@@ -55,7 +55,7 @@ func TestBuildSummaryIndex_SingleNode(t *testing.T) {
 
 	result := BuildSummaryIndex(ctx, store, "conv1", 1500)
 
-	if !strings.Contains(result, "## 对话历史摘要") {
+	if !strings.Contains(result, "## Conversation Summary") {
 		t.Fatal("missing header")
 	}
 	if !strings.Contains(result, "[s_abc]") {
@@ -123,7 +123,7 @@ func TestBuildSummaryIndex_BudgetTruncation(t *testing.T) {
 	if len(result) > 600 {
 		t.Fatalf("result too long (%d chars), budget should limit it", len(result))
 	}
-	if !strings.Contains(result, "已省略") {
+	if !strings.Contains(result, "omitted") {
 		t.Fatal("should contain omission note when budget truncates")
 	}
 }
