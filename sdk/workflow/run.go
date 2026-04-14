@@ -75,7 +75,13 @@ func prepareBoard(ctx context.Context, req *Request, session MemorySession, opts
 
 	prev := 0
 	if session != nil {
-		msgs, err := session.Load(ctx)
+		var msgs []model.Message
+		var err error
+		if assembler, ok := session.(ContextAssembler); ok {
+			msgs, err = assembler.Assemble(ctx, req)
+		} else {
+			msgs, err = session.Load(ctx)
+		}
 		if err != nil {
 			return nil, fmt.Errorf("memory load: %w", err)
 		}
@@ -185,8 +191,18 @@ func finishRun(ctx context.Context, agent Agent, req *Request, board *Board, ses
 
 	main := board.Channel(MainChannel)
 	if session != nil {
-		if err := session.Save(ctx, main); err != nil {
-			return nil, fmt.Errorf("memory save: %w", err)
+		if inc, ok := session.(IncrementalSaver); ok {
+			newMsgs := main
+			if prev > 0 && prev <= len(main) {
+				newMsgs = main[prev:]
+			}
+			if err := inc.Append(ctx, newMsgs); err != nil {
+				return nil, fmt.Errorf("memory append: %w", err)
+			}
+		} else {
+			if err := session.Save(ctx, main); err != nil {
+				return nil, fmt.Errorf("memory save: %w", err)
+			}
 		}
 	}
 

@@ -490,3 +490,192 @@ func TestRuntime_MaxIterationsOption(t *testing.T) {
 		t.Fatalf("MaxIterations=%d, want 50", rc.MaxIterations)
 	}
 }
+
+// --- ContextAssembler / IncrementalSaver ---
+
+type assemblingSession struct {
+	BaseSession
+	history      []model.Message
+	vars         map[string]any
+	assembled    atomic.Bool
+	assembledReq *Request
+}
+
+func (s *assemblingSession) Assemble(_ context.Context, req *Request) ([]model.Message, error) {
+	s.assembled.Store(true)
+	s.assembledReq = req
+	cp := make([]model.Message, len(s.history))
+	copy(cp, s.history)
+	return cp, nil
+}
+
+func (s *assemblingSession) Vars(_ context.Context) (map[string]any, error) { return s.vars, nil }
+func (s *assemblingSession) Close(_ context.Context, _ error) error         { return nil }
+
+type assemblingMemory struct{ session *assemblingSession }
+
+func (m *assemblingMemory) Session(_ context.Context, _ string) (MemorySession, error) {
+	return m.session, nil
+}
+
+func TestRuntime_ContextAssembler(t *testing.T) {
+	sess := &assemblingSession{
+		history: []model.Message{
+			model.NewTextMessage(model.RoleUser, "summarized context"),
+		},
+		vars: map[string]any{VarSummaryIndex: 1},
+	}
+	factory := func(_ context.Context, _ Agent) (Memory, error) {
+		return &assemblingMemory{session: sess}, nil
+	}
+	rt := NewRuntime(WithMemoryFactory(factory))
+
+	req := NewTextRequest("new question")
+	req.ContextID = "conv-asm"
+
+	res, err := rt.Run(context.Background(), testAgent(echoStrategy{answer: "assembled"}), req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !sess.assembled.Load() {
+		t.Fatal("Assemble was not called")
+	}
+	if sess.assembledReq != req {
+		t.Fatal("Assemble did not receive the original request")
+	}
+	if res.Status != StatusCompleted {
+		t.Fatalf("status=%s, want completed", res.Status)
+	}
+	if len(res.Messages) != 2 {
+		t.Fatalf("len(Messages)=%d, want 2 (user + assistant)", len(res.Messages))
+	}
+	if res.Messages[0].Content() != "new question" {
+		t.Fatalf("Messages[0]=%q, want 'new question'", res.Messages[0].Content())
+	}
+}
+
+type incrementalSession struct {
+	BaseSession
+	history      []model.Message
+	appended     atomic.Bool
+	appendedMsgs []model.Message
+}
+
+func (s *incrementalSession) Load(_ context.Context) ([]model.Message, error) {
+	cp := make([]model.Message, len(s.history))
+	copy(cp, s.history)
+	return cp, nil
+}
+
+func (s *incrementalSession) Append(_ context.Context, msgs []model.Message) error {
+	s.appended.Store(true)
+	s.appendedMsgs = append([]model.Message(nil), msgs...)
+	return nil
+}
+
+func (s *incrementalSession) Close(_ context.Context, _ error) error { return nil }
+
+type incrementalMemory struct{ session *incrementalSession }
+
+func (m *incrementalMemory) Session(_ context.Context, _ string) (MemorySession, error) {
+	return m.session, nil
+}
+
+func TestRuntime_IncrementalSaver(t *testing.T) {
+	sess := &incrementalSession{
+		history: []model.Message{
+			model.NewTextMessage(model.RoleUser, "old"),
+			model.NewTextMessage(model.RoleAssistant, "old reply"),
+		},
+	}
+	factory := func(_ context.Context, _ Agent) (Memory, error) {
+		return &incrementalMemory{session: sess}, nil
+	}
+	rt := NewRuntime(WithMemoryFactory(factory))
+
+	req := NewTextRequest("new")
+	req.ContextID = "conv-inc"
+
+	res, err := rt.Run(context.Background(), testAgent(echoStrategy{answer: "new reply"}), req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !sess.appended.Load() {
+		t.Fatal("Append was not called")
+	}
+	if len(sess.appendedMsgs) != 2 {
+		t.Fatalf("appended %d messages, want 2 (new user + assistant)", len(sess.appendedMsgs))
+	}
+	if sess.appendedMsgs[0].Content() != "new" {
+		t.Fatalf("appendedMsgs[0]=%q, want 'new'", sess.appendedMsgs[0].Content())
+	}
+	if sess.appendedMsgs[1].Content() != "new reply" {
+		t.Fatalf("appendedMsgs[1]=%q, want 'new reply'", sess.appendedMsgs[1].Content())
+	}
+	if res.Status != StatusCompleted {
+		t.Fatalf("status=%s, want completed", res.Status)
+	}
+}
+
+type fullComboSession struct {
+	BaseSession
+	history      []model.Message
+	vars         map[string]any
+	assembled    atomic.Bool
+	appended     atomic.Bool
+	appendedMsgs []model.Message
+}
+
+func (s *fullComboSession) Assemble(_ context.Context, _ *Request) ([]model.Message, error) {
+	s.assembled.Store(true)
+	cp := make([]model.Message, len(s.history))
+	copy(cp, s.history)
+	return cp, nil
+}
+
+func (s *fullComboSession) Append(_ context.Context, msgs []model.Message) error {
+	s.appended.Store(true)
+	s.appendedMsgs = append([]model.Message(nil), msgs...)
+	return nil
+}
+
+func (s *fullComboSession) Vars(_ context.Context) (map[string]any, error) { return s.vars, nil }
+func (s *fullComboSession) Close(_ context.Context, _ error) error         { return nil }
+
+type fullComboMemory struct{ session *fullComboSession }
+
+func (m *fullComboMemory) Session(_ context.Context, _ string) (MemorySession, error) {
+	return m.session, nil
+}
+
+func TestRuntime_ContextAssembler_And_IncrementalSaver(t *testing.T) {
+	sess := &fullComboSession{
+		history: []model.Message{
+			model.NewTextMessage(model.RoleUser, "ctx"),
+		},
+	}
+	factory := func(_ context.Context, _ Agent) (Memory, error) {
+		return &fullComboMemory{session: sess}, nil
+	}
+	rt := NewRuntime(WithMemoryFactory(factory))
+
+	req := NewTextRequest("hello")
+	req.ContextID = "conv-combo"
+
+	res, err := rt.Run(context.Background(), testAgent(echoStrategy{answer: "world"}), req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !sess.assembled.Load() {
+		t.Fatal("Assemble was not called")
+	}
+	if !sess.appended.Load() {
+		t.Fatal("Append was not called")
+	}
+	if len(sess.appendedMsgs) != 2 {
+		t.Fatalf("appended %d messages, want 2", len(sess.appendedMsgs))
+	}
+	if res.Status != StatusCompleted {
+		t.Fatalf("status=%s", res.Status)
+	}
+}
