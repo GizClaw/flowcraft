@@ -1,0 +1,295 @@
+// Package event provides the EventBus interface and an in-memory implementation
+// for non-blocking multi-consumer event subscription.
+package event
+
+import (
+	"context"
+	"fmt"
+	"slices"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"github.com/rs/xid"
+	"go.opentelemetry.io/otel/trace"
+)
+
+// EventType identifies the kind of event.
+type EventType string
+
+const (
+	EventGraphStart         EventType = "graph.start"
+	EventGraphEnd           EventType = "graph.end"
+	EventNodeStart          EventType = "node.start"
+	EventNodeComplete       EventType = "node.complete"
+	EventNodeError          EventType = "node.error"
+	EventNodeSkipped        EventType = "node.skipped"
+	EventCheckpoint         EventType = "checkpoint"
+	EventStreamDelta        EventType = "stream.delta"
+	EventParallelFork       EventType = "parallel.fork"
+	EventParallelJoin       EventType = "parallel.join"
+	EventKanbanUpdate       EventType = "kanban.update"
+	EventApprovalRequired   EventType = "approval.required"
+	EventGraphChanged       EventType = "graph.changed"
+	EventAgentConfigChanged EventType = "agent_config.changed"
+	EventCompileResult      EventType = "compile.result"
+)
+
+// Event is a structured event emitted during graph execution.
+type Event struct {
+	ID        string    `json:"id"`
+	Type      EventType `json:"type"`
+	RunID     string    `json:"run_id,omitempty"`
+	GraphID   string    `json:"graph_id,omitempty"`
+	ActorID   string    `json:"actor_id,omitempty"`
+	NodeID    string    `json:"node_id,omitempty"`
+	TraceID   string    `json:"trace_id,omitempty"`
+	SpanID    string    `json:"span_id,omitempty"`
+	Timestamp time.Time `json:"timestamp"`
+	Payload   any       `json:"payload,omitempty"`
+}
+
+// EventFilter specifies criteria for subscribing to events.
+type EventFilter struct {
+	Types   []EventType
+	RunID   string
+	NodeID  string
+	ActorID string
+}
+
+// SubscribeOption configures the Subscribe call.
+type SubscribeOption func(*subscribeOptions)
+
+type subscribeOptions struct {
+	bufferSize int
+}
+
+// WithBufferSize overrides the default channel buffer size for a subscription.
+func WithBufferSize(n int) SubscribeOption {
+	return func(o *subscribeOptions) {
+		if n > 0 {
+			o.bufferSize = n
+		}
+	}
+}
+
+// EventBus is the interface for publishing and subscribing to events.
+type EventBus interface {
+	Publish(ctx context.Context, event Event) error
+	Subscribe(ctx context.Context, filter EventFilter, opts ...SubscribeOption) (Subscription, error)
+	Close() error
+}
+
+// Subscription represents an active event subscription.
+type Subscription interface {
+	Events() <-chan Event
+	Close() error
+}
+
+// ---------- MemoryBus implementation ----------
+
+const defaultBufferSize = 64
+
+// MemoryBusOption configures a MemoryBus.
+type MemoryBusOption func(*MemoryBus)
+
+// WithDropCallback sets a callback invoked each time an event is dropped
+// because a subscriber's channel buffer is full.
+func WithDropCallback(fn func(Event)) MemoryBusOption {
+	return func(b *MemoryBus) { b.onDrop = fn }
+}
+
+// MemoryBus is an in-memory EventBus implementation.
+// Thread safety: all methods are safe for concurrent use.
+type MemoryBus struct {
+	mu          sync.RWMutex
+	subscribers map[*memorySubscription]struct{}
+	closed      bool
+	dropped     atomic.Int64
+	onDrop      func(Event)
+}
+
+type memorySubscription struct {
+	ch     chan Event
+	filter EventFilter
+	done   chan struct{}
+	once   sync.Once
+	bus    *MemoryBus
+}
+
+// NewMemoryBus creates a new in-memory event bus.
+func NewMemoryBus(opts ...MemoryBusOption) *MemoryBus {
+	b := &MemoryBus{
+		subscribers: make(map[*memorySubscription]struct{}),
+	}
+	for _, opt := range opts {
+		opt(b)
+	}
+	return b
+}
+
+// Dropped returns the total number of events dropped due to full subscriber buffers.
+func (b *MemoryBus) Dropped() int64 {
+	return b.dropped.Load()
+}
+
+// Publish sends an event to all matching subscribers (non-blocking).
+// TraceID and SpanID are automatically extracted from ctx if not already set.
+func (b *MemoryBus) Publish(ctx context.Context, event Event) error {
+	if event.ID == "" {
+		event.ID = xid.New().String()
+	}
+	if event.Timestamp.IsZero() {
+		event.Timestamp = time.Now()
+	}
+	if event.TraceID == "" || event.SpanID == "" {
+		if sc := trace.SpanFromContext(ctx).SpanContext(); sc.IsValid() {
+			if event.TraceID == "" {
+				event.TraceID = sc.TraceID().String()
+			}
+			if event.SpanID == "" {
+				event.SpanID = sc.SpanID().String()
+			}
+		}
+	}
+
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+
+	if b.closed {
+		return fmt.Errorf("event bus closed")
+	}
+
+	for sub := range b.subscribers {
+		if !sub.matches(event) {
+			continue
+		}
+		select {
+		case <-sub.done:
+		default:
+			select {
+			case sub.ch <- event:
+			default:
+				b.dropped.Add(1)
+				if b.onDrop != nil {
+					b.onDrop(event)
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// Subscribe creates a new subscription with the given filter. The subscription
+// is automatically closed when ctx is cancelled.
+func (b *MemoryBus) Subscribe(ctx context.Context, filter EventFilter, opts ...SubscribeOption) (Subscription, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	if b.closed {
+		return nil, fmt.Errorf("event bus closed")
+	}
+
+	o := subscribeOptions{bufferSize: defaultBufferSize}
+	for _, fn := range opts {
+		fn(&o)
+	}
+
+	sub := &memorySubscription{
+		ch:     make(chan Event, o.bufferSize),
+		filter: filter,
+		done:   make(chan struct{}),
+		bus:    b,
+	}
+	b.subscribers[sub] = struct{}{}
+
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = sub.Close()
+		case <-sub.done:
+		}
+	}()
+
+	return sub, nil
+}
+
+// Close shuts down the bus and all active subscriptions.
+func (b *MemoryBus) Close() error {
+	b.mu.Lock()
+	subs := b.subscribers
+	b.subscribers = make(map[*memorySubscription]struct{})
+	b.closed = true
+	b.mu.Unlock()
+
+	for sub := range subs {
+		sub.closeInternal()
+	}
+	return nil
+}
+
+func (b *MemoryBus) removeSub(target *memorySubscription) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	delete(b.subscribers, target)
+}
+
+func (s *memorySubscription) Events() <-chan Event { return s.ch }
+
+func (s *memorySubscription) Close() error {
+	s.once.Do(func() {
+		if s.bus != nil {
+			s.bus.removeSub(s)
+		}
+		close(s.done)
+		close(s.ch)
+	})
+	return nil
+}
+
+// closeInternal closes the subscription without removing from bus (used by Bus.Close).
+func (s *memorySubscription) closeInternal() {
+	s.once.Do(func() {
+		close(s.done)
+		close(s.ch)
+	})
+}
+
+func (s *memorySubscription) matches(event Event) bool {
+	if len(s.filter.Types) > 0 {
+		found := slices.Contains(s.filter.Types, event.Type)
+		if !found {
+			return false
+		}
+	}
+	if s.filter.RunID != "" && s.filter.RunID != event.RunID {
+		return false
+	}
+	if s.filter.NodeID != "" && s.filter.NodeID != event.NodeID {
+		return false
+	}
+	if s.filter.ActorID != "" && event.ActorID != "" && s.filter.ActorID != event.ActorID {
+		return false
+	}
+	return true
+}
+
+// NoopBus is an EventBus that discards all events. Used when no bus is configured.
+type NoopBus struct{}
+
+func (NoopBus) Publish(context.Context, Event) error { return nil }
+func (NoopBus) Subscribe(context.Context, EventFilter, ...SubscribeOption) (Subscription, error) {
+	return &noopSub{}, nil
+}
+func (NoopBus) Close() error { return nil }
+
+var closedEventCh = func() chan Event {
+	ch := make(chan Event)
+	close(ch)
+	return ch
+}()
+
+type noopSub struct{}
+
+func (s *noopSub) Events() <-chan Event { return closedEventCh }
+func (s *noopSub) Close() error         { return nil }

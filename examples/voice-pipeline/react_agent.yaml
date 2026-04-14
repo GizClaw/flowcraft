@@ -1,0 +1,29 @@
+name: react_agent
+entry: llm_call
+nodes:
+  - id: llm_call
+    type: llm
+    config:
+      system_prompt: "You are a concise, friendly voice assistant. Reply in natural spoken language. Do not output markdown, code blocks, or list markers."
+      temperature: 1.0
+      model: minimax/MiniMax-M2.5-highspeed
+      track_steps: true
+  - id: loop
+    type: loopguard
+    config:
+      max_count: 10
+  - id: output
+    type: answer
+    config:
+      keys:
+        - response
+edges:
+  - from: llm_call
+    to: loop
+  - from: loop
+    to: llm_call
+    condition: tool_pending == true && loop_count_exceeded == false
+  - from: loop
+    to: output
+  - from: output
+    to: __end__

@@ -1,0 +1,74 @@
+# Whitelist mode: ignore everything, then allow explicitly
+*
+
+# ── Git config ──
+!.gitignore
+
+# ── Root documentation ──
+!README.md
+!LICENSE
+
+# ── Architecture docs ──
+!docs/
+!docs/**
+
+# ── Go source ──
+!go.mod
+!go.sum
+!go.work
+!cmd/
+!cmd/**
+!internal/
+!internal/**
+!model/
+!model/**
+!plugin/
+!plugin/**
+!sdk/
+!sdk/**
+!sdkx/
+!sdkx/**
+!examples/
+!examples/**
+!skills/
+!skills/**
+!deploy/
+!deploy/**
+
+# ── Frontend source ──
+!web/
+!web/**
+
+# ── Container ──
+!Dockerfile
+!.dockerignore
+!docker-compose*.yml
+
+# ── CI/CD ──
+!Makefile
+!.github/
+!.github/**
+
+# ── Global excludes (override all allowed dirs) ──
+# Example: go build in examples/voice-pipeline produces ./voice-pipeline
+examples/voice-pipeline/voice-pipeline
+**/.DS_Store
+**/Thumbs.db
+**/*.exe
+**/*.exe~
+**/*.dll
+**/*.so
+**/*.dylib
+**/*.test
+**/*.out
+**/*.prof
+**/*.swp
+**/*.swo
+**/*~
+**/.env
+**/.env.local
+**/.env.production
+**/vendor/
+**/.idea/
+**/.vscode/
+**/__debug_bin*
