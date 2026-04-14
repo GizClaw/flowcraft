@@ -3,7 +3,7 @@ module github.com/GizClaw/flowcraft/examples/voice-pipeline
 go 1.25.0
 
 require (
-	github.com/GizClaw/flowcraft/sdk v0.1.0
+	github.com/GizClaw/flowcraft/sdk v0.1.1
 	github.com/GizClaw/flowcraft/sdkx v0.1.0
 	github.com/charmbracelet/bubbles v0.20.0
 	github.com/charmbracelet/bubbletea v1.1.0
