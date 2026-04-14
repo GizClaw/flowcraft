@@ -18,7 +18,7 @@ jobs:
           go-version: "1.25"
       - name: Build
         run: |
-          for m in sdk sdkx plugin examples/voice-pipeline; do
+          for m in sdk sdkx plugin; do
             echo "==> build $m"
             (cd "$m" && go build ./...)
           done

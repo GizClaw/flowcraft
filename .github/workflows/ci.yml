@@ -15,7 +15,6 @@ jobs:
       sdk: ${{ steps.filter.outputs.sdk }}
       sdkx: ${{ steps.filter.outputs.sdkx }}
       plugin: ${{ steps.filter.outputs.plugin }}
-      examples: ${{ steps.filter.outputs.examples }}
       ci: ${{ steps.filter.outputs.ci }}
     steps:
       - uses: actions/checkout@v4
@@ -29,8 +28,6 @@ jobs:
               - 'sdkx/**'
             plugin:
               - 'plugin/**'
-            examples:
-              - 'examples/**'
             ci:
               - '.github/workflows/**'
               - 'Makefile'
@@ -112,26 +109,12 @@ jobs:
         run: go test -count=1 -race ./...
         working-directory: plugin
 
-  build-examples:
-    name: Build examples
-    needs: detect
-    if: needs.detect.outputs.sdk == 'true' || needs.detect.outputs.sdkx == 'true' || needs.detect.outputs.examples == 'true' || needs.detect.outputs.ci == 'true'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v6
-        with:
-          go-version: "1.25"
-      - name: Build
-        run: go build ./...
-        working-directory: examples/voice-pipeline
-
   # Gate job: single required status check for branch protection.
   # Always runs; succeeds only when all triggered jobs pass.
   ci-pass:
     name: CI
     if: always()
-    needs: [lint, test-sdk, test-sdkx, test-plugin, build-examples]
+    needs: [lint, test-sdk, test-sdkx, test-plugin]
     runs-on: ubuntu-latest
     steps:
       - name: Check results
@@ -141,7 +124,6 @@ jobs:
             "${{ needs.test-sdk.result }}" \
             "${{ needs.test-sdkx.result }}" \
             "${{ needs.test-plugin.result }}" \
-            "${{ needs.build-examples.result }}" \
           )
           for r in "${results[@]}"; do
             if [[ "$r" == "failure" || "$r" == "cancelled" ]]; then

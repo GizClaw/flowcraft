@@ -489,7 +489,7 @@ type mockCallbacks struct {
 }
 
 func (m *mockCallbacks) GetVar(key string) (any, bool) { return m.getVar(key) }
-func (m *mockCallbacks) SetVar(key string, value any)   { m.setVar(key, value) }
+func (m *mockCallbacks) SetVar(key string, value any)  { m.setVar(key, value) }
 func (m *mockCallbacks) LLMGenerate(ctx context.Context, prompt string) (string, error) {
 	return m.llmGenerate(ctx, prompt)
 }
