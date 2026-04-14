@@ -43,6 +43,18 @@ func ObjectProperty(name, description string, properties map[string]any) Propert
 	return PropertyDef{name: name, schema: schema}
 }
 
+// PropertyWithDefault creates a typed property with a default value.
+func PropertyWithDefault(name, typ, description string, defaultVal any) PropertyDef {
+	return PropertyDef{
+		name: name,
+		schema: map[string]any{
+			"type":        typ,
+			"description": description,
+			"default":     defaultVal,
+		},
+	}
+}
+
 // EnumProperty creates a property restricted to a set of string values.
 func EnumProperty(name, typ, description string, values ...string) PropertyDef {
 	enums := make([]any, len(values))
@@ -81,8 +93,18 @@ func DefineSchema(name, description string, props ...PropertyDef) *SchemaBuilder
 }
 
 // Required marks the given property names as required in the JSON Schema.
+// Duplicate names are silently ignored.
 func (b *SchemaBuilder) Required(names ...string) *SchemaBuilder {
-	b.required = append(b.required, names...)
+	seen := make(map[string]bool, len(b.required))
+	for _, n := range b.required {
+		seen[n] = true
+	}
+	for _, n := range names {
+		if !seen[n] {
+			b.required = append(b.required, n)
+			seen[n] = true
+		}
+	}
 	return b
 }
 

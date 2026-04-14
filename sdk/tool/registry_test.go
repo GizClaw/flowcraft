@@ -233,12 +233,9 @@ func TestExecute_Success(t *testing.T) {
 		},
 	))
 
-	result, err := r.Execute(context.Background(), model.ToolCall{
+	result := r.Execute(context.Background(), model.ToolCall{
 		ID: "call-1", Name: "echo", Arguments: "hello",
 	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
 	if result.ToolCallID != "call-1" {
 		t.Errorf("ToolCallID = %q, want %q", result.ToolCallID, "call-1")
 	}
@@ -252,14 +249,14 @@ func TestExecute_Success(t *testing.T) {
 
 func TestExecute_ToolNotFound(t *testing.T) {
 	r := NewRegistry()
-	_, err := r.Execute(context.Background(), model.ToolCall{
+	result := r.Execute(context.Background(), model.ToolCall{
 		ID: "call-1", Name: "missing", Arguments: "{}",
 	})
-	if err == nil {
-		t.Fatal("expected error for missing tool")
+	if !result.IsError {
+		t.Fatal("expected IsError for missing tool")
 	}
-	if !strings.Contains(err.Error(), "not found") {
-		t.Errorf("error = %q, want to contain 'not found'", err.Error())
+	if !strings.Contains(result.Content, "not found") {
+		t.Errorf("Content = %q, want to contain 'not found'", result.Content)
 	}
 }
 
@@ -267,12 +264,9 @@ func TestExecute_ToolReturnsError(t *testing.T) {
 	r := NewRegistry()
 	r.Register(errTool("fail", errors.New("broken")))
 
-	result, err := r.Execute(context.Background(), model.ToolCall{
+	result := r.Execute(context.Background(), model.ToolCall{
 		ID: "call-2", Name: "fail", Arguments: "{}",
 	})
-	if err != nil {
-		t.Fatalf("Execute should not return error for tool-level errors, got: %v", err)
-	}
 	if !result.IsError {
 		t.Error("IsError should be true")
 	}
@@ -294,12 +288,9 @@ func TestExecute_ContextCancelled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	result, err := r.Execute(ctx, model.ToolCall{
+	result := r.Execute(ctx, model.ToolCall{
 		ID: "call-3", Name: "slow", Arguments: "{}",
 	})
-	if err != nil {
-		t.Fatalf("Execute should wrap tool errors, got outer error: %v", err)
-	}
 	if !result.IsError {
 		t.Error("IsError should be true for cancelled context")
 	}
@@ -315,12 +306,9 @@ func TestExecute_Timeout(t *testing.T) {
 		},
 	))
 
-	result, err := r.Execute(context.Background(), model.ToolCall{
+	result := r.Execute(context.Background(), model.ToolCall{
 		ID: "call-4", Name: "hang", Arguments: "{}",
 	})
-	if err != nil {
-		t.Fatalf("unexpected outer error: %v", err)
-	}
 	if !result.IsError {
 		t.Error("IsError should be true for timed-out tool")
 	}
@@ -331,12 +319,9 @@ func TestExecute_SelfTimeouter_SkipsTimeout(t *testing.T) {
 	st := &selfTimeoutTool{def: model.ToolDefinition{Name: "self"}}
 	r.Register(st)
 
-	result, err := r.Execute(context.Background(), model.ToolCall{
+	result := r.Execute(context.Background(), model.ToolCall{
 		ID: "call-5", Name: "self", Arguments: "{}",
 	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
 	if result.IsError {
 		t.Errorf("unexpected tool error: %s", result.Content)
 	}

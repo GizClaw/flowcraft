@@ -28,29 +28,12 @@ type fetchURLArgs struct {
 
 // Definition returns the tool definition for LLM function-calling.
 func (t *FetchURLTool) Definition() model.ToolDefinition {
-	return model.ToolDefinition{
-		Name:        "fetch_url",
-		Description: "Extract clean text content from a URL. Supports web pages, YouTube videos, podcasts, and more.",
-		InputSchema: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"url": map[string]any{
-					"type":        "string",
-					"description": "The URL to extract content from",
-				},
-				"max_characters": map[string]any{
-					"type":        "integer",
-					"description": "Maximum number of characters to extract (optional)",
-				},
-				"format": map[string]any{
-					"type":        "string",
-					"description": "Output format: 'text' (default) or 'markdown'",
-					"enum":        []string{"text", "markdown"},
-				},
-			},
-			"required": []string{"url"},
-		},
-	}
+	return tool.DefineSchema("fetch_url",
+		"Extract clean text content from a URL. Supports web pages, YouTube videos, podcasts, and more.",
+		tool.Property("url", "string", "The URL to extract content from"),
+		tool.Property("max_characters", "integer", "Maximum number of characters to extract (optional)"),
+		tool.EnumProperty("format", "string", "Output format: 'text' (default) or 'markdown'", "text", "markdown"),
+	).Required("url").Build()
 }
 
 // Execute runs the tool with given arguments, passing per-call options

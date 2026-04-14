@@ -186,7 +186,9 @@ func (r *Registry) Len() int {
 }
 
 // Execute runs a single tool call with OTel tracing and metrics.
-func (r *Registry) Execute(ctx context.Context, call model.ToolCall) (model.ToolResult, error) {
+// All errors (including tool-not-found) are returned as ToolResult with
+// IsError=true, so callers never need to handle a separate error path.
+func (r *Registry) Execute(ctx context.Context, call model.ToolCall) model.ToolResult {
 	ctx, span := telemetry.Tracer().Start(ctx, fmt.Sprintf("tool.%s.execute", call.Name), trace.WithAttributes(attribute.String("tool.name", call.Name)))
 	defer span.End()
 
@@ -201,7 +203,11 @@ func (r *Registry) Execute(ctx context.Context, call model.ToolCall) (model.Tool
 			attribute.String("tool.name", call.Name),
 			attribute.String("status", "error")))
 		toolErrorCount.Add(ctx, 1, nameAttr)
-		return model.ToolResult{}, fmt.Errorf("tool %q not found", call.Name)
+		return model.ToolResult{
+			ToolCallID: call.ID,
+			Content:    fmt.Sprintf("tool %q not found", call.Name),
+			IsError:    true,
+		}
 	}
 
 	execCtx := ctx
@@ -232,7 +238,7 @@ func (r *Registry) Execute(ctx context.Context, call model.ToolCall) (model.Tool
 			ToolCallID: call.ID,
 			Content:    err.Error(),
 			IsError:    true,
-		}, nil
+		}
 	}
 
 	span.SetStatus(codes.Ok, "OK")
@@ -242,7 +248,7 @@ func (r *Registry) Execute(ctx context.Context, call model.ToolCall) (model.Tool
 	return model.ToolResult{
 		ToolCallID: call.ID,
 		Content:    content,
-	}, nil
+	}
 }
 
 // ExecuteAll runs multiple tool calls concurrently with a semaphore
@@ -278,16 +284,7 @@ func (r *Registry) ExecuteAll(ctx context.Context, calls []model.ToolCall) []mod
 			}
 			defer r.sem.Release(1)
 
-			res, execErr := r.Execute(ctx, c)
-			if execErr != nil {
-				results[idx] = model.ToolResult{
-					ToolCallID: c.ID,
-					Content:    execErr.Error(),
-					IsError:    true,
-				}
-				return
-			}
-			results[idx] = res
+			results[idx] = r.Execute(ctx, c)
 		}(i, call)
 	}
 
