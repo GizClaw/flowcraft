@@ -1,0 +1,152 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  detect:
+    name: Detect changes
+    runs-on: ubuntu-latest
+    outputs:
+      sdk: ${{ steps.filter.outputs.sdk }}
+      sdkx: ${{ steps.filter.outputs.sdkx }}
+      plugin: ${{ steps.filter.outputs.plugin }}
+      examples: ${{ steps.filter.outputs.examples }}
+      ci: ${{ steps.filter.outputs.ci }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            sdk:
+              - 'sdk/**'
+            sdkx:
+              - 'sdkx/**'
+            plugin:
+              - 'plugin/**'
+            examples:
+              - 'examples/**'
+            ci:
+              - '.github/workflows/**'
+              - 'Makefile'
+
+  lint:
+    name: Lint
+    needs: detect
+    if: needs.detect.outputs.sdk == 'true' || needs.detect.outputs.sdkx == 'true' || needs.detect.outputs.plugin == 'true' || needs.detect.outputs.ci == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.25"
+      - name: go vet
+        run: |
+          for m in sdk sdkx plugin; do
+            echo "==> vet $m"
+            (cd "$m" && go vet ./...)
+          done
+      - name: gofmt check
+        run: |
+          diff=$(gofmt -l sdk sdkx plugin)
+          if [ -n "$diff" ]; then
+            echo "Files not formatted:"
+            echo "$diff"
+            exit 1
+          fi
+
+  test-sdk:
+    name: Test sdk (Go ${{ matrix.go-version }})
+    needs: detect
+    if: needs.detect.outputs.sdk == 'true' || needs.detect.outputs.ci == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        go-version: ["1.25", "1.26"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v6
+        with:
+          go-version: ${{ matrix.go-version }}
+      - name: Test
+        run: go test -count=1 -race ./...
+        working-directory: sdk
+
+  test-sdkx:
+    name: Test sdkx (Go ${{ matrix.go-version }})
+    needs: detect
+    # sdkx depends on sdk, so run when either changes
+    if: needs.detect.outputs.sdk == 'true' || needs.detect.outputs.sdkx == 'true' || needs.detect.outputs.ci == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        go-version: ["1.25", "1.26"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v6
+        with:
+          go-version: ${{ matrix.go-version }}
+      - name: Test
+        run: go test -count=1 -race ./...
+        working-directory: sdkx
+
+  test-plugin:
+    name: Test plugin (Go ${{ matrix.go-version }})
+    needs: detect
+    if: needs.detect.outputs.plugin == 'true' || needs.detect.outputs.ci == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        go-version: ["1.25", "1.26"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v6
+        with:
+          go-version: ${{ matrix.go-version }}
+      - name: Test
+        run: go test -count=1 -race ./...
+        working-directory: plugin
+
+  build-examples:
+    name: Build examples
+    needs: detect
+    if: needs.detect.outputs.sdk == 'true' || needs.detect.outputs.sdkx == 'true' || needs.detect.outputs.examples == 'true' || needs.detect.outputs.ci == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.25"
+      - name: Build
+        run: go build ./...
+        working-directory: examples/voice-pipeline
+
+  # Gate job: single required status check for branch protection.
+  # Always runs; succeeds only when all triggered jobs pass.
+  ci-pass:
+    name: CI
+    if: always()
+    needs: [lint, test-sdk, test-sdkx, test-plugin, build-examples]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check results
+        run: |
+          results=( \
+            "${{ needs.lint.result }}" \
+            "${{ needs.test-sdk.result }}" \
+            "${{ needs.test-sdkx.result }}" \
+            "${{ needs.test-plugin.result }}" \
+            "${{ needs.build-examples.result }}" \
+          )
+          for r in "${results[@]}"; do
+            if [[ "$r" == "failure" || "$r" == "cancelled" ]]; then
+              echo "Job failed or cancelled: $r"
+              exit 1
+            fi
+          done
+          echo "All jobs passed or were skipped."
