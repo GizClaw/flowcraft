@@ -133,6 +133,51 @@ func TestNewGraphRunnable_WithCustomExecutor(t *testing.T) {
 	}
 }
 
+func TestGraphRunnable_ResolvesVariableReferences(t *testing.T) {
+	def := &graph.GraphDefinition{
+		Name:  "var-resolve",
+		Entry: "s1",
+		Nodes: []graph.NodeDefinition{
+			{
+				ID:   "s1",
+				Type: "script",
+				Config: map[string]any{
+					"source":   `board.setVar("resolved_greeting", config.greeting);`,
+					"greeting": "${board.greeting}",
+				},
+			},
+		},
+	}
+
+	cg, err := compiler.NewCompiler().Compile(def)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+
+	deps := workflow.NewDependencies()
+	fac := node.NewFactory(node.WithScriptRuntime(jsrt.New()))
+	workflow.SetDep(deps, DepNodeFactory, fac)
+
+	s := FromCompiled(cg)
+	runnable, err := s.Build(context.Background(), deps)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+
+	board := workflow.NewBoard()
+	board.SetVar("greeting", "hello from board")
+
+	result, err := runnable.Execute(context.Background(), board, nil)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	got := result.GetVarString("resolved_greeting")
+	if got != "hello from board" {
+		t.Fatalf("expected resolved_greeting=%q, got %q (variable reference was not resolved)", "hello from board", got)
+	}
+}
+
 func TestFromDefinition_CompiledCacheHit(t *testing.T) {
 	def := &graph.GraphDefinition{
 		Name:  "cache-test",
