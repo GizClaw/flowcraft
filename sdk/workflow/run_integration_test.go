@@ -556,8 +556,8 @@ func TestRuntime_ContextAssembler(t *testing.T) {
 
 type incrementalSession struct {
 	BaseSession
-	history     []model.Message
-	appended    atomic.Bool
+	history      []model.Message
+	appended     atomic.Bool
 	appendedMsgs []model.Message
 }
 
