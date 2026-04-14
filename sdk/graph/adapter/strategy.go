@@ -9,6 +9,7 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/graph/compiler"
 	"github.com/GizClaw/flowcraft/sdk/graph/executor"
 	"github.com/GizClaw/flowcraft/sdk/graph/node"
+	"github.com/GizClaw/flowcraft/sdk/graph/variable"
 	"github.com/GizClaw/flowcraft/sdk/workflow"
 )
 
@@ -108,7 +109,9 @@ func (r *graphRunnable) Execute(ctx context.Context, board *workflow.Board, req 
 	if err != nil {
 		return board, err
 	}
-	var execOpts []executor.RunOption
+	execOpts := []executor.RunOption{
+		executor.WithResolver(variable.NewResolver()),
+	}
 	if req != nil && req.Extensions != nil {
 		if raw, ok := req.Extensions[ExtExecutorRunOpts]; ok {
 			if sl, ok := raw.([]executor.RunOption); ok {
