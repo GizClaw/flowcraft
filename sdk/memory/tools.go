@@ -39,25 +39,11 @@ func newMemoryExpandTool(deps ToolDeps) tool.Tool {
 }
 
 func (t *memoryExpandTool) Definition() model.ToolDefinition {
-	return model.ToolDefinition{
-		Name:        "memory_expand",
-		Description: "Expand a compressed summary to see the original messages or finer-grained summaries it was derived from.",
-		InputSchema: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"summary_id": map[string]any{
-					"type":        "string",
-					"description": "The ID of the summary to expand",
-				},
-				"max_messages": map[string]any{
-					"type":        "integer",
-					"description": "Maximum original messages to return",
-					"default":     20,
-				},
-			},
-			"required": []string{"summary_id"},
-		},
-	}
+	return tool.DefineSchema("memory_expand",
+		"Expand a compressed summary to see the original messages or finer-grained summaries it was derived from.",
+		tool.Property("summary_id", "string", "The ID of the summary to expand"),
+		tool.PropertyWithDefault("max_messages", "integer", "Maximum original messages to return", 20),
+	).Required("summary_id").Build()
 }
 
 func (t *memoryExpandTool) Execute(ctx context.Context, arguments string) (string, error) {
@@ -209,30 +195,12 @@ func newMemoryCompactTool(deps ToolDeps) tool.Tool {
 }
 
 func (t *memoryCompactTool) Definition() model.ToolDefinition {
-	return model.ToolDefinition{
-		Name:        "memory_compact",
-		Description: "Manually trigger compact and archive for a conversation's memory DAG.",
-		InputSchema: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"conversation_id": map[string]any{
-					"type":        "string",
-					"description": "The conversation ID to compact/archive",
-				},
-				"compact": map[string]any{
-					"type":        "boolean",
-					"description": "Run DAG compact",
-					"default":     true,
-				},
-				"archive": map[string]any{
-					"type":        "boolean",
-					"description": "Run message archiving",
-					"default":     true,
-				},
-			},
-			"required": []string{"conversation_id"},
-		},
-	}
+	return tool.DefineSchema("memory_compact",
+		"Manually trigger compact and archive for a conversation's memory DAG.",
+		tool.Property("conversation_id", "string", "The conversation ID to compact/archive"),
+		tool.PropertyWithDefault("compact", "boolean", "Run DAG compact", true),
+		tool.PropertyWithDefault("archive", "boolean", "Run message archiving", true),
+	).Required("conversation_id").Build()
 }
 
 func (t *memoryCompactTool) Execute(ctx context.Context, arguments string) (string, error) {

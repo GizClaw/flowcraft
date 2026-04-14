@@ -135,3 +135,37 @@ func TestDefineSchema_WithAllPropertyTypes(t *testing.T) {
 		t.Fatalf("properties count = %d, want 4", len(props))
 	}
 }
+
+func TestPropertyWithDefault(t *testing.T) {
+	prop := PropertyWithDefault("limit", "integer", "max items", 10)
+	if prop.name != "limit" {
+		t.Fatalf("name = %q", prop.name)
+	}
+	if prop.schema["type"] != "integer" {
+		t.Fatalf("type = %v", prop.schema["type"])
+	}
+	if prop.schema["default"] != 10 {
+		t.Fatalf("default = %v, want 10", prop.schema["default"])
+	}
+
+	def := DefineSchema("t", "d",
+		PropertyWithDefault("enabled", "boolean", "toggle", true),
+	).Build()
+	props := def.InputSchema["properties"].(map[string]any)
+	enabled := props["enabled"].(map[string]any)
+	if enabled["default"] != true {
+		t.Fatalf("default = %v, want true", enabled["default"])
+	}
+}
+
+func TestRequired_Dedup(t *testing.T) {
+	def := DefineSchema("t", "d",
+		Property("a", "string", "a"),
+		Property("b", "string", "b"),
+	).Required("a", "b").Required("a").Required("b", "a").Build()
+
+	req := def.InputSchema["required"].([]string)
+	if len(req) != 2 {
+		t.Fatalf("required count = %d, want 2 (deduped)", len(req))
+	}
+}
