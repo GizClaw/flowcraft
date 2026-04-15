@@ -14,7 +14,9 @@ import (
 	"github.com/GizClaw/flowcraft/sdkx/internal/testenv"
 
 	_ "github.com/GizClaw/flowcraft/sdkx/embedding/azure"
+	_ "github.com/GizClaw/flowcraft/sdkx/embedding/bytedance"
 	_ "github.com/GizClaw/flowcraft/sdkx/embedding/openai"
+	_ "github.com/GizClaw/flowcraft/sdkx/embedding/qwen"
 )
 
 func init() {
