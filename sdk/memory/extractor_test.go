@@ -473,14 +473,12 @@ func TestExtractWithPostProcess_FilterAll(t *testing.T) {
 }
 
 func TestExtractWithContextMessages(t *testing.T) {
-	var receivedPrompt string
+	var receivedMessages []llm.Message
 
 	store := &mergeFallbackStore{}
 	resolver := &mergeFallbackResolver{
 		generate: func(_ context.Context, msgs []llm.Message, _ ...llm.GenerateOption) (llm.Message, llm.TokenUsage, error) {
-			if len(msgs) > 0 {
-				receivedPrompt = msgs[0].Content()
-			}
+			receivedMessages = msgs
 			return llm.Message{
 				Role:  llm.RoleAssistant,
 				Parts: []llm.Part{{Type: llm.PartText, Text: `[]`}},
@@ -502,8 +500,53 @@ func TestExtractWithContextMessages(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(receivedPrompt, "earlier context") {
-		t.Fatal("expected ContextMessages to be used instead of Messages")
+	if len(receivedMessages) != 2 {
+		t.Fatalf("expected 2 messages (system + user), got %d", len(receivedMessages))
+	}
+	if receivedMessages[0].Role != llm.RoleSystem {
+		t.Fatalf("expected first message to be system, got %s", receivedMessages[0].Role)
+	}
+	sysContent := receivedMessages[0].Content()
+	if !strings.Contains(sysContent, "earlier context") {
+		t.Fatal("expected system message to contain ContextMessages content")
+	}
+	if !strings.Contains(sysContent, "Do NOT extract") {
+		t.Fatal("expected system message to contain extraction restriction")
+	}
+	userContent := receivedMessages[1].Content()
+	if !strings.Contains(userContent, "incremental only") {
+		t.Fatal("expected user message to contain Messages content")
+	}
+}
+
+func TestExtractWithoutContextMessages(t *testing.T) {
+	var receivedMessages []llm.Message
+
+	store := &mergeFallbackStore{}
+	resolver := &mergeFallbackResolver{
+		generate: func(_ context.Context, msgs []llm.Message, _ ...llm.GenerateOption) (llm.Message, llm.TokenUsage, error) {
+			receivedMessages = msgs
+			return llm.Message{
+				Role:  llm.RoleAssistant,
+				Parts: []llm.Part{{Type: llm.PartText, Text: `[]`}},
+			}, llm.TokenUsage{}, nil
+		},
+	}
+
+	extractor := NewMemoryExtractor(resolver, store, LongTermConfig{}, ExtractorConfig{})
+	err := extractor.Extract(context.Background(), ExtractInput{
+		RuntimeID: "agent1",
+		Messages:  []llm.Message{llm.NewTextMessage(llm.RoleUser, "hello world")},
+		Source:    MemorySource{RuntimeID: "owner"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(receivedMessages) != 1 {
+		t.Fatalf("expected 1 message (user only) when no ContextMessages, got %d", len(receivedMessages))
+	}
+	if receivedMessages[0].Role != llm.RoleUser {
+		t.Fatalf("expected user message, got %s", receivedMessages[0].Role)
 	}
 }
 
