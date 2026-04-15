@@ -205,16 +205,11 @@ func (e *MemoryExtractor) Extract(ctx context.Context, input ExtractInput) error
 }
 
 func extractCandidates(ctx context.Context, l llm.LLM, input ExtractInput, ecfg ExtractorConfig) ([]CandidateMemory, error) {
-	messages := input.Messages
-	if len(input.ContextMessages) > 0 {
-		messages = input.ContextMessages
-	}
-
 	var convText string
 	if ecfg.FormatMessages != nil {
-		convText = ecfg.FormatMessages(messages, input.Source)
+		convText = ecfg.FormatMessages(input.Messages, input.Source)
 	} else {
-		convText = defaultFormatMessages(messages)
+		convText = defaultFormatMessages(input.Messages)
 	}
 
 	if convText == "" {
@@ -235,10 +230,29 @@ func extractCandidates(ctx context.Context, l llm.LLM, input ExtractInput, ecfg 
 	}
 
 	prompt := fmt.Sprintf(promptTpl, convText)
+
+	var msgs []llm.Message
+	if len(input.ContextMessages) > 0 {
+		var ctxText string
+		if ecfg.FormatMessages != nil {
+			ctxText = ecfg.FormatMessages(input.ContextMessages, input.Source)
+		} else {
+			ctxText = defaultFormatMessages(input.ContextMessages)
+		}
+		ctxBudget := maxRunes * 3 / 10
+		if r := []rune(ctxText); len(r) > ctxBudget {
+			ctxText = string(r[len(r)-ctxBudget:])
+		}
+		if ctxText != "" {
+			msgs = append(msgs, llm.NewTextMessage(llm.RoleSystem,
+				"Earlier conversation for reference only. "+
+					"Do NOT extract memories from this section.\n\n"+ctxText))
+		}
+	}
+	msgs = append(msgs, llm.NewTextMessage(llm.RoleUser, prompt))
+
 	jsonOpt := jsonOutputOption(l, extractionSchema())
-	resp, _, err := l.Generate(ctx, []llm.Message{
-		llm.NewTextMessage(llm.RoleUser, prompt),
-	}, jsonOpt)
+	resp, _, err := l.Generate(ctx, msgs, jsonOpt)
 	if err != nil {
 		return nil, err
 	}
