@@ -119,6 +119,7 @@ type Pipeline struct {
 	timeouts       PipelineTimeouts
 	history        []model.Message
 	contextID      string
+	skipWarmup     bool
 }
 
 // currentTTSOpts merges static and dynamic TTS options for the current turn.
@@ -162,15 +163,16 @@ func (p *Pipeline) clone() *Pipeline {
 		return nil
 	}
 	cp := Pipeline{
-		stt:       p.stt,
-		tts:       p.tts,
-		rt:        p.rt,
-		agent:     p.agent,
-		timeouts:  p.timeouts,
-		contextID: p.contextID,
-		segOpts:   append([]tts.SegmenterOption(nil), p.segOpts...),
-		sttOpts:   append([]stt.STTOption(nil), p.sttOpts...),
-		ttsOpts:   append([]tts.TTSOption(nil), p.ttsOpts...),
+		stt:        p.stt,
+		tts:        p.tts,
+		rt:         p.rt,
+		agent:      p.agent,
+		timeouts:   p.timeouts,
+		contextID:  p.contextID,
+		skipWarmup: p.skipWarmup,
+		segOpts:    append([]tts.SegmenterOption(nil), p.segOpts...),
+		sttOpts:    append([]stt.STTOption(nil), p.sttOpts...),
+		ttsOpts:    append([]tts.TTSOption(nil), p.ttsOpts...),
 	}
 	if len(p.dynamicTTSOpts) > 0 {
 		cp.dynamicTTSOpts = append([]func() []tts.TTSOption(nil), p.dynamicTTSOpts...)
@@ -545,54 +547,26 @@ func (p *Pipeline) runStream(ctx context.Context, input audio.Stream[audio.Frame
 // LLM + TTS linear pipeline
 // ---------------------------------------------------------------------------
 
-func (p *Pipeline) runLLMAndTTS(
-	ctx context.Context,
-	transcript string,
-	sttTail audio.Stream[stt.STTResult],
-	out *audio.Pipe[Event],
-) {
+// flowRun is a handle to a running AgentFlow execution.
+// Produced by startFlow, consumed by runTTS.
+type flowRun struct {
+	runID     string
+	cancel    context.CancelFunc
+	events    <-chan Event
+	sentences <-chan string
+	done      <-chan struct{}
+	runErr    func() error
+}
+
+func (p *Pipeline) startFlow(ctx context.Context, transcript string) *flowRun {
 	var wg sync.WaitGroup
 	var overflow atomic.Int64
 	runID := xid.New().String()
 
 	seg := tts.NewSegmenter(p.segOpts...)
-	sentencePipe := audio.NewPipe[string](32)
-	defer bindPipeToContext(ctx, sentencePipe)()
-	responseDone := make(chan struct{}, 1)
-	sentenceStarted := make(chan struct{}, 1)
-	sttTailRevision := 0
-	sendSentence := func(sentence string) bool {
-		if sentence == "" {
-			return true
-		}
-		select {
-		case sentenceStarted <- struct{}{}:
-		default:
-		}
-		return sentencePipe.Send(sentence)
-	}
-
-	if sttTail != nil {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for {
-				r, err := sttTail.Read()
-				if err != nil {
-					return
-				}
-				if r.IsFinal {
-					sttTailRevision++
-					out.Send(withRunID(newTranscriptEvent(EventTranscriptFinal, r, sttTailRevision), runID))
-					out.Send(withRunID(newTranscriptEvent(EventTranscriptRevision, r, sttTailRevision), runID))
-				} else {
-					sttTailRevision++
-					out.Send(withRunID(newTranscriptEvent(EventTranscriptPartial, r, sttTailRevision), runID))
-					out.Send(withRunID(newTranscriptEvent(EventTranscriptRevision, r, sttTailRevision), runID))
-				}
-			}
-		}()
-	}
+	events := make(chan Event, 32)
+	sentences := make(chan string, 32)
+	done := make(chan struct{})
 
 	eventCh := make(chan workflow.StreamEvent, 256)
 	runCtx, runCancel := context.WithCancel(ctx)
@@ -634,9 +608,138 @@ func (p *Pipeline) runLLMAndTTS(
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		defer sentencePipe.Close()
+		defer close(events)
+		defer close(sentences)
+
+		for {
+			select {
+			case <-ctx.Done():
+				runCancel()
+				return
+			case ev, ok := <-eventCh:
+				if !ok {
+					if runErr != nil {
+						select {
+						case events <- withRunID(errorEvent(runErr), runID):
+						case <-ctx.Done():
+						}
+					}
+					if n := overflow.Load(); n > 0 {
+						select {
+						case events <- withRunID(Event{
+							Type:      EventError,
+							ErrorCode: ErrorCodeInternal,
+							Text:      fmt.Sprintf("speech: %d stream events dropped due to backpressure", n),
+						}, runID):
+						case <-ctx.Done():
+						}
+					}
+					if last := seg.Flush(); last != "" {
+						select {
+						case sentences <- last:
+						case <-ctx.Done():
+						}
+					}
+					return
+				}
+
+				payload, ok := ev.Payload.(map[string]any)
+				if !ok {
+					continue
+				}
+
+				switch ev.Type {
+				case "token":
+					content, _ := payload["content"].(string)
+					if content == "" {
+						continue
+					}
+					select {
+					case events <- withRunID(Event{Type: EventTextDelta, Text: content}, runID):
+					case <-ctx.Done():
+						runCancel()
+						return
+					}
+					if sentence, segOK := seg.Feed(content); segOK && sentence != "" {
+						select {
+						case sentences <- sentence:
+						case <-ctx.Done():
+							runCancel()
+							return
+						}
+					}
+				case "tool_call":
+					name, _ := payload["name"].(string)
+					select {
+					case events <- withRunID(Event{Type: EventToolCall, Text: name, Data: payload}, runID):
+					case <-ctx.Done():
+						runCancel()
+						return
+					}
+				case "tool_result":
+					content, _ := payload["content"].(string)
+					select {
+					case events <- withRunID(Event{Type: EventToolResult, Text: content, Data: payload}, runID):
+					case <-ctx.Done():
+						runCancel()
+						return
+					}
+				}
+			}
+		}
+	}()
+
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+
+	return &flowRun{
+		runID:     runID,
+		cancel:    runCancel,
+		events:    events,
+		sentences: sentences,
+		done:      done,
+		runErr:    func() error { return runErr },
+	}
+}
+
+func (p *Pipeline) drainSttTail(tail audio.Stream[stt.STTResult], runID string, out *audio.Pipe[Event]) {
+	revision := 0
+	for {
+		r, err := tail.Read()
+		if err != nil {
+			return
+		}
+		revision++
+		if r.IsFinal {
+			out.Send(withRunID(newTranscriptEvent(EventTranscriptFinal, r, revision), runID))
+			out.Send(withRunID(newTranscriptEvent(EventTranscriptRevision, r, revision), runID))
+		} else {
+			out.Send(withRunID(newTranscriptEvent(EventTranscriptPartial, r, revision), runID))
+			out.Send(withRunID(newTranscriptEvent(EventTranscriptRevision, r, revision), runID))
+		}
+	}
+}
+
+func (p *Pipeline) runTTS(ctx context.Context, flow *flowRun, out *audio.Pipe[Event], awaitExtra ...func()) {
+	sentencePipe := audio.NewPipe[string](32)
+	defer bindPipeToContext(ctx, sentencePipe)()
+
+	responseDone := make(chan struct{}, 1)
+	sentenceStarted := make(chan struct{}, 1)
+
+	var fwdWg sync.WaitGroup
+	eventFwdDone := make(chan struct{})
+
+	fwdWg.Add(1)
+	go func() {
+		defer fwdWg.Done()
+		defer close(eventFwdDone)
 		defer func() {
-			p.emitPipe(ctx, out, withRunID(Event{Type: EventResponseDone}, runID))
+			for range flow.events {
+			}
+			p.emitPipe(ctx, out, withRunID(Event{Type: EventResponseDone}, flow.runID))
 			select {
 			case responseDone <- struct{}{}:
 			default:
@@ -651,36 +754,45 @@ func (p *Pipeline) runLLMAndTTS(
 		for {
 			select {
 			case <-ctx.Done():
-				runCancel()
+				flow.cancel()
 				return
 			case <-firstTokenTimer:
-				runCancel()
-				out.Send(withRunID(errorEvent(stageTimeoutError("runner first token")), runID))
+				flow.cancel()
+				out.Send(withRunID(errorEvent(stageTimeoutError("runner first token")), flow.runID))
 				return
-			case ev, ok := <-eventCh:
+			case ev, ok := <-flow.events:
 				if !ok {
-					if runErr != nil {
-						out.Send(withRunID(errorEvent(runErr), runID))
-					}
-					if n := overflow.Load(); n > 0 {
-						out.Send(withRunID(Event{
-							Type:      EventError,
-							ErrorCode: ErrorCodeInternal,
-							Text:      fmt.Sprintf("speech: %d stream events dropped due to backpressure", n),
-						}, runID))
-					}
-					if last := seg.Flush(); last != "" {
-						sendSentence(last)
-					}
 					return
 				}
-				if ev.Type == "token" {
+				if ev.Type == EventTextDelta {
 					firstTokenTimer = nil
 				}
-				p.handleStreamEvent(ev, runID, seg, sendSentence, out)
+				out.Send(ev)
 			}
 		}
 	}()
+
+	fwdWg.Add(1)
+	go func() {
+		defer fwdWg.Done()
+		defer sentencePipe.Close()
+		for s := range flow.sentences {
+			select {
+			case sentenceStarted <- struct{}{}:
+			default:
+			}
+			sentencePipe.Send(s)
+		}
+		<-eventFwdDone
+	}()
+
+	awaitAll := func() {
+		<-flow.done
+		fwdWg.Wait()
+		for _, f := range awaitExtra {
+			f()
+		}
+	}
 
 	ttsOpts := p.currentTTSOpts()
 	ttsRecorder := provider.NewRecorder()
@@ -691,14 +803,14 @@ func (p *Pipeline) runLLMAndTTS(
 		var ttsErr error
 		ttsStream, ttsErr = st.SynthesizeStream(ttsCtx, sentencePipe, ttsOpts...)
 		if ttsErr != nil {
-			ev := withRunID(errorEvent(ttsErr), runID)
+			ev := withRunID(errorEvent(ttsErr), flow.runID)
 			if report, ok := providerReport(ttsRecorder, "tts.synthesize_stream"); ok {
 				ev = withProviderReport(ev, report)
 			}
 			p.emitPipe(ctx, out, ev)
 			drainStream[string](sentencePipe)
 			p.emitPipe(ctx, out, Event{Type: EventDone})
-			wg.Wait()
+			awaitAll()
 			out.Close()
 			return
 		}
@@ -715,7 +827,7 @@ func (p *Pipeline) runLLMAndTTS(
 				}
 				rc, synthErr := p.tts.Synthesize(ttsCtx, sentence, ttsOpts...)
 				if synthErr != nil {
-					ev := withRunID(errorEvent(synthErr), runID)
+					ev := withRunID(errorEvent(synthErr), flow.runID)
 					if report, ok := providerReport(ttsRecorder, "tts.synthesize"); ok {
 						ev = withProviderReport(ev, report)
 					}
@@ -771,7 +883,7 @@ func (p *Pipeline) runLLMAndTTS(
 				firstAudioTimer = time.After(p.timeouts.TTSFirstAudio)
 			}
 		case <-firstAudioTimer:
-			ev := withRunID(errorEvent(stageTimeoutError("tts first audio")), runID)
+			ev := withRunID(errorEvent(stageTimeoutError("tts first audio")), flow.runID)
 			if report, ok := providerReport(ttsRecorder, "tts.synthesize_stream"); ok {
 				ev = withProviderReport(ev, report)
 			} else if report, ok := providerReport(ttsRecorder, "tts.synthesize"); ok {
@@ -790,7 +902,7 @@ func (p *Pipeline) runLLMAndTTS(
 				Text:  utt.Text,
 				Audio: utt.Frame,
 				Data:  map[string]any{"chunk_id": utt.ChunkID},
-			}, runID)
+			}, flow.runID)
 			if report, ok := providerReport(ttsRecorder, "tts.synthesize_stream"); ok {
 				ev = withProviderReport(ev, report)
 			} else if report, ok := providerReport(ttsRecorder, "tts.synthesize"); ok {
@@ -804,13 +916,31 @@ ttsDone:
 	select {
 	case <-responseDone:
 	default:
-		p.emitPipe(ctx, out, withRunID(Event{Type: EventResponseDone}, runID))
+		p.emitPipe(ctx, out, withRunID(Event{Type: EventResponseDone}, flow.runID))
 	}
-	p.emitPipe(ctx, out, withRunID(Event{Type: EventAudioDone}, runID))
-	p.emitPipe(ctx, out, withRunID(Event{Type: EventDone}, runID))
+	p.emitPipe(ctx, out, withRunID(Event{Type: EventAudioDone}, flow.runID))
+	p.emitPipe(ctx, out, withRunID(Event{Type: EventDone}, flow.runID))
 
-	wg.Wait()
+	awaitAll()
 	out.Close()
+}
+
+func (p *Pipeline) runLLMAndTTS(
+	ctx context.Context,
+	transcript string,
+	sttTail audio.Stream[stt.STTResult],
+	out *audio.Pipe[Event],
+) {
+	flow := p.startFlow(ctx, transcript)
+	var sttWg sync.WaitGroup
+	if sttTail != nil {
+		sttWg.Add(1)
+		go func() {
+			defer sttWg.Done()
+			p.drainSttTail(sttTail, flow.runID, out)
+		}()
+	}
+	p.runTTS(ctx, flow, out, sttWg.Wait)
 }
 
 type sttResultItem struct {
@@ -828,39 +958,6 @@ func (s *sttResultStream) Read() (stt.STTResult, error) {
 		return stt.STTResult{}, io.EOF
 	}
 	return item.r, item.err
-}
-
-func (p *Pipeline) handleStreamEvent(
-	ev workflow.StreamEvent,
-	runID string,
-	seg *tts.Segmenter,
-	sendSentence func(string) bool,
-	out *audio.Pipe[Event],
-) {
-	payload, ok := ev.Payload.(map[string]any)
-	if !ok {
-		return
-	}
-
-	switch ev.Type {
-	case "token":
-		content, _ := payload["content"].(string)
-		if content == "" {
-			return
-		}
-		out.Send(withRunID(Event{Type: EventTextDelta, Text: content}, runID))
-		if sentence, segOK := seg.Feed(content); segOK {
-			sendSentence(sentence)
-		}
-
-	case "tool_call":
-		name, _ := payload["name"].(string)
-		out.Send(withRunID(Event{Type: EventToolCall, Text: name, Data: payload}, runID))
-
-	case "tool_result":
-		content, _ := payload["content"].(string)
-		out.Send(withRunID(Event{Type: EventToolResult, Text: content, Data: payload}, runID))
-	}
 }
 
 func drainStream[T any](s audio.Stream[T]) {
@@ -883,6 +980,9 @@ func bindPipeToContext[T any](ctx context.Context, pipe *audio.Pipe[T]) func() b
 }
 
 func (p *Pipeline) startWarmup(ctx context.Context) func() {
+	if p.skipWarmup {
+		return func() {}
+	}
 	warmupCtx, warmupCancel := context.WithCancel(ctx)
 	var wg sync.WaitGroup
 	wg.Add(1)

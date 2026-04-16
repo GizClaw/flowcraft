@@ -1,6 +1,7 @@
 // Package script defines a language-agnostic script execution interface.
-// Implementations (e.g. script/jsrt for JavaScript, script/luart for Lua)
+// Implementations (e.g. script/jsrt for JavaScript, script/luart for Lua via gopher-lua)
 // provide concrete runtimes that satisfy the Runtime interface.
+// Host APIs for [Env] are built with script/bindings; see bindings/doc.go for layout and conventions.
 package script
 
 import "context"

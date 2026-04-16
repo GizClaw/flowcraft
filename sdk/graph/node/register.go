@@ -14,7 +14,10 @@ func buildLLMNode(def graph.NodeDefinition, bctx *BuildContext) (graph.Node, err
 	if bctx.LLMResolver == nil {
 		return nil, fmt.Errorf("build node %q: LLMResolver is required for llm nodes", def.ID)
 	}
-	cfg := ConfigFromMap(def.Config)
+	cfg, err := ConfigFromMap(def.Config)
+	if err != nil {
+		return nil, fmt.Errorf("build node %q: invalid config: %w", def.ID, err)
+	}
 	n := NewLLMNode(def.ID, bctx.LLMResolver, bctx.ToolRegistry, cfg)
 	n.rawConfig = def.Config
 	return n, nil

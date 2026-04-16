@@ -44,6 +44,9 @@ type sessionLoop struct {
 	metricsMu   sync.Mutex
 	turnMetrics turnMetricsState
 	bargeIn     bargeInConfirmState
+
+	partialMu     sync.Mutex
+	latestPartial string
 }
 
 type turnMetricsState struct {
@@ -84,6 +87,8 @@ func newSessionLoop(s *Session, ctx context.Context) *sessionLoop {
 // ---------------------------------------------------------------------------
 
 func (l *sessionLoop) run() error {
+	stopWarmup := l.warmupTTS()
+	defer stopWarmup()
 	frameCh := l.startFrameReader()
 	l.startPlaybackReferenceReader()
 
@@ -175,10 +180,14 @@ func (l *sessionLoop) onIdle(f audio.Frame) SessionState {
 func (l *sessionLoop) onHearing(f audio.Frame) SessionState {
 	l.audioPipe.Send(f)
 	isSpeech := l.detector.IsSpeech(f)
-	if l.decider != nil && l.decider.Feed(endpoint.Input{IsSpeech: isSpeech}) == endpoint.Commit {
+	if l.decider != nil && l.decider.Feed(endpoint.Input{
+		IsSpeech:    isSpeech,
+		PartialText: l.getLatestPartial(),
+	}) == endpoint.Commit {
 		l.audioPipe.Close()
 		l.audioPipe = nil
 		l.detector.Reset()
+		l.clearLatestPartial()
 		return StateResponding
 	}
 	return StateHearing
@@ -204,9 +213,6 @@ func (l *sessionLoop) onInterruptable(f audio.Frame) SessionState {
 }
 
 func (l *sessionLoop) onText(text string) SessionState {
-	if l.state == StateResponding {
-		l.session.pipeline.Abort()
-	}
 	if l.state != StateIdle {
 		l.setInterruptReason(InterruptReasonTextInterrupt)
 		l.emitTurnInterrupted(InterruptReasonTextInterrupt)
@@ -239,6 +245,7 @@ func (l *sessionLoop) onCommit() SessionState {
 			l.detector.Reset()
 		}
 		l.resetBargeInConfirm()
+		l.clearLatestPartial()
 		return StateResponding
 	default:
 		return l.state
@@ -249,10 +256,7 @@ func (l *sessionLoop) onStopSpeaking() SessionState {
 	switch l.state {
 	case StateHearing:
 		return l.onCommit()
-	case StateResponding:
-		l.session.pipeline.Abort()
-		fallthrough
-	case StatePlayback:
+	case StateResponding, StatePlayback:
 		l.setInterruptReason(InterruptReasonManualInterrupt)
 		l.emitTurnInterrupted(InterruptReasonManualInterrupt)
 		l.endTurn()
@@ -339,6 +343,7 @@ func (l *sessionLoop) startPlayback(ev audio.Stream[Event]) bool {
 func (l *sessionLoop) endTurn() {
 	l.reportTurnMetrics(true)
 	l.stopTurn()
+	l.clearLatestPartial()
 	if l.decider != nil {
 		l.decider.Reset()
 	}
@@ -417,6 +422,9 @@ func (l *sessionLoop) startRelay(stream audio.Stream[Event], utt *audio.Pipe[tts
 			if ev.TurnID == "" {
 				ev.TurnID = turnID
 			}
+			if ev.Type == EventTranscriptPartial {
+				l.setLatestPartial(ev.Text)
+			}
 			l.observeEventMetrics(ev)
 			l.session.emitEvent(ev)
 			if ev.Type == EventAudio && utt != nil {
@@ -437,6 +445,7 @@ func (l *sessionLoop) startTurn() {
 	l.turnMetrics = turnMetricsState{startedAt: time.Now()}
 	l.metricsMu.Unlock()
 	l.resetBargeInConfirm()
+	l.clearLatestPartial()
 	l.session.emitEvent(l.currentTurnEvent(Event{Type: EventTurnStarted}))
 }
 
@@ -524,9 +533,6 @@ func (l *sessionLoop) resetBargeInConfirm() {
 }
 
 func (l *sessionLoop) executeBargeIn(seed []audio.Frame) SessionState {
-	if l.state == StateResponding {
-		l.session.pipeline.Abort()
-	}
 	l.setInterruptReason(InterruptReasonUserBargeIn)
 	l.emitTurnInterrupted(InterruptReasonUserBargeIn)
 	l.endTurn()
@@ -644,4 +650,47 @@ func (l *sessionLoop) reportTurnMetrics(interrupted bool) {
 		m.PlaybackTotal = completedAt.Sub(tm.playStartedAt)
 	}
 	hook.OnTurnMetrics(m)
+}
+
+// ---------------------------------------------------------------------------
+// Partial text tracking (fed by relay goroutine, read by onHearing)
+// ---------------------------------------------------------------------------
+
+func (l *sessionLoop) setLatestPartial(text string) {
+	l.partialMu.Lock()
+	l.latestPartial = text
+	l.partialMu.Unlock()
+}
+
+func (l *sessionLoop) getLatestPartial() string {
+	l.partialMu.Lock()
+	defer l.partialMu.Unlock()
+	return l.latestPartial
+}
+
+func (l *sessionLoop) clearLatestPartial() {
+	l.partialMu.Lock()
+	l.latestPartial = ""
+	l.partialMu.Unlock()
+}
+
+// ---------------------------------------------------------------------------
+// Session-level TTS warmup
+// ---------------------------------------------------------------------------
+
+func (l *sessionLoop) warmupTTS() func() {
+	if l.session.pipeline == nil {
+		return func() {}
+	}
+	warmupCtx, warmupCancel := context.WithCancel(l.ctx)
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		_ = tts.WarmupTTS(warmupCtx, l.session.pipeline.tts)
+	}()
+	return func() {
+		warmupCancel()
+		wg.Wait()
+	}
 }

@@ -1263,6 +1263,400 @@ func TestPipeline_RunText_WarmupLifecycle(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// P1 refactoring: startFlow + runTTS split coverage
+// ---------------------------------------------------------------------------
+
+func TestPipeline_EventOrdering_Strict(t *testing.T) {
+	p := speech.NewPipeline(
+		&fakeSTT{preset: "hello"},
+		&fakeTTS{},
+		&fakeRuntime{},
+		fakeAgent{},
+		speech.WithSegmenterOptions(tts.WithMinChars(1)),
+	)
+
+	stream, err := p.RunAudio(context.Background(), audio.Frame{Data: []byte("wav")})
+	if err != nil {
+		t.Fatalf("RunAudio: %v", err)
+	}
+	events := collectStreamEvents(t, stream)
+
+	lastTextDelta := -1
+	firstResponseDone := -1
+	firstAudioDone := -1
+	firstDone := -1
+
+	for i, ev := range events {
+		switch ev.Type {
+		case speech.EventTextDelta:
+			lastTextDelta = i
+		case speech.EventResponseDone:
+			if firstResponseDone == -1 {
+				firstResponseDone = i
+			}
+		case speech.EventAudioDone:
+			if firstAudioDone == -1 {
+				firstAudioDone = i
+			}
+		case speech.EventDone:
+			if firstDone == -1 {
+				firstDone = i
+			}
+		}
+	}
+
+	if lastTextDelta < 0 || firstResponseDone < 0 || firstAudioDone < 0 || firstDone < 0 {
+		types := make([]speech.EventType, len(events))
+		for i, ev := range events {
+			types[i] = ev.Type
+		}
+		t.Fatalf("missing lifecycle events: %v", types)
+	}
+	if firstResponseDone < lastTextDelta {
+		t.Errorf("EventResponseDone (idx %d) before last EventTextDelta (idx %d)", firstResponseDone, lastTextDelta)
+	}
+	if firstAudioDone < firstResponseDone {
+		t.Errorf("EventAudioDone (idx %d) before EventResponseDone (idx %d)", firstAudioDone, firstResponseDone)
+	}
+	if firstDone < firstAudioDone {
+		t.Errorf("EventDone (idx %d) before EventAudioDone (idx %d)", firstDone, firstAudioDone)
+	}
+	if firstDone != len(events)-1 {
+		t.Errorf("EventDone should be last event, at idx %d of %d", firstDone, len(events))
+	}
+}
+
+func TestPipeline_RunText_AllEventsShareRunID(t *testing.T) {
+	p := speech.NewPipeline(
+		nil,
+		&fakeTTS{},
+		&fakeRuntime{},
+		fakeAgent{},
+		speech.WithSegmenterOptions(tts.WithMinChars(1)),
+	)
+
+	stream, err := p.RunText(context.Background(), "hello")
+	if err != nil {
+		t.Fatalf("RunText: %v", err)
+	}
+	events := collectStreamEvents(t, stream)
+
+	var runID string
+	for _, ev := range events {
+		if ev.RunID == "" {
+			continue
+		}
+		if runID == "" {
+			runID = ev.RunID
+		} else if ev.RunID != runID {
+			t.Fatalf("inconsistent RunID: %q vs %q (event type: %s)", runID, ev.RunID, ev.Type)
+		}
+	}
+	if runID == "" {
+		t.Fatal("no events with RunID found")
+	}
+}
+
+func TestPipeline_ContextCancel_TerminatesCleanly(t *testing.T) {
+	rt := &blockingRuntime{}
+	p := speech.NewPipeline(
+		nil,
+		&fakeTTS{},
+		rt,
+		fakeAgent{},
+	)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	stream, err := p.RunText(ctx, "hello")
+	if err != nil {
+		t.Fatalf("RunText: %v", err)
+	}
+
+	for i := 0; i < 100; i++ {
+		if rt.running.Load() {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if !rt.running.Load() {
+		t.Fatal("runtime did not start")
+	}
+
+	cancel()
+
+	done := make(chan struct{})
+	go func() {
+		collectStreamEvents(t, stream)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("stream did not terminate after context cancellation")
+	}
+}
+
+func TestPipeline_RunAudioStream_ContextCancel_NoHang(t *testing.T) {
+	p := speech.NewPipeline(
+		&fakeStreamSTT{preset: "hello"},
+		&fakeTTS{},
+		&blockingRuntime{},
+		fakeAgent{},
+	)
+
+	input := audio.NewPipe[audio.Frame](8)
+	input.Send(audio.Frame{Data: []byte("wav")})
+	input.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	stream, err := p.RunAudioStream(ctx, input)
+	if err != nil {
+		t.Fatalf("RunAudioStream: %v", err)
+	}
+
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+
+	done := make(chan struct{})
+	go func() {
+		collectStreamEvents(t, stream)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("stream did not terminate after context cancellation (RunAudioStream)")
+	}
+}
+
+func TestPipeline_RunText_MultipleSentences(t *testing.T) {
+	p := speech.NewPipeline(
+		nil,
+		&fakeTTS{},
+		&fakeRuntime{tokens: []string{"First sentence.", " Second sentence."}},
+		fakeAgent{},
+		speech.WithSegmenterOptions(tts.WithMinChars(1)),
+	)
+
+	stream, err := p.RunText(context.Background(), "hello")
+	if err != nil {
+		t.Fatalf("RunText: %v", err)
+	}
+
+	events := collectStreamEvents(t, stream)
+	var audioCount int
+	for _, ev := range events {
+		if ev.Type == speech.EventAudio {
+			audioCount++
+		}
+	}
+	if audioCount < 2 {
+		t.Fatalf("expected at least 2 audio events for 2 sentences, got %d", audioCount)
+	}
+}
+
+func TestPipeline_Abort_EmitsLifecycleEvents(t *testing.T) {
+	rt := &blockingRuntime{}
+	p := speech.NewPipeline(
+		nil,
+		&fakeTTS{},
+		rt,
+		fakeAgent{},
+	)
+
+	stream, err := p.RunText(context.Background(), "hello")
+	if err != nil {
+		t.Fatalf("RunText: %v", err)
+	}
+
+	for i := 0; i < 100; i++ {
+		if rt.running.Load() {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	p.Abort()
+
+	events := collectStreamEvents(t, stream)
+
+	var hasResponseDone, hasAudioDone, hasDone bool
+	for _, ev := range events {
+		switch ev.Type {
+		case speech.EventResponseDone:
+			hasResponseDone = true
+		case speech.EventAudioDone:
+			hasAudioDone = true
+		case speech.EventDone:
+			hasDone = true
+		}
+	}
+	if !hasResponseDone {
+		t.Error("expected EventResponseDone after Abort")
+	}
+	if !hasAudioDone {
+		t.Error("expected EventAudioDone after Abort")
+	}
+	if !hasDone {
+		t.Error("expected EventDone after Abort")
+	}
+}
+
+// slowStreamTTS reads sentences but never produces utterances (for TTSFirstAudio timeout testing).
+type slowStreamTTS struct{}
+
+func (slowStreamTTS) Synthesize(context.Context, string, ...tts.TTSOption) (io.ReadCloser, error) {
+	return io.NopCloser(bytes.NewReader(nil)), nil
+}
+
+func (slowStreamTTS) Voices(context.Context) ([]tts.Voice, error) { return nil, nil }
+
+func (slowStreamTTS) SynthesizeStream(ctx context.Context, input audio.Stream[string], opts ...tts.TTSOption) (audio.Stream[tts.Utterance], error) {
+	out := audio.NewPipe[tts.Utterance](1)
+	go func() {
+		defer out.Close()
+		for {
+			_, err := input.Read()
+			if err != nil {
+				<-ctx.Done()
+				return
+			}
+		}
+	}()
+	return out, nil
+}
+
+func TestPipeline_RunText_TTSFirstAudioTimeout(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	p := speech.NewPipeline(
+		nil,
+		slowStreamTTS{},
+		&fakeRuntime{tokens: []string{"Hello."}},
+		fakeAgent{},
+		speech.WithTimeouts(speech.PipelineTimeouts{
+			TTSFirstAudio: 50 * time.Millisecond,
+		}),
+		speech.WithSegmenterOptions(tts.WithMinChars(1)),
+	)
+
+	stream, err := p.RunText(ctx, "hello")
+	if err != nil {
+		t.Fatalf("RunText: %v", err)
+	}
+
+	events := collectStreamEvents(t, stream)
+	for _, ev := range events {
+		if ev.Type == speech.EventError && strings.Contains(ev.Text, "tts first audio timeout") {
+			if ev.ErrorCode != speech.ErrorCodeTimeout {
+				t.Fatalf("EventError.ErrorCode = %q, want %q", ev.ErrorCode, speech.ErrorCodeTimeout)
+			}
+			return
+		}
+	}
+	types := make([]speech.EventType, len(events))
+	for i, ev := range events {
+		types[i] = ev.Type
+	}
+	t.Fatalf("expected TTS first audio timeout EventError, got events: %v", types)
+}
+
+func TestPipeline_EventOrdering_StreamTTS(t *testing.T) {
+	p := speech.NewPipeline(
+		&fakeSTT{preset: "hello"},
+		&fakeStreamTTS{fakeTTS: &fakeTTS{}},
+		&fakeRuntime{},
+		fakeAgent{},
+		speech.WithSegmenterOptions(tts.WithMinChars(1)),
+	)
+
+	stream, err := p.RunAudio(context.Background(), audio.Frame{Data: []byte("wav")})
+	if err != nil {
+		t.Fatalf("RunAudio: %v", err)
+	}
+	events := collectStreamEvents(t, stream)
+
+	lastTextDelta := -1
+	firstAudioDone := -1
+	firstDone := -1
+
+	for i, ev := range events {
+		switch ev.Type {
+		case speech.EventTextDelta:
+			lastTextDelta = i
+		case speech.EventAudioDone:
+			if firstAudioDone == -1 {
+				firstAudioDone = i
+			}
+		case speech.EventDone:
+			if firstDone == -1 {
+				firstDone = i
+			}
+		}
+	}
+
+	if lastTextDelta < 0 || firstAudioDone < 0 || firstDone < 0 {
+		t.Fatalf("missing lifecycle events")
+	}
+	if firstAudioDone <= lastTextDelta {
+		t.Errorf("EventAudioDone should come after last EventTextDelta")
+	}
+	if firstDone <= firstAudioDone {
+		t.Errorf("EventDone should come after EventAudioDone")
+	}
+}
+
+func TestPipeline_RunText_StreamTTS_EventOrdering(t *testing.T) {
+	p := speech.NewPipeline(
+		nil,
+		&fakeStreamTTS{fakeTTS: &fakeTTS{}},
+		&fakeRuntime{tokens: []string{"One.", " Two."}},
+		fakeAgent{},
+		speech.WithSegmenterOptions(tts.WithMinChars(1)),
+	)
+
+	stream, err := p.RunText(context.Background(), "hello")
+	if err != nil {
+		t.Fatalf("RunText: %v", err)
+	}
+	events := collectStreamEvents(t, stream)
+
+	var audioCount int
+	lastAudio := -1
+	firstAudioDone := -1
+	firstDone := -1
+
+	for i, ev := range events {
+		switch ev.Type {
+		case speech.EventAudio:
+			audioCount++
+			lastAudio = i
+		case speech.EventAudioDone:
+			if firstAudioDone == -1 {
+				firstAudioDone = i
+			}
+		case speech.EventDone:
+			if firstDone == -1 {
+				firstDone = i
+			}
+		}
+	}
+
+	if audioCount < 2 {
+		t.Fatalf("expected ≥2 audio events, got %d", audioCount)
+	}
+	if firstAudioDone <= lastAudio {
+		t.Errorf("EventAudioDone should come after last EventAudio")
+	}
+	if firstDone <= firstAudioDone {
+		t.Errorf("EventDone should come after EventAudioDone")
+	}
+}
+
 func TestPipeline_RunAudio_WarmupLifecycle(t *testing.T) {
 	wt := &warmupTTS{fakeTTS: &fakeTTS{}, done: make(chan struct{})}
 	p := speech.NewPipeline(

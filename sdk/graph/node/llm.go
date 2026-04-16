@@ -2,12 +2,13 @@
 package node
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
-	"strings"
 
 	"github.com/GizClaw/flowcraft/sdk/graph"
 	"github.com/GizClaw/flowcraft/sdk/llm"
+	"github.com/GizClaw/flowcraft/sdk/model"
 	"github.com/GizClaw/flowcraft/sdk/telemetry"
 	"github.com/GizClaw/flowcraft/sdk/tool"
 	"github.com/GizClaw/flowcraft/sdk/workflow"
@@ -17,11 +18,14 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-// LLMConfig configures an LLM node.
+// LLMConfig configures an LLM graph node.
+// Fields like SystemPrompt, OutputKey, MessagesKey, QueryFallback, and TrackSteps
+// are graph-level board I/O concerns; the pure LLM call parameters are forwarded
+// to llm.RoundConfig via the roundConfig() method.
 type LLMConfig struct {
 	SystemPrompt  string   `json:"system_prompt" yaml:"system_prompt"`
 	Model         string   `json:"model,omitempty" yaml:"model,omitempty"`
-	Temperature   float64  `json:"temperature,omitempty" yaml:"temperature,omitempty"`
+	Temperature   *float64 `json:"temperature,omitempty" yaml:"temperature,omitempty"`
 	MaxTokens     int64    `json:"max_tokens,omitempty" yaml:"max_tokens,omitempty"`
 	OutputKey     string   `json:"output_key,omitempty" yaml:"output_key,omitempty"`
 	MessagesKey   string   `json:"messages_key,omitempty" yaml:"messages_key,omitempty"`
@@ -30,6 +34,17 @@ type LLMConfig struct {
 	QueryFallback bool     `json:"query_fallback,omitempty" yaml:"query_fallback,omitempty"`
 	TrackSteps    bool     `json:"track_steps,omitempty" yaml:"track_steps,omitempty"`
 	ToolNames     []string `json:"tool_names,omitempty" yaml:"tool_names,omitempty"`
+}
+
+func (c LLMConfig) roundConfig() llm.RoundConfig {
+	return llm.RoundConfig{
+		Model:       c.Model,
+		Temperature: c.Temperature,
+		MaxTokens:   c.MaxTokens,
+		JSONMode:    c.JSONMode,
+		Thinking:    c.Thinking,
+		ToolNames:   c.ToolNames,
+	}
 }
 
 // LLMNode is a Go-native graph node that calls an LLM, handles tool calls,
@@ -57,7 +72,14 @@ func (n *LLMNode) Config() map[string]any { return n.rawConfig }
 // resolved ${board.xxx} variables take effect (e.g. system_prompt).
 func (n *LLMNode) SetConfig(c map[string]any) {
 	n.rawConfig = c
-	n.config = ConfigFromMap(c)
+	cfg, err := ConfigFromMap(c)
+	if err != nil {
+		telemetry.Warn(context.Background(), "llm node: invalid config map",
+			otellog.String("node_id", n.id),
+			otellog.String("error", err.Error()))
+		return
+	}
+	n.config = cfg
 }
 
 func (n *LLMNode) InputPorts() []graph.Port {
@@ -99,65 +121,23 @@ func (n *LLMNode) ExecuteBoard(ctx graph.ExecutionContext, board *graph.Board) e
 		board.SetVar(workflow.VarPrevMessageCount, len(messages))
 	}
 
-	opts := n.buildOptions(cfg)
-
-	l, err := n.resolver.Resolve(ctx.Context, cfg.Model)
+	result, err := llm.RunRound(
+		ctx.Context, ctx.Stream,
+		n.resolver, n.toolRegistry,
+		n.id, messages, cfg.roundConfig(),
+	)
 	if err != nil {
 		span.RecordError(err)
-		return fmt.Errorf("node %q: cannot resolve LLM model %q: %w", n.id, cfg.Model, err)
+		return err
 	}
 
-	stream, err := l.GenerateStream(ctx.Context, messages, opts...)
-	if err != nil {
-		span.RecordError(err)
-		return fmt.Errorf("llm node %s generate failed: %w", n.id, err)
-	}
-
-	var fullContent strings.Builder
-	for stream.Next() {
-		chunk := stream.Current()
-		if chunk.Content != "" {
-			fullContent.WriteString(chunk.Content)
-			if ctx.Stream != nil {
-				ctx.Stream(graph.StreamEvent{
-					Type:    "token",
-					NodeID:  n.id,
-					Payload: map[string]any{"content": chunk.Content},
-				})
-			}
-		}
-	}
-	if err := stream.Err(); err != nil {
-		span.RecordError(err)
-		return fmt.Errorf("llm node %s stream error: %w", n.id, err)
-	}
-
-	rawUsage := stream.Usage()
-	usage := llm.TokenUsage{
-		InputTokens:  rawUsage.InputTokens,
-		OutputTokens: rawUsage.OutputTokens,
-		TotalTokens:  rawUsage.InputTokens + rawUsage.OutputTokens,
-	}
-
-	accMsg := stream.Message()
-	if fullContent.Len() > 0 && len(accMsg.Parts) == 0 {
-		accMsg = llm.NewTextMessage(llm.RoleAssistant, fullContent.String())
-	}
-	if accMsg.Role != "" || len(accMsg.Parts) > 0 {
-		messages = append(messages, accMsg)
-	}
-
-	toolCalls := accMsg.ToolCalls()
-	toolPending, messages := n.handleToolCalls(ctx, toolCalls, messages)
-
-	content := fullContent.String()
-	n.writeResults(ctx, board, cfg, content, messages, toolCalls, toolPending, usage, messagesKey, chName)
+	n.writeResults(ctx, board, cfg, result, messagesKey, chName)
 
 	span.SetAttributes(
-		attribute.Int64("llm.input_tokens", usage.InputTokens),
-		attribute.Int64("llm.output_tokens", usage.OutputTokens),
-		attribute.Bool("llm.tool_pending", toolPending),
-		attribute.Int("llm.tool_calls", len(toolCalls)),
+		attribute.Int64("llm.input_tokens", result.Usage.InputTokens),
+		attribute.Int64("llm.output_tokens", result.Usage.OutputTokens),
+		attribute.Bool("llm.tool_pending", result.ToolPending),
+		attribute.Int("llm.tool_calls", len(result.ToolCalls)),
 	)
 	return nil
 }
@@ -168,7 +148,7 @@ func (n *LLMNode) buildMessages(cfg LLMConfig, board *graph.Board, chName, messa
 		messages = msgs
 	} else if existing, ok := board.GetVar(messagesKey); ok {
 		if msgs, ok := existing.([]llm.Message); ok {
-			messages = msgs
+			messages = append([]llm.Message(nil), msgs...)
 		}
 	}
 
@@ -217,90 +197,17 @@ func (n *LLMNode) buildMessages(cfg LLMConfig, board *graph.Board, chName, messa
 	return messages
 }
 
-func (n *LLMNode) buildOptions(cfg LLMConfig) []llm.GenerateOption {
-	var opts []llm.GenerateOption
-	if cfg.Temperature > 0 {
-		opts = append(opts, llm.WithTemperature(cfg.Temperature))
-	}
-	if cfg.MaxTokens > 0 {
-		opts = append(opts, llm.WithMaxTokens(cfg.MaxTokens))
-	}
-	if cfg.Thinking {
-		opts = append(opts, llm.WithThinking(true))
-	}
-	if cfg.JSONMode {
-		opts = append(opts, llm.WithJSONMode(true))
-	}
-
-	var toolDefs []llm.ToolDefinition
-	if n.toolRegistry != nil && len(cfg.ToolNames) > 0 {
-		allowed := make(map[string]bool, len(cfg.ToolNames))
-		for _, name := range cfg.ToolNames {
-			allowed[name] = true
-		}
-		for _, def := range n.toolRegistry.Definitions() {
-			if allowed[def.Name] {
-				toolDefs = append(toolDefs, def)
-			}
-		}
-	}
-	if len(toolDefs) > 0 {
-		opts = append(opts, llm.WithTools(toolDefs...))
-	}
-	return opts
-}
-
-func (n *LLMNode) handleToolCalls(ctx graph.ExecutionContext, toolCalls []llm.ToolCall, messages []llm.Message) (bool, []llm.Message) {
-	if len(toolCalls) == 0 || n.toolRegistry == nil {
-		return false, messages
-	}
-
-	if ctx.Stream != nil {
-		for _, tc := range toolCalls {
-			ctx.Stream(graph.StreamEvent{
-				Type:    "tool_call",
-				NodeID:  n.id,
-				Payload: map[string]any{"id": tc.ID, "name": tc.Name, "arguments": tc.Arguments},
-			})
-		}
-	}
-
-	results := n.toolRegistry.ExecuteAll(ctx.Context, toolCalls)
-
-	if ctx.Stream != nil {
-		tcNames := make(map[string]string, len(toolCalls))
-		for _, tc := range toolCalls {
-			tcNames[tc.ID] = tc.Name
-		}
-		for _, r := range results {
-			ctx.Stream(graph.StreamEvent{
-				Type:   "tool_result",
-				NodeID: n.id,
-				Payload: map[string]any{
-					"tool_call_id": r.ToolCallID,
-					"name":         tcNames[r.ToolCallID],
-					"content":      r.Content,
-					"is_error":     r.IsError,
-				},
-			})
-		}
-	}
-
-	return true, append(messages, llm.NewToolResultMessage(results))
-}
-
 func (n *LLMNode) writeResults(
 	ctx graph.ExecutionContext, board *graph.Board, cfg LLMConfig,
-	content string, messages []llm.Message, toolCalls []llm.ToolCall,
-	toolPending bool, usage llm.TokenUsage, messagesKey, chName string,
+	result *llm.RoundResult, messagesKey, chName string,
 ) {
 	if cfg.TrackSteps {
 		steps, _ := board.GetVar("agent_steps")
 		stepList, _ := steps.([]map[string]any)
 		step := map[string]any{
-			"response":   content,
-			"tool_calls": toolCalls,
-			"usage":      usage,
+			"response":   result.Content,
+			"tool_calls": result.ToolCalls,
+			"usage":      result.Usage,
 		}
 		board.SetVar("agent_steps", append(stepList, step))
 	}
@@ -310,11 +217,11 @@ func (n *LLMNode) writeResults(
 		outputKey = VarResponse
 	}
 	if cfg.JSONMode {
-		extracted, _, extractErr := llm.ExtractJSON(content)
+		extracted, _, extractErr := llm.ExtractJSON(result.Content)
 		if extractErr != nil {
 			telemetry.Warn(ctx.Context, "llm json_mode: extract failed, keeping existing board value",
 				otellog.String("node_id", n.id),
-				otellog.String("raw", truncate(content, 200)),
+				otellog.String("raw", truncate(result.Content, 200)),
 				otellog.String("error", extractErr.Error()))
 		} else {
 			var parsed any
@@ -325,25 +232,26 @@ func (n *LLMNode) writeResults(
 				default:
 					telemetry.Warn(ctx.Context, "llm json_mode: parsed to scalar, keeping existing board value",
 						otellog.String("node_id", n.id),
-						otellog.String("raw", truncate(content, 200)))
+						otellog.String("raw", truncate(result.Content, 200)))
 				}
 			} else {
 				telemetry.Warn(ctx.Context, "llm json_mode: parse failed, keeping existing board value",
 					otellog.String("node_id", n.id),
-					otellog.String("raw", truncate(content, 200)),
+					otellog.String("raw", truncate(result.Content, 200)),
 					otellog.String("error", err.Error()))
 			}
 		}
 	} else {
-		board.SetVar(outputKey, content)
+		board.SetVar(outputKey, result.Content)
 	}
 
-	board.SetVar(messagesKey, messages)
-	board.SetChannel(chName, messages)
-	board.SetVar(VarToolPending, toolPending)
+	board.SetVar(messagesKey, result.Messages)
+	board.SetChannel(chName, result.Messages)
+	board.SetVar(VarToolPending, result.ToolPending)
 
+	usage := result.Usage
 	if existingUsage, ok := board.GetVar(workflow.VarInternalUsage); ok {
-		if u, ok := existingUsage.(llm.TokenUsage); ok {
+		if u, ok := existingUsage.(model.TokenUsage); ok {
 			usage = usage.Add(u)
 		}
 	}
@@ -352,16 +260,19 @@ func (n *LLMNode) writeResults(
 }
 
 // ConfigFromMap parses an LLMConfig from a generic map via JSON round-trip.
-// The LLMConfig struct tags drive the mapping, so adding new fields only
-// requires updating the struct — no manual parsing needed.
-func ConfigFromMap(m map[string]any) LLMConfig {
+func ConfigFromMap(m map[string]any) (LLMConfig, error) {
 	var cfg LLMConfig
+	if m == nil {
+		return cfg, nil
+	}
 	data, err := json.Marshal(m)
 	if err != nil {
-		return cfg
+		return cfg, fmt.Errorf("node: marshal config map: %w", err)
 	}
-	_ = json.Unmarshal(data, &cfg)
-	return cfg
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return cfg, fmt.Errorf("node: unmarshal config: %w", err)
+	}
+	return cfg, nil
 }
 
 func truncate(s string, n int) string {
