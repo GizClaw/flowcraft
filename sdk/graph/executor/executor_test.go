@@ -620,3 +620,169 @@ func TestLocalExecutor_TypedResolution_UnresolvedFallback(t *testing.T) {
 		t.Fatalf("unresolved prompt: got %T %v", capturedConfig["prompt"], capturedConfig["prompt"])
 	}
 }
+
+func TestLocalExecutor_TemplateRef_BuildThenExecute(t *testing.T) {
+	var capturedConfig map[string]any
+
+	node := &configurableTestNode{
+		id: "llm1",
+		config: map[string]any{
+			"system_prompt": "${board.system_prompt}",
+			"temperature":   "${board.temperature}",
+			"max_tokens":    "${board.max_tokens}",
+			"json_mode":     "${board.json_mode}",
+			"model":         "openai/gpt-4o",
+		},
+		execFn: func(_ graph.ExecutionContext, b *graph.Board, cfg map[string]any) error {
+			capturedConfig = copyMap(cfg)
+			b.SetVar("done", true)
+			return nil
+		},
+	}
+
+	origConfig := copyMap(node.config)
+
+	g := graph.NewGraph(&graph.RawGraph{
+		Name:  "test",
+		Entry: "llm1",
+		Nodes: map[string]graph.Node{"llm1": node},
+		Edges: map[string][]graph.Edge{
+			"llm1": {{From: "llm1", To: graph.END}},
+		},
+		Reverse:        map[string][]string{graph.END: {"llm1"}},
+		SkipConditions: make(map[string]*graph.CompiledCondition),
+	}, graph.GraphMeta{})
+
+	board := graph.NewBoard()
+	board.SetVar("system_prompt", "You are a translator.")
+	board.SetVar("temperature", 0.3)
+	board.SetVar("max_tokens", 2048)
+	board.SetVar("json_mode", true)
+
+	exec := NewLocalExecutor()
+	_, err := exec.Execute(context.Background(), g, board, WithResolver(variable.NewResolver()))
+	if err != nil {
+		t.Fatalf("execute failed: %v", err)
+	}
+
+	// Verify resolved values reached the node during execution.
+	if s, ok := capturedConfig["system_prompt"].(string); !ok || s != "You are a translator." {
+		t.Fatalf("system_prompt: got %T %v", capturedConfig["system_prompt"], capturedConfig["system_prompt"])
+	}
+	if temp, ok := capturedConfig["temperature"].(float64); !ok || temp != 0.3 {
+		t.Fatalf("temperature: got %T %v", capturedConfig["temperature"], capturedConfig["temperature"])
+	}
+	if mt, ok := capturedConfig["max_tokens"].(int); !ok || mt != 2048 {
+		t.Fatalf("max_tokens: got %T %v", capturedConfig["max_tokens"], capturedConfig["max_tokens"])
+	}
+	if jm, ok := capturedConfig["json_mode"].(bool); !ok || !jm {
+		t.Fatalf("json_mode: got %T %v", capturedConfig["json_mode"], capturedConfig["json_mode"])
+	}
+
+	// Verify original config is restored after execution.
+	for k, v := range origConfig {
+		if node.config[k] != v {
+			t.Fatalf("config[%q] not restored: got %v, want %v", k, node.config[k], v)
+		}
+	}
+}
+
+func TestLocalExecutor_TemplateRef_StringNumericBoardVars(t *testing.T) {
+	var capturedConfig map[string]any
+
+	node := &configurableTestNode{
+		id: "n1",
+		config: map[string]any{
+			"temperature": "${board.temperature}",
+			"max_tokens":  "${board.max_tokens}",
+			"json_mode":   "${board.json_mode}",
+		},
+		execFn: func(_ graph.ExecutionContext, b *graph.Board, cfg map[string]any) error {
+			capturedConfig = copyMap(cfg)
+			b.SetVar("done", true)
+			return nil
+		},
+	}
+
+	g := graph.NewGraph(&graph.RawGraph{
+		Name:  "test",
+		Entry: "n1",
+		Nodes: map[string]graph.Node{"n1": node},
+		Edges: map[string][]graph.Edge{
+			"n1": {{From: "n1", To: graph.END}},
+		},
+		Reverse:        map[string][]string{graph.END: {"n1"}},
+		SkipConditions: make(map[string]*graph.CompiledCondition),
+	}, graph.GraphMeta{})
+
+	board := graph.NewBoard()
+	board.SetVar("temperature", "0.7")
+	board.SetVar("max_tokens", "4096")
+	board.SetVar("json_mode", "true")
+
+	exec := NewLocalExecutor()
+	_, err := exec.Execute(context.Background(), g, board, WithResolver(variable.NewResolver()))
+	if err != nil {
+		t.Fatalf("execute failed: %v", err)
+	}
+
+	// When board vars are strings, resolveTyped returns the string value.
+	// The node's SetConfig → CoerceMapForStruct should still handle them.
+	if capturedConfig["temperature"] != "0.7" {
+		t.Fatalf("temperature: got %T %v", capturedConfig["temperature"], capturedConfig["temperature"])
+	}
+	if capturedConfig["max_tokens"] != "4096" {
+		t.Fatalf("max_tokens: got %T %v", capturedConfig["max_tokens"], capturedConfig["max_tokens"])
+	}
+	if capturedConfig["json_mode"] != "true" {
+		t.Fatalf("json_mode: got %T %v", capturedConfig["json_mode"], capturedConfig["json_mode"])
+	}
+}
+
+func TestLocalExecutor_PartialTemplateRef_PreservesLiteral(t *testing.T) {
+	var capturedConfig map[string]any
+
+	node := &configurableTestNode{
+		id: "n1",
+		config: map[string]any{
+			"system_prompt": "Translate: ${board.lang}",
+			"temperature":   float64(0.5),
+			"model":         "${board.model}",
+		},
+		execFn: func(_ graph.ExecutionContext, b *graph.Board, cfg map[string]any) error {
+			capturedConfig = copyMap(cfg)
+			return nil
+		},
+	}
+
+	g := graph.NewGraph(&graph.RawGraph{
+		Name:  "test",
+		Entry: "n1",
+		Nodes: map[string]graph.Node{"n1": node},
+		Edges: map[string][]graph.Edge{
+			"n1": {{From: "n1", To: graph.END}},
+		},
+		Reverse:        map[string][]string{graph.END: {"n1"}},
+		SkipConditions: make(map[string]*graph.CompiledCondition),
+	}, graph.GraphMeta{})
+
+	board := graph.NewBoard()
+	board.SetVar("lang", "Chinese")
+	board.SetVar("model", "openai/gpt-4o")
+
+	exec := NewLocalExecutor()
+	_, err := exec.Execute(context.Background(), g, board, WithResolver(variable.NewResolver()))
+	if err != nil {
+		t.Fatalf("execute failed: %v", err)
+	}
+
+	if s, ok := capturedConfig["system_prompt"].(string); !ok || s != "Translate: Chinese" {
+		t.Fatalf("system_prompt: got %T %v", capturedConfig["system_prompt"], capturedConfig["system_prompt"])
+	}
+	if temp, ok := capturedConfig["temperature"].(float64); !ok || temp != 0.5 {
+		t.Fatalf("temperature: got %T %v, want 0.5", capturedConfig["temperature"], capturedConfig["temperature"])
+	}
+	if s, ok := capturedConfig["model"].(string); !ok || s != "openai/gpt-4o" {
+		t.Fatalf("model: got %T %v", capturedConfig["model"], capturedConfig["model"])
+	}
+}

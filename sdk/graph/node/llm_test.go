@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/GizClaw/flowcraft/sdk/graph"
+	"github.com/GizClaw/flowcraft/sdk/graph/variable"
 	"github.com/GizClaw/flowcraft/sdk/model"
 	"github.com/GizClaw/flowcraft/sdk/workflow"
 )
@@ -17,7 +18,7 @@ func pf64(v float64) *float64 { return &v }
 
 func mustConfigFromMap(t *testing.T, m map[string]any) LLMConfig {
 	t.Helper()
-	cfg, err := ConfigFromMap(m)
+	cfg, err := ConfigFromMap(m, nil)
 	if err != nil {
 		t.Fatalf("ConfigFromMap: %v", err)
 	}
@@ -127,12 +128,36 @@ func TestConfigFromMap_JSONModeString(t *testing.T) {
 	}
 }
 
-func TestConfigFromMap_UnresolvedRef(t *testing.T) {
+func TestConfigFromMap_TemplateRef(t *testing.T) {
+	cfg, err := ConfigFromMap(map[string]any{
+		"temperature":   "${board.temperature}",
+		"max_tokens":    "${board.max_tokens}",
+		"json_mode":     "${board.json_mode}",
+		"system_prompt": "${board.system_prompt}",
+	}, variable.ContainsRef)
+	if err != nil {
+		t.Fatalf("template ref should not error at build time: %v", err)
+	}
+	if cfg.Temperature != nil {
+		t.Fatalf("template ref should leave Temperature nil, got %v", *cfg.Temperature)
+	}
+	if cfg.MaxTokens != 0 {
+		t.Fatalf("template ref should leave MaxTokens 0, got %d", cfg.MaxTokens)
+	}
+	if cfg.JSONMode {
+		t.Fatal("template ref should leave JSONMode false")
+	}
+	if cfg.SystemPrompt != "${board.system_prompt}" {
+		t.Fatalf("template ref in string field should be kept, got %q", cfg.SystemPrompt)
+	}
+}
+
+func TestConfigFromMap_InvalidString(t *testing.T) {
 	_, err := ConfigFromMap(map[string]any{
-		"temperature": "${board.missing}",
-	})
+		"temperature": "not-a-number",
+	}, nil)
 	if err == nil {
-		t.Fatal("unresolved ref should produce an error")
+		t.Fatal("invalid string should produce an error")
 	}
 }
 
@@ -299,6 +324,78 @@ func TestLLMNode_SetConfig(t *testing.T) {
 	}
 	if n.config.Temperature == nil || *n.config.Temperature != 0.8 {
 		t.Fatalf("Temperature after SetConfig = %v", n.config.Temperature)
+	}
+}
+
+func TestLLMNode_SetConfig_TemplateRefThenResolved(t *testing.T) {
+	cfg, err := ConfigFromMap(map[string]any{
+		"system_prompt": "${board.system_prompt}",
+		"temperature":   "${board.temperature}",
+		"max_tokens":    "${board.max_tokens}",
+		"json_mode":     "${board.json_mode}",
+		"model":         "openai/gpt-4o",
+	}, variable.ContainsRef)
+	if err != nil {
+		t.Fatalf("ConfigFromMap: %v", err)
+	}
+
+	n := NewLLMNode("llm1", nil, nil, cfg)
+	n.rawConfig = map[string]any{
+		"system_prompt": "${board.system_prompt}",
+		"temperature":   "${board.temperature}",
+		"max_tokens":    "${board.max_tokens}",
+		"json_mode":     "${board.json_mode}",
+		"model":         "openai/gpt-4o",
+	}
+
+	if n.config.Temperature != nil {
+		t.Fatalf("Build phase: Temperature should be nil, got %v", *n.config.Temperature)
+	}
+	if n.config.MaxTokens != 0 {
+		t.Fatalf("Build phase: MaxTokens should be 0, got %d", n.config.MaxTokens)
+	}
+	if n.config.Model != "openai/gpt-4o" {
+		t.Fatalf("Build phase: Model should be preserved, got %q", n.config.Model)
+	}
+
+	n.SetConfig(map[string]any{
+		"system_prompt": "You are a translator.",
+		"temperature":   0.3,
+		"max_tokens":    float64(2048),
+		"json_mode":     true,
+		"model":         "openai/gpt-4o",
+	})
+
+	if n.config.SystemPrompt != "You are a translator." {
+		t.Fatalf("Execute phase: SystemPrompt = %q", n.config.SystemPrompt)
+	}
+	if n.config.Temperature == nil || *n.config.Temperature != 0.3 {
+		t.Fatalf("Execute phase: Temperature = %v", n.config.Temperature)
+	}
+	if n.config.MaxTokens != 2048 {
+		t.Fatalf("Execute phase: MaxTokens = %d", n.config.MaxTokens)
+	}
+	if !n.config.JSONMode {
+		t.Fatal("Execute phase: JSONMode should be true")
+	}
+}
+
+func TestLLMNode_SetConfig_StringNumericValues(t *testing.T) {
+	n := NewLLMNode("llm1", nil, nil, LLMConfig{})
+	n.SetConfig(map[string]any{
+		"temperature": "0.7",
+		"max_tokens":  "4096",
+		"json_mode":   "true",
+	})
+
+	if n.config.Temperature == nil || *n.config.Temperature != 0.7 {
+		t.Fatalf("Temperature = %v, want 0.7", n.config.Temperature)
+	}
+	if n.config.MaxTokens != 4096 {
+		t.Fatalf("MaxTokens = %d, want 4096", n.config.MaxTokens)
+	}
+	if !n.config.JSONMode {
+		t.Fatal("JSONMode should be true")
 	}
 }
 

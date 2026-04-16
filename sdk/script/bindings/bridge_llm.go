@@ -3,6 +3,7 @@ package bindings
 import (
 	"context"
 	"encoding/json"
+	"maps"
 
 	"github.com/GizClaw/flowcraft/sdk/llm"
 	"github.com/GizClaw/flowcraft/sdk/model"
@@ -130,10 +131,8 @@ func mergeRoundConfig(base llm.RoundConfig, overrides map[string]any) llm.RoundC
 	if err := json.Unmarshal(raw, &m); err != nil {
 		return base
 	}
-	for k, v := range overrides {
-		m[k] = v
-	}
-	m = llm.CoerceMapForStruct[llm.RoundConfig](m)
+	maps.Copy(m, overrides)
+	m = llm.CoerceMapForStruct[llm.RoundConfig](m, nil)
 	merged, err := json.Marshal(m)
 	if err != nil {
 		return base
