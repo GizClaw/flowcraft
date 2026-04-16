@@ -265,6 +265,7 @@ func ConfigFromMap(m map[string]any) (LLMConfig, error) {
 	if m == nil {
 		return cfg, nil
 	}
+	m = llm.CoerceMapForStruct[LLMConfig](m)
 	data, err := json.Marshal(m)
 	if err != nil {
 		return cfg, fmt.Errorf("node: marshal config map: %w", err)

@@ -102,6 +102,40 @@ func TestConfigFromMap_TemperatureFloat(t *testing.T) {
 	}
 }
 
+func TestConfigFromMap_TemperatureString(t *testing.T) {
+	m := map[string]any{"temperature": "0.8"}
+	cfg := mustConfigFromMap(t, m)
+	if cfg.Temperature == nil || *cfg.Temperature != 0.8 {
+		t.Fatalf("Temperature = %v, want 0.8", cfg.Temperature)
+	}
+	if _, ok := m["temperature"].(string); !ok {
+		t.Fatalf("input map should not be mutated, got %T", m["temperature"])
+	}
+}
+
+func TestConfigFromMap_MaxTokensString(t *testing.T) {
+	cfg := mustConfigFromMap(t, map[string]any{"max_tokens": "2048"})
+	if cfg.MaxTokens != 2048 {
+		t.Fatalf("MaxTokens = %d, want 2048", cfg.MaxTokens)
+	}
+}
+
+func TestConfigFromMap_JSONModeString(t *testing.T) {
+	cfg := mustConfigFromMap(t, map[string]any{"json_mode": "true"})
+	if !cfg.JSONMode {
+		t.Fatal("JSONMode should be true")
+	}
+}
+
+func TestConfigFromMap_UnresolvedRef(t *testing.T) {
+	_, err := ConfigFromMap(map[string]any{
+		"temperature": "${board.missing}",
+	})
+	if err == nil {
+		t.Fatal("unresolved ref should produce an error")
+	}
+}
+
 func TestLLMNode_SummaryIndexInjection(t *testing.T) {
 	board := newTestBoard()
 	board.SetVar("messages", []model.Message{

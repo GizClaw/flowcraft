@@ -302,3 +302,154 @@ func TestRoundConfigFromMap_TemperatureZero(t *testing.T) {
 		t.Fatalf("Temperature = %v, want 0", *cfg.Temperature)
 	}
 }
+
+func TestRoundConfigFromMap_TemperatureString(t *testing.T) {
+	m := map[string]any{"temperature": "0.75"}
+	cfg, err := RoundConfigFromMap(m)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Temperature == nil || *cfg.Temperature != 0.75 {
+		t.Fatalf("Temperature = %v", cfg.Temperature)
+	}
+	if _, ok := m["temperature"].(string); !ok {
+		t.Fatalf("RoundConfigFromMap must not mutate the input map, got %T", m["temperature"])
+	}
+}
+
+func TestRoundConfigFromMap_MaxTokensString(t *testing.T) {
+	cfg, err := RoundConfigFromMap(map[string]any{"max_tokens": "4096"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.MaxTokens != 4096 {
+		t.Fatalf("MaxTokens = %d, want 4096", cfg.MaxTokens)
+	}
+}
+
+func TestRoundConfigFromMap_JSONModeString(t *testing.T) {
+	cfg, err := RoundConfigFromMap(map[string]any{"json_mode": "true"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !cfg.JSONMode {
+		t.Fatal("JSONMode should be true")
+	}
+}
+
+func TestRoundConfigFromMap_UnresolvedRef(t *testing.T) {
+	_, err := RoundConfigFromMap(map[string]any{"temperature": "${board.missing}"})
+	if err == nil {
+		t.Fatal("unresolved ref should produce an error")
+	}
+}
+
+// ── CoerceMapForStruct tests ──
+
+type coerceTestStruct struct {
+	F64    float64  `json:"f64"`
+	PtrF64 *float64 `json:"ptr_f64"`
+	I64    int64    `json:"i64"`
+	B      bool     `json:"b"`
+	S      string   `json:"s"`
+	U      uint32   `json:"u"`
+}
+
+func TestCoerceMapForStruct_Nil(t *testing.T) {
+	got := CoerceMapForStruct[coerceTestStruct](nil)
+	if got != nil {
+		t.Fatalf("expected nil, got %v", got)
+	}
+}
+
+func TestCoerceMapForStruct_StringToFloat(t *testing.T) {
+	m := map[string]any{"f64": "1.5", "ptr_f64": "0.3"}
+	got := CoerceMapForStruct[coerceTestStruct](m)
+	if v, ok := got["f64"].(float64); !ok || v != 1.5 {
+		t.Fatalf("f64: got %T %v", got["f64"], got["f64"])
+	}
+	if v, ok := got["ptr_f64"].(float64); !ok || v != 0.3 {
+		t.Fatalf("ptr_f64: got %T %v", got["ptr_f64"], got["ptr_f64"])
+	}
+}
+
+func TestCoerceMapForStruct_StringToInt(t *testing.T) {
+	m := map[string]any{"i64": "42"}
+	got := CoerceMapForStruct[coerceTestStruct](m)
+	if v, ok := got["i64"].(int64); !ok || v != 42 {
+		t.Fatalf("i64: got %T %v", got["i64"], got["i64"])
+	}
+}
+
+func TestCoerceMapForStruct_StringToUint(t *testing.T) {
+	m := map[string]any{"u": "100"}
+	got := CoerceMapForStruct[coerceTestStruct](m)
+	if v, ok := got["u"].(uint64); !ok || v != 100 {
+		t.Fatalf("u: got %T %v", got["u"], got["u"])
+	}
+}
+
+func TestCoerceMapForStruct_StringToBool(t *testing.T) {
+	m := map[string]any{"b": "true"}
+	got := CoerceMapForStruct[coerceTestStruct](m)
+	if v, ok := got["b"].(bool); !ok || !v {
+		t.Fatalf("b: got %T %v", got["b"], got["b"])
+	}
+}
+
+func TestCoerceMapForStruct_NonStringUntouched(t *testing.T) {
+	m := map[string]any{"f64": 2.5, "i64": int64(10), "b": false, "s": "hello"}
+	got := CoerceMapForStruct[coerceTestStruct](m)
+	if got["f64"] != 2.5 || got["i64"] != int64(10) || got["b"] != false || got["s"] != "hello" {
+		t.Fatalf("non-string values should pass through: %v", got)
+	}
+}
+
+func TestCoerceMapForStruct_InvalidStringKept(t *testing.T) {
+	m := map[string]any{"f64": "not-a-number", "i64": "abc", "b": "nope"}
+	got := CoerceMapForStruct[coerceTestStruct](m)
+	if got["f64"] != "not-a-number" {
+		t.Fatalf("invalid float string should be kept, got %v", got["f64"])
+	}
+	if got["i64"] != "abc" {
+		t.Fatalf("invalid int string should be kept, got %v", got["i64"])
+	}
+	if got["b"] != "nope" {
+		t.Fatalf("invalid bool string should be kept, got %v", got["b"])
+	}
+}
+
+func TestCoerceMapForStruct_EmptyStringKept(t *testing.T) {
+	m := map[string]any{"f64": "", "i64": "  "}
+	got := CoerceMapForStruct[coerceTestStruct](m)
+	if got["f64"] != "" {
+		t.Fatalf("empty string should be kept, got %v", got["f64"])
+	}
+	if got["i64"] != "  " {
+		t.Fatalf("whitespace string should be kept, got %v", got["i64"])
+	}
+}
+
+func TestCoerceMapForStruct_StringFieldUntouched(t *testing.T) {
+	m := map[string]any{"s": "hello world"}
+	got := CoerceMapForStruct[coerceTestStruct](m)
+	if got["s"] != "hello world" {
+		t.Fatalf("string field should be untouched, got %v", got["s"])
+	}
+}
+
+func TestCoerceMapForStruct_DoesNotMutateInput(t *testing.T) {
+	m := map[string]any{"f64": "1.0", "s": "keep"}
+	_ = CoerceMapForStruct[coerceTestStruct](m)
+	if _, ok := m["f64"].(string); !ok {
+		t.Fatalf("input map was mutated: f64 is %T", m["f64"])
+	}
+}
+
+func TestCoerceMapForStruct_ExtraKeysPassThrough(t *testing.T) {
+	m := map[string]any{"f64": "1.0", "unknown_key": "whatever"}
+	got := CoerceMapForStruct[coerceTestStruct](m)
+	if got["unknown_key"] != "whatever" {
+		t.Fatalf("extra keys should pass through, got %v", got["unknown_key"])
+	}
+}

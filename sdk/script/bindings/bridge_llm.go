@@ -133,6 +133,7 @@ func mergeRoundConfig(base llm.RoundConfig, overrides map[string]any) llm.RoundC
 	for k, v := range overrides {
 		m[k] = v
 	}
+	m = llm.CoerceMapForStruct[llm.RoundConfig](m)
 	merged, err := json.Marshal(m)
 	if err != nil {
 		return base
