@@ -56,3 +56,21 @@ func TestNormalizeLLMOverrides_NonMap(t *testing.T) {
 		t.Fatalf("expected nil for non-map, got %v", got)
 	}
 }
+
+func TestMergeRoundConfig_StringOverrides(t *testing.T) {
+	base := llm.RoundConfig{Model: "m1", MaxTokens: 100}
+	out := mergeRoundConfig(base, map[string]any{
+		"temperature": "0.3",
+		"max_tokens":  "2048",
+		"json_mode":   "true",
+	})
+	if out.Temperature == nil || *out.Temperature != 0.3 {
+		t.Fatalf("temperature = %v, want 0.3", out.Temperature)
+	}
+	if out.MaxTokens != 2048 {
+		t.Fatalf("max_tokens = %d, want 2048", out.MaxTokens)
+	}
+	if !out.JSONMode {
+		t.Fatal("json_mode should be true")
+	}
+}
