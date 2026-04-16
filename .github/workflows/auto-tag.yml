@@ -1,0 +1,120 @@
+name: Auto-tag modules
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "sdk/**"
+      - "sdkx/**"
+      - "plugin/**"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: auto-tag
+  cancel-in-progress: false
+
+jobs:
+  tag:
+    name: Tag changed modules
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.x"
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Detect changes and tag
+        run: |
+          set -euo pipefail
+
+          bump_patch() {
+            local tag=$1
+            local version=${tag##*/v}
+            local major minor patch
+            IFS='.' read -r major minor patch <<< "$version"
+            echo "${major}.${minor}.$((patch + 1))"
+          }
+
+          latest_tag() {
+            git tag -l "$1/v*" --sort=-v:refname | head -1
+          }
+
+          has_changes() {
+            local mod=$1 latest=$2
+            [ -n "$(git diff --name-only "$latest"..HEAD -- "$mod/")" ]
+          }
+
+          # tag_module tags a module if it has changes since its last tag.
+          # On success, writes the new version to $TAGGED_<MOD> env var.
+          tag_module() {
+            local mod=$1
+            local latest
+            latest=$(latest_tag "$mod")
+            if [ -z "$latest" ]; then
+              echo "::warning::No existing tag for $mod, skipping"
+              return
+            fi
+            if ! has_changes "$mod" "$latest"; then
+              echo "$mod: no changes since $latest"
+              return
+            fi
+            local new_version
+            new_version=$(bump_patch "$latest")
+            local new_tag="${mod}/v${new_version}"
+            echo "$mod: $latest -> $new_tag"
+            git tag "$new_tag"
+            git push origin "$new_tag"
+
+            local env_key
+            env_key="TAGGED_$(echo "$mod" | tr '[:lower:]' '[:upper:]')"
+            echo "${env_key}=${new_version}" >> "$GITHUB_ENV"
+          }
+
+          # Phase 1: tag leaf modules (plugin, sdk)
+          tag_module "plugin"
+          tag_module "sdk"
+
+      - name: Cascade sdk bump to sdkx
+        if: env.TAGGED_SDK != ''
+        run: |
+          set -euo pipefail
+          echo "sdkx: updating sdk dependency to v${TAGGED_SDK}"
+          cd sdkx
+          go get "github.com/GizClaw/flowcraft/sdk@v${TAGGED_SDK}"
+          go mod tidy
+          cd ..
+          git add sdkx/go.mod sdkx/go.sum
+          git commit -m "chore(sdkx): bump sdk dependency to v${TAGGED_SDK}"
+          git push origin main
+
+      - name: Tag sdkx
+        if: env.TAGGED_SDK != '' || success()
+        run: |
+          set -euo pipefail
+
+          latest=$(git tag -l "sdkx/v*" --sort=-v:refname | head -1)
+          if [ -z "$latest" ]; then
+            echo "::warning::No existing tag for sdkx, skipping"
+            exit 0
+          fi
+          if [ -z "$(git diff --name-only "$latest"..HEAD -- sdkx/)" ]; then
+            echo "sdkx: no changes since $latest"
+            exit 0
+          fi
+
+          version=${latest##*/v}
+          IFS='.' read -r major minor patch <<< "$version"
+          new_tag="sdkx/v${major}.${minor}.$((patch + 1))"
+          echo "sdkx: $latest -> $new_tag"
+          git tag "$new_tag"
+          git push origin "$new_tag"

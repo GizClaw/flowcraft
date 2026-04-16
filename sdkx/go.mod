@@ -2,7 +2,7 @@ module github.com/GizClaw/flowcraft/sdkx
 
 go 1.25.0
 
-require github.com/GizClaw/flowcraft/sdk v0.1.4
+require github.com/GizClaw/flowcraft/sdk v0.1.5
 
 require (
 	github.com/PuerkitoBio/goquery v1.11.0
