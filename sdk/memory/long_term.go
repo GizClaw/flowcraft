@@ -141,6 +141,20 @@ type SearchOptions struct {
 	Scope *MemoryScope
 	// Recall selects partitions for Search; nil derives from Scope via [EffectiveRecallForSearch].
 	Recall *RecallScope
+	// QueryVector, when non-nil, is passed directly to the store implementation,
+	// allowing the caller to pre-compute the embedding once and share it across
+	// multiple category searches. Stores that do not support vector search ignore it.
+	QueryVector []float32
+}
+
+// Embedder computes vector embeddings from text.
+type Embedder interface {
+	Embed(ctx context.Context, text string) ([]float32, error)
+}
+
+// VectorSearcher performs similarity search over pre-indexed vectors.
+type VectorSearcher interface {
+	SearchByVector(ctx context.Context, runtimeID string, vec []float32, opts SearchOptions) ([]*MemoryEntry, error)
 }
 
 // DefaultGlobalCategories is used when LongTermConfig.GlobalCategories is empty.

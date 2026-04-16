@@ -13,6 +13,17 @@ func newTestBoard() *graph.Board {
 	return graph.NewBoard()
 }
 
+func pf64(v float64) *float64 { return &v }
+
+func mustConfigFromMap(t *testing.T, m map[string]any) LLMConfig {
+	t.Helper()
+	cfg, err := ConfigFromMap(m)
+	if err != nil {
+		t.Fatalf("ConfigFromMap: %v", err)
+	}
+	return cfg
+}
+
 func TestConfigFromMap_Full(t *testing.T) {
 	m := map[string]any{
 		"system_prompt":  "You are helpful.",
@@ -26,7 +37,7 @@ func TestConfigFromMap_Full(t *testing.T) {
 		"track_steps":    true,
 	}
 
-	cfg := ConfigFromMap(m)
+	cfg := mustConfigFromMap(t, m)
 
 	if cfg.SystemPrompt != "You are helpful." {
 		t.Fatalf("SystemPrompt = %q", cfg.SystemPrompt)
@@ -34,8 +45,8 @@ func TestConfigFromMap_Full(t *testing.T) {
 	if cfg.Model != "openai/gpt-4o" {
 		t.Fatalf("Model = %q", cfg.Model)
 	}
-	if cfg.Temperature != 0.7 {
-		t.Fatalf("Temperature = %f", cfg.Temperature)
+	if cfg.Temperature == nil || *cfg.Temperature != 0.7 {
+		t.Fatalf("Temperature = %v", cfg.Temperature)
 	}
 	if cfg.MaxTokens != 1024 {
 		t.Fatalf("MaxTokens = %d", cfg.MaxTokens)
@@ -58,12 +69,12 @@ func TestConfigFromMap_Full(t *testing.T) {
 }
 
 func TestConfigFromMap_Defaults(t *testing.T) {
-	cfg := ConfigFromMap(map[string]any{})
+	cfg := mustConfigFromMap(t, map[string]any{})
 	if cfg.SystemPrompt != "" {
 		t.Fatal("SystemPrompt should be empty")
 	}
-	if cfg.Temperature != 0 {
-		t.Fatal("Temperature should be 0")
+	if cfg.Temperature != nil {
+		t.Fatal("Temperature should be nil")
 	}
 	if cfg.MaxTokens != 0 {
 		t.Fatal("MaxTokens should be 0")
@@ -71,23 +82,23 @@ func TestConfigFromMap_Defaults(t *testing.T) {
 }
 
 func TestConfigFromMap_MaxTokensInt(t *testing.T) {
-	cfg := ConfigFromMap(map[string]any{"max_tokens": 512})
+	cfg := mustConfigFromMap(t, map[string]any{"max_tokens": 512})
 	if cfg.MaxTokens != 512 {
 		t.Fatalf("MaxTokens from int = %d, want 512", cfg.MaxTokens)
 	}
 }
 
 func TestConfigFromMap_TemperatureInt(t *testing.T) {
-	cfg := ConfigFromMap(map[string]any{"temperature": 1})
-	if cfg.Temperature != 1.0 {
-		t.Fatalf("Temperature from int = %f, want 1.0", cfg.Temperature)
+	cfg := mustConfigFromMap(t, map[string]any{"temperature": 1})
+	if cfg.Temperature == nil || *cfg.Temperature != 1.0 {
+		t.Fatalf("Temperature from int = %v, want 1.0", cfg.Temperature)
 	}
 }
 
 func TestConfigFromMap_TemperatureFloat(t *testing.T) {
-	cfg := ConfigFromMap(map[string]any{"temperature": 0.3})
-	if cfg.Temperature != 0.3 {
-		t.Fatalf("Temperature = %f, want 0.3", cfg.Temperature)
+	cfg := mustConfigFromMap(t, map[string]any{"temperature": 0.3})
+	if cfg.Temperature == nil || *cfg.Temperature != 0.3 {
+		t.Fatalf("Temperature = %v, want 0.3", cfg.Temperature)
 	}
 }
 
@@ -162,7 +173,7 @@ func TestLLMNode_SummaryIndexNotInjectedWhenAbsent(t *testing.T) {
 }
 
 func TestConfigFromMap_ToolNames(t *testing.T) {
-	cfg := ConfigFromMap(map[string]any{
+	cfg := mustConfigFromMap(t, map[string]any{
 		"tool_names": []any{"search", "calculator"},
 	})
 	if len(cfg.ToolNames) != 2 {
@@ -174,7 +185,7 @@ func TestConfigFromMap_ToolNames(t *testing.T) {
 }
 
 func TestConfigFromMap_ToolNamesStringSlice(t *testing.T) {
-	cfg := ConfigFromMap(map[string]any{
+	cfg := mustConfigFromMap(t, map[string]any{
 		"tool_names": []string{"a", "b"},
 	})
 	if len(cfg.ToolNames) != 2 {
@@ -183,14 +194,14 @@ func TestConfigFromMap_ToolNamesStringSlice(t *testing.T) {
 }
 
 func TestConfigFromMap_Thinking(t *testing.T) {
-	cfg := ConfigFromMap(map[string]any{"thinking": true})
+	cfg := mustConfigFromMap(t, map[string]any{"thinking": true})
 	if !cfg.Thinking {
 		t.Fatal("Thinking should be true")
 	}
 }
 
 func TestConfigFromMap_NilMap(t *testing.T) {
-	cfg := ConfigFromMap(nil)
+	cfg := mustConfigFromMap(t, nil)
 	if cfg.SystemPrompt != "" || cfg.Model != "" {
 		t.Fatal("nil map should produce zero-value config")
 	}
@@ -210,15 +221,15 @@ func TestConfigFromMap_AllFields(t *testing.T) {
 		"track_steps":    true,
 		"tool_names":     []any{"t1", "t2"},
 	}
-	cfg := ConfigFromMap(m)
+	cfg := mustConfigFromMap(t, m)
 	if cfg.SystemPrompt != "prompt" {
 		t.Fatalf("SystemPrompt = %q", cfg.SystemPrompt)
 	}
 	if cfg.Model != "gpt-4" {
 		t.Fatalf("Model = %q", cfg.Model)
 	}
-	if cfg.Temperature != 0.5 {
-		t.Fatalf("Temperature = %f", cfg.Temperature)
+	if cfg.Temperature == nil || *cfg.Temperature != 0.5 {
+		t.Fatalf("Temperature = %v", cfg.Temperature)
 	}
 	if cfg.MaxTokens != 2048 {
 		t.Fatalf("MaxTokens = %d", cfg.MaxTokens)
@@ -252,8 +263,8 @@ func TestLLMNode_SetConfig(t *testing.T) {
 	if n.config.SystemPrompt != "new" {
 		t.Fatalf("SystemPrompt after SetConfig = %q", n.config.SystemPrompt)
 	}
-	if n.config.Temperature != 0.8 {
-		t.Fatalf("Temperature after SetConfig = %f", n.config.Temperature)
+	if n.config.Temperature == nil || *n.config.Temperature != 0.8 {
+		t.Fatalf("Temperature after SetConfig = %v", n.config.Temperature)
 	}
 }
 

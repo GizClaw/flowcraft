@@ -12,6 +12,7 @@ const (
 type Input struct {
 	IsSpeech       bool
 	ExplicitCommit bool
+	PartialText    string
 }
 
 type Decider interface {
@@ -25,11 +26,7 @@ type SilenceDecider struct {
 }
 
 func NewSilenceDecider(silenceDuration, frameSize time.Duration) *SilenceDecider {
-	limit := 1
-	if frameSize > 0 && silenceDuration > 0 {
-		limit = max(int(silenceDuration/frameSize), 1)
-	}
-	return &SilenceDecider{limit: limit}
+	return &SilenceDecider{limit: framesToLimit(silenceDuration, frameSize)}
 }
 
 func (d *SilenceDecider) Feed(input Input) Decision {
@@ -51,4 +48,11 @@ func (d *SilenceDecider) Feed(input Input) Decision {
 
 func (d *SilenceDecider) Reset() {
 	d.silentN = 0
+}
+
+func framesToLimit(duration, frameSize time.Duration) int {
+	if frameSize <= 0 || duration <= 0 {
+		return 1
+	}
+	return max(int((duration+frameSize-1)/frameSize), 1)
 }

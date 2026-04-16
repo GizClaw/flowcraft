@@ -234,6 +234,7 @@ func (s *Session) pipelineForTurn() *Pipeline {
 		return nil
 	}
 	p := s.pipeline.clone()
+	p.skipWarmup = true
 	if p.contextID == "" {
 		p.contextID = s.sessionID
 	}

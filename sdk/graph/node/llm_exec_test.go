@@ -552,43 +552,6 @@ func TestLLMNode_ExecuteBoard_WithToolCalls(t *testing.T) {
 	}
 }
 
-// --- buildOptions coverage ---
-
-func TestBuildOptions_AllFlags(t *testing.T) {
-	n := NewLLMNode("n", nil, nil, LLMConfig{
-		Temperature: 0.8,
-		MaxTokens:   100,
-		Thinking:    true,
-		JSONMode:    true,
-	})
-	opts := n.buildOptions(n.config)
-	if len(opts) != 4 {
-		t.Fatalf("expected 4 options, got %d", len(opts))
-	}
-}
-
-func TestBuildOptions_WithTools(t *testing.T) {
-	reg := tool.NewRegistry()
-	reg.Register(&mockTool{name: "a"})
-	reg.Register(&mockTool{name: "b"})
-
-	n := NewLLMNode("n", nil, reg, LLMConfig{
-		ToolNames: []string{"a"},
-	})
-	opts := n.buildOptions(n.config)
-	if len(opts) != 1 {
-		t.Fatalf("expected 1 option (WithTools), got %d", len(opts))
-	}
-}
-
-func TestBuildOptions_NoOptions(t *testing.T) {
-	n := NewLLMNode("n", nil, nil, LLMConfig{})
-	opts := n.buildOptions(n.config)
-	if len(opts) != 0 {
-		t.Fatalf("expected 0 options, got %d", len(opts))
-	}
-}
-
 // --- truncate ---
 
 func TestTruncate_Short(t *testing.T) {

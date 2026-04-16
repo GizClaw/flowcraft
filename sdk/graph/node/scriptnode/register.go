@@ -7,6 +7,7 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/graph"
 	"github.com/GizClaw/flowcraft/sdk/graph/node"
 	"github.com/GizClaw/flowcraft/sdk/graph/node/scripts"
+	"github.com/GizClaw/flowcraft/sdk/script/bindings"
 )
 
 var needsShellFS = map[string]bool{
@@ -23,11 +24,11 @@ func init() {
 					"node %q (type %s): script runtime not configured", def.ID, n)
 			}
 			src := scripts.MustGet(n)
-			var extra []BindingFunc
+			var extra []bindings.BindingFunc
 			if needsShellFS[n] {
-				extra = append(extra, NewShellBridge(bctx.CommandRunner))
+				extra = append(extra, bindings.NewShellBridge(bctx.CommandRunner))
 			}
-			extra = append(extra, NewFSBridge(bctx.Workspace))
+			extra = append(extra, bindings.NewFSBridge(bctx.Workspace))
 			return New(def.ID, n, src, def.Config, bctx.ScriptRuntime, extra...), nil
 		})
 	}
@@ -42,7 +43,7 @@ func init() {
 			return nil, errdefs.Validationf(
 				"node %q (type script): config.source is required", def.ID)
 		}
-		return New(def.ID, "script", source, def.Config, bctx.ScriptRuntime, NewFSBridge(bctx.Workspace)), nil
+		return New(def.ID, "script", source, def.Config, bctx.ScriptRuntime, bindings.NewFSBridge(bctx.Workspace)), nil
 	})
 
 	node.RegisterFallbackBuilder(func(def graph.NodeDefinition, bctx *node.BuildContext) (graph.Node, error) {
@@ -53,7 +54,7 @@ func init() {
 					return nil, errdefs.Validationf(
 						"node %q (type %s): script runtime not configured", def.ID, def.Type)
 				}
-				return New(def.ID, def.Type, string(data), def.Config, bctx.ScriptRuntime, NewFSBridge(bctx.Workspace)), nil
+				return New(def.ID, def.Type, string(data), def.Config, bctx.ScriptRuntime, bindings.NewFSBridge(bctx.Workspace)), nil
 			}
 		}
 		return nil, errdefs.Validationf(

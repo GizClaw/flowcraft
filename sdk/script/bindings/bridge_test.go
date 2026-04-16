@@ -1,20 +1,21 @@
-package scriptnode
+package bindings_test
 
 import (
 	"context"
 	"testing"
 
-	"github.com/GizClaw/flowcraft/sdk/graph"
+	"github.com/GizClaw/flowcraft/sdk/script/bindings"
 	"github.com/GizClaw/flowcraft/sdk/script/jsrt"
+	"github.com/GizClaw/flowcraft/sdk/workflow"
 	"github.com/GizClaw/flowcraft/sdk/workspace"
 )
 
 func TestBoardBridge(t *testing.T) {
 	rt := jsrt.New(jsrt.WithPoolSize(1))
-	board := graph.NewBoard()
+	board := workflow.NewBoard()
 	board.SetVar("x", 10)
 
-	env := BuildEnv(context.Background(), nil, NewBoardBridge(board))
+	env := bindings.BuildEnv(context.Background(), nil, bindings.NewBoardBridge(board))
 	_, err := rt.Exec(context.Background(), "board", `
 		var val = board.getVar("x");
 		if (val !== 10) throw new Error("expected 10, got " + val);
@@ -37,9 +38,9 @@ func TestBoardBridge(t *testing.T) {
 
 func TestExprBridge(t *testing.T) {
 	rt := jsrt.New(jsrt.WithPoolSize(1))
-	board := graph.NewBoard()
+	board := workflow.NewBoard()
 
-	env := BuildEnv(context.Background(), nil, NewBoardBridge(board), NewExprBridge())
+	env := bindings.BuildEnv(context.Background(), nil, bindings.NewBoardBridge(board), bindings.NewExprBridge())
 	_, err := rt.Exec(context.Background(), "expr", `
 		var result = expr.eval("a + b", {a: 3, b: 4});
 		if (result !== 7) throw new Error("expected 7, got " + result);
@@ -57,12 +58,12 @@ func TestExprBridge(t *testing.T) {
 
 func TestStreamBridge(t *testing.T) {
 	rt := jsrt.New(jsrt.WithPoolSize(1))
-	var captured []graph.StreamEvent
-	cb := func(e graph.StreamEvent) {
+	var captured []workflow.StreamEvent
+	cb := func(e workflow.StreamEvent) {
 		captured = append(captured, e)
 	}
 
-	env := BuildEnv(context.Background(), nil, NewStreamBridge(cb, "node1"))
+	env := bindings.BuildEnv(context.Background(), nil, bindings.NewStreamBridge(cb, "node1"))
 	_, err := rt.Exec(context.Background(), "stream", `
 		stream.emit("token", {content: "hello"});
 	`, env)
@@ -82,7 +83,7 @@ func TestStreamBridge(t *testing.T) {
 
 func TestStreamBridge_NilCallback(t *testing.T) {
 	rt := jsrt.New(jsrt.WithPoolSize(1))
-	env := BuildEnv(context.Background(), nil, NewStreamBridge(nil, "node1"))
+	env := bindings.BuildEnv(context.Background(), nil, bindings.NewStreamBridge(nil, "node1"))
 	_, err := rt.Exec(context.Background(), "stream-nil", `
 		stream.emit("token", {content: "hello"});
 	`, env)
@@ -119,11 +120,11 @@ func TestShellBridge_AllowList_Allowed(t *testing.T) {
 		exitCode: 0,
 	}
 	rt := jsrt.New(jsrt.WithPoolSize(1))
-	board := graph.NewBoard()
+	board := workflow.NewBoard()
 
-	env := BuildEnv(context.Background(), nil,
-		NewBoardBridge(board),
-		NewShellBridge(runner, WithAllowedCommands("echo", "cat")),
+	env := bindings.BuildEnv(context.Background(), nil,
+		bindings.NewBoardBridge(board),
+		bindings.NewShellBridge(runner, bindings.WithAllowedCommands("echo", "cat")),
 	)
 	_, err := rt.Exec(context.Background(), "shell-allow", `
 		var result = shell.exec("echo", "hello");
@@ -143,11 +144,11 @@ func TestShellBridge_AllowList_Allowed(t *testing.T) {
 func TestShellBridge_AllowList_Blocked(t *testing.T) {
 	runner := &fakeCommandRunner{stdout: "ok", exitCode: 0}
 	rt := jsrt.New(jsrt.WithPoolSize(1))
-	board := graph.NewBoard()
+	board := workflow.NewBoard()
 
-	env := BuildEnv(context.Background(), nil,
-		NewBoardBridge(board),
-		NewShellBridge(runner, WithAllowedCommands("echo")),
+	env := bindings.BuildEnv(context.Background(), nil,
+		bindings.NewBoardBridge(board),
+		bindings.NewShellBridge(runner, bindings.WithAllowedCommands("echo")),
 	)
 	_, err := rt.Exec(context.Background(), "shell-block", `
 		var result = shell.exec("rm -rf /");
@@ -167,11 +168,11 @@ func TestShellBridge_AllowList_Blocked(t *testing.T) {
 func TestShellBridge_NoAllowList(t *testing.T) {
 	runner := &fakeCommandRunner{stdout: "ok", exitCode: 0}
 	rt := jsrt.New(jsrt.WithPoolSize(1))
-	board := graph.NewBoard()
+	board := workflow.NewBoard()
 
-	env := BuildEnv(context.Background(), nil,
-		NewBoardBridge(board),
-		NewShellBridge(runner),
+	env := bindings.BuildEnv(context.Background(), nil,
+		bindings.NewBoardBridge(board),
+		bindings.NewShellBridge(runner),
 	)
 	_, err := rt.Exec(context.Background(), "shell-nolist", `
 		var result = shell.exec("anything");
@@ -189,11 +190,11 @@ func TestShellBridge_NoAllowList(t *testing.T) {
 
 func TestShellBridge_NilRunner(t *testing.T) {
 	rt := jsrt.New(jsrt.WithPoolSize(1))
-	board := graph.NewBoard()
+	board := workflow.NewBoard()
 
-	env := BuildEnv(context.Background(), nil,
-		NewBoardBridge(board),
-		NewShellBridge(nil),
+	env := bindings.BuildEnv(context.Background(), nil,
+		bindings.NewBoardBridge(board),
+		bindings.NewShellBridge(nil),
 	)
 	_, err := rt.Exec(context.Background(), "shell-nil", `
 		var result = shell.exec("echo hello");
@@ -211,9 +212,9 @@ func TestShellBridge_NilRunner(t *testing.T) {
 
 func TestExprBridge_CachedResults(t *testing.T) {
 	rt := jsrt.New(jsrt.WithPoolSize(1))
-	board := graph.NewBoard()
+	board := workflow.NewBoard()
 
-	env := BuildEnv(context.Background(), nil, NewBoardBridge(board), NewExprBridge())
+	env := bindings.BuildEnv(context.Background(), nil, bindings.NewBoardBridge(board), bindings.NewExprBridge())
 	_, err := rt.Exec(context.Background(), "expr-cache", `
 		var r1 = expr.eval("x * 2", {x: 5});
 		var r2 = expr.eval("x * 2", {x: 10});
@@ -232,9 +233,9 @@ func TestExprBridge_CachedResults(t *testing.T) {
 
 func TestExprBridge_InvalidExpression(t *testing.T) {
 	rt := jsrt.New(jsrt.WithPoolSize(1))
-	board := graph.NewBoard()
+	board := workflow.NewBoard()
 
-	env := BuildEnv(context.Background(), nil, NewBoardBridge(board), NewExprBridge())
+	env := bindings.BuildEnv(context.Background(), nil, bindings.NewBoardBridge(board), bindings.NewExprBridge())
 	_, err := rt.Exec(context.Background(), "expr-invalid", `
 		try {
 			expr.eval("!!!invalid", {});
@@ -262,4 +263,51 @@ type fakeCommandRunner struct {
 
 func (f *fakeCommandRunner) Exec(_ context.Context, _ string, _ []string, _ workspace.ExecOptions) (*workspace.ExecResult, error) {
 	return &workspace.ExecResult{Stdout: f.stdout, Stderr: f.stderr, ExitCode: f.exitCode}, nil
+}
+
+func TestShellBridge_AllowList_FullPath(t *testing.T) {
+	runner := &fakeCommandRunner{stdout: "ok", exitCode: 0}
+	rt := jsrt.New(jsrt.WithPoolSize(1))
+	board := workflow.NewBoard()
+
+	env := bindings.BuildEnv(context.Background(), nil,
+		bindings.NewBoardBridge(board),
+		bindings.NewShellBridge(runner, bindings.WithAllowedCommands("echo")),
+	)
+	_, err := rt.Exec(context.Background(), "shell-fullpath", `
+		var result = shell.exec("/usr/bin/echo", "hello");
+		if (result.exit_code !== 0) throw new Error("expected exit 0, got " + result.exit_code);
+		board.setVar("fullpath_ok", true);
+	`, env)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	v, _ := board.GetVar("fullpath_ok")
+	if v != true {
+		t.Fatal("full-path command matching via filepath.Base should work")
+	}
+}
+
+func TestShellBridge_AllowList_FullPath_Blocked(t *testing.T) {
+	runner := &fakeCommandRunner{stdout: "ok", exitCode: 0}
+	rt := jsrt.New(jsrt.WithPoolSize(1))
+	board := workflow.NewBoard()
+
+	env := bindings.BuildEnv(context.Background(), nil,
+		bindings.NewBoardBridge(board),
+		bindings.NewShellBridge(runner, bindings.WithAllowedCommands("echo")),
+	)
+	_, err := rt.Exec(context.Background(), "shell-fullpath-block", `
+		var result = shell.exec("/usr/bin/rm -rf /");
+		if (result.exit_code !== -1) throw new Error("expected rejection");
+		if (result.stderr.indexOf("not allowed") === -1) throw new Error("expected 'not allowed' in stderr");
+		board.setVar("blocked_ok", true);
+	`, env)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	v, _ := board.GetVar("blocked_ok")
+	if v != true {
+		t.Fatal("full-path command not in allow list should be blocked")
+	}
 }
