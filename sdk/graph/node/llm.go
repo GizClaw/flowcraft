@@ -55,6 +55,7 @@ type LLMNode struct {
 	toolRegistry *tool.Registry
 	config       LLMConfig
 	rawConfig    map[string]any
+	isDeferred   func(string) bool
 }
 
 // NewLLMNode creates a new LLM node.
@@ -72,7 +73,7 @@ func (n *LLMNode) Config() map[string]any { return n.rawConfig }
 // resolved ${board.xxx} variables take effect (e.g. system_prompt).
 func (n *LLMNode) SetConfig(c map[string]any) {
 	n.rawConfig = c
-	cfg, err := ConfigFromMap(c)
+	cfg, err := ConfigFromMap(c, n.isDeferred)
 	if err != nil {
 		telemetry.Warn(context.Background(), "llm node: invalid config map",
 			otellog.String("node_id", n.id),
@@ -260,12 +261,13 @@ func (n *LLMNode) writeResults(
 }
 
 // ConfigFromMap parses an LLMConfig from a generic map via JSON round-trip.
-func ConfigFromMap(m map[string]any) (LLMConfig, error) {
+// isDeferred is passed through to CoerceMapForStruct; see its documentation.
+func ConfigFromMap(m map[string]any, isDeferred func(string) bool) (LLMConfig, error) {
 	var cfg LLMConfig
 	if m == nil {
 		return cfg, nil
 	}
-	m = llm.CoerceMapForStruct[LLMConfig](m)
+	m = llm.CoerceMapForStruct[LLMConfig](m, isDeferred)
 	data, err := json.Marshal(m)
 	if err != nil {
 		return cfg, fmt.Errorf("node: marshal config map: %w", err)

@@ -162,6 +162,19 @@ func resolveNested(m map[string]any, path string) any {
 	return current
 }
 
+// ContainsRef reports whether s contains at least one resolvable
+// ${scope.name} reference (i.e. the content inside braces must have a
+// dot-separated scope and name, matching what lookup actually resolves).
+func ContainsRef(s string) bool {
+	for _, match := range refPattern.FindAllStringSubmatch(s, -1) {
+		ref := strings.TrimSpace(match[1])
+		if i := strings.IndexByte(ref, '.'); i > 0 && i < len(ref)-1 {
+			return true
+		}
+	}
+	return false
+}
+
 // ExtractRefs returns all ${scope.name} references found in a string.
 func ExtractRefs(text string) []string {
 	matches := refPattern.FindAllStringSubmatch(text, -1)

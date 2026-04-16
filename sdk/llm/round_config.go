@@ -25,8 +25,14 @@ type RoundConfig struct {
 // allows JSON round-trip (Marshal → Unmarshal) to succeed when map values
 // arrive as strings (e.g. from ${board.temperature} template resolution).
 //
+// isDeferred, when non-nil, reports whether a string value is a deferred
+// reference (e.g. a template variable) that will be resolved later. Such
+// values are removed from non-string fields so that json.Unmarshal sees the
+// zero value instead of an invalid string. The caller should supply the
+// resolver's own ContainsRef function to keep detection in sync.
+//
 // The input map is not modified; a shallow clone is returned.
-func CoerceMapForStruct[T any](m map[string]any) map[string]any {
+func CoerceMapForStruct[T any](m map[string]any, isDeferred func(string) bool) map[string]any {
 	if m == nil {
 		return nil
 	}
@@ -68,6 +74,8 @@ func CoerceMapForStruct[T any](m map[string]any) map[string]any {
 		}
 		if coerced, ok := coerceString(str, target.Kind()); ok {
 			result[key] = coerced
+		} else if isDeferred != nil && isDeferred(str) {
+			delete(result, key)
 		}
 	}
 	return result
@@ -109,12 +117,13 @@ func coerceString(s string, kind reflect.Kind) (any, bool) {
 }
 
 // RoundConfigFromMap parses RoundConfig from a generic map via JSON round-trip.
-func RoundConfigFromMap(m map[string]any) (RoundConfig, error) {
+// isDeferred is passed through to CoerceMapForStruct; see its documentation.
+func RoundConfigFromMap(m map[string]any, isDeferred func(string) bool) (RoundConfig, error) {
 	var cfg RoundConfig
 	if m == nil {
 		return cfg, nil
 	}
-	m = CoerceMapForStruct[RoundConfig](m)
+	m = CoerceMapForStruct[RoundConfig](m, isDeferred)
 	data, err := json.Marshal(m)
 	if err != nil {
 		return cfg, fmt.Errorf("llm: marshal config map: %w", err)
