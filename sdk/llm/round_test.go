@@ -30,10 +30,10 @@ func (r *failResolver) Resolve(_ context.Context, _ string) (LLM, error) {
 func (r *failResolver) InvalidateCache(_ string) {}
 
 type roundFakeStream struct {
-	chunks  []string
-	idx     int
-	err     error
-	closed  atomic.Int32
+	chunks []string
+	idx    int
+	err    error
+	closed atomic.Int32
 }
 
 func (s *roundFakeStream) Next() bool {
