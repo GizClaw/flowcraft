@@ -15,6 +15,8 @@ jobs:
       sdk: ${{ steps.filter.outputs.sdk }}
       sdkx: ${{ steps.filter.outputs.sdkx }}
       plugin: ${{ steps.filter.outputs.plugin }}
+      platform: ${{ steps.filter.outputs.platform }}
+      web: ${{ steps.filter.outputs.web }}
       ci: ${{ steps.filter.outputs.ci }}
     steps:
       - uses: actions/checkout@v4
@@ -28,6 +30,13 @@ jobs:
               - 'sdkx/**'
             plugin:
               - 'plugin/**'
+            platform:
+              - 'cmd/**'
+              - 'internal/**'
+              - 'go.mod'
+              - 'go.sum'
+            web:
+              - 'web/**'
             ci:
               - '.github/workflows/**'
               - 'Makefile'
@@ -57,6 +66,27 @@ jobs:
             exit 1
           fi
 
+  lint-platform:
+    name: Lint Platform
+    needs: detect
+    if: needs.detect.outputs.platform == 'true' || needs.detect.outputs.ci == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.25"
+      - name: go vet
+        run: go vet ./...
+      - name: gofmt check
+        run: |
+          diff=$(gofmt -l cmd/ internal/)
+          if [ -n "$diff" ]; then
+            echo "Files not formatted:"
+            echo "$diff"
+            exit 1
+          fi
+
   test-sdk:
     name: Test sdk (Go ${{ matrix.go-version }})
     needs: detect
@@ -77,7 +107,6 @@ jobs:
   test-sdkx:
     name: Test sdkx (Go ${{ matrix.go-version }})
     needs: detect
-    # sdkx depends on sdk, so run when either changes
     if: needs.detect.outputs.sdk == 'true' || needs.detect.outputs.sdkx == 'true' || needs.detect.outputs.ci == 'true'
     runs-on: ubuntu-latest
     strategy:
@@ -109,21 +138,101 @@ jobs:
         run: go test -count=1 -race ./...
         working-directory: plugin
 
-  # Gate job: single required status check for branch protection.
-  # Always runs; succeeds only when all triggered jobs pass.
+  test-platform:
+    name: Test Platform
+    needs: detect
+    if: needs.detect.outputs.platform == 'true' || needs.detect.outputs.ci == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.25"
+      - name: Test
+        run: go test -count=1 -race ./internal/...
+
+  build-matrix:
+    name: Build ${{ matrix.target }}
+    needs: detect
+    if: needs.detect.outputs.platform == 'true' || needs.detect.outputs.ci == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - target: linux-amd64
+            goos: linux
+            goarch: amd64
+            tags: linux
+          - target: darwin-amd64
+            goos: darwin
+            goarch: amd64
+            tags: ""
+          - target: darwin-arm64
+            goos: darwin
+            goarch: arm64
+            tags: ""
+          - target: windows-amd64
+            goos: windows
+            goarch: amd64
+            tags: ""
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.25"
+      - name: Build
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: 0
+        run: |
+          TAGS="${{ matrix.tags }}"
+          if [ -n "$TAGS" ]; then
+            go build -tags "$TAGS" -ldflags="-s -w" -o "dist/flowcraft-${{ matrix.target }}" ./cmd/flowcraft
+          else
+            go build -ldflags="-s -w" -o "dist/flowcraft-${{ matrix.target }}" ./cmd/flowcraft
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: flowcraft-${{ matrix.target }}
+          path: dist/flowcraft-${{ matrix.target }}
+
+  lint-web:
+    name: Lint & Build Web
+    needs: detect
+    if: needs.detect.outputs.web == 'true' || needs.detect.outputs.ci == 'true'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+      - run: npx vitest run
+      - run: npm run build
+
   ci-pass:
     name: CI
     if: always()
-    needs: [lint, test-sdk, test-sdkx, test-plugin]
+    needs: [lint, lint-platform, test-sdk, test-sdkx, test-plugin, test-platform, build-matrix, lint-web]
     runs-on: ubuntu-latest
     steps:
       - name: Check results
         run: |
           results=( \
             "${{ needs.lint.result }}" \
+            "${{ needs.lint-platform.result }}" \
             "${{ needs.test-sdk.result }}" \
             "${{ needs.test-sdkx.result }}" \
             "${{ needs.test-plugin.result }}" \
+            "${{ needs.test-platform.result }}" \
+            "${{ needs.build-matrix.result }}" \
+            "${{ needs.lint-web.result }}" \
           )
           for r in "${results[@]}"; do
             if [[ "$r" == "failure" || "$r" == "cancelled" ]]; then

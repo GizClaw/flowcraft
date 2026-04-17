@@ -6,9 +6,10 @@ import (
 	"context"
 	"errors"
 	"io"
+	"runtime"
 )
 
-// Native is a placeholder on non-Linux platforms.
+// Native is a placeholder on unsupported platforms.
 type Native struct{}
 
 // NewNative returns a stub machine manager.
@@ -20,12 +21,12 @@ var _ Machine = (*Native)(nil)
 
 func (n *Native) Start(ctx context.Context) error {
 	_ = ctx
-	return errors.New("flowcraft start: only supported on Linux (M1)")
+	return errors.New("flowcraft start: unsupported platform " + runtime.GOOS)
 }
 
 func (n *Native) Stop(ctx context.Context) error {
 	_ = ctx
-	return errors.New("flowcraft stop: only supported on Linux (M1)")
+	return errors.New("flowcraft stop: unsupported platform " + runtime.GOOS)
 }
 
 func (n *Native) Status(ctx context.Context) (*Status, error) {
@@ -36,5 +37,5 @@ func (n *Native) Status(ctx context.Context) (*Status, error) {
 func (n *Native) Logs(ctx context.Context, w io.Writer) error {
 	_ = ctx
 	_ = w
-	return errors.New("flowcraft logs: only supported on Linux (M1)")
+	return errors.New("flowcraft logs: unsupported platform " + runtime.GOOS)
 }
