@@ -42,6 +42,7 @@ type RunOption func(*RunConfig)
 // implementations (e.g. flowgraph) can read stream callback, max iterations, etc.
 type RunConfig struct {
 	History        []model.Message
+	Board          *Board
 	StreamCallback StreamCallback
 	MaxIterations  int
 }
@@ -69,4 +70,10 @@ func WithStreamCallback(cb StreamCallback) RunOption {
 // WithMaxIterations caps the number of graph execution steps.
 func WithMaxIterations(n int) RunOption {
 	return func(c *RunConfig) { c.MaxIterations = n }
+}
+
+// WithBoard injects a pre-built Board, skipping the normal prepareBoard phase.
+// Used for resume-from-snapshot flows.
+func WithBoard(b *Board) RunOption {
+	return func(c *RunConfig) { c.Board = b }
 }
