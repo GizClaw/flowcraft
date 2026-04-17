@@ -1,0 +1,10 @@
+/node_modules/
+/dist/*
+!/dist/.gitkeep
+/.eslintcache
+/test-results/
+/playwright-report/
+/.playwright-home/
+/tsconfig.tsbuildinfo
+
+
