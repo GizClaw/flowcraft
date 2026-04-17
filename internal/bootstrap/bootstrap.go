@@ -156,6 +156,12 @@ func Run(ctx context.Context) (*platform.Platform, *api.Server, func(), error) {
 	// --- seed data ---
 	ensureCoPilotAgent(ctx, appStore, knowledgeStore, templateReg)
 
+	// --- JWT auth ---
+	jwtCfg, err := wireAuth(ctx, appStore)
+	if err != nil {
+		return fail(err)
+	}
+
 	// --- gateway + HTTP ---
 	gw := initGateway(ctx, runtimeMgr, appStore)
 	nr := gateway.NewNotificationRouter(gw, appStore)
@@ -165,11 +171,7 @@ func Run(ctx context.Context) (*platform.Platform, *api.Server, func(), error) {
 		pluginDir = filepath.Join(workspaceRoot, "plugins")
 	}
 
-	server := wireHTTP(cfg, plat, gw, pluginDir)
-
-	if cfg.Auth.APIKey == "" {
-		telemetry.Warn(ctx, "security: API key is not configured, authentication is disabled — set FLOWCRAFT_AUTH_API_KEY for production use")
-	}
+	server := wireHTTP(cfg, plat, gw, jwtCfg, pluginDir)
 
 	// --- realm callbacks ---
 	var schedOnce sync.Once

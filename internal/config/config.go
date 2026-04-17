@@ -64,9 +64,8 @@ type MemoryConfig struct {
 }
 
 // AuthConfig holds authentication settings.
-type AuthConfig struct {
-	APIKey string
-}
+// JWT secret is managed in the DB (settings table), not in config.
+type AuthConfig struct{}
 
 // LogConfig holds logging settings.
 type LogConfig struct {
@@ -187,9 +186,6 @@ func (c *Config) Validate() []string {
 	if c.Server.Port <= 0 || c.Server.Port > 65535 {
 		warnings = append(warnings, fmt.Sprintf("server.port %d is out of valid range (1-65535)", c.Server.Port))
 	}
-	if c.Auth.APIKey == "" {
-		warnings = append(warnings, "auth.api_key is not set; API is unauthenticated")
-	}
 	if c.Memory.Type != "" && c.Memory.Type != "lossless" {
 		warnings = append(warnings, fmt.Sprintf("memory.type %q is deprecated; all memory is now lossless", c.Memory.Type))
 	}
@@ -244,7 +240,7 @@ func (c *Config) String() string {
 	fmt.Fprintf(&b, "  server.host:      %s\n", c.Server.Host)
 	fmt.Fprintf(&b, "  server.port:      %d\n", c.Server.Port)
 	fmt.Fprintf(&b, "  memory:           lossless\n")
-	fmt.Fprintf(&b, "  auth.api_key:     %s\n", maskSecret(c.Auth.APIKey))
+	fmt.Fprintf(&b, "  auth:             jwt (secret in DB)\n")
 	fmt.Fprintf(&b, "  log.level:        %s\n", c.Log.Level)
 	fmt.Fprintf(&b, "  log.format:       %s\n", c.Log.Format)
 	fmt.Fprintf(&b, "  configure_path:   %s\n", c.ConfigurePath)

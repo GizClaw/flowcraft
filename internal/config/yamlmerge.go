@@ -122,9 +122,7 @@ func mergeYAML(cfg *Config, configPath string) {
 	if y.Memory != nil && y.Memory.Type != "" {
 		cfg.Memory.Type = y.Memory.Type
 	}
-	if y.Auth != nil && y.Auth.APIKey != "" {
-		cfg.Auth.APIKey = y.Auth.APIKey
-	}
+	// Auth is now JWT-based; secret is managed in the DB, not in config.yaml.
 	if y.DB != nil && y.DB.Path != "" {
 		cfg.DB.Path = y.DB.Path
 	}

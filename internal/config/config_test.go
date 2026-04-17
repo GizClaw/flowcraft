@@ -53,24 +53,13 @@ auth:
 	if cfg.Log.Level != "debug" {
 		t.Fatalf("expected log level 'debug', got %q", cfg.Log.Level)
 	}
-	if cfg.Auth.APIKey != "test-key" {
-		t.Fatalf("expected api key 'test-key', got %q", cfg.Auth.APIKey)
-	}
 }
 
 func TestValidate(t *testing.T) {
 	isolateFlowcraftHome(t)
 	cfg := Load()
 	warnings := cfg.Validate()
-	found := false
-	for _, w := range warnings {
-		if w == "auth.api_key is not set; API is unauthenticated" {
-			found = true
-		}
-	}
-	if !found {
-		t.Fatal("expected auth warning in default config validation")
-	}
+	_ = warnings // JWT auth is managed in DB; no config-level auth warning expected
 }
 
 func TestValidate_BadPort(t *testing.T) {

@@ -1,0 +1,2616 @@
+openapi: "3.1.0"
+info:
+  title: FlowCraft API
+  version: "1.0.0"
+  description: FlowCraft platform API
+
+# ---------- paths ----------
+paths:
+  # ── Auth ──
+  /auth/login:
+    post:
+      operationId: login
+      tags: [auth]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LoginRequest"
+      responses:
+        "200":
+          description: Login result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LoginResponse"
+        default:
+          $ref: "#/components/responses/Error"
+
+  /auth/logout:
+    post:
+      operationId: logout
+      tags: [auth]
+      responses:
+        "204":
+          description: Logged out
+        default:
+          $ref: "#/components/responses/Error"
+
+  /auth/session:
+    get:
+      operationId: getSession
+      tags: [auth]
+      responses:
+        "200":
+          description: Session info
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionInfo"
+        default:
+          $ref: "#/components/responses/Error"
+
+  /auth/config:
+    get:
+      operationId: getAuthConfig
+      tags: [auth]
+      responses:
+        "200":
+          description: Auth configuration
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthConfig"
+        default:
+          $ref: "#/components/responses/Error"
+
+  # ── Agents ──
+  /agents:
+    get:
+      operationId: listAgents
+      tags: [agents]
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: Agent list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentList"
+        default:
+          $ref: "#/components/responses/Error"
+    post:
+      operationId: createAgent
+      tags: [agents]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateAgentRequest"
+      responses:
+        "201":
+          description: Created agent
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Agent"
+        default:
+          $ref: "#/components/responses/Error"
+
+  /agents/{id}:
+    get:
+      operationId: getAgent
+      tags: [agents]
+      parameters:
+        - $ref: "#/components/parameters/AgentID"
+      responses:
+        "200":
+          description: Agent detail
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Agent"
+        default:
+          $ref: "#/components/responses/Error"
+    put:
+      operationId: updateAgent
+      tags: [agents]
+      parameters:
+        - $ref: "#/components/parameters/AgentID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateAgentRequest"
+      responses:
+        "200":
+          description: Updated agent
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Agent"
+        default:
+          $ref: "#/components/responses/Error"
+    delete:
+      operationId: deleteAgent
+      tags: [agents]
+      parameters:
+        - $ref: "#/components/parameters/AgentID"
+      responses:
+        "204":
+          description: Deleted
+        default:
+          $ref: "#/components/responses/Error"
+
+  /agents/{agentID}/abort:
+    post:
+      operationId: abortActor
+      tags: [agents]
+      parameters:
+        - name: agentID
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Abort result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  aborted:
+                    type: boolean
+        default:
+          $ref: "#/components/responses/Error"
+
+  # ── Chat (SSE) ──
+  /chat/stream:
+    post:
+      operationId: chatStream
+      tags: [chat]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ChatRequest"
+      responses:
+        "200":
+          description: SSE event stream
+          content:
+            text/event-stream: {}
+        default:
+          $ref: "#/components/responses/Error"
+
+  /chat/resume/stream:
+    post:
+      operationId: resumeStream
+      tags: [chat]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ResumeRequest"
+      responses:
+        "200":
+          description: SSE event stream
+          content:
+            text/event-stream: {}
+        default:
+          $ref: "#/components/responses/Error"
+
+  # ── Conversations ──
+  /conversations:
+    get:
+      operationId: listConversations
+      tags: [conversations]
+      parameters:
+        - name: agent_id
+          in: query
+          schema:
+            type: string
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: Conversation list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConversationList"
+        default:
+          $ref: "#/components/responses/Error"
+
+  /conversations/{id}/messages:
+    get:
+      operationId: getMessages
+      tags: [conversations]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Message list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageList"
+        default:
+          $ref: "#/components/responses/Error"
+
+  # ── Workflow Runs ──
+  /workflows/runs:
+    get:
+      operationId: listWorkflowRuns
+      tags: [workflows]
+      parameters:
+        - name: agent_id
+          in: query
+          schema:
+            type: string
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: Run list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkflowRunList"
+        default:
+          $ref: "#/components/responses/Error"
+
+  /workflows/runs/{id}:
+    get:
+      operationId: getWorkflowRun
+      tags: [workflows]
+      parameters:
+        - $ref: "#/components/parameters/RunID"
+      responses:
+        "200":
+          description: Run detail
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkflowRun"
+        default:
+          $ref: "#/components/responses/Error"
+
+  /workflows/runs/{id}/events:
+    get:
+      operationId: getWorkflowRunEvents
+      tags: [workflows]
+      parameters:
+        - $ref: "#/components/parameters/RunID"
+      responses:
+        "200":
+          description: Execution events
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ExecutionEventList"
+        default:
+          $ref: "#/components/responses/Error"
+
+  /workflows/runs/{id}/status:
+    get:
+      operationId: getRunStatus
+      tags: [workflows]
+      parameters:
+        - $ref: "#/components/parameters/RunID"
+      responses:
+        "200":
+          description: Run status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkflowRun"
+        default:
+          $ref: "#/components/responses/Error"
+
+  # ── Knowledge ──
+  /datasets:
+    post:
+      operationId: createDataset
+      tags: [knowledge]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateDatasetRequest"
+      responses:
+        "201":
+          description: Created dataset
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Dataset"
+        default:
+          $ref: "#/components/responses/Error"
+    get:
+      operationId: listDatasets
+      tags: [knowledge]
+      responses:
+        "200":
+          description: Dataset list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DatasetList"
+        default:
+          $ref: "#/components/responses/Error"
+
+  /datasets/{id}:
+    get:
+      operationId: getDataset
+      tags: [knowledge]
+      parameters:
+        - $ref: "#/components/parameters/DatasetID"
+      responses:
+        "200":
+          description: Dataset detail
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Dataset"
+        default:
+          $ref: "#/components/responses/Error"
+    delete:
+      operationId: deleteDataset
+      tags: [knowledge]
+      parameters:
+        - $ref: "#/components/parameters/DatasetID"
+      responses:
+        "204":
+          description: Deleted
+        default:
+          $ref: "#/components/responses/Error"
+
+  /datasets/{id}/documents:
+    post:
+      operationId: addDocument
+      tags: [knowledge]
+      parameters:
+        - $ref: "#/components/parameters/DatasetID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AddDocumentRequest"
+      responses:
+        "201":
+          description: Created document
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DatasetDocument"
+        default:
+          $ref: "#/components/responses/Error"
+    get:
+      operationId: listDocuments
+      tags: [knowledge]
+      parameters:
+        - $ref: "#/components/parameters/DatasetID"
+      responses:
+        "200":
+          description: Document list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DocumentList"
+        default:
+          $ref: "#/components/responses/Error"
+
+  /datasets/{id}/documents/{docId}:
+    delete:
+      operationId: deleteDocument
+      tags: [knowledge]
+      parameters:
+        - $ref: "#/components/parameters/DatasetID"
+        - name: docId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: Deleted
+        default:
+          $ref: "#/components/responses/Error"
+
+  /datasets/{id}/query:
+    post:
+      operationId: queryDocuments
+      tags: [knowledge]
+      parameters:
+        - $ref: "#/components/parameters/DatasetID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DatasetQueryRequest"
+      responses:
+        "200":
+          description: Query results
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QueryResultList"
+        default:
+          $ref: "#/components/responses/Error"
+
+  # ── Graph Versions ──
+  /agents/{id}/versions:
+    get:
+      operationId: listVersions
+      tags: [versions]
+      parameters:
+        - $ref: "#/components/parameters/AgentID"
+      responses:
+        "200":
+          description: Version list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GraphVersionList"
+        default:
+          $ref: "#/components/responses/Error"
+
+  /agents/{id}/versions/publish:
+    post:
+      operationId: publishVersion
+      tags: [versions]
+      parameters:
+        - $ref: "#/components/parameters/AgentID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PublishVersionRequest"
+      responses:
+        "201":
+          description: Published version
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GraphVersion"
+        default:
+          $ref: "#/components/responses/Error"
+
+  /agents/{id}/versions/{ver}/rollback:
+    post:
+      operationId: rollbackVersion
+      tags: [versions]
+      parameters:
+        - $ref: "#/components/parameters/AgentID"
+        - name: ver
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Rolled-back version
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GraphVersion"
+        default:
+          $ref: "#/components/responses/Error"
+
+  /agents/{id}/versions/diff:
+    get:
+      operationId: diffVersions
+      tags: [versions]
+      parameters:
+        - $ref: "#/components/parameters/AgentID"
+        - name: v1
+          in: query
+          required: true
+          schema:
+            type: integer
+        - name: v2
+          in: query
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Version diff
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VersionDiff"
+        default:
+          $ref: "#/components/responses/Error"
+
+  # ── Graph History ──
+  /agents/{id}/graph/history:
+    get:
+      operationId: getGraphHistory
+      tags: [versions]
+      parameters:
+        - $ref: "#/components/parameters/AgentID"
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: Graph operation history
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GraphOperationList"
+        default:
+          $ref: "#/components/responses/Error"
+
+  # ── Compile + DryRun ──
+  /agents/{id}/compile:
+    post:
+      operationId: compileGraph
+      tags: [compile]
+      parameters:
+        - $ref: "#/components/parameters/AgentID"
+      responses:
+        "200":
+          description: Compile result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CompileResult"
+        default:
+          $ref: "#/components/responses/Error"
+
+  /agents/{id}/dryrun:
+    post:
+      operationId: dryRun
+      tags: [compile]
+      parameters:
+        - $ref: "#/components/parameters/AgentID"
+      responses:
+        "200":
+          description: DryRun result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DryRunResult"
+        default:
+          $ref: "#/components/responses/Error"
+
+  # ── Import/Export ──
+  /agents/{id}/export:
+    get:
+      operationId: exportAgent
+      tags: [agents]
+      parameters:
+        - $ref: "#/components/parameters/AgentID"
+        - name: format
+          in: query
+          schema:
+            type: string
+            enum: [json, yaml]
+            default: json
+      responses:
+        "200":
+          description: Graph definition file download
+          headers:
+            Content-Disposition:
+              required: true
+              schema:
+                type: string
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        default:
+          $ref: "#/components/responses/Error"
+
+  /agents/{id}/import:
+    post:
+      operationId: importAgent
+      tags: [agents]
+      parameters:
+        - $ref: "#/components/parameters/AgentID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ImportRequest"
+      responses:
+        "200":
+          description: Import result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ImportResult"
+        default:
+          $ref: "#/components/responses/Error"
+
+  # ── Memory ──
+  /memories:
+    get:
+      operationId: listMemories
+      tags: [memory]
+      parameters:
+        - name: category
+          in: query
+          schema:
+            type: string
+        - name: q
+          in: query
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Memory entries
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MemoryEntryList"
+        default:
+          $ref: "#/components/responses/Error"
+
+  /memories/{entryID}:
+    put:
+      operationId: updateMemory
+      tags: [memory]
+      parameters:
+        - name: entryID
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateMemoryRequest"
+      responses:
+        "200":
+          description: Updated memory
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MemoryEntry"
+        default:
+          $ref: "#/components/responses/Error"
+    delete:
+      operationId: deleteMemory
+      tags: [memory]
+      parameters:
+        - name: entryID
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: Deleted
+        default:
+          $ref: "#/components/responses/Error"
+
+  # ── Node Types + Templates ──
+  /node-types:
+    get:
+      operationId: listNodeTypes
+      tags: [nodes]
+      responses:
+        "200":
+          description: Available node types
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NodeTypeList"
+        default:
+          $ref: "#/components/responses/Error"
+
+  /templates:
+    get:
+      operationId: listTemplates
+      tags: [templates]
+      responses:
+        "200":
+          description: Template list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TemplateList"
+        default:
+          $ref: "#/components/responses/Error"
+    post:
+      operationId: createTemplate
+      tags: [templates]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateTemplateRequest"
+      responses:
+        "201":
+          description: Created template
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GraphTemplate"
+        default:
+          $ref: "#/components/responses/Error"
+
+  /templates/{name}:
+    delete:
+      operationId: deleteTemplate
+      tags: [templates]
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  deleted:
+                    type: boolean
+        default:
+          $ref: "#/components/responses/Error"
+
+  /templates/{name}/instantiate:
+    post:
+      operationId: instantiateTemplate
+      tags: [templates]
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TemplateParams"
+      responses:
+        "200":
+          description: Instantiated graph definition
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GraphDefinition"
+        default:
+          $ref: "#/components/responses/Error"
+
+  # ── Tools ──
+  /tools:
+    get:
+      operationId: listTools
+      tags: [tools]
+      responses:
+        "200":
+          description: Available tools
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ToolList"
+        default:
+          $ref: "#/components/responses/Error"
+
+  # ── Skills ──
+  /skills:
+    get:
+      operationId: listSkills
+      tags: [skills]
+      responses:
+        "200":
+          description: Installed skills
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SkillList"
+        default:
+          $ref: "#/components/responses/Error"
+
+  /skills/install:
+    post:
+      operationId: installSkill
+      tags: [skills]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/InstallSkillRequest"
+      responses:
+        "201":
+          description: Installed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SkillInstallResult"
+        default:
+          $ref: "#/components/responses/Error"
+
+  /skills/{name}:
+    put:
+      operationId: updateSkill
+      tags: [skills]
+      parameters:
+        - $ref: "#/components/parameters/SkillName"
+      responses:
+        "200":
+          description: Updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  name:
+                    type: string
+        default:
+          $ref: "#/components/responses/Error"
+    delete:
+      operationId: deleteSkill
+      tags: [skills]
+      parameters:
+        - $ref: "#/components/parameters/SkillName"
+      responses:
+        "204":
+          description: Deleted
+        default:
+          $ref: "#/components/responses/Error"
+
+  /skills/update-all:
+    post:
+      operationId: updateAllSkills
+      tags: [skills]
+      responses:
+        "200":
+          description: Update result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  updated:
+                    type: array
+                    items:
+                      type: string
+                  error:
+                    type: string
+        default:
+          $ref: "#/components/responses/Error"
+
+  # ── Models + Providers ──
+  /models:
+    get:
+      operationId: listModels
+      tags: [models]
+      responses:
+        "200":
+          description: Model list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ModelList"
+        default:
+          $ref: "#/components/responses/Error"
+    post:
+      operationId: addModel
+      tags: [models]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AddModelRequest"
+      responses:
+        "201":
+          description: Added model
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ModelInfo"
+        default:
+          $ref: "#/components/responses/Error"
+
+  /models/default:
+    put:
+      operationId: setDefaultModel
+      tags: [models]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SetDefaultModelRequest"
+      responses:
+        "204":
+          description: Default set
+        default:
+          $ref: "#/components/responses/Error"
+
+  /models/{modelID}:
+    delete:
+      operationId: deleteModel
+      tags: [models]
+      parameters:
+        - name: modelID
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: Deleted
+        default:
+          $ref: "#/components/responses/Error"
+
+  /providers:
+    get:
+      operationId: listProviders
+      tags: [models]
+      responses:
+        "200":
+          description: Provider list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProviderList"
+        default:
+          $ref: "#/components/responses/Error"
+
+  /providers/{name}/configure:
+    post:
+      operationId: configureProvider
+      tags: [models]
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ConfigureProviderRequest"
+      responses:
+        "204":
+          description: Configured
+        default:
+          $ref: "#/components/responses/Error"
+
+  # ── Stats ──
+  /stats:
+    get:
+      operationId: getStats
+      tags: [stats]
+      responses:
+        "200":
+          description: Overview stats
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StatsOverview"
+        default:
+          $ref: "#/components/responses/Error"
+
+  /stats/runs:
+    get:
+      operationId: getRunStats
+      tags: [stats]
+      parameters:
+        - name: agent_id
+          in: query
+          schema:
+            type: string
+        - name: days
+          in: query
+          schema:
+            type: integer
+            default: 30
+      responses:
+        "200":
+          description: Daily run stats
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DailyRunStatsList"
+        default:
+          $ref: "#/components/responses/Error"
+
+  /stats/runtime:
+    get:
+      operationId: getRuntimeStats
+      tags: [stats]
+      responses:
+        "200":
+          description: Runtime stats
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RuntimeStats"
+        default:
+          $ref: "#/components/responses/Error"
+
+  /stats/memory:
+    get:
+      operationId: getMemoryStats
+      tags: [stats]
+      responses:
+        "200":
+          description: Memory stats
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MemoryStats"
+        default:
+          $ref: "#/components/responses/Error"
+
+  # ── Monitoring ──
+  /monitoring/summary:
+    get:
+      operationId: getMonitoringSummary
+      tags: [monitoring]
+      parameters:
+        - name: agent_id
+          in: query
+          schema:
+            type: string
+        - name: window
+          in: query
+          schema:
+            type: string
+            enum: ["1h", "6h", "24h", "7d"]
+            default: "24h"
+      responses:
+        "200":
+          description: Monitoring summary
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MonitoringSummary"
+        default:
+          $ref: "#/components/responses/Error"
+
+  /monitoring/timeseries:
+    get:
+      operationId: getMonitoringTimeseries
+      tags: [monitoring]
+      parameters:
+        - name: agent_id
+          in: query
+          schema:
+            type: string
+        - name: window
+          in: query
+          schema:
+            type: string
+            default: "24h"
+        - name: interval
+          in: query
+          schema:
+            type: string
+            enum: ["1m", "5m", "15m", "1h"]
+      responses:
+        "200":
+          description: Timeseries data
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MonitoringTimeseries"
+        default:
+          $ref: "#/components/responses/Error"
+
+  /monitoring/runtime:
+    get:
+      operationId: getMonitoringRuntime
+      tags: [monitoring]
+      responses:
+        "200":
+          description: Runtime monitoring
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RuntimeManagerStats"
+        default:
+          $ref: "#/components/responses/Error"
+
+  /monitoring/diagnostics:
+    get:
+      operationId: getMonitoringDiagnostics
+      tags: [monitoring]
+      parameters:
+        - name: agent_id
+          in: query
+          schema:
+            type: string
+        - name: window
+          in: query
+          schema:
+            type: string
+            default: "24h"
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 20
+      responses:
+        "200":
+          description: Diagnostics
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MonitoringDiagnostics"
+        default:
+          $ref: "#/components/responses/Error"
+
+  # ── Plugins ──
+  /plugins:
+    get:
+      operationId: listPlugins
+      tags: [plugins]
+      parameters:
+        - name: type
+          in: query
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Plugin list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PluginList"
+        default:
+          $ref: "#/components/responses/Error"
+
+  /plugins/{name}:
+    get:
+      operationId: getPlugin
+      tags: [plugins]
+      parameters:
+        - $ref: "#/components/parameters/PluginName"
+      responses:
+        "200":
+          description: Plugin detail
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PluginDetail"
+        default:
+          $ref: "#/components/responses/Error"
+    delete:
+      operationId: deletePlugin
+      tags: [plugins]
+      parameters:
+        - $ref: "#/components/parameters/PluginName"
+      responses:
+        "204":
+          description: Deleted
+        default:
+          $ref: "#/components/responses/Error"
+
+  /plugins/{name}/enable:
+    post:
+      operationId: enablePlugin
+      tags: [plugins]
+      parameters:
+        - $ref: "#/components/parameters/PluginName"
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PluginConfig"
+      responses:
+        "200":
+          description: Enabled
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PluginInfo"
+        default:
+          $ref: "#/components/responses/Error"
+
+  /plugins/{name}/disable:
+    post:
+      operationId: disablePlugin
+      tags: [plugins]
+      parameters:
+        - $ref: "#/components/parameters/PluginName"
+      responses:
+        "200":
+          description: Disabled
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PluginInfo"
+        default:
+          $ref: "#/components/responses/Error"
+
+  /plugins/{name}/config:
+    put:
+      operationId: updatePluginConfig
+      tags: [plugins]
+      parameters:
+        - $ref: "#/components/parameters/PluginName"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PluginConfig"
+      responses:
+        "200":
+          description: Updated config
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PluginInfo"
+        default:
+          $ref: "#/components/responses/Error"
+
+  /plugins/reload:
+    post:
+      operationId: reloadPlugins
+      tags: [plugins]
+      responses:
+        "200":
+          description: Reload result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  added:
+                    type: array
+                    items:
+                      type: string
+                  removed:
+                    type: array
+                    items:
+                      type: string
+        default:
+          $ref: "#/components/responses/Error"
+
+  /plugins/upload:
+    post:
+      operationId: uploadPlugin
+      tags: [plugins]
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                file:
+                  type: string
+                  format: binary
+              required: [file]
+      responses:
+        "200":
+          description: Upload result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PluginUploadResult"
+        default:
+          $ref: "#/components/responses/Error"
+
+  # ── Kanban ──
+  /kanban/cards:
+    get:
+      operationId: getKanbanCards
+      tags: [kanban]
+      responses:
+        "200":
+          description: Kanban cards
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/KanbanCardList"
+        default:
+          $ref: "#/components/responses/Error"
+
+  /kanban/timeline:
+    get:
+      operationId: getKanbanTimeline
+      tags: [kanban]
+      responses:
+        "200":
+          description: Kanban timeline
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/KanbanTimeline"
+        default:
+          $ref: "#/components/responses/Error"
+
+  /kanban/topology:
+    get:
+      operationId: getKanbanTopology
+      tags: [kanban]
+      responses:
+        "200":
+          description: Kanban topology
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/KanbanTopology"
+        default:
+          $ref: "#/components/responses/Error"
+
+  # ── Channel Types ──
+  /channel-types:
+    get:
+      operationId: getChannelTypes
+      tags: [gateway]
+      responses:
+        "200":
+          description: Supported channel types
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ChannelTypeList"
+        default:
+          $ref: "#/components/responses/Error"
+
+  # ── WebSocket ──
+  /ws-ticket:
+    post:
+      operationId: createWSTicket
+      tags: [websocket]
+      responses:
+        "200":
+          description: WebSocket ticket
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WSTicketResponse"
+        default:
+          $ref: "#/components/responses/Error"
+
+  # ── Health ──
+  /healthz:
+    get:
+      operationId: healthCheck
+      tags: [health]
+      security: []
+      responses:
+        "200":
+          description: Service is healthy
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthStatus"
+        default:
+          $ref: "#/components/responses/Error"
+
+# ---------- components ----------
+components:
+  parameters:
+    Limit:
+      name: limit
+      in: query
+      schema:
+        type: integer
+    Cursor:
+      name: cursor
+      in: query
+      schema:
+        type: string
+    AgentID:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+    RunID:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+    DatasetID:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+    SkillName:
+      name: name
+      in: path
+      required: true
+      schema:
+        type: string
+    PluginName:
+      name: name
+      in: path
+      required: true
+      schema:
+        type: string
+
+  responses:
+    Error:
+      description: Error
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+
+  schemas:
+    # ── Error ──
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [message]
+          properties:
+            message:
+              type: string
+            code:
+              type: string
+              description: Machine-readable error code (platform + errdefs mapping).
+
+    # ── Pagination ──
+    PaginationResult:
+      type: object
+      properties:
+        has_more:
+          type: boolean
+        next_cursor:
+          type: string
+
+    # ── Auth ──
+    LoginRequest:
+      type: object
+      properties:
+        api_key:
+          type: string
+      required: [api_key]
+
+    LoginResponse:
+      type: object
+      properties:
+        authenticated:
+          type: boolean
+        auth_enabled:
+          type: boolean
+        principal:
+          type: string
+        auth_mode:
+          type: string
+
+    SessionInfo:
+      type: object
+      properties:
+        authenticated:
+          type: boolean
+        auth_enabled:
+          type: boolean
+        principal:
+          type: string
+        auth_mode:
+          type: string
+
+    AuthConfig:
+      type: object
+      properties:
+        auth_enabled:
+          type: boolean
+        login_mode:
+          type: string
+
+    # ── Agent ──
+    Agent:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        type:
+          type: string
+        description:
+          type: string
+        config:
+          type: object
+        graph_definition:
+          type: object
+        input_schema:
+          type: object
+        output_schema:
+          type: object
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    AgentList:
+      allOf:
+        - $ref: "#/components/schemas/PaginationResult"
+        - type: object
+          properties:
+            data:
+              type: array
+              items:
+                $ref: "#/components/schemas/Agent"
+
+    CreateAgentRequest:
+      type: object
+      properties:
+        name:
+          type: string
+        type:
+          type: string
+        description:
+          type: string
+        config:
+          type: object
+        graph_definition:
+          type: object
+        input_schema:
+          type: object
+        template:
+          type: string
+      required: [name]
+
+    UpdateAgentRequest:
+      type: object
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+        config:
+          type: object
+        graph_definition:
+          type: object
+        input_schema:
+          type: object
+
+    # ── Chat ──
+    ChatRequest:
+      type: object
+      required: [agent_id, query]
+      properties:
+        agent_id:
+          type: string
+        conversation_id:
+          type: string
+        query:
+          type: string
+        inputs:
+          type: object
+        async:
+          type: boolean
+
+    ResumeRequest:
+      type: object
+      required: [agent_id, conversation_id, run_id, decision]
+      properties:
+        agent_id:
+          type: string
+        conversation_id:
+          type: string
+        run_id:
+          type: string
+        state:
+          type: object
+        decision:
+          type: object
+
+    # ── WebSocket ──
+    WSTicketResponse:
+      type: object
+      required: [ticket, expires_at]
+      properties:
+        ticket:
+          type: string
+        expires_at:
+          type: string
+          format: date-time
+
+    # ── Conversation ──
+    Conversation:
+      type: object
+      properties:
+        id:
+          type: string
+        agent_id:
+          type: string
+        runtime_id:
+          type: string
+        variables:
+          type: object
+        status:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    ConversationList:
+      allOf:
+        - $ref: "#/components/schemas/PaginationResult"
+        - type: object
+          properties:
+            data:
+              type: array
+              items:
+                $ref: "#/components/schemas/Conversation"
+
+    Message:
+      type: object
+      properties:
+        id:
+          type: string
+        conversation_id:
+          type: string
+        role:
+          type: string
+        content:
+          type: string
+        metadata:
+          type: object
+        token_count:
+          type: integer
+        created_at:
+          type: string
+          format: date-time
+
+    MessageList:
+      type: object
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/Message"
+
+    # ── Workflow Run ──
+    WorkflowRun:
+      type: object
+      properties:
+        id:
+          type: string
+        agent_id:
+          type: string
+        actor_id:
+          type: string
+        conversation_id:
+          type: string
+        input:
+          type: string
+        output:
+          type: string
+        inputs:
+          type: object
+        outputs:
+          type: object
+        status:
+          type: string
+        usage:
+          type: object
+        elapsed_ms:
+          type: integer
+        created_at:
+          type: string
+          format: date-time
+
+    WorkflowRunList:
+      allOf:
+        - $ref: "#/components/schemas/PaginationResult"
+        - type: object
+          properties:
+            data:
+              type: array
+              items:
+                $ref: "#/components/schemas/WorkflowRun"
+
+    ExecutionEvent:
+      type: object
+      properties:
+        id:
+          type: string
+        run_id:
+          type: string
+        node_id:
+          type: string
+        type:
+          type: string
+        payload:
+          type: object
+        created_at:
+          type: string
+          format: date-time
+
+    ExecutionEventList:
+      type: object
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/ExecutionEvent"
+
+    # ── Knowledge ──
+    Dataset:
+      type: object
+      properties:
+        id:
+          type: string
+        agent_id:
+          type: string
+        name:
+          type: string
+        description:
+          type: string
+        document_count:
+          type: integer
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    DatasetList:
+      type: object
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/Dataset"
+
+    CreateDatasetRequest:
+      type: object
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+        agent_id:
+          type: string
+      required: [name]
+
+    DatasetDocument:
+      type: object
+      properties:
+        id:
+          type: string
+        dataset_id:
+          type: string
+        name:
+          type: string
+        content:
+          type: string
+        chunk_count:
+          type: integer
+        processing_status:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+
+    DocumentList:
+      type: object
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/DatasetDocument"
+
+    AddDocumentRequest:
+      type: object
+      properties:
+        name:
+          type: string
+        content:
+          type: string
+      required: [name, content]
+
+    DatasetQueryRequest:
+      type: object
+      properties:
+        query:
+          type: string
+        top_k:
+          type: integer
+        max_layer:
+          type: integer
+        threshold:
+          type: number
+      required: [query]
+
+    QueryResult:
+      type: object
+      properties:
+        document_id:
+          type: string
+        document_name:
+          type: string
+        content:
+          type: string
+        score:
+          type: number
+        layer:
+          type: integer
+        chunk_index:
+          type: integer
+
+    QueryResultList:
+      type: object
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/QueryResult"
+
+    # ── Graph Version ──
+    GraphVersion:
+      type: object
+      properties:
+        id:
+          type: string
+        agent_id:
+          type: string
+        version:
+          type: integer
+        graph_definition:
+          type: object
+        description:
+          type: string
+        checksum:
+          type: string
+        created_by:
+          type: string
+        published_at:
+          type: string
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
+
+    GraphVersionList:
+      type: object
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/GraphVersion"
+
+    PublishVersionRequest:
+      type: object
+      properties:
+        description:
+          type: string
+
+    VersionDiff:
+      type: object
+      properties:
+        v1:
+          type: integer
+        v2:
+          type: integer
+        added_nodes:
+          type: array
+          items:
+            type: string
+        removed_nodes:
+          type: array
+          items:
+            type: string
+        modified_nodes:
+          type: array
+          items:
+            type: string
+        added_edges:
+          type: array
+          items:
+            type: string
+        removed_edges:
+          type: array
+          items:
+            type: string
+
+    GraphOperation:
+      type: object
+      properties:
+        id:
+          type: string
+        agent_id:
+          type: string
+        type:
+          type: string
+        node_id:
+          type: string
+        edge_from:
+          type: string
+        edge_to:
+          type: string
+        graph_def:
+          type: object
+        description:
+          type: string
+        created_by:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+
+    GraphOperationList:
+      allOf:
+        - $ref: "#/components/schemas/PaginationResult"
+        - type: object
+          properties:
+            data:
+              type: array
+              items:
+                $ref: "#/components/schemas/GraphOperation"
+
+    # ── Compile ──
+    CompileResult:
+      type: object
+      properties:
+        success:
+          type: boolean
+        warnings:
+          type: array
+          items:
+            $ref: "#/components/schemas/CompileIssue"
+        errors:
+          type: array
+          items:
+            $ref: "#/components/schemas/CompileIssue"
+        metadata:
+          type: object
+
+    CompileIssue:
+      type: object
+      properties:
+        code:
+          type: string
+        message:
+          type: string
+        node_ids:
+          type: array
+          items:
+            type: string
+
+    DryRunResult:
+      type: object
+      properties:
+        valid:
+          type: boolean
+        node_results:
+          type: array
+          items:
+            $ref: "#/components/schemas/NodeValidationResult"
+        warnings:
+          type: array
+          items:
+            $ref: "#/components/schemas/CompileIssue"
+
+    NodeValidationResult:
+      type: object
+      properties:
+        node_id:
+          type: string
+        node_type:
+          type: string
+        valid:
+          type: boolean
+        warnings:
+          type: array
+          items:
+            type: string
+
+    # ── Import/Export ──
+    ImportRequest:
+      type: object
+      properties:
+        format:
+          type: string
+        content:
+          type: string
+        force:
+          type: boolean
+      required: [format, content]
+
+    ImportResult:
+      type: object
+      properties:
+        success:
+          type: boolean
+        compile_result:
+          $ref: "#/components/schemas/CompileResult"
+
+    # ── Memory ──
+    MemoryEntry:
+      type: object
+      properties:
+        id:
+          type: string
+        content:
+          type: string
+        category:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    MemoryEntryList:
+      type: object
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/MemoryEntry"
+
+    UpdateMemoryRequest:
+      type: object
+      properties:
+        content:
+          type: string
+      required: [content]
+
+    # ── Node Types ──
+    NodeFieldOption:
+      type: object
+      properties:
+        label:
+          type: string
+        value:
+          type: string
+
+    NodeFieldSchema:
+      type: object
+      properties:
+        key:
+          type: string
+        label:
+          type: string
+        type:
+          type: string
+        required:
+          type: boolean
+        placeholder:
+          type: string
+        options:
+          type: array
+          items:
+            $ref: "#/components/schemas/NodeFieldOption"
+
+    NodeSchema:
+      type: object
+      properties:
+        type:
+          type: string
+        label:
+          type: string
+        description:
+          type: string
+        category:
+          type: string
+        fields:
+          type: array
+          items:
+            $ref: "#/components/schemas/NodeFieldSchema"
+
+    NodeTypeList:
+      type: object
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/NodeSchema"
+
+    # ── Templates ──
+    GraphTemplate:
+      type: object
+      properties:
+        name:
+          type: string
+        label:
+          type: string
+        description:
+          type: string
+        category:
+          type: string
+        parameters:
+          type: array
+          items:
+            type: object
+        graph_def:
+          type: object
+
+    TemplateList:
+      type: object
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/GraphTemplate"
+
+    CreateTemplateRequest:
+      type: object
+      properties:
+        name:
+          type: string
+        label:
+          type: string
+        description:
+          type: string
+        category:
+          type: string
+        parameters:
+          type: array
+          items:
+            type: object
+        graph_def:
+          type: object
+      required: [name, label, description, category, graph_def]
+
+    TemplateParams:
+      type: object
+      additionalProperties: true
+
+    GraphDefinition:
+      type: object
+      properties:
+        name:
+          type: string
+        entry:
+          type: string
+        nodes:
+          type: array
+          items:
+            type: object
+        edges:
+          type: array
+          items:
+            type: object
+
+    # ── Tools ──
+    ToolInfo:
+      type: object
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+
+    ToolList:
+      type: object
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/ToolInfo"
+
+    # ── Skills ──
+    SkillInfo:
+      type: object
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+        tags:
+          type: array
+          items:
+            type: string
+        dir:
+          type: string
+        entry:
+          type: string
+        builtin:
+          type: boolean
+        enabled:
+          type: boolean
+        source:
+          type: string
+
+    SkillList:
+      type: object
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/SkillInfo"
+
+    InstallSkillRequest:
+      type: object
+      properties:
+        url:
+          type: string
+        name:
+          type: string
+      required: [url]
+
+    SkillInstallResult:
+      type: object
+      properties:
+        status:
+          type: string
+        url:
+          type: string
+        name:
+          type: string
+
+    # ── Models + Providers ──
+    ModelInfo:
+      type: object
+      properties:
+        provider:
+          type: string
+        model:
+          type: string
+        label:
+          type: string
+        is_default:
+          type: boolean
+
+    ModelList:
+      type: object
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/ModelInfo"
+
+    AddModelRequest:
+      type: object
+      properties:
+        provider:
+          type: string
+        model:
+          type: string
+        api_key:
+          type: string
+        base_url:
+          type: string
+        extra:
+          type: object
+      required: [provider, model]
+
+    SetDefaultModelRequest:
+      type: object
+      properties:
+        provider:
+          type: string
+        model:
+          type: string
+      required: [provider, model]
+
+    ProviderInfo:
+      type: object
+      properties:
+        name:
+          type: string
+        configured:
+          type: boolean
+        models:
+          type: array
+          items:
+            type: object
+            properties:
+              label:
+                type: string
+              name:
+                type: string
+
+    ProviderList:
+      type: object
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/ProviderInfo"
+
+    ConfigureProviderRequest:
+      type: object
+      properties:
+        api_key:
+          type: string
+        base_url:
+          type: string
+        extra:
+          type: object
+      required: [api_key]
+
+    # ── Plugins ──
+    PluginDetail:
+      type: object
+      properties:
+        name:
+          type: string
+        type:
+          type: string
+        description:
+          type: string
+        version:
+          type: string
+        config:
+          type: object
+        enabled:
+          type: boolean
+        source:
+          type: string
+        builtin:
+          type: boolean
+        tools:
+          type: array
+          items:
+            type: string
+        node_types:
+          type: array
+          items:
+            type: string
+        models:
+          type: array
+          items:
+            type: string
+
+    PluginInfo:
+      type: object
+      properties:
+        name:
+          type: string
+        type:
+          type: string
+        description:
+          type: string
+        version:
+          type: string
+        builtin:
+          type: boolean
+
+    PluginList:
+      type: object
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/PluginDetail"
+
+    PluginConfig:
+      type: object
+      additionalProperties: true
+
+    PluginUploadResult:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        size:
+          type: integer
+        added:
+          type: array
+          items:
+            type: string
+        removed:
+          type: array
+          items:
+            type: string
+
+    # ── Stats ──
+    StatsOverview:
+      type: object
+      properties:
+        total_agents:
+          type: integer
+        total_conversations:
+          type: integer
+        total_runs:
+          type: integer
+
+    DailyRunStats:
+      type: object
+      properties:
+        date:
+          type: string
+        count:
+          type: integer
+        avg_elapsed_ms:
+          type: number
+
+    DailyRunStatsList:
+      type: object
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/DailyRunStats"
+
+    RuntimeStats:
+      type: object
+      properties:
+        runtime_id:
+          type: string
+        runtime_count:
+          type: integer
+        actor_count:
+          type: integer
+        current:
+          type: object
+
+    MemoryStats:
+      type: object
+      properties:
+        runtime_id:
+          type: string
+        total_entries:
+          type: integer
+        categories:
+          type: array
+          items:
+            type: object
+            properties:
+              category:
+                type: string
+              count:
+                type: integer
+
+    # ── Monitoring ──
+    MonitoringSummary:
+      type: object
+      properties:
+        window_start:
+          type: string
+          format: date-time
+        window_end:
+          type: string
+          format: date-time
+        run_total:
+          type: integer
+        run_success:
+          type: integer
+        run_failed:
+          type: integer
+        success_rate:
+          type: number
+        error_rate:
+          type: number
+        latency_p50_ms:
+          type: number
+        latency_p95_ms:
+          type: number
+        latency_p99_ms:
+          type: number
+        health:
+          type: string
+        health_reason:
+          type: string
+
+    MonitoringTimeseries:
+      type: object
+      properties:
+        window_start:
+          type: string
+          format: date-time
+        window_end:
+          type: string
+          format: date-time
+        interval:
+          type: string
+        data:
+          type: array
+          items:
+            type: object
+
+    RuntimeManagerStats:
+      type: object
+      properties:
+        runtime_count:
+          type: integer
+        actor_count:
+          type: integer
+
+    MonitoringDiagnostics:
+      type: object
+      properties:
+        top_failed_agents:
+          type: array
+          items:
+            type: object
+        top_error_codes:
+          type: array
+          items:
+            type: object
+        recent_failures:
+          type: array
+          items:
+            type: object
+
+    # ── Kanban ──
+    KanbanCardList:
+      type: object
+      properties:
+        data:
+          type: array
+          items:
+            type: object
+
+    KanbanTimeline:
+      type: object
+      properties:
+        data:
+          type: array
+          items:
+            type: object
+
+    KanbanTopology:
+      type: object
+      properties:
+        nodes:
+          type: array
+          items:
+            type: object
+        edges:
+          type: array
+          items:
+            type: object
+
+    # ── Channel Types ──
+    ChannelTypeList:
+      type: object
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/ChannelType"
+
+    ChannelType:
+      type: object
+      properties:
+        type:
+          type: string
+        label:
+          type: string
+        config_schema:
+          type: object
+          additionalProperties: true
+
+    # ── Health ──
+    HealthStatus:
+      type: object
+      properties:
+        status:
+          type: string
+      required: [status]
