@@ -1,6 +1,6 @@
 // Package sandbox provides isolated execution environments for code.
-// Implementations include Docker containers (full isolation) and local
-// OS processes (dev/test degradation).
+// On Linux, commands run inside Bubblewrap namespaces for process/filesystem
+// isolation. On non-Linux platforms, bare OS processes are used for dev/test.
 package sandbox
 
 import (
@@ -57,15 +57,6 @@ type ExecResult struct {
 type AcquireOptions struct {
 	Mode        Mode          `json:"mode,omitempty"`
 	IdleTimeout time.Duration `json:"idle_timeout,omitempty"`
-}
-
-// MountConfig describes a filesystem mount (bind or volume).
-type MountConfig struct {
-	Source   string `json:"source" yaml:"source"`
-	Target   string `json:"target" yaml:"target"`
-	ReadOnly bool   `json:"readonly,omitempty" yaml:"readonly,omitempty"`
-	Type     string `json:"type,omitempty" yaml:"type,omitempty"`
-	Overlay  bool   `json:"overlay,omitempty" yaml:"overlay,omitempty"`
 }
 
 // Common errors.

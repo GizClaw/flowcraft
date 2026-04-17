@@ -31,65 +31,6 @@ func TestOverlaySupported(t *testing.T) {
 	_ = OverlaySupported()
 }
 
-func TestHasOverlayMounts(t *testing.T) {
-	if hasOverlayMounts(nil) {
-		t.Fatal("nil mounts should return false")
-	}
-	if hasOverlayMounts([]MountConfig{{Source: "/a", Target: "/b"}}) {
-		t.Fatal("non-overlay mount should return false")
-	}
-	if !hasOverlayMounts([]MountConfig{{Source: "/a", Target: "/b", Overlay: true}}) {
-		t.Fatal("overlay mount should return true")
-	}
-	if !hasOverlayMounts([]MountConfig{
-		{Source: "/a", Target: "/b"},
-		{Source: "/c", Target: "/d", Overlay: true},
-	}) {
-		t.Fatal("mixed mounts with one overlay should return true")
-	}
-}
-
-func TestResolveMounts_NoOverlayManager(t *testing.T) {
-	cfg := DefaultManagerConfig()
-	cfg.RootDir = t.TempDir()
-	cfg.Mounts = []MountConfig{
-		{Source: "/host/skills", Target: "/workspace/skills", ReadOnly: true, Overlay: true},
-		{Source: "/host/data", Target: "/workspace/data"},
-	}
-	m, err := NewManager(t.Context(), cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = m.Close() }()
-
-	// On non-Linux (or when overlay manager fails), overlay mounts
-	// should fall back to direct read-write bind mount
-	resolved := m.resolveMounts(t.Context(), "test-session")
-	if len(resolved) != 2 {
-		t.Fatalf("expected 2 mounts, got %d", len(resolved))
-	}
-
-	skillsMount := resolved[0]
-	if OverlaySupported() {
-		// On Linux the overlay manager is initialized and Prepare is called,
-		// but mount -t overlay will fail in non-root test environment,
-		// so it falls back to direct mount
-		if skillsMount.ReadOnly {
-			t.Fatal("fallback should not be read-only")
-		}
-	} else {
-		// On non-Linux, overlay manager is nil, mount is passed through unchanged
-		if skillsMount.Source != "/host/skills" {
-			t.Fatalf("expected source /host/skills, got %s", skillsMount.Source)
-		}
-	}
-
-	dataMount := resolved[1]
-	if dataMount.Source != "/host/data" {
-		t.Fatalf("non-overlay mount should pass through, got source %s", dataMount.Source)
-	}
-}
-
 func TestNewOverlayManager(t *testing.T) {
 	dir := t.TempDir()
 	om, err := NewOverlayManager(dir)

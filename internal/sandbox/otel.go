@@ -8,9 +8,9 @@ import (
 var (
 	sbMeter = telemetry.MeterWithSuffix("sandbox")
 
-	sbExecCount, _           = sbMeter.Int64Counter("executions.total", metric.WithDescription("Total sandbox command executions"))
-	sbExecDuration, _        = sbMeter.Float64Histogram("duration.seconds", metric.WithDescription("Sandbox command execution duration"))
-	sbContainersActive, _    = sbMeter.Int64UpDownCounter("containers.active", metric.WithDescription("Currently active sandbox containers"))
-	sbContainersCreated, _   = sbMeter.Int64Counter("containers.created.total", metric.WithDescription("Total sandbox containers created"))
-	sbContainersDestroyed, _ = sbMeter.Int64Counter("containers.destroyed.total", metric.WithDescription("Total sandbox containers destroyed"))
+	sbExecCount, _    = sbMeter.Int64Counter("executions.total", metric.WithDescription("Total sandbox command executions"))
+	sbExecDuration, _ = sbMeter.Float64Histogram("duration.seconds", metric.WithDescription("Sandbox command execution duration"))
+	sbActive, _       = sbMeter.Int64UpDownCounter("sandboxes.active", metric.WithDescription("Currently active sandbox instances"))
+	sbCreated, _      = sbMeter.Int64Counter("sandboxes.created.total", metric.WithDescription("Total sandbox instances created"))
+	sbDestroyed, _    = sbMeter.Int64Counter("sandboxes.destroyed.total", metric.WithDescription("Total sandbox instances destroyed"))
 )

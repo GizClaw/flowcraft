@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"path/filepath"
 	"sync"
 	"time"
 
@@ -14,7 +13,7 @@ import (
 )
 
 // SandboxHandle manages a single runtime-scoped sandbox instance.
-// The workspace directory is persistent; only the running process/container is recycled.
+// The workspace directory is persistent; only the running process is recycled.
 type SandboxHandle struct {
 	ctx       context.Context
 	runtimeID string
@@ -25,7 +24,6 @@ type SandboxHandle struct {
 	activeRootDir  string
 	useCount       int
 	idleTimer      *time.Timer
-	overlay        *OverlayManager
 	localIsolation probeResult
 	closed         bool
 }
@@ -36,25 +34,9 @@ func NewSandboxHandle(ctx context.Context, runtimeID string, cfg ManagerConfig) 
 		return nil, fmt.Errorf("sandbox: runtime ID is required")
 	}
 
-	cfg = normalizeHandleConfig(cfg)
-	validateCfg := cfg
-	if validateCfg.MaxConcurrent <= 0 {
-		validateCfg.MaxConcurrent = 1
-	}
-	if err := validateCfg.Validate(); err != nil {
+	normalizeHandleConfig(&cfg)
+	if err := cfg.Validate(); err != nil {
 		return nil, err
-	}
-
-	var overlayMgr *OverlayManager
-	if hasOverlayMounts(cfg.Mounts) && OverlaySupported() {
-		overlayDir := filepath.Join(cfg.RootDir, ".overlays")
-		om, err := NewOverlayManager(overlayDir)
-		if err != nil {
-			telemetry.Warn(ctx, "sandbox handle: overlay init failed, falling back to direct mount",
-				otellog.String("error", err.Error()))
-		} else {
-			overlayMgr = om
-		}
 	}
 
 	localIso, probeErr := probeIsolation()
@@ -66,12 +48,11 @@ func NewSandboxHandle(ctx context.Context, runtimeID string, cfg ManagerConfig) 
 		ctx:            ctx,
 		runtimeID:      runtimeID,
 		cfg:            cfg,
-		overlay:        overlayMgr,
 		localIsolation: localIso,
 	}, nil
 }
 
-func normalizeHandleConfig(cfg ManagerConfig) ManagerConfig {
+func normalizeHandleConfig(cfg *ManagerConfig) {
 	if cfg.Mode == "" {
 		cfg.Mode = ModePersistent
 	}
@@ -84,7 +65,6 @@ func normalizeHandleConfig(cfg ManagerConfig) ManagerConfig {
 	if cfg.RootDir == "" {
 		cfg.RootDir = os.TempDir()
 	}
-	return cfg
 }
 
 // Acquire returns the active sandbox and a release callback.
@@ -198,34 +178,11 @@ func (h *SandboxHandle) closeActiveLocked() error {
 			otellog.String("runtime_id", h.runtimeID),
 			otellog.String("error", err.Error()))
 	}
-	if h.overlay != nil {
-		if cleanErr := h.overlay.Cleanup(h.runtimeID); cleanErr != nil {
-			telemetry.Warn(h.ctx, "sandbox handle: overlay cleanup error",
-				otellog.String("runtime_id", h.runtimeID),
-				otellog.String("error", cleanErr.Error()))
-		}
-	}
 	h.active = nil
 	h.activeRootDir = ""
 	return err
 }
 
 func (h *SandboxHandle) create(_ context.Context) (Sandbox, string, error) {
-	rootDir := filepath.Join(h.cfg.RootDir, "local", h.runtimeID)
-	specs := []SymlinkSpec{
-		{Name: "skills", Target: filepath.Join(h.cfg.RootDir, "skills"), ReadOnly: true},
-		{Name: "data", Target: filepath.Join(h.cfg.RootDir, "data"), ReadOnly: false},
-	}
-	bwrapCfg := BwrapConfig{
-		ShareNet: h.cfg.NetworkMode != "" && h.cfg.NetworkMode != "none",
-	}
-	sb, err := NewLocalSandbox(h.runtimeID, rootDir,
-		WithIsolation(h.localIsolation),
-		WithSymlinks(specs),
-		WithBwrapConfig(bwrapCfg),
-	)
-	if err != nil {
-		return nil, "", err
-	}
-	return sb, rootDir, nil
+	return createLocalSandbox(h.runtimeID, h.cfg, h.localIsolation)
 }

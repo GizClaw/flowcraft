@@ -24,26 +24,42 @@ type ManagerConfig struct {
 	IdleTimeout   time.Duration `json:"idle_timeout,omitempty"`
 	MaxConcurrent int           `json:"max_concurrent,omitempty"`
 	RootDir       string        `json:"root_dir,omitempty"`
-	Mounts        []MountConfig `json:"mounts,omitempty"`
 	NetworkMode   string        `json:"network_mode,omitempty"`
 
-	// Circuit breaker configuration
-	CBCapacity         uint32        `json:"cb_capacity,omitempty"`          // Max requests in half-open state
-	CBInterval         time.Duration `json:"cb_interval,omitempty"`          // Cyclic period for circuit breaker
-	CBTimeout          time.Duration `json:"cb_timeout,omitempty"`           // Time in open state before half-open
-	CBFailureThreshold int           `json:"cb_failure_threshold,omitempty"` // Consecutive failures to trip
+	// Circuit breaker (Manager-only; ignored by SandboxHandle).
+	CBCapacity         uint32        `json:"cb_capacity,omitempty"`
+	CBInterval         time.Duration `json:"cb_interval,omitempty"`
+	CBTimeout          time.Duration `json:"cb_timeout,omitempty"`
+	CBFailureThreshold int           `json:"cb_failure_threshold,omitempty"`
 }
 
-// Validate checks the configuration for invalid values.
-func (c ManagerConfig) Validate() error {
+// normalize fills zero-valued fields with sensible defaults.
+func (c *ManagerConfig) normalize() {
+	if c.Mode == "" {
+		c.Mode = ModeSession
+	}
 	if c.ExecTimeout <= 0 {
-		return fmt.Errorf("sandbox: ExecTimeout must be positive, got %v", c.ExecTimeout)
+		c.ExecTimeout = 5 * time.Minute
 	}
 	if c.IdleTimeout <= 0 {
-		return fmt.Errorf("sandbox: IdleTimeout must be positive, got %v", c.IdleTimeout)
+		c.IdleTimeout = 30 * time.Minute
 	}
 	if c.MaxConcurrent <= 0 {
-		return fmt.Errorf("sandbox: MaxConcurrent must be positive, got %d", c.MaxConcurrent)
+		c.MaxConcurrent = 10
+	}
+}
+
+// Validate checks the configuration for explicitly invalid values.
+// Call normalize() first if you want defaults applied.
+func (c ManagerConfig) Validate() error {
+	if c.ExecTimeout < 0 {
+		return fmt.Errorf("sandbox: ExecTimeout must not be negative, got %v", c.ExecTimeout)
+	}
+	if c.IdleTimeout < 0 {
+		return fmt.Errorf("sandbox: IdleTimeout must not be negative, got %v", c.IdleTimeout)
+	}
+	if c.MaxConcurrent < 0 {
+		return fmt.Errorf("sandbox: MaxConcurrent must not be negative, got %d", c.MaxConcurrent)
 	}
 	return nil
 }
@@ -74,9 +90,8 @@ type Manager struct {
 	cfg            ManagerConfig
 	mu             sync.Mutex
 	entries        map[string]*sandboxEntry
-	overlay        *OverlayManager // nil when overlay is unavailable or unneeded
 	cb             *gobreaker.CircuitBreaker[createResult]
-	localIsolation probeResult // cached isolation probe, shared by all local sandboxes
+	localIsolation probeResult
 	done           chan struct{}
 	wg             sync.WaitGroup
 	closeOnce      sync.Once
@@ -90,19 +105,11 @@ type createResult struct {
 // NewManager creates a Manager and starts the idle reaper.
 // The ctx is stored for telemetry in background operations (reaper, circuit breaker callbacks).
 func NewManager(ctx context.Context, cfg ManagerConfig) (*Manager, error) {
+	cfg.normalize()
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
 
-	if cfg.Mode == "" {
-		cfg.Mode = ModeSession
-	}
-	if cfg.ExecTimeout <= 0 {
-		cfg.ExecTimeout = 5 * time.Minute
-	}
-	if cfg.IdleTimeout <= 0 {
-		cfg.IdleTimeout = 30 * time.Minute
-	}
 	if cfg.RootDir == "" {
 		dir, err := os.MkdirTemp("", "flowcraft-sandbox-*")
 		if err != nil {
@@ -111,51 +118,7 @@ func NewManager(ctx context.Context, cfg ManagerConfig) (*Manager, error) {
 		cfg.RootDir = dir
 	}
 
-	// Use configured circuit breaker values or defaults
-	cbMaxRequests := cfg.CBCapacity
-	if cbMaxRequests == 0 {
-		cbMaxRequests = 2
-	}
-	cbInterval := cfg.CBInterval
-	if cbInterval == 0 {
-		cbInterval = 60 * time.Second
-	}
-	cbTimeout := cfg.CBTimeout
-	if cbTimeout == 0 {
-		cbTimeout = 30 * time.Second
-	}
-	cbFailureThreshold := uint32(cfg.CBFailureThreshold)
-	if cbFailureThreshold == 0 {
-		cbFailureThreshold = 3
-	}
-
-	cb := gobreaker.NewCircuitBreaker[createResult](gobreaker.Settings{
-		Name:        "sandbox-create",
-		MaxRequests: cbMaxRequests,
-		Interval:    cbInterval,
-		Timeout:     cbTimeout,
-		ReadyToTrip: func(counts gobreaker.Counts) bool {
-			return counts.ConsecutiveFailures >= cbFailureThreshold
-		},
-		OnStateChange: func(name string, from, to gobreaker.State) {
-			telemetry.Warn(ctx, "sandbox circuit breaker state change",
-				otellog.String("name", name),
-				otellog.String("from", from.String()),
-				otellog.String("to", to.String()))
-		},
-	})
-
-	var overlayMgr *OverlayManager
-	if hasOverlayMounts(cfg.Mounts) && OverlaySupported() {
-		overlayDir := filepath.Join(cfg.RootDir, ".overlays")
-		om, omErr := NewOverlayManager(overlayDir)
-		if omErr != nil {
-			telemetry.Warn(ctx, "overlay manager init failed, falling back to direct mount",
-				otellog.String("error", omErr.Error()))
-		} else {
-			overlayMgr = om
-		}
-	}
+	cb := newCircuitBreaker(ctx, cfg)
 
 	localIso, probeErr := probeIsolation()
 	if probeErr != nil {
@@ -168,7 +131,6 @@ func NewManager(ctx context.Context, cfg ManagerConfig) (*Manager, error) {
 		ctx:            ctx,
 		cfg:            cfg,
 		entries:        make(map[string]*sandboxEntry),
-		overlay:        overlayMgr,
 		cb:             cb,
 		localIsolation: localIso,
 		done:           make(chan struct{}),
@@ -176,6 +138,40 @@ func NewManager(ctx context.Context, cfg ManagerConfig) (*Manager, error) {
 	m.wg.Add(1)
 	go m.reaper()
 	return m, nil
+}
+
+func newCircuitBreaker(ctx context.Context, cfg ManagerConfig) *gobreaker.CircuitBreaker[createResult] {
+	maxReq := cfg.CBCapacity
+	if maxReq == 0 {
+		maxReq = 2
+	}
+	interval := cfg.CBInterval
+	if interval == 0 {
+		interval = 60 * time.Second
+	}
+	timeout := cfg.CBTimeout
+	if timeout == 0 {
+		timeout = 30 * time.Second
+	}
+	threshold := uint32(cfg.CBFailureThreshold)
+	if threshold == 0 {
+		threshold = 3
+	}
+	return gobreaker.NewCircuitBreaker[createResult](gobreaker.Settings{
+		Name:        "sandbox-create",
+		MaxRequests: maxReq,
+		Interval:    interval,
+		Timeout:     timeout,
+		ReadyToTrip: func(counts gobreaker.Counts) bool {
+			return counts.ConsecutiveFailures >= threshold
+		},
+		OnStateChange: func(name string, from, to gobreaker.State) {
+			telemetry.Warn(ctx, "sandbox circuit breaker state change",
+				otellog.String("name", name),
+				otellog.String("from", from.String()),
+				otellog.String("to", to.String()))
+		},
+	})
 }
 
 // Acquire returns an existing sandbox for runtimeID or creates a new one.
@@ -220,8 +216,8 @@ func (m *Manager) Acquire(ctx context.Context, runtimeID string, opts AcquireOpt
 	m.entries[runtimeID] = &sandboxEntry{
 		sb: result.sb, mode: mode, refCount: 1, lastUsed: time.Now(), rootDir: result.rootDir,
 	}
-	sbContainersActive.Add(ctx, 1)
-	sbContainersCreated.Add(ctx, 1,
+	sbActive.Add(ctx, 1)
+	sbCreated.Add(ctx, 1,
 		metric.WithAttributes(attribute.String("mode", string(mode))))
 	telemetry.Info(ctx, "sandbox acquired",
 		otellog.String("runtime_id", runtimeID),
@@ -283,23 +279,7 @@ func (m *Manager) Stats() int {
 }
 
 func (m *Manager) create(_ context.Context, sessionID string) (Sandbox, string, error) {
-	rootDir := filepath.Join(m.cfg.RootDir, "local", sessionID)
-	specs := []SymlinkSpec{
-		{Name: "skills", Target: filepath.Join(m.cfg.RootDir, "skills"), ReadOnly: true},
-		{Name: "data", Target: filepath.Join(m.cfg.RootDir, "data"), ReadOnly: false},
-	}
-	bwrapCfg := BwrapConfig{
-		ShareNet: m.cfg.NetworkMode != "" && m.cfg.NetworkMode != "none",
-	}
-	sb, err := NewLocalSandbox(sessionID, rootDir,
-		WithIsolation(m.localIsolation),
-		WithSymlinks(specs),
-		WithBwrapConfig(bwrapCfg),
-	)
-	if err != nil {
-		return nil, "", err
-	}
-	return sb, rootDir, nil
+	return createLocalSandbox(sessionID, m.cfg, m.localIsolation)
 }
 
 func (m *Manager) destroyLocked(sessionID string) error {
@@ -315,8 +295,6 @@ func (m *Manager) destroyLocked(sessionID string) error {
 			otellog.String("error", err.Error()))
 	}
 
-	m.cleanupOverlay(sessionID)
-
 	if e.rootDir != "" {
 		if err := os.RemoveAll(e.rootDir); err != nil {
 			telemetry.Warn(m.ctx, "sandbox cleanup error",
@@ -324,8 +302,8 @@ func (m *Manager) destroyLocked(sessionID string) error {
 				otellog.String("error", err.Error()))
 		}
 	}
-	sbContainersActive.Add(m.ctx, -1)
-	sbContainersDestroyed.Add(m.ctx, 1)
+	sbActive.Add(m.ctx, -1)
+	sbDestroyed.Add(m.ctx, 1)
 	telemetry.Info(m.ctx, "sandbox destroyed",
 		otellog.String("session", sessionID))
 	return nil
@@ -346,56 +324,6 @@ func (m *Manager) reaper() {
 	}
 }
 
-// resolveMounts processes the configured mounts for a session. Overlay-flagged
-// mounts are prepared via OverlayManager (source replaced with the merged dir)
-// when available; otherwise they fall back to a direct read-write bind mount.
-func (m *Manager) resolveMounts(ctx context.Context, sessionID string) []MountConfig {
-	resolved := make([]MountConfig, 0, len(m.cfg.Mounts))
-	for _, mc := range m.cfg.Mounts {
-		if !mc.Overlay || m.overlay == nil {
-			resolved = append(resolved, mc)
-			continue
-		}
-		od, err := m.overlay.Prepare(sessionID, mc.Source, mc.Target)
-		if err != nil {
-			telemetry.Warn(ctx, "overlay prepare failed, falling back to direct mount",
-				otellog.String("session", sessionID),
-				otellog.String("target", mc.Target),
-				otellog.String("error", err.Error()))
-			fallback := mc
-			fallback.Overlay = false
-			fallback.ReadOnly = false
-			resolved = append(resolved, fallback)
-			continue
-		}
-		resolved = append(resolved, MountConfig{
-			Source: od.Merged,
-			Target: mc.Target,
-		})
-	}
-	return resolved
-}
-
-func (m *Manager) cleanupOverlay(sessionID string) {
-	if m.overlay == nil {
-		return
-	}
-	if err := m.overlay.Cleanup(sessionID); err != nil {
-		telemetry.Warn(m.ctx, "overlay cleanup error",
-			otellog.String("session", sessionID),
-			otellog.String("error", err.Error()))
-	}
-}
-
-func hasOverlayMounts(mounts []MountConfig) bool {
-	for _, mc := range mounts {
-		if mc.Overlay {
-			return true
-		}
-	}
-	return false
-}
-
 func (m *Manager) reapIdle(now time.Time) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -410,4 +338,26 @@ func (m *Manager) reapIdle(now time.Time) {
 			_ = m.destroyLocked(sid)
 		}
 	}
+}
+
+// createLocalSandbox is the single factory for local sandboxes, shared by
+// Manager and SandboxHandle to avoid duplicating setup logic.
+func createLocalSandbox(id string, cfg ManagerConfig, iso probeResult) (Sandbox, string, error) {
+	rootDir := filepath.Join(cfg.RootDir, "local", id)
+	specs := []SymlinkSpec{
+		{Name: "skills", Target: filepath.Join(cfg.RootDir, "skills"), ReadOnly: true},
+		{Name: "data", Target: filepath.Join(cfg.RootDir, "data"), ReadOnly: false},
+	}
+	bwrapCfg := BwrapConfig{
+		ShareNet: cfg.NetworkMode != "" && cfg.NetworkMode != "none",
+	}
+	sb, err := NewLocalSandbox(id, rootDir,
+		WithIsolation(iso),
+		WithSymlinks(specs),
+		WithBwrapConfig(bwrapCfg),
+	)
+	if err != nil {
+		return nil, "", err
+	}
+	return sb, rootDir, nil
 }

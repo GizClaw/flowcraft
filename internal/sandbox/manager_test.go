@@ -151,7 +151,8 @@ func TestManagerConfig_Validate(t *testing.T) {
 	}{
 		{"negative_exec_timeout", ManagerConfig{ExecTimeout: -1}, true},
 		{"negative_idle_timeout", ManagerConfig{IdleTimeout: -1}, true},
-		{"zero_max_concurrent", ManagerConfig{MaxConcurrent: 0}, true},
+		{"negative_max_concurrent", ManagerConfig{MaxConcurrent: -1}, true},
+		{"zero_values_ok", ManagerConfig{}, false},
 		{"valid", ManagerConfig{ExecTimeout: time.Minute, IdleTimeout: time.Minute, MaxConcurrent: 10}, false},
 	}
 
