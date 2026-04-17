@@ -30,8 +30,12 @@ func (rt *runtime) run(ctx context.Context, agent Agent, req *Request, opts []Ru
 		}()
 	}
 
+	rc := ApplyRunOpts(opts)
+
 	var board *Board
-	if rt.prepareBoardFn != nil {
+	if rc.Board != nil {
+		board = rc.Board
+	} else if rt.prepareBoardFn != nil {
 		board, err = rt.prepareBoardFn(ctx, agent, req, session, opts)
 	} else {
 		board, err = prepareBoard(ctx, req, session, opts)

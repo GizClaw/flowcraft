@@ -23,15 +23,14 @@ type Artifact struct {
 
 // Result is returned by Runtime.Run after execution and finish logic.
 type Result struct {
-	TaskID    string
-	Status    TaskStatus
-	Messages  []model.Message
-	Artifacts []Artifact
-	Usage     model.TokenUsage
-	State     map[string]any
-	Err       error
-	// LastBoard is the board after Execute (for platform persistence hooks). Not serialized.
-	LastBoard *Board `json:"-"`
+	TaskID    string           `json:"task_id,omitempty"`
+	Status    TaskStatus       `json:"status"`
+	Messages  []model.Message  `json:"messages,omitempty"`
+	Artifacts []Artifact       `json:"artifacts,omitempty"`
+	Usage     model.TokenUsage `json:"usage"`
+	State     map[string]any   `json:"state,omitempty"`
+	Err       error            `json:"-"`
+	LastBoard *Board           `json:"-"`
 }
 
 // Text returns the last assistant text message in Messages, or "".

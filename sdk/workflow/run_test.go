@@ -306,3 +306,112 @@ func (r usageRunnable) Execute(_ context.Context, board *Board, _ *Request, _ ..
 	board.SetVar(VarAnswer, "done")
 	return board, nil
 }
+
+// --- WithBoard (resume) ---
+
+func TestRuntime_WithBoard_SkipsPrepareBoard(t *testing.T) {
+	board := NewBoard()
+	board.SetVar(VarRunID, "resumed-run")
+	board.SetVar(VarPrevMessageCount, 0)
+	board.AppendChannelMessage(MainChannel, model.NewTextMessage(model.RoleUser, "original"))
+
+	rt := NewRuntime()
+	req := NewTextRequest("resume-input")
+	res, err := rt.Run(context.Background(), noopAgent{str: noopStrategy{}}, req, WithBoard(board))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Status != StatusCompleted {
+		t.Fatalf("status=%s", res.Status)
+	}
+	if res.State["run_id"] != "resumed-run" {
+		t.Fatalf("run_id=%v, want resumed-run", res.State["run_id"])
+	}
+}
+
+func TestRuntime_WithBoard_OverridesCustomPrepareBoard(t *testing.T) {
+	prepareCalled := false
+	rt := NewRuntime(WithPrepareBoard(func(_ context.Context, _ Agent, _ *Request, _ MemorySession, _ []RunOption) (*Board, error) {
+		prepareCalled = true
+		return NewBoard(), nil
+	}))
+
+	board := NewBoard()
+	board.SetVar(VarRunID, "injected")
+	board.SetVar(VarPrevMessageCount, 0)
+
+	req := NewTextRequest("hi")
+	res, err := rt.Run(context.Background(), noopAgent{str: noopStrategy{}}, req, WithBoard(board))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prepareCalled {
+		t.Fatal("prepareBoardFn should be skipped when WithBoard is used")
+	}
+	if res.State["run_id"] != "injected" {
+		t.Fatalf("run_id=%v, want injected", res.State["run_id"])
+	}
+}
+
+func TestRuntime_WithBoard_PreservesExistingChannelMessages(t *testing.T) {
+	board := NewBoard()
+	board.SetVar(VarRunID, "r1")
+	board.SetVar(VarPrevMessageCount, 2)
+	board.SetChannel(MainChannel, []model.Message{
+		model.NewTextMessage(model.RoleUser, "turn1"),
+		model.NewTextMessage(model.RoleAssistant, "reply1"),
+	})
+
+	rt := NewRuntime()
+	req := NewTextRequest("turn2")
+	res, err := rt.Run(context.Background(), noopAgent{str: echoStrategy2{answer: "reply2"}}, req, WithBoard(board))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Status != StatusCompleted {
+		t.Fatalf("status=%s", res.Status)
+	}
+	if len(res.Messages) != 1 {
+		t.Fatalf("expected 1 new message, got %d", len(res.Messages))
+	}
+	if res.Messages[0].Content() != "reply2" {
+		t.Fatalf("message=%q, want reply2", res.Messages[0].Content())
+	}
+}
+
+func TestRuntime_WithBoard_MemorySessionStillSaves(t *testing.T) {
+	saved := false
+	sess := &trackingSaveSession{onSave: func() { saved = true }}
+	factory := func(_ context.Context, _ Agent) (Memory, error) {
+		return &staticMem{session: sess}, nil
+	}
+	rt := NewRuntime(WithMemoryFactory(factory))
+
+	board := NewBoard()
+	board.SetVar(VarRunID, "resume")
+	board.SetVar(VarPrevMessageCount, 0)
+	board.SetChannel(MainChannel, []model.Message{})
+
+	req := NewTextRequest("hi")
+	req.ContextID = "c1"
+	_, err := rt.Run(context.Background(), noopAgent{str: echoStrategy2{answer: "ok"}}, req, WithBoard(board))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !saved {
+		t.Fatal("memory session should still save after WithBoard resume")
+	}
+}
+
+type trackingSaveSession struct {
+	BaseSession
+	onSave func()
+}
+
+func (s *trackingSaveSession) Load(context.Context) ([]model.Message, error) { return nil, nil }
+func (s *trackingSaveSession) Vars(context.Context) (map[string]any, error)  { return nil, nil }
+func (s *trackingSaveSession) Save(_ context.Context, _ []model.Message) error {
+	s.onSave()
+	return nil
+}
+func (s *trackingSaveSession) Close(_ context.Context, _ error) error { return nil }
