@@ -6,9 +6,12 @@ import (
 )
 
 func TestProbeIsolation_Deterministic(t *testing.T) {
-	r1 := probeIsolation()
-	r2 := probeIsolation()
-	if r1.backend != r2.backend {
+	r1, err1 := probeIsolation()
+	r2, err2 := probeIsolation()
+	if (err1 == nil) != (err2 == nil) {
+		t.Fatal("probeIsolation should return consistent error results")
+	}
+	if err1 == nil && r1.backend != r2.backend {
 		t.Fatal("probeIsolation should return consistent results")
 	}
 }
@@ -17,14 +20,21 @@ func TestProbeIsolation_BareOnNonLinux(t *testing.T) {
 	if runtime.GOOS == "linux" {
 		t.Skip("only runs on non-Linux")
 	}
-	r := probeIsolation()
+	r, err := probeIsolation()
+	if err != nil {
+		t.Fatalf("expected no error on non-Linux, got %v", err)
+	}
 	if r.backend != backendBare {
 		t.Fatalf("expected bare on %s, got %s", runtime.GOOS, r.backend)
 	}
 }
 
 func TestProbeIsolation_SmokeTestCoversPermissions(t *testing.T) {
-	r := probeIsolation()
+	r, err := probeIsolation()
+	if err != nil {
+		t.Logf("probeIsolation returned error (expected on Linux without bwrap): %v", err)
+		return
+	}
 	t.Logf("probeIsolation: backend=%s, bwrapPath=%s", r.backend, r.bwrapPath)
 
 	if r.backend == backendBubblewrap && r.bwrapPath == "" {

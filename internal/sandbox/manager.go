@@ -19,17 +19,13 @@ import (
 
 // ManagerConfig configures the sandbox Manager.
 type ManagerConfig struct {
-	Driver        string        `json:"driver,omitempty"`
 	Mode          Mode          `json:"mode,omitempty"`
 	ExecTimeout   time.Duration `json:"exec_timeout,omitempty"`
 	IdleTimeout   time.Duration `json:"idle_timeout,omitempty"`
 	MaxConcurrent int           `json:"max_concurrent,omitempty"`
 	RootDir       string        `json:"root_dir,omitempty"`
-	Image         string        `json:"image,omitempty"`
 	Mounts        []MountConfig `json:"mounts,omitempty"`
 	NetworkMode   string        `json:"network_mode,omitempty"`
-	CPUQuota      int64         `json:"cpu_quota,omitempty"`
-	MemoryLimit   int64         `json:"memory_limit,omitempty"`
 
 	// Circuit breaker configuration
 	CBCapacity         uint32        `json:"cb_capacity,omitempty"`          // Max requests in half-open state
@@ -49,19 +45,12 @@ func (c ManagerConfig) Validate() error {
 	if c.MaxConcurrent <= 0 {
 		return fmt.Errorf("sandbox: MaxConcurrent must be positive, got %d", c.MaxConcurrent)
 	}
-	if c.Driver != "local" && c.Driver != "docker" && c.Driver != "" {
-		return fmt.Errorf("sandbox: Driver must be 'local' or 'docker', got %q", c.Driver)
-	}
-	if c.Driver == "docker" && c.Image == "" {
-		return fmt.Errorf("sandbox: Image is required when Driver is 'docker'")
-	}
 	return nil
 }
 
 // DefaultManagerConfig returns sensible defaults.
 func DefaultManagerConfig() ManagerConfig {
 	return ManagerConfig{
-		Driver:        "local",
 		Mode:          ModeSession,
 		ExecTimeout:   5 * time.Minute,
 		IdleTimeout:   30 * time.Minute,
@@ -105,9 +94,6 @@ func NewManager(ctx context.Context, cfg ManagerConfig) (*Manager, error) {
 		return nil, err
 	}
 
-	if cfg.Driver == "" {
-		cfg.Driver = "local"
-	}
 	if cfg.Mode == "" {
 		cfg.Mode = ModeSession
 	}
@@ -171,12 +157,12 @@ func NewManager(ctx context.Context, cfg ManagerConfig) (*Manager, error) {
 		}
 	}
 
-	var localIso probeResult
-	if cfg.Driver == "local" || cfg.Driver == "" {
-		localIso = probeIsolation()
-		telemetry.Info(ctx, "sandbox: isolation probe complete",
-			otellog.String("backend", localIso.backend.String()))
+	localIso, probeErr := probeIsolation()
+	if probeErr != nil {
+		return nil, probeErr
 	}
+	telemetry.Info(ctx, "sandbox: isolation probe complete",
+		otellog.String("backend", localIso.backend.String()))
 
 	m := &Manager{
 		ctx:            ctx,
@@ -296,44 +282,24 @@ func (m *Manager) Stats() int {
 	return len(m.entries)
 }
 
-func (m *Manager) create(ctx context.Context, sessionID string) (Sandbox, string, error) {
-	switch m.cfg.Driver {
-	case "local", "":
-		rootDir := filepath.Join(m.cfg.RootDir, "local", sessionID)
-		specs := []SymlinkSpec{
-			{Name: "skills", Target: filepath.Join(m.cfg.RootDir, "skills"), ReadOnly: true},
-			{Name: "data", Target: filepath.Join(m.cfg.RootDir, "data"), ReadOnly: false},
-		}
-		bwrapCfg := BwrapConfig{
-			ShareNet: m.cfg.NetworkMode != "" && m.cfg.NetworkMode != "none",
-		}
-		sb, err := NewLocalSandbox(sessionID, rootDir,
-			WithIsolation(m.localIsolation),
-			WithSymlinks(specs),
-			WithBwrapConfig(bwrapCfg),
-		)
-		if err != nil {
-			return nil, "", err
-		}
-		return sb, rootDir, nil
-	case "docker":
-		mounts := m.resolveMounts(ctx, sessionID)
-		driver := NewDockerDriver(m.cfg.Image, mounts)
-		ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
-		defer cancel()
-		sb, err := driver.Create(ctx, sessionID, CreateOptions{
-			NetworkMode: m.cfg.NetworkMode,
-			CPUQuota:    m.cfg.CPUQuota,
-			MemoryLimit: m.cfg.MemoryLimit,
-		})
-		if err != nil {
-			m.cleanupOverlay(sessionID)
-			return nil, "", err
-		}
-		return sb, "", nil
-	default:
-		return nil, "", fmt.Errorf("sandbox: unsupported driver %q", m.cfg.Driver)
+func (m *Manager) create(_ context.Context, sessionID string) (Sandbox, string, error) {
+	rootDir := filepath.Join(m.cfg.RootDir, "local", sessionID)
+	specs := []SymlinkSpec{
+		{Name: "skills", Target: filepath.Join(m.cfg.RootDir, "skills"), ReadOnly: true},
+		{Name: "data", Target: filepath.Join(m.cfg.RootDir, "data"), ReadOnly: false},
 	}
+	bwrapCfg := BwrapConfig{
+		ShareNet: m.cfg.NetworkMode != "" && m.cfg.NetworkMode != "none",
+	}
+	sb, err := NewLocalSandbox(sessionID, rootDir,
+		WithIsolation(m.localIsolation),
+		WithSymlinks(specs),
+		WithBwrapConfig(bwrapCfg),
+	)
+	if err != nil {
+		return nil, "", err
+	}
+	return sb, rootDir, nil
 }
 
 func (m *Manager) destroyLocked(sessionID string) error {

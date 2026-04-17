@@ -20,10 +20,10 @@
 !cmd/**
 !internal/
 !internal/**
-!model/
-!model/**
 !plugin/
 !plugin/**
+!scripts/
+!scripts/**
 !sdk/
 !sdk/**
 !sdkx/
@@ -32,8 +32,6 @@
 !examples/**
 !skills/
 !skills/**
-!deploy/
-!deploy/**
 
 # ── Frontend source ──
 !web/

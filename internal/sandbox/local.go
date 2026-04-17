@@ -112,7 +112,11 @@ func NewLocalSandbox(id, rootDir string, opts ...LocalOption) (*LocalSandbox, er
 		opt(sb)
 	}
 	if sb.isolation == (probeResult{}) {
-		sb.isolation = probeIsolation()
+		pr, err := probeIsolation()
+		if err != nil {
+			return nil, err
+		}
+		sb.isolation = pr
 	}
 	telemetry.Info(context.Background(), "sandbox: local isolation backend",
 		otellog.String("session", id),

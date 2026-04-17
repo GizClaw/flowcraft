@@ -2,6 +2,7 @@ package sandbox
 
 import (
 	"context"
+	"fmt"
 	"os/exec"
 	"runtime"
 	"time"
@@ -11,7 +12,7 @@ import (
 type isolationBackend int
 
 const (
-	backendBare       isolationBackend = iota // bare process, no isolation
+	backendBare       isolationBackend = iota // non-Linux dev/test only
 	backendBubblewrap                         // Linux Bubblewrap namespace isolation
 )
 
@@ -31,20 +32,19 @@ type probeResult struct {
 }
 
 // probeIsolation detects the best available isolation backend.
-// Three-layer validation: OS → LookPath → smoke test.
-// Any layer failure degrades to bare. Idempotent and side-effect free.
-func probeIsolation() probeResult {
+// On Linux, bwrap is required — missing bwrap returns an error instead of
+// silently degrading to bare execution. On non-Linux (dev/test only),
+// bare execution is used.
+func probeIsolation() (probeResult, error) {
 	if runtime.GOOS != "linux" {
-		return probeResult{backend: backendBare}
+		return probeResult{backend: backendBare}, nil
 	}
 
 	p, err := exec.LookPath("bwrap")
 	if err != nil {
-		return probeResult{backend: backendBare}
+		return probeResult{}, fmt.Errorf("sandbox: bwrap not found; install bubblewrap for sandbox isolation")
 	}
 
-	// Smoke test: verify bwrap can actually create namespaces.
-	// Covers: container without CAP_SYS_ADMIN, kernel disabling unprivileged userns, etc.
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	if err := exec.CommandContext(ctx, p,
@@ -54,8 +54,8 @@ func probeIsolation() probeResult {
 		"--die-with-parent",
 		"--", "true",
 	).Run(); err != nil {
-		return probeResult{backend: backendBare}
+		return probeResult{}, fmt.Errorf("sandbox: bwrap smoke test failed: %w", err)
 	}
 
-	return probeResult{backend: backendBubblewrap, bwrapPath: p}
+	return probeResult{backend: backendBubblewrap, bwrapPath: p}, nil
 }

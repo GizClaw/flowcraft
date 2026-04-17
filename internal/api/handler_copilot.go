@@ -37,9 +37,9 @@ func (s *Server) buildCoPilotInputs(r *http.Request, req CoPilotRequest) map[str
 			targetAgent = a
 			inputs["current_agent_id"] = a.ID
 			inputs["current_agent_name"] = a.Name
-		if gd := a.StrategyDef.AsGraph(); gd != nil {
-			inputs["current_graph_summary"] = summarizeGraph(gd)
-		}
+			if gd := a.StrategyDef.AsGraph(); gd != nil {
+				inputs["current_graph_summary"] = summarizeGraph(gd)
+			}
 		}
 	}
 	refContext := s.parseRefMarkers(r.Context(), req.Query, targetAgent)

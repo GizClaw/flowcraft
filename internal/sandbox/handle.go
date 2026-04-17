@@ -57,9 +57,9 @@ func NewSandboxHandle(ctx context.Context, runtimeID string, cfg ManagerConfig) 
 		}
 	}
 
-	var localIso probeResult
-	if cfg.Driver == "local" || cfg.Driver == "" {
-		localIso = probeIsolation()
+	localIso, probeErr := probeIsolation()
+	if probeErr != nil {
+		return nil, probeErr
 	}
 
 	return &SandboxHandle{
@@ -72,9 +72,6 @@ func NewSandboxHandle(ctx context.Context, runtimeID string, cfg ManagerConfig) 
 }
 
 func normalizeHandleConfig(cfg ManagerConfig) ManagerConfig {
-	if cfg.Driver == "" {
-		cfg.Driver = "local"
-	}
 	if cfg.Mode == "" {
 		cfg.Mode = ModePersistent
 	}
@@ -213,68 +210,22 @@ func (h *SandboxHandle) closeActiveLocked() error {
 	return err
 }
 
-func (h *SandboxHandle) create(ctx context.Context) (Sandbox, string, error) {
-	switch h.cfg.Driver {
-	case "local", "":
-		rootDir := filepath.Join(h.cfg.RootDir, "local", h.runtimeID)
-		specs := []SymlinkSpec{
-			{Name: "skills", Target: filepath.Join(h.cfg.RootDir, "skills"), ReadOnly: true},
-			{Name: "data", Target: filepath.Join(h.cfg.RootDir, "data"), ReadOnly: false},
-		}
-		bwrapCfg := BwrapConfig{
-			ShareNet: h.cfg.NetworkMode != "" && h.cfg.NetworkMode != "none",
-		}
-		sb, err := NewLocalSandbox(h.runtimeID, rootDir,
-			WithIsolation(h.localIsolation),
-			WithSymlinks(specs),
-			WithBwrapConfig(bwrapCfg),
-		)
-		if err != nil {
-			return nil, "", err
-		}
-		return sb, rootDir, nil
-	case "docker":
-		mounts := h.resolveMounts(ctx, h.runtimeID)
-		driver := NewDockerDriver(h.cfg.Image, mounts)
-		createCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
-		defer cancel()
-		sb, err := driver.Create(createCtx, h.runtimeID, CreateOptions{
-			NetworkMode: h.cfg.NetworkMode,
-			CPUQuota:    h.cfg.CPUQuota,
-			MemoryLimit: h.cfg.MemoryLimit,
-		})
-		if err != nil {
-			return nil, "", err
-		}
-		return sb, "", nil
-	default:
-		return nil, "", fmt.Errorf("sandbox: unsupported driver %q", h.cfg.Driver)
+func (h *SandboxHandle) create(_ context.Context) (Sandbox, string, error) {
+	rootDir := filepath.Join(h.cfg.RootDir, "local", h.runtimeID)
+	specs := []SymlinkSpec{
+		{Name: "skills", Target: filepath.Join(h.cfg.RootDir, "skills"), ReadOnly: true},
+		{Name: "data", Target: filepath.Join(h.cfg.RootDir, "data"), ReadOnly: false},
 	}
-}
-
-func (h *SandboxHandle) resolveMounts(ctx context.Context, runtimeID string) []MountConfig {
-	resolved := make([]MountConfig, 0, len(h.cfg.Mounts))
-	for _, mc := range h.cfg.Mounts {
-		if !mc.Overlay || h.overlay == nil {
-			resolved = append(resolved, mc)
-			continue
-		}
-		od, err := h.overlay.Prepare(runtimeID, mc.Source, mc.Target)
-		if err != nil {
-			telemetry.Warn(ctx, "sandbox handle: overlay prepare failed, falling back to direct mount",
-				otellog.String("runtime_id", runtimeID),
-				otellog.String("target", mc.Target),
-				otellog.String("error", err.Error()))
-			fallback := mc
-			fallback.Overlay = false
-			fallback.ReadOnly = false
-			resolved = append(resolved, fallback)
-			continue
-		}
-		resolved = append(resolved, MountConfig{
-			Source: od.Merged,
-			Target: mc.Target,
-		})
+	bwrapCfg := BwrapConfig{
+		ShareNet: h.cfg.NetworkMode != "" && h.cfg.NetworkMode != "none",
 	}
-	return resolved
+	sb, err := NewLocalSandbox(h.runtimeID, rootDir,
+		WithIsolation(h.localIsolation),
+		WithSymlinks(specs),
+		WithBwrapConfig(bwrapCfg),
+	)
+	if err != nil {
+		return nil, "", err
+	}
+	return sb, rootDir, nil
 }

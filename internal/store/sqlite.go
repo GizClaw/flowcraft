@@ -538,7 +538,7 @@ func (s *SQLiteStore) SaveMessage(ctx context.Context, msg *model.Message) error
 
 func scanMessage(rows *sql.Rows) (*model.Message, error) {
 	var (
-		m              model.Message
+		m                   model.Message
 		role, partsJSON, ts string
 	)
 	if err := rows.Scan(&m.ID, &m.ConversationID, &role, &partsJSON, &m.TokenCount, &ts); err != nil {

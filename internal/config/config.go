@@ -75,21 +75,12 @@ type LogConfig struct {
 
 // SandboxConfig holds sandbox execution environment settings.
 type SandboxConfig struct {
-	Driver        string // "local" (default) or "docker"
 	Mode          string // "ephemeral", "session" (default), "persistent"
-	Image         string
 	ExecTimeout   string
 	IdleTimeout   string
 	MaxConcurrent int
 	RootDir       string
 	NetworkMode   string // "none" (default), "bridge", "host"
-	CPUQuota      int64  // Docker CPU quota in microseconds per 100ms period (e.g. 50000 = 50%)
-	MemoryLimit   int64  // Docker memory limit in bytes (e.g. 536870912 = 512MB)
-
-	// Deprecated: HostDataDir was used for Docker bind-mount source override.
-	// With the unified image + bwrap approach, local driver uses symlinks instead.
-	// Retained for backward compatibility; emits a warning at startup if set.
-	HostDataDir string
 }
 
 // DaemonConfig holds daemon mode settings.
@@ -143,15 +134,11 @@ func Default() *Config {
 			Format: "text",
 		},
 		Sandbox: SandboxConfig{
-			Driver:        "local",
 			Mode:          "session",
-			Image:         "flowcraft/sandbox:latest",
 			ExecTimeout:   "5m",
 			IdleTimeout:   "30m",
 			MaxConcurrent: 10,
 			NetworkMode:   "none",
-			CPUQuota:      50000,     // 50% of one CPU core
-			MemoryLimit:   536870912, // 512 MB
 		},
 		DB: DBConfig{
 			Path: "data/flowcraft.db",
@@ -199,9 +186,6 @@ func (c *Config) Validate() []string {
 	default:
 		warnings = append(warnings, fmt.Sprintf("log.format %q is not recognized (expected: text, json)", c.Log.Format))
 	}
-	if c.Sandbox.HostDataDir != "" {
-		warnings = append(warnings, "sandbox.host_data_dir is deprecated and will be removed in a future release; local driver now uses symlinks for workspace data, Docker driver uses volume mounts configured via FLOWCRAFT_SANDBOX_VOLUME_NAME")
-	}
 	if c.Monitoring.ErrorRateWarn < 0 || c.Monitoring.ErrorRateWarn > 1 {
 		warnings = append(warnings, fmt.Sprintf("monitoring.error_rate_warn %.4f is out of range [0,1]", c.Monitoring.ErrorRateWarn))
 	}
@@ -244,7 +228,6 @@ func (c *Config) String() string {
 	fmt.Fprintf(&b, "  log.level:        %s\n", c.Log.Level)
 	fmt.Fprintf(&b, "  log.format:       %s\n", c.Log.Format)
 	fmt.Fprintf(&b, "  configure_path:   %s\n", c.ConfigurePath)
-	fmt.Fprintf(&b, "  sandbox.driver:   %s\n", c.Sandbox.Driver)
 	fmt.Fprintf(&b, "  sandbox.mode:     %s\n", c.Sandbox.Mode)
 	fmt.Fprintf(&b, "  db.path:          %s\n", c.DB.Path)
 	fmt.Fprintf(&b, "  telemetry:        %v\n", c.Telemetry.Enabled)

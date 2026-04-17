@@ -575,6 +575,196 @@ func TestRuntimeAgentExecutor_SchedulerProducerSkipsCallback(t *testing.T) {
 	}
 }
 
+func TestRealm_Accessors(t *testing.T) {
+	store := newMockStore()
+	cfg := newRuntimeSandboxConfig(t)
+	rt, err := NewRealm(context.Background(), "test-realm", store, &PlatformDeps{}, cfg, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rt.Close()
+
+	if rt.ID() != "test-realm" {
+		t.Fatalf("ID() = %q, want test-realm", rt.ID())
+	}
+	if rt.Bus() == nil {
+		t.Fatal("Bus() should not be nil")
+	}
+	if rt.Board() == nil {
+		t.Fatal("Board() should not be nil")
+	}
+	if rt.Deps() == nil {
+		t.Fatal("Deps() should not be nil")
+	}
+	if rt.Runtime() == nil {
+		t.Fatal("Runtime() should not be nil")
+	}
+}
+
+func TestRealm_Stats(t *testing.T) {
+	store := newMockStore()
+	cfg := newRuntimeSandboxConfig(t)
+	rt, err := NewRealm(context.Background(), "owner", store, &PlatformDeps{}, cfg, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rt.Close()
+
+	stats := rt.Stats()
+	if stats.RealmID != "owner" {
+		t.Fatalf("RealmID = %q, want owner", stats.RealmID)
+	}
+	if stats.ActorCount != 0 {
+		t.Fatalf("ActorCount = %d, want 0", stats.ActorCount)
+	}
+
+	rt.GetOrCreateActor("agent1")
+	rt.GetOrCreateActor("agent2")
+
+	stats = rt.Stats()
+	if stats.ActorCount != 2 {
+		t.Fatalf("ActorCount = %d, want 2", stats.ActorCount)
+	}
+}
+
+func TestRealm_Actor(t *testing.T) {
+	store := newMockStore()
+	cfg := newRuntimeSandboxConfig(t)
+	rt, err := NewRealm(context.Background(), "owner", store, &PlatformDeps{}, cfg, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rt.Close()
+
+	_, ok := rt.Actor("nonexistent")
+	if ok {
+		t.Fatal("expected Actor() to return false for nonexistent")
+	}
+
+	rt.GetOrCreateActor("agent1")
+	actor, ok := rt.Actor("agent1")
+	if !ok || actor == nil {
+		t.Fatal("expected Actor() to return the created actor")
+	}
+}
+
+func TestRealm_AbortActor(t *testing.T) {
+	store := newMockStore()
+	cfg := newRuntimeSandboxConfig(t)
+	rt, err := NewRealm(context.Background(), "owner", store, &PlatformDeps{}, cfg, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rt.Close()
+
+	if rt.AbortActor("nonexistent") {
+		t.Fatal("expected AbortActor to return false for nonexistent actor")
+	}
+
+	rt.GetOrCreateActor("agent1")
+	rt.AbortActor("agent1")
+}
+
+func TestAgentActor_Accessors(t *testing.T) {
+	store := newMockStore()
+	cfg := newRuntimeSandboxConfig(t)
+	rt, err := NewRealm(context.Background(), "owner", store, &PlatformDeps{}, cfg, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rt.Close()
+
+	actor := rt.GetOrCreateActor("agent1",
+		WithInboxSize(5),
+		WithSource("test"),
+	)
+
+	if actor.ActorKey() != "agent1" {
+		t.Fatalf("ActorKey() = %q, want agent1", actor.ActorKey())
+	}
+	if actor.RealmID() != "owner" {
+		t.Fatalf("RealmID() = %q, want owner", actor.RealmID())
+	}
+	if actor.AgentID() != "agent1" {
+		t.Fatalf("AgentID() = %q, want agent1", actor.AgentID())
+	}
+	if actor.Source() != "test" {
+		t.Fatalf("Source() = %q, want test", actor.Source())
+	}
+	if actor.Bus() == nil {
+		t.Fatal("Bus() should not be nil")
+	}
+	if actor.IsRunning() {
+		t.Fatal("expected actor not to be running")
+	}
+	if actor.IsPersistent() {
+		t.Fatal("expected actor not to be persistent by default")
+	}
+	if actor.LastActive().IsZero() {
+		t.Fatal("expected non-zero LastActive")
+	}
+}
+
+func TestSingleRealmProvider_Stats(t *testing.T) {
+	store := newMockStore()
+	cfg := newRuntimeSandboxConfig(t)
+	mgr := NewSingleRealmProvider(store, &PlatformDeps{}, cfg, time.Minute)
+
+	stats := mgr.Stats()
+	if stats.RealmCount != 0 {
+		t.Fatalf("expected 0 realms before Get, got %d", stats.RealmCount)
+	}
+
+	_, err := mgr.Get(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	stats = mgr.Stats()
+	if stats.RealmCount != 1 {
+		t.Fatalf("expected 1 realm after Get, got %d", stats.RealmCount)
+	}
+	if stats.Current == nil {
+		t.Fatal("expected non-nil Current stats")
+	}
+}
+
+func TestSingleRealmProvider_OnRealmCreated(t *testing.T) {
+	store := newMockStore()
+	cfg := newRuntimeSandboxConfig(t)
+	mgr := NewSingleRealmProvider(store, &PlatformDeps{}, cfg, time.Minute)
+
+	var called bool
+	mgr.OnRealmCreated(func(r *Realm) {
+		called = true
+	})
+
+	_, err := mgr.Get(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !called {
+		t.Fatal("expected OnRealmCreated callback to fire")
+	}
+}
+
+func TestSingleRealmProvider_Close(t *testing.T) {
+	store := newMockStore()
+	cfg := newRuntimeSandboxConfig(t)
+	mgr := NewSingleRealmProvider(store, &PlatformDeps{}, cfg, time.Minute)
+
+	_, err := mgr.Get(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	mgr.Close()
+	_, ok := mgr.Current()
+	if ok {
+		t.Fatal("expected Current() to return false after Close")
+	}
+}
+
 func TestSingleRealmProvider_Get_Concurrent(t *testing.T) {
 	store := newMockStore()
 	cfg := newRuntimeSandboxConfig(t)

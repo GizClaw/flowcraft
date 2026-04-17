@@ -3,12 +3,12 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
-
-	"errors"
 
 	"github.com/GizClaw/flowcraft/internal/model"
 	"github.com/GizClaw/flowcraft/internal/platform"
@@ -198,5 +198,215 @@ func TestWSTicket_RequiresJWT(t *testing.T) {
 	_, ok2 := s.authenticateRequest(r2)
 	if !ok2 {
 		t.Fatal("expected authenticated request to succeed")
+	}
+}
+
+func TestAuthStatus_Initialized(t *testing.T) {
+	s, store := newTestServer(t)
+	store.cred = &model.OwnerCredential{Username: "admin", PasswordHash: "hash"}
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest("GET", "/api/auth/status", nil)
+	s.handleAuthStatus(w, r)
+
+	var body map[string]any
+	json.Unmarshal(w.Body.Bytes(), &body)
+	if body["initialized"] != true {
+		t.Fatal("expected initialized=true")
+	}
+}
+
+func TestSetup_ShortPassword(t *testing.T) {
+	s, _ := newTestServer(t)
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest("POST", "/api/auth/setup",
+		strings.NewReader(`{"username":"admin","password":"short"}`))
+	s.handleSetup(w, r)
+	if w.Code != 400 {
+		t.Fatalf("expected 400 for short password, got %d", w.Code)
+	}
+}
+
+func TestSetup_EmptyUsername(t *testing.T) {
+	s, _ := newTestServer(t)
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest("POST", "/api/auth/setup",
+		strings.NewReader(`{"username":"","password":"12345678"}`))
+	s.handleSetup(w, r)
+	if w.Code != 400 {
+		t.Fatalf("expected 400 for empty username, got %d", w.Code)
+	}
+}
+
+func TestSetup_InvalidJSON(t *testing.T) {
+	s, _ := newTestServer(t)
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest("POST", "/api/auth/setup",
+		strings.NewReader(`{invalid json`))
+	s.handleSetup(w, r)
+	if w.Code != 400 {
+		t.Fatalf("expected 400 for invalid JSON, got %d", w.Code)
+	}
+}
+
+func TestLogin_NotInitialized(t *testing.T) {
+	s, _ := newTestServer(t)
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest("POST", "/api/auth/login",
+		strings.NewReader(`{"username":"admin","password":"12345678"}`))
+	s.handleLogin(w, r)
+	if w.Code != 401 {
+		t.Fatalf("expected 401 when not initialized, got %d", w.Code)
+	}
+}
+
+func TestLogin_InvalidJSON(t *testing.T) {
+	s, _ := newTestServer(t)
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest("POST", "/api/auth/login",
+		strings.NewReader(`not json`))
+	s.handleLogin(w, r)
+	if w.Code != 400 {
+		t.Fatalf("expected 400 for invalid JSON, got %d", w.Code)
+	}
+}
+
+func TestLogout(t *testing.T) {
+	s, _ := newTestServer(t)
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest("POST", "/api/auth/logout", nil)
+	s.handleLogout(w, r)
+	if w.Code != 204 {
+		t.Fatalf("expected 204, got %d", w.Code)
+	}
+
+	cookies := w.Result().Cookies()
+	found := false
+	for _, c := range cookies {
+		if c.Name == authCookieName && c.MaxAge < 0 {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("expected auth cookie to be cleared")
+	}
+}
+
+func TestAuthSession_Authenticated(t *testing.T) {
+	s, _ := newTestServer(t)
+
+	token, expiresAt, _ := s.jwt.Issue("admin")
+	r := httptest.NewRequest("GET", "/api/auth/session", nil)
+	r.AddCookie(&http.Cookie{Name: authCookieName, Value: token, Expires: expiresAt})
+
+	w := httptest.NewRecorder()
+	s.handleAuthSession(w, r)
+
+	var body map[string]any
+	json.Unmarshal(w.Body.Bytes(), &body)
+	if body["authenticated"] != true {
+		t.Fatal("expected authenticated=true")
+	}
+	if body["username"] != "admin" {
+		t.Fatalf("expected username=admin, got %v", body["username"])
+	}
+}
+
+func TestAuthSession_Unauthenticated(t *testing.T) {
+	s, _ := newTestServer(t)
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest("GET", "/api/auth/session", nil)
+	s.handleAuthSession(w, r)
+
+	var body map[string]any
+	json.Unmarshal(w.Body.Bytes(), &body)
+	if body["authenticated"] != false {
+		t.Fatal("expected authenticated=false")
+	}
+}
+
+func TestChangePassword_WrongOldPassword(t *testing.T) {
+	s, store := newTestServer(t)
+	hash, _ := bcrypt.GenerateFromPassword([]byte("correct-pw"), 12)
+	store.cred = &model.OwnerCredential{Username: "admin", PasswordHash: string(hash)}
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest("POST", "/api/auth/change-password",
+		strings.NewReader(`{"old_password":"wrong-pw","new_password":"new-pass-here"}`))
+	s.handleChangePassword(w, r)
+	if w.Code != 401 {
+		t.Fatalf("expected 401 for wrong old password, got %d", w.Code)
+	}
+}
+
+func TestChangePassword_TooShort(t *testing.T) {
+	s, store := newTestServer(t)
+	hash, _ := bcrypt.GenerateFromPassword([]byte("old-pass-here"), 12)
+	store.cred = &model.OwnerCredential{Username: "admin", PasswordHash: string(hash)}
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest("POST", "/api/auth/change-password",
+		strings.NewReader(`{"old_password":"old-pass-here","new_password":"short"}`))
+	s.handleChangePassword(w, r)
+	if w.Code != 400 {
+		t.Fatalf("expected 400 for short new password, got %d", w.Code)
+	}
+}
+
+func TestAuthenticateRequest_CookieAuth(t *testing.T) {
+	s, _ := newTestServer(t)
+
+	token, expiresAt, _ := s.jwt.Issue("cookieuser")
+	r := httptest.NewRequest("GET", "/api/agents", nil)
+	r.AddCookie(&http.Cookie{Name: authCookieName, Value: token, Expires: expiresAt})
+
+	claims, ok := s.authenticateRequest(r)
+	if !ok {
+		t.Fatal("expected cookie auth to succeed")
+	}
+	if claims.Username != "cookieuser" {
+		t.Fatalf("username = %q, want cookieuser", claims.Username)
+	}
+}
+
+func TestAuthenticateRequest_NilJWT(t *testing.T) {
+	s, _ := newTestServer(t)
+	s.jwt = nil
+
+	r := httptest.NewRequest("GET", "/api/agents", nil)
+	_, ok := s.authenticateRequest(r)
+	if !ok {
+		t.Fatal("expected nil JWT to allow all requests")
+	}
+}
+
+func TestChangePassword_InvalidJSON(t *testing.T) {
+	s, _ := newTestServer(t)
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest("POST", "/api/auth/change-password",
+		strings.NewReader(`{bad`))
+	s.handleChangePassword(w, r)
+	if w.Code != 400 {
+		t.Fatalf("expected 400, got %d", w.Code)
+	}
+}
+
+func TestChangePassword_NotInitialized(t *testing.T) {
+	s, _ := newTestServer(t)
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest("POST", "/api/auth/change-password",
+		strings.NewReader(`{"old_password":"x","new_password":"12345678"}`))
+	s.handleChangePassword(w, r)
+	if w.Code != 401 {
+		t.Fatalf("expected 401 when not initialized, got %d", w.Code)
 	}
 }

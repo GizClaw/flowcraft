@@ -143,17 +143,7 @@ func TestManager_CircuitBreaker_Success(t *testing.T) {
 	}
 }
 
-func TestManager_CircuitBreaker_BadDriver(t *testing.T) {
-	cfg := DefaultManagerConfig()
-	cfg.RootDir = t.TempDir()
-	cfg.Driver = "nonexistent-driver"
-
-	// Validate should reject invalid driver
-	if err := cfg.Validate(); err == nil {
-		t.Fatal("expected validation error for invalid driver")
-	}
-
-	// Verify validation errors
+func TestManagerConfig_Validate(t *testing.T) {
 	tests := []struct {
 		name    string
 		cfg     ManagerConfig
@@ -162,10 +152,7 @@ func TestManager_CircuitBreaker_BadDriver(t *testing.T) {
 		{"negative_exec_timeout", ManagerConfig{ExecTimeout: -1}, true},
 		{"negative_idle_timeout", ManagerConfig{IdleTimeout: -1}, true},
 		{"zero_max_concurrent", ManagerConfig{MaxConcurrent: 0}, true},
-		{"invalid_driver", ManagerConfig{Driver: "invalid"}, true},
-		{"docker_no_image", ManagerConfig{Driver: "docker", Image: ""}, true},
-		{"valid", ManagerConfig{Driver: "local", ExecTimeout: time.Minute, IdleTimeout: time.Minute, MaxConcurrent: 10}, false},
-		{"valid_docker_with_image", ManagerConfig{Driver: "docker", Image: "test", ExecTimeout: time.Minute, IdleTimeout: time.Minute, MaxConcurrent: 10}, false},
+		{"valid", ManagerConfig{ExecTimeout: time.Minute, IdleTimeout: time.Minute, MaxConcurrent: 10}, false},
 	}
 
 	for _, tt := range tests {

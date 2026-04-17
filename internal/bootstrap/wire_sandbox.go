@@ -6,8 +6,8 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/internal/config"
-	"github.com/GizClaw/flowcraft/sdk/kanban"
 	"github.com/GizClaw/flowcraft/internal/sandbox"
+	"github.com/GizClaw/flowcraft/sdk/kanban"
 	"github.com/GizClaw/flowcraft/sdk/telemetry"
 	"github.com/GizClaw/flowcraft/sdk/tool"
 	"github.com/GizClaw/flowcraft/sdk/workspace"
@@ -30,17 +30,10 @@ func wireSandbox(ctx context.Context, cfg *config.Config, toolReg *tool.Registry
 	}
 
 	sandboxCfg := sandbox.ManagerConfig{
-		Driver:        cfg.Sandbox.Driver,
 		Mode:          sandbox.ParseMode(cfg.Sandbox.Mode),
 		RootDir:       workspaceRoot,
-		Image:         cfg.Sandbox.Image,
 		MaxConcurrent: cfg.Sandbox.MaxConcurrent,
 		NetworkMode:   cfg.Sandbox.NetworkMode,
-		CPUQuota:      cfg.Sandbox.CPUQuota,
-		MemoryLimit:   cfg.Sandbox.MemoryLimit,
-	}
-	if sandboxCfg.Driver == "" {
-		sandboxCfg.Driver = "local"
 	}
 	if sandboxCfg.MaxConcurrent <= 0 {
 		sandboxCfg.MaxConcurrent = 10
@@ -54,9 +47,6 @@ func wireSandbox(ctx context.Context, cfg *config.Config, toolReg *tool.Registry
 		if d, err := time.ParseDuration(cfg.Sandbox.IdleTimeout); err == nil {
 			sandboxCfg.IdleTimeout = d
 		}
-	}
-	if sandboxCfg.Driver == "docker" {
-		sandboxCfg.Mounts = buildSandboxMounts(cfg, workspaceRoot)
 	}
 
 	sm, err := sandbox.NewManager(ctx, sandboxCfg)

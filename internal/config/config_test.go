@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -27,9 +28,6 @@ func TestDefault(t *testing.T) {
 	}
 	if cfg.Memory.Type != "lossless" {
 		t.Fatalf("expected default memory type 'lossless', got %q", cfg.Memory.Type)
-	}
-	if cfg.Sandbox.Driver != "local" {
-		t.Fatalf("expected default sandbox driver 'local', got %q", cfg.Sandbox.Driver)
 	}
 	if cfg.DB.Path != "data/flowcraft.db" {
 		t.Fatalf("expected default db path data/flowcraft.db, got %q", cfg.DB.Path)
@@ -227,6 +225,210 @@ func TestMaskSecret(t *testing.T) {
 	}
 	if maskSecret("a-very-long-key-here") != "a-ve****here" {
 		t.Fatalf("unexpected mask: %s", maskSecret("a-very-long-key-here"))
+	}
+}
+
+func TestDBPath_Absolute(t *testing.T) {
+	isolateFlowcraftHome(t)
+	cfg := Load()
+	cfg.DB.Path = "/absolute/db.sqlite"
+	if cfg.DBPath() != "/absolute/db.sqlite" {
+		t.Fatalf("expected absolute path, got %q", cfg.DBPath())
+	}
+}
+
+func TestDBPath_Relative(t *testing.T) {
+	isolateFlowcraftHome(t)
+	cfg := Load()
+	dbPath := cfg.DBPath()
+	if dbPath == "" {
+		t.Fatal("expected non-empty db path")
+	}
+	if dbPath == cfg.DB.Path {
+		t.Fatal("relative path should be resolved to absolute")
+	}
+}
+
+func TestString(t *testing.T) {
+	isolateFlowcraftHome(t)
+	cfg := Load()
+	s := cfg.String()
+	if s == "" {
+		t.Fatal("expected non-empty string")
+	}
+	if !strings.Contains(s, "server.port") {
+		t.Fatal("expected server.port in string output")
+	}
+	if !strings.Contains(s, "8080") {
+		t.Fatal("expected default port 8080 in output")
+	}
+}
+
+func TestInitLogging_JSON(t *testing.T) {
+	InitLogging(LogConfig{Level: "debug", Format: "json"})
+}
+
+func TestInitLogging_Text(t *testing.T) {
+	InitLogging(LogConfig{Level: "warn", Format: "text"})
+}
+
+func TestInitLogging_Error(t *testing.T) {
+	InitLogging(LogConfig{Level: "error"})
+}
+
+func TestInitLogging_Default(t *testing.T) {
+	InitLogging(LogConfig{Level: "unknown"})
+}
+
+func TestValidate_DeprecatedMemoryType(t *testing.T) {
+	isolateFlowcraftHome(t)
+	cfg := Load()
+	cfg.Memory.Type = "sliding_window"
+	warnings := cfg.Validate()
+	found := false
+	for _, w := range warnings {
+		if strings.Contains(w, "deprecated") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("expected deprecation warning for non-lossless memory type")
+	}
+}
+
+func TestValidate_BadLogLevel(t *testing.T) {
+	isolateFlowcraftHome(t)
+	cfg := Load()
+	cfg.Log.Level = "trace"
+	warnings := cfg.Validate()
+	found := false
+	for _, w := range warnings {
+		if strings.Contains(w, "log.level") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("expected warning for unrecognized log level")
+	}
+}
+
+func TestValidate_BadLogFormat(t *testing.T) {
+	isolateFlowcraftHome(t)
+	cfg := Load()
+	cfg.Log.Format = "xml"
+	warnings := cfg.Validate()
+	found := false
+	for _, w := range warnings {
+		if strings.Contains(w, "log.format") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("expected warning for unrecognized log format")
+	}
+}
+
+func TestValidate_BadMonitoring(t *testing.T) {
+	isolateFlowcraftHome(t)
+	cfg := Load()
+	cfg.Monitoring.ErrorRateWarn = 2.0
+	cfg.Monitoring.ErrorRateDown = -1.0
+	cfg.Monitoring.ConsecutiveBuckets = 0
+	cfg.Monitoring.NoSuccessDownMinutes = 0
+	warnings := cfg.Validate()
+	if len(warnings) < 4 {
+		t.Fatalf("expected at least 4 warnings, got %d: %v", len(warnings), warnings)
+	}
+}
+
+func TestValidate_WarnHigherThanDown(t *testing.T) {
+	isolateFlowcraftHome(t)
+	cfg := Load()
+	cfg.Monitoring.ErrorRateWarn = 0.3
+	cfg.Monitoring.ErrorRateDown = 0.1
+	warnings := cfg.Validate()
+	found := false
+	for _, w := range warnings {
+		if strings.Contains(w, "lower than") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("expected warning for warn > down")
+	}
+}
+
+func TestDefaultConfigPath(t *testing.T) {
+	isolateFlowcraftHome(t)
+	p := DefaultConfigPath()
+	if p == "" {
+		t.Fatal("expected non-empty path")
+	}
+}
+
+func TestYAMLMerge_Telemetry(t *testing.T) {
+	root := isolateFlowcraftHome(t)
+	mustWrite(t, filepath.Join(root, "config.yaml"), `
+telemetry:
+  enabled: true
+  endpoint: localhost:4317
+  insecure: true
+`)
+	cfg := Load()
+	if !cfg.Telemetry.Enabled {
+		t.Fatal("expected telemetry enabled")
+	}
+	if cfg.Telemetry.Endpoint != "localhost:4317" {
+		t.Fatalf("expected endpoint localhost:4317, got %q", cfg.Telemetry.Endpoint)
+	}
+	if !cfg.Telemetry.Insecure {
+		t.Fatal("expected insecure true")
+	}
+}
+
+func TestYAMLMerge_Sandbox(t *testing.T) {
+	root := isolateFlowcraftHome(t)
+	mustWrite(t, filepath.Join(root, "config.yaml"), `
+sandbox:
+  mode: persistent
+  exec_timeout: 10m
+  idle_timeout: 1h
+  max_concurrent: 20
+  root_dir: /custom/workspace
+  network_mode: bridge
+`)
+	cfg := Load()
+	if cfg.Sandbox.Mode != "persistent" {
+		t.Fatalf("expected persistent, got %q", cfg.Sandbox.Mode)
+	}
+	if cfg.Sandbox.MaxConcurrent != 20 {
+		t.Fatalf("expected 20, got %d", cfg.Sandbox.MaxConcurrent)
+	}
+	if cfg.Sandbox.RootDir != "/custom/workspace" {
+		t.Fatalf("expected /custom/workspace, got %q", cfg.Sandbox.RootDir)
+	}
+	if cfg.Sandbox.NetworkMode != "bridge" {
+		t.Fatalf("expected bridge, got %q", cfg.Sandbox.NetworkMode)
+	}
+}
+
+func TestYAMLMerge_WebDir(t *testing.T) {
+	root := isolateFlowcraftHome(t)
+	mustWrite(t, filepath.Join(root, "config.yaml"), `
+web_dir: /opt/flowcraft/web
+`)
+	cfg := Load()
+	if cfg.WebDir != "/opt/flowcraft/web" {
+		t.Fatalf("expected /opt/flowcraft/web, got %q", cfg.WebDir)
+	}
+}
+
+func TestYAMLMerge_InvalidFile(t *testing.T) {
+	root := isolateFlowcraftHome(t)
+	mustWrite(t, filepath.Join(root, "config.yaml"), `{{invalid yaml}}`)
+	cfg := Load()
+	if cfg.Server.Port != 8080 {
+		t.Fatalf("invalid YAML should keep defaults, got port %d", cfg.Server.Port)
 	}
 }
 

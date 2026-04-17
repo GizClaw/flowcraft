@@ -13,7 +13,7 @@ import (
 )
 
 const (
-	authCookieName = "flowcraft_token"
+	authCookieName   = "flowcraft_token"
 	settingJWTSecret = "jwt_secret"
 )
 

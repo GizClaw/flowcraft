@@ -59,6 +59,15 @@ type AcquireOptions struct {
 	IdleTimeout time.Duration `json:"idle_timeout,omitempty"`
 }
 
+// MountConfig describes a filesystem mount (bind or volume).
+type MountConfig struct {
+	Source   string `json:"source" yaml:"source"`
+	Target   string `json:"target" yaml:"target"`
+	ReadOnly bool   `json:"readonly,omitempty" yaml:"readonly,omitempty"`
+	Type     string `json:"type,omitempty" yaml:"type,omitempty"`
+	Overlay  bool   `json:"overlay,omitempty" yaml:"overlay,omitempty"`
+}
+
 // Common errors.
 var (
 	ErrClosed        = errors.New("sandbox: closed")

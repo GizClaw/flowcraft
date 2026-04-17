@@ -4,18 +4,15 @@ package bootstrap
 
 import (
 	"context"
-	"os"
 	"path/filepath"
 	"sync"
 
 	"github.com/GizClaw/flowcraft/internal/api"
-	"github.com/GizClaw/flowcraft/internal/config"
 	"github.com/GizClaw/flowcraft/internal/gateway"
 	"github.com/GizClaw/flowcraft/internal/metatool"
 	"github.com/GizClaw/flowcraft/internal/model"
 	"github.com/GizClaw/flowcraft/internal/platform"
 	"github.com/GizClaw/flowcraft/internal/realm"
-	"github.com/GizClaw/flowcraft/internal/sandbox"
 	"github.com/GizClaw/flowcraft/internal/template"
 	"github.com/GizClaw/flowcraft/internal/version"
 	"github.com/GizClaw/flowcraft/sdk/event"
@@ -235,40 +232,6 @@ func persistKanbanCards(ctx context.Context, sb *kanban.TaskBoard, store model.S
 				otellog.String("error", err.Error()))
 		}
 	}
-}
-
-// buildSandboxMounts constructs mount configurations for Docker sandboxes.
-// Three scenarios: explicit HostDataDir (deprecated), DinD (Named Volume), bare-metal (bind mount).
-func buildSandboxMounts(cfg *config.Config, workspaceRoot string) []sandbox.MountConfig {
-	//nolint:staticcheck // SA1019 HostDataDir kept for backward-compatible Docker mounts.
-	hostDataDir := cfg.Sandbox.HostDataDir
-	if hostDataDir != "" {
-		telemetry.Warn(context.Background(),
-			"sandbox: HostDataDir is deprecated; consider switching to FLOWCRAFT_SANDBOX_DRIVER=local with Bubblewrap isolation",
-			otellog.String("host_data_dir", hostDataDir))
-		return []sandbox.MountConfig{
-			{Source: filepath.Join(hostDataDir, "skills"), Target: "/workspace/skills", ReadOnly: true, Overlay: true},
-			{Source: filepath.Join(hostDataDir, "data"), Target: "/workspace/data"},
-		}
-	}
-	if isRunningInContainer() {
-		volumeName := os.Getenv("FLOWCRAFT_SANDBOX_VOLUME_NAME")
-		if volumeName == "" {
-			volumeName = "flowcraft-workspace"
-		}
-		return []sandbox.MountConfig{
-			{Type: "volume", Source: volumeName, Target: "/workspace"},
-		}
-	}
-	return []sandbox.MountConfig{
-		{Source: filepath.Join(workspaceRoot, "skills"), Target: "/workspace/skills", ReadOnly: true, Overlay: true},
-		{Source: filepath.Join(workspaceRoot, "data"), Target: "/workspace/data"},
-	}
-}
-
-func isRunningInContainer() bool {
-	_, err := os.Stat("/.dockerenv")
-	return err == nil
 }
 
 // initScheduler starts the Kanban scheduler after the runtime is available.

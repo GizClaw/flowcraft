@@ -37,9 +37,7 @@ type yamlFile struct {
 		Path string `yaml:"path"`
 	} `yaml:"db"`
 	Sandbox *struct {
-		Driver        string `yaml:"driver"`
 		Mode          string `yaml:"mode"`
-		Image         string `yaml:"image"`
 		ExecTimeout   string `yaml:"exec_timeout"`
 		IdleTimeout   string `yaml:"idle_timeout"`
 		MaxConcurrent *int   `yaml:"max_concurrent"`
@@ -127,14 +125,8 @@ func mergeYAML(cfg *Config, configPath string) {
 		cfg.DB.Path = y.DB.Path
 	}
 	if y.Sandbox != nil {
-		if y.Sandbox.Driver != "" {
-			cfg.Sandbox.Driver = y.Sandbox.Driver
-		}
 		if y.Sandbox.Mode != "" {
 			cfg.Sandbox.Mode = y.Sandbox.Mode
-		}
-		if y.Sandbox.Image != "" {
-			cfg.Sandbox.Image = y.Sandbox.Image
 		}
 		if y.Sandbox.ExecTimeout != "" {
 			cfg.Sandbox.ExecTimeout = y.Sandbox.ExecTimeout
