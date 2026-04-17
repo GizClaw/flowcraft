@@ -1,117 +1,67 @@
 // Package bootstrap wires all dependencies and returns a ready-to-serve
-// *api.Server. Extracted from cmd/flowcraft/ so the wiring logic is
-// importable and testable.
+// *api.Server plus the assembled *platform.Platform.
 package bootstrap
 
 import (
 	"context"
-	"fmt"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"sync"
-	"time"
 
 	"github.com/GizClaw/flowcraft/internal/api"
 	"github.com/GizClaw/flowcraft/internal/config"
 	"github.com/GizClaw/flowcraft/internal/gateway"
-	"github.com/GizClaw/flowcraft/internal/paths"
-	"github.com/GizClaw/flowcraft/internal/realm"
 	"github.com/GizClaw/flowcraft/internal/metatool"
 	"github.com/GizClaw/flowcraft/internal/model"
-	"github.com/GizClaw/flowcraft/internal/pluginhost"
+	"github.com/GizClaw/flowcraft/internal/platform"
+	"github.com/GizClaw/flowcraft/internal/realm"
 	"github.com/GizClaw/flowcraft/internal/sandbox"
-	"github.com/GizClaw/flowcraft/internal/skill"
-	"github.com/GizClaw/flowcraft/internal/store"
 	"github.com/GizClaw/flowcraft/internal/template"
 	"github.com/GizClaw/flowcraft/internal/version"
-	"github.com/GizClaw/flowcraft/plugin"
 	"github.com/GizClaw/flowcraft/sdk/event"
-	"github.com/GizClaw/flowcraft/sdk/graph"
-	"github.com/GizClaw/flowcraft/sdk/graph/adapter"
 	"github.com/GizClaw/flowcraft/sdk/graph/compiler"
-	"github.com/GizClaw/flowcraft/sdk/graph/executor"
 	"github.com/GizClaw/flowcraft/sdk/graph/node"
-	"github.com/GizClaw/flowcraft/sdk/workflow"
 	_ "github.com/GizClaw/flowcraft/sdk/graph/node/scriptnode" // register built-in script node types
 	"github.com/GizClaw/flowcraft/sdk/kanban"
 	"github.com/GizClaw/flowcraft/sdk/llm"
-	"github.com/GizClaw/flowcraft/sdk/memory"
-	"github.com/GizClaw/flowcraft/sdk/script/jsrt"
 	"github.com/GizClaw/flowcraft/sdk/telemetry"
 	"github.com/GizClaw/flowcraft/sdk/tool"
-	"github.com/GizClaw/flowcraft/sdk/workspace"
-	"github.com/GizClaw/flowcraft/sdkx/extract"
 	"github.com/GizClaw/flowcraft/sdkx/knowledge"
-	"github.com/GizClaw/flowcraft/skills"
-	"github.com/GizClaw/flowcraft/web"
 
 	otellog "go.opentelemetry.io/otel/log"
 )
 
-// Run wires all dependencies and returns a ready-to-serve HTTP server,
-// a cleanup function (call in reverse-init order), and any bootstrap error.
-func Run(ctx context.Context) (*api.Server, func(), error) {
+// Run wires all dependencies and returns the assembled Platform, a
+// ready-to-serve HTTP server, a cleanup function (called in reverse-init
+// order), and any bootstrap error.
+func Run(ctx context.Context) (*platform.Platform, *api.Server, func(), error) {
 	var cleanups []func()
 	runCleanups := func() {
 		for i := len(cleanups) - 1; i >= 0; i-- {
 			cleanups[i]()
 		}
 	}
-	fail := func(err error) (*api.Server, func(), error) {
+	fail := func(err error) (*platform.Platform, *api.Server, func(), error) {
 		runCleanups()
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 
-	if err := paths.EnsureLayout(); err != nil {
-		return fail(err)
-	}
-
-	cfg := config.Load()
-	config.InitLogging(cfg.Log)
-	for _, w := range cfg.Validate() {
-		telemetry.Warn(ctx, "config validation", otellog.String("warning", w))
-	}
-	telemetry.Info(ctx, "config loaded",
-		otellog.String("address", cfg.Address()),
-		otellog.String("configure_path", cfg.ConfigurePath))
-
-	shutdownTracer, shutdownMeter, shutdownLog := initTelemetry(ctx, cfg)
-	shutdownTelemetry := func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		_ = shutdownTracer(ctx)
-		_ = shutdownMeter(ctx)
-		_ = shutdownLog(ctx)
-	}
-	cleanups = append(cleanups, shutdownTelemetry)
-
-	dbPath := cfg.DBPath()
-	sqliteStore, err := store.NewSQLiteStore(ctx, dbPath)
+	// --- config + telemetry ---
+	cfg, telemetryCleanup, err := wireConfig(ctx)
 	if err != nil {
-		telemetry.Error(ctx, "failed to open database",
-			otellog.String("path", dbPath), otellog.String("error", err.Error()))
 		return fail(err)
 	}
-	var appStore model.Store = sqliteStore
-	if cfg.Telemetry.Enabled {
-		appStore = store.WithStoreTracing(appStore)
-	}
-	cleanups = append(cleanups, func() { _ = appStore.Close() })
+	cleanups = append(cleanups, telemetryCleanup)
 
-	workspaceRoot := cfg.Sandbox.RootDir
-	if workspaceRoot == "" {
-		workspaceRoot = filepath.Join(cfg.ConfigurePath, "workspace")
-	}
-
-	ws, err := workspace.NewLocalWorkspace(workspaceRoot)
+	// --- store ---
+	appStore, storeCleanup, err := wireStore(ctx, cfg)
 	if err != nil {
-		telemetry.Error(ctx, "failed to initialize workspace", otellog.String("error", err.Error()))
 		return fail(err)
 	}
+	cleanups = append(cleanups, storeCleanup)
 
+	// --- registries + resolvers ---
 	toolReg := tool.NewRegistry()
-	scriptRT := jsrt.New()
 
 	schemaReg := node.NewSchemaRegistry()
 	node.RegisterBuiltinSchemas(schemaReg)
@@ -124,297 +74,48 @@ func Run(ctx context.Context) (*api.Server, func(), error) {
 
 	llmResolver := llm.DefaultResolver(appStore)
 
-	fsStore := knowledge.NewFSStore(ws)
-	if err := fsStore.BuildIndex(ctx); err != nil {
-		telemetry.Warn(ctx, "knowledge: initial index build failed", otellog.String("error", err.Error()))
+	// --- sandbox + workspace ---
+	ws, sandboxMgr, sandboxCfg, sandboxCleanup, err := wireSandbox(ctx, cfg, toolReg)
+	if err != nil {
+		return fail(err)
 	}
-	semanticLLM, semErr := llmResolver.Resolve(ctx, "")
-	knowledgeStore := knowledge.NewCachedStore(fsStore)
+	cleanups = append(cleanups, sandboxCleanup)
 
-	var semProc *knowledge.SemanticProcessor
-	if semErr == nil && semanticLLM != nil {
-		semProc = knowledge.NewSemanticProcessor(semanticLLM, fsStore,
-			knowledge.WithOnEvict(func(datasetID string) { knowledgeStore.EvictDataset(datasetID) }),
-		)
-		semProc.Start(ctx)
-		fsStore.SetSemanticProcessor(semProc)
-		cleanups = append(cleanups, func() { semProc.Stop() })
-	} else {
-		telemetry.Warn(ctx, "knowledge: SemanticProcessor disabled (no LLM configured), L0/L1 summaries will not be generated — knowledge base will use BM25 search only")
+	workspaceRoot := sandboxCfg.RootDir
+
+	// --- knowledge ---
+	knowledgeStore, knowledgeCleanup, err := wireKnowledge(ctx, ws, llmResolver)
+	if err != nil {
+		return fail(err)
 	}
+	cleanups = append(cleanups, knowledgeCleanup)
 
-	if kw, kwErr := fsStore.StartWatching(ctx); kwErr != nil {
-		telemetry.Warn(ctx, "knowledge: file watcher failed to start", otellog.String("error", kwErr.Error()))
-	} else if kw != nil {
-		cleanups = append(cleanups, func() { kw.Stop() })
+	// --- plugins + node factory ---
+	pluginReg, nodeFactory, pluginCleanup, err := wirePlugin(ctx, cfg, ws, workspaceRoot, llmResolver, toolReg, schemaReg, sandboxMgr)
+	if err != nil {
+		return fail(err)
 	}
+	cleanups = append(cleanups, pluginCleanup)
 
-	pluginReg := pluginhost.NewRegistry()
-
-	pluginDir := cfg.Plugin.Dir
-	if pluginDir == "" {
-		pluginDir = filepath.Join(workspaceRoot, "plugins")
-	}
-	healthInterval := time.Duration(cfg.Plugin.HealthInterval) * time.Second
-	if healthInterval <= 0 {
-		healthInterval = 10 * time.Second
-	}
-	maxFailures := cfg.Plugin.MaxFailures
-	if maxFailures <= 0 {
-		maxFailures = 3
-	}
-	extMgr := pluginhost.NewExternalManager(pluginhost.ExternalManagerConfig{
-		PluginDir:      pluginDir,
-		HealthInterval: healthInterval,
-		MaxFailures:    maxFailures,
-	})
-	pluginReg.SetExternalManager(extMgr)
-
-	if cfg.Plugin.ConfigFile != "" {
-		if configs, err := pluginhost.LoadPluginsJSON(cfg.Plugin.ConfigFile); err != nil {
-			telemetry.Warn(ctx, "plugin: load config failed", otellog.String("error", err.Error()))
-		} else {
-			for _, pc := range configs {
-				if pc.Path != "" && pc.Enabled {
-					ep := pluginhost.NewExternalPlugin(pc.Path, plugin.PluginInfo{
-						ID:   pc.ID,
-						Name: pc.ID,
-					})
-					_ = pluginReg.RegisterWithConfig(ep, pc.Config)
-				}
-			}
-		}
-	}
-
-	_ = pluginReg.InitializeAll(ctx)
-	pluginhost.InjectSchemas(pluginReg, schemaReg)
-
-	cleanups = append(cleanups, func() {
-		pluginReg.ShutdownAll(context.Background())
-		extMgr.Stop(context.Background())
-	})
-
-	graphCompiler := compiler.NewCompiler()
-
+	// --- knowledge node ---
 	knowledge.RegisterNode(knowledgeStore)
 	schemaReg.Register(knowledge.KnowledgeNodeSchema())
 
-	nodeFactory := node.NewFactory(
-		node.WithLLMResolver(llmResolver),
-		node.WithToolRegistry(toolReg),
-		node.WithScriptRuntime(scriptRT),
-		node.WithWorkspace(ws),
-		node.WithCommandRunner(workspace.NewLocalCommandRunner(workspaceRoot)),
-	)
+	// --- skills ---
+	skillStore, skillCleanup, err := wireSkill(ctx, ws, cfg, sandboxMgr, toolReg)
+	if err != nil {
+		return fail(err)
+	}
+	cleanups = append(cleanups, skillCleanup)
 
-	var sandboxMgr *sandbox.Manager
-
-	jsFallback := nodeFactory.Fallback()
-	nodeFactory.SetFallback(func(def graph.NodeDefinition, bctx *node.BuildContext) (graph.Node, error) {
-		if p, ok := pluginReg.GetPluginForNodeType(def.Type); ok {
-			if ep, ok := p.(*pluginhost.ExternalPlugin); ok {
-				resolver := func(pluginID string) (plugin.NodeServiceClient, error) {
-					rp, rok := pluginReg.Get(pluginID)
-					if !rok {
-						return nil, fmt.Errorf("plugin %q not registered", pluginID)
-					}
-					rep, rok := rp.(*pluginhost.ExternalPlugin)
-					if !rok {
-						return nil, fmt.Errorf("plugin %q is not external", pluginID)
-					}
-					client := rep.NodeClient()
-					if client == nil {
-						return nil, fmt.Errorf("plugin %q has no node service", pluginID)
-					}
-					return client, nil
-				}
-				host := &pluginhost.HostCallbackProvider{
-					LLMGenerate: func(ctx context.Context, prompt string) (string, error) {
-						m, err := llmResolver.Resolve(ctx, "")
-						if err != nil {
-							return "", fmt.Errorf("plugin llm callback: %w", err)
-						}
-						resp, _, err := m.Generate(ctx, []llm.Message{llm.NewTextMessage(llm.RoleUser, prompt)})
-						if err != nil {
-							return "", err
-						}
-						return resp.Content(), nil
-					},
-					ToolExecute: func(ctx context.Context, name, args string) (string, error) {
-						t, ok := toolReg.Get(name)
-						if !ok {
-							return "", fmt.Errorf("tool %q not found", name)
-						}
-						return t.Execute(ctx, args)
-					},
-					SandboxExec: func(ctx context.Context, command string) (string, error) {
-						if handle, ok := model.SandboxHandleFrom(ctx).(*sandbox.SandboxHandle); ok && handle != nil {
-							sb, done, err := handle.Acquire(ctx)
-							if err != nil {
-								return "", fmt.Errorf("plugin sandbox callback: %w", err)
-							}
-							defer done()
-							result, err := sb.Exec(ctx, "sh", []string{"-c", command}, sandbox.ExecOptions{})
-							if err != nil {
-								return "", err
-							}
-							return result.Stdout, nil
-						}
-						if sandboxMgr == nil {
-							return "", fmt.Errorf("plugin sandbox callback: sandbox manager not available")
-						}
-						runtimeID := model.RuntimeIDFrom(ctx)
-						if runtimeID == "" {
-							return "", fmt.Errorf("plugin sandbox callback: no runtime ID in context")
-						}
-						sb, err := sandboxMgr.Acquire(ctx, runtimeID, sandbox.AcquireOptions{
-							Mode: sandbox.ModePersistent,
-						})
-						if err != nil {
-							return "", fmt.Errorf("plugin sandbox callback: %w", err)
-						}
-						defer func() { _ = sandboxMgr.Release(runtimeID) }()
-						result, err := sb.Exec(ctx, "sh", []string{"-c", command}, sandbox.ExecOptions{})
-						if err != nil {
-							return "", err
-						}
-						return result.Stdout, nil
-					},
-					Signal: func(_ context.Context, _ string, _ any) error {
-						return nil
-					},
-				}
-				return pluginhost.NewProxyNode(def.ID, def.Type, ep.Info().ID, def.Config, resolver, host), nil
-			}
-		}
-		if jsFallback != nil {
-			return jsFallback(def, bctx)
-		}
-		return nil, fmt.Errorf("unknown node type %q for node %q", def.Type, def.ID)
-	})
-
+	// --- version store + event bus ---
 	versionStore := version.NewVersionStore(appStore)
+	graphCompiler := compiler.NewCompiler()
 
 	globalBus := event.NewMemoryBus()
 	cleanups = append(cleanups, func() { _ = globalBus.Close() })
 
-	sandboxCfg := sandbox.ManagerConfig{
-		Driver:        cfg.Sandbox.Driver,
-		Mode:          sandbox.ParseMode(cfg.Sandbox.Mode),
-		RootDir:       workspaceRoot,
-		Image:         cfg.Sandbox.Image,
-		MaxConcurrent: cfg.Sandbox.MaxConcurrent,
-		NetworkMode:   cfg.Sandbox.NetworkMode,
-		CPUQuota:      cfg.Sandbox.CPUQuota,
-		MemoryLimit:   cfg.Sandbox.MemoryLimit,
-	}
-	if sandboxCfg.Driver == "" {
-		sandboxCfg.Driver = "local"
-	}
-	if sandboxCfg.MaxConcurrent <= 0 {
-		sandboxCfg.MaxConcurrent = 10
-	}
-	if cfg.Sandbox.ExecTimeout != "" {
-		if d, err := time.ParseDuration(cfg.Sandbox.ExecTimeout); err == nil {
-			sandboxCfg.ExecTimeout = d
-		}
-	}
-	if cfg.Sandbox.IdleTimeout != "" {
-		if d, err := time.ParseDuration(cfg.Sandbox.IdleTimeout); err == nil {
-			sandboxCfg.IdleTimeout = d
-		}
-	}
-	if sandboxCfg.Driver == "docker" {
-		sandboxCfg.Mounts = buildSandboxMounts(cfg, workspaceRoot)
-	}
-	sm, err := sandbox.NewManager(ctx, sandboxCfg)
-	if err != nil {
-		telemetry.Error(ctx, "failed to initialize sandbox manager", otellog.String("error", err.Error()))
-		return fail(err)
-	}
-	sandboxMgr = sm
-	cleanups = append(cleanups, func() { _ = sandboxMgr.Close() })
-
-	toolReg.Register(&sandbox.ExecTool{Manager: sandboxMgr})
-	toolReg.Register(&sandbox.ReadTool{Manager: sandboxMgr})
-	toolReg.Register(&sandbox.WriteTool{Manager: sandboxMgr})
-	toolReg.Register(&kanban.SubmitTool{})
-	toolReg.Register(&kanban.TaskContextTool{})
-
-	skillStore := skill.NewSkillStore(ws, "skills")
-	skillStore.SetBuiltinFS(skills.BuiltinFS())
-	skillStore.SetGlobalConfig(cfg.Skills)
-	if err := skillStore.BuildIndex(ctx); err != nil {
-		telemetry.Warn(ctx, "skill: initial index build failed", otellog.String("error", err.Error()))
-	}
-	skillWatcher, swErr := skillStore.StartWatching(ctx)
-	if swErr != nil {
-		telemetry.Warn(ctx, "skill: fsnotify watcher disabled", otellog.String("error", swErr.Error()))
-	}
-	if skillWatcher != nil {
-		cleanups = append(cleanups, func() { skillWatcher.Stop() })
-	}
-
-	skillExecutor := skill.NewSkillExecutor(skillStore, sandboxMgr)
-	toolReg.Register(&skill.SkillTool{Store: skillStore, Executor: skillExecutor})
-	extract.Register(toolReg, extract.New())
-
-	pluginhost.InjectTools(pluginReg, toolReg)
-
-	ltStore := memory.NewFileLongTermStore(ws, "", memory.WithMaxEntries(0))
-
-	cpDir := filepath.Join(cfg.ConfigurePath, "checkpoints")
-	checkpointStore, err := executor.NewFileCheckpointStore(executor.FileCheckpointConfig{
-		Dir:            cpDir,
-		MaxCheckpoints: 3,
-	})
-	if err != nil {
-		telemetry.Warn(ctx, "checkpoint store disabled", otellog.String("error", err.Error()))
-		checkpointStore = nil
-	}
-
-	memStore := memory.NewFileStore(ws, "memory")
-	summaryStore := memory.NewFileSummaryStore(ws, "memory")
-	memoryFactory := func(ctx context.Context, cfg model.MemoryConfig) (memory.Memory, error) {
-		l, _ := llmResolver.Resolve(ctx, "")
-		return memory.NewWithLLM(cfg, memStore, l, ltStore,
-			memory.WithWorkspace(ws),
-			memory.WithPrefix("memory"),
-		)
-	}
-
-	memory.RegisterTools(toolReg, memory.ToolDeps{
-		SummaryStore: summaryStore,
-		MessageStore: memStore,
-		Workspace:    ws,
-		Prefix:       "memory",
-		Config:       memory.DefaultDAGConfig(),
-	})
-
-	memExtractor := memory.NewMemoryExtractor(llmResolver, ltStore, memory.LongTermConfig{Enabled: true}, memory.ExtractorConfig{})
-
-	graphExecutor := executor.NewLocalExecutor()
-	platformCfg := &realm.PlatformDeps{
-		Store:           appStore,
-		Factory:         nodeFactory,
-		Executor:        graphExecutor,
-		Workspace:       ws,
-		MemoryFactory:   memoryFactory,
-		Extractor:       memExtractor,
-		SummaryStore:    summaryStore,
-		CheckpointStore: checkpointStore,
-		StrategyResolver: func(a *model.Agent) workflow.Strategy {
-			if gd := a.StrategyDef.AsGraph(); gd != nil {
-				return adapter.FromDefinition(gd)
-			}
-			return nil
-		},
-	}
-	runtimeMgr := realm.NewSingleRealmProvider(appStore, platformCfg, sandboxCfg, sandboxCfg.IdleTimeout)
-	cleanups = append(cleanups, runtimeMgr.Close)
-
-	telemetry.Info(ctx, "kanban: board restoration enabled, persisted cards will be loaded on runtime init")
-
+	// --- metatool + knowledge tools ---
 	metatool.Register(toolReg, &metatool.Deps{
 		Store:        appStore,
 		Compiler:     graphCompiler,
@@ -426,25 +127,19 @@ func Run(ctx context.Context) (*api.Server, func(), error) {
 	toolReg.Register(knowledge.NewSearchTool(knowledgeStore))
 	toolReg.Register(knowledge.NewAddTool(knowledgeStore))
 
-	ensureCoPilotAgent(ctx, appStore, knowledgeStore, templateReg)
+	// --- realm ---
+	runtimeMgr, ltStore, realmCleanup, err := wireRealm(ctx, appStore, cfg, ws, nodeFactory, llmResolver, toolReg, sandboxCfg)
+	if err != nil {
+		return fail(err)
+	}
+	cleanups = append(cleanups, realmCleanup)
 
-	gw := initGateway(ctx, runtimeMgr, appStore)
-	nr := gateway.NewNotificationRouter(gw, appStore)
-	var schedOnce sync.Once
-	runtimeMgr.OnRealmCreated(func(r *realm.Realm) {
-		nr.SubscribeSession(ctx, r.Board())
-		go persistKanbanCards(ctx, r.Board(), appStore)
+	telemetry.Info(ctx, "kanban: board restoration enabled, persisted cards will be loaded on runtime init")
 
-		schedOnce.Do(func() {
-			go initScheduler(ctx, runtimeMgr, appStore, globalBus)
-		})
-	})
-
-	webFS, _ := fs.Sub(web.Dist, "dist")
-
-	deps := api.ServerDeps{
-		Store:      appStore,
-		RuntimeMgr: runtimeMgr,
+	// --- assemble platform ---
+	plat := &platform.Platform{
+		Store:        appStore,
+		Realms:       runtimeMgr,
 		Compiler:     graphCompiler,
 		SchemaReg:    schemaReg,
 		TemplateReg:  templateReg,
@@ -456,32 +151,38 @@ func Run(ctx context.Context) (*api.Server, func(), error) {
 		LLMResolver:  llmResolver,
 		SkillStore:   skillStore,
 		ToolRegistry: toolReg,
-		PluginDir:    pluginDir,
-		Monitoring: api.MonitoringConfig{
-			ErrorRateWarn:        cfg.Monitoring.ErrorRateWarn,
-			ErrorRateDown:        cfg.Monitoring.ErrorRateDown,
-			LatencyP95WarnMs:     cfg.Monitoring.LatencyP95WarnMs,
-			ConsecutiveBuckets:   cfg.Monitoring.ConsecutiveBuckets,
-			NoSuccessDownMinutes: cfg.Monitoring.NoSuccessDownMinutes,
-		},
 	}
-	deps.Gateway = gw
+
+	// --- seed data ---
+	ensureCoPilotAgent(ctx, appStore, knowledgeStore, templateReg)
+
+	// --- gateway + HTTP ---
+	gw := initGateway(ctx, runtimeMgr, appStore)
+	nr := gateway.NewNotificationRouter(gw, appStore)
+
+	pluginDir := cfg.Plugin.Dir
+	if pluginDir == "" {
+		pluginDir = filepath.Join(workspaceRoot, "plugins")
+	}
+
+	server := wireHTTP(cfg, plat, gw, pluginDir)
 
 	if cfg.Auth.APIKey == "" {
 		telemetry.Warn(ctx, "security: API key is not configured, authentication is disabled — set FLOWCRAFT_AUTH_API_KEY for production use")
 	}
 
-	server := api.NewServer(api.ServerConfig{
-		Host:           cfg.Server.Host,
-		Port:           cfg.Server.Port,
-		APIKey:         cfg.Auth.APIKey,
-		RateLimitRPS:   cfg.Server.RateLimitRPS,
-		RateLimitBurst: cfg.Server.RateLimitBurst,
-		MaxUploadSize:  cfg.Plugin.MaxUploadSize,
-		WebFS:          webFS,
-	}, deps)
+	// --- realm callbacks ---
+	var schedOnce sync.Once
+	runtimeMgr.OnRealmCreated(func(r *realm.Realm) {
+		nr.SubscribeSession(ctx, r.Board())
+		go persistKanbanCards(ctx, r.Board(), appStore)
 
-	return server, runCleanups, nil
+		schedOnce.Do(func() {
+			go initScheduler(ctx, runtimeMgr, appStore, globalBus)
+		})
+	})
+
+	return plat, server, runCleanups, nil
 }
 
 // persistKanbanCards watches card changes on a TaskBoard and persists

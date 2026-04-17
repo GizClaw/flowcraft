@@ -14,93 +14,61 @@ import (
 	otellog "go.opentelemetry.io/otel/log"
 )
 
-func initTelemetry(ctx context.Context, cfg *config.Config) (
-	shutdownTracer func(context.Context) error,
-	shutdownMeter func(context.Context) error,
-	shutdownLogPipeline func(context.Context) error,
-) {
-	noop := func(context.Context) error { return nil }
+func initTelemetry(ctx context.Context, cfg *config.Config) (func(context.Context) error, error) {
+	var opts []telemetry.Option
 
-	var traceOpts []telemetry.TraceOption
 	if cfg.Telemetry.Enabled && cfg.Telemetry.Endpoint != "" {
-		exporterOpts := []otlptracehttp.Option{
-			otlptracehttp.WithEndpoint(cfg.Telemetry.Endpoint),
-		}
-		if cfg.Telemetry.Insecure {
-			exporterOpts = append(exporterOpts, otlptracehttp.WithInsecure())
-		}
-		exp, err := otlptracehttp.New(ctx, exporterOpts...)
-		if err != nil {
-			slog.Error("telemetry: failed to create OTLP trace exporter", "error", err)
-		} else {
-			traceOpts = append(traceOpts, telemetry.WithExporter(exp))
-		}
-	}
-	st, err := telemetry.InitTracer(ctx, traceOpts...)
-	if err != nil {
-		slog.Error("telemetry: failed to init tracer", "error", err)
-		shutdownTracer = noop
-	} else {
-		shutdownTracer = st
+		buildOTLPOpts(cfg, ctx, &opts)
 	}
 
-	var meterOpts []telemetry.MeterOption
-	if cfg.Telemetry.Enabled && cfg.Telemetry.Endpoint != "" {
-		exporterOpts := []otlpmetrichttp.Option{
-			otlpmetrichttp.WithEndpoint(cfg.Telemetry.Endpoint),
-		}
-		if cfg.Telemetry.Insecure {
-			exporterOpts = append(exporterOpts, otlpmetrichttp.WithInsecure())
-		}
-		exp, err := otlpmetrichttp.New(ctx, exporterOpts...)
-		if err != nil {
-			slog.Error("telemetry: failed to create OTLP metric exporter", "error", err)
-		} else {
-			meterOpts = append(meterOpts, telemetry.WithMeterExporter(exp))
-		}
-	}
-	sm, err := telemetry.InitMeter(ctx, meterOpts...)
-	if err != nil {
-		slog.Error("telemetry: failed to init meter", "error", err)
-		shutdownMeter = noop
-	} else {
-		shutdownMeter = sm
-	}
-
-	logMinSev := logSeverityFromConfig(cfg.Log.Level)
-	logOpts := []telemetry.LogOption{
+	opts = append(opts, telemetry.LoggerOpts(
 		telemetry.WithLogConsole(true),
-		telemetry.WithLogMinSeverity(logMinSev),
-	}
-	if cfg.Telemetry.Enabled && cfg.Telemetry.Endpoint != "" {
-		exporterOpts := []otlploghttp.Option{
-			otlploghttp.WithEndpoint(cfg.Telemetry.Endpoint),
-		}
-		if cfg.Telemetry.Insecure {
-			exporterOpts = append(exporterOpts, otlploghttp.WithInsecure())
-		}
-		exp, err := otlploghttp.New(ctx, exporterOpts...)
-		if err != nil {
-			slog.Error("telemetry: failed to create OTLP log exporter", "error", err)
-		} else {
-			logOpts = append(logOpts, telemetry.WithLogExporter(exp))
-		}
-	}
-	sl, err := telemetry.InitLog(ctx, logOpts...)
+		telemetry.WithLogMinSeverity(logSeverityFromConfig(cfg.Log.Level)),
+	))
+
+	shutdown, err := telemetry.InitAll(ctx, opts...)
 	if err != nil {
-		slog.Error("telemetry: failed to init log pipeline", "error", err)
-		shutdownLogPipeline = noop
-	} else {
-		shutdownLogPipeline = sl
+		return nil, err
 	}
 
 	telemetry.Info(ctx, "telemetry initialized",
 		otellog.Bool("enabled", cfg.Telemetry.Enabled),
 		otellog.String("endpoint", redactEndpointForLog(cfg.Telemetry.Endpoint)))
-	return
+
+	return shutdown, nil
 }
 
-// redactEndpointForLog strips userinfo and query from OTLP endpoints before logging.
+func buildOTLPOpts(cfg *config.Config, ctx context.Context, opts *[]telemetry.Option) {
+	endpoint := cfg.Telemetry.Endpoint
+
+	traceExpOpts := []otlptracehttp.Option{otlptracehttp.WithEndpoint(endpoint)}
+	meterExpOpts := []otlpmetrichttp.Option{otlpmetrichttp.WithEndpoint(endpoint)}
+	logExpOpts := []otlploghttp.Option{otlploghttp.WithEndpoint(endpoint)}
+	if cfg.Telemetry.Insecure {
+		traceExpOpts = append(traceExpOpts, otlptracehttp.WithInsecure())
+		meterExpOpts = append(meterExpOpts, otlpmetrichttp.WithInsecure())
+		logExpOpts = append(logExpOpts, otlploghttp.WithInsecure())
+	}
+
+	if traceExp, err := otlptracehttp.New(ctx, traceExpOpts...); err != nil {
+		slog.Error("telemetry: failed to create OTLP trace exporter", "error", err)
+	} else {
+		*opts = append(*opts, telemetry.TracerOpts(telemetry.WithExporter(traceExp)))
+	}
+
+	if meterExp, err := otlpmetrichttp.New(ctx, meterExpOpts...); err != nil {
+		slog.Error("telemetry: failed to create OTLP metric exporter", "error", err)
+	} else {
+		*opts = append(*opts, telemetry.MeterOpts(telemetry.WithMeterExporter(meterExp)))
+	}
+
+	if logExp, err := otlploghttp.New(ctx, logExpOpts...); err != nil {
+		slog.Error("telemetry: failed to create OTLP log exporter", "error", err)
+	} else {
+		*opts = append(*opts, telemetry.LoggerOpts(telemetry.WithLogExporter(logExp)))
+	}
+}
+
 func redactEndpointForLog(endpoint string) string {
 	if endpoint == "" {
 		return ""

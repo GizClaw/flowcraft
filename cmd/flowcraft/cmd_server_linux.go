@@ -45,7 +45,7 @@ func runServer(cmd *cobra.Command, args []string) {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
-	server, cleanup, err := bootstrap.Run(ctx)
+	_, server, cleanup, err := bootstrap.Run(ctx)
 	if err != nil {
 		slog.Error("bootstrap failed", "error", err)
 		os.Exit(1)
