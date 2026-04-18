@@ -39,3 +39,14 @@ func (n *Native) Logs(ctx context.Context, w io.Writer) error {
 	_ = w
 	return errors.New("flowcraft logs: unsupported platform " + runtime.GOOS)
 }
+
+func (n *Native) Reset(ctx context.Context, scope ResetScope) error {
+	_ = ctx
+	_ = scope
+	return errors.New("flowcraft reset: unsupported platform " + runtime.GOOS)
+}
+
+func (n *Native) OpenWeb(ctx context.Context) error {
+	_ = ctx
+	return errors.New("flowcraft web: unsupported platform " + runtime.GOOS)
+}

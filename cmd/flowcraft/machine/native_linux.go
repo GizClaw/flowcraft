@@ -147,6 +147,42 @@ func (n *Native) Logs(ctx context.Context, w io.Writer) error {
 	return err
 }
 
+func (n *Native) Reset(ctx context.Context, scope ResetScope) error {
+	_ = n.Stop(ctx)
+	switch scope {
+	case ResetMachine:
+		_ = os.RemoveAll(paths.MachineDir())
+		_ = os.Remove(paths.PIDFile())
+		return nil
+	case ResetData:
+		return os.RemoveAll(paths.DataDir())
+	default:
+		return os.RemoveAll(paths.Root())
+	}
+}
+
+func (n *Native) OpenWeb(ctx context.Context) error {
+	if running, _ := n.pidRunning(); !running {
+		return errors.New("server is not running")
+	}
+	cfg := config.Load()
+	return exec.CommandContext(ctx, "xdg-open", baseURL(cfg)).Run()
+}
+
+func baseURL(cfg *config.Config) string {
+	host, port, err := net.SplitHostPort(cfg.Address())
+	if err != nil {
+		return "http://127.0.0.1:8080"
+	}
+	if host == "" || host == "0.0.0.0" {
+		host = "127.0.0.1"
+	}
+	if host == "[::]" {
+		host = "::1"
+	}
+	return fmt.Sprintf("http://%s", net.JoinHostPort(host, port))
+}
+
 func healthURL(cfg *config.Config) string {
 	host, port, err := net.SplitHostPort(cfg.Address())
 	if err != nil {

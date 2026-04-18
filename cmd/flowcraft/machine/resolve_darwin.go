@@ -50,3 +50,11 @@ func (a *darwinAdapter) Status(ctx context.Context) (*Status, error) {
 func (a *darwinAdapter) Logs(ctx context.Context, w io.Writer) error {
 	return a.vm.Logs(ctx, w)
 }
+
+func (a *darwinAdapter) Reset(ctx context.Context, scope ResetScope) error {
+	return a.vm.Reset(ctx, int(scope))
+}
+
+func (a *darwinAdapter) OpenWeb(ctx context.Context) error {
+	return a.vm.OpenWeb(ctx)
+}

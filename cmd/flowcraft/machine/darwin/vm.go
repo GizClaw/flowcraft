@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -172,6 +173,27 @@ func (v *VM) Stop(ctx context.Context) error {
 	return StopVfkit(pidFile, 30*time.Second)
 }
 
+// ResetScope mirrors machine.ResetScope to avoid an import cycle.
+const (
+	ScopeMachine = iota
+	ScopeData
+	ScopeAll
+)
+
+func (v *VM) Reset(ctx context.Context, scope int) error {
+	_ = v.Stop(ctx)
+	switch scope {
+	case ScopeMachine:
+		_ = os.RemoveAll(paths.MachineDir())
+		_ = os.Remove(filepath.Join(paths.DataDir(), ".provisioned"))
+		return nil
+	case ScopeData:
+		return os.RemoveAll(paths.DataDir())
+	default:
+		return os.RemoveAll(paths.Root())
+	}
+}
+
 func (v *VM) GetStatus(ctx context.Context) (*Status, error) {
 	machDir := paths.MachineDir()
 	pidFile := filepath.Join(machDir, "vfkit.pid")
@@ -200,6 +222,18 @@ func (v *VM) GetStatus(ctx context.Context) (*Status, error) {
 	defer resp.Body.Close()
 	st.HealthzOK = resp.StatusCode == http.StatusOK
 	return st, nil
+}
+
+func (v *VM) OpenWeb(ctx context.Context) error {
+	machDir := paths.MachineDir()
+	guestIP, err := readGuestIP(machDir)
+	if err != nil {
+		return errors.New("server is not running (no guest IP)")
+	}
+	cfg := config.Load()
+	port := serverPort(cfg)
+	url := fmt.Sprintf("http://%s:%d", guestIP, port)
+	return exec.CommandContext(ctx, "open", url).Run()
 }
 
 func (v *VM) Logs(_ context.Context, w io.Writer) error {

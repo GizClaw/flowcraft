@@ -13,10 +13,21 @@ type Status struct {
 	HealthzOK bool
 }
 
+// ResetScope selects what to clean during a reset.
+type ResetScope int
+
+const (
+	ResetMachine ResetScope = iota // VM / machine state only; preserves user data
+	ResetData                      // user data only; preserves machine
+	ResetAll                       // everything under ~/.flowcraft
+)
+
 // Machine manages the lifecycle of the minimal `flowcraft server` child (Linux).
 type Machine interface {
 	Start(ctx context.Context) error
 	Stop(ctx context.Context) error
 	Status(ctx context.Context) (*Status, error)
 	Logs(ctx context.Context, w io.Writer) error
+	Reset(ctx context.Context, scope ResetScope) error
+	OpenWeb(ctx context.Context) error
 }
