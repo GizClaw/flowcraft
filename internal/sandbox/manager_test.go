@@ -9,6 +9,7 @@ import (
 )
 
 func TestManager_AcquireRelease(t *testing.T) {
+	skipIfNotLinux(t)
 	cfg := DefaultManagerConfig()
 	cfg.RootDir = t.TempDir()
 	m, err := NewManager(context.Background(), cfg)
@@ -34,6 +35,7 @@ func TestManager_AcquireRelease(t *testing.T) {
 }
 
 func TestManager_SameSession(t *testing.T) {
+	skipIfNotLinux(t)
 	cfg := DefaultManagerConfig()
 	cfg.RootDir = t.TempDir()
 	m, err := NewManager(context.Background(), cfg)
@@ -57,6 +59,7 @@ func TestManager_SameSession(t *testing.T) {
 }
 
 func TestManager_MaxConcurrent(t *testing.T) {
+	skipIfNotLinux(t)
 	cfg := DefaultManagerConfig()
 	cfg.RootDir = t.TempDir()
 	cfg.MaxConcurrent = 2
@@ -76,6 +79,7 @@ func TestManager_MaxConcurrent(t *testing.T) {
 }
 
 func TestManager_Ephemeral(t *testing.T) {
+	skipIfNotLinux(t)
 	cfg := DefaultManagerConfig()
 	cfg.RootDir = t.TempDir()
 	m, err := NewManager(context.Background(), cfg)
@@ -96,6 +100,7 @@ func TestManager_Ephemeral(t *testing.T) {
 }
 
 func TestManager_CloseIdempotent(t *testing.T) {
+	skipIfNotLinux(t)
 	cfg := DefaultManagerConfig()
 	cfg.RootDir = t.TempDir()
 	m, err := NewManager(context.Background(), cfg)
@@ -108,6 +113,7 @@ func TestManager_CloseIdempotent(t *testing.T) {
 }
 
 func TestManager_CloseDestroysAll(t *testing.T) {
+	skipIfNotLinux(t)
 	cfg := DefaultManagerConfig()
 	cfg.RootDir = t.TempDir()
 	m, err := NewManager(context.Background(), cfg)
@@ -125,6 +131,7 @@ func TestManager_CloseDestroysAll(t *testing.T) {
 }
 
 func TestManager_CircuitBreaker_Success(t *testing.T) {
+	skipIfNotLinux(t)
 	cfg := DefaultManagerConfig()
 	cfg.RootDir = t.TempDir()
 	m, err := NewManager(context.Background(), cfg)
@@ -187,6 +194,7 @@ func TestParseMode(t *testing.T) {
 // --- SB-22: Manager local 分支创建的 sandbox 包含 skills/ 和 data/ 软链接 ---
 
 func TestManager_LocalBranch_CreatesSymlinks(t *testing.T) {
+	skipIfNotLinux(t)
 	workspaceRoot := t.TempDir()
 	skillsDir := filepath.Join(workspaceRoot, "skills")
 	dataDir := filepath.Join(workspaceRoot, "data")
@@ -235,6 +243,7 @@ func TestManager_LocalBranch_CreatesSymlinks(t *testing.T) {
 }
 
 func TestManager_LocalBranch_SkillReadable(t *testing.T) {
+	skipIfNotLinux(t)
 	workspaceRoot := t.TempDir()
 	skillDir := filepath.Join(workspaceRoot, "skills", "demo")
 	if err := os.MkdirAll(skillDir, 0o755); err != nil {
@@ -270,6 +279,7 @@ func TestManager_LocalBranch_SkillReadable(t *testing.T) {
 }
 
 func TestManager_LocalIsolation_CachedAcrossSandboxes(t *testing.T) {
+	skipIfNotLinux(t)
 	workspaceRoot := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(workspaceRoot, "skills"), 0o755); err != nil {
 		t.Fatal(err)
@@ -315,6 +325,7 @@ func TestManager_LocalIsolation_CachedAcrossSandboxes(t *testing.T) {
 }
 
 func TestManager_Config(t *testing.T) {
+	skipIfNotLinux(t)
 	cfg := DefaultManagerConfig()
 	cfg.RootDir = t.TempDir()
 	cfg.NetworkMode = "bridge"

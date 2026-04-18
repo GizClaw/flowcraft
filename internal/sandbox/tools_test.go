@@ -15,6 +15,7 @@ import (
 // --- SB-21: ExecTool.Execute 带有默认超时 ---
 
 func TestExecTool_DefaultTimeout(t *testing.T) {
+	skipIfNotLinux(t)
 	cfg := DefaultManagerConfig()
 	cfg.RootDir = t.TempDir()
 	cfg.ExecTimeout = 500 * time.Millisecond
@@ -42,6 +43,7 @@ func TestExecTool_DefaultTimeout(t *testing.T) {
 }
 
 func TestExecTool_CustomTimeout_ExceedsDefault(t *testing.T) {
+	skipIfNotLinux(t)
 	cfg := DefaultManagerConfig()
 	cfg.RootDir = t.TempDir()
 	cfg.ExecTimeout = 500 * time.Millisecond
@@ -71,6 +73,7 @@ func TestExecTool_CustomTimeout_ExceedsDefault(t *testing.T) {
 }
 
 func TestExecTool_CustomTimeout_Shorter(t *testing.T) {
+	skipIfNotLinux(t)
 	cfg := DefaultManagerConfig()
 	cfg.RootDir = t.TempDir()
 	cfg.ExecTimeout = 10 * time.Second
@@ -99,6 +102,7 @@ func TestExecTool_CustomTimeout_Shorter(t *testing.T) {
 }
 
 func TestExecTool_NoRuntimeID(t *testing.T) {
+	skipIfNotLinux(t)
 	cfg := DefaultManagerConfig()
 	cfg.RootDir = t.TempDir()
 	m, err := NewManager(context.Background(), cfg)
@@ -115,6 +119,7 @@ func TestExecTool_NoRuntimeID(t *testing.T) {
 }
 
 func TestExecTool_UsesSandboxHandleWithoutRuntimeID(t *testing.T) {
+	skipIfNotLinux(t)
 	cfg := DefaultManagerConfig()
 	cfg.RootDir = t.TempDir()
 	cfg.ExecTimeout = 2 * time.Second

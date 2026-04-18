@@ -10,7 +10,9 @@ import (
 
 	"github.com/GizClaw/flowcraft/internal/config"
 	"github.com/GizClaw/flowcraft/internal/store"
+	"github.com/GizClaw/flowcraft/sdk/telemetry"
 	"github.com/spf13/cobra"
+	otellog "go.opentelemetry.io/otel/log"
 )
 
 const settingJWTSecret = "jwt_secret"
@@ -46,8 +48,9 @@ var secretShowCmd = &cobra.Command{
 
 		hash := sha256.Sum256([]byte(secret))
 		fingerprint := hex.EncodeToString(hash[:8])
-		fmt.Printf("JWT secret fingerprint: %s\n", fingerprint)
-		fmt.Printf("Secret length: %d bytes\n", len(secret))
+		telemetry.Info(ctx, "secret: JWT fingerprint",
+			otellog.String("fingerprint", fingerprint),
+			otellog.Int("length", len(secret)))
 		return nil
 	},
 }
@@ -75,9 +78,8 @@ var secretRotateCmd = &cobra.Command{
 
 		hash := sha256.Sum256([]byte(encoded))
 		fingerprint := hex.EncodeToString(hash[:8])
-		fmt.Println("JWT secret rotated successfully.")
-		fmt.Printf("New fingerprint: %s\n", fingerprint)
-		fmt.Println("All existing JWT tokens are now invalid. Users must re-login.")
+		telemetry.Info(ctx, "secret: JWT secret rotated", otellog.String("fingerprint", fingerprint))
+		telemetry.Warn(ctx, "secret: all existing JWT tokens are now invalid")
 		return nil
 	},
 }

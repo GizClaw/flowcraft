@@ -21,6 +21,11 @@ func ConfigFile() string {
 	return filepath.Join(Root(), "config.yaml")
 }
 
+// BinDir returns ~/.flowcraft/bin.
+func BinDir() string {
+	return filepath.Join(Root(), "bin")
+}
+
 // DataDir returns ~/.flowcraft/data.
 func DataDir() string {
 	return filepath.Join(Root(), "data")
@@ -48,7 +53,7 @@ func ServerLogFile() string {
 
 // EnsureLayout creates ~/.flowcraft subdirectories if missing.
 func EnsureLayout() error {
-	for _, d := range []string{Root(), DataDir(), LogsDir(), MachineDir()} {
+	for _, d := range []string{Root(), BinDir(), DataDir(), LogsDir(), MachineDir()} {
 		if err := os.MkdirAll(d, 0o755); err != nil {
 			return err
 		}

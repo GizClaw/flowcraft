@@ -1,6 +1,9 @@
 SHELL := /bin/bash
 .DEFAULT_GOAL := help
 
+VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+LDFLAGS := -X main.cliVersion=$(VERSION)
+
 # Sub-modules managed by go.work
 WORKSPACE_MODULES := sdk sdkx examples/voice-pipeline
 
@@ -37,7 +40,7 @@ tidy:
 
 .PHONY: build
 build:
-	@echo "==> build flowcraft"; GOWORK=off go build -o bin/flowcraft ./cmd/flowcraft
+	@echo "==> build flowcraft ($(VERSION))"; GOWORK=off go build -ldflags '$(LDFLAGS)' -o bin/flowcraft ./cmd/flowcraft
 
 .PHONY: ci
 ci: vet test

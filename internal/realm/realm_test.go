@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -18,8 +19,16 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/workflow"
 )
 
+func skipIfNotLinux(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS != "linux" {
+		t.Skipf("sandbox requires Linux (current: %s)", runtime.GOOS)
+	}
+}
+
 func newRuntimeSandboxConfig(t *testing.T) sandbox.ManagerConfig {
 	t.Helper()
+	skipIfNotLinux(t)
 	root := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(root, "skills"), 0o755); err != nil {
 		t.Fatal(err)

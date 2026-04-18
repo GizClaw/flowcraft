@@ -9,6 +9,7 @@ import (
 )
 
 func TestLocalSandbox_ExecEcho(t *testing.T) {
+	skipIfNotLinux(t)
 	dir := t.TempDir()
 	sb, err := NewLocalSandbox("test-1", dir)
 	if err != nil {
@@ -29,6 +30,7 @@ func TestLocalSandbox_ExecEcho(t *testing.T) {
 }
 
 func TestLocalSandbox_ExecWithTimeout(t *testing.T) {
+	skipIfNotLinux(t)
 	dir := t.TempDir()
 	sb, err := NewLocalSandbox("test-2", dir)
 	if err != nil {
@@ -51,6 +53,7 @@ func TestLocalSandbox_ExecWithTimeout(t *testing.T) {
 }
 
 func TestLocalSandbox_ExecWithTimeout_ChildProcess(t *testing.T) {
+	skipIfNotLinux(t)
 	dir := t.TempDir()
 	sb, err := NewLocalSandbox("test-child-timeout", dir)
 	if err != nil {
@@ -72,6 +75,7 @@ func TestLocalSandbox_ExecWithTimeout_ChildProcess(t *testing.T) {
 }
 
 func TestLocalSandbox_ReadWriteFile(t *testing.T) {
+	skipIfNotLinux(t)
 	dir := t.TempDir()
 	sb, err := NewLocalSandbox("test-3", dir)
 	if err != nil {
@@ -95,6 +99,7 @@ func TestLocalSandbox_ReadWriteFile(t *testing.T) {
 }
 
 func TestLocalSandbox_ReadNotFound(t *testing.T) {
+	skipIfNotLinux(t)
 	dir := t.TempDir()
 	sb, err := NewLocalSandbox("test-4", dir)
 	if err != nil {
@@ -109,6 +114,7 @@ func TestLocalSandbox_ReadNotFound(t *testing.T) {
 }
 
 func TestLocalSandbox_PathTraversal(t *testing.T) {
+	skipIfNotLinux(t)
 	dir := t.TempDir()
 	sb, err := NewLocalSandbox("test-5", dir)
 	if err != nil {
@@ -123,6 +129,7 @@ func TestLocalSandbox_PathTraversal(t *testing.T) {
 }
 
 func TestLocalSandbox_NestedDirs(t *testing.T) {
+	skipIfNotLinux(t)
 	dir := t.TempDir()
 	sb, err := NewLocalSandbox("test-6", dir)
 	if err != nil {
@@ -146,6 +153,7 @@ func TestLocalSandbox_NestedDirs(t *testing.T) {
 }
 
 func TestLocalSandbox_Closed(t *testing.T) {
+	skipIfNotLinux(t)
 	dir := t.TempDir()
 	sb, err := NewLocalSandbox("test-7", dir)
 	if err != nil {
@@ -167,6 +175,7 @@ func TestLocalSandbox_Closed(t *testing.T) {
 }
 
 func TestLocalSandbox_ID(t *testing.T) {
+	skipIfNotLinux(t)
 	dir := t.TempDir()
 	sb, err := NewLocalSandbox("my-id", dir)
 	if err != nil {
@@ -179,6 +188,7 @@ func TestLocalSandbox_ID(t *testing.T) {
 }
 
 func TestLocalSandbox_RootDir(t *testing.T) {
+	skipIfNotLinux(t)
 	dir := t.TempDir()
 	sb, err := NewLocalSandbox("test-8", dir)
 	if err != nil {
@@ -193,6 +203,7 @@ func TestLocalSandbox_RootDir(t *testing.T) {
 }
 
 func TestLocalSandbox_ExecEnv(t *testing.T) {
+	skipIfNotLinux(t)
 	dir := t.TempDir()
 	sb, err := NewLocalSandbox("test-9", dir)
 	if err != nil {
@@ -212,6 +223,7 @@ func TestLocalSandbox_ExecEnv(t *testing.T) {
 }
 
 func TestLocalSandbox_ExecWorkDir(t *testing.T) {
+	skipIfNotLinux(t)
 	dir := t.TempDir()
 	subDir := filepath.Join(dir, "sub")
 	_ = os.MkdirAll(subDir, 0o755)
@@ -234,6 +246,7 @@ func TestLocalSandbox_ExecWorkDir(t *testing.T) {
 }
 
 func TestLocalSandbox_ExecNonZeroExit(t *testing.T) {
+	skipIfNotLinux(t)
 	dir := t.TempDir()
 	sb, err := NewLocalSandbox("test-11", dir)
 	if err != nil {
@@ -251,6 +264,7 @@ func TestLocalSandbox_ExecNonZeroExit(t *testing.T) {
 }
 
 func TestLocalSandbox_ExecEcho_WithIsolation(t *testing.T) {
+	skipIfNotLinux(t)
 	dir := t.TempDir()
 	sb, err := NewLocalSandbox("test-isolation", dir)
 	if err != nil {
@@ -273,6 +287,7 @@ func TestLocalSandbox_ExecEcho_WithIsolation(t *testing.T) {
 }
 
 func TestLocalSandbox_IsolationBackendLogged(t *testing.T) {
+	skipIfNotLinux(t)
 	dir := t.TempDir()
 	sb, err := NewLocalSandbox("test-backend-log", dir)
 	if err != nil {
@@ -280,28 +295,28 @@ func TestLocalSandbox_IsolationBackendLogged(t *testing.T) {
 	}
 	defer func() { _ = sb.Close() }()
 
-	backend := sb.isolation.backend.String()
-	if backend != "bare" && backend != "bubblewrap" {
-		t.Fatalf("unexpected backend: %s", backend)
+	if sb.isolation.backend != backendBubblewrap {
+		t.Fatalf("expected bubblewrap, got %s", sb.isolation.backend)
 	}
-	t.Logf("detected backend: %s", backend)
 }
 
 func TestLocalSandbox_WithIsolationOption(t *testing.T) {
+	skipIfNotLinux(t)
 	dir := t.TempDir()
-	injected := probeResult{backend: backendBare}
+	injected := probeResult{backend: backendBubblewrap, bwrapPath: "/usr/bin/bwrap"}
 	sb, err := NewLocalSandbox("test-inject", dir, WithIsolation(injected))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = sb.Close() }()
 
-	if sb.isolation.backend != backendBare {
-		t.Fatalf("expected injected bare backend, got %s", sb.isolation.backend)
+	if sb.isolation.backend != backendBubblewrap {
+		t.Fatalf("expected injected bubblewrap backend, got %s", sb.isolation.backend)
 	}
 }
 
 func TestLocalSandbox_ExecTimeout_ProcessCleanup(t *testing.T) {
+	skipIfNotLinux(t)
 	dir := t.TempDir()
 	sb, err := NewLocalSandbox("test-cleanup", dir)
 	if err != nil {
@@ -321,6 +336,7 @@ func TestLocalSandbox_ExecTimeout_ProcessCleanup(t *testing.T) {
 }
 
 func TestLocalSandbox_ExecWithWorkDir_SubDir(t *testing.T) {
+	skipIfNotLinux(t)
 	dir := t.TempDir()
 	subDir := filepath.Join(dir, "mywork")
 	_ = os.MkdirAll(subDir, 0o755)

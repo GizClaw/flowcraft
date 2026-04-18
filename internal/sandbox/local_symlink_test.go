@@ -11,6 +11,7 @@ import (
 // --- SB-14: WithSymlinks 创建软链接后 ReadFile/Exec 可达 ---
 
 func TestWithSymlinks_ReadFile(t *testing.T) {
+	skipIfNotLinux(t)
 	workspaceRoot := t.TempDir()
 	skillsDir := filepath.Join(workspaceRoot, "skills", "demo")
 	if err := os.MkdirAll(skillsDir, 0o755); err != nil {
@@ -39,6 +40,7 @@ func TestWithSymlinks_ReadFile(t *testing.T) {
 }
 
 func TestWithSymlinks_Exec(t *testing.T) {
+	skipIfNotLinux(t)
 	workspaceRoot := t.TempDir()
 	skillsDir := filepath.Join(workspaceRoot, "skills", "demo")
 	if err := os.MkdirAll(skillsDir, 0o755); err != nil {
@@ -66,6 +68,7 @@ func TestWithSymlinks_Exec(t *testing.T) {
 }
 
 func TestWithSymlinks_WriteFile(t *testing.T) {
+	skipIfNotLinux(t)
 	workspaceRoot := t.TempDir()
 	dataDir := filepath.Join(workspaceRoot, "data")
 	if err := os.MkdirAll(dataDir, 0o755); err != nil {
@@ -96,6 +99,7 @@ func TestWithSymlinks_WriteFile(t *testing.T) {
 }
 
 func TestWithSymlinks_Idempotent(t *testing.T) {
+	skipIfNotLinux(t)
 	workspaceRoot := t.TempDir()
 	skillsDir := filepath.Join(workspaceRoot, "skills")
 	if err := os.MkdirAll(skillsDir, 0o755); err != nil {
@@ -131,6 +135,7 @@ func TestWithSymlinks_Idempotent(t *testing.T) {
 // --- SB-15: resolvePath 白名单路径放行 ---
 
 func TestResolvePath_AllowedSymlink(t *testing.T) {
+	skipIfNotLinux(t)
 	workspaceRoot := t.TempDir()
 	skillsDir := filepath.Join(workspaceRoot, "skills")
 	if err := os.MkdirAll(filepath.Join(skillsDir, "demo"), 0o755); err != nil {
@@ -157,6 +162,7 @@ func TestResolvePath_AllowedSymlink(t *testing.T) {
 }
 
 func TestResolvePath_AllowedSymlink_NestedFile(t *testing.T) {
+	skipIfNotLinux(t)
 	workspaceRoot := t.TempDir()
 	skillsDir := filepath.Join(workspaceRoot, "skills")
 	subDir := filepath.Join(skillsDir, "analysis")
@@ -183,6 +189,7 @@ func TestResolvePath_AllowedSymlink_NestedFile(t *testing.T) {
 }
 
 func TestResolvePath_LocalFilesStillWork(t *testing.T) {
+	skipIfNotLinux(t)
 	sandboxRoot := t.TempDir()
 	sb, err := NewLocalSandbox("sess7", sandboxRoot)
 	if err != nil {
@@ -203,6 +210,7 @@ func TestResolvePath_LocalFilesStillWork(t *testing.T) {
 // --- SB-16: resolvePath 非白名单 symlink escape 拒绝 ---
 
 func TestResolvePath_UnauthorizedSymlink_Rejected(t *testing.T) {
+	skipIfNotLinux(t)
 	workspaceRoot := t.TempDir()
 	secretDir := filepath.Join(workspaceRoot, "secrets")
 	if err := os.MkdirAll(secretDir, 0o755); err != nil {
@@ -237,6 +245,7 @@ func TestResolvePath_UnauthorizedSymlink_Rejected(t *testing.T) {
 }
 
 func TestResolvePath_PathTraversal_StillRejected(t *testing.T) {
+	skipIfNotLinux(t)
 	workspaceRoot := t.TempDir()
 	skillsDir := filepath.Join(workspaceRoot, "skills")
 	if err := os.MkdirAll(skillsDir, 0o755); err != nil {
@@ -264,6 +273,7 @@ func TestResolvePath_PathTraversal_StillRejected(t *testing.T) {
 // --- SymlinkSpec ReadOnly flag verification ---
 
 func TestSymlinkSpec_ReadOnlyTargetClassification(t *testing.T) {
+	skipIfNotLinux(t)
 	workspaceRoot := t.TempDir()
 	skillsDir := filepath.Join(workspaceRoot, "skills")
 	dataDir := filepath.Join(workspaceRoot, "data")
@@ -309,6 +319,7 @@ func TestSymlinkSpec_ReadOnlyTargetClassification(t *testing.T) {
 }
 
 func TestSymlinkSpec_AllTargetsContainsBoth(t *testing.T) {
+	skipIfNotLinux(t)
 	workspaceRoot := t.TempDir()
 	skillsDir := filepath.Join(workspaceRoot, "skills")
 	dataDir := filepath.Join(workspaceRoot, "data")

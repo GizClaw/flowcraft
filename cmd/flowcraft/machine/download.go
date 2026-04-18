@@ -9,67 +9,140 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
 
 	"github.com/GizClaw/flowcraft/internal/paths"
+	"github.com/GizClaw/flowcraft/sdk/telemetry"
+	otellog "go.opentelemetry.io/otel/log"
 )
 
 const (
 	defaultRepo   = "GizClaw/flowcraft"
 	releaseURLFmt = "https://github.com/%s/releases/download/%s/%s"
 	latestURLFmt  = "https://api.github.com/repos/%s/releases/latest"
+
+	debianCloudBase    = "https://cloud.debian.org/images/cloud/bookworm/latest"
+	debianImageVersion = "12"
 )
 
 // ImageKind selects which runtime image to download.
 type ImageKind int
 
 const (
-	ImageQCOW2  ImageKind = iota // macOS VM image
-	ImageRootFS                  // Windows WSL rootfs tarball
-	ImageOCI                     // Docker/K8s OCI image (for reference)
+	ImageDisk     ImageKind = iota // Debian genericcloud raw disk (downloaded as tar.xz, extracted)
+	ImageLinuxBin                  // Linux server binary
 )
 
-func (k ImageKind) filename(version, arch string) string {
-	switch k {
-	case ImageQCOW2:
-		return fmt.Sprintf("flowcraft-vm-%s-%s.qcow2", version, arch)
-	case ImageRootFS:
-		return fmt.Sprintf("flowcraft-wsl-%s-amd64.tar.gz", version)
-	default:
-		return fmt.Sprintf("flowcraft-runtime-%s-%s.tar.gz", version, arch)
+func debianArch() string {
+	if runtime.GOARCH == "arm64" {
+		return "arm64"
 	}
+	return "amd64"
 }
 
-// EnsureImage downloads the runtime image for the given version if not already cached.
-// Returns the path to the cached image file.
+// EnsureImage downloads the runtime image if not already cached.
+// For ImageDisk, it downloads the official Debian nocloud tar.xz and extracts
+// the raw image. For others, it downloads from GitHub releases.
 func EnsureImage(ctx context.Context, version string, kind ImageKind) (string, error) {
 	if err := paths.EnsureLayout(); err != nil {
 		return "", err
 	}
 
-	arch := runtime.GOARCH
-	name := kind.filename(version, arch)
-	cached := filepath.Join(paths.MachineDir(), name)
+	switch kind {
+	case ImageDisk:
+		return ensureDebianDisk(ctx)
+	case ImageLinuxBin:
+		asset := fmt.Sprintf("flowcraft-linux-%s", runtime.GOARCH)
+		dst := filepath.Join(paths.BinDir(), "flowcraft")
+		if _, err := os.Stat(dst); err == nil {
+			return dst, nil
+		}
+		src, err := ensureGitHubAsset(ctx, version, asset, paths.BinDir())
+		if err != nil {
+			return "", err
+		}
+		if src != dst {
+			if err := os.Rename(src, dst); err != nil {
+				return "", fmt.Errorf("rename linux binary: %w", err)
+			}
+		}
+		if err := os.Chmod(dst, 0o755); err != nil {
+			return "", err
+		}
+		return dst, nil
+	default:
+		return "", fmt.Errorf("unknown image kind: %d", kind)
+	}
+}
 
+func ensureDebianDisk(ctx context.Context) (string, error) {
+	rawPath := filepath.Join(paths.MachineDir(), "disk.raw")
+
+	if _, err := os.Stat(rawPath); err == nil {
+		return rawPath, nil
+	}
+
+	arch := debianArch()
+	tarName := fmt.Sprintf("debian-%s-genericcloud-%s.tar.xz", debianImageVersion, arch)
+	tarPath := filepath.Join(paths.MachineDir(), tarName)
+	url := fmt.Sprintf("%s/%s", debianCloudBase, tarName)
+
+	telemetry.Info(ctx, "download: fetching Debian cloud image", otellog.String("file", tarName))
+	if err := downloadFile(ctx, url, tarPath); err != nil {
+		return "", fmt.Errorf("download %s: %w", tarName, err)
+	}
+
+	telemetry.Info(ctx, "download: extracting disk image")
+	if err := extractTarXZ(tarPath, paths.MachineDir()); err != nil {
+		return "", fmt.Errorf("extract %s: %w", tarName, err)
+	}
+
+	_ = os.Remove(tarPath)
+
+	extractedName := fmt.Sprintf("debian-%s-genericcloud-%s.raw", debianImageVersion, arch)
+	extractedPath := filepath.Join(paths.MachineDir(), extractedName)
+	if _, err := os.Stat(extractedPath); err == nil {
+		if err := os.Rename(extractedPath, rawPath); err != nil {
+			return "", fmt.Errorf("rename %s → disk.raw: %w", extractedName, err)
+		}
+	}
+
+	if _, err := os.Stat(rawPath); err != nil {
+		return "", fmt.Errorf("expected disk.raw after extraction but not found")
+	}
+
+	telemetry.Info(ctx, "download: disk image cached", otellog.String("path", rawPath))
+	return rawPath, nil
+}
+
+// extractTarXZ extracts a .tar.xz archive into destDir using the system tar.
+func extractTarXZ(archive, destDir string) error {
+	cmd := exec.Command("tar", "xJf", archive, "-C", destDir)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
+func ensureGitHubAsset(ctx context.Context, version, name, dir string) (string, error) {
+	cached := filepath.Join(dir, name)
 	if _, err := os.Stat(cached); err == nil {
 		return cached, nil
 	}
 
-	repo := defaultRepo
-	url := fmt.Sprintf(releaseURLFmt, repo, version, name)
-
-	fmt.Printf("Downloading runtime image %s ...\n", name)
+	url := fmt.Sprintf(releaseURLFmt, defaultRepo, version, name)
+	telemetry.Info(ctx, "download: fetching asset", otellog.String("name", name))
 	if err := downloadFile(ctx, url, cached); err != nil {
 		return "", fmt.Errorf("download %s: %w", name, err)
 	}
-	fmt.Printf("Cached at %s\n", cached)
+	telemetry.Info(ctx, "download: asset cached", otellog.String("path", cached))
 	return cached, nil
 }
 
-// CheckVersionMismatch compares the CLI version against the cached runtime
-// image version. Returns the latest release version if an update is available.
+// CheckVersionMismatch compares the CLI version against the latest GitHub
+// release. Returns the latest version if an update is available.
 func CheckVersionMismatch(ctx context.Context, cliVersion string) (latestVersion string, needsUpdate bool, err error) {
 	latest, err := fetchLatestRelease(ctx)
 	if err != nil {

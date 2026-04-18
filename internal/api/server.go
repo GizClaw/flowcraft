@@ -108,6 +108,13 @@ func NewServer(cfg ServerConfig, deps ServerDeps, jwtCfg *JWTConfig) *Server {
 	mux.HandleFunc("GET /api/auth/session", s.handleAuthSession)
 	mux.HandleFunc("POST /api/auth/change-password", s.handleChangePassword)
 
+	// Health check at root level (also defined in OpenAPI under /api/).
+	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"status":"ok"}`))
+	})
+
 	// WebSocket is not covered by OpenAPI.
 	mux.HandleFunc("GET /api/ws", s.handleWS)
 
@@ -116,8 +123,15 @@ func NewServer(cfg ServerConfig, deps ServerDeps, jwtCfg *JWTConfig) *Server {
 		mux.HandleFunc("POST /api/webhook/{channel}", s.deps.Gateway.HandleWebhook)
 	}
 
-	// SPA fallback.
-	mux.HandleFunc("GET /", s.handleSPA)
+	// SPA fallback: method-agnostic "/" is less specific than "/api/" in all
+	// dimensions, so no conflict. Only serve SPA for GET requests.
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.NotFound(w, r)
+			return
+		}
+		s.handleSPA(w, r)
+	})
 
 	handler := s.middleware(mux)
 	s.server = &http.Server{

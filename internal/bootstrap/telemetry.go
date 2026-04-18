@@ -2,7 +2,6 @@ package bootstrap
 
 import (
 	"context"
-	"log/slog"
 	"net/url"
 
 	"github.com/GizClaw/flowcraft/internal/config"
@@ -51,19 +50,19 @@ func buildOTLPOpts(cfg *config.Config, ctx context.Context, opts *[]telemetry.Op
 	}
 
 	if traceExp, err := otlptracehttp.New(ctx, traceExpOpts...); err != nil {
-		slog.Error("telemetry: failed to create OTLP trace exporter", "error", err)
+		telemetry.Error(ctx, "telemetry: failed to create OTLP trace exporter", otellog.String("error", err.Error()))
 	} else {
 		*opts = append(*opts, telemetry.TracerOpts(telemetry.WithExporter(traceExp)))
 	}
 
 	if meterExp, err := otlpmetrichttp.New(ctx, meterExpOpts...); err != nil {
-		slog.Error("telemetry: failed to create OTLP metric exporter", "error", err)
+		telemetry.Error(ctx, "telemetry: failed to create OTLP metric exporter", otellog.String("error", err.Error()))
 	} else {
 		*opts = append(*opts, telemetry.MeterOpts(telemetry.WithMeterExporter(meterExp)))
 	}
 
 	if logExp, err := otlploghttp.New(ctx, logExpOpts...); err != nil {
-		slog.Error("telemetry: failed to create OTLP log exporter", "error", err)
+		telemetry.Error(ctx, "telemetry: failed to create OTLP log exporter", otellog.String("error", err.Error()))
 	} else {
 		*opts = append(*opts, telemetry.LoggerOpts(telemetry.WithLogExporter(logExp)))
 	}

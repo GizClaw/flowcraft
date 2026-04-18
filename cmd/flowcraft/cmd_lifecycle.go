@@ -2,18 +2,20 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"os"
 	"runtime"
 
 	"github.com/GizClaw/flowcraft/cmd/flowcraft/machine"
+	"github.com/GizClaw/flowcraft/sdk/telemetry"
 	"github.com/spf13/cobra"
+	otellog "go.opentelemetry.io/otel/log"
 )
 
-const cliVersion = "0.5.0"
+// Set at build time via: go build -ldflags "-X main.cliVersion=..."
+var cliVersion = "dev"
 
 func resolveMachine() machine.Machine {
-	return machine.Resolve(cliVersion)
+	return machine.NewMachine(cliVersion)
 }
 
 func init() {
@@ -34,8 +36,8 @@ Runtime images are downloaded automatically on first use.`,
 		if runtime.GOOS != "linux" {
 			latest, needsUpdate, err := machine.CheckVersionMismatch(ctx, cliVersion)
 			if err == nil && needsUpdate {
-				fmt.Printf("Note: a newer runtime version %s is available (CLI is %s).\n", latest, cliVersion)
-				fmt.Println("The updated image will be downloaded automatically.")
+				telemetry.Warn(ctx, "cli: newer runtime version available",
+					otellog.String("latest", latest), otellog.String("current", cliVersion))
 			}
 		}
 
@@ -55,11 +57,15 @@ var statusCmd = &cobra.Command{
 	Use:   "status",
 	Short: "Show FlowCraft server status",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		st, err := resolveMachine().Status(context.Background())
+		ctx := context.Background()
+		st, err := resolveMachine().Status(ctx)
 		if err != nil {
 			return err
 		}
-		fmt.Fprintf(os.Stdout, "running=%v pid=%d healthz_ok=%v\n", st.Running, st.PID, st.HealthzOK)
+		telemetry.Info(ctx, "cli: server status",
+			otellog.Bool("running", st.Running),
+			otellog.Int("pid", st.PID),
+			otellog.Bool("healthz_ok", st.HealthzOK))
 		return nil
 	},
 }

@@ -5,7 +5,15 @@ import (
 	"testing"
 )
 
+func skipIfNotLinux(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS != "linux" {
+		t.Skipf("sandbox requires Linux (current: %s)", runtime.GOOS)
+	}
+}
+
 func TestProbeIsolation_Deterministic(t *testing.T) {
+	skipIfNotLinux(t)
 	r1, err1 := probeIsolation()
 	r2, err2 := probeIsolation()
 	if (err1 == nil) != (err2 == nil) {
@@ -16,43 +24,30 @@ func TestProbeIsolation_Deterministic(t *testing.T) {
 	}
 }
 
-func TestProbeIsolation_BareOnNonLinux(t *testing.T) {
+func TestProbeIsolation_ErrorOnNonLinux(t *testing.T) {
 	if runtime.GOOS == "linux" {
 		t.Skip("only runs on non-Linux")
 	}
-	r, err := probeIsolation()
-	if err != nil {
-		t.Fatalf("expected no error on non-Linux, got %v", err)
-	}
-	if r.backend != backendBare {
-		t.Fatalf("expected bare on %s, got %s", runtime.GOOS, r.backend)
+	_, err := probeIsolation()
+	if err == nil {
+		t.Fatal("expected error on non-Linux")
 	}
 }
 
-func TestProbeIsolation_SmokeTestCoversPermissions(t *testing.T) {
+func TestProbeIsolation_SmokeTest(t *testing.T) {
+	skipIfNotLinux(t)
 	r, err := probeIsolation()
 	if err != nil {
-		t.Logf("probeIsolation returned error (expected on Linux without bwrap): %v", err)
-		return
+		t.Skipf("bwrap not available: %v", err)
 	}
 	t.Logf("probeIsolation: backend=%s, bwrapPath=%s", r.backend, r.bwrapPath)
-
-	if r.backend == backendBubblewrap && r.bwrapPath == "" {
+	if r.bwrapPath == "" {
 		t.Fatal("bubblewrap backend should have non-empty bwrapPath")
 	}
 }
 
 func TestIsolationBackend_String(t *testing.T) {
-	tests := []struct {
-		backend isolationBackend
-		want    string
-	}{
-		{backendBare, "bare"},
-		{backendBubblewrap, "bubblewrap"},
-	}
-	for _, tt := range tests {
-		if got := tt.backend.String(); got != tt.want {
-			t.Fatalf("String() = %q, want %q", got, tt.want)
-		}
+	if got := backendBubblewrap.String(); got != "bubblewrap" {
+		t.Fatalf("String() = %q, want %q", got, "bubblewrap")
 	}
 }

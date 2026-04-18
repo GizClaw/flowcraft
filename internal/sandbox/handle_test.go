@@ -10,6 +10,7 @@ import (
 )
 
 func TestSandboxHandle_AcquireReleaseAndIdle(t *testing.T) {
+	skipIfNotLinux(t)
 	cfg := DefaultManagerConfig()
 	cfg.RootDir = t.TempDir()
 	cfg.IdleTimeout = 100 * time.Millisecond
@@ -56,6 +57,7 @@ func TestSandboxHandle_AcquireReleaseAndIdle(t *testing.T) {
 }
 
 func TestSandboxHandle_MultipleLeases(t *testing.T) {
+	skipIfNotLinux(t)
 	cfg := DefaultManagerConfig()
 	cfg.RootDir = t.TempDir()
 	cfg.IdleTimeout = time.Second

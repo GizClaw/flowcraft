@@ -77,7 +77,7 @@ jobs:
         with:
           go-version: "1.25"
       - name: go vet
-        run: go vet ./...
+        run: GOWORK=off go vet ./...
       - name: gofmt check
         run: |
           diff=$(gofmt -l cmd/ internal/)
@@ -149,7 +149,7 @@ jobs:
         with:
           go-version: "1.25"
       - name: Test
-        run: go test -count=1 -race ./internal/...
+        run: GOWORK=off go test -count=1 -race ./internal/...
 
   build-matrix:
     name: Build ${{ matrix.target }}
@@ -163,6 +163,10 @@ jobs:
             goos: linux
             goarch: amd64
             tags: linux
+          - target: linux-arm64
+            goos: linux
+            goarch: arm64
+            tags: linux
           - target: darwin-amd64
             goos: darwin
             goarch: amd64
@@ -170,10 +174,6 @@ jobs:
           - target: darwin-arm64
             goos: darwin
             goarch: arm64
-            tags: ""
-          - target: windows-amd64
-            goos: windows
-            goarch: amd64
             tags: ""
     steps:
       - uses: actions/checkout@v4
@@ -184,13 +184,16 @@ jobs:
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
+          GOWORK: "off"
           CGO_ENABLED: 0
         run: |
+          VERSION="${GITHUB_REF_NAME:-dev}"
+          LDFLAGS="-s -w -X main.cliVersion=${VERSION}"
           TAGS="${{ matrix.tags }}"
           if [ -n "$TAGS" ]; then
-            go build -tags "$TAGS" -ldflags="-s -w" -o "dist/flowcraft-${{ matrix.target }}" ./cmd/flowcraft
+            go build -tags "$TAGS" -ldflags="$LDFLAGS" -o "dist/flowcraft-${{ matrix.target }}" ./cmd/flowcraft
           else
-            go build -ldflags="-s -w" -o "dist/flowcraft-${{ matrix.target }}" ./cmd/flowcraft
+            go build -ldflags="$LDFLAGS" -o "dist/flowcraft-${{ matrix.target }}" ./cmd/flowcraft
           fi
       - uses: actions/upload-artifact@v4
         with:

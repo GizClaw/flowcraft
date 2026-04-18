@@ -4,7 +4,6 @@ package main
 
 import (
 	"context"
-	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -12,7 +11,9 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/internal/bootstrap"
+	"github.com/GizClaw/flowcraft/sdk/telemetry"
 	"github.com/spf13/cobra"
+	otellog "go.opentelemetry.io/otel/log"
 
 	// LLM provider auto-registration via init().
 	_ "github.com/GizClaw/flowcraft/sdkx/llm/anthropic"
@@ -47,7 +48,7 @@ func runServer(cmd *cobra.Command, args []string) {
 
 	_, server, cleanup, err := bootstrap.Run(ctx)
 	if err != nil {
-		slog.Error("bootstrap failed", "error", err)
+		telemetry.Error(ctx, "bootstrap failed", otellog.String("error", err.Error()))
 		os.Exit(1)
 	}
 	defer cleanup()
@@ -60,7 +61,7 @@ func runServer(cmd *cobra.Command, args []string) {
 	}()
 
 	if err := server.ListenAndServe(ctx); err != nil && err != http.ErrServerClosed {
-		slog.Error("server stopped", "error", err)
+		telemetry.Error(ctx, "server stopped", otellog.String("error", err.Error()))
 		os.Exit(1)
 	}
 }

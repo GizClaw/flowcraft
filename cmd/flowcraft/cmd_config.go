@@ -1,13 +1,16 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"strconv"
 	"strings"
 
 	"github.com/GizClaw/flowcraft/internal/paths"
+	"github.com/GizClaw/flowcraft/sdk/telemetry"
 	"github.com/spf13/cobra"
+	otellog "go.opentelemetry.io/otel/log"
 	"gopkg.in/yaml.v3"
 )
 
@@ -39,7 +42,8 @@ var configGetCmd = &cobra.Command{
 		if !ok {
 			return fmt.Errorf("key %q not found in config", args[0])
 		}
-		fmt.Println(formatValue(val))
+		telemetry.Info(context.Background(), "config: value",
+			otellog.String("key", args[0]), otellog.String("value", formatValue(val)))
 		return nil
 	},
 }
@@ -69,7 +73,7 @@ var configListCmd = &cobra.Command{
 		data, err := readConfigMap()
 		if err != nil {
 			if os.IsNotExist(err) {
-				fmt.Println("(no config.yaml found; using defaults)")
+				telemetry.Info(context.Background(), "config: no config.yaml found, using defaults")
 				return nil
 			}
 			return err
@@ -173,7 +177,8 @@ func printFlat(prefix string, m map[string]any) {
 		case map[string]any:
 			printFlat(full, sub)
 		default:
-			fmt.Printf("%s = %v\n", full, v)
+			telemetry.Info(context.Background(), "config: entry",
+				otellog.String("key", full), otellog.String("value", fmt.Sprintf("%v", v)))
 		}
 	}
 }

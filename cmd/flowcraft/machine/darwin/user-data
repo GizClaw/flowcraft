@@ -1,0 +1,46 @@
+#cloud-config
+package_update: true
+packages:
+  - bubblewrap
+  - openssh-server
+
+users:
+  - name: flowcraft
+    sudo: ALL=(ALL) NOPASSWD:ALL
+    shell: /bin/bash
+    lock_passwd: false
+    plain_text_passwd: flowcraft
+
+ssh_pwauth: true
+
+write_files:
+  - path: /etc/systemd/system/flowcraft.service
+    content: |
+      [Unit]
+      Description=FlowCraft Server
+      After=network.target local-fs.target
+
+      [Service]
+      Type=simple
+      ExecStart=/opt/flowcraft/flowcraft server
+      Restart=always
+      RestartSec=3
+      Environment=FLOWCRAFT_DATA_DIR=/data
+
+      [Install]
+      WantedBy=multi-user.target
+  - path: /etc/cloud/cloud.cfg.d/99-datasource.cfg
+    content: |
+      datasource_list: [NoCloud, None]
+
+mounts:
+  - [bin, /opt/flowcraft, virtiofs, "rw,nofail", "0", "0"]
+  - [data, /data, virtiofs, "rw,nofail", "0", "0"]
+
+runcmd:
+  - mkdir -p /opt/flowcraft /data
+  - mount -a
+  - systemctl daemon-reload
+  - systemctl enable --now flowcraft.service
+  - touch /data/.provisioned
+  - touch /etc/cloud/cloud-init.disabled

@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/GizClaw/flowcraft/internal/model"
@@ -13,6 +14,13 @@ import (
 	"github.com/GizClaw/flowcraft/internal/template"
 	"github.com/GizClaw/flowcraft/sdk/workflow"
 )
+
+func skipIfNotLinux(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS != "linux" {
+		t.Skipf("sandbox requires Linux (current: %s)", runtime.GOOS)
+	}
+}
 
 func newTestStore(t *testing.T) model.Store {
 	t.Helper()
@@ -31,6 +39,7 @@ func init() {
 
 func newTestProvider(t *testing.T, s model.Store) *realm.SingleRealmProvider {
 	t.Helper()
+	skipIfNotLinux(t)
 	pcfg := &realm.PlatformDeps{
 		RunOverride: func(_ context.Context, _ *model.Agent, _ *workflow.Request) (*workflow.Result, error) {
 			return &workflow.Result{

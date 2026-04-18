@@ -12,17 +12,11 @@ import (
 type isolationBackend int
 
 const (
-	backendBare       isolationBackend = iota // non-Linux dev/test only
-	backendBubblewrap                         // Linux Bubblewrap namespace isolation
+	backendBubblewrap isolationBackend = iota // Linux Bubblewrap namespace isolation
 )
 
 func (b isolationBackend) String() string {
-	switch b {
-	case backendBubblewrap:
-		return "bubblewrap"
-	default:
-		return "bare"
-	}
+	return "bubblewrap"
 }
 
 // probeResult holds the outcome of an isolation probe.
@@ -31,13 +25,12 @@ type probeResult struct {
 	bwrapPath string // absolute path to bwrap binary (empty when bare)
 }
 
-// probeIsolation detects the best available isolation backend.
-// On Linux, bwrap is required — missing bwrap returns an error instead of
-// silently degrading to bare execution. On non-Linux (dev/test only),
-// bare execution is used.
+// probeIsolation detects the available isolation backend.
+// Requires Linux with Bubblewrap installed. Returns an error on non-Linux
+// platforms or when bwrap is missing.
 func probeIsolation() (probeResult, error) {
 	if runtime.GOOS != "linux" {
-		return probeResult{backend: backendBare}, nil
+		return probeResult{}, fmt.Errorf("sandbox: requires Linux (current OS: %s)", runtime.GOOS)
 	}
 
 	p, err := exec.LookPath("bwrap")

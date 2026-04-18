@@ -21,9 +21,8 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-// LocalSandbox runs commands as local OS processes scoped to a directory.
-// On Linux with bwrap available, commands are isolated via Bubblewrap namespaces.
-// Otherwise falls back to bare process execution with path validation.
+// LocalSandbox runs commands in Bubblewrap-isolated namespaces scoped to a directory.
+// Requires Linux with bwrap installed.
 type LocalSandbox struct {
 	id               string
 	rootDir          string
@@ -158,13 +157,6 @@ func (s *LocalSandbox) Exec(ctx context.Context, cmd string, args []string, opts
 	}
 	c.WaitDelay = 3 * time.Second
 
-	if s.isolation.backend != backendBubblewrap {
-		c.Env = os.Environ()
-		for k, v := range opts.Env {
-			c.Env = append(c.Env, fmt.Sprintf("%s=%s", k, v))
-		}
-	}
-
 	if opts.Stdin != nil {
 		c.Stdin = bytes.NewReader(opts.Stdin)
 	}
@@ -214,18 +206,11 @@ func (s *LocalSandbox) buildCommand(ctx context.Context, cmd string, args []stri
 		workDir = dir
 	}
 
-	switch s.isolation.backend {
-	case backendBubblewrap:
-		env := minimalEnv(s.rootDir, opts.Env)
-		c := buildBwrapCommand(ctx, s.isolation.bwrapPath,
-			s.rootDir, workDir, s.readOnlyTargets, s.readWriteTargets,
-			cmd, args, env, s.bwrapCfg)
-		return c, nil
-	default:
-		c := exec.CommandContext(ctx, cmd, args...)
-		c.Dir = workDir
-		return c, nil
-	}
+	env := minimalEnv(s.rootDir, opts.Env)
+	c := buildBwrapCommand(ctx, s.isolation.bwrapPath,
+		s.rootDir, workDir, s.readOnlyTargets, s.readWriteTargets,
+		cmd, args, env, s.bwrapCfg)
+	return c, nil
 }
 
 func (s *LocalSandbox) ReadFile(_ context.Context, path string) ([]byte, error) {
