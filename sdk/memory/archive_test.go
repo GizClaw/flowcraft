@@ -70,7 +70,7 @@ func TestArchive_AboveThreshold(t *testing.T) {
 	}
 
 	// Check manifest.
-	manifest, err := LoadManifest(ctx, ws, "memory", convID)
+	manifest, err := LoadManifest(ctx, ws, "memory", "archive", convID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -104,7 +104,7 @@ func TestLoadArchivedMessages(t *testing.T) {
 	}
 
 	// Load archived messages.
-	archived, err := LoadArchivedMessages(ctx, ws, "memory", convID, 0, 14)
+	archived, err := LoadArchivedMessages(ctx, ws, "memory", "archive", convID, 0, 14)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -122,7 +122,7 @@ func TestRecoverArchive_NoIntent(t *testing.T) {
 	ctx := context.Background()
 
 	// No pending intent — should be a no-op.
-	if err := RecoverArchive(ctx, ws, store, "memory", "no-intent-conv"); err != nil {
+	if err := RecoverArchive(ctx, ws, store, "memory", "archive", "no-intent-conv"); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -168,10 +168,10 @@ func TestRecoverArchive_GzipWrittenPhase(t *testing.T) {
 		ConvID: convID, StartSeq: 10, EndSeq: 19,
 		BatchSize: 10, ArchiveFile: "messages_10_19.jsonl.gz", Phase: "gzip_written",
 	}
-	_ = writeIntent(ctx, ws, "memory", convID, intent)
+	_ = writeIntent(ctx, ws, "memory", "archive", convID, intent)
 
 	// Recovery should: update manifest, trim messages.
-	if err := RecoverArchive(ctx, ws, store, "memory", convID); err != nil {
+	if err := RecoverArchive(ctx, ws, store, "memory", "archive", convID); err != nil {
 		t.Fatal(err)
 	}
 
@@ -182,7 +182,7 @@ func TestRecoverArchive_GzipWrittenPhase(t *testing.T) {
 	}
 
 	// Verify intent cleaned up.
-	loadedIntent, _ := loadIntent(ctx, ws, "memory", convID)
+	loadedIntent, _ := loadIntent(ctx, ws, "memory", "archive", convID)
 	if loadedIntent != nil {
 		t.Fatal("intent should be cleaned up after recovery")
 	}
@@ -218,9 +218,9 @@ func TestRecoverArchive_ManifestUpdatedPhase(t *testing.T) {
 		ConvID: convID, StartSeq: 0, EndSeq: 9,
 		BatchSize: 10, ArchiveFile: "messages_0_9.jsonl.gz", Phase: "manifest_updated",
 	}
-	_ = writeIntent(ctx, ws, "memory", convID, intent)
+	_ = writeIntent(ctx, ws, "memory", "archive", convID, intent)
 
-	if err := RecoverArchive(ctx, ws, store, "memory", convID); err != nil {
+	if err := RecoverArchive(ctx, ws, store, "memory", "archive", convID); err != nil {
 		t.Fatal(err)
 	}
 
@@ -229,7 +229,7 @@ func TestRecoverArchive_ManifestUpdatedPhase(t *testing.T) {
 		t.Fatalf("expected 10 remaining after recovery, got %d", len(after))
 	}
 
-	loadedIntent, _ := loadIntent(ctx, ws, "memory", convID)
+	loadedIntent, _ := loadIntent(ctx, ws, "memory", "archive", convID)
 	if loadedIntent != nil {
 		t.Fatal("intent should be cleaned up")
 	}
@@ -257,7 +257,7 @@ func TestArchive_IntentCleanup(t *testing.T) {
 	}
 
 	// After successful archive, intent should not exist.
-	loadedIntent, _ := loadIntent(ctx, ws, "memory", convID)
+	loadedIntent, _ := loadIntent(ctx, ws, "memory", "archive", convID)
 	if loadedIntent != nil {
 		t.Fatal("intent should be cleaned up after successful archive")
 	}

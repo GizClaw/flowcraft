@@ -92,7 +92,11 @@ func (t *memoryExpandTool) expandLeaf(ctx context.Context, convID string, node *
 
 	// Check archive manifest for Hot/Cold boundary.
 	if t.deps.Workspace != nil {
-		manifest, err := LoadManifest(ctx, t.deps.Workspace, t.deps.Prefix, convID)
+		archivePrefix := t.deps.Config.Archive.ArchivePrefix
+		if archivePrefix == "" {
+			archivePrefix = "archive"
+		}
+		manifest, err := LoadManifest(ctx, t.deps.Workspace, t.deps.Prefix, archivePrefix, convID)
 		if err == nil && manifest.HotStartSeq > 0 {
 			var allMsgs []model.Message
 
@@ -102,7 +106,7 @@ func (t *memoryExpandTool) expandLeaf(ctx context.Context, convID string, node *
 				if coldEnd > manifest.HotStartSeq {
 					coldEnd = manifest.HotStartSeq
 				}
-				coldMsgs, err := LoadArchivedMessages(ctx, t.deps.Workspace, t.deps.Prefix, convID, startSeq, coldEnd-1)
+				coldMsgs, err := LoadArchivedMessages(ctx, t.deps.Workspace, t.deps.Prefix, archivePrefix, convID, startSeq, coldEnd-1)
 				if err == nil {
 					allMsgs = append(allMsgs, coldMsgs...)
 				}

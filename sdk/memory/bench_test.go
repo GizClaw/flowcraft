@@ -192,6 +192,6 @@ func BenchmarkExpandFromArchive_50Messages(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_, _ = LoadArchivedMessages(ctx, ws, "memory", convID, 10, 59)
+		_, _ = LoadArchivedMessages(ctx, ws, "memory", "archive", convID, 10, 59)
 	}
 }
