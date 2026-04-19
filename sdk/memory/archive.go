@@ -47,8 +47,8 @@ type ArchiveResult struct {
 }
 
 // LoadManifest reads the archive manifest for a conversation.
-func LoadManifest(ctx context.Context, ws workspace.Workspace, prefix, convID string) (*ArchiveManifest, error) {
-	path := manifestPath(prefix, convID)
+func LoadManifest(ctx context.Context, ws workspace.Workspace, prefix, archivePrefix, convID string) (*ArchiveManifest, error) {
+	path := manifestPath(prefix, archivePrefix, convID)
 	exists, err := ws.Exists(ctx, path)
 	if err != nil {
 		return nil, fmt.Errorf("archive: check manifest: %w", err)
@@ -68,24 +68,24 @@ func LoadManifest(ctx context.Context, ws workspace.Workspace, prefix, convID st
 }
 
 // SaveManifest writes the archive manifest.
-func SaveManifest(ctx context.Context, ws workspace.Workspace, prefix, convID string, m *ArchiveManifest) error {
+func SaveManifest(ctx context.Context, ws workspace.Workspace, prefix, archivePrefix, convID string, m *ArchiveManifest) error {
 	data, err := json.MarshalIndent(m, "", "  ")
 	if err != nil {
 		return fmt.Errorf("archive: marshal manifest: %w", err)
 	}
-	path := manifestPath(prefix, convID)
+	path := manifestPath(prefix, archivePrefix, convID)
 	return ws.Write(ctx, path, data)
 }
 
-func manifestPath(prefix, convID string) string {
+func manifestPath(prefix, archivePrefix, convID string) string {
 	if prefix != "" {
-		return fmt.Sprintf("%s/%s/archive/manifest.json", prefix, convID)
+		return fmt.Sprintf("%s/%s/%s/manifest.json", prefix, convID, archivePrefix)
 	}
-	return fmt.Sprintf("%s/archive/manifest.json", convID)
+	return fmt.Sprintf("%s/%s/manifest.json", convID, archivePrefix)
 }
 
-func intentPath(prefix, convID string) string {
-	return archiveDir(prefix, convID) + "/intent.json"
+func intentPath(prefix, archivePrefix, convID string) string {
+	return archiveDir(prefix, archivePrefix, convID) + "/intent.json"
 }
 
 // archiveIntent records the in-progress archive operation for crash recovery.
@@ -98,21 +98,21 @@ type archiveIntent struct {
 	Phase       string `json:"phase"` // "gzip_written" | "manifest_updated"
 }
 
-func writeIntent(ctx context.Context, ws workspace.Workspace, prefix, convID string, intent *archiveIntent) error {
+func writeIntent(ctx context.Context, ws workspace.Workspace, prefix, archivePrefix, convID string, intent *archiveIntent) error {
 	data, err := json.Marshal(intent)
 	if err != nil {
 		return err
 	}
-	return ws.Write(ctx, intentPath(prefix, convID), data)
+	return ws.Write(ctx, intentPath(prefix, archivePrefix, convID), data)
 }
 
-func deleteIntent(ctx context.Context, ws workspace.Workspace, prefix, convID string) {
-	path := intentPath(prefix, convID)
+func deleteIntent(ctx context.Context, ws workspace.Workspace, prefix, archivePrefix, convID string) {
+	path := intentPath(prefix, archivePrefix, convID)
 	_ = ws.Write(ctx, path, nil)
 }
 
-func loadIntent(ctx context.Context, ws workspace.Workspace, prefix, convID string) (*archiveIntent, error) {
-	path := intentPath(prefix, convID)
+func loadIntent(ctx context.Context, ws workspace.Workspace, prefix, archivePrefix, convID string) (*archiveIntent, error) {
+	path := intentPath(prefix, archivePrefix, convID)
 	exists, err := ws.Exists(ctx, path)
 	if err != nil || !exists {
 		return nil, err
@@ -130,8 +130,8 @@ func loadIntent(ctx context.Context, ws workspace.Workspace, prefix, convID stri
 
 // RecoverArchive checks for incomplete archive operations and completes them.
 // Call this at startup before any new archive operations.
-func RecoverArchive(ctx context.Context, ws workspace.Workspace, store Store, prefix, convID string) error {
-	intent, err := loadIntent(ctx, ws, prefix, convID)
+func RecoverArchive(ctx context.Context, ws workspace.Workspace, store Store, prefix, archivePrefix, convID string) error {
+	intent, err := loadIntent(ctx, ws, prefix, archivePrefix, convID)
 	if err != nil || intent == nil {
 		return err
 	}
@@ -155,7 +155,7 @@ func RecoverArchive(ctx context.Context, ws workspace.Workspace, store Store, pr
 		}
 	case "gzip_written":
 		// Gzip done but manifest not updated — update manifest then trim.
-		manifest, err := LoadManifest(ctx, ws, prefix, convID)
+		manifest, err := LoadManifest(ctx, ws, prefix, archivePrefix, convID)
 		if err != nil {
 			return fmt.Errorf("archive: recovery load manifest: %w", err)
 		}
@@ -176,7 +176,7 @@ func RecoverArchive(ctx context.Context, ws workspace.Workspace, store Store, pr
 				CreatedAt: time.Now(),
 			})
 			manifest.HotStartSeq = intent.EndSeq + 1
-			if err := SaveManifest(ctx, ws, prefix, convID, manifest); err != nil {
+			if err := SaveManifest(ctx, ws, prefix, archivePrefix, convID, manifest); err != nil {
 				return fmt.Errorf("archive: recovery save manifest: %w", err)
 			}
 		}
@@ -192,7 +192,7 @@ func RecoverArchive(ctx context.Context, ws workspace.Workspace, store Store, pr
 		}
 	}
 
-	deleteIntent(ctx, ws, prefix, convID)
+	deleteIntent(ctx, ws, prefix, archivePrefix, convID)
 	telemetry.Info(ctx, "archive: recovery completed", otellog.String("conversation_id", convID))
 	return nil
 }
@@ -234,7 +234,12 @@ func Archive(ctx context.Context, ws workspace.Workspace, store Store, prefix, c
 		return result, nil
 	}
 
-	manifest, err := LoadManifest(ctx, ws, prefix, convID)
+	archivePrefix := cfg.ArchivePrefix
+	if archivePrefix == "" {
+		archivePrefix = "archive"
+	}
+
+	manifest, err := LoadManifest(ctx, ws, prefix, archivePrefix, convID)
 	if err != nil {
 		return result, err
 	}
@@ -261,7 +266,7 @@ func Archive(ctx context.Context, ws workspace.Workspace, store Store, prefix, c
 		return result, fmt.Errorf("archive: gzip close: %w", err)
 	}
 
-	archivePath := archiveDir(prefix, convID) + "/" + archiveFile
+	archivePath := archiveDir(prefix, archivePrefix, convID) + "/" + archiveFile
 	if err := ws.Write(ctx, archivePath, buf.Bytes()); err != nil {
 		return result, fmt.Errorf("archive: write gzip: %w", err)
 	}
@@ -270,7 +275,7 @@ func Archive(ctx context.Context, ws workspace.Workspace, store Store, prefix, c
 		ConvID: convID, StartSeq: startSeq, EndSeq: endSeq,
 		BatchSize: batchSize, ArchiveFile: archiveFile, Phase: "gzip_written",
 	}
-	if err := writeIntent(ctx, ws, prefix, convID, intent); err != nil {
+	if err := writeIntent(ctx, ws, prefix, archivePrefix, convID, intent); err != nil {
 		return result, fmt.Errorf("archive: write intent: %w", err)
 	}
 
@@ -284,12 +289,12 @@ func Archive(ctx context.Context, ws workspace.Workspace, store Store, prefix, c
 	})
 	manifest.HotStartSeq = endSeq + 1
 
-	if err := SaveManifest(ctx, ws, prefix, convID, manifest); err != nil {
+	if err := SaveManifest(ctx, ws, prefix, archivePrefix, convID, manifest); err != nil {
 		return result, fmt.Errorf("archive: save manifest: %w", err)
 	}
 
 	intent.Phase = "manifest_updated"
-	if err := writeIntent(ctx, ws, prefix, convID, intent); err != nil {
+	if err := writeIntent(ctx, ws, prefix, archivePrefix, convID, intent); err != nil {
 		return result, fmt.Errorf("archive: update intent: %w", err)
 	}
 
@@ -298,7 +303,7 @@ func Archive(ctx context.Context, ws workspace.Workspace, store Store, prefix, c
 		return result, fmt.Errorf("archive: rewrite messages: %w", err)
 	}
 
-	deleteIntent(ctx, ws, prefix, convID)
+	deleteIntent(ctx, ws, prefix, archivePrefix, convID)
 
 	result.MessagesArchived = batchSize
 	result.ArchiveFile = archiveFile
@@ -312,22 +317,22 @@ func Archive(ctx context.Context, ws workspace.Workspace, store Store, prefix, c
 	return result, nil
 }
 
-func archiveDir(prefix, convID string) string {
+func archiveDir(prefix, archivePrefix, convID string) string {
 	if prefix != "" {
-		return fmt.Sprintf("%s/%s/archive", prefix, convID)
+		return fmt.Sprintf("%s/%s/%s", prefix, convID, archivePrefix)
 	}
-	return fmt.Sprintf("%s/archive", convID)
+	return fmt.Sprintf("%s/%s", convID, archivePrefix)
 }
 
 // LoadArchivedMessages reads messages from gzip archive segments.
-func LoadArchivedMessages(ctx context.Context, ws workspace.Workspace, prefix, convID string, startSeq, endSeq int) ([]model.Message, error) {
-	manifest, err := LoadManifest(ctx, ws, prefix, convID)
+func LoadArchivedMessages(ctx context.Context, ws workspace.Workspace, prefix, archivePrefix, convID string, startSeq, endSeq int) ([]model.Message, error) {
+	manifest, err := LoadManifest(ctx, ws, prefix, archivePrefix, convID)
 	if err != nil {
 		return nil, err
 	}
 
 	var result []model.Message
-	dir := archiveDir(prefix, convID)
+	dir := archiveDir(prefix, archivePrefix, convID)
 
 	for _, seg := range manifest.Segments {
 		if seg.EndSeq < startSeq || seg.StartSeq > endSeq {
