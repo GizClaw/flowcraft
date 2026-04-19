@@ -9,6 +9,21 @@ vi.mock('../store/authStore', () => ({
   },
 }));
 
+vi.mock('../store/toastStore', () => ({
+  useToastStore: {
+    getState: () => ({ addToast: vi.fn() }),
+  },
+}));
+
+vi.mock('../utils/api', () => ({
+  wsApi: {
+    ticket: vi.fn().mockResolvedValue({
+      ticket: 'ticket-123',
+      expires_at: new Date().toISOString(),
+    }),
+  },
+}));
+
 class MockWebSocket {
   static instances: MockWebSocket[] = [];
   static OPEN = 1;
@@ -54,20 +69,12 @@ afterEach(() => {
 
 describe('useWebSocket', () => {
   it('requests websocket ticket before connecting to /api/ws', async () => {
-    globalThis.fetch = vi.fn().mockResolvedValue({
-      ok: true,
-      status: 200,
-      headers: new Headers(),
-      json: () => Promise.resolve({
-        ticket: 'ticket-123',
-        expires_at: new Date().toISOString(),
-      }),
-    }) as typeof fetch;
-
     render(<TestComponent url="/api/ws" />);
 
+    const { wsApi } = await import('../utils/api');
+
     await waitFor(() => {
-      expect(globalThis.fetch).toHaveBeenCalledWith('/api/ws-ticket', expect.objectContaining({ method: 'POST' }));
+      expect(wsApi.ticket).toHaveBeenCalled();
       expect(MockWebSocket.instances).toHaveLength(1);
       expect(MockWebSocket.instances[0].url).toContain('/api/ws?ticket=ticket-123');
     });

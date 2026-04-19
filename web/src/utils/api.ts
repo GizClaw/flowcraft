@@ -1,163 +1,158 @@
-import { useToastStore } from '../store/toastStore';
+import client, { ApiError, apiStream } from '../api/client';
+import type { components } from '../api/schema';
 import type { Agent, CreateAgentRequest, UpdateAgentRequest, CompileResult, DryRunResult, GraphTemplate } from '../types/app';
 import type { Conversation, Message, ChatRequest, WorkflowStreamEvent, WorkflowRun, ExecutionEvent, ResumeRequest } from '../types/chat';
 import type { Dataset, DatasetDocument, CreateDatasetRequest, AddDocumentRequest, QueryDatasetRequest, QueryResult } from '../types/knowledge';
 import type { NodeSchema } from '../types/nodeTypes';
-import type { Plugin } from '../types/plugin';
 import type { KanbanSnapshot, TimelineEntry, TopologyNode, TopologyEdge } from '../types/kanban';
+import type { Plugin } from '../types/plugin';
 
-export class ApiError extends Error {
-  status: number;
-  constructor(status: number, message: string) {
-    super(message);
-    this.name = 'ApiError';
-    this.status = status;
-  }
-}
+export { ApiError } from '../api/client';
+export { apiStream } from '../api/client';
 
-interface FetchOptions extends RequestInit {
-  json?: unknown;
-}
-
-export async function apiFetch<T = unknown>(path: string, opts: FetchOptions = {}): Promise<T> {
-  const { json, headers: extra, ...rest } = opts;
-  const headers: Record<string, string> = { ...(extra as Record<string, string>) };
-
-  if (json !== undefined) {
-    headers['Content-Type'] = 'application/json';
-    rest.body = JSON.stringify(json);
-  }
-
-  const res = await fetch(path, { headers, credentials: 'include', ...rest });
-
-  if (!res.ok) {
-    const body = await res.json().catch(() => ({}));
-    const err = (body as { error?: { message?: string }; message?: string });
-    throw new ApiError(res.status, err.error?.message || err.message || res.statusText);
-  }
-
-  const warning = res.headers.get('X-Warning');
-  if (warning) {
-    useToastStore.getState().addToast('warning', warning);
-  }
-
-  if (res.status === 204) return undefined as unknown as T;
-  return res.json() as Promise<T>;
-}
-
-export async function* apiStream<T = unknown>(path: string, opts: FetchOptions & { signal?: AbortSignal } = {}): AsyncGenerator<T> {
-  const { json, headers: extra, signal, ...rest } = opts;
-  const headers: Record<string, string> = { ...(extra as Record<string, string>) };
-
-  if (json !== undefined) {
-    headers['Content-Type'] = 'application/json';
-    rest.body = JSON.stringify(json);
-  }
-
-  const res = await fetch(path, { headers, signal, credentials: 'include', ...rest });
-
-  if (!res.ok) {
-    const body = await res.json().catch(() => ({}));
-    const err = (body as { error?: { message?: string }; message?: string });
-    throw new ApiError(res.status, err.error?.message || err.message || res.statusText);
-  }
-
-  const reader = res.body?.getReader();
-  if (!reader) return;
-
-  const decoder = new TextDecoder();
-  let buffer = '';
-  let currentEventType = '';
-
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split('\n');
-      buffer = lines.pop() || '';
-
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (trimmed.startsWith('event: ')) {
-          currentEventType = trimmed.slice(7).trim();
-        } else if (trimmed.startsWith('data: ')) {
-          try {
-            const parsed = JSON.parse(trimmed.slice(6));
-            if (currentEventType && typeof parsed === 'object' && parsed !== null) {
-              (parsed as Record<string, unknown>).type = currentEventType;
-            }
-            yield parsed as T;
-          } catch { /* skip malformed */ }
-          currentEventType = '';
-        } else if (trimmed === '') {
-          currentEventType = '';
-        }
-      }
-    }
-  } finally {
-    reader.releaseLock();
-  }
-}
+export type Schemas = components['schemas'];
 
 // ── Agent API ──
 
 export const agentApi = {
-  list: () => apiFetch<{ data: Agent[]; has_more: boolean }>('/api/agents').then(r => r.data ?? []),
-  get: (id: string) => apiFetch<Agent>(`/api/agents/${id}`),
-  create: (data: CreateAgentRequest) => apiFetch<Agent>('/api/agents', { method: 'POST', json: data }),
-  update: (id: string, data: UpdateAgentRequest) => apiFetch<Agent>(`/api/agents/${id}`, { method: 'PUT', json: data }),
-  delete: (id: string) => apiFetch<void>(`/api/agents/${id}`, { method: 'DELETE' }),
-  abort: (id: string) => apiFetch<{ aborted: boolean }>(`/api/agents/${id}/abort`, { method: 'POST' }),
+  list: async () => {
+    const { data } = await client.GET('/agents');
+    return (data?.data ?? []) as Agent[];
+  },
+  get: async (id: string) => {
+    const { data } = await client.GET('/agents/{id}', { params: { path: { id } } });
+    return data as unknown as Agent;
+  },
+  create: async (body: CreateAgentRequest) => {
+    const { data } = await client.POST('/agents', {
+      body: body as unknown as Schemas['CreateAgentRequest'],
+    });
+    return data as unknown as Agent;
+  },
+  update: async (id: string, body: UpdateAgentRequest) => {
+    const { data } = await client.PUT('/agents/{id}', {
+      params: { path: { id } },
+      body: body as unknown as Schemas['UpdateAgentRequest'],
+    });
+    return data as unknown as Agent;
+  },
+  delete: async (id: string) => {
+    await client.DELETE('/agents/{id}', { params: { path: { id } } });
+  },
+  abort: async (id: string) => {
+    const { data } = await client.POST('/agents/{agentID}/abort', {
+      params: { path: { agentID: id } },
+    });
+    return data as { aborted?: boolean };
+  },
 };
 
+// ── Auth API ──
+
 export interface AuthStatus {
-  initialized: boolean;
-  authenticated: boolean;
+  initialized?: boolean;
+  authenticated?: boolean;
+  auth_enabled?: boolean;
   username?: string;
+  principal?: string;
+  auth_mode?: string;
+}
+
+async function authFetch<T>(path: string, opts?: RequestInit & { json?: unknown }): Promise<T> {
+  const { json, headers: extra, ...rest } = opts ?? {};
+  const headers: Record<string, string> = { ...(extra as Record<string, string>) };
+  if (json !== undefined) {
+    headers['Content-Type'] = 'application/json';
+    rest.body = JSON.stringify(json);
+  }
+  const res = await fetch(path, { headers, credentials: 'include', ...rest });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    const err = body as { error?: { message?: string }; message?: string };
+    throw new ApiError(res.status, err.error?.message || err.message || res.statusText);
+  }
+  if (res.status === 204) return undefined as unknown as T;
+  return res.json() as Promise<T>;
 }
 
 export const authApi = {
-  status: () => apiFetch<AuthStatus>('/api/auth/status'),
+  status: () => authFetch<AuthStatus>('/api/auth/status'),
   setup: (username: string, password: string) =>
-    apiFetch<{ ok: boolean }>('/api/auth/setup', { method: 'POST', json: { username, password } }),
+    authFetch<{ ok: boolean }>('/api/auth/setup', { method: 'POST', json: { username, password } }),
   login: (username: string, password: string) =>
-    apiFetch<{ token: string; expires_at: string }>('/api/auth/login', { method: 'POST', json: { username, password } }),
-  logout: () => apiFetch<void>('/api/auth/logout', { method: 'POST' }),
-  session: () => apiFetch<AuthStatus>('/api/auth/session'),
+    authFetch<{ token: string; expires_at: string }>('/api/auth/login', { method: 'POST', json: { username, password } }),
+  logout: () => authFetch<void>('/api/auth/logout', { method: 'POST' }),
+  session: () => authFetch<AuthStatus>('/api/auth/session'),
   changePassword: (oldPassword: string, newPassword: string) =>
-    apiFetch<{ ok: boolean }>('/api/auth/change-password', { method: 'POST', json: { old_password: oldPassword, new_password: newPassword } }),
+    authFetch<{ ok: boolean }>('/api/auth/change-password', { method: 'POST', json: { old_password: oldPassword, new_password: newPassword } }),
 };
 
 // ── Chat API ──
 
 export const chatApi = {
-  stream: (data: ChatRequest) => apiStream<WorkflowStreamEvent>('/api/chat/stream', { method: 'POST', json: data }),
+  stream: (data: ChatRequest) =>
+    apiStream<WorkflowStreamEvent>('/api/chat/stream', {
+      method: 'POST',
+      json: data,
+    }),
   streamReconnect: (data: { agent_id: string; conversation_id?: string }) =>
-    apiStream<WorkflowStreamEvent>('/api/chat/stream', { method: 'POST', json: { ...data, query: '', reconnect: true } }),
-  resumeStream: (agentId: string, data: ResumeRequest) => apiStream<WorkflowStreamEvent>('/api/chat/resume/stream', { method: 'POST', json: { ...data, agent_id: agentId } }),
-  getConversations: (agentId?: string) => apiFetch<{ data: Conversation[] }>(`/api/conversations${agentId ? `?agent_id=${agentId}` : ''}`).then(r => r.data ?? []),
-  getMessages: (conversationId: string) => apiFetch<{ data: Message[] }>(`/api/conversations/${conversationId}/messages`).then(r => r.data ?? []),
+    apiStream<WorkflowStreamEvent>('/api/chat/stream', {
+      method: 'POST',
+      json: { ...data, query: '', reconnect: true },
+    }),
+  resumeStream: (agentId: string, data: ResumeRequest) =>
+    apiStream<WorkflowStreamEvent>('/api/chat/resume/stream', {
+      method: 'POST',
+      json: { ...data, agent_id: agentId },
+    }),
+  getConversations: async (agentId?: string) => {
+    const { data } = await client.GET('/conversations', {
+      params: { query: agentId ? { agent_id: agentId } : {} },
+    });
+    return (data?.data ?? []) as Conversation[];
+  },
+  getMessages: async (conversationId: string) => {
+    const { data } = await client.GET('/conversations/{id}/messages', {
+      params: { path: { id: conversationId } },
+    });
+    return (data?.data ?? []) as Message[];
+  },
 };
 
 // ── Compile / DryRun ──
 
 export const compileApi = {
-  compile: (agentId: string) => apiFetch<CompileResult>(`/api/agents/${agentId}/compile`, { method: 'POST' }),
-  dryrun: (agentId: string) => apiFetch<DryRunResult>(`/api/agents/${agentId}/dryrun`, { method: 'POST' }),
+  compile: async (agentId: string) => {
+    const { data } = await client.POST('/agents/{id}/compile', {
+      params: { path: { id: agentId } },
+    });
+    return data as unknown as CompileResult;
+  },
+  dryrun: async (agentId: string) => {
+    const { data } = await client.POST('/agents/{id}/dryrun', {
+      params: { path: { id: agentId } },
+    });
+    return data as unknown as DryRunResult;
+  },
 };
 
 // ── Import / Export ──
 
 export const importExportApi = {
   exportGraph: async (agentId: string, format: 'json' | 'yaml' = 'json') => {
-    const res = await fetch(`/api/agents/${agentId}/export?format=${format}`, { credentials: 'include' });
+    const res = await fetch(`/api/agents/${agentId}/export?format=${format}`, {
+      credentials: 'include',
+    });
     if (!res.ok) throw new Error('Export failed');
     return res.text();
   },
-  importGraph: (agentId: string, data: { format: string; content: string; force?: boolean }) =>
-    apiFetch<CompileResult>(`/api/agents/${agentId}/import`, { method: 'POST', json: data }),
+  importGraph: async (agentId: string, data: { format: string; content: string; force?: boolean }) => {
+    const { data: result } = await client.POST('/agents/{id}/import', {
+      params: { path: { id: agentId } },
+      body: data as Schemas['ImportRequest'],
+    });
+    return result as unknown as CompileResult;
+  },
 };
 
 // ── Version API ──
@@ -166,7 +161,7 @@ export interface GraphVersion {
   id: string;
   agent_id: string;
   version: number;
-  graph_definition: Record<string, unknown> | null;
+  graph_definition?: Record<string, unknown> | null;
   description?: string;
   checksum: string;
   created_by?: string;
@@ -183,41 +178,104 @@ export interface GraphDiff {
 }
 
 export const versionApi = {
-  list: (agentId: string) => apiFetch<{ data: GraphVersion[] }>(`/api/agents/${agentId}/versions`).then(r => r.data ?? []),
-  publish: (agentId: string, version: number, description?: string) =>
-    apiFetch<GraphVersion>(`/api/agents/${agentId}/versions/publish`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ version, description }),
-    }),
-  rollback: (agentId: string, version: number) => apiFetch<void>(`/api/agents/${agentId}/versions/${version}/rollback`, { method: 'POST' }),
-  diff: (agentId: string, v1: number, v2: number) => apiFetch<GraphDiff>(`/api/agents/${agentId}/versions/diff?v1=${v1}&v2=${v2}`),
+  list: async (agentId: string) => {
+    const { data } = await client.GET('/agents/{id}/versions', {
+      params: { path: { id: agentId } },
+    });
+    return (data?.data ?? []) as GraphVersion[];
+  },
+  publish: async (agentId: string, _version: number, description?: string) => {
+    const { data } = await client.POST('/agents/{id}/versions/publish', {
+      params: { path: { id: agentId } },
+      body: { description },
+    });
+    return data as GraphVersion;
+  },
+  rollback: async (agentId: string, version: number) => {
+    const { data } = await client.POST('/agents/{id}/versions/{ver}/rollback', {
+      params: { path: { id: agentId, ver: version } },
+    });
+    return data as GraphVersion;
+  },
+  diff: async (agentId: string, v1: number, v2: number) => {
+    const { data } = await client.GET('/agents/{id}/versions/diff', {
+      params: { path: { id: agentId }, query: { v1, v2 } },
+    });
+    return data as GraphDiff;
+  },
 };
 
 // ── Dataset / Knowledge API ──
 
 export const datasetApi = {
-  list: () => apiFetch<{ data: Dataset[] }>('/api/datasets').then(r => r.data ?? []),
-  get: (id: string) => apiFetch<Dataset>(`/api/datasets/${id}`),
-  create: (data: CreateDatasetRequest) => apiFetch<Dataset>('/api/datasets', { method: 'POST', json: data }),
-  delete: (id: string) => apiFetch<void>(`/api/datasets/${id}`, { method: 'DELETE' }),
-  listDocuments: (datasetId: string) => apiFetch<{ data: DatasetDocument[] }>(`/api/datasets/${datasetId}/documents`).then(r => r.data ?? []),
-  addDocument: (datasetId: string, data: AddDocumentRequest) => apiFetch<DatasetDocument>(`/api/datasets/${datasetId}/documents`, { method: 'POST', json: data }),
-  deleteDocument: (datasetId: string, docId: string) => apiFetch<void>(`/api/datasets/${datasetId}/documents/${docId}`, { method: 'DELETE' }),
-  query: (datasetId: string, data: QueryDatasetRequest) => apiFetch<{ data: QueryResult[] }>(`/api/datasets/${datasetId}/query`, { method: 'POST', json: data }).then(r => r.data ?? []),
+  list: async () => {
+    const { data } = await client.GET('/datasets');
+    return (data?.data ?? []) as Dataset[];
+  },
+  get: async (id: string) => {
+    const { data } = await client.GET('/datasets/{id}', {
+      params: { path: { id } },
+    });
+    return data as unknown as Dataset;
+  },
+  create: async (body: CreateDatasetRequest) => {
+    const { data } = await client.POST('/datasets', {
+      body: body as Schemas['CreateDatasetRequest'],
+    });
+    return data as unknown as Dataset;
+  },
+  delete: async (id: string) => {
+    await client.DELETE('/datasets/{id}', { params: { path: { id } } });
+  },
+  listDocuments: async (datasetId: string) => {
+    const { data } = await client.GET('/datasets/{id}/documents', {
+      params: { path: { id: datasetId } },
+    });
+    return (data?.data ?? []) as DatasetDocument[];
+  },
+  addDocument: async (datasetId: string, body: AddDocumentRequest) => {
+    const { data } = await client.POST('/datasets/{id}/documents', {
+      params: { path: { id: datasetId } },
+      body: body as Schemas['AddDocumentRequest'],
+    });
+    return data as unknown as DatasetDocument;
+  },
+  deleteDocument: async (datasetId: string, docId: string) => {
+    await client.DELETE('/datasets/{id}/documents/{docId}', {
+      params: { path: { id: datasetId, docId } },
+    });
+  },
+  query: async (datasetId: string, body: QueryDatasetRequest) => {
+    const { data } = await client.POST('/datasets/{id}/query', {
+      params: { path: { id: datasetId } },
+      body: body as Schemas['DatasetQueryRequest'],
+    });
+    return (data?.data ?? []) as QueryResult[];
+  },
 };
 
 // ── Node Types API ──
 
 export const nodeTypeApi = {
-  list: () => apiFetch<{ data: NodeSchema[] }>('/api/node-types').then(r => r.data ?? []),
+  list: async () => {
+    const { data } = await client.GET('/node-types');
+    return (data?.data ?? []) as NodeSchema[];
+  },
 };
 
 // ── Template API ──
 
 export const templateApi = {
-  list: () => apiFetch<{ data: GraphTemplate[] }>('/api/templates').then(r => r.data ?? []),
-  instantiate: (name: string) => apiFetch<Agent>(`/api/templates/${name}/instantiate`, { method: 'POST' }),
+  list: async () => {
+    const { data } = await client.GET('/templates');
+    return (data?.data ?? []) as GraphTemplate[];
+  },
+  instantiate: async (name: string) => {
+    const { data } = await client.POST('/templates/{name}/instantiate', {
+      params: { path: { name } },
+    });
+    return data as unknown as Agent;
+  },
 };
 
 // ── Model / Provider API ──
@@ -241,14 +299,32 @@ export interface ProviderInfo {
 }
 
 export const modelApi = {
-  list: () => apiFetch<{ data: ConfiguredModel[] }>('/api/models').then(r => r.data ?? []),
-  add: (data: { provider: string; model: string; api_key?: string; base_url?: string; extra?: Record<string, unknown> }) =>
-    apiFetch<ConfiguredModel>('/api/models', { method: 'POST', json: data }),
-  setDefault: (provider: string, model: string) => apiFetch<void>('/api/models/default', { method: 'PUT', json: { provider, model } }),
-  delete: (id: string) => apiFetch<void>(`/api/models/${id}`, { method: 'DELETE' }),
-  getProviders: () => apiFetch<{ data: ProviderInfo[] }>('/api/providers').then(r => r.data ?? []),
-  configureProvider: (name: string, data: { api_key: string; base_url?: string }) =>
-    apiFetch<void>(`/api/providers/${name}/configure`, { method: 'POST', json: data }),
+  list: async () => {
+    const { data } = await client.GET('/models');
+    return (data?.data ?? []) as ConfiguredModel[];
+  },
+  add: async (body: { provider: string; model: string; api_key?: string; base_url?: string; extra?: Record<string, unknown> }) => {
+    const { data } = await client.POST('/models', {
+      body: body as Schemas['AddModelRequest'],
+    });
+    return data as unknown as ConfiguredModel;
+  },
+  setDefault: async (provider: string, model: string) => {
+    await client.PUT('/models/default', { body: { provider, model } });
+  },
+  delete: async (id: string) => {
+    await client.DELETE('/models/{modelID}', { params: { path: { modelID: id } } });
+  },
+  getProviders: async () => {
+    const { data } = await client.GET('/providers');
+    return (data?.data ?? []) as ProviderInfo[];
+  },
+  configureProvider: async (name: string, body: { api_key: string; base_url?: string }) => {
+    await client.POST('/providers/{name}/configure', {
+      params: { path: { name } },
+      body: body as Schemas['ConfigureProviderRequest'],
+    });
+  },
 };
 
 // ── Tool API ──
@@ -259,7 +335,10 @@ export interface ToolItem {
 }
 
 export const toolApi = {
-  list: () => apiFetch<{ data: ToolItem[] }>('/api/tools').then(r => r.data ?? []),
+  list: async () => {
+    const { data } = await client.GET('/tools');
+    return (data?.data ?? []) as ToolItem[];
+  },
 };
 
 // ── Skill API ──
@@ -273,9 +352,17 @@ export interface SkillItem {
 }
 
 export const skillApi = {
-  list: () => apiFetch<{ data: SkillItem[] }>('/api/skills').then(r => r.data ?? []),
-  install: (data: { url: string; name?: string }) => apiFetch<{ name: string }>('/api/skills/install', { method: 'POST', json: data }),
-  uninstall: (name: string) => apiFetch<void>(`/api/skills/${name}`, { method: 'DELETE' }),
+  list: async () => {
+    const { data } = await client.GET('/skills');
+    return (data?.data ?? []) as SkillItem[];
+  },
+  install: async (body: Schemas['InstallSkillRequest']) => {
+    const { data } = await client.POST('/skills/install', { body });
+    return data as Schemas['SkillInstallResult'];
+  },
+  uninstall: async (name: string) => {
+    await client.DELETE('/skills/{name}', { params: { path: { name } } });
+  },
 };
 
 // ── Stats API ──
@@ -343,137 +430,230 @@ export interface MonitoringSummary {
   };
 }
 
-export interface MonitoringTimeseriesPoint {
+export type MonitoringTimeseriesPoint = {
   bucket_start: string;
-  run_total: number;
-  run_success: number;
-  run_failed: number;
+  run_total?: number;
+  run_success?: number;
+  run_failed?: number;
   success_rate?: number;
   error_rate?: number;
   latency_p50_ms?: number;
   latency_p95_ms?: number;
   latency_p99_ms?: number;
   avg_elapsed_ms?: number;
-  throughput_rpm: number;
-}
+  throughput_rpm?: number;
+};
 
-export interface MonitoringRuntimeOverview {
-  runtime_count: number;
-  actor_count: number;
+export type MonitoringRuntimeOverview = Schemas['RuntimeManagerStats'] & {
   current?: {
     runtime_id: string;
     actor_count: number;
     kanban_card_count: number;
     sandbox_leases: number;
   };
-}
+};
 
-export interface MonitoringTopFailedAgent {
+export type MonitoringTopFailedAgent = {
   agent_id: string;
   failed_runs: number;
   total_runs: number;
   failure_rate?: number;
-}
+};
 
-export interface MonitoringTopErrorCode {
+export type MonitoringTopErrorCode = {
   code: string;
   count: number;
-}
+};
 
-export interface MonitoringRecentFailure {
+export type MonitoringRecentFailure = {
   run_id: string;
   agent_id: string;
   error_code: string;
   message: string;
   elapsed_ms: number;
   created_at: string;
-}
+};
 
-export interface MonitoringDiagnostics {
+export type MonitoringDiagnostics = {
   top_failed_agents: MonitoringTopFailedAgent[];
   top_error_codes: MonitoringTopErrorCode[];
   recent_failures: MonitoringRecentFailure[];
-}
+};
 
 export const statsApi = {
-  overview: () => apiFetch<StatsOverview>('/api/stats'),
-  runs: (agentId?: string) => apiFetch<{ data: RunStats[] }>(`/api/stats/runs${agentId ? `?agent_id=${agentId}` : ''}`).then(r => r.data ?? []),
-  runtime: () => apiFetch<RuntimeStatsOverview>('/api/stats/runtime'),
-  memory: () => apiFetch<MemoryStatsOverview>('/api/stats/memory'),
+  overview: async () => {
+    const { data } = await client.GET('/stats');
+    return data as StatsOverview;
+  },
+  runs: async (agentId?: string) => {
+    const { data } = await client.GET('/stats/runs', {
+      params: { query: agentId ? { agent_id: agentId } : {} },
+    });
+    return (data?.data ?? []) as RunStats[];
+  },
+  runtime: async () => {
+    const { data } = await client.GET('/stats/runtime');
+    return data as RuntimeStatsOverview;
+  },
+  memory: async () => {
+    const { data } = await client.GET('/stats/memory');
+    return data as MemoryStatsOverview;
+  },
 };
 
 export const monitoringApi = {
-  summary: (params?: { window?: string; agentId?: string }) => {
-    const search = new URLSearchParams();
-    if (params?.window) search.set('window', params.window);
-    if (params?.agentId) search.set('agent_id', params.agentId);
-    const query = search.toString();
-    return apiFetch<MonitoringSummary>(`/api/monitoring/summary${query ? `?${query}` : ''}`);
+  summary: async (params?: { window?: string; agentId?: string }) => {
+    const { data } = await client.GET('/monitoring/summary', {
+      params: {
+        query: {
+          ...(params?.window ? { window: params.window as '1h' | '6h' | '24h' | '7d' } : {}),
+          ...(params?.agentId ? { agent_id: params.agentId } : {}),
+        },
+      },
+    });
+    return data as MonitoringSummary;
   },
-  timeseries: (params?: { window?: string; interval?: string; agentId?: string }) => {
-    const search = new URLSearchParams();
-    if (params?.window) search.set('window', params.window);
-    if (params?.interval) search.set('interval', params.interval);
-    if (params?.agentId) search.set('agent_id', params.agentId);
-    const query = search.toString();
-    return apiFetch<{ data: MonitoringTimeseriesPoint[] }>(`/api/monitoring/timeseries${query ? `?${query}` : ''}`).then(r => r.data ?? []);
+  timeseries: async (params?: { window?: string; interval?: string; agentId?: string }) => {
+    const { data } = await client.GET('/monitoring/timeseries', {
+      params: {
+        query: {
+          ...(params?.window ? { window: params.window } : {}),
+          ...(params?.interval ? { interval: params.interval as '1m' | '5m' | '15m' | '1h' } : {}),
+          ...(params?.agentId ? { agent_id: params.agentId } : {}),
+        },
+      },
+    });
+    return (data?.data ?? []) as MonitoringTimeseriesPoint[];
   },
-  runtime: () => apiFetch<MonitoringRuntimeOverview>('/api/monitoring/runtime'),
-  diagnostics: (params?: { window?: string; agentId?: string; limit?: number }) => {
-    const search = new URLSearchParams();
-    if (params?.window) search.set('window', params.window);
-    if (params?.agentId) search.set('agent_id', params.agentId);
-    if (params?.limit) search.set('limit', String(params.limit));
-    const query = search.toString();
-    return apiFetch<MonitoringDiagnostics>(`/api/monitoring/diagnostics${query ? `?${query}` : ''}`);
+  runtime: async () => {
+    const { data } = await client.GET('/monitoring/runtime');
+    return data as MonitoringRuntimeOverview;
+  },
+  diagnostics: async (params?: { window?: string; agentId?: string; limit?: number }) => {
+    const { data } = await client.GET('/monitoring/diagnostics', {
+      params: {
+        query: {
+          ...(params?.window ? { window: params.window } : {}),
+          ...(params?.agentId ? { agent_id: params.agentId } : {}),
+          ...(params?.limit ? { limit: params.limit } : {}),
+        },
+      },
+    });
+    return data as MonitoringDiagnostics;
   },
 };
 
 // ── Workflow Run API ──
 
 export const workflowRunApi = {
-  list: (agentId?: string) => apiFetch<{ data: WorkflowRun[] }>(`/api/workflows/runs${agentId ? `?agent_id=${agentId}` : ''}`).then(r => r.data ?? []),
-  get: (id: string) => apiFetch<WorkflowRun>(`/api/workflows/runs/${id}`),
-  status: (id: string) => apiFetch<{ status: string }>(`/api/workflows/runs/${id}/status`),
-  events: (id: string) => apiFetch<{ data: ExecutionEvent[] }>(`/api/workflows/runs/${id}/events`).then(r => r.data ?? []),
+  list: async (agentId?: string) => {
+    const { data } = await client.GET('/workflows/runs', {
+      params: { query: agentId ? { agent_id: agentId } : {} },
+    });
+    return (data?.data ?? []) as WorkflowRun[];
+  },
+  get: async (id: string) => {
+    const { data } = await client.GET('/workflows/runs/{id}', {
+      params: { path: { id } },
+    });
+    return data as unknown as WorkflowRun;
+  },
+  status: async (id: string) => {
+    const { data } = await client.GET('/workflows/runs/{id}/status', {
+      params: { path: { id } },
+    });
+    return data as unknown as { status: string };
+  },
+  events: async (id: string) => {
+    const { data } = await client.GET('/workflows/runs/{id}/events', {
+      params: { path: { id } },
+    });
+    return (data?.data ?? []) as ExecutionEvent[];
+  },
 };
 
 // ── Kanban API ──
 
 export const kanbanApi = {
-  cards: () => apiFetch<{ data: KanbanSnapshot['cards'] }>('/api/kanban/cards').then(r => r.data ?? []),
-  timeline: () => apiFetch<{ data: TimelineEntry[] }>('/api/kanban/timeline').then(r => r.data ?? []),
-  topology: () => apiFetch<{ nodes: TopologyNode[]; edges: TopologyEdge[] }>('/api/kanban/topology'),
+  cards: async () => {
+    const { data } = await client.GET('/kanban/cards');
+    return (data?.data ?? []) as KanbanSnapshot['cards'];
+  },
+  timeline: async () => {
+    const { data } = await client.GET('/kanban/timeline');
+    return (data?.data ?? []) as TimelineEntry[];
+  },
+  topology: async () => {
+    const { data } = await client.GET('/kanban/topology');
+    return data as unknown as { nodes: TopologyNode[]; edges: TopologyEdge[] };
+  },
 };
 
 // ── Plugin API ──
 
+export type PluginDetail = Schemas['PluginDetail'];
+
 export const pluginApi = {
-  list: () => apiFetch<{ data: Plugin[] }>('/api/plugins').then(r => r.data ?? []),
-  get: (name: string) => apiFetch<Plugin>(`/api/plugins/${name}`),
-  enable: (name: string) => apiFetch<Plugin>(`/api/plugins/${name}/enable`, { method: 'POST' }),
-  disable: (name: string) => apiFetch<Plugin>(`/api/plugins/${name}/disable`, { method: 'POST' }),
-  configure: (name: string, config: Record<string, unknown>) =>
-    apiFetch<Plugin>(`/api/plugins/${name}/config`, { method: 'PUT', json: config }),
-  reload: () =>
-    apiFetch<{ added: number; removed: number }>('/api/plugins/reload', { method: 'POST' }),
-  upload: (file: File) => {
+  list: async () => {
+    const { data } = await client.GET('/plugins');
+    return (data?.data ?? []) as unknown as Plugin[];
+  },
+  get: async (name: string) => {
+    const { data } = await client.GET('/plugins/{name}', {
+      params: { path: { name } },
+    });
+    return data as unknown as Plugin;
+  },
+  enable: async (name: string) => {
+    const { data } = await client.POST('/plugins/{name}/enable', {
+      params: { path: { name } },
+    });
+    return data as Schemas['PluginInfo'];
+  },
+  disable: async (name: string) => {
+    const { data } = await client.POST('/plugins/{name}/disable', {
+      params: { path: { name } },
+    });
+    return data as Schemas['PluginInfo'];
+  },
+  configure: async (name: string, config: Record<string, unknown>) => {
+    const { data } = await client.PUT('/plugins/{name}/config', {
+      params: { path: { name } },
+      body: config,
+    });
+    return data as Schemas['PluginInfo'];
+  },
+  reload: async () => {
+    const { data } = await client.POST('/plugins/reload');
+    return data as { added?: string[]; removed?: string[] };
+  },
+  upload: async (file: File) => {
     const form = new FormData();
     form.append('file', file);
-    return apiFetch<{ id: string; name: string; size: number; added: number; removed: number }>(
-      '/api/plugins/upload', { method: 'POST', body: form },
-    );
+    const res = await fetch('/api/plugins/upload', {
+      method: 'POST',
+      body: form,
+      credentials: 'include',
+    });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      const err = body as { error?: { message?: string }; message?: string };
+      throw new ApiError(res.status, err.error?.message || err.message || res.statusText);
+    }
+    return res.json() as Promise<Schemas['PluginUploadResult']>;
   },
-  remove: (name: string) => apiFetch<void>(`/api/plugins/${name}`, { method: 'DELETE' }),
+  remove: async (name: string) => {
+    await client.DELETE('/plugins/{name}', { params: { path: { name } } });
+  },
 };
 
 // ── Channel Types API ──
 
-export interface ChannelTypeField {
+export type ChannelTypeField = {
   type: string;
   required?: boolean;
   secret?: boolean;
-}
+};
 
 export interface ChannelTypeSchema {
   type: string;
@@ -482,8 +662,13 @@ export interface ChannelTypeSchema {
 }
 
 export const channelApi = {
-  types: () => apiFetch<{ data: ChannelTypeSchema[] }>('/api/channel-types').then(r => r.data ?? []),
+  types: async () => {
+    const { data } = await client.GET('/channel-types');
+    return (data?.data ?? []) as ChannelTypeSchema[];
+  },
 };
+
+// ── WebSocket Ticket ──
 
 export interface WSTicket {
   ticket: string;
@@ -491,7 +676,10 @@ export interface WSTicket {
 }
 
 export const wsApi = {
-  ticket: () => apiFetch<WSTicket>('/api/ws-ticket', { method: 'POST' }),
+  ticket: async () => {
+    const { data } = await client.POST('/ws-ticket');
+    return data as WSTicket;
+  },
 };
 
 // ── Long-term Memory API ──
@@ -509,22 +697,31 @@ export interface MemoryEntry {
 }
 
 export const memoryApi = {
-  list: (category?: string) => {
-    const p = new URLSearchParams();
-    if (category) p.set('category', category);
-    const qs = p.toString();
-    return apiFetch<{ data: MemoryEntry[] }>(`/api/memories${qs ? `?${qs}` : ''}`).then(r => r.data ?? []);
+  list: async (category?: string) => {
+    const { data } = await client.GET('/memories', {
+      params: { query: category ? { category } : {} },
+    });
+    return (data?.data ?? []) as MemoryEntry[];
   },
-  update: (entryId: string, content: string) =>
-    apiFetch<MemoryEntry>(`/api/memories/${entryId}`, { method: 'PUT', json: { content } }),
-  delete: (entryId: string) =>
-    apiFetch<void>(`/api/memories/${entryId}`, { method: 'DELETE' }),
+  update: async (entryId: string, content: string) => {
+    const { data } = await client.PUT('/memories/{entryID}', {
+      params: { path: { entryID: entryId } },
+      body: { content },
+    });
+    return data as MemoryEntry;
+  },
+  delete: async (entryId: string) => {
+    await client.DELETE('/memories/{entryID}', {
+      params: { path: { entryID: entryId } },
+    });
+  },
 };
 
 // ── Setup API ──
 
 export const setupApi = {
-  getStatus: () => modelApi.getProviders().then(providers => ({
-    status: providers.some(p => p.configured) ? 'configured' as const : 'not_configured' as const,
-  })),
+  getStatus: () =>
+    modelApi.getProviders().then((providers) => ({
+      status: providers.some((p) => p.configured) ? ('configured' as const) : ('not_configured' as const),
+    })),
 };

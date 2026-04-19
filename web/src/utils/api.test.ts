@@ -1,22 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { apiFetch, apiStream, toolApi } from './api';
+import { apiStream, toolApi } from './api';
+import client from '../api/client';
 
-// Mock useAuthStore to avoid import side-effects
-vi.mock('../store/authStore', () => ({
-  useAuthStore: {
-    getState: () => ({ authenticated: false }),
+vi.mock('../store/toastStore', () => ({
+  useToastStore: {
+    getState: () => ({ addToast: vi.fn() }),
   },
 }));
-
-function mockFetchJson(data: unknown, status = 200) {
-  return vi.fn().mockResolvedValue({
-    ok: status >= 200 && status < 300,
-    status,
-    statusText: 'OK',
-    headers: new Headers(),
-    json: () => Promise.resolve(data),
-  });
-}
 
 function mockFetchSSE(chunks: string[]) {
   let idx = 0;
@@ -38,55 +28,6 @@ function mockFetchSSE(chunks: string[]) {
 
 beforeEach(() => {
   vi.restoreAllMocks();
-});
-
-describe('apiFetch', () => {
-  it('returns parsed JSON on success', async () => {
-    globalThis.fetch = mockFetchJson({ id: '1', name: 'test' });
-    const result = await apiFetch<{ id: string; name: string }>('/api/test');
-    expect(result).toEqual({ id: '1', name: 'test' });
-  });
-
-  it('returns undefined for 204 No Content', async () => {
-    globalThis.fetch = vi.fn().mockResolvedValue({
-      ok: true,
-      status: 204,
-      statusText: 'No Content',
-      headers: new Headers(),
-      json: () => Promise.resolve(null),
-    });
-    const result = await apiFetch('/api/test');
-    expect(result).toBeUndefined();
-  });
-
-  it('throws error with message from response body', async () => {
-    globalThis.fetch = vi.fn().mockResolvedValue({
-      ok: false,
-      status: 400,
-      statusText: 'Bad Request',
-      json: () => Promise.resolve({ error: { message: 'invalid input' } }),
-    });
-    await expect(apiFetch('/api/bad')).rejects.toThrow('invalid input');
-  });
-
-  it('falls back to statusText if no error message', async () => {
-    globalThis.fetch = vi.fn().mockResolvedValue({
-      ok: false,
-      status: 500,
-      statusText: 'Internal Server Error',
-      json: () => Promise.reject(new Error('not json')),
-    });
-    await expect(apiFetch('/api/fail')).rejects.toThrow('Internal Server Error');
-  });
-
-  it('sends JSON body and content-type header', async () => {
-    globalThis.fetch = mockFetchJson({ ok: true });
-    await apiFetch('/api/test', { method: 'POST', json: { key: 'value' } });
-
-    const [, opts] = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0];
-    expect(opts.body).toBe('{"key":"value"}');
-    expect(opts.headers['Content-Type']).toBe('application/json');
-  });
 });
 
 describe('apiStream', () => {
@@ -192,7 +133,6 @@ describe('apiStream', () => {
     }
 
     expect(events).toHaveLength(1);
-    // blank line reset currentEventType, so no type override
     expect((events[0] as Record<string, unknown>).type).toBeUndefined();
     expect((events[0] as Record<string, unknown>).chunk).toBe('no-type');
   });
@@ -204,7 +144,11 @@ describe('toolApi', () => {
       { name: 'sandbox_bash', description: 'Run commands' },
       { name: 'skill', description: 'Search, inspect, and execute skills' },
     ];
-    globalThis.fetch = mockFetchJson({ data: tools });
+    vi.spyOn(client, 'GET').mockResolvedValue({
+      data: { data: tools },
+      error: undefined,
+      response: new Response(),
+    } as never);
 
     const result = await toolApi.list();
     expect(result).toEqual(tools);
@@ -213,18 +157,25 @@ describe('toolApi', () => {
   });
 
   it('list returns empty array when data is null', async () => {
-    globalThis.fetch = mockFetchJson({ data: null });
+    vi.spyOn(client, 'GET').mockResolvedValue({
+      data: { data: null },
+      error: undefined,
+      response: new Response(),
+    } as never);
 
     const result = await toolApi.list();
     expect(result).toEqual([]);
   });
 
-  it('list calls correct endpoint', async () => {
-    globalThis.fetch = mockFetchJson({ data: [] });
+  it('list calls GET /tools', async () => {
+    const spy = vi.spyOn(client, 'GET').mockResolvedValue({
+      data: { data: [] },
+      error: undefined,
+      response: new Response(),
+    } as never);
 
     await toolApi.list();
 
-    const [path] = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0];
-    expect(path).toBe('/api/tools');
+    expect(spy).toHaveBeenCalledWith('/tools');
   });
 });

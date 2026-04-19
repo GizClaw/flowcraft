@@ -130,8 +130,8 @@ export default function App() {
     authApi.status()
       .then((status) => {
         if (cancelled) return;
-        setAccountSetup(status.initialized);
-        setAuthenticated(status.authenticated);
+        setAccountSetup(status.initialized ?? false);
+        setAuthenticated(status.authenticated ?? false);
         setLoading(false);
       })
       .catch(() => {

@@ -4,6 +4,8 @@ SHELL := /bin/bash
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -X main.cliVersion=$(VERSION)
 
+OPENAPI_SPEC := internal/api/openapi.yaml
+
 # Sub-modules managed by go.work
 WORKSPACE_MODULES := sdk sdkx examples/voice-pipeline
 
@@ -17,6 +19,9 @@ help:
 	@echo "  make tidy      Run go mod tidy on all modules"
 	@echo "  make ci        vet + test"
 	@echo "  make build     Build flowcraft binary"
+	@echo "  make generate  Regenerate all code from openapi.yaml"
+	@echo "  make gen-go    Regenerate Go server stubs (ogen)"
+	@echo "  make gen-web   Regenerate Web TypeScript types (openapi-typescript)"
 
 .PHONY: vet
 vet:
@@ -41,6 +46,19 @@ tidy:
 .PHONY: build
 build:
 	@echo "==> build flowcraft ($(VERSION))"; GOWORK=off go build -ldflags '$(LDFLAGS)' -o bin/flowcraft ./cmd/flowcraft
+
+.PHONY: generate
+generate: gen-go gen-web
+
+.PHONY: gen-go
+gen-go:
+	@echo "==> generate Go server (ogen)"
+	cd internal/api && go generate ./...
+
+.PHONY: gen-web
+gen-web:
+	@echo "==> generate Web TypeScript types (openapi-typescript)"
+	cd web && npx openapi-typescript ../$(OPENAPI_SPEC) -o src/api/schema.d.ts
 
 .PHONY: ci
 ci: vet test

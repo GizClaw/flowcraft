@@ -12,7 +12,8 @@
     "test:watch": "vitest",
     "test:e2e": "playwright test",
     "test:e2e:ui": "playwright test --ui",
-    "test:e2e:headed": "playwright test --headed"
+    "test:e2e:headed": "playwright test --headed",
+    "generate:api": "openapi-typescript ../internal/api/openapi.yaml -o src/api/schema.d.ts"
   },
   "dependencies": {
     "@dagrejs/dagre": "^2.0.4",
@@ -22,6 +23,7 @@
     "i18next": "^25.8.13",
     "js-yaml": "^4.1.1",
     "lucide-react": "^0.470.0",
+    "openapi-fetch": "^0.17.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
     "react-i18next": "^16.5.4",
@@ -49,6 +51,7 @@
     "eslint-plugin-react-refresh": "^0.4.0",
     "globals": "^15.15.0",
     "jsdom": "^28.1.0",
+    "openapi-typescript": "^7.13.0",
     "tailwindcss": "^4.1.0",
     "typescript": "^5.8.0",
     "typescript-eslint": "^8.0.0",
