@@ -337,16 +337,22 @@ export default function MonitoringPage() {
             <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-300">{t('monitoring.qualityTitle')}</h3>
             {qualityAlert && <span className="text-xs px-2 py-0.5 rounded bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300">{t('monitoring.qualityAlert')}</span>}
           </div>
-          <ResponsiveContainer width="100%" height={280}>
-            <LineChart data={lineData}>
-              <CartesianGrid strokeDasharray="3 3" stroke={gridStroke} />
-              <XAxis dataKey="time" tick={{ fontSize: 12 }} />
-              <YAxis tick={{ fontSize: 12 }} />
-              <Tooltip />
-              <Line type="monotone" dataKey="successRate" stroke="#10b981" strokeWidth={2} dot={false} />
-              <Line type="monotone" dataKey="errorRate" stroke="#ef4444" strokeWidth={2} dot={false} />
-            </LineChart>
-          </ResponsiveContainer>
+          {lineData.length === 0 ? (
+            <div className="h-[280px] flex items-center justify-center text-sm text-gray-400 dark:text-gray-500">
+              {t('monitoring.noTimeseries')}
+            </div>
+          ) : (
+            <ResponsiveContainer width="100%" height={280}>
+              <LineChart data={lineData}>
+                <CartesianGrid strokeDasharray="3 3" stroke={gridStroke} />
+                <XAxis dataKey="time" tick={{ fontSize: 12 }} />
+                <YAxis tick={{ fontSize: 12 }} />
+                <Tooltip cursor={{ stroke: gridStroke }} />
+                <Line type="monotone" dataKey="successRate" stroke="#10b981" strokeWidth={2} dot={false} />
+                <Line type="monotone" dataKey="errorRate" stroke="#ef4444" strokeWidth={2} dot={false} />
+              </LineChart>
+            </ResponsiveContainer>
+          )}
         </div>
 
         <div className="bg-white dark:bg-gray-900 rounded-xl border border-gray-200 dark:border-gray-800 p-4">
@@ -354,74 +360,93 @@ export default function MonitoringPage() {
             <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-300">{t('monitoring.capacityTitle')}</h3>
             {capacityAlert && <span className="text-xs px-2 py-0.5 rounded bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300">{t('monitoring.capacityAlert')}</span>}
           </div>
-          <ResponsiveContainer width="100%" height={280}>
-            <ComposedChart data={lineData}>
-              <CartesianGrid strokeDasharray="3 3" stroke={gridStroke} />
-              <XAxis dataKey="time" tick={{ fontSize: 12 }} />
-              <YAxis tick={{ fontSize: 12 }} />
-              <Tooltip />
-              <Area type="monotone" dataKey="throughput" stroke="#6366f1" fill="#6366f133" />
-              <Line type="monotone" dataKey="p95" stroke="#f97316" strokeWidth={2} dot={false} />
-            </ComposedChart>
-          </ResponsiveContainer>
+          {lineData.length === 0 ? (
+            <div className="h-[280px] flex items-center justify-center text-sm text-gray-400 dark:text-gray-500">
+              {t('monitoring.noTimeseries')}
+            </div>
+          ) : (
+            <ResponsiveContainer width="100%" height={280}>
+              <ComposedChart data={lineData}>
+                <CartesianGrid strokeDasharray="3 3" stroke={gridStroke} />
+                <XAxis dataKey="time" tick={{ fontSize: 12 }} />
+                <YAxis tick={{ fontSize: 12 }} />
+                <Tooltip cursor={{ stroke: gridStroke }} />
+                <Area type="monotone" dataKey="throughput" stroke="#6366f1" fill="#6366f133" />
+                <Line type="monotone" dataKey="p95" stroke="#f97316" strokeWidth={2} dot={false} />
+              </ComposedChart>
+            </ResponsiveContainer>
+          )}
         </div>
       </div>
 
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
         <div className="bg-white dark:bg-gray-900 rounded-xl border border-gray-200 dark:border-gray-800 p-4">
           <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-4">{t('monitoring.topFailedAgents')}</h3>
-          <ResponsiveContainer width="100%" height={280}>
-            <BarChart data={topFailedData}>
-              <CartesianGrid strokeDasharray="3 3" stroke={gridStroke} />
-              <XAxis dataKey="label" tick={{ fontSize: 12 }} interval={0} angle={-20} textAnchor="end" height={50} />
-              <YAxis tick={{ fontSize: 12 }} allowDecimals={false} />
-              <Tooltip
-                labelFormatter={(_, payload) => {
-                  const item = payload?.[0]?.payload as { agent_id?: string; label?: string } | undefined;
-                  if (!item) return '';
-                  const name = agentNameMap.get(item.agent_id ?? '');
-                  return name ?? item.agent_id ?? item.label ?? '';
-                }}
-              />
-              <Bar dataKey="failed_runs" fill="#ef4444" radius={[4, 4, 0, 0]} />
-            </BarChart>
-          </ResponsiveContainer>
+          {topFailedData.length === 0 ? (
+            <div className="h-[280px] flex items-center justify-center text-sm text-gray-400 dark:text-gray-500">
+              {t('monitoring.noFailedAgents')}
+            </div>
+          ) : (
+            <ResponsiveContainer width="100%" height={280}>
+              <BarChart data={topFailedData}>
+                <CartesianGrid strokeDasharray="3 3" stroke={gridStroke} />
+                <XAxis dataKey="label" tick={{ fontSize: 12 }} interval={0} angle={-20} textAnchor="end" height={50} />
+                <YAxis tick={{ fontSize: 12 }} allowDecimals={false} />
+                <Tooltip
+                  cursor={{ fill: isDark ? 'rgba(255,255,255,0.04)' : 'rgba(0,0,0,0.04)' }}
+                  labelFormatter={(_, payload) => {
+                    const item = payload?.[0]?.payload as { agent_id?: string; label?: string } | undefined;
+                    if (!item) return '';
+                    const name = agentNameMap.get(item.agent_id ?? '');
+                    return name ?? item.agent_id ?? item.label ?? '';
+                  }}
+                />
+                <Bar dataKey="failed_runs" fill="#ef4444" radius={[4, 4, 0, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          )}
         </div>
 
         <div className="bg-white dark:bg-gray-900 rounded-xl border border-gray-200 dark:border-gray-800 p-4">
           <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-4">{t('monitoring.recentFailures')}</h3>
-          <div className="overflow-x-auto">
-            <table className="min-w-full text-sm">
-              <thead>
-                <tr className="text-left text-gray-500 border-b border-gray-200 dark:border-gray-800">
-                  <th className="py-2 pr-3">{t('monitoring.tableTime')}</th>
-                  <th className="py-2 pr-3">{t('monitoring.tableRun')}</th>
-                  <th className="py-2 pr-3">{t('monitoring.tableAgent')}</th>
-                  <th className="py-2 pr-3">{t('monitoring.tableCode')}</th>
-                  <th className="py-2 pr-3">{t('monitoring.tableMessage')}</th>
-                  <th className="py-2 pr-3 whitespace-nowrap">{t('monitoring.tableElapsed')}</th>
-                </tr>
-              </thead>
-              <tbody>
-                {(diagnostics?.recent_failures ?? []).map((r) => {
-                  const agentName = agentNameMap.get(r.agent_id);
-                  const created = r.created_at ? new Date(r.created_at) : null;
-                  return (
-                    <tr key={r.run_id} className="border-b border-gray-100 dark:border-gray-900 cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-800/40" onClick={() => navigate(`/agents/${r.agent_id}/runs/${r.run_id}`)}>
-                      <td className="py-2 pr-3 text-gray-500 dark:text-gray-400 whitespace-nowrap" title={created ? created.toISOString() : ''}>
-                        {created ? created.toLocaleString([], { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : '--'}
-                      </td>
-                      <td className="py-2 pr-3 text-gray-700 dark:text-gray-200 font-mono" title={r.run_id}>{r.run_id.slice(0, 8)}</td>
-                      <td className="py-2 pr-3 text-gray-700 dark:text-gray-200" title={r.agent_id}>{agentName ?? r.agent_id.slice(0, 8)}</td>
-                      <td className="py-2 pr-3 text-red-500 whitespace-nowrap">{r.error_code}</td>
-                      <td className="py-2 pr-3 text-gray-600 dark:text-gray-300 max-w-[280px] truncate" title={r.message}>{r.message || '--'}</td>
-                      <td className="py-2 pr-3 text-gray-700 dark:text-gray-200 whitespace-nowrap">{r.elapsed_ms} ms</td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
+          {(diagnostics?.recent_failures ?? []).length === 0 ? (
+            <div className="h-[280px] flex items-center justify-center text-sm text-gray-400 dark:text-gray-500">
+              {t('monitoring.noRecentFailures')}
+            </div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="min-w-full text-sm">
+                <thead>
+                  <tr className="text-left text-gray-500 border-b border-gray-200 dark:border-gray-800">
+                    <th className="py-2 pr-3">{t('monitoring.tableTime')}</th>
+                    <th className="py-2 pr-3">{t('monitoring.tableRun')}</th>
+                    <th className="py-2 pr-3">{t('monitoring.tableAgent')}</th>
+                    <th className="py-2 pr-3">{t('monitoring.tableCode')}</th>
+                    <th className="py-2 pr-3">{t('monitoring.tableMessage')}</th>
+                    <th className="py-2 pr-3 whitespace-nowrap">{t('monitoring.tableElapsed')}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(diagnostics?.recent_failures ?? []).map((r) => {
+                    const agentName = agentNameMap.get(r.agent_id);
+                    const created = r.created_at ? new Date(r.created_at) : null;
+                    return (
+                      <tr key={r.run_id} className="border-b border-gray-100 dark:border-gray-900 cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-800/40" onClick={() => navigate(`/agents/${r.agent_id}/runs/${r.run_id}`)}>
+                        <td className="py-2 pr-3 text-gray-500 dark:text-gray-400 whitespace-nowrap" title={created ? created.toISOString() : ''}>
+                          {created ? created.toLocaleString([], { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : '--'}
+                        </td>
+                        <td className="py-2 pr-3 text-gray-700 dark:text-gray-200 font-mono" title={r.run_id}>{r.run_id.slice(0, 8)}</td>
+                        <td className="py-2 pr-3 text-gray-700 dark:text-gray-200" title={r.agent_id}>{agentName ?? r.agent_id.slice(0, 8)}</td>
+                        <td className="py-2 pr-3 text-red-500 whitespace-nowrap">{r.error_code}</td>
+                        <td className="py-2 pr-3 text-gray-600 dark:text-gray-300 max-w-[280px] truncate" title={r.message}>{r.message || '--'}</td>
+                        <td className="py-2 pr-3 text-gray-700 dark:text-gray-200 whitespace-nowrap">{r.elapsed_ms} ms</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
         </div>
       </div>
     </div>
