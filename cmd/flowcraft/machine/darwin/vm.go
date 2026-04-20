@@ -54,6 +54,12 @@ func IsProvisioned() bool {
 	return err == nil
 }
 
+// Start launches the VM and waits for the in-guest server to become healthy.
+//
+// The command is idempotent: if vfkit is already running and the in-guest
+// /healthz returns OK, Start returns nil. If vfkit is alive but healthz is
+// failing (VM hung, server crashed, network broken), Start tears the VM down
+// and relaunches it from scratch.
 func (v *VM) Start(ctx context.Context) error {
 	if err := config.EnsureLayout(); err != nil {
 		return err
@@ -63,8 +69,16 @@ func (v *VM) Start(ctx context.Context) error {
 	binDir := config.BinDir()
 	pidFile := filepath.Join(machDir, "vfkit.pid")
 
-	if running, _ := VfkitRunning(pidFile); running {
-		return errors.New("flowcraft VM is already running")
+	if running, pid := VfkitRunning(pidFile); running {
+		if v.probeRunningHealthz(ctx, machDir) {
+			telemetry.Info(ctx, "vm: already running and healthy", otellog.Int("pid", pid))
+			return nil
+		}
+		telemetry.Warn(ctx, "vm: vfkit alive but healthz failing — restarting",
+			otellog.Int("pid", pid))
+		if err := StopVfkit(ctx, pidFile, 30*time.Second); err != nil {
+			return fmt.Errorf("stop unhealthy VM: %w", err)
+		}
 	}
 
 	vfkitBin, err := EnsureVfkit(ctx, binDir, nil)
@@ -143,7 +157,7 @@ func (v *VM) Start(ctx context.Context) error {
 	telemetry.Info(ctx, "vm: waiting for network")
 	guestIP, err := WaitForGuestIP(ctx, 30*time.Second, leaseSnapshot)
 	if err != nil {
-		_ = StopVfkit(pidFile, 10*time.Second)
+		_ = StopVfkit(ctx, pidFile, 10*time.Second)
 		return fmt.Errorf("resolve guest IP: %w", err)
 	}
 	telemetry.Info(ctx, "vm: guest IP resolved", otellog.String("ip", guestIP))
@@ -159,7 +173,7 @@ func (v *VM) Start(ctx context.Context) error {
 		timeout = 5 * time.Minute
 	}
 	if err := waitHealthyURL(ctx, healthzURL, timeout); err != nil {
-		_ = StopVfkit(pidFile, 10*time.Second)
+		_ = StopVfkit(ctx, pidFile, 10*time.Second)
 		return fmt.Errorf("healthz: %w", err)
 	}
 	telemetry.Info(ctx, "vm: FlowCraft is ready")
@@ -167,9 +181,9 @@ func (v *VM) Start(ctx context.Context) error {
 }
 
 func (v *VM) Stop(ctx context.Context) error {
-	_ = ctx
 	pidFile := filepath.Join(config.MachineDir(), "vfkit.pid")
-	return StopVfkit(pidFile, 30*time.Second)
+	telemetry.Info(ctx, "vm: stop requested")
+	return StopVfkit(ctx, pidFile, 30*time.Second)
 }
 
 // ResetScope mirrors machine.ResetScope to avoid an import cycle.
@@ -249,6 +263,31 @@ func (v *VM) Logs(_ context.Context, w io.Writer) error {
 }
 
 var healthzClient = &http.Client{Timeout: 5 * time.Second}
+
+// probeRunningHealthz performs a single, fast healthz probe against the
+// previously recorded guest IP. It is used by Start for idempotency checks
+// — not for the long boot wait. Any failure (no saved IP, network error,
+// non-200) returns false, signalling the caller to relaunch the VM.
+func (v *VM) probeRunningHealthz(ctx context.Context, machDir string) bool {
+	guestIP, err := readGuestIP(machDir)
+	if err != nil {
+		return false
+	}
+	cfg := config.Load()
+	url := fmt.Sprintf("http://%s:%d/healthz", guestIP, serverPort(cfg))
+	rctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(rctx, http.MethodGet, url, nil)
+	if err != nil {
+		return false
+	}
+	resp, err := healthzClient.Do(req)
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	return resp.StatusCode == http.StatusOK
+}
 
 func waitHealthyURL(ctx context.Context, url string, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)

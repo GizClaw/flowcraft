@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/sdk/telemetry"
+	otellog "go.opentelemetry.io/otel/log"
 )
 
 // VfkitConfig describes the VM resources and paths.
@@ -119,38 +120,52 @@ func StartVfkit(ctx context.Context, vfkitBin string, cfg VfkitConfig) error {
 
 // StopVfkit requests a graceful VM shutdown via the REST API (ACPI power
 // button), waits for the guest to shut down, then falls back to SIGTERM/SIGKILL.
-func StopVfkit(pidFile string, timeout time.Duration) error {
+// Each phase emits a log entry so the user can see why a stop is taking time.
+func StopVfkit(ctx context.Context, pidFile string, timeout time.Duration) error {
 	pid, err := readPID(pidFile)
 	if err != nil {
 		return err
 	}
 
 	if err := syscall.Kill(pid, 0); err != nil {
+		telemetry.Info(ctx, "vm: vfkit already stopped — clearing stale pid file",
+			otellog.Int("pid", pid))
 		_ = os.Remove(pidFile)
 		return nil
 	}
 
 	sockPath := filepath.Join(filepath.Dir(pidFile), "vfkit.sock")
-	_ = requestStopViaSocket(sockPath)
+	telemetry.Info(ctx, "vm: requesting graceful shutdown",
+		otellog.Int("pid", pid), otellog.String("timeout", timeout.String()))
+	if err := requestStopViaSocket(sockPath); err != nil {
+		telemetry.Warn(ctx, "vm: graceful shutdown request failed — will fall back to signals",
+			otellog.String("error", err.Error()))
+	}
 
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		if err := syscall.Kill(pid, 0); err != nil {
 			_ = os.Remove(pidFile)
 			_ = os.Remove(sockPath)
+			telemetry.Info(ctx, "vm: stopped gracefully", otellog.Int("pid", pid))
 			return nil
 		}
 		time.Sleep(500 * time.Millisecond)
 	}
 
+	telemetry.Warn(ctx, "vm: graceful shutdown timed out — sending SIGTERM",
+		otellog.Int("pid", pid))
 	_ = syscall.Kill(pid, syscall.SIGTERM)
 	time.Sleep(2 * time.Second)
 
 	if err := syscall.Kill(pid, 0); err == nil {
+		telemetry.Warn(ctx, "vm: vfkit still alive after SIGTERM — sending SIGKILL",
+			otellog.Int("pid", pid))
 		_ = syscall.Kill(pid, syscall.SIGKILL)
 	}
 	_ = os.Remove(pidFile)
 	_ = os.Remove(sockPath)
+	telemetry.Info(ctx, "vm: stopped", otellog.Int("pid", pid))
 	return nil
 }
 

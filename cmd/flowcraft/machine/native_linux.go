@@ -17,6 +17,8 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/internal/config"
+	"github.com/GizClaw/flowcraft/sdk/telemetry"
+	otellog "go.opentelemetry.io/otel/log"
 )
 
 // Native runs `flowcraft server` as a detached child with PID + log files under ~/.flowcraft.
@@ -30,15 +32,37 @@ func NewNative() *Native {
 var _ Machine = (*Native)(nil)
 
 // Start launches the M1 server binary in the background.
+//
+// The command is idempotent: if the server is already running and /healthz
+// returns OK, Start returns nil. If the PID is alive but healthz fails (the
+// process is stuck or the port is not bound), Start treats it as a stale
+// instance, stops it, and relaunches. A stale PID file with no live process
+// is silently cleaned up before launching.
 func (n *Native) Start(ctx context.Context) error {
-	_ = ctx
 	if err := config.EnsureLayout(); err != nil {
 		return err
 	}
-	if running, _ := n.pidRunning(); running {
-		return fmt.Errorf("flowcraft server already running (pid file %s)", config.PIDFile())
+
+	cfg := config.Load()
+	if running, pid := n.pidRunning(); running {
+		if probeHealthz(ctx, healthURL(cfg)) {
+			telemetry.Info(ctx, "cli: server already running and healthy",
+				otellog.Int("pid", pid))
+			return nil
+		}
+		telemetry.Warn(ctx, "cli: server pid alive but healthz failing — restarting",
+			otellog.Int("pid", pid))
+		if err := n.Stop(ctx); err != nil {
+			return fmt.Errorf("stop unhealthy server: %w", err)
+		}
+	} else {
+		_ = os.Remove(config.PIDFile())
 	}
 
+	return n.launchServer()
+}
+
+func (n *Native) launchServer() error {
 	exe, err := os.Executable()
 	if err != nil {
 		return err
@@ -66,6 +90,23 @@ func (n *Native) Start(ctx context.Context) error {
 	return nil
 }
 
+// probeHealthz issues a single GET to url and returns true on HTTP 200.
+// Used by Start for fast idempotency checks (not the long boot wait).
+func probeHealthz(ctx context.Context, url string) bool {
+	rctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(rctx, http.MethodGet, url, nil)
+	if err != nil {
+		return false
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	return resp.StatusCode == http.StatusOK
+}
+
 func (n *Native) pidRunning() (bool, int) {
 	data, err := os.ReadFile(config.PIDFile())
 	if err != nil {
@@ -82,8 +123,10 @@ func (n *Native) pidRunning() (bool, int) {
 }
 
 // Stop terminates the background server using the PID file.
+//
+// Sends SIGTERM and waits up to 10s for graceful exit, then SIGKILL.
+// Each phase is logged so users can see why a stop is taking time.
 func (n *Native) Stop(ctx context.Context) error {
-	_ = ctx
 	data, err := os.ReadFile(config.PIDFile())
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -95,6 +138,15 @@ func (n *Native) Stop(ctx context.Context) error {
 	if err != nil || pid <= 0 {
 		return fmt.Errorf("invalid pid file")
 	}
+
+	if err := syscall.Kill(pid, 0); err != nil {
+		telemetry.Info(ctx, "cli: server already stopped — clearing stale pid file",
+			otellog.Int("pid", pid))
+		_ = os.Remove(config.PIDFile())
+		return nil
+	}
+
+	telemetry.Info(ctx, "cli: stopping server (SIGTERM)", otellog.Int("pid", pid))
 	if err := syscall.Kill(pid, syscall.SIGTERM); err != nil {
 		return fmt.Errorf("kill pid %d: %w", pid, err)
 	}
@@ -102,12 +154,16 @@ func (n *Native) Stop(ctx context.Context) error {
 	for time.Now().Before(deadline) {
 		if err := syscall.Kill(pid, 0); err != nil {
 			_ = os.Remove(config.PIDFile())
+			telemetry.Info(ctx, "cli: server stopped", otellog.Int("pid", pid))
 			return nil
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
+	telemetry.Warn(ctx, "cli: server did not exit within 10s — sending SIGKILL",
+		otellog.Int("pid", pid))
 	_ = syscall.Kill(pid, syscall.SIGKILL)
 	_ = os.Remove(config.PIDFile())
+	telemetry.Info(ctx, "cli: server killed", otellog.Int("pid", pid))
 	return nil
 }
 
@@ -119,16 +175,7 @@ func (n *Native) Status(ctx context.Context) (*Status, error) {
 		return st, nil
 	}
 	cfg := config.Load()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, healthURL(cfg), nil)
-	if err != nil {
-		return st, err
-	}
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return st, nil
-	}
-	defer resp.Body.Close()
-	st.HealthzOK = resp.StatusCode == http.StatusOK
+	st.HealthzOK = probeHealthz(ctx, healthURL(cfg))
 	return st, nil
 }
 
