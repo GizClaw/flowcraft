@@ -1,6 +1,13 @@
-// Package knowledge provides the knowledge base system: document storage,
-// layered context generation (L0/L1/L2), chunking, tokenization, and
-// BM25, semantic, and hybrid retrieval.
+// Package knowledge provides a side-effect-free knowledge base library:
+// document storage, chunking, tokenization, and BM25 / semantic / hybrid
+// retrieval over layered context (L0 abstract, L1 overview, L2 chunks).
+//
+// Storage operations (Store.AddDocument, AddDocuments) only persist raw
+// content and update search indexes; they do not call out to an LLM. To
+// derive L0/L1, use the stateless GenerateDocumentContext and
+// GenerateDatasetContext helpers and publish results back through the
+// FSStore setters and sidecar writers. This keeps scheduling, retries,
+// caching, and persistence concerns owned entirely by the caller.
 package knowledge
 
 // ContextLayer indicates the granularity of a search result.

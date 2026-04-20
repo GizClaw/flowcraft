@@ -286,8 +286,10 @@ func (s *CachedStore) DatasetOverview(ctx context.Context, datasetID string) (st
 	return val, nil
 }
 
-// EvictDataset removes all cached entries for a dataset.
-// Intended for use by SemanticProcessor after updating semantic data directly on FSStore.
+// EvictDataset removes all cached entries for a dataset. Callers should
+// invoke this after mutating the underlying store out-of-band — for
+// example, after refreshing layered context on the inner FSStore via
+// SetDocAbstract / SetDatasetOverview / etc.
 func (s *CachedStore) EvictDataset(datasetID string) {
 	s.evictDataset(datasetID)
 }
