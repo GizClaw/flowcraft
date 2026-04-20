@@ -237,13 +237,7 @@
     "version": "v{{version}}"
   },
   "monitoring": {
-    "title": "Monitoring",
-    "agents": "Agents",
-    "conversations": "Conversations",
-    "workflowRuns": "Workflow Runs"
-  },
-  "monitoringV2": {
-    "title": "Monitoring Center V2",
+    "title": "Monitoring Center",
     "healthHealthy": "Healthy",
     "healthDegraded": "Degraded",
     "healthDown": "Down",
@@ -262,12 +256,16 @@
     "capacityAlert": "Consecutive high latency",
     "topFailedAgents": "Top Failed Agents",
     "recentFailures": "Recent Failures (Structured Code)",
+    "tableTime": "Time",
     "tableRun": "Run",
     "tableAgent": "Agent",
     "tableCode": "Code",
+    "tableMessage": "Message",
     "tableElapsed": "Elapsed",
     "partialErrorPrefix": "Some sections are unavailable: ",
     "allAgents": "All Agents",
+    "refresh": "Refresh",
+    "refreshing": "Refreshing…",
     "window": {
       "1h": "Last 1h",
       "6h": "Last 6h",

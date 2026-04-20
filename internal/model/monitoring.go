@@ -16,11 +16,11 @@ type MonitoringSummary struct {
 	RunTotal        int64                  `json:"run_total"`
 	RunSuccess      int64                  `json:"run_success"`
 	RunFailed       int64                  `json:"run_failed"`
-	SuccessRate     *float64               `json:"success_rate"`
-	ErrorRate       *float64               `json:"error_rate"`
-	LatencyP50Ms    *float64               `json:"latency_p50_ms"`
-	LatencyP95Ms    *float64               `json:"latency_p95_ms"`
-	LatencyP99Ms    *float64               `json:"latency_p99_ms"`
+	SuccessRate     *float64               `json:"success_rate,omitempty"`
+	ErrorRate       *float64               `json:"error_rate,omitempty"`
+	LatencyP50Ms    *float64               `json:"latency_p50_ms,omitempty"`
+	LatencyP95Ms    *float64               `json:"latency_p95_ms,omitempty"`
+	LatencyP99Ms    *float64               `json:"latency_p99_ms,omitempty"`
 	Health          MonitoringHealthStatus `json:"health"`
 	HealthReason    string                 `json:"health_reason,omitempty"`
 	ActiveActors    int                    `json:"active_actors"`
@@ -41,12 +41,12 @@ type MonitoringTimeseriesPoint struct {
 	RunTotal      int64     `json:"run_total"`
 	RunSuccess    int64     `json:"run_success"`
 	RunFailed     int64     `json:"run_failed"`
-	SuccessRate   *float64  `json:"success_rate"`
-	ErrorRate     *float64  `json:"error_rate"`
-	LatencyP50Ms  *float64  `json:"latency_p50_ms"`
-	LatencyP95Ms  *float64  `json:"latency_p95_ms"`
-	LatencyP99Ms  *float64  `json:"latency_p99_ms"`
-	AvgElapsedMs  *float64  `json:"avg_elapsed_ms"`
+	SuccessRate   *float64  `json:"success_rate,omitempty"`
+	ErrorRate     *float64  `json:"error_rate,omitempty"`
+	LatencyP50Ms  *float64  `json:"latency_p50_ms,omitempty"`
+	LatencyP95Ms  *float64  `json:"latency_p95_ms,omitempty"`
+	LatencyP99Ms  *float64  `json:"latency_p99_ms,omitempty"`
+	AvgElapsedMs  *float64  `json:"avg_elapsed_ms,omitempty"`
 	ThroughputRPM float64   `json:"throughput_rpm"`
 }
 
@@ -54,7 +54,7 @@ type MonitoringTopFailedAgent struct {
 	AgentID     string   `json:"agent_id"`
 	FailedRuns  int64    `json:"failed_runs"`
 	TotalRuns   int64    `json:"total_runs"`
-	FailureRate *float64 `json:"failure_rate"`
+	FailureRate *float64 `json:"failure_rate,omitempty"`
 }
 
 type MonitoringTopErrorCode struct {

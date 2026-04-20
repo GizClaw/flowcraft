@@ -237,13 +237,7 @@
     "version": "v{{version}}"
   },
   "monitoring": {
-    "title": "监控",
-    "agents": "智能体数",
-    "conversations": "对话数",
-    "workflowRuns": "工作流运行"
-  },
-  "monitoringV2": {
-    "title": "监控中心 V2",
+    "title": "监控中心",
     "healthHealthy": "健康",
     "healthDegraded": "降级",
     "healthDown": "不可用",
@@ -262,12 +256,16 @@
     "capacityAlert": "连续高延迟",
     "topFailedAgents": "失败 Agent Top",
     "recentFailures": "最近失败样本（结构化错误码）",
+    "tableTime": "时间",
     "tableRun": "Run",
     "tableAgent": "Agent",
     "tableCode": "Code",
-    "tableElapsed": "Elapsed",
+    "tableMessage": "错误信息",
+    "tableElapsed": "耗时",
     "partialErrorPrefix": "部分区块数据暂不可用：",
     "allAgents": "全部 Agent",
+    "refresh": "刷新",
+    "refreshing": "刷新中…",
     "window": {
       "1h": "最近 1h",
       "6h": "最近 6h",

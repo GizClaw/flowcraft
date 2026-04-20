@@ -21,6 +21,12 @@ vi.mock('react-i18next', () => ({
   useTranslation: () => ({
     t: (k: string) => k,
   }),
+  initReactI18next: { type: '3rdParty', init: () => {} },
+}));
+
+vi.mock('../store/uiStore', () => ({
+  useUIStore: (selector: (state: { isDark: () => boolean }) => unknown) =>
+    selector({ isDark: () => false }),
 }));
 
 vi.mock('../utils/api', () => ({
@@ -77,13 +83,13 @@ describe('MonitoringPage', () => {
   it('shows partial error and avoids zero fallback when summary fails', async () => {
     summaryMock.mockRejectedValue(new Error('boom'));
     render(<MonitoringPage />);
-    await waitFor(() => expect(screen.getByText(/monitoringV2.summaryLoadFailed/)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText(/monitoring.summaryLoadFailed/)).toBeInTheDocument());
     expect(screen.getAllByText('--').length).toBeGreaterThan(0);
   });
 
   it('re-fetches with agent filter parameter', async () => {
     render(<MonitoringPage />);
-    await waitFor(() => expect(screen.getByText('Agent A')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getAllByText('Agent A').length).toBeGreaterThan(0));
     const selects = screen.getAllByRole('combobox');
     fireEvent.change(selects[2], { target: { value: 'a1' } });
     await waitFor(() => {

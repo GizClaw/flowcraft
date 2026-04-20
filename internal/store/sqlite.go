@@ -1493,7 +1493,7 @@ func (s *SQLiteStore) GetMonitoringDiagnostics(ctx context.Context, agentID stri
 		return nil, fmt.Errorf("store: monitoring diagnostics top agents: %w", err)
 	}
 	defer func() { _ = topRows.Close() }()
-	var topAgents []model.MonitoringTopFailedAgent
+	topAgents := make([]model.MonitoringTopFailedAgent, 0)
 	for topRows.Next() {
 		var item model.MonitoringTopFailedAgent
 		if err := topRows.Scan(&item.AgentID, &item.FailedRuns, &item.TotalRuns); err != nil {
