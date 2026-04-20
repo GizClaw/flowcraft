@@ -122,11 +122,6 @@ func WithTokenizer(t Tokenizer) FSStoreOption {
 	return func(s *FSStore) { s.tokenizer = t }
 }
 
-// WithSemanticProcessor enables async L0/L1 generation.
-func WithSemanticProcessor(p *SemanticProcessor) FSStoreOption {
-	return func(s *FSStore) { s.processor = p }
-}
-
 // WithChunkConfig sets the chunking configuration.
 func WithChunkConfig(cfg ChunkConfig) FSStoreOption {
 	return func(s *FSStore) { s.chunkCfg = cfg }
@@ -139,22 +134,22 @@ func WithEmbedder(e Embedder) FSStoreOption {
 
 // FSStore implements Store using a Workspace-backed file tree.
 // Thread-safe via sync.RWMutex.
+//
+// FSStore is intentionally side-effect free with respect to layered
+// context: AddDocument persists raw content + builds the BM25/vector
+// index, but does not synthesize L0/L1. Callers are expected to drive
+// summarization explicitly via the GenerateDocumentContext /
+// GenerateDatasetContext helpers and then publish results back through
+// SetDocAbstract / SetDocOverview / SetDatasetAbstract / SetDatasetOverview
+// (and WriteSidecar / WriteDatasetFile for persistence).
 type FSStore struct {
 	ws        workspace.Workspace
 	prefix    string
 	mu        sync.RWMutex
 	index     map[string]*datasetIndex
-	processor *SemanticProcessor
 	tokenizer Tokenizer
 	chunkCfg  ChunkConfig
 	embedder  Embedder
-}
-
-// SetSemanticProcessor attaches (or replaces) the SemanticProcessor after construction.
-func (s *FSStore) SetSemanticProcessor(p *SemanticProcessor) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.processor = p
 }
 
 // NewFSStore creates a knowledge store rooted at the given prefix.
@@ -301,14 +296,6 @@ func (s *FSStore) AddDocument(ctx context.Context, datasetID, name, content stri
 		}
 	}
 
-	if s.processor != nil {
-		_ = s.processor.Enqueue(processingTask{
-			datasetID: datasetID,
-			docName:   name,
-			content:   parsedContent,
-			taskType:  taskDocProcess,
-		})
-	}
 	return nil
 }
 
@@ -379,16 +366,6 @@ func (s *FSStore) AddDocuments(ctx context.Context, datasetID string, docs []Doc
 		}
 	}
 
-	if s.processor != nil {
-		for _, item := range items {
-			_ = s.processor.Enqueue(processingTask{
-				datasetID: datasetID,
-				docName:   item.doc.Name,
-				content:   item.doc.Content,
-				taskType:  taskDocProcess,
-			})
-		}
-	}
 	return nil
 }
 
@@ -806,8 +783,10 @@ func (s *FSStore) DatasetOverview(_ context.Context, datasetID string) (string, 
 	return "", nil
 }
 
-// SetDocAbstract updates the in-memory abstract for a document.
-// Called by SemanticProcessor after generation.
+// SetDocAbstract updates the in-memory abstract for a document and refreshes
+// abstract-layer corpus statistics. Intended to be called after deriving a
+// new L0 (e.g. via GenerateDocumentContext); pair with WriteSidecar to make
+// the change durable.
 func (s *FSStore) SetDocAbstract(datasetID, name, abstract string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -900,8 +879,8 @@ func (s *FSStore) readFile(ctx context.Context, path string) (string, error) {
 	return string(data), nil
 }
 
-// WriteSidecar writes a sidecar file (e.g. .abstract, .overview).
-// Exported for SemanticProcessor.
+// WriteSidecar writes a per-document sidecar file (e.g. ".abstract",
+// ".overview") used to persist layered context derived externally.
 func (s *FSStore) WriteSidecar(ctx context.Context, datasetID, name, ext, content string) error {
 	base := strings.TrimSuffix(name, filepath.Ext(name))
 	path := filepath.Join(s.prefix, datasetID, base+ext)

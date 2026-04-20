@@ -2,11 +2,42 @@ package knowledge
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
 	"github.com/GizClaw/flowcraft/sdk/workspace"
 )
+
+// errStore is a Store that fails every read/write with the configured error.
+type errStore struct{ err error }
+
+func (e errStore) AddDocument(context.Context, string, string, string) error {
+	return e.err
+}
+func (e errStore) AddDocuments(context.Context, string, []DocInput) error { return e.err }
+func (e errStore) GetDocument(context.Context, string, string) (*Document, error) {
+	return nil, e.err
+}
+func (e errStore) DeleteDocument(context.Context, string, string) error { return e.err }
+func (e errStore) ListDocuments(context.Context, string) ([]Document, error) {
+	return nil, e.err
+}
+func (e errStore) Search(context.Context, string, string, SearchOptions) ([]SearchResult, error) {
+	return nil, e.err
+}
+func (e errStore) Abstract(context.Context, string, string) (string, error) {
+	return "", e.err
+}
+func (e errStore) Overview(context.Context, string, string) (string, error) {
+	return "", e.err
+}
+func (e errStore) DatasetAbstract(context.Context, string) (string, error) {
+	return "", e.err
+}
+func (e errStore) DatasetOverview(context.Context, string) (string, error) {
+	return "", e.err
+}
 
 func TestCachedStore_GetDocument_CacheHit(t *testing.T) {
 	ws := workspace.NewMemWorkspace()
@@ -232,6 +263,194 @@ func TestCachedStore_Abstract_WrongCacheType_NoPanic(t *testing.T) {
 	}
 	if abs != "abstract" {
 		t.Fatalf("expected 'abstract', got %q", abs)
+	}
+}
+
+func TestCachedStore_AddDocumentsEvictsCache(t *testing.T) {
+	ws := workspace.NewMemWorkspace()
+	inner := NewFSStore(ws)
+	cached := NewCachedStore(inner)
+	ctx := context.Background()
+
+	_ = inner.AddDocument(ctx, "ds", "a.md", "old a")
+	_, _ = cached.GetDocument(ctx, "ds", "a.md")
+
+	if err := cached.AddDocuments(ctx, "ds", []DocInput{
+		{Name: "a.md", Content: "new a"},
+		{Name: "b.md", Content: "new b"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	doc, _ := cached.GetDocument(ctx, "ds", "a.md")
+	if doc.Content != "new a" {
+		t.Fatalf("expected refreshed content, got %q", doc.Content)
+	}
+}
+
+func TestCachedStore_AddDocumentsPropagatesError(t *testing.T) {
+	ws := workspace.NewMemWorkspace()
+	inner := NewFSStore(ws)
+	cached := NewCachedStore(inner)
+
+	err := cached.AddDocuments(context.Background(), "", []DocInput{{Name: "x.md", Content: "y"}})
+	if err == nil {
+		t.Fatal("expected error for empty datasetID")
+	}
+}
+
+func TestCachedStore_ListDocumentsForwards(t *testing.T) {
+	ws := workspace.NewMemWorkspace()
+	inner := NewFSStore(ws)
+	cached := NewCachedStore(inner)
+	ctx := context.Background()
+
+	_ = inner.AddDocument(ctx, "ds", "a.md", "a")
+	_ = inner.AddDocument(ctx, "ds", "b.md", "b")
+
+	docs, err := cached.ListDocuments(ctx, "ds")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(docs) != 2 {
+		t.Fatalf("expected 2 docs, got %d", len(docs))
+	}
+}
+
+func TestCachedStore_DatasetAbstractCachesAndEvicts(t *testing.T) {
+	ws := workspace.NewMemWorkspace()
+	inner := NewFSStore(ws)
+	cached := NewCachedStore(inner)
+	ctx := context.Background()
+
+	_ = inner.AddDocument(ctx, "ds", "doc.md", "body")
+	inner.SetDatasetAbstract("ds", "v1")
+
+	// Prime cache.
+	if got, _ := cached.DatasetAbstract(ctx, "ds"); got != "v1" {
+		t.Fatalf("got %q", got)
+	}
+
+	// Mutate inner without going through cached: cache should still serve v1.
+	inner.SetDatasetAbstract("ds", "v2")
+	if got, _ := cached.DatasetAbstract(ctx, "ds"); got != "v1" {
+		t.Fatalf("expected cached v1, got %q", got)
+	}
+
+	// Explicit eviction surfaces the new value.
+	cached.EvictDataset("ds")
+	if got, _ := cached.DatasetAbstract(ctx, "ds"); got != "v2" {
+		t.Fatalf("expected v2 after eviction, got %q", got)
+	}
+}
+
+func TestCachedStore_DatasetOverviewCachesAndEvicts(t *testing.T) {
+	ws := workspace.NewMemWorkspace()
+	inner := NewFSStore(ws)
+	cached := NewCachedStore(inner)
+	ctx := context.Background()
+
+	_ = inner.AddDocument(ctx, "ds", "doc.md", "body")
+	inner.SetDatasetOverview("ds", "v1")
+
+	if got, _ := cached.DatasetOverview(ctx, "ds"); got != "v1" {
+		t.Fatalf("got %q", got)
+	}
+
+	inner.SetDatasetOverview("ds", "v2")
+	if got, _ := cached.DatasetOverview(ctx, "ds"); got != "v1" {
+		t.Fatalf("expected cached v1, got %q", got)
+	}
+
+	cached.EvictDataset("ds")
+	if got, _ := cached.DatasetOverview(ctx, "ds"); got != "v2" {
+		t.Fatalf("expected v2 after eviction, got %q", got)
+	}
+}
+
+func TestCachedStore_DatasetAbstract_WrongCacheType_NoPanic(t *testing.T) {
+	ws := workspace.NewMemWorkspace()
+	inner := NewFSStore(ws)
+	cached := NewCachedStore(inner)
+	ctx := context.Background()
+
+	_ = inner.AddDocument(ctx, "ds", "doc.md", "body")
+	inner.SetDatasetAbstract("ds", "real")
+	_, _ = cached.DatasetAbstract(ctx, "ds")
+
+	cached.set("dsabs:ds", 12345)
+
+	got, err := cached.DatasetAbstract(ctx, "ds")
+	if err != nil {
+		t.Fatalf("expected fallback to inner, got error: %v", err)
+	}
+	if got != "real" {
+		t.Fatalf("expected 'real' from inner store, got %q", got)
+	}
+}
+
+func TestCachedStore_DatasetOverview_WrongCacheType_NoPanic(t *testing.T) {
+	ws := workspace.NewMemWorkspace()
+	inner := NewFSStore(ws)
+	cached := NewCachedStore(inner)
+	ctx := context.Background()
+
+	_ = inner.AddDocument(ctx, "ds", "doc.md", "body")
+	inner.SetDatasetOverview("ds", "real")
+	_, _ = cached.DatasetOverview(ctx, "ds")
+
+	cached.set("dsov:ds", "ok-but-should-be-bypassed-only-on-wrong-type")
+	// Force the wrong-type branch.
+	cached.set("dsov:ds", []int{1, 2, 3})
+
+	got, err := cached.DatasetOverview(ctx, "ds")
+	if err != nil {
+		t.Fatalf("expected fallback to inner, got error: %v", err)
+	}
+	if got != "real" {
+		t.Fatalf("expected 'real' from inner store, got %q", got)
+	}
+}
+
+func TestCachedStore_Overview_WrongCacheType_NoPanic(t *testing.T) {
+	ws := workspace.NewMemWorkspace()
+	inner := NewFSStore(ws)
+	cached := NewCachedStore(inner)
+	ctx := context.Background()
+
+	_ = inner.AddDocument(ctx, "ds", "doc.md", "body")
+	inner.SetDocOverview("ds", "doc.md", "ov")
+	_, _ = cached.Overview(ctx, "ds", "doc.md")
+
+	cached.set("ov:ds/doc.md", 999)
+
+	got, err := cached.Overview(ctx, "ds", "doc.md")
+	if err != nil {
+		t.Fatalf("expected fallback to inner, got error: %v", err)
+	}
+	if got != "ov" {
+		t.Fatalf("expected 'ov' from inner store, got %q", got)
+	}
+}
+
+func TestCachedStore_Search_PropagatesError(t *testing.T) {
+	cached := NewCachedStore(errStore{err: errors.New("boom")})
+	if _, err := cached.Search(context.Background(), "ds", "q", SearchOptions{TopK: 1}); err == nil {
+		t.Fatal("expected error to bubble up")
+	}
+}
+
+func TestCachedStore_Abstract_PropagatesError(t *testing.T) {
+	cached := NewCachedStore(errStore{err: errors.New("boom")})
+	if _, err := cached.Abstract(context.Background(), "ds", "doc.md"); err == nil {
+		t.Fatal("expected error to bubble up")
+	}
+}
+
+func TestCachedStore_DatasetAbstract_PropagatesError(t *testing.T) {
+	cached := NewCachedStore(errStore{err: errors.New("boom")})
+	if _, err := cached.DatasetAbstract(context.Background(), "ds"); err == nil {
+		t.Fatal("expected error to bubble up")
 	}
 }
 
