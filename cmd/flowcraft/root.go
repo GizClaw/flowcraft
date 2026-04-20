@@ -4,6 +4,8 @@ import (
 	"context"
 
 	"github.com/GizClaw/flowcraft/sdk/telemetry"
+	otellog "go.opentelemetry.io/otel/log"
+
 	"github.com/spf13/cobra"
 )
 
@@ -27,9 +29,15 @@ On Windows it runs inside a WSL2 distribution.`,
 		if cmd.Name() == "server" {
 			return
 		}
-		shutdown, _ := telemetry.InitLog(context.Background(),
-			telemetry.WithLogConsole(true),
-		)
+		// Suppress the SDK's default-on console sink (v0.1.x compatibility
+		// shim) so it doesn't double up with the explicit ConsoleProcessors
+		// we register below. Drop the WithLogConsole call once the SDK
+		// removes the default in v0.2.0.
+		logOpts := []telemetry.LogOption{telemetry.WithLogConsole(false)}
+		for _, p := range telemetry.ConsoleProcessors(otellog.SeverityInfo) {
+			logOpts = append(logOpts, telemetry.WithLogProcessor(p))
+		}
+		shutdown, _ := telemetry.InitLog(context.Background(), logOpts...)
 		cliLogShutdown = shutdown
 	},
 	PersistentPostRun: func(cmd *cobra.Command, args []string) {

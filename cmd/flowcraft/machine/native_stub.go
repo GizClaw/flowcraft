@@ -34,9 +34,10 @@ func (n *Native) Status(ctx context.Context) (*Status, error) {
 	return &Status{}, nil
 }
 
-func (n *Native) Logs(ctx context.Context, w io.Writer) error {
+func (n *Native) Logs(ctx context.Context, w io.Writer, opts LogsOptions) error {
 	_ = ctx
 	_ = w
+	_ = opts
 	return errors.New("flowcraft logs: unsupported platform " + runtime.GOOS)
 }
 

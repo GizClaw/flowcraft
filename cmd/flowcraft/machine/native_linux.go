@@ -68,8 +68,8 @@ func (n *Native) launchServer() error {
 		return err
 	}
 
-	logPath := config.ServerLogFile()
-	logf, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	crashPath := config.ServerCrashLogFile()
+	logf, err := os.OpenFile(crashPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
 	if err != nil {
 		return err
 	}
@@ -179,18 +179,27 @@ func (n *Native) Status(ctx context.Context) (*Status, error) {
 	return st, nil
 }
 
-// Logs prints the server log file to w.
-func (n *Native) Logs(ctx context.Context, w io.Writer) error {
+// Logs prints one of the server log files to w. opts.Source picks the
+// file (structured server log, stdout/stderr crash capture, or — only
+// on macOS — the vfkit console). opts.TailLines truncates the output
+// to the last N lines.
+func (n *Native) Logs(ctx context.Context, w io.Writer, opts LogsOptions) error {
 	_ = ctx
-	data, err := os.ReadFile(config.ServerLogFile())
-	if err != nil {
-		if os.IsNotExist(err) {
-			return errors.New("no server log file yet")
+	switch opts.Source {
+	case LogsServer:
+		cfg := config.Load()
+		path := cfg.LogFilePath()
+		if path == "" {
+			return errors.New("server log file is disabled (log.file.path is empty)")
 		}
-		return err
+		return WriteLogFile(w, path, opts.TailLines, "no server log file yet")
+	case LogsCrash:
+		return WriteLogFile(w, config.ServerCrashLogFile(), opts.TailLines, "no crash log file yet")
+	case LogsVM:
+		return errors.New("--vm log is only available on macOS")
+	default:
+		return fmt.Errorf("unknown logs source %d", opts.Source)
 	}
-	_, err = w.Write(data)
-	return err
 }
 
 func (n *Native) Reset(ctx context.Context, scope ResetScope) error {

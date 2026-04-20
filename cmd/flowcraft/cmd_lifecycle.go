@@ -114,6 +114,11 @@ Scopes:
 
 func init() {
 	resetCmd.Flags().Bool("force", false, "skip confirmation and perform the reset")
+
+	logsCmd.Flags().BoolP("crash", "c", false, "read the stdout/stderr crash log instead of the server log (Linux only)")
+	logsCmd.Flags().Bool("vm", false, "read the vfkit VM console log instead of the server log (macOS only)")
+	logsCmd.Flags().IntP("tail", "n", 0, "print only the last N lines (0 = print all)")
+	logsCmd.MarkFlagsMutuallyExclusive("crash", "vm")
 }
 
 var webCmd = &cobra.Command{
@@ -127,7 +132,31 @@ var webCmd = &cobra.Command{
 var logsCmd = &cobra.Command{
 	Use:   "logs",
 	Short: "Print FlowCraft server logs",
+	Long: `Print FlowCraft server logs.
+
+By default reads the structured server log (log.file.path, default
+~/.flowcraft/data/logs/server.log) — written by the OTel pipeline with
+size-based rotation. On macOS this file lives on the host's shared data
+directory and is the same inode the in-VM server writes to.
+
+Use --crash (Linux) to read the stdout/stderr capture file for panics
+and any output emitted before telemetry initialized. Use --vm (macOS)
+to read the vfkit console log when the guest never reached the server
+stage. Use -n/--tail to limit output to the last N lines.
+
+Configure rotation via log.file.{max_size_mb,max_backups,max_age_days,compress}
+in config.yaml; see ` + "`flowcraft config`" + ` for current values.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return resolveMachine().Logs(context.Background(), os.Stdout)
+		opts := machine.LogsOptions{Source: machine.LogsServer}
+		if c, _ := cmd.Flags().GetBool("crash"); c {
+			opts.Source = machine.LogsCrash
+		}
+		if v, _ := cmd.Flags().GetBool("vm"); v {
+			opts.Source = machine.LogsVM
+		}
+		if n, _ := cmd.Flags().GetInt("tail"); n > 0 {
+			opts.TailLines = n
+		}
+		return resolveMachine().Logs(context.Background(), os.Stdout, opts)
 	},
 }

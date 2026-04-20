@@ -69,6 +69,22 @@ type AuthConfig struct{}
 type LogConfig struct {
 	Level  string // debug, info, warn, error
 	Format string // text, json
+
+	// File controls the rotating server log sink. Always enabled so that
+	// `flowcraft logs` has something to read on every platform; set
+	// File.Path to "" to disable.
+	File LogFileConfig
+}
+
+// LogFileConfig configures the rotating file log sink. Mirrors
+// sdkx/telemetry/logfile.Config; resolved against ConfigurePath when Path
+// is relative.
+type LogFileConfig struct {
+	Path       string // log file path; empty disables file sink
+	MaxSizeMB  int    // rotate when file exceeds this size; 0 = sdk default
+	MaxBackups int    // number of rotated files to keep; 0 = sdk default
+	MaxAgeDays int    // delete rotated files older than this; 0 = sdk default
+	Compress   bool   // gzip rotated files
 }
 
 // SandboxConfig holds sandbox execution environment settings.
@@ -130,6 +146,12 @@ func Default() *Config {
 		Log: LogConfig{
 			Level:  "info",
 			Format: "text",
+			File: LogFileConfig{
+				Path:       "logs/server.log",
+				MaxSizeMB:  100,
+				MaxBackups: 7,
+				MaxAgeDays: 30,
+			},
 		},
 		Sandbox: SandboxConfig{
 			Mode:          "session",
@@ -184,6 +206,15 @@ func (c *Config) Validate() []string {
 	default:
 		warnings = append(warnings, fmt.Sprintf("log.format %q is not recognized (expected: text, json)", c.Log.Format))
 	}
+	if c.Log.File.MaxSizeMB < 0 {
+		warnings = append(warnings, fmt.Sprintf("log.file.max_size_mb %d must be >= 0", c.Log.File.MaxSizeMB))
+	}
+	if c.Log.File.MaxBackups < 0 {
+		warnings = append(warnings, fmt.Sprintf("log.file.max_backups %d must be >= 0", c.Log.File.MaxBackups))
+	}
+	if c.Log.File.MaxAgeDays < 0 {
+		warnings = append(warnings, fmt.Sprintf("log.file.max_age_days %d must be >= 0", c.Log.File.MaxAgeDays))
+	}
 	if c.Monitoring.ErrorRateWarn < 0 || c.Monitoring.ErrorRateWarn > 1 {
 		warnings = append(warnings, fmt.Sprintf("monitoring.error_rate_warn %.4f is out of range [0,1]", c.Monitoring.ErrorRateWarn))
 	}
@@ -215,6 +246,23 @@ func (c *Config) DBPath() string {
 	return filepath.Join(c.ConfigurePath, c.DB.Path)
 }
 
+// LogFilePath returns the absolute server log file path, resolved relative
+// to DataDir (not ConfigurePath). Returns "" if the file sink is disabled.
+//
+// The file lives under DataDir so that on macOS — where the server runs in
+// a vfkit guest — DataDir is virtio-fs-shared with the host and `flowcraft
+// logs` on the host can read the same file the guest server is writing
+// to.
+func (c *Config) LogFilePath() string {
+	if c.Log.File.Path == "" {
+		return ""
+	}
+	if filepath.IsAbs(c.Log.File.Path) {
+		return c.Log.File.Path
+	}
+	return filepath.Join(DataDir(), c.Log.File.Path)
+}
+
 // String returns a summary of the config (with secrets masked).
 func (c *Config) String() string {
 	var b strings.Builder
@@ -225,6 +273,11 @@ func (c *Config) String() string {
 	fmt.Fprintf(&b, "  auth:             jwt (secret in DB)\n")
 	fmt.Fprintf(&b, "  log.level:        %s\n", c.Log.Level)
 	fmt.Fprintf(&b, "  log.format:       %s\n", c.Log.Format)
+	if p := c.LogFilePath(); p != "" {
+		fmt.Fprintf(&b, "  log.file.path:    %s\n", p)
+	} else {
+		fmt.Fprintf(&b, "  log.file.path:    (disabled)\n")
+	}
 	fmt.Fprintf(&b, "  configure_path:   %s\n", c.ConfigurePath)
 	fmt.Fprintf(&b, "  sandbox.mode:     %s\n", c.Sandbox.Mode)
 	fmt.Fprintf(&b, "  db.path:          %s\n", c.DB.Path)

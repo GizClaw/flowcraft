@@ -25,6 +25,13 @@ type yamlFile struct {
 	Log *struct {
 		Level  string `yaml:"level"`
 		Format string `yaml:"format"`
+		File   *struct {
+			Path       *string `yaml:"path"`
+			MaxSizeMB  *int    `yaml:"max_size_mb"`
+			MaxBackups *int    `yaml:"max_backups"`
+			MaxAgeDays *int    `yaml:"max_age_days"`
+			Compress   *bool   `yaml:"compress"`
+		} `yaml:"file"`
 	} `yaml:"log"`
 	Memory *struct {
 		Type string `yaml:"type"`
@@ -114,6 +121,23 @@ func mergeYAML(cfg *Config, configPath string) {
 		}
 		if y.Log.Format != "" {
 			cfg.Log.Format = y.Log.Format
+		}
+		if f := y.Log.File; f != nil {
+			if f.Path != nil {
+				cfg.Log.File.Path = *f.Path
+			}
+			if f.MaxSizeMB != nil {
+				cfg.Log.File.MaxSizeMB = *f.MaxSizeMB
+			}
+			if f.MaxBackups != nil {
+				cfg.Log.File.MaxBackups = *f.MaxBackups
+			}
+			if f.MaxAgeDays != nil {
+				cfg.Log.File.MaxAgeDays = *f.MaxAgeDays
+			}
+			if f.Compress != nil {
+				cfg.Log.File.Compress = *f.Compress
+			}
 		}
 	}
 	if y.Memory != nil && y.Memory.Type != "" {

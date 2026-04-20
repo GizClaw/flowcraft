@@ -7,7 +7,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"os"
@@ -249,17 +248,19 @@ func (v *VM) OpenWeb(ctx context.Context) error {
 	return exec.CommandContext(ctx, "open", url).Run()
 }
 
-func (v *VM) Logs(_ context.Context, w io.Writer) error {
-	logPath := filepath.Join(config.MachineDir(), "vm.log")
-	data, err := os.ReadFile(logPath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return errors.New("no VM log file yet")
-		}
-		return err
-	}
-	_, err = w.Write(data)
-	return err
+// LogsServerPath returns the host-visible path to the in-guest
+// structured server log. Lives under DataDir (virtio-fs-shared with the
+// guest as /data) so the host reads the same inode the guest server
+// writes to. Returns "" when the file sink is disabled.
+func (v *VM) LogsServerPath() string {
+	cfg := config.Load()
+	return cfg.LogFilePath()
+}
+
+// VMLogPath returns the path to vfkit's console log (kernel + cloud-init
+// + early boot output).
+func (v *VM) VMLogPath() string {
+	return filepath.Join(config.MachineDir(), "vm.log")
 }
 
 var healthzClient = &http.Client{Timeout: 5 * time.Second}

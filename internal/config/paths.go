@@ -25,8 +25,17 @@ func BinDir() string {
 	return filepath.Join(HomeRoot(), "bin")
 }
 
-// DataDir returns ~/.flowcraft/data.
+// DataDir returns the FlowCraft data directory.
+//
+// Defaults to ~/.flowcraft/data; can be overridden by setting the
+// FLOWCRAFT_DATA_DIR environment variable, which the macOS VM uses to
+// point at /data (a virtio-fs mount of the host's DataDir). This is the
+// only path that is env-overridable so that host-shared state — the
+// database, structured log file, plugins data — lands on the host disk.
 func DataDir() string {
+	if v := os.Getenv("FLOWCRAFT_DATA_DIR"); v != "" {
+		return v
+	}
 	return filepath.Join(HomeRoot(), "data")
 }
 
@@ -45,9 +54,13 @@ func PIDFile() string {
 	return filepath.Join(HomeRoot(), "server.pid")
 }
 
-// ServerLogFile returns the path to the server log file.
-func ServerLogFile() string {
-	return filepath.Join(LogsDir(), "server.log")
+// ServerCrashLogFile returns the path to the server stdout/stderr capture
+// file. This sink catches panics and any output not routed through the OTel
+// log pipeline; it is single-file (no rotation) since crash output is rare
+// and small. For structured application logs use [Config.LogFilePath]
+// instead.
+func ServerCrashLogFile() string {
+	return filepath.Join(LogsDir(), "server.crash.log")
 }
 
 // EnsureLayout creates ~/.flowcraft subdirectories if missing.

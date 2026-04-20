@@ -4,6 +4,8 @@ package machine
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"io"
 
 	"github.com/GizClaw/flowcraft/cmd/flowcraft/machine/darwin"
@@ -47,8 +49,21 @@ func (a *darwinAdapter) Status(ctx context.Context) (*Status, error) {
 	}, nil
 }
 
-func (a *darwinAdapter) Logs(ctx context.Context, w io.Writer) error {
-	return a.vm.Logs(ctx, w)
+func (a *darwinAdapter) Logs(_ context.Context, w io.Writer, opts LogsOptions) error {
+	switch opts.Source {
+	case LogsServer:
+		path := a.vm.LogsServerPath()
+		if path == "" {
+			return errors.New("server log file is disabled (log.file.path is empty)")
+		}
+		return WriteLogFile(w, path, opts.TailLines, "no server log file yet")
+	case LogsVM:
+		return WriteLogFile(w, a.vm.VMLogPath(), opts.TailLines, "no VM log file yet")
+	case LogsCrash:
+		return errors.New("--crash log is not exposed from the macOS guest; use --vm for boot failures or omit to read the server log")
+	default:
+		return fmt.Errorf("unknown logs source %d", opts.Source)
+	}
 }
 
 func (a *darwinAdapter) Reset(ctx context.Context, scope ResetScope) error {
