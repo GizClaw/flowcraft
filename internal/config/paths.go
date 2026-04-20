@@ -1,14 +1,13 @@
-// Package paths defines canonical filesystem locations for FlowCraft data.
-package paths
+package config
 
 import (
 	"os"
 	"path/filepath"
 )
 
-// Root returns the FlowCraft home directory (~/.flowcraft under the current user's home).
-// Configuration lives here (see internal/config); it is not overridden by environment variables.
-func Root() string {
+// HomeRoot returns the FlowCraft home directory (~/.flowcraft under the current user's home).
+// Configuration lives here; it is not overridden by environment variables.
+func HomeRoot() string {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return filepath.Join(os.TempDir(), "flowcraft")
@@ -18,32 +17,32 @@ func Root() string {
 
 // ConfigFile returns the path to config.yaml.
 func ConfigFile() string {
-	return filepath.Join(Root(), "config.yaml")
+	return filepath.Join(HomeRoot(), "config.yaml")
 }
 
 // BinDir returns ~/.flowcraft/bin.
 func BinDir() string {
-	return filepath.Join(Root(), "bin")
+	return filepath.Join(HomeRoot(), "bin")
 }
 
 // DataDir returns ~/.flowcraft/data.
 func DataDir() string {
-	return filepath.Join(Root(), "data")
+	return filepath.Join(HomeRoot(), "data")
 }
 
 // LogsDir returns ~/.flowcraft/logs.
 func LogsDir() string {
-	return filepath.Join(Root(), "logs")
+	return filepath.Join(HomeRoot(), "logs")
 }
 
 // MachineDir returns ~/.flowcraft/machine.
 func MachineDir() string {
-	return filepath.Join(Root(), "machine")
+	return filepath.Join(HomeRoot(), "machine")
 }
 
 // PIDFile returns the server PID file path.
 func PIDFile() string {
-	return filepath.Join(Root(), "server.pid")
+	return filepath.Join(HomeRoot(), "server.pid")
 }
 
 // ServerLogFile returns the path to the server log file.
@@ -53,7 +52,7 @@ func ServerLogFile() string {
 
 // EnsureLayout creates ~/.flowcraft subdirectories if missing.
 func EnsureLayout() error {
-	for _, d := range []string{Root(), BinDir(), DataDir(), LogsDir(), MachineDir()} {
+	for _, d := range []string{HomeRoot(), BinDir(), DataDir(), LogsDir(), MachineDir()} {
 		if err := os.MkdirAll(d, 0o755); err != nil {
 			return err
 		}

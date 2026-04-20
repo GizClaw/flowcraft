@@ -5,7 +5,6 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/internal/config"
-	"github.com/GizClaw/flowcraft/internal/paths"
 	"github.com/GizClaw/flowcraft/sdk/telemetry"
 
 	otellog "go.opentelemetry.io/otel/log"
@@ -15,7 +14,7 @@ import (
 // initialises the telemetry pipeline. The returned cleanup shuts down
 // the OTLP exporters.
 func wireConfig(ctx context.Context) (*config.Config, func(), error) {
-	if err := paths.EnsureLayout(); err != nil {
+	if err := config.EnsureLayout(); err != nil {
 		return nil, nil, err
 	}
 

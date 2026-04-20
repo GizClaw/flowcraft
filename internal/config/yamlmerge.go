@@ -4,7 +4,6 @@ import (
 	"context"
 	"os"
 
-	"github.com/GizClaw/flowcraft/internal/paths"
 	"github.com/GizClaw/flowcraft/sdk/telemetry"
 	"gopkg.in/yaml.v3"
 
@@ -205,5 +204,5 @@ func telemetryWarnYAML(path string, err error) {
 
 // DefaultConfigPath returns the path to config.yaml under the FlowCraft home.
 func DefaultConfigPath() string {
-	return paths.ConfigFile()
+	return ConfigFile()
 }

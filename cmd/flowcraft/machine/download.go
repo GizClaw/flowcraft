@@ -14,7 +14,7 @@ import (
 	"runtime"
 	"strings"
 
-	"github.com/GizClaw/flowcraft/internal/paths"
+	"github.com/GizClaw/flowcraft/internal/config"
 	"github.com/GizClaw/flowcraft/sdk/telemetry"
 	otellog "go.opentelemetry.io/otel/log"
 )
@@ -47,7 +47,7 @@ func debianArch() string {
 // For ImageDisk, it downloads the official Debian nocloud tar.xz and extracts
 // the raw image. For others, it downloads from GitHub releases.
 func EnsureImage(ctx context.Context, version string, kind ImageKind) (string, error) {
-	if err := paths.EnsureLayout(); err != nil {
+	if err := config.EnsureLayout(); err != nil {
 		return "", err
 	}
 
@@ -56,11 +56,11 @@ func EnsureImage(ctx context.Context, version string, kind ImageKind) (string, e
 		return ensureDebianDisk(ctx)
 	case ImageLinuxBin:
 		asset := fmt.Sprintf("flowcraft-linux-%s", runtime.GOARCH)
-		dst := filepath.Join(paths.BinDir(), "flowcraft")
+		dst := filepath.Join(config.BinDir(), "flowcraft")
 		if _, err := os.Stat(dst); err == nil {
 			return dst, nil
 		}
-		src, err := ensureGitHubAsset(ctx, version, asset, paths.BinDir())
+		src, err := ensureGitHubAsset(ctx, version, asset, config.BinDir())
 		if err != nil {
 			return "", err
 		}
@@ -79,7 +79,7 @@ func EnsureImage(ctx context.Context, version string, kind ImageKind) (string, e
 }
 
 func ensureDebianDisk(ctx context.Context) (string, error) {
-	rawPath := filepath.Join(paths.MachineDir(), "disk.raw")
+	rawPath := filepath.Join(config.MachineDir(), "disk.raw")
 
 	if _, err := os.Stat(rawPath); err == nil {
 		return rawPath, nil
@@ -87,7 +87,7 @@ func ensureDebianDisk(ctx context.Context) (string, error) {
 
 	arch := debianArch()
 	tarName := fmt.Sprintf("debian-%s-genericcloud-%s.tar.xz", debianImageVersion, arch)
-	tarPath := filepath.Join(paths.MachineDir(), tarName)
+	tarPath := filepath.Join(config.MachineDir(), tarName)
 	url := fmt.Sprintf("%s/%s", debianCloudBase, tarName)
 
 	telemetry.Info(ctx, "download: fetching Debian cloud image", otellog.String("file", tarName))
@@ -96,14 +96,14 @@ func ensureDebianDisk(ctx context.Context) (string, error) {
 	}
 
 	telemetry.Info(ctx, "download: extracting disk image")
-	if err := extractTarXZ(tarPath, paths.MachineDir()); err != nil {
+	if err := extractTarXZ(tarPath, config.MachineDir()); err != nil {
 		return "", fmt.Errorf("extract %s: %w", tarName, err)
 	}
 
 	_ = os.Remove(tarPath)
 
 	extractedName := fmt.Sprintf("debian-%s-genericcloud-%s.raw", debianImageVersion, arch)
-	extractedPath := filepath.Join(paths.MachineDir(), extractedName)
+	extractedPath := filepath.Join(config.MachineDir(), extractedName)
 	if _, err := os.Stat(extractedPath); err == nil {
 		if err := os.Rename(extractedPath, rawPath); err != nil {
 			return "", fmt.Errorf("rename %s → disk.raw: %w", extractedName, err)

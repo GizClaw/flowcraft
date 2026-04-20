@@ -17,7 +17,6 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/internal/config"
-	"github.com/GizClaw/flowcraft/internal/paths"
 )
 
 // Native runs `flowcraft server` as a detached child with PID + log files under ~/.flowcraft.
@@ -33,11 +32,11 @@ var _ Machine = (*Native)(nil)
 // Start launches the M1 server binary in the background.
 func (n *Native) Start(ctx context.Context) error {
 	_ = ctx
-	if err := paths.EnsureLayout(); err != nil {
+	if err := config.EnsureLayout(); err != nil {
 		return err
 	}
 	if running, _ := n.pidRunning(); running {
-		return fmt.Errorf("flowcraft server already running (pid file %s)", paths.PIDFile())
+		return fmt.Errorf("flowcraft server already running (pid file %s)", config.PIDFile())
 	}
 
 	exe, err := os.Executable()
@@ -45,7 +44,7 @@ func (n *Native) Start(ctx context.Context) error {
 		return err
 	}
 
-	logPath := paths.ServerLogFile()
+	logPath := config.ServerLogFile()
 	logf, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
 	if err != nil {
 		return err
@@ -60,7 +59,7 @@ func (n *Native) Start(ctx context.Context) error {
 		return err
 	}
 	pid := strconv.Itoa(cmd.Process.Pid)
-	if err := os.WriteFile(paths.PIDFile(), []byte(pid+"\n"), 0o644); err != nil {
+	if err := os.WriteFile(config.PIDFile(), []byte(pid+"\n"), 0o644); err != nil {
 		_ = syscall.Kill(cmd.Process.Pid, syscall.SIGTERM)
 		return err
 	}
@@ -68,7 +67,7 @@ func (n *Native) Start(ctx context.Context) error {
 }
 
 func (n *Native) pidRunning() (bool, int) {
-	data, err := os.ReadFile(paths.PIDFile())
+	data, err := os.ReadFile(config.PIDFile())
 	if err != nil {
 		return false, 0
 	}
@@ -85,7 +84,7 @@ func (n *Native) pidRunning() (bool, int) {
 // Stop terminates the background server using the PID file.
 func (n *Native) Stop(ctx context.Context) error {
 	_ = ctx
-	data, err := os.ReadFile(paths.PIDFile())
+	data, err := os.ReadFile(config.PIDFile())
 	if err != nil {
 		if os.IsNotExist(err) {
 			return errors.New("flowcraft server is not running (no pid file)")
@@ -102,13 +101,13 @@ func (n *Native) Stop(ctx context.Context) error {
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
 		if err := syscall.Kill(pid, 0); err != nil {
-			_ = os.Remove(paths.PIDFile())
+			_ = os.Remove(config.PIDFile())
 			return nil
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
 	_ = syscall.Kill(pid, syscall.SIGKILL)
-	_ = os.Remove(paths.PIDFile())
+	_ = os.Remove(config.PIDFile())
 	return nil
 }
 
@@ -136,7 +135,7 @@ func (n *Native) Status(ctx context.Context) (*Status, error) {
 // Logs prints the server log file to w.
 func (n *Native) Logs(ctx context.Context, w io.Writer) error {
 	_ = ctx
-	data, err := os.ReadFile(paths.ServerLogFile())
+	data, err := os.ReadFile(config.ServerLogFile())
 	if err != nil {
 		if os.IsNotExist(err) {
 			return errors.New("no server log file yet")
@@ -151,13 +150,13 @@ func (n *Native) Reset(ctx context.Context, scope ResetScope) error {
 	_ = n.Stop(ctx)
 	switch scope {
 	case ResetMachine:
-		_ = os.RemoveAll(paths.MachineDir())
-		_ = os.Remove(paths.PIDFile())
+		_ = os.RemoveAll(config.MachineDir())
+		_ = os.Remove(config.PIDFile())
 		return nil
 	case ResetData:
-		return os.RemoveAll(paths.DataDir())
+		return os.RemoveAll(config.DataDir())
 	default:
-		return os.RemoveAll(paths.Root())
+		return os.RemoveAll(config.HomeRoot())
 	}
 }
 

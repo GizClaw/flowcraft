@@ -7,7 +7,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/GizClaw/flowcraft/internal/paths"
+	"github.com/GizClaw/flowcraft/internal/config"
 	"github.com/GizClaw/flowcraft/sdk/telemetry"
 	"github.com/spf13/cobra"
 	otellog "go.opentelemetry.io/otel/log"
@@ -84,7 +84,7 @@ var configListCmd = &cobra.Command{
 }
 
 func readConfigMap() (map[string]any, error) {
-	raw, err := os.ReadFile(paths.ConfigFile())
+	raw, err := os.ReadFile(config.ConfigFile())
 	if err != nil {
 		return nil, err
 	}
@@ -96,14 +96,14 @@ func readConfigMap() (map[string]any, error) {
 }
 
 func writeConfigMap(m map[string]any) error {
-	if err := paths.EnsureLayout(); err != nil {
+	if err := config.EnsureLayout(); err != nil {
 		return err
 	}
 	out, err := yaml.Marshal(m)
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(paths.ConfigFile(), out, 0o644)
+	return os.WriteFile(config.ConfigFile(), out, 0o644)
 }
 
 func getNestedValue(m map[string]any, key string) (any, bool) {

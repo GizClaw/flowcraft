@@ -1,7 +1,7 @@
 // Package config provides configuration loading for the FlowCraft server.
 //
 // Defaults are merged with ~/.flowcraft/config.yaml (see mergeYAML). The layout root
-// is fixed at [paths.Root] (~/.flowcraft); use config.yaml or CLI to change behavior.
+// is fixed at [HomeRoot] (~/.flowcraft); use config.yaml or CLI to change behavior.
 package config
 
 import (
@@ -10,8 +10,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-
-	"github.com/GizClaw/flowcraft/internal/paths"
 )
 
 // Config is the top-level application configuration.
@@ -161,7 +159,7 @@ func Default() *Config {
 // Load creates configuration from defaults merged with ~/.flowcraft/config.yaml (if present).
 func Load() *Config {
 	cfg := Default()
-	cfg.ConfigurePath = paths.Root()
+	cfg.ConfigurePath = HomeRoot()
 	mergeYAML(cfg, filepath.Join(cfg.ConfigurePath, "config.yaml"))
 	return cfg
 }

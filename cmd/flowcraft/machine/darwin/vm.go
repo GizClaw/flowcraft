@@ -17,7 +17,6 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/internal/config"
-	"github.com/GizClaw/flowcraft/internal/paths"
 	"github.com/GizClaw/flowcraft/sdk/telemetry"
 	otellog "go.opentelemetry.io/otel/log"
 )
@@ -51,17 +50,17 @@ func NewVM(version string, diskResolver, binaryResolver ImageResolver) *VM {
 // IsProvisioned checks whether the VM has been provisioned by looking for
 // the marker file that cloud-init writes to the shared data directory.
 func IsProvisioned() bool {
-	_, err := os.Stat(filepath.Join(paths.DataDir(), ".provisioned"))
+	_, err := os.Stat(filepath.Join(config.DataDir(), ".provisioned"))
 	return err == nil
 }
 
 func (v *VM) Start(ctx context.Context) error {
-	if err := paths.EnsureLayout(); err != nil {
+	if err := config.EnsureLayout(); err != nil {
 		return err
 	}
 
-	machDir := paths.MachineDir()
-	binDir := paths.BinDir()
+	machDir := config.MachineDir()
+	binDir := config.BinDir()
 	pidFile := filepath.Join(machDir, "vfkit.pid")
 
 	if running, _ := VfkitRunning(pidFile); running {
@@ -102,7 +101,7 @@ func (v *VM) Start(ctx context.Context) error {
 		LogPath:      filepath.Join(machDir, "vm.log"),
 		MACAddress:   mac,
 		BinShareDir:  binDir,
-		DataShareDir: paths.DataDir(),
+		DataShareDir: config.DataDir(),
 		PIDFile:      pidFile,
 	}
 
@@ -169,7 +168,7 @@ func (v *VM) Start(ctx context.Context) error {
 
 func (v *VM) Stop(ctx context.Context) error {
 	_ = ctx
-	pidFile := filepath.Join(paths.MachineDir(), "vfkit.pid")
+	pidFile := filepath.Join(config.MachineDir(), "vfkit.pid")
 	return StopVfkit(pidFile, 30*time.Second)
 }
 
@@ -184,18 +183,18 @@ func (v *VM) Reset(ctx context.Context, scope int) error {
 	_ = v.Stop(ctx)
 	switch scope {
 	case ScopeMachine:
-		_ = os.RemoveAll(paths.MachineDir())
-		_ = os.Remove(filepath.Join(paths.DataDir(), ".provisioned"))
+		_ = os.RemoveAll(config.MachineDir())
+		_ = os.Remove(filepath.Join(config.DataDir(), ".provisioned"))
 		return nil
 	case ScopeData:
-		return os.RemoveAll(paths.DataDir())
+		return os.RemoveAll(config.DataDir())
 	default:
-		return os.RemoveAll(paths.Root())
+		return os.RemoveAll(config.HomeRoot())
 	}
 }
 
 func (v *VM) GetStatus(ctx context.Context) (*Status, error) {
-	machDir := paths.MachineDir()
+	machDir := config.MachineDir()
 	pidFile := filepath.Join(machDir, "vfkit.pid")
 	running, pid := VfkitRunning(pidFile)
 	st := &Status{Running: running, PID: pid}
@@ -225,7 +224,7 @@ func (v *VM) GetStatus(ctx context.Context) (*Status, error) {
 }
 
 func (v *VM) OpenWeb(ctx context.Context) error {
-	machDir := paths.MachineDir()
+	machDir := config.MachineDir()
 	guestIP, err := readGuestIP(machDir)
 	if err != nil {
 		return errors.New("server is not running (no guest IP)")
@@ -237,7 +236,7 @@ func (v *VM) OpenWeb(ctx context.Context) error {
 }
 
 func (v *VM) Logs(_ context.Context, w io.Writer) error {
-	logPath := filepath.Join(paths.MachineDir(), "vm.log")
+	logPath := filepath.Join(config.MachineDir(), "vm.log")
 	data, err := os.ReadFile(logPath)
 	if err != nil {
 		if os.IsNotExist(err) {
