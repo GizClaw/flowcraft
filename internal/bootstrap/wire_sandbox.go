@@ -2,7 +2,6 @@ package bootstrap
 
 import (
 	"context"
-	"path/filepath"
 	"time"
 
 	"github.com/GizClaw/flowcraft/internal/config"
@@ -20,7 +19,7 @@ import (
 func wireSandbox(ctx context.Context, cfg *config.Config, toolReg *tool.Registry) (workspace.Workspace, *sandbox.Manager, sandbox.ManagerConfig, func(), error) {
 	workspaceRoot := cfg.Sandbox.RootDir
 	if workspaceRoot == "" {
-		workspaceRoot = filepath.Join(cfg.ConfigurePath, "workspace")
+		workspaceRoot = config.WorkspaceDir()
 	}
 
 	ws, err := workspace.NewLocalWorkspace(workspaceRoot)

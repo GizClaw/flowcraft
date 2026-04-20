@@ -2,7 +2,6 @@ package bootstrap
 
 import (
 	"context"
-	"path/filepath"
 
 	"github.com/GizClaw/flowcraft/internal/config"
 	"github.com/GizClaw/flowcraft/internal/model"
@@ -36,7 +35,7 @@ func wireRealm(
 ) (*realm.SingleRealmProvider, memory.LongTermStore, func(), error) {
 	ltStore := memory.NewFileLongTermStore(ws, "", memory.WithMaxEntries(0))
 
-	cpDir := filepath.Join(cfg.ConfigurePath, "checkpoints")
+	cpDir := config.CheckpointsDir()
 	checkpointStore, err := executor.NewFileCheckpointStore(executor.FileCheckpointConfig{
 		Dir:            cpDir,
 		MaxCheckpoints: 3,

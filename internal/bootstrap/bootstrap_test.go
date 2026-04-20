@@ -4,50 +4,52 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/GizClaw/flowcraft/internal/config"
 	"github.com/GizClaw/flowcraft/internal/sandbox"
 )
 
+// TestWorkspaceRoot_Consistency verifies that wireSandbox falls back to
+// config.WorkspaceDir() when cfg.Sandbox.RootDir is empty. Workspace
+// stores agent state, plugins, skills, and long-term memory — all user
+// data — so on macOS (server runs in a vfkit guest) it must land on the
+// virtio-fs-shared DataDir to survive VM restart. Resolving against
+// HomeRoot would put it on the guest's tmpfs and wipe data on reboot.
 func TestWorkspaceRoot_Consistency(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	dataDir := t.TempDir()
+	t.Setenv("FLOWCRAFT_DATA_DIR", dataDir)
+
 	cases := []struct {
-		name          string
-		rootDir       string
-		configurePath string
-		wantRoot      string
+		name     string
+		rootDir  string
+		wantRoot string
 	}{
 		{
-			name:          "explicit RootDir",
-			rootDir:       "/opt/flowcraft/workspace",
-			configurePath: "/home/user/.flowcraft",
-			wantRoot:      "/opt/flowcraft/workspace",
+			name:     "explicit RootDir",
+			rootDir:  "/opt/flowcraft/workspace",
+			wantRoot: "/opt/flowcraft/workspace",
 		},
 		{
-			name:          "empty RootDir falls back to ConfigurePath/workspace",
-			rootDir:       "",
-			configurePath: "/home/user/.flowcraft",
-			wantRoot:      "/home/user/.flowcraft/workspace",
+			name:     "empty RootDir falls back to WorkspaceDir",
+			rootDir:  "",
+			wantRoot: filepath.Join(dataDir, "workspace"),
 		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			// Reproduce the same logic as bootstrap.Run
 			workspaceRoot := tc.rootDir
 			if workspaceRoot == "" {
-				workspaceRoot = filepath.Join(tc.configurePath, "workspace")
+				workspaceRoot = config.WorkspaceDir()
 			}
 
-			sandboxCfg := sandbox.ManagerConfig{
-				RootDir: workspaceRoot,
-			}
+			sandboxCfg := sandbox.ManagerConfig{RootDir: workspaceRoot}
 
 			if workspaceRoot != tc.wantRoot {
 				t.Fatalf("workspaceRoot = %q, want %q", workspaceRoot, tc.wantRoot)
 			}
 			if sandboxCfg.RootDir != tc.wantRoot {
 				t.Fatalf("sandboxCfg.RootDir = %q, want %q", sandboxCfg.RootDir, tc.wantRoot)
-			}
-			if workspaceRoot != sandboxCfg.RootDir {
-				t.Fatalf("workspaceRoot and sandboxCfg.RootDir diverge: %q vs %q", workspaceRoot, sandboxCfg.RootDir)
 			}
 		})
 	}

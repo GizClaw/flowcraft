@@ -5,14 +5,34 @@ import (
 	"path/filepath"
 )
 
-// HomeRoot returns the FlowCraft home directory (~/.flowcraft under the current user's home).
-// Configuration lives here; it is not overridden by environment variables.
+// HomeRoot returns the FlowCraft home directory (~/.flowcraft under the
+// current user's home). Configuration lives here; it is not overridden
+// by environment variables.
+//
+// If [os.UserHomeDir] fails (typically because HOME is unset — e.g. a
+// systemd unit started without Environment=HOME=...) the result falls
+// back to a directory under [os.TempDir]. Callers that want to detect
+// this degraded mode should consult [HomeRootDegraded]; long-running
+// processes should log a prominent warning so it is not silently
+// masked: writes that should have been persistent will end up on tmpfs
+// and disappear on the next reboot.
 func HomeRoot() string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return filepath.Join(os.TempDir(), "flowcraft")
+	if home, err := os.UserHomeDir(); err == nil {
+		return filepath.Join(home, ".flowcraft")
 	}
-	return filepath.Join(home, ".flowcraft")
+	return filepath.Join(os.TempDir(), "flowcraft")
+}
+
+// HomeRootDegraded reports whether [HomeRoot] would fall back to a
+// temporary directory because the user's home directory cannot be
+// determined. In this state any path derived from HomeRoot (config.yaml,
+// PID file, crash log, machine state) lives on ephemeral storage.
+// [DataDir] and the paths derived from it ([WorkspaceDir],
+// [CheckpointsDir], [Config.DBPath], [Config.LogFilePath]) are
+// unaffected because they can be pinned with FLOWCRAFT_DATA_DIR.
+func HomeRootDegraded() bool {
+	_, err := os.UserHomeDir()
+	return err != nil
 }
 
 // ConfigFile returns the path to config.yaml.
@@ -42,6 +62,23 @@ func DataDir() string {
 // LogsDir returns ~/.flowcraft/logs.
 func LogsDir() string {
 	return filepath.Join(HomeRoot(), "logs")
+}
+
+// WorkspaceDir returns the runtime workspace root: agent sandboxes,
+// long-term memory, knowledge base, skills, and plugins. Lives under
+// [DataDir] because every file written here is user-generated state
+// that must survive a VM restart on macOS — DataDir is the
+// virtio-fs-shared mount with the host, while HomeRoot inside the
+// guest is on tmpfs and gets wiped on reboot.
+func WorkspaceDir() string {
+	return filepath.Join(DataDir(), "workspace")
+}
+
+// CheckpointsDir returns the directory where the graph executor stores
+// per-run checkpoints. Lives under [DataDir] for the same reason as
+// [WorkspaceDir].
+func CheckpointsDir() string {
+	return filepath.Join(DataDir(), "checkpoints")
 }
 
 // MachineDir returns ~/.flowcraft/machine.

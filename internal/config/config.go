@@ -27,8 +27,7 @@ type Config struct {
 
 	Skills SkillsConfig
 
-	WebDir        string // path to frontend build directory
-	ConfigurePath string // directory for persistent configuration files
+	WebDir string // path to frontend build directory
 }
 
 // SkillsConfig holds global per-skill configuration.
@@ -77,8 +76,8 @@ type LogConfig struct {
 }
 
 // LogFileConfig configures the rotating file log sink. Mirrors
-// sdkx/telemetry/logfile.Config; resolved against ConfigurePath when Path
-// is relative.
+// sdkx/telemetry/logfile.Config; resolved against [DataDir] when Path
+// is relative (see [Config.LogFilePath]).
 type LogFileConfig struct {
 	Path       string // log file path; empty disables file sink
 	MaxSizeMB  int    // rotate when file exceeds this size; 0 = sdk default
@@ -112,7 +111,9 @@ type TelemetryConfig struct {
 
 // DBConfig controls the primary database.
 type DBConfig struct {
-	Path string // SQLite database file path (relative to ConfigurePath if not absolute)
+	// Path is the SQLite database file path. Relative paths are
+	// resolved against [DataDir] (see [Config.DBPath]).
+	Path string
 }
 
 // PluginConfig holds external plugin settings.
@@ -161,7 +162,7 @@ func Default() *Config {
 			NetworkMode:   "none",
 		},
 		DB: DBConfig{
-			Path: "data/flowcraft.db",
+			Path: "flowcraft.db",
 		},
 		Plugin: PluginConfig{
 			MaxUploadSize: 100 << 20, // 100 MB
@@ -181,8 +182,7 @@ func Default() *Config {
 // Load creates configuration from defaults merged with ~/.flowcraft/config.yaml (if present).
 func Load() *Config {
 	cfg := Default()
-	cfg.ConfigurePath = HomeRoot()
-	mergeYAML(cfg, filepath.Join(cfg.ConfigurePath, "config.yaml"))
+	mergeYAML(cfg, ConfigFile())
 	return cfg
 }
 
@@ -238,16 +238,25 @@ func (c *Config) Address() string {
 	return fmt.Sprintf("%s:%d", c.Server.Host, c.Server.Port)
 }
 
-// DBPath returns the absolute database path, resolved relative to ConfigurePath.
+// DBPath returns the absolute database path. Relative paths are resolved
+// against [DataDir] so that the SQLite file lives on shared, persistent
+// storage alongside other server state. On macOS the FlowCraft server
+// runs in a vfkit guest with FLOWCRAFT_DATA_DIR=/data (a virtio-fs mount
+// of the host's ~/.flowcraft/data); resolving the DB against DataDir
+// lands the file on the host disk so it survives VM restarts. Resolving
+// against [HomeRoot] would put the DB under the guest's HOME (or
+// /tmp/flowcraft when HOME is unset, e.g. in a systemd unit without
+// Environment=HOME=...), which is tmpfs and gets wiped on every VM
+// reboot — see [HomeRootDegraded].
 func (c *Config) DBPath() string {
 	if filepath.IsAbs(c.DB.Path) {
 		return c.DB.Path
 	}
-	return filepath.Join(c.ConfigurePath, c.DB.Path)
+	return filepath.Join(DataDir(), c.DB.Path)
 }
 
-// LogFilePath returns the absolute server log file path, resolved relative
-// to DataDir (not ConfigurePath). Returns "" if the file sink is disabled.
+// LogFilePath returns the absolute server log file path, resolved
+// relative to [DataDir]. Returns "" if the file sink is disabled.
 //
 // The file lives under DataDir so that on macOS — where the server runs in
 // a vfkit guest — DataDir is virtio-fs-shared with the host and `flowcraft
@@ -278,9 +287,10 @@ func (c *Config) String() string {
 	} else {
 		fmt.Fprintf(&b, "  log.file.path:    (disabled)\n")
 	}
-	fmt.Fprintf(&b, "  configure_path:   %s\n", c.ConfigurePath)
+	fmt.Fprintf(&b, "  home_root:        %s\n", HomeRoot())
+	fmt.Fprintf(&b, "  data_dir:         %s\n", DataDir())
 	fmt.Fprintf(&b, "  sandbox.mode:     %s\n", c.Sandbox.Mode)
-	fmt.Fprintf(&b, "  db.path:          %s\n", c.DB.Path)
+	fmt.Fprintf(&b, "  db.path:          %s (resolved: %s)\n", c.DB.Path, c.DBPath())
 	fmt.Fprintf(&b, "  telemetry:        %v\n", c.Telemetry.Enabled)
 	fmt.Fprintf(&b, "  monitoring.warn:  %.2f\n", c.Monitoring.ErrorRateWarn)
 	fmt.Fprintf(&b, "  monitoring.down:  %.2f\n", c.Monitoring.ErrorRateDown)

@@ -29,8 +29,8 @@ func TestDefault(t *testing.T) {
 	if cfg.Memory.Type != "lossless" {
 		t.Fatalf("expected default memory type 'lossless', got %q", cfg.Memory.Type)
 	}
-	if cfg.DB.Path != "data/flowcraft.db" {
-		t.Fatalf("expected default db path data/flowcraft.db, got %q", cfg.DB.Path)
+	if cfg.DB.Path != "flowcraft.db" {
+		t.Fatalf("expected default db path flowcraft.db, got %q", cfg.DB.Path)
 	}
 }
 
@@ -246,6 +246,22 @@ func TestDBPath_Relative(t *testing.T) {
 	}
 	if dbPath == cfg.DB.Path {
 		t.Fatal("relative path should be resolved to absolute")
+	}
+}
+
+// TestDBPath_RelativeUsesDataDir guards against a regression where the
+// SQLite file landed under HomeRoot()/data instead of DataDir(). On macOS
+// the FlowCraft server runs in a vfkit guest that has HOME unset and an
+// empty /tmp (tmpfs); resolving against HomeRoot would put the DB on the
+// guest's tmpfs and wipe user data on every VM restart. DataDir() is the
+// virtio-fs-shared host directory and survives restarts.
+func TestDBPath_RelativeUsesDataDir(t *testing.T) {
+	isolateFlowcraftHome(t)
+	dataDir := t.TempDir()
+	t.Setenv("FLOWCRAFT_DATA_DIR", dataDir)
+	cfg := Load()
+	if got, want := cfg.DBPath(), filepath.Join(dataDir, cfg.DB.Path); got != want {
+		t.Fatalf("DBPath() = %q, want %q (must resolve relative to DataDir, not HomeRoot)", got, want)
 	}
 }
 
