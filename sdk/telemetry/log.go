@@ -2,7 +2,6 @@ package telemetry
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -16,7 +15,8 @@ import (
 )
 
 type logOptions struct {
-	export         sdklog.Exporter
+	export         sdklog.Exporter // deprecated: see WithLogExporter
+	processors     []sdklog.Processor
 	serviceName    string
 	serviceVersion string
 	console        bool
@@ -26,8 +26,41 @@ type logOptions struct {
 // LogOption configures InitLog behaviour.
 type LogOption func(*logOptions)
 
+// WithLogExporter wires a single OTel log exporter wrapped in a default
+// BatchProcessor with a min-severity gate.
+//
+// Deprecated: use WithLogProcessor for explicit control over batching and
+// filtering. WithLogExporter has covering semantics (a second call replaces
+// the first) and a hard-coded BatchProcessor configuration. It will be
+// removed in v0.2.0.
+//
+// Migration:
+//
+//	// Before
+//	telemetry.WithLogExporter(exp)
+//
+//	// After
+//	telemetry.WithLogProcessor(
+//	    telemetry.NewSeverityFilter(
+//	        sdklog.NewBatchProcessor(exp),
+//	        otellog.SeverityInfo, 0,
+//	    ),
+//	)
 func WithLogExporter(exp sdklog.Exporter) LogOption {
 	return func(o *logOptions) { o.export = exp }
+}
+
+// WithLogProcessor registers an OTel log processor. May be called multiple
+// times to stack independent destinations (file, OTLP, custom routing).
+//
+// This mirrors OTel's own sdklog.NewLoggerProvider(WithProcessor(...))
+// design and is the canonical way to attach log destinations going forward.
+func WithLogProcessor(p sdklog.Processor) LogOption {
+	return func(o *logOptions) {
+		if p != nil {
+			o.processors = append(o.processors, p)
+		}
+	}
 }
 
 func WithLogServiceName(name string) LogOption {
@@ -38,21 +71,71 @@ func WithLogServiceVersion(version string) LogOption {
 	return func(o *logOptions) { o.serviceVersion = version }
 }
 
+// WithLogConsole toggles the default console sink.
+//
+// Deprecated: use WithLogProcessor with ConsoleProcessors for explicit
+// control. WithLogConsole's "default true" semantics make it ambiguous
+// whether console is intentionally on or just left at default; the
+// explicit form makes intent visible at the call site. Will be removed
+// in v0.2.0.
+//
+// Migration:
+//
+//	// Before — implicit default
+//	telemetry.InitLog(ctx)
+//
+//	// After — explicit
+//	telemetry.InitLog(ctx,
+//	    telemetry.WithLogProcessor(telemetry.ConsoleProcessors(otellog.SeverityInfo)...),
+//	)
+//
+//	// Before — disable console
+//	telemetry.InitLog(ctx, telemetry.WithLogConsole(false))
+//
+//	// After — just don't pass ConsoleProcessors
+//	telemetry.InitLog(ctx, telemetry.WithLogProcessor(myFileProc))
 func WithLogConsole(enabled bool) LogOption {
 	return func(o *logOptions) { o.console = enabled }
 }
 
+// WithLogMinSeverity sets the minimum severity for the deprecated
+// WithLogExporter and WithLogConsole sinks.
+//
+// Deprecated: this option only affects the deprecated WithLogExporter
+// and WithLogConsole sinks; it has no effect on processors registered
+// via WithLogProcessor (those manage their own severity gate, typically
+// by wrapping with NewSeverityFilter). With WithLogConsole and
+// WithLogExporter slated for removal in v0.2.0, this option will go
+// with them. Use NewSeverityFilter directly when wiring processors.
+//
+// Migration:
+//
+//	// Before
+//	telemetry.InitLog(ctx, telemetry.WithLogMinSeverity(otellog.SeverityWarn))
+//
+//	// After
+//	telemetry.InitLog(ctx,
+//	    telemetry.WithLogProcessor(telemetry.ConsoleProcessors(otellog.SeverityWarn)...),
+//	)
 func WithLogMinSeverity(sev otellog.Severity) LogOption {
 	return func(o *logOptions) { o.minSeverity = sev }
 }
 
 // InitLog initializes the OpenTelemetry LoggerProvider.
 //
-// - WithLogExporter: logs are exported via BatchProcessor + severityFilterProcessor.
-// - WithLogConsole (default true): logs are written to stdout/stderr via plainTextProcessor.
-// - Neither: discardProcessor (noop).
+// Sinks are composed from (in order):
+//  1. WithLogExporter (deprecated, single) — wrapped in BatchProcessor + severity gate.
+//  2. WithLogProcessor (any number) — used as-is, callers control batching/filtering.
+//  3. WithLogConsole (deprecated, default true) — stdout for INFO..<WARN,
+//     stderr for WARN.. Equivalent to WithLogProcessor(ConsoleProcessors(...)...).
 //
-// Multiple processors can be stacked (export + console simultaneously).
+// If no sink is configured, a discardProcessor (noop) is installed.
+//
+// Forward-compatible usage (no deprecated options):
+//
+//	telemetry.InitLog(ctx,
+//	    telemetry.WithLogProcessor(telemetry.ConsoleProcessors(otellog.SeverityInfo)...),
+//	)
 func InitLog(ctx context.Context, opts ...LogOption) (func(context.Context) error, error) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -76,11 +159,11 @@ func InitLog(ctx context.Context, opts ...LogOption) (func(context.Context) erro
 	var processors []sdklog.Processor
 	if o.export != nil {
 		processors = append(processors,
-			newSeverityFilterProcessor(sdklog.NewBatchProcessor(o.export), o.minSeverity))
+			NewSeverityFilter(sdklog.NewBatchProcessor(o.export), o.minSeverity, 0))
 	}
+	processors = append(processors, o.processors...)
 	if o.console {
-		processors = append(processors,
-			newPlainTextProcessor(os.Stdout, os.Stderr, o.minSeverity))
+		processors = append(processors, ConsoleProcessors(o.minSeverity)...)
 	}
 	if len(processors) == 0 {
 		processors = append(processors, discardProcessor{minSeverity: o.minSeverity})
@@ -94,6 +177,36 @@ func InitLog(ctx context.Context, opts ...LogOption) (func(context.Context) erro
 	logglobal.SetLoggerProvider(lp)
 
 	return lp.Shutdown, nil
+}
+
+// ConsoleProcessors returns the canonical stdout/stderr split sink:
+// records in [min, Warn) go to stdout, records in [Warn, +∞) go to
+// stderr — mirroring POSIX conventions.
+//
+// Each side is a NewPlainTextExporter wrapped in sdklog.NewBatchProcessor
+// for async batching and shutdown draining, then gated by NewSeverityFilter
+// so OTel's Enabled protocol can short-circuit dropped records before
+// formatting.
+//
+// Pass the result spread into WithLogProcessor:
+//
+//	telemetry.InitLog(ctx,
+//	    telemetry.WithLogProcessor(telemetry.ConsoleProcessors(otellog.SeverityInfo)...),
+//	)
+//
+// Each call returns a fresh slice of processors with their own batchers
+// and exporters; do not share the returned processors across multiple
+// LoggerProviders.
+func ConsoleProcessors(min otellog.Severity) []sdklog.Processor {
+	stdout := NewSeverityFilter(
+		sdklog.NewBatchProcessor(NewPlainTextExporter(os.Stdout)),
+		min, otellog.SeverityWarn,
+	)
+	stderr := NewSeverityFilter(
+		sdklog.NewBatchProcessor(NewPlainTextExporter(os.Stderr)),
+		otellog.SeverityWarn, 0,
+	)
+	return []sdklog.Processor{stdout, stderr}
 }
 
 // ---------------------------------------------------------------------------
@@ -119,24 +232,46 @@ func (discardProcessor) ForceFlush(context.Context) error             { return n
 type severityFilterProcessor struct {
 	base        sdklog.Processor
 	minSeverity otellog.Severity
+	maxSeverity otellog.Severity // 0 = no upper bound
 }
 
-func newSeverityFilterProcessor(base sdklog.Processor, min otellog.Severity) sdklog.Processor {
+// NewSeverityFilter wraps base with a severity gate. Records with
+// severity < min, or severity >= max when max != 0, are dropped before
+// reaching base.
+//
+// Use max = 0 for "no upper bound" (the common case).
+//
+// The filter implements OTel's Enabled protocol, so dropped records are
+// never constructed in the first place — saving CPU and allocations
+// across the entire pipeline (formatting, batching, exporting).
+//
+// Returns a noop processor if base is nil.
+func NewSeverityFilter(base sdklog.Processor, min, max otellog.Severity) sdklog.Processor {
 	if base == nil {
 		return discardProcessor{minSeverity: min}
 	}
-	return &severityFilterProcessor{base: base, minSeverity: min}
+	return &severityFilterProcessor{base: base, minSeverity: min, maxSeverity: max}
+}
+
+func (p *severityFilterProcessor) allow(sev otellog.Severity) bool {
+	if sev < p.minSeverity {
+		return false
+	}
+	if p.maxSeverity != 0 && sev >= p.maxSeverity {
+		return false
+	}
+	return true
 }
 
 func (p *severityFilterProcessor) Enabled(ctx context.Context, param sdklog.EnabledParameters) bool {
-	if param.Severity < p.minSeverity {
+	if !p.allow(param.Severity) {
 		return false
 	}
 	return p.base.Enabled(ctx, param)
 }
 
 func (p *severityFilterProcessor) OnEmit(ctx context.Context, record *sdklog.Record) error {
-	if record == nil || record.Severity() < p.minSeverity {
+	if record == nil || !p.allow(record.Severity()) {
 		return nil
 	}
 	return p.base.OnEmit(ctx, record)
@@ -148,142 +283,76 @@ func (p *severityFilterProcessor) ForceFlush(ctx context.Context) error {
 }
 
 // ---------------------------------------------------------------------------
-// plainTextProcessor — batched console log writer
+// plainTextExporter — formats and writes plain-text log lines to an io.Writer
 // ---------------------------------------------------------------------------
 
-// plainTextProcessor buffers log lines and flushes them in batches to reduce
-// I/O overhead from high-frequency logging. WARN and above go to stderr,
-// everything else to stdout.
-type plainTextProcessor struct {
-	stdout      io.Writer
-	stderr      io.Writer
-	minSeverity otellog.Severity
+// plainTextExporter implements sdklog.Exporter. Batching, queueing, retry
+// policy, and shutdown draining are all delegated to a wrapping
+// sdklog.BatchProcessor — this exporter only owns the
+// "format record → write bytes" step.
+//
+// Concurrency: per the sdklog.Exporter contract, Export is never called
+// concurrently with itself, so writes to w are naturally serialized
+// without an explicit mutex. Shutdown may race with Export; the closed
+// flag guards that boundary.
+type plainTextExporter struct {
+	w io.Writer
 
-	batchMaxBytes int
-	batchInterval time.Duration
-
-	mu        sync.Mutex
-	stdoutBuf []byte
-	stderrBuf []byte
-
-	done     chan struct{}
-	stopOnce sync.Once
-	wg       sync.WaitGroup
+	mu     sync.Mutex
+	closed bool
 }
 
-func newPlainTextProcessor(stdout, stderr io.Writer, min otellog.Severity) sdklog.Processor {
-	return newPlainTextProcessorWithBatch(stdout, stderr, min, 32*1024, 200*time.Millisecond)
+// NewPlainTextExporter returns an sdklog.Exporter that formats each
+// record via FormatPlainTextRecordLine and writes it to w. All severities
+// are written to the same w; for stdout/stderr splitting use
+// ConsoleProcessors or compose two exporters with NewSeverityFilter.
+//
+// The exporter writes synchronously per Export call but is intended to
+// be wrapped in sdklog.NewBatchProcessor (which provides asynchronous
+// batching, queueing, and shutdown draining). ConsoleProcessors and the
+// internal default sink already do this wrapping.
+//
+// A nil w is treated as io.Discard.
+func NewPlainTextExporter(w io.Writer) sdklog.Exporter {
+	if w == nil {
+		w = io.Discard
+	}
+	return &plainTextExporter{w: w}
 }
 
-func newPlainTextProcessorWithBatch(stdout, stderr io.Writer, min otellog.Severity, batchMaxBytes int, batchInterval time.Duration) sdklog.Processor {
-	if stdout == nil {
-		stdout = os.Stdout
+func (e *plainTextExporter) Export(ctx context.Context, records []sdklog.Record) error {
+	if err := ctx.Err(); err != nil {
+		return err
 	}
-	if stderr == nil {
-		stderr = os.Stderr
-	}
-	if batchMaxBytes <= 0 {
-		batchMaxBytes = 32 * 1024
-	}
-	if batchInterval < 0 {
-		batchInterval = 0
-	}
-
-	p := &plainTextProcessor{
-		stdout:        stdout,
-		stderr:        stderr,
-		minSeverity:   min,
-		batchMaxBytes: batchMaxBytes,
-		batchInterval: batchInterval,
-		done:          make(chan struct{}),
-	}
-
-	if p.batchInterval > 0 {
-		p.wg.Add(1)
-		ticker := time.NewTicker(p.batchInterval)
-		go func() {
-			defer p.wg.Done()
-			defer ticker.Stop()
-			for {
-				select {
-				case <-ticker.C:
-					if err := p.ForceFlush(context.Background()); err != nil {
-						fmt.Fprintln(os.Stderr, "telemetry: plaintext flush error:", err)
-					}
-				case <-p.done:
-					return
-				}
-			}
-		}()
-	}
-
-	return p
-}
-
-func (p *plainTextProcessor) Enabled(_ context.Context, param sdklog.EnabledParameters) bool {
-	return param.Severity >= p.minSeverity
-}
-
-func (p *plainTextProcessor) OnEmit(_ context.Context, record *sdklog.Record) error {
-	if record == nil || record.Severity() < p.minSeverity {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.closed {
 		return nil
 	}
-
-	line := formatPlainTextRecordLine(record)
-
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	if record.Severity() >= otellog.SeverityWarn {
-		p.stderrBuf = append(p.stderrBuf, line...)
-		if len(p.stderrBuf) >= p.batchMaxBytes {
-			return flushBuffer(p.stderr, &p.stderrBuf)
+	for i := range records {
+		line := FormatPlainTextRecordLine(&records[i])
+		if err := writeFull(e.w, line); err != nil {
+			return fmt.Errorf("telemetry: plaintext export: %w", err)
 		}
-		return nil
-	}
-
-	p.stdoutBuf = append(p.stdoutBuf, line...)
-	if len(p.stdoutBuf) >= p.batchMaxBytes {
-		return flushBuffer(p.stdout, &p.stdoutBuf)
 	}
 	return nil
 }
 
-func (p *plainTextProcessor) Shutdown(ctx context.Context) error {
-	p.stopOnce.Do(func() { close(p.done) })
-	p.wg.Wait()
-	return p.ForceFlush(ctx)
+func (e *plainTextExporter) Shutdown(_ context.Context) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.closed = true
+	return nil
 }
 
-func (p *plainTextProcessor) ForceFlush(ctx context.Context) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	var errs []error
-	if err := flushBuffer(p.stdout, &p.stdoutBuf); err != nil {
-		errs = append(errs, err)
-	}
-	if err := flushBuffer(p.stderr, &p.stderrBuf); err != nil {
-		errs = append(errs, err)
-	}
-	return errors.Join(errs...)
-}
+// ForceFlush is a no-op: writes are synchronous per Export call. Any
+// caller-side batching lives in the wrapping BatchProcessor, whose own
+// ForceFlush will drain pending records into Export before returning.
+func (e *plainTextExporter) ForceFlush(_ context.Context) error { return nil }
 
 // ---------------------------------------------------------------------------
 // helpers
 // ---------------------------------------------------------------------------
-
-func flushBuffer(w io.Writer, buf *[]byte) error {
-	if w == nil || buf == nil || len(*buf) == 0 {
-		return nil
-	}
-	b := *buf
-	*buf = (*buf)[:0]
-	return writeFull(w, b)
-}
 
 func writeFull(w io.Writer, b []byte) error {
 	for len(b) > 0 {
@@ -299,10 +368,14 @@ func writeFull(w io.Writer, b []byte) error {
 	return nil
 }
 
-// formatPlainTextRecordLine formats a log record as:
+// FormatPlainTextRecordLine renders an OTel log record as a single line
+// in the canonical plain-text format used by NewPlainTextExporter:
 //
 //	RFC3339Nano SEVERITY message k=v ...
-func formatPlainTextRecordLine(record *sdklog.Record) []byte {
+//
+// Exposed so downstream sinks (file exporters, custom processors) can
+// match the on-screen format.
+func FormatPlainTextRecordLine(record *sdklog.Record) []byte {
 	ts := record.Timestamp()
 	if ts.IsZero() {
 		ts = record.ObservedTimestamp()
@@ -329,11 +402,35 @@ func formatPlainTextRecordLine(record *sdklog.Record) []byte {
 		b.WriteByte(' ')
 		b.WriteString(kv.Key)
 		b.WriteByte('=')
-		b.WriteString(formatPlainTextValue(kv.Value.String()))
+		b.WriteString(formatPlainTextValue(stringifyLogValue(kv.Value)))
 		return true
 	})
 	b.WriteByte('\n')
 	return []byte(b.String())
+}
+
+// stringifyLogValue converts an otellog.Value to a string suitable for
+// plain-text output. KindString is treated specially because Value.String
+// only returns the raw string for that one Kind; for other Kinds it
+// returns the type name, which is useless in logs.
+func stringifyLogValue(v otellog.Value) string {
+	switch v.Kind() {
+	case otellog.KindString:
+		return v.AsString()
+	case otellog.KindBool:
+		if v.AsBool() {
+			return "true"
+		}
+		return "false"
+	case otellog.KindInt64:
+		return fmt.Sprintf("%d", v.AsInt64())
+	case otellog.KindFloat64:
+		return fmt.Sprintf("%g", v.AsFloat64())
+	case otellog.KindBytes:
+		return fmt.Sprintf("%x", v.AsBytes())
+	default:
+		return v.String()
+	}
 }
 
 func formatPlainTextValue(s string) string {
