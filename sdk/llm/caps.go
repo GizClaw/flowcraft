@@ -50,23 +50,35 @@ var downgradeJSONSchema GenerateOption = func(o *GenerateOptions) {
 	}
 }
 
-func mergeCaps(a, b ModelCaps) ModelCaps {
-	if a.IsZero() {
-		return b
+// mergeCaps OR-merges any number of ModelCaps. A capability is
+// disabled in the result if any input has it disabled. Zero-value
+// inputs are skipped without allocating.
+func mergeCaps(layers ...ModelCaps) ModelCaps {
+	total := 0
+	for _, l := range layers {
+		total += len(l.Disabled)
 	}
-	if b.IsZero() {
-		return a
+	if total == 0 {
+		return ModelCaps{}
 	}
-	merged := ModelCaps{Disabled: make(map[Capability]bool, len(a.Disabled)+len(b.Disabled))}
-	for k, v := range a.Disabled {
-		if v {
-			merged.Disabled[k] = true
-		}
-	}
-	for k, v := range b.Disabled {
-		if v {
-			merged.Disabled[k] = true
+	merged := ModelCaps{Disabled: make(map[Capability]bool, total)}
+	for _, l := range layers {
+		for k, v := range l.Disabled {
+			if v {
+				merged.Disabled[k] = true
+			}
 		}
 	}
 	return merged
+}
+
+// unwrapCaps returns the inner LLM if l was wrapped by CapsMiddleware,
+// otherwise l itself. Used by the resolver to avoid double-wrapping
+// when re-applying merged caps on top of the registry's already-wrapped
+// instance.
+func unwrapCaps(l LLM) LLM {
+	if c, ok := l.(*capsLLM); ok {
+		return c.inner
+	}
+	return l
 }
