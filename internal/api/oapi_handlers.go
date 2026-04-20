@@ -33,53 +33,21 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// configuredModelKeyPrefix is the store key prefix for per-model rows in
-// the provider_configs table. The table doubles as storage for two
-// distinct concepts:
+// As of migration 005 the model-config storage layout is split into
+// three tables:
 //
-//   - row with key = "<provider>"           — provider-level credentials
-//     (api_key, base_url, ...) shared across all models of that provider.
-//     Read by sdk/llm.DefaultResolver.
-//   - row with key = "model:<provider>/<m>" — per-model UI entry surfaced
-//     in Settings → Configured Models. Holds optional model-level overrides
-//     such as caps. Resolver does not read these.
-//   - row with key = llm.GlobalDefaultProvider — pointer to the current
-//     default {provider, model} pair.
+//   - provider_configs holds ONLY plain provider credentials
+//     (api_key, base_url, ...) keyed by provider name. Read by
+//     sdk/llm.DefaultResolver via store.GetProviderConfig.
+//   - model_configs holds per-model {Caps, Extra} overrides keyed by
+//     (provider, model). Read by the resolver via the optional
+//     llm.ModelConfigStore interface (store.GetModelConfig).
+//   - default_model is a singleton row carrying the current default
+//     {provider, model} pair, read via the optional
+//     llm.DefaultModelStore interface (store.GetDefaultModel).
 //
-// The prefix encoding keeps the schema flat (single table, single PK) at
-// the cost of stringly-typed dispatch in handlers; helpers below
-// centralize that dispatch.
-const configuredModelKeyPrefix = "model:"
-
-// modelStoreKey returns the provider_configs key for the per-model row
-// of provider/model.
-func modelStoreKey(provider, model string) string {
-	return configuredModelKeyPrefix + provider + "/" + model
-}
-
-// parseModelStoreKey returns (provider, model, true) when key is a
-// per-model row, else ("", "", false). Use isProviderCredsKey for
-// "this is a plain provider creds row" checks.
-func parseModelStoreKey(key string) (provider, model string, ok bool) {
-	if !strings.HasPrefix(key, configuredModelKeyPrefix) {
-		return "", "", false
-	}
-	rest := key[len(configuredModelKeyPrefix):]
-	idx := strings.Index(rest, "/")
-	if idx <= 0 || idx == len(rest)-1 {
-		return "", "", false
-	}
-	return rest[:idx], rest[idx+1:], true
-}
-
-// isProviderCredsKey reports whether key is a plain provider-level row
-// (i.e. neither a per-model row nor the global-default pointer).
-func isProviderCredsKey(key string) bool {
-	if strings.HasPrefix(key, configuredModelKeyPrefix) {
-		return false
-	}
-	return key != llm.GlobalDefaultProvider
-}
+// Handlers no longer encode/decode magic PK prefixes; each store
+// method owns its own typed row.
 
 type oapiHandler struct {
 	s *Server
@@ -1073,7 +1041,7 @@ func (h *oapiHandler) ListNodeTypes(ctx context.Context) (*oas.NodeTypeList, err
 }
 
 func (h *oapiHandler) buildLLMModelOptions(ctx context.Context) []node.SelectOption {
-	configs, err := h.s.deps.Platform.Store.ListProviderConfigs(ctx)
+	configs, err := h.s.deps.Platform.Store.ListModelConfigs(ctx)
 	if err != nil {
 		return nil
 	}
@@ -1081,10 +1049,7 @@ func (h *oapiHandler) buildLLMModelOptions(ctx context.Context) []node.SelectOpt
 		{Value: "", Label: "Use Default Model"},
 	}
 	for _, c := range configs {
-		if !strings.HasPrefix(c.Provider, configuredModelKeyPrefix) {
-			continue
-		}
-		key := c.Provider[len(configuredModelKeyPrefix):]
+		key := c.Provider + "/" + c.Model
 		options = append(options, node.SelectOption{Value: key, Label: key})
 	}
 	if len(options) <= 1 {
@@ -1251,7 +1216,7 @@ func (h *oapiHandler) DeleteSkill(ctx context.Context, params oas.DeleteSkillPar
 // ══════════════════════════ Models + Providers ══════════════════════════
 
 // ListModels returns only the models the user has explicitly configured
-// in Settings → Add Model (per-model rows under the "model:" key prefix).
+// in Settings → Add Model (model_configs table).
 //
 // Previously this returned llm.ListAllModels() — the full registry catalog
 // of every model every provider package knows about — which surfaced
@@ -1260,7 +1225,7 @@ func (h *oapiHandler) DeleteSkill(ctx context.Context, params oas.DeleteSkillPar
 // Label metadata is enriched from the provider registry when available,
 // so users see e.g. "GPT-4o (OpenAI's flagship)" instead of the bare id.
 func (h *oapiHandler) ListModels(ctx context.Context) (*oas.ModelList, error) {
-	configs, err := h.s.deps.Platform.Store.ListProviderConfigs(ctx)
+	configs, err := h.s.deps.Platform.Store.ListModelConfigs(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -1273,30 +1238,32 @@ func (h *oapiHandler) ListModels(ctx context.Context) (*oas.ModelList, error) {
 
 	items := make([]oas.ModelInfo, 0, len(configs))
 	for _, c := range configs {
-		provider, model, ok := parseModelStoreKey(c.Provider)
-		if !ok {
-			continue
-		}
-		label := labels[provider+"/"+model]
+		label := labels[c.Provider+"/"+c.Model]
 		if label == "" {
-			label = model
+			label = c.Model
 		}
 		items = append(items, oas.ModelInfo{
-			Provider:  oas.NewOptString(provider),
-			Model:     oas.NewOptString(model),
+			Provider:  oas.NewOptString(c.Provider),
+			Model:     oas.NewOptString(c.Model),
 			Label:     oas.NewOptString(label),
-			IsDefault: oas.NewOptBool(provider == defaultProvider && model == defaultModel),
+			IsDefault: oas.NewOptBool(c.Provider == defaultProvider && c.Model == defaultModel),
 		})
 	}
 	return &oas.ModelList{Data: items}, nil
 }
 
-// AddModel registers a per-model entry that surfaces in Settings →
-// Configured Models. If api_key / base_url are supplied (i.e. the
-// provider has not yet been configured) they are persisted to the
-// provider-level credentials row so the LLM resolver can actually
-// instantiate the model. Per-model overrides such as caps land on the
-// "model:" row.
+// AddModel registers a per-model entry surfaced in Settings →
+// Configured Models. When api_key / base_url are supplied (i.e. the
+// provider has not yet been configured) they are persisted to
+// provider_configs so the resolver can instantiate the model.
+//
+// The optional `extra` request field is split into:
+//   - `extra.caps`  → ModelConfig.Caps   (typed; the resolver applies these)
+//   - the remainder → ModelConfig.Extra  (shallow-merged onto provider config)
+//
+// This mirrors the SDK's typed ModelConfig surface and removes the
+// dead-link bug where caps stuffed into untyped maps were silently
+// dropped by the resolver.
 func (h *oapiHandler) AddModel(ctx context.Context, req *oas.AddModelRequest) (*oas.ModelInfo, error) {
 	if req.Provider == "" || req.Model == "" {
 		return nil, errdefs.Validationf("provider and model are required")
@@ -1305,7 +1272,19 @@ func (h *oapiHandler) AddModel(ctx context.Context, req *oas.AddModelRequest) (*
 	apiKey, _ := req.APIKey.Get()
 	baseURL, _ := req.BaseURL.Get()
 	if apiKey != "" || baseURL != "" {
+		// Merge into existing provider credentials rather than
+		// replacing wholesale: adding a second model for an already-
+		// configured provider frequently omits api_key (the UI doesn't
+		// force a retype), and a blind SetProviderConfig would wipe
+		// the existing key, breaking every other model under that
+		// provider. Only fields the caller explicitly supplied get
+		// overwritten.
 		credCfg := map[string]any{}
+		if existing, err := h.s.deps.Platform.Store.GetProviderConfig(ctx, req.Provider); err == nil && existing != nil {
+			for k, v := range existing.Config {
+				credCfg[k] = v
+			}
+		}
 		if apiKey != "" {
 			credCfg["api_key"] = apiKey
 		}
@@ -1318,18 +1297,18 @@ func (h *oapiHandler) AddModel(ctx context.Context, req *oas.AddModelRequest) (*
 		}
 	}
 
-	modelCfg := map[string]any{}
+	mc := &model.ModelConfig{Provider: req.Provider, Model: req.Model}
 	var extra map[string]any
 	if decodeOptJSONObject(req.Extra, &extra) {
-		for k, ev := range extra {
-			modelCfg[k] = ev
+		if rawCaps, ok := extra["caps"].(map[string]any); ok {
+			mc.Caps = capsFromMap(rawCaps)
+			delete(extra, "caps")
+		}
+		if len(extra) > 0 {
+			mc.Extra = extra
 		}
 	}
-	row := &llm.ProviderConfig{
-		Provider: modelStoreKey(req.Provider, req.Model),
-		Config:   modelCfg,
-	}
-	if err := h.s.deps.Platform.Store.SetProviderConfig(ctx, row); err != nil {
+	if err := h.s.deps.Platform.Store.SetModelConfig(ctx, mc); err != nil {
 		return nil, err
 	}
 
@@ -1343,22 +1322,54 @@ func (h *oapiHandler) AddModel(ctx context.Context, req *oas.AddModelRequest) (*
 	}, nil
 }
 
-// SetDefaultModel marks {provider, model} as the global default. The
-// pair must already be a configured per-model row (created via
+// capsFromMap parses the UI's caps payload into typed llm.ModelCaps.
+// Accepts both the structured form `{"disabled":{"temperature":true}}`
+// and the flat form `{"no_temperature":true, "no_json_mode":true}`,
+// matching the SDK's capsFromConfig fallback chain so users can paste
+// whichever form they have at hand.
+func capsFromMap(m map[string]any) llm.ModelCaps {
+	if disabled, ok := m["disabled"].(map[string]any); ok {
+		caps := llm.ModelCaps{Disabled: make(map[llm.Capability]bool)}
+		for k, v := range disabled {
+			if b, _ := v.(bool); b {
+				caps.Disabled[llm.Capability(k)] = true
+			}
+		}
+		if len(caps.Disabled) == 0 {
+			return llm.ModelCaps{}
+		}
+		return caps
+	}
+	flat := map[string]llm.Capability{
+		"no_temperature": llm.CapTemperature,
+		"no_json_schema": llm.CapJSONSchema,
+		"no_json_mode":   llm.CapJSONMode,
+	}
+	caps := llm.ModelCaps{Disabled: make(map[llm.Capability]bool)}
+	for k, c := range flat {
+		if b, _ := m[k].(bool); b {
+			caps.Disabled[c] = true
+		}
+	}
+	if len(caps.Disabled) == 0 {
+		return llm.ModelCaps{}
+	}
+	return caps
+}
+
+// SetDefaultModel marks {provider, model} as the resolver's default.
+// The pair must already be a configured per-model row (created via
 // AddModel); otherwise the resolver would point at a non-existent
 // entry.
 func (h *oapiHandler) SetDefaultModel(ctx context.Context, req *oas.SetDefaultModelRequest) error {
 	if req.Provider == "" || req.Model == "" {
 		return errdefs.Validationf("provider and model are required")
 	}
-	if _, err := h.s.deps.Platform.Store.GetProviderConfig(ctx, modelStoreKey(req.Provider, req.Model)); err != nil {
+	if _, err := h.s.deps.Platform.Store.GetModelConfig(ctx, req.Provider, req.Model); err != nil {
 		return errdefs.Validationf("model %s/%s is not configured; add it first", req.Provider, req.Model)
 	}
-	pc := &llm.ProviderConfig{
-		Provider: llm.GlobalDefaultProvider,
-		Config:   map[string]any{"provider": req.Provider, "model": req.Model},
-	}
-	if err := h.s.deps.Platform.Store.SetProviderConfig(ctx, pc); err != nil {
+	if err := h.s.deps.Platform.Store.SetDefaultModel(ctx,
+		&model.DefaultModelRef{Provider: req.Provider, Model: req.Model}); err != nil {
 		return err
 	}
 	if h.s.deps.Platform.LLMResolver != nil {
@@ -1368,24 +1379,20 @@ func (h *oapiHandler) SetDefaultModel(ctx context.Context, req *oas.SetDefaultMo
 }
 
 // DeleteModel removes the per-model row identified by "<provider>/<model>".
-// When the deleted model was the global default the default pointer is
+// When the deleted model was the current default the default pointer is
 // cleared too, so the next Resolve call falls back to the resolver's
 // fallback model rather than dangling.
 func (h *oapiHandler) DeleteModel(ctx context.Context, params oas.DeleteModelParams) error {
-	id := params.ModelID
-	provider, modelName := splitProviderModelPath(id)
+	provider, modelName := splitProviderModelPath(params.ModelID)
 	if provider == "" || modelName == "" {
 		return errdefs.Validationf("model id must be in the form '<provider>/<model>'")
 	}
-	if err := h.s.deps.Platform.Store.DeleteProviderConfig(ctx, modelStoreKey(provider, modelName)); err != nil {
+	if err := h.s.deps.Platform.Store.DeleteModelConfig(ctx, provider, modelName); err != nil {
 		return err
 	}
-	if gc, err := h.s.deps.Platform.Store.GetProviderConfig(ctx, llm.GlobalDefaultProvider); err == nil && gc != nil {
-		p, _ := gc.Config["provider"].(string)
-		m, _ := gc.Config["model"].(string)
-		if p == provider && m == modelName {
-			_ = h.s.deps.Platform.Store.DeleteProviderConfig(ctx, llm.GlobalDefaultProvider)
-		}
+	if ref, err := h.s.deps.Platform.Store.GetDefaultModel(ctx); err == nil && ref != nil &&
+		ref.Provider == provider && ref.Model == modelName {
+		_ = h.s.deps.Platform.Store.ClearDefaultModel(ctx)
 	}
 	if h.s.deps.Platform.LLMResolver != nil {
 		h.s.deps.Platform.LLMResolver.InvalidateCache(provider)
@@ -1402,9 +1409,9 @@ func splitProviderModelPath(s string) (provider, modelName string) {
 
 // ListProviders returns the catalog of providers known to the LLM
 // registry, each annotated with whether the user has supplied
-// provider-level credentials. Per-model rows ("model:..." prefix) and
-// the default-model pointer are filtered out — a provider is
-// "configured" only when its plain credentials row exists.
+// provider-level credentials. After migration 005 provider_configs
+// holds only plain credential rows, so no PK-prefix filtering is
+// necessary.
 func (h *oapiHandler) ListProviders(ctx context.Context) (*oas.ProviderList, error) {
 	providers := llm.ListProviders()
 	allModels := llm.ListAllModels()
@@ -1412,9 +1419,7 @@ func (h *oapiHandler) ListProviders(ctx context.Context) (*oas.ProviderList, err
 	configs, err := h.s.deps.Platform.Store.ListProviderConfigs(ctx)
 	if err == nil {
 		for _, pc := range configs {
-			if isProviderCredsKey(pc.Provider) {
-				configured[pc.Provider] = true
-			}
+			configured[pc.Provider] = true
 		}
 	}
 	modelsByProvider := make(map[string][]oas.ProviderInfoModelsItem)
@@ -1460,17 +1465,11 @@ func (h *oapiHandler) ConfigureProvider(ctx context.Context, req *oas.ConfigureP
 }
 
 func (h *oapiHandler) resolveDefaultModel(ctx context.Context) (provider, mdl string) {
-	gc, err := h.s.deps.Platform.Store.GetProviderConfig(ctx, llm.GlobalDefaultProvider)
-	if err != nil {
+	ref, err := h.s.deps.Platform.Store.GetDefaultModel(ctx)
+	if err != nil || ref == nil {
 		return "", ""
 	}
-	if p, _ := gc.Config["provider"].(string); p != "" {
-		provider = p
-	}
-	if m, _ := gc.Config["model"].(string); m != "" {
-		mdl = m
-	}
-	return
+	return ref.Provider, ref.Model
 }
 
 // ══════════════════════════ Stats ══════════════════════════

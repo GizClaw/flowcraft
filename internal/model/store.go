@@ -130,6 +130,20 @@ type Store interface {
 	DeleteProviderConfig(ctx context.Context, provider string) error
 	ListProviderConfigs(ctx context.Context) ([]*ProviderConfig, error)
 
+	// Per-model config operations. Together these satisfy the SDK's
+	// llm.ModelConfigStore optional interface so the resolver picks
+	// up per-model caps and extra overrides.
+	GetModelConfig(ctx context.Context, provider, model string) (*ModelConfig, error)
+	SetModelConfig(ctx context.Context, mc *ModelConfig) error
+	DeleteModelConfig(ctx context.Context, provider, model string) error
+	ListModelConfigs(ctx context.Context) ([]*ModelConfig, error)
+
+	// Default-model pointer operations. Together these satisfy the
+	// SDK's llm.DefaultModelStore optional interface.
+	GetDefaultModel(ctx context.Context) (*DefaultModelRef, error)
+	SetDefaultModel(ctx context.Context, ref *DefaultModelRef) error
+	ClearDefaultModel(ctx context.Context) error
+
 	// Owner credential operations (single-row).
 	GetOwnerCredential(ctx context.Context) (*OwnerCredential, error)
 	SetOwnerCredential(ctx context.Context, cred *OwnerCredential) error

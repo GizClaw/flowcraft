@@ -4,10 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"strings"
 
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
-	"github.com/GizClaw/flowcraft/sdk/llm"
 	"github.com/GizClaw/flowcraft/sdk/tool"
 )
 
@@ -121,18 +119,14 @@ func schemaModelList(ctx context.Context, deps *Deps) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	configs, err := store.ListProviderConfigs(ctx)
+	configs, err := store.ListModelConfigs(ctx)
 	if err != nil {
 		return "", err
 	}
 
 	globalDefault := ""
-	if gc, gErr := store.GetProviderConfig(ctx, llm.GlobalDefaultProvider); gErr == nil {
-		if p, _ := gc.Config["provider"].(string); p != "" {
-			if m, _ := gc.Config["model"].(string); m != "" {
-				globalDefault = p + "/" + m
-			}
-		}
+	if ref, gErr := store.GetDefaultModel(ctx); gErr == nil && ref != nil {
+		globalDefault = ref.Provider + "/" + ref.Model
 	}
 
 	type modelEntry struct {
@@ -141,22 +135,15 @@ func schemaModelList(ctx context.Context, deps *Deps) (string, error) {
 		Model     string `json:"model"`
 		IsDefault bool   `json:"is_default,omitempty"`
 	}
-	var models []modelEntry
+	models := make([]modelEntry, 0, len(configs))
 	for _, c := range configs {
-		if !strings.HasPrefix(c.Provider, "model:") {
-			continue
-		}
-		key := c.Provider[len("model:"):]
-		provider, modelName := splitKey(key)
+		key := c.Provider + "/" + c.Model
 		models = append(models, modelEntry{
 			Label:     key,
-			Provider:  provider,
-			Model:     modelName,
+			Provider:  c.Provider,
+			Model:     c.Model,
 			IsDefault: key == globalDefault,
 		})
-	}
-	if models == nil {
-		models = []modelEntry{}
 	}
 	return jsonResult(map[string]any{
 		"models":         models,
@@ -184,11 +171,4 @@ func schemaToolList(deps *Deps) (string, error) {
 		"tools": tools,
 		"hint":  "Add tool names to the LLM node's tool_names array. Only listed tools are injected; empty tool_names means no tool-calling ability.",
 	})
-}
-
-func splitKey(s string) (string, string) {
-	if idx := strings.Index(s, "/"); idx >= 0 {
-		return s[:idx], s[idx+1:]
-	}
-	return s, ""
 }

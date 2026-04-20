@@ -176,9 +176,20 @@ func (s *mockStore) DeleteProviderConfig(context.Context, string) error         
 func (s *mockStore) ListProviderConfigs(context.Context) ([]*model.ProviderConfig, error) {
 	return nil, nil
 }
-func (s *mockStore) ListTemplates(ctx context.Context) ([]*model.Template, error) { return nil, nil }
-func (s *mockStore) SaveTemplate(ctx context.Context, t *model.Template) error    { return nil }
-func (s *mockStore) DeleteTemplate(ctx context.Context, name string) error        { return nil }
+func (s *mockStore) GetModelConfig(context.Context, string, string) (*model.ModelConfig, error) {
+	return nil, errdefs.NotFoundf("model_config not found")
+}
+func (s *mockStore) SetModelConfig(context.Context, *model.ModelConfig) error       { return nil }
+func (s *mockStore) DeleteModelConfig(context.Context, string, string) error        { return nil }
+func (s *mockStore) ListModelConfigs(context.Context) ([]*model.ModelConfig, error) { return nil, nil }
+func (s *mockStore) GetDefaultModel(context.Context) (*model.DefaultModelRef, error) {
+	return nil, errdefs.NotFoundf("default model not set")
+}
+func (s *mockStore) SetDefaultModel(context.Context, *model.DefaultModelRef) error { return nil }
+func (s *mockStore) ClearDefaultModel(context.Context) error                       { return nil }
+func (s *mockStore) ListTemplates(ctx context.Context) ([]*model.Template, error)  { return nil, nil }
+func (s *mockStore) SaveTemplate(ctx context.Context, t *model.Template) error     { return nil }
+func (s *mockStore) DeleteTemplate(ctx context.Context, name string) error         { return nil }
 func (s *mockStore) GetOwnerCredential(context.Context) (*model.OwnerCredential, error) {
 	return nil, errdefs.NotFoundf("not initialized")
 }

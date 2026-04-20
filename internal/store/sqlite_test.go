@@ -8,7 +8,9 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/internal/model"
+	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/kanban"
+	"github.com/GizClaw/flowcraft/sdk/llm"
 	sdkmodel "github.com/GizClaw/flowcraft/sdk/model"
 )
 
@@ -274,6 +276,231 @@ func TestProviderConfig(t *testing.T) {
 	}
 }
 
+// TestModelConfig exercises the typed per-model overrides table that
+// satisfies sdk/llm.ModelConfigStore. Caps + Extra must round-trip
+// through SQLite verbatim, since the resolver consumes them by-value
+// without any platform-side massaging.
+func TestModelConfig(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	mc := &model.ModelConfig{
+		Provider: "openai",
+		Model:    "gpt-4o",
+		Caps: llm.ModelCaps{Disabled: map[llm.Capability]bool{
+			llm.CapTemperature: true,
+		}},
+		Extra: map[string]any{"max_tokens": float64(2048)},
+	}
+	if err := s.SetModelConfig(ctx, mc); err != nil {
+		t.Fatalf("set: %v", err)
+	}
+
+	got, err := s.GetModelConfig(ctx, "openai", "gpt-4o")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.Provider != "openai" || got.Model != "gpt-4o" {
+		t.Fatalf("identity mismatch: %+v", got)
+	}
+	if !got.Caps.Disabled[llm.CapTemperature] {
+		t.Errorf("temperature should be disabled; caps=%+v", got.Caps)
+	}
+	if got.Extra["max_tokens"] != float64(2048) {
+		t.Errorf("extra.max_tokens=%v want 2048", got.Extra["max_tokens"])
+	}
+
+	// Upsert
+	mc.Caps.Disabled[llm.CapJSONSchema] = true
+	if err := s.SetModelConfig(ctx, mc); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	got, _ = s.GetModelConfig(ctx, "openai", "gpt-4o")
+	if !got.Caps.Disabled[llm.CapJSONSchema] {
+		t.Errorf("json_schema should be disabled after upsert; caps=%+v", got.Caps)
+	}
+
+	// NotFound is the contract the resolver depends on (silent miss);
+	// any other error class would short-circuit Resolve.
+	_, err = s.GetModelConfig(ctx, "openai", "missing")
+	if !errdefs.IsNotFound(err) {
+		t.Errorf("missing model: want NotFound, got %v", err)
+	}
+
+	list, err := s.ListModelConfigs(ctx)
+	if err != nil || len(list) != 1 {
+		t.Fatalf("list: err=%v len=%d", err, len(list))
+	}
+
+	if err := s.DeleteModelConfig(ctx, "openai", "gpt-4o"); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if _, err := s.GetModelConfig(ctx, "openai", "gpt-4o"); !errdefs.IsNotFound(err) {
+		t.Errorf("after delete: want NotFound, got %v", err)
+	}
+}
+
+// TestDefaultModel exercises the singleton default-model row that
+// satisfies sdk/llm.DefaultModelStore. The CHECK(id=1) constraint
+// means upsert MUST collapse to a single row regardless of how many
+// times we call SetDefaultModel.
+func TestDefaultModel(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	if _, err := s.GetDefaultModel(ctx); !errdefs.IsNotFound(err) {
+		t.Errorf("empty store: want NotFound, got %v", err)
+	}
+
+	if err := s.SetDefaultModel(ctx, &model.DefaultModelRef{Provider: "openai", Model: "gpt-4o"}); err != nil {
+		t.Fatal(err)
+	}
+	ref, err := s.GetDefaultModel(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ref.Provider != "openai" || ref.Model != "gpt-4o" {
+		t.Fatalf("unexpected ref: %+v", ref)
+	}
+
+	if err := s.SetDefaultModel(ctx, &model.DefaultModelRef{Provider: "anthropic", Model: "claude-3"}); err != nil {
+		t.Fatal(err)
+	}
+	ref, _ = s.GetDefaultModel(ctx)
+	if ref.Provider != "anthropic" {
+		t.Errorf("upsert lost: %+v", ref)
+	}
+
+	var n int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM default_model`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Errorf("default_model row count = %d, want 1", n)
+	}
+
+	if err := s.ClearDefaultModel(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.GetDefaultModel(ctx); !errdefs.IsNotFound(err) {
+		t.Errorf("after clear: want NotFound, got %v", err)
+	}
+}
+
+// TestMigration005 verifies the split of provider_configs into
+// provider_configs (creds-only) + model_configs + default_model.
+//
+// We seed the legacy layout directly (bypassing newTestStore which
+// would have already drained those rows by running migration 005 on
+// an empty DB), then run the same SQL goose would run, and assert
+// everything landed where the resolver expects it.
+func TestMigration005(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	seed := func(provider, configJSON string) {
+		t.Helper()
+		_, err := s.db.ExecContext(ctx,
+			`INSERT OR REPLACE INTO provider_configs (provider, config) VALUES (?, ?)`,
+			provider, configJSON)
+		if err != nil {
+			t.Fatalf("seed %q: %v", provider, err)
+		}
+	}
+
+	seed("openai", `{"api_key":"sk-test"}`)
+	seed("model:openai/gpt-4o",
+		`{"caps":{"disabled":{"temperature":true}},"extra":{"max_tokens":2048}}`)
+	seed("model:anthropic/claude-3", `{}`)
+	seed("__global_default__", `{"provider":"openai","model":"gpt-4o"}`)
+	// Malformed prefixed keys must be left in provider_configs (they'll
+	// be cleaned up by the post-migration DELETE only when they actually
+	// match the well-formed pattern). The DELETE below is broad, so we
+	// assert it doesn't take any data we'd want to recover instead.
+	seed("model:malformed-no-slash", `{}`)
+
+	migration := `
+INSERT OR IGNORE INTO model_configs (provider, model, caps, extra)
+SELECT
+    substr(provider, 7, instr(substr(provider, 7), '/') - 1)               AS provider,
+    substr(provider, 7 + instr(substr(provider, 7), '/'))                  AS model,
+    COALESCE(json_extract(config, '$.caps'),  '{}')                        AS caps,
+    COALESCE(json_extract(config, '$.extra'), '{}')                        AS extra
+FROM provider_configs
+WHERE provider LIKE 'model:%/%'
+  AND substr(provider, 7) NOT LIKE '/%'
+  AND substr(provider, 7) NOT LIKE '%/';
+DELETE FROM provider_configs
+WHERE provider LIKE 'model:%/%'
+  AND substr(provider, 7) NOT LIKE '/%'
+  AND substr(provider, 7) NOT LIKE '%/';
+INSERT OR IGNORE INTO default_model (id, provider, model)
+SELECT 1,
+       json_extract(config, '$.provider'),
+       json_extract(config, '$.model')
+FROM provider_configs
+WHERE provider = '__global_default__'
+  AND json_extract(config, '$.provider') IS NOT NULL
+  AND json_extract(config, '$.provider') != ''
+  AND json_extract(config, '$.model') IS NOT NULL
+  AND json_extract(config, '$.model') != '';
+DELETE FROM provider_configs WHERE provider = '__global_default__';
+`
+	if _, err := s.db.ExecContext(ctx, migration); err != nil {
+		t.Fatalf("apply migration: %v", err)
+	}
+
+	// provider_configs holds the plain creds row and the malformed
+	// "model:malformed-no-slash" seed (preserved by design: the DELETE
+	// only drops rows whose keys match the well-formed migration
+	// pattern, so operators can inspect leftovers post-migration).
+	pcs, _ := s.ListProviderConfigs(ctx)
+	pcNames := map[string]bool{}
+	for _, pc := range pcs {
+		pcNames[pc.Provider] = true
+	}
+	if !pcNames["openai"] {
+		t.Errorf("creds row lost: %+v", pcs)
+	}
+	if !pcNames["model:malformed-no-slash"] {
+		t.Errorf("malformed row was silently dropped: %+v", pcs)
+	}
+	if pcNames["__global_default__"] || pcNames["model:openai/gpt-4o"] {
+		t.Errorf("legacy rows not moved: %+v", pcs)
+	}
+
+	// model_configs holds typed entries for both seeded models.
+	mcs, _ := s.ListModelConfigs(ctx)
+	if len(mcs) != 2 {
+		t.Fatalf("model_configs after: %+v", mcs)
+	}
+	gpt, err := s.GetModelConfig(ctx, "openai", "gpt-4o")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !gpt.Caps.Disabled[llm.CapTemperature] {
+		t.Errorf("caps lost in migration: %+v", gpt.Caps)
+	}
+	if gpt.Extra["max_tokens"] != float64(2048) {
+		t.Errorf("extra lost in migration: %+v", gpt.Extra)
+	}
+
+	// default_model populated from the legacy magic key.
+	ref, err := s.GetDefaultModel(ctx)
+	if err != nil || ref.Provider != "openai" || ref.Model != "gpt-4o" {
+		t.Errorf("default_model: ref=%+v err=%v", ref, err)
+	}
+
+	// Idempotency: re-running must be a no-op.
+	if _, err := s.db.ExecContext(ctx, migration); err != nil {
+		t.Fatalf("re-apply: %v", err)
+	}
+	mcs2, _ := s.ListModelConfigs(ctx)
+	if len(mcs2) != 2 {
+		t.Errorf("re-run grew row count: %d", len(mcs2))
+	}
+}
+
 // TestProviderConfigMigration004 covers the data-repair migration that
 // splits legacy provider_configs rows (which conflated credentials with
 // a single per-provider model field) into separate "model:" rows.
@@ -324,14 +551,14 @@ WHERE provider != '__global_default__'
 	}
 
 	want := map[string]string{
-		"openai":              `{"api_key":"sk-legacy","base_url":"https://api.openai.com"}`,
-		"anthropic":           `{"api_key":"sk-ant"}`,
-		"clean-provider":      `{"api_key":"sk-ok"}`,
-		"__global_default__":  `{"provider":"openai","model":"gpt-4o"}`,
+		"openai":             `{"api_key":"sk-legacy","base_url":"https://api.openai.com"}`,
+		"anthropic":          `{"api_key":"sk-ant"}`,
+		"clean-provider":     `{"api_key":"sk-ok"}`,
+		"__global_default__": `{"provider":"openai","model":"gpt-4o"}`,
 		// Empty model field is stripped by the cleanup UPDATE without
 		// spawning a "model:openai-empty/" row.
-		"openai-empty": `{"api_key":"x"}`,
-		"model:openai/gpt-4o": `{}`,
+		"openai-empty":             `{"api_key":"x"}`,
+		"model:openai/gpt-4o":      `{}`,
 		"model:anthropic/claude-3": `{}`,
 	}
 	rows, err := s.db.QueryContext(ctx, `SELECT provider, config FROM provider_configs ORDER BY provider`)

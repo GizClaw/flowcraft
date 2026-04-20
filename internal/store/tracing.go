@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/internal/model"
+	"github.com/GizClaw/flowcraft/sdk/llm"
 	"github.com/GizClaw/flowcraft/sdk/telemetry"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -17,6 +18,16 @@ type TracingStore struct {
 	inner  model.Store
 	tracer trace.Tracer
 }
+
+// Mirror SQLiteStore's resolver-extension assertions: if TracingStore
+// ever drops a method, the resolver would silently stop seeing
+// ModelConfigStore / DefaultModelStore in the tracing-enabled build
+// (prod), while tests — which skip tracing — would still pass.
+var (
+	_ llm.ModelConfigStore    = (*TracingStore)(nil)
+	_ llm.DefaultModelStore   = (*TracingStore)(nil)
+	_ llm.ProviderConfigStore = (*TracingStore)(nil)
+)
 
 // WithStoreTracing wraps the given store with OTel tracing instrumentation.
 func WithStoreTracing(inner model.Store) model.Store {
@@ -380,6 +391,71 @@ func (s *TracingStore) ListProviderConfigs(ctx context.Context) ([]*model.Provid
 	configs, err := s.inner.ListProviderConfigs(ctx)
 	finish(span, err)
 	return configs, err
+}
+
+func (s *TracingStore) GetModelConfig(ctx context.Context, provider, mdl string) (*model.ModelConfig, error) {
+	ctx, span := s.start(ctx, "GetModelConfig",
+		attribute.String("provider", provider),
+		attribute.String("model", mdl))
+	mc, err := s.inner.GetModelConfig(ctx, provider, mdl)
+	finish(span, err)
+	return mc, err
+}
+
+func (s *TracingStore) SetModelConfig(ctx context.Context, mc *model.ModelConfig) error {
+	attrs := []attribute.KeyValue{}
+	if mc != nil {
+		attrs = append(attrs,
+			attribute.String("provider", mc.Provider),
+			attribute.String("model", mc.Model))
+	}
+	ctx, span := s.start(ctx, "SetModelConfig", attrs...)
+	err := s.inner.SetModelConfig(ctx, mc)
+	finish(span, err)
+	return err
+}
+
+func (s *TracingStore) DeleteModelConfig(ctx context.Context, provider, mdl string) error {
+	ctx, span := s.start(ctx, "DeleteModelConfig",
+		attribute.String("provider", provider),
+		attribute.String("model", mdl))
+	err := s.inner.DeleteModelConfig(ctx, provider, mdl)
+	finish(span, err)
+	return err
+}
+
+func (s *TracingStore) ListModelConfigs(ctx context.Context) ([]*model.ModelConfig, error) {
+	ctx, span := s.start(ctx, "ListModelConfigs")
+	configs, err := s.inner.ListModelConfigs(ctx)
+	finish(span, err)
+	return configs, err
+}
+
+func (s *TracingStore) GetDefaultModel(ctx context.Context) (*model.DefaultModelRef, error) {
+	ctx, span := s.start(ctx, "GetDefaultModel")
+	ref, err := s.inner.GetDefaultModel(ctx)
+	finish(span, err)
+	return ref, err
+}
+
+func (s *TracingStore) SetDefaultModel(ctx context.Context, ref *model.DefaultModelRef) error {
+	attrs := []attribute.KeyValue{}
+	if ref != nil {
+		attrs = append(attrs,
+			attribute.String("provider", ref.Provider),
+			attribute.String("model", ref.Model))
+	}
+	ctx, span := s.start(ctx, "SetDefaultModel", attrs...)
+	err := s.inner.SetDefaultModel(ctx, ref)
+	finish(span, err)
+	return err
+}
+
+func (s *TracingStore) ClearDefaultModel(ctx context.Context) error {
+	ctx, span := s.start(ctx, "ClearDefaultModel")
+	err := s.inner.ClearDefaultModel(ctx)
+	finish(span, err)
+	return err
 }
 
 func (s *TracingStore) GetOwnerCredential(ctx context.Context) (*model.OwnerCredential, error) {

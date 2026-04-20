@@ -19,6 +19,7 @@ import (
 	"github.com/GizClaw/flowcraft/internal/store/migrations"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/graph/variable"
+	"github.com/GizClaw/flowcraft/sdk/llm"
 	"github.com/GizClaw/flowcraft/sdk/telemetry"
 	"github.com/pressly/goose/v3"
 	"github.com/rs/xid"
@@ -1933,6 +1934,141 @@ func (s *SQLiteStore) ListProviderConfigs(ctx context.Context) ([]*model.Provide
 		configs = append(configs, &pc)
 	}
 	return configs, rows.Err()
+}
+
+// Compile-time assertions that SQLiteStore (and therefore
+// TracingStore, which composes it) satisfies the SDK's optional
+// resolver extension interfaces. These are load-bearing: if a method
+// signature drifts, the resolver's type assertions would silently
+// miss and per-model caps would stop being applied (recreating the
+// B1 dead-link bug). Breaking this line is the canary.
+var (
+	_ llm.ModelConfigStore    = (*SQLiteStore)(nil)
+	_ llm.DefaultModelStore   = (*SQLiteStore)(nil)
+	_ llm.ProviderConfigStore = (*SQLiteStore)(nil)
+)
+
+// --- Model config operations ---
+//
+// model_configs holds per-model overrides ({Caps, Extra}) keyed by
+// (provider, model). The store satisfies llm.ModelConfigStore by
+// returning *model.ModelConfig (an alias for *llm.ModelConfig)
+// directly from GetModelConfig, so the resolver can walk the typed
+// path without conversion.
+
+func (s *SQLiteStore) GetModelConfig(ctx context.Context, provider, mdl string) (*model.ModelConfig, error) {
+	var capsJSON, extraJSON string
+	err := s.db.QueryRowContext(ctx,
+		`SELECT caps, extra FROM model_configs WHERE provider = ? AND model = ?`,
+		provider, mdl).Scan(&capsJSON, &extraJSON)
+	if err == sql.ErrNoRows {
+		return nil, errdefs.NotFoundf("model_config %s/%s not found", provider, mdl)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("store: get model config: %w", err)
+	}
+	mc := &model.ModelConfig{Provider: provider, Model: mdl}
+	if capsJSON != "" {
+		_ = json.Unmarshal([]byte(capsJSON), &mc.Caps)
+	}
+	if extraJSON != "" {
+		_ = json.Unmarshal([]byte(extraJSON), &mc.Extra)
+	}
+	return mc, nil
+}
+
+func (s *SQLiteStore) SetModelConfig(ctx context.Context, mc *model.ModelConfig) error {
+	if mc == nil || mc.Provider == "" || mc.Model == "" {
+		return errdefs.Validationf("provider and model are required")
+	}
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO model_configs (provider, model, caps, extra) VALUES (?, ?, ?, ?)
+		 ON CONFLICT(provider, model) DO UPDATE
+		 SET caps = excluded.caps, extra = excluded.extra`,
+		mc.Provider, mc.Model, marshalJSON(mc.Caps), marshalJSON(mc.Extra))
+	if err != nil {
+		return fmt.Errorf("store: set model config: %w", err)
+	}
+	return nil
+}
+
+func (s *SQLiteStore) DeleteModelConfig(ctx context.Context, provider, mdl string) error {
+	_, err := s.db.ExecContext(ctx,
+		`DELETE FROM model_configs WHERE provider = ? AND model = ?`,
+		provider, mdl)
+	if err != nil {
+		return fmt.Errorf("store: delete model config: %w", err)
+	}
+	return nil
+}
+
+func (s *SQLiteStore) ListModelConfigs(ctx context.Context) ([]*model.ModelConfig, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT provider, model, caps, extra FROM model_configs ORDER BY provider, model`)
+	if err != nil {
+		return nil, fmt.Errorf("store: list model configs: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var configs []*model.ModelConfig
+	for rows.Next() {
+		var capsJSON, extraJSON string
+		mc := &model.ModelConfig{}
+		if err := rows.Scan(&mc.Provider, &mc.Model, &capsJSON, &extraJSON); err != nil {
+			return nil, fmt.Errorf("store: scan model config: %w", err)
+		}
+		if capsJSON != "" {
+			_ = json.Unmarshal([]byte(capsJSON), &mc.Caps)
+		}
+		if extraJSON != "" {
+			_ = json.Unmarshal([]byte(extraJSON), &mc.Extra)
+		}
+		configs = append(configs, mc)
+	}
+	return configs, rows.Err()
+}
+
+// --- Default model operations ---
+//
+// default_model is a singleton row (CHECK(id = 1)). The store
+// satisfies llm.DefaultModelStore by returning *model.DefaultModelRef
+// from GetDefaultModel; the resolver consults this before falling
+// back to WithFallbackModel.
+
+func (s *SQLiteStore) GetDefaultModel(ctx context.Context) (*model.DefaultModelRef, error) {
+	ref := &model.DefaultModelRef{}
+	err := s.db.QueryRowContext(ctx,
+		`SELECT provider, model FROM default_model WHERE id = 1`).
+		Scan(&ref.Provider, &ref.Model)
+	if err == sql.ErrNoRows {
+		return nil, errdefs.NotFoundf("default model not set")
+	}
+	if err != nil {
+		return nil, fmt.Errorf("store: get default model: %w", err)
+	}
+	return ref, nil
+}
+
+func (s *SQLiteStore) SetDefaultModel(ctx context.Context, ref *model.DefaultModelRef) error {
+	if ref == nil || ref.Provider == "" || ref.Model == "" {
+		return errdefs.Validationf("provider and model are required")
+	}
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO default_model (id, provider, model) VALUES (1, ?, ?)
+		 ON CONFLICT(id) DO UPDATE SET provider = excluded.provider, model = excluded.model`,
+		ref.Provider, ref.Model)
+	if err != nil {
+		return fmt.Errorf("store: set default model: %w", err)
+	}
+	return nil
+}
+
+func (s *SQLiteStore) ClearDefaultModel(ctx context.Context) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM default_model WHERE id = 1`)
+	if err != nil {
+		return fmt.Errorf("store: clear default model: %w", err)
+	}
+	return nil
 }
 
 // --- Owner credential operations ---

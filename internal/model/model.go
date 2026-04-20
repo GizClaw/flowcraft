@@ -357,3 +357,12 @@ type OwnerCredential struct {
 
 // ProviderConfig is an alias for the SDK provider configuration type.
 type ProviderConfig = llm.ProviderConfig
+
+// ModelConfig is an alias for the SDK per-model overrides type. The
+// store satisfies llm.ModelConfigStore by returning *llm.ModelConfig
+// directly, which keeps zero conversion at the resolver boundary.
+type ModelConfig = llm.ModelConfig
+
+// DefaultModelRef is an alias for the SDK default-model pointer type,
+// returned by store.GetDefaultModel to satisfy llm.DefaultModelStore.
+type DefaultModelRef = llm.DefaultModelRef
