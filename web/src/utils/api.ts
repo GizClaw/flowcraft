@@ -5,7 +5,6 @@ import type { Conversation, Message, ChatRequest, WorkflowStreamEvent, WorkflowR
 import type { Dataset, DatasetDocument, CreateDatasetRequest, AddDocumentRequest, QueryDatasetRequest, QueryResult } from '../types/knowledge';
 import type { NodeSchema } from '../types/nodeTypes';
 import type { KanbanSnapshot, TimelineEntry, TopologyNode, TopologyEdge } from '../types/kanban';
-import type { Plugin } from '../types/plugin';
 
 export { ApiError } from '../api/client';
 export { apiStream } from '../api/client';
@@ -591,58 +590,55 @@ export const kanbanApi = {
 
 // ── Plugin API ──
 
-export type PluginDetail = Schemas['PluginDetail'];
+export type PluginInfo = Schemas['PluginInfo'];
+export type Plugin = Schemas['PluginDetail'];
+export type PluginReloadResult = Required<Schemas['PluginReloadResult']>;
+export type PluginUploadResult = Schemas['PluginUploadResult'];
 
 export const pluginApi = {
-  list: async () => {
+  list: async (): Promise<Plugin[]> => {
     const { data } = await client.GET('/plugins');
-    return (data?.data ?? []) as unknown as Plugin[];
+    return (data?.data ?? []) as Plugin[];
   },
-  get: async (name: string) => {
+  get: async (name: string): Promise<Plugin | undefined> => {
     const { data } = await client.GET('/plugins/{name}', {
       params: { path: { name } },
     });
-    return data as unknown as Plugin;
+    return data as Plugin | undefined;
   },
-  enable: async (name: string) => {
+  enable: async (name: string): Promise<PluginInfo | undefined> => {
     const { data } = await client.POST('/plugins/{name}/enable', {
       params: { path: { name } },
     });
-    return data as Schemas['PluginInfo'];
+    return data as PluginInfo | undefined;
   },
-  disable: async (name: string) => {
+  disable: async (name: string): Promise<PluginInfo | undefined> => {
     const { data } = await client.POST('/plugins/{name}/disable', {
       params: { path: { name } },
     });
-    return data as Schemas['PluginInfo'];
+    return data as PluginInfo | undefined;
   },
-  configure: async (name: string, config: Record<string, unknown>) => {
+  configure: async (name: string, config: Record<string, unknown>): Promise<PluginInfo | undefined> => {
     const { data } = await client.PUT('/plugins/{name}/config', {
       params: { path: { name } },
       body: config,
     });
-    return data as Schemas['PluginInfo'];
+    return data as PluginInfo | undefined;
   },
-  reload: async () => {
+  reload: async (): Promise<PluginReloadResult> => {
     const { data } = await client.POST('/plugins/reload');
-    return data as { added?: string[]; removed?: string[] };
+    const res = data as Schemas['PluginReloadResult'] | undefined;
+    return { added: res?.added ?? [], removed: res?.removed ?? [] };
   },
-  upload: async (file: File) => {
+  upload: async (file: File): Promise<PluginUploadResult> => {
     const form = new FormData();
     form.append('file', file);
-    const res = await fetch('/api/plugins/upload', {
-      method: 'POST',
-      body: form,
-      credentials: 'include',
+    const { data } = await client.POST('/plugins/upload', {
+      body: form as unknown as never,
     });
-    if (!res.ok) {
-      const body = await res.json().catch(() => ({}));
-      const err = body as { error?: { message?: string }; message?: string };
-      throw new ApiError(res.status, err.error?.message || err.message || res.statusText);
-    }
-    return res.json() as Promise<Schemas['PluginUploadResult']>;
+    return (data ?? {}) as PluginUploadResult;
   },
-  remove: async (name: string) => {
+  remove: async (name: string): Promise<void> => {
     await client.DELETE('/plugins/{name}', { params: { path: { name } } });
   },
 };

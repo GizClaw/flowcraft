@@ -3615,37 +3615,20 @@ func (s *PluginConfig) init() PluginConfig {
 
 // Ref: #/components/schemas/PluginDetail
 type PluginDetail struct {
-	Name        OptString     `json:"name"`
-	Type        OptString     `json:"type"`
-	Description OptString     `json:"description"`
-	Version     OptString     `json:"version"`
-	Config      OptJSONObject `json:"config"`
-	Enabled     OptBool       `json:"enabled"`
-	Source      OptString     `json:"source"`
-	Builtin     OptBool       `json:"builtin"`
-	Tools       []string      `json:"tools"`
-	NodeTypes   []string      `json:"node_types"`
-	Models      []string      `json:"models"`
+	Info   PluginInfo         `json:"info"`
+	Status PluginDetailStatus `json:"status"`
+	Config OptJSONObject      `json:"config"`
+	Error  OptString          `json:"error"`
 }
 
-// GetName returns the value of Name.
-func (s *PluginDetail) GetName() OptString {
-	return s.Name
+// GetInfo returns the value of Info.
+func (s *PluginDetail) GetInfo() PluginInfo {
+	return s.Info
 }
 
-// GetType returns the value of Type.
-func (s *PluginDetail) GetType() OptString {
-	return s.Type
-}
-
-// GetDescription returns the value of Description.
-func (s *PluginDetail) GetDescription() OptString {
-	return s.Description
-}
-
-// GetVersion returns the value of Version.
-func (s *PluginDetail) GetVersion() OptString {
-	return s.Version
+// GetStatus returns the value of Status.
+func (s *PluginDetail) GetStatus() PluginDetailStatus {
+	return s.Status
 }
 
 // GetConfig returns the value of Config.
@@ -3653,54 +3636,19 @@ func (s *PluginDetail) GetConfig() OptJSONObject {
 	return s.Config
 }
 
-// GetEnabled returns the value of Enabled.
-func (s *PluginDetail) GetEnabled() OptBool {
-	return s.Enabled
+// GetError returns the value of Error.
+func (s *PluginDetail) GetError() OptString {
+	return s.Error
 }
 
-// GetSource returns the value of Source.
-func (s *PluginDetail) GetSource() OptString {
-	return s.Source
+// SetInfo sets the value of Info.
+func (s *PluginDetail) SetInfo(val PluginInfo) {
+	s.Info = val
 }
 
-// GetBuiltin returns the value of Builtin.
-func (s *PluginDetail) GetBuiltin() OptBool {
-	return s.Builtin
-}
-
-// GetTools returns the value of Tools.
-func (s *PluginDetail) GetTools() []string {
-	return s.Tools
-}
-
-// GetNodeTypes returns the value of NodeTypes.
-func (s *PluginDetail) GetNodeTypes() []string {
-	return s.NodeTypes
-}
-
-// GetModels returns the value of Models.
-func (s *PluginDetail) GetModels() []string {
-	return s.Models
-}
-
-// SetName sets the value of Name.
-func (s *PluginDetail) SetName(val OptString) {
-	s.Name = val
-}
-
-// SetType sets the value of Type.
-func (s *PluginDetail) SetType(val OptString) {
-	s.Type = val
-}
-
-// SetDescription sets the value of Description.
-func (s *PluginDetail) SetDescription(val OptString) {
-	s.Description = val
-}
-
-// SetVersion sets the value of Version.
-func (s *PluginDetail) SetVersion(val OptString) {
-	s.Version = val
+// SetStatus sets the value of Status.
+func (s *PluginDetail) SetStatus(val PluginDetailStatus) {
+	s.Status = val
 }
 
 // SetConfig sets the value of Config.
@@ -3708,48 +3656,93 @@ func (s *PluginDetail) SetConfig(val OptJSONObject) {
 	s.Config = val
 }
 
-// SetEnabled sets the value of Enabled.
-func (s *PluginDetail) SetEnabled(val OptBool) {
-	s.Enabled = val
+// SetError sets the value of Error.
+func (s *PluginDetail) SetError(val OptString) {
+	s.Error = val
 }
 
-// SetSource sets the value of Source.
-func (s *PluginDetail) SetSource(val OptString) {
-	s.Source = val
+type PluginDetailStatus string
+
+const (
+	PluginDetailStatusInstalled PluginDetailStatus = "installed"
+	PluginDetailStatusActive    PluginDetailStatus = "active"
+	PluginDetailStatusInactive  PluginDetailStatus = "inactive"
+	PluginDetailStatusError     PluginDetailStatus = "error"
+)
+
+// AllValues returns all PluginDetailStatus values.
+func (PluginDetailStatus) AllValues() []PluginDetailStatus {
+	return []PluginDetailStatus{
+		PluginDetailStatusInstalled,
+		PluginDetailStatusActive,
+		PluginDetailStatusInactive,
+		PluginDetailStatusError,
+	}
 }
 
-// SetBuiltin sets the value of Builtin.
-func (s *PluginDetail) SetBuiltin(val OptBool) {
-	s.Builtin = val
+// MarshalText implements encoding.TextMarshaler.
+func (s PluginDetailStatus) MarshalText() ([]byte, error) {
+	switch s {
+	case PluginDetailStatusInstalled:
+		return []byte(s), nil
+	case PluginDetailStatusActive:
+		return []byte(s), nil
+	case PluginDetailStatusInactive:
+		return []byte(s), nil
+	case PluginDetailStatusError:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
 }
 
-// SetTools sets the value of Tools.
-func (s *PluginDetail) SetTools(val []string) {
-	s.Tools = val
-}
-
-// SetNodeTypes sets the value of NodeTypes.
-func (s *PluginDetail) SetNodeTypes(val []string) {
-	s.NodeTypes = val
-}
-
-// SetModels sets the value of Models.
-func (s *PluginDetail) SetModels(val []string) {
-	s.Models = val
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *PluginDetailStatus) UnmarshalText(data []byte) error {
+	switch PluginDetailStatus(data) {
+	case PluginDetailStatusInstalled:
+		*s = PluginDetailStatusInstalled
+		return nil
+	case PluginDetailStatusActive:
+		*s = PluginDetailStatusActive
+		return nil
+	case PluginDetailStatusInactive:
+		*s = PluginDetailStatusInactive
+		return nil
+	case PluginDetailStatusError:
+		*s = PluginDetailStatusError
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
 }
 
 // Ref: #/components/schemas/PluginInfo
 type PluginInfo struct {
-	Name        OptString `json:"name"`
-	Type        OptString `json:"type"`
-	Description OptString `json:"description"`
-	Version     OptString `json:"version"`
-	Builtin     OptBool   `json:"builtin"`
+	ID          string      `json:"id"`
+	Name        string      `json:"name"`
+	Version     OptString   `json:"version"`
+	Type        OptString   `json:"type"`
+	Description OptString   `json:"description"`
+	Author      OptString   `json:"author"`
+	Icon        OptString   `json:"icon"`
+	Homepage    OptString   `json:"homepage"`
+	Builtin     bool        `json:"builtin"`
+	CreatedAt   OptDateTime `json:"created_at"`
+}
+
+// GetID returns the value of ID.
+func (s *PluginInfo) GetID() string {
+	return s.ID
 }
 
 // GetName returns the value of Name.
-func (s *PluginInfo) GetName() OptString {
+func (s *PluginInfo) GetName() string {
 	return s.Name
+}
+
+// GetVersion returns the value of Version.
+func (s *PluginInfo) GetVersion() OptString {
+	return s.Version
 }
 
 // GetType returns the value of Type.
@@ -3762,19 +3755,44 @@ func (s *PluginInfo) GetDescription() OptString {
 	return s.Description
 }
 
-// GetVersion returns the value of Version.
-func (s *PluginInfo) GetVersion() OptString {
-	return s.Version
+// GetAuthor returns the value of Author.
+func (s *PluginInfo) GetAuthor() OptString {
+	return s.Author
+}
+
+// GetIcon returns the value of Icon.
+func (s *PluginInfo) GetIcon() OptString {
+	return s.Icon
+}
+
+// GetHomepage returns the value of Homepage.
+func (s *PluginInfo) GetHomepage() OptString {
+	return s.Homepage
 }
 
 // GetBuiltin returns the value of Builtin.
-func (s *PluginInfo) GetBuiltin() OptBool {
+func (s *PluginInfo) GetBuiltin() bool {
 	return s.Builtin
 }
 
+// GetCreatedAt returns the value of CreatedAt.
+func (s *PluginInfo) GetCreatedAt() OptDateTime {
+	return s.CreatedAt
+}
+
+// SetID sets the value of ID.
+func (s *PluginInfo) SetID(val string) {
+	s.ID = val
+}
+
 // SetName sets the value of Name.
-func (s *PluginInfo) SetName(val OptString) {
+func (s *PluginInfo) SetName(val string) {
 	s.Name = val
+}
+
+// SetVersion sets the value of Version.
+func (s *PluginInfo) SetVersion(val OptString) {
+	s.Version = val
 }
 
 // SetType sets the value of Type.
@@ -3787,14 +3805,29 @@ func (s *PluginInfo) SetDescription(val OptString) {
 	s.Description = val
 }
 
-// SetVersion sets the value of Version.
-func (s *PluginInfo) SetVersion(val OptString) {
-	s.Version = val
+// SetAuthor sets the value of Author.
+func (s *PluginInfo) SetAuthor(val OptString) {
+	s.Author = val
+}
+
+// SetIcon sets the value of Icon.
+func (s *PluginInfo) SetIcon(val OptString) {
+	s.Icon = val
+}
+
+// SetHomepage sets the value of Homepage.
+func (s *PluginInfo) SetHomepage(val OptString) {
+	s.Homepage = val
 }
 
 // SetBuiltin sets the value of Builtin.
-func (s *PluginInfo) SetBuiltin(val OptBool) {
+func (s *PluginInfo) SetBuiltin(val bool) {
 	s.Builtin = val
+}
+
+// SetCreatedAt sets the value of CreatedAt.
+func (s *PluginInfo) SetCreatedAt(val OptDateTime) {
+	s.CreatedAt = val
 }
 
 // Ref: #/components/schemas/PluginList

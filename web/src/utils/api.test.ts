@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { apiStream, toolApi } from './api';
+import { apiStream, toolApi, pluginApi } from './api';
 import client from '../api/client';
 
 vi.mock('../store/toastStore', () => ({
@@ -177,5 +177,126 @@ describe('toolApi', () => {
     await toolApi.list();
 
     expect(spy).toHaveBeenCalledWith('/tools');
+  });
+});
+
+describe('pluginApi', () => {
+  it('list returns plugins from /plugins envelope', async () => {
+    const plugins = [
+      { info: { id: 'a', name: 'A', builtin: true }, status: 'active' as const },
+      { info: { id: 'b', name: 'B', builtin: false }, status: 'inactive' as const },
+    ];
+    const spy = vi.spyOn(client, 'GET').mockResolvedValue({
+      data: { data: plugins },
+      error: undefined,
+      response: new Response(),
+    } as never);
+
+    const result = await pluginApi.list();
+    expect(spy).toHaveBeenCalledWith('/plugins');
+    expect(result).toHaveLength(2);
+    expect(result[0].info.id).toBe('a');
+  });
+
+  it('list returns empty array when payload is missing', async () => {
+    vi.spyOn(client, 'GET').mockResolvedValue({
+      data: undefined,
+      error: undefined,
+      response: new Response(),
+    } as never);
+    const result = await pluginApi.list();
+    expect(result).toEqual([]);
+  });
+
+  it('reload normalizes missing added/removed to empty arrays', async () => {
+    vi.spyOn(client, 'POST').mockResolvedValue({
+      data: {},
+      error: undefined,
+      response: new Response(),
+    } as never);
+    const result = await pluginApi.reload();
+    expect(result).toEqual({ added: [], removed: [] });
+  });
+
+  it('reload preserves real id arrays', async () => {
+    vi.spyOn(client, 'POST').mockResolvedValue({
+      data: { added: ['x', 'y'], removed: ['z'] },
+      error: undefined,
+      response: new Response(),
+    } as never);
+    const result = await pluginApi.reload();
+    expect(result).toEqual({ added: ['x', 'y'], removed: ['z'] });
+  });
+
+  it('enable calls POST /plugins/{name}/enable with path param', async () => {
+    const spy = vi.spyOn(client, 'POST').mockResolvedValue({
+      data: { id: 'p1', name: 'P1', builtin: false },
+      error: undefined,
+      response: new Response(),
+    } as never);
+
+    await pluginApi.enable('p1');
+    expect(spy).toHaveBeenCalledWith('/plugins/{name}/enable', {
+      params: { path: { name: 'p1' } },
+    });
+  });
+
+  it('disable calls POST /plugins/{name}/disable', async () => {
+    const spy = vi.spyOn(client, 'POST').mockResolvedValue({
+      data: { id: 'p1', name: 'P1', builtin: false },
+      error: undefined,
+      response: new Response(),
+    } as never);
+
+    await pluginApi.disable('p1');
+    expect(spy).toHaveBeenCalledWith('/plugins/{name}/disable', {
+      params: { path: { name: 'p1' } },
+    });
+  });
+
+  it('remove calls DELETE /plugins/{name}', async () => {
+    const spy = vi.spyOn(client, 'DELETE').mockResolvedValue({
+      data: undefined,
+      error: undefined,
+      response: new Response(),
+    } as never);
+
+    await pluginApi.remove('p1');
+    expect(spy).toHaveBeenCalledWith('/plugins/{name}', {
+      params: { path: { name: 'p1' } },
+    });
+  });
+
+  it('upload posts FormData with file field', async () => {
+    const spy = vi.spyOn(client, 'POST').mockResolvedValue({
+      data: { id: 'echo', name: 'echo', size: 12, added: ['echo'], removed: [] },
+      error: undefined,
+      response: new Response(),
+    } as never);
+
+    const file = new File(['hello-binary'], 'echo', { type: 'application/octet-stream' });
+    const result = await pluginApi.upload(file);
+
+    expect(spy).toHaveBeenCalledTimes(1);
+    const [path, opts] = spy.mock.calls[0] as [string, { body: unknown }];
+    expect(path).toBe('/plugins/upload');
+    expect(opts.body).toBeInstanceOf(FormData);
+    expect((opts.body as FormData).get('file')).toBeInstanceOf(File);
+    expect(result.id).toBe('echo');
+    expect(result.added).toEqual(['echo']);
+  });
+
+  it('configure calls PUT /plugins/{name}/config with body', async () => {
+    const spy = vi.spyOn(client, 'PUT').mockResolvedValue({
+      data: { id: 'p1', name: 'P1', builtin: false },
+      error: undefined,
+      response: new Response(),
+    } as never);
+
+    await pluginApi.configure('p1', { temperature: 0.7 });
+    expect(spy).toHaveBeenCalledWith('/plugins/{name}/config', {
+      params: { path: { name: 'p1' } },
+      body: { temperature: 0.7 },
+    });
   });
 });

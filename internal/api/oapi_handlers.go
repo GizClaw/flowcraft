@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -16,6 +17,7 @@ import (
 	"github.com/GizClaw/flowcraft/internal/api/oas"
 	"github.com/GizClaw/flowcraft/internal/model"
 	"github.com/GizClaw/flowcraft/internal/platform"
+	"github.com/GizClaw/flowcraft/plugin"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/event"
 	"github.com/GizClaw/flowcraft/sdk/graph"
@@ -1605,30 +1607,62 @@ func (h *oapiHandler) GetMonitoringDiagnostics(ctx context.Context, params oas.G
 
 // ══════════════════════════ Plugins ══════════════════════════
 
+func pluginInfoToOAS(info plugin.PluginInfo) oas.PluginInfo {
+	out := oas.PluginInfo{
+		ID:      info.ID,
+		Name:    info.Name,
+		Builtin: info.Builtin,
+	}
+	if info.Version != "" {
+		out.Version = oas.NewOptString(info.Version)
+	}
+	if info.Type != "" {
+		out.Type = oas.NewOptString(string(info.Type))
+	}
+	if info.Description != "" {
+		out.Description = oas.NewOptString(info.Description)
+	}
+	if info.Author != "" {
+		out.Author = oas.NewOptString(info.Author)
+	}
+	if info.Icon != "" {
+		out.Icon = oas.NewOptString(info.Icon)
+	}
+	if info.Homepage != "" {
+		out.Homepage = oas.NewOptString(info.Homepage)
+	}
+	if !info.CreatedAt.IsZero() {
+		out.CreatedAt = oas.NewOptDateTime(info.CreatedAt)
+	}
+	return out
+}
+
+func installedPluginToOAS(p plugin.InstalledPlugin) oas.PluginDetail {
+	d := oas.PluginDetail{
+		Info:   pluginInfoToOAS(p.Info),
+		Status: oas.PluginDetailStatus(p.Status),
+	}
+	if len(p.Config) > 0 {
+		d.Config = oas.NewOptJSONObject(toJSONObject(p.Config))
+	}
+	if p.Error != "" {
+		d.Error = oas.NewOptString(p.Error)
+	}
+	return d
+}
+
 func (h *oapiHandler) ListPlugins(ctx context.Context, params oas.ListPluginsParams) (*oas.PluginList, error) {
 	if h.s.deps.Platform.PluginReg == nil {
 		return &oas.PluginList{Data: []oas.PluginDetail{}}, nil
 	}
 	all := h.s.deps.Platform.PluginReg.List()
-	if filterType, ok := params.Type.Get(); ok && filterType != "" {
-		filtered := make([]any, 0)
-		for _, p := range all {
-			raw, _ := json.Marshal(p)
-			var m map[string]any
-			_ = json.Unmarshal(raw, &m)
-			if t, _ := m["type"].(string); t == filterType {
-				filtered = append(filtered, p)
-			}
+	filterType, hasFilter := params.Type.Get()
+	items := make([]oas.PluginDetail, 0, len(all))
+	for _, p := range all {
+		if hasFilter && filterType != "" && string(p.Info.Type) != filterType {
+			continue
 		}
-		items, err := toOASSlice[oas.PluginDetail](filtered)
-		if err != nil {
-			return nil, err
-		}
-		return &oas.PluginList{Data: items}, nil
-	}
-	items, err := toOASSlice[oas.PluginDetail](all)
-	if err != nil {
-		return nil, err
+		items = append(items, installedPluginToOAS(p))
 	}
 	return &oas.PluginList{Data: items}, nil
 }
@@ -1637,11 +1671,23 @@ func (h *oapiHandler) GetPlugin(ctx context.Context, params oas.GetPluginParams)
 	if h.s.deps.Platform.PluginReg == nil {
 		return nil, errdefs.NotFoundf("plugin %s not found", params.Name)
 	}
-	p, ok := h.s.deps.Platform.PluginReg.Get(params.Name)
-	if !ok {
-		return nil, errdefs.NotFoundf("plugin %s not found", params.Name)
+	all := h.s.deps.Platform.PluginReg.List()
+	for _, p := range all {
+		if p.Info.ID == params.Name {
+			d := installedPluginToOAS(p)
+			return &d, nil
+		}
 	}
-	return toOAS[oas.PluginDetail](p.Info())
+	return nil, errdefs.NotFoundf("plugin %s not found", params.Name)
+}
+
+func (h *oapiHandler) resolvePluginInfo(name string) oas.PluginInfo {
+	if h.s.deps.Platform.PluginReg != nil {
+		if p, ok := h.s.deps.Platform.PluginReg.Get(name); ok {
+			return pluginInfoToOAS(p.Info())
+		}
+	}
+	return oas.PluginInfo{ID: name, Name: name}
 }
 
 func (h *oapiHandler) EnablePlugin(ctx context.Context, req oas.OptPluginConfig, params oas.EnablePluginParams) (*oas.PluginInfo, error) {
@@ -1656,7 +1702,8 @@ func (h *oapiHandler) EnablePlugin(ctx context.Context, req oas.OptPluginConfig,
 	if err := h.s.deps.Platform.PluginReg.Enable(ctx, params.Name, config); err != nil {
 		return nil, err
 	}
-	return &oas.PluginInfo{Name: oas.NewOptString(params.Name)}, nil
+	info := h.resolvePluginInfo(params.Name)
+	return &info, nil
 }
 
 func (h *oapiHandler) DisablePlugin(ctx context.Context, params oas.DisablePluginParams) (*oas.PluginInfo, error) {
@@ -1666,7 +1713,8 @@ func (h *oapiHandler) DisablePlugin(ctx context.Context, params oas.DisablePlugi
 	if err := h.s.deps.Platform.PluginReg.Disable(ctx, params.Name); err != nil {
 		return nil, err
 	}
-	return &oas.PluginInfo{Name: oas.NewOptString(params.Name)}, nil
+	info := h.resolvePluginInfo(params.Name)
+	return &info, nil
 }
 
 func (h *oapiHandler) UpdatePluginConfig(ctx context.Context, req oas.PluginConfig, params oas.UpdatePluginConfigParams) (*oas.PluginInfo, error) {
@@ -1679,30 +1727,59 @@ func (h *oapiHandler) UpdatePluginConfig(ctx context.Context, req oas.PluginConf
 	if err := h.s.deps.Platform.PluginReg.UpdateConfig(ctx, params.Name, config); err != nil {
 		return nil, err
 	}
-	return &oas.PluginInfo{Name: oas.NewOptString(params.Name)}, nil
+	info := h.resolvePluginInfo(params.Name)
+	return &info, nil
 }
 
 func (h *oapiHandler) ReloadPlugins(ctx context.Context) (*oas.PluginReloadResult, error) {
 	if h.s.deps.Platform.PluginReg == nil {
-		return &oas.PluginReloadResult{}, nil
+		return &oas.PluginReloadResult{Added: []string{}, Removed: []string{}}, nil
 	}
 	added, removed, err := h.s.deps.Platform.PluginReg.Reload(ctx)
 	if err != nil {
 		return nil, err
 	}
 	h.s.deps.Platform.SyncPluginSchemas()
-	return &oas.PluginReloadResult{
-		Added:   make([]string, added),
-		Removed: make([]string, removed),
-	}, nil
+	return &oas.PluginReloadResult{Added: added, Removed: removed}, nil
 }
 
 func (h *oapiHandler) UploadPlugin(ctx context.Context, req *oas.UploadPluginReq) (*oas.PluginUploadResult, error) {
-	return nil, errdefs.Forbiddenf("plugin upload not supported via API")
+	if h.s.deps.Platform.PluginReg == nil {
+		return nil, errdefs.Forbiddenf("plugin system is not configured")
+	}
+	if req == nil {
+		return nil, errdefs.Validationf("missing upload body")
+	}
+	filename := strings.TrimSpace(req.File.Name)
+	if filename == "" {
+		return nil, errdefs.Validationf("upload filename is required")
+	}
+	added, removed, size, err := h.s.deps.Platform.PluginReg.InstallBinary(ctx, filename, req.File.File)
+	if err != nil {
+		return nil, err
+	}
+	h.s.deps.Platform.SyncPluginSchemas()
+	result := &oas.PluginUploadResult{
+		Name:    oas.NewOptString(filepath.Base(filename)),
+		Size:    oas.NewOptInt(int(size)),
+		Added:   added,
+		Removed: removed,
+	}
+	if len(added) > 0 {
+		result.ID = oas.NewOptString(added[0])
+	}
+	return result, nil
 }
 
 func (h *oapiHandler) DeletePlugin(ctx context.Context, params oas.DeletePluginParams) error {
-	return errdefs.Forbiddenf("plugin deletion not supported via API; remove the binary and call POST /plugins/reload")
+	if h.s.deps.Platform.PluginReg == nil {
+		return errdefs.NotFoundf("plugin %s not found", params.Name)
+	}
+	if err := h.s.deps.Platform.PluginReg.RemoveBinary(ctx, params.Name); err != nil {
+		return err
+	}
+	h.s.deps.Platform.SyncPluginSchemas()
+	return nil
 }
 
 // ══════════════════════════ Kanban ══════════════════════════

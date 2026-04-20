@@ -1521,25 +1521,25 @@ export interface components {
             base_url?: string;
             extra?: components["schemas"]["JSONObject"];
         };
-        PluginDetail: {
-            name?: string;
-            type?: string;
-            description?: string;
-            version?: string;
-            config?: components["schemas"]["JSONObject"];
-            enabled?: boolean;
-            source?: string;
-            builtin?: boolean;
-            tools?: string[];
-            node_types?: string[];
-            models?: string[];
-        };
         PluginInfo: {
-            name?: string;
+            id: string;
+            name: string;
+            version?: string;
             type?: string;
             description?: string;
-            version?: string;
-            builtin?: boolean;
+            author?: string;
+            icon?: string;
+            homepage?: string;
+            builtin: boolean;
+            /** Format: date-time */
+            created_at?: string;
+        };
+        PluginDetail: {
+            info: components["schemas"]["PluginInfo"];
+            /** @enum {string} */
+            status: "installed" | "active" | "inactive" | "error";
+            config?: components["schemas"]["JSONObject"];
+            error?: string;
         };
         PluginList: {
             data?: components["schemas"]["PluginDetail"][];

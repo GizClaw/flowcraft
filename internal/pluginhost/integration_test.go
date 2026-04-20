@@ -165,13 +165,12 @@ func TestIntegration_EchoPlugin(t *testing.T) {
 		t.Fatal("echo tool not injected into tool registry")
 	}
 
-	// Test Reload — plugin still exists, no changes expected
 	added, removed, err := reg.Reload(ctx)
 	if err != nil {
 		t.Fatalf("Reload: %v", err)
 	}
-	if added != 0 || removed != 0 {
-		t.Fatalf("expected no changes on reload, got added=%d removed=%d", added, removed)
+	if len(added) != 0 || len(removed) != 0 {
+		t.Fatalf("expected no changes on reload, got added=%v removed=%v", added, removed)
 	}
 }
 
@@ -323,11 +322,11 @@ func TestIntegration_EchoPlugin_Reload(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Reload (remove): %v", err)
 	}
-	if removed != 1 {
-		t.Fatalf("expected 1 removed, got %d", removed)
+	if len(removed) != 1 {
+		t.Fatalf("expected 1 removed, got %v", removed)
 	}
-	if added != 0 {
-		t.Fatalf("expected 0 added, got %d", added)
+	if len(added) != 0 {
+		t.Fatalf("expected 0 added, got %v", added)
 	}
 	if _, ok := reg.Get("echo"); ok {
 		t.Fatal("echo plugin should be removed after reload")
@@ -339,11 +338,11 @@ func TestIntegration_EchoPlugin_Reload(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Reload (add): %v", err)
 	}
-	if added != 1 {
-		t.Fatalf("expected 1 added, got %d", added)
+	if len(added) != 1 {
+		t.Fatalf("expected 1 added, got %v", added)
 	}
-	if removed != 0 {
-		t.Fatalf("expected 0 removed, got %d", removed)
+	if len(removed) != 0 {
+		t.Fatalf("expected 0 removed, got %v", removed)
 	}
 	if _, ok := reg.Get("echo"); !ok {
 		t.Fatal("echo plugin should be back after reload")

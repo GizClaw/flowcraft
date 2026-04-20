@@ -2449,51 +2449,45 @@ components:
       required: [api_key]
 
     # ── Plugins ──
-    PluginDetail:
-      type: object
-      properties:
-        name:
-          type: string
-        type:
-          type: string
-        description:
-          type: string
-        version:
-          type: string
-        config:
-          $ref: "#/components/schemas/JSONObject"
-        enabled:
-          type: boolean
-        source:
-          type: string
-        builtin:
-          type: boolean
-        tools:
-          type: array
-          items:
-            type: string
-        node_types:
-          type: array
-          items:
-            type: string
-        models:
-          type: array
-          items:
-            type: string
-
     PluginInfo:
       type: object
+      required: [id, name, builtin]
       properties:
+        id:
+          type: string
         name:
+          type: string
+        version:
           type: string
         type:
           type: string
         description:
           type: string
-        version:
+        author:
+          type: string
+        icon:
+          type: string
+        homepage:
           type: string
         builtin:
           type: boolean
+        created_at:
+          type: string
+          format: date-time
+
+    PluginDetail:
+      type: object
+      required: [info, status]
+      properties:
+        info:
+          $ref: "#/components/schemas/PluginInfo"
+        status:
+          type: string
+          enum: [installed, active, inactive, error]
+        config:
+          $ref: "#/components/schemas/JSONObject"
+        error:
+          type: string
 
     PluginList:
       type: object

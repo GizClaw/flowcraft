@@ -4,7 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 
 	"github.com/GizClaw/flowcraft/internal/errcode"
@@ -322,20 +325,23 @@ func (r *Registry) ShutdownAll(ctx context.Context) {
 }
 
 // Reload re-scans the plugin directory, adds newly discovered plugins and
-// removes plugins whose binaries no longer exist. Returns counts of added
-// and removed plugins.
-func (r *Registry) Reload(ctx context.Context) (added, removed int, err error) {
+// removes plugins whose binaries no longer exist. Returns the IDs of plugins
+// that were added and removed respectively.
+func (r *Registry) Reload(ctx context.Context) (added, removed []string, err error) {
 	r.mu.RLock()
 	extMgr := r.extManager
 	r.mu.RUnlock()
 
+	added = []string{}
+	removed = []string{}
+
 	if extMgr == nil {
-		return 0, 0, nil
+		return added, removed, nil
 	}
 
 	discovered, err := extMgr.Discover()
 	if err != nil {
-		return 0, 0, err
+		return added, removed, err
 	}
 
 	r.mu.Lock()
@@ -346,7 +352,6 @@ func (r *Registry) Reload(ctx context.Context) (added, removed int, err error) {
 		discoveredIDs[ep.info.ID] = ep
 	}
 
-	// Remove plugins whose binaries no longer exist
 	for id, mp := range r.plugins {
 		if mp.p.Info().Builtin {
 			continue
@@ -359,11 +364,10 @@ func (r *Registry) Reload(ctx context.Context) (added, removed int, err error) {
 					delete(r.nodePlugins, nodeType)
 				}
 			}
-			removed++
+			removed = append(removed, id)
 		}
 	}
 
-	// Add newly discovered plugins
 	for id, ep := range discoveredIDs {
 		if _, exists := r.plugins[id]; exists {
 			continue
@@ -381,10 +385,110 @@ func (r *Registry) Reload(ctx context.Context) (added, removed int, err error) {
 				r.nodePlugins[ns.Type] = id
 			}
 		}
-		added++
+		added = append(added, id)
 	}
 
 	return added, removed, nil
+}
+
+// InstallBinary writes binary content to the plugin directory under the given
+// filename, marks it executable, and runs Reload to pick it up. Returns the
+// plugins that were added / removed by the subsequent reload.
+//
+// The filename is sanitized: any path separators are rejected, and a leading
+// dot is disallowed to prevent hidden-file uploads.
+func (r *Registry) InstallBinary(ctx context.Context, filename string, content io.Reader) (added, removed []string, written int64, err error) {
+	r.mu.RLock()
+	extMgr := r.extManager
+	r.mu.RUnlock()
+
+	if extMgr == nil || extMgr.PluginDir() == "" {
+		return nil, nil, 0, errdefs.Forbiddenf("external plugin directory is not configured")
+	}
+
+	raw := strings.TrimSpace(filename)
+	if raw == "" || strings.ContainsAny(raw, `/\`) || raw == "." || raw == ".." || strings.HasPrefix(raw, ".") {
+		return nil, nil, 0, errdefs.Validationf("invalid plugin filename %q", filename)
+	}
+	cleaned := filepath.Base(raw)
+
+	dir := extMgr.PluginDir()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return nil, nil, 0, fmt.Errorf("plugin: ensure dir %q: %w", dir, err)
+	}
+
+	dst := filepath.Join(dir, cleaned)
+	tmp, err := os.CreateTemp(dir, ".upload-*")
+	if err != nil {
+		return nil, nil, 0, fmt.Errorf("plugin: create temp: %w", err)
+	}
+	tmpPath := tmp.Name()
+	written, err = io.Copy(tmp, content)
+	if cerr := tmp.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		_ = os.Remove(tmpPath)
+		return nil, nil, 0, fmt.Errorf("plugin: write upload: %w", err)
+	}
+	if err := os.Chmod(tmpPath, 0o755); err != nil {
+		_ = os.Remove(tmpPath)
+		return nil, nil, 0, fmt.Errorf("plugin: chmod upload: %w", err)
+	}
+	if err := os.Rename(tmpPath, dst); err != nil {
+		_ = os.Remove(tmpPath)
+		return nil, nil, 0, fmt.Errorf("plugin: move upload: %w", err)
+	}
+
+	added, removed, err = r.Reload(ctx)
+	if err != nil {
+		return nil, nil, written, err
+	}
+	return added, removed, written, nil
+}
+
+// RemoveBinary unregisters and removes an external plugin binary. Returns an
+// error if the plugin is built-in or not found.
+func (r *Registry) RemoveBinary(ctx context.Context, pluginID string) error {
+	r.mu.RLock()
+	extMgr := r.extManager
+	mp, ok := r.plugins[pluginID]
+	r.mu.RUnlock()
+
+	if !ok {
+		return errdefs.NotFoundf("plugin %q not found", pluginID)
+	}
+	if mp.p.Info().Builtin {
+		return errcode.MethodNotAllowedf("cannot remove built-in plugin %q", pluginID)
+	}
+	if extMgr == nil || extMgr.PluginDir() == "" {
+		return errdefs.Forbiddenf("external plugin directory is not configured")
+	}
+
+	var binPath string
+	if ep, isExt := mp.p.(*ExternalPlugin); isExt {
+		binPath = ep.path
+	}
+	if binPath == "" {
+		binPath = filepath.Join(extMgr.PluginDir(), pluginID)
+	}
+
+	_ = mp.p.Shutdown(ctx)
+
+	if err := os.Remove(binPath); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("plugin: remove binary %q: %w", binPath, err)
+	}
+
+	r.mu.Lock()
+	delete(r.plugins, pluginID)
+	for nodeType, pid := range r.nodePlugins {
+		if pid == pluginID {
+			delete(r.nodePlugins, nodeType)
+		}
+	}
+	r.mu.Unlock()
+
+	return nil
 }
 
 // CollectNodeSchemas returns UI schemas from all active plugins implementing SchemaProvider.

@@ -8068,28 +8068,12 @@ func (s *PluginDetail) Encode(e *jx.Encoder) {
 // encodeFields encodes fields.
 func (s *PluginDetail) encodeFields(e *jx.Encoder) {
 	{
-		if s.Name.Set {
-			e.FieldStart("name")
-			s.Name.Encode(e)
-		}
+		e.FieldStart("info")
+		s.Info.Encode(e)
 	}
 	{
-		if s.Type.Set {
-			e.FieldStart("type")
-			s.Type.Encode(e)
-		}
-	}
-	{
-		if s.Description.Set {
-			e.FieldStart("description")
-			s.Description.Encode(e)
-		}
-	}
-	{
-		if s.Version.Set {
-			e.FieldStart("version")
-			s.Version.Encode(e)
-		}
+		e.FieldStart("status")
+		s.Status.Encode(e)
 	}
 	{
 		if s.Config.Set {
@@ -8098,67 +8082,18 @@ func (s *PluginDetail) encodeFields(e *jx.Encoder) {
 		}
 	}
 	{
-		if s.Enabled.Set {
-			e.FieldStart("enabled")
-			s.Enabled.Encode(e)
-		}
-	}
-	{
-		if s.Source.Set {
-			e.FieldStart("source")
-			s.Source.Encode(e)
-		}
-	}
-	{
-		if s.Builtin.Set {
-			e.FieldStart("builtin")
-			s.Builtin.Encode(e)
-		}
-	}
-	{
-		if s.Tools != nil {
-			e.FieldStart("tools")
-			e.ArrStart()
-			for _, elem := range s.Tools {
-				e.Str(elem)
-			}
-			e.ArrEnd()
-		}
-	}
-	{
-		if s.NodeTypes != nil {
-			e.FieldStart("node_types")
-			e.ArrStart()
-			for _, elem := range s.NodeTypes {
-				e.Str(elem)
-			}
-			e.ArrEnd()
-		}
-	}
-	{
-		if s.Models != nil {
-			e.FieldStart("models")
-			e.ArrStart()
-			for _, elem := range s.Models {
-				e.Str(elem)
-			}
-			e.ArrEnd()
+		if s.Error.Set {
+			e.FieldStart("error")
+			s.Error.Encode(e)
 		}
 	}
 }
 
-var jsonFieldsNameOfPluginDetail = [11]string{
-	0:  "name",
-	1:  "type",
-	2:  "description",
-	3:  "version",
-	4:  "config",
-	5:  "enabled",
-	6:  "source",
-	7:  "builtin",
-	8:  "tools",
-	9:  "node_types",
-	10: "models",
+var jsonFieldsNameOfPluginDetail = [4]string{
+	0: "info",
+	1: "status",
+	2: "config",
+	3: "error",
 }
 
 // Decode decodes PluginDetail from json.
@@ -8166,48 +8101,29 @@ func (s *PluginDetail) Decode(d *jx.Decoder) error {
 	if s == nil {
 		return errors.New("invalid: unable to decode PluginDetail to nil")
 	}
+	var requiredBitSet [1]uint8
 
 	if err := d.ObjBytes(func(d *jx.Decoder, k []byte) error {
 		switch string(k) {
-		case "name":
+		case "info":
+			requiredBitSet[0] |= 1 << 0
 			if err := func() error {
-				s.Name.Reset()
-				if err := s.Name.Decode(d); err != nil {
+				if err := s.Info.Decode(d); err != nil {
 					return err
 				}
 				return nil
 			}(); err != nil {
-				return errors.Wrap(err, "decode field \"name\"")
+				return errors.Wrap(err, "decode field \"info\"")
 			}
-		case "type":
+		case "status":
+			requiredBitSet[0] |= 1 << 1
 			if err := func() error {
-				s.Type.Reset()
-				if err := s.Type.Decode(d); err != nil {
+				if err := s.Status.Decode(d); err != nil {
 					return err
 				}
 				return nil
 			}(); err != nil {
-				return errors.Wrap(err, "decode field \"type\"")
-			}
-		case "description":
-			if err := func() error {
-				s.Description.Reset()
-				if err := s.Description.Decode(d); err != nil {
-					return err
-				}
-				return nil
-			}(); err != nil {
-				return errors.Wrap(err, "decode field \"description\"")
-			}
-		case "version":
-			if err := func() error {
-				s.Version.Reset()
-				if err := s.Version.Decode(d); err != nil {
-					return err
-				}
-				return nil
-			}(); err != nil {
-				return errors.Wrap(err, "decode field \"version\"")
+				return errors.Wrap(err, "decode field \"status\"")
 			}
 		case "config":
 			if err := func() error {
@@ -8219,92 +8135,15 @@ func (s *PluginDetail) Decode(d *jx.Decoder) error {
 			}(); err != nil {
 				return errors.Wrap(err, "decode field \"config\"")
 			}
-		case "enabled":
+		case "error":
 			if err := func() error {
-				s.Enabled.Reset()
-				if err := s.Enabled.Decode(d); err != nil {
+				s.Error.Reset()
+				if err := s.Error.Decode(d); err != nil {
 					return err
 				}
 				return nil
 			}(); err != nil {
-				return errors.Wrap(err, "decode field \"enabled\"")
-			}
-		case "source":
-			if err := func() error {
-				s.Source.Reset()
-				if err := s.Source.Decode(d); err != nil {
-					return err
-				}
-				return nil
-			}(); err != nil {
-				return errors.Wrap(err, "decode field \"source\"")
-			}
-		case "builtin":
-			if err := func() error {
-				s.Builtin.Reset()
-				if err := s.Builtin.Decode(d); err != nil {
-					return err
-				}
-				return nil
-			}(); err != nil {
-				return errors.Wrap(err, "decode field \"builtin\"")
-			}
-		case "tools":
-			if err := func() error {
-				s.Tools = make([]string, 0)
-				if err := d.Arr(func(d *jx.Decoder) error {
-					var elem string
-					v, err := d.Str()
-					elem = string(v)
-					if err != nil {
-						return err
-					}
-					s.Tools = append(s.Tools, elem)
-					return nil
-				}); err != nil {
-					return err
-				}
-				return nil
-			}(); err != nil {
-				return errors.Wrap(err, "decode field \"tools\"")
-			}
-		case "node_types":
-			if err := func() error {
-				s.NodeTypes = make([]string, 0)
-				if err := d.Arr(func(d *jx.Decoder) error {
-					var elem string
-					v, err := d.Str()
-					elem = string(v)
-					if err != nil {
-						return err
-					}
-					s.NodeTypes = append(s.NodeTypes, elem)
-					return nil
-				}); err != nil {
-					return err
-				}
-				return nil
-			}(); err != nil {
-				return errors.Wrap(err, "decode field \"node_types\"")
-			}
-		case "models":
-			if err := func() error {
-				s.Models = make([]string, 0)
-				if err := d.Arr(func(d *jx.Decoder) error {
-					var elem string
-					v, err := d.Str()
-					elem = string(v)
-					if err != nil {
-						return err
-					}
-					s.Models = append(s.Models, elem)
-					return nil
-				}); err != nil {
-					return err
-				}
-				return nil
-			}(); err != nil {
-				return errors.Wrap(err, "decode field \"models\"")
+				return errors.Wrap(err, "decode field \"error\"")
 			}
 		default:
 			return d.Skip()
@@ -8312,6 +8151,38 @@ func (s *PluginDetail) Decode(d *jx.Decoder) error {
 		return nil
 	}); err != nil {
 		return errors.Wrap(err, "decode PluginDetail")
+	}
+	// Validate required fields.
+	var failures []validate.FieldError
+	for i, mask := range [1]uint8{
+		0b00000011,
+	} {
+		if result := (requiredBitSet[i] & mask) ^ mask; result != 0 {
+			// Mask only required fields and check equality to mask using XOR.
+			//
+			// If XOR result is not zero, result is not equal to expected, so some fields are missed.
+			// Bits of fields which would be set are actually bits of missed fields.
+			missed := bits.OnesCount8(result)
+			for bitN := 0; bitN < missed; bitN++ {
+				bitIdx := bits.TrailingZeros8(result)
+				fieldIdx := i*8 + bitIdx
+				var name string
+				if fieldIdx < len(jsonFieldsNameOfPluginDetail) {
+					name = jsonFieldsNameOfPluginDetail[fieldIdx]
+				} else {
+					name = strconv.Itoa(fieldIdx)
+				}
+				failures = append(failures, validate.FieldError{
+					Name:  name,
+					Error: validate.ErrFieldRequired,
+				})
+				// Reset bit.
+				result &^= 1 << bitIdx
+			}
+		}
+	}
+	if len(failures) > 0 {
+		return &validate.Error{Fields: failures}
 	}
 
 	return nil
@@ -8330,6 +8201,50 @@ func (s *PluginDetail) UnmarshalJSON(data []byte) error {
 	return s.Decode(d)
 }
 
+// Encode encodes PluginDetailStatus as json.
+func (s PluginDetailStatus) Encode(e *jx.Encoder) {
+	e.Str(string(s))
+}
+
+// Decode decodes PluginDetailStatus from json.
+func (s *PluginDetailStatus) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode PluginDetailStatus to nil")
+	}
+	v, err := d.StrBytes()
+	if err != nil {
+		return err
+	}
+	// Try to use constant string.
+	switch PluginDetailStatus(v) {
+	case PluginDetailStatusInstalled:
+		*s = PluginDetailStatusInstalled
+	case PluginDetailStatusActive:
+		*s = PluginDetailStatusActive
+	case PluginDetailStatusInactive:
+		*s = PluginDetailStatusInactive
+	case PluginDetailStatusError:
+		*s = PluginDetailStatusError
+	default:
+		*s = PluginDetailStatus(v)
+	}
+
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s PluginDetailStatus) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *PluginDetailStatus) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
 // Encode implements json.Marshaler.
 func (s *PluginInfo) Encode(e *jx.Encoder) {
 	e.ObjStart()
@@ -8340,9 +8255,17 @@ func (s *PluginInfo) Encode(e *jx.Encoder) {
 // encodeFields encodes fields.
 func (s *PluginInfo) encodeFields(e *jx.Encoder) {
 	{
-		if s.Name.Set {
-			e.FieldStart("name")
-			s.Name.Encode(e)
+		e.FieldStart("id")
+		e.Str(s.ID)
+	}
+	{
+		e.FieldStart("name")
+		e.Str(s.Name)
+	}
+	{
+		if s.Version.Set {
+			e.FieldStart("version")
+			s.Version.Encode(e)
 		}
 	}
 	{
@@ -8358,25 +8281,46 @@ func (s *PluginInfo) encodeFields(e *jx.Encoder) {
 		}
 	}
 	{
-		if s.Version.Set {
-			e.FieldStart("version")
-			s.Version.Encode(e)
+		if s.Author.Set {
+			e.FieldStart("author")
+			s.Author.Encode(e)
 		}
 	}
 	{
-		if s.Builtin.Set {
-			e.FieldStart("builtin")
-			s.Builtin.Encode(e)
+		if s.Icon.Set {
+			e.FieldStart("icon")
+			s.Icon.Encode(e)
+		}
+	}
+	{
+		if s.Homepage.Set {
+			e.FieldStart("homepage")
+			s.Homepage.Encode(e)
+		}
+	}
+	{
+		e.FieldStart("builtin")
+		e.Bool(s.Builtin)
+	}
+	{
+		if s.CreatedAt.Set {
+			e.FieldStart("created_at")
+			s.CreatedAt.Encode(e, json.EncodeDateTime)
 		}
 	}
 }
 
-var jsonFieldsNameOfPluginInfo = [5]string{
-	0: "name",
-	1: "type",
-	2: "description",
-	3: "version",
-	4: "builtin",
+var jsonFieldsNameOfPluginInfo = [10]string{
+	0: "id",
+	1: "name",
+	2: "version",
+	3: "type",
+	4: "description",
+	5: "author",
+	6: "icon",
+	7: "homepage",
+	8: "builtin",
+	9: "created_at",
 }
 
 // Decode decodes PluginInfo from json.
@@ -8384,18 +8328,43 @@ func (s *PluginInfo) Decode(d *jx.Decoder) error {
 	if s == nil {
 		return errors.New("invalid: unable to decode PluginInfo to nil")
 	}
+	var requiredBitSet [2]uint8
 
 	if err := d.ObjBytes(func(d *jx.Decoder, k []byte) error {
 		switch string(k) {
-		case "name":
+		case "id":
+			requiredBitSet[0] |= 1 << 0
 			if err := func() error {
-				s.Name.Reset()
-				if err := s.Name.Decode(d); err != nil {
+				v, err := d.Str()
+				s.ID = string(v)
+				if err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"id\"")
+			}
+		case "name":
+			requiredBitSet[0] |= 1 << 1
+			if err := func() error {
+				v, err := d.Str()
+				s.Name = string(v)
+				if err != nil {
 					return err
 				}
 				return nil
 			}(); err != nil {
 				return errors.Wrap(err, "decode field \"name\"")
+			}
+		case "version":
+			if err := func() error {
+				s.Version.Reset()
+				if err := s.Version.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"version\"")
 			}
 		case "type":
 			if err := func() error {
@@ -8417,25 +8386,57 @@ func (s *PluginInfo) Decode(d *jx.Decoder) error {
 			}(); err != nil {
 				return errors.Wrap(err, "decode field \"description\"")
 			}
-		case "version":
+		case "author":
 			if err := func() error {
-				s.Version.Reset()
-				if err := s.Version.Decode(d); err != nil {
+				s.Author.Reset()
+				if err := s.Author.Decode(d); err != nil {
 					return err
 				}
 				return nil
 			}(); err != nil {
-				return errors.Wrap(err, "decode field \"version\"")
+				return errors.Wrap(err, "decode field \"author\"")
+			}
+		case "icon":
+			if err := func() error {
+				s.Icon.Reset()
+				if err := s.Icon.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"icon\"")
+			}
+		case "homepage":
+			if err := func() error {
+				s.Homepage.Reset()
+				if err := s.Homepage.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"homepage\"")
 			}
 		case "builtin":
+			requiredBitSet[1] |= 1 << 0
 			if err := func() error {
-				s.Builtin.Reset()
-				if err := s.Builtin.Decode(d); err != nil {
+				v, err := d.Bool()
+				s.Builtin = bool(v)
+				if err != nil {
 					return err
 				}
 				return nil
 			}(); err != nil {
 				return errors.Wrap(err, "decode field \"builtin\"")
+			}
+		case "created_at":
+			if err := func() error {
+				s.CreatedAt.Reset()
+				if err := s.CreatedAt.Decode(d, json.DecodeDateTime); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"created_at\"")
 			}
 		default:
 			return d.Skip()
@@ -8443,6 +8444,39 @@ func (s *PluginInfo) Decode(d *jx.Decoder) error {
 		return nil
 	}); err != nil {
 		return errors.Wrap(err, "decode PluginInfo")
+	}
+	// Validate required fields.
+	var failures []validate.FieldError
+	for i, mask := range [2]uint8{
+		0b00000011,
+		0b00000001,
+	} {
+		if result := (requiredBitSet[i] & mask) ^ mask; result != 0 {
+			// Mask only required fields and check equality to mask using XOR.
+			//
+			// If XOR result is not zero, result is not equal to expected, so some fields are missed.
+			// Bits of fields which would be set are actually bits of missed fields.
+			missed := bits.OnesCount8(result)
+			for bitN := 0; bitN < missed; bitN++ {
+				bitIdx := bits.TrailingZeros8(result)
+				fieldIdx := i*8 + bitIdx
+				var name string
+				if fieldIdx < len(jsonFieldsNameOfPluginInfo) {
+					name = jsonFieldsNameOfPluginInfo[fieldIdx]
+				} else {
+					name = strconv.Itoa(fieldIdx)
+				}
+				failures = append(failures, validate.FieldError{
+					Name:  name,
+					Error: validate.ErrFieldRequired,
+				})
+				// Reset bit.
+				result &^= 1 << bitIdx
+			}
+		}
+	}
+	if len(failures) > 0 {
+		return &validate.Error{Fields: failures}
 	}
 
 	return nil

@@ -280,6 +280,9 @@ type ExternalManagerConfig struct {
 	MaxFailures    int           `json:"max_failures,omitempty"`
 }
 
+// PluginDir returns the directory scanned for external plugin binaries.
+func (m *ExternalManager) PluginDir() string { return m.pluginDir }
+
 // NewExternalManager creates an external plugin manager.
 func NewExternalManager(cfg ExternalManagerConfig) *ExternalManager {
 	if cfg.HealthInterval <= 0 {

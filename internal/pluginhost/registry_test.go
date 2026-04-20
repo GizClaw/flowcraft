@@ -2,6 +2,9 @@ package pluginhost
 
 import (
 	"context"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/GizClaw/flowcraft/plugin"
@@ -237,8 +240,8 @@ func TestRegistry_Reload_NoExtManager(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Reload: %v", err)
 	}
-	if added != 0 || removed != 0 {
-		t.Fatalf("expected 0/0, got %d/%d", added, removed)
+	if len(added) != 0 || len(removed) != 0 {
+		t.Fatalf("expected 0/0, got %d/%d", len(added), len(removed))
 	}
 }
 
@@ -257,14 +260,12 @@ func TestRegistry_Reload_BuiltinNotAffected(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Reload: %v", err)
 	}
-	// Built-in plugin should not be removed
-	if removed != 0 {
-		t.Fatalf("expected 0 removed (builtin protected), got %d", removed)
+	if len(removed) != 0 {
+		t.Fatalf("expected 0 removed (builtin protected), got %d", len(removed))
 	}
-	if added != 0 {
-		t.Fatalf("expected 0 added, got %d", added)
+	if len(added) != 0 {
+		t.Fatalf("expected 0 added, got %d", len(added))
 	}
-	// Verify builtin still exists
 	if _, ok := r.Get("builtin-1"); !ok {
 		t.Fatal("builtin plugin should still exist after reload")
 	}
@@ -286,13 +287,157 @@ func TestRegistry_Reload_RemoveNonexistent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Reload: %v", err)
 	}
-	if removed != 1 {
-		t.Fatalf("expected 1 removed, got %d", removed)
+	if len(removed) != 1 || removed[0] != "ext-1" {
+		t.Fatalf("expected [ext-1] removed, got %v", removed)
 	}
-	if added != 0 {
-		t.Fatalf("expected 0 added, got %d", added)
+	if len(added) != 0 {
+		t.Fatalf("expected 0 added, got %d", len(added))
 	}
 	if _, ok := r.Get("ext-1"); ok {
 		t.Fatal("removed plugin should not exist after reload")
+	}
+}
+
+func TestRegistry_InstallBinary_NoExtManager(t *testing.T) {
+	r := NewRegistry()
+	_, _, _, err := r.InstallBinary(context.Background(), "x.bin", strings.NewReader("payload"))
+	if err == nil {
+		t.Fatal("expected error when external manager is not configured")
+	}
+}
+
+func TestRegistry_InstallBinary_RejectsBadNames(t *testing.T) {
+	r := NewRegistry()
+	dir := t.TempDir()
+	r.SetExternalManager(NewExternalManager(ExternalManagerConfig{PluginDir: dir}))
+
+	cases := []string{"", " ", "..", ".", ".hidden", "sub/bin", `windows\path`}
+	for _, name := range cases {
+		_, _, _, err := r.InstallBinary(context.Background(), name, strings.NewReader("x"))
+		if err == nil {
+			t.Fatalf("expected rejection for %q", name)
+		}
+	}
+}
+
+func TestRegistry_InstallBinary_WritesAndReloads(t *testing.T) {
+	r := NewRegistry()
+	dir := t.TempDir()
+	r.SetExternalManager(NewExternalManager(ExternalManagerConfig{PluginDir: dir}))
+
+	// We pass a non-executable payload. Discover only picks up files with
+	// executable bits; InstallBinary chmods to 0755, so Discover will see it
+	// but Reload will try to start the (fake) binary and fail. The file must
+	// at least land on disk at the expected path.
+	_, _, size, err := r.InstallBinary(context.Background(), "fake.bin", strings.NewReader("hello"))
+	if err == nil {
+		// It's OK for Reload to succeed with 0 adds (init will fail silently).
+	}
+	// Regardless of reload outcome, the binary must have been written.
+	info, statErr := os.Stat(filepath.Join(dir, "fake.bin"))
+	if statErr != nil {
+		t.Fatalf("binary not written: %v", statErr)
+	}
+	if info.Mode()&0o111 == 0 {
+		t.Fatal("binary is not executable")
+	}
+	if size != 5 {
+		t.Fatalf("expected 5 bytes, got %d", size)
+	}
+}
+
+func TestRegistry_RemoveBinary_Builtin(t *testing.T) {
+	r := NewRegistry()
+	r.SetExternalManager(NewExternalManager(ExternalManagerConfig{PluginDir: t.TempDir()}))
+	p := &testPlugin{info: plugin.PluginInfo{ID: "b", Name: "B", Builtin: true}}
+	_ = r.Register(p)
+
+	if err := r.RemoveBinary(context.Background(), "b"); err == nil {
+		t.Fatal("expected error removing built-in plugin")
+	}
+}
+
+func TestRegistry_RemoveBinary_NotFound(t *testing.T) {
+	r := NewRegistry()
+	r.SetExternalManager(NewExternalManager(ExternalManagerConfig{PluginDir: t.TempDir()}))
+	if err := r.RemoveBinary(context.Background(), "missing"); err == nil {
+		t.Fatal("expected not-found error")
+	}
+}
+
+func TestRegistry_InstallBinary_CreatesMissingDir(t *testing.T) {
+	r := NewRegistry()
+	dir := filepath.Join(t.TempDir(), "nested", "plugins")
+	r.SetExternalManager(NewExternalManager(ExternalManagerConfig{PluginDir: dir}))
+
+	_, _, _, _ = r.InstallBinary(context.Background(), "fake", strings.NewReader("x"))
+
+	if _, err := os.Stat(filepath.Join(dir, "fake")); err != nil {
+		t.Fatalf("file not present in auto-created dir: %v", err)
+	}
+}
+
+func TestRegistry_InstallBinary_OverwritesAtomically(t *testing.T) {
+	r := NewRegistry()
+	dir := t.TempDir()
+	r.SetExternalManager(NewExternalManager(ExternalManagerConfig{PluginDir: dir}))
+
+	_, _, _, _ = r.InstallBinary(context.Background(), "echo", strings.NewReader("v1"))
+	_, _, _, _ = r.InstallBinary(context.Background(), "echo", strings.NewReader("v2-longer"))
+
+	got, err := os.ReadFile(filepath.Join(dir, "echo"))
+	if err != nil {
+		t.Fatalf("read overwritten file: %v", err)
+	}
+	if string(got) != "v2-longer" {
+		t.Fatalf("expected v2-longer, got %q", string(got))
+	}
+
+	// No leftover .upload-* temp files.
+	entries, _ := os.ReadDir(dir)
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), ".upload-") {
+			t.Fatalf("temp file leaked: %s", e.Name())
+		}
+	}
+}
+
+func TestRegistry_RemoveBinary_RemovesFile(t *testing.T) {
+	r := NewRegistry()
+	dir := t.TempDir()
+	r.SetExternalManager(NewExternalManager(ExternalManagerConfig{PluginDir: dir}))
+
+	binPath := filepath.Join(dir, "tool")
+	if err := os.WriteFile(binPath, []byte("noop"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	p := &testPlugin{info: plugin.PluginInfo{ID: "tool", Name: "Tool", Builtin: false}}
+	_ = r.Register(p)
+
+	if err := r.RemoveBinary(context.Background(), "tool"); err != nil {
+		t.Fatalf("RemoveBinary: %v", err)
+	}
+	if _, err := os.Stat(binPath); !os.IsNotExist(err) {
+		t.Fatalf("binary should be deleted, stat err=%v", err)
+	}
+	if _, ok := r.Get("tool"); ok {
+		t.Fatal("plugin should be unregistered after RemoveBinary")
+	}
+}
+
+func TestRegistry_RemoveBinary_GracefulIfBinaryAlreadyGone(t *testing.T) {
+	r := NewRegistry()
+	dir := t.TempDir()
+	r.SetExternalManager(NewExternalManager(ExternalManagerConfig{PluginDir: dir}))
+	// Plugin registered but no binary on disk: delete should still succeed
+	// (idempotent unregister) instead of erroring out.
+	p := &testPlugin{info: plugin.PluginInfo{ID: "tool", Name: "Tool", Builtin: false}}
+	_ = r.Register(p)
+
+	if err := r.RemoveBinary(context.Background(), "tool"); err != nil {
+		t.Fatalf("RemoveBinary should be idempotent: %v", err)
+	}
+	if _, ok := r.Get("tool"); ok {
+		t.Fatal("plugin should be unregistered")
 	}
 }
