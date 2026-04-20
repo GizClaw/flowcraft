@@ -142,6 +142,9 @@ export default function SettingsPage() {
         },
       });
       addToast('success', t('settings.copilotSaved'));
+      // Re-pull so subsequent saves merge against the server-normalized
+      // base (trim/enum coercion) rather than stale UI state.
+      await loadCoPilotSettings();
     } catch (err) {
       addToast('error', err instanceof Error ? err.message : t('settings.copilotSaveFailed'));
     }

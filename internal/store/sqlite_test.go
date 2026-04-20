@@ -274,6 +274,112 @@ func TestProviderConfig(t *testing.T) {
 	}
 }
 
+// TestProviderConfigMigration004 covers the data-repair migration that
+// splits legacy provider_configs rows (which conflated credentials with
+// a single per-provider model field) into separate "model:" rows.
+func TestProviderConfigMigration004(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	// Migrations have already run on a fresh store. Re-seed legacy rows
+	// directly, then re-run the 004 statements to verify behavior on
+	// data that wasn't created by the new code path.
+	migration004 := `
+INSERT OR IGNORE INTO provider_configs (provider, config)
+SELECT
+    'model:' || provider || '/' || json_extract(config, '$.model'),
+    '{}'
+FROM provider_configs
+WHERE provider != '__global_default__'
+  AND provider NOT LIKE 'model:%'
+  AND json_extract(config, '$.model') IS NOT NULL
+  AND json_extract(config, '$.model') != '';
+
+UPDATE provider_configs
+SET config = json_remove(config, '$.model')
+WHERE provider != '__global_default__'
+  AND provider NOT LIKE 'model:%'
+  AND json_extract(config, '$.model') IS NOT NULL;
+`
+	seed := func(provider, configJSON string) {
+		t.Helper()
+		_, err := s.db.ExecContext(ctx,
+			`INSERT OR REPLACE INTO provider_configs (provider, config) VALUES (?, ?)`,
+			provider, configJSON)
+		if err != nil {
+			t.Fatalf("seed %q: %v", provider, err)
+		}
+	}
+
+	seed("openai", `{"api_key":"sk-legacy","base_url":"https://api.openai.com","model":"gpt-4o"}`)
+	seed("anthropic", `{"api_key":"sk-ant","model":"claude-3"}`)
+	seed("clean-provider", `{"api_key":"sk-ok"}`)
+	seed("__global_default__", `{"provider":"openai","model":"gpt-4o"}`)
+	// A row whose model field is empty string should NOT spawn a
+	// "model:openai-empty/" row; the migration filters empty values.
+	seed("openai-empty", `{"api_key":"x","model":""}`)
+
+	if _, err := s.db.ExecContext(ctx, migration004); err != nil {
+		t.Fatalf("apply migration: %v", err)
+	}
+
+	want := map[string]string{
+		"openai":              `{"api_key":"sk-legacy","base_url":"https://api.openai.com"}`,
+		"anthropic":           `{"api_key":"sk-ant"}`,
+		"clean-provider":      `{"api_key":"sk-ok"}`,
+		"__global_default__":  `{"provider":"openai","model":"gpt-4o"}`,
+		// Empty model field is stripped by the cleanup UPDATE without
+		// spawning a "model:openai-empty/" row.
+		"openai-empty": `{"api_key":"x"}`,
+		"model:openai/gpt-4o": `{}`,
+		"model:anthropic/claude-3": `{}`,
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT provider, config FROM provider_configs ORDER BY provider`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	got := map[string]string{}
+	for rows.Next() {
+		var k, v string
+		if err := rows.Scan(&k, &v); err != nil {
+			t.Fatal(err)
+		}
+		got[k] = v
+	}
+	if len(got) != len(want) {
+		t.Fatalf("row count: want %d (%v) got %d (%v)", len(want), want, len(got), got)
+	}
+	for k, v := range want {
+		if got[k] != v {
+			t.Errorf("row %q: want %q got %q", k, v, got[k])
+		}
+	}
+
+	// Re-running must be a no-op (idempotent).
+	if _, err := s.db.ExecContext(ctx, migration004); err != nil {
+		t.Fatalf("re-apply migration: %v", err)
+	}
+	rows2, err := s.db.QueryContext(ctx, `SELECT provider, config FROM provider_configs ORDER BY provider`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows2.Close()
+	got2 := map[string]string{}
+	for rows2.Next() {
+		var k, v string
+		if err := rows2.Scan(&k, &v); err != nil {
+			t.Fatal(err)
+		}
+		got2[k] = v
+	}
+	for k, v := range want {
+		if got2[k] != v {
+			t.Errorf("re-run row %q: want %q got %q", k, v, got2[k])
+		}
+	}
+}
+
 func TestStats(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
