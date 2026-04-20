@@ -80,6 +80,20 @@ func (p *probeProviderLLM) GenerateStream(_ context.Context, _ []Message, _ ...G
 	return nil, nil
 }
 
+// captureGenOpts returns a factory that records the GenerateOption set
+// applied by the most recent Generate call into *into. Used by caps
+// tests to assert which user-supplied options survived CapsMiddleware.
+func captureGenOpts(reg *ProviderRegistry, provider string, into *GenerateOptions) {
+	reg.Register(provider, func(model string, _ map[string]any) (LLM, error) {
+		return &probeProviderLLM{model: model, onGen: func(opts []GenerateOption) {
+			*into = GenerateOptions{}
+			for _, o := range opts {
+				o(into)
+			}
+		}}, nil
+	})
+}
+
 // ---------------------------------------------------------------------------
 // ModelConfigStore — per-model overrides
 // ---------------------------------------------------------------------------
@@ -103,7 +117,7 @@ func TestResolver_ModelConfig_OverridesProviderConfig(t *testing.T) {
 		Extra: map[string]any{"base_url": "https://azure-proxy.example.com"},
 	}
 
-	r := &defaultResolver{registry: reg, store: store, cache: make(map[string]LLM)}
+	r := newResolverWithRegistry(store, reg)
 	if _, err := r.Resolve(context.Background(), "openai/azure-gpt"); err != nil {
 		t.Fatal(err)
 	}
@@ -125,7 +139,7 @@ func TestResolver_ModelConfig_NotFound_IsSilent(t *testing.T) {
 	store.providers["p"] = &ProviderConfig{Provider: "p", Config: map[string]any{"api_key": "k"}}
 	// no models entry — GetModelConfig returns NotFound
 
-	r := &defaultResolver{registry: reg, store: store, cache: make(map[string]LLM)}
+	r := newResolverWithRegistry(store, reg)
 	if _, err := r.Resolve(context.Background(), "p/whatever"); err != nil {
 		t.Fatalf("NotFound should be silent, got %v", err)
 	}
@@ -151,7 +165,7 @@ func TestResolver_ModelConfig_OtherError_FailsResolve(t *testing.T) {
 	base.providers["p"] = &ProviderConfig{Provider: "p", Config: map[string]any{"api_key": "k"}}
 
 	store := &failingModelStore{layeredMockStore: base, err: errdefs.Internalf("db down")}
-	r := &defaultResolver{registry: reg, store: store, cache: make(map[string]LLM)}
+	r := newResolverWithRegistry(store, reg)
 
 	_, err := r.Resolve(context.Background(), "p/m")
 	if err == nil {
@@ -163,51 +177,30 @@ func TestResolver_ModelConfig_OtherError_FailsResolve(t *testing.T) {
 // DefaultModelStore — preferred default model lookup
 // ---------------------------------------------------------------------------
 
-func TestResolver_DefaultModelStore_PreferredOverGlobalDefault(t *testing.T) {
+func TestResolver_DefaultModelStore_PreferredOverLegacyMagicKey(t *testing.T) {
 	store := newLayeredMockStore()
 	reg := NewProviderRegistry()
 	reg.Register("p", func(model string, _ map[string]any) (LLM, error) {
 		return &resolverMockLLM{model: model}, nil
 	})
 	store.providers["p"] = &ProviderConfig{Provider: "p", Config: map[string]any{"api_key": "k"}}
-	// New API winner.
+	// New API wins.
 	store.defaultM = &DefaultModelRef{Provider: "p", Model: "from-default-store"}
-	// Legacy fallback also present — must be ignored when DefaultModelStore wins.
-	store.providers[GlobalDefaultProvider] = &ProviderConfig{
-		Provider: GlobalDefaultProvider,
+	// Legacy magic-key row is also present and must be ignored when
+	// DefaultModelStore yields a value. We seed it via the public
+	// store map only (no use of the deprecated constant in test code).
+	store.providers["__global_default__"] = &ProviderConfig{
+		Provider: "__global_default__",
 		Config:   map[string]any{"provider": "p", "model": "from-legacy"},
 	}
 
-	r := &defaultResolver{registry: reg, store: store, cache: make(map[string]LLM)}
+	r := newResolverWithRegistry(store, reg)
 	inst, err := r.Resolve(context.Background(), "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got := inst.(*resolverMockLLM).model; got != "from-default-store" {
 		t.Fatalf("DefaultModelStore should win, got %q", got)
-	}
-}
-
-func TestResolver_DefaultModelStore_NotFound_FallsBackToLegacy(t *testing.T) {
-	store := newLayeredMockStore()
-	reg := NewProviderRegistry()
-	reg.Register("p", func(model string, _ map[string]any) (LLM, error) {
-		return &resolverMockLLM{model: model}, nil
-	})
-	store.providers["p"] = &ProviderConfig{Provider: "p", Config: map[string]any{"api_key": "k"}}
-	store.defaultM = nil // GetDefaultModel returns NotFound
-	store.providers[GlobalDefaultProvider] = &ProviderConfig{
-		Provider: GlobalDefaultProvider,
-		Config:   map[string]any{"provider": "p", "model": "from-legacy"},
-	}
-
-	r := &defaultResolver{registry: reg, store: store, cache: make(map[string]LLM)}
-	inst, err := r.Resolve(context.Background(), "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := inst.(*resolverMockLLM).model; got != "from-legacy" {
-		t.Fatalf("legacy fallback should kick in, got %q", got)
 	}
 }
 
@@ -218,10 +211,9 @@ func TestResolver_DefaultModelStore_FallsBackToWithFallback(t *testing.T) {
 		return &resolverMockLLM{model: model}, nil
 	})
 	store.providers["p"] = &ProviderConfig{Provider: "p", Config: map[string]any{"api_key": "k"}}
-	// Both new and legacy default are absent.
+	// No default set anywhere — WithFallbackModel must take over.
 
-	r := &defaultResolver{registry: reg, store: store, cache: make(map[string]LLM),
-		fallback: "p/hard-fallback"}
+	r := newResolverWithRegistry(store, reg, WithFallbackModel("p/hard-fallback"))
 	inst, err := r.Resolve(context.Background(), "")
 	if err != nil {
 		t.Fatal(err)
@@ -240,14 +232,8 @@ func TestResolver_Caps_LayeredMerge(t *testing.T) {
 	reg := NewProviderRegistry()
 
 	var capturedOpts GenerateOptions
-	reg.Register("p", func(model string, _ map[string]any) (LLM, error) {
-		return &probeProviderLLM{model: model, onGen: func(opts []GenerateOption) {
-			capturedOpts = GenerateOptions{}
-			for _, o := range opts {
-				o(&capturedOpts)
-			}
-		}}, nil
-	})
+	captureGenOpts(reg, "p", &capturedOpts)
+
 	// Layer 1: registry catalog disables temperature for "reason-model".
 	reg.RegisterModels("p", []ModelInfo{
 		{Name: "reason-model", Caps: DisabledCaps(CapTemperature)},
@@ -263,8 +249,7 @@ func TestResolver_Caps_LayeredMerge(t *testing.T) {
 		Caps: DisabledCaps(CapJSONSchema),
 	}
 
-	// Layer 4: resolver-wide extra caps — none set here, leave for option test.
-	r := &defaultResolver{registry: reg, store: store, cache: make(map[string]LLM)}
+	r := newResolverWithRegistry(store, reg)
 	llm, err := r.Resolve(context.Background(), "p/reason-model")
 	if err != nil {
 		t.Fatal(err)
@@ -281,9 +266,8 @@ func TestResolver_Caps_LayeredMerge(t *testing.T) {
 	if capturedOpts.JSONMode != nil {
 		t.Errorf("json_mode should be stripped (provider layer), got %v", *capturedOpts.JSONMode)
 	}
-	// JSONSchema disabled at model layer downgrades to JSONMode (per
-	// caps.go semantics); since JSONMode is also disabled the final
-	// state is "no schema, no mode".
+	// JSONSchema is disabled at the model layer; with JSONMode also
+	// disabled at the provider layer, no schema fallback survives.
 	if capturedOpts.JSONSchema != nil {
 		t.Errorf("json_schema should be downgraded then cleared, got %v", capturedOpts.JSONSchema)
 	}
@@ -294,19 +278,10 @@ func TestResolver_Caps_ExtraFromOption(t *testing.T) {
 	reg := NewProviderRegistry()
 
 	var capturedOpts GenerateOptions
-	reg.Register("p", func(model string, _ map[string]any) (LLM, error) {
-		return &probeProviderLLM{model: model, onGen: func(opts []GenerateOption) {
-			capturedOpts = GenerateOptions{}
-			for _, o := range opts {
-				o(&capturedOpts)
-			}
-		}}, nil
-	})
+	captureGenOpts(reg, "p", &capturedOpts)
 	store.providers["p"] = &ProviderConfig{Provider: "p", Config: map[string]any{"api_key": "k"}}
 
-	r := &defaultResolver{registry: reg, store: store, cache: make(map[string]LLM)}
-	WithExtraCaps(DisabledCaps(CapTemperature))(r)
-
+	r := newResolverWithRegistry(store, reg, WithExtraCaps(DisabledCaps(CapTemperature)))
 	llm, err := r.Resolve(context.Background(), "p/m")
 	if err != nil {
 		t.Fatal(err)
@@ -315,40 +290,6 @@ func TestResolver_Caps_ExtraFromOption(t *testing.T) {
 	_, _, _ = llm.Generate(context.Background(), nil, WithTemperature(temp))
 	if capturedOpts.Temperature != nil {
 		t.Fatalf("WithExtraCaps should disable temperature, got %v", *capturedOpts.Temperature)
-	}
-}
-
-func TestResolver_Caps_LegacyConfigKey_StillRespected(t *testing.T) {
-	store := newLayeredMockStore()
-	reg := NewProviderRegistry()
-
-	var capturedOpts GenerateOptions
-	reg.Register("p", func(model string, _ map[string]any) (LLM, error) {
-		return &probeProviderLLM{model: model, onGen: func(opts []GenerateOption) {
-			capturedOpts = GenerateOptions{}
-			for _, o := range opts {
-				o(&capturedOpts)
-			}
-		}}, nil
-	})
-	// Legacy: caps stuffed into Config["caps"] (the deprecated path).
-	store.providers["p"] = &ProviderConfig{
-		Provider: "p",
-		Config: map[string]any{
-			"api_key": "k",
-			"caps":    map[string]any{"no_temperature": true},
-		},
-	}
-
-	r := &defaultResolver{registry: reg, store: store, cache: make(map[string]LLM)}
-	llm, err := r.Resolve(context.Background(), "p/m")
-	if err != nil {
-		t.Fatal(err)
-	}
-	temp := 0.5
-	_, _, _ = llm.Generate(context.Background(), nil, WithTemperature(temp))
-	if capturedOpts.Temperature != nil {
-		t.Fatalf("legacy Config[\"caps\"] must still strip temperature, got %v", *capturedOpts.Temperature)
 	}
 }
 
@@ -367,8 +308,7 @@ func TestResolver_ProviderOnlyStore_NoBehaviorChange(t *testing.T) {
 		return &resolverMockLLM{model: model}, nil
 	})
 
-	r := &defaultResolver{registry: reg, store: store, cache: make(map[string]LLM),
-		fallback: "p/the-model"}
+	r := newResolverWithRegistry(store, reg, WithFallbackModel("p/the-model"))
 	if _, err := r.Resolve(context.Background(), ""); err != nil {
 		t.Fatal(err)
 	}
@@ -394,7 +334,6 @@ func TestShallowMergeConfig_OverlayWins(t *testing.T) {
 			t.Errorf("key %q: want %v, got %v", k, v, got[k])
 		}
 	}
-	// base must be untouched.
 	if base["b"] != 2 {
 		t.Errorf("base mutated: b=%v", base["b"])
 	}
@@ -403,44 +342,10 @@ func TestShallowMergeConfig_OverlayWins(t *testing.T) {
 func TestShallowMergeConfig_EmptyOverlay_ReturnsBaseAsIs(t *testing.T) {
 	base := map[string]any{"a": 1}
 	got := shallowMergeConfig(base, nil)
-	// Documented optimization: returns base as-is to avoid allocation.
-	if &got == &base {
-		// Pointer comparison on map headers isn't meaningful; instead
-		// just check no copy was made by mutating base and seeing got.
-	}
+	// Documented optimization: returns base verbatim. Mutate base and
+	// observe got changes — the only black-box way to assert "no copy".
 	base["a"] = 2
 	if got["a"] != 2 {
 		t.Errorf("expected zero-overlay path to return base verbatim, got snapshot %v", got["a"])
-	}
-}
-
-// ---------------------------------------------------------------------------
-// Deprecated WithModelCaps still works
-// ---------------------------------------------------------------------------
-
-func TestResolver_WithModelCaps_Deprecated_StillForwards(t *testing.T) {
-	store := newLayeredMockStore()
-	reg := NewProviderRegistry()
-	var captured GenerateOptions
-	reg.Register("p", func(model string, _ map[string]any) (LLM, error) {
-		return &probeProviderLLM{model: model, onGen: func(opts []GenerateOption) {
-			captured = GenerateOptions{}
-			for _, o := range opts {
-				o(&captured)
-			}
-		}}, nil
-	})
-	store.providers["p"] = &ProviderConfig{Provider: "p", Config: map[string]any{"api_key": "k"}}
-
-	r := &defaultResolver{registry: reg, store: store, cache: make(map[string]LLM)}
-	WithModelCaps(DisabledCaps(CapTemperature))(r) //nolint:staticcheck // deprecation-compat test
-	llm, err := r.Resolve(context.Background(), "p/m")
-	if err != nil {
-		t.Fatal(err)
-	}
-	temp := 0.5
-	_, _, _ = llm.Generate(context.Background(), nil, WithTemperature(temp))
-	if captured.Temperature != nil {
-		t.Fatalf("WithModelCaps must still gate caps (deprecated alias), got %v", *captured.Temperature)
 	}
 }

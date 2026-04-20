@@ -44,7 +44,7 @@ type Board struct {
 
 // TaskBoard is a legacy alias for Board.
 //
-// Deprecated: Use Board directly.
+// Deprecated: Use Board directly. Removed in v0.2.0.
 type TaskBoard = Board
 
 // BoardOption configures optional Board parameters.
@@ -82,7 +82,7 @@ func NewBoard(scopeID string, opts ...BoardOption) *Board {
 
 // NewTaskBoard is an alias for NewBoard.
 //
-// Deprecated: Use NewBoard directly.
+// Deprecated: Use NewBoard directly. Removed in v0.2.0.
 func NewTaskBoard(scopeID string) *Board { return NewBoard(scopeID) }
 
 // Bus returns the persistent EventBus bound to the board.

@@ -116,9 +116,8 @@ func (r *ProviderRegistry) NewFromConfig(provider, model string, config map[stri
 // and the older flat format {"no_temperature":true}.
 //
 // Deprecated: pass caps via ProviderConfig.Caps / ModelConfig.Caps
-// instead of stuffing them into the provider config map. This helper
-// will be removed once NewFromConfig stops reading the "caps" key in
-// v0.2.0.
+// instead of stuffing them into the provider config map. Removed in
+// v0.2.0 along with NewFromConfig's reading of the "caps" key.
 func capsFromConfig(config map[string]any) ModelCaps {
 	sub, _ := config["caps"].(map[string]any)
 	if sub == nil {

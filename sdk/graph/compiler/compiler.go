@@ -12,7 +12,7 @@ import (
 // ValidateGraphDef validates a GraphDefinition.
 //
 // Deprecated: Use def.Validate() directly. This wrapper exists only for
-// backward compatibility with existing callers.
+// backward compatibility with existing callers. Removed in v0.2.0.
 func ValidateGraphDef(d *graph.GraphDefinition) error {
 	return d.Validate()
 }

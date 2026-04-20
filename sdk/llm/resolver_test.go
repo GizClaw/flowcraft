@@ -100,7 +100,11 @@ func TestRegisterInferRule(t *testing.T) {
 // Resolver
 // ---------------------------------------------------------------------------
 
-func TestResolver_DynamicGlobalDefault(t *testing.T) {
+// TestResolver_LegacyMagicKey_DynamicDefault verifies the deprecated
+// "__global_default__" provider row still works as a default-model
+// pointer for stores that have not implemented DefaultModelStore yet.
+// Will be removed alongside GlobalDefaultProvider in v0.2.0.
+func TestResolver_LegacyMagicKey_DynamicDefault(t *testing.T) {
 	store := newResolverMockStore()
 	reg := NewProviderRegistry()
 
@@ -114,12 +118,12 @@ func TestResolver_DynamicGlobalDefault(t *testing.T) {
 		Provider: "test-provider",
 		Config:   map[string]any{"api_key": "key123"},
 	}
-	store.configs[GlobalDefaultProvider] = &ProviderConfig{
-		Provider: GlobalDefaultProvider,
+	store.configs["__global_default__"] = &ProviderConfig{
+		Provider: "__global_default__",
 		Config:   map[string]any{"provider": "test-provider", "model": "fast-model"},
 	}
 
-	r := &defaultResolver{registry: reg, store: store, cache: make(map[string]LLM)}
+	r := newResolverWithRegistry(store, reg)
 
 	inst, err := r.Resolve(context.Background(), "")
 	if err != nil {
@@ -129,8 +133,8 @@ func TestResolver_DynamicGlobalDefault(t *testing.T) {
 		t.Fatalf("expected 'fast-model', got %q", mock.model)
 	}
 
-	store.configs[GlobalDefaultProvider] = &ProviderConfig{
-		Provider: GlobalDefaultProvider,
+	store.configs["__global_default__"] = &ProviderConfig{
+		Provider: "__global_default__",
 		Config:   map[string]any{"provider": "test-provider", "model": "smart-model"},
 	}
 	r.InvalidateCache("")
@@ -158,7 +162,7 @@ func TestResolver_CacheHit(t *testing.T) {
 		Config:   map[string]any{"api_key": "key"},
 	}
 
-	r := &defaultResolver{registry: reg, store: store, cache: make(map[string]LLM)}
+	r := newResolverWithRegistry(store, reg)
 
 	ctx := context.Background()
 	_, _ = r.Resolve(ctx, "test-provider/model-a")
@@ -186,7 +190,7 @@ func TestResolver_InvalidateCache_ByProvider(t *testing.T) {
 	store.configs["p1"] = &ProviderConfig{Provider: "p1", Config: map[string]any{"api_key": "k1"}}
 	store.configs["p2"] = &ProviderConfig{Provider: "p2", Config: map[string]any{"api_key": "k2"}}
 
-	r := &defaultResolver{registry: reg, store: store, cache: make(map[string]LLM)}
+	r := newResolverWithRegistry(store, reg)
 	ctx := context.Background()
 
 	_, _ = r.Resolve(ctx, "p1/model-a")
@@ -218,7 +222,7 @@ func TestResolver_InvalidateCache_All(t *testing.T) {
 	})
 	store.configs["prov"] = &ProviderConfig{Provider: "prov", Config: map[string]any{"api_key": "k"}}
 
-	r := &defaultResolver{registry: reg, store: store, cache: make(map[string]LLM)}
+	r := newResolverWithRegistry(store, reg)
 	ctx := context.Background()
 
 	_, _ = r.Resolve(ctx, "prov/m1")
@@ -240,10 +244,7 @@ func TestResolver_FallbackModel(t *testing.T) {
 	})
 	store.configs["fb-prov"] = &ProviderConfig{Provider: "fb-prov", Config: map[string]any{"api_key": "k"}}
 
-	r := &defaultResolver{
-		registry: reg, store: store, cache: make(map[string]LLM),
-		fallback: "fb-prov/default-model",
-	}
+	r := newResolverWithRegistry(store, reg, WithFallbackModel("fb-prov/default-model"))
 
 	inst, err := r.Resolve(context.Background(), "")
 	if err != nil {
@@ -254,22 +255,21 @@ func TestResolver_FallbackModel(t *testing.T) {
 	}
 }
 
-func TestResolver_GlobalDefault_OverridesFallback(t *testing.T) {
+// TestResolver_LegacyMagicKey_OverridesFallback: deprecated path still
+// outranks WithFallbackModel for stores without DefaultModelStore.
+func TestResolver_LegacyMagicKey_OverridesFallback(t *testing.T) {
 	store := newResolverMockStore()
 	reg := NewProviderRegistry()
 	reg.Register("prov", func(model string, config map[string]any) (LLM, error) {
 		return &resolverMockLLM{model: model}, nil
 	})
 	store.configs["prov"] = &ProviderConfig{Provider: "prov", Config: map[string]any{"api_key": "k"}}
-	store.configs[GlobalDefaultProvider] = &ProviderConfig{
-		Provider: GlobalDefaultProvider,
+	store.configs["__global_default__"] = &ProviderConfig{
+		Provider: "__global_default__",
 		Config:   map[string]any{"provider": "prov", "model": "global-default"},
 	}
 
-	r := &defaultResolver{
-		registry: reg, store: store, cache: make(map[string]LLM),
-		fallback: "prov/fallback-model",
-	}
+	r := newResolverWithRegistry(store, reg, WithFallbackModel("prov/fallback-model"))
 
 	inst, err := r.Resolve(context.Background(), "")
 	if err != nil {
@@ -280,19 +280,19 @@ func TestResolver_GlobalDefault_OverridesFallback(t *testing.T) {
 	}
 }
 
-func TestResolver_ExplicitModel_OverridesGlobalDefault(t *testing.T) {
+func TestResolver_ExplicitModel_OverridesDefault(t *testing.T) {
 	store := newResolverMockStore()
 	reg := NewProviderRegistry()
 	reg.Register("prov", func(model string, config map[string]any) (LLM, error) {
 		return &resolverMockLLM{model: model}, nil
 	})
 	store.configs["prov"] = &ProviderConfig{Provider: "prov", Config: map[string]any{"api_key": "k"}}
-	store.configs[GlobalDefaultProvider] = &ProviderConfig{
-		Provider: GlobalDefaultProvider,
+	store.configs["__global_default__"] = &ProviderConfig{
+		Provider: "__global_default__",
 		Config:   map[string]any{"provider": "prov", "model": "global-default"},
 	}
 
-	r := &defaultResolver{registry: reg, store: store, cache: make(map[string]LLM)}
+	r := newResolverWithRegistry(store, reg)
 
 	inst, err := r.Resolve(context.Background(), "prov/explicit-model")
 	if err != nil {
@@ -311,7 +311,7 @@ func TestResolver_ConcurrentResolve(t *testing.T) {
 	})
 	store.configs["prov"] = &ProviderConfig{Provider: "prov", Config: map[string]any{"api_key": "k"}}
 
-	r := &defaultResolver{registry: reg, store: store, cache: make(map[string]LLM)}
+	r := newResolverWithRegistry(store, reg)
 
 	var wg sync.WaitGroup
 	errs := make(chan error, 50)
@@ -333,7 +333,7 @@ func TestResolver_ConcurrentResolve(t *testing.T) {
 
 func TestResolver_NoModelNoFallback(t *testing.T) {
 	store := newResolverMockStore()
-	r := &defaultResolver{registry: NewProviderRegistry(), store: store, cache: make(map[string]LLM)}
+	r := newResolverWithRegistry(store, NewProviderRegistry())
 
 	_, err := r.Resolve(context.Background(), "")
 	if err == nil {
@@ -352,7 +352,7 @@ func TestResolver_CapsMiddleware_Integration(t *testing.T) {
 	})
 	store.configs["test-prov"] = &ProviderConfig{Provider: "test-prov", Config: map[string]any{"api_key": "k"}}
 
-	r := &defaultResolver{registry: reg, store: store, cache: make(map[string]LLM)}
+	r := newResolverWithRegistry(store, reg)
 
 	inst, err := r.Resolve(context.Background(), "test-prov/capped-model")
 	if err != nil {

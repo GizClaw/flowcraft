@@ -72,7 +72,7 @@ func NewScheduler() *Scheduler {
 // SetKanban injects the owning Kanban reference.
 //
 // Deprecated: Use WithScheduler when constructing a Kanban via New instead.
-// New automatically wires the scheduler's Kanban reference.
+// New automatically wires the scheduler's Kanban reference. Removed in v0.2.0.
 func (s *Scheduler) SetKanban(k *Kanban) { s.kanban = k }
 
 // Start begins cron scheduling.
