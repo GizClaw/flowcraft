@@ -11,7 +11,7 @@ type Handler interface {
 	// AbortActor implements abortActor operation.
 	//
 	// POST /agents/{agentID}/abort
-	AbortActor(ctx context.Context, params AbortActorParams) (*AbortActorOK, error)
+	AbortActor(ctx context.Context, params AbortActorParams) (*AbortResult, error)
 	// AddDocument implements addDocument operation.
 	//
 	// POST /datasets/{id}/documents
@@ -20,6 +20,10 @@ type Handler interface {
 	//
 	// POST /models
 	AddModel(ctx context.Context, req *AddModelRequest) (*ModelInfo, error)
+	// ChangePassword implements changePassword operation.
+	//
+	// POST /auth/change-password
+	ChangePassword(ctx context.Context, req *ChangePasswordRequest) (*OkResponse, error)
 	// ChatStream implements chatStream operation.
 	//
 	// POST /chat/stream
@@ -79,7 +83,7 @@ type Handler interface {
 	// DeleteTemplate implements deleteTemplate operation.
 	//
 	// DELETE /templates/{name}
-	DeleteTemplate(ctx context.Context, params DeleteTemplateParams) (*DeleteTemplateOK, error)
+	DeleteTemplate(ctx context.Context, params DeleteTemplateParams) error
 	// DiffVersions implements diffVersions operation.
 	//
 	// GET /agents/{id}/versions/diff
@@ -104,10 +108,12 @@ type Handler interface {
 	//
 	// GET /agents/{id}
 	GetAgent(ctx context.Context, params GetAgentParams) (*Agent, error)
-	// GetAuthConfig implements getAuthConfig operation.
+	// GetAuthStatus implements getAuthStatus operation.
 	//
-	// GET /auth/config
-	GetAuthConfig(ctx context.Context) (*AuthConfig, error)
+	// Returns whether owner credentials have been initialized.
+	//
+	// GET /auth/status
+	GetAuthStatus(ctx context.Context) (*AuthStatus, error)
 	// GetChannelTypes implements getChannelTypes operation.
 	//
 	// GET /channel-types
@@ -279,7 +285,7 @@ type Handler interface {
 	// ReloadPlugins implements reloadPlugins operation.
 	//
 	// POST /plugins/reload
-	ReloadPlugins(ctx context.Context) (*ReloadPluginsOK, error)
+	ReloadPlugins(ctx context.Context) (*PluginReloadResult, error)
 	// ResumeStream implements resumeStream operation.
 	//
 	// POST /chat/resume/stream
@@ -292,6 +298,12 @@ type Handler interface {
 	//
 	// PUT /models/default
 	SetDefaultModel(ctx context.Context, req *SetDefaultModelRequest) error
+	// SetupAuth implements setupAuth operation.
+	//
+	// One-time owner credential bootstrap. Returns 409 if already initialized.
+	//
+	// POST /auth/setup
+	SetupAuth(ctx context.Context, req *SetupRequest) (*OkResponse, error)
 	// UpdateAgent implements updateAgent operation.
 	//
 	// PUT /agents/{id}
@@ -299,7 +311,7 @@ type Handler interface {
 	// UpdateAllSkills implements updateAllSkills operation.
 	//
 	// POST /skills/update-all
-	UpdateAllSkills(ctx context.Context) (*UpdateAllSkillsOK, error)
+	UpdateAllSkills(ctx context.Context) (*SkillUpdateAllResult, error)
 	// UpdateMemory implements updateMemory operation.
 	//
 	// PUT /memories/{entryID}
@@ -311,7 +323,7 @@ type Handler interface {
 	// UpdateSkill implements updateSkill operation.
 	//
 	// PUT /skills/{name}
-	UpdateSkill(ctx context.Context, params UpdateSkillParams) (*UpdateSkillOK, error)
+	UpdateSkill(ctx context.Context, params UpdateSkillParams) (*SkillUpdateResult, error)
 	// UploadPlugin implements uploadPlugin operation.
 	//
 	// POST /plugins/upload
@@ -325,18 +337,20 @@ type Handler interface {
 // Server implements http server based on OpenAPI v3 specification and
 // calls Handler to handle requests.
 type Server struct {
-	h Handler
+	h   Handler
+	sec SecurityHandler
 	baseServer
 }
 
 // NewServer creates new Server.
-func NewServer(h Handler, opts ...ServerOption) (*Server, error) {
+func NewServer(h Handler, sec SecurityHandler, opts ...ServerOption) (*Server, error) {
 	s, err := newServerConfig(opts...).baseServer()
 	if err != nil {
 		return nil, err
 	}
 	return &Server{
 		h:          h,
+		sec:        sec,
 		baseServer: s,
 	}, nil
 }

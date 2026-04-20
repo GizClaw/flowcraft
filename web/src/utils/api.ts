@@ -268,7 +268,7 @@ export const nodeTypeApi = {
 export const templateApi = {
   list: async () => {
     const { data } = await client.GET('/templates');
-    return (data?.data ?? []) as GraphTemplate[];
+    return (data?.data ?? []) as unknown as GraphTemplate[];
   },
   instantiate: async (name: string) => {
     const { data } = await client.POST('/templates/{name}/instantiate', {
@@ -577,11 +577,11 @@ export const workflowRunApi = {
 export const kanbanApi = {
   cards: async () => {
     const { data } = await client.GET('/kanban/cards');
-    return (data?.data ?? []) as KanbanSnapshot['cards'];
+    return (data?.data ?? []) as unknown as KanbanSnapshot['cards'];
   },
   timeline: async () => {
     const { data } = await client.GET('/kanban/timeline');
-    return (data?.data ?? []) as TimelineEntry[];
+    return (data?.data ?? []) as unknown as TimelineEntry[];
   },
   topology: async () => {
     const { data } = await client.GET('/kanban/topology');

@@ -16,7 +16,7 @@ var _ Handler = UnimplementedHandler{}
 // AbortActor implements abortActor operation.
 //
 // POST /agents/{agentID}/abort
-func (UnimplementedHandler) AbortActor(ctx context.Context, params AbortActorParams) (r *AbortActorOK, _ error) {
+func (UnimplementedHandler) AbortActor(ctx context.Context, params AbortActorParams) (r *AbortResult, _ error) {
 	return r, ht.ErrNotImplemented
 }
 
@@ -31,6 +31,13 @@ func (UnimplementedHandler) AddDocument(ctx context.Context, req *AddDocumentReq
 //
 // POST /models
 func (UnimplementedHandler) AddModel(ctx context.Context, req *AddModelRequest) (r *ModelInfo, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
+// ChangePassword implements changePassword operation.
+//
+// POST /auth/change-password
+func (UnimplementedHandler) ChangePassword(ctx context.Context, req *ChangePasswordRequest) (r *OkResponse, _ error) {
 	return r, ht.ErrNotImplemented
 }
 
@@ -135,8 +142,8 @@ func (UnimplementedHandler) DeleteSkill(ctx context.Context, params DeleteSkillP
 // DeleteTemplate implements deleteTemplate operation.
 //
 // DELETE /templates/{name}
-func (UnimplementedHandler) DeleteTemplate(ctx context.Context, params DeleteTemplateParams) (r *DeleteTemplateOK, _ error) {
-	return r, ht.ErrNotImplemented
+func (UnimplementedHandler) DeleteTemplate(ctx context.Context, params DeleteTemplateParams) error {
+	return ht.ErrNotImplemented
 }
 
 // DiffVersions implements diffVersions operation.
@@ -181,10 +188,12 @@ func (UnimplementedHandler) GetAgent(ctx context.Context, params GetAgentParams)
 	return r, ht.ErrNotImplemented
 }
 
-// GetAuthConfig implements getAuthConfig operation.
+// GetAuthStatus implements getAuthStatus operation.
 //
-// GET /auth/config
-func (UnimplementedHandler) GetAuthConfig(ctx context.Context) (r *AuthConfig, _ error) {
+// Returns whether owner credentials have been initialized.
+//
+// GET /auth/status
+func (UnimplementedHandler) GetAuthStatus(ctx context.Context) (r *AuthStatus, _ error) {
 	return r, ht.ErrNotImplemented
 }
 
@@ -485,7 +494,7 @@ func (UnimplementedHandler) QueryDocuments(ctx context.Context, req *DatasetQuer
 // ReloadPlugins implements reloadPlugins operation.
 //
 // POST /plugins/reload
-func (UnimplementedHandler) ReloadPlugins(ctx context.Context) (r *ReloadPluginsOK, _ error) {
+func (UnimplementedHandler) ReloadPlugins(ctx context.Context) (r *PluginReloadResult, _ error) {
 	return r, ht.ErrNotImplemented
 }
 
@@ -510,6 +519,15 @@ func (UnimplementedHandler) SetDefaultModel(ctx context.Context, req *SetDefault
 	return ht.ErrNotImplemented
 }
 
+// SetupAuth implements setupAuth operation.
+//
+// One-time owner credential bootstrap. Returns 409 if already initialized.
+//
+// POST /auth/setup
+func (UnimplementedHandler) SetupAuth(ctx context.Context, req *SetupRequest) (r *OkResponse, _ error) {
+	return r, ht.ErrNotImplemented
+}
+
 // UpdateAgent implements updateAgent operation.
 //
 // PUT /agents/{id}
@@ -520,7 +538,7 @@ func (UnimplementedHandler) UpdateAgent(ctx context.Context, req *UpdateAgentReq
 // UpdateAllSkills implements updateAllSkills operation.
 //
 // POST /skills/update-all
-func (UnimplementedHandler) UpdateAllSkills(ctx context.Context) (r *UpdateAllSkillsOK, _ error) {
+func (UnimplementedHandler) UpdateAllSkills(ctx context.Context) (r *SkillUpdateAllResult, _ error) {
 	return r, ht.ErrNotImplemented
 }
 
@@ -541,7 +559,7 @@ func (UnimplementedHandler) UpdatePluginConfig(ctx context.Context, req PluginCo
 // UpdateSkill implements updateSkill operation.
 //
 // PUT /skills/{name}
-func (UnimplementedHandler) UpdateSkill(ctx context.Context, params UpdateSkillParams) (r *UpdateSkillOK, _ error) {
+func (UnimplementedHandler) UpdateSkill(ctx context.Context, params UpdateSkillParams) (r *SkillUpdateResult, _ error) {
 	return r, ht.ErrNotImplemented
 }
 

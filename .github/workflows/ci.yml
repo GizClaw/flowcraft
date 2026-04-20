@@ -17,6 +17,7 @@ jobs:
       plugin: ${{ steps.filter.outputs.plugin }}
       platform: ${{ steps.filter.outputs.platform }}
       web: ${{ steps.filter.outputs.web }}
+      openapi: ${{ steps.filter.outputs.openapi }}
       ci: ${{ steps.filter.outputs.ci }}
     steps:
       - uses: actions/checkout@v4
@@ -37,6 +38,12 @@ jobs:
               - 'go.sum'
             web:
               - 'web/**'
+            openapi:
+              - 'internal/api/openapi.yaml'
+              - 'internal/api/oas/**'
+              - 'web/src/api/schema.d.ts'
+              - 'web/package.json'
+              - 'web/package-lock.json'
             ci:
               - '.github/workflows/**'
               - 'Makefile'
@@ -200,6 +207,39 @@ jobs:
           name: flowcraft-${{ matrix.target }}
           path: dist/flowcraft-${{ matrix.target }}
 
+  verify-generated:
+    name: Verify generated code matches openapi.yaml
+    needs: detect
+    if: needs.detect.outputs.openapi == 'true' || needs.detect.outputs.ci == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.25"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Install web deps
+        working-directory: web
+        run: npm ci
+      - name: Regenerate from openapi.yaml
+        run: make generate
+      - name: Fail if generated code differs
+        run: |
+          if ! git diff --quiet -- internal/api/oas web/src/api/schema.d.ts; then
+            echo "::error::Generated code is out of sync with internal/api/openapi.yaml."
+            echo "Run 'make generate' locally and commit the result."
+            echo
+            echo "--- diff (truncated) ---"
+            git --no-pager diff --stat -- internal/api/oas web/src/api/schema.d.ts
+            git --no-pager diff -- internal/api/oas web/src/api/schema.d.ts | head -200
+            exit 1
+          fi
+          echo "Generated code is in sync with openapi.yaml."
+
   lint-web:
     name: Lint & Build Web
     needs: detect
@@ -222,7 +262,7 @@ jobs:
   ci-pass:
     name: CI
     if: always()
-    needs: [lint, lint-platform, test-sdk, test-sdkx, test-plugin, test-platform, build-matrix, lint-web]
+    needs: [lint, lint-platform, test-sdk, test-sdkx, test-plugin, test-platform, build-matrix, lint-web, verify-generated]
     runs-on: ubuntu-latest
     steps:
       - name: Check results
@@ -236,6 +276,7 @@ jobs:
             "${{ needs.test-platform.result }}" \
             "${{ needs.build-matrix.result }}" \
             "${{ needs.lint-web.result }}" \
+            "${{ needs.verify-generated.result }}" \
           )
           for r in "${results[@]}"; do
             if [[ "$r" == "failure" || "$r" == "cancelled" ]]; then

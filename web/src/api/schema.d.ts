@@ -4,6 +4,40 @@
  */
 
 export interface paths {
+    "/auth/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Returns whether owner credentials have been initialized. */
+        get: operations["getAuthStatus"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/auth/setup": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description One-time owner credential bootstrap. Returns 409 if already initialized. */
+        post: operations["setupAuth"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/auth/login": {
         parameters: {
             query?: never;
@@ -52,16 +86,16 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/auth/config": {
+    "/auth/change-password": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        get: operations["getAuthConfig"];
+        get?: never;
         put?: never;
-        post?: never;
+        post: operations["changePassword"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1075,34 +1109,50 @@ export interface components {
             has_more?: boolean;
             next_cursor?: string;
         };
+        OkResponse: {
+            ok: boolean;
+        };
+        AuthStatus: {
+            /** @description True iff owner credentials have been set via `/auth/setup`. */
+            initialized: boolean;
+            /** @description Always `"jwt"` in the current implementation. */
+            auth_mode: string;
+        };
+        SetupRequest: {
+            username: string;
+            password: string;
+        };
         LoginRequest: {
-            api_key: string;
+            username: string;
+            password: string;
         };
         LoginResponse: {
-            authenticated?: boolean;
-            auth_enabled?: boolean;
-            principal?: string;
-            auth_mode?: string;
+            /** @description JWT (also set as HttpOnly cookie). */
+            token: string;
+            /** Format: date-time */
+            expires_at: string;
+        };
+        ChangePasswordRequest: {
+            old_password: string;
+            new_password: string;
         };
         SessionInfo: {
-            authenticated?: boolean;
-            auth_enabled?: boolean;
-            principal?: string;
-            auth_mode?: string;
+            authenticated: boolean;
+            /** @description Present iff `authenticated == true`. */
+            username?: string;
         };
-        AuthConfig: {
-            auth_enabled?: boolean;
-            login_mode?: string;
+        JSONObject: {
+            [key: string]: unknown;
         };
         Agent: {
             id?: string;
             name?: string;
             type?: string;
             description?: string;
-            config?: Record<string, never>;
-            graph_definition?: Record<string, never>;
-            input_schema?: Record<string, never>;
-            output_schema?: Record<string, never>;
+            config?: components["schemas"]["JSONObject"];
+            graph_definition?: components["schemas"]["JSONObject"];
+            input_schema?: components["schemas"]["JSONObject"];
+            output_schema?: components["schemas"]["JSONObject"];
             /** Format: date-time */
             created_at?: string;
             /** Format: date-time */
@@ -1115,31 +1165,31 @@ export interface components {
             name: string;
             type?: string;
             description?: string;
-            config?: Record<string, never>;
-            graph_definition?: Record<string, never>;
-            input_schema?: Record<string, never>;
+            config?: components["schemas"]["JSONObject"];
+            graph_definition?: components["schemas"]["JSONObject"];
+            input_schema?: components["schemas"]["JSONObject"];
             template?: string;
         };
         UpdateAgentRequest: {
             name?: string;
             description?: string;
-            config?: Record<string, never>;
-            graph_definition?: Record<string, never>;
-            input_schema?: Record<string, never>;
+            config?: components["schemas"]["JSONObject"];
+            graph_definition?: components["schemas"]["JSONObject"];
+            input_schema?: components["schemas"]["JSONObject"];
         };
         ChatRequest: {
             agent_id: string;
             conversation_id?: string;
             query: string;
-            inputs?: Record<string, never>;
+            inputs?: components["schemas"]["JSONObject"];
             async?: boolean;
         };
         ResumeRequest: {
             agent_id: string;
             conversation_id: string;
             run_id: string;
-            state?: Record<string, never>;
-            decision: Record<string, never>;
+            state?: components["schemas"]["JSONObject"];
+            decision: components["schemas"]["JSONObject"];
         };
         WSTicketResponse: {
             ticket: string;
@@ -1150,7 +1200,7 @@ export interface components {
             id?: string;
             agent_id?: string;
             runtime_id?: string;
-            variables?: Record<string, never>;
+            variables?: components["schemas"]["JSONObject"];
             status?: string;
             /** Format: date-time */
             created_at?: string;
@@ -1165,7 +1215,7 @@ export interface components {
             conversation_id?: string;
             role?: string;
             content?: string;
-            metadata?: Record<string, never>;
+            metadata?: components["schemas"]["JSONObject"];
             token_count?: number;
             /** Format: date-time */
             created_at?: string;
@@ -1180,10 +1230,10 @@ export interface components {
             conversation_id?: string;
             input?: string;
             output?: string;
-            inputs?: Record<string, never>;
-            outputs?: Record<string, never>;
+            inputs?: components["schemas"]["JSONObject"];
+            outputs?: components["schemas"]["JSONObject"];
             status?: string;
-            usage?: Record<string, never>;
+            usage?: components["schemas"]["JSONObject"];
             elapsed_ms?: number;
             /** Format: date-time */
             created_at?: string;
@@ -1196,7 +1246,7 @@ export interface components {
             run_id?: string;
             node_id?: string;
             type?: string;
-            payload?: Record<string, never>;
+            payload?: components["schemas"]["JSONObject"];
             /** Format: date-time */
             created_at?: string;
         };
@@ -1260,7 +1310,7 @@ export interface components {
             id?: string;
             agent_id?: string;
             version?: number;
-            graph_definition?: Record<string, never>;
+            graph_definition?: components["schemas"]["JSONObject"];
             description?: string;
             checksum?: string;
             created_by?: string;
@@ -1291,7 +1341,7 @@ export interface components {
             node_id?: string;
             edge_from?: string;
             edge_to?: string;
-            graph_def?: Record<string, never>;
+            graph_def?: components["schemas"]["JSONObject"];
             description?: string;
             created_by?: string;
             /** Format: date-time */
@@ -1304,7 +1354,7 @@ export interface components {
             success?: boolean;
             warnings?: components["schemas"]["CompileIssue"][];
             errors?: components["schemas"]["CompileIssue"][];
-            metadata?: Record<string, never>;
+            metadata?: components["schemas"]["JSONObject"];
         };
         CompileIssue: {
             code?: string;
@@ -1368,13 +1418,23 @@ export interface components {
         NodeTypeList: {
             data?: components["schemas"]["NodeSchema"][];
         };
+        TemplateParameter: {
+            name?: string;
+            label?: string;
+            type?: string;
+            /** @description Default value (any JSON type). */
+            default?: unknown;
+            required?: boolean;
+        } & {
+            [key: string]: unknown;
+        };
         GraphTemplate: {
             name?: string;
             label?: string;
             description?: string;
             category?: string;
-            parameters?: Record<string, never>[];
-            graph_def?: Record<string, never>;
+            parameters?: components["schemas"]["TemplateParameter"][];
+            graph_def?: components["schemas"]["JSONObject"];
         };
         TemplateList: {
             data?: components["schemas"]["GraphTemplate"][];
@@ -1384,8 +1444,8 @@ export interface components {
             label: string;
             description: string;
             category: string;
-            parameters?: Record<string, never>[];
-            graph_def: Record<string, never>;
+            parameters?: components["schemas"]["TemplateParameter"][];
+            graph_def: components["schemas"]["JSONObject"];
         };
         TemplateParams: {
             [key: string]: unknown;
@@ -1393,8 +1453,8 @@ export interface components {
         GraphDefinition: {
             name?: string;
             entry?: string;
-            nodes?: Record<string, never>[];
-            edges?: Record<string, never>[];
+            nodes?: components["schemas"]["JSONObject"][];
+            edges?: components["schemas"]["JSONObject"][];
         };
         ToolInfo: {
             name?: string;
@@ -1439,7 +1499,7 @@ export interface components {
             model: string;
             api_key?: string;
             base_url?: string;
-            extra?: Record<string, never>;
+            extra?: components["schemas"]["JSONObject"];
         };
         SetDefaultModelRequest: {
             provider: string;
@@ -1459,14 +1519,14 @@ export interface components {
         ConfigureProviderRequest: {
             api_key: string;
             base_url?: string;
-            extra?: Record<string, never>;
+            extra?: components["schemas"]["JSONObject"];
         };
         PluginDetail: {
             name?: string;
             type?: string;
             description?: string;
             version?: string;
-            config?: Record<string, never>;
+            config?: components["schemas"]["JSONObject"];
             enabled?: boolean;
             source?: string;
             builtin?: boolean;
@@ -1511,15 +1571,16 @@ export interface components {
             runtime_id?: string;
             runtime_count?: number;
             actor_count?: number;
-            current?: Record<string, never>;
+            current?: components["schemas"]["JSONObject"];
+        };
+        MemoryCategoryCount: {
+            category?: string;
+            count?: number;
         };
         MemoryStats: {
             runtime_id?: string;
             total_entries?: number;
-            categories?: {
-                category?: string;
-                count?: number;
-            }[];
+            categories?: components["schemas"]["MemoryCategoryCount"][];
         };
         MonitoringSummary: {
             /** Format: date-time */
@@ -1543,26 +1604,26 @@ export interface components {
             /** Format: date-time */
             window_end?: string;
             interval?: string;
-            data?: Record<string, never>[];
+            data?: components["schemas"]["JSONObject"][];
         };
         RuntimeManagerStats: {
             runtime_count?: number;
             actor_count?: number;
         };
         MonitoringDiagnostics: {
-            top_failed_agents?: Record<string, never>[];
-            top_error_codes?: Record<string, never>[];
-            recent_failures?: Record<string, never>[];
+            top_failed_agents?: components["schemas"]["JSONObject"][];
+            top_error_codes?: components["schemas"]["JSONObject"][];
+            recent_failures?: components["schemas"]["JSONObject"][];
         };
         KanbanCardList: {
-            data?: Record<string, never>[];
+            data?: components["schemas"]["JSONObject"][];
         };
         KanbanTimeline: {
-            data?: Record<string, never>[];
+            data?: components["schemas"]["JSONObject"][];
         };
         KanbanTopology: {
-            nodes?: Record<string, never>[];
-            edges?: Record<string, never>[];
+            nodes?: components["schemas"]["JSONObject"][];
+            edges?: components["schemas"]["JSONObject"][];
         };
         ChannelTypeList: {
             data?: components["schemas"]["ChannelType"][];
@@ -1576,6 +1637,21 @@ export interface components {
         };
         HealthStatus: {
             status: string;
+        };
+        AbortResult: {
+            aborted?: boolean;
+        };
+        SkillUpdateResult: {
+            status?: string;
+            name?: string;
+        };
+        SkillUpdateAllResult: {
+            updated?: string[];
+            error?: string;
+        };
+        PluginReloadResult: {
+            added?: string[];
+            removed?: string[];
         };
     };
     responses: {
@@ -1604,6 +1680,52 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    getAuthStatus: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Auth status */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AuthStatus"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    setupAuth: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SetupRequest"];
+            };
+        };
+        responses: {
+            /** @description Setup completed */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OkResponse"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
     login: {
         parameters: {
             query?: never;
@@ -1617,7 +1739,7 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Login result */
+            /** @description Login result. Sets the `flowcraft_token` HttpOnly cookie. */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -1638,7 +1760,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Logged out */
+            /** @description Logged out. Clears the `flowcraft_token` cookie. */
             204: {
                 headers: {
                     [name: string]: unknown;
@@ -1669,22 +1791,26 @@ export interface operations {
             default: components["responses"]["Error"];
         };
     };
-    getAuthConfig: {
+    changePassword: {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ChangePasswordRequest"];
+            };
+        };
         responses: {
-            /** @description Auth configuration */
+            /** @description Password changed */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["AuthConfig"];
+                    "application/json": components["schemas"]["OkResponse"];
                 };
             };
             default: components["responses"]["Error"];
@@ -1827,9 +1953,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        aborted?: boolean;
-                    };
+                    "application/json": components["schemas"]["AbortResult"];
                 };
             };
             default: components["responses"]["Error"];
@@ -2592,15 +2716,11 @@ export interface operations {
         requestBody?: never;
         responses: {
             /** @description Deleted */
-            200: {
+            204: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content: {
-                    "application/json": {
-                        deleted?: boolean;
-                    };
-                };
+                content?: never;
             };
             default: components["responses"]["Error"];
         };
@@ -2716,10 +2836,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        status?: string;
-                        name?: string;
-                    };
+                    "application/json": components["schemas"]["SkillUpdateResult"];
                 };
             };
             default: components["responses"]["Error"];
@@ -2761,10 +2878,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        updated?: string[];
-                        error?: string;
-                    };
+                    "application/json": components["schemas"]["SkillUpdateAllResult"];
                 };
             };
             default: components["responses"]["Error"];
@@ -3247,10 +3361,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        added?: string[];
-                        removed?: string[];
-                    };
+                    "application/json": components["schemas"]["PluginReloadResult"];
                 };
             };
             default: components["responses"]["Error"];

@@ -84,7 +84,7 @@ func NewServer(cfg ServerConfig, deps ServerDeps, jwtCfg *JWTConfig) *Server {
 	}
 
 	h := newOAPIHandler(s)
-	ogenSrv, err := oas.NewServer(h,
+	ogenSrv, err := oas.NewServer(h, s,
 		oas.WithErrorHandler(ogenErrorHandler(s)),
 	)
 	if err != nil {
@@ -99,14 +99,6 @@ func NewServer(cfg ServerConfig, deps ServerDeps, jwtCfg *JWTConfig) *Server {
 		ogenSrv.ServeHTTP(w, r.WithContext(ctx))
 	})
 	mux.Handle("/api/", http.StripPrefix("/api", ogenHTTP))
-
-	// JWT auth routes (outside ogen).
-	mux.HandleFunc("GET /api/auth/status", s.handleAuthStatus)
-	mux.HandleFunc("POST /api/auth/setup", s.handleSetup)
-	mux.HandleFunc("POST /api/auth/login", s.handleLogin)
-	mux.HandleFunc("POST /api/auth/logout", s.handleLogout)
-	mux.HandleFunc("GET /api/auth/session", s.handleAuthSession)
-	mux.HandleFunc("POST /api/auth/change-password", s.handleChangePassword)
 
 	// Health check at root level (also defined in OpenAPI under /api/).
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {

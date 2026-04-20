@@ -2,15 +2,73 @@ openapi: "3.1.0"
 info:
   title: FlowCraft API
   version: "1.0.0"
-  description: FlowCraft platform API
+  description: |
+    FlowCraft platform API.
+
+    NOTE: a few HTTP endpoints are intentionally NOT described here because they
+    do not fit the OpenAPI request/response model. They are mounted directly in
+    `internal/api/server.go`:
+      • `GET  /api/ws`                — WebSocket upgrade
+      • `POST /api/webhook/{channel}` — channel-specific webhook (dynamic schema)
+      • `GET  /healthz`               — root-level alias of `/api/healthz`
+
+    Everything else is generated from this file. Run `make generate` after edits;
+    CI verifies that `internal/api/oas/**` and `web/src/api/schema.d.ts` are in
+    sync with this spec.
+
+# All endpoints below default to cookie-or-bearer JWT auth. Public endpoints
+# explicitly opt out with `security: []`.
+security:
+  - cookieAuth: []
+  - bearerAuth: []
 
 # ---------- paths ----------
 paths:
   # ── Auth ──
+  # All auth endpoints are public (no cookie/bearer required to reach them).
+  /auth/status:
+    get:
+      operationId: getAuthStatus
+      tags: [auth]
+      security: []
+      description: Returns whether owner credentials have been initialized.
+      responses:
+        "200":
+          description: Auth status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthStatus"
+        default:
+          $ref: "#/components/responses/Error"
+
+  /auth/setup:
+    post:
+      operationId: setupAuth
+      tags: [auth]
+      security: []
+      description: One-time owner credential bootstrap. Returns 409 if already initialized.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SetupRequest"
+      responses:
+        "200":
+          description: Setup completed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+        default:
+          $ref: "#/components/responses/Error"
+
   /auth/login:
     post:
       operationId: login
       tags: [auth]
+      security: []
       requestBody:
         required: true
         content:
@@ -19,7 +77,7 @@ paths:
               $ref: "#/components/schemas/LoginRequest"
       responses:
         "200":
-          description: Login result
+          description: Login result. Sets the `flowcraft_token` HttpOnly cookie.
           content:
             application/json:
               schema:
@@ -31,9 +89,10 @@ paths:
     post:
       operationId: logout
       tags: [auth]
+      security: []
       responses:
         "204":
-          description: Logged out
+          description: Logged out. Clears the `flowcraft_token` cookie.
         default:
           $ref: "#/components/responses/Error"
 
@@ -41,6 +100,7 @@ paths:
     get:
       operationId: getSession
       tags: [auth]
+      security: []
       responses:
         "200":
           description: Session info
@@ -51,17 +111,23 @@ paths:
         default:
           $ref: "#/components/responses/Error"
 
-  /auth/config:
-    get:
-      operationId: getAuthConfig
+  /auth/change-password:
+    post:
+      operationId: changePassword
       tags: [auth]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ChangePasswordRequest"
       responses:
         "200":
-          description: Auth configuration
+          description: Password changed
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/AuthConfig"
+                $ref: "#/components/schemas/OkResponse"
         default:
           $ref: "#/components/responses/Error"
 
@@ -163,10 +229,7 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  aborted:
-                    type: boolean
+                $ref: "#/components/schemas/AbortResult"
         default:
           $ref: "#/components/responses/Error"
 
@@ -764,15 +827,8 @@ paths:
           schema:
             type: string
       responses:
-        "200":
+        "204":
           description: Deleted
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  deleted:
-                    type: boolean
         default:
           $ref: "#/components/responses/Error"
 
@@ -863,12 +919,7 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  status:
-                    type: string
-                  name:
-                    type: string
+                $ref: "#/components/schemas/SkillUpdateResult"
         default:
           $ref: "#/components/responses/Error"
     delete:
@@ -892,14 +943,7 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  updated:
-                    type: array
-                    items:
-                      type: string
-                  error:
-                    type: string
+                $ref: "#/components/schemas/SkillUpdateAllResult"
         default:
           $ref: "#/components/responses/Error"
 
@@ -1284,16 +1328,7 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  added:
-                    type: array
-                    items:
-                      type: string
-                  removed:
-                    type: array
-                    items:
-                      type: string
+                $ref: "#/components/schemas/PluginReloadResult"
         default:
           $ref: "#/components/responses/Error"
 
@@ -1413,6 +1448,18 @@ paths:
 
 # ---------- components ----------
 components:
+  securitySchemes:
+    cookieAuth:
+      type: apiKey
+      in: cookie
+      name: flowcraft_token
+      description: JWT issued by `/auth/login`, set as HttpOnly cookie.
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: "Same JWT as cookieAuth, sent via the Authorization: Bearer header."
+
   parameters:
     Limit:
       name: limit
@@ -1489,46 +1536,80 @@ components:
           type: string
 
     # ── Auth ──
+    OkResponse:
+      type: object
+      required: [ok]
+      properties:
+        ok:
+          type: boolean
+
+    AuthStatus:
+      type: object
+      required: [initialized, auth_mode]
+      properties:
+        initialized:
+          type: boolean
+          description: True iff owner credentials have been set via `/auth/setup`.
+        auth_mode:
+          type: string
+          description: Always `"jwt"` in the current implementation.
+
+    SetupRequest:
+      type: object
+      required: [username, password]
+      properties:
+        username:
+          type: string
+        password:
+          type: string
+          minLength: 8
+
     LoginRequest:
       type: object
+      required: [username, password]
       properties:
-        api_key:
+        username:
           type: string
-      required: [api_key]
+        password:
+          type: string
 
     LoginResponse:
       type: object
+      required: [token, expires_at]
       properties:
-        authenticated:
-          type: boolean
-        auth_enabled:
-          type: boolean
-        principal:
+        token:
           type: string
-        auth_mode:
+          description: JWT (also set as HttpOnly cookie).
+        expires_at:
           type: string
+          format: date-time
+
+    ChangePasswordRequest:
+      type: object
+      required: [old_password, new_password]
+      properties:
+        old_password:
+          type: string
+        new_password:
+          type: string
+          minLength: 8
 
     SessionInfo:
       type: object
+      required: [authenticated]
       properties:
         authenticated:
           type: boolean
-        auth_enabled:
-          type: boolean
-        principal:
+        username:
           type: string
-        auth_mode:
-          type: string
-
-    AuthConfig:
-      type: object
-      properties:
-        auth_enabled:
-          type: boolean
-        login_mode:
-          type: string
+          description: Present iff `authenticated == true`.
 
     # ── Agent ──
+    # Free-form bag with dynamic key/value structure (untyped JSON object).
+    JSONObject:
+      type: object
+      additionalProperties: true
+
     Agent:
       type: object
       properties:
@@ -1541,13 +1622,13 @@ components:
         description:
           type: string
         config:
-          type: object
+          $ref: "#/components/schemas/JSONObject"
         graph_definition:
-          type: object
+          $ref: "#/components/schemas/JSONObject"
         input_schema:
-          type: object
+          $ref: "#/components/schemas/JSONObject"
         output_schema:
-          type: object
+          $ref: "#/components/schemas/JSONObject"
         created_at:
           type: string
           format: date-time
@@ -1575,11 +1656,11 @@ components:
         description:
           type: string
         config:
-          type: object
+          $ref: "#/components/schemas/JSONObject"
         graph_definition:
-          type: object
+          $ref: "#/components/schemas/JSONObject"
         input_schema:
-          type: object
+          $ref: "#/components/schemas/JSONObject"
         template:
           type: string
       required: [name]
@@ -1592,11 +1673,11 @@ components:
         description:
           type: string
         config:
-          type: object
+          $ref: "#/components/schemas/JSONObject"
         graph_definition:
-          type: object
+          $ref: "#/components/schemas/JSONObject"
         input_schema:
-          type: object
+          $ref: "#/components/schemas/JSONObject"
 
     # ── Chat ──
     ChatRequest:
@@ -1610,7 +1691,7 @@ components:
         query:
           type: string
         inputs:
-          type: object
+          $ref: "#/components/schemas/JSONObject"
         async:
           type: boolean
 
@@ -1625,9 +1706,9 @@ components:
         run_id:
           type: string
         state:
-          type: object
+          $ref: "#/components/schemas/JSONObject"
         decision:
-          type: object
+          $ref: "#/components/schemas/JSONObject"
 
     # ── WebSocket ──
     WSTicketResponse:
@@ -1651,7 +1732,7 @@ components:
         runtime_id:
           type: string
         variables:
-          type: object
+          $ref: "#/components/schemas/JSONObject"
         status:
           type: string
         created_at:
@@ -1683,7 +1764,7 @@ components:
         content:
           type: string
         metadata:
-          type: object
+          $ref: "#/components/schemas/JSONObject"
         token_count:
           type: integer
         created_at:
@@ -1715,13 +1796,13 @@ components:
         output:
           type: string
         inputs:
-          type: object
+          $ref: "#/components/schemas/JSONObject"
         outputs:
-          type: object
+          $ref: "#/components/schemas/JSONObject"
         status:
           type: string
         usage:
-          type: object
+          $ref: "#/components/schemas/JSONObject"
         elapsed_ms:
           type: integer
         created_at:
@@ -1750,7 +1831,7 @@ components:
         type:
           type: string
         payload:
-          type: object
+          $ref: "#/components/schemas/JSONObject"
         created_at:
           type: string
           format: date-time
@@ -1887,7 +1968,7 @@ components:
         version:
           type: integer
         graph_definition:
-          type: object
+          $ref: "#/components/schemas/JSONObject"
         description:
           type: string
         checksum:
@@ -1959,7 +2040,7 @@ components:
         edge_to:
           type: string
         graph_def:
-          type: object
+          $ref: "#/components/schemas/JSONObject"
         description:
           type: string
         created_by:
@@ -1993,7 +2074,7 @@ components:
           items:
             $ref: "#/components/schemas/CompileIssue"
         metadata:
-          type: object
+          $ref: "#/components/schemas/JSONObject"
 
     CompileIssue:
       type: object
@@ -2139,6 +2220,21 @@ components:
             $ref: "#/components/schemas/NodeSchema"
 
     # ── Templates ──
+    TemplateParameter:
+      type: object
+      properties:
+        name:
+          type: string
+        label:
+          type: string
+        type:
+          type: string
+        default:
+          description: Default value (any JSON type).
+        required:
+          type: boolean
+      additionalProperties: true
+
     GraphTemplate:
       type: object
       properties:
@@ -2153,9 +2249,9 @@ components:
         parameters:
           type: array
           items:
-            type: object
+            $ref: "#/components/schemas/TemplateParameter"
         graph_def:
-          type: object
+          $ref: "#/components/schemas/JSONObject"
 
     TemplateList:
       type: object
@@ -2179,9 +2275,9 @@ components:
         parameters:
           type: array
           items:
-            type: object
+            $ref: "#/components/schemas/TemplateParameter"
         graph_def:
-          type: object
+          $ref: "#/components/schemas/JSONObject"
       required: [name, label, description, category, graph_def]
 
     TemplateParams:
@@ -2198,11 +2294,11 @@ components:
         nodes:
           type: array
           items:
-            type: object
+            $ref: "#/components/schemas/JSONObject"
         edges:
           type: array
           items:
-            type: object
+            $ref: "#/components/schemas/JSONObject"
 
     # ── Tools ──
     ToolInfo:
@@ -2304,7 +2400,7 @@ components:
         base_url:
           type: string
         extra:
-          type: object
+          $ref: "#/components/schemas/JSONObject"
       required: [provider, model]
 
     SetDefaultModelRequest:
@@ -2349,7 +2445,7 @@ components:
         base_url:
           type: string
         extra:
-          type: object
+          $ref: "#/components/schemas/JSONObject"
       required: [api_key]
 
     # ── Plugins ──
@@ -2365,7 +2461,7 @@ components:
         version:
           type: string
         config:
-          type: object
+          $ref: "#/components/schemas/JSONObject"
         enabled:
           type: boolean
         source:
@@ -2468,7 +2564,15 @@ components:
         actor_count:
           type: integer
         current:
-          type: object
+          $ref: "#/components/schemas/JSONObject"
+
+    MemoryCategoryCount:
+      type: object
+      properties:
+        category:
+          type: string
+        count:
+          type: integer
 
     MemoryStats:
       type: object
@@ -2480,12 +2584,7 @@ components:
         categories:
           type: array
           items:
-            type: object
-            properties:
-              category:
-                type: string
-              count:
-                type: integer
+            $ref: "#/components/schemas/MemoryCategoryCount"
 
     # ── Monitoring ──
     MonitoringSummary:
@@ -2532,7 +2631,7 @@ components:
         data:
           type: array
           items:
-            type: object
+            $ref: "#/components/schemas/JSONObject"
 
     RuntimeManagerStats:
       type: object
@@ -2548,15 +2647,15 @@ components:
         top_failed_agents:
           type: array
           items:
-            type: object
+            $ref: "#/components/schemas/JSONObject"
         top_error_codes:
           type: array
           items:
-            type: object
+            $ref: "#/components/schemas/JSONObject"
         recent_failures:
           type: array
           items:
-            type: object
+            $ref: "#/components/schemas/JSONObject"
 
     # ── Kanban ──
     KanbanCardList:
@@ -2565,7 +2664,7 @@ components:
         data:
           type: array
           items:
-            type: object
+            $ref: "#/components/schemas/JSONObject"
 
     KanbanTimeline:
       type: object
@@ -2573,7 +2672,7 @@ components:
         data:
           type: array
           items:
-            type: object
+            $ref: "#/components/schemas/JSONObject"
 
     KanbanTopology:
       type: object
@@ -2581,11 +2680,11 @@ components:
         nodes:
           type: array
           items:
-            type: object
+            $ref: "#/components/schemas/JSONObject"
         edges:
           type: array
           items:
-            type: object
+            $ref: "#/components/schemas/JSONObject"
 
     # ── Channel Types ──
     ChannelTypeList:
@@ -2614,3 +2713,40 @@ components:
         status:
           type: string
       required: [status]
+
+    # ── Misc small response schemas (extracted from inline definitions) ──
+    AbortResult:
+      type: object
+      properties:
+        aborted:
+          type: boolean
+
+    SkillUpdateResult:
+      type: object
+      properties:
+        status:
+          type: string
+        name:
+          type: string
+
+    SkillUpdateAllResult:
+      type: object
+      properties:
+        updated:
+          type: array
+          items:
+            type: string
+        error:
+          type: string
+
+    PluginReloadResult:
+      type: object
+      properties:
+        added:
+          type: array
+          items:
+            type: string
+        removed:
+          type: array
+          items:
+            type: string

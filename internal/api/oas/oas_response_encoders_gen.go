@@ -16,7 +16,7 @@ import (
 	"github.com/ogen-go/ogen/uri"
 )
 
-func encodeAbortActorResponse(response *AbortActorOK, w http.ResponseWriter, span trace.Span) error {
+func encodeAbortActorResponse(response *AbortResult, w http.ResponseWriter, span trace.Span) error {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(200)
 	span.SetStatus(codes.Ok, http.StatusText(200))
@@ -48,6 +48,20 @@ func encodeAddModelResponse(response *ModelInfo, w http.ResponseWriter, span tra
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(201)
 	span.SetStatus(codes.Ok, http.StatusText(201))
+
+	e := new(jx.Encoder)
+	response.Encode(e)
+	if _, err := e.WriteTo(w); err != nil {
+		return errors.Wrap(err, "write")
+	}
+
+	return nil
+}
+
+func encodeChangePasswordResponse(response *OkResponse, w http.ResponseWriter, span trace.Span) error {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(200)
+	span.SetStatus(codes.Ok, http.StatusText(200))
 
 	e := new(jx.Encoder)
 	response.Encode(e)
@@ -200,16 +214,9 @@ func encodeDeleteSkillResponse(response *DeleteSkillNoContent, w http.ResponseWr
 	return nil
 }
 
-func encodeDeleteTemplateResponse(response *DeleteTemplateOK, w http.ResponseWriter, span trace.Span) error {
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	w.WriteHeader(200)
-	span.SetStatus(codes.Ok, http.StatusText(200))
-
-	e := new(jx.Encoder)
-	response.Encode(e)
-	if _, err := e.WriteTo(w); err != nil {
-		return errors.Wrap(err, "write")
-	}
+func encodeDeleteTemplateResponse(response *DeleteTemplateNoContent, w http.ResponseWriter, span trace.Span) error {
+	w.WriteHeader(204)
+	span.SetStatus(codes.Ok, http.StatusText(204))
 
 	return nil
 }
@@ -316,7 +323,7 @@ func encodeGetAgentResponse(response *Agent, w http.ResponseWriter, span trace.S
 	return nil
 }
 
-func encodeGetAuthConfigResponse(response *AuthConfig, w http.ResponseWriter, span trace.Span) error {
+func encodeGetAuthStatusResponse(response *AuthStatus, w http.ResponseWriter, span trace.Span) error {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(200)
 	span.SetStatus(codes.Ok, http.StatusText(200))
@@ -911,7 +918,7 @@ func encodeQueryDocumentsResponse(response *QueryResultList, w http.ResponseWrit
 	return nil
 }
 
-func encodeReloadPluginsResponse(response *ReloadPluginsOK, w http.ResponseWriter, span trace.Span) error {
+func encodeReloadPluginsResponse(response *PluginReloadResult, w http.ResponseWriter, span trace.Span) error {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(200)
 	span.SetStatus(codes.Ok, http.StatusText(200))
@@ -962,6 +969,20 @@ func encodeSetDefaultModelResponse(response *SetDefaultModelNoContent, w http.Re
 	return nil
 }
 
+func encodeSetupAuthResponse(response *OkResponse, w http.ResponseWriter, span trace.Span) error {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(200)
+	span.SetStatus(codes.Ok, http.StatusText(200))
+
+	e := new(jx.Encoder)
+	response.Encode(e)
+	if _, err := e.WriteTo(w); err != nil {
+		return errors.Wrap(err, "write")
+	}
+
+	return nil
+}
+
 func encodeUpdateAgentResponse(response *Agent, w http.ResponseWriter, span trace.Span) error {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(200)
@@ -976,7 +997,7 @@ func encodeUpdateAgentResponse(response *Agent, w http.ResponseWriter, span trac
 	return nil
 }
 
-func encodeUpdateAllSkillsResponse(response *UpdateAllSkillsOK, w http.ResponseWriter, span trace.Span) error {
+func encodeUpdateAllSkillsResponse(response *SkillUpdateAllResult, w http.ResponseWriter, span trace.Span) error {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(200)
 	span.SetStatus(codes.Ok, http.StatusText(200))
@@ -1018,7 +1039,7 @@ func encodeUpdatePluginConfigResponse(response *PluginInfo, w http.ResponseWrite
 	return nil
 }
 
-func encodeUpdateSkillResponse(response *UpdateSkillOK, w http.ResponseWriter, span trace.Span) error {
+func encodeUpdateSkillResponse(response *SkillUpdateResult, w http.ResponseWriter, span trace.Span) error {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(200)
 	span.SetStatus(codes.Ok, http.StatusText(200))

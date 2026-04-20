@@ -19,9 +19,10 @@ help:
 	@echo "  make tidy      Run go mod tidy on all modules"
 	@echo "  make ci        vet + test"
 	@echo "  make build     Build flowcraft binary"
-	@echo "  make generate  Regenerate all code from openapi.yaml"
-	@echo "  make gen-go    Regenerate Go server stubs (ogen)"
-	@echo "  make gen-web   Regenerate Web TypeScript types (openapi-typescript)"
+	@echo "  make generate         Regenerate all code from openapi.yaml"
+	@echo "  make gen-go           Regenerate Go server stubs (ogen)"
+	@echo "  make gen-web          Regenerate Web TypeScript types (openapi-typescript)"
+	@echo "  make verify-generated Verify generated code is in sync with openapi.yaml"
 
 .PHONY: vet
 vet:
@@ -59,6 +60,17 @@ gen-go:
 gen-web:
 	@echo "==> generate Web TypeScript types (openapi-typescript)"
 	cd web && npx openapi-typescript ../$(OPENAPI_SPEC) -o src/api/schema.d.ts
+
+.PHONY: verify-generated
+verify-generated: generate
+	@echo "==> verify generated code matches $(OPENAPI_SPEC)"
+	@if ! git diff --quiet -- internal/api/oas web/src/api/schema.d.ts; then \
+		echo "ERROR: generated code is out of sync with $(OPENAPI_SPEC)."; \
+		echo "Run 'make generate' and commit the result."; \
+		git --no-pager diff --stat -- internal/api/oas web/src/api/schema.d.ts; \
+		exit 1; \
+	fi
+	@echo "OK: generated code is in sync."
 
 .PHONY: ci
 ci: vet test

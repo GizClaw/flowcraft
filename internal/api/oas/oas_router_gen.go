@@ -414,9 +414,9 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 						break
 					}
 					switch elem[0] {
-					case 'c': // Prefix: "config"
+					case 'c': // Prefix: "change-password"
 
-						if l := len("config"); len(elem) >= l && elem[0:l] == "config" {
+						if l := len("change-password"); len(elem) >= l && elem[0:l] == "change-password" {
 							elem = elem[l:]
 						} else {
 							break
@@ -425,10 +425,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 						if len(elem) == 0 {
 							// Leaf node.
 							switch r.Method {
-							case "GET":
-								s.handleGetAuthConfigRequest([0]string{}, elemIsEscaped, w, r)
+							case "POST":
+								s.handleChangePasswordRequest([0]string{}, elemIsEscaped, w, r)
 							default:
-								s.notAllowed(w, r, "GET")
+								s.notAllowed(w, r, "POST")
 							}
 
 							return
@@ -488,24 +488,92 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 						}
 
-					case 's': // Prefix: "session"
+					case 's': // Prefix: "s"
 
-						if l := len("session"); len(elem) >= l && elem[0:l] == "session" {
+						if l := len("s"); len(elem) >= l && elem[0:l] == "s" {
 							elem = elem[l:]
 						} else {
 							break
 						}
 
 						if len(elem) == 0 {
-							// Leaf node.
-							switch r.Method {
-							case "GET":
-								s.handleGetSessionRequest([0]string{}, elemIsEscaped, w, r)
-							default:
-								s.notAllowed(w, r, "GET")
+							break
+						}
+						switch elem[0] {
+						case 'e': // Prefix: "e"
+
+							if l := len("e"); len(elem) >= l && elem[0:l] == "e" {
+								elem = elem[l:]
+							} else {
+								break
 							}
 
-							return
+							if len(elem) == 0 {
+								break
+							}
+							switch elem[0] {
+							case 's': // Prefix: "ssion"
+
+								if l := len("ssion"); len(elem) >= l && elem[0:l] == "ssion" {
+									elem = elem[l:]
+								} else {
+									break
+								}
+
+								if len(elem) == 0 {
+									// Leaf node.
+									switch r.Method {
+									case "GET":
+										s.handleGetSessionRequest([0]string{}, elemIsEscaped, w, r)
+									default:
+										s.notAllowed(w, r, "GET")
+									}
+
+									return
+								}
+
+							case 't': // Prefix: "tup"
+
+								if l := len("tup"); len(elem) >= l && elem[0:l] == "tup" {
+									elem = elem[l:]
+								} else {
+									break
+								}
+
+								if len(elem) == 0 {
+									// Leaf node.
+									switch r.Method {
+									case "POST":
+										s.handleSetupAuthRequest([0]string{}, elemIsEscaped, w, r)
+									default:
+										s.notAllowed(w, r, "POST")
+									}
+
+									return
+								}
+
+							}
+
+						case 't': // Prefix: "tatus"
+
+							if l := len("tatus"); len(elem) >= l && elem[0:l] == "tatus" {
+								elem = elem[l:]
+							} else {
+								break
+							}
+
+							if len(elem) == 0 {
+								// Leaf node.
+								switch r.Method {
+								case "GET":
+									s.handleGetAuthStatusRequest([0]string{}, elemIsEscaped, w, r)
+								default:
+									s.notAllowed(w, r, "GET")
+								}
+
+								return
+							}
+
 						}
 
 					}
@@ -2452,9 +2520,9 @@ func (s *Server) FindPath(method string, u *url.URL) (r Route, _ bool) {
 						break
 					}
 					switch elem[0] {
-					case 'c': // Prefix: "config"
+					case 'c': // Prefix: "change-password"
 
-						if l := len("config"); len(elem) >= l && elem[0:l] == "config" {
+						if l := len("change-password"); len(elem) >= l && elem[0:l] == "change-password" {
 							elem = elem[l:]
 						} else {
 							break
@@ -2463,11 +2531,11 @@ func (s *Server) FindPath(method string, u *url.URL) (r Route, _ bool) {
 						if len(elem) == 0 {
 							// Leaf node.
 							switch method {
-							case "GET":
-								r.name = GetAuthConfigOperation
+							case "POST":
+								r.name = ChangePasswordOperation
 								r.summary = ""
-								r.operationID = "getAuthConfig"
-								r.pathPattern = "/auth/config"
+								r.operationID = "changePassword"
+								r.pathPattern = "/auth/change-password"
 								r.args = args
 								r.count = 0
 								return r, true
@@ -2538,28 +2606,104 @@ func (s *Server) FindPath(method string, u *url.URL) (r Route, _ bool) {
 
 						}
 
-					case 's': // Prefix: "session"
+					case 's': // Prefix: "s"
 
-						if l := len("session"); len(elem) >= l && elem[0:l] == "session" {
+						if l := len("s"); len(elem) >= l && elem[0:l] == "s" {
 							elem = elem[l:]
 						} else {
 							break
 						}
 
 						if len(elem) == 0 {
-							// Leaf node.
-							switch method {
-							case "GET":
-								r.name = GetSessionOperation
-								r.summary = ""
-								r.operationID = "getSession"
-								r.pathPattern = "/auth/session"
-								r.args = args
-								r.count = 0
-								return r, true
-							default:
-								return
+							break
+						}
+						switch elem[0] {
+						case 'e': // Prefix: "e"
+
+							if l := len("e"); len(elem) >= l && elem[0:l] == "e" {
+								elem = elem[l:]
+							} else {
+								break
 							}
+
+							if len(elem) == 0 {
+								break
+							}
+							switch elem[0] {
+							case 's': // Prefix: "ssion"
+
+								if l := len("ssion"); len(elem) >= l && elem[0:l] == "ssion" {
+									elem = elem[l:]
+								} else {
+									break
+								}
+
+								if len(elem) == 0 {
+									// Leaf node.
+									switch method {
+									case "GET":
+										r.name = GetSessionOperation
+										r.summary = ""
+										r.operationID = "getSession"
+										r.pathPattern = "/auth/session"
+										r.args = args
+										r.count = 0
+										return r, true
+									default:
+										return
+									}
+								}
+
+							case 't': // Prefix: "tup"
+
+								if l := len("tup"); len(elem) >= l && elem[0:l] == "tup" {
+									elem = elem[l:]
+								} else {
+									break
+								}
+
+								if len(elem) == 0 {
+									// Leaf node.
+									switch method {
+									case "POST":
+										r.name = SetupAuthOperation
+										r.summary = ""
+										r.operationID = "setupAuth"
+										r.pathPattern = "/auth/setup"
+										r.args = args
+										r.count = 0
+										return r, true
+									default:
+										return
+									}
+								}
+
+							}
+
+						case 't': // Prefix: "tatus"
+
+							if l := len("tatus"); len(elem) >= l && elem[0:l] == "tatus" {
+								elem = elem[l:]
+							} else {
+								break
+							}
+
+							if len(elem) == 0 {
+								// Leaf node.
+								switch method {
+								case "GET":
+									r.name = GetAuthStatusOperation
+									r.summary = ""
+									r.operationID = "getAuthStatus"
+									r.pathPattern = "/auth/status"
+									r.args = args
+									r.count = 0
+									return r, true
+								default:
+									return
+								}
+							}
+
 						}
 
 					}

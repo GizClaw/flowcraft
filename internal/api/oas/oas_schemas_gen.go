@@ -17,17 +17,18 @@ func (s *ErrorStatusCode) Error() string {
 	return fmt.Sprintf("code %d: %+v", s.StatusCode, s.Response)
 }
 
-type AbortActorOK struct {
+// Ref: #/components/schemas/AbortResult
+type AbortResult struct {
 	Aborted OptBool `json:"aborted"`
 }
 
 // GetAborted returns the value of Aborted.
-func (s *AbortActorOK) GetAborted() OptBool {
+func (s *AbortResult) GetAborted() OptBool {
 	return s.Aborted
 }
 
 // SetAborted sets the value of Aborted.
-func (s *AbortActorOK) SetAborted(val OptBool) {
+func (s *AbortResult) SetAborted(val OptBool) {
 	s.Aborted = val
 }
 
@@ -59,11 +60,11 @@ func (s *AddDocumentRequest) SetContent(val string) {
 
 // Ref: #/components/schemas/AddModelRequest
 type AddModelRequest struct {
-	Provider string                `json:"provider"`
-	Model    string                `json:"model"`
-	APIKey   OptString             `json:"api_key"`
-	BaseURL  OptString             `json:"base_url"`
-	Extra    *AddModelRequestExtra `json:"extra"`
+	Provider string        `json:"provider"`
+	Model    string        `json:"model"`
+	APIKey   OptString     `json:"api_key"`
+	BaseURL  OptString     `json:"base_url"`
+	Extra    OptJSONObject `json:"extra"`
 }
 
 // GetProvider returns the value of Provider.
@@ -87,7 +88,7 @@ func (s *AddModelRequest) GetBaseURL() OptString {
 }
 
 // GetExtra returns the value of Extra.
-func (s *AddModelRequest) GetExtra() *AddModelRequestExtra {
+func (s *AddModelRequest) GetExtra() OptJSONObject {
 	return s.Extra
 }
 
@@ -112,24 +113,22 @@ func (s *AddModelRequest) SetBaseURL(val OptString) {
 }
 
 // SetExtra sets the value of Extra.
-func (s *AddModelRequest) SetExtra(val *AddModelRequestExtra) {
+func (s *AddModelRequest) SetExtra(val OptJSONObject) {
 	s.Extra = val
 }
 
-type AddModelRequestExtra struct{}
-
 // Ref: #/components/schemas/Agent
 type Agent struct {
-	ID              OptString             `json:"id"`
-	Name            OptString             `json:"name"`
-	Type            OptString             `json:"type"`
-	Description     OptString             `json:"description"`
-	Config          *AgentConfig          `json:"config"`
-	GraphDefinition *AgentGraphDefinition `json:"graph_definition"`
-	InputSchema     *AgentInputSchema     `json:"input_schema"`
-	OutputSchema    *AgentOutputSchema    `json:"output_schema"`
-	CreatedAt       OptDateTime           `json:"created_at"`
-	UpdatedAt       OptDateTime           `json:"updated_at"`
+	ID              OptString     `json:"id"`
+	Name            OptString     `json:"name"`
+	Type            OptString     `json:"type"`
+	Description     OptString     `json:"description"`
+	Config          OptJSONObject `json:"config"`
+	GraphDefinition OptJSONObject `json:"graph_definition"`
+	InputSchema     OptJSONObject `json:"input_schema"`
+	OutputSchema    OptJSONObject `json:"output_schema"`
+	CreatedAt       OptDateTime   `json:"created_at"`
+	UpdatedAt       OptDateTime   `json:"updated_at"`
 }
 
 // GetID returns the value of ID.
@@ -153,22 +152,22 @@ func (s *Agent) GetDescription() OptString {
 }
 
 // GetConfig returns the value of Config.
-func (s *Agent) GetConfig() *AgentConfig {
+func (s *Agent) GetConfig() OptJSONObject {
 	return s.Config
 }
 
 // GetGraphDefinition returns the value of GraphDefinition.
-func (s *Agent) GetGraphDefinition() *AgentGraphDefinition {
+func (s *Agent) GetGraphDefinition() OptJSONObject {
 	return s.GraphDefinition
 }
 
 // GetInputSchema returns the value of InputSchema.
-func (s *Agent) GetInputSchema() *AgentInputSchema {
+func (s *Agent) GetInputSchema() OptJSONObject {
 	return s.InputSchema
 }
 
 // GetOutputSchema returns the value of OutputSchema.
-func (s *Agent) GetOutputSchema() *AgentOutputSchema {
+func (s *Agent) GetOutputSchema() OptJSONObject {
 	return s.OutputSchema
 }
 
@@ -203,22 +202,22 @@ func (s *Agent) SetDescription(val OptString) {
 }
 
 // SetConfig sets the value of Config.
-func (s *Agent) SetConfig(val *AgentConfig) {
+func (s *Agent) SetConfig(val OptJSONObject) {
 	s.Config = val
 }
 
 // SetGraphDefinition sets the value of GraphDefinition.
-func (s *Agent) SetGraphDefinition(val *AgentGraphDefinition) {
+func (s *Agent) SetGraphDefinition(val OptJSONObject) {
 	s.GraphDefinition = val
 }
 
 // SetInputSchema sets the value of InputSchema.
-func (s *Agent) SetInputSchema(val *AgentInputSchema) {
+func (s *Agent) SetInputSchema(val OptJSONObject) {
 	s.InputSchema = val
 }
 
 // SetOutputSchema sets the value of OutputSchema.
-func (s *Agent) SetOutputSchema(val *AgentOutputSchema) {
+func (s *Agent) SetOutputSchema(val OptJSONObject) {
 	s.OutputSchema = val
 }
 
@@ -231,12 +230,6 @@ func (s *Agent) SetCreatedAt(val OptDateTime) {
 func (s *Agent) SetUpdatedAt(val OptDateTime) {
 	s.UpdatedAt = val
 }
-
-type AgentConfig struct{}
-
-type AgentGraphDefinition struct{}
-
-type AgentInputSchema struct{}
 
 // Merged schema.
 // Ref: #/components/schemas/AgentList
@@ -276,32 +269,83 @@ func (s *AgentList) SetData(val []Agent) {
 	s.Data = val
 }
 
-type AgentOutputSchema struct{}
-
-// Ref: #/components/schemas/AuthConfig
-type AuthConfig struct {
-	AuthEnabled OptBool   `json:"auth_enabled"`
-	LoginMode   OptString `json:"login_mode"`
+// Ref: #/components/schemas/AuthStatus
+type AuthStatus struct {
+	// True iff owner credentials have been set via `/auth/setup`.
+	Initialized bool `json:"initialized"`
+	// Always `"jwt"` in the current implementation.
+	AuthMode string `json:"auth_mode"`
 }
 
-// GetAuthEnabled returns the value of AuthEnabled.
-func (s *AuthConfig) GetAuthEnabled() OptBool {
-	return s.AuthEnabled
+// GetInitialized returns the value of Initialized.
+func (s *AuthStatus) GetInitialized() bool {
+	return s.Initialized
 }
 
-// GetLoginMode returns the value of LoginMode.
-func (s *AuthConfig) GetLoginMode() OptString {
-	return s.LoginMode
+// GetAuthMode returns the value of AuthMode.
+func (s *AuthStatus) GetAuthMode() string {
+	return s.AuthMode
 }
 
-// SetAuthEnabled sets the value of AuthEnabled.
-func (s *AuthConfig) SetAuthEnabled(val OptBool) {
-	s.AuthEnabled = val
+// SetInitialized sets the value of Initialized.
+func (s *AuthStatus) SetInitialized(val bool) {
+	s.Initialized = val
 }
 
-// SetLoginMode sets the value of LoginMode.
-func (s *AuthConfig) SetLoginMode(val OptString) {
-	s.LoginMode = val
+// SetAuthMode sets the value of AuthMode.
+func (s *AuthStatus) SetAuthMode(val string) {
+	s.AuthMode = val
+}
+
+type BearerAuth struct {
+	Token string
+	Roles []string
+}
+
+// GetToken returns the value of Token.
+func (s *BearerAuth) GetToken() string {
+	return s.Token
+}
+
+// GetRoles returns the value of Roles.
+func (s *BearerAuth) GetRoles() []string {
+	return s.Roles
+}
+
+// SetToken sets the value of Token.
+func (s *BearerAuth) SetToken(val string) {
+	s.Token = val
+}
+
+// SetRoles sets the value of Roles.
+func (s *BearerAuth) SetRoles(val []string) {
+	s.Roles = val
+}
+
+// Ref: #/components/schemas/ChangePasswordRequest
+type ChangePasswordRequest struct {
+	OldPassword string `json:"old_password"`
+	NewPassword string `json:"new_password"`
+}
+
+// GetOldPassword returns the value of OldPassword.
+func (s *ChangePasswordRequest) GetOldPassword() string {
+	return s.OldPassword
+}
+
+// GetNewPassword returns the value of NewPassword.
+func (s *ChangePasswordRequest) GetNewPassword() string {
+	return s.NewPassword
+}
+
+// SetOldPassword sets the value of OldPassword.
+func (s *ChangePasswordRequest) SetOldPassword(val string) {
+	s.OldPassword = val
+}
+
+// SetNewPassword sets the value of NewPassword.
+func (s *ChangePasswordRequest) SetNewPassword(val string) {
+	s.NewPassword = val
 }
 
 // Ref: #/components/schemas/ChannelType
@@ -369,11 +413,11 @@ func (s *ChannelTypeList) SetData(val []ChannelType) {
 
 // Ref: #/components/schemas/ChatRequest
 type ChatRequest struct {
-	AgentID        string             `json:"agent_id"`
-	ConversationID OptString          `json:"conversation_id"`
-	Query          string             `json:"query"`
-	Inputs         *ChatRequestInputs `json:"inputs"`
-	Async          OptBool            `json:"async"`
+	AgentID        string        `json:"agent_id"`
+	ConversationID OptString     `json:"conversation_id"`
+	Query          string        `json:"query"`
+	Inputs         OptJSONObject `json:"inputs"`
+	Async          OptBool       `json:"async"`
 }
 
 // GetAgentID returns the value of AgentID.
@@ -392,7 +436,7 @@ func (s *ChatRequest) GetQuery() string {
 }
 
 // GetInputs returns the value of Inputs.
-func (s *ChatRequest) GetInputs() *ChatRequestInputs {
+func (s *ChatRequest) GetInputs() OptJSONObject {
 	return s.Inputs
 }
 
@@ -417,7 +461,7 @@ func (s *ChatRequest) SetQuery(val string) {
 }
 
 // SetInputs sets the value of Inputs.
-func (s *ChatRequest) SetInputs(val *ChatRequestInputs) {
+func (s *ChatRequest) SetInputs(val OptJSONObject) {
 	s.Inputs = val
 }
 
@@ -425,8 +469,6 @@ func (s *ChatRequest) SetInputs(val *ChatRequestInputs) {
 func (s *ChatRequest) SetAsync(val OptBool) {
 	s.Async = val
 }
-
-type ChatRequestInputs struct{}
 
 type ChatStreamOK struct {
 	Data io.Reader
@@ -481,10 +523,10 @@ func (s *CompileIssue) SetNodeIds(val []string) {
 
 // Ref: #/components/schemas/CompileResult
 type CompileResult struct {
-	Success  OptBool                `json:"success"`
-	Warnings []CompileIssue         `json:"warnings"`
-	Errors   []CompileIssue         `json:"errors"`
-	Metadata *CompileResultMetadata `json:"metadata"`
+	Success  OptBool        `json:"success"`
+	Warnings []CompileIssue `json:"warnings"`
+	Errors   []CompileIssue `json:"errors"`
+	Metadata OptJSONObject  `json:"metadata"`
 }
 
 // GetSuccess returns the value of Success.
@@ -503,7 +545,7 @@ func (s *CompileResult) GetErrors() []CompileIssue {
 }
 
 // GetMetadata returns the value of Metadata.
-func (s *CompileResult) GetMetadata() *CompileResultMetadata {
+func (s *CompileResult) GetMetadata() OptJSONObject {
 	return s.Metadata
 }
 
@@ -523,20 +565,18 @@ func (s *CompileResult) SetErrors(val []CompileIssue) {
 }
 
 // SetMetadata sets the value of Metadata.
-func (s *CompileResult) SetMetadata(val *CompileResultMetadata) {
+func (s *CompileResult) SetMetadata(val OptJSONObject) {
 	s.Metadata = val
 }
-
-type CompileResultMetadata struct{}
 
 // ConfigureProviderNoContent is response for ConfigureProvider operation.
 type ConfigureProviderNoContent struct{}
 
 // Ref: #/components/schemas/ConfigureProviderRequest
 type ConfigureProviderRequest struct {
-	APIKey  string                         `json:"api_key"`
-	BaseURL OptString                      `json:"base_url"`
-	Extra   *ConfigureProviderRequestExtra `json:"extra"`
+	APIKey  string        `json:"api_key"`
+	BaseURL OptString     `json:"base_url"`
+	Extra   OptJSONObject `json:"extra"`
 }
 
 // GetAPIKey returns the value of APIKey.
@@ -550,7 +590,7 @@ func (s *ConfigureProviderRequest) GetBaseURL() OptString {
 }
 
 // GetExtra returns the value of Extra.
-func (s *ConfigureProviderRequest) GetExtra() *ConfigureProviderRequestExtra {
+func (s *ConfigureProviderRequest) GetExtra() OptJSONObject {
 	return s.Extra
 }
 
@@ -565,21 +605,19 @@ func (s *ConfigureProviderRequest) SetBaseURL(val OptString) {
 }
 
 // SetExtra sets the value of Extra.
-func (s *ConfigureProviderRequest) SetExtra(val *ConfigureProviderRequestExtra) {
+func (s *ConfigureProviderRequest) SetExtra(val OptJSONObject) {
 	s.Extra = val
 }
 
-type ConfigureProviderRequestExtra struct{}
-
 // Ref: #/components/schemas/Conversation
 type Conversation struct {
-	ID        OptString              `json:"id"`
-	AgentID   OptString              `json:"agent_id"`
-	RuntimeID OptString              `json:"runtime_id"`
-	Variables *ConversationVariables `json:"variables"`
-	Status    OptString              `json:"status"`
-	CreatedAt OptDateTime            `json:"created_at"`
-	UpdatedAt OptDateTime            `json:"updated_at"`
+	ID        OptString     `json:"id"`
+	AgentID   OptString     `json:"agent_id"`
+	RuntimeID OptString     `json:"runtime_id"`
+	Variables OptJSONObject `json:"variables"`
+	Status    OptString     `json:"status"`
+	CreatedAt OptDateTime   `json:"created_at"`
+	UpdatedAt OptDateTime   `json:"updated_at"`
 }
 
 // GetID returns the value of ID.
@@ -598,7 +636,7 @@ func (s *Conversation) GetRuntimeID() OptString {
 }
 
 // GetVariables returns the value of Variables.
-func (s *Conversation) GetVariables() *ConversationVariables {
+func (s *Conversation) GetVariables() OptJSONObject {
 	return s.Variables
 }
 
@@ -633,7 +671,7 @@ func (s *Conversation) SetRuntimeID(val OptString) {
 }
 
 // SetVariables sets the value of Variables.
-func (s *Conversation) SetVariables(val *ConversationVariables) {
+func (s *Conversation) SetVariables(val OptJSONObject) {
 	s.Variables = val
 }
 
@@ -690,17 +728,40 @@ func (s *ConversationList) SetData(val []Conversation) {
 	s.Data = val
 }
 
-type ConversationVariables struct{}
+type CookieAuth struct {
+	APIKey string
+	Roles  []string
+}
+
+// GetAPIKey returns the value of APIKey.
+func (s *CookieAuth) GetAPIKey() string {
+	return s.APIKey
+}
+
+// GetRoles returns the value of Roles.
+func (s *CookieAuth) GetRoles() []string {
+	return s.Roles
+}
+
+// SetAPIKey sets the value of APIKey.
+func (s *CookieAuth) SetAPIKey(val string) {
+	s.APIKey = val
+}
+
+// SetRoles sets the value of Roles.
+func (s *CookieAuth) SetRoles(val []string) {
+	s.Roles = val
+}
 
 // Ref: #/components/schemas/CreateAgentRequest
 type CreateAgentRequest struct {
-	Name            string                             `json:"name"`
-	Type            OptString                          `json:"type"`
-	Description     OptString                          `json:"description"`
-	Config          *CreateAgentRequestConfig          `json:"config"`
-	GraphDefinition *CreateAgentRequestGraphDefinition `json:"graph_definition"`
-	InputSchema     *CreateAgentRequestInputSchema     `json:"input_schema"`
-	Template        OptString                          `json:"template"`
+	Name            string        `json:"name"`
+	Type            OptString     `json:"type"`
+	Description     OptString     `json:"description"`
+	Config          OptJSONObject `json:"config"`
+	GraphDefinition OptJSONObject `json:"graph_definition"`
+	InputSchema     OptJSONObject `json:"input_schema"`
+	Template        OptString     `json:"template"`
 }
 
 // GetName returns the value of Name.
@@ -719,17 +780,17 @@ func (s *CreateAgentRequest) GetDescription() OptString {
 }
 
 // GetConfig returns the value of Config.
-func (s *CreateAgentRequest) GetConfig() *CreateAgentRequestConfig {
+func (s *CreateAgentRequest) GetConfig() OptJSONObject {
 	return s.Config
 }
 
 // GetGraphDefinition returns the value of GraphDefinition.
-func (s *CreateAgentRequest) GetGraphDefinition() *CreateAgentRequestGraphDefinition {
+func (s *CreateAgentRequest) GetGraphDefinition() OptJSONObject {
 	return s.GraphDefinition
 }
 
 // GetInputSchema returns the value of InputSchema.
-func (s *CreateAgentRequest) GetInputSchema() *CreateAgentRequestInputSchema {
+func (s *CreateAgentRequest) GetInputSchema() OptJSONObject {
 	return s.InputSchema
 }
 
@@ -754,17 +815,17 @@ func (s *CreateAgentRequest) SetDescription(val OptString) {
 }
 
 // SetConfig sets the value of Config.
-func (s *CreateAgentRequest) SetConfig(val *CreateAgentRequestConfig) {
+func (s *CreateAgentRequest) SetConfig(val OptJSONObject) {
 	s.Config = val
 }
 
 // SetGraphDefinition sets the value of GraphDefinition.
-func (s *CreateAgentRequest) SetGraphDefinition(val *CreateAgentRequestGraphDefinition) {
+func (s *CreateAgentRequest) SetGraphDefinition(val OptJSONObject) {
 	s.GraphDefinition = val
 }
 
 // SetInputSchema sets the value of InputSchema.
-func (s *CreateAgentRequest) SetInputSchema(val *CreateAgentRequestInputSchema) {
+func (s *CreateAgentRequest) SetInputSchema(val OptJSONObject) {
 	s.InputSchema = val
 }
 
@@ -772,12 +833,6 @@ func (s *CreateAgentRequest) SetInputSchema(val *CreateAgentRequestInputSchema) 
 func (s *CreateAgentRequest) SetTemplate(val OptString) {
 	s.Template = val
 }
-
-type CreateAgentRequestConfig struct{}
-
-type CreateAgentRequestGraphDefinition struct{}
-
-type CreateAgentRequestInputSchema struct{}
 
 // Ref: #/components/schemas/CreateDatasetRequest
 type CreateDatasetRequest struct {
@@ -818,12 +873,12 @@ func (s *CreateDatasetRequest) SetAgentID(val OptString) {
 
 // Ref: #/components/schemas/CreateTemplateRequest
 type CreateTemplateRequest struct {
-	Name        string                                `json:"name"`
-	Label       string                                `json:"label"`
-	Description string                                `json:"description"`
-	Category    string                                `json:"category"`
-	Parameters  []CreateTemplateRequestParametersItem `json:"parameters"`
-	GraphDef    CreateTemplateRequestGraphDef         `json:"graph_def"`
+	Name        string              `json:"name"`
+	Label       string              `json:"label"`
+	Description string              `json:"description"`
+	Category    string              `json:"category"`
+	Parameters  []TemplateParameter `json:"parameters"`
+	GraphDef    JSONObject          `json:"graph_def"`
 }
 
 // GetName returns the value of Name.
@@ -847,12 +902,12 @@ func (s *CreateTemplateRequest) GetCategory() string {
 }
 
 // GetParameters returns the value of Parameters.
-func (s *CreateTemplateRequest) GetParameters() []CreateTemplateRequestParametersItem {
+func (s *CreateTemplateRequest) GetParameters() []TemplateParameter {
 	return s.Parameters
 }
 
 // GetGraphDef returns the value of GraphDef.
-func (s *CreateTemplateRequest) GetGraphDef() CreateTemplateRequestGraphDef {
+func (s *CreateTemplateRequest) GetGraphDef() JSONObject {
 	return s.GraphDef
 }
 
@@ -877,18 +932,14 @@ func (s *CreateTemplateRequest) SetCategory(val string) {
 }
 
 // SetParameters sets the value of Parameters.
-func (s *CreateTemplateRequest) SetParameters(val []CreateTemplateRequestParametersItem) {
+func (s *CreateTemplateRequest) SetParameters(val []TemplateParameter) {
 	s.Parameters = val
 }
 
 // SetGraphDef sets the value of GraphDef.
-func (s *CreateTemplateRequest) SetGraphDef(val CreateTemplateRequestGraphDef) {
+func (s *CreateTemplateRequest) SetGraphDef(val JSONObject) {
 	s.GraphDef = val
 }
-
-type CreateTemplateRequestGraphDef struct{}
-
-type CreateTemplateRequestParametersItem struct{}
 
 // Ref: #/components/schemas/DailyRunStats
 type DailyRunStats struct {
@@ -1188,19 +1239,8 @@ type DeletePluginNoContent struct{}
 // DeleteSkillNoContent is response for DeleteSkill operation.
 type DeleteSkillNoContent struct{}
 
-type DeleteTemplateOK struct {
-	Deleted OptBool `json:"deleted"`
-}
-
-// GetDeleted returns the value of Deleted.
-func (s *DeleteTemplateOK) GetDeleted() OptBool {
-	return s.Deleted
-}
-
-// SetDeleted sets the value of Deleted.
-func (s *DeleteTemplateOK) SetDeleted(val OptBool) {
-	s.Deleted = val
-}
+// DeleteTemplateNoContent is response for DeleteTemplate operation.
+type DeleteTemplateNoContent struct{}
 
 // Ref: #/components/schemas/DocumentList
 type DocumentList struct {
@@ -1323,12 +1363,12 @@ func (s *ErrorStatusCode) SetResponse(val ErrorResponse) {
 
 // Ref: #/components/schemas/ExecutionEvent
 type ExecutionEvent struct {
-	ID        OptString              `json:"id"`
-	RunID     OptString              `json:"run_id"`
-	NodeID    OptString              `json:"node_id"`
-	Type      OptString              `json:"type"`
-	Payload   *ExecutionEventPayload `json:"payload"`
-	CreatedAt OptDateTime            `json:"created_at"`
+	ID        OptString     `json:"id"`
+	RunID     OptString     `json:"run_id"`
+	NodeID    OptString     `json:"node_id"`
+	Type      OptString     `json:"type"`
+	Payload   OptJSONObject `json:"payload"`
+	CreatedAt OptDateTime   `json:"created_at"`
 }
 
 // GetID returns the value of ID.
@@ -1352,7 +1392,7 @@ func (s *ExecutionEvent) GetType() OptString {
 }
 
 // GetPayload returns the value of Payload.
-func (s *ExecutionEvent) GetPayload() *ExecutionEventPayload {
+func (s *ExecutionEvent) GetPayload() OptJSONObject {
 	return s.Payload
 }
 
@@ -1382,7 +1422,7 @@ func (s *ExecutionEvent) SetType(val OptString) {
 }
 
 // SetPayload sets the value of Payload.
-func (s *ExecutionEvent) SetPayload(val *ExecutionEventPayload) {
+func (s *ExecutionEvent) SetPayload(val OptJSONObject) {
 	s.Payload = val
 }
 
@@ -1405,8 +1445,6 @@ func (s *ExecutionEventList) GetData() []ExecutionEvent {
 func (s *ExecutionEventList) SetData(val []ExecutionEvent) {
 	s.Data = val
 }
-
-type ExecutionEventPayload struct{}
 
 type ExportAgentFormat string
 
@@ -1601,10 +1639,10 @@ func (s *GetMonitoringTimeseriesInterval) UnmarshalText(data []byte) error {
 
 // Ref: #/components/schemas/GraphDefinition
 type GraphDefinition struct {
-	Name  OptString                  `json:"name"`
-	Entry OptString                  `json:"entry"`
-	Nodes []GraphDefinitionNodesItem `json:"nodes"`
-	Edges []GraphDefinitionEdgesItem `json:"edges"`
+	Name  OptString    `json:"name"`
+	Entry OptString    `json:"entry"`
+	Nodes []JSONObject `json:"nodes"`
+	Edges []JSONObject `json:"edges"`
 }
 
 // GetName returns the value of Name.
@@ -1618,12 +1656,12 @@ func (s *GraphDefinition) GetEntry() OptString {
 }
 
 // GetNodes returns the value of Nodes.
-func (s *GraphDefinition) GetNodes() []GraphDefinitionNodesItem {
+func (s *GraphDefinition) GetNodes() []JSONObject {
 	return s.Nodes
 }
 
 // GetEdges returns the value of Edges.
-func (s *GraphDefinition) GetEdges() []GraphDefinitionEdgesItem {
+func (s *GraphDefinition) GetEdges() []JSONObject {
 	return s.Edges
 }
 
@@ -1638,31 +1676,27 @@ func (s *GraphDefinition) SetEntry(val OptString) {
 }
 
 // SetNodes sets the value of Nodes.
-func (s *GraphDefinition) SetNodes(val []GraphDefinitionNodesItem) {
+func (s *GraphDefinition) SetNodes(val []JSONObject) {
 	s.Nodes = val
 }
 
 // SetEdges sets the value of Edges.
-func (s *GraphDefinition) SetEdges(val []GraphDefinitionEdgesItem) {
+func (s *GraphDefinition) SetEdges(val []JSONObject) {
 	s.Edges = val
 }
 
-type GraphDefinitionEdgesItem struct{}
-
-type GraphDefinitionNodesItem struct{}
-
 // Ref: #/components/schemas/GraphOperation
 type GraphOperation struct {
-	ID          OptString               `json:"id"`
-	AgentID     OptString               `json:"agent_id"`
-	Type        OptString               `json:"type"`
-	NodeID      OptString               `json:"node_id"`
-	EdgeFrom    OptString               `json:"edge_from"`
-	EdgeTo      OptString               `json:"edge_to"`
-	GraphDef    *GraphOperationGraphDef `json:"graph_def"`
-	Description OptString               `json:"description"`
-	CreatedBy   OptString               `json:"created_by"`
-	CreatedAt   OptDateTime             `json:"created_at"`
+	ID          OptString     `json:"id"`
+	AgentID     OptString     `json:"agent_id"`
+	Type        OptString     `json:"type"`
+	NodeID      OptString     `json:"node_id"`
+	EdgeFrom    OptString     `json:"edge_from"`
+	EdgeTo      OptString     `json:"edge_to"`
+	GraphDef    OptJSONObject `json:"graph_def"`
+	Description OptString     `json:"description"`
+	CreatedBy   OptString     `json:"created_by"`
+	CreatedAt   OptDateTime   `json:"created_at"`
 }
 
 // GetID returns the value of ID.
@@ -1696,7 +1730,7 @@ func (s *GraphOperation) GetEdgeTo() OptString {
 }
 
 // GetGraphDef returns the value of GraphDef.
-func (s *GraphOperation) GetGraphDef() *GraphOperationGraphDef {
+func (s *GraphOperation) GetGraphDef() OptJSONObject {
 	return s.GraphDef
 }
 
@@ -1746,7 +1780,7 @@ func (s *GraphOperation) SetEdgeTo(val OptString) {
 }
 
 // SetGraphDef sets the value of GraphDef.
-func (s *GraphOperation) SetGraphDef(val *GraphOperationGraphDef) {
+func (s *GraphOperation) SetGraphDef(val OptJSONObject) {
 	s.GraphDef = val
 }
 
@@ -1764,8 +1798,6 @@ func (s *GraphOperation) SetCreatedBy(val OptString) {
 func (s *GraphOperation) SetCreatedAt(val OptDateTime) {
 	s.CreatedAt = val
 }
-
-type GraphOperationGraphDef struct{}
 
 // Merged schema.
 // Ref: #/components/schemas/GraphOperationList
@@ -1807,12 +1839,12 @@ func (s *GraphOperationList) SetData(val []GraphOperation) {
 
 // Ref: #/components/schemas/GraphTemplate
 type GraphTemplate struct {
-	Name        OptString                     `json:"name"`
-	Label       OptString                     `json:"label"`
-	Description OptString                     `json:"description"`
-	Category    OptString                     `json:"category"`
-	Parameters  []GraphTemplateParametersItem `json:"parameters"`
-	GraphDef    *GraphTemplateGraphDef        `json:"graph_def"`
+	Name        OptString           `json:"name"`
+	Label       OptString           `json:"label"`
+	Description OptString           `json:"description"`
+	Category    OptString           `json:"category"`
+	Parameters  []TemplateParameter `json:"parameters"`
+	GraphDef    OptJSONObject       `json:"graph_def"`
 }
 
 // GetName returns the value of Name.
@@ -1836,12 +1868,12 @@ func (s *GraphTemplate) GetCategory() OptString {
 }
 
 // GetParameters returns the value of Parameters.
-func (s *GraphTemplate) GetParameters() []GraphTemplateParametersItem {
+func (s *GraphTemplate) GetParameters() []TemplateParameter {
 	return s.Parameters
 }
 
 // GetGraphDef returns the value of GraphDef.
-func (s *GraphTemplate) GetGraphDef() *GraphTemplateGraphDef {
+func (s *GraphTemplate) GetGraphDef() OptJSONObject {
 	return s.GraphDef
 }
 
@@ -1866,30 +1898,26 @@ func (s *GraphTemplate) SetCategory(val OptString) {
 }
 
 // SetParameters sets the value of Parameters.
-func (s *GraphTemplate) SetParameters(val []GraphTemplateParametersItem) {
+func (s *GraphTemplate) SetParameters(val []TemplateParameter) {
 	s.Parameters = val
 }
 
 // SetGraphDef sets the value of GraphDef.
-func (s *GraphTemplate) SetGraphDef(val *GraphTemplateGraphDef) {
+func (s *GraphTemplate) SetGraphDef(val OptJSONObject) {
 	s.GraphDef = val
 }
 
-type GraphTemplateGraphDef struct{}
-
-type GraphTemplateParametersItem struct{}
-
 // Ref: #/components/schemas/GraphVersion
 type GraphVersion struct {
-	ID              OptString                    `json:"id"`
-	AgentID         OptString                    `json:"agent_id"`
-	Version         OptInt                       `json:"version"`
-	GraphDefinition *GraphVersionGraphDefinition `json:"graph_definition"`
-	Description     OptString                    `json:"description"`
-	Checksum        OptString                    `json:"checksum"`
-	CreatedBy       OptString                    `json:"created_by"`
-	PublishedAt     OptDateTime                  `json:"published_at"`
-	CreatedAt       OptDateTime                  `json:"created_at"`
+	ID              OptString     `json:"id"`
+	AgentID         OptString     `json:"agent_id"`
+	Version         OptInt        `json:"version"`
+	GraphDefinition OptJSONObject `json:"graph_definition"`
+	Description     OptString     `json:"description"`
+	Checksum        OptString     `json:"checksum"`
+	CreatedBy       OptString     `json:"created_by"`
+	PublishedAt     OptDateTime   `json:"published_at"`
+	CreatedAt       OptDateTime   `json:"created_at"`
 }
 
 // GetID returns the value of ID.
@@ -1908,7 +1936,7 @@ func (s *GraphVersion) GetVersion() OptInt {
 }
 
 // GetGraphDefinition returns the value of GraphDefinition.
-func (s *GraphVersion) GetGraphDefinition() *GraphVersionGraphDefinition {
+func (s *GraphVersion) GetGraphDefinition() OptJSONObject {
 	return s.GraphDefinition
 }
 
@@ -1953,7 +1981,7 @@ func (s *GraphVersion) SetVersion(val OptInt) {
 }
 
 // SetGraphDefinition sets the value of GraphDefinition.
-func (s *GraphVersion) SetGraphDefinition(val *GraphVersionGraphDefinition) {
+func (s *GraphVersion) SetGraphDefinition(val OptJSONObject) {
 	s.GraphDefinition = val
 }
 
@@ -1981,8 +2009,6 @@ func (s *GraphVersion) SetPublishedAt(val OptDateTime) {
 func (s *GraphVersion) SetCreatedAt(val OptDateTime) {
 	s.CreatedAt = val
 }
-
-type GraphVersionGraphDefinition struct{}
 
 // Ref: #/components/schemas/GraphVersionList
 type GraphVersionList struct {
@@ -2103,135 +2129,155 @@ func (s *InstallSkillRequest) SetName(val OptString) {
 	s.Name = val
 }
 
+// Ref: #/components/schemas/JSONObject
+type JSONObject map[string]jx.Raw
+
+func (s *JSONObject) init() JSONObject {
+	m := *s
+	if m == nil {
+		m = map[string]jx.Raw{}
+		*s = m
+	}
+	return m
+}
+
 // Ref: #/components/schemas/KanbanCardList
 type KanbanCardList struct {
-	Data []KanbanCardListDataItem `json:"data"`
+	Data []JSONObject `json:"data"`
 }
 
 // GetData returns the value of Data.
-func (s *KanbanCardList) GetData() []KanbanCardListDataItem {
+func (s *KanbanCardList) GetData() []JSONObject {
 	return s.Data
 }
 
 // SetData sets the value of Data.
-func (s *KanbanCardList) SetData(val []KanbanCardListDataItem) {
+func (s *KanbanCardList) SetData(val []JSONObject) {
 	s.Data = val
 }
-
-type KanbanCardListDataItem struct{}
 
 // Ref: #/components/schemas/KanbanTimeline
 type KanbanTimeline struct {
-	Data []KanbanTimelineDataItem `json:"data"`
+	Data []JSONObject `json:"data"`
 }
 
 // GetData returns the value of Data.
-func (s *KanbanTimeline) GetData() []KanbanTimelineDataItem {
+func (s *KanbanTimeline) GetData() []JSONObject {
 	return s.Data
 }
 
 // SetData sets the value of Data.
-func (s *KanbanTimeline) SetData(val []KanbanTimelineDataItem) {
+func (s *KanbanTimeline) SetData(val []JSONObject) {
 	s.Data = val
 }
 
-type KanbanTimelineDataItem struct{}
-
 // Ref: #/components/schemas/KanbanTopology
 type KanbanTopology struct {
-	Nodes []KanbanTopologyNodesItem `json:"nodes"`
-	Edges []KanbanTopologyEdgesItem `json:"edges"`
+	Nodes []JSONObject `json:"nodes"`
+	Edges []JSONObject `json:"edges"`
 }
 
 // GetNodes returns the value of Nodes.
-func (s *KanbanTopology) GetNodes() []KanbanTopologyNodesItem {
+func (s *KanbanTopology) GetNodes() []JSONObject {
 	return s.Nodes
 }
 
 // GetEdges returns the value of Edges.
-func (s *KanbanTopology) GetEdges() []KanbanTopologyEdgesItem {
+func (s *KanbanTopology) GetEdges() []JSONObject {
 	return s.Edges
 }
 
 // SetNodes sets the value of Nodes.
-func (s *KanbanTopology) SetNodes(val []KanbanTopologyNodesItem) {
+func (s *KanbanTopology) SetNodes(val []JSONObject) {
 	s.Nodes = val
 }
 
 // SetEdges sets the value of Edges.
-func (s *KanbanTopology) SetEdges(val []KanbanTopologyEdgesItem) {
+func (s *KanbanTopology) SetEdges(val []JSONObject) {
 	s.Edges = val
 }
 
-type KanbanTopologyEdgesItem struct{}
-
-type KanbanTopologyNodesItem struct{}
-
 // Ref: #/components/schemas/LoginRequest
 type LoginRequest struct {
-	APIKey string `json:"api_key"`
+	Username string `json:"username"`
+	Password string `json:"password"`
 }
 
-// GetAPIKey returns the value of APIKey.
-func (s *LoginRequest) GetAPIKey() string {
-	return s.APIKey
+// GetUsername returns the value of Username.
+func (s *LoginRequest) GetUsername() string {
+	return s.Username
 }
 
-// SetAPIKey sets the value of APIKey.
-func (s *LoginRequest) SetAPIKey(val string) {
-	s.APIKey = val
+// GetPassword returns the value of Password.
+func (s *LoginRequest) GetPassword() string {
+	return s.Password
+}
+
+// SetUsername sets the value of Username.
+func (s *LoginRequest) SetUsername(val string) {
+	s.Username = val
+}
+
+// SetPassword sets the value of Password.
+func (s *LoginRequest) SetPassword(val string) {
+	s.Password = val
 }
 
 // Ref: #/components/schemas/LoginResponse
 type LoginResponse struct {
-	Authenticated OptBool   `json:"authenticated"`
-	AuthEnabled   OptBool   `json:"auth_enabled"`
-	Principal     OptString `json:"principal"`
-	AuthMode      OptString `json:"auth_mode"`
+	// JWT (also set as HttpOnly cookie).
+	Token     string    `json:"token"`
+	ExpiresAt time.Time `json:"expires_at"`
 }
 
-// GetAuthenticated returns the value of Authenticated.
-func (s *LoginResponse) GetAuthenticated() OptBool {
-	return s.Authenticated
+// GetToken returns the value of Token.
+func (s *LoginResponse) GetToken() string {
+	return s.Token
 }
 
-// GetAuthEnabled returns the value of AuthEnabled.
-func (s *LoginResponse) GetAuthEnabled() OptBool {
-	return s.AuthEnabled
+// GetExpiresAt returns the value of ExpiresAt.
+func (s *LoginResponse) GetExpiresAt() time.Time {
+	return s.ExpiresAt
 }
 
-// GetPrincipal returns the value of Principal.
-func (s *LoginResponse) GetPrincipal() OptString {
-	return s.Principal
+// SetToken sets the value of Token.
+func (s *LoginResponse) SetToken(val string) {
+	s.Token = val
 }
 
-// GetAuthMode returns the value of AuthMode.
-func (s *LoginResponse) GetAuthMode() OptString {
-	return s.AuthMode
-}
-
-// SetAuthenticated sets the value of Authenticated.
-func (s *LoginResponse) SetAuthenticated(val OptBool) {
-	s.Authenticated = val
-}
-
-// SetAuthEnabled sets the value of AuthEnabled.
-func (s *LoginResponse) SetAuthEnabled(val OptBool) {
-	s.AuthEnabled = val
-}
-
-// SetPrincipal sets the value of Principal.
-func (s *LoginResponse) SetPrincipal(val OptString) {
-	s.Principal = val
-}
-
-// SetAuthMode sets the value of AuthMode.
-func (s *LoginResponse) SetAuthMode(val OptString) {
-	s.AuthMode = val
+// SetExpiresAt sets the value of ExpiresAt.
+func (s *LoginResponse) SetExpiresAt(val time.Time) {
+	s.ExpiresAt = val
 }
 
 // LogoutNoContent is response for Logout operation.
 type LogoutNoContent struct{}
+
+// Ref: #/components/schemas/MemoryCategoryCount
+type MemoryCategoryCount struct {
+	Category OptString `json:"category"`
+	Count    OptInt    `json:"count"`
+}
+
+// GetCategory returns the value of Category.
+func (s *MemoryCategoryCount) GetCategory() OptString {
+	return s.Category
+}
+
+// GetCount returns the value of Count.
+func (s *MemoryCategoryCount) GetCount() OptInt {
+	return s.Count
+}
+
+// SetCategory sets the value of Category.
+func (s *MemoryCategoryCount) SetCategory(val OptString) {
+	s.Category = val
+}
+
+// SetCount sets the value of Count.
+func (s *MemoryCategoryCount) SetCount(val OptInt) {
+	s.Count = val
+}
 
 // Ref: #/components/schemas/MemoryEntry
 type MemoryEntry struct {
@@ -2309,9 +2355,9 @@ func (s *MemoryEntryList) SetData(val []MemoryEntry) {
 
 // Ref: #/components/schemas/MemoryStats
 type MemoryStats struct {
-	RuntimeID    OptString                   `json:"runtime_id"`
-	TotalEntries OptInt                      `json:"total_entries"`
-	Categories   []MemoryStatsCategoriesItem `json:"categories"`
+	RuntimeID    OptString             `json:"runtime_id"`
+	TotalEntries OptInt                `json:"total_entries"`
+	Categories   []MemoryCategoryCount `json:"categories"`
 }
 
 // GetRuntimeID returns the value of RuntimeID.
@@ -2325,7 +2371,7 @@ func (s *MemoryStats) GetTotalEntries() OptInt {
 }
 
 // GetCategories returns the value of Categories.
-func (s *MemoryStats) GetCategories() []MemoryStatsCategoriesItem {
+func (s *MemoryStats) GetCategories() []MemoryCategoryCount {
 	return s.Categories
 }
 
@@ -2340,44 +2386,19 @@ func (s *MemoryStats) SetTotalEntries(val OptInt) {
 }
 
 // SetCategories sets the value of Categories.
-func (s *MemoryStats) SetCategories(val []MemoryStatsCategoriesItem) {
+func (s *MemoryStats) SetCategories(val []MemoryCategoryCount) {
 	s.Categories = val
-}
-
-type MemoryStatsCategoriesItem struct {
-	Category OptString `json:"category"`
-	Count    OptInt    `json:"count"`
-}
-
-// GetCategory returns the value of Category.
-func (s *MemoryStatsCategoriesItem) GetCategory() OptString {
-	return s.Category
-}
-
-// GetCount returns the value of Count.
-func (s *MemoryStatsCategoriesItem) GetCount() OptInt {
-	return s.Count
-}
-
-// SetCategory sets the value of Category.
-func (s *MemoryStatsCategoriesItem) SetCategory(val OptString) {
-	s.Category = val
-}
-
-// SetCount sets the value of Count.
-func (s *MemoryStatsCategoriesItem) SetCount(val OptInt) {
-	s.Count = val
 }
 
 // Ref: #/components/schemas/Message
 type Message struct {
-	ID             OptString        `json:"id"`
-	ConversationID OptString        `json:"conversation_id"`
-	Role           OptString        `json:"role"`
-	Content        OptString        `json:"content"`
-	Metadata       *MessageMetadata `json:"metadata"`
-	TokenCount     OptInt           `json:"token_count"`
-	CreatedAt      OptDateTime      `json:"created_at"`
+	ID             OptString     `json:"id"`
+	ConversationID OptString     `json:"conversation_id"`
+	Role           OptString     `json:"role"`
+	Content        OptString     `json:"content"`
+	Metadata       OptJSONObject `json:"metadata"`
+	TokenCount     OptInt        `json:"token_count"`
+	CreatedAt      OptDateTime   `json:"created_at"`
 }
 
 // GetID returns the value of ID.
@@ -2401,7 +2422,7 @@ func (s *Message) GetContent() OptString {
 }
 
 // GetMetadata returns the value of Metadata.
-func (s *Message) GetMetadata() *MessageMetadata {
+func (s *Message) GetMetadata() OptJSONObject {
 	return s.Metadata
 }
 
@@ -2436,7 +2457,7 @@ func (s *Message) SetContent(val OptString) {
 }
 
 // SetMetadata sets the value of Metadata.
-func (s *Message) SetMetadata(val *MessageMetadata) {
+func (s *Message) SetMetadata(val OptJSONObject) {
 	s.Metadata = val
 }
 
@@ -2464,8 +2485,6 @@ func (s *MessageList) GetData() []Message {
 func (s *MessageList) SetData(val []Message) {
 	s.Data = val
 }
-
-type MessageMetadata struct{}
 
 // Ref: #/components/schemas/ModelInfo
 type ModelInfo struct {
@@ -2532,46 +2551,40 @@ func (s *ModelList) SetData(val []ModelInfo) {
 
 // Ref: #/components/schemas/MonitoringDiagnostics
 type MonitoringDiagnostics struct {
-	TopFailedAgents []MonitoringDiagnosticsTopFailedAgentsItem `json:"top_failed_agents"`
-	TopErrorCodes   []MonitoringDiagnosticsTopErrorCodesItem   `json:"top_error_codes"`
-	RecentFailures  []MonitoringDiagnosticsRecentFailuresItem  `json:"recent_failures"`
+	TopFailedAgents []JSONObject `json:"top_failed_agents"`
+	TopErrorCodes   []JSONObject `json:"top_error_codes"`
+	RecentFailures  []JSONObject `json:"recent_failures"`
 }
 
 // GetTopFailedAgents returns the value of TopFailedAgents.
-func (s *MonitoringDiagnostics) GetTopFailedAgents() []MonitoringDiagnosticsTopFailedAgentsItem {
+func (s *MonitoringDiagnostics) GetTopFailedAgents() []JSONObject {
 	return s.TopFailedAgents
 }
 
 // GetTopErrorCodes returns the value of TopErrorCodes.
-func (s *MonitoringDiagnostics) GetTopErrorCodes() []MonitoringDiagnosticsTopErrorCodesItem {
+func (s *MonitoringDiagnostics) GetTopErrorCodes() []JSONObject {
 	return s.TopErrorCodes
 }
 
 // GetRecentFailures returns the value of RecentFailures.
-func (s *MonitoringDiagnostics) GetRecentFailures() []MonitoringDiagnosticsRecentFailuresItem {
+func (s *MonitoringDiagnostics) GetRecentFailures() []JSONObject {
 	return s.RecentFailures
 }
 
 // SetTopFailedAgents sets the value of TopFailedAgents.
-func (s *MonitoringDiagnostics) SetTopFailedAgents(val []MonitoringDiagnosticsTopFailedAgentsItem) {
+func (s *MonitoringDiagnostics) SetTopFailedAgents(val []JSONObject) {
 	s.TopFailedAgents = val
 }
 
 // SetTopErrorCodes sets the value of TopErrorCodes.
-func (s *MonitoringDiagnostics) SetTopErrorCodes(val []MonitoringDiagnosticsTopErrorCodesItem) {
+func (s *MonitoringDiagnostics) SetTopErrorCodes(val []JSONObject) {
 	s.TopErrorCodes = val
 }
 
 // SetRecentFailures sets the value of RecentFailures.
-func (s *MonitoringDiagnostics) SetRecentFailures(val []MonitoringDiagnosticsRecentFailuresItem) {
+func (s *MonitoringDiagnostics) SetRecentFailures(val []JSONObject) {
 	s.RecentFailures = val
 }
-
-type MonitoringDiagnosticsRecentFailuresItem struct{}
-
-type MonitoringDiagnosticsTopErrorCodesItem struct{}
-
-type MonitoringDiagnosticsTopFailedAgentsItem struct{}
 
 // Ref: #/components/schemas/MonitoringSummary
 type MonitoringSummary struct {
@@ -2711,10 +2724,10 @@ func (s *MonitoringSummary) SetHealthReason(val OptString) {
 
 // Ref: #/components/schemas/MonitoringTimeseries
 type MonitoringTimeseries struct {
-	WindowStart OptDateTime                    `json:"window_start"`
-	WindowEnd   OptDateTime                    `json:"window_end"`
-	Interval    OptString                      `json:"interval"`
-	Data        []MonitoringTimeseriesDataItem `json:"data"`
+	WindowStart OptDateTime  `json:"window_start"`
+	WindowEnd   OptDateTime  `json:"window_end"`
+	Interval    OptString    `json:"interval"`
+	Data        []JSONObject `json:"data"`
 }
 
 // GetWindowStart returns the value of WindowStart.
@@ -2733,7 +2746,7 @@ func (s *MonitoringTimeseries) GetInterval() OptString {
 }
 
 // GetData returns the value of Data.
-func (s *MonitoringTimeseries) GetData() []MonitoringTimeseriesDataItem {
+func (s *MonitoringTimeseries) GetData() []JSONObject {
 	return s.Data
 }
 
@@ -2753,11 +2766,9 @@ func (s *MonitoringTimeseries) SetInterval(val OptString) {
 }
 
 // SetData sets the value of Data.
-func (s *MonitoringTimeseries) SetData(val []MonitoringTimeseriesDataItem) {
+func (s *MonitoringTimeseries) SetData(val []JSONObject) {
 	s.Data = val
 }
-
-type MonitoringTimeseriesDataItem struct{}
 
 // Ref: #/components/schemas/NodeFieldOption
 type NodeFieldOption struct {
@@ -2975,6 +2986,21 @@ func (s *NodeValidationResult) SetValid(val OptBool) {
 // SetWarnings sets the value of Warnings.
 func (s *NodeValidationResult) SetWarnings(val []string) {
 	s.Warnings = val
+}
+
+// Ref: #/components/schemas/OkResponse
+type OkResponse struct {
+	Ok bool `json:"ok"`
+}
+
+// GetOk returns the value of Ok.
+func (s *OkResponse) GetOk() bool {
+	return s.Ok
+}
+
+// SetOk sets the value of Ok.
+func (s *OkResponse) SetOk(val bool) {
+	s.Ok = val
 }
 
 // NewOptBool returns new OptBool with value set to v.
@@ -3391,6 +3417,52 @@ func (o OptInt) Or(d int) int {
 	return d
 }
 
+// NewOptJSONObject returns new OptJSONObject with value set to v.
+func NewOptJSONObject(v JSONObject) OptJSONObject {
+	return OptJSONObject{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptJSONObject is optional JSONObject.
+type OptJSONObject struct {
+	Value JSONObject
+	Set   bool
+}
+
+// IsSet returns true if OptJSONObject was set.
+func (o OptJSONObject) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptJSONObject) Reset() {
+	var v JSONObject
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptJSONObject) SetTo(v JSONObject) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptJSONObject) Get() (v JSONObject, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptJSONObject) Or(d JSONObject) JSONObject {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
 // NewOptPluginConfig returns new OptPluginConfig with value set to v.
 func NewOptPluginConfig(v PluginConfig) OptPluginConfig {
 	return OptPluginConfig{
@@ -3543,17 +3615,17 @@ func (s *PluginConfig) init() PluginConfig {
 
 // Ref: #/components/schemas/PluginDetail
 type PluginDetail struct {
-	Name        OptString           `json:"name"`
-	Type        OptString           `json:"type"`
-	Description OptString           `json:"description"`
-	Version     OptString           `json:"version"`
-	Config      *PluginDetailConfig `json:"config"`
-	Enabled     OptBool             `json:"enabled"`
-	Source      OptString           `json:"source"`
-	Builtin     OptBool             `json:"builtin"`
-	Tools       []string            `json:"tools"`
-	NodeTypes   []string            `json:"node_types"`
-	Models      []string            `json:"models"`
+	Name        OptString     `json:"name"`
+	Type        OptString     `json:"type"`
+	Description OptString     `json:"description"`
+	Version     OptString     `json:"version"`
+	Config      OptJSONObject `json:"config"`
+	Enabled     OptBool       `json:"enabled"`
+	Source      OptString     `json:"source"`
+	Builtin     OptBool       `json:"builtin"`
+	Tools       []string      `json:"tools"`
+	NodeTypes   []string      `json:"node_types"`
+	Models      []string      `json:"models"`
 }
 
 // GetName returns the value of Name.
@@ -3577,7 +3649,7 @@ func (s *PluginDetail) GetVersion() OptString {
 }
 
 // GetConfig returns the value of Config.
-func (s *PluginDetail) GetConfig() *PluginDetailConfig {
+func (s *PluginDetail) GetConfig() OptJSONObject {
 	return s.Config
 }
 
@@ -3632,7 +3704,7 @@ func (s *PluginDetail) SetVersion(val OptString) {
 }
 
 // SetConfig sets the value of Config.
-func (s *PluginDetail) SetConfig(val *PluginDetailConfig) {
+func (s *PluginDetail) SetConfig(val OptJSONObject) {
 	s.Config = val
 }
 
@@ -3665,8 +3737,6 @@ func (s *PluginDetail) SetNodeTypes(val []string) {
 func (s *PluginDetail) SetModels(val []string) {
 	s.Models = val
 }
-
-type PluginDetailConfig struct{}
 
 // Ref: #/components/schemas/PluginInfo
 type PluginInfo struct {
@@ -3740,6 +3810,32 @@ func (s *PluginList) GetData() []PluginDetail {
 // SetData sets the value of Data.
 func (s *PluginList) SetData(val []PluginDetail) {
 	s.Data = val
+}
+
+// Ref: #/components/schemas/PluginReloadResult
+type PluginReloadResult struct {
+	Added   []string `json:"added"`
+	Removed []string `json:"removed"`
+}
+
+// GetAdded returns the value of Added.
+func (s *PluginReloadResult) GetAdded() []string {
+	return s.Added
+}
+
+// GetRemoved returns the value of Removed.
+func (s *PluginReloadResult) GetRemoved() []string {
+	return s.Removed
+}
+
+// SetAdded sets the value of Added.
+func (s *PluginReloadResult) SetAdded(val []string) {
+	s.Added = val
+}
+
+// SetRemoved sets the value of Removed.
+func (s *PluginReloadResult) SetRemoved(val []string) {
+	s.Removed = val
 }
 
 // Ref: #/components/schemas/PluginUploadResult
@@ -3978,38 +4074,13 @@ func (s *QueryResultList) SetData(val []QueryResult) {
 	s.Data = val
 }
 
-type ReloadPluginsOK struct {
-	Added   []string `json:"added"`
-	Removed []string `json:"removed"`
-}
-
-// GetAdded returns the value of Added.
-func (s *ReloadPluginsOK) GetAdded() []string {
-	return s.Added
-}
-
-// GetRemoved returns the value of Removed.
-func (s *ReloadPluginsOK) GetRemoved() []string {
-	return s.Removed
-}
-
-// SetAdded sets the value of Added.
-func (s *ReloadPluginsOK) SetAdded(val []string) {
-	s.Added = val
-}
-
-// SetRemoved sets the value of Removed.
-func (s *ReloadPluginsOK) SetRemoved(val []string) {
-	s.Removed = val
-}
-
 // Ref: #/components/schemas/ResumeRequest
 type ResumeRequest struct {
-	AgentID        string                `json:"agent_id"`
-	ConversationID string                `json:"conversation_id"`
-	RunID          string                `json:"run_id"`
-	State          *ResumeRequestState   `json:"state"`
-	Decision       ResumeRequestDecision `json:"decision"`
+	AgentID        string        `json:"agent_id"`
+	ConversationID string        `json:"conversation_id"`
+	RunID          string        `json:"run_id"`
+	State          OptJSONObject `json:"state"`
+	Decision       JSONObject    `json:"decision"`
 }
 
 // GetAgentID returns the value of AgentID.
@@ -4028,12 +4099,12 @@ func (s *ResumeRequest) GetRunID() string {
 }
 
 // GetState returns the value of State.
-func (s *ResumeRequest) GetState() *ResumeRequestState {
+func (s *ResumeRequest) GetState() OptJSONObject {
 	return s.State
 }
 
 // GetDecision returns the value of Decision.
-func (s *ResumeRequest) GetDecision() ResumeRequestDecision {
+func (s *ResumeRequest) GetDecision() JSONObject {
 	return s.Decision
 }
 
@@ -4053,18 +4124,14 @@ func (s *ResumeRequest) SetRunID(val string) {
 }
 
 // SetState sets the value of State.
-func (s *ResumeRequest) SetState(val *ResumeRequestState) {
+func (s *ResumeRequest) SetState(val OptJSONObject) {
 	s.State = val
 }
 
 // SetDecision sets the value of Decision.
-func (s *ResumeRequest) SetDecision(val ResumeRequestDecision) {
+func (s *ResumeRequest) SetDecision(val JSONObject) {
 	s.Decision = val
 }
-
-type ResumeRequestDecision struct{}
-
-type ResumeRequestState struct{}
 
 type ResumeStreamOK struct {
 	Data io.Reader
@@ -4108,10 +4175,10 @@ func (s *RuntimeManagerStats) SetActorCount(val OptInt) {
 
 // Ref: #/components/schemas/RuntimeStats
 type RuntimeStats struct {
-	RuntimeID    OptString            `json:"runtime_id"`
-	RuntimeCount OptInt               `json:"runtime_count"`
-	ActorCount   OptInt               `json:"actor_count"`
-	Current      *RuntimeStatsCurrent `json:"current"`
+	RuntimeID    OptString     `json:"runtime_id"`
+	RuntimeCount OptInt        `json:"runtime_count"`
+	ActorCount   OptInt        `json:"actor_count"`
+	Current      OptJSONObject `json:"current"`
 }
 
 // GetRuntimeID returns the value of RuntimeID.
@@ -4130,7 +4197,7 @@ func (s *RuntimeStats) GetActorCount() OptInt {
 }
 
 // GetCurrent returns the value of Current.
-func (s *RuntimeStats) GetCurrent() *RuntimeStatsCurrent {
+func (s *RuntimeStats) GetCurrent() OptJSONObject {
 	return s.Current
 }
 
@@ -4150,58 +4217,35 @@ func (s *RuntimeStats) SetActorCount(val OptInt) {
 }
 
 // SetCurrent sets the value of Current.
-func (s *RuntimeStats) SetCurrent(val *RuntimeStatsCurrent) {
+func (s *RuntimeStats) SetCurrent(val OptJSONObject) {
 	s.Current = val
 }
 
-type RuntimeStatsCurrent struct{}
-
 // Ref: #/components/schemas/SessionInfo
 type SessionInfo struct {
-	Authenticated OptBool   `json:"authenticated"`
-	AuthEnabled   OptBool   `json:"auth_enabled"`
-	Principal     OptString `json:"principal"`
-	AuthMode      OptString `json:"auth_mode"`
+	Authenticated bool `json:"authenticated"`
+	// Present iff `authenticated == true`.
+	Username OptString `json:"username"`
 }
 
 // GetAuthenticated returns the value of Authenticated.
-func (s *SessionInfo) GetAuthenticated() OptBool {
+func (s *SessionInfo) GetAuthenticated() bool {
 	return s.Authenticated
 }
 
-// GetAuthEnabled returns the value of AuthEnabled.
-func (s *SessionInfo) GetAuthEnabled() OptBool {
-	return s.AuthEnabled
-}
-
-// GetPrincipal returns the value of Principal.
-func (s *SessionInfo) GetPrincipal() OptString {
-	return s.Principal
-}
-
-// GetAuthMode returns the value of AuthMode.
-func (s *SessionInfo) GetAuthMode() OptString {
-	return s.AuthMode
+// GetUsername returns the value of Username.
+func (s *SessionInfo) GetUsername() OptString {
+	return s.Username
 }
 
 // SetAuthenticated sets the value of Authenticated.
-func (s *SessionInfo) SetAuthenticated(val OptBool) {
+func (s *SessionInfo) SetAuthenticated(val bool) {
 	s.Authenticated = val
 }
 
-// SetAuthEnabled sets the value of AuthEnabled.
-func (s *SessionInfo) SetAuthEnabled(val OptBool) {
-	s.AuthEnabled = val
-}
-
-// SetPrincipal sets the value of Principal.
-func (s *SessionInfo) SetPrincipal(val OptString) {
-	s.Principal = val
-}
-
-// SetAuthMode sets the value of AuthMode.
-func (s *SessionInfo) SetAuthMode(val OptString) {
-	s.AuthMode = val
+// SetUsername sets the value of Username.
+func (s *SessionInfo) SetUsername(val OptString) {
+	s.Username = val
 }
 
 // SetDefaultModelNoContent is response for SetDefaultModel operation.
@@ -4231,6 +4275,32 @@ func (s *SetDefaultModelRequest) SetProvider(val string) {
 // SetModel sets the value of Model.
 func (s *SetDefaultModelRequest) SetModel(val string) {
 	s.Model = val
+}
+
+// Ref: #/components/schemas/SetupRequest
+type SetupRequest struct {
+	Username string `json:"username"`
+	Password string `json:"password"`
+}
+
+// GetUsername returns the value of Username.
+func (s *SetupRequest) GetUsername() string {
+	return s.Username
+}
+
+// GetPassword returns the value of Password.
+func (s *SetupRequest) GetPassword() string {
+	return s.Password
+}
+
+// SetUsername sets the value of Username.
+func (s *SetupRequest) SetUsername(val string) {
+	s.Username = val
+}
+
+// SetPassword sets the value of Password.
+func (s *SetupRequest) SetPassword(val string) {
+	s.Password = val
 }
 
 // Ref: #/components/schemas/SkillInfo
@@ -4377,6 +4447,58 @@ func (s *SkillList) SetData(val []SkillInfo) {
 	s.Data = val
 }
 
+// Ref: #/components/schemas/SkillUpdateAllResult
+type SkillUpdateAllResult struct {
+	Updated []string  `json:"updated"`
+	Error   OptString `json:"error"`
+}
+
+// GetUpdated returns the value of Updated.
+func (s *SkillUpdateAllResult) GetUpdated() []string {
+	return s.Updated
+}
+
+// GetError returns the value of Error.
+func (s *SkillUpdateAllResult) GetError() OptString {
+	return s.Error
+}
+
+// SetUpdated sets the value of Updated.
+func (s *SkillUpdateAllResult) SetUpdated(val []string) {
+	s.Updated = val
+}
+
+// SetError sets the value of Error.
+func (s *SkillUpdateAllResult) SetError(val OptString) {
+	s.Error = val
+}
+
+// Ref: #/components/schemas/SkillUpdateResult
+type SkillUpdateResult struct {
+	Status OptString `json:"status"`
+	Name   OptString `json:"name"`
+}
+
+// GetStatus returns the value of Status.
+func (s *SkillUpdateResult) GetStatus() OptString {
+	return s.Status
+}
+
+// GetName returns the value of Name.
+func (s *SkillUpdateResult) GetName() OptString {
+	return s.Name
+}
+
+// SetStatus sets the value of Status.
+func (s *SkillUpdateResult) SetStatus(val OptString) {
+	s.Status = val
+}
+
+// SetName sets the value of Name.
+func (s *SkillUpdateResult) SetName(val OptString) {
+	s.Name = val
+}
+
 // Ref: #/components/schemas/StatsOverview
 type StatsOverview struct {
 	TotalAgents        OptInt `json:"total_agents"`
@@ -4427,6 +4549,88 @@ func (s *TemplateList) GetData() []GraphTemplate {
 // SetData sets the value of Data.
 func (s *TemplateList) SetData(val []GraphTemplate) {
 	s.Data = val
+}
+
+// Ref: #/components/schemas/TemplateParameter
+type TemplateParameter struct {
+	Name  OptString `json:"name"`
+	Label OptString `json:"label"`
+	Type  OptString `json:"type"`
+	// Default value (any JSON type).
+	Default         jx.Raw  `json:"default"`
+	Required        OptBool `json:"required"`
+	AdditionalProps TemplateParameterAdditional
+}
+
+// GetName returns the value of Name.
+func (s *TemplateParameter) GetName() OptString {
+	return s.Name
+}
+
+// GetLabel returns the value of Label.
+func (s *TemplateParameter) GetLabel() OptString {
+	return s.Label
+}
+
+// GetType returns the value of Type.
+func (s *TemplateParameter) GetType() OptString {
+	return s.Type
+}
+
+// GetDefault returns the value of Default.
+func (s *TemplateParameter) GetDefault() jx.Raw {
+	return s.Default
+}
+
+// GetRequired returns the value of Required.
+func (s *TemplateParameter) GetRequired() OptBool {
+	return s.Required
+}
+
+// GetAdditionalProps returns the value of AdditionalProps.
+func (s *TemplateParameter) GetAdditionalProps() TemplateParameterAdditional {
+	return s.AdditionalProps
+}
+
+// SetName sets the value of Name.
+func (s *TemplateParameter) SetName(val OptString) {
+	s.Name = val
+}
+
+// SetLabel sets the value of Label.
+func (s *TemplateParameter) SetLabel(val OptString) {
+	s.Label = val
+}
+
+// SetType sets the value of Type.
+func (s *TemplateParameter) SetType(val OptString) {
+	s.Type = val
+}
+
+// SetDefault sets the value of Default.
+func (s *TemplateParameter) SetDefault(val jx.Raw) {
+	s.Default = val
+}
+
+// SetRequired sets the value of Required.
+func (s *TemplateParameter) SetRequired(val OptBool) {
+	s.Required = val
+}
+
+// SetAdditionalProps sets the value of AdditionalProps.
+func (s *TemplateParameter) SetAdditionalProps(val TemplateParameterAdditional) {
+	s.AdditionalProps = val
+}
+
+type TemplateParameterAdditional map[string]jx.Raw
+
+func (s *TemplateParameterAdditional) init() TemplateParameterAdditional {
+	m := *s
+	if m == nil {
+		m = map[string]jx.Raw{}
+		*s = m
+	}
+	return m
 }
 
 // Ref: #/components/schemas/TemplateParams
@@ -4484,11 +4688,11 @@ func (s *ToolList) SetData(val []ToolInfo) {
 
 // Ref: #/components/schemas/UpdateAgentRequest
 type UpdateAgentRequest struct {
-	Name            OptString                          `json:"name"`
-	Description     OptString                          `json:"description"`
-	Config          *UpdateAgentRequestConfig          `json:"config"`
-	GraphDefinition *UpdateAgentRequestGraphDefinition `json:"graph_definition"`
-	InputSchema     *UpdateAgentRequestInputSchema     `json:"input_schema"`
+	Name            OptString     `json:"name"`
+	Description     OptString     `json:"description"`
+	Config          OptJSONObject `json:"config"`
+	GraphDefinition OptJSONObject `json:"graph_definition"`
+	InputSchema     OptJSONObject `json:"input_schema"`
 }
 
 // GetName returns the value of Name.
@@ -4502,17 +4706,17 @@ func (s *UpdateAgentRequest) GetDescription() OptString {
 }
 
 // GetConfig returns the value of Config.
-func (s *UpdateAgentRequest) GetConfig() *UpdateAgentRequestConfig {
+func (s *UpdateAgentRequest) GetConfig() OptJSONObject {
 	return s.Config
 }
 
 // GetGraphDefinition returns the value of GraphDefinition.
-func (s *UpdateAgentRequest) GetGraphDefinition() *UpdateAgentRequestGraphDefinition {
+func (s *UpdateAgentRequest) GetGraphDefinition() OptJSONObject {
 	return s.GraphDefinition
 }
 
 // GetInputSchema returns the value of InputSchema.
-func (s *UpdateAgentRequest) GetInputSchema() *UpdateAgentRequestInputSchema {
+func (s *UpdateAgentRequest) GetInputSchema() OptJSONObject {
 	return s.InputSchema
 }
 
@@ -4527,49 +4731,18 @@ func (s *UpdateAgentRequest) SetDescription(val OptString) {
 }
 
 // SetConfig sets the value of Config.
-func (s *UpdateAgentRequest) SetConfig(val *UpdateAgentRequestConfig) {
+func (s *UpdateAgentRequest) SetConfig(val OptJSONObject) {
 	s.Config = val
 }
 
 // SetGraphDefinition sets the value of GraphDefinition.
-func (s *UpdateAgentRequest) SetGraphDefinition(val *UpdateAgentRequestGraphDefinition) {
+func (s *UpdateAgentRequest) SetGraphDefinition(val OptJSONObject) {
 	s.GraphDefinition = val
 }
 
 // SetInputSchema sets the value of InputSchema.
-func (s *UpdateAgentRequest) SetInputSchema(val *UpdateAgentRequestInputSchema) {
+func (s *UpdateAgentRequest) SetInputSchema(val OptJSONObject) {
 	s.InputSchema = val
-}
-
-type UpdateAgentRequestConfig struct{}
-
-type UpdateAgentRequestGraphDefinition struct{}
-
-type UpdateAgentRequestInputSchema struct{}
-
-type UpdateAllSkillsOK struct {
-	Updated []string  `json:"updated"`
-	Error   OptString `json:"error"`
-}
-
-// GetUpdated returns the value of Updated.
-func (s *UpdateAllSkillsOK) GetUpdated() []string {
-	return s.Updated
-}
-
-// GetError returns the value of Error.
-func (s *UpdateAllSkillsOK) GetError() OptString {
-	return s.Error
-}
-
-// SetUpdated sets the value of Updated.
-func (s *UpdateAllSkillsOK) SetUpdated(val []string) {
-	s.Updated = val
-}
-
-// SetError sets the value of Error.
-func (s *UpdateAllSkillsOK) SetError(val OptString) {
-	s.Error = val
 }
 
 // Ref: #/components/schemas/UpdateMemoryRequest
@@ -4585,31 +4758,6 @@ func (s *UpdateMemoryRequest) GetContent() string {
 // SetContent sets the value of Content.
 func (s *UpdateMemoryRequest) SetContent(val string) {
 	s.Content = val
-}
-
-type UpdateSkillOK struct {
-	Status OptString `json:"status"`
-	Name   OptString `json:"name"`
-}
-
-// GetStatus returns the value of Status.
-func (s *UpdateSkillOK) GetStatus() OptString {
-	return s.Status
-}
-
-// GetName returns the value of Name.
-func (s *UpdateSkillOK) GetName() OptString {
-	return s.Name
-}
-
-// SetStatus sets the value of Status.
-func (s *UpdateSkillOK) SetStatus(val OptString) {
-	s.Status = val
-}
-
-// SetName sets the value of Name.
-func (s *UpdateSkillOK) SetName(val OptString) {
-	s.Name = val
 }
 
 type UploadPluginReq struct {
@@ -4735,18 +4883,18 @@ func (s *WSTicketResponse) SetExpiresAt(val time.Time) {
 
 // Ref: #/components/schemas/WorkflowRun
 type WorkflowRun struct {
-	ID             OptString           `json:"id"`
-	AgentID        OptString           `json:"agent_id"`
-	ActorID        OptString           `json:"actor_id"`
-	ConversationID OptString           `json:"conversation_id"`
-	Input          OptString           `json:"input"`
-	Output         OptString           `json:"output"`
-	Inputs         *WorkflowRunInputs  `json:"inputs"`
-	Outputs        *WorkflowRunOutputs `json:"outputs"`
-	Status         OptString           `json:"status"`
-	Usage          *WorkflowRunUsage   `json:"usage"`
-	ElapsedMs      OptInt              `json:"elapsed_ms"`
-	CreatedAt      OptDateTime         `json:"created_at"`
+	ID             OptString     `json:"id"`
+	AgentID        OptString     `json:"agent_id"`
+	ActorID        OptString     `json:"actor_id"`
+	ConversationID OptString     `json:"conversation_id"`
+	Input          OptString     `json:"input"`
+	Output         OptString     `json:"output"`
+	Inputs         OptJSONObject `json:"inputs"`
+	Outputs        OptJSONObject `json:"outputs"`
+	Status         OptString     `json:"status"`
+	Usage          OptJSONObject `json:"usage"`
+	ElapsedMs      OptInt        `json:"elapsed_ms"`
+	CreatedAt      OptDateTime   `json:"created_at"`
 }
 
 // GetID returns the value of ID.
@@ -4780,12 +4928,12 @@ func (s *WorkflowRun) GetOutput() OptString {
 }
 
 // GetInputs returns the value of Inputs.
-func (s *WorkflowRun) GetInputs() *WorkflowRunInputs {
+func (s *WorkflowRun) GetInputs() OptJSONObject {
 	return s.Inputs
 }
 
 // GetOutputs returns the value of Outputs.
-func (s *WorkflowRun) GetOutputs() *WorkflowRunOutputs {
+func (s *WorkflowRun) GetOutputs() OptJSONObject {
 	return s.Outputs
 }
 
@@ -4795,7 +4943,7 @@ func (s *WorkflowRun) GetStatus() OptString {
 }
 
 // GetUsage returns the value of Usage.
-func (s *WorkflowRun) GetUsage() *WorkflowRunUsage {
+func (s *WorkflowRun) GetUsage() OptJSONObject {
 	return s.Usage
 }
 
@@ -4840,12 +4988,12 @@ func (s *WorkflowRun) SetOutput(val OptString) {
 }
 
 // SetInputs sets the value of Inputs.
-func (s *WorkflowRun) SetInputs(val *WorkflowRunInputs) {
+func (s *WorkflowRun) SetInputs(val OptJSONObject) {
 	s.Inputs = val
 }
 
 // SetOutputs sets the value of Outputs.
-func (s *WorkflowRun) SetOutputs(val *WorkflowRunOutputs) {
+func (s *WorkflowRun) SetOutputs(val OptJSONObject) {
 	s.Outputs = val
 }
 
@@ -4855,7 +5003,7 @@ func (s *WorkflowRun) SetStatus(val OptString) {
 }
 
 // SetUsage sets the value of Usage.
-func (s *WorkflowRun) SetUsage(val *WorkflowRunUsage) {
+func (s *WorkflowRun) SetUsage(val OptJSONObject) {
 	s.Usage = val
 }
 
@@ -4868,8 +5016,6 @@ func (s *WorkflowRun) SetElapsedMs(val OptInt) {
 func (s *WorkflowRun) SetCreatedAt(val OptDateTime) {
 	s.CreatedAt = val
 }
-
-type WorkflowRunInputs struct{}
 
 // Merged schema.
 // Ref: #/components/schemas/WorkflowRunList
@@ -4908,7 +5054,3 @@ func (s *WorkflowRunList) SetNextCursor(val OptString) {
 func (s *WorkflowRunList) SetData(val []WorkflowRun) {
 	s.Data = val
 }
-
-type WorkflowRunOutputs struct{}
-
-type WorkflowRunUsage struct{}

@@ -43,6 +43,20 @@ func encodeAddModelRequest(
 	return nil
 }
 
+func encodeChangePasswordRequest(
+	req *ChangePasswordRequest,
+	r *http.Request,
+) error {
+	const contentType = "application/json"
+	e := new(jx.Encoder)
+	{
+		req.Encode(e)
+	}
+	encoded := e.Bytes()
+	ht.SetBody(r, bytes.NewReader(encoded), contentType)
+	return nil
+}
+
 func encodeChatStreamRequest(
 	req *ChatRequest,
 	r *http.Request,
@@ -239,6 +253,20 @@ func encodeResumeStreamRequest(
 
 func encodeSetDefaultModelRequest(
 	req *SetDefaultModelRequest,
+	r *http.Request,
+) error {
+	const contentType = "application/json"
+	e := new(jx.Encoder)
+	{
+		req.Encode(e)
+	}
+	encoded := e.Bytes()
+	ht.SetBody(r, bytes.NewReader(encoded), contentType)
+	return nil
+}
+
+func encodeSetupAuthRequest(
+	req *SetupRequest,
 	r *http.Request,
 ) error {
 	const contentType = "application/json"
