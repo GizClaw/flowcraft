@@ -79,16 +79,22 @@ func (r *ProviderRegistry) Register(name string, factory ProviderFactory) {
 }
 
 // NewFromConfig creates an LLM instance via the registered factory.
-// It merges caps from the registry and config["caps"] sub-object, then
-// wraps the instance with CapsMiddleware automatically.
+// It merges caps from the registry catalog and the legacy
+// config["caps"] sub-object, then wraps the instance with
+// CapsMiddleware automatically.
 //
 // Expected config structure:
 //
 //	{
 //	  "api_key": "...",
 //	  "base_url": "...",
-//	  "caps": {"no_temperature": true, ...}
 //	}
+//
+// The legacy {"caps": ...} sub-object is still honored for backward
+// compatibility but is deprecated; new callers should pass caps via
+// ProviderConfig.Caps / ModelConfig.Caps when going through
+// DefaultResolver, which composes layered caps without relying on the
+// untyped config map.
 func (r *ProviderRegistry) NewFromConfig(provider, model string, config map[string]any) (LLM, error) {
 	r.mu.RLock()
 	factory, ok := r.providers[provider]
@@ -106,8 +112,12 @@ func (r *ProviderRegistry) NewFromConfig(provider, model string, config map[stri
 }
 
 // capsFromConfig extracts ModelCaps from config["caps"] sub-object.
-// Supports both the new format {"disabled":{"temperature":true}} and
-// the legacy format {"no_temperature":true}.
+// Supports both the structured format {"disabled":{"temperature":true}}
+// and the older flat format {"no_temperature":true}.
+//
+// Deprecated: pass caps via ProviderConfig.Caps / ModelConfig.Caps
+// instead of stuffing them into the provider config map. Removed in
+// v0.2.0 along with NewFromConfig's reading of the "caps" key.
 func capsFromConfig(config map[string]any) ModelCaps {
 	sub, _ := config["caps"].(map[string]any)
 	if sub == nil {
