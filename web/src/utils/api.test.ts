@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { apiStream, toolApi, pluginApi } from './api';
+import { apiStream, toolApi, pluginApi, skillApi } from './api';
 import client from '../api/client';
 
 vi.mock('../store/toastStore', () => ({
@@ -298,5 +298,85 @@ describe('pluginApi', () => {
       params: { path: { name: 'p1' } },
       body: { temperature: 0.7 },
     });
+  });
+});
+
+describe('skillApi', () => {
+  it('list returns skills from /skills envelope', async () => {
+    const skills = [
+      { name: 'analyzer', builtin: true },
+      { name: 'web-search', builtin: false, source: 'https://github.com/foo/bar.git' },
+    ];
+    const spy = vi.spyOn(client, 'GET').mockResolvedValue({
+      data: { data: skills },
+      error: undefined,
+      response: new Response(),
+    } as never);
+
+    const result = await skillApi.list();
+    expect(spy).toHaveBeenCalledWith('/skills');
+    expect(result).toHaveLength(2);
+    expect(result[0].name).toBe('analyzer');
+    expect(result[1].source).toBe('https://github.com/foo/bar.git');
+  });
+
+  it('list returns empty array when payload is missing', async () => {
+    vi.spyOn(client, 'GET').mockResolvedValue({
+      data: undefined,
+      error: undefined,
+      response: new Response(),
+    } as never);
+    expect(await skillApi.list()).toEqual([]);
+  });
+
+  it('install posts /skills/install with the request body', async () => {
+    const spy = vi.spyOn(client, 'POST').mockResolvedValue({
+      data: { status: 'installed', name: 'web-search', url: 'https://github.com/foo/bar.git' },
+      error: undefined,
+      response: new Response(),
+    } as never);
+
+    const body = { url: 'https://github.com/foo/bar.git', name: 'web-search' };
+    await skillApi.install(body);
+    expect(spy).toHaveBeenCalledWith('/skills/install', { body });
+  });
+
+  it('uninstall calls DELETE /skills/{name}', async () => {
+    const spy = vi.spyOn(client, 'DELETE').mockResolvedValue({
+      data: undefined,
+      error: undefined,
+      response: new Response(),
+    } as never);
+
+    await skillApi.uninstall('web-search');
+    expect(spy).toHaveBeenCalledWith('/skills/{name}', {
+      params: { path: { name: 'web-search' } },
+    });
+  });
+
+  it('update calls PUT /skills/{name} and returns the result', async () => {
+    const spy = vi.spyOn(client, 'PUT').mockResolvedValue({
+      data: { status: 'updated', name: 'web-search' },
+      error: undefined,
+      response: new Response(),
+    } as never);
+
+    const result = await skillApi.update('web-search');
+    expect(spy).toHaveBeenCalledWith('/skills/{name}', {
+      params: { path: { name: 'web-search' } },
+    });
+    expect(result).toEqual({ status: 'updated', name: 'web-search' });
+  });
+
+  it('updateAll calls POST /skills/update-all and returns the result', async () => {
+    const spy = vi.spyOn(client, 'POST').mockResolvedValue({
+      data: { updated: ['a', 'b'] },
+      error: undefined,
+      response: new Response(),
+    } as never);
+
+    const result = await skillApi.updateAll();
+    expect(spy).toHaveBeenCalledWith('/skills/update-all', {});
+    expect(result).toEqual({ updated: ['a', 'b'] });
   });
 });

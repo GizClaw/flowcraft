@@ -44,6 +44,12 @@ export default function AgentSettingsPage() {
   }, []);
 
   const handleSave = async () => {
+    // Mirrors SettingsPage: when notifications are off, persist only the
+    // disabled flag rather than carrying the (now-meaningless) channel and
+    // granularity selections forward.
+    const notification = notifEnabled
+      ? { enabled: true, channel_name: notifChannel, granularity: notifGranularity as 'all' | 'final' | 'failure' }
+      : { enabled: false };
     const update: UpdateAgentRequest = {
       name, description,
       input_schema: inputSchema,
@@ -52,7 +58,7 @@ export default function AgentSettingsPage() {
         ...agent.config,
         skill_whitelist: skillWhitelist,
         parallel: { enabled: parallelEnabled, merge_strategy: mergeStrategy as 'last_wins', max_branches: maxBranches, max_nesting: maxNesting },
-        notification: { enabled: notifEnabled, channel_name: notifChannel, granularity: notifGranularity as 'all' | 'final' | 'failure' },
+        notification,
         memory: {
           ...agent.config?.memory,
           long_term: {
@@ -279,7 +285,7 @@ export default function AgentSettingsPage() {
       </section>
 
       <section>
-        <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100 mb-4">{t('agentSettings.skillWhitelist')}</h2>
+        <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100 mb-4">{t('skillWhitelist.title')}</h2>
         <SkillWhitelistEditor whitelist={skillWhitelist} onChange={setSkillWhitelist} />
       </section>
 

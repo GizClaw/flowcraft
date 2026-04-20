@@ -112,10 +112,17 @@ export default function SettingsPage() {
   const handleSaveCoPilot = async () => {
     try {
       const agent = await agentApi.get(COPILOT_AGENT_ID);
+      // When notifications are disabled, persist only `enabled: false` so
+      // stale channel/granularity selections do not silently linger in the
+      // backing config (the prior shape was harmless thanks to omitempty,
+      // but it produced confusing reload behaviour and tests).
+      const notification = cpNotifEnabled
+        ? { enabled: true, channel_name: cpNotifChannel, granularity: cpNotifGranularity }
+        : { enabled: false };
       await agentApi.update(COPILOT_AGENT_ID, {
           config: {
           ...agent.config,
-          notification: { enabled: cpNotifEnabled, channel_name: cpNotifChannel, granularity: cpNotifGranularity },
+          notification,
           memory: {
             ...agent.config.memory,
             max_messages: cpMemMaxMessages,
@@ -526,7 +533,7 @@ export default function SettingsPage() {
 
                 {/* Skill Whitelist */}
                 <div>
-                  <h3 className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-3">{t('settings.skillWhitelist')}</h3>
+                  <h3 className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-3">{t('skillWhitelist.title')}</h3>
                   <SkillWhitelistEditor whitelist={cpSkillWhitelist} onChange={setCpSkillWhitelist} />
                 </div>
 

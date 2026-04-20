@@ -342,12 +342,18 @@ export const toolApi = {
 
 // ── Skill API ──
 
+// Mirrors components.schemas.SkillInfo — every field is optional in the
+// OpenAPI contract, so the TS shape must match to avoid runtime surprises
+// (e.g. undefined React keys, blank text rendered as "undefined").
 export interface SkillItem {
-  name: string;
-  description: string;
+  name?: string;
+  description?: string;
   tags?: string[];
-  dir: string;
+  dir?: string;
+  entry?: string;
   builtin?: boolean;
+  enabled?: boolean;
+  source?: string;
 }
 
 export const skillApi = {
@@ -361,6 +367,14 @@ export const skillApi = {
   },
   uninstall: async (name: string) => {
     await client.DELETE('/skills/{name}', { params: { path: { name } } });
+  },
+  update: async (name: string) => {
+    const { data } = await client.PUT('/skills/{name}', { params: { path: { name } } });
+    return data as Schemas['SkillUpdateResult'];
+  },
+  updateAll: async () => {
+    const { data } = await client.POST('/skills/update-all', {});
+    return data as Schemas['SkillUpdateAllResult'];
   },
 };
 
