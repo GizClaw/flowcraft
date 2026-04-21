@@ -71,7 +71,7 @@ func newSeedHarness(t *testing.T, ll llm.LLM) (model.Store, knowledge.Store, *kn
 	}
 	cs := knowledge.NewCachedStore(fs)
 
-	worker := knowledgeproc.New(knowledgeproc.Deps{
+	worker, err := knowledgeproc.New(knowledgeproc.Deps{
 		FSStore:        fs,
 		CachedStore:    cs,
 		AppStore:       appStore,
@@ -82,6 +82,9 @@ func newSeedHarness(t *testing.T, ll llm.LLM) (model.Store, knowledge.Store, *kn
 		RollupDebounce: 30 * time.Millisecond,
 		RollupTimeout:  2 * time.Second,
 	})
+	if err != nil {
+		t.Fatalf("new worker: %v", err)
+	}
 	worker.Start(ctx)
 
 	cleanup := func() {

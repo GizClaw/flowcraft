@@ -16,10 +16,19 @@ import (
 
 const copilotKnowledgeDatasetID = "copilot-reference"
 
+// ensureCoPilotAgent creates the CoPilot agent on first launch and
+// (independently) seeds the reference knowledge dataset. The two
+// concerns are decoupled on purpose: a previous boot may have created
+// the agent successfully but failed mid-seed (no LLM, app crash,
+// etc.). Re-running seed on every boot is cheap because
+// initCoPilotKnowledge is itself idempotent.
 func ensureCoPilotAgent(ctx context.Context, s model.Store, ks knowledge.Store, worker *knowledgeproc.Worker, templateReg *template.Registry) {
-	_, err := s.GetAgent(ctx, model.CoPilotAgentID)
-	if err == nil {
-		telemetry.Info(ctx, "copilot: agent already exists, skipping initialization")
+	if ks != nil {
+		initCoPilotKnowledge(ctx, s, ks, worker)
+	}
+
+	if _, err := s.GetAgent(ctx, model.CoPilotAgentID); err == nil {
+		telemetry.Info(ctx, "copilot: agent already exists, skipping agent initialization")
 		return
 	}
 
@@ -93,10 +102,6 @@ func ensureCoPilotAgent(ctx context.Context, s model.Store, ks knowledge.Store, 
 		return
 	}
 	telemetry.Info(ctx, "copilot: dispatcher agent created", otellog.String("id", created.AgentID))
-
-	if ks != nil {
-		initCoPilotKnowledge(ctx, s, ks, worker)
-	}
 }
 
 // resolveTemplate returns the template metadata and the instantiated GraphDefinition.
@@ -126,15 +131,19 @@ func resolveTemplate(ctx context.Context, templateReg *template.Registry, templa
 	return t, nil
 }
 
-// initCoPilotKnowledge ingests the embedded reference docs into both the
-// app store (so REST consumers can list them) and the knowledge store
-// (so retrieval works), and submits each doc to the context worker to
-// kick off layered-context generation. The worker's debounced rollup
-// then derives the dataset-level L0/L1 in the background.
+// initCoPilotKnowledge ingests the embedded reference docs into both
+// the app store (so REST consumers can list them) and the knowledge
+// store (so retrieval works), and submits each doc to the context
+// worker to kick off layered-context generation. The worker's
+// debounced rollup then derives the dataset-level L0/L1 in the
+// background.
 //
-// All operations are best-effort: a failure on any single doc does not
-// abort the seed, since the recovery path on the next start will
-// re-submit anything left in pending/processing.
+// The function is idempotent and re-runs every boot:
+//   - the dataset is created on demand
+//   - documents already present in the app store are skipped
+//     (recoverPendingKnowledgeDocs handles re-submitting unfinished ones)
+//   - on ks.AddDocument failure the orphan app row is rolled back so
+//     the next boot can retry cleanly
 func initCoPilotKnowledge(ctx context.Context, appStore model.Store, ks knowledge.Store, worker *knowledgeproc.Worker) {
 	if _, err := appStore.GetDataset(ctx, copilotKnowledgeDatasetID); err != nil {
 		if !errdefs.IsNotFound(err) {
@@ -153,8 +162,24 @@ func initCoPilotKnowledge(ctx context.Context, appStore model.Store, ks knowledg
 		}
 	}
 
+	existing, err := appStore.ListDocuments(ctx, copilotKnowledgeDatasetID)
+	if err != nil {
+		telemetry.Warn(ctx, "copilot: list reference docs failed", otellog.String("error", err.Error()))
+		return
+	}
+	known := make(map[string]struct{}, len(existing))
+	for _, d := range existing {
+		if d != nil {
+			known[d.Name] = struct{}{}
+		}
+	}
+
 	docs := template.CoPilotReferenceDocs()
+	var added int
 	for _, doc := range docs {
+		if _, ok := known[doc.Name]; ok {
+			continue
+		}
 		row, err := appStore.AddDocument(ctx, copilotKnowledgeDatasetID, doc.Name, doc.Content)
 		if err != nil {
 			telemetry.Warn(ctx, "copilot: app store add reference doc failed",
@@ -164,8 +189,13 @@ func initCoPilotKnowledge(ctx context.Context, appStore model.Store, ks knowledg
 		if err := ks.AddDocument(ctx, copilotKnowledgeDatasetID, doc.Name, doc.Content); err != nil {
 			telemetry.Warn(ctx, "copilot: knowledge store add reference doc failed",
 				otellog.String("name", doc.Name), otellog.String("error", err.Error()))
+			if delErr := appStore.DeleteDocument(ctx, copilotKnowledgeDatasetID, row.ID); delErr != nil {
+				telemetry.Warn(ctx, "copilot: rollback app store doc failed",
+					otellog.String("name", doc.Name), otellog.String("error", delErr.Error()))
+			}
 			continue
 		}
+		added++
 		if worker == nil {
 			continue
 		}
@@ -174,9 +204,10 @@ func initCoPilotKnowledge(ctx context.Context, appStore model.Store, ks knowledg
 				otellog.String("name", doc.Name), otellog.String("error", err.Error()))
 		}
 	}
-	telemetry.Info(ctx, "copilot: reference knowledge initialized",
-		otellog.Int("docs", len(docs)),
-		otellog.Bool("worker_enabled", worker != nil && worker.Enabled()))
+	telemetry.Info(ctx, "copilot: reference knowledge ensured",
+		otellog.Int("docs_total", len(docs)),
+		otellog.Int("docs_added", added),
+		otellog.Bool("worker_enabled", worker != nil))
 }
 
 // recoverPendingKnowledgeDocs re-submits documents that were left in
@@ -185,7 +216,7 @@ func initCoPilotKnowledge(ctx context.Context, appStore model.Store, ks knowledg
 // users drive retries explicitly via the reprocess endpoint to avoid
 // retry storms when an upstream LLM is genuinely broken.
 func recoverPendingKnowledgeDocs(ctx context.Context, appStore model.Store, worker *knowledgeproc.Worker) {
-	if worker == nil || !worker.Enabled() {
+	if worker == nil {
 		return
 	}
 	datasets, err := appStore.ListDatasets(ctx)

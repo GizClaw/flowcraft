@@ -17,10 +17,11 @@ import (
 // initial index, starts the file watcher, and stands up the
 // platform-side context worker that owns LLM-driven L0/L1 generation.
 //
-// When llmResolver cannot produce an LLM the worker still runs in
-// no-op mode: SubmitDocument immediately marks the document completed
-// so REST consumers do not get stuck on "processing", preserving the
-// historical BM25-only behaviour.
+// When llmResolver cannot produce an LLM the worker is not
+// constructed and the returned worker pointer is nil. Callers must
+// guard the worker with KnowledgeWorker == nil; the API surface
+// rejects context-generating writes (AddDocument, ReprocessDocument)
+// in that mode rather than silently degrading.
 //
 // The returned cleanup stops the watcher and the worker in
 // reverse-init order.
@@ -38,21 +39,28 @@ func wireKnowledge(ctx context.Context, ws workspace.Workspace, llmResolver llm.
 	if llmResolver != nil {
 		l, err := llmResolver.Resolve(ctx, "")
 		if err != nil {
-			telemetry.Warn(ctx, "knowledge: LLM unavailable, context worker will run in no-op mode (BM25-only search)",
+			telemetry.Warn(ctx, "knowledge: LLM unavailable, context worker disabled (BM25-only search; AddDocument/Reprocess will return 503)",
 				otellog.String("error", err.Error()))
 		} else {
 			workerLLM = l
 		}
 	}
 
-	worker := knowledgeproc.New(knowledgeproc.Deps{
-		FSStore:     fsStore,
-		CachedStore: cachedStore,
-		AppStore:    appStore,
-		LLM:         workerLLM,
-	})
-	worker.Start(ctx)
-	cleanups = append(cleanups, worker.Stop)
+	var worker *knowledgeproc.Worker
+	if workerLLM != nil {
+		w, err := knowledgeproc.New(knowledgeproc.Deps{
+			FSStore:     fsStore,
+			CachedStore: cachedStore,
+			AppStore:    appStore,
+			LLM:         workerLLM,
+		})
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		w.Start(ctx)
+		cleanups = append(cleanups, w.Stop)
+		worker = w
+	}
 
 	if kw, kwErr := fsStore.StartWatching(ctx); kwErr != nil {
 		telemetry.Warn(ctx, "knowledge: file watcher failed to start", otellog.String("error", kwErr.Error()))

@@ -274,13 +274,6 @@ func (s *TracingStore) UpdateDocumentStats(ctx context.Context, datasetID, docID
 	return err
 }
 
-func (s *TracingStore) UpdateDocumentStatsByName(ctx context.Context, datasetID, docName string, patch model.DocumentStatsPatch) error {
-	ctx, span := s.start(ctx, "UpdateDocumentStatsByName", attribute.String("dataset.id", datasetID), attribute.String("document.name", docName))
-	err := s.inner.UpdateDocumentStatsByName(ctx, datasetID, docName, patch)
-	finish(span, err)
-	return err
-}
-
 func (s *TracingStore) UpdateDatasetAbstract(ctx context.Context, datasetID, abstract string) error {
 	ctx, span := s.start(ctx, "UpdateDatasetAbstract", attribute.String("dataset.id", datasetID))
 	err := s.inner.UpdateDatasetAbstract(ctx, datasetID, abstract)

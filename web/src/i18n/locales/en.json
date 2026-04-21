@@ -210,8 +210,8 @@
       "completed": "Ready",
       "failed": "Failed"
     },
-    "chunks": "{{count}} chunks",
-    "chunks_one": "{{count}} chunk"
+    "chunks_one": "{{count}} chunk",
+    "chunks_other": "{{count}} chunks"
   },
   "skills": {
     "title": "Skills",

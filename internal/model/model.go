@@ -243,7 +243,8 @@ type Dataset struct {
 	UpdatedAt     time.Time `json:"updated_at"`
 }
 
-// ProcessingStatus tracks the semantic processing state of a document.
+// ProcessingStatus tracks the layered-context generation lifecycle of
+// a document as driven by the knowledgeproc.Worker.
 type ProcessingStatus string
 
 const (
@@ -266,10 +267,10 @@ type DatasetDocument struct {
 	CreatedAt        time.Time        `json:"created_at"`
 }
 
-// DocumentStatsPatch updates one or more computed fields on a DatasetDocument.
-// Only non-nil fields are written; this lets callers update chunk_count
-// synchronously after ingestion and L0/L1/status asynchronously from the
-// semantic processor without racing.
+// DocumentStatsPatch updates one or more computed fields on a
+// DatasetDocument. Only non-nil fields are written, so the API
+// handler can patch chunk_count inline after ingestion while the
+// context worker patches L0/L1/status asynchronously without racing.
 type DocumentStatsPatch struct {
 	ChunkCount       *int
 	L0Abstract       *string

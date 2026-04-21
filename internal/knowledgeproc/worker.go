@@ -6,8 +6,8 @@
 // reflect lifecycle and layered context).
 //
 // The worker is intentionally in-memory: there is no persistent queue.
-// A future commit will recover unfinished rows on startup by scanning
-// the app store and re-submitting them.
+// Bootstrap re-submits any document still in pending/processing on
+// startup via recoverPendingKnowledgeDocs.
 package knowledgeproc
 
 import (
@@ -33,9 +33,11 @@ const (
 	defaultRollupTimeout  = 5 * time.Minute
 )
 
-// Deps groups the worker's collaborators. FSStore, CachedStore and
-// AppStore are required; LLM is optional (when nil the worker runs in
-// no-op mode and immediately marks every submitted document completed).
+// Deps groups the worker's collaborators. All four core stores plus an
+// LLM are required: the worker is the platform's only path for LLM
+// driven layered-context generation, so refusing to construct one when
+// any collaborator is missing keeps the failure mode at startup
+// instead of silently degrading at runtime.
 type Deps struct {
 	FSStore     *knowledge.FSStore
 	CachedStore *knowledge.CachedStore
@@ -77,6 +79,7 @@ type Worker struct {
 	mu           sync.Mutex
 	cancels      map[string]context.CancelFunc // keyed by docID
 	rollupTimers map[string]*time.Timer        // keyed by datasetID
+	tombstones   map[string]struct{}           // keyed by docID; in-queue jobs to drop
 	started      bool
 	stopping     bool
 
@@ -86,9 +89,18 @@ type Worker struct {
 	wg sync.WaitGroup
 }
 
-// New constructs a Worker with the given dependencies. It does not
-// start any goroutines; call Start before SubmitDocument.
-func New(deps Deps) *Worker {
+// New constructs a Worker. It returns an error if any required
+// collaborator is missing so misconfiguration is loud at startup.
+func New(deps Deps) (*Worker, error) {
+	if deps.FSStore == nil {
+		return nil, errors.New("knowledgeproc: FSStore is required")
+	}
+	if deps.AppStore == nil {
+		return nil, errors.New("knowledgeproc: AppStore is required")
+	}
+	if deps.LLM == nil {
+		return nil, errors.New("knowledgeproc: LLM is required")
+	}
 	if deps.Concurrency <= 0 {
 		deps.Concurrency = defaultConcurrency
 	}
@@ -109,13 +121,9 @@ func New(deps Deps) *Worker {
 		jobs:         make(chan job, deps.QueueSize),
 		cancels:      make(map[string]context.CancelFunc),
 		rollupTimers: make(map[string]*time.Timer),
-	}
+		tombstones:   make(map[string]struct{}),
+	}, nil
 }
-
-// Enabled reports whether the worker will actually call an LLM. When
-// false, SubmitDocument short-circuits with a synchronous "completed"
-// patch (the historical BM25-only behaviour).
-func (w *Worker) Enabled() bool { return w != nil && w.deps.LLM != nil }
 
 // Start launches the worker pool. The supplied context bounds the
 // lifetime of every in-flight job; cancelling it (or calling Stop)
@@ -140,8 +148,9 @@ func (w *Worker) Start(ctx context.Context) {
 	}
 }
 
-// Stop closes the queue, cancels all in-flight jobs and blocks until
-// every worker goroutine has exited. Safe to call multiple times.
+// Stop closes the queue, cancels all in-flight jobs and pending
+// rollups and blocks until every goroutine has exited. Safe to call
+// multiple times.
 func (w *Worker) Stop() {
 	if w == nil {
 		return
@@ -158,7 +167,11 @@ func (w *Worker) Stop() {
 	}
 	w.cancels = map[string]context.CancelFunc{}
 	for _, t := range w.rollupTimers {
-		t.Stop()
+		if t.Stop() {
+			// Timer had not fired yet so its wg.Done deferred in the
+			// AfterFunc callback will never run; release that slot.
+			w.wg.Done()
+		}
 	}
 	w.rollupTimers = map[string]*time.Timer{}
 	cancelRoot := w.rootCancel
@@ -170,15 +183,12 @@ func (w *Worker) Stop() {
 	}
 }
 
-// SubmitDocument enqueues a document for context generation.
+// SubmitDocument transitions the document to "processing" and enqueues
+// it for LLM-driven context generation. The status flip and enqueue
+// are atomic from the caller's perspective: if either step fails the
+// document is left in "failed" with the underlying error returned.
 //
-// When the worker is in no-op mode (LLM nil) the document is marked
-// completed inline and SubmitDocument returns nil. Otherwise the
-// document's processing_status is flipped to "processing" before the
-// job lands on the queue so the UI sees the transition immediately.
-//
-// SubmitDocument blocks if the queue is full; callers that need a
-// non-blocking variant should add a buffered upstream.
+// SubmitDocument blocks on a full queue.
 func (w *Worker) SubmitDocument(ctx context.Context, datasetID, docID, name, content string) error {
 	if w == nil {
 		return errors.New("knowledgeproc: worker is nil")
@@ -187,54 +197,48 @@ func (w *Worker) SubmitDocument(ctx context.Context, datasetID, docID, name, con
 		return errors.New("knowledgeproc: datasetID, docID and name are required")
 	}
 
-	if !w.Enabled() {
-		status := model.ProcessingCompleted
-		return w.deps.AppStore.UpdateDocumentStats(ctx, datasetID, docID, model.DocumentStatsPatch{
-			ProcessingStatus: &status,
-		})
-	}
-
 	w.mu.Lock()
 	if !w.started || w.stopping {
 		w.mu.Unlock()
 		return errors.New("knowledgeproc: worker not running")
 	}
+	delete(w.tombstones, docID)
 	w.mu.Unlock()
 
-	status := model.ProcessingRunning
+	processing := model.ProcessingRunning
 	if err := w.deps.AppStore.UpdateDocumentStats(ctx, datasetID, docID, model.DocumentStatsPatch{
-		ProcessingStatus: &status,
+		ProcessingStatus: &processing,
 	}); err != nil {
-		telemetry.Warn(ctx, "knowledgeproc: mark processing failed",
-			otellog.String("dataset", datasetID),
-			otellog.String("doc", docID),
-			otellog.String("error", err.Error()))
+		return err
 	}
 
 	select {
 	case w.jobs <- job{datasetID: datasetID, docID: docID, docName: name, content: content}:
 		return nil
 	case <-ctx.Done():
+		w.markEnqueueFailed(context.Background(), datasetID, docID, ctx.Err())
 		return ctx.Err()
 	}
 }
 
-// Cancel best-effort aborts an in-flight job for the given docID. If
-// the job has not started yet (still in the queue) Cancel is a no-op:
-// when the worker pulls it the cancellation will already be visible
-// because the per-job context derived from rootCtx will not be active
-// for that docID. Safe to call when the worker is not running.
+// Cancel best-effort aborts processing for the given docID.
+//
+// If the job is currently running its context is cancelled. If it is
+// still queued a tombstone is recorded so the worker drops it on
+// pickup. Safe to call when the worker is not running.
 func (w *Worker) Cancel(docID string) {
 	if w == nil || docID == "" {
 		return
 	}
 	w.mu.Lock()
-	cancel, ok := w.cancels[docID]
-	if ok {
+	cancel, running := w.cancels[docID]
+	if running {
 		delete(w.cancels, docID)
+	} else {
+		w.tombstones[docID] = struct{}{}
 	}
 	w.mu.Unlock()
-	if ok && cancel != nil {
+	if running && cancel != nil {
 		cancel()
 	}
 }
@@ -243,6 +247,15 @@ func (w *Worker) Cancel(docID string) {
 func (w *Worker) loop() {
 	defer w.wg.Done()
 	for j := range w.jobs {
+		w.mu.Lock()
+		_, dropped := w.tombstones[j.docID]
+		if dropped {
+			delete(w.tombstones, j.docID)
+		}
+		w.mu.Unlock()
+		if dropped {
+			continue
+		}
 		w.runJob(j)
 	}
 }
@@ -287,16 +300,16 @@ func (w *Worker) runJob(j job) {
 		return
 	}
 
-	status := model.ProcessingCompleted
+	completed := model.ProcessingCompleted
 	patch := model.DocumentStatsPatch{
-		ProcessingStatus: &status,
+		ProcessingStatus: &completed,
 		L0Abstract:       strPtr(docCtx.Abstract),
 		L1Overview:       strPtr(docCtx.Overview),
 	}
-	if err := w.deps.AppStore.UpdateDocumentStatsByName(jobCtx, j.datasetID, j.docName, patch); err != nil {
+	if err := w.deps.AppStore.UpdateDocumentStats(jobCtx, j.datasetID, j.docID, patch); err != nil {
 		telemetry.Warn(jobCtx, "knowledgeproc: persist completed status failed",
 			otellog.String("dataset", j.datasetID),
-			otellog.String("doc", j.docName),
+			otellog.String("doc", j.docID),
 			otellog.String("error", err.Error()))
 	}
 
@@ -305,7 +318,8 @@ func (w *Worker) runJob(j job) {
 
 // scheduleDatasetRollup arms (or re-arms) a debounced timer for a
 // dataset. Bursts of completing documents collapse into a single
-// rollup run.
+// rollup run. The actual run is tracked in the worker WaitGroup so
+// Stop blocks until it finishes (or short-circuits when stopping).
 func (w *Worker) scheduleDatasetRollup(datasetID string) {
 	if w == nil || datasetID == "" {
 		return
@@ -318,10 +332,18 @@ func (w *Worker) scheduleDatasetRollup(datasetID string) {
 	if w.stopping {
 		return
 	}
+	// Reschedule by stopping any prior pending timer; if Stop() reports
+	// the timer was active (meaning it had not fired yet) we must
+	// release the matching wg.Add slot ourselves because the canceled
+	// callback will never run.
 	if t, ok := w.rollupTimers[datasetID]; ok {
-		t.Stop()
+		if t.Stop() {
+			w.wg.Done()
+		}
 	}
+	w.wg.Add(1)
 	w.rollupTimers[datasetID] = time.AfterFunc(w.deps.RollupDebounce, func() {
+		defer w.wg.Done()
 		w.mu.Lock()
 		delete(w.rollupTimers, datasetID)
 		stopping := w.stopping
@@ -336,8 +358,8 @@ func (w *Worker) scheduleDatasetRollup(datasetID string) {
 // runDatasetRollup aggregates per-document L0 abstracts for a dataset
 // into a dataset-level L0 + L1 summary. It writes the result to both
 // the FSStore (in-memory + .abstract.md / .overview.md sidecars) and
-// the app store (datasets.l0_abstract). Empty datasets and rollups
-// that produce zero non-empty abstracts skip the LLM call.
+// the app store (datasets.l0_abstract). Rollups that produce zero
+// non-empty abstracts skip the LLM call.
 func (w *Worker) runDatasetRollup(datasetID string) {
 	parent := w.rootCtx
 	if parent == nil {
@@ -368,16 +390,20 @@ func (w *Worker) runDatasetRollup(datasetID string) {
 		return
 	}
 
-	dsCtx, err := knowledge.GenerateDatasetContext(ctx, w.deps.LLM, summaries)
-	if err != nil {
-		telemetry.Warn(ctx, "knowledgeproc: dataset rollup generation failed",
-			otellog.String("dataset", datasetID),
-			otellog.String("error", err.Error()))
-		// Persist the partially produced overview when available so a
-		// later retry does not lose it.
-		if dsCtx.Overview == "" {
+	dsCtx, genErr := knowledge.GenerateDatasetContext(ctx, w.deps.LLM, summaries)
+	if genErr != nil {
+		// Preserve whatever partial output the SDK managed to produce
+		// (typically just an Abstract). Without it nothing was
+		// generated and there is nothing to persist.
+		if dsCtx.Abstract == "" && dsCtx.Overview == "" {
+			telemetry.Warn(ctx, "knowledgeproc: dataset rollup generation failed",
+				otellog.String("dataset", datasetID),
+				otellog.String("error", genErr.Error()))
 			return
 		}
+		telemetry.Warn(ctx, "knowledgeproc: dataset rollup generation partially succeeded",
+			otellog.String("dataset", datasetID),
+			otellog.String("error", genErr.Error()))
 	}
 
 	w.deps.FSStore.SetDatasetAbstract(datasetID, dsCtx.Abstract)
@@ -404,7 +430,7 @@ func (w *Worker) runDatasetRollup(datasetID string) {
 
 // persistDocContext writes generated L0/L1 to the FSStore (in-memory +
 // sidecars) and evicts any cached entries. Returns the first error
-// encountered; partial writes are best-effort logged.
+// encountered.
 func (w *Worker) persistDocContext(ctx context.Context, j job, c knowledge.DocumentContext) error {
 	w.deps.FSStore.SetDocAbstract(j.datasetID, j.docName, c.Abstract)
 	w.deps.FSStore.SetDocOverview(j.datasetID, j.docName, c.Overview)
@@ -428,12 +454,12 @@ func (w *Worker) persistDocContext(ctx context.Context, j job, c knowledge.Docum
 func (w *Worker) markFailed(ctx context.Context, j job, cause error, partial knowledge.DocumentContext) {
 	telemetry.Warn(ctx, "knowledgeproc: document context generation failed",
 		otellog.String("dataset", j.datasetID),
-		otellog.String("doc", j.docName),
+		otellog.String("doc", j.docID),
 		otellog.String("error", cause.Error()))
 
-	status := model.ProcessingFailed
+	failed := model.ProcessingFailed
 	patch := model.DocumentStatsPatch{
-		ProcessingStatus: &status,
+		ProcessingStatus: &failed,
 	}
 	if partial.Abstract != "" {
 		patch.L0Abstract = strPtr(partial.Abstract)
@@ -441,10 +467,26 @@ func (w *Worker) markFailed(ctx context.Context, j job, cause error, partial kno
 	if partial.Overview != "" {
 		patch.L1Overview = strPtr(partial.Overview)
 	}
-	if err := w.deps.AppStore.UpdateDocumentStatsByName(ctx, j.datasetID, j.docName, patch); err != nil {
+	if err := w.deps.AppStore.UpdateDocumentStats(ctx, j.datasetID, j.docID, patch); err != nil {
 		telemetry.Warn(ctx, "knowledgeproc: persist failed status failed",
 			otellog.String("dataset", j.datasetID),
-			otellog.String("doc", j.docName),
+			otellog.String("doc", j.docID),
+			otellog.String("error", err.Error()))
+	}
+}
+
+// markEnqueueFailed flips a document straight to failed when the
+// caller's context is cancelled mid-enqueue. Uses Background so the
+// row state is recorded even when the request is gone.
+func (w *Worker) markEnqueueFailed(ctx context.Context, datasetID, docID string, cause error) {
+	failed := model.ProcessingFailed
+	if err := w.deps.AppStore.UpdateDocumentStats(ctx, datasetID, docID, model.DocumentStatsPatch{
+		ProcessingStatus: &failed,
+	}); err != nil {
+		telemetry.Warn(ctx, "knowledgeproc: persist enqueue-failed status failed",
+			otellog.String("dataset", datasetID),
+			otellog.String("doc", docID),
+			otellog.String("cause", cause.Error()),
 			otellog.String("error", err.Error()))
 	}
 }

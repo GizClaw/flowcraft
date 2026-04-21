@@ -13,6 +13,7 @@ import (
 	"github.com/GizClaw/flowcraft/internal/model"
 	"github.com/GizClaw/flowcraft/internal/platform"
 	"github.com/GizClaw/flowcraft/internal/store"
+	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/llm"
 	"github.com/GizClaw/flowcraft/sdk/workspace"
 	"github.com/GizClaw/flowcraft/sdkx/knowledge"
@@ -64,7 +65,7 @@ func newKnowledgeHandler(t *testing.T, withWorker bool) (*oapiHandler, *store.SQ
 	var worker *knowledgeproc.Worker
 	if withWorker {
 		stub := &kbStubLLM{abstractResp: "abs", overviewResp: "ov", datasetOverviewResp: "ds-ov"}
-		worker = knowledgeproc.New(knowledgeproc.Deps{
+		w, err := knowledgeproc.New(knowledgeproc.Deps{
 			FSStore:        fs,
 			CachedStore:    cs,
 			AppStore:       s,
@@ -75,8 +76,12 @@ func newKnowledgeHandler(t *testing.T, withWorker bool) (*oapiHandler, *store.SQ
 			RollupDebounce: 30 * time.Millisecond,
 			RollupTimeout:  2 * time.Second,
 		})
-		worker.Start(ctx)
-		t.Cleanup(worker.Stop)
+		if err != nil {
+			t.Fatalf("new worker: %v", err)
+		}
+		w.Start(ctx)
+		t.Cleanup(w.Stop)
+		worker = w
 	}
 
 	srv := &Server{deps: ServerDeps{Platform: &platform.Platform{
@@ -133,7 +138,10 @@ func TestReprocessDocument_FlipsToPendingAndSubmits(t *testing.T) {
 	t.Fatalf("doc did not reach completed; status=%s", fresh.ProcessingStatus)
 }
 
-func TestReprocessDocument_NoWorker_MarksCompleted(t *testing.T) {
+// When no worker is wired (LLM unavailable) Reprocess must surface a
+// 503 instead of pretending the document is completed: callers can
+// then explain the misconfiguration to the user.
+func TestReprocessDocument_NoWorker_Returns503(t *testing.T) {
 	h, s, _, _ := newKnowledgeHandler(t, false)
 	ctx := context.Background()
 
@@ -145,12 +153,27 @@ func TestReprocessDocument_NoWorker_MarksCompleted(t *testing.T) {
 		t.Fatalf("add doc: %v", err)
 	}
 
-	resp, err := h.ReprocessDocument(ctx, oas.ReprocessDocumentParams{ID: "ds", DocId: doc.ID})
-	if err != nil {
-		t.Fatalf("reprocess: %v", err)
+	if _, err := h.ReprocessDocument(ctx, oas.ReprocessDocumentParams{ID: "ds", DocId: doc.ID}); err == nil {
+		t.Fatal("expected error when worker is not configured")
+	} else if !errdefs.IsNotAvailable(err) {
+		t.Fatalf("expected NotAvailable, got %v", err)
 	}
-	got, _ := resp.ProcessingStatus.Get()
-	if got != string(model.ProcessingCompleted) {
-		t.Fatalf("expected completed, got %s", got)
+}
+
+// AddDocument must also reject when no worker is wired so we never
+// land "completed" rows that the user cannot retry.
+func TestAddDocument_NoWorker_Returns503(t *testing.T) {
+	h, s, _, _ := newKnowledgeHandler(t, false)
+	ctx := context.Background()
+
+	if _, err := s.CreateDataset(ctx, &model.Dataset{ID: "ds", Name: "test"}); err != nil {
+		t.Fatalf("create ds: %v", err)
+	}
+	_, err := h.AddDocument(ctx, &oas.AddDocumentRequest{Name: "doc.md", Content: "body"}, oas.AddDocumentParams{ID: "ds"})
+	if err == nil {
+		t.Fatal("expected error when worker is not configured")
+	}
+	if !errdefs.IsNotAvailable(err) {
+		t.Fatalf("expected NotAvailable, got %v", err)
 	}
 }

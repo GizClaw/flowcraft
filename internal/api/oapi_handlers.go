@@ -565,6 +565,11 @@ func (h *oapiHandler) AddDocument(ctx context.Context, req *oas.AddDocumentReque
 	if req.Name == "" || req.Content == "" {
 		return nil, errdefs.Validationf("name and content are required")
 	}
+	worker := h.s.deps.Platform.KnowledgeWorker
+	if worker == nil {
+		return nil, errdefs.NotAvailablef("knowledge context worker is not configured (LLM unavailable)")
+	}
+
 	doc, err := h.s.deps.Platform.Store.AddDocument(ctx, params.ID, req.Name, req.Content)
 	if err != nil {
 		return nil, err
@@ -577,37 +582,27 @@ func (h *oapiHandler) AddDocument(ctx context.Context, req *oas.AddDocumentReque
 	}
 
 	// Backfill the chunk count synchronously so the first list/get after
-	// ingestion reflects the true value. Processing state is owned by the
-	// context worker: when a worker is wired and an LLM is configured the
-	// document walks pending → processing → completed | failed and
-	// l0_abstract / l1_overview get filled in asynchronously. Without a
-	// worker (or without an LLM) the document is marked completed inline
-	// so the UI does not get stuck.
+	// ingestion reflects the true value. Processing state itself is
+	// owned by the worker (it flips pending → processing → completed |
+	// failed below).
 	chunks := knowledge.ChunkDocument(req.Name, req.Content, knowledge.DefaultChunkConfig())
 	chunkCount := len(chunks)
-	initialStatus := model.ProcessingPending
-	if h.s.deps.Platform.KnowledgeWorker == nil || !h.s.deps.Platform.KnowledgeWorker.Enabled() {
-		initialStatus = model.ProcessingCompleted
-	}
 	if updateErr := h.s.deps.Platform.Store.UpdateDocumentStats(ctx, params.ID, doc.ID, model.DocumentStatsPatch{
-		ChunkCount:       &chunkCount,
-		ProcessingStatus: &initialStatus,
+		ChunkCount: &chunkCount,
 	}); updateErr != nil {
-		telemetry.Warn(ctx, "knowledge: update document stats failed",
+		telemetry.Warn(ctx, "knowledge: update document chunk count failed",
 			otellog.String("doc", doc.ID), otellog.String("error", updateErr.Error()))
 	} else {
 		doc.ChunkCount = chunkCount
-		doc.ProcessingStatus = initialStatus
 	}
 
-	if h.s.deps.Platform.KnowledgeWorker != nil {
-		if subErr := h.s.deps.Platform.KnowledgeWorker.SubmitDocument(ctx, params.ID, doc.ID, req.Name, req.Content); subErr != nil {
-			telemetry.Warn(ctx, "knowledge: submit to context worker failed",
-				otellog.String("doc", doc.ID), otellog.String("error", subErr.Error()))
-		} else if h.s.deps.Platform.KnowledgeWorker.Enabled() {
-			doc.ProcessingStatus = model.ProcessingRunning
-		}
+	if subErr := worker.SubmitDocument(ctx, params.ID, doc.ID, req.Name, req.Content); subErr != nil {
+		// The worker already flipped the row to failed when the
+		// underlying store error is the cause; surface the failure to
+		// the caller so the UI can show it.
+		return nil, subErr
 	}
+	doc.ProcessingStatus = model.ProcessingRunning
 
 	return toOAS[oas.DatasetDocument](doc)
 }
@@ -632,12 +627,17 @@ func (h *oapiHandler) DeleteDocument(ctx context.Context, params oas.DeleteDocum
 	return nil
 }
 
-// ReprocessDocument resets the document's processing_status to pending
-// and re-submits it to the context worker. Used by the UI as a manual
-// retry path for docs that landed in failed (or got stuck while the
-// worker was offline). When no worker is wired the row is just marked
-// completed so the UI does not loop on a dead retry.
+// ReprocessDocument re-submits a document to the context worker. Used
+// by the UI as a manual retry path for docs that landed in failed (or
+// got stuck while the worker was offline). When no worker is wired
+// (no LLM configured) Reprocess returns 503 so the caller can surface
+// the misconfiguration instead of looping on a dead retry.
 func (h *oapiHandler) ReprocessDocument(ctx context.Context, params oas.ReprocessDocumentParams) (*oas.DatasetDocument, error) {
+	worker := h.s.deps.Platform.KnowledgeWorker
+	if worker == nil {
+		return nil, errdefs.NotAvailablef("knowledge context worker is not configured (LLM unavailable)")
+	}
+
 	doc, err := h.s.deps.Platform.Store.GetDocument(ctx, params.ID, params.DocId)
 	if err != nil {
 		return nil, err
@@ -646,26 +646,10 @@ func (h *oapiHandler) ReprocessDocument(ctx context.Context, params oas.Reproces
 		return nil, errdefs.NotFoundf("document %s not found", params.DocId)
 	}
 
-	worker := h.s.deps.Platform.KnowledgeWorker
-	resetStatus := model.ProcessingPending
-	if worker == nil || !worker.Enabled() {
-		resetStatus = model.ProcessingCompleted
-	}
-	if err := h.s.deps.Platform.Store.UpdateDocumentStats(ctx, params.ID, doc.ID, model.DocumentStatsPatch{
-		ProcessingStatus: &resetStatus,
-	}); err != nil {
+	if err := worker.SubmitDocument(ctx, params.ID, doc.ID, doc.Name, doc.Content); err != nil {
 		return nil, err
 	}
-	doc.ProcessingStatus = resetStatus
-
-	if worker != nil {
-		if err := worker.SubmitDocument(ctx, params.ID, doc.ID, doc.Name, doc.Content); err != nil {
-			telemetry.Warn(ctx, "knowledge: reprocess submit failed",
-				otellog.String("doc", doc.ID), otellog.String("error", err.Error()))
-		} else if worker.Enabled() {
-			doc.ProcessingStatus = model.ProcessingRunning
-		}
-	}
+	doc.ProcessingStatus = model.ProcessingRunning
 
 	return toOAS[oas.DatasetDocument](doc)
 }

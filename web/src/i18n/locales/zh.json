@@ -210,7 +210,7 @@
       "completed": "已就绪",
       "failed": "失败"
     },
-    "chunks": "{{count}} 个分片"
+    "chunks_other": "{{count}} 个分片"
   },
   "skills": {
     "title": "技能",

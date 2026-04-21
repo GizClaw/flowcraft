@@ -996,36 +996,9 @@ func (s *SQLiteStore) DeleteDocument(ctx context.Context, datasetID, docID strin
 	})
 }
 
+// UpdateDocumentStats updates only the non-nil fields of patch. Returns
+// NotFound when the document row is gone (typical race with delete).
 func (s *SQLiteStore) UpdateDocumentStats(ctx context.Context, datasetID, docID string, patch model.DocumentStatsPatch) error {
-	return s.applyDocumentStatsPatch(ctx, datasetID, docID, "", patch)
-}
-
-func (s *SQLiteStore) UpdateDocumentStatsByName(ctx context.Context, datasetID, docName string, patch model.DocumentStatsPatch) error {
-	return s.applyDocumentStatsPatch(ctx, datasetID, "", docName, patch)
-}
-
-// UpdateDatasetAbstract overwrites the dataset-level L0 abstract and
-// bumps updated_at. Empty datasets (no row) return NotFound so callers
-// can treat the rollup as a no-op.
-func (s *SQLiteStore) UpdateDatasetAbstract(ctx context.Context, datasetID, abstract string) error {
-	res, err := s.db.ExecContext(ctx,
-		`UPDATE datasets SET l0_abstract = ?, updated_at = ? WHERE id = ?`,
-		abstract, timeStr(time.Now()), datasetID)
-	if err != nil {
-		return fmt.Errorf("store: update dataset abstract: %w", err)
-	}
-	n, _ := res.RowsAffected()
-	if n == 0 {
-		return errdefs.NotFoundf("dataset %s not found", datasetID)
-	}
-	return nil
-}
-
-// applyDocumentStatsPatch updates only the non-nil fields of patch. Exactly
-// one of docID or docName must be set: docID is used by the API handler
-// directly after ingestion; docName is used by the semantic processor which
-// only tracks documents by their display name.
-func (s *SQLiteStore) applyDocumentStatsPatch(ctx context.Context, datasetID, docID, docName string, patch model.DocumentStatsPatch) error {
 	setParts := make([]string, 0, 4)
 	args := make([]any, 0, 6)
 	if patch.ChunkCount != nil {
@@ -1047,26 +1020,33 @@ func (s *SQLiteStore) applyDocumentStatsPatch(ctx context.Context, datasetID, do
 	if len(setParts) == 0 {
 		return nil
 	}
-	var whereClause string
-	if docID != "" {
-		whereClause = "id = ? AND dataset_id = ?"
-		args = append(args, docID, datasetID)
-	} else {
-		whereClause = "name = ? AND dataset_id = ?"
-		args = append(args, docName, datasetID)
-	}
-	query := fmt.Sprintf("UPDATE dataset_documents SET %s WHERE %s",
-		strings.Join(setParts, ", "), whereClause)
+	args = append(args, docID, datasetID)
+	query := fmt.Sprintf("UPDATE dataset_documents SET %s WHERE id = ? AND dataset_id = ?",
+		strings.Join(setParts, ", "))
 	res, err := s.db.ExecContext(ctx, query, args...)
 	if err != nil {
 		return fmt.Errorf("store: update document stats: %w", err)
 	}
 	n, _ := res.RowsAffected()
 	if n == 0 {
-		if docID != "" {
-			return errdefs.NotFoundf("document %s not found", docID)
-		}
-		return errdefs.NotFoundf("document %s not found in dataset %s", docName, datasetID)
+		return errdefs.NotFoundf("document %s not found", docID)
+	}
+	return nil
+}
+
+// UpdateDatasetAbstract overwrites the dataset-level L0 abstract and
+// bumps updated_at. Empty datasets (no row) return NotFound so callers
+// can treat the rollup as a no-op.
+func (s *SQLiteStore) UpdateDatasetAbstract(ctx context.Context, datasetID, abstract string) error {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE datasets SET l0_abstract = ?, updated_at = ? WHERE id = ?`,
+		abstract, timeStr(time.Now()), datasetID)
+	if err != nil {
+		return fmt.Errorf("store: update dataset abstract: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return errdefs.NotFoundf("dataset %s not found", datasetID)
 	}
 	return nil
 }

@@ -123,10 +123,6 @@ func (s *mockStore) DeleteDocument(context.Context, string, string) error { retu
 func (s *mockStore) UpdateDocumentStats(context.Context, string, string, model.DocumentStatsPatch) error {
 	return nil
 }
-
-func (s *mockStore) UpdateDocumentStatsByName(context.Context, string, string, model.DocumentStatsPatch) error {
-	return nil
-}
 func (s *mockStore) UpdateDatasetAbstract(context.Context, string, string) error { return nil }
 func (s *mockStore) ListGraphVersions(context.Context, string) ([]*model.GraphVersion, error) {
 	return nil, nil

@@ -99,7 +99,6 @@ type Store interface {
 	ListDocuments(ctx context.Context, datasetID string) ([]*DatasetDocument, error)
 	DeleteDocument(ctx context.Context, datasetID, docID string) error
 	UpdateDocumentStats(ctx context.Context, datasetID, docID string, patch DocumentStatsPatch) error
-	UpdateDocumentStatsByName(ctx context.Context, datasetID, docName string, patch DocumentStatsPatch) error
 	UpdateDatasetAbstract(ctx context.Context, datasetID, abstract string) error
 
 	// Graph version operations.

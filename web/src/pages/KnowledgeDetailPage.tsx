@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { ArrowLeft, Plus, RefreshCw, Search, Trash2 } from 'lucide-react';
@@ -31,7 +31,7 @@ export default function KnowledgeDetailPage() {
   const [searching, setSearching] = useState(false);
   const addToast = useToastStore((s) => s.addToast);
 
-  const load = (silent = false) => {
+  const load = useCallback((silent = false) => {
     if (!id) return;
     if (!silent) setLoading(true);
     Promise.all([datasetApi.get(id), datasetApi.listDocuments(id)])
@@ -40,9 +40,9 @@ export default function KnowledgeDetailPage() {
         if (!silent) navigate('/knowledge');
       })
       .finally(() => { if (!silent) setLoading(false); });
-  };
+  }, [id, navigate]);
 
-  useEffect(load, [id, navigate]);
+  useEffect(() => { load(); }, [load]);
 
   const hasUnsettled = useMemo(
     () => docs.some((d) => d.processing_status === 'pending' || d.processing_status === 'processing'),
@@ -55,8 +55,7 @@ export default function KnowledgeDetailPage() {
     if (!hasUnsettled) return;
     const handle = window.setInterval(() => load(true), 2500);
     return () => window.clearInterval(handle);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hasUnsettled, id]);
+  }, [hasUnsettled, load]);
 
   const handleAddDoc = async () => {
     if (!id || !newTitle.trim() || !newContent.trim()) return;
