@@ -26,9 +26,11 @@ import (
 
 // Defaults for the worker pool.
 const (
-	defaultConcurrency = 3
-	defaultQueueSize   = 256
-	defaultJobTimeout  = 5 * time.Minute
+	defaultConcurrency    = 3
+	defaultQueueSize      = 256
+	defaultJobTimeout     = 5 * time.Minute
+	defaultRollupDebounce = 30 * time.Second
+	defaultRollupTimeout  = 5 * time.Minute
 )
 
 // Deps groups the worker's collaborators. FSStore, CachedStore and
@@ -49,6 +51,13 @@ type Deps struct {
 	// JobTimeout caps per-document LLM work. Defaults to 5 minutes when
 	// zero. Set negative to disable.
 	JobTimeout time.Duration
+	// RollupDebounce is the quiet window after the last document
+	// completion before a dataset-level rollup runs. Defaults to 30s
+	// when zero. Set negative to disable rollup entirely.
+	RollupDebounce time.Duration
+	// RollupTimeout caps per-rollup LLM work. Defaults to 5 minutes
+	// when zero. Set negative to disable.
+	RollupTimeout time.Duration
 }
 
 // job describes one unit of LLM-driven context generation.
@@ -65,10 +74,11 @@ type Worker struct {
 
 	jobs chan job
 
-	mu       sync.Mutex
-	cancels  map[string]context.CancelFunc // keyed by docID
-	started  bool
-	stopping bool
+	mu           sync.Mutex
+	cancels      map[string]context.CancelFunc // keyed by docID
+	rollupTimers map[string]*time.Timer        // keyed by datasetID
+	started      bool
+	stopping     bool
 
 	rootCtx    context.Context
 	rootCancel context.CancelFunc
@@ -88,10 +98,17 @@ func New(deps Deps) *Worker {
 	if deps.JobTimeout == 0 {
 		deps.JobTimeout = defaultJobTimeout
 	}
+	if deps.RollupDebounce == 0 {
+		deps.RollupDebounce = defaultRollupDebounce
+	}
+	if deps.RollupTimeout == 0 {
+		deps.RollupTimeout = defaultRollupTimeout
+	}
 	return &Worker{
-		deps:    deps,
-		jobs:    make(chan job, deps.QueueSize),
-		cancels: make(map[string]context.CancelFunc),
+		deps:         deps,
+		jobs:         make(chan job, deps.QueueSize),
+		cancels:      make(map[string]context.CancelFunc),
+		rollupTimers: make(map[string]*time.Timer),
 	}
 }
 
@@ -140,6 +157,10 @@ func (w *Worker) Stop() {
 		cancel()
 	}
 	w.cancels = map[string]context.CancelFunc{}
+	for _, t := range w.rollupTimers {
+		t.Stop()
+	}
+	w.rollupTimers = map[string]*time.Timer{}
 	cancelRoot := w.rootCancel
 	w.mu.Unlock()
 
@@ -256,11 +277,13 @@ func (w *Worker) runJob(j job) {
 	docCtx, err := knowledge.GenerateDocumentContext(jobCtx, w.deps.LLM, j.content)
 	if err != nil {
 		w.markFailed(jobCtx, j, err, docCtx)
+		w.scheduleDatasetRollup(j.datasetID)
 		return
 	}
 
 	if err := w.persistDocContext(jobCtx, j, docCtx); err != nil {
 		w.markFailed(jobCtx, j, err, docCtx)
+		w.scheduleDatasetRollup(j.datasetID)
 		return
 	}
 
@@ -274,6 +297,107 @@ func (w *Worker) runJob(j job) {
 		telemetry.Warn(jobCtx, "knowledgeproc: persist completed status failed",
 			otellog.String("dataset", j.datasetID),
 			otellog.String("doc", j.docName),
+			otellog.String("error", err.Error()))
+	}
+
+	w.scheduleDatasetRollup(j.datasetID)
+}
+
+// scheduleDatasetRollup arms (or re-arms) a debounced timer for a
+// dataset. Bursts of completing documents collapse into a single
+// rollup run.
+func (w *Worker) scheduleDatasetRollup(datasetID string) {
+	if w == nil || datasetID == "" {
+		return
+	}
+	if w.deps.RollupDebounce < 0 {
+		return
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.stopping {
+		return
+	}
+	if t, ok := w.rollupTimers[datasetID]; ok {
+		t.Stop()
+	}
+	w.rollupTimers[datasetID] = time.AfterFunc(w.deps.RollupDebounce, func() {
+		w.mu.Lock()
+		delete(w.rollupTimers, datasetID)
+		stopping := w.stopping
+		w.mu.Unlock()
+		if stopping {
+			return
+		}
+		w.runDatasetRollup(datasetID)
+	})
+}
+
+// runDatasetRollup aggregates per-document L0 abstracts for a dataset
+// into a dataset-level L0 + L1 summary. It writes the result to both
+// the FSStore (in-memory + .abstract.md / .overview.md sidecars) and
+// the app store (datasets.l0_abstract). Empty datasets and rollups
+// that produce zero non-empty abstracts skip the LLM call.
+func (w *Worker) runDatasetRollup(datasetID string) {
+	parent := w.rootCtx
+	if parent == nil {
+		parent = context.Background()
+	}
+	ctx, cancel := context.WithCancel(parent)
+	if w.deps.RollupTimeout > 0 {
+		ctx, cancel = context.WithTimeout(parent, w.deps.RollupTimeout)
+	}
+	defer cancel()
+
+	docs, err := w.deps.AppStore.ListDocuments(ctx, datasetID)
+	if err != nil {
+		telemetry.Warn(ctx, "knowledgeproc: rollup list documents failed",
+			otellog.String("dataset", datasetID),
+			otellog.String("error", err.Error()))
+		return
+	}
+
+	summaries := make([]knowledge.DocumentSummary, 0, len(docs))
+	for _, d := range docs {
+		if d == nil || d.L0Abstract == "" {
+			continue
+		}
+		summaries = append(summaries, knowledge.DocumentSummary{Name: d.Name, Abstract: d.L0Abstract})
+	}
+	if len(summaries) == 0 {
+		return
+	}
+
+	dsCtx, err := knowledge.GenerateDatasetContext(ctx, w.deps.LLM, summaries)
+	if err != nil {
+		telemetry.Warn(ctx, "knowledgeproc: dataset rollup generation failed",
+			otellog.String("dataset", datasetID),
+			otellog.String("error", err.Error()))
+		// Persist the partially produced overview when available so a
+		// later retry does not lose it.
+		if dsCtx.Overview == "" {
+			return
+		}
+	}
+
+	w.deps.FSStore.SetDatasetAbstract(datasetID, dsCtx.Abstract)
+	w.deps.FSStore.SetDatasetOverview(datasetID, dsCtx.Overview)
+	if err := w.deps.FSStore.WriteDatasetFile(ctx, datasetID, ".abstract.md", dsCtx.Abstract); err != nil {
+		telemetry.Warn(ctx, "knowledgeproc: write dataset abstract sidecar failed",
+			otellog.String("dataset", datasetID),
+			otellog.String("error", err.Error()))
+	}
+	if err := w.deps.FSStore.WriteDatasetFile(ctx, datasetID, ".overview.md", dsCtx.Overview); err != nil {
+		telemetry.Warn(ctx, "knowledgeproc: write dataset overview sidecar failed",
+			otellog.String("dataset", datasetID),
+			otellog.String("error", err.Error()))
+	}
+	if w.deps.CachedStore != nil {
+		w.deps.CachedStore.EvictDataset(datasetID)
+	}
+	if err := w.deps.AppStore.UpdateDatasetAbstract(ctx, datasetID, dsCtx.Abstract); err != nil {
+		telemetry.Warn(ctx, "knowledgeproc: persist dataset abstract failed",
+			otellog.String("dataset", datasetID),
 			otellog.String("error", err.Error()))
 	}
 }

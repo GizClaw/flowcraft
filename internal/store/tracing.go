@@ -281,6 +281,13 @@ func (s *TracingStore) UpdateDocumentStatsByName(ctx context.Context, datasetID,
 	return err
 }
 
+func (s *TracingStore) UpdateDatasetAbstract(ctx context.Context, datasetID, abstract string) error {
+	ctx, span := s.start(ctx, "UpdateDatasetAbstract", attribute.String("dataset.id", datasetID))
+	err := s.inner.UpdateDatasetAbstract(ctx, datasetID, abstract)
+	finish(span, err)
+	return err
+}
+
 func (s *TracingStore) ListGraphVersions(ctx context.Context, agentID string) ([]*model.GraphVersion, error) {
 	ctx, span := s.start(ctx, "ListGraphVersions", attribute.String("agent.id", agentID))
 	versions, err := s.inner.ListGraphVersions(ctx, agentID)

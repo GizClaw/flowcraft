@@ -1004,6 +1004,23 @@ func (s *SQLiteStore) UpdateDocumentStatsByName(ctx context.Context, datasetID, 
 	return s.applyDocumentStatsPatch(ctx, datasetID, "", docName, patch)
 }
 
+// UpdateDatasetAbstract overwrites the dataset-level L0 abstract and
+// bumps updated_at. Empty datasets (no row) return NotFound so callers
+// can treat the rollup as a no-op.
+func (s *SQLiteStore) UpdateDatasetAbstract(ctx context.Context, datasetID, abstract string) error {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE datasets SET l0_abstract = ?, updated_at = ? WHERE id = ?`,
+		abstract, timeStr(time.Now()), datasetID)
+	if err != nil {
+		return fmt.Errorf("store: update dataset abstract: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return errdefs.NotFoundf("dataset %s not found", datasetID)
+	}
+	return nil
+}
+
 // applyDocumentStatsPatch updates only the non-nil fields of patch. Exactly
 // one of docID or docName must be set: docID is used by the API handler
 // directly after ingestion; docName is used by the semantic processor which

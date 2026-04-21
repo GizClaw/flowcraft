@@ -24,20 +24,62 @@ import (
 type stubStore struct {
 	model.Store // embed for method-set satisfaction; nil entries panic on call
 
-	mu       sync.Mutex
-	byID     map[string]model.DocumentStatsPatch // last patch keyed by docID
-	byName   map[string]model.DocumentStatsPatch // last patch keyed by name
-	statuses map[string][]model.ProcessingStatus // ordered status history per name
-	failOnce bool                                // when true, the first UpdateDocumentStats fails
+	mu              sync.Mutex
+	byID            map[string]model.DocumentStatsPatch  // last patch keyed by docID
+	byName          map[string]model.DocumentStatsPatch  // last patch keyed by name
+	statuses        map[string][]model.ProcessingStatus  // ordered status history per name
+	docsByDataset   map[string][]*model.DatasetDocument  // ListDocuments source of truth
+	datasetAbstract map[string]string                    // last abstract written per datasetID
+	abstractCalls   int32                                // count UpdateDatasetAbstract calls
+	failOnce        bool                                 // when true, the first UpdateDocumentStats fails
+	abstractErr     error                                // when set, UpdateDatasetAbstract returns this
 }
 
 func newStubStore() *stubStore {
 	return &stubStore{
-		byID:     map[string]model.DocumentStatsPatch{},
-		byName:   map[string]model.DocumentStatsPatch{},
-		statuses: map[string][]model.ProcessingStatus{},
+		byID:            map[string]model.DocumentStatsPatch{},
+		byName:          map[string]model.DocumentStatsPatch{},
+		statuses:        map[string][]model.ProcessingStatus{},
+		docsByDataset:   map[string][]*model.DatasetDocument{},
+		datasetAbstract: map[string]string{},
 	}
 }
+
+func (s *stubStore) seedDoc(datasetID string, doc *model.DatasetDocument) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.docsByDataset[datasetID] = append(s.docsByDataset[datasetID], doc)
+}
+
+func (s *stubStore) ListDocuments(_ context.Context, datasetID string) ([]*model.DatasetDocument, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	docs := s.docsByDataset[datasetID]
+	out := make([]*model.DatasetDocument, len(docs))
+	for i, d := range docs {
+		// Return a shallow copy with the latest L0 patched in so the
+		// rollup sees fresh abstracts produced by the worker.
+		dc := *d
+		if patch, ok := s.byName[d.Name]; ok && patch.L0Abstract != nil {
+			dc.L0Abstract = *patch.L0Abstract
+		}
+		out[i] = &dc
+	}
+	return out, nil
+}
+
+func (s *stubStore) UpdateDatasetAbstract(_ context.Context, datasetID, abstract string) error {
+	if s.abstractErr != nil {
+		return s.abstractErr
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.datasetAbstract[datasetID] = abstract
+	atomic.AddInt32(&s.abstractCalls, 1)
+	return nil
+}
+
+func (s *stubStore) datasetAbstractCalls() int { return int(atomic.LoadInt32(&s.abstractCalls)) }
 
 func (s *stubStore) UpdateDocumentStats(_ context.Context, _, docID string, patch model.DocumentStatsPatch) error {
 	s.mu.Lock()
@@ -74,12 +116,14 @@ func (s *stubStore) statusHistory(name string) []model.ProcessingStatus {
 // Optional delay simulates a slow generation so tests can race
 // Cancel/Stop against in-flight jobs.
 type stubLLM struct {
-	abstractResp string
-	abstractErr  error
-	overviewResp string
-	overviewErr  error
-	delay        time.Duration
-	calls        int32
+	abstractResp        string
+	abstractErr         error
+	overviewResp        string
+	overviewErr         error
+	datasetOverviewResp string
+	datasetOverviewErr  error
+	delay               time.Duration
+	calls               int32
 }
 
 func (s *stubLLM) Generate(ctx context.Context, msgs []llm.Message, _ ...llm.GenerateOption) (llm.Message, llm.TokenUsage, error) {
@@ -95,16 +139,23 @@ func (s *stubLLM) Generate(ctx context.Context, msgs []llm.Message, _ ...llm.Gen
 		return llm.Message{}, llm.TokenUsage{}, errors.New("empty prompt")
 	}
 	body := msgs[0].Content()
-	if strings.Contains(body, "structured overview") {
+	switch {
+	case strings.Contains(body, "Document summaries:"):
+		if s.datasetOverviewErr != nil {
+			return llm.Message{}, llm.TokenUsage{}, s.datasetOverviewErr
+		}
+		return llm.NewTextMessage(llm.RoleAssistant, s.datasetOverviewResp), llm.TokenUsage{}, nil
+	case strings.Contains(body, "structured overview"):
 		if s.overviewErr != nil {
 			return llm.Message{}, llm.TokenUsage{}, s.overviewErr
 		}
 		return llm.NewTextMessage(llm.RoleAssistant, s.overviewResp), llm.TokenUsage{}, nil
+	default:
+		if s.abstractErr != nil {
+			return llm.Message{}, llm.TokenUsage{}, s.abstractErr
+		}
+		return llm.NewTextMessage(llm.RoleAssistant, s.abstractResp), llm.TokenUsage{}, nil
 	}
-	if s.abstractErr != nil {
-		return llm.Message{}, llm.TokenUsage{}, s.abstractErr
-	}
-	return llm.NewTextMessage(llm.RoleAssistant, s.abstractResp), llm.TokenUsage{}, nil
 }
 
 func (s *stubLLM) GenerateStream(_ context.Context, _ []llm.Message, _ ...llm.GenerateOption) (llm.StreamMessage, error) {
@@ -115,7 +166,12 @@ func (s *stubLLM) callCount() int { return int(atomic.LoadInt32(&s.calls)) }
 
 // newWorker builds a Worker with an in-memory FSStore + CachedStore +
 // stubStore. The caller may override the LLM (pass nil for no-op mode).
+// Rollup is disabled by default; tests that exercise it use newWorkerWithRollup.
 func newWorker(t *testing.T, ll llm.LLM) (*Worker, *knowledge.FSStore, *stubStore) {
+	return newWorkerWithRollup(t, ll, -1)
+}
+
+func newWorkerWithRollup(t *testing.T, ll llm.LLM, debounce time.Duration) (*Worker, *knowledge.FSStore, *stubStore) {
 	t.Helper()
 	ws := workspace.NewMemWorkspace()
 	fs := knowledge.NewFSStore(ws)
@@ -125,13 +181,15 @@ func newWorker(t *testing.T, ll llm.LLM) (*Worker, *knowledge.FSStore, *stubStor
 	cs := knowledge.NewCachedStore(fs)
 	store := newStubStore()
 	w := New(Deps{
-		FSStore:     fs,
-		CachedStore: cs,
-		AppStore:    store,
-		LLM:         ll,
-		Concurrency: 2,
-		QueueSize:   8,
-		JobTimeout:  2 * time.Second,
+		FSStore:        fs,
+		CachedStore:    cs,
+		AppStore:       store,
+		LLM:            ll,
+		Concurrency:    2,
+		QueueSize:      8,
+		JobTimeout:     2 * time.Second,
+		RollupDebounce: debounce,
+		RollupTimeout:  2 * time.Second,
 	})
 	return w, fs, store
 }
@@ -300,6 +358,89 @@ func TestWorker_Stop_DrainsAndUnblocks(t *testing.T) {
 
 	// Calling Stop again must be a no-op.
 	w.Stop()
+}
+
+// ------------------------------------------------------------------ //
+// dataset rollup tests
+// ------------------------------------------------------------------ //
+
+func TestWorker_DatasetRollup_DebouncesBurst(t *testing.T) {
+	stub := &stubLLM{
+		abstractResp:        "doc-l0",
+		overviewResp:        "doc-l1",
+		datasetOverviewResp: "ds-l1",
+	}
+	w, fs, store := newWorkerWithRollup(t, stub, 80*time.Millisecond)
+	const n = 5
+	for i := 0; i < n; i++ {
+		addRawDoc(t, fs, "ds", docName(i), "body")
+		store.seedDoc("ds", &model.DatasetDocument{Name: docName(i)})
+	}
+	w.Start(context.Background())
+	defer w.Stop()
+
+	for i := 0; i < n; i++ {
+		_ = w.SubmitDocument(context.Background(), "ds", docID(i), docName(i), "body")
+	}
+
+	waitFor(t, 3*time.Second, func() bool {
+		return store.datasetAbstractCalls() >= 1 && store.datasetAbstract["ds"] != ""
+	})
+
+	// Allow any straggler timer to fire.
+	time.Sleep(150 * time.Millisecond)
+	if got := store.datasetAbstractCalls(); got != 1 {
+		t.Fatalf("expected exactly 1 rollup, got %d", got)
+	}
+	// dataset L0 from the AbstractPrompt second call.
+	if store.datasetAbstract["ds"] != "doc-l0" {
+		t.Fatalf("dataset L0: %q", store.datasetAbstract["ds"])
+	}
+	// FSStore in-memory dataset overview should be set as well.
+	if got, _ := fs.DatasetOverview(context.Background(), "ds"); got != "ds-l1" {
+		t.Fatalf("FSStore dataset overview: %q", got)
+	}
+}
+
+func TestWorker_DatasetRollup_EmptyAbstractsSkipsLLM(t *testing.T) {
+	stub := &stubLLM{abstractResp: "abs", overviewResp: "ov"}
+	w, _, store := newWorkerWithRollup(t, stub, 30*time.Millisecond)
+	// Seed a row but with no L0Abstract (and never produce one) so the
+	// rollup has nothing to summarize.
+	store.seedDoc("ds", &model.DatasetDocument{Name: "doc.md"})
+	w.Start(context.Background())
+	defer w.Stop()
+
+	w.scheduleDatasetRollup("ds")
+	time.Sleep(120 * time.Millisecond)
+
+	if got := store.datasetAbstractCalls(); got != 0 {
+		t.Fatalf("expected 0 rollup writes for empty abstracts, got %d", got)
+	}
+}
+
+func TestWorker_DatasetRollup_PersistFailureLogs(t *testing.T) {
+	stub := &stubLLM{
+		abstractResp:        "doc-l0",
+		overviewResp:        "doc-l1",
+		datasetOverviewResp: "ds-l1",
+	}
+	w, fs, store := newWorkerWithRollup(t, stub, 30*time.Millisecond)
+	addRawDoc(t, fs, "ds", "doc.md", "body")
+	store.seedDoc("ds", &model.DatasetDocument{Name: "doc.md", L0Abstract: "seed-l0"})
+	store.abstractErr = errors.New("simulated dataset abstract write failure")
+
+	w.Start(context.Background())
+	defer w.Stop()
+
+	w.scheduleDatasetRollup("ds")
+	time.Sleep(150 * time.Millisecond)
+
+	// FSStore should still be populated even though the app store
+	// write failed (best-effort).
+	if got, _ := fs.DatasetAbstract(context.Background(), "ds"); got == "" {
+		t.Fatal("FSStore dataset abstract should be set even when app store write fails")
+	}
 }
 
 func TestWorker_SubmitBeforeStart_Errors(t *testing.T) {
