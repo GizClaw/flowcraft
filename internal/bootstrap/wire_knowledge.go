@@ -3,6 +3,9 @@ package bootstrap
 import (
 	"context"
 
+	"github.com/GizClaw/flowcraft/internal/knowledgeproc"
+	"github.com/GizClaw/flowcraft/internal/model"
+	"github.com/GizClaw/flowcraft/sdk/llm"
 	"github.com/GizClaw/flowcraft/sdk/telemetry"
 	"github.com/GizClaw/flowcraft/sdk/workspace"
 	"github.com/GizClaw/flowcraft/sdkx/knowledge"
@@ -10,15 +13,18 @@ import (
 	otellog "go.opentelemetry.io/otel/log"
 )
 
-// wireKnowledge creates the FS-backed knowledge store, builds the initial
-// index, and starts the file watcher. The returned cleanup stops the
-// watcher.
+// wireKnowledge constructs the FS-backed knowledge store, builds the
+// initial index, starts the file watcher, and stands up the
+// platform-side context worker that owns LLM-driven L0/L1 generation.
 //
-// After the sdkx Scheme E refactor, layered context (L0/L1) generation is no
-// longer driven by the SDK. A platform-side worker (introduced in a follow-up
-// commit) will own LLM orchestration and persistence of l0_abstract,
-// l1_overview and processing_status back into the app store.
-func wireKnowledge(ctx context.Context, ws workspace.Workspace) (knowledge.Store, func(), error) {
+// When llmResolver cannot produce an LLM the worker still runs in
+// no-op mode: SubmitDocument immediately marks the document completed
+// so REST consumers do not get stuck on "processing", preserving the
+// historical BM25-only behaviour.
+//
+// The returned cleanup stops the watcher and the worker in
+// reverse-init order.
+func wireKnowledge(ctx context.Context, ws workspace.Workspace, llmResolver llm.LLMResolver, appStore model.Store) (knowledge.Store, *knowledgeproc.Worker, func(), error) {
 	var cleanups []func()
 
 	fsStore := knowledge.NewFSStore(ws)
@@ -26,7 +32,27 @@ func wireKnowledge(ctx context.Context, ws workspace.Workspace) (knowledge.Store
 		telemetry.Warn(ctx, "knowledge: initial index build failed", otellog.String("error", err.Error()))
 	}
 
-	knowledgeStore := knowledge.NewCachedStore(fsStore)
+	cachedStore := knowledge.NewCachedStore(fsStore)
+
+	var workerLLM llm.LLM
+	if llmResolver != nil {
+		l, err := llmResolver.Resolve(ctx, "")
+		if err != nil {
+			telemetry.Warn(ctx, "knowledge: LLM unavailable, context worker will run in no-op mode (BM25-only search)",
+				otellog.String("error", err.Error()))
+		} else {
+			workerLLM = l
+		}
+	}
+
+	worker := knowledgeproc.New(knowledgeproc.Deps{
+		FSStore:     fsStore,
+		CachedStore: cachedStore,
+		AppStore:    appStore,
+		LLM:         workerLLM,
+	})
+	worker.Start(ctx)
+	cleanups = append(cleanups, worker.Stop)
 
 	if kw, kwErr := fsStore.StartWatching(ctx); kwErr != nil {
 		telemetry.Warn(ctx, "knowledge: file watcher failed to start", otellog.String("error", kwErr.Error()))
@@ -39,5 +65,5 @@ func wireKnowledge(ctx context.Context, ws workspace.Workspace) (knowledge.Store
 			cleanups[i]()
 		}
 	}
-	return knowledgeStore, cleanup, nil
+	return cachedStore, worker, cleanup, nil
 }

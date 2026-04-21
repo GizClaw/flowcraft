@@ -81,7 +81,7 @@ func Run(ctx context.Context) (*platform.Platform, *api.Server, func(), error) {
 	workspaceRoot := sandboxCfg.RootDir
 
 	// --- knowledge ---
-	knowledgeStore, knowledgeCleanup, err := wireKnowledge(ctx, ws)
+	knowledgeStore, knowledgeWorker, knowledgeCleanup, err := wireKnowledge(ctx, ws, llmResolver, appStore)
 	if err != nil {
 		return fail(err)
 	}
@@ -135,19 +135,20 @@ func Run(ctx context.Context) (*platform.Platform, *api.Server, func(), error) {
 
 	// --- assemble platform ---
 	plat := &platform.Platform{
-		Store:        appStore,
-		Realms:       runtimeMgr,
-		Compiler:     graphCompiler,
-		SchemaReg:    schemaReg,
-		TemplateReg:  templateReg,
-		PluginReg:    pluginReg,
-		Knowledge:    knowledgeStore,
-		VersionStore: versionStore,
-		LTStore:      ltStore,
-		EventBus:     globalBus,
-		LLMResolver:  llmResolver,
-		SkillStore:   skillStore,
-		ToolRegistry: toolReg,
+		Store:           appStore,
+		Realms:          runtimeMgr,
+		Compiler:        graphCompiler,
+		SchemaReg:       schemaReg,
+		TemplateReg:     templateReg,
+		PluginReg:       pluginReg,
+		Knowledge:       knowledgeStore,
+		KnowledgeWorker: knowledgeWorker,
+		VersionStore:    versionStore,
+		LTStore:         ltStore,
+		EventBus:        globalBus,
+		LLMResolver:     llmResolver,
+		SkillStore:      skillStore,
+		ToolRegistry:    toolReg,
 	}
 
 	// --- seed data ---

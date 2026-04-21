@@ -5,6 +5,7 @@ package platform
 import (
 	"context"
 
+	"github.com/GizClaw/flowcraft/internal/knowledgeproc"
 	"github.com/GizClaw/flowcraft/internal/model"
 	"github.com/GizClaw/flowcraft/internal/pluginhost"
 	"github.com/GizClaw/flowcraft/internal/realm"
@@ -30,19 +31,20 @@ type RunResult struct {
 
 // Platform is the unified application facade for adapter layers.
 type Platform struct {
-	Store        model.Store
-	Realms       realm.RealmProvider
-	Compiler     *compiler.Compiler
-	SchemaReg    *node.SchemaRegistry
-	TemplateReg  *template.Registry
-	PluginReg    *pluginhost.Registry
-	Knowledge    knowledge.Store
-	VersionStore version.VersionStore
-	LTStore      memory.LongTermStore
-	EventBus     event.EventBus
-	LLMResolver  llm.LLMResolver
-	SkillStore   *skill.SkillStore
-	ToolRegistry *tool.Registry
+	Store           model.Store
+	Realms          realm.RealmProvider
+	Compiler        *compiler.Compiler
+	SchemaReg       *node.SchemaRegistry
+	TemplateReg     *template.Registry
+	PluginReg       *pluginhost.Registry
+	Knowledge       knowledge.Store
+	KnowledgeWorker *knowledgeproc.Worker
+	VersionStore    version.VersionStore
+	LTStore         memory.LongTermStore
+	EventBus        event.EventBus
+	LLMResolver     llm.LLMResolver
+	SkillStore      *skill.SkillStore
+	ToolRegistry    *tool.Registry
 }
 
 // RunAgent resolves the current Realm and dispatches a run to the named agent's actor.

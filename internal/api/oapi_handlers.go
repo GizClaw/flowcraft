@@ -576,26 +576,37 @@ func (h *oapiHandler) AddDocument(ctx context.Context, req *oas.AddDocumentReque
 		}
 	}
 
-	// Backfill synchronously computable stats so the first list/get after
-	// ingestion reflects the true chunk count.
-	//
-	// TODO(knowledgeproc): submit this document to the platform-side context
-	// worker (introduced in a follow-up commit) so processing_status walks
-	// pending → processing → completed | failed and l0_abstract / l1_overview
-	// get filled in. Until that worker exists every document is marked
-	// completed inline so the UI does not get stuck on "processing".
+	// Backfill the chunk count synchronously so the first list/get after
+	// ingestion reflects the true value. Processing state is owned by the
+	// context worker: when a worker is wired and an LLM is configured the
+	// document walks pending → processing → completed | failed and
+	// l0_abstract / l1_overview get filled in asynchronously. Without a
+	// worker (or without an LLM) the document is marked completed inline
+	// so the UI does not get stuck.
 	chunks := knowledge.ChunkDocument(req.Name, req.Content, knowledge.DefaultChunkConfig())
 	chunkCount := len(chunks)
-	status := model.ProcessingCompleted
+	initialStatus := model.ProcessingPending
+	if h.s.deps.Platform.KnowledgeWorker == nil || !h.s.deps.Platform.KnowledgeWorker.Enabled() {
+		initialStatus = model.ProcessingCompleted
+	}
 	if updateErr := h.s.deps.Platform.Store.UpdateDocumentStats(ctx, params.ID, doc.ID, model.DocumentStatsPatch{
 		ChunkCount:       &chunkCount,
-		ProcessingStatus: &status,
+		ProcessingStatus: &initialStatus,
 	}); updateErr != nil {
 		telemetry.Warn(ctx, "knowledge: update document stats failed",
 			otellog.String("doc", doc.ID), otellog.String("error", updateErr.Error()))
 	} else {
 		doc.ChunkCount = chunkCount
-		doc.ProcessingStatus = status
+		doc.ProcessingStatus = initialStatus
+	}
+
+	if h.s.deps.Platform.KnowledgeWorker != nil {
+		if subErr := h.s.deps.Platform.KnowledgeWorker.SubmitDocument(ctx, params.ID, doc.ID, req.Name, req.Content); subErr != nil {
+			telemetry.Warn(ctx, "knowledge: submit to context worker failed",
+				otellog.String("doc", doc.ID), otellog.String("error", subErr.Error()))
+		} else if h.s.deps.Platform.KnowledgeWorker.Enabled() {
+			doc.ProcessingStatus = model.ProcessingRunning
+		}
 	}
 
 	return toOAS[oas.DatasetDocument](doc)
@@ -605,6 +616,12 @@ func (h *oapiHandler) DeleteDocument(ctx context.Context, params oas.DeleteDocum
 	doc, err := h.s.deps.Platform.Store.GetDocument(ctx, params.ID, params.DocId)
 	if err != nil {
 		return err
+	}
+	// Best-effort: cancel any in-flight context generation for this doc
+	// so it does not race with the delete and resurrect a "completed"
+	// stats patch after the row is gone.
+	if h.s.deps.Platform.KnowledgeWorker != nil {
+		h.s.deps.Platform.KnowledgeWorker.Cancel(params.DocId)
 	}
 	if err := h.s.deps.Platform.Store.DeleteDocument(ctx, params.ID, params.DocId); err != nil {
 		return err
