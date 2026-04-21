@@ -4,15 +4,19 @@ import (
 	"context"
 	"encoding/json"
 
+	"github.com/GizClaw/flowcraft/internal/knowledgeproc"
 	"github.com/GizClaw/flowcraft/internal/model"
 	"github.com/GizClaw/flowcraft/internal/template"
+	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/telemetry"
 	"github.com/GizClaw/flowcraft/sdkx/knowledge"
 
 	otellog "go.opentelemetry.io/otel/log"
 )
 
-func ensureCoPilotAgent(ctx context.Context, s model.Store, ks knowledge.Store, templateReg *template.Registry) {
+const copilotKnowledgeDatasetID = "copilot-reference"
+
+func ensureCoPilotAgent(ctx context.Context, s model.Store, ks knowledge.Store, worker *knowledgeproc.Worker, templateReg *template.Registry) {
 	_, err := s.GetAgent(ctx, model.CoPilotAgentID)
 	if err == nil {
 		telemetry.Info(ctx, "copilot: agent already exists, skipping initialization")
@@ -91,7 +95,7 @@ func ensureCoPilotAgent(ctx context.Context, s model.Store, ks knowledge.Store, 
 	telemetry.Info(ctx, "copilot: dispatcher agent created", otellog.String("id", created.AgentID))
 
 	if ks != nil {
-		initCoPilotKnowledge(ctx, ks)
+		initCoPilotKnowledge(ctx, s, ks, worker)
 	}
 }
 
@@ -122,14 +126,103 @@ func resolveTemplate(ctx context.Context, templateReg *template.Registry, templa
 	return t, nil
 }
 
-func initCoPilotKnowledge(ctx context.Context, ks knowledge.Store) {
-	const datasetID = "copilot-reference"
+// initCoPilotKnowledge ingests the embedded reference docs into both the
+// app store (so REST consumers can list them) and the knowledge store
+// (so retrieval works), and submits each doc to the context worker to
+// kick off layered-context generation. The worker's debounced rollup
+// then derives the dataset-level L0/L1 in the background.
+//
+// All operations are best-effort: a failure on any single doc does not
+// abort the seed, since the recovery path on the next start will
+// re-submit anything left in pending/processing.
+func initCoPilotKnowledge(ctx context.Context, appStore model.Store, ks knowledge.Store, worker *knowledgeproc.Worker) {
+	if _, err := appStore.GetDataset(ctx, copilotKnowledgeDatasetID); err != nil {
+		if !errdefs.IsNotFound(err) {
+			telemetry.Warn(ctx, "copilot: lookup reference dataset failed",
+				otellog.String("error", err.Error()))
+			return
+		}
+		if _, err := appStore.CreateDataset(ctx, &model.Dataset{
+			ID:          copilotKnowledgeDatasetID,
+			Name:        "CoPilot Reference",
+			Description: "Built-in reference documents bootstrapped on first launch",
+		}); err != nil {
+			telemetry.Error(ctx, "copilot: create reference dataset failed",
+				otellog.String("error", err.Error()))
+			return
+		}
+	}
+
 	docs := template.CoPilotReferenceDocs()
 	for _, doc := range docs {
-		if err := ks.AddDocument(ctx, datasetID, doc.Name, doc.Content); err != nil {
-			telemetry.Warn(ctx, "copilot: failed to add reference doc",
+		row, err := appStore.AddDocument(ctx, copilotKnowledgeDatasetID, doc.Name, doc.Content)
+		if err != nil {
+			telemetry.Warn(ctx, "copilot: app store add reference doc failed",
+				otellog.String("name", doc.Name), otellog.String("error", err.Error()))
+			continue
+		}
+		if err := ks.AddDocument(ctx, copilotKnowledgeDatasetID, doc.Name, doc.Content); err != nil {
+			telemetry.Warn(ctx, "copilot: knowledge store add reference doc failed",
+				otellog.String("name", doc.Name), otellog.String("error", err.Error()))
+			continue
+		}
+		if worker == nil {
+			continue
+		}
+		if err := worker.SubmitDocument(ctx, copilotKnowledgeDatasetID, row.ID, doc.Name, doc.Content); err != nil {
+			telemetry.Warn(ctx, "copilot: submit reference doc to context worker failed",
 				otellog.String("name", doc.Name), otellog.String("error", err.Error()))
 		}
 	}
-	telemetry.Info(ctx, "copilot: reference knowledge initialized", otellog.Int("docs", len(docs)))
+	telemetry.Info(ctx, "copilot: reference knowledge initialized",
+		otellog.Int("docs", len(docs)),
+		otellog.Bool("worker_enabled", worker != nil && worker.Enabled()))
+}
+
+// recoverPendingKnowledgeDocs re-submits documents that were left in
+// pending or processing state at startup (typical after a crash mid
+// generation). Documents in failed state are intentionally skipped:
+// users drive retries explicitly via the reprocess endpoint to avoid
+// retry storms when an upstream LLM is genuinely broken.
+func recoverPendingKnowledgeDocs(ctx context.Context, appStore model.Store, worker *knowledgeproc.Worker) {
+	if worker == nil || !worker.Enabled() {
+		return
+	}
+	datasets, err := appStore.ListDatasets(ctx)
+	if err != nil {
+		telemetry.Warn(ctx, "knowledge: recover list datasets failed", otellog.String("error", err.Error()))
+		return
+	}
+	var resubmitted int
+	for _, ds := range datasets {
+		if ds == nil {
+			continue
+		}
+		docs, err := appStore.ListDocuments(ctx, ds.ID)
+		if err != nil {
+			telemetry.Warn(ctx, "knowledge: recover list documents failed",
+				otellog.String("dataset", ds.ID), otellog.String("error", err.Error()))
+			continue
+		}
+		for _, d := range docs {
+			if d == nil {
+				continue
+			}
+			if d.ProcessingStatus != model.ProcessingPending && d.ProcessingStatus != model.ProcessingRunning {
+				continue
+			}
+			if err := worker.SubmitDocument(ctx, ds.ID, d.ID, d.Name, d.Content); err != nil {
+				telemetry.Warn(ctx, "knowledge: recover submit failed",
+					otellog.String("dataset", ds.ID),
+					otellog.String("doc", d.Name),
+					otellog.String("error", err.Error()))
+				continue
+			}
+			resubmitted++
+		}
+	}
+	if resubmitted > 0 {
+		telemetry.Info(ctx, "knowledge: recovered unfinished documents",
+			otellog.Int("count", resubmitted))
+	}
 }

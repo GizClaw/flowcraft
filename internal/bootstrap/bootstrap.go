@@ -152,7 +152,8 @@ func Run(ctx context.Context) (*platform.Platform, *api.Server, func(), error) {
 	}
 
 	// --- seed data ---
-	ensureCoPilotAgent(ctx, appStore, knowledgeStore, templateReg)
+	ensureCoPilotAgent(ctx, appStore, knowledgeStore, knowledgeWorker, templateReg)
+	recoverPendingKnowledgeDocs(ctx, appStore, knowledgeWorker)
 
 	// --- JWT auth ---
 	jwtCfg, err := wireAuth(ctx, appStore)
