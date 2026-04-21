@@ -3237,6 +3237,48 @@ func (s *DatasetQueryRequest) UnmarshalJSON(data []byte) error {
 	return s.Decode(d)
 }
 
+// Encode encodes DatasetQueryRequestMaxLayer as json.
+func (s DatasetQueryRequestMaxLayer) Encode(e *jx.Encoder) {
+	e.Str(string(s))
+}
+
+// Decode decodes DatasetQueryRequestMaxLayer from json.
+func (s *DatasetQueryRequestMaxLayer) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode DatasetQueryRequestMaxLayer to nil")
+	}
+	v, err := d.StrBytes()
+	if err != nil {
+		return err
+	}
+	// Try to use constant string.
+	switch DatasetQueryRequestMaxLayer(v) {
+	case DatasetQueryRequestMaxLayerL0:
+		*s = DatasetQueryRequestMaxLayerL0
+	case DatasetQueryRequestMaxLayerL1:
+		*s = DatasetQueryRequestMaxLayerL1
+	case DatasetQueryRequestMaxLayerL2:
+		*s = DatasetQueryRequestMaxLayerL2
+	default:
+		*s = DatasetQueryRequestMaxLayer(v)
+	}
+
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s DatasetQueryRequestMaxLayer) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *DatasetQueryRequestMaxLayer) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
 // Encode implements json.Marshaler.
 func (s *DocumentList) Encode(e *jx.Encoder) {
 	e.ObjStart()
@@ -7805,6 +7847,39 @@ func (s OptCompileResult) MarshalJSON() ([]byte, error) {
 
 // UnmarshalJSON implements stdjson.Unmarshaler.
 func (s *OptCompileResult) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode encodes DatasetQueryRequestMaxLayer as json.
+func (o OptDatasetQueryRequestMaxLayer) Encode(e *jx.Encoder) {
+	if !o.Set {
+		return
+	}
+	e.Str(string(o.Value))
+}
+
+// Decode decodes DatasetQueryRequestMaxLayer from json.
+func (o *OptDatasetQueryRequestMaxLayer) Decode(d *jx.Decoder) error {
+	if o == nil {
+		return errors.New("invalid: unable to decode OptDatasetQueryRequestMaxLayer to nil")
+	}
+	o.Set = true
+	if err := o.Value.Decode(d); err != nil {
+		return err
+	}
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s OptDatasetQueryRequestMaxLayer) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *OptDatasetQueryRequestMaxLayer) UnmarshalJSON(data []byte) error {
 	d := jx.DecodeBytes(data)
 	return s.Decode(d)
 }

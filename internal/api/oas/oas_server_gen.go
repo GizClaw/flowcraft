@@ -286,6 +286,15 @@ type Handler interface {
 	//
 	// POST /plugins/reload
 	ReloadPlugins(ctx context.Context) (*PluginReloadResult, error)
+	// ReprocessDocument implements reprocessDocument operation.
+	//
+	// Resets processing_status to "pending" and submits the document
+	// to the platform's context worker. Useful for retrying a doc
+	// that failed during the initial generation (e.g. transient LLM
+	// error). Returns the patched document row.
+	//
+	// POST /datasets/{id}/documents/{docId}/reprocess
+	ReprocessDocument(ctx context.Context, params ReprocessDocumentParams) (*DatasetDocument, error)
 	// ResumeStream implements resumeStream operation.
 	//
 	// POST /chat/resume/stream

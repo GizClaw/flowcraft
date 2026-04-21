@@ -22,9 +22,14 @@ export default function KnowledgePage() {
 
   const load = () => {
     setLoading(true);
-    datasetApi.list().then(setDatasets).catch(() => {}).finally(() => setLoading(false));
+    datasetApi
+      .list()
+      .then(setDatasets)
+      .catch((err) => addToast('error', err instanceof Error ? err.message : t('knowledge.loadFailed')))
+      .finally(() => setLoading(false));
   };
 
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(load, []);
 
   const handleCreate = async () => {
@@ -39,9 +44,17 @@ export default function KnowledgePage() {
     }
   };
 
-  const handleDelete = async (id: string) => {
+  const handleDelete = async (id: string, name: string) => {
+    if (!window.confirm(t('knowledge.deleteDatasetConfirm', { name }))) return;
     try { await datasetApi.delete(id); load(); addToast('success', t('knowledge.datasetDeleted')); }
     catch (err) { addToast('error', err instanceof Error ? err.message : t('knowledge.deleteFailed')); }
+  };
+
+  const formatRelative = (raw?: string) => {
+    if (!raw) return '';
+    const d = new Date(raw);
+    if (Number.isNaN(d.getTime())) return '';
+    return formatDistanceToNow(d, { addSuffix: true });
   };
 
   if (loading) return <div className="flex justify-center py-16"><LoadingSpinner /></div>;
@@ -66,7 +79,7 @@ export default function KnowledgePage() {
                   <BookOpen size={16} className="text-cyan-500" />
                   <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">{ds.name}</h3>
                 </div>
-                <button onClick={(e) => { e.stopPropagation(); handleDelete(ds.id); }} className="p-1 opacity-0 group-hover:opacity-100 text-red-400 hover:text-red-600">
+                <button onClick={(e) => { e.stopPropagation(); handleDelete(ds.id, ds.name); }} className="p-1 opacity-0 group-hover:opacity-100 text-red-400 hover:text-red-600">
                   <Trash2 size={14} />
                 </button>
               </div>
@@ -74,7 +87,7 @@ export default function KnowledgePage() {
               {ds.l0_abstract && <p className="text-xs text-gray-400 italic mb-2 line-clamp-2">{ds.l0_abstract}</p>}
               <div className="flex items-center gap-2 text-[10px] text-gray-400">
                 <span>{ds.document_count ?? 0} {t('knowledge.docs')}</span>
-                <span>{formatDistanceToNow(new Date(ds.updated_at), { addSuffix: true })}</span>
+                <span>{formatRelative(ds.updated_at)}</span>
               </div>
             </div>
           ))}

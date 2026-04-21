@@ -197,7 +197,20 @@
     "docAdded": "文档已添加",
     "addFailed": "添加失败",
     "searchFailed": "搜索失败",
-    "score": "得分"
+    "score": "得分",
+    "loadFailed": "加载数据集失败",
+    "deleteDocConfirm": "删除该文档？",
+    "deleteDatasetConfirm": "确定删除数据集 “{{name}}” 及其全部文档？",
+    "reprocess": "重试",
+    "reprocessQueued": "已重新加入处理队列",
+    "reprocessFailed": "重新处理失败",
+    "processing": {
+      "pending": "排队中",
+      "processing": "处理中",
+      "completed": "已就绪",
+      "failed": "失败"
+    },
+    "chunks": "{{count}} 个分片"
   },
   "skills": {
     "title": "技能",

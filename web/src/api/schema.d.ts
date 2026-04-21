@@ -342,6 +342,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/datasets/{id}/documents/{docId}/reprocess": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Re-run layered context generation for a document
+         * @description Resets processing_status to "pending" and submits the document
+         *     to the platform's context worker. Useful for retrying a doc
+         *     that failed during the initial generation (e.g. transient LLM
+         *     error). Returns the patched document row.
+         */
+        post: operations["reprocessDocument"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/datasets/{id}/query": {
         parameters: {
             query?: never;
@@ -1295,7 +1318,13 @@ export interface components {
         DatasetQueryRequest: {
             query: string;
             top_k?: number;
-            max_layer?: number;
+            /**
+             * @description Cap the layer of context returned for each match. L0 is the
+             *     short abstract, L1 the structured overview, L2 the chunk
+             *     detail. Defaults to L2 when omitted.
+             * @enum {string}
+             */
+            max_layer?: "L0" | "L1" | "L2";
             threshold?: number;
         };
         QueryResult: {
@@ -2316,6 +2345,30 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    reprocessDocument: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["DatasetID"];
+                docId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Document scheduled for reprocessing */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DatasetDocument"];
+                };
             };
             default: components["responses"]["Error"];
         };

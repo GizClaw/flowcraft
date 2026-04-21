@@ -632,6 +632,44 @@ func (h *oapiHandler) DeleteDocument(ctx context.Context, params oas.DeleteDocum
 	return nil
 }
 
+// ReprocessDocument resets the document's processing_status to pending
+// and re-submits it to the context worker. Used by the UI as a manual
+// retry path for docs that landed in failed (or got stuck while the
+// worker was offline). When no worker is wired the row is just marked
+// completed so the UI does not loop on a dead retry.
+func (h *oapiHandler) ReprocessDocument(ctx context.Context, params oas.ReprocessDocumentParams) (*oas.DatasetDocument, error) {
+	doc, err := h.s.deps.Platform.Store.GetDocument(ctx, params.ID, params.DocId)
+	if err != nil {
+		return nil, err
+	}
+	if doc == nil {
+		return nil, errdefs.NotFoundf("document %s not found", params.DocId)
+	}
+
+	worker := h.s.deps.Platform.KnowledgeWorker
+	resetStatus := model.ProcessingPending
+	if worker == nil || !worker.Enabled() {
+		resetStatus = model.ProcessingCompleted
+	}
+	if err := h.s.deps.Platform.Store.UpdateDocumentStats(ctx, params.ID, doc.ID, model.DocumentStatsPatch{
+		ProcessingStatus: &resetStatus,
+	}); err != nil {
+		return nil, err
+	}
+	doc.ProcessingStatus = resetStatus
+
+	if worker != nil {
+		if err := worker.SubmitDocument(ctx, params.ID, doc.ID, doc.Name, doc.Content); err != nil {
+			telemetry.Warn(ctx, "knowledge: reprocess submit failed",
+				otellog.String("doc", doc.ID), otellog.String("error", err.Error()))
+		} else if worker.Enabled() {
+			doc.ProcessingStatus = model.ProcessingRunning
+		}
+	}
+
+	return toOAS[oas.DatasetDocument](doc)
+}
+
 func (h *oapiHandler) QueryDocuments(ctx context.Context, req *oas.DatasetQueryRequest, params oas.QueryDocumentsParams) (*oas.QueryResultList, error) {
 	if req.Query == "" {
 		return nil, errdefs.Validationf("query is required")
@@ -647,10 +685,10 @@ func (h *oapiHandler) QueryDocuments(ctx context.Context, req *oas.DatasetQueryR
 		opts.Threshold = v
 	}
 	if v, ok := req.MaxLayer.Get(); ok {
-		layerMap := map[int]knowledge.ContextLayer{
-			0: knowledge.LayerAbstract,
-			1: knowledge.LayerOverview,
-			2: knowledge.LayerDetail,
+		layerMap := map[oas.DatasetQueryRequestMaxLayer]knowledge.ContextLayer{
+			oas.DatasetQueryRequestMaxLayerL0: knowledge.LayerAbstract,
+			oas.DatasetQueryRequestMaxLayerL1: knowledge.LayerOverview,
+			oas.DatasetQueryRequestMaxLayerL2: knowledge.LayerDetail,
 		}
 		if ml, found := layerMap[v]; found {
 			opts.MaxLayer = ml

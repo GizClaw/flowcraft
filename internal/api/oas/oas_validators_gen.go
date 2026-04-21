@@ -115,6 +115,24 @@ func (s *DatasetQueryRequest) Validate() error {
 
 	var failures []validate.FieldError
 	if err := func() error {
+		if value, ok := s.MaxLayer.Get(); ok {
+			if err := func() error {
+				if err := value.Validate(); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return err
+			}
+		}
+		return nil
+	}(); err != nil {
+		failures = append(failures, validate.FieldError{
+			Name:  "max_layer",
+			Error: err,
+		})
+	}
+	if err := func() error {
 		if value, ok := s.Threshold.Get(); ok {
 			if err := func() error {
 				if err := (validate.Float{}).Validate(float64(value)); err != nil {
@@ -136,6 +154,19 @@ func (s *DatasetQueryRequest) Validate() error {
 		return &validate.Error{Fields: failures}
 	}
 	return nil
+}
+
+func (s DatasetQueryRequestMaxLayer) Validate() error {
+	switch s {
+	case "L0":
+		return nil
+	case "L1":
+		return nil
+	case "L2":
+		return nil
+	default:
+		return errors.Errorf("invalid value: %v", s)
+	}
 }
 
 func (s ExportAgentFormat) Validate() error {

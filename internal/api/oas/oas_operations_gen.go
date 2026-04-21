@@ -75,6 +75,7 @@ const (
 	PublishVersionOperation           OperationName = "PublishVersion"
 	QueryDocumentsOperation           OperationName = "QueryDocuments"
 	ReloadPluginsOperation            OperationName = "ReloadPlugins"
+	ReprocessDocumentOperation        OperationName = "ReprocessDocument"
 	ResumeStreamOperation             OperationName = "ResumeStream"
 	RollbackVersionOperation          OperationName = "RollbackVersion"
 	SetDefaultModelOperation          OperationName = "SetDefaultModel"

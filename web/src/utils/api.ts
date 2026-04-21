@@ -244,6 +244,12 @@ export const datasetApi = {
       params: { path: { id: datasetId, docId } },
     });
   },
+  reprocessDocument: async (datasetId: string, docId: string) => {
+    const { data } = await client.POST('/datasets/{id}/documents/{docId}/reprocess', {
+      params: { path: { id: datasetId, docId } },
+    });
+    return data as unknown as DatasetDocument;
+  },
   query: async (datasetId: string, body: QueryDatasetRequest) => {
     const { data } = await client.POST('/datasets/{id}/query', {
       params: { path: { id: datasetId } },

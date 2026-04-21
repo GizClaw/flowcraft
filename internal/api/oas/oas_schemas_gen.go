@@ -1205,10 +1205,13 @@ func (s *DatasetList) SetData(val []Dataset) {
 
 // Ref: #/components/schemas/DatasetQueryRequest
 type DatasetQueryRequest struct {
-	Query     string     `json:"query"`
-	TopK      OptInt     `json:"top_k"`
-	MaxLayer  OptInt     `json:"max_layer"`
-	Threshold OptFloat64 `json:"threshold"`
+	Query string `json:"query"`
+	TopK  OptInt `json:"top_k"`
+	// Cap the layer of context returned for each match. L0 is the
+	// short abstract, L1 the structured overview, L2 the chunk
+	// detail. Defaults to L2 when omitted.
+	MaxLayer  OptDatasetQueryRequestMaxLayer `json:"max_layer"`
+	Threshold OptFloat64                     `json:"threshold"`
 }
 
 // GetQuery returns the value of Query.
@@ -1222,7 +1225,7 @@ func (s *DatasetQueryRequest) GetTopK() OptInt {
 }
 
 // GetMaxLayer returns the value of MaxLayer.
-func (s *DatasetQueryRequest) GetMaxLayer() OptInt {
+func (s *DatasetQueryRequest) GetMaxLayer() OptDatasetQueryRequestMaxLayer {
 	return s.MaxLayer
 }
 
@@ -1242,13 +1245,64 @@ func (s *DatasetQueryRequest) SetTopK(val OptInt) {
 }
 
 // SetMaxLayer sets the value of MaxLayer.
-func (s *DatasetQueryRequest) SetMaxLayer(val OptInt) {
+func (s *DatasetQueryRequest) SetMaxLayer(val OptDatasetQueryRequestMaxLayer) {
 	s.MaxLayer = val
 }
 
 // SetThreshold sets the value of Threshold.
 func (s *DatasetQueryRequest) SetThreshold(val OptFloat64) {
 	s.Threshold = val
+}
+
+// Cap the layer of context returned for each match. L0 is the
+// short abstract, L1 the structured overview, L2 the chunk
+// detail. Defaults to L2 when omitted.
+type DatasetQueryRequestMaxLayer string
+
+const (
+	DatasetQueryRequestMaxLayerL0 DatasetQueryRequestMaxLayer = "L0"
+	DatasetQueryRequestMaxLayerL1 DatasetQueryRequestMaxLayer = "L1"
+	DatasetQueryRequestMaxLayerL2 DatasetQueryRequestMaxLayer = "L2"
+)
+
+// AllValues returns all DatasetQueryRequestMaxLayer values.
+func (DatasetQueryRequestMaxLayer) AllValues() []DatasetQueryRequestMaxLayer {
+	return []DatasetQueryRequestMaxLayer{
+		DatasetQueryRequestMaxLayerL0,
+		DatasetQueryRequestMaxLayerL1,
+		DatasetQueryRequestMaxLayerL2,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s DatasetQueryRequestMaxLayer) MarshalText() ([]byte, error) {
+	switch s {
+	case DatasetQueryRequestMaxLayerL0:
+		return []byte(s), nil
+	case DatasetQueryRequestMaxLayerL1:
+		return []byte(s), nil
+	case DatasetQueryRequestMaxLayerL2:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *DatasetQueryRequestMaxLayer) UnmarshalText(data []byte) error {
+	switch DatasetQueryRequestMaxLayer(data) {
+	case DatasetQueryRequestMaxLayerL0:
+		*s = DatasetQueryRequestMaxLayerL0
+		return nil
+	case DatasetQueryRequestMaxLayerL1:
+		*s = DatasetQueryRequestMaxLayerL1
+		return nil
+	case DatasetQueryRequestMaxLayerL2:
+		*s = DatasetQueryRequestMaxLayerL2
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
 }
 
 // DeleteAgentNoContent is response for DeleteAgent operation.
@@ -3168,6 +3222,52 @@ func (o OptCompileResult) Get() (v CompileResult, ok bool) {
 
 // Or returns value if set, or given parameter if does not.
 func (o OptCompileResult) Or(d CompileResult) CompileResult {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptDatasetQueryRequestMaxLayer returns new OptDatasetQueryRequestMaxLayer with value set to v.
+func NewOptDatasetQueryRequestMaxLayer(v DatasetQueryRequestMaxLayer) OptDatasetQueryRequestMaxLayer {
+	return OptDatasetQueryRequestMaxLayer{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptDatasetQueryRequestMaxLayer is optional DatasetQueryRequestMaxLayer.
+type OptDatasetQueryRequestMaxLayer struct {
+	Value DatasetQueryRequestMaxLayer
+	Set   bool
+}
+
+// IsSet returns true if OptDatasetQueryRequestMaxLayer was set.
+func (o OptDatasetQueryRequestMaxLayer) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptDatasetQueryRequestMaxLayer) Reset() {
+	var v DatasetQueryRequestMaxLayer
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptDatasetQueryRequestMaxLayer) SetTo(v DatasetQueryRequestMaxLayer) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptDatasetQueryRequestMaxLayer) Get() (v DatasetQueryRequestMaxLayer, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptDatasetQueryRequestMaxLayer) Or(d DatasetQueryRequestMaxLayer) DatasetQueryRequestMaxLayer {
 	if v, ok := o.Get(); ok {
 		return v
 	}

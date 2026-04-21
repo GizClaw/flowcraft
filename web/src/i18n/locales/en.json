@@ -197,7 +197,21 @@
     "docAdded": "Document added",
     "addFailed": "Add failed",
     "searchFailed": "Search failed",
-    "score": "score"
+    "score": "score",
+    "loadFailed": "Failed to load datasets",
+    "deleteDocConfirm": "Delete this document?",
+    "deleteDatasetConfirm": "Delete dataset \"{{name}}\" and all its documents?",
+    "reprocess": "Retry",
+    "reprocessQueued": "Reprocessing scheduled",
+    "reprocessFailed": "Reprocess failed",
+    "processing": {
+      "pending": "Pending",
+      "processing": "Processing",
+      "completed": "Ready",
+      "failed": "Failed"
+    },
+    "chunks": "{{count}} chunks",
+    "chunks_one": "{{count}} chunk"
   },
   "skills": {
     "title": "Skills",

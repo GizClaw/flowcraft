@@ -307,6 +307,15 @@ type Invoker interface {
 	//
 	// POST /plugins/reload
 	ReloadPlugins(ctx context.Context) (*PluginReloadResult, error)
+	// ReprocessDocument invokes reprocessDocument operation.
+	//
+	// Resets processing_status to "pending" and submits the document
+	// to the platform's context worker. Useful for retrying a doc
+	// that failed during the initial generation (e.g. transient LLM
+	// error). Returns the patched document row.
+	//
+	// POST /datasets/{id}/documents/{docId}/reprocess
+	ReprocessDocument(ctx context.Context, params ReprocessDocumentParams) (*DatasetDocument, error)
 	// ResumeStream invokes resumeStream operation.
 	//
 	// POST /chat/resume/stream
@@ -9230,6 +9239,164 @@ func (c *Client) sendReloadPlugins(ctx context.Context) (res *PluginReloadResult
 
 	stage = "DecodeResponse"
 	result, err := decodeReloadPluginsResponse(resp)
+	if err != nil {
+		return res, errors.Wrap(err, "decode response")
+	}
+
+	return result, nil
+}
+
+// ReprocessDocument invokes reprocessDocument operation.
+//
+// Resets processing_status to "pending" and submits the document
+// to the platform's context worker. Useful for retrying a doc
+// that failed during the initial generation (e.g. transient LLM
+// error). Returns the patched document row.
+//
+// POST /datasets/{id}/documents/{docId}/reprocess
+func (c *Client) ReprocessDocument(ctx context.Context, params ReprocessDocumentParams) (*DatasetDocument, error) {
+	res, err := c.sendReprocessDocument(ctx, params)
+	return res, err
+}
+
+func (c *Client) sendReprocessDocument(ctx context.Context, params ReprocessDocumentParams) (res *DatasetDocument, err error) {
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("reprocessDocument"),
+		semconv.HTTPRequestMethodKey.String("POST"),
+		semconv.HTTPRouteKey.String("/datasets/{id}/documents/{docId}/reprocess"),
+	}
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		elapsedDuration := time.Since(startTime)
+		c.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), metric.WithAttributes(otelAttrs...))
+	}()
+
+	// Increment request counter.
+	c.requests.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+
+	// Start a span for this request.
+	ctx, span := c.cfg.Tracer.Start(ctx, ReprocessDocumentOperation,
+		trace.WithAttributes(otelAttrs...),
+		clientSpanKind,
+	)
+	// Track stage for error reporting.
+	var stage string
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, stage)
+			c.errors.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+		}
+		span.End()
+	}()
+
+	stage = "BuildURL"
+	u := uri.Clone(c.requestURL(ctx))
+	var pathParts [5]string
+	pathParts[0] = "/datasets/"
+	{
+		// Encode "id" parameter.
+		e := uri.NewPathEncoder(uri.PathEncoderConfig{
+			Param:   "id",
+			Style:   uri.PathStyleSimple,
+			Explode: false,
+		})
+		if err := func() error {
+			return e.EncodeValue(conv.StringToString(params.ID))
+		}(); err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		encoded, err := e.Result()
+		if err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		pathParts[1] = encoded
+	}
+	pathParts[2] = "/documents/"
+	{
+		// Encode "docId" parameter.
+		e := uri.NewPathEncoder(uri.PathEncoderConfig{
+			Param:   "docId",
+			Style:   uri.PathStyleSimple,
+			Explode: false,
+		})
+		if err := func() error {
+			return e.EncodeValue(conv.StringToString(params.DocId))
+		}(); err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		encoded, err := e.Result()
+		if err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		pathParts[3] = encoded
+	}
+	pathParts[4] = "/reprocess"
+	uri.AddPathParts(u, pathParts[:]...)
+
+	stage = "EncodeRequest"
+	r, err := ht.NewRequest(ctx, "POST", u)
+	if err != nil {
+		return res, errors.Wrap(err, "create request")
+	}
+
+	{
+		type bitset = [1]uint8
+		var satisfied bitset
+		{
+			stage = "Security:CookieAuth"
+			switch err := c.securityCookieAuth(ctx, ReprocessDocumentOperation, r); {
+			case err == nil: // if NO error
+				satisfied[0] |= 1 << 0
+			case errors.Is(err, ogenerrors.ErrSkipClientSecurity):
+				// Skip this security.
+			default:
+				return res, errors.Wrap(err, "security \"CookieAuth\"")
+			}
+		}
+		{
+			stage = "Security:BearerAuth"
+			switch err := c.securityBearerAuth(ctx, ReprocessDocumentOperation, r); {
+			case err == nil: // if NO error
+				satisfied[0] |= 1 << 1
+			case errors.Is(err, ogenerrors.ErrSkipClientSecurity):
+				// Skip this security.
+			default:
+				return res, errors.Wrap(err, "security \"BearerAuth\"")
+			}
+		}
+
+		if ok := func() bool {
+		nextRequirement:
+			for _, requirement := range []bitset{
+				{0b00000001},
+				{0b00000010},
+			} {
+				for i, mask := range requirement {
+					if satisfied[i]&mask != mask {
+						continue nextRequirement
+					}
+				}
+				return true
+			}
+			return false
+		}(); !ok {
+			return res, ogenerrors.ErrSecurityRequirementIsNotSatisfied
+		}
+	}
+
+	stage = "SendRequest"
+	resp, err := c.cfg.Client.Do(r)
+	if err != nil {
+		return res, errors.Wrap(err, "do request")
+	}
+	defer resp.Body.Close()
+
+	stage = "DecodeResponse"
+	result, err := decodeReprocessDocumentResponse(resp)
 	if err != nil {
 		return res, errors.Wrap(err, "decode response")
 	}

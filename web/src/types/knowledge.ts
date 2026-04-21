@@ -32,10 +32,12 @@ export interface AddDocumentRequest {
   content: string;
 }
 
+export type KnowledgeLayer = 'L0' | 'L1' | 'L2';
+
 export interface QueryDatasetRequest {
   query: string;
   top_k?: number;
-  max_layer?: 0 | 1 | 2;
+  max_layer?: KnowledgeLayer;
 }
 
 export interface QueryResult {
@@ -43,6 +45,6 @@ export interface QueryResult {
   document_name: string;
   content: string;
   score: number;
-  layer?: number;
+  layer?: KnowledgeLayer;
   chunk_index?: number;
 }

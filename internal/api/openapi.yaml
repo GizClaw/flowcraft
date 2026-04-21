@@ -494,6 +494,33 @@ paths:
         default:
           $ref: "#/components/responses/Error"
 
+  /datasets/{id}/documents/{docId}/reprocess:
+    post:
+      operationId: reprocessDocument
+      tags: [knowledge]
+      summary: Re-run layered context generation for a document
+      description: |
+        Resets processing_status to "pending" and submits the document
+        to the platform's context worker. Useful for retrying a doc
+        that failed during the initial generation (e.g. transient LLM
+        error). Returns the patched document row.
+      parameters:
+        - $ref: "#/components/parameters/DatasetID"
+        - name: docId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Document scheduled for reprocessing
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DatasetDocument"
+        default:
+          $ref: "#/components/responses/Error"
+
   /datasets/{id}/query:
     post:
       operationId: queryDocuments
@@ -1934,7 +1961,12 @@ components:
         top_k:
           type: integer
         max_layer:
-          type: integer
+          type: string
+          enum: [L0, L1, L2]
+          description: |
+            Cap the layer of context returned for each match. L0 is the
+            short abstract, L1 the structured overview, L2 the chunk
+            detail. Defaults to L2 when omitted.
         threshold:
           type: number
       required: [query]
