@@ -1858,6 +1858,8 @@ components:
           type: string
         document_count:
           type: integer
+        l0_abstract:
+          type: string
         created_at:
           type: string
           format: date-time
@@ -1897,6 +1899,10 @@ components:
           type: string
         chunk_count:
           type: integer
+        l0_abstract:
+          type: string
+        l1_overview:
+          type: string
         processing_status:
           type: string
         created_at:
@@ -1945,7 +1951,9 @@ components:
         score:
           type: number
         layer:
-          type: integer
+          type: string
+          description: Context layer tag ("L0", "L1", "L2")
+          enum: ["L0", "L1", "L2"]
         chunk_index:
           type: integer
 

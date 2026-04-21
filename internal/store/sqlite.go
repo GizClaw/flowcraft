@@ -996,6 +996,64 @@ func (s *SQLiteStore) DeleteDocument(ctx context.Context, datasetID, docID strin
 	})
 }
 
+func (s *SQLiteStore) UpdateDocumentStats(ctx context.Context, datasetID, docID string, patch model.DocumentStatsPatch) error {
+	return s.applyDocumentStatsPatch(ctx, datasetID, docID, "", patch)
+}
+
+func (s *SQLiteStore) UpdateDocumentStatsByName(ctx context.Context, datasetID, docName string, patch model.DocumentStatsPatch) error {
+	return s.applyDocumentStatsPatch(ctx, datasetID, "", docName, patch)
+}
+
+// applyDocumentStatsPatch updates only the non-nil fields of patch. Exactly
+// one of docID or docName must be set: docID is used by the API handler
+// directly after ingestion; docName is used by the semantic processor which
+// only tracks documents by their display name.
+func (s *SQLiteStore) applyDocumentStatsPatch(ctx context.Context, datasetID, docID, docName string, patch model.DocumentStatsPatch) error {
+	setParts := make([]string, 0, 4)
+	args := make([]any, 0, 6)
+	if patch.ChunkCount != nil {
+		setParts = append(setParts, "chunk_count = ?")
+		args = append(args, *patch.ChunkCount)
+	}
+	if patch.L0Abstract != nil {
+		setParts = append(setParts, "l0_abstract = ?")
+		args = append(args, *patch.L0Abstract)
+	}
+	if patch.L1Overview != nil {
+		setParts = append(setParts, "l1_overview = ?")
+		args = append(args, *patch.L1Overview)
+	}
+	if patch.ProcessingStatus != nil {
+		setParts = append(setParts, "processing_status = ?")
+		args = append(args, string(*patch.ProcessingStatus))
+	}
+	if len(setParts) == 0 {
+		return nil
+	}
+	var whereClause string
+	if docID != "" {
+		whereClause = "id = ? AND dataset_id = ?"
+		args = append(args, docID, datasetID)
+	} else {
+		whereClause = "name = ? AND dataset_id = ?"
+		args = append(args, docName, datasetID)
+	}
+	query := fmt.Sprintf("UPDATE dataset_documents SET %s WHERE %s",
+		strings.Join(setParts, ", "), whereClause)
+	res, err := s.db.ExecContext(ctx, query, args...)
+	if err != nil {
+		return fmt.Errorf("store: update document stats: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		if docID != "" {
+			return errdefs.NotFoundf("document %s not found", docID)
+		}
+		return errdefs.NotFoundf("document %s not found in dataset %s", docName, datasetID)
+	}
+	return nil
+}
+
 // --- Graph version operations ---
 
 func (s *SQLiteStore) ListGraphVersions(ctx context.Context, agentID string) ([]*model.GraphVersion, error) {

@@ -2675,6 +2675,12 @@ func (s *Dataset) encodeFields(e *jx.Encoder) {
 		}
 	}
 	{
+		if s.L0Abstract.Set {
+			e.FieldStart("l0_abstract")
+			s.L0Abstract.Encode(e)
+		}
+	}
+	{
 		if s.CreatedAt.Set {
 			e.FieldStart("created_at")
 			s.CreatedAt.Encode(e, json.EncodeDateTime)
@@ -2688,14 +2694,15 @@ func (s *Dataset) encodeFields(e *jx.Encoder) {
 	}
 }
 
-var jsonFieldsNameOfDataset = [7]string{
+var jsonFieldsNameOfDataset = [8]string{
 	0: "id",
 	1: "agent_id",
 	2: "name",
 	3: "description",
 	4: "document_count",
-	5: "created_at",
-	6: "updated_at",
+	5: "l0_abstract",
+	6: "created_at",
+	7: "updated_at",
 }
 
 // Decode decodes Dataset from json.
@@ -2755,6 +2762,16 @@ func (s *Dataset) Decode(d *jx.Decoder) error {
 				return nil
 			}(); err != nil {
 				return errors.Wrap(err, "decode field \"document_count\"")
+			}
+		case "l0_abstract":
+			if err := func() error {
+				s.L0Abstract.Reset()
+				if err := s.L0Abstract.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"l0_abstract\"")
 			}
 		case "created_at":
 			if err := func() error {
@@ -2840,6 +2857,18 @@ func (s *DatasetDocument) encodeFields(e *jx.Encoder) {
 		}
 	}
 	{
+		if s.L0Abstract.Set {
+			e.FieldStart("l0_abstract")
+			s.L0Abstract.Encode(e)
+		}
+	}
+	{
+		if s.L1Overview.Set {
+			e.FieldStart("l1_overview")
+			s.L1Overview.Encode(e)
+		}
+	}
+	{
 		if s.ProcessingStatus.Set {
 			e.FieldStart("processing_status")
 			s.ProcessingStatus.Encode(e)
@@ -2853,14 +2882,16 @@ func (s *DatasetDocument) encodeFields(e *jx.Encoder) {
 	}
 }
 
-var jsonFieldsNameOfDatasetDocument = [7]string{
+var jsonFieldsNameOfDatasetDocument = [9]string{
 	0: "id",
 	1: "dataset_id",
 	2: "name",
 	3: "content",
 	4: "chunk_count",
-	5: "processing_status",
-	6: "created_at",
+	5: "l0_abstract",
+	6: "l1_overview",
+	7: "processing_status",
+	8: "created_at",
 }
 
 // Decode decodes DatasetDocument from json.
@@ -2920,6 +2951,26 @@ func (s *DatasetDocument) Decode(d *jx.Decoder) error {
 				return nil
 			}(); err != nil {
 				return errors.Wrap(err, "decode field \"chunk_count\"")
+			}
+		case "l0_abstract":
+			if err := func() error {
+				s.L0Abstract.Reset()
+				if err := s.L0Abstract.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"l0_abstract\"")
+			}
+		case "l1_overview":
+			if err := func() error {
+				s.L1Overview.Reset()
+				if err := s.L1Overview.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"l1_overview\"")
 			}
 		case "processing_status":
 			if err := func() error {
@@ -7931,6 +7982,39 @@ func (s *OptPluginConfig) UnmarshalJSON(data []byte) error {
 	return s.Decode(d)
 }
 
+// Encode encodes QueryResultLayer as json.
+func (o OptQueryResultLayer) Encode(e *jx.Encoder) {
+	if !o.Set {
+		return
+	}
+	e.Str(string(o.Value))
+}
+
+// Decode decodes QueryResultLayer from json.
+func (o *OptQueryResultLayer) Decode(d *jx.Decoder) error {
+	if o == nil {
+		return errors.New("invalid: unable to decode OptQueryResultLayer to nil")
+	}
+	o.Set = true
+	if err := o.Value.Decode(d); err != nil {
+		return err
+	}
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s OptQueryResultLayer) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *OptQueryResultLayer) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
 // Encode encodes string as json.
 func (o OptString) Encode(e *jx.Encoder) {
 	if !o.Set {
@@ -9301,6 +9385,48 @@ func (s *QueryResult) MarshalJSON() ([]byte, error) {
 
 // UnmarshalJSON implements stdjson.Unmarshaler.
 func (s *QueryResult) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode encodes QueryResultLayer as json.
+func (s QueryResultLayer) Encode(e *jx.Encoder) {
+	e.Str(string(s))
+}
+
+// Decode decodes QueryResultLayer from json.
+func (s *QueryResultLayer) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode QueryResultLayer to nil")
+	}
+	v, err := d.StrBytes()
+	if err != nil {
+		return err
+	}
+	// Try to use constant string.
+	switch QueryResultLayer(v) {
+	case QueryResultLayerL0:
+		*s = QueryResultLayerL0
+	case QueryResultLayerL1:
+		*s = QueryResultLayerL1
+	case QueryResultLayerL2:
+		*s = QueryResultLayerL2
+	default:
+		*s = QueryResultLayer(v)
+	}
+
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s QueryResultLayer) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *QueryResultLayer) UnmarshalJSON(data []byte) error {
 	d := jx.DecodeBytes(data)
 	return s.Decode(d)
 }

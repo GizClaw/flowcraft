@@ -267,6 +267,20 @@ func (s *TracingStore) DeleteDocument(ctx context.Context, datasetID, docID stri
 	return err
 }
 
+func (s *TracingStore) UpdateDocumentStats(ctx context.Context, datasetID, docID string, patch model.DocumentStatsPatch) error {
+	ctx, span := s.start(ctx, "UpdateDocumentStats", attribute.String("document.id", docID))
+	err := s.inner.UpdateDocumentStats(ctx, datasetID, docID, patch)
+	finish(span, err)
+	return err
+}
+
+func (s *TracingStore) UpdateDocumentStatsByName(ctx context.Context, datasetID, docName string, patch model.DocumentStatsPatch) error {
+	ctx, span := s.start(ctx, "UpdateDocumentStatsByName", attribute.String("dataset.id", datasetID), attribute.String("document.name", docName))
+	err := s.inner.UpdateDocumentStatsByName(ctx, datasetID, docName, patch)
+	finish(span, err)
+	return err
+}
+
 func (s *TracingStore) ListGraphVersions(ctx context.Context, agentID string) ([]*model.GraphVersion, error) {
 	ctx, span := s.start(ctx, "ListGraphVersions", attribute.String("agent.id", agentID))
 	versions, err := s.inner.ListGraphVersions(ctx, agentID)

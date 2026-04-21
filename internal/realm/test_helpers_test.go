@@ -120,6 +120,13 @@ func (s *mockStore) ListDocuments(context.Context, string) ([]*model.DatasetDocu
 	return nil, nil
 }
 func (s *mockStore) DeleteDocument(context.Context, string, string) error { return nil }
+func (s *mockStore) UpdateDocumentStats(context.Context, string, string, model.DocumentStatsPatch) error {
+	return nil
+}
+
+func (s *mockStore) UpdateDocumentStatsByName(context.Context, string, string, model.DocumentStatsPatch) error {
+	return nil
+}
 func (s *mockStore) ListGraphVersions(context.Context, string) ([]*model.GraphVersion, error) {
 	return nil, nil
 }

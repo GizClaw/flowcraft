@@ -1259,6 +1259,7 @@ export interface components {
             name?: string;
             description?: string;
             document_count?: number;
+            l0_abstract?: string;
             /** Format: date-time */
             created_at?: string;
             /** Format: date-time */
@@ -1278,6 +1279,8 @@ export interface components {
             name?: string;
             content?: string;
             chunk_count?: number;
+            l0_abstract?: string;
+            l1_overview?: string;
             processing_status?: string;
             /** Format: date-time */
             created_at?: string;
@@ -1300,7 +1303,11 @@ export interface components {
             document_name?: string;
             content?: string;
             score?: number;
-            layer?: number;
+            /**
+             * @description Context layer tag ("L0", "L1", "L2")
+             * @enum {string}
+             */
+            layer?: "L0" | "L1" | "L2";
             chunk_index?: number;
         };
         QueryResultList: {

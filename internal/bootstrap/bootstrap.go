@@ -81,7 +81,7 @@ func Run(ctx context.Context) (*platform.Platform, *api.Server, func(), error) {
 	workspaceRoot := sandboxCfg.RootDir
 
 	// --- knowledge ---
-	knowledgeStore, knowledgeCleanup, err := wireKnowledge(ctx, ws, llmResolver)
+	knowledgeStore, knowledgeCleanup, err := wireKnowledge(ctx, ws)
 	if err != nil {
 		return fail(err)
 	}

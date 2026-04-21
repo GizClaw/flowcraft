@@ -27,11 +27,13 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/llm"
 	"github.com/GizClaw/flowcraft/sdk/memory"
 	sdkmodel "github.com/GizClaw/flowcraft/sdk/model"
+	"github.com/GizClaw/flowcraft/sdk/telemetry"
 	"github.com/GizClaw/flowcraft/sdk/tool"
 	"github.com/GizClaw/flowcraft/sdk/workflow"
 	"github.com/GizClaw/flowcraft/sdkx/knowledge"
 
 	"github.com/rs/xid"
+	otellog "go.opentelemetry.io/otel/log"
 	"gopkg.in/yaml.v3"
 )
 
@@ -573,6 +575,29 @@ func (h *oapiHandler) AddDocument(ctx context.Context, req *oas.AddDocumentReque
 			return nil, addErr
 		}
 	}
+
+	// Backfill synchronously computable stats so the first list/get after
+	// ingestion reflects the true chunk count.
+	//
+	// TODO(knowledgeproc): submit this document to the platform-side context
+	// worker (introduced in a follow-up commit) so processing_status walks
+	// pending → processing → completed | failed and l0_abstract / l1_overview
+	// get filled in. Until that worker exists every document is marked
+	// completed inline so the UI does not get stuck on "processing".
+	chunks := knowledge.ChunkDocument(req.Name, req.Content, knowledge.DefaultChunkConfig())
+	chunkCount := len(chunks)
+	status := model.ProcessingCompleted
+	if updateErr := h.s.deps.Platform.Store.UpdateDocumentStats(ctx, params.ID, doc.ID, model.DocumentStatsPatch{
+		ChunkCount:       &chunkCount,
+		ProcessingStatus: &status,
+	}); updateErr != nil {
+		telemetry.Warn(ctx, "knowledge: update document stats failed",
+			otellog.String("doc", doc.ID), otellog.String("error", updateErr.Error()))
+	} else {
+		doc.ChunkCount = chunkCount
+		doc.ProcessingStatus = status
+	}
+
 	return toOAS[oas.DatasetDocument](doc)
 }
 
@@ -620,14 +645,34 @@ func (h *oapiHandler) QueryDocuments(ctx context.Context, req *oas.DatasetQueryR
 	}
 	oasResults := make([]oas.QueryResult, len(results))
 	for i, res := range results {
-		oasResults[i] = oas.QueryResult{
+		qr := oas.QueryResult{
 			Content:      oas.NewOptString(res.Content),
 			Score:        oas.NewOptFloat64(res.Score),
 			DocumentName: oas.NewOptString(res.DocName),
 			ChunkIndex:   oas.NewOptInt(res.ChunkIndex),
 		}
+		if layer, ok := toOASLayer(res.Layer); ok {
+			qr.Layer = oas.NewOptQueryResultLayer(layer)
+		}
+		oasResults[i] = qr
 	}
 	return &oas.QueryResultList{Data: oasResults}, nil
+}
+
+// toOASLayer maps the knowledge-package ContextLayer string ("L0"/"L1"/"L2")
+// onto the generated OAS enum. The second return value is false when the
+// layer is unset or unrecognised so the caller can omit the field.
+func toOASLayer(l knowledge.ContextLayer) (oas.QueryResultLayer, bool) {
+	switch l {
+	case knowledge.LayerAbstract:
+		return oas.QueryResultLayerL0, true
+	case knowledge.LayerOverview:
+		return oas.QueryResultLayerL1, true
+	case knowledge.LayerDetail:
+		return oas.QueryResultLayerL2, true
+	default:
+		return "", false
+	}
 }
 
 // ══════════════════════════ Graph Versions ══════════════════════════

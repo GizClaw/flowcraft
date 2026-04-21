@@ -1000,6 +1000,7 @@ type Dataset struct {
 	Name          OptString   `json:"name"`
 	Description   OptString   `json:"description"`
 	DocumentCount OptInt      `json:"document_count"`
+	L0Abstract    OptString   `json:"l0_abstract"`
 	CreatedAt     OptDateTime `json:"created_at"`
 	UpdatedAt     OptDateTime `json:"updated_at"`
 }
@@ -1027,6 +1028,11 @@ func (s *Dataset) GetDescription() OptString {
 // GetDocumentCount returns the value of DocumentCount.
 func (s *Dataset) GetDocumentCount() OptInt {
 	return s.DocumentCount
+}
+
+// GetL0Abstract returns the value of L0Abstract.
+func (s *Dataset) GetL0Abstract() OptString {
+	return s.L0Abstract
 }
 
 // GetCreatedAt returns the value of CreatedAt.
@@ -1064,6 +1070,11 @@ func (s *Dataset) SetDocumentCount(val OptInt) {
 	s.DocumentCount = val
 }
 
+// SetL0Abstract sets the value of L0Abstract.
+func (s *Dataset) SetL0Abstract(val OptString) {
+	s.L0Abstract = val
+}
+
 // SetCreatedAt sets the value of CreatedAt.
 func (s *Dataset) SetCreatedAt(val OptDateTime) {
 	s.CreatedAt = val
@@ -1081,6 +1092,8 @@ type DatasetDocument struct {
 	Name             OptString   `json:"name"`
 	Content          OptString   `json:"content"`
 	ChunkCount       OptInt      `json:"chunk_count"`
+	L0Abstract       OptString   `json:"l0_abstract"`
+	L1Overview       OptString   `json:"l1_overview"`
 	ProcessingStatus OptString   `json:"processing_status"`
 	CreatedAt        OptDateTime `json:"created_at"`
 }
@@ -1108,6 +1121,16 @@ func (s *DatasetDocument) GetContent() OptString {
 // GetChunkCount returns the value of ChunkCount.
 func (s *DatasetDocument) GetChunkCount() OptInt {
 	return s.ChunkCount
+}
+
+// GetL0Abstract returns the value of L0Abstract.
+func (s *DatasetDocument) GetL0Abstract() OptString {
+	return s.L0Abstract
+}
+
+// GetL1Overview returns the value of L1Overview.
+func (s *DatasetDocument) GetL1Overview() OptString {
+	return s.L1Overview
 }
 
 // GetProcessingStatus returns the value of ProcessingStatus.
@@ -1143,6 +1166,16 @@ func (s *DatasetDocument) SetContent(val OptString) {
 // SetChunkCount sets the value of ChunkCount.
 func (s *DatasetDocument) SetChunkCount(val OptInt) {
 	s.ChunkCount = val
+}
+
+// SetL0Abstract sets the value of L0Abstract.
+func (s *DatasetDocument) SetL0Abstract(val OptString) {
+	s.L0Abstract = val
+}
+
+// SetL1Overview sets the value of L1Overview.
+func (s *DatasetDocument) SetL1Overview(val OptString) {
+	s.L1Overview = val
 }
 
 // SetProcessingStatus sets the value of ProcessingStatus.
@@ -3509,6 +3542,52 @@ func (o OptPluginConfig) Or(d PluginConfig) PluginConfig {
 	return d
 }
 
+// NewOptQueryResultLayer returns new OptQueryResultLayer with value set to v.
+func NewOptQueryResultLayer(v QueryResultLayer) OptQueryResultLayer {
+	return OptQueryResultLayer{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptQueryResultLayer is optional QueryResultLayer.
+type OptQueryResultLayer struct {
+	Value QueryResultLayer
+	Set   bool
+}
+
+// IsSet returns true if OptQueryResultLayer was set.
+func (o OptQueryResultLayer) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptQueryResultLayer) Reset() {
+	var v QueryResultLayer
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptQueryResultLayer) SetTo(v QueryResultLayer) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptQueryResultLayer) Get() (v QueryResultLayer, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptQueryResultLayer) Or(d QueryResultLayer) QueryResultLayer {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
 // NewOptString returns new OptString with value set to v.
 func NewOptString(v string) OptString {
 	return OptString{
@@ -4028,8 +4107,9 @@ type QueryResult struct {
 	DocumentName OptString  `json:"document_name"`
 	Content      OptString  `json:"content"`
 	Score        OptFloat64 `json:"score"`
-	Layer        OptInt     `json:"layer"`
-	ChunkIndex   OptInt     `json:"chunk_index"`
+	// Context layer tag ("L0", "L1", "L2").
+	Layer      OptQueryResultLayer `json:"layer"`
+	ChunkIndex OptInt              `json:"chunk_index"`
 }
 
 // GetDocumentID returns the value of DocumentID.
@@ -4053,7 +4133,7 @@ func (s *QueryResult) GetScore() OptFloat64 {
 }
 
 // GetLayer returns the value of Layer.
-func (s *QueryResult) GetLayer() OptInt {
+func (s *QueryResult) GetLayer() OptQueryResultLayer {
 	return s.Layer
 }
 
@@ -4083,13 +4163,62 @@ func (s *QueryResult) SetScore(val OptFloat64) {
 }
 
 // SetLayer sets the value of Layer.
-func (s *QueryResult) SetLayer(val OptInt) {
+func (s *QueryResult) SetLayer(val OptQueryResultLayer) {
 	s.Layer = val
 }
 
 // SetChunkIndex sets the value of ChunkIndex.
 func (s *QueryResult) SetChunkIndex(val OptInt) {
 	s.ChunkIndex = val
+}
+
+// Context layer tag ("L0", "L1", "L2").
+type QueryResultLayer string
+
+const (
+	QueryResultLayerL0 QueryResultLayer = "L0"
+	QueryResultLayerL1 QueryResultLayer = "L1"
+	QueryResultLayerL2 QueryResultLayer = "L2"
+)
+
+// AllValues returns all QueryResultLayer values.
+func (QueryResultLayer) AllValues() []QueryResultLayer {
+	return []QueryResultLayer{
+		QueryResultLayerL0,
+		QueryResultLayerL1,
+		QueryResultLayerL2,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s QueryResultLayer) MarshalText() ([]byte, error) {
+	switch s {
+	case QueryResultLayerL0:
+		return []byte(s), nil
+	case QueryResultLayerL1:
+		return []byte(s), nil
+	case QueryResultLayerL2:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *QueryResultLayer) UnmarshalText(data []byte) error {
+	switch QueryResultLayer(data) {
+	case QueryResultLayerL0:
+		*s = QueryResultLayerL0
+		return nil
+	case QueryResultLayerL1:
+		*s = QueryResultLayerL1
+		return nil
+	case QueryResultLayerL2:
+		*s = QueryResultLayerL2
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
 }
 
 // Ref: #/components/schemas/QueryResultList
