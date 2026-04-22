@@ -1,0 +1,16 @@
+domain: task
+events:
+  task.submitted:
+    version: 1
+    category: business
+    partition: card
+    payload_ref: P
+    producers: [test]
+    consumers: [test]
+    transports: [ws]
+    audit_required: false
+    doc: "loosened required -> optional at same version (allowed)"
+payloads:
+  P:
+    card_id: { type: string, required: true }
+    title:   { type: string }

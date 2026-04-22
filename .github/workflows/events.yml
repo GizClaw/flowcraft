@@ -1,0 +1,42 @@
+name: Events
+
+on:
+  push:
+    branches: [main, feat/flowcraft]
+    paths:
+      - "contracts/**"
+      - "cmd/eventgen/**"
+      - "internal/eventlog/**"
+      - "web/src/api/events.gen.ts"
+      - "web/src/api/event_payloads.gen.ts"
+      - "web/src/api/event_guards.gen.ts"
+      - "Makefile"
+  pull_request:
+    branches: [main, feat/flowcraft]
+    paths:
+      - "contracts/**"
+      - "cmd/eventgen/**"
+      - "internal/eventlog/**"
+      - "web/src/api/events.gen.ts"
+      - "web/src/api/event_payloads.gen.ts"
+      - "web/src/api/event_guards.gen.ts"
+      - "Makefile"
+      - ".github/workflows/events.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  events:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.25"
+      - name: events-check
+        run: make events-check
+      - name: go test (eventgen + eventlog)
+        run: go test ./cmd/eventgen/... ./internal/eventlog/... -count=1
+      - name: fuzz (short)
+        run: make events-fuzz

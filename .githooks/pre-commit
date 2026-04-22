@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+set -euo pipefail
+if git diff --cached --name-only | grep -q '^contracts/'; then
+  echo "contracts/ changed — running make events-gen"
+  make events-gen
+  git add \
+    contracts/envelope.schema.json \
+    contracts/payloads.schema.json \
+    internal/eventlog/events_gen.go \
+    internal/eventlog/payloads_gen.go \
+    internal/eventlog/partitions_gen.go \
+    internal/eventlog/dispatch_gen.go \
+    internal/eventlog/publish_gen.go \
+    internal/eventlog/audit_gen.go \
+    web/src/api/events.gen.ts \
+    web/src/api/event_payloads.gen.ts \
+    web/src/api/event_guards.gen.ts
+fi

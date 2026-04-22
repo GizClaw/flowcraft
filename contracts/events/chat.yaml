@@ -1,0 +1,62 @@
+domain: chat
+events:
+  chat.message.sent:
+    version: 1
+    category: business
+    partition: card
+    payload_ref: ChatMessageSentPayload
+    producers: [ChatService]
+    consumers: [Projector, TransportHub]
+    transports: [ws, sse, http_pull]
+    audit_required: true
+    audit_summary: "chat message sent on card {{payload.card_id}}"
+    doc: "User or assistant message persisted."
+  chat.callback.queued:
+    version: 1
+    category: business
+    partition: card
+    payload_ref: ChatCallbackQueuedPayload
+    producers: [ChatService]
+    consumers: [Projector, TransportHub]
+    transports: [ws, sse, http_pull]
+    audit_required: false
+    doc: "Kanban callback turn queued."
+  chat.callback.delivered:
+    version: 1
+    category: business
+    partition: card
+    payload_ref: ChatCallbackDeliveredPayload
+    producers: [ChatService]
+    consumers: [Projector, TransportHub]
+    transports: [ws, sse, http_pull]
+    audit_required: true
+    audit_summary: "chat callback delivered for card {{payload.card_id}}"
+    doc: "Callback processing finished (actor required at runtime)."
+  chat.callback.dismissed:
+    version: 1
+    category: business
+    partition: card
+    payload_ref: ChatCallbackDismissedPayload
+    producers: [ChatService]
+    consumers: [Projector, TransportHub]
+    transports: [ws, sse, http_pull]
+    audit_required: true
+    audit_summary: "chat callback dismissed for card {{payload.card_id}}"
+    doc: "Callback dismissed without completion."
+
+payloads:
+  ChatMessageSentPayload:
+    card_id: { type: string, required: true }
+    role: { type: string, required: true }
+    message_id: { type: string, required: true }
+  ChatCallbackQueuedPayload:
+    card_id: { type: string, required: true }
+    callback_id: { type: string, required: true }
+  ChatCallbackDeliveredPayload:
+    card_id: { type: string, required: true }
+    callback_id: { type: string, required: true }
+    success: { type: bool, required: true }
+  ChatCallbackDismissedPayload:
+    card_id: { type: string, required: true }
+    callback_id: { type: string, required: true }
+    reason: { type: string, required: false }

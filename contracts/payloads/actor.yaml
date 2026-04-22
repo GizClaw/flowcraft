@@ -1,0 +1,6 @@
+# Shared envelope.actor shape (referenced from manifest envelope.fields).
+definitions:
+  Actor:
+    id: { type: string, required: true }
+    kind: { type: string, required: true }
+    realm_id: { type: string, required: true }

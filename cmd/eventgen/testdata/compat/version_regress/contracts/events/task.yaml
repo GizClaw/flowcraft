@@ -1,0 +1,16 @@
+domain: task
+events:
+  task.submitted:
+    version: 1
+    category: business
+    partition: card
+    payload_ref: P
+    producers: [test]
+    consumers: [test]
+    transports: [ws]
+    audit_required: false
+    doc: "version regressed 2 -> 1 (forbidden)"
+payloads:
+  P:
+    card_id: { type: string, required: true }
+    title:   { type: string, required: true }

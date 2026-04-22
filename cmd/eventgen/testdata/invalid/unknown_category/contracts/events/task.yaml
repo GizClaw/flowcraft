@@ -1,0 +1,15 @@
+domain: task
+events:
+  task.submitted:
+    version: 1
+    category: nonsense
+    partition: card
+    payload_ref: P
+    producers: [test]
+    consumers: [test]
+    transports: [ws]
+    audit_required: false
+    doc: "category not in manifest categories"
+payloads:
+  P:
+    card_id: { type: string, required: true }

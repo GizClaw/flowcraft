@@ -1,0 +1,29 @@
+# Mark generated code so GitHub PR diffs collapse them by default and
+# `git diff` excludes them from `--stat`. Per docs/event-sourcing/20-phased-rollout.md
+# the rule is: anything emitted by a code generator must be linguist-generated.
+#
+# Generators in this repo:
+#   - cmd/eventgen        → internal/eventlog/*_gen.go, web/src/api/events*.gen.ts
+#   - ogen-go/ogen        → internal/api/oas/*_gen.go
+#   - openapi-typescript  → web/src/api/schema.d.ts
+
+internal/eventlog/*_gen.go         linguist-generated=true
+internal/api/oas/*_gen.go          linguist-generated=true
+web/src/api/events.gen.ts          linguist-generated=true
+web/src/api/event_payloads.gen.ts  linguist-generated=true
+web/src/api/event_guards.gen.ts    linguist-generated=true
+web/src/api/schema.d.ts            linguist-generated=true
+contracts/envelope.schema.json     linguist-generated=true
+contracts/payloads.schema.json     linguist-generated=true
+
+# Treat generated files as binary for git diff so reviews don't surface
+# spurious context.  (linguist-generated=true alone hides them in the
+# GitHub UI; -diff hides them on the CLI too.)
+internal/eventlog/*_gen.go         -diff
+internal/api/oas/*_gen.go          -diff
+web/src/api/events.gen.ts          -diff
+web/src/api/event_payloads.gen.ts  -diff
+web/src/api/event_guards.gen.ts    -diff
+web/src/api/schema.d.ts            -diff
+contracts/envelope.schema.json     -diff
+contracts/payloads.schema.json     -diff

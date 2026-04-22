@@ -1,0 +1,15 @@
+domain: task
+events:
+  task.exploded:
+    version: 1
+    category: business
+    partition: card
+    payload_ref: P
+    producers: [test]
+    consumers: [test]
+    transports: [ws]
+    audit_required: false
+    doc: "verb not in whitelist"
+payloads:
+  P:
+    card_id: { type: string, required: true }

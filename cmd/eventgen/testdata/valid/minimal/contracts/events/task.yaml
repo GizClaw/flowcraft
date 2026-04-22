@@ -1,0 +1,16 @@
+domain: task
+events:
+  task.submitted:
+    version: 1
+    category: business
+    partition: card
+    payload_ref: TaskSubmittedPayload
+    producers: [test]
+    consumers: [test]
+    transports: [ws]
+    audit_required: false
+    doc: "Test task submission."
+payloads:
+  TaskSubmittedPayload:
+    card_id: { type: string, required: true }
+    title: { type: string, required: true }

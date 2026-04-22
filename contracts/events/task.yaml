@@ -1,0 +1,70 @@
+domain: task
+events:
+  task.submitted:
+    version: 1
+    category: business
+    partition: runtime
+    payload_ref: TaskSubmittedPayload
+    producers: [KanbanBridge]
+    consumers: [Projector, TransportHub]
+    transports: [ws, sse, http_pull]
+    audit_required: true
+    audit_summary: "task {{payload.card_id}} submitted for agent {{payload.target_agent_id}}"
+    doc: "Task card created in pending state."
+  task.claimed:
+    version: 1
+    category: business
+    partition: runtime
+    payload_ref: TaskClaimedPayload
+    producers: [KanbanBridge]
+    consumers: [Projector, TransportHub]
+    transports: [ws, sse, http_pull]
+    audit_required: false
+    doc: "Task claimed by an executor."
+  task.completed:
+    version: 1
+    category: business
+    partition: runtime
+    payload_ref: TaskCompletedPayload
+    producers: [KanbanBridge]
+    consumers: [Projector, TransportHub]
+    transports: [ws, sse, http_pull]
+    audit_required: true
+    audit_summary: "task {{payload.card_id}} completed"
+    doc: "Task finished successfully."
+  task.failed:
+    version: 1
+    category: business
+    partition: runtime
+    payload_ref: TaskFailedPayload
+    producers: [KanbanBridge]
+    consumers: [Projector, TransportHub]
+    transports: [ws, sse, http_pull]
+    audit_required: true
+    audit_summary: "task {{payload.card_id}} failed"
+    doc: "Task finished with error."
+
+payloads:
+  TaskSubmittedPayload:
+    card_id: { type: string, required: true }
+    target_agent_id: { type: string, required: true }
+    query: { type: string, required: true }
+    runtime_id: { type: string, required: true }
+    inputs: { type: map, value_type: any, required: false }
+  TaskClaimedPayload:
+    card_id: { type: string, required: true }
+    target_agent_id: { type: string, required: true }
+    runtime_id: { type: string, required: true }
+    consumer: { type: string, required: true }
+  TaskCompletedPayload:
+    card_id: { type: string, required: true }
+    target_agent_id: { type: string, required: true }
+    runtime_id: { type: string, required: true }
+    output: { type: string, required: true }
+    elapsed_ms: { type: int64, required: true }
+  TaskFailedPayload:
+    card_id: { type: string, required: true }
+    target_agent_id: { type: string, required: true }
+    runtime_id: { type: string, required: true }
+    error: { type: string, required: true }
+    elapsed_ms: { type: int64, required: true }

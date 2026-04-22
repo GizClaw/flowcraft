@@ -1,0 +1,7 @@
+# Large inbound webhook body (split for readability).
+definitions:
+  WebhookInboundBody:
+    endpoint_id: { type: string, required: true }
+    headers: { type: map, value_type: string, required: false }
+    body: { type: string, required: true }
+    content_type: { type: string, required: false }

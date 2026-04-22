@@ -3,6 +3,9 @@
 
 # ── Git config ──
 !.gitignore
+!.gitattributes
+!.githooks/
+!.githooks/**
 
 # ── Root documentation ──
 !README.md
@@ -17,6 +20,8 @@
 !go.sum
 !cmd/
 !cmd/**
+!contracts/
+!contracts/**
 !internal/
 !internal/**
 !plugin/

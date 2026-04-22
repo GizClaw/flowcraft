@@ -1,0 +1,66 @@
+# FlowCraft event contract manifest (R1).
+# spec_version: contract schema version for tooling.
+spec_version: 1
+generated_at: "2026-04-22T06:27:25.656693Z"
+envelope:
+  fields:
+    seq: { type: int64, required: true, doc: "Monotonic append sequence (gaps allowed)." }
+    partition: { type: string, required: true, doc: "Routing + ordering key." }
+    type: { type: string, required: true, doc: "Fully-qualified event name." }
+    version: { type: int32, required: true, doc: "Payload schema version." }
+    category: { type: string, required: true, doc: "Retention category." }
+    ts: { type: timestamp, required: true, doc: "RFC3339Nano UTC append time." }
+    payload: { type: object, required: true, doc: "Event-specific payload JSON." }
+    actor: { type: ref, ref: payloads/actor.yaml#Actor, required: false, doc: "Actor for audit." }
+    trace_id: { type: string, required: false }
+    span_id: { type: string, required: false }
+
+partitions:
+  - name: runtime
+    format: "runtime:{runtime_id}"
+    fields: { runtime_id: string }
+    doc: "Realm-wide task/cron/realm config scope."
+  - name: card
+    format: "card:{card_id}"
+    fields: { card_id: string }
+    doc: "Single card (agent/chat)."
+  - name: webhook_endpoint
+    format: "webhook:{endpoint_id}"
+    fields: { endpoint_id: string }
+    doc: "Single webhook endpoint."
+  - name: cron_rule
+    format: "cron:{rule_id}"
+    fields: { rule_id: string }
+    doc: "Single cron rule."
+  - name: realm
+    format: "realm:{realm_id}"
+    fields: { realm_id: string }
+    doc: "Realm lifecycle."
+  - name: actor
+    format: "actor:{actor_id}"
+    fields: { actor_id: string }
+    doc: "Audit-only partition."
+
+categories:
+  volatile: { default_ttl: 7d, doc: "High-frequency streaming deltas." }
+  operational: { default_ttl: 30d, doc: "Ops signals (webhook retries, cron fired)." }
+  business: { default_ttl: 90d, doc: "Business facts (tasks, chat, agent runs)." }
+  audit: { default_ttl: 365d, doc: "Security-sensitive operations." }
+  permanent: { default_ttl: infinite, doc: "Never delete (realm.created)." }
+
+lint:
+  enforce_verb_whitelist: true
+  enforce_partition_match: true
+  enforce_category_in_categories: true
+  enforce_audit_summary_when_required: true
+  allow_verbs: []
+  allow_consumer_names: []
+
+includes:
+  - events/task.yaml
+  - events/cron.yaml
+  - events/agent.yaml
+  - events/chat.yaml
+  - events/webhook.yaml
+  - events/realm.yaml
+  - events/audit.yaml

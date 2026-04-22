@@ -1,0 +1,24 @@
+spec_version: 1
+generated_at: ""
+envelope:
+  fields:
+    seq: { type: int64, required: true }
+    partition: { type: string, required: true }
+    type: { type: string, required: true }
+    version: { type: int32, required: true }
+    category: { type: string, required: true }
+    ts: { type: timestamp, required: true }
+    payload: { type: object, required: true }
+partitions:
+  - name: card
+    format: "card:{cardID}"
+categories:
+  business:
+    default_ttl: "0"
+lint:
+  enforce_verb_whitelist: true
+  enforce_partition_match: true
+  enforce_category_in_categories: true
+  enforce_audit_summary_when_required: true
+includes:
+  - events/task.yaml

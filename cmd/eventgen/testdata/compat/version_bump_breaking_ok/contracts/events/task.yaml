@@ -1,0 +1,17 @@
+domain: task
+events:
+  task.submitted:
+    version: 2
+    category: business
+    partition: card
+    payload_ref: P
+    producers: [test]
+    consumers: [test]
+    transports: [ws]
+    audit_required: false
+    doc: "bumped version: breaking changes are allowed at v2"
+payloads:
+  P:
+    card_id:   { type: string, required: true }
+    title:     { type: string, required: true }
+    extra_req: { type: string, required: true }

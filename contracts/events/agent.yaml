@@ -1,0 +1,107 @@
+domain: agent
+events:
+  agent.run.started:
+    version: 1
+    category: business
+    partition: card
+    payload_ref: AgentRunStartedPayload
+    producers: [AgentRuntime]
+    consumers: [Projector, TransportHub]
+    transports: [ws, sse, http_pull]
+    audit_required: false
+    doc: "Agent execution started for a card."
+  agent.run.completed:
+    version: 1
+    category: business
+    partition: card
+    payload_ref: AgentRunCompletedPayload
+    producers: [AgentRuntime]
+    consumers: [Projector, TransportHub]
+    transports: [ws, sse, http_pull]
+    audit_required: true
+    audit_summary: "agent run completed for card {{payload.card_id}}"
+    doc: "Agent execution completed successfully."
+  agent.run.failed:
+    version: 1
+    category: business
+    partition: card
+    payload_ref: AgentRunFailedPayload
+    producers: [AgentRuntime]
+    consumers: [Projector, TransportHub]
+    transports: [ws, sse, http_pull]
+    audit_required: true
+    audit_summary: "agent run failed for card {{payload.card_id}}"
+    doc: "Agent execution failed."
+  agent.stream.delta:
+    version: 1
+    category: volatile
+    partition: card
+    payload_ref: AgentStreamDeltaPayload
+    producers: [AgentRuntime]
+    consumers: [Projector, TransportHub]
+    transports: [ws, sse, http_pull]
+    audit_required: false
+    doc: "Streaming token delta for assistant output."
+  agent.thinking.delta:
+    version: 1
+    category: volatile
+    partition: card
+    payload_ref: AgentThinkingDeltaPayload
+    producers: [AgentRuntime]
+    consumers: [Projector, TransportHub]
+    transports: [ws, sse, http_pull]
+    audit_required: false
+    doc: "Streaming delta for model thinking trace."
+  agent.tool.invoked:
+    version: 1
+    category: business
+    partition: card
+    payload_ref: AgentToolInvokedPayload
+    producers: [AgentRuntime]
+    consumers: [Projector, TransportHub]
+    transports: [ws, sse, http_pull]
+    audit_required: false
+    doc: "Tool call started."
+  agent.tool.returned:
+    version: 1
+    category: business
+    partition: card
+    payload_ref: AgentToolReturnedPayload
+    producers: [AgentRuntime]
+    consumers: [Projector, TransportHub]
+    transports: [ws, sse, http_pull]
+    audit_required: false
+    doc: "Tool call finished."
+
+payloads:
+  AgentRunStartedPayload:
+    card_id: { type: string, required: true }
+    run_id: { type: string, required: true }
+  AgentRunCompletedPayload:
+    card_id: { type: string, required: true }
+    run_id: { type: string, required: true }
+    output: { type: string, required: false }
+  AgentRunFailedPayload:
+    card_id: { type: string, required: true }
+    run_id: { type: string, required: true }
+    error: { type: string, required: true }
+  AgentStreamDeltaPayload:
+    card_id: { type: string, required: true }
+    run_id: { type: string, required: true }
+    delta: { type: string, required: true }
+  AgentThinkingDeltaPayload:
+    card_id: { type: string, required: true }
+    run_id: { type: string, required: true }
+    delta: { type: string, required: true }
+  AgentToolInvokedPayload:
+    card_id: { type: string, required: true }
+    run_id: { type: string, required: true }
+    tool_name: { type: string, required: true }
+    call_id: { type: string, required: true }
+  AgentToolReturnedPayload:
+    card_id: { type: string, required: true }
+    run_id: { type: string, required: true }
+    tool_name: { type: string, required: true }
+    call_id: { type: string, required: true }
+    output: { type: string, required: false }
+    error: { type: string, required: false }

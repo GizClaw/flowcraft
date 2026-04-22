@@ -1,0 +1,499 @@
+events:
+    agent.run.completed:
+        version: 1
+        category: business
+        partition: card
+        payload_type: AgentRunCompletedPayload
+        fields:
+            card_id:
+                type: string
+                required: true
+            output:
+                type: string
+            run_id:
+                type: string
+                required: true
+    agent.run.failed:
+        version: 1
+        category: business
+        partition: card
+        payload_type: AgentRunFailedPayload
+        fields:
+            card_id:
+                type: string
+                required: true
+            error:
+                type: string
+                required: true
+            run_id:
+                type: string
+                required: true
+    agent.run.started:
+        version: 1
+        category: business
+        partition: card
+        payload_type: AgentRunStartedPayload
+        fields:
+            card_id:
+                type: string
+                required: true
+            run_id:
+                type: string
+                required: true
+    agent.stream.delta:
+        version: 1
+        category: volatile
+        partition: card
+        payload_type: AgentStreamDeltaPayload
+        fields:
+            card_id:
+                type: string
+                required: true
+            delta:
+                type: string
+                required: true
+            run_id:
+                type: string
+                required: true
+    agent.thinking.delta:
+        version: 1
+        category: volatile
+        partition: card
+        payload_type: AgentThinkingDeltaPayload
+        fields:
+            card_id:
+                type: string
+                required: true
+            delta:
+                type: string
+                required: true
+            run_id:
+                type: string
+                required: true
+    agent.tool.invoked:
+        version: 1
+        category: business
+        partition: card
+        payload_type: AgentToolInvokedPayload
+        fields:
+            call_id:
+                type: string
+                required: true
+            card_id:
+                type: string
+                required: true
+            run_id:
+                type: string
+                required: true
+            tool_name:
+                type: string
+                required: true
+    agent.tool.returned:
+        version: 1
+        category: business
+        partition: card
+        payload_type: AgentToolReturnedPayload
+        fields:
+            call_id:
+                type: string
+                required: true
+            card_id:
+                type: string
+                required: true
+            error:
+                type: string
+            output:
+                type: string
+            run_id:
+                type: string
+                required: true
+            tool_name:
+                type: string
+                required: true
+    audit.action.failed:
+        version: 1
+        category: audit
+        partition: actor
+        payload_type: AuditActionFailedPayload
+        fields:
+            action:
+                type: string
+                required: true
+            actor_id:
+                type: string
+                required: true
+            error:
+                type: string
+                required: true
+    audit.action.performed:
+        version: 1
+        category: audit
+        partition: actor
+        payload_type: AuditActionPerformedPayload
+        fields:
+            action:
+                type: string
+                required: true
+            actor_id:
+                type: string
+                required: true
+            resource:
+                type: string
+                required: true
+    chat.callback.delivered:
+        version: 1
+        category: business
+        partition: card
+        payload_type: ChatCallbackDeliveredPayload
+        fields:
+            callback_id:
+                type: string
+                required: true
+            card_id:
+                type: string
+                required: true
+            success:
+                type: bool
+                required: true
+    chat.callback.dismissed:
+        version: 1
+        category: business
+        partition: card
+        payload_type: ChatCallbackDismissedPayload
+        fields:
+            callback_id:
+                type: string
+                required: true
+            card_id:
+                type: string
+                required: true
+            reason:
+                type: string
+    chat.callback.queued:
+        version: 1
+        category: business
+        partition: card
+        payload_type: ChatCallbackQueuedPayload
+        fields:
+            callback_id:
+                type: string
+                required: true
+            card_id:
+                type: string
+                required: true
+    chat.message.sent:
+        version: 1
+        category: business
+        partition: card
+        payload_type: ChatMessageSentPayload
+        fields:
+            card_id:
+                type: string
+                required: true
+            message_id:
+                type: string
+                required: true
+            role:
+                type: string
+                required: true
+    cron.rule.changed:
+        version: 1
+        category: business
+        partition: runtime
+        payload_type: CronRuleChangedPayload
+        fields:
+            agent_id:
+                type: string
+                required: true
+            cron:
+                type: string
+                required: true
+            query:
+                type: string
+                required: true
+            schedule_id:
+                type: string
+                required: true
+            timezone:
+                type: string
+    cron.rule.created:
+        version: 1
+        category: business
+        partition: runtime
+        payload_type: CronRuleCreatedPayload
+        fields:
+            agent_id:
+                type: string
+                required: true
+            cron:
+                type: string
+                required: true
+            query:
+                type: string
+                required: true
+            schedule_id:
+                type: string
+                required: true
+            timezone:
+                type: string
+    cron.rule.disabled:
+        version: 1
+        category: business
+        partition: runtime
+        payload_type: CronRuleDisabledPayload
+        fields:
+            agent_id:
+                type: string
+                required: true
+            schedule_id:
+                type: string
+                required: true
+    cron.rule.fired:
+        version: 1
+        category: operational
+        partition: cron_rule
+        payload_type: CronRuleFiredPayload
+        fields:
+            agent_id:
+                type: string
+                required: true
+            card_id:
+                type: string
+                required: true
+            query:
+                type: string
+                required: true
+            schedule_id:
+                type: string
+                required: true
+    realm.config.changed:
+        version: 1
+        category: audit
+        partition: realm
+        payload_type: RealmConfigChangedPayload
+        fields:
+            keys:
+                type: array
+                required: true
+                item_type: string
+            realm_id:
+                type: string
+                required: true
+    realm.created:
+        version: 1
+        category: permanent
+        partition: realm
+        payload_type: RealmCreatedPayload
+        fields:
+            name:
+                type: string
+                required: true
+            realm_id:
+                type: string
+                required: true
+    realm.member.added:
+        version: 1
+        category: audit
+        partition: realm
+        payload_type: RealmMemberAddedPayload
+        fields:
+            member_id:
+                type: string
+                required: true
+            realm_id:
+                type: string
+                required: true
+            role:
+                type: string
+                required: true
+    realm.member.removed:
+        version: 1
+        category: audit
+        partition: realm
+        payload_type: RealmMemberRemovedPayload
+        fields:
+            member_id:
+                type: string
+                required: true
+            realm_id:
+                type: string
+                required: true
+    task.claimed:
+        version: 1
+        category: business
+        partition: runtime
+        payload_type: TaskClaimedPayload
+        fields:
+            card_id:
+                type: string
+                required: true
+            consumer:
+                type: string
+                required: true
+            runtime_id:
+                type: string
+                required: true
+            target_agent_id:
+                type: string
+                required: true
+    task.completed:
+        version: 1
+        category: business
+        partition: runtime
+        payload_type: TaskCompletedPayload
+        fields:
+            card_id:
+                type: string
+                required: true
+            elapsed_ms:
+                type: int64
+                required: true
+            output:
+                type: string
+                required: true
+            runtime_id:
+                type: string
+                required: true
+            target_agent_id:
+                type: string
+                required: true
+    task.failed:
+        version: 1
+        category: business
+        partition: runtime
+        payload_type: TaskFailedPayload
+        fields:
+            card_id:
+                type: string
+                required: true
+            elapsed_ms:
+                type: int64
+                required: true
+            error:
+                type: string
+                required: true
+            runtime_id:
+                type: string
+                required: true
+            target_agent_id:
+                type: string
+                required: true
+    task.submitted:
+        version: 1
+        category: business
+        partition: runtime
+        payload_type: TaskSubmittedPayload
+        fields:
+            card_id:
+                type: string
+                required: true
+            inputs:
+                type: map
+                value_type: any
+            query:
+                type: string
+                required: true
+            runtime_id:
+                type: string
+                required: true
+            target_agent_id:
+                type: string
+                required: true
+    webhook.inbound.received:
+        version: 1
+        category: operational
+        partition: webhook_endpoint
+        payload_type: WebhookInboundBody
+        fields:
+            body:
+                type: string
+                required: true
+            content_type:
+                type: string
+            endpoint_id:
+                type: string
+                required: true
+            headers:
+                type: map
+                value_type: string
+    webhook.outbound.attempt_failed:
+        version: 1
+        category: operational
+        partition: webhook_endpoint
+        payload_type: WebhookOutboundAttemptFailedPayload
+        fields:
+            attempt:
+                type: int32
+                required: true
+            delivery_id:
+                type: string
+                required: true
+            endpoint_id:
+                type: string
+                required: true
+            error:
+                type: string
+                required: true
+    webhook.outbound.exhausted:
+        version: 1
+        category: audit
+        partition: webhook_endpoint
+        payload_type: WebhookOutboundExhaustedPayload
+        fields:
+            delivery_id:
+                type: string
+                required: true
+            endpoint_id:
+                type: string
+                required: true
+            last_error:
+                type: string
+                required: true
+    webhook.outbound.queued:
+        version: 1
+        category: operational
+        partition: webhook_endpoint
+        payload_type: WebhookOutboundQueuedPayload
+        fields:
+            delivery_id:
+                type: string
+                required: true
+            endpoint_id:
+                type: string
+                required: true
+    webhook.outbound.scheduled:
+        version: 1
+        category: operational
+        partition: webhook_endpoint
+        payload_type: WebhookOutboundScheduledPayload
+        fields:
+            attempt:
+                type: int32
+                required: true
+            delivery_id:
+                type: string
+                required: true
+            endpoint_id:
+                type: string
+                required: true
+            next_at:
+                type: timestamp
+                required: true
+    webhook.outbound.sent:
+        version: 1
+        category: operational
+        partition: webhook_endpoint
+        payload_type: WebhookOutboundSentPayload
+        fields:
+            attempt:
+                type: int32
+                required: true
+            delivery_id:
+                type: string
+                required: true
+            endpoint_id:
+                type: string
+                required: true
+            status_code:
+                type: int32
+                required: true

@@ -1,0 +1,678 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "AgentRunCompletedPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "card_id": {
+          "type": "string"
+        },
+        "output": {
+          "type": "string"
+        },
+        "run_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "card_id",
+        "run_id"
+      ],
+      "type": "object"
+    },
+    "AgentRunFailedPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "card_id": {
+          "type": "string"
+        },
+        "error": {
+          "type": "string"
+        },
+        "run_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "card_id",
+        "error",
+        "run_id"
+      ],
+      "type": "object"
+    },
+    "AgentRunStartedPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "card_id": {
+          "type": "string"
+        },
+        "run_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "card_id",
+        "run_id"
+      ],
+      "type": "object"
+    },
+    "AgentStreamDeltaPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "card_id": {
+          "type": "string"
+        },
+        "delta": {
+          "type": "string"
+        },
+        "run_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "card_id",
+        "delta",
+        "run_id"
+      ],
+      "type": "object"
+    },
+    "AgentThinkingDeltaPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "card_id": {
+          "type": "string"
+        },
+        "delta": {
+          "type": "string"
+        },
+        "run_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "card_id",
+        "delta",
+        "run_id"
+      ],
+      "type": "object"
+    },
+    "AgentToolInvokedPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "call_id": {
+          "type": "string"
+        },
+        "card_id": {
+          "type": "string"
+        },
+        "run_id": {
+          "type": "string"
+        },
+        "tool_name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "call_id",
+        "card_id",
+        "run_id",
+        "tool_name"
+      ],
+      "type": "object"
+    },
+    "AgentToolReturnedPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "call_id": {
+          "type": "string"
+        },
+        "card_id": {
+          "type": "string"
+        },
+        "error": {
+          "type": "string"
+        },
+        "output": {
+          "type": "string"
+        },
+        "run_id": {
+          "type": "string"
+        },
+        "tool_name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "call_id",
+        "card_id",
+        "run_id",
+        "tool_name"
+      ],
+      "type": "object"
+    },
+    "AuditActionFailedPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "type": "string"
+        },
+        "actor_id": {
+          "type": "string"
+        },
+        "error": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "action",
+        "actor_id",
+        "error"
+      ],
+      "type": "object"
+    },
+    "AuditActionPerformedPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "type": "string"
+        },
+        "actor_id": {
+          "type": "string"
+        },
+        "resource": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "action",
+        "actor_id",
+        "resource"
+      ],
+      "type": "object"
+    },
+    "ChatCallbackDeliveredPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "callback_id": {
+          "type": "string"
+        },
+        "card_id": {
+          "type": "string"
+        },
+        "success": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "callback_id",
+        "card_id",
+        "success"
+      ],
+      "type": "object"
+    },
+    "ChatCallbackDismissedPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "callback_id": {
+          "type": "string"
+        },
+        "card_id": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "callback_id",
+        "card_id"
+      ],
+      "type": "object"
+    },
+    "ChatCallbackQueuedPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "callback_id": {
+          "type": "string"
+        },
+        "card_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "callback_id",
+        "card_id"
+      ],
+      "type": "object"
+    },
+    "ChatMessageSentPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "card_id": {
+          "type": "string"
+        },
+        "message_id": {
+          "type": "string"
+        },
+        "role": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "card_id",
+        "message_id",
+        "role"
+      ],
+      "type": "object"
+    },
+    "CronRuleChangedPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "agent_id": {
+          "type": "string"
+        },
+        "cron": {
+          "type": "string"
+        },
+        "query": {
+          "type": "string"
+        },
+        "schedule_id": {
+          "type": "string"
+        },
+        "timezone": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "agent_id",
+        "cron",
+        "query",
+        "schedule_id"
+      ],
+      "type": "object"
+    },
+    "CronRuleCreatedPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "agent_id": {
+          "type": "string"
+        },
+        "cron": {
+          "type": "string"
+        },
+        "query": {
+          "type": "string"
+        },
+        "schedule_id": {
+          "type": "string"
+        },
+        "timezone": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "agent_id",
+        "cron",
+        "query",
+        "schedule_id"
+      ],
+      "type": "object"
+    },
+    "CronRuleDisabledPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "agent_id": {
+          "type": "string"
+        },
+        "schedule_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "agent_id",
+        "schedule_id"
+      ],
+      "type": "object"
+    },
+    "CronRuleFiredPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "agent_id": {
+          "type": "string"
+        },
+        "card_id": {
+          "type": "string"
+        },
+        "query": {
+          "type": "string"
+        },
+        "schedule_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "agent_id",
+        "card_id",
+        "query",
+        "schedule_id"
+      ],
+      "type": "object"
+    },
+    "RealmConfigChangedPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "keys": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "realm_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "keys",
+        "realm_id"
+      ],
+      "type": "object"
+    },
+    "RealmCreatedPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "realm_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "realm_id"
+      ],
+      "type": "object"
+    },
+    "RealmMemberAddedPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "member_id": {
+          "type": "string"
+        },
+        "realm_id": {
+          "type": "string"
+        },
+        "role": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "member_id",
+        "realm_id",
+        "role"
+      ],
+      "type": "object"
+    },
+    "RealmMemberRemovedPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "member_id": {
+          "type": "string"
+        },
+        "realm_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "member_id",
+        "realm_id"
+      ],
+      "type": "object"
+    },
+    "TaskClaimedPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "card_id": {
+          "type": "string"
+        },
+        "consumer": {
+          "type": "string"
+        },
+        "runtime_id": {
+          "type": "string"
+        },
+        "target_agent_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "card_id",
+        "consumer",
+        "runtime_id",
+        "target_agent_id"
+      ],
+      "type": "object"
+    },
+    "TaskCompletedPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "card_id": {
+          "type": "string"
+        },
+        "elapsed_ms": {
+          "type": "integer"
+        },
+        "output": {
+          "type": "string"
+        },
+        "runtime_id": {
+          "type": "string"
+        },
+        "target_agent_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "card_id",
+        "elapsed_ms",
+        "output",
+        "runtime_id",
+        "target_agent_id"
+      ],
+      "type": "object"
+    },
+    "TaskFailedPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "card_id": {
+          "type": "string"
+        },
+        "elapsed_ms": {
+          "type": "integer"
+        },
+        "error": {
+          "type": "string"
+        },
+        "runtime_id": {
+          "type": "string"
+        },
+        "target_agent_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "card_id",
+        "elapsed_ms",
+        "error",
+        "runtime_id",
+        "target_agent_id"
+      ],
+      "type": "object"
+    },
+    "TaskSubmittedPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "card_id": {
+          "type": "string"
+        },
+        "inputs": {
+          "additionalProperties": {},
+          "type": "object"
+        },
+        "query": {
+          "type": "string"
+        },
+        "runtime_id": {
+          "type": "string"
+        },
+        "target_agent_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "card_id",
+        "query",
+        "runtime_id",
+        "target_agent_id"
+      ],
+      "type": "object"
+    },
+    "WebhookInboundBody": {
+      "additionalProperties": false,
+      "properties": {
+        "body": {
+          "type": "string"
+        },
+        "content_type": {
+          "type": "string"
+        },
+        "endpoint_id": {
+          "type": "string"
+        },
+        "headers": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        }
+      },
+      "required": [
+        "body",
+        "endpoint_id"
+      ],
+      "type": "object"
+    },
+    "WebhookOutboundAttemptFailedPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "attempt": {
+          "type": "integer"
+        },
+        "delivery_id": {
+          "type": "string"
+        },
+        "endpoint_id": {
+          "type": "string"
+        },
+        "error": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "attempt",
+        "delivery_id",
+        "endpoint_id",
+        "error"
+      ],
+      "type": "object"
+    },
+    "WebhookOutboundExhaustedPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "delivery_id": {
+          "type": "string"
+        },
+        "endpoint_id": {
+          "type": "string"
+        },
+        "last_error": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "delivery_id",
+        "endpoint_id",
+        "last_error"
+      ],
+      "type": "object"
+    },
+    "WebhookOutboundQueuedPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "delivery_id": {
+          "type": "string"
+        },
+        "endpoint_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "delivery_id",
+        "endpoint_id"
+      ],
+      "type": "object"
+    },
+    "WebhookOutboundScheduledPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "attempt": {
+          "type": "integer"
+        },
+        "delivery_id": {
+          "type": "string"
+        },
+        "endpoint_id": {
+          "type": "string"
+        },
+        "next_at": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "attempt",
+        "delivery_id",
+        "endpoint_id",
+        "next_at"
+      ],
+      "type": "object"
+    },
+    "WebhookOutboundSentPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "attempt": {
+          "type": "integer"
+        },
+        "delivery_id": {
+          "type": "string"
+        },
+        "endpoint_id": {
+          "type": "string"
+        },
+        "status_code": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "attempt",
+        "delivery_id",
+        "endpoint_id",
+        "status_code"
+      ],
+      "type": "object"
+    }
+  },
+  "title": "FlowCraftPayloads",
+  "type": "object"
+}

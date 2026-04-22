@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "actor": {
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "realm_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "kind",
+        "realm_id"
+      ],
+      "type": "object"
+    },
+    "category": {
+      "type": "string"
+    },
+    "partition": {
+      "type": "string"
+    },
+    "payload": {
+      "type": "object"
+    },
+    "seq": {
+      "type": "integer"
+    },
+    "span_id": {
+      "type": "string"
+    },
+    "trace_id": {
+      "type": "string"
+    },
+    "ts": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "type": {
+      "type": "string"
+    },
+    "version": {
+      "type": "integer"
+    }
+  },
+  "required": [
+    "seq",
+    "partition",
+    "type",
+    "version",
+    "category",
+    "ts",
+    "payload"
+  ],
+  "title": "FlowCraftEnvelope",
+  "type": "object"
+}

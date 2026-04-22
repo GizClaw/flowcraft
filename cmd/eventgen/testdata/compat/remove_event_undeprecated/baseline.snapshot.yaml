@@ -1,0 +1,15 @@
+events:
+  task.submitted:
+    version: 1
+    category: business
+    partition: card
+    payload_type: P
+    fields:
+      card_id: { type: string, required: true }
+  task.completed:
+    version: 1
+    category: business
+    partition: card
+    payload_type: P
+    fields:
+      card_id: { type: string, required: true }

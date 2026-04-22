@@ -1,0 +1,61 @@
+domain: realm
+events:
+  realm.created:
+    version: 1
+    category: permanent
+    partition: realm
+    payload_ref: RealmCreatedPayload
+    producers: [RealmService]
+    consumers: [Projector, TransportHub]
+    transports: [ws, sse, http_pull]
+    audit_required: true
+    audit_summary: "realm {{payload.realm_id}} created"
+    doc: "Realm record created; never delete category."
+  realm.config.changed:
+    version: 1
+    category: audit
+    partition: realm
+    payload_ref: RealmConfigChangedPayload
+    producers: [RealmService]
+    consumers: [Projector, TransportHub]
+    transports: [ws, sse, http_pull]
+    audit_required: true
+    audit_summary: "realm {{payload.realm_id}} configuration changed"
+    doc: "Realm settings mutated."
+  realm.member.added:
+    version: 1
+    category: audit
+    partition: realm
+    payload_ref: RealmMemberAddedPayload
+    producers: [RealmService]
+    consumers: [Projector, TransportHub]
+    transports: [ws, sse, http_pull]
+    audit_required: true
+    audit_summary: "member added to realm {{payload.realm_id}}"
+    doc: "Membership grant."
+  realm.member.removed:
+    version: 1
+    category: audit
+    partition: realm
+    payload_ref: RealmMemberRemovedPayload
+    producers: [RealmService]
+    consumers: [Projector, TransportHub]
+    transports: [ws, sse, http_pull]
+    audit_required: true
+    audit_summary: "member removed from realm {{payload.realm_id}}"
+    doc: "Membership revoke."
+
+payloads:
+  RealmCreatedPayload:
+    realm_id: { type: string, required: true }
+    name: { type: string, required: true }
+  RealmConfigChangedPayload:
+    realm_id: { type: string, required: true }
+    keys: { type: array, item_type: string, required: true }
+  RealmMemberAddedPayload:
+    realm_id: { type: string, required: true }
+    member_id: { type: string, required: true }
+    role: { type: string, required: true }
+  RealmMemberRemovedPayload:
+    realm_id: { type: string, required: true }
+    member_id: { type: string, required: true }

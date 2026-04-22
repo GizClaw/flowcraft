@@ -1,0 +1,34 @@
+domain: audit
+events:
+  audit.action.performed:
+    version: 1
+    category: audit
+    partition: actor
+    payload_ref: AuditActionPerformedPayload
+    producers: [AuditService]
+    consumers: [Projector]
+    transports: []
+    audit_required: true
+    audit_summary: "audit action performed by {{payload.actor_id}}"
+    doc: "Explicit audit trail entry."
+  audit.action.failed:
+    version: 1
+    category: audit
+    partition: actor
+    payload_ref: AuditActionFailedPayload
+    producers: [AuditService]
+    consumers: [Projector]
+    transports: []
+    audit_required: true
+    audit_summary: "audit action failed for {{payload.actor_id}}"
+    doc: "Audit append or validation failed."
+
+payloads:
+  AuditActionPerformedPayload:
+    actor_id: { type: string, required: true }
+    action: { type: string, required: true }
+    resource: { type: string, required: true }
+  AuditActionFailedPayload:
+    actor_id: { type: string, required: true }
+    action: { type: string, required: true }
+    error: { type: string, required: true }

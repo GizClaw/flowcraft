@@ -1,0 +1,16 @@
+domain: task
+events:
+  task.submitted:
+    version: 1
+    category: business
+    partition: card
+    payload_ref: TaskSubmittedPayload
+    producers: [api]
+    consumers: [projection.kanban]
+    transports: [ws, sse, http_pull]
+    audit_required: false
+    doc: "Test task submitted event."
+payloads:
+  TaskSubmittedPayload:
+    card_id: { type: string, required: true }
+    title:   { type: string, required: true }

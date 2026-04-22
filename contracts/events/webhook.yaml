@@ -1,0 +1,88 @@
+domain: webhook
+events:
+  webhook.inbound.received:
+    version: 1
+    category: operational
+    partition: webhook_endpoint
+    payload_ref: "payloads/webhook_inbound.yaml#WebhookInboundBody"
+    producers: [WebhookIngress]
+    consumers: [Projector, TransportHub]
+    transports: [ws, sse, http_pull]
+    audit_required: true
+    audit_summary: "webhook inbound received for endpoint {{payload.endpoint_id}}"
+    doc: "Signed inbound webhook accepted."
+  webhook.outbound.queued:
+    version: 1
+    category: operational
+    partition: webhook_endpoint
+    payload_ref: WebhookOutboundQueuedPayload
+    producers: [WebhookSender]
+    consumers: [Projector, TransportHub]
+    transports: [ws, sse, http_pull]
+    audit_required: false
+    doc: "Outbound delivery queued."
+  webhook.outbound.scheduled:
+    version: 1
+    category: operational
+    partition: webhook_endpoint
+    payload_ref: WebhookOutboundScheduledPayload
+    producers: [WebhookSender]
+    consumers: [Projector, TransportHub]
+    transports: [ws, sse, http_pull]
+    audit_required: false
+    doc: "Outbound delivery scheduled with backoff."
+  webhook.outbound.sent:
+    version: 1
+    category: operational
+    partition: webhook_endpoint
+    payload_ref: WebhookOutboundSentPayload
+    producers: [WebhookSender]
+    consumers: [Projector, TransportHub]
+    transports: [ws, sse, http_pull]
+    audit_required: false
+    doc: "Outbound HTTP request succeeded."
+  webhook.outbound.attempt_failed:
+    version: 1
+    category: operational
+    partition: webhook_endpoint
+    payload_ref: WebhookOutboundAttemptFailedPayload
+    producers: [WebhookSender]
+    consumers: [Projector, TransportHub]
+    transports: [ws, sse, http_pull]
+    audit_required: false
+    doc: "Single delivery attempt failed; will retry."
+  webhook.outbound.exhausted:
+    version: 1
+    category: audit
+    partition: webhook_endpoint
+    payload_ref: WebhookOutboundExhaustedPayload
+    producers: [WebhookSender]
+    consumers: [Projector, TransportHub]
+    transports: [ws, sse, http_pull]
+    audit_required: true
+    audit_summary: "webhook outbound exhausted for endpoint {{payload.endpoint_id}}"
+    doc: "All retries exhausted; requires audit trail."
+
+payloads:
+  WebhookOutboundQueuedPayload:
+    endpoint_id: { type: string, required: true }
+    delivery_id: { type: string, required: true }
+  WebhookOutboundScheduledPayload:
+    endpoint_id: { type: string, required: true }
+    delivery_id: { type: string, required: true }
+    attempt: { type: int32, required: true }
+    next_at: { type: timestamp, required: true }
+  WebhookOutboundSentPayload:
+    endpoint_id: { type: string, required: true }
+    delivery_id: { type: string, required: true }
+    attempt: { type: int32, required: true }
+    status_code: { type: int32, required: true }
+  WebhookOutboundAttemptFailedPayload:
+    endpoint_id: { type: string, required: true }
+    delivery_id: { type: string, required: true }
+    attempt: { type: int32, required: true }
+    error: { type: string, required: true }
+  WebhookOutboundExhaustedPayload:
+    endpoint_id: { type: string, required: true }
+    delivery_id: { type: string, required: true }
+    last_error: { type: string, required: true }

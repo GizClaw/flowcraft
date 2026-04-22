@@ -1,0 +1,67 @@
+domain: cron
+events:
+  cron.rule.created:
+    version: 1
+    category: business
+    partition: runtime
+    payload_ref: CronRuleCreatedPayload
+    producers: [KanbanBridge]
+    consumers: [Projector, TransportHub]
+    transports: [ws, sse, http_pull]
+    audit_required: true
+    audit_summary: "cron rule {{payload.schedule_id}} created for agent {{payload.agent_id}}"
+    doc: "Dynamic cron rule registered."
+  cron.rule.changed:
+    version: 1
+    category: business
+    partition: runtime
+    payload_ref: CronRuleChangedPayload
+    producers: [KanbanBridge]
+    consumers: [Projector, TransportHub]
+    transports: [ws, sse, http_pull]
+    audit_required: true
+    audit_summary: "cron rule {{payload.schedule_id}} changed"
+    doc: "Cron expression or query updated."
+  cron.rule.disabled:
+    version: 1
+    category: business
+    partition: runtime
+    payload_ref: CronRuleDisabledPayload
+    producers: [KanbanBridge]
+    consumers: [Projector, TransportHub]
+    transports: [ws, sse, http_pull]
+    audit_required: true
+    audit_summary: "cron rule {{payload.schedule_id}} disabled"
+    doc: "Cron rule removed or disabled."
+  cron.rule.fired:
+    version: 1
+    category: operational
+    partition: cron_rule
+    payload_ref: CronRuleFiredPayload
+    producers: [CronBridge]
+    consumers: [Projector, TransportHub]
+    transports: [ws, sse, http_pull]
+    audit_required: false
+    doc: "Cron tick produced a downstream task submission."
+
+payloads:
+  CronRuleCreatedPayload:
+    schedule_id: { type: string, required: true }
+    agent_id: { type: string, required: true }
+    cron: { type: string, required: true }
+    query: { type: string, required: true }
+    timezone: { type: string, required: false }
+  CronRuleChangedPayload:
+    schedule_id: { type: string, required: true }
+    agent_id: { type: string, required: true }
+    cron: { type: string, required: true }
+    query: { type: string, required: true }
+    timezone: { type: string, required: false }
+  CronRuleDisabledPayload:
+    schedule_id: { type: string, required: true }
+    agent_id: { type: string, required: true }
+  CronRuleFiredPayload:
+    schedule_id: { type: string, required: true }
+    agent_id: { type: string, required: true }
+    card_id: { type: string, required: true }
+    query: { type: string, required: true }
