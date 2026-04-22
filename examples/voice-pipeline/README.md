@@ -4,7 +4,7 @@ Local demo: **microphone → ByteDance STT → FlowCraft graph (MiniMax LLM) →
 
 ## Requirements
 
-- **Go** 1.25+ (see repo `go.work`)
+- **Go** 1.25+
 - **macOS** (default build uses PortAudio for mic and speakers)
 - **PortAudio**: `brew install portaudio`
 - **Accounts / keys**

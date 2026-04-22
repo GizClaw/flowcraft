@@ -6,8 +6,10 @@ LDFLAGS := -X main.cliVersion=$(VERSION)
 
 OPENAPI_SPEC := internal/api/openapi.yaml
 
-# Sub-modules managed by go.work
-WORKSPACE_MODULES := sdk sdkx examples/voice-pipeline
+# Independent Go modules in this repo.
+# Each module is treated as if checked out separately (no go.work);
+# sdkx / plugin / examples consume sdk via the published version pinned in their go.mod.
+GO_MODULES := . sdk sdkx plugin examples/voice-pipeline
 
 .PHONY: help
 help:
@@ -26,27 +28,23 @@ help:
 
 .PHONY: vet
 vet:
-	@for m in $(WORKSPACE_MODULES); do echo "==> vet $$m"; ( cd $$m && go vet ./... ); done
-	@echo "==> vet root"; GOWORK=off go vet ./...
+	@for m in $(GO_MODULES); do echo "==> vet $$m"; ( cd $$m && go vet ./... ); done
 
 .PHONY: test
 test:
-	@for m in $(WORKSPACE_MODULES); do echo "==> test $$m"; ( cd $$m && go test ./... -count=1 ); done
-	@echo "==> test root"; GOWORK=off go test ./... -count=1
+	@for m in $(GO_MODULES); do echo "==> test $$m"; ( cd $$m && go test ./... -count=1 ); done
 
 .PHONY: fmt
 fmt:
-	@for m in $(WORKSPACE_MODULES); do echo "==> fmt $$m"; ( cd $$m && go fmt ./... ); done
-	@echo "==> fmt root"; GOWORK=off go fmt ./...
+	@for m in $(GO_MODULES); do echo "==> fmt $$m"; ( cd $$m && go fmt ./... ); done
 
 .PHONY: tidy
 tidy:
-	@for m in $(WORKSPACE_MODULES); do echo "==> tidy $$m"; ( cd $$m && go mod tidy ); done
-	@echo "==> tidy root"; GOWORK=off go mod tidy
+	@for m in $(GO_MODULES); do echo "==> tidy $$m"; ( cd $$m && go mod tidy ); done
 
 .PHONY: build
 build:
-	@echo "==> build flowcraft ($(VERSION))"; GOWORK=off go build -ldflags '$(LDFLAGS)' -o bin/flowcraft ./cmd/flowcraft
+	@echo "==> build flowcraft ($(VERSION))"; go build -ldflags '$(LDFLAGS)' -o bin/flowcraft ./cmd/flowcraft
 
 .PHONY: generate
 generate: gen-go gen-web

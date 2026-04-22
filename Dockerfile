@@ -7,10 +7,7 @@ FROM golang:1.25-alpine AS builder
 RUN apk add --no-cache gcc musl-dev git nodejs npm
 
 WORKDIR /src
-COPY go.mod go.sum go.work ./
-COPY sdk/ sdk/
-COPY sdkx/ sdkx/
-COPY plugin/ plugin/
+COPY go.mod go.sum ./
 RUN go mod download
 
 COPY . .

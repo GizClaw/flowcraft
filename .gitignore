@@ -15,7 +15,6 @@
 # ── Go source ──
 !go.mod
 !go.sum
-!go.work
 !cmd/
 !cmd/**
 !internal/
