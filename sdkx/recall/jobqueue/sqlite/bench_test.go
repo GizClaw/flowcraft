@@ -121,6 +121,16 @@ func BenchmarkSaveAsync_EndToEnd(b *testing.B) {
 			ctx := context.Background()
 			b.ResetTimer()
 
+			// Per-await timeout has to account for the queue ahead of
+			// each job: with W workers and N total jobs, the last job
+			// waits for ~N/W predecessors. Estimate generously (1ms
+			// per job) and floor at 30s; uncapped on purpose so a slow
+			// CI box can still complete rather than spuriously fail.
+			perJob := time.Duration(b.N/workers+1) * time.Millisecond
+			if perJob < 30*time.Second {
+				perJob = 30 * time.Second
+			}
+
 			var wg sync.WaitGroup
 			var failed atomic.Int64
 			wg.Add(b.N)
@@ -131,7 +141,7 @@ func BenchmarkSaveAsync_EndToEnd(b *testing.B) {
 				}
 				go func(jid recall.JobID) {
 					defer wg.Done()
-					st, err := jc.AwaitJob(ctx, jid, 30*time.Second)
+					st, err := jc.AwaitJob(ctx, jid, perJob)
 					if err != nil || st.State != recall.JobSucceeded {
 						failed.Add(1)
 					}
