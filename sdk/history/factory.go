@@ -1,9 +1,10 @@
-package memory
+package history
 
 import (
 	"context"
 
 	"github.com/GizClaw/flowcraft/sdk/llm"
+	"github.com/GizClaw/flowcraft/sdk/memory/ltm"
 	"github.com/GizClaw/flowcraft/sdk/telemetry"
 	"github.com/GizClaw/flowcraft/sdk/workspace"
 	otellog "go.opentelemetry.io/otel/log"
@@ -36,7 +37,7 @@ func WithPrefix(p string) MemoryOption {
 // NewWithLLM creates a Memory instance. All memory types are unified to lossless;
 // deprecated type values (buffer, window, summary, token) emit a warning and
 // are treated as lossless. When LLM is nil, lossless degrades to buffer.
-func NewWithLLM(cfg Config, store Store, l llm.LLM, ltStore LongTermStore, opts ...MemoryOption) (Memory, error) {
+func NewWithLLM(cfg Config, store Store, l llm.LLM, ltStore ltm.LongTermStore, opts ...MemoryOption) (Memory, error) {
 	if store == nil {
 		store = NewInMemoryStore()
 	}
@@ -52,7 +53,7 @@ func NewWithLLM(cfg Config, store Store, l llm.LLM, ltStore LongTermStore, opts 
 
 	mem := buildCoreMemory(cfg, store, l, o)
 	if ltStore != nil && cfg.LongTerm.Enabled {
-		mem = NewMemoryAwareMemoryCompat(mem, ltStore, "", cfg.LongTerm)
+		mem = ltm.NewMemoryAwareMemoryCompat(mem, ltStore, "", cfg.LongTerm)
 	}
 	return mem, nil
 }

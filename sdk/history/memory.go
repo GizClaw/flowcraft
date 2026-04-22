@@ -1,13 +1,21 @@
-// Package memory provides conversation memory management with lossless
-// short-term memory (DAG-based summarization) and long-term memory
-// (automatic extraction, deduplication, context injection).
-package memory
+// Package history manages conversation transcripts: append messages,
+// load them back fitted to a model's context window, and (optionally)
+// compact older turns into hierarchical summaries to keep that window
+// finite. Long-term fact recall lives in [sdk/recall].
+//
+// Migration note: this package was renamed from sdk/memory in v0.2.0.
+// The Save/Load/Clear interface and the LosslessMemory/BufferMemory/
+// SummaryDAG/Archive types are unchanged in this commit; later commits
+// in the same series tighten the contract (Save → Append) and add
+// atomic-write durability.
+package history
 
 import (
 	"context"
 	"sync"
 	"time"
 
+	"github.com/GizClaw/flowcraft/sdk/memory/ltm"
 	"github.com/GizClaw/flowcraft/sdk/model"
 )
 
@@ -55,7 +63,7 @@ type SummaryCacheStore interface {
 type Config struct {
 	Type        string         `json:"type,omitempty"` // deprecated: ignored, always lossless
 	MaxMessages int            `json:"max_messages,omitempty"`
-	LongTerm    LongTermConfig `json:"long_term,omitempty"`
+	LongTerm    ltm.LongTermConfig `json:"long_term,omitempty"`
 	Lossless    LosslessConfig `json:"lossless,omitempty"`
 }
 

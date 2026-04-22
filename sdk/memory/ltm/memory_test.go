@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/sdk/llm"
-	"github.com/GizClaw/flowcraft/sdk/memory"
 	"github.com/GizClaw/flowcraft/sdk/memory/ltm"
 	"github.com/GizClaw/flowcraft/sdk/model"
 	"github.com/GizClaw/flowcraft/sdk/retrieval/journal"
@@ -34,8 +33,8 @@ func (s *stubLLM) GenerateStream(_ context.Context, _ []llm.Message, _ ...llm.Ge
 	return nil, errors.New("not used")
 }
 
-func newScope() memory.MemoryScope {
-	return memory.MemoryScope{RuntimeID: "rt1", AgentID: "bot", UserID: "u1", SessionID: "s1"}
+func newScope() ltm.MemoryScope {
+	return ltm.MemoryScope{RuntimeID: "rt1", AgentID: "bot", UserID: "u1", SessionID: "s1"}
 }
 
 func TestSaveExtractsAdditiveFacts(t *testing.T) {
@@ -105,7 +104,7 @@ func TestRequireUserIDValidation(t *testing.T) {
 	idx := memidx.New()
 	m, _ := ltm.New(ltm.Config{Index: idx, LLM: &stubLLM{resp: "[]"}, RequireUserID: true})
 	defer m.Close()
-	_, err := m.Save(context.Background(), memory.MemoryScope{RuntimeID: "rt1"}, []llm.Message{
+	_, err := m.Save(context.Background(), ltm.MemoryScope{RuntimeID: "rt1"}, []llm.Message{
 		{Role: model.RoleUser, Parts: []model.Part{{Type: model.PartText, Text: "hi"}}},
 	})
 	if !errors.Is(err, ltm.ErrMissingUserID) {
@@ -119,12 +118,12 @@ func TestAddRawAndAgentFilter(t *testing.T) {
 	m, _ := ltm.New(ltm.Config{Index: idx, RequireUserID: true})
 	defer m.Close()
 	scope := newScope()
-	if _, err := m.AddRaw(ctx, scope, memory.MemoryEntry{Content: "raw fact for bot1", Categories: []string{"profile"}}); err != nil {
+	if _, err := m.AddRaw(ctx, scope, ltm.MemoryEntry{Content: "raw fact for bot1", Categories: []string{"profile"}}); err != nil {
 		t.Fatal(err)
 	}
 	other := scope
 	other.AgentID = "other-bot"
-	if _, err := m.AddRaw(ctx, other, memory.MemoryEntry{Content: "raw fact for other bot", Categories: []string{"profile"}}); err != nil {
+	if _, err := m.AddRaw(ctx, other, ltm.MemoryEntry{Content: "raw fact for other bot", Categories: []string{"profile"}}); err != nil {
 		t.Fatal(err)
 	}
 	hits, err := m.Recall(ctx, scope, ltm.RecallRequest{Query: "raw fact", TopK: 5})
@@ -144,13 +143,13 @@ func TestTTLSoftFilter(t *testing.T) {
 	defer m.Close()
 	scope := newScope()
 	past := now.Add(-time.Second)
-	if _, err := m.AddRaw(ctx, scope, memory.MemoryEntry{
+	if _, err := m.AddRaw(ctx, scope, ltm.MemoryEntry{
 		Content: "expired memory", Categories: []string{"episodic"}, ExpiresAt: &past,
 	}); err != nil {
 		t.Fatal(err)
 	}
 	future := now.Add(24 * time.Hour)
-	if _, err := m.AddRaw(ctx, scope, memory.MemoryEntry{
+	if _, err := m.AddRaw(ctx, scope, ltm.MemoryEntry{
 		Content: "active memory", Categories: []string{"episodic"}, ExpiresAt: &future,
 	}); err != nil {
 		t.Fatal(err)
@@ -175,7 +174,7 @@ func TestSweeperPhysicalDelete(t *testing.T) {
 	m, _ := ltm.New(ltm.Config{
 		Index:           idx,
 		RequireUserID:   true,
-		TTLPolicy:       ltm.CategoryTTLPolicy{memory.CategoryEpisodic: time.Hour},
+		TTLPolicy:       ltm.CategoryTTLPolicy{ltm.CategoryEpisodic: time.Hour},
 		SweeperEnabled:  false, // we manually call SweepNamespace
 		Now:             func() time.Time { return now },
 		SweeperBatchMax: 10,
@@ -183,7 +182,7 @@ func TestSweeperPhysicalDelete(t *testing.T) {
 	defer m.Close()
 	scope := newScope()
 	past := now.Add(-time.Second)
-	id, err := m.AddRaw(ctx, scope, memory.MemoryEntry{Content: "old", Categories: []string{"episodic"}, ExpiresAt: &past})
+	id, err := m.AddRaw(ctx, scope, ltm.MemoryEntry{Content: "old", Categories: []string{"episodic"}, ExpiresAt: &past})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -240,10 +239,10 @@ func TestHistoryAndRollback(t *testing.T) {
 	defer m.Close()
 	scope := newScope()
 	t1 := time.Now()
-	id, _ := m.AddRaw(ctx, scope, memory.MemoryEntry{Content: "v1", Categories: []string{"profile"}, CreatedAt: t1, UpdatedAt: t1})
+	id, _ := m.AddRaw(ctx, scope, ltm.MemoryEntry{Content: "v1", Categories: []string{"profile"}, CreatedAt: t1, UpdatedAt: t1})
 	time.Sleep(10 * time.Millisecond)
 	t2 := time.Now()
-	_, _ = m.AddRaw(ctx, scope, memory.MemoryEntry{ID: id, Content: "v2", Categories: []string{"profile"}, CreatedAt: t2, UpdatedAt: t2})
+	_, _ = m.AddRaw(ctx, scope, ltm.MemoryEntry{ID: id, Content: "v2", Categories: []string{"profile"}, CreatedAt: t2, UpdatedAt: t2})
 
 	events, err := m.History(ctx, scope, id)
 	if err != nil {
@@ -268,7 +267,7 @@ func TestForget(t *testing.T) {
 	m, _ := ltm.New(ltm.Config{Index: idx, RequireUserID: true})
 	defer m.Close()
 	scope := newScope()
-	id, _ := m.AddRaw(ctx, scope, memory.MemoryEntry{Content: "forget me", Categories: []string{"episodic"}})
+	id, _ := m.AddRaw(ctx, scope, ltm.MemoryEntry{Content: "forget me", Categories: []string{"episodic"}})
 	if err := m.Forget(ctx, scope, id, "user_request"); err != nil {
 		t.Fatal(err)
 	}

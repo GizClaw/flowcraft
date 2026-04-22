@@ -1,4 +1,4 @@
-package memory
+package history
 
 import "github.com/GizClaw/flowcraft/sdk/model"
 

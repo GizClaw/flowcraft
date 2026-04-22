@@ -12,7 +12,6 @@ import (
 	"github.com/GizClaw/flowcraft/bench/locomo/runners"
 	"github.com/GizClaw/flowcraft/sdk/embedding"
 	"github.com/GizClaw/flowcraft/sdk/llm"
-	"github.com/GizClaw/flowcraft/sdk/memory"
 	"github.com/GizClaw/flowcraft/sdk/memory/ltm"
 	memidx "github.com/GizClaw/flowcraft/sdk/retrieval/memory"
 	"github.com/GizClaw/flowcraft/sdk/retrieval/pipeline"
@@ -107,7 +106,7 @@ func New(opts Options) (runners.Runner, error) {
 func (r *Runner) Name() string { return r.name }
 
 // Save implements runners.Runner.
-func (r *Runner) Save(ctx context.Context, scope memory.MemoryScope, msgs []llm.Message) (int, time.Duration, error) {
+func (r *Runner) Save(ctx context.Context, scope ltm.MemoryScope, msgs []llm.Message) (int, time.Duration, error) {
 	t0 := time.Now()
 	res, err := r.mem.Save(ctx, scope, msgs)
 	if err != nil {
@@ -120,7 +119,7 @@ func (r *Runner) Save(ctx context.Context, scope memory.MemoryScope, msgs []llm.
 // is created per non-empty user/assistant turn. Each entry's ID is
 // auto-generated, so recall.k_hit cannot be evaluated through this path —
 // callers that need evidence scoring should use SaveRawTurns instead.
-func (r *Runner) SaveRaw(ctx context.Context, scope memory.MemoryScope, msgs []llm.Message) (int, time.Duration, error) {
+func (r *Runner) SaveRaw(ctx context.Context, scope ltm.MemoryScope, msgs []llm.Message) (int, time.Duration, error) {
 	t0 := time.Now()
 	saved := 0
 	for i, m := range msgs {
@@ -128,10 +127,10 @@ func (r *Runner) SaveRaw(ctx context.Context, scope memory.MemoryScope, msgs []l
 		if txt == "" {
 			continue
 		}
-		entry := memory.MemoryEntry{
+		entry := ltm.MemoryEntry{
 			Content:    txt,
 			Categories: []string{"raw"},
-			Source:     memory.MemorySource{RuntimeID: scope.RuntimeID},
+			Source:     ltm.MemorySource{RuntimeID: scope.RuntimeID},
 		}
 		if _, err := r.mem.AddRaw(ctx, scope, entry); err != nil {
 			return saved, time.Since(t0), fmt.Errorf("add_raw turn %d: %w", i, err)
@@ -144,18 +143,18 @@ func (r *Runner) SaveRaw(ctx context.Context, scope memory.MemoryScope, msgs []l
 // SaveRawTurns implements runners.RawIngestSaver: it preserves each turn's
 // EvidenceID as the MemoryEntry primary key so recall.k_hit becomes
 // meaningful. Empty IDs fall back to the auto-generated ULID.
-func (r *Runner) SaveRawTurns(ctx context.Context, scope memory.MemoryScope, turns []runners.RawTurn) (int, time.Duration, error) {
+func (r *Runner) SaveRawTurns(ctx context.Context, scope ltm.MemoryScope, turns []runners.RawTurn) (int, time.Duration, error) {
 	t0 := time.Now()
 	saved := 0
 	for i, t := range turns {
 		if t.Content == "" {
 			continue
 		}
-		entry := memory.MemoryEntry{
+		entry := ltm.MemoryEntry{
 			ID:         t.EvidenceID,
 			Content:    t.Content,
 			Categories: []string{"raw"},
-			Source:     memory.MemorySource{RuntimeID: scope.RuntimeID},
+			Source:     ltm.MemorySource{RuntimeID: scope.RuntimeID},
 		}
 		if _, err := r.mem.AddRaw(ctx, scope, entry); err != nil {
 			return saved, time.Since(t0), fmt.Errorf("add_raw turn %d (%s): %w", i, t.EvidenceID, err)
@@ -166,7 +165,7 @@ func (r *Runner) SaveRawTurns(ctx context.Context, scope memory.MemoryScope, tur
 }
 
 // Recall implements runners.Runner.
-func (r *Runner) Recall(ctx context.Context, scope memory.MemoryScope, query string, topK int) ([]ltm.RecallHit, time.Duration, error) {
+func (r *Runner) Recall(ctx context.Context, scope ltm.MemoryScope, query string, topK int) ([]ltm.RecallHit, time.Duration, error) {
 	t0 := time.Now()
 	hits, err := r.mem.Recall(ctx, scope, ltm.RecallRequest{Query: query, TopK: topK})
 	return hits, time.Since(t0), err

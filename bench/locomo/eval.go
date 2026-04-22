@@ -15,7 +15,6 @@ import (
 	"github.com/GizClaw/flowcraft/bench/locomo/metrics"
 	"github.com/GizClaw/flowcraft/bench/locomo/runners"
 	"github.com/GizClaw/flowcraft/sdk/llm"
-	"github.com/GizClaw/flowcraft/sdk/memory"
 	"github.com/GizClaw/flowcraft/sdk/memory/ltm"
 	"github.com/GizClaw/flowcraft/sdk/model"
 )
@@ -24,7 +23,7 @@ import (
 // (the default Flowcraft runner exposes SaveRaw to bypass an LLM extractor for
 // CI-friendly runs without API keys).
 type IngestSaver interface {
-	SaveRaw(ctx context.Context, scope memory.MemoryScope, msgs []llm.Message) (saveCount int, saveLatency time.Duration, err error)
+	SaveRaw(ctx context.Context, scope ltm.MemoryScope, msgs []llm.Message) (saveCount int, saveLatency time.Duration, err error)
 }
 
 // Report aggregates one full evaluation run.
@@ -114,12 +113,12 @@ func Run(ctx context.Context, r runners.Runner, ds *dataset.Dataset, opts Option
 	// top-k from a pool of all 10 convs combined and relevant facts get
 	// drowned out by other conversations (observed: judge=0.67 on a single
 	// conv but 0.17 across 10).
-	scopeOf := func(convID string) memory.MemoryScope {
+	scopeOf := func(convID string) ltm.MemoryScope {
 		uid := opts.UserID
 		if convID != "" {
 			uid = opts.UserID + "::" + convID
 		}
-		return memory.MemoryScope{RuntimeID: opts.RuntimeID, UserID: uid, AgentID: opts.AgentID}
+		return ltm.MemoryScope{RuntimeID: opts.RuntimeID, UserID: uid, AgentID: opts.AgentID}
 	}
 
 	report := &Report{
@@ -295,7 +294,7 @@ func perQuestionCtx(parent context.Context, timeout time.Duration) (context.Cont
 // conversation has fewer sessions than another.
 type ingestJob struct {
 	convID    string
-	scope     memory.MemoryScope
+	scope     ltm.MemoryScope
 	batch     turnBatch
 	batchIdx  int // 0-based position within its conversation, for WARN logs
 	convTotal int // total batches for the owning conversation, for WARN logs
@@ -315,7 +314,7 @@ type ingestJob struct {
 //
 // Failures on any single batch are logged + skipped so one rate-limited or
 // truncated extractor response can't disqualify an entire conversation.
-func ingestFlat(ctx context.Context, r runners.Runner, scopeOf func(string) memory.MemoryScope, convs []dataset.Conversation, opts Options) []time.Duration {
+func ingestFlat(ctx context.Context, r runners.Runner, scopeOf func(string) ltm.MemoryScope, convs []dataset.Conversation, opts Options) []time.Duration {
 	// Precompute conversation-level counters + expand every conv into its
 	// batches. Keeping convStart out of the worker path means no
 	// synchronization is needed for timing.
@@ -416,7 +415,7 @@ func ingestFlat(ctx context.Context, r runners.Runner, scopeOf func(string) memo
 	return latencies
 }
 
-func evalQuestions(ctx context.Context, r runners.Runner, scopeOf func(string) memory.MemoryScope, qs []dataset.Question, opts Options) ([]QuestionScore, []time.Duration, error) {
+func evalQuestions(ctx context.Context, r runners.Runner, scopeOf func(string) ltm.MemoryScope, qs []dataset.Question, opts Options) ([]QuestionScore, []time.Duration, error) {
 	n := len(qs)
 	scores := make([]QuestionScore, n)
 	latencies := make([]time.Duration, n)

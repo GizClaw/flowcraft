@@ -1,6 +1,7 @@
-package memory
+package history
 
 import (
+	"github.com/GizClaw/flowcraft/sdk/memory/ltm"
 	"context"
 	"sync"
 	"testing"
@@ -68,18 +69,18 @@ func TestInMemoryStore_Isolation(t *testing.T) {
 }
 
 func TestAllCategories(t *testing.T) {
-	cats := AllCategories()
+	cats := ltm.AllCategories()
 	if len(cats) < 6 {
 		t.Fatalf("expected at least 6 categories, got %d", len(cats))
 	}
-	expected := map[MemoryCategory]bool{
-		CategoryProfile: true, CategoryPreferences: true, CategoryEntities: true,
-		CategoryEvents: true, CategoryCases: true, CategoryPatterns: true,
+	expected := map[ltm.MemoryCategory]bool{
+		ltm.CategoryProfile: true, ltm.CategoryPreferences: true, ltm.CategoryEntities: true,
+		ltm.CategoryEvents: true, ltm.CategoryCases: true, ltm.CategoryPatterns: true,
 	}
 	for _, c := range expected {
 		_ = c
 	}
-	for _, want := range []MemoryCategory{CategoryProfile, CategoryPreferences, CategoryEntities, CategoryEvents, CategoryCases, CategoryPatterns} {
+	for _, want := range []ltm.MemoryCategory{ltm.CategoryProfile, ltm.CategoryPreferences, ltm.CategoryEntities, ltm.CategoryEvents, ltm.CategoryCases, ltm.CategoryPatterns} {
 		found := false
 		for _, c := range cats {
 			if c == want {
@@ -94,8 +95,8 @@ func TestAllCategories(t *testing.T) {
 }
 
 func TestRegisterCategory(t *testing.T) {
-	RegisterCategory("custom_test_cat")
-	cats := AllCategories()
+	ltm.RegisterCategory("custom_test_cat")
+	cats := ltm.AllCategories()
 	found := false
 	for _, c := range cats {
 		if c == "custom_test_cat" {
@@ -104,20 +105,20 @@ func TestRegisterCategory(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Fatal("expected custom_test_cat in AllCategories after RegisterCategory")
+		t.Fatal("expected custom_test_cat in ltm.AllCategories after ltm.RegisterCategory")
 	}
 
 	// Duplicate registration should be idempotent.
-	before := len(AllCategories())
-	RegisterCategory("custom_test_cat")
-	after := len(AllCategories())
+	before := len(ltm.AllCategories())
+	ltm.RegisterCategory("custom_test_cat")
+	after := len(ltm.AllCategories())
 	if after != before {
-		t.Fatalf("duplicate RegisterCategory changed count: %d -> %d", before, after)
+		t.Fatalf("duplicate ltm.RegisterCategory changed count: %d -> %d", before, after)
 	}
 }
 
 func TestAllCategoryStrings(t *testing.T) {
-	strs := AllCategoryStrings()
+	strs := ltm.AllCategoryStrings()
 	if len(strs) < 6 {
 		t.Fatalf("expected at least 6 category strings, got %d", len(strs))
 	}
@@ -129,7 +130,7 @@ func TestAllCategoryStrings(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Fatal("expected 'profile' in AllCategoryStrings")
+		t.Fatal("expected 'profile' in ltm.AllCategoryStrings")
 	}
 }
 

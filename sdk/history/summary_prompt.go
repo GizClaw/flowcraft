@@ -1,4 +1,4 @@
-package memory
+package history
 
 const leafPrompt = `Summarize the following conversation segment. Preserve:
 - Specific file/code changes and their reasons

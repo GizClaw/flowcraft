@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/sdk/llm"
-	"github.com/GizClaw/flowcraft/sdk/memory"
 	"github.com/GizClaw/flowcraft/sdk/memory/ltm"
 )
 
@@ -25,8 +24,8 @@ import (
 // "extractor returned 0 facts on conv-X" without an interactive debugger.
 type Runner interface {
 	Name() string
-	Save(ctx context.Context, scope memory.MemoryScope, msgs []llm.Message) (saveCount int, saveLatency time.Duration, err error)
-	Recall(ctx context.Context, scope memory.MemoryScope, query string, topK int) (hits []ltm.RecallHit, recallLatency time.Duration, err error)
+	Save(ctx context.Context, scope ltm.MemoryScope, msgs []llm.Message) (saveCount int, saveLatency time.Duration, err error)
+	Recall(ctx context.Context, scope ltm.MemoryScope, query string, topK int) (hits []ltm.RecallHit, recallLatency time.Duration, err error)
 	Close() error
 }
 
@@ -44,5 +43,5 @@ type RawTurn struct {
 // while preserving each turn's EvidenceID. Only used when the eval driver
 // runs without an LLM extractor.
 type RawIngestSaver interface {
-	SaveRawTurns(ctx context.Context, scope memory.MemoryScope, turns []RawTurn) (saveCount int, saveLatency time.Duration, err error)
+	SaveRawTurns(ctx context.Context, scope ltm.MemoryScope, turns []RawTurn) (saveCount int, saveLatency time.Duration, err error)
 }

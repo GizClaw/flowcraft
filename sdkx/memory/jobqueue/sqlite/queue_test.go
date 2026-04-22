@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/sdk/llm"
-	"github.com/GizClaw/flowcraft/sdk/memory"
 	"github.com/GizClaw/flowcraft/sdk/memory/ltm"
 	memidx "github.com/GizClaw/flowcraft/sdk/retrieval/memory"
 	"github.com/GizClaw/flowcraft/sdkx/memory/jobqueue/sqlite"
@@ -22,7 +21,7 @@ func TestEnqueueLeaseComplete(t *testing.T) {
 	defer q.Close()
 
 	id, err := q.Enqueue(ctx, "ns1", ltm.JobPayload{
-		Scope:    memory.MemoryScope{RuntimeID: "rt1", UserID: "u1"},
+		Scope:    ltm.MemoryScope{RuntimeID: "rt1", UserID: "u1"},
 		Messages: []llm.Message{},
 	})
 	if err != nil {
@@ -57,7 +56,7 @@ func TestRescheduleAndBackoff(t *testing.T) {
 	q, _ := sqlite.Open(":memory:")
 	defer q.Close()
 
-	id, _ := q.Enqueue(ctx, "ns1", ltm.JobPayload{Scope: memory.MemoryScope{RuntimeID: "rt"}})
+	id, _ := q.Enqueue(ctx, "ns1", ltm.JobPayload{Scope: ltm.MemoryScope{RuntimeID: "rt"}})
 	_, ok, _ := q.Lease(ctx, time.Now())
 	if !ok {
 		t.Fatal("first lease failed")
@@ -80,7 +79,7 @@ func TestCrashRecovery(t *testing.T) {
 	path := filepath.Join(dir, "jobs.db")
 
 	q1, _ := sqlite.Open(path)
-	id, _ := q1.Enqueue(ctx, "ns", ltm.JobPayload{Scope: memory.MemoryScope{RuntimeID: "rt"}})
+	id, _ := q1.Enqueue(ctx, "ns", ltm.JobPayload{Scope: ltm.MemoryScope{RuntimeID: "rt"}})
 	if _, ok, _ := q1.Lease(ctx, time.Now()); !ok {
 		t.Fatal("lease before crash failed")
 	}
@@ -115,7 +114,7 @@ func TestEndToEndWithLTM(t *testing.T) {
 	})
 	defer m.Close()
 
-	scope := memory.MemoryScope{RuntimeID: "rt1", UserID: "u1", AgentID: "bot"}
+	scope := ltm.MemoryScope{RuntimeID: "rt1", UserID: "u1", AgentID: "bot"}
 	id, err := m.SaveAsync(ctx, scope, []llm.Message{
 		{Role: "user", Parts: []llm.Part{{Type: "text", Text: "hi"}}},
 	})
