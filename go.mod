@@ -6,8 +6,8 @@ exclude google.golang.org/genproto v0.0.0-20200526211855-cb27e3aa2013
 
 require (
 	github.com/GizClaw/flowcraft/plugin v0.1.0
-	github.com/GizClaw/flowcraft/sdk v0.1.10
-	github.com/GizClaw/flowcraft/sdkx v0.1.12
+	github.com/GizClaw/flowcraft/sdk v0.1.11
+	github.com/GizClaw/flowcraft/sdkx v0.1.13
 	github.com/coder/websocket v1.8.14
 	github.com/fsnotify/fsnotify v1.9.0
 	github.com/go-faster/errors v0.7.1
