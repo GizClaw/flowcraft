@@ -32,9 +32,7 @@ func TestCompactArchive_Integration_LongConversation(t *testing.T) {
 
 	// Simulate 50 messages in batches of 10.
 	for batch := 0; batch < 5; batch++ {
-		msgs := make([]model.Message, 0, (batch+1)*10)
-		existing, _ := store.GetMessages(ctx, convID)
-		msgs = append(msgs, existing...)
+		msgs := make([]model.Message, 0, 10)
 		for i := 0; i < 10; i++ {
 			if i%2 == 0 {
 				msgs = append(msgs, model.NewTextMessage(model.RoleUser, "user message"))
@@ -42,8 +40,8 @@ func TestCompactArchive_Integration_LongConversation(t *testing.T) {
 				msgs = append(msgs, model.NewTextMessage(model.RoleAssistant, "assistant response"))
 			}
 		}
-		if err := mem.Save(ctx, convID, msgs); err != nil {
-			t.Fatalf("batch %d Save: %v", batch, err)
+		if err := mem.Append(ctx, convID, msgs); err != nil {
+			t.Fatalf("batch %d Append: %v", batch, err)
 		}
 		// Wait for async ingest.
 		time.Sleep(500 * time.Millisecond)

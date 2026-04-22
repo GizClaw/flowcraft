@@ -158,11 +158,7 @@ func TestFileSummaryStore_CacheHit(t *testing.T) {
 		t.Fatalf("expected 1, got %d", len(nodes1))
 	}
 
-	// Verify cache is populated.
-	store.mu.Lock()
-	cached, ok := store.cache["c"]
-	store.mu.Unlock()
-	if !ok || len(cached) == 0 {
+	if cached, ok := cacheSnapshot(store, "c"); !ok || len(cached) == 0 {
 		t.Fatal("expected cache to be populated after List")
 	}
 
@@ -187,10 +183,7 @@ func TestFileSummaryStore_CacheUpdatedOnSave(t *testing.T) {
 	_ = store.Save(ctx, &SummaryNode{ConversationID: "c", Content: "first", EarliestSeq: 0, LatestSeq: 5})
 	_ = store.Save(ctx, &SummaryNode{ConversationID: "c", Content: "second", EarliestSeq: 6, LatestSeq: 10})
 
-	// Cache should contain both nodes.
-	store.mu.Lock()
-	cached := store.cache["c"]
-	store.mu.Unlock()
+	cached, _ := cacheSnapshot(store, "c")
 	if len(cached) != 2 {
 		t.Fatalf("expected 2 in cache, got %d", len(cached))
 	}
@@ -211,10 +204,7 @@ func TestFileSummaryStore_CacheUpdatedOnRewrite(t *testing.T) {
 		{ID: "a", ConversationID: "c", Content: "new1"},
 	})
 
-	// Cache should reflect rewrite.
-	store.mu.Lock()
-	cached := store.cache["c"]
-	store.mu.Unlock()
+	cached, _ := cacheSnapshot(store, "c")
 	if len(cached) != 1 {
 		t.Fatalf("expected 1 in cache after rewrite, got %d", len(cached))
 	}
@@ -236,10 +226,7 @@ func TestFileSummaryStore_CacheUpdatedOnDelete(t *testing.T) {
 
 	_ = store.DeleteByConvID(ctx, "c", node.ID)
 
-	// Cache should contain the deletion marker.
-	store.mu.Lock()
-	cached := store.cache["c"]
-	store.mu.Unlock()
+	cached, _ := cacheSnapshot(store, "c")
 	if len(cached) != 2 {
 		t.Fatalf("expected 2 (original + delete marker), got %d", len(cached))
 	}
@@ -249,4 +236,23 @@ func TestFileSummaryStore_CacheUpdatedOnDelete(t *testing.T) {
 	if len(nodes) != 0 {
 		t.Fatalf("expected 0 after delete, got %d", len(nodes))
 	}
+}
+
+// cacheSnapshot reads the LRU-backed cache for the given conversation
+// without going through the public API. It returns (cachedNodes, true) if
+// the entry is present and loaded, (nil, false) otherwise.
+func cacheSnapshot(s *FileSummaryStore, convID string) ([]*SummaryNode, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	el, ok := s.entries[convID]
+	if !ok {
+		return nil, false
+	}
+	entry := el.Value.(*summaryCacheEntry)
+	if !entry.loaded {
+		return nil, false
+	}
+	cp := make([]*SummaryNode, len(entry.nodes))
+	copy(cp, entry.nodes)
+	return cp, true
 }

@@ -10,12 +10,12 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/model"
 )
 
-// ShortTermMemory is the strategy-layer interface satisfied by sdk/memory.Memory.
-// We declare it locally so this package does not depend on sdk/memory (which
-// in turn depends on ltm via aliases).
+// ShortTermMemory mirrors sdk/history.Memory. Re-declared locally so
+// this package compiles without an import cycle (sdk/history imports
+// sdk/recall for LongTermConfig, and recall must not import history back).
 type ShortTermMemory interface {
 	Load(ctx context.Context, conversationID string) ([]model.Message, error)
-	Save(ctx context.Context, conversationID string, messages []model.Message) error
+	Append(ctx context.Context, conversationID string, newMessages []model.Message) error
 	Clear(ctx context.Context, conversationID string) error
 }
 
@@ -151,8 +151,11 @@ func (m *MemoryAwareMemory) Load(ctx context.Context, conversationID string) ([]
 	return prependSystemContext(msgs, ltContext), nil
 }
 
-func (m *MemoryAwareMemory) Save(ctx context.Context, conversationID string, messages []model.Message) error {
-	return m.inner.Save(ctx, conversationID, messages)
+// Append forwards to the underlying short-term memory. Long-term
+// extraction is intentionally NOT triggered here: it happens through the
+// recall.Memory.Save / Add path, on its own background pipeline.
+func (m *MemoryAwareMemory) Append(ctx context.Context, conversationID string, newMessages []model.Message) error {
+	return m.inner.Append(ctx, conversationID, newMessages)
 }
 
 func (m *MemoryAwareMemory) Clear(ctx context.Context, conversationID string) error {

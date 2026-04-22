@@ -43,7 +43,7 @@ func TestLosslessMemory_SaveAndLoad(t *testing.T) {
 		llm.NewTextMessage(llm.RoleAssistant, "Hi there"),
 	}
 
-	if err := mem.Save(ctx, convID, msgs); err != nil {
+	if err := mem.Append(ctx, convID, msgs); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
 
@@ -78,7 +78,7 @@ func TestLosslessMemory_Clear(t *testing.T) {
 	msgs := []llm.Message{
 		llm.NewTextMessage(llm.RoleUser, "Hello"),
 	}
-	_ = mem.Save(ctx, convID, msgs)
+	_ = mem.Append(ctx, convID, msgs)
 
 	if err := mem.Clear(ctx, convID); err != nil {
 		t.Fatalf("Clear: %v", err)
@@ -189,7 +189,7 @@ func TestLosslessMemory_CloseWaitsForAsync(t *testing.T) {
 	}
 
 	for i := 0; i < 5; i++ {
-		if err := mem.Save(ctx, fmt.Sprintf("conv-%d", i), msgs); err != nil {
+		if err := mem.Append(ctx, fmt.Sprintf("conv-%d", i), msgs); err != nil {
 			t.Fatalf("Save %d: %v", i, err)
 		}
 	}
@@ -220,14 +220,17 @@ func TestLosslessMemory_CloseWaitsForAsync(t *testing.T) {
 	}
 }
 
-func TestLosslessMemory_SemaphoreFull(t *testing.T) {
+// TestLosslessMemory_NoIngestDrop pins down the post-refactor invariant:
+// fast successive Appends across many conversations must NOT silently drop
+// any DAG ingest. The old semaphore-bounded implementation could skip
+// ingests under load (telemetry warned, but the summarized history quietly
+// shrank); the new per-conversation goroutine model has no such ceiling.
+func TestLosslessMemory_NoIngestDrop(t *testing.T) {
 	store := NewInMemoryStore()
 	summaryStore := &inMemSummaryStore{data: make(map[string][]*SummaryNode)}
-	slowLLM := &slowMockLLM{delay: 500 * time.Millisecond}
+	slowLLM := &slowMockLLM{delay: 50 * time.Millisecond}
 	dag := NewSummaryDAG(summaryStore, store, slowLLM, DefaultDAGConfig(), &EstimateCounter{})
 	mem := NewLosslessMemory(store, dag, DefaultDAGConfig(), nil, "")
-	// Override semaphore to capacity 1 for testing.
-	mem.sem = make(chan struct{}, 1)
 
 	ctx := context.Background()
 	msgs := []llm.Message{
@@ -235,17 +238,15 @@ func TestLosslessMemory_SemaphoreFull(t *testing.T) {
 		llm.NewTextMessage(llm.RoleAssistant, "Hi"),
 	}
 
-	// Save multiple conversations rapidly; only 1 can ingest concurrently.
-	for i := 0; i < 5; i++ {
-		if err := mem.Save(ctx, fmt.Sprintf("conv-%d", i), msgs); err != nil {
-			t.Fatalf("Save %d: %v", i, err)
+	const conversations = 20
+	for i := 0; i < conversations; i++ {
+		if err := mem.Append(ctx, fmt.Sprintf("conv-%d", i), msgs); err != nil {
+			t.Fatalf("Append %d: %v", i, err)
 		}
 	}
-
 	mem.Close()
 
-	// All conversations should have messages saved (sync part of Save).
-	for i := 0; i < 5; i++ {
+	for i := 0; i < conversations; i++ {
 		got, err := store.GetMessages(ctx, fmt.Sprintf("conv-%d", i))
 		if err != nil {
 			t.Fatalf("GetMessages conv-%d: %v", i, err)

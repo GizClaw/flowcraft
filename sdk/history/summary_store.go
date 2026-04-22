@@ -3,6 +3,7 @@ package history
 import (
 	"bufio"
 	"bytes"
+	"container/list"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -14,6 +15,13 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/workspace"
 	"github.com/rs/xid"
 )
+
+// defaultSummaryStoreCapacity caps the FileSummaryStore in-memory cache so
+// long-running services with millions of conversations cannot exhaust RAM
+// by replaying every summary they have ever touched. The eviction policy
+// is LRU on conversationID; eviction drops both the cached node slice and
+// the per-conversation lock — the next access reloads from disk.
+const defaultSummaryStoreCapacity = 1024
 
 // SummaryNode represents a node in the summary DAG.
 type SummaryNode struct {
@@ -57,34 +65,85 @@ func NewSummaryNodeID() string {
 
 // FileSummaryStore is a Workspace-backed SummaryStore using JSONL files.
 // It caches parsed nodes per conversation to avoid repeated disk reads.
+//
+// The cache is bounded (LRU): the previous implementation grew the
+// in-memory map for every conversation ever touched, which leaked memory
+// in long-running services; here we evict the least-recently-used
+// conversation when capacity is exceeded.
 type FileSummaryStore struct {
-	ws     workspace.Workspace
-	prefix string
+	ws       workspace.Workspace
+	prefix   string
+	capacity int
 
-	mu    sync.Mutex
-	locks map[string]*sync.Mutex
-	cache map[string][]*SummaryNode
+	mu      sync.Mutex
+	entries map[string]*list.Element
+	order   *list.List
+}
+
+// FileSummaryStoreOption configures a FileSummaryStore.
+type FileSummaryStoreOption func(*FileSummaryStore)
+
+// WithSummaryStoreCapacity overrides the default LRU cache capacity.
+// A value <= 0 leaves the default in place.
+func WithSummaryStoreCapacity(n int) FileSummaryStoreOption {
+	return func(s *FileSummaryStore) {
+		if n > 0 {
+			s.capacity = n
+		}
+	}
+}
+
+// summaryCacheEntry pairs the per-conversation lock with its cached nodes
+// so they are evicted together — keeping a stale lock around is a
+// pointless leak, and re-creating it on next access costs nothing.
+type summaryCacheEntry struct {
+	convID string
+	mu     *sync.Mutex
+	nodes  []*SummaryNode
+	loaded bool // true once the disk read has populated nodes
 }
 
 // NewFileSummaryStore creates a FileSummaryStore rooted at the given prefix.
-func NewFileSummaryStore(ws workspace.Workspace, prefix string) *FileSummaryStore {
-	return &FileSummaryStore{
-		ws:     ws,
-		prefix: prefix,
-		locks:  make(map[string]*sync.Mutex),
-		cache:  make(map[string][]*SummaryNode),
+func NewFileSummaryStore(ws workspace.Workspace, prefix string, opts ...FileSummaryStoreOption) *FileSummaryStore {
+	s := &FileSummaryStore{
+		ws:       ws,
+		prefix:   prefix,
+		capacity: defaultSummaryStoreCapacity,
+		entries:  make(map[string]*list.Element),
+		order:    list.New(),
 	}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
+}
+
+// touch returns the cache entry for convID, creating it if missing and
+// promoting it to MRU. Caller must hold s.mu.
+func (s *FileSummaryStore) touch(convID string) *summaryCacheEntry {
+	if el, ok := s.entries[convID]; ok {
+		s.order.MoveToBack(el)
+		return el.Value.(*summaryCacheEntry)
+	}
+	entry := &summaryCacheEntry{convID: convID, mu: &sync.Mutex{}}
+	el := s.order.PushBack(entry)
+	s.entries[convID] = el
+	for s.order.Len() > s.capacity {
+		oldest := s.order.Front()
+		if oldest == nil {
+			break
+		}
+		old := oldest.Value.(*summaryCacheEntry)
+		s.order.Remove(oldest)
+		delete(s.entries, old.convID)
+	}
+	return entry
 }
 
 func (s *FileSummaryStore) convMu(convID string) *sync.Mutex {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	m, ok := s.locks[convID]
-	if !ok {
-		m = &sync.Mutex{}
-		s.locks[convID] = m
-	}
-	return m
+	return s.touch(convID).mu
 }
 
 func (s *FileSummaryStore) summariesPath(convID string) string {
@@ -96,9 +155,14 @@ func (s *FileSummaryStore) summariesPath(convID string) string {
 
 // loadCached returns cached nodes or reads from disk and populates cache.
 // Caller must hold the per-conversation lock.
+//
+// We touch the LRU on every read so a hot conversation stays in cache
+// even when many cold ones are accessed in between.
 func (s *FileSummaryStore) loadCached(ctx context.Context, convID string) ([]*SummaryNode, error) {
 	s.mu.Lock()
-	if nodes, ok := s.cache[convID]; ok {
+	entry := s.touch(convID)
+	if entry.loaded {
+		nodes := entry.nodes
 		s.mu.Unlock()
 		return nodes, nil
 	}
@@ -110,20 +174,27 @@ func (s *FileSummaryStore) loadCached(ctx context.Context, convID string) ([]*Su
 	}
 
 	s.mu.Lock()
-	s.cache[convID] = nodes
+	entry = s.touch(convID)
+	entry.nodes = nodes
+	entry.loaded = true
 	s.mu.Unlock()
 	return nodes, nil
 }
 
 func (s *FileSummaryStore) setCache(convID string, nodes []*SummaryNode) {
 	s.mu.Lock()
-	s.cache[convID] = nodes
+	entry := s.touch(convID)
+	entry.nodes = nodes
+	entry.loaded = true
 	s.mu.Unlock()
 }
 
 func (s *FileSummaryStore) appendCache(convID string, node *SummaryNode) {
 	s.mu.Lock()
-	s.cache[convID] = append(s.cache[convID], node)
+	entry := s.touch(convID)
+	if entry.loaded {
+		entry.nodes = append(entry.nodes, node)
+	}
 	s.mu.Unlock()
 }
 
@@ -379,7 +450,11 @@ func (s *FileSummaryStore) Rewrite(ctx context.Context, convID string, nodes []*
 	}
 
 	path := s.summariesPath(convID)
-	if err := s.ws.Write(ctx, path, buf.Bytes()); err != nil {
+	// Rewrite replaces the whole summaries.jsonl atomically: a crash mid-
+	// write must never leave readers seeing a half-truncated file (which
+	// would confuse the JSON-line scanner in readFromDisk and in the
+	// worst case appear as missing summaries).
+	if err := workspace.AtomicWrite(ctx, s.ws, path, buf.Bytes()); err != nil {
 		return err
 	}
 

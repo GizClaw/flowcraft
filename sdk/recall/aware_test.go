@@ -37,7 +37,7 @@ func (s *inMemConvStore) GetMessages(_ context.Context, id string) ([]model.Mess
 	return cp, nil
 }
 
-// bufferMemory is the test-side equivalent of sdk/memory.BufferMemory: it
+// bufferMemory is the test-side equivalent of sdk/history.BufferMemory: it
 // just round-trips messages through the store. Long-term assembly is added
 // by wrapping it with MemoryAwareMemory.
 type bufferMemory struct {
@@ -60,8 +60,13 @@ func (b *bufferMemory) Load(ctx context.Context, id string) ([]model.Message, er
 	return msgs, nil
 }
 
-func (b *bufferMemory) Save(ctx context.Context, id string, msgs []model.Message) error {
-	return b.store.SaveMessages(ctx, id, msgs)
+func (b *bufferMemory) Append(ctx context.Context, id string, newMessages []model.Message) error {
+	existing, err := b.store.GetMessages(ctx, id)
+	if err != nil {
+		return err
+	}
+	combined := append(existing, newMessages...)
+	return b.store.SaveMessages(ctx, id, combined)
 }
 
 func (b *bufferMemory) Clear(ctx context.Context, id string) error {
@@ -129,16 +134,16 @@ func TestMemoryAwareMemory_Injection(t *testing.T) {
 	}
 }
 
-func TestMemoryAwareMemory_SaveDelegates(t *testing.T) {
+func TestMemoryAwareMemory_AppendDelegates(t *testing.T) {
 	store := NewInMemoryStore()
 	ctx := context.Background()
 	inner := NewBufferMemory(store, 50)
 	aware := NewMemoryAwareMemoryCompat(inner, nil, "user-1", LongTermConfig{})
 
-	_ = aware.Save(ctx, "c1", []model.Message{model.NewTextMessage(model.RoleUser, "hi")})
+	_ = aware.Append(ctx, "c1", []model.Message{model.NewTextMessage(model.RoleUser, "hi")})
 	msgs, _ := store.GetMessages(ctx, "c1")
 	if len(msgs) != 1 {
-		t.Fatal("save should delegate to inner")
+		t.Fatal("append should delegate to inner")
 	}
 }
 

@@ -3,11 +3,22 @@
 // compact older turns into hierarchical summaries to keep that window
 // finite. Long-term fact recall lives in [sdk/recall].
 //
-// Migration note: this package was renamed from sdk/memory in v0.2.0.
-// The Save/Load/Clear interface and the LosslessMemory/BufferMemory/
-// SummaryDAG/Archive types are unchanged in this commit; later commits
-// in the same series tighten the contract (Save → Append) and add
-// atomic-write durability.
+// The interface is deliberately narrow:
+//
+//   - Load returns the messages a caller should send to the LLM, possibly
+//     compressed by an internal summary DAG.
+//   - Append durably persists newly produced messages. It is the caller's
+//     contract that exactly the new turn (and only the new turn) is passed,
+//     so the underlying store never needs to diff against previous state.
+//     Implementations serialize concurrent Appends per conversation so that
+//     two callers writing at the same time cannot corrupt the message log.
+//   - Clear removes a conversation, including any derived summaries.
+//
+// Migration note: this package was renamed from sdk/memory in v0.2.0 and
+// the previous Save(fullHistory) method was replaced by Append(newOnly).
+// The old Save signature was lossy under concurrent writers (read-modify-
+// write race) and silently accepted truncated histories. There is no
+// compat shim; call sites pass only the freshly produced messages.
 package history
 
 import (
@@ -19,10 +30,23 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/model"
 )
 
-// Memory is the strategy-layer interface that decides which messages to return to the LLM.
+// Memory is the strategy-layer interface that decides which messages to
+// return to the LLM and how new turns are persisted. See the package
+// doc comment for the per-method contract.
 type Memory interface {
+	// Load returns messages suited for the next LLM call. Implementations
+	// MAY compress, summarize, or window the underlying transcript.
 	Load(ctx context.Context, conversationID string) ([]model.Message, error)
-	Save(ctx context.Context, conversationID string, messages []model.Message) error
+
+	// Append durably persists newMessages — and only newMessages — to the
+	// conversation. It MUST be safe to call from multiple goroutines for
+	// the same conversationID; implementations serialize per-conversation
+	// writes internally. After Append returns nil, the messages are
+	// guaranteed visible to subsequent Load calls.
+	Append(ctx context.Context, conversationID string, newMessages []model.Message) error
+
+	// Clear removes the conversation and any derived state (summaries,
+	// archives) owned by this Memory implementation.
 	Clear(ctx context.Context, conversationID string) error
 }
 

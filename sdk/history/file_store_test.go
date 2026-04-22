@@ -164,7 +164,7 @@ func TestBufferMemory_WithFileStore(t *testing.T) {
 		model.NewTextMessage(model.RoleAssistant, "reply1"),
 	}
 	buf := NewBufferMemory(store, 50)
-	if err := buf.Save(ctx, convID, round1); err != nil {
+	if err := buf.Append(ctx, convID, round1); err != nil {
 		t.Fatal(err)
 	}
 
@@ -176,11 +176,11 @@ func TestBufferMemory_WithFileStore(t *testing.T) {
 		t.Fatalf("expected 2 from round 1, got %d", len(loaded))
 	}
 
-	round2 := append(loaded,
+	round2 := []model.Message{
 		model.NewTextMessage(model.RoleUser, "turn2"),
 		model.NewTextMessage(model.RoleAssistant, "reply2"),
-	)
-	if err := buf.Save(ctx, convID, round2); err != nil {
+	}
+	if err := buf.Append(ctx, convID, round2); err != nil {
 		t.Fatal(err)
 	}
 
@@ -201,7 +201,7 @@ func TestBufferMemory_FileStoreSurvivesRestart(t *testing.T) {
 		model.NewTextMessage(model.RoleUser, "before restart"),
 		model.NewTextMessage(model.RoleAssistant, "still here"),
 	}
-	if err := buf1.Save(ctx, convID, msgs); err != nil {
+	if err := buf1.Append(ctx, convID, msgs); err != nil {
 		t.Fatal(err)
 	}
 

@@ -67,14 +67,15 @@ func LoadManifest(ctx context.Context, ws workspace.Workspace, prefix, archivePr
 	return &m, nil
 }
 
-// SaveManifest writes the archive manifest.
+// SaveManifest writes the archive manifest atomically (write-tmp + rename),
+// so a crash mid-write cannot leave readers seeing a half-serialized manifest.
 func SaveManifest(ctx context.Context, ws workspace.Workspace, prefix, archivePrefix, convID string, m *ArchiveManifest) error {
 	data, err := json.MarshalIndent(m, "", "  ")
 	if err != nil {
 		return fmt.Errorf("archive: marshal manifest: %w", err)
 	}
 	path := manifestPath(prefix, archivePrefix, convID)
-	return ws.Write(ctx, path, data)
+	return workspace.AtomicWrite(ctx, ws, path, data)
 }
 
 func manifestPath(prefix, archivePrefix, convID string) string {
@@ -98,17 +99,25 @@ type archiveIntent struct {
 	Phase       string `json:"phase"` // "gzip_written" | "manifest_updated"
 }
 
+// writeIntent records the in-progress archive operation atomically.
+// RecoverArchive depends on the intent being either fully present or
+// fully absent — partial writes would make the recovery state machine
+// indeterministic.
 func writeIntent(ctx context.Context, ws workspace.Workspace, prefix, archivePrefix, convID string, intent *archiveIntent) error {
 	data, err := json.Marshal(intent)
 	if err != nil {
 		return err
 	}
-	return ws.Write(ctx, intentPath(prefix, archivePrefix, convID), data)
+	return workspace.AtomicWrite(ctx, ws, intentPath(prefix, archivePrefix, convID), data)
 }
 
+// deleteIntent removes the intent file. The previous implementation wrote
+// an empty payload; that worked only because loadIntent special-cased
+// len(data) == 0, but it left a zombie file behind and meant Exists() lied
+// to other code paths. Use Delete for honest semantics.
 func deleteIntent(ctx context.Context, ws workspace.Workspace, prefix, archivePrefix, convID string) {
 	path := intentPath(prefix, archivePrefix, convID)
-	_ = ws.Write(ctx, path, nil)
+	_ = ws.Delete(ctx, path)
 }
 
 func loadIntent(ctx context.Context, ws workspace.Workspace, prefix, archivePrefix, convID string) (*archiveIntent, error) {

@@ -39,7 +39,7 @@ func TestBufferMemory_SaveAndClear(t *testing.T) {
 	ctx := context.Background()
 	buf := NewBufferMemory(store, 10)
 
-	_ = buf.Save(ctx, "c1", []model.Message{model.NewTextMessage(model.RoleUser, "hi")})
+	_ = buf.Append(ctx, "c1", []model.Message{model.NewTextMessage(model.RoleUser, "hi")})
 	loaded, _ := buf.Load(ctx, "c1")
 	if len(loaded) != 1 {
 		t.Fatal("expected 1 message")
