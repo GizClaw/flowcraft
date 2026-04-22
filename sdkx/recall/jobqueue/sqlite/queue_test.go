@@ -9,7 +9,7 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/llm"
 	"github.com/GizClaw/flowcraft/sdk/recall"
 	memidx "github.com/GizClaw/flowcraft/sdk/retrieval/memory"
-	"github.com/GizClaw/flowcraft/sdkx/memory/jobqueue/sqlite"
+	"github.com/GizClaw/flowcraft/sdkx/recall/jobqueue/sqlite"
 )
 
 func TestEnqueueLeaseComplete(t *testing.T) {

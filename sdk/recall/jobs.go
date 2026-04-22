@@ -95,7 +95,7 @@ func statusFromRecord(r *JobRecord) JobStatus {
 // MemoryJobQueue is the default in-process JobQueue.
 //
 // It does NOT survive a process crash. For crash-recoverable Async Save use
-// sdkx/memory/jobqueue/sqlite.SQLiteJobQueue.
+// sdkx/recall/jobqueue/sqlite.SQLiteJobQueue.
 type MemoryJobQueue struct {
 	mu     sync.Mutex
 	jobs   map[JobID]*JobRecord
