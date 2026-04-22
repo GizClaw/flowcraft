@@ -153,7 +153,7 @@ func TestFileStore_Isolation(t *testing.T) {
 	}
 }
 
-func TestBufferMemory_WithFileStore(t *testing.T) {
+func TestBuffer_WithFileStore(t *testing.T) {
 	ws := workspace.NewMemWorkspace()
 	store := NewFileStore(ws, "memory")
 	ctx := context.Background()
@@ -163,12 +163,12 @@ func TestBufferMemory_WithFileStore(t *testing.T) {
 		model.NewTextMessage(model.RoleUser, "turn1"),
 		model.NewTextMessage(model.RoleAssistant, "reply1"),
 	}
-	buf := NewBufferMemory(store, 50)
+	buf := NewBuffer(store, WithBufferMax(50))
 	if err := buf.Append(ctx, convID, round1); err != nil {
 		t.Fatal(err)
 	}
 
-	loaded, err := buf.Load(ctx, convID)
+	loaded, err := buf.Load(ctx, convID, Budget{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -184,19 +184,19 @@ func TestBufferMemory_WithFileStore(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	loaded, _ = buf.Load(ctx, convID)
+	loaded, _ = buf.Load(ctx, convID, Budget{})
 	if len(loaded) != 4 {
 		t.Fatalf("expected 4 after 2 rounds, got %d", len(loaded))
 	}
 }
 
-func TestBufferMemory_FileStoreSurvivesRestart(t *testing.T) {
+func TestBuffer_FileStoreSurvivesRestart(t *testing.T) {
 	ws := workspace.NewMemWorkspace()
 	ctx := context.Background()
 	convID := "restart-test"
 
 	store1 := NewFileStore(ws, "memory")
-	buf1 := NewBufferMemory(store1, 50)
+	buf1 := NewBuffer(store1, WithBufferMax(50))
 	msgs := []model.Message{
 		model.NewTextMessage(model.RoleUser, "before restart"),
 		model.NewTextMessage(model.RoleAssistant, "still here"),
@@ -206,8 +206,8 @@ func TestBufferMemory_FileStoreSurvivesRestart(t *testing.T) {
 	}
 
 	store2 := NewFileStore(ws, "memory")
-	buf2 := NewBufferMemory(store2, 50)
-	loaded, err := buf2.Load(ctx, convID)
+	buf2 := NewBuffer(store2, WithBufferMax(50))
+	loaded, err := buf2.Load(ctx, convID, Budget{})
 	if err != nil {
 		t.Fatal(err)
 	}

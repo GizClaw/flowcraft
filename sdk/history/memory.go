@@ -35,7 +35,13 @@ import (
 type Memory interface {
 	// Load returns messages suited for the next LLM call. Implementations
 	// MAY compress, summarize, or window the underlying transcript.
-	Load(ctx context.Context, conversationID string) ([]model.Message, error)
+	//
+	// budget is a hint; implementations fall back to their configured
+	// defaults when the corresponding [Budget] field is zero. A fully
+	// zero Budget explicitly means "use defaults" and is the most
+	// common value (the common case: "give me whatever you'd send to
+	// the model").
+	Load(ctx context.Context, conversationID string, budget Budget) ([]model.Message, error)
 
 	// Append durably persists newMessages — and only newMessages — to the
 	// conversation. It MUST be safe to call from multiple goroutines for
@@ -48,6 +54,19 @@ type Memory interface {
 	// archives) owned by this Memory implementation.
 	Clear(ctx context.Context, conversationID string) error
 }
+
+// Budget caps how much transcript [Memory.Load] returns. Zero means
+// "use the implementation default"; set either field to clamp.
+type Budget struct {
+	// MaxTokens caps the estimated token count of returned messages.
+	// Implementations that do not track tokens treat this as a hint.
+	MaxTokens int
+	// MaxMessages caps the raw message count.
+	MaxMessages int
+}
+
+// IsZero reports whether b carries no explicit limits.
+func (b Budget) IsZero() bool { return b.MaxTokens == 0 && b.MaxMessages == 0 }
 
 // Store is the persistence-layer interface for short-term message storage.
 type Store interface {
@@ -79,66 +98,6 @@ type RangeReader interface {
 type SummaryCacheStore interface {
 	GetSummary(ctx context.Context, conversationID string) (summary string, msgCount int, err error)
 	SaveSummary(ctx context.Context, conversationID, summary string, msgCount int) error
-}
-
-// Config configures the conversation memory. All memory is lossless by default;
-// the Type field is deprecated and ignored (kept for backward compatibility).
-//
-// Long-term-fact recall is intentionally NOT configured here in v0.2.0+;
-// callers wanting that capability compose [sdk/recall.Memory] separately
-// (see examples/chatbot-with-recall for a worked example). The previous
-// Config.LongTerm field was removed because it forced this package to
-// import sdk/recall and bound a "fact recall" decision into a "message
-// transcript" type.
-type Config struct {
-	Type        string         `json:"type,omitempty"` // deprecated: ignored, always lossless
-	MaxMessages int            `json:"max_messages,omitempty"`
-	Lossless    LosslessConfig `json:"lossless,omitempty"`
-}
-
-// LosslessConfig controls the lossless DAG memory behavior.
-type LosslessConfig struct {
-	ChunkSize         int     `json:"chunk_size,omitempty"`
-	CondenseThreshold int     `json:"condense_threshold,omitempty"`
-	MaxDepth          int     `json:"max_depth,omitempty"`
-	TokenBudget       int     `json:"token_budget,omitempty"`
-	RecentRatio       float64 `json:"recent_ratio,omitempty"`
-	CompactThreshold  int     `json:"compact_threshold,omitempty"`
-	PruneLeafContent  *bool   `json:"prune_leaf_content,omitempty"`
-	ArchiveThreshold  int     `json:"archive_threshold,omitempty"`
-	ArchiveBatchSize  int     `json:"archive_batch_size,omitempty"`
-}
-
-func (c LosslessConfig) toDAGConfig() DAGConfig {
-	cfg := DefaultDAGConfig()
-	if c.ChunkSize > 0 {
-		cfg.ChunkSize = c.ChunkSize
-	}
-	if c.CondenseThreshold > 0 {
-		cfg.CondenseThreshold = c.CondenseThreshold
-	}
-	if c.MaxDepth > 0 {
-		cfg.MaxDepth = c.MaxDepth
-	}
-	if c.TokenBudget > 0 {
-		cfg.TokenBudget = c.TokenBudget
-	}
-	if c.RecentRatio > 0 {
-		cfg.RecentRatio = c.RecentRatio
-	}
-	if c.CompactThreshold > 0 {
-		cfg.Compact.CompactThreshold = c.CompactThreshold
-	}
-	if c.PruneLeafContent != nil {
-		cfg.Compact.PruneLeafContent = *c.PruneLeafContent
-	}
-	if c.ArchiveThreshold > 0 {
-		cfg.Archive.ArchiveThreshold = c.ArchiveThreshold
-	}
-	if c.ArchiveBatchSize > 0 {
-		cfg.Archive.ArchiveBatchSize = c.ArchiveBatchSize
-	}
-	return cfg
 }
 
 const (

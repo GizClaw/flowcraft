@@ -130,7 +130,7 @@ func (r *Runner) SaveRaw(ctx context.Context, scope recall.Scope, msgs []llm.Mes
 			Categories: []string{"raw"},
 			Source:     recall.Source{RuntimeID: scope.RuntimeID},
 		}
-		if _, err := r.mem.AddRaw(ctx, scope, entry); err != nil {
+		if _, err := r.mem.Add(ctx, scope, entry); err != nil {
 			return saved, time.Since(t0), fmt.Errorf("add_raw turn %d: %w", i, err)
 		}
 		saved++
@@ -154,7 +154,7 @@ func (r *Runner) SaveRawTurns(ctx context.Context, scope recall.Scope, turns []r
 			Categories: []string{"raw"},
 			Source:     recall.Source{RuntimeID: scope.RuntimeID},
 		}
-		if _, err := r.mem.AddRaw(ctx, scope, entry); err != nil {
+		if _, err := r.mem.Add(ctx, scope, entry); err != nil {
 			return saved, time.Since(t0), fmt.Errorf("add_raw turn %d (%s): %w", i, t.EvidenceID, err)
 		}
 		saved++
@@ -163,9 +163,9 @@ func (r *Runner) SaveRawTurns(ctx context.Context, scope recall.Scope, turns []r
 }
 
 // Recall implements runners.Runner.
-func (r *Runner) Recall(ctx context.Context, scope recall.Scope, query string, topK int) ([]recall.RecallHit, time.Duration, error) {
+func (r *Runner) Recall(ctx context.Context, scope recall.Scope, query string, topK int) ([]recall.Hit, time.Duration, error) {
 	t0 := time.Now()
-	hits, err := r.mem.Recall(ctx, scope, recall.RecallRequest{Query: query, TopK: topK})
+	hits, err := r.mem.Recall(ctx, scope, recall.Request{Query: query, TopK: topK})
 	return hits, time.Since(t0), err
 }
 

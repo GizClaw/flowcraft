@@ -469,7 +469,7 @@ func (d *SummaryDAG) Compact(ctx context.Context, convID string) (CompactResult,
 				shouldPrune = false
 			}
 			if shouldPrune && n.Content != "" && !strings.HasPrefix(n.Content, "[pruned") {
-				n.Content = "[pruned — use memory_expand to load originals]"
+				n.Content = "[pruned — use history_expand to load originals]"
 				n.TokenCount = 0
 				result.LeafPruned++
 				dagCompactPruned.Add(ctx, 1)
@@ -547,7 +547,7 @@ func (d *SummaryDAG) summarizeText(ctx context.Context, text string, depth int) 
 		tail = string(runes[tailStart:])
 	}
 	content = fmt.Sprintf("[auto-summary] %s... ...%s", head, tail)
-	expandHint = "[LLM summarization failed, use memory_expand to see originals]"
+	expandHint = "[LLM summarization failed, use history_expand to see originals]"
 	return content, expandHint, nil
 }
 

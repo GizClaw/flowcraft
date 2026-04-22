@@ -8,8 +8,8 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/retrieval/journal"
 )
 
-// RecallRequest is the input to Memory.Recall ( + §6.2).
-type RecallRequest struct {
+// Request is the input to Memory.Recall ( + §6.2).
+type Request struct {
 	Query     string
 	TopK      int
 	Filter    map[string]any // metadata equality filters merged into pipeline filter
@@ -17,8 +17,8 @@ type RecallRequest struct {
 	WithStale bool           // if true, do NOT filter expired entries
 }
 
-// RecallHit is one result returned by Memory.Recall.
-type RecallHit struct {
+// Hit is one result returned by Memory.Recall.
+type Hit struct {
 	Entry  Entry
 	Score  float64
 	Scores map[string]float64
@@ -26,7 +26,7 @@ type RecallHit struct {
 
 // Recall runs the configured pipeline against the namespace and projects
 // hits back into Entry.
-func (m *lt) Recall(ctx context.Context, scope Scope, req RecallRequest) ([]RecallHit, error) {
+func (m *lt) Recall(ctx context.Context, scope Scope, req Request) ([]Hit, error) {
 	if scope.RuntimeID == "" {
 		return nil, ErrMissingRuntimeID
 	}
@@ -57,9 +57,9 @@ func (m *lt) Recall(ctx context.Context, scope Scope, req RecallRequest) ([]Reca
 	if err != nil {
 		return nil, err
 	}
-	out := make([]RecallHit, 0, len(resp.Hits))
+	out := make([]Hit, 0, len(resp.Hits))
 	for _, h := range resp.Hits {
-		out = append(out, RecallHit{
+		out = append(out, Hit{
 			Entry:  DocToEntry(h.Doc),
 			Score:  h.Score,
 			Scores: h.Scores,

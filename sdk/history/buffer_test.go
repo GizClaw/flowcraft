@@ -7,7 +7,7 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/model"
 )
 
-func TestBufferMemory_Load(t *testing.T) {
+func TestBuffer_Load(t *testing.T) {
 	store := NewInMemoryStore()
 	ctx := context.Background()
 
@@ -17,8 +17,8 @@ func TestBufferMemory_Load(t *testing.T) {
 	}
 	_ = store.SaveMessages(ctx, "c1", msgs)
 
-	buf := NewBufferMemory(store, 3)
-	loaded, err := buf.Load(ctx, "c1")
+	buf := NewBuffer(store, WithBufferMax(3))
+	loaded, err := buf.Load(ctx, "c1", Budget{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -27,26 +27,26 @@ func TestBufferMemory_Load(t *testing.T) {
 	}
 }
 
-func TestBufferMemory_DefaultMaxMessages(t *testing.T) {
-	buf := NewBufferMemory(NewInMemoryStore(), 0)
+func TestBuffer_DefaultMaxMessages(t *testing.T) {
+	buf := NewBuffer(NewInMemoryStore()).(*buffer)
 	if buf.maxMessages != 50 {
 		t.Fatalf("expected 50, got %d", buf.maxMessages)
 	}
 }
 
-func TestBufferMemory_SaveAndClear(t *testing.T) {
+func TestBuffer_SaveAndClear(t *testing.T) {
 	store := NewInMemoryStore()
 	ctx := context.Background()
-	buf := NewBufferMemory(store, 10)
+	buf := NewBuffer(store, WithBufferMax(10))
 
 	_ = buf.Append(ctx, "c1", []model.Message{model.NewTextMessage(model.RoleUser, "hi")})
-	loaded, _ := buf.Load(ctx, "c1")
+	loaded, _ := buf.Load(ctx, "c1", Budget{})
 	if len(loaded) != 1 {
 		t.Fatal("expected 1 message")
 	}
 
 	_ = buf.Clear(ctx, "c1")
-	loaded, _ = buf.Load(ctx, "c1")
+	loaded, _ = buf.Load(ctx, "c1", Budget{})
 	if len(loaded) != 0 {
 		t.Fatal("expected 0 after clear")
 	}

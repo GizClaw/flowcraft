@@ -13,25 +13,60 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/retrieval/pipeline"
 )
 
-// Memory is the long-term-memory facade.
+// Memory is the long-term-memory facade — the read/write contract every
+// recall implementation must satisfy.
 //
 // All write paths are scope-validated; all read paths apply the
 // scope-derived namespace + agent/expiry filter. Implementations are
 // safe for concurrent use.
+//
+// Audit (History / Rollback) and async job control (JobStatus /
+// AwaitJob) are exposed through the optional [Auditable] and
+// [JobController] sub-interfaces, not here, so alternative Memory
+// implementations (e.g. an in-memory test double) do not have to
+// implement them. Callers that need those capabilities type-assert:
+//
+//	if jc, ok := mem.(recall.JobController); ok { … }
 type Memory interface {
+	// Save extracts facts from msgs and writes them synchronously.
 	Save(ctx context.Context, scope Scope, msgs []llm.Message) (SaveResult, error)
+
+	// SaveAsync enqueues extraction on the configured JobQueue and
+	// returns immediately.
 	SaveAsync(ctx context.Context, scope Scope, msgs []llm.Message) (JobID, error)
-	JobStatus(ctx context.Context, id JobID) (JobStatus, error)
-	AwaitJob(ctx context.Context, id JobID, timeout time.Duration) (JobStatus, error)
 
-	AddRaw(ctx context.Context, scope Scope, e Entry) (string, error)
-	Recall(ctx context.Context, scope Scope, req RecallRequest) ([]RecallHit, error)
+	// Add inserts one pre-built Entry verbatim. Returns the assigned
+	// entry ID (content-addressable when e.ID is empty).
+	Add(ctx context.Context, scope Scope, e Entry) (string, error)
 
-	History(ctx context.Context, scope Scope, entryID string) ([]journal.Event, error)
-	Rollback(ctx context.Context, scope Scope, entryID string, before time.Time) error
+	// Recall runs the configured retrieval pipeline against the
+	// scope-derived namespace.
+	Recall(ctx context.Context, scope Scope, req Request) ([]Hit, error)
+
+	// Forget hard-deletes one entry; journal (when configured)
+	// captures the reason.
 	Forget(ctx context.Context, scope Scope, entryID string, reason string) error
 
+	// Close stops async workers and the TTL sweeper; safe to call more
+	// than once.
 	Close() error
+}
+
+// Auditable is implemented by [Memory] flavours that persist a
+// [journal.Journal]. Callers must type-assert at construction time:
+//
+//	aud, ok := mem.(recall.Auditable)
+type Auditable interface {
+	History(ctx context.Context, scope Scope, entryID string) ([]journal.Event, error)
+	Rollback(ctx context.Context, scope Scope, entryID string, before time.Time) error
+}
+
+// JobController is implemented by [Memory] flavours that back
+// SaveAsync with an inspectable [JobQueue]. Callers type-assert at
+// construction time.
+type JobController interface {
+	JobStatus(ctx context.Context, id JobID) (JobStatus, error)
+	AwaitJob(ctx context.Context, id JobID, timeout time.Duration) (JobStatus, error)
 }
 
 // config is the resolved configuration of a Memory instance, populated
@@ -192,7 +227,7 @@ func WithAllowGlobal() Option { return func(c *config) { c.allowGlobal = true } 
 
 // WithTTLPolicy enables expiry on entries. The policy returns a
 // duration per entry; when expired entries are recalled they are
-// filtered unless the caller passes RecallRequest.WithStale = true.
+// filtered unless the caller passes Request.WithStale = true.
 func WithTTLPolicy(p TTLPolicy) Option { return func(c *config) { c.ttlPolicy = p } }
 
 // WithSweeper enables a background goroutine that hard-deletes expired
@@ -221,7 +256,10 @@ func WithLogger(fn func(string, ...any)) Option { return func(c *config) { c.log
 // the audit-trail APIs on [Memory].
 func WithJournal(j journal.Journal) Option { return func(c *config) { c.journal = j } }
 
-// lt is the canonical Memory implementation.
+// lt is the canonical Memory implementation. It satisfies the core
+// [Memory] contract plus the optional [Auditable] and [JobController]
+// sub-interfaces; callers that need the audit or job APIs obtain them
+// via type assertion on the Memory returned by [New].
 type lt struct {
 	cfg       config
 	idx       retrieval.Index
@@ -229,6 +267,12 @@ type lt struct {
 	stopCh    chan struct{}
 	wgWorkers sync.WaitGroup
 }
+
+var (
+	_ Memory        = (*lt)(nil)
+	_ Auditable     = (*lt)(nil)
+	_ JobController = (*lt)(nil)
+)
 
 // New constructs a Memory backed by idx. Caller must Close() on
 // shutdown. idx is a positional parameter because it is the only

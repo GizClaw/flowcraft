@@ -64,8 +64,8 @@ func TestBuildSummaryIndex_SingleNode(t *testing.T) {
 	if !strings.Contains(result, "seq 0-50") {
 		t.Fatal("missing seq range")
 	}
-	if !strings.Contains(result, "memory_expand") {
-		t.Fatal("missing memory_expand hint")
+	if !strings.Contains(result, "history_expand") {
+		t.Fatal("missing history_expand hint")
 	}
 }
 
@@ -118,9 +118,9 @@ func TestBuildSummaryIndex_BudgetTruncation(t *testing.T) {
 		})
 	}
 
-	result := BuildSummaryIndex(ctx, store, "conv1", 500)
+	result := BuildSummaryIndex(ctx, store, "conv1", 600)
 
-	if len(result) > 600 {
+	if len(result) > 700 {
 		t.Fatalf("result too long (%d chars), budget should limit it", len(result))
 	}
 	if !strings.Contains(result, "omitted") {

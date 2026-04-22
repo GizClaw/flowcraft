@@ -12,11 +12,14 @@ import (
 
 	"github.com/GizClaw/flowcraft/sdk/llm"
 	"github.com/GizClaw/flowcraft/sdk/recall"
+	"github.com/GizClaw/flowcraft/sdk/retrieval"
 	retmem "github.com/GizClaw/flowcraft/sdk/retrieval/memory"
 )
 
 // ---------------------------------------------------------------------------
-// Shared helpers ( Phase 3 — extraction goes through recall.Memory)
+// Shared helpers — integration tests drive recall.Memory as the public
+// surface; entry enumeration drops to retrieval.Index directly so we do
+// not re-export a Store abstraction from the recall package.
 // ---------------------------------------------------------------------------
 
 // expectedMemory describes one expected extraction result (soft-match).
@@ -25,10 +28,9 @@ type expectedMemory struct {
 	mustContain []string
 }
 
-func newLTM(t *testing.T, l llm.LLM) (recall.Memory, *recall.RetrievalStore) {
+func newLTM(t *testing.T, l llm.LLM) (recall.Memory, retrieval.Index) {
 	t.Helper()
 	idx := retmem.New()
-	store := recall.NewRetrievalStore(idx)
 	mem, err := recall.New(idx,
 		recall.WithLLM(l),
 		recall.WithExtractMode(recall.ModeAdditive),
@@ -37,19 +39,43 @@ func newLTM(t *testing.T, l llm.LLM) (recall.Memory, *recall.RetrievalStore) {
 	if err != nil {
 		t.Fatalf("recall.New: %v", err)
 	}
-	return mem, store
+	return mem, idx
+}
+
+// listEntries enumerates everything recall.Memory.Save has written for
+// the given scope by going straight to the backing retrieval.Index.
+// Tests use this instead of Memory.Recall when they need the full set
+// (no TopK truncation, no ranker bias).
+func listEntries(t *testing.T, idx retrieval.Index, scope recall.Scope) []recall.Entry {
+	t.Helper()
+	ns := recall.NamespaceFor(scope)
+	var out []recall.Entry
+	var token string
+	for {
+		resp, err := idx.List(context.Background(), ns, retrieval.ListRequest{PageToken: token, PageSize: 100})
+		if err != nil {
+			t.Fatalf("list %s: %v", ns, err)
+		}
+		for _, d := range resp.Items {
+			out = append(out, recall.DocToEntry(d))
+		}
+		if resp.NextPageToken == "" {
+			break
+		}
+		token = resp.NextPageToken
+	}
+	return out
 }
 
 // checkExtractions verifies that stored entries satisfy expectations.
 func checkExtractions(
 	t *testing.T,
-	store recall.Store,
+	idx retrieval.Index,
 	scope recall.Scope,
 	expects []expectedMemory,
 ) (hits, misses int, extras []string) {
 	t.Helper()
-	ctx := context.Background()
-	all, _ := store.List(ctx, scope.RuntimeID, recall.ListOptions{Limit: 100, Scope: &scope})
+	all := listEntries(t, idx, scope)
 
 	byCat := make(map[recall.Category][]string)
 	for _, e := range all {
@@ -172,7 +198,7 @@ func TestExtractQuality(t *testing.T) {
 
 			for _, tc := range cases {
 				t.Run(tc.name, func(t *testing.T) {
-					mem, store := newLTM(t, provider)
+					mem, idx := newLTM(t, provider)
 					defer mem.Close()
 
 					ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -183,11 +209,10 @@ func TestExtractQuality(t *testing.T) {
 						t.Fatalf("Save failed: %v", err)
 					}
 
-					hits, misses, extras := checkExtractions(t, store, scope, tc.expects)
+					hits, misses, extras := checkExtractions(t, idx, scope, tc.expects)
 					t.Logf("hits=%d misses=%d extras=%v", hits, misses, extras)
 
-					all, _ := store.List(ctx, "test-rt", recall.ListOptions{Limit: 50, Scope: &scope})
-					for _, e := range all {
+					for _, e := range listEntries(t, idx, scope) {
 						t.Logf("  [%s] %s (kw: %v)", e.Category, e.Content, e.Keywords)
 					}
 				})
@@ -204,7 +229,7 @@ func TestDeduplicationQuality(t *testing.T) {
 	for _, spec := range providers {
 		t.Run(spec.Provider, func(t *testing.T) {
 			provider := createProvider(t, spec)
-			mem, store := newLTM(t, provider)
+			mem, idx := newLTM(t, provider)
 			defer mem.Close()
 
 			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -212,12 +237,14 @@ func TestDeduplicationQuality(t *testing.T) {
 
 			scope := recall.Scope{RuntimeID: "test-rt", UserID: "u1"}
 
-			_ = store.Save(ctx, "test-rt", &recall.Entry{
+			if _, err := mem.Add(ctx, scope, recall.Entry{
 				Category: recall.CategoryProfile,
 				Content:  "User is a Go backend developer",
 				Keywords: []string{"go", "backend", "developer"},
 				Scope:    scope,
-			})
+			}); err != nil {
+				t.Fatalf("seed Add: %v", err)
+			}
 
 			if _, err := mem.Save(ctx, scope, []llm.Message{
 				llm.NewTextMessage(llm.RoleUser, "I'm a Go developer working on backend services"),
@@ -226,14 +253,19 @@ func TestDeduplicationQuality(t *testing.T) {
 				t.Fatalf("Save failed: %v", err)
 			}
 
-			entries, _ := store.List(ctx, "test-rt", recall.ListOptions{Category: recall.CategoryProfile, Limit: 50, Scope: &scope})
-			t.Logf("profile entries after dedup: %d", len(entries))
-			for _, e := range entries {
+			var profile []recall.Entry
+			for _, e := range listEntries(t, idx, scope) {
+				if e.Category == recall.CategoryProfile {
+					profile = append(profile, e)
+				}
+			}
+			t.Logf("profile entries after dedup: %d", len(profile))
+			for _, e := range profile {
 				t.Logf("  [%s] id=%s content=%q", e.Category, e.ID, e.Content)
 			}
 
-			if len(entries) > 4 {
-				t.Errorf("expected at most 4 profile entries, got %d — dedup may have failed", len(entries))
+			if len(profile) > 4 {
+				t.Errorf("expected at most 4 profile entries, got %d — dedup may have failed", len(profile))
 			}
 		})
 	}
@@ -310,7 +342,7 @@ Only return the JSON object, nothing else.`
 					ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 					defer cancel()
 
-					mem, store := newLTM(t, provider)
+					mem, idx := newLTM(t, provider)
 					defer mem.Close()
 
 					scope := recall.Scope{RuntimeID: "test-rt", UserID: "u1"}
@@ -318,7 +350,7 @@ Only return the JSON object, nothing else.`
 						t.Fatalf("Seed save failed: %v", err)
 					}
 
-					extracted, _ := store.List(ctx, "test-rt", recall.ListOptions{Limit: 50, Scope: &scope})
+					extracted := listEntries(t, idx, scope)
 					t.Logf("extracted %d entries:", len(extracted))
 					for _, e := range extracted {
 						t.Logf("  [%s] %s", e.Category, e.Content)
@@ -338,7 +370,7 @@ Only return the JSON object, nothing else.`
 					}
 					answerA := respA.Content()
 
-					hits, err := mem.Recall(ctx, scope, recall.RecallRequest{
+					hits, err := mem.Recall(ctx, scope, recall.Request{
 						Query: tc.followUpQuery,
 						TopK:  10,
 					})

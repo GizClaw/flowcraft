@@ -9,7 +9,7 @@ import (
 )
 
 func TestMemoryExpandTool_NoConversationID(t *testing.T) {
-	tool := newMemoryExpandTool(ToolDeps{})
+	tool := newHistoryExpandTool(ToolDeps{})
 	_, err := tool.Execute(context.Background(), `{"summary_id":"n1"}`)
 	if err == nil || !strings.Contains(err.Error(), "no conversation ID") {
 		t.Fatalf("expected no conversation ID error, got: %v", err)
@@ -17,10 +17,10 @@ func TestMemoryExpandTool_NoConversationID(t *testing.T) {
 }
 
 func TestMemoryCompactTool_Definition(t *testing.T) {
-	tool := newMemoryCompactTool(ToolDeps{})
+	tool := newHistoryCompactTool(ToolDeps{})
 	def := tool.Definition()
-	if def.Name != "memory_compact" {
-		t.Fatalf("expected name memory_compact, got %s", def.Name)
+	if def.Name != "history_compact" {
+		t.Fatalf("expected name history_compact, got %s", def.Name)
 	}
 }
 

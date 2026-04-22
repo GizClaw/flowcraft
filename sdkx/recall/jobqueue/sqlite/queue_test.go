@@ -122,7 +122,11 @@ func TestEndToEndWithLTM(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	st, err := m.AwaitJob(ctx, id, 5*time.Second)
+	jc, ok := m.(recall.JobController)
+	if !ok {
+		t.Fatalf("recall.Memory does not implement JobController")
+	}
+	st, err := jc.AwaitJob(ctx, id, 5*time.Second)
 	if err != nil {
 		t.Fatalf("await: %v", err)
 	}

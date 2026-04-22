@@ -1,44 +1,53 @@
 package history
 
-import "testing"
+import (
+	"context"
+	"testing"
 
-func TestNewWithLLM_NilLLMDegradesToBuffer(t *testing.T) {
-	mem, err := NewWithLLM(Config{}, nil, nil)
+	"github.com/GizClaw/flowcraft/sdk/model"
+	"github.com/GizClaw/flowcraft/sdk/workspace"
+)
+
+func TestNewBuffer_Defaults(t *testing.T) {
+	mem := NewBuffer(NewInMemoryStore())
+	if mem == nil {
+		t.Fatal("NewBuffer returned nil")
+	}
+	ctx := context.Background()
+	if err := mem.Append(ctx, "c1", []model.Message{model.NewTextMessage(model.RoleUser, "hello")}); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	msgs, err := mem.Load(ctx, "c1", Budget{})
+	if err != nil || len(msgs) != 1 {
+		t.Fatalf("Load: %v len=%d", err, len(msgs))
+	}
+}
+
+func TestNewBuffer_WithMaxApplies(t *testing.T) {
+	mem := NewBuffer(NewInMemoryStore(), WithBufferMax(2))
+	ctx := context.Background()
+	for i := 0; i < 5; i++ {
+		if err := mem.Append(ctx, "c", []model.Message{model.NewTextMessage(model.RoleUser, "m")}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	msgs, _ := mem.Load(ctx, "c", Budget{})
+	if len(msgs) != 2 {
+		t.Fatalf("expected tail truncation to 2, got %d", len(msgs))
+	}
+}
+
+func TestNewCompacted_SmokeBoots(t *testing.T) {
+	ws, err := workspace.NewLocalWorkspace(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := mem.(*BufferMemory); !ok {
-		t.Fatal("expected BufferMemory fallback when LLM is nil")
+	mem := NewCompacted(NewInMemoryStore(), &mockSummaryLLM{}, ws, WithStoragePrefix("hst"))
+	if mem == nil {
+		t.Fatal("NewCompacted returned nil")
 	}
-}
-
-func TestNewWithLLM_DeprecatedTypeStillWorks(t *testing.T) {
-	for _, typ := range []string{"buffer", "window", "summary", "token"} {
-		mem, err := NewWithLLM(Config{Type: typ}, nil, nil)
-		if err != nil {
-			t.Fatalf("type %q: %v", typ, err)
-		}
-		if _, ok := mem.(*BufferMemory); !ok {
-			t.Fatalf("type %q: expected BufferMemory fallback when LLM is nil", typ)
-		}
-	}
-}
-
-func TestNewWithLLM_NilWorkspaceDegradesToBuffer(t *testing.T) {
-	ml := &mockSummaryLLM{}
-	// LLM provided but no workspace → should fall back to buffer.
-	mem, err := NewWithLLM(Config{}, nil, ml)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, ok := mem.(*BufferMemory); !ok {
-		t.Fatal("expected BufferMemory fallback when workspace is nil")
-	}
-}
-
-func TestConfigDefaults(t *testing.T) {
-	cfg := Config{}
-	if cfg.maxMessages() != 50 {
-		t.Fatalf("expected 50, got %d", cfg.maxMessages())
+	ctx := context.Background()
+	if err := mem.Append(ctx, "c", []model.Message{model.NewTextMessage(model.RoleUser, "hi")}); err != nil {
+		t.Fatalf("Append: %v", err)
 	}
 }

@@ -7,8 +7,10 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/model"
 )
 
-// BufferMemory keeps the last N messages.
-type BufferMemory struct {
+// buffer is the tail-truncation implementation of [Memory]. It is
+// unexported on purpose: callers construct it via [NewBuffer] and
+// consume it through [Memory].
+type buffer struct {
 	store       Store
 	maxMessages int
 
@@ -16,35 +18,61 @@ type BufferMemory struct {
 	locks map[string]*sync.Mutex
 }
 
-// NewBufferMemory creates a buffer memory with a maximum message count.
-func NewBufferMemory(store Store, maxMessages int) *BufferMemory {
-	if maxMessages <= 0 {
-		maxMessages = 50
-	}
-	return &BufferMemory{
-		store:       store,
-		maxMessages: maxMessages,
-		locks:       make(map[string]*sync.Mutex),
+// BufferOption customizes a [Memory] built by [NewBuffer].
+type BufferOption func(*buffer)
+
+// WithBufferMax sets the maximum message count kept in the returned
+// [Memory]. Must be > 0; values ≤ 0 are ignored and the default (50) is
+// kept.
+func WithBufferMax(n int) BufferOption {
+	return func(b *buffer) {
+		if n > 0 {
+			b.maxMessages = n
+		}
 	}
 }
 
-func (m *BufferMemory) Load(ctx context.Context, conversationID string) ([]model.Message, error) {
+// NewBuffer returns a [Memory] that keeps the most recent messages for
+// each conversation up to a cap (default 50; override with
+// [WithBufferMax]).
+//
+// It is the simplest Memory implementation — appends concatenate, loads
+// truncate. Use it for short sessions, tests, and examples; switch to
+// [NewCompacted] when a conversation needs to outgrow a single context
+// window.
+func NewBuffer(store Store, opts ...BufferOption) Memory {
+	b := &buffer{
+		store:       store,
+		maxMessages: 50,
+		locks:       make(map[string]*sync.Mutex),
+	}
+	for _, opt := range opts {
+		opt(b)
+	}
+	return b
+}
+
+func (m *buffer) Load(ctx context.Context, conversationID string, budget Budget) ([]model.Message, error) {
+	limit := m.maxMessages
+	if budget.MaxMessages > 0 && budget.MaxMessages < limit {
+		limit = budget.MaxMessages
+	}
 	if recent, ok := m.store.(RecentReader); ok {
-		return recent.GetRecentMessages(ctx, conversationID, m.maxMessages)
+		return recent.GetRecentMessages(ctx, conversationID, limit)
 	}
 	msgs, err := m.store.GetMessages(ctx, conversationID)
 	if err != nil {
 		return nil, err
 	}
-	if len(msgs) > m.maxMessages {
-		msgs = msgs[len(msgs)-m.maxMessages:]
+	if len(msgs) > limit {
+		msgs = msgs[len(msgs)-limit:]
 	}
 	return msgs, nil
 }
 
 // Append persists newMessages, serializing concurrent calls per conversation
 // so a read-modify-write fallback path can never lose data.
-func (m *BufferMemory) Append(ctx context.Context, conversationID string, newMessages []model.Message) error {
+func (m *buffer) Append(ctx context.Context, conversationID string, newMessages []model.Message) error {
 	if len(newMessages) == 0 {
 		return nil
 	}
@@ -68,14 +96,14 @@ func (m *BufferMemory) Append(ctx context.Context, conversationID string, newMes
 	return m.store.SaveMessages(ctx, conversationID, combined)
 }
 
-func (m *BufferMemory) Clear(ctx context.Context, conversationID string) error {
+func (m *buffer) Clear(ctx context.Context, conversationID string) error {
 	mu := m.convMu(conversationID)
 	mu.Lock()
 	defer mu.Unlock()
 	return m.store.DeleteMessages(ctx, conversationID)
 }
 
-func (m *BufferMemory) convMu(convID string) *sync.Mutex {
+func (m *buffer) convMu(convID string) *sync.Mutex {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	mu, ok := m.locks[convID]

@@ -25,7 +25,7 @@ func TestCompactArchive_Integration_LongConversation(t *testing.T) {
 	cfg.Archive.ArchiveBatchSize = 20
 
 	dag := NewSummaryDAG(summaryStore, store, ml, cfg, &EstimateCounter{})
-	mem := NewLosslessMemory(store, dag, cfg, ws, "memory")
+	mem := newCompacted(store, dag, cfg, ws, "memory")
 
 	ctx := context.Background()
 	convID := "integration-long"
@@ -77,7 +77,7 @@ func TestCompactArchive_Integration_LongConversation(t *testing.T) {
 	}
 
 	// Verify Load returns assembled context.
-	loaded, err := mem.Load(ctx, convID)
+	loaded, err := mem.Load(ctx, convID, Budget{})
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -134,7 +134,7 @@ func TestCompactArchive_ManualCompact(t *testing.T) {
 	remaining, _ := summaryStore.ListAll(ctx, convID)
 	for _, n := range remaining {
 		if n.Depth == 0 && (n.ID == d0IDs[3] || n.ID == d0IDs[4]) {
-			if n.Content == "[pruned — use memory_expand to load originals]" {
+			if n.Content == "[pruned — use history_expand to load originals]" {
 				t.Fatalf("d0 without parent should NOT be pruned: %s", n.ID)
 			}
 		}
@@ -173,7 +173,7 @@ func TestCompactArchive_ArchiveAndExpand(t *testing.T) {
 		Content: "summary", EarliestSeq: 10, LatestSeq: 20,
 	})
 
-	expandTool := newMemoryExpandTool(ToolDeps{
+	expandTool := newHistoryExpandTool(ToolDeps{
 		SummaryStore: summaryStore, MessageStore: store,
 		Workspace: ws, Prefix: "memory",
 	})

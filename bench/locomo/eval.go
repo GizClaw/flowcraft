@@ -183,7 +183,7 @@ func Run(ctx context.Context, r runners.Runner, ds *dataset.Dataset, opts Option
 //     the recalled memories (closed-book QA over LTM).
 //   - otherwise              → cheap fallback: concatenate top-3 hits, so
 //     EM/F1 still surface a "did retrieval find the right text" signal.
-func buildPrediction(ctx context.Context, opts Options, query string, hits []recall.RecallHit) (string, error) {
+func buildPrediction(ctx context.Context, opts Options, query string, hits []recall.Hit) (string, error) {
 	if opts.AnswerLLM == nil {
 		return composePrediction(hits), nil
 	}
@@ -203,7 +203,7 @@ func buildPrediction(ctx context.Context, opts Options, query string, hits []rec
 
 // buildAnswerBody renders the "Q + MEMORIES" block fed into the QA prompt.
 // Top-k memories are listed as bullets; ordering matches RecallHit ranking.
-func buildAnswerBody(query string, hits []recall.RecallHit) string {
+func buildAnswerBody(query string, hits []recall.Hit) string {
 	var b strings.Builder
 	b.WriteString("QUESTION: ")
 	b.WriteString(query)
@@ -223,7 +223,7 @@ func buildAnswerBody(query string, hits []recall.RecallHit) string {
 // composePrediction concatenates the top-3 hit contents — the "answer" we feed
 // to EM/F1/Judge when no AnswerLLM is configured. Cheap, deterministic, and
 // good enough to surface "did retrieval find the right text" without an API key.
-func composePrediction(hits []recall.RecallHit) string {
+func composePrediction(hits []recall.Hit) string {
 	if len(hits) == 0 {
 		return ""
 	}
@@ -241,7 +241,7 @@ func composePrediction(hits []recall.RecallHit) string {
 	return b.String()
 }
 
-func evidenceKHit(hits []recall.RecallHit, want []string) float64 {
+func evidenceKHit(hits []recall.Hit, want []string) float64 {
 	if len(want) == 0 {
 		return 0
 	}

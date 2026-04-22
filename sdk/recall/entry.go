@@ -1,7 +1,6 @@
 package recall
 
 import (
-	"context"
 	"sync"
 	"time"
 )
@@ -164,79 +163,6 @@ type Source struct {
 	RuntimeID      string    `json:"runtime_id,omitempty"`
 	ConversationID string    `json:"conversation_id,omitempty"`
 	Timestamp      time.Time `json:"timestamp,omitempty"`
-}
-
-// Store is the persistence interface for runtime-scoped long-term memory.
-type Store interface {
-	Save(ctx context.Context, runtimeID string, entry *Entry) error
-	List(ctx context.Context, runtimeID string, opts ListOptions) ([]*Entry, error)
-	Search(ctx context.Context, runtimeID string, query string, opts SearchOptions) ([]*Entry, error)
-	Update(ctx context.Context, runtimeID string, entry *Entry) error
-	Delete(ctx context.Context, runtimeID, entryID string) error
-}
-
-// ListOptions configures listing of long-term memory entries. Scope is the
-// single source of truth for both filtering and partition selection — set
-// Scope.Partitions when you need to override the auto-derived behavior
-// (see [Scope.EffectivePartitions]).
-type ListOptions struct {
-	Category Category
-	Limit    int
-	Scope    *Scope
-}
-
-// SearchOptions configures search of long-term memory entries. The Scope
-// contract matches [ListOptions].
-type SearchOptions struct {
-	Category  Category
-	TopK      int
-	Threshold float64
-	Scope     *Scope
-	// QueryVector, when non-nil, is passed directly to the store implementation,
-	// allowing the caller to pre-compute the embedding once and share it across
-	// multiple category searches. Stores that do not support vector search ignore it.
-	QueryVector []float32
-}
-
-// Embedder computes vector embeddings from text.
-type Embedder interface {
-	Embed(ctx context.Context, text string) ([]float32, error)
-}
-
-// VectorSearcher performs similarity search over pre-indexed vectors.
-type VectorSearcher interface {
-	SearchByVector(ctx context.Context, runtimeID string, vec []float32, opts SearchOptions) ([]*Entry, error)
-}
-
-// DefaultGlobalCategories names the categories whose entries are stored
-// in the runtime-global bucket regardless of caller scope. Callers
-// constructing their own context-injection layer can use it as a sane
-// default for which categories should be shared across users.
-func DefaultGlobalCategories() []Category {
-	return []Category{CategoryProfile, CategoryPreferences, CategoryCases, CategoryPatterns}
-}
-
-func isGlobalCategory(cat Category, global []Category) bool {
-	if len(global) == 0 {
-		global = DefaultGlobalCategories()
-	}
-	for _, g := range global {
-		if g == cat {
-			return true
-		}
-	}
-	return false
-}
-
-// NormalizeScopeForCategory returns the scope under which an entry of
-// category cat should be persisted. Global categories collapse UserID
-// to "" so the entry lands in the shared bucket.
-func NormalizeScopeForCategory(cat Category, in Scope, global []Category) Scope {
-	out := in
-	if isGlobalCategory(cat, global) {
-		out.UserID = ""
-	}
-	return out
 }
 
 // EntryMatchesScope reports whether e satisfies the persistence and

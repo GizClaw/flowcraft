@@ -11,7 +11,7 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/workspace"
 )
 
-// ToolDeps holds dependencies for memory tools.
+// ToolDeps holds dependencies for history tools.
 type ToolDeps struct {
 	SummaryStore SummaryStore
 	MessageStore Store
@@ -20,54 +20,55 @@ type ToolDeps struct {
 	Config       DAGConfig
 }
 
-// RegisterTools registers memory_expand and memory_compact.
-// Summary index is now auto-injected into the LLM system prompt via
-// workflow.VarSummaryIndex board variable, so memory_search is no longer needed.
+// RegisterTools registers history_expand and history_compact. The
+// summary index is auto-injected into the LLM system prompt via the
+// workflow.VarSummaryIndex board variable, so a separate
+// history_search tool is not needed.
 func RegisterTools(registry *tool.Registry, deps ToolDeps) {
-	registry.Register(newMemoryExpandTool(deps))
-	registry.RegisterWithScope(newMemoryCompactTool(deps), tool.ScopePlatform)
+	registry.Register(newHistoryExpandTool(deps))
+	registry.RegisterWithScope(newHistoryCompactTool(deps), tool.ScopePlatform)
 }
 
-// --- memory_expand ---
+// --- history_expand ---
 
-type memoryExpandTool struct {
+type historyExpandTool struct {
 	deps ToolDeps
 }
 
-func newMemoryExpandTool(deps ToolDeps) tool.Tool {
-	return &memoryExpandTool{deps: deps}
+func newHistoryExpandTool(deps ToolDeps) tool.Tool {
+	return &historyExpandTool{deps: deps}
 }
 
-func (t *memoryExpandTool) Definition() model.ToolDefinition {
-	return tool.DefineSchema("memory_expand",
+func (t *historyExpandTool) Definition() model.ToolDefinition {
+	return tool.DefineSchema("history_expand",
 		"Expand a compressed summary to see the original messages or finer-grained summaries it was derived from.",
 		tool.Property("summary_id", "string", "The ID of the summary to expand"),
 		tool.PropertyWithDefault("max_messages", "integer", "Maximum original messages to return", 20),
 	).Required("summary_id").Build()
 }
 
-func (t *memoryExpandTool) Execute(ctx context.Context, arguments string) (string, error) {
+func (t *historyExpandTool) Execute(ctx context.Context, arguments string) (string, error) {
 	var args struct {
 		SummaryID   string `json:"summary_id"`
 		MaxMessages int    `json:"max_messages"`
 	}
 	args.MaxMessages = 20
 	if err := json.Unmarshal([]byte(arguments), &args); err != nil {
-		return "", fmt.Errorf("memory_expand: parse args: %w", err)
+		return "", fmt.Errorf("history_expand: parse args: %w", err)
 	}
 
 	convID := ConversationIDFrom(ctx)
 	if convID == "" {
-		return "", fmt.Errorf("memory_expand: no conversation ID in context")
+		return "", fmt.Errorf("history_expand: no conversation ID in context")
 	}
 
 	if t.deps.SummaryStore == nil {
-		return "", fmt.Errorf("memory_expand: summary store not available")
+		return "", fmt.Errorf("history_expand: summary store not available")
 	}
 
 	node, err := t.deps.SummaryStore.GetByConvID(ctx, convID, args.SummaryID)
 	if err != nil {
-		return "", fmt.Errorf("memory_expand: %w", err)
+		return "", fmt.Errorf("history_expand: %w", err)
 	}
 
 	if node.Depth > 0 {
@@ -86,7 +87,7 @@ func (t *memoryExpandTool) Execute(ctx context.Context, arguments string) (strin
 	return t.expandLeaf(ctx, convID, node, args.MaxMessages)
 }
 
-func (t *memoryExpandTool) expandLeaf(ctx context.Context, convID string, node *SummaryNode, maxMsgs int) (string, error) {
+func (t *historyExpandTool) expandLeaf(ctx context.Context, convID string, node *SummaryNode, maxMsgs int) (string, error) {
 	startSeq := node.EarliestSeq
 	endSeq := node.LatestSeq + 1
 
@@ -150,7 +151,7 @@ func (t *memoryExpandTool) expandLeaf(ctx context.Context, convID string, node *
 	// Final fallback: get all messages and slice.
 	msgs, err := t.deps.MessageStore.GetMessages(ctx, convID)
 	if err != nil {
-		return "", fmt.Errorf("memory_expand: get messages: %w", err)
+		return "", fmt.Errorf("history_expand: get messages: %w", err)
 	}
 	if startSeq < len(msgs) {
 		end := endSeq
@@ -188,18 +189,18 @@ func formatChildSummaries(children []*SummaryNode) string {
 	return b.String()
 }
 
-// --- memory_compact ---
+// --- history_compact ---
 
-type memoryCompactTool struct {
+type historyCompactTool struct {
 	deps ToolDeps
 }
 
-func newMemoryCompactTool(deps ToolDeps) tool.Tool {
-	return &memoryCompactTool{deps: deps}
+func newHistoryCompactTool(deps ToolDeps) tool.Tool {
+	return &historyCompactTool{deps: deps}
 }
 
-func (t *memoryCompactTool) Definition() model.ToolDefinition {
-	return tool.DefineSchema("memory_compact",
+func (t *historyCompactTool) Definition() model.ToolDefinition {
+	return tool.DefineSchema("history_compact",
 		"Manually trigger compact and archive for a conversation's memory DAG.",
 		tool.Property("conversation_id", "string", "The conversation ID to compact/archive"),
 		tool.PropertyWithDefault("compact", "boolean", "Run DAG compact", true),
@@ -207,14 +208,14 @@ func (t *memoryCompactTool) Definition() model.ToolDefinition {
 	).Required("conversation_id").Build()
 }
 
-func (t *memoryCompactTool) Execute(ctx context.Context, arguments string) (string, error) {
+func (t *historyCompactTool) Execute(ctx context.Context, arguments string) (string, error) {
 	var args struct {
 		ConversationID string `json:"conversation_id"`
 		Compact        *bool  `json:"compact"`
 		Archive        *bool  `json:"archive"`
 	}
 	if err := json.Unmarshal([]byte(arguments), &args); err != nil {
-		return "", fmt.Errorf("memory_compact: parse args: %w", err)
+		return "", fmt.Errorf("history_compact: parse args: %w", err)
 	}
 
 	doCompact := args.Compact == nil || *args.Compact
@@ -236,7 +237,7 @@ func (t *memoryCompactTool) Execute(ctx context.Context, arguments string) (stri
 		}
 		cr, err := dag.Compact(ctx, args.ConversationID)
 		if err != nil {
-			return "", fmt.Errorf("memory_compact: compact: %w", err)
+			return "", fmt.Errorf("history_compact: compact: %w", err)
 		}
 		res.CompactResult = &cr
 	}
@@ -244,7 +245,7 @@ func (t *memoryCompactTool) Execute(ctx context.Context, arguments string) (stri
 	if doArchive && t.deps.Workspace != nil && t.deps.MessageStore != nil {
 		ar, err := Archive(ctx, t.deps.Workspace, t.deps.MessageStore, t.deps.Prefix, args.ConversationID, cfg.Archive)
 		if err != nil {
-			return "", fmt.Errorf("memory_compact: archive: %w", err)
+			return "", fmt.Errorf("history_compact: archive: %w", err)
 		}
 		res.ArchiveResult = &ar
 	}

@@ -25,7 +25,7 @@ import (
 type Runner interface {
 	Name() string
 	Save(ctx context.Context, scope recall.Scope, msgs []llm.Message) (saveCount int, saveLatency time.Duration, err error)
-	Recall(ctx context.Context, scope recall.Scope, query string, topK int) (hits []recall.RecallHit, recallLatency time.Duration, err error)
+	Recall(ctx context.Context, scope recall.Scope, query string, topK int) (hits []recall.Hit, recallLatency time.Duration, err error)
 	Close() error
 }
 

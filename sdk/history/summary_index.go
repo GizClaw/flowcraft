@@ -77,7 +77,7 @@ func formatSummaryIndex(nodes []*SummaryNode, budget int) string {
 		budget = 1500
 	}
 
-	const header = "## Conversation Summary\n\nBelow are compressed summaries of earlier conversation. To view the original messages, call memory_expand(summary_id=ID).\n\n"
+	const header = "## Conversation Summary\n\nBelow are compressed summaries of earlier conversation. To view the original messages, call history_expand(summary_id=ID).\n\n"
 
 	lines := make([]string, len(nodes))
 	for i, n := range nodes {

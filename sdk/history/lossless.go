@@ -20,16 +20,20 @@ const (
 	defaultArchiveTimeout = 60 * time.Second
 )
 
-// LosslessMemory implements the Memory interface with lossless context management.
-// All original messages are persisted; a DAG of summaries provides compressed
-// context windows while allowing on-demand expansion.
+// compacted is the DAG-summarization implementation of [Memory]. It is
+// unexported on purpose: callers construct it via [NewCompacted] and
+// consume it through the [Memory] interface. The "compacted" name
+// reflects what the implementation actually does — archive + leaf
+// prune discard data on disk in exchange for context-window budget;
+// the previous "lossless" name was aspirational.
 //
-// Concurrency model: every Append acquires a per-conversation lock and then
-// schedules background DAG ingest + archive on a goroutine. Because the
-// per-conversation lock serializes Appends for the same conversationID,
-// no two background workers race on the same DAG; cross-conversation
-// background work runs in parallel without artificial bounds.
-type LosslessMemory struct {
+// Concurrency model: every Append acquires a per-conversation lock and
+// then schedules background DAG ingest + archive on a goroutine.
+// Because the per-conversation lock serializes Appends for the same
+// conversationID, no two background workers race on the same DAG;
+// cross-conversation background work runs in parallel without
+// artificial bounds.
+type compacted struct {
 	store  Store
 	dag    *SummaryDAG
 	config DAGConfig
@@ -41,9 +45,8 @@ type LosslessMemory struct {
 	wg    sync.WaitGroup
 }
 
-// NewLosslessMemory creates a new LosslessMemory.
-func NewLosslessMemory(store Store, dag *SummaryDAG, config DAGConfig, ws workspace.Workspace, prefix string) *LosslessMemory {
-	return &LosslessMemory{
+func newCompacted(store Store, dag *SummaryDAG, config DAGConfig, ws workspace.Workspace, prefix string) *compacted {
+	return &compacted{
 		store:  store,
 		dag:    dag,
 		config: config,
@@ -53,8 +56,19 @@ func NewLosslessMemory(store Store, dag *SummaryDAG, config DAGConfig, ws worksp
 	}
 }
 
-func (m *LosslessMemory) Load(ctx context.Context, conversationID string) ([]model.Message, error) {
-	return m.dag.Assemble(ctx, conversationID, m.config.TokenBudget)
+func (m *compacted) Load(ctx context.Context, conversationID string, budget Budget) ([]model.Message, error) {
+	tokenBudget := m.config.TokenBudget
+	if budget.MaxTokens > 0 && (tokenBudget == 0 || budget.MaxTokens < tokenBudget) {
+		tokenBudget = budget.MaxTokens
+	}
+	msgs, err := m.dag.Assemble(ctx, conversationID, tokenBudget)
+	if err != nil {
+		return nil, err
+	}
+	if budget.MaxMessages > 0 && len(msgs) > budget.MaxMessages {
+		msgs = msgs[len(msgs)-budget.MaxMessages:]
+	}
+	return msgs, nil
 }
 
 // Append persists newMessages and asynchronously ingests them into the
@@ -76,7 +90,7 @@ func (m *LosslessMemory) Load(ctx context.Context, conversationID string) ([]mod
 //     load. Per-conversation serialization means the only contention is
 //     between successive Appends for the same conversation, which is
 //     naturally bounded; we just wg.Add them and let the workers run.
-func (m *LosslessMemory) Append(ctx context.Context, conversationID string, newMessages []model.Message) error {
+func (m *compacted) Append(ctx context.Context, conversationID string, newMessages []model.Message) error {
 	if len(newMessages) == 0 {
 		return nil
 	}
@@ -123,7 +137,7 @@ func (m *LosslessMemory) Append(ctx context.Context, conversationID string, newM
 // persistAppend writes newMessages to the underlying store and returns the
 // 0-based sequence number where the first new message lives. Caller must
 // hold the per-conversation lock.
-func (m *LosslessMemory) persistAppend(ctx context.Context, conversationID string, newMessages []model.Message) (int, error) {
+func (m *compacted) persistAppend(ctx context.Context, conversationID string, newMessages []model.Message) (int, error) {
 	if appender, ok := m.store.(MessageAppender); ok {
 		// We still need the prior count for the DAG sequence. Stores that
 		// support AppendMessages typically also support reading the count
@@ -152,7 +166,7 @@ func (m *LosslessMemory) persistAppend(ctx context.Context, conversationID strin
 	return len(existing), nil
 }
 
-func (m *LosslessMemory) Clear(ctx context.Context, conversationID string) error {
+func (m *compacted) Clear(ctx context.Context, conversationID string) error {
 	convMu := m.convMu(conversationID)
 	convMu.Lock()
 	defer convMu.Unlock()
@@ -164,12 +178,12 @@ func (m *LosslessMemory) Clear(ctx context.Context, conversationID string) error
 }
 
 // Close waits for all pending async ingest/archive goroutines to complete.
-func (m *LosslessMemory) Close() {
+func (m *compacted) Close() {
 	m.wg.Wait()
 }
 
 // Archive manually triggers archiving for this conversation.
-func (m *LosslessMemory) Archive(ctx context.Context, conversationID string) (ArchiveResult, error) {
+func (m *compacted) Archive(ctx context.Context, conversationID string) (ArchiveResult, error) {
 	if m.ws == nil {
 		return ArchiveResult{}, nil
 	}
@@ -179,7 +193,7 @@ func (m *LosslessMemory) Archive(ctx context.Context, conversationID string) (Ar
 	return Archive(ctx, m.ws, m.store, m.prefix, conversationID, m.config.Archive)
 }
 
-func (m *LosslessMemory) convMu(convID string) *sync.Mutex {
+func (m *compacted) convMu(convID string) *sync.Mutex {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	mu, ok := m.locks[convID]

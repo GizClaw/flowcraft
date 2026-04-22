@@ -82,7 +82,7 @@ func (m *lt) gatherExistingFacts(ctx context.Context, scope Scope, msgs []llm.Me
 	if q == "" {
 		return nil
 	}
-	hits, err := m.Recall(ctx, scope, RecallRequest{
+	hits, err := m.Recall(ctx, scope, Request{
 		Query: q,
 		TopK:  m.cfg.saveCtxTopK,
 	})
@@ -151,8 +151,10 @@ func (m *lt) SaveAsync(ctx context.Context, scope Scope, msgs []llm.Message) (Jo
 	return m.cfg.jobQueue.Enqueue(ctx, ns, JobPayload{Scope: scope, Messages: msgs})
 }
 
-// AddRaw bypasses extraction and writes one entry.
-func (m *lt) AddRaw(ctx context.Context, scope Scope, e Entry) (string, error) {
+// Add bypasses extraction and writes one entry verbatim. The returned
+// string is the assigned entry ID (content-addressable when the caller
+// leaves Entry.ID empty).
+func (m *lt) Add(ctx context.Context, scope Scope, e Entry) (string, error) {
 	if err := m.validateScope(scope); err != nil {
 		return "", err
 	}
@@ -161,7 +163,7 @@ func (m *lt) AddRaw(ctx context.Context, scope Scope, e Entry) (string, error) {
 		e.ID = deterministicEntryID(scope, nil, 0, e.Content+"|"+now.Format(time.RFC3339Nano))
 	}
 	if e.Content == "" {
-		return "", errors.New("ltm: AddRaw: content is required")
+		return "", errors.New("recall: Add: content is required")
 	}
 	if e.CreatedAt.IsZero() {
 		e.CreatedAt = now

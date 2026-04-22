@@ -138,7 +138,7 @@ func renderExistingFacts(facts []string) string {
 // AdditiveExtractor is the default single-pass extractor.
 //
 // When LLM is nil, Extract returns an empty slice; callers should treat
-// AddRaw as the only ingestion path — useful for tests and bench runners
+// Add as the only ingestion path — useful for tests and bench runners
 // that need to populate LTM verbatim without spinning up an LLM client.
 type AdditiveExtractor struct {
 	LLM              llm.LLM

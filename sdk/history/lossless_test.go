@@ -27,12 +27,12 @@ func (m *mockSummaryLLM) GenerateStream(_ context.Context, _ []llm.Message, _ ..
 	return nil, nil
 }
 
-func TestLosslessMemory_SaveAndLoad(t *testing.T) {
+func TestCompacted_SaveAndLoad(t *testing.T) {
 	store := NewInMemoryStore()
 	summaryStore := &inMemSummaryStore{data: make(map[string][]*SummaryNode)}
 	ml := &mockSummaryLLM{}
 	dag := NewSummaryDAG(summaryStore, store, ml, DefaultDAGConfig(), &EstimateCounter{})
-	mem := NewLosslessMemory(store, dag, DefaultDAGConfig(), nil, "")
+	mem := newCompacted(store, dag, DefaultDAGConfig(), nil, "")
 
 	ctx := context.Background()
 	convID := "test-conv-1"
@@ -50,7 +50,7 @@ func TestLosslessMemory_SaveAndLoad(t *testing.T) {
 	// Wait for async ingest.
 	time.Sleep(200 * time.Millisecond)
 
-	loaded, err := mem.Load(ctx, convID)
+	loaded, err := mem.Load(ctx, convID, Budget{})
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -65,12 +65,12 @@ func TestLosslessMemory_SaveAndLoad(t *testing.T) {
 	}
 }
 
-func TestLosslessMemory_Clear(t *testing.T) {
+func TestCompacted_Clear(t *testing.T) {
 	store := NewInMemoryStore()
 	summaryStore := &inMemSummaryStore{data: make(map[string][]*SummaryNode)}
 	ml := &mockSummaryLLM{}
 	dag := NewSummaryDAG(summaryStore, store, ml, DefaultDAGConfig(), &EstimateCounter{})
-	mem := NewLosslessMemory(store, dag, DefaultDAGConfig(), nil, "")
+	mem := newCompacted(store, dag, DefaultDAGConfig(), nil, "")
 
 	ctx := context.Background()
 	convID := "test-clear"
@@ -84,7 +84,7 @@ func TestLosslessMemory_Clear(t *testing.T) {
 		t.Fatalf("Clear: %v", err)
 	}
 
-	loaded, err := mem.Load(ctx, convID)
+	loaded, err := mem.Load(ctx, convID, Budget{})
 	if err != nil {
 		t.Fatalf("Load after clear: %v", err)
 	}
@@ -174,12 +174,12 @@ func (s *inMemSummaryStore) Rewrite(_ context.Context, convID string, nodes []*S
 	return nil
 }
 
-func TestLosslessMemory_CloseWaitsForAsync(t *testing.T) {
+func TestCompacted_CloseWaitsForAsync(t *testing.T) {
 	store := NewInMemoryStore()
 	summaryStore := &inMemSummaryStore{data: make(map[string][]*SummaryNode)}
 	ml := &mockSummaryLLM{}
 	dag := NewSummaryDAG(summaryStore, store, ml, DefaultDAGConfig(), &EstimateCounter{})
-	mem := NewLosslessMemory(store, dag, DefaultDAGConfig(), nil, "")
+	mem := newCompacted(store, dag, DefaultDAGConfig(), nil, "")
 
 	ctx := context.Background()
 
@@ -220,17 +220,17 @@ func TestLosslessMemory_CloseWaitsForAsync(t *testing.T) {
 	}
 }
 
-// TestLosslessMemory_NoIngestDrop pins down the post-refactor invariant:
+// TestCompacted_NoIngestDrop pins down the post-refactor invariant:
 // fast successive Appends across many conversations must NOT silently drop
 // any DAG ingest. The old semaphore-bounded implementation could skip
 // ingests under load (telemetry warned, but the summarized history quietly
 // shrank); the new per-conversation goroutine model has no such ceiling.
-func TestLosslessMemory_NoIngestDrop(t *testing.T) {
+func TestCompacted_NoIngestDrop(t *testing.T) {
 	store := NewInMemoryStore()
 	summaryStore := &inMemSummaryStore{data: make(map[string][]*SummaryNode)}
 	slowLLM := &slowMockLLM{delay: 50 * time.Millisecond}
 	dag := NewSummaryDAG(summaryStore, store, slowLLM, DefaultDAGConfig(), &EstimateCounter{})
-	mem := NewLosslessMemory(store, dag, DefaultDAGConfig(), nil, "")
+	mem := newCompacted(store, dag, DefaultDAGConfig(), nil, "")
 
 	ctx := context.Background()
 	msgs := []llm.Message{

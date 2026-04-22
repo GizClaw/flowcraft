@@ -59,7 +59,7 @@ func TestSaveExtractsAdditiveFacts(t *testing.T) {
 	if len(res.EntryIDs) != 1 {
 		t.Fatalf("entry_ids=%v", res.EntryIDs)
 	}
-	hits, err := m.Recall(ctx, newScope(), recall.RecallRequest{Query: "咖啡", TopK: 5})
+	hits, err := m.Recall(ctx, newScope(), recall.Request{Query: "咖啡", TopK: 5})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -93,7 +93,7 @@ func TestSaveIdempotentByDocID(t *testing.T) {
 	if r1.EntryIDs[0] != r2.EntryIDs[0] {
 		t.Fatalf("ids drift: %s vs %s", r1.EntryIDs[0], r2.EntryIDs[0])
 	}
-	hits, _ := m.Recall(ctx, scope, recall.RecallRequest{Query: "coffee", TopK: 5})
+	hits, _ := m.Recall(ctx, scope, recall.Request{Query: "coffee", TopK: 5})
 	if len(hits) != 1 {
 		t.Fatalf("expected dedup via idempotent upsert, got %d", len(hits))
 	}
@@ -117,15 +117,15 @@ func TestAddRawAndAgentFilter(t *testing.T) {
 	m, _ := recall.New(idx, recall.WithRequireUserID())
 	defer m.Close()
 	scope := newScope()
-	if _, err := m.AddRaw(ctx, scope, recall.Entry{Content: "raw fact for bot1", Categories: []string{"profile"}}); err != nil {
+	if _, err := m.Add(ctx, scope, recall.Entry{Content: "raw fact for bot1", Categories: []string{"profile"}}); err != nil {
 		t.Fatal(err)
 	}
 	other := scope
 	other.AgentID = "other-bot"
-	if _, err := m.AddRaw(ctx, other, recall.Entry{Content: "raw fact for other bot", Categories: []string{"profile"}}); err != nil {
+	if _, err := m.Add(ctx, other, recall.Entry{Content: "raw fact for other bot", Categories: []string{"profile"}}); err != nil {
 		t.Fatal(err)
 	}
-	hits, err := m.Recall(ctx, scope, recall.RecallRequest{Query: "raw fact", TopK: 5})
+	hits, err := m.Recall(ctx, scope, recall.Request{Query: "raw fact", TopK: 5})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -145,25 +145,25 @@ func TestTTLSoftFilter(t *testing.T) {
 	defer m.Close()
 	scope := newScope()
 	past := now.Add(-time.Second)
-	if _, err := m.AddRaw(ctx, scope, recall.Entry{
+	if _, err := m.Add(ctx, scope, recall.Entry{
 		Content: "expired memory", Categories: []string{"episodic"}, ExpiresAt: &past,
 	}); err != nil {
 		t.Fatal(err)
 	}
 	future := now.Add(24 * time.Hour)
-	if _, err := m.AddRaw(ctx, scope, recall.Entry{
+	if _, err := m.Add(ctx, scope, recall.Entry{
 		Content: "active memory", Categories: []string{"episodic"}, ExpiresAt: &future,
 	}); err != nil {
 		t.Fatal(err)
 	}
-	hits, err := m.Recall(ctx, scope, recall.RecallRequest{Query: "memory", TopK: 5})
+	hits, err := m.Recall(ctx, scope, recall.Request{Query: "memory", TopK: 5})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(hits) != 1 || !strings.Contains(hits[0].Entry.Content, "active") {
 		t.Fatalf("expected only active memory, got %+v", hits)
 	}
-	hitsAll, _ := m.Recall(ctx, scope, recall.RecallRequest{Query: "memory", TopK: 5, WithStale: true})
+	hitsAll, _ := m.Recall(ctx, scope, recall.Request{Query: "memory", TopK: 5, WithStale: true})
 	if len(hitsAll) != 2 {
 		t.Fatalf("WithStale expected 2, got %d", len(hitsAll))
 	}
@@ -181,7 +181,7 @@ func TestSweeperPhysicalDelete(t *testing.T) {
 	defer m.Close()
 	scope := newScope()
 	past := now.Add(-time.Second)
-	id, err := m.AddRaw(ctx, scope, recall.Entry{Content: "old", Categories: []string{"episodic"}, ExpiresAt: &past})
+	id, err := m.Add(ctx, scope, recall.Entry{Content: "old", Categories: []string{"episodic"}, ExpiresAt: &past})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -216,7 +216,11 @@ func TestAsyncSaveAndAwait(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	st, err := m.AwaitJob(ctx, id, 5*time.Second)
+	jc, ok := m.(recall.JobController)
+	if !ok {
+		t.Fatalf("recall.Memory does not implement JobController")
+	}
+	st, err := jc.AwaitJob(ctx, id, 5*time.Second)
 	if err != nil {
 		t.Fatalf("await: %v", err)
 	}
@@ -236,12 +240,16 @@ func TestHistoryAndRollback(t *testing.T) {
 	defer m.Close()
 	scope := newScope()
 	t1 := time.Now()
-	id, _ := m.AddRaw(ctx, scope, recall.Entry{Content: "v1", Categories: []string{"profile"}, CreatedAt: t1, UpdatedAt: t1})
+	id, _ := m.Add(ctx, scope, recall.Entry{Content: "v1", Categories: []string{"profile"}, CreatedAt: t1, UpdatedAt: t1})
 	time.Sleep(10 * time.Millisecond)
 	t2 := time.Now()
-	_, _ = m.AddRaw(ctx, scope, recall.Entry{ID: id, Content: "v2", Categories: []string{"profile"}, CreatedAt: t2, UpdatedAt: t2})
+	_, _ = m.Add(ctx, scope, recall.Entry{ID: id, Content: "v2", Categories: []string{"profile"}, CreatedAt: t2, UpdatedAt: t2})
 
-	events, err := m.History(ctx, scope, id)
+	aud, ok := m.(recall.Auditable)
+	if !ok {
+		t.Fatalf("recall.Memory does not implement Auditable")
+	}
+	events, err := aud.History(ctx, scope, id)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -249,10 +257,10 @@ func TestHistoryAndRollback(t *testing.T) {
 		t.Fatalf("history len=%d", len(events))
 	}
 
-	if err := m.Rollback(ctx, scope, id, t1.Add(5*time.Millisecond)); err != nil {
+	if err := aud.Rollback(ctx, scope, id, t1.Add(5*time.Millisecond)); err != nil {
 		t.Fatal(err)
 	}
-	hits, _ := m.Recall(ctx, scope, recall.RecallRequest{Query: "v1", TopK: 5})
+	hits, _ := m.Recall(ctx, scope, recall.Request{Query: "v1", TopK: 5})
 	if len(hits) != 1 || hits[0].Entry.Content != "v1" {
 		t.Fatalf("rollback failed: %+v", hits)
 	}
@@ -264,11 +272,11 @@ func TestForget(t *testing.T) {
 	m, _ := recall.New(idx, recall.WithRequireUserID())
 	defer m.Close()
 	scope := newScope()
-	id, _ := m.AddRaw(ctx, scope, recall.Entry{Content: "forget me", Categories: []string{"episodic"}})
+	id, _ := m.Add(ctx, scope, recall.Entry{Content: "forget me", Categories: []string{"episodic"}})
 	if err := m.Forget(ctx, scope, id, "user_request"); err != nil {
 		t.Fatal(err)
 	}
-	hits, _ := m.Recall(ctx, scope, recall.RecallRequest{Query: "forget", TopK: 5})
+	hits, _ := m.Recall(ctx, scope, recall.Request{Query: "forget", TopK: 5})
 	if len(hits) != 0 {
 		t.Fatalf("expected forgotten, got %+v", hits)
 	}
