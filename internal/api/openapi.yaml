@@ -13,6 +13,13 @@ info:
       • `GET  /healthz`               — root-level alias of `/api/healthz`
       • `GET  /api/admin/audit`       — admin audit log query (RBAC: super admin)
       • `GET  /api/admin/audit/{seq}` — single audit entry (RBAC: super admin)
+      • `GET  /api/admin/projection/status`                          — projector health snapshot (RBAC: super admin)
+      • `GET  /api/admin/projection/dead-letters`                    — list unresolved DLT rows (RBAC: super admin)
+      • `POST /api/admin/projection/dead-letters/{id}/replay`        — re-apply a DLT envelope (RBAC: super admin)
+      • `GET  /api/admin/webhooks/deliveries`                        — webhook outbound delivery aggregation (RBAC: super admin)
+      • `POST /api/admin/webhooks/deliveries/{id}/replay`            — manually retry a delivery (RBAC: super admin)
+      • `GET  /api/events/latest-seq`                                — current global max envelope seq
+      • `GET  /api/events/stream`                                    — SSE envelope stream (Last-Event-ID resume)
 
     Everything else is generated from this file. Run `make generate` after edits;
     CI verifies that `internal/api/oas/**` and `web/src/api/schema.d.ts` are in
@@ -258,6 +265,12 @@ paths:
     post:
       operationId: resumeStream
       tags: [chat]
+      deprecated: true
+      description: |
+        DEPRECATED (R5): superseded by `GET /api/events?partition=card:<id>&since=<seq>`
+        envelope subscription combined with the existing approval-decision command
+        endpoints. Kept only for the in-flight HITL approval flow until the chat UI
+        finishes migrating to the EnvelopeClient.
       requestBody:
         required: true
         content:
@@ -356,6 +369,12 @@ paths:
     get:
       operationId: getWorkflowRunEvents
       tags: [workflows]
+      deprecated: true
+      description: |
+        DEPRECATED (R5): superseded by
+        `GET /api/events?partition=runtime:<id>&since=<seq>` envelope pull.
+        Returns ExecutionEvent rows from the legacy execution_events table; new
+        consumers should subscribe to the runtime partition instead.
       parameters:
         - $ref: "#/components/parameters/RunID"
       responses:

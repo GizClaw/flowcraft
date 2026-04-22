@@ -72,12 +72,12 @@ func (h *webhookOutboundHeap) Pop() any {
 
 // Options bundles the optional knobs of a sender.
 type Options struct {
-	HTTPClient            *http.Client
-	SSRF                  *SSRFGuard
-	SecretLookup          EndpointSecretLookup // nil => no HMAC signing
-	PerEndpointConcurrency int                 // 0 => 4
-	TickInterval          time.Duration        // 0 => 500ms
-	MaxBodyBytes          int64                // 0 => 1 MiB
+	HTTPClient             *http.Client
+	SSRF                   *SSRFGuard
+	SecretLookup           EndpointSecretLookup // nil => no HMAC signing
+	PerEndpointConcurrency int                  // 0 => 4
+	TickInterval           time.Duration        // 0 => 500ms
+	MaxBodyBytes           int64                // 0 => 1 MiB
 }
 
 // WebhookOutboundSender delivers outbound webhooks. It implements
@@ -486,6 +486,73 @@ func computeBackoff(attempt int, initialMs int) time.Duration {
 }
 
 // Stop signals the run loop to exit.
+// ReplayDelivery requeues a delivery_id at the head of the heap (NotBefore=now)
+// using the most recent queued envelope as the source of truth for URL/Method/
+// Body. Used by /api/admin/webhooks/deliveries/{id}/replay to manually retry
+// an exhausted delivery; if the delivery is unknown an error is returned.
+func (s *WebhookOutboundSender) ReplayDelivery(ctx context.Context, deliveryID string) error {
+	queued, err := s.findQueuedAcrossEndpoints(ctx, deliveryID)
+	if err != nil {
+		return err
+	}
+	if queued == nil {
+		return fmt.Errorf("webhook_outbound: delivery %q not found", deliveryID)
+	}
+	maxAttempts := queued.MaxAttempts
+	if maxAttempts <= 0 {
+		maxAttempts = 5
+	}
+	s.mu.Lock()
+	for i, it := range s.heap {
+		if it.DeliveryID == deliveryID {
+			s.heap[i].NotBefore = time.Now()
+			s.heap[i].Attempt = 1
+			heap.Fix(&s.heap, i)
+			s.mu.Unlock()
+			return nil
+		}
+	}
+	heap.Push(&s.heap, &scheduledItem{
+		DeliveryID:  deliveryID,
+		EndpointID:  queued.EndpointID,
+		URL:         queued.URL,
+		Method:      queued.Method,
+		Headers:     queued.Headers,
+		Body:        queued.Body,
+		MaxAttempts: maxAttempts,
+		Attempt:     1,
+		NotBefore:   time.Now(),
+	})
+	s.mu.Unlock()
+	return nil
+}
+
+// findQueuedAcrossEndpoints scans the global event log (capped to 5000 most
+// recent envelopes) for the latest webhook.outbound.queued whose delivery_id
+// matches. The bounded scan keeps replay cheap; older envelopes that have
+// rolled off the operational retention window cannot be replayed.
+func (s *WebhookOutboundSender) findQueuedAcrossEndpoints(ctx context.Context, deliveryID string) (*eventlog.WebhookOutboundQueuedPayload, error) {
+	const window = 5000
+	res, err := s.log.ReadAll(ctx, eventlog.SinceBeginning, window)
+	if err != nil {
+		return nil, err
+	}
+	for i := len(res.Events) - 1; i >= 0; i-- {
+		env := res.Events[i]
+		if env.Type != eventlog.EventTypeWebhookOutboundQueued {
+			continue
+		}
+		var p eventlog.WebhookOutboundQueuedPayload
+		if err := json.Unmarshal(env.Payload, &p); err != nil {
+			continue
+		}
+		if p.DeliveryID == deliveryID {
+			return &p, nil
+		}
+	}
+	return nil, nil
+}
+
 // PendingForTest returns a snapshot of the heap (delivery_id -> attempt).
 // Test-only helper used to assert restart-restore correctness.
 func (s *WebhookOutboundSender) PendingForTest() map[string]int32 {

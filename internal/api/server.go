@@ -18,6 +18,7 @@ import (
 	"github.com/GizClaw/flowcraft/internal/gateway"
 	"github.com/GizClaw/flowcraft/internal/model"
 	"github.com/GizClaw/flowcraft/internal/platform"
+	"github.com/GizClaw/flowcraft/internal/policy"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/telemetry"
 
@@ -41,12 +42,45 @@ type ServerConfig struct {
 
 // ServerDeps holds all dependencies for the API server.
 type ServerDeps struct {
-	Platform   *platform.Platform
-	Gateway    GatewayIntegration
-	PluginDir  string
-	Monitoring MonitoringConfig
-	EventLog   *eventlog.SQLiteLog
-	AuditCmds  *auditcmd.Commands
+	Platform           *platform.Platform
+	Gateway            GatewayIntegration
+	PluginDir          string
+	Monitoring         MonitoringConfig
+	EventLog           *eventlog.SQLiteLog
+	AuditCmds          *auditcmd.Commands
+	Policy             policy.Policy
+	ProjectionStatus   ProjectionStatusProbe
+	ProjectionReplayer ProjectionReplayer
+	WebhookReplayer    WebhookReplayer
+}
+
+// ProjectionStatusProbe is the read side of projection.Manager that
+// /api/admin/projection/status uses. Defined here so handler_admin_projection
+// doesn't import the projection package (avoids cycle through wiring).
+type ProjectionStatusProbe interface {
+	Status() []ProjectorStatusSnapshot
+}
+
+// ProjectionReplayer drives DLT replays.
+type ProjectionReplayer interface {
+	ReplayEvent(ctx context.Context, log eventlog.Log, projectorName string, env eventlog.Envelope) error
+}
+
+// WebhookReplayer reschedules a previously failed/exhausted webhook delivery.
+type WebhookReplayer interface {
+	ReplayDelivery(ctx context.Context, deliveryID string) error
+}
+
+// ProjectorStatusSnapshot is the projector status snapshot the handler exposes
+// (mirrors projection.ProjectorStatus by structure, not by import).
+type ProjectorStatusSnapshot struct {
+	Name                string
+	CheckpointSeq       int64
+	LatestSeq           int64
+	Lag                 int64
+	Ready               bool
+	ConsecutiveFailures int
+	LastError           string
 }
 
 // MonitoringConfig holds monitoring threshold settings.
@@ -125,6 +159,18 @@ func NewServer(cfg ServerConfig, deps ServerDeps, jwtCfg *JWTConfig) *Server {
 	if s.deps.EventLog != nil {
 		mux.HandleFunc("GET /api/admin/audit", s.handleAdminAuditList)
 		mux.HandleFunc("GET /api/admin/audit/{seq}", s.handleAdminAuditGet)
+	}
+
+	// R5 admin endpoints (projection + webhook delivery introspection).
+	mux.HandleFunc("GET /api/admin/projection/status", s.handleAdminProjectionStatus)
+	if s.deps.EventLog != nil {
+		mux.HandleFunc("GET /api/admin/projection/dead-letters", s.handleAdminDeadLettersList)
+		mux.HandleFunc("POST /api/admin/projection/dead-letters/{id}/replay", s.handleAdminDeadLetterReplay)
+		mux.HandleFunc("GET /api/admin/webhooks/deliveries", s.handleAdminWebhookDeliveries)
+		mux.HandleFunc("POST /api/admin/webhooks/deliveries/{id}/replay", s.handleAdminWebhookReplay)
+		mux.HandleFunc("GET /api/events/latest-seq", s.handleEventsLatestSeq)
+		mux.HandleFunc("GET /api/events/stream", s.handleEventsSSE)
+		mux.HandleFunc("GET /api/events/ws", s.handleEventsWS)
 	}
 
 	// SPA fallback: method-agnostic "/" is less specific than "/api/" in all

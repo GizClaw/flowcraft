@@ -37,11 +37,11 @@ func (p *AuditProjector) Subscribes() []string {
 }
 
 func (p *AuditProjector) RestoreMode() projection.RestoreMode { return projection.RestoreReplay }
-func (p *AuditProjector) OnReady(context.Context) error        { return nil }
+func (p *AuditProjector) OnReady(context.Context) error       { return nil }
 
 // AuditProjector does not use snapshots.
-func (p *AuditProjector) SnapshotFormatVersion() int                  { return 0 }
-func (p *AuditProjector) SnapshotEvery() (int64, time.Duration)     { return 0, 0 }
+func (p *AuditProjector) SnapshotFormatVersion() int            { return 0 }
+func (p *AuditProjector) SnapshotEvery() (int64, time.Duration) { return 0, 0 }
 func (p *AuditProjector) Snapshot(context.Context) (int64, []byte, error) {
 	return 0, nil, nil
 }

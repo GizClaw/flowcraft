@@ -206,7 +206,9 @@ func Run(ctx context.Context) (*platform.Platform, *api.Server, func(), error) {
 		pluginDir = filepath.Join(workspaceRoot, "plugins")
 	}
 
-	server := wireHTTP(cfg, plat, gw, jwtCfg, pluginDir, eventLog, auditCmds)
+	server := wireHTTP(cfg, plat, gw, jwtCfg, pluginDir, eventLog, auditCmds,
+		nil, // Policy not currently wired; SSE/admin endpoints fall back to OAuth-only checks.
+		projMgr, r4webhookSender(r4))
 
 	// --- realm callbacks ---
 	var schedOnce sync.Once

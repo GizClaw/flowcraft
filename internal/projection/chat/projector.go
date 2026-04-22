@@ -73,14 +73,16 @@ func NewChatProjector(log eventlog.Log) *ChatProjector {
 
 func (p *ChatProjector) Name() string                        { return ProjectorName }
 func (p *ChatProjector) Subscribes() []string                { return SubscribedEvents }
-func (p *ChatProjector) RestoreMode() projection.RestoreMode     { return projection.RestoreSnapshot }
-func (p *ChatProjector) OnReady(context.Context) error        { return nil }
+func (p *ChatProjector) RestoreMode() projection.RestoreMode { return projection.RestoreSnapshot }
+func (p *ChatProjector) OnReady(context.Context) error       { return nil }
 
 // SnapshotFormatVersion is bumped whenever the snapshot payload structure changes.
 const SnapshotFormatVersion = 1
 
-func (p *ChatProjector) SnapshotFormatVersion() int                            { return SnapshotFormatVersion }
-func (p *ChatProjector) SnapshotEvery() (int64, time.Duration)                 { return projection.DefaultSnapshotEveryEvents, projection.DefaultSnapshotEveryPeriod }
+func (p *ChatProjector) SnapshotFormatVersion() int { return SnapshotFormatVersion }
+func (p *ChatProjector) SnapshotEvery() (int64, time.Duration) {
+	return projection.DefaultSnapshotEveryEvents, projection.DefaultSnapshotEveryPeriod
+}
 
 // Snapshot returns the current cursor and encoded snapshot payload.
 func (p *ChatProjector) Snapshot(ctx context.Context) (int64, []byte, error) {
@@ -91,9 +93,9 @@ func (p *ChatProjector) Snapshot(ctx context.Context) (int64, []byte, error) {
 		OwnerUserID      string
 		Messages         []Message
 		PendingCallbacks map[string]*Callback
-		LastMessageAt   time.Time
-		MessageCount    int
-		DeltaSeq        int64
+		LastMessageAt    time.Time
+		MessageCount     int
+		DeltaSeq         int64
 	}
 	convos := make(map[string]*snapConvo, len(p.convos))
 	for id, c := range p.convos {
@@ -104,7 +106,7 @@ func (p *ChatProjector) Snapshot(ctx context.Context) (int64, []byte, error) {
 			PendingCallbacks: c.PendingCallbacks,
 			LastMessageAt:    c.LastMessageAt,
 			MessageCount:     c.MessageCount,
-			DeltaSeq:        c.DeltaSeq,
+			DeltaSeq:         c.DeltaSeq,
 		}
 	}
 	cardMap := make(map[string]string, len(p.byCard))
@@ -136,9 +138,9 @@ func (p *ChatProjector) LoadSnapshot(_ context.Context, _ int64, payload []byte)
 		OwnerUserID      string
 		Messages         []Message
 		PendingCallbacks map[string]*Callback
-		LastMessageAt   time.Time
-		MessageCount    int
-		DeltaSeq        int64
+		LastMessageAt    time.Time
+		MessageCount     int
+		DeltaSeq         int64
 	}
 	data := struct {
 		Convos map[string]*snapConvo
@@ -158,7 +160,7 @@ func (p *ChatProjector) LoadSnapshot(_ context.Context, _ int64, payload []byte)
 			PendingCallbacks: sc.PendingCallbacks,
 			LastMessageAt:    sc.LastMessageAt,
 			MessageCount:     sc.MessageCount,
-			DeltaSeq:        sc.DeltaSeq,
+			DeltaSeq:         sc.DeltaSeq,
 		}
 	}
 	p.byCard = make(map[string]string, len(data.ByCard))

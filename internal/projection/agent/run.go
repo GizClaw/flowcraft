@@ -17,13 +17,13 @@ const RunProjectorName = "agent_run"
 
 // RunState tracks the lifecycle state of an agent run per card.
 type RunState struct {
-	CardID       string
-	RunID        string
-	StartedAt    time.Time
-	CompletedAt  time.Time
-	FailedAt     time.Time
-	Error        string
-	LastSeq      int64
+	CardID      string
+	RunID       string
+	StartedAt   time.Time
+	CompletedAt time.Time
+	FailedAt    time.Time
+	Error       string
+	LastSeq     int64
 }
 
 // AgentRunProjector tracks agent run lifecycle events per card.
@@ -45,12 +45,12 @@ func NewAgentRunProjector(log eventlog.Log) *AgentRunProjector {
 	}
 }
 
-func (p *AgentRunProjector) Name() string                         { return RunProjectorName }
+func (p *AgentRunProjector) Name() string { return RunProjectorName }
 func (p *AgentRunProjector) Subscribes() []string {
 	return []string{"agent.run.started", "agent.run.completed", "agent.run.failed"}
 }
 func (p *AgentRunProjector) RestoreMode() projection.RestoreMode { return projection.RestoreReplay }
-func (p *AgentRunProjector) OnReady(context.Context) error    { return nil }
+func (p *AgentRunProjector) OnReady(context.Context) error       { return nil }
 
 // AgentRunProjector uses snapshots for efficient restart.
 func (p *AgentRunProjector) SnapshotFormatVersion() int { return 1 }

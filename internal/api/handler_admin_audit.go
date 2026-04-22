@@ -12,16 +12,16 @@ import (
 )
 
 type auditEntryDTO struct {
-	Seq          int64             `json:"seq"`
-	Type         string            `json:"type"`
-	ActorID      string            `json:"actor_id,omitempty"`
-	ActorKind    string            `json:"actor_kind,omitempty"`
-	ActorRealmID string            `json:"actor_realm_id,omitempty"`
-	Actor        json.RawMessage   `json:"actor,omitempty"`
-	Ts           string            `json:"ts"`
-	Partition    string            `json:"partition,omitempty"`
-	TraceID      string            `json:"trace_id,omitempty"`
-	Summary      string            `json:"summary"`
+	Seq          int64           `json:"seq"`
+	Type         string          `json:"type"`
+	ActorID      string          `json:"actor_id,omitempty"`
+	ActorKind    string          `json:"actor_kind,omitempty"`
+	ActorRealmID string          `json:"actor_realm_id,omitempty"`
+	Actor        json.RawMessage `json:"actor,omitempty"`
+	Ts           string          `json:"ts"`
+	Partition    string          `json:"partition,omitempty"`
+	TraceID      string          `json:"trace_id,omitempty"`
+	Summary      string          `json:"summary"`
 }
 
 type auditListResponse struct {

@@ -66,7 +66,7 @@ func TestWebhookOutboundSender_ApplyScheduledRecoversFromQueued(t *testing.T) {
 		Type:      queued.Type,
 		Version:   1,
 		Category:  "business",
-		Payload:   eventlog.WebhookOutboundQueuedPayload{
+		Payload: eventlog.WebhookOutboundQueuedPayload{
 			DeliveryID:  "d-2",
 			EndpointID:  "ep-2",
 			URL:         "https://example.com/y",

@@ -19,37 +19,37 @@ const DeltaTailSize = 200
 
 // ToolInvocation records a single tool call and its result.
 type ToolInvocation struct {
-	CallID   string
-	ToolName string
-	Args     string
-	Output   string
-	Error    string
+	CallID     string
+	ToolName   string
+	Args       string
+	Output     string
+	Error      string
 	DurationMs int64
-	Seq      int64
+	Seq        int64
 }
 
 // Trace tracks the in-memory trace for a single card run.
 type Trace struct {
-	CardID       string
-	RunID        string
-	Tools        []ToolInvocation
-	DeltaTail    []DeltaSnippet // last N deltas
-	DeltaSeq     int64
-	LastUpdated  time.Time
+	CardID      string
+	RunID       string
+	Tools       []ToolInvocation
+	DeltaTail   []DeltaSnippet // last N deltas
+	DeltaSeq    int64
+	LastUpdated time.Time
 }
 
 // DeltaSnippet is a short delta for display.
 type DeltaSnippet struct {
-	Content   string
-	Role      string
-	Finished  bool
-	Seq       int64
+	Content  string
+	Role     string
+	Finished bool
+	Seq      int64
 }
 
 // AgentTraceProjector maintains in-memory agent trace read-models with a 24h window.
 type AgentTraceProjector struct {
-	log   eventlog.Log
-	mu    sync.RWMutex
+	log    eventlog.Log
+	mu     sync.RWMutex
 	traces map[string]*Trace // cardID → trace
 }
 
@@ -63,7 +63,7 @@ func NewAgentTraceProjector(log eventlog.Log) *AgentTraceProjector {
 	}
 }
 
-func (p *AgentTraceProjector) Name() string                         { return TraceProjectorName }
+func (p *AgentTraceProjector) Name() string { return TraceProjectorName }
 func (p *AgentTraceProjector) Subscribes() []string {
 	return []string{
 		"agent.stream.delta",
@@ -73,15 +73,15 @@ func (p *AgentTraceProjector) Subscribes() []string {
 	}
 }
 func (p *AgentTraceProjector) RestoreMode() projection.RestoreMode { return projection.RestoreWindow }
-func (p *AgentTraceProjector) WindowSize() time.Duration        { return 24 * time.Hour }
-func (p *AgentTraceProjector) OnReady(context.Context) error   { return nil }
+func (p *AgentTraceProjector) WindowSize() time.Duration           { return 24 * time.Hour }
+func (p *AgentTraceProjector) OnReady(context.Context) error       { return nil }
 
 // AgentTraceProjector does not use snapshots.
 func (p *AgentTraceProjector) SnapshotFormatVersion() int { return 0 }
 func (p *AgentTraceProjector) SnapshotEvery() (int64, time.Duration) {
 	return 0, 0
 }
-func (p *AgentTraceProjector) Snapshot(context.Context) (int64, []byte, error) { return 0, nil, nil }
+func (p *AgentTraceProjector) Snapshot(context.Context) (int64, []byte, error)   { return 0, nil, nil }
 func (p *AgentTraceProjector) LoadSnapshot(context.Context, int64, []byte) error { return nil }
 
 // Apply dispatches based on event type.
@@ -117,7 +117,7 @@ func (p *AgentTraceProjector) handleStreamDelta(ctx context.Context, uow eventlo
 	finished = raw.Finished
 	tail := append(trace.DeltaTail, DeltaSnippet{
 		Content:  payload.Delta,
-		Seq:     trace.DeltaSeq,
+		Seq:      trace.DeltaSeq,
 		Finished: finished,
 	})
 	if len(tail) > DeltaTailSize {
@@ -140,8 +140,8 @@ func (p *AgentTraceProjector) handleThinkingDelta(ctx context.Context, uow event
 	// thinking delta stored with role "assistant" for display purposes
 	tail := append(trace.DeltaTail, DeltaSnippet{
 		Content: payload.Delta,
-		Role:   "assistant",
-		Seq:    trace.DeltaSeq,
+		Role:    "assistant",
+		Seq:     trace.DeltaSeq,
 	})
 	if len(tail) > DeltaTailSize {
 		tail = tail[len(tail)-DeltaTailSize:]

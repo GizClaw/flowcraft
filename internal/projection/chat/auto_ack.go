@@ -23,9 +23,9 @@ type ChatAutoAckProjector struct {
 	timeout   time.Duration
 	chatProj  *ChatProjector
 	mu        sync.RWMutex
-	timers    map[string]*time.Timer  // callbackID → timer
-	timerSeqs map[string]int64        // callbackID → event seq when timer was set
-	convoIDs  map[string]string       // callbackID → conversation_id
+	timers    map[string]*time.Timer // callbackID → timer
+	timerSeqs map[string]int64       // callbackID → event seq when timer was set
+	convoIDs  map[string]string      // callbackID → conversation_id
 }
 
 var _ projection.Projector = (*ChatAutoAckProjector)(nil)
@@ -52,9 +52,9 @@ func (p *ChatAutoAckProjector) SetTimeout(d time.Duration) {
 	p.mu.Unlock()
 }
 
-func (p *ChatAutoAckProjector) Name() string    { return AutoAckProjectorName }
+func (p *ChatAutoAckProjector) Name() string                        { return AutoAckProjectorName }
 func (p *ChatAutoAckProjector) RestoreMode() projection.RestoreMode { return projection.RestoreWindow }
-func (p *ChatAutoAckProjector) WindowSize() time.Duration        { return 24 * time.Hour }
+func (p *ChatAutoAckProjector) WindowSize() time.Duration           { return 24 * time.Hour }
 func (p *ChatAutoAckProjector) Subscribes() []string {
 	return []string{"chat.callback.queued", "chat.callback.delivered", "chat.callback.dismissed"}
 }
@@ -65,7 +65,9 @@ func (p *ChatAutoAckProjector) SnapshotFormatVersion() int { return 0 }
 func (p *ChatAutoAckProjector) SnapshotEvery() (int64, time.Duration) {
 	return 0, 0
 }
-func (p *ChatAutoAckProjector) Snapshot(ctx context.Context) (int64, []byte, error) { return 0, nil, nil }
+func (p *ChatAutoAckProjector) Snapshot(ctx context.Context) (int64, []byte, error) {
+	return 0, nil, nil
+}
 func (p *ChatAutoAckProjector) LoadSnapshot(context.Context, int64, []byte) error { return nil }
 
 // Apply handles chat.callback.queued for status_update type auto-ack.

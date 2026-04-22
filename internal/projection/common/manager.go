@@ -272,6 +272,34 @@ func (m *Manager) Status() []ProjectorStatus {
 	return out
 }
 
+// ProjectorByName returns the registered Projector with the given name, or
+// nil if no projector exists. Used by admin endpoints to drive DLT replays.
+func (m *Manager) ProjectorByName(name string) Projector {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	n, ok := m.registry[name]
+	if !ok || n.kind != nodeProjector || n.runner == nil {
+		return nil
+	}
+	return n.runner.cfg.Projector
+}
+
+// ReplayEvent re-applies a single envelope to the named projector inside an
+// atomic transaction (mirroring what the runner does for live events). Used
+// by /api/admin/projection/dead-letters/{id}/replay to retry a previously
+// failed envelope. The caller is responsible for marking the dead_letters
+// row resolved on success.
+func (m *Manager) ReplayEvent(ctx context.Context, log eventlog.Log, projectorName string, env eventlog.Envelope) error {
+	p := m.ProjectorByName(projectorName)
+	if p == nil {
+		return fmt.Errorf("projection: unknown projector %q", projectorName)
+	}
+	_, err := log.Atomic(ctx, func(uow eventlog.UnitOfWork) error {
+		return p.Apply(ctx, uow, env)
+	})
+	return err
+}
+
 // ProjectorStatus describes the current status of a projector for /readyz.
 type ProjectorStatus struct {
 	Name                string
