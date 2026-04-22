@@ -1,6 +1,34 @@
 import { create } from 'zustand';
 import type { KanbanCard, KanbanEvent, CardStatus } from '../types/kanban';
 import type { ToolCallInfo } from '../types/chat';
+import type { Envelope } from '../eventlog/types';
+
+interface TaskSubmittedPayload {
+  card_id: string;
+  runtime_id: string;
+  target_agent_id?: string;
+  query?: string;
+  inputs?: Record<string, unknown>;
+}
+interface TaskClaimedPayload {
+  card_id: string;
+  runtime_id: string;
+  target_agent_id?: string;
+}
+interface TaskCompletedPayload {
+  card_id: string;
+  runtime_id: string;
+  target_agent_id?: string;
+  result?: string;
+  elapsed_ms?: number;
+}
+interface TaskFailedPayload {
+  card_id: string;
+  runtime_id: string;
+  target_agent_id?: string;
+  error?: string;
+  elapsed_ms?: number;
+}
 
 export interface AgentDetail {
   cardId: string;
@@ -19,6 +47,10 @@ interface KanbanState {
   cardsByStatus: Map<CardStatus, KanbanCard[]>;
 
   applyEvent: (event: KanbanEvent) => void;
+  applyTaskSubmitted: (env: Envelope<TaskSubmittedPayload>) => void;
+  applyTaskClaimed: (env: Envelope<TaskClaimedPayload>) => void;
+  applyTaskCompleted: (env: Envelope<TaskCompletedPayload>) => void;
+  applyTaskFailed: (env: Envelope<TaskFailedPayload>) => void;
   loadSnapshot: (cards: KanbanCard[]) => void;
   setRuntimeId: (id: string | null) => void;
   reset: () => void;
@@ -78,6 +110,70 @@ export const useKanbanStore = create<KanbanState>((set, get) => ({
       events: nextEvents.length > 200 ? nextEvents.slice(-100) : nextEvents,
       cardsByStatus: buildCardsByStatus(nextCards),
     });
+  },
+
+  applyTaskSubmitted: (env) => {
+    const { cards } = get();
+    const next = new Map(cards);
+    const p = env.payload;
+    const existing = next.get(p.card_id);
+    next.set(p.card_id, {
+      id: p.card_id,
+      type: 'task',
+      status: 'pending',
+      producer: existing?.producer ?? '',
+      consumer: existing?.consumer ?? '*',
+      target_agent_id: p.target_agent_id,
+      query: p.query,
+      created_at: existing?.created_at ?? env.ts,
+      updated_at: env.ts,
+      meta: existing?.meta,
+    });
+    set({ cards: next, cardsByStatus: buildCardsByStatus(next) });
+  },
+
+  applyTaskClaimed: (env) => {
+    const { cards } = get();
+    const cur = cards.get(env.payload.card_id);
+    if (!cur) return;
+    const next = new Map(cards);
+    next.set(env.payload.card_id, {
+      ...cur,
+      status: 'claimed',
+      target_agent_id: env.payload.target_agent_id ?? cur.target_agent_id,
+      updated_at: env.ts,
+    });
+    set({ cards: next, cardsByStatus: buildCardsByStatus(next) });
+  },
+
+  applyTaskCompleted: (env) => {
+    const { cards } = get();
+    const cur = cards.get(env.payload.card_id);
+    if (!cur) return;
+    const next = new Map(cards);
+    next.set(env.payload.card_id, {
+      ...cur,
+      status: 'done',
+      output: env.payload.result ?? cur.output,
+      elapsed_ms: env.payload.elapsed_ms ?? cur.elapsed_ms,
+      updated_at: env.ts,
+    });
+    set({ cards: next, cardsByStatus: buildCardsByStatus(next) });
+  },
+
+  applyTaskFailed: (env) => {
+    const { cards } = get();
+    const cur = cards.get(env.payload.card_id);
+    if (!cur) return;
+    const next = new Map(cards);
+    next.set(env.payload.card_id, {
+      ...cur,
+      status: 'failed',
+      error: env.payload.error ?? cur.error,
+      elapsed_ms: env.payload.elapsed_ms ?? cur.elapsed_ms,
+      updated_at: env.ts,
+    });
+    set({ cards: next, cardsByStatus: buildCardsByStatus(next) });
   },
 
   loadSnapshot: (cards) => {

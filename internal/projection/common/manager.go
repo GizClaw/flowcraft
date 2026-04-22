@@ -15,6 +15,7 @@ import (
 // ManagerConfig holds Manager-level config.
 type ManagerConfig struct {
 	ReadyTimeout time.Duration
+	DLTSink      DeadLetterSink // applied to all projectors unless overridden per-registration
 }
 
 // DefaultManagerConfig returns sensible defaults.
@@ -164,7 +165,11 @@ func (m *Manager) Start(ctx context.Context, log eventlog.Log) error {
 			n.runner.cfg.Log = log
 			n.runner.cfg.SnapshotsEnabled = n.rcOpts.snapshots
 			n.runner.cfg.Snapshots = n.rcOpts.snapshotter
+			// Manager-level DLT sink applies to all unless overridden per-registration.
 			n.runner.cfg.DeadLetters = n.rcOpts.dlt
+			if n.runner.cfg.DeadLetters == nil {
+				n.runner.cfg.DeadLetters = m.cfg.DLTSink
+			}
 			if n.runner.cfg.RestartBackoff == 0 {
 				n.runner.cfg.RestartBackoff = 250 * time.Millisecond
 			}

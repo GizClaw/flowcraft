@@ -8,11 +8,13 @@ import (
 	"sync"
 
 	"github.com/GizClaw/flowcraft/internal/api"
+	"github.com/GizClaw/flowcraft/internal/eventlog"
 	"github.com/GizClaw/flowcraft/internal/gateway"
 	"github.com/GizClaw/flowcraft/internal/metatool"
 	"github.com/GizClaw/flowcraft/internal/model"
 	"github.com/GizClaw/flowcraft/internal/platform"
 	"github.com/GizClaw/flowcraft/internal/realm"
+	"github.com/GizClaw/flowcraft/internal/store"
 	"github.com/GizClaw/flowcraft/internal/template"
 	"github.com/GizClaw/flowcraft/internal/version"
 	"github.com/GizClaw/flowcraft/sdk/event"
@@ -51,11 +53,31 @@ func Run(ctx context.Context) (*platform.Platform, *api.Server, func(), error) {
 	cleanups = append(cleanups, telemetryCleanup)
 
 	// --- store ---
-	appStore, storeCleanup, err := wireStore(ctx, cfg)
+	appStore, sqliteStore, storeCleanup, err := wireStore(ctx, cfg)
 	if err != nil {
 		return fail(err)
 	}
 	cleanups = append(cleanups, storeCleanup)
+	var _ *store.SQLiteStore = sqliteStore // use store package to satisfy import
+
+	// --- eventlog + projection + retention ---
+	var eventLog *eventlog.SQLiteLog
+	eventLog, err = WireEventLog(ctx, sqliteStore)
+	if err != nil {
+		return fail(err)
+	}
+	projMgr := WireProjectionManager(sqliteStore)
+	// R3 starts the manager even though no projector is registered yet, so
+	// /readyz reflects "system started, no projectors waiting" instead of
+	// the default "always ready". R4 will register concrete projectors
+	// (agent / chat / webhook / audit) against this same manager.
+	if err := projMgr.Start(ctx, eventLog); err != nil {
+		return fail(err)
+	}
+	cleanups = append(cleanups, projMgr.Stop)
+
+	retentionStop := WireRetention(eventLog)
+	cleanups = append(cleanups, retentionStop)
 
 	// --- registries + resolvers ---
 	toolReg := tool.NewRegistry()
@@ -135,20 +157,21 @@ func Run(ctx context.Context) (*platform.Platform, *api.Server, func(), error) {
 
 	// --- assemble platform ---
 	plat := &platform.Platform{
-		Store:           appStore,
-		Realms:          runtimeMgr,
-		Compiler:        graphCompiler,
-		SchemaReg:       schemaReg,
-		TemplateReg:     templateReg,
-		PluginReg:       pluginReg,
-		Knowledge:       knowledgeStore,
-		KnowledgeWorker: knowledgeWorker,
-		VersionStore:    versionStore,
-		LTStore:         ltStore,
-		EventBus:        globalBus,
-		LLMResolver:     llmResolver,
-		SkillStore:      skillStore,
-		ToolRegistry:    toolReg,
+		Store:             appStore,
+		Realms:            runtimeMgr,
+		Compiler:          graphCompiler,
+		SchemaReg:         schemaReg,
+		TemplateReg:       templateReg,
+		PluginReg:         pluginReg,
+		Knowledge:         knowledgeStore,
+		KnowledgeWorker:   knowledgeWorker,
+		VersionStore:      versionStore,
+		LTStore:           ltStore,
+		EventBus:          globalBus,
+		LLMResolver:       llmResolver,
+		SkillStore:        skillStore,
+		ToolRegistry:      toolReg,
+		ProjectionManager: projMgr,
 	}
 
 	// --- seed data ---
@@ -178,17 +201,44 @@ func Run(ctx context.Context) (*platform.Platform, *api.Server, func(), error) {
 		nr.SubscribeSession(ctx, r.Board())
 		go persistKanbanCards(ctx, r.Board(), appStore)
 
+		// §2.4 step 9: attach bridges BEFORE scheduler.Start() so the very
+		// first cron tick is already observed by the eventlog. Both bridges
+		// outlive this callback; they exit when the board's context is
+		// cancelled (i.e., when the realm closes). Errors at this point are
+		// fatal-ish for eventlog observability so we surface them to the
+		// realm log; bootstrap itself stays alive because operators can
+		// still drive the system via direct sdk calls.
+		kb, cb, err := eventlog.BootKanbanWithBridge(r.Board().Context(), eventLog, r.Board())
+		if err != nil {
+			telemetry.Error(ctx, "kanban bridge: attach failed",
+				otellog.String("realm", r.ID()),
+				otellog.String("error", err.Error()))
+			return
+		}
+
 		schedOnce.Do(func() {
-			go initScheduler(ctx, runtimeMgr, appStore, globalBus)
+			// §2.4 step 10: scheduler.Start() runs only after both bridges
+			// are attached. initScheduler is responsible for that ordering
+			// and for wiring lifecycle envelope publishing.
+			go initScheduler(ctx, runtimeMgr, appStore, globalBus, cb)
 		})
+
+		// Stop bridges when the realm shuts down (otherwise the
+		// goroutines leak past process shutdown and would race with
+		// eventLog.Close on a real shutdown).
+		go func() {
+			<-r.Board().Context().Done()
+			_ = kb.Close()
+			_ = cb.Close()
+		}()
 	})
 
 	return plat, server, runCleanups, nil
 }
 
-// persistKanbanCards watches card changes on a TaskBoard and persists
+// persistKanbanCards watches card changes on a Board and persists
 // each change to the store. Runs until the board's context is cancelled.
-func persistKanbanCards(ctx context.Context, sb *kanban.TaskBoard, store model.Store) {
+func persistKanbanCards(ctx context.Context, sb *kanban.Board, store model.Store) {
 	if sb == nil || store == nil {
 		return
 	}
@@ -239,7 +289,11 @@ func persistKanbanCards(ctx context.Context, sb *kanban.TaskBoard, store model.S
 // initScheduler starts the Kanban scheduler after the runtime is available.
 // It is called in a goroutine (via sync.Once) from OnRealmCreated to
 // avoid holding SingleRealmProvider's write lock during Resolve/Get.
-func initScheduler(ctx context.Context, runtimeMgr *realm.SingleRealmProvider, store model.Store, bus event.EventBus) {
+//
+// §2.4 step 10: scheduler.Start() must run AFTER bridge_cron has been
+// attached. Caller passes the cron bridge so we can publish lifecycle
+// envelopes (cron.rule.created/changed/disabled) for every rule we sync.
+func initScheduler(ctx context.Context, runtimeMgr *realm.SingleRealmProvider, store model.Store, bus event.EventBus, cb *eventlog.CronBridge) {
 	rt, err := runtimeMgr.Get(ctx)
 	if err != nil {
 		telemetry.Error(ctx, "scheduler: failed to get runtime", otellog.String("error", err.Error()))
@@ -256,7 +310,8 @@ func initScheduler(ctx context.Context, runtimeMgr *realm.SingleRealmProvider, s
 		return
 	}
 
-	loadAllSchedules(ctx, sched, store)
+	runtimeID := rt.ID()
+	loadAllSchedules(ctx, sched, store, cb, runtimeID)
 
 	n := sched.LoadFromBoard()
 	if n > 0 {
@@ -267,11 +322,13 @@ func initScheduler(ctx context.Context, runtimeMgr *realm.SingleRealmProvider, s
 	sched.Start()
 	telemetry.Info(ctx, "scheduler: started")
 
-	subscribeScheduleChanges(ctx, sched, store, bus)
+	subscribeScheduleChanges(ctx, sched, store, bus, cb, runtimeID)
 }
 
 // loadAllSchedules reads all agent configs and syncs their schedule rules.
-func loadAllSchedules(ctx context.Context, sched *kanban.Scheduler, store model.Store) {
+// Each rule that is loaded results in a cron.rule.created envelope so the
+// eventlog has a complete history independent of the agent config table.
+func loadAllSchedules(ctx context.Context, sched *kanban.Scheduler, store model.Store, cb *eventlog.CronBridge, runtimeID string) {
 	agents, _, err := store.ListAgents(ctx, model.ListOptions{Limit: model.MaxPageLimit})
 	if err != nil {
 		telemetry.Warn(ctx, "scheduler: failed to list agents", otellog.String("error", err.Error()))
@@ -280,19 +337,55 @@ func loadAllSchedules(ctx context.Context, sched *kanban.Scheduler, store model.
 	count := 0
 	for _, a := range agents {
 		jobs := toCronJobs(a.Config.Schedules)
-		if len(jobs) > 0 {
-			sched.SyncAgent(a.AgentID, jobs)
-			count += len(jobs)
+		if len(jobs) == 0 {
+			continue
 		}
+		sched.SyncAgent(a.AgentID, jobs)
+		count += len(jobs)
+		publishRuleLifecycle(ctx, cb, runtimeID, a.AgentID, jobs)
 	}
 	telemetry.Info(ctx, "scheduler: loaded schedules",
 		otellog.Int("agent_count", len(agents)),
 		otellog.Int("schedule_count", count))
 }
 
+// publishRuleLifecycle emits cron.rule.created envelopes for each enabled
+// rule, and cron.rule.disabled for each rule whose Enabled is explicitly
+// false.
+func publishRuleLifecycle(ctx context.Context, cb *eventlog.CronBridge, runtimeID, agentID string, jobs []kanban.CronJob) {
+	if cb == nil {
+		return
+	}
+	for _, j := range jobs {
+		evt := eventlog.CronRuleEvent{
+			RuleID:        j.ID,
+			RuntimeID:     runtimeID,
+			Expression:    j.Cron,
+			Timezone:      j.Timezone,
+			TargetAgentID: agentID,
+			Query:         j.Query,
+			Enabled:       j.Enabled == nil || *j.Enabled,
+		}
+		var err error
+		if !evt.Enabled {
+			evt.DisabledAt = eventlog.NowRFC3339Nano()
+			err = cb.PublishRuleDisabled(ctx, evt)
+		} else {
+			err = cb.PublishRuleCreated(ctx, evt)
+		}
+		if err != nil {
+			telemetry.Warn(ctx, "scheduler: publish rule lifecycle failed",
+				otellog.String("rule_id", j.ID),
+				otellog.String("error", err.Error()))
+		}
+	}
+}
+
 // subscribeScheduleChanges watches for EventAgentConfigChanged and reloads
-// the affected agent's schedule rules.
-func subscribeScheduleChanges(ctx context.Context, sched *kanban.Scheduler, store model.Store, bus event.EventBus) {
+// the affected agent's schedule rules. Each Sync emits cron.rule.changed
+// envelopes; full agent removal emits cron.rule.disabled envelopes for
+// each previously-known rule.
+func subscribeScheduleChanges(ctx context.Context, sched *kanban.Scheduler, store model.Store, bus event.EventBus, cb *eventlog.CronBridge, runtimeID string) {
 	sub, err := bus.Subscribe(ctx, event.EventFilter{
 		Types: []event.EventType{event.EventAgentConfigChanged},
 	})
@@ -316,11 +409,43 @@ func subscribeScheduleChanges(ctx context.Context, sched *kanban.Scheduler, stor
 			}
 			jobs := toCronJobs(agent.Config.Schedules)
 			sched.SyncAgent(agentID, jobs)
+			publishRuleChanges(ctx, cb, runtimeID, agentID, jobs)
 			telemetry.Info(ctx, "scheduler: agent schedule synced",
 				otellog.String("agent_id", agentID),
 				otellog.Int("schedule_count", len(jobs)))
 		}
 	}()
+}
+
+// publishRuleChanges emits cron.rule.changed for enabled rules and
+// cron.rule.disabled for those whose Enabled field is explicitly false.
+func publishRuleChanges(ctx context.Context, cb *eventlog.CronBridge, runtimeID, agentID string, jobs []kanban.CronJob) {
+	if cb == nil {
+		return
+	}
+	for _, j := range jobs {
+		evt := eventlog.CronRuleEvent{
+			RuleID:        j.ID,
+			RuntimeID:     runtimeID,
+			Expression:    j.Cron,
+			Timezone:      j.Timezone,
+			TargetAgentID: agentID,
+			Query:         j.Query,
+			Enabled:       j.Enabled == nil || *j.Enabled,
+		}
+		var err error
+		if !evt.Enabled {
+			evt.DisabledAt = eventlog.NowRFC3339Nano()
+			err = cb.PublishRuleDisabled(ctx, evt)
+		} else {
+			err = cb.PublishRuleChanged(ctx, evt)
+		}
+		if err != nil {
+			telemetry.Warn(ctx, "scheduler: publish rule change failed",
+				otellog.String("rule_id", j.ID),
+				otellog.String("error", err.Error()))
+		}
+	}
 }
 
 // toCronJobs converts model.Schedule slice to kanban.CronJob slice.

@@ -348,4 +348,85 @@ describe('kanbanStore', () => {
       expect(getState().cards.get('run-done')!.run_id).toBe('run-xyz');
     });
   });
+
+  // ── envelope reducers (R3) ──
+
+  describe('envelope reducers', () => {
+    function envelope<P>(type: string, payload: P, seq = 1) {
+      return {
+        seq,
+        partition: 'runtime:rt-1',
+        type,
+        version: 1,
+        category: 'business',
+        ts: NOW,
+        payload,
+      };
+    }
+
+    it('task.submitted creates a pending card', () => {
+      act(() =>
+        getState().applyTaskSubmitted(
+          envelope('task.submitted', {
+            card_id: 'env-1',
+            runtime_id: 'rt-1',
+            target_agent_id: 'agent-x',
+            query: 'hello',
+          }),
+        ),
+      );
+      const card = getState().cards.get('env-1');
+      expect(card?.status).toBe('pending');
+      expect(card?.target_agent_id).toBe('agent-x');
+      expect(card?.query).toBe('hello');
+    });
+
+    it('task.claimed → task.completed transitions card', () => {
+      act(() =>
+        getState().applyTaskSubmitted(
+          envelope('task.submitted', { card_id: 'env-2', runtime_id: 'rt-1' }, 1),
+        ),
+      );
+      act(() =>
+        getState().applyTaskClaimed(
+          envelope('task.claimed', { card_id: 'env-2', runtime_id: 'rt-1', target_agent_id: 'a' }, 2),
+        ),
+      );
+      expect(getState().cards.get('env-2')?.status).toBe('claimed');
+      act(() =>
+        getState().applyTaskCompleted(
+          envelope('task.completed', { card_id: 'env-2', runtime_id: 'rt-1', result: 'ok', elapsed_ms: 7 }, 3),
+        ),
+      );
+      const done = getState().cards.get('env-2');
+      expect(done?.status).toBe('done');
+      expect(done?.output).toBe('ok');
+      expect(done?.elapsed_ms).toBe(7);
+    });
+
+    it('task.failed records error', () => {
+      act(() =>
+        getState().applyTaskSubmitted(
+          envelope('task.submitted', { card_id: 'env-3', runtime_id: 'rt-1' }, 1),
+        ),
+      );
+      act(() =>
+        getState().applyTaskFailed(
+          envelope('task.failed', { card_id: 'env-3', runtime_id: 'rt-1', error: 'boom' }, 2),
+        ),
+      );
+      const card = getState().cards.get('env-3');
+      expect(card?.status).toBe('failed');
+      expect(card?.error).toBe('boom');
+    });
+
+    it('out-of-order task.claimed without prior submit is ignored', () => {
+      act(() =>
+        getState().applyTaskClaimed(
+          envelope('task.claimed', { card_id: 'ghost', runtime_id: 'rt-1' }),
+        ),
+      );
+      expect(getState().cards.has('ghost')).toBe(false);
+    });
+  });
 });

@@ -13,10 +13,10 @@ import (
 // sequence of envelopes it sees and exposes hooks to inject failures, observe
 // readiness transitions, and assert ordering.
 type FakeProjector struct {
-	NameStr     string
-	SubsList    []string
-	Mode        projection.RestoreMode
-	PartList    []string
+	NameStr  string
+	SubsList []string
+	Mode     projection.RestoreMode
+	PartList []string
 
 	mu       sync.Mutex
 	Applied  []eventlog.Envelope

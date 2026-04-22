@@ -98,7 +98,7 @@ events-gen:
 	@gofmt -w internal/eventlog/*_gen.go
 
 .PHONY: events-check
-events-check: events-partition-lint events-marker-lint
+events-check: events-partition-lint events-marker-lint events-bridge-lint
 	@echo "==> events-check"
 	@$(EVENTGEN) -mode=check -repo=.
 	@$(EVENTGEN) -mode=gen -repo=.
@@ -133,6 +133,28 @@ events-fmt:
 .PHONY: events-fuzz
 events-fuzz:
 	go test ./cmd/eventgen -fuzz=FuzzEventNameLint -fuzztime=5s
+
+.PHONY: events-bridge-lint
+# Reject any reference to NewKanbanBridge / NewCronBridge / KanbanBridge.Attach
+# / CronBridge.Attach outside of internal/eventlog (where they are defined)
+# and internal/bootstrap (the only allowed caller, via BootKanbanWithBridge).
+# This enforces §R3 DoD bullet 5: bridges must only be constructed by the
+# bootstrap entry point so the §2.4 step 7→8→9→10 ordering can be audited
+# in one place.
+events-bridge-lint:
+	@hits=$$(grep -RnE \
+	  --include='*.go' \
+	  --exclude='*_test.go' \
+	  --exclude-dir=eventlog \
+	  --exclude-dir=bootstrap \
+	  '\bNewKanbanBridge\b|\bNewCronBridge\b|\bBootKanbanWithBridge\b|\.Attach\(.+kanban\.Board' \
+	  internal/ 2>/dev/null \
+	  | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' || true); \
+	if [ -n "$$hits" ]; then \
+		echo "ERROR: bridge constructed outside internal/bootstrap. Use eventlog.BootKanbanWithBridge."; \
+		echo "$$hits"; \
+		exit 1; \
+	fi
 
 .PHONY: events-partition-lint
 # Reject raw partition string literals (e.g. "card:%s", "runtime:1") inside

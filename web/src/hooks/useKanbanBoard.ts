@@ -6,6 +6,53 @@ import { kanbanApi } from '../utils/api';
 import { useWebSocket } from './useWebSocket';
 import type { KanbanEvent } from '../types/kanban';
 import { mapCardStatusToUI } from '../types/kanban';
+import type { Envelope } from '../eventlog/types';
+import { envelopeRouter } from '../eventlog/router';
+
+let kanbanReducersRegistered = false;
+function registerKanbanReducersOnce() {
+  if (kanbanReducersRegistered) return;
+  kanbanReducersRegistered = true;
+  envelopeRouter.on('task.submitted', (e) => {
+    useKanbanStore.getState().applyTaskSubmitted(e as Envelope<{ card_id: string; runtime_id: string; target_agent_id?: string; query?: string }>);
+    useCoPilotStore.getState().updateDispatchedTaskStatus((e.payload as { card_id: string }).card_id, mapCardStatusToUI('pending'));
+  });
+  envelopeRouter.on('task.claimed', (e) => {
+    useKanbanStore.getState().applyTaskClaimed(e as Envelope<{ card_id: string; runtime_id: string; target_agent_id?: string }>);
+    useCoPilotStore.getState().updateDispatchedTaskStatus((e.payload as { card_id: string }).card_id, mapCardStatusToUI('claimed'));
+  });
+  envelopeRouter.on('task.completed', (e) => {
+    useKanbanStore.getState().applyTaskCompleted(e as Envelope<{ card_id: string; runtime_id: string; target_agent_id?: string; result?: string; elapsed_ms?: number }>);
+    useCoPilotStore.getState().updateDispatchedTaskStatus((e.payload as { card_id: string }).card_id, mapCardStatusToUI('done'));
+    maybeStopBackground();
+  });
+  envelopeRouter.on('task.failed', (e) => {
+    useKanbanStore.getState().applyTaskFailed(e as Envelope<{ card_id: string; runtime_id: string; target_agent_id?: string; error?: string; elapsed_ms?: number }>);
+    useCoPilotStore.getState().updateDispatchedTaskStatus((e.payload as { card_id: string }).card_id, mapCardStatusToUI('failed'));
+    maybeStopBackground();
+  });
+}
+
+function maybeStopBackground() {
+  const store = useKanbanStore.getState();
+  const hasPending = store.getCardsByStatus('pending').length > 0 || store.getCardsByStatus('claimed').length > 0;
+  if (!hasPending) {
+    useCoPilotStore.getState().setBackgroundRunning(false);
+  }
+}
+
+// isEnvelope returns true when the WS frame matches the §4 envelope wire
+// format (seq+partition+type+payload). The legacy `{type:"kanban", ...}`
+// frames returned false so they continue to flow through the legacy
+// switch below.
+function isEnvelope(msg: Record<string, unknown>): boolean {
+  return (
+    typeof msg.seq === 'number' &&
+    typeof msg.partition === 'string' &&
+    typeof msg.type === 'string' &&
+    'payload' in msg
+  );
+}
 
 interface AgentStreamPayload {
   card_id?: string;
@@ -206,6 +253,14 @@ function handleKanbanMessage(data: unknown, callbackAgentId?: string) {
   const msg = data as Record<string, unknown>;
   if (!msg.type) return;
 
+  // Envelope frames go through the central router (§7.1.5). Each
+  // registered reducer (KanbanStore, CoPilotStore, ...) updates its own
+  // slice of state from the payload.
+  if (isEnvelope(msg)) {
+    envelopeRouter.dispatch(msg as unknown as Envelope);
+    return;
+  }
+
   // Delegate callback_* messages to the callback handler.
   // Only consume if the event's agent_id matches the panel's callbackAgentId.
   if (callbackAgentId && (msg.type as string).startsWith('callback_')) {
@@ -277,59 +332,44 @@ function handleKanbanMessage(data: unknown, callbackAgentId?: string) {
   }
 }
 
+// fullResync grabs the current /kanban/cards snapshot once at boot or on
+// WS reconnect. Per §7.1.5 the steady-state KanbanStore is fed by
+// envelopes only — fullResync is the only legacy fetch that survives R3
+// (it covers events from before the WS connected).
+function fullResync() {
+  kanbanApi.cards()
+    .then((cards) => useKanbanStore.getState().loadSnapshot(cards))
+    .catch((err) => console.error('kanban: snapshot load failed:', err));
+}
+
 export function useKanbanBoard(runtimeId: string | null, callbackAgentId?: string) {
-  const loadSnapshot = useKanbanStore((s) => s.loadSnapshot);
   const setRuntimeId = useKanbanStore((s) => s.setRuntimeId);
   const reset = useKanbanStore((s) => s.reset);
   const prevRuntimeRef = useRef<string | null>(null);
-  const snapshotLoadedRef = useRef(false);
   const callbackAgentIdRef = useRef(callbackAgentId);
   callbackAgentIdRef.current = callbackAgentId;
+
+  useEffect(() => {
+    registerKanbanReducersOnce();
+  }, []);
 
   useEffect(() => {
     if (!runtimeId) {
       if (prevRuntimeRef.current !== null) reset();
       prevRuntimeRef.current = null;
-      snapshotLoadedRef.current = false;
       return;
     }
-
     setRuntimeId(runtimeId);
-
-    let timer: ReturnType<typeof setInterval> | undefined;
-    let cancelled = false;
-
-    const tryLoad = () => {
-      kanbanApi.cards()
-        .then((cards) => {
-          if (cancelled) return;
-          snapshotLoadedRef.current = true;
-          loadSnapshot(cards);
-          if (timer) { clearInterval(timer); timer = undefined; }
-        })
-        .catch((err) => console.error('kanban: snapshot load failed:', err));
-    };
-
-    tryLoad();
-    timer = setInterval(tryLoad, 3000);
+    fullResync();
     prevRuntimeRef.current = runtimeId;
-
-    return () => {
-      cancelled = true;
-      if (timer) clearInterval(timer);
-    };
-  }, [runtimeId, loadSnapshot, setRuntimeId, reset]);
+  }, [runtimeId, setRuntimeId, reset]);
 
   const wsUrl = runtimeId ? '/api/ws' : null;
 
   useWebSocket(wsUrl, {
     onMessage: (data) => handleKanbanMessage(data, callbackAgentIdRef.current),
     onOpen: () => {
-      if (runtimeId) {
-        kanbanApi.cards()
-          .then((cards) => useKanbanStore.getState().loadSnapshot(cards))
-          .catch((err) => console.error('kanban: reconnect snapshot load failed:', err));
-      }
+      if (runtimeId) fullResync();
     },
     reconnectInterval: 5000,
   });
