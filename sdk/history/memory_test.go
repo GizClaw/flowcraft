@@ -1,7 +1,7 @@
 package history
 
 import (
-	"github.com/GizClaw/flowcraft/sdk/memory/ltm"
+	"github.com/GizClaw/flowcraft/sdk/recall"
 	"context"
 	"sync"
 	"testing"
@@ -69,18 +69,18 @@ func TestInMemoryStore_Isolation(t *testing.T) {
 }
 
 func TestAllCategories(t *testing.T) {
-	cats := ltm.AllCategories()
+	cats := recall.AllCategories()
 	if len(cats) < 6 {
 		t.Fatalf("expected at least 6 categories, got %d", len(cats))
 	}
-	expected := map[ltm.MemoryCategory]bool{
-		ltm.CategoryProfile: true, ltm.CategoryPreferences: true, ltm.CategoryEntities: true,
-		ltm.CategoryEvents: true, ltm.CategoryCases: true, ltm.CategoryPatterns: true,
+	expected := map[recall.MemoryCategory]bool{
+		recall.CategoryProfile: true, recall.CategoryPreferences: true, recall.CategoryEntities: true,
+		recall.CategoryEvents: true, recall.CategoryCases: true, recall.CategoryPatterns: true,
 	}
 	for _, c := range expected {
 		_ = c
 	}
-	for _, want := range []ltm.MemoryCategory{ltm.CategoryProfile, ltm.CategoryPreferences, ltm.CategoryEntities, ltm.CategoryEvents, ltm.CategoryCases, ltm.CategoryPatterns} {
+	for _, want := range []recall.MemoryCategory{recall.CategoryProfile, recall.CategoryPreferences, recall.CategoryEntities, recall.CategoryEvents, recall.CategoryCases, recall.CategoryPatterns} {
 		found := false
 		for _, c := range cats {
 			if c == want {
@@ -95,8 +95,8 @@ func TestAllCategories(t *testing.T) {
 }
 
 func TestRegisterCategory(t *testing.T) {
-	ltm.RegisterCategory("custom_test_cat")
-	cats := ltm.AllCategories()
+	recall.RegisterCategory("custom_test_cat")
+	cats := recall.AllCategories()
 	found := false
 	for _, c := range cats {
 		if c == "custom_test_cat" {
@@ -105,20 +105,20 @@ func TestRegisterCategory(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Fatal("expected custom_test_cat in ltm.AllCategories after ltm.RegisterCategory")
+		t.Fatal("expected custom_test_cat in recall.AllCategories after recall.RegisterCategory")
 	}
 
 	// Duplicate registration should be idempotent.
-	before := len(ltm.AllCategories())
-	ltm.RegisterCategory("custom_test_cat")
-	after := len(ltm.AllCategories())
+	before := len(recall.AllCategories())
+	recall.RegisterCategory("custom_test_cat")
+	after := len(recall.AllCategories())
 	if after != before {
-		t.Fatalf("duplicate ltm.RegisterCategory changed count: %d -> %d", before, after)
+		t.Fatalf("duplicate recall.RegisterCategory changed count: %d -> %d", before, after)
 	}
 }
 
 func TestAllCategoryStrings(t *testing.T) {
-	strs := ltm.AllCategoryStrings()
+	strs := recall.AllCategoryStrings()
 	if len(strs) < 6 {
 		t.Fatalf("expected at least 6 category strings, got %d", len(strs))
 	}
@@ -130,7 +130,7 @@ func TestAllCategoryStrings(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Fatal("expected 'profile' in ltm.AllCategoryStrings")
+		t.Fatal("expected 'profile' in recall.AllCategoryStrings")
 	}
 }
 

@@ -15,7 +15,7 @@ import (
 	"github.com/GizClaw/flowcraft/bench/locomo/metrics"
 	"github.com/GizClaw/flowcraft/bench/locomo/runners"
 	"github.com/GizClaw/flowcraft/sdk/llm"
-	"github.com/GizClaw/flowcraft/sdk/memory/ltm"
+	"github.com/GizClaw/flowcraft/sdk/recall"
 	"github.com/GizClaw/flowcraft/sdk/model"
 )
 
@@ -23,7 +23,7 @@ import (
 // (the default Flowcraft runner exposes SaveRaw to bypass an LLM extractor for
 // CI-friendly runs without API keys).
 type IngestSaver interface {
-	SaveRaw(ctx context.Context, scope ltm.MemoryScope, msgs []llm.Message) (saveCount int, saveLatency time.Duration, err error)
+	SaveRaw(ctx context.Context, scope recall.MemoryScope, msgs []llm.Message) (saveCount int, saveLatency time.Duration, err error)
 }
 
 // Report aggregates one full evaluation run.
@@ -113,12 +113,12 @@ func Run(ctx context.Context, r runners.Runner, ds *dataset.Dataset, opts Option
 	// top-k from a pool of all 10 convs combined and relevant facts get
 	// drowned out by other conversations (observed: judge=0.67 on a single
 	// conv but 0.17 across 10).
-	scopeOf := func(convID string) ltm.MemoryScope {
+	scopeOf := func(convID string) recall.MemoryScope {
 		uid := opts.UserID
 		if convID != "" {
 			uid = opts.UserID + "::" + convID
 		}
-		return ltm.MemoryScope{RuntimeID: opts.RuntimeID, UserID: uid, AgentID: opts.AgentID}
+		return recall.MemoryScope{RuntimeID: opts.RuntimeID, UserID: uid, AgentID: opts.AgentID}
 	}
 
 	report := &Report{
@@ -183,7 +183,7 @@ func Run(ctx context.Context, r runners.Runner, ds *dataset.Dataset, opts Option
 //     the recalled memories (closed-book QA over LTM).
 //   - otherwise              → cheap fallback: concatenate top-3 hits, so
 //     EM/F1 still surface a "did retrieval find the right text" signal.
-func buildPrediction(ctx context.Context, opts Options, query string, hits []ltm.RecallHit) (string, error) {
+func buildPrediction(ctx context.Context, opts Options, query string, hits []recall.RecallHit) (string, error) {
 	if opts.AnswerLLM == nil {
 		return composePrediction(hits), nil
 	}
@@ -203,7 +203,7 @@ func buildPrediction(ctx context.Context, opts Options, query string, hits []ltm
 
 // buildAnswerBody renders the "Q + MEMORIES" block fed into the QA prompt.
 // Top-k memories are listed as bullets; ordering matches RecallHit ranking.
-func buildAnswerBody(query string, hits []ltm.RecallHit) string {
+func buildAnswerBody(query string, hits []recall.RecallHit) string {
 	var b strings.Builder
 	b.WriteString("QUESTION: ")
 	b.WriteString(query)
@@ -223,7 +223,7 @@ func buildAnswerBody(query string, hits []ltm.RecallHit) string {
 // composePrediction concatenates the top-3 hit contents — the "answer" we feed
 // to EM/F1/Judge when no AnswerLLM is configured. Cheap, deterministic, and
 // good enough to surface "did retrieval find the right text" without an API key.
-func composePrediction(hits []ltm.RecallHit) string {
+func composePrediction(hits []recall.RecallHit) string {
 	if len(hits) == 0 {
 		return ""
 	}
@@ -241,7 +241,7 @@ func composePrediction(hits []ltm.RecallHit) string {
 	return b.String()
 }
 
-func evidenceKHit(hits []ltm.RecallHit, want []string) float64 {
+func evidenceKHit(hits []recall.RecallHit, want []string) float64 {
 	if len(want) == 0 {
 		return 0
 	}
@@ -294,7 +294,7 @@ func perQuestionCtx(parent context.Context, timeout time.Duration) (context.Cont
 // conversation has fewer sessions than another.
 type ingestJob struct {
 	convID    string
-	scope     ltm.MemoryScope
+	scope     recall.MemoryScope
 	batch     turnBatch
 	batchIdx  int // 0-based position within its conversation, for WARN logs
 	convTotal int // total batches for the owning conversation, for WARN logs
@@ -314,7 +314,7 @@ type ingestJob struct {
 //
 // Failures on any single batch are logged + skipped so one rate-limited or
 // truncated extractor response can't disqualify an entire conversation.
-func ingestFlat(ctx context.Context, r runners.Runner, scopeOf func(string) ltm.MemoryScope, convs []dataset.Conversation, opts Options) []time.Duration {
+func ingestFlat(ctx context.Context, r runners.Runner, scopeOf func(string) recall.MemoryScope, convs []dataset.Conversation, opts Options) []time.Duration {
 	// Precompute conversation-level counters + expand every conv into its
 	// batches. Keeping convStart out of the worker path means no
 	// synchronization is needed for timing.
@@ -415,7 +415,7 @@ func ingestFlat(ctx context.Context, r runners.Runner, scopeOf func(string) ltm.
 	return latencies
 }
 
-func evalQuestions(ctx context.Context, r runners.Runner, scopeOf func(string) ltm.MemoryScope, qs []dataset.Question, opts Options) ([]QuestionScore, []time.Duration, error) {
+func evalQuestions(ctx context.Context, r runners.Runner, scopeOf func(string) recall.MemoryScope, qs []dataset.Question, opts Options) ([]QuestionScore, []time.Duration, error) {
 	n := len(qs)
 	scores := make([]QuestionScore, n)
 	latencies := make([]time.Duration, n)

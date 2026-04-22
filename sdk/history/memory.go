@@ -15,7 +15,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/GizClaw/flowcraft/sdk/memory/ltm"
+	"github.com/GizClaw/flowcraft/sdk/recall"
 	"github.com/GizClaw/flowcraft/sdk/model"
 )
 
@@ -63,7 +63,7 @@ type SummaryCacheStore interface {
 type Config struct {
 	Type        string         `json:"type,omitempty"` // deprecated: ignored, always lossless
 	MaxMessages int            `json:"max_messages,omitempty"`
-	LongTerm    ltm.LongTermConfig `json:"long_term,omitempty"`
+	LongTerm    recall.LongTermConfig `json:"long_term,omitempty"`
 	Lossless    LosslessConfig `json:"lossless,omitempty"`
 }
 

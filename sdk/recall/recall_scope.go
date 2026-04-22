@@ -1,4 +1,4 @@
-package ltm
+package recall
 
 // MemoryPartition names a logical partition for long-term List/Search (recall path).
 // It is orthogonal to [MemoryScope] (row persistence). Implementations combine

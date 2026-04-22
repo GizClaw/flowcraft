@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/sdk/llm"
-	"github.com/GizClaw/flowcraft/sdk/memory/ltm"
+	"github.com/GizClaw/flowcraft/sdk/recall"
 	memidx "github.com/GizClaw/flowcraft/sdk/retrieval/memory"
 	"github.com/GizClaw/flowcraft/sdkx/memory/jobqueue/sqlite"
 )
@@ -20,8 +20,8 @@ func TestEnqueueLeaseComplete(t *testing.T) {
 	}
 	defer q.Close()
 
-	id, err := q.Enqueue(ctx, "ns1", ltm.JobPayload{
-		Scope:    ltm.MemoryScope{RuntimeID: "rt1", UserID: "u1"},
+	id, err := q.Enqueue(ctx, "ns1", recall.JobPayload{
+		Scope:    recall.MemoryScope{RuntimeID: "rt1", UserID: "u1"},
 		Messages: []llm.Message{},
 	})
 	if err != nil {
@@ -43,7 +43,7 @@ func TestEnqueueLeaseComplete(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.State != ltm.JobSucceeded {
+	if got.State != recall.JobSucceeded {
 		t.Fatalf("state=%s", got.State)
 	}
 	if len(got.EntryIDs) != 2 {
@@ -56,7 +56,7 @@ func TestRescheduleAndBackoff(t *testing.T) {
 	q, _ := sqlite.Open(":memory:")
 	defer q.Close()
 
-	id, _ := q.Enqueue(ctx, "ns1", ltm.JobPayload{Scope: ltm.MemoryScope{RuntimeID: "rt"}})
+	id, _ := q.Enqueue(ctx, "ns1", recall.JobPayload{Scope: recall.MemoryScope{RuntimeID: "rt"}})
 	_, ok, _ := q.Lease(ctx, time.Now())
 	if !ok {
 		t.Fatal("first lease failed")
@@ -79,7 +79,7 @@ func TestCrashRecovery(t *testing.T) {
 	path := filepath.Join(dir, "jobs.db")
 
 	q1, _ := sqlite.Open(path)
-	id, _ := q1.Enqueue(ctx, "ns", ltm.JobPayload{Scope: ltm.MemoryScope{RuntimeID: "rt"}})
+	id, _ := q1.Enqueue(ctx, "ns", recall.JobPayload{Scope: recall.MemoryScope{RuntimeID: "rt"}})
 	if _, ok, _ := q1.Lease(ctx, time.Now()); !ok {
 		t.Fatal("lease before crash failed")
 	}
@@ -107,14 +107,14 @@ func TestEndToEndWithLTM(t *testing.T) {
 	defer q.Close()
 
 	idx := memidx.New()
-	m, _ := ltm.New(ltm.Config{
+	m, _ := recall.New(recall.Config{
 		Index:    idx,
 		LLM:      &fakeLLM{resp: `[{"content":"persisted fact","categories":["profile"]}]`},
 		JobQueue: q, RequireUserID: true, AsyncWorkers: 1,
 	})
 	defer m.Close()
 
-	scope := ltm.MemoryScope{RuntimeID: "rt1", UserID: "u1", AgentID: "bot"}
+	scope := recall.MemoryScope{RuntimeID: "rt1", UserID: "u1", AgentID: "bot"}
 	id, err := m.SaveAsync(ctx, scope, []llm.Message{
 		{Role: "user", Parts: []llm.Part{{Type: "text", Text: "hi"}}},
 	})
@@ -125,7 +125,7 @@ func TestEndToEndWithLTM(t *testing.T) {
 	if err != nil {
 		t.Fatalf("await: %v", err)
 	}
-	if st.State != ltm.JobSucceeded {
+	if st.State != recall.JobSucceeded {
 		t.Fatalf("state=%s err=%s", st.State, st.LastError)
 	}
 }

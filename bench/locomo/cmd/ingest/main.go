@@ -13,7 +13,7 @@ import (
 	"github.com/GizClaw/flowcraft/bench/locomo/dataset"
 	"github.com/GizClaw/flowcraft/bench/locomo/runners/flowcraft"
 	"github.com/GizClaw/flowcraft/sdk/llm"
-	"github.com/GizClaw/flowcraft/sdk/memory/ltm"
+	"github.com/GizClaw/flowcraft/sdk/recall"
 	"github.com/GizClaw/flowcraft/sdk/model"
 )
 
@@ -39,9 +39,9 @@ func main() {
 		log.Fatal(err)
 	}
 	defer r.Close()
-	scope := ltm.MemoryScope{RuntimeID: "ingest", UserID: "u-bench", AgentID: "agent-bench"}
+	scope := recall.MemoryScope{RuntimeID: "ingest", UserID: "u-bench", AgentID: "agent-bench"}
 	type rawSaver interface {
-		SaveRaw(ctx context.Context, scope ltm.MemoryScope, msgs []llm.Message) (int, time.Duration, error)
+		SaveRaw(ctx context.Context, scope recall.MemoryScope, msgs []llm.Message) (int, time.Duration, error)
 	}
 	for _, c := range ds.Conversations {
 		t0 := time.Now()

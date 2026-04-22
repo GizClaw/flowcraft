@@ -11,12 +11,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/GizClaw/flowcraft/sdk/memory/ltm"
+	"github.com/GizClaw/flowcraft/sdk/recall"
 
 	_ "modernc.org/sqlite"
 )
 
-// SQLiteJobQueue is the persistent ltm.JobQueue.
+// SQLiteJobQueue is the persistent recall.JobQueue.
 type SQLiteJobQueue struct {
 	db *sql.DB
 
@@ -54,7 +54,7 @@ func Open(path string) (*SQLiteJobQueue, error) {
 	return q, nil
 }
 
-// Close implements ltm.JobQueue.
+// Close implements recall.JobQueue.
 func (q *SQLiteJobQueue) Close() error { return q.db.Close() }
 
 func (q *SQLiteJobQueue) migrate() error {
@@ -91,8 +91,8 @@ func (q *SQLiteJobQueue) recoverRunning() error {
 	return err
 }
 
-// Enqueue implements ltm.JobQueue.
-func (q *SQLiteJobQueue) Enqueue(ctx context.Context, namespace string, p ltm.JobPayload) (ltm.JobID, error) {
+// Enqueue implements recall.JobQueue.
+func (q *SQLiteJobQueue) Enqueue(ctx context.Context, namespace string, p recall.JobPayload) (recall.JobID, error) {
 	id := q.newID()
 	bytes, err := json.Marshal(p)
 	if err != nil {
@@ -102,7 +102,7 @@ func (q *SQLiteJobQueue) Enqueue(ctx context.Context, namespace string, p ltm.Jo
 	if _, err := q.db.ExecContext(ctx,
 		`INSERT INTO memory_jobs (id,namespace,payload,state,attempts,created_at,updated_at,next_run_at)
 		 VALUES (?,?,?,?,0,?,?,?)`,
-		string(id), namespace, bytes, string(ltm.JobPending), now, now, now,
+		string(id), namespace, bytes, string(recall.JobPending), now, now, now,
 	); err != nil {
 		return "", err
 	}
@@ -111,7 +111,7 @@ func (q *SQLiteJobQueue) Enqueue(ctx context.Context, namespace string, p ltm.Jo
 
 // Lease atomically picks and locks the oldest pending job whose NextRunAt has
 // elapsed. Implementation uses an immediate transaction (single writer DB).
-func (q *SQLiteJobQueue) Lease(ctx context.Context, now time.Time) (*ltm.JobRecord, bool, error) {
+func (q *SQLiteJobQueue) Lease(ctx context.Context, now time.Time) (*recall.JobRecord, bool, error) {
 	tx, err := q.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, false, err
@@ -141,14 +141,14 @@ func (q *SQLiteJobQueue) Lease(ctx context.Context, now time.Time) (*ltm.JobReco
 	if err := tx.Commit(); err != nil {
 		return nil, false, err
 	}
-	rec.State = ltm.JobRunning
+	rec.State = recall.JobRunning
 	rec.Attempts++
 	rec.UpdatedAt = now
 	return rec, true, nil
 }
 
-// Reschedule implements ltm.JobQueue.
-func (q *SQLiteJobQueue) Reschedule(ctx context.Context, id ltm.JobID, next time.Time, lastErr string) error {
+// Reschedule implements recall.JobQueue.
+func (q *SQLiteJobQueue) Reschedule(ctx context.Context, id recall.JobID, next time.Time, lastErr string) error {
 	_, err := q.db.ExecContext(ctx,
 		`UPDATE memory_jobs SET state='pending', next_run_at=?, last_error=?, updated_at=? WHERE id=?`,
 		next.UnixMilli(), lastErr, time.Now().UnixMilli(), string(id),
@@ -156,8 +156,8 @@ func (q *SQLiteJobQueue) Reschedule(ctx context.Context, id ltm.JobID, next time
 	return err
 }
 
-// Complete implements ltm.JobQueue.
-func (q *SQLiteJobQueue) Complete(ctx context.Context, id ltm.JobID, entryIDs []string) error {
+// Complete implements recall.JobQueue.
+func (q *SQLiteJobQueue) Complete(ctx context.Context, id recall.JobID, entryIDs []string) error {
 	bytes, _ := json.Marshal(entryIDs)
 	_, err := q.db.ExecContext(ctx,
 		`UPDATE memory_jobs SET state='succeeded', entry_ids=?, updated_at=? WHERE id=?`,
@@ -167,7 +167,7 @@ func (q *SQLiteJobQueue) Complete(ctx context.Context, id ltm.JobID, entryIDs []
 }
 
 // Fail marks the job dead.
-func (q *SQLiteJobQueue) Fail(ctx context.Context, id ltm.JobID, lastErr string) error {
+func (q *SQLiteJobQueue) Fail(ctx context.Context, id recall.JobID, lastErr string) error {
 	_, err := q.db.ExecContext(ctx,
 		`UPDATE memory_jobs SET state='dead', last_error=?, updated_at=? WHERE id=?`,
 		lastErr, time.Now().UnixMilli(), string(id),
@@ -175,8 +175,8 @@ func (q *SQLiteJobQueue) Fail(ctx context.Context, id ltm.JobID, lastErr string)
 	return err
 }
 
-// Get implements ltm.JobQueue.
-func (q *SQLiteJobQueue) Get(ctx context.Context, id ltm.JobID) (*ltm.JobRecord, error) {
+// Get implements recall.JobQueue.
+func (q *SQLiteJobQueue) Get(ctx context.Context, id recall.JobID) (*recall.JobRecord, error) {
 	row := q.db.QueryRowContext(ctx,
 		`SELECT id,namespace,payload,attempts,COALESCE(last_error,''),COALESCE(entry_ids,''),created_at,updated_at,next_run_at,state
 		   FROM memory_jobs WHERE id=?`,
@@ -185,7 +185,7 @@ func (q *SQLiteJobQueue) Get(ctx context.Context, id ltm.JobID) (*ltm.JobRecord,
 	rec, err := scanRecordWithState(row)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return nil, ltm.ErrJobNotFound
+			return nil, recall.ErrJobNotFound
 		}
 		return nil, err
 	}
@@ -199,7 +199,7 @@ func (q *SQLiteJobQueue) PendingCount(ctx context.Context) (int, error) {
 	return n, err
 }
 
-func (q *SQLiteJobQueue) newID() ltm.JobID {
+func (q *SQLiteJobQueue) newID() recall.JobID {
 	q.mu.Lock()
 	q.seq++
 	s := q.seq
@@ -207,12 +207,12 @@ func (q *SQLiteJobQueue) newID() ltm.JobID {
 	t := uint64(time.Now().UnixMilli())
 	var rnd [8]byte
 	_, _ = rand.Read(rnd[:])
-	return ltm.JobID(fmt.Sprintf("job_%013d_%016x_%08d", t, binary.BigEndian.Uint64(rnd[:]), s))
+	return recall.JobID(fmt.Sprintf("job_%013d_%016x_%08d", t, binary.BigEndian.Uint64(rnd[:]), s))
 }
 
 // -- scanners ----------------------------------------------------------------
 
-func scanRecord(row *sql.Row) (*ltm.JobRecord, error) {
+func scanRecord(row *sql.Row) (*recall.JobRecord, error) {
 	var (
 		id, ns, lastErr, entryIDsJSON string
 		payload                       []byte
@@ -222,8 +222,8 @@ func scanRecord(row *sql.Row) (*ltm.JobRecord, error) {
 	if err := row.Scan(&id, &ns, &payload, &attempts, &lastErr, &entryIDsJSON, &createdAt, &updatedAt, &nextRun); err != nil {
 		return nil, err
 	}
-	rec := &ltm.JobRecord{
-		ID:        ltm.JobID(id),
+	rec := &recall.JobRecord{
+		ID:        recall.JobID(id),
 		Namespace: ns,
 		Attempts:  attempts,
 		LastError: lastErr,
@@ -240,7 +240,7 @@ func scanRecord(row *sql.Row) (*ltm.JobRecord, error) {
 	return rec, nil
 }
 
-func scanRecordWithState(row *sql.Row) (*ltm.JobRecord, error) {
+func scanRecordWithState(row *sql.Row) (*recall.JobRecord, error) {
 	var (
 		id, ns, lastErr, entryIDsJSON, state string
 		payload                              []byte
@@ -250,12 +250,12 @@ func scanRecordWithState(row *sql.Row) (*ltm.JobRecord, error) {
 	if err := row.Scan(&id, &ns, &payload, &attempts, &lastErr, &entryIDsJSON, &createdAt, &updatedAt, &nextRun, &state); err != nil {
 		return nil, err
 	}
-	rec := &ltm.JobRecord{
-		ID:        ltm.JobID(id),
+	rec := &recall.JobRecord{
+		ID:        recall.JobID(id),
 		Namespace: ns,
 		Attempts:  attempts,
 		LastError: lastErr,
-		State:     ltm.JobState(state),
+		State:     recall.JobState(state),
 		CreatedAt: time.UnixMilli(createdAt).UTC(),
 		UpdatedAt: time.UnixMilli(updatedAt).UTC(),
 		NextRunAt: time.UnixMilli(nextRun).UTC(),

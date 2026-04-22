@@ -1,4 +1,4 @@
-package ltm_test
+package recall_test
 
 import (
 	"context"
@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/sdk/llm"
-	"github.com/GizClaw/flowcraft/sdk/memory/ltm"
+	"github.com/GizClaw/flowcraft/sdk/recall"
 	"github.com/GizClaw/flowcraft/sdk/model"
 	"github.com/GizClaw/flowcraft/sdk/retrieval/journal"
 	memidx "github.com/GizClaw/flowcraft/sdk/retrieval/memory"
@@ -33,15 +33,15 @@ func (s *stubLLM) GenerateStream(_ context.Context, _ []llm.Message, _ ...llm.Ge
 	return nil, errors.New("not used")
 }
 
-func newScope() ltm.MemoryScope {
-	return ltm.MemoryScope{RuntimeID: "rt1", AgentID: "bot", UserID: "u1", SessionID: "s1"}
+func newScope() recall.MemoryScope {
+	return recall.MemoryScope{RuntimeID: "rt1", AgentID: "bot", UserID: "u1", SessionID: "s1"}
 }
 
 func TestSaveExtractsAdditiveFacts(t *testing.T) {
 	ctx := context.Background()
 	idx := memidx.New()
 	resp := `[{"content":"用户喜欢黑咖啡","categories":["preference"],"entities":["黑咖啡"],"source":"user","confidence":0.95}]`
-	m, err := ltm.New(ltm.Config{
+	m, err := recall.New(recall.Config{
 		Index:         idx,
 		LLM:           &stubLLM{resp: resp},
 		RequireUserID: true,
@@ -60,7 +60,7 @@ func TestSaveExtractsAdditiveFacts(t *testing.T) {
 	if len(res.EntryIDs) != 1 {
 		t.Fatalf("entry_ids=%v", res.EntryIDs)
 	}
-	hits, err := m.Recall(ctx, newScope(), ltm.RecallRequest{Query: "咖啡", TopK: 5})
+	hits, err := m.Recall(ctx, newScope(), recall.RecallRequest{Query: "咖啡", TopK: 5})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -79,7 +79,7 @@ func TestSaveIdempotentByDocID(t *testing.T) {
 	ctx := context.Background()
 	idx := memidx.New()
 	resp := `[{"content":"User likes coffee","entities":["coffee"]}]`
-	m, _ := ltm.New(ltm.Config{Index: idx, LLM: &stubLLM{resp: resp}, RequireUserID: true})
+	m, _ := recall.New(recall.Config{Index: idx, LLM: &stubLLM{resp: resp}, RequireUserID: true})
 	defer m.Close()
 	scope := newScope()
 	msgs := []llm.Message{{Role: model.RoleUser, Parts: []model.Part{{Type: model.PartText, Text: "I love coffee"}}}}
@@ -94,7 +94,7 @@ func TestSaveIdempotentByDocID(t *testing.T) {
 	if r1.EntryIDs[0] != r2.EntryIDs[0] {
 		t.Fatalf("ids drift: %s vs %s", r1.EntryIDs[0], r2.EntryIDs[0])
 	}
-	hits, _ := m.Recall(ctx, scope, ltm.RecallRequest{Query: "coffee", TopK: 5})
+	hits, _ := m.Recall(ctx, scope, recall.RecallRequest{Query: "coffee", TopK: 5})
 	if len(hits) != 1 {
 		t.Fatalf("expected dedup via idempotent upsert, got %d", len(hits))
 	}
@@ -102,12 +102,12 @@ func TestSaveIdempotentByDocID(t *testing.T) {
 
 func TestRequireUserIDValidation(t *testing.T) {
 	idx := memidx.New()
-	m, _ := ltm.New(ltm.Config{Index: idx, LLM: &stubLLM{resp: "[]"}, RequireUserID: true})
+	m, _ := recall.New(recall.Config{Index: idx, LLM: &stubLLM{resp: "[]"}, RequireUserID: true})
 	defer m.Close()
-	_, err := m.Save(context.Background(), ltm.MemoryScope{RuntimeID: "rt1"}, []llm.Message{
+	_, err := m.Save(context.Background(), recall.MemoryScope{RuntimeID: "rt1"}, []llm.Message{
 		{Role: model.RoleUser, Parts: []model.Part{{Type: model.PartText, Text: "hi"}}},
 	})
-	if !errors.Is(err, ltm.ErrMissingUserID) {
+	if !errors.Is(err, recall.ErrMissingUserID) {
 		t.Fatalf("expected ErrMissingUserID, got %v", err)
 	}
 }
@@ -115,18 +115,18 @@ func TestRequireUserIDValidation(t *testing.T) {
 func TestAddRawAndAgentFilter(t *testing.T) {
 	ctx := context.Background()
 	idx := memidx.New()
-	m, _ := ltm.New(ltm.Config{Index: idx, RequireUserID: true})
+	m, _ := recall.New(recall.Config{Index: idx, RequireUserID: true})
 	defer m.Close()
 	scope := newScope()
-	if _, err := m.AddRaw(ctx, scope, ltm.MemoryEntry{Content: "raw fact for bot1", Categories: []string{"profile"}}); err != nil {
+	if _, err := m.AddRaw(ctx, scope, recall.MemoryEntry{Content: "raw fact for bot1", Categories: []string{"profile"}}); err != nil {
 		t.Fatal(err)
 	}
 	other := scope
 	other.AgentID = "other-bot"
-	if _, err := m.AddRaw(ctx, other, ltm.MemoryEntry{Content: "raw fact for other bot", Categories: []string{"profile"}}); err != nil {
+	if _, err := m.AddRaw(ctx, other, recall.MemoryEntry{Content: "raw fact for other bot", Categories: []string{"profile"}}); err != nil {
 		t.Fatal(err)
 	}
-	hits, err := m.Recall(ctx, scope, ltm.RecallRequest{Query: "raw fact", TopK: 5})
+	hits, err := m.Recall(ctx, scope, recall.RecallRequest{Query: "raw fact", TopK: 5})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -139,29 +139,29 @@ func TestTTLSoftFilter(t *testing.T) {
 	ctx := context.Background()
 	idx := memidx.New()
 	now := time.Now()
-	m, _ := ltm.New(ltm.Config{Index: idx, RequireUserID: true, Now: func() time.Time { return now }})
+	m, _ := recall.New(recall.Config{Index: idx, RequireUserID: true, Now: func() time.Time { return now }})
 	defer m.Close()
 	scope := newScope()
 	past := now.Add(-time.Second)
-	if _, err := m.AddRaw(ctx, scope, ltm.MemoryEntry{
+	if _, err := m.AddRaw(ctx, scope, recall.MemoryEntry{
 		Content: "expired memory", Categories: []string{"episodic"}, ExpiresAt: &past,
 	}); err != nil {
 		t.Fatal(err)
 	}
 	future := now.Add(24 * time.Hour)
-	if _, err := m.AddRaw(ctx, scope, ltm.MemoryEntry{
+	if _, err := m.AddRaw(ctx, scope, recall.MemoryEntry{
 		Content: "active memory", Categories: []string{"episodic"}, ExpiresAt: &future,
 	}); err != nil {
 		t.Fatal(err)
 	}
-	hits, err := m.Recall(ctx, scope, ltm.RecallRequest{Query: "memory", TopK: 5})
+	hits, err := m.Recall(ctx, scope, recall.RecallRequest{Query: "memory", TopK: 5})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(hits) != 1 || !strings.Contains(hits[0].Entry.Content, "active") {
 		t.Fatalf("expected only active memory, got %+v", hits)
 	}
-	hitsAll, _ := m.Recall(ctx, scope, ltm.RecallRequest{Query: "memory", TopK: 5, WithStale: true})
+	hitsAll, _ := m.Recall(ctx, scope, recall.RecallRequest{Query: "memory", TopK: 5, WithStale: true})
 	if len(hitsAll) != 2 {
 		t.Fatalf("WithStale expected 2, got %d", len(hitsAll))
 	}
@@ -171,10 +171,10 @@ func TestSweeperPhysicalDelete(t *testing.T) {
 	ctx := context.Background()
 	idx := memidx.New()
 	now := time.Now()
-	m, _ := ltm.New(ltm.Config{
+	m, _ := recall.New(recall.Config{
 		Index:           idx,
 		RequireUserID:   true,
-		TTLPolicy:       ltm.CategoryTTLPolicy{ltm.CategoryEpisodic: time.Hour},
+		TTLPolicy:       recall.CategoryTTLPolicy{recall.CategoryEpisodic: time.Hour},
 		SweeperEnabled:  false, // we manually call SweepNamespace
 		Now:             func() time.Time { return now },
 		SweeperBatchMax: 10,
@@ -182,7 +182,7 @@ func TestSweeperPhysicalDelete(t *testing.T) {
 	defer m.Close()
 	scope := newScope()
 	past := now.Add(-time.Second)
-	id, err := m.AddRaw(ctx, scope, ltm.MemoryEntry{Content: "old", Categories: []string{"episodic"}, ExpiresAt: &past})
+	id, err := m.AddRaw(ctx, scope, recall.MemoryEntry{Content: "old", Categories: []string{"episodic"}, ExpiresAt: &past})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -192,10 +192,10 @@ func TestSweeperPhysicalDelete(t *testing.T) {
 	if !ok {
 		t.Fatal("Memory does not expose SweepNamespace")
 	}
-	if err := sweeper.SweepNamespace(ctx, ltm.NamespaceFor(scope)); err != nil {
+	if err := sweeper.SweepNamespace(ctx, recall.NamespaceFor(scope)); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok, _ := idx.Get(ctx, ltm.NamespaceFor(scope), id); ok {
+	if _, ok, _ := idx.Get(ctx, recall.NamespaceFor(scope), id); ok {
 		t.Fatalf("sweeper failed to delete %s", id)
 	}
 }
@@ -204,7 +204,7 @@ func TestAsyncSaveAndAwait(t *testing.T) {
 	ctx := context.Background()
 	idx := memidx.New()
 	resp := `[{"content":"async fact"}]`
-	m, _ := ltm.New(ltm.Config{
+	m, _ := recall.New(recall.Config{
 		Index: idx, LLM: &stubLLM{resp: resp},
 		RequireUserID: true,
 		AsyncWorkers:  1,
@@ -221,7 +221,7 @@ func TestAsyncSaveAndAwait(t *testing.T) {
 	if err != nil {
 		t.Fatalf("await: %v", err)
 	}
-	if st.State != ltm.JobSucceeded {
+	if st.State != recall.JobSucceeded {
 		t.Fatalf("state=%s err=%s", st.State, st.LastError)
 	}
 	if len(st.EntryIDs) != 1 {
@@ -233,16 +233,16 @@ func TestHistoryAndRollback(t *testing.T) {
 	ctx := context.Background()
 	idx := memidx.New()
 	j := journal.NewMemoryJournal()
-	m, _ := ltm.New(ltm.Config{
+	m, _ := recall.New(recall.Config{
 		Index: idx, RequireUserID: true, Journal: j,
 	})
 	defer m.Close()
 	scope := newScope()
 	t1 := time.Now()
-	id, _ := m.AddRaw(ctx, scope, ltm.MemoryEntry{Content: "v1", Categories: []string{"profile"}, CreatedAt: t1, UpdatedAt: t1})
+	id, _ := m.AddRaw(ctx, scope, recall.MemoryEntry{Content: "v1", Categories: []string{"profile"}, CreatedAt: t1, UpdatedAt: t1})
 	time.Sleep(10 * time.Millisecond)
 	t2 := time.Now()
-	_, _ = m.AddRaw(ctx, scope, ltm.MemoryEntry{ID: id, Content: "v2", Categories: []string{"profile"}, CreatedAt: t2, UpdatedAt: t2})
+	_, _ = m.AddRaw(ctx, scope, recall.MemoryEntry{ID: id, Content: "v2", Categories: []string{"profile"}, CreatedAt: t2, UpdatedAt: t2})
 
 	events, err := m.History(ctx, scope, id)
 	if err != nil {
@@ -255,7 +255,7 @@ func TestHistoryAndRollback(t *testing.T) {
 	if err := m.Rollback(ctx, scope, id, t1.Add(5*time.Millisecond)); err != nil {
 		t.Fatal(err)
 	}
-	hits, _ := m.Recall(ctx, scope, ltm.RecallRequest{Query: "v1", TopK: 5})
+	hits, _ := m.Recall(ctx, scope, recall.RecallRequest{Query: "v1", TopK: 5})
 	if len(hits) != 1 || hits[0].Entry.Content != "v1" {
 		t.Fatalf("rollback failed: %+v", hits)
 	}
@@ -264,14 +264,14 @@ func TestHistoryAndRollback(t *testing.T) {
 func TestForget(t *testing.T) {
 	ctx := context.Background()
 	idx := memidx.New()
-	m, _ := ltm.New(ltm.Config{Index: idx, RequireUserID: true})
+	m, _ := recall.New(recall.Config{Index: idx, RequireUserID: true})
 	defer m.Close()
 	scope := newScope()
-	id, _ := m.AddRaw(ctx, scope, ltm.MemoryEntry{Content: "forget me", Categories: []string{"episodic"}})
+	id, _ := m.AddRaw(ctx, scope, recall.MemoryEntry{Content: "forget me", Categories: []string{"episodic"}})
 	if err := m.Forget(ctx, scope, id, "user_request"); err != nil {
 		t.Fatal(err)
 	}
-	hits, _ := m.Recall(ctx, scope, ltm.RecallRequest{Query: "forget", TopK: 5})
+	hits, _ := m.Recall(ctx, scope, recall.RecallRequest{Query: "forget", TopK: 5})
 	if len(hits) != 0 {
 		t.Fatalf("expected forgotten, got %+v", hits)
 	}

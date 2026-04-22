@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/GizClaw/flowcraft/sdk/memory/ltm"
+	"github.com/GizClaw/flowcraft/sdk/recall"
 )
 
 func TestNewWithLLM_NilLLMDegradesToBuffer(t *testing.T) {
@@ -32,13 +32,13 @@ func TestNewWithLLM_DeprecatedTypeStillWorks(t *testing.T) {
 func TestNewWithLLM_WithLongTermStore(t *testing.T) {
 	ltStore := &mockLongTermStore{}
 	mem, err := NewWithLLM(Config{
-		LongTerm: ltm.LongTermConfig{Enabled: true},
+		LongTerm: recall.LongTermConfig{Enabled: true},
 	}, nil, nil, ltStore)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := mem.(*ltm.MemoryAwareMemory); !ok {
-		t.Fatal("expected ltm.MemoryAwareMemory wrapper when ltStore is provided")
+	if _, ok := mem.(*recall.MemoryAwareMemory); !ok {
+		t.Fatal("expected recall.MemoryAwareMemory wrapper when ltStore is provided")
 	}
 }
 
@@ -63,12 +63,12 @@ func TestConfigDefaults(t *testing.T) {
 
 type mockLongTermStore struct{}
 
-func (m *mockLongTermStore) Save(context.Context, string, *ltm.MemoryEntry) error { return nil }
-func (m *mockLongTermStore) List(context.Context, string, ltm.ListOptions) ([]*ltm.MemoryEntry, error) {
+func (m *mockLongTermStore) Save(context.Context, string, *recall.MemoryEntry) error { return nil }
+func (m *mockLongTermStore) List(context.Context, string, recall.ListOptions) ([]*recall.MemoryEntry, error) {
 	return nil, nil
 }
-func (m *mockLongTermStore) Search(context.Context, string, string, ltm.SearchOptions) ([]*ltm.MemoryEntry, error) {
+func (m *mockLongTermStore) Search(context.Context, string, string, recall.SearchOptions) ([]*recall.MemoryEntry, error) {
 	return nil, nil
 }
-func (m *mockLongTermStore) Update(context.Context, string, *ltm.MemoryEntry) error { return nil }
+func (m *mockLongTermStore) Update(context.Context, string, *recall.MemoryEntry) error { return nil }
 func (m *mockLongTermStore) Delete(context.Context, string, string) error           { return nil }

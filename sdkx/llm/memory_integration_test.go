@@ -12,32 +12,32 @@ import (
 
 	"github.com/GizClaw/flowcraft/sdk/llm"
 	"github.com/GizClaw/flowcraft/sdk/history"
-	"github.com/GizClaw/flowcraft/sdk/memory/ltm"
+	"github.com/GizClaw/flowcraft/sdk/recall"
 	retmem "github.com/GizClaw/flowcraft/sdk/retrieval/memory"
 )
 
 // ---------------------------------------------------------------------------
-// Shared helpers ( Phase 3 — extraction goes through ltm.Memory)
+// Shared helpers ( Phase 3 — extraction goes through recall.Memory)
 // ---------------------------------------------------------------------------
 
 // expectedMemory describes one expected extraction result (soft-match).
 type expectedMemory struct {
-	category    ltm.MemoryCategory
+	category    recall.MemoryCategory
 	mustContain []string
 }
 
-func newLTM(t *testing.T, l llm.LLM) (ltm.Memory, *ltm.RetrievalStore) {
+func newLTM(t *testing.T, l llm.LLM) (recall.Memory, *recall.RetrievalStore) {
 	t.Helper()
 	idx := retmem.New()
-	store := ltm.NewRetrievalStore(idx)
-	mem, err := ltm.New(ltm.Config{
+	store := recall.NewRetrievalStore(idx)
+	mem, err := recall.New(recall.Config{
 		Index:           idx,
 		LLM:             l,
-		Mode:            ltm.ModeAdditive,
+		Mode:            recall.ModeAdditive,
 		MaxFactsPerCall: 8,
 	})
 	if err != nil {
-		t.Fatalf("ltm.New: %v", err)
+		t.Fatalf("recall.New: %v", err)
 	}
 	return mem, store
 }
@@ -45,20 +45,20 @@ func newLTM(t *testing.T, l llm.LLM) (ltm.Memory, *ltm.RetrievalStore) {
 // checkExtractions verifies that stored entries satisfy expectations.
 func checkExtractions(
 	t *testing.T,
-	store ltm.LongTermStore,
-	scope ltm.MemoryScope,
+	store recall.LongTermStore,
+	scope recall.MemoryScope,
 	expects []expectedMemory,
 ) (hits, misses int, extras []string) {
 	t.Helper()
 	ctx := context.Background()
-	all, _ := store.List(ctx, scope.RuntimeID, ltm.ListOptions{Limit: 100, Scope: &scope})
+	all, _ := store.List(ctx, scope.RuntimeID, recall.ListOptions{Limit: 100, Scope: &scope})
 
-	byCat := make(map[ltm.MemoryCategory][]string)
+	byCat := make(map[recall.MemoryCategory][]string)
 	for _, e := range all {
 		byCat[e.Category] = append(byCat[e.Category], e.Content)
 	}
 
-	expectedCats := make(map[ltm.MemoryCategory]bool)
+	expectedCats := make(map[recall.MemoryCategory]bool)
 	for _, exp := range expects {
 		expectedCats[exp.category] = true
 		contents := byCat[exp.category]
@@ -113,7 +113,7 @@ func TestExtractQuality(t *testing.T) {
 				llm.NewTextMessage(llm.RoleAssistant, "你好小明！很高兴认识你。"),
 			},
 			expects: []expectedMemory{
-				{category: ltm.CategoryProfile, mustContain: []string{"小明"}},
+				{category: recall.CategoryProfile, mustContain: []string{"小明"}},
 			},
 		},
 		{
@@ -123,7 +123,7 @@ func TestExtractQuality(t *testing.T) {
 				llm.NewTextMessage(llm.RoleAssistant, "好的，我会用中文回复你。"),
 			},
 			expects: []expectedMemory{
-				{category: ltm.CategoryPreferences, mustContain: []string{"Vim"}},
+				{category: recall.CategoryPreferences, mustContain: []string{"Vim"}},
 			},
 		},
 		{
@@ -133,7 +133,7 @@ func TestExtractQuality(t *testing.T) {
 				llm.NewTextMessage(llm.RoleAssistant, "了解，Falcon 项目使用了 gRPC 和 K8s。"),
 			},
 			expects: []expectedMemory{
-				{category: ltm.CategoryEntities, mustContain: []string{"Falcon"}},
+				{category: recall.CategoryEntities, mustContain: []string{"Falcon"}},
 			},
 		},
 		{
@@ -143,7 +143,7 @@ func TestExtractQuality(t *testing.T) {
 				llm.NewTextMessage(llm.RoleAssistant, "恭喜上线！认证 bug 修复了就好。"),
 			},
 			expects: []expectedMemory{
-				{category: ltm.CategoryEvents, mustContain: []string{"v3"}},
+				{category: recall.CategoryEvents, mustContain: []string{"v3"}},
 			},
 		},
 		{
@@ -153,7 +153,7 @@ func TestExtractQuality(t *testing.T) {
 				llm.NewTextMessage(llm.RoleAssistant, "流式处理是个好方案，能显著降低内存占用。"),
 			},
 			expects: []expectedMemory{
-				{category: ltm.CategoryCases, mustContain: []string{"OOM"}},
+				{category: recall.CategoryCases, mustContain: []string{"OOM"}},
 			},
 		},
 		{
@@ -163,7 +163,7 @@ func TestExtractQuality(t *testing.T) {
 				llm.NewTextMessage(llm.RoleAssistant, "这是个很好的实践，context 是 Go 并发控制的关键。"),
 			},
 			expects: []expectedMemory{
-				{category: ltm.CategoryPatterns, mustContain: []string{"context"}},
+				{category: recall.CategoryPatterns, mustContain: []string{"context"}},
 			},
 		},
 	}
@@ -180,7 +180,7 @@ func TestExtractQuality(t *testing.T) {
 					ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 					defer cancel()
 
-					scope := ltm.MemoryScope{RuntimeID: "test-rt", UserID: "u1"}
+					scope := recall.MemoryScope{RuntimeID: "test-rt", UserID: "u1"}
 					if _, err := mem.Save(ctx, scope, tc.messages); err != nil {
 						t.Fatalf("Save failed: %v", err)
 					}
@@ -188,7 +188,7 @@ func TestExtractQuality(t *testing.T) {
 					hits, misses, extras := checkExtractions(t, store, scope, tc.expects)
 					t.Logf("hits=%d misses=%d extras=%v", hits, misses, extras)
 
-					all, _ := store.List(ctx, "test-rt", ltm.ListOptions{Limit: 50, Scope: &scope})
+					all, _ := store.List(ctx, "test-rt", recall.ListOptions{Limit: 50, Scope: &scope})
 					for _, e := range all {
 						t.Logf("  [%s] %s (kw: %v)", e.Category, e.Content, e.Keywords)
 					}
@@ -212,10 +212,10 @@ func TestDeduplicationQuality(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 			defer cancel()
 
-			scope := ltm.MemoryScope{RuntimeID: "test-rt", UserID: "u1"}
+			scope := recall.MemoryScope{RuntimeID: "test-rt", UserID: "u1"}
 
-			_ = store.Save(ctx, "test-rt", &ltm.MemoryEntry{
-				Category: ltm.CategoryProfile,
+			_ = store.Save(ctx, "test-rt", &recall.MemoryEntry{
+				Category: recall.CategoryProfile,
 				Content:  "User is a Go backend developer",
 				Keywords: []string{"go", "backend", "developer"},
 				Scope:    scope,
@@ -228,7 +228,7 @@ func TestDeduplicationQuality(t *testing.T) {
 				t.Fatalf("Save failed: %v", err)
 			}
 
-			entries, _ := store.List(ctx, "test-rt", ltm.ListOptions{Category: ltm.CategoryProfile, Limit: 50, Scope: &scope})
+			entries, _ := store.List(ctx, "test-rt", recall.ListOptions{Category: recall.CategoryProfile, Limit: 50, Scope: &scope})
 			t.Logf("profile entries after dedup: %d", len(entries))
 			for _, e := range entries {
 				t.Logf("  [%s] id=%s content=%q", e.Category, e.ID, e.Content)
@@ -315,12 +315,12 @@ Only return the JSON object, nothing else.`
 					mem, store := newLTM(t, provider)
 					defer mem.Close()
 
-					scope := ltm.MemoryScope{RuntimeID: "test-rt", UserID: "u1"}
+					scope := recall.MemoryScope{RuntimeID: "test-rt", UserID: "u1"}
 					if _, err := mem.Save(ctx, scope, tc.seedMessages); err != nil {
 						t.Fatalf("Seed save failed: %v", err)
 					}
 
-					extracted, _ := store.List(ctx, "test-rt", ltm.ListOptions{Limit: 50, Scope: &scope})
+					extracted, _ := store.List(ctx, "test-rt", recall.ListOptions{Limit: 50, Scope: &scope})
 					t.Logf("extracted %d entries:", len(extracted))
 					for _, e := range extracted {
 						t.Logf("  [%s] %s", e.Category, e.Content)
@@ -346,7 +346,7 @@ Only return the JSON object, nothing else.`
 						llm.NewTextMessage(llm.RoleUser, tc.followUpQuery),
 					})
 					inner := history.NewBufferMemory(msgStore, 50)
-					aware := ltm.NewMemoryAwareMemoryCompat(inner, store, "test-rt", ltm.LongTermConfig{Enabled: true, MaxEntries: 10})
+					aware := recall.NewMemoryAwareMemoryCompat(inner, store, "test-rt", recall.LongTermConfig{Enabled: true, MaxEntries: 10})
 					aware.SetScope(&scope)
 					msgsWith, err := aware.Load(ctx, "followup")
 					if err != nil {
