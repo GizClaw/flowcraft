@@ -7,9 +7,9 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/model"
 )
 
-// buffer is the tail-truncation implementation of [Memory]. It is
+// buffer is the tail-truncation implementation of [History]. It is
 // unexported on purpose: callers construct it via [NewBuffer] and
-// consume it through [Memory].
+// consume it through [History].
 type buffer struct {
 	store       Store
 	maxMessages int
@@ -18,11 +18,11 @@ type buffer struct {
 	locks map[string]*sync.Mutex
 }
 
-// BufferOption customizes a [Memory] built by [NewBuffer].
+// BufferOption customizes a [History] built by [NewBuffer].
 type BufferOption func(*buffer)
 
 // WithBufferMax sets the maximum message count kept in the returned
-// [Memory]. Must be > 0; values ≤ 0 are ignored and the default (50) is
+// [History]. Must be > 0; values ≤ 0 are ignored and the default (50) is
 // kept.
 func WithBufferMax(n int) BufferOption {
 	return func(b *buffer) {
@@ -32,15 +32,15 @@ func WithBufferMax(n int) BufferOption {
 	}
 }
 
-// NewBuffer returns a [Memory] that keeps the most recent messages for
+// NewBuffer returns a [History] that keeps the most recent messages for
 // each conversation up to a cap (default 50; override with
 // [WithBufferMax]).
 //
-// It is the simplest Memory implementation — appends concatenate, loads
+// It is the simplest History implementation — appends concatenate, loads
 // truncate. Use it for short sessions, tests, and examples; switch to
 // [NewCompacted] when a conversation needs to outgrow a single context
 // window.
-func NewBuffer(store Store, opts ...BufferOption) Memory {
+func NewBuffer(store Store, opts ...BufferOption) History {
 	b := &buffer{
 		store:       store,
 		maxMessages: 50,

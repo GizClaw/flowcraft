@@ -3,15 +3,363 @@ package history
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/GizClaw/flowcraft/sdk/llm"
+	"github.com/GizClaw/flowcraft/sdk/model"
 	"github.com/GizClaw/flowcraft/sdk/telemetry"
+	"github.com/GizClaw/flowcraft/sdk/workspace"
 
 	otellog "go.opentelemetry.io/otel/log"
 	"go.opentelemetry.io/otel/metric"
 )
+
+// Background work timeouts. Ingest and archive used to share a single 60s
+// budget; that meant a slow LLM summarization could starve the archive
+// step (or vice-versa). They now run independently with their own ceilings.
+const (
+	defaultIngestTimeout  = 60 * time.Second
+	defaultArchiveTimeout = 60 * time.Second
+)
+
+// compactor is the DAG-summarization implementation of [History]. It is
+// unexported on purpose: callers construct it via [NewCompacted] and
+// consume it through the [History] interface. The "compactor" name
+// reflects what the implementation actually does — archive + leaf
+// prune discard data on disk in exchange for context-window budget;
+// the previous "lossless" name was aspirational.
+//
+// Concurrency model: every Append acquires a per-conversation lock and
+// then schedules background DAG ingest + archive on a goroutine.
+// Because the per-conversation lock serializes Appends for the same
+// conversationID, no two background workers race on the same DAG;
+// cross-conversation background work runs in parallel without
+// artificial bounds.
+type compactor struct {
+	store  Store
+	dag    *SummaryDAG
+	config DAGConfig
+	ws     workspace.Workspace
+	prefix string
+
+	mu    sync.Mutex
+	locks map[string]*sync.Mutex
+	wg    sync.WaitGroup
+}
+
+func newCompactor(store Store, dag *SummaryDAG, config DAGConfig, ws workspace.Workspace, prefix string) *compactor {
+	return &compactor{
+		store:  store,
+		dag:    dag,
+		config: config,
+		ws:     ws,
+		prefix: prefix,
+		locks:  make(map[string]*sync.Mutex),
+	}
+}
+
+func (m *compactor) Load(ctx context.Context, conversationID string, budget Budget) ([]model.Message, error) {
+	tokenBudget := m.config.TokenBudget
+	if budget.MaxTokens > 0 && (tokenBudget == 0 || budget.MaxTokens < tokenBudget) {
+		tokenBudget = budget.MaxTokens
+	}
+	msgs, err := m.dag.Assemble(ctx, conversationID, tokenBudget)
+	if err != nil {
+		return nil, err
+	}
+	if budget.MaxMessages > 0 && len(msgs) > budget.MaxMessages {
+		msgs = msgs[len(msgs)-budget.MaxMessages:]
+	}
+	return msgs, nil
+}
+
+// Append persists newMessages and asynchronously ingests them into the
+// summary DAG and (if a workspace is wired) the archive.
+//
+// Two correctness properties matter:
+//
+//  1. No read-modify-write race. The previous Save took a full history,
+//     diffed it against GetMessages, and then SaveMessages-overwrote.
+//     Two concurrent callers could both observe the pre-state, both
+//     diff, and both overwrite — losing one side's writes. Append takes
+//     the per-conversation lock and either calls MessageAppender (if the
+//     Store supports it) or performs the GetMessages+concat+SaveMessages
+//     fallback under the lock, so the ABA window is closed.
+//
+//  2. No silent ingest drop. The previous implementation used a global
+//     semaphore and dropped DAG ingest when full, which silently shrank
+//     the summarized history (and thereby the assembled context) under
+//     load. Per-conversation serialization means the only contention is
+//     between successive Appends for the same conversation, which is
+//     naturally bounded; we just wg.Add them and let the workers run.
+func (m *compactor) Append(ctx context.Context, conversationID string, newMessages []model.Message) error {
+	if len(newMessages) == 0 {
+		return nil
+	}
+
+	convMu := m.convMu(conversationID)
+	convMu.Lock()
+	defer convMu.Unlock()
+
+	startSeq, err := m.persistAppend(ctx, conversationID, newMessages)
+	if err != nil {
+		return err
+	}
+
+	m.wg.Add(1)
+	go func() {
+		defer m.wg.Done()
+
+		// Ingest and archive each get their own detached context with
+		// independent timeouts so a slow LLM summarization cannot starve
+		// archive (and vice-versa).
+		ingestCtx, cancelIngest := context.WithTimeout(context.WithoutCancel(ctx), defaultIngestTimeout)
+		defer cancelIngest()
+		if err := m.dag.Ingest(ingestCtx, conversationID, newMessages, startSeq); err != nil {
+			telemetry.Warn(ingestCtx, "lossless: async ingest failed",
+				otellog.String("conversation_id", conversationID),
+				otellog.String("error", err.Error()))
+		}
+
+		if m.ws == nil {
+			return
+		}
+		archiveCtx, cancelArchive := context.WithTimeout(context.WithoutCancel(ctx), defaultArchiveTimeout)
+		defer cancelArchive()
+		if _, err := Archive(archiveCtx, m.ws, m.store, m.prefix, conversationID, m.config.Archive); err != nil {
+			telemetry.Warn(archiveCtx, "lossless: async archive failed",
+				otellog.String("conversation_id", conversationID),
+				otellog.String("error", err.Error()))
+		}
+	}()
+
+	return nil
+}
+
+// persistAppend writes newMessages to the underlying store and returns the
+// 0-based sequence number where the first new message lives. Caller must
+// hold the per-conversation lock.
+func (m *compactor) persistAppend(ctx context.Context, conversationID string, newMessages []model.Message) (int, error) {
+	if appender, ok := m.store.(MessageAppender); ok {
+		// We still need the prior count for the DAG sequence. Stores that
+		// support AppendMessages typically also support reading the count
+		// cheaply; if that ever becomes a hotspot, add a CountMessages
+		// optional interface.
+		existing, err := m.store.GetMessages(ctx, conversationID)
+		if err != nil {
+			return 0, err
+		}
+		if err := appender.AppendMessages(ctx, conversationID, newMessages); err != nil {
+			return 0, err
+		}
+		return len(existing), nil
+	}
+
+	existing, err := m.store.GetMessages(ctx, conversationID)
+	if err != nil {
+		return 0, err
+	}
+	combined := make([]model.Message, 0, len(existing)+len(newMessages))
+	combined = append(combined, existing...)
+	combined = append(combined, newMessages...)
+	if err := m.store.SaveMessages(ctx, conversationID, combined); err != nil {
+		return 0, err
+	}
+	return len(existing), nil
+}
+
+func (m *compactor) Clear(ctx context.Context, conversationID string) error {
+	convMu := m.convMu(conversationID)
+	convMu.Lock()
+	defer convMu.Unlock()
+
+	if err := m.store.DeleteMessages(ctx, conversationID); err != nil {
+		return err
+	}
+	return m.dag.store.Rewrite(ctx, conversationID, nil)
+}
+
+// Close waits for all pending async ingest/archive goroutines to complete.
+func (m *compactor) Close() {
+	m.wg.Wait()
+}
+
+// Archive manually triggers archiving for this conversation.
+func (m *compactor) Archive(ctx context.Context, conversationID string) (ArchiveResult, error) {
+	if m.ws == nil {
+		return ArchiveResult{}, nil
+	}
+	convMu := m.convMu(conversationID)
+	convMu.Lock()
+	defer convMu.Unlock()
+	return Archive(ctx, m.ws, m.store, m.prefix, conversationID, m.config.Archive)
+}
+
+func (m *compactor) convMu(convID string) *sync.Mutex {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	mu, ok := m.locks[convID]
+	if !ok {
+		mu = &sync.Mutex{}
+		m.locks[convID] = mu
+	}
+	return mu
+}
+
+// CompactOption customizes a [History] built by [NewCompacted].
+//
+// Compaction knobs (chunk size, recent ratio, leaf pruning, archive
+// threshold, …) used to live in a dedicated Config struct; they are
+// now functional options so adding a new knob does not break every
+// caller passing a struct literal.
+type CompactOption func(*compactOptions)
+
+type compactOptions struct {
+	dag     DAGConfig
+	counter TokenCounter
+	prefix  string
+}
+
+// WithDAGConfig overrides the entire [DAGConfig] used by the DAG
+// summarizer. Individual knobs below compose on top of a default
+// config; use this when you need to set many at once or inherit from a
+// [DefaultDAGConfig].
+func WithDAGConfig(cfg DAGConfig) CompactOption {
+	return func(o *compactOptions) { o.dag = cfg }
+}
+
+// WithChunkSize sets how many messages feed into each leaf summary.
+func WithChunkSize(n int) CompactOption {
+	return func(o *compactOptions) {
+		if n > 0 {
+			o.dag.ChunkSize = n
+		}
+	}
+}
+
+// WithCondenseThreshold sets the sibling-count that triggers a depth+1
+// condensation.
+func WithCondenseThreshold(n int) CompactOption {
+	return func(o *compactOptions) {
+		if n > 0 {
+			o.dag.CondenseThreshold = n
+		}
+	}
+}
+
+// WithMaxDepth caps the summary tree height.
+func WithMaxDepth(n int) CompactOption {
+	return func(o *compactOptions) {
+		if n > 0 {
+			o.dag.MaxDepth = n
+		}
+	}
+}
+
+// WithTokenBudget caps the assembled context size in estimated tokens.
+func WithTokenBudget(n int) CompactOption {
+	return func(o *compactOptions) {
+		if n > 0 {
+			o.dag.TokenBudget = n
+		}
+	}
+}
+
+// WithRecentRatio splits the token budget between "recent verbatim
+// messages" and "older summaries".
+func WithRecentRatio(r float64) CompactOption {
+	return func(o *compactOptions) {
+		if r > 0 {
+			o.dag.RecentRatio = r
+		}
+	}
+}
+
+// WithCompactThreshold triggers compaction once the hot message count
+// crosses this number.
+func WithCompactThreshold(n int) CompactOption {
+	return func(o *compactOptions) {
+		if n > 0 {
+			o.dag.Compact.CompactThreshold = n
+		}
+	}
+}
+
+// WithLeafPrune turns on/off deleting the leaf content after its
+// summary is absorbed into a parent node.
+func WithLeafPrune(b bool) CompactOption {
+	return func(o *compactOptions) { o.dag.Compact.PruneLeafContent = b }
+}
+
+// WithArchiveThreshold sets the hot-message count that triggers
+// archival of the oldest batch to cold storage.
+func WithArchiveThreshold(n int) CompactOption {
+	return func(o *compactOptions) {
+		if n > 0 {
+			o.dag.Archive.ArchiveThreshold = n
+		}
+	}
+}
+
+// WithArchiveBatchSize sets how many messages move per archive run.
+func WithArchiveBatchSize(n int) CompactOption {
+	return func(o *compactOptions) {
+		if n > 0 {
+			o.dag.Archive.ArchiveBatchSize = n
+		}
+	}
+}
+
+// WithTokenCounter swaps the [TokenCounter] used during assembly.
+// Defaults to [EstimateCounter].
+func WithTokenCounter(c TokenCounter) CompactOption {
+	return func(o *compactOptions) {
+		if c != nil {
+			o.counter = c
+		}
+	}
+}
+
+// WithStoragePrefix sets the workspace prefix for summary/archive
+// files. Default "memory" for backwards compatibility with files
+// written by prior builds.
+func WithStoragePrefix(p string) CompactOption {
+	return func(o *compactOptions) {
+		if p != "" {
+			o.prefix = p
+		}
+	}
+}
+
+// NewCompacted returns a [History] that keeps the full transcript but
+// summarizes older turns through a DAG to stay within a token budget.
+// Requires both an LLM (for summarization) and a [workspace.Workspace]
+// (for summary + archive persistence).
+//
+// This is the recommended default for any agent that holds
+// multi-session conversations; use [NewBuffer] for short or
+// single-turn interactions.
+func NewCompacted(store Store, l llm.LLM, ws workspace.Workspace, opts ...CompactOption) History {
+	if store == nil {
+		store = NewInMemoryStore()
+	}
+	o := compactOptions{
+		dag:     DefaultDAGConfig(),
+		counter: &EstimateCounter{},
+		prefix:  "memory",
+	}
+	for _, opt := range opts {
+		opt(&o)
+	}
+	summaryStore := NewFileSummaryStore(ws, o.prefix)
+	dag := NewSummaryDAG(summaryStore, store, l, o.dag, o.counter)
+	return newCompactor(store, dag, o.dag, ws, o.prefix)
+}
+
+// ===== SummaryDAG (was compactor_dag.go) =====
 
 var (
 	dagMeter = telemetry.MeterWithSuffix("memory.dag")
@@ -583,3 +931,126 @@ func (d *SummaryDAG) countMsg(msg llm.Message) int {
 }
 
 func intPtr(i int) *int { return &i }
+
+// ===== SummaryIndex (was compactor_index.go) =====
+
+
+// BuildSummaryIndex generates a summary index string from the top-level
+// summaries of a conversation. The result is intended to be injected into
+// the LLM system prompt via the workflow.VarSummaryIndex board variable.
+//
+// Returns an empty string when no summaries exist or the store is nil.
+// The budget parameter controls the maximum character length of the output;
+// older summaries are omitted (with a note) when the budget is exceeded.
+func BuildSummaryIndex(ctx context.Context, store SummaryStore, convID string, budget int) string {
+	if store == nil || convID == "" {
+		return ""
+	}
+
+	nodes, err := topLevelSummaries(ctx, store, convID)
+	if err != nil || len(nodes) == 0 {
+		return ""
+	}
+
+	return formatSummaryIndex(nodes, budget)
+}
+
+// topLevelSummaries returns the highest-depth active summary nodes for a
+// conversation, sorted by EarliestSeq ascending.
+func topLevelSummaries(ctx context.Context, store SummaryStore, convID string) ([]*SummaryNode, error) {
+	all, err := store.ListAll(ctx, convID)
+	if err != nil {
+		return nil, err
+	}
+
+	deleted := make(map[string]bool)
+	latest := make(map[string]*SummaryNode)
+	maxDepth := 0
+
+	for _, n := range all {
+		if n.Deleted {
+			deleted[n.ID] = true
+			continue
+		}
+		deleted[n.ID] = false
+		latest[n.ID] = n
+		if n.Depth > maxDepth {
+			maxDepth = n.Depth
+		}
+	}
+
+	var top []*SummaryNode
+	for id, isDel := range deleted {
+		if isDel {
+			continue
+		}
+		n := latest[id]
+		if n.Depth == maxDepth {
+			top = append(top, n)
+		}
+	}
+
+	sort.Slice(top, func(i, j int) bool {
+		return top[i].EarliestSeq < top[j].EarliestSeq
+	})
+
+	return top, nil
+}
+
+// formatSummaryIndex renders summary nodes into a human-readable index.
+// It fills from the newest summary backwards; when the budget is exceeded,
+// earlier entries are dropped with a note.
+func formatSummaryIndex(nodes []*SummaryNode, budget int) string {
+	if budget <= 0 {
+		budget = 1500
+	}
+
+	const header = "## Conversation Summary\n\nBelow are compressed summaries of earlier conversation. To view the original messages, call history_expand(summary_id=ID).\n\n"
+
+	lines := make([]string, len(nodes))
+	for i, n := range nodes {
+		content := truncateSummary(n.Content, 200)
+		lines[i] = fmt.Sprintf("[%s] seq %d-%d: %s", n.ID, n.EarliestSeq, n.LatestSeq, content)
+	}
+
+	remaining := budget - len(header)
+	if remaining <= 0 {
+		return ""
+	}
+
+	var included []string
+	total := 0
+	for i := len(lines) - 1; i >= 0; i-- {
+		lineLen := len(lines[i]) + 1 // +1 for newline
+		if total+lineLen > remaining {
+			break
+		}
+		included = append([]string{lines[i]}, included...)
+		total += lineLen
+	}
+
+	if len(included) == 0 {
+		return ""
+	}
+
+	omitted := len(nodes) - len(included)
+	var b strings.Builder
+	b.WriteString(header)
+	if omitted > 0 {
+		fmt.Fprintf(&b, "(%d earlier summaries omitted)\n", omitted)
+	}
+	for _, line := range included {
+		b.WriteString(line)
+		b.WriteByte('\n')
+	}
+
+	return b.String()
+}
+
+func truncateSummary(s string, maxRunes int) string {
+	runes := []rune(s)
+	if len(runes) <= maxRunes {
+		return s
+	}
+	return string(runes[:maxRunes]) + "..."
+}

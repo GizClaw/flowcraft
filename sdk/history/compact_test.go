@@ -25,7 +25,7 @@ func TestCompactArchive_Integration_LongConversation(t *testing.T) {
 	cfg.Archive.ArchiveBatchSize = 20
 
 	dag := NewSummaryDAG(summaryStore, store, ml, cfg, &EstimateCounter{})
-	mem := newCompacted(store, dag, cfg, ws, "memory")
+	mem := newCompactor(store, dag, cfg, ws, "memory")
 
 	ctx := context.Background()
 	convID := "integration-long"

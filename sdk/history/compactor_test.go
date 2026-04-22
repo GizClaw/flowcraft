@@ -32,7 +32,7 @@ func TestCompacted_SaveAndLoad(t *testing.T) {
 	summaryStore := &inMemSummaryStore{data: make(map[string][]*SummaryNode)}
 	ml := &mockSummaryLLM{}
 	dag := NewSummaryDAG(summaryStore, store, ml, DefaultDAGConfig(), &EstimateCounter{})
-	mem := newCompacted(store, dag, DefaultDAGConfig(), nil, "")
+	mem := newCompactor(store, dag, DefaultDAGConfig(), nil, "")
 
 	ctx := context.Background()
 	convID := "test-conv-1"
@@ -70,7 +70,7 @@ func TestCompacted_Clear(t *testing.T) {
 	summaryStore := &inMemSummaryStore{data: make(map[string][]*SummaryNode)}
 	ml := &mockSummaryLLM{}
 	dag := NewSummaryDAG(summaryStore, store, ml, DefaultDAGConfig(), &EstimateCounter{})
-	mem := newCompacted(store, dag, DefaultDAGConfig(), nil, "")
+	mem := newCompactor(store, dag, DefaultDAGConfig(), nil, "")
 
 	ctx := context.Background()
 	convID := "test-clear"
@@ -179,7 +179,7 @@ func TestCompacted_CloseWaitsForAsync(t *testing.T) {
 	summaryStore := &inMemSummaryStore{data: make(map[string][]*SummaryNode)}
 	ml := &mockSummaryLLM{}
 	dag := NewSummaryDAG(summaryStore, store, ml, DefaultDAGConfig(), &EstimateCounter{})
-	mem := newCompacted(store, dag, DefaultDAGConfig(), nil, "")
+	mem := newCompactor(store, dag, DefaultDAGConfig(), nil, "")
 
 	ctx := context.Background()
 
@@ -230,7 +230,7 @@ func TestCompacted_NoIngestDrop(t *testing.T) {
 	summaryStore := &inMemSummaryStore{data: make(map[string][]*SummaryNode)}
 	slowLLM := &slowMockLLM{delay: 50 * time.Millisecond}
 	dag := NewSummaryDAG(summaryStore, store, slowLLM, DefaultDAGConfig(), &EstimateCounter{})
-	mem := newCompacted(store, dag, DefaultDAGConfig(), nil, "")
+	mem := newCompactor(store, dag, DefaultDAGConfig(), nil, "")
 
 	ctx := context.Background()
 	msgs := []llm.Message{

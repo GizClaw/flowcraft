@@ -41,7 +41,7 @@ func main() {
 // chat is the canonical "history + recall + LLM" coordinator: load
 // transcript, recall relevant facts, inject as system prompt, call
 // LLM, persist the new turn, harvest new facts.
-func chat(ctx context.Context, hist history.Memory, mem recall.Memory, chatLLM llm.LLM, scope recall.Scope, convID, userText string) (string, error) {
+func chat(ctx context.Context, hist history.History, mem recall.Memory, chatLLM llm.LLM, scope recall.Scope, convID, userText string) (string, error) {
 	userMsg := model.NewTextMessage(model.RoleUser, userText)
 	transcript, err := hist.Load(ctx, convID, history.Budget{})
 	if err != nil {
