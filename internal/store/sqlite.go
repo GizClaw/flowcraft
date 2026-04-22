@@ -71,6 +71,9 @@ func NewSQLiteStore(ctx context.Context, dsn string) (*SQLiteStore, error) {
 
 func (s *SQLiteStore) Close() error { return s.db.Close() }
 
+// DB returns the underlying *sql.DB so other packages (e.g. eventlog) can share the connection.
+func (s *SQLiteStore) DB() *sql.DB { return s.db }
+
 func (s *SQLiteStore) migrate() error {
 	goose.SetBaseFS(migrations.FS)
 	if err := goose.SetDialect("sqlite3"); err != nil {

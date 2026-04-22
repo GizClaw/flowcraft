@@ -136,13 +136,20 @@ events-fuzz:
 
 .PHONY: events-partition-lint
 # Reject raw partition string literals (e.g. "card:%s", "runtime:1") inside
-# internal/ Go files. Allowed forms: eventlog.PartitionCard(...), etc. The regex
-# requires the colon to be followed by a non-space non-quote char so log
-# messages such as "realm: foo bar" are not flagged. Generated files in
-# internal/eventlog are excluded. Plain grep is used (instead of git grep) so
-# CI checkouts and untracked local edits are both covered.
+# production Go files under internal/. Test files (*_test.go) and apitest/
+# fixtures may construct partitions inline; comments (lines starting with //)
+# never produce code. Generated files in internal/eventlog are excluded.
 events-partition-lint:
-	@hits=$$(grep -RnE --include='*.go' --exclude-dir=eventlog '"(runtime|card|webhook_endpoint|cron_rule|realm|actor):[%{A-Za-z0-9_-]' internal/ 2>/dev/null || true); \
+	@hits=$$(grep -RnE \
+	  --include='*.go' \
+	  --exclude='*_test.go' \
+	  --exclude-dir=eventlog \
+	  --exclude-dir=apitest \
+	  --exclude-dir=projectiontest \
+	  --exclude-dir=eventlogtest \
+	  '"(runtime|card|webhook_endpoint|cron_rule|realm|actor):[%{A-Za-z0-9_-]' \
+	  internal/ 2>/dev/null \
+	  | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' || true); \
 	if [ -n "$$hits" ]; then \
 		echo "ERROR: raw partition string literal in internal/. Use eventlog.Partition* helpers."; \
 		echo "$$hits"; \

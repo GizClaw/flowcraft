@@ -45,7 +45,10 @@ func TestValidFixtures(t *testing.T) {
 // minor wording changes while still confirming the right rule fired.
 func TestInvalidFixtures(t *testing.T) {
 	root := filepath.Join("testdata", "invalid")
-	type expect struct{ name string; needles []string }
+	type expect struct {
+		name    string
+		needles []string
+	}
 	cases := []expect{
 		{"bad_name", []string{"name must match"}},
 		{"imperative_verb", []string{"imperative", "verb whitelist"}},
@@ -99,9 +102,9 @@ func TestInvalidFixtures(t *testing.T) {
 // if so, a substring that the consolidated error output must contain.
 func TestCompatFixtures(t *testing.T) {
 	type expect struct {
-		name        string
-		wantErr     bool
-		wantNeedle  string
+		name       string
+		wantErr    bool
+		wantNeedle string
 	}
 	cases := []expect{
 		{"add_optional_field", false, ""},
