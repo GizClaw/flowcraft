@@ -91,6 +91,73 @@ func TestRun_Synthetic(t *testing.T) {
 	}
 }
 
+// withEvidenceDataset is a focused fixture for the truncation detector: c1
+// has a 4-turn arc whose first turn carries the only evidence. BufferMax=2
+// guarantees that turn falls out of the window, so StrategyBuffer should
+// report Truncated=1 while StrategyNone reports 0.
+func withEvidenceDataset() *dataset.Dataset {
+	return &dataset.Dataset{
+		Name: "with-evidence",
+		Conversations: []dataset.Conversation{{
+			ID: "c1",
+			Turns: []dataset.Turn{
+				{Role: "user", Content: "I bought a yellow Toyota Prius in 2021.", EvidenceID: "c1:1"},
+				{Role: "assistant", Content: "Nice — fuel-efficient choice."},
+				{Role: "user", Content: "Today is sunny in Berlin."},
+				{Role: "assistant", Content: "Enjoy the weather!"},
+			},
+		}},
+		Questions: []dataset.Question{{
+			ID: "q1", ConversationID: "c1",
+			Query:       "What car does the user own?",
+			GoldAnswers: []string{"Prius", "Toyota Prius"},
+			EvidenceIDs: []string{"c1:1"},
+		}},
+	}
+}
+
+func TestRun_TruncatedDetected(t *testing.T) {
+	rep, err := hc.Run(context.Background(), withEvidenceDataset(), hc.Options{
+		AnswerLLM:  echoLLM{},
+		Strategies: []hc.Strategy{hc.StrategyNone, hc.StrategyBuffer},
+		BufferMax:  2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	none := rep.Strategies[hc.StrategyNone]
+	buf := rep.Strategies[hc.StrategyBuffer]
+	if none.EvidenceMeasured != 1 || buf.EvidenceMeasured != 1 {
+		t.Fatalf("EvidenceMeasured: none=%d buf=%d", none.EvidenceMeasured, buf.EvidenceMeasured)
+	}
+	if none.Truncated != 0 {
+		t.Fatalf("StrategyNone must not truncate evidence, got %d (rate=%.2f)", none.Truncated, none.TruncatedRate)
+	}
+	if buf.Truncated != 1 {
+		t.Fatalf("StrategyBuffer (max=2) must truncate the evidence turn, got %d", buf.Truncated)
+	}
+	if buf.TruncatedRate != 1.0 {
+		t.Fatalf("buf.TruncatedRate=%.2f, want 1.0", buf.TruncatedRate)
+	}
+}
+
+func TestRun_NoEvidenceLeavesTruncatedZero(t *testing.T) {
+	// Synthetic carries no evidence_ids; the detector must report 0/0
+	// rather than dividing by zero or flagging false positives.
+	rep, err := hc.Run(context.Background(), dataset.Synthetic(), hc.Options{
+		AnswerLLM:  echoLLM{},
+		Strategies: []hc.Strategy{hc.StrategyNone},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	none := rep.Strategies[hc.StrategyNone]
+	if none.EvidenceMeasured != 0 || none.Truncated != 0 || none.TruncatedRate != 0 {
+		t.Fatalf("expected all-zero evidence stats, got measured=%d truncated=%d rate=%.2f",
+			none.EvidenceMeasured, none.Truncated, none.TruncatedRate)
+	}
+}
+
 func TestRun_CompactedSkippedWithoutLLM(t *testing.T) {
 	rep, err := hc.Run(context.Background(), dataset.Synthetic(), hc.Options{
 		AnswerLLM:  echoLLM{},

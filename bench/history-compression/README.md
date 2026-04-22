@@ -21,6 +21,21 @@ For each strategy we report `qa_judge` / `qa_em` / `qa_f1` plus prompt token
 percentiles and history-load latency. Running all three lets you read off
 the compactor's compression ratio _and_ its quality cost in one shot.
 
+When the dataset carries `evidence_id`s on its turns (LoCoMo does, the
+synthetic fixture does not), the report also includes:
+
+| field              | meaning                                                                         |
+| ------------------ | ------------------------------------------------------------------------------- |
+| `evidence_measured`| Questions that carried at least one `evidence_id`                              |
+| `truncated`        | Of those, how many lost _all_ evidence turns from the loaded prompt            |
+| `truncated_rate`   | `truncated / evidence_measured`                                                |
+
+Reading: `truncated_rate` for `none` is always 0 (the upper bound). A non-zero
+value for `compacted` is the cleanest signal that the compactor's TokenBudget
+is set too aggressively for the dataset at hand — it lets you separate
+"the model failed to use the evidence" (judge ↓ but truncated = 0) from
+"the compactor compressed the evidence away" (judge ↓ and truncated > 0).
+
 ## Quick start
 
 ```bash

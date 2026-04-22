@@ -93,9 +93,22 @@ type PerStrategyReport struct {
 	LoadLatencyP50 time.Duration `json:"history_load_p50"`
 	LoadLatencyP95 time.Duration `json:"history_load_p95"`
 
-	N         int `json:"n"`
-	Errors    int `json:"errors"`
-	Truncated int `json:"truncated"` // count where buffer/compactor likely dropped evidence
+	N      int `json:"n"`
+	Errors int `json:"errors"`
+
+	// EvidenceMeasured is the number of questions that carried at least one
+	// evidence_id (i.e. the subset on which Truncated is meaningful).
+	// Datasets without evidence_ids report 0 for both.
+	EvidenceMeasured int `json:"evidence_measured"`
+	// Truncated counts evidence-bearing questions for which the loaded prompt
+	// no longer contains any of the evidence turns' content. Reading: a
+	// non-zero value pinpoints "this strategy compressed away the evidence
+	// the question requires". For StrategyNone this should always be 0; if
+	// it is not, the dataset's evidence_ids are inconsistent with its
+	// transcripts and the rest of the report should not be trusted.
+	Truncated int `json:"truncated"`
+	// TruncatedRate = Truncated / EvidenceMeasured (NaN serializes as 0).
+	TruncatedRate float64 `json:"truncated_rate"`
 }
 
 // Report is the top-level JSON document the cmd writes.
@@ -165,10 +178,17 @@ func runStrategy(ctx context.Context, ds *dataset.Dataset, s Strategy, opts Opti
 		defer c.Close()
 	}
 
+	// evidenceFingerprints[convID][evidenceID] = normalized snippet of the
+	// turn whose evidence_id we want to recover post-Load. We keep at most
+	// evidenceFingerprintLen runes of each turn so the substring check stays
+	// robust against compactor rephrasing of trailing words while still
+	// being unique inside a conversation.
+	evidence := map[string]map[string]string{}
 	for _, conv := range ds.Conversations {
 		if err := ingest(ctx, conv); err != nil {
 			return nil, fmt.Errorf("ingest %s: %w", conv.ID, err)
 		}
+		evidence[conv.ID] = fingerprintTurns(conv.Turns)
 	}
 
 	counter := &history.EstimateCounter{}
@@ -184,9 +204,20 @@ func runStrategy(ctx context.Context, ds *dataset.Dataset, s Strategy, opts Opti
 			continue
 		}
 
-		body := formatHistory(msgs) + "\n\nQUESTION: " + q.Query
+		hist := formatHistory(msgs)
+		body := hist + "\n\nQUESTION: " + q.Query
 		prompt := fmt.Sprintf(opts.AnswerPrompt, body)
 		tokens = append(tokens, counter.Count(prompt))
+
+		// Evidence-loss check runs against the loaded transcript only (not
+		// the question text), so a question whose query happens to echo a
+		// turn cannot mask that the compactor dropped that turn.
+		if len(q.EvidenceIDs) > 0 {
+			r.EvidenceMeasured++
+			if !evidencePresent(hist, evidence[q.ConversationID], q.EvidenceIDs) {
+				r.Truncated++
+			}
+		}
 
 		resp, _, err := opts.AnswerLLM.Generate(ctx, []llm.Message{
 			{Role: model.RoleUser, Parts: []model.Part{{Type: model.PartText, Text: prompt}}},
@@ -218,7 +249,54 @@ func runStrategy(ctx context.Context, ds *dataset.Dataset, s Strategy, opts Opti
 	r.EM = sumEM / float64(n)
 	r.PromptTokensP50, r.PromptTokensP95, r.PromptTokensMax = tokenStats(tokens)
 	r.LoadLatencyP50, r.LoadLatencyP95 = latencyPercentiles(loadLats)
+	if r.EvidenceMeasured > 0 {
+		r.TruncatedRate = float64(r.Truncated) / float64(r.EvidenceMeasured)
+	}
 	return r, nil
+}
+
+// evidenceFingerprintLen bounds how much of each evidence turn we use as the
+// presence marker in the loaded prompt. ~32 normalized runes is enough to be
+// unique inside a single conversation without forcing verbatim survival of
+// long trailing sentences (which the compactor is allowed to drop).
+const evidenceFingerprintLen = 32
+
+func fingerprintTurns(turns []dataset.Turn) map[string]string {
+	out := map[string]string{}
+	for _, t := range turns {
+		if t.EvidenceID == "" {
+			continue
+		}
+		fp := metrics.Normalize(t.Content)
+		if r := []rune(fp); len(r) > evidenceFingerprintLen {
+			fp = string(r[:evidenceFingerprintLen])
+		}
+		if fp == "" {
+			continue
+		}
+		out[t.EvidenceID] = fp
+	}
+	return out
+}
+
+// evidencePresent returns true iff at least one of want's fingerprints is a
+// substring of the loaded transcript. Mirrors the "any-hit" semantics
+// bench/locomo's evidenceKHit uses, so the two reports stay comparable.
+func evidencePresent(loaded string, fps map[string]string, want []string) bool {
+	if len(fps) == 0 {
+		return false
+	}
+	norm := metrics.Normalize(loaded)
+	for _, id := range want {
+		fp, ok := fps[id]
+		if !ok {
+			continue
+		}
+		if strings.Contains(norm, fp) {
+			return true
+		}
+	}
+	return false
 }
 
 // buildHistory returns the History impl for the strategy plus an ingest

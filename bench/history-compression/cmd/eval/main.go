@@ -95,8 +95,12 @@ func main() {
 			fmt.Printf("  %-9s SKIPPED (%s)\n", s.Strategy, s.Skipped)
 			continue
 		}
-		fmt.Printf("  %-9s judge=%.3f f1=%.3f em=%.3f tokens.p95=%d load.p95=%s\n",
-			s.Strategy, s.Judge, s.F1, s.EM, s.PromptTokensP95, s.LoadLatencyP95)
+		trunc := "n/a"
+		if s.EvidenceMeasured > 0 {
+			trunc = fmt.Sprintf("%d/%d (%.1f%%)", s.Truncated, s.EvidenceMeasured, s.TruncatedRate*100)
+		}
+		fmt.Printf("  %-9s judge=%.3f f1=%.3f em=%.3f tokens.p95=%d load.p95=%s truncated=%s\n",
+			s.Strategy, s.Judge, s.F1, s.EM, s.PromptTokensP95, s.LoadLatencyP95, trunc)
 	}
 }
 
