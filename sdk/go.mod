@@ -5,6 +5,7 @@ go 1.25.0
 require (
 	github.com/dop251/goja v0.0.0-20260219130522-0ba9a5494a59
 	github.com/expr-lang/expr v1.17.8
+	github.com/oklog/ulid/v2 v2.1.1
 	github.com/pion/webrtc/v4 v4.2.9
 	github.com/pkoukk/tiktoken-go v0.1.8
 	github.com/robfig/cron/v3 v3.0.1

@@ -104,35 +104,6 @@ func (c LosslessConfig) toDAGConfig() DAGConfig {
 	return cfg
 }
 
-// LongTermConfig controls long-term memory extraction and injection.
-type LongTermConfig struct {
-	Enabled    bool     `json:"enabled"`
-	Categories []string `json:"categories,omitempty"`
-	MaxEntries int      `json:"max_entries,omitempty"`
-
-	// PinnedCategories are always fully injected regardless of query relevance.
-	// Empty uses default: [profile, preferences].
-	PinnedCategories []MemoryCategory `json:"pinned_categories,omitempty"`
-
-	// RecallCategories are searched by query relevance.
-	// Empty uses default: [entities, events, cases, patterns].
-	RecallCategories []MemoryCategory `json:"recall_categories,omitempty"`
-
-	// RecallPartitions overrides which partitions each recall category searches.
-	// nil or missing keys default to user-only ([PartitionUser]).
-	// Example: shared "adventure" rows live in the global bucket — set
-	// RecallPartitions["adventure"] = []MemoryPartition{PartitionUser, PartitionGlobal}.
-	RecallPartitions map[MemoryCategory][]MemoryPartition `json:"recall_partitions,omitempty"`
-
-	// ScopeEnabled, when true, causes ContextAssembler to use MemoryScope for
-	// List/Search (requires SetScope on MemoryAwareMemory before Load).
-	ScopeEnabled bool `json:"scope_enabled,omitempty"`
-
-	// GlobalCategories are stored and queried in the runtime-global bucket
-	// (empty UserID). When nil, DefaultGlobalCategories is used.
-	GlobalCategories []MemoryCategory `json:"global_categories,omitempty"`
-}
-
 const (
 	defaultMaxConversations = 10000
 	defaultConversationTTL  = 24 * time.Hour

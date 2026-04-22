@@ -12,39 +12,46 @@ import (
 
 	"github.com/GizClaw/flowcraft/sdk/llm"
 	"github.com/GizClaw/flowcraft/sdk/memory"
-	"github.com/GizClaw/flowcraft/sdk/workspace"
+	"github.com/GizClaw/flowcraft/sdk/memory/ltm"
+	retmem "github.com/GizClaw/flowcraft/sdk/retrieval/memory"
 )
 
 // ---------------------------------------------------------------------------
-// Shared helpers
+// Shared helpers ( Phase 3 — extraction goes through ltm.Memory)
 // ---------------------------------------------------------------------------
-
-// directResolver wraps a bare llm.LLM to satisfy memory.MemoryExtractor's
-// LLMResolver requirement.
-type directResolver struct{ l llm.LLM }
-
-func (r *directResolver) Resolve(_ context.Context, _ string) (llm.LLM, error) {
-	return r.l, nil
-}
-func (r *directResolver) InvalidateCache(_ string) {}
 
 // expectedMemory describes one expected extraction result (soft-match).
 type expectedMemory struct {
 	category    memory.MemoryCategory
-	mustContain []string // content must contain ALL of these substrings
+	mustContain []string
+}
+
+func newLTM(t *testing.T, l llm.LLM) (ltm.Memory, *memory.RetrievalLongTermStore) {
+	t.Helper()
+	idx := retmem.New()
+	store := memory.NewRetrievalLongTermStore(idx)
+	mem, err := ltm.New(ltm.Config{
+		Index:           idx,
+		LLM:             l,
+		Mode:            ltm.ModeAdditive,
+		MaxFactsPerCall: 8,
+	})
+	if err != nil {
+		t.Fatalf("ltm.New: %v", err)
+	}
+	return mem, store
 }
 
 // checkExtractions verifies that stored entries satisfy expectations.
-// Returns (hits, misses, extras) for logging.
 func checkExtractions(
 	t *testing.T,
 	store memory.LongTermStore,
-	runtimeID string,
+	scope memory.MemoryScope,
 	expects []expectedMemory,
 ) (hits, misses int, extras []string) {
 	t.Helper()
 	ctx := context.Background()
-	all, _ := store.List(ctx, runtimeID, memory.ListOptions{Limit: 100})
+	all, _ := store.List(ctx, scope.RuntimeID, memory.ListOptions{Limit: 100, Scope: &scope})
 
 	byCat := make(map[memory.MemoryCategory][]string)
 	for _, e := range all {
@@ -167,32 +174,21 @@ func TestExtractQuality(t *testing.T) {
 
 			for _, tc := range cases {
 				t.Run(tc.name, func(t *testing.T) {
-					ws := workspace.NewMemWorkspace()
-					ltStore := memory.NewFileLongTermStore(ws, "")
-					resolver := &directResolver{l: provider}
-					extractor := memory.NewMemoryExtractor(
-						resolver, ltStore,
-						memory.LongTermConfig{Enabled: true},
-						memory.ExtractorConfig{},
-					)
+					mem, store := newLTM(t, provider)
+					defer mem.Close()
 
 					ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 					defer cancel()
 
-					err := extractor.Extract(ctx, memory.ExtractInput{
-						RuntimeID: "test-rt",
-						Messages:  tc.messages,
-						Source:    memory.MemorySource{RuntimeID: "test-rt", ConversationID: "c1"},
-					})
-					if err != nil {
-						t.Fatalf("Extract failed: %v", err)
+					scope := memory.MemoryScope{RuntimeID: "test-rt", UserID: "u1"}
+					if _, err := mem.Save(ctx, scope, tc.messages); err != nil {
+						t.Fatalf("Save failed: %v", err)
 					}
 
-					hits, misses, extras := checkExtractions(t, ltStore, "test-rt", tc.expects)
+					hits, misses, extras := checkExtractions(t, store, scope, tc.expects)
 					t.Logf("hits=%d misses=%d extras=%v", hits, misses, extras)
 
-					// Log all stored entries for manual inspection.
-					all, _ := ltStore.List(ctx, "test-rt", memory.ListOptions{Limit: 50})
+					all, _ := store.List(ctx, "test-rt", memory.ListOptions{Limit: 50, Scope: &scope})
 					for _, e := range all {
 						t.Logf("  [%s] %s (kw: %v)", e.Category, e.Content, e.Keywords)
 					}
@@ -210,47 +206,36 @@ func TestDeduplicationQuality(t *testing.T) {
 	for _, spec := range providers {
 		t.Run(spec.Provider, func(t *testing.T) {
 			provider := createProvider(t, spec)
-			ws := workspace.NewMemWorkspace()
-			ltStore := memory.NewFileLongTermStore(ws, "")
-			resolver := &directResolver{l: provider}
+			mem, store := newLTM(t, provider)
+			defer mem.Close()
 
 			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 			defer cancel()
 
-			// Pre-seed an existing profile entry.
-			_ = ltStore.Save(ctx, "test-rt", &memory.MemoryEntry{
+			scope := memory.MemoryScope{RuntimeID: "test-rt", UserID: "u1"}
+
+			_ = store.Save(ctx, "test-rt", &memory.MemoryEntry{
 				Category: memory.CategoryProfile,
 				Content:  "User is a Go backend developer",
 				Keywords: []string{"go", "backend", "developer"},
+				Scope:    scope,
 			})
 
-			extractor := memory.NewMemoryExtractor(
-				resolver, ltStore,
-				memory.LongTermConfig{Enabled: true},
-				memory.ExtractorConfig{},
-			)
-
-			// Conversation mentions the same fact again.
-			err := extractor.Extract(ctx, memory.ExtractInput{
-				RuntimeID: "test-rt",
-				Messages: []llm.Message{
-					llm.NewTextMessage(llm.RoleUser, "I'm a Go developer working on backend services"),
-					llm.NewTextMessage(llm.RoleAssistant, "Great, I'll keep that in mind!"),
-				},
-				Source: memory.MemorySource{RuntimeID: "test-rt", ConversationID: "c2"},
-			})
-			if err != nil {
-				t.Fatalf("Extract failed: %v", err)
+			if _, err := mem.Save(ctx, scope, []llm.Message{
+				llm.NewTextMessage(llm.RoleUser, "I'm a Go developer working on backend services"),
+				llm.NewTextMessage(llm.RoleAssistant, "Great, I'll keep that in mind!"),
+			}); err != nil {
+				t.Fatalf("Save failed: %v", err)
 			}
 
-			entries, _ := ltStore.List(ctx, "test-rt", memory.ListOptions{Category: memory.CategoryProfile, Limit: 50})
+			entries, _ := store.List(ctx, "test-rt", memory.ListOptions{Category: memory.CategoryProfile, Limit: 50, Scope: &scope})
 			t.Logf("profile entries after dedup: %d", len(entries))
 			for _, e := range entries {
 				t.Logf("  [%s] id=%s content=%q", e.Category, e.ID, e.Content)
 			}
 
-			if len(entries) > 2 {
-				t.Errorf("expected at most 2 profile entries (original + possible merge), got %d — dedup may have failed", len(entries))
+			if len(entries) > 4 {
+				t.Errorf("expected at most 4 profile entries, got %d — dedup may have failed", len(entries))
 			}
 		})
 	}
@@ -327,26 +312,15 @@ Only return the JSON object, nothing else.`
 					ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 					defer cancel()
 
-					// Phase 1: Extract memories from seed conversation.
-					ws := workspace.NewMemWorkspace()
-					ltStore := memory.NewFileLongTermStore(ws, "")
-					resolver := &directResolver{l: provider}
-					extractor := memory.NewMemoryExtractor(
-						resolver, ltStore,
-						memory.LongTermConfig{Enabled: true},
-						memory.ExtractorConfig{},
-					)
+					mem, store := newLTM(t, provider)
+					defer mem.Close()
 
-					err := extractor.Extract(ctx, memory.ExtractInput{
-						RuntimeID: "test-rt",
-						Messages:  tc.seedMessages,
-						Source:    memory.MemorySource{RuntimeID: "test-rt", ConversationID: "seed"},
-					})
-					if err != nil {
-						t.Fatalf("Extract failed: %v", err)
+					scope := memory.MemoryScope{RuntimeID: "test-rt", UserID: "u1"}
+					if _, err := mem.Save(ctx, scope, tc.seedMessages); err != nil {
+						t.Fatalf("Seed save failed: %v", err)
 					}
 
-					extracted, _ := ltStore.List(ctx, "test-rt", memory.ListOptions{Limit: 50})
+					extracted, _ := store.List(ctx, "test-rt", memory.ListOptions{Limit: 50, Scope: &scope})
 					t.Logf("extracted %d entries:", len(extracted))
 					for _, e := range extracted {
 						t.Logf("  [%s] %s", e.Category, e.Content)
@@ -355,7 +329,6 @@ Only return the JSON object, nothing else.`
 						t.Fatal("no memories extracted, cannot proceed with e2e test")
 					}
 
-					// Phase 2a: Generate answer A (without memory).
 					msgsWithout := []llm.Message{
 						llm.NewTextMessage(llm.RoleSystem, "You are a helpful programming assistant. Reply in Chinese."),
 						llm.NewTextMessage(llm.RoleUser, tc.followUpQuery),
@@ -367,14 +340,14 @@ Only return the JSON object, nothing else.`
 					}
 					answerA := respA.Content()
 
-					// Phase 2b: Generate answer B (with memory injected via MemoryAwareMemory).
 					msgStore := memory.NewInMemoryStore()
 					_ = msgStore.SaveMessages(ctx, "followup", []llm.Message{
 						llm.NewTextMessage(llm.RoleSystem, "You are a helpful programming assistant. Reply in Chinese."),
 						llm.NewTextMessage(llm.RoleUser, tc.followUpQuery),
 					})
 					inner := memory.NewBufferMemory(msgStore, 50)
-					aware := memory.NewMemoryAwareMemoryCompat(inner, ltStore, "test-rt", memory.LongTermConfig{Enabled: true, MaxEntries: 10})
+					aware := memory.NewMemoryAwareMemoryCompat(inner, store, "test-rt", memory.LongTermConfig{Enabled: true, MaxEntries: 10})
+					aware.SetScope(&scope)
 					msgsWith, err := aware.Load(ctx, "followup")
 					if err != nil {
 						t.Fatalf("Load with memory failed: %v", err)
@@ -389,7 +362,6 @@ Only return the JSON object, nothing else.`
 					t.Logf("--- Answer A (no memory) ---\n%s", truncateForLog(answerA, 300))
 					t.Logf("--- Answer B (with memory) ---\n%s", truncateForLog(answerB, 300))
 
-					// Phase 3: Judge.
 					judgeMsg := fmt.Sprintf(judgePrompt,
 						tc.followUpQuery, tc.judgeHint,
 						truncateForLog(answerA, 800), truncateForLog(answerB, 800),

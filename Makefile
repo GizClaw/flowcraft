@@ -1,7 +1,7 @@
 SHELL := /bin/bash
 .DEFAULT_GOAL := help
 
-MODULES := sdk sdkx examples/voice-pipeline
+MODULES := sdk sdkx bench examples/voice-pipeline
 
 .PHONY: help
 help:
