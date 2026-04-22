@@ -6,6 +6,27 @@ import (
 	"testing"
 )
 
+func TestScopedWorkspace_Rename(t *testing.T) {
+	inner := NewMemWorkspace()
+	inner.MustWrite("allowed/old.txt", []byte("p"))
+	sw := NewScopedWorkspace(inner, WithAllowWrite("allowed/**"))
+	ctx := context.Background()
+
+	// rename within allowed -> ok
+	if err := sw.Rename(ctx, "allowed/old.txt", "allowed/new.txt"); err != nil {
+		t.Fatalf("rename within allowed: %v", err)
+	}
+	// rename out of allowed -> denied
+	if err := sw.Rename(ctx, "allowed/new.txt", "other/x.txt"); err == nil {
+		t.Fatal("expected rename to denied dst to fail")
+	}
+	// rename from denied src -> denied
+	inner.MustWrite("other/y.txt", []byte("q"))
+	if err := sw.Rename(ctx, "other/y.txt", "allowed/y.txt"); err == nil {
+		t.Fatal("expected rename from denied src to fail")
+	}
+}
+
 func TestScopedWorkspace_ReadWrite(t *testing.T) {
 	inner := NewMemWorkspace()
 	inner.MustWrite("allowed/file.txt", []byte("ok"))

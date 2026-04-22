@@ -76,6 +76,30 @@ func (w *objectWorkspace) Append(ctx context.Context, path string, data []byte) 
 	return w.store.Put(ctx, key, append(existing, data...))
 }
 
+func (w *objectWorkspace) Rename(ctx context.Context, src, dst string) error {
+	srcKey, err := w.resolve(src)
+	if err != nil {
+		return err
+	}
+	dstKey, err := w.resolve(dst)
+	if err != nil {
+		return err
+	}
+	if srcKey == dstKey {
+		return nil
+	}
+	// Object stores generally lack atomic rename; do copy + delete.
+	// Callers that need true atomicity should use a local-fs workspace.
+	data, err := w.store.Get(ctx, srcKey)
+	if err != nil {
+		return mapErr(src, err)
+	}
+	if err := w.store.Put(ctx, dstKey, data); err != nil {
+		return err
+	}
+	return w.store.Del(ctx, srcKey)
+}
+
 func (w *objectWorkspace) Delete(ctx context.Context, path string) error {
 	key, err := w.resolve(path)
 	if err != nil {

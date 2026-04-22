@@ -19,6 +19,17 @@ type Workspace interface {
 	Read(ctx context.Context, path string) ([]byte, error)
 	Write(ctx context.Context, path string, data []byte) error
 	Append(ctx context.Context, path string, data []byte) error
+	// Rename moves src to dst within the same workspace. Implementations
+	// MUST be atomic when the underlying medium supports it (e.g. POSIX
+	// rename(2) on a local filesystem). When the medium cannot rename
+	// atomically (e.g. object stores) the implementation MAY fall back
+	// to copy + delete, but callers should treat Rename as the canonical
+	// "publish a finalized payload" operation: write to a tmp path then
+	// Rename to the live path so readers never observe a half-written file.
+	//
+	// Returns ErrNotFound if src does not exist. Overwriting an existing
+	// dst is allowed; on local filesystems this is atomic.
+	Rename(ctx context.Context, src, dst string) error
 	Delete(ctx context.Context, path string) error
 	RemoveAll(ctx context.Context, path string) error
 	List(ctx context.Context, dir string) ([]fs.DirEntry, error)

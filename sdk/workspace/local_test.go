@@ -326,6 +326,41 @@ func TestValidateGitURL(t *testing.T) {
 
 // --- helpers ---
 
+func TestLocalWorkspace_Rename(t *testing.T) {
+	ws, ctx := newLocalWS(t)
+	if err := ws.Write(ctx, "a/old.txt", []byte("payload")); err != nil {
+		t.Fatal(err)
+	}
+	if err := ws.Rename(ctx, "a/old.txt", "b/new.txt"); err != nil {
+		t.Fatal(err)
+	}
+	if exists, _ := ws.Exists(ctx, "a/old.txt"); exists {
+		t.Fatal("src must not exist after rename")
+	}
+	data, err := ws.Read(ctx, "b/new.txt")
+	if err != nil || string(data) != "payload" {
+		t.Fatalf("read dst: data=%q err=%v", data, err)
+	}
+	// rename overwrites existing dst.
+	if err := ws.Write(ctx, "src.txt", []byte("v2")); err != nil {
+		t.Fatal(err)
+	}
+	if err := ws.Rename(ctx, "src.txt", "b/new.txt"); err != nil {
+		t.Fatal(err)
+	}
+	data2, _ := ws.Read(ctx, "b/new.txt")
+	if string(data2) != "v2" {
+		t.Fatalf("rename should overwrite; got %q", data2)
+	}
+}
+
+func TestLocalWorkspace_Rename_SrcNotFound(t *testing.T) {
+	ws, ctx := newLocalWS(t)
+	if err := ws.Rename(ctx, "missing.txt", "dst.txt"); err == nil {
+		t.Fatal("expected error when src missing")
+	}
+}
+
 func newLocalWS(t *testing.T) (*LocalWorkspace, context.Context) {
 	t.Helper()
 	ws, err := NewLocalWorkspace(t.TempDir())

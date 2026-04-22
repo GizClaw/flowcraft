@@ -81,6 +81,31 @@ func (m *MemWorkspace) Append(_ context.Context, path string, data []byte) error
 	return nil
 }
 
+func (m *MemWorkspace) Rename(_ context.Context, src, dst string) error {
+	srcP, err := cleanPath(src)
+	if err != nil {
+		return err
+	}
+	dstP, err := cleanPath(dst)
+	if err != nil {
+		return err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	f, ok := m.files[srcP]
+	if !ok || f.isDir {
+		return fmt.Errorf("%w: %s", ErrNotFound, src)
+	}
+	if srcP == dstP {
+		return nil
+	}
+	m.ensureParents(dstP)
+	m.files[dstP] = f
+	delete(m.files, srcP)
+	f.modTime = time.Now()
+	return nil
+}
+
 func (m *MemWorkspace) Delete(_ context.Context, path string) error {
 	p, err := cleanPath(path)
 	if err != nil {
