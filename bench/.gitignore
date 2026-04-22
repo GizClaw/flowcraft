@@ -1,11 +1,13 @@
 # Bench-local artifacts; not tracked.
 #
-# - locomo/data/    upstream LoCoMo / LongMemEval dumps + converted .jsonl
-#                   (CC-BY but bulky; users fetch via cmd/fetch + cmd/convert-locomo)
-# - locomo/results/ per-run report JSON written by cmd/eval
+# - locomo/data/                  upstream LoCoMo / LongMemEval dumps + converted .jsonl
+#                                 (CC-BY but bulky; users fetch via cmd/fetch + cmd/convert-locomo)
+# - locomo/results/               per-run report JSON written by cmd/eval
+# - history-compression/results/  per-run report JSON written by cmd/eval
 # - compiled binaries from `go build ./locomo/cmd/...`
 locomo/data/
 locomo/results/
+history-compression/results/
 locomo/cmd/*/convert-locomo
 locomo/cmd/*/eval
 locomo/cmd/*/compare
