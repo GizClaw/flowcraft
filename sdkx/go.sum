@@ -8,8 +8,8 @@ github.com/Azure/azure-sdk-for-go/sdk/internal v1.10.0/go.mod h1:iZDifYGJTIgIIkY
 github.com/AzureAD/microsoft-authentication-library-for-go v1.2.2 h1:XHOnouVk1mxXfQidrMEnLlPk9UMeRtyBTnEFtxkV0kU=
 github.com/AzureAD/microsoft-authentication-library-for-go v1.2.2/go.mod h1:wP83P5OoQ5p6ip3ScPr0BAq0BvuPAvacpEuSzyouqAI=
 github.com/BurntSushi/toml v0.3.1/go.mod h1:xHWCNGjB5oqiDr8zfno3MHue2Ht5sIBksp03qcyfWMU=
-github.com/GizClaw/flowcraft/sdk v0.1.10 h1:amK5MoulTipN/DlBFbTfyZ0pgx0YnZnvA/84fF7P62s=
-github.com/GizClaw/flowcraft/sdk v0.1.10/go.mod h1:ANQvC68Ue7IL474d8XcJTyHd19jV8HdG4tDHBMEzM+4=
+github.com/GizClaw/flowcraft/sdk v0.1.11 h1:kOKTtxucT8g/mNuvxWgyYz+GUqiRcVY95w00pFzyfbc=
+github.com/GizClaw/flowcraft/sdk v0.1.11/go.mod h1:ANQvC68Ue7IL474d8XcJTyHd19jV8HdG4tDHBMEzM+4=
 github.com/PuerkitoBio/goquery v1.11.0 h1:jZ7pwMQXIITcUXNH83LLk+txlaEy6NVOfTuP43xxfqw=
 github.com/PuerkitoBio/goquery v1.11.0/go.mod h1:wQHgxUOU3JGuj3oD/QFfxUdlzW6xPHfqyHre6VMY4DQ=
 github.com/andybalholm/cascadia v1.3.3 h1:AG2YHrzJIm4BZ19iwJ/DAua6Btl3IwJX+VI4kktS1LM=
