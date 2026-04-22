@@ -169,7 +169,7 @@ events-partition-lint:
 	  --exclude-dir=apitest \
 	  --exclude-dir=projectiontest \
 	  --exclude-dir=eventlogtest \
-	  '"(runtime|card|webhook_endpoint|cron_rule|realm|actor):[%{A-Za-z0-9_-]' \
+	  '"(runtime|card|webhook|cron|realm|actor):[%{A-Za-z0-9_-]' \
 	  internal/ 2>/dev/null \
 	  | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' || true); \
 	if [ -n "$$hits" ]; then \

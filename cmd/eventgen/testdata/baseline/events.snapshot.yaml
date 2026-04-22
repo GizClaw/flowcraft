@@ -49,9 +49,18 @@ events:
             card_id:
                 type: string
                 required: true
+            conversation_id:
+                type: string
             delta:
                 type: string
                 required: true
+            delta_seq:
+                type: int64
+                required: true
+            finished:
+                type: bool
+            role:
+                type: string
             run_id:
                 type: string
                 required: true
@@ -67,6 +76,11 @@ events:
             delta:
                 type: string
                 required: true
+            delta_seq:
+                type: int64
+                required: true
+            finished:
+                type: bool
             run_id:
                 type: string
                 required: true
@@ -76,6 +90,8 @@ events:
         partition: card
         payload_type: AgentToolInvokedPayload
         fields:
+            arguments:
+                type: string
             call_id:
                 type: string
                 required: true
@@ -100,11 +116,16 @@ events:
             card_id:
                 type: string
                 required: true
+            duration_ms:
+                type: int64
             error:
                 type: string
             output:
                 type: string
             run_id:
+                type: string
+                required: true
+            status:
                 type: string
                 required: true
             tool_name:
@@ -122,9 +143,19 @@ events:
             actor_id:
                 type: string
                 required: true
-            error:
+            error_class:
                 type: string
                 required: true
+            error_message:
+                type: string
+                required: true
+            ip_address:
+                type: string
+            occurred_at:
+                type: timestamp
+                required: true
+            user_agent:
+                type: string
     audit.action.performed:
         version: 1
         category: audit
@@ -137,9 +168,20 @@ events:
             actor_id:
                 type: string
                 required: true
-            resource:
+            details:
+                type: map
+                value_type: any
+            ip_address:
                 type: string
+            occurred_at:
+                type: timestamp
                 required: true
+            target_id:
+                type: string
+            target_type:
+                type: string
+            user_agent:
+                type: string
     chat.callback.delivered:
         version: 1
         category: business
@@ -150,6 +192,12 @@ events:
                 type: string
                 required: true
             card_id:
+                type: string
+                required: true
+            conversation_id:
+                type: string
+                required: true
+            delivered_to:
                 type: string
                 required: true
             success:
@@ -167,6 +215,9 @@ events:
             card_id:
                 type: string
                 required: true
+            conversation_id:
+                type: string
+                required: true
             reason:
                 type: string
     chat.callback.queued:
@@ -181,6 +232,16 @@ events:
             card_id:
                 type: string
                 required: true
+            content:
+                type: string
+            content_type:
+                type: string
+                required: true
+            conversation_id:
+                type: string
+                required: true
+            source_card_id:
+                type: string
     chat.message.sent:
         version: 1
         category: business
@@ -188,6 +249,11 @@ events:
         payload_type: ChatMessageSentPayload
         fields:
             card_id:
+                type: string
+                required: true
+            content:
+                type: string
+            conversation_id:
                 type: string
                 required: true
             message_id:
@@ -428,12 +494,19 @@ events:
             delivery_id:
                 type: string
                 required: true
+            duration_ms:
+                type: int64
             endpoint_id:
                 type: string
                 required: true
-            error:
+            error_class:
                 type: string
                 required: true
+            error_message:
+                type: string
+                required: true
+            status_code:
+                type: int32
     webhook.outbound.exhausted:
         version: 1
         category: audit
@@ -446,8 +519,11 @@ events:
             endpoint_id:
                 type: string
                 required: true
-            last_error:
+            final_error:
                 type: string
+                required: true
+            total_attempts:
+                type: int32
                 required: true
     webhook.outbound.queued:
         version: 1
@@ -455,10 +531,27 @@ events:
         partition: webhook_endpoint
         payload_type: WebhookOutboundQueuedPayload
         fields:
+            body:
+                type: string
             delivery_id:
                 type: string
                 required: true
             endpoint_id:
+                type: string
+                required: true
+            headers:
+                type: map
+                value_type: string
+            initial_backoff_ms:
+                type: int32
+            max_attempts:
+                type: int32
+            method:
+                type: string
+                required: true
+            source_event_seq:
+                type: int64
+            url:
                 type: string
                 required: true
     webhook.outbound.scheduled:
@@ -476,9 +569,11 @@ events:
             endpoint_id:
                 type: string
                 required: true
-            next_at:
+            not_before:
                 type: timestamp
                 required: true
+            reason:
+                type: string
     webhook.outbound.sent:
         version: 1
         category: operational
@@ -491,9 +586,14 @@ events:
             delivery_id:
                 type: string
                 required: true
+            duration_ms:
+                type: int64
+                required: true
             endpoint_id:
                 type: string
                 required: true
+            response_body:
+                type: string
             status_code:
                 type: int32
                 required: true

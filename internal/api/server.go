@@ -12,7 +12,9 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/internal/api/oas"
+	auditcmd "github.com/GizClaw/flowcraft/internal/commands/audit"
 	"github.com/GizClaw/flowcraft/internal/errcode"
+	"github.com/GizClaw/flowcraft/internal/eventlog"
 	"github.com/GizClaw/flowcraft/internal/gateway"
 	"github.com/GizClaw/flowcraft/internal/model"
 	"github.com/GizClaw/flowcraft/internal/platform"
@@ -43,6 +45,8 @@ type ServerDeps struct {
 	Gateway    GatewayIntegration
 	PluginDir  string
 	Monitoring MonitoringConfig
+	EventLog   *eventlog.SQLiteLog
+	AuditCmds  *auditcmd.Commands
 }
 
 // MonitoringConfig holds monitoring threshold settings.
@@ -113,6 +117,14 @@ func NewServer(cfg ServerConfig, deps ServerDeps, jwtCfg *JWTConfig) *Server {
 	// Webhook routes are dynamic per channel.
 	if s.deps.Gateway != nil {
 		mux.HandleFunc("POST /api/webhook/{channel}", s.deps.Gateway.HandleWebhook)
+	}
+
+	// Admin audit endpoints. Mounted directly because they read from the
+	// projector-maintained audit_entries table and are RBAC-gated to super
+	// admins; the OpenAPI schema documents them as observability surface.
+	if s.deps.EventLog != nil {
+		mux.HandleFunc("GET /api/admin/audit", s.handleAdminAuditList)
+		mux.HandleFunc("GET /api/admin/audit/{seq}", s.handleAdminAuditGet)
 	}
 
 	// SPA fallback: method-agnostic "/" is less specific than "/api/" in all

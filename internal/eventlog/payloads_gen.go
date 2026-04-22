@@ -26,75 +26,102 @@ type AgentRunStartedPayload struct {
 
 // AgentStreamDeltaPayload is generated from contracts.
 type AgentStreamDeltaPayload struct {
-	CardID string `json:"card_id"`
-	Delta  string `json:"delta"`
-	RunID  string `json:"run_id"`
+	CardID         string `json:"card_id"`
+	ConversationID string `json:"conversation_id"`
+	Delta          string `json:"delta"`
+	DeltaSeq       int64  `json:"delta_seq"`
+	Finished       bool   `json:"finished"`
+	Role           string `json:"role"`
+	RunID          string `json:"run_id"`
 }
 
 // AgentThinkingDeltaPayload is generated from contracts.
 type AgentThinkingDeltaPayload struct {
-	CardID string `json:"card_id"`
-	Delta  string `json:"delta"`
-	RunID  string `json:"run_id"`
+	CardID   string `json:"card_id"`
+	Delta    string `json:"delta"`
+	DeltaSeq int64  `json:"delta_seq"`
+	Finished bool   `json:"finished"`
+	RunID    string `json:"run_id"`
 }
 
 // AgentToolInvokedPayload is generated from contracts.
 type AgentToolInvokedPayload struct {
-	CallID   string `json:"call_id"`
-	CardID   string `json:"card_id"`
-	RunID    string `json:"run_id"`
-	ToolName string `json:"tool_name"`
+	Arguments string `json:"arguments"`
+	CallID    string `json:"call_id"`
+	CardID    string `json:"card_id"`
+	RunID     string `json:"run_id"`
+	ToolName  string `json:"tool_name"`
 }
 
 // AgentToolReturnedPayload is generated from contracts.
 type AgentToolReturnedPayload struct {
-	CallID   string `json:"call_id"`
-	CardID   string `json:"card_id"`
-	Error    string `json:"error"`
-	Output   string `json:"output"`
-	RunID    string `json:"run_id"`
-	ToolName string `json:"tool_name"`
+	CallID     string `json:"call_id"`
+	CardID     string `json:"card_id"`
+	DurationMs int64  `json:"duration_ms"`
+	Error      string `json:"error"`
+	Output     string `json:"output"`
+	RunID      string `json:"run_id"`
+	Status     string `json:"status"`
+	ToolName   string `json:"tool_name"`
 }
 
 // AuditActionFailedPayload is generated from contracts.
 type AuditActionFailedPayload struct {
-	Action  string `json:"action"`
-	ActorID string `json:"actor_id"`
-	Error   string `json:"error"`
+	Action       string `json:"action"`
+	ActorID      string `json:"actor_id"`
+	ErrorClass   string `json:"error_class"`
+	ErrorMessage string `json:"error_message"`
+	IPAddress    string `json:"ip_address"`
+	OccurredAt   string `json:"occurred_at"`
+	UserAgent    string `json:"user_agent"`
 }
 
 // AuditActionPerformedPayload is generated from contracts.
 type AuditActionPerformedPayload struct {
-	Action   string `json:"action"`
-	ActorID  string `json:"actor_id"`
-	Resource string `json:"resource"`
+	Action     string         `json:"action"`
+	ActorID    string         `json:"actor_id"`
+	Details    map[string]any `json:"details"`
+	IPAddress  string         `json:"ip_address"`
+	OccurredAt string         `json:"occurred_at"`
+	TargetID   string         `json:"target_id"`
+	TargetType string         `json:"target_type"`
+	UserAgent  string         `json:"user_agent"`
 }
 
 // ChatCallbackDeliveredPayload is generated from contracts.
 type ChatCallbackDeliveredPayload struct {
-	CallbackID string `json:"callback_id"`
-	CardID     string `json:"card_id"`
-	Success    bool   `json:"success"`
+	CallbackID     string `json:"callback_id"`
+	CardID         string `json:"card_id"`
+	ConversationID string `json:"conversation_id"`
+	DeliveredTo    string `json:"delivered_to"`
+	Success        bool   `json:"success"`
 }
 
 // ChatCallbackDismissedPayload is generated from contracts.
 type ChatCallbackDismissedPayload struct {
-	CallbackID string `json:"callback_id"`
-	CardID     string `json:"card_id"`
-	Reason     string `json:"reason"`
+	CallbackID     string `json:"callback_id"`
+	CardID         string `json:"card_id"`
+	ConversationID string `json:"conversation_id"`
+	Reason         string `json:"reason"`
 }
 
 // ChatCallbackQueuedPayload is generated from contracts.
 type ChatCallbackQueuedPayload struct {
-	CallbackID string `json:"callback_id"`
-	CardID     string `json:"card_id"`
+	CallbackID     string `json:"callback_id"`
+	CardID         string `json:"card_id"`
+	Content        string `json:"content"`
+	ContentType    string `json:"content_type"`
+	ConversationID string `json:"conversation_id"`
+	SourceCardID   string `json:"source_card_id"`
 }
 
 // ChatMessageSentPayload is generated from contracts.
 type ChatMessageSentPayload struct {
-	CardID    string `json:"card_id"`
-	MessageID string `json:"message_id"`
-	Role      string `json:"role"`
+	CardID         string `json:"card_id"`
+	Content        string `json:"content"`
+	ConversationID string `json:"conversation_id"`
+	MessageID      string `json:"message_id"`
+	Role           string `json:"role"`
 }
 
 // CronRuleChangedPayload is generated from contracts.
@@ -199,23 +226,34 @@ type WebhookInboundBody struct {
 
 // WebhookOutboundAttemptFailedPayload is generated from contracts.
 type WebhookOutboundAttemptFailedPayload struct {
-	Attempt    int32  `json:"attempt"`
-	DeliveryID string `json:"delivery_id"`
-	EndpointID string `json:"endpoint_id"`
-	Error      string `json:"error"`
+	Attempt      int32  `json:"attempt"`
+	DeliveryID   string `json:"delivery_id"`
+	DurationMs   int64  `json:"duration_ms"`
+	EndpointID   string `json:"endpoint_id"`
+	ErrorClass   string `json:"error_class"`
+	ErrorMessage string `json:"error_message"`
+	StatusCode   int32  `json:"status_code"`
 }
 
 // WebhookOutboundExhaustedPayload is generated from contracts.
 type WebhookOutboundExhaustedPayload struct {
-	DeliveryID string `json:"delivery_id"`
-	EndpointID string `json:"endpoint_id"`
-	LastError  string `json:"last_error"`
+	DeliveryID    string `json:"delivery_id"`
+	EndpointID    string `json:"endpoint_id"`
+	FinalError    string `json:"final_error"`
+	TotalAttempts int32  `json:"total_attempts"`
 }
 
 // WebhookOutboundQueuedPayload is generated from contracts.
 type WebhookOutboundQueuedPayload struct {
-	DeliveryID string `json:"delivery_id"`
-	EndpointID string `json:"endpoint_id"`
+	Body             string            `json:"body"`
+	DeliveryID       string            `json:"delivery_id"`
+	EndpointID       string            `json:"endpoint_id"`
+	Headers          map[string]string `json:"headers"`
+	InitialBackoffMs int32             `json:"initial_backoff_ms"`
+	MaxAttempts      int32             `json:"max_attempts"`
+	Method           string            `json:"method"`
+	SourceEventSeq   int64             `json:"source_event_seq"`
+	URL              string            `json:"url"`
 }
 
 // WebhookOutboundScheduledPayload is generated from contracts.
@@ -223,15 +261,18 @@ type WebhookOutboundScheduledPayload struct {
 	Attempt    int32  `json:"attempt"`
 	DeliveryID string `json:"delivery_id"`
 	EndpointID string `json:"endpoint_id"`
-	NextAt     string `json:"next_at"`
+	NotBefore  string `json:"not_before"`
+	Reason     string `json:"reason"`
 }
 
 // WebhookOutboundSentPayload is generated from contracts.
 type WebhookOutboundSentPayload struct {
-	Attempt    int32  `json:"attempt"`
-	DeliveryID string `json:"delivery_id"`
-	EndpointID string `json:"endpoint_id"`
-	StatusCode int32  `json:"status_code"`
+	Attempt      int32  `json:"attempt"`
+	DeliveryID   string `json:"delivery_id"`
+	DurationMs   int64  `json:"duration_ms"`
+	EndpointID   string `json:"endpoint_id"`
+	ResponseBody string `json:"response_body"`
+	StatusCode   int32  `json:"status_code"`
 }
 
 // PayloadTypeFor returns the concrete payload struct name for an event type, or "" if unknown.
@@ -289,7 +330,7 @@ func PayloadTypeFor(eventType string) string {
 		return "TaskSubmittedPayload"
 	case EventTypeWebhookInboundReceived:
 		return "WebhookInboundBody"
-	case EventTypeWebhookOutboundAttempt_failed:
+	case EventTypeWebhookOutboundAttemptFailed:
 		return "WebhookOutboundAttemptFailedPayload"
 	case EventTypeWebhookOutboundExhausted:
 		return "WebhookOutboundExhaustedPayload"
@@ -463,7 +504,7 @@ func UnmarshalPayload(env Envelope) (any, error) {
 			return nil, err
 		}
 		return &p, nil
-	case EventTypeWebhookOutboundAttempt_failed:
+	case EventTypeWebhookOutboundAttemptFailed:
 		var p WebhookOutboundAttemptFailedPayload
 		if err := json.Unmarshal(env.Payload, &p); err != nil {
 			return nil, err

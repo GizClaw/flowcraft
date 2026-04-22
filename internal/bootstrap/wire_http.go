@@ -4,7 +4,9 @@ import (
 	"io/fs"
 
 	"github.com/GizClaw/flowcraft/internal/api"
+	auditcmd "github.com/GizClaw/flowcraft/internal/commands/audit"
 	"github.com/GizClaw/flowcraft/internal/config"
+	"github.com/GizClaw/flowcraft/internal/eventlog"
 	"github.com/GizClaw/flowcraft/internal/gateway"
 	"github.com/GizClaw/flowcraft/internal/platform"
 	"github.com/GizClaw/flowcraft/web"
@@ -12,13 +14,15 @@ import (
 
 // wireHTTP constructs the API server from the assembled Platform, gateway,
 // JWT config, and server settings.
-func wireHTTP(cfg *config.Config, plat *platform.Platform, gw *gateway.Gateway, jwtCfg *api.JWTConfig, pluginDir string) *api.Server {
+func wireHTTP(cfg *config.Config, plat *platform.Platform, gw *gateway.Gateway, jwtCfg *api.JWTConfig, pluginDir string, eventLog *eventlog.SQLiteLog, auditCmds *auditcmd.Commands) *api.Server {
 	webFS, _ := fs.Sub(web.Dist, "dist")
 
 	deps := api.ServerDeps{
 		Platform:  plat,
 		Gateway:   gw,
 		PluginDir: pluginDir,
+		EventLog:  eventLog,
+		AuditCmds: auditCmds,
 		Monitoring: api.MonitoringConfig{
 			ErrorRateWarn:        cfg.Monitoring.ErrorRateWarn,
 			ErrorRateDown:        cfg.Monitoring.ErrorRateDown,

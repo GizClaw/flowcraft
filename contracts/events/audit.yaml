@@ -27,8 +27,17 @@ payloads:
   AuditActionPerformedPayload:
     actor_id: { type: string, required: true }
     action: { type: string, required: true }
-    resource: { type: string, required: true }
+    target_type: { type: string, required: false }
+    target_id: { type: string, required: false }
+    ip_address: { type: string, required: false }
+    user_agent: { type: string, required: false }
+    occurred_at: { type: timestamp, required: true }
+    details: { type: map, value_type: any, required: false }
   AuditActionFailedPayload:
     actor_id: { type: string, required: true }
     action: { type: string, required: true }
-    error: { type: string, required: true }
+    error_class: { type: string, required: true }
+    error_message: { type: string, required: true }
+    occurred_at: { type: timestamp, required: true }
+    ip_address: { type: string, required: false }
+    user_agent: { type: string, required: false }

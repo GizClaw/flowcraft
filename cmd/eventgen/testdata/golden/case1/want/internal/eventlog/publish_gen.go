@@ -7,7 +7,7 @@ import (
 	"encoding/json"
 )
 
-// PublishTaskSubmitted appends a task.submitted envelope (category=business, version=1).
+// PublishTaskSubmitted appends a task.submitted envelope (category=business, version=1) outside a transaction.
 func PublishTaskSubmitted(ctx context.Context, log Appender, cardID string, p TaskSubmittedPayload, opts ...PublishOption) (int64, error) {
 	b, err := json.Marshal(p)
 	if err != nil {
@@ -26,5 +26,20 @@ func PublishTaskSubmitted(ctx context.Context, log Appender, cardID string, p Ta
 		SpanID: o.spanID,
 	}
 	return log.Append(ctx, env)
+}
+
+// PublishTaskSubmittedInTx appends a task.submitted envelope inside an open UnitOfWork.
+func PublishTaskSubmittedInTx(ctx context.Context, uow UnitOfWork, cardID string, p TaskSubmittedPayload, opts ...PublishOption) error {
+	o := collectPublishOptions(opts)
+	return uow.Append(ctx, EnvelopeDraft{
+		Partition: PartitionCard(cardID),
+		Type: EventTypeTaskSubmitted,
+		Version: 1,
+		Category: CategoryBusiness,
+		Payload: p,
+		Actor: o.actor,
+		TraceID: o.traceID,
+		SpanID: o.spanID,
+	})
 }
 

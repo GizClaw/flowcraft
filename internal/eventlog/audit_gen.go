@@ -2,6 +2,11 @@
 
 package eventlog
 
+import (
+	"encoding/json"
+	"fmt"
+)
+
 // AuditRequiredEventTypes lists envelope.type values that require audit_summary in contracts.
 var AuditRequiredEventTypes = []string{
 	EventTypeAgentRunCompleted,
@@ -25,7 +30,7 @@ var AuditRequiredEventTypes = []string{
 	EventTypeWebhookOutboundExhausted,
 }
 
-// AuditSummaryTemplate returns the template from contracts or "".
+// AuditSummaryTemplate returns the raw template string from contracts or "".
 func AuditSummaryTemplate(eventType string) string {
 	switch eventType {
 	case EventTypeAgentRunCompleted:
@@ -69,4 +74,272 @@ func AuditSummaryTemplate(eventType string) string {
 	default:
 		return ""
 	}
+}
+
+// summarizeAgentRunCompleted renders the audit_summary template for agent.run.completed.
+func summarizeAgentRunCompleted(env Envelope) string {
+	var p AgentRunCompletedPayload
+	if len(env.Payload) > 0 {
+		_ = json.Unmarshal(env.Payload, &p)
+	}
+	return renderSummaryTemplate("agent run completed for card {{payload.card_id}}", env.Payload)
+}
+
+// summarizeAgentRunFailed renders the audit_summary template for agent.run.failed.
+func summarizeAgentRunFailed(env Envelope) string {
+	var p AgentRunFailedPayload
+	if len(env.Payload) > 0 {
+		_ = json.Unmarshal(env.Payload, &p)
+	}
+	return renderSummaryTemplate("agent run failed for card {{payload.card_id}}", env.Payload)
+}
+
+// summarizeAuditActionFailed renders the audit_summary template for audit.action.failed.
+func summarizeAuditActionFailed(env Envelope) string {
+	var p AuditActionFailedPayload
+	if len(env.Payload) > 0 {
+		_ = json.Unmarshal(env.Payload, &p)
+	}
+	return renderSummaryTemplate("audit action failed for {{payload.actor_id}}", env.Payload)
+}
+
+// summarizeAuditActionPerformed renders the audit_summary template for audit.action.performed.
+func summarizeAuditActionPerformed(env Envelope) string {
+	var p AuditActionPerformedPayload
+	if len(env.Payload) > 0 {
+		_ = json.Unmarshal(env.Payload, &p)
+	}
+	return renderSummaryTemplate("audit action performed by {{payload.actor_id}}", env.Payload)
+}
+
+// summarizeChatCallbackDelivered renders the audit_summary template for chat.callback.delivered.
+func summarizeChatCallbackDelivered(env Envelope) string {
+	var p ChatCallbackDeliveredPayload
+	if len(env.Payload) > 0 {
+		_ = json.Unmarshal(env.Payload, &p)
+	}
+	return renderSummaryTemplate("chat callback delivered for card {{payload.card_id}}", env.Payload)
+}
+
+// summarizeChatCallbackDismissed renders the audit_summary template for chat.callback.dismissed.
+func summarizeChatCallbackDismissed(env Envelope) string {
+	var p ChatCallbackDismissedPayload
+	if len(env.Payload) > 0 {
+		_ = json.Unmarshal(env.Payload, &p)
+	}
+	return renderSummaryTemplate("chat callback dismissed for card {{payload.card_id}}", env.Payload)
+}
+
+// summarizeChatMessageSent renders the audit_summary template for chat.message.sent.
+func summarizeChatMessageSent(env Envelope) string {
+	var p ChatMessageSentPayload
+	if len(env.Payload) > 0 {
+		_ = json.Unmarshal(env.Payload, &p)
+	}
+	return renderSummaryTemplate("chat message sent on card {{payload.card_id}}", env.Payload)
+}
+
+// summarizeCronRuleChanged renders the audit_summary template for cron.rule.changed.
+func summarizeCronRuleChanged(env Envelope) string {
+	var p CronRuleChangedPayload
+	if len(env.Payload) > 0 {
+		_ = json.Unmarshal(env.Payload, &p)
+	}
+	return renderSummaryTemplate("cron rule {{payload.schedule_id}} changed", env.Payload)
+}
+
+// summarizeCronRuleCreated renders the audit_summary template for cron.rule.created.
+func summarizeCronRuleCreated(env Envelope) string {
+	var p CronRuleCreatedPayload
+	if len(env.Payload) > 0 {
+		_ = json.Unmarshal(env.Payload, &p)
+	}
+	return renderSummaryTemplate("cron rule {{payload.schedule_id}} created for agent {{payload.agent_id}}", env.Payload)
+}
+
+// summarizeCronRuleDisabled renders the audit_summary template for cron.rule.disabled.
+func summarizeCronRuleDisabled(env Envelope) string {
+	var p CronRuleDisabledPayload
+	if len(env.Payload) > 0 {
+		_ = json.Unmarshal(env.Payload, &p)
+	}
+	return renderSummaryTemplate("cron rule {{payload.schedule_id}} disabled", env.Payload)
+}
+
+// summarizeRealmConfigChanged renders the audit_summary template for realm.config.changed.
+func summarizeRealmConfigChanged(env Envelope) string {
+	var p RealmConfigChangedPayload
+	if len(env.Payload) > 0 {
+		_ = json.Unmarshal(env.Payload, &p)
+	}
+	return renderSummaryTemplate("realm {{payload.realm_id}} configuration changed", env.Payload)
+}
+
+// summarizeRealmCreated renders the audit_summary template for realm.created.
+func summarizeRealmCreated(env Envelope) string {
+	var p RealmCreatedPayload
+	if len(env.Payload) > 0 {
+		_ = json.Unmarshal(env.Payload, &p)
+	}
+	return renderSummaryTemplate("realm {{payload.realm_id}} created", env.Payload)
+}
+
+// summarizeRealmMemberAdded renders the audit_summary template for realm.member.added.
+func summarizeRealmMemberAdded(env Envelope) string {
+	var p RealmMemberAddedPayload
+	if len(env.Payload) > 0 {
+		_ = json.Unmarshal(env.Payload, &p)
+	}
+	return renderSummaryTemplate("member added to realm {{payload.realm_id}}", env.Payload)
+}
+
+// summarizeRealmMemberRemoved renders the audit_summary template for realm.member.removed.
+func summarizeRealmMemberRemoved(env Envelope) string {
+	var p RealmMemberRemovedPayload
+	if len(env.Payload) > 0 {
+		_ = json.Unmarshal(env.Payload, &p)
+	}
+	return renderSummaryTemplate("member removed from realm {{payload.realm_id}}", env.Payload)
+}
+
+// summarizeTaskCompleted renders the audit_summary template for task.completed.
+func summarizeTaskCompleted(env Envelope) string {
+	var p TaskCompletedPayload
+	if len(env.Payload) > 0 {
+		_ = json.Unmarshal(env.Payload, &p)
+	}
+	return renderSummaryTemplate("task {{payload.card_id}} completed", env.Payload)
+}
+
+// summarizeTaskFailed renders the audit_summary template for task.failed.
+func summarizeTaskFailed(env Envelope) string {
+	var p TaskFailedPayload
+	if len(env.Payload) > 0 {
+		_ = json.Unmarshal(env.Payload, &p)
+	}
+	return renderSummaryTemplate("task {{payload.card_id}} failed", env.Payload)
+}
+
+// summarizeTaskSubmitted renders the audit_summary template for task.submitted.
+func summarizeTaskSubmitted(env Envelope) string {
+	var p TaskSubmittedPayload
+	if len(env.Payload) > 0 {
+		_ = json.Unmarshal(env.Payload, &p)
+	}
+	return renderSummaryTemplate("task {{payload.card_id}} submitted for agent {{payload.target_agent_id}}", env.Payload)
+}
+
+// summarizeWebhookInboundReceived renders the audit_summary template for webhook.inbound.received.
+func summarizeWebhookInboundReceived(env Envelope) string {
+	var p WebhookInboundBody
+	if len(env.Payload) > 0 {
+		_ = json.Unmarshal(env.Payload, &p)
+	}
+	return renderSummaryTemplate("webhook inbound received for endpoint {{payload.endpoint_id}}", env.Payload)
+}
+
+// summarizeWebhookOutboundExhausted renders the audit_summary template for webhook.outbound.exhausted.
+func summarizeWebhookOutboundExhausted(env Envelope) string {
+	var p WebhookOutboundExhaustedPayload
+	if len(env.Payload) > 0 {
+		_ = json.Unmarshal(env.Payload, &p)
+	}
+	return renderSummaryTemplate("webhook outbound exhausted for endpoint {{payload.endpoint_id}}", env.Payload)
+}
+
+// RenderAuditSummary returns the human-readable summary for an audit-required envelope.
+// Returns empty string if env.Type is not audit_required.
+func RenderAuditSummary(env Envelope) string {
+	switch env.Type {
+	case EventTypeAgentRunCompleted:
+		return summarizeAgentRunCompleted(env)
+	case EventTypeAgentRunFailed:
+		return summarizeAgentRunFailed(env)
+	case EventTypeAuditActionFailed:
+		return summarizeAuditActionFailed(env)
+	case EventTypeAuditActionPerformed:
+		return summarizeAuditActionPerformed(env)
+	case EventTypeChatCallbackDelivered:
+		return summarizeChatCallbackDelivered(env)
+	case EventTypeChatCallbackDismissed:
+		return summarizeChatCallbackDismissed(env)
+	case EventTypeChatMessageSent:
+		return summarizeChatMessageSent(env)
+	case EventTypeCronRuleChanged:
+		return summarizeCronRuleChanged(env)
+	case EventTypeCronRuleCreated:
+		return summarizeCronRuleCreated(env)
+	case EventTypeCronRuleDisabled:
+		return summarizeCronRuleDisabled(env)
+	case EventTypeRealmConfigChanged:
+		return summarizeRealmConfigChanged(env)
+	case EventTypeRealmCreated:
+		return summarizeRealmCreated(env)
+	case EventTypeRealmMemberAdded:
+		return summarizeRealmMemberAdded(env)
+	case EventTypeRealmMemberRemoved:
+		return summarizeRealmMemberRemoved(env)
+	case EventTypeTaskCompleted:
+		return summarizeTaskCompleted(env)
+	case EventTypeTaskFailed:
+		return summarizeTaskFailed(env)
+	case EventTypeTaskSubmitted:
+		return summarizeTaskSubmitted(env)
+	case EventTypeWebhookInboundReceived:
+		return summarizeWebhookInboundReceived(env)
+	case EventTypeWebhookOutboundExhausted:
+		return summarizeWebhookOutboundExhausted(env)
+	default:
+		return ""
+	}
+}
+
+// renderSummaryTemplate substitutes {{payload.x}} tokens in tmpl using
+// a JSON-decoded view of payloadJSON. Unknown keys render as "<missing>".
+func renderSummaryTemplate(tmpl string, payloadJSON []byte) string {
+	if tmpl == "" {
+		return ""
+	}
+	var m map[string]any
+	if len(payloadJSON) > 0 {
+		_ = json.Unmarshal(payloadJSON, &m)
+	}
+	out := make([]byte, 0, len(tmpl))
+	for i := 0; i < len(tmpl); {
+		if i+1 < len(tmpl) && tmpl[i] == '{' && tmpl[i+1] == '{' {
+			j := i + 2
+			for j+1 < len(tmpl) && !(tmpl[j] == '}' && tmpl[j+1] == '}') {
+				j++
+			}
+			if j+1 >= len(tmpl) {
+				out = append(out, tmpl[i:]...)
+				break
+			}
+			expr := tmpl[i+2 : j]
+			// trim spaces and "payload." prefix
+			start := 0
+			for start < len(expr) && expr[start] == ' ' {
+				start++
+			}
+			end := len(expr)
+			for end > start && expr[end-1] == ' ' {
+				end--
+			}
+			key := expr[start:end]
+			const pfx = "payload."
+			if len(key) > len(pfx) && key[:len(pfx)] == pfx {
+				key = key[len(pfx):]
+			}
+			if v, ok := m[key]; ok {
+				out = append(out, []byte(fmt.Sprintf("%v", v))...)
+			} else {
+				out = append(out, []byte("<missing>")...)
+			}
+			i = j + 2
+			continue
+		}
+		out = append(out, tmpl[i])
+		i++
+	}
+	return string(out)
 }

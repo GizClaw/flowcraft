@@ -3,37 +3,37 @@
 package eventlog
 
 const (
-	EventTypeAgentRunCompleted             = "agent.run.completed"
-	EventTypeAgentRunFailed                = "agent.run.failed"
-	EventTypeAgentRunStarted               = "agent.run.started"
-	EventTypeAgentStreamDelta              = "agent.stream.delta"
-	EventTypeAgentThinkingDelta            = "agent.thinking.delta"
-	EventTypeAgentToolInvoked              = "agent.tool.invoked"
-	EventTypeAgentToolReturned             = "agent.tool.returned"
-	EventTypeAuditActionFailed             = "audit.action.failed"
-	EventTypeAuditActionPerformed          = "audit.action.performed"
-	EventTypeChatCallbackDelivered         = "chat.callback.delivered"
-	EventTypeChatCallbackDismissed         = "chat.callback.dismissed"
-	EventTypeChatCallbackQueued            = "chat.callback.queued"
-	EventTypeChatMessageSent               = "chat.message.sent"
-	EventTypeCronRuleChanged               = "cron.rule.changed"
-	EventTypeCronRuleCreated               = "cron.rule.created"
-	EventTypeCronRuleDisabled              = "cron.rule.disabled"
-	EventTypeCronRuleFired                 = "cron.rule.fired"
-	EventTypeRealmConfigChanged            = "realm.config.changed"
-	EventTypeRealmCreated                  = "realm.created"
-	EventTypeRealmMemberAdded              = "realm.member.added"
-	EventTypeRealmMemberRemoved            = "realm.member.removed"
-	EventTypeTaskClaimed                   = "task.claimed"
-	EventTypeTaskCompleted                 = "task.completed"
-	EventTypeTaskFailed                    = "task.failed"
-	EventTypeTaskSubmitted                 = "task.submitted"
-	EventTypeWebhookInboundReceived        = "webhook.inbound.received"
-	EventTypeWebhookOutboundAttempt_failed = "webhook.outbound.attempt_failed"
-	EventTypeWebhookOutboundExhausted      = "webhook.outbound.exhausted"
-	EventTypeWebhookOutboundQueued         = "webhook.outbound.queued"
-	EventTypeWebhookOutboundScheduled      = "webhook.outbound.scheduled"
-	EventTypeWebhookOutboundSent           = "webhook.outbound.sent"
+	EventTypeAgentRunCompleted            = "agent.run.completed"
+	EventTypeAgentRunFailed               = "agent.run.failed"
+	EventTypeAgentRunStarted              = "agent.run.started"
+	EventTypeAgentStreamDelta             = "agent.stream.delta"
+	EventTypeAgentThinkingDelta           = "agent.thinking.delta"
+	EventTypeAgentToolInvoked             = "agent.tool.invoked"
+	EventTypeAgentToolReturned            = "agent.tool.returned"
+	EventTypeAuditActionFailed            = "audit.action.failed"
+	EventTypeAuditActionPerformed         = "audit.action.performed"
+	EventTypeChatCallbackDelivered        = "chat.callback.delivered"
+	EventTypeChatCallbackDismissed        = "chat.callback.dismissed"
+	EventTypeChatCallbackQueued           = "chat.callback.queued"
+	EventTypeChatMessageSent              = "chat.message.sent"
+	EventTypeCronRuleChanged              = "cron.rule.changed"
+	EventTypeCronRuleCreated              = "cron.rule.created"
+	EventTypeCronRuleDisabled             = "cron.rule.disabled"
+	EventTypeCronRuleFired                = "cron.rule.fired"
+	EventTypeRealmConfigChanged           = "realm.config.changed"
+	EventTypeRealmCreated                 = "realm.created"
+	EventTypeRealmMemberAdded             = "realm.member.added"
+	EventTypeRealmMemberRemoved           = "realm.member.removed"
+	EventTypeTaskClaimed                  = "task.claimed"
+	EventTypeTaskCompleted                = "task.completed"
+	EventTypeTaskFailed                   = "task.failed"
+	EventTypeTaskSubmitted                = "task.submitted"
+	EventTypeWebhookInboundReceived       = "webhook.inbound.received"
+	EventTypeWebhookOutboundAttemptFailed = "webhook.outbound.attempt_failed"
+	EventTypeWebhookOutboundExhausted     = "webhook.outbound.exhausted"
+	EventTypeWebhookOutboundQueued        = "webhook.outbound.queued"
+	EventTypeWebhookOutboundScheduled     = "webhook.outbound.scheduled"
+	EventTypeWebhookOutboundSent          = "webhook.outbound.sent"
 )
 
 // EventTypes lists every known envelope.type value (sorted).
@@ -64,7 +64,7 @@ var EventTypes = []string{
 	EventTypeTaskFailed,
 	EventTypeTaskSubmitted,
 	EventTypeWebhookInboundReceived,
-	EventTypeWebhookOutboundAttempt_failed,
+	EventTypeWebhookOutboundAttemptFailed,
 	EventTypeWebhookOutboundExhausted,
 	EventTypeWebhookOutboundQueued,
 	EventTypeWebhookOutboundScheduled,

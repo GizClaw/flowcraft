@@ -289,40 +289,8 @@ describe('handleCallbackMessage', () => {
     expect(session.messages[1].isCallback).toBe(true);
   });
 
-  it('queues callback frames until current assistant stream finishes', async () => {
-    vi.useFakeTimers();
-    try {
-      s().startStreaming(AGENT);
-      s().appendStreamChunk(AGENT, 'main reply');
-
-      handleCallbackMessage(
-        { type: 'callback_start', card_id: 'queued-1', query: '[Task Callback] queued' },
-        AGENT,
-      );
-      handleCallbackMessage(
-        { type: 'callback_token', card_id: 'queued-1', chunk: 'callback reply', timestamp: 'qt1' },
-        AGENT,
-      );
-      handleCallbackMessage(
-        { type: 'callback_done', card_id: 'queued-1' },
-        AGENT,
-      );
-
-      expect(s().getSession(AGENT).messages).toHaveLength(0);
-
-      s().finishStreaming(AGENT);
-      await vi.runOnlyPendingTimersAsync();
-
-      const session = s().getSession(AGENT);
-      expect(session.messages).toHaveLength(3);
-      expect(session.messages[0].content).toBe('main reply');
-      expect(session.messages[1].role).toBe('user');
-      expect(session.messages[1].content).toBe('[Task Callback] queued');
-      expect(session.messages[2].role).toBe('assistant');
-      expect(session.messages[2].content).toBe('callback reply');
-      expect(session.messages[2].isCallback).toBe(true);
-    } finally {
-      vi.useRealTimers();
-    }
-  });
+  // The R4 envelope router preserves order via `seq`, so the legacy
+  // pendingCallbackMessages queue (and its associated test) is removed.
+  // Chat envelopes now flow through `chatReducers` and update chatStore
+  // directly; tests for that path live in chatReducers.test.ts.
 });

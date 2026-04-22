@@ -8,11 +8,13 @@ import (
 	"sync"
 
 	"github.com/GizClaw/flowcraft/internal/api"
+	auditcmd "github.com/GizClaw/flowcraft/internal/commands/audit"
 	"github.com/GizClaw/flowcraft/internal/eventlog"
 	"github.com/GizClaw/flowcraft/internal/gateway"
 	"github.com/GizClaw/flowcraft/internal/metatool"
 	"github.com/GizClaw/flowcraft/internal/model"
 	"github.com/GizClaw/flowcraft/internal/platform"
+	projection "github.com/GizClaw/flowcraft/internal/projection/common"
 	"github.com/GizClaw/flowcraft/internal/realm"
 	"github.com/GizClaw/flowcraft/internal/store"
 	"github.com/GizClaw/flowcraft/internal/template"
@@ -67,17 +69,28 @@ func Run(ctx context.Context) (*platform.Platform, *api.Server, func(), error) {
 		return fail(err)
 	}
 	projMgr := WireProjectionManager(sqliteStore)
-	// R3 starts the manager even though no projector is registered yet, so
-	// /readyz reflects "system started, no projectors waiting" instead of
-	// the default "always ready". R4 will register concrete projectors
-	// (agent / chat / webhook / audit) against this same manager.
-	if err := projMgr.Start(ctx, eventLog); err != nil {
+	snapshots := projection.NewSQLiteSnapshots(sqliteStore.DB())
+	r4, err := RegisterR4Projectors(projMgr, eventLog, snapshots)
+	if err != nil {
 		return fail(err)
 	}
-	cleanups = append(cleanups, projMgr.Stop)
+	auditCmds := auditcmd.New(eventLog)
 
 	retentionStop := WireRetention(eventLog)
 	cleanups = append(cleanups, retentionStop)
+
+	if err := projMgr.Start(ctx, eventLog); err != nil {
+		return fail(err)
+	}
+	cleanups = append(cleanups, func() { projMgr.Stop() })
+	cleanups = append(cleanups, func() {
+		if r4 != nil && r4.WebhookSender != nil {
+			r4.WebhookSender.Stop()
+		}
+		if r4 != nil && r4.ChatAutoAck != nil {
+			r4.ChatAutoAck.Stop()
+		}
+	})
 
 	// --- registries + resolvers ---
 	toolReg := tool.NewRegistry()
@@ -193,7 +206,7 @@ func Run(ctx context.Context) (*platform.Platform, *api.Server, func(), error) {
 		pluginDir = filepath.Join(workspaceRoot, "plugins")
 	}
 
-	server := wireHTTP(cfg, plat, gw, jwtCfg, pluginDir)
+	server := wireHTTP(cfg, plat, gw, jwtCfg, pluginDir, eventLog, auditCmds)
 
 	// --- realm callbacks ---
 	var schedOnce sync.Once

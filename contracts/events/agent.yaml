@@ -88,20 +88,29 @@ payloads:
   AgentStreamDeltaPayload:
     card_id: { type: string, required: true }
     run_id: { type: string, required: true }
+    delta_seq: { type: int64, required: true }
     delta: { type: string, required: true }
+    role: { type: string, required: false }
+    finished: { type: bool, required: false }
+    conversation_id: { type: string, required: false }
   AgentThinkingDeltaPayload:
     card_id: { type: string, required: true }
     run_id: { type: string, required: true }
+    delta_seq: { type: int64, required: true }
     delta: { type: string, required: true }
+    finished: { type: bool, required: false }
   AgentToolInvokedPayload:
     card_id: { type: string, required: true }
     run_id: { type: string, required: true }
     tool_name: { type: string, required: true }
     call_id: { type: string, required: true }
+    arguments: { type: string, required: false }
   AgentToolReturnedPayload:
     card_id: { type: string, required: true }
     run_id: { type: string, required: true }
     tool_name: { type: string, required: true }
     call_id: { type: string, required: true }
+    status: { type: string, required: true }
     output: { type: string, required: false }
     error: { type: string, required: false }
+    duration_ms: { type: int64, required: false }

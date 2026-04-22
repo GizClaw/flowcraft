@@ -41,20 +41,47 @@ func eventGoName(event string) string {
 		if part == "" {
 			continue
 		}
-		b.WriteString(strings.ToUpper(part[:1]) + part[1:])
+		for _, sub := range strings.Split(part, "_") {
+			if sub == "" {
+				continue
+			}
+			b.WriteString(strings.ToUpper(sub[:1]) + sub[1:])
+		}
 	}
 	return b.String()
+}
+
+// commonInitialisms is the set of all-caps acronyms used in Go field names.
+// Aligned with the golint convention so generated structs match what humans
+// would write by hand.
+var commonInitialisms = map[string]string{
+	"id":   "ID",
+	"url":  "URL",
+	"uri":  "URI",
+	"api":  "API",
+	"http": "HTTP",
+	"json": "JSON",
+	"sql":  "SQL",
+	"ws":   "WS",
+	"sse":  "SSE",
+	"ip":   "IP",
+	"db":   "DB",
+	"ttl":  "TTL",
+	"hmac": "HMAC",
+	"cdn":  "CDN",
+	"acl":  "ACL",
+	"rpc":  "RPC",
 }
 
 func goFieldName(yamlKey string) string {
 	parts := strings.Split(yamlKey, "_")
 	var b strings.Builder
-	for i, p := range parts {
+	for _, p := range parts {
 		if p == "" {
 			continue
 		}
-		if i == len(parts)-1 && p == "id" && b.Len() > 0 {
-			b.WriteString("ID")
+		if up, ok := commonInitialisms[strings.ToLower(p)]; ok {
+			b.WriteString(up)
 			continue
 		}
 		b.WriteString(strings.ToUpper(p[:1]) + p[1:])
@@ -294,12 +321,22 @@ func writeGoPublish(spec *Spec, path string) error {
 		if err != nil {
 			return err
 		}
+		// Out-of-transaction Publish (single-event) helper.
 		sb.WriteString(fmt.Sprintf(
-			"// Publish%s appends a %s envelope (category=%s, version=%d).\nfunc Publish%s(ctx context.Context, log Appender, %s string, p %s, opts ...PublishOption) (int64, error) {\n"+
+			"// Publish%s appends a %s envelope (category=%s, version=%d) outside a transaction.\nfunc Publish%s(ctx context.Context, log Appender, %s string, p %s, opts ...PublishOption) (int64, error) {\n"+
 				"\tb, err := json.Marshal(p)\n\tif err != nil {\n\t\treturn 0, err\n\t}\n"+
 				"\to := collectPublishOptions(opts)\n"+
 				"\tenv := Envelope{\n\t\tPartition: %s,\n\t\tType: EventType%s,\n\t\tVersion: %d,\n\t\tCategory: %s,\n\t\tTs: NowRFC3339Nano(),\n\t\tPayload: b,\n\t\tActor: o.actor,\n\t\tTraceID: o.traceID,\n\t\tSpanID: o.spanID,\n\t}\n\treturn log.Append(ctx, env)\n}\n\n",
 			g, ev.Name, ev.Category, ev.Version,
+			g, argName, ev.PayloadType,
+			partExpr, g, ev.Version, categoryConstName(ev.Category),
+		))
+		// In-transaction Publish helper for use inside log.Atomic(...).
+		sb.WriteString(fmt.Sprintf(
+			"// Publish%sInTx appends a %s envelope inside an open UnitOfWork.\nfunc Publish%sInTx(ctx context.Context, uow UnitOfWork, %s string, p %s, opts ...PublishOption) error {\n"+
+				"\to := collectPublishOptions(opts)\n"+
+				"\treturn uow.Append(ctx, EnvelopeDraft{\n\t\tPartition: %s,\n\t\tType: EventType%s,\n\t\tVersion: %d,\n\t\tCategory: %s,\n\t\tPayload: p,\n\t\tActor: o.actor,\n\t\tTraceID: o.traceID,\n\t\tSpanID: o.spanID,\n\t})\n}\n\n",
+			g, ev.Name,
 			g, argName, ev.PayloadType,
 			partExpr, g, ev.Version, categoryConstName(ev.Category),
 		))
@@ -309,19 +346,101 @@ func writeGoPublish(spec *Spec, path string) error {
 
 func writeGoAudit(spec *Spec, path string) error {
 	var sb strings.Builder
-	sb.WriteString("package eventlog\n\n// AuditRequiredEventTypes lists envelope.type values that require audit_summary in contracts.\n")
+	sb.WriteString("package eventlog\n\n")
+	sb.WriteString("import (\n\t\"encoding/json\"\n\t\"fmt\"\n)\n\n")
+	sb.WriteString("// AuditRequiredEventTypes lists envelope.type values that require audit_summary in contracts.\n")
 	sb.WriteString("var AuditRequiredEventTypes = []string{\n")
 	for _, ev := range spec.Events {
 		if ev.AuditRequired {
 			sb.WriteString(fmt.Sprintf("\tEventType%s,\n", eventGoName(ev.Name)))
 		}
 	}
-	sb.WriteString("}\n\n// AuditSummaryTemplate returns the template from contracts or \"\".\nfunc AuditSummaryTemplate(eventType string) string {\n\tswitch eventType {\n")
+	sb.WriteString("}\n\n// AuditSummaryTemplate returns the raw template string from contracts or \"\".\nfunc AuditSummaryTemplate(eventType string) string {\n\tswitch eventType {\n")
 	for _, ev := range spec.Events {
 		if ev.AuditRequired {
 			sb.WriteString(fmt.Sprintf("\tcase EventType%s:\n\t\treturn %q\n", eventGoName(ev.Name), ev.AuditSummary))
 		}
 	}
-	sb.WriteString("\tdefault:\n\t\treturn \"\"\n\t}\n}\n")
+	sb.WriteString("\tdefault:\n\t\treturn \"\"\n\t}\n}\n\n")
+	// per-event summarize<Type>(env Envelope) string that fully renders {{payload.x}} tokens.
+	for _, ev := range spec.Events {
+		if !ev.AuditRequired {
+			continue
+		}
+		g := eventGoName(ev.Name)
+		sb.WriteString(fmt.Sprintf("// summarize%s renders the audit_summary template for %s.\n", g, ev.Name))
+		sb.WriteString(fmt.Sprintf("func summarize%s(env Envelope) string {\n", g))
+		sb.WriteString(fmt.Sprintf("\tvar p %s\n", ev.PayloadType))
+		sb.WriteString("\tif len(env.Payload) > 0 {\n\t\t_ = json.Unmarshal(env.Payload, &p)\n\t}\n")
+		// for each field referenced in the template via {{payload.x}}
+		// emit an fmt.Sprintf using the struct field
+		// to keep generation simple, we pass the payload struct as a JSON map for token substitution
+		sb.WriteString("\treturn renderSummaryTemplate(")
+		sb.WriteString(fmt.Sprintf("%q, env.Payload)\n", ev.AuditSummary))
+		sb.WriteString("}\n\n")
+	}
+	// Dispatcher
+	sb.WriteString("// RenderAuditSummary returns the human-readable summary for an audit-required envelope.\n")
+	sb.WriteString("// Returns empty string if env.Type is not audit_required.\n")
+	sb.WriteString("func RenderAuditSummary(env Envelope) string {\n\tswitch env.Type {\n")
+	for _, ev := range spec.Events {
+		if !ev.AuditRequired {
+			continue
+		}
+		g := eventGoName(ev.Name)
+		sb.WriteString(fmt.Sprintf("\tcase EventType%s:\n\t\treturn summarize%s(env)\n", g, g))
+	}
+	sb.WriteString("\tdefault:\n\t\treturn \"\"\n\t}\n}\n\n")
+	// Helper: lightweight {{payload.x}} renderer without a real template engine.
+	sb.WriteString(`// renderSummaryTemplate substitutes {{payload.x}} tokens in tmpl using
+// a JSON-decoded view of payloadJSON. Unknown keys render as "<missing>".
+func renderSummaryTemplate(tmpl string, payloadJSON []byte) string {
+	if tmpl == "" {
+		return ""
+	}
+	var m map[string]any
+	if len(payloadJSON) > 0 {
+		_ = json.Unmarshal(payloadJSON, &m)
+	}
+	out := make([]byte, 0, len(tmpl))
+	for i := 0; i < len(tmpl); {
+		if i+1 < len(tmpl) && tmpl[i] == '{' && tmpl[i+1] == '{' {
+			j := i + 2
+			for j+1 < len(tmpl) && !(tmpl[j] == '}' && tmpl[j+1] == '}') {
+				j++
+			}
+			if j+1 >= len(tmpl) {
+				out = append(out, tmpl[i:]...)
+				break
+			}
+			expr := tmpl[i+2 : j]
+			// trim spaces and "payload." prefix
+			start := 0
+			for start < len(expr) && expr[start] == ' ' {
+				start++
+			}
+			end := len(expr)
+			for end > start && expr[end-1] == ' ' {
+				end--
+			}
+			key := expr[start:end]
+			const pfx = "payload."
+			if len(key) > len(pfx) && key[:len(pfx)] == pfx {
+				key = key[len(pfx):]
+			}
+			if v, ok := m[key]; ok {
+				out = append(out, []byte(fmt.Sprintf("%v", v))...)
+			} else {
+				out = append(out, []byte("<missing>")...)
+			}
+			i = j + 2
+			continue
+		}
+		out = append(out, tmpl[i])
+		i++
+	}
+	return string(out)
+}
+`)
 	return writeFile(path, []byte(sb.String()))
 }

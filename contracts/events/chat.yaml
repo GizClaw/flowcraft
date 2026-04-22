@@ -47,16 +47,25 @@ events:
 payloads:
   ChatMessageSentPayload:
     card_id: { type: string, required: true }
-    role: { type: string, required: true }
+    conversation_id: { type: string, required: true }
     message_id: { type: string, required: true }
+    role: { type: string, required: true }
+    content: { type: string, required: false }
   ChatCallbackQueuedPayload:
     card_id: { type: string, required: true }
+    conversation_id: { type: string, required: true }
     callback_id: { type: string, required: true }
+    source_card_id: { type: string, required: false }
+    content_type: { type: string, required: true }
+    content: { type: string, required: false }
   ChatCallbackDeliveredPayload:
     card_id: { type: string, required: true }
+    conversation_id: { type: string, required: true }
     callback_id: { type: string, required: true }
+    delivered_to: { type: string, required: true }
     success: { type: bool, required: true }
   ChatCallbackDismissedPayload:
     card_id: { type: string, required: true }
+    conversation_id: { type: string, required: true }
     callback_id: { type: string, required: true }
     reason: { type: string, required: false }

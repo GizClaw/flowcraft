@@ -8,6 +8,7 @@ import type { KanbanEvent } from '../types/kanban';
 import { mapCardStatusToUI } from '../types/kanban';
 import type { Envelope } from '../eventlog/types';
 import { envelopeRouter } from '../eventlog/router';
+import { registerChatReducersOnce } from '../eventlog/chatReducers';
 
 let kanbanReducersRegistered = false;
 function registerKanbanReducersOnce() {
@@ -84,8 +85,12 @@ const DEDUP_SIZE = 256;
 const seenKeys: string[] = [];
 const seenSet = new Set<string>();
 const activeCallbackCards = new Set<string>();
-const pendingCallbackMessages = new Map<string, Array<Record<string, unknown>>>();
-const pendingCallbackTimers = new Map<string, ReturnType<typeof setTimeout>>();
+// NOTE: the previous `pendingCallbackMessages` global map was removed in
+// R4. All chat-relevant frames are now envelopes routed through
+// `envelopeRouter`, which preserves order via `seq`. The legacy
+// callback_* WS frames below remain for backward-compat with any
+// non-event-sourced code paths still emitting them; they will be
+// removed once R5 retires the legacy WS transport.
 
 function isDuplicate(key: string): boolean {
   if (seenSet.has(key)) return true;
@@ -96,52 +101,6 @@ function isDuplicate(key: string): boolean {
   seenKeys.push(key);
   seenSet.add(key);
   return false;
-}
-
-function callbackCardID(msg: Record<string, unknown>): string {
-  return typeof msg.card_id === 'string' ? msg.card_id : '';
-}
-
-function isChatAgentBusy(chatAgentId: string): boolean {
-  return useChatStore.getState().isAgentStreaming(chatAgentId);
-}
-
-function shouldQueueCallbackMessage(msg: Record<string, unknown>, chatAgentId: string): boolean {
-  const type = typeof msg.type === 'string' ? msg.type : '';
-  if (!type.startsWith('callback_')) return false;
-  const cardID = callbackCardID(msg);
-  if (cardID && activeCallbackCards.has(cardID)) {
-    return false;
-  }
-  return isChatAgentBusy(chatAgentId);
-}
-
-function queueCallbackMessage(msg: Record<string, unknown>, chatAgentId: string) {
-  const queue = pendingCallbackMessages.get(chatAgentId) || [];
-  queue.push(msg);
-  pendingCallbackMessages.set(chatAgentId, queue);
-  schedulePendingCallbackDrain(chatAgentId);
-}
-
-function schedulePendingCallbackDrain(chatAgentId: string) {
-  if (pendingCallbackTimers.has(chatAgentId)) return;
-  const tick = () => {
-    pendingCallbackTimers.delete(chatAgentId);
-    if (isChatAgentBusy(chatAgentId)) {
-      pendingCallbackTimers.set(chatAgentId, setTimeout(tick, 25));
-      return;
-    }
-    const queue = pendingCallbackMessages.get(chatAgentId);
-    if (!queue || queue.length === 0) {
-      pendingCallbackMessages.delete(chatAgentId);
-      return;
-    }
-    while (queue.length > 0) {
-      processCallbackMessage(queue.shift()!, chatAgentId);
-    }
-    pendingCallbackMessages.delete(chatAgentId);
-  };
-  pendingCallbackTimers.set(chatAgentId, setTimeout(tick, 25));
 }
 
 function processCallbackMessage(
@@ -231,10 +190,6 @@ export function handleCallbackMessage(
   msg: Record<string, unknown>,
   chatAgentId: string,
 ): boolean {
-  if (shouldQueueCallbackMessage(msg, chatAgentId)) {
-    queueCallbackMessage(msg, chatAgentId);
-    return true;
-  }
   return processCallbackMessage(msg, chatAgentId);
 }
 
@@ -242,11 +197,6 @@ export function resetCallbackMessageStateForTest() {
   seenKeys.splice(0, seenKeys.length);
   seenSet.clear();
   activeCallbackCards.clear();
-  pendingCallbackMessages.clear();
-  for (const timer of pendingCallbackTimers.values()) {
-    clearTimeout(timer);
-  }
-  pendingCallbackTimers.clear();
 }
 
 function handleKanbanMessage(data: unknown, callbackAgentId?: string) {
@@ -351,6 +301,7 @@ export function useKanbanBoard(runtimeId: string | null, callbackAgentId?: strin
 
   useEffect(() => {
     registerKanbanReducersOnce();
+    registerChatReducersOnce();
   }, []);
 
   useEffect(() => {

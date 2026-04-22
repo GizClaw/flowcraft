@@ -36,7 +36,7 @@ type Handler interface {
 	HandleTaskFailed(ctx context.Context, env Envelope, p TaskFailedPayload) error
 	HandleTaskSubmitted(ctx context.Context, env Envelope, p TaskSubmittedPayload) error
 	HandleWebhookInboundReceived(ctx context.Context, env Envelope, p WebhookInboundBody) error
-	HandleWebhookOutboundAttempt_failed(ctx context.Context, env Envelope, p WebhookOutboundAttemptFailedPayload) error
+	HandleWebhookOutboundAttemptFailed(ctx context.Context, env Envelope, p WebhookOutboundAttemptFailedPayload) error
 	HandleWebhookOutboundExhausted(ctx context.Context, env Envelope, p WebhookOutboundExhaustedPayload) error
 	HandleWebhookOutboundQueued(ctx context.Context, env Envelope, p WebhookOutboundQueuedPayload) error
 	HandleWebhookOutboundScheduled(ctx context.Context, env Envelope, p WebhookOutboundScheduledPayload) error
@@ -124,7 +124,7 @@ func (DefaultHandler) HandleTaskSubmitted(_ context.Context, _ Envelope, _ TaskS
 func (DefaultHandler) HandleWebhookInboundReceived(_ context.Context, _ Envelope, _ WebhookInboundBody) error {
 	return nil
 }
-func (DefaultHandler) HandleWebhookOutboundAttempt_failed(_ context.Context, _ Envelope, _ WebhookOutboundAttemptFailedPayload) error {
+func (DefaultHandler) HandleWebhookOutboundAttemptFailed(_ context.Context, _ Envelope, _ WebhookOutboundAttemptFailedPayload) error {
 	return nil
 }
 func (DefaultHandler) HandleWebhookOutboundExhausted(_ context.Context, _ Envelope, _ WebhookOutboundExhaustedPayload) error {
@@ -299,12 +299,12 @@ func Dispatch(ctx context.Context, env Envelope, h Handler) error {
 			return err
 		}
 		return h.HandleWebhookInboundReceived(ctx, env, p)
-	case EventTypeWebhookOutboundAttempt_failed:
+	case EventTypeWebhookOutboundAttemptFailed:
 		var p WebhookOutboundAttemptFailedPayload
 		if err := json.Unmarshal(env.Payload, &p); err != nil {
 			return err
 		}
-		return h.HandleWebhookOutboundAttempt_failed(ctx, env, p)
+		return h.HandleWebhookOutboundAttemptFailed(ctx, env, p)
 	case EventTypeWebhookOutboundExhausted:
 		var p WebhookOutboundExhaustedPayload
 		if err := json.Unmarshal(env.Payload, &p); err != nil {

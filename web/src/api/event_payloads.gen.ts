@@ -25,17 +25,24 @@ export interface AgentRunStartedPayload {
 
 export interface AgentStreamDeltaPayload {
   cardID: string;
+  conversationID?: string;
   delta: string;
+  deltaSeq: number;
+  finished?: boolean;
+  role?: string;
   runID: string;
 }
 
 export interface AgentThinkingDeltaPayload {
   cardID: string;
   delta: string;
+  deltaSeq: number;
+  finished?: boolean;
   runID: string;
 }
 
 export interface AgentToolInvokedPayload {
+  arguments?: string;
   callID: string;
   cardID: string;
   runID: string;
@@ -45,43 +52,63 @@ export interface AgentToolInvokedPayload {
 export interface AgentToolReturnedPayload {
   callID: string;
   cardID: string;
+  durationMs?: number;
   error?: string;
   output?: string;
   runID: string;
+  status: string;
   toolName: string;
 }
 
 export interface AuditActionFailedPayload {
   action: string;
   actorID: string;
-  error: string;
+  errorClass: string;
+  errorMessage: string;
+  iPAddress?: string;
+  occurredAt: string;
+  userAgent?: string;
 }
 
 export interface AuditActionPerformedPayload {
   action: string;
   actorID: string;
-  resource: string;
+  details?: Record<string, unknown>;
+  iPAddress?: string;
+  occurredAt: string;
+  targetID?: string;
+  targetType?: string;
+  userAgent?: string;
 }
 
 export interface ChatCallbackDeliveredPayload {
   callbackID: string;
   cardID: string;
+  conversationID: string;
+  deliveredTo: string;
   success: boolean;
 }
 
 export interface ChatCallbackDismissedPayload {
   callbackID: string;
   cardID: string;
+  conversationID: string;
   reason?: string;
 }
 
 export interface ChatCallbackQueuedPayload {
   callbackID: string;
   cardID: string;
+  content?: string;
+  contentType: string;
+  conversationID: string;
+  sourceCardID?: string;
 }
 
 export interface ChatMessageSentPayload {
   cardID: string;
+  content?: string;
+  conversationID: string;
   messageID: string;
   role: string;
 }
@@ -176,32 +203,46 @@ export interface WebhookInboundBody {
 export interface WebhookOutboundAttemptFailedPayload {
   attempt: number;
   deliveryID: string;
+  durationMs?: number;
   endpointID: string;
-  error: string;
+  errorClass: string;
+  errorMessage: string;
+  statusCode?: number;
 }
 
 export interface WebhookOutboundExhaustedPayload {
   deliveryID: string;
   endpointID: string;
-  lastError: string;
+  finalError: string;
+  totalAttempts: number;
 }
 
 export interface WebhookOutboundQueuedPayload {
+  body?: string;
   deliveryID: string;
   endpointID: string;
+  headers?: Record<string, string>;
+  initialBackoffMs?: number;
+  maxAttempts?: number;
+  method: string;
+  sourceEventSeq?: number;
+  uRL: string;
 }
 
 export interface WebhookOutboundScheduledPayload {
   attempt: number;
   deliveryID: string;
   endpointID: string;
-  nextAt: string;
+  notBefore: string;
+  reason?: string;
 }
 
 export interface WebhookOutboundSentPayload {
   attempt: number;
   deliveryID: string;
+  durationMs: number;
   endpointID: string;
+  responseBody?: string;
   statusCode: number;
 }
 

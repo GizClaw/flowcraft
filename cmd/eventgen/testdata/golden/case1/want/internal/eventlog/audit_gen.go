@@ -2,14 +2,78 @@
 
 package eventlog
 
+import (
+	"encoding/json"
+	"fmt"
+)
+
 // AuditRequiredEventTypes lists envelope.type values that require audit_summary in contracts.
 var AuditRequiredEventTypes = []string{
 }
 
-// AuditSummaryTemplate returns the template from contracts or "".
+// AuditSummaryTemplate returns the raw template string from contracts or "".
 func AuditSummaryTemplate(eventType string) string {
 	switch eventType {
 	default:
 		return ""
 	}
+}
+
+// RenderAuditSummary returns the human-readable summary for an audit-required envelope.
+// Returns empty string if env.Type is not audit_required.
+func RenderAuditSummary(env Envelope) string {
+	switch env.Type {
+	default:
+		return ""
+	}
+}
+
+// renderSummaryTemplate substitutes {{payload.x}} tokens in tmpl using
+// a JSON-decoded view of payloadJSON. Unknown keys render as "<missing>".
+func renderSummaryTemplate(tmpl string, payloadJSON []byte) string {
+	if tmpl == "" {
+		return ""
+	}
+	var m map[string]any
+	if len(payloadJSON) > 0 {
+		_ = json.Unmarshal(payloadJSON, &m)
+	}
+	out := make([]byte, 0, len(tmpl))
+	for i := 0; i < len(tmpl); {
+		if i+1 < len(tmpl) && tmpl[i] == '{' && tmpl[i+1] == '{' {
+			j := i + 2
+			for j+1 < len(tmpl) && !(tmpl[j] == '}' && tmpl[j+1] == '}') {
+				j++
+			}
+			if j+1 >= len(tmpl) {
+				out = append(out, tmpl[i:]...)
+				break
+			}
+			expr := tmpl[i+2 : j]
+			// trim spaces and "payload." prefix
+			start := 0
+			for start < len(expr) && expr[start] == ' ' {
+				start++
+			}
+			end := len(expr)
+			for end > start && expr[end-1] == ' ' {
+				end--
+			}
+			key := expr[start:end]
+			const pfx = "payload."
+			if len(key) > len(pfx) && key[:len(pfx)] == pfx {
+				key = key[len(pfx):]
+			}
+			if v, ok := m[key]; ok {
+				out = append(out, []byte(fmt.Sprintf("%v", v))...)
+			} else {
+				out = append(out, []byte("<missing>")...)
+			}
+			i = j + 2
+			continue
+		}
+		out = append(out, tmpl[i])
+		i++
+	}
+	return string(out)
 }

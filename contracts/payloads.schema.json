@@ -63,7 +63,19 @@
         "card_id": {
           "type": "string"
         },
+        "conversation_id": {
+          "type": "string"
+        },
         "delta": {
+          "type": "string"
+        },
+        "delta_seq": {
+          "type": "integer"
+        },
+        "finished": {
+          "type": "boolean"
+        },
+        "role": {
           "type": "string"
         },
         "run_id": {
@@ -73,6 +85,7 @@
       "required": [
         "card_id",
         "delta",
+        "delta_seq",
         "run_id"
       ],
       "type": "object"
@@ -86,6 +99,12 @@
         "delta": {
           "type": "string"
         },
+        "delta_seq": {
+          "type": "integer"
+        },
+        "finished": {
+          "type": "boolean"
+        },
         "run_id": {
           "type": "string"
         }
@@ -93,6 +112,7 @@
       "required": [
         "card_id",
         "delta",
+        "delta_seq",
         "run_id"
       ],
       "type": "object"
@@ -100,6 +120,9 @@
     "AgentToolInvokedPayload": {
       "additionalProperties": false,
       "properties": {
+        "arguments": {
+          "type": "string"
+        },
         "call_id": {
           "type": "string"
         },
@@ -130,6 +153,9 @@
         "card_id": {
           "type": "string"
         },
+        "duration_ms": {
+          "type": "integer"
+        },
         "error": {
           "type": "string"
         },
@@ -137,6 +163,9 @@
           "type": "string"
         },
         "run_id": {
+          "type": "string"
+        },
+        "status": {
           "type": "string"
         },
         "tool_name": {
@@ -147,6 +176,7 @@
         "call_id",
         "card_id",
         "run_id",
+        "status",
         "tool_name"
       ],
       "type": "object"
@@ -160,14 +190,28 @@
         "actor_id": {
           "type": "string"
         },
-        "error": {
+        "error_class": {
+          "type": "string"
+        },
+        "error_message": {
+          "type": "string"
+        },
+        "ip_address": {
+          "type": "string"
+        },
+        "occurred_at": {
+          "type": "string"
+        },
+        "user_agent": {
           "type": "string"
         }
       },
       "required": [
         "action",
         "actor_id",
-        "error"
+        "error_class",
+        "error_message",
+        "occurred_at"
       ],
       "type": "object"
     },
@@ -180,14 +224,30 @@
         "actor_id": {
           "type": "string"
         },
-        "resource": {
+        "details": {
+          "additionalProperties": {},
+          "type": "object"
+        },
+        "ip_address": {
+          "type": "string"
+        },
+        "occurred_at": {
+          "type": "string"
+        },
+        "target_id": {
+          "type": "string"
+        },
+        "target_type": {
+          "type": "string"
+        },
+        "user_agent": {
           "type": "string"
         }
       },
       "required": [
         "action",
         "actor_id",
-        "resource"
+        "occurred_at"
       ],
       "type": "object"
     },
@@ -200,6 +260,12 @@
         "card_id": {
           "type": "string"
         },
+        "conversation_id": {
+          "type": "string"
+        },
+        "delivered_to": {
+          "type": "string"
+        },
         "success": {
           "type": "boolean"
         }
@@ -207,6 +273,8 @@
       "required": [
         "callback_id",
         "card_id",
+        "conversation_id",
+        "delivered_to",
         "success"
       ],
       "type": "object"
@@ -220,13 +288,17 @@
         "card_id": {
           "type": "string"
         },
+        "conversation_id": {
+          "type": "string"
+        },
         "reason": {
           "type": "string"
         }
       },
       "required": [
         "callback_id",
-        "card_id"
+        "card_id",
+        "conversation_id"
       ],
       "type": "object"
     },
@@ -238,11 +310,25 @@
         },
         "card_id": {
           "type": "string"
+        },
+        "content": {
+          "type": "string"
+        },
+        "content_type": {
+          "type": "string"
+        },
+        "conversation_id": {
+          "type": "string"
+        },
+        "source_card_id": {
+          "type": "string"
         }
       },
       "required": [
         "callback_id",
-        "card_id"
+        "card_id",
+        "content_type",
+        "conversation_id"
       ],
       "type": "object"
     },
@@ -250,6 +336,12 @@
       "additionalProperties": false,
       "properties": {
         "card_id": {
+          "type": "string"
+        },
+        "content": {
+          "type": "string"
+        },
+        "conversation_id": {
           "type": "string"
         },
         "message_id": {
@@ -261,6 +353,7 @@
       },
       "required": [
         "card_id",
+        "conversation_id",
         "message_id",
         "role"
       ],
@@ -573,18 +666,28 @@
         "delivery_id": {
           "type": "string"
         },
+        "duration_ms": {
+          "type": "integer"
+        },
         "endpoint_id": {
           "type": "string"
         },
-        "error": {
+        "error_class": {
           "type": "string"
+        },
+        "error_message": {
+          "type": "string"
+        },
+        "status_code": {
+          "type": "integer"
         }
       },
       "required": [
         "attempt",
         "delivery_id",
         "endpoint_id",
-        "error"
+        "error_class",
+        "error_message"
       ],
       "type": "object"
     },
@@ -597,30 +700,60 @@
         "endpoint_id": {
           "type": "string"
         },
-        "last_error": {
+        "final_error": {
           "type": "string"
+        },
+        "total_attempts": {
+          "type": "integer"
         }
       },
       "required": [
         "delivery_id",
         "endpoint_id",
-        "last_error"
+        "final_error",
+        "total_attempts"
       ],
       "type": "object"
     },
     "WebhookOutboundQueuedPayload": {
       "additionalProperties": false,
       "properties": {
+        "body": {
+          "type": "string"
+        },
         "delivery_id": {
           "type": "string"
         },
         "endpoint_id": {
           "type": "string"
+        },
+        "headers": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        },
+        "initial_backoff_ms": {
+          "type": "integer"
+        },
+        "max_attempts": {
+          "type": "integer"
+        },
+        "method": {
+          "type": "string"
+        },
+        "source_event_seq": {
+          "type": "integer"
+        },
+        "url": {
+          "type": "string"
         }
       },
       "required": [
         "delivery_id",
-        "endpoint_id"
+        "endpoint_id",
+        "method",
+        "url"
       ],
       "type": "object"
     },
@@ -636,7 +769,10 @@
         "endpoint_id": {
           "type": "string"
         },
-        "next_at": {
+        "not_before": {
+          "type": "string"
+        },
+        "reason": {
           "type": "string"
         }
       },
@@ -644,7 +780,7 @@
         "attempt",
         "delivery_id",
         "endpoint_id",
-        "next_at"
+        "not_before"
       ],
       "type": "object"
     },
@@ -657,7 +793,13 @@
         "delivery_id": {
           "type": "string"
         },
+        "duration_ms": {
+          "type": "integer"
+        },
         "endpoint_id": {
+          "type": "string"
+        },
+        "response_body": {
           "type": "string"
         },
         "status_code": {
@@ -667,6 +809,7 @@
       "required": [
         "attempt",
         "delivery_id",
+        "duration_ms",
         "endpoint_id",
         "status_code"
       ],

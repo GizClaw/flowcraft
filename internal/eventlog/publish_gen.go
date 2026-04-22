@@ -7,7 +7,7 @@ import (
 	"encoding/json"
 )
 
-// PublishAgentRunCompleted appends a agent.run.completed envelope (category=business, version=1).
+// PublishAgentRunCompleted appends a agent.run.completed envelope (category=business, version=1) outside a transaction.
 func PublishAgentRunCompleted(ctx context.Context, log Appender, cardID string, p AgentRunCompletedPayload, opts ...PublishOption) (int64, error) {
 	b, err := json.Marshal(p)
 	if err != nil {
@@ -28,7 +28,22 @@ func PublishAgentRunCompleted(ctx context.Context, log Appender, cardID string, 
 	return log.Append(ctx, env)
 }
 
-// PublishAgentRunFailed appends a agent.run.failed envelope (category=business, version=1).
+// PublishAgentRunCompletedInTx appends a agent.run.completed envelope inside an open UnitOfWork.
+func PublishAgentRunCompletedInTx(ctx context.Context, uow UnitOfWork, cardID string, p AgentRunCompletedPayload, opts ...PublishOption) error {
+	o := collectPublishOptions(opts)
+	return uow.Append(ctx, EnvelopeDraft{
+		Partition: PartitionCard(cardID),
+		Type:      EventTypeAgentRunCompleted,
+		Version:   1,
+		Category:  CategoryBusiness,
+		Payload:   p,
+		Actor:     o.actor,
+		TraceID:   o.traceID,
+		SpanID:    o.spanID,
+	})
+}
+
+// PublishAgentRunFailed appends a agent.run.failed envelope (category=business, version=1) outside a transaction.
 func PublishAgentRunFailed(ctx context.Context, log Appender, cardID string, p AgentRunFailedPayload, opts ...PublishOption) (int64, error) {
 	b, err := json.Marshal(p)
 	if err != nil {
@@ -49,7 +64,22 @@ func PublishAgentRunFailed(ctx context.Context, log Appender, cardID string, p A
 	return log.Append(ctx, env)
 }
 
-// PublishAgentRunStarted appends a agent.run.started envelope (category=business, version=1).
+// PublishAgentRunFailedInTx appends a agent.run.failed envelope inside an open UnitOfWork.
+func PublishAgentRunFailedInTx(ctx context.Context, uow UnitOfWork, cardID string, p AgentRunFailedPayload, opts ...PublishOption) error {
+	o := collectPublishOptions(opts)
+	return uow.Append(ctx, EnvelopeDraft{
+		Partition: PartitionCard(cardID),
+		Type:      EventTypeAgentRunFailed,
+		Version:   1,
+		Category:  CategoryBusiness,
+		Payload:   p,
+		Actor:     o.actor,
+		TraceID:   o.traceID,
+		SpanID:    o.spanID,
+	})
+}
+
+// PublishAgentRunStarted appends a agent.run.started envelope (category=business, version=1) outside a transaction.
 func PublishAgentRunStarted(ctx context.Context, log Appender, cardID string, p AgentRunStartedPayload, opts ...PublishOption) (int64, error) {
 	b, err := json.Marshal(p)
 	if err != nil {
@@ -70,7 +100,22 @@ func PublishAgentRunStarted(ctx context.Context, log Appender, cardID string, p 
 	return log.Append(ctx, env)
 }
 
-// PublishAgentStreamDelta appends a agent.stream.delta envelope (category=volatile, version=1).
+// PublishAgentRunStartedInTx appends a agent.run.started envelope inside an open UnitOfWork.
+func PublishAgentRunStartedInTx(ctx context.Context, uow UnitOfWork, cardID string, p AgentRunStartedPayload, opts ...PublishOption) error {
+	o := collectPublishOptions(opts)
+	return uow.Append(ctx, EnvelopeDraft{
+		Partition: PartitionCard(cardID),
+		Type:      EventTypeAgentRunStarted,
+		Version:   1,
+		Category:  CategoryBusiness,
+		Payload:   p,
+		Actor:     o.actor,
+		TraceID:   o.traceID,
+		SpanID:    o.spanID,
+	})
+}
+
+// PublishAgentStreamDelta appends a agent.stream.delta envelope (category=volatile, version=1) outside a transaction.
 func PublishAgentStreamDelta(ctx context.Context, log Appender, cardID string, p AgentStreamDeltaPayload, opts ...PublishOption) (int64, error) {
 	b, err := json.Marshal(p)
 	if err != nil {
@@ -91,7 +136,22 @@ func PublishAgentStreamDelta(ctx context.Context, log Appender, cardID string, p
 	return log.Append(ctx, env)
 }
 
-// PublishAgentThinkingDelta appends a agent.thinking.delta envelope (category=volatile, version=1).
+// PublishAgentStreamDeltaInTx appends a agent.stream.delta envelope inside an open UnitOfWork.
+func PublishAgentStreamDeltaInTx(ctx context.Context, uow UnitOfWork, cardID string, p AgentStreamDeltaPayload, opts ...PublishOption) error {
+	o := collectPublishOptions(opts)
+	return uow.Append(ctx, EnvelopeDraft{
+		Partition: PartitionCard(cardID),
+		Type:      EventTypeAgentStreamDelta,
+		Version:   1,
+		Category:  CategoryVolatile,
+		Payload:   p,
+		Actor:     o.actor,
+		TraceID:   o.traceID,
+		SpanID:    o.spanID,
+	})
+}
+
+// PublishAgentThinkingDelta appends a agent.thinking.delta envelope (category=volatile, version=1) outside a transaction.
 func PublishAgentThinkingDelta(ctx context.Context, log Appender, cardID string, p AgentThinkingDeltaPayload, opts ...PublishOption) (int64, error) {
 	b, err := json.Marshal(p)
 	if err != nil {
@@ -112,7 +172,22 @@ func PublishAgentThinkingDelta(ctx context.Context, log Appender, cardID string,
 	return log.Append(ctx, env)
 }
 
-// PublishAgentToolInvoked appends a agent.tool.invoked envelope (category=business, version=1).
+// PublishAgentThinkingDeltaInTx appends a agent.thinking.delta envelope inside an open UnitOfWork.
+func PublishAgentThinkingDeltaInTx(ctx context.Context, uow UnitOfWork, cardID string, p AgentThinkingDeltaPayload, opts ...PublishOption) error {
+	o := collectPublishOptions(opts)
+	return uow.Append(ctx, EnvelopeDraft{
+		Partition: PartitionCard(cardID),
+		Type:      EventTypeAgentThinkingDelta,
+		Version:   1,
+		Category:  CategoryVolatile,
+		Payload:   p,
+		Actor:     o.actor,
+		TraceID:   o.traceID,
+		SpanID:    o.spanID,
+	})
+}
+
+// PublishAgentToolInvoked appends a agent.tool.invoked envelope (category=business, version=1) outside a transaction.
 func PublishAgentToolInvoked(ctx context.Context, log Appender, cardID string, p AgentToolInvokedPayload, opts ...PublishOption) (int64, error) {
 	b, err := json.Marshal(p)
 	if err != nil {
@@ -133,7 +208,22 @@ func PublishAgentToolInvoked(ctx context.Context, log Appender, cardID string, p
 	return log.Append(ctx, env)
 }
 
-// PublishAgentToolReturned appends a agent.tool.returned envelope (category=business, version=1).
+// PublishAgentToolInvokedInTx appends a agent.tool.invoked envelope inside an open UnitOfWork.
+func PublishAgentToolInvokedInTx(ctx context.Context, uow UnitOfWork, cardID string, p AgentToolInvokedPayload, opts ...PublishOption) error {
+	o := collectPublishOptions(opts)
+	return uow.Append(ctx, EnvelopeDraft{
+		Partition: PartitionCard(cardID),
+		Type:      EventTypeAgentToolInvoked,
+		Version:   1,
+		Category:  CategoryBusiness,
+		Payload:   p,
+		Actor:     o.actor,
+		TraceID:   o.traceID,
+		SpanID:    o.spanID,
+	})
+}
+
+// PublishAgentToolReturned appends a agent.tool.returned envelope (category=business, version=1) outside a transaction.
 func PublishAgentToolReturned(ctx context.Context, log Appender, cardID string, p AgentToolReturnedPayload, opts ...PublishOption) (int64, error) {
 	b, err := json.Marshal(p)
 	if err != nil {
@@ -154,7 +244,22 @@ func PublishAgentToolReturned(ctx context.Context, log Appender, cardID string, 
 	return log.Append(ctx, env)
 }
 
-// PublishAuditActionFailed appends a audit.action.failed envelope (category=audit, version=1).
+// PublishAgentToolReturnedInTx appends a agent.tool.returned envelope inside an open UnitOfWork.
+func PublishAgentToolReturnedInTx(ctx context.Context, uow UnitOfWork, cardID string, p AgentToolReturnedPayload, opts ...PublishOption) error {
+	o := collectPublishOptions(opts)
+	return uow.Append(ctx, EnvelopeDraft{
+		Partition: PartitionCard(cardID),
+		Type:      EventTypeAgentToolReturned,
+		Version:   1,
+		Category:  CategoryBusiness,
+		Payload:   p,
+		Actor:     o.actor,
+		TraceID:   o.traceID,
+		SpanID:    o.spanID,
+	})
+}
+
+// PublishAuditActionFailed appends a audit.action.failed envelope (category=audit, version=1) outside a transaction.
 func PublishAuditActionFailed(ctx context.Context, log Appender, actorID string, p AuditActionFailedPayload, opts ...PublishOption) (int64, error) {
 	b, err := json.Marshal(p)
 	if err != nil {
@@ -175,7 +280,22 @@ func PublishAuditActionFailed(ctx context.Context, log Appender, actorID string,
 	return log.Append(ctx, env)
 }
 
-// PublishAuditActionPerformed appends a audit.action.performed envelope (category=audit, version=1).
+// PublishAuditActionFailedInTx appends a audit.action.failed envelope inside an open UnitOfWork.
+func PublishAuditActionFailedInTx(ctx context.Context, uow UnitOfWork, actorID string, p AuditActionFailedPayload, opts ...PublishOption) error {
+	o := collectPublishOptions(opts)
+	return uow.Append(ctx, EnvelopeDraft{
+		Partition: PartitionActor(actorID),
+		Type:      EventTypeAuditActionFailed,
+		Version:   1,
+		Category:  CategoryAudit,
+		Payload:   p,
+		Actor:     o.actor,
+		TraceID:   o.traceID,
+		SpanID:    o.spanID,
+	})
+}
+
+// PublishAuditActionPerformed appends a audit.action.performed envelope (category=audit, version=1) outside a transaction.
 func PublishAuditActionPerformed(ctx context.Context, log Appender, actorID string, p AuditActionPerformedPayload, opts ...PublishOption) (int64, error) {
 	b, err := json.Marshal(p)
 	if err != nil {
@@ -196,7 +316,22 @@ func PublishAuditActionPerformed(ctx context.Context, log Appender, actorID stri
 	return log.Append(ctx, env)
 }
 
-// PublishChatCallbackDelivered appends a chat.callback.delivered envelope (category=business, version=1).
+// PublishAuditActionPerformedInTx appends a audit.action.performed envelope inside an open UnitOfWork.
+func PublishAuditActionPerformedInTx(ctx context.Context, uow UnitOfWork, actorID string, p AuditActionPerformedPayload, opts ...PublishOption) error {
+	o := collectPublishOptions(opts)
+	return uow.Append(ctx, EnvelopeDraft{
+		Partition: PartitionActor(actorID),
+		Type:      EventTypeAuditActionPerformed,
+		Version:   1,
+		Category:  CategoryAudit,
+		Payload:   p,
+		Actor:     o.actor,
+		TraceID:   o.traceID,
+		SpanID:    o.spanID,
+	})
+}
+
+// PublishChatCallbackDelivered appends a chat.callback.delivered envelope (category=business, version=1) outside a transaction.
 func PublishChatCallbackDelivered(ctx context.Context, log Appender, cardID string, p ChatCallbackDeliveredPayload, opts ...PublishOption) (int64, error) {
 	b, err := json.Marshal(p)
 	if err != nil {
@@ -217,7 +352,22 @@ func PublishChatCallbackDelivered(ctx context.Context, log Appender, cardID stri
 	return log.Append(ctx, env)
 }
 
-// PublishChatCallbackDismissed appends a chat.callback.dismissed envelope (category=business, version=1).
+// PublishChatCallbackDeliveredInTx appends a chat.callback.delivered envelope inside an open UnitOfWork.
+func PublishChatCallbackDeliveredInTx(ctx context.Context, uow UnitOfWork, cardID string, p ChatCallbackDeliveredPayload, opts ...PublishOption) error {
+	o := collectPublishOptions(opts)
+	return uow.Append(ctx, EnvelopeDraft{
+		Partition: PartitionCard(cardID),
+		Type:      EventTypeChatCallbackDelivered,
+		Version:   1,
+		Category:  CategoryBusiness,
+		Payload:   p,
+		Actor:     o.actor,
+		TraceID:   o.traceID,
+		SpanID:    o.spanID,
+	})
+}
+
+// PublishChatCallbackDismissed appends a chat.callback.dismissed envelope (category=business, version=1) outside a transaction.
 func PublishChatCallbackDismissed(ctx context.Context, log Appender, cardID string, p ChatCallbackDismissedPayload, opts ...PublishOption) (int64, error) {
 	b, err := json.Marshal(p)
 	if err != nil {
@@ -238,7 +388,22 @@ func PublishChatCallbackDismissed(ctx context.Context, log Appender, cardID stri
 	return log.Append(ctx, env)
 }
 
-// PublishChatCallbackQueued appends a chat.callback.queued envelope (category=business, version=1).
+// PublishChatCallbackDismissedInTx appends a chat.callback.dismissed envelope inside an open UnitOfWork.
+func PublishChatCallbackDismissedInTx(ctx context.Context, uow UnitOfWork, cardID string, p ChatCallbackDismissedPayload, opts ...PublishOption) error {
+	o := collectPublishOptions(opts)
+	return uow.Append(ctx, EnvelopeDraft{
+		Partition: PartitionCard(cardID),
+		Type:      EventTypeChatCallbackDismissed,
+		Version:   1,
+		Category:  CategoryBusiness,
+		Payload:   p,
+		Actor:     o.actor,
+		TraceID:   o.traceID,
+		SpanID:    o.spanID,
+	})
+}
+
+// PublishChatCallbackQueued appends a chat.callback.queued envelope (category=business, version=1) outside a transaction.
 func PublishChatCallbackQueued(ctx context.Context, log Appender, cardID string, p ChatCallbackQueuedPayload, opts ...PublishOption) (int64, error) {
 	b, err := json.Marshal(p)
 	if err != nil {
@@ -259,7 +424,22 @@ func PublishChatCallbackQueued(ctx context.Context, log Appender, cardID string,
 	return log.Append(ctx, env)
 }
 
-// PublishChatMessageSent appends a chat.message.sent envelope (category=business, version=1).
+// PublishChatCallbackQueuedInTx appends a chat.callback.queued envelope inside an open UnitOfWork.
+func PublishChatCallbackQueuedInTx(ctx context.Context, uow UnitOfWork, cardID string, p ChatCallbackQueuedPayload, opts ...PublishOption) error {
+	o := collectPublishOptions(opts)
+	return uow.Append(ctx, EnvelopeDraft{
+		Partition: PartitionCard(cardID),
+		Type:      EventTypeChatCallbackQueued,
+		Version:   1,
+		Category:  CategoryBusiness,
+		Payload:   p,
+		Actor:     o.actor,
+		TraceID:   o.traceID,
+		SpanID:    o.spanID,
+	})
+}
+
+// PublishChatMessageSent appends a chat.message.sent envelope (category=business, version=1) outside a transaction.
 func PublishChatMessageSent(ctx context.Context, log Appender, cardID string, p ChatMessageSentPayload, opts ...PublishOption) (int64, error) {
 	b, err := json.Marshal(p)
 	if err != nil {
@@ -280,7 +460,22 @@ func PublishChatMessageSent(ctx context.Context, log Appender, cardID string, p 
 	return log.Append(ctx, env)
 }
 
-// PublishCronRuleChanged appends a cron.rule.changed envelope (category=business, version=1).
+// PublishChatMessageSentInTx appends a chat.message.sent envelope inside an open UnitOfWork.
+func PublishChatMessageSentInTx(ctx context.Context, uow UnitOfWork, cardID string, p ChatMessageSentPayload, opts ...PublishOption) error {
+	o := collectPublishOptions(opts)
+	return uow.Append(ctx, EnvelopeDraft{
+		Partition: PartitionCard(cardID),
+		Type:      EventTypeChatMessageSent,
+		Version:   1,
+		Category:  CategoryBusiness,
+		Payload:   p,
+		Actor:     o.actor,
+		TraceID:   o.traceID,
+		SpanID:    o.spanID,
+	})
+}
+
+// PublishCronRuleChanged appends a cron.rule.changed envelope (category=business, version=1) outside a transaction.
 func PublishCronRuleChanged(ctx context.Context, log Appender, runtimeID string, p CronRuleChangedPayload, opts ...PublishOption) (int64, error) {
 	b, err := json.Marshal(p)
 	if err != nil {
@@ -301,7 +496,22 @@ func PublishCronRuleChanged(ctx context.Context, log Appender, runtimeID string,
 	return log.Append(ctx, env)
 }
 
-// PublishCronRuleCreated appends a cron.rule.created envelope (category=business, version=1).
+// PublishCronRuleChangedInTx appends a cron.rule.changed envelope inside an open UnitOfWork.
+func PublishCronRuleChangedInTx(ctx context.Context, uow UnitOfWork, runtimeID string, p CronRuleChangedPayload, opts ...PublishOption) error {
+	o := collectPublishOptions(opts)
+	return uow.Append(ctx, EnvelopeDraft{
+		Partition: PartitionRuntime(runtimeID),
+		Type:      EventTypeCronRuleChanged,
+		Version:   1,
+		Category:  CategoryBusiness,
+		Payload:   p,
+		Actor:     o.actor,
+		TraceID:   o.traceID,
+		SpanID:    o.spanID,
+	})
+}
+
+// PublishCronRuleCreated appends a cron.rule.created envelope (category=business, version=1) outside a transaction.
 func PublishCronRuleCreated(ctx context.Context, log Appender, runtimeID string, p CronRuleCreatedPayload, opts ...PublishOption) (int64, error) {
 	b, err := json.Marshal(p)
 	if err != nil {
@@ -322,7 +532,22 @@ func PublishCronRuleCreated(ctx context.Context, log Appender, runtimeID string,
 	return log.Append(ctx, env)
 }
 
-// PublishCronRuleDisabled appends a cron.rule.disabled envelope (category=business, version=1).
+// PublishCronRuleCreatedInTx appends a cron.rule.created envelope inside an open UnitOfWork.
+func PublishCronRuleCreatedInTx(ctx context.Context, uow UnitOfWork, runtimeID string, p CronRuleCreatedPayload, opts ...PublishOption) error {
+	o := collectPublishOptions(opts)
+	return uow.Append(ctx, EnvelopeDraft{
+		Partition: PartitionRuntime(runtimeID),
+		Type:      EventTypeCronRuleCreated,
+		Version:   1,
+		Category:  CategoryBusiness,
+		Payload:   p,
+		Actor:     o.actor,
+		TraceID:   o.traceID,
+		SpanID:    o.spanID,
+	})
+}
+
+// PublishCronRuleDisabled appends a cron.rule.disabled envelope (category=business, version=1) outside a transaction.
 func PublishCronRuleDisabled(ctx context.Context, log Appender, runtimeID string, p CronRuleDisabledPayload, opts ...PublishOption) (int64, error) {
 	b, err := json.Marshal(p)
 	if err != nil {
@@ -343,7 +568,22 @@ func PublishCronRuleDisabled(ctx context.Context, log Appender, runtimeID string
 	return log.Append(ctx, env)
 }
 
-// PublishCronRuleFired appends a cron.rule.fired envelope (category=operational, version=1).
+// PublishCronRuleDisabledInTx appends a cron.rule.disabled envelope inside an open UnitOfWork.
+func PublishCronRuleDisabledInTx(ctx context.Context, uow UnitOfWork, runtimeID string, p CronRuleDisabledPayload, opts ...PublishOption) error {
+	o := collectPublishOptions(opts)
+	return uow.Append(ctx, EnvelopeDraft{
+		Partition: PartitionRuntime(runtimeID),
+		Type:      EventTypeCronRuleDisabled,
+		Version:   1,
+		Category:  CategoryBusiness,
+		Payload:   p,
+		Actor:     o.actor,
+		TraceID:   o.traceID,
+		SpanID:    o.spanID,
+	})
+}
+
+// PublishCronRuleFired appends a cron.rule.fired envelope (category=operational, version=1) outside a transaction.
 func PublishCronRuleFired(ctx context.Context, log Appender, ruleID string, p CronRuleFiredPayload, opts ...PublishOption) (int64, error) {
 	b, err := json.Marshal(p)
 	if err != nil {
@@ -364,7 +604,22 @@ func PublishCronRuleFired(ctx context.Context, log Appender, ruleID string, p Cr
 	return log.Append(ctx, env)
 }
 
-// PublishRealmConfigChanged appends a realm.config.changed envelope (category=audit, version=1).
+// PublishCronRuleFiredInTx appends a cron.rule.fired envelope inside an open UnitOfWork.
+func PublishCronRuleFiredInTx(ctx context.Context, uow UnitOfWork, ruleID string, p CronRuleFiredPayload, opts ...PublishOption) error {
+	o := collectPublishOptions(opts)
+	return uow.Append(ctx, EnvelopeDraft{
+		Partition: PartitionCron(ruleID),
+		Type:      EventTypeCronRuleFired,
+		Version:   1,
+		Category:  CategoryOperational,
+		Payload:   p,
+		Actor:     o.actor,
+		TraceID:   o.traceID,
+		SpanID:    o.spanID,
+	})
+}
+
+// PublishRealmConfigChanged appends a realm.config.changed envelope (category=audit, version=1) outside a transaction.
 func PublishRealmConfigChanged(ctx context.Context, log Appender, realmID string, p RealmConfigChangedPayload, opts ...PublishOption) (int64, error) {
 	b, err := json.Marshal(p)
 	if err != nil {
@@ -385,7 +640,22 @@ func PublishRealmConfigChanged(ctx context.Context, log Appender, realmID string
 	return log.Append(ctx, env)
 }
 
-// PublishRealmCreated appends a realm.created envelope (category=permanent, version=1).
+// PublishRealmConfigChangedInTx appends a realm.config.changed envelope inside an open UnitOfWork.
+func PublishRealmConfigChangedInTx(ctx context.Context, uow UnitOfWork, realmID string, p RealmConfigChangedPayload, opts ...PublishOption) error {
+	o := collectPublishOptions(opts)
+	return uow.Append(ctx, EnvelopeDraft{
+		Partition: PartitionRealm(realmID),
+		Type:      EventTypeRealmConfigChanged,
+		Version:   1,
+		Category:  CategoryAudit,
+		Payload:   p,
+		Actor:     o.actor,
+		TraceID:   o.traceID,
+		SpanID:    o.spanID,
+	})
+}
+
+// PublishRealmCreated appends a realm.created envelope (category=permanent, version=1) outside a transaction.
 func PublishRealmCreated(ctx context.Context, log Appender, realmID string, p RealmCreatedPayload, opts ...PublishOption) (int64, error) {
 	b, err := json.Marshal(p)
 	if err != nil {
@@ -406,7 +676,22 @@ func PublishRealmCreated(ctx context.Context, log Appender, realmID string, p Re
 	return log.Append(ctx, env)
 }
 
-// PublishRealmMemberAdded appends a realm.member.added envelope (category=audit, version=1).
+// PublishRealmCreatedInTx appends a realm.created envelope inside an open UnitOfWork.
+func PublishRealmCreatedInTx(ctx context.Context, uow UnitOfWork, realmID string, p RealmCreatedPayload, opts ...PublishOption) error {
+	o := collectPublishOptions(opts)
+	return uow.Append(ctx, EnvelopeDraft{
+		Partition: PartitionRealm(realmID),
+		Type:      EventTypeRealmCreated,
+		Version:   1,
+		Category:  CategoryPermanent,
+		Payload:   p,
+		Actor:     o.actor,
+		TraceID:   o.traceID,
+		SpanID:    o.spanID,
+	})
+}
+
+// PublishRealmMemberAdded appends a realm.member.added envelope (category=audit, version=1) outside a transaction.
 func PublishRealmMemberAdded(ctx context.Context, log Appender, realmID string, p RealmMemberAddedPayload, opts ...PublishOption) (int64, error) {
 	b, err := json.Marshal(p)
 	if err != nil {
@@ -427,7 +712,22 @@ func PublishRealmMemberAdded(ctx context.Context, log Appender, realmID string, 
 	return log.Append(ctx, env)
 }
 
-// PublishRealmMemberRemoved appends a realm.member.removed envelope (category=audit, version=1).
+// PublishRealmMemberAddedInTx appends a realm.member.added envelope inside an open UnitOfWork.
+func PublishRealmMemberAddedInTx(ctx context.Context, uow UnitOfWork, realmID string, p RealmMemberAddedPayload, opts ...PublishOption) error {
+	o := collectPublishOptions(opts)
+	return uow.Append(ctx, EnvelopeDraft{
+		Partition: PartitionRealm(realmID),
+		Type:      EventTypeRealmMemberAdded,
+		Version:   1,
+		Category:  CategoryAudit,
+		Payload:   p,
+		Actor:     o.actor,
+		TraceID:   o.traceID,
+		SpanID:    o.spanID,
+	})
+}
+
+// PublishRealmMemberRemoved appends a realm.member.removed envelope (category=audit, version=1) outside a transaction.
 func PublishRealmMemberRemoved(ctx context.Context, log Appender, realmID string, p RealmMemberRemovedPayload, opts ...PublishOption) (int64, error) {
 	b, err := json.Marshal(p)
 	if err != nil {
@@ -448,7 +748,22 @@ func PublishRealmMemberRemoved(ctx context.Context, log Appender, realmID string
 	return log.Append(ctx, env)
 }
 
-// PublishTaskClaimed appends a task.claimed envelope (category=business, version=1).
+// PublishRealmMemberRemovedInTx appends a realm.member.removed envelope inside an open UnitOfWork.
+func PublishRealmMemberRemovedInTx(ctx context.Context, uow UnitOfWork, realmID string, p RealmMemberRemovedPayload, opts ...PublishOption) error {
+	o := collectPublishOptions(opts)
+	return uow.Append(ctx, EnvelopeDraft{
+		Partition: PartitionRealm(realmID),
+		Type:      EventTypeRealmMemberRemoved,
+		Version:   1,
+		Category:  CategoryAudit,
+		Payload:   p,
+		Actor:     o.actor,
+		TraceID:   o.traceID,
+		SpanID:    o.spanID,
+	})
+}
+
+// PublishTaskClaimed appends a task.claimed envelope (category=business, version=1) outside a transaction.
 func PublishTaskClaimed(ctx context.Context, log Appender, runtimeID string, p TaskClaimedPayload, opts ...PublishOption) (int64, error) {
 	b, err := json.Marshal(p)
 	if err != nil {
@@ -469,7 +784,22 @@ func PublishTaskClaimed(ctx context.Context, log Appender, runtimeID string, p T
 	return log.Append(ctx, env)
 }
 
-// PublishTaskCompleted appends a task.completed envelope (category=business, version=1).
+// PublishTaskClaimedInTx appends a task.claimed envelope inside an open UnitOfWork.
+func PublishTaskClaimedInTx(ctx context.Context, uow UnitOfWork, runtimeID string, p TaskClaimedPayload, opts ...PublishOption) error {
+	o := collectPublishOptions(opts)
+	return uow.Append(ctx, EnvelopeDraft{
+		Partition: PartitionRuntime(runtimeID),
+		Type:      EventTypeTaskClaimed,
+		Version:   1,
+		Category:  CategoryBusiness,
+		Payload:   p,
+		Actor:     o.actor,
+		TraceID:   o.traceID,
+		SpanID:    o.spanID,
+	})
+}
+
+// PublishTaskCompleted appends a task.completed envelope (category=business, version=1) outside a transaction.
 func PublishTaskCompleted(ctx context.Context, log Appender, runtimeID string, p TaskCompletedPayload, opts ...PublishOption) (int64, error) {
 	b, err := json.Marshal(p)
 	if err != nil {
@@ -490,7 +820,22 @@ func PublishTaskCompleted(ctx context.Context, log Appender, runtimeID string, p
 	return log.Append(ctx, env)
 }
 
-// PublishTaskFailed appends a task.failed envelope (category=business, version=1).
+// PublishTaskCompletedInTx appends a task.completed envelope inside an open UnitOfWork.
+func PublishTaskCompletedInTx(ctx context.Context, uow UnitOfWork, runtimeID string, p TaskCompletedPayload, opts ...PublishOption) error {
+	o := collectPublishOptions(opts)
+	return uow.Append(ctx, EnvelopeDraft{
+		Partition: PartitionRuntime(runtimeID),
+		Type:      EventTypeTaskCompleted,
+		Version:   1,
+		Category:  CategoryBusiness,
+		Payload:   p,
+		Actor:     o.actor,
+		TraceID:   o.traceID,
+		SpanID:    o.spanID,
+	})
+}
+
+// PublishTaskFailed appends a task.failed envelope (category=business, version=1) outside a transaction.
 func PublishTaskFailed(ctx context.Context, log Appender, runtimeID string, p TaskFailedPayload, opts ...PublishOption) (int64, error) {
 	b, err := json.Marshal(p)
 	if err != nil {
@@ -511,7 +856,22 @@ func PublishTaskFailed(ctx context.Context, log Appender, runtimeID string, p Ta
 	return log.Append(ctx, env)
 }
 
-// PublishTaskSubmitted appends a task.submitted envelope (category=business, version=1).
+// PublishTaskFailedInTx appends a task.failed envelope inside an open UnitOfWork.
+func PublishTaskFailedInTx(ctx context.Context, uow UnitOfWork, runtimeID string, p TaskFailedPayload, opts ...PublishOption) error {
+	o := collectPublishOptions(opts)
+	return uow.Append(ctx, EnvelopeDraft{
+		Partition: PartitionRuntime(runtimeID),
+		Type:      EventTypeTaskFailed,
+		Version:   1,
+		Category:  CategoryBusiness,
+		Payload:   p,
+		Actor:     o.actor,
+		TraceID:   o.traceID,
+		SpanID:    o.spanID,
+	})
+}
+
+// PublishTaskSubmitted appends a task.submitted envelope (category=business, version=1) outside a transaction.
 func PublishTaskSubmitted(ctx context.Context, log Appender, runtimeID string, p TaskSubmittedPayload, opts ...PublishOption) (int64, error) {
 	b, err := json.Marshal(p)
 	if err != nil {
@@ -532,7 +892,22 @@ func PublishTaskSubmitted(ctx context.Context, log Appender, runtimeID string, p
 	return log.Append(ctx, env)
 }
 
-// PublishWebhookInboundReceived appends a webhook.inbound.received envelope (category=operational, version=1).
+// PublishTaskSubmittedInTx appends a task.submitted envelope inside an open UnitOfWork.
+func PublishTaskSubmittedInTx(ctx context.Context, uow UnitOfWork, runtimeID string, p TaskSubmittedPayload, opts ...PublishOption) error {
+	o := collectPublishOptions(opts)
+	return uow.Append(ctx, EnvelopeDraft{
+		Partition: PartitionRuntime(runtimeID),
+		Type:      EventTypeTaskSubmitted,
+		Version:   1,
+		Category:  CategoryBusiness,
+		Payload:   p,
+		Actor:     o.actor,
+		TraceID:   o.traceID,
+		SpanID:    o.spanID,
+	})
+}
+
+// PublishWebhookInboundReceived appends a webhook.inbound.received envelope (category=operational, version=1) outside a transaction.
 func PublishWebhookInboundReceived(ctx context.Context, log Appender, endpointID string, p WebhookInboundBody, opts ...PublishOption) (int64, error) {
 	b, err := json.Marshal(p)
 	if err != nil {
@@ -553,8 +928,23 @@ func PublishWebhookInboundReceived(ctx context.Context, log Appender, endpointID
 	return log.Append(ctx, env)
 }
 
-// PublishWebhookOutboundAttempt_failed appends a webhook.outbound.attempt_failed envelope (category=operational, version=1).
-func PublishWebhookOutboundAttempt_failed(ctx context.Context, log Appender, endpointID string, p WebhookOutboundAttemptFailedPayload, opts ...PublishOption) (int64, error) {
+// PublishWebhookInboundReceivedInTx appends a webhook.inbound.received envelope inside an open UnitOfWork.
+func PublishWebhookInboundReceivedInTx(ctx context.Context, uow UnitOfWork, endpointID string, p WebhookInboundBody, opts ...PublishOption) error {
+	o := collectPublishOptions(opts)
+	return uow.Append(ctx, EnvelopeDraft{
+		Partition: PartitionWebhook(endpointID),
+		Type:      EventTypeWebhookInboundReceived,
+		Version:   1,
+		Category:  CategoryOperational,
+		Payload:   p,
+		Actor:     o.actor,
+		TraceID:   o.traceID,
+		SpanID:    o.spanID,
+	})
+}
+
+// PublishWebhookOutboundAttemptFailed appends a webhook.outbound.attempt_failed envelope (category=operational, version=1) outside a transaction.
+func PublishWebhookOutboundAttemptFailed(ctx context.Context, log Appender, endpointID string, p WebhookOutboundAttemptFailedPayload, opts ...PublishOption) (int64, error) {
 	b, err := json.Marshal(p)
 	if err != nil {
 		return 0, err
@@ -562,7 +952,7 @@ func PublishWebhookOutboundAttempt_failed(ctx context.Context, log Appender, end
 	o := collectPublishOptions(opts)
 	env := Envelope{
 		Partition: PartitionWebhook(endpointID),
-		Type:      EventTypeWebhookOutboundAttempt_failed,
+		Type:      EventTypeWebhookOutboundAttemptFailed,
 		Version:   1,
 		Category:  CategoryOperational,
 		Ts:        NowRFC3339Nano(),
@@ -574,7 +964,22 @@ func PublishWebhookOutboundAttempt_failed(ctx context.Context, log Appender, end
 	return log.Append(ctx, env)
 }
 
-// PublishWebhookOutboundExhausted appends a webhook.outbound.exhausted envelope (category=audit, version=1).
+// PublishWebhookOutboundAttemptFailedInTx appends a webhook.outbound.attempt_failed envelope inside an open UnitOfWork.
+func PublishWebhookOutboundAttemptFailedInTx(ctx context.Context, uow UnitOfWork, endpointID string, p WebhookOutboundAttemptFailedPayload, opts ...PublishOption) error {
+	o := collectPublishOptions(opts)
+	return uow.Append(ctx, EnvelopeDraft{
+		Partition: PartitionWebhook(endpointID),
+		Type:      EventTypeWebhookOutboundAttemptFailed,
+		Version:   1,
+		Category:  CategoryOperational,
+		Payload:   p,
+		Actor:     o.actor,
+		TraceID:   o.traceID,
+		SpanID:    o.spanID,
+	})
+}
+
+// PublishWebhookOutboundExhausted appends a webhook.outbound.exhausted envelope (category=audit, version=1) outside a transaction.
 func PublishWebhookOutboundExhausted(ctx context.Context, log Appender, endpointID string, p WebhookOutboundExhaustedPayload, opts ...PublishOption) (int64, error) {
 	b, err := json.Marshal(p)
 	if err != nil {
@@ -595,7 +1000,22 @@ func PublishWebhookOutboundExhausted(ctx context.Context, log Appender, endpoint
 	return log.Append(ctx, env)
 }
 
-// PublishWebhookOutboundQueued appends a webhook.outbound.queued envelope (category=operational, version=1).
+// PublishWebhookOutboundExhaustedInTx appends a webhook.outbound.exhausted envelope inside an open UnitOfWork.
+func PublishWebhookOutboundExhaustedInTx(ctx context.Context, uow UnitOfWork, endpointID string, p WebhookOutboundExhaustedPayload, opts ...PublishOption) error {
+	o := collectPublishOptions(opts)
+	return uow.Append(ctx, EnvelopeDraft{
+		Partition: PartitionWebhook(endpointID),
+		Type:      EventTypeWebhookOutboundExhausted,
+		Version:   1,
+		Category:  CategoryAudit,
+		Payload:   p,
+		Actor:     o.actor,
+		TraceID:   o.traceID,
+		SpanID:    o.spanID,
+	})
+}
+
+// PublishWebhookOutboundQueued appends a webhook.outbound.queued envelope (category=operational, version=1) outside a transaction.
 func PublishWebhookOutboundQueued(ctx context.Context, log Appender, endpointID string, p WebhookOutboundQueuedPayload, opts ...PublishOption) (int64, error) {
 	b, err := json.Marshal(p)
 	if err != nil {
@@ -616,7 +1036,22 @@ func PublishWebhookOutboundQueued(ctx context.Context, log Appender, endpointID 
 	return log.Append(ctx, env)
 }
 
-// PublishWebhookOutboundScheduled appends a webhook.outbound.scheduled envelope (category=operational, version=1).
+// PublishWebhookOutboundQueuedInTx appends a webhook.outbound.queued envelope inside an open UnitOfWork.
+func PublishWebhookOutboundQueuedInTx(ctx context.Context, uow UnitOfWork, endpointID string, p WebhookOutboundQueuedPayload, opts ...PublishOption) error {
+	o := collectPublishOptions(opts)
+	return uow.Append(ctx, EnvelopeDraft{
+		Partition: PartitionWebhook(endpointID),
+		Type:      EventTypeWebhookOutboundQueued,
+		Version:   1,
+		Category:  CategoryOperational,
+		Payload:   p,
+		Actor:     o.actor,
+		TraceID:   o.traceID,
+		SpanID:    o.spanID,
+	})
+}
+
+// PublishWebhookOutboundScheduled appends a webhook.outbound.scheduled envelope (category=operational, version=1) outside a transaction.
 func PublishWebhookOutboundScheduled(ctx context.Context, log Appender, endpointID string, p WebhookOutboundScheduledPayload, opts ...PublishOption) (int64, error) {
 	b, err := json.Marshal(p)
 	if err != nil {
@@ -637,7 +1072,22 @@ func PublishWebhookOutboundScheduled(ctx context.Context, log Appender, endpoint
 	return log.Append(ctx, env)
 }
 
-// PublishWebhookOutboundSent appends a webhook.outbound.sent envelope (category=operational, version=1).
+// PublishWebhookOutboundScheduledInTx appends a webhook.outbound.scheduled envelope inside an open UnitOfWork.
+func PublishWebhookOutboundScheduledInTx(ctx context.Context, uow UnitOfWork, endpointID string, p WebhookOutboundScheduledPayload, opts ...PublishOption) error {
+	o := collectPublishOptions(opts)
+	return uow.Append(ctx, EnvelopeDraft{
+		Partition: PartitionWebhook(endpointID),
+		Type:      EventTypeWebhookOutboundScheduled,
+		Version:   1,
+		Category:  CategoryOperational,
+		Payload:   p,
+		Actor:     o.actor,
+		TraceID:   o.traceID,
+		SpanID:    o.spanID,
+	})
+}
+
+// PublishWebhookOutboundSent appends a webhook.outbound.sent envelope (category=operational, version=1) outside a transaction.
 func PublishWebhookOutboundSent(ctx context.Context, log Appender, endpointID string, p WebhookOutboundSentPayload, opts ...PublishOption) (int64, error) {
 	b, err := json.Marshal(p)
 	if err != nil {
@@ -656,4 +1106,19 @@ func PublishWebhookOutboundSent(ctx context.Context, log Appender, endpointID st
 		SpanID:    o.spanID,
 	}
 	return log.Append(ctx, env)
+}
+
+// PublishWebhookOutboundSentInTx appends a webhook.outbound.sent envelope inside an open UnitOfWork.
+func PublishWebhookOutboundSentInTx(ctx context.Context, uow UnitOfWork, endpointID string, p WebhookOutboundSentPayload, opts ...PublishOption) error {
+	o := collectPublishOptions(opts)
+	return uow.Append(ctx, EnvelopeDraft{
+		Partition: PartitionWebhook(endpointID),
+		Type:      EventTypeWebhookOutboundSent,
+		Version:   1,
+		Category:  CategoryOperational,
+		Payload:   p,
+		Actor:     o.actor,
+		TraceID:   o.traceID,
+		SpanID:    o.spanID,
+	})
 }

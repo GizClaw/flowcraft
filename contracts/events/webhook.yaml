@@ -67,22 +67,36 @@ payloads:
   WebhookOutboundQueuedPayload:
     endpoint_id: { type: string, required: true }
     delivery_id: { type: string, required: true }
+    url: { type: string, required: true }
+    method: { type: string, required: true }
+    headers: { type: map, value_type: string, required: false }
+    body: { type: string, required: false }
+    max_attempts: { type: int32, required: false }
+    initial_backoff_ms: { type: int32, required: false }
+    source_event_seq: { type: int64, required: false }
   WebhookOutboundScheduledPayload:
     endpoint_id: { type: string, required: true }
     delivery_id: { type: string, required: true }
     attempt: { type: int32, required: true }
-    next_at: { type: timestamp, required: true }
+    not_before: { type: timestamp, required: true }
+    reason: { type: string, required: false }
   WebhookOutboundSentPayload:
     endpoint_id: { type: string, required: true }
     delivery_id: { type: string, required: true }
     attempt: { type: int32, required: true }
     status_code: { type: int32, required: true }
+    response_body: { type: string, required: false }
+    duration_ms: { type: int64, required: true }
   WebhookOutboundAttemptFailedPayload:
     endpoint_id: { type: string, required: true }
     delivery_id: { type: string, required: true }
     attempt: { type: int32, required: true }
-    error: { type: string, required: true }
+    error_class: { type: string, required: true }
+    error_message: { type: string, required: true }
+    status_code: { type: int32, required: false }
+    duration_ms: { type: int64, required: false }
   WebhookOutboundExhaustedPayload:
     endpoint_id: { type: string, required: true }
     delivery_id: { type: string, required: true }
-    last_error: { type: string, required: true }
+    total_attempts: { type: int32, required: true }
+    final_error: { type: string, required: true }
