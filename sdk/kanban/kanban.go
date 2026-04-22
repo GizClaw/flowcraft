@@ -2,6 +2,7 @@ package kanban
 
 import (
 	"context"
+	"runtime"
 	"sync"
 	"time"
 
@@ -77,17 +78,28 @@ func DefaultConfig() KanbanConfig {
 	}
 }
 
+// DefaultStopTimeout bounds how long Kanban.Stop() waits for in-flight
+// executors before logging and returning. Override with WithStopTimeout(0)
+// for the legacy "wait forever" behaviour, or with a different positive
+// duration. Callers building integrations on top of Kanban (SIGTERM
+// handlers, test harnesses) rely on Stop terminating in bounded time.
+const DefaultStopTimeout = 10 * time.Second
+
 // Kanban coordinates multi-agent collaboration via a shared board.
+//
+// Kanban does not own an independent event bus: every state transition is
+// published on Board.Bus(), which is the single source of truth.
+// (k *Kanban).Bus() is a thin alias for board.Bus() kept for ergonomics.
 type Kanban struct {
-	board     *Board
-	executor  AgentExecutor
-	validator AgentValidator
-	bus       event.EventBus
-	cfg       KanbanConfig
-	metrics   *kanbanMetrics
-	scheduler *Scheduler
-	ctx       context.Context
-	cancel    context.CancelFunc
+	board       *Board
+	executor    AgentExecutor
+	validator   AgentValidator
+	cfg         KanbanConfig
+	metrics     *kanbanMetrics
+	scheduler   *Scheduler
+	stopTimeout time.Duration
+	ctx         context.Context
+	cancel      context.CancelFunc
 
 	mu       sync.RWMutex
 	closed   bool
@@ -102,12 +114,12 @@ func New(ctx context.Context, board *Board, opts ...Option) *Kanban {
 	}
 	runCtx, cancel := context.WithCancel(ctx)
 	k := &Kanban{
-		board:   board,
-		bus:     board.Bus(),
-		cfg:     DefaultConfig(),
-		metrics: newKanbanMetrics(ctx),
-		ctx:     runCtx,
-		cancel:  cancel,
+		board:       board,
+		cfg:         DefaultConfig(),
+		metrics:     newKanbanMetrics(ctx),
+		stopTimeout: DefaultStopTimeout,
+		ctx:         runCtx,
+		cancel:      cancel,
 	}
 	for _, opt := range opts {
 		opt(k)
@@ -135,9 +147,15 @@ func WithAgentValidator(v AgentValidator) Option {
 	return func(k *Kanban) { k.validator = v }
 }
 
-// WithEventBus sets the event bus for publishing Kanban events.
-func WithEventBus(bus event.EventBus) Option {
-	return func(k *Kanban) { k.bus = bus }
+// WithEventBus is retained for source compatibility only and has no effect.
+//
+// Deprecated: Board.Bus() is the single source of truth for every Kanban
+// state transition (task submitted / claimed / completed / failed + cron
+// rule created / fired / disabled). Pass your bus to the Board instead, or
+// subscribe to board.Bus() and forward as needed. This option will be
+// removed in v0.2.0.
+func WithEventBus(_ event.EventBus) Option {
+	return func(*Kanban) {}
 }
 
 // WithConfig sets the Kanban configuration.
@@ -150,10 +168,28 @@ func WithScheduler(s *Scheduler) Option {
 	return func(k *Kanban) { k.scheduler = s }
 }
 
+// WithStopTimeout bounds how long Stop will wait for in-flight executors.
+// The default is DefaultStopTimeout (10s); pass 0 or a negative value to
+// fall back to the legacy "wait forever" behaviour.
+//
+// On timeout, Stop logs the unfinished goroutine count captured at start
+// of Stop and returns; the executors keep running but no longer block
+// process exit. AgentExecutor implementations should always honour ctx
+// cancellation — using context.WithoutCancel inside an executor chain
+// defeats this safety net.
+func WithStopTimeout(d time.Duration) Option {
+	return func(k *Kanban) { k.stopTimeout = d }
+}
+
 // Scheduler returns the embedded scheduler, or nil.
 func (k *Kanban) Scheduler() *Scheduler { return k.scheduler }
 
-// Stop closes the Kanban admission path and waits for running executors to finish.
+// Stop closes the Kanban admission path and waits for in-flight executors.
+// The wait is bounded by the stop timeout (DefaultStopTimeout = 10s, or
+// the value passed to WithStopTimeout); set WithStopTimeout(0) to wait
+// forever. On timeout the alive-goroutine count captured at start of Stop
+// is logged and Stop returns without waiting for stuck executors. The
+// board is always closed before Stop returns.
 func (k *Kanban) Stop() {
 	k.stopOnce.Do(func() {
 		k.mu.Lock()
@@ -170,7 +206,30 @@ func (k *Kanban) Stop() {
 				k.board.Close()
 			}
 		}()
-		k.execWg.Wait()
+
+		if k.stopTimeout <= 0 {
+			k.execWg.Wait()
+			return
+		}
+
+		goroutinesAtStop := runtime.NumGoroutine()
+		done := make(chan struct{})
+		go func() {
+			k.execWg.Wait()
+			close(done)
+		}()
+		select {
+		case <-done:
+		case <-time.After(k.stopTimeout):
+			ctx := k.ctx
+			if ctx == nil {
+				ctx = context.Background()
+			}
+			telemetry.Warn(ctx, "kanban: Stop timed out waiting for executors; returning early",
+				otellog.String("stop_timeout", k.stopTimeout.String()),
+				otellog.Int("goroutines_at_stop", goroutinesAtStop),
+				otellog.Int("goroutines_now", runtime.NumGoroutine()))
+		}
 	})
 }
 
@@ -194,8 +253,9 @@ func (k *Kanban) executionContext(producer string) context.Context {
 // Board returns the owned task board.
 func (k *Kanban) Board() *Board { return k.board }
 
-// Bus returns the event bus used by Kanban.
-func (k *Kanban) Bus() event.EventBus { return k.bus }
+// Bus returns the event bus that publishes every Kanban state transition.
+// It is an alias for Board().Bus(); both return the same underlying bus.
+func (k *Kanban) Bus() event.EventBus { return k.board.Bus() }
 
 // Submit produces a task card on the board and executes via AgentExecutor.
 // All tasks are asynchronous; results are delivered via callback.
@@ -258,14 +318,8 @@ func (k *Kanban) Submit(ctx context.Context, opts TaskOptions) (string, error) {
 	k.mu.Unlock()
 
 	k.metrics.incTasksSubmitted(ctx, attribute.String("target_agent_id", opts.TargetAgentID))
-
-	k.publishEvent(ctx, EventTaskSubmitted, TaskSubmittedPayload{
-		CardID:        card.ID,
-		TargetAgentID: opts.TargetAgentID,
-		Query:         opts.Query,
-		RuntimeID:     k.board.ScopeID(),
-		Inputs:        opts.Inputs,
-	})
+	// EventTaskSubmitted is published by Board.Produce → publishProduceEvent.
+	// Do not re-publish here; Board.Bus() is the single source of truth.
 
 	if shouldExecute {
 		go func() {
@@ -282,14 +336,9 @@ func (k *Kanban) Submit(ctx context.Context, opts TaskOptions) (string, error) {
 					attribute.String("target_agent_id", opts.TargetAgentID),
 					attribute.String("status", "error"),
 				)
+				// Board.Fail publishes EventTaskFailed via publishCardEvent;
+				// no need to emit a second copy from here.
 				k.board.Fail(card.ID, err.Error())
-				k.publishEvent(execCtx, EventTaskFailed, TaskFailedPayload{
-					CardID:        card.ID,
-					TargetAgentID: opts.TargetAgentID,
-					RuntimeID:     k.board.ScopeID(),
-					Error:         err.Error(),
-					ElapsedMs:     elapsed.Milliseconds(),
-				})
 				telemetry.Warn(ctx, "kanban executor failed",
 					otellog.String("card", card.ID),
 					otellog.String("error", err.Error()))
@@ -326,14 +375,4 @@ func (k *Kanban) Broadcast(ctx context.Context, signalType string, payload any) 
 	}
 	producer := ProducerIDFrom(ctx)
 	k.board.Produce("signal", producer, payload, WithMeta("signal_type", signalType))
-}
-
-func (k *Kanban) publishEvent(ctx context.Context, eventType string, payload any) {
-	if k.bus == nil {
-		return
-	}
-	_ = k.bus.Publish(ctx, event.Event{
-		Type:    event.EventType(eventType),
-		Payload: payload,
-	})
 }

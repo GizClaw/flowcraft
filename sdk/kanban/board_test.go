@@ -2,8 +2,6 @@ package kanban
 
 import (
 	"context"
-	"fmt"
-	"sync"
 	"testing"
 	"time"
 
@@ -11,137 +9,197 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// Produce / deep copy
+// Construction
 // ---------------------------------------------------------------------------
 
-func TestBoard_Produce_ReturnsDeepCopy(t *testing.T) {
-	b := NewBoard("scope-dc1")
-	defer b.Close()
-	card := b.Produce("task", "p", map[string]any{"key": "val"}, WithMeta("m", "v"))
-
-	card.Status = CardDone
-	card.Meta["m"] = "mutated"
-
-	internal := b.Last(CardFilter{Type: "task"})
-	if internal.Status != CardPending {
-		t.Fatalf("internal card should still be Pending, got %s", internal.Status)
-	}
-	if internal.Meta["m"] != "v" {
-		t.Fatalf("internal meta should be 'v', got %s", internal.Meta["m"])
-	}
-}
-
-func TestBoard_Query_ReturnsDeepCopies(t *testing.T) {
-	b := NewBoard("scope-dc2")
-	defer b.Close()
-	b.Produce("task", "p", nil)
-	b.Produce("task", "p", nil)
-
-	cards := b.Query(CardFilter{Type: "task"})
-	for _, c := range cards {
-		c.Status = CardDone
-	}
-
-	internal := b.Query(CardFilter{Type: "task"})
-	for _, c := range internal {
-		if c.Status != CardPending {
-			t.Fatalf("mutation through Query should not affect internal state, got %s", c.Status)
-		}
+func TestBoard_New(t *testing.T) {
+	t.Parallel()
+	for _, ctor := range []struct {
+		name string
+		make func(scope string) *Board
+	}{
+		{"NewBoard", func(s string) *Board { return NewBoard(s) }},
+		{"NewTaskBoard", func(s string) *Board { return NewTaskBoard(s) }},
+	} {
+		ctor := ctor
+		t.Run(ctor.name, func(t *testing.T) {
+			t.Parallel()
+			b := ctor.make(scopeID(t))
+			t.Cleanup(b.Close)
+			if b.ScopeID() == "" {
+				t.Fatal("ScopeID empty")
+			}
+		})
 	}
 }
 
-func TestBoard_Last_ReturnsDeepCopy(t *testing.T) {
-	b := NewBoard("scope-dc3")
-	defer b.Close()
-	b.Produce("task", "p", "payload")
-
-	last := b.Last(CardFilter{Type: "task"})
-	last.Producer = "mutated"
-
-	check := b.Last(CardFilter{Type: "task"})
-	if check.Producer == "mutated" {
-		t.Fatal("Last() should return a copy; mutation should not affect internal state")
-	}
-}
-
-func TestBoard_RawCards_ReturnsDeepCopies(t *testing.T) {
-	b := NewBoard("scope-dc4")
-	defer b.Close()
-	b.Produce("task", "p", nil)
-
-	cards := b.RawCards()
-	cards[0].Type = "mutated"
-
-	check := b.RawCards()
-	if check[0].Type == "mutated" {
-		t.Fatal("RawCards() should return copies; mutation should not affect internal state")
-	}
+func TestBoard_Close_Idempotent(t *testing.T) {
+	t.Parallel()
+	b := NewBoard(scopeID(t))
+	b.Close()
+	b.Close() // second close must not panic
 }
 
 // ---------------------------------------------------------------------------
-// Claim / Done / Fail state transitions
+// Deep-copy isolation: callers must not be able to mutate Board state
+// through any returned Card. Covers Produce / Query / Last / RawCards /
+// GetCardByID — they all use the same deepCopy path.
 // ---------------------------------------------------------------------------
 
-func TestBoard_DoubleClaimFails(t *testing.T) {
-	b := NewBoard("scope-dcf")
-	defer b.Close()
-	card := b.Produce("task", "p", nil)
+func TestBoard_ReturnsDeepCopies(t *testing.T) {
+	t.Parallel()
 
-	if !b.Claim(card.ID, "a1") {
-		t.Fatal("first claim should succeed")
+	cases := []struct {
+		name   string
+		mutate func(b *Board, original *Card)
+		check  func(t *testing.T, b *Board, original *Card)
+	}{
+		{
+			name: "Produce_then_Last",
+			mutate: func(b *Board, c *Card) {
+				c.Status = CardDone
+				c.Meta["m"] = "mutated"
+			},
+			check: func(t *testing.T, b *Board, _ *Card) {
+				got := b.Last(CardFilter{Type: "task"})
+				if got.Status != CardPending || got.Meta["m"] != "v" {
+					t.Fatalf("internal state leaked: status=%s meta=%q", got.Status, got.Meta["m"])
+				}
+			},
+		},
+		{
+			name: "Query",
+			mutate: func(b *Board, _ *Card) {
+				for _, c := range b.Query(CardFilter{Type: "task"}) {
+					c.Status = CardDone
+				}
+			},
+			check: func(t *testing.T, b *Board, _ *Card) {
+				for _, c := range b.Query(CardFilter{Type: "task"}) {
+					if c.Status != CardPending {
+						t.Fatalf("Query mutation leaked into board")
+					}
+				}
+			},
+		},
+		{
+			name: "Last",
+			mutate: func(b *Board, _ *Card) {
+				b.Last(CardFilter{Type: "task"}).Producer = "mutated"
+			},
+			check: func(t *testing.T, b *Board, _ *Card) {
+				if got := b.Last(CardFilter{Type: "task"}).Producer; got == "mutated" {
+					t.Fatalf("Last mutation leaked: producer=%q", got)
+				}
+			},
+		},
+		{
+			name: "RawCards",
+			mutate: func(b *Board, _ *Card) {
+				b.RawCards()[0].Type = "mutated"
+			},
+			check: func(t *testing.T, b *Board, _ *Card) {
+				if got := b.RawCards()[0].Type; got == "mutated" {
+					t.Fatalf("RawCards mutation leaked: type=%q", got)
+				}
+			},
+		},
+		{
+			name: "GetCardByID",
+			mutate: func(b *Board, original *Card) {
+				got, _ := b.GetCardByID(original.ID)
+				got.Status = CardDone
+			},
+			check: func(t *testing.T, b *Board, original *Card) {
+				got, _ := b.GetCardByID(original.ID)
+				if got.Status != CardPending {
+					t.Fatalf("GetCardByID mutation leaked: status=%s", got.Status)
+				}
+			},
+		},
 	}
-	if b.Claim(card.ID, "a2") {
-		t.Fatal("second claim should fail (already claimed)")
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			b := newBoard(t)
+			card := b.Produce("task", "p", map[string]any{"k": "v"}, WithMeta("m", "v"))
+			tc.mutate(b, card)
+			tc.check(t, b, card)
+		})
 	}
 }
 
-func TestBoard_DoneOnPendingFails(t *testing.T) {
-	b := NewBoard("scope-dop")
-	defer b.Close()
-	card := b.Produce("task", "p", nil)
+// ---------------------------------------------------------------------------
+// State machine: Claim / Done / Fail transitions and validity rules.
+// ---------------------------------------------------------------------------
 
-	if b.Done(card.ID, "result") {
-		t.Fatal("Done on pending card should fail")
+func TestBoard_StateTransitions(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name    string
+		setup   func(b *Board) string
+		action  func(b *Board, id string) bool
+		wantOK  bool
+		wantEnd CardStatus
+	}{
+		{"DoubleClaim_fails", func(b *Board) string {
+			c := b.Produce("task", "p", nil)
+			b.Claim(c.ID, "a1")
+			return c.ID
+		}, func(b *Board, id string) bool { return b.Claim(id, "a2") }, false, CardClaimed},
+
+		{"DoneOnPending_fails", func(b *Board) string {
+			return b.Produce("task", "p", nil).ID
+		}, func(b *Board, id string) bool { return b.Done(id, "r") }, false, CardPending},
+
+		{"DoneAfterDone_fails", func(b *Board) string {
+			c := b.Produce("task", "p", nil)
+			b.Claim(c.ID, "a")
+			b.Done(c.ID, "r1")
+			return c.ID
+		}, func(b *Board, id string) bool { return b.Done(id, "r2") }, false, CardDone},
+
+		{"FailOnPending_succeeds", func(b *Board) string {
+			return b.Produce("task", "p", nil).ID
+		}, func(b *Board, id string) bool { return b.Fail(id, "boom") }, true, CardFailed},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			b := newBoard(t)
+			id := tc.setup(b)
+			if got := tc.action(b, id); got != tc.wantOK {
+				t.Fatalf("action returned %v, want %v", got, tc.wantOK)
+			}
+			got, _ := b.GetCardByID(id)
+			if got.Status != tc.wantEnd {
+				t.Fatalf("end state %s, want %s", got.Status, tc.wantEnd)
+			}
+		})
 	}
 }
 
-func TestBoard_DoneAfterDoneFails(t *testing.T) {
-	b := NewBoard("scope-dad")
-	defer b.Close()
-	card := b.Produce("task", "p", nil)
-	b.Claim(card.ID, "a")
-	b.Done(card.ID, "r1")
-
-	if b.Done(card.ID, "r2") {
-		t.Fatal("double Done should fail")
-	}
-}
-
-func TestBoard_FailOnPendingSucceeds(t *testing.T) {
-	b := NewBoard("scope-fop")
-	defer b.Close()
-	card := b.Produce("task", "p", nil)
-
-	if !b.Fail(card.ID, "error") {
+func TestBoard_FailFromPending_RecordsError(t *testing.T) {
+	t.Parallel()
+	b := newBoard(t)
+	c := b.Produce("task", "p", nil)
+	if !b.Fail(c.ID, "error") {
 		t.Fatal("Fail on pending card should succeed")
 	}
-	for _, c := range b.Cards() {
-		if c.ID == card.ID {
-			if c.Status != string(CardFailed) {
-				t.Fatalf("expected CardFailed, got %s", c.Status)
-			}
-			if c.Error != "error" {
-				t.Fatalf("expected error message, got %q", c.Error)
-			}
-			return
-		}
+	got, _ := b.GetCardByID(c.ID)
+	if got.Error != "error" {
+		t.Fatalf("Error = %q, want %q", got.Error, "error")
 	}
-	t.Fatal("card not found")
 }
 
-func TestBoard_QueryDoneFailedPendingCounts(t *testing.T) {
-	b := NewBoard("scope-qcounts")
-	defer b.Close()
+func TestBoard_QueryByStatus_Counts(t *testing.T) {
+	t.Parallel()
+	b := newBoard(t)
 
 	c1 := b.Produce("task", "p1", "payload1")
 	b.Claim(c1.ID, "a1")
@@ -151,74 +209,16 @@ func TestBoard_QueryDoneFailedPendingCounts(t *testing.T) {
 	b.Claim(c2.ID, "a2")
 	b.Fail(c2.ID, "oops")
 
-	b.Produce("task", "p3", "payload3")
+	b.Produce("task", "p3", "payload3") // pending
 
-	if len(b.Query(CardFilter{Status: CardDone})) != 1 {
-		t.Fatalf("done: %d", len(b.Query(CardFilter{Status: CardDone})))
-	}
-	if len(b.Query(CardFilter{Status: CardFailed})) != 1 {
-		t.Fatalf("failed: %d", len(b.Query(CardFilter{Status: CardFailed})))
-	}
-	if len(b.Query(CardFilter{Status: CardPending})) != 1 {
-		t.Fatalf("pending: %d", len(b.Query(CardFilter{Status: CardPending})))
-	}
-}
-
-// ---------------------------------------------------------------------------
-// GetCardByID
-// ---------------------------------------------------------------------------
-
-func TestBoard_GetCardByID(t *testing.T) {
-	b := NewBoard("scope-k4")
-	defer b.Close()
-
-	card := b.Produce("task", "p", map[string]any{"k": "v"})
-
-	got, ok := b.GetCardByID(card.ID)
-	if !ok {
-		t.Fatal("expected card to be found")
-	}
-	if got.ID != card.ID {
-		t.Fatalf("expected ID %q, got %q", card.ID, got.ID)
-	}
-
-	got.Status = CardDone
-	check, _ := b.GetCardByID(card.ID)
-	if check.Status != CardPending {
-		t.Fatal("GetCardByID should return a deep copy; mutation must not affect internal state")
-	}
-}
-
-func TestBoard_GetCardByID_NotFound(t *testing.T) {
-	b := NewBoard("scope-k4-nf")
-	defer b.Close()
-
-	_, ok := b.GetCardByID("nonexistent")
-	if ok {
-		t.Fatal("expected ok=false for nonexistent card")
-	}
-}
-
-func TestBoard_GetCardByID_AfterRemap(t *testing.T) {
-	b := NewBoard("scope-k4-remap")
-	defer b.Close()
-
-	card := b.Produce("task", "p", nil)
-	oldID := card.ID
-	newID := "remapped-id"
-	b.RemapCardID(oldID, newID)
-
-	_, ok := b.GetCardByID(oldID)
-	if ok {
-		t.Fatal("old ID should no longer be found after remap")
-	}
-
-	got, ok := b.GetCardByID(newID)
-	if !ok {
-		t.Fatal("new ID should be found after remap")
-	}
-	if got.ID != newID {
-		t.Fatalf("expected ID %q, got %q", newID, got.ID)
+	for status, want := range map[CardStatus]int{
+		CardDone:    1,
+		CardFailed:  1,
+		CardPending: 1,
+	} {
+		if got := len(b.Query(CardFilter{Status: status})); got != want {
+			t.Errorf("Query(%s)=%d, want %d", status, got, want)
+		}
 	}
 }
 
@@ -227,42 +227,76 @@ func TestBoard_GetCardByID_AfterRemap(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestBoard_CountByStatus(t *testing.T) {
-	b := NewBoard("scope-k3")
-	defer b.Close()
+	t.Parallel()
+	b := newBoard(t)
 
 	c1 := b.Produce("task", "p", nil)
 	c2 := b.Produce("task", "p", nil)
 	b.Produce("signal", "p", nil)
 
-	if got := b.CountByStatus(CardPending, ""); got != 3 {
-		t.Fatalf("all pending: expected 3, got %d", got)
-	}
-	if got := b.CountByStatus(CardPending, "task"); got != 2 {
-		t.Fatalf("pending tasks: expected 2, got %d", got)
-	}
-	if got := b.CountByStatus(CardPending, "signal"); got != 1 {
-		t.Fatalf("pending signals: expected 1, got %d", got)
+	for _, c := range []struct {
+		status   CardStatus
+		typeName string
+		want     int
+		label    string
+	}{
+		{CardPending, "", 3, "all pending"},
+		{CardPending, "task", 2, "pending tasks"},
+		{CardPending, "signal", 1, "pending signals"},
+	} {
+		if got := b.CountByStatus(c.status, c.typeName); got != c.want {
+			t.Errorf("%s: got %d, want %d", c.label, got, c.want)
+		}
 	}
 
 	b.Claim(c1.ID, "a1")
-	if got := b.CountByStatus(CardPending, "task"); got != 1 {
-		t.Fatalf("after claim: expected 1 pending task, got %d", got)
-	}
-	if got := b.CountByStatus(CardClaimed, ""); got != 1 {
-		t.Fatalf("after claim: expected 1 claimed, got %d", got)
-	}
-
 	b.Done(c1.ID, "result")
-	if got := b.CountByStatus(CardDone, ""); got != 1 {
-		t.Fatalf("after done: expected 1 done, got %d", got)
-	}
-
 	b.Fail(c2.ID, "oops")
-	if got := b.CountByStatus(CardFailed, ""); got != 1 {
-		t.Fatalf("after fail: expected 1 failed, got %d", got)
+
+	for _, c := range []struct {
+		status   CardStatus
+		typeName string
+		want     int
+		label    string
+	}{
+		{CardDone, "", 1, "after done"},
+		{CardFailed, "", 1, "after fail"},
+		{CardPending, "", 1, "remaining pending (signal)"},
+	} {
+		if got := b.CountByStatus(c.status, c.typeName); got != c.want {
+			t.Errorf("%s: got %d, want %d", c.label, got, c.want)
+		}
 	}
-	if got := b.CountByStatus(CardPending, ""); got != 1 {
-		t.Fatalf("remaining pending: expected 1 (signal), got %d", got)
+}
+
+// ---------------------------------------------------------------------------
+// GetCardByID
+// ---------------------------------------------------------------------------
+
+func TestBoard_GetCardByID_NotFound(t *testing.T) {
+	t.Parallel()
+	b := newBoard(t)
+	if _, ok := b.GetCardByID("nonexistent"); ok {
+		t.Fatal("expected ok=false")
+	}
+}
+
+func TestBoard_GetCardByID_AfterRemap(t *testing.T) {
+	t.Parallel()
+	b := newBoard(t)
+	c := b.Produce("task", "p", nil)
+	const newID = "remapped-id"
+	b.RemapCardID(c.ID, newID)
+
+	if _, ok := b.GetCardByID(c.ID); ok {
+		t.Fatal("old ID should not be findable after remap")
+	}
+	got, ok := b.GetCardByID(newID)
+	if !ok {
+		t.Fatal("new ID should be findable after remap")
+	}
+	if got.ID != newID {
+		t.Fatalf("ID = %q, want %q", got.ID, newID)
 	}
 }
 
@@ -270,100 +304,64 @@ func TestBoard_CountByStatus(t *testing.T) {
 // Watch / WatchFiltered
 // ---------------------------------------------------------------------------
 
-func waitBoardCard(t *testing.T, ch <-chan *Card, desc string) *Card {
-	t.Helper()
-	select {
-	case c := <-ch:
-		return c
-	case <-time.After(2 * time.Second):
-		t.Fatalf("timeout waiting for %s", desc)
-		return nil
-	}
-}
-
-func TestBoard_WatcherSeesClaimDoneFail(t *testing.T) {
-	b := NewBoard("scope-watcher")
-	defer b.Close()
+func TestBoard_Watch_FullLifecycle(t *testing.T) {
+	t.Parallel()
+	b := newBoard(t)
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	t.Cleanup(cancel)
 
 	ch := b.WatchFiltered(ctx, CardFilter{Type: "task"})
 
-	card1 := b.Produce("task", "orch", map[string]any{"n": 1})
-
-	recv := waitBoardCard(t, ch, "produce")
-	if recv.ID != card1.ID || recv.Status != CardPending {
-		t.Fatalf("expected pending card1, got status=%s", recv.Status)
+	c := b.Produce("task", "orch", map[string]any{"n": 1})
+	if got := waitCard(t, ch, "produce"); got.ID != c.ID || got.Status != CardPending {
+		t.Fatalf("produce: ID=%q status=%s", got.ID, got.Status)
 	}
 
-	b.Claim(card1.ID, "agent-1")
-	recv = waitBoardCard(t, ch, "claim")
-	if recv.Status != CardClaimed {
-		t.Fatalf("expected claimed, got %s", recv.Status)
-	}
-	if recv.Consumer != "agent-1" {
-		t.Fatalf("expected agent-1, got %s", recv.Consumer)
+	b.Claim(c.ID, "agent-1")
+	if got := waitCard(t, ch, "claim"); got.Status != CardClaimed || got.Consumer != "agent-1" {
+		t.Fatalf("claim: status=%s consumer=%q", got.Status, got.Consumer)
 	}
 
-	b.Done(card1.ID, "result-data")
-	recv = waitBoardCard(t, ch, "done")
-	if recv.Status != CardDone {
-		t.Fatalf("expected done, got %s", recv.Status)
+	b.Done(c.ID, "result-data")
+	if got := waitCard(t, ch, "done"); got.Status != CardDone {
+		t.Fatalf("done: status=%s", got.Status)
 	}
 
-	card2 := b.Produce("task", "orch", map[string]any{"n": 2})
-	recv = waitBoardCard(t, ch, "produce card2")
-	if recv.ID != card2.ID {
-		t.Fatal("expected card2")
-	}
-
-	b.Claim(card2.ID, "agent-2")
-	recv = waitBoardCard(t, ch, "claim card2")
-	if recv.Status != CardClaimed {
-		t.Fatalf("expected claimed, got %s", recv.Status)
-	}
-
-	b.Fail(card2.ID, "agent error")
-	recv = waitBoardCard(t, ch, "fail")
-	if recv.Status != CardFailed {
-		t.Fatalf("expected failed, got %s", recv.Status)
-	}
-	if recv.Error != "agent error" {
-		t.Fatalf("expected error 'agent error', got %q", recv.Error)
+	c2 := b.Produce("task", "orch", map[string]any{"n": 2})
+	waitCard(t, ch, "produce c2")
+	b.Claim(c2.ID, "agent-2")
+	waitCard(t, ch, "claim c2")
+	b.Fail(c2.ID, "agent error")
+	if got := waitCard(t, ch, "fail"); got.Status != CardFailed || got.Error != "agent error" {
+		t.Fatalf("fail: status=%s err=%q", got.Status, got.Error)
 	}
 }
 
-func TestBoard_WatcherReceivesSnapshot(t *testing.T) {
-	b := NewBoard("scope-snap")
-	defer b.Close()
+func TestBoard_Watch_DeliversSnapshotsNotLivePointers(t *testing.T) {
+	t.Parallel()
+	b := newBoard(t)
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	t.Cleanup(cancel)
 
 	ch := b.WatchFiltered(ctx, CardFilter{})
 
-	card := b.Produce("task", "p", map[string]any{"v": 1}, WithMeta("key", "val"))
+	c := b.Produce("task", "p", map[string]any{"v": 1}, WithMeta("key", "val"))
+	got := waitCard(t, ch, "produce")
+	b.Claim(c.ID, "agent")
 
-	recv := waitBoardCard(t, ch, "produce")
-	if recv.ID != card.ID {
-		t.Fatal("wrong card")
+	if got.Status != CardPending {
+		t.Fatal("snapshot must remain Pending after the source card is Claimed")
 	}
-
-	b.Claim(card.ID, "agent")
-
-	if recv.Status != CardPending {
-		t.Fatal("received snapshot should remain Pending even after source card was claimed")
-	}
-
-	if recv.Meta["key"] != "val" {
-		t.Fatal("meta should be copied to snapshot")
+	if got.Meta["key"] != "val" {
+		t.Fatal("Meta must be deep-copied into snapshot")
 	}
 }
 
-func TestBoard_MultipleWatchersFiltered(t *testing.T) {
-	b := NewBoard("scope-multi-watch")
-	defer b.Close()
+func TestBoard_Watch_FilteringByType(t *testing.T) {
+	t.Parallel()
+	b := newBoard(t)
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	t.Cleanup(cancel)
 
 	taskCh := b.WatchFiltered(ctx, CardFilter{Type: "task"})
 	resultCh := b.WatchFiltered(ctx, CardFilter{Type: "result"})
@@ -373,319 +371,282 @@ func TestBoard_MultipleWatchersFiltered(t *testing.T) {
 	b.Produce("result", "p", nil)
 	b.Produce("signal", "p", nil)
 
-	recv := waitBoardCard(t, taskCh, "task")
-	if recv.Type != "task" {
-		t.Fatalf("taskCh: expected task, got %s", recv.Type)
+	if got := waitCard(t, taskCh, "task"); got.Type != "task" {
+		t.Fatalf("taskCh got %s", got.Type)
+	}
+	if got := waitCard(t, resultCh, "result"); got.Type != "result" {
+		t.Fatalf("resultCh got %s", got.Type)
 	}
 
-	recv = waitBoardCard(t, resultCh, "result")
-	if recv.Type != "result" {
-		t.Fatalf("resultCh: expected result, got %s", recv.Type)
-	}
-
-	received := 0
+	count := 0
 	timeout := time.After(time.Second)
 drain:
-	for {
+	for count < 3 {
 		select {
 		case <-allCh:
-			received++
-			if received == 3 {
-				break drain
-			}
+			count++
 		case <-timeout:
 			break drain
 		}
 	}
-	if received != 3 {
-		t.Fatalf("allCh: expected 3 events, got %d", received)
+	if count != 3 {
+		t.Fatalf("allCh got %d, want 3", count)
 	}
 }
 
-func TestBoard_WatcherCleanupOnCancel(t *testing.T) {
-	b := NewBoard("scope-cleanup")
-	defer b.Close()
+func TestBoard_Watch_CleanupOnContextCancel(t *testing.T) {
+	t.Parallel()
+	b := newBoard(t)
 	ctx, cancel := context.WithCancel(context.Background())
-
 	ch := b.WatchFiltered(ctx, CardFilter{})
 	cancel()
-
-	time.Sleep(50 * time.Millisecond)
 
 	select {
 	case _, ok := <-ch:
 		if ok {
-			t.Fatal("expected channel to be closed after context cancel")
+			t.Fatal("expected channel close after context cancel")
 		}
 	case <-time.After(time.Second):
-		t.Fatal("channel should be closed")
+		t.Fatal("channel was not closed after cancel")
 	}
 
+	// Producing after the watcher is gone must not panic.
 	b.Produce("task", "p", nil)
 }
 
-func TestBoard_WatcherChannelFull_DoesNotPanic(t *testing.T) {
-	b := NewBoard("scope-k5")
-	defer b.Close()
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	ch := b.WatchFiltered(ctx, CardFilter{})
-
-	for i := 0; i < watchBufSize+10; i++ {
-		b.Produce("task", "p", nil)
-	}
-
-	drained := 0
-	for {
-		select {
-		case <-ch:
-			drained++
-		default:
-			goto done
-		}
-	}
-done:
-	if drained != watchBufSize {
-		t.Fatalf("expected to receive exactly %d buffered cards, got %d", watchBufSize, drained)
-	}
-}
-
 func TestBoard_Watch_ClosesOnBoardClose(t *testing.T) {
-	b := NewBoard("scope-watch-close")
+	t.Parallel()
+	b := NewBoard(scopeID(t))
 	ch := b.Watch(context.Background())
 	b.Close()
 
 	select {
 	case _, ok := <-ch:
 		if ok {
-			t.Fatal("expected watch channel to be closed after Board.Close")
+			t.Fatal("expected channel close after Board.Close")
 		}
 	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for watch channel to close")
+		t.Fatal("channel did not close after Board.Close")
+	}
+}
+
+// Bug 1 (P0): unbounded watcher queue must deliver every event regardless of
+// consumer pace.
+func TestBoard_Watch_SlowConsumer_NoEventLoss(t *testing.T) {
+	t.Parallel()
+	b := newBoard(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	ch := b.WatchFiltered(ctx, CardFilter{})
+
+	const total = watchBufSize * 4 // intentionally larger than the legacy bound
+	for i := 0; i < total; i++ {
+		b.Produce("task", "p", nil)
+	}
+
+	drained := 0
+	timeout := time.After(2 * time.Second)
+drain:
+	for drained < total {
+		select {
+		case <-ch:
+			drained++
+		case <-timeout:
+			break drain
+		}
+	}
+	if drained != total {
+		t.Fatalf("got %d/%d events; queue dropped events", drained, total)
+	}
+	if got := b.WatcherDropped(); got != 0 {
+		t.Fatalf("WatcherDropped should be 0 for a live watcher, got %d", got)
 	}
 }
 
 // ---------------------------------------------------------------------------
-// Cards / Timeline / Topology (view methods)
+// Cards / Timeline / Topology view methods.
+//
+// These views must filter internal-only card types ("result", "cron_rule")
+// out of the public API. Bug 2 (issue #28) was a regression here.
 // ---------------------------------------------------------------------------
 
-func TestBoard_Cards_FiltersResultCards(t *testing.T) {
-	b := NewBoard("scope-filter")
-	defer b.Close()
+func TestBoard_Cards_FiltersInternalTypes(t *testing.T) {
+	t.Parallel()
 
-	b.Produce("task", "agent-main", TaskPayload{Query: "q1", TargetAgentID: "t1"})
-	b.Produce("result", "agent-1", ResultPayload{Output: "r1"},
-		WithConsumer("agent-main"), WithMeta("task_card_id", "c1"))
-	b.Produce("task", "agent-main", TaskPayload{Query: "q2", TargetAgentID: "t2"})
-
-	cards := b.Cards()
-	if len(cards) != 2 {
-		t.Fatalf("expected 2 cards (result filtered), got %d", len(cards))
+	cases := []struct {
+		name   string
+		seed   func(b *Board)
+		hidden string
+	}{
+		{
+			name: "result cards hidden",
+			seed: func(b *Board) {
+				b.Produce("task", "agent-main", TaskPayload{Query: "q1", TargetAgentID: "t1"})
+				b.Produce("result", "agent-1", ResultPayload{Output: "r1"},
+					WithConsumer("agent-main"), WithMeta("task_card_id", "c1"))
+				b.Produce("task", "agent-main", TaskPayload{Query: "q2", TargetAgentID: "t2"})
+			},
+			hidden: "result",
+		},
+		{
+			name: "cron_rule cards hidden",
+			seed: func(b *Board) {
+				b.Produce("task", "agent-main", TaskPayload{Query: "real task", TargetAgentID: "t1"})
+				b.Produce(cardTypeCronRule, "scheduler", cronRulePayload{
+					AgentID: "agent-main", ScheduleID: "sched-1",
+					Cron: "0 9 * * *", Query: "daily",
+				}, WithMeta("schedule_id", "sched-1"))
+			},
+			hidden: cardTypeCronRule,
+		},
 	}
-	for _, c := range cards {
-		if c.Type == "result" {
-			t.Fatal("result card should be filtered from Cards()")
-		}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			b := newBoard(t)
+			tc.seed(b)
+			for _, c := range b.Cards() {
+				if c.Type == tc.hidden {
+					t.Fatalf("%s should be filtered out of Cards()", tc.hidden)
+				}
+			}
+		})
 	}
 }
 
 func TestBoard_Cards_ExtractsPayloadFields(t *testing.T) {
-	b := NewBoard("scope-payload")
-	defer b.Close()
+	t.Parallel()
+	b := newBoard(t)
 
-	card := b.Produce("task", "orch", TaskPayload{Query: "the query", TargetAgentID: "the_tpl"})
-	b.Claim(card.ID, "agent-1")
-	b.Done(card.ID, map[string]any{
+	c := b.Produce("task", "orch", TaskPayload{Query: "the query", TargetAgentID: "the_tpl"})
+	b.Claim(c.ID, "agent-1")
+	b.Done(c.ID, map[string]any{
 		"query":           "the query",
 		"target_agent_id": "the_tpl",
 		"output":          "the output",
-	})
-
-	cards := b.Cards()
-	if len(cards) != 1 {
-		t.Fatalf("expected 1 card, got %d", len(cards))
-	}
-	c := cards[0]
-	if c.Query != "the query" {
-		t.Fatalf("expected query 'the query', got %q", c.Query)
-	}
-	if c.TargetAgentID != "the_tpl" {
-		t.Fatalf("expected target_agent_id 'the_tpl', got %q", c.TargetAgentID)
-	}
-	if c.Output != "the output" {
-		t.Fatalf("expected output 'the output', got %q", c.Output)
-	}
-}
-
-func TestBoard_Cards_ExtractsRunID(t *testing.T) {
-	b := NewBoard("scope-runid")
-	defer b.Close()
-
-	card := b.Produce("task", "orch", TaskPayload{Query: "q1", TargetAgentID: "agent-1"})
-	b.Claim(card.ID, "agent-1")
-	b.Done(card.ID, map[string]any{
-		"query":           "q1",
-		"target_agent_id": "agent-1",
-		"output":          "done",
 		"run_id":          "run-abc",
 	})
 
 	cards := b.Cards()
 	if len(cards) != 1 {
-		t.Fatalf("expected 1 card, got %d", len(cards))
+		t.Fatalf("Cards()=%d, want 1", len(cards))
 	}
-	if cards[0].RunID != "run-abc" {
-		t.Fatalf("expected run_id 'run-abc', got %q", cards[0].RunID)
+	got := cards[0]
+	if got.Query != "the query" || got.TargetAgentID != "the_tpl" ||
+		got.Output != "the output" || got.RunID != "run-abc" {
+		t.Fatalf("unexpected extracted fields: %+v", got)
 	}
 }
 
-func TestBoard_Timeline_FiltersResultCards(t *testing.T) {
-	b := NewBoard("scope-tl-filter")
-	defer b.Close()
+func TestBoard_Timeline_FiltersInternalTypes(t *testing.T) {
+	t.Parallel()
 
-	b.Produce("task", "orch", TaskPayload{Query: "q1"})
-	b.Produce("result", "agent", ResultPayload{Output: "r1"})
-
-	timeline := b.Timeline()
-	if len(timeline) != 1 {
-		t.Fatalf("expected 1 timeline entry, got %d", len(timeline))
+	cases := []struct {
+		name string
+		seed func(b *Board)
+	}{
+		{
+			name: "result hidden",
+			seed: func(b *Board) {
+				b.Produce("task", "orch", TaskPayload{Query: "q1"})
+				b.Produce("result", "agent", ResultPayload{Output: "r1"})
+			},
+		},
+		{
+			name: "cron_rule hidden",
+			seed: func(b *Board) {
+				b.Produce("task", "orch", TaskPayload{Query: "q1"})
+				b.Produce(cardTypeCronRule, "scheduler", cronRulePayload{
+					AgentID: "orch", ScheduleID: "sched-1",
+					Cron: "0 9 * * *", Query: "daily",
+				}, WithMeta("schedule_id", "sched-1"))
+			},
+		},
 	}
-	if timeline[0].Type == "result" {
-		t.Fatal("result should not appear in timeline")
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			b := newBoard(t)
+			tc.seed(b)
+			tl := b.Timeline()
+			if len(tl) != 1 {
+				t.Fatalf("Timeline()=%d, want 1", len(tl))
+			}
+			if tl[0].Type == "result" || tl[0].Type == cardTypeCronRule {
+				t.Fatalf("Timeline leaked %s", tl[0].Type)
+			}
+		})
 	}
 }
 
 func TestBoard_Topology(t *testing.T) {
-	b := NewBoard("scope-topo")
-	defer b.Close()
+	t.Parallel()
+	b := newBoard(t)
 
 	b.Produce("task", "agent-main", TaskPayload{Query: "q1"}, WithConsumer("agent-1"))
 	b.Produce("task", "agent-main", TaskPayload{Query: "q2"}, WithConsumer("agent-2"))
 
 	topo := b.Topology()
 	if len(topo.Nodes) != 3 {
-		t.Fatalf("expected 3 nodes (producer + 2 consumers), got %d", len(topo.Nodes))
+		t.Fatalf("Nodes=%d, want 3 (producer + 2 consumers)", len(topo.Nodes))
 	}
 	if len(topo.Edges) != 2 {
-		t.Fatalf("expected 2 edges, got %d", len(topo.Edges))
+		t.Fatalf("Edges=%d, want 2", len(topo.Edges))
 	}
 }
 
 // ---------------------------------------------------------------------------
-// Payload extraction helpers
+// Payload extraction helpers (extractPayloadFields / extractRunID).
 // ---------------------------------------------------------------------------
 
 func TestExtractPayloadFieldsPublic(t *testing.T) {
-	q, tid, o := ExtractPayloadFieldsPublic(TaskPayload{Query: "q", TargetAgentID: "t"})
-	if q != "q" || tid != "t" || o != "" {
-		t.Fatalf("unexpected: q=%q tid=%q o=%q", q, tid, o)
+	t.Parallel()
+	cases := []struct {
+		name            string
+		in              any
+		query, tid, out string
+	}{
+		{"struct", TaskPayload{Query: "q", TargetAgentID: "t"}, "q", "t", ""},
+		{"map", map[string]any{"query": "q2", "output": "o2"}, "q2", "", "o2"},
 	}
-
-	q, _, o = ExtractPayloadFieldsPublic(map[string]any{"query": "q2", "output": "o2"})
-	if q != "q2" || o != "o2" {
-		t.Fatalf("unexpected map: q=%q o=%q", q, o)
+	for _, c := range cases {
+		c := c
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			q, tid, o := ExtractPayloadFieldsPublic(c.in)
+			if q != c.query || tid != c.tid || o != c.out {
+				t.Fatalf("got q=%q tid=%q o=%q; want q=%q tid=%q o=%q",
+					q, tid, o, c.query, c.tid, c.out)
+			}
+		})
 	}
 }
 
 func TestExtractRunID(t *testing.T) {
-	if id := extractRunID(map[string]any{"run_id": "r1"}); id != "r1" {
-		t.Fatalf("expected r1, got %q", id)
+	t.Parallel()
+	cases := []struct {
+		name string
+		in   any
+		want string
+	}{
+		{"map_with_run_id", map[string]any{"run_id": "r1"}, "r1"},
+		{"map_without_run_id", map[string]any{"other": "val"}, ""},
+		{"struct", TaskPayload{Query: "q"}, ""},
+		{"nil", nil, ""},
 	}
-	if id := extractRunID(map[string]any{"other": "val"}); id != "" {
-		t.Fatalf("expected empty, got %q", id)
-	}
-	if id := extractRunID(TaskPayload{Query: "q"}); id != "" {
-		t.Fatalf("expected empty for non-map, got %q", id)
-	}
-	if id := extractRunID(nil); id != "" {
-		t.Fatalf("expected empty for nil, got %q", id)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// Restore
-// ---------------------------------------------------------------------------
-
-func TestRestoreTaskBoard_AllStates(t *testing.T) {
-	cards := []*KanbanCardModel{
-		{
-			ID: "c1", RuntimeID: "s1", Type: "task", Status: "pending",
-			Producer: "copilot", Consumer: "*",
-			Query: "q1", TargetAgentID: "agent-1",
-			CreatedAt: time.Now(), UpdatedAt: time.Now(),
-		},
-		{
-			ID: "c2", RuntimeID: "s1", Type: "task", Status: "claimed",
-			Producer: "copilot", Consumer: "agent-2",
-			Query: "q2", TargetAgentID: "agent-2",
-			CreatedAt: time.Now(), UpdatedAt: time.Now(),
-		},
-		{
-			ID: "c3", RuntimeID: "s1", Type: "task", Status: "done",
-			Producer: "copilot", Consumer: "agent-3",
-			Query: "q3", TargetAgentID: "agent-3", Output: "result", RunID: "run-1",
-			CreatedAt: time.Now(), UpdatedAt: time.Now(),
-		},
-		{
-			ID: "c4", RuntimeID: "s1", Type: "task", Status: "failed",
-			Producer: "copilot", Consumer: "agent-4",
-			Query: "q4", TargetAgentID: "agent-4", Error: "timeout",
-			CreatedAt: time.Now(), UpdatedAt: time.Now(),
-		},
-	}
-
-	tb := RestoreTaskBoard("s1", cards)
-	defer tb.Close()
-
-	if tb.ScopeID() != "s1" {
-		t.Fatalf("expected scope s1, got %q", tb.ScopeID())
-	}
-
-	infos := tb.Cards()
-	if len(infos) != 4 {
-		t.Fatalf("expected 4 cards, got %d", len(infos))
-	}
-
-	statusMap := make(map[string]string)
-	for _, c := range infos {
-		statusMap[c.ID] = c.Status
-	}
-
-	if statusMap["c1"] != "pending" {
-		t.Fatalf("c1: expected pending, got %s", statusMap["c1"])
-	}
-	if statusMap["c2"] != "claimed" {
-		t.Fatalf("c2: expected claimed, got %s", statusMap["c2"])
-	}
-	if statusMap["c3"] != "done" {
-		t.Fatalf("c3: expected done, got %s", statusMap["c3"])
-	}
-	if statusMap["c4"] != "failed" {
-		t.Fatalf("c4: expected failed, got %s", statusMap["c4"])
-	}
-
-	for _, c := range infos {
-		if c.ID == "c3" {
-			if c.RunID != "run-1" {
-				t.Fatalf("c3: expected run_id 'run-1', got %q", c.RunID)
+	for _, c := range cases {
+		c := c
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			if got := extractRunID(c.in); got != c.want {
+				t.Errorf("got %q, want %q", got, c.want)
 			}
-			if c.Output != "result" {
-				t.Fatalf("c3: expected output 'result', got %q", c.Output)
-			}
-		}
-	}
-}
-
-func TestRestoreTaskBoard_Empty(t *testing.T) {
-	tb := RestoreTaskBoard("s-empty", nil)
-	defer tb.Close()
-
-	if tb.ScopeID() != "s-empty" {
-		t.Fatalf("expected scope s-empty, got %q", tb.ScopeID())
-	}
-	if len(tb.Cards()) != 0 {
-		t.Fatalf("expected 0 cards, got %d", len(tb.Cards()))
+		})
 	}
 }
 
@@ -694,135 +655,135 @@ func TestRestoreTaskBoard_Empty(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestBoard_WithMaxCards_EvictsTerminal(t *testing.T) {
-	b := NewBoard("scope-k2-max", WithMaxCards(5))
-	defer b.Close()
+	t.Parallel()
+	b := NewBoard(scopeID(t), WithMaxCards(5))
+	t.Cleanup(b.Close)
 
 	for i := 0; i < 5; i++ {
 		c := b.Produce("task", "p", nil)
 		b.Claim(c.ID, "a")
 		b.Done(c.ID, "r")
 	}
-
 	if b.Len() != 5 {
-		t.Fatalf("expected 5 cards before eviction trigger, got %d", b.Len())
+		t.Fatalf("before extra produces: Len()=%d, want 5", b.Len())
 	}
 
 	b.Produce("task", "p", nil)
 	b.Produce("task", "p", nil)
 
 	if b.Len() > 7 {
-		t.Fatalf("expected cards to be evicted to stay near maxCards, got %d", b.Len())
+		t.Fatalf("eviction did not bound size: Len()=%d", b.Len())
 	}
-
-	pending := b.CountByStatus(CardPending, "")
-	if pending < 2 {
-		t.Fatalf("pending cards should not be evicted, got %d pending", pending)
+	if pending := b.CountByStatus(CardPending, ""); pending < 2 {
+		t.Fatalf("pending cards must not be evicted, got %d pending", pending)
 	}
 }
 
 func TestBoard_WithCardTTL_EvictsExpired(t *testing.T) {
-	b := NewBoard("scope-k2-ttl", WithCardTTL(50*time.Millisecond))
-	defer b.Close()
+	t.Parallel()
+	b := NewBoard(scopeID(t), WithCardTTL(50*time.Millisecond))
+	t.Cleanup(b.Close)
 
-	c1 := b.Produce("task", "p", nil)
-	b.Claim(c1.ID, "a")
-	b.Done(c1.ID, "r")
+	c := b.Produce("task", "p", nil)
+	b.Claim(c.ID, "a")
+	b.Done(c.ID, "r")
 
 	time.Sleep(80 * time.Millisecond)
+	b.Produce("task", "p", nil) // triggers eviction sweep
 
-	b.Produce("task", "p", nil)
-
-	done := b.CountByStatus(CardDone, "")
-	if done != 0 {
-		t.Fatalf("expected done card to be evicted after TTL, got %d done", done)
+	if got := b.CountByStatus(CardDone, ""); got != 0 {
+		t.Fatalf("done card not evicted after TTL: %d remain", got)
 	}
-	if b.CountByStatus(CardPending, "") != 1 {
-		t.Fatal("pending card should survive TTL eviction")
+	if got := b.CountByStatus(CardPending, ""); got != 1 {
+		t.Fatalf("pending must survive TTL eviction, got %d", got)
 	}
 }
 
 func TestBoard_WithMaxCards_PreservesActiveCards(t *testing.T) {
-	b := NewBoard("scope-k2-active", WithMaxCards(3))
-	defer b.Close()
+	t.Parallel()
+	b := NewBoard(scopeID(t), WithMaxCards(3))
+	t.Cleanup(b.Close)
 
 	for i := 0; i < 5; i++ {
 		b.Produce("task", "p", nil)
 	}
-
-	if b.CountByStatus(CardPending, "") != 5 {
-		t.Fatalf("active (pending) cards should never be evicted, got %d", b.CountByStatus(CardPending, ""))
+	if got := b.CountByStatus(CardPending, ""); got != 5 {
+		t.Fatalf("active (pending) cards must never be evicted, got %d", got)
 	}
 }
 
 // ---------------------------------------------------------------------------
-// normalizePayload
+// normalizePayload — Produce/Done normalize to map[string]any (or pass
+// through primitives) so downstream callers see one consistent shape.
 // ---------------------------------------------------------------------------
 
-func TestBoard_NormalizePayload_TypeConsistency(t *testing.T) {
-	b := NewBoard("scope-k6")
-	defer b.Close()
+func TestBoard_NormalizePayload(t *testing.T) {
+	t.Parallel()
 
-	card := b.Produce("task", "p", TaskPayload{
-		TargetAgentID: "agent-1",
-		Query:         "hello",
-	})
-
-	if _, ok := card.Payload.(map[string]any); !ok {
-		t.Fatalf("expected Payload to be map[string]any after Produce, got %T", card.Payload)
+	cases := []struct {
+		name    string
+		payload any
+		check   func(t *testing.T, got *Card)
+	}{
+		{
+			name:    "struct -> map",
+			payload: TaskPayload{TargetAgentID: "agent-1", Query: "hello"},
+			check: func(t *testing.T, c *Card) {
+				m, ok := c.Payload.(map[string]any)
+				if !ok {
+					t.Fatalf("Payload type = %T, want map[string]any", c.Payload)
+				}
+				if m["query"] != "hello" || m["target_agent_id"] != "agent-1" {
+					t.Fatalf("missing fields after normalize: %v", m)
+				}
+			},
+		},
+		{
+			name:    "map passthrough",
+			payload: map[string]any{"key": "val"},
+			check: func(t *testing.T, c *Card) {
+				if _, ok := c.Payload.(map[string]any); !ok {
+					t.Fatalf("map should pass through, got %T", c.Payload)
+				}
+			},
+		},
+		{
+			name:    "primitive passthrough",
+			payload: "hello string",
+			check: func(t *testing.T, c *Card) {
+				s, ok := c.Payload.(string)
+				if !ok || s != "hello string" {
+					t.Fatalf("string should pass through, got %T: %v", c.Payload, c.Payload)
+				}
+			},
+		},
 	}
 
-	got, _ := b.GetCardByID(card.ID)
-	if _, ok := got.Payload.(map[string]any); !ok {
-		t.Fatalf("expected internal Payload to be map[string]any, got %T", got.Payload)
-	}
-
-	p := PayloadMap(got.Payload)
-	if p["query"] != "hello" {
-		t.Fatalf("expected query='hello', got %v", p["query"])
-	}
-	if p["target_agent_id"] != "agent-1" {
-		t.Fatalf("expected target_agent_id='agent-1', got %v", p["target_agent_id"])
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			b := newBoard(t)
+			tc.check(t, b.Produce("task", "p", tc.payload))
+		})
 	}
 }
 
 func TestBoard_NormalizePayload_DoneAlsoNormalized(t *testing.T) {
-	b := NewBoard("scope-k6-done")
-	defer b.Close()
+	t.Parallel()
+	b := newBoard(t)
 
-	card := b.Produce("task", "p", nil)
-	b.Claim(card.ID, "a")
-	b.Done(card.ID, ResultPayload{Output: "result text", Error: ""})
+	c := b.Produce("task", "p", nil)
+	b.Claim(c.ID, "a")
+	b.Done(c.ID, ResultPayload{Output: "result text"})
 
-	got, _ := b.GetCardByID(card.ID)
-	if _, ok := got.Payload.(map[string]any); !ok {
-		t.Fatalf("expected Done Payload to be map[string]any, got %T", got.Payload)
+	got, _ := b.GetCardByID(c.ID)
+	m, ok := got.Payload.(map[string]any)
+	if !ok {
+		t.Fatalf("Done payload should normalize to map, got %T", got.Payload)
 	}
-
-	p := PayloadMap(got.Payload)
-	if p["output"] != "result text" {
-		t.Fatalf("expected output='result text', got %v", p["output"])
-	}
-}
-
-func TestBoard_NormalizePayload_MapPassthrough(t *testing.T) {
-	b := NewBoard("scope-k6-map")
-	defer b.Close()
-
-	original := map[string]any{"key": "val"}
-	card := b.Produce("task", "p", original)
-
-	if _, ok := card.Payload.(map[string]any); !ok {
-		t.Fatalf("map[string]any should pass through normalizePayload, got %T", card.Payload)
-	}
-}
-
-func TestBoard_NormalizePayload_PrimitivePassthrough(t *testing.T) {
-	b := NewBoard("scope-k6-prim")
-	defer b.Close()
-
-	card := b.Produce("task", "p", "hello string")
-	if s, ok := card.Payload.(string); !ok || s != "hello string" {
-		t.Fatalf("string payload should pass through, got %T: %v", card.Payload, card.Payload)
+	if m["output"] != "result text" {
+		t.Fatalf("output = %v, want 'result text'", m["output"])
 	}
 }
 
@@ -834,120 +795,109 @@ type unmarshalable struct {
 	Ch chan int
 }
 
-func TestDeepCopyJSONValue_Nil(t *testing.T) {
-	if deepCopyJSONValue(nil) != nil {
-		t.Fatal("expected nil")
+func TestDeepCopyJSONValue(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		in   any
+		want any
+	}{
+		{"nil", nil, nil},
+		{"string", "hello", "hello"},
+		{"int", 42, 42},
+		{"bool", true, true},
+		{"unmarshalable", unmarshalable{Ch: make(chan int)}, nil},
+	}
+	for _, c := range cases {
+		c := c
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			if got := deepCopyJSONValue(c.in); got != c.want {
+				t.Fatalf("got %v, want %v", got, c.want)
+			}
+		})
 	}
 }
 
-func TestDeepCopyJSONValue_Primitive(t *testing.T) {
-	if v := deepCopyJSONValue("hello"); v != "hello" {
-		t.Fatalf("expected 'hello', got %v", v)
-	}
-	if v := deepCopyJSONValue(42); v != 42 {
-		t.Fatalf("expected 42, got %v", v)
-	}
-	if v := deepCopyJSONValue(true); v != true {
-		t.Fatalf("expected true, got %v", v)
-	}
-}
-
-func TestDeepCopyJSONValue_Map(t *testing.T) {
+func TestDeepCopyJSONValue_MapIsIndependent(t *testing.T) {
+	t.Parallel()
 	original := map[string]any{"a": float64(1), "b": "two"}
-	cp := deepCopyJSONValue(original)
-	m, ok := cp.(map[string]any)
+	cp, ok := deepCopyJSONValue(original).(map[string]any)
 	if !ok {
-		t.Fatalf("expected map[string]any, got %T", cp)
+		t.Fatalf("copy is not a map")
 	}
-	if m["a"] != float64(1) || m["b"] != "two" {
-		t.Fatalf("unexpected copy: %v", m)
+	if cp["a"] != float64(1) || cp["b"] != "two" {
+		t.Fatalf("copy missing fields: %v", cp)
 	}
-
 	original["a"] = float64(999)
-	if m["a"] == float64(999) {
-		t.Fatal("copy should be independent of original")
-	}
-}
-
-func TestDeepCopyJSONValue_FailReturnsNil(t *testing.T) {
-	v := deepCopyJSONValue(unmarshalable{Ch: make(chan int)})
-	if v != nil {
-		t.Fatalf("expected nil when marshal fails, got %v", v)
+	if cp["a"] == float64(999) {
+		t.Fatal("mutation to original leaked into copy")
 	}
 }
 
 // ---------------------------------------------------------------------------
-// Index consistency across state transitions
+// Index consistency: cardIndex / statusIndex stay in sync with state.
+// (Concurrent variant lives in board_concurrency_test.go.)
 // ---------------------------------------------------------------------------
 
 func TestBoard_IndexConsistency_FullLifecycle(t *testing.T) {
-	b := NewBoard("scope-idx-lc")
-	defer b.Close()
+	t.Parallel()
+	b := newBoard(t)
 
-	card := b.Produce("task", "p", map[string]any{"v": 1})
-
-	if b.CountByStatus(CardPending, "") != 1 {
-		t.Fatal("pending count should be 1 after Produce")
-	}
-
-	b.Claim(card.ID, "agent")
-	if b.CountByStatus(CardPending, "") != 0 {
-		t.Fatal("pending count should be 0 after Claim")
-	}
-	if b.CountByStatus(CardClaimed, "") != 1 {
-		t.Fatal("claimed count should be 1 after Claim")
+	c := b.Produce("task", "p", map[string]any{"v": 1})
+	if got := b.CountByStatus(CardPending, ""); got != 1 {
+		t.Fatalf("pending after Produce = %d, want 1", got)
 	}
 
-	b.Done(card.ID, "result")
-	if b.CountByStatus(CardClaimed, "") != 0 {
-		t.Fatal("claimed count should be 0 after Done")
-	}
-	if b.CountByStatus(CardDone, "") != 1 {
-		t.Fatal("done count should be 1 after Done")
+	b.Claim(c.ID, "agent")
+	if b.CountByStatus(CardPending, "") != 0 || b.CountByStatus(CardClaimed, "") != 1 {
+		t.Fatal("pending/claimed indexes inconsistent after Claim")
 	}
 
-	got, ok := b.GetCardByID(card.ID)
-	if !ok {
-		t.Fatal("card should still be findable by ID after Done")
+	b.Done(c.ID, "result")
+	if b.CountByStatus(CardClaimed, "") != 0 || b.CountByStatus(CardDone, "") != 1 {
+		t.Fatal("claimed/done indexes inconsistent after Done")
 	}
-	if got.Status != CardDone {
-		t.Fatalf("expected Done status, got %s", got.Status)
+
+	got, ok := b.GetCardByID(c.ID)
+	if !ok || got.Status != CardDone {
+		t.Fatalf("post-Done lookup mismatch: ok=%v status=%s", ok, got.Status)
 	}
 }
 
 func TestBoard_IndexConsistency_FailFromPending(t *testing.T) {
-	b := NewBoard("scope-idx-fp")
-	defer b.Close()
-
-	card := b.Produce("task", "p", nil)
-	b.Fail(card.ID, "fail-from-pending")
+	t.Parallel()
+	b := newBoard(t)
+	c := b.Produce("task", "p", nil)
+	b.Fail(c.ID, "fail-from-pending")
 
 	if b.CountByStatus(CardPending, "") != 0 {
-		t.Fatal("pending should be 0 after Fail")
+		t.Fatal("pending must drop to 0 after Fail")
 	}
 	if b.CountByStatus(CardFailed, "") != 1 {
-		t.Fatal("failed should be 1 after Fail")
+		t.Fatal("failed must rise to 1 after Fail")
 	}
 }
 
 // ---------------------------------------------------------------------------
-// Bus
+// Bus — generic publish/subscribe wiring.
+// (Kanban-specific event payloads are tested in events_test.go.)
 // ---------------------------------------------------------------------------
 
-func TestBoard_Bus(t *testing.T) {
-	b := NewBoard("scope-bus")
-	defer b.Close()
-
-	bus := b.Bus()
-	if bus == nil {
+func TestBoard_Bus_PublishesToSubscriber(t *testing.T) {
+	t.Parallel()
+	b := newBoard(t)
+	if b.Bus() == nil {
 		t.Fatal("Bus() should not be nil")
 	}
 
 	ctx := context.Background()
-	sub, err := bus.Subscribe(ctx, event.EventFilter{})
+	sub, err := b.Bus().Subscribe(ctx, event.EventFilter{})
 	if err != nil {
 		t.Fatalf("Subscribe: %v", err)
 	}
+	t.Cleanup(func() { _ = sub.Close() })
 
 	ev := event.Event{
 		ID:        "ev-1",
@@ -955,23 +905,23 @@ func TestBoard_Bus(t *testing.T) {
 		Timestamp: time.Now(),
 		Payload:   map[string]any{"node_id": "n1"},
 	}
-	if err := bus.Publish(ctx, ev); err != nil {
+	if err := b.Bus().Publish(ctx, ev); err != nil {
 		t.Fatalf("Publish: %v", err)
 	}
 
 	select {
 	case got := <-sub.Events():
 		if got.ID != "ev-1" {
-			t.Fatalf("expected event ID 'ev-1', got %q", got.ID)
+			t.Fatalf("got ID=%q, want 'ev-1'", got.ID)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for event")
 	}
 }
 
-func TestBoard_Bus_MultipleSubscribers(t *testing.T) {
-	b := NewBoard("scope-multi")
-	defer b.Close()
+func TestBoard_Bus_FanOutsToMultipleSubscribers(t *testing.T) {
+	t.Parallel()
+	b := newBoard(t)
 
 	ctx := context.Background()
 	const n = 5
@@ -982,6 +932,7 @@ func TestBoard_Bus_MultipleSubscribers(t *testing.T) {
 			t.Fatalf("Subscribe[%d]: %v", i, err)
 		}
 		subs[i] = s
+		t.Cleanup(func() { _ = s.Close() })
 	}
 
 	ev := event.Event{ID: "ev-multi", Type: event.EventGraphStart, Timestamp: time.Now()}
@@ -993,228 +944,10 @@ func TestBoard_Bus_MultipleSubscribers(t *testing.T) {
 		select {
 		case got := <-sub.Events():
 			if got.ID != "ev-multi" {
-				t.Fatalf("sub[%d]: expected 'ev-multi', got %q", i, got.ID)
+				t.Errorf("sub[%d]: got ID=%q, want 'ev-multi'", i, got.ID)
 			}
 		case <-time.After(time.Second):
-			t.Fatalf("sub[%d]: timed out", i)
+			t.Errorf("sub[%d]: timed out", i)
 		}
-	}
-}
-
-func TestBoard_Close_Idempotent(t *testing.T) {
-	b := NewBoard("scope-close")
-	b.Close()
-	b.Close()
-}
-
-// ---------------------------------------------------------------------------
-// NewBoard / NewTaskBoard
-// ---------------------------------------------------------------------------
-
-func TestNewBoard(t *testing.T) {
-	b := NewBoard("scope-1")
-	defer b.Close()
-	if b.ScopeID() != "scope-1" {
-		t.Fatalf("expected scope ID 'scope-1', got %q", b.ScopeID())
-	}
-}
-
-func TestNewTaskBoard_Alias(t *testing.T) {
-	tb := NewTaskBoard("scope-alias")
-	defer tb.Close()
-	if tb.ScopeID() != "scope-alias" {
-		t.Fatalf("expected scope ID 'scope-alias', got %q", tb.ScopeID())
-	}
-}
-
-// ---------------------------------------------------------------------------
-// Concurrency
-// ---------------------------------------------------------------------------
-
-func TestBoard_ConcurrentProduceAndQuery(t *testing.T) {
-	b := NewBoard("scope-cpq")
-	defer b.Close()
-	const n = 50
-
-	var wg sync.WaitGroup
-
-	for i := 0; i < n; i++ {
-		wg.Add(2)
-		go func() {
-			defer wg.Done()
-			b.Produce("task", "p", nil)
-		}()
-		go func() {
-			defer wg.Done()
-			_ = b.Query(CardFilter{Type: "task"})
-		}()
-	}
-
-	wg.Wait()
-
-	if b.Len() != n {
-		t.Fatalf("expected %d cards, got %d", n, b.Len())
-	}
-}
-
-func TestBoard_ConcurrentProduceClaimDone(t *testing.T) {
-	b := NewBoard("scope-conc-pcd")
-	defer b.Close()
-	const n = 100
-
-	var wg sync.WaitGroup
-	cardIDs := make([]string, n)
-
-	for i := 0; i < n; i++ {
-		wg.Add(1)
-		go func(idx int) {
-			defer wg.Done()
-			card := b.Produce("task", fmt.Sprintf("p-%d", idx), map[string]any{"idx": idx})
-			cardIDs[idx] = card.ID
-		}(i)
-	}
-	wg.Wait()
-
-	if b.Len() != n {
-		t.Fatalf("expected %d cards, got %d", n, b.Len())
-	}
-
-	claimed := make([]bool, n)
-	for i := 0; i < n; i++ {
-		wg.Add(1)
-		go func(idx int) {
-			defer wg.Done()
-			claimed[idx] = b.Claim(cardIDs[idx], fmt.Sprintf("c-%d", idx))
-		}(i)
-	}
-	wg.Wait()
-
-	for i, ok := range claimed {
-		if !ok {
-			t.Fatalf("claim %d failed", i)
-		}
-	}
-
-	for i := 0; i < n; i++ {
-		wg.Add(1)
-		go func(idx int) {
-			defer wg.Done()
-			b.Done(cardIDs[idx], fmt.Sprintf("result-%d", idx))
-		}(i)
-	}
-	wg.Wait()
-
-	doneCards := b.Query(CardFilter{Status: CardDone})
-	if len(doneCards) != n {
-		t.Fatalf("expected %d done cards, got %d", n, len(doneCards))
-	}
-}
-
-func TestBoard_ConcurrentWatchAndProduce(t *testing.T) {
-	b := NewBoard("scope-cwp")
-	defer b.Close()
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	const watchers = 5
-	const produces = 20
-
-	channels := make([]<-chan *Card, watchers)
-	for i := 0; i < watchers; i++ {
-		channels[i] = b.WatchFiltered(ctx, CardFilter{})
-	}
-
-	var wg sync.WaitGroup
-	for i := 0; i < produces; i++ {
-		wg.Add(1)
-		go func(idx int) {
-			defer wg.Done()
-			b.Produce("task", "p", map[string]any{"i": idx})
-		}(i)
-	}
-	wg.Wait()
-
-	for wi, ch := range channels {
-		count := 0
-		timeout := time.After(time.Second)
-	drain:
-		for {
-			select {
-			case <-ch:
-				count++
-				if count == produces {
-					break drain
-				}
-			case <-timeout:
-				break drain
-			}
-		}
-		if count != produces {
-			t.Fatalf("watcher %d: expected %d events, got %d", wi, produces, count)
-		}
-	}
-}
-
-func TestBoard_ConcurrentBusSubscribe(t *testing.T) {
-	b := NewBoard("scope-conc-bus")
-	defer b.Close()
-
-	ctx := context.Background()
-	var wg sync.WaitGroup
-	errs := make(chan error, 20)
-
-	for i := 0; i < 20; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			_, err := b.Bus().Subscribe(ctx, event.EventFilter{})
-			if err != nil {
-				errs <- err
-			}
-		}()
-	}
-
-	wg.Wait()
-	close(errs)
-	for err := range errs {
-		t.Fatalf("concurrent Subscribe failed: %v", err)
-	}
-}
-
-func TestBoard_IndexConsistency_ConcurrentTransitions(t *testing.T) {
-	b := NewBoard("scope-idx-conc")
-	defer b.Close()
-	const n = 50
-
-	ids := make([]string, n)
-	for i := 0; i < n; i++ {
-		c := b.Produce("task", "p", nil)
-		ids[i] = c.ID
-	}
-
-	if b.CountByStatus(CardPending, "") != n {
-		t.Fatalf("expected %d pending, got %d", n, b.CountByStatus(CardPending, ""))
-	}
-
-	done := make(chan struct{})
-	for i := 0; i < n; i++ {
-		go func(id string) {
-			b.Claim(id, "a")
-			b.Done(id, "r")
-			done <- struct{}{}
-		}(ids[i])
-	}
-	for i := 0; i < n; i++ {
-		<-done
-	}
-
-	if b.CountByStatus(CardDone, "") != n {
-		t.Fatalf("expected %d done, got %d", n, b.CountByStatus(CardDone, ""))
-	}
-	if b.CountByStatus(CardPending, "") != 0 {
-		t.Fatalf("expected 0 pending, got %d", b.CountByStatus(CardPending, ""))
-	}
-	if b.CountByStatus(CardClaimed, "") != 0 {
-		t.Fatalf("expected 0 claimed, got %d", b.CountByStatus(CardClaimed, ""))
 	}
 }

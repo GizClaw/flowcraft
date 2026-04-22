@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"maps"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/GizClaw/flowcraft/sdk/event"
@@ -15,11 +16,69 @@ import (
 	otellog "go.opentelemetry.io/otel/log"
 )
 
+// watchBufSize is the initial capacity hint for a watcher's internal queue.
+// The queue grows on demand; events are never dropped.
 const watchBufSize = 32
 
+// watcher delivers card snapshots to a single subscriber via an unbounded
+// internal queue. notifyWatchers enqueues without blocking; a dedicated pump
+// goroutine forwards events to the consumer-visible channel `out`.
 type watcher struct {
 	filter CardFilter
-	ch     chan *Card
+	out    chan *Card
+
+	mu     sync.Mutex
+	queue  []*Card
+	notify chan struct{} // buffered(1); signal that queue has items or is closed
+	closed bool
+}
+
+// enqueue appends snap to the internal queue and wakes the pump goroutine.
+// It never blocks and never drops events.
+func (w *watcher) enqueue(snap *Card) {
+	w.mu.Lock()
+	if w.closed {
+		w.mu.Unlock()
+		return
+	}
+	w.queue = append(w.queue, snap)
+	w.mu.Unlock()
+	select {
+	case w.notify <- struct{}{}:
+	default:
+	}
+}
+
+// shutdown marks the watcher closed and wakes the pump so it can drain and exit.
+func (w *watcher) shutdown() {
+	w.mu.Lock()
+	w.closed = true
+	w.mu.Unlock()
+	select {
+	case w.notify <- struct{}{}:
+	default:
+	}
+}
+
+// pump runs in a goroutine, draining queue → out until shutdown.
+// On shutdown it flushes any remaining buffered events and closes out.
+func (w *watcher) pump() {
+	defer close(w.out)
+	for {
+		w.mu.Lock()
+		batch := w.queue
+		w.queue = nil
+		closed := w.closed
+		w.mu.Unlock()
+
+		for _, snap := range batch {
+			w.out <- snap
+		}
+		if closed {
+			return
+		}
+		<-w.notify
+	}
 }
 
 // Board is the kanban task board: card coordination + scope + EventBus.
@@ -40,6 +99,11 @@ type Board struct {
 	ctx       context.Context
 	cancel    context.CancelFunc
 	closeOnce sync.Once
+
+	// watcherDropped tracks notifications dropped because a watcher was
+	// already shut down. With the unbounded queue the value is informational
+	// only — live watchers never lose events.
+	watcherDropped atomic.Int64
 }
 
 // TaskBoard is a legacy alias for Board.
@@ -132,10 +196,41 @@ func (b *Board) Produce(cardType, producer string, payload any, opts ...CardOpti
 
 	snap := copyKanbanCard(card)
 	b.notifyWatchers(snap)
+	b.publishProduceEvent(snap)
 	return snap
 }
 
+// publishProduceEvent emits EventTaskSubmitted on Bus() for newly produced
+// task cards. Internal types and non-task cards are skipped.
+func (b *Board) publishProduceEvent(snap *Card) {
+	if b.bus == nil || snap == nil {
+		return
+	}
+	if snap.Type != "task" {
+		return
+	}
+	ctx := b.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	p := PayloadMap(snap.Payload)
+	target, _ := p["target_agent_id"].(string)
+	query, _ := p["query"].(string)
+	var inputs map[string]any
+	if v, ok := p["inputs"].(map[string]any); ok {
+		inputs = v
+	}
+	_ = b.bus.Publish(ctx, eventEnvelope(EventTaskSubmitted, TaskSubmittedPayload{
+		CardID:        snap.ID,
+		TargetAgentID: target,
+		Query:         query,
+		RuntimeID:     b.scopeID,
+		Inputs:        inputs,
+	}))
+}
+
 // Claim transitions a pending card to claimed status for the given consumer.
+// Publishes EventTaskClaimed to Bus() for task-typed cards.
 func (b *Board) Claim(cardID, consumer string) bool {
 	b.cardMu.Lock()
 	var snap *Card
@@ -152,12 +247,14 @@ func (b *Board) Claim(cardID, consumer string) bool {
 	b.cardMu.Unlock()
 	if snap != nil {
 		b.notifyWatchers(snap)
+		b.publishCardEvent(snap)
 		return true
 	}
 	return false
 }
 
 // Done transitions a claimed card to done status with a result payload.
+// Publishes EventTaskCompleted to Bus() for task-typed cards.
 func (b *Board) Done(cardID string, result any) bool {
 	b.cardMu.Lock()
 	var snap *Card
@@ -174,12 +271,14 @@ func (b *Board) Done(cardID string, result any) bool {
 	b.cardMu.Unlock()
 	if snap != nil {
 		b.notifyWatchers(snap)
+		b.publishCardEvent(snap)
 		return true
 	}
 	return false
 }
 
 // Fail transitions a pending or claimed card to failed status with an error message.
+// Publishes EventTaskFailed to Bus() for task-typed cards.
 func (b *Board) Fail(cardID string, errMsg string) bool {
 	b.cardMu.Lock()
 	var snap *Card
@@ -196,9 +295,61 @@ func (b *Board) Fail(cardID string, errMsg string) bool {
 	b.cardMu.Unlock()
 	if snap != nil {
 		b.notifyWatchers(snap)
+		b.publishCardEvent(snap)
 		return true
 	}
 	return false
+}
+
+// publishCardEvent maps a card transition snapshot to the matching Kanban event
+// type and publishes it on Board.Bus(). Internal card types (cron rules /
+// result rows) are skipped — they are not part of the public state machine.
+func (b *Board) publishCardEvent(snap *Card) {
+	if b.bus == nil || snap == nil {
+		return
+	}
+	if isInternalCardType(snap.Type) {
+		return
+	}
+	if snap.Type != "task" {
+		return
+	}
+	ctx := b.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	p := PayloadMap(snap.Payload)
+	target, _ := p["target_agent_id"].(string)
+	output, _ := p["output"].(string)
+	elapsedMs := int64(0)
+	if snap.UpdatedAt.After(snap.CreatedAt) {
+		elapsedMs = snap.UpdatedAt.Sub(snap.CreatedAt).Milliseconds()
+	}
+	switch snap.Status {
+	case CardClaimed:
+		_ = b.bus.Publish(ctx, eventEnvelope(EventTaskClaimed, TaskClaimedPayload{
+			CardID:        snap.ID,
+			TargetAgentID: target,
+			RuntimeID:     b.scopeID,
+			Consumer:      snap.Consumer,
+		}))
+	case CardDone:
+		_ = b.bus.Publish(ctx, eventEnvelope(EventTaskCompleted, TaskCompletedPayload{
+			CardID:        snap.ID,
+			TargetAgentID: target,
+			RuntimeID:     b.scopeID,
+			Output:        output,
+			ElapsedMs:     elapsedMs,
+		}))
+	case CardFailed:
+		_ = b.bus.Publish(ctx, eventEnvelope(EventTaskFailed, TaskFailedPayload{
+			CardID:        snap.ID,
+			TargetAgentID: target,
+			RuntimeID:     b.scopeID,
+			Error:         snap.Error,
+			ElapsedMs:     elapsedMs,
+		}))
+	}
 }
 
 // Query returns copies of all cards matching the filter.
@@ -314,16 +465,22 @@ func (b *Board) evictTerminalCardsLocked() {
 }
 
 // WatchFiltered returns a channel that receives newly produced cards matching the filter.
-// The channel is closed when ctx is cancelled.
+// The channel is closed when ctx is cancelled. The internal queue is unbounded:
+// notifications are never dropped while the watcher is alive, so slow consumers
+// can still observe every state transition.
 func (b *Board) WatchFiltered(ctx context.Context, filter CardFilter) <-chan *Card {
 	w := &watcher{
 		filter: filter,
-		ch:     make(chan *Card, watchBufSize),
+		out:    make(chan *Card),
+		queue:  make([]*Card, 0, watchBufSize),
+		notify: make(chan struct{}, 1),
 	}
 
 	b.wmu.Lock()
 	b.watchers = append(b.watchers, w)
 	b.wmu.Unlock()
+
+	go w.pump()
 
 	go func() {
 		<-ctx.Done()
@@ -335,10 +492,17 @@ func (b *Board) WatchFiltered(ctx context.Context, filter CardFilter) <-chan *Ca
 			}
 		}
 		b.wmu.Unlock()
-		close(w.ch)
+		w.shutdown()
 	}()
 
-	return w.ch
+	return w.out
+}
+
+// WatcherDropped returns the cumulative number of notifications dropped because
+// a watcher had already been shut down (i.e. its consumer disappeared but the
+// removal goroutine had not yet run). Live watchers never drop events.
+func (b *Board) WatcherDropped() int64 {
+	return b.watcherDropped.Load()
 }
 
 // Watch subscribes to all card changes. If ctx is nil, the subscription uses the board lifecycle context.
@@ -368,12 +532,20 @@ func (b *Board) RemapCardID(oldID, newID string) {
 	}
 }
 
-// Cards returns a snapshot of task cards on the board (excludes "result" cards).
+// isInternalCardType reports whether c is an internal card type that must not
+// leak into user-facing views (Cards / Timeline). Currently this covers the
+// scheduler's persisted cron rule cards and the legacy "result" cards.
+func isInternalCardType(t string) bool {
+	return t == "result" || t == cardTypeCronRule
+}
+
+// Cards returns a snapshot of task cards on the board, excluding internal
+// bookkeeping cards (result rows and cron rule definitions).
 func (b *Board) Cards() []CardInfo {
 	raw := b.RawCards()
 	out := make([]CardInfo, 0, len(raw))
 	for _, c := range raw {
-		if c.Type == "result" {
+		if isInternalCardType(c.Type) {
 			continue
 		}
 		ci := CardInfo{
@@ -398,11 +570,12 @@ func (b *Board) Cards() []CardInfo {
 }
 
 // Timeline returns card state history suitable for Gantt chart rendering.
+// Internal bookkeeping cards (result rows, cron rule definitions) are excluded.
 func (b *Board) Timeline() []TimelineEntry {
 	raw := b.RawCards()
 	out := make([]TimelineEntry, 0, len(raw))
 	for _, c := range raw {
-		if c.Type == "result" {
+		if isInternalCardType(c.Type) {
 			continue
 		}
 		te := TimelineEntry{
@@ -452,7 +625,9 @@ func (b *Board) Topology() Topology {
 	return Topology{Nodes: nodes, Edges: edges}
 }
 
-// RestoreTaskBoard reconstructs a Board from persisted KanbanCards.
+// RestoreTaskBoard reconstructs a Board from persisted KanbanCards. Each
+// card's persisted CreatedAt / UpdatedAt is honoured so timeline views and
+// elapsed-time metrics stay correct across a process restart.
 func RestoreTaskBoard(scopeID string, cards []*KanbanCardModel) *Board {
 	b := NewBoard(scopeID)
 	for _, c := range cards {
@@ -460,7 +635,10 @@ func RestoreTaskBoard(scopeID string, cards []*KanbanCardModel) *Board {
 			"query":           c.Query,
 			"target_agent_id": c.TargetAgentID,
 		}
-		card := b.Produce(c.Type, c.Producer, payload, WithConsumer(c.Consumer))
+		// Stamp the persisted CreatedAt; UpdatedAt is set per terminal state below.
+		card := b.Produce(c.Type, c.Producer, payload,
+			WithConsumer(c.Consumer),
+			WithTimestamps(c.CreatedAt, c.CreatedAt))
 
 		remapKanbanCardID(b, card.ID, c.ID)
 
@@ -480,8 +658,29 @@ func RestoreTaskBoard(scopeID string, cards []*KanbanCardModel) *Board {
 			b.Claim(c.ID, c.Consumer)
 			b.Fail(c.ID, c.Error)
 		}
+		// Claim/Done/Fail re-stamped UpdatedAt to time.Now(). Force it back to
+		// the persisted value so external timeline / SLA metrics remain accurate.
+		b.restoreTimestamps(c.ID, c.CreatedAt, c.UpdatedAt)
 	}
 	return b
+}
+
+// restoreTimestamps overwrites CreatedAt / UpdatedAt on an existing card to the
+// persisted values. Internal helper for RestoreTaskBoard; must not be exposed
+// because regular state transitions are responsible for stamping UpdatedAt.
+func (b *Board) restoreTimestamps(cardID string, created, updated time.Time) {
+	b.cardMu.Lock()
+	defer b.cardMu.Unlock()
+	c, ok := b.cardIndex[cardID]
+	if !ok {
+		return
+	}
+	if !created.IsZero() {
+		c.CreatedAt = created
+	}
+	if !updated.IsZero() {
+		c.UpdatedAt = updated
+	}
 }
 
 func remapKanbanCardID(b *Board, oldID, newID string) {
@@ -513,17 +712,26 @@ func matchKanbanCard(c *Card, f CardFilter) bool {
 
 func (b *Board) notifyWatchers(snap *Card) {
 	b.wmu.Lock()
-	defer b.wmu.Unlock()
+	matched := make([]*watcher, 0, len(b.watchers))
 	for _, w := range b.watchers {
 		if notifyKanbanMatch(snap, w.filter) {
-			select {
-			case w.ch <- snap:
-			default:
-				telemetry.Warn(b.ctx, "kanban: watcher channel full, card notification dropped",
-					otellog.String("card_id", snap.ID),
-					otellog.String("status", string(snap.Status)))
-			}
+			matched = append(matched, w)
 		}
+	}
+	b.wmu.Unlock()
+
+	for _, w := range matched {
+		w.mu.Lock()
+		closed := w.closed
+		w.mu.Unlock()
+		if closed {
+			b.watcherDropped.Add(1)
+			telemetry.Warn(b.ctx, "kanban: watcher already shut down, card notification dropped",
+				otellog.String("card_id", snap.ID),
+				otellog.String("status", string(snap.Status)))
+			continue
+		}
+		w.enqueue(snap)
 	}
 }
 
