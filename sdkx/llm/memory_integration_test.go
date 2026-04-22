@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/sdk/llm"
-	"github.com/GizClaw/flowcraft/sdk/history"
 	"github.com/GizClaw/flowcraft/sdk/recall"
 	retmem "github.com/GizClaw/flowcraft/sdk/retrieval/memory"
 )
@@ -22,7 +21,7 @@ import (
 
 // expectedMemory describes one expected extraction result (soft-match).
 type expectedMemory struct {
-	category    recall.MemoryCategory
+	category    recall.Category
 	mustContain []string
 }
 
@@ -30,12 +29,11 @@ func newLTM(t *testing.T, l llm.LLM) (recall.Memory, *recall.RetrievalStore) {
 	t.Helper()
 	idx := retmem.New()
 	store := recall.NewRetrievalStore(idx)
-	mem, err := recall.New(recall.Config{
-		Index:           idx,
-		LLM:             l,
-		Mode:            recall.ModeAdditive,
-		MaxFactsPerCall: 8,
-	})
+	mem, err := recall.New(idx,
+		recall.WithLLM(l),
+		recall.WithExtractMode(recall.ModeAdditive),
+		recall.WithMaxFactsPerCall(8),
+	)
 	if err != nil {
 		t.Fatalf("recall.New: %v", err)
 	}
@@ -45,20 +43,20 @@ func newLTM(t *testing.T, l llm.LLM) (recall.Memory, *recall.RetrievalStore) {
 // checkExtractions verifies that stored entries satisfy expectations.
 func checkExtractions(
 	t *testing.T,
-	store recall.LongTermStore,
-	scope recall.MemoryScope,
+	store recall.Store,
+	scope recall.Scope,
 	expects []expectedMemory,
 ) (hits, misses int, extras []string) {
 	t.Helper()
 	ctx := context.Background()
 	all, _ := store.List(ctx, scope.RuntimeID, recall.ListOptions{Limit: 100, Scope: &scope})
 
-	byCat := make(map[recall.MemoryCategory][]string)
+	byCat := make(map[recall.Category][]string)
 	for _, e := range all {
 		byCat[e.Category] = append(byCat[e.Category], e.Content)
 	}
 
-	expectedCats := make(map[recall.MemoryCategory]bool)
+	expectedCats := make(map[recall.Category]bool)
 	for _, exp := range expects {
 		expectedCats[exp.category] = true
 		contents := byCat[exp.category]
@@ -180,7 +178,7 @@ func TestExtractQuality(t *testing.T) {
 					ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 					defer cancel()
 
-					scope := recall.MemoryScope{RuntimeID: "test-rt", UserID: "u1"}
+					scope := recall.Scope{RuntimeID: "test-rt", UserID: "u1"}
 					if _, err := mem.Save(ctx, scope, tc.messages); err != nil {
 						t.Fatalf("Save failed: %v", err)
 					}
@@ -212,9 +210,9 @@ func TestDeduplicationQuality(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 			defer cancel()
 
-			scope := recall.MemoryScope{RuntimeID: "test-rt", UserID: "u1"}
+			scope := recall.Scope{RuntimeID: "test-rt", UserID: "u1"}
 
-			_ = store.Save(ctx, "test-rt", &recall.MemoryEntry{
+			_ = store.Save(ctx, "test-rt", &recall.Entry{
 				Category: recall.CategoryProfile,
 				Content:  "User is a Go backend developer",
 				Keywords: []string{"go", "backend", "developer"},
@@ -315,7 +313,7 @@ Only return the JSON object, nothing else.`
 					mem, store := newLTM(t, provider)
 					defer mem.Close()
 
-					scope := recall.MemoryScope{RuntimeID: "test-rt", UserID: "u1"}
+					scope := recall.Scope{RuntimeID: "test-rt", UserID: "u1"}
 					if _, err := mem.Save(ctx, scope, tc.seedMessages); err != nil {
 						t.Fatalf("Seed save failed: %v", err)
 					}
@@ -340,17 +338,23 @@ Only return the JSON object, nothing else.`
 					}
 					answerA := respA.Content()
 
-					msgStore := history.NewInMemoryStore()
-					_ = msgStore.SaveMessages(ctx, "followup", []llm.Message{
-						llm.NewTextMessage(llm.RoleSystem, "You are a helpful programming assistant. Reply in Chinese."),
-						llm.NewTextMessage(llm.RoleUser, tc.followUpQuery),
+					hits, err := mem.Recall(ctx, scope, recall.RecallRequest{
+						Query: tc.followUpQuery,
+						TopK:  10,
 					})
-					inner := history.NewBufferMemory(msgStore, 50)
-					aware := recall.NewMemoryAwareMemoryCompat(inner, store, "test-rt", recall.LongTermConfig{Enabled: true, MaxEntries: 10})
-					aware.SetScope(&scope)
-					msgsWith, err := aware.Load(ctx, "followup")
 					if err != nil {
-						t.Fatalf("Load with memory failed: %v", err)
+						t.Fatalf("Recall failed: %v", err)
+					}
+					var ltBlock strings.Builder
+					ltBlock.WriteString("[Long-term memory]\n")
+					for _, h := range hits {
+						fmt.Fprintf(&ltBlock, "- [%s] %s\n", h.Entry.Category, h.Entry.Content)
+					}
+					ltBlock.WriteString("[End of long-term memory]")
+					sysPrompt := ltBlock.String() + "\n\nYou are a helpful programming assistant. Reply in Chinese."
+					msgsWith := []llm.Message{
+						llm.NewTextMessage(llm.RoleSystem, sysPrompt),
+						llm.NewTextMessage(llm.RoleUser, tc.followUpQuery),
 					}
 
 					respB, _, err := provider.Generate(ctx, msgsWith, genOpts...)

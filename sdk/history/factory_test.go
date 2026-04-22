@@ -1,14 +1,9 @@
 package history
 
-import (
-	"context"
-	"testing"
-
-	"github.com/GizClaw/flowcraft/sdk/recall"
-)
+import "testing"
 
 func TestNewWithLLM_NilLLMDegradesToBuffer(t *testing.T) {
-	mem, err := NewWithLLM(Config{}, nil, nil, nil)
+	mem, err := NewWithLLM(Config{}, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -19,7 +14,7 @@ func TestNewWithLLM_NilLLMDegradesToBuffer(t *testing.T) {
 
 func TestNewWithLLM_DeprecatedTypeStillWorks(t *testing.T) {
 	for _, typ := range []string{"buffer", "window", "summary", "token"} {
-		mem, err := NewWithLLM(Config{Type: typ}, nil, nil, nil)
+		mem, err := NewWithLLM(Config{Type: typ}, nil, nil)
 		if err != nil {
 			t.Fatalf("type %q: %v", typ, err)
 		}
@@ -29,23 +24,10 @@ func TestNewWithLLM_DeprecatedTypeStillWorks(t *testing.T) {
 	}
 }
 
-func TestNewWithLLM_WithLongTermStore(t *testing.T) {
-	ltStore := &mockLongTermStore{}
-	mem, err := NewWithLLM(Config{
-		LongTerm: recall.LongTermConfig{Enabled: true},
-	}, nil, nil, ltStore)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, ok := mem.(*recall.MemoryAwareMemory); !ok {
-		t.Fatal("expected recall.MemoryAwareMemory wrapper when ltStore is provided")
-	}
-}
-
 func TestNewWithLLM_NilWorkspaceDegradesToBuffer(t *testing.T) {
 	ml := &mockSummaryLLM{}
 	// LLM provided but no workspace → should fall back to buffer.
-	mem, err := NewWithLLM(Config{}, nil, ml, nil)
+	mem, err := NewWithLLM(Config{}, nil, ml)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -60,15 +42,3 @@ func TestConfigDefaults(t *testing.T) {
 		t.Fatalf("expected 50, got %d", cfg.maxMessages())
 	}
 }
-
-type mockLongTermStore struct{}
-
-func (m *mockLongTermStore) Save(context.Context, string, *recall.MemoryEntry) error { return nil }
-func (m *mockLongTermStore) List(context.Context, string, recall.ListOptions) ([]*recall.MemoryEntry, error) {
-	return nil, nil
-}
-func (m *mockLongTermStore) Search(context.Context, string, string, recall.SearchOptions) ([]*recall.MemoryEntry, error) {
-	return nil, nil
-}
-func (m *mockLongTermStore) Update(context.Context, string, *recall.MemoryEntry) error { return nil }
-func (m *mockLongTermStore) Delete(context.Context, string, string) error           { return nil }

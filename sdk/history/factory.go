@@ -4,7 +4,6 @@ import (
 	"context"
 
 	"github.com/GizClaw/flowcraft/sdk/llm"
-	"github.com/GizClaw/flowcraft/sdk/recall"
 	"github.com/GizClaw/flowcraft/sdk/telemetry"
 	"github.com/GizClaw/flowcraft/sdk/workspace"
 	otellog "go.opentelemetry.io/otel/log"
@@ -37,7 +36,12 @@ func WithPrefix(p string) MemoryOption {
 // NewWithLLM creates a Memory instance. All memory types are unified to lossless;
 // deprecated type values (buffer, window, summary, token) emit a warning and
 // are treated as lossless. When LLM is nil, lossless degrades to buffer.
-func NewWithLLM(cfg Config, store Store, l llm.LLM, ltStore recall.LongTermStore, opts ...MemoryOption) (Memory, error) {
+//
+// Long-term recall composition was removed in v0.2.0: callers wiring an
+// [sdk/recall.Memory] alongside this Memory should do so explicitly,
+// e.g. by calling recall.Memory.Recall() and prepending hits to the
+// system prompt before invoking the LLM. See examples/chatbot-with-recall.
+func NewWithLLM(cfg Config, store Store, l llm.LLM, opts ...MemoryOption) (Memory, error) {
 	if store == nil {
 		store = NewInMemoryStore()
 	}
@@ -51,11 +55,7 @@ func NewWithLLM(cfg Config, store Store, l llm.LLM, ltStore recall.LongTermStore
 		telemetry.Warn(context.Background(), "memory: deprecated type, using lossless", otellog.String("type", cfg.Type))
 	}
 
-	mem := buildCoreMemory(cfg, store, l, o)
-	if ltStore != nil && cfg.LongTerm.Enabled {
-		mem = recall.NewMemoryAwareMemoryCompat(mem, ltStore, "", cfg.LongTerm)
-	}
-	return mem, nil
+	return buildCoreMemory(cfg, store, l, o), nil
 }
 
 func buildCoreMemory(cfg Config, store Store, l llm.LLM, o memoryOptions) Memory {

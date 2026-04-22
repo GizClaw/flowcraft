@@ -13,7 +13,7 @@ import (
 // contentHash returns an MD5 hex digest scoped by user, used by the byte-level
 // dedup path on Save. Same content from different users may legitimately exist
 // in parallel namespaces, but within one user we never want exact duplicates.
-func contentHash(scope MemoryScope, content string) string {
+func contentHash(scope Scope, content string) string {
 	h := md5.New()
 	h.Write([]byte(scope.UserID))
 	h.Write([]byte{0})
@@ -24,7 +24,7 @@ func contentHash(scope MemoryScope, content string) string {
 // dedupHashes returns hash → existingDocID for content hashes already present
 // in the namespace. Implemented via Index.List with an In filter; backends
 // without native filter pushdown fall back to client-side scans.
-func (m *lt) dedupHashes(ctx context.Context, scope MemoryScope, hashes []string) (map[string]string, error) {
+func (m *lt) dedupHashes(ctx context.Context, scope Scope, hashes []string) (map[string]string, error) {
 	out := make(map[string]string, len(hashes))
 	if len(hashes) == 0 {
 		return out, nil
@@ -57,10 +57,10 @@ func (m *lt) dedupHashes(ctx context.Context, scope MemoryScope, hashes []string
 // Old entries are NOT deleted; pipeline.SupersededDecay handles retrieval-time
 // damping (RFC-0002 soft-merge).
 func (m *lt) supersedeNeighbours(
-	ctx context.Context, scope MemoryScope, newID string,
+	ctx context.Context, scope Scope, newID string,
 	fact ExtractedFact, vec []float32, now time.Time,
 ) {
-	if !m.cfg.SoftMerge || m.cfg.Embedder == nil || len(vec) == 0 {
+	if !m.cfg.softMerge || m.cfg.embedder == nil || len(vec) == 0 {
 		return
 	}
 	if len(fact.Entities) == 0 {
@@ -70,7 +70,7 @@ func (m *lt) supersedeNeighbours(
 	resp, err := m.idx.Search(ctx, ns, retrieval.SearchRequest{
 		QueryVector: vec,
 		Filter:      AgentRecallFilter(scope),
-		TopK:        m.cfg.SoftMergeTopK + 1, // +1 in case the new doc itself shows up
+		TopK:        m.cfg.softMergeTopK + 1, // +1 in case the new doc itself shows up
 	})
 	if err != nil || resp == nil {
 		return
@@ -88,7 +88,7 @@ func (m *lt) supersedeNeighbours(
 				cos = v
 			}
 		}
-		if cos < m.cfg.SoftMergeCosineMin {
+		if cos < m.cfg.softMergeCosineMin {
 			continue
 		}
 		oldEnts := lowerSet(docEntities(h.Doc))

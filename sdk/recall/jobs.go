@@ -41,7 +41,7 @@ type JobStatus struct {
 
 // JobPayload is the durable representation of a Save invocation.
 type JobPayload struct {
-	Scope    MemoryScope   `json:"scope"`
+	Scope    Scope   `json:"scope"`
 	Messages []llm.Message `json:"messages"`
 }
 
@@ -248,7 +248,7 @@ func (m *lt) worker() {
 		default:
 		}
 		ctx := context.Background()
-		rec, ok, err := m.cfg.JobQueue.Lease(ctx, m.cfg.Now())
+		rec, ok, err := m.cfg.jobQueue.Lease(ctx, m.cfg.now())
 		if err != nil {
 			m.log("ltm.worker.lease: %v", err)
 			time.Sleep(100 * time.Millisecond)
@@ -268,43 +268,43 @@ func (m *lt) worker() {
 
 func (m *lt) handleJob(ctx context.Context, rec *JobRecord) {
 	var extractOpts []ExtractOption
-	if m.cfg.SaveWithContext {
+	if m.cfg.saveWithCtx {
 		if existing := m.gatherExistingFacts(ctx, rec.Payload.Scope, rec.Payload.Messages); len(existing) > 0 {
 			extractOpts = append(extractOpts, WithExistingFacts(existing))
 		}
 	}
-	facts, err := m.cfg.Extractor.Extract(ctx, rec.Payload.Scope, rec.Payload.Messages, extractOpts...)
+	facts, err := m.cfg.extractor.Extract(ctx, rec.Payload.Scope, rec.Payload.Messages, extractOpts...)
 	if err != nil {
 		m.failOrRetry(ctx, rec, err)
 		return
 	}
-	ids, err := m.upsertFacts(ctx, rec.Payload.Scope, rec.Payload.Messages, facts, m.cfg.Now())
+	ids, err := m.upsertFacts(ctx, rec.Payload.Scope, rec.Payload.Messages, facts, m.cfg.now())
 	if err != nil {
 		m.failOrRetry(ctx, rec, err)
 		return
 	}
-	if err := m.cfg.JobQueue.Complete(ctx, rec.ID, ids); err != nil {
+	if err := m.cfg.jobQueue.Complete(ctx, rec.ID, ids); err != nil {
 		m.log("ltm.worker.complete: %v", err)
 	}
 }
 
 func (m *lt) failOrRetry(ctx context.Context, rec *JobRecord, err error) {
-	if rec.Attempts >= m.cfg.JobMaxAttempts {
-		_ = m.cfg.JobQueue.Fail(ctx, rec.ID, err.Error())
+	if rec.Attempts >= m.cfg.jobMaxAttempts {
+		_ = m.cfg.jobQueue.Fail(ctx, rec.ID, err.Error())
 		m.log("ltm.worker.dead %s: %v", rec.ID, err)
 		return
 	}
-	d := m.cfg.JobBackoffBase
+	d := m.cfg.jobBackoffBase
 	for i := 1; i < rec.Attempts; i++ {
 		d *= 2
-		if d >= m.cfg.JobBackoffMax {
-			d = m.cfg.JobBackoffMax
+		if d >= m.cfg.jobBackoffMax {
+			d = m.cfg.jobBackoffMax
 			break
 		}
 	}
-	if d > m.cfg.JobBackoffMax {
-		d = m.cfg.JobBackoffMax
+	if d > m.cfg.jobBackoffMax {
+		d = m.cfg.jobBackoffMax
 	}
-	next := m.cfg.Now().Add(d)
-	_ = m.cfg.JobQueue.Reschedule(ctx, rec.ID, next, err.Error())
+	next := m.cfg.now().Add(d)
+	_ = m.cfg.jobQueue.Reschedule(ctx, rec.ID, next, err.Error())
 }

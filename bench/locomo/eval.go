@@ -23,7 +23,7 @@ import (
 // (the default Flowcraft runner exposes SaveRaw to bypass an LLM extractor for
 // CI-friendly runs without API keys).
 type IngestSaver interface {
-	SaveRaw(ctx context.Context, scope recall.MemoryScope, msgs []llm.Message) (saveCount int, saveLatency time.Duration, err error)
+	SaveRaw(ctx context.Context, scope recall.Scope, msgs []llm.Message) (saveCount int, saveLatency time.Duration, err error)
 }
 
 // Report aggregates one full evaluation run.
@@ -113,12 +113,12 @@ func Run(ctx context.Context, r runners.Runner, ds *dataset.Dataset, opts Option
 	// top-k from a pool of all 10 convs combined and relevant facts get
 	// drowned out by other conversations (observed: judge=0.67 on a single
 	// conv but 0.17 across 10).
-	scopeOf := func(convID string) recall.MemoryScope {
+	scopeOf := func(convID string) recall.Scope {
 		uid := opts.UserID
 		if convID != "" {
 			uid = opts.UserID + "::" + convID
 		}
-		return recall.MemoryScope{RuntimeID: opts.RuntimeID, UserID: uid, AgentID: opts.AgentID}
+		return recall.Scope{RuntimeID: opts.RuntimeID, UserID: uid, AgentID: opts.AgentID}
 	}
 
 	report := &Report{
@@ -294,7 +294,7 @@ func perQuestionCtx(parent context.Context, timeout time.Duration) (context.Cont
 // conversation has fewer sessions than another.
 type ingestJob struct {
 	convID    string
-	scope     recall.MemoryScope
+	scope     recall.Scope
 	batch     turnBatch
 	batchIdx  int // 0-based position within its conversation, for WARN logs
 	convTotal int // total batches for the owning conversation, for WARN logs
@@ -314,7 +314,7 @@ type ingestJob struct {
 //
 // Failures on any single batch are logged + skipped so one rate-limited or
 // truncated extractor response can't disqualify an entire conversation.
-func ingestFlat(ctx context.Context, r runners.Runner, scopeOf func(string) recall.MemoryScope, convs []dataset.Conversation, opts Options) []time.Duration {
+func ingestFlat(ctx context.Context, r runners.Runner, scopeOf func(string) recall.Scope, convs []dataset.Conversation, opts Options) []time.Duration {
 	// Precompute conversation-level counters + expand every conv into its
 	// batches. Keeping convStart out of the worker path means no
 	// synchronization is needed for timing.
@@ -415,7 +415,7 @@ func ingestFlat(ctx context.Context, r runners.Runner, scopeOf func(string) reca
 	return latencies
 }
 
-func evalQuestions(ctx context.Context, r runners.Runner, scopeOf func(string) recall.MemoryScope, qs []dataset.Question, opts Options) ([]QuestionScore, []time.Duration, error) {
+func evalQuestions(ctx context.Context, r runners.Runner, scopeOf func(string) recall.Scope, qs []dataset.Question, opts Options) ([]QuestionScore, []time.Duration, error) {
 	n := len(qs)
 	scores := make([]QuestionScore, n)
 	latencies := make([]time.Duration, n)

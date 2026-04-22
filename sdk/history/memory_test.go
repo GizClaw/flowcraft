@@ -73,14 +73,14 @@ func TestAllCategories(t *testing.T) {
 	if len(cats) < 6 {
 		t.Fatalf("expected at least 6 categories, got %d", len(cats))
 	}
-	expected := map[recall.MemoryCategory]bool{
+	expected := map[recall.Category]bool{
 		recall.CategoryProfile: true, recall.CategoryPreferences: true, recall.CategoryEntities: true,
 		recall.CategoryEvents: true, recall.CategoryCases: true, recall.CategoryPatterns: true,
 	}
 	for _, c := range expected {
 		_ = c
 	}
-	for _, want := range []recall.MemoryCategory{recall.CategoryProfile, recall.CategoryPreferences, recall.CategoryEntities, recall.CategoryEvents, recall.CategoryCases, recall.CategoryPatterns} {
+	for _, want := range []recall.Category{recall.CategoryProfile, recall.CategoryPreferences, recall.CategoryEntities, recall.CategoryEvents, recall.CategoryCases, recall.CategoryPatterns} {
 		found := false
 		for _, c := range cats {
 			if c == want {

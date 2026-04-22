@@ -16,17 +16,17 @@ func newRLTM(t *testing.T) *RetrievalStore {
 func TestRetrievalLongTerm_SaveAndSearch(t *testing.T) {
 	ctx := context.Background()
 	s := newRLTM(t)
-	if err := s.Save(ctx, "rt1", &MemoryEntry{
+	if err := s.Save(ctx, "rt1", &Entry{
 		Category: CategoryProfile,
 		Content:  "Alice is a Go backend developer at Acme.",
-		Scope:    MemoryScope{RuntimeID: "rt1", UserID: "u1"},
+		Scope:    Scope{RuntimeID: "rt1", UserID: "u1"},
 	}); err != nil {
 		t.Fatalf("save: %v", err)
 	}
 	res, err := s.Search(ctx, "rt1", "Alice", SearchOptions{
 		Category: CategoryProfile,
 		TopK:     5,
-		Scope:    &MemoryScope{RuntimeID: "rt1", UserID: "u1"},
+		Scope:    &Scope{RuntimeID: "rt1", UserID: "u1"},
 	})
 	if err != nil {
 		t.Fatalf("search: %v", err)
@@ -43,15 +43,15 @@ func TestRetrievalLongTerm_ListAndDelete(t *testing.T) {
 	ctx := context.Background()
 	s := newRLTM(t)
 	for i, c := range []string{"one", "two", "three"} {
-		if err := s.Save(ctx, "rt1", &MemoryEntry{
+		if err := s.Save(ctx, "rt1", &Entry{
 			Category: CategoryEvents,
 			Content:  c,
-			Scope:    MemoryScope{RuntimeID: "rt1", UserID: "u1"},
+			Scope:    Scope{RuntimeID: "rt1", UserID: "u1"},
 		}); err != nil {
 			t.Fatalf("save %d: %v", i, err)
 		}
 	}
-	scope := &MemoryScope{RuntimeID: "rt1", UserID: "u1"}
+	scope := &Scope{RuntimeID: "rt1", UserID: "u1"}
 	entries, err := s.List(ctx, "rt1", ListOptions{Category: CategoryEvents, Limit: 10, Scope: scope})
 	if err != nil {
 		t.Fatalf("list: %v", err)
@@ -71,20 +71,20 @@ func TestRetrievalLongTerm_ListAndDelete(t *testing.T) {
 func TestRetrievalLongTerm_ScopeFilter(t *testing.T) {
 	ctx := context.Background()
 	s := newRLTM(t)
-	_ = s.Save(ctx, "rt1", &MemoryEntry{
+	_ = s.Save(ctx, "rt1", &Entry{
 		Category: CategoryProfile,
 		Content:  "Alice loves Go.",
-		Scope:    MemoryScope{RuntimeID: "rt1", UserID: "u1"},
+		Scope:    Scope{RuntimeID: "rt1", UserID: "u1"},
 	})
-	_ = s.Save(ctx, "rt1", &MemoryEntry{
+	_ = s.Save(ctx, "rt1", &Entry{
 		Category: CategoryProfile,
 		Content:  "Bob loves Python.",
-		Scope:    MemoryScope{RuntimeID: "rt1", UserID: "u2"},
+		Scope:    Scope{RuntimeID: "rt1", UserID: "u2"},
 	})
 	res, err := s.Search(ctx, "rt1", "loves", SearchOptions{
 		Category: CategoryProfile,
 		TopK:     10,
-		Scope:    &MemoryScope{RuntimeID: "rt1", UserID: "u1"},
+		Scope:    &Scope{RuntimeID: "rt1", UserID: "u1"},
 	})
 	if err != nil {
 		t.Fatalf("search: %v", err)
@@ -98,21 +98,21 @@ func TestRetrievalLongTerm_RoundtripFields(t *testing.T) {
 	ctx := context.Background()
 	s := newRLTM(t)
 	exp := time.Now().Add(2 * time.Hour).UTC().Truncate(time.Second)
-	in := &MemoryEntry{
+	in := &Entry{
 		Category:   CategorySemantic,
 		Content:    "fact",
 		Categories: []string{"semantic", "episodic"},
 		Entities:   []string{"alice", "go"},
 		Confidence: 0.85,
 		ExpiresAt:  &exp,
-		Scope:      MemoryScope{RuntimeID: "rt1", UserID: "u1", AgentID: "agent-x"},
+		Scope:      Scope{RuntimeID: "rt1", UserID: "u1", AgentID: "agent-x"},
 	}
 	if err := s.Save(ctx, "rt1", in); err != nil {
 		t.Fatalf("save: %v", err)
 	}
 	out, err := s.List(ctx, "rt1", ListOptions{
 		Category: CategorySemantic, Limit: 1,
-		Scope: &MemoryScope{RuntimeID: "rt1", UserID: "u1"},
+		Scope: &Scope{RuntimeID: "rt1", UserID: "u1"},
 	})
 	if err != nil || len(out) != 1 {
 		t.Fatalf("list: %v %v", err, out)

@@ -39,9 +39,9 @@ func main() {
 		log.Fatal(err)
 	}
 	defer r.Close()
-	scope := recall.MemoryScope{RuntimeID: "ingest", UserID: "u-bench", AgentID: "agent-bench"}
+	scope := recall.Scope{RuntimeID: "ingest", UserID: "u-bench", AgentID: "agent-bench"}
 	type rawSaver interface {
-		SaveRaw(ctx context.Context, scope recall.MemoryScope, msgs []llm.Message) (int, time.Duration, error)
+		SaveRaw(ctx context.Context, scope recall.Scope, msgs []llm.Message) (int, time.Duration, error)
 	}
 	for _, c := range ds.Conversations {
 		t0 := time.Now()

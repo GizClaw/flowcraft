@@ -12,8 +12,10 @@ import (
 //	ltm_<runtime>__u_<user>   when UserID != ""
 //	ltm_<runtime>__global     otherwise
 //
-// AgentID and SessionID are soft-isolation dimensions stored in metadata.
-func NamespaceFor(s MemoryScope) string {
+// AgentID is a soft-isolation dimension stored in metadata, not in the
+// namespace, so a single agent can union its own facts with shared ones
+// in a single recall call.
+func NamespaceFor(s Scope) string {
 	rt := s.RuntimeID
 	if rt == "" {
 		rt = "anon"
@@ -53,7 +55,7 @@ func saneNS(s string) string {
 // .
 //
 // When AgentID is empty the filter is empty (cross-agent recall).
-func AgentRecallFilter(s MemoryScope) retrieval.Filter {
+func AgentRecallFilter(s Scope) retrieval.Filter {
 	if s.AgentID == "" {
 		return retrieval.Filter{}
 	}

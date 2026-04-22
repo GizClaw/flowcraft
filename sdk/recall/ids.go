@@ -40,13 +40,16 @@ func NewJobID() JobID {
 // id = "ltm_<sha256(scope|messages|index|content)[:16]>"
 //
 // Unlike ULIDs, this ID must be content-addressed so a job replayed twice
-// upserts the same row.
-func deterministicEntryID(scope MemoryScope, msgs []llm.Message, index int, content string) string {
+// upserts the same row. Note that Scope.SessionID was removed in v0.2.0,
+// which is a breaking change: IDs computed from old (scope, messages,
+// content) tuples will not match the new ones, so re-ingest may produce
+// duplicates for already-stored facts. Callers upgrading should treat
+// the LTM index as a fresh corpus.
+func deterministicEntryID(scope Scope, msgs []llm.Message, index int, content string) string {
 	h := sha256.New()
 	fmt.Fprintf(h, "rt=%s\n", scope.RuntimeID)
 	fmt.Fprintf(h, "agent=%s\n", scope.AgentID)
 	fmt.Fprintf(h, "user=%s\n", scope.UserID)
-	fmt.Fprintf(h, "session=%s\n", scope.SessionID)
 	for _, m := range msgs {
 		fmt.Fprintf(h, "%s|%s\n", string(m.Role), m.Content())
 	}

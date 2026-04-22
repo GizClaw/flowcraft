@@ -24,8 +24,8 @@ import (
 // "extractor returned 0 facts on conv-X" without an interactive debugger.
 type Runner interface {
 	Name() string
-	Save(ctx context.Context, scope recall.MemoryScope, msgs []llm.Message) (saveCount int, saveLatency time.Duration, err error)
-	Recall(ctx context.Context, scope recall.MemoryScope, query string, topK int) (hits []recall.RecallHit, recallLatency time.Duration, err error)
+	Save(ctx context.Context, scope recall.Scope, msgs []llm.Message) (saveCount int, saveLatency time.Duration, err error)
+	Recall(ctx context.Context, scope recall.Scope, query string, topK int) (hits []recall.RecallHit, recallLatency time.Duration, err error)
 	Close() error
 }
 
@@ -43,5 +43,5 @@ type RawTurn struct {
 // while preserving each turn's EvidenceID. Only used when the eval driver
 // runs without an LLM extractor.
 type RawIngestSaver interface {
-	SaveRawTurns(ctx context.Context, scope recall.MemoryScope, turns []RawTurn) (saveCount int, saveLatency time.Duration, err error)
+	SaveRawTurns(ctx context.Context, scope recall.Scope, turns []RawTurn) (saveCount int, saveLatency time.Duration, err error)
 }

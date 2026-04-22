@@ -26,7 +26,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/GizClaw/flowcraft/sdk/recall"
 	"github.com/GizClaw/flowcraft/sdk/model"
 )
 
@@ -84,10 +83,16 @@ type SummaryCacheStore interface {
 
 // Config configures the conversation memory. All memory is lossless by default;
 // the Type field is deprecated and ignored (kept for backward compatibility).
+//
+// Long-term-fact recall is intentionally NOT configured here in v0.2.0+;
+// callers wanting that capability compose [sdk/recall.Memory] separately
+// (see examples/chatbot-with-recall for a worked example). The previous
+// Config.LongTerm field was removed because it forced this package to
+// import sdk/recall and bound a "fact recall" decision into a "message
+// transcript" type.
 type Config struct {
 	Type        string         `json:"type,omitempty"` // deprecated: ignored, always lossless
 	MaxMessages int            `json:"max_messages,omitempty"`
-	LongTerm    recall.LongTermConfig `json:"long_term,omitempty"`
 	Lossless    LosslessConfig `json:"lossless,omitempty"`
 }
 

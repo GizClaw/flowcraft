@@ -38,32 +38,32 @@ type SaveResult struct {
 }
 
 // validateScope is enforced by every write path.
-func (m *lt) validateScope(s MemoryScope) error {
+func (m *lt) validateScope(s Scope) error {
 	if s.RuntimeID == "" {
 		return ErrMissingRuntimeID
 	}
-	if m.cfg.RequireUserID && s.UserID == "" && !m.cfg.AllowGlobal {
+	if m.cfg.requireUserID && s.UserID == "" && !m.cfg.allowGlobal {
 		return ErrMissingUserID
 	}
 	return nil
 }
 
 // Save (sync) extracts then upserts; returns generated entry IDs.
-func (m *lt) Save(ctx context.Context, scope MemoryScope, msgs []llm.Message) (SaveResult, error) {
+func (m *lt) Save(ctx context.Context, scope Scope, msgs []llm.Message) (SaveResult, error) {
 	if err := m.validateScope(scope); err != nil {
 		return SaveResult{}, err
 	}
 	var extractOpts []ExtractOption
-	if m.cfg.SaveWithContext {
+	if m.cfg.saveWithCtx {
 		if existing := m.gatherExistingFacts(ctx, scope, msgs); len(existing) > 0 {
 			extractOpts = append(extractOpts, WithExistingFacts(existing))
 		}
 	}
-	facts, err := m.cfg.Extractor.Extract(ctx, scope, msgs, extractOpts...)
+	facts, err := m.cfg.extractor.Extract(ctx, scope, msgs, extractOpts...)
 	if err != nil {
 		return SaveResult{}, err
 	}
-	ids, err := m.upsertFacts(ctx, scope, msgs, facts, m.cfg.Now())
+	ids, err := m.upsertFacts(ctx, scope, msgs, facts, m.cfg.now())
 	if err != nil {
 		return SaveResult{}, err
 	}
@@ -74,7 +74,7 @@ func (m *lt) Save(ctx context.Context, scope MemoryScope, msgs []llm.Message) (S
 // query, returning short snippets to seed the extractor's "existing memories"
 // section. Errors are swallowed: this is a quality booster, not correctness-
 // critical.
-func (m *lt) gatherExistingFacts(ctx context.Context, scope MemoryScope, msgs []llm.Message) []string {
+func (m *lt) gatherExistingFacts(ctx context.Context, scope Scope, msgs []llm.Message) []string {
 	if len(msgs) == 0 {
 		return nil
 	}
@@ -84,7 +84,7 @@ func (m *lt) gatherExistingFacts(ctx context.Context, scope MemoryScope, msgs []
 	}
 	hits, err := m.Recall(ctx, scope, RecallRequest{
 		Query: q,
-		TopK:  m.cfg.SaveContextTopK,
+		TopK:  m.cfg.saveCtxTopK,
 	})
 	if err != nil {
 		return nil
@@ -143,20 +143,20 @@ func snippetSingleLine(s string, max int) string {
 }
 
 // SaveAsync enqueues; returns immediately with JobID.
-func (m *lt) SaveAsync(ctx context.Context, scope MemoryScope, msgs []llm.Message) (JobID, error) {
+func (m *lt) SaveAsync(ctx context.Context, scope Scope, msgs []llm.Message) (JobID, error) {
 	if err := m.validateScope(scope); err != nil {
 		return "", err
 	}
 	ns := NamespaceFor(scope)
-	return m.cfg.JobQueue.Enqueue(ctx, ns, JobPayload{Scope: scope, Messages: msgs})
+	return m.cfg.jobQueue.Enqueue(ctx, ns, JobPayload{Scope: scope, Messages: msgs})
 }
 
 // AddRaw bypasses extraction and writes one entry.
-func (m *lt) AddRaw(ctx context.Context, scope MemoryScope, e MemoryEntry) (string, error) {
+func (m *lt) AddRaw(ctx context.Context, scope Scope, e Entry) (string, error) {
 	if err := m.validateScope(scope); err != nil {
 		return "", err
 	}
-	now := m.cfg.Now()
+	now := m.cfg.now()
 	if e.ID == "" {
 		e.ID = deterministicEntryID(scope, nil, 0, e.Content+"|"+now.Format(time.RFC3339Nano))
 	}
@@ -174,8 +174,8 @@ func (m *lt) AddRaw(ctx context.Context, scope MemoryScope, e MemoryEntry) (stri
 		e.Source.RuntimeID = scope.RuntimeID
 		e.Source.Timestamp = now
 	}
-	if e.ExpiresAt == nil && m.cfg.TTLPolicy != nil {
-		if d, ok := m.cfg.TTLPolicy.TTLFor(e); ok && d > 0 {
+	if e.ExpiresAt == nil && m.cfg.ttlPolicy != nil {
+		if d, ok := m.cfg.ttlPolicy.TTLFor(e); ok && d > 0 {
 			t := now.Add(d)
 			e.ExpiresAt = &t
 		}
@@ -197,7 +197,7 @@ func (m *lt) AddRaw(ctx context.Context, scope MemoryScope, e MemoryEntry) (stri
 //  3. Optional soft-merge: mark older near-duplicates as superseded_by=newID.
 //  4. Upsert the new docs.
 func (m *lt) upsertFacts(
-	ctx context.Context, scope MemoryScope, msgs []llm.Message,
+	ctx context.Context, scope Scope, msgs []llm.Message,
 	facts []ExtractedFact, now time.Time,
 ) ([]string, error) {
 	if len(facts) == 0 {
@@ -210,7 +210,7 @@ func (m *lt) upsertFacts(
 		hashes[i] = contentHash(scope, f.Content)
 	}
 	var existing map[string]string
-	if m.cfg.MD5Dedup {
+	if m.cfg.md5Dedup {
 		var err error
 		existing, err = m.dedupHashes(ctx, scope, hashes)
 		if err != nil {
@@ -221,7 +221,7 @@ func (m *lt) upsertFacts(
 
 	// 2. Build entries + embed --------------------------------------------
 	type plan struct {
-		entry MemoryEntry
+		entry Entry
 		doc   retrieval.Doc
 		fact  ExtractedFact
 		vec   []float32
@@ -237,7 +237,7 @@ func (m *lt) upsertFacts(
 				continue
 			}
 		}
-		entry := MemoryEntry{
+		entry := Entry{
 			ID:         deterministicEntryID(scope, msgs, i, f.Content),
 			Scope:      scope,
 			Content:    f.Content,
@@ -246,16 +246,16 @@ func (m *lt) upsertFacts(
 			Confidence: f.Confidence,
 			CreatedAt:  now,
 			UpdatedAt:  now,
-			Source: MemorySource{
+			Source: Source{
 				RuntimeID: scope.RuntimeID,
 				Timestamp: now,
 			},
 		}
 		if len(entry.Categories) > 0 {
-			entry.Category = MemoryCategory(entry.Categories[0])
+			entry.Category = Category(entry.Categories[0])
 		}
-		if m.cfg.TTLPolicy != nil {
-			if d, ok := m.cfg.TTLPolicy.TTLFor(entry); ok && d > 0 {
+		if m.cfg.ttlPolicy != nil {
+			if d, ok := m.cfg.ttlPolicy.TTLFor(entry); ok && d > 0 {
 				t := now.Add(d)
 				entry.ExpiresAt = &t
 			}
@@ -278,12 +278,12 @@ func (m *lt) upsertFacts(
 
 	// Embed in one batch when the embedder is available so each Save is
 	// bounded to a single embedding-API round-trip.
-	if m.cfg.Embedder != nil {
+	if m.cfg.embedder != nil {
 		texts := make([]string, len(plans))
 		for i, p := range plans {
 			texts[i] = p.fact.Content
 		}
-		vecs, err := embedBatch(ctx, m.cfg.Embedder, texts)
+		vecs, err := embedBatch(ctx, m.cfg.embedder, texts)
 		if err != nil {
 			m.log("ltm: embed batch failed: %v", err)
 		} else {
@@ -297,7 +297,7 @@ func (m *lt) upsertFacts(
 	}
 
 	// 3. Soft-merge --------------------------------------------------------
-	if m.cfg.SoftMerge {
+	if m.cfg.softMerge {
 		for _, p := range plans {
 			m.supersedeNeighbours(ctx, scope, p.entry.ID, p.fact, p.vec, now)
 		}

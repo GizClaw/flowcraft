@@ -64,7 +64,7 @@ func WithExistingFacts(facts []string) ExtractOption {
 // per-invocation context (existing facts, scope-scoped instructions, …)
 // without breaking implementations that don't read them.
 type Extractor interface {
-	Extract(ctx context.Context, scope MemoryScope, msgs []llm.Message, opts ...ExtractOption) ([]ExtractedFact, error)
+	Extract(ctx context.Context, scope Scope, msgs []llm.Message, opts ...ExtractOption) ([]ExtractedFact, error)
 }
 
 // applyExtractOptions reduces a slice of ExtractOption into ExtractOptions.
@@ -152,7 +152,7 @@ type AdditiveExtractor struct {
 func (e *AdditiveExtractor) Name() string { return "additive" }
 
 // Extract implements Extractor.
-func (e *AdditiveExtractor) Extract(ctx context.Context, _ MemoryScope, msgs []llm.Message, opts ...ExtractOption) ([]ExtractedFact, error) {
+func (e *AdditiveExtractor) Extract(ctx context.Context, _ Scope, msgs []llm.Message, opts ...ExtractOption) ([]ExtractedFact, error) {
 	if e.LLM == nil || len(msgs) == 0 {
 		return nil, nil
 	}

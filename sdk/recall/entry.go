@@ -6,36 +6,36 @@ import (
 	"time"
 )
 
-// MemoryCategory classifies a long-term memory entry.
-type MemoryCategory string
+// Category classifies a long-term memory entry.
+type Category string
 
 const (
-	CategoryProfile     MemoryCategory = "profile"
-	CategoryPreferences MemoryCategory = "preferences"
-	CategoryEntities    MemoryCategory = "entities"
-	CategoryEvents      MemoryCategory = "events"
-	CategoryCases       MemoryCategory = "cases"
-	CategoryPatterns    MemoryCategory = "patterns"
+	CategoryProfile     Category = "profile"
+	CategoryPreferences Category = "preferences"
+	CategoryEntities    Category = "entities"
+	CategoryEvents      Category = "events"
+	CategoryCases       Category = "cases"
+	CategoryPatterns    Category = "patterns"
 
 	// Categories added by (Additive Extraction taxonomy).
-	CategoryProcedural MemoryCategory = "procedural"
-	CategoryEpisodic   MemoryCategory = "episodic"
-	CategorySemantic   MemoryCategory = "semantic"
+	CategoryProcedural Category = "procedural"
+	CategoryEpisodic   Category = "episodic"
+	CategorySemantic   Category = "semantic"
 )
 
-var defaultCategories = []MemoryCategory{
+var defaultCategories = []Category{
 	CategoryProfile, CategoryPreferences, CategoryEntities,
 	CategoryEvents, CategoryCases, CategoryPatterns,
 }
 
 var categoryRegistry struct {
 	mu         sync.RWMutex
-	registered []MemoryCategory
+	registered []Category
 }
 
 // RegisterCategory adds a custom memory category to the global registry.
 // Must be called before pipeline usage (typically in init or startup).
-func RegisterCategory(cat MemoryCategory) {
+func RegisterCategory(cat Category) {
 	categoryRegistry.mu.Lock()
 	defer categoryRegistry.mu.Unlock()
 	for _, c := range categoryRegistry.registered {
@@ -47,15 +47,15 @@ func RegisterCategory(cat MemoryCategory) {
 }
 
 // AllCategories returns all built-in and registered memory categories.
-func AllCategories() []MemoryCategory {
+func AllCategories() []Category {
 	categoryRegistry.mu.RLock()
 	extra := categoryRegistry.registered
 	categoryRegistry.mu.RUnlock()
 
 	if len(extra) == 0 {
-		return append([]MemoryCategory(nil), defaultCategories...)
+		return append([]Category(nil), defaultCategories...)
 	}
-	all := make([]MemoryCategory, 0, len(defaultCategories)+len(extra))
+	all := make([]Category, 0, len(defaultCategories)+len(extra))
 	all = append(all, defaultCategories...)
 	all = append(all, extra...)
 	return all
@@ -71,95 +71,127 @@ func AllCategoryStrings() []string {
 	return out
 }
 
-// MemoryScope partitions long-term memory within a runtime (e.g. per end user).
-// Empty UserID and SessionID denotes the runtime-global bucket (shared memories).
+// Scope identifies a bucket of long-term memory rows. It serves both as
+// the persistence key (which namespace/agent/user a Save lands in) and as
+// the read filter (which buckets a List/Search visits, via Partitions).
 //
-// AgentID (added by) is a soft-isolation dimension stored as
-// metadata; an empty AgentID means "shared across agents". When non-empty,
-// the LTM Recall path filters by `agent_id == scope.AgentID OR agent_id == ""`.
-type MemoryScope struct {
-	RuntimeID string `json:"runtime_id,omitempty"`
-	AgentID   string `json:"agent_id,omitempty"`
-	UserID    string `json:"user_id,omitempty"`
-	SessionID string `json:"session_id,omitempty"`
+// Persistence dimensions:
+//
+//   - RuntimeID: scopes everything to one process/tenant (mandatory in
+//     practice; empty falls back to "anon").
+//   - AgentID: soft-isolation stored in entry metadata. Empty means
+//     "shared across agents"; non-empty narrows recall to that agent
+//     plus shared rows.
+//   - UserID: per-end-user partition. Empty means "runtime-global", a
+//     bucket used for facts that should be visible to every user (e.g.
+//     a knowledge-base entry shared by every chat in this runtime).
+//
+// Recall dimension:
+//
+//   - Partitions selects which buckets a List/Search visits. nil/empty
+//     means "auto": global scopes recall the global bucket only, and
+//     non-global scopes recall the user bucket only. Set explicitly when
+//     a single call must union both buckets, e.g. when shared and
+//     per-user facts both contribute to the answer.
+//
+// Note: SessionID was intentionally removed in v0.2.0. It conflated
+// conversation-thread state (which belongs in sdk/history) with
+// long-term recall, and silently leaked thread IDs into namespace and
+// id-hash inputs. Callers that previously partitioned LTM by session
+// should either move that data to sdk/history (transient) or model it
+// as a tag on Entry.Keywords (durable).
+type Scope struct {
+	RuntimeID  string      `json:"runtime_id,omitempty"`
+	AgentID    string      `json:"agent_id,omitempty"`
+	UserID     string      `json:"user_id,omitempty"`
+	Partitions []Partition `json:"partitions,omitempty"`
 }
 
-// IsGlobal returns true when this scope refers only to the runtime-wide bucket.
-func (s MemoryScope) IsGlobal() bool {
-	return s.UserID == "" && s.SessionID == ""
+// IsGlobal returns true when this scope addresses the runtime-wide bucket.
+func (s Scope) IsGlobal() bool {
+	return s.UserID == ""
 }
 
-// CacheKey returns a stable key for assembler caches (must include runtime + user/session).
-func (s MemoryScope) CacheKey() string {
-	if s.SessionID != "" {
-		return s.RuntimeID + "|" + s.UserID + "|" + s.SessionID
+// CacheKey returns a stable key suitable for in-process caching of
+// recall results (callers building their own assembler/cache layer can
+// use this to invalidate per-scope).
+func (s Scope) CacheKey() string {
+	parts := s.EffectivePartitions()
+	pk := ""
+	for i, p := range parts {
+		if i > 0 {
+			pk += ","
+		}
+		pk += string(p)
 	}
 	if s.UserID != "" {
-		return s.RuntimeID + "|" + s.UserID
+		return s.RuntimeID + "|" + s.UserID + "|" + pk
 	}
-	return s.RuntimeID
+	return s.RuntimeID + "|" + pk
 }
 
-// MemoryEntry is a single long-term memory record.
-//
-// Fields added by are tail-appended (Categories/Entities/
-// Confidence/ExpiresAt/Sources). Existing struct-literal callers continue to
-// compile because Go allows zero-value tail fields with named-field literals.
-type MemoryEntry struct {
-	ID        string         `json:"id"`
-	Category  MemoryCategory `json:"category"`
-	Content   string         `json:"content"`
-	Keywords  []string       `json:"keywords,omitempty"`
-	Source    MemorySource   `json:"source"`
-	CreatedAt time.Time      `json:"created_at"`
-	UpdatedAt time.Time      `json:"updated_at"`
-	Scope     MemoryScope    `json:"scope,omitempty"`
-
-	Categories []string   `json:"categories,omitempty"` //: multi-label
-	Entities   []string   `json:"entities,omitempty"`   //: linked entities
-	Confidence float64    `json:"confidence,omitempty"` //: LLM-reported [0,1]
-	ExpiresAt  *time.Time `json:"expires_at,omitempty"` //: soft TTL; nil = never
+// EffectivePartitions returns Partitions if non-empty, else the auto-
+// derived single-partition slice based on IsGlobal.
+func (s Scope) EffectivePartitions() []Partition {
+	if len(s.Partitions) > 0 {
+		return NormalizePartitions(s.Partitions)
+	}
+	if s.IsGlobal() {
+		return []Partition{PartitionGlobal}
+	}
+	return []Partition{PartitionUser}
 }
 
-// MemorySource records the origin of a memory entry.
-type MemorySource struct {
+// Entry is a single long-term memory record.
+type Entry struct {
+	ID        string    `json:"id"`
+	Category  Category  `json:"category"`
+	Content   string    `json:"content"`
+	Keywords  []string  `json:"keywords,omitempty"`
+	Source    Source    `json:"source"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+	Scope     Scope     `json:"scope,omitempty"`
+
+	Categories []string   `json:"categories,omitempty"` // multi-label
+	Entities   []string   `json:"entities,omitempty"`   // linked entities
+	Confidence float64    `json:"confidence,omitempty"` // LLM-reported [0,1]
+	ExpiresAt  *time.Time `json:"expires_at,omitempty"` // soft TTL; nil = never
+}
+
+// Source records the origin of a memory entry.
+type Source struct {
 	RuntimeID      string    `json:"runtime_id,omitempty"`
 	ConversationID string    `json:"conversation_id,omitempty"`
 	Timestamp      time.Time `json:"timestamp,omitempty"`
 }
 
-// LongTermStore is the persistence interface for runtime-scoped long-term memory.
-type LongTermStore interface {
-	Save(ctx context.Context, runtimeID string, entry *MemoryEntry) error
-	List(ctx context.Context, runtimeID string, opts ListOptions) ([]*MemoryEntry, error)
-	Search(ctx context.Context, runtimeID string, query string, opts SearchOptions) ([]*MemoryEntry, error)
-	Update(ctx context.Context, runtimeID string, entry *MemoryEntry) error
+// Store is the persistence interface for runtime-scoped long-term memory.
+type Store interface {
+	Save(ctx context.Context, runtimeID string, entry *Entry) error
+	List(ctx context.Context, runtimeID string, opts ListOptions) ([]*Entry, error)
+	Search(ctx context.Context, runtimeID string, query string, opts SearchOptions) ([]*Entry, error)
+	Update(ctx context.Context, runtimeID string, entry *Entry) error
 	Delete(ctx context.Context, runtimeID, entryID string) error
 }
 
-// ListOptions configures listing of long-term memory entries.
+// ListOptions configures listing of long-term memory entries. Scope is the
+// single source of truth for both filtering and partition selection — set
+// Scope.Partitions when you need to override the auto-derived behavior
+// (see [Scope.EffectivePartitions]).
 type ListOptions struct {
-	Category MemoryCategory
+	Category Category
 	Limit    int
-	// Scope, when non-nil, restricts rows to entries in that scope bucket.
-	// nil preserves legacy behavior (no scope filter).
-	// If Recall is set, Scope is ignored for filtering (Recall wins).
-	Scope *MemoryScope
-	// Recall selects one or more partitions (user bucket, global bucket, or union).
-	// When nil, [EffectiveRecallForList] derives partitioning from Scope for backward compatibility.
-	Recall *RecallScope
+	Scope    *Scope
 }
 
-// SearchOptions configures search of long-term memory entries.
+// SearchOptions configures search of long-term memory entries. The Scope
+// contract matches [ListOptions].
 type SearchOptions struct {
-	Category  MemoryCategory
+	Category  Category
 	TopK      int
 	Threshold float64
-	// Scope, when non-nil, restricts hits to entries in that scope bucket.
-	// If Recall is set, Scope is ignored for filtering (Recall wins).
-	Scope *MemoryScope
-	// Recall selects partitions for Search; nil derives from Scope via [EffectiveRecallForSearch].
-	Recall *RecallScope
+	Scope     *Scope
 	// QueryVector, when non-nil, is passed directly to the store implementation,
 	// allowing the caller to pre-compute the embedding once and share it across
 	// multiple category searches. Stores that do not support vector search ignore it.
@@ -173,15 +205,18 @@ type Embedder interface {
 
 // VectorSearcher performs similarity search over pre-indexed vectors.
 type VectorSearcher interface {
-	SearchByVector(ctx context.Context, runtimeID string, vec []float32, opts SearchOptions) ([]*MemoryEntry, error)
+	SearchByVector(ctx context.Context, runtimeID string, vec []float32, opts SearchOptions) ([]*Entry, error)
 }
 
-// DefaultGlobalCategories is used when LongTermConfig.GlobalCategories is empty.
-func DefaultGlobalCategories() []MemoryCategory {
-	return []MemoryCategory{CategoryProfile, CategoryPreferences, CategoryCases, CategoryPatterns}
+// DefaultGlobalCategories names the categories whose entries are stored
+// in the runtime-global bucket regardless of caller scope. Callers
+// constructing their own context-injection layer can use it as a sane
+// default for which categories should be shared across users.
+func DefaultGlobalCategories() []Category {
+	return []Category{CategoryProfile, CategoryPreferences, CategoryCases, CategoryPatterns}
 }
 
-func isGlobalCategory(cat MemoryCategory, global []MemoryCategory) bool {
+func isGlobalCategory(cat Category, global []Category) bool {
 	if len(global) == 0 {
 		global = DefaultGlobalCategories()
 	}
@@ -193,31 +228,35 @@ func isGlobalCategory(cat MemoryCategory, global []MemoryCategory) bool {
 	return false
 }
 
-// NormalizeScopeForCategory returns the scope stored on an entry for the given category.
-func NormalizeScopeForCategory(cat MemoryCategory, in MemoryScope, global []MemoryCategory) MemoryScope {
+// NormalizeScopeForCategory returns the scope under which an entry of
+// category cat should be persisted. Global categories collapse UserID
+// to "" so the entry lands in the shared bucket.
+func NormalizeScopeForCategory(cat Category, in Scope, global []Category) Scope {
 	out := in
 	if isGlobalCategory(cat, global) {
 		out.UserID = ""
-		out.SessionID = ""
 	}
 	return out
 }
 
-// EntryMatchesQueryScope reports whether e belongs to the bucket described by query.
-// query nil matches all entries (legacy stores / uncoped queries).
-func EntryMatchesQueryScope(e *MemoryEntry, query *MemoryScope) bool {
+// EntryMatchesScope reports whether e satisfies the persistence and
+// partition filters in query. Nil query matches all entries (used by
+// legacy/uncoped paths).
+func EntryMatchesScope(e *Entry, query *Scope) bool {
 	if query == nil {
 		return true
 	}
-	// Global bucket: only runtime-global rows.
-	if query.IsGlobal() {
-		return e.Scope.IsGlobal()
+	for _, p := range query.EffectivePartitions() {
+		switch p {
+		case PartitionGlobal:
+			if e.Scope.IsGlobal() {
+				return true
+			}
+		case PartitionUser:
+			if query.UserID != "" && e.Scope.UserID == query.UserID {
+				return true
+			}
+		}
 	}
-	if e.Scope.UserID != query.UserID {
-		return false
-	}
-	if query.SessionID != "" {
-		return e.Scope.SessionID == query.SessionID || e.Scope.SessionID == ""
-	}
-	return true
+	return false
 }

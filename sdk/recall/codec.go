@@ -6,23 +6,27 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/retrieval"
 )
 
-// EntryToDoc serializes a [MemoryEntry] into a [retrieval.Doc].
+// EntryToDoc serializes a [Entry] into a [retrieval.Doc].
 //
 // Metadata layout:
 //
+//	user_id      string
 //	agent_id     string
-//	session_id   string
 //	categories   []string
 //	entities     []string
-//	source       string
+//	keywords     []string
 //	confidence   float64
 //	expires_at   int64 (unix-millis), only when ExpiresAt != nil
 //	category     string (legacy single-value mirror)
-func EntryToDoc(e MemoryEntry) retrieval.Doc {
+//	runtime_id   string
+//
+// Note: session_id was removed in v0.2.0 (see Scope godoc). Old rows
+// that still carry session_id metadata are read back with the field
+// silently dropped, since [DocToEntry] no longer looks for it.
+func EntryToDoc(e Entry) retrieval.Doc {
 	md := map[string]any{
-		"user_id":    e.Scope.UserID,
-		"agent_id":   e.Scope.AgentID,
-		"session_id": e.Scope.SessionID,
+		"user_id":  e.Scope.UserID,
+		"agent_id": e.Scope.AgentID,
 	}
 	if e.Scope.RuntimeID != "" {
 		md["runtime_id"] = e.Scope.RuntimeID
@@ -63,8 +67,8 @@ func EntryToDoc(e MemoryEntry) retrieval.Doc {
 }
 
 // DocToEntry reverses [EntryToDoc]. Vector / sparse fields are dropped.
-func DocToEntry(d retrieval.Doc) MemoryEntry {
-	e := MemoryEntry{
+func DocToEntry(d retrieval.Doc) Entry {
+	e := Entry{
 		ID:        d.ID,
 		Content:   d.Content,
 		CreatedAt: d.Timestamp,
@@ -79,15 +83,12 @@ func DocToEntry(d retrieval.Doc) MemoryEntry {
 	if v, ok := d.Metadata["agent_id"].(string); ok {
 		e.Scope.AgentID = v
 	}
-	if v, ok := d.Metadata["session_id"].(string); ok {
-		e.Scope.SessionID = v
-	}
 	if v, ok := d.Metadata["runtime_id"].(string); ok {
 		e.Source.RuntimeID = v
 		e.Scope.RuntimeID = v
 	}
 	if v, ok := d.Metadata["category"].(string); ok {
-		e.Category = MemoryCategory(v)
+		e.Category = Category(v)
 	}
 	e.Categories = stringSlice(d.Metadata["categories"])
 	e.Entities = stringSlice(d.Metadata["entities"])
@@ -103,7 +104,7 @@ func DocToEntry(d retrieval.Doc) MemoryEntry {
 		}
 	}
 	if e.Category == "" && len(e.Categories) > 0 {
-		e.Category = MemoryCategory(e.Categories[0])
+		e.Category = Category(e.Categories[0])
 	}
 	return e
 }

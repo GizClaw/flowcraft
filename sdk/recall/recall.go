@@ -19,23 +19,23 @@ type RecallRequest struct {
 
 // RecallHit is one result returned by Memory.Recall.
 type RecallHit struct {
-	Entry  MemoryEntry
+	Entry  Entry
 	Score  float64
 	Scores map[string]float64
 }
 
 // Recall runs the configured pipeline against the namespace and projects
-// hits back into MemoryEntry.
-func (m *lt) Recall(ctx context.Context, scope MemoryScope, req RecallRequest) ([]RecallHit, error) {
+// hits back into Entry.
+func (m *lt) Recall(ctx context.Context, scope Scope, req RecallRequest) ([]RecallHit, error) {
 	if scope.RuntimeID == "" {
 		return nil, ErrMissingRuntimeID
 	}
-	if m.cfg.RequireUserID && scope.UserID == "" && !m.cfg.AllowGlobal {
+	if m.cfg.requireUserID && scope.UserID == "" && !m.cfg.allowGlobal {
 		return nil, ErrMissingUserID
 	}
 	now := req.Now
 	if now.IsZero() {
-		now = m.cfg.Now()
+		now = m.cfg.now()
 	}
 	topK := req.TopK
 	if topK <= 0 {
@@ -69,21 +69,21 @@ func (m *lt) Recall(ctx context.Context, scope MemoryScope, req RecallRequest) (
 }
 
 // History implements Memory; requires Journal.
-func (m *lt) History(ctx context.Context, scope MemoryScope, id string) ([]journal.Event, error) {
-	if m.cfg.Journal == nil {
+func (m *lt) History(ctx context.Context, scope Scope, id string) ([]journal.Event, error) {
+	if m.cfg.journal == nil {
 		return nil, ErrJournalRequired
 	}
-	return m.cfg.Journal.History(ctx, NamespaceFor(scope), id)
+	return m.cfg.journal.History(ctx, NamespaceFor(scope), id)
 }
 
 // Rollback re-applies the last Upsert recorded before t (or deletes the doc
 // when no prior state existed).
-func (m *lt) Rollback(ctx context.Context, scope MemoryScope, id string, before time.Time) error {
-	if m.cfg.Journal == nil {
+func (m *lt) Rollback(ctx context.Context, scope Scope, id string, before time.Time) error {
+	if m.cfg.journal == nil {
 		return ErrJournalRequired
 	}
 	ns := NamespaceFor(scope)
-	events, err := m.cfg.Journal.History(ctx, ns, id)
+	events, err := m.cfg.journal.History(ctx, ns, id)
 	if err != nil {
 		return err
 	}
@@ -109,7 +109,7 @@ func (m *lt) Rollback(ctx context.Context, scope MemoryScope, id string, before 
 }
 
 // Forget hard-deletes one entry; Journal records OpDelete{reason}.
-func (m *lt) Forget(ctx context.Context, scope MemoryScope, id, reason string) error {
+func (m *lt) Forget(ctx context.Context, scope Scope, id, reason string) error {
 	_ = reason // reason is captured by Journal actor (caller can WithActor)
 	return m.idx.Delete(ctx, NamespaceFor(scope), []string{id})
 }

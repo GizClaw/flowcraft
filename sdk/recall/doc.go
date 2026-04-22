@@ -1,24 +1,31 @@
-// Package recall implements long-term agent memory on top of the unified
-// retrieval layer. It owns extraction (LLM facts out of conversation
-// turns), persistence (versioned MemoryEntry rows in a retrieval Index),
-// and retrieval (BM25 + vector hybrid search with entity boost).
+// Package recall implements long-term agent memory on top of the
+// unified retrieval layer. It owns extraction (turning conversation
+// turns into structured facts), persistence (Entry rows in a retrieval
+// Index, scoped per runtime/agent/user), and retrieval (BM25 + vector
+// hybrid search with entity boost and TTL filtering).
 //
 // Capabilities:
 //
-//   - Single-pass additive extraction (no merge/delete decisions in the
-//     extractor; supersedence is decided at write time).
-//   - Entity linking via Doc.Metadata["entities"], consumed by EntityBoost.
-//   - Async Save with a persistent JobQueue (default: in-memory; a SQLite
-//     queue is provided in sdkx/recall/jobqueue/sqlite — moved in a
-//     follow-up commit).
-//   - AgentID dimension on MemoryScope for soft isolation via metadata.
+//   - Single-pass additive extraction; supersedence decisions happen at
+//     write time via soft-merge.
+//   - Entity linking via Doc.Metadata["entities"], consumed by
+//     EntityBoost.
+//   - Sync Save and async SaveAsync backed by a [JobQueue] (default
+//     in-memory; sdkx/recall/jobqueue/sqlite provides a durable
+//     SQLite queue).
+//   - Three-axis [Scope] (RuntimeID + AgentID + UserID) plus a
+//     [Partitions] selector that controls whether a recall visits the
+//     per-user bucket, the runtime-global bucket, or both.
 //   - History / Rollback / Forget backed by retrieval/journal.
-//   - TTL via MemoryEntry.ExpiresAt plus a Sweeper for physical cleanup.
+//   - TTL via Entry.ExpiresAt plus an optional sweeper goroutine.
 //
-// Construct via recall.New(cfg) and consume through the Memory interface.
+// Construct via [New] with [Option] modifiers. Callers wanting context
+// injection into a chat prompt should compose this package with
+// sdk/history themselves; see examples/chatbot-with-recall for a
+// reference assembler.
 //
-// Migration: this package was promoted from sdk/memory/ltm in v0.2.0.
-// Identifiers are unchanged in this rename commit; later commits in the
-// same series rework the constructor (Config -> functional options) and
-// drop the MemoryAware/Assembler glue layer in favor of a thin example.
+// Migration history: this package was promoted from sdk/memory/ltm in
+// v0.2.0. The same release dropped Scope.SessionID and the
+// MemoryAware/ContextAssembler glue; see docs/memory-refactor.md for
+// the full migration guide.
 package recall

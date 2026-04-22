@@ -21,7 +21,7 @@ func TestEnqueueLeaseComplete(t *testing.T) {
 	defer q.Close()
 
 	id, err := q.Enqueue(ctx, "ns1", recall.JobPayload{
-		Scope:    recall.MemoryScope{RuntimeID: "rt1", UserID: "u1"},
+		Scope:    recall.Scope{RuntimeID: "rt1", UserID: "u1"},
 		Messages: []llm.Message{},
 	})
 	if err != nil {
@@ -56,7 +56,7 @@ func TestRescheduleAndBackoff(t *testing.T) {
 	q, _ := sqlite.Open(":memory:")
 	defer q.Close()
 
-	id, _ := q.Enqueue(ctx, "ns1", recall.JobPayload{Scope: recall.MemoryScope{RuntimeID: "rt"}})
+	id, _ := q.Enqueue(ctx, "ns1", recall.JobPayload{Scope: recall.Scope{RuntimeID: "rt"}})
 	_, ok, _ := q.Lease(ctx, time.Now())
 	if !ok {
 		t.Fatal("first lease failed")
@@ -79,7 +79,7 @@ func TestCrashRecovery(t *testing.T) {
 	path := filepath.Join(dir, "jobs.db")
 
 	q1, _ := sqlite.Open(path)
-	id, _ := q1.Enqueue(ctx, "ns", recall.JobPayload{Scope: recall.MemoryScope{RuntimeID: "rt"}})
+	id, _ := q1.Enqueue(ctx, "ns", recall.JobPayload{Scope: recall.Scope{RuntimeID: "rt"}})
 	if _, ok, _ := q1.Lease(ctx, time.Now()); !ok {
 		t.Fatal("lease before crash failed")
 	}
@@ -107,14 +107,15 @@ func TestEndToEndWithLTM(t *testing.T) {
 	defer q.Close()
 
 	idx := memidx.New()
-	m, _ := recall.New(recall.Config{
-		Index:    idx,
-		LLM:      &fakeLLM{resp: `[{"content":"persisted fact","categories":["profile"]}]`},
-		JobQueue: q, RequireUserID: true, AsyncWorkers: 1,
-	})
+	m, _ := recall.New(idx,
+		recall.WithLLM(&fakeLLM{resp: `[{"content":"persisted fact","categories":["profile"]}]`}),
+		recall.WithJobQueue(q),
+		recall.WithRequireUserID(),
+		recall.WithAsyncWorkers(1),
+	)
 	defer m.Close()
 
-	scope := recall.MemoryScope{RuntimeID: "rt1", UserID: "u1", AgentID: "bot"}
+	scope := recall.Scope{RuntimeID: "rt1", UserID: "u1", AgentID: "bot"}
 	id, err := m.SaveAsync(ctx, scope, []llm.Message{
 		{Role: "user", Parts: []llm.Part{{Type: "text", Text: "hi"}}},
 	})

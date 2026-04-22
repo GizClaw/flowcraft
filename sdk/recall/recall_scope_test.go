@@ -1,74 +1,79 @@
 package recall
 
-import (
-	"testing"
-)
+import "testing"
 
-func TestNormalizePartitions_DefaultUser(t *testing.T) {
-	got := NormalizePartitions(nil)
-	if len(got) != 1 || got[0] != PartitionUser {
-		t.Fatalf("got %v", got)
+func TestNormalizePartitions_EmptyReturnsNil(t *testing.T) {
+	if got := NormalizePartitions(nil); got != nil {
+		t.Fatalf("nil input: got %v", got)
 	}
-	got = NormalizePartitions([]MemoryPartition{})
-	if len(got) != 1 || got[0] != PartitionUser {
+	if got := NormalizePartitions([]Partition{}); got != nil {
 		t.Fatalf("empty slice: got %v", got)
 	}
 }
 
 func TestNormalizePartitions_Dedupe(t *testing.T) {
-	got := NormalizePartitions([]MemoryPartition{PartitionUser, PartitionGlobal, PartitionUser})
-	if len(got) != 2 {
+	got := NormalizePartitions([]Partition{PartitionUser, PartitionGlobal, PartitionUser, ""})
+	if len(got) != 2 || got[0] != PartitionUser || got[1] != PartitionGlobal {
 		t.Fatalf("got %v", got)
 	}
 }
 
-func TestEntryMatchesRecallScope_Union(t *testing.T) {
-	rec := &RecallScope{
+func TestScope_EffectivePartitions_Auto(t *testing.T) {
+	if got := (Scope{UserID: "alice"}).EffectivePartitions(); len(got) != 1 || got[0] != PartitionUser {
+		t.Fatalf("user-only scope auto-derives PartitionUser: %v", got)
+	}
+	if got := (Scope{}).EffectivePartitions(); len(got) != 1 || got[0] != PartitionGlobal {
+		t.Fatalf("empty scope auto-derives PartitionGlobal: %v", got)
+	}
+}
+
+func TestScope_EffectivePartitions_Explicit(t *testing.T) {
+	s := Scope{UserID: "alice", Partitions: []Partition{PartitionUser, PartitionGlobal}}
+	got := s.EffectivePartitions()
+	if len(got) != 2 || got[0] != PartitionUser || got[1] != PartitionGlobal {
+		t.Fatalf("explicit partitions should win: %v", got)
+	}
+}
+
+func TestEntryMatchesScope_Union(t *testing.T) {
+	scope := &Scope{
 		RuntimeID:  "r1",
 		UserID:     "alice",
-		Partitions: []MemoryPartition{PartitionUser, PartitionGlobal},
+		Partitions: []Partition{PartitionUser, PartitionGlobal},
 	}
-	globalEntry := &MemoryEntry{Scope: MemoryScope{}}
-	if !EntryMatchesRecallScope(globalEntry, rec) {
+	if !EntryMatchesScope(&Entry{Scope: Scope{}}, scope) {
 		t.Fatal("global row should match union")
 	}
-	aliceEntry := &MemoryEntry{Scope: MemoryScope{UserID: "alice"}}
-	if !EntryMatchesRecallScope(aliceEntry, rec) {
+	if !EntryMatchesScope(&Entry{Scope: Scope{UserID: "alice"}}, scope) {
 		t.Fatal("alice row should match union")
 	}
-	bobEntry := &MemoryEntry{Scope: MemoryScope{UserID: "bob"}}
-	if EntryMatchesRecallScope(bobEntry, rec) {
+	if EntryMatchesScope(&Entry{Scope: Scope{UserID: "bob"}}, scope) {
 		t.Fatal("bob row should not match")
 	}
 }
 
-func TestEffectiveRecallForSearch_PrefersRecall(t *testing.T) {
-	explicit := &RecallScope{Partitions: []MemoryPartition{PartitionGlobal}}
-	opts := SearchOptions{
-		Scope:  &MemoryScope{UserID: "alice"},
-		Recall: explicit,
+func TestEntryMatchesScope_DefaultUserOnly(t *testing.T) {
+	scope := &Scope{RuntimeID: "r1", UserID: "alice"}
+	if !EntryMatchesScope(&Entry{Scope: Scope{UserID: "alice"}}, scope) {
+		t.Fatal("alice row should match")
 	}
-	got := EffectiveRecallForSearch(opts, "rt")
-	if got == nil || len(got.Partitions) != 1 || got.Partitions[0] != PartitionGlobal {
-		t.Fatalf("Recall should win: %+v", got)
+	if EntryMatchesScope(&Entry{Scope: Scope{}}, scope) {
+		t.Fatal("global row should not match a non-global scope by default")
 	}
 }
 
-func TestEffectiveRecallForSearch_DerivesFromScope(t *testing.T) {
-	opts := SearchOptions{Scope: &MemoryScope{UserID: "u1", SessionID: "s1"}}
-	got := EffectiveRecallForSearch(opts, "rt")
-	if got == nil || got.UserID != "u1" || got.SessionID != "s1" {
-		t.Fatalf("got %+v", got)
+func TestEntryMatchesScope_DefaultGlobalOnly(t *testing.T) {
+	scope := &Scope{RuntimeID: "r1"}
+	if !EntryMatchesScope(&Entry{Scope: Scope{}}, scope) {
+		t.Fatal("global row should match")
 	}
-	if len(got.Partitions) != 1 || got.Partitions[0] != PartitionUser {
-		t.Fatalf("partitions %v", got.Partitions)
+	if EntryMatchesScope(&Entry{Scope: Scope{UserID: "alice"}}, scope) {
+		t.Fatal("alice row should not match a global-only scope")
 	}
 }
 
-func TestEffectiveRecallForSearch_GlobalScope(t *testing.T) {
-	opts := SearchOptions{Scope: &MemoryScope{RuntimeID: "rt"}}
-	got := EffectiveRecallForSearch(opts, "rt")
-	if got == nil || len(got.Partitions) != 1 || got.Partitions[0] != PartitionGlobal {
-		t.Fatalf("global MemoryScope should derive global partition: %+v", got)
+func TestEntryMatchesScope_NilMatchesAll(t *testing.T) {
+	if !EntryMatchesScope(&Entry{}, nil) {
+		t.Fatal("nil query should match")
 	}
 }

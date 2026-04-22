@@ -11,7 +11,7 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/retrieval/pipeline"
 )
 
-// RetrievalStore is the canonical [LongTermStore] implementation
+// RetrievalStore is the canonical [Store] implementation
 // ( Phase 3). It delegates persistence and search to a
 // [retrieval.Index] and uses [pipeline.LTM] for hybrid recall.
 //
@@ -22,7 +22,7 @@ import (
 //
 // Per-category recall is achieved via metadata Filter `category=<cat>`,
 // not separate namespaces. This keeps the data layout of the high-level
-// [Memory] facade and the low-level [LongTermStore] in lockstep.
+// [Memory] facade and the low-level [Store] in lockstep.
 type RetrievalStore struct {
 	idx      retrieval.Index
 	pipeline *pipeline.Pipeline
@@ -44,7 +44,7 @@ func WithRetrievalPipeline(p *pipeline.Pipeline) RetrievalStoreOption {
 	return func(s *RetrievalStore) { s.pipeline = p }
 }
 
-// NewRetrievalStore wires a [LongTermStore] to a [retrieval.Index].
+// NewRetrievalStore wires a [Store] to a [retrieval.Index].
 // The store is safe for concurrent use and does not own idx (caller closes).
 func NewRetrievalStore(idx retrieval.Index, opts ...RetrievalStoreOption) *RetrievalStore {
 	s := &RetrievalStore{idx: idx, now: time.Now}
@@ -59,11 +59,11 @@ func NewRetrievalStore(idx retrieval.Index, opts ...RetrievalStoreOption) *Retri
 
 // Index exposes the underlying [retrieval.Index] for callers who need to drop
 // down to retrieval-native APIs (List, Iterate, Snapshot) without going
-// through the [LongTermStore] facade.
+// through the [Store] facade.
 func (s *RetrievalStore) Index() retrieval.Index { return s.idx }
 
-// Save implements [LongTermStore].
-func (s *RetrievalStore) Save(ctx context.Context, runtimeID string, entry *MemoryEntry) error {
+// Save implements [Store].
+func (s *RetrievalStore) Save(ctx context.Context, runtimeID string, entry *Entry) error {
 	if entry == nil {
 		return fmt.Errorf("memory: entry is nil")
 	}
@@ -90,8 +90,8 @@ func (s *RetrievalStore) Save(ctx context.Context, runtimeID string, entry *Memo
 	return s.idx.Upsert(ctx, namespaceForScope(runtimeID, entry.Scope), []retrieval.Doc{doc})
 }
 
-// Update implements [LongTermStore]. Treated as Save (Doc IDs are stable).
-func (s *RetrievalStore) Update(ctx context.Context, runtimeID string, entry *MemoryEntry) error {
+// Update implements [Store]. Treated as Save (Doc IDs are stable).
+func (s *RetrievalStore) Update(ctx context.Context, runtimeID string, entry *Entry) error {
 	if entry == nil || entry.ID == "" {
 		return fmt.Errorf("memory: update requires entry with ID")
 	}
@@ -106,29 +106,29 @@ func (s *RetrievalStore) Update(ctx context.Context, runtimeID string, entry *Me
 	return s.idx.Upsert(ctx, namespaceForScope(runtimeID, entry.Scope), []retrieval.Doc{doc})
 }
 
-// Delete implements [LongTermStore]. Best-effort against the global namespace
+// Delete implements [Store]. Best-effort against the global namespace
 // only — for known scopes prefer [DeleteScoped].
 func (s *RetrievalStore) Delete(ctx context.Context, runtimeID, entryID string) error {
-	ns := namespaceForScope(runtimeID, MemoryScope{RuntimeID: runtimeID})
+	ns := namespaceForScope(runtimeID, Scope{RuntimeID: runtimeID})
 	return s.idx.Delete(ctx, ns, []string{entryID})
 }
 
 // DeleteScoped removes an entry from the namespace its scope hashes to.
 // Prefer this over Delete when the scope is known (zero fanout).
-func (s *RetrievalStore) DeleteScoped(ctx context.Context, runtimeID string, scope MemoryScope, entryID string) error {
+func (s *RetrievalStore) DeleteScoped(ctx context.Context, runtimeID string, scope Scope, entryID string) error {
 	return s.idx.Delete(ctx, namespaceForScope(runtimeID, scope), []string{entryID})
 }
 
-// List implements [LongTermStore].
-func (s *RetrievalStore) List(ctx context.Context, runtimeID string, opts ListOptions) ([]*MemoryEntry, error) {
+// List implements [Store].
+func (s *RetrievalStore) List(ctx context.Context, runtimeID string, opts ListOptions) ([]*Entry, error) {
 	limit := opts.Limit
 	if limit <= 0 {
 		limit = 50
 	}
-	rec := EffectiveRecallForList(opts, runtimeID)
-	namespaces := namespacesForRecall(runtimeID, opts.Scope, rec)
+	scope := scopeWithRuntime(opts.Scope, runtimeID)
+	namespaces := namespacesForScope(runtimeID, scope)
 
-	var all []*MemoryEntry
+	var all []*Entry
 	for _, ns := range namespaces {
 		page, err := s.idx.List(ctx, ns, retrieval.ListRequest{
 			PageSize: limit * 2,
@@ -142,11 +142,7 @@ func (s *RetrievalStore) List(ctx context.Context, runtimeID string, opts ListOp
 			if opts.Category != "" && e.Category != opts.Category {
 				continue
 			}
-			if rec != nil {
-				if !EntryMatchesRecallScope(e, rec) {
-					continue
-				}
-			} else if !EntryMatchesQueryScope(e, opts.Scope) {
+			if !EntryMatchesScope(e, scope) {
 				continue
 			}
 			all = append(all, e)
@@ -159,8 +155,8 @@ func (s *RetrievalStore) List(ctx context.Context, runtimeID string, opts ListOp
 	return all, nil
 }
 
-// Search implements [LongTermStore] via [pipeline.LTM].
-func (s *RetrievalStore) Search(ctx context.Context, runtimeID, query string, opts SearchOptions) ([]*MemoryEntry, error) {
+// Search implements [Store] via [pipeline.LTM].
+func (s *RetrievalStore) Search(ctx context.Context, runtimeID, query string, opts SearchOptions) ([]*Entry, error) {
 	if query == "" {
 		return nil, nil
 	}
@@ -168,8 +164,8 @@ func (s *RetrievalStore) Search(ctx context.Context, runtimeID, query string, op
 	if topK <= 0 {
 		topK = 10
 	}
-	rec := EffectiveRecallForSearch(opts, runtimeID)
-	namespaces := namespacesForRecall(runtimeID, opts.Scope, rec)
+	scope := scopeWithRuntime(opts.Scope, runtimeID)
+	namespaces := namespacesForScope(runtimeID, scope)
 
 	var qVec []float32 = opts.QueryVector
 	if qVec == nil && s.embedder != nil {
@@ -179,7 +175,7 @@ func (s *RetrievalStore) Search(ctx context.Context, runtimeID, query string, op
 		}
 	}
 
-	var all []*MemoryEntry
+	var all []*Entry
 	for _, ns := range namespaces {
 		req := retrieval.SearchRequest{
 			QueryText:   query,
@@ -199,11 +195,7 @@ func (s *RetrievalStore) Search(ctx context.Context, runtimeID, query string, op
 			if opts.Category != "" && e.Category != opts.Category {
 				continue
 			}
-			if rec != nil {
-				if !EntryMatchesRecallScope(e, rec) {
-					continue
-				}
-			} else if !EntryMatchesQueryScope(e, opts.Scope) {
+			if !EntryMatchesScope(e, scope) {
 				continue
 			}
 			all = append(all, e)
@@ -216,7 +208,7 @@ func (s *RetrievalStore) Search(ctx context.Context, runtimeID, query string, op
 }
 
 // SearchByVector satisfies the optional [VectorSearcher] interface.
-func (s *RetrievalStore) SearchByVector(ctx context.Context, runtimeID string, vec []float32, opts SearchOptions) ([]*MemoryEntry, error) {
+func (s *RetrievalStore) SearchByVector(ctx context.Context, runtimeID string, vec []float32, opts SearchOptions) ([]*Entry, error) {
 	if len(vec) == 0 {
 		return nil, nil
 	}
@@ -224,10 +216,10 @@ func (s *RetrievalStore) SearchByVector(ctx context.Context, runtimeID string, v
 	if topK <= 0 {
 		topK = 10
 	}
-	rec := EffectiveRecallForSearch(opts, runtimeID)
-	namespaces := namespacesForRecall(runtimeID, opts.Scope, rec)
+	scope := scopeWithRuntime(opts.Scope, runtimeID)
+	namespaces := namespacesForScope(runtimeID, scope)
 
-	var all []*MemoryEntry
+	var all []*Entry
 	for _, ns := range namespaces {
 		resp, err := s.idx.Search(ctx, ns, retrieval.SearchRequest{
 			QueryVector: vec,
@@ -245,11 +237,7 @@ func (s *RetrievalStore) SearchByVector(ctx context.Context, runtimeID string, v
 			if opts.Category != "" && e.Category != opts.Category {
 				continue
 			}
-			if rec != nil {
-				if !EntryMatchesRecallScope(e, rec) {
-					continue
-				}
-			} else if !EntryMatchesQueryScope(e, opts.Scope) {
+			if !EntryMatchesScope(e, scope) {
 				continue
 			}
 			all = append(all, e)
@@ -261,69 +249,75 @@ func (s *RetrievalStore) SearchByVector(ctx context.Context, runtimeID string, v
 	return all, nil
 }
 
-// PreWarmEmbeddings satisfies the assembler.embedPreWarmer interface; the
-// pipeline already caches the query vector across recall lanes via
-// SearchRequest.QueryVector, so this is a no-op pass-through.
-func (s *RetrievalStore) PreWarmEmbeddings(_ context.Context, _ string, _ []string) {}
-
 // ----------------------------------------------------------------------------
 // helpers
 // ----------------------------------------------------------------------------
 
 // namespaceForScope is a thin wrapper around [NamespaceFor] that lets callers
-// pass an explicit runtimeID override (used by [LongTermStore] methods that
+// pass an explicit runtimeID override (used by [Store] methods that
 // receive runtimeID separately from the scope).
-func namespaceForScope(runtimeID string, s MemoryScope) string {
+func namespaceForScope(runtimeID string, s Scope) string {
 	if runtimeID != "" {
 		s.RuntimeID = runtimeID
 	}
 	return NamespaceFor(s)
 }
 
-// namespacesForRecall returns the union of namespaces that may hold rows
-// matching the given scope/recall hints. Defaults to the global namespace
-// when no scope is provided to preserve legacy "list all" behavior.
-func namespacesForRecall(runtimeID string, scope *MemoryScope, rec *RecallScope) []string {
-	if rec != nil {
-		out := make([]string, 0, 2)
-		seen := make(map[string]struct{}, 2)
-		add := func(ns string) {
-			if _, ok := seen[ns]; ok {
-				return
-			}
-			seen[ns] = struct{}{}
-			out = append(out, ns)
-		}
-		for _, p := range NormalizePartitions(rec.Partitions) {
-			switch p {
-			case PartitionGlobal:
-				add(namespaceForScope(runtimeID, MemoryScope{RuntimeID: runtimeID}))
-			case PartitionUser:
-				if rec.UserID != "" {
-					add(namespaceForScope(runtimeID, MemoryScope{RuntimeID: runtimeID, UserID: rec.UserID}))
-				}
-			}
-		}
-		if len(out) == 0 {
-			add(namespaceForScope(runtimeID, MemoryScope{RuntimeID: runtimeID}))
-		}
-		return out
+// scopeWithRuntime returns a copy of scope with RuntimeID populated when
+// missing. Returns nil when scope is nil so legacy "list all" semantics
+// (no scope filter) are preserved end-to-end.
+func scopeWithRuntime(scope *Scope, runtimeID string) *Scope {
+	if scope == nil {
+		return nil
 	}
-	if scope != nil {
-		return []string{namespaceForScope(runtimeID, *scope)}
+	out := *scope
+	if out.RuntimeID == "" {
+		out.RuntimeID = runtimeID
 	}
-	return []string{namespaceForScope(runtimeID, MemoryScope{RuntimeID: runtimeID})}
+	return &out
+}
+
+// namespacesForScope returns the namespaces that may hold rows matching
+// the given query scope. Defaults to the runtime-global namespace when
+// scope is nil to preserve legacy "list all" semantics.
+func namespacesForScope(runtimeID string, scope *Scope) []string {
+	if scope == nil {
+		return []string{namespaceForScope(runtimeID, Scope{RuntimeID: runtimeID})}
+	}
+	out := make([]string, 0, 2)
+	seen := make(map[string]struct{}, 2)
+	add := func(ns string) {
+		if _, ok := seen[ns]; ok {
+			return
+		}
+		seen[ns] = struct{}{}
+		out = append(out, ns)
+	}
+	for _, p := range scope.EffectivePartitions() {
+		switch p {
+		case PartitionGlobal:
+			add(namespaceForScope(runtimeID, Scope{RuntimeID: runtimeID}))
+		case PartitionUser:
+			if scope.UserID != "" {
+				add(namespaceForScope(runtimeID, Scope{RuntimeID: runtimeID, UserID: scope.UserID}))
+			}
+		}
+	}
+	if len(out) == 0 {
+		add(namespaceForScope(runtimeID, Scope{RuntimeID: runtimeID}))
+	}
+	return out
 }
 
 // categoryFilter pushes category filtering to the index when non-empty.
-func categoryFilter(cat MemoryCategory) retrieval.Filter {
+func categoryFilter(cat Category) retrieval.Filter {
 	if cat == "" {
 		return retrieval.Filter{}
 	}
 	return retrieval.Filter{Eq: map[string]any{"category": string(cat)}}
 }
 
-func (s *RetrievalStore) encodeDoc(ctx context.Context, e *MemoryEntry) (retrieval.Doc, error) {
+func (s *RetrievalStore) encodeDoc(ctx context.Context, e *Entry) (retrieval.Doc, error) {
 	doc := EntryToDoc(*e)
 	if s.embedder != nil {
 		v, err := s.embedder.Embed(ctx, e.Content)
@@ -335,10 +329,10 @@ func (s *RetrievalStore) encodeDoc(ctx context.Context, e *MemoryEntry) (retriev
 	return doc, nil
 }
 
-// docToEntry returns a heap-allocated copy so the [LongTermStore] interface
-// (which returns *MemoryEntry) and the in-tree DocToEntry helper (which
+// docToEntry returns a heap-allocated copy so the [Store] interface
+// (which returns *Entry) and the in-tree DocToEntry helper (which
 // returns by value) stay in sync.
-func docToEntry(d retrieval.Doc) *MemoryEntry {
+func docToEntry(d retrieval.Doc) *Entry {
 	e := DocToEntry(d)
 	return &e
 }

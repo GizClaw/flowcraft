@@ -9,19 +9,19 @@ import (
 
 // TTLPolicy decides default ExpiresAt for facts during extraction.
 type TTLPolicy interface {
-	TTLFor(entry MemoryEntry) (ttl time.Duration, ok bool)
+	TTLFor(entry Entry) (ttl time.Duration, ok bool)
 }
 
 // CategoryTTLPolicy maps category → TTL; missing keys mean "never expires".
-type CategoryTTLPolicy map[MemoryCategory]time.Duration
+type CategoryTTLPolicy map[Category]time.Duration
 
 // TTLFor implements TTLPolicy.
-func (p CategoryTTLPolicy) TTLFor(e MemoryEntry) (time.Duration, bool) {
+func (p CategoryTTLPolicy) TTLFor(e Entry) (time.Duration, bool) {
 	if d, ok := p[e.Category]; ok {
 		return d, true
 	}
 	for _, c := range e.Categories {
-		if d, ok := p[MemoryCategory(c)]; ok {
+		if d, ok := p[Category(c)]; ok {
 			return d, true
 		}
 	}
@@ -42,7 +42,7 @@ func DefaultCategoryTTL() CategoryTTLPolicy {
 
 func (m *lt) sweeperLoop() {
 	defer m.wgWorkers.Done()
-	t := time.NewTicker(m.cfg.SweeperInterval)
+	t := time.NewTicker(m.cfg.sweeperInterval)
 	defer t.Stop()
 	for {
 		select {
@@ -60,7 +60,7 @@ func (m *lt) sweeperLoop() {
 //  1. Try DeletableByFilter.DeleteByFilter once.
 //  2. Otherwise List(Range{expires_at:{Lte:now}}) → Delete(ids) in batches.
 func (m *lt) SweepOnce(ctx context.Context) error {
-	now := m.cfg.Now().UnixMilli()
+	now := m.cfg.now().UnixMilli()
 	filter := retrieval.Filter{
 		And: []retrieval.Filter{
 			{Exists: []string{"expires_at"}},
@@ -75,7 +75,7 @@ func (m *lt) SweepOnce(ctx context.Context) error {
 // SweepNamespace exposes a per-namespace TTL pass for callers who manage many
 // namespaces (e.g. one per tenant).
 func (m *lt) SweepNamespace(ctx context.Context, ns string) error {
-	now := m.cfg.Now().UnixMilli()
+	now := m.cfg.now().UnixMilli()
 	filter := retrieval.Filter{
 		And: []retrieval.Filter{
 			{Exists: []string{"expires_at"}},
@@ -97,7 +97,7 @@ func (m *lt) sweepNamespace(ctx context.Context, ns string, filter retrieval.Fil
 	for {
 		page, err := m.idx.List(ctx, ns, retrieval.ListRequest{
 			Filter:    filter,
-			PageSize:  m.cfg.SweeperBatchMax,
+			PageSize:  m.cfg.sweeperBatchMax,
 			PageToken: tok,
 		})
 		if err != nil {

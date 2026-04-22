@@ -8,8 +8,8 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/sdk/llm"
-	"github.com/GizClaw/flowcraft/sdk/recall"
 	"github.com/GizClaw/flowcraft/sdk/model"
+	"github.com/GizClaw/flowcraft/sdk/recall"
 	"github.com/GizClaw/flowcraft/sdk/retrieval/journal"
 	memidx "github.com/GizClaw/flowcraft/sdk/retrieval/memory"
 )
@@ -33,19 +33,18 @@ func (s *stubLLM) GenerateStream(_ context.Context, _ []llm.Message, _ ...llm.Ge
 	return nil, errors.New("not used")
 }
 
-func newScope() recall.MemoryScope {
-	return recall.MemoryScope{RuntimeID: "rt1", AgentID: "bot", UserID: "u1", SessionID: "s1"}
+func newScope() recall.Scope {
+	return recall.Scope{RuntimeID: "rt1", AgentID: "bot", UserID: "u1"}
 }
 
 func TestSaveExtractsAdditiveFacts(t *testing.T) {
 	ctx := context.Background()
 	idx := memidx.New()
 	resp := `[{"content":"用户喜欢黑咖啡","categories":["preference"],"entities":["黑咖啡"],"source":"user","confidence":0.95}]`
-	m, err := recall.New(recall.Config{
-		Index:         idx,
-		LLM:           &stubLLM{resp: resp},
-		RequireUserID: true,
-	})
+	m, err := recall.New(idx,
+		recall.WithLLM(&stubLLM{resp: resp}),
+		recall.WithRequireUserID(),
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -79,7 +78,7 @@ func TestSaveIdempotentByDocID(t *testing.T) {
 	ctx := context.Background()
 	idx := memidx.New()
 	resp := `[{"content":"User likes coffee","entities":["coffee"]}]`
-	m, _ := recall.New(recall.Config{Index: idx, LLM: &stubLLM{resp: resp}, RequireUserID: true})
+	m, _ := recall.New(idx, recall.WithLLM(&stubLLM{resp: resp}), recall.WithRequireUserID())
 	defer m.Close()
 	scope := newScope()
 	msgs := []llm.Message{{Role: model.RoleUser, Parts: []model.Part{{Type: model.PartText, Text: "I love coffee"}}}}
@@ -102,9 +101,9 @@ func TestSaveIdempotentByDocID(t *testing.T) {
 
 func TestRequireUserIDValidation(t *testing.T) {
 	idx := memidx.New()
-	m, _ := recall.New(recall.Config{Index: idx, LLM: &stubLLM{resp: "[]"}, RequireUserID: true})
+	m, _ := recall.New(idx, recall.WithLLM(&stubLLM{resp: "[]"}), recall.WithRequireUserID())
 	defer m.Close()
-	_, err := m.Save(context.Background(), recall.MemoryScope{RuntimeID: "rt1"}, []llm.Message{
+	_, err := m.Save(context.Background(), recall.Scope{RuntimeID: "rt1"}, []llm.Message{
 		{Role: model.RoleUser, Parts: []model.Part{{Type: model.PartText, Text: "hi"}}},
 	})
 	if !errors.Is(err, recall.ErrMissingUserID) {
@@ -115,15 +114,15 @@ func TestRequireUserIDValidation(t *testing.T) {
 func TestAddRawAndAgentFilter(t *testing.T) {
 	ctx := context.Background()
 	idx := memidx.New()
-	m, _ := recall.New(recall.Config{Index: idx, RequireUserID: true})
+	m, _ := recall.New(idx, recall.WithRequireUserID())
 	defer m.Close()
 	scope := newScope()
-	if _, err := m.AddRaw(ctx, scope, recall.MemoryEntry{Content: "raw fact for bot1", Categories: []string{"profile"}}); err != nil {
+	if _, err := m.AddRaw(ctx, scope, recall.Entry{Content: "raw fact for bot1", Categories: []string{"profile"}}); err != nil {
 		t.Fatal(err)
 	}
 	other := scope
 	other.AgentID = "other-bot"
-	if _, err := m.AddRaw(ctx, other, recall.MemoryEntry{Content: "raw fact for other bot", Categories: []string{"profile"}}); err != nil {
+	if _, err := m.AddRaw(ctx, other, recall.Entry{Content: "raw fact for other bot", Categories: []string{"profile"}}); err != nil {
 		t.Fatal(err)
 	}
 	hits, err := m.Recall(ctx, scope, recall.RecallRequest{Query: "raw fact", TopK: 5})
@@ -139,17 +138,20 @@ func TestTTLSoftFilter(t *testing.T) {
 	ctx := context.Background()
 	idx := memidx.New()
 	now := time.Now()
-	m, _ := recall.New(recall.Config{Index: idx, RequireUserID: true, Now: func() time.Time { return now }})
+	m, _ := recall.New(idx,
+		recall.WithRequireUserID(),
+		recall.WithClock(func() time.Time { return now }),
+	)
 	defer m.Close()
 	scope := newScope()
 	past := now.Add(-time.Second)
-	if _, err := m.AddRaw(ctx, scope, recall.MemoryEntry{
+	if _, err := m.AddRaw(ctx, scope, recall.Entry{
 		Content: "expired memory", Categories: []string{"episodic"}, ExpiresAt: &past,
 	}); err != nil {
 		t.Fatal(err)
 	}
 	future := now.Add(24 * time.Hour)
-	if _, err := m.AddRaw(ctx, scope, recall.MemoryEntry{
+	if _, err := m.AddRaw(ctx, scope, recall.Entry{
 		Content: "active memory", Categories: []string{"episodic"}, ExpiresAt: &future,
 	}); err != nil {
 		t.Fatal(err)
@@ -171,18 +173,15 @@ func TestSweeperPhysicalDelete(t *testing.T) {
 	ctx := context.Background()
 	idx := memidx.New()
 	now := time.Now()
-	m, _ := recall.New(recall.Config{
-		Index:           idx,
-		RequireUserID:   true,
-		TTLPolicy:       recall.CategoryTTLPolicy{recall.CategoryEpisodic: time.Hour},
-		SweeperEnabled:  false, // we manually call SweepNamespace
-		Now:             func() time.Time { return now },
-		SweeperBatchMax: 10,
-	})
+	m, _ := recall.New(idx,
+		recall.WithRequireUserID(),
+		recall.WithTTLPolicy(recall.CategoryTTLPolicy{recall.CategoryEpisodic: time.Hour}),
+		recall.WithClock(func() time.Time { return now }),
+	)
 	defer m.Close()
 	scope := newScope()
 	past := now.Add(-time.Second)
-	id, err := m.AddRaw(ctx, scope, recall.MemoryEntry{Content: "old", Categories: []string{"episodic"}, ExpiresAt: &past})
+	id, err := m.AddRaw(ctx, scope, recall.Entry{Content: "old", Categories: []string{"episodic"}, ExpiresAt: &past})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -204,11 +203,11 @@ func TestAsyncSaveAndAwait(t *testing.T) {
 	ctx := context.Background()
 	idx := memidx.New()
 	resp := `[{"content":"async fact"}]`
-	m, _ := recall.New(recall.Config{
-		Index: idx, LLM: &stubLLM{resp: resp},
-		RequireUserID: true,
-		AsyncWorkers:  1,
-	})
+	m, _ := recall.New(idx,
+		recall.WithLLM(&stubLLM{resp: resp}),
+		recall.WithRequireUserID(),
+		recall.WithAsyncWorkers(1),
+	)
 	defer m.Close()
 	scope := newScope()
 	id, err := m.SaveAsync(ctx, scope, []llm.Message{
@@ -233,16 +232,14 @@ func TestHistoryAndRollback(t *testing.T) {
 	ctx := context.Background()
 	idx := memidx.New()
 	j := journal.NewMemoryJournal()
-	m, _ := recall.New(recall.Config{
-		Index: idx, RequireUserID: true, Journal: j,
-	})
+	m, _ := recall.New(idx, recall.WithRequireUserID(), recall.WithJournal(j))
 	defer m.Close()
 	scope := newScope()
 	t1 := time.Now()
-	id, _ := m.AddRaw(ctx, scope, recall.MemoryEntry{Content: "v1", Categories: []string{"profile"}, CreatedAt: t1, UpdatedAt: t1})
+	id, _ := m.AddRaw(ctx, scope, recall.Entry{Content: "v1", Categories: []string{"profile"}, CreatedAt: t1, UpdatedAt: t1})
 	time.Sleep(10 * time.Millisecond)
 	t2 := time.Now()
-	_, _ = m.AddRaw(ctx, scope, recall.MemoryEntry{ID: id, Content: "v2", Categories: []string{"profile"}, CreatedAt: t2, UpdatedAt: t2})
+	_, _ = m.AddRaw(ctx, scope, recall.Entry{ID: id, Content: "v2", Categories: []string{"profile"}, CreatedAt: t2, UpdatedAt: t2})
 
 	events, err := m.History(ctx, scope, id)
 	if err != nil {
@@ -264,10 +261,10 @@ func TestHistoryAndRollback(t *testing.T) {
 func TestForget(t *testing.T) {
 	ctx := context.Background()
 	idx := memidx.New()
-	m, _ := recall.New(recall.Config{Index: idx, RequireUserID: true})
+	m, _ := recall.New(idx, recall.WithRequireUserID())
 	defer m.Close()
 	scope := newScope()
-	id, _ := m.AddRaw(ctx, scope, recall.MemoryEntry{Content: "forget me", Categories: []string{"episodic"}})
+	id, _ := m.AddRaw(ctx, scope, recall.Entry{Content: "forget me", Categories: []string{"episodic"}})
 	if err := m.Forget(ctx, scope, id, "user_request"); err != nil {
 		t.Fatal(err)
 	}

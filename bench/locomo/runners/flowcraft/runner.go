@@ -60,30 +60,28 @@ func New(opts Options) (runners.Runner, error) {
 	if maxFacts == 0 {
 		maxFacts = 200 // LoCoMo conversations span hundreds of turns
 	}
-	cfg := recall.Config{
-		Index:            memidx.New(),
-		LLM:              opts.LLM,
-		Embedder:         opts.Embedder,
-		RequireUserID:    true,
-		MaxFactsPerCall:  maxFacts,
-		IncludeAssistant: opts.IncludeAssistant,
-		SaveWithContext:  opts.SaveWithContext,
-		MD5Dedup:         true,
+	idx := memidx.New()
+	memOpts := []recall.Option{
+		recall.WithLLM(opts.LLM),
+		recall.WithEmbedder(opts.Embedder),
+		recall.WithRequireUserID(),
+		recall.WithMaxFactsPerCall(maxFacts),
+		recall.WithIncludeAssistant(opts.IncludeAssistant),
 	}
-	if opts.SoftMerge != nil {
-		cfg.SoftMerge = *opts.SoftMerge
-	} else {
-		cfg.SoftMerge = true
+	if opts.SaveWithContext {
+		memOpts = append(memOpts, recall.WithSaveContext(0, 0))
+	}
+	if opts.SoftMerge != nil && !*opts.SoftMerge {
+		memOpts = append(memOpts, recall.WithoutSoftMerge())
 	}
 	if opts.ExtractPrompt != "" || opts.LLM != nil {
-		cfg.Extractor = &recall.AdditiveExtractor{
+		memOpts = append(memOpts, recall.WithExtractor(&recall.AdditiveExtractor{
 			LLM:              opts.LLM,
 			IncludeAssistant: opts.IncludeAssistant,
 			MaxFacts:         maxFacts,
 			PromptTemplate:   opts.ExtractPrompt,
-		}
+		}))
 	}
-
 	pipeOpts := []pipeline.LTMOption{}
 	if opts.ScoreThreshold > 0 {
 		pipeOpts = append(pipeOpts, pipeline.WithScoreThreshold(opts.ScoreThreshold))
@@ -92,10 +90,10 @@ func New(opts Options) (runners.Runner, error) {
 		pipeOpts = append(pipeOpts, pipeline.WithReranker(&pipeline.LLMReranker{LLM: opts.RerankerLLM}))
 	}
 	if len(pipeOpts) > 0 {
-		cfg.Pipeline = pipeline.LTM(opts.Embedder, pipeOpts...)
+		memOpts = append(memOpts, recall.WithPipeline(pipeline.LTM(opts.Embedder, pipeOpts...)))
 	}
 
-	mem, err := recall.New(cfg)
+	mem, err := recall.New(idx, memOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -106,7 +104,7 @@ func New(opts Options) (runners.Runner, error) {
 func (r *Runner) Name() string { return r.name }
 
 // Save implements runners.Runner.
-func (r *Runner) Save(ctx context.Context, scope recall.MemoryScope, msgs []llm.Message) (int, time.Duration, error) {
+func (r *Runner) Save(ctx context.Context, scope recall.Scope, msgs []llm.Message) (int, time.Duration, error) {
 	t0 := time.Now()
 	res, err := r.mem.Save(ctx, scope, msgs)
 	if err != nil {
@@ -119,7 +117,7 @@ func (r *Runner) Save(ctx context.Context, scope recall.MemoryScope, msgs []llm.
 // is created per non-empty user/assistant turn. Each entry's ID is
 // auto-generated, so recall.k_hit cannot be evaluated through this path —
 // callers that need evidence scoring should use SaveRawTurns instead.
-func (r *Runner) SaveRaw(ctx context.Context, scope recall.MemoryScope, msgs []llm.Message) (int, time.Duration, error) {
+func (r *Runner) SaveRaw(ctx context.Context, scope recall.Scope, msgs []llm.Message) (int, time.Duration, error) {
 	t0 := time.Now()
 	saved := 0
 	for i, m := range msgs {
@@ -127,10 +125,10 @@ func (r *Runner) SaveRaw(ctx context.Context, scope recall.MemoryScope, msgs []l
 		if txt == "" {
 			continue
 		}
-		entry := recall.MemoryEntry{
+		entry := recall.Entry{
 			Content:    txt,
 			Categories: []string{"raw"},
-			Source:     recall.MemorySource{RuntimeID: scope.RuntimeID},
+			Source:     recall.Source{RuntimeID: scope.RuntimeID},
 		}
 		if _, err := r.mem.AddRaw(ctx, scope, entry); err != nil {
 			return saved, time.Since(t0), fmt.Errorf("add_raw turn %d: %w", i, err)
@@ -143,18 +141,18 @@ func (r *Runner) SaveRaw(ctx context.Context, scope recall.MemoryScope, msgs []l
 // SaveRawTurns implements runners.RawIngestSaver: it preserves each turn's
 // EvidenceID as the MemoryEntry primary key so recall.k_hit becomes
 // meaningful. Empty IDs fall back to the auto-generated ULID.
-func (r *Runner) SaveRawTurns(ctx context.Context, scope recall.MemoryScope, turns []runners.RawTurn) (int, time.Duration, error) {
+func (r *Runner) SaveRawTurns(ctx context.Context, scope recall.Scope, turns []runners.RawTurn) (int, time.Duration, error) {
 	t0 := time.Now()
 	saved := 0
 	for i, t := range turns {
 		if t.Content == "" {
 			continue
 		}
-		entry := recall.MemoryEntry{
+		entry := recall.Entry{
 			ID:         t.EvidenceID,
 			Content:    t.Content,
 			Categories: []string{"raw"},
-			Source:     recall.MemorySource{RuntimeID: scope.RuntimeID},
+			Source:     recall.Source{RuntimeID: scope.RuntimeID},
 		}
 		if _, err := r.mem.AddRaw(ctx, scope, entry); err != nil {
 			return saved, time.Since(t0), fmt.Errorf("add_raw turn %d (%s): %w", i, t.EvidenceID, err)
@@ -165,7 +163,7 @@ func (r *Runner) SaveRawTurns(ctx context.Context, scope recall.MemoryScope, tur
 }
 
 // Recall implements runners.Runner.
-func (r *Runner) Recall(ctx context.Context, scope recall.MemoryScope, query string, topK int) ([]recall.RecallHit, time.Duration, error) {
+func (r *Runner) Recall(ctx context.Context, scope recall.Scope, query string, topK int) ([]recall.RecallHit, time.Duration, error) {
 	t0 := time.Now()
 	hits, err := r.mem.Recall(ctx, scope, recall.RecallRequest{Query: query, TopK: topK})
 	return hits, time.Since(t0), err
