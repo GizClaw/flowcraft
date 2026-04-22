@@ -84,9 +84,9 @@ type config struct {
 	maxFacts   int
 	confMin    float64
 
-	saveWithCtx       bool
-	saveCtxTopK       int
-	saveCtxThreshold  float64
+	saveWithCtx      bool
+	saveCtxTopK      int
+	saveCtxThreshold float64
 
 	md5Dedup           bool
 	softMerge          bool

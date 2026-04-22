@@ -29,6 +29,8 @@
 // memory_jobs → recall_jobs to match. Existing deployments must drain
 // their old queue before upgrading or run a one-shot
 // `ALTER TABLE memory_jobs RENAME TO recall_jobs;
-//  ALTER INDEX memory_jobs_pending RENAME TO recall_jobs_pending;`
+//
+//	ALTER INDEX memory_jobs_pending RENAME TO recall_jobs_pending;`
+//
 // against the SQLite file.
 package sqlite

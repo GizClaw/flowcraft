@@ -934,7 +934,6 @@ func intPtr(i int) *int { return &i }
 
 // ===== SummaryIndex (was compactor_index.go) =====
 
-
 // BuildSummaryIndex generates a summary index string from the top-level
 // summaries of a conversation. The result is intended to be injected into
 // the LLM system prompt via the workflow.VarSummaryIndex board variable.

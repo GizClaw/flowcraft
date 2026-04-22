@@ -13,8 +13,8 @@ import (
 	"github.com/GizClaw/flowcraft/bench/locomo/dataset"
 	"github.com/GizClaw/flowcraft/bench/locomo/runners/flowcraft"
 	"github.com/GizClaw/flowcraft/sdk/llm"
-	"github.com/GizClaw/flowcraft/sdk/recall"
 	"github.com/GizClaw/flowcraft/sdk/model"
+	"github.com/GizClaw/flowcraft/sdk/recall"
 )
 
 func main() {

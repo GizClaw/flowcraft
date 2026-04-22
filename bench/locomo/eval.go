@@ -15,8 +15,8 @@ import (
 	"github.com/GizClaw/flowcraft/bench/locomo/metrics"
 	"github.com/GizClaw/flowcraft/bench/locomo/runners"
 	"github.com/GizClaw/flowcraft/sdk/llm"
-	"github.com/GizClaw/flowcraft/sdk/recall"
 	"github.com/GizClaw/flowcraft/sdk/model"
+	"github.com/GizClaw/flowcraft/sdk/recall"
 )
 
 // IngestSaver is implemented by runners that can ingest verbatim turns

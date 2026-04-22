@@ -41,7 +41,7 @@ type JobStatus struct {
 
 // JobPayload is the durable representation of a Save invocation.
 type JobPayload struct {
-	Scope    Scope   `json:"scope"`
+	Scope    Scope         `json:"scope"`
 	Messages []llm.Message `json:"messages"`
 }
 
