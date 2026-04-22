@@ -3,8 +3,11 @@ package historycompression
 import (
 	"context"
 	"fmt"
+	"log"
 	"sort"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/GizClaw/flowcraft/bench/locomo/dataset"
@@ -62,6 +65,17 @@ type Options struct {
 	// LimitConvs / LimitQs trim the dataset for debug runs.
 	LimitConvs int
 	LimitQs    int
+
+	// Concurrency caps how many questions are answered in parallel per
+	// strategy. <=1 means strictly sequential (legacy behavior). The
+	// answer/judge LLM is the dominant cost so this is the only knob that
+	// matters in practice.
+	Concurrency int
+
+	// ProgressEvery, when > 0, logs a "X/N done" line to the standard
+	// logger every ProgressEvery completed questions. Use 0 for silent
+	// runs (tests).
+	ProgressEvery int
 }
 
 // DefaultAnswerPrompt mirrors the LoCoMo answer prompt's neutral framing so
@@ -192,54 +206,115 @@ func runStrategy(ctx context.Context, ds *dataset.Dataset, s Strategy, opts Opti
 	}
 
 	counter := &history.EstimateCounter{}
-	tokens := make([]int, 0, len(ds.Questions))
-	loadLats := make([]time.Duration, 0, len(ds.Questions))
+	type sample struct {
+		tokens     int
+		loadLat    time.Duration
+		judge      float64
+		f1         float64
+		em         bool
+		evMeasured bool
+		evTrunc    bool
+		err        bool
+	}
+	results := make([]sample, len(ds.Questions))
+
+	concurrency := opts.Concurrency
+	if concurrency < 1 {
+		concurrency = 1
+	}
+	sem := make(chan struct{}, concurrency)
+	var wg sync.WaitGroup
+	var done int64
+	total := len(ds.Questions)
+
+	for i := range ds.Questions {
+		i := i
+		q := ds.Questions[i]
+		wg.Add(1)
+		sem <- struct{}{}
+		go func() {
+			defer wg.Done()
+			defer func() { <-sem }()
+
+			out := sample{}
+			t0 := time.Now()
+			// Note: hist.Load is safe for concurrent calls per the
+			// History contract (per-conversation serialization is
+			// internal). Append happens only during ingest, before
+			// this loop.
+			msgs, err := hist.Load(ctx, q.ConversationID, history.Budget{MaxTokens: opts.CompactTokenBudget})
+			out.loadLat = time.Since(t0)
+			if err != nil {
+				out.err = true
+				results[i] = out
+				return
+			}
+
+			loaded := formatHistory(msgs)
+			body := loaded + "\n\nQUESTION: " + q.Query
+			prompt := fmt.Sprintf(opts.AnswerPrompt, body)
+			out.tokens = counter.Count(prompt)
+
+			if len(q.EvidenceIDs) > 0 {
+				out.evMeasured = true
+				if !evidencePresent(loaded, evidence[q.ConversationID], q.EvidenceIDs) {
+					out.evTrunc = true
+				}
+			}
+
+			resp, _, err := opts.AnswerLLM.Generate(ctx, []llm.Message{
+				{Role: model.RoleUser, Parts: []model.Part{{Type: model.PartText, Text: prompt}}},
+			})
+			if err != nil {
+				out.err = true
+				results[i] = out
+				return
+			}
+			pred := resp.Content()
+			score, err := opts.Judge.Score(ctx, q.Query, pred, q.GoldAnswers)
+			if err != nil {
+				out.err = true
+				results[i] = out
+				return
+			}
+			out.judge = score
+			out.f1 = metrics.F1(pred, q.GoldAnswers)
+			out.em = metrics.ExactMatch(pred, q.GoldAnswers)
+			results[i] = out
+
+			if opts.ProgressEvery > 0 {
+				if d := atomic.AddInt64(&done, 1); d%int64(opts.ProgressEvery) == 0 {
+					log.Printf("[history-compression] %s %d/%d questions done", s, d, total)
+				}
+			}
+		}()
+	}
+	wg.Wait()
+
+	tokens := make([]int, 0, total)
+	loadLats := make([]time.Duration, 0, total)
 	var sumJudge, sumF1, sumEM float64
-	for _, q := range ds.Questions {
-		t0 := time.Now()
-		msgs, err := hist.Load(ctx, q.ConversationID, history.Budget{MaxTokens: opts.CompactTokenBudget})
-		loadLats = append(loadLats, time.Since(t0))
-		if err != nil {
+	for _, s := range results {
+		if s.err {
 			r.Errors++
 			continue
 		}
-
-		hist := formatHistory(msgs)
-		body := hist + "\n\nQUESTION: " + q.Query
-		prompt := fmt.Sprintf(opts.AnswerPrompt, body)
-		tokens = append(tokens, counter.Count(prompt))
-
-		// Evidence-loss check runs against the loaded transcript only (not
-		// the question text), so a question whose query happens to echo a
-		// turn cannot mask that the compactor dropped that turn.
-		if len(q.EvidenceIDs) > 0 {
+		tokens = append(tokens, s.tokens)
+		loadLats = append(loadLats, s.loadLat)
+		sumJudge += s.judge
+		sumF1 += s.f1
+		if s.em {
+			sumEM++
+		}
+		if s.evMeasured {
 			r.EvidenceMeasured++
-			if !evidencePresent(hist, evidence[q.ConversationID], q.EvidenceIDs) {
+			if s.evTrunc {
 				r.Truncated++
 			}
 		}
-
-		resp, _, err := opts.AnswerLLM.Generate(ctx, []llm.Message{
-			{Role: model.RoleUser, Parts: []model.Part{{Type: model.PartText, Text: prompt}}},
-		})
-		if err != nil {
-			r.Errors++
-			continue
-		}
-		pred := resp.Content()
-		score, err := opts.Judge.Score(ctx, q.Query, pred, q.GoldAnswers)
-		if err != nil {
-			r.Errors++
-			continue
-		}
-		sumJudge += score
-		sumF1 += metrics.F1(pred, q.GoldAnswers)
-		if metrics.ExactMatch(pred, q.GoldAnswers) {
-			sumEM++
-		}
 	}
 
-	n := len(ds.Questions) - r.Errors
+	n := total - r.Errors
 	if n < 1 {
 		n = 1
 	}

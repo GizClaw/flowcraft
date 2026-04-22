@@ -31,6 +31,8 @@ func main() {
 	limitConvs := flag.Int("limit-convs", 0, "evaluate only the first N conversations (debug)")
 	limitQs := flag.Int("limit-questions", 0, "evaluate only the first N questions (debug)")
 	stratFlag := flag.String("strategies", "none,buffer,compacted", "comma-separated subset of {none, buffer, compacted}")
+	concurrency := flag.Int("concurrency", 1, "questions answered in parallel per strategy (default 1 = sequential)")
+	progressEvery := flag.Int("progress-every", 0, "log a progress line every N completed questions per strategy (0 = silent)")
 	out := flag.String("out", "", "output report path (default: stdout)")
 	flag.Parse()
 
@@ -68,6 +70,8 @@ func main() {
 		LimitConvs:         *limitConvs,
 		LimitQs:            *limitQs,
 		Strategies:         parseStrategies(*stratFlag),
+		Concurrency:        *concurrency,
+		ProgressEvery:      *progressEvery,
 	}
 	if judge != nil {
 		opts.Judge = metrics.LLMJudge{LLM: judge}
