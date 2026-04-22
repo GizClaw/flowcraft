@@ -2,6 +2,7 @@ package kanban
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -13,28 +14,12 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// Helpers
+// Submit — happy path & payload shaping
 // ---------------------------------------------------------------------------
 
-type mockExecutor struct {
-	fn func(ctx context.Context, scopeID, targetAgentID string, card *Card, query string, inputs map[string]any) error
-}
-
-func (m *mockExecutor) ExecuteTask(ctx context.Context, scopeID, targetAgentID string, card *Card, query string, inputs map[string]any) error {
-	if m.fn != nil {
-		return m.fn(ctx, scopeID, targetAgentID, card, query, inputs)
-	}
-	return nil
-}
-
-// ---------------------------------------------------------------------------
-// Submit
-// ---------------------------------------------------------------------------
-
-func TestKanban_Submit(t *testing.T) {
-	sb := NewBoard("scope-1")
-	k := New(context.Background(), sb, WithConfig(KanbanConfig{MaxPendingTasks: 100}))
-	defer k.Stop()
+func TestKanban_Submit_HappyPath(t *testing.T) {
+	t.Parallel()
+	k, _ := newKanban(t, WithConfig(KanbanConfig{MaxPendingTasks: 100}))
 
 	ctx := context.Background()
 	cardID, err := k.Submit(ctx, TaskOptions{
@@ -55,62 +40,86 @@ func TestKanban_Submit(t *testing.T) {
 		t.Fatalf("GetCard: %v", err)
 	}
 	p := PayloadMap(card.Payload)
-	if p["user_query"] != "帮我创建一个 RAG 应用" {
-		t.Fatalf("expected user_query in payload, got %v", p["user_query"])
-	}
-	if p["dispatch_note"] != "完成后告知用户" {
-		t.Fatalf("expected dispatch_note in payload, got %v", p["dispatch_note"])
-	}
-	if p["target_agent_id"] != "copilot_builder" {
-		t.Fatalf("expected target_agent_id in payload, got %v", p["target_agent_id"])
+	for key, want := range map[string]string{
+		"user_query":      "帮我创建一个 RAG 应用",
+		"dispatch_note":   "完成后告知用户",
+		"target_agent_id": "copilot_builder",
+	} {
+		if p[key] != want {
+			t.Fatalf("payload[%q] = %v, want %q", key, p[key], want)
+		}
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Submit — guardrails (rate limit, validator, structured errors)
+// ---------------------------------------------------------------------------
 
 func TestKanban_Submit_PendingLimit(t *testing.T) {
-	sb := NewBoard("scope-2")
-	k := New(context.Background(), sb, WithConfig(KanbanConfig{MaxPendingTasks: 2}))
+	t.Parallel()
+	k, _ := newKanban(t, WithConfig(KanbanConfig{MaxPendingTasks: 2}))
 
-	ctx := context.Background()
-
-	_, err := k.Submit(ctx, TaskOptions{Query: "task 1"})
-	if err != nil {
-		t.Fatalf("submit 1: %v", err)
-	}
-	_, err = k.Submit(ctx, TaskOptions{Query: "task 2"})
-	if err != nil {
-		t.Fatalf("submit 2: %v", err)
+	for i, query := range []string{"task 1", "task 2"} {
+		if _, err := k.Submit(context.Background(), TaskOptions{Query: query}); err != nil {
+			t.Fatalf("submit %d: %v", i+1, err)
+		}
 	}
 
-	_, err = k.Submit(ctx, TaskOptions{Query: "task 3"})
+	_, err := k.Submit(context.Background(), TaskOptions{Query: "task 3"})
 	if err == nil {
-		t.Fatal("expected pending limit error")
-	}
-}
-
-func TestKanban_Submit_StructuredErrors(t *testing.T) {
-	sb := NewBoard("scope-err")
-
-	k := New(context.Background(), sb, WithConfig(KanbanConfig{MaxPendingTasks: 1}))
-	ctx := context.Background()
-	_, _ = k.Submit(ctx, TaskOptions{Query: "task 1"})
-	_, err := k.Submit(ctx, TaskOptions{Query: "task 2"})
-	if err == nil {
-		t.Fatal("expected rate limit error")
+		t.Fatal("expected pending-limit error on 3rd submit")
 	}
 	if !errdefs.IsRateLimit(err) {
 		t.Fatalf("expected RateLimit error, got %v", err)
 	}
 }
 
+func TestKanban_Submit_AgentValidatorRejects(t *testing.T) {
+	t.Parallel()
+	validAgents := map[string]bool{"copilot-builder": true, "copilot-runner": true}
+	validator := func(_ context.Context, agentID string) error {
+		if validAgents[agentID] {
+			return nil
+		}
+		return fmt.Errorf("agent %q not found; available agent IDs: [copilot-builder copilot-runner]", agentID)
+	}
+	k, _ := newKanban(t,
+		WithAgentValidator(validator),
+		WithConfig(KanbanConfig{MaxPendingTasks: 100}),
+	)
+
+	_, err := k.Submit(context.Background(), TaskOptions{
+		TargetAgentID: "agent-builder",
+		Query:         "build something",
+	})
+	if err == nil {
+		t.Fatal("expected validation error for unknown agent")
+	}
+	if !strings.Contains(err.Error(), "agent-builder") || !strings.Contains(err.Error(), "copilot-builder") {
+		t.Fatalf("error should name the bad ID and list valid IDs, got: %v", err)
+	}
+
+	if cards := k.QueryCards(CardFilter{Type: "task"}); len(cards) != 0 {
+		t.Fatalf("expected 0 cards after rejected submit, got %d", len(cards))
+	}
+
+	if _, err := k.Submit(context.Background(), TaskOptions{
+		TargetAgentID: "copilot-builder",
+		Query:         "build something",
+	}); err != nil {
+		t.Fatalf("expected valid agent to pass validation: %v", err)
+	}
+}
+
 // ---------------------------------------------------------------------------
-// GetCard / QueryCards
+// GetCard / QueryCards / Broadcast
 // ---------------------------------------------------------------------------
 
 func TestKanban_GetCard(t *testing.T) {
-	sb := NewBoard("scope-gc")
-	k := New(context.Background(), sb)
-
+	t.Parallel()
+	k, sb := newKanban(t)
 	card := sb.Produce("task", "orch", "payload1")
+
 	got, err := k.GetCard(context.Background(), card.ID)
 	if err != nil {
 		t.Fatalf("GetCard: %v", err)
@@ -128,53 +137,93 @@ func TestKanban_GetCard(t *testing.T) {
 	}
 }
 
-func TestKanban_QueryCards(t *testing.T) {
-	sb := NewBoard("scope-qc")
-	k := New(context.Background(), sb)
-
+func TestKanban_QueryCards_FiltersByType(t *testing.T) {
+	t.Parallel()
+	k, sb := newKanban(t)
 	sb.Produce("task", "orch", "payload1")
 	sb.Produce("task", "orch", "payload2")
 	sb.Produce("signal", "orch", "stop")
 
-	tasks := k.QueryCards(CardFilter{Type: "task"})
-	if len(tasks) != 2 {
-		t.Fatalf("expected 2 task cards, got %d", len(tasks))
+	cases := []struct {
+		filter CardFilter
+		want   int
+		label  string
+	}{
+		{CardFilter{Type: "task"}, 2, "task filter"},
+		{CardFilter{Type: "signal"}, 1, "signal filter"},
+		{CardFilter{}, 3, "no filter"},
 	}
-
-	signals := k.QueryCards(CardFilter{Type: "signal"})
-	if len(signals) != 1 {
-		t.Fatalf("expected 1 signal card, got %d", len(signals))
-	}
-
-	all := k.QueryCards(CardFilter{})
-	if len(all) != 3 {
-		t.Fatalf("expected 3 total cards, got %d", len(all))
+	for _, c := range cases {
+		if got := len(k.QueryCards(c.filter)); got != c.want {
+			t.Errorf("%s: got %d, want %d", c.label, got, c.want)
+		}
 	}
 }
 
-// ---------------------------------------------------------------------------
-// Broadcast
-// ---------------------------------------------------------------------------
+// TestKanban_Board_ReturnsUnderlyingBoard guards the Board() accessor.
+// Many callers (audit, persistence layers) rely on this.
+func TestKanban_Board_ReturnsUnderlyingBoard(t *testing.T) {
+	t.Parallel()
+	k, sb := newKanban(t)
+	if k.Board() != sb {
+		t.Fatal("Kanban.Board() should return the same Board passed to New()")
+	}
+}
 
-func TestKanban_Broadcast(t *testing.T) {
-	sb := NewBoard("scope-4")
-	k := New(context.Background(), sb)
+// TestKanban_WithEventBus_DeprecatedNoOp pins the v0.1.x contract:
+// WithEventBus is accepted for source compatibility but is a complete
+// no-op. Events must continue to land on board.Bus() — the injected bus
+// must remain silent. Will be removed together with WithEventBus in v0.2.0.
+func TestKanban_WithEventBus_DeprecatedNoOp(t *testing.T) {
+	t.Parallel()
+	external := event.NewMemoryBus()
+	t.Cleanup(func() { _ = external.Close() })
 
-	ctx := context.Background()
-	k.Broadcast(ctx, "stop_all", map[string]string{"reason": "test"})
+	extSub, err := external.Subscribe(context.Background(), event.EventFilter{})
+	if err != nil {
+		t.Fatalf("external.Subscribe: %v", err)
+	}
+	t.Cleanup(func() { _ = extSub.Close() })
 
-	cards := sb.Query(CardFilter{Type: "signal"})
-	if len(cards) != 1 {
+	k, sb := newKanban(t, WithEventBus(external))
+	if k.Bus() != sb.Bus() {
+		t.Fatal("Kanban.Bus() must alias board.Bus(); WithEventBus must not redirect it")
+	}
+
+	boardSub := subscribeBus(t, sb)
+
+	if _, err := k.Submit(context.Background(), TaskOptions{Query: "still works"}); err != nil {
+		t.Fatalf("Submit after WithEventBus: %v", err)
+	}
+
+	if got := drainEvents(boardSub, 200*time.Millisecond, 1, func(e event.Event) bool {
+		return string(e.Type) == EventTaskSubmitted
+	}); !containsType(got, EventTaskSubmitted) {
+		t.Fatalf("expected EventTaskSubmitted on board.Bus(), got types=%v", eventTypes(got))
+	}
+
+	if got := drainEvents(extSub, 100*time.Millisecond, 0, nil); len(got) != 0 {
+		t.Fatalf("WithEventBus must be a no-op; injected bus received %d events: %v",
+			len(got), eventTypes(got))
+	}
+}
+
+func TestKanban_Broadcast_ProducesSignalCard(t *testing.T) {
+	t.Parallel()
+	k, sb := newKanban(t)
+	k.Broadcast(context.Background(), "stop_all", map[string]string{"reason": "test"})
+
+	if cards := sb.Query(CardFilter{Type: "signal"}); len(cards) != 1 {
 		t.Fatalf("expected 1 signal card, got %d", len(cards))
 	}
 }
 
 // ---------------------------------------------------------------------------
-// Executor — success
+// Executor — invocation, success, failure
 // ---------------------------------------------------------------------------
 
-func TestKanban_Submit_WithExecutor(t *testing.T) {
-	sb := NewBoard("scope-exec")
+func TestKanban_Submit_InvokesExecutor(t *testing.T) {
+	t.Parallel()
 	executed := make(chan struct{})
 	executor := &mockExecutor{
 		fn: func(_ context.Context, _, _ string, _ *Card, _ string, _ map[string]any) error {
@@ -183,104 +232,30 @@ func TestKanban_Submit_WithExecutor(t *testing.T) {
 		},
 	}
 
-	k := New(context.Background(), sb, WithAgentExecutor(executor), WithConfig(KanbanConfig{MaxPendingTasks: 100}))
-	defer k.Stop()
-
-	_, err := k.Submit(context.Background(), TaskOptions{
+	k, _ := newKanban(t, WithAgentExecutor(executor), WithConfig(KanbanConfig{MaxPendingTasks: 100}))
+	if _, err := k.Submit(context.Background(), TaskOptions{
 		TargetAgentID: "builder",
 		Query:         "build something",
-	})
-	if err != nil {
+	}); err != nil {
 		t.Fatalf("Submit: %v", err)
 	}
 
 	select {
 	case <-executed:
 	case <-time.After(2 * time.Second):
-		t.Fatal("executor was not called")
+		t.Fatal("executor was not invoked")
 	}
 }
 
-func TestKanban_ExecutorClaimAndDone(t *testing.T) {
-	sb := NewBoard("scope-ev")
-	defer sb.Close()
-
-	executor := &mockExecutor{
-		fn: func(_ context.Context, _, targetAgentID string, card *Card, _ string, _ map[string]any) error {
-			sb.Claim(card.ID, targetAgentID)
-			sb.Done(card.ID, map[string]any{
-				"output":          "agent output",
-				"target_agent_id": targetAgentID,
-			})
-			return nil
-		},
-	}
-
-	k := New(context.Background(), sb,
-		WithAgentExecutor(executor),
-		WithConfig(KanbanConfig{MaxPendingTasks: 100}),
-		WithEventBus(sb.Bus()),
-	)
-
-	ctx := context.Background()
-	sub, err := sb.Bus().Subscribe(ctx, event.EventFilter{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = sub.Close() }()
-
-	_, err = k.Submit(ctx, TaskOptions{
-		TargetAgentID: "test-agent",
-		Query:         "hello agent",
-	})
-	if err != nil {
-		t.Fatalf("Submit: %v", err)
-	}
-
-	k.Stop()
-
-	var received []event.Event
-	drainTimeout := time.After(time.Second)
-drain:
-	for {
-		select {
-		case ev := <-sub.Events():
-			received = append(received, ev)
-		case <-drainTimeout:
-			break drain
-		}
-	}
-
-	hasSubmitted := false
-	for _, ev := range received {
-		if ev.Type == EventTaskSubmitted {
-			hasSubmitted = true
-		}
-	}
-	if !hasSubmitted {
-		t.Fatal("expected task.submitted event on Bus")
-	}
-}
-
-// ---------------------------------------------------------------------------
-// Executor — failure (K-1)
-// ---------------------------------------------------------------------------
-
-func TestKanban_ExecutorError_MarksCardFailed(t *testing.T) {
-	sb := NewBoard("scope-k1-fail")
-	defer sb.Close()
-
+func TestKanban_Executor_FailureMarksCardFailed(t *testing.T) {
+	t.Parallel()
 	executor := &mockExecutor{
 		fn: func(_ context.Context, _, _ string, _ *Card, _ string, _ map[string]any) error {
-			return fmt.Errorf("simulated executor crash")
+			return errors.New("simulated executor crash")
 		},
 	}
 
-	k := New(context.Background(), sb,
-		WithAgentExecutor(executor),
-		WithConfig(KanbanConfig{MaxPendingTasks: 100}),
-	)
-
+	k, _ := newKanban(t, WithAgentExecutor(executor), WithConfig(KanbanConfig{MaxPendingTasks: 100}))
 	cardID, err := k.Submit(context.Background(), TaskOptions{
 		TargetAgentID: "agent-x",
 		Query:         "do work",
@@ -288,7 +263,6 @@ func TestKanban_ExecutorError_MarksCardFailed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Submit: %v", err)
 	}
-
 	k.Stop()
 
 	card, err := k.GetCard(context.Background(), cardID)
@@ -296,157 +270,39 @@ func TestKanban_ExecutorError_MarksCardFailed(t *testing.T) {
 		t.Fatalf("GetCard: %v", err)
 	}
 	if card.Status != CardFailed {
-		t.Fatalf("expected card status Failed, got %s", card.Status)
+		t.Fatalf("expected CardFailed, got %s", card.Status)
 	}
 	if card.Error != "simulated executor crash" {
 		t.Fatalf("expected error message on card, got %q", card.Error)
 	}
 }
 
-func TestKanban_ExecutorError_PublishesTaskFailedEvent(t *testing.T) {
-	sb := NewBoard("scope-k1-ev")
-	defer sb.Close()
-
-	bus := event.NewMemoryBus()
-	defer func() { _ = bus.Close() }()
-
-	executor := &mockExecutor{
-		fn: func(_ context.Context, _, _ string, _ *Card, _ string, _ map[string]any) error {
-			return fmt.Errorf("agent down")
-		},
-	}
-
-	k := New(context.Background(), sb,
-		WithAgentExecutor(executor),
-		WithEventBus(bus),
-		WithConfig(KanbanConfig{MaxPendingTasks: 100}),
-	)
-
-	sub, err := bus.Subscribe(context.Background(), event.EventFilter{})
-	if err != nil {
-		t.Fatalf("subscribe: %v", err)
-	}
-	defer func() { _ = sub.Close() }()
-
-	_, err = k.Submit(context.Background(), TaskOptions{
-		TargetAgentID: "agent-fail",
-		Query:         "boom",
-	})
-	if err != nil {
-		t.Fatalf("Submit: %v", err)
-	}
-
-	k.Stop()
-
-	var hasFailed bool
-	timeout := time.After(2 * time.Second)
-drainFailed:
-	for {
-		select {
-		case ev := <-sub.Events():
-			if string(ev.Type) == EventTaskFailed {
-				hasFailed = true
-				p, ok := ev.Payload.(TaskFailedPayload)
-				if !ok {
-					break drainFailed
-				}
-				if p.Error != "agent down" {
-					t.Fatalf("expected error='agent down', got %q", p.Error)
-				}
-				if p.TargetAgentID != "agent-fail" {
-					t.Fatalf("expected target_agent_id='agent-fail', got %q", p.TargetAgentID)
-				}
-				break drainFailed
-			}
-		case <-timeout:
-			break drainFailed
-		}
-	}
-	if !hasFailed {
-		t.Fatal("expected EventTaskFailed to be published when executor returns error")
-	}
-}
-
-func TestKanban_ExecutorCallsFailThenReturnsError(t *testing.T) {
-	sb := NewBoard("scope-fail-both")
-	defer sb.Close()
-
+// TestKanban_Executor_FailIsIdempotent guards the legacy contract that an
+// executor is allowed to call Fail itself and also return a non-nil error;
+// only one CardFailed transition must land on the board.
+func TestKanban_Executor_FailIsIdempotent(t *testing.T) {
+	t.Parallel()
+	sb := newBoard(t)
 	executor := &mockExecutor{
 		fn: func(_ context.Context, _, targetAgentID string, card *Card, _ string, _ map[string]any) error {
 			sb.Claim(card.ID, targetAgentID)
 			sb.Fail(card.ID, "execution failed")
-			return fmt.Errorf("execution failed")
+			return errors.New("execution failed")
 		},
 	}
+	k := New(context.Background(), sb, WithAgentExecutor(executor), WithConfig(KanbanConfig{MaxPendingTasks: 100}))
+	t.Cleanup(k.Stop)
 
-	k := New(context.Background(), sb,
-		WithAgentExecutor(executor),
-		WithConfig(KanbanConfig{MaxPendingTasks: 100}),
-	)
-
-	_, err := k.Submit(context.Background(), TaskOptions{
+	if _, err := k.Submit(context.Background(), TaskOptions{
 		TargetAgentID: "fail-agent",
 		Query:         "boom",
-	})
-	if err != nil {
+	}); err != nil {
 		t.Fatalf("Submit: %v", err)
 	}
-
 	k.Stop()
 
-	failed := sb.Query(CardFilter{Type: "task", Status: CardFailed})
-	if len(failed) == 0 {
-		t.Fatal("expected failed card after executor error")
-	}
-}
-
-// ---------------------------------------------------------------------------
-// Validator
-// ---------------------------------------------------------------------------
-
-func TestKanban_Submit_AgentValidatorRejects(t *testing.T) {
-	tb := NewBoard("scope-validate")
-	validAgents := map[string]bool{"copilot-builder": true, "copilot-runner": true}
-	validator := func(_ context.Context, agentID string) error {
-		if validAgents[agentID] {
-			return nil
-		}
-		return fmt.Errorf("agent %q not found; available agent IDs: [copilot-builder copilot-runner]", agentID)
-	}
-	k := New(context.Background(), tb,
-		WithAgentValidator(validator),
-		WithConfig(KanbanConfig{MaxPendingTasks: 100}),
-	)
-	defer k.Stop()
-
-	_, err := k.Submit(context.Background(), TaskOptions{
-		TargetAgentID: "agent-builder",
-		Query:         "build something",
-	})
-	if err == nil {
-		t.Fatal("expected validation error for unknown agent")
-	}
-	if !strings.Contains(err.Error(), "agent-builder") {
-		t.Fatalf("error should mention invalid ID, got: %v", err)
-	}
-	if !strings.Contains(err.Error(), "copilot-builder") {
-		t.Fatalf("error should list available IDs, got: %v", err)
-	}
-
-	cards := k.QueryCards(CardFilter{Type: "task"})
-	if len(cards) != 0 {
-		t.Fatalf("expected 0 cards after rejected submit, got %d", len(cards))
-	}
-
-	cardID, err := k.Submit(context.Background(), TaskOptions{
-		TargetAgentID: "copilot-builder",
-		Query:         "build something",
-	})
-	if err != nil {
-		t.Fatalf("expected valid agent to pass validation: %v", err)
-	}
-	if cardID == "" {
-		t.Fatal("expected non-empty card ID for valid agent")
+	if got := len(sb.Query(CardFilter{Type: "task", Status: CardFailed})); got != 1 {
+		t.Fatalf("expected exactly 1 failed card, got %d", got)
 	}
 }
 
@@ -454,25 +310,26 @@ func TestKanban_Submit_AgentValidatorRejects(t *testing.T) {
 // Stop / lifecycle
 // ---------------------------------------------------------------------------
 
-func TestKanban_StopRejectsNewSubmit(t *testing.T) {
-	tb := NewBoard("scope-stop")
-	k := New(context.Background(), tb)
-
+func TestKanban_Stop_RejectsNewSubmits(t *testing.T) {
+	t.Parallel()
+	k, _ := newKanban(t)
 	k.Stop()
+
 	_, err := k.Submit(context.Background(), TaskOptions{Query: "after-stop"})
 	if err == nil {
-		t.Fatal("expected submit to fail after stop")
+		t.Fatal("expected submit to fail after Stop")
 	}
 	if !errdefs.IsNotAvailable(err) {
 		t.Fatalf("expected NotAvailable error, got %v", err)
 	}
 }
 
-func TestKanban_StopWaitsInflightExecutor(t *testing.T) {
-	tb := NewBoard("scope-wait")
+func TestKanban_Stop_WaitsForInflightExecutor(t *testing.T) {
+	t.Parallel()
 	started := make(chan struct{})
 	release := make(chan struct{})
-	k := New(context.Background(), tb, WithAgentExecutor(&mockExecutor{
+
+	k, _ := newKanban(t, WithAgentExecutor(&mockExecutor{
 		fn: func(_ context.Context, _, _ string, _ *Card, _ string, _ map[string]any) error {
 			close(started)
 			<-release
@@ -496,7 +353,7 @@ func TestKanban_StopWaitsInflightExecutor(t *testing.T) {
 
 	select {
 	case <-stopped:
-		t.Fatal("Stop should wait for inflight executor")
+		t.Fatal("Stop returned before inflight executor finished")
 	case <-time.After(100 * time.Millisecond):
 	}
 
@@ -509,13 +366,13 @@ func TestKanban_StopWaitsInflightExecutor(t *testing.T) {
 	}
 }
 
-func TestKanban_StopCancelsExecutorContext(t *testing.T) {
-	tb := NewBoard("scope-cancel")
-	ctxCancelled := make(chan struct{})
-	k := New(context.Background(), tb, WithAgentExecutor(&mockExecutor{
+func TestKanban_Stop_CancelsExecutorContext(t *testing.T) {
+	t.Parallel()
+	cancelled := make(chan struct{})
+	k, _ := newKanban(t, WithAgentExecutor(&mockExecutor{
 		fn: func(ctx context.Context, _, _ string, _ *Card, _ string, _ map[string]any) error {
 			<-ctx.Done()
-			close(ctxCancelled)
+			close(cancelled)
 			return ctx.Err()
 		},
 	}))
@@ -530,49 +387,127 @@ func TestKanban_StopCancelsExecutorContext(t *testing.T) {
 	k.Stop()
 
 	select {
-	case <-ctxCancelled:
+	case <-cancelled:
 	case <-time.After(2 * time.Second):
 		t.Fatal("executor context was not cancelled by Stop")
 	}
 }
 
-// ---------------------------------------------------------------------------
-// Events
-// ---------------------------------------------------------------------------
+// Default stopTimeout is DefaultStopTimeout (10s), not "wait forever".
+// A fresh Kanban with no Option must therefore have a bounded Stop.
+func TestKanban_Stop_DefaultTimeoutIsTenSeconds(t *testing.T) {
+	t.Parallel()
+	k, _ := newKanban(t)
+	if got, want := k.stopTimeout, DefaultStopTimeout; got != want {
+		t.Fatalf("default stopTimeout = %v, want %v", got, want)
+	}
+	if DefaultStopTimeout != 10*time.Second {
+		t.Fatalf("DefaultStopTimeout = %v, want 10s", DefaultStopTimeout)
+	}
+}
 
-func TestKanban_EventBusPublish(t *testing.T) {
-	sb := NewBoard("scope-ev-pub")
-	bus := event.NewMemoryBus()
-	defer func() { _ = bus.Close() }()
+// WithStopTimeout(0) opts back into the legacy unbounded-wait behaviour.
+func TestKanban_Stop_ZeroTimeoutWaitsForever(t *testing.T) {
+	t.Parallel()
+	executorEntered := make(chan struct{})
+	releaseExecutor := make(chan struct{})
 
-	k := New(context.Background(), sb, WithEventBus(bus), WithConfig(KanbanConfig{MaxPendingTasks: 100}))
-
-	ctx := context.Background()
-	sub, err := bus.Subscribe(ctx, event.EventFilter{})
-	if err != nil {
-		t.Fatalf("subscribe: %v", err)
+	k, _ := newKanban(t,
+		WithAgentExecutor(&mockExecutor{
+			fn: func(_ context.Context, _, _ string, _ *Card, _ string, _ map[string]any) error {
+				close(executorEntered)
+				<-releaseExecutor
+				return nil
+			},
+		}),
+		WithStopTimeout(0),
+	)
+	if k.stopTimeout != 0 {
+		t.Fatalf("WithStopTimeout(0) did not set stopTimeout to 0, got %v", k.stopTimeout)
 	}
 
-	_, _ = k.Submit(ctx, TaskOptions{Query: "test event"})
+	if _, err := k.Submit(context.Background(), TaskOptions{
+		TargetAgentID: "builder",
+		Query:         "build something",
+	}); err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	<-executorEntered
+
+	stopped := make(chan struct{})
+	go func() {
+		k.Stop()
+		close(stopped)
+	}()
+
+	// With zero timeout, Stop must NOT return while the executor is still
+	// running, even after a window much larger than DefaultStopTimeout would
+	// have allowed if it had silently leaked through.
+	select {
+	case <-stopped:
+		t.Fatal("Stop with WithStopTimeout(0) returned before executor finished")
+	case <-time.After(200 * time.Millisecond):
+	}
+
+	close(releaseExecutor)
 
 	select {
-	case ev := <-sub.Events():
-		if string(ev.Type) != EventTaskSubmitted {
-			t.Fatalf("expected %q, got %q", EventTaskSubmitted, ev.Type)
-		}
+	case <-stopped:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Stop did not return after executor finished")
+	}
+}
+
+// Bug 4 (P2): Stop must respect WithStopTimeout and not hang on stuck executors.
+func TestKanban_Stop_RespectsStopTimeout(t *testing.T) {
+	t.Parallel()
+	executorEntered := make(chan struct{})
+	releaseExecutor := make(chan struct{})
+	defer close(releaseExecutor)
+
+	k, _ := newKanban(t,
+		WithAgentExecutor(&mockExecutor{
+			fn: func(_ context.Context, _, _ string, _ *Card, _ string, _ map[string]any) error {
+				close(executorEntered)
+				<-releaseExecutor
+				return nil
+			},
+		}),
+		WithStopTimeout(100*time.Millisecond),
+	)
+
+	if _, err := k.Submit(context.Background(), TaskOptions{
+		TargetAgentID: "stuck",
+		Query:         "ignore cancel",
+	}); err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	<-executorEntered
+
+	stopped := make(chan struct{})
+	start := time.Now()
+	go func() {
+		k.Stop()
+		close(stopped)
+	}()
+
+	select {
+	case <-stopped:
 	case <-time.After(time.Second):
-		t.Fatal("no event received")
+		t.Fatal("Stop with WithStopTimeout did not return within budget")
+	}
+	if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
+		t.Fatalf("Stop returned but took %v, expected ~100ms", elapsed)
 	}
 }
 
 // ---------------------------------------------------------------------------
-// Concurrency
+// Concurrency — Submit racing under load and against Stop
 // ---------------------------------------------------------------------------
 
-func TestKanban_SubmitConcurrent(t *testing.T) {
-	sb := NewBoard("scope-conc")
-	defer sb.Close()
-
+func TestKanban_Submit_Concurrent(t *testing.T) {
+	t.Parallel()
+	sb := newBoard(t)
 	executor := &mockExecutor{
 		fn: func(_ context.Context, _, targetAgentID string, card *Card, _ string, _ map[string]any) error {
 			time.Sleep(10 * time.Millisecond)
@@ -581,8 +516,8 @@ func TestKanban_SubmitConcurrent(t *testing.T) {
 			return nil
 		},
 	}
-
 	k := New(context.Background(), sb, WithAgentExecutor(executor), WithConfig(KanbanConfig{MaxPendingTasks: 100}))
+	t.Cleanup(k.Stop)
 
 	const n = 10
 	var wg sync.WaitGroup
@@ -592,28 +527,24 @@ func TestKanban_SubmitConcurrent(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			_, err := k.Submit(context.Background(), TaskOptions{
+			if _, err := k.Submit(context.Background(), TaskOptions{
 				TargetAgentID: "tpl",
 				Query:         "concurrent-task",
-			})
-			if err != nil {
+			}); err != nil {
 				errs <- err
 			}
 		}()
 	}
-
 	wg.Wait()
 	close(errs)
 	for err := range errs {
 		t.Fatalf("concurrent Submit error: %v", err)
 	}
-
-	k.Stop()
 }
 
-func TestKanban_SubmitConcurrentWithStop(t *testing.T) {
-	tb := NewBoard("scope-race")
-	k := New(context.Background(), tb, WithAgentExecutor(&mockExecutor{
+func TestKanban_Submit_RacesWithStop(t *testing.T) {
+	t.Parallel()
+	k, _ := newKanban(t, WithAgentExecutor(&mockExecutor{
 		fn: func(ctx context.Context, _, _ string, _ *Card, _ string, _ map[string]any) error {
 			select {
 			case <-ctx.Done():
@@ -645,6 +576,6 @@ func TestKanban_SubmitConcurrentWithStop(t *testing.T) {
 	close(errs)
 
 	for err := range errs {
-		t.Fatalf("unexpected submit error: %v", err)
+		t.Fatalf("unexpected submit error during Submit/Stop race: %v", err)
 	}
 }

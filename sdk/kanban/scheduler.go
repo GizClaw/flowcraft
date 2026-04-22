@@ -11,7 +11,9 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/telemetry"
 
 	"github.com/robfig/cron/v3"
+	"go.opentelemetry.io/otel/attribute"
 	otellog "go.opentelemetry.io/otel/log"
+	"go.opentelemetry.io/otel/trace"
 )
 
 const cardTypeCronRule = "cron_rule"
@@ -143,14 +145,32 @@ func (s *Scheduler) SyncAgent(agentID string, jobs []CronJob) {
 	}
 }
 
-// RemoveAgent clears all cron rules for an agent.
+// RemoveAgent clears all cron rules for an agent. An EventCronRuleDisabled
+// event is published for each removed schedule so external observers can keep
+// in sync without polling.
 func (s *Scheduler) RemoveAgent(agentID string) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	removed := make([]string, 0, len(s.entries[agentID]))
 	for _, rec := range s.entries[agentID] {
 		s.cron.Remove(rec.cronID)
+		removed = append(removed, rec.scheduleID)
 	}
 	delete(s.entries, agentID)
+	s.mu.Unlock()
+
+	if s.kanban != nil {
+		ctx := context.Background()
+		if s.kanban.ctx != nil {
+			ctx = s.kanban.ctx
+		}
+		bus := s.kanban.board.Bus()
+		for _, scheduleID := range removed {
+			_ = bus.Publish(ctx, eventEnvelope(EventCronRuleDisabled, CronRuleDisabledPayload{
+				ScheduleID: scheduleID,
+				AgentID:    agentID,
+			}))
+		}
+	}
 }
 
 // LoadFromBoard scans the board for active cron_rule cards and registers them.
@@ -213,16 +233,49 @@ func (s *Scheduler) SyncAgentAppend(agentID string, job CronJob) {
 	s.mu.Unlock()
 }
 
+// schedulerCtx returns the base context used for all scheduler-originated
+// submissions. Trace span + producer ID are attached so downstream telemetry
+// can correlate cron / delayed tasks back to the scheduler that fired them.
+func (s *Scheduler) schedulerCtx(parent context.Context, agentID, scheduleID, kind string) (context.Context, trace.Span) {
+	if parent == nil {
+		parent = context.Background()
+	}
+	if s.kanban != nil && s.kanban.ctx != nil {
+		// Use the Kanban lifecycle ctx so a Kanban.Stop() also cancels in-flight
+		// scheduler submits. We keep the parent's trace baggage by deriving the
+		// span from the parent ctx if it had one.
+		if sc := trace.SpanFromContext(parent).SpanContext(); sc.IsValid() {
+			parent = trace.ContextWithSpanContext(s.kanban.ctx, sc)
+		} else {
+			parent = s.kanban.ctx
+		}
+	}
+	ctx, span := telemetry.Tracer().Start(parent, "kanban.scheduler."+kind,
+		trace.WithAttributes(
+			attribute.String("kanban.scheduler.agent_id", agentID),
+			attribute.String("kanban.scheduler.schedule_id", scheduleID),
+		),
+	)
+	ctx = WithProducerID(ctx, "scheduler")
+	return ctx, span
+}
+
 // fire submits a scheduled task card, skipping if a previous card is still active.
+// It propagates a fresh scheduler-rooted trace span so submitted tasks correlate
+// back to the cron rule that triggered them, instead of starting from a bare
+// context.Background().
 func (s *Scheduler) fire(agentID, scheduleID, query string) {
 	if s.isClosed() || s.kanban == nil {
 		return
 	}
 
+	ctx, span := s.schedulerCtx(nil, agentID, scheduleID, "fire")
+	defer span.End()
+
 	for _, card := range s.kanban.QueryCards(CardFilter{Type: "task"}) {
 		if card.Meta["schedule_id"] == scheduleID &&
 			(card.Status == CardPending || card.Status == CardClaimed) {
-			telemetry.Info(context.Background(), "kanban.scheduler: skipping, previous task still active",
+			telemetry.Info(ctx, "kanban.scheduler: skipping, previous task still active",
 				otellog.String("agent_id", agentID),
 				otellog.String("schedule_id", scheduleID),
 				otellog.String("card_id", card.ID))
@@ -230,7 +283,6 @@ func (s *Scheduler) fire(agentID, scheduleID, query string) {
 		}
 	}
 
-	ctx := WithProducerID(context.Background(), "scheduler")
 	cardID, err := s.kanban.Submit(ctx, TaskOptions{
 		TargetAgentID: agentID,
 		Query:         query,
@@ -238,13 +290,23 @@ func (s *Scheduler) fire(agentID, scheduleID, query string) {
 		Meta:          map[string]string{"schedule_id": scheduleID},
 	})
 	if err != nil {
-		telemetry.Warn(context.Background(), "kanban.scheduler: submit failed",
+		span.RecordError(err)
+		telemetry.Warn(ctx, "kanban.scheduler: submit failed",
 			otellog.String("agent_id", agentID),
 			otellog.String("schedule_id", scheduleID),
 			otellog.String("error", err.Error()))
 		return
 	}
-	telemetry.Info(context.Background(), "kanban.scheduler: task submitted",
+	span.SetAttributes(attribute.String("kanban.scheduler.card_id", cardID))
+
+	_ = s.kanban.board.Bus().Publish(ctx, eventEnvelope(EventCronRuleFired, CronRuleFiredPayload{
+		ScheduleID: scheduleID,
+		AgentID:    agentID,
+		CardID:     cardID,
+		Query:      query,
+	}))
+
+	telemetry.Info(ctx, "kanban.scheduler: task submitted",
 		otellog.String("agent_id", agentID),
 		otellog.String("schedule_id", scheduleID),
 		otellog.String("card_id", cardID))
@@ -270,13 +332,23 @@ func (s *Scheduler) scheduleSubmit(ctx context.Context, opts TaskOptions) (strin
 	return s.kanban.Submit(ctx, opts)
 }
 
-func (s *Scheduler) submitWithDelay(_ context.Context, opts TaskOptions, delayStr string) (string, error) {
+// submitWithDelay registers a one-shot timer that fires opts after delayStr.
+// The original caller's producer ID and trace span context are captured at
+// submit time and re-attached when the timer fires, so rate-limit accounting
+// and trace correlation behave the same as a synchronous Submit.
+func (s *Scheduler) submitWithDelay(ctx context.Context, opts TaskOptions, delayStr string) (string, error) {
 	d, err := time.ParseDuration(delayStr)
 	if err != nil {
 		return "", fmt.Errorf("kanban.scheduler: invalid delay %q: %w", delayStr, err)
 	}
 
 	placeholderID := schedGenID()
+
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	originalProducer := ProducerIDFrom(ctx)
+	originalSpanCtx := trace.SpanFromContext(ctx).SpanContext()
 
 	s.mu.Lock()
 	if s.closed {
@@ -287,9 +359,36 @@ func (s *Scheduler) submitWithDelay(_ context.Context, opts TaskOptions, delaySt
 		s.mu.Lock()
 		delete(s.timers, placeholderID)
 		s.mu.Unlock()
-		if !s.isClosed() && s.kanban != nil {
-			_, _ = s.kanban.Submit(context.Background(), opts)
+		if s.isClosed() || s.kanban == nil {
+			return
 		}
+
+		base := s.kanban.ctx
+		if base == nil {
+			base = context.Background()
+		}
+		if originalSpanCtx.IsValid() {
+			base = trace.ContextWithSpanContext(base, originalSpanCtx)
+		}
+		producer := originalProducer
+		if producer == "" {
+			producer = "scheduler"
+		}
+		fireCtx, span := telemetry.Tracer().Start(base, "kanban.scheduler.delay.fire",
+			trace.WithAttributes(
+				attribute.String("kanban.scheduler.placeholder_id", placeholderID),
+				attribute.String("kanban.scheduler.original_producer", originalProducer),
+			),
+		)
+		fireCtx = WithProducerID(fireCtx, producer)
+		_, err := s.kanban.Submit(fireCtx, opts)
+		if err != nil {
+			span.RecordError(err)
+			telemetry.Warn(fireCtx, "kanban.scheduler: delayed submit failed",
+				otellog.String("placeholder_id", placeholderID),
+				otellog.String("error", err.Error()))
+		}
+		span.End()
 	})
 	s.timers[placeholderID] = timer
 	s.mu.Unlock()
@@ -304,7 +403,13 @@ func schedGenID() string {
 }
 
 // submitWithCron registers a dynamic cron job and persists it as a cron_rule card.
-func (s *Scheduler) submitWithCron(_ context.Context, opts TaskOptions, cronExpr, tz string) (string, error) {
+// The caller's ctx (producer ID + trace span) is preserved on the
+// EventCronRuleCreated event so external observers can correlate the rule
+// back to the user request that created it.
+func (s *Scheduler) submitWithCron(ctx context.Context, opts TaskOptions, cronExpr, tz string) (string, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	scheduleID := schedGenID()
 	agentID := opts.TargetAgentID
 	query := opts.Query
@@ -329,6 +434,14 @@ func (s *Scheduler) submitWithCron(_ context.Context, opts TaskOptions, cronExpr
 			Query:      query,
 			Timezone:   tz,
 		}, WithMeta("schedule_id", scheduleID), WithMeta("agent_id", agentID))
+
+		_ = s.kanban.board.Bus().Publish(ctx, eventEnvelope(EventCronRuleCreated, CronRuleCreatedPayload{
+			ScheduleID: scheduleID,
+			AgentID:    agentID,
+			Cron:       rawCron,
+			Query:      query,
+			Timezone:   tz,
+		}))
 	}
 
 	s.mu.Lock()
