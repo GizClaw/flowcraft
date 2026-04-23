@@ -179,7 +179,7 @@ func TestKanban_WithEventBus_DeprecatedNoOp(t *testing.T) {
 	external := event.NewMemoryBus()
 	t.Cleanup(func() { _ = external.Close() })
 
-	extSub, err := external.Subscribe(context.Background(), event.EventFilter{})
+	extSub, err := external.Subscribe(context.Background(), event.Pattern(">"))
 	if err != nil {
 		t.Fatalf("external.Subscribe: %v", err)
 	}
@@ -196,15 +196,15 @@ func TestKanban_WithEventBus_DeprecatedNoOp(t *testing.T) {
 		t.Fatalf("Submit after WithEventBus: %v", err)
 	}
 
-	if got := drainEvents(boardSub, 200*time.Millisecond, 1, func(e event.Event) bool {
-		return string(e.Type) == EventTaskSubmitted
-	}); !containsType(got, EventTaskSubmitted) {
-		t.Fatalf("expected EventTaskSubmitted on board.Bus(), got types=%v", eventTypes(got))
+	if got := drainEvents(boardSub, 200*time.Millisecond, 1, func(e event.Envelope) bool {
+		return kindOf(e) == EventTaskSubmitted
+	}); !containsKind(got, EventTaskSubmitted) {
+		t.Fatalf("expected EventTaskSubmitted on board.Bus(), got kinds=%v", eventKinds(got))
 	}
 
 	if got := drainEvents(extSub, 100*time.Millisecond, 0, nil); len(got) != 0 {
 		t.Fatalf("WithEventBus must be a no-op; injected bus received %d events: %v",
-			len(got), eventTypes(got))
+			len(got), eventKinds(got))
 	}
 }
 

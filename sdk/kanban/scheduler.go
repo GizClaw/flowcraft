@@ -164,11 +164,12 @@ func (s *Scheduler) RemoveAgent(agentID string) {
 			ctx = s.kanban.ctx
 		}
 		bus := s.kanban.board.Bus()
+		scopeID := s.kanban.board.ScopeID()
 		for _, scheduleID := range removed {
-			_ = bus.Publish(ctx, eventEnvelope(EventCronRuleDisabled, CronRuleDisabledPayload{
+			publishCronEvent(ctx, bus, EventCronRuleDisabled, scheduleID, scopeID, CronRuleDisabledPayload{
 				ScheduleID: scheduleID,
 				AgentID:    agentID,
-			}))
+			})
 		}
 	}
 }
@@ -299,12 +300,12 @@ func (s *Scheduler) fire(agentID, scheduleID, query string) {
 	}
 	span.SetAttributes(attribute.String("kanban.scheduler.card_id", cardID))
 
-	_ = s.kanban.board.Bus().Publish(ctx, eventEnvelope(EventCronRuleFired, CronRuleFiredPayload{
+	publishCronEvent(ctx, s.kanban.board.Bus(), EventCronRuleFired, scheduleID, s.kanban.board.ScopeID(), CronRuleFiredPayload{
 		ScheduleID: scheduleID,
 		AgentID:    agentID,
 		CardID:     cardID,
 		Query:      query,
-	}))
+	})
 
 	telemetry.Info(ctx, "kanban.scheduler: task submitted",
 		otellog.String("agent_id", agentID),
@@ -435,13 +436,13 @@ func (s *Scheduler) submitWithCron(ctx context.Context, opts TaskOptions, cronEx
 			Timezone:   tz,
 		}, WithMeta("schedule_id", scheduleID), WithMeta("agent_id", agentID))
 
-		_ = s.kanban.board.Bus().Publish(ctx, eventEnvelope(EventCronRuleCreated, CronRuleCreatedPayload{
+		publishCronEvent(ctx, s.kanban.board.Bus(), EventCronRuleCreated, scheduleID, s.kanban.board.ScopeID(), CronRuleCreatedPayload{
 			ScheduleID: scheduleID,
 			AgentID:    agentID,
 			Cron:       rawCron,
 			Query:      query,
 			Timezone:   tz,
-		}))
+		})
 	}
 
 	s.mu.Lock()

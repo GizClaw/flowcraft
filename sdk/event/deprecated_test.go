@@ -8,7 +8,7 @@ import (
 )
 
 func TestMemoryBus_PublishSubscribe(t *testing.T) {
-	bus := NewMemoryBus()
+	bus := NewLegacyMemoryBus()
 	defer func() { _ = bus.Close() }()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -36,7 +36,7 @@ func TestMemoryBus_PublishSubscribe(t *testing.T) {
 }
 
 func TestMemoryBus_FilterByRunID(t *testing.T) {
-	bus := NewMemoryBus()
+	bus := NewLegacyMemoryBus()
 	defer func() { _ = bus.Close() }()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -58,7 +58,7 @@ func TestMemoryBus_FilterByRunID(t *testing.T) {
 }
 
 func TestMemoryBus_CtxCancel_AutoCleanup(t *testing.T) {
-	bus := NewMemoryBus()
+	bus := NewLegacyMemoryBus()
 	defer func() { _ = bus.Close() }()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -74,7 +74,7 @@ func TestMemoryBus_CtxCancel_AutoCleanup(t *testing.T) {
 }
 
 func TestMemoryBus_Close_ClosesAll(t *testing.T) {
-	bus := NewMemoryBus()
+	bus := NewLegacyMemoryBus()
 	ctx := context.Background()
 
 	sub1, _ := bus.Subscribe(ctx, EventFilter{})
@@ -92,7 +92,7 @@ func TestMemoryBus_Close_ClosesAll(t *testing.T) {
 }
 
 func TestMemoryBus_NonBlocking(t *testing.T) {
-	bus := NewMemoryBus()
+	bus := NewLegacyMemoryBus()
 	defer func() { _ = bus.Close() }()
 
 	ctx := context.Background()
@@ -107,7 +107,7 @@ func TestMemoryBus_NonBlocking(t *testing.T) {
 }
 
 func TestMemoryBus_FilterByActorID(t *testing.T) {
-	bus := NewMemoryBus()
+	bus := NewLegacyMemoryBus()
 	defer func() { _ = bus.Close() }()
 
 	ctx := context.Background()
@@ -131,7 +131,7 @@ func TestMemoryBus_FilterByActorID(t *testing.T) {
 }
 
 func TestMemoryBus_EmptyActorID_MatchesAll(t *testing.T) {
-	bus := NewMemoryBus()
+	bus := NewLegacyMemoryBus()
 	defer func() { _ = bus.Close() }()
 
 	ctx := context.Background()
@@ -154,7 +154,7 @@ func TestMemoryBus_EmptyActorID_MatchesAll(t *testing.T) {
 }
 
 func TestMemoryBus_KanbanEvents_AlwaysVisible(t *testing.T) {
-	bus := NewMemoryBus()
+	bus := NewLegacyMemoryBus()
 	defer func() { _ = bus.Close() }()
 
 	ctx := context.Background()
@@ -174,12 +174,12 @@ func TestMemoryBus_KanbanEvents_AlwaysVisible(t *testing.T) {
 }
 
 func TestMemoryBus_WithBufferSize(t *testing.T) {
-	bus := NewMemoryBus()
+	bus := NewLegacyMemoryBus()
 	defer func() { _ = bus.Close() }()
 
 	ctx := context.Background()
 	bigBuffer := 256
-	sub, err := bus.Subscribe(ctx, EventFilter{}, WithBufferSize(bigBuffer))
+	sub, err := bus.Subscribe(ctx, EventFilter{}, LegacyWithBufferSize(bigBuffer))
 	if err != nil {
 		t.Fatalf("subscribe failed: %v", err)
 	}
@@ -210,12 +210,12 @@ done:
 }
 
 func TestMemoryBus_WithBufferSize_ZeroIgnored(t *testing.T) {
-	bus := NewMemoryBus()
+	bus := NewLegacyMemoryBus()
 	defer func() { _ = bus.Close() }()
 
 	ctx := context.Background()
-	// WithBufferSize(0) should be ignored, falling back to default
-	sub, err := bus.Subscribe(ctx, EventFilter{}, WithBufferSize(0))
+	// LegacyWithBufferSize(0) should be ignored, falling back to default
+	sub, err := bus.Subscribe(ctx, EventFilter{}, LegacyWithBufferSize(0))
 	if err != nil {
 		t.Fatalf("subscribe failed: %v", err)
 	}
@@ -240,7 +240,7 @@ done:
 }
 
 func TestNoopBus(t *testing.T) {
-	bus := NoopBus{}
+	bus := LegacyNoopBus{}
 	ctx := context.Background()
 
 	if err := bus.Publish(ctx, Event{}); err != nil {
@@ -255,11 +255,11 @@ func TestNoopBus(t *testing.T) {
 }
 
 func TestMemoryBus_DroppedCount(t *testing.T) {
-	bus := NewMemoryBus()
+	bus := NewLegacyMemoryBus()
 	defer func() { _ = bus.Close() }()
 
 	ctx := context.Background()
-	_, _ = bus.Subscribe(ctx, EventFilter{}, WithBufferSize(2))
+	_, _ = bus.Subscribe(ctx, EventFilter{}, LegacyWithBufferSize(2))
 
 	for i := 0; i < 10; i++ {
 		_ = bus.Publish(ctx, Event{Type: EventNodeStart})
@@ -275,14 +275,14 @@ func TestMemoryBus_DropCallback(t *testing.T) {
 	var callbackCount atomic.Int64
 	var lastDroppedType EventType
 
-	bus := NewMemoryBus(WithDropCallback(func(ev Event) {
+	bus := NewLegacyMemoryBus(LegacyWithDropCallback(func(ev Event) {
 		callbackCount.Add(1)
 		lastDroppedType = ev.Type
 	}))
 	defer func() { _ = bus.Close() }()
 
 	ctx := context.Background()
-	_, _ = bus.Subscribe(ctx, EventFilter{}, WithBufferSize(1))
+	_, _ = bus.Subscribe(ctx, EventFilter{}, LegacyWithBufferSize(1))
 
 	_ = bus.Publish(ctx, Event{Type: EventNodeStart})
 	_ = bus.Publish(ctx, Event{Type: EventNodeComplete})
@@ -297,11 +297,11 @@ func TestMemoryBus_DropCallback(t *testing.T) {
 }
 
 func TestMemoryBus_DroppedZeroWhenNotFull(t *testing.T) {
-	bus := NewMemoryBus()
+	bus := NewLegacyMemoryBus()
 	defer func() { _ = bus.Close() }()
 
 	ctx := context.Background()
-	sub, _ := bus.Subscribe(ctx, EventFilter{}, WithBufferSize(64))
+	sub, _ := bus.Subscribe(ctx, EventFilter{}, LegacyWithBufferSize(64))
 
 	_ = bus.Publish(ctx, Event{Type: EventNodeStart})
 
@@ -320,12 +320,12 @@ func TestMemoryBus_DroppedZeroWhenNotFull(t *testing.T) {
 }
 
 func TestMemoryBus_SubscriberMapRemoval(t *testing.T) {
-	bus := NewMemoryBus()
+	bus := NewLegacyMemoryBus()
 	defer func() { _ = bus.Close() }()
 
 	ctx := context.Background()
 
-	subs := make([]Subscription, 10)
+	subs := make([]LegacySubscription, 10)
 	for i := range subs {
 		var err error
 		subs[i], err = bus.Subscribe(ctx, EventFilter{})
@@ -353,13 +353,13 @@ func TestMemoryBus_SubscriberMapRemoval(t *testing.T) {
 
 func TestMemoryBus_MultipleDropCallbacks_Concurrent(t *testing.T) {
 	var dropped atomic.Int64
-	bus := NewMemoryBus(WithDropCallback(func(_ Event) {
+	bus := NewLegacyMemoryBus(LegacyWithDropCallback(func(_ Event) {
 		dropped.Add(1)
 	}))
 	defer func() { _ = bus.Close() }()
 
 	ctx := context.Background()
-	_, _ = bus.Subscribe(ctx, EventFilter{}, WithBufferSize(1))
+	_, _ = bus.Subscribe(ctx, EventFilter{}, LegacyWithBufferSize(1))
 
 	for i := 0; i < 100; i++ {
 		_ = bus.Publish(ctx, Event{Type: EventNodeStart})

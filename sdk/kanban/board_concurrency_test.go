@@ -146,7 +146,7 @@ func TestBoard_Concurrent_BusSubscribe(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if _, err := b.Bus().Subscribe(ctx, event.EventFilter{}); err != nil {
+			if _, err := b.Bus().Subscribe(ctx, event.Pattern(">")); err != nil {
 				errs <- err
 			}
 		}()

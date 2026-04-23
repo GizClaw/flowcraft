@@ -19,7 +19,7 @@ type Runner struct {
 	compiled *compiler.CompiledGraph
 	factory  *node.Factory
 	executor Executor
-	bus      event.EventBus
+	bus      event.Bus
 }
 
 // RunnerOption configures a Runner.
@@ -30,9 +30,9 @@ func WithRunnerExecutor(e Executor) RunnerOption {
 	return func(r *Runner) { r.executor = e }
 }
 
-// WithRunnerEventBus sets the EventBus used for graph lifecycle events.
+// WithRunnerEventBus sets the Bus used for graph lifecycle events.
 // Defaults to event.NoopBus{}.
-func WithRunnerEventBus(bus event.EventBus) RunnerOption {
+func WithRunnerEventBus(bus event.Bus) RunnerOption {
 	return func(r *Runner) { r.bus = bus }
 }
 
@@ -78,8 +78,8 @@ func (r *Runner) Run(ctx context.Context, vars map[string]any, opts ...RunOption
 	return r.executor.Execute(ctx, g, board, merged...)
 }
 
-// Bus returns the configured EventBus for external subscription.
-func (r *Runner) Bus() event.EventBus { return r.bus }
+// Bus returns the configured Bus for external subscription.
+func (r *Runner) Bus() event.Bus { return r.bus }
 
 // Graph returns a freshly assembled Graph snapshot for inspection.
 // Intended for testing and debugging, not for execution.

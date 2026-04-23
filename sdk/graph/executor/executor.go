@@ -92,7 +92,7 @@ type runConfig struct {
 	checkpointStore CheckpointStore
 	startNode       string
 	parallel        *ParallelConfig
-	bus             event.EventBus
+	bus             event.Bus
 	resolver        VariableResolver
 	streamCallback  graph.StreamCallback
 
@@ -128,7 +128,7 @@ func WithParallel(cfg ParallelConfig) RunOption {
 	}
 }
 
-func WithEventBus(bus event.EventBus) RunOption {
+func WithEventBus(bus event.Bus) RunOption {
 	return func(c *runConfig) { c.bus = bus }
 }
 
@@ -173,14 +173,8 @@ func (e *LocalExecutor) Execute(ctx context.Context, g *graph.Graph, board *grap
 					payload[k] = v
 				}
 			}
-			_ = bus.Publish(ctx, event.Event{
-				Type:    event.EventStreamDelta,
-				GraphID: g.Name(),
-				ActorID: actorKey,
-				NodeID:  se.NodeID,
-				RunID:   cfg.runID,
-				Payload: payload,
-			})
+			publishNodeEvent(ctx, bus, subjNodeStreamDelta(cfg.runID, se.NodeID),
+				cfg.runID, g.Name(), actorKey, se.NodeID, payload)
 		}
 	}
 
@@ -208,13 +202,8 @@ func (e *LocalExecutor) Execute(ctx context.Context, g *graph.Graph, board *grap
 		currentNodes = []string{cfg.startNode}
 	}
 
-	_ = bus.Publish(ctx, event.Event{
-		Type:    event.EventGraphStart,
-		GraphID: g.Name(),
-		ActorID: actorKey,
-		RunID:   cfg.runID,
-		Payload: board.Vars(),
-	})
+	publishGraphEvent(ctx, bus, subjGraphStart(cfg.runID),
+		cfg.runID, g.Name(), actorKey, board.Vars())
 
 	iteration := 0
 	graphStatus := "success"
@@ -235,9 +224,8 @@ func (e *LocalExecutor) Execute(ctx context.Context, g *graph.Graph, board *grap
 			if skip, err := shouldSkip(g, node, board); err != nil {
 				return board, err
 			} else if skip {
-				_ = bus.Publish(ctx, event.Event{
-					Type: event.EventNodeSkipped, GraphID: g.Name(), ActorID: actorKey, NodeID: nodeID, RunID: cfg.runID,
-				})
+				publishNodeEvent(ctx, bus, subjNodeSkipped(cfg.runID, nodeID),
+					cfg.runID, g.Name(), actorKey, nodeID, nil)
 				resolved, err := resolveNextNodes(g, node, board)
 				if err != nil {
 					return board, err
@@ -269,9 +257,8 @@ func (e *LocalExecutor) Execute(ctx context.Context, g *graph.Graph, board *grap
 				}
 			}
 
-			_ = bus.Publish(ctx, event.Event{
-				Type: event.EventNodeStart, GraphID: g.Name(), ActorID: actorKey, NodeID: nodeID, RunID: cfg.runID,
-			})
+			publishNodeEvent(ctx, bus, subjNodeStart(cfg.runID, nodeID),
+				cfg.runID, g.Name(), actorKey, nodeID, nil)
 
 			nodeStart := time.Now()
 			_, nodeSpan := telemetry.Tracer().Start(ctx, "node."+node.Type()+".execute",
@@ -306,9 +293,8 @@ func (e *LocalExecutor) Execute(ctx context.Context, g *graph.Graph, board *grap
 
 				if errdefs.Is(err, graph.ErrInterrupt) {
 					board.SetVar(graph.VarInterruptedNode, nodeID)
-					_ = bus.Publish(ctx, event.Event{
-						Type: event.EventGraphEnd, GraphID: g.Name(), ActorID: actorKey, RunID: cfg.runID,
-					})
+					publishGraphEvent(ctx, bus, subjGraphEnd(cfg.runID),
+						cfg.runID, g.Name(), actorKey, nil)
 					graphSpan.SetAttributes(attribute.String("graph.status", "interrupted"))
 					graphExecCount.Add(ctx, 1,
 						metric.WithAttributes(
@@ -331,10 +317,9 @@ func (e *LocalExecutor) Execute(ctx context.Context, g *graph.Graph, board *grap
 					otellog.String("node.id", nodeID),
 					otellog.String("error", err.Error()))
 
-				_ = bus.Publish(ctx, event.Event{
-					Type: event.EventNodeError, GraphID: g.Name(), ActorID: actorKey, NodeID: nodeID, RunID: cfg.runID,
-					Payload: err.Error(),
-				})
+				publishNodeEvent(ctx, bus, subjNodeError(cfg.runID, nodeID),
+					cfg.runID, g.Name(), actorKey, nodeID,
+					map[string]any{"error": err.Error()})
 				return board, err
 			}
 
@@ -353,10 +338,9 @@ func (e *LocalExecutor) Execute(ctx context.Context, g *graph.Graph, board *grap
 				}
 			}
 
-			_ = bus.Publish(ctx, event.Event{
-				Type: event.EventNodeComplete, GraphID: g.Name(), ActorID: actorKey, NodeID: nodeID, RunID: cfg.runID,
-				Payload: map[string]any{"iteration": iteration, "vars": board.Vars()},
-			})
+			publishNodeEvent(ctx, bus, subjNodeComplete(cfg.runID, nodeID),
+				cfg.runID, g.Name(), actorKey, nodeID,
+				map[string]any{"iteration": iteration, "vars": board.Vars()})
 
 			if cfg.checkpointStore != nil {
 				if err := cfg.checkpointStore.Save(Checkpoint{
@@ -415,10 +399,9 @@ func (e *LocalExecutor) Execute(ctx context.Context, g *graph.Graph, board *grap
 		return board, fmt.Errorf("graph execution exceeded max iterations (%d)", cfg.maxIterations)
 	}
 
-	_ = bus.Publish(ctx, event.Event{
-		Type: event.EventGraphEnd, GraphID: g.Name(), ActorID: actorKey, RunID: cfg.runID,
-		Payload: map[string]any{"iteration": iteration, "vars": board.Vars()},
-	})
+	publishGraphEvent(ctx, bus, subjGraphEnd(cfg.runID),
+		cfg.runID, g.Name(), actorKey,
+		map[string]any{"iteration": iteration, "vars": board.Vars()})
 
 	graphSpan.SetAttributes(
 		attribute.String("graph.status", graphStatus),
