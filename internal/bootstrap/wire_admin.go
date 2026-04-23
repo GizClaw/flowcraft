@@ -68,11 +68,12 @@ func (a *webhookReplayAdapter) ReplayDelivery(ctx context.Context, deliveryID st
 	return a.sender.ReplayDelivery(ctx, deliveryID)
 }
 
-// r4webhookSender extracts the WebhookOutboundSender from R4Components,
-// returning nil safely when r4 wasn't constructed.
-func r4webhookSender(r4 *R4Components) *senderwebhook.WebhookOutboundSender {
-	if r4 == nil {
+// projectorWebhookSender extracts the WebhookOutboundSender from
+// ProjectorComponents, returning nil safely when bootstrap failed before the
+// webhook stage.
+func projectorWebhookSender(p *ProjectorComponents) *senderwebhook.WebhookOutboundSender {
+	if p == nil {
 		return nil
 	}
-	return r4.WebhookSender
+	return p.WebhookSender
 }

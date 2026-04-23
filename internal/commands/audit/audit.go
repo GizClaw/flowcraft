@@ -102,7 +102,6 @@ func (c *Commands) Failed(ctx context.Context, req FailedReq) error {
 	return err
 }
 
-
 // newCommandID is exported via this private symbol so tests can stub via build tags if needed.
 func newCommandID() string {
 	b := make([]byte, 16)

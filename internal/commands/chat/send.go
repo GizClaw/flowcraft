@@ -85,4 +85,3 @@ func isDuplicateCommand(ctx context.Context, uow eventlog.UnitOfWork, commandID 
 	}
 	return false, nil
 }
-

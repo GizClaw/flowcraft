@@ -72,7 +72,7 @@ func Run(ctx context.Context) (*platform.Platform, *api.Server, func(), error) {
 	}
 	projMgr := WireProjectionManager(sqliteStore)
 	snapshots := projection.NewSQLiteSnapshots(sqliteStore.DB())
-	r4, err := RegisterR4Projectors(projMgr, eventLog, snapshots)
+	projectors, err := RegisterDomainProjectors(projMgr, eventLog, snapshots)
 	if err != nil {
 		return fail(err)
 	}
@@ -86,11 +86,11 @@ func Run(ctx context.Context) (*platform.Platform, *api.Server, func(), error) {
 	}
 	cleanups = append(cleanups, func() { projMgr.Stop() })
 	cleanups = append(cleanups, func() {
-		if r4 != nil && r4.WebhookSender != nil {
-			r4.WebhookSender.Stop()
+		if projectors != nil && projectors.WebhookSender != nil {
+			projectors.WebhookSender.Stop()
 		}
-		if r4 != nil && r4.ChatAutoAck != nil {
-			r4.ChatAutoAck.Stop()
+		if projectors != nil && projectors.ChatAutoAck != nil {
+			projectors.ChatAutoAck.Stop()
 		}
 	})
 
@@ -228,7 +228,7 @@ func Run(ctx context.Context) (*platform.Platform, *api.Server, func(), error) {
 	// never have to second-guess.
 	pol := policy.NewOwnerOnly()
 	server, hubs := wireHTTP(cfg, plat, gw, jwtCfg, pluginDir, eventLog, auditCmds,
-		pol, projMgr, r4webhookSender(r4), newChatReadAdapter(r4.Chat))
+		pol, projMgr, projectorWebhookSender(projectors), newChatReadAdapter(projectors.Chat))
 	cleanups = append(cleanups, hubs.Stop)
 
 	// --- realm callbacks ---

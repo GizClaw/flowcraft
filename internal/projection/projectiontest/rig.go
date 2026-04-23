@@ -17,23 +17,52 @@ import (
 // Rig wires together everything a projector unit test needs: an in-memory
 // log, a manager, and a list of registered projectors.
 type Rig struct {
-	tb      testing.TB
-	Log     *eventlogtest.MemoryLog
-	Manager *projection.Manager
-	mu      sync.Mutex
-	cancels []context.CancelFunc
-	started bool
+	tb         testing.TB
+	Log        *eventlogtest.MemoryLog
+	Manager    *projection.Manager
+	clock      eventlogtest.Clock
+	mu         sync.Mutex
+	cancels    []context.CancelFunc
+	started    bool
+	projectors map[string]projection.Projector
 }
 
 // NewRig builds a fresh Rig with a MemoryLog and a Manager (5s ready timeout).
+// The MemoryLog uses eventlogtest.SystemClock by default; tests that need
+// deterministic timestamps should call Rig.WithClock before Seed.
 func NewRig(tb testing.TB) *Rig {
 	tb.Helper()
 	log := eventlogtest.NewMemoryLog()
 	mgr := projection.NewManager(projection.ManagerConfig{ReadyTimeout: 5 * time.Second})
-	r := &Rig{tb: tb, Log: log, Manager: mgr}
+	r := &Rig{
+		tb:         tb,
+		Log:        log,
+		Manager:    mgr,
+		clock:      eventlogtest.SystemClock,
+		projectors: map[string]projection.Projector{},
+	}
 	tb.Cleanup(r.Stop)
 	return r
 }
+
+// WithClock substitutes the wall clock used by the underlying MemoryLog so
+// that envelope.ts becomes deterministic. Must be called before Start.
+func (r *Rig) WithClock(c eventlogtest.Clock) *Rig {
+	r.tb.Helper()
+	if r.started {
+		r.tb.Fatalf("Rig.WithClock: cannot change clock after Start")
+	}
+	if c == nil {
+		return r
+	}
+	r.clock = c
+	r.Log.WithClock(c)
+	return r
+}
+
+// Clock returns the clock currently driving the underlying MemoryLog. Useful
+// for tests that need to share the clock with code under test.
+func (r *Rig) Clock() eventlogtest.Clock { return r.clock }
 
 // Register adds a projector to the manager (must be called before Start).
 func (r *Rig) Register(p projection.Projector, dependsOn []string, opts ...projection.RegisterOption) {
@@ -41,6 +70,17 @@ func (r *Rig) Register(p projection.Projector, dependsOn []string, opts ...proje
 	if err := r.Manager.RegisterProjector(p, dependsOn, opts...); err != nil {
 		r.tb.Fatalf("Rig.Register: %v", err)
 	}
+	r.projectors[p.Name()] = p
+}
+
+// Projector returns the registered projector with the given name, or nil if
+// no such projector has been registered. Tests use this to reach into a
+// projector's read-model state without re-plumbing the constructor return.
+func (r *Rig) Projector(name string) projection.Projector {
+	if p, ok := r.projectors[name]; ok {
+		return p
+	}
+	return r.Manager.ProjectorByName(name)
 }
 
 // Start launches the manager; subsequent Register calls fail.
@@ -77,6 +117,26 @@ func (r *Rig) WaitReady(ctx context.Context, timeout time.Duration) {
 	}
 	r.tb.Fatalf("Rig.WaitReady: not all projectors ready within %s; status=%+v",
 		timeout, r.Manager.Status())
+}
+
+// WaitCheckpoint blocks until the named projector's checkpoint reaches at
+// least seq, or fails the test on timeout. This is the preferred way to
+// synchronize on "the projector has consumed event seq=N" because it polls
+// the runner's atomic status snapshot rather than fishing through MemoryLog
+// (whose CheckpointStore is intentionally a no-op).
+func (r *Rig) WaitCheckpoint(name string, seq int64, timeout time.Duration) {
+	r.tb.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		for _, st := range r.Manager.Status() {
+			if st.Name == name && st.CheckpointSeq >= seq {
+				return
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	r.tb.Fatalf("Rig.WaitCheckpoint(%q, %d): not reached within %s; status=%+v",
+		name, seq, timeout, r.Manager.Status())
 }
 
 // Stop tears down the manager (called automatically by t.Cleanup).
