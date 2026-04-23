@@ -78,6 +78,18 @@ func (r DropReason) String() string {
 //   - Observer methods may be invoked concurrently from multiple
 //     goroutines; implementations must be safe for concurrent use.
 //
+// Ordering:
+//
+//   - For a single Publish call, OnPublish is invoked exactly once,
+//     followed by zero or more OnDeliver / OnDrop calls (one per
+//     matching subscription).
+//   - The relative order of OnDeliver / OnDrop calls within one Publish
+//     reflects the bus's internal subscription scan and is therefore
+//     implementation-defined. MemoryBus, for example, memoises the
+//     match result per Subject so a hot subject sees a stable callback
+//     order across publishes — observers MUST NOT rely on that order
+//     being either stable or random.
+//
 // Observer is intentionally an interface (not a func) so a single hook
 // can correlate the three lifecycle moments without ad-hoc closures.
 type Observer interface {
@@ -95,6 +107,6 @@ type Observer interface {
 // branches uniform.
 type noopObserver struct{}
 
-func (noopObserver) OnPublish(Envelope)                              {}
-func (noopObserver) OnDeliver(SubscriptionID, Envelope)              {}
-func (noopObserver) OnDrop(SubscriptionID, Envelope, DropReason)     {}
+func (noopObserver) OnPublish(Envelope)                          {}
+func (noopObserver) OnDeliver(SubscriptionID, Envelope)          {}
+func (noopObserver) OnDrop(SubscriptionID, Envelope, DropReason) {}

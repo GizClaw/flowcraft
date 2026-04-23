@@ -18,8 +18,8 @@ type Subject string
 
 // Pattern is a Subject matcher using NATS-style wildcards:
 //
-//	*  matches exactly one segment
-//	>  matches one or more trailing segments (must be the last segment)
+//   - matches exactly one segment
+//     >  matches one or more trailing segments (must be the last segment)
 //
 // Examples:
 //
@@ -116,33 +116,45 @@ func (p Pattern) Validate() error {
 //
 // Matching is segment-wise:
 //   - literal segments must compare byte-for-byte equal;
-//   - '*' matches any single segment (including a single '>' / '*' literal-looking
-//     segment in a subject — but Subject.Validate rejects those, so in practice
-//     only well-formed subjects reach here);
-//   - '>' matches one or more trailing segments.
+//   - '*' matches any single segment;
+//   - '>' matches one or more trailing segments (must be the last pattern
+//     segment; Validate enforces this).
 //
 // An empty pattern matches nothing. An empty subject matches nothing.
 // Matches does not validate p; callers that accept untrusted input should
 // call p.Validate() first (Bus implementations are required to).
+//
+// Matches splits both p and s on every call. Hot paths inside the package
+// (MemoryBus.Publish) use matchSegs directly with pre-split inputs to
+// avoid the per-call allocations.
 func (p Pattern) Matches(s Subject) bool {
 	if p == "" || s == "" {
 		return false
 	}
-	pSegs := strings.Split(string(p), subjectSep)
-	sSegs := strings.Split(string(s), subjectSep)
+	return matchSegs(splitSubject(string(p)), splitSubject(string(s)))
+}
 
+// splitSubject returns the segments of s. Centralised so MemoryBus and the
+// public Matches share one allocation strategy.
+func splitSubject(s string) []string {
+	return strings.Split(s, subjectSep)
+}
+
+// matchSegs is the segment-level matcher shared by Pattern.Matches and the
+// MemoryBus hot path. Both inputs are non-empty.
+//
+// Well-formed pattern segments satisfy Pattern.Validate: at most one '>'
+// segment, only at the tail. To stay defined for malformed input that
+// reaches Pattern.Matches directly (Bus implementations validate first),
+// a '>' that is not the last pattern segment is treated as a literal
+// segment — i.e. it only matches a subject segment that is also '>'.
+// Subject.Validate rejects '>' inside a subject, so under normal Bus
+// usage that branch is unreachable; the literal fallback exists only to
+// keep the standalone Pattern.Matches helper total.
+func matchSegs(pSegs, sSegs []string) bool {
+	last := len(pSegs) - 1
 	for i, pSeg := range pSegs {
-		if pSeg == wildcardTrail {
-			// '>' is constrained to last segment by Validate; if a malformed
-			// pattern slips through, treat any non-last '>' as a literal so
-			// behaviour is at least defined.
-			if i != len(pSegs)-1 {
-				if i >= len(sSegs) || sSegs[i] != wildcardTrail {
-					return false
-				}
-				continue
-			}
-			// Tail wildcard requires at least one remaining subject segment.
+		if pSeg == wildcardTrail && i == last {
 			return len(sSegs) >= i+1
 		}
 		if i >= len(sSegs) {
@@ -151,6 +163,8 @@ func (p Pattern) Matches(s Subject) bool {
 		if pSeg == wildcardOne {
 			continue
 		}
+		// Non-tail '>' falls through to literal compare (defensive); same
+		// goes for any other byte sequence — Validate is the front gate.
 		if pSeg != sSegs[i] {
 			return false
 		}

@@ -30,9 +30,9 @@ const (
 // Well-known header keys carried on every Envelope produced by this
 // package.
 //
-//   HeaderKanbanKind  the EventKind constant (e.g. "kanban.task.submitted")
-//   HeaderCardID      card_id (task / callback events only)
-//   HeaderScheduleID  schedule_id (cron events only)
+//	HeaderKanbanKind  the EventKind constant (e.g. "kanban.task.submitted")
+//	HeaderCardID      card_id (task / callback events only)
+//	HeaderScheduleID  schedule_id (cron events only)
 //
 // Subscribers using a broad subject pattern (e.g. kanban.>) can route on
 // these headers instead of re-parsing the subject.

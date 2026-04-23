@@ -2,7 +2,6 @@ package event
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -11,82 +10,6 @@ import (
 	"github.com/rs/xid"
 	"go.opentelemetry.io/otel/trace"
 )
-
-// ErrBusClosed is returned by Publish / Subscribe after a Bus has been closed.
-var ErrBusClosed = errors.New("event: bus closed")
-
-// Bus is a publish-subscribe channel for Envelopes routed by Subject /
-// Pattern.
-//
-// Bus is the new (post v0.1.x) primary surface; the legacy Event /
-// LegacyEventBus types remain available as deprecated shims for one
-// minor cycle and will be removed in v0.2.0.
-type Bus interface {
-	// Publish delivers env to every matching subscription. Implementations
-	// must:
-	//   - fill env.ID and env.Time when zero;
-	//   - return ErrBusClosed once Close has been invoked;
-	//   - guarantee that, on return, the envelope has been enqueued for
-	//     every matching subscription, or dropped according to that
-	//     subscription's BackpressurePolicy.
-	//
-	// Cross-process implementations (added in later commits) may relax
-	// the on-return delivery guarantee to "fire-and-forget"; that
-	// relaxation must be documented at the implementation level.
-	Publish(ctx context.Context, env Envelope) error
-
-	// Subscribe creates a new subscription matching pattern. The returned
-	// Subscription is closed automatically when ctx is cancelled.
-	// pattern is validated and a malformed value returns an error.
-	Subscribe(ctx context.Context, pattern Pattern, opts ...SubOption) (Subscription, error)
-
-	// Close shuts down the bus. After Close returns, every subscription
-	// channel will be closed and subsequent Publish / Subscribe calls
-	// return ErrBusClosed. Close is idempotent.
-	Close() error
-}
-
-// Subscription is an active receive-side handle.
-type Subscription interface {
-	// ID is unique within the originating bus instance.
-	ID() SubscriptionID
-	// C returns the envelope channel. The channel is closed exactly once,
-	// either when Close is invoked or when the parent bus is closed.
-	C() <-chan Envelope
-	// Close cancels the subscription. Idempotent.
-	Close() error
-}
-
-// SubOption configures a Subscription at creation time.
-type SubOption func(*subOptions)
-
-type subOptions struct {
-	bufferSize   int
-	backpressure BackpressurePolicy
-	predicate    func(Envelope) bool
-}
-
-// WithBufferSize sets the buffered channel capacity. Values <= 0 fall back
-// to the default (64).
-func WithBufferSize(n int) SubOption {
-	return func(o *subOptions) {
-		if n > 0 {
-			o.bufferSize = n
-		}
-	}
-}
-
-// WithBackpressure overrides the default DropNewest policy.
-func WithBackpressure(p BackpressurePolicy) SubOption {
-	return func(o *subOptions) { o.backpressure = p }
-}
-
-// WithPredicate adds a secondary filter applied after pattern matching.
-// Useful when subject routing alone cannot express the desired filter
-// (e.g. multi-tenant header checks).
-func WithPredicate(fn func(Envelope) bool) SubOption {
-	return func(o *subOptions) { o.predicate = fn }
-}
 
 // MemoryBusOption configures a MemoryBus at construction time.
 type MemoryBusOption func(*MemoryBus)
@@ -100,6 +23,33 @@ func WithObserver(o Observer) MemoryBusOption {
 		if o != nil {
 			b.observer = o
 		}
+	}
+}
+
+// WithRouteCacheSize bounds the subject→subscribers route cache.
+//
+// The route cache memoises the result of scanning every subscription for
+// a given Subject so that hot subjects skip the per-publish O(N) match
+// loop. Cache entries are invalidated whenever the subscription set
+// changes (Subscribe / removeSub / Close).
+//
+// Sizing:
+//   - n > 0  : cap at n distinct subjects; on overflow the cache is
+//     wholesale cleared (poor-man's LRU — adequate when the working set
+//     is small or churns slowly, which matches every current SDK
+//     producer).
+//   - n == 0 : disable the cache entirely; every Publish scans
+//     subscribers. Use when subjects are unique-per-publish (e.g. ID
+//     embedded in subject and never repeated).
+//   - n < 0  : ignored; default applies.
+//
+// Default is defaultRouteCacheSize.
+func WithRouteCacheSize(n int) MemoryBusOption {
+	return func(b *MemoryBus) {
+		if n < 0 {
+			return
+		}
+		b.routeCacheCap = n
 	}
 }
 
@@ -117,6 +67,16 @@ func WithObserver(o Observer) MemoryBusOption {
 // Hot-path lock-freedom:
 //   - Observer callbacks are deferred to a local slice and executed after
 //     the RLock has been released.
+//
+// Route cache:
+//   - routeCache memoises subject → []*memSub so a hot subject avoids the
+//     O(N) match loop. Guarded by routeCacheMu (a separate mutex from
+//     b.mu so cache writes don't compete with the publish RLock fan-out).
+//   - Lock order when both are held: ALWAYS b.mu first, then
+//     routeCacheMu. Subscribe / Close / removeSub clear the cache while
+//     holding b.mu.Lock(); Publish reads/writes the cache while holding
+//     b.mu.RLock(). This ordering prevents a writer's clear from racing
+//     a publisher's lookup of stale entries.
 type MemoryBus struct {
 	mu          sync.RWMutex
 	subscribers map[SubscriptionID]*memSub
@@ -130,56 +90,85 @@ type MemoryBus struct {
 
 	observer Observer
 	subSeq   atomic.Uint64
+
+	// Route cache. routeCacheCap == 0 disables the cache.
+	routeCacheMu  sync.RWMutex
+	routeCache    map[Subject][]*memSub
+	routeCacheCap int
 }
 
-const defaultMemoryBufferSize = 64
+const (
+	defaultMemoryBufferSize = 64
+	defaultRouteCacheSize   = 1024
+)
 
 // NewMemoryBus constructs an in-process Bus.
 func NewMemoryBus(opts ...MemoryBusOption) *MemoryBus {
 	b := &MemoryBus{
-		subscribers: make(map[SubscriptionID]*memSub),
-		observer:    noopObserver{},
+		subscribers:   make(map[SubscriptionID]*memSub),
+		observer:      noopObserver{},
+		routeCacheCap: defaultRouteCacheSize,
 	}
 	for _, opt := range opts {
 		opt(b)
 	}
+	if b.routeCacheCap > 0 {
+		b.routeCache = make(map[Subject][]*memSub, b.routeCacheCap)
+	}
 	return b
+}
+
+// lookupRoute returns the cached subscriber slice for subj or nil/false on
+// miss. Caller must hold b.mu.RLock so the returned slice cannot be
+// invalidated mid-scan.
+func (b *MemoryBus) lookupRoute(subj Subject) ([]*memSub, bool) {
+	if b.routeCacheCap == 0 {
+		return nil, false
+	}
+	b.routeCacheMu.RLock()
+	subs, ok := b.routeCache[subj]
+	b.routeCacheMu.RUnlock()
+	return subs, ok
+}
+
+// storeRoute writes the matched subscriber slice for subj. Caller must
+// hold b.mu.RLock so subscribers cannot churn between match and store.
+// On overflow the entire cache is cleared (poor-man's LRU).
+func (b *MemoryBus) storeRoute(subj Subject, subs []*memSub) {
+	if b.routeCacheCap == 0 {
+		return
+	}
+	b.routeCacheMu.Lock()
+	if len(b.routeCache) >= b.routeCacheCap {
+		b.routeCache = make(map[Subject][]*memSub, b.routeCacheCap)
+	}
+	b.routeCache[subj] = subs
+	b.routeCacheMu.Unlock()
+}
+
+// clearRouteCache drops every cached entry. Caller must hold b.mu.Lock
+// (write lock) so no concurrent Publish can observe an inconsistent cache
+// against a churning subscriber set.
+func (b *MemoryBus) clearRouteCache() {
+	if b.routeCacheCap == 0 {
+		return
+	}
+	b.routeCacheMu.Lock()
+	if len(b.routeCache) > 0 {
+		b.routeCache = make(map[Subject][]*memSub, b.routeCacheCap)
+	}
+	b.routeCacheMu.Unlock()
 }
 
 // Dropped returns the cumulative count of envelopes dropped due to
 // DropNewest / DropOldest policies. Diagnostic only.
 func (b *MemoryBus) Dropped() int64 { return b.dropped.Load() }
 
-// NoopBus is a Bus that discards every Publish and yields a closed channel
-// for every Subscribe. Useful for tests and as a default value to keep
-// nil-checks out of producer code.
-type NoopBus struct{}
-
-// NewNoopBus returns a NoopBus value (kept for symmetry with NewMemoryBus).
-func NewNoopBus() NoopBus { return NoopBus{} }
-
-func (NoopBus) Publish(context.Context, Envelope) error { return nil }
-func (NoopBus) Subscribe(context.Context, Pattern, ...SubOption) (Subscription, error) {
-	return noopSubscription{}, nil
-}
-func (NoopBus) Close() error { return nil }
-
-var noopClosedCh = func() chan Envelope {
-	ch := make(chan Envelope)
-	close(ch)
-	return ch
-}()
-
-type noopSubscription struct{}
-
-func (noopSubscription) ID() SubscriptionID { return "noop" }
-func (noopSubscription) C() <-chan Envelope { return noopClosedCh }
-func (noopSubscription) Close() error       { return nil }
-
 // memSub is the in-memory subscription record.
 type memSub struct {
 	id           SubscriptionID
 	pattern      Pattern
+	patternSegs  []string // pre-split pattern; never mutated after Subscribe.
 	predicate    func(Envelope) bool
 	backpressure BackpressurePolicy
 	ch           chan Envelope
@@ -256,16 +245,22 @@ type dropCb struct {
 	reason DropReason
 }
 
-// matches applies the pattern + predicate filter. Called under the bus
-// RLock.
-func (s *memSub) matches(env Envelope) bool {
-	if !s.pattern.Matches(env.Subject) {
-		return false
+// patternMatches reports whether the subscription's pattern matches
+// sSegs. Called under the bus RLock. Pattern matching is independent of
+// envelope payload/headers so its result can be safely cached per
+// Subject; user-supplied predicates cannot (they may inspect the
+// envelope) and are evaluated separately by the publish loop.
+func (s *memSub) patternMatches(sSegs []string) bool {
+	return matchSegs(s.patternSegs, sSegs)
+}
+
+// predicateAllows runs the optional WithPredicate filter; returns true
+// when the subscription has no predicate.
+func (s *memSub) predicateAllows(env Envelope) bool {
+	if s.predicate == nil {
+		return true
 	}
-	if s.predicate != nil && !s.predicate(env) {
-		return false
-	}
-	return true
+	return s.predicate(env)
 }
 
 // Publish routes env to every matching subscription according to each
@@ -312,8 +307,27 @@ func (b *MemoryBus) Publish(ctx context.Context, env Envelope) error {
 		return ErrBusClosed
 	}
 
-	for _, sub := range b.subscribers {
-		if !sub.matches(env) {
+	// Resolve the pattern-matching subscription set for this subject.
+	// Cached value reflects PATTERN matches only; per-publish predicates
+	// still run inside the loop because they may depend on payload /
+	// headers and therefore cannot be memoised by Subject alone.
+	matched, hit := b.lookupRoute(env.Subject)
+	if !hit {
+		sSegs := splitSubject(string(env.Subject))
+		// Allocate a fresh slice — the result is published into the cache
+		// and may be read concurrently by future Publish calls; reusing
+		// any caller-side scratch buffer would corrupt entries.
+		matched = matched[:0:0]
+		for _, sub := range b.subscribers {
+			if sub.patternMatches(sSegs) {
+				matched = append(matched, sub)
+			}
+		}
+		b.storeRoute(env.Subject, matched)
+	}
+
+	for _, sub := range matched {
+		if !sub.predicateAllows(env) {
 			continue
 		}
 		select {
@@ -434,9 +448,16 @@ func (b *MemoryBus) Subscribe(ctx context.Context, pattern Pattern, opts ...SubO
 		return nil, ErrBusClosed
 	}
 
+	// Cache invalidation: any subscription churn changes the pattern set
+	// and therefore every cached subject→subs entry. Must run while
+	// holding the write lock so concurrent Publish RLock holders cannot
+	// race against a half-updated cache.
+	b.clearRouteCache()
+
 	sub := &memSub{
 		id:           SubscriptionID(fmt.Sprintf("ms-%d", b.subSeq.Add(1))),
 		pattern:      pattern,
+		patternSegs:  splitSubject(string(pattern)),
 		predicate:    o.predicate,
 		backpressure: o.backpressure,
 		ch:           make(chan Envelope, o.bufferSize),
@@ -483,6 +504,7 @@ func (b *MemoryBus) Close() error {
 	b.closed = true
 	subs := b.subscribers
 	b.subscribers = make(map[SubscriptionID]*memSub)
+	b.clearRouteCache()
 	b.mu.Unlock()
 
 	for _, sub := range subs {
@@ -500,7 +522,9 @@ func (b *MemoryBus) Close() error {
 
 func (b *MemoryBus) removeSub(id SubscriptionID) {
 	b.mu.Lock()
-	delete(b.subscribers, id)
+	if _, ok := b.subscribers[id]; ok {
+		delete(b.subscribers, id)
+		b.clearRouteCache()
+	}
 	b.mu.Unlock()
 }
-
