@@ -3,8 +3,8 @@ module github.com/GizClaw/flowcraft/bench
 go 1.25.0
 
 require (
-	github.com/GizClaw/flowcraft/sdk v0.1.12
-	github.com/GizClaw/flowcraft/sdkx v0.0.0
+	github.com/GizClaw/flowcraft/sdk v0.2.0
+	github.com/GizClaw/flowcraft/sdkx v0.2.0
 )
 
 require (
@@ -35,9 +35,4 @@ require (
 	golang.org/x/sync v0.20.0 // indirect
 	golang.org/x/sys v0.42.0 // indirect
 	golang.org/x/text v0.34.0 // indirect
-)
-
-replace (
-	github.com/GizClaw/flowcraft/sdk => ../sdk
-	github.com/GizClaw/flowcraft/sdkx => ../sdkx
 )
