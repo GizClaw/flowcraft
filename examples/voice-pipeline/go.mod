@@ -3,8 +3,8 @@ module github.com/GizClaw/flowcraft/examples/voice-pipeline
 go 1.25.0
 
 require (
-	github.com/GizClaw/flowcraft/sdk v0.1.7
-	github.com/GizClaw/flowcraft/sdkx v0.0.0
+	github.com/GizClaw/flowcraft/sdk v0.1.12
+	github.com/GizClaw/flowcraft/sdkx v0.1.14
 	github.com/charmbracelet/bubbles v0.20.0
 	github.com/charmbracelet/bubbletea v1.1.0
 	github.com/charmbracelet/lipgloss v0.13.0
@@ -12,11 +12,6 @@ require (
 	github.com/hajimehoshi/go-mp3 v0.3.4
 	github.com/mattn/go-runewidth v0.0.16
 	gopkg.in/yaml.v3 v3.0.1
-)
-
-replace (
-	github.com/GizClaw/flowcraft/sdk => ../../sdk
-	github.com/GizClaw/flowcraft/sdkx => ../../sdkx
 )
 
 require (
