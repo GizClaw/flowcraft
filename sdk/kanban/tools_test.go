@@ -201,22 +201,6 @@ func TestKanbanContext_Missing(t *testing.T) {
 	}
 }
 
-func TestTaskBoardContext(t *testing.T) {
-	tb := NewBoard("scope-tbc")
-	ctx := WithTaskBoard(context.Background(), tb)
-	got, ok := TaskBoardFrom(ctx)
-	if !ok || got != tb {
-		t.Fatal("TaskBoardFrom should return injected board")
-	}
-}
-
-func TestTaskBoardContext_Missing(t *testing.T) {
-	_, ok := TaskBoardFrom(context.Background())
-	if ok {
-		t.Fatal("expected not found for empty ctx")
-	}
-}
-
 func TestSubmitTool_DelayResponse(t *testing.T) {
 	sb := NewBoard("scope-delay")
 	sched := NewScheduler()

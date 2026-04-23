@@ -20,7 +20,6 @@ type ctxKey int
 const (
 	ctxKeyProducerID ctxKey = iota
 	ctxKeyKanban
-	ctxKeyTaskBoard
 )
 
 // WithProducerID injects the producer ID (e.g. agent ID) into the context.

@@ -149,12 +149,3 @@ func KanbanFrom(ctx context.Context) *Kanban {
 	k, _ := ctx.Value(ctxKeyKanban).(*Kanban)
 	return k
 }
-
-func WithTaskBoard(ctx context.Context, tb *Board) context.Context {
-	return context.WithValue(ctx, ctxKeyTaskBoard, tb)
-}
-
-func TaskBoardFrom(ctx context.Context) (*Board, bool) {
-	tb, ok := ctx.Value(ctxKeyTaskBoard).(*Board)
-	return tb, ok
-}
