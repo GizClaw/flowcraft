@@ -16,6 +16,15 @@
 //     compacted's hierarchical summarization. Most callers do not touch
 //     them directly.
 //
+// # Lifecycle
+//
+// [NewBuffer] returns a stateless History; nothing to drain. The
+// History returned by [NewCompacted] owns background ingest/archive
+// goroutines and satisfies the [Closer] sub-interface — callers that
+// own its lifetime should type-assert and Close on shutdown so async
+// work is not abandoned mid-flight. See the [Closer] godoc for the
+// canonical pattern.
+//
 // # Tools
 //
 // Two graph tools surface this package to LLMs: history_expand fetches

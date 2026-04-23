@@ -158,12 +158,15 @@ func (m *lt) Add(ctx context.Context, scope Scope, e Entry) (string, error) {
 	if err := m.validateScope(scope); err != nil {
 		return "", err
 	}
+	// Validate content before any derived work (ID hash, timestamps,
+	// embedding) so an empty payload fails fast and never shows up in
+	// debug logs or telemetry attributes.
+	if e.Content == "" {
+		return "", errors.New("recall: Add: content is required")
+	}
 	now := m.cfg.now()
 	if e.ID == "" {
 		e.ID = deterministicEntryID(scope, nil, 0, e.Content+"|"+now.Format(time.RFC3339Nano))
-	}
-	if e.Content == "" {
-		return "", errors.New("recall: Add: content is required")
 	}
 	if e.CreatedAt.IsZero() {
 		e.CreatedAt = now

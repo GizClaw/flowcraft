@@ -98,6 +98,7 @@ type config struct {
 	jobMaxAttempts int
 	jobBackoffBase time.Duration
 	jobBackoffMax  time.Duration
+	jobTimeout     time.Duration
 
 	requireUserID bool
 	allowGlobal   bool
@@ -198,6 +199,24 @@ func WithJobQueue(q JobQueue) Option { return func(c *config) { c.jobQueue = q }
 // JobQueue. Default 2.
 func WithAsyncWorkers(n int) Option { return func(c *config) { c.asyncWorkers = n } }
 
+// WithJobTimeout caps the per-job execution budget. A worker that
+// exceeds it sees its context canceled, the extractor / index call
+// returns ctx.Err(), and the job is rescheduled (or sent to dead via
+// the normal failOrRetry path). Defaults to 5 minutes; pass 0 to keep
+// the default.
+//
+// This bound also guarantees [Memory.Close] never blocks longer than
+// timeout + the time needed to drain currently-leased jobs, because
+// Close cancels the worker context which is propagated into Extract
+// and the index Upsert.
+func WithJobTimeout(d time.Duration) Option {
+	return func(c *config) {
+		if d > 0 {
+			c.jobTimeout = d
+		}
+	}
+}
+
 // WithJobRetry configures retry behaviour for async jobs. maxAttempts
 // <= 0 keeps default 5; either backoff <= 0 keeps the corresponding
 // default (1s base, 5m cap).
@@ -260,12 +279,20 @@ func WithJournal(j journal.Journal) Option { return func(c *config) { c.journal 
 // [Memory] contract plus the optional [Auditable] and [JobController]
 // sub-interfaces; callers that need the audit or job APIs obtain them
 // via type assertion on the Memory returned by [New].
+//
+// workerCtx / workerCancel propagate Close() into in-flight jobs: the
+// worker derives a per-job context from workerCtx with the configured
+// timeout, so cancelling workerCtx (Close) bounds Close()'s wait by the
+// extractor / index call's responsiveness to ctx cancellation.
 type lt struct {
 	cfg       config
 	idx       retrieval.Index
 	pipe      *pipeline.Pipeline
 	stopCh    chan struct{}
 	wgWorkers sync.WaitGroup
+
+	workerCtx    context.Context
+	workerCancel context.CancelFunc
 }
 
 var (
@@ -292,6 +319,7 @@ func New(idx retrieval.Index, opts ...Option) (Memory, error) {
 		jobMaxAttempts:     5,
 		jobBackoffBase:     time.Second,
 		jobBackoffMax:      5 * time.Minute,
+		jobTimeout:         5 * time.Minute,
 		sweeperInterval:    time.Hour,
 		sweeperBatchMax:    500,
 		now:                time.Now,
@@ -320,11 +348,14 @@ func New(idx retrieval.Index, opts ...Option) (Memory, error) {
 	if pipe == nil {
 		pipe = pipeline.LTM(cfg.embedder)
 	}
+	workerCtx, workerCancel := context.WithCancel(context.Background())
 	m := &lt{
-		cfg:    cfg,
-		idx:    wrapped,
-		pipe:   pipe,
-		stopCh: make(chan struct{}),
+		cfg:          cfg,
+		idx:          wrapped,
+		pipe:         pipe,
+		stopCh:       make(chan struct{}),
+		workerCtx:    workerCtx,
+		workerCancel: workerCancel,
 	}
 	for i := 0; i < cfg.asyncWorkers; i++ {
 		m.wgWorkers.Add(1)
@@ -370,8 +401,26 @@ func (m *lt) AwaitJob(ctx context.Context, id JobID, timeout time.Duration) (Job
 }
 
 // Close stops workers and flushes the queue.
+//
+// Close is bounded: cancelling workerCtx propagates into the per-job
+// context derived in handleJob, so an extractor or index call that
+// honours ctx.Done() will return promptly. Close still Wait()s on the
+// worker goroutines themselves, so a non-responsive backend can still
+// delay shutdown by up to its own internal timeout — but it can no
+// longer block forever on a stuck LLM call (the worst case is bounded
+// by [WithJobTimeout], default 5 minutes).
+//
+// Idempotent: subsequent calls observe a closed stopCh and a drained
+// WaitGroup and return immediately. workerCancel is also idempotent
+// per the context.CancelFunc contract.
 func (m *lt) Close() error {
-	close(m.stopCh)
+	select {
+	case <-m.stopCh:
+		// already closed
+	default:
+		close(m.stopCh)
+	}
+	m.workerCancel()
 	m.wgWorkers.Wait()
 	_ = m.cfg.jobQueue.Close()
 	return m.idx.Close()

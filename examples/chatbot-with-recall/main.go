@@ -16,6 +16,14 @@ import (
 func main() {
 	ctx := context.Background()
 	hist := history.NewBuffer(history.NewInMemoryStore(), history.WithBufferMax(20))
+	// NewBuffer does not satisfy history.Closer; if you swap in
+	// history.NewCompacted (or any implementation with background
+	// goroutines), the type-assert below drains them on shutdown.
+	defer func() {
+		if c, ok := hist.(history.Closer); ok {
+			c.Close()
+		}
+	}()
 	mem, err := recall.New(memidx.New(),
 		recall.WithLLM(&factExtractorLLM{}),
 		recall.WithRequireUserID(),

@@ -183,9 +183,17 @@ func (m *compactor) Clear(ctx context.Context, conversationID string) error {
 }
 
 // Close waits for all pending async ingest/archive goroutines to complete.
+// Idempotent: subsequent calls return immediately because there is no
+// state to release beyond the wait group, and a drained group's Wait
+// is a no-op.
 func (m *compactor) Close() {
 	m.wg.Wait()
 }
+
+// Compile-time guarantee that compactor satisfies the [Closer]
+// sub-interface — callers type-assert on the History returned from
+// [NewCompacted].
+var _ Closer = (*compactor)(nil)
 
 // Archive manually triggers archiving for this conversation.
 func (m *compactor) Archive(ctx context.Context, conversationID string) (ArchiveResult, error) {

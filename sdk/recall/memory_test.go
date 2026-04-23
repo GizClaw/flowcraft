@@ -266,6 +266,69 @@ func TestHistoryAndRollback(t *testing.T) {
 	}
 }
 
+// TestAddEmptyContentFailsFast pins the contract that recall.Add
+// validates Content before doing any derived work (ID hash, timestamps,
+// embedding). Regression test for the previous order which generated a
+// throwaway ID for an entry that was about to be rejected.
+func TestAddEmptyContentFailsFast(t *testing.T) {
+	idx := memidx.New()
+	m, _ := recall.New(idx, recall.WithRequireUserID())
+	defer m.Close()
+	_, err := m.Add(context.Background(), newScope(), recall.Entry{Content: ""})
+	if err == nil || !strings.Contains(err.Error(), "content is required") {
+		t.Fatalf("expected content-required error, got %v", err)
+	}
+}
+
+// blockingLLM blocks Generate until ctx is canceled; used to exercise
+// the per-job timeout / Close cancellation path.
+type blockingLLM struct{}
+
+func (blockingLLM) Generate(ctx context.Context, _ []llm.Message, _ ...llm.GenerateOption) (llm.Message, llm.TokenUsage, error) {
+	<-ctx.Done()
+	return llm.Message{}, llm.TokenUsage{}, ctx.Err()
+}
+func (blockingLLM) GenerateStream(_ context.Context, _ []llm.Message, _ ...llm.GenerateOption) (llm.StreamMessage, error) {
+	return nil, errors.New("not used")
+}
+
+// TestCloseCancelsStuckJob asserts Memory.Close cancels in-flight
+// async jobs instead of blocking on the worker WaitGroup forever.
+// Without workerCancel a stuck LLM (Extractor that never returns)
+// would pin Close until WithJobTimeout elapses (default 5min);
+// with cancellation Close returns within milliseconds.
+func TestCloseCancelsStuckJob(t *testing.T) {
+	idx := memidx.New()
+	m, err := recall.New(idx,
+		recall.WithLLM(blockingLLM{}),
+		recall.WithRequireUserID(),
+		recall.WithAsyncWorkers(1),
+		recall.WithJobTimeout(2*time.Minute), // long enough that Close, not timeout, is what unblocks us
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.SaveAsync(context.Background(), newScope(), []llm.Message{
+		{Role: model.RoleUser, Parts: []model.Part{{Type: model.PartText, Text: "hi"}}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// Give the worker a moment to lease the job and enter the
+	// blocking Generate call before we cancel.
+	time.Sleep(100 * time.Millisecond)
+
+	done := make(chan struct{})
+	go func() {
+		_ = m.Close()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Close did not return within 5s; workerCancel is not propagating into the per-job context")
+	}
+}
+
 func TestForget(t *testing.T) {
 	ctx := context.Background()
 	idx := memidx.New()

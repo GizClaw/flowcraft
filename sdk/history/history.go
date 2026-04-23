@@ -44,3 +44,27 @@ type Budget struct {
 
 // IsZero reports whether b carries no explicit limits.
 func (b Budget) IsZero() bool { return b.MaxTokens == 0 && b.MaxMessages == 0 }
+
+// Closer is implemented by [History] flavours that own background work
+// (goroutines, timers, file handles) and must be drained on shutdown.
+//
+// [NewBuffer] returns a History that does NOT need draining; its return
+// value will not satisfy this interface. [NewCompacted] does — its
+// async ingest/archive goroutines outlive each Append call. Production
+// callers should always type-assert and Close when they own the
+// History's lifetime:
+//
+//	hist := history.NewCompacted(store, llm, ws)
+//	defer func() {
+//	    if c, ok := hist.(history.Closer); ok {
+//	        c.Close()
+//	    }
+//	}()
+//
+// Close blocks until all in-flight background work for already-accepted
+// Appends finishes; it does NOT cancel them. Implementations are
+// expected to make Close idempotent and safe to call from any
+// goroutine.
+type Closer interface {
+	Close()
+}

@@ -239,6 +239,14 @@ func (q *MemoryJobQueue) AllIDs() []string {
 // Worker loop — owned by *lt
 // -----------------------------------------------------------------------------
 
+// bookkeepingTimeout caps how long we wait for jobqueue accounting
+// (Complete / Fail / Reschedule) to land after a job finishes or its
+// per-job context is canceled. These calls run on a fresh ctx — derived
+// from context.Background, NOT workerCtx — so Close()'s cancellation
+// of workerCtx does not abort the very write that records the job's
+// outcome (otherwise a leased job could stay "running" forever).
+const bookkeepingTimeout = 5 * time.Second
+
 func (m *lt) worker() {
 	defer m.wgWorkers.Done()
 	for {
@@ -247,11 +255,21 @@ func (m *lt) worker() {
 			return
 		default:
 		}
-		ctx := context.Background()
-		rec, ok, err := m.cfg.jobQueue.Lease(ctx, m.cfg.now())
+		// Lease is short and uses workerCtx so Close() unblocks any
+		// blocking SQL Lease implementations promptly.
+		rec, ok, err := m.cfg.jobQueue.Lease(m.workerCtx, m.cfg.now())
 		if err != nil {
+			// Treat ctx.Canceled (Close) as a clean exit signal, not a
+			// queue error worth logging.
+			if m.workerCtx.Err() != nil {
+				return
+			}
 			m.log("ltm.worker.lease: %v", err)
-			time.Sleep(100 * time.Millisecond)
+			select {
+			case <-m.stopCh:
+				return
+			case <-time.After(100 * time.Millisecond):
+			}
 			continue
 		}
 		if !ok {
@@ -262,35 +280,53 @@ func (m *lt) worker() {
 			}
 			continue
 		}
-		m.handleJob(ctx, rec)
+		m.handleJob(rec)
 	}
 }
 
-func (m *lt) handleJob(ctx context.Context, rec *JobRecord) {
+// handleJob runs one leased job under a per-job context derived from
+// workerCtx with the configured timeout. Two failure modes share the
+// retry path:
+//
+//  1. extractor / upsert returned an error → failOrRetry as before.
+//  2. ctx was canceled (timeout or Close) → ctx.Err() flows through
+//     extractor's return value and lands in failOrRetry too. The job
+//     is rescheduled with a short backoff so a transient cancel does
+//     not advance attempts beyond the cap on shutdown.
+func (m *lt) handleJob(rec *JobRecord) {
+	jobCtx, cancel := context.WithTimeout(m.workerCtx, m.cfg.jobTimeout)
+	defer cancel()
+
 	var extractOpts []ExtractOption
 	if m.cfg.saveWithCtx {
-		if existing := m.gatherExistingFacts(ctx, rec.Payload.Scope, rec.Payload.Messages); len(existing) > 0 {
+		if existing := m.gatherExistingFacts(jobCtx, rec.Payload.Scope, rec.Payload.Messages); len(existing) > 0 {
 			extractOpts = append(extractOpts, WithExistingFacts(existing))
 		}
 	}
-	facts, err := m.cfg.extractor.Extract(ctx, rec.Payload.Scope, rec.Payload.Messages, extractOpts...)
+	facts, err := m.cfg.extractor.Extract(jobCtx, rec.Payload.Scope, rec.Payload.Messages, extractOpts...)
 	if err != nil {
-		m.failOrRetry(ctx, rec, err)
+		m.failOrRetry(rec, err)
 		return
 	}
-	ids, err := m.upsertFacts(ctx, rec.Payload.Scope, rec.Payload.Messages, facts, m.cfg.now())
+	ids, err := m.upsertFacts(jobCtx, rec.Payload.Scope, rec.Payload.Messages, facts, m.cfg.now())
 	if err != nil {
-		m.failOrRetry(ctx, rec, err)
+		m.failOrRetry(rec, err)
 		return
 	}
-	if err := m.cfg.jobQueue.Complete(ctx, rec.ID, ids); err != nil {
+	// Bookkeeping uses a fresh ctx so a workerCtx cancel during this
+	// last-mile write does not orphan a successful job in 'running'.
+	bookCtx, bookCancel := context.WithTimeout(context.Background(), bookkeepingTimeout)
+	defer bookCancel()
+	if err := m.cfg.jobQueue.Complete(bookCtx, rec.ID, ids); err != nil {
 		m.log("ltm.worker.complete: %v", err)
 	}
 }
 
-func (m *lt) failOrRetry(ctx context.Context, rec *JobRecord, err error) {
+func (m *lt) failOrRetry(rec *JobRecord, err error) {
+	bookCtx, cancel := context.WithTimeout(context.Background(), bookkeepingTimeout)
+	defer cancel()
 	if rec.Attempts >= m.cfg.jobMaxAttempts {
-		_ = m.cfg.jobQueue.Fail(ctx, rec.ID, err.Error())
+		_ = m.cfg.jobQueue.Fail(bookCtx, rec.ID, err.Error())
 		m.log("ltm.worker.dead %s: %v", rec.ID, err)
 		return
 	}
@@ -306,5 +342,5 @@ func (m *lt) failOrRetry(ctx context.Context, rec *JobRecord, err error) {
 		d = m.cfg.jobBackoffMax
 	}
 	next := m.cfg.now().Add(d)
-	_ = m.cfg.jobQueue.Reschedule(ctx, rec.ID, next, err.Error())
+	_ = m.cfg.jobQueue.Reschedule(bookCtx, rec.ID, next, err.Error())
 }
