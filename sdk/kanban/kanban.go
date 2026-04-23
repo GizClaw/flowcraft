@@ -154,7 +154,7 @@ func WithAgentValidator(v AgentValidator) Option {
 // rule created / fired / disabled). Pass your bus to the Board instead, or
 // subscribe to board.Bus() and forward as needed. This option will be
 // removed in v0.2.0.
-func WithEventBus(_ event.LegacyEventBus) Option {
+func WithEventBus(_ event.Bus) Option {
 	return func(*Kanban) {}
 }
 
@@ -255,7 +255,7 @@ func (k *Kanban) Board() *Board { return k.board }
 
 // Bus returns the event bus that publishes every Kanban state transition.
 // It is an alias for Board().Bus(); both return the same underlying bus.
-func (k *Kanban) Bus() event.LegacyEventBus { return k.board.Bus() }
+func (k *Kanban) Bus() event.Bus { return k.board.Bus() }
 
 // Submit produces a task card on the board and executes via AgentExecutor.
 // All tasks are asynchronous; results are delivered via callback.

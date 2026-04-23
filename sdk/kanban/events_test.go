@@ -25,11 +25,11 @@ func TestBus_PublishesTaskSubmitted(t *testing.T) {
 		t.Fatalf("Submit: %v", err)
 	}
 
-	evs := drainEvents(sub, time.Second, 1, func(e event.Event) bool {
-		return string(e.Type) == EventTaskSubmitted
+	evs := drainEvents(sub, time.Second, 1, func(e event.Envelope) bool {
+		return kindOf(e) == EventTaskSubmitted
 	})
-	if !containsType(evs, EventTaskSubmitted) {
-		t.Fatalf("expected %q on Bus(), saw types: %v", EventTaskSubmitted, eventTypes(evs))
+	if !containsKind(evs, EventTaskSubmitted) {
+		t.Fatalf("expected %q on Bus(), saw kinds: %v", EventTaskSubmitted, eventKinds(evs))
 	}
 }
 
@@ -64,8 +64,8 @@ func TestBus_PublishesClaimAndDone(t *testing.T) {
 
 	evs := drainEvents(sub, time.Second, 0, nil)
 	for _, want := range []string{EventTaskSubmitted, EventTaskClaimed, EventTaskCompleted} {
-		if !containsType(evs, want) {
-			t.Errorf("expected %q on Bus(), saw types: %v", want, eventTypes(evs))
+		if !containsKind(evs, want) {
+			t.Errorf("expected %q on Bus(), saw kinds: %v", want, eventKinds(evs))
 		}
 	}
 }
@@ -91,16 +91,16 @@ func TestBus_PublishesTaskFailedFromExecutorError(t *testing.T) {
 	}
 	k.Stop()
 
-	evs := drainEvents(sub, 2*time.Second, 1, func(e event.Event) bool {
-		return string(e.Type) == EventTaskFailed
+	evs := drainEvents(sub, 2*time.Second, 1, func(e event.Envelope) bool {
+		return kindOf(e) == EventTaskFailed
 	})
 	for _, e := range evs {
-		if string(e.Type) != EventTaskFailed {
+		if kindOf(e) != EventTaskFailed {
 			continue
 		}
-		p, ok := e.Payload.(TaskFailedPayload)
-		if !ok {
-			t.Fatalf("payload type = %T, want TaskFailedPayload", e.Payload)
+		var p TaskFailedPayload
+		if err := e.Decode(&p); err != nil {
+			t.Fatalf("Decode TaskFailedPayload: %v", err)
 		}
 		if p.Error != "agent down" {
 			t.Errorf("payload.Error = %q, want %q", p.Error, "agent down")
@@ -110,7 +110,92 @@ func TestBus_PublishesTaskFailedFromExecutorError(t *testing.T) {
 		}
 		return
 	}
-	t.Fatalf("expected EventTaskFailed on Bus(), saw types: %v", eventTypes(evs))
+	t.Fatalf("expected EventTaskFailed on Bus(), saw kinds: %v", eventKinds(evs))
+}
+
+// ---------------------------------------------------------------------------
+// Subject convention: each kind maps to a card- / cron-scoped subject and
+// carries the well-known headers.
+// ---------------------------------------------------------------------------
+
+func TestBus_SubjectAndHeadersForTaskSubmitted(t *testing.T) {
+	t.Parallel()
+	k, sb := newKanban(t, WithConfig(KanbanConfig{MaxPendingTasks: 100}))
+	sub := subscribeBus(t, sb)
+
+	cardID, err := k.Submit(context.Background(), TaskOptions{Query: "subject check", TargetAgentID: "a"})
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+
+	evs := drainEvents(sub, time.Second, 1, func(e event.Envelope) bool {
+		return kindOf(e) == EventTaskSubmitted
+	})
+	for _, e := range evs {
+		if kindOf(e) != EventTaskSubmitted {
+			continue
+		}
+		want := subjTaskSubmitted(cardID)
+		if e.Subject != want {
+			t.Errorf("Subject = %q, want %q", e.Subject, want)
+		}
+		if got := e.Header(HeaderCardID); got != cardID {
+			t.Errorf("Header[card_id] = %q, want %q", got, cardID)
+		}
+		if got := e.Header(HeaderKanbanKind); got != EventTaskSubmitted {
+			t.Errorf("Header[kanban_kind] = %q, want %q", got, EventTaskSubmitted)
+		}
+		if e.Source != sb.ScopeID() {
+			t.Errorf("Source = %q, want %q", e.Source, sb.ScopeID())
+		}
+		return
+	}
+	t.Fatalf("missing %q on Bus(), saw kinds: %v", EventTaskSubmitted, eventKinds(evs))
+}
+
+func TestBus_PatternCardScopesToSingleCard(t *testing.T) {
+	t.Parallel()
+	k, sb := newKanban(t, WithConfig(KanbanConfig{MaxPendingTasks: 100}))
+
+	// Submit a card first so we know its ID, then subscribe to PatternCard
+	// for that ID, then submit a second card. Only the first card's
+	// follow-up events would land on a per-card subscription, but in this
+	// scenario nothing further happens to either card — so we settle for
+	// the weaker guarantee that the *all-cards* fan-out has produced two
+	// distinct subjects, one per card_id.
+	allSub := subscribeBus(t, sb)
+
+	id1, err := k.Submit(context.Background(), TaskOptions{Query: "first", TargetAgentID: "a"})
+	if err != nil {
+		t.Fatalf("Submit #1: %v", err)
+	}
+	id2, err := k.Submit(context.Background(), TaskOptions{Query: "second", TargetAgentID: "a"})
+	if err != nil {
+		t.Fatalf("Submit #2: %v", err)
+	}
+	if id1 == id2 {
+		t.Fatalf("Submit returned same id twice: %q", id1)
+	}
+
+	want := map[string]event.Subject{
+		id1: subjTaskSubmitted(id1),
+		id2: subjTaskSubmitted(id2),
+	}
+	got := map[string]event.Subject{}
+	for _, e := range drainEvents(allSub, 500*time.Millisecond, 2, func(e event.Envelope) bool {
+		return kindOf(e) == EventTaskSubmitted
+	}) {
+		if kindOf(e) != EventTaskSubmitted {
+			continue
+		}
+		got[e.Header(HeaderCardID)] = e.Subject
+	}
+
+	for id, w := range want {
+		if got[id] != w {
+			t.Errorf("card %q subject = %q, want %q", id, got[id], w)
+		}
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -160,7 +245,6 @@ func TestBus_ReconstructsCardsFromEvents(t *testing.T) {
 		}
 	}
 
-	// Cards() = ground truth, sorted by ID.
 	type stateRow struct {
 		id     string
 		status string
@@ -175,25 +259,28 @@ func TestBus_ReconstructsCardsFromEvents(t *testing.T) {
 		return out
 	}()
 
-	// Bus() = derived state by replaying event payloads.
 	got := func() []stateRow {
 		state := make(map[string]string)
 		for _, ev := range drainEvents(sub, time.Second, 0, nil) {
-			switch ev.Type {
+			switch kindOf(ev) {
 			case EventTaskSubmitted:
-				if p, ok := ev.Payload.(TaskSubmittedPayload); ok {
+				var p TaskSubmittedPayload
+				if ev.Decode(&p) == nil {
 					state[p.CardID] = string(CardPending)
 				}
 			case EventTaskClaimed:
-				if p, ok := ev.Payload.(TaskClaimedPayload); ok {
+				var p TaskClaimedPayload
+				if ev.Decode(&p) == nil {
 					state[p.CardID] = string(CardClaimed)
 				}
 			case EventTaskCompleted:
-				if p, ok := ev.Payload.(TaskCompletedPayload); ok {
+				var p TaskCompletedPayload
+				if ev.Decode(&p) == nil {
 					state[p.CardID] = string(CardDone)
 				}
 			case EventTaskFailed:
-				if p, ok := ev.Payload.(TaskFailedPayload); ok {
+				var p TaskFailedPayload
+				if ev.Decode(&p) == nil {
 					state[p.CardID] = string(CardFailed)
 				}
 			}
@@ -217,30 +304,32 @@ func TestBus_ReconstructsCardsFromEvents(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Envelope: every payload carries Version=payloadVersion regardless of input.
+// stampVersion: every payload type carries Version=payloadVersion.
 // ---------------------------------------------------------------------------
 
-func TestEventEnvelope_StampsVersion(t *testing.T) {
+func TestStampVersion_StampsAllPayloadTypes(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
 		name    string
 		payload any
-		version func(event.Event) int
+		version func(any) int
 	}{
-		{"task.submitted", TaskSubmittedPayload{CardID: "c1"}, func(e event.Event) int { return e.Payload.(TaskSubmittedPayload).Version }},
-		{"task.claimed", TaskClaimedPayload{CardID: "c1"}, func(e event.Event) int { return e.Payload.(TaskClaimedPayload).Version }},
-		{"task.completed", TaskCompletedPayload{CardID: "c1"}, func(e event.Event) int { return e.Payload.(TaskCompletedPayload).Version }},
-		{"task.failed", TaskFailedPayload{CardID: "c1"}, func(e event.Event) int { return e.Payload.(TaskFailedPayload).Version }},
-		{"cron.created", CronRuleCreatedPayload{ScheduleID: "s1"}, func(e event.Event) int { return e.Payload.(CronRuleCreatedPayload).Version }},
-		{"cron.fired", CronRuleFiredPayload{ScheduleID: "s1"}, func(e event.Event) int { return e.Payload.(CronRuleFiredPayload).Version }},
-		{"cron.disabled", CronRuleDisabledPayload{ScheduleID: "s1"}, func(e event.Event) int { return e.Payload.(CronRuleDisabledPayload).Version }},
+		{"task.submitted", TaskSubmittedPayload{CardID: "c1"}, func(p any) int { return p.(TaskSubmittedPayload).Version }},
+		{"task.claimed", TaskClaimedPayload{CardID: "c1"}, func(p any) int { return p.(TaskClaimedPayload).Version }},
+		{"task.completed", TaskCompletedPayload{CardID: "c1"}, func(p any) int { return p.(TaskCompletedPayload).Version }},
+		{"task.failed", TaskFailedPayload{CardID: "c1"}, func(p any) int { return p.(TaskFailedPayload).Version }},
+		{"callback.start", CallbackStartPayload{CardID: "c1"}, func(p any) int { return p.(CallbackStartPayload).Version }},
+		{"callback.done", CallbackDonePayload{CardID: "c1"}, func(p any) int { return p.(CallbackDonePayload).Version }},
+		{"cron.created", CronRuleCreatedPayload{ScheduleID: "s1"}, func(p any) int { return p.(CronRuleCreatedPayload).Version }},
+		{"cron.fired", CronRuleFiredPayload{ScheduleID: "s1"}, func(p any) int { return p.(CronRuleFiredPayload).Version }},
+		{"cron.disabled", CronRuleDisabledPayload{ScheduleID: "s1"}, func(p any) int { return p.(CronRuleDisabledPayload).Version }},
 	}
 	for _, c := range cases {
 		c := c
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
-			ev := eventEnvelope("kanban."+c.name, c.payload)
-			if v := c.version(ev); v != payloadVersion {
+			out := stampVersion(c.payload)
+			if v := c.version(out); v != payloadVersion {
 				t.Fatalf("Version = %d, want %d", v, payloadVersion)
 			}
 		})
@@ -248,22 +337,25 @@ func TestEventEnvelope_StampsVersion(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// helpers
+// helpers — env.Header(HeaderKanbanKind) is the canonical "what kind of
+// kanban event is this" lookup; subjects are scoped per-card / per-rule.
 // ---------------------------------------------------------------------------
 
-func containsType(evs []event.Event, t string) bool {
+func kindOf(e event.Envelope) string { return e.Header(HeaderKanbanKind) }
+
+func containsKind(evs []event.Envelope, kind string) bool {
 	for _, e := range evs {
-		if string(e.Type) == t {
+		if kindOf(e) == kind {
 			return true
 		}
 	}
 	return false
 }
 
-func eventTypes(evs []event.Event) []string {
+func eventKinds(evs []event.Envelope) []string {
 	out := make([]string, len(evs))
 	for i, e := range evs {
-		out[i] = string(e.Type)
+		out[i] = kindOf(e)
 	}
 	return out
 }
