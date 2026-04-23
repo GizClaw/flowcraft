@@ -5,7 +5,8 @@
 // Prerequisites (macOS): brew install portaudio
 //
 // LLM parameters are defined in the react_agent graph's llm node config (matching
-// FlowCraft's GraphDefinition). Credentials: see deploy/.env.example.
+// FlowCraft's GraphDefinition). Credentials are read from environment variables
+// (optionally sourced from a repo-root `.env` file); see README for the list.
 //
 // Usage: go run .   (from this directory)
 package main
@@ -82,7 +83,7 @@ func requireVoiceCredentials() (bdAppID, bdToken, mmAPIKey string) {
 	mmAPIKey = getenvMinimaxAPIKey()
 	if bdAppID == "" || bdToken == "" || mmAPIKey == "" {
 		fmt.Fprintf(os.Stderr, "error: set FLOWCRAFT_VOICE_BYTEDANCE_APP_ID, FLOWCRAFT_VOICE_BYTEDANCE_ACCESS_TOKEN, "+
-			"FLOWCRAFT_VOICE_MINIMAX_API_KEY (see deploy/.env.example), or legacy BYTEDANCE_* / ANIMUS_* / FLOWCRAFT_TEST_MINIMAX\n")
+			"FLOWCRAFT_VOICE_MINIMAX_API_KEY, or legacy BYTEDANCE_* / ANIMUS_* / FLOWCRAFT_TEST_MINIMAX\n")
 		os.Exit(1)
 	}
 	return bdAppID, bdToken, mmAPIKey

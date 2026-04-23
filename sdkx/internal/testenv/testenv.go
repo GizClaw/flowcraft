@@ -15,16 +15,18 @@ import (
 
 var once sync.Once
 
-// Load reads deploy/.env (relative to the repository root) into the process
-// environment. Existing env vars are never overwritten. The function is
-// idempotent — concurrent or repeated calls are safe.
+// Load reads a repo-root `.env` file into the process environment. The
+// lookup walks up from the test's working directory so it works regardless
+// of which package directory `go test` is invoked from. Existing env vars
+// are never overwritten. The function is idempotent — concurrent or
+// repeated calls are safe.
 func Load() {
 	once.Do(func() {
 		candidates := []string{
-			filepath.Join("deploy", ".env"),
-			filepath.Join("..", "deploy", ".env"),
-			filepath.Join("..", "..", "deploy", ".env"),
-			filepath.Join("..", "..", "..", "deploy", ".env"),
+			".env",
+			filepath.Join("..", ".env"),
+			filepath.Join("..", "..", ".env"),
+			filepath.Join("..", "..", "..", ".env"),
 		}
 		for _, p := range candidates {
 			if loadFile(p) {

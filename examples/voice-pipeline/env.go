@@ -19,7 +19,6 @@ func getenvFirst(keys ...string) string {
 
 func loadDotEnv() {
 	candidates := []string{
-		filepath.Join("..", "..", "deploy", ".env"),
 		filepath.Join("..", "..", ".env"),
 		".env",
 		filepath.Join("examples", "voice-pipeline", ".env"),
@@ -47,7 +46,7 @@ func loadDotEnv() {
 	}
 }
 
-// Voice credentials: prefer FLOWCRAFT_VOICE_* (see deploy/.env.example), then legacy names.
+// Voice credentials: prefer FLOWCRAFT_VOICE_*, then legacy names.
 
 func getenvBytedanceAppID() string {
 	return getenvFirst("FLOWCRAFT_VOICE_BYTEDANCE_APP_ID", "BYTEDANCE_APP_ID", "ANIMUS_BYTEDANCE_APP_ID")
