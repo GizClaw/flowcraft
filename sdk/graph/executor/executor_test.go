@@ -389,13 +389,15 @@ func TestLocalExecutor_AbortBetweenNodes(t *testing.T) {
 }
 
 func TestLocalExecutor_EventBus_Integration(t *testing.T) {
-	bus := event.NewLegacyMemoryBus()
+	bus := event.NewMemoryBus()
 	defer func() { _ = bus.Close() }()
 
 	ctx := context.Background()
-	sub, _ := bus.Subscribe(ctx, event.EventFilter{
-		Types: []event.EventType{event.EventGraphStart, event.EventGraphEnd},
-	})
+	const runID = "rint-1"
+	sub, err := bus.Subscribe(ctx, PatternRun(runID))
+	if err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
 
 	g := buildGraph("test", "start",
 		map[string]graph.Node{
@@ -408,34 +410,41 @@ func TestLocalExecutor_EventBus_Integration(t *testing.T) {
 
 	board := graph.NewBoard()
 	exec := NewLocalExecutor()
-	_, err := exec.Execute(ctx, g, board, WithEventBus(bus))
+	_, err = exec.Execute(ctx, g, board, WithEventBus(bus), WithRunID(runID))
 	if err != nil {
 		t.Fatalf("execute failed: %v", err)
 	}
 
-	var events []event.Event
+	wantStart := subjGraphStart(runID)
+	wantEnd := subjGraphEnd(runID)
+
+	var envelopes []event.Envelope
 	timeout := time.After(time.Second)
+loop:
 	for {
 		select {
-		case ev, ok := <-sub.Events():
+		case env, ok := <-sub.C():
 			if !ok {
-				goto done
+				break loop
 			}
-			events = append(events, ev)
-			if ev.Type == event.EventGraphEnd {
-				goto done
+			envelopes = append(envelopes, env)
+			if env.Subject == wantEnd {
+				break loop
 			}
 		case <-timeout:
-			goto done
+			break loop
 		}
 	}
-done:
 
-	if len(events) < 2 {
-		t.Fatalf("expected at least 2 events (start+end), got %d", len(events))
+	if len(envelopes) < 2 {
+		t.Fatalf("expected at least 2 envelopes (start+end), got %d", len(envelopes))
 	}
-	if events[0].Type != event.EventGraphStart {
-		t.Fatalf("first event should be graph.start, got %s", events[0].Type)
+	if envelopes[0].Subject != wantStart {
+		t.Fatalf("first envelope should be %s, got %s", wantStart, envelopes[0].Subject)
+	}
+	// Headers must carry the run id for downstream predicate filters.
+	if envelopes[0].RunID() != runID {
+		t.Fatalf("envelope missing run_id header, got %q", envelopes[0].RunID())
 	}
 }
 

@@ -5,6 +5,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/GizClaw/flowcraft/sdk/event"
 	"github.com/GizClaw/flowcraft/sdk/graph"
@@ -196,7 +197,7 @@ func TestRunner_ConcurrentSafety(t *testing.T) {
 }
 
 func TestRunner_WithEventBus(t *testing.T) {
-	bus := event.NewLegacyMemoryBus()
+	bus := event.NewMemoryBus()
 	defer func() { _ = bus.Close() }()
 
 	def := &graph.GraphDefinition{
@@ -219,22 +220,35 @@ func TestRunner_WithEventBus(t *testing.T) {
 		t.Fatal("Bus() should return the configured bus")
 	}
 
-	sub, _ := bus.Subscribe(context.Background(), event.EventFilter{
-		Types: []event.EventType{event.EventGraphStart, event.EventGraphEnd},
-	})
+	const runID = "rb-1"
+	sub, err := bus.Subscribe(context.Background(), PatternRun(runID), event.WithBufferSize(16))
+	if err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
 
-	_, err = runner.Run(context.Background(), nil)
+	_, err = runner.Run(context.Background(), nil, WithRunID(runID))
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 
-	got := 0
-	for got < 2 {
+	wantStart := subjGraphStart(runID)
+	wantEnd := subjGraphEnd(runID)
+	sawStart, sawEnd := false, false
+	timeout := time.After(time.Second)
+	for !(sawStart && sawEnd) {
 		select {
-		case <-sub.Events():
-			got++
-		default:
-			t.Fatalf("expected 2 events (start+end), got %d", got)
+		case env, ok := <-sub.C():
+			if !ok {
+				t.Fatalf("subscription closed before seeing start+end (sawStart=%v sawEnd=%v)", sawStart, sawEnd)
+			}
+			if env.Subject == wantStart {
+				sawStart = true
+			}
+			if env.Subject == wantEnd {
+				sawEnd = true
+			}
+		case <-timeout:
+			t.Fatalf("timeout waiting for start+end (sawStart=%v sawEnd=%v)", sawStart, sawEnd)
 		}
 	}
 }
