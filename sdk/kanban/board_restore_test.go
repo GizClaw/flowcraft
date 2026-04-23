@@ -6,13 +6,13 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// RestoreTaskBoard — rebuild a board from persisted KanbanCardModel rows.
+// RestoreBoard — rebuild a board from persisted KanbanCardModel rows.
 //
 // Bug 5 (issue #28): historical CreatedAt/UpdatedAt must survive restore so
 // timeline/SLA metrics keep reporting accurate elapsed times.
 // ---------------------------------------------------------------------------
 
-func TestRestoreTaskBoard_AllStates(t *testing.T) {
+func TestRestoreBoard_AllStates(t *testing.T) {
 	t.Parallel()
 	now := time.Now()
 	cards := []*KanbanCardModel{
@@ -42,7 +42,7 @@ func TestRestoreTaskBoard_AllStates(t *testing.T) {
 		},
 	}
 
-	tb := RestoreTaskBoard("s1", cards)
+	tb := RestoreBoard("s1", cards)
 	t.Cleanup(tb.Close)
 
 	if tb.ScopeID() != "s1" {
@@ -76,9 +76,9 @@ func TestRestoreTaskBoard_AllStates(t *testing.T) {
 	}
 }
 
-func TestRestoreTaskBoard_Empty(t *testing.T) {
+func TestRestoreBoard_Empty(t *testing.T) {
 	t.Parallel()
-	tb := RestoreTaskBoard("s-empty", nil)
+	tb := RestoreBoard("s-empty", nil)
 	t.Cleanup(tb.Close)
 
 	if tb.ScopeID() != "s-empty" {
@@ -90,13 +90,13 @@ func TestRestoreTaskBoard_Empty(t *testing.T) {
 }
 
 // Bug 5: historical timestamps must not be replaced by time.Now() during
-// the synthetic Claim/Done/Fail calls RestoreTaskBoard makes internally.
-func TestRestoreTaskBoard_PreservesTimestamps(t *testing.T) {
+// the synthetic Claim/Done/Fail calls RestoreBoard makes internally.
+func TestRestoreBoard_PreservesTimestamps(t *testing.T) {
 	t.Parallel()
 	created := time.Date(2024, 1, 2, 10, 0, 0, 0, time.UTC)
 	updated := time.Date(2024, 1, 2, 10, 5, 30, 0, time.UTC)
 
-	tb := RestoreTaskBoard("s1", []*KanbanCardModel{{
+	tb := RestoreBoard("s1", []*KanbanCardModel{{
 		ID: "c-old", RuntimeID: "s1", Type: "task", Status: "done",
 		Producer: "copilot", Consumer: "agent-1",
 		Query: "q", TargetAgentID: "agent-1", Output: "ok",
@@ -126,7 +126,7 @@ func TestRestoreTaskBoard_PreservesTimestamps(t *testing.T) {
 	}
 }
 
-// WithTimestamps is the public hook RestoreTaskBoard now uses internally.
+// WithTimestamps is the public hook RestoreBoard now uses internally.
 // Verify it overrides Produce's default time.Now() but does not break the
 // default path when not supplied.
 func TestBoard_WithTimestamps(t *testing.T) {

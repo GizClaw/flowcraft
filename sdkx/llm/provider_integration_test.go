@@ -28,6 +28,12 @@ import (
 // Env is the single env var containing a JSON config:
 //
 //	{"provider":"azure","api_key":"...","model":"gpt-5","base_url":"...","caps":{"no_temperature":true}}
+//
+// The "caps" sub-object is a test-fixture convention only — it is parsed
+// by capsHas below to decide whether to skip scenarios that need an
+// unsupported capability (e.g. temperature on a model that rejects it).
+// llm.NewFromConfig itself ignores the field; pass real caps through
+// ProviderConfig.Caps / ModelConfig.Caps when going through DefaultResolver.
 type providerSpec struct {
 	Provider string // llm.RegisterProvider name
 	Env      string // env var holding the JSON config

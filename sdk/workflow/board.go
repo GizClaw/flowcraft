@@ -215,7 +215,6 @@ func RestoreBoard(snap *BoardSnapshot) *Board {
 	} else {
 		b.channels[MainChannel] = []model.Message{}
 	}
-	migrateVarsMessages(b)
 	return b
 }
 
@@ -234,21 +233,9 @@ func (b *Board) RestoreFrom(snap *BoardSnapshot) {
 			copy(cp, msgs)
 			b.channels[k] = cp
 		}
-	}
-	migrateVarsMessages(b)
-}
-
-// Deprecated: migrateVarsMessages moves legacy vars["messages"] into the main
-// channel. Remove after v2 migration window.
-func migrateVarsMessages(b *Board) {
-	if msgs, ok := b.vars["messages"].([]model.Message); ok {
-		if len(b.channels[MainChannel]) == 0 {
-			cp := make([]model.Message, len(msgs))
-			copy(cp, msgs)
-			b.channels[MainChannel] = cp
-		}
-	}
-	if len(b.channels) == 0 {
+	} else {
+		// Mirror RestoreBoard / NewBoard: every Board must expose
+		// MainChannel even when the snapshot didn't carry channels.
 		b.channels[MainChannel] = []model.Message{}
 	}
 }

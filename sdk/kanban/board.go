@@ -81,7 +81,7 @@ func (w *watcher) pump() {
 	}
 }
 
-// Board is the kanban task board: card coordination + scope + LegacyEventBus.
+// Board is the kanban task board: card coordination + scope + event bus.
 // Graph execution uses workflow.Board separately (see sdk/workflow).
 type Board struct {
 	cards       []*Card
@@ -105,11 +105,6 @@ type Board struct {
 	// only — live watchers never lose events.
 	watcherDropped atomic.Int64
 }
-
-// TaskBoard is a legacy alias for Board.
-//
-// Deprecated: Use Board directly. Removed in v0.2.0.
-type TaskBoard = Board
 
 // BoardOption configures optional Board parameters.
 type BoardOption func(*Board)
@@ -143,11 +138,6 @@ func NewBoard(scopeID string, opts ...BoardOption) *Board {
 	}
 	return b
 }
-
-// NewTaskBoard is an alias for NewBoard.
-//
-// Deprecated: Use NewBoard directly. Removed in v0.2.0.
-func NewTaskBoard(scopeID string) *Board { return NewBoard(scopeID) }
 
 // Bus returns the persistent event Bus bound to the board.
 func (b *Board) Bus() event.Bus { return b.bus }
@@ -625,10 +615,10 @@ func (b *Board) Topology() Topology {
 	return Topology{Nodes: nodes, Edges: edges}
 }
 
-// RestoreTaskBoard reconstructs a Board from persisted KanbanCards. Each
+// RestoreBoard reconstructs a Board from persisted KanbanCards. Each
 // card's persisted CreatedAt / UpdatedAt is honoured so timeline views and
 // elapsed-time metrics stay correct across a process restart.
-func RestoreTaskBoard(scopeID string, cards []*KanbanCardModel) *Board {
+func RestoreBoard(scopeID string, cards []*KanbanCardModel) *Board {
 	b := NewBoard(scopeID)
 	for _, c := range cards {
 		payload := map[string]any{
@@ -666,7 +656,7 @@ func RestoreTaskBoard(scopeID string, cards []*KanbanCardModel) *Board {
 }
 
 // restoreTimestamps overwrites CreatedAt / UpdatedAt on an existing card to the
-// persisted values. Internal helper for RestoreTaskBoard; must not be exposed
+// persisted values. Internal helper for RestoreBoard; must not be exposed
 // because regular state transitions are responsible for stamping UpdatedAt.
 func (b *Board) restoreTimestamps(cardID string, created, updated time.Time) {
 	b.cardMu.Lock()

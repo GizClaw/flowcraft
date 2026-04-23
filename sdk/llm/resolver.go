@@ -77,21 +77,11 @@ type LLMResolver interface {
 	InvalidateCache(provider string)
 }
 
-// GlobalDefaultProvider is the legacy well-known key for the default
-// model pointer. Kept for backward compatibility with stores that
-// stash {provider, model} into a ProviderConfig row keyed by this
-// constant.
-//
-// Deprecated: implement DefaultModelStore on your store instead.
-// Removed in v0.2.0.
-const GlobalDefaultProvider = "__global_default__"
-
 // ResolverOption configures a defaultResolver.
 type ResolverOption func(*defaultResolver)
 
 // WithFallbackModel sets the default model used when Resolve("") is
-// called and no DefaultModelStore (or legacy GlobalDefaultProvider row)
-// yields a result.
+// called and no DefaultModelStore yields a result.
 func WithFallbackModel(model string) ResolverOption {
 	return func(r *defaultResolver) { r.fallback = model }
 }
@@ -103,11 +93,6 @@ func WithFallbackModel(model string) ResolverOption {
 func WithExtraCaps(caps ModelCaps) ResolverOption {
 	return func(r *defaultResolver) { r.extraCaps = mergeCaps(r.extraCaps, caps) }
 }
-
-// WithModelCaps is the legacy spelling of WithExtraCaps.
-//
-// Deprecated: use WithExtraCaps. Removed in v0.2.0.
-func WithModelCaps(caps ModelCaps) ResolverOption { return WithExtraCaps(caps) }
 
 // DefaultResolver creates an LLMResolver backed by the DefaultRegistry
 // and the given store. The store must implement ProviderConfigStore;
@@ -140,9 +125,7 @@ type defaultResolver struct {
 // modelStr triggers default-model lookup in this order:
 //
 //  1. DefaultModelStore.GetDefaultModel (preferred)
-//  2. Legacy ProviderConfig row keyed by GlobalDefaultProvider
-//     (deprecated, removed in v0.2.0)
-//  3. WithFallbackModel
+//  2. WithFallbackModel
 func (r *defaultResolver) Resolve(ctx context.Context, modelStr string) (LLM, error) {
 	if modelStr == "" {
 		modelStr = r.resolveDefaultModel(ctx)
@@ -168,21 +151,13 @@ func (r *defaultResolver) Resolve(ctx context.Context, modelStr string) (LLM, er
 }
 
 // resolveDefaultModel returns the default model identifier or "".
-// Tries DefaultModelStore first, then the deprecated GlobalDefaultProvider
-// magic key, then WithFallbackModel.
+// Tries DefaultModelStore first, then WithFallbackModel.
 func (r *defaultResolver) resolveDefaultModel(ctx context.Context) string {
 	if r.store != nil {
 		if dms, ok := r.store.(DefaultModelStore); ok {
 			if ref, err := dms.GetDefaultModel(ctx); err == nil && ref != nil &&
 				ref.Provider != "" && ref.Model != "" {
 				return ref.Provider + "/" + ref.Model
-			}
-		}
-		if gc, err := r.store.GetProviderConfig(ctx, GlobalDefaultProvider); err == nil && gc != nil {
-			if p, _ := gc.Config["provider"].(string); p != "" {
-				if m, _ := gc.Config["model"].(string); m != "" {
-					return p + "/" + m
-				}
 			}
 		}
 	}
@@ -225,13 +200,12 @@ func (r *defaultResolver) createLLM(ctx context.Context, modelStr string) (LLM, 
 	// Caps merge order (OR — any layer disabling a cap wins):
 	//   1) Registry catalog caps for this model
 	//   2) ProviderConfig.Caps (user-supplied, applies to all models of provider)
-	//   3) Legacy Config["caps"] sub-object (deprecated)
-	//   4) ModelConfig.Caps (user-supplied, this model only)
-	//   5) Resolver-wide extra caps from WithExtraCaps
+	//   3) ModelConfig.Caps (user-supplied, this model only)
+	//   4) Resolver-wide extra caps from WithExtraCaps
 	//
-	// NewFromConfig already applies (1) + (3) internally and wraps the
-	// instance once. We unwrap+rewrap here so the additional layers
-	// (2, 4, 5) compose cleanly without nesting CapsMiddleware twice.
+	// NewFromConfig already applies (1) and wraps the instance once.
+	// We unwrap+rewrap here so the additional layers (2, 3, 4) compose
+	// cleanly without nesting CapsMiddleware twice.
 	caps := mergeCaps(
 		r.registry.LookupModelCaps(provider, modelName),
 		pc.Caps,
@@ -239,7 +213,7 @@ func (r *defaultResolver) createLLM(ctx context.Context, modelStr string) (LLM, 
 	if mc != nil {
 		caps = mergeCaps(caps, mc.Caps)
 	}
-	caps = mergeCaps(caps, capsFromConfig(merged), r.extraCaps)
+	caps = mergeCaps(caps, r.extraCaps)
 	inst = CapsMiddleware(unwrapCaps(inst), caps)
 
 	r.mu.Lock()

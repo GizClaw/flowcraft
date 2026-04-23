@@ -56,7 +56,7 @@ func WithMeta(k, v string) CardOption {
 // otherwise stamp with time.Now(). Pass the zero time on either argument to
 // keep the default (current time) for that field.
 //
-// Primary use case: RestoreTaskBoard, which must preserve the historical
+// Primary use case: RestoreBoard, which must preserve the historical
 // creation / update timestamps captured in persistence so timeline / Gantt
 // views and SLA metrics survive a process restart.
 func WithTimestamps(created, updated time.Time) CardOption {

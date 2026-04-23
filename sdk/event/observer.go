@@ -64,9 +64,9 @@ func (r DropReason) String() string {
 	}
 }
 
-// Observer is the bus-level instrumentation hook. It replaces the legacy
-// per-subscription drop callback (LegacyWithDropCallback) with a richer
-// surface that carries the OnPublish / OnDeliver / OnDrop lifecycle.
+// Observer is the bus-level instrumentation hook. It carries the
+// OnPublish / OnDeliver / OnDrop lifecycle for every envelope, giving
+// callers a single place to wire metrics / tracing / drop accounting.
 //
 // Concurrency contract — every Bus implementation must guarantee:
 //

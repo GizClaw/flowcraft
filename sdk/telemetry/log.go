@@ -15,46 +15,19 @@ import (
 )
 
 type logOptions struct {
-	export         sdklog.Exporter // deprecated: see WithLogExporter
 	processors     []sdklog.Processor
 	serviceName    string
 	serviceVersion string
-	console        bool
-	minSeverity    otellog.Severity
 }
 
 // LogOption configures InitLog behaviour.
 type LogOption func(*logOptions)
 
-// WithLogExporter wires a single OTel log exporter wrapped in a default
-// BatchProcessor with a min-severity gate.
-//
-// Deprecated: use WithLogProcessor for explicit control over batching and
-// filtering. WithLogExporter has covering semantics (a second call replaces
-// the first) and a hard-coded BatchProcessor configuration. It will be
-// removed in v0.2.0.
-//
-// Migration:
-//
-//	// Before
-//	telemetry.WithLogExporter(exp)
-//
-//	// After
-//	telemetry.WithLogProcessor(
-//	    telemetry.NewSeverityFilter(
-//	        sdklog.NewBatchProcessor(exp),
-//	        otellog.SeverityInfo, 0,
-//	    ),
-//	)
-func WithLogExporter(exp sdklog.Exporter) LogOption {
-	return func(o *logOptions) { o.export = exp }
-}
-
 // WithLogProcessor registers an OTel log processor. May be called multiple
 // times to stack independent destinations (file, OTLP, custom routing).
 //
 // This mirrors OTel's own sdklog.NewLoggerProvider(WithProcessor(...))
-// design and is the canonical way to attach log destinations going forward.
+// design and is the canonical way to attach log destinations.
 func WithLogProcessor(p sdklog.Processor) LogOption {
 	return func(o *logOptions) {
 		if p != nil {
@@ -71,71 +44,21 @@ func WithLogServiceVersion(version string) LogOption {
 	return func(o *logOptions) { o.serviceVersion = version }
 }
 
-// WithLogConsole toggles the default console sink.
-//
-// Deprecated: use WithLogProcessor with ConsoleProcessors for explicit
-// control. WithLogConsole's "default true" semantics make it ambiguous
-// whether console is intentionally on or just left at default; the
-// explicit form makes intent visible at the call site. Will be removed
-// in v0.2.0.
-//
-// Migration:
-//
-//	// Before — implicit default
-//	telemetry.InitLog(ctx)
-//
-//	// After — explicit
-//	telemetry.InitLog(ctx,
-//	    telemetry.WithLogProcessor(telemetry.ConsoleProcessors(otellog.SeverityInfo)...),
-//	)
-//
-//	// Before — disable console
-//	telemetry.InitLog(ctx, telemetry.WithLogConsole(false))
-//
-//	// After — just don't pass ConsoleProcessors
-//	telemetry.InitLog(ctx, telemetry.WithLogProcessor(myFileProc))
-func WithLogConsole(enabled bool) LogOption {
-	return func(o *logOptions) { o.console = enabled }
-}
-
-// WithLogMinSeverity sets the minimum severity for the deprecated
-// WithLogExporter and WithLogConsole sinks.
-//
-// Deprecated: this option only affects the deprecated WithLogExporter
-// and WithLogConsole sinks; it has no effect on processors registered
-// via WithLogProcessor (those manage their own severity gate, typically
-// by wrapping with NewSeverityFilter). With WithLogConsole and
-// WithLogExporter slated for removal in v0.2.0, this option will go
-// with them. Use NewSeverityFilter directly when wiring processors.
-//
-// Migration:
-//
-//	// Before
-//	telemetry.InitLog(ctx, telemetry.WithLogMinSeverity(otellog.SeverityWarn))
-//
-//	// After
-//	telemetry.InitLog(ctx,
-//	    telemetry.WithLogProcessor(telemetry.ConsoleProcessors(otellog.SeverityWarn)...),
-//	)
-func WithLogMinSeverity(sev otellog.Severity) LogOption {
-	return func(o *logOptions) { o.minSeverity = sev }
-}
-
 // InitLog initializes the OpenTelemetry LoggerProvider.
 //
-// Sinks are composed from (in order):
-//  1. WithLogExporter (deprecated, single) — wrapped in BatchProcessor + severity gate.
-//  2. WithLogProcessor (any number) — used as-is, callers control batching/filtering.
-//  3. WithLogConsole (deprecated, default true) — stdout for INFO..<WARN,
-//     stderr for WARN.. Equivalent to WithLogProcessor(ConsoleProcessors(...)...).
+// Sinks are exactly the WithLogProcessor entries supplied by the caller;
+// pass them in any order, batching/filtering policy is theirs to control.
+// If no processor is supplied a discardProcessor (noop) is installed so
+// global log calls remain safe.
 //
-// If no sink is configured, a discardProcessor (noop) is installed.
-//
-// Forward-compatible usage (no deprecated options):
+// Typical usage:
 //
 //	telemetry.InitLog(ctx,
 //	    telemetry.WithLogProcessor(telemetry.ConsoleProcessors(otellog.SeverityInfo)...),
 //	)
+//
+// To wire an OTLP / file / custom exporter, wrap it in the OTel
+// BatchProcessor (or your own processor) and pass it via WithLogProcessor.
 func InitLog(ctx context.Context, opts ...LogOption) (func(context.Context) error, error) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -144,8 +67,6 @@ func InitLog(ctx context.Context, opts ...LogOption) (func(context.Context) erro
 	o := &logOptions{
 		serviceName:    ServiceName,
 		serviceVersion: ServiceVersion,
-		console:        true,
-		minSeverity:    otellog.SeverityInfo,
 	}
 	for _, fn := range opts {
 		fn(o)
@@ -156,17 +77,9 @@ func InitLog(ctx context.Context, opts ...LogOption) (func(context.Context) erro
 		return nil, fmt.Errorf("telemetry: create log resource: %w", err)
 	}
 
-	var processors []sdklog.Processor
-	if o.export != nil {
-		processors = append(processors,
-			NewSeverityFilter(sdklog.NewBatchProcessor(o.export), o.minSeverity, 0))
-	}
-	processors = append(processors, o.processors...)
-	if o.console {
-		processors = append(processors, ConsoleProcessors(o.minSeverity)...)
-	}
+	processors := o.processors
 	if len(processors) == 0 {
-		processors = append(processors, discardProcessor{minSeverity: o.minSeverity})
+		processors = append(processors, discardProcessor{minSeverity: otellog.SeverityInfo})
 	}
 
 	lpOpts := []sdklog.LoggerProviderOption{sdklog.WithResource(res)}

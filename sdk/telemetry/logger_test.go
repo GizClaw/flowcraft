@@ -19,7 +19,7 @@ func TestSetLoggerName(t *testing.T) {
 
 func TestEmitAllSeverities(t *testing.T) {
 	ctx := context.Background()
-	shutdown, err := InitLog(ctx, WithLogConsole(false))
+	shutdown, err := InitLog(ctx)
 	if err != nil {
 		t.Fatalf("InitLog error: %v", err)
 	}
@@ -35,7 +35,7 @@ func TestEmitAllSeverities(t *testing.T) {
 }
 
 func TestEmitWithNilContext(t *testing.T) {
-	shutdown, err := InitLog(context.Background(), WithLogConsole(false))
+	shutdown, err := InitLog(context.Background())
 	if err != nil {
 		t.Fatalf("InitLog error: %v", err)
 	}
@@ -47,7 +47,7 @@ func TestEmitWithNilContext(t *testing.T) {
 
 func TestEmitWithAttributes(t *testing.T) {
 	ctx := context.Background()
-	shutdown, err := InitLog(ctx, WithLogConsole(false))
+	shutdown, err := InitLog(ctx)
 	if err != nil {
 		t.Fatalf("InitLog error: %v", err)
 	}
@@ -66,7 +66,7 @@ func TestEmitWithTraceContext(t *testing.T) {
 	}
 	defer func() { _ = traceShutdown(ctx) }()
 
-	logShutdown, err := InitLog(ctx, WithLogConsole(false))
+	logShutdown, err := InitLog(ctx)
 	if err != nil {
 		t.Fatalf("InitLog error: %v", err)
 	}
