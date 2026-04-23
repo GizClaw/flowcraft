@@ -34,9 +34,7 @@ func TestLoggerOpts(t *testing.T) {
 
 func TestInitAll_DefaultOptions(t *testing.T) {
 	ctx := context.Background()
-	shutdown, err := InitAll(ctx,
-		LoggerOpts(WithLogConsole(false)),
-	)
+	shutdown, err := InitAll(ctx)
 	if err != nil {
 		t.Fatalf("InitAll error: %v", err)
 	}
@@ -48,7 +46,7 @@ func TestInitAll_DefaultOptions(t *testing.T) {
 
 func TestInitAll_NilOptionIgnored(t *testing.T) {
 	ctx := context.Background()
-	shutdown, err := InitAll(ctx, nil, LoggerOpts(WithLogConsole(false)))
+	shutdown, err := InitAll(ctx, nil)
 	if err != nil {
 		t.Fatalf("InitAll error: %v", err)
 	}
@@ -62,7 +60,7 @@ func TestInitAll_WithAllSubOptions(t *testing.T) {
 	shutdown, err := InitAll(ctx,
 		TracerOpts(WithServiceName("test"), WithServiceVersion("1.0")),
 		MeterOpts(WithMeterServiceName("test"), WithMeterServiceVersion("1.0")),
-		LoggerOpts(WithLogServiceName("test"), WithLogServiceVersion("1.0"), WithLogConsole(false)),
+		LoggerOpts(WithLogServiceName("test"), WithLogServiceVersion("1.0")),
 	)
 	if err != nil {
 		t.Fatalf("InitAll error: %v", err)

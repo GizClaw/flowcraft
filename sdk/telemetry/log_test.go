@@ -30,7 +30,7 @@ func makeRecord(sev otellog.Severity, body string, attrs ...otellog.KeyValue) sd
 
 func TestInitLog_NoExporter_DiscardStillEnables(t *testing.T) {
 	ctx := context.Background()
-	shutdown, err := InitLog(ctx, WithLogConsole(false))
+	shutdown, err := InitLog(ctx)
 	if err != nil {
 		t.Fatalf("InitLog error: %v", err)
 	}
@@ -115,7 +115,7 @@ func TestPlainTextExporter_Export_WrappedInBatchProcessor(t *testing.T) {
 
 func TestConvenienceLogFunctions(t *testing.T) {
 	ctx := context.Background()
-	shutdown, err := InitLog(ctx, WithLogConsole(false))
+	shutdown, err := InitLog(ctx)
 	if err != nil {
 		t.Fatalf("InitLog error: %v", err)
 	}
@@ -129,14 +129,6 @@ func TestConvenienceLogFunctions(t *testing.T) {
 
 	Enable()
 	Info(ctx, "back again")
-}
-
-func TestWithLogExporter(t *testing.T) {
-	o := &logOptions{}
-	WithLogExporter(nil)(o)
-	if o.export != nil {
-		t.Fatal("expected nil exporter")
-	}
 }
 
 func TestWithLogProcessor(t *testing.T) {
@@ -171,16 +163,8 @@ func TestWithLogServiceVersion(t *testing.T) {
 	}
 }
 
-func TestWithLogMinSeverity(t *testing.T) {
-	o := &logOptions{}
-	WithLogMinSeverity(otellog.SeverityWarn)(o)
-	if o.minSeverity != otellog.SeverityWarn {
-		t.Fatalf("expected SeverityWarn, got %v", o.minSeverity)
-	}
-}
-
 func TestInitLog_NilContext(t *testing.T) {
-	shutdown, err := InitLog(nil, WithLogConsole(false))
+	shutdown, err := InitLog(nil)
 	if err != nil {
 		t.Fatalf("InitLog error: %v", err)
 	}
@@ -402,14 +386,12 @@ func TestPlainTextExporter_Export_PropagatesWriteError(t *testing.T) {
 }
 
 // TestInitLog_ForwardCompatible_ConsoleViaProcessor exercises the
-// forward-compatible wiring (WithLogProcessor(ConsoleProcessors(...)...))
-// without touching any deprecated option, ensuring the recommended
-// migration path actually initializes a usable LoggerProvider.
+// canonical wiring (WithLogProcessor(ConsoleProcessors(...)...)) and
+// ensures the recommended path actually initializes a usable LoggerProvider.
 func TestInitLog_ForwardCompatible_ConsoleViaProcessor(t *testing.T) {
 	ctx := context.Background()
 	procs := ConsoleProcessors(otellog.SeverityInfo)
 	shutdown, err := InitLog(ctx,
-		WithLogConsole(false), // suppress the deprecated default sink
 		WithLogProcessor(procs[0]),
 		WithLogProcessor(procs[1]),
 	)
