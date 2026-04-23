@@ -72,6 +72,16 @@ func (s *ScopedWorkspace) Append(ctx context.Context, path string, data []byte) 
 	return s.inner.Append(ctx, path, data)
 }
 
+func (s *ScopedWorkspace) Rename(ctx context.Context, src, dst string) error {
+	if err := s.checkWrite(ctx, src); err != nil {
+		return err
+	}
+	if err := s.checkWrite(ctx, dst); err != nil {
+		return err
+	}
+	return s.inner.Rename(ctx, src, dst)
+}
+
 func (s *ScopedWorkspace) Delete(ctx context.Context, path string) error {
 	if err := s.checkWrite(ctx, path); err != nil {
 		return err

@@ -16,6 +16,8 @@
 !go.mod
 !go.sum
 !go.work
+!bench/
+!bench/**
 !cmd/
 !cmd/**
 !internal/

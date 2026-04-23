@@ -7,18 +7,23 @@ import (
 	"path/filepath"
 )
 
-// Rename moves a file from src to dst within the same workspace.
-// It is not atomic; the caller must handle partial-failure cleanup.
-func Rename(ctx context.Context, ws Workspace, src, dst string) error {
-	data, err := ws.Read(ctx, src)
-	if err != nil {
-		return fmt.Errorf("workspace rename: read %s: %w", src, err)
+// AtomicWrite writes data to path via a tmp file + Rename, so concurrent
+// readers never observe a half-written payload. The tmp file is placed in
+// the same directory as path so Rename stays atomic on POSIX filesystems
+// (cross-directory renames are not guaranteed atomic).
+//
+// On workspaces whose Rename is non-atomic (e.g. object stores) AtomicWrite
+// still runs cleanly; durability/atomicity is then bounded by the underlying
+// store's guarantees, but never weaker than a plain Write.
+func AtomicWrite(ctx context.Context, ws Workspace, path string, data []byte) error {
+	dir := filepath.Dir(path)
+	tmp := filepath.Join(dir, "."+filepath.Base(path)+".tmp")
+	if err := ws.Write(ctx, tmp, data); err != nil {
+		return fmt.Errorf("workspace atomicwrite: write tmp %s: %w", tmp, err)
 	}
-	if err := ws.Write(ctx, dst, data); err != nil {
-		return fmt.Errorf("workspace rename: write %s: %w", dst, err)
-	}
-	if err := ws.Delete(ctx, src); err != nil {
-		return fmt.Errorf("workspace rename: delete %s: %w", src, err)
+	if err := ws.Rename(ctx, tmp, path); err != nil {
+		_ = ws.Delete(ctx, tmp)
+		return fmt.Errorf("workspace atomicwrite: rename %s -> %s: %w", tmp, path, err)
 	}
 	return nil
 }

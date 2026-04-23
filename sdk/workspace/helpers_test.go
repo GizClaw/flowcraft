@@ -8,19 +8,17 @@ import (
 	"testing"
 )
 
-func TestRename(t *testing.T) {
+func TestRename_Mem(t *testing.T) {
 	ws := NewMemWorkspace()
 	ctx := context.Background()
-
-	ws.MustWrite("old.txt", []byte("content"))
-	if err := Rename(ctx, ws, "old.txt", "new.txt"); err != nil {
+	ws.MustWrite("a/old.txt", []byte("content"))
+	if err := ws.Rename(ctx, "a/old.txt", "b/new.txt"); err != nil {
 		t.Fatal(err)
 	}
-
-	if exists, _ := ws.Exists(ctx, "old.txt"); exists {
+	if exists, _ := ws.Exists(ctx, "a/old.txt"); exists {
 		t.Fatal("old file should not exist after rename")
 	}
-	data, err := ws.Read(ctx, "new.txt")
+	data, err := ws.Read(ctx, "b/new.txt")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -29,11 +27,26 @@ func TestRename(t *testing.T) {
 	}
 }
 
-func TestRename_SrcNotFound(t *testing.T) {
+func TestRename_SrcNotFound_Mem(t *testing.T) {
 	ws := NewMemWorkspace()
-	err := Rename(context.Background(), ws, "nope.txt", "dst.txt")
-	if err == nil {
+	if err := ws.Rename(context.Background(), "nope.txt", "dst.txt"); err == nil {
 		t.Fatal("expected error when src does not exist")
+	}
+}
+
+func TestAtomicWrite(t *testing.T) {
+	ws := NewMemWorkspace()
+	ctx := context.Background()
+	if err := AtomicWrite(ctx, ws, "out/x.txt", []byte("hello")); err != nil {
+		t.Fatal(err)
+	}
+	data, err := ws.Read(ctx, "out/x.txt")
+	if err != nil || string(data) != "hello" {
+		t.Fatalf("read: data=%q err=%v", data, err)
+	}
+	// tmp file must be cleaned up.
+	if exists, _ := ws.Exists(ctx, "out/.x.txt.tmp"); exists {
+		t.Fatal("tmp file should not exist after AtomicWrite")
 	}
 }
 

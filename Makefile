@@ -1,33 +1,58 @@
+# Pin bash so the GO_FOREACH macro's `set -e; for ... done` semantics are
+# stable across hosts (default sh on some macOS setups treats `set -e`
+# inside compound statements differently).
 SHELL := /bin/bash
 .DEFAULT_GOAL := help
 
-MODULES := sdk sdkx examples/voice-pipeline
+# Modules listed in go.work — `go vet ./...` and friends work as-is.
+MODULES_WORK := sdk sdkx examples/voice-pipeline
+
+# Modules intentionally outside go.work (use `replace` directives + GOWORK=off).
+# bench is here because it pulls in heavyweight eval datasets/CLIs that we do
+# not want to dirty the main workspace's dependency graph with.
+MODULES_OFFWORK := bench
+
+ALL_MODULES := $(MODULES_WORK) $(MODULES_OFFWORK)
+
+# `set -e` inside the for-loop body so a failure in any submodule stops the
+# loop. The previous form (` ( cd $$m && ... ) `) silently swallowed errors
+# from the subshell because the for-body's last command was the `done`, not
+# the failing subshell — make then saw exit 0 from the loop and reported the
+# whole target green.
+GO_FOREACH = set -e; for m in $(1); do echo "==> $(2) $$m"; ( cd $$m && $(3) ); done
 
 .PHONY: help
 help:
 	@echo "FlowCraft"
 	@echo ""
-	@echo "  make vet       Run go vet on all modules"
-	@echo "  make test      Run tests on all modules"
+	@echo "  make vet       Run go vet on all modules (incl. bench via GOWORK=off)"
+	@echo "  make test      Run tests on all modules (excl. Go benchmarks)"
 	@echo "  make fmt       Run gofmt on all modules"
 	@echo "  make tidy      Run go mod tidy on all modules"
 	@echo "  make ci        vet + test"
+	@echo ""
+	@echo "Bench is in CI for vet+test only. Long-running eval CLIs"
+	@echo "(bench/locomo/cmd/eval, history-compression/cmd/eval) are main"
+	@echo "packages and are not invoked by 'go test ./...'."
 
 .PHONY: vet
 vet:
-	@for m in $(MODULES); do echo "==> vet $$m"; ( cd $$m && go vet ./... ); done
+	@$(call GO_FOREACH,$(MODULES_WORK),vet,go vet ./...)
+	@$(call GO_FOREACH,$(MODULES_OFFWORK),vet (GOWORK=off),GOWORK=off go vet ./...)
 
 .PHONY: test
 test:
-	@for m in $(MODULES); do echo "==> test $$m"; ( cd $$m && go test ./... -count=1 ); done
+	@$(call GO_FOREACH,$(MODULES_WORK),test,go test ./... -count=1)
+	@$(call GO_FOREACH,$(MODULES_OFFWORK),test (GOWORK=off),GOWORK=off go test ./... -count=1)
 
 .PHONY: fmt
 fmt:
-	@for m in $(MODULES); do echo "==> fmt $$m"; ( cd $$m && go fmt ./... ); done
+	@$(call GO_FOREACH,$(ALL_MODULES),fmt,go fmt ./...)
 
 .PHONY: tidy
 tidy:
-	@for m in $(MODULES); do echo "==> tidy $$m"; ( cd $$m && go mod tidy ); done
+	@$(call GO_FOREACH,$(MODULES_WORK),tidy,go mod tidy)
+	@$(call GO_FOREACH,$(MODULES_OFFWORK),tidy (GOWORK=off),GOWORK=off go mod tidy)
 
 .PHONY: ci
 ci: vet test

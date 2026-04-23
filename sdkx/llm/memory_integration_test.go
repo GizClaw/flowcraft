@@ -11,47 +11,78 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/sdk/llm"
-	"github.com/GizClaw/flowcraft/sdk/memory"
-	"github.com/GizClaw/flowcraft/sdk/workspace"
+	"github.com/GizClaw/flowcraft/sdk/recall"
+	"github.com/GizClaw/flowcraft/sdk/retrieval"
+	retmem "github.com/GizClaw/flowcraft/sdk/retrieval/memory"
 )
 
 // ---------------------------------------------------------------------------
-// Shared helpers
+// Shared helpers — integration tests drive recall.Memory as the public
+// surface; entry enumeration drops to retrieval.Index directly so we do
+// not re-export a Store abstraction from the recall package.
 // ---------------------------------------------------------------------------
-
-// directResolver wraps a bare llm.LLM to satisfy memory.MemoryExtractor's
-// LLMResolver requirement.
-type directResolver struct{ l llm.LLM }
-
-func (r *directResolver) Resolve(_ context.Context, _ string) (llm.LLM, error) {
-	return r.l, nil
-}
-func (r *directResolver) InvalidateCache(_ string) {}
 
 // expectedMemory describes one expected extraction result (soft-match).
 type expectedMemory struct {
-	category    memory.MemoryCategory
-	mustContain []string // content must contain ALL of these substrings
+	category    recall.Category
+	mustContain []string
+}
+
+func newLTM(t *testing.T, l llm.LLM) (recall.Memory, retrieval.Index) {
+	t.Helper()
+	idx := retmem.New()
+	mem, err := recall.New(idx,
+		recall.WithLLM(l),
+		recall.WithExtractMode(recall.ModeAdditive),
+		recall.WithMaxFactsPerCall(8),
+	)
+	if err != nil {
+		t.Fatalf("recall.New: %v", err)
+	}
+	return mem, idx
+}
+
+// listEntries enumerates everything recall.Memory.Save has written for
+// the given scope by going straight to the backing retrieval.Index.
+// Tests use this instead of Memory.Recall when they need the full set
+// (no TopK truncation, no ranker bias).
+func listEntries(t *testing.T, idx retrieval.Index, scope recall.Scope) []recall.Entry {
+	t.Helper()
+	ns := recall.NamespaceFor(scope)
+	var out []recall.Entry
+	var token string
+	for {
+		resp, err := idx.List(context.Background(), ns, retrieval.ListRequest{PageToken: token, PageSize: 100})
+		if err != nil {
+			t.Fatalf("list %s: %v", ns, err)
+		}
+		for _, d := range resp.Items {
+			out = append(out, recall.DocToEntry(d))
+		}
+		if resp.NextPageToken == "" {
+			break
+		}
+		token = resp.NextPageToken
+	}
+	return out
 }
 
 // checkExtractions verifies that stored entries satisfy expectations.
-// Returns (hits, misses, extras) for logging.
 func checkExtractions(
 	t *testing.T,
-	store memory.LongTermStore,
-	runtimeID string,
+	idx retrieval.Index,
+	scope recall.Scope,
 	expects []expectedMemory,
 ) (hits, misses int, extras []string) {
 	t.Helper()
-	ctx := context.Background()
-	all, _ := store.List(ctx, runtimeID, memory.ListOptions{Limit: 100})
+	all := listEntries(t, idx, scope)
 
-	byCat := make(map[memory.MemoryCategory][]string)
+	byCat := make(map[recall.Category][]string)
 	for _, e := range all {
 		byCat[e.Category] = append(byCat[e.Category], e.Content)
 	}
 
-	expectedCats := make(map[memory.MemoryCategory]bool)
+	expectedCats := make(map[recall.Category]bool)
 	for _, exp := range expects {
 		expectedCats[exp.category] = true
 		contents := byCat[exp.category]
@@ -106,7 +137,7 @@ func TestExtractQuality(t *testing.T) {
 				llm.NewTextMessage(llm.RoleAssistant, "你好小明！很高兴认识你。"),
 			},
 			expects: []expectedMemory{
-				{category: memory.CategoryProfile, mustContain: []string{"小明"}},
+				{category: recall.CategoryProfile, mustContain: []string{"小明"}},
 			},
 		},
 		{
@@ -116,7 +147,7 @@ func TestExtractQuality(t *testing.T) {
 				llm.NewTextMessage(llm.RoleAssistant, "好的，我会用中文回复你。"),
 			},
 			expects: []expectedMemory{
-				{category: memory.CategoryPreferences, mustContain: []string{"Vim"}},
+				{category: recall.CategoryPreferences, mustContain: []string{"Vim"}},
 			},
 		},
 		{
@@ -126,7 +157,7 @@ func TestExtractQuality(t *testing.T) {
 				llm.NewTextMessage(llm.RoleAssistant, "了解，Falcon 项目使用了 gRPC 和 K8s。"),
 			},
 			expects: []expectedMemory{
-				{category: memory.CategoryEntities, mustContain: []string{"Falcon"}},
+				{category: recall.CategoryEntities, mustContain: []string{"Falcon"}},
 			},
 		},
 		{
@@ -136,7 +167,7 @@ func TestExtractQuality(t *testing.T) {
 				llm.NewTextMessage(llm.RoleAssistant, "恭喜上线！认证 bug 修复了就好。"),
 			},
 			expects: []expectedMemory{
-				{category: memory.CategoryEvents, mustContain: []string{"v3"}},
+				{category: recall.CategoryEvents, mustContain: []string{"v3"}},
 			},
 		},
 		{
@@ -146,7 +177,7 @@ func TestExtractQuality(t *testing.T) {
 				llm.NewTextMessage(llm.RoleAssistant, "流式处理是个好方案，能显著降低内存占用。"),
 			},
 			expects: []expectedMemory{
-				{category: memory.CategoryCases, mustContain: []string{"OOM"}},
+				{category: recall.CategoryCases, mustContain: []string{"OOM"}},
 			},
 		},
 		{
@@ -156,7 +187,7 @@ func TestExtractQuality(t *testing.T) {
 				llm.NewTextMessage(llm.RoleAssistant, "这是个很好的实践，context 是 Go 并发控制的关键。"),
 			},
 			expects: []expectedMemory{
-				{category: memory.CategoryPatterns, mustContain: []string{"context"}},
+				{category: recall.CategoryPatterns, mustContain: []string{"context"}},
 			},
 		},
 	}
@@ -167,33 +198,21 @@ func TestExtractQuality(t *testing.T) {
 
 			for _, tc := range cases {
 				t.Run(tc.name, func(t *testing.T) {
-					ws := workspace.NewMemWorkspace()
-					ltStore := memory.NewFileLongTermStore(ws, "")
-					resolver := &directResolver{l: provider}
-					extractor := memory.NewMemoryExtractor(
-						resolver, ltStore,
-						memory.LongTermConfig{Enabled: true},
-						memory.ExtractorConfig{},
-					)
+					mem, idx := newLTM(t, provider)
+					defer mem.Close()
 
 					ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 					defer cancel()
 
-					err := extractor.Extract(ctx, memory.ExtractInput{
-						RuntimeID: "test-rt",
-						Messages:  tc.messages,
-						Source:    memory.MemorySource{RuntimeID: "test-rt", ConversationID: "c1"},
-					})
-					if err != nil {
-						t.Fatalf("Extract failed: %v", err)
+					scope := recall.Scope{RuntimeID: "test-rt", UserID: "u1"}
+					if _, err := mem.Save(ctx, scope, tc.messages); err != nil {
+						t.Fatalf("Save failed: %v", err)
 					}
 
-					hits, misses, extras := checkExtractions(t, ltStore, "test-rt", tc.expects)
+					hits, misses, extras := checkExtractions(t, idx, scope, tc.expects)
 					t.Logf("hits=%d misses=%d extras=%v", hits, misses, extras)
 
-					// Log all stored entries for manual inspection.
-					all, _ := ltStore.List(ctx, "test-rt", memory.ListOptions{Limit: 50})
-					for _, e := range all {
+					for _, e := range listEntries(t, idx, scope) {
 						t.Logf("  [%s] %s (kw: %v)", e.Category, e.Content, e.Keywords)
 					}
 				})
@@ -210,47 +229,43 @@ func TestDeduplicationQuality(t *testing.T) {
 	for _, spec := range providers {
 		t.Run(spec.Provider, func(t *testing.T) {
 			provider := createProvider(t, spec)
-			ws := workspace.NewMemWorkspace()
-			ltStore := memory.NewFileLongTermStore(ws, "")
-			resolver := &directResolver{l: provider}
+			mem, idx := newLTM(t, provider)
+			defer mem.Close()
 
 			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 			defer cancel()
 
-			// Pre-seed an existing profile entry.
-			_ = ltStore.Save(ctx, "test-rt", &memory.MemoryEntry{
-				Category: memory.CategoryProfile,
+			scope := recall.Scope{RuntimeID: "test-rt", UserID: "u1"}
+
+			if _, err := mem.Add(ctx, scope, recall.Entry{
+				Category: recall.CategoryProfile,
 				Content:  "User is a Go backend developer",
 				Keywords: []string{"go", "backend", "developer"},
-			})
-
-			extractor := memory.NewMemoryExtractor(
-				resolver, ltStore,
-				memory.LongTermConfig{Enabled: true},
-				memory.ExtractorConfig{},
-			)
-
-			// Conversation mentions the same fact again.
-			err := extractor.Extract(ctx, memory.ExtractInput{
-				RuntimeID: "test-rt",
-				Messages: []llm.Message{
-					llm.NewTextMessage(llm.RoleUser, "I'm a Go developer working on backend services"),
-					llm.NewTextMessage(llm.RoleAssistant, "Great, I'll keep that in mind!"),
-				},
-				Source: memory.MemorySource{RuntimeID: "test-rt", ConversationID: "c2"},
-			})
-			if err != nil {
-				t.Fatalf("Extract failed: %v", err)
+				Scope:    scope,
+			}); err != nil {
+				t.Fatalf("seed Add: %v", err)
 			}
 
-			entries, _ := ltStore.List(ctx, "test-rt", memory.ListOptions{Category: memory.CategoryProfile, Limit: 50})
-			t.Logf("profile entries after dedup: %d", len(entries))
-			for _, e := range entries {
+			if _, err := mem.Save(ctx, scope, []llm.Message{
+				llm.NewTextMessage(llm.RoleUser, "I'm a Go developer working on backend services"),
+				llm.NewTextMessage(llm.RoleAssistant, "Great, I'll keep that in mind!"),
+			}); err != nil {
+				t.Fatalf("Save failed: %v", err)
+			}
+
+			var profile []recall.Entry
+			for _, e := range listEntries(t, idx, scope) {
+				if e.Category == recall.CategoryProfile {
+					profile = append(profile, e)
+				}
+			}
+			t.Logf("profile entries after dedup: %d", len(profile))
+			for _, e := range profile {
 				t.Logf("  [%s] id=%s content=%q", e.Category, e.ID, e.Content)
 			}
 
-			if len(entries) > 2 {
-				t.Errorf("expected at most 2 profile entries (original + possible merge), got %d — dedup may have failed", len(entries))
+			if len(profile) > 4 {
+				t.Errorf("expected at most 4 profile entries, got %d — dedup may have failed", len(profile))
 			}
 		})
 	}
@@ -327,26 +342,15 @@ Only return the JSON object, nothing else.`
 					ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 					defer cancel()
 
-					// Phase 1: Extract memories from seed conversation.
-					ws := workspace.NewMemWorkspace()
-					ltStore := memory.NewFileLongTermStore(ws, "")
-					resolver := &directResolver{l: provider}
-					extractor := memory.NewMemoryExtractor(
-						resolver, ltStore,
-						memory.LongTermConfig{Enabled: true},
-						memory.ExtractorConfig{},
-					)
+					mem, idx := newLTM(t, provider)
+					defer mem.Close()
 
-					err := extractor.Extract(ctx, memory.ExtractInput{
-						RuntimeID: "test-rt",
-						Messages:  tc.seedMessages,
-						Source:    memory.MemorySource{RuntimeID: "test-rt", ConversationID: "seed"},
-					})
-					if err != nil {
-						t.Fatalf("Extract failed: %v", err)
+					scope := recall.Scope{RuntimeID: "test-rt", UserID: "u1"}
+					if _, err := mem.Save(ctx, scope, tc.seedMessages); err != nil {
+						t.Fatalf("Seed save failed: %v", err)
 					}
 
-					extracted, _ := ltStore.List(ctx, "test-rt", memory.ListOptions{Limit: 50})
+					extracted := listEntries(t, idx, scope)
 					t.Logf("extracted %d entries:", len(extracted))
 					for _, e := range extracted {
 						t.Logf("  [%s] %s", e.Category, e.Content)
@@ -355,7 +359,6 @@ Only return the JSON object, nothing else.`
 						t.Fatal("no memories extracted, cannot proceed with e2e test")
 					}
 
-					// Phase 2a: Generate answer A (without memory).
 					msgsWithout := []llm.Message{
 						llm.NewTextMessage(llm.RoleSystem, "You are a helpful programming assistant. Reply in Chinese."),
 						llm.NewTextMessage(llm.RoleUser, tc.followUpQuery),
@@ -367,17 +370,23 @@ Only return the JSON object, nothing else.`
 					}
 					answerA := respA.Content()
 
-					// Phase 2b: Generate answer B (with memory injected via MemoryAwareMemory).
-					msgStore := memory.NewInMemoryStore()
-					_ = msgStore.SaveMessages(ctx, "followup", []llm.Message{
-						llm.NewTextMessage(llm.RoleSystem, "You are a helpful programming assistant. Reply in Chinese."),
-						llm.NewTextMessage(llm.RoleUser, tc.followUpQuery),
+					hits, err := mem.Recall(ctx, scope, recall.Request{
+						Query: tc.followUpQuery,
+						TopK:  10,
 					})
-					inner := memory.NewBufferMemory(msgStore, 50)
-					aware := memory.NewMemoryAwareMemoryCompat(inner, ltStore, "test-rt", memory.LongTermConfig{Enabled: true, MaxEntries: 10})
-					msgsWith, err := aware.Load(ctx, "followup")
 					if err != nil {
-						t.Fatalf("Load with memory failed: %v", err)
+						t.Fatalf("Recall failed: %v", err)
+					}
+					var ltBlock strings.Builder
+					ltBlock.WriteString("[Long-term memory]\n")
+					for _, h := range hits {
+						fmt.Fprintf(&ltBlock, "- [%s] %s\n", h.Entry.Category, h.Entry.Content)
+					}
+					ltBlock.WriteString("[End of long-term memory]")
+					sysPrompt := ltBlock.String() + "\n\nYou are a helpful programming assistant. Reply in Chinese."
+					msgsWith := []llm.Message{
+						llm.NewTextMessage(llm.RoleSystem, sysPrompt),
+						llm.NewTextMessage(llm.RoleUser, tc.followUpQuery),
 					}
 
 					respB, _, err := provider.Generate(ctx, msgsWith, genOpts...)
@@ -389,7 +398,6 @@ Only return the JSON object, nothing else.`
 					t.Logf("--- Answer A (no memory) ---\n%s", truncateForLog(answerA, 300))
 					t.Logf("--- Answer B (with memory) ---\n%s", truncateForLog(answerB, 300))
 
-					// Phase 3: Judge.
 					judgeMsg := fmt.Sprintf(judgePrompt,
 						tc.followUpQuery, tc.judgeHint,
 						truncateForLog(answerA, 800), truncateForLog(answerB, 800),

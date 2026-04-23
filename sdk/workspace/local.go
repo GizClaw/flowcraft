@@ -79,6 +79,27 @@ func (w *LocalWorkspace) Append(_ context.Context, path string, data []byte) err
 	return err
 }
 
+func (w *LocalWorkspace) Rename(_ context.Context, src, dst string) error {
+	srcFull, err := w.resolve(src)
+	if err != nil {
+		return err
+	}
+	dstFull, err := w.resolve(dst)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(dstFull), 0o755); err != nil {
+		return fmt.Errorf("workspace: mkdir for %s: %w", dst, err)
+	}
+	if err := os.Rename(srcFull, dstFull); err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("%w: %s", ErrNotFound, src)
+		}
+		return fmt.Errorf("workspace: rename %s -> %s: %w", src, dst, err)
+	}
+	return nil
+}
+
 func (w *LocalWorkspace) Delete(_ context.Context, path string) error {
 	full, err := w.resolve(path)
 	if err != nil {

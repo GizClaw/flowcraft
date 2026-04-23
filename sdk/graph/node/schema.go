@@ -50,7 +50,7 @@ var builtinSchemas = []NodeSchema{
 				"When json_mode=false and system_prompt instructs the LLM to output a single keyword, output_key stores that keyword as a plain string — condition edges can compare directly: output_key == 'keyword'",
 				"tool_names is an array of tool name strings. When empty, the LLM has NO tool-calling ability. Use schema(action=tool_list) to see all available tools, then list the ones this node needs. Example: [\"knowledge_search\", \"fetch_url\"]",
 				"For ReAct agent patterns, the LLM node MUST have tool_names configured and the graph must include a loopguard + conditional loop back on tool_pending == true",
-				"When lossless memory is enabled, summary index is auto-injected into system prompt. Add memory_expand to tool_names so the LLM can expand compressed summaries to see original messages on demand.",
+				"When lossless history compaction is enabled, the summary index is auto-injected into the system prompt. Add history_expand to tool_names so the LLM can expand compressed summaries back to the original messages on demand.",
 			},
 		},
 	},
