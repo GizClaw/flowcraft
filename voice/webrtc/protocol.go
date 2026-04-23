@@ -48,10 +48,10 @@ type ServerMessage struct {
 
 type StartPayload struct {
 	Capabilities    voice.SessionCapabilities `json:"capabilities"`
-	InputFormat     audio.Format               `json:"input_format"`
-	OutputFormat    audio.Format               `json:"output_format"`
-	AcceptedCodecs  []audio.Codec              `json:"accepted_codecs,omitempty"`
-	PreferredCodecs []audio.Codec              `json:"preferred_codecs,omitempty"`
+	InputFormat     audio.Format              `json:"input_format"`
+	OutputFormat    audio.Format              `json:"output_format"`
+	AcceptedCodecs  []audio.Codec             `json:"accepted_codecs,omitempty"`
+	PreferredCodecs []audio.Codec             `json:"preferred_codecs,omitempty"`
 }
 
 type AudioPayload struct {

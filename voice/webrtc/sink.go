@@ -5,9 +5,9 @@ import (
 	"io"
 	"time"
 
+	"github.com/GizClaw/flowcraft/sdk/telemetry"
 	"github.com/GizClaw/flowcraft/voice/audio"
 	"github.com/GizClaw/flowcraft/voice/tts"
-	"github.com/GizClaw/flowcraft/sdk/telemetry"
 	"github.com/pion/webrtc/v4/pkg/media"
 	"go.opentelemetry.io/otel/metric"
 )

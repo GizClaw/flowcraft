@@ -7,9 +7,9 @@ import (
 	"fmt"
 	"io"
 
+	"github.com/GizClaw/flowcraft/sdk/telemetry"
 	"github.com/GizClaw/flowcraft/voice/audio"
 	"github.com/GizClaw/flowcraft/voice/stt"
-	"github.com/GizClaw/flowcraft/sdk/telemetry"
 )
 
 const (

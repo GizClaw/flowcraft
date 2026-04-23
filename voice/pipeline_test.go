@@ -10,12 +10,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/GizClaw/flowcraft/sdk/workflow"
 	"github.com/GizClaw/flowcraft/voice"
 	"github.com/GizClaw/flowcraft/voice/audio"
 	"github.com/GizClaw/flowcraft/voice/provider"
 	"github.com/GizClaw/flowcraft/voice/stt"
 	"github.com/GizClaw/flowcraft/voice/tts"
-	"github.com/GizClaw/flowcraft/sdk/workflow"
 )
 
 func collectStreamEvents(t *testing.T, s audio.Stream[voice.Event]) []voice.Event {
