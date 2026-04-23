@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -112,4 +113,84 @@ func TestMustEnvelope_PanicsOnBadSubject(t *testing.T) {
 		}
 	}()
 	_ = MustEnvelope(context.Background(), "", nil)
+}
+
+// TestNewEnvelope_ByteSliceReused asserts the documented fast-path:
+// passing a []byte payload skips the JSON encode and is reused
+// verbatim. Callers rely on this for zero-copy republishing of
+// already-encoded blobs (e.g. SSE re-broadcast).
+func TestNewEnvelope_ByteSliceReused(t *testing.T) {
+	raw := []byte(`{"k":"v"}`)
+	env, err := NewEnvelope(context.Background(), "demo.bytes", raw)
+	if err != nil {
+		t.Fatalf("NewEnvelope: %v", err)
+	}
+	if string(env.Payload) != string(raw) {
+		t.Fatalf("[]byte payload should be reused verbatim, got %s", env.Payload)
+	}
+}
+
+// TestNewEnvelope_NilByteSlice and _NilRawMessage cover the explicit
+// nil-guard branches inside NewEnvelope so a typed-nil payload does
+// not slip past as an empty-but-non-nil RawMessage.
+func TestNewEnvelope_NilByteSlice(t *testing.T) {
+	var raw []byte
+	env, err := NewEnvelope(context.Background(), "demo.nil-bytes", raw)
+	if err != nil {
+		t.Fatalf("NewEnvelope: %v", err)
+	}
+	if env.Payload != nil {
+		t.Fatalf("nil []byte should leave Payload nil, got %s", env.Payload)
+	}
+}
+
+func TestNewEnvelope_NilRawMessage(t *testing.T) {
+	var raw json.RawMessage
+	env, err := NewEnvelope(context.Background(), "demo.nil-raw", raw)
+	if err != nil {
+		t.Fatalf("NewEnvelope: %v", err)
+	}
+	if env.Payload != nil {
+		t.Fatalf("nil json.RawMessage should leave Payload nil, got %s", env.Payload)
+	}
+}
+
+// TestNewEnvelope_MarshalFailure forces the json.Marshal error branch
+// by passing a value json.Marshal cannot encode (a channel). This
+// branch is what guarantees malformed payloads surface synchronously
+// rather than later at decode time on the consumer side.
+func TestNewEnvelope_MarshalFailure(t *testing.T) {
+	bad := make(chan int)
+	_, err := NewEnvelope(context.Background(), "demo.bad", bad)
+	if err == nil {
+		t.Fatal("expected marshal error for chan payload, got nil")
+	}
+	if !strings.Contains(err.Error(), "marshal payload") {
+		t.Fatalf("error %q should mention marshal payload", err)
+	}
+}
+
+// TestEnvelope_DecodeError confirms Decode wraps the underlying
+// json.Unmarshal failure with subject context, so consumers can tell
+// which subject misbehaved when many envelopes share a sink.
+func TestEnvelope_DecodeError(t *testing.T) {
+	env := Envelope{Subject: "demo.bad", Payload: json.RawMessage(`{not json}`)}
+	var dst map[string]any
+	err := env.Decode(&dst)
+	if err == nil {
+		t.Fatal("expected decode error, got nil")
+	}
+	if !strings.Contains(err.Error(), "demo.bad") {
+		t.Fatalf("error %q should mention subject", err)
+	}
+}
+
+// TestEnvelope_HeaderOnZero pins the zero-value behaviour: Header(k)
+// on an Envelope with a nil Headers map must return "" without
+// panicking. Callers depend on this for header-optional events.
+func TestEnvelope_HeaderOnZero(t *testing.T) {
+	var env Envelope
+	if got := env.Header("missing"); got != "" {
+		t.Fatalf("Header on zero envelope = %q, want \"\"", got)
+	}
 }
