@@ -26,9 +26,9 @@ check() {
 
 # --- 1. eventlog.SQLiteLog.Append must stay unexported ---------------
 # Business code must publish via the typed PublishXxx generated helpers
-# or via a UnitOfWork inside Atomic; nothing outside internal/eventlog
-# may call SQLiteLog.appendOne directly either (it's package-private but
-# the guard catches accidental copy-paste from older diffs).
+# or via a UnitOfWork inside Atomic. The previous appendOne escape hatch
+# was removed once PublishXxx routed through Log.Atomic, so the only
+# write path is now the Log interface (§4.2).
 check "no-exported-Append" \
       "SQLiteLog.Append must remain unexported; use PublishXxx or UnitOfWork.Append" \
       bash -c '

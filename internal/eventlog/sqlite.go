@@ -91,32 +91,6 @@ func (l *SQLiteLog) Atomic(ctx context.Context, fn func(uow UnitOfWork) error) (
 	return envs, nil
 }
 
-// appendOne is the single-envelope write path used exclusively by the
-// generated PublishXxx helpers. It is unexported so business packages
-// cannot bypass the publisher API and append raw envelopes (§11.1#5).
-// Callers wanting to bundle multiple events must use Atomic.
-func (l *SQLiteLog) appendOne(ctx context.Context, env Envelope) (int64, error) {
-	envs, err := l.Atomic(ctx, func(uow UnitOfWork) error {
-		return uow.Append(ctx, EnvelopeDraft{
-			Partition: env.Partition,
-			Type:      env.Type,
-			Version:   env.Version,
-			Category:  env.Category,
-			Payload:   json.RawMessage(env.Payload),
-			TraceID:   env.TraceID,
-			SpanID:    env.SpanID,
-			Actor:     env.Actor,
-		})
-	})
-	if err != nil {
-		return 0, err
-	}
-	if len(envs) == 0 {
-		return 0, nil
-	}
-	return envs[len(envs)-1].Seq, nil
-}
-
 // LatestSeq returns the highest committed seq in the log, or 0 if empty.
 func (l *SQLiteLog) LatestSeq(ctx context.Context) (int64, error) {
 	var seq sql.NullInt64

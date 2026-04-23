@@ -4,28 +4,21 @@ package eventlog
 
 import (
 	"context"
-	"encoding/json"
 )
 
 // PublishAgentConfigChanged appends a agent.config.changed envelope (category=business, version=1) outside a transaction.
-func PublishAgentConfigChanged(ctx context.Context, log *SQLiteLog, runtimeID string, p AgentConfigChangedPayload, opts ...PublishOption) (int64, error) {
-	b, err := json.Marshal(p)
+func PublishAgentConfigChanged(ctx context.Context, log Log, runtimeID string, p AgentConfigChangedPayload, opts ...PublishOption) (int64, error) {
+	var seq int64
+	envs, err := log.Atomic(ctx, func(uow UnitOfWork) error {
+		return PublishAgentConfigChangedInTx(ctx, uow, runtimeID, p, opts...)
+	})
 	if err != nil {
 		return 0, err
 	}
-	o := collectPublishOptions(opts)
-	env := Envelope{
-		Partition: PartitionRuntime(runtimeID),
-		Type:      EventTypeAgentConfigChanged,
-		Version:   1,
-		Category:  CategoryBusiness,
-		Ts:        NowRFC3339Nano(),
-		Payload:   b,
-		Actor:     o.actor,
-		TraceID:   o.traceID,
-		SpanID:    o.spanID,
+	if n := len(envs); n > 0 {
+		seq = envs[n-1].Seq
 	}
-	return log.appendOne(ctx, env)
+	return seq, nil
 }
 
 // PublishAgentConfigChangedInTx appends a agent.config.changed envelope inside an open UnitOfWork.
@@ -44,24 +37,18 @@ func PublishAgentConfigChangedInTx(ctx context.Context, uow UnitOfWork, runtimeI
 }
 
 // PublishAgentRunCompleted appends a agent.run.completed envelope (category=business, version=1) outside a transaction.
-func PublishAgentRunCompleted(ctx context.Context, log *SQLiteLog, cardID string, p AgentRunCompletedPayload, opts ...PublishOption) (int64, error) {
-	b, err := json.Marshal(p)
+func PublishAgentRunCompleted(ctx context.Context, log Log, cardID string, p AgentRunCompletedPayload, opts ...PublishOption) (int64, error) {
+	var seq int64
+	envs, err := log.Atomic(ctx, func(uow UnitOfWork) error {
+		return PublishAgentRunCompletedInTx(ctx, uow, cardID, p, opts...)
+	})
 	if err != nil {
 		return 0, err
 	}
-	o := collectPublishOptions(opts)
-	env := Envelope{
-		Partition: PartitionCard(cardID),
-		Type:      EventTypeAgentRunCompleted,
-		Version:   1,
-		Category:  CategoryBusiness,
-		Ts:        NowRFC3339Nano(),
-		Payload:   b,
-		Actor:     o.actor,
-		TraceID:   o.traceID,
-		SpanID:    o.spanID,
+	if n := len(envs); n > 0 {
+		seq = envs[n-1].Seq
 	}
-	return log.appendOne(ctx, env)
+	return seq, nil
 }
 
 // PublishAgentRunCompletedInTx appends a agent.run.completed envelope inside an open UnitOfWork.
@@ -80,24 +67,18 @@ func PublishAgentRunCompletedInTx(ctx context.Context, uow UnitOfWork, cardID st
 }
 
 // PublishAgentRunFailed appends a agent.run.failed envelope (category=business, version=1) outside a transaction.
-func PublishAgentRunFailed(ctx context.Context, log *SQLiteLog, cardID string, p AgentRunFailedPayload, opts ...PublishOption) (int64, error) {
-	b, err := json.Marshal(p)
+func PublishAgentRunFailed(ctx context.Context, log Log, cardID string, p AgentRunFailedPayload, opts ...PublishOption) (int64, error) {
+	var seq int64
+	envs, err := log.Atomic(ctx, func(uow UnitOfWork) error {
+		return PublishAgentRunFailedInTx(ctx, uow, cardID, p, opts...)
+	})
 	if err != nil {
 		return 0, err
 	}
-	o := collectPublishOptions(opts)
-	env := Envelope{
-		Partition: PartitionCard(cardID),
-		Type:      EventTypeAgentRunFailed,
-		Version:   1,
-		Category:  CategoryBusiness,
-		Ts:        NowRFC3339Nano(),
-		Payload:   b,
-		Actor:     o.actor,
-		TraceID:   o.traceID,
-		SpanID:    o.spanID,
+	if n := len(envs); n > 0 {
+		seq = envs[n-1].Seq
 	}
-	return log.appendOne(ctx, env)
+	return seq, nil
 }
 
 // PublishAgentRunFailedInTx appends a agent.run.failed envelope inside an open UnitOfWork.
@@ -116,24 +97,18 @@ func PublishAgentRunFailedInTx(ctx context.Context, uow UnitOfWork, cardID strin
 }
 
 // PublishAgentRunStarted appends a agent.run.started envelope (category=business, version=1) outside a transaction.
-func PublishAgentRunStarted(ctx context.Context, log *SQLiteLog, cardID string, p AgentRunStartedPayload, opts ...PublishOption) (int64, error) {
-	b, err := json.Marshal(p)
+func PublishAgentRunStarted(ctx context.Context, log Log, cardID string, p AgentRunStartedPayload, opts ...PublishOption) (int64, error) {
+	var seq int64
+	envs, err := log.Atomic(ctx, func(uow UnitOfWork) error {
+		return PublishAgentRunStartedInTx(ctx, uow, cardID, p, opts...)
+	})
 	if err != nil {
 		return 0, err
 	}
-	o := collectPublishOptions(opts)
-	env := Envelope{
-		Partition: PartitionCard(cardID),
-		Type:      EventTypeAgentRunStarted,
-		Version:   1,
-		Category:  CategoryBusiness,
-		Ts:        NowRFC3339Nano(),
-		Payload:   b,
-		Actor:     o.actor,
-		TraceID:   o.traceID,
-		SpanID:    o.spanID,
+	if n := len(envs); n > 0 {
+		seq = envs[n-1].Seq
 	}
-	return log.appendOne(ctx, env)
+	return seq, nil
 }
 
 // PublishAgentRunStartedInTx appends a agent.run.started envelope inside an open UnitOfWork.
@@ -152,24 +127,18 @@ func PublishAgentRunStartedInTx(ctx context.Context, uow UnitOfWork, cardID stri
 }
 
 // PublishAgentStreamDelta appends a agent.stream.delta envelope (category=volatile, version=1) outside a transaction.
-func PublishAgentStreamDelta(ctx context.Context, log *SQLiteLog, cardID string, p AgentStreamDeltaPayload, opts ...PublishOption) (int64, error) {
-	b, err := json.Marshal(p)
+func PublishAgentStreamDelta(ctx context.Context, log Log, cardID string, p AgentStreamDeltaPayload, opts ...PublishOption) (int64, error) {
+	var seq int64
+	envs, err := log.Atomic(ctx, func(uow UnitOfWork) error {
+		return PublishAgentStreamDeltaInTx(ctx, uow, cardID, p, opts...)
+	})
 	if err != nil {
 		return 0, err
 	}
-	o := collectPublishOptions(opts)
-	env := Envelope{
-		Partition: PartitionCard(cardID),
-		Type:      EventTypeAgentStreamDelta,
-		Version:   1,
-		Category:  CategoryVolatile,
-		Ts:        NowRFC3339Nano(),
-		Payload:   b,
-		Actor:     o.actor,
-		TraceID:   o.traceID,
-		SpanID:    o.spanID,
+	if n := len(envs); n > 0 {
+		seq = envs[n-1].Seq
 	}
-	return log.appendOne(ctx, env)
+	return seq, nil
 }
 
 // PublishAgentStreamDeltaInTx appends a agent.stream.delta envelope inside an open UnitOfWork.
@@ -188,24 +157,18 @@ func PublishAgentStreamDeltaInTx(ctx context.Context, uow UnitOfWork, cardID str
 }
 
 // PublishAgentThinkingDelta appends a agent.thinking.delta envelope (category=volatile, version=1) outside a transaction.
-func PublishAgentThinkingDelta(ctx context.Context, log *SQLiteLog, cardID string, p AgentThinkingDeltaPayload, opts ...PublishOption) (int64, error) {
-	b, err := json.Marshal(p)
+func PublishAgentThinkingDelta(ctx context.Context, log Log, cardID string, p AgentThinkingDeltaPayload, opts ...PublishOption) (int64, error) {
+	var seq int64
+	envs, err := log.Atomic(ctx, func(uow UnitOfWork) error {
+		return PublishAgentThinkingDeltaInTx(ctx, uow, cardID, p, opts...)
+	})
 	if err != nil {
 		return 0, err
 	}
-	o := collectPublishOptions(opts)
-	env := Envelope{
-		Partition: PartitionCard(cardID),
-		Type:      EventTypeAgentThinkingDelta,
-		Version:   1,
-		Category:  CategoryVolatile,
-		Ts:        NowRFC3339Nano(),
-		Payload:   b,
-		Actor:     o.actor,
-		TraceID:   o.traceID,
-		SpanID:    o.spanID,
+	if n := len(envs); n > 0 {
+		seq = envs[n-1].Seq
 	}
-	return log.appendOne(ctx, env)
+	return seq, nil
 }
 
 // PublishAgentThinkingDeltaInTx appends a agent.thinking.delta envelope inside an open UnitOfWork.
@@ -224,24 +187,18 @@ func PublishAgentThinkingDeltaInTx(ctx context.Context, uow UnitOfWork, cardID s
 }
 
 // PublishAgentToolInvoked appends a agent.tool.invoked envelope (category=business, version=1) outside a transaction.
-func PublishAgentToolInvoked(ctx context.Context, log *SQLiteLog, cardID string, p AgentToolInvokedPayload, opts ...PublishOption) (int64, error) {
-	b, err := json.Marshal(p)
+func PublishAgentToolInvoked(ctx context.Context, log Log, cardID string, p AgentToolInvokedPayload, opts ...PublishOption) (int64, error) {
+	var seq int64
+	envs, err := log.Atomic(ctx, func(uow UnitOfWork) error {
+		return PublishAgentToolInvokedInTx(ctx, uow, cardID, p, opts...)
+	})
 	if err != nil {
 		return 0, err
 	}
-	o := collectPublishOptions(opts)
-	env := Envelope{
-		Partition: PartitionCard(cardID),
-		Type:      EventTypeAgentToolInvoked,
-		Version:   1,
-		Category:  CategoryBusiness,
-		Ts:        NowRFC3339Nano(),
-		Payload:   b,
-		Actor:     o.actor,
-		TraceID:   o.traceID,
-		SpanID:    o.spanID,
+	if n := len(envs); n > 0 {
+		seq = envs[n-1].Seq
 	}
-	return log.appendOne(ctx, env)
+	return seq, nil
 }
 
 // PublishAgentToolInvokedInTx appends a agent.tool.invoked envelope inside an open UnitOfWork.
@@ -260,24 +217,18 @@ func PublishAgentToolInvokedInTx(ctx context.Context, uow UnitOfWork, cardID str
 }
 
 // PublishAgentToolReturned appends a agent.tool.returned envelope (category=business, version=1) outside a transaction.
-func PublishAgentToolReturned(ctx context.Context, log *SQLiteLog, cardID string, p AgentToolReturnedPayload, opts ...PublishOption) (int64, error) {
-	b, err := json.Marshal(p)
+func PublishAgentToolReturned(ctx context.Context, log Log, cardID string, p AgentToolReturnedPayload, opts ...PublishOption) (int64, error) {
+	var seq int64
+	envs, err := log.Atomic(ctx, func(uow UnitOfWork) error {
+		return PublishAgentToolReturnedInTx(ctx, uow, cardID, p, opts...)
+	})
 	if err != nil {
 		return 0, err
 	}
-	o := collectPublishOptions(opts)
-	env := Envelope{
-		Partition: PartitionCard(cardID),
-		Type:      EventTypeAgentToolReturned,
-		Version:   1,
-		Category:  CategoryBusiness,
-		Ts:        NowRFC3339Nano(),
-		Payload:   b,
-		Actor:     o.actor,
-		TraceID:   o.traceID,
-		SpanID:    o.spanID,
+	if n := len(envs); n > 0 {
+		seq = envs[n-1].Seq
 	}
-	return log.appendOne(ctx, env)
+	return seq, nil
 }
 
 // PublishAgentToolReturnedInTx appends a agent.tool.returned envelope inside an open UnitOfWork.
@@ -296,24 +247,18 @@ func PublishAgentToolReturnedInTx(ctx context.Context, uow UnitOfWork, cardID st
 }
 
 // PublishAuditActionFailed appends a audit.action.failed envelope (category=audit, version=1) outside a transaction.
-func PublishAuditActionFailed(ctx context.Context, log *SQLiteLog, actorID string, p AuditActionFailedPayload, opts ...PublishOption) (int64, error) {
-	b, err := json.Marshal(p)
+func PublishAuditActionFailed(ctx context.Context, log Log, actorID string, p AuditActionFailedPayload, opts ...PublishOption) (int64, error) {
+	var seq int64
+	envs, err := log.Atomic(ctx, func(uow UnitOfWork) error {
+		return PublishAuditActionFailedInTx(ctx, uow, actorID, p, opts...)
+	})
 	if err != nil {
 		return 0, err
 	}
-	o := collectPublishOptions(opts)
-	env := Envelope{
-		Partition: PartitionActor(actorID),
-		Type:      EventTypeAuditActionFailed,
-		Version:   1,
-		Category:  CategoryAudit,
-		Ts:        NowRFC3339Nano(),
-		Payload:   b,
-		Actor:     o.actor,
-		TraceID:   o.traceID,
-		SpanID:    o.spanID,
+	if n := len(envs); n > 0 {
+		seq = envs[n-1].Seq
 	}
-	return log.appendOne(ctx, env)
+	return seq, nil
 }
 
 // PublishAuditActionFailedInTx appends a audit.action.failed envelope inside an open UnitOfWork.
@@ -332,24 +277,18 @@ func PublishAuditActionFailedInTx(ctx context.Context, uow UnitOfWork, actorID s
 }
 
 // PublishAuditActionPerformed appends a audit.action.performed envelope (category=audit, version=1) outside a transaction.
-func PublishAuditActionPerformed(ctx context.Context, log *SQLiteLog, actorID string, p AuditActionPerformedPayload, opts ...PublishOption) (int64, error) {
-	b, err := json.Marshal(p)
+func PublishAuditActionPerformed(ctx context.Context, log Log, actorID string, p AuditActionPerformedPayload, opts ...PublishOption) (int64, error) {
+	var seq int64
+	envs, err := log.Atomic(ctx, func(uow UnitOfWork) error {
+		return PublishAuditActionPerformedInTx(ctx, uow, actorID, p, opts...)
+	})
 	if err != nil {
 		return 0, err
 	}
-	o := collectPublishOptions(opts)
-	env := Envelope{
-		Partition: PartitionActor(actorID),
-		Type:      EventTypeAuditActionPerformed,
-		Version:   1,
-		Category:  CategoryAudit,
-		Ts:        NowRFC3339Nano(),
-		Payload:   b,
-		Actor:     o.actor,
-		TraceID:   o.traceID,
-		SpanID:    o.spanID,
+	if n := len(envs); n > 0 {
+		seq = envs[n-1].Seq
 	}
-	return log.appendOne(ctx, env)
+	return seq, nil
 }
 
 // PublishAuditActionPerformedInTx appends a audit.action.performed envelope inside an open UnitOfWork.
@@ -368,24 +307,18 @@ func PublishAuditActionPerformedInTx(ctx context.Context, uow UnitOfWork, actorI
 }
 
 // PublishChatCallbackDelivered appends a chat.callback.delivered envelope (category=business, version=1) outside a transaction.
-func PublishChatCallbackDelivered(ctx context.Context, log *SQLiteLog, cardID string, p ChatCallbackDeliveredPayload, opts ...PublishOption) (int64, error) {
-	b, err := json.Marshal(p)
+func PublishChatCallbackDelivered(ctx context.Context, log Log, cardID string, p ChatCallbackDeliveredPayload, opts ...PublishOption) (int64, error) {
+	var seq int64
+	envs, err := log.Atomic(ctx, func(uow UnitOfWork) error {
+		return PublishChatCallbackDeliveredInTx(ctx, uow, cardID, p, opts...)
+	})
 	if err != nil {
 		return 0, err
 	}
-	o := collectPublishOptions(opts)
-	env := Envelope{
-		Partition: PartitionCard(cardID),
-		Type:      EventTypeChatCallbackDelivered,
-		Version:   1,
-		Category:  CategoryBusiness,
-		Ts:        NowRFC3339Nano(),
-		Payload:   b,
-		Actor:     o.actor,
-		TraceID:   o.traceID,
-		SpanID:    o.spanID,
+	if n := len(envs); n > 0 {
+		seq = envs[n-1].Seq
 	}
-	return log.appendOne(ctx, env)
+	return seq, nil
 }
 
 // PublishChatCallbackDeliveredInTx appends a chat.callback.delivered envelope inside an open UnitOfWork.
@@ -404,24 +337,18 @@ func PublishChatCallbackDeliveredInTx(ctx context.Context, uow UnitOfWork, cardI
 }
 
 // PublishChatCallbackDismissed appends a chat.callback.dismissed envelope (category=business, version=1) outside a transaction.
-func PublishChatCallbackDismissed(ctx context.Context, log *SQLiteLog, cardID string, p ChatCallbackDismissedPayload, opts ...PublishOption) (int64, error) {
-	b, err := json.Marshal(p)
+func PublishChatCallbackDismissed(ctx context.Context, log Log, cardID string, p ChatCallbackDismissedPayload, opts ...PublishOption) (int64, error) {
+	var seq int64
+	envs, err := log.Atomic(ctx, func(uow UnitOfWork) error {
+		return PublishChatCallbackDismissedInTx(ctx, uow, cardID, p, opts...)
+	})
 	if err != nil {
 		return 0, err
 	}
-	o := collectPublishOptions(opts)
-	env := Envelope{
-		Partition: PartitionCard(cardID),
-		Type:      EventTypeChatCallbackDismissed,
-		Version:   1,
-		Category:  CategoryBusiness,
-		Ts:        NowRFC3339Nano(),
-		Payload:   b,
-		Actor:     o.actor,
-		TraceID:   o.traceID,
-		SpanID:    o.spanID,
+	if n := len(envs); n > 0 {
+		seq = envs[n-1].Seq
 	}
-	return log.appendOne(ctx, env)
+	return seq, nil
 }
 
 // PublishChatCallbackDismissedInTx appends a chat.callback.dismissed envelope inside an open UnitOfWork.
@@ -440,24 +367,18 @@ func PublishChatCallbackDismissedInTx(ctx context.Context, uow UnitOfWork, cardI
 }
 
 // PublishChatCallbackQueued appends a chat.callback.queued envelope (category=business, version=1) outside a transaction.
-func PublishChatCallbackQueued(ctx context.Context, log *SQLiteLog, cardID string, p ChatCallbackQueuedPayload, opts ...PublishOption) (int64, error) {
-	b, err := json.Marshal(p)
+func PublishChatCallbackQueued(ctx context.Context, log Log, cardID string, p ChatCallbackQueuedPayload, opts ...PublishOption) (int64, error) {
+	var seq int64
+	envs, err := log.Atomic(ctx, func(uow UnitOfWork) error {
+		return PublishChatCallbackQueuedInTx(ctx, uow, cardID, p, opts...)
+	})
 	if err != nil {
 		return 0, err
 	}
-	o := collectPublishOptions(opts)
-	env := Envelope{
-		Partition: PartitionCard(cardID),
-		Type:      EventTypeChatCallbackQueued,
-		Version:   1,
-		Category:  CategoryBusiness,
-		Ts:        NowRFC3339Nano(),
-		Payload:   b,
-		Actor:     o.actor,
-		TraceID:   o.traceID,
-		SpanID:    o.spanID,
+	if n := len(envs); n > 0 {
+		seq = envs[n-1].Seq
 	}
-	return log.appendOne(ctx, env)
+	return seq, nil
 }
 
 // PublishChatCallbackQueuedInTx appends a chat.callback.queued envelope inside an open UnitOfWork.
@@ -476,24 +397,18 @@ func PublishChatCallbackQueuedInTx(ctx context.Context, uow UnitOfWork, cardID s
 }
 
 // PublishChatMessageSent appends a chat.message.sent envelope (category=business, version=1) outside a transaction.
-func PublishChatMessageSent(ctx context.Context, log *SQLiteLog, cardID string, p ChatMessageSentPayload, opts ...PublishOption) (int64, error) {
-	b, err := json.Marshal(p)
+func PublishChatMessageSent(ctx context.Context, log Log, cardID string, p ChatMessageSentPayload, opts ...PublishOption) (int64, error) {
+	var seq int64
+	envs, err := log.Atomic(ctx, func(uow UnitOfWork) error {
+		return PublishChatMessageSentInTx(ctx, uow, cardID, p, opts...)
+	})
 	if err != nil {
 		return 0, err
 	}
-	o := collectPublishOptions(opts)
-	env := Envelope{
-		Partition: PartitionCard(cardID),
-		Type:      EventTypeChatMessageSent,
-		Version:   1,
-		Category:  CategoryBusiness,
-		Ts:        NowRFC3339Nano(),
-		Payload:   b,
-		Actor:     o.actor,
-		TraceID:   o.traceID,
-		SpanID:    o.spanID,
+	if n := len(envs); n > 0 {
+		seq = envs[n-1].Seq
 	}
-	return log.appendOne(ctx, env)
+	return seq, nil
 }
 
 // PublishChatMessageSentInTx appends a chat.message.sent envelope inside an open UnitOfWork.
@@ -512,24 +427,18 @@ func PublishChatMessageSentInTx(ctx context.Context, uow UnitOfWork, cardID stri
 }
 
 // PublishCronRuleChanged appends a cron.rule.changed envelope (category=business, version=1) outside a transaction.
-func PublishCronRuleChanged(ctx context.Context, log *SQLiteLog, runtimeID string, p CronRuleChangedPayload, opts ...PublishOption) (int64, error) {
-	b, err := json.Marshal(p)
+func PublishCronRuleChanged(ctx context.Context, log Log, runtimeID string, p CronRuleChangedPayload, opts ...PublishOption) (int64, error) {
+	var seq int64
+	envs, err := log.Atomic(ctx, func(uow UnitOfWork) error {
+		return PublishCronRuleChangedInTx(ctx, uow, runtimeID, p, opts...)
+	})
 	if err != nil {
 		return 0, err
 	}
-	o := collectPublishOptions(opts)
-	env := Envelope{
-		Partition: PartitionRuntime(runtimeID),
-		Type:      EventTypeCronRuleChanged,
-		Version:   1,
-		Category:  CategoryBusiness,
-		Ts:        NowRFC3339Nano(),
-		Payload:   b,
-		Actor:     o.actor,
-		TraceID:   o.traceID,
-		SpanID:    o.spanID,
+	if n := len(envs); n > 0 {
+		seq = envs[n-1].Seq
 	}
-	return log.appendOne(ctx, env)
+	return seq, nil
 }
 
 // PublishCronRuleChangedInTx appends a cron.rule.changed envelope inside an open UnitOfWork.
@@ -548,24 +457,18 @@ func PublishCronRuleChangedInTx(ctx context.Context, uow UnitOfWork, runtimeID s
 }
 
 // PublishCronRuleCreated appends a cron.rule.created envelope (category=business, version=1) outside a transaction.
-func PublishCronRuleCreated(ctx context.Context, log *SQLiteLog, runtimeID string, p CronRuleCreatedPayload, opts ...PublishOption) (int64, error) {
-	b, err := json.Marshal(p)
+func PublishCronRuleCreated(ctx context.Context, log Log, runtimeID string, p CronRuleCreatedPayload, opts ...PublishOption) (int64, error) {
+	var seq int64
+	envs, err := log.Atomic(ctx, func(uow UnitOfWork) error {
+		return PublishCronRuleCreatedInTx(ctx, uow, runtimeID, p, opts...)
+	})
 	if err != nil {
 		return 0, err
 	}
-	o := collectPublishOptions(opts)
-	env := Envelope{
-		Partition: PartitionRuntime(runtimeID),
-		Type:      EventTypeCronRuleCreated,
-		Version:   1,
-		Category:  CategoryBusiness,
-		Ts:        NowRFC3339Nano(),
-		Payload:   b,
-		Actor:     o.actor,
-		TraceID:   o.traceID,
-		SpanID:    o.spanID,
+	if n := len(envs); n > 0 {
+		seq = envs[n-1].Seq
 	}
-	return log.appendOne(ctx, env)
+	return seq, nil
 }
 
 // PublishCronRuleCreatedInTx appends a cron.rule.created envelope inside an open UnitOfWork.
@@ -584,24 +487,18 @@ func PublishCronRuleCreatedInTx(ctx context.Context, uow UnitOfWork, runtimeID s
 }
 
 // PublishCronRuleDisabled appends a cron.rule.disabled envelope (category=business, version=1) outside a transaction.
-func PublishCronRuleDisabled(ctx context.Context, log *SQLiteLog, runtimeID string, p CronRuleDisabledPayload, opts ...PublishOption) (int64, error) {
-	b, err := json.Marshal(p)
+func PublishCronRuleDisabled(ctx context.Context, log Log, runtimeID string, p CronRuleDisabledPayload, opts ...PublishOption) (int64, error) {
+	var seq int64
+	envs, err := log.Atomic(ctx, func(uow UnitOfWork) error {
+		return PublishCronRuleDisabledInTx(ctx, uow, runtimeID, p, opts...)
+	})
 	if err != nil {
 		return 0, err
 	}
-	o := collectPublishOptions(opts)
-	env := Envelope{
-		Partition: PartitionRuntime(runtimeID),
-		Type:      EventTypeCronRuleDisabled,
-		Version:   1,
-		Category:  CategoryBusiness,
-		Ts:        NowRFC3339Nano(),
-		Payload:   b,
-		Actor:     o.actor,
-		TraceID:   o.traceID,
-		SpanID:    o.spanID,
+	if n := len(envs); n > 0 {
+		seq = envs[n-1].Seq
 	}
-	return log.appendOne(ctx, env)
+	return seq, nil
 }
 
 // PublishCronRuleDisabledInTx appends a cron.rule.disabled envelope inside an open UnitOfWork.
@@ -620,24 +517,18 @@ func PublishCronRuleDisabledInTx(ctx context.Context, uow UnitOfWork, runtimeID 
 }
 
 // PublishCronRuleFired appends a cron.rule.fired envelope (category=operational, version=1) outside a transaction.
-func PublishCronRuleFired(ctx context.Context, log *SQLiteLog, ruleID string, p CronRuleFiredPayload, opts ...PublishOption) (int64, error) {
-	b, err := json.Marshal(p)
+func PublishCronRuleFired(ctx context.Context, log Log, ruleID string, p CronRuleFiredPayload, opts ...PublishOption) (int64, error) {
+	var seq int64
+	envs, err := log.Atomic(ctx, func(uow UnitOfWork) error {
+		return PublishCronRuleFiredInTx(ctx, uow, ruleID, p, opts...)
+	})
 	if err != nil {
 		return 0, err
 	}
-	o := collectPublishOptions(opts)
-	env := Envelope{
-		Partition: PartitionCron(ruleID),
-		Type:      EventTypeCronRuleFired,
-		Version:   1,
-		Category:  CategoryOperational,
-		Ts:        NowRFC3339Nano(),
-		Payload:   b,
-		Actor:     o.actor,
-		TraceID:   o.traceID,
-		SpanID:    o.spanID,
+	if n := len(envs); n > 0 {
+		seq = envs[n-1].Seq
 	}
-	return log.appendOne(ctx, env)
+	return seq, nil
 }
 
 // PublishCronRuleFiredInTx appends a cron.rule.fired envelope inside an open UnitOfWork.
@@ -656,24 +547,18 @@ func PublishCronRuleFiredInTx(ctx context.Context, uow UnitOfWork, ruleID string
 }
 
 // PublishRealmConfigChanged appends a realm.config.changed envelope (category=audit, version=1) outside a transaction.
-func PublishRealmConfigChanged(ctx context.Context, log *SQLiteLog, realmID string, p RealmConfigChangedPayload, opts ...PublishOption) (int64, error) {
-	b, err := json.Marshal(p)
+func PublishRealmConfigChanged(ctx context.Context, log Log, realmID string, p RealmConfigChangedPayload, opts ...PublishOption) (int64, error) {
+	var seq int64
+	envs, err := log.Atomic(ctx, func(uow UnitOfWork) error {
+		return PublishRealmConfigChangedInTx(ctx, uow, realmID, p, opts...)
+	})
 	if err != nil {
 		return 0, err
 	}
-	o := collectPublishOptions(opts)
-	env := Envelope{
-		Partition: PartitionRealm(realmID),
-		Type:      EventTypeRealmConfigChanged,
-		Version:   1,
-		Category:  CategoryAudit,
-		Ts:        NowRFC3339Nano(),
-		Payload:   b,
-		Actor:     o.actor,
-		TraceID:   o.traceID,
-		SpanID:    o.spanID,
+	if n := len(envs); n > 0 {
+		seq = envs[n-1].Seq
 	}
-	return log.appendOne(ctx, env)
+	return seq, nil
 }
 
 // PublishRealmConfigChangedInTx appends a realm.config.changed envelope inside an open UnitOfWork.
@@ -692,24 +577,18 @@ func PublishRealmConfigChangedInTx(ctx context.Context, uow UnitOfWork, realmID 
 }
 
 // PublishRealmCreated appends a realm.created envelope (category=permanent, version=1) outside a transaction.
-func PublishRealmCreated(ctx context.Context, log *SQLiteLog, realmID string, p RealmCreatedPayload, opts ...PublishOption) (int64, error) {
-	b, err := json.Marshal(p)
+func PublishRealmCreated(ctx context.Context, log Log, realmID string, p RealmCreatedPayload, opts ...PublishOption) (int64, error) {
+	var seq int64
+	envs, err := log.Atomic(ctx, func(uow UnitOfWork) error {
+		return PublishRealmCreatedInTx(ctx, uow, realmID, p, opts...)
+	})
 	if err != nil {
 		return 0, err
 	}
-	o := collectPublishOptions(opts)
-	env := Envelope{
-		Partition: PartitionRealm(realmID),
-		Type:      EventTypeRealmCreated,
-		Version:   1,
-		Category:  CategoryPermanent,
-		Ts:        NowRFC3339Nano(),
-		Payload:   b,
-		Actor:     o.actor,
-		TraceID:   o.traceID,
-		SpanID:    o.spanID,
+	if n := len(envs); n > 0 {
+		seq = envs[n-1].Seq
 	}
-	return log.appendOne(ctx, env)
+	return seq, nil
 }
 
 // PublishRealmCreatedInTx appends a realm.created envelope inside an open UnitOfWork.
@@ -728,24 +607,18 @@ func PublishRealmCreatedInTx(ctx context.Context, uow UnitOfWork, realmID string
 }
 
 // PublishRealmMemberAdded appends a realm.member.added envelope (category=audit, version=1) outside a transaction.
-func PublishRealmMemberAdded(ctx context.Context, log *SQLiteLog, realmID string, p RealmMemberAddedPayload, opts ...PublishOption) (int64, error) {
-	b, err := json.Marshal(p)
+func PublishRealmMemberAdded(ctx context.Context, log Log, realmID string, p RealmMemberAddedPayload, opts ...PublishOption) (int64, error) {
+	var seq int64
+	envs, err := log.Atomic(ctx, func(uow UnitOfWork) error {
+		return PublishRealmMemberAddedInTx(ctx, uow, realmID, p, opts...)
+	})
 	if err != nil {
 		return 0, err
 	}
-	o := collectPublishOptions(opts)
-	env := Envelope{
-		Partition: PartitionRealm(realmID),
-		Type:      EventTypeRealmMemberAdded,
-		Version:   1,
-		Category:  CategoryAudit,
-		Ts:        NowRFC3339Nano(),
-		Payload:   b,
-		Actor:     o.actor,
-		TraceID:   o.traceID,
-		SpanID:    o.spanID,
+	if n := len(envs); n > 0 {
+		seq = envs[n-1].Seq
 	}
-	return log.appendOne(ctx, env)
+	return seq, nil
 }
 
 // PublishRealmMemberAddedInTx appends a realm.member.added envelope inside an open UnitOfWork.
@@ -764,24 +637,18 @@ func PublishRealmMemberAddedInTx(ctx context.Context, uow UnitOfWork, realmID st
 }
 
 // PublishRealmMemberRemoved appends a realm.member.removed envelope (category=audit, version=1) outside a transaction.
-func PublishRealmMemberRemoved(ctx context.Context, log *SQLiteLog, realmID string, p RealmMemberRemovedPayload, opts ...PublishOption) (int64, error) {
-	b, err := json.Marshal(p)
+func PublishRealmMemberRemoved(ctx context.Context, log Log, realmID string, p RealmMemberRemovedPayload, opts ...PublishOption) (int64, error) {
+	var seq int64
+	envs, err := log.Atomic(ctx, func(uow UnitOfWork) error {
+		return PublishRealmMemberRemovedInTx(ctx, uow, realmID, p, opts...)
+	})
 	if err != nil {
 		return 0, err
 	}
-	o := collectPublishOptions(opts)
-	env := Envelope{
-		Partition: PartitionRealm(realmID),
-		Type:      EventTypeRealmMemberRemoved,
-		Version:   1,
-		Category:  CategoryAudit,
-		Ts:        NowRFC3339Nano(),
-		Payload:   b,
-		Actor:     o.actor,
-		TraceID:   o.traceID,
-		SpanID:    o.spanID,
+	if n := len(envs); n > 0 {
+		seq = envs[n-1].Seq
 	}
-	return log.appendOne(ctx, env)
+	return seq, nil
 }
 
 // PublishRealmMemberRemovedInTx appends a realm.member.removed envelope inside an open UnitOfWork.
@@ -800,24 +667,18 @@ func PublishRealmMemberRemovedInTx(ctx context.Context, uow UnitOfWork, realmID 
 }
 
 // PublishTaskClaimed appends a task.claimed envelope (category=business, version=1) outside a transaction.
-func PublishTaskClaimed(ctx context.Context, log *SQLiteLog, runtimeID string, p TaskClaimedPayload, opts ...PublishOption) (int64, error) {
-	b, err := json.Marshal(p)
+func PublishTaskClaimed(ctx context.Context, log Log, runtimeID string, p TaskClaimedPayload, opts ...PublishOption) (int64, error) {
+	var seq int64
+	envs, err := log.Atomic(ctx, func(uow UnitOfWork) error {
+		return PublishTaskClaimedInTx(ctx, uow, runtimeID, p, opts...)
+	})
 	if err != nil {
 		return 0, err
 	}
-	o := collectPublishOptions(opts)
-	env := Envelope{
-		Partition: PartitionRuntime(runtimeID),
-		Type:      EventTypeTaskClaimed,
-		Version:   1,
-		Category:  CategoryBusiness,
-		Ts:        NowRFC3339Nano(),
-		Payload:   b,
-		Actor:     o.actor,
-		TraceID:   o.traceID,
-		SpanID:    o.spanID,
+	if n := len(envs); n > 0 {
+		seq = envs[n-1].Seq
 	}
-	return log.appendOne(ctx, env)
+	return seq, nil
 }
 
 // PublishTaskClaimedInTx appends a task.claimed envelope inside an open UnitOfWork.
@@ -836,24 +697,18 @@ func PublishTaskClaimedInTx(ctx context.Context, uow UnitOfWork, runtimeID strin
 }
 
 // PublishTaskCompleted appends a task.completed envelope (category=business, version=1) outside a transaction.
-func PublishTaskCompleted(ctx context.Context, log *SQLiteLog, runtimeID string, p TaskCompletedPayload, opts ...PublishOption) (int64, error) {
-	b, err := json.Marshal(p)
+func PublishTaskCompleted(ctx context.Context, log Log, runtimeID string, p TaskCompletedPayload, opts ...PublishOption) (int64, error) {
+	var seq int64
+	envs, err := log.Atomic(ctx, func(uow UnitOfWork) error {
+		return PublishTaskCompletedInTx(ctx, uow, runtimeID, p, opts...)
+	})
 	if err != nil {
 		return 0, err
 	}
-	o := collectPublishOptions(opts)
-	env := Envelope{
-		Partition: PartitionRuntime(runtimeID),
-		Type:      EventTypeTaskCompleted,
-		Version:   1,
-		Category:  CategoryBusiness,
-		Ts:        NowRFC3339Nano(),
-		Payload:   b,
-		Actor:     o.actor,
-		TraceID:   o.traceID,
-		SpanID:    o.spanID,
+	if n := len(envs); n > 0 {
+		seq = envs[n-1].Seq
 	}
-	return log.appendOne(ctx, env)
+	return seq, nil
 }
 
 // PublishTaskCompletedInTx appends a task.completed envelope inside an open UnitOfWork.
@@ -872,24 +727,18 @@ func PublishTaskCompletedInTx(ctx context.Context, uow UnitOfWork, runtimeID str
 }
 
 // PublishTaskFailed appends a task.failed envelope (category=business, version=1) outside a transaction.
-func PublishTaskFailed(ctx context.Context, log *SQLiteLog, runtimeID string, p TaskFailedPayload, opts ...PublishOption) (int64, error) {
-	b, err := json.Marshal(p)
+func PublishTaskFailed(ctx context.Context, log Log, runtimeID string, p TaskFailedPayload, opts ...PublishOption) (int64, error) {
+	var seq int64
+	envs, err := log.Atomic(ctx, func(uow UnitOfWork) error {
+		return PublishTaskFailedInTx(ctx, uow, runtimeID, p, opts...)
+	})
 	if err != nil {
 		return 0, err
 	}
-	o := collectPublishOptions(opts)
-	env := Envelope{
-		Partition: PartitionRuntime(runtimeID),
-		Type:      EventTypeTaskFailed,
-		Version:   1,
-		Category:  CategoryBusiness,
-		Ts:        NowRFC3339Nano(),
-		Payload:   b,
-		Actor:     o.actor,
-		TraceID:   o.traceID,
-		SpanID:    o.spanID,
+	if n := len(envs); n > 0 {
+		seq = envs[n-1].Seq
 	}
-	return log.appendOne(ctx, env)
+	return seq, nil
 }
 
 // PublishTaskFailedInTx appends a task.failed envelope inside an open UnitOfWork.
@@ -908,24 +757,18 @@ func PublishTaskFailedInTx(ctx context.Context, uow UnitOfWork, runtimeID string
 }
 
 // PublishTaskSubmitted appends a task.submitted envelope (category=business, version=1) outside a transaction.
-func PublishTaskSubmitted(ctx context.Context, log *SQLiteLog, runtimeID string, p TaskSubmittedPayload, opts ...PublishOption) (int64, error) {
-	b, err := json.Marshal(p)
+func PublishTaskSubmitted(ctx context.Context, log Log, runtimeID string, p TaskSubmittedPayload, opts ...PublishOption) (int64, error) {
+	var seq int64
+	envs, err := log.Atomic(ctx, func(uow UnitOfWork) error {
+		return PublishTaskSubmittedInTx(ctx, uow, runtimeID, p, opts...)
+	})
 	if err != nil {
 		return 0, err
 	}
-	o := collectPublishOptions(opts)
-	env := Envelope{
-		Partition: PartitionRuntime(runtimeID),
-		Type:      EventTypeTaskSubmitted,
-		Version:   1,
-		Category:  CategoryBusiness,
-		Ts:        NowRFC3339Nano(),
-		Payload:   b,
-		Actor:     o.actor,
-		TraceID:   o.traceID,
-		SpanID:    o.spanID,
+	if n := len(envs); n > 0 {
+		seq = envs[n-1].Seq
 	}
-	return log.appendOne(ctx, env)
+	return seq, nil
 }
 
 // PublishTaskSubmittedInTx appends a task.submitted envelope inside an open UnitOfWork.
@@ -944,24 +787,18 @@ func PublishTaskSubmittedInTx(ctx context.Context, uow UnitOfWork, runtimeID str
 }
 
 // PublishWebhookInboundReceived appends a webhook.inbound.received envelope (category=operational, version=1) outside a transaction.
-func PublishWebhookInboundReceived(ctx context.Context, log *SQLiteLog, endpointID string, p WebhookInboundBody, opts ...PublishOption) (int64, error) {
-	b, err := json.Marshal(p)
+func PublishWebhookInboundReceived(ctx context.Context, log Log, endpointID string, p WebhookInboundBody, opts ...PublishOption) (int64, error) {
+	var seq int64
+	envs, err := log.Atomic(ctx, func(uow UnitOfWork) error {
+		return PublishWebhookInboundReceivedInTx(ctx, uow, endpointID, p, opts...)
+	})
 	if err != nil {
 		return 0, err
 	}
-	o := collectPublishOptions(opts)
-	env := Envelope{
-		Partition: PartitionWebhook(endpointID),
-		Type:      EventTypeWebhookInboundReceived,
-		Version:   1,
-		Category:  CategoryOperational,
-		Ts:        NowRFC3339Nano(),
-		Payload:   b,
-		Actor:     o.actor,
-		TraceID:   o.traceID,
-		SpanID:    o.spanID,
+	if n := len(envs); n > 0 {
+		seq = envs[n-1].Seq
 	}
-	return log.appendOne(ctx, env)
+	return seq, nil
 }
 
 // PublishWebhookInboundReceivedInTx appends a webhook.inbound.received envelope inside an open UnitOfWork.
@@ -980,24 +817,18 @@ func PublishWebhookInboundReceivedInTx(ctx context.Context, uow UnitOfWork, endp
 }
 
 // PublishWebhookOutboundAttemptFailed appends a webhook.outbound.attempt_failed envelope (category=operational, version=1) outside a transaction.
-func PublishWebhookOutboundAttemptFailed(ctx context.Context, log *SQLiteLog, endpointID string, p WebhookOutboundAttemptFailedPayload, opts ...PublishOption) (int64, error) {
-	b, err := json.Marshal(p)
+func PublishWebhookOutboundAttemptFailed(ctx context.Context, log Log, endpointID string, p WebhookOutboundAttemptFailedPayload, opts ...PublishOption) (int64, error) {
+	var seq int64
+	envs, err := log.Atomic(ctx, func(uow UnitOfWork) error {
+		return PublishWebhookOutboundAttemptFailedInTx(ctx, uow, endpointID, p, opts...)
+	})
 	if err != nil {
 		return 0, err
 	}
-	o := collectPublishOptions(opts)
-	env := Envelope{
-		Partition: PartitionWebhook(endpointID),
-		Type:      EventTypeWebhookOutboundAttemptFailed,
-		Version:   1,
-		Category:  CategoryOperational,
-		Ts:        NowRFC3339Nano(),
-		Payload:   b,
-		Actor:     o.actor,
-		TraceID:   o.traceID,
-		SpanID:    o.spanID,
+	if n := len(envs); n > 0 {
+		seq = envs[n-1].Seq
 	}
-	return log.appendOne(ctx, env)
+	return seq, nil
 }
 
 // PublishWebhookOutboundAttemptFailedInTx appends a webhook.outbound.attempt_failed envelope inside an open UnitOfWork.
@@ -1016,24 +847,18 @@ func PublishWebhookOutboundAttemptFailedInTx(ctx context.Context, uow UnitOfWork
 }
 
 // PublishWebhookOutboundExhausted appends a webhook.outbound.exhausted envelope (category=audit, version=1) outside a transaction.
-func PublishWebhookOutboundExhausted(ctx context.Context, log *SQLiteLog, endpointID string, p WebhookOutboundExhaustedPayload, opts ...PublishOption) (int64, error) {
-	b, err := json.Marshal(p)
+func PublishWebhookOutboundExhausted(ctx context.Context, log Log, endpointID string, p WebhookOutboundExhaustedPayload, opts ...PublishOption) (int64, error) {
+	var seq int64
+	envs, err := log.Atomic(ctx, func(uow UnitOfWork) error {
+		return PublishWebhookOutboundExhaustedInTx(ctx, uow, endpointID, p, opts...)
+	})
 	if err != nil {
 		return 0, err
 	}
-	o := collectPublishOptions(opts)
-	env := Envelope{
-		Partition: PartitionWebhook(endpointID),
-		Type:      EventTypeWebhookOutboundExhausted,
-		Version:   1,
-		Category:  CategoryAudit,
-		Ts:        NowRFC3339Nano(),
-		Payload:   b,
-		Actor:     o.actor,
-		TraceID:   o.traceID,
-		SpanID:    o.spanID,
+	if n := len(envs); n > 0 {
+		seq = envs[n-1].Seq
 	}
-	return log.appendOne(ctx, env)
+	return seq, nil
 }
 
 // PublishWebhookOutboundExhaustedInTx appends a webhook.outbound.exhausted envelope inside an open UnitOfWork.
@@ -1052,24 +877,18 @@ func PublishWebhookOutboundExhaustedInTx(ctx context.Context, uow UnitOfWork, en
 }
 
 // PublishWebhookOutboundQueued appends a webhook.outbound.queued envelope (category=operational, version=1) outside a transaction.
-func PublishWebhookOutboundQueued(ctx context.Context, log *SQLiteLog, endpointID string, p WebhookOutboundQueuedPayload, opts ...PublishOption) (int64, error) {
-	b, err := json.Marshal(p)
+func PublishWebhookOutboundQueued(ctx context.Context, log Log, endpointID string, p WebhookOutboundQueuedPayload, opts ...PublishOption) (int64, error) {
+	var seq int64
+	envs, err := log.Atomic(ctx, func(uow UnitOfWork) error {
+		return PublishWebhookOutboundQueuedInTx(ctx, uow, endpointID, p, opts...)
+	})
 	if err != nil {
 		return 0, err
 	}
-	o := collectPublishOptions(opts)
-	env := Envelope{
-		Partition: PartitionWebhook(endpointID),
-		Type:      EventTypeWebhookOutboundQueued,
-		Version:   1,
-		Category:  CategoryOperational,
-		Ts:        NowRFC3339Nano(),
-		Payload:   b,
-		Actor:     o.actor,
-		TraceID:   o.traceID,
-		SpanID:    o.spanID,
+	if n := len(envs); n > 0 {
+		seq = envs[n-1].Seq
 	}
-	return log.appendOne(ctx, env)
+	return seq, nil
 }
 
 // PublishWebhookOutboundQueuedInTx appends a webhook.outbound.queued envelope inside an open UnitOfWork.
@@ -1088,24 +907,18 @@ func PublishWebhookOutboundQueuedInTx(ctx context.Context, uow UnitOfWork, endpo
 }
 
 // PublishWebhookOutboundScheduled appends a webhook.outbound.scheduled envelope (category=operational, version=1) outside a transaction.
-func PublishWebhookOutboundScheduled(ctx context.Context, log *SQLiteLog, endpointID string, p WebhookOutboundScheduledPayload, opts ...PublishOption) (int64, error) {
-	b, err := json.Marshal(p)
+func PublishWebhookOutboundScheduled(ctx context.Context, log Log, endpointID string, p WebhookOutboundScheduledPayload, opts ...PublishOption) (int64, error) {
+	var seq int64
+	envs, err := log.Atomic(ctx, func(uow UnitOfWork) error {
+		return PublishWebhookOutboundScheduledInTx(ctx, uow, endpointID, p, opts...)
+	})
 	if err != nil {
 		return 0, err
 	}
-	o := collectPublishOptions(opts)
-	env := Envelope{
-		Partition: PartitionWebhook(endpointID),
-		Type:      EventTypeWebhookOutboundScheduled,
-		Version:   1,
-		Category:  CategoryOperational,
-		Ts:        NowRFC3339Nano(),
-		Payload:   b,
-		Actor:     o.actor,
-		TraceID:   o.traceID,
-		SpanID:    o.spanID,
+	if n := len(envs); n > 0 {
+		seq = envs[n-1].Seq
 	}
-	return log.appendOne(ctx, env)
+	return seq, nil
 }
 
 // PublishWebhookOutboundScheduledInTx appends a webhook.outbound.scheduled envelope inside an open UnitOfWork.
@@ -1124,24 +937,18 @@ func PublishWebhookOutboundScheduledInTx(ctx context.Context, uow UnitOfWork, en
 }
 
 // PublishWebhookOutboundSent appends a webhook.outbound.sent envelope (category=operational, version=1) outside a transaction.
-func PublishWebhookOutboundSent(ctx context.Context, log *SQLiteLog, endpointID string, p WebhookOutboundSentPayload, opts ...PublishOption) (int64, error) {
-	b, err := json.Marshal(p)
+func PublishWebhookOutboundSent(ctx context.Context, log Log, endpointID string, p WebhookOutboundSentPayload, opts ...PublishOption) (int64, error) {
+	var seq int64
+	envs, err := log.Atomic(ctx, func(uow UnitOfWork) error {
+		return PublishWebhookOutboundSentInTx(ctx, uow, endpointID, p, opts...)
+	})
 	if err != nil {
 		return 0, err
 	}
-	o := collectPublishOptions(opts)
-	env := Envelope{
-		Partition: PartitionWebhook(endpointID),
-		Type:      EventTypeWebhookOutboundSent,
-		Version:   1,
-		Category:  CategoryOperational,
-		Ts:        NowRFC3339Nano(),
-		Payload:   b,
-		Actor:     o.actor,
-		TraceID:   o.traceID,
-		SpanID:    o.spanID,
+	if n := len(envs); n > 0 {
+		seq = envs[n-1].Seq
 	}
-	return log.appendOne(ctx, env)
+	return seq, nil
 }
 
 // PublishWebhookOutboundSentInTx appends a webhook.outbound.sent envelope inside an open UnitOfWork.

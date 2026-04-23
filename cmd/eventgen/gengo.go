@@ -314,25 +314,30 @@ func publishArgs(ev EventDef) (argName, partitionExpr string, err error) {
 
 func writeGoPublish(spec *Spec, path string) error {
 	var sb strings.Builder
-	sb.WriteString("package eventlog\n\nimport (\n\t\"context\"\n\t\"encoding/json\"\n)\n\n")
+	sb.WriteString("package eventlog\n\nimport (\n\t\"context\"\n)\n\n")
 	for _, ev := range spec.Events {
 		g := eventGoName(ev.Name)
 		argName, partExpr, err := publishArgs(ev)
 		if err != nil {
 			return err
 		}
-		// Out-of-transaction Publish (single-event) helper. We take the
-		// concrete *SQLiteLog (rather than an exported interface) so
-		// business packages cannot bypass the publisher API and append
-		// raw envelopes — the appendOne method is unexported (§11.1#5).
+		// Out-of-transaction Publish (single-event) helper. The signature
+		// takes the public Log interface and routes through Log.Atomic so
+		// no caller can reach for an internal append shortcut — Atomic
+		// remains the only write path (§4.2 / §11.1#5). Marshalling is
+		// handled inside the InTx helper via uow.Append.
 		sb.WriteString(fmt.Sprintf(
-			"// Publish%s appends a %s envelope (category=%s, version=%d) outside a transaction.\nfunc Publish%s(ctx context.Context, log *SQLiteLog, %s string, p %s, opts ...PublishOption) (int64, error) {\n"+
-				"\tb, err := json.Marshal(p)\n\tif err != nil {\n\t\treturn 0, err\n\t}\n"+
-				"\to := collectPublishOptions(opts)\n"+
-				"\tenv := Envelope{\n\t\tPartition: %s,\n\t\tType: EventType%s,\n\t\tVersion: %d,\n\t\tCategory: %s,\n\t\tTs: NowRFC3339Nano(),\n\t\tPayload: b,\n\t\tActor: o.actor,\n\t\tTraceID: o.traceID,\n\t\tSpanID: o.spanID,\n\t}\n\treturn log.appendOne(ctx, env)\n}\n\n",
+			"// Publish%s appends a %s envelope (category=%s, version=%d) outside a transaction.\nfunc Publish%s(ctx context.Context, log Log, %s string, p %s, opts ...PublishOption) (int64, error) {\n"+
+				"\tvar seq int64\n"+
+				"\tenvs, err := log.Atomic(ctx, func(uow UnitOfWork) error {\n"+
+				"\t\treturn Publish%sInTx(ctx, uow, %s, p, opts...)\n"+
+				"\t})\n"+
+				"\tif err != nil {\n\t\treturn 0, err\n\t}\n"+
+				"\tif n := len(envs); n > 0 {\n\t\tseq = envs[n-1].Seq\n\t}\n"+
+				"\treturn seq, nil\n}\n\n",
 			g, ev.Name, ev.Category, ev.Version,
 			g, argName, ev.PayloadType,
-			partExpr, g, ev.Version, categoryConstName(ev.Category),
+			g, argName,
 		))
 		// In-transaction Publish helper for use inside log.Atomic(...).
 		sb.WriteString(fmt.Sprintf(

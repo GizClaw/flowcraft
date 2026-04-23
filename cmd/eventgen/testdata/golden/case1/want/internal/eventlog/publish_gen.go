@@ -4,28 +4,21 @@ package eventlog
 
 import (
 	"context"
-	"encoding/json"
 )
 
 // PublishTaskSubmitted appends a task.submitted envelope (category=business, version=1) outside a transaction.
-func PublishTaskSubmitted(ctx context.Context, log *SQLiteLog, cardID string, p TaskSubmittedPayload, opts ...PublishOption) (int64, error) {
-	b, err := json.Marshal(p)
+func PublishTaskSubmitted(ctx context.Context, log Log, cardID string, p TaskSubmittedPayload, opts ...PublishOption) (int64, error) {
+	var seq int64
+	envs, err := log.Atomic(ctx, func(uow UnitOfWork) error {
+		return PublishTaskSubmittedInTx(ctx, uow, cardID, p, opts...)
+	})
 	if err != nil {
 		return 0, err
 	}
-	o := collectPublishOptions(opts)
-	env := Envelope{
-		Partition: PartitionCard(cardID),
-		Type: EventTypeTaskSubmitted,
-		Version: 1,
-		Category: CategoryBusiness,
-		Ts: NowRFC3339Nano(),
-		Payload: b,
-		Actor: o.actor,
-		TraceID: o.traceID,
-		SpanID: o.spanID,
+	if n := len(envs); n > 0 {
+		seq = envs[n-1].Seq
 	}
-	return log.appendOne(ctx, env)
+	return seq, nil
 }
 
 // PublishTaskSubmittedInTx appends a task.submitted envelope inside an open UnitOfWork.
