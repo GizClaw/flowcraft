@@ -615,10 +615,10 @@ func (b *Board) Topology() Topology {
 	return Topology{Nodes: nodes, Edges: edges}
 }
 
-// RestoreTaskBoard reconstructs a Board from persisted KanbanCards. Each
+// RestoreBoard reconstructs a Board from persisted KanbanCards. Each
 // card's persisted CreatedAt / UpdatedAt is honoured so timeline views and
 // elapsed-time metrics stay correct across a process restart.
-func RestoreTaskBoard(scopeID string, cards []*KanbanCardModel) *Board {
+func RestoreBoard(scopeID string, cards []*KanbanCardModel) *Board {
 	b := NewBoard(scopeID)
 	for _, c := range cards {
 		payload := map[string]any{
@@ -656,7 +656,7 @@ func RestoreTaskBoard(scopeID string, cards []*KanbanCardModel) *Board {
 }
 
 // restoreTimestamps overwrites CreatedAt / UpdatedAt on an existing card to the
-// persisted values. Internal helper for RestoreTaskBoard; must not be exposed
+// persisted values. Internal helper for RestoreBoard; must not be exposed
 // because regular state transitions are responsible for stamping UpdatedAt.
 func (b *Board) restoreTimestamps(cardID string, created, updated time.Time) {
 	b.cardMu.Lock()
