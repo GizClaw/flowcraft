@@ -1,5 +1,11 @@
 // Package event provides the EventBus interface and an in-memory implementation
 // for non-blocking multi-consumer event subscription.
+//
+// The exported names below are scheduled for removal in v0.2.0. The new
+// subject-routed Bus / Envelope / MemoryBus types live in their own files.
+//
+// The "Legacy" prefix has been added to every name that would otherwise clash
+// with the new API; behaviour is unchanged from before the rename.
 package event
 
 import (
@@ -15,8 +21,15 @@ import (
 )
 
 // EventType identifies the kind of event.
+//
+// Deprecated: this name is retained for source compatibility during the
+// v0.1.x → v0.2.0 transition. The new API uses Subject (a dot-delimited
+// routing key) instead.
 type EventType string
 
+// Built-in EventType constants used by graph executor and SDK consumers.
+//
+// Deprecated: see EventType.
 const (
 	EventGraphStart         EventType = "graph.start"
 	EventGraphEnd           EventType = "graph.end"
@@ -36,6 +49,8 @@ const (
 )
 
 // Event is a structured event emitted during graph execution.
+//
+// Deprecated: use Envelope. Removed in v0.2.0.
 type Event struct {
 	ID        string    `json:"id"`
 	Type      EventType `json:"type"`
@@ -50,6 +65,8 @@ type Event struct {
 }
 
 // EventFilter specifies criteria for subscribing to events.
+//
+// Deprecated: use Pattern + WithPredicate. Removed in v0.2.0.
 type EventFilter struct {
 	Types   []EventType
 	RunID   string
@@ -57,15 +74,20 @@ type EventFilter struct {
 	ActorID string
 }
 
-// SubscribeOption configures the Subscribe call.
-type SubscribeOption func(*subscribeOptions)
+// LegacySubscribeOption configures the LegacyEventBus.Subscribe call.
+//
+// Deprecated: use SubOption. Removed in v0.2.0.
+type LegacySubscribeOption func(*subscribeOptions)
 
 type subscribeOptions struct {
 	bufferSize int
 }
 
-// WithBufferSize overrides the default channel buffer size for a subscription.
-func WithBufferSize(n int) SubscribeOption {
+// LegacyWithBufferSize overrides the default channel buffer size for a
+// legacy subscription.
+//
+// Deprecated: use WithBufferSize on the new Bus. Removed in v0.2.0.
+func LegacyWithBufferSize(n int) LegacySubscribeOption {
 	return func(o *subscribeOptions) {
 		if n > 0 {
 			o.bufferSize = n
@@ -73,54 +95,71 @@ func WithBufferSize(n int) SubscribeOption {
 	}
 }
 
-// EventBus is the interface for publishing and subscribing to events.
-type EventBus interface {
+// LegacyEventBus is the original interface for publishing and subscribing
+// to Event values.
+//
+// Deprecated: use Bus. Removed in v0.2.0.
+type LegacyEventBus interface {
 	Publish(ctx context.Context, event Event) error
-	Subscribe(ctx context.Context, filter EventFilter, opts ...SubscribeOption) (Subscription, error)
+	Subscribe(ctx context.Context, filter EventFilter, opts ...LegacySubscribeOption) (LegacySubscription, error)
 	Close() error
 }
 
-// Subscription represents an active event subscription.
-type Subscription interface {
+// LegacySubscription represents an active legacy event subscription.
+//
+// Deprecated: use Subscription. Removed in v0.2.0.
+type LegacySubscription interface {
 	Events() <-chan Event
 	Close() error
 }
 
-// ---------- MemoryBus implementation ----------
+// ---------- LegacyMemoryBus implementation ----------
 
 const defaultBufferSize = 64
 
-// MemoryBusOption configures a MemoryBus.
-type MemoryBusOption func(*MemoryBus)
+// LegacyMemoryBusOption configures a LegacyMemoryBus.
+//
+// Deprecated: use MemoryBusOption on the new Bus. Removed in v0.2.0.
+type LegacyMemoryBusOption func(*LegacyMemoryBus)
 
-// WithDropCallback sets a callback invoked each time an event is dropped
+// LegacyWithDropCallback sets a callback invoked each time an event is dropped
 // because a subscriber's channel buffer is full.
-func WithDropCallback(fn func(Event)) MemoryBusOption {
-	return func(b *MemoryBus) { b.onDrop = fn }
+//
+// Deprecated: use WithObserver on the new Bus. Removed in v0.2.0.
+//
+// Known issue (will not be fixed in the legacy implementation): the callback
+// is invoked while holding the bus RLock; user callbacks must not call back
+// into the bus or block.
+func LegacyWithDropCallback(fn func(Event)) LegacyMemoryBusOption {
+	return func(b *LegacyMemoryBus) { b.onDrop = fn }
 }
 
-// MemoryBus is an in-memory EventBus implementation.
+// LegacyMemoryBus is an in-memory LegacyEventBus implementation.
 // Thread safety: all methods are safe for concurrent use.
-type MemoryBus struct {
+//
+// Deprecated: use MemoryBus. Removed in v0.2.0.
+type LegacyMemoryBus struct {
 	mu          sync.RWMutex
-	subscribers map[*memorySubscription]struct{}
+	subscribers map[*legacyMemorySub]struct{}
 	closed      bool
 	dropped     atomic.Int64
 	onDrop      func(Event)
 }
 
-type memorySubscription struct {
+type legacyMemorySub struct {
 	ch     chan Event
 	filter EventFilter
 	done   chan struct{}
 	once   sync.Once
-	bus    *MemoryBus
+	bus    *LegacyMemoryBus
 }
 
-// NewMemoryBus creates a new in-memory event bus.
-func NewMemoryBus(opts ...MemoryBusOption) *MemoryBus {
-	b := &MemoryBus{
-		subscribers: make(map[*memorySubscription]struct{}),
+// NewLegacyMemoryBus creates a new in-memory legacy event bus.
+//
+// Deprecated: use NewMemoryBus. Removed in v0.2.0.
+func NewLegacyMemoryBus(opts ...LegacyMemoryBusOption) *LegacyMemoryBus {
+	b := &LegacyMemoryBus{
+		subscribers: make(map[*legacyMemorySub]struct{}),
 	}
 	for _, opt := range opts {
 		opt(b)
@@ -129,13 +168,13 @@ func NewMemoryBus(opts ...MemoryBusOption) *MemoryBus {
 }
 
 // Dropped returns the total number of events dropped due to full subscriber buffers.
-func (b *MemoryBus) Dropped() int64 {
+func (b *LegacyMemoryBus) Dropped() int64 {
 	return b.dropped.Load()
 }
 
 // Publish sends an event to all matching subscribers (non-blocking).
 // TraceID and SpanID are automatically extracted from ctx if not already set.
-func (b *MemoryBus) Publish(ctx context.Context, event Event) error {
+func (b *LegacyMemoryBus) Publish(ctx context.Context, event Event) error {
 	if event.ID == "" {
 		event.ID = xid.New().String()
 	}
@@ -182,7 +221,7 @@ func (b *MemoryBus) Publish(ctx context.Context, event Event) error {
 
 // Subscribe creates a new subscription with the given filter. The subscription
 // is automatically closed when ctx is cancelled.
-func (b *MemoryBus) Subscribe(ctx context.Context, filter EventFilter, opts ...SubscribeOption) (Subscription, error) {
+func (b *LegacyMemoryBus) Subscribe(ctx context.Context, filter EventFilter, opts ...LegacySubscribeOption) (LegacySubscription, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
@@ -195,7 +234,7 @@ func (b *MemoryBus) Subscribe(ctx context.Context, filter EventFilter, opts ...S
 		fn(&o)
 	}
 
-	sub := &memorySubscription{
+	sub := &legacyMemorySub{
 		ch:     make(chan Event, o.bufferSize),
 		filter: filter,
 		done:   make(chan struct{}),
@@ -215,10 +254,10 @@ func (b *MemoryBus) Subscribe(ctx context.Context, filter EventFilter, opts ...S
 }
 
 // Close shuts down the bus and all active subscriptions.
-func (b *MemoryBus) Close() error {
+func (b *LegacyMemoryBus) Close() error {
 	b.mu.Lock()
 	subs := b.subscribers
-	b.subscribers = make(map[*memorySubscription]struct{})
+	b.subscribers = make(map[*legacyMemorySub]struct{})
 	b.closed = true
 	b.mu.Unlock()
 
@@ -228,15 +267,15 @@ func (b *MemoryBus) Close() error {
 	return nil
 }
 
-func (b *MemoryBus) removeSub(target *memorySubscription) {
+func (b *LegacyMemoryBus) removeSub(target *legacyMemorySub) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	delete(b.subscribers, target)
 }
 
-func (s *memorySubscription) Events() <-chan Event { return s.ch }
+func (s *legacyMemorySub) Events() <-chan Event { return s.ch }
 
-func (s *memorySubscription) Close() error {
+func (s *legacyMemorySub) Close() error {
 	s.once.Do(func() {
 		if s.bus != nil {
 			s.bus.removeSub(s)
@@ -248,14 +287,14 @@ func (s *memorySubscription) Close() error {
 }
 
 // closeInternal closes the subscription without removing from bus (used by Bus.Close).
-func (s *memorySubscription) closeInternal() {
+func (s *legacyMemorySub) closeInternal() {
 	s.once.Do(func() {
 		close(s.done)
 		close(s.ch)
 	})
 }
 
-func (s *memorySubscription) matches(event Event) bool {
+func (s *legacyMemorySub) matches(event Event) bool {
 	if len(s.filter.Types) > 0 {
 		found := slices.Contains(s.filter.Types, event.Type)
 		if !found {
@@ -274,22 +313,24 @@ func (s *memorySubscription) matches(event Event) bool {
 	return true
 }
 
-// NoopBus is an EventBus that discards all events. Used when no bus is configured.
-type NoopBus struct{}
+// LegacyNoopBus is a LegacyEventBus that discards all events.
+//
+// Deprecated: use NoopBus. Removed in v0.2.0.
+type LegacyNoopBus struct{}
 
-func (NoopBus) Publish(context.Context, Event) error { return nil }
-func (NoopBus) Subscribe(context.Context, EventFilter, ...SubscribeOption) (Subscription, error) {
-	return &noopSub{}, nil
+func (LegacyNoopBus) Publish(context.Context, Event) error { return nil }
+func (LegacyNoopBus) Subscribe(context.Context, EventFilter, ...LegacySubscribeOption) (LegacySubscription, error) {
+	return &legacyNoopSub{}, nil
 }
-func (NoopBus) Close() error { return nil }
+func (LegacyNoopBus) Close() error { return nil }
 
-var closedEventCh = func() chan Event {
+var legacyClosedEventCh = func() chan Event {
 	ch := make(chan Event)
 	close(ch)
 	return ch
 }()
 
-type noopSub struct{}
+type legacyNoopSub struct{}
 
-func (s *noopSub) Events() <-chan Event { return closedEventCh }
-func (s *noopSub) Close() error         { return nil }
+func (s *legacyNoopSub) Events() <-chan Event { return legacyClosedEventCh }
+func (s *legacyNoopSub) Close() error         { return nil }

@@ -925,7 +925,7 @@ func TestBoard_Bus_FanOutsToMultipleSubscribers(t *testing.T) {
 
 	ctx := context.Background()
 	const n = 5
-	subs := make([]event.Subscription, n)
+	subs := make([]event.LegacySubscription, n)
 	for i := range subs {
 		s, err := b.Bus().Subscribe(ctx, event.EventFilter{})
 		if err != nil {

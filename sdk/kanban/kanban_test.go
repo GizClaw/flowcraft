@@ -176,7 +176,7 @@ func TestKanban_Board_ReturnsUnderlyingBoard(t *testing.T) {
 // must remain silent. Will be removed together with WithEventBus in v0.2.0.
 func TestKanban_WithEventBus_DeprecatedNoOp(t *testing.T) {
 	t.Parallel()
-	external := event.NewMemoryBus()
+	external := event.NewLegacyMemoryBus()
 	t.Cleanup(func() { _ = external.Close() })
 
 	extSub, err := external.Subscribe(context.Background(), event.EventFilter{})

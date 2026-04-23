@@ -81,7 +81,7 @@ func (w *watcher) pump() {
 	}
 }
 
-// Board is the kanban task board: card coordination + scope + EventBus.
+// Board is the kanban task board: card coordination + scope + LegacyEventBus.
 // Graph execution uses workflow.Board separately (see sdk/workflow).
 type Board struct {
 	cards       []*Card
@@ -95,7 +95,7 @@ type Board struct {
 	watchers []*watcher
 
 	scopeID   string
-	bus       event.EventBus
+	bus       event.LegacyEventBus
 	ctx       context.Context
 	cancel    context.CancelFunc
 	closeOnce sync.Once
@@ -126,7 +126,7 @@ func WithCardTTL(d time.Duration) BoardOption {
 	return func(b *Board) { b.cardTTL = d }
 }
 
-// NewBoard creates a scope-scoped board with a persistent EventBus.
+// NewBoard creates a scope-scoped board with a persistent LegacyEventBus.
 func NewBoard(scopeID string, opts ...BoardOption) *Board {
 	ctx, cancel := context.WithCancel(context.Background())
 	b := &Board{
@@ -134,7 +134,7 @@ func NewBoard(scopeID string, opts ...BoardOption) *Board {
 		cardIndex:   make(map[string]*Card),
 		statusCount: make(map[CardStatus]int),
 		scopeID:     scopeID,
-		bus:         event.NewMemoryBus(),
+		bus:         event.NewLegacyMemoryBus(),
 		ctx:         ctx,
 		cancel:      cancel,
 	}
@@ -149,10 +149,10 @@ func NewBoard(scopeID string, opts ...BoardOption) *Board {
 // Deprecated: Use NewBoard directly. Removed in v0.2.0.
 func NewTaskBoard(scopeID string) *Board { return NewBoard(scopeID) }
 
-// Bus returns the persistent EventBus bound to the board.
-func (b *Board) Bus() event.EventBus { return b.bus }
+// Bus returns the persistent LegacyEventBus bound to the board.
+func (b *Board) Bus() event.LegacyEventBus { return b.bus }
 
-// Close releases the persistent EventBus. Safe to call multiple times.
+// Close releases the persistent LegacyEventBus. Safe to call multiple times.
 func (b *Board) Close() {
 	b.closeOnce.Do(func() {
 		if b.cancel != nil {

@@ -6,7 +6,7 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/event"
 )
 
-// EventBus event types for Kanban operations. The catalogue below is the
+// LegacyEventBus event types for Kanban operations. The catalogue below is the
 // complete set of business actions an external observer can subscribe to via
 // Board.Bus(); subscribing alone is sufficient to reconstruct every state
 // transition the SDK exposes through Cards().

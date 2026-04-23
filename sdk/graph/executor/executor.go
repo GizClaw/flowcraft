@@ -92,7 +92,7 @@ type runConfig struct {
 	checkpointStore CheckpointStore
 	startNode       string
 	parallel        *ParallelConfig
-	bus             event.EventBus
+	bus             event.LegacyEventBus
 	resolver        VariableResolver
 	streamCallback  graph.StreamCallback
 
@@ -128,7 +128,7 @@ func WithParallel(cfg ParallelConfig) RunOption {
 	}
 }
 
-func WithEventBus(bus event.EventBus) RunOption {
+func WithEventBus(bus event.LegacyEventBus) RunOption {
 	return func(c *runConfig) { c.bus = bus }
 }
 
@@ -160,7 +160,7 @@ func (e *LocalExecutor) Execute(ctx context.Context, g *graph.Graph, board *grap
 
 	bus := cfg.bus
 	if bus == nil {
-		bus = event.NoopBus{}
+		bus = event.LegacyNoopBus{}
 	}
 
 	actorKey := actorKeyFrom(ctx)

@@ -19,7 +19,7 @@ type Runner struct {
 	compiled *compiler.CompiledGraph
 	factory  *node.Factory
 	executor Executor
-	bus      event.EventBus
+	bus      event.LegacyEventBus
 }
 
 // RunnerOption configures a Runner.
@@ -30,9 +30,9 @@ func WithRunnerExecutor(e Executor) RunnerOption {
 	return func(r *Runner) { r.executor = e }
 }
 
-// WithRunnerEventBus sets the EventBus used for graph lifecycle events.
-// Defaults to event.NoopBus{}.
-func WithRunnerEventBus(bus event.EventBus) RunnerOption {
+// WithRunnerEventBus sets the LegacyEventBus used for graph lifecycle events.
+// Defaults to event.LegacyNoopBus{}.
+func WithRunnerEventBus(bus event.LegacyEventBus) RunnerOption {
 	return func(r *Runner) { r.bus = bus }
 }
 
@@ -48,7 +48,7 @@ func NewRunner(def *graph.GraphDefinition, factory *node.Factory, opts ...Runner
 		compiled: compiled,
 		factory:  factory,
 		executor: NewLocalExecutor(),
-		bus:      event.NoopBus{},
+		bus:      event.LegacyNoopBus{},
 	}
 	for _, opt := range opts {
 		opt(r)
@@ -78,8 +78,8 @@ func (r *Runner) Run(ctx context.Context, vars map[string]any, opts ...RunOption
 	return r.executor.Execute(ctx, g, board, merged...)
 }
 
-// Bus returns the configured EventBus for external subscription.
-func (r *Runner) Bus() event.EventBus { return r.bus }
+// Bus returns the configured LegacyEventBus for external subscription.
+func (r *Runner) Bus() event.LegacyEventBus { return r.bus }
 
 // Graph returns a freshly assembled Graph snapshot for inspection.
 // Intended for testing and debugging, not for execution.

@@ -389,7 +389,7 @@ func TestLocalExecutor_AbortBetweenNodes(t *testing.T) {
 }
 
 func TestLocalExecutor_EventBus_Integration(t *testing.T) {
-	bus := event.NewMemoryBus()
+	bus := event.NewLegacyMemoryBus()
 	defer func() { _ = bus.Close() }()
 
 	ctx := context.Background()

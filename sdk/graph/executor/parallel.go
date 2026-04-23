@@ -17,7 +17,7 @@ type branchResult struct {
 	err      error
 }
 
-func executeForkJoin(ctx context.Context, g *graph.Graph, board *graph.Board, branchStarts []string, cfg runConfig, bus event.EventBus) (*graph.Board, error) {
+func executeForkJoin(ctx context.Context, g *graph.Graph, board *graph.Board, branchStarts []string, cfg runConfig, bus event.LegacyEventBus) (*graph.Board, error) {
 	if cfg.parallel != nil && len(branchStarts) > cfg.parallel.MaxBranches {
 		branchStarts = branchStarts[:cfg.parallel.MaxBranches]
 	}

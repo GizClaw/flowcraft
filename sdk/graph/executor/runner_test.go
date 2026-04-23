@@ -196,7 +196,7 @@ func TestRunner_ConcurrentSafety(t *testing.T) {
 }
 
 func TestRunner_WithEventBus(t *testing.T) {
-	bus := event.NewMemoryBus()
+	bus := event.NewLegacyMemoryBus()
 	defer func() { _ = bus.Close() }()
 
 	def := &graph.GraphDefinition{

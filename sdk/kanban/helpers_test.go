@@ -102,7 +102,7 @@ func waitCard(t *testing.T, ch <-chan *Card, label string) *Card {
 //
 // match may be nil to collect everything. The returned slice preserves
 // arrival order and includes all events seen, not just the matching ones.
-func drainEvents(sub event.Subscription, deadline time.Duration, matchCount int, match func(event.Event) bool) []event.Event {
+func drainEvents(sub event.LegacySubscription, deadline time.Duration, matchCount int, match func(event.Event) bool) []event.Event {
 	var out []event.Event
 	matched := 0
 	timeout := time.After(deadline)
@@ -127,9 +127,9 @@ func drainEvents(sub event.Subscription, deadline time.Duration, matchCount int,
 
 // subscribeBus subscribes to b.Bus() with a generous buffer and registers
 // the subscription's Close with t.Cleanup.
-func subscribeBus(t *testing.T, b *Board) event.Subscription {
+func subscribeBus(t *testing.T, b *Board) event.LegacySubscription {
 	t.Helper()
-	sub, err := b.Bus().Subscribe(context.Background(), event.EventFilter{}, event.WithBufferSize(1024))
+	sub, err := b.Bus().Subscribe(context.Background(), event.EventFilter{}, event.LegacyWithBufferSize(1024))
 	if err != nil {
 		t.Fatalf("Bus().Subscribe: %v", err)
 	}
