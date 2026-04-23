@@ -10,12 +10,12 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/graph/node"
 	"github.com/GizClaw/flowcraft/sdk/llm"
 	"github.com/GizClaw/flowcraft/sdk/script/jsrt"
+	"github.com/GizClaw/flowcraft/sdk/workflow"
 	"github.com/GizClaw/flowcraft/voice"
 	"github.com/GizClaw/flowcraft/voice/audio"
 	"github.com/GizClaw/flowcraft/voice/stt"
-	"github.com/GizClaw/flowcraft/voice/tts"
-	"github.com/GizClaw/flowcraft/sdk/workflow"
 	"github.com/GizClaw/flowcraft/voice/stt/bytedance"
+	"github.com/GizClaw/flowcraft/voice/tts"
 	minimaxTTS "github.com/GizClaw/flowcraft/voice/tts/minimax"
 )
 
@@ -60,26 +60,26 @@ func setupCloudVoice(ctx context.Context, bdAppID, bdToken, mmAPIKey string) (st
 	return sttProvider, ttsProvider, voices, nil
 }
 
-// setupVoicePipeline wires STT -> Runtime.Run -> TTS into a speech.Pipeline.
+// setupVoicePipeline wires STT -> Runtime.Run -> TTS into a voice.Pipeline.
 func setupVoicePipeline(
 	sttProvider stt.STT,
 	ttsProvider tts.TTS,
 	rt workflow.Runtime,
 	agent workflow.Agent,
 	voiceID *string,
-) *speech.Pipeline {
-	return speech.NewPipeline(
+) *voice.Pipeline {
+	return voice.NewPipeline(
 		sttProvider,
 		ttsProvider,
 		rt,
 		agent,
-		speech.WithSTTOptions(stt.WithLanguage("zh"), stt.WithTargetSampleRate(16000)),
-		speech.WithTTSOptions(tts.WithCodec(audio.CodecMP3)),
-		speech.WithDynamicTTSOptions(func() []tts.TTSOption {
+		voice.WithSTTOptions(stt.WithLanguage("zh"), stt.WithTargetSampleRate(16000)),
+		voice.WithTTSOptions(tts.WithCodec(audio.CodecMP3)),
+		voice.WithDynamicTTSOptions(func() []tts.TTSOption {
 			return []tts.TTSOption{tts.WithVoice(*voiceID)}
 		}),
-		speech.WithSegmenterOptions(tts.EagerMode(), tts.WithMinChars(4), tts.WithForceBreakRunes(12)),
-		speech.WithTimeouts(speech.PipelineTimeouts{
+		voice.WithSegmenterOptions(tts.EagerMode(), tts.WithMinChars(4), tts.WithForceBreakRunes(12)),
+		voice.WithTimeouts(voice.PipelineTimeouts{
 			STTFirstPartial:  10 * time.Second,
 			STTFinal:         30 * time.Second,
 			RunnerFirstToken: 15 * time.Second,

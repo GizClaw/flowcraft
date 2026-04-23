@@ -300,7 +300,7 @@ func fallbackVoices() []speechtts.Voice {
 	}
 }
 
-// --- speech.StreamTTS interface ---
+// --- voice.StreamTTS interface ---
 
 func (t *TTS) SynthesizeStream(
 	ctx context.Context,

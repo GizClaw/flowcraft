@@ -1,4 +1,4 @@
-package speech_test
+package voice_test
 
 import (
 	"bytes"
@@ -259,43 +259,43 @@ func (r *staleTokenRuntime) Run(ctx context.Context, _ workflow.Agent, _ *workfl
 	return &workflow.Result{}, nil
 }
 
-func newSessionPipeline(transcript string) *speech.Pipeline {
+func newSessionPipeline(transcript string) *voice.Pipeline {
 	var tokens []string
 	if transcript != "" {
 		tokens = []string{transcript}
 	}
-	return speech.NewPipeline(
+	return voice.NewPipeline(
 		&fakeStreamSTT{preset: transcript},
 		&fakeStreamTTS{fakeTTS: &fakeTTS{}},
 		&fakeRuntime{tokens: tokens},
 		fakeAgent{},
-		speech.WithSegmenterOptions(tts.WithMinChars(1)),
+		voice.WithSegmenterOptions(tts.WithMinChars(1)),
 	)
 }
 
 // newTextOnlyPipeline creates a pipeline with no STT (text-only mode).
-func newTextOnlyPipeline() *speech.Pipeline {
-	return speech.NewPipeline(
+func newTextOnlyPipeline() *voice.Pipeline {
+	return voice.NewPipeline(
 		nil,
 		&fakeStreamTTS{fakeTTS: &fakeTTS{}},
 		&fakeRuntime{tokens: []string{"reply"}},
 		fakeAgent{},
-		speech.WithSegmenterOptions(tts.WithMinChars(1)),
+		voice.WithSegmenterOptions(tts.WithMinChars(1)),
 	)
 }
 
-func newSessionPipelineForBargeIn(transcript string) (*speech.Pipeline, *delayedRuntime) {
+func newSessionPipelineForBargeIn(transcript string) (*voice.Pipeline, *delayedRuntime) {
 	var tokens []string
 	if transcript != "" {
 		tokens = []string{transcript}
 	}
 	rt := newDelayedRuntime(tokens, 500*time.Millisecond)
-	pipeline := speech.NewPipeline(
+	pipeline := voice.NewPipeline(
 		&fakeStreamSTT{preset: transcript},
 		&fakeStreamTTS{fakeTTS: &fakeTTS{}},
 		rt,
 		fakeAgent{},
-		speech.WithSegmenterOptions(tts.WithMinChars(1)),
+		voice.WithSegmenterOptions(tts.WithMinChars(1)),
 	)
 	return pipeline, rt
 }
@@ -316,13 +316,13 @@ func TestSession_SingleTurn(t *testing.T) {
 	sink := &fakeAudioSink{}
 	pipeline := newSessionPipeline("hello")
 
-	var events []speech.Event
-	session := speech.NewSession(pipeline, source, sink,
-		speech.WithSilenceDuration(700*time.Millisecond),
-		speech.WithFrameSize(100*time.Millisecond),
-		speech.WithEventHandler(func(ev speech.Event) {
+	var events []voice.Event
+	session := voice.NewSession(pipeline, source, sink,
+		voice.WithSilenceDuration(700*time.Millisecond),
+		voice.WithFrameSize(100*time.Millisecond),
+		voice.WithEventHandler(func(ev voice.Event) {
 			events = append(events, ev)
-			if ev.Type == speech.EventDone {
+			if ev.Type == voice.EventDone {
 				cancel()
 			}
 		}),
@@ -341,7 +341,7 @@ func TestSession_SingleTurn(t *testing.T) {
 	}
 	hasDone := false
 	for _, ev := range events {
-		if ev.Type == speech.EventDone {
+		if ev.Type == voice.EventDone {
 			hasDone = true
 		}
 	}
@@ -375,18 +375,18 @@ func TestSession_BargeIn(t *testing.T) {
 
 	var interrupted bool
 	var doneCount int
-	session := speech.NewSession(pipeline, source, sink,
-		speech.WithSilenceDuration(700*time.Millisecond),
-		speech.WithFrameSize(100*time.Millisecond),
-		speech.WithDetector(detect.NewEnergyDetector(
+	session := voice.NewSession(pipeline, source, sink,
+		voice.WithSilenceDuration(700*time.Millisecond),
+		voice.WithFrameSize(100*time.Millisecond),
+		voice.WithDetector(detect.NewEnergyDetector(
 			detect.WithDetectorInterruptThreshold(0.015),
 			detect.WithDetectorConfirm(3),
 		)),
-		speech.WithEventHandler(func(ev speech.Event) {
-			if ev.Type == speech.EventTurnInterrupted {
+		voice.WithEventHandler(func(ev voice.Event) {
+			if ev.Type == voice.EventTurnInterrupted {
 				interrupted = true
 			}
-			if ev.Type == speech.EventDone {
+			if ev.Type == voice.EventDone {
 				doneCount++
 				if doneCount >= 1 {
 					cancel()
@@ -429,19 +429,19 @@ func TestSession_BargeInTransientNoiseDoesNotInterrupt(t *testing.T) {
 	sink := &fakeAudioSink{}
 
 	var interrupted bool
-	session := speech.NewSession(pipeline, source, sink,
-		speech.WithSilenceDuration(700*time.Millisecond),
-		speech.WithFrameSize(100*time.Millisecond),
-		speech.WithDetector(detect.NewEnergyDetector(
+	session := voice.NewSession(pipeline, source, sink,
+		voice.WithSilenceDuration(700*time.Millisecond),
+		voice.WithFrameSize(100*time.Millisecond),
+		voice.WithDetector(detect.NewEnergyDetector(
 			detect.WithDetectorInterruptThreshold(0.015),
 			detect.WithDetectorConfirm(3),
 		)),
-		speech.WithBargeInConfirm(2),
-		speech.WithEventHandler(func(ev speech.Event) {
-			if ev.Type == speech.EventTurnInterrupted {
+		voice.WithBargeInConfirm(2),
+		voice.WithEventHandler(func(ev voice.Event) {
+			if ev.Type == voice.EventTurnInterrupted {
 				interrupted = true
 			}
-			if ev.Type == speech.EventDone {
+			if ev.Type == voice.EventDone {
 				cancel()
 			}
 		}),
@@ -470,17 +470,17 @@ func TestSession_PreprocessorChainAppliesToInputFrames(t *testing.T) {
 	pipeline := newSessionPipeline("hello")
 	counter := &countingProcessor{}
 
-	session := speech.NewSession(pipeline, source, sink,
-		speech.WithSilenceDuration(700*time.Millisecond),
-		speech.WithFrameSize(100*time.Millisecond),
-		speech.WithPreprocessors(
+	session := voice.NewSession(pipeline, source, sink,
+		voice.WithSilenceDuration(700*time.Millisecond),
+		voice.WithFrameSize(100*time.Millisecond),
+		voice.WithPreprocessors(
 			counter,
 			preprocess.Func(func(frame audio.Frame) audio.Frame {
 				return makeLoudFrame(samplesPerChunk)
 			}),
 		),
-		speech.WithEventHandler(func(ev speech.Event) {
-			if ev.Type == speech.EventDone {
+		voice.WithEventHandler(func(ev voice.Event) {
+			if ev.Type == voice.EventDone {
 				cancel()
 			}
 		}),
@@ -504,25 +504,25 @@ func TestSession_VoiceProfileAppliesDynamicTTSOptions(t *testing.T) {
 	defer cancel()
 
 	ttsCapture := &capturingTTS{}
-	pipeline := speech.NewPipeline(
+	pipeline := voice.NewPipeline(
 		nil,
 		ttsCapture,
 		&fakeRuntime{tokens: []string{"reply"}},
 		fakeAgent{},
-		speech.WithSegmenterOptions(tts.WithMinChars(1)),
+		voice.WithSegmenterOptions(tts.WithMinChars(1)),
 	)
-	session := speech.NewSession(pipeline, nil, &fakeAudioSink{},
-		speech.WithVoiceProfile(speech.VoiceProfile{
+	session := voice.NewSession(pipeline, nil, &fakeAudioSink{},
+		voice.WithVoiceProfile(voice.VoiceProfile{
 			Language: "zh-CN",
 			Voice:    "xiaoyi",
 			Speed:    1.15,
 			Emotion:  "calm",
 			Volume:   0.8,
 			Rate:     22050,
-			Scene:    speech.VoiceProfileSceneCompanion,
+			Scene:    voice.VoiceProfileSceneCompanion,
 		}),
-		speech.WithEventHandler(func(ev speech.Event) {
-			if ev.Type == speech.EventDone {
+		voice.WithEventHandler(func(ev voice.Event) {
+			if ev.Type == voice.EventDone {
 				cancel()
 			}
 		}),
@@ -539,7 +539,7 @@ func TestSession_VoiceProfileAppliesDynamicTTSOptions(t *testing.T) {
 	}
 
 	if ttsCapture.lastVoice != "xiaoyi" || ttsCapture.lastLang != "zh-CN" ||
-		ttsCapture.lastEmotion != "calm" || ttsCapture.lastScene != string(speech.VoiceProfileSceneCompanion) {
+		ttsCapture.lastEmotion != "calm" || ttsCapture.lastScene != string(voice.VoiceProfileSceneCompanion) {
 		t.Fatalf("voice profile extras not applied: %+v", ttsCapture)
 	}
 	if ttsCapture.lastSpeed != 1.15 || ttsCapture.lastRate != 22050 || ttsCapture.lastVolume != 0.8 {
@@ -561,7 +561,7 @@ func TestSession_ContextCancel(t *testing.T) {
 	sink := &fakeAudioSink{}
 	pipeline := newSessionPipeline("x")
 
-	session := speech.NewSession(pipeline, source, sink)
+	session := voice.NewSession(pipeline, source, sink)
 
 	err := session.Run(ctx)
 	if err != nil && err != context.Canceled && err != context.DeadlineExceeded {
@@ -582,9 +582,9 @@ func TestSession_EmptySpeech(t *testing.T) {
 	sink := &fakeAudioSink{}
 	pipeline := newSessionPipeline("")
 
-	var events []speech.Event
-	session := speech.NewSession(pipeline, source, sink,
-		speech.WithEventHandler(func(ev speech.Event) {
+	var events []voice.Event
+	session := voice.NewSession(pipeline, source, sink,
+		voice.WithEventHandler(func(ev voice.Event) {
 			events = append(events, ev)
 		}),
 	)
@@ -641,16 +641,16 @@ func TestSession_WithClassifier(t *testing.T) {
 	classifier := &fakeClassifier{threshold: 0.0001}
 
 	var gotDone bool
-	session := speech.NewSession(pipeline, source, sink,
-		speech.WithDetector(detect.NewEnergyDetector(
+	session := voice.NewSession(pipeline, source, sink,
+		voice.WithDetector(detect.NewEnergyDetector(
 			detect.WithDetectorClassifier(classifier),
 			detect.WithDetectorThreshold(0.01),
 			detect.WithDetectorInterruptThreshold(0.05),
 		)),
-		speech.WithSilenceDuration(700*time.Millisecond),
-		speech.WithFrameSize(100*time.Millisecond),
-		speech.WithEventHandler(func(ev speech.Event) {
-			if ev.Type == speech.EventDone {
+		voice.WithSilenceDuration(700*time.Millisecond),
+		voice.WithFrameSize(100*time.Millisecond),
+		voice.WithEventHandler(func(ev voice.Event) {
+			if ev.Type == voice.EventDone {
 				gotDone = true
 				cancel()
 			}
@@ -698,20 +698,20 @@ func TestSession_ClassifierBargeIn(t *testing.T) {
 	sink := &fakeAudioSink{}
 
 	var interrupted bool
-	session := speech.NewSession(pipeline, source, sink,
-		speech.WithDetector(detect.NewEnergyDetector(
+	session := voice.NewSession(pipeline, source, sink,
+		voice.WithDetector(detect.NewEnergyDetector(
 			detect.WithDetectorClassifier(classifier),
 			detect.WithDetectorThreshold(0.01),
 			detect.WithDetectorInterruptThreshold(0.05),
 			detect.WithDetectorConfirm(3),
 		)),
-		speech.WithSilenceDuration(700*time.Millisecond),
-		speech.WithFrameSize(100*time.Millisecond),
-		speech.WithEventHandler(func(ev speech.Event) {
-			if ev.Type == speech.EventTurnInterrupted {
+		voice.WithSilenceDuration(700*time.Millisecond),
+		voice.WithFrameSize(100*time.Millisecond),
+		voice.WithEventHandler(func(ev voice.Event) {
+			if ev.Type == voice.EventTurnInterrupted {
 				interrupted = true
 			}
-			if ev.Type == speech.EventDone {
+			if ev.Type == voice.EventDone {
 				cancel()
 			}
 		}),
@@ -757,7 +757,7 @@ func TestSession_SourceEOF(t *testing.T) {
 	sink := &fakeAudioSink{}
 	pipeline := newSessionPipeline("hi")
 
-	session := speech.NewSession(pipeline, source, sink)
+	session := voice.NewSession(pipeline, source, sink)
 
 	err := session.Run(ctx)
 	if err != nil {
@@ -833,14 +833,14 @@ func TestSession_MultiRound(t *testing.T) {
 
 	var rounds int
 	var doneCount int
-	session := speech.NewSession(pipeline, source, sink,
-		speech.WithSilenceDuration(700*time.Millisecond),
-		speech.WithFrameSize(100*time.Millisecond),
-		speech.WithEventHandler(func(ev speech.Event) {
-			if ev.Type == speech.EventTranscriptFinal {
+	session := voice.NewSession(pipeline, source, sink,
+		voice.WithSilenceDuration(700*time.Millisecond),
+		voice.WithFrameSize(100*time.Millisecond),
+		voice.WithEventHandler(func(ev voice.Event) {
+			if ev.Type == voice.EventTranscriptFinal {
 				rounds++
 			}
-			if ev.Type == speech.EventDone {
+			if ev.Type == voice.EventDone {
 				doneCount++
 				if doneCount == 1 {
 					close(round2Gate)
@@ -877,12 +877,12 @@ func TestSession_TextOnly(t *testing.T) {
 	pipeline := newTextOnlyPipeline()
 
 	var gotTranscript, gotDone bool
-	session := speech.NewSession(pipeline, nil, sink,
-		speech.WithEventHandler(func(ev speech.Event) {
-			if ev.Type == speech.EventTranscriptFinal {
+	session := voice.NewSession(pipeline, nil, sink,
+		voice.WithEventHandler(func(ev voice.Event) {
+			if ev.Type == voice.EventTranscriptFinal {
 				gotTranscript = true
 			}
-			if ev.Type == speech.EventDone {
+			if ev.Type == voice.EventDone {
 				gotDone = true
 				cancel()
 			}
@@ -918,9 +918,9 @@ func TestSession_TextOnly_MultiRound(t *testing.T) {
 	pipeline := newTextOnlyPipeline()
 
 	var doneCount int
-	session := speech.NewSession(pipeline, nil, sink,
-		speech.WithEventHandler(func(ev speech.Event) {
-			if ev.Type == speech.EventDone {
+	session := voice.NewSession(pipeline, nil, sink,
+		voice.WithEventHandler(func(ev voice.Event) {
+			if ev.Type == voice.EventDone {
 				doneCount++
 				if doneCount >= 2 {
 					cancel()
@@ -955,18 +955,18 @@ func TestSession_TextInterruptsResponding(t *testing.T) {
 
 	sink := &fakeAudioSink{}
 	rt := newDelayedRuntime([]string{"slow reply"}, 2*time.Second)
-	pipeline := speech.NewPipeline(
+	pipeline := voice.NewPipeline(
 		nil,
 		&fakeStreamTTS{fakeTTS: &fakeTTS{}},
 		rt,
 		fakeAgent{},
-		speech.WithSegmenterOptions(tts.WithMinChars(1)),
+		voice.WithSegmenterOptions(tts.WithMinChars(1)),
 	)
 
 	var doneCount int
-	session := speech.NewSession(pipeline, nil, sink,
-		speech.WithEventHandler(func(ev speech.Event) {
-			if ev.Type == speech.EventDone {
+	session := voice.NewSession(pipeline, nil, sink,
+		voice.WithEventHandler(func(ev voice.Event) {
+			if ev.Type == voice.EventDone {
 				doneCount++
 				if doneCount >= 1 {
 					cancel()
@@ -994,26 +994,26 @@ func TestSession_TextInterruptStopsOldTurnEvents(t *testing.T) {
 
 	sink := &fakeAudioSink{}
 	rt := &staleTokenRuntime{}
-	pipeline := speech.NewPipeline(
+	pipeline := voice.NewPipeline(
 		nil,
 		&fakeStreamTTS{fakeTTS: &fakeTTS{}},
 		rt,
 		fakeAgent{},
-		speech.WithSegmenterOptions(tts.WithMinChars(1)),
+		voice.WithSegmenterOptions(tts.WithMinChars(1)),
 	)
 
 	var (
 		mu     sync.Mutex
 		deltas []string
 	)
-	session := speech.NewSession(pipeline, nil, sink,
-		speech.WithEventHandler(func(ev speech.Event) {
-			if ev.Type == speech.EventTextDelta {
+	session := voice.NewSession(pipeline, nil, sink,
+		voice.WithEventHandler(func(ev voice.Event) {
+			if ev.Type == voice.EventTextDelta {
 				mu.Lock()
 				deltas = append(deltas, ev.Text)
 				mu.Unlock()
 			}
-			if ev.Type == speech.EventDone {
+			if ev.Type == voice.EventDone {
 				mu.Lock()
 				defer mu.Unlock()
 				for _, delta := range deltas {
@@ -1075,14 +1075,14 @@ func TestSession_CommitInputEndsHearing(t *testing.T) {
 		gotTranscript bool
 		gotTurnDone   bool
 	)
-	session := speech.NewSession(pipeline, source, sink,
-		speech.WithSilenceDuration(700*time.Millisecond),
-		speech.WithFrameSize(100*time.Millisecond),
-		speech.WithEventHandler(func(ev speech.Event) {
-			if ev.Type == speech.EventTranscriptFinal && ev.Text == "committed" {
+	session := voice.NewSession(pipeline, source, sink,
+		voice.WithSilenceDuration(700*time.Millisecond),
+		voice.WithFrameSize(100*time.Millisecond),
+		voice.WithEventHandler(func(ev voice.Event) {
+			if ev.Type == voice.EventTranscriptFinal && ev.Text == "committed" {
 				gotTranscript = true
 			}
-			if ev.Type == speech.EventTurnDone {
+			if ev.Type == voice.EventTurnDone {
 				gotTurnDone = true
 				cancel()
 			}
@@ -1115,14 +1115,14 @@ func TestSession_LifecycleEvents(t *testing.T) {
 
 	var (
 		mu     sync.Mutex
-		events []speech.EventType
+		events []voice.EventType
 	)
-	session := speech.NewSession(pipeline, nil, sink,
-		speech.WithEventHandler(func(ev speech.Event) {
+	session := voice.NewSession(pipeline, nil, sink,
+		voice.WithEventHandler(func(ev voice.Event) {
 			mu.Lock()
 			events = append(events, ev.Type)
 			mu.Unlock()
-			if ev.Type == speech.EventTurnDone {
+			if ev.Type == voice.EventTurnDone {
 				cancel()
 			}
 		}),
@@ -1140,7 +1140,7 @@ func TestSession_LifecycleEvents(t *testing.T) {
 
 	mu.Lock()
 	defer mu.Unlock()
-	indexOf := func(target speech.EventType) int {
+	indexOf := func(target voice.EventType) int {
 		for i, ev := range events {
 			if ev == target {
 				return i
@@ -1149,12 +1149,12 @@ func TestSession_LifecycleEvents(t *testing.T) {
 		return -1
 	}
 
-	turnStarted := indexOf(speech.EventTurnStarted)
-	responseDone := indexOf(speech.EventResponseDone)
-	playStarted := indexOf(speech.EventPlayStarted)
-	playDone := indexOf(speech.EventPlayDone)
-	turnDone := indexOf(speech.EventTurnDone)
-	done := indexOf(speech.EventDone)
+	turnStarted := indexOf(voice.EventTurnStarted)
+	responseDone := indexOf(voice.EventResponseDone)
+	playStarted := indexOf(voice.EventPlayStarted)
+	playDone := indexOf(voice.EventPlayDone)
+	turnDone := indexOf(voice.EventTurnDone)
+	done := indexOf(voice.EventDone)
 
 	if turnStarted < 0 || responseDone < 0 || playStarted < 0 || playDone < 0 || turnDone < 0 || done < 0 {
 		t.Fatalf("missing lifecycle events: %v", events)
@@ -1178,14 +1178,14 @@ func TestSession_MetricsHook(t *testing.T) {
 		mu      sync.Mutex
 		metrics []speechmetrics.TurnMetrics
 	)
-	session := speech.NewSession(pipeline, nil, sink,
-		speech.WithMetricsHook(speechmetrics.HookFunc(func(m speechmetrics.TurnMetrics) {
+	session := voice.NewSession(pipeline, nil, sink,
+		voice.WithMetricsHook(speechmetrics.HookFunc(func(m speechmetrics.TurnMetrics) {
 			mu.Lock()
 			metrics = append(metrics, m)
 			mu.Unlock()
 		})),
-		speech.WithEventHandler(func(ev speech.Event) {
-			if ev.Type == speech.EventTurnDone {
+		voice.WithEventHandler(func(ev voice.Event) {
+			if ev.Type == voice.EventTurnDone {
 				cancel()
 			}
 		}),
@@ -1238,15 +1238,15 @@ func TestSession_MixedAudioAndText(t *testing.T) {
 
 	var transcripts []string
 	var doneCount int
-	var session *speech.Session
-	session = speech.NewSession(pipeline, source, sink,
-		speech.WithSilenceDuration(700*time.Millisecond),
-		speech.WithFrameSize(100*time.Millisecond),
-		speech.WithEventHandler(func(ev speech.Event) {
-			if ev.Type == speech.EventTranscriptFinal {
+	var session *voice.Session
+	session = voice.NewSession(pipeline, source, sink,
+		voice.WithSilenceDuration(700*time.Millisecond),
+		voice.WithFrameSize(100*time.Millisecond),
+		voice.WithEventHandler(func(ev voice.Event) {
+			if ev.Type == voice.EventTranscriptFinal {
 				transcripts = append(transcripts, ev.Text)
 			}
-			if ev.Type == speech.EventDone {
+			if ev.Type == voice.EventDone {
 				doneCount++
 				if doneCount == 1 {
 					go session.Send("text-turn")
@@ -1275,14 +1275,14 @@ func TestSession_PlaybackDrainTimeout(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	timeoutCh := make(chan speech.Event, 1)
-	session := speech.NewSession(
+	timeoutCh := make(chan voice.Event, 1)
+	session := voice.NewSession(
 		newTextOnlyPipeline(),
 		nil,
 		&stickyAudioSink{},
-		speech.WithPlaybackDrainTimeout(30*time.Millisecond),
-		speech.WithEventHandler(func(ev speech.Event) {
-			if ev.Type == speech.EventError && ev.ErrorCode == speech.ErrorCodeTimeout {
+		voice.WithPlaybackDrainTimeout(30*time.Millisecond),
+		voice.WithEventHandler(func(ev voice.Event) {
+			if ev.Type == voice.EventError && ev.ErrorCode == voice.ErrorCodeTimeout {
 				select {
 				case timeoutCh <- ev:
 				default:
@@ -1316,7 +1316,7 @@ func TestSession_TurnMetricsIncludeProviderReports(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	pipeline := speech.NewPipeline(
+	pipeline := voice.NewPipeline(
 		stt.NewFallbackSTT(
 			failingStreamSTTAdapter{err: context.DeadlineExceeded},
 			okStreamSTTAdapter{text: "metrics"},
@@ -1327,7 +1327,7 @@ func TestSession_TurnMetricsIncludeProviderReports(t *testing.T) {
 		),
 		&fakeRuntime{tokens: []string{"reply"}},
 		fakeAgent{},
-		speech.WithSegmenterOptions(tts.WithMinChars(1)),
+		voice.WithSegmenterOptions(tts.WithMinChars(1)),
 	)
 	source := newFakeAudioSource([]audio.Frame{
 		makeLoudFrame(samplesPerChunk),
@@ -1342,14 +1342,14 @@ func TestSession_TurnMetricsIncludeProviderReports(t *testing.T) {
 	}, ctx)
 
 	var got speechmetrics.TurnMetrics
-	session := speech.NewSession(pipeline, source, &fakeAudioSink{},
-		speech.WithSilenceDuration(700*time.Millisecond),
-		speech.WithFrameSize(100*time.Millisecond),
-		speech.WithMetricsHook(speechmetrics.HookFunc(func(m speechmetrics.TurnMetrics) {
+	session := voice.NewSession(pipeline, source, &fakeAudioSink{},
+		voice.WithSilenceDuration(700*time.Millisecond),
+		voice.WithFrameSize(100*time.Millisecond),
+		voice.WithMetricsHook(speechmetrics.HookFunc(func(m speechmetrics.TurnMetrics) {
 			got = m
 		})),
-		speech.WithEventHandler(func(ev speech.Event) {
-			if ev.Type == speech.EventTurnDone {
+		voice.WithEventHandler(func(ev voice.Event) {
+			if ev.Type == voice.EventTurnDone {
 				cancel()
 			}
 		}),

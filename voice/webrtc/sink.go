@@ -19,7 +19,7 @@ var (
 		metric.WithDescription("Audio frames dropped due to track write failure"))
 )
 
-// Sink implements speech.AudioSink by encoding PCM audio frames via the
+// Sink implements voice.AudioSink by encoding PCM audio frames via the
 // injected AudioEncoder and writing them to a local WebRTC audio track.
 type Sink struct {
 	track   trackWriter
@@ -37,7 +37,7 @@ func newSink(track trackWriter, encoder AudioEncoder) *Sink {
 }
 
 // Play reads utterances from the stream, encodes the PCM audio to Opus, and
-// writes the encoded packets to the WebRTC track. Implements speech.AudioSink.
+// writes the encoded packets to the WebRTC track. Implements voice.AudioSink.
 //
 // Stream termination semantics (matching AudioSink contract):
 //   - io.EOF: turn ended normally — all audio has been written.

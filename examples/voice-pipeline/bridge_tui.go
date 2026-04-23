@@ -34,36 +34,36 @@ func (b *tuiBridge) metricsHook() speechmetrics.HookFunc {
 	}
 }
 
-func (b *tuiBridge) speechEventHandler() func(speech.Event) {
-	return func(ev speech.Event) {
+func (b *tuiBridge) speechEventHandler() func(voice.Event) {
+	return func(ev voice.Event) {
 		if b.program == nil {
 			return
 		}
 		switch ev.Type {
-		case speech.EventTurnStarted:
+		case voice.EventTurnStarted:
 			b.program.Send(appendLineMsg{role: "status", text: "─── turn started ───"})
 
-		case speech.EventTranscriptPartial:
+		case voice.EventTranscriptPartial:
 			b.program.Send(updatePartialMsg(ev.Text))
 
-		case speech.EventTranscriptFinal:
+		case voice.EventTranscriptFinal:
 			b.program.Send(clearPartialMsg{})
 			b.program.Send(appendLineMsg{role: "user", text: ev.Text})
 
-		case speech.EventAudio:
+		case voice.EventAudio:
 			if ev.Text != "" {
 				b.program.Send(appendAIDeltaMsg(ev.Text))
 			}
 
-		case speech.EventTurnInterrupted:
+		case voice.EventTurnInterrupted:
 			b.program.Send(flushAIStreamMsg{})
 			b.program.Send(appendLineMsg{role: "status", text: fmt.Sprintf("─── interrupted (%s) ───", ev.InterruptReason)})
 
-		case speech.EventTurnDone, speech.EventDone:
+		case voice.EventTurnDone, voice.EventDone:
 			b.program.Send(flushAIStreamMsg{})
 			b.program.Send(appendLineMsg{role: "status", text: "─── turn complete ───"})
 
-		case speech.EventError:
+		case voice.EventError:
 			b.program.Send(appendLineMsg{role: "status", text: fmt.Sprintf("error [%s]: %s", ev.ErrorCode, ev.Text)})
 		}
 	}

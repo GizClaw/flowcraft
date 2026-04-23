@@ -1,4 +1,4 @@
-package speech_test
+package voice_test
 
 import (
 	"bytes"
@@ -18,9 +18,9 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/workflow"
 )
 
-func collectStreamEvents(t *testing.T, s audio.Stream[speech.Event]) []speech.Event {
+func collectStreamEvents(t *testing.T, s audio.Stream[voice.Event]) []voice.Event {
 	t.Helper()
-	var events []speech.Event
+	var events []voice.Event
 	for {
 		ev, err := s.Read()
 		if err != nil {
@@ -334,12 +334,12 @@ func (r *slowRuntime) Run(ctx context.Context, _ workflow.Agent, _ *workflow.Req
 // ---------------------------------------------------------------------------
 
 func TestPipeline_RunAudio_Basic(t *testing.T) {
-	p := speech.NewPipeline(
+	p := voice.NewPipeline(
 		&fakeSTT{preset: "hello"},
 		&fakeTTS{},
 		&fakeRuntime{},
 		fakeAgent{},
-		speech.WithSegmenterOptions(tts.WithMinChars(1)),
+		voice.WithSegmenterOptions(tts.WithMinChars(1)),
 	)
 
 	ctx := context.Background()
@@ -353,13 +353,13 @@ func TestPipeline_RunAudio_Basic(t *testing.T) {
 	var hasTranscriptFinal, hasTextDelta, hasAudio, hasDone bool
 	for _, ev := range events {
 		switch ev.Type {
-		case speech.EventTranscriptFinal:
+		case voice.EventTranscriptFinal:
 			hasTranscriptFinal = true
-		case speech.EventTextDelta:
+		case voice.EventTextDelta:
 			hasTextDelta = true
-		case speech.EventAudio:
+		case voice.EventAudio:
 			hasAudio = true
-		case speech.EventDone:
+		case voice.EventDone:
 			hasDone = true
 		}
 	}
@@ -376,16 +376,16 @@ func TestPipeline_RunAudio_Basic(t *testing.T) {
 	if !hasDone {
 		t.Error("expected EventDone")
 	}
-	if len(events) > 0 && events[0].Type != speech.EventTranscriptFinal {
+	if len(events) > 0 && events[0].Type != voice.EventTranscriptFinal {
 		t.Errorf("first event should be EventTranscriptFinal, got %s", events[0].Type)
 	}
-	if len(events) > 0 && events[len(events)-1].Type != speech.EventDone {
+	if len(events) > 0 && events[len(events)-1].Type != voice.EventDone {
 		t.Errorf("last event should be EventDone, got %s", events[len(events)-1].Type)
 	}
 }
 
 func TestPipeline_RunAudio_EmptyTranscript(t *testing.T) {
-	p := speech.NewPipeline(
+	p := voice.NewPipeline(
 		&fakeSTT{preset: ""},
 		&fakeTTS{},
 		&fakeRuntime{},
@@ -408,9 +408,9 @@ func TestPipeline_RunAudio_EmptyTranscript(t *testing.T) {
 	otherCount := 0
 	for _, ev := range events {
 		switch ev.Type {
-		case speech.EventTranscriptFinal:
+		case voice.EventTranscriptFinal:
 			hasTranscriptFinal = true
-		case speech.EventDone:
+		case voice.EventDone:
 			hasDone = true
 		default:
 			otherCount++
@@ -428,12 +428,12 @@ func TestPipeline_RunAudio_EmptyTranscript(t *testing.T) {
 }
 
 func TestPipeline_RunAudioStream_WithStreamSTT(t *testing.T) {
-	p := speech.NewPipeline(
+	p := voice.NewPipeline(
 		&fakeStreamSTT{preset: "hello"},
 		&fakeTTS{},
 		&fakeRuntime{},
 		fakeAgent{},
-		speech.WithSegmenterOptions(tts.WithMinChars(1)),
+		voice.WithSegmenterOptions(tts.WithMinChars(1)),
 	)
 
 	input := audio.NewPipe[audio.Frame](8)
@@ -451,13 +451,13 @@ func TestPipeline_RunAudioStream_WithStreamSTT(t *testing.T) {
 	var hasTranscriptFinal, hasTextDelta, hasAudio, hasDone bool
 	for _, ev := range events {
 		switch ev.Type {
-		case speech.EventTranscriptFinal:
+		case voice.EventTranscriptFinal:
 			hasTranscriptFinal = true
-		case speech.EventTextDelta:
+		case voice.EventTextDelta:
 			hasTextDelta = true
-		case speech.EventAudio:
+		case voice.EventAudio:
 			hasAudio = true
-		case speech.EventDone:
+		case voice.EventDone:
 			hasDone = true
 		}
 	}
@@ -477,12 +477,12 @@ func TestPipeline_RunAudioStream_WithStreamSTT(t *testing.T) {
 }
 
 func TestPipeline_RunAudioStream_PreservesSTTTailAfterFirstFinal(t *testing.T) {
-	p := speech.NewPipeline(
+	p := voice.NewPipeline(
 		tailingStreamSTT{},
 		&fakeTTS{},
 		&fakeRuntime{},
 		fakeAgent{},
-		speech.WithSegmenterOptions(tts.WithMinChars(1)),
+		voice.WithSegmenterOptions(tts.WithMinChars(1)),
 	)
 
 	input := audio.NewPipe[audio.Frame](1)
@@ -497,10 +497,10 @@ func TestPipeline_RunAudioStream_PreservesSTTTailAfterFirstFinal(t *testing.T) {
 	events := collectStreamEvents(t, stream)
 	var sawTailPartial, sawTailFinal bool
 	for _, ev := range events {
-		if ev.Type == speech.EventTranscriptPartial && ev.Text == "hello wor" {
+		if ev.Type == voice.EventTranscriptPartial && ev.Text == "hello wor" {
 			sawTailPartial = true
 		}
-		if ev.Type == speech.EventTranscriptFinal && ev.Text == "hello world" {
+		if ev.Type == voice.EventTranscriptFinal && ev.Text == "hello world" {
 			sawTailFinal = true
 		}
 	}
@@ -511,12 +511,12 @@ func TestPipeline_RunAudioStream_PreservesSTTTailAfterFirstFinal(t *testing.T) {
 }
 
 func TestPipeline_RunAudioStream_WithNonStreamSTT(t *testing.T) {
-	p := speech.NewPipeline(
+	p := voice.NewPipeline(
 		&fakeSTT{preset: "hello"},
 		&fakeTTS{},
 		&fakeRuntime{},
 		fakeAgent{},
-		speech.WithSegmenterOptions(tts.WithMinChars(1)),
+		voice.WithSegmenterOptions(tts.WithMinChars(1)),
 	)
 
 	input := audio.NewPipe[audio.Frame](8)
@@ -534,11 +534,11 @@ func TestPipeline_RunAudioStream_WithNonStreamSTT(t *testing.T) {
 	var hasTranscriptFinal, hasAudio, hasDone bool
 	for _, ev := range events {
 		switch ev.Type {
-		case speech.EventTranscriptFinal:
+		case voice.EventTranscriptFinal:
 			hasTranscriptFinal = true
-		case speech.EventAudio:
+		case voice.EventAudio:
 			hasAudio = true
-		case speech.EventDone:
+		case voice.EventDone:
 			hasDone = true
 		}
 	}
@@ -555,12 +555,12 @@ func TestPipeline_RunAudioStream_WithNonStreamSTT(t *testing.T) {
 }
 
 func TestPipeline_RunAudioStream_WithStreamTTS(t *testing.T) {
-	p := speech.NewPipeline(
+	p := voice.NewPipeline(
 		&fakeSTT{preset: "hello"},
 		&fakeStreamTTS{fakeTTS: &fakeTTS{}},
 		&fakeRuntime{},
 		fakeAgent{},
-		speech.WithSegmenterOptions(tts.WithMinChars(1)),
+		voice.WithSegmenterOptions(tts.WithMinChars(1)),
 	)
 
 	ctx := context.Background()
@@ -573,7 +573,7 @@ func TestPipeline_RunAudioStream_WithStreamTTS(t *testing.T) {
 
 	var hasAudio bool
 	for _, ev := range events {
-		if ev.Type == speech.EventAudio {
+		if ev.Type == voice.EventAudio {
 			hasAudio = true
 			if !bytes.Contains(ev.Audio.Data, []byte("audio:")) {
 				t.Errorf("EventAudio should contain 'audio:' prefix, got %q", string(ev.Audio.Data))
@@ -587,12 +587,12 @@ func TestPipeline_RunAudioStream_WithStreamTTS(t *testing.T) {
 }
 
 func TestPipeline_RunnerError(t *testing.T) {
-	p := speech.NewPipeline(
+	p := voice.NewPipeline(
 		&fakeSTT{preset: "hello"},
 		&fakeTTS{},
 		&errRuntime{err: io.ErrClosedPipe},
 		fakeAgent{},
-		speech.WithSegmenterOptions(tts.WithMinChars(1)),
+		voice.WithSegmenterOptions(tts.WithMinChars(1)),
 	)
 
 	ctx := context.Background()
@@ -605,10 +605,10 @@ func TestPipeline_RunnerError(t *testing.T) {
 
 	var hasError bool
 	for _, ev := range events {
-		if ev.Type == speech.EventError {
+		if ev.Type == voice.EventError {
 			hasError = true
-			if ev.ErrorCode != speech.ErrorCodeTransport {
-				t.Fatalf("EventError.ErrorCode = %q, want %q", ev.ErrorCode, speech.ErrorCodeTransport)
+			if ev.ErrorCode != voice.ErrorCodeTransport {
+				t.Fatalf("EventError.ErrorCode = %q, want %q", ev.ErrorCode, voice.ErrorCodeTransport)
 			}
 			break
 		}
@@ -619,7 +619,7 @@ func TestPipeline_RunnerError(t *testing.T) {
 }
 
 func TestPipeline_RunAudio_STTFinalTimeout(t *testing.T) {
-	p := speech.NewPipeline(
+	p := voice.NewPipeline(
 		&slowSTT{
 			delay:  200 * time.Millisecond,
 			result: stt.STTResult{Text: "hello", IsFinal: true},
@@ -627,7 +627,7 @@ func TestPipeline_RunAudio_STTFinalTimeout(t *testing.T) {
 		&fakeTTS{},
 		&fakeRuntime{},
 		fakeAgent{},
-		speech.WithTimeouts(speech.PipelineTimeouts{
+		voice.WithTimeouts(voice.PipelineTimeouts{
 			STTFinal: 20 * time.Millisecond,
 		}),
 	)
@@ -639,9 +639,9 @@ func TestPipeline_RunAudio_STTFinalTimeout(t *testing.T) {
 
 	events := collectStreamEvents(t, stream)
 	for _, ev := range events {
-		if ev.Type == speech.EventError {
-			if ev.ErrorCode != speech.ErrorCodeTimeout {
-				t.Fatalf("EventError.ErrorCode = %q, want %q", ev.ErrorCode, speech.ErrorCodeTimeout)
+		if ev.Type == voice.EventError {
+			if ev.ErrorCode != voice.ErrorCodeTimeout {
+				t.Fatalf("EventError.ErrorCode = %q, want %q", ev.ErrorCode, voice.ErrorCodeTimeout)
 			}
 			if !strings.Contains(ev.Text, "context deadline exceeded") {
 				t.Fatalf("EventError.Text = %q, want context deadline exceeded", ev.Text)
@@ -653,12 +653,12 @@ func TestPipeline_RunAudio_STTFinalTimeout(t *testing.T) {
 }
 
 func TestPipeline_RunText_RunnerFirstTokenTimeout(t *testing.T) {
-	p := speech.NewPipeline(
+	p := voice.NewPipeline(
 		nil,
 		&fakeTTS{},
 		&slowRuntime{delay: 2 * time.Second},
 		fakeAgent{},
-		speech.WithTimeouts(speech.PipelineTimeouts{
+		voice.WithTimeouts(voice.PipelineTimeouts{
 			RunnerFirstToken: 20 * time.Millisecond,
 		}),
 	)
@@ -670,9 +670,9 @@ func TestPipeline_RunText_RunnerFirstTokenTimeout(t *testing.T) {
 
 	events := collectStreamEvents(t, stream)
 	for _, ev := range events {
-		if ev.Type == speech.EventError {
-			if ev.ErrorCode != speech.ErrorCodeTimeout {
-				t.Fatalf("EventError.ErrorCode = %q, want %q", ev.ErrorCode, speech.ErrorCodeTimeout)
+		if ev.Type == voice.EventError {
+			if ev.ErrorCode != voice.ErrorCodeTimeout {
+				t.Fatalf("EventError.ErrorCode = %q, want %q", ev.ErrorCode, voice.ErrorCodeTimeout)
 			}
 			if !strings.Contains(ev.Text, "runner first token timeout") {
 				t.Fatalf("EventError.Text = %q, want runner first token timeout", ev.Text)
@@ -688,12 +688,12 @@ func TestPipeline_RunAudio_AttachesSTTProviderReport(t *testing.T) {
 		failingSTTAdapter{err: io.ErrClosedPipe},
 		okSTTAdapter{text: "hello"},
 	)
-	p := speech.NewPipeline(
+	p := voice.NewPipeline(
 		fallbackSTT,
 		&fakeTTS{},
 		&fakeRuntime{},
 		fakeAgent{},
-		speech.WithSegmenterOptions(tts.WithMinChars(1)),
+		voice.WithSegmenterOptions(tts.WithMinChars(1)),
 	)
 
 	stream, err := p.RunAudio(context.Background(), audio.Frame{Data: []byte("wav")})
@@ -702,7 +702,7 @@ func TestPipeline_RunAudio_AttachesSTTProviderReport(t *testing.T) {
 	}
 
 	for _, ev := range collectStreamEvents(t, stream) {
-		if ev.Type != speech.EventTranscriptFinal {
+		if ev.Type != voice.EventTranscriptFinal {
 			continue
 		}
 		reportAny, ok := ev.Data["provider_report"]
@@ -726,12 +726,12 @@ func TestPipeline_RunAudio_AttachesTTSProviderReport(t *testing.T) {
 		failingStreamTTSAdapter{err: io.ErrClosedPipe},
 		okStreamTTSAdapter{payload: "audio"},
 	)
-	p := speech.NewPipeline(
+	p := voice.NewPipeline(
 		&fakeSTT{preset: "hello"},
 		fallbackTTS,
 		&fakeRuntime{},
 		fakeAgent{},
-		speech.WithSegmenterOptions(tts.WithMinChars(1)),
+		voice.WithSegmenterOptions(tts.WithMinChars(1)),
 	)
 
 	stream, err := p.RunAudio(context.Background(), audio.Frame{Data: []byte("wav")})
@@ -740,7 +740,7 @@ func TestPipeline_RunAudio_AttachesTTSProviderReport(t *testing.T) {
 	}
 
 	for _, ev := range collectStreamEvents(t, stream) {
-		if ev.Type != speech.EventAudio {
+		if ev.Type != voice.EventAudio {
 			continue
 		}
 		reportAny, ok := ev.Data["provider_report"]
@@ -760,7 +760,7 @@ func TestPipeline_RunAudio_AttachesTTSProviderReport(t *testing.T) {
 }
 
 func TestPipeline_RunAudio_TranscriptMetadata(t *testing.T) {
-	p := speech.NewPipeline(
+	p := voice.NewPipeline(
 		metadataSTT{},
 		&fakeTTS{},
 		&fakeRuntime{},
@@ -773,7 +773,7 @@ func TestPipeline_RunAudio_TranscriptMetadata(t *testing.T) {
 	}
 
 	for _, ev := range collectStreamEvents(t, stream) {
-		if ev.Type != speech.EventTranscriptFinal {
+		if ev.Type != voice.EventTranscriptFinal {
 			continue
 		}
 		if ev.Lang != "en-US" || ev.Confidence != 0.92 || ev.Duration != 1500*time.Millisecond {
@@ -791,12 +791,12 @@ func TestPipeline_RunAudio_TranscriptMetadata(t *testing.T) {
 }
 
 func TestPipeline_RunAudioStream_TranscriptRevisionIncrements(t *testing.T) {
-	p := speech.NewPipeline(
+	p := voice.NewPipeline(
 		metadataStreamSTT{},
 		&fakeTTS{},
 		&fakeRuntime{},
 		fakeAgent{},
-		speech.WithSegmenterOptions(tts.WithMinChars(1)),
+		voice.WithSegmenterOptions(tts.WithMinChars(1)),
 	)
 
 	input := audio.NewPipe[audio.Frame](1)
@@ -808,16 +808,16 @@ func TestPipeline_RunAudioStream_TranscriptRevisionIncrements(t *testing.T) {
 		t.Fatalf("RunAudioStream: %v", err)
 	}
 
-	var partial, final *speech.Event
-	var revisions []speech.Event
+	var partial, final *voice.Event
+	var revisions []voice.Event
 	events := collectStreamEvents(t, stream)
 	for i := range events {
 		switch events[i].Type {
-		case speech.EventTranscriptRevision:
+		case voice.EventTranscriptRevision:
 			revisions = append(revisions, events[i])
-		case speech.EventTranscriptPartial:
+		case voice.EventTranscriptPartial:
 			partial = &events[i]
-		case speech.EventTranscriptFinal:
+		case voice.EventTranscriptFinal:
 			final = &events[i]
 		}
 	}
@@ -840,12 +840,12 @@ func TestPipeline_RunAudioStream_TranscriptRevisionIncrements(t *testing.T) {
 
 func TestPipeline_TranscriptAudio(t *testing.T) {
 	audioData := []byte("original-audio-bytes")
-	p := speech.NewPipeline(
+	p := voice.NewPipeline(
 		&fakeSTT{preset: "hello"},
 		&fakeTTS{},
 		&fakeRuntime{},
 		fakeAgent{},
-		speech.WithSegmenterOptions(tts.WithMinChars(1)),
+		voice.WithSegmenterOptions(tts.WithMinChars(1)),
 	)
 
 	ctx := context.Background()
@@ -857,7 +857,7 @@ func TestPipeline_TranscriptAudio(t *testing.T) {
 	events := collectStreamEvents(t, stream)
 
 	for _, ev := range events {
-		if ev.Type == speech.EventTranscriptFinal {
+		if ev.Type == voice.EventTranscriptFinal {
 			if !bytes.Equal(ev.Audio.Data, audioData) {
 				t.Errorf("EventTranscriptFinal.Audio = %q, want %q", ev.Audio.Data, audioData)
 			}
@@ -876,12 +876,12 @@ func TestPipeline_ToolCallEvents(t *testing.T) {
 		},
 	}
 
-	p := speech.NewPipeline(
+	p := voice.NewPipeline(
 		&fakeSTT{preset: "hello"},
 		&fakeTTS{},
 		toolRuntime,
 		fakeAgent{},
-		speech.WithSegmenterOptions(tts.WithMinChars(1)),
+		voice.WithSegmenterOptions(tts.WithMinChars(1)),
 	)
 
 	ctx := context.Background()
@@ -895,12 +895,12 @@ func TestPipeline_ToolCallEvents(t *testing.T) {
 	var hasToolCall, hasToolResult bool
 	for _, ev := range events {
 		switch ev.Type {
-		case speech.EventToolCall:
+		case voice.EventToolCall:
 			hasToolCall = true
 			if ev.Text != "get_weather" {
 				t.Errorf("EventToolCall.Text = %q, want get_weather", ev.Text)
 			}
-		case speech.EventToolResult:
+		case voice.EventToolResult:
 			hasToolResult = true
 			if ev.Text != "sunny" {
 				t.Errorf("EventToolResult.Text = %q, want sunny", ev.Text)
@@ -917,7 +917,7 @@ func TestPipeline_ToolCallEvents(t *testing.T) {
 
 func TestPipeline_Abort(t *testing.T) {
 	rt := &blockingRuntime{}
-	p := speech.NewPipeline(
+	p := voice.NewPipeline(
 		nil,
 		&fakeTTS{},
 		rt,
@@ -950,12 +950,12 @@ func TestPipeline_Abort(t *testing.T) {
 }
 
 func TestPipeline_NonStreamTTS(t *testing.T) {
-	p := speech.NewPipeline(
+	p := voice.NewPipeline(
 		&fakeSTT{preset: "hello"},
 		&fakeTTS{},
 		&fakeRuntime{},
 		fakeAgent{},
-		speech.WithSegmenterOptions(tts.WithMinChars(1)),
+		voice.WithSegmenterOptions(tts.WithMinChars(1)),
 	)
 
 	ctx := context.Background()
@@ -968,7 +968,7 @@ func TestPipeline_NonStreamTTS(t *testing.T) {
 
 	var hasAudio bool
 	for _, ev := range events {
-		if ev.Type == speech.EventAudio {
+		if ev.Type == voice.EventAudio {
 			hasAudio = true
 			if !bytes.HasPrefix(ev.Audio.Data, []byte("audio:")) {
 				t.Errorf("EventAudio.Data = %q, want prefix 'audio:'", string(ev.Audio.Data))
@@ -982,12 +982,12 @@ func TestPipeline_NonStreamTTS(t *testing.T) {
 }
 
 func TestPipeline_RunText_Basic(t *testing.T) {
-	p := speech.NewPipeline(
+	p := voice.NewPipeline(
 		nil,
 		&fakeTTS{},
 		&fakeRuntime{},
 		fakeAgent{},
-		speech.WithSegmenterOptions(tts.WithMinChars(1)),
+		voice.WithSegmenterOptions(tts.WithMinChars(1)),
 	)
 
 	ctx := context.Background()
@@ -1001,16 +1001,16 @@ func TestPipeline_RunText_Basic(t *testing.T) {
 	var hasTranscriptFinal, hasTextDelta, hasAudio, hasDone bool
 	for _, ev := range events {
 		switch ev.Type {
-		case speech.EventTranscriptFinal:
+		case voice.EventTranscriptFinal:
 			hasTranscriptFinal = true
 			if ev.Text != "hello from text" {
 				t.Errorf("EventTranscriptFinal.Text = %q, want %q", ev.Text, "hello from text")
 			}
-		case speech.EventTextDelta:
+		case voice.EventTextDelta:
 			hasTextDelta = true
-		case speech.EventAudio:
+		case voice.EventAudio:
 			hasAudio = true
-		case speech.EventDone:
+		case voice.EventDone:
 			hasDone = true
 		}
 	}
@@ -1027,13 +1027,13 @@ func TestPipeline_RunText_Basic(t *testing.T) {
 	if !hasDone {
 		t.Error("expected EventDone")
 	}
-	if len(events) > 0 && events[0].Type != speech.EventTranscriptFinal {
+	if len(events) > 0 && events[0].Type != voice.EventTranscriptFinal {
 		t.Errorf("first event should be EventTranscriptFinal, got %s", events[0].Type)
 	}
 }
 
 func TestPipeline_RunText_EmptyText(t *testing.T) {
-	p := speech.NewPipeline(nil, &fakeTTS{}, &fakeRuntime{}, fakeAgent{})
+	p := voice.NewPipeline(nil, &fakeTTS{}, &fakeRuntime{}, fakeAgent{})
 
 	ctx := context.Background()
 	stream, err := p.RunText(ctx, "")
@@ -1047,9 +1047,9 @@ func TestPipeline_RunText_EmptyText(t *testing.T) {
 	otherCount := 0
 	for _, ev := range events {
 		switch ev.Type {
-		case speech.EventTranscriptFinal:
+		case voice.EventTranscriptFinal:
 			hasTranscriptFinal = true
-		case speech.EventDone:
+		case voice.EventDone:
 			hasDone = true
 		default:
 			otherCount++
@@ -1067,7 +1067,7 @@ func TestPipeline_RunText_EmptyText(t *testing.T) {
 }
 
 func TestPipeline_RunAudio_NilSTT(t *testing.T) {
-	p := speech.NewPipeline(nil, &fakeTTS{}, &fakeRuntime{}, fakeAgent{})
+	p := voice.NewPipeline(nil, &fakeTTS{}, &fakeRuntime{}, fakeAgent{})
 
 	_, err := p.RunAudio(context.Background(), audio.Frame{Data: []byte("wav")})
 	if err == nil {
@@ -1076,7 +1076,7 @@ func TestPipeline_RunAudio_NilSTT(t *testing.T) {
 }
 
 func TestPipeline_RunAudioStream_NilSTT(t *testing.T) {
-	p := speech.NewPipeline(nil, &fakeTTS{}, &fakeRuntime{}, fakeAgent{})
+	p := voice.NewPipeline(nil, &fakeTTS{}, &fakeRuntime{}, fakeAgent{})
 
 	input := audio.NewPipe[audio.Frame](8)
 	input.Close()
@@ -1091,7 +1091,7 @@ func TestPipeline_InputInterruptClosesOutput(t *testing.T) {
 	input := audio.NewPipe[audio.Frame](8)
 	input.Send(audio.Frame{Data: []byte("wav")})
 
-	p := speech.NewPipeline(
+	p := voice.NewPipeline(
 		&fakeStreamSTT{preset: "hello"},
 		&fakeTTS{},
 		&fakeRuntime{},
@@ -1122,12 +1122,12 @@ func TestPipeline_InputInterruptClosesOutput(t *testing.T) {
 
 func TestPipeline_RunText_NonStreamTTS_SynthesizeError_EmitsErrorEvent(t *testing.T) {
 	synthErr := fmt.Errorf("tts synthesis failed")
-	p := speech.NewPipeline(
+	p := voice.NewPipeline(
 		nil,
 		failingTTSAdapter{err: synthErr},
 		&fakeRuntime{tokens: []string{"Hello."}},
 		fakeAgent{},
-		speech.WithSegmenterOptions(tts.WithMinChars(1)),
+		voice.WithSegmenterOptions(tts.WithMinChars(1)),
 	)
 
 	stream, err := p.RunText(context.Background(), "hello")
@@ -1138,12 +1138,12 @@ func TestPipeline_RunText_NonStreamTTS_SynthesizeError_EmitsErrorEvent(t *testin
 	events := collectStreamEvents(t, stream)
 	var gotErrorEvent bool
 	for _, ev := range events {
-		if ev.Type == speech.EventError && strings.Contains(ev.Text, "tts synthesis failed") {
+		if ev.Type == voice.EventError && strings.Contains(ev.Text, "tts synthesis failed") {
 			gotErrorEvent = true
 		}
 	}
 	if !gotErrorEvent {
-		types := make([]speech.EventType, len(events))
+		types := make([]voice.EventType, len(events))
 		for i, ev := range events {
 			types[i] = ev.Type
 		}
@@ -1151,10 +1151,10 @@ func TestPipeline_RunText_NonStreamTTS_SynthesizeError_EmitsErrorEvent(t *testin
 	}
 }
 
-func collectTextDeltas(events []speech.Event) string {
+func collectTextDeltas(events []voice.Event) string {
 	var sb strings.Builder
 	for _, ev := range events {
-		if ev.Type == speech.EventTextDelta {
+		if ev.Type == voice.EventTextDelta {
 			sb.WriteString(ev.Text)
 		}
 	}
@@ -1184,7 +1184,7 @@ func (r *overflowRuntime) Run(ctx context.Context, _ workflow.Agent, _ *workflow
 }
 
 func TestPipeline_RunText_EventOverflowWarning(t *testing.T) {
-	p := speech.NewPipeline(
+	p := voice.NewPipeline(
 		nil,
 		&fakeTTS{},
 		&overflowRuntime{count: 2000},
@@ -1199,12 +1199,12 @@ func TestPipeline_RunText_EventOverflowWarning(t *testing.T) {
 	events := collectStreamEvents(t, stream)
 
 	var tokenCount int
-	var overflowEvent *speech.Event
+	var overflowEvent *voice.Event
 	for i, ev := range events {
-		if ev.Type == speech.EventTextDelta {
+		if ev.Type == voice.EventTextDelta {
 			tokenCount++
 		}
-		if ev.Type == speech.EventError && ev.ErrorCode == speech.ErrorCodeInternal &&
+		if ev.Type == voice.EventError && ev.ErrorCode == voice.ErrorCodeInternal &&
 			strings.Contains(ev.Text, "dropped") {
 			overflowEvent = &events[i]
 		}
@@ -1238,12 +1238,12 @@ func (w *warmupTTS) Warmup(ctx context.Context) error {
 
 func TestPipeline_RunText_WarmupLifecycle(t *testing.T) {
 	wt := &warmupTTS{fakeTTS: &fakeTTS{}, done: make(chan struct{})}
-	p := speech.NewPipeline(
+	p := voice.NewPipeline(
 		nil,
 		wt,
 		&fakeRuntime{},
 		fakeAgent{},
-		speech.WithSegmenterOptions(tts.WithMinChars(1)),
+		voice.WithSegmenterOptions(tts.WithMinChars(1)),
 	)
 
 	stream, err := p.RunText(context.Background(), "hello")
@@ -1268,12 +1268,12 @@ func TestPipeline_RunText_WarmupLifecycle(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestPipeline_EventOrdering_Strict(t *testing.T) {
-	p := speech.NewPipeline(
+	p := voice.NewPipeline(
 		&fakeSTT{preset: "hello"},
 		&fakeTTS{},
 		&fakeRuntime{},
 		fakeAgent{},
-		speech.WithSegmenterOptions(tts.WithMinChars(1)),
+		voice.WithSegmenterOptions(tts.WithMinChars(1)),
 	)
 
 	stream, err := p.RunAudio(context.Background(), audio.Frame{Data: []byte("wav")})
@@ -1289,17 +1289,17 @@ func TestPipeline_EventOrdering_Strict(t *testing.T) {
 
 	for i, ev := range events {
 		switch ev.Type {
-		case speech.EventTextDelta:
+		case voice.EventTextDelta:
 			lastTextDelta = i
-		case speech.EventResponseDone:
+		case voice.EventResponseDone:
 			if firstResponseDone == -1 {
 				firstResponseDone = i
 			}
-		case speech.EventAudioDone:
+		case voice.EventAudioDone:
 			if firstAudioDone == -1 {
 				firstAudioDone = i
 			}
-		case speech.EventDone:
+		case voice.EventDone:
 			if firstDone == -1 {
 				firstDone = i
 			}
@@ -1307,7 +1307,7 @@ func TestPipeline_EventOrdering_Strict(t *testing.T) {
 	}
 
 	if lastTextDelta < 0 || firstResponseDone < 0 || firstAudioDone < 0 || firstDone < 0 {
-		types := make([]speech.EventType, len(events))
+		types := make([]voice.EventType, len(events))
 		for i, ev := range events {
 			types[i] = ev.Type
 		}
@@ -1328,12 +1328,12 @@ func TestPipeline_EventOrdering_Strict(t *testing.T) {
 }
 
 func TestPipeline_RunText_AllEventsShareRunID(t *testing.T) {
-	p := speech.NewPipeline(
+	p := voice.NewPipeline(
 		nil,
 		&fakeTTS{},
 		&fakeRuntime{},
 		fakeAgent{},
-		speech.WithSegmenterOptions(tts.WithMinChars(1)),
+		voice.WithSegmenterOptions(tts.WithMinChars(1)),
 	)
 
 	stream, err := p.RunText(context.Background(), "hello")
@@ -1360,7 +1360,7 @@ func TestPipeline_RunText_AllEventsShareRunID(t *testing.T) {
 
 func TestPipeline_ContextCancel_TerminatesCleanly(t *testing.T) {
 	rt := &blockingRuntime{}
-	p := speech.NewPipeline(
+	p := voice.NewPipeline(
 		nil,
 		&fakeTTS{},
 		rt,
@@ -1399,7 +1399,7 @@ func TestPipeline_ContextCancel_TerminatesCleanly(t *testing.T) {
 }
 
 func TestPipeline_RunAudioStream_ContextCancel_NoHang(t *testing.T) {
-	p := speech.NewPipeline(
+	p := voice.NewPipeline(
 		&fakeStreamSTT{preset: "hello"},
 		&fakeTTS{},
 		&blockingRuntime{},
@@ -1433,12 +1433,12 @@ func TestPipeline_RunAudioStream_ContextCancel_NoHang(t *testing.T) {
 }
 
 func TestPipeline_RunText_MultipleSentences(t *testing.T) {
-	p := speech.NewPipeline(
+	p := voice.NewPipeline(
 		nil,
 		&fakeTTS{},
 		&fakeRuntime{tokens: []string{"First sentence.", " Second sentence."}},
 		fakeAgent{},
-		speech.WithSegmenterOptions(tts.WithMinChars(1)),
+		voice.WithSegmenterOptions(tts.WithMinChars(1)),
 	)
 
 	stream, err := p.RunText(context.Background(), "hello")
@@ -1449,7 +1449,7 @@ func TestPipeline_RunText_MultipleSentences(t *testing.T) {
 	events := collectStreamEvents(t, stream)
 	var audioCount int
 	for _, ev := range events {
-		if ev.Type == speech.EventAudio {
+		if ev.Type == voice.EventAudio {
 			audioCount++
 		}
 	}
@@ -1460,7 +1460,7 @@ func TestPipeline_RunText_MultipleSentences(t *testing.T) {
 
 func TestPipeline_Abort_EmitsLifecycleEvents(t *testing.T) {
 	rt := &blockingRuntime{}
-	p := speech.NewPipeline(
+	p := voice.NewPipeline(
 		nil,
 		&fakeTTS{},
 		rt,
@@ -1486,11 +1486,11 @@ func TestPipeline_Abort_EmitsLifecycleEvents(t *testing.T) {
 	var hasResponseDone, hasAudioDone, hasDone bool
 	for _, ev := range events {
 		switch ev.Type {
-		case speech.EventResponseDone:
+		case voice.EventResponseDone:
 			hasResponseDone = true
-		case speech.EventAudioDone:
+		case voice.EventAudioDone:
 			hasAudioDone = true
-		case speech.EventDone:
+		case voice.EventDone:
 			hasDone = true
 		}
 	}
@@ -1533,15 +1533,15 @@ func TestPipeline_RunText_TTSFirstAudioTimeout(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	p := speech.NewPipeline(
+	p := voice.NewPipeline(
 		nil,
 		slowStreamTTS{},
 		&fakeRuntime{tokens: []string{"Hello."}},
 		fakeAgent{},
-		speech.WithTimeouts(speech.PipelineTimeouts{
+		voice.WithTimeouts(voice.PipelineTimeouts{
 			TTSFirstAudio: 50 * time.Millisecond,
 		}),
-		speech.WithSegmenterOptions(tts.WithMinChars(1)),
+		voice.WithSegmenterOptions(tts.WithMinChars(1)),
 	)
 
 	stream, err := p.RunText(ctx, "hello")
@@ -1551,14 +1551,14 @@ func TestPipeline_RunText_TTSFirstAudioTimeout(t *testing.T) {
 
 	events := collectStreamEvents(t, stream)
 	for _, ev := range events {
-		if ev.Type == speech.EventError && strings.Contains(ev.Text, "tts first audio timeout") {
-			if ev.ErrorCode != speech.ErrorCodeTimeout {
-				t.Fatalf("EventError.ErrorCode = %q, want %q", ev.ErrorCode, speech.ErrorCodeTimeout)
+		if ev.Type == voice.EventError && strings.Contains(ev.Text, "tts first audio timeout") {
+			if ev.ErrorCode != voice.ErrorCodeTimeout {
+				t.Fatalf("EventError.ErrorCode = %q, want %q", ev.ErrorCode, voice.ErrorCodeTimeout)
 			}
 			return
 		}
 	}
-	types := make([]speech.EventType, len(events))
+	types := make([]voice.EventType, len(events))
 	for i, ev := range events {
 		types[i] = ev.Type
 	}
@@ -1566,12 +1566,12 @@ func TestPipeline_RunText_TTSFirstAudioTimeout(t *testing.T) {
 }
 
 func TestPipeline_EventOrdering_StreamTTS(t *testing.T) {
-	p := speech.NewPipeline(
+	p := voice.NewPipeline(
 		&fakeSTT{preset: "hello"},
 		&fakeStreamTTS{fakeTTS: &fakeTTS{}},
 		&fakeRuntime{},
 		fakeAgent{},
-		speech.WithSegmenterOptions(tts.WithMinChars(1)),
+		voice.WithSegmenterOptions(tts.WithMinChars(1)),
 	)
 
 	stream, err := p.RunAudio(context.Background(), audio.Frame{Data: []byte("wav")})
@@ -1586,13 +1586,13 @@ func TestPipeline_EventOrdering_StreamTTS(t *testing.T) {
 
 	for i, ev := range events {
 		switch ev.Type {
-		case speech.EventTextDelta:
+		case voice.EventTextDelta:
 			lastTextDelta = i
-		case speech.EventAudioDone:
+		case voice.EventAudioDone:
 			if firstAudioDone == -1 {
 				firstAudioDone = i
 			}
-		case speech.EventDone:
+		case voice.EventDone:
 			if firstDone == -1 {
 				firstDone = i
 			}
@@ -1611,12 +1611,12 @@ func TestPipeline_EventOrdering_StreamTTS(t *testing.T) {
 }
 
 func TestPipeline_RunText_StreamTTS_EventOrdering(t *testing.T) {
-	p := speech.NewPipeline(
+	p := voice.NewPipeline(
 		nil,
 		&fakeStreamTTS{fakeTTS: &fakeTTS{}},
 		&fakeRuntime{tokens: []string{"One.", " Two."}},
 		fakeAgent{},
-		speech.WithSegmenterOptions(tts.WithMinChars(1)),
+		voice.WithSegmenterOptions(tts.WithMinChars(1)),
 	)
 
 	stream, err := p.RunText(context.Background(), "hello")
@@ -1632,14 +1632,14 @@ func TestPipeline_RunText_StreamTTS_EventOrdering(t *testing.T) {
 
 	for i, ev := range events {
 		switch ev.Type {
-		case speech.EventAudio:
+		case voice.EventAudio:
 			audioCount++
 			lastAudio = i
-		case speech.EventAudioDone:
+		case voice.EventAudioDone:
 			if firstAudioDone == -1 {
 				firstAudioDone = i
 			}
-		case speech.EventDone:
+		case voice.EventDone:
 			if firstDone == -1 {
 				firstDone = i
 			}
@@ -1659,12 +1659,12 @@ func TestPipeline_RunText_StreamTTS_EventOrdering(t *testing.T) {
 
 func TestPipeline_RunAudio_WarmupLifecycle(t *testing.T) {
 	wt := &warmupTTS{fakeTTS: &fakeTTS{}, done: make(chan struct{})}
-	p := speech.NewPipeline(
+	p := voice.NewPipeline(
 		&fakeSTT{preset: "hello"},
 		wt,
 		&fakeRuntime{},
 		fakeAgent{},
-		speech.WithSegmenterOptions(tts.WithMinChars(1)),
+		voice.WithSegmenterOptions(tts.WithMinChars(1)),
 	)
 
 	stream, err := p.RunAudio(context.Background(), audio.Frame{Data: []byte("wav")})

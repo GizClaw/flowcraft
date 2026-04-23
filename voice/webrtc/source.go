@@ -29,7 +29,7 @@ func (c SourceConfig) channels() int {
 	return 1
 }
 
-// Source implements speech.AudioSource by reading RTP packets from a remote
+// Source implements voice.AudioSource by reading RTP packets from a remote
 // WebRTC audio track, decoding the payload via the injected AudioDecoder,
 // and emitting audio.Frame values through a Pipe.
 type Source struct {
@@ -39,7 +39,7 @@ type Source struct {
 	initOnce sync.Once
 }
 
-// Stream returns the audio frame stream. Implements speech.AudioSource.
+// Stream returns the audio frame stream. Implements voice.AudioSource.
 func (s *Source) Stream() audio.Stream[audio.Frame] {
 	return s.pipe
 }

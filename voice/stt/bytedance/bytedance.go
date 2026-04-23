@@ -85,7 +85,7 @@ func EnablePUNC(enable bool) stt.STTOption { return stt.WithExtra(KeyEnablePUNC,
 // ResultType returns a per-call STTOption that sets the result type (e.g. "full", "single").
 func ResultType(t string) stt.STTOption { return stt.WithExtra(KeyResultType, t) }
 
-// STT implements sdk/speech.STT and sdk/speech.StreamSTT for ByteDance Volcano ASR.
+// STT implements voice/stt.STT and voice/stt.StreamSTT for ByteDance Volcano ASR.
 type STT struct {
 	appID     string
 	token     string

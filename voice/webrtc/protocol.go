@@ -47,7 +47,7 @@ type ServerMessage struct {
 }
 
 type StartPayload struct {
-	Capabilities    speech.SessionCapabilities `json:"capabilities"`
+	Capabilities    voice.SessionCapabilities `json:"capabilities"`
 	InputFormat     audio.Format               `json:"input_format"`
 	OutputFormat    audio.Format               `json:"output_format"`
 	AcceptedCodecs  []audio.Codec              `json:"accepted_codecs,omitempty"`
@@ -73,19 +73,19 @@ type ErrorPayload struct {
 }
 
 type EventPayload struct {
-	Event speech.Event `json:"event"`
+	Event voice.Event `json:"event"`
 }
 
-func SessionOptionsFromStart(start *StartPayload) []speech.SessionOption {
+func SessionOptionsFromStart(start *StartPayload) []voice.SessionOption {
 	if start == nil {
 		return nil
 	}
-	return []speech.SessionOption{
-		speech.WithCapabilities(start.Capabilities),
+	return []voice.SessionOption{
+		voice.WithCapabilities(start.Capabilities),
 	}
 }
 
-func ApplyControlMessage(session *speech.Session, msg ClientMessage) (bool, error) {
+func ApplyControlMessage(session *voice.Session, msg ClientMessage) (bool, error) {
 	if session == nil {
 		return false, fmt.Errorf("speech/ws: nil session")
 	}
@@ -106,7 +106,7 @@ func ApplyControlMessage(session *speech.Session, msg ClientMessage) (bool, erro
 	}
 }
 
-func EventMessage(ev speech.Event, requestID string) ServerMessage {
+func EventMessage(ev voice.Event, requestID string) ServerMessage {
 	return ServerMessage{
 		Type:      MessageEvent,
 		Event:     &EventPayload{Event: ev},

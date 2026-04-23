@@ -347,7 +347,7 @@ func TestRegistration(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Error("minimax not registered in speech.DefaultTTSRegistry")
+		t.Error("minimax not registered in voice.DefaultTTSRegistry")
 	}
 }
 

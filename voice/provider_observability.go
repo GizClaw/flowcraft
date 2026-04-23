@@ -1,4 +1,4 @@
-package speech
+package voice
 
 import "github.com/GizClaw/flowcraft/voice/provider"
 

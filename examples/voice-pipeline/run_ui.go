@@ -14,11 +14,11 @@ import (
 // sessionRef wires /reset to the live session and pipeline without exporting session before it exists.
 type sessionRef struct {
 	mu       sync.Mutex
-	pipeline *speech.Pipeline
-	session  *speech.Session
+	pipeline *voice.Pipeline
+	session  *voice.Session
 }
 
-func (r *sessionRef) setSession(s *speech.Session) {
+func (r *sessionRef) setSession(s *voice.Session) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.session = s
@@ -39,7 +39,7 @@ func (r *sessionRef) reset() {
 // runVoiceUI starts the mic session and bubbletea TUI. Cancel ctx after program.Run returns, then wait on sessionDone.
 func runVoiceUI(
 	ctx context.Context,
-	pipeline *speech.Pipeline,
+	pipeline *voice.Pipeline,
 	source *PortAudioSource,
 	sink *PortAudioSink,
 	voices []voiceInfo,
@@ -67,18 +67,18 @@ func runVoiceUI(
 		}
 	}, ref.reset, voices, voicePtr)
 
-	session := speech.NewSession(pipeline, source, sink,
-		speech.WithDetector(detect.NewEchoSuppressor(baseDetector)),
-		speech.WithCapabilities(speech.SessionCapabilities{
-			ClientAEC:    speech.ClientAECUnknown,
-			DeviceType:   speech.DeviceTypeDesktop,
-			PlaybackMode: speech.PlaybackModeSpeaker,
+	session := voice.NewSession(pipeline, source, sink,
+		voice.WithDetector(detect.NewEchoSuppressor(baseDetector)),
+		voice.WithCapabilities(voice.SessionCapabilities{
+			ClientAEC:    voice.ClientAECUnknown,
+			DeviceType:   voice.DeviceTypeDesktop,
+			PlaybackMode: voice.PlaybackModeSpeaker,
 		}),
-		speech.WithSilenceDuration(700*time.Millisecond),
-		speech.WithFrameSize(100*time.Millisecond),
-		speech.WithPlaybackDrainTimeout(10*time.Minute),
-		speech.WithMetricsHook(bridge.metricsHook()),
-		speech.WithEventHandler(bridge.speechEventHandler()),
+		voice.WithSilenceDuration(700*time.Millisecond),
+		voice.WithFrameSize(100*time.Millisecond),
+		voice.WithPlaybackDrainTimeout(10*time.Minute),
+		voice.WithMetricsHook(bridge.metricsHook()),
+		voice.WithEventHandler(bridge.speechEventHandler()),
 	)
 	ref.setSession(session)
 
