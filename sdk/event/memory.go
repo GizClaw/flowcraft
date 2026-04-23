@@ -61,8 +61,8 @@ func WithRouteCacheSize(n int) MemoryBusOption {
 //   - Subscribe / Close / removeSub take the write lock;
 //   - in-flight Publish calls are tracked by inflight (sync.WaitGroup) so
 //     Close can wait for them to drain before any subscriber channel is
-//     closed — this is the fix for the legacy "send on closed channel"
-//     race documented in commit 1's predecessor (LegacyMemoryBus).
+//     closed — this avoids the "send on closed channel" race that bit
+//     earlier per-subscription bus implementations.
 //
 // Hot-path lock-freedom:
 //   - Observer callbacks are deferred to a local slice and executed after

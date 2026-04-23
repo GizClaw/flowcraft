@@ -11,11 +11,6 @@
 //	envelope.go    — Envelope value type and well-known headers.
 //	subject.go     — Subject / Pattern routing keys.
 //	observer.go    — Observer instrumentation hook + BackpressurePolicy.
-//	deprecated.go  — All v0.1.x compatibility shims (Legacy* types,
-//	                 Event/EventType/EventFilter, LegacyMemoryBus).
-//	                 Scheduled to be deleted in v0.2.0 in a single
-//	                 commit; per-symbol Migration godoc gives the
-//	                 new-API equivalent.
 package event
 
 import (
@@ -30,10 +25,6 @@ var ErrBusClosed = errors.New("event: bus closed")
 
 // Bus is a publish-subscribe channel for Envelopes routed by Subject /
 // Pattern.
-//
-// Bus is the new (post v0.1.x) primary surface; the legacy Event /
-// LegacyEventBus types remain available as deprecated shims for one
-// minor cycle and will be removed in v0.2.0.
 type Bus interface {
 	// Publish delivers env to every matching subscription. Implementations
 	// must:

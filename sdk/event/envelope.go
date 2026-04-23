@@ -54,7 +54,8 @@ const (
 //     re-encoding;
 //   - otherwise, payload is JSON-encoded;
 //   - if ctx carries an OTel span, TraceID / SpanID are filled from it
-//     (preserving the legacy behaviour of LegacyMemoryBus.Publish).
+//     so downstream subscribers can correlate envelopes back to the
+//     producing trace without separate plumbing.
 func NewEnvelope(ctx context.Context, subject Subject, payload any) (Envelope, error) {
 	if err := subject.Validate(); err != nil {
 		return Envelope{}, err

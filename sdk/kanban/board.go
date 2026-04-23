@@ -81,7 +81,7 @@ func (w *watcher) pump() {
 	}
 }
 
-// Board is the kanban task board: card coordination + scope + LegacyEventBus.
+// Board is the kanban task board: card coordination + scope + event bus.
 // Graph execution uses workflow.Board separately (see sdk/workflow).
 type Board struct {
 	cards       []*Card
