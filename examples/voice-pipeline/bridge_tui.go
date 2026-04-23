@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/GizClaw/flowcraft/voice"
-	speechmetrics "github.com/GizClaw/flowcraft/voice/metrics"
+	"github.com/GizClaw/flowcraft/sdk/speech"
+	speechmetrics "github.com/GizClaw/flowcraft/sdk/speech/metrics"
 	tea "github.com/charmbracelet/bubbletea"
 )
 
@@ -34,36 +34,36 @@ func (b *tuiBridge) metricsHook() speechmetrics.HookFunc {
 	}
 }
 
-func (b *tuiBridge) speechEventHandler() func(voice.Event) {
-	return func(ev voice.Event) {
+func (b *tuiBridge) speechEventHandler() func(speech.Event) {
+	return func(ev speech.Event) {
 		if b.program == nil {
 			return
 		}
 		switch ev.Type {
-		case voice.EventTurnStarted:
+		case speech.EventTurnStarted:
 			b.program.Send(appendLineMsg{role: "status", text: "─── turn started ───"})
 
-		case voice.EventTranscriptPartial:
+		case speech.EventTranscriptPartial:
 			b.program.Send(updatePartialMsg(ev.Text))
 
-		case voice.EventTranscriptFinal:
+		case speech.EventTranscriptFinal:
 			b.program.Send(clearPartialMsg{})
 			b.program.Send(appendLineMsg{role: "user", text: ev.Text})
 
-		case voice.EventAudio:
+		case speech.EventAudio:
 			if ev.Text != "" {
 				b.program.Send(appendAIDeltaMsg(ev.Text))
 			}
 
-		case voice.EventTurnInterrupted:
+		case speech.EventTurnInterrupted:
 			b.program.Send(flushAIStreamMsg{})
 			b.program.Send(appendLineMsg{role: "status", text: fmt.Sprintf("─── interrupted (%s) ───", ev.InterruptReason)})
 
-		case voice.EventTurnDone, voice.EventDone:
+		case speech.EventTurnDone, speech.EventDone:
 			b.program.Send(flushAIStreamMsg{})
 			b.program.Send(appendLineMsg{role: "status", text: "─── turn complete ───"})
 
-		case voice.EventError:
+		case speech.EventError:
 			b.program.Send(appendLineMsg{role: "status", text: fmt.Sprintf("error [%s]: %s", ev.ErrorCode, ev.Text)})
 		}
 	}

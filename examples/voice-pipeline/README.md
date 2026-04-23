@@ -52,7 +52,7 @@ If your `.env` lives at the repo root, run from this directory so `loadDotEnv()`
 | File | Role |
 |------|------|
 | `main.go` | Entry: env check, PortAudio, delegates to setup + UI |
-| `setup.go` | Workflow runtime, cloud STT/TTS, `voice.Pipeline` options |
+| `setup.go` | Workflow runtime, cloud STT/TTS, `speech.Pipeline` options |
 | `run_ui.go` | Mic session + bubbletea program; `/reset` wiring |
 | `bridge_tui.go` | Maps speech metrics/events into bubbletea messages |
 | `react_agent.yaml` | Declarative graph definition |

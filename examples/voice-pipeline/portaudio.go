@@ -10,9 +10,9 @@ import (
 	"github.com/gordonklaus/portaudio"
 	"github.com/hajimehoshi/go-mp3"
 
-	"github.com/GizClaw/flowcraft/voice"
-	"github.com/GizClaw/flowcraft/voice/audio"
-	"github.com/GizClaw/flowcraft/voice/tts"
+	"github.com/GizClaw/flowcraft/sdk/speech"
+	"github.com/GizClaw/flowcraft/sdk/speech/audio"
+	"github.com/GizClaw/flowcraft/sdk/speech/tts"
 )
 
 const (
@@ -28,7 +28,7 @@ var pcmFormat = audio.Format{
 	BitDepth:   16,
 }
 
-// PortAudioSource implements voice.AudioSource backed by a PortAudio input stream.
+// PortAudioSource implements speech.AudioSource backed by a PortAudio input stream.
 type PortAudioSource struct {
 	paStream *portaudio.Stream
 	buf      []int16
@@ -36,7 +36,7 @@ type PortAudioSource struct {
 	done     chan struct{}
 }
 
-var _ voice.AudioSource = (*PortAudioSource)(nil)
+var _ speech.AudioSource = (*PortAudioSource)(nil)
 
 func NewPortAudioSource() (*PortAudioSource, error) {
 	s := &PortAudioSource{
@@ -81,7 +81,7 @@ func (s *PortAudioSource) Start(ctx context.Context) error {
 	return nil
 }
 
-// Stream returns the audio frame stream (used by voice.Session).
+// Stream returns the audio frame stream (used by speech.Session).
 func (s *PortAudioSource) Stream() audio.Stream[audio.Frame] { return s.pipe }
 
 // Close stops the PortAudio input stream.
@@ -92,14 +92,14 @@ func (s *PortAudioSource) Close() error {
 	return s.paStream.Close()
 }
 
-// PortAudioSink implements voice.AudioSink for MP3 TTS chunks via PortAudio output.
+// PortAudioSink implements speech.AudioSink for MP3 TTS chunks via PortAudio output.
 type PortAudioSink struct {
 	ref *audio.Pipe[audio.Frame]
 }
 
 var (
-	_ voice.AudioSink                 = (*PortAudioSink)(nil)
-	_ voice.PlaybackReferenceProvider = (*PortAudioSink)(nil)
+	_ speech.AudioSink                 = (*PortAudioSink)(nil)
+	_ speech.PlaybackReferenceProvider = (*PortAudioSink)(nil)
 )
 
 func NewPortAudioSink() *PortAudioSink {
