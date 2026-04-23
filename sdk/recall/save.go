@@ -8,6 +8,9 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/embedding"
 	"github.com/GizClaw/flowcraft/sdk/llm"
 	"github.com/GizClaw/flowcraft/sdk/retrieval"
+	"github.com/GizClaw/flowcraft/sdk/telemetry"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
 )
 
 // embedBatch wraps Embedder.EmbedBatch with a defensive fallback to per-text
@@ -154,15 +157,33 @@ func (m *lt) SaveAsync(ctx context.Context, scope Scope, msgs []llm.Message) (Jo
 // Add bypasses extraction and writes one entry verbatim. The returned
 // string is the assigned entry ID (content-addressable when the caller
 // leaves Entry.ID empty).
+//
+// Telemetry: emits span memory.recall.add with attributes
+// runtime_id / has_user_id / has_vector, increments counter
+// memory.recall.add_total{outcome=success|fail}, and records latency
+// in histogram memory.recall.add_duration. Scope.UserID is intentionally
+// not attached as an attribute (PII + cardinality).
 func (m *lt) Add(ctx context.Context, scope Scope, e Entry) (string, error) {
+	ctx, span := telemetry.Tracer().Start(ctx, "memory.recall.add")
+	defer span.End()
+	t0 := time.Now()
+	defer func() {
+		addDuration.Record(ctx, time.Since(t0).Seconds())
+	}()
+
 	if err := m.validateScope(scope); err != nil {
+		span.RecordError(err)
+		addTotal.Add(ctx, 1, metric.WithAttributes(attribute.String("outcome", "fail"), attribute.String("reason", "scope")))
 		return "", err
 	}
 	// Validate content before any derived work (ID hash, timestamps,
 	// embedding) so an empty payload fails fast and never shows up in
 	// debug logs or telemetry attributes.
 	if e.Content == "" {
-		return "", errors.New("recall: Add: content is required")
+		err := errors.New("recall: Add: content is required")
+		span.RecordError(err)
+		addTotal.Add(ctx, 1, metric.WithAttributes(attribute.String("outcome", "fail"), attribute.String("reason", "empty_content")))
+		return "", err
 	}
 	now := m.cfg.now()
 	if e.ID == "" {
@@ -188,8 +209,16 @@ func (m *lt) Add(ctx context.Context, scope Scope, e Entry) (string, error) {
 	d := EntryToDoc(e)
 	ns := NamespaceFor(scope)
 	if err := m.idx.Upsert(ctx, ns, []retrieval.Doc{d}); err != nil {
+		span.RecordError(err)
+		addTotal.Add(ctx, 1, metric.WithAttributes(attribute.String("outcome", "fail"), attribute.String("reason", "upsert")))
 		return "", err
 	}
+	span.SetAttributes(
+		attribute.String("runtime_id", scope.RuntimeID),
+		attribute.Bool("has_user_id", scope.UserID != ""),
+		attribute.Bool("has_vector", len(d.Vector) > 0),
+	)
+	addTotal.Add(ctx, 1, metric.WithAttributes(attribute.String("outcome", "success")))
 	return e.ID, nil
 }
 

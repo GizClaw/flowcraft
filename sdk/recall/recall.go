@@ -6,6 +6,9 @@ import (
 
 	"github.com/GizClaw/flowcraft/sdk/retrieval"
 	"github.com/GizClaw/flowcraft/sdk/retrieval/journal"
+	"github.com/GizClaw/flowcraft/sdk/telemetry"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
 )
 
 // Request is the input to Memory.Recall ( + §6.2).
@@ -26,11 +29,29 @@ type Hit struct {
 
 // Recall runs the configured pipeline against the namespace and projects
 // hits back into Entry.
+//
+// Telemetry: emits span memory.recall.recall covering the entire
+// pipeline.Run call (which itself emits per-stage child spans), records
+// outcome on counter memory.recall.recall_total, latency on histogram
+// memory.recall.recall_duration, and hit count on histogram
+// memory.recall.recall_hits. Query text is intentionally NOT attached
+// to the span (PII risk on user-typed queries).
 func (m *lt) Recall(ctx context.Context, scope Scope, req Request) ([]Hit, error) {
+	ctx, span := telemetry.Tracer().Start(ctx, "memory.recall.recall")
+	defer span.End()
+	t0 := time.Now()
+	defer func() {
+		recallDuration.Record(ctx, time.Since(t0).Seconds())
+	}()
+
 	if scope.RuntimeID == "" {
+		span.RecordError(ErrMissingRuntimeID)
+		recallTotal.Add(ctx, 1, metric.WithAttributes(attribute.String("outcome", "fail"), attribute.String("reason", "scope")))
 		return nil, ErrMissingRuntimeID
 	}
 	if m.cfg.requireUserID && scope.UserID == "" && !m.cfg.allowGlobal {
+		span.RecordError(ErrMissingUserID)
+		recallTotal.Add(ctx, 1, metric.WithAttributes(attribute.String("outcome", "fail"), attribute.String("reason", "scope")))
 		return nil, ErrMissingUserID
 	}
 	now := req.Now
@@ -49,12 +70,21 @@ func (m *lt) Recall(ctx context.Context, scope Scope, req Request) ([]Hit, error
 		filter = MergeFilters(filter, retrieval.Filter{Eq: req.Filter})
 	}
 	ns := NamespaceFor(scope)
+	span.SetAttributes(
+		attribute.String("runtime_id", scope.RuntimeID),
+		attribute.Bool("has_user_id", scope.UserID != ""),
+		attribute.Int("top_k", topK),
+		attribute.Int("query_len", len(req.Query)),
+		attribute.Bool("with_stale", req.WithStale),
+	)
 	resp, err := m.pipe.Run(ctx, m.idx, ns, retrieval.SearchRequest{
 		QueryText: req.Query,
 		Filter:    filter,
 		TopK:      topK,
 	})
 	if err != nil {
+		span.RecordError(err)
+		recallTotal.Add(ctx, 1, metric.WithAttributes(attribute.String("outcome", "fail"), attribute.String("reason", "pipeline")))
 		return nil, err
 	}
 	out := make([]Hit, 0, len(resp.Hits))
@@ -65,6 +95,9 @@ func (m *lt) Recall(ctx context.Context, scope Scope, req Request) ([]Hit, error
 			Scores: h.Scores,
 		})
 	}
+	span.SetAttributes(attribute.Int("hits", len(out)))
+	recallHits.Record(ctx, int64(len(out)))
+	recallTotal.Add(ctx, 1, metric.WithAttributes(attribute.String("outcome", "success")))
 	return out, nil
 }
 

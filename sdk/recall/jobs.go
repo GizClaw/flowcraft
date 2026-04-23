@@ -2,11 +2,16 @@ package recall
 
 import (
 	"context"
+	"errors"
 	"sort"
 	"sync"
 	"time"
 
 	"github.com/GizClaw/flowcraft/sdk/llm"
+	"github.com/GizClaw/flowcraft/sdk/telemetry"
+	"go.opentelemetry.io/otel/attribute"
+	otellog "go.opentelemetry.io/otel/log"
+	"go.opentelemetry.io/otel/metric"
 )
 
 // -----------------------------------------------------------------------------
@@ -265,6 +270,9 @@ func (m *lt) worker() {
 				return
 			}
 			m.log("ltm.worker.lease: %v", err)
+			jobLeaseErrors.Add(m.workerCtx, 1)
+			telemetry.Warn(m.workerCtx, "recall: worker lease failed",
+				otellog.String("error", err.Error()))
 			select {
 			case <-m.stopCh:
 				return
@@ -297,6 +305,11 @@ func (m *lt) handleJob(rec *JobRecord) {
 	jobCtx, cancel := context.WithTimeout(m.workerCtx, m.cfg.jobTimeout)
 	defer cancel()
 
+	t0 := time.Now()
+	defer func() {
+		jobDuration.Record(jobCtx, time.Since(t0).Seconds())
+	}()
+
 	var extractOpts []ExtractOption
 	if m.cfg.saveWithCtx {
 		if existing := m.gatherExistingFacts(jobCtx, rec.Payload.Scope, rec.Payload.Messages); len(existing) > 0 {
@@ -305,11 +318,13 @@ func (m *lt) handleJob(rec *JobRecord) {
 	}
 	facts, err := m.cfg.extractor.Extract(jobCtx, rec.Payload.Scope, rec.Payload.Messages, extractOpts...)
 	if err != nil {
+		m.recordJobFailure(jobCtx, rec, err, "extract")
 		m.failOrRetry(rec, err)
 		return
 	}
 	ids, err := m.upsertFacts(jobCtx, rec.Payload.Scope, rec.Payload.Messages, facts, m.cfg.now())
 	if err != nil {
+		m.recordJobFailure(jobCtx, rec, err, "upsert")
 		m.failOrRetry(rec, err)
 		return
 	}
@@ -319,7 +334,37 @@ func (m *lt) handleJob(rec *JobRecord) {
 	defer bookCancel()
 	if err := m.cfg.jobQueue.Complete(bookCtx, rec.ID, ids); err != nil {
 		m.log("ltm.worker.complete: %v", err)
+		telemetry.Warn(bookCtx, "recall: job complete bookkeeping failed",
+			otellog.String("job_id", string(rec.ID)),
+			otellog.String("error", err.Error()))
 	}
+	jobTotal.Add(jobCtx, 1, metric.WithAttributes(
+		attribute.String("outcome", "succeeded"),
+		attribute.Int("attempts", rec.Attempts),
+	))
+}
+
+// recordJobFailure emits the OTel signal for a failed handleJob attempt.
+// Timeout is split out from generic error so dashboards can isolate
+// "extractor wedged" from "extractor returned error". Job retry/dead
+// transitions are still owned by failOrRetry; this only annotates the
+// observation.
+func (m *lt) recordJobFailure(ctx context.Context, rec *JobRecord, err error, stage string) {
+	outcome := "failed"
+	if errors.Is(err, context.DeadlineExceeded) {
+		outcome = "timeout"
+	}
+	jobTotal.Add(ctx, 1, metric.WithAttributes(
+		attribute.String("outcome", outcome),
+		attribute.String("stage", stage),
+		attribute.Int("attempts", rec.Attempts),
+	))
+	telemetry.Warn(ctx, "recall: async job failed",
+		otellog.String("job_id", string(rec.ID)),
+		otellog.String("stage", stage),
+		otellog.String("outcome", outcome),
+		otellog.Int("attempts", rec.Attempts),
+		otellog.String("error", err.Error()))
 }
 
 func (m *lt) failOrRetry(rec *JobRecord, err error) {
@@ -328,6 +373,14 @@ func (m *lt) failOrRetry(rec *JobRecord, err error) {
 	if rec.Attempts >= m.cfg.jobMaxAttempts {
 		_ = m.cfg.jobQueue.Fail(bookCtx, rec.ID, err.Error())
 		m.log("ltm.worker.dead %s: %v", rec.ID, err)
+		jobTotal.Add(bookCtx, 1, metric.WithAttributes(
+			attribute.String("outcome", "dead"),
+			attribute.Int("attempts", rec.Attempts),
+		))
+		telemetry.Warn(bookCtx, "recall: async job dead-lettered",
+			otellog.String("job_id", string(rec.ID)),
+			otellog.Int("attempts", rec.Attempts),
+			otellog.String("error", err.Error()))
 		return
 	}
 	d := m.cfg.jobBackoffBase

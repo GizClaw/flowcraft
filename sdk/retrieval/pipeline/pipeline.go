@@ -5,6 +5,8 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/sdk/retrieval"
+	"github.com/GizClaw/flowcraft/sdk/telemetry"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 // Stage is one step of a retrieval pipeline.
@@ -61,6 +63,11 @@ func (p *Pipeline) Stages() []Stage {
 
 // Run executes each stage; on ShortCircuit the rest are skipped, but cleanup
 // stages with idempotent Run can still be appended explicitly.
+//
+// Telemetry: each stage gets a child span retrieval.stage.<name>; any
+// Stage.Run error is recorded on its own span. The parent caller (e.g.
+// memory.recall.recall) supplies the enclosing span, so the trace tree
+// directly answers "which retrieval stage was the slow one".
 func (p *Pipeline) Run(ctx context.Context, idx retrieval.Index, namespace string, req retrieval.SearchRequest) (*retrieval.SearchResponse, error) {
 	st := &State{
 		Index:     idx,
@@ -68,13 +75,21 @@ func (p *Pipeline) Run(ctx context.Context, idx retrieval.Index, namespace strin
 		Request:   &req,
 		Recalls:   make(map[string][]retrieval.Hit),
 	}
+	tracer := telemetry.Tracer()
 	for _, s := range p.stages {
 		if st.ShortCircuit {
 			break
 		}
+		stageCtx, span := tracer.Start(ctx, "retrieval.stage."+s.Name())
 		t0 := time.Now()
-		err := s.Run(ctx, st)
-		st.Trace = append(st.Trace, StageTrace{Stage: s.Name(), Duration: time.Since(t0), Err: err})
+		err := s.Run(stageCtx, st)
+		dur := time.Since(t0)
+		span.SetAttributes(attribute.Float64("duration_seconds", dur.Seconds()))
+		if err != nil {
+			span.RecordError(err)
+		}
+		span.End()
+		st.Trace = append(st.Trace, StageTrace{Stage: s.Name(), Duration: dur, Err: err})
 		if err != nil {
 			return nil, err
 		}
