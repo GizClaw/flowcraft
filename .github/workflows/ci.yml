@@ -14,6 +14,7 @@ jobs:
     outputs:
       sdk: ${{ steps.filter.outputs.sdk }}
       sdkx: ${{ steps.filter.outputs.sdkx }}
+      voice: ${{ steps.filter.outputs.voice }}
       ci: ${{ steps.filter.outputs.ci }}
     steps:
       - uses: actions/checkout@v4
@@ -25,6 +26,8 @@ jobs:
               - 'sdk/**'
             sdkx:
               - 'sdkx/**'
+            voice:
+              - 'voice/**'
             ci:
               - '.github/workflows/**'
               - 'Makefile'
@@ -32,7 +35,7 @@ jobs:
   lint:
     name: Lint
     needs: detect
-    if: needs.detect.outputs.sdk == 'true' || needs.detect.outputs.sdkx == 'true' || needs.detect.outputs.ci == 'true'
+    if: needs.detect.outputs.sdk == 'true' || needs.detect.outputs.sdkx == 'true' || needs.detect.outputs.voice == 'true' || needs.detect.outputs.ci == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -41,13 +44,13 @@ jobs:
           go-version: "1.25"
       - name: go vet
         run: |
-          for m in sdk sdkx; do
+          for m in sdk sdkx voice; do
             echo "==> vet $m"
             (cd "$m" && go vet ./...)
           done
       - name: gofmt check
         run: |
-          diff=$(gofmt -l sdk sdkx)
+          diff=$(gofmt -l sdk sdkx voice)
           if [ -n "$diff" ]; then
             echo "Files not formatted:"
             echo "$diff"
@@ -89,12 +92,30 @@ jobs:
         run: go test -count=1 -race ./...
         working-directory: sdkx
 
+  test-voice:
+    name: Test voice (Go ${{ matrix.go-version }})
+    needs: detect
+    # voice depends on sdk, so run when either changes
+    if: needs.detect.outputs.sdk == 'true' || needs.detect.outputs.voice == 'true' || needs.detect.outputs.ci == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        go-version: ["1.25", "1.26"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v6
+        with:
+          go-version: ${{ matrix.go-version }}
+      - name: Test
+        run: go test -count=1 -race ./...
+        working-directory: voice
+
   # Gate job: single required status check for branch protection.
   # Always runs; succeeds only when all triggered jobs pass.
   ci-pass:
     name: CI
     if: always()
-    needs: [lint, test-sdk, test-sdkx]
+    needs: [lint, test-sdk, test-sdkx, test-voice]
     runs-on: ubuntu-latest
     steps:
       - name: Check results
@@ -103,6 +124,7 @@ jobs:
             "${{ needs.lint.result }}" \
             "${{ needs.test-sdk.result }}" \
             "${{ needs.test-sdkx.result }}" \
+            "${{ needs.test-voice.result }}" \
           )
           for r in "${results[@]}"; do
             if [[ "$r" == "failure" || "$r" == "cancelled" ]]; then
