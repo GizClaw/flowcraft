@@ -16,16 +16,40 @@ import (
 // AutoAckProjectorName is the canonical name for the auto-ack projector.
 const AutoAckProjectorName = "chat_auto_ack"
 
-// ChatAutoAckProjector automatically acks status_update callbacks after a timeout.
-// It uses RestoreWindow mode with a 24h window so timers are rebuilt on restart.
+// pendingAck tracks a single status_update callback that is awaiting auto-ack.
+type pendingAck struct {
+	callbackID string
+	cardID     string
+	convoID    string
+	deadline   time.Time
+	seq        int64
+}
+
+// ChatAutoAckProjector automatically acks status_update callbacks after a
+// timeout. Timers are not driven by time.AfterFunc — instead a single ticker
+// goroutine sweeps the pending map and publishes ChatCallbackDelivered for any
+// entry whose deadline has elapsed. This keeps the projector compatible with a
+// fake clock in tests and avoids leaking goroutines per callback (an
+// anti-pattern called out in docs/event-sourcing-plan.md §11.1).
+//
+// Restart semantics are preserved by RestoreWindow(24h): on cold start the
+// projector replays the last 24h of callback events, repopulates pending
+// entries, and the ticker resumes sweeping.
 type ChatAutoAckProjector struct {
-	log       eventlog.Log
-	timeout   time.Duration
-	chatProj  *ChatProjector
-	mu        sync.RWMutex
-	timers    map[string]*time.Timer // callbackID → timer
-	timerSeqs map[string]int64       // callbackID → event seq when timer was set
-	convoIDs  map[string]string      // callbackID → conversation_id
+	log      eventlog.Log
+	timeout  time.Duration
+	chatProj *ChatProjector
+
+	now func() time.Time // injectable clock; defaults to time.Now
+
+	mu      sync.Mutex
+	pending map[string]*pendingAck // callbackID → pending entry
+
+	tickInterval time.Duration
+	stopOnce     sync.Once
+	done         chan struct{}
+	wakeup       chan struct{}
+	wg           sync.WaitGroup
 }
 
 var _ projection.Projector = (*ChatAutoAckProjector)(nil)
@@ -33,15 +57,22 @@ var _ projection.Projector = (*ChatAutoAckProjector)(nil)
 // AutoAckTimeout is the default auto-ack timeout for status_update callbacks.
 const AutoAckTimeout = 30 * time.Minute
 
-// NewChatAutoAckProjector constructs a ChatAutoAckProjector.
+// defaultTickInterval bounds how late an auto-ack can fire after its deadline.
+// Small enough to keep latency tight in tests; large enough to be cheap.
+const defaultTickInterval = 5 * time.Second
+
+// NewChatAutoAckProjector constructs a ChatAutoAckProjector. Call Start once
+// the surrounding ProjectorManager has reached its ready barrier.
 func NewChatAutoAckProjector(log eventlog.Log, chatProj *ChatProjector) *ChatAutoAckProjector {
 	return &ChatAutoAckProjector{
-		log:       log,
-		timeout:   AutoAckTimeout,
-		chatProj:  chatProj,
-		timers:    make(map[string]*time.Timer),
-		timerSeqs: make(map[string]int64),
-		convoIDs:  make(map[string]string),
+		log:          log,
+		timeout:      AutoAckTimeout,
+		chatProj:     chatProj,
+		now:          time.Now,
+		pending:      make(map[string]*pendingAck),
+		tickInterval: defaultTickInterval,
+		done:         make(chan struct{}),
+		wakeup:       make(chan struct{}, 1),
 	}
 }
 
@@ -52,13 +83,33 @@ func (p *ChatAutoAckProjector) SetTimeout(d time.Duration) {
 	p.mu.Unlock()
 }
 
+// SetClock overrides the wall clock and tick interval; intended for tests.
+func (p *ChatAutoAckProjector) SetClock(now func() time.Time, tick time.Duration) {
+	p.mu.Lock()
+	if now != nil {
+		p.now = now
+	}
+	if tick > 0 {
+		p.tickInterval = tick
+	}
+	p.mu.Unlock()
+}
+
 func (p *ChatAutoAckProjector) Name() string                        { return AutoAckProjectorName }
 func (p *ChatAutoAckProjector) RestoreMode() projection.RestoreMode { return projection.RestoreWindow }
 func (p *ChatAutoAckProjector) WindowSize() time.Duration           { return 24 * time.Hour }
 func (p *ChatAutoAckProjector) Subscribes() []string {
 	return []string{"chat.callback.queued", "chat.callback.delivered", "chat.callback.dismissed"}
 }
-func (p *ChatAutoAckProjector) OnReady(context.Context) error { return nil }
+
+// OnReady starts the sweep goroutine after restore completes. The
+// ProjectorManager calls OnReady exactly once after the projector has caught
+// up, satisfying the bootstrap order in §2.4.
+func (p *ChatAutoAckProjector) OnReady(context.Context) error {
+	p.wg.Add(1)
+	go p.sweepLoop()
+	return nil
+}
 
 // AutoAckProjector does not use snapshots.
 func (p *ChatAutoAckProjector) SnapshotFormatVersion() int { return 0 }
@@ -90,51 +141,18 @@ func (p *ChatAutoAckProjector) handleCallbackQueued(ctx context.Context, uow eve
 		return nil
 	}
 	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.convoIDs[payload.CallbackID] = payload.ConversationID
-	p.startTimer(payload.CallbackID, payload.CardID, env.Seq)
-	return nil
-}
-
-func (p *ChatAutoAckProjector) startTimer(callbackID, cardID string, seq int64) {
-	if _, exists := p.timers[callbackID]; exists {
-		return
+	if _, exists := p.pending[payload.CallbackID]; !exists {
+		p.pending[payload.CallbackID] = &pendingAck{
+			callbackID: payload.CallbackID,
+			cardID:     payload.CardID,
+			convoID:    payload.ConversationID,
+			deadline:   p.now().Add(p.timeout),
+			seq:        env.Seq,
+		}
 	}
-	timeout := p.timeout
-	p.timers[callbackID] = time.AfterFunc(timeout, func() {
-		p.doAutoAck(callbackID, cardID)
-	})
-	p.timerSeqs[callbackID] = seq
-}
-
-// doAutoAck publishes chat.callback.delivered with a system actor. It is safe
-// to call concurrently with handleCallbackDone: the latter cancels the timer
-// before doAutoAck fires; if the publish wins the race, the dedup happens at
-// the projector level (the consumer is idempotent on callback_id).
-func (p *ChatAutoAckProjector) doAutoAck(callbackID, cardID string) {
-	p.mu.Lock()
-	convoID := p.convoIDs[callbackID]
-	delete(p.timers, callbackID)
-	delete(p.timerSeqs, callbackID)
-	delete(p.convoIDs, callbackID)
 	p.mu.Unlock()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	_, err := p.log.Atomic(ctx, func(uow eventlog.UnitOfWork) error {
-		return eventlog.PublishChatCallbackDeliveredInTx(ctx, uow, cardID, eventlog.ChatCallbackDeliveredPayload{
-			CardID:         cardID,
-			ConversationID: convoID,
-			CallbackID:     callbackID,
-			DeliveredTo:    "system_auto",
-			Success:        true,
-		}, eventlog.WithActor(eventlog.Actor{Kind: "system", ID: "auto_ack"}))
-	})
-	if err != nil {
-		slog.Error("chat auto_ack: publish delivered failed",
-			"callback_id", callbackID, "card_id", cardID, "err", err)
-		return
-	}
-	slog.Info("chat auto_ack: delivered", "callback_id", callbackID, "card_id", cardID)
+	p.kick()
+	return nil
 }
 
 func (p *ChatAutoAckProjector) handleCallbackDone(ctx context.Context, env eventlog.Envelope) error {
@@ -145,24 +163,87 @@ func (p *ChatAutoAckProjector) handleCallbackDone(ctx context.Context, env event
 		return nil
 	}
 	p.mu.Lock()
-	defer p.mu.Unlock()
-	if t, ok := p.timers[payload.CallbackID]; ok {
-		t.Stop()
-		delete(p.timers, payload.CallbackID)
-		delete(p.timerSeqs, payload.CallbackID)
-		delete(p.convoIDs, payload.CallbackID)
-	}
+	delete(p.pending, payload.CallbackID)
+	p.mu.Unlock()
 	return nil
 }
 
-// Stop cancels all pending timers.
-func (p *ChatAutoAckProjector) Stop() {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	for _, t := range p.timers {
-		t.Stop()
+// kick wakes the sweep goroutine without blocking. Used after pending entries
+// change so a freshly-queued (or freshly-cancelled) callback is reflected in
+// the next iteration without waiting a full tick.
+func (p *ChatAutoAckProjector) kick() {
+	select {
+	case p.wakeup <- struct{}{}:
+	default:
 	}
-	p.timers = nil
-	p.timerSeqs = nil
-	p.convoIDs = nil
+}
+
+// sweepLoop runs until Stop() is called, periodically firing any auto-ack
+// whose deadline has elapsed.
+func (p *ChatAutoAckProjector) sweepLoop() {
+	defer p.wg.Done()
+	t := time.NewTicker(p.tickInterval)
+	defer t.Stop()
+	for {
+		select {
+		case <-p.done:
+			return
+		case <-t.C:
+		case <-p.wakeup:
+		}
+		p.sweepOnce()
+	}
+}
+
+// sweepOnce fires every pending entry whose deadline has elapsed. Public so
+// tests using a fake clock can trigger a deterministic sweep without touching
+// the ticker.
+func (p *ChatAutoAckProjector) sweepOnce() {
+	p.mu.Lock()
+	now := p.now()
+	var due []*pendingAck
+	for id, e := range p.pending {
+		if !now.Before(e.deadline) {
+			due = append(due, e)
+			delete(p.pending, id)
+		}
+	}
+	p.mu.Unlock()
+	for _, e := range due {
+		p.publishAutoAck(e)
+	}
+}
+
+// publishAutoAck emits chat.callback.delivered with a system actor. It is safe
+// for the corresponding "real" delivery to win the race: the consumer is
+// idempotent on callback_id so the duplicate envelope is harmless.
+func (p *ChatAutoAckProjector) publishAutoAck(e *pendingAck) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err := p.log.Atomic(ctx, func(uow eventlog.UnitOfWork) error {
+		return eventlog.PublishChatCallbackDeliveredInTx(ctx, uow, e.cardID, eventlog.ChatCallbackDeliveredPayload{
+			CardID:         e.cardID,
+			ConversationID: e.convoID,
+			CallbackID:     e.callbackID,
+			DeliveredTo:    "system_auto",
+			Success:        true,
+		}, eventlog.WithActor(eventlog.Actor{Kind: "system", ID: "auto_ack"}))
+	})
+	if err != nil {
+		slog.Error("chat auto_ack: publish delivered failed",
+			"callback_id", e.callbackID, "card_id", e.cardID, "err", err)
+		return
+	}
+	slog.Info("chat auto_ack: delivered", "callback_id", e.callbackID, "card_id", e.cardID)
+}
+
+// Stop signals the sweep goroutine to exit and waits for it to finish.
+func (p *ChatAutoAckProjector) Stop() {
+	p.stopOnce.Do(func() {
+		close(p.done)
+	})
+	p.wg.Wait()
+	p.mu.Lock()
+	p.pending = nil
+	p.mu.Unlock()
 }
