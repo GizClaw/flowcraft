@@ -306,12 +306,15 @@ func (p *ChatProjector) handleCallbackDismissed(ctx context.Context, uow eventlo
 	return nil
 }
 
+// extractConversationID derives a conversation id from a card partition.
+// Uses eventlog.SplitPartition so the prefix table stays the single source of
+// truth (avoids the naked-partition-string anti-pattern called out in §11.1).
 func extractConversationID(partition string) string {
-	// partition format: "card:<id>"
-	if len(partition) > 5 && partition[:5] == "card:" {
-		return partition[5:]
+	kind, id, ok := eventlog.SplitPartition(partition)
+	if !ok || kind != eventlog.PartitionKindCard {
+		return ""
 	}
-	return ""
+	return id
 }
 
 // OwnsCallback checks whether actor owns the callback in the conversation.
