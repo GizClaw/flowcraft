@@ -3,8 +3,9 @@ module github.com/GizClaw/flowcraft/examples/voice-pipeline
 go 1.25.0
 
 require (
-	github.com/GizClaw/flowcraft/sdk v0.1.12
-	github.com/GizClaw/flowcraft/sdkx v0.1.14
+	github.com/GizClaw/flowcraft/sdk v0.2.0
+	github.com/GizClaw/flowcraft/sdkx v0.2.0
+	github.com/GizClaw/flowcraft/voice v0.1.0
 	github.com/charmbracelet/bubbles v0.20.0
 	github.com/charmbracelet/bubbletea v1.1.0
 	github.com/charmbracelet/lipgloss v0.13.0
@@ -51,7 +52,7 @@ require (
 	go.opentelemetry.io/otel/sdk/log v0.16.0 // indirect
 	go.opentelemetry.io/otel/sdk/metric v1.40.0 // indirect
 	go.opentelemetry.io/otel/trace v1.40.0 // indirect
-	golang.org/x/sync v0.19.0 // indirect
-	golang.org/x/sys v0.41.0 // indirect
+	golang.org/x/sync v0.20.0 // indirect
+	golang.org/x/sys v0.42.0 // indirect
 	golang.org/x/text v0.34.0 // indirect
 )
