@@ -46,6 +46,11 @@ func TestNewCompacted_SmokeBoots(t *testing.T) {
 	if mem == nil {
 		t.Fatal("NewCompacted returned nil")
 	}
+	t.Cleanup(func() {
+		if c, ok := mem.(Closer); ok {
+			c.Close()
+		}
+	})
 	ctx := context.Background()
 	if err := mem.Append(ctx, "c", []model.Message{model.NewTextMessage(model.RoleUser, "hi")}); err != nil {
 		t.Fatalf("Append: %v", err)
