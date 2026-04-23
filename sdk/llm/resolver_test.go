@@ -100,54 +100,6 @@ func TestRegisterInferRule(t *testing.T) {
 // Resolver
 // ---------------------------------------------------------------------------
 
-// TestResolver_LegacyMagicKey_DynamicDefault verifies the deprecated
-// "__global_default__" provider row still works as a default-model
-// pointer for stores that have not implemented DefaultModelStore yet.
-// Will be removed alongside GlobalDefaultProvider in v0.2.0.
-func TestResolver_LegacyMagicKey_DynamicDefault(t *testing.T) {
-	store := newResolverMockStore()
-	reg := NewProviderRegistry()
-
-	var factoryCallCount atomic.Int32
-	reg.Register("test-provider", func(model string, config map[string]any) (LLM, error) {
-		factoryCallCount.Add(1)
-		return &resolverMockLLM{model: model}, nil
-	})
-
-	store.configs["test-provider"] = &ProviderConfig{
-		Provider: "test-provider",
-		Config:   map[string]any{"api_key": "key123"},
-	}
-	store.configs["__global_default__"] = &ProviderConfig{
-		Provider: "__global_default__",
-		Config:   map[string]any{"provider": "test-provider", "model": "fast-model"},
-	}
-
-	r := newResolverWithRegistry(store, reg)
-
-	inst, err := r.Resolve(context.Background(), "")
-	if err != nil {
-		t.Fatalf("resolve empty model: %v", err)
-	}
-	if mock := inst.(*resolverMockLLM); mock.model != "fast-model" {
-		t.Fatalf("expected 'fast-model', got %q", mock.model)
-	}
-
-	store.configs["__global_default__"] = &ProviderConfig{
-		Provider: "__global_default__",
-		Config:   map[string]any{"provider": "test-provider", "model": "smart-model"},
-	}
-	r.InvalidateCache("")
-
-	inst2, err := r.Resolve(context.Background(), "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if mock2 := inst2.(*resolverMockLLM); mock2.model != "smart-model" {
-		t.Fatalf("expected 'smart-model' after default change, got %q", mock2.model)
-	}
-}
-
 func TestResolver_CacheHit(t *testing.T) {
 	store := newResolverMockStore()
 	reg := NewProviderRegistry()
@@ -255,31 +207,6 @@ func TestResolver_FallbackModel(t *testing.T) {
 	}
 }
 
-// TestResolver_LegacyMagicKey_OverridesFallback: deprecated path still
-// outranks WithFallbackModel for stores without DefaultModelStore.
-func TestResolver_LegacyMagicKey_OverridesFallback(t *testing.T) {
-	store := newResolverMockStore()
-	reg := NewProviderRegistry()
-	reg.Register("prov", func(model string, config map[string]any) (LLM, error) {
-		return &resolverMockLLM{model: model}, nil
-	})
-	store.configs["prov"] = &ProviderConfig{Provider: "prov", Config: map[string]any{"api_key": "k"}}
-	store.configs["__global_default__"] = &ProviderConfig{
-		Provider: "__global_default__",
-		Config:   map[string]any{"provider": "prov", "model": "global-default"},
-	}
-
-	r := newResolverWithRegistry(store, reg, WithFallbackModel("prov/fallback-model"))
-
-	inst, err := r.Resolve(context.Background(), "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if inst.(*resolverMockLLM).model != "global-default" {
-		t.Fatalf("expected global default to override fallback, got %q", inst.(*resolverMockLLM).model)
-	}
-}
-
 func TestResolver_ExplicitModel_OverridesDefault(t *testing.T) {
 	store := newResolverMockStore()
 	reg := NewProviderRegistry()
@@ -287,12 +214,8 @@ func TestResolver_ExplicitModel_OverridesDefault(t *testing.T) {
 		return &resolverMockLLM{model: model}, nil
 	})
 	store.configs["prov"] = &ProviderConfig{Provider: "prov", Config: map[string]any{"api_key": "k"}}
-	store.configs["__global_default__"] = &ProviderConfig{
-		Provider: "__global_default__",
-		Config:   map[string]any{"provider": "prov", "model": "global-default"},
-	}
 
-	r := newResolverWithRegistry(store, reg)
+	r := newResolverWithRegistry(store, reg, WithFallbackModel("prov/should-not-win"))
 
 	inst, err := r.Resolve(context.Background(), "prov/explicit-model")
 	if err != nil {

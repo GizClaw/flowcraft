@@ -177,33 +177,6 @@ func TestResolver_ModelConfig_OtherError_FailsResolve(t *testing.T) {
 // DefaultModelStore — preferred default model lookup
 // ---------------------------------------------------------------------------
 
-func TestResolver_DefaultModelStore_PreferredOverLegacyMagicKey(t *testing.T) {
-	store := newLayeredMockStore()
-	reg := NewProviderRegistry()
-	reg.Register("p", func(model string, _ map[string]any) (LLM, error) {
-		return &resolverMockLLM{model: model}, nil
-	})
-	store.providers["p"] = &ProviderConfig{Provider: "p", Config: map[string]any{"api_key": "k"}}
-	// New API wins.
-	store.defaultM = &DefaultModelRef{Provider: "p", Model: "from-default-store"}
-	// Legacy magic-key row is also present and must be ignored when
-	// DefaultModelStore yields a value. We seed it via the public
-	// store map only (no use of the deprecated constant in test code).
-	store.providers["__global_default__"] = &ProviderConfig{
-		Provider: "__global_default__",
-		Config:   map[string]any{"provider": "p", "model": "from-legacy"},
-	}
-
-	r := newResolverWithRegistry(store, reg)
-	inst, err := r.Resolve(context.Background(), "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := inst.(*resolverMockLLM).model; got != "from-default-store" {
-		t.Fatalf("DefaultModelStore should win, got %q", got)
-	}
-}
-
 func TestResolver_DefaultModelStore_FallsBackToWithFallback(t *testing.T) {
 	store := newLayeredMockStore()
 	reg := NewProviderRegistry()
