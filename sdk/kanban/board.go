@@ -106,11 +106,6 @@ type Board struct {
 	watcherDropped atomic.Int64
 }
 
-// TaskBoard is a legacy alias for Board.
-//
-// Deprecated: Use Board directly. Removed in v0.2.0.
-type TaskBoard = Board
-
 // BoardOption configures optional Board parameters.
 type BoardOption func(*Board)
 
@@ -143,11 +138,6 @@ func NewBoard(scopeID string, opts ...BoardOption) *Board {
 	}
 	return b
 }
-
-// NewTaskBoard is an alias for NewBoard.
-//
-// Deprecated: Use NewBoard directly. Removed in v0.2.0.
-func NewTaskBoard(scopeID string) *Board { return NewBoard(scopeID) }
 
 // Bus returns the persistent event Bus bound to the board.
 func (b *Board) Bus() event.Bus { return b.bus }

@@ -8,7 +8,7 @@ import (
 )
 
 func TestSubmitTool(t *testing.T) {
-	sb := NewTaskBoard("scope-t1")
+	sb := NewBoard("scope-t1")
 	k := New(context.Background(), sb, WithConfig(KanbanConfig{MaxPendingTasks: 100}))
 	defer k.Stop()
 
@@ -46,7 +46,7 @@ func TestSubmitTool_NilKanban(t *testing.T) {
 }
 
 func TestSubmitTool_FromContext(t *testing.T) {
-	sb := NewTaskBoard("scope-ctx")
+	sb := NewBoard("scope-ctx")
 	k := New(context.Background(), sb, WithConfig(KanbanConfig{MaxPendingTasks: 100}))
 	defer k.Stop()
 
@@ -62,7 +62,7 @@ func TestSubmitTool_FromContext(t *testing.T) {
 }
 
 func TestTaskContextTool(t *testing.T) {
-	sb := NewTaskBoard("scope-tc")
+	sb := NewBoard("scope-tc")
 	k := New(context.Background(), sb, WithConfig(KanbanConfig{MaxPendingTasks: 100}))
 
 	ctx := context.Background()
@@ -102,7 +102,7 @@ func TestTaskContextTool(t *testing.T) {
 }
 
 func TestTaskContextTool_NotFound(t *testing.T) {
-	sb := NewTaskBoard("scope-tc-nf")
+	sb := NewBoard("scope-tc-nf")
 	k := New(context.Background(), sb)
 
 	tc := &TaskContextTool{Kanban: k}
@@ -121,7 +121,7 @@ func TestTaskContextTool_NilKanban(t *testing.T) {
 }
 
 func TestKanbanSubmitCallbackTaskContextLoop(t *testing.T) {
-	tb := NewTaskBoard("scope-loop")
+	tb := NewBoard("scope-loop")
 	k := New(context.Background(), tb, WithConfig(KanbanConfig{MaxPendingTasks: 100}))
 	defer k.Stop()
 
@@ -184,7 +184,7 @@ func TestKanbanSubmitCallbackTaskContextLoop(t *testing.T) {
 }
 
 func TestKanbanContext(t *testing.T) {
-	sb := NewTaskBoard("scope-ctx")
+	sb := NewBoard("scope-ctx")
 	k := New(context.Background(), sb)
 
 	ctx := WithKanban(context.Background(), k)
@@ -202,7 +202,7 @@ func TestKanbanContext_Missing(t *testing.T) {
 }
 
 func TestTaskBoardContext(t *testing.T) {
-	tb := NewTaskBoard("scope-tbc")
+	tb := NewBoard("scope-tbc")
 	ctx := WithTaskBoard(context.Background(), tb)
 	got, ok := TaskBoardFrom(ctx)
 	if !ok || got != tb {
@@ -218,10 +218,9 @@ func TestTaskBoardContext_Missing(t *testing.T) {
 }
 
 func TestSubmitTool_DelayResponse(t *testing.T) {
-	sb := NewTaskBoard("scope-delay")
+	sb := NewBoard("scope-delay")
 	sched := NewScheduler()
 	k := New(context.Background(), sb, WithScheduler(sched), WithConfig(KanbanConfig{MaxPendingTasks: 100}))
-	sched.SetKanban(k)
 	sched.Start()
 	defer k.Stop()
 
@@ -251,10 +250,9 @@ func TestSubmitTool_DelayResponse(t *testing.T) {
 }
 
 func TestSubmitTool_CronResponse(t *testing.T) {
-	sb := NewTaskBoard("scope-cron")
+	sb := NewBoard("scope-cron")
 	sched := NewScheduler()
 	k := New(context.Background(), sb, WithScheduler(sched), WithConfig(KanbanConfig{MaxPendingTasks: 100}))
-	sched.SetKanban(k)
 	sched.Start()
 	defer k.Stop()
 
@@ -284,10 +282,9 @@ func TestSubmitTool_CronResponse(t *testing.T) {
 }
 
 func TestSubmitTool_ImmediateResponse(t *testing.T) {
-	sb := NewTaskBoard("scope-imm")
+	sb := NewBoard("scope-imm")
 	sched := NewScheduler()
 	k := New(context.Background(), sb, WithScheduler(sched), WithConfig(KanbanConfig{MaxPendingTasks: 100}))
-	sched.SetKanban(k)
 	sched.Start()
 	defer k.Stop()
 

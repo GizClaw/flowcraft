@@ -14,22 +14,10 @@ import (
 
 func TestBoard_New(t *testing.T) {
 	t.Parallel()
-	for _, ctor := range []struct {
-		name string
-		make func(scope string) *Board
-	}{
-		{"NewBoard", func(s string) *Board { return NewBoard(s) }},
-		{"NewTaskBoard", func(s string) *Board { return NewTaskBoard(s) }},
-	} {
-		ctor := ctor
-		t.Run(ctor.name, func(t *testing.T) {
-			t.Parallel()
-			b := ctor.make(scopeID(t))
-			t.Cleanup(b.Close)
-			if b.ScopeID() == "" {
-				t.Fatal("ScopeID empty")
-			}
-		})
+	b := NewBoard(scopeID(t))
+	t.Cleanup(b.Close)
+	if b.ScopeID() == "" {
+		t.Fatal("ScopeID empty")
 	}
 }
 

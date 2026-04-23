@@ -147,17 +147,6 @@ func WithAgentValidator(v AgentValidator) Option {
 	return func(k *Kanban) { k.validator = v }
 }
 
-// WithEventBus is retained for source compatibility only and has no effect.
-//
-// Deprecated: Board.Bus() is the single source of truth for every Kanban
-// state transition (task submitted / claimed / completed / failed + cron
-// rule created / fired / disabled). Pass your bus to the Board instead, or
-// subscribe to board.Bus() and forward as needed. This option will be
-// removed in v0.2.0.
-func WithEventBus(_ event.Bus) Option {
-	return func(*Kanban) {}
-}
-
 // WithConfig sets the Kanban configuration.
 func WithConfig(cfg KanbanConfig) Option {
 	return func(k *Kanban) { k.cfg = cfg }

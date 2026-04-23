@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
-	"github.com/GizClaw/flowcraft/sdk/event"
 )
 
 // ---------------------------------------------------------------------------
@@ -167,44 +166,6 @@ func TestKanban_Board_ReturnsUnderlyingBoard(t *testing.T) {
 	k, sb := newKanban(t)
 	if k.Board() != sb {
 		t.Fatal("Kanban.Board() should return the same Board passed to New()")
-	}
-}
-
-// TestKanban_WithEventBus_DeprecatedNoOp pins the v0.1.x contract:
-// WithEventBus is accepted for source compatibility but is a complete
-// no-op. Events must continue to land on board.Bus() — the injected bus
-// must remain silent. Will be removed together with WithEventBus in v0.2.0.
-func TestKanban_WithEventBus_DeprecatedNoOp(t *testing.T) {
-	t.Parallel()
-	external := event.NewMemoryBus()
-	t.Cleanup(func() { _ = external.Close() })
-
-	extSub, err := external.Subscribe(context.Background(), event.Pattern(">"))
-	if err != nil {
-		t.Fatalf("external.Subscribe: %v", err)
-	}
-	t.Cleanup(func() { _ = extSub.Close() })
-
-	k, sb := newKanban(t, WithEventBus(external))
-	if k.Bus() != sb.Bus() {
-		t.Fatal("Kanban.Bus() must alias board.Bus(); WithEventBus must not redirect it")
-	}
-
-	boardSub := subscribeBus(t, sb)
-
-	if _, err := k.Submit(context.Background(), TaskOptions{Query: "still works"}); err != nil {
-		t.Fatalf("Submit after WithEventBus: %v", err)
-	}
-
-	if got := drainEvents(boardSub, 200*time.Millisecond, 1, func(e event.Envelope) bool {
-		return kindOf(e) == EventTaskSubmitted
-	}); !containsKind(got, EventTaskSubmitted) {
-		t.Fatalf("expected EventTaskSubmitted on board.Bus(), got kinds=%v", eventKinds(got))
-	}
-
-	if got := drainEvents(extSub, 100*time.Millisecond, 0, nil); len(got) != 0 {
-		t.Fatalf("WithEventBus must be a no-op; injected bus received %d events: %v",
-			len(got), eventKinds(got))
 	}
 }
 
