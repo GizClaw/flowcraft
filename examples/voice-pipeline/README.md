@@ -13,7 +13,7 @@ Local demo: **microphone → ByteDance STT → FlowCraft graph (MiniMax LLM) →
 
 ## Configuration
 
-1. Copy `deploy/.env.example` to `deploy/.env` or a repo-root `.env`, and set at least:
+1. Create a repo-root `.env` (or export the variables directly in your shell), setting at least:
 
    | Variable | Purpose |
    |----------|---------|
@@ -21,7 +21,7 @@ Local demo: **microphone → ByteDance STT → FlowCraft graph (MiniMax LLM) →
    | `FLOWCRAFT_VOICE_BYTEDANCE_ACCESS_TOKEN` | ByteDance STT token |
    | `FLOWCRAFT_VOICE_MINIMAX_API_KEY` | MiniMax API key |
 
-   Legacy names (`BYTEDANCE_*`, `ANIMUS_*`, etc.) and `FLOWCRAFT_TEST_MINIMAX` JSON are also supported; see `env.go` and `deploy/.env.example`.
+   Legacy names (`BYTEDANCE_*`, `ANIMUS_*`, etc.) and `FLOWCRAFT_TEST_MINIMAX` JSON are also supported; see `env.go` for the full precedence list.
 
 2. Optional:
 
@@ -39,7 +39,7 @@ cd examples/voice-pipeline
 go run .
 ```
 
-If you use `../../deploy/.env`, run from this directory so `loadDotEnv()` can merge those files.
+If your `.env` lives at the repo root, run from this directory so `loadDotEnv()` can locate it at `../../.env`.
 
 ## What the UI does
 

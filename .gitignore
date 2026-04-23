@@ -24,8 +24,6 @@
 !internal/**
 !model/
 !model/**
-!plugin/
-!plugin/**
 !sdk/
 !sdk/**
 !sdkx/
@@ -34,8 +32,6 @@
 !examples/**
 !skills/
 !skills/**
-!deploy/
-!deploy/**
 
 # ── Frontend source ──
 !web/
