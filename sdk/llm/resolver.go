@@ -200,13 +200,12 @@ func (r *defaultResolver) createLLM(ctx context.Context, modelStr string) (LLM, 
 	// Caps merge order (OR — any layer disabling a cap wins):
 	//   1) Registry catalog caps for this model
 	//   2) ProviderConfig.Caps (user-supplied, applies to all models of provider)
-	//   3) Legacy Config["caps"] sub-object (deprecated)
-	//   4) ModelConfig.Caps (user-supplied, this model only)
-	//   5) Resolver-wide extra caps from WithExtraCaps
+	//   3) ModelConfig.Caps (user-supplied, this model only)
+	//   4) Resolver-wide extra caps from WithExtraCaps
 	//
-	// NewFromConfig already applies (1) + (3) internally and wraps the
-	// instance once. We unwrap+rewrap here so the additional layers
-	// (2, 4, 5) compose cleanly without nesting CapsMiddleware twice.
+	// NewFromConfig already applies (1) and wraps the instance once.
+	// We unwrap+rewrap here so the additional layers (2, 3, 4) compose
+	// cleanly without nesting CapsMiddleware twice.
 	caps := mergeCaps(
 		r.registry.LookupModelCaps(provider, modelName),
 		pc.Caps,
@@ -214,7 +213,7 @@ func (r *defaultResolver) createLLM(ctx context.Context, modelStr string) (LLM, 
 	if mc != nil {
 		caps = mergeCaps(caps, mc.Caps)
 	}
-	caps = mergeCaps(caps, capsFromConfig(merged), r.extraCaps)
+	caps = mergeCaps(caps, r.extraCaps)
 	inst = CapsMiddleware(unwrapCaps(inst), caps)
 
 	r.mu.Lock()

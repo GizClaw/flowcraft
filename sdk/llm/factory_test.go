@@ -88,66 +88,6 @@ func TestProviderRegistry_RegisterModels_DoesNotMutateInput(t *testing.T) {
 	}
 }
 
-func TestCapsFromConfig_NewFormat(t *testing.T) {
-	config := map[string]any{
-		"caps": map[string]any{
-			"disabled": map[string]any{
-				"temperature": true,
-				"json_schema": true,
-				"json_mode":   false,
-			},
-		},
-	}
-	caps := capsFromConfig(config)
-	if caps.Supports(CapTemperature) {
-		t.Fatal("expected CapTemperature disabled")
-	}
-	if caps.Supports(CapJSONSchema) {
-		t.Fatal("expected CapJSONSchema disabled")
-	}
-	if !caps.Supports(CapJSONMode) {
-		t.Fatal("expected CapJSONMode supported (false value)")
-	}
-}
-
-func TestCapsFromConfig_LegacyFormat(t *testing.T) {
-	config := map[string]any{
-		"caps": map[string]any{
-			"no_temperature": true,
-			"no_json_mode":   true,
-		},
-	}
-	caps := capsFromConfig(config)
-	if caps.Supports(CapTemperature) {
-		t.Fatal("expected CapTemperature disabled via legacy")
-	}
-	if !caps.Supports(CapJSONSchema) {
-		t.Fatal("expected CapJSONSchema supported")
-	}
-	if caps.Supports(CapJSONMode) {
-		t.Fatal("expected CapJSONMode disabled via legacy")
-	}
-}
-
-func TestCapsFromConfig_NoCaps(t *testing.T) {
-	caps := capsFromConfig(map[string]any{"api_key": "k"})
-	if !caps.IsZero() {
-		t.Fatalf("expected zero caps, got %+v", caps)
-	}
-}
-
-func TestCapsFromConfig_EmptyLegacy(t *testing.T) {
-	config := map[string]any{
-		"caps": map[string]any{
-			"no_temperature": false,
-		},
-	}
-	caps := capsFromConfig(config)
-	if !caps.IsZero() {
-		t.Fatalf("all-false legacy should return zero caps, got %+v", caps)
-	}
-}
-
 func TestLookupModelCaps(t *testing.T) {
 	reg := NewProviderRegistry()
 	reg.RegisterModels("prov", []ModelInfo{

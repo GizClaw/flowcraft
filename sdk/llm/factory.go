@@ -78,10 +78,8 @@ func (r *ProviderRegistry) Register(name string, factory ProviderFactory) {
 	r.providers[name] = factory
 }
 
-// NewFromConfig creates an LLM instance via the registered factory.
-// It merges caps from the registry catalog and the legacy
-// config["caps"] sub-object, then wraps the instance with
-// CapsMiddleware automatically.
+// NewFromConfig creates an LLM instance via the registered factory and
+// wraps it with CapsMiddleware seeded from the registry catalog.
 //
 // Expected config structure:
 //
@@ -90,11 +88,9 @@ func (r *ProviderRegistry) Register(name string, factory ProviderFactory) {
 //	  "base_url": "...",
 //	}
 //
-// The legacy {"caps": ...} sub-object is still honored for backward
-// compatibility but is deprecated; new callers should pass caps via
-// ProviderConfig.Caps / ModelConfig.Caps when going through
-// DefaultResolver, which composes layered caps without relying on the
-// untyped config map.
+// Caps must come through the typed pipeline (ProviderConfig.Caps /
+// ModelConfig.Caps when going through DefaultResolver); the untyped
+// config["caps"] sub-object is no longer read.
 func (r *ProviderRegistry) NewFromConfig(provider, model string, config map[string]any) (LLM, error) {
 	r.mu.RLock()
 	factory, ok := r.providers[provider]
@@ -107,48 +103,7 @@ func (r *ProviderRegistry) NewFromConfig(provider, model string, config map[stri
 	if err != nil {
 		return nil, err
 	}
-	caps := mergeCaps(registryCaps, capsFromConfig(config))
-	return CapsMiddleware(inst, caps), nil
-}
-
-// capsFromConfig extracts ModelCaps from config["caps"] sub-object.
-// Supports both the structured format {"disabled":{"temperature":true}}
-// and the older flat format {"no_temperature":true}.
-//
-// Deprecated: pass caps via ProviderConfig.Caps / ModelConfig.Caps
-// instead of stuffing them into the provider config map. Removed in
-// v0.2.0 along with NewFromConfig's reading of the "caps" key.
-func capsFromConfig(config map[string]any) ModelCaps {
-	sub, _ := config["caps"].(map[string]any)
-	if sub == nil {
-		return ModelCaps{}
-	}
-
-	if disabled, ok := sub["disabled"].(map[string]any); ok {
-		caps := ModelCaps{Disabled: make(map[Capability]bool)}
-		for k, v := range disabled {
-			if b, _ := v.(bool); b {
-				caps.Disabled[Capability(k)] = true
-			}
-		}
-		return caps
-	}
-
-	legacyMap := map[string]Capability{
-		"no_temperature": CapTemperature,
-		"no_json_schema": CapJSONSchema,
-		"no_json_mode":   CapJSONMode,
-	}
-	caps := ModelCaps{Disabled: make(map[Capability]bool)}
-	for legacyKey, cap := range legacyMap {
-		if v, _ := sub[legacyKey].(bool); v {
-			caps.Disabled[cap] = true
-		}
-	}
-	if len(caps.Disabled) == 0 {
-		return ModelCaps{}
-	}
-	return caps
+	return CapsMiddleware(inst, registryCaps), nil
 }
 
 // LookupModelCaps returns the ModelCaps for a registered model.
