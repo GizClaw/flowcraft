@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/GizClaw/flowcraft/sdk/speech/audio"
+	"github.com/GizClaw/flowcraft/voice/audio"
 )
 
 type recordingAEC struct {

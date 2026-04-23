@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 
-	"github.com/GizClaw/flowcraft/sdk/speech/provider"
+	"github.com/GizClaw/flowcraft/voice/provider"
 )
 
 type ErrorCode string

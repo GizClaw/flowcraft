@@ -11,8 +11,8 @@ import (
 	"net/http"
 	"strings"
 
-	speechaudio "github.com/GizClaw/flowcraft/sdk/speech/audio"
-	speechtts "github.com/GizClaw/flowcraft/sdk/speech/tts"
+	speechaudio "github.com/GizClaw/flowcraft/voice/audio"
+	speechtts "github.com/GizClaw/flowcraft/voice/tts"
 	"github.com/rs/xid"
 )
 

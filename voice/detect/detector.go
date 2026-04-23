@@ -1,6 +1,6 @@
 package detect
 
-import "github.com/GizClaw/flowcraft/sdk/speech/audio"
+import "github.com/GizClaw/flowcraft/voice/audio"
 
 // SpeechAction is the verdict returned by SpeechDetector.Detect.
 type SpeechAction int

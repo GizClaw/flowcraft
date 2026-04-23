@@ -7,7 +7,7 @@ import (
 	"sync"
 
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
-	"github.com/GizClaw/flowcraft/sdk/speech/audio"
+	"github.com/GizClaw/flowcraft/voice/audio"
 )
 
 // Voice describes an available TTS voice.

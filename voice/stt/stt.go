@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
-	"github.com/GizClaw/flowcraft/sdk/speech/audio"
+	"github.com/GizClaw/flowcraft/voice/audio"
 )
 
 // STT is the one-shot speech recognition interface.

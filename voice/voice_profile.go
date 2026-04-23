@@ -1,8 +1,8 @@
 package speech
 
 import (
-	"github.com/GizClaw/flowcraft/sdk/speech/audio"
-	"github.com/GizClaw/flowcraft/sdk/speech/tts"
+	"github.com/GizClaw/flowcraft/voice/audio"
+	"github.com/GizClaw/flowcraft/voice/tts"
 )
 
 const (

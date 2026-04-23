@@ -1,6 +1,6 @@
 package preprocess
 
-import "github.com/GizClaw/flowcraft/sdk/speech/audio"
+import "github.com/GizClaw/flowcraft/voice/audio"
 
 type Processor interface {
 	Process(audio.Frame) audio.Frame

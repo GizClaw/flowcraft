@@ -6,8 +6,8 @@ import (
 	"io"
 	"testing"
 
-	"github.com/GizClaw/flowcraft/sdk/speech"
-	"github.com/GizClaw/flowcraft/sdk/speech/provider"
+	"github.com/GizClaw/flowcraft/voice"
+	"github.com/GizClaw/flowcraft/voice/provider"
 )
 
 func TestClassifyError_Nil(t *testing.T) {

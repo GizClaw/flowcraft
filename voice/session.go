@@ -4,11 +4,11 @@ import (
 	"context"
 	"time"
 
-	"github.com/GizClaw/flowcraft/sdk/speech/detect"
-	"github.com/GizClaw/flowcraft/sdk/speech/endpoint"
-	speechmetrics "github.com/GizClaw/flowcraft/sdk/speech/metrics"
-	"github.com/GizClaw/flowcraft/sdk/speech/preprocess"
-	"github.com/GizClaw/flowcraft/sdk/speech/tts"
+	"github.com/GizClaw/flowcraft/voice/detect"
+	"github.com/GizClaw/flowcraft/voice/endpoint"
+	speechmetrics "github.com/GizClaw/flowcraft/voice/metrics"
+	"github.com/GizClaw/flowcraft/voice/preprocess"
+	"github.com/GizClaw/flowcraft/voice/tts"
 	"github.com/rs/xid"
 )
 

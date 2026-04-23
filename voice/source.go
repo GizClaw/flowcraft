@@ -1,6 +1,6 @@
 package speech
 
-import "github.com/GizClaw/flowcraft/sdk/speech/audio"
+import "github.com/GizClaw/flowcraft/voice/audio"
 
 // AudioSource is an abstraction for audio input (microphone, WebSocket, file, etc.).
 //

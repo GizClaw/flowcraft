@@ -1,6 +1,6 @@
 package tts
 
-import "github.com/GizClaw/flowcraft/sdk/speech/audio"
+import "github.com/GizClaw/flowcraft/voice/audio"
 
 // TTSOption configures a single Synthesize/SynthesizeStream call.
 type TTSOption func(*TTSOptions)

@@ -4,8 +4,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/GizClaw/flowcraft/sdk/speech/audio"
-	"github.com/GizClaw/flowcraft/sdk/speech/vad"
+	"github.com/GizClaw/flowcraft/voice/audio"
+	"github.com/GizClaw/flowcraft/voice/vad"
 )
 
 type EchoSuppressorOption func(*EchoSuppressor)

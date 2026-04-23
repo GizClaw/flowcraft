@@ -5,9 +5,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/GizClaw/flowcraft/sdk/speech"
-	"github.com/GizClaw/flowcraft/sdk/speech/detect"
-	"github.com/GizClaw/flowcraft/sdk/speech/vad"
+	"github.com/GizClaw/flowcraft/voice"
+	"github.com/GizClaw/flowcraft/voice/detect"
+	"github.com/GizClaw/flowcraft/voice/vad"
 	tea "github.com/charmbracelet/bubbletea"
 )
 

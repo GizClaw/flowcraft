@@ -3,8 +3,8 @@ package stt
 import (
 	"context"
 
-	"github.com/GizClaw/flowcraft/sdk/speech/audio"
-	"github.com/GizClaw/flowcraft/sdk/speech/provider"
+	"github.com/GizClaw/flowcraft/voice/audio"
+	"github.com/GizClaw/flowcraft/voice/provider"
 )
 
 // FallbackSTT tries providers in order until one succeeds.

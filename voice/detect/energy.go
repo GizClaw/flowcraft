@@ -1,8 +1,8 @@
 package detect
 
 import (
-	"github.com/GizClaw/flowcraft/sdk/speech/audio"
-	"github.com/GizClaw/flowcraft/sdk/speech/vad"
+	"github.com/GizClaw/flowcraft/voice/audio"
+	"github.com/GizClaw/flowcraft/voice/vad"
 )
 
 // EnergyDetectorOption configures an EnergyDetector.

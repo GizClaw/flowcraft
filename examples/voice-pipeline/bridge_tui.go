@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/GizClaw/flowcraft/sdk/speech"
-	speechmetrics "github.com/GizClaw/flowcraft/sdk/speech/metrics"
+	"github.com/GizClaw/flowcraft/voice"
+	speechmetrics "github.com/GizClaw/flowcraft/voice/metrics"
 	tea "github.com/charmbracelet/bubbletea"
 )
 

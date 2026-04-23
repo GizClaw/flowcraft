@@ -1,6 +1,6 @@
 package speech
 
-import "github.com/GizClaw/flowcraft/sdk/speech/provider"
+import "github.com/GizClaw/flowcraft/voice/provider"
 
 const providerReportDataKey = "provider_report"
 

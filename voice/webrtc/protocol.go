@@ -3,8 +3,8 @@ package webrtc
 import (
 	"fmt"
 
-	"github.com/GizClaw/flowcraft/sdk/speech"
-	"github.com/GizClaw/flowcraft/sdk/speech/audio"
+	"github.com/GizClaw/flowcraft/voice"
+	"github.com/GizClaw/flowcraft/voice/audio"
 )
 
 type MessageType string

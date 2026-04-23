@@ -3,7 +3,7 @@ package metrics
 import (
 	"time"
 
-	"github.com/GizClaw/flowcraft/sdk/speech/provider"
+	"github.com/GizClaw/flowcraft/voice/provider"
 )
 
 type TurnMetrics struct {

@@ -4,7 +4,7 @@ import (
 	"encoding/binary"
 	"testing"
 
-	"github.com/GizClaw/flowcraft/sdk/speech/audio"
+	"github.com/GizClaw/flowcraft/voice/audio"
 )
 
 type fakeClassifier struct {

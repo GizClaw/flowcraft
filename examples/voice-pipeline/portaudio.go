@@ -10,9 +10,9 @@ import (
 	"github.com/gordonklaus/portaudio"
 	"github.com/hajimehoshi/go-mp3"
 
-	"github.com/GizClaw/flowcraft/sdk/speech"
-	"github.com/GizClaw/flowcraft/sdk/speech/audio"
-	"github.com/GizClaw/flowcraft/sdk/speech/tts"
+	"github.com/GizClaw/flowcraft/voice"
+	"github.com/GizClaw/flowcraft/voice/audio"
+	"github.com/GizClaw/flowcraft/voice/tts"
 )
 
 const (

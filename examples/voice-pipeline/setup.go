@@ -10,13 +10,13 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/graph/node"
 	"github.com/GizClaw/flowcraft/sdk/llm"
 	"github.com/GizClaw/flowcraft/sdk/script/jsrt"
-	"github.com/GizClaw/flowcraft/sdk/speech"
-	"github.com/GizClaw/flowcraft/sdk/speech/audio"
-	"github.com/GizClaw/flowcraft/sdk/speech/stt"
-	"github.com/GizClaw/flowcraft/sdk/speech/tts"
+	"github.com/GizClaw/flowcraft/voice"
+	"github.com/GizClaw/flowcraft/voice/audio"
+	"github.com/GizClaw/flowcraft/voice/stt"
+	"github.com/GizClaw/flowcraft/voice/tts"
 	"github.com/GizClaw/flowcraft/sdk/workflow"
-	"github.com/GizClaw/flowcraft/sdkx/stt/bytedance"
-	minimaxTTS "github.com/GizClaw/flowcraft/sdkx/tts/minimax"
+	"github.com/GizClaw/flowcraft/voice/stt/bytedance"
+	minimaxTTS "github.com/GizClaw/flowcraft/voice/tts/minimax"
 )
 
 // setupWorkflow creates a workflow.Runtime + Agent backed by the graph definition.

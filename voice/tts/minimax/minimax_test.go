@@ -10,8 +10,8 @@ import (
 	"strings"
 	"testing"
 
-	speechaudio "github.com/GizClaw/flowcraft/sdk/speech/audio"
-	speechtts "github.com/GizClaw/flowcraft/sdk/speech/tts"
+	speechaudio "github.com/GizClaw/flowcraft/voice/audio"
+	speechtts "github.com/GizClaw/flowcraft/voice/tts"
 )
 
 func TestNew_RequiresAPIKey(t *testing.T) {

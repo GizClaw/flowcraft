@@ -3,7 +3,7 @@ package preprocess
 import (
 	"testing"
 
-	"github.com/GizClaw/flowcraft/sdk/speech/audio"
+	"github.com/GizClaw/flowcraft/voice/audio"
 )
 
 func TestFunc_Process(t *testing.T) {

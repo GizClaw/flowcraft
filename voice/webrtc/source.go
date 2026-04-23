@@ -4,7 +4,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/GizClaw/flowcraft/sdk/speech/audio"
+	"github.com/GizClaw/flowcraft/voice/audio"
 	"github.com/pion/webrtc/v4"
 )
 

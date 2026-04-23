@@ -13,9 +13,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/GizClaw/flowcraft/sdk/speech/audio"
-	"github.com/GizClaw/flowcraft/sdk/speech/tts"
-	rtc "github.com/GizClaw/flowcraft/sdk/speech/webrtc"
+	"github.com/GizClaw/flowcraft/voice/audio"
+	"github.com/GizClaw/flowcraft/voice/tts"
+	rtc "github.com/GizClaw/flowcraft/voice/webrtc"
 	"github.com/pion/webrtc/v4"
 	"github.com/pion/webrtc/v4/pkg/media"
 )

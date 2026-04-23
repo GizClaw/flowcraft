@@ -6,7 +6,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/GizClaw/flowcraft/sdk/speech/audio"
+	"github.com/GizClaw/flowcraft/voice/audio"
 )
 
 func TestPipe_SendRead(t *testing.T) {

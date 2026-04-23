@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/GizClaw/flowcraft/sdk/speech/provider"
+	"github.com/GizClaw/flowcraft/voice/provider"
 )
 
 type failingTTS struct{ err error }

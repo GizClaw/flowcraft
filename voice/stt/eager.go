@@ -4,8 +4,8 @@ import (
 	"context"
 	"io"
 
-	"github.com/GizClaw/flowcraft/sdk/speech/audio"
-	"github.com/GizClaw/flowcraft/sdk/speech/vad"
+	"github.com/GizClaw/flowcraft/voice/audio"
+	"github.com/GizClaw/flowcraft/voice/vad"
 )
 
 // EagerRecognizer wraps a non-streaming STT with a VAD to provide

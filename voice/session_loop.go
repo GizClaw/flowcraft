@@ -6,12 +6,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/GizClaw/flowcraft/sdk/speech/audio"
-	"github.com/GizClaw/flowcraft/sdk/speech/detect"
-	"github.com/GizClaw/flowcraft/sdk/speech/endpoint"
-	speechmetrics "github.com/GizClaw/flowcraft/sdk/speech/metrics"
-	"github.com/GizClaw/flowcraft/sdk/speech/provider"
-	"github.com/GizClaw/flowcraft/sdk/speech/tts"
+	"github.com/GizClaw/flowcraft/voice/audio"
+	"github.com/GizClaw/flowcraft/voice/detect"
+	"github.com/GizClaw/flowcraft/voice/endpoint"
+	speechmetrics "github.com/GizClaw/flowcraft/voice/metrics"
+	"github.com/GizClaw/flowcraft/voice/provider"
+	"github.com/GizClaw/flowcraft/voice/tts"
 	"github.com/rs/xid"
 )
 
