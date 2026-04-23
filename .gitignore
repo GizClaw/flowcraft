@@ -28,6 +28,8 @@
 !sdk/**
 !sdkx/
 !sdkx/**
+!voice/
+!voice/**
 !examples/
 !examples/**
 !skills/
