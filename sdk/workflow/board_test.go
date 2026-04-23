@@ -261,51 +261,26 @@ func TestRestoreBoard_NoChannels_InitializesMainChannel(t *testing.T) {
 	}
 }
 
-// --- migrateVarsMessages (legacy) ---
+// TestBoard_RestoreFrom_NoChannels_InitializesMainChannel mirrors
+// TestRestoreBoard_NoChannels_InitializesMainChannel for the in-place
+// rollback path: RestoreFrom must guarantee MainChannel exists even
+// when the snapshot's Channels map is nil/empty (every Board invariant
+// — including the one NewBoard / RestoreBoard already uphold).
+func TestBoard_RestoreFrom_NoChannels_InitializesMainChannel(t *testing.T) {
+	b := NewBoard()
+	b.AppendChannelMessage(MainChannel, model.NewTextMessage(model.RoleUser, "before"))
 
-func TestMigrateVarsMessages_MovesToChannel(t *testing.T) {
-	b := &Board{
-		channels: map[string][]model.Message{MainChannel: {}},
-		vars: map[string]any{
-			"messages": []model.Message{
-				model.NewTextMessage(model.RoleUser, "legacy"),
-			},
-		},
+	snap := &BoardSnapshot{
+		Vars:     map[string]any{"k": "v"},
+		Channels: nil,
 	}
-	migrateVarsMessages(b)
+	b.RestoreFrom(snap)
 
-	msgs := b.channels[MainChannel]
-	if len(msgs) != 1 || msgs[0].Content() != "legacy" {
-		t.Fatalf("expected legacy message migrated, got %v", msgs)
-	}
-}
-
-func TestMigrateVarsMessages_SkipsWhenChannelHasData(t *testing.T) {
-	existing := []model.Message{model.NewTextMessage(model.RoleUser, "existing")}
-	b := &Board{
-		channels: map[string][]model.Message{MainChannel: existing},
-		vars: map[string]any{
-			"messages": []model.Message{
-				model.NewTextMessage(model.RoleUser, "legacy"),
-			},
-		},
-	}
-	migrateVarsMessages(b)
-
-	msgs := b.channels[MainChannel]
-	if len(msgs) != 1 || msgs[0].Content() != "existing" {
-		t.Fatalf("existing channel should not be overwritten, got %v", msgs)
-	}
-}
-
-func TestMigrateVarsMessages_EmptyChannels(t *testing.T) {
-	b := &Board{
-		channels: map[string][]model.Message{},
-		vars:     map[string]any{},
-	}
-	migrateVarsMessages(b)
 	if _, ok := b.channels[MainChannel]; !ok {
-		t.Fatal("should initialize main channel")
+		t.Fatal("RestoreFrom must initialize MainChannel when snapshot carries no channels")
+	}
+	if got := b.Channel(MainChannel); len(got) != 0 {
+		t.Fatalf("expected empty MainChannel after restore, got %v", got)
 	}
 }
 
