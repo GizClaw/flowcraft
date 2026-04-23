@@ -3,7 +3,7 @@ module github.com/GizClaw/flowcraft/bench
 go 1.25.0
 
 require (
-	github.com/GizClaw/flowcraft/sdk v0.1.11
+	github.com/GizClaw/flowcraft/sdk v0.1.12
 	github.com/GizClaw/flowcraft/sdkx v0.0.0
 )
 
