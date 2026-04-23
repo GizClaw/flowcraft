@@ -5,12 +5,18 @@ SHELL := /bin/bash
 .DEFAULT_GOAL := help
 
 # Modules listed in go.work — `go vet ./...` and friends work as-is.
-MODULES_WORK := sdk sdkx examples/voice-pipeline
+# Only sdk + sdkx, because they are the tightly-coupled core that needs
+# atomic in-tree edits (sdkx imports sdk packages that may not yet exist
+# in any released sdk version).
+MODULES_WORK := sdk sdkx
 
-# Modules intentionally outside go.work (use `replace` directives + GOWORK=off).
-# bench is here because it pulls in heavyweight eval datasets/CLIs that we do
-# not want to dirty the main workspace's dependency graph with.
-MODULES_OFFWORK := bench
+# Modules intentionally outside go.work — they pin sdk/sdkx via go.mod
+# require directives and run with GOWORK=off so the pin is honoured.
+#
+#  - bench: heavy eval datasets/CLIs we don't want polluting the workspace
+#  - examples/voice-pipeline: pinned to sdk v0.1.12 + sdkx v0.1.14 so
+#    external consumers see a real reproducible example
+MODULES_OFFWORK := bench examples/voice-pipeline
 
 ALL_MODULES := $(MODULES_WORK) $(MODULES_OFFWORK)
 
