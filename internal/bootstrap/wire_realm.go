@@ -32,6 +32,7 @@ func wireRealm(
 	llmResolver llm.LLMResolver,
 	toolReg *tool.Registry,
 	sandboxCfg sandbox.ManagerConfig,
+	publishMessage realm.PublishMessageFn,
 ) (*realm.SingleRealmProvider, memory.LongTermStore, func(), error) {
 	ltStore := memory.NewFileLongTermStore(ws, "", memory.WithMaxEntries(0))
 
@@ -81,6 +82,7 @@ func wireRealm(
 			}
 			return nil
 		},
+		PublishMessage: publishMessage,
 	}
 	runtimeMgr := realm.NewSingleRealmProvider(store, platformCfg, sandboxCfg, sandboxCfg.IdleTimeout)
 

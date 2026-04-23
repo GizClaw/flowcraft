@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/GizClaw/flowcraft/internal/policy"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/telemetry"
 
@@ -190,9 +191,21 @@ func (s *Server) jwtMiddleware(next http.Handler) http.Handler {
 			return
 		}
 
-		if _, ok := s.authenticateRequest(r); !ok {
+		claims, ok := s.authenticateRequest(r)
+		if !ok {
 			writeError(w, errdefs.Unauthorizedf("unauthorized"))
 			return
+		}
+		// FlowCraft is single-owner: every authenticated subject is the
+		// super admin. Inject the actor so policy.ActorFrom downstream
+		// (admin endpoints, event-stream gates) sees a SuperAdmin.
+		if claims != nil {
+			actor := policy.Actor{
+				Type:  policy.ActorUser,
+				ID:    claims.Username,
+				Super: true,
+			}
+			r = r.WithContext(policy.WithActor(r.Context(), actor))
 		}
 		next.ServeHTTP(w, r)
 	})

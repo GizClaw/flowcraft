@@ -286,9 +286,13 @@ function handleKanbanMessage(data: unknown, callbackAgentId?: string) {
 // WS reconnect. Per §7.1.5 the steady-state KanbanStore is fed by
 // envelopes only — fullResync is the only legacy fetch that survives R3
 // (it covers events from before the WS connected).
+//
+// After R5 the response also carries `last_seq`; we hand it to the store
+// so the next envelope frame is reconciled against the snapshot cursor
+// (drops anything ≤ last_seq, which would otherwise double-apply).
 function fullResync() {
   kanbanApi.cards()
-    .then((cards) => useKanbanStore.getState().loadSnapshot(cards))
+    .then((snap) => useKanbanStore.getState().loadSnapshot(snap.cards, snap.lastSeq))
     .catch((err) => console.error('kanban: snapshot load failed:', err));
 }
 

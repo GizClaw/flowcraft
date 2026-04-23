@@ -49,11 +49,13 @@ export interface TokenUsage {
   total_tokens: number;
 }
 
+// ChatRequest is the body of POST /api/conversations/{id}/runs. The
+// conversation id lives in the URL path, not the body.
 export interface ChatRequest {
   agent_id: string;
   query: string;
-  conversation_id?: string;
   inputs?: Record<string, unknown>;
+  async?: boolean;
 }
 
 export interface CoPilotContextInput {
@@ -74,12 +76,6 @@ export interface ChatResponse {
   state?: Record<string, unknown>;
 }
 
-export interface ResumeRequest {
-  conversation_id: string;
-  run_id: string;
-  state: Record<string, unknown>;
-  decision: Record<string, unknown>;
-}
 
 interface StreamEventBase {
   run_id?: string;
@@ -158,11 +154,3 @@ export interface WorkflowRun {
   created_at: string;
 }
 
-export interface ExecutionEvent {
-  id: string;
-  run_id: string;
-  node_id: string;
-  type: string;
-  payload?: Record<string, unknown>;
-  created_at: string;
-}

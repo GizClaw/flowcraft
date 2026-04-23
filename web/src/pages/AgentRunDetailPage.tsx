@@ -2,22 +2,20 @@ import { useState, useEffect } from 'react';
 import { useParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { workflowRunApi } from '../utils/api';
-import type { WorkflowRun, ExecutionEvent } from '../types/chat';
-import EventTimeline from '../components/common/EventTimeline';
+import type { WorkflowRun } from '../types/chat';
 import LoadingSpinner from '../components/common/LoadingSpinner';
 
 export default function AgentRunDetailPage() {
   const { t } = useTranslation();
   const { runId } = useParams<{ runId: string }>();
   const [run, setRun] = useState<WorkflowRun | null>(null);
-  const [events, setEvents] = useState<ExecutionEvent[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     if (!runId) return;
     setLoading(true);
-    Promise.all([workflowRunApi.get(runId), workflowRunApi.events(runId)])
-      .then(([r, e]) => { setRun(r); setEvents(e); })
+    workflowRunApi.get(runId)
+      .then((r) => setRun(r))
       .catch(() => {})
       .finally(() => setLoading(false));
   }, [runId]);
@@ -49,11 +47,6 @@ export default function AgentRunDetailPage() {
           <pre className="text-xs bg-gray-50 dark:bg-gray-800 p-3 rounded-lg overflow-x-auto">{JSON.stringify(run.outputs, null, 2)}</pre>
         </div>
       )}
-
-      <div className="bg-white dark:bg-gray-900 rounded-xl border border-gray-200 dark:border-gray-800 p-4">
-        <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-3">{t('runDetail.timeline', { count: events.length })}</h3>
-        <EventTimeline events={events} />
-      </div>
     </div>
   );
 }

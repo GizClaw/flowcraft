@@ -111,6 +111,7 @@ export interface ChatMessageSentPayload {
   conversationID: string;
   messageID: string;
   role: string;
+  tokenCount?: number;
 }
 
 export interface CronRuleChangedPayload {

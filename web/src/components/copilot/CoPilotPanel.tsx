@@ -14,7 +14,7 @@ import TaskDispatchCard from './TaskDispatchCard';
 import CoPilotInput from './CoPilotInput';
 import { useCoPilot } from '../../hooks/useCoPilot';
 import { chatApi, kanbanApi } from '../../utils/api';
-import { OWNER_RUNTIME_ID } from '../../utils/runtime';
+import { OWNER_RUNTIME_ID, getRuntimeConversationId } from '../../utils/runtime';
 import { mapHistoryMessages } from './utils/mapHistoryMessages';
 import type { KanbanCard } from '../../types/kanban';
 import type { RichMessage } from '../../types/chat';
@@ -50,11 +50,12 @@ export default function CoPilotPanel() {
   const setBackgroundRunning = useCoPilotStore((s) => s.setBackgroundRunning);
   const setGraphContext = useCoPilotStore((s) => s.setGraphContext);
 
-  const isMyStreaming = useChatStore((s) => s.isAgentStreaming(COPILOT_AGENT_ID));
+  const copilotConversationId = getRuntimeConversationId(COPILOT_AGENT_ID);
+  const isMyStreaming = useChatStore((s) => s.isAgentStreaming(copilotConversationId));
   const ensureSession = useChatStore((s) => s.ensureSession);
   const loadHistory = useChatStore((s) => s.loadHistory);
   const restoreFromHistory = useChatStore((s) => s.restoreFromHistory);
-  const session = useChatStore((s) => s.getSession(COPILOT_AGENT_ID));
+  const session = useChatStore((s) => s.getSession(copilotConversationId));
 
   const kanbanCards = useKanbanStore((s) => s.cards);
   const nodes = useWorkflowStore((s) => s.nodes);
@@ -66,7 +67,7 @@ export default function CoPilotPanel() {
 
   const { sendMessage, stopStreaming } = useCoPilot();
 
-  useEffect(() => { ensureSession(COPILOT_AGENT_ID); }, [ensureSession]);
+  useEffect(() => { ensureSession(copilotConversationId); }, [copilotConversationId, ensureSession]);
 
   useEffect(() => {
     const nodeTypes: Record<string, number> = {};
@@ -95,21 +96,21 @@ export default function CoPilotPanel() {
   const loadHistoryAndCheck = useCallback(async () => {
     const historyLoaded = session.historyLoaded;
     try {
-      const conversationId = `${OWNER_RUNTIME_ID}--${COPILOT_AGENT_ID}`;
-      const [messages, cards] = await Promise.all([
-        chatApi.getMessages(conversationId),
-        kanbanApi.cards().catch(() => []),
+      const [messages, snap] = await Promise.all([
+        chatApi.getMessages(copilotConversationId),
+        kanbanApi.cards().catch(() => ({ cards: [] as KanbanCard[], lastSeq: 0, lastEventTs: null, realmId: null })),
       ]);
+      const cards = snap.cards;
 
       if (messages.length > 0) {
         const mapped = mapHistoryMessages(messages);
         if (historyLoaded) {
-          restoreFromHistory(COPILOT_AGENT_ID, mapped);
+          restoreFromHistory(copilotConversationId, mapped);
         } else {
-          loadHistory(COPILOT_AGENT_ID, mapped);
+          loadHistory(copilotConversationId, mapped);
         }
       } else {
-        if (!historyLoaded) loadHistory(COPILOT_AGENT_ID, []);
+        if (!historyLoaded) loadHistory(copilotConversationId, []);
       }
 
       if (hasRunningTasks(cards)) {
@@ -118,9 +119,9 @@ export default function CoPilotPanel() {
         setBackgroundRunning(false);
       }
     } catch {
-      if (!session.historyLoaded) loadHistory(COPILOT_AGENT_ID, []);
+      if (!session.historyLoaded) loadHistory(copilotConversationId, []);
     }
-  }, [session.historyLoaded, loadHistory, restoreFromHistory, setBackgroundRunning]);
+  }, [copilotConversationId, session.historyLoaded, loadHistory, restoreFromHistory, setBackgroundRunning]);
 
   useEffect(() => {
     if (!open) {

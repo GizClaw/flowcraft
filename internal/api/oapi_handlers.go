@@ -3,10 +3,10 @@ package api
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -15,6 +15,7 @@ import (
 	"golang.org/x/crypto/bcrypt"
 
 	"github.com/GizClaw/flowcraft/internal/api/oas"
+	"github.com/GizClaw/flowcraft/internal/eventlog"
 	"github.com/GizClaw/flowcraft/internal/model"
 	"github.com/GizClaw/flowcraft/internal/platform"
 	"github.com/GizClaw/flowcraft/plugin"
@@ -441,16 +442,102 @@ func (h *oapiHandler) ListConversations(ctx context.Context, params oas.ListConv
 	return result, nil
 }
 
+// GetMessages returns the materialised messages for a conversation. After
+// R5 the legacy `messages` table is gone — the ChatProjector is the only
+// source of truth, populated from `chat.message.sent` envelopes.
 func (h *oapiHandler) GetMessages(ctx context.Context, params oas.GetMessagesParams) (*oas.MessageList, error) {
-	msgs, err := h.s.deps.Platform.Store.GetMessages(ctx, params.ID)
-	if err != nil {
-		return nil, err
+	if h.s.deps.ChatRead == nil {
+		return &oas.MessageList{Data: []oas.Message{}}, nil
 	}
-	oasMsgs, err := toOASSlice[oas.Message](msgs)
-	if err != nil {
-		return nil, err
+	conv := h.s.deps.ChatRead.GetConversation(params.ID)
+	if conv == nil {
+		return &oas.MessageList{Data: []oas.Message{}}, nil
 	}
-	return &oas.MessageList{Data: oasMsgs}, nil
+	out := make([]oas.Message, 0, len(conv.Messages))
+	for _, m := range conv.Messages {
+		out = append(out, oas.Message{
+			ID:             oas.NewOptString(m.MessageID),
+			ConversationID: oas.NewOptString(conv.ID),
+			Role:           oas.NewOptString(m.Role),
+			Content:        oas.NewOptString(m.Content),
+			CreatedAt:      oas.NewOptDateTime(m.SentAt),
+		})
+	}
+	return &oas.MessageList{Data: out}, nil
+}
+
+// SubmitApproval is the command-side replacement of POST /chat/resume/stream
+// (deprecated). The HTTP path carries the conversation/card id; the body carries
+// the agent + run identifiers so we can locate the paused checkpoint, plus the
+// approval verdict. We synchronously resume the agent (so the caller knows
+// whether the resume actually started) but no longer SSE-stream the resulting
+// agent activity back through this endpoint — those events flow through the
+// shared event log and clients pick them up via
+// `GET /api/events?partition=card:{id}&since={last_seq}`.
+func (h *oapiHandler) SubmitApproval(ctx context.Context, req *oas.ApprovalDecisionRequest, params oas.SubmitApprovalParams) (*oas.ApprovalDecisionResponse, error) {
+	if req == nil {
+		return nil, errdefs.Validationf("approval request body required")
+	}
+	if req.AgentID == "" || req.RunID == "" {
+		return nil, errdefs.Validationf("agent_id and run_id are required")
+	}
+	if req.Decision != oas.ApprovalDecisionRequestDecisionApproved && req.Decision != oas.ApprovalDecisionRequestDecisionRejected {
+		return nil, errdefs.Validationf("decision must be 'approved' or 'rejected'")
+	}
+
+	agent, err := h.s.deps.Platform.Store.GetAgent(ctx, req.AgentID)
+	if err != nil {
+		return nil, errdefs.NotFoundf("agent %q: %v", req.AgentID, err)
+	}
+
+	var snap *graph.BoardSnapshot
+	if req.State.Set {
+		snap = new(graph.BoardSnapshot)
+		if !decodeOptJSONObject(req.State, snap) {
+			snap = nil
+		}
+	}
+	if snap == nil {
+		loaded, loadErr := h.s.deps.Platform.LoadCheckpoint(ctx, req.AgentID)
+		if loadErr != nil || loaded == nil {
+			return nil, errdefs.Conflictf("no state provided and no checkpoint available for agent %q", req.AgentID)
+		}
+		snap = loaded
+	}
+
+	// Inject the verdict so the resumed `approval` script sees it via
+	// board.getVar("approval_decision"). Comment is exposed alongside for
+	// downstream nodes that want to surface reviewer notes.
+	inputs := map[string]any{
+		"approval_decision": string(req.Decision),
+	}
+	if comment, ok := req.Comment.Get(); ok && comment != "" {
+		inputs["approval_comment"] = comment
+	}
+
+	wfReq := &workflow.Request{
+		ContextID: params.ID,
+		RunID:     req.RunID,
+		Inputs:    inputs,
+	}
+
+	startNode := graph.RestoreBoard(snap).GetVarString(graph.VarInterruptedNode)
+
+	if _, resumeErr := h.s.deps.Platform.ResumeAgent(ctx, agent, wfReq, snap, startNode); resumeErr != nil {
+		return nil, errdefs.Internalf("resume failed: %v", resumeErr)
+	}
+
+	resp := &oas.ApprovalDecisionResponse{
+		Accepted:  true,
+		RunID:     req.RunID,
+		Partition: oas.NewOptString("card:" + params.ID),
+	}
+	if h.s.deps.EventLog != nil {
+		if seq, seqErr := h.s.deps.EventLog.LatestSeq(ctx); seqErr == nil {
+			resp.LastSeq = oas.NewOptInt64(seq)
+		}
+	}
+	return resp, nil
 }
 
 // ══════════════════════════ Workflow Runs ══════════════════════════
@@ -485,18 +572,6 @@ func (h *oapiHandler) GetWorkflowRun(ctx context.Context, params oas.GetWorkflow
 		return nil, err
 	}
 	return toOAS[oas.WorkflowRun](run)
-}
-
-func (h *oapiHandler) GetWorkflowRunEvents(ctx context.Context, params oas.GetWorkflowRunEventsParams) (*oas.ExecutionEventList, error) {
-	events, err := h.s.deps.Platform.Store.ListExecutionEvents(ctx, params.ID)
-	if err != nil {
-		return nil, err
-	}
-	oasEvents, err := toOASSlice[oas.ExecutionEvent](events)
-	if err != nil {
-		return nil, err
-	}
-	return &oas.ExecutionEventList{Data: oasEvents}, nil
 }
 
 func (h *oapiHandler) GetRunStatus(ctx context.Context, params oas.GetRunStatusParams) (*oas.WorkflowRun, error) {
@@ -1873,13 +1948,104 @@ func lookupRuntimeBoard(plat *platform.Platform) (*kanban.TaskBoard, bool) {
 	return board, board != nil
 }
 
-func (h *oapiHandler) GetKanbanCards(ctx context.Context) (*oas.KanbanCardList, error) {
-	if board, ok := lookupRuntimeBoard(h.s.deps.Platform); ok {
-		return &oas.KanbanCardList{Data: jsonObjectsFromAny(board.Cards())}, nil
+// currentRealmID returns the realm/runtime ID this process is currently
+// serving (SingleRealmProvider). Used to derive the partition cursor and
+// per-card realm_id in /kanban/cards. Empty string when no realm has been
+// resolved yet — callers should treat that as "no snapshot available".
+func (h *oapiHandler) currentRealmID() string {
+	if h.s.deps.Platform == nil || h.s.deps.Platform.Realms == nil {
+		return ""
 	}
-	return &oas.KanbanCardList{Data: []oas.JSONObject{}}, nil
+	r, ok := h.s.deps.Platform.Realms.Current()
+	if !ok || r == nil {
+		return ""
+	}
+	return r.ID()
 }
 
+// GetKanbanCards returns the initial snapshot consumed by the frontend
+// Kanban view. After R5 (§7.1.5 / §13) the response carries:
+//
+//   - last_seq / last_event_ts: cursor for the envelope subscription that
+//     drives the steady-state board (clients subscribe to
+//     `partition=runtime:<realm_id>` with `since=last_seq`);
+//   - realm_id (top-level + per card): so single-board UIs do not need to
+//     peek inside `data` to know which runtime they're looking at.
+//
+// The legacy `events` array and `lastUpdate` field are gone — the canonical
+// stream of card mutations lives in the event log, not in this snapshot.
+func (h *oapiHandler) GetKanbanCards(ctx context.Context) (*oas.KanbanCardList, error) {
+	realmID := h.currentRealmID()
+	resp := &oas.KanbanCardList{Data: []oas.KanbanCardSummary{}}
+	if realmID != "" {
+		resp.RealmID = oas.NewOptString(realmID)
+	}
+	board, ok := lookupRuntimeBoard(h.s.deps.Platform)
+	if ok {
+		cards := board.Cards()
+		resp.Data = make([]oas.KanbanCardSummary, 0, len(cards))
+		for _, c := range cards {
+			resp.Data = append(resp.Data, kanbanCardSummary(c, realmID))
+		}
+	}
+	if h.s.deps.EventLog != nil && realmID != "" {
+		seq, ts, err := h.s.deps.EventLog.LatestInPartition(ctx, eventlog.PartitionRuntime(realmID))
+		if err == nil {
+			resp.LastSeq = oas.NewOptInt64(seq)
+			if !ts.IsZero() {
+				resp.LastEventTs = oas.NewOptDateTime(ts)
+			}
+		}
+	}
+	return resp, nil
+}
+
+func kanbanCardSummary(c kanban.CardInfo, realmID string) oas.KanbanCardSummary {
+	out := oas.KanbanCardSummary{
+		ID:        c.ID,
+		Type:      c.Type,
+		Status:    c.Status,
+		Producer:  c.Producer,
+		Consumer:  c.Consumer,
+		CreatedAt: c.CreatedAt,
+		UpdatedAt: c.UpdatedAt,
+	}
+	if c.Query != "" {
+		out.Query = oas.NewOptString(c.Query)
+	}
+	if c.TargetAgentID != "" {
+		out.TargetAgentID = oas.NewOptString(c.TargetAgentID)
+	}
+	if c.Output != "" {
+		out.Output = oas.NewOptString(c.Output)
+	}
+	if c.Error != "" {
+		out.Error = oas.NewOptString(c.Error)
+	}
+	if c.RunID != "" {
+		out.RunID = oas.NewOptString(c.RunID)
+	}
+	if c.ElapsedMs != 0 {
+		out.ElapsedMs = oas.NewOptInt64(c.ElapsedMs)
+	}
+	if len(c.Meta) > 0 {
+		meta := make(oas.KanbanCardSummaryMeta, len(c.Meta))
+		for k, v := range c.Meta {
+			meta[k] = v
+		}
+		out.Meta = oas.NewOptKanbanCardSummaryMeta(meta)
+	}
+	if realmID != "" {
+		out.RealmID = oas.NewOptString(realmID)
+	}
+	return out
+}
+
+// GetKanbanTimeline returns the per-card timeline. The schema is unchanged
+// (R5 §13 only requires the response to be derived from envelopes, not a
+// breaking field rename) — sdk/kanban.Board.Timeline() already projects
+// the same view from the in-memory card list, which is itself driven by
+// the event log via the kanban bridge. So we keep the existing pass-through.
 func (h *oapiHandler) GetKanbanTimeline(ctx context.Context) (*oas.KanbanTimeline, error) {
 	if board, ok := lookupRuntimeBoard(h.s.deps.Platform); ok {
 		return &oas.KanbanTimeline{Data: jsonObjectsFromAny(board.Timeline())}, nil
@@ -1951,135 +2117,106 @@ func (h *oapiHandler) GetChannelTypes(ctx context.Context) (*oas.ChannelTypeList
 	return &oas.ChannelTypeList{Data: types}, nil
 }
 
-// ══════════════════════════ Chat SSE ══════════════════════════
+// ══════════════════════════ Chat command ══════════════════════════
 
-func (h *oapiHandler) ChatStream(ctx context.Context, req *oas.ChatRequest) (oas.ChatStreamOK, error) {
-	httpReq, _ := HTTPRequestFromContext(ctx)
-	pr, pw := io.Pipe()
-	go func() {
-		defer pw.Close()
-		h.writeChatSSE(ctx, httpReq, req, pw)
-	}()
-	return oas.ChatStreamOK{Data: pr}, nil
-}
+// StartConversationRun is the command-side replacement of the deprecated
+// `POST /chat/stream` SSE endpoint. It accepts a chat run, fires it
+// asynchronously via the realm runtime, and returns the identifiers the
+// caller should use to subscribe to the resulting envelope stream
+// (`GET /api/events?partition=card:{id}&since=last_seq`).
+func (h *oapiHandler) StartConversationRun(ctx context.Context, req *oas.ChatRequest, params oas.StartConversationRunParams) (*oas.ChatStartResponse, error) {
+	if req == nil {
+		return nil, errdefs.Validationf("chat request body required")
+	}
+	if req.AgentID == "" {
+		return nil, errdefs.Validationf("agent_id is required")
+	}
+	if req.Query == "" {
+		return nil, errdefs.Validationf("query is required")
+	}
 
-func (h *oapiHandler) writeChatSSE(ctx context.Context, httpReq *http.Request, req *oas.ChatRequest, w io.Writer) {
 	agent, err := h.s.deps.Platform.Store.GetAgent(ctx, req.AgentID)
 	if err != nil {
-		fmt.Fprintf(w, "event: error\ndata: {\"code\":\"agent_not_found\",\"message\":%q}\n\n", err.Error())
-		return
+		return nil, errdefs.NotFoundf("agent %q: %v", req.AgentID, err)
+	}
+
+	convID := params.ID
+	if convID == "" {
+		convID = ownerRealmID + "--" + agent.AgentID
 	}
 
 	var inputs map[string]any
 	decodeOptJSONObject(req.Inputs, &inputs)
-	if agent.Type == model.AgentTypeCoPilot && httpReq != nil {
-		compat := chatRequestCompat{
-			AgentID: req.AgentID,
-			Query:   req.Query,
-			Inputs:  inputs,
+	if agent.Type == model.AgentTypeCoPilot {
+		httpReq, _ := HTTPRequestFromContext(ctx)
+		if httpReq != nil {
+			compat := chatRequestCompat{
+				AgentID:        req.AgentID,
+				ConversationID: convID,
+				Query:          req.Query,
+				Inputs:         inputs,
+			}
+			if async, ok := req.Async.Get(); ok {
+				compat.Async = async
+			}
+			inputs = h.s.buildCoPilotInputsFromChat(httpReq, agent, compat)
 		}
-		if conv, ok := req.ConversationID.Get(); ok {
-			compat.ConversationID = conv
-		}
-		if async, ok := req.Async.Get(); ok {
-			compat.Async = async
-		}
-		inputs = h.s.buildCoPilotInputsFromChat(httpReq, agent, compat)
 	}
-	convID := req.ConversationID.Or("")
-	if convID == "" {
-		convID = ownerRealmID + "--" + agent.AgentID
-	}
+
+	runID := newRunID()
 	wfReq := &workflow.Request{
 		ContextID: convID,
 		RuntimeID: ownerRealmID,
+		RunID:     runID,
 		Message:   sdkmodel.NewTextMessage(sdkmodel.RoleUser, req.Query),
 		Inputs:    inputs,
 	}
 
 	persistent := agent.Type == model.AgentTypeCoPilot
-	doneCh, sub, _, err := h.s.deps.Platform.RunAgentStreaming(ctx, agent, wfReq, persistent)
-	if err != nil {
-		fmt.Fprintf(w, "event: error\ndata: {\"code\":\"runtime_error\",\"message\":%q}\n\n", err.Error())
-		return
+	doneCh, sub, _, runErr := h.s.deps.Platform.RunAgentStreaming(ctx, agent, wfReq, persistent)
+	if runErr != nil {
+		return nil, errdefs.Internalf("start run: %v", runErr)
 	}
-	defer func() { _ = sub.Close() }()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case ev, ok := <-sub.Events():
-			if !ok {
+	// We don't consume realm events here — the legacy SSE stream is gone and
+	// all observable progress (agent.stream.delta, kanban.card.*, ...) flows
+	// through the event log. Drain the bus subscription in the background so
+	// the actor doesn't backpressure on its in-memory channel.
+	go func() {
+		defer func() { _ = sub.Close() }()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case _, ok := <-sub.Events():
+				if !ok {
+					return
+				}
+			case <-doneCh:
 				return
 			}
-			raw, _ := json.Marshal(ev)
-			fmt.Fprintf(w, "event: %s\ndata: %s\n\n", ev.Type, string(raw))
-		case result := <-doneCh:
-			if result.Err != nil {
-				fmt.Fprintf(w, "event: error\ndata: {\"code\":\"run_error\",\"message\":%q}\n\n", result.Err.Error())
-			} else {
-				raw, _ := json.Marshal(result.Value)
-				fmt.Fprintf(w, "event: done\ndata: %s\n\n", string(raw))
-			}
-			return
 		}
-	}
-}
-
-func (h *oapiHandler) ResumeStream(ctx context.Context, req *oas.ResumeRequest) (oas.ResumeStreamOK, error) {
-	pr, pw := io.Pipe()
-	go func() {
-		defer pw.Close()
-		h.writeResumeSSE(ctx, req, pw)
 	}()
-	return oas.ResumeStreamOK{Data: pr}, nil
+
+	resp := &oas.ChatStartResponse{
+		Accepted:       true,
+		ConversationID: convID,
+		RunID:          runID,
+		Partition:      "card:" + convID,
+	}
+	if h.s.deps.EventLog != nil {
+		if seq, seqErr := h.s.deps.EventLog.LatestSeq(ctx); seqErr == nil {
+			resp.LastSeq = oas.NewOptInt64(seq)
+		}
+	}
+	return resp, nil
 }
 
-func (h *oapiHandler) writeResumeSSE(ctx context.Context, req *oas.ResumeRequest, w io.Writer) {
-	agent, err := h.s.deps.Platform.Store.GetAgent(ctx, req.AgentID)
-	if err != nil {
-		fmt.Fprintf(w, "event: error\ndata: {\"code\":\"agent_not_found\",\"message\":%q}\n\n", err.Error())
-		return
-	}
-
-	var snap *graph.BoardSnapshot
-	if req.State.Set {
-		snap = new(graph.BoardSnapshot)
-		if !decodeOptJSONObject(req.State, snap) {
-			snap = nil
-		}
-	}
-	if snap == nil {
-		loaded, loadErr := h.s.deps.Platform.LoadCheckpoint(ctx, req.AgentID)
-		if loadErr != nil || loaded == nil {
-			fmt.Fprintf(w, "event: error\ndata: {\"code\":\"no_state\",\"message\":\"no state provided and no checkpoint available\"}\n\n")
-			return
-		}
-		snap = loaded
-	}
-
-	var decision map[string]any
-	if len(req.Decision) > 0 {
-		raw, _ := json.Marshal(req.Decision)
-		_ = json.Unmarshal(raw, &decision)
-	}
-
-	wfReq := &workflow.Request{
-		ContextID: req.ConversationID,
-		RunID:     req.RunID,
-		Inputs:    decision,
-	}
-
-	startNode := graph.RestoreBoard(snap).GetVarString(graph.VarInterruptedNode)
-
-	result, resumeErr := h.s.deps.Platform.ResumeAgent(ctx, agent, wfReq, snap, startNode)
-	if resumeErr != nil {
-		fmt.Fprintf(w, "event: error\ndata: {\"code\":\"run_error\",\"message\":%q}\n\n", resumeErr.Error())
-	} else {
-		raw, _ := json.Marshal(result)
-		fmt.Fprintf(w, "event: done\ndata: %s\n\n", string(raw))
-	}
+// newRunID returns a 32-char hex identifier used to correlate runtime events
+// (agent.stream.delta, kanban.card.*) with the run that produced them.
+func newRunID() string {
+	b := make([]byte, 16)
+	_, _ = rand.Read(b)
+	return hex.EncodeToString(b)
 }
 
 // ══════════════════════════ WS Ticket ══════════════════════════

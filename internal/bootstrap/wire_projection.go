@@ -9,8 +9,7 @@ import (
 // SQLite-backed dead-letter sink so all projectors write to dead_letters on
 // exhaustion rather than just logging.
 func WireProjectionManager(st *store.SQLiteStore) *projection.Manager {
-	cfg := projection.ManagerConfig{
-		DLTSink: projection.NewSQLiteDLT(st.DB()),
-	}
-	return projection.NewManager(cfg)
+	defaults := projection.DefaultManagerConfig()
+	defaults.DLTSink = projection.NewSQLiteDLT(st.DB())
+	return projection.NewManager(defaults)
 }

@@ -40,3 +40,17 @@ jobs:
         run: go test ./cmd/eventgen/... ./internal/eventlog/... -count=1
       - name: fuzz (short)
         run: make events-fuzz
+      - name: bench (budget gate)
+        run: go test ./internal/eventlog -run '^$' -bench '.' -benchtime 2s -count 1
+
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.25"
+      - name: install bubblewrap (sandbox isolation)
+        run: sudo apt-get update -y && sudo apt-get install -y bubblewrap
+      - name: smoke (boot + 3-channel byte-equality)
+        run: make smoke

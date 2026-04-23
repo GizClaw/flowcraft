@@ -19,6 +19,15 @@ type MemoryFactory func(ctx context.Context, cfg model.MemoryConfig) (memory.Mem
 // StrategyResolver resolves a workflow.Strategy for the given agent.
 type StrategyResolver func(agent *model.Agent) workflow.Strategy
 
+// PublishMessageFn appends a chat.message.sent envelope. The realm uses it
+// instead of writing to the legacy `messages` table so the ChatProjector
+// becomes the only source of truth for /conversations/{id}/messages.
+//
+// A function pointer is used (instead of a typed dependency) to avoid
+// pulling internal/commands/chat into the realm package; bootstrap wires
+// it in NewSingleRealmProvider.
+type PublishMessageFn func(ctx context.Context, conversationID, role, content string, tokenCount int64) error
+
 // PlatformDeps holds all platform-specific dependencies needed by a Realm.
 // It is a pure dependency container with no execution logic.
 type PlatformDeps struct {
@@ -31,6 +40,7 @@ type PlatformDeps struct {
 	SummaryStore     memory.SummaryStore
 	CheckpointStore  executor.CheckpointStore
 	StrategyResolver StrategyResolver
+	PublishMessage   PublishMessageFn
 
 	// RunOverride, when set, replaces the entire runtime.Run path (used in tests).
 	RunOverride func(ctx context.Context, agent *model.Agent, req *workflow.Request) (*workflow.Result, error)

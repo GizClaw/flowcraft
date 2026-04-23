@@ -68,11 +68,6 @@ func (s *mockStore) CreateConversation(context.Context, *model.Conversation) (*m
 func (s *mockStore) UpdateConversation(context.Context, *model.Conversation) (*model.Conversation, error) {
 	return nil, nil
 }
-func (s *mockStore) GetMessages(context.Context, string) ([]*model.Message, error) { return nil, nil }
-func (s *mockStore) GetRecentMessages(context.Context, string, int) ([]*model.Message, error) {
-	return nil, nil
-}
-func (s *mockStore) SaveMessage(context.Context, *model.Message) error         { return nil }
 func (s *mockStore) SaveWorkflowRun(context.Context, *model.WorkflowRun) error { return nil }
 func (s *mockStore) GetWorkflowRun(context.Context, string) (*model.WorkflowRun, error) {
 	return nil, errdefs.NotFoundf("workflow_run %q not found", "")
@@ -81,11 +76,6 @@ func (s *mockStore) GetWorkflowRun(context.Context, string) (*model.WorkflowRun,
 func (s *mockStore) ListWorkflowRuns(context.Context, string, model.ListOptions) ([]*model.WorkflowRun, *model.ListResult, error) {
 	return nil, &model.ListResult{}, nil
 }
-func (s *mockStore) SaveExecutionEvent(context.Context, *model.ExecutionEvent) error { return nil }
-func (s *mockStore) ListExecutionEvents(context.Context, string) ([]*model.ExecutionEvent, error) {
-	return nil, nil
-}
-
 func (s *mockStore) SaveKanbanCard(_ context.Context, card *model.KanbanCard) error {
 	s.kanbanCards[card.RuntimeID] = append(s.kanbanCards[card.RuntimeID], card)
 	return nil

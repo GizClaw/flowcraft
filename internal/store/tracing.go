@@ -113,27 +113,6 @@ func (s *TracingStore) UpdateConversation(ctx context.Context, conv *model.Conve
 	return c, err
 }
 
-func (s *TracingStore) GetMessages(ctx context.Context, conversationID string) ([]*model.Message, error) {
-	ctx, span := s.start(ctx, "GetMessages", attribute.String("conversation.id", conversationID))
-	msgs, err := s.inner.GetMessages(ctx, conversationID)
-	finish(span, err)
-	return msgs, err
-}
-
-func (s *TracingStore) GetRecentMessages(ctx context.Context, conversationID string, limit int) ([]*model.Message, error) {
-	ctx, span := s.start(ctx, "GetRecentMessages", attribute.String("conversation.id", conversationID))
-	msgs, err := s.inner.GetRecentMessages(ctx, conversationID, limit)
-	finish(span, err)
-	return msgs, err
-}
-
-func (s *TracingStore) SaveMessage(ctx context.Context, msg *model.Message) error {
-	ctx, span := s.start(ctx, "SaveMessage", attribute.String("conversation.id", msg.ConversationID))
-	err := s.inner.SaveMessage(ctx, msg)
-	finish(span, err)
-	return err
-}
-
 func (s *TracingStore) SaveWorkflowRun(ctx context.Context, run *model.WorkflowRun) error {
 	ctx, span := s.start(ctx, "SaveWorkflowRun", attribute.String("agent.id", run.AgentID))
 	err := s.inner.SaveWorkflowRun(ctx, run)
@@ -153,20 +132,6 @@ func (s *TracingStore) ListWorkflowRuns(ctx context.Context, agentID string, opt
 	runs, lr, err := s.inner.ListWorkflowRuns(ctx, agentID, opts)
 	finish(span, err)
 	return runs, lr, err
-}
-
-func (s *TracingStore) SaveExecutionEvent(ctx context.Context, ev *model.ExecutionEvent) error {
-	ctx, span := s.start(ctx, "SaveExecutionEvent", attribute.String("run.id", ev.RunID))
-	err := s.inner.SaveExecutionEvent(ctx, ev)
-	finish(span, err)
-	return err
-}
-
-func (s *TracingStore) ListExecutionEvents(ctx context.Context, runID string) ([]*model.ExecutionEvent, error) {
-	ctx, span := s.start(ctx, "ListExecutionEvents", attribute.String("run.id", runID))
-	events, err := s.inner.ListExecutionEvents(ctx, runID)
-	finish(span, err)
-	return events, err
 }
 
 func (s *TracingStore) SaveKanbanCard(ctx context.Context, card *model.KanbanCard) error {

@@ -7,6 +7,8 @@
 
 import { create } from 'zustand';
 import { getEnvelopeClient, type ConnectionState } from '../eventlog/client';
+import { envelopeRouter } from '../eventlog/router';
+import { registerChatReducersOnce } from '../eventlog/chatReducers';
 import type { Envelope } from '../eventlog/types';
 
 interface EventState {
@@ -49,11 +51,17 @@ export const useEventStore = create<EventState>((set, get) => ({
 
 let installed = false;
 
-// installEnvelopeWiring connects the singleton client to the store.
-// Call once at app boot. Safe to call multiple times.
+// installEnvelopeWiring connects the singleton client to (a) the
+// observable store and (b) the envelope router that drives all
+// per-domain reducers (chat, kanban, ...). Call once at app boot.
+//
+// Without (b) the chat reducers in eventlog/chatReducers.ts never see
+// agent.stream.delta and the UI silently stalls — the bug that kept
+// /chat/resume/stream alive through R5.
 export function installEnvelopeWiring(): void {
   if (installed) return;
   installed = true;
+  registerChatReducersOnce();
   const client = getEnvelopeClient();
   client.on('connected', () => useEventStore.getState().setConnection('connected'));
   client.on('disconnected', () => useEventStore.getState().setConnection('disconnected'));
@@ -65,6 +73,7 @@ export function installEnvelopeWiring(): void {
     const e = env as Envelope;
     useEventStore.getState().setLatestSeq(e.seq);
     useEventStore.getState().bumpUnread();
+    envelopeRouter.dispatch(e);
   });
 }
 

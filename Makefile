@@ -4,7 +4,7 @@ SHELL := /bin/bash
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -X main.cliVersion=$(VERSION)
 
-OPENAPI_SPEC := internal/api/openapi.yaml
+OPENAPI_SPEC := contracts/openapi.yaml
 
 # Independent Go modules in this repo.
 # Each module is treated as if checked out separately (no go.work);
@@ -182,6 +182,15 @@ events-partition-lint:
 install-hooks:
 	git config core.hooksPath .githooks
 	chmod +x .githooks/pre-commit
+
+.PHONY: smoke
+# End-to-end "is the platform alive?" probe. Boots an in-process server in a
+# disposable HOME, publishes a real task.submitted envelope, and verifies the
+# admin/projection/events surface (HTTP / SSE / WS byte-consistency) all agree.
+# Skips itself on non-Linux because the sandbox manager refuses to start.
+smoke:
+	@echo "==> smoke (cmd/smoketest)"
+	@GOWORK=off go run ./cmd/smoketest
 
 .PHONY: ci
 ci: vet test events-check

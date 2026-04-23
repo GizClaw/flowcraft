@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/GizClaw/flowcraft/internal/store"
 )
@@ -125,6 +126,37 @@ func (l *SQLiteLog) LatestSeq(ctx context.Context) (int64, error) {
 		return 0, nil
 	}
 	return seq.Int64, nil
+}
+
+// LatestInPartition returns the (seq, ts) of the newest envelope in the
+// given partition. Returns (0, zero, nil) when the partition is empty so
+// snapshot endpoints can return a usable cursor for live tailing
+// (`since=0` meaning "give me everything from the start").
+func (l *SQLiteLog) LatestInPartition(ctx context.Context, partition string) (int64, time.Time, error) {
+	var (
+		seq sql.NullInt64
+		ts  sql.NullString
+	)
+	row := l.db.QueryRowContext(ctx,
+		`SELECT seq, ts FROM event_log
+		 WHERE partition=? ORDER BY seq DESC LIMIT 1`, partition)
+	if err := row.Scan(&seq, &ts); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return 0, time.Time{}, nil
+		}
+		return 0, time.Time{}, fmt.Errorf("eventlog: latest in partition: %w", err)
+	}
+	if !seq.Valid {
+		return 0, time.Time{}, nil
+	}
+	if !ts.Valid || ts.String == "" {
+		return seq.Int64, time.Time{}, nil
+	}
+	parsed, err := time.Parse(time.RFC3339Nano, ts.String)
+	if err != nil {
+		return seq.Int64, time.Time{}, nil
+	}
+	return seq.Int64, parsed, nil
 }
 
 // Checkpoints returns the projector checkpoint sub-store (SQLite-backed).

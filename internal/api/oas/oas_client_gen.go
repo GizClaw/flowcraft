@@ -45,10 +45,6 @@ type Invoker interface {
 	//
 	// POST /auth/change-password
 	ChangePassword(ctx context.Context, request *ChangePasswordRequest) (*OkResponse, error)
-	// ChatStream invokes chatStream operation.
-	//
-	// POST /chat/stream
-	ChatStream(ctx context.Context, request *ChatRequest) (ChatStreamOK, error)
 	// CompileGraph invokes compileGraph operation.
 	//
 	// POST /agents/{id}/compile
@@ -211,10 +207,6 @@ type Invoker interface {
 	//
 	// GET /workflows/runs/{id}
 	GetWorkflowRun(ctx context.Context, params GetWorkflowRunParams) (*WorkflowRun, error)
-	// GetWorkflowRunEvents invokes getWorkflowRunEvents operation.
-	//
-	// GET /workflows/runs/{id}/events
-	GetWorkflowRunEvents(ctx context.Context, params GetWorkflowRunEventsParams) (*ExecutionEventList, error)
 	// HealthCheck invokes healthCheck operation.
 	//
 	// GET /healthz
@@ -316,10 +308,6 @@ type Invoker interface {
 	//
 	// POST /datasets/{id}/documents/{docId}/reprocess
 	ReprocessDocument(ctx context.Context, params ReprocessDocumentParams) (*DatasetDocument, error)
-	// ResumeStream invokes resumeStream operation.
-	//
-	// POST /chat/resume/stream
-	ResumeStream(ctx context.Context, request *ResumeRequest) (ResumeStreamOK, error)
 	// RollbackVersion invokes rollbackVersion operation.
 	//
 	// POST /agents/{id}/versions/{ver}/rollback
@@ -334,6 +322,28 @@ type Invoker interface {
 	//
 	// POST /auth/setup
 	SetupAuth(ctx context.Context, request *SetupRequest) (*OkResponse, error)
+	// StartConversationRun invokes startConversationRun operation.
+	//
+	// Starts an agent run on this conversation. This replaces the previous
+	// `POST /chat/stream` SSE endpoint: the call returns immediately with the
+	// identifiers needed to subscribe to the resulting envelope stream.
+	// All token, tool-call and completion events are published to the event
+	// log; clients consume them via
+	// `GET /api/events?partition=card:{id}&since={last_seq}` (or the WS/SSE
+	// envelope channels exposed by the same surface).
+	//
+	// POST /conversations/{id}/runs
+	StartConversationRun(ctx context.Context, request *ChatRequest, params StartConversationRunParams) (*ChatStartResponse, error)
+	// SubmitApproval invokes submitApproval operation.
+	//
+	// Submit a HITL approval decision for a paused agent run on this conversation.
+	// This is the command-side replacement of the deprecated `POST /chat/resume/stream`:
+	// the decision is injected into the saved BoardSnapshot and the agent resumes.
+	// The resulting envelopes (agent.stream.delta, kanban.card.*, ...) are emitted to
+	// the event log; subscribe to `GET /api/events?partition=card:{id}` to follow them.
+	//
+	// POST /conversations/{id}/approval
+	SubmitApproval(ctx context.Context, request *ApprovalDecisionRequest, params SubmitApprovalParams) (*ApprovalDecisionResponse, error)
 	// UpdateAgent invokes updateAgent operation.
 	//
 	// PUT /agents/{id}
@@ -909,124 +919,6 @@ func (c *Client) sendChangePassword(ctx context.Context, request *ChangePassword
 
 	stage = "DecodeResponse"
 	result, err := decodeChangePasswordResponse(resp)
-	if err != nil {
-		return res, errors.Wrap(err, "decode response")
-	}
-
-	return result, nil
-}
-
-// ChatStream invokes chatStream operation.
-//
-// POST /chat/stream
-func (c *Client) ChatStream(ctx context.Context, request *ChatRequest) (ChatStreamOK, error) {
-	res, err := c.sendChatStream(ctx, request)
-	return res, err
-}
-
-func (c *Client) sendChatStream(ctx context.Context, request *ChatRequest) (res ChatStreamOK, err error) {
-	otelAttrs := []attribute.KeyValue{
-		otelogen.OperationID("chatStream"),
-		semconv.HTTPRequestMethodKey.String("POST"),
-		semconv.HTTPRouteKey.String("/chat/stream"),
-	}
-
-	// Run stopwatch.
-	startTime := time.Now()
-	defer func() {
-		// Use floating point division here for higher precision (instead of Millisecond method).
-		elapsedDuration := time.Since(startTime)
-		c.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), metric.WithAttributes(otelAttrs...))
-	}()
-
-	// Increment request counter.
-	c.requests.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
-
-	// Start a span for this request.
-	ctx, span := c.cfg.Tracer.Start(ctx, ChatStreamOperation,
-		trace.WithAttributes(otelAttrs...),
-		clientSpanKind,
-	)
-	// Track stage for error reporting.
-	var stage string
-	defer func() {
-		if err != nil {
-			span.RecordError(err)
-			span.SetStatus(codes.Error, stage)
-			c.errors.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
-		}
-		span.End()
-	}()
-
-	stage = "BuildURL"
-	u := uri.Clone(c.requestURL(ctx))
-	var pathParts [1]string
-	pathParts[0] = "/chat/stream"
-	uri.AddPathParts(u, pathParts[:]...)
-
-	stage = "EncodeRequest"
-	r, err := ht.NewRequest(ctx, "POST", u)
-	if err != nil {
-		return res, errors.Wrap(err, "create request")
-	}
-	if err := encodeChatStreamRequest(request, r); err != nil {
-		return res, errors.Wrap(err, "encode request")
-	}
-
-	{
-		type bitset = [1]uint8
-		var satisfied bitset
-		{
-			stage = "Security:CookieAuth"
-			switch err := c.securityCookieAuth(ctx, ChatStreamOperation, r); {
-			case err == nil: // if NO error
-				satisfied[0] |= 1 << 0
-			case errors.Is(err, ogenerrors.ErrSkipClientSecurity):
-				// Skip this security.
-			default:
-				return res, errors.Wrap(err, "security \"CookieAuth\"")
-			}
-		}
-		{
-			stage = "Security:BearerAuth"
-			switch err := c.securityBearerAuth(ctx, ChatStreamOperation, r); {
-			case err == nil: // if NO error
-				satisfied[0] |= 1 << 1
-			case errors.Is(err, ogenerrors.ErrSkipClientSecurity):
-				// Skip this security.
-			default:
-				return res, errors.Wrap(err, "security \"BearerAuth\"")
-			}
-		}
-
-		if ok := func() bool {
-		nextRequirement:
-			for _, requirement := range []bitset{
-				{0b00000001},
-				{0b00000010},
-			} {
-				for i, mask := range requirement {
-					if satisfied[i]&mask != mask {
-						continue nextRequirement
-					}
-				}
-				return true
-			}
-			return false
-		}(); !ok {
-			return res, ogenerrors.ErrSecurityRequirementIsNotSatisfied
-		}
-	}
-
-	stage = "SendRequest"
-	resp, err := c.cfg.Client.Do(r)
-	if err != nil {
-		return res, errors.Wrap(err, "do request")
-	}
-	defer resp.Body.Close()
-
-	stage = "DecodeResponse"
-	result, err := decodeChatStreamResponse(resp)
 	if err != nil {
 		return res, errors.Wrap(err, "decode response")
 	}
@@ -6263,140 +6155,6 @@ func (c *Client) sendGetWorkflowRun(ctx context.Context, params GetWorkflowRunPa
 	return result, nil
 }
 
-// GetWorkflowRunEvents invokes getWorkflowRunEvents operation.
-//
-// GET /workflows/runs/{id}/events
-func (c *Client) GetWorkflowRunEvents(ctx context.Context, params GetWorkflowRunEventsParams) (*ExecutionEventList, error) {
-	res, err := c.sendGetWorkflowRunEvents(ctx, params)
-	return res, err
-}
-
-func (c *Client) sendGetWorkflowRunEvents(ctx context.Context, params GetWorkflowRunEventsParams) (res *ExecutionEventList, err error) {
-	otelAttrs := []attribute.KeyValue{
-		otelogen.OperationID("getWorkflowRunEvents"),
-		semconv.HTTPRequestMethodKey.String("GET"),
-		semconv.HTTPRouteKey.String("/workflows/runs/{id}/events"),
-	}
-
-	// Run stopwatch.
-	startTime := time.Now()
-	defer func() {
-		// Use floating point division here for higher precision (instead of Millisecond method).
-		elapsedDuration := time.Since(startTime)
-		c.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), metric.WithAttributes(otelAttrs...))
-	}()
-
-	// Increment request counter.
-	c.requests.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
-
-	// Start a span for this request.
-	ctx, span := c.cfg.Tracer.Start(ctx, GetWorkflowRunEventsOperation,
-		trace.WithAttributes(otelAttrs...),
-		clientSpanKind,
-	)
-	// Track stage for error reporting.
-	var stage string
-	defer func() {
-		if err != nil {
-			span.RecordError(err)
-			span.SetStatus(codes.Error, stage)
-			c.errors.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
-		}
-		span.End()
-	}()
-
-	stage = "BuildURL"
-	u := uri.Clone(c.requestURL(ctx))
-	var pathParts [3]string
-	pathParts[0] = "/workflows/runs/"
-	{
-		// Encode "id" parameter.
-		e := uri.NewPathEncoder(uri.PathEncoderConfig{
-			Param:   "id",
-			Style:   uri.PathStyleSimple,
-			Explode: false,
-		})
-		if err := func() error {
-			return e.EncodeValue(conv.StringToString(params.ID))
-		}(); err != nil {
-			return res, errors.Wrap(err, "encode path")
-		}
-		encoded, err := e.Result()
-		if err != nil {
-			return res, errors.Wrap(err, "encode path")
-		}
-		pathParts[1] = encoded
-	}
-	pathParts[2] = "/events"
-	uri.AddPathParts(u, pathParts[:]...)
-
-	stage = "EncodeRequest"
-	r, err := ht.NewRequest(ctx, "GET", u)
-	if err != nil {
-		return res, errors.Wrap(err, "create request")
-	}
-
-	{
-		type bitset = [1]uint8
-		var satisfied bitset
-		{
-			stage = "Security:CookieAuth"
-			switch err := c.securityCookieAuth(ctx, GetWorkflowRunEventsOperation, r); {
-			case err == nil: // if NO error
-				satisfied[0] |= 1 << 0
-			case errors.Is(err, ogenerrors.ErrSkipClientSecurity):
-				// Skip this security.
-			default:
-				return res, errors.Wrap(err, "security \"CookieAuth\"")
-			}
-		}
-		{
-			stage = "Security:BearerAuth"
-			switch err := c.securityBearerAuth(ctx, GetWorkflowRunEventsOperation, r); {
-			case err == nil: // if NO error
-				satisfied[0] |= 1 << 1
-			case errors.Is(err, ogenerrors.ErrSkipClientSecurity):
-				// Skip this security.
-			default:
-				return res, errors.Wrap(err, "security \"BearerAuth\"")
-			}
-		}
-
-		if ok := func() bool {
-		nextRequirement:
-			for _, requirement := range []bitset{
-				{0b00000001},
-				{0b00000010},
-			} {
-				for i, mask := range requirement {
-					if satisfied[i]&mask != mask {
-						continue nextRequirement
-					}
-				}
-				return true
-			}
-			return false
-		}(); !ok {
-			return res, ogenerrors.ErrSecurityRequirementIsNotSatisfied
-		}
-	}
-
-	stage = "SendRequest"
-	resp, err := c.cfg.Client.Do(r)
-	if err != nil {
-		return res, errors.Wrap(err, "do request")
-	}
-	defer resp.Body.Close()
-
-	stage = "DecodeResponse"
-	result, err := decodeGetWorkflowRunEventsResponse(resp)
-	if err != nil {
-		return res, errors.Wrap(err, "decode response")
-	}
-
-	return result, nil
-}
-
 // HealthCheck invokes healthCheck operation.
 //
 // GET /healthz
@@ -9404,124 +9162,6 @@ func (c *Client) sendReprocessDocument(ctx context.Context, params ReprocessDocu
 	return result, nil
 }
 
-// ResumeStream invokes resumeStream operation.
-//
-// POST /chat/resume/stream
-func (c *Client) ResumeStream(ctx context.Context, request *ResumeRequest) (ResumeStreamOK, error) {
-	res, err := c.sendResumeStream(ctx, request)
-	return res, err
-}
-
-func (c *Client) sendResumeStream(ctx context.Context, request *ResumeRequest) (res ResumeStreamOK, err error) {
-	otelAttrs := []attribute.KeyValue{
-		otelogen.OperationID("resumeStream"),
-		semconv.HTTPRequestMethodKey.String("POST"),
-		semconv.HTTPRouteKey.String("/chat/resume/stream"),
-	}
-
-	// Run stopwatch.
-	startTime := time.Now()
-	defer func() {
-		// Use floating point division here for higher precision (instead of Millisecond method).
-		elapsedDuration := time.Since(startTime)
-		c.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), metric.WithAttributes(otelAttrs...))
-	}()
-
-	// Increment request counter.
-	c.requests.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
-
-	// Start a span for this request.
-	ctx, span := c.cfg.Tracer.Start(ctx, ResumeStreamOperation,
-		trace.WithAttributes(otelAttrs...),
-		clientSpanKind,
-	)
-	// Track stage for error reporting.
-	var stage string
-	defer func() {
-		if err != nil {
-			span.RecordError(err)
-			span.SetStatus(codes.Error, stage)
-			c.errors.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
-		}
-		span.End()
-	}()
-
-	stage = "BuildURL"
-	u := uri.Clone(c.requestURL(ctx))
-	var pathParts [1]string
-	pathParts[0] = "/chat/resume/stream"
-	uri.AddPathParts(u, pathParts[:]...)
-
-	stage = "EncodeRequest"
-	r, err := ht.NewRequest(ctx, "POST", u)
-	if err != nil {
-		return res, errors.Wrap(err, "create request")
-	}
-	if err := encodeResumeStreamRequest(request, r); err != nil {
-		return res, errors.Wrap(err, "encode request")
-	}
-
-	{
-		type bitset = [1]uint8
-		var satisfied bitset
-		{
-			stage = "Security:CookieAuth"
-			switch err := c.securityCookieAuth(ctx, ResumeStreamOperation, r); {
-			case err == nil: // if NO error
-				satisfied[0] |= 1 << 0
-			case errors.Is(err, ogenerrors.ErrSkipClientSecurity):
-				// Skip this security.
-			default:
-				return res, errors.Wrap(err, "security \"CookieAuth\"")
-			}
-		}
-		{
-			stage = "Security:BearerAuth"
-			switch err := c.securityBearerAuth(ctx, ResumeStreamOperation, r); {
-			case err == nil: // if NO error
-				satisfied[0] |= 1 << 1
-			case errors.Is(err, ogenerrors.ErrSkipClientSecurity):
-				// Skip this security.
-			default:
-				return res, errors.Wrap(err, "security \"BearerAuth\"")
-			}
-		}
-
-		if ok := func() bool {
-		nextRequirement:
-			for _, requirement := range []bitset{
-				{0b00000001},
-				{0b00000010},
-			} {
-				for i, mask := range requirement {
-					if satisfied[i]&mask != mask {
-						continue nextRequirement
-					}
-				}
-				return true
-			}
-			return false
-		}(); !ok {
-			return res, ogenerrors.ErrSecurityRequirementIsNotSatisfied
-		}
-	}
-
-	stage = "SendRequest"
-	resp, err := c.cfg.Client.Do(r)
-	if err != nil {
-		return res, errors.Wrap(err, "do request")
-	}
-	defer resp.Body.Close()
-
-	stage = "DecodeResponse"
-	result, err := decodeResumeStreamResponse(resp)
-	if err != nil {
-		return res, errors.Wrap(err, "decode response")
-	}
-
-	return result, nil
-}
-
 // RollbackVersion invokes rollbackVersion operation.
 //
 // POST /agents/{id}/versions/{ver}/rollback
@@ -9861,6 +9501,294 @@ func (c *Client) sendSetupAuth(ctx context.Context, request *SetupRequest) (res 
 
 	stage = "DecodeResponse"
 	result, err := decodeSetupAuthResponse(resp)
+	if err != nil {
+		return res, errors.Wrap(err, "decode response")
+	}
+
+	return result, nil
+}
+
+// StartConversationRun invokes startConversationRun operation.
+//
+// Starts an agent run on this conversation. This replaces the previous
+// `POST /chat/stream` SSE endpoint: the call returns immediately with the
+// identifiers needed to subscribe to the resulting envelope stream.
+// All token, tool-call and completion events are published to the event
+// log; clients consume them via
+// `GET /api/events?partition=card:{id}&since={last_seq}` (or the WS/SSE
+// envelope channels exposed by the same surface).
+//
+// POST /conversations/{id}/runs
+func (c *Client) StartConversationRun(ctx context.Context, request *ChatRequest, params StartConversationRunParams) (*ChatStartResponse, error) {
+	res, err := c.sendStartConversationRun(ctx, request, params)
+	return res, err
+}
+
+func (c *Client) sendStartConversationRun(ctx context.Context, request *ChatRequest, params StartConversationRunParams) (res *ChatStartResponse, err error) {
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("startConversationRun"),
+		semconv.HTTPRequestMethodKey.String("POST"),
+		semconv.HTTPRouteKey.String("/conversations/{id}/runs"),
+	}
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		elapsedDuration := time.Since(startTime)
+		c.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), metric.WithAttributes(otelAttrs...))
+	}()
+
+	// Increment request counter.
+	c.requests.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+
+	// Start a span for this request.
+	ctx, span := c.cfg.Tracer.Start(ctx, StartConversationRunOperation,
+		trace.WithAttributes(otelAttrs...),
+		clientSpanKind,
+	)
+	// Track stage for error reporting.
+	var stage string
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, stage)
+			c.errors.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+		}
+		span.End()
+	}()
+
+	stage = "BuildURL"
+	u := uri.Clone(c.requestURL(ctx))
+	var pathParts [3]string
+	pathParts[0] = "/conversations/"
+	{
+		// Encode "id" parameter.
+		e := uri.NewPathEncoder(uri.PathEncoderConfig{
+			Param:   "id",
+			Style:   uri.PathStyleSimple,
+			Explode: false,
+		})
+		if err := func() error {
+			return e.EncodeValue(conv.StringToString(params.ID))
+		}(); err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		encoded, err := e.Result()
+		if err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		pathParts[1] = encoded
+	}
+	pathParts[2] = "/runs"
+	uri.AddPathParts(u, pathParts[:]...)
+
+	stage = "EncodeRequest"
+	r, err := ht.NewRequest(ctx, "POST", u)
+	if err != nil {
+		return res, errors.Wrap(err, "create request")
+	}
+	if err := encodeStartConversationRunRequest(request, r); err != nil {
+		return res, errors.Wrap(err, "encode request")
+	}
+
+	{
+		type bitset = [1]uint8
+		var satisfied bitset
+		{
+			stage = "Security:CookieAuth"
+			switch err := c.securityCookieAuth(ctx, StartConversationRunOperation, r); {
+			case err == nil: // if NO error
+				satisfied[0] |= 1 << 0
+			case errors.Is(err, ogenerrors.ErrSkipClientSecurity):
+				// Skip this security.
+			default:
+				return res, errors.Wrap(err, "security \"CookieAuth\"")
+			}
+		}
+		{
+			stage = "Security:BearerAuth"
+			switch err := c.securityBearerAuth(ctx, StartConversationRunOperation, r); {
+			case err == nil: // if NO error
+				satisfied[0] |= 1 << 1
+			case errors.Is(err, ogenerrors.ErrSkipClientSecurity):
+				// Skip this security.
+			default:
+				return res, errors.Wrap(err, "security \"BearerAuth\"")
+			}
+		}
+
+		if ok := func() bool {
+		nextRequirement:
+			for _, requirement := range []bitset{
+				{0b00000001},
+				{0b00000010},
+			} {
+				for i, mask := range requirement {
+					if satisfied[i]&mask != mask {
+						continue nextRequirement
+					}
+				}
+				return true
+			}
+			return false
+		}(); !ok {
+			return res, ogenerrors.ErrSecurityRequirementIsNotSatisfied
+		}
+	}
+
+	stage = "SendRequest"
+	resp, err := c.cfg.Client.Do(r)
+	if err != nil {
+		return res, errors.Wrap(err, "do request")
+	}
+	defer resp.Body.Close()
+
+	stage = "DecodeResponse"
+	result, err := decodeStartConversationRunResponse(resp)
+	if err != nil {
+		return res, errors.Wrap(err, "decode response")
+	}
+
+	return result, nil
+}
+
+// SubmitApproval invokes submitApproval operation.
+//
+// Submit a HITL approval decision for a paused agent run on this conversation.
+// This is the command-side replacement of the deprecated `POST /chat/resume/stream`:
+// the decision is injected into the saved BoardSnapshot and the agent resumes.
+// The resulting envelopes (agent.stream.delta, kanban.card.*, ...) are emitted to
+// the event log; subscribe to `GET /api/events?partition=card:{id}` to follow them.
+//
+// POST /conversations/{id}/approval
+func (c *Client) SubmitApproval(ctx context.Context, request *ApprovalDecisionRequest, params SubmitApprovalParams) (*ApprovalDecisionResponse, error) {
+	res, err := c.sendSubmitApproval(ctx, request, params)
+	return res, err
+}
+
+func (c *Client) sendSubmitApproval(ctx context.Context, request *ApprovalDecisionRequest, params SubmitApprovalParams) (res *ApprovalDecisionResponse, err error) {
+	otelAttrs := []attribute.KeyValue{
+		otelogen.OperationID("submitApproval"),
+		semconv.HTTPRequestMethodKey.String("POST"),
+		semconv.HTTPRouteKey.String("/conversations/{id}/approval"),
+	}
+
+	// Run stopwatch.
+	startTime := time.Now()
+	defer func() {
+		// Use floating point division here for higher precision (instead of Millisecond method).
+		elapsedDuration := time.Since(startTime)
+		c.duration.Record(ctx, float64(elapsedDuration)/float64(time.Millisecond), metric.WithAttributes(otelAttrs...))
+	}()
+
+	// Increment request counter.
+	c.requests.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+
+	// Start a span for this request.
+	ctx, span := c.cfg.Tracer.Start(ctx, SubmitApprovalOperation,
+		trace.WithAttributes(otelAttrs...),
+		clientSpanKind,
+	)
+	// Track stage for error reporting.
+	var stage string
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, stage)
+			c.errors.Add(ctx, 1, metric.WithAttributes(otelAttrs...))
+		}
+		span.End()
+	}()
+
+	stage = "BuildURL"
+	u := uri.Clone(c.requestURL(ctx))
+	var pathParts [3]string
+	pathParts[0] = "/conversations/"
+	{
+		// Encode "id" parameter.
+		e := uri.NewPathEncoder(uri.PathEncoderConfig{
+			Param:   "id",
+			Style:   uri.PathStyleSimple,
+			Explode: false,
+		})
+		if err := func() error {
+			return e.EncodeValue(conv.StringToString(params.ID))
+		}(); err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		encoded, err := e.Result()
+		if err != nil {
+			return res, errors.Wrap(err, "encode path")
+		}
+		pathParts[1] = encoded
+	}
+	pathParts[2] = "/approval"
+	uri.AddPathParts(u, pathParts[:]...)
+
+	stage = "EncodeRequest"
+	r, err := ht.NewRequest(ctx, "POST", u)
+	if err != nil {
+		return res, errors.Wrap(err, "create request")
+	}
+	if err := encodeSubmitApprovalRequest(request, r); err != nil {
+		return res, errors.Wrap(err, "encode request")
+	}
+
+	{
+		type bitset = [1]uint8
+		var satisfied bitset
+		{
+			stage = "Security:CookieAuth"
+			switch err := c.securityCookieAuth(ctx, SubmitApprovalOperation, r); {
+			case err == nil: // if NO error
+				satisfied[0] |= 1 << 0
+			case errors.Is(err, ogenerrors.ErrSkipClientSecurity):
+				// Skip this security.
+			default:
+				return res, errors.Wrap(err, "security \"CookieAuth\"")
+			}
+		}
+		{
+			stage = "Security:BearerAuth"
+			switch err := c.securityBearerAuth(ctx, SubmitApprovalOperation, r); {
+			case err == nil: // if NO error
+				satisfied[0] |= 1 << 1
+			case errors.Is(err, ogenerrors.ErrSkipClientSecurity):
+				// Skip this security.
+			default:
+				return res, errors.Wrap(err, "security \"BearerAuth\"")
+			}
+		}
+
+		if ok := func() bool {
+		nextRequirement:
+			for _, requirement := range []bitset{
+				{0b00000001},
+				{0b00000010},
+			} {
+				for i, mask := range requirement {
+					if satisfied[i]&mask != mask {
+						continue nextRequirement
+					}
+				}
+				return true
+			}
+			return false
+		}(); !ok {
+			return res, ogenerrors.ErrSecurityRequirementIsNotSatisfied
+		}
+	}
+
+	stage = "SendRequest"
+	resp, err := c.cfg.Client.Do(r)
+	if err != nil {
+		return res, errors.Wrap(err, "do request")
+	}
+	defer resp.Body.Close()
+
+	stage = "DecodeResponse"
+	result, err := decodeSubmitApprovalResponse(resp)
 	if err != nil {
 		return res, errors.Wrap(err, "decode response")
 	}

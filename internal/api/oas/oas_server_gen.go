@@ -24,10 +24,6 @@ type Handler interface {
 	//
 	// POST /auth/change-password
 	ChangePassword(ctx context.Context, req *ChangePasswordRequest) (*OkResponse, error)
-	// ChatStream implements chatStream operation.
-	//
-	// POST /chat/stream
-	ChatStream(ctx context.Context, req *ChatRequest) (ChatStreamOK, error)
 	// CompileGraph implements compileGraph operation.
 	//
 	// POST /agents/{id}/compile
@@ -190,10 +186,6 @@ type Handler interface {
 	//
 	// GET /workflows/runs/{id}
 	GetWorkflowRun(ctx context.Context, params GetWorkflowRunParams) (*WorkflowRun, error)
-	// GetWorkflowRunEvents implements getWorkflowRunEvents operation.
-	//
-	// GET /workflows/runs/{id}/events
-	GetWorkflowRunEvents(ctx context.Context, params GetWorkflowRunEventsParams) (*ExecutionEventList, error)
 	// HealthCheck implements healthCheck operation.
 	//
 	// GET /healthz
@@ -295,10 +287,6 @@ type Handler interface {
 	//
 	// POST /datasets/{id}/documents/{docId}/reprocess
 	ReprocessDocument(ctx context.Context, params ReprocessDocumentParams) (*DatasetDocument, error)
-	// ResumeStream implements resumeStream operation.
-	//
-	// POST /chat/resume/stream
-	ResumeStream(ctx context.Context, req *ResumeRequest) (ResumeStreamOK, error)
 	// RollbackVersion implements rollbackVersion operation.
 	//
 	// POST /agents/{id}/versions/{ver}/rollback
@@ -313,6 +301,28 @@ type Handler interface {
 	//
 	// POST /auth/setup
 	SetupAuth(ctx context.Context, req *SetupRequest) (*OkResponse, error)
+	// StartConversationRun implements startConversationRun operation.
+	//
+	// Starts an agent run on this conversation. This replaces the previous
+	// `POST /chat/stream` SSE endpoint: the call returns immediately with the
+	// identifiers needed to subscribe to the resulting envelope stream.
+	// All token, tool-call and completion events are published to the event
+	// log; clients consume them via
+	// `GET /api/events?partition=card:{id}&since={last_seq}` (or the WS/SSE
+	// envelope channels exposed by the same surface).
+	//
+	// POST /conversations/{id}/runs
+	StartConversationRun(ctx context.Context, req *ChatRequest, params StartConversationRunParams) (*ChatStartResponse, error)
+	// SubmitApproval implements submitApproval operation.
+	//
+	// Submit a HITL approval decision for a paused agent run on this conversation.
+	// This is the command-side replacement of the deprecated `POST /chat/resume/stream`:
+	// the decision is injected into the saved BoardSnapshot and the agent resumes.
+	// The resulting envelopes (agent.stream.delta, kanban.card.*, ...) are emitted to
+	// the event log; subscribe to `GET /api/events?partition=card:{id}` to follow them.
+	//
+	// POST /conversations/{id}/approval
+	SubmitApproval(ctx context.Context, req *ApprovalDecisionRequest, params SubmitApprovalParams) (*ApprovalDecisionResponse, error)
 	// UpdateAgent implements updateAgent operation.
 	//
 	// PUT /agents/{id}

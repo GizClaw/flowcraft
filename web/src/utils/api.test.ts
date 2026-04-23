@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { apiStream, toolApi, pluginApi, skillApi } from './api';
+import { apiStream } from '../api/client';
+import { toolApi, pluginApi, skillApi } from './api';
 import client from '../api/client';
 
 vi.mock('../store/toastStore', () => ({

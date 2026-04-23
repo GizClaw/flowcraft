@@ -28,6 +28,7 @@ func wireHTTP(
 	pol policy.Policy,
 	projMgr *projection.Manager,
 	webhookSender *senderwebhook.WebhookOutboundSender,
+	chatRead api.ChatReadModel,
 ) *api.Server {
 	webFS, _ := fs.Sub(web.Dist, "dist")
 
@@ -41,6 +42,7 @@ func wireHTTP(
 		ProjectionStatus:   newProjectionStatusAdapter(projMgr),
 		ProjectionReplayer: newProjectionReplayAdapter(projMgr),
 		WebhookReplayer:    newWebhookReplayAdapter(webhookSender),
+		ChatRead:           chatRead,
 		Monitoring: api.MonitoringConfig{
 			ErrorRateWarn:        cfg.Monitoring.ErrorRateWarn,
 			ErrorRateDown:        cfg.Monitoring.ErrorRateDown,

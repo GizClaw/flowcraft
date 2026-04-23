@@ -1,10 +1,16 @@
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useChatStore } from '../store/chatStore';
 import { chatApi } from '../utils/api';
-import type { WorkflowStreamEvent, AgentToolResultEvent, StreamDoneEvent, ChatRequest, ApprovalRequiredEvent } from '../types/chat';
+import type { ApprovalRequiredEvent } from '../types/chat';
 import { useNotification } from './useNotification';
 import { getRuntimeConversationId } from '../utils/runtime';
+import { envelopeRouter } from '../eventlog/router';
+import type { Envelope } from '../eventlog/types';
+
+const EVT_APPROVAL_REQUIRED = 'approval.required';
+const EVT_RUN_COMPLETED = 'agent.run.completed';
+const EVT_RUN_FAILED = 'agent.run.failed';
 
 export interface ApprovalState {
   pending: boolean;
@@ -16,183 +22,107 @@ export interface ApprovalState {
 
 interface UseChatOptions {
   agentId: string;
-  streamApi?: (request: ChatRequest, signal?: AbortSignal) => AsyncIterable<WorkflowStreamEvent>;
-  onToolResult?: (event: AgentToolResultEvent) => void;
-  onDone?: (event: StreamDoneEvent) => void;
-  buildRequest?: (content: string) => Partial<ChatRequest>;
+  buildRequest?: (content: string) => { inputs?: Record<string, unknown>; async?: boolean };
 }
 
+// useChat is now a thin command-side hook:
+//   * sendMessage    → POST /api/conversations/{id}/runs (no streaming)
+//   * submitApproval → POST /api/conversations/{id}/approval
+// All progress (agent.stream.delta, kanban.card.*, agent.run.completed,
+// approval.required) flows through the global EnvelopeClient and is
+// projected into chatStore by chatReducers. The hook only watches the same
+// envelope stream to surface HITL approval prompts as React state for the
+// approval modal.
 export function useChat(options: UseChatOptions) {
   const { t } = useTranslation();
-  const { agentId, onToolResult, onDone, buildRequest } = options;
-  const streamFn = useMemo(
-    () => options.streamApi || ((req: ChatRequest) => chatApi.stream(req)),
-    [options.streamApi],
-  );
+  const { agentId, buildRequest } = options;
 
-  const addUserMessage = useChatStore((s) => s.addUserMessage);
   const startStreaming = useChatStore((s) => s.startStreaming);
   const appendStreamChunk = useChatStore((s) => s.appendStreamChunk);
   const finishStreaming = useChatStore((s) => s.finishStreaming);
   const stopStreaming = useChatStore((s) => s.stopStreaming);
-  const addToolCall = useChatStore((s) => s.addToolCall);
-  const updateToolCallResult = useChatStore((s) => s.updateToolCallResult);
-  const commitIntermediateMessage = useChatStore((s) => s.commitIntermediateMessage);
   const { handleStreamEvent } = useNotification();
 
   const [approval, setApproval] = useState<ApprovalState>({
     pending: false, runId: '', conversationId: '', state: null,
   });
 
+  const conversationId = getRuntimeConversationId(agentId);
+
+  // Surface approval-required envelopes for this conversation as React state.
+  useEffect(() => {
+    const handler = (env: Envelope) => {
+      const payload = env.payload as { run_id?: string; conversation_id?: string; conversationID?: string; state?: Record<string, unknown>; prompt?: string };
+      const convID = payload.conversationID ?? payload.conversation_id;
+      if (convID && convID !== conversationId) return;
+      setApproval({
+        pending: true,
+        runId: payload.run_id || '',
+        conversationId: convID || conversationId,
+        state: payload.state || null,
+        prompt: payload.prompt,
+      });
+      handleStreamEvent({ type: 'approval_required', ...payload } as ApprovalRequiredEvent);
+    };
+    const dispose = envelopeRouter.on(EVT_APPROVAL_REQUIRED, handler);
+    return () => { dispose(); };
+  }, [conversationId, handleStreamEvent]);
+
+  // Close the streaming indicator once the run terminates.
+  useEffect(() => {
+    const handler = (env: Envelope) => {
+      const payload = env.payload as { conversation_id?: string; conversationID?: string };
+      const convID = payload.conversationID ?? payload.conversation_id;
+      if (convID && convID !== conversationId) return;
+      finishStreaming(conversationId);
+    };
+    const dispose1 = envelopeRouter.on(EVT_RUN_COMPLETED, handler);
+    const dispose2 = envelopeRouter.on(EVT_RUN_FAILED, handler);
+    return () => { dispose1(); dispose2(); };
+  }, [conversationId, finishStreaming]);
+
   const sendMessage = useCallback(async (content: string) => {
-    addUserMessage(agentId, content);
-    const controller = startStreaming(agentId);
-
+    startStreaming(conversationId);
     const extra = buildRequest?.(content) || {};
-
-    let isCallback = false;
-    let callbackCardId = '';
-    let tokenBuffer = '';
-    let tokenTimer: ReturnType<typeof setTimeout> | null = null;
-
-    function flushTokens() {
-      if (tokenBuffer) {
-        appendStreamChunk(agentId, tokenBuffer);
-        tokenBuffer = '';
-      }
-      if (tokenTimer) { clearTimeout(tokenTimer); tokenTimer = null; }
-    }
-
     try {
-      const extraInputs = (extra.inputs && typeof extra.inputs === 'object')
-        ? extra.inputs
-        : undefined;
-      const request: ChatRequest = {
-        ...extra,
+      await chatApi.startRun(conversationId, {
         agent_id: agentId,
         query: content,
-        conversation_id: getRuntimeConversationId(agentId),
-        ...(extraInputs ? { inputs: extraInputs } : {}),
-      };
-
-      const stream = streamFn(request, controller.signal);
-
-      for await (const event of stream) {
-        if (controller.signal.aborted) break;
-        handleStreamEvent(event);
-        handleEvent(event);
-      }
-    } catch (err) {
-      flushTokens();
-      if (err instanceof DOMException && err.name === 'AbortError') {
-        appendStreamChunk(agentId, t('chat.aborted'));
-      } else {
-        appendStreamChunk(agentId, `Error: ${err instanceof Error ? err.message : 'Unknown error'}`);
-      }
-    } finally {
-      flushTokens();
-      finishStreaming(agentId, isCallback ? { isCallback: true, cardId: callbackCardId || undefined } : undefined);
-    }
-
-    function handleEvent(event: WorkflowStreamEvent) {
-      const st = useChatStore.getState().getStreaming(agentId);
-
-      switch (event.type) {
-        case 'agent_token':
-          if (event.chunk) {
-            if (st.toolCalls.length > 0 && st.toolCalls.every((tc) => tc.status !== 'pending')) {
-              flushTokens();
-              commitIntermediateMessage(agentId);
-            }
-            tokenBuffer += event.chunk;
-            if (!tokenTimer) {
-              tokenTimer = setTimeout(flushTokens, 16);
-            }
-          }
-          break;
-        case 'agent_tool_call':
-          flushTokens();
-          if (event.tool_name) {
-            if (useChatStore.getState().getStreaming(agentId).content) {
-              commitIntermediateMessage(agentId);
-            }
-            addToolCall(agentId, { id: event.tool_call_id, name: event.tool_name, args: event.tool_args || '', status: 'pending' });
-          }
-          break;
-        case 'agent_tool_result':
-          if (event.tool_name) {
-            updateToolCallResult(agentId, event.tool_call_id, event.tool_name, event.tool_result || '', event.is_error ? 'error' : 'success');
-            onToolResult?.(event as AgentToolResultEvent);
-          }
-          break;
-        case 'approval_required': {
-          flushTokens();
-          const approvalEvent = event as ApprovalRequiredEvent;
-          setApproval({
-            pending: true,
-            runId: approvalEvent.run_id || '',
-            conversationId: approvalEvent.conversation_id || getRuntimeConversationId(agentId),
-            state: (approvalEvent.data as Record<string, unknown>) || null,
-            prompt: approvalEvent.prompt,
-          });
-          break;
-        }
-        case 'done': {
-          flushTokens();
-          const done = event as StreamDoneEvent;
-          const doneAny = event as unknown as Record<string, unknown>;
-          const metadata = doneAny.metadata as Record<string, unknown> | undefined;
-          if (metadata?.callback) {
-            isCallback = true;
-            callbackCardId = (metadata.card_id as string) || '';
-          }
-          if (done.status === 'interrupted' && done.output?.state) {
-            setApproval({
-              pending: true,
-              runId: done.output.run_id || done.run_id || '',
-              conversationId: done.output.conversation_id || done.conversation_id || getRuntimeConversationId(agentId),
-              state: done.output.state as Record<string, unknown>,
-            });
-          }
-          onDone?.(done);
-          break;
-        }
-        case 'error':
-          flushTokens();
-          appendStreamChunk(agentId, `Error: ${event.error || event.message || 'Unknown error'}`);
-          break;
-      }
-    }
-  }, [agentId, streamFn, addUserMessage, startStreaming, appendStreamChunk, finishStreaming, addToolCall, updateToolCallResult, commitIntermediateMessage, buildRequest, onToolResult, onDone, handleStreamEvent, t]);
-
-  const stop = useCallback(() => stopStreaming(agentId), [agentId, stopStreaming]);
-
-  const submitApproval = useCallback(async (decision: 'approved' | 'rejected', comment?: string) => {
-    if (!approval.pending || !approval.state) return;
-    setApproval((prev) => ({ ...prev, pending: false }));
-
-    const controller = startStreaming(agentId);
-    try {
-      const stream = chatApi.resumeStream(agentId, {
-        conversation_id: approval.conversationId,
-        run_id: approval.runId,
-        state: approval.state,
-        decision: {
-          approval_decision: decision,
-          ...(comment ? { approval_comment: comment } : {}),
-        },
+        ...(extra.inputs ? { inputs: extra.inputs } : {}),
+        ...(extra.async !== undefined ? { async: extra.async } : {}),
       });
-      for await (const event of stream) {
-        if (controller.signal.aborted) break;
-        handleStreamEvent(event);
-        // Re-use the same event dispatch — approval_required can recur
-      }
+      // chat.message.sent for the user prompt is published by the backend
+      // ChatSendCommand and projected into the store by chatReducers; the
+      // assistant reply streams in via agent.stream.delta envelopes.
     } catch (err) {
-      appendStreamChunk(agentId, `Error: ${err instanceof Error ? err.message : 'Unknown error'}`);
-    } finally {
-      finishStreaming(agentId);
+      appendStreamChunk(conversationId, `${t('chat.error')}: ${err instanceof Error ? err.message : 'Unknown error'}`);
+      finishStreaming(conversationId);
     }
-  }, [agentId, approval, startStreaming, finishStreaming, appendStreamChunk, handleStreamEvent]);
+  }, [agentId, conversationId, buildRequest, startStreaming, appendStreamChunk, finishStreaming, t]);
+
+  const stop = useCallback(() => stopStreaming(conversationId), [conversationId, stopStreaming]);
+
+  // submitApproval POSTs the decision; the resumed agent's tokens and tool
+  // events arrive via the global EnvelopeClient subscription. We start a
+  // streaming session so the UI shows "agent typing" until the first
+  // envelope closes it.
+  const submitApproval = useCallback(async (decision: 'approved' | 'rejected', comment?: string) => {
+    if (!approval.pending || !approval.runId) return;
+    setApproval((prev) => ({ ...prev, pending: false }));
+    startStreaming(conversationId);
+    try {
+      await chatApi.submitApproval(approval.conversationId, {
+        agent_id: agentId,
+        run_id: approval.runId,
+        decision,
+        ...(comment ? { comment } : {}),
+        ...(approval.state ? { state: approval.state } : {}),
+      });
+    } catch (err) {
+      appendStreamChunk(conversationId, `Error: ${err instanceof Error ? err.message : 'Unknown error'}`);
+      finishStreaming(conversationId);
+    }
+  }, [agentId, conversationId, approval, startStreaming, finishStreaming, appendStreamChunk]);
 
   return { sendMessage, stopStreaming: stop, approval, submitApproval };
 }

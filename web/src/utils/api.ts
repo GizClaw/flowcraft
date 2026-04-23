@@ -1,13 +1,12 @@
-import client, { ApiError, apiStream } from '../api/client';
+import client, { ApiError } from '../api/client';
 import type { components } from '../api/schema';
 import type { Agent, CreateAgentRequest, UpdateAgentRequest, CompileResult, DryRunResult, GraphTemplate } from '../types/app';
-import type { Conversation, Message, ChatRequest, WorkflowStreamEvent, WorkflowRun, ExecutionEvent, ResumeRequest } from '../types/chat';
+import type { Conversation, Message, ChatRequest, WorkflowRun } from '../types/chat';
 import type { Dataset, DatasetDocument, CreateDatasetRequest, AddDocumentRequest, QueryDatasetRequest, QueryResult } from '../types/knowledge';
 import type { NodeSchema } from '../types/nodeTypes';
 import type { KanbanSnapshot, TimelineEntry, TopologyNode, TopologyEdge } from '../types/kanban';
 
 export { ApiError } from '../api/client';
-export { apiStream } from '../api/client';
 
 export type Schemas = components['schemas'];
 
@@ -89,21 +88,38 @@ export const authApi = {
 // ── Chat API ──
 
 export const chatApi = {
-  stream: (data: ChatRequest) =>
-    apiStream<WorkflowStreamEvent>('/api/chat/stream', {
-      method: 'POST',
-      json: data,
-    }),
-  streamReconnect: (data: { agent_id: string; conversation_id?: string }) =>
-    apiStream<WorkflowStreamEvent>('/api/chat/stream', {
-      method: 'POST',
-      json: { ...data, query: '', reconnect: true },
-    }),
-  resumeStream: (agentId: string, data: ResumeRequest) =>
-    apiStream<WorkflowStreamEvent>('/api/chat/resume/stream', {
-      method: 'POST',
-      json: { ...data, agent_id: agentId },
-    }),
+  // startRun is the command-side replacement of the deprecated `POST
+  // /chat/stream` SSE endpoint. The server starts the agent and returns
+  // identifiers; clients subscribe to envelope events through the global
+  // EnvelopeClient (see web/src/eventlog/client.ts).
+  startRun: async (
+    conversationId: string,
+    body: { agent_id: string; query: string; inputs?: Record<string, unknown>; async?: boolean },
+  ) => {
+    const { data, error } = await client.POST('/conversations/{id}/runs', {
+      params: { path: { id: conversationId } },
+      body: body as ChatRequest,
+    });
+    if (error) {
+      throw new Error(typeof error === 'object' && error && 'message' in error ? String((error as { message?: unknown }).message ?? 'start run failed') : 'start run failed');
+    }
+    return data as { accepted: boolean; conversation_id: string; run_id: string; partition: string; last_seq?: number };
+  },
+  // submitApproval is the command-side replacement of the deprecated
+  // resumeStream(). It just POSTs the verdict; the resumed agent's
+  // events stream back through the global EnvelopeClient (event_log)
+  // and chat reducers update the store automatically.
+  submitApproval: async (
+    conversationId: string,
+    body: { agent_id: string; run_id: string; decision: 'approved' | 'rejected'; comment?: string; state?: Record<string, unknown> },
+  ) => {
+    const { data, error } = await client.POST('/conversations/{id}/approval', {
+      params: { path: { id: conversationId } },
+      body,
+    });
+    if (error) throw new Error(typeof error === 'object' && error && 'message' in error ? String((error as { message?: unknown }).message ?? 'approval failed') : 'approval failed');
+    return data as { accepted: boolean; run_id: string; partition?: string; last_seq?: number };
+  },
   getConversations: async (agentId?: string) => {
     const { data } = await client.GET('/conversations', {
       params: { query: agentId ? { agent_id: agentId } : {} },
@@ -583,20 +599,28 @@ export const workflowRunApi = {
     });
     return data as unknown as { status: string };
   },
-  events: async (id: string) => {
-    const { data } = await client.GET('/workflows/runs/{id}/events', {
-      params: { path: { id } },
-    });
-    return (data?.data ?? []) as ExecutionEvent[];
-  },
 };
 
 // ── Kanban API ──
 
 export const kanbanApi = {
-  cards: async () => {
+  // cards returns the initial snapshot consumed at boot / WS reconnect.
+  // After R5 (§7.1.5) the steady-state board is fed by the envelope stream;
+  // `last_seq` is the cursor clients hand to the EnvelopeClient so they
+  // do not miss / replay any task.* events.
+  cards: async (): Promise<{
+    cards: KanbanSnapshot['cards'];
+    lastSeq: number;
+    lastEventTs: string | null;
+    realmId: string | null;
+  }> => {
     const { data } = await client.GET('/kanban/cards');
-    return (data?.data ?? []) as unknown as KanbanSnapshot['cards'];
+    return {
+      cards: (data?.data ?? []) as unknown as KanbanSnapshot['cards'],
+      lastSeq: typeof data?.last_seq === 'number' ? data.last_seq : 0,
+      lastEventTs: typeof data?.last_event_ts === 'string' ? data.last_event_ts : null,
+      realmId: typeof data?.realm_id === 'string' ? data.realm_id : null,
+    };
   },
   timeline: async () => {
     const { data } = await client.GET('/kanban/timeline');

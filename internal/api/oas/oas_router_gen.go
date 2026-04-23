@@ -592,92 +592,24 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 					break
 				}
 				switch elem[0] {
-				case 'h': // Prefix: "ha"
+				case 'h': // Prefix: "hannel-types"
 
-					if l := len("ha"); len(elem) >= l && elem[0:l] == "ha" {
+					if l := len("hannel-types"); len(elem) >= l && elem[0:l] == "hannel-types" {
 						elem = elem[l:]
 					} else {
 						break
 					}
 
 					if len(elem) == 0 {
-						break
-					}
-					switch elem[0] {
-					case 'n': // Prefix: "nnel-types"
-
-						if l := len("nnel-types"); len(elem) >= l && elem[0:l] == "nnel-types" {
-							elem = elem[l:]
-						} else {
-							break
+						// Leaf node.
+						switch r.Method {
+						case "GET":
+							s.handleGetChannelTypesRequest([0]string{}, elemIsEscaped, w, r)
+						default:
+							s.notAllowed(w, r, "GET")
 						}
 
-						if len(elem) == 0 {
-							// Leaf node.
-							switch r.Method {
-							case "GET":
-								s.handleGetChannelTypesRequest([0]string{}, elemIsEscaped, w, r)
-							default:
-								s.notAllowed(w, r, "GET")
-							}
-
-							return
-						}
-
-					case 't': // Prefix: "t/"
-
-						if l := len("t/"); len(elem) >= l && elem[0:l] == "t/" {
-							elem = elem[l:]
-						} else {
-							break
-						}
-
-						if len(elem) == 0 {
-							break
-						}
-						switch elem[0] {
-						case 'r': // Prefix: "resume/stream"
-
-							if l := len("resume/stream"); len(elem) >= l && elem[0:l] == "resume/stream" {
-								elem = elem[l:]
-							} else {
-								break
-							}
-
-							if len(elem) == 0 {
-								// Leaf node.
-								switch r.Method {
-								case "POST":
-									s.handleResumeStreamRequest([0]string{}, elemIsEscaped, w, r)
-								default:
-									s.notAllowed(w, r, "POST")
-								}
-
-								return
-							}
-
-						case 's': // Prefix: "stream"
-
-							if l := len("stream"); len(elem) >= l && elem[0:l] == "stream" {
-								elem = elem[l:]
-							} else {
-								break
-							}
-
-							if len(elem) == 0 {
-								// Leaf node.
-								switch r.Method {
-								case "POST":
-									s.handleChatStreamRequest([0]string{}, elemIsEscaped, w, r)
-								default:
-									s.notAllowed(w, r, "POST")
-								}
-
-								return
-							}
-
-						}
-
+						return
 					}
 
 				case 'o': // Prefix: "onversations"
@@ -720,26 +652,84 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 							break
 						}
 						switch elem[0] {
-						case '/': // Prefix: "/messages"
+						case '/': // Prefix: "/"
 
-							if l := len("/messages"); len(elem) >= l && elem[0:l] == "/messages" {
+							if l := len("/"); len(elem) >= l && elem[0:l] == "/" {
 								elem = elem[l:]
 							} else {
 								break
 							}
 
 							if len(elem) == 0 {
-								// Leaf node.
-								switch r.Method {
-								case "GET":
-									s.handleGetMessagesRequest([1]string{
-										args[0],
-									}, elemIsEscaped, w, r)
-								default:
-									s.notAllowed(w, r, "GET")
+								break
+							}
+							switch elem[0] {
+							case 'a': // Prefix: "approval"
+
+								if l := len("approval"); len(elem) >= l && elem[0:l] == "approval" {
+									elem = elem[l:]
+								} else {
+									break
 								}
 
-								return
+								if len(elem) == 0 {
+									// Leaf node.
+									switch r.Method {
+									case "POST":
+										s.handleSubmitApprovalRequest([1]string{
+											args[0],
+										}, elemIsEscaped, w, r)
+									default:
+										s.notAllowed(w, r, "POST")
+									}
+
+									return
+								}
+
+							case 'm': // Prefix: "messages"
+
+								if l := len("messages"); len(elem) >= l && elem[0:l] == "messages" {
+									elem = elem[l:]
+								} else {
+									break
+								}
+
+								if len(elem) == 0 {
+									// Leaf node.
+									switch r.Method {
+									case "GET":
+										s.handleGetMessagesRequest([1]string{
+											args[0],
+										}, elemIsEscaped, w, r)
+									default:
+										s.notAllowed(w, r, "GET")
+									}
+
+									return
+								}
+
+							case 'r': // Prefix: "runs"
+
+								if l := len("runs"); len(elem) >= l && elem[0:l] == "runs" {
+									elem = elem[l:]
+								} else {
+									break
+								}
+
+								if len(elem) == 0 {
+									// Leaf node.
+									switch r.Method {
+									case "POST":
+										s.handleStartConversationRunRequest([1]string{
+											args[0],
+										}, elemIsEscaped, w, r)
+									default:
+										s.notAllowed(w, r, "POST")
+									}
+
+									return
+								}
+
 							}
 
 						}
@@ -1974,62 +1964,26 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 							return
 						}
 						switch elem[0] {
-						case '/': // Prefix: "/"
+						case '/': // Prefix: "/status"
 
-							if l := len("/"); len(elem) >= l && elem[0:l] == "/" {
+							if l := len("/status"); len(elem) >= l && elem[0:l] == "/status" {
 								elem = elem[l:]
 							} else {
 								break
 							}
 
 							if len(elem) == 0 {
-								break
-							}
-							switch elem[0] {
-							case 'e': // Prefix: "events"
-
-								if l := len("events"); len(elem) >= l && elem[0:l] == "events" {
-									elem = elem[l:]
-								} else {
-									break
+								// Leaf node.
+								switch r.Method {
+								case "GET":
+									s.handleGetRunStatusRequest([1]string{
+										args[0],
+									}, elemIsEscaped, w, r)
+								default:
+									s.notAllowed(w, r, "GET")
 								}
 
-								if len(elem) == 0 {
-									// Leaf node.
-									switch r.Method {
-									case "GET":
-										s.handleGetWorkflowRunEventsRequest([1]string{
-											args[0],
-										}, elemIsEscaped, w, r)
-									default:
-										s.notAllowed(w, r, "GET")
-									}
-
-									return
-								}
-
-							case 's': // Prefix: "status"
-
-								if l := len("status"); len(elem) >= l && elem[0:l] == "status" {
-									elem = elem[l:]
-								} else {
-									break
-								}
-
-								if len(elem) == 0 {
-									// Leaf node.
-									switch r.Method {
-									case "GET":
-										s.handleGetRunStatusRequest([1]string{
-											args[0],
-										}, elemIsEscaped, w, r)
-									default:
-										s.notAllowed(w, r, "GET")
-									}
-
-									return
-								}
-
+								return
 							}
 
 						}
@@ -2746,104 +2700,28 @@ func (s *Server) FindPath(method string, u *url.URL) (r Route, _ bool) {
 					break
 				}
 				switch elem[0] {
-				case 'h': // Prefix: "ha"
+				case 'h': // Prefix: "hannel-types"
 
-					if l := len("ha"); len(elem) >= l && elem[0:l] == "ha" {
+					if l := len("hannel-types"); len(elem) >= l && elem[0:l] == "hannel-types" {
 						elem = elem[l:]
 					} else {
 						break
 					}
 
 					if len(elem) == 0 {
-						break
-					}
-					switch elem[0] {
-					case 'n': // Prefix: "nnel-types"
-
-						if l := len("nnel-types"); len(elem) >= l && elem[0:l] == "nnel-types" {
-							elem = elem[l:]
-						} else {
-							break
+						// Leaf node.
+						switch method {
+						case "GET":
+							r.name = GetChannelTypesOperation
+							r.summary = ""
+							r.operationID = "getChannelTypes"
+							r.pathPattern = "/channel-types"
+							r.args = args
+							r.count = 0
+							return r, true
+						default:
+							return
 						}
-
-						if len(elem) == 0 {
-							// Leaf node.
-							switch method {
-							case "GET":
-								r.name = GetChannelTypesOperation
-								r.summary = ""
-								r.operationID = "getChannelTypes"
-								r.pathPattern = "/channel-types"
-								r.args = args
-								r.count = 0
-								return r, true
-							default:
-								return
-							}
-						}
-
-					case 't': // Prefix: "t/"
-
-						if l := len("t/"); len(elem) >= l && elem[0:l] == "t/" {
-							elem = elem[l:]
-						} else {
-							break
-						}
-
-						if len(elem) == 0 {
-							break
-						}
-						switch elem[0] {
-						case 'r': // Prefix: "resume/stream"
-
-							if l := len("resume/stream"); len(elem) >= l && elem[0:l] == "resume/stream" {
-								elem = elem[l:]
-							} else {
-								break
-							}
-
-							if len(elem) == 0 {
-								// Leaf node.
-								switch method {
-								case "POST":
-									r.name = ResumeStreamOperation
-									r.summary = ""
-									r.operationID = "resumeStream"
-									r.pathPattern = "/chat/resume/stream"
-									r.args = args
-									r.count = 0
-									return r, true
-								default:
-									return
-								}
-							}
-
-						case 's': // Prefix: "stream"
-
-							if l := len("stream"); len(elem) >= l && elem[0:l] == "stream" {
-								elem = elem[l:]
-							} else {
-								break
-							}
-
-							if len(elem) == 0 {
-								// Leaf node.
-								switch method {
-								case "POST":
-									r.name = ChatStreamOperation
-									r.summary = ""
-									r.operationID = "chatStream"
-									r.pathPattern = "/chat/stream"
-									r.args = args
-									r.count = 0
-									return r, true
-								default:
-									return
-								}
-							}
-
-						}
-
 					}
 
 				case 'o': // Prefix: "onversations"
@@ -2890,28 +2768,90 @@ func (s *Server) FindPath(method string, u *url.URL) (r Route, _ bool) {
 							break
 						}
 						switch elem[0] {
-						case '/': // Prefix: "/messages"
+						case '/': // Prefix: "/"
 
-							if l := len("/messages"); len(elem) >= l && elem[0:l] == "/messages" {
+							if l := len("/"); len(elem) >= l && elem[0:l] == "/" {
 								elem = elem[l:]
 							} else {
 								break
 							}
 
 							if len(elem) == 0 {
-								// Leaf node.
-								switch method {
-								case "GET":
-									r.name = GetMessagesOperation
-									r.summary = ""
-									r.operationID = "getMessages"
-									r.pathPattern = "/conversations/{id}/messages"
-									r.args = args
-									r.count = 1
-									return r, true
-								default:
-									return
+								break
+							}
+							switch elem[0] {
+							case 'a': // Prefix: "approval"
+
+								if l := len("approval"); len(elem) >= l && elem[0:l] == "approval" {
+									elem = elem[l:]
+								} else {
+									break
 								}
+
+								if len(elem) == 0 {
+									// Leaf node.
+									switch method {
+									case "POST":
+										r.name = SubmitApprovalOperation
+										r.summary = ""
+										r.operationID = "submitApproval"
+										r.pathPattern = "/conversations/{id}/approval"
+										r.args = args
+										r.count = 1
+										return r, true
+									default:
+										return
+									}
+								}
+
+							case 'm': // Prefix: "messages"
+
+								if l := len("messages"); len(elem) >= l && elem[0:l] == "messages" {
+									elem = elem[l:]
+								} else {
+									break
+								}
+
+								if len(elem) == 0 {
+									// Leaf node.
+									switch method {
+									case "GET":
+										r.name = GetMessagesOperation
+										r.summary = ""
+										r.operationID = "getMessages"
+										r.pathPattern = "/conversations/{id}/messages"
+										r.args = args
+										r.count = 1
+										return r, true
+									default:
+										return
+									}
+								}
+
+							case 'r': // Prefix: "runs"
+
+								if l := len("runs"); len(elem) >= l && elem[0:l] == "runs" {
+									elem = elem[l:]
+								} else {
+									break
+								}
+
+								if len(elem) == 0 {
+									// Leaf node.
+									switch method {
+									case "POST":
+										r.name = StartConversationRunOperation
+										r.summary = ""
+										r.operationID = "startConversationRun"
+										r.pathPattern = "/conversations/{id}/runs"
+										r.args = args
+										r.count = 1
+										return r, true
+									default:
+										return
+									}
+								}
+
 							}
 
 						}
@@ -4322,66 +4262,28 @@ func (s *Server) FindPath(method string, u *url.URL) (r Route, _ bool) {
 							}
 						}
 						switch elem[0] {
-						case '/': // Prefix: "/"
+						case '/': // Prefix: "/status"
 
-							if l := len("/"); len(elem) >= l && elem[0:l] == "/" {
+							if l := len("/status"); len(elem) >= l && elem[0:l] == "/status" {
 								elem = elem[l:]
 							} else {
 								break
 							}
 
 							if len(elem) == 0 {
-								break
-							}
-							switch elem[0] {
-							case 'e': // Prefix: "events"
-
-								if l := len("events"); len(elem) >= l && elem[0:l] == "events" {
-									elem = elem[l:]
-								} else {
-									break
+								// Leaf node.
+								switch method {
+								case "GET":
+									r.name = GetRunStatusOperation
+									r.summary = ""
+									r.operationID = "getRunStatus"
+									r.pathPattern = "/workflows/runs/{id}/status"
+									r.args = args
+									r.count = 1
+									return r, true
+								default:
+									return
 								}
-
-								if len(elem) == 0 {
-									// Leaf node.
-									switch method {
-									case "GET":
-										r.name = GetWorkflowRunEventsOperation
-										r.summary = ""
-										r.operationID = "getWorkflowRunEvents"
-										r.pathPattern = "/workflows/runs/{id}/events"
-										r.args = args
-										r.count = 1
-										return r, true
-									default:
-										return
-									}
-								}
-
-							case 's': // Prefix: "status"
-
-								if l := len("status"); len(elem) >= l && elem[0:l] == "status" {
-									elem = elem[l:]
-								} else {
-									break
-								}
-
-								if len(elem) == 0 {
-									// Leaf node.
-									switch method {
-									case "GET":
-										r.name = GetRunStatusOperation
-										r.summary = ""
-										r.operationID = "getRunStatus"
-										r.pathPattern = "/workflows/runs/{id}/status"
-										r.args = args
-										r.count = 1
-										return r, true
-									default:
-										return
-									}
-								}
-
 							}
 
 						}

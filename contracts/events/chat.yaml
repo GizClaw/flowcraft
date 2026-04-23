@@ -51,6 +51,7 @@ payloads:
     message_id: { type: string, required: true }
     role: { type: string, required: true }
     content: { type: string, required: false }
+    token_count: { type: int64, required: false }
   ChatCallbackQueuedPayload:
     card_id: { type: string, required: true }
     conversation_id: { type: string, required: true }

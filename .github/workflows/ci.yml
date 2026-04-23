@@ -39,7 +39,7 @@ jobs:
             web:
               - 'web/**'
             openapi:
-              - 'internal/api/openapi.yaml'
+              - 'contracts/openapi.yaml'
               - 'internal/api/oas/**'
               - 'web/src/api/schema.d.ts'
               - 'web/package.json'
@@ -229,7 +229,7 @@ jobs:
       - name: Fail if generated code differs
         run: |
           if ! git diff --quiet -- internal/api/oas web/src/api/schema.d.ts; then
-            echo "::error::Generated code is out of sync with internal/api/openapi.yaml."
+            echo "::error::Generated code is out of sync with contracts/openapi.yaml."
             echo "Run 'make generate' locally and commit the result."
             echo
             echo "--- diff (truncated) ---"

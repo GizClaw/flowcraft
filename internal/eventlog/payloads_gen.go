@@ -122,6 +122,7 @@ type ChatMessageSentPayload struct {
 	ConversationID string `json:"conversation_id"`
 	MessageID      string `json:"message_id"`
 	Role           string `json:"role"`
+	TokenCount     int64  `json:"token_count"`
 }
 
 // CronRuleChangedPayload is generated from contracts.

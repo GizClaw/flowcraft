@@ -5,6 +5,7 @@ package platform
 import (
 	"context"
 
+	"github.com/GizClaw/flowcraft/internal/eventlog"
 	"github.com/GizClaw/flowcraft/internal/knowledgeproc"
 	"github.com/GizClaw/flowcraft/internal/model"
 	"github.com/GizClaw/flowcraft/internal/pluginhost"
@@ -47,6 +48,10 @@ type Platform struct {
 	SkillStore        *skill.SkillStore
 	ToolRegistry      *tool.Registry
 	ProjectionManager *projection.Manager
+	// EventLog is exposed so out-of-band tools (smoketest, admin replay
+	// helpers) can publish or query envelopes without re-wiring the SQLite
+	// store. Always non-nil after bootstrap.Run completes.
+	EventLog *eventlog.SQLiteLog
 }
 
 // RunAgent resolves the current Realm and dispatches a run to the named agent's actor.

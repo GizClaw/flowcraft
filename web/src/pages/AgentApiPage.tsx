@@ -41,8 +41,8 @@ export default function AgentApiPage() {
 
       <Section title={t('apiRef.resume')}>
         <ApiBlock
-          method="POST" path="/api/chat/resume/stream"
-          body={`{ "agent_id": "${id}", "run_id": "...", "state": {}, "decision": {} }`}
+          method="POST" path="/api/conversations/{id}/approval"
+          body={`{ "agent_id": "${id}", "run_id": "...", "decision": "approved" }`}
         />
         <p className="text-xs text-gray-500">{t('apiRef.resumeDesc')}</p>
       </Section>
@@ -51,7 +51,6 @@ export default function AgentApiPage() {
         <div className="space-y-2">
           <ApiBlock method="GET" path={`/api/workflows/runs?agent_id=${id}`} />
           <ApiBlock method="GET" path="/api/workflows/runs/{run_id}" />
-          <ApiBlock method="GET" path="/api/workflows/runs/{run_id}/events" />
           <ApiBlock method="GET" path="/api/workflows/runs/{run_id}/status" />
         </div>
       </Section>

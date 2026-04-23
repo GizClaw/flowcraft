@@ -11,7 +11,6 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/kanban"
 	"github.com/GizClaw/flowcraft/sdk/llm"
-	sdkmodel "github.com/GizClaw/flowcraft/sdk/model"
 )
 
 func newTestStore(t *testing.T) *SQLiteStore {
@@ -129,39 +128,11 @@ func TestConversationCRUD(t *testing.T) {
 	}
 }
 
-func TestMessageCRUD(t *testing.T) {
-	s := newTestStore(t)
-	ctx := context.Background()
+// TestMessageCRUD was removed in R5: the legacy `messages` table was
+// dropped and message persistence now happens via chat.message.sent
+// envelopes consumed by the ChatProjector. See
+// internal/projection/chat/projector_test.go for the new coverage.
 
-	agent, _ := s.CreateAgent(ctx, &model.Agent{Name: "Agent", Type: model.AgentTypeWorkflow})
-	conv, _ := s.CreateConversation(ctx, &model.Conversation{AgentID: agent.AgentID})
-
-	for i := 0; i < 5; i++ {
-		err := s.SaveMessage(ctx, &model.Message{
-			Message:        sdkmodel.NewTextMessage(model.RoleUser, "msg"),
-			ConversationID: conv.ID,
-		})
-		if err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	all, err := s.GetMessages(ctx, conv.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(all) != 5 {
-		t.Fatalf("expected 5 messages, got %d", len(all))
-	}
-
-	recent, err := s.GetRecentMessages(ctx, conv.ID, 3)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(recent) != 3 {
-		t.Fatalf("expected 3 recent messages, got %d", len(recent))
-	}
-}
 
 func TestWorkflowRunCRUD(t *testing.T) {
 	s := newTestStore(t)
@@ -660,21 +631,11 @@ func TestMonitoringDiagnostics_UsesStructuredErrorCode(t *testing.T) {
 		AgentID:   agent.AgentID,
 		Status:    "failed",
 		Output:    "provider call failed",
+		Outputs:   map[string]any{"error": map[string]any{"code": "MODEL_TIMEOUT"}},
 		ElapsedMs: 800,
 		CreatedAt: time.Now().UTC().Add(-1 * time.Minute),
 	}
 	if err := s.SaveWorkflowRun(ctx, run2); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.SaveExecutionEvent(ctx, &model.ExecutionEvent{
-		RunID: run2.ID,
-		Type:  "node.error",
-		Payload: map[string]any{
-			"error": map[string]any{
-				"code": "MODEL_TIMEOUT",
-			},
-		},
-	}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -692,8 +653,10 @@ func TestMonitoringDiagnostics_UsesStructuredErrorCode(t *testing.T) {
 	if !gotCodes["rate_limit"] {
 		t.Fatalf("expected structured code rate_limit in top codes, got %+v", diag.TopErrorCodes)
 	}
+	// MODEL_TIMEOUT now arrives via WorkflowRun.Outputs.error.code (the
+	// execution_events fallback was removed in R5).
 	if !gotCodes["model_timeout"] {
-		t.Fatalf("expected event-derived code model_timeout in top codes, got %+v", diag.TopErrorCodes)
+		t.Fatalf("expected outputs-derived code model_timeout in top codes, got %+v", diag.TopErrorCodes)
 	}
 }
 
@@ -782,14 +745,8 @@ func TestCascadeDelete(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.SaveMessage(ctx, &model.Message{Message: sdkmodel.NewTextMessage(model.RoleUser, "hi"), ConversationID: conv.ID}); err != nil {
-		t.Fatal(err)
-	}
 	run := &model.WorkflowRun{AgentID: agent.AgentID, Status: "completed"}
 	if err := s.SaveWorkflowRun(ctx, run); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.SaveExecutionEvent(ctx, &model.ExecutionEvent{RunID: run.ID, Type: "node.start"}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.PublishGraphVersion(ctx, agent.AgentID, &model.GraphDefinition{Name: "g", Entry: "s", Nodes: []model.NodeDefinition{{ID: "s", Type: "t"}}}, ""); err != nil {
@@ -799,14 +756,9 @@ func TestCascadeDelete(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Verify everything is gone
-	msgs, _ := s.GetMessages(ctx, conv.ID)
-	if len(msgs) != 0 {
-		t.Fatal("expected messages to be deleted")
-	}
-	events, _ := s.ListExecutionEvents(ctx, run.ID)
-	if len(events) != 0 {
-		t.Fatal("expected events to be deleted")
+	// Conversation row should also be cascade-deleted with the agent.
+	if got, _ := s.GetConversation(ctx, conv.ID); got != nil {
+		t.Fatal("expected conversation to be deleted")
 	}
 }
 
@@ -824,20 +776,8 @@ func TestDeleteAgent_CascadeDeletesAllRelated(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.SaveMessage(ctx, &model.Message{Message: sdkmodel.NewTextMessage(model.RoleUser, "hi"), ConversationID: conv.ID}); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.SaveMessage(ctx, &model.Message{Message: sdkmodel.NewTextMessage(model.RoleAssistant, "hello"), ConversationID: conv.ID}); err != nil {
-		t.Fatal(err)
-	}
 	run := &model.WorkflowRun{AgentID: agent.AgentID, Status: "completed"}
 	if err := s.SaveWorkflowRun(ctx, run); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.SaveExecutionEvent(ctx, &model.ExecutionEvent{RunID: run.ID, Type: "node.start"}); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.SaveExecutionEvent(ctx, &model.ExecutionEvent{RunID: run.ID, Type: "node.end"}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.PublishGraphVersion(ctx, agent.AgentID, &model.GraphDefinition{
@@ -859,14 +799,8 @@ func TestDeleteAgent_CascadeDeletesAllRelated(t *testing.T) {
 		t.Fatalf("DeleteAgent failed: %v", err)
 	}
 
-	// Verify everything is gone
-	msgs, _ := s.GetMessages(ctx, conv.ID)
-	if len(msgs) != 0 {
-		t.Fatalf("expected messages deleted, got %d", len(msgs))
-	}
-	events, _ := s.ListExecutionEvents(ctx, run.ID)
-	if len(events) != 0 {
-		t.Fatalf("expected events deleted, got %d", len(events))
+	if got, _ := s.GetConversation(ctx, conv.ID); got != nil {
+		t.Fatalf("expected conversation deleted, got %+v", got)
 	}
 	versions, _ := s.ListGraphVersions(ctx, agent.AgentID)
 	if len(versions) != 0 {

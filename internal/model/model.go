@@ -221,16 +221,6 @@ type WorkflowRun struct {
 	CreatedAt      time.Time      `json:"created_at"`
 }
 
-// ExecutionEvent records a graph execution event.
-type ExecutionEvent struct {
-	ID        string         `json:"id"`
-	RunID     string         `json:"run_id"`
-	NodeID    string         `json:"node_id"`
-	Type      string         `json:"type"`
-	Payload   map[string]any `json:"payload,omitempty"`
-	CreatedAt time.Time      `json:"created_at"`
-}
-
 // Dataset is a knowledge base data set.
 type Dataset struct {
 	ID            string    `json:"id"`

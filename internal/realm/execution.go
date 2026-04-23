@@ -242,24 +242,36 @@ func (rt *Realm) postRun(ctx context.Context, agent *model.Agent, req *workflow.
 		_ = rt.deps.Store.SaveWorkflowRun(ctx, run)
 	}
 
-	if req.ContextID != "" && rt.deps.Store != nil {
+	if req.ContextID != "" {
 		rt.persistMessages(ctx, agent, req, result)
 	}
 
 	rt.extractLTM(ctx, agent, req, result)
 }
 
+// persistMessages publishes chat.message.sent envelopes for every
+// non-system message produced during this run. Persistence is no longer
+// done via Store.SaveMessage — the ChatProjector materialises messages
+// from these envelopes (see internal/projection/chat).
 func (rt *Realm) persistMessages(ctx context.Context, agent *model.Agent, req *workflow.Request, result *workflow.Result) {
 	rt.ensureConversation(ctx, agent.AgentID, req)
 
-	newMsgs := result.Messages
-	modelMsgs := model.FromMessages(req.ContextID, newMsgs)
-	for _, msg := range modelMsgs {
-		if msg.Role == sdkmodel.RoleSystem {
+	if rt.deps.PublishMessage == nil {
+		// In test setups (mock realm) PublishMessage may be unset; nothing
+		// to persist then. Production wiring guarantees a non-nil fn.
+		return
+	}
+
+	for _, m := range result.Messages {
+		if m.Role == sdkmodel.RoleSystem {
 			continue
 		}
-		if err := rt.deps.Store.SaveMessage(ctx, msg); err != nil {
-			telemetry.Error(ctx, "store message save failed",
+		content := m.Content()
+		if content == "" {
+			continue
+		}
+		if err := rt.deps.PublishMessage(ctx, req.ContextID, string(m.Role), content, 0); err != nil {
+			telemetry.Error(ctx, "publish chat.message.sent failed",
 				otellog.String("conversation_id", req.ContextID),
 				otellog.String("error", err.Error()))
 		}

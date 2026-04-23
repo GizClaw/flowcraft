@@ -24,19 +24,19 @@ export default function ChatPanel({ agentId }: Props) {
   const ensureSession = useChatStore((s) => s.ensureSession);
   const loadHistory = useChatStore((s) => s.loadHistory);
   const [loading, setLoading] = useState(false);
+  const conversationId = getRuntimeConversationId(agentId);
 
-  useEffect(() => { ensureSession(agentId); }, [agentId, ensureSession]);
+  useEffect(() => { ensureSession(conversationId); }, [conversationId, ensureSession]);
 
   useEffect(() => {
-    const conversationId = getRuntimeConversationId(agentId);
     setLoading(true);
     chatApi.getMessages(conversationId).then((msgs) => {
       const rich = msgs
         .filter((m) => m.role === 'user' || m.role === 'assistant')
         .map(messageToRichMessage);
-      loadHistory(agentId, rich);
+      loadHistory(conversationId, rich);
     }).catch(() => {}).finally(() => setLoading(false));
-  }, [agentId, loadHistory]);
+  }, [conversationId, loadHistory]);
 
   const wsUrl = '/api/ws';
   useWebSocket(wsUrl, {

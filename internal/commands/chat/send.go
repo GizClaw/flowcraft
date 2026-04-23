@@ -19,7 +19,10 @@ type ChatSendReq struct {
 	CardID         string
 	Role           string
 	Content        string
-	CommandID      string
+	// TokenCount is optional; only populated when the producer (e.g. the
+	// agent runtime) knows the LLM-reported token usage for the message.
+	TokenCount int64
+	CommandID  string
 }
 
 // ChatSendCommand publishes chat.message.sent events.
@@ -60,6 +63,7 @@ func (c *ChatSendCommand) Handle(ctx context.Context, req ChatSendReq) (messageI
 			MessageID:      req.CommandID,
 			Role:           req.Role,
 			Content:        req.Content,
+			TokenCount:     req.TokenCount,
 		}, eventlog.WithActor(actorOrAnonymous(actor)))
 	})
 	return req.CommandID, err

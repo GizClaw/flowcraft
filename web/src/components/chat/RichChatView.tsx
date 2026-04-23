@@ -10,15 +10,15 @@ import ToolCallList from '../message/ToolCallList';
 import MarkdownContent from '../message/MarkdownContent';
 import ChatInput from './ChatInput';
 import ApprovalPanel from '../workflow/ApprovalPanel';
-import type { RichMessage as RichMsg, ChatRequest, WorkflowStreamEvent, AgentToolResultEvent, StreamDoneEvent } from '../../types/chat';
+import type { RichMessage as RichMsg } from '../../types/chat';
+import { getRuntimeConversationId } from '../../utils/runtime';
 
 export interface RichChatViewProps {
   agentId: string;
   renderExtra?: (msg: RichMsg) => React.ReactNode;
-  onBeforeSend?: (content: string) => Record<string, unknown>;
-  onToolResult?: (event: AgentToolResultEvent) => void;
-  onDone?: (event: StreamDoneEvent) => void;
-  streamApi?: (request: ChatRequest, signal?: AbortSignal) => AsyncIterable<WorkflowStreamEvent>;
+  // onBeforeSend lets callers attach extra `inputs` to the chat command
+  // (formerly the buildRequest hook on useChat).
+  onBeforeSend?: (content: string) => { inputs?: Record<string, unknown> };
   placeholder?: string;
   emptyIcon?: React.ReactNode;
   emptyTitle?: string;
@@ -30,9 +30,6 @@ export default function RichChatView({
   agentId,
   renderExtra,
   onBeforeSend,
-  onToolResult,
-  onDone,
-  streamApi,
   placeholder,
   emptyIcon,
   emptyTitle,
@@ -40,8 +37,12 @@ export default function RichChatView({
   inputComponent,
 }: RichChatViewProps) {
   const { t } = useTranslation();
-  const session = useChatStore((s) => s.getSession(agentId));
-  const st = useChatStore((s) => s.getStreaming(agentId));
+  // chatStore is keyed by conversationID (chatReducers project envelopes
+  // under that key); RichChatView reads from the same key so the user
+  // bubble and the streaming assistant bubble both surface here.
+  const conversationId = getRuntimeConversationId(agentId);
+  const session = useChatStore((s) => s.getSession(conversationId));
+  const st = useChatStore((s) => s.getStreaming(conversationId));
   const isMyStream = st.isStreaming;
   const streamingContent = st.content;
   const streamingToolCalls = st.toolCalls;
@@ -50,7 +51,7 @@ export default function RichChatView({
   const [isNearBottom, setIsNearBottom] = useState(true);
   const prevMessageCountRef = useRef(0);
 
-  useEffect(() => { ensureSession(agentId); }, [agentId, ensureSession]);
+  useEffect(() => { ensureSession(conversationId); }, [conversationId, ensureSession]);
 
   const buildRequest = useCallback((content: string) => {
     return onBeforeSend?.(content) || {};
@@ -58,9 +59,6 @@ export default function RichChatView({
 
   const { sendMessage: rawSend, stopStreaming, approval, submitApproval } = useChat({
     agentId,
-    streamApi,
-    onToolResult,
-    onDone,
     buildRequest,
   });
 

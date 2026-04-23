@@ -11,6 +11,15 @@ info:
       • `GET  /api/ws`                — WebSocket upgrade
       • `POST /api/webhook/{channel}` — channel-specific webhook (dynamic schema)
       • `GET  /healthz`               — root-level alias of `/api/healthz`
+      • `GET  /api/admin/audit`       — admin audit log query (RBAC: super admin)
+      • `GET  /api/admin/audit/{seq}` — single audit entry (RBAC: super admin)
+      • `GET  /api/admin/projection/status`                          — projector health snapshot (RBAC: super admin)
+      • `GET  /api/admin/projection/dead-letters`                    — list unresolved DLT rows (RBAC: super admin)
+      • `POST /api/admin/projection/dead-letters/{id}/replay`        — re-apply a DLT envelope (RBAC: super admin)
+      • `GET  /api/admin/webhooks/deliveries`                        — webhook outbound delivery aggregation (RBAC: super admin)
+      • `POST /api/admin/webhooks/deliveries/{id}/replay`            — manually retry a delivery (RBAC: super admin)
+      • `GET  /api/events/latest-seq`                                — current global max envelope seq
+      • `GET  /api/events/stream`                                    — SSE envelope stream (Last-Event-ID resume)
 
     Everything else is generated from this file. Run `make generate` after edits;
     CI verifies that `internal/api/oas/**` and `web/src/api/schema.d.ts` are in
@@ -233,43 +242,6 @@ paths:
         default:
           $ref: "#/components/responses/Error"
 
-  # ── Chat (SSE) ──
-  /chat/stream:
-    post:
-      operationId: chatStream
-      tags: [chat]
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/ChatRequest"
-      responses:
-        "200":
-          description: SSE event stream
-          content:
-            text/event-stream: {}
-        default:
-          $ref: "#/components/responses/Error"
-
-  /chat/resume/stream:
-    post:
-      operationId: resumeStream
-      tags: [chat]
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/ResumeRequest"
-      responses:
-        "200":
-          description: SSE event stream
-          content:
-            text/event-stream: {}
-        default:
-          $ref: "#/components/responses/Error"
-
   # ── Conversations ──
   /conversations:
     get:
@@ -312,6 +284,72 @@ paths:
         default:
           $ref: "#/components/responses/Error"
 
+  /conversations/{id}/approval:
+    post:
+      operationId: submitApproval
+      tags: [conversations]
+      description: |
+        Submit a HITL approval decision for a paused agent run on this conversation.
+        This is the command-side replacement of the deprecated `POST /chat/resume/stream`:
+        the decision is injected into the saved BoardSnapshot and the agent resumes.
+        The resulting envelopes (agent.stream.delta, kanban.card.*, ...) are emitted to
+        the event log; subscribe to `GET /api/events?partition=card:{id}` to follow them.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ApprovalDecisionRequest"
+      responses:
+        "202":
+          description: Decision accepted; subscribe to envelope stream for progress
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApprovalDecisionResponse"
+        default:
+          $ref: "#/components/responses/Error"
+
+  /conversations/{id}/runs:
+    post:
+      operationId: startConversationRun
+      tags: [conversations]
+      description: |
+        Starts an agent run on this conversation. This replaces the previous
+        `POST /chat/stream` SSE endpoint: the call returns immediately with the
+        identifiers needed to subscribe to the resulting envelope stream.
+        All token, tool-call and completion events are published to the event
+        log; clients consume them via
+        `GET /api/events?partition=card:{id}&since={last_seq}` (or the WS/SSE
+        envelope channels exposed by the same surface).
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ChatRequest"
+      responses:
+        "202":
+          description: Run accepted; subscribe to envelope stream for progress
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ChatStartResponse"
+        default:
+          $ref: "#/components/responses/Error"
+
   # ── Workflow Runs ──
   /workflows/runs:
     get:
@@ -347,22 +385,6 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/WorkflowRun"
-        default:
-          $ref: "#/components/responses/Error"
-
-  /workflows/runs/{id}/events:
-    get:
-      operationId: getWorkflowRunEvents
-      tags: [workflows]
-      parameters:
-        - $ref: "#/components/parameters/RunID"
-      responses:
-        "200":
-          description: Execution events
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ExecutionEventList"
         default:
           $ref: "#/components/responses/Error"
 
@@ -1427,62 +1449,6 @@ paths:
         default:
           $ref: "#/components/responses/Error"
 
-  # ── Event Log (Phase 1.5 transport) ──
-  /events:
-    get:
-      operationId: getEvents
-      tags: [events]
-      description: |
-        Pull historical event envelopes from a single partition. Used for WS/SSE
-        reconnect catch-up, first-paint snapshot, and admin replay.
-
-        Pagination semantics (see docs/event-sourcing/05-transport-unification.md §5.1):
-          - `events`: ordered by `seq` ascending.
-          - `next_since`: cursor to pass on the next call. Equals `seq` of the
-            last returned envelope, or the input `since` when no events were
-            returned (so re-polling stays idempotent).
-          - `has_more`: true only when the batch was truncated by `limit`.
-      parameters:
-        - name: partition
-          in: query
-          required: true
-          schema:
-            type: string
-          description: "Wire form partition key (e.g. `runtime:owner`, `card:abc`)."
-        - name: since
-          in: query
-          required: true
-          schema:
-            type: integer
-            format: int64
-            minimum: 0
-          description: "Exclusive lower bound; events with `seq > since` are returned."
-        - name: limit
-          in: query
-          schema:
-            type: integer
-            minimum: 1
-            maximum: 1000
-            default: 100
-        - name: types
-          in: query
-          schema:
-            type: array
-            items:
-              type: string
-          style: form
-          explode: true
-          description: "Optional event type filter (repeat for multiple)."
-      responses:
-        "200":
-          description: Event envelopes
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/EventList"
-        default:
-          $ref: "#/components/responses/Error"
-
   # ── Channel Types ──
   /channel-types:
     get:
@@ -1769,8 +1735,6 @@ components:
       properties:
         agent_id:
           type: string
-        conversation_id:
-          type: string
         query:
           type: string
         inputs:
@@ -1778,20 +1742,62 @@ components:
         async:
           type: boolean
 
-    ResumeRequest:
+    ChatStartResponse:
       type: object
-      required: [agent_id, conversation_id, run_id, decision]
+      required: [accepted, conversation_id, run_id, partition]
       properties:
-        agent_id:
-          type: string
+        accepted:
+          type: boolean
         conversation_id:
           type: string
         run_id:
           type: string
+          description: Workflow run id; correlates with run_id field on subsequent envelopes.
+        partition:
+          type: string
+          description: Envelope partition to subscribe (always `card:{conversation_id}`).
+        last_seq:
+          type: integer
+          format: int64
+          description: Latest event seq at the moment the run was accepted; use as the `since` cursor.
+
+    ApprovalDecisionRequest:
+      type: object
+      required: [agent_id, run_id, decision]
+      properties:
+        agent_id:
+          type: string
+          description: Agent that owns the paused run.
+        run_id:
+          type: string
+          description: Workflow run id captured in the prior approval_required event.
+        decision:
+          type: string
+          enum: [approved, rejected]
+        comment:
+          type: string
+          description: Optional reviewer comment surfaced to the resumed graph.
         state:
           $ref: "#/components/schemas/JSONObject"
-        decision:
-          $ref: "#/components/schemas/JSONObject"
+          description: |
+            Optional client-supplied BoardSnapshot. When omitted, the server loads the
+            most recent checkpoint for `agent_id`.
+
+    ApprovalDecisionResponse:
+      type: object
+      required: [accepted, run_id]
+      properties:
+        accepted:
+          type: boolean
+        run_id:
+          type: string
+        partition:
+          type: string
+          description: Envelope partition to subscribe for resumed progress (`card:{id}`).
+        last_seq:
+          type: integer
+          format: int64
+          description: Latest event seq emitted while serving the request; clients can use it as the `since` cursor.
 
     # ── WebSocket ──
     WSTicketResponse:
@@ -1901,31 +1907,6 @@ components:
               type: array
               items:
                 $ref: "#/components/schemas/WorkflowRun"
-
-    ExecutionEvent:
-      type: object
-      properties:
-        id:
-          type: string
-        run_id:
-          type: string
-        node_id:
-          type: string
-        type:
-          type: string
-        payload:
-          $ref: "#/components/schemas/JSONObject"
-        created_at:
-          type: string
-          format: date-time
-
-    ExecutionEventList:
-      type: object
-      properties:
-        data:
-          type: array
-          items:
-            $ref: "#/components/schemas/ExecutionEvent"
 
     # ── Knowledge ──
     Dataset:
@@ -2748,13 +2729,76 @@ components:
             $ref: "#/components/schemas/JSONObject"
 
     # ── Kanban ──
+    # R5 §13: KanbanCardList is the initial snapshot consumed by the frontend
+    # before it switches to the envelope stream. The legacy `events` array and
+    # `lastUpdate` field are gone — clients should use `last_seq` as the
+    # `since` cursor for `GET /api/events?partition=runtime:<id>` (see §7.1.5).
     KanbanCardList:
       type: object
       properties:
         data:
           type: array
           items:
-            $ref: "#/components/schemas/JSONObject"
+            $ref: "#/components/schemas/KanbanCardSummary"
+        # last_seq is the eventlog seq snapshot was taken at; clients use it
+        # as the since-cursor when subscribing to the envelope stream.
+        last_seq:
+          type: integer
+          format: int64
+        # last_event_ts is the wall-clock timestamp of the envelope at last_seq
+        # (RFC3339Nano). Empty string when the partition has no events yet.
+        last_event_ts:
+          type: string
+          format: date-time
+        # realm_id of the runtime that owns these cards. Mirrors the per-card
+        # realm_id and is exposed at the top level so clients that show a
+        # single board do not need to peek inside `data`.
+        realm_id:
+          type: string
+
+    # KanbanCardSummary mirrors sdk/kanban.CardInfo plus the R5-required
+    # `realm_id` field. It is intentionally permissive: optional fields stay
+    # optional so future SDK additions remain forward-compatible.
+    KanbanCardSummary:
+      type: object
+      required: [id, type, status, producer, consumer, created_at, updated_at]
+      properties:
+        id:
+          type: string
+        type:
+          type: string
+        status:
+          type: string
+        producer:
+          type: string
+        consumer:
+          type: string
+        query:
+          type: string
+        target_agent_id:
+          type: string
+        output:
+          type: string
+        error:
+          type: string
+        run_id:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        elapsed_ms:
+          type: integer
+          format: int64
+        meta:
+          type: object
+          additionalProperties:
+            type: string
+        # realm_id is the realm that owns the runtime this card lives in.
+        realm_id:
+          type: string
 
     KanbanTimeline:
       type: object
@@ -2775,78 +2819,6 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/JSONObject"
-
-    # ── Events (Phase 1.5 transport) ──
-    EventActor:
-      type: object
-      description: Caller attribution captured at append time.
-      properties:
-        id:
-          type: string
-        realm_id:
-          type: string
-        super_admin:
-          type: boolean
-        type:
-          type: string
-          description: "`user` | `system` | other adapter-specific kind."
-        via:
-          $ref: "#/components/schemas/EventActorVia"
-      required: [id, super_admin, type]
-
-    EventActorVia:
-      type: object
-      properties:
-        kind:
-          type: string
-      required: [kind]
-
-    EventEnvelope:
-      type: object
-      description: |
-        Wire form of an `eventlog.Envelope`. Identical bytes are emitted by the
-        WS / SSE / HTTP-pull transports so frontend reducers stay transport
-        agnostic.
-      properties:
-        seq:
-          type: integer
-          format: int64
-        partition:
-          type: string
-        type:
-          type: string
-        version:
-          type: integer
-        category:
-          type: string
-          description: "`audit` | `business` | `operational` | `permanent` | `volatile`."
-        ts:
-          type: string
-          format: date-time
-        payload:
-          $ref: "#/components/schemas/JSONObject"
-        actor:
-          $ref: "#/components/schemas/EventActor"
-        trace_id:
-          type: string
-        span_id:
-          type: string
-      required: [seq, partition, type, version, category, ts, payload]
-
-    EventList:
-      type: object
-      description: HTTP-pull batch response.
-      properties:
-        events:
-          type: array
-          items:
-            $ref: "#/components/schemas/EventEnvelope"
-        next_since:
-          type: integer
-          format: int64
-        has_more:
-          type: boolean
-      required: [events, next_since, has_more]
 
     # ── Channel Types ──
     ChannelTypeList:

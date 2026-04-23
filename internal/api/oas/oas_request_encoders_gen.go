@@ -57,20 +57,6 @@ func encodeChangePasswordRequest(
 	return nil
 }
 
-func encodeChatStreamRequest(
-	req *ChatRequest,
-	r *http.Request,
-) error {
-	const contentType = "application/json"
-	e := new(jx.Encoder)
-	{
-		req.Encode(e)
-	}
-	encoded := e.Bytes()
-	ht.SetBody(r, bytes.NewReader(encoded), contentType)
-	return nil
-}
-
 func encodeConfigureProviderRequest(
 	req *ConfigureProviderRequest,
 	r *http.Request,
@@ -237,20 +223,6 @@ func encodeQueryDocumentsRequest(
 	return nil
 }
 
-func encodeResumeStreamRequest(
-	req *ResumeRequest,
-	r *http.Request,
-) error {
-	const contentType = "application/json"
-	e := new(jx.Encoder)
-	{
-		req.Encode(e)
-	}
-	encoded := e.Bytes()
-	ht.SetBody(r, bytes.NewReader(encoded), contentType)
-	return nil
-}
-
 func encodeSetDefaultModelRequest(
 	req *SetDefaultModelRequest,
 	r *http.Request,
@@ -267,6 +239,34 @@ func encodeSetDefaultModelRequest(
 
 func encodeSetupAuthRequest(
 	req *SetupRequest,
+	r *http.Request,
+) error {
+	const contentType = "application/json"
+	e := new(jx.Encoder)
+	{
+		req.Encode(e)
+	}
+	encoded := e.Bytes()
+	ht.SetBody(r, bytes.NewReader(encoded), contentType)
+	return nil
+}
+
+func encodeStartConversationRunRequest(
+	req *ChatRequest,
+	r *http.Request,
+) error {
+	const contentType = "application/json"
+	e := new(jx.Encoder)
+	{
+		req.Encode(e)
+	}
+	encoded := e.Bytes()
+	ht.SetBody(r, bytes.NewReader(encoded), contentType)
+	return nil
+}
+
+func encodeSubmitApprovalRequest(
+	req *ApprovalDecisionRequest,
 	r *http.Request,
 ) error {
 	const contentType = "application/json"

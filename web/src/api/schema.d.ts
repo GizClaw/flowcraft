@@ -150,38 +150,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/chat/stream": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post: operations["chatStream"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/chat/resume/stream": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post: operations["resumeStream"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/conversations": {
         parameters: {
             query?: never;
@@ -214,6 +182,54 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/conversations/{id}/approval": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * @description Submit a HITL approval decision for a paused agent run on this conversation.
+         *     This is the command-side replacement of the deprecated `POST /chat/resume/stream`:
+         *     the decision is injected into the saved BoardSnapshot and the agent resumes.
+         *     The resulting envelopes (agent.stream.delta, kanban.card.*, ...) are emitted to
+         *     the event log; subscribe to `GET /api/events?partition=card:{id}` to follow them.
+         */
+        post: operations["submitApproval"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/conversations/{id}/runs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * @description Starts an agent run on this conversation. This replaces the previous
+         *     `POST /chat/stream` SSE endpoint: the call returns immediately with the
+         *     identifiers needed to subscribe to the resulting envelope stream.
+         *     All token, tool-call and completion events are published to the event
+         *     log; clients consume them via
+         *     `GET /api/events?partition=card:{id}&since={last_seq}` (or the WS/SSE
+         *     envelope channels exposed by the same surface).
+         */
+        post: operations["startConversationRun"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/workflows/runs": {
         parameters: {
             query?: never;
@@ -238,22 +254,6 @@ export interface paths {
             cookie?: never;
         };
         get: operations["getWorkflowRun"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/workflows/runs/{id}/events": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["getWorkflowRunEvents"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1202,17 +1202,48 @@ export interface components {
         };
         ChatRequest: {
             agent_id: string;
-            conversation_id?: string;
             query: string;
             inputs?: components["schemas"]["JSONObject"];
             async?: boolean;
         };
-        ResumeRequest: {
-            agent_id: string;
+        ChatStartResponse: {
+            accepted: boolean;
             conversation_id: string;
+            /** @description Workflow run id; correlates with run_id field on subsequent envelopes. */
             run_id: string;
+            /** @description Envelope partition to subscribe (always `card:{conversation_id}`). */
+            partition: string;
+            /**
+             * Format: int64
+             * @description Latest event seq at the moment the run was accepted; use as the `since` cursor.
+             */
+            last_seq?: number;
+        };
+        ApprovalDecisionRequest: {
+            /** @description Agent that owns the paused run. */
+            agent_id: string;
+            /** @description Workflow run id captured in the prior approval_required event. */
+            run_id: string;
+            /** @enum {string} */
+            decision: "approved" | "rejected";
+            /** @description Optional reviewer comment surfaced to the resumed graph. */
+            comment?: string;
+            /**
+             * @description Optional client-supplied BoardSnapshot. When omitted, the server loads the
+             *     most recent checkpoint for `agent_id`.
+             */
             state?: components["schemas"]["JSONObject"];
-            decision: components["schemas"]["JSONObject"];
+        };
+        ApprovalDecisionResponse: {
+            accepted: boolean;
+            run_id: string;
+            /** @description Envelope partition to subscribe for resumed progress (`card:{id}`). */
+            partition?: string;
+            /**
+             * Format: int64
+             * @description Latest event seq emitted while serving the request; clients can use it as the `since` cursor.
+             */
+            last_seq?: number;
         };
         WSTicketResponse: {
             ticket: string;
@@ -1263,18 +1294,6 @@ export interface components {
         };
         WorkflowRunList: components["schemas"]["PaginationResult"] & {
             data?: components["schemas"]["WorkflowRun"][];
-        };
-        ExecutionEvent: {
-            id?: string;
-            run_id?: string;
-            node_id?: string;
-            type?: string;
-            payload?: components["schemas"]["JSONObject"];
-            /** Format: date-time */
-            created_at?: string;
-        };
-        ExecutionEventList: {
-            data?: components["schemas"]["ExecutionEvent"][];
         };
         Dataset: {
             id?: string;
@@ -1652,7 +1671,34 @@ export interface components {
             recent_failures?: components["schemas"]["JSONObject"][];
         };
         KanbanCardList: {
-            data?: components["schemas"]["JSONObject"][];
+            data?: components["schemas"]["KanbanCardSummary"][];
+            /** Format: int64 */
+            last_seq?: number;
+            /** Format: date-time */
+            last_event_ts?: string;
+            realm_id?: string;
+        };
+        KanbanCardSummary: {
+            id: string;
+            type: string;
+            status: string;
+            producer: string;
+            consumer: string;
+            query?: string;
+            target_agent_id?: string;
+            output?: string;
+            error?: string;
+            run_id?: string;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            updated_at: string;
+            /** Format: int64 */
+            elapsed_ms?: number;
+            meta?: {
+                [key: string]: string;
+            };
+            realm_id?: string;
         };
         KanbanTimeline: {
             data?: components["schemas"]["JSONObject"][];
@@ -1995,56 +2041,6 @@ export interface operations {
             default: components["responses"]["Error"];
         };
     };
-    chatStream: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["ChatRequest"];
-            };
-        };
-        responses: {
-            /** @description SSE event stream */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "text/event-stream": unknown;
-                };
-            };
-            default: components["responses"]["Error"];
-        };
-    };
-    resumeStream: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["ResumeRequest"];
-            };
-        };
-        responses: {
-            /** @description SSE event stream */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "text/event-stream": unknown;
-                };
-            };
-            default: components["responses"]["Error"];
-        };
-    };
     listConversations: {
         parameters: {
             query?: {
@@ -2093,6 +2089,60 @@ export interface operations {
             default: components["responses"]["Error"];
         };
     };
+    submitApproval: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ApprovalDecisionRequest"];
+            };
+        };
+        responses: {
+            /** @description Decision accepted; subscribe to envelope stream for progress */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApprovalDecisionResponse"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    startConversationRun: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ChatRequest"];
+            };
+        };
+        responses: {
+            /** @description Run accepted; subscribe to envelope stream for progress */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChatStartResponse"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
     listWorkflowRuns: {
         parameters: {
             query?: {
@@ -2136,29 +2186,6 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["WorkflowRun"];
-                };
-            };
-            default: components["responses"]["Error"];
-        };
-    };
-    getWorkflowRunEvents: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                id: components["parameters"]["RunID"];
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Execution events */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ExecutionEventList"];
                 };
             };
             default: components["responses"]["Error"];

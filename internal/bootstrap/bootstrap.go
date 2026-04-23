@@ -9,6 +9,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/internal/api"
 	auditcmd "github.com/GizClaw/flowcraft/internal/commands/audit"
+	chatcmd "github.com/GizClaw/flowcraft/internal/commands/chat"
 	"github.com/GizClaw/flowcraft/internal/eventlog"
 	"github.com/GizClaw/flowcraft/internal/gateway"
 	"github.com/GizClaw/flowcraft/internal/metatool"
@@ -160,7 +161,18 @@ func Run(ctx context.Context) (*platform.Platform, *api.Server, func(), error) {
 	toolReg.Register(knowledge.NewAddTool(knowledgeStore))
 
 	// --- realm ---
-	runtimeMgr, ltStore, realmCleanup, err := wireRealm(ctx, appStore, cfg, ws, nodeFactory, llmResolver, toolReg, sandboxCfg)
+	chatSender := chatcmd.NewChatSendCommand(eventLog)
+	publishMessage := func(ctx context.Context, conversationID, role, content string, tokenCount int64) error {
+		_, err := chatSender.Handle(ctx, chatcmd.ChatSendReq{
+			ConversationID: conversationID,
+			CardID:         conversationID,
+			Role:           role,
+			Content:        content,
+			TokenCount:     tokenCount,
+		})
+		return err
+	}
+	runtimeMgr, ltStore, realmCleanup, err := wireRealm(ctx, appStore, cfg, ws, nodeFactory, llmResolver, toolReg, sandboxCfg, publishMessage)
 	if err != nil {
 		return fail(err)
 	}
@@ -185,6 +197,7 @@ func Run(ctx context.Context) (*platform.Platform, *api.Server, func(), error) {
 		SkillStore:        skillStore,
 		ToolRegistry:      toolReg,
 		ProjectionManager: projMgr,
+		EventLog:          eventLog,
 	}
 
 	// --- seed data ---
@@ -208,7 +221,7 @@ func Run(ctx context.Context) (*platform.Platform, *api.Server, func(), error) {
 
 	server := wireHTTP(cfg, plat, gw, jwtCfg, pluginDir, eventLog, auditCmds,
 		nil, // Policy not currently wired; SSE/admin endpoints fall back to OAuth-only checks.
-		projMgr, r4webhookSender(r4))
+		projMgr, r4webhookSender(r4), newChatReadAdapter(r4.Chat))
 
 	// --- realm callbacks ---
 	var schedOnce sync.Once

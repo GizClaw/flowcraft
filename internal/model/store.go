@@ -70,19 +70,15 @@ type Store interface {
 	CreateConversation(ctx context.Context, conv *Conversation) (*Conversation, error)
 	UpdateConversation(ctx context.Context, conv *Conversation) (*Conversation, error)
 
-	// Message operations.
-	GetMessages(ctx context.Context, conversationID string) ([]*Message, error)
-	GetRecentMessages(ctx context.Context, conversationID string, limit int) ([]*Message, error)
-	SaveMessage(ctx context.Context, msg *Message) error
+	// Message persistence is no longer in the SQL store after R5: the
+	// ChatProjector materialises messages from chat.message.sent
+	// envelopes. Consumers that need history (gateway notifications,
+	// memory buffers) read the projector instead.
 
 	// Workflow run operations.
 	SaveWorkflowRun(ctx context.Context, run *WorkflowRun) error
 	GetWorkflowRun(ctx context.Context, id string) (*WorkflowRun, error)
 	ListWorkflowRuns(ctx context.Context, agentID string, opts ListOptions) ([]*WorkflowRun, *ListResult, error)
-
-	// Execution event operations.
-	SaveExecutionEvent(ctx context.Context, ev *ExecutionEvent) error
-	ListExecutionEvents(ctx context.Context, runID string) ([]*ExecutionEvent, error)
 
 	// Kanban card operations.
 	SaveKanbanCard(ctx context.Context, card *KanbanCard) error

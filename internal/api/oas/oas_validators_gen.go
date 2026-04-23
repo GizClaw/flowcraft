@@ -10,6 +10,40 @@ import (
 	"github.com/ogen-go/ogen/validate"
 )
 
+func (s *ApprovalDecisionRequest) Validate() error {
+	if s == nil {
+		return validate.ErrNilPointer
+	}
+
+	var failures []validate.FieldError
+	if err := func() error {
+		if err := s.Decision.Validate(); err != nil {
+			return err
+		}
+		return nil
+	}(); err != nil {
+		failures = append(failures, validate.FieldError{
+			Name:  "decision",
+			Error: err,
+		})
+	}
+	if len(failures) > 0 {
+		return &validate.Error{Fields: failures}
+	}
+	return nil
+}
+
+func (s ApprovalDecisionRequestDecision) Validate() error {
+	switch s {
+	case "approved":
+		return nil
+	case "rejected":
+		return nil
+	default:
+		return errors.Errorf("invalid value: %v", s)
+	}
+}
+
 func (s *ChangePasswordRequest) Validate() error {
 	if s == nil {
 		return validate.ErrNilPointer

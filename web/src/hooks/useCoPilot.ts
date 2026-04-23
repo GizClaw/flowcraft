@@ -1,11 +1,14 @@
-import { useCallback } from 'react';
+import { useCallback, useEffect } from 'react';
 import { useCoPilotStore, COPILOT_AGENT_ID } from '../store/copilotStore';
 import { useChatStore } from '../store/chatStore';
 import { useWorkflowStore } from '../store/workflowStore';
 import { graphDefToReactFlow } from '../utils/nodeHelpers';
 import { useChat } from './useChat';
 import { agentApi } from '../utils/api';
-import type { CoPilotContextInput, CoPilotRef, AgentToolResultEvent, DispatchedTask } from '../types/chat';
+import type { CoPilotContextInput, CoPilotRef, DispatchedTask } from '../types/chat';
+import { envelopeRouter } from '../eventlog/router';
+import type { Envelope } from '../eventlog/types';
+import { getRuntimeConversationId } from '../utils/runtime';
 
 const GRAPH_MUTATING_TOOLS = ['graph'];
 
@@ -64,11 +67,10 @@ export function useCoPilot() {
     } catch { /* best effort */ }
   }, [currentAgentId, loadGraph]);
 
-  const tryTrackDispatchedTask = useCallback((event: AgentToolResultEvent) => {
-    const resultStr = event.tool_result;
-    if (!resultStr) return;
+  const tryTrackDispatchedTask = useCallback((toolOutput: string) => {
+    if (!toolOutput) return;
     try {
-      const parsed = JSON.parse(resultStr);
+      const parsed = JSON.parse(toolOutput);
       if (parsed.card_id) {
         const task: DispatchedTask = {
           cardId: parsed.card_id,
@@ -81,24 +83,37 @@ export function useCoPilot() {
     } catch { /* not async dispatch result */ }
   }, [commitIntermediateMessage, trackDispatchedTask]);
 
-  const onToolResult = useCallback((event: AgentToolResultEvent) => {
-    if (event.tool_name && GRAPH_MUTATING_TOOLS.includes(event.tool_name)) {
-      refreshGraph();
-    }
-    if (event.tool_name === 'kanban_submit') {
-      tryTrackDispatchedTask(event);
-    }
-  }, [refreshGraph, tryTrackDispatchedTask]);
+  // The legacy useChat onToolResult/onDone callbacks are gone — every
+  // observable agent event now flows through the global EnvelopeClient.
+  // Subscribe directly to the same router for the side-effects CoPilot
+  // needs (refresh graph after a graph-mutating tool, track dispatched
+  // tasks from kanban_submit, clear background-running indicator).
+  useEffect(() => {
+    const conversationId = getRuntimeConversationId(COPILOT_AGENT_ID);
 
-  const onDone = useCallback(() => {
-    setBackgroundRunning(false);
-  }, [setBackgroundRunning]);
+    const onToolReturned = (env: Envelope) => {
+      const p = env.payload as { tool_name?: string; output?: string; conversation_id?: string };
+      if (p.conversation_id && p.conversation_id !== conversationId) return;
+      if (!p.tool_name) return;
+      if (GRAPH_MUTATING_TOOLS.includes(p.tool_name)) refreshGraph();
+      if (p.tool_name === 'kanban_submit' && p.output) tryTrackDispatchedTask(p.output);
+    };
+
+    const onRunSettled = (env: Envelope) => {
+      const p = env.payload as { conversation_id?: string };
+      if (p.conversation_id && p.conversation_id !== conversationId) return;
+      setBackgroundRunning(false);
+    };
+
+    const off1 = envelopeRouter.on('agent.tool.returned', onToolReturned);
+    const off2 = envelopeRouter.on('agent.run.completed', onRunSettled);
+    const off3 = envelopeRouter.on('agent.run.failed', onRunSettled);
+    return () => { off1(); off2(); off3(); };
+  }, [refreshGraph, tryTrackDispatchedTask, setBackgroundRunning]);
 
   const { sendMessage, stopStreaming, approval, submitApproval } = useChat({
     agentId: COPILOT_AGENT_ID,
     buildRequest,
-    onToolResult,
-    onDone,
   });
 
   return { sendMessage, stopStreaming, approval, submitApproval };

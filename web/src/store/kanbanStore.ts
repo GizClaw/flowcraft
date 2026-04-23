@@ -43,6 +43,12 @@ interface KanbanState {
   runtimeId: string | null;
   agentDetails: Map<string, AgentDetail>;
 
+  // snapshotSeq is the eventlog seq the last /kanban/cards snapshot was
+  // taken at (R5 §13). Envelopes with seq ≤ snapshotSeq were already
+  // baked into the snapshot, so the apply* reducers drop them to avoid
+  // double-applying state across the snapshot ↔ envelope boundary.
+  snapshotSeq: number;
+
   // Cached cards grouped by status for O(1) lookup
   cardsByStatus: Map<CardStatus, KanbanCard[]>;
 
@@ -51,7 +57,7 @@ interface KanbanState {
   applyTaskClaimed: (env: Envelope<TaskClaimedPayload>) => void;
   applyTaskCompleted: (env: Envelope<TaskCompletedPayload>) => void;
   applyTaskFailed: (env: Envelope<TaskFailedPayload>) => void;
-  loadSnapshot: (cards: KanbanCard[]) => void;
+  loadSnapshot: (cards: KanbanCard[], snapshotSeq?: number) => void;
   setRuntimeId: (id: string | null) => void;
   reset: () => void;
 
@@ -83,6 +89,7 @@ export const useKanbanStore = create<KanbanState>((set, get) => ({
   events: [],
   runtimeId: null,
   agentDetails: new Map(),
+  snapshotSeq: 0,
   cardsByStatus: new Map(),
 
   applyEvent: (event) => {
@@ -113,7 +120,8 @@ export const useKanbanStore = create<KanbanState>((set, get) => ({
   },
 
   applyTaskSubmitted: (env) => {
-    const { cards } = get();
+    const { cards, snapshotSeq } = get();
+    if (env.seq && snapshotSeq && env.seq <= snapshotSeq) return;
     const next = new Map(cards);
     const p = env.payload;
     const existing = next.get(p.card_id);
@@ -133,7 +141,8 @@ export const useKanbanStore = create<KanbanState>((set, get) => ({
   },
 
   applyTaskClaimed: (env) => {
-    const { cards } = get();
+    const { cards, snapshotSeq } = get();
+    if (env.seq && snapshotSeq && env.seq <= snapshotSeq) return;
     const cur = cards.get(env.payload.card_id);
     if (!cur) return;
     const next = new Map(cards);
@@ -147,7 +156,8 @@ export const useKanbanStore = create<KanbanState>((set, get) => ({
   },
 
   applyTaskCompleted: (env) => {
-    const { cards } = get();
+    const { cards, snapshotSeq } = get();
+    if (env.seq && snapshotSeq && env.seq <= snapshotSeq) return;
     const cur = cards.get(env.payload.card_id);
     if (!cur) return;
     const next = new Map(cards);
@@ -162,7 +172,8 @@ export const useKanbanStore = create<KanbanState>((set, get) => ({
   },
 
   applyTaskFailed: (env) => {
-    const { cards } = get();
+    const { cards, snapshotSeq } = get();
+    if (env.seq && snapshotSeq && env.seq <= snapshotSeq) return;
     const cur = cards.get(env.payload.card_id);
     if (!cur) return;
     const next = new Map(cards);
@@ -176,15 +187,28 @@ export const useKanbanStore = create<KanbanState>((set, get) => ({
     set({ cards: next, cardsByStatus: buildCardsByStatus(next) });
   },
 
-  loadSnapshot: (cards) => {
+  loadSnapshot: (cards, snapshotSeq) => {
     const cardMap = new Map<string, KanbanCard>();
     cards.forEach((c) => cardMap.set(c.id, c));
-    set({ cards: cardMap, events: [], cardsByStatus: buildCardsByStatus(cardMap) });
+    set({
+      cards: cardMap,
+      events: [],
+      cardsByStatus: buildCardsByStatus(cardMap),
+      snapshotSeq: typeof snapshotSeq === 'number' ? snapshotSeq : 0,
+    });
   },
 
   setRuntimeId: (id) => set({ runtimeId: id }),
 
-  reset: () => set({ cards: new Map(), events: [], runtimeId: null, agentDetails: new Map(), cardsByStatus: new Map() }),
+  reset: () =>
+    set({
+      cards: new Map(),
+      events: [],
+      runtimeId: null,
+      agentDetails: new Map(),
+      cardsByStatus: new Map(),
+      snapshotSeq: 0,
+    }),
 
   getCardsByStatus: (status) => {
     // O(1) lookup from cached map instead of O(n) iteration

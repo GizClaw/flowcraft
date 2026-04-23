@@ -11,16 +11,33 @@ import (
 	otellog "go.opentelemetry.io/otel/log"
 )
 
+// RecentMessageReader returns the most recent N assistant messages for a
+// conversation. After R5 the canonical source is the ChatProjector — the
+// router uses this small interface so the gateway package does not need to
+// import projection/chat (and so tests can stub the reader cheaply).
+type RecentMessageReader interface {
+	RecentAssistantMessages(conversationID string, limit int) []string
+}
+
 // NotificationRouter subscribes to per-runtime EventBus events and routes
 // notifications to configured outbound channels based on Agent.Config.Notification.
 type NotificationRouter struct {
-	gateway *Gateway
-	store   model.Store
+	gateway      *Gateway
+	store        model.Store
+	recentReader RecentMessageReader
 }
 
-// NewNotificationRouter creates a notification router.
+// NewNotificationRouter creates a notification router. The recentReader is
+// optional; when nil, callback summary fall back to the generic event push.
 func NewNotificationRouter(gw *Gateway, store model.Store) *NotificationRouter {
 	return &NotificationRouter{gateway: gw, store: store}
+}
+
+// WithRecentReader wires the projector-backed RecentMessageReader. Bootstrap
+// calls this once the ChatProjector is up.
+func (nr *NotificationRouter) WithRecentReader(r RecentMessageReader) *NotificationRouter {
+	nr.recentReader = r
+	return nr
 }
 
 // SubscribeSession subscribes to a runtime board's Bus for notification-relevant
@@ -123,20 +140,27 @@ func (nr *NotificationRouter) pushCallbackSummary(ctx context.Context, agentID, 
 		return
 	}
 
+	if nr.recentReader == nil {
+		nr.push(ctx, agentID, channelName, ev)
+		return
+	}
 	for _, conv := range convs {
-		msgs, err := nr.store.GetRecentMessages(ctx, conv.ID, 5)
-		if err != nil || len(msgs) == 0 {
+		msgs := nr.recentReader.RecentAssistantMessages(conv.ID, 5)
+		if len(msgs) == 0 {
 			continue
 		}
+		// Most-recent-last semantics: scan from the end so the latest
+		// assistant message wins.
 		for i := len(msgs) - 1; i >= 0; i-- {
-			if msgs[i].Role == model.RoleAssistant && msgs[i].Content() != "" {
-				if err := outCh.Send(ctx, runtimeID, msgs[i].Content()); err != nil {
-					telemetry.Warn(ctx, "gateway: callback summary push failed",
-						otellog.String("channel", channelName),
-						otellog.String("error", err.Error()))
-				}
-				return
+			if msgs[i] == "" {
+				continue
 			}
+			if err := outCh.Send(ctx, runtimeID, msgs[i]); err != nil {
+				telemetry.Warn(ctx, "gateway: callback summary push failed",
+					otellog.String("channel", channelName),
+					otellog.String("error", err.Error()))
+			}
+			return
 		}
 	}
 

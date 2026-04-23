@@ -275,11 +275,11 @@ func (s *SQLiteStore) DeleteAgent(ctx context.Context, id string) error {
 			return errcode.MethodNotAllowedf("copilot agent cannot be deleted")
 		}
 
-		// Cascade delete in dependency order.
+		// Cascade delete in dependency order. The legacy `messages` table
+		// was dropped in migration 015 (R5); the ChatProjector handles
+		// conversation cleanup based on chat events.
 		cascadeDeletes := []string{
-			`DELETE FROM execution_events WHERE run_id IN (SELECT id FROM workflow_runs WHERE agent_id = ?)`,
 			`DELETE FROM workflow_runs WHERE agent_id = ?`,
-			`DELETE FROM messages WHERE conversation_id IN (SELECT id FROM conversations WHERE agent_id = ?)`,
 			`DELETE FROM conversations WHERE agent_id = ?`,
 			`DELETE FROM graph_versions WHERE agent_id = ?`,
 			`DELETE FROM dataset_documents WHERE dataset_id IN (SELECT id FROM datasets WHERE agent_id = ?)`,
@@ -488,74 +488,6 @@ func scanConversation(rows *sql.Rows) (*model.Conversation, error) {
 
 // --- Message operations ---
 
-func (s *SQLiteStore) GetMessages(ctx context.Context, conversationID string) ([]*model.Message, error) {
-	return s.GetRecentMessages(ctx, conversationID, 0)
-}
-
-func (s *SQLiteStore) GetRecentMessages(ctx context.Context, conversationID string, limit int) ([]*model.Message, error) {
-	var query string
-	var args []any
-	if limit > 0 {
-		query = `SELECT id, conversation_id, role, parts, token_count, created_at
-			FROM (SELECT *, rowid AS _r FROM messages WHERE conversation_id = ? ORDER BY created_at DESC, _r DESC LIMIT ?)
-			ORDER BY created_at ASC, _r ASC`
-		args = []any{conversationID, limit}
-	} else {
-		query = `SELECT id, conversation_id, role, parts, token_count, created_at
-			FROM messages WHERE conversation_id = ? ORDER BY created_at ASC, rowid ASC`
-		args = []any{conversationID}
-	}
-	rows, err := s.db.QueryContext(ctx, query, args...)
-	if err != nil {
-		return nil, fmt.Errorf("store: get messages: %w", err)
-	}
-	defer func() { _ = rows.Close() }()
-
-	var msgs []*model.Message
-	for rows.Next() {
-		m, err := scanMessage(rows)
-		if err != nil {
-			return nil, err
-		}
-		msgs = append(msgs, m)
-	}
-	return msgs, rows.Err()
-}
-
-func (s *SQLiteStore) SaveMessage(ctx context.Context, msg *model.Message) error {
-	if msg.ID == "" {
-		msg.ID = xid.New().String()
-	}
-	if msg.CreatedAt.IsZero() {
-		msg.CreatedAt = time.Now()
-	}
-	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO messages (id, conversation_id, role, parts, token_count, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?)`,
-		msg.ID, msg.ConversationID, string(msg.Role),
-		marshalJSON(msg.Parts), msg.TokenCount, timeStr(msg.CreatedAt))
-	if err != nil {
-		return fmt.Errorf("store: save message: %w", err)
-	}
-	return nil
-}
-
-func scanMessage(rows *sql.Rows) (*model.Message, error) {
-	var (
-		m                   model.Message
-		role, partsJSON, ts string
-	)
-	if err := rows.Scan(&m.ID, &m.ConversationID, &role, &partsJSON, &m.TokenCount, &ts); err != nil {
-		return nil, fmt.Errorf("store: scan message: %w", err)
-	}
-	m.Role = model.Role(role)
-	m.CreatedAt = parseTime(ts)
-	if partsJSON != "" && partsJSON != "[]" {
-		_ = json.Unmarshal([]byte(partsJSON), &m.Parts)
-	}
-	return &m, nil
-}
-
 // --- Workflow run operations ---
 
 func (s *SQLiteStore) SaveWorkflowRun(ctx context.Context, run *model.WorkflowRun) error {
@@ -687,51 +619,6 @@ func scanWorkflowRunRow(row *sql.Row) (*model.WorkflowRun, error) {
 		}
 	}
 	return &run, nil
-}
-
-// --- Execution event operations ---
-
-func (s *SQLiteStore) SaveExecutionEvent(ctx context.Context, ev *model.ExecutionEvent) error {
-	if ev.ID == "" {
-		ev.ID = xid.New().String()
-	}
-	if ev.CreatedAt.IsZero() {
-		ev.CreatedAt = time.Now()
-	}
-	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO execution_events (id, run_id, node_id, type, payload, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
-		ev.ID, ev.RunID, ev.NodeID, ev.Type, marshalJSON(ev.Payload), timeStr(ev.CreatedAt))
-	if err != nil {
-		return fmt.Errorf("store: save execution event: %w", err)
-	}
-	return nil
-}
-
-func (s *SQLiteStore) ListExecutionEvents(ctx context.Context, runID string) ([]*model.ExecutionEvent, error) {
-	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, run_id, node_id, type, payload, created_at FROM execution_events WHERE run_id = ? ORDER BY created_at ASC`, runID)
-	if err != nil {
-		return nil, fmt.Errorf("store: list execution events: %w", err)
-	}
-	defer func() { _ = rows.Close() }()
-
-	var events []*model.ExecutionEvent
-	for rows.Next() {
-		var (
-			ev          model.ExecutionEvent
-			payloadJSON string
-			ts          string
-		)
-		if err := rows.Scan(&ev.ID, &ev.RunID, &ev.NodeID, &ev.Type, &payloadJSON, &ts); err != nil {
-			return nil, fmt.Errorf("store: scan execution event: %w", err)
-		}
-		ev.CreatedAt = parseTime(ts)
-		if payloadJSON != "" && payloadJSON != "{}" {
-			_ = json.Unmarshal([]byte(payloadJSON), &ev.Payload)
-		}
-		events = append(events, &ev)
-	}
-	return events, rows.Err()
 }
 
 // --- Kanban card operations ---
@@ -1613,18 +1500,9 @@ func (s *SQLiteStore) GetMonitoringDiagnostics(ctx context.Context, agentID stri
 		return nil, fmt.Errorf("store: close failed runs rows: %w", err)
 	}
 
-	// Collect run IDs that need event-based error code resolution in a single
-	// batch query instead of issuing one query per run (N+1).
-	var needEventLookup []string
-	for i := range allFailed {
-		run := &allFailed[i]
-		if extractErrorCodeFromOutputs(run.outputsRaw) == "" && extractErrorCodeFromMessage(run.output) == "" {
-			needEventLookup = append(needEventLookup, run.runID)
-		}
-	}
-	eventCodes := s.batchLookupErrorCodesFromEvents(ctx, needEventLookup)
-
 	// Resolve error codes once per run and cache both code and message.
+	// The legacy execution_events fallback was removed in R5; we now rely
+	// solely on `outputs`/`output` parsing plus `detectErrorCode` heuristics.
 	type resolved struct {
 		code string
 		msg  string
@@ -1633,7 +1511,7 @@ func (s *SQLiteStore) GetMonitoringDiagnostics(ctx context.Context, agentID stri
 	errorCounts := map[string]int64{}
 	for i := range allFailed {
 		run := &allFailed[i]
-		code := resolveErrorCodeWithCache(run.output, run.outputsRaw, eventCodes[run.runID])
+		code := resolveErrorCodeWithCache(run.output, run.outputsRaw, "")
 		msg := extractFailureMessage(run.output, run.outputsRaw)
 		resolvedRuns[i] = resolved{code: code, msg: msg}
 		errorCounts[code]++
@@ -1679,69 +1557,6 @@ func (s *SQLiteStore) GetMonitoringDiagnostics(ctx context.Context, agentID stri
 		TopErrorCodes:   topCodes,
 		RecentFailures:  recent,
 	}, nil
-}
-
-// batchLookupErrorCodesFromEvents resolves error codes from execution_events
-// for multiple run IDs in a single query, avoiding N+1 DB round-trips.
-func (s *SQLiteStore) batchLookupErrorCodesFromEvents(ctx context.Context, runIDs []string) map[string]string {
-	result := make(map[string]string, len(runIDs))
-	if len(runIDs) == 0 {
-		return result
-	}
-	placeholders := make([]string, len(runIDs))
-	args := make([]any, len(runIDs))
-	for i, id := range runIDs {
-		placeholders[i] = "?"
-		args[i] = id
-	}
-	q := `SELECT run_id, type, payload FROM execution_events
-		WHERE run_id IN (` + strings.Join(placeholders, ",") + `)
-		ORDER BY created_at DESC`
-	rows, err := s.db.QueryContext(ctx, q, args...)
-	if err != nil {
-		return result
-	}
-	defer func() { _ = rows.Close() }()
-
-	type eventPayload struct {
-		eventType string
-		payload   string
-	}
-	perRun := make(map[string][]eventPayload)
-	for rows.Next() {
-		var runID, eventType string
-		var payload sql.NullString
-		if err := rows.Scan(&runID, &eventType, &payload); err != nil {
-			continue
-		}
-		if !payload.Valid || payload.String == "" || payload.String == "{}" {
-			continue
-		}
-		perRun[runID] = append(perRun[runID], eventPayload{
-			eventType: strings.ToLower(eventType),
-			payload:   payload.String,
-		})
-	}
-	for runID, candidates := range perRun {
-		for _, item := range candidates {
-			if strings.Contains(item.eventType, "error") || strings.Contains(item.eventType, "fail") {
-				if code := extractErrorCodeFromOutputs(item.payload); code != "" {
-					result[runID] = code
-					break
-				}
-			}
-		}
-		if result[runID] != "" {
-			continue
-		}
-		for _, item := range candidates {
-			if code := extractErrorCodeFromOutputs(item.payload); code != "" {
-				result[runID] = code
-				break
-			}
-		}
-	}
-	return result
 }
 
 // resolveErrorCodeWithCache resolves the error code for a failed run using

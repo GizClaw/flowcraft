@@ -52,6 +52,35 @@ type ServerDeps struct {
 	ProjectionStatus   ProjectionStatusProbe
 	ProjectionReplayer ProjectionReplayer
 	WebhookReplayer    WebhookReplayer
+	// ChatRead is the read side of the ChatProjector. It is the only source
+	// of truth for /api/conversations/{id}/messages and the message-count /
+	// last-message-at fields on /api/conversations after R5; the legacy
+	// `messages` table is no longer read.
+	ChatRead ChatReadModel
+}
+
+// ChatMessageView mirrors the projector's Message shape without forcing api/
+// to import internal/projection/chat (avoids tight coupling and a long
+// dependency chain through bootstrap wiring).
+type ChatMessageView struct {
+	MessageID string
+	Role      string
+	Content   string
+	SentAt    time.Time
+}
+
+// ChatConversationView is the projector's Conversation shape, again kept
+// local to api so this package does not depend on projection/chat.
+type ChatConversationView struct {
+	ID            string
+	Messages      []ChatMessageView
+	LastMessageAt time.Time
+	MessageCount  int
+}
+
+// ChatReadModel is the read interface implemented by the chat projector.
+type ChatReadModel interface {
+	GetConversation(id string) *ChatConversationView
 }
 
 // ProjectionStatusProbe is the read side of projection.Manager that
@@ -198,6 +227,13 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	return s.Serve(ctx, ln)
+}
+
+// Serve starts the HTTP server on a caller-supplied listener. Used by the
+// smoke harness (and tests) to bind an OS-assigned port and read the actual
+// address back via ln.Addr() before any traffic flows.
+func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 	telemetry.Info(ctx, "api: server listening", otellog.String("addr", ln.Addr().String()))
 	return s.server.Serve(ln)
 }

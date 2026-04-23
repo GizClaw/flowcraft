@@ -72,22 +72,6 @@ func encodeChangePasswordResponse(response *OkResponse, w http.ResponseWriter, s
 	return nil
 }
 
-func encodeChatStreamResponse(response ChatStreamOK, w http.ResponseWriter, span trace.Span) error {
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.WriteHeader(200)
-	span.SetStatus(codes.Ok, http.StatusText(200))
-
-	writer := w
-	if closer, ok := response.Data.(io.Closer); ok {
-		defer closer.Close()
-	}
-	if _, err := io.Copy(writer, response); err != nil {
-		return errors.Wrap(err, "write")
-	}
-
-	return nil
-}
-
 func encodeCompileGraphResponse(response *CompileResult, w http.ResponseWriter, span trace.Span) error {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(200)
@@ -603,20 +587,6 @@ func encodeGetWorkflowRunResponse(response *WorkflowRun, w http.ResponseWriter, 
 	return nil
 }
 
-func encodeGetWorkflowRunEventsResponse(response *ExecutionEventList, w http.ResponseWriter, span trace.Span) error {
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	w.WriteHeader(200)
-	span.SetStatus(codes.Ok, http.StatusText(200))
-
-	e := new(jx.Encoder)
-	response.Encode(e)
-	if _, err := e.WriteTo(w); err != nil {
-		return errors.Wrap(err, "write")
-	}
-
-	return nil
-}
-
 func encodeHealthCheckResponse(response *HealthStatus, w http.ResponseWriter, span trace.Span) error {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(200)
@@ -946,22 +916,6 @@ func encodeReprocessDocumentResponse(response *DatasetDocument, w http.ResponseW
 	return nil
 }
 
-func encodeResumeStreamResponse(response ResumeStreamOK, w http.ResponseWriter, span trace.Span) error {
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.WriteHeader(200)
-	span.SetStatus(codes.Ok, http.StatusText(200))
-
-	writer := w
-	if closer, ok := response.Data.(io.Closer); ok {
-		defer closer.Close()
-	}
-	if _, err := io.Copy(writer, response); err != nil {
-		return errors.Wrap(err, "write")
-	}
-
-	return nil
-}
-
 func encodeRollbackVersionResponse(response *GraphVersion, w http.ResponseWriter, span trace.Span) error {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(200)
@@ -987,6 +941,34 @@ func encodeSetupAuthResponse(response *OkResponse, w http.ResponseWriter, span t
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(200)
 	span.SetStatus(codes.Ok, http.StatusText(200))
+
+	e := new(jx.Encoder)
+	response.Encode(e)
+	if _, err := e.WriteTo(w); err != nil {
+		return errors.Wrap(err, "write")
+	}
+
+	return nil
+}
+
+func encodeStartConversationRunResponse(response *ChatStartResponse, w http.ResponseWriter, span trace.Span) error {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(202)
+	span.SetStatus(codes.Ok, http.StatusText(202))
+
+	e := new(jx.Encoder)
+	response.Encode(e)
+	if _, err := e.WriteTo(w); err != nil {
+		return errors.Wrap(err, "write")
+	}
+
+	return nil
+}
+
+func encodeSubmitApprovalResponse(response *ApprovalDecisionResponse, w http.ResponseWriter, span trace.Span) error {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(202)
+	span.SetStatus(codes.Ok, http.StatusText(202))
 
 	e := new(jx.Encoder)
 	response.Encode(e)

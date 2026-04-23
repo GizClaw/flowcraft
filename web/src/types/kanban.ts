@@ -55,6 +55,10 @@ export interface KanbanCard {
   updated_at: string;
   elapsed_ms?: number;
   meta?: Record<string, string>;
+  // R5 §13: realm that owns the runtime this card lives in. Optional so
+  // legacy snapshot consumers (and tests that synthesise cards) keep
+  // working without filling it in.
+  realm_id?: string;
 }
 
 export interface KanbanEvent {

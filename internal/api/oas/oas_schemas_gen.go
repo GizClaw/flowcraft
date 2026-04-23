@@ -269,6 +269,161 @@ func (s *AgentList) SetData(val []Agent) {
 	s.Data = val
 }
 
+// Ref: #/components/schemas/ApprovalDecisionRequest
+type ApprovalDecisionRequest struct {
+	// Agent that owns the paused run.
+	AgentID string `json:"agent_id"`
+	// Workflow run id captured in the prior approval_required event.
+	RunID    string                          `json:"run_id"`
+	Decision ApprovalDecisionRequestDecision `json:"decision"`
+	// Optional reviewer comment surfaced to the resumed graph.
+	Comment OptString `json:"comment"`
+	// Optional client-supplied BoardSnapshot. When omitted, the server loads the
+	// most recent checkpoint for `agent_id`.
+	State OptJSONObject `json:"state"`
+}
+
+// GetAgentID returns the value of AgentID.
+func (s *ApprovalDecisionRequest) GetAgentID() string {
+	return s.AgentID
+}
+
+// GetRunID returns the value of RunID.
+func (s *ApprovalDecisionRequest) GetRunID() string {
+	return s.RunID
+}
+
+// GetDecision returns the value of Decision.
+func (s *ApprovalDecisionRequest) GetDecision() ApprovalDecisionRequestDecision {
+	return s.Decision
+}
+
+// GetComment returns the value of Comment.
+func (s *ApprovalDecisionRequest) GetComment() OptString {
+	return s.Comment
+}
+
+// GetState returns the value of State.
+func (s *ApprovalDecisionRequest) GetState() OptJSONObject {
+	return s.State
+}
+
+// SetAgentID sets the value of AgentID.
+func (s *ApprovalDecisionRequest) SetAgentID(val string) {
+	s.AgentID = val
+}
+
+// SetRunID sets the value of RunID.
+func (s *ApprovalDecisionRequest) SetRunID(val string) {
+	s.RunID = val
+}
+
+// SetDecision sets the value of Decision.
+func (s *ApprovalDecisionRequest) SetDecision(val ApprovalDecisionRequestDecision) {
+	s.Decision = val
+}
+
+// SetComment sets the value of Comment.
+func (s *ApprovalDecisionRequest) SetComment(val OptString) {
+	s.Comment = val
+}
+
+// SetState sets the value of State.
+func (s *ApprovalDecisionRequest) SetState(val OptJSONObject) {
+	s.State = val
+}
+
+type ApprovalDecisionRequestDecision string
+
+const (
+	ApprovalDecisionRequestDecisionApproved ApprovalDecisionRequestDecision = "approved"
+	ApprovalDecisionRequestDecisionRejected ApprovalDecisionRequestDecision = "rejected"
+)
+
+// AllValues returns all ApprovalDecisionRequestDecision values.
+func (ApprovalDecisionRequestDecision) AllValues() []ApprovalDecisionRequestDecision {
+	return []ApprovalDecisionRequestDecision{
+		ApprovalDecisionRequestDecisionApproved,
+		ApprovalDecisionRequestDecisionRejected,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s ApprovalDecisionRequestDecision) MarshalText() ([]byte, error) {
+	switch s {
+	case ApprovalDecisionRequestDecisionApproved:
+		return []byte(s), nil
+	case ApprovalDecisionRequestDecisionRejected:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *ApprovalDecisionRequestDecision) UnmarshalText(data []byte) error {
+	switch ApprovalDecisionRequestDecision(data) {
+	case ApprovalDecisionRequestDecisionApproved:
+		*s = ApprovalDecisionRequestDecisionApproved
+		return nil
+	case ApprovalDecisionRequestDecisionRejected:
+		*s = ApprovalDecisionRequestDecisionRejected
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+// Ref: #/components/schemas/ApprovalDecisionResponse
+type ApprovalDecisionResponse struct {
+	Accepted bool   `json:"accepted"`
+	RunID    string `json:"run_id"`
+	// Envelope partition to subscribe for resumed progress (`card:{id}`).
+	Partition OptString `json:"partition"`
+	// Latest event seq emitted while serving the request; clients can use it as the `since` cursor.
+	LastSeq OptInt64 `json:"last_seq"`
+}
+
+// GetAccepted returns the value of Accepted.
+func (s *ApprovalDecisionResponse) GetAccepted() bool {
+	return s.Accepted
+}
+
+// GetRunID returns the value of RunID.
+func (s *ApprovalDecisionResponse) GetRunID() string {
+	return s.RunID
+}
+
+// GetPartition returns the value of Partition.
+func (s *ApprovalDecisionResponse) GetPartition() OptString {
+	return s.Partition
+}
+
+// GetLastSeq returns the value of LastSeq.
+func (s *ApprovalDecisionResponse) GetLastSeq() OptInt64 {
+	return s.LastSeq
+}
+
+// SetAccepted sets the value of Accepted.
+func (s *ApprovalDecisionResponse) SetAccepted(val bool) {
+	s.Accepted = val
+}
+
+// SetRunID sets the value of RunID.
+func (s *ApprovalDecisionResponse) SetRunID(val string) {
+	s.RunID = val
+}
+
+// SetPartition sets the value of Partition.
+func (s *ApprovalDecisionResponse) SetPartition(val OptString) {
+	s.Partition = val
+}
+
+// SetLastSeq sets the value of LastSeq.
+func (s *ApprovalDecisionResponse) SetLastSeq(val OptInt64) {
+	s.LastSeq = val
+}
+
 // Ref: #/components/schemas/AuthStatus
 type AuthStatus struct {
 	// True iff owner credentials have been set via `/auth/setup`.
@@ -413,21 +568,15 @@ func (s *ChannelTypeList) SetData(val []ChannelType) {
 
 // Ref: #/components/schemas/ChatRequest
 type ChatRequest struct {
-	AgentID        string        `json:"agent_id"`
-	ConversationID OptString     `json:"conversation_id"`
-	Query          string        `json:"query"`
-	Inputs         OptJSONObject `json:"inputs"`
-	Async          OptBool       `json:"async"`
+	AgentID string        `json:"agent_id"`
+	Query   string        `json:"query"`
+	Inputs  OptJSONObject `json:"inputs"`
+	Async   OptBool       `json:"async"`
 }
 
 // GetAgentID returns the value of AgentID.
 func (s *ChatRequest) GetAgentID() string {
 	return s.AgentID
-}
-
-// GetConversationID returns the value of ConversationID.
-func (s *ChatRequest) GetConversationID() OptString {
-	return s.ConversationID
 }
 
 // GetQuery returns the value of Query.
@@ -450,11 +599,6 @@ func (s *ChatRequest) SetAgentID(val string) {
 	s.AgentID = val
 }
 
-// SetConversationID sets the value of ConversationID.
-func (s *ChatRequest) SetConversationID(val OptString) {
-	s.ConversationID = val
-}
-
 // SetQuery sets the value of Query.
 func (s *ChatRequest) SetQuery(val string) {
 	s.Query = val
@@ -470,18 +614,66 @@ func (s *ChatRequest) SetAsync(val OptBool) {
 	s.Async = val
 }
 
-type ChatStreamOK struct {
-	Data io.Reader
+// Ref: #/components/schemas/ChatStartResponse
+type ChatStartResponse struct {
+	Accepted       bool   `json:"accepted"`
+	ConversationID string `json:"conversation_id"`
+	// Workflow run id; correlates with run_id field on subsequent envelopes.
+	RunID string `json:"run_id"`
+	// Envelope partition to subscribe (always `card:{conversation_id}`).
+	Partition string `json:"partition"`
+	// Latest event seq at the moment the run was accepted; use as the `since` cursor.
+	LastSeq OptInt64 `json:"last_seq"`
 }
 
-// Read reads data from the Data reader.
-//
-// Kept to satisfy the io.Reader interface.
-func (s ChatStreamOK) Read(p []byte) (n int, err error) {
-	if s.Data == nil {
-		return 0, io.EOF
-	}
-	return s.Data.Read(p)
+// GetAccepted returns the value of Accepted.
+func (s *ChatStartResponse) GetAccepted() bool {
+	return s.Accepted
+}
+
+// GetConversationID returns the value of ConversationID.
+func (s *ChatStartResponse) GetConversationID() string {
+	return s.ConversationID
+}
+
+// GetRunID returns the value of RunID.
+func (s *ChatStartResponse) GetRunID() string {
+	return s.RunID
+}
+
+// GetPartition returns the value of Partition.
+func (s *ChatStartResponse) GetPartition() string {
+	return s.Partition
+}
+
+// GetLastSeq returns the value of LastSeq.
+func (s *ChatStartResponse) GetLastSeq() OptInt64 {
+	return s.LastSeq
+}
+
+// SetAccepted sets the value of Accepted.
+func (s *ChatStartResponse) SetAccepted(val bool) {
+	s.Accepted = val
+}
+
+// SetConversationID sets the value of ConversationID.
+func (s *ChatStartResponse) SetConversationID(val string) {
+	s.ConversationID = val
+}
+
+// SetRunID sets the value of RunID.
+func (s *ChatStartResponse) SetRunID(val string) {
+	s.RunID = val
+}
+
+// SetPartition sets the value of Partition.
+func (s *ChatStartResponse) SetPartition(val string) {
+	s.Partition = val
+}
+
+// SetLastSeq sets the value of LastSeq.
+func (s *ChatStartResponse) SetLastSeq(val OptInt64) {
+	s.LastSeq = val
 }
 
 // Ref: #/components/schemas/CompileIssue
@@ -1448,91 +1640,6 @@ func (s *ErrorStatusCode) SetResponse(val ErrorResponse) {
 	s.Response = val
 }
 
-// Ref: #/components/schemas/ExecutionEvent
-type ExecutionEvent struct {
-	ID        OptString     `json:"id"`
-	RunID     OptString     `json:"run_id"`
-	NodeID    OptString     `json:"node_id"`
-	Type      OptString     `json:"type"`
-	Payload   OptJSONObject `json:"payload"`
-	CreatedAt OptDateTime   `json:"created_at"`
-}
-
-// GetID returns the value of ID.
-func (s *ExecutionEvent) GetID() OptString {
-	return s.ID
-}
-
-// GetRunID returns the value of RunID.
-func (s *ExecutionEvent) GetRunID() OptString {
-	return s.RunID
-}
-
-// GetNodeID returns the value of NodeID.
-func (s *ExecutionEvent) GetNodeID() OptString {
-	return s.NodeID
-}
-
-// GetType returns the value of Type.
-func (s *ExecutionEvent) GetType() OptString {
-	return s.Type
-}
-
-// GetPayload returns the value of Payload.
-func (s *ExecutionEvent) GetPayload() OptJSONObject {
-	return s.Payload
-}
-
-// GetCreatedAt returns the value of CreatedAt.
-func (s *ExecutionEvent) GetCreatedAt() OptDateTime {
-	return s.CreatedAt
-}
-
-// SetID sets the value of ID.
-func (s *ExecutionEvent) SetID(val OptString) {
-	s.ID = val
-}
-
-// SetRunID sets the value of RunID.
-func (s *ExecutionEvent) SetRunID(val OptString) {
-	s.RunID = val
-}
-
-// SetNodeID sets the value of NodeID.
-func (s *ExecutionEvent) SetNodeID(val OptString) {
-	s.NodeID = val
-}
-
-// SetType sets the value of Type.
-func (s *ExecutionEvent) SetType(val OptString) {
-	s.Type = val
-}
-
-// SetPayload sets the value of Payload.
-func (s *ExecutionEvent) SetPayload(val OptJSONObject) {
-	s.Payload = val
-}
-
-// SetCreatedAt sets the value of CreatedAt.
-func (s *ExecutionEvent) SetCreatedAt(val OptDateTime) {
-	s.CreatedAt = val
-}
-
-// Ref: #/components/schemas/ExecutionEventList
-type ExecutionEventList struct {
-	Data []ExecutionEvent `json:"data"`
-}
-
-// GetData returns the value of Data.
-func (s *ExecutionEventList) GetData() []ExecutionEvent {
-	return s.Data
-}
-
-// SetData sets the value of Data.
-func (s *ExecutionEventList) SetData(val []ExecutionEvent) {
-	s.Data = val
-}
-
 type ExportAgentFormat string
 
 const (
@@ -2230,17 +2337,230 @@ func (s *JSONObject) init() JSONObject {
 
 // Ref: #/components/schemas/KanbanCardList
 type KanbanCardList struct {
-	Data []JSONObject `json:"data"`
+	Data        []KanbanCardSummary `json:"data"`
+	LastSeq     OptInt64            `json:"last_seq"`
+	LastEventTs OptDateTime         `json:"last_event_ts"`
+	RealmID     OptString           `json:"realm_id"`
 }
 
 // GetData returns the value of Data.
-func (s *KanbanCardList) GetData() []JSONObject {
+func (s *KanbanCardList) GetData() []KanbanCardSummary {
 	return s.Data
 }
 
+// GetLastSeq returns the value of LastSeq.
+func (s *KanbanCardList) GetLastSeq() OptInt64 {
+	return s.LastSeq
+}
+
+// GetLastEventTs returns the value of LastEventTs.
+func (s *KanbanCardList) GetLastEventTs() OptDateTime {
+	return s.LastEventTs
+}
+
+// GetRealmID returns the value of RealmID.
+func (s *KanbanCardList) GetRealmID() OptString {
+	return s.RealmID
+}
+
 // SetData sets the value of Data.
-func (s *KanbanCardList) SetData(val []JSONObject) {
+func (s *KanbanCardList) SetData(val []KanbanCardSummary) {
 	s.Data = val
+}
+
+// SetLastSeq sets the value of LastSeq.
+func (s *KanbanCardList) SetLastSeq(val OptInt64) {
+	s.LastSeq = val
+}
+
+// SetLastEventTs sets the value of LastEventTs.
+func (s *KanbanCardList) SetLastEventTs(val OptDateTime) {
+	s.LastEventTs = val
+}
+
+// SetRealmID sets the value of RealmID.
+func (s *KanbanCardList) SetRealmID(val OptString) {
+	s.RealmID = val
+}
+
+// Ref: #/components/schemas/KanbanCardSummary
+type KanbanCardSummary struct {
+	ID            string                   `json:"id"`
+	Type          string                   `json:"type"`
+	Status        string                   `json:"status"`
+	Producer      string                   `json:"producer"`
+	Consumer      string                   `json:"consumer"`
+	Query         OptString                `json:"query"`
+	TargetAgentID OptString                `json:"target_agent_id"`
+	Output        OptString                `json:"output"`
+	Error         OptString                `json:"error"`
+	RunID         OptString                `json:"run_id"`
+	CreatedAt     time.Time                `json:"created_at"`
+	UpdatedAt     time.Time                `json:"updated_at"`
+	ElapsedMs     OptInt64                 `json:"elapsed_ms"`
+	Meta          OptKanbanCardSummaryMeta `json:"meta"`
+	RealmID       OptString                `json:"realm_id"`
+}
+
+// GetID returns the value of ID.
+func (s *KanbanCardSummary) GetID() string {
+	return s.ID
+}
+
+// GetType returns the value of Type.
+func (s *KanbanCardSummary) GetType() string {
+	return s.Type
+}
+
+// GetStatus returns the value of Status.
+func (s *KanbanCardSummary) GetStatus() string {
+	return s.Status
+}
+
+// GetProducer returns the value of Producer.
+func (s *KanbanCardSummary) GetProducer() string {
+	return s.Producer
+}
+
+// GetConsumer returns the value of Consumer.
+func (s *KanbanCardSummary) GetConsumer() string {
+	return s.Consumer
+}
+
+// GetQuery returns the value of Query.
+func (s *KanbanCardSummary) GetQuery() OptString {
+	return s.Query
+}
+
+// GetTargetAgentID returns the value of TargetAgentID.
+func (s *KanbanCardSummary) GetTargetAgentID() OptString {
+	return s.TargetAgentID
+}
+
+// GetOutput returns the value of Output.
+func (s *KanbanCardSummary) GetOutput() OptString {
+	return s.Output
+}
+
+// GetError returns the value of Error.
+func (s *KanbanCardSummary) GetError() OptString {
+	return s.Error
+}
+
+// GetRunID returns the value of RunID.
+func (s *KanbanCardSummary) GetRunID() OptString {
+	return s.RunID
+}
+
+// GetCreatedAt returns the value of CreatedAt.
+func (s *KanbanCardSummary) GetCreatedAt() time.Time {
+	return s.CreatedAt
+}
+
+// GetUpdatedAt returns the value of UpdatedAt.
+func (s *KanbanCardSummary) GetUpdatedAt() time.Time {
+	return s.UpdatedAt
+}
+
+// GetElapsedMs returns the value of ElapsedMs.
+func (s *KanbanCardSummary) GetElapsedMs() OptInt64 {
+	return s.ElapsedMs
+}
+
+// GetMeta returns the value of Meta.
+func (s *KanbanCardSummary) GetMeta() OptKanbanCardSummaryMeta {
+	return s.Meta
+}
+
+// GetRealmID returns the value of RealmID.
+func (s *KanbanCardSummary) GetRealmID() OptString {
+	return s.RealmID
+}
+
+// SetID sets the value of ID.
+func (s *KanbanCardSummary) SetID(val string) {
+	s.ID = val
+}
+
+// SetType sets the value of Type.
+func (s *KanbanCardSummary) SetType(val string) {
+	s.Type = val
+}
+
+// SetStatus sets the value of Status.
+func (s *KanbanCardSummary) SetStatus(val string) {
+	s.Status = val
+}
+
+// SetProducer sets the value of Producer.
+func (s *KanbanCardSummary) SetProducer(val string) {
+	s.Producer = val
+}
+
+// SetConsumer sets the value of Consumer.
+func (s *KanbanCardSummary) SetConsumer(val string) {
+	s.Consumer = val
+}
+
+// SetQuery sets the value of Query.
+func (s *KanbanCardSummary) SetQuery(val OptString) {
+	s.Query = val
+}
+
+// SetTargetAgentID sets the value of TargetAgentID.
+func (s *KanbanCardSummary) SetTargetAgentID(val OptString) {
+	s.TargetAgentID = val
+}
+
+// SetOutput sets the value of Output.
+func (s *KanbanCardSummary) SetOutput(val OptString) {
+	s.Output = val
+}
+
+// SetError sets the value of Error.
+func (s *KanbanCardSummary) SetError(val OptString) {
+	s.Error = val
+}
+
+// SetRunID sets the value of RunID.
+func (s *KanbanCardSummary) SetRunID(val OptString) {
+	s.RunID = val
+}
+
+// SetCreatedAt sets the value of CreatedAt.
+func (s *KanbanCardSummary) SetCreatedAt(val time.Time) {
+	s.CreatedAt = val
+}
+
+// SetUpdatedAt sets the value of UpdatedAt.
+func (s *KanbanCardSummary) SetUpdatedAt(val time.Time) {
+	s.UpdatedAt = val
+}
+
+// SetElapsedMs sets the value of ElapsedMs.
+func (s *KanbanCardSummary) SetElapsedMs(val OptInt64) {
+	s.ElapsedMs = val
+}
+
+// SetMeta sets the value of Meta.
+func (s *KanbanCardSummary) SetMeta(val OptKanbanCardSummaryMeta) {
+	s.Meta = val
+}
+
+// SetRealmID sets the value of RealmID.
+func (s *KanbanCardSummary) SetRealmID(val OptString) {
+	s.RealmID = val
+}
+
+type KanbanCardSummaryMeta map[string]string
+
+func (s *KanbanCardSummaryMeta) init() KanbanCardSummaryMeta {
+	m := *s
+	if m == nil {
+		m = map[string]string{}
+		*s = m
+	}
+	return m
 }
 
 // Ref: #/components/schemas/KanbanTimeline
@@ -3550,6 +3870,52 @@ func (o OptInt) Or(d int) int {
 	return d
 }
 
+// NewOptInt64 returns new OptInt64 with value set to v.
+func NewOptInt64(v int64) OptInt64 {
+	return OptInt64{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptInt64 is optional int64.
+type OptInt64 struct {
+	Value int64
+	Set   bool
+}
+
+// IsSet returns true if OptInt64 was set.
+func (o OptInt64) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptInt64) Reset() {
+	var v int64
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptInt64) SetTo(v int64) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptInt64) Get() (v int64, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptInt64) Or(d int64) int64 {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
 // NewOptJSONObject returns new OptJSONObject with value set to v.
 func NewOptJSONObject(v JSONObject) OptJSONObject {
 	return OptJSONObject{
@@ -3590,6 +3956,52 @@ func (o OptJSONObject) Get() (v JSONObject, ok bool) {
 
 // Or returns value if set, or given parameter if does not.
 func (o OptJSONObject) Or(d JSONObject) JSONObject {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptKanbanCardSummaryMeta returns new OptKanbanCardSummaryMeta with value set to v.
+func NewOptKanbanCardSummaryMeta(v KanbanCardSummaryMeta) OptKanbanCardSummaryMeta {
+	return OptKanbanCardSummaryMeta{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptKanbanCardSummaryMeta is optional KanbanCardSummaryMeta.
+type OptKanbanCardSummaryMeta struct {
+	Value KanbanCardSummaryMeta
+	Set   bool
+}
+
+// IsSet returns true if OptKanbanCardSummaryMeta was set.
+func (o OptKanbanCardSummaryMeta) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptKanbanCardSummaryMeta) Reset() {
+	var v KanbanCardSummaryMeta
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptKanbanCardSummaryMeta) SetTo(v KanbanCardSummaryMeta) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptKanbanCardSummaryMeta) Get() (v KanbanCardSummaryMeta, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptKanbanCardSummaryMeta) Or(d KanbanCardSummaryMeta) KanbanCardSummaryMeta {
 	if v, ok := o.Get(); ok {
 		return v
 	}
@@ -4334,79 +4746,6 @@ func (s *QueryResultList) GetData() []QueryResult {
 // SetData sets the value of Data.
 func (s *QueryResultList) SetData(val []QueryResult) {
 	s.Data = val
-}
-
-// Ref: #/components/schemas/ResumeRequest
-type ResumeRequest struct {
-	AgentID        string        `json:"agent_id"`
-	ConversationID string        `json:"conversation_id"`
-	RunID          string        `json:"run_id"`
-	State          OptJSONObject `json:"state"`
-	Decision       JSONObject    `json:"decision"`
-}
-
-// GetAgentID returns the value of AgentID.
-func (s *ResumeRequest) GetAgentID() string {
-	return s.AgentID
-}
-
-// GetConversationID returns the value of ConversationID.
-func (s *ResumeRequest) GetConversationID() string {
-	return s.ConversationID
-}
-
-// GetRunID returns the value of RunID.
-func (s *ResumeRequest) GetRunID() string {
-	return s.RunID
-}
-
-// GetState returns the value of State.
-func (s *ResumeRequest) GetState() OptJSONObject {
-	return s.State
-}
-
-// GetDecision returns the value of Decision.
-func (s *ResumeRequest) GetDecision() JSONObject {
-	return s.Decision
-}
-
-// SetAgentID sets the value of AgentID.
-func (s *ResumeRequest) SetAgentID(val string) {
-	s.AgentID = val
-}
-
-// SetConversationID sets the value of ConversationID.
-func (s *ResumeRequest) SetConversationID(val string) {
-	s.ConversationID = val
-}
-
-// SetRunID sets the value of RunID.
-func (s *ResumeRequest) SetRunID(val string) {
-	s.RunID = val
-}
-
-// SetState sets the value of State.
-func (s *ResumeRequest) SetState(val OptJSONObject) {
-	s.State = val
-}
-
-// SetDecision sets the value of Decision.
-func (s *ResumeRequest) SetDecision(val JSONObject) {
-	s.Decision = val
-}
-
-type ResumeStreamOK struct {
-	Data io.Reader
-}
-
-// Read reads data from the Data reader.
-//
-// Kept to satisfy the io.Reader interface.
-func (s ResumeStreamOK) Read(p []byte) (n int, err error) {
-	if s.Data == nil {
-		return 0, io.EOF
-	}
-	return s.Data.Read(p)
 }
 
 // Ref: #/components/schemas/RuntimeManagerStats
