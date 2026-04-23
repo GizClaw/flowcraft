@@ -257,13 +257,19 @@ board["intent_result"] = {"intent": "qa", "continue_session": false}
 
 **原因**: resume 请求缺少必要的 decision 数据。
 
-**解决**: 使用 `POST /api/chat/resume/stream` 时需要提供:
+**解决**: 使用 `POST /api/conversations/{id}/approval` 时需要提供完整的 decision payload：
+
 ```json
 {
-  "session_id": "...",
+  "agent_id": "...",
+  "run_id": "...",
   "decision": "approved"
 }
 ```
+
+提交后会返回 `202`；后续 agent 进展（`agent.stream.delta` 等）从
+`GET /api/events?partition=card:{id}&since={last_seq}` 拉取，
+旧的 `POST /api/chat/resume/stream` 已废弃，不再保留。
 
 ---
 
