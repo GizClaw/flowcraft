@@ -14,35 +14,39 @@ func TestBootKanbanWithBridge_RejectsNilArgs(t *testing.T) {
 	board := kanban.NewBoard("rt-boot")
 	t.Cleanup(board.Close)
 
-	if _, _, err := eventlog.BootKanbanWithBridge(context.Background(), nil, board); err == nil {
+	if _, _, _, err := eventlog.BootKanbanWithBridge(context.Background(), nil, board); err == nil {
 		t.Fatal("nil log accepted")
 	}
-	if _, _, err := eventlog.BootKanbanWithBridge(context.Background(), log, nil); err == nil {
+	if _, _, _, err := eventlog.BootKanbanWithBridge(context.Background(), log, nil); err == nil {
 		t.Fatal("nil board accepted")
 	}
 }
 
-func TestBootKanbanWithBridge_AttachesBoth(t *testing.T) {
+func TestBootKanbanWithBridge_AttachesAll(t *testing.T) {
 	log := newTestLog(t)
 	board := kanban.NewBoard("rt-boot-2")
 	t.Cleanup(board.Close)
 
-	kb, cb, err := eventlog.BootKanbanWithBridge(context.Background(), log, board)
+	kb, cb, ab, err := eventlog.BootKanbanWithBridge(context.Background(), log, board)
 	if err != nil {
 		t.Fatalf("boot: %v", err)
 	}
 	t.Cleanup(func() {
-		_ = kb.Close()
+		_ = ab.Close()
 		_ = cb.Close()
+		_ = kb.Close()
 	})
 
-	// Re-attaching either bridge should fail (Attach is non-idempotent on
+	// Re-attaching any bridge should fail (Attach is non-idempotent on
 	// purpose so callers can't accidentally double-publish).
 	if err := kb.Attach(context.Background(), board); err == nil {
 		t.Fatal("KanbanBridge.Attach: second call should fail")
 	}
 	if err := cb.Attach(context.Background(), board); err == nil {
 		t.Fatal("CronBridge.Attach: second call should fail")
+	}
+	if err := ab.Attach(context.Background(), board); err == nil {
+		t.Fatal("AgentStreamBridge.Attach: second call should fail")
 	}
 }
 
@@ -65,9 +69,12 @@ func TestBootKanbanWithBridge_CloseStopsGoroutines(t *testing.T) {
 	log := newTestLog(t)
 	board := kanban.NewBoard("rt-boot-4")
 
-	kb, cb, err := eventlog.BootKanbanWithBridge(context.Background(), log, board)
+	kb, cb, ab, err := eventlog.BootKanbanWithBridge(context.Background(), log, board)
 	if err != nil {
 		t.Fatalf("boot: %v", err)
+	}
+	if err := ab.Close(); err != nil {
+		t.Fatalf("ab close: %v", err)
 	}
 	if err := kb.Close(); err != nil {
 		t.Fatalf("kb close: %v", err)

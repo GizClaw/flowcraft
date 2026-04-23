@@ -708,20 +708,6 @@ export const channelApi = {
   },
 };
 
-// ── WebSocket Ticket ──
-
-export interface WSTicket {
-  ticket: string;
-  expires_at: string;
-}
-
-export const wsApi = {
-  ticket: async () => {
-    const { data } = await client.POST('/ws-ticket');
-    return data as WSTicket;
-  },
-};
-
 // ── Long-term Memory API ──
 
 export interface MemoryEntry {

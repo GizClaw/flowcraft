@@ -24,24 +24,31 @@ import (
 //
 // On error, any bridge that was already started is closed before
 // returning so we don't leak goroutines.
-func BootKanbanWithBridge(boardCtx context.Context, log *SQLiteLog, board *kanban.Board) (*KanbanBridge, *CronBridge, error) {
+func BootKanbanWithBridge(boardCtx context.Context, log *SQLiteLog, board *kanban.Board) (*KanbanBridge, *CronBridge, *AgentStreamBridge, error) {
 	if log == nil {
-		return nil, nil, errors.New("boot_kanban: nil log")
+		return nil, nil, nil, errors.New("boot_kanban: nil log")
 	}
 	if board == nil {
-		return nil, nil, errors.New("boot_kanban: nil board")
+		return nil, nil, nil, errors.New("boot_kanban: nil board")
 	}
 
 	kb := NewKanbanBridge(log)
 	if err := kb.Attach(boardCtx, board); err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 
 	cb := NewCronBridge(log)
 	if err := cb.Attach(boardCtx, board); err != nil {
 		_ = kb.Close()
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 
-	return kb, cb, nil
+	ab := NewAgentStreamBridge(log)
+	if err := ab.Attach(boardCtx, board); err != nil {
+		_ = cb.Close()
+		_ = kb.Close()
+		return nil, nil, nil, err
+	}
+
+	return kb, cb, ab, nil
 }

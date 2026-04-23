@@ -15,6 +15,7 @@ import (
 	"github.com/GizClaw/flowcraft/internal/metatool"
 	"github.com/GizClaw/flowcraft/internal/model"
 	"github.com/GizClaw/flowcraft/internal/platform"
+	"github.com/GizClaw/flowcraft/internal/policy"
 	projection "github.com/GizClaw/flowcraft/internal/projection/common"
 	"github.com/GizClaw/flowcraft/internal/realm"
 	"github.com/GizClaw/flowcraft/internal/store"
@@ -219,9 +220,16 @@ func Run(ctx context.Context) (*platform.Platform, *api.Server, func(), error) {
 		pluginDir = filepath.Join(workspaceRoot, "plugins")
 	}
 
-	server := wireHTTP(cfg, plat, gw, jwtCfg, pluginDir, eventLog, auditCmds,
-		nil, // Policy not currently wired; SSE/admin endpoints fall back to OAuth-only checks.
-		projMgr, r4webhookSender(r4), newChatReadAdapter(r4.Chat))
+	// FlowCraft is single-owner: the OwnerOnly policy enforces the
+	// §11.1 invariant ("every subscribe/append goes through Policy")
+	// without dragging in a multi-realm RealmStore that we don't have.
+	// Owner / system / cron / webhook actors are allow; everything else
+	// is denied at the policy boundary so wshub / ssehub / EventsHandler
+	// never have to second-guess.
+	pol := policy.NewOwnerOnly()
+	server, hubs := wireHTTP(cfg, plat, gw, jwtCfg, pluginDir, eventLog, auditCmds,
+		pol, projMgr, r4webhookSender(r4), newChatReadAdapter(r4.Chat))
+	cleanups = append(cleanups, hubs.Stop)
 
 	// --- realm callbacks ---
 	var schedOnce sync.Once
@@ -236,7 +244,7 @@ func Run(ctx context.Context) (*platform.Platform, *api.Server, func(), error) {
 		// fatal-ish for eventlog observability so we surface them to the
 		// realm log; bootstrap itself stays alive because operators can
 		// still drive the system via direct sdk calls.
-		kb, cb, err := eventlog.BootKanbanWithBridge(r.Board().Context(), eventLog, r.Board())
+		kb, cb, ab, err := eventlog.BootKanbanWithBridge(r.Board().Context(), eventLog, r.Board())
 		if err != nil {
 			telemetry.Error(ctx, "kanban bridge: attach failed",
 				otellog.String("realm", r.ID()),
@@ -256,8 +264,9 @@ func Run(ctx context.Context) (*platform.Platform, *api.Server, func(), error) {
 		// eventLog.Close on a real shutdown).
 		go func() {
 			<-r.Board().Context().Done()
-			_ = kb.Close()
+			_ = ab.Close()
 			_ = cb.Close()
+			_ = kb.Close()
 		}()
 	})
 

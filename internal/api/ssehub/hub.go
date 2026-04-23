@@ -195,6 +195,10 @@ func (c *Conn) Run() {
 	}
 }
 
+// writeEvent emits one envelope as an SSE event named "envelope" so the
+// browser EnvelopeClient can do `addEventListener('envelope', ...)`.
+// The data field is the canonical eventlog.MarshalEnvelope output, byte-
+// equal to the WS / HTTP-pull representations (§6.5).
 func (c *Conn) writeEvent(env eventlog.Envelope) error {
 	body, err := eventlog.MarshalEnvelope(env)
 	if err != nil {
@@ -202,7 +206,7 @@ func (c *Conn) writeEvent(env eventlog.Envelope) error {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if _, err := fmt.Fprintf(c.w, "id: %d\nevent: %s\ndata: %s\n\n", env.Seq, env.Type, body); err != nil {
+	if _, err := fmt.Fprintf(c.w, "id: %d\nevent: envelope\ndata: %s\n\n", env.Seq, body); err != nil {
 		return err
 	}
 	if c.flusher != nil {
@@ -211,10 +215,13 @@ func (c *Conn) writeEvent(env eventlog.Envelope) error {
 	return nil
 }
 
+// writeHeartbeat emits a named SSE event ("heartbeat") so the browser
+// EnvelopeClient can listen via addEventListener('heartbeat', ...). Body
+// is JSON {"latest_seq":N} so consumers don't have to parse a comment.
 func (c *Conn) writeHeartbeat(latest int64) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	fmt.Fprintf(c.w, ": heartbeat latest_seq=%d\n\n", latest)
+	fmt.Fprintf(c.w, "event: heartbeat\ndata: {\"latest_seq\":%d}\n\n", latest)
 	if c.flusher != nil {
 		c.flusher.Flush()
 	}

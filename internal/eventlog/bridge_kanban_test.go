@@ -46,7 +46,7 @@ func TestKanbanBridge_TranslatesAllFourTaskEvents(t *testing.T) {
 	board := kanban.NewBoard("rt-1")
 	t.Cleanup(board.Close)
 
-	kb, _, err := eventlog.BootKanbanWithBridge(context.Background(), log, board)
+	kb, _, _, err := eventlog.BootKanbanWithBridge(context.Background(), log, board)
 	if err != nil {
 		t.Fatalf("boot: %v", err)
 	}

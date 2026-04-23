@@ -324,7 +324,7 @@ func waitForSeq(ctx context.Context, client *http.Client, base string, target in
 	return failf("latest-seq did not reach %d within %s", target, within)
 }
 
-func publishTaskSubmitted(ctx context.Context, log eventlog.Appender) (int64, error) {
+func publishTaskSubmitted(ctx context.Context, log *eventlog.SQLiteLog) (int64, error) {
 	payload := eventlog.TaskSubmittedPayload{
 		CardID:        "smoke-card-1",
 		Inputs:        map[string]any{"smoke": true},

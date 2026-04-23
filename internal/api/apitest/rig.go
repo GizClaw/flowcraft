@@ -148,7 +148,10 @@ func (r *Rig) PullPartition(partition string, since int64, limit int) [][]byte {
 	return out
 }
 
-// SSEPartition opens an SSE stream and reads back N envelopes' data fields.
+// SSEPartition opens an SSE stream and reads back N envelopes' data
+// fields. Frames carrying `event: heartbeat` are skipped — only frames
+// preceded by `event: envelope` count toward N. Comments (lines starting
+// with `:`) are also dropped.
 func (r *Rig) SSEPartition(partition string, since int64, n int, timeout time.Duration) [][]byte {
 	r.tb.Helper()
 	u := fmt.Sprintf("%s/sse?partition=%s&since=%d", r.Server.URL, partition, since)
@@ -161,23 +164,34 @@ func (r *Rig) SSEPartition(partition string, since int64, n int, timeout time.Du
 	deadline := time.Now().Add(timeout)
 	out := make([][]byte, 0, n)
 	br := bufReader{r: resp.Body}
+	currentEvent := ""
 	for len(out) < n && time.Now().Before(deadline) {
 		line, err := br.readLine()
 		if err != nil {
 			break
 		}
-		if strings.HasPrefix(line, "data: ") {
+		if strings.HasPrefix(line, ":") || line == "" {
+			currentEvent = ""
+			continue
+		}
+		if strings.HasPrefix(line, "event: ") {
+			currentEvent = strings.TrimPrefix(line, "event: ")
+			continue
+		}
+		if strings.HasPrefix(line, "data: ") && currentEvent == "envelope" {
 			out = append(out, []byte(strings.TrimPrefix(line, "data: ")))
 		}
 	}
 	return out
 }
 
-// WSPartition opens a WebSocket and reads back N envelopes as raw text frames.
+// WSPartition opens a WebSocket, sends a `subscribe` control frame, and
+// reads back N envelope payloads. The data field of the
+// {"type":"envelope","data":<env>} frame is what we return — byte-equal
+// to the SSE / HTTP-pull `MarshalEnvelope` outputs (§6.5).
 func (r *Rig) WSPartition(partition string, since int64, n int, timeout time.Duration) [][]byte {
 	r.tb.Helper()
-	u := strings.Replace(r.Server.URL, "http", "ws", 1) +
-		"/ws?partition=" + partition + "&since=" + strconv.FormatInt(since, 10)
+	u := strings.Replace(r.Server.URL, "http", "ws", 1) + "/ws"
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	c, _, err := websocket.Dial(ctx, u, nil)
@@ -185,22 +199,34 @@ func (r *Rig) WSPartition(partition string, since int64, n int, timeout time.Dur
 		r.tb.Fatalf("apitest: ws dial: %v", err)
 	}
 	defer c.Close(websocket.StatusNormalClosure, "")
+	subFrame, _ := json.Marshal(map[string]any{
+		"type":      "subscribe",
+		"partition": partition,
+		"since":     since,
+	})
+	if err := c.Write(ctx, websocket.MessageText, subFrame); err != nil {
+		r.tb.Fatalf("apitest: ws subscribe: %v", err)
+	}
 	out := make([][]byte, 0, n)
 	for len(out) < n {
 		_, msg, err := c.Read(ctx)
 		if err != nil {
 			break
 		}
-		// Skip control frames (heartbeat / pong).
-		if len(msg) > 0 && msg[0] == '{' && (containsKey(msg, `"op":`) && !containsKey(msg, `"seq":`)) {
+		var frame struct {
+			Type string          `json:"type"`
+			Data json.RawMessage `json:"data"`
+		}
+		if err := json.Unmarshal(msg, &frame); err != nil {
 			continue
 		}
-		out = append(out, msg)
+		if frame.Type != "envelope" {
+			continue
+		}
+		out = append(out, []byte(frame.Data))
 	}
 	return out
 }
-
-func containsKey(b []byte, key string) bool { return strings.Contains(string(b), key) }
 
 func (r *Rig) serveSSE(w http.ResponseWriter, req *http.Request) {
 	w.Header().Set("Content-Type", "text/event-stream")
@@ -221,9 +247,7 @@ func (r *Rig) serveWS(w http.ResponseWriter, req *http.Request) {
 	if err != nil {
 		return
 	}
-	partition := req.URL.Query().Get("partition")
-	since, _ := strconv.ParseInt(req.URL.Query().Get("since"), 10, 64)
-	conn, err := r.WSHub.Open(req.Context(), policy.Actor{Type: policy.ActorUser, ID: "u-test"}, partition, since)
+	conn, err := r.WSHub.Open(req.Context(), policy.Actor{Type: policy.ActorUser, ID: "u-test"})
 	if err != nil {
 		c.Close(websocket.StatusPolicyViolation, err.Error())
 		return

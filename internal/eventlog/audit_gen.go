@@ -9,6 +9,7 @@ import (
 
 // AuditRequiredEventTypes lists envelope.type values that require audit_summary in contracts.
 var AuditRequiredEventTypes = []string{
+	EventTypeAgentConfigChanged,
 	EventTypeAgentRunCompleted,
 	EventTypeAgentRunFailed,
 	EventTypeAuditActionFailed,
@@ -33,6 +34,8 @@ var AuditRequiredEventTypes = []string{
 // AuditSummaryTemplate returns the raw template string from contracts or "".
 func AuditSummaryTemplate(eventType string) string {
 	switch eventType {
+	case EventTypeAgentConfigChanged:
+		return "agent {{payload.agent_id}} config changed"
 	case EventTypeAgentRunCompleted:
 		return "agent run completed for card {{payload.card_id}}"
 	case EventTypeAgentRunFailed:
@@ -74,6 +77,15 @@ func AuditSummaryTemplate(eventType string) string {
 	default:
 		return ""
 	}
+}
+
+// summarizeAgentConfigChanged renders the audit_summary template for agent.config.changed.
+func summarizeAgentConfigChanged(env Envelope) string {
+	var p AgentConfigChangedPayload
+	if len(env.Payload) > 0 {
+		_ = json.Unmarshal(env.Payload, &p)
+	}
+	return renderSummaryTemplate("agent {{payload.agent_id}} config changed", env.Payload)
 }
 
 // summarizeAgentRunCompleted renders the audit_summary template for agent.run.completed.
@@ -251,6 +263,8 @@ func summarizeWebhookOutboundExhausted(env Envelope) string {
 // Returns empty string if env.Type is not audit_required.
 func RenderAuditSummary(env Envelope) string {
 	switch env.Type {
+	case EventTypeAgentConfigChanged:
+		return summarizeAgentConfigChanged(env)
 	case EventTypeAgentRunCompleted:
 		return summarizeAgentRunCompleted(env)
 	case EventTypeAgentRunFailed:

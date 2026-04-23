@@ -8,7 +8,7 @@ import (
 )
 
 // PublishTaskSubmitted appends a task.submitted envelope (category=business, version=1) outside a transaction.
-func PublishTaskSubmitted(ctx context.Context, log Appender, cardID string, p TaskSubmittedPayload, opts ...PublishOption) (int64, error) {
+func PublishTaskSubmitted(ctx context.Context, log *SQLiteLog, cardID string, p TaskSubmittedPayload, opts ...PublishOption) (int64, error) {
 	b, err := json.Marshal(p)
 	if err != nil {
 		return 0, err
@@ -25,7 +25,7 @@ func PublishTaskSubmitted(ctx context.Context, log Appender, cardID string, p Ta
 		TraceID: o.traceID,
 		SpanID: o.spanID,
 	}
-	return log.Append(ctx, env)
+	return log.appendOne(ctx, env)
 }
 
 // PublishTaskSubmittedInTx appends a task.submitted envelope inside an open UnitOfWork.

@@ -3,6 +3,7 @@
 import type { Actor } from "./event_payloads.gen";
 
 export type EventType =
+  "agent.config.changed" |
   "agent.run.completed" |
   "agent.run.failed" |
   "agent.run.started" |

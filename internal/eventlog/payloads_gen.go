@@ -4,6 +4,14 @@ package eventlog
 
 import "encoding/json"
 
+// AgentConfigChangedPayload is generated from contracts.
+type AgentConfigChangedPayload struct {
+	AgentID   string `json:"agent_id"`
+	Change    string `json:"change"`
+	Revision  int64  `json:"revision"`
+	RuntimeID string `json:"runtime_id"`
+}
+
 // AgentRunCompletedPayload is generated from contracts.
 type AgentRunCompletedPayload struct {
 	CardID string `json:"card_id"`
@@ -279,6 +287,8 @@ type WebhookOutboundSentPayload struct {
 // PayloadTypeFor returns the concrete payload struct name for an event type, or "" if unknown.
 func PayloadTypeFor(eventType string) string {
 	switch eventType {
+	case EventTypeAgentConfigChanged:
+		return "AgentConfigChangedPayload"
 	case EventTypeAgentRunCompleted:
 		return "AgentRunCompletedPayload"
 	case EventTypeAgentRunFailed:
@@ -349,6 +359,12 @@ func PayloadTypeFor(eventType string) string {
 // UnmarshalPayload decodes env.Payload into the correct struct for env.Type.
 func UnmarshalPayload(env Envelope) (any, error) {
 	switch env.Type {
+	case EventTypeAgentConfigChanged:
+		var p AgentConfigChangedPayload
+		if err := json.Unmarshal(env.Payload, &p); err != nil {
+			return nil, err
+		}
+		return &p, nil
 	case EventTypeAgentRunCompleted:
 		var p AgentRunCompletedPayload
 		if err := json.Unmarshal(env.Payload, &p); err != nil {

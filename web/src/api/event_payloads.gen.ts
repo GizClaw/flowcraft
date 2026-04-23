@@ -6,6 +6,13 @@ export interface Actor {
   realm_id: string;
 }
 
+export interface AgentConfigChangedPayload {
+  agentID: string;
+  change: string;
+  revision?: number;
+  runtimeID: string;
+}
+
 export interface AgentRunCompletedPayload {
   cardID: string;
   output?: string;

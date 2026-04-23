@@ -18,6 +18,7 @@ import (
 	"github.com/GizClaw/flowcraft/internal/eventlog"
 	"github.com/GizClaw/flowcraft/internal/model"
 	"github.com/GizClaw/flowcraft/internal/platform"
+	"github.com/GizClaw/flowcraft/internal/policy"
 	"github.com/GizClaw/flowcraft/plugin"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/event"
@@ -348,7 +349,7 @@ func (h *oapiHandler) CreateAgent(ctx context.Context, req *oas.CreateAgentReque
 		return nil, err
 	}
 	h.saveDraftVersion(ctx, created)
-	h.publishAgentConfigChanged(ctx, created.AgentID)
+	h.publishAgentConfigChanged(ctx, created.AgentID, "created")
 	return toOAS[oas.Agent](created)
 }
 
@@ -390,7 +391,7 @@ func (h *oapiHandler) UpdateAgent(ctx context.Context, req *oas.UpdateAgentReque
 		return nil, err
 	}
 	h.saveDraftVersion(ctx, updated)
-	h.publishAgentConfigChanged(ctx, updated.AgentID)
+	h.publishAgentConfigChanged(ctx, updated.AgentID, "updated")
 	return toOAS[oas.Agent](updated)
 }
 
@@ -819,7 +820,7 @@ func (h *oapiHandler) PublishVersion(ctx context.Context, req *oas.PublishVersio
 	if getErr == nil && gv.GraphDef != nil {
 		agent.StrategyDef = model.NewGraphStrategy(gv.GraphDef)
 		_, _ = h.s.deps.Platform.Store.UpdateAgent(ctx, agent)
-		h.publishAgentConfigChanged(ctx, params.ID)
+		h.publishAgentConfigChanged(ctx, params.ID, "version_published")
 	}
 	return toOAS[oas.GraphVersion](gv)
 }
@@ -836,7 +837,7 @@ func (h *oapiHandler) RollbackVersion(ctx context.Context, params oas.RollbackVe
 	if getErr == nil && gv.GraphDef != nil {
 		agent.StrategyDef = model.NewGraphStrategy(gv.GraphDef)
 		_, _ = h.s.deps.Platform.Store.UpdateAgent(ctx, agent)
-		h.publishAgentConfigChanged(ctx, params.ID)
+		h.publishAgentConfigChanged(ctx, params.ID, "version_rolled_back")
 	}
 	return toOAS[oas.GraphVersion](gv)
 }
@@ -2177,10 +2178,12 @@ func (h *oapiHandler) StartConversationRun(ctx context.Context, req *oas.ChatReq
 	if runErr != nil {
 		return nil, errdefs.Internalf("start run: %v", runErr)
 	}
-	// We don't consume realm events here — the legacy SSE stream is gone and
-	// all observable progress (agent.stream.delta, kanban.card.*, ...) flows
-	// through the event log. Drain the bus subscription in the background so
-	// the actor doesn't backpressure on its in-memory channel.
+	// RunAgentStreaming hands us a bus subscription that we intentionally
+	// don't read from: post-Phase 9 every observable signal
+	// (agent.stream.delta, kanban.card.*, ...) is published to the event
+	// log and reaches the client through the unified envelope stream.
+	// We still have to drain `sub` until the run finishes, otherwise the
+	// actor's outbound channel back-pressures and stalls the run.
 	go func() {
 		defer func() { _ = sub.Close() }()
 		for {
@@ -2221,8 +2224,36 @@ func newRunID() string {
 
 // ══════════════════════════ WS Ticket ══════════════════════════
 
-func (h *oapiHandler) CreateWSTicket(ctx context.Context) (*oas.WSTicketResponse, error) {
-	ticket, expiresAt, err := h.s.wsTickets.issue(wsTicketTTL)
+// CreateWSTicket issues a single-use ticket bound to (partition, since)
+// per §12.3. The ticket is consumed by /api/events/ws on the first
+// subscribe; subsequent subscribes on the same connection still go
+// through the actor's policy (so leaked tickets can't escalate scope).
+func (h *oapiHandler) CreateWSTicket(ctx context.Context, req *oas.WSTicketRequest) (*oas.WSTicketResponse, error) {
+	if req == nil || req.Partition == "" {
+		return nil, errdefs.Validationf("partition required")
+	}
+	if _, _, ok := eventlog.SplitPartition(req.Partition); !ok {
+		return nil, errdefs.Validationf("partition %q malformed", req.Partition)
+	}
+	if req.Since < 0 {
+		return nil, errdefs.Validationf("since must be >= 0")
+	}
+	actor, _ := policy.ActorFrom(ctx)
+	// Policy is always wired by bootstrap.wireHTTP (OwnerOnly in
+	// production, an explicit allow-all in apitest), so we can fail
+	// hard rather than silently bypass when it would be nil — that
+	// nil branch was the §11.1 "subscribe must go through Policy"
+	// hole pre-Phase 9.
+	dec, err := h.s.deps.Policy.AllowSubscribe(ctx, actor, policy.SubscribeOptions{
+		Partitions: []string{req.Partition},
+	})
+	if err != nil {
+		return nil, err
+	}
+	if !dec.Allow {
+		return nil, errdefs.Forbiddenf("%s", dec.Reason)
+	}
+	ticket, expiresAt, err := h.s.wsTickets.issue(wsTicketTTL, actor, req.Partition, req.Since)
 	if err != nil {
 		return nil, errdefs.Internalf("failed to issue websocket ticket")
 	}
@@ -2247,12 +2278,38 @@ func (h *oapiHandler) saveDraftVersion(ctx context.Context, agent *model.Agent) 
 	_ = h.s.deps.Platform.VersionStore.SaveDraft(ctx, gv)
 }
 
-func (h *oapiHandler) publishAgentConfigChanged(ctx context.Context, agentID string) {
-	if h.s.deps.Platform.EventBus == nil {
+// publishAgentConfigChanged broadcasts an agent config change on two
+// channels:
+//
+//  1. sdk/event bus — kept for in-process consumers (cron scheduler reload,
+//     graph hot-reload in IDE-side panels) that pre-date the event log.
+//  2. eventlog envelope `agent.config.changed` — the canonical persisted
+//     fact, replayable and visible to every transport. This is what the
+//     frontend AgentDetailLayout subscribes to via the unified envelope
+//     stream (GET /api/events / /api/events/stream / /api/events/ws),
+//     replacing the bespoke websocket polling that pre-dated §12.
+//
+// runtime_id is required by the envelope partition; we resolve it from
+// the current realm (single-realm provider). When no realm is resolved
+// yet (boot race), the envelope publish is skipped — bus publish still
+// goes out so in-process listeners see the change.
+func (h *oapiHandler) publishAgentConfigChanged(ctx context.Context, agentID, change string) {
+	if h.s.deps.Platform.EventBus != nil {
+		_ = h.s.deps.Platform.EventBus.Publish(ctx, event.Event{
+			Type:    event.EventAgentConfigChanged,
+			ActorID: agentID,
+		})
+	}
+	runtimeID := h.currentRealmID()
+	if runtimeID == "" || h.s.deps.EventLog == nil {
 		return
 	}
-	_ = h.s.deps.Platform.EventBus.Publish(ctx, event.Event{
-		Type:    event.EventAgentConfigChanged,
-		ActorID: agentID,
+	if change == "" {
+		change = "updated"
+	}
+	_, _ = eventlog.PublishAgentConfigChanged(ctx, h.s.deps.EventLog, runtimeID, eventlog.AgentConfigChangedPayload{
+		AgentID:   agentID,
+		RuntimeID: runtimeID,
+		Change:    change,
 	})
 }

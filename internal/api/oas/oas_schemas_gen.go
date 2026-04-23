@@ -5456,6 +5456,38 @@ func (s *VersionDiff) SetRemovedEdges(val []string) {
 	s.RemovedEdges = val
 }
 
+// Ref: #/components/schemas/WSTicketRequest
+type WSTicketRequest struct {
+	// Kind:id pair (e.g. "runtime:rt-1", "card:c-3") this ticket is
+	// valid for. The /api/events/ws handler refuses any subscribe
+	// frame whose partition does not match.
+	Partition string `json:"partition"`
+	// Seq cursor the connection will resume from on first
+	// subscribe. Pass 0 for "from current latest". /api/events/ws
+	// refuses subscribes whose `since` differs from this value.
+	Since int64 `json:"since"`
+}
+
+// GetPartition returns the value of Partition.
+func (s *WSTicketRequest) GetPartition() string {
+	return s.Partition
+}
+
+// GetSince returns the value of Since.
+func (s *WSTicketRequest) GetSince() int64 {
+	return s.Since
+}
+
+// SetPartition sets the value of Partition.
+func (s *WSTicketRequest) SetPartition(val string) {
+	s.Partition = val
+}
+
+// SetSince sets the value of Since.
+func (s *WSTicketRequest) SetSince(val int64) {
+	s.Since = val
+}
+
 // Ref: #/components/schemas/WSTicketResponse
 type WSTicketResponse struct {
 	Ticket    string    `json:"ticket"`

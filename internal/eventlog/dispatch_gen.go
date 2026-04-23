@@ -10,6 +10,7 @@ import (
 
 // Handler receives decoded envelope payloads. Embed DefaultHandler to opt in incrementally.
 type Handler interface {
+	HandleAgentConfigChanged(ctx context.Context, env Envelope, p AgentConfigChangedPayload) error
 	HandleAgentRunCompleted(ctx context.Context, env Envelope, p AgentRunCompletedPayload) error
 	HandleAgentRunFailed(ctx context.Context, env Envelope, p AgentRunFailedPayload) error
 	HandleAgentRunStarted(ctx context.Context, env Envelope, p AgentRunStartedPayload) error
@@ -46,6 +47,9 @@ type Handler interface {
 // DefaultHandler is a no-op Handler useful for embedding.
 type DefaultHandler struct{}
 
+func (DefaultHandler) HandleAgentConfigChanged(_ context.Context, _ Envelope, _ AgentConfigChangedPayload) error {
+	return nil
+}
 func (DefaultHandler) HandleAgentRunCompleted(_ context.Context, _ Envelope, _ AgentRunCompletedPayload) error {
 	return nil
 }
@@ -143,6 +147,12 @@ func (DefaultHandler) HandleWebhookOutboundSent(_ context.Context, _ Envelope, _
 // Dispatch routes env to the matching Handle* method on h.
 func Dispatch(ctx context.Context, env Envelope, h Handler) error {
 	switch env.Type {
+	case EventTypeAgentConfigChanged:
+		var p AgentConfigChangedPayload
+		if err := json.Unmarshal(env.Payload, &p); err != nil {
+			return err
+		}
+		return h.HandleAgentConfigChanged(ctx, env, p)
 	case EventTypeAgentRunCompleted:
 		var p AgentRunCompletedPayload
 		if err := json.Unmarshal(env.Payload, &p); err != nil {

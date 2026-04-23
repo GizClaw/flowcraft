@@ -72,6 +72,17 @@ events:
     transports: [ws, sse, http_pull]
     audit_required: false
     doc: "Tool call finished."
+  agent.config.changed:
+    version: 1
+    category: business
+    partition: runtime
+    payload_ref: AgentConfigChangedPayload
+    producers: [APIServer]
+    consumers: [Projector, TransportHub]
+    transports: [ws, sse, http_pull]
+    audit_required: true
+    audit_summary: "agent {{payload.agent_id}} config changed"
+    doc: "Agent configuration (graph / strategy / metadata) was modified."
 
 payloads:
   AgentRunStartedPayload:
@@ -114,3 +125,8 @@ payloads:
     output: { type: string, required: false }
     error: { type: string, required: false }
     duration_ms: { type: int64, required: false }
+  AgentConfigChangedPayload:
+    agent_id: { type: string, required: true }
+    runtime_id: { type: string, required: true }
+    change: { type: string, required: true }
+    revision: { type: int64, required: false }

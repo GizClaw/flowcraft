@@ -7,8 +7,44 @@ import (
 	"encoding/json"
 )
 
+// PublishAgentConfigChanged appends a agent.config.changed envelope (category=business, version=1) outside a transaction.
+func PublishAgentConfigChanged(ctx context.Context, log *SQLiteLog, runtimeID string, p AgentConfigChangedPayload, opts ...PublishOption) (int64, error) {
+	b, err := json.Marshal(p)
+	if err != nil {
+		return 0, err
+	}
+	o := collectPublishOptions(opts)
+	env := Envelope{
+		Partition: PartitionRuntime(runtimeID),
+		Type:      EventTypeAgentConfigChanged,
+		Version:   1,
+		Category:  CategoryBusiness,
+		Ts:        NowRFC3339Nano(),
+		Payload:   b,
+		Actor:     o.actor,
+		TraceID:   o.traceID,
+		SpanID:    o.spanID,
+	}
+	return log.appendOne(ctx, env)
+}
+
+// PublishAgentConfigChangedInTx appends a agent.config.changed envelope inside an open UnitOfWork.
+func PublishAgentConfigChangedInTx(ctx context.Context, uow UnitOfWork, runtimeID string, p AgentConfigChangedPayload, opts ...PublishOption) error {
+	o := collectPublishOptions(opts)
+	return uow.Append(ctx, EnvelopeDraft{
+		Partition: PartitionRuntime(runtimeID),
+		Type:      EventTypeAgentConfigChanged,
+		Version:   1,
+		Category:  CategoryBusiness,
+		Payload:   p,
+		Actor:     o.actor,
+		TraceID:   o.traceID,
+		SpanID:    o.spanID,
+	})
+}
+
 // PublishAgentRunCompleted appends a agent.run.completed envelope (category=business, version=1) outside a transaction.
-func PublishAgentRunCompleted(ctx context.Context, log Appender, cardID string, p AgentRunCompletedPayload, opts ...PublishOption) (int64, error) {
+func PublishAgentRunCompleted(ctx context.Context, log *SQLiteLog, cardID string, p AgentRunCompletedPayload, opts ...PublishOption) (int64, error) {
 	b, err := json.Marshal(p)
 	if err != nil {
 		return 0, err
@@ -25,7 +61,7 @@ func PublishAgentRunCompleted(ctx context.Context, log Appender, cardID string, 
 		TraceID:   o.traceID,
 		SpanID:    o.spanID,
 	}
-	return log.Append(ctx, env)
+	return log.appendOne(ctx, env)
 }
 
 // PublishAgentRunCompletedInTx appends a agent.run.completed envelope inside an open UnitOfWork.
@@ -44,7 +80,7 @@ func PublishAgentRunCompletedInTx(ctx context.Context, uow UnitOfWork, cardID st
 }
 
 // PublishAgentRunFailed appends a agent.run.failed envelope (category=business, version=1) outside a transaction.
-func PublishAgentRunFailed(ctx context.Context, log Appender, cardID string, p AgentRunFailedPayload, opts ...PublishOption) (int64, error) {
+func PublishAgentRunFailed(ctx context.Context, log *SQLiteLog, cardID string, p AgentRunFailedPayload, opts ...PublishOption) (int64, error) {
 	b, err := json.Marshal(p)
 	if err != nil {
 		return 0, err
@@ -61,7 +97,7 @@ func PublishAgentRunFailed(ctx context.Context, log Appender, cardID string, p A
 		TraceID:   o.traceID,
 		SpanID:    o.spanID,
 	}
-	return log.Append(ctx, env)
+	return log.appendOne(ctx, env)
 }
 
 // PublishAgentRunFailedInTx appends a agent.run.failed envelope inside an open UnitOfWork.
@@ -80,7 +116,7 @@ func PublishAgentRunFailedInTx(ctx context.Context, uow UnitOfWork, cardID strin
 }
 
 // PublishAgentRunStarted appends a agent.run.started envelope (category=business, version=1) outside a transaction.
-func PublishAgentRunStarted(ctx context.Context, log Appender, cardID string, p AgentRunStartedPayload, opts ...PublishOption) (int64, error) {
+func PublishAgentRunStarted(ctx context.Context, log *SQLiteLog, cardID string, p AgentRunStartedPayload, opts ...PublishOption) (int64, error) {
 	b, err := json.Marshal(p)
 	if err != nil {
 		return 0, err
@@ -97,7 +133,7 @@ func PublishAgentRunStarted(ctx context.Context, log Appender, cardID string, p 
 		TraceID:   o.traceID,
 		SpanID:    o.spanID,
 	}
-	return log.Append(ctx, env)
+	return log.appendOne(ctx, env)
 }
 
 // PublishAgentRunStartedInTx appends a agent.run.started envelope inside an open UnitOfWork.
@@ -116,7 +152,7 @@ func PublishAgentRunStartedInTx(ctx context.Context, uow UnitOfWork, cardID stri
 }
 
 // PublishAgentStreamDelta appends a agent.stream.delta envelope (category=volatile, version=1) outside a transaction.
-func PublishAgentStreamDelta(ctx context.Context, log Appender, cardID string, p AgentStreamDeltaPayload, opts ...PublishOption) (int64, error) {
+func PublishAgentStreamDelta(ctx context.Context, log *SQLiteLog, cardID string, p AgentStreamDeltaPayload, opts ...PublishOption) (int64, error) {
 	b, err := json.Marshal(p)
 	if err != nil {
 		return 0, err
@@ -133,7 +169,7 @@ func PublishAgentStreamDelta(ctx context.Context, log Appender, cardID string, p
 		TraceID:   o.traceID,
 		SpanID:    o.spanID,
 	}
-	return log.Append(ctx, env)
+	return log.appendOne(ctx, env)
 }
 
 // PublishAgentStreamDeltaInTx appends a agent.stream.delta envelope inside an open UnitOfWork.
@@ -152,7 +188,7 @@ func PublishAgentStreamDeltaInTx(ctx context.Context, uow UnitOfWork, cardID str
 }
 
 // PublishAgentThinkingDelta appends a agent.thinking.delta envelope (category=volatile, version=1) outside a transaction.
-func PublishAgentThinkingDelta(ctx context.Context, log Appender, cardID string, p AgentThinkingDeltaPayload, opts ...PublishOption) (int64, error) {
+func PublishAgentThinkingDelta(ctx context.Context, log *SQLiteLog, cardID string, p AgentThinkingDeltaPayload, opts ...PublishOption) (int64, error) {
 	b, err := json.Marshal(p)
 	if err != nil {
 		return 0, err
@@ -169,7 +205,7 @@ func PublishAgentThinkingDelta(ctx context.Context, log Appender, cardID string,
 		TraceID:   o.traceID,
 		SpanID:    o.spanID,
 	}
-	return log.Append(ctx, env)
+	return log.appendOne(ctx, env)
 }
 
 // PublishAgentThinkingDeltaInTx appends a agent.thinking.delta envelope inside an open UnitOfWork.
@@ -188,7 +224,7 @@ func PublishAgentThinkingDeltaInTx(ctx context.Context, uow UnitOfWork, cardID s
 }
 
 // PublishAgentToolInvoked appends a agent.tool.invoked envelope (category=business, version=1) outside a transaction.
-func PublishAgentToolInvoked(ctx context.Context, log Appender, cardID string, p AgentToolInvokedPayload, opts ...PublishOption) (int64, error) {
+func PublishAgentToolInvoked(ctx context.Context, log *SQLiteLog, cardID string, p AgentToolInvokedPayload, opts ...PublishOption) (int64, error) {
 	b, err := json.Marshal(p)
 	if err != nil {
 		return 0, err
@@ -205,7 +241,7 @@ func PublishAgentToolInvoked(ctx context.Context, log Appender, cardID string, p
 		TraceID:   o.traceID,
 		SpanID:    o.spanID,
 	}
-	return log.Append(ctx, env)
+	return log.appendOne(ctx, env)
 }
 
 // PublishAgentToolInvokedInTx appends a agent.tool.invoked envelope inside an open UnitOfWork.
@@ -224,7 +260,7 @@ func PublishAgentToolInvokedInTx(ctx context.Context, uow UnitOfWork, cardID str
 }
 
 // PublishAgentToolReturned appends a agent.tool.returned envelope (category=business, version=1) outside a transaction.
-func PublishAgentToolReturned(ctx context.Context, log Appender, cardID string, p AgentToolReturnedPayload, opts ...PublishOption) (int64, error) {
+func PublishAgentToolReturned(ctx context.Context, log *SQLiteLog, cardID string, p AgentToolReturnedPayload, opts ...PublishOption) (int64, error) {
 	b, err := json.Marshal(p)
 	if err != nil {
 		return 0, err
@@ -241,7 +277,7 @@ func PublishAgentToolReturned(ctx context.Context, log Appender, cardID string, 
 		TraceID:   o.traceID,
 		SpanID:    o.spanID,
 	}
-	return log.Append(ctx, env)
+	return log.appendOne(ctx, env)
 }
 
 // PublishAgentToolReturnedInTx appends a agent.tool.returned envelope inside an open UnitOfWork.
@@ -260,7 +296,7 @@ func PublishAgentToolReturnedInTx(ctx context.Context, uow UnitOfWork, cardID st
 }
 
 // PublishAuditActionFailed appends a audit.action.failed envelope (category=audit, version=1) outside a transaction.
-func PublishAuditActionFailed(ctx context.Context, log Appender, actorID string, p AuditActionFailedPayload, opts ...PublishOption) (int64, error) {
+func PublishAuditActionFailed(ctx context.Context, log *SQLiteLog, actorID string, p AuditActionFailedPayload, opts ...PublishOption) (int64, error) {
 	b, err := json.Marshal(p)
 	if err != nil {
 		return 0, err
@@ -277,7 +313,7 @@ func PublishAuditActionFailed(ctx context.Context, log Appender, actorID string,
 		TraceID:   o.traceID,
 		SpanID:    o.spanID,
 	}
-	return log.Append(ctx, env)
+	return log.appendOne(ctx, env)
 }
 
 // PublishAuditActionFailedInTx appends a audit.action.failed envelope inside an open UnitOfWork.
@@ -296,7 +332,7 @@ func PublishAuditActionFailedInTx(ctx context.Context, uow UnitOfWork, actorID s
 }
 
 // PublishAuditActionPerformed appends a audit.action.performed envelope (category=audit, version=1) outside a transaction.
-func PublishAuditActionPerformed(ctx context.Context, log Appender, actorID string, p AuditActionPerformedPayload, opts ...PublishOption) (int64, error) {
+func PublishAuditActionPerformed(ctx context.Context, log *SQLiteLog, actorID string, p AuditActionPerformedPayload, opts ...PublishOption) (int64, error) {
 	b, err := json.Marshal(p)
 	if err != nil {
 		return 0, err
@@ -313,7 +349,7 @@ func PublishAuditActionPerformed(ctx context.Context, log Appender, actorID stri
 		TraceID:   o.traceID,
 		SpanID:    o.spanID,
 	}
-	return log.Append(ctx, env)
+	return log.appendOne(ctx, env)
 }
 
 // PublishAuditActionPerformedInTx appends a audit.action.performed envelope inside an open UnitOfWork.
@@ -332,7 +368,7 @@ func PublishAuditActionPerformedInTx(ctx context.Context, uow UnitOfWork, actorI
 }
 
 // PublishChatCallbackDelivered appends a chat.callback.delivered envelope (category=business, version=1) outside a transaction.
-func PublishChatCallbackDelivered(ctx context.Context, log Appender, cardID string, p ChatCallbackDeliveredPayload, opts ...PublishOption) (int64, error) {
+func PublishChatCallbackDelivered(ctx context.Context, log *SQLiteLog, cardID string, p ChatCallbackDeliveredPayload, opts ...PublishOption) (int64, error) {
 	b, err := json.Marshal(p)
 	if err != nil {
 		return 0, err
@@ -349,7 +385,7 @@ func PublishChatCallbackDelivered(ctx context.Context, log Appender, cardID stri
 		TraceID:   o.traceID,
 		SpanID:    o.spanID,
 	}
-	return log.Append(ctx, env)
+	return log.appendOne(ctx, env)
 }
 
 // PublishChatCallbackDeliveredInTx appends a chat.callback.delivered envelope inside an open UnitOfWork.
@@ -368,7 +404,7 @@ func PublishChatCallbackDeliveredInTx(ctx context.Context, uow UnitOfWork, cardI
 }
 
 // PublishChatCallbackDismissed appends a chat.callback.dismissed envelope (category=business, version=1) outside a transaction.
-func PublishChatCallbackDismissed(ctx context.Context, log Appender, cardID string, p ChatCallbackDismissedPayload, opts ...PublishOption) (int64, error) {
+func PublishChatCallbackDismissed(ctx context.Context, log *SQLiteLog, cardID string, p ChatCallbackDismissedPayload, opts ...PublishOption) (int64, error) {
 	b, err := json.Marshal(p)
 	if err != nil {
 		return 0, err
@@ -385,7 +421,7 @@ func PublishChatCallbackDismissed(ctx context.Context, log Appender, cardID stri
 		TraceID:   o.traceID,
 		SpanID:    o.spanID,
 	}
-	return log.Append(ctx, env)
+	return log.appendOne(ctx, env)
 }
 
 // PublishChatCallbackDismissedInTx appends a chat.callback.dismissed envelope inside an open UnitOfWork.
@@ -404,7 +440,7 @@ func PublishChatCallbackDismissedInTx(ctx context.Context, uow UnitOfWork, cardI
 }
 
 // PublishChatCallbackQueued appends a chat.callback.queued envelope (category=business, version=1) outside a transaction.
-func PublishChatCallbackQueued(ctx context.Context, log Appender, cardID string, p ChatCallbackQueuedPayload, opts ...PublishOption) (int64, error) {
+func PublishChatCallbackQueued(ctx context.Context, log *SQLiteLog, cardID string, p ChatCallbackQueuedPayload, opts ...PublishOption) (int64, error) {
 	b, err := json.Marshal(p)
 	if err != nil {
 		return 0, err
@@ -421,7 +457,7 @@ func PublishChatCallbackQueued(ctx context.Context, log Appender, cardID string,
 		TraceID:   o.traceID,
 		SpanID:    o.spanID,
 	}
-	return log.Append(ctx, env)
+	return log.appendOne(ctx, env)
 }
 
 // PublishChatCallbackQueuedInTx appends a chat.callback.queued envelope inside an open UnitOfWork.
@@ -440,7 +476,7 @@ func PublishChatCallbackQueuedInTx(ctx context.Context, uow UnitOfWork, cardID s
 }
 
 // PublishChatMessageSent appends a chat.message.sent envelope (category=business, version=1) outside a transaction.
-func PublishChatMessageSent(ctx context.Context, log Appender, cardID string, p ChatMessageSentPayload, opts ...PublishOption) (int64, error) {
+func PublishChatMessageSent(ctx context.Context, log *SQLiteLog, cardID string, p ChatMessageSentPayload, opts ...PublishOption) (int64, error) {
 	b, err := json.Marshal(p)
 	if err != nil {
 		return 0, err
@@ -457,7 +493,7 @@ func PublishChatMessageSent(ctx context.Context, log Appender, cardID string, p 
 		TraceID:   o.traceID,
 		SpanID:    o.spanID,
 	}
-	return log.Append(ctx, env)
+	return log.appendOne(ctx, env)
 }
 
 // PublishChatMessageSentInTx appends a chat.message.sent envelope inside an open UnitOfWork.
@@ -476,7 +512,7 @@ func PublishChatMessageSentInTx(ctx context.Context, uow UnitOfWork, cardID stri
 }
 
 // PublishCronRuleChanged appends a cron.rule.changed envelope (category=business, version=1) outside a transaction.
-func PublishCronRuleChanged(ctx context.Context, log Appender, runtimeID string, p CronRuleChangedPayload, opts ...PublishOption) (int64, error) {
+func PublishCronRuleChanged(ctx context.Context, log *SQLiteLog, runtimeID string, p CronRuleChangedPayload, opts ...PublishOption) (int64, error) {
 	b, err := json.Marshal(p)
 	if err != nil {
 		return 0, err
@@ -493,7 +529,7 @@ func PublishCronRuleChanged(ctx context.Context, log Appender, runtimeID string,
 		TraceID:   o.traceID,
 		SpanID:    o.spanID,
 	}
-	return log.Append(ctx, env)
+	return log.appendOne(ctx, env)
 }
 
 // PublishCronRuleChangedInTx appends a cron.rule.changed envelope inside an open UnitOfWork.
@@ -512,7 +548,7 @@ func PublishCronRuleChangedInTx(ctx context.Context, uow UnitOfWork, runtimeID s
 }
 
 // PublishCronRuleCreated appends a cron.rule.created envelope (category=business, version=1) outside a transaction.
-func PublishCronRuleCreated(ctx context.Context, log Appender, runtimeID string, p CronRuleCreatedPayload, opts ...PublishOption) (int64, error) {
+func PublishCronRuleCreated(ctx context.Context, log *SQLiteLog, runtimeID string, p CronRuleCreatedPayload, opts ...PublishOption) (int64, error) {
 	b, err := json.Marshal(p)
 	if err != nil {
 		return 0, err
@@ -529,7 +565,7 @@ func PublishCronRuleCreated(ctx context.Context, log Appender, runtimeID string,
 		TraceID:   o.traceID,
 		SpanID:    o.spanID,
 	}
-	return log.Append(ctx, env)
+	return log.appendOne(ctx, env)
 }
 
 // PublishCronRuleCreatedInTx appends a cron.rule.created envelope inside an open UnitOfWork.
@@ -548,7 +584,7 @@ func PublishCronRuleCreatedInTx(ctx context.Context, uow UnitOfWork, runtimeID s
 }
 
 // PublishCronRuleDisabled appends a cron.rule.disabled envelope (category=business, version=1) outside a transaction.
-func PublishCronRuleDisabled(ctx context.Context, log Appender, runtimeID string, p CronRuleDisabledPayload, opts ...PublishOption) (int64, error) {
+func PublishCronRuleDisabled(ctx context.Context, log *SQLiteLog, runtimeID string, p CronRuleDisabledPayload, opts ...PublishOption) (int64, error) {
 	b, err := json.Marshal(p)
 	if err != nil {
 		return 0, err
@@ -565,7 +601,7 @@ func PublishCronRuleDisabled(ctx context.Context, log Appender, runtimeID string
 		TraceID:   o.traceID,
 		SpanID:    o.spanID,
 	}
-	return log.Append(ctx, env)
+	return log.appendOne(ctx, env)
 }
 
 // PublishCronRuleDisabledInTx appends a cron.rule.disabled envelope inside an open UnitOfWork.
@@ -584,7 +620,7 @@ func PublishCronRuleDisabledInTx(ctx context.Context, uow UnitOfWork, runtimeID 
 }
 
 // PublishCronRuleFired appends a cron.rule.fired envelope (category=operational, version=1) outside a transaction.
-func PublishCronRuleFired(ctx context.Context, log Appender, ruleID string, p CronRuleFiredPayload, opts ...PublishOption) (int64, error) {
+func PublishCronRuleFired(ctx context.Context, log *SQLiteLog, ruleID string, p CronRuleFiredPayload, opts ...PublishOption) (int64, error) {
 	b, err := json.Marshal(p)
 	if err != nil {
 		return 0, err
@@ -601,7 +637,7 @@ func PublishCronRuleFired(ctx context.Context, log Appender, ruleID string, p Cr
 		TraceID:   o.traceID,
 		SpanID:    o.spanID,
 	}
-	return log.Append(ctx, env)
+	return log.appendOne(ctx, env)
 }
 
 // PublishCronRuleFiredInTx appends a cron.rule.fired envelope inside an open UnitOfWork.
@@ -620,7 +656,7 @@ func PublishCronRuleFiredInTx(ctx context.Context, uow UnitOfWork, ruleID string
 }
 
 // PublishRealmConfigChanged appends a realm.config.changed envelope (category=audit, version=1) outside a transaction.
-func PublishRealmConfigChanged(ctx context.Context, log Appender, realmID string, p RealmConfigChangedPayload, opts ...PublishOption) (int64, error) {
+func PublishRealmConfigChanged(ctx context.Context, log *SQLiteLog, realmID string, p RealmConfigChangedPayload, opts ...PublishOption) (int64, error) {
 	b, err := json.Marshal(p)
 	if err != nil {
 		return 0, err
@@ -637,7 +673,7 @@ func PublishRealmConfigChanged(ctx context.Context, log Appender, realmID string
 		TraceID:   o.traceID,
 		SpanID:    o.spanID,
 	}
-	return log.Append(ctx, env)
+	return log.appendOne(ctx, env)
 }
 
 // PublishRealmConfigChangedInTx appends a realm.config.changed envelope inside an open UnitOfWork.
@@ -656,7 +692,7 @@ func PublishRealmConfigChangedInTx(ctx context.Context, uow UnitOfWork, realmID 
 }
 
 // PublishRealmCreated appends a realm.created envelope (category=permanent, version=1) outside a transaction.
-func PublishRealmCreated(ctx context.Context, log Appender, realmID string, p RealmCreatedPayload, opts ...PublishOption) (int64, error) {
+func PublishRealmCreated(ctx context.Context, log *SQLiteLog, realmID string, p RealmCreatedPayload, opts ...PublishOption) (int64, error) {
 	b, err := json.Marshal(p)
 	if err != nil {
 		return 0, err
@@ -673,7 +709,7 @@ func PublishRealmCreated(ctx context.Context, log Appender, realmID string, p Re
 		TraceID:   o.traceID,
 		SpanID:    o.spanID,
 	}
-	return log.Append(ctx, env)
+	return log.appendOne(ctx, env)
 }
 
 // PublishRealmCreatedInTx appends a realm.created envelope inside an open UnitOfWork.
@@ -692,7 +728,7 @@ func PublishRealmCreatedInTx(ctx context.Context, uow UnitOfWork, realmID string
 }
 
 // PublishRealmMemberAdded appends a realm.member.added envelope (category=audit, version=1) outside a transaction.
-func PublishRealmMemberAdded(ctx context.Context, log Appender, realmID string, p RealmMemberAddedPayload, opts ...PublishOption) (int64, error) {
+func PublishRealmMemberAdded(ctx context.Context, log *SQLiteLog, realmID string, p RealmMemberAddedPayload, opts ...PublishOption) (int64, error) {
 	b, err := json.Marshal(p)
 	if err != nil {
 		return 0, err
@@ -709,7 +745,7 @@ func PublishRealmMemberAdded(ctx context.Context, log Appender, realmID string, 
 		TraceID:   o.traceID,
 		SpanID:    o.spanID,
 	}
-	return log.Append(ctx, env)
+	return log.appendOne(ctx, env)
 }
 
 // PublishRealmMemberAddedInTx appends a realm.member.added envelope inside an open UnitOfWork.
@@ -728,7 +764,7 @@ func PublishRealmMemberAddedInTx(ctx context.Context, uow UnitOfWork, realmID st
 }
 
 // PublishRealmMemberRemoved appends a realm.member.removed envelope (category=audit, version=1) outside a transaction.
-func PublishRealmMemberRemoved(ctx context.Context, log Appender, realmID string, p RealmMemberRemovedPayload, opts ...PublishOption) (int64, error) {
+func PublishRealmMemberRemoved(ctx context.Context, log *SQLiteLog, realmID string, p RealmMemberRemovedPayload, opts ...PublishOption) (int64, error) {
 	b, err := json.Marshal(p)
 	if err != nil {
 		return 0, err
@@ -745,7 +781,7 @@ func PublishRealmMemberRemoved(ctx context.Context, log Appender, realmID string
 		TraceID:   o.traceID,
 		SpanID:    o.spanID,
 	}
-	return log.Append(ctx, env)
+	return log.appendOne(ctx, env)
 }
 
 // PublishRealmMemberRemovedInTx appends a realm.member.removed envelope inside an open UnitOfWork.
@@ -764,7 +800,7 @@ func PublishRealmMemberRemovedInTx(ctx context.Context, uow UnitOfWork, realmID 
 }
 
 // PublishTaskClaimed appends a task.claimed envelope (category=business, version=1) outside a transaction.
-func PublishTaskClaimed(ctx context.Context, log Appender, runtimeID string, p TaskClaimedPayload, opts ...PublishOption) (int64, error) {
+func PublishTaskClaimed(ctx context.Context, log *SQLiteLog, runtimeID string, p TaskClaimedPayload, opts ...PublishOption) (int64, error) {
 	b, err := json.Marshal(p)
 	if err != nil {
 		return 0, err
@@ -781,7 +817,7 @@ func PublishTaskClaimed(ctx context.Context, log Appender, runtimeID string, p T
 		TraceID:   o.traceID,
 		SpanID:    o.spanID,
 	}
-	return log.Append(ctx, env)
+	return log.appendOne(ctx, env)
 }
 
 // PublishTaskClaimedInTx appends a task.claimed envelope inside an open UnitOfWork.
@@ -800,7 +836,7 @@ func PublishTaskClaimedInTx(ctx context.Context, uow UnitOfWork, runtimeID strin
 }
 
 // PublishTaskCompleted appends a task.completed envelope (category=business, version=1) outside a transaction.
-func PublishTaskCompleted(ctx context.Context, log Appender, runtimeID string, p TaskCompletedPayload, opts ...PublishOption) (int64, error) {
+func PublishTaskCompleted(ctx context.Context, log *SQLiteLog, runtimeID string, p TaskCompletedPayload, opts ...PublishOption) (int64, error) {
 	b, err := json.Marshal(p)
 	if err != nil {
 		return 0, err
@@ -817,7 +853,7 @@ func PublishTaskCompleted(ctx context.Context, log Appender, runtimeID string, p
 		TraceID:   o.traceID,
 		SpanID:    o.spanID,
 	}
-	return log.Append(ctx, env)
+	return log.appendOne(ctx, env)
 }
 
 // PublishTaskCompletedInTx appends a task.completed envelope inside an open UnitOfWork.
@@ -836,7 +872,7 @@ func PublishTaskCompletedInTx(ctx context.Context, uow UnitOfWork, runtimeID str
 }
 
 // PublishTaskFailed appends a task.failed envelope (category=business, version=1) outside a transaction.
-func PublishTaskFailed(ctx context.Context, log Appender, runtimeID string, p TaskFailedPayload, opts ...PublishOption) (int64, error) {
+func PublishTaskFailed(ctx context.Context, log *SQLiteLog, runtimeID string, p TaskFailedPayload, opts ...PublishOption) (int64, error) {
 	b, err := json.Marshal(p)
 	if err != nil {
 		return 0, err
@@ -853,7 +889,7 @@ func PublishTaskFailed(ctx context.Context, log Appender, runtimeID string, p Ta
 		TraceID:   o.traceID,
 		SpanID:    o.spanID,
 	}
-	return log.Append(ctx, env)
+	return log.appendOne(ctx, env)
 }
 
 // PublishTaskFailedInTx appends a task.failed envelope inside an open UnitOfWork.
@@ -872,7 +908,7 @@ func PublishTaskFailedInTx(ctx context.Context, uow UnitOfWork, runtimeID string
 }
 
 // PublishTaskSubmitted appends a task.submitted envelope (category=business, version=1) outside a transaction.
-func PublishTaskSubmitted(ctx context.Context, log Appender, runtimeID string, p TaskSubmittedPayload, opts ...PublishOption) (int64, error) {
+func PublishTaskSubmitted(ctx context.Context, log *SQLiteLog, runtimeID string, p TaskSubmittedPayload, opts ...PublishOption) (int64, error) {
 	b, err := json.Marshal(p)
 	if err != nil {
 		return 0, err
@@ -889,7 +925,7 @@ func PublishTaskSubmitted(ctx context.Context, log Appender, runtimeID string, p
 		TraceID:   o.traceID,
 		SpanID:    o.spanID,
 	}
-	return log.Append(ctx, env)
+	return log.appendOne(ctx, env)
 }
 
 // PublishTaskSubmittedInTx appends a task.submitted envelope inside an open UnitOfWork.
@@ -908,7 +944,7 @@ func PublishTaskSubmittedInTx(ctx context.Context, uow UnitOfWork, runtimeID str
 }
 
 // PublishWebhookInboundReceived appends a webhook.inbound.received envelope (category=operational, version=1) outside a transaction.
-func PublishWebhookInboundReceived(ctx context.Context, log Appender, endpointID string, p WebhookInboundBody, opts ...PublishOption) (int64, error) {
+func PublishWebhookInboundReceived(ctx context.Context, log *SQLiteLog, endpointID string, p WebhookInboundBody, opts ...PublishOption) (int64, error) {
 	b, err := json.Marshal(p)
 	if err != nil {
 		return 0, err
@@ -925,7 +961,7 @@ func PublishWebhookInboundReceived(ctx context.Context, log Appender, endpointID
 		TraceID:   o.traceID,
 		SpanID:    o.spanID,
 	}
-	return log.Append(ctx, env)
+	return log.appendOne(ctx, env)
 }
 
 // PublishWebhookInboundReceivedInTx appends a webhook.inbound.received envelope inside an open UnitOfWork.
@@ -944,7 +980,7 @@ func PublishWebhookInboundReceivedInTx(ctx context.Context, uow UnitOfWork, endp
 }
 
 // PublishWebhookOutboundAttemptFailed appends a webhook.outbound.attempt_failed envelope (category=operational, version=1) outside a transaction.
-func PublishWebhookOutboundAttemptFailed(ctx context.Context, log Appender, endpointID string, p WebhookOutboundAttemptFailedPayload, opts ...PublishOption) (int64, error) {
+func PublishWebhookOutboundAttemptFailed(ctx context.Context, log *SQLiteLog, endpointID string, p WebhookOutboundAttemptFailedPayload, opts ...PublishOption) (int64, error) {
 	b, err := json.Marshal(p)
 	if err != nil {
 		return 0, err
@@ -961,7 +997,7 @@ func PublishWebhookOutboundAttemptFailed(ctx context.Context, log Appender, endp
 		TraceID:   o.traceID,
 		SpanID:    o.spanID,
 	}
-	return log.Append(ctx, env)
+	return log.appendOne(ctx, env)
 }
 
 // PublishWebhookOutboundAttemptFailedInTx appends a webhook.outbound.attempt_failed envelope inside an open UnitOfWork.
@@ -980,7 +1016,7 @@ func PublishWebhookOutboundAttemptFailedInTx(ctx context.Context, uow UnitOfWork
 }
 
 // PublishWebhookOutboundExhausted appends a webhook.outbound.exhausted envelope (category=audit, version=1) outside a transaction.
-func PublishWebhookOutboundExhausted(ctx context.Context, log Appender, endpointID string, p WebhookOutboundExhaustedPayload, opts ...PublishOption) (int64, error) {
+func PublishWebhookOutboundExhausted(ctx context.Context, log *SQLiteLog, endpointID string, p WebhookOutboundExhaustedPayload, opts ...PublishOption) (int64, error) {
 	b, err := json.Marshal(p)
 	if err != nil {
 		return 0, err
@@ -997,7 +1033,7 @@ func PublishWebhookOutboundExhausted(ctx context.Context, log Appender, endpoint
 		TraceID:   o.traceID,
 		SpanID:    o.spanID,
 	}
-	return log.Append(ctx, env)
+	return log.appendOne(ctx, env)
 }
 
 // PublishWebhookOutboundExhaustedInTx appends a webhook.outbound.exhausted envelope inside an open UnitOfWork.
@@ -1016,7 +1052,7 @@ func PublishWebhookOutboundExhaustedInTx(ctx context.Context, uow UnitOfWork, en
 }
 
 // PublishWebhookOutboundQueued appends a webhook.outbound.queued envelope (category=operational, version=1) outside a transaction.
-func PublishWebhookOutboundQueued(ctx context.Context, log Appender, endpointID string, p WebhookOutboundQueuedPayload, opts ...PublishOption) (int64, error) {
+func PublishWebhookOutboundQueued(ctx context.Context, log *SQLiteLog, endpointID string, p WebhookOutboundQueuedPayload, opts ...PublishOption) (int64, error) {
 	b, err := json.Marshal(p)
 	if err != nil {
 		return 0, err
@@ -1033,7 +1069,7 @@ func PublishWebhookOutboundQueued(ctx context.Context, log Appender, endpointID 
 		TraceID:   o.traceID,
 		SpanID:    o.spanID,
 	}
-	return log.Append(ctx, env)
+	return log.appendOne(ctx, env)
 }
 
 // PublishWebhookOutboundQueuedInTx appends a webhook.outbound.queued envelope inside an open UnitOfWork.
@@ -1052,7 +1088,7 @@ func PublishWebhookOutboundQueuedInTx(ctx context.Context, uow UnitOfWork, endpo
 }
 
 // PublishWebhookOutboundScheduled appends a webhook.outbound.scheduled envelope (category=operational, version=1) outside a transaction.
-func PublishWebhookOutboundScheduled(ctx context.Context, log Appender, endpointID string, p WebhookOutboundScheduledPayload, opts ...PublishOption) (int64, error) {
+func PublishWebhookOutboundScheduled(ctx context.Context, log *SQLiteLog, endpointID string, p WebhookOutboundScheduledPayload, opts ...PublishOption) (int64, error) {
 	b, err := json.Marshal(p)
 	if err != nil {
 		return 0, err
@@ -1069,7 +1105,7 @@ func PublishWebhookOutboundScheduled(ctx context.Context, log Appender, endpoint
 		TraceID:   o.traceID,
 		SpanID:    o.spanID,
 	}
-	return log.Append(ctx, env)
+	return log.appendOne(ctx, env)
 }
 
 // PublishWebhookOutboundScheduledInTx appends a webhook.outbound.scheduled envelope inside an open UnitOfWork.
@@ -1088,7 +1124,7 @@ func PublishWebhookOutboundScheduledInTx(ctx context.Context, uow UnitOfWork, en
 }
 
 // PublishWebhookOutboundSent appends a webhook.outbound.sent envelope (category=operational, version=1) outside a transaction.
-func PublishWebhookOutboundSent(ctx context.Context, log Appender, endpointID string, p WebhookOutboundSentPayload, opts ...PublishOption) (int64, error) {
+func PublishWebhookOutboundSent(ctx context.Context, log *SQLiteLog, endpointID string, p WebhookOutboundSentPayload, opts ...PublishOption) (int64, error) {
 	b, err := json.Marshal(p)
 	if err != nil {
 		return 0, err
@@ -1105,7 +1141,7 @@ func PublishWebhookOutboundSent(ctx context.Context, log Appender, endpointID st
 		TraceID:   o.traceID,
 		SpanID:    o.spanID,
 	}
-	return log.Append(ctx, env)
+	return log.appendOne(ctx, env)
 }
 
 // PublishWebhookOutboundSentInTx appends a webhook.outbound.sent envelope inside an open UnitOfWork.

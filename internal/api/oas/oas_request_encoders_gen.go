@@ -113,6 +113,20 @@ func encodeCreateTemplateRequest(
 	return nil
 }
 
+func encodeCreateWSTicketRequest(
+	req *WSTicketRequest,
+	r *http.Request,
+) error {
+	const contentType = "application/json"
+	e := new(jx.Encoder)
+	{
+		req.Encode(e)
+	}
+	encoded := e.Bytes()
+	ht.SetBody(r, bytes.NewReader(encoded), contentType)
+	return nil
+}
+
 func encodeEnablePluginRequest(
 	req OptPluginConfig,
 	r *http.Request,

@@ -3,6 +3,7 @@
 package eventlog
 
 const (
+	EventTypeAgentConfigChanged           = "agent.config.changed"
 	EventTypeAgentRunCompleted            = "agent.run.completed"
 	EventTypeAgentRunFailed               = "agent.run.failed"
 	EventTypeAgentRunStarted              = "agent.run.started"
@@ -38,6 +39,7 @@ const (
 
 // EventTypes lists every known envelope.type value (sorted).
 var EventTypes = []string{
+	EventTypeAgentConfigChanged,
 	EventTypeAgentRunCompleted,
 	EventTypeAgentRunFailed,
 	EventTypeAgentRunStarted,

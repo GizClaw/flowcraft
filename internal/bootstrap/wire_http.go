@@ -16,7 +16,9 @@ import (
 )
 
 // wireHTTP constructs the API server from the assembled Platform, gateway,
-// JWT config, and server settings.
+// JWT config, and server settings. It also wires the §12 unified envelope
+// transports (HubBundle + EventsHandler) so /api/events, /api/events/stream
+// and /api/events/ws share one source of truth.
 func wireHTTP(
 	cfg *config.Config,
 	plat *platform.Platform,
@@ -29,8 +31,11 @@ func wireHTTP(
 	projMgr *projection.Manager,
 	webhookSender *senderwebhook.WebhookOutboundSender,
 	chatRead api.ChatReadModel,
-) *api.Server {
+) (*api.Server, HubBundle) {
 	webFS, _ := fs.Sub(web.Dist, "dist")
+
+	hubs := WireHubs(eventLog, pol)
+	eventsHandler := WireEventsHandler(eventLog, pol, projMgr)
 
 	deps := api.ServerDeps{
 		Platform:           plat,
@@ -43,6 +48,9 @@ func wireHTTP(
 		ProjectionReplayer: newProjectionReplayAdapter(projMgr),
 		WebhookReplayer:    newWebhookReplayAdapter(webhookSender),
 		ChatRead:           chatRead,
+		WSHub:              hubs.WS,
+		SSEHub:             hubs.SSE,
+		EventsHandler:      eventsHandler,
 		Monitoring: api.MonitoringConfig{
 			ErrorRateWarn:        cfg.Monitoring.ErrorRateWarn,
 			ErrorRateDown:        cfg.Monitoring.ErrorRateDown,
@@ -52,7 +60,7 @@ func wireHTTP(
 		},
 	}
 
-	return api.NewServer(api.ServerConfig{
+	srv := api.NewServer(api.ServerConfig{
 		Host:           cfg.Server.Host,
 		Port:           cfg.Server.Port,
 		RateLimitRPS:   cfg.Server.RateLimitRPS,
@@ -60,4 +68,5 @@ func wireHTTP(
 		MaxUploadSize:  cfg.Plugin.MaxUploadSize,
 		WebFS:          webFS,
 	}, deps, jwtCfg)
+	return srv, hubs
 }

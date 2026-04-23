@@ -321,12 +321,15 @@ func writeGoPublish(spec *Spec, path string) error {
 		if err != nil {
 			return err
 		}
-		// Out-of-transaction Publish (single-event) helper.
+		// Out-of-transaction Publish (single-event) helper. We take the
+		// concrete *SQLiteLog (rather than an exported interface) so
+		// business packages cannot bypass the publisher API and append
+		// raw envelopes — the appendOne method is unexported (§11.1#5).
 		sb.WriteString(fmt.Sprintf(
-			"// Publish%s appends a %s envelope (category=%s, version=%d) outside a transaction.\nfunc Publish%s(ctx context.Context, log Appender, %s string, p %s, opts ...PublishOption) (int64, error) {\n"+
+			"// Publish%s appends a %s envelope (category=%s, version=%d) outside a transaction.\nfunc Publish%s(ctx context.Context, log *SQLiteLog, %s string, p %s, opts ...PublishOption) (int64, error) {\n"+
 				"\tb, err := json.Marshal(p)\n\tif err != nil {\n\t\treturn 0, err\n\t}\n"+
 				"\to := collectPublishOptions(opts)\n"+
-				"\tenv := Envelope{\n\t\tPartition: %s,\n\t\tType: EventType%s,\n\t\tVersion: %d,\n\t\tCategory: %s,\n\t\tTs: NowRFC3339Nano(),\n\t\tPayload: b,\n\t\tActor: o.actor,\n\t\tTraceID: o.traceID,\n\t\tSpanID: o.spanID,\n\t}\n\treturn log.Append(ctx, env)\n}\n\n",
+				"\tenv := Envelope{\n\t\tPartition: %s,\n\t\tType: EventType%s,\n\t\tVersion: %d,\n\t\tCategory: %s,\n\t\tTs: NowRFC3339Nano(),\n\t\tPayload: b,\n\t\tActor: o.actor,\n\t\tTraceID: o.traceID,\n\t\tSpanID: o.spanID,\n\t}\n\treturn log.appendOne(ctx, env)\n}\n\n",
 			g, ev.Name, ev.Category, ev.Version,
 			g, argName, ev.PayloadType,
 			partExpr, g, ev.Version, categoryConstName(ev.Category),

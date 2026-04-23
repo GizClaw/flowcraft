@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/internal/api/oas"
+	"github.com/GizClaw/flowcraft/internal/api/ssehub"
+	"github.com/GizClaw/flowcraft/internal/api/wshub"
 	auditcmd "github.com/GizClaw/flowcraft/internal/commands/audit"
 	"github.com/GizClaw/flowcraft/internal/errcode"
 	"github.com/GizClaw/flowcraft/internal/eventlog"
@@ -52,6 +54,16 @@ type ServerDeps struct {
 	ProjectionStatus   ProjectionStatusProbe
 	ProjectionReplayer ProjectionReplayer
 	WebhookReplayer    WebhookReplayer
+	// WSHub / SSEHub / EventsHandler back the §12 unified envelope
+	// transports (GET /api/events, GET /api/events/stream, GET
+	// /api/events/ws). bootstrap.WireHubs + bootstrap.WireEventsHandler
+	// construct these and inject them here. They are REQUIRED — NewServer
+	// panics if any is nil (the Phase 9 nil-fallback that returned 503
+	// has been removed; tests must use apitest.NewRig or supply
+	// stand-ins explicitly).
+	WSHub         *wshub.Hub
+	SSEHub        *ssehub.Hub
+	EventsHandler *EventsHandler
 	// ChatRead is the read side of the ChatProjector. It is the only source
 	// of truth for /api/conversations/{id}/messages and the message-count /
 	// last-message-at fields on /api/conversations after R5; the legacy
@@ -141,7 +153,29 @@ type Server struct {
 const ownerRealmID = "owner"
 
 // NewServer creates and configures the API server with all routes.
+//
+// Required dependencies (panic on nil): Policy, WSHub, SSEHub,
+// EventsHandler. These back the §12 unified envelope transports plus
+// the §11.1 "every action goes through Policy" invariant; making them
+// nullable used to silently bypass authorization and degrade
+// /api/events/* to 503, which is exactly the kind of mixed-mode
+// behaviour Phase 9 is removing. Tests that don't need a full
+// transport stack should construct via apitest.NewRig (or the
+// NewTestServer helper below), which fills these with explicit
+// allow-all stand-ins.
 func NewServer(cfg ServerConfig, deps ServerDeps, jwtCfg *JWTConfig) *Server {
+	if deps.Policy == nil {
+		panic("api: ServerDeps.Policy is required (use policy.NewOwnerOnly or apitest.AllowAllPolicy)")
+	}
+	if deps.WSHub == nil {
+		panic("api: ServerDeps.WSHub is required (call bootstrap.WireHubs)")
+	}
+	if deps.SSEHub == nil {
+		panic("api: ServerDeps.SSEHub is required (call bootstrap.WireHubs)")
+	}
+	if deps.EventsHandler == nil {
+		panic("api: ServerDeps.EventsHandler is required (call bootstrap.WireEventsHandler)")
+	}
 	s := &Server{
 		deps:      deps,
 		config:    cfg,
@@ -174,9 +208,6 @@ func NewServer(cfg ServerConfig, deps ServerDeps, jwtCfg *JWTConfig) *Server {
 		_, _ = w.Write([]byte(`{"status":"ok"}`))
 	})
 
-	// WebSocket is not covered by OpenAPI.
-	mux.HandleFunc("GET /api/ws", s.handleWS)
-
 	// Webhook routes are dynamic per channel.
 	if s.deps.Gateway != nil {
 		mux.HandleFunc("POST /api/webhook/{channel}", s.deps.Gateway.HandleWebhook)
@@ -198,9 +229,9 @@ func NewServer(cfg ServerConfig, deps ServerDeps, jwtCfg *JWTConfig) *Server {
 		mux.HandleFunc("GET /api/admin/webhooks/deliveries", s.handleAdminWebhookDeliveries)
 		mux.HandleFunc("POST /api/admin/webhooks/deliveries/{id}/replay", s.handleAdminWebhookReplay)
 		mux.HandleFunc("GET /api/events/latest-seq", s.handleEventsLatestSeq)
-		mux.HandleFunc("GET /api/events/stream", s.handleEventsSSE)
-		mux.HandleFunc("GET /api/events/ws", s.handleEventsWS)
 	}
+	mux.HandleFunc("GET /api/events/stream", s.handleEventsSSE)
+	mux.HandleFunc("GET /api/events/ws", s.handleEventsWS)
 
 	// SPA fallback: method-agnostic "/" is less specific than "/api/" in all
 	// dimensions, so no conflict. Only serve SPA for GET requests.

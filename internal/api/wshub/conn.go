@@ -14,37 +14,62 @@ import (
 )
 
 // Conn is one logical WebSocket subscriber. The Conn owns:
-//   - the eventlog.Subscription (sub) that supplies envelopes
-//   - the writeLoop goroutine that drains sub.C() into c.out
+//   - a set of partition subscriptions (subs), each one an independent
+//     eventlog.Subscription pumping into c.out
+//   - the writeLoop goroutine that drains c.out into the websocket
 //   - the readLoop goroutine that handles client control frames
 //
-// Wire format on the WS channel: each envelope is sent as a single text
-// frame whose body is exactly eventlog.MarshalEnvelope(env), so byte-equal
-// to the SSE/HTTP-pull representations. Control messages (heartbeat,
-// errors) carry an "op" field so clients can dispatch.
+// Wire format:
+//
+//	{"type":"envelope","data":<eventlog.MarshalEnvelope(env)>}
+//
+// where the data field is the raw envelope JSON, byte-equal to the SSE /
+// HTTP-pull representations. Control frames carry a "type" of
+// "subscribed" / "unsubscribed" / "heartbeat" / "error" / "pong".
+//
+// Client control frames the Conn understands:
+//
+//	{"type":"subscribe","partition":"<kind:id>","since":<int64>}
+//	{"type":"unsubscribe","partition":"<kind:id>"}
+//	{"type":"ping"}
+//
+// Subscriptions are scoped to the Conn's actor. Each subscribe goes
+// through Policy.AllowSubscribe; rejected requests result in a frame
+// {"type":"error","code":"forbidden","partition":"...","message":"..."}.
 type Conn struct {
-	ctx       context.Context
-	hub       *Hub
-	actor     policy.Actor
-	partition string
-	sub       eventlog.Subscription
-	conn      *websocket.Conn
+	ctx   context.Context
+	hub   *Hub
+	actor policy.Actor
+	conn  *websocket.Conn
 
 	out       chan []byte
 	dropped   atomic.Int64
 	done      chan struct{}
 	closeOnce sync.Once
+
+	// subs is the live partition→subscription map. Only the readLoop
+	// goroutine writes to it; pump goroutines hold their own subscription
+	// reference for the lifetime of the goroutine, so it is safe to
+	// delete here without coordination.
+	subsMu sync.Mutex
+	subs   map[string]*partitionSub
 }
 
-func newConn(ctx context.Context, hub *Hub, actor policy.Actor, partition string, sub eventlog.Subscription) *Conn {
+// partitionSub bundles a Subscription with the cancel func for its pump
+// goroutine.
+type partitionSub struct {
+	sub    eventlog.Subscription
+	cancel context.CancelFunc
+}
+
+func newConn(ctx context.Context, hub *Hub, actor policy.Actor) *Conn {
 	return &Conn{
-		ctx:       ctx,
-		hub:       hub,
-		actor:     actor,
-		partition: partition,
-		sub:       sub,
-		out:       make(chan []byte, hub.cfg.SendBuffer),
-		done:      make(chan struct{}),
+		ctx:   ctx,
+		hub:   hub,
+		actor: actor,
+		out:   make(chan []byte, hub.cfg.SendBuffer),
+		done:  make(chan struct{}),
+		subs:  make(map[string]*partitionSub),
 	}
 }
 
@@ -59,15 +84,65 @@ func (c *Conn) Attach(ws *websocket.Conn) {
 	c.writeLoop()
 }
 
-// pumpFromSubscription drains the eventlog subscription into c.out using the
-// canonical envelope serializer. It runs as soon as Hub.Open registers the
-// connection; closing the subscription unblocks it.
-func (c *Conn) pumpFromSubscription() {
+// SubscribePartition is the programmatic equivalent of receiving a
+// {"type":"subscribe"} frame. Tests that don't want to round-trip
+// websocket frames use it directly.
+func (c *Conn) SubscribePartition(partition string, since int64) error {
+	dec, err := c.hub.policy.AllowSubscribe(c.ctx, c.actor, policy.SubscribeOptions{
+		Partitions: []string{partition},
+	})
+	if err != nil {
+		return err
+	}
+	if !dec.Allow {
+		return errors.New(dec.Reason)
+	}
+	c.subsMu.Lock()
+	if _, exists := c.subs[partition]; exists {
+		c.subsMu.Unlock()
+		return nil
+	}
+	pumpCtx, cancel := context.WithCancel(c.ctx)
+	sub, err := c.hub.log.Subscribe(pumpCtx, eventlog.SubscribeOptions{
+		Partitions: []string{partition},
+		Since:      eventlog.Since(since),
+		BufferSize: c.hub.cfg.SendBuffer,
+	})
+	if err != nil {
+		cancel()
+		c.subsMu.Unlock()
+		return err
+	}
+	c.subs[partition] = &partitionSub{sub: sub, cancel: cancel}
+	c.subsMu.Unlock()
+	go c.pumpFromSubscription(partition, sub)
+	c.sendControl(map[string]any{"type": "subscribed", "partition": partition})
+	return nil
+}
+
+// UnsubscribePartition stops the pump for partition. Idempotent.
+func (c *Conn) UnsubscribePartition(partition string) {
+	c.subsMu.Lock()
+	ps, ok := c.subs[partition]
+	delete(c.subs, partition)
+	c.subsMu.Unlock()
+	if !ok {
+		return
+	}
+	ps.cancel()
+	_ = ps.sub.Close()
+	c.sendControl(map[string]any{"type": "unsubscribed", "partition": partition})
+}
+
+// pumpFromSubscription drains one subscription into c.out. Wrapping the
+// envelope in {"type":"envelope","data":<bytes>} keeps the data field
+// byte-equal to the SSE / HTTP-pull representations (§6.5).
+func (c *Conn) pumpFromSubscription(partition string, sub eventlog.Subscription) {
+	_ = partition // reserved for slow-consumer accounting; see Phase 9.
 	for {
 		select {
-		case env, ok := <-c.sub.C():
+		case env, ok := <-sub.C():
 			if !ok {
-				c.close()
 				return
 			}
 			data, err := eventlog.MarshalEnvelope(env)
@@ -75,11 +150,15 @@ func (c *Conn) pumpFromSubscription() {
 				slog.Warn("wshub: marshal envelope", "err", err)
 				continue
 			}
-			c.send(data)
+			frame, err := encodeEnvelopeFrame(data)
+			if err != nil {
+				slog.Warn("wshub: encode envelope frame", "err", err)
+				continue
+			}
+			c.send(frame)
 		case <-c.done:
 			return
 		case <-c.ctx.Done():
-			c.close()
 			return
 		}
 	}
@@ -122,22 +201,41 @@ func (c *Conn) writeLoop() {
 	}
 }
 
+// handle dispatches a single client control frame.
 func (c *Conn) handle(msg []byte) {
 	var op struct {
-		Op string `json:"op"`
+		Type      string `json:"type"`
+		Partition string `json:"partition"`
+		Since     int64  `json:"since"`
 	}
 	if err := json.Unmarshal(msg, &op); err != nil {
-		c.sendControlErr("bad_message", "invalid JSON")
+		c.sendControlErr("bad_message", "", "invalid JSON")
 		return
 	}
-	switch op.Op {
+	switch op.Type {
 	case "ping":
-		c.sendControl([]byte(`{"op":"pong"}`))
+		c.sendControl(map[string]any{"type": "pong"})
+	case "subscribe":
+		if op.Partition == "" {
+			c.sendControlErr("bad_request", "", "partition required")
+			return
+		}
+		if err := c.SubscribePartition(op.Partition, op.Since); err != nil {
+			c.sendControlErr("forbidden", op.Partition, err.Error())
+		}
+	case "unsubscribe":
+		if op.Partition == "" {
+			c.sendControlErr("bad_request", "", "partition required")
+			return
+		}
+		c.UnsubscribePartition(op.Partition)
+	default:
+		c.sendControlErr("bad_message", "", "unknown type "+op.Type)
 	}
 }
 
-// send queues a raw envelope payload. Drops with a counter increment if the
-// buffer is full, never blocking the eventlog goroutine.
+// send queues a raw payload. Drops with a counter increment if the buffer
+// is full so the eventlog goroutine never blocks on a slow consumer.
 func (c *Conn) send(data []byte) {
 	select {
 	case c.out <- data:
@@ -145,26 +243,51 @@ func (c *Conn) send(data []byte) {
 	default:
 		n := c.dropped.Add(1)
 		if n%100 == 1 {
-			LogSlowConsumer(c.partition, n)
+			LogSlowConsumer(c.actor.ID, n)
 		}
 	}
 }
 
-// sendControl queues an administrative payload (heartbeat, pong, error).
-func (c *Conn) sendControl(data []byte) { c.send(data) }
+// sendControl queues an administrative payload (subscribed, heartbeat,
+// pong, error). Marshalling failures are logged and silently swallowed.
+func (c *Conn) sendControl(payload map[string]any) {
+	body, err := json.Marshal(payload)
+	if err != nil {
+		slog.Debug("wshub: encode control", "err", err)
+		return
+	}
+	c.send(body)
+}
 
-func (c *Conn) sendControlErr(code, msg string) {
-	body, _ := json.Marshal(map[string]any{"op": "error", "code": code, "msg": msg})
-	c.sendControl(body)
+func (c *Conn) sendControlErr(code, partition, msg string) {
+	payload := map[string]any{"type": "error", "code": code, "message": msg}
+	if partition != "" {
+		payload["partition"] = partition
+	}
+	c.sendControl(payload)
+}
+
+// broadcastHeartbeat is invoked by Hub.heartbeats; the heartbeat frame
+// is the same envelope-shaped JSON {"type":"heartbeat","latest_seq":N}
+// the SSE channel uses.
+func (c *Conn) broadcastHeartbeat(latestSeq int64) {
+	c.sendControl(map[string]any{
+		"type":       "heartbeat",
+		"latest_seq": latestSeq,
+	})
 }
 
 // close releases all resources; idempotent.
 func (c *Conn) close() {
 	c.closeOnce.Do(func() {
 		close(c.done)
-		if c.sub != nil {
-			_ = c.sub.Close()
+		c.subsMu.Lock()
+		for _, ps := range c.subs {
+			ps.cancel()
+			_ = ps.sub.Close()
 		}
+		c.subs = nil
+		c.subsMu.Unlock()
 		c.hub.removeConn(c)
 		if c.conn != nil {
 			_ = c.conn.Close(websocket.StatusNormalClosure, "")
@@ -173,12 +296,24 @@ func (c *Conn) close() {
 	})
 }
 
-// Out returns the raw outbound channel; tests use it to assert on the exact
-// bytes the connection would write to the wire.
+// Out returns the raw outbound channel; tests use it to assert on the
+// exact bytes the connection would write to the wire.
 func (c *Conn) Out() <-chan []byte { return c.out }
 
 // Done is closed when the connection is fully torn down.
 func (c *Conn) Done() <-chan struct{} { return c.done }
 
-// Dropped returns the count of envelopes dropped due to slow consumer.
+// Dropped returns the count of payloads dropped due to slow consumer.
 func (c *Conn) Dropped() int64 { return c.dropped.Load() }
+
+// encodeEnvelopeFrame wraps a raw envelope JSON in the on-wire control
+// frame {"type":"envelope","data":<env>}. We embed `data` as raw JSON so
+// the bytes inside `data` remain byte-equal to the SSE/HTTP-pull
+// representations, satisfying the §6.5 wire-format invariant.
+func encodeEnvelopeFrame(envBytes []byte) ([]byte, error) {
+	out := make([]byte, 0, len(envBytes)+24)
+	out = append(out, []byte(`{"type":"envelope","data":`)...)
+	out = append(out, envBytes...)
+	out = append(out, '}')
+	return out, nil
+}

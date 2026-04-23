@@ -7,6 +7,7 @@ import { useChat } from './useChat';
 import { agentApi } from '../utils/api';
 import type { CoPilotContextInput, CoPilotRef, DispatchedTask } from '../types/chat';
 import { envelopeRouter } from '../eventlog/router';
+import { useEventStore } from '../store/eventStore';
 import type { Envelope } from '../eventlog/types';
 import { getRuntimeConversationId } from '../utils/runtime';
 
@@ -88,6 +89,15 @@ export function useCoPilot() {
   // Subscribe directly to the same router for the side-effects CoPilot
   // needs (refresh graph after a graph-mutating tool, track dispatched
   // tasks from kanban_submit, clear background-running indicator).
+  // §13 / Track-A: subscribe to the CoPilot card partition so the
+  // EnvelopeClient actually pulls agent.tool.* / agent.stream.delta /
+  // agent.run.* envelopes for the CoPilot conversation. Without this the
+  // router subscriptions below would be wired to a silent stream.
+  useEffect(() => {
+    const conversationId = getRuntimeConversationId(COPILOT_AGENT_ID);
+    return useEventStore.getState().trackSubscribe(`card:${conversationId}`);
+  }, []);
+
   useEffect(() => {
     const conversationId = getRuntimeConversationId(COPILOT_AGENT_ID);
 

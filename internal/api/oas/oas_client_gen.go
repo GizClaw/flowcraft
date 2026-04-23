@@ -67,8 +67,14 @@ type Invoker interface {
 	CreateTemplate(ctx context.Context, request *CreateTemplateRequest) (*GraphTemplate, error)
 	// CreateWSTicket invokes createWSTicket operation.
 	//
+	// Issues a single-use ticket scoped to one (partition, since) pair, as
+	// required by §12.3. The ticket is consumed by /api/events/ws on the
+	// first frame; subsequent subscribes on the same connection still go
+	// through the actor's policy. The TTL is 45s — enough to cover client
+	// retries but short enough that leaked tickets can't be replayed.
+	//
 	// POST /ws-ticket
-	CreateWSTicket(ctx context.Context) (*WSTicketResponse, error)
+	CreateWSTicket(ctx context.Context, request *WSTicketRequest) (*WSTicketResponse, error)
 	// DeleteAgent invokes deleteAgent operation.
 	//
 	// DELETE /agents/{id}
@@ -1553,13 +1559,19 @@ func (c *Client) sendCreateTemplate(ctx context.Context, request *CreateTemplate
 
 // CreateWSTicket invokes createWSTicket operation.
 //
+// Issues a single-use ticket scoped to one (partition, since) pair, as
+// required by §12.3. The ticket is consumed by /api/events/ws on the
+// first frame; subsequent subscribes on the same connection still go
+// through the actor's policy. The TTL is 45s — enough to cover client
+// retries but short enough that leaked tickets can't be replayed.
+//
 // POST /ws-ticket
-func (c *Client) CreateWSTicket(ctx context.Context) (*WSTicketResponse, error) {
-	res, err := c.sendCreateWSTicket(ctx)
+func (c *Client) CreateWSTicket(ctx context.Context, request *WSTicketRequest) (*WSTicketResponse, error) {
+	res, err := c.sendCreateWSTicket(ctx, request)
 	return res, err
 }
 
-func (c *Client) sendCreateWSTicket(ctx context.Context) (res *WSTicketResponse, err error) {
+func (c *Client) sendCreateWSTicket(ctx context.Context, request *WSTicketRequest) (res *WSTicketResponse, err error) {
 	otelAttrs := []attribute.KeyValue{
 		otelogen.OperationID("createWSTicket"),
 		semconv.HTTPRequestMethodKey.String("POST"),
@@ -1603,6 +1615,9 @@ func (c *Client) sendCreateWSTicket(ctx context.Context) (res *WSTicketResponse,
 	r, err := ht.NewRequest(ctx, "POST", u)
 	if err != nil {
 		return res, errors.Wrap(err, "create request")
+	}
+	if err := encodeCreateWSTicketRequest(request, r); err != nil {
+		return res, errors.Wrap(err, "encode request")
 	}
 
 	{

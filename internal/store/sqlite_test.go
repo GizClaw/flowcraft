@@ -133,7 +133,6 @@ func TestConversationCRUD(t *testing.T) {
 // envelopes consumed by the ChatProjector. See
 // internal/projection/chat/projector_test.go for the new coverage.
 
-
 func TestWorkflowRunCRUD(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()

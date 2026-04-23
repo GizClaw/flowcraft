@@ -186,7 +186,10 @@ func (s *Server) jwtMiddleware(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		if r.URL.Path == "/api/ws" {
+		// /api/events/ws does its own ticket-based auth (§12.3) and must
+		// bypass the cookie/JWT check; the ws-ticket already encodes the
+		// authorized actor + (partition, since) bound to it.
+		if r.URL.Path == "/api/events/ws" {
 			next.ServeHTTP(w, r)
 			return
 		}

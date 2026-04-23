@@ -1,11 +1,14 @@
 import { Outlet, NavLink, useParams, useNavigate } from 'react-router-dom';
-import { useEffect, useState, useCallback, useRef } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { ArrowLeft } from 'lucide-react';
 import * as icons from 'lucide-react';
 import { agentApi } from '../../utils/api';
 import { agentDetailTabs } from '../../constants/navigation';
-import { useWebSocket } from '../../hooks/useWebSocket';
+import { useEventStore } from '../../store/eventStore';
+import { envelopeRouter } from '../../eventlog/router';
+import { OWNER_RUNTIME_ID } from '../../utils/runtime';
+import type { Envelope } from '../../eventlog/types';
 import type { Agent } from '../../types/app';
 import LoadingSpinner from '../common/LoadingSpinner';
 
@@ -23,21 +26,30 @@ export default function AgentDetailLayout() {
     agentApi.get(id).then(setAgent).catch(() => navigate('/agents')).finally(() => setLoading(false));
   }, [id, navigate]);
 
-  const handleWsMessage = useCallback((data: unknown) => {
-    const msg = data as { type?: string; agent_id?: string };
-    if (msg.type === 'graph_changed' && msg.agent_id === id) {
-      clearTimeout(refreshTimerRef.current);
-      refreshTimerRef.current = setTimeout(() => {
-        agentApi.get(id!).then(setAgent).catch(() => {});
-      }, 300);
-    }
-  }, [id]);
-
   useEffect(() => {
     return () => clearTimeout(refreshTimerRef.current);
   }, []);
 
-  useWebSocket('/api/ws', { onMessage: handleWsMessage, reconnectInterval: 5000 });
+  // §13 / Track-E: subscribe to runtime envelopes and react to
+  // agent.config.changed for this agent. Replaces the legacy /api/ws +
+  // graph_changed protocol; the envelope is published by oapiHandler
+  // .publishAgentConfigChanged on every CRUD that mutates an agent.
+  useEffect(() => {
+    if (!id) return;
+    const stop = useEventStore.getState().trackSubscribe(`runtime:${OWNER_RUNTIME_ID}`);
+    const off = envelopeRouter.on('agent.config.changed', (env: Envelope) => {
+      const p = env.payload as { agent_id?: string };
+      if (p?.agent_id !== id) return;
+      clearTimeout(refreshTimerRef.current);
+      refreshTimerRef.current = setTimeout(() => {
+        agentApi.get(id).then(setAgent).catch(() => {});
+      }, 300);
+    });
+    return () => {
+      off();
+      stop();
+    };
+  }, [id]);
 
   if (loading) return <div className="flex items-center justify-center h-full"><LoadingSpinner /></div>;
 

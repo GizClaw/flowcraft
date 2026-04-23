@@ -2,7 +2,6 @@ package wshub
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -93,34 +92,39 @@ func (h *Hub) Stop() {
 	}
 }
 
-// Open registers a Conn with the Hub. The caller must call Conn.close when
-// done, which removes it from the registry.
-func (h *Hub) Open(ctx context.Context, actor policy.Actor, partition string, since int64) (*Conn, error) {
+// Open registers a Conn with the Hub. The returned Conn does not have
+// any partition subscription yet — clients open subscriptions by sending
+// {"type":"subscribe","partition":"<kind:id>","since":N} frames over the
+// websocket (or via Conn.SubscribePartition in tests).
+//
+// EnvelopeClient (web/src/eventlog/client.ts) multiplexes any number of
+// partitions over one websocket; the Hub does not care about the count.
+func (h *Hub) Open(ctx context.Context, actor policy.Actor) (*Conn, error) {
 	if h.closed.Load() {
 		return nil, fmt.Errorf("wshub: hub closed")
 	}
-	dec, err := h.policy.AllowSubscribe(ctx, actor, policy.SubscribeOptions{
-		Partitions: []string{partition},
-	})
-	if err != nil {
-		return nil, fmt.Errorf("wshub: policy error: %w", err)
-	}
-	if !dec.Allow {
-		return nil, fmt.Errorf("wshub: %s", dec.Reason)
-	}
-	sub, err := h.log.Subscribe(ctx, eventlog.SubscribeOptions{
-		Partitions: []string{partition},
-		Since:      eventlog.Since(since),
-		BufferSize: h.cfg.SendBuffer,
-	})
-	if err != nil {
-		return nil, err
-	}
-	c := newConn(ctx, h, actor, partition, sub)
+	c := newConn(ctx, h, actor)
 	h.mu.Lock()
 	h.conns[c] = struct{}{}
 	h.mu.Unlock()
-	go c.pumpFromSubscription()
+	return c, nil
+}
+
+// OpenWithInitial mirrors Open but immediately subscribes to (partition,
+// since) before returning, so connections that came via a §12.3 ws-ticket
+// can begin streaming on the first frame without an extra round-trip.
+// The initial subscribe still goes through Policy.AllowSubscribe.
+func (h *Hub) OpenWithInitial(ctx context.Context, actor policy.Actor, partition string, since int64) (*Conn, error) {
+	c, err := h.Open(ctx, actor)
+	if err != nil {
+		return nil, err
+	}
+	if partition != "" {
+		if subErr := c.SubscribePartition(partition, since); subErr != nil {
+			c.close()
+			return nil, fmt.Errorf("wshub: initial subscribe: %w", subErr)
+		}
+	}
 	return c, nil
 }
 
@@ -144,14 +148,9 @@ func (h *Hub) heartbeats() {
 		select {
 		case <-ticker.C:
 			latest, _ := h.log.LatestSeq(context.Background())
-			payload, _ := json.Marshal(map[string]any{
-				"op":         "heartbeat",
-				"ts":         time.Now().UTC().Format(time.RFC3339Nano),
-				"latest_seq": latest,
-			})
 			h.mu.RLock()
 			for c := range h.conns {
-				c.sendControl(payload)
+				c.broadcastHeartbeat(latest)
 			}
 			h.mu.RUnlock()
 		case <-h.stopCh:

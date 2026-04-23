@@ -258,10 +258,27 @@ jobs:
       - run: npx vitest run
       - run: npm run build
 
+  architecture-guards:
+    # Static guards for the architectural invariants documented in
+    # docs/event-sourcing-plan.md §11.2 / §13. Cheap (rg-only), runs on
+    # every PR, and catches regressions like SQLiteLog.Append leaking
+    # back out, /api/ws or useWebSocket coming back, or wsSink/sseSink
+    # being reintroduced.
+    name: Architecture Guards
+    needs: detect
+    if: needs.detect.outputs.platform == 'true' || needs.detect.outputs.web == 'true' || needs.detect.outputs.ci == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install ripgrep
+        run: sudo apt-get update && sudo apt-get install -y ripgrep
+      - name: Run guards
+        run: ./scripts/ci-architecture-guards.sh
+
   ci-pass:
     name: CI
     if: always()
-    needs: [lint, lint-platform, test-sdk, test-sdkx, test-plugin, test-platform, build-matrix, lint-web, verify-generated]
+    needs: [lint, lint-platform, test-sdk, test-sdkx, test-plugin, test-platform, build-matrix, lint-web, verify-generated, architecture-guards]
     runs-on: ubuntu-latest
     steps:
       - name: Check results
@@ -276,6 +293,7 @@ jobs:
             "${{ needs.build-matrix.result }}" \
             "${{ needs.lint-web.result }}" \
             "${{ needs.verify-generated.result }}" \
+            "${{ needs.architecture-guards.result }}" \
           )
           for r in "${results[@]}"; do
             if [[ "$r" == "failure" || "$r" == "cancelled" ]]; then

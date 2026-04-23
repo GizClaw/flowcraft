@@ -14,7 +14,9 @@ export default defineConfig({
   },
   server: {
     proxy: {
-      '/api/ws': { target: 'http://localhost:8080', ws: true },
+      // §12.2 unified envelope WS — multiplexed subscribe / unsubscribe
+      // frames over a single connection authorized by /api/ws-ticket.
+      '/api/events/ws': { target: 'http://localhost:8080', ws: true },
       '/api': 'http://localhost:8080',
     },
   },

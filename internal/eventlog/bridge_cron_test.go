@@ -26,7 +26,7 @@ func TestCronBridge_FiresOnSchedulerSubmissions(t *testing.T) {
 	board := kanban.NewBoard("rt-c1")
 	t.Cleanup(board.Close)
 
-	_, cb, err := eventlog.BootKanbanWithBridge(context.Background(), log, board)
+	_, cb, _, err := eventlog.BootKanbanWithBridge(context.Background(), log, board)
 	if err != nil {
 		t.Fatalf("boot: %v", err)
 	}
@@ -74,7 +74,7 @@ func TestCronBridge_IgnoresUserSubmissions(t *testing.T) {
 	board := kanban.NewBoard("rt-c2")
 	t.Cleanup(board.Close)
 
-	_, cb, err := eventlog.BootKanbanWithBridge(context.Background(), log, board)
+	_, cb, _, err := eventlog.BootKanbanWithBridge(context.Background(), log, board)
 	if err != nil {
 		t.Fatalf("boot: %v", err)
 	}
@@ -109,7 +109,7 @@ func TestCronBridge_FireKeyIdempotent(t *testing.T) {
 	board := kanban.NewBoard("rt-c3")
 	t.Cleanup(board.Close)
 
-	_, cb, err := eventlog.BootKanbanWithBridge(context.Background(), log, board)
+	_, cb, _, err := eventlog.BootKanbanWithBridge(context.Background(), log, board)
 	if err != nil {
 		t.Fatalf("boot: %v", err)
 	}
@@ -140,7 +140,7 @@ func TestCronBridge_PublishLifecycleHelpers(t *testing.T) {
 	board := kanban.NewBoard("rt-c4")
 	t.Cleanup(board.Close)
 
-	_, cb, err := eventlog.BootKanbanWithBridge(context.Background(), log, board)
+	_, cb, _, err := eventlog.BootKanbanWithBridge(context.Background(), log, board)
 	if err != nil {
 		t.Fatalf("boot: %v", err)
 	}

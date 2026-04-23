@@ -11,8 +11,8 @@ func TestLoadSpecAndLint(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(sp.Events) != 31 {
-		t.Fatalf("expected 31 events, got %d", len(sp.Events))
+	if len(sp.Events) != 32 {
+		t.Fatalf("expected 32 events, got %d", len(sp.Events))
 	}
 	if errs := lintSpec(sp); len(errs) > 0 {
 		for _, e := range errs {

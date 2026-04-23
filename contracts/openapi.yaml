@@ -8,7 +8,6 @@ info:
     NOTE: a few HTTP endpoints are intentionally NOT described here because they
     do not fit the OpenAPI request/response model. They are mounted directly in
     `internal/api/server.go`:
-      • `GET  /api/ws`                — WebSocket upgrade
       • `POST /api/webhook/{channel}` — channel-specific webhook (dynamic schema)
       • `GET  /healthz`               — root-level alias of `/api/healthz`
       • `GET  /api/admin/audit`       — admin audit log query (RBAC: super admin)
@@ -20,6 +19,7 @@ info:
       • `POST /api/admin/webhooks/deliveries/{id}/replay`            — manually retry a delivery (RBAC: super admin)
       • `GET  /api/events/latest-seq`                                — current global max envelope seq
       • `GET  /api/events/stream`                                    — SSE envelope stream (Last-Event-ID resume)
+      • `GET  /api/events/ws`                                        — multiplexed envelope WS (single-use ws-ticket auth)
 
     Everything else is generated from this file. Run `make generate` after edits;
     CI verifies that `internal/api/oas/**` and `web/src/api/schema.d.ts` are in
@@ -1469,6 +1469,19 @@ paths:
     post:
       operationId: createWSTicket
       tags: [websocket]
+      summary: Issue a single-use WebSocket ticket bound to (partition, since).
+      description: |
+        Issues a single-use ticket scoped to one (partition, since) pair, as
+        required by §12.3. The ticket is consumed by /api/events/ws on the
+        first frame; subsequent subscribes on the same connection still go
+        through the actor's policy. The TTL is 45s — enough to cover client
+        retries but short enough that leaked tickets can't be replayed.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WSTicketRequest"
       responses:
         "200":
           description: WebSocket ticket
@@ -1800,6 +1813,25 @@ components:
           description: Latest event seq emitted while serving the request; clients can use it as the `since` cursor.
 
     # ── WebSocket ──
+    WSTicketRequest:
+      type: object
+      required: [partition, since]
+      properties:
+        partition:
+          type: string
+          description: |
+            kind:id pair (e.g. "runtime:rt-1", "card:c-3") this ticket is
+            valid for. The /api/events/ws handler refuses any subscribe
+            frame whose partition does not match.
+          example: "runtime:rt-1"
+        since:
+          type: integer
+          format: int64
+          minimum: 0
+          description: |
+            seq cursor the connection will resume from on first
+            subscribe. Pass 0 for "from current latest". /api/events/ws
+            refuses subscribes whose `since` differs from this value.
     WSTicketResponse:
       type: object
       required: [ticket, expires_at]

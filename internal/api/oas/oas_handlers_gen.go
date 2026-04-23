@@ -1970,6 +1970,12 @@ func (s *Server) handleCreateTemplateRequest(args [0]string, argsEscaped bool, w
 
 // handleCreateWSTicketRequest handles createWSTicket operation.
 //
+// Issues a single-use ticket scoped to one (partition, since) pair, as
+// required by §12.3. The ticket is consumed by /api/events/ws on the
+// first frame; subsequent subscribes on the same connection still go
+// through the actor's policy. The TTL is 45s — enough to cover client
+// retries but short enough that leaked tickets can't be replayed.
+//
 // POST /ws-ticket
 func (s *Server) handleCreateWSTicketRequest(args [0]string, argsEscaped bool, w http.ResponseWriter, r *http.Request) {
 	statusWriter := &codeRecorder{ResponseWriter: w}
@@ -2105,21 +2111,36 @@ func (s *Server) handleCreateWSTicketRequest(args [0]string, argsEscaped bool, w
 			return
 		}
 	}
+	request, close, err := s.decodeCreateWSTicketRequest(r)
+	if err != nil {
+		err = &ogenerrors.DecodeRequestError{
+			OperationContext: opErrContext,
+			Err:              err,
+		}
+		defer recordError("DecodeRequest", err)
+		s.cfg.ErrorHandler(ctx, w, r, err)
+		return
+	}
+	defer func() {
+		if err := close(); err != nil {
+			recordError("CloseRequest", err)
+		}
+	}()
 
 	var response *WSTicketResponse
 	if m := s.cfg.Middleware; m != nil {
 		mreq := middleware.Request{
 			Context:          ctx,
 			OperationName:    CreateWSTicketOperation,
-			OperationSummary: "",
+			OperationSummary: "Issue a single-use WebSocket ticket bound to (partition, since).",
 			OperationID:      "createWSTicket",
-			Body:             nil,
+			Body:             request,
 			Params:           middleware.Parameters{},
 			Raw:              r,
 		}
 
 		type (
-			Request  = struct{}
+			Request  = *WSTicketRequest
 			Params   = struct{}
 			Response = *WSTicketResponse
 		)
@@ -2132,12 +2153,12 @@ func (s *Server) handleCreateWSTicketRequest(args [0]string, argsEscaped bool, w
 			mreq,
 			nil,
 			func(ctx context.Context, request Request, params Params) (response Response, err error) {
-				response, err = s.h.CreateWSTicket(ctx)
+				response, err = s.h.CreateWSTicket(ctx, request)
 				return response, err
 			},
 		)
 	} else {
-		response, err = s.h.CreateWSTicket(ctx)
+		response, err = s.h.CreateWSTicket(ctx, request)
 	}
 	if err != nil {
 		if errRes, ok := errors.Into[*ErrorStatusCode](err); ok {

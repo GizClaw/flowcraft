@@ -78,8 +78,14 @@ func (UnimplementedHandler) CreateTemplate(ctx context.Context, req *CreateTempl
 
 // CreateWSTicket implements createWSTicket operation.
 //
+// Issues a single-use ticket scoped to one (partition, since) pair, as
+// required by §12.3. The ticket is consumed by /api/events/ws on the
+// first frame; subsequent subscribes on the same connection still go
+// through the actor's policy. The TTL is 45s — enough to cover client
+// retries but short enough that leaked tickets can't be replayed.
+//
 // POST /ws-ticket
-func (UnimplementedHandler) CreateWSTicket(ctx context.Context) (r *WSTicketResponse, _ error) {
+func (UnimplementedHandler) CreateWSTicket(ctx context.Context, req *WSTicketRequest) (r *WSTicketResponse, _ error) {
 	return r, ht.ErrNotImplemented
 }
 

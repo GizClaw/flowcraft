@@ -61,7 +61,7 @@ export default function CoPilotPanel() {
   const nodes = useWorkflowStore((s) => s.nodes);
   const edges = useWorkflowStore((s) => s.edges);
 
-  useKanbanBoard(OWNER_RUNTIME_ID, COPILOT_AGENT_ID);
+  useKanbanBoard(OWNER_RUNTIME_ID);
   const recoveryAttemptedRef = useRef(false);
   const [activeTab, setActiveTab] = useState<TabType>('chat');
 

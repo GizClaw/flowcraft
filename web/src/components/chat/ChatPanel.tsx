@@ -1,8 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useChatStore } from '../../store/chatStore';
+import { useEventStore } from '../../store/eventStore';
 import { chatApi } from '../../utils/api';
-import { useWebSocket } from '../../hooks/useWebSocket';
-import { handleCallbackMessage } from '../../hooks/useKanbanBoard';
 import { getRuntimeConversationId } from '../../utils/runtime';
 import RichChatView from './RichChatView';
 import type { Message, RichMessage } from '../../types/chat';
@@ -38,16 +37,14 @@ export default function ChatPanel({ agentId }: Props) {
     }).catch(() => {}).finally(() => setLoading(false));
   }, [conversationId, loadHistory]);
 
-  const wsUrl = '/api/ws';
-  useWebSocket(wsUrl, {
-    onMessage: (data) => {
-      const msg = data as Record<string, unknown>;
-      if ((msg.type as string)?.startsWith('callback_')) {
-        handleCallbackMessage(msg, agentId);
-      }
-    },
-    reconnectInterval: 5000,
-  });
+  // §13 / Track-A: subscribe to chat partition (card:<conversationID>).
+  // ChatReducers (registered globally in eventStore.installEnvelopeWiring)
+  // pick up chat.message.sent / chat.callback.* envelopes and update
+  // chatStore directly.
+  useEffect(() => {
+    if (!conversationId) return;
+    return useEventStore.getState().trackSubscribe(`card:${conversationId}`);
+  }, [conversationId]);
 
   return (
     <div className="flex h-full">

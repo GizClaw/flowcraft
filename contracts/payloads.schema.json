@@ -2,6 +2,29 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
   "properties": {
+    "AgentConfigChangedPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "agent_id": {
+          "type": "string"
+        },
+        "change": {
+          "type": "string"
+        },
+        "revision": {
+          "type": "integer"
+        },
+        "runtime_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "agent_id",
+        "change",
+        "runtime_id"
+      ],
+      "type": "object"
+    },
     "AgentRunCompletedPayload": {
       "additionalProperties": false,
       "properties": {

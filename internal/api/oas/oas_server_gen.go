@@ -46,8 +46,14 @@ type Handler interface {
 	CreateTemplate(ctx context.Context, req *CreateTemplateRequest) (*GraphTemplate, error)
 	// CreateWSTicket implements createWSTicket operation.
 	//
+	// Issues a single-use ticket scoped to one (partition, since) pair, as
+	// required by §12.3. The ticket is consumed by /api/events/ws on the
+	// first frame; subsequent subscribes on the same connection still go
+	// through the actor's policy. The TTL is 45s — enough to cover client
+	// retries but short enough that leaked tickets can't be replayed.
+	//
 	// POST /ws-ticket
-	CreateWSTicket(ctx context.Context) (*WSTicketResponse, error)
+	CreateWSTicket(ctx context.Context, req *WSTicketRequest) (*WSTicketResponse, error)
 	// DeleteAgent implements deleteAgent operation.
 	//
 	// DELETE /agents/{id}

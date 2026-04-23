@@ -144,11 +144,20 @@ export class EnvelopeClient {
     if (!this.opts.websocketImpl || !this.opts.fetchImpl) {
       return this.tryEventSource();
     }
+    if (this.subs.size === 0) {
+      return; // no partitions to subscribe to yet
+    }
     try {
-      // Per the doc the WS connect issues a one-shot ticket via POST /ws-ticket.
+      // §12.3: each WS connect issues a one-shot ticket bound to one
+      // (partition, since) pair. Pick the first active subscription as
+      // the initial — additional partitions are joined post-connect via
+      // sendWSSubscribe (one connection multiplexes many subs).
+      const initial = this.subs.values().next().value as SubscriptionState;
       const ticketRes = await this.opts.fetchImpl(`${this.opts.baseUrl}/api/ws-ticket`, {
         method: 'POST',
         credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ partition: initial.partition, since: initial.since }),
       });
       if (!ticketRes.ok) throw new Error(`ws-ticket: ${ticketRes.status}`);
       const { ticket } = (await ticketRes.json()) as { ticket: string };
@@ -159,7 +168,13 @@ export class EnvelopeClient {
       ws.onopen = () => {
         this.wsFailures = 0;
         this.markConnected();
-        this.subs.forEach((s) => this.sendWSSubscribe(s.partition, s.since));
+        // Initial subscribe is auto-applied server-side from the ticket;
+        // we explicitly subscribe any additional partitions.
+        this.subs.forEach((s) => {
+          if (s.partition !== initial.partition) {
+            this.sendWSSubscribe(s.partition, s.since);
+          }
+        });
       };
       ws.onmessage = (msg) => this.handleRawFrame(msg.data);
       ws.onerror = () => this.handleWSFailure();

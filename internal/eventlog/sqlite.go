@@ -91,9 +91,11 @@ func (l *SQLiteLog) Atomic(ctx context.Context, fn func(uow UnitOfWork) error) (
 	return envs, nil
 }
 
-// Append implements eventlog.Appender for codegen publish helpers. It opens its
-// own transaction; callers wanting to bundle business writes should use Atomic.
-func (l *SQLiteLog) Append(ctx context.Context, env Envelope) (int64, error) {
+// appendOne is the single-envelope write path used exclusively by the
+// generated PublishXxx helpers. It is unexported so business packages
+// cannot bypass the publisher API and append raw envelopes (§11.1#5).
+// Callers wanting to bundle multiple events must use Atomic.
+func (l *SQLiteLog) appendOne(ctx context.Context, env Envelope) (int64, error) {
 	envs, err := l.Atomic(ctx, func(uow UnitOfWork) error {
 		return uow.Append(ctx, EnvelopeDraft{
 			Partition: env.Partition,

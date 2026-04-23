@@ -31,7 +31,7 @@ test.describe('Kanban', () => {
     const kanbanCardsResp = page.waitForResponse((resp) =>
       resp.url().includes('/api/kanban/cards') && resp.request().method() === 'GET',
     );
-    const websocket = page.waitForEvent('websocket', (ws) => ws.url().includes('/api/ws'));
+    const websocket = page.waitForEvent('websocket', (ws) => ws.url().includes('/api/events/ws'));
 
     await page.goto('/kanban');
 
@@ -47,7 +47,7 @@ test.describe('Kanban', () => {
     expect(runtimeResp.ok()).toBeTruthy();
     expect(memoryResp.ok()).toBeTruthy();
     expect(cardsResp.ok()).toBeTruthy();
-    expect(ws.url()).toContain('/api/ws?ticket=');
+    expect(ws.url()).toContain('/api/events/ws?ticket=');
 
     await expect(page.getByText('Runtime Debug')).toBeVisible({ timeout: 10_000 });
     await expect(page.getByText(/user:\s*default/)).toBeVisible();

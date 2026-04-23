@@ -4303,7 +4303,7 @@ func (s *Server) FindPath(method string, u *url.URL) (r Route, _ bool) {
 						switch method {
 						case "POST":
 							r.name = CreateWSTicketOperation
-							r.summary = ""
+							r.summary = "Issue a single-use WebSocket ticket bound to (partition, since)."
 							r.operationID = "createWSTicket"
 							r.pathPattern = "/ws-ticket"
 							r.args = args
