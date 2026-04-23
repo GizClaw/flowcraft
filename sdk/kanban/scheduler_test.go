@@ -549,15 +549,15 @@ func TestScheduler_Bus_PublishesCronRuleCreatedAndDisabled(t *testing.T) {
 	}
 
 	createdSeen := false
-	for _, ev := range drainEvents(sub, 500*time.Millisecond, 1, func(e event.Event) bool {
-		return string(e.Type) == EventCronRuleCreated
+	for _, ev := range drainEvents(sub, 500*time.Millisecond, 1, func(e event.Envelope) bool {
+		return kindOf(e) == EventCronRuleCreated
 	}) {
-		if string(ev.Type) != EventCronRuleCreated {
+		if kindOf(ev) != EventCronRuleCreated {
 			continue
 		}
-		p, ok := ev.Payload.(CronRuleCreatedPayload)
-		if !ok || p.ScheduleID != id || p.AgentID != "agent-1" {
-			t.Fatalf("CronRuleCreated payload mismatch: %+v", ev.Payload)
+		var p CronRuleCreatedPayload
+		if err := ev.Decode(&p); err != nil || p.ScheduleID != id || p.AgentID != "agent-1" {
+			t.Fatalf("CronRuleCreated payload mismatch: err=%v p=%+v", err, p)
 		}
 		createdSeen = true
 	}
@@ -568,15 +568,15 @@ func TestScheduler_Bus_PublishesCronRuleCreatedAndDisabled(t *testing.T) {
 	s.RemoveAgent("agent-1")
 
 	disabledSeen := false
-	for _, ev := range drainEvents(sub, 500*time.Millisecond, 1, func(e event.Event) bool {
-		return string(e.Type) == EventCronRuleDisabled
+	for _, ev := range drainEvents(sub, 500*time.Millisecond, 1, func(e event.Envelope) bool {
+		return kindOf(e) == EventCronRuleDisabled
 	}) {
-		if string(ev.Type) != EventCronRuleDisabled {
+		if kindOf(ev) != EventCronRuleDisabled {
 			continue
 		}
-		p, ok := ev.Payload.(CronRuleDisabledPayload)
-		if !ok || p.AgentID != "agent-1" {
-			t.Fatalf("CronRuleDisabled payload mismatch: %+v", ev.Payload)
+		var p CronRuleDisabledPayload
+		if err := ev.Decode(&p); err != nil || p.AgentID != "agent-1" {
+			t.Fatalf("CronRuleDisabled payload mismatch: err=%v p=%+v", err, p)
 		}
 		disabledSeen = true
 	}
@@ -592,15 +592,15 @@ func TestScheduler_Bus_PublishesCronRuleFiredOnFire(t *testing.T) {
 
 	s.fire("agent-1", "sched-fire", "cron task")
 
-	for _, ev := range drainEvents(sub, 500*time.Millisecond, 1, func(e event.Event) bool {
-		return string(e.Type) == EventCronRuleFired
+	for _, ev := range drainEvents(sub, 500*time.Millisecond, 1, func(e event.Envelope) bool {
+		return kindOf(e) == EventCronRuleFired
 	}) {
-		if string(ev.Type) != EventCronRuleFired {
+		if kindOf(ev) != EventCronRuleFired {
 			continue
 		}
-		p, ok := ev.Payload.(CronRuleFiredPayload)
-		if !ok || p.ScheduleID != "sched-fire" || p.AgentID != "agent-1" {
-			t.Fatalf("CronRuleFired payload mismatch: %+v", ev.Payload)
+		var p CronRuleFiredPayload
+		if err := ev.Decode(&p); err != nil || p.ScheduleID != "sched-fire" || p.AgentID != "agent-1" {
+			t.Fatalf("CronRuleFired payload mismatch: err=%v p=%+v", err, p)
 		}
 		return
 	}

@@ -81,7 +81,7 @@ func (w *watcher) pump() {
 	}
 }
 
-// Board is the kanban task board: card coordination + scope + EventBus.
+// Board is the kanban task board: card coordination + scope + LegacyEventBus.
 // Graph execution uses workflow.Board separately (see sdk/workflow).
 type Board struct {
 	cards       []*Card
@@ -95,7 +95,7 @@ type Board struct {
 	watchers []*watcher
 
 	scopeID   string
-	bus       event.EventBus
+	bus       event.Bus
 	ctx       context.Context
 	cancel    context.CancelFunc
 	closeOnce sync.Once
@@ -126,7 +126,7 @@ func WithCardTTL(d time.Duration) BoardOption {
 	return func(b *Board) { b.cardTTL = d }
 }
 
-// NewBoard creates a scope-scoped board with a persistent EventBus.
+// NewBoard creates a scope-scoped board with a persistent event Bus.
 func NewBoard(scopeID string, opts ...BoardOption) *Board {
 	ctx, cancel := context.WithCancel(context.Background())
 	b := &Board{
@@ -149,10 +149,10 @@ func NewBoard(scopeID string, opts ...BoardOption) *Board {
 // Deprecated: Use NewBoard directly. Removed in v0.2.0.
 func NewTaskBoard(scopeID string) *Board { return NewBoard(scopeID) }
 
-// Bus returns the persistent EventBus bound to the board.
-func (b *Board) Bus() event.EventBus { return b.bus }
+// Bus returns the persistent event Bus bound to the board.
+func (b *Board) Bus() event.Bus { return b.bus }
 
-// Close releases the persistent EventBus. Safe to call multiple times.
+// Close releases the persistent event Bus. Safe to call multiple times.
 func (b *Board) Close() {
 	b.closeOnce.Do(func() {
 		if b.cancel != nil {
@@ -220,13 +220,13 @@ func (b *Board) publishProduceEvent(snap *Card) {
 	if v, ok := p["inputs"].(map[string]any); ok {
 		inputs = v
 	}
-	_ = b.bus.Publish(ctx, eventEnvelope(EventTaskSubmitted, TaskSubmittedPayload{
+	publishCardEvent(ctx, b.bus, EventTaskSubmitted, snap.ID, b.scopeID, TaskSubmittedPayload{
 		CardID:        snap.ID,
 		TargetAgentID: target,
 		Query:         query,
 		RuntimeID:     b.scopeID,
 		Inputs:        inputs,
-	}))
+	})
 }
 
 // Claim transitions a pending card to claimed status for the given consumer.
@@ -327,28 +327,28 @@ func (b *Board) publishCardEvent(snap *Card) {
 	}
 	switch snap.Status {
 	case CardClaimed:
-		_ = b.bus.Publish(ctx, eventEnvelope(EventTaskClaimed, TaskClaimedPayload{
+		publishCardEvent(ctx, b.bus, EventTaskClaimed, snap.ID, b.scopeID, TaskClaimedPayload{
 			CardID:        snap.ID,
 			TargetAgentID: target,
 			RuntimeID:     b.scopeID,
 			Consumer:      snap.Consumer,
-		}))
+		})
 	case CardDone:
-		_ = b.bus.Publish(ctx, eventEnvelope(EventTaskCompleted, TaskCompletedPayload{
+		publishCardEvent(ctx, b.bus, EventTaskCompleted, snap.ID, b.scopeID, TaskCompletedPayload{
 			CardID:        snap.ID,
 			TargetAgentID: target,
 			RuntimeID:     b.scopeID,
 			Output:        output,
 			ElapsedMs:     elapsedMs,
-		}))
+		})
 	case CardFailed:
-		_ = b.bus.Publish(ctx, eventEnvelope(EventTaskFailed, TaskFailedPayload{
+		publishCardEvent(ctx, b.bus, EventTaskFailed, snap.ID, b.scopeID, TaskFailedPayload{
 			CardID:        snap.ID,
 			TargetAgentID: target,
 			RuntimeID:     b.scopeID,
 			Error:         snap.Error,
 			ElapsedMs:     elapsedMs,
-		}))
+		})
 	}
 }
 

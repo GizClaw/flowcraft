@@ -1,19 +1,20 @@
 package kanban
 
 import (
-	"time"
+	"context"
 
 	"github.com/GizClaw/flowcraft/sdk/event"
 )
 
-// EventBus event types for Kanban operations. The catalogue below is the
-// complete set of business actions an external observer can subscribe to via
-// Board.Bus(); subscribing alone is sufficient to reconstruct every state
-// transition the SDK exposes through Cards().
+// EventKind labels the Kanban events surfaced via Board.Bus(). Subjects
+// emitted on the wire follow the format documented in subjects.go (e.g.
+// "kanban.card.<cardID>.task.submitted"); EventKind keeps the older
+// flat-type vocabulary available for callers that want to reason about
+// the action without parsing the Subject.
 //
-// When a new public action is added, it MUST add (1) a constant here, (2) a
-// Publish call in the same critical section as the state change, and (3) a
-// unit test under sdk/kanban/...
+// EventKind values are also written to a "kind" header on every emitted
+// Envelope so subscribers using a broad pattern (kanban.>) can route on
+// kind without re-parsing the subject.
 const (
 	EventTaskSubmitted    = "kanban.task.submitted"
 	EventTaskClaimed      = "kanban.task.claimed"
@@ -24,6 +25,21 @@ const (
 	EventCronRuleCreated  = "kanban.cron.rule.created"
 	EventCronRuleFired    = "kanban.cron.rule.fired"
 	EventCronRuleDisabled = "kanban.cron.rule.disabled"
+)
+
+// Well-known header keys carried on every Envelope produced by this
+// package.
+//
+//	HeaderKanbanKind  the EventKind constant (e.g. "kanban.task.submitted")
+//	HeaderCardID      card_id (task / callback events only)
+//	HeaderScheduleID  schedule_id (cron events only)
+//
+// Subscribers using a broad subject pattern (e.g. kanban.>) can route on
+// these headers instead of re-parsing the subject.
+const (
+	HeaderKanbanKind = "kanban_kind"
+	HeaderCardID     = "card_id"
+	HeaderScheduleID = "schedule_id"
 )
 
 // payloadVersion is the schema version stamped onto every Kanban event payload.
@@ -116,36 +132,121 @@ type CronRuleDisabledPayload struct {
 	AgentID    string `json:"agent_id"`
 }
 
-// eventEnvelope wraps a Kanban payload into an event.Event. It auto-stamps the
-// payload's Version field via reflection-free type switch, so call sites stay
-// terse.
-func eventEnvelope(eventType string, payload any) event.Event {
+// stampVersion fills in the Version field of any known payload via a
+// reflection-free type switch and returns the (possibly modified) value.
+// Unknown types pass through unchanged.
+func stampVersion(payload any) any {
 	switch p := payload.(type) {
 	case TaskSubmittedPayload:
 		p.Version = payloadVersion
-		payload = p
+		return p
 	case TaskClaimedPayload:
 		p.Version = payloadVersion
-		payload = p
+		return p
 	case TaskCompletedPayload:
 		p.Version = payloadVersion
-		payload = p
+		return p
 	case TaskFailedPayload:
 		p.Version = payloadVersion
-		payload = p
+		return p
+	case CallbackStartPayload:
+		p.Version = payloadVersion
+		return p
+	case CallbackDonePayload:
+		p.Version = payloadVersion
+		return p
 	case CronRuleCreatedPayload:
 		p.Version = payloadVersion
-		payload = p
+		return p
 	case CronRuleFiredPayload:
 		p.Version = payloadVersion
-		payload = p
+		return p
 	case CronRuleDisabledPayload:
 		p.Version = payloadVersion
-		payload = p
+		return p
 	}
-	return event.Event{
-		Type:      event.EventType(eventType),
-		Timestamp: time.Now(),
-		Payload:   payload,
+	return payload
+}
+
+// publishCardEvent constructs and dispatches a card-scoped envelope.
+// The subject is computed from kind + cardID; HeaderRunID-style well-known
+// headers populate card_id and the kanban_kind label so subscribers using
+// a coarse Pattern can still filter cheaply.
+//
+// Errors from Publish are intentionally swallowed to match the previous
+// behaviour: Kanban state transitions must not fail because an observer's
+// bus is overloaded.
+func publishCardEvent(ctx context.Context, bus event.Bus, kind, cardID, scopeID string, payload any) {
+	subject := cardSubjectFor(kind, cardID)
+	if subject == "" {
+		// Unknown kind — refuse to silently emit a malformed subject.
+		return
 	}
+	env, err := event.NewEnvelope(ctx, subject, stampVersion(payload))
+	if err != nil {
+		return
+	}
+	env.SetHeader(HeaderKanbanKind, kind)
+	if cardID != "" {
+		env.SetHeader(HeaderCardID, cardID)
+	}
+	if scopeID != "" {
+		env.Source = scopeID
+	}
+	_ = bus.Publish(ctx, env)
+}
+
+// publishCronEvent is the cron analogue of publishCardEvent.
+func publishCronEvent(ctx context.Context, bus event.Bus, kind, scheduleID, scopeID string, payload any) {
+	subject := cronSubjectFor(kind, scheduleID)
+	if subject == "" {
+		return
+	}
+	env, err := event.NewEnvelope(ctx, subject, stampVersion(payload))
+	if err != nil {
+		return
+	}
+	env.SetHeader(HeaderKanbanKind, kind)
+	if scheduleID != "" {
+		env.SetHeader(HeaderScheduleID, scheduleID)
+	}
+	if scopeID != "" {
+		env.Source = scopeID
+	}
+	_ = bus.Publish(ctx, env)
+}
+
+// cardSubjectFor maps an EventKind constant to the corresponding card
+// Subject helper. Returns "" for unknown kinds so the caller can refuse
+// to publish a malformed subject.
+func cardSubjectFor(kind, cardID string) event.Subject {
+	switch kind {
+	case EventTaskSubmitted:
+		return subjTaskSubmitted(cardID)
+	case EventTaskClaimed:
+		return subjTaskClaimed(cardID)
+	case EventTaskCompleted:
+		return subjTaskCompleted(cardID)
+	case EventTaskFailed:
+		return subjTaskFailed(cardID)
+	case EventCallbackStart:
+		return subjCallbackStart(cardID)
+	case EventCallbackDone:
+		return subjCallbackDone(cardID)
+	}
+	return ""
+}
+
+// cronSubjectFor maps an EventKind cron constant to the corresponding
+// cron Subject helper.
+func cronSubjectFor(kind, scheduleID string) event.Subject {
+	switch kind {
+	case EventCronRuleCreated:
+		return subjCronCreated(scheduleID)
+	case EventCronRuleFired:
+		return subjCronFired(scheduleID)
+	case EventCronRuleDisabled:
+		return subjCronDisabled(scheduleID)
+	}
+	return ""
 }

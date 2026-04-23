@@ -97,18 +97,19 @@ func waitCard(t *testing.T, ch <-chan *Card, label string) *Card {
 	}
 }
 
-// drainEvents collects every event emitted on sub until either matchCount
-// events satisfy match (returning early), or the deadline elapses.
+// drainEvents collects every envelope emitted on sub until either
+// matchCount envelopes satisfy match (returning early), or the deadline
+// elapses.
 //
 // match may be nil to collect everything. The returned slice preserves
-// arrival order and includes all events seen, not just the matching ones.
-func drainEvents(sub event.Subscription, deadline time.Duration, matchCount int, match func(event.Event) bool) []event.Event {
-	var out []event.Event
+// arrival order and includes all envelopes seen, not just the matching ones.
+func drainEvents(sub event.Subscription, deadline time.Duration, matchCount int, match func(event.Envelope) bool) []event.Envelope {
+	var out []event.Envelope
 	matched := 0
 	timeout := time.After(deadline)
 	for {
 		select {
-		case ev, ok := <-sub.Events():
+		case ev, ok := <-sub.C():
 			if !ok {
 				return out
 			}
@@ -126,10 +127,12 @@ func drainEvents(sub event.Subscription, deadline time.Duration, matchCount int,
 }
 
 // subscribeBus subscribes to b.Bus() with a generous buffer and registers
-// the subscription's Close with t.Cleanup.
+// the subscription's Close with t.Cleanup. The pattern PatternAll() is used
+// because most tests want to observe every state transition the board
+// emits and assert on a specific subset.
 func subscribeBus(t *testing.T, b *Board) event.Subscription {
 	t.Helper()
-	sub, err := b.Bus().Subscribe(context.Background(), event.EventFilter{}, event.WithBufferSize(1024))
+	sub, err := b.Bus().Subscribe(context.Background(), PatternAll(), event.WithBufferSize(1024))
 	if err != nil {
 		t.Fatalf("Bus().Subscribe: %v", err)
 	}

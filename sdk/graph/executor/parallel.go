@@ -17,7 +17,7 @@ type branchResult struct {
 	err      error
 }
 
-func executeForkJoin(ctx context.Context, g *graph.Graph, board *graph.Board, branchStarts []string, cfg runConfig, bus event.EventBus) (*graph.Board, error) {
+func executeForkJoin(ctx context.Context, g *graph.Graph, board *graph.Board, branchStarts []string, cfg runConfig, bus event.Bus) (*graph.Board, error) {
 	if cfg.parallel != nil && len(branchStarts) > cfg.parallel.MaxBranches {
 		branchStarts = branchStarts[:cfg.parallel.MaxBranches]
 	}
@@ -25,16 +25,12 @@ func executeForkJoin(ctx context.Context, g *graph.Graph, board *graph.Board, br
 	actorKey := actorKeyFrom(ctx)
 	joinNodeID := findJoinNode(g, branchStarts)
 
-	_ = bus.Publish(ctx, event.Event{
-		Type:    event.EventParallelFork,
-		GraphID: g.Name(),
-		ActorID: actorKey,
-		RunID:   cfg.runID,
-		Payload: map[string]any{
+	publishGraphEvent(ctx, bus, subjParallelFork(cfg.runID),
+		cfg.runID, g.Name(), actorKey,
+		map[string]any{
 			"branch_ids": branchStarts,
 			"join_node":  joinNodeID,
-		},
-	})
+		})
 
 	results := make([]branchResult, len(branchStarts))
 	var wg sync.WaitGroup
@@ -94,16 +90,12 @@ func executeForkJoin(ctx context.Context, g *graph.Graph, board *graph.Board, br
 		return board, err
 	}
 
-	_ = bus.Publish(ctx, event.Event{
-		Type:    event.EventParallelJoin,
-		GraphID: g.Name(),
-		ActorID: actorKey,
-		RunID:   cfg.runID,
-		Payload: map[string]any{
+	publishGraphEvent(ctx, bus, subjParallelJoin(cfg.runID),
+		cfg.runID, g.Name(), actorKey,
+		map[string]any{
 			"branch_ids": branchStarts,
 			"vars":       board.Vars(),
-		},
-	})
+		})
 
 	return board, nil
 }

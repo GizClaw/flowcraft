@@ -893,24 +893,23 @@ func TestBoard_Bus_PublishesToSubscriber(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	sub, err := b.Bus().Subscribe(ctx, event.EventFilter{})
+	sub, err := b.Bus().Subscribe(ctx, event.Pattern(">"))
 	if err != nil {
 		t.Fatalf("Subscribe: %v", err)
 	}
 	t.Cleanup(func() { _ = sub.Close() })
 
-	ev := event.Event{
-		ID:        "ev-1",
-		Type:      event.EventNodeStart,
-		Timestamp: time.Now(),
-		Payload:   map[string]any{"node_id": "n1"},
+	env, err := event.NewEnvelope(ctx, event.Subject("test.bus.publish"), map[string]any{"node_id": "n1"})
+	if err != nil {
+		t.Fatalf("NewEnvelope: %v", err)
 	}
-	if err := b.Bus().Publish(ctx, ev); err != nil {
+	env.ID = "ev-1"
+	if err := b.Bus().Publish(ctx, env); err != nil {
 		t.Fatalf("Publish: %v", err)
 	}
 
 	select {
-	case got := <-sub.Events():
+	case got := <-sub.C():
 		if got.ID != "ev-1" {
 			t.Fatalf("got ID=%q, want 'ev-1'", got.ID)
 		}
@@ -927,7 +926,7 @@ func TestBoard_Bus_FanOutsToMultipleSubscribers(t *testing.T) {
 	const n = 5
 	subs := make([]event.Subscription, n)
 	for i := range subs {
-		s, err := b.Bus().Subscribe(ctx, event.EventFilter{})
+		s, err := b.Bus().Subscribe(ctx, event.Pattern(">"))
 		if err != nil {
 			t.Fatalf("Subscribe[%d]: %v", i, err)
 		}
@@ -935,14 +934,18 @@ func TestBoard_Bus_FanOutsToMultipleSubscribers(t *testing.T) {
 		t.Cleanup(func() { _ = s.Close() })
 	}
 
-	ev := event.Event{ID: "ev-multi", Type: event.EventGraphStart, Timestamp: time.Now()}
-	if err := b.Bus().Publish(ctx, ev); err != nil {
+	env, err := event.NewEnvelope(ctx, event.Subject("test.bus.fanout"), nil)
+	if err != nil {
+		t.Fatalf("NewEnvelope: %v", err)
+	}
+	env.ID = "ev-multi"
+	if err := b.Bus().Publish(ctx, env); err != nil {
 		t.Fatalf("Publish: %v", err)
 	}
 
 	for i, sub := range subs {
 		select {
-		case got := <-sub.Events():
+		case got := <-sub.C():
 			if got.ID != "ev-multi" {
 				t.Errorf("sub[%d]: got ID=%q, want 'ev-multi'", i, got.ID)
 			}
