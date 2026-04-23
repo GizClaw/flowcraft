@@ -9,14 +9,6 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/graph"
 )
 
-// ValidateGraphDef validates a GraphDefinition.
-//
-// Deprecated: Use def.Validate() directly. This wrapper exists only for
-// backward compatibility with existing callers. Removed in v0.2.0.
-func ValidateGraphDef(d *graph.GraphDefinition) error {
-	return d.Validate()
-}
-
 // CompiledGraph is the result of compilation, containing the raw graph structure
 // and analysis metadata. Nodes in RawGraph are passthrough placeholders; actual
 // node construction is deferred to downstream Assemble + NodeFactory.
