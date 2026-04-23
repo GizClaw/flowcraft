@@ -153,10 +153,15 @@ func (s ScoreThreshold) Run(_ context.Context, st *State) error {
 }
 
 // SupersededDecay penalizes hits whose Doc.Metadata["superseded_by"] is set,
-// implementing the soft-merge semantics described in RFC-0002 §5+.
+// implementing the read-side half of recall's soft-merge contract: when
+// recall.Memory.Save observes that a new fact's entity set + vector
+// cosine matches an older entry, it stamps the older row with
+// superseded_by=<new_id> instead of deleting it. This stage damps the
+// older row at retrieval time so newer revisions float to the top
+// while the audit trail stays intact.
 //
-// Old facts are kept in store (history is preserved) but their score is
-// multiplied by Factor (default 0.3) so newer revisions float to the top.
+// Score is multiplied by Factor (default 0.3); set Factor close to 1
+// to make supersedence purely informational (no ranking impact).
 //
 // Reads/Writes: Final.
 type SupersededDecay struct {

@@ -24,8 +24,21 @@
 // sdk/history themselves; see examples/chatbot-with-recall for a
 // reference assembler.
 //
-// Migration history: this package was promoted from sdk/memory/ltm in
-// v0.2.0. The same release dropped Scope.SessionID and the
-// MemoryAware/ContextAssembler glue; see docs/memory-refactor.md for
-// the full migration guide.
+// Migration notes (v0.2.0):
+//
+//   - This package was promoted from sdk/memory/ltm. Update imports
+//     and qualifiers (ltm.X → recall.X). No symbol-level renames in
+//     the lift itself; subsequent renames are noted on each type.
+//   - Scope.SessionID was removed. It conflated conversation-thread
+//     state (now in sdk/history) with long-term-fact partitioning;
+//     callers should keep transient thread state in sdk/history or
+//     model durable signals as Entry.Keywords. This is a breaking
+//     schema change: deterministicEntryID no longer mixes the
+//     session line, so re-ingest may produce duplicates of facts
+//     that were extracted before the upgrade — treat the LTM index
+//     as a fresh corpus.
+//   - The MemoryAware / ContextAssembler glue was deleted. Compose
+//     history.Memory + recall.Memory at the call site instead; see
+//     examples/chatbot-with-recall for the canonical ~10-line
+//     pattern (Recall → format hits → prepend system prompt).
 package recall

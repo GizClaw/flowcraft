@@ -54,8 +54,10 @@ func (m *lt) dedupHashes(ctx context.Context, scope Scope, hashes []string) (map
 
 // supersedeNeighbours marks older entries whose entity set matches the new
 // fact AND whose vector cosine ≥ SoftMergeCosineMin with metadata.superseded_by.
-// Old entries are NOT deleted; pipeline.SupersededDecay handles retrieval-time
-// damping (RFC-0002 soft-merge).
+// Old entries are NOT deleted (history preserved for Auditable.History /
+// Rollback); retrieval-time damping is the responsibility of
+// pipeline.SupersededDecay, which multiplies the score of any hit
+// carrying superseded_by by its Factor (default 0.3).
 func (m *lt) supersedeNeighbours(
 	ctx context.Context, scope Scope, newID string,
 	fact ExtractedFact, vec []float32, now time.Time,
