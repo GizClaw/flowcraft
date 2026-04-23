@@ -58,7 +58,7 @@ func (c *ChatAckCommand) Handle(ctx context.Context, req ChatAckReq) error {
 			CallbackID:     req.CallbackID,
 			DeliveredTo:    deliveredTo,
 			Success:        true,
-		}, eventlog.WithActor(actorOrAnonymous(actor)))
+		}, eventlog.WithActor(actor.ToWire()))
 	})
 	return err
 }

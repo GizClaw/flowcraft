@@ -70,7 +70,7 @@ func (c *WebhookInboundCommand) Handle(ctx context.Context, req InboundReq) (rec
 			ContentType: req.ContentType,
 			Headers:     filterHeaders(req.Headers),
 			Body:        req.Body,
-		}, eventlog.WithActor(actorOrAnonymous(actor)))
+		}, eventlog.WithActor(actor.ToWire()))
 	})
 	return receivedID, alreadyProcessed, err
 }
@@ -112,10 +112,3 @@ func isDuplicateCommand(ctx context.Context, uow eventlog.UnitOfWork, commandID 
 	return false, nil
 }
 
-func actorOrAnonymous(a policy.Actor) eventlog.Actor {
-	return eventlog.Actor{
-		Kind:    string(a.Type),
-		ID:      a.ID,
-		RealmID: a.RealmID,
-	}
-}

@@ -65,7 +65,7 @@ func (c *Commands) Create(ctx context.Context, req CreateReq) error {
 		return eventlog.PublishRealmCreatedInTx(ctx, uow, req.RealmID, eventlog.RealmCreatedPayload{
 			RealmID: req.RealmID,
 			Name:    req.Name,
-		}, eventlog.WithActor(actorEnv(actor)))
+		}, eventlog.WithActor(actor.ToWire()))
 	})
 }
 
@@ -81,7 +81,7 @@ func (c *Commands) ConfigUpdate(ctx context.Context, req ConfigUpdateReq) error 
 		return eventlog.PublishRealmConfigChangedInTx(ctx, uow, req.RealmID, eventlog.RealmConfigChangedPayload{
 			RealmID: req.RealmID,
 			Keys:    keys,
-		}, eventlog.WithActor(actorEnv(actor)))
+		}, eventlog.WithActor(actor.ToWire()))
 	})
 }
 
@@ -99,7 +99,7 @@ func (c *Commands) MemberAdd(ctx context.Context, req MemberAddReq) error {
 			RealmID:  req.RealmID,
 			MemberID: req.MemberID,
 			Role:     req.Role,
-		}, eventlog.WithActor(actorEnv(actor)))
+		}, eventlog.WithActor(actor.ToWire()))
 	})
 }
 
@@ -113,7 +113,7 @@ func (c *Commands) MemberRemove(ctx context.Context, req MemberRemoveReq) error 
 		return eventlog.PublishRealmMemberRemovedInTx(ctx, uow, req.RealmID, eventlog.RealmMemberRemovedPayload{
 			RealmID:  req.RealmID,
 			MemberID: req.MemberID,
-		}, eventlog.WithActor(actorEnv(actor)))
+		}, eventlog.WithActor(actor.ToWire()))
 	})
 }
 
@@ -143,6 +143,3 @@ func newCommandID() string {
 	return hex.EncodeToString(b)
 }
 
-func actorEnv(a policy.Actor) eventlog.Actor {
-	return eventlog.Actor{Kind: string(a.Type), ID: a.ID, RealmID: a.RealmID}
-}

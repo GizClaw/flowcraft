@@ -76,7 +76,7 @@ func (c *Commands) Performed(ctx context.Context, req PerformedReq) error {
 			UserAgent:  req.UserAgent,
 			OccurredAt: now,
 			Details:    req.Details,
-		}, eventlog.WithActor(actorEnv(actor)))
+		}, eventlog.WithActor(actor.ToWire()))
 	})
 	return err
 }
@@ -97,14 +97,11 @@ func (c *Commands) Failed(ctx context.Context, req FailedReq) error {
 			IPAddress:    req.IPAddress,
 			UserAgent:    req.UserAgent,
 			OccurredAt:   now,
-		}, eventlog.WithActor(actorEnv(actor)))
+		}, eventlog.WithActor(actor.ToWire()))
 	})
 	return err
 }
 
-func actorEnv(a policy.Actor) eventlog.Actor {
-	return eventlog.Actor{Kind: string(a.Type), ID: a.ID, RealmID: a.RealmID}
-}
 
 // newCommandID is exported via this private symbol so tests can stub via build tags if needed.
 func newCommandID() string {

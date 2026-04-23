@@ -53,7 +53,7 @@ func (c *ChatDismissCommand) Handle(ctx context.Context, req ChatDismissReq) err
 			ConversationID: req.ConversationID,
 			CallbackID:     req.CallbackID,
 			Reason:         req.Reason,
-		}, eventlog.WithActor(actorOrAnonymous(actor)))
+		}, eventlog.WithActor(actor.ToWire()))
 	})
 	return err
 }

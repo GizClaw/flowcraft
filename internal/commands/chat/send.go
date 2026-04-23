@@ -64,7 +64,7 @@ func (c *ChatSendCommand) Handle(ctx context.Context, req ChatSendReq) (messageI
 			Role:           req.Role,
 			Content:        req.Content,
 			TokenCount:     req.TokenCount,
-		}, eventlog.WithActor(actorOrAnonymous(actor)))
+		}, eventlog.WithActor(actor.ToWire()))
 	})
 	return req.CommandID, err
 }
@@ -86,10 +86,3 @@ func isDuplicateCommand(ctx context.Context, uow eventlog.UnitOfWork, commandID 
 	return false, nil
 }
 
-func actorOrAnonymous(a policy.Actor) eventlog.Actor {
-	return eventlog.Actor{
-		Kind:    string(a.Type),
-		ID:      a.ID,
-		RealmID: a.RealmID,
-	}
-}

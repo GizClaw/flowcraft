@@ -63,7 +63,7 @@ func (c *ChatCallbackEnqueueCommand) Handle(ctx context.Context, req CallbackEnq
 			SourceCardID:   req.SourceCardID,
 			ContentType:    req.ContentType,
 			Content:        req.Content,
-		}, eventlog.WithActor(actorOrAnonymous(actor)))
+		}, eventlog.WithActor(actor.ToWire()))
 	})
 	return req.CallbackID, err
 }

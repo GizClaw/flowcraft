@@ -118,6 +118,24 @@ func SystemActor(name string) Actor {
 	return Actor{Type: ActorSystem, ID: name}
 }
 
+// ToWire projects a policy.Actor onto its on-wire counterpart
+// (eventlog.Actor) carrying only the fields that belong on the audit
+// envelope (id / kind / realm_id). Authorization-only data such as
+// scopes/roles/runtime_id is intentionally dropped here so it never leaks
+// into the event log.
+//
+// All command/sender code paths must use this function instead of
+// hand-rolling their own conversion to keep policy.Actor → eventlog.Actor
+// translation in a single place (avoids the per-package duplicate
+// `actorEnv`/`actorOrAnonymous` shims that drifted historically).
+func (a Actor) ToWire() eventlog.Actor {
+	return eventlog.Actor{
+		ID:      a.ID,
+		Kind:    string(a.Type),
+		RealmID: a.RealmID,
+	}
+}
+
 // AllowAppendFunc and AllowSubscribeFunc and AllowReadFunc are
 // functional options for building policies.
 type (

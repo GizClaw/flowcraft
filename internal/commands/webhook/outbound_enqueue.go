@@ -71,7 +71,7 @@ func (c *WebhookOutboundEnqueueCommand) Handle(ctx context.Context, req Outbound
 			MaxAttempts:      req.MaxAttempts,
 			InitialBackoffMs: req.InitialBackoffMs,
 			SourceEventSeq:   req.SourceEventSeq,
-		}, eventlog.WithActor(actorOrAnonymous(actor)))
+		}, eventlog.WithActor(actor.ToWire()))
 	})
 	return req.CommandID, err
 }
