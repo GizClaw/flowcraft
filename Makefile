@@ -5,10 +5,10 @@ SHELL := /bin/bash
 .DEFAULT_GOAL := help
 
 # Modules listed in go.work — `go vet ./...` and friends work as-is.
-# Only sdk + sdkx, because they are the tightly-coupled core that needs
-# atomic in-tree edits (sdkx imports sdk packages that may not yet exist
-# in any released sdk version).
-MODULES_WORK := sdk sdkx
+# sdk + sdkx + voice are the tightly-coupled core that needs atomic
+# in-tree edits (sdkx imports sdk packages that may not yet exist in
+# any released sdk version; voice depends on the same sdk source).
+MODULES_WORK := sdk sdkx voice
 
 # Modules intentionally outside go.work — they pin sdk/sdkx via go.mod
 # require directives and run with GOWORK=off so the pin is honoured.
