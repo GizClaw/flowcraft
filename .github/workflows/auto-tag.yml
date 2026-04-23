@@ -6,7 +6,6 @@ on:
     paths:
       - "sdk/**"
       - "sdkx/**"
-      - "plugin/**"
 
 permissions:
   contents: write
@@ -17,8 +16,37 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # Hard opt-out: if the head commit message contains `[skip-tag]`, the
+  # whole workflow skips. Use this when a release coordinator is hand-
+  # tagging (e.g. a SemVer-major / breaking-change bump that auto-tag's
+  # patch-only logic would label incorrectly). Mirrors GitHub's own
+  # `[skip ci]` convention.
+  #
+  # Per-module skip is below: `[skip-tag:sdk]` keeps the workflow
+  # running but bypasses the sdk module specifically.
+  guard:
+    name: Check skip-tag marker
+    runs-on: ubuntu-latest
+    outputs:
+      skip_all: ${{ steps.check.outputs.skip_all }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - id: check
+        run: |
+          msg=$(git log -1 --pretty=%B)
+          if echo "$msg" | grep -qiE '\[skip[-_]tag\]'; then
+            echo "head commit opts out of auto-tag, exiting cleanly"
+            echo "skip_all=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip_all=false" >> "$GITHUB_OUTPUT"
+          fi
+
   tag:
     name: Tag changed modules
+    needs: guard
+    if: needs.guard.outputs.skip_all != 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -33,6 +61,22 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Capture per-module skip markers
+        id: skip
+        run: |
+          msg=$(git log -1 --pretty=%B)
+          # Extract each `[skip-tag:<mod>]` marker from the commit message
+          # and surface them as MODULE_SKIP_<MOD>=1 env vars consumed by
+          # tag_module. Case-insensitive on the keyword, exact match on
+          # the module token.
+          for mod in sdk sdkx; do
+            if echo "$msg" | grep -qiE "\[skip[-_]tag:${mod}\]"; then
+              key="MODULE_SKIP_$(echo "$mod" | tr '[:lower:]' '[:upper:]')"
+              echo "${key}=1" >> "$GITHUB_ENV"
+              echo "$mod: per-module skip marker present"
+            fi
+          done
 
       - name: Detect changes and tag
         run: |
@@ -57,8 +101,15 @@ jobs:
 
           # tag_module tags a module if it has changes since its last tag.
           # On success, writes the new version to $TAGGED_<MOD> env var.
+          # Honours the per-module skip marker captured by the previous
+          # step (MODULE_SKIP_<MOD>=1 from `[skip-tag:<mod>]`).
           tag_module() {
             local mod=$1
+            local skip_var="MODULE_SKIP_$(echo "$mod" | tr '[:lower:]' '[:upper:]')"
+            if [ "${!skip_var:-}" = "1" ]; then
+              echo "$mod: skipped via [skip-tag:${mod}]"
+              return
+            fi
             local latest
             latest=$(latest_tag "$mod")
             if [ -z "$latest" ]; then
@@ -81,8 +132,7 @@ jobs:
             echo "${env_key}=${new_version}" >> "$GITHUB_ENV"
           }
 
-          # Phase 1: tag leaf modules (plugin, sdk)
-          tag_module "plugin"
+          # Phase 1: tag leaf modules (sdk)
           tag_module "sdk"
 
       - name: Cascade sdk bump to sdkx
@@ -111,7 +161,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
 
       - name: Tag sdkx (if changed independently)
-        if: env.TAGGED_SDK == ''
+        if: env.TAGGED_SDK == '' && env.MODULE_SKIP_SDKX != '1'
         run: |
           set -euo pipefail
 

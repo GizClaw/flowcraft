@@ -14,7 +14,6 @@ jobs:
     outputs:
       sdk: ${{ steps.filter.outputs.sdk }}
       sdkx: ${{ steps.filter.outputs.sdkx }}
-      plugin: ${{ steps.filter.outputs.plugin }}
       ci: ${{ steps.filter.outputs.ci }}
     steps:
       - uses: actions/checkout@v4
@@ -26,8 +25,6 @@ jobs:
               - 'sdk/**'
             sdkx:
               - 'sdkx/**'
-            plugin:
-              - 'plugin/**'
             ci:
               - '.github/workflows/**'
               - 'Makefile'
@@ -35,7 +32,7 @@ jobs:
   lint:
     name: Lint
     needs: detect
-    if: needs.detect.outputs.sdk == 'true' || needs.detect.outputs.sdkx == 'true' || needs.detect.outputs.plugin == 'true' || needs.detect.outputs.ci == 'true'
+    if: needs.detect.outputs.sdk == 'true' || needs.detect.outputs.sdkx == 'true' || needs.detect.outputs.ci == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -44,13 +41,13 @@ jobs:
           go-version: "1.25"
       - name: go vet
         run: |
-          for m in sdk sdkx plugin; do
+          for m in sdk sdkx; do
             echo "==> vet $m"
             (cd "$m" && go vet ./...)
           done
       - name: gofmt check
         run: |
-          diff=$(gofmt -l sdk sdkx plugin)
+          diff=$(gofmt -l sdk sdkx)
           if [ -n "$diff" ]; then
             echo "Files not formatted:"
             echo "$diff"
@@ -92,29 +89,12 @@ jobs:
         run: go test -count=1 -race ./...
         working-directory: sdkx
 
-  test-plugin:
-    name: Test plugin (Go ${{ matrix.go-version }})
-    needs: detect
-    if: needs.detect.outputs.plugin == 'true' || needs.detect.outputs.ci == 'true'
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        go-version: ["1.25", "1.26"]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v6
-        with:
-          go-version: ${{ matrix.go-version }}
-      - name: Test
-        run: go test -count=1 -race ./...
-        working-directory: plugin
-
   # Gate job: single required status check for branch protection.
   # Always runs; succeeds only when all triggered jobs pass.
   ci-pass:
     name: CI
     if: always()
-    needs: [lint, test-sdk, test-sdkx, test-plugin]
+    needs: [lint, test-sdk, test-sdkx]
     runs-on: ubuntu-latest
     steps:
       - name: Check results
@@ -123,7 +103,6 @@ jobs:
             "${{ needs.lint.result }}" \
             "${{ needs.test-sdk.result }}" \
             "${{ needs.test-sdkx.result }}" \
-            "${{ needs.test-plugin.result }}" \
           )
           for r in "${results[@]}"; do
             if [[ "$r" == "failure" || "$r" == "cancelled" ]]; then
