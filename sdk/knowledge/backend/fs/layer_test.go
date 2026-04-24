@@ -190,7 +190,10 @@ func TestLayerRepo_SearchIncludesDatasetLevel(t *testing.T) {
 	}
 }
 
-func TestLayerRepo_VectorModeReturnsEmpty(t *testing.T) {
+// When no vector sidecar is present the vector lane has nothing to
+// score, so ModeVector must safely return an empty slice rather than
+// erroring out.
+func TestLayerRepo_VectorModeWithoutSidecarIsEmpty(t *testing.T) {
 	r, _ := newLayerRepo(t)
 	ctx := context.Background()
 	if err := r.Put(ctx, knowledge.DerivedLayer{
@@ -211,5 +214,181 @@ func TestLayerRepo_VectorModeReturnsEmpty(t *testing.T) {
 	}
 	if len(cands) != 0 {
 		t.Fatalf("vector search should be empty, got %+v", cands)
+	}
+}
+
+// PutAndGet must round-trip the embedding via the .vec sidecar so the
+// engine can later score it.
+func TestLayerRepo_PutPersistsVectorSidecar(t *testing.T) {
+	r, ws := newLayerRepo(t)
+	ctx := context.Background()
+	vec := []float32{0.1, 0.2, 0.3, 0.4}
+	if err := r.Put(ctx, knowledge.DerivedLayer{
+		DatasetID: "ds",
+		DocName:   "a.md",
+		Layer:     knowledge.LayerAbstract,
+		Content:   "with embedding",
+		Vector:    vec,
+	}); err != nil {
+		t.Fatalf("put: %v", err)
+	}
+	exists, _ := ws.Exists(ctx, "kb/ds/a.abstract.vec")
+	if !exists {
+		t.Fatalf("vec sidecar missing on disk")
+	}
+	got, err := r.Get(ctx, "ds", "a.md", knowledge.LayerAbstract)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got == nil || len(got.Vector) != len(vec) {
+		t.Fatalf("vector not roundtripped: %+v", got)
+	}
+	for i := range vec {
+		if got.Vector[i] != vec[i] {
+			t.Fatalf("vector[%d] = %v, want %v", i, got.Vector[i], vec[i])
+		}
+	}
+}
+
+// Re-Putting with an empty Vector must drop a previously persisted
+// sidecar so vector and text never drift apart.
+func TestLayerRepo_PutEmptyVectorRemovesSidecar(t *testing.T) {
+	r, ws := newLayerRepo(t)
+	ctx := context.Background()
+	base := knowledge.DerivedLayer{
+		DatasetID: "ds", DocName: "a.md", Layer: knowledge.LayerAbstract,
+		Content: "v1", Vector: []float32{1, 2, 3},
+	}
+	if err := r.Put(ctx, base); err != nil {
+		t.Fatalf("put v1: %v", err)
+	}
+	if exists, _ := ws.Exists(ctx, "kb/ds/a.abstract.vec"); !exists {
+		t.Fatalf("vec sidecar should exist after first put")
+	}
+	base.Content = "v2"
+	base.Vector = nil
+	if err := r.Put(ctx, base); err != nil {
+		t.Fatalf("put v2: %v", err)
+	}
+	if exists, _ := ws.Exists(ctx, "kb/ds/a.abstract.vec"); exists {
+		t.Fatalf("vec sidecar should be removed when re-put with empty vector")
+	}
+}
+
+// ModeVector must rank by cosine similarity and ignore the BM25 lane.
+func TestLayerRepo_SearchVectorMode(t *testing.T) {
+	r, _ := newLayerRepo(t)
+	ctx := context.Background()
+	put := func(doc string, vec []float32) {
+		t.Helper()
+		if err := r.Put(ctx, knowledge.DerivedLayer{
+			DatasetID: "ds", DocName: doc, Layer: knowledge.LayerAbstract,
+			Content: doc + " content", Vector: vec,
+		}); err != nil {
+			t.Fatalf("put %s: %v", doc, err)
+		}
+	}
+	put("near.md", []float32{1, 0.1, 0})
+	put("far.md", []float32{0.2, 1, 0})
+
+	cands, err := r.Search(ctx, knowledge.LayerQuery{
+		DatasetIDs: []string{"ds"},
+		Layer:      knowledge.LayerAbstract,
+		Mode:       knowledge.ModeVector,
+		Vector:     []float32{1, 0, 0},
+		TopK:       5,
+	})
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	if len(cands) != 2 {
+		t.Fatalf("expected 2 cands, got %d (%+v)", len(cands), cands)
+	}
+	if cands[0].Hit.DocName != "near" {
+		t.Fatalf("expected near first, got %+v", cands)
+	}
+	if cands[0].Hit.Score <= cands[1].Hit.Score {
+		t.Fatalf("near should outrank far: %+v", cands)
+	}
+}
+
+// ModeHybrid runs both lanes and surfaces a doc that only matches via
+// vector similarity (BM25 keyword would miss it).
+func TestLayerRepo_SearchHybridFusesLanes(t *testing.T) {
+	r, _ := newLayerRepo(t)
+	ctx := context.Background()
+	if err := r.Put(ctx, knowledge.DerivedLayer{
+		DatasetID: "ds", DocName: "vec_only.md", Layer: knowledge.LayerAbstract,
+		Content: "totally unrelated text", Vector: []float32{1, 0, 0},
+	}); err != nil {
+		t.Fatalf("put vec_only: %v", err)
+	}
+	if err := r.Put(ctx, knowledge.DerivedLayer{
+		DatasetID: "ds", DocName: "bm25_only.md", Layer: knowledge.LayerAbstract,
+		Content: "keyword apple banana",
+	}); err != nil {
+		t.Fatalf("put bm25_only: %v", err)
+	}
+
+	cands, err := r.Search(ctx, knowledge.LayerQuery{
+		DatasetIDs: []string{"ds"},
+		Layer:      knowledge.LayerAbstract,
+		Mode:       knowledge.ModeHybrid,
+		Text:       "apple",
+		Vector:     []float32{1, 0, 0},
+		TopK:       5,
+	})
+	if err != nil {
+		t.Fatalf("search hybrid: %v", err)
+	}
+	if len(cands) != 2 {
+		t.Fatalf("expected both lanes, got %d (%+v)", len(cands), cands)
+	}
+	docs := map[string]bool{}
+	for _, c := range cands {
+		docs[c.Hit.DocName] = true
+	}
+	if !docs["vec_only"] || !docs["bm25_only"] {
+		t.Fatalf("hybrid missed a lane: %+v", cands)
+	}
+}
+
+// DeleteByDoc must wipe both layer text and the .vec sidecar.
+func TestLayerRepo_DeleteByDocRemovesVectorSidecar(t *testing.T) {
+	r, ws := newLayerRepo(t)
+	ctx := context.Background()
+	if err := r.Put(ctx, knowledge.DerivedLayer{
+		DatasetID: "ds", DocName: "a.md", Layer: knowledge.LayerAbstract,
+		Content: "x", Vector: []float32{1, 2, 3},
+	}); err != nil {
+		t.Fatalf("put: %v", err)
+	}
+	if err := r.DeleteByDoc(ctx, "ds", "a.md"); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	for _, p := range []string{"kb/ds/a.abstract", "kb/ds/a.abstract.vec"} {
+		if exists, _ := ws.Exists(ctx, p); exists {
+			t.Fatalf("path %s should be deleted", p)
+		}
+	}
+}
+
+// DeleteByDataset must wipe dataset-level layer text and the .vec sidecar.
+func TestLayerRepo_DeleteByDatasetRemovesVectorSidecar(t *testing.T) {
+	r, ws := newLayerRepo(t)
+	ctx := context.Background()
+	if err := r.Put(ctx, knowledge.DerivedLayer{
+		DatasetID: "ds", Layer: knowledge.LayerAbstract,
+		Content: "ds-level", Vector: []float32{1, 2, 3},
+	}); err != nil {
+		t.Fatalf("put: %v", err)
+	}
+	if err := r.DeleteByDataset(ctx, "ds"); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	for _, p := range []string{"kb/ds/.abstract.md", "kb/ds/.abstract.md.vec"} {
+		if exists, _ := ws.Exists(ctx, p); exists {
+			t.Fatalf("path %s should be deleted", p)
+		}
 	}
 }

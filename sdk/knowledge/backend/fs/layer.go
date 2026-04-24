@@ -29,15 +29,24 @@ type datasetLayersFileSchema struct {
 //
 // Layout per document:
 //
-//	<doc>.abstract    L0 layer text
-//	<doc>.overview    L1 layer text
-//	<doc>.layers.json DerivedSig metadata for both layers
+//	<doc>.abstract        L0 layer text
+//	<doc>.abstract.vec    L0 layer embedding (binary, see vec.go)
+//	<doc>.overview        L1 layer text
+//	<doc>.overview.vec    L1 layer embedding
+//	<doc>.layers.json     DerivedSig metadata for both layers
 //
 // Layout per dataset:
 //
 //	.abstract.md           dataset L0
+//	.abstract.md.vec       dataset L0 embedding
 //	.overview.md           dataset L1
+//	.overview.md.vec       dataset L1 embedding
 //	.dataset_layers.json   DerivedSig metadata for both
+//
+// Vectors are stored as separate sidecars so the human-readable text
+// stays diffable in source control while embeddings remain binary. A
+// missing or malformed .vec is a recoverable miss (vector lane skips
+// the entry); the BM25 lane keeps working unchanged.
 //
 // Detail (L2) layers are not persisted by this repo: detail content
 // already lives in chunks via FSChunkRepo. Put for LayerDetail returns a
@@ -66,12 +75,14 @@ func (r *FSLayerRepo) resolveTokenizer() textsearch.Tokenizer {
 	return &textsearch.CJKTokenizer{}
 }
 
-// Put writes a layer text and refreshes its DerivedSig sidecar.
+// Put writes a layer text, refreshes its DerivedSig sidecar and
+// persists the embedding vector when present.
 //
 //   - layer.DocName == "" denotes a dataset-level layer.
 //   - layer.Layer must be LayerAbstract or LayerOverview.
-//   - layer.Vector is currently ignored (vectors for layers will land in
-//     a follow-up; the on-disk schema reserves a slot for them).
+//   - layer.Vector, when non-empty, is encoded via encodeVec and stored
+//     in a co-located ".vec" sidecar; when empty, any pre-existing
+//     sidecar is removed so the vector and text never drift apart.
 func (r *FSLayerRepo) Put(ctx context.Context, layer knowledge.DerivedLayer) error {
 	if layer.DatasetID == "" {
 		return errdefs.Validationf("knowledge/fs: dataset_id is required")
@@ -82,19 +93,41 @@ func (r *FSLayerRepo) Put(ctx context.Context, layer knowledge.DerivedLayer) err
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
+	var textPath, vecPath string
 	if layer.DocName == "" {
-		path := r.paths.datasetLayerPath(layer.DatasetID, string(layer.Layer))
-		if err := atomicWrite(ctx, r.ws, path, []byte(layer.Content)); err != nil {
-			return err
-		}
-		return r.updateDatasetSigSidecar(ctx, layer.DatasetID, layer.Layer, layer.Sig)
+		textPath = r.paths.datasetLayerPath(layer.DatasetID, string(layer.Layer))
+		vecPath = r.paths.datasetLayerVecPath(layer.DatasetID, string(layer.Layer))
+	} else {
+		textPath = r.paths.layerPath(layer.DatasetID, layer.DocName, string(layer.Layer))
+		vecPath = r.paths.layerVecPath(layer.DatasetID, layer.DocName, string(layer.Layer))
 	}
 
-	path := r.paths.layerPath(layer.DatasetID, layer.DocName, string(layer.Layer))
-	if err := atomicWrite(ctx, r.ws, path, []byte(layer.Content)); err != nil {
+	if err := atomicWrite(ctx, r.ws, textPath, []byte(layer.Content)); err != nil {
 		return err
 	}
+	if err := r.persistLayerVector(ctx, vecPath, layer.Vector); err != nil {
+		return err
+	}
+	if layer.DocName == "" {
+		return r.updateDatasetSigSidecar(ctx, layer.DatasetID, layer.Layer, layer.Sig)
+	}
 	return r.updateDocSigSidecar(ctx, layer.DatasetID, layer.DocName, layer.Layer, layer.Sig)
+}
+
+// persistLayerVector writes the encoded vector or removes the sidecar
+// when the vector is empty. A missing sidecar on delete is treated as a
+// no-op.
+func (r *FSLayerRepo) persistLayerVector(ctx context.Context, vecPath string, vec []float32) error {
+	if vecPath == "" {
+		return nil
+	}
+	if len(vec) == 0 {
+		if err := r.ws.Delete(ctx, vecPath); err != nil && !errdefs.IsNotFound(err) {
+			return fmt.Errorf("knowledge/fs: delete layer vector %s: %w", vecPath, err)
+		}
+		return nil
+	}
+	return atomicWrite(ctx, r.ws, vecPath, encodeVec(vec))
 }
 
 // Get returns the layer for (datasetID, docName, layer); docName == ""
@@ -127,13 +160,34 @@ func (r *FSLayerRepo) Get(ctx context.Context, datasetID, docName string, layer 
 	}
 	if docName == "" {
 		out.Sig = r.readDatasetSig(ctx, datasetID, layer)
+		out.Vector = r.readLayerVector(ctx, r.paths.datasetLayerVecPath(datasetID, string(layer)))
 	} else {
 		out.Sig = r.readDocSig(ctx, datasetID, docName, layer)
+		out.Vector = r.readLayerVector(ctx, r.paths.layerVecPath(datasetID, docName, string(layer)))
 	}
 	return out, nil
 }
 
-// DeleteByDoc removes per-document layer files and the sig sidecar.
+// readLayerVector loads and decodes the vec sidecar. Returns nil for any
+// failure (missing file, decode error) so callers degrade to BM25 lane
+// silently rather than failing the whole Search.
+func (r *FSLayerRepo) readLayerVector(ctx context.Context, vecPath string) []float32 {
+	if vecPath == "" {
+		return nil
+	}
+	data, err := r.ws.Read(ctx, vecPath)
+	if err != nil {
+		return nil
+	}
+	vec, err := decodeVec(data)
+	if err != nil {
+		return nil
+	}
+	return vec
+}
+
+// DeleteByDoc removes per-document layer files, their vec sidecars and
+// the sig sidecar. Missing files are ignored so the call is idempotent.
 func (r *FSLayerRepo) DeleteByDoc(ctx context.Context, datasetID, docName string) error {
 	if datasetID == "" || docName == "" {
 		return errdefs.Validationf("knowledge/fs: dataset_id and doc_name are required")
@@ -142,7 +196,9 @@ func (r *FSLayerRepo) DeleteByDoc(ctx context.Context, datasetID, docName string
 	defer r.mu.Unlock()
 	for _, p := range []string{
 		r.paths.layerPath(datasetID, docName, "L0"),
+		r.paths.layerVecPath(datasetID, docName, "L0"),
 		r.paths.layerPath(datasetID, docName, "L1"),
+		r.paths.layerVecPath(datasetID, docName, "L1"),
 		r.paths.docLayersPath(datasetID, docName),
 	} {
 		if p == "" {
@@ -155,7 +211,8 @@ func (r *FSLayerRepo) DeleteByDoc(ctx context.Context, datasetID, docName string
 	return nil
 }
 
-// DeleteByDataset removes the dataset-level layer files and their sig sidecar.
+// DeleteByDataset removes the dataset-level layer files, their vec
+// sidecars and the sig sidecar.
 //
 // Per-document layers must be cleaned via DeleteByDoc; this method does
 // NOT enumerate documents to keep its cost predictable.
@@ -167,7 +224,9 @@ func (r *FSLayerRepo) DeleteByDataset(ctx context.Context, datasetID string) err
 	defer r.mu.Unlock()
 	for _, p := range []string{
 		r.paths.datasetLayerPath(datasetID, "L0"),
+		r.paths.datasetLayerVecPath(datasetID, "L0"),
 		r.paths.datasetLayerPath(datasetID, "L1"),
+		r.paths.datasetLayerVecPath(datasetID, "L1"),
 		r.paths.datasetLayersSigPath(datasetID),
 	} {
 		if p == "" {
@@ -180,25 +239,43 @@ func (r *FSLayerRepo) DeleteByDataset(ctx context.Context, datasetID string) err
 	return nil
 }
 
-// Search performs a layer-tier BM25 scan. Vector recall is not yet
-// supported for layers; ModeVector returns an empty result without
-// error so the SearchEngine can still fan out hybrid queries safely.
+// Search performs a layer-tier scan with separate BM25 and vector
+// lanes. The selected mode picks which lane runs:
+//
+//   - ModeBM25:   keyword scan only (vectors ignored).
+//   - ModeVector: cosine scan only (text ignored); requires q.Vector
+//     and a layer that has a stored vector sidecar.
+//   - ModeHybrid (and the legacy default): both lanes run, results are
+//     merged keyed by (dataset, docName), and the higher score wins so
+//     downstream rankers see one Candidate per layer entity.
 //
 // Hits carry Layer == q.Layer (contract guarantee #3: queries never
-// cross layers).
+// cross layers). When neither lane has anything to score, Search
+// returns (nil, nil) so SearchEngine can keep fanning out without a
+// hard failure.
 func (r *FSLayerRepo) Search(ctx context.Context, q knowledge.LayerQuery) ([]knowledge.Candidate, error) {
 	if q.Layer != knowledge.LayerAbstract && q.Layer != knowledge.LayerOverview {
 		return nil, errdefs.Validationf("knowledge/fs: only LayerAbstract / LayerOverview are searchable (got %q)", q.Layer)
 	}
 	mode := knowledge.ResolveMode(q.Mode)
-	if mode == knowledge.ModeVector {
-		return nil, nil
-	}
+	wantBM25 := mode == knowledge.ModeBM25 || mode == knowledge.ModeHybrid
+	wantVec := mode == knowledge.ModeVector || mode == knowledge.ModeHybrid
+
 	tok := r.resolveTokenizer()
-	keywords := textsearch.ExtractKeywords(q.Text, tok)
+	var keywords []string
+	if wantBM25 {
+		keywords = textsearch.ExtractKeywords(q.Text, tok)
+	}
 	if len(keywords) == 0 {
+		wantBM25 = false
+	}
+	if len(q.Vector) == 0 {
+		wantVec = false
+	}
+	if !wantBM25 && !wantVec {
 		return nil, nil
 	}
+
 	datasets, err := r.resolveDatasets(ctx, q.DatasetIDs)
 	if err != nil {
 		return nil, err
@@ -209,22 +286,57 @@ func (r *FSLayerRepo) Search(ctx context.Context, q knowledge.LayerQuery) ([]kno
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
-		layers, err := r.collectLayerTexts(ctx, ds, q.Layer)
+		layers, err := r.collectLayerTexts(ctx, ds, q.Layer, wantVec)
 		if err != nil {
 			return nil, err
 		}
 		if len(layers) == 0 {
 			continue
 		}
-		stats := textsearch.NewCorpusStats()
-		toks := make([][]string, len(layers))
-		for i, l := range layers {
-			toks[i] = tok.Tokenize(l.Content)
-			stats.AddDocument(toks[i])
+
+		// scores[i] holds the best score across lanes for layers[i];
+		// scored[i] tracks whether any lane produced a hit so we can
+		// drop unscored entries before emitting Candidates.
+		scores := make([]float64, len(layers))
+		scored := make([]bool, len(layers))
+
+		if wantBM25 {
+			stats := textsearch.NewCorpusStats()
+			toks := make([][]string, len(layers))
+			for i, l := range layers {
+				toks[i] = tok.Tokenize(l.Content)
+				stats.AddDocument(toks[i])
+			}
+			for i := range layers {
+				s := textsearch.BM25(toks[i], keywords, stats)
+				if s <= 0 {
+					continue
+				}
+				if !scored[i] || s > scores[i] {
+					scores[i] = s
+				}
+				scored[i] = true
+			}
 		}
+
+		if wantVec {
+			for i, l := range layers {
+				if len(l.Vector) == 0 {
+					continue
+				}
+				s := knowledge.CosineSimilarity(q.Vector, l.Vector)
+				if s <= 0 {
+					continue
+				}
+				if !scored[i] || s > scores[i] {
+					scores[i] = s
+				}
+				scored[i] = true
+			}
+		}
+
 		for i, l := range layers {
-			score := textsearch.BM25(toks[i], keywords, stats)
-			if q.Mode == knowledge.ModeBM25 && score <= 0 {
+			if !scored[i] {
 				continue
 			}
 			out = append(out, knowledge.Candidate{
@@ -234,7 +346,7 @@ func (r *FSLayerRepo) Search(ctx context.Context, q knowledge.LayerQuery) ([]kno
 					DocName:    l.DocName,
 					Layer:      q.Layer,
 					Content:    l.Content,
-					Score:      score,
+					Score:      scores[i],
 					ChunkIndex: -1,
 					Sig:        l.Sig,
 				},
@@ -249,8 +361,14 @@ func (r *FSLayerRepo) Search(ctx context.Context, q knowledge.LayerQuery) ([]kno
 }
 
 // collectLayerTexts enumerates per-document layer texts plus the
-// dataset-level layer (DocName == ""), pulling Sig metadata in lockstep.
-func (r *FSLayerRepo) collectLayerTexts(ctx context.Context, datasetID string, layer knowledge.Layer) ([]knowledge.DerivedLayer, error) {
+// dataset-level layer (DocName == ""), pulling Sig metadata in
+// lockstep. When withVectors is true, each entry's Vector field is
+// populated from its co-located ".vec" sidecar (missing or unreadable
+// sidecars yield a nil Vector, which the vector lane treats as a miss).
+//
+// The .vec suffix lookalikes are filtered explicitly: when listing
+// "*.abstract" we must skip "<doc>.abstract.vec".
+func (r *FSLayerRepo) collectLayerTexts(ctx context.Context, datasetID string, layer knowledge.Layer, withVectors bool) ([]knowledge.DerivedLayer, error) {
 	entries, err := r.ws.List(ctx, r.paths.datasetDir(datasetID))
 	if err != nil {
 		if errdefs.IsNotFound(err) {
@@ -271,7 +389,7 @@ func (r *FSLayerRepo) collectLayerTexts(ctx context.Context, datasetID string, l
 			continue
 		}
 		name := e.Name()
-		if !endsWith(name, ext) {
+		if !endsWith(name, ext) || endsWith(name, vecSuffix) {
 			continue
 		}
 		data, err := r.ws.Read(ctx, r.paths.datasetDir(datasetID)+"/"+name)
@@ -279,21 +397,29 @@ func (r *FSLayerRepo) collectLayerTexts(ctx context.Context, datasetID string, l
 			continue
 		}
 		docName := name[:len(name)-len(ext)]
-		out = append(out, knowledge.DerivedLayer{
+		entry := knowledge.DerivedLayer{
 			DatasetID: datasetID,
 			DocName:   docName,
 			Layer:     layer,
 			Content:   string(data),
 			Sig:       r.readDocSig(ctx, datasetID, docName, layer),
-		})
+		}
+		if withVectors {
+			entry.Vector = r.readLayerVector(ctx, r.paths.layerVecPath(datasetID, docName, string(layer)))
+		}
+		out = append(out, entry)
 	}
 	if data, err := r.ws.Read(ctx, r.paths.datasetLayerPath(datasetID, string(layer))); err == nil {
-		out = append(out, knowledge.DerivedLayer{
+		entry := knowledge.DerivedLayer{
 			DatasetID: datasetID,
 			Layer:     layer,
 			Content:   string(data),
 			Sig:       r.readDatasetSig(ctx, datasetID, layer),
-		})
+		}
+		if withVectors {
+			entry.Vector = r.readLayerVector(ctx, r.paths.datasetLayerVecPath(datasetID, string(layer)))
+		}
+		out = append(out, entry)
 	}
 	return out, nil
 }

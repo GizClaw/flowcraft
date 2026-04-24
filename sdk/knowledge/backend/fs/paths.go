@@ -7,10 +7,14 @@
 //	<doc>.meta.json        SourceDocument.Version + Metadata sidecar
 //	.chunks.json           DerivedChunk[] for the dataset (atomic write)
 //	<doc>.abstract         L0 layer text   (Q7=A: human-readable)
+//	<doc>.abstract.vec     L0 layer embedding (binary, see vec.go)
 //	<doc>.overview         L1 layer text
+//	<doc>.overview.vec     L1 layer embedding
 //	<doc>.layers.json      per-doc layer DerivedSig sidecar
 //	.abstract.md           dataset-level L0 text
+//	.abstract.md.vec       dataset-level L0 embedding
 //	.overview.md           dataset-level L1 text
+//	.overview.md.vec       dataset-level L1 embedding
 //	.dataset_layers.json   dataset-level layer DerivedSig sidecar
 //
 // Atomic writes go through workspace.Rename(tmp, final); the workspace
@@ -113,6 +117,16 @@ func (p pathBuilder) docLayersPath(datasetID, name string) string {
 	return filepath.Join(p.prefix, datasetID, baseName(name)+".layers.json")
 }
 
+// layerVecPath is the per-document layer embedding sidecar. Co-located
+// with the text file with a ".vec" suffix so the two stay in lockstep.
+func (p pathBuilder) layerVecPath(datasetID, name, layer string) string {
+	text := p.layerPath(datasetID, name, layer)
+	if text == "" {
+		return ""
+	}
+	return text + vecSuffix
+}
+
 // datasetLayerPath is the dataset-level layer text path.
 func (p pathBuilder) datasetLayerPath(datasetID, layer string) string {
 	switch layer {
@@ -122,6 +136,15 @@ func (p pathBuilder) datasetLayerPath(datasetID, layer string) string {
 		return filepath.Join(p.prefix, datasetID, datasetOverviewFile)
 	}
 	return ""
+}
+
+// datasetLayerVecPath is the dataset-level layer embedding sidecar.
+func (p pathBuilder) datasetLayerVecPath(datasetID, layer string) string {
+	text := p.datasetLayerPath(datasetID, layer)
+	if text == "" {
+		return ""
+	}
+	return text + vecSuffix
 }
 
 // datasetLayersSigPath is the dataset-level DerivedSig sidecar.
