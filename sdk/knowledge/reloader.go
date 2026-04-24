@@ -7,12 +7,13 @@ import (
 )
 
 // EventNotifier is the v0.3.0 producer side of the reload pipeline. It
-// supersedes ChangeNotifier: events carry dataset/doc granularity so
-// the consumer can issue targeted Rebuilds instead of a global one.
+// supersedes the deprecated ChangeNotifier (defined in deprecated.go):
+// events carry dataset/doc granularity so the consumer can issue
+// targeted Rebuilds instead of a global one.
 //
-// Implementations live in adapter packages (e.g. sdkx/knowledge/watcher)
-// so the sdk core stays dependency-free. Implementations MUST close the
-// Events channel when Close() is called.
+// Implementations live in adapter packages (e.g. sdkx/knowledge/watcher,
+// once it migrates) so the sdk core stays dependency-free.
+// Implementations MUST close the Events channel when Close() is called.
 type EventNotifier interface {
 	Events() <-chan ChangeEvent
 	Close() error
@@ -44,8 +45,9 @@ type ReloaderOptions struct {
 // window collapse to a global RebuildScope{} (every dataset).
 //
 // EventReloader is the v0.3.0 successor to Reloader. The legacy
-// Reloader (with its struct{}-channel ChangeNotifier) remains exported
-// during the deprecation window and will be removed in v0.3.0.
+// Reloader (with its struct{}-channel ChangeNotifier, both in
+// deprecated.go) remains exported during the deprecation window and
+// will be removed in v0.3.0.
 type EventReloader struct {
 	target   Rebuilder
 	notifier EventNotifier

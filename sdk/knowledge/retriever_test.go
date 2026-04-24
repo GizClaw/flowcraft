@@ -16,8 +16,8 @@ type stubChunkRepo struct {
 func (r *stubChunkRepo) Replace(context.Context, string, string, []DerivedChunk) error {
 	return nil
 }
-func (r *stubChunkRepo) DeleteByDoc(context.Context, string, string) error  { return nil }
-func (r *stubChunkRepo) DeleteByDataset(context.Context, string) error      { return nil }
+func (r *stubChunkRepo) DeleteByDoc(context.Context, string, string) error { return nil }
+func (r *stubChunkRepo) DeleteByDataset(context.Context, string) error     { return nil }
 func (r *stubChunkRepo) Search(_ context.Context, q ChunkQuery) ([]Candidate, error) {
 	r.calls = append(r.calls, q)
 	if r.err != nil {

@@ -21,8 +21,8 @@ const chunksFileVersion = 1
 // chunksFile is the dataset-level on-disk schema. Stored verbatim as JSON
 // at <prefix>/<dataset>/.chunks.json via atomicWrite.
 type chunksFile struct {
-	Version int                       `json:"version"`
-	Chunks  []knowledge.DerivedChunk  `json:"chunks"`
+	Version int                      `json:"version"`
+	Chunks  []knowledge.DerivedChunk `json:"chunks"`
 }
 
 // chunkPosting is a per-term occurrence inside the in-memory inverted index.

@@ -19,9 +19,9 @@ import (
 // per-document mutex so the read-modify-write Version increment is
 // deterministic. Reads do not acquire the per-document mutex.
 type FSDocumentRepo struct {
-	ws     workspace.Workspace
-	paths  pathBuilder
-	now    func() time.Time
+	ws    workspace.Workspace
+	paths pathBuilder
+	now   func() time.Time
 
 	mu    sync.Mutex
 	locks map[string]*sync.Mutex

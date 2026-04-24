@@ -15,7 +15,7 @@ import (
 
 // docLayersFile is the per-document DerivedSig sidecar schema.
 type docLayersFile struct {
-	Version int                                  `json:"version"`
+	Version int                                      `json:"version"`
 	Sigs    map[knowledge.Layer]knowledge.DerivedSig `json:"sigs,omitempty"`
 }
 

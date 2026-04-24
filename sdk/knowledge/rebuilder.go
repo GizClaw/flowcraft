@@ -2,9 +2,9 @@ package knowledge
 
 import "context"
 
-// EventKind classifies a ChangeEvent emitted by a future ChangeNotifier
-// implementation. Used by the v0.3.0 Reloader to decide whether to perform
-// a targeted or dataset-wide rebuild.
+// EventKind classifies a ChangeEvent emitted by an EventNotifier
+// implementation. Used by EventReloader to decide whether to perform a
+// targeted or dataset-wide rebuild.
 type EventKind int
 
 const (
@@ -19,9 +19,11 @@ const (
 // ChangeEvent carries enough granularity for targeted rebuilds.
 // DocName == "" denotes a dataset-level event.
 //
-// NOTE (v0.2.x): The legacy ChangeNotifier in reloader.go still emits
-// struct{} events. The new ChangeEvent shape will be wired up in v0.3.0
-// when the legacy Reloader is replaced.
+// NOTE (v0.2.x): The deprecated ChangeNotifier in deprecated.go still
+// emits opaque struct{} events; sdkx/knowledge/watcher remains its only
+// in-tree producer. The ChangeEvent shape declared here is what
+// EventNotifier implementations will emit once watcher migrates in
+// v0.3.0.
 type ChangeEvent struct {
 	DatasetID string
 	DocName   string
@@ -36,8 +38,8 @@ type RebuildScope struct {
 }
 
 // Rebuilder is the consumer side of the change-driven reload pipeline.
-// Service satisfies this interface; future ChangeNotifier implementations
-// invoke Rebuild on the trailing edge of a debounce window.
+// Service satisfies this interface; EventReloader invokes Rebuild on the
+// trailing edge of a debounce window over an EventNotifier stream.
 type Rebuilder interface {
 	Rebuild(ctx context.Context, scope RebuildScope) error
 }
