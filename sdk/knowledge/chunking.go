@@ -8,25 +8,6 @@ import (
 	"unicode/utf8"
 )
 
-// ChunkerOptions controls how ChunkText splits source content.
-//
-// All sizes are measured in runes (not bytes), so multi-byte UTF-8
-// content (CJK, emoji, etc.) is sliced safely on rune boundaries.
-type ChunkerOptions struct {
-	// Size is the target rune count per chunk. Zero means 512.
-	Size int
-	// Overlap is the rune count copied from the tail of the previous
-	// chunk into the head of the next. Must be < Size; clamped to Size/4
-	// when out of range.
-	Overlap int
-}
-
-// DefaultChunkerOptions returns the canonical chunking configuration
-// (512/64) used when callers do not override it.
-func DefaultChunkerOptions() ChunkerOptions {
-	return ChunkerOptions{Size: 512, Overlap: 64}
-}
-
 // ChunkSpec is the chunker output: a positionally-tagged content slice
 // without dataset/doc identity (the Service fills those in).
 type ChunkSpec struct {
@@ -47,16 +28,19 @@ type Chunker interface {
 // NewDefaultChunker returns the built-in paragraph/sentence-boundary
 // chunker. Its output is UTF-8 safe; chunks never split inside a
 // multi-byte rune.
-func NewDefaultChunker(opts ChunkerOptions) Chunker {
-	return &defaultChunker{opts: opts.normalised()}
+//
+// Sizes are measured in runes (not bytes), so multi-byte UTF-8 content
+// (CJK, emoji, etc.) is sliced safely on rune boundaries.
+func NewDefaultChunker(cfg ChunkConfig) Chunker {
+	return &defaultChunker{cfg: normaliseChunkConfig(cfg)}
 }
 
-type defaultChunker struct{ opts ChunkerOptions }
+type defaultChunker struct{ cfg ChunkConfig }
 
-func (c *defaultChunker) Sig() string { return c.opts.Sig() }
+func (c *defaultChunker) Sig() string { return ChunkConfigSig(c.cfg) }
 
 func (c *defaultChunker) Split(content string) []ChunkSpec {
-	derived := ChunkText("", content, c.opts)
+	derived := ChunkText("", content, c.cfg)
 	out := make([]ChunkSpec, len(derived))
 	for i, d := range derived {
 		out[i] = ChunkSpec{Index: d.Index, Offset: d.Offset, Content: d.Content}
@@ -64,25 +48,28 @@ func (c *defaultChunker) Split(content string) []ChunkSpec {
 	return out
 }
 
-func (o ChunkerOptions) normalised() ChunkerOptions {
-	if o.Size <= 0 {
-		o.Size = 512
+// normaliseChunkConfig clamps invalid inputs so downstream code can
+// rely on Size > 0 and 0 <= Overlap < Size. Mirrors the legacy
+// ChunkDocument behaviour so v0.2.x callers see the same chunks.
+func normaliseChunkConfig(c ChunkConfig) ChunkConfig {
+	if c.ChunkSize <= 0 {
+		c.ChunkSize = 512
 	}
-	if o.Overlap < 0 {
-		o.Overlap = 0
+	if c.ChunkOverlap < 0 {
+		c.ChunkOverlap = 0
 	}
-	if o.Overlap >= o.Size {
-		o.Overlap = o.Size / 4
+	if c.ChunkOverlap >= c.ChunkSize {
+		c.ChunkOverlap = c.ChunkSize / 4
 	}
-	return o
+	return c
 }
 
-// Sig returns a stable signature for a chunker configuration. It is the
-// ChunkerSig embedded in DerivedSig so freshness checks can detect a
-// configuration change.
-func (o ChunkerOptions) Sig() string {
-	n := o.normalised()
-	sum := sha256.Sum256([]byte(fmt.Sprintf("v1|size=%d|overlap=%d", n.Size, n.Overlap)))
+// ChunkConfigSig returns a stable signature for a chunker configuration.
+// It is the ChunkerSig embedded in DerivedSig so freshness checks can
+// detect a configuration change.
+func ChunkConfigSig(c ChunkConfig) string {
+	n := normaliseChunkConfig(c)
+	sum := sha256.Sum256([]byte(fmt.Sprintf("v1|size=%d|overlap=%d", n.ChunkSize, n.ChunkOverlap)))
 	return "chunker:" + hex.EncodeToString(sum[:8])
 }
 
@@ -93,16 +80,16 @@ func (o ChunkerOptions) Sig() string {
 //   - End offsets are reported in bytes for compatibility with retrieval
 //     filters that key on byte position.
 //   - Boundary preference: paragraph (\n\n) > sentence (". ") > line (\n).
-//   - The result is deterministic for a given (content, opts) pair.
-func ChunkText(docName, content string, opts ChunkerOptions) []DerivedChunk {
-	opts = opts.normalised()
+//   - The result is deterministic for a given (content, cfg) pair.
+func ChunkText(docName, content string, cfg ChunkConfig) []DerivedChunk {
+	opts := normaliseChunkConfig(cfg)
 	content = strings.TrimSpace(content)
 	if content == "" {
 		return nil
 	}
 
 	runes := []rune(content)
-	if len(runes) <= opts.Size {
+	if len(runes) <= opts.ChunkSize {
 		return []DerivedChunk{{
 			DocName: docName,
 			Index:   0,
@@ -111,14 +98,14 @@ func ChunkText(docName, content string, opts ChunkerOptions) []DerivedChunk {
 		}}
 	}
 
-	step := opts.Size - opts.Overlap
+	step := opts.ChunkSize - opts.ChunkOverlap
 	if step <= 0 {
 		step = 1
 	}
 
 	var chunks []DerivedChunk
 	for start := 0; start < len(runes); {
-		end := start + opts.Size
+		end := start + opts.ChunkSize
 		if end > len(runes) {
 			end = len(runes)
 		}
@@ -141,7 +128,7 @@ func ChunkText(docName, content string, opts ChunkerOptions) []DerivedChunk {
 				Content: piece,
 			})
 		}
-		next := end - opts.Overlap
+		next := end - opts.ChunkOverlap
 		if next <= start {
 			next = start + 1
 		}

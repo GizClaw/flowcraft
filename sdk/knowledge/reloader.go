@@ -42,10 +42,20 @@ type Reloader struct {
 	stop    chan struct{}
 }
 
-// ReloaderOptions configures a Reloader.
+// ReloaderOptions configures Reloader and EventReloader.
+//
+// Field set is the union of both consumers:
+//   - Debounce       controls the trailing-edge window (both consumers).
+//   - RebuildTimeout caps each rebuild call (EventReloader only; the
+//     legacy Reloader hard-codes 30s).
+//   - Rebuild        is the legacy hook used by Reloader to swap the
+//     rebuild callback. EventReloader ignores it (it always calls
+//     Rebuilder.Rebuild on the supplied target). Deprecated: pass a
+//     Rebuilder to NewEventReloader instead.
 type ReloaderOptions struct {
-	Debounce time.Duration               // default 500ms
-	Rebuild  func(context.Context) error // overrides the default rebuild fn
+	Debounce       time.Duration
+	RebuildTimeout time.Duration
+	Rebuild        func(context.Context) error
 }
 
 // NewReloader wires a ChangeNotifier to a rebuild callback.

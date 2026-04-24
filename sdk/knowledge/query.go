@@ -57,6 +57,20 @@ type Query struct {
 	Layer     Layer
 	TopK      int
 	Threshold float64
+
+	// resolvedDatasets is set by Service.Search after resolving
+	// ScopeAllDatasets via DocumentRepo.ListDatasets, so retrievers can
+	// fan out without re-enumerating datasets per lane. Unexported on
+	// purpose: callers MUST go through Service.Search.
+	resolvedDatasets []string
+}
+
+// withDatasets returns a copy of q whose resolvedDatasets is set; used
+// by Service.Search to push the resolved fan-out list down to
+// retrievers without mutating the caller's Query.
+func (q Query) withDatasets(ids []string) Query {
+	q.resolvedDatasets = ids
+	return q
 }
 
 // Hit is one ranked search result.
