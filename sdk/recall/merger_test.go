@@ -2,6 +2,7 @@ package recall_test
 
 import (
 	"context"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -55,7 +56,15 @@ func TestSaveDedupsSameFactAcrossDifferentMessages(t *testing.T) {
 func TestSaveSoftMergeMarksSupersededNeighbour(t *testing.T) {
 	ctx := context.Background()
 	idx := memidx.New()
-	now := time.Now()
+	// Wrap the test clock in atomic.Pointer so the recall worker
+	// goroutine (which calls the clock asynchronously while it drains
+	// the save queue) and the test goroutine (which advances time
+	// between saves) cannot race on the shared `now`. The previous
+	// closure-over-local-variable form tripped -race in CI.
+	var clockHolder atomic.Pointer[time.Time]
+	setNow := func(t time.Time) { clockHolder.Store(&t) }
+	getNow := func() time.Time { return *clockHolder.Load() }
+	setNow(time.Now())
 	oldFact := "Alice prefers pour-over coffee"
 	newFact := "Alice now prefers pour over coffee at work"
 	ex := &scriptedExtractor{
@@ -74,7 +83,7 @@ func TestSaveSoftMergeMarksSupersededNeighbour(t *testing.T) {
 		recall.WithRequireUserID(),
 		recall.WithExtractor(ex),
 		recall.WithEmbedder(emb),
-		recall.WithClock(func() time.Time { return now }),
+		recall.WithClock(getNow),
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -88,7 +97,7 @@ func TestSaveSoftMergeMarksSupersededNeighbour(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	now = now.Add(time.Minute)
+	setNow(getNow().Add(time.Minute))
 	second, err := m.Save(ctx, scope, []llm.Message{
 		{Role: model.RoleUser, Parts: []model.Part{{Type: model.PartText, Text: "Alice now prefers pour over coffee at work."}}},
 	})
@@ -106,7 +115,7 @@ func TestSaveSoftMergeMarksSupersededNeighbour(t *testing.T) {
 	if got := doc.Metadata["superseded_by"]; got != second.EntryIDs[0] {
 		t.Fatalf("superseded_by=%v, want %q", got, second.EntryIDs[0])
 	}
-	if got := doc.Metadata["superseded_at"]; got != now.UnixMilli() {
-		t.Fatalf("superseded_at=%v, want %d", got, now.UnixMilli())
+	if got := doc.Metadata["superseded_at"]; got != getNow().UnixMilli() {
+		t.Fatalf("superseded_at=%v, want %d", got, getNow().UnixMilli())
 	}
 }
