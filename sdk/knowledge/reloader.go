@@ -6,116 +6,127 @@ import (
 	"time"
 )
 
-// ChangeNotifier emits an opaque event whenever the underlying source changes.
+// EventNotifier is the v0.3.0 producer side of the reload pipeline. It
+// supersedes the deprecated ChangeNotifier (defined in deprecated.go):
+// events carry dataset/doc granularity so the consumer can issue
+// targeted Rebuilds instead of a global one.
 //
-// Concrete implementations live in adapter packages (e.g.
-// sdkx/knowledge/watcher uses fsnotify) so that the sdk core stays
-// dependency-free.
-//
-// Events on the Events channel must be coalesced by the consumer; the
-// Reloader below applies a debounce window. Implementations should close
-// Events when Close is called.
-type ChangeNotifier interface {
-	Events() <-chan struct{}
+// Implementations live in adapter packages (e.g. sdkx/knowledge/watcher,
+// once it migrates) so the sdk core stays dependency-free.
+// Implementations MUST close the Events channel when Close() is called.
+type EventNotifier interface {
+	Events() <-chan ChangeEvent
 	Close() error
 }
 
-// Reloader debounces ChangeNotifier events and triggers Rebuild on a
-// stable trailing edge.
+// ReloaderOptions configures EventReloader (and the deprecated Reloader).
 //
-// Typical use:
+// Field set is the union of both consumers:
+//   - Debounce       controls the trailing-edge window (both consumers).
+//   - RebuildTimeout caps each rebuild call (EventReloader only; the
+//     legacy Reloader hard-codes 30s).
+//   - Rebuild        is the legacy hook used by the deprecated Reloader to
+//     swap the rebuild callback. EventReloader ignores it and always
+//     calls Rebuilder.Rebuild on the supplied target.
+type ReloaderOptions struct {
+	Debounce       time.Duration
+	RebuildTimeout time.Duration
+	Rebuild        func(context.Context) error
+}
+
+// EventReloader debounces ChangeEvents and triggers Rebuild on the
+// trailing edge. Rebuilds are serialised: a new rebuild waits for the
+// previous one to finish.
 //
-//	notifier, _ := watcher.NewFSNotifier(store) // sdkx adapter
-//	r := knowledge.NewReloader(store, notifier, knowledge.ReloaderOptions{Debounce: 500 * time.Millisecond})
-//	go r.Run(ctx)
+// Targeted vs global rebuilds: when the debounce window contains
+// events for a single (dataset, doc) pair, the rebuild is scoped to
+// that pair; when it touches multiple datasets or any EventBulk event,
+// a dataset-wide rebuild is issued instead. Mixed datasets in one
+// window collapse to a global RebuildScope{} (every dataset).
 //
-// Rebuild defaults to FSStore.BuildIndex; callers can override to integrate
-// with their own RetrievalStore implementations.
-type Reloader struct {
-	notifier ChangeNotifier
-	rebuild  func(ctx context.Context) error
+// EventReloader is the v0.3.0 successor to Reloader. The legacy
+// Reloader (with its struct{}-channel ChangeNotifier, both in
+// deprecated.go) remains exported during the deprecation window and
+// will be removed in v0.3.0.
+type EventReloader struct {
+	target   Rebuilder
+	notifier EventNotifier
 	debounce time.Duration
+	timeout  time.Duration
 
 	mu      sync.Mutex
-	pending bool
+	pending map[scopeKey]struct{} // events accumulated within the window
+	timer   *time.Timer
 	wg      sync.WaitGroup
 	stop    chan struct{}
+	stopped bool
 }
 
-// ReloaderOptions configures a Reloader.
-type ReloaderOptions struct {
-	Debounce time.Duration               // default 500ms
-	Rebuild  func(context.Context) error // overrides the default rebuild fn
+// scopeKey collapses a ChangeEvent into a comparable scope so the
+// debouncer can dedupe and decide which Rebuild to issue.
+type scopeKey struct {
+	datasetID string
+	docName   string // "" means dataset-wide
 }
 
-// NewReloader wires a ChangeNotifier to a rebuild callback.
+// NewEventReloader wires a Rebuilder to an EventNotifier.
 //
-// When opts.Rebuild is nil and store is non-nil, the reloader falls back to
-// store.BuildIndex(ctx).
-func NewReloader(store *FSStore, notifier ChangeNotifier, opts ReloaderOptions) *Reloader {
-	d := opts.Debounce
-	if d <= 0 {
-		d = 500 * time.Millisecond
+// opts.Debounce defaults to 500ms; opts.RebuildTimeout defaults to 30s.
+// When notifier is nil, Run becomes a no-op (returns immediately) so
+// callers can wire up unconditionally.
+func NewEventReloader(target Rebuilder, notifier EventNotifier, opts ReloaderOptions) *EventReloader {
+	debounce := opts.Debounce
+	if debounce <= 0 {
+		debounce = 500 * time.Millisecond
 	}
-	rebuild := opts.Rebuild
-	if rebuild == nil && store != nil {
-		rebuild = store.BuildIndex
+	timeout := opts.RebuildTimeout
+	if timeout <= 0 {
+		timeout = 30 * time.Second
 	}
-	return &Reloader{
+	return &EventReloader{
+		target:   target,
 		notifier: notifier,
-		rebuild:  rebuild,
-		debounce: d,
+		debounce: debounce,
+		timeout:  timeout,
+		pending:  make(map[scopeKey]struct{}),
 		stop:     make(chan struct{}),
 	}
 }
 
-// Run blocks until Close is called or ctx is cancelled.
-func (r *Reloader) Run(ctx context.Context) error {
-	if r.notifier == nil || r.rebuild == nil {
+// Run blocks until ctx is cancelled or Close is called.
+func (r *EventReloader) Run(ctx context.Context) error {
+	if r == nil || r.target == nil || r.notifier == nil {
 		return nil
 	}
-	var timer *time.Timer
 	r.wg.Add(1)
 	defer r.wg.Done()
 	for {
 		select {
 		case <-ctx.Done():
-			if timer != nil {
-				timer.Stop()
-			}
+			r.cancelTimer()
 			return ctx.Err()
 		case <-r.stop:
-			if timer != nil {
-				timer.Stop()
-			}
+			r.cancelTimer()
 			return nil
-		case _, ok := <-r.notifier.Events():
+		case ev, ok := <-r.notifier.Events():
 			if !ok {
 				return nil
 			}
-			r.mu.Lock()
-			if !r.pending {
-				r.pending = true
-				if timer != nil {
-					timer.Stop()
-				}
-				timer = time.AfterFunc(r.debounce, func() {
-					r.mu.Lock()
-					r.pending = false
-					r.mu.Unlock()
-					rebuildCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-					defer cancel()
-					_ = r.rebuild(rebuildCtx)
-				})
-			}
-			r.mu.Unlock()
+			r.enqueue(ctx, ev)
 		}
 	}
 }
 
-// Close stops Run and the underlying ChangeNotifier.
-func (r *Reloader) Close() error {
+// Close stops Run and the underlying notifier.
+func (r *EventReloader) Close() error {
+	r.mu.Lock()
+	if r.stopped {
+		r.mu.Unlock()
+		return nil
+	}
+	r.stopped = true
 	close(r.stop)
+	r.mu.Unlock()
 	r.wg.Wait()
 	if r.notifier != nil {
 		return r.notifier.Close()
@@ -123,17 +134,87 @@ func (r *Reloader) Close() error {
 	return nil
 }
 
-// WorkspaceRoot exposes the underlying workspace root when available.
-//
-// Returns "" if the workspace does not implement Root().
-func (s *FSStore) WorkspaceRoot() string {
-	if rw, ok := s.ws.(interface{ Root() string }); ok {
-		return rw.Root()
+// enqueue is the body of the debouncer: it stamps the event into the
+// pending set and (re)arms the trailing-edge timer.
+func (r *EventReloader) enqueue(ctx context.Context, ev ChangeEvent) {
+	key := scopeKey{datasetID: ev.DatasetID}
+	if ev.Kind != EventBulk {
+		key.docName = ev.DocName
 	}
-	return ""
+	r.mu.Lock()
+	r.pending[key] = struct{}{}
+	if r.timer != nil {
+		r.timer.Stop()
+	}
+	r.timer = time.AfterFunc(r.debounce, func() { r.flush(ctx) })
+	r.mu.Unlock()
 }
 
-// Prefix returns the FSStore directory prefix beneath WorkspaceRoot.
+// flush executes the rebuild for the accumulated pending set.
 //
-// Combined: filepath.Join(WorkspaceRoot(), Prefix()) is the on-disk root.
-func (s *FSStore) Prefix() string { return s.prefix }
+// Scope reduction:
+//   - one (datasetID, docName)            -> RebuildScope{datasetID, docName}
+//   - one datasetID, multiple docs/bulk   -> RebuildScope{datasetID}
+//   - multiple datasetIDs                 -> RebuildScope{} (everything)
+func (r *EventReloader) flush(ctx context.Context) {
+	r.mu.Lock()
+	if r.stopped {
+		r.mu.Unlock()
+		return
+	}
+	scope := reducePending(r.pending)
+	r.pending = make(map[scopeKey]struct{})
+	r.mu.Unlock()
+
+	rebuildCtx, cancel := context.WithTimeout(ctx, r.timeout)
+	defer cancel()
+	_ = r.target.Rebuild(rebuildCtx, scope)
+}
+
+func (r *EventReloader) cancelTimer() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.timer != nil {
+		r.timer.Stop()
+		r.timer = nil
+	}
+}
+
+// reducePending collapses the pending set into a single RebuildScope
+// per the rules in flush.
+func reducePending(set map[scopeKey]struct{}) RebuildScope {
+	if len(set) == 0 {
+		return RebuildScope{}
+	}
+	var (
+		datasets = make(map[string]struct{}, len(set))
+		docs     = make(map[string]struct{}, len(set))
+		anyBulk  bool
+	)
+	for k := range set {
+		datasets[k.datasetID] = struct{}{}
+		if k.docName == "" {
+			anyBulk = true
+		} else {
+			docs[k.docName] = struct{}{}
+		}
+	}
+	if len(datasets) > 1 {
+		return RebuildScope{}
+	}
+	var ds string
+	for k := range datasets {
+		ds = k
+	}
+	if anyBulk || len(docs) > 1 {
+		return RebuildScope{DatasetID: ds}
+	}
+	if len(docs) == 1 {
+		var doc string
+		for d := range docs {
+			doc = d
+		}
+		return RebuildScope{DatasetID: ds, DocName: doc}
+	}
+	return RebuildScope{DatasetID: ds}
+}

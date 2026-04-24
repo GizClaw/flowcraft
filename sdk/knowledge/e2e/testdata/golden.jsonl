@@ -1,0 +1,40 @@
+{"id":"g001","category":"keyword_direct","question":"苹果含有什么维生素和有机酸?","expected_doc":"fruit_apple.md","expected_keywords":["维生素 C","苹果酸"]}
+{"id":"g002","category":"keyword_direct","question":"PostgreSQL 默认使用什么并发控制机制?","expected_doc":"db_postgresql.md","expected_keywords":["MVCC"]}
+{"id":"g003","category":"keyword_direct","question":"Transformer 架构的核心组件是什么?","expected_doc":"ml_transformer.md","expected_keywords":["自注意力","位置编码"]}
+{"id":"g004","category":"keyword_direct","question":"佛跳墙属于哪个菜系?","expected_doc":"cuisine_min.md","expected_keywords":["佛跳墙","闽菜"]}
+{"id":"g005","category":"keyword_direct","question":"哪个王朝开凿了京杭大运河?","expected_doc":"dynasty_sui.md","expected_keywords":["京杭大运河","隋"]}
+{"id":"g006","category":"keyword_direct","question":"Redis 通过哪两种文件提供持久化?","expected_doc":"db_redis.md","expected_keywords":["RDB","AOF"]}
+{"id":"g007","category":"keyword_direct","question":"郑和下西洋发生在哪个朝代?","expected_doc":"dynasty_ming.md","expected_keywords":["郑和","明"]}
+{"id":"g008","category":"keyword_direct","question":"Go 语言原生支持的并发原语是什么?","expected_doc":"lang_go.md","expected_keywords":["goroutine","channel"]}
+{"id":"g009","category":"keyword_direct","question":"K-Means 算法常用什么方法选择簇数?","expected_doc":"ml_kmeans.md","expected_keywords":["肘部法","轮廓系数"]}
+{"id":"g010","category":"keyword_direct","question":"FreeRTOS 由谁负责维护?","expected_doc":"os_freertos.md","expected_keywords":["AWS","FreeRTOS"]}
+{"id":"g011","category":"paraphrase","question":"哪种水果以富含钾元素而出名?","expected_doc":"fruit_banana.md","expected_keywords":["钾"]}
+{"id":"g012","category":"paraphrase","question":"哪个朝代是中国第一个大一统的中央集权王朝?","expected_doc":"dynasty_qin.md","expected_keywords":["大一统","郡县制"]}
+{"id":"g013","category":"paraphrase","question":"哪个城市曾经叫长安,是丝绸之路的起点?","expected_doc":"city_cn_xian.md","expected_keywords":["长安","丝绸之路"]}
+{"id":"g014","category":"paraphrase","question":"哪种动物只吃竹子,被称为中国国宝?","expected_doc":"animal_panda.md","expected_keywords":["竹","国宝"]}
+{"id":"g015","category":"paraphrase","question":"哪种数据库直接把数据存在一个文件里,不需要单独的服务进程?","expected_doc":"db_sqlite.md","expected_keywords":["单一文件","嵌入式"]}
+{"id":"g016","category":"paraphrase","question":"哪种编程语言通过编译期借用检查防止内存错误?","expected_doc":"lang_rust.md","expected_keywords":["所有权","借用"]}
+{"id":"g017","category":"intra_cluster","question":"哪种水果属于聚合果,真正的果实是表面的瘦果?","expected_doc":"fruit_strawberry.md","expected_keywords":["聚合果","瘦果"]}
+{"id":"g018","category":"intra_cluster","question":"哪个菜系以咸鲜醇厚和高汤吊制著称,是宫廷菜的源头?","expected_doc":"cuisine_lu.md","expected_keywords":["高汤","宫廷"]}
+{"id":"g019","category":"intra_cluster","question":"哪个朝代实行了行省制度,被马可·波罗造访过?","expected_doc":"dynasty_yuan.md","expected_keywords":["行省","马可·波罗"]}
+{"id":"g020","category":"intra_cluster","question":"哪种数据库专为大规模 OLAP 分析设计,采用列式存储?","expected_doc":"db_clickhouse.md","expected_keywords":["列式","OLAP"]}
+{"id":"g021","category":"intra_cluster","question":"哪种哺乳动物是唯一能主动飞行的?","expected_doc":"animal_bat.md","expected_keywords":["飞行","翼膜"]}
+{"id":"g022","category":"intra_cluster","question":"哪个城市拥有兵马俑,曾是十三朝古都?","expected_doc":"city_cn_xian.md","expected_keywords":["兵马俑","古都"]}
+{"id":"g023","category":"cross_cluster","question":"Python 在数据科学领域常用的库有哪些?","expected_doc":"lang_python.md","expected_keywords":["NumPy","Pandas"]}
+{"id":"g024","category":"cross_cluster","question":"GPS 卫星定位为什么必须考虑相对论修正?","expected_doc":"physics_relativity.md","expected_keywords":["GPS","时间"]}
+{"id":"g025","category":"cross_cluster","question":"哪个城市是中国第一个经济特区,紧邻香港?","expected_doc":"city_cn_shenzhen.md","expected_keywords":["经济特区","香港"]}
+{"id":"g026","category":"cross_cluster","question":"哪种算法依赖支持向量来确定决策边界?","expected_doc":"ml_svm.md","expected_keywords":["支持向量","间隔"]}
+{"id":"g027","category":"negative","question":"如何制作一杯卡布奇诺咖啡?","expected_doc":"","expected_keywords":[]}
+{"id":"g028","category":"negative","question":"火星表面的平均温度是多少摄氏度?","expected_doc":"","expected_keywords":[]}
+{"id":"g029","category":"negative","question":"足球比赛每队上场多少名球员?","expected_doc":"","expected_keywords":[]}
+{"id":"g030","category":"negative","question":"莎士比亚的代表作有哪些?","expected_doc":"","expected_keywords":[]}
+{"id":"g101","category":"semantic_paraphrase","question":"哪种澳洲哺乳动物的母亲会把幼崽藏在腹部口袋里抚养?","expected_doc":"animal_kangaroo.md","expected_keywords":["育儿袋"]}
+{"id":"g102","category":"semantic_paraphrase","question":"哪种无监督学习方法把样本分成若干组,使每组内部尽量相似?","expected_doc":"ml_kmeans.md","expected_keywords":["簇内方差"]}
+{"id":"g103","category":"semantic_paraphrase","question":"哪种 NoSQL 数据库没有主节点,可以无限地横向扩张?","expected_doc":"db_cassandra.md","expected_keywords":["去中心化","水平扩展"]}
+{"id":"g104","category":"semantic_paraphrase","question":"哪个地方风味以分量大、爱用泡的白菜储菜过冬出名?","expected_doc":"cuisine_dongbei.md","expected_keywords":["酸菜"]}
+{"id":"g105","category":"semantic_paraphrase","question":"谁第一次精确称量出了地球的质量?","expected_doc":"physics_gravity.md","expected_keywords":["扭秤","卡文迪许"]}
+{"id":"g106","category":"semantic_paraphrase","question":"哪个研究型操作系统启发了 Go 语言的并发模型与 UTF-8 编码?","expected_doc":"os_plan9.md","expected_keywords":["UTF-8"]}
+{"id":"g107","category":"semantic_paraphrase","question":"哪个开源类 Unix 系统在很早就提供了类似容器的进程隔离机制?","expected_doc":"os_freebsd.md","expected_keywords":["Jail"]}
+{"id":"g108","category":"semantic_paraphrase","question":"哪种动物据说就是郑和从东非带回中国、被当作'麒麟'的奇兽?","expected_doc":"animal_giraffe.md","expected_keywords":["麒麟","郑和"]}
+{"id":"g109","category":"semantic_paraphrase","question":"哪种水果是法国波尔多和新疆吐鲁番都引以为傲的招牌作物?","expected_doc":"fruit_grape.md","expected_keywords":["波尔多","吐鲁番"]}
+{"id":"g110","category":"semantic_paraphrase","question":"哪种数据库最适合存储节点和关系密集的社交网络数据?","expected_doc":"db_neo4j.md","expected_keywords":["社交网络"]}
