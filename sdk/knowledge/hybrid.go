@@ -5,6 +5,11 @@ import (
 	"math"
 )
 
+// CosineSimilarity returns the cosine similarity of two equal-length vectors.
+// Returns 0 when lengths differ, either vector is empty, or either vector
+// has zero norm. Exported so backends can share one canonical implementation.
+func CosineSimilarity(a, b []float32) float64 { return cosineSimilarity(a, b) }
+
 func cosineSimilarity(a, b []float32) float64 {
 	if len(a) != len(b) || len(a) == 0 {
 		return 0
