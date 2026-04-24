@@ -224,17 +224,29 @@ func (s Limit) Run(_ context.Context, st *State) error {
 }
 
 // pickFinalish returns Final if non-empty, otherwise lifts Fused/Reranked.
+//
+// When lifting from Reranked or Fused the slice is shallow-copied so that
+// downstream stages (which freely mutate Score / Scores in place) cannot
+// corrupt the original Reranked/Fused snapshots that diagnostics or later
+// stages may still want to inspect. Hit.Doc remains shared by design — the
+// document content itself is immutable from the pipeline's POV.
 func pickFinalish(st *State) []retrieval.Hit {
 	if len(st.Final) > 0 {
 		return st.Final
 	}
 	if len(st.Reranked) > 0 {
-		st.Final = st.Reranked
+		st.Final = cloneHits(st.Reranked)
 		return st.Final
 	}
 	if len(st.Fused) > 0 {
-		st.Final = st.Fused
+		st.Final = cloneHits(st.Fused)
 		return st.Final
 	}
 	return nil
+}
+
+func cloneHits(in []retrieval.Hit) []retrieval.Hit {
+	out := make([]retrieval.Hit, len(in))
+	copy(out, in)
+	return out
 }

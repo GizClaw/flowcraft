@@ -199,6 +199,40 @@ func TestSweeperPhysicalDelete(t *testing.T) {
 	}
 }
 
+func TestBackgroundSweeperDeletesExpiredEntries(t *testing.T) {
+	ctx := context.Background()
+	idx := memidx.New()
+	m, err := recall.New(idx,
+		recall.WithRequireUserID(),
+		recall.WithTTLPolicy(recall.CategoryTTLPolicy{recall.CategoryEpisodic: time.Hour}),
+		recall.WithSweeper(10*time.Millisecond, 100),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer m.Close()
+
+	scope := newScope()
+	past := time.Now().Add(-time.Second)
+	id, err := m.Add(ctx, scope, recall.Entry{
+		Content:    "expired in background",
+		Categories: []string{"episodic"},
+		ExpiresAt:  &past,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, ok, _ := idx.Get(ctx, recall.NamespaceFor(scope), id); !ok {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("background sweeper failed to delete %s", id)
+}
+
 func TestAsyncSaveAndAwait(t *testing.T) {
 	ctx := context.Background()
 	idx := memidx.New()

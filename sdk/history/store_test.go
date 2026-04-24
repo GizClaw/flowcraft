@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/GizClaw/flowcraft/sdk/model"
 	"github.com/GizClaw/flowcraft/sdk/workspace"
@@ -378,4 +379,165 @@ func TestFileStore_DeleteAndReuse(t *testing.T) {
 	if len(loaded) != 1 || loaded[0].Content() != "new message" {
 		t.Fatalf("expected 'new message', got %v", loaded)
 	}
+}
+
+// --- FileStore: deprecated SummaryCacheStore surface ---
+
+func TestFileStore_SaveAndGetSummary(t *testing.T) {
+	ws := workspace.NewMemWorkspace()
+	store := NewFileStore(ws, "memory")
+	ctx := context.Background()
+
+	if err := store.SaveSummary(ctx, "conv-sum", "the summary text", 42); err != nil {
+		t.Fatalf("SaveSummary: %v", err)
+	}
+
+	text, count, err := store.GetSummary(ctx, "conv-sum")
+	if err != nil {
+		t.Fatalf("GetSummary: %v", err)
+	}
+	if text != "the summary text" {
+		t.Fatalf("text mismatch: got %q", text)
+	}
+	if count != 42 {
+		t.Fatalf("count mismatch: got %d", count)
+	}
+}
+
+func TestFileStore_GetSummary_Missing(t *testing.T) {
+	ws := workspace.NewMemWorkspace()
+	store := NewFileStore(ws, "memory")
+	ctx := context.Background()
+
+	text, count, err := store.GetSummary(ctx, "no-such-conv")
+	if err != nil {
+		t.Fatalf("GetSummary on missing should be (\"\",0,nil), got err=%v", err)
+	}
+	if text != "" || count != 0 {
+		t.Fatalf("expected zero values for missing conv, got %q,%d", text, count)
+	}
+}
+
+func TestFileStore_SaveSummary_OverwritesPrevious(t *testing.T) {
+	ws := workspace.NewMemWorkspace()
+	store := NewFileStore(ws, "memory")
+	ctx := context.Background()
+
+	if err := store.SaveSummary(ctx, "c", "first", 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveSummary(ctx, "c", "second", 2); err != nil {
+		t.Fatal(err)
+	}
+	text, count, err := store.GetSummary(ctx, "c")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if text != "second" || count != 2 {
+		t.Fatalf("expected overwrite to win, got %q,%d", text, count)
+	}
+}
+
+// --- InMemoryStore: options + lifecycle ---
+
+func TestInMemoryStore_LenReflectsSaves(t *testing.T) {
+	store := NewInMemoryStore()
+	defer store.Close()
+	ctx := context.Background()
+
+	if store.Len() != 0 {
+		t.Fatalf("expected fresh store empty, got %d", store.Len())
+	}
+	for i, id := range []string{"a", "b", "c"} {
+		if err := store.SaveMessages(ctx, id, []model.Message{
+			model.NewTextMessage(model.RoleUser, "x"),
+		}); err != nil {
+			t.Fatalf("SaveMessages %d: %v", i, err)
+		}
+	}
+	if got := store.Len(); got != 3 {
+		t.Fatalf("expected 3 conversations, got %d", got)
+	}
+
+	if err := store.DeleteMessages(ctx, "a"); err != nil {
+		t.Fatal(err)
+	}
+	if got := store.Len(); got != 2 {
+		t.Fatalf("expected 2 after delete, got %d", got)
+	}
+}
+
+func TestInMemoryStore_WithMaxConversations_EvictsOldest(t *testing.T) {
+	// Cap at 2 conversations so the third Save triggers evictOldest().
+	store := NewInMemoryStore(WithMaxConversations(2))
+	defer store.Close()
+	ctx := context.Background()
+
+	_ = store.SaveMessages(ctx, "first", []model.Message{model.NewTextMessage(model.RoleUser, "1")})
+	// Force "first" to be the strictly older entry by stamping it earlier.
+	store.mu.Lock()
+	store.data["first"].lastAccess = time.Now().Add(-time.Hour)
+	store.mu.Unlock()
+	_ = store.SaveMessages(ctx, "second", []model.Message{model.NewTextMessage(model.RoleUser, "2")})
+	_ = store.SaveMessages(ctx, "third", []model.Message{model.NewTextMessage(model.RoleUser, "3")})
+
+	if got := store.Len(); got != 2 {
+		t.Fatalf("expected 2 after eviction, got %d", got)
+	}
+	got, _ := store.GetMessages(ctx, "first")
+	if len(got) != 0 {
+		t.Fatal("expected oldest 'first' to be evicted")
+	}
+}
+
+func TestInMemoryStore_EvictExpired(t *testing.T) {
+	// Use the smallest TTL accepted (>0) so we control eviction by hand
+	// rather than waiting for the cleanup goroutine — the latter would
+	// flake on slow CI.
+	store := NewInMemoryStore(WithTTL(time.Second))
+	defer store.Close()
+	ctx := context.Background()
+
+	_ = store.SaveMessages(ctx, "stale", []model.Message{model.NewTextMessage(model.RoleUser, "x")})
+	_ = store.SaveMessages(ctx, "fresh", []model.Message{model.NewTextMessage(model.RoleUser, "y")})
+
+	store.mu.Lock()
+	// Push "stale" past the cutoff; "fresh" stays current.
+	store.data["stale"].lastAccess = time.Now().Add(-2 * time.Second)
+	store.mu.Unlock()
+
+	store.evictExpired()
+
+	if _, ok := func() (any, bool) {
+		store.mu.RLock()
+		defer store.mu.RUnlock()
+		v, ok := store.data["stale"]
+		return v, ok
+	}(); ok {
+		t.Fatal("expected stale conversation to be evicted")
+	}
+	if got := store.Len(); got != 1 {
+		t.Fatalf("expected 1 fresh conversation, got %d", got)
+	}
+}
+
+func TestInMemoryStore_OptionRejectsNonPositive(t *testing.T) {
+	// WithMaxConversations(0) and WithTTL(0) are documented no-ops; the
+	// defaults must survive.
+	store := NewInMemoryStore(WithMaxConversations(0), WithTTL(0))
+	defer store.Close()
+
+	if store.maxConversations != defaultMaxConversations {
+		t.Fatalf("expected default max, got %d", store.maxConversations)
+	}
+	if store.ttl != defaultConversationTTL {
+		t.Fatalf("expected default ttl, got %s", store.ttl)
+	}
+}
+
+func TestInMemoryStore_CloseIdempotent(t *testing.T) {
+	// Two consecutive Close() calls must not panic on a closed channel.
+	store := NewInMemoryStore()
+	store.Close()
+	store.Close()
 }

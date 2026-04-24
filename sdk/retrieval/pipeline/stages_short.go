@@ -44,12 +44,22 @@ func (s HybridShortCircuit) Run(ctx context.Context, st *State) error {
 		TopK:        st.Request.TopK,
 		Mode:        mode,
 		Param:       s.Param,
+		// Forward the caller's debug request so backends that honour
+		// Capabilities.Debug can populate SearchResponse.Execution; the
+		// pipeline copies that explanation into State for emission.
+		Debug: st.Request.Debug,
 	})
 	if err != nil {
 		return err
 	}
 	if resp != nil {
 		st.Final = resp.Hits
+		// Preserve the backend's structured explanation so the wrapping
+		// pipeline can surface it on the short-circuit path. Without this
+		// the pipeline would observe empty Recalls/Trace and produce a
+		// nil SearchResponse.Execution even when the backend tried to
+		// honour Debug.
+		st.HybridExecution = resp.Execution
 	}
 	st.ShortCircuit = true
 	return nil

@@ -11,8 +11,34 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/workspace"
 )
 
-// ToolDeps holds dependencies for history tools.
+// ToolDeps bundles everything the history_expand / history_compact
+// tools need at registration time. Pass it to [RegisterTools].
+//
+// Coordinator is optional but strongly recommended: when set,
+// history_compact routes Compact / Archive through the per-conversation
+// worker queue, matching the serialization guarantees that
+// [Coordinator] offers to first-class callers. When Coordinator is nil
+// the tool falls back to constructing an ad-hoc [SummaryDAG] and
+// calling [archiveImpl] directly, which can race a concurrent
+// [History.Append] on the same conversation. New code that already has
+// a [History] from [NewCompacted] should always wire it via:
+//
+//	coord, _ := hist.(history.Coordinator)
+//	history.RegisterTools(registry, history.ToolDeps{
+//	    Coordinator:  coord,
+//	    SummaryStore: summaryStore,
+//	    MessageStore: msgStore,
+//	    Workspace:    ws,
+//	    Prefix:       prefix,
+//	    Config:       cfg,
+//	})
 type ToolDeps struct {
+	// Coordinator, when non-nil, makes history_compact go through the
+	// per-conversation queue. Leaving it nil preserves the v0.2 "direct
+	// store mutation" behaviour and keeps the struct usable from code
+	// that only has raw stores.
+	Coordinator Coordinator
+
 	SummaryStore SummaryStore
 	MessageStore Store
 	Workspace    workspace.Workspace
@@ -20,10 +46,13 @@ type ToolDeps struct {
 	Config       DAGConfig
 }
 
-// RegisterTools registers history_expand and history_compact. The
-// summary index is auto-injected into the LLM system prompt via the
-// workflow.VarSummaryIndex board variable, so a separate
-// history_search tool is not needed.
+// RegisterTools registers history_expand and history_compact against the
+// supplied [tool.Registry]. The summary index is auto-injected into the
+// LLM system prompt via the workflow.VarSummaryIndex board variable, so
+// a separate history_search tool is not needed.
+//
+// See [ToolDeps] for the recommended way to construct deps from an
+// existing [History] / [Coordinator] pair.
 func RegisterTools(registry *tool.Registry, deps ToolDeps) {
 	registry.Register(newHistoryExpandTool(deps))
 	registry.RegisterWithScope(newHistoryCompactTool(deps), tool.ScopePlatform)
@@ -83,7 +112,6 @@ func (t *historyExpandTool) Execute(ctx context.Context, arguments string) (stri
 		return formatChildSummaries(children), nil
 	}
 
-	// Leaf node: return original messages.
 	return t.expandLeaf(ctx, convID, node, args.MaxMessages)
 }
 
@@ -91,29 +119,26 @@ func (t *historyExpandTool) expandLeaf(ctx context.Context, convID string, node 
 	startSeq := node.EarliestSeq
 	endSeq := node.LatestSeq + 1
 
-	// Check archive manifest for Hot/Cold boundary.
 	if t.deps.Workspace != nil {
 		archivePrefix := t.deps.Config.Archive.ArchivePrefix
 		if archivePrefix == "" {
 			archivePrefix = "archive"
 		}
-		manifest, err := LoadManifest(ctx, t.deps.Workspace, t.deps.Prefix, archivePrefix, convID)
+		manifest, err := loadManifestImpl(ctx, t.deps.Workspace, t.deps.Prefix, archivePrefix, convID)
 		if err == nil && manifest.HotStartSeq > 0 {
 			var allMsgs []model.Message
 
-			// Cold part.
 			if startSeq < manifest.HotStartSeq {
 				coldEnd := endSeq
 				if coldEnd > manifest.HotStartSeq {
 					coldEnd = manifest.HotStartSeq
 				}
-				coldMsgs, err := LoadArchivedMessages(ctx, t.deps.Workspace, t.deps.Prefix, archivePrefix, convID, startSeq, coldEnd-1)
+				coldMsgs, err := loadArchivedMessagesImpl(ctx, t.deps.Workspace, t.deps.Prefix, archivePrefix, convID, startSeq, coldEnd-1)
 				if err == nil {
 					allMsgs = append(allMsgs, coldMsgs...)
 				}
 			}
 
-			// Hot part.
 			if endSeq > manifest.HotStartSeq {
 				hotStart := startSeq - manifest.HotStartSeq
 				if hotStart < 0 {
@@ -137,7 +162,6 @@ func (t *historyExpandTool) expandLeaf(ctx context.Context, convID string, node 
 		}
 	}
 
-	// No archive or fallback: use RangeReader directly.
 	if rr, ok := t.deps.MessageStore.(RangeReader); ok {
 		msgs, err := rr.GetMessageRange(ctx, convID, startSeq, endSeq)
 		if err == nil {
@@ -148,7 +172,6 @@ func (t *historyExpandTool) expandLeaf(ctx context.Context, convID string, node 
 		}
 	}
 
-	// Final fallback: get all messages and slice.
 	msgs, err := t.deps.MessageStore.GetMessages(ctx, convID)
 	if err != nil {
 		return "", fmt.Errorf("history_expand: get messages: %w", err)
@@ -227,8 +250,33 @@ func (t *historyCompactTool) Execute(ctx context.Context, arguments string) (str
 	}
 	var res resultJSON
 
-	// We need a SummaryDAG reference. The tool deps don't directly hold it.
-	// Instead, we operate through the store interfaces.
+	// Preferred path: a Coordinator is wired, every operation observes
+	// per-conversation serialization, and we never reach into the raw
+	// stores from the tool.
+	if t.deps.Coordinator != nil {
+		if doCompact {
+			cr, err := t.deps.Coordinator.Compact(ctx, args.ConversationID)
+			if err != nil {
+				return "", fmt.Errorf("history_compact: compact: %w", err)
+			}
+			res.CompactResult = &cr
+		}
+		if doArchive {
+			ar, err := t.deps.Coordinator.Archive(ctx, args.ConversationID)
+			if err != nil {
+				return "", fmt.Errorf("history_compact: archive: %w", err)
+			}
+			res.ArchiveResult = &ar
+		}
+		data, _ := json.Marshal(res)
+		return string(data), nil
+	}
+
+	// Fallback path (no Coordinator wired): we go straight to the
+	// stores, which means a concurrent Append on the same conversation
+	// can race the trim step inside archive. Callers that own a
+	// [History] from [NewCompacted] should always populate
+	// [ToolDeps.Coordinator] to avoid this branch.
 	cfg := t.deps.Config
 	if doCompact && t.deps.SummaryStore != nil {
 		dag := &SummaryDAG{
@@ -241,9 +289,8 @@ func (t *historyCompactTool) Execute(ctx context.Context, arguments string) (str
 		}
 		res.CompactResult = &cr
 	}
-
 	if doArchive && t.deps.Workspace != nil && t.deps.MessageStore != nil {
-		ar, err := Archive(ctx, t.deps.Workspace, t.deps.MessageStore, t.deps.Prefix, args.ConversationID, cfg.Archive)
+		ar, err := archiveImpl(ctx, t.deps.Workspace, t.deps.MessageStore, t.deps.Prefix, args.ConversationID, cfg.Archive)
 		if err != nil {
 			return "", fmt.Errorf("history_compact: archive: %w", err)
 		}

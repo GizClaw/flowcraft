@@ -162,3 +162,15 @@ func TestInMemoryStore_ConcurrentGetMessages(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+func TestBudget_IsZero(t *testing.T) {
+	if !(Budget{}).IsZero() {
+		t.Fatal("zero Budget should report IsZero")
+	}
+	if (Budget{MaxTokens: 1}).IsZero() {
+		t.Fatal("MaxTokens=1 must not be zero")
+	}
+	if (Budget{MaxMessages: 1}).IsZero() {
+		t.Fatal("MaxMessages=1 must not be zero")
+	}
+}

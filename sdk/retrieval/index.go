@@ -38,6 +38,10 @@ type HybridRequest struct {
 	TopK        int
 	Mode        HybridMode
 	Param       map[string]any
+
+	// Debug controls how much execution detail Hybridable backends should
+	// attach to SearchResponse.Execution. Zero value disables it.
+	Debug SearchDebug
 }
 
 // Vectorizable marks backends that embed internally.

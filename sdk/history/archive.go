@@ -46,8 +46,8 @@ type ArchiveResult struct {
 	HotStartSeq      int    `json:"hot_start_seq"`
 }
 
-// LoadManifest reads the archive manifest for a conversation.
-func LoadManifest(ctx context.Context, ws workspace.Workspace, prefix, archivePrefix, convID string) (*ArchiveManifest, error) {
+// loadManifestImpl reads the archive manifest for a conversation.
+func loadManifestImpl(ctx context.Context, ws workspace.Workspace, prefix, archivePrefix, convID string) (*ArchiveManifest, error) {
 	path := manifestPath(prefix, archivePrefix, convID)
 	exists, err := ws.Exists(ctx, path)
 	if err != nil {
@@ -67,9 +67,10 @@ func LoadManifest(ctx context.Context, ws workspace.Workspace, prefix, archivePr
 	return &m, nil
 }
 
-// SaveManifest writes the archive manifest atomically (write-tmp + rename),
-// so a crash mid-write cannot leave readers seeing a half-serialized manifest.
-func SaveManifest(ctx context.Context, ws workspace.Workspace, prefix, archivePrefix, convID string, m *ArchiveManifest) error {
+// saveManifestImpl writes the archive manifest atomically (write-tmp +
+// rename), so a crash mid-write cannot leave readers seeing a half-
+// serialized manifest.
+func saveManifestImpl(ctx context.Context, ws workspace.Workspace, prefix, archivePrefix, convID string, m *ArchiveManifest) error {
 	data, err := json.MarshalIndent(m, "", "  ")
 	if err != nil {
 		return fmt.Errorf("archive: marshal manifest: %w", err)
@@ -137,9 +138,12 @@ func loadIntent(ctx context.Context, ws workspace.Workspace, prefix, archivePref
 	return &intent, nil
 }
 
-// RecoverArchive checks for incomplete archive operations and completes them.
-// Call this at startup before any new archive operations.
-func RecoverArchive(ctx context.Context, ws workspace.Workspace, store Store, prefix, archivePrefix, convID string) error {
+// recoverArchiveImpl checks for incomplete archive operations and
+// completes them. The [Coordinator] runs this at construction (startup
+// scan) and on the first task per conversation (lazy recovery); the
+// deprecated top-level [RecoverArchive] shim calls through to here for
+// callers still on the v0.2.x manual-recovery flow.
+func recoverArchiveImpl(ctx context.Context, ws workspace.Workspace, store Store, prefix, archivePrefix, convID string) error {
 	intent, err := loadIntent(ctx, ws, prefix, archivePrefix, convID)
 	if err != nil || intent == nil {
 		return err
@@ -164,7 +168,7 @@ func RecoverArchive(ctx context.Context, ws workspace.Workspace, store Store, pr
 		}
 	case "gzip_written":
 		// Gzip done but manifest not updated — update manifest then trim.
-		manifest, err := LoadManifest(ctx, ws, prefix, archivePrefix, convID)
+		manifest, err := loadManifestImpl(ctx, ws, prefix, archivePrefix, convID)
 		if err != nil {
 			return fmt.Errorf("archive: recovery load manifest: %w", err)
 		}
@@ -185,7 +189,7 @@ func RecoverArchive(ctx context.Context, ws workspace.Workspace, store Store, pr
 				CreatedAt: time.Now(),
 			})
 			manifest.HotStartSeq = intent.EndSeq + 1
-			if err := SaveManifest(ctx, ws, prefix, archivePrefix, convID, manifest); err != nil {
+			if err := saveManifestImpl(ctx, ws, prefix, archivePrefix, convID, manifest); err != nil {
 				return fmt.Errorf("archive: recovery save manifest: %w", err)
 			}
 		}
@@ -206,9 +210,14 @@ func RecoverArchive(ctx context.Context, ws workspace.Workspace, store Store, pr
 	return nil
 }
 
-// Archive moves old messages to gzip-compressed archive files.
-// Uses an intent file for crash recovery (see RecoverArchive).
-func Archive(ctx context.Context, ws workspace.Workspace, store Store, prefix, convID string, cfg ArchiveConfig) (ArchiveResult, error) {
+// archiveImpl moves old messages to gzip-compressed archive files. It is
+// the package-private implementation called by the [Coordinator] (via
+// internalArchive) and by the deprecated top-level [Archive] shim.
+//
+// Crash recovery is handled by recoverArchiveImpl; new callers should
+// drive both through [Coordinator] rather than invoking the package
+// helpers directly.
+func archiveImpl(ctx context.Context, ws workspace.Workspace, store Store, prefix, convID string, cfg ArchiveConfig) (ArchiveResult, error) {
 	start := time.Now()
 	defer func() {
 		archiveDuration.Record(ctx, time.Since(start).Seconds())
@@ -248,7 +257,7 @@ func Archive(ctx context.Context, ws workspace.Workspace, store Store, prefix, c
 		archivePrefix = "archive"
 	}
 
-	manifest, err := LoadManifest(ctx, ws, prefix, archivePrefix, convID)
+	manifest, err := loadManifestImpl(ctx, ws, prefix, archivePrefix, convID)
 	if err != nil {
 		return result, err
 	}
@@ -298,7 +307,7 @@ func Archive(ctx context.Context, ws workspace.Workspace, store Store, prefix, c
 	})
 	manifest.HotStartSeq = endSeq + 1
 
-	if err := SaveManifest(ctx, ws, prefix, archivePrefix, convID, manifest); err != nil {
+	if err := saveManifestImpl(ctx, ws, prefix, archivePrefix, convID, manifest); err != nil {
 		return result, fmt.Errorf("archive: save manifest: %w", err)
 	}
 
@@ -333,9 +342,12 @@ func archiveDir(prefix, archivePrefix, convID string) string {
 	return fmt.Sprintf("%s/%s", convID, archivePrefix)
 }
 
-// LoadArchivedMessages reads messages from gzip archive segments.
-func LoadArchivedMessages(ctx context.Context, ws workspace.Workspace, prefix, archivePrefix, convID string, startSeq, endSeq int) ([]model.Message, error) {
-	manifest, err := LoadManifest(ctx, ws, prefix, archivePrefix, convID)
+// loadArchivedMessagesImpl reads messages from gzip archive segments. It
+// powers history_expand's cold-segment path; callers outside the
+// history package should obtain archived turns via the history_expand
+// tool registered through [RegisterTools].
+func loadArchivedMessagesImpl(ctx context.Context, ws workspace.Workspace, prefix, archivePrefix, convID string, startSeq, endSeq int) ([]model.Message, error) {
+	manifest, err := loadManifestImpl(ctx, ws, prefix, archivePrefix, convID)
 	if err != nil {
 		return nil, err
 	}

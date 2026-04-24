@@ -22,6 +22,15 @@ type Capabilities struct {
 
 	ReadAfterWrite bool
 	Distributed    bool
+
+	// Debug reports whether the backend will honour SearchRequest.Debug
+	// (or HybridRequest.Debug) by populating SearchResponse.Execution.
+	//
+	// Backends that delegate retrieval to a higher-level pipeline (e.g.
+	// MemoryIndex used through retrieval/pipeline) typically leave this
+	// false: pipelines populate Execution themselves; the backend has no
+	// view of lanes/stages on the direct Search path.
+	Debug bool
 }
 
 // DefaultMemoryCapabilities returns capabilities for MemoryIndex.

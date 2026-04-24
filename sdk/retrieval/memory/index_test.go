@@ -88,6 +88,35 @@ func TestListPagination(t *testing.T) {
 	}
 }
 
+func TestListPagination_StalePageTokenReturnsEmptyPage(t *testing.T) {
+	ctx := context.Background()
+	idx := New()
+	ns := "ns-stale-token"
+	now := time.Now()
+	if err := idx.Upsert(ctx, ns, []retrieval.Doc{
+		{ID: "a", Content: "x", Timestamp: now},
+		{ID: "b", Content: "x", Timestamp: now.Add(time.Second)},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	tok, err := retrieval.EncodeListPageToken(10)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	resp, err := idx.List(ctx, ns, retrieval.ListRequest{PageSize: 2, PageToken: tok})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Items) != 0 {
+		t.Fatalf("expected empty page for stale token, got %d items", len(resp.Items))
+	}
+	if resp.NextPageToken != "" {
+		t.Fatalf("expected no next token, got %q", resp.NextPageToken)
+	}
+}
+
 func TestHybridRRF(t *testing.T) {
 	ctx := context.Background()
 	idx := New()

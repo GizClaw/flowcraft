@@ -222,9 +222,11 @@ func (m *Index) Search(_ context.Context, namespace string, req retrieval.Search
 		var hits []retrieval.Hit
 		for _, s := range out {
 			rrf := 1.0/(k+float64(bmRank[s.d.ID])) + 1.0/(k+float64(vecRank[s.d.ID]))
-			if rrf < req.MinScore {
-				continue
-			}
+			// SearchRequest.MinScore is intentionally NOT consulted on the
+			// hybrid path: RRF scores live on a different scale (~1/k) than
+			// raw BM25/cosine, and applying the same threshold here would
+			// silently change meaning depending on which modes were
+			// supplied. Use pipeline.ScoreThreshold for hybrid filtering.
 			hits = append(hits, retrieval.Hit{
 				Doc:    cloneDoc(s.d),
 				Score:  rrf,
@@ -315,10 +317,10 @@ func (m *Index) List(_ context.Context, namespace string, req retrieval.ListRequ
 		}
 	})
 	total := int64(len(all))
-	end := offset + pageSize
-	if end > len(all) {
-		end = len(all)
+	if offset >= len(all) {
+		return &retrieval.ListResponse{Items: []retrieval.Doc{}, Total: total}, nil
 	}
+	end := min(offset+pageSize, len(all))
 	page := all[offset:end]
 	for i := range page {
 		page[i] = projectDoc(cloneDoc(page[i]), req.Project, req.WithVector)
@@ -358,10 +360,7 @@ func (m *Index) Iterate(_ context.Context, namespace string, cursor string, batc
 			start = idx
 		}
 	}
-	end := start + batch
-	if end > len(ids) {
-		end = len(ids)
-	}
+	end := min(start+batch, len(ids))
 	var docs []retrieval.Doc
 	for i := start; i < end; i++ {
 		docs = append(docs, cloneDoc(n.docs[ids[i]]))

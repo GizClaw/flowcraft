@@ -2,6 +2,8 @@ package recall
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"time"
 
 	"github.com/GizClaw/flowcraft/sdk/retrieval"
@@ -49,7 +51,9 @@ func (m *lt) sweeperLoop() {
 		case <-m.stopCh:
 			return
 		case <-t.C:
-			_ = m.SweepOnce(context.Background())
+			if err := m.SweepOnce(m.workerCtx); err != nil && m.workerCtx.Err() == nil {
+				m.log("recall: sweeper pass failed: %v", err)
+			}
 		}
 	}
 }
@@ -67,14 +71,23 @@ func (m *lt) SweepOnce(ctx context.Context) error {
 			{Range: map[string]retrieval.Range{"expires_at": {Lte: now}}},
 		},
 	}
-	// We do not enumerate every namespace; SweepNamespace covers explicit ones.
-	// In practice callers run a per-namespace sweeper or rely on adapter-side cron.
-	return m.sweepNamespace(ctx, "", filter)
+	namespaces, err := m.cfg.nsRegistry.List(ctx)
+	if err != nil {
+		return err
+	}
+	var errs []error
+	for _, ns := range namespaces {
+		if err := m.sweepNamespace(ctx, ns, filter); err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", ns, err))
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // SweepNamespace exposes a per-namespace TTL pass for callers who manage many
 // namespaces (e.g. one per tenant).
 func (m *lt) SweepNamespace(ctx context.Context, ns string) error {
+	m.rememberNamespace(ctx, ns)
 	now := m.cfg.now().UnixMilli()
 	filter := retrieval.Filter{
 		And: []retrieval.Filter{

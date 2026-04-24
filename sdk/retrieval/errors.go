@@ -8,20 +8,31 @@ import (
 )
 
 // PartialError reports per-document outcomes for a batch Upsert.
+//
+// Backends return PartialError when at least one document in the batch
+// failed validation but other documents were accepted (or would have been
+// accepted if the backend chose to commit per-row). Inspect Results to find
+// the failing IDs; entries with Err == nil indicate successful rows.
 type PartialError struct {
 	Results []DocUpsertResult
 }
 
 func (e *PartialError) Error() string {
+	if e == nil || len(e.Results) == 0 {
+		return "retrieval: partial upsert"
+	}
 	var b strings.Builder
 	b.WriteString("retrieval: partial upsert (")
-	for i, r := range e.Results {
-		if i > 0 {
+	first := true
+	for _, r := range e.Results {
+		if r.Err == nil {
+			continue
+		}
+		if !first {
 			b.WriteString("; ")
 		}
-		if r.Err != nil {
-			fmt.Fprintf(&b, "%s: %v", r.ID, r.Err)
-		}
+		fmt.Fprintf(&b, "%s: %v", r.ID, r.Err)
+		first = false
 	}
 	b.WriteString(")")
 	return b.String()
