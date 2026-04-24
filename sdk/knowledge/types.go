@@ -11,6 +11,10 @@
 package knowledge
 
 // ContextLayer indicates the granularity of a search result.
+//
+// v0.3.0 will rename ContextLayer -> Layer; the alias declared in
+// model.go (type Layer = ContextLayer) lets new code adopt the final name
+// today without breaking existing callers.
 type ContextLayer string
 
 const (
@@ -38,11 +42,21 @@ type SearchResult struct {
 	Metadata   map[string]any `json:"metadata,omitempty"`
 }
 
+// SearchMode chooses the retrieval algorithm.
+//
+// v0.3.0 final values are explicit strings; legacy callers that pass the
+// empty string are normalised to ModeBM25 by Mode.Resolve().
+//
+// Deprecated names:
+//   - ModeSemantic remains for backwards compatibility; new code should
+//     use ModeVector. They are recognised as equivalent at the Service
+//     boundary starting in v0.2.x and ModeSemantic is removed in v0.3.0.
 type SearchMode string
 
 const (
-	ModeBM25     SearchMode = ""
-	ModeSemantic SearchMode = "semantic"
+	ModeBM25     SearchMode = "bm25"
+	ModeVector   SearchMode = "vector"
+	ModeSemantic SearchMode = "semantic" // Deprecated: use ModeVector.
 	ModeHybrid   SearchMode = "hybrid"
 )
 
