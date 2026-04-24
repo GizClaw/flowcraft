@@ -24,6 +24,9 @@ const (
 )
 
 // Document represents a knowledge base document.
+//
+// Deprecated: use SourceDocument (raw content + Version) and DerivedLayer
+// (L0/L1) separately. Document conflates the two and is removed in v0.3.0.
 type Document struct {
 	Name     string            `json:"name"`
 	Content  string            `json:"content"`
@@ -33,6 +36,8 @@ type Document struct {
 }
 
 // SearchResult represents a single search hit with its relevance score.
+//
+// Deprecated: use Hit. SearchResult is removed in v0.3.0.
 type SearchResult struct {
 	Content    string         `json:"content"`
 	Score      float64        `json:"score"`
@@ -61,6 +66,9 @@ const (
 )
 
 // SearchOptions configures a knowledge search query.
+//
+// Deprecated: use Query. The MaxLayer→Layer rename and ScopeAllDatasets
+// fan-out live on Query. SearchOptions is removed in v0.3.0.
 type SearchOptions struct {
 	TopK      int          `json:"top_k,omitempty"`
 	MaxLayer  ContextLayer `json:"max_layer,omitempty"`
@@ -82,6 +90,8 @@ func DefaultChunkConfig() ChunkConfig {
 const DefaultThreshold = 0.1
 
 // Chunk represents a segment of a document.
+//
+// Deprecated: use DerivedChunk. Chunk is removed in v0.3.0.
 type Chunk struct {
 	DocName string `json:"doc_name"`
 	Index   int    `json:"index"`

@@ -30,6 +30,10 @@ type cacheEntry struct {
 
 // CachedStore wraps a Store with TTL + LRU caching for read operations.
 // Write operations are forwarded and evict related cache entries.
+//
+// Deprecated: caching now lives inside Service / repository implementations
+// where appropriate; the indirection no longer earns its keep at the
+// orchestration layer. Removed in v0.3.0.
 type CachedStore struct {
 	inner    Store
 	mu       sync.RWMutex
@@ -40,6 +44,8 @@ type CachedStore struct {
 }
 
 // NewCachedStore wraps inner with caching.
+//
+// Deprecated: see CachedStore docs. Removed in v0.3.0.
 func NewCachedStore(inner Store, opts ...CacheOption) *CachedStore {
 	s := &CachedStore{
 		inner:    inner,

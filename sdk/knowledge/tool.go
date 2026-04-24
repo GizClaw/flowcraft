@@ -10,6 +10,9 @@ import (
 
 const defaultDatasetID = "default"
 
+// NewSearchTool returns the legacy "knowledge_search" LLM tool.
+//
+// Deprecated: use NewSearchServiceTool(*Service). Removed in v0.3.0.
 func NewSearchTool(ks Store) tool.Tool {
 	return tool.FuncTool(
 		tool.DefineSchema("knowledge_search",
@@ -47,6 +50,9 @@ func NewSearchTool(ks Store) tool.Tool {
 	)
 }
 
+// NewAddTool returns the legacy "knowledge_add" LLM tool.
+//
+// Deprecated: use NewPutServiceTool(*Service). Removed in v0.3.0.
 func NewAddTool(ks Store) tool.Tool {
 	return tool.FuncTool(
 		tool.DefineSchema("knowledge_add",

@@ -15,6 +15,9 @@ import (
 // Events on the Events channel must be coalesced by the consumer; the
 // Reloader below applies a debounce window. Implementations should close
 // Events when Close is called.
+//
+// Deprecated: use EventNotifier (typed ChangeEvent stream) with
+// EventReloader. Removed in v0.3.0.
 type ChangeNotifier interface {
 	Events() <-chan struct{}
 	Close() error
@@ -31,6 +34,9 @@ type ChangeNotifier interface {
 //
 // Rebuild defaults to FSStore.BuildIndex; callers can override to integrate
 // with their own RetrievalStore implementations.
+//
+// Deprecated: use EventReloader (typed events + scope-aware Service.Rebuild
+// + serialised execution). Removed in v0.3.0.
 type Reloader struct {
 	notifier ChangeNotifier
 	rebuild  func(ctx context.Context) error
@@ -62,6 +68,9 @@ type ReloaderOptions struct {
 //
 // When opts.Rebuild is nil and store is non-nil, the reloader falls back to
 // store.BuildIndex(ctx).
+//
+// Deprecated: use NewEventReloader(target Rebuilder, notifier EventNotifier, opts).
+// Removed in v0.3.0.
 func NewReloader(store *FSStore, notifier ChangeNotifier, opts ReloaderOptions) *Reloader {
 	d := opts.Debounce
 	if d <= 0 {

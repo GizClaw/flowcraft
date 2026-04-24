@@ -35,6 +35,9 @@ import (
 // Caller responsibility: pre-compute embeddings for chunks (when supplying
 // an Embedder) — RetrievalStore reuses GenericEmbedder if
 // configured.
+//
+// Deprecated: use factory.NewRetrieval(docs, idx, opts...) which returns a
+// *Service backed by backend/retrieval. Removed in v0.3.0.
 type RetrievalStore struct {
 	idx       retrieval.Index
 	embedder  embedding.Embedder
@@ -69,6 +72,8 @@ func WithRetrievalTokenizer(t Tokenizer) RetrievalStoreOption {
 
 // NewRetrievalStore wires a Store to a retrieval.Index. The store is safe
 // for concurrent use; it does not own idx (caller must Close).
+//
+// Deprecated: use factory.NewRetrieval(docs, idx, opts...). Removed in v0.3.0.
 func NewRetrievalStore(idx retrieval.Index, opts ...RetrievalStoreOption) *RetrievalStore {
 	s := &RetrievalStore{
 		idx:      idx,

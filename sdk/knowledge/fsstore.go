@@ -142,6 +142,9 @@ func WithEmbedder(e Embedder) FSStoreOption {
 // GenerateDatasetContext helpers and then publish results back through
 // SetDocAbstract / SetDocOverview / SetDatasetAbstract / SetDatasetOverview
 // (and WriteSidecar / WriteDatasetFile for persistence).
+//
+// Deprecated: use factory.NewLocal(ws, opts...) which returns a *Service
+// backed by backend/fs repositories. Removed in v0.3.0.
 type FSStore struct {
 	ws        workspace.Workspace
 	prefix    string
@@ -153,6 +156,8 @@ type FSStore struct {
 }
 
 // NewFSStore creates a knowledge store rooted at the given prefix.
+//
+// Deprecated: use factory.NewLocal(ws, opts...). Removed in v0.3.0.
 func NewFSStore(ws workspace.Workspace, opts ...FSStoreOption) *FSStore {
 	s := &FSStore{
 		ws:       ws,

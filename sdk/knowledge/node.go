@@ -13,6 +13,9 @@ import (
 )
 
 // KnowledgeConfig configures a Knowledge node.
+//
+// Deprecated: use KnowledgeNodeConfig (adds Scope / Mode / Threshold and
+// renames MaxLayer→Layer). Removed in v0.3.0.
 type KnowledgeConfig struct {
 	Datasets []DatasetQuery `json:"datasets"`
 	MaxLayer ContextLayer   `json:"max_layer,omitempty"` // L0, L1, L2 (default)
@@ -26,6 +29,8 @@ type DatasetQuery struct {
 }
 
 // KnowledgeNode is a Go-native graph node for knowledge retrieval.
+//
+// Deprecated: use KnowledgeServiceNode. Removed in v0.3.0.
 type KnowledgeNode struct {
 	id        string
 	store     Store
@@ -34,6 +39,9 @@ type KnowledgeNode struct {
 }
 
 // NewKnowledgeNode creates a Knowledge node. store may be nil (retrieval returns empty).
+//
+// Deprecated: use NewKnowledgeServiceNode(id, *Service, KnowledgeNodeConfig).
+// Removed in v0.3.0.
 func NewKnowledgeNode(id string, store Store, config KnowledgeConfig) *KnowledgeNode {
 	return &KnowledgeNode{id: id, store: store, config: config}
 }
@@ -126,6 +134,8 @@ func searchResultsToSlice(results []SearchResult) []map[string]any {
 }
 
 // KnowledgeConfigFromMap parses a KnowledgeConfig from a generic map.
+//
+// Deprecated: use KnowledgeNodeConfigFromMap. Removed in v0.3.0.
 func KnowledgeConfigFromMap(m map[string]any) KnowledgeConfig {
 	cfg := KnowledgeConfig{}
 	if datasets, ok := m["datasets"].([]any); ok {
@@ -154,6 +164,8 @@ func KnowledgeConfigFromMap(m map[string]any) KnowledgeConfig {
 // RegisterNode registers the "knowledge" node builder with the SDK's node
 // factory, capturing the given Store via closure. Call this from bootstrap
 // before constructing the node factory.
+//
+// Deprecated: use RegisterServiceNode(*Service). Removed in v0.3.0.
 func RegisterNode(ks Store) {
 	node.RegisterDefaultBuilder("knowledge", func(def graph.NodeDefinition, bctx *node.BuildContext) (graph.Node, error) {
 		cfg := KnowledgeConfigFromMap(def.Config)
@@ -165,6 +177,8 @@ func RegisterNode(ks Store) {
 
 // KnowledgeNodeSchema returns the NodeSchema for the knowledge node type,
 // used by the schema registry for frontend metadata.
+//
+// Deprecated: use KnowledgeServiceNodeSchema. Removed in v0.3.0.
 func KnowledgeNodeSchema() node.NodeSchema {
 	return node.NodeSchema{
 		Type:        "knowledge",
