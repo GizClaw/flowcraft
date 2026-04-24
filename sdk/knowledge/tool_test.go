@@ -1,93 +1,115 @@
-package knowledge
+package knowledge_test
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 
-	"github.com/GizClaw/flowcraft/sdk/workspace"
+	"github.com/GizClaw/flowcraft/sdk/knowledge"
 )
 
-func TestSearchTool_Execute(t *testing.T) {
-	ws := workspace.NewMemWorkspace()
-	store := NewFSStore(ws, WithChunkConfig(ChunkConfig{ChunkSize: 200, ChunkOverlap: 20}))
+func TestSearchServiceTool_AllScopeDefault(t *testing.T) {
+	svc := newLocalService(t)
 	ctx := context.Background()
-
-	_ = store.AddDocument(ctx, "ds1", "go.md", "Go is a compiled programming language")
-
-	st := NewSearchTool(store)
-	if st.Definition().Name != "knowledge_search" {
-		t.Fatalf("expected tool name knowledge_search, got %s", st.Definition().Name)
+	if err := svc.PutDocument(ctx, "ds", "go.md", "Go is a compiled programming language"); err != nil {
+		t.Fatalf("put: %v", err)
+	}
+	tool := knowledge.NewSearchServiceTool(svc)
+	if got := tool.Definition().Name; got != "knowledge_search" {
+		t.Fatalf("tool name = %q, want knowledge_search", got)
 	}
 
-	result, err := st.Execute(ctx, `{"query": "Go programming"}`)
+	out, err := tool.Execute(ctx, `{"query":"Go programming"}`)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("execute: %v", err)
 	}
-	if result == "" || result == "[]" || result == "null" {
-		t.Fatal("expected non-empty search results")
+	var hits []knowledge.Hit
+	if err := json.Unmarshal([]byte(out), &hits); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(hits) == 0 {
+		t.Fatalf("expected hits, got %s", out)
 	}
 }
 
-func TestSearchTool_NilStore(t *testing.T) {
-	st := NewSearchTool(nil)
-	_, err := st.Execute(context.Background(), `{"query": "test"}`)
-	if err == nil {
-		t.Fatal("expected error for nil store")
+func TestSearchServiceTool_NilService(t *testing.T) {
+	tool := knowledge.NewSearchServiceTool(nil)
+	if _, err := tool.Execute(context.Background(), `{"query":"x"}`); err == nil {
+		t.Fatal("expected error for nil service")
 	}
 }
 
-func TestAddTool_Execute(t *testing.T) {
-	ws := workspace.NewMemWorkspace()
-	store := NewFSStore(ws)
+func TestSearchServiceTool_SingleScope(t *testing.T) {
+	svc := newLocalService(t)
 	ctx := context.Background()
-
-	at := NewAddTool(store)
-	if at.Definition().Name != "knowledge_add" {
-		t.Fatalf("expected tool name knowledge_add, got %s", at.Definition().Name)
+	if err := svc.PutDocument(ctx, "docs", "go.md", "Go alpha banana"); err != nil {
+		t.Fatalf("put: %v", err)
 	}
-
-	result, err := at.Execute(ctx, `{"name":"debug-tips.md","content":"Always check logs first."}`)
+	tool := knowledge.NewSearchServiceTool(svc)
+	out, err := tool.Execute(ctx, `{"query":"alpha","scope":"single","dataset_id":"docs"}`)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("execute: %v", err)
 	}
-	if !strings.Contains(result, `"status":"ok"`) {
-		t.Fatalf("expected ok status, got %s", result)
-	}
-
-	doc, err := store.GetDocument(ctx, "default", "debug-tips.md")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(doc.Content, "Always check logs first") {
-		t.Fatal("document content mismatch")
+	if out == "[]" {
+		t.Fatal("expected hits for single scope, got []")
 	}
 }
 
-func TestAddTool_CustomDataset(t *testing.T) {
-	ws := workspace.NewMemWorkspace()
-	store := NewFSStore(ws)
-	ctx := context.Background()
+func TestSearchServiceTool_InvalidScope(t *testing.T) {
+	svc := newLocalService(t)
+	tool := knowledge.NewSearchServiceTool(svc)
+	if _, err := tool.Execute(context.Background(), `{"query":"x","scope":"bogus"}`); err == nil {
+		t.Fatal("expected validation error")
+	}
+}
 
-	at := NewAddTool(store)
-	_, err := at.Execute(ctx, `{"dataset_id":"recipes","name":"go-deploy.md","content":"Use multi-stage Docker builds."}`)
+func TestPutServiceTool_DefaultDatasetAndVersion(t *testing.T) {
+	svc := newLocalService(t)
+	ctx := context.Background()
+	tool := knowledge.NewPutServiceTool(svc)
+	if got := tool.Definition().Name; got != "knowledge_put" {
+		t.Fatalf("tool name = %q, want knowledge_put", got)
+	}
+	out, err := tool.Execute(ctx, `{"name":"a.md","content":"alpha"}`)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("execute: %v", err)
+	}
+	if !strings.Contains(out, `"status":"ok"`) {
+		t.Fatalf("response missing status: %s", out)
+	}
+	if !strings.Contains(out, `"version":1`) {
+		t.Fatalf("response missing version 1: %s", out)
 	}
 
-	doc, err := store.GetDocument(ctx, "recipes", "go-deploy.md")
+	out2, err := tool.Execute(ctx, `{"name":"a.md","content":"beta"}`)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("re-put: %v", err)
+	}
+	if !strings.Contains(out2, `"version":2`) {
+		t.Fatalf("response missing version 2: %s", out2)
+	}
+}
+
+func TestPutServiceTool_NilService(t *testing.T) {
+	tool := knowledge.NewPutServiceTool(nil)
+	if _, err := tool.Execute(context.Background(), `{"name":"a.md","content":"x"}`); err == nil {
+		t.Fatal("expected error for nil service")
+	}
+}
+
+func TestPutServiceTool_CustomDataset(t *testing.T) {
+	svc := newLocalService(t)
+	ctx := context.Background()
+	tool := knowledge.NewPutServiceTool(svc)
+	if _, err := tool.Execute(ctx, `{"dataset_id":"recipes","name":"r.md","content":"x"}`); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	doc, err := svc.GetDocument(ctx, "recipes", "r.md")
+	if err != nil {
+		t.Fatalf("get: %v", err)
 	}
 	if doc == nil {
 		t.Fatal("expected document in custom dataset")
-	}
-}
-
-func TestAddTool_NilStore(t *testing.T) {
-	at := NewAddTool(nil)
-	_, err := at.Execute(context.Background(), `{"name":"x.md","content":"y"}`)
-	if err == nil {
-		t.Fatal("expected error for nil store")
 	}
 }
