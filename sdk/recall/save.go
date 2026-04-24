@@ -56,6 +56,7 @@ func (m *lt) Save(ctx context.Context, scope Scope, msgs []llm.Message) (SaveRes
 	if err := m.validateScope(scope); err != nil {
 		return SaveResult{}, err
 	}
+	m.rememberNamespace(ctx, NamespaceFor(scope))
 	var extractOpts []ExtractOption
 	if m.cfg.saveWithCtx {
 		if existing := m.gatherExistingFacts(ctx, scope, msgs); len(existing) > 0 {
@@ -151,6 +152,7 @@ func (m *lt) SaveAsync(ctx context.Context, scope Scope, msgs []llm.Message) (Jo
 		return "", err
 	}
 	ns := NamespaceFor(scope)
+	m.rememberNamespace(ctx, ns)
 	return m.cfg.jobQueue.Enqueue(ctx, ns, JobPayload{Scope: scope, Messages: msgs})
 }
 
@@ -208,6 +210,7 @@ func (m *lt) Add(ctx context.Context, scope Scope, e Entry) (string, error) {
 	}
 	d := EntryToDoc(e)
 	ns := NamespaceFor(scope)
+	m.rememberNamespace(ctx, ns)
 	if err := m.idx.Upsert(ctx, ns, []retrieval.Doc{d}); err != nil {
 		span.RecordError(err)
 		addTotal.Add(ctx, 1, metric.WithAttributes(attribute.String("outcome", "fail"), attribute.String("reason", "upsert")))
@@ -237,6 +240,8 @@ func (m *lt) upsertFacts(
 	if len(facts) == 0 {
 		return nil, nil
 	}
+	ns := NamespaceFor(scope)
+	m.rememberNamespace(ctx, ns)
 
 	// 1. MD5 dedup ---------------------------------------------------------
 	hashes := make([]string, len(facts))
@@ -342,7 +347,7 @@ func (m *lt) upsertFacts(
 	for i, p := range plans {
 		docs[i] = p.doc
 	}
-	if err := m.idx.Upsert(ctx, NamespaceFor(scope), docs); err != nil {
+	if err := m.idx.Upsert(ctx, ns, docs); err != nil {
 		return nil, err
 	}
 	return returnedIDs, nil

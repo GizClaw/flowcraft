@@ -15,13 +15,23 @@ import (
 // . Reads: Request.QueryText. Writes: Request.QueryVector.
 //
 // If Request.QueryVector is already non-empty, EmbedQuery is a no-op.
+//
+// The cache evicts entries via TTL expiry on read (lazy) and via an
+// upper-bound eviction (MaxEntries, default 1024) on write so a long-lived
+// EmbedQuery cannot accumulate unbounded memory under high-cardinality
+// query traffic.
 type EmbedQuery struct {
 	Embedder embedding.Embedder
 	TTL      time.Duration
+	// MaxEntries caps the in-memory cache size. Zero means use the
+	// default (1024); negative disables caching entirely.
+	MaxEntries int
 
 	mu    sync.Mutex
 	cache map[string]embedCacheEntry
 }
+
+const defaultEmbedCacheMax = 1024
 
 type embedCacheEntry struct {
 	vec []float32
@@ -43,15 +53,33 @@ func (s *EmbedQuery) Run(ctx context.Context, st *State) error {
 	if ttl <= 0 {
 		ttl = 30 * time.Second
 	}
+	maxEntries := s.MaxEntries
+	switch {
+	case maxEntries < 0:
+		// Caching disabled by the caller.
+		v, err := s.Embedder.Embed(ctx, st.Request.QueryText)
+		if err != nil {
+			return err
+		}
+		st.Request.QueryVector = v
+		return nil
+	case maxEntries == 0:
+		maxEntries = defaultEmbedCacheMax
+	}
 	key := st.Request.QueryText
 	s.mu.Lock()
 	if s.cache == nil {
 		s.cache = make(map[string]embedCacheEntry)
 	}
-	if e, ok := s.cache[key]; ok && time.Now().Before(e.exp) {
-		st.Request.QueryVector = append([]float32(nil), e.vec...)
-		s.mu.Unlock()
-		return nil
+	if e, ok := s.cache[key]; ok {
+		if time.Now().Before(e.exp) {
+			st.Request.QueryVector = append([]float32(nil), e.vec...)
+			s.mu.Unlock()
+			return nil
+		}
+		// Drop the expired entry while we hold the lock to keep the
+		// map size honest under high-churn workloads.
+		delete(s.cache, key)
 	}
 	s.mu.Unlock()
 	v, err := s.Embedder.Embed(ctx, key)
@@ -59,6 +87,26 @@ func (s *EmbedQuery) Run(ctx context.Context, st *State) error {
 		return err
 	}
 	s.mu.Lock()
+	if len(s.cache) >= maxEntries {
+		// Evict any single expired entry first, then fall back to a
+		// random victim. This is intentionally cheap: the cache is a
+		// best-effort latency optimisation, not a correctness boundary.
+		now := time.Now()
+		evicted := false
+		for k, e := range s.cache {
+			if !now.Before(e.exp) {
+				delete(s.cache, k)
+				evicted = true
+				break
+			}
+		}
+		if !evicted {
+			for k := range s.cache {
+				delete(s.cache, k)
+				break
+			}
+		}
+	}
 	s.cache[key] = embedCacheEntry{vec: append([]float32(nil), v...), exp: time.Now().Add(ttl)}
 	s.mu.Unlock()
 	st.Request.QueryVector = v

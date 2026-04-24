@@ -23,10 +23,13 @@ func Run(t *testing.T, f Factory) {
 	t.Run("NamespaceIsolation", func(t *testing.T) { testNamespaceIsolation(t, f) })
 	t.Run("SearchNoQuery", func(t *testing.T) { testSearchNoQuery(t, f) })
 	t.Run("ListPagination", func(t *testing.T) { testListPagination(t, f) })
+	t.Run("ListPaginationStalePageToken", func(t *testing.T) { testListPaginationStalePageToken(t, f) })
 	t.Run("FilterEqAndIn", func(t *testing.T) { testFilterEqIn(t, f) })
 	t.Run("FilterRangeAndExists", func(t *testing.T) { testFilterRangeExists(t, f) })
+	t.Run("FilterNotComposes", func(t *testing.T) { testFilterNotComposes(t, f) })
 	t.Run("DeleteByFilterValidation", func(t *testing.T) { testDeleteByFilterValidation(t, f) })
 	t.Run("CapabilitiesShape", func(t *testing.T) { testCapabilitiesShape(t, f) })
+	t.Run("SearchDebugIncludeLanesPopulatesExecution", func(t *testing.T) { testSearchDebugIncludeLanesPopulatesExecution(t, f) })
 }
 
 func mustUpsert(t *testing.T, idx retrieval.Index, ns string, docs []retrieval.Doc) {
@@ -162,6 +165,33 @@ func testListPagination(t *testing.T, f Factory) {
 	}
 }
 
+func testListPaginationStalePageToken(t *testing.T, f Factory) {
+	idx, cleanup := f(t)
+	defer cleanup()
+	defer idx.Close()
+	ctx := context.Background()
+	ns := "ns_list_stale"
+	now := time.Now()
+	mustUpsert(t, idx, ns, []retrieval.Doc{
+		{ID: "a", Content: "x", Timestamp: now},
+		{ID: "b", Content: "x", Timestamp: now.Add(time.Second)},
+	})
+	tok, err := retrieval.EncodeListPageToken(10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := idx.List(ctx, ns, retrieval.ListRequest{PageSize: 2, PageToken: tok})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Items) != 0 {
+		t.Fatalf("expected empty page for stale token, got %d items", len(resp.Items))
+	}
+	if resp.NextPageToken != "" {
+		t.Fatalf("expected no next token, got %q", resp.NextPageToken)
+	}
+}
+
 func testFilterEqIn(t *testing.T, f Factory) {
 	idx, cleanup := f(t)
 	defer cleanup()
@@ -224,6 +254,33 @@ func testFilterRangeExists(t *testing.T, f Factory) {
 	}
 }
 
+func testFilterNotComposes(t *testing.T, f Factory) {
+	idx, cleanup := f(t)
+	defer cleanup()
+	defer idx.Close()
+	ctx := context.Background()
+	ns := "ns_not"
+	mustUpsert(t, idx, ns, []retrieval.Doc{
+		{ID: "1", Content: "alpha", Metadata: map[string]any{"tenant": "acme", "status": "active"}, Timestamp: time.Now()},
+		{ID: "2", Content: "alpha", Metadata: map[string]any{"tenant": "other", "status": "active"}, Timestamp: time.Now()},
+		{ID: "3", Content: "alpha", Metadata: map[string]any{"tenant": "acme", "status": "deleted"}, Timestamp: time.Now()},
+	})
+	resp, err := idx.Search(ctx, ns, retrieval.SearchRequest{
+		QueryText: "alpha",
+		TopK:      10,
+		Filter: retrieval.Filter{
+			Not: &retrieval.Filter{Eq: map[string]any{"status": "deleted"}},
+			Eq:  map[string]any{"tenant": "acme"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Hits) != 1 || resp.Hits[0].Doc.ID != "1" {
+		t.Fatalf("Not composition wrong: %+v", resp.Hits)
+	}
+}
+
 func testDeleteByFilterValidation(t *testing.T, f Factory) {
 	idx, cleanup := f(t)
 	defer cleanup()
@@ -245,6 +302,61 @@ func testCapabilitiesShape(t *testing.T, f Factory) {
 	c := idx.Capabilities()
 	if c.MaxListPageSize < 0 {
 		t.Fatalf("invalid MaxListPageSize: %d", c.MaxListPageSize)
+	}
+}
+
+// testSearchDebugIncludeLanesPopulatesExecution validates that backends
+// advertising Capabilities.Debug honour SearchRequest.Debug by populating
+// SearchResponse.Execution. Backends that delegate execution to a higher
+// layer (e.g. retrieval/pipeline) leave the flag false; this test then
+// skips, keeping the Execution surface strictly opt-in for backends.
+func testSearchDebugIncludeLanesPopulatesExecution(t *testing.T, f Factory) {
+	idx, cleanup := f(t)
+	defer cleanup()
+	defer idx.Close()
+	if !idx.Capabilities().Debug {
+		t.Skip("backend does not advertise Capabilities.Debug")
+	}
+	ctx := context.Background()
+	ns := "ns_debug"
+	now := time.Now()
+	mustUpsert(t, idx, ns, []retrieval.Doc{
+		{ID: "a", Content: "alpha bravo", Timestamp: now},
+		{ID: "b", Content: "charlie delta", Timestamp: now},
+	})
+	resp, err := idx.Search(ctx, ns, retrieval.SearchRequest{
+		QueryText: "alpha",
+		TopK:      5,
+		Debug:     retrieval.SearchDebug{IncludeLanes: true, IncludeStages: true},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp == nil || resp.Execution == nil {
+		t.Fatalf("expected SearchResponse.Execution when Capabilities.Debug=true, got %+v", resp)
+	}
+	exec := resp.Execution
+	if len(exec.Lanes) == 0 && len(exec.Stages) == 0 {
+		t.Fatal("expected at least one of Execution.Lanes / Execution.Stages to be populated")
+	}
+	hitIDs := make(map[string]struct{}, len(resp.Hits))
+	for _, h := range resp.Hits {
+		hitIDs[h.Doc.ID] = struct{}{}
+	}
+	for _, lane := range exec.Lanes {
+		if lane.Key == "" {
+			t.Fatalf("lane %d missing Key", len(exec.Lanes))
+		}
+		for _, h := range lane.Hits {
+			if _, ok := hitIDs[h.Doc.ID]; !ok && len(resp.Hits) > 0 {
+				// Lanes may legitimately surface candidates that fusion later
+				// drops; only flag a lane hit that names a doc that is not in
+				// the namespace at all.
+				if h.Doc.ID != "a" && h.Doc.ID != "b" {
+					t.Fatalf("lane %q surfaced unknown doc %q", lane.Key, h.Doc.ID)
+				}
+			}
+		}
 	}
 }
 

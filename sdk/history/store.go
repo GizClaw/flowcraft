@@ -42,7 +42,52 @@ type RangeReader interface {
 }
 
 // SummaryCacheStore is an optional interface that Store implementations
-// can satisfy to persist summary caches alongside messages.
+// can satisfy to persist a single "current summary" string alongside
+// messages.
+//
+// Deprecated: superseded by [SummaryStore], which the [SummaryDAG]
+// already requires. Nothing inside the history package consumes this
+// interface any more — the [InMemoryStore] / [FileStore] implementations
+// remain only so downstream Stores that already satisfied it keep
+// compiling. Will be removed in v0.3.0.
+//
+// # Migration
+//
+// Most callers wired SummaryCacheStore in v0.1 to enable a hand-rolled
+// "buffer + single summary" history strategy. The supported v0.2+
+// equivalent is [NewCompacted], which manages a multi-level summary DAG
+// and assembles "highest-depth summary + recent tail" into the supplied
+// token budget automatically — no SummaryCacheStore plumbing required:
+//
+//	hist := history.NewCompacted(store, summaryLLM, ws,
+//	    history.WithTokenBudget(8000),
+//	)
+//	msgs, _ := hist.Load(ctx, convID, history.Budget{})
+//
+// If the single-summary semantics are still desired (for example
+// because the downstream service has its own summarizer and only needs
+// a place to persist the result), the same shape can be expressed in
+// ~5 lines on top of [SummaryStore]:
+//
+//	// Save (overwrite the single summary):
+//	_ = ss.Rewrite(ctx, convID, []*history.SummaryNode{{
+//	    ID:             history.NewSummaryNodeID(),
+//	    ConversationID: convID,
+//	    Depth:          0,
+//	    Content:        text,
+//	    EarliestSeq:    0,
+//	    LatestSeq:      msgCount - 1,
+//	    CreatedAt:      time.Now(),
+//	}})
+//
+//	// Load:
+//	depth0 := 0
+//	nodes, _ := ss.List(ctx, convID, history.SummaryListOptions{Depth: &depth0})
+//	// nodes[0].Content is the summary; nodes[0].LatestSeq+1 is msgCount.
+//
+// [SummaryStore.Rewrite] is the exact primitive SummaryCacheStore.SaveSummary
+// implied (atomic single-record replacement); the only thing v0.3 drops is
+// the dedicated interface name.
 type SummaryCacheStore interface {
 	GetSummary(ctx context.Context, conversationID string) (summary string, msgCount int, err error)
 	SaveSummary(ctx context.Context, conversationID, summary string, msgCount int) error

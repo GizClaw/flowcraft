@@ -3,6 +3,7 @@ package history
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/GizClaw/flowcraft/sdk/model"
 	"github.com/GizClaw/flowcraft/sdk/workspace"
@@ -260,5 +261,47 @@ func TestArchive_IntentCleanup(t *testing.T) {
 	loadedIntent, _ := loadIntent(ctx, ws, "memory", "archive", convID)
 	if loadedIntent != nil {
 		t.Fatal("intent should be cleaned up after successful archive")
+	}
+}
+
+// TestSaveManifest_RoundTrip exercises the deprecated SaveManifest /
+// LoadManifest pair declared in deprecated.go: write a manifest, read it
+// back, and assert all fields survive the JSON round-trip.
+func TestSaveManifest_RoundTrip(t *testing.T) {
+	ws, err := workspace.NewLocalWorkspace(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	convID := "manifest-test"
+
+	in := &ArchiveManifest{
+		HotStartSeq: 25,
+		Segments: []ArchiveSegment{
+			{File: "messages_0_9.jsonl.gz", StartSeq: 0, EndSeq: 9, Count: 10, CreatedAt: time.Now().UTC().Truncate(time.Second)},
+			{File: "messages_10_24.jsonl.gz", StartSeq: 10, EndSeq: 24, Count: 15, CreatedAt: time.Now().UTC().Truncate(time.Second)},
+		},
+	}
+	if err := SaveManifest(ctx, ws, "memory", "archive", convID, in); err != nil {
+		t.Fatalf("SaveManifest: %v", err)
+	}
+
+	out, err := LoadManifest(ctx, ws, "memory", "archive", convID)
+	if err != nil {
+		t.Fatalf("LoadManifest: %v", err)
+	}
+	if out.HotStartSeq != in.HotStartSeq {
+		t.Fatalf("HotStartSeq mismatch: got %d", out.HotStartSeq)
+	}
+	if len(out.Segments) != len(in.Segments) {
+		t.Fatalf("segments len: got %d", len(out.Segments))
+	}
+	for i := range in.Segments {
+		if out.Segments[i].File != in.Segments[i].File {
+			t.Fatalf("segment %d File mismatch: got %q", i, out.Segments[i].File)
+		}
+		if out.Segments[i].Count != in.Segments[i].Count {
+			t.Fatalf("segment %d Count mismatch: got %d", i, out.Segments[i].Count)
+		}
 	}
 }

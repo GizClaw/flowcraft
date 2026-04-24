@@ -69,6 +69,21 @@ type JobController interface {
 	AwaitJob(ctx context.Context, id JobID, timeout time.Duration) (JobStatus, error)
 }
 
+// RecallExplainer is implemented by [Memory] flavours whose underlying
+// retrieval pipeline can produce a structured [retrieval.SearchExecution]
+// (lanes, stages, …) alongside the ranked hits.
+//
+// RecallExplain has the same scope/validation contract as [Memory.Recall];
+// callers populate Request.Debug to opt in. The returned execution is nil
+// when Debug is the zero value or when no stage produced one.
+//
+// Type-assert to use it:
+//
+//	if rx, ok := mem.(recall.RecallExplainer); ok { … }
+type RecallExplainer interface {
+	RecallExplain(ctx context.Context, scope Scope, req Request) ([]Hit, *retrieval.SearchExecution, error)
+}
+
 // config is the resolved configuration of a Memory instance, populated
 // by the [Option] functions passed to [New]. It is package-private on
 // purpose: callers compose behaviour exclusively through Option, which
@@ -107,6 +122,7 @@ type config struct {
 	sweeperEnabled  bool
 	sweeperInterval time.Duration
 	sweeperBatchMax int
+	nsRegistry      NamespaceRegistry
 
 	now    func() time.Time
 	logger func(string, ...any)
@@ -264,6 +280,16 @@ func WithSweeper(interval time.Duration, batchMax int) Option {
 	}
 }
 
+// WithNamespaceRegistry overrides the registry used to track namespaces for
+// background sweeps. Defaults to an in-memory implementation.
+func WithNamespaceRegistry(r NamespaceRegistry) Option {
+	return func(c *config) {
+		if r != nil {
+			c.nsRegistry = r
+		}
+	}
+}
+
 // WithClock injects a time source (mainly for tests).
 func WithClock(now func() time.Time) Option { return func(c *config) { c.now = now } }
 
@@ -339,6 +365,9 @@ func New(idx retrieval.Index, opts ...Option) (Memory, error) {
 	}
 	if cfg.jobQueue == nil {
 		cfg.jobQueue = NewMemoryJobQueue()
+	}
+	if cfg.sweeperEnabled && cfg.nsRegistry == nil {
+		cfg.nsRegistry = NewMemoryNamespaceRegistry()
 	}
 	wrapped := idx
 	if cfg.journal != nil {
@@ -422,12 +451,28 @@ func (m *lt) Close() error {
 	}
 	m.workerCancel()
 	m.wgWorkers.Wait()
-	_ = m.cfg.jobQueue.Close()
-	return m.idx.Close()
+	var nsErr error
+	if m.cfg.nsRegistry != nil {
+		nsErr = m.cfg.nsRegistry.Close()
+	}
+	return errors.Join(
+		nsErr,
+		m.cfg.jobQueue.Close(),
+		m.idx.Close(),
+	)
 }
 
 func (m *lt) log(format string, args ...any) {
 	if m.cfg.logger != nil {
 		m.cfg.logger(format, args...)
+	}
+}
+
+func (m *lt) rememberNamespace(ctx context.Context, ns string) {
+	if ns == "" || m.cfg.nsRegistry == nil {
+		return
+	}
+	if err := m.cfg.nsRegistry.Remember(ctx, ns); err != nil && ctx.Err() == nil {
+		m.log("recall: remember namespace %q: %v", ns, err)
 	}
 }

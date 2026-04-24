@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"context"
+	"math"
 	"sort"
 
 	"github.com/GizClaw/flowcraft/sdk/retrieval"
@@ -114,16 +115,5 @@ func cosineHit(a, b retrieval.Hit) float64 {
 	if na == 0 || nb == 0 {
 		return 0
 	}
-	return dot / (sqrt(na) * sqrt(nb))
-}
-
-func sqrt(x float64) float64 {
-	if x <= 0 {
-		return 0
-	}
-	z := x
-	for i := 0; i < 20; i++ {
-		z = (z + x/z) / 2
-	}
-	return z
+	return dot / (math.Sqrt(na) * math.Sqrt(nb))
 }

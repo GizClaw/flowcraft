@@ -2,6 +2,7 @@ package history
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 
 	"github.com/GizClaw/flowcraft/sdk/workspace"
@@ -235,6 +236,80 @@ func TestFileSummaryStore_CacheUpdatedOnDelete(t *testing.T) {
 	nodes, _ := store.List(ctx, "c", SummaryListOptions{})
 	if len(nodes) != 0 {
 		t.Fatalf("expected 0 after delete, got %d", len(nodes))
+	}
+}
+
+// --- WithSummaryStoreCapacity + LRU eviction ---
+
+func TestWithSummaryStoreCapacity_OverridesDefault(t *testing.T) {
+	ws := workspace.NewMemWorkspace()
+	store := NewFileSummaryStore(ws, "mem", WithSummaryStoreCapacity(3))
+	if store.capacity != 3 {
+		t.Fatalf("expected capacity=3, got %d", store.capacity)
+	}
+
+	// Non-positive capacity must be rejected (no-op).
+	store2 := NewFileSummaryStore(ws, "mem", WithSummaryStoreCapacity(0), WithSummaryStoreCapacity(-1))
+	if store2.capacity != defaultSummaryStoreCapacity {
+		t.Fatalf("expected default capacity, got %d", store2.capacity)
+	}
+}
+
+func TestFileSummaryStore_LRUEviction(t *testing.T) {
+	ws := workspace.NewMemWorkspace()
+	store := NewFileSummaryStore(ws, "mem", WithSummaryStoreCapacity(2))
+	ctx := context.Background()
+
+	// Touch three different conversations; the LRU cap is 2 so the
+	// least-recently-used entry must be evicted.
+	for _, id := range []string{"a", "b", "c"} {
+		_ = store.Save(ctx, &SummaryNode{ConversationID: id, Depth: 0, Content: "x"})
+	}
+
+	store.mu.Lock()
+	got := store.order.Len()
+	_, hasA := store.entries["a"]
+	store.mu.Unlock()
+
+	if got != 2 {
+		t.Fatalf("expected order list len 2 after capacity bound, got %d", got)
+	}
+	if hasA {
+		t.Fatal("expected 'a' to be evicted as LRU")
+	}
+}
+
+// --- readFromDisk ---
+
+func TestFileSummaryStore_ReadFromDisk_SkipsMalformedLines(t *testing.T) {
+	ws := workspace.NewMemWorkspace()
+	store := NewFileSummaryStore(ws, "mem")
+	ctx := context.Background()
+
+	// Hand-craft a summaries.jsonl with one good record, one blank line,
+	// and one malformed line. readFromDisk must keep the good record and
+	// skip the rest without erroring.
+	good, _ := json.Marshal(&SummaryNode{
+		ID: "n1", ConversationID: "c", Depth: 0, Content: "good", EarliestSeq: 0, LatestSeq: 4,
+	})
+	payload := append(good, '\n')
+	payload = append(payload, '\n')
+	payload = append(payload, []byte("{not-json\n")...)
+	payload = append(payload, []byte(`{"id":"n2","conversation_id":"c","depth":0,"content":"second","earliest_seq":5,"latest_seq":9}`+"\n")...)
+
+	if err := ws.Write(ctx, "mem/c/summaries.jsonl", payload); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := store.readFromDisk(ctx, "c")
+	if err != nil {
+		t.Fatalf("readFromDisk: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("expected 2 nodes (skip blank+malformed), got %d", len(got))
+	}
+	if got[0].Content != "good" || got[1].Content != "second" {
+		t.Fatalf("unexpected content order: %+v", got)
 	}
 }
 

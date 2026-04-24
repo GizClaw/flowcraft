@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/sdk/embedding"
+	"github.com/GizClaw/flowcraft/sdk/retrieval"
 )
 
 // LTMOption mutates the LTM pipeline configuration before assembly.
@@ -91,9 +92,9 @@ func Default(emb embedding.Embedder) *Pipeline {
 		&EmbedQuery{Embedder: emb},
 		EntityExtract{},
 		MultiRetrieve{
-			"bm25":   {Mode: ModeBM25, TopK: 50},
-			"vector": {Mode: ModeVector, TopK: 50},
-			"entity": {Mode: ModeEntity, TopK: 30},
+			string(retrieval.LaneBM25):   {Mode: ModeBM25, TopK: 50},
+			string(retrieval.LaneVector): {Mode: ModeVector, TopK: 50},
+			string(retrieval.LaneEntity): {Mode: ModeEntity, TopK: 30},
 		},
 		RRFFusion{K: 60},
 		EntityBoost{Boost: 0.2},
@@ -126,10 +127,10 @@ func LTM(emb embedding.Embedder, opts ...LTMOption) *Pipeline {
 	// so memory tests / in-process indexes that ship without embeddings keep
 	// working.
 	primaryMode := ModeVector
-	primaryLane := "vector"
+	primaryLane := string(retrieval.LaneVector)
 	if emb == nil {
 		primaryMode = ModeBM25
-		primaryLane = "bm25"
+		primaryLane = string(retrieval.LaneBM25)
 	}
 
 	stages := []Stage{
@@ -142,12 +143,12 @@ func LTM(emb embedding.Embedder, opts ...LTMOption) *Pipeline {
 		// not recall expanders).
 		liftRecall{Lane: primaryLane},
 	}
-	// Only run BM25Boost when the primary lane was vector — otherwise the
-	// BM25 score would be applied twice.
-	if primaryMode == ModeBM25 {
-		cfg.bm25Weight = 0
-	}
-	if cfg.bm25Weight > 0 {
+	// BM25Boost is a re-ranking signal layered on top of the recall lane;
+	// when the recall lane is itself BM25 the boost would double-count, so
+	// we suppress it. This expresses "BM25 is a complement to vector
+	// recall, not its own additive lane" in one place.
+	addBM25Boost := primaryMode != ModeBM25 && cfg.bm25Weight > 0
+	if addBM25Boost {
 		stages = append(stages, BM25Boost{Weight: cfg.bm25Weight})
 	}
 	if cfg.entityBoost > 0 {
@@ -177,8 +178,8 @@ func Knowledge(emb embedding.Embedder, ce Reranker) *Pipeline {
 		&EmbedQuery{Embedder: emb},
 		EntityExtract{},
 		MultiRetrieve{
-			"bm25":   {Mode: ModeBM25, TopK: 50},
-			"vector": {Mode: ModeVector, TopK: 50},
+			string(retrieval.LaneBM25):   {Mode: ModeBM25, TopK: 50},
+			string(retrieval.LaneVector): {Mode: ModeVector, TopK: 50},
 		},
 		RRFFusion{K: 60},
 		EntityBoost{Boost: 0.2},

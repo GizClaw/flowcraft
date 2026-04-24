@@ -11,7 +11,9 @@ import (
 // Doc.Content is not considered except for Match when the key is "_content".
 func DocMatchesFilter(d Doc, f Filter) bool {
 	if f.Not != nil {
-		return !DocMatchesFilter(d, *f.Not)
+		if DocMatchesFilter(d, *f.Not) {
+			return false
+		}
 	}
 	for _, sub := range f.And {
 		if !DocMatchesFilter(d, sub) {
@@ -120,13 +122,38 @@ func valuesEqual(a, b any) bool {
 	return reflect.DeepEqual(normalizeJSONish(a), normalizeJSONish(b))
 }
 
+// normalizeJSONish coerces every numeric scalar to float64 so that filter
+// equality is symmetric across Go numeric kinds and JSON-decoded float64
+// values. Without this, Filter.Eq{"score": 5} (int) would not match a
+// document whose Metadata["score"] was decoded as float64(5).
+//
+// Booleans, strings, and composite types are returned unchanged.
 func normalizeJSONish(v any) any {
 	switch x := v.(type) {
 	case float64:
-		if x == float64(int64(x)) {
-			return int64(x)
-		}
 		return x
+	case float32:
+		return float64(x)
+	case int:
+		return float64(x)
+	case int8:
+		return float64(x)
+	case int16:
+		return float64(x)
+	case int32:
+		return float64(x)
+	case int64:
+		return float64(x)
+	case uint:
+		return float64(x)
+	case uint8:
+		return float64(x)
+	case uint16:
+		return float64(x)
+	case uint32:
+		return float64(x)
+	case uint64:
+		return float64(x)
 	default:
 		return v
 	}

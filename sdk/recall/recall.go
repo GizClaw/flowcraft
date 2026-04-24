@@ -18,6 +18,11 @@ type Request struct {
 	Filter    map[string]any // metadata equality filters merged into pipeline filter
 	Now       time.Time      // optional clock injection (for tests / TTL)
 	WithStale bool           // if true, do NOT filter expired entries
+
+	// Debug controls how much execution detail the underlying retrieval
+	// pipeline should attach. Memory.Recall always discards it; callers
+	// that need the SearchExecution must use [RecallExplainer.RecallExplain].
+	Debug retrieval.SearchDebug
 }
 
 // Hit is one result returned by Memory.Recall.
@@ -36,7 +41,32 @@ type Hit struct {
 // memory.recall.recall_duration, and hit count on histogram
 // memory.recall.recall_hits. Query text is intentionally NOT attached
 // to the span (PII risk on user-typed queries).
+//
+// Memory.Recall does NOT expose the underlying [retrieval.SearchExecution];
+// callers that need it must type-assert to [RecallExplainer] and call
+// RecallExplain instead.
 func (m *lt) Recall(ctx context.Context, scope Scope, req Request) ([]Hit, error) {
+	hits, _, err := m.runRecall(ctx, scope, req)
+	return hits, err
+}
+
+// RecallExplain is the structured-explanation variant of Recall: it returns
+// the same hits plus the underlying [retrieval.SearchExecution] (lanes,
+// stages) when Request.Debug requested it. Execution is nil when Debug is
+// zero or when no stage chose to populate it.
+//
+// Implements [RecallExplainer].
+func (m *lt) RecallExplain(ctx context.Context, scope Scope, req Request) ([]Hit, *retrieval.SearchExecution, error) {
+	return m.runRecall(ctx, scope, req)
+}
+
+// runRecall is the single internal recall path; both [Memory.Recall] and
+// [RecallExplainer.RecallExplain] delegate here so telemetry, scope
+// validation, namespace bookkeeping and pipeline wiring stay in one place.
+//
+// The returned *retrieval.SearchExecution is whatever the configured
+// pipeline produced; callers that don't want it discard it (Memory.Recall).
+func (m *lt) runRecall(ctx context.Context, scope Scope, req Request) ([]Hit, *retrieval.SearchExecution, error) {
 	ctx, span := telemetry.Tracer().Start(ctx, "memory.recall.recall")
 	defer span.End()
 	t0 := time.Now()
@@ -47,12 +77,12 @@ func (m *lt) Recall(ctx context.Context, scope Scope, req Request) ([]Hit, error
 	if scope.RuntimeID == "" {
 		span.RecordError(ErrMissingRuntimeID)
 		recallTotal.Add(ctx, 1, metric.WithAttributes(attribute.String("outcome", "fail"), attribute.String("reason", "scope")))
-		return nil, ErrMissingRuntimeID
+		return nil, nil, ErrMissingRuntimeID
 	}
 	if m.cfg.requireUserID && scope.UserID == "" && !m.cfg.allowGlobal {
 		span.RecordError(ErrMissingUserID)
 		recallTotal.Add(ctx, 1, metric.WithAttributes(attribute.String("outcome", "fail"), attribute.String("reason", "scope")))
-		return nil, ErrMissingUserID
+		return nil, nil, ErrMissingUserID
 	}
 	now := req.Now
 	if now.IsZero() {
@@ -70,23 +100,39 @@ func (m *lt) Recall(ctx context.Context, scope Scope, req Request) ([]Hit, error
 		filter = MergeFilters(filter, retrieval.Filter{Eq: req.Filter})
 	}
 	ns := NamespaceFor(scope)
+	m.rememberNamespace(ctx, ns)
 	span.SetAttributes(
 		attribute.String("runtime_id", scope.RuntimeID),
 		attribute.Bool("has_user_id", scope.UserID != ""),
 		attribute.Int("top_k", topK),
 		attribute.Int("query_len", len(req.Query)),
 		attribute.Bool("with_stale", req.WithStale),
+		attribute.Bool("debug_lanes", req.Debug.IncludeLanes),
+		attribute.Bool("debug_stages", req.Debug.IncludeStages),
 	)
+	// Always ask the pipeline for stage + lane trace so we can feed
+	// recallStageDuration / recallLaneDuration without depending on
+	// per-call SearchDebug. The extra cost is bounded: stages are tiny
+	// structs; lanes carry copied hit slices but recall TopK is in the
+	// dozens. The caller-visible Execution is trimmed below to match
+	// req.Debug so RecallExplain still honours its public contract
+	// ("Execution is nil when Debug is zero").
+	pipeDebug := req.Debug
+	pipeDebug.IncludeStages = true
+	pipeDebug.IncludeLanes = true
 	resp, err := m.pipe.Run(ctx, m.idx, ns, retrieval.SearchRequest{
 		QueryText: req.Query,
 		Filter:    filter,
 		TopK:      topK,
+		Debug:     pipeDebug,
 	})
 	if err != nil {
 		span.RecordError(err)
 		recallTotal.Add(ctx, 1, metric.WithAttributes(attribute.String("outcome", "fail"), attribute.String("reason", "pipeline")))
-		return nil, err
+		return nil, nil, err
 	}
+	recordStageDurations(ctx, resp.Execution)
+	recordLaneDurations(ctx, resp.Execution)
 	out := make([]Hit, 0, len(resp.Hits))
 	for _, h := range resp.Hits {
 		out = append(out, Hit{
@@ -98,7 +144,77 @@ func (m *lt) Recall(ctx context.Context, scope Scope, req Request) ([]Hit, error
 	span.SetAttributes(attribute.Int("hits", len(out)))
 	recallHits.Record(ctx, int64(len(out)))
 	recallTotal.Add(ctx, 1, metric.WithAttributes(attribute.String("outcome", "success")))
-	return out, nil
+	return out, projectExecution(resp.Execution, req.Debug), nil
+}
+
+// projectExecution returns the caller-visible slice of pipe.Execution
+// according to req.Debug. Pipeline always emits stages (we need them for
+// recallStageDuration), but callers must explicitly request them via
+// SearchDebug.IncludeStages to observe them; otherwise we strip stages
+// (and lanes if not requested) so RecallExplain's public contract holds.
+func projectExecution(exec *retrieval.SearchExecution, debug retrieval.SearchDebug) *retrieval.SearchExecution {
+	if exec == nil {
+		return nil
+	}
+	if !debug.IncludeLanes && !debug.IncludeStages {
+		return nil
+	}
+	out := &retrieval.SearchExecution{}
+	if debug.IncludeLanes {
+		out.Lanes = exec.Lanes
+	}
+	if debug.IncludeStages {
+		out.Stages = exec.Stages
+	}
+	return out
+}
+
+// recordStageDurations emits one observation per pipeline stage on
+// recallStageDuration. The stage label is the pipeline stage name; the
+// outcome label is "success" by default and "fail" when the stage
+// recorded an error (pipeline aborts on first error, so at most one
+// "fail" sample is produced per call).
+func recordStageDurations(ctx context.Context, exec *retrieval.SearchExecution) {
+	if exec == nil || len(exec.Stages) == 0 {
+		return
+	}
+	for _, st := range exec.Stages {
+		outcome := "success"
+		if st.Err != "" {
+			outcome = "fail"
+		}
+		recallStageDuration.Record(
+			ctx,
+			st.Took.Seconds(),
+			metric.WithAttributes(
+				attribute.String("stage", st.Name),
+				attribute.String("outcome", outcome),
+			),
+		)
+	}
+}
+
+// recordLaneDurations emits one observation per recall lane on
+// recallLaneDuration. The lane label is the LaneKey reported by the
+// pipeline (a small enum-like set, see retrieval.Lane*). Lanes whose
+// Took is zero are skipped — typically a lane that the recall stage
+// never invoked (e.g. vector lane when QueryVector is empty).
+func recordLaneDurations(ctx context.Context, exec *retrieval.SearchExecution) {
+	if exec == nil || len(exec.Lanes) == 0 {
+		return
+	}
+	for _, lane := range exec.Lanes {
+		if lane.Took <= 0 {
+			continue
+		}
+		recallLaneDuration.Record(
+			ctx,
+			lane.Took.Seconds(),
+			metric.WithAttributes(
+				attribute.String("lane", string(lane.Key)),
+			),
+		)
+	}
 }
 
 // History implements Memory; requires Journal.
@@ -106,7 +222,9 @@ func (m *lt) History(ctx context.Context, scope Scope, id string) ([]journal.Eve
 	if m.cfg.journal == nil {
 		return nil, ErrJournalRequired
 	}
-	return m.cfg.journal.History(ctx, NamespaceFor(scope), id)
+	ns := NamespaceFor(scope)
+	m.rememberNamespace(ctx, ns)
+	return m.cfg.journal.History(ctx, ns, id)
 }
 
 // Rollback re-applies the last Upsert recorded before t (or deletes the doc
@@ -116,6 +234,7 @@ func (m *lt) Rollback(ctx context.Context, scope Scope, id string, before time.T
 		return ErrJournalRequired
 	}
 	ns := NamespaceFor(scope)
+	m.rememberNamespace(ctx, ns)
 	events, err := m.cfg.journal.History(ctx, ns, id)
 	if err != nil {
 		return err
@@ -144,5 +263,7 @@ func (m *lt) Rollback(ctx context.Context, scope Scope, id string, before time.T
 // Forget hard-deletes one entry; Journal records OpDelete{reason}.
 func (m *lt) Forget(ctx context.Context, scope Scope, id, reason string) error {
 	_ = reason // reason is captured by Journal actor (caller can WithActor)
-	return m.idx.Delete(ctx, NamespaceFor(scope), []string{id})
+	ns := NamespaceFor(scope)
+	m.rememberNamespace(ctx, ns)
+	return m.idx.Delete(ctx, ns, []string{id})
 }

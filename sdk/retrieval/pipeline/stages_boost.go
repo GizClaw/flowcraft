@@ -68,7 +68,8 @@ func (s BM25Boost) Run(_ context.Context, st *State) error {
 	}
 	N := float64(len(hits))
 	scoresBM25 := make([]float64, len(hits))
-	var maxBM25, minBM25 float64 = 0, 0
+	maxBM25 := math.Inf(-1)
+	minBM25 := math.Inf(+1)
 	for i, terms := range docTokens {
 		tf := map[string]int{}
 		for _, t := range terms {
@@ -99,7 +100,7 @@ func (s BM25Boost) Run(_ context.Context, st *State) error {
 		if s > maxBM25 {
 			maxBM25 = s
 		}
-		if i == 0 || s < minBM25 {
+		if s < minBM25 {
 			minBM25 = s
 		}
 	}

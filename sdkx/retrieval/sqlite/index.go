@@ -485,6 +485,9 @@ func (s *Index) List(ctx context.Context, ns string, req retrieval.ListRequest) 
 		}
 	}
 	total := int64(len(all))
+	if offset >= len(all) {
+		return &retrieval.ListResponse{Items: []retrieval.Doc{}, Total: total}, nil
+	}
 	end := offset + pageSize
 	if end > len(all) {
 		end = len(all)

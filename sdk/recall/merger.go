@@ -58,6 +58,12 @@ func (m *lt) dedupHashes(ctx context.Context, scope Scope, hashes []string) (map
 // Rollback); retrieval-time damping is the responsibility of
 // pipeline.SupersededDecay, which multiplies the score of any hit
 // carrying superseded_by by its Factor (default 0.3).
+//
+// Execution surface: this is a single-lane vector lookup that bypasses the
+// configured pipeline by design (we only need cosines, not the ranked
+// answer). It therefore never asks the backend for an Execution and never
+// reads RawByRetriever; downstream callers should not treat it as part of
+// the Recall explanation produced by [RecallExplainer.RecallExplain].
 func (m *lt) supersedeNeighbours(
 	ctx context.Context, scope Scope, newID string,
 	fact ExtractedFact, vec []float32, now time.Time,
@@ -73,6 +79,7 @@ func (m *lt) supersedeNeighbours(
 		QueryVector: vec,
 		Filter:      AgentRecallFilter(scope),
 		TopK:        m.cfg.softMergeTopK + 1, // +1 in case the new doc itself shows up
+		// Debug intentionally left zero: see godoc above.
 	})
 	if err != nil || resp == nil {
 		return

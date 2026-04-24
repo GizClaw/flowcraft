@@ -110,7 +110,7 @@ func (s WeightedFusion) Run(_ context.Context, st *State) error {
 
 // ConvexFusion combines exactly two lanes (bm25/vector) as α·bm25 + (1-α)·vector
 // after min-max normalization.
-// Reads: Recalls["bm25"], Recalls["vector"]. Writes: Fused.
+// Reads: Recalls[retrieval.LaneBM25], Recalls[retrieval.LaneVector]. Writes: Fused.
 type ConvexFusion struct {
 	Alpha float64 // weight for bm25 lane; 0..1
 }
@@ -127,6 +127,9 @@ func (s ConvexFusion) Run(_ context.Context, st *State) error {
 	if a > 1 {
 		a = 1
 	}
-	wf := WeightedFusion{Weights: map[string]float64{"bm25": a, "vector": 1 - a}}
+	wf := WeightedFusion{Weights: map[string]float64{
+		string(retrieval.LaneBM25):   a,
+		string(retrieval.LaneVector): 1 - a,
+	}}
 	return wf.Run(context.Background(), st)
 }
