@@ -83,6 +83,71 @@ type Message struct {
 	Parts []Part `json:"parts"`
 }
 
+// Clone returns a deep copy of m. It duplicates the Parts slice and all
+// pointer-backed payloads so callers can safely retain or mutate the result.
+func (m Message) Clone() Message {
+	return Message{
+		Role:  m.Role,
+		Parts: CloneParts(m.Parts),
+	}
+}
+
+// CloneMessages returns a deep copy of msgs. Nil stays nil so callers can
+// preserve the usual JSON / len semantics.
+func CloneMessages(msgs []Message) []Message {
+	if msgs == nil {
+		return nil
+	}
+	out := make([]Message, len(msgs))
+	for i, msg := range msgs {
+		out[i] = msg.Clone()
+	}
+	return out
+}
+
+// Clone returns a deep copy of p.
+func (p Part) Clone() Part {
+	out := p
+	if p.Image != nil {
+		image := *p.Image
+		out.Image = &image
+	}
+	if p.Audio != nil {
+		audio := *p.Audio
+		out.Audio = &audio
+	}
+	if p.File != nil {
+		file := *p.File
+		out.File = &file
+	}
+	if p.Data != nil {
+		data := *p.Data
+		data.Value = cloneAnyMap(p.Data.Value)
+		out.Data = &data
+	}
+	if p.ToolCall != nil {
+		call := *p.ToolCall
+		out.ToolCall = &call
+	}
+	if p.ToolResult != nil {
+		result := *p.ToolResult
+		out.ToolResult = &result
+	}
+	return out
+}
+
+// CloneParts returns a deep copy of parts.
+func CloneParts(parts []Part) []Part {
+	if parts == nil {
+		return nil
+	}
+	out := make([]Part, len(parts))
+	for i, part := range parts {
+		out[i] = part.Clone()
+	}
+	return out
+}
+
 // Content returns the concatenated text of all text parts.
 func (m Message) Content() string {
 	var s strings.Builder
@@ -209,4 +274,30 @@ func MarshalToolArgs(args any) (string, error) {
 		return "", fmt.Errorf("marshal tool args: %w", err)
 	}
 	return string(b), nil
+}
+
+func cloneAnyMap(in map[string]any) map[string]any {
+	if in == nil {
+		return nil
+	}
+	out := make(map[string]any, len(in))
+	for k, v := range in {
+		out[k] = cloneAny(v)
+	}
+	return out
+}
+
+func cloneAny(v any) any {
+	switch val := v.(type) {
+	case map[string]any:
+		return cloneAnyMap(val)
+	case []any:
+		out := make([]any, len(val))
+		for i, item := range val {
+			out[i] = cloneAny(item)
+		}
+		return out
+	default:
+		return v
+	}
 }
