@@ -1,5 +1,5 @@
-github.com/GizClaw/flowcraft/sdk v0.2.0 h1:K+hs86rxDg6gup8SUIJEfuMJ+3z0V3KOWwLtLWIUl90=
-github.com/GizClaw/flowcraft/sdk v0.2.0/go.mod h1:ESQWkg/xVCc+2RIO7Lxkdp9lwW9U+u2q+lojvnRzK3Y=
+github.com/GizClaw/flowcraft/sdk v0.2.2 h1:smHhb1HcOG3/xlDFDQ1uO+aYMlLvx5AAaGcPsYQDHcY=
+github.com/GizClaw/flowcraft/sdk v0.2.2/go.mod h1:ESQWkg/xVCc+2RIO7Lxkdp9lwW9U+u2q+lojvnRzK3Y=
 github.com/cespare/xxhash/v2 v2.3.0 h1:UL815xU9SqsFlibzuggzjXhog7bL6oX9BbNZnL2UFvs=
 github.com/cespare/xxhash/v2 v2.3.0/go.mod h1:VGX0DQ3Q6kWi7AoAeZDth3/j3BFtOZR5XLFGgcrjCOs=
 github.com/coder/websocket v1.8.14 h1:9L0p0iKiNOibykf283eHkKUHHrpG7f65OE3BhhO7v9g=
