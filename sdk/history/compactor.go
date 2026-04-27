@@ -122,7 +122,13 @@ type convQueue struct {
 	// recovered guards lazy archive recovery (D-R3): the first task to
 	// reach a worker triggers a single RecoverArchive pass for that
 	// conversation, regardless of which task kind it is.
-	recovered bool
+	//
+	// Atomic because it is touched from two unrelated paths without a
+	// shared mutex: lazyRecover runs on the per-conversation worker
+	// (no compactor.mu), while kickoffStartupRecovery's pre-marking
+	// path runs under compactor.mu. A monotonic "set once to true"
+	// flag is the natural fit for atomic.Bool.
+	recovered atomic.Bool
 }
 
 func newCompactor(store Store, dag *SummaryDAG, config DAGConfig, ws workspace.Workspace, prefix string) *compactor {
@@ -417,10 +423,12 @@ func (m *compactor) worker(convID string, q *convQueue) {
 }
 
 func (m *compactor) lazyRecover(convID string, q *convQueue) {
-	if q.recovered || m.ws == nil {
+	if m.ws == nil {
 		return
 	}
-	q.recovered = true
+	if !q.recovered.CompareAndSwap(false, true) {
+		return
+	}
 	archivePrefix := m.archivePrefix()
 	ctx, cancel := context.WithTimeout(context.Background(), defaultArchiveTimeout)
 	defer cancel()
@@ -554,12 +562,13 @@ func (m *compactor) kickoffStartupRecovery() {
 			m.mu.Lock()
 			if m.state.Load() == stateOpen {
 				if _, ok := m.queues[convID]; !ok {
-					q := &convQueue{tasks: make(chan convTask, queueBuffer), recovered: true}
+					q := &convQueue{tasks: make(chan convTask, queueBuffer)}
+					q.recovered.Store(true)
 					m.queues[convID] = q
 					m.closeWg.Add(1)
 					go m.worker(convID, q)
 				} else {
-					m.queues[convID].recovered = true
+					m.queues[convID].recovered.Store(true)
 				}
 			}
 			m.mu.Unlock()
