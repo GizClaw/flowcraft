@@ -72,8 +72,25 @@ type scopeKey struct {
 // NewEventReloader wires a Rebuilder to an EventNotifier.
 //
 // opts.Debounce defaults to 500ms; opts.RebuildTimeout defaults to 30s.
-// When notifier is nil, Run becomes a no-op (returns immediately) so
-// callers can wire up unconditionally.
+//
+// When target or notifier is nil, Run becomes a no-op (returns
+// immediately) and Close is also a no-op for the background loop, so
+// callers can wire up unconditionally and the call order does not
+// matter.
+//
+// In the normal (non-nil) configuration the contract is:
+//
+//   - Run MUST be invoked at most once before Close;
+//   - Close blocks until Run has actually exited AND the notifier has
+//     been closed, so callers observing a successful Close are
+//     guaranteed no further Rebuild / timer callback can fire.
+//
+// To uphold the second guarantee even when Close races with the
+// goroutine that is about to call Run, wg.Add(1) is performed here
+// (synchronously, before the constructor returns) rather than inside
+// Run. This way wg.Add strictly happens-before any wg.Wait in Close,
+// which is what sync.WaitGroup requires when its counter starts at
+// zero.
 func NewEventReloader(target Rebuilder, notifier EventNotifier, opts ReloaderOptions) *EventReloader {
 	debounce := opts.Debounce
 	if debounce <= 0 {
@@ -83,7 +100,7 @@ func NewEventReloader(target Rebuilder, notifier EventNotifier, opts ReloaderOpt
 	if timeout <= 0 {
 		timeout = 30 * time.Second
 	}
-	return &EventReloader{
+	r := &EventReloader{
 		target:   target,
 		notifier: notifier,
 		debounce: debounce,
@@ -91,14 +108,19 @@ func NewEventReloader(target Rebuilder, notifier EventNotifier, opts ReloaderOpt
 		pending:  make(map[scopeKey]struct{}),
 		stop:     make(chan struct{}),
 	}
+	if target != nil && notifier != nil {
+		r.wg.Add(1)
+	}
+	return r
 }
 
-// Run blocks until ctx is cancelled or Close is called.
+// Run blocks until ctx is cancelled or Close is called. Run MUST be
+// called at most once. When target or notifier is nil, Run returns
+// immediately as a no-op.
 func (r *EventReloader) Run(ctx context.Context) error {
 	if r == nil || r.target == nil || r.notifier == nil {
 		return nil
 	}
-	r.wg.Add(1)
 	defer r.wg.Done()
 	for {
 		select {
@@ -118,6 +140,16 @@ func (r *EventReloader) Run(ctx context.Context) error {
 }
 
 // Close stops Run and the underlying notifier.
+//
+// In the normal (non-nil target & notifier) configuration Close blocks
+// until Run has actually returned, so on success the caller is
+// guaranteed that no further Rebuild call or timer-driven flush can
+// happen. Calling Close before Run was started would deadlock, so
+// callers MUST start Run first; this matches the EventReloader
+// lifecycle documented on Run / NewEventReloader.
+//
+// When target or notifier is nil, Close is a no-op and may be called
+// at any time.
 func (r *EventReloader) Close() error {
 	r.mu.Lock()
 	if r.stopped {
