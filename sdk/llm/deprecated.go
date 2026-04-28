@@ -1,8 +1,19 @@
 package llm
 
+// This file groups symbols that are scheduled for removal in v0.3.0,
+// once the agent + engine runtime supersedes the workflow-based
+// execution path. New code MUST NOT rely on anything declared here.
+// The canonical migration target is documented per symbol; until then
+// the helpers stay buildable so existing callers (graph/node,
+// script/bindings, …) keep compiling.
+
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"maps"
+	"reflect"
+	"strconv"
 	"strings"
 
 	"github.com/GizClaw/flowcraft/sdk/model"
@@ -15,6 +26,12 @@ import (
 )
 
 // RoundResult is the structured output of one LLM round.
+//
+// Deprecated: RoundResult is part of the workflow-based round helper
+// surface and is scheduled for removal in v0.3.0, once the
+// agent + engine runtime owns per-call streaming and tool execution.
+// Prefer building rounds on top of [LLM.GenerateStream] directly
+// until the replacement lands.
 type RoundResult struct {
 	Content     string
 	Message     Message
@@ -31,6 +48,12 @@ type RoundResult struct {
 //
 // stream may be nil; when non-nil, token / tool_call / tool_result events are
 // emitted as they arrive (eventID labels the source in each event).
+//
+// Deprecated: RunRound mixes resolver, streaming, and tool follow-up
+// in one helper and depends on workflow.StreamCallback. It is
+// scheduled for removal in v0.3.0; the agent + engine layering will
+// replace it. New code should drive LLM rounds directly via
+// [LLM.GenerateStream] and surface events through the engine host.
 func RunRound(
 	ctx context.Context,
 	stream workflow.StreamCallback,
@@ -70,6 +93,10 @@ func RunRound(
 
 // RoundStream is a token-by-token iterator over an in-progress LLM round.
 // Callers loop with Next() / Token(), then call Finish() for the complete result.
+//
+// Deprecated: RoundStream is the iterator counterpart of [RunRound]
+// and is scheduled for removal in v0.3.0 alongside it. Use
+// [LLM.GenerateStream] directly.
 type RoundStream struct {
 	ctx     context.Context
 	inner   StreamMessage
@@ -84,6 +111,8 @@ type RoundStream struct {
 
 // StreamRound starts an LLM round and returns a RoundStream for
 // token-by-token iteration. Call Finish() after Next() returns false.
+//
+// Deprecated: scheduled for removal in v0.3.0; see [RunRound].
 func StreamRound(
 	ctx context.Context,
 	stream workflow.StreamCallback,
@@ -262,4 +291,140 @@ func buildRoundGenerateOptions(cfg RoundConfig, reg *tool.Registry) []GenerateOp
 		opts = append(opts, WithTools(toolDefs...))
 	}
 	return opts
+}
+
+// RoundConfig configures the LLM call parameters for one round.
+// Board I/O (system prompt injection, output routing, etc.) is the caller's responsibility.
+//
+// Deprecated: RoundConfig is the input shape consumed by [RunRound]
+// and is scheduled for removal in v0.3.0 alongside it. Configure
+// individual [GenerateOption]s on the agent / engine side once the
+// replacement lands.
+type RoundConfig struct {
+	Model       string   `json:"model,omitempty" yaml:"model,omitempty"`
+	Temperature *float64 `json:"temperature,omitempty" yaml:"temperature,omitempty"`
+	MaxTokens   int64    `json:"max_tokens,omitempty" yaml:"max_tokens,omitempty"`
+	JSONMode    bool     `json:"json_mode,omitempty" yaml:"json_mode,omitempty"`
+	Thinking    bool     `json:"thinking,omitempty" yaml:"thinking,omitempty"`
+	ToolNames   []string `json:"tool_names,omitempty" yaml:"tool_names,omitempty"`
+}
+
+// CoerceMapForStruct uses reflection on T's json tags to coerce string values
+// in m to the numeric/bool types expected by the target struct fields. This
+// allows JSON round-trip (Marshal → Unmarshal) to succeed when map values
+// arrive as strings (e.g. from ${board.temperature} template resolution).
+//
+// isDeferred, when non-nil, reports whether a string value is a deferred
+// reference (e.g. a template variable) that will be resolved later. Such
+// values are removed from non-string fields so that json.Unmarshal sees the
+// zero value instead of an invalid string. The caller should supply the
+// resolver's own ContainsRef function to keep detection in sync.
+//
+// The input map is not modified; a shallow clone is returned.
+//
+// Deprecated: CoerceMapForStruct only exists to support
+// [RoundConfigFromMap]. It is scheduled for removal in v0.3.0
+// alongside [RoundConfig].
+func CoerceMapForStruct[T any](m map[string]any, isDeferred func(string) bool) map[string]any {
+	if m == nil {
+		return nil
+	}
+	var zero T
+	t := reflect.TypeOf(zero)
+	if t.Kind() == reflect.Ptr {
+		t = t.Elem()
+	}
+	if t.Kind() != reflect.Struct {
+		return m
+	}
+
+	result := maps.Clone(m)
+	for i := range t.NumField() {
+		field := t.Field(i)
+		tag := field.Tag.Get("json")
+		if tag == "" || tag == "-" {
+			continue
+		}
+		key, _, _ := strings.Cut(tag, ",")
+		if key == "" {
+			continue
+		}
+		val, ok := result[key]
+		if !ok {
+			continue
+		}
+		str, ok := val.(string)
+		if !ok {
+			continue
+		}
+
+		target := field.Type
+		if target.Kind() == reflect.Ptr {
+			target = target.Elem()
+		}
+		if target.Kind() == reflect.String {
+			continue
+		}
+		if coerced, ok := coerceString(str, target.Kind()); ok {
+			result[key] = coerced
+		} else if isDeferred != nil && isDeferred(str) {
+			delete(result, key)
+		}
+	}
+	return result
+}
+
+func coerceString(s string, kind reflect.Kind) (any, bool) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return nil, false
+	}
+	switch kind {
+	case reflect.Float32, reflect.Float64:
+		f, err := strconv.ParseFloat(s, 64)
+		if err != nil {
+			return nil, false
+		}
+		return f, true
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		i, err := strconv.ParseInt(s, 10, 64)
+		if err != nil {
+			return nil, false
+		}
+		return i, true
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		u, err := strconv.ParseUint(s, 10, 64)
+		if err != nil {
+			return nil, false
+		}
+		return u, true
+	case reflect.Bool:
+		b, err := strconv.ParseBool(s)
+		if err != nil {
+			return nil, false
+		}
+		return b, true
+	default:
+		return nil, false
+	}
+}
+
+// RoundConfigFromMap parses RoundConfig from a generic map via JSON round-trip.
+// isDeferred is passed through to CoerceMapForStruct; see its documentation.
+//
+// Deprecated: scheduled for removal in v0.3.0; see [RoundConfig].
+func RoundConfigFromMap(m map[string]any, isDeferred func(string) bool) (RoundConfig, error) {
+	var cfg RoundConfig
+	if m == nil {
+		return cfg, nil
+	}
+	m = CoerceMapForStruct[RoundConfig](m, isDeferred)
+	data, err := json.Marshal(m)
+	if err != nil {
+		return cfg, fmt.Errorf("llm: marshal config map: %w", err)
+	}
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return cfg, fmt.Errorf("llm: unmarshal config: %w", err)
+	}
+	return cfg, nil
 }

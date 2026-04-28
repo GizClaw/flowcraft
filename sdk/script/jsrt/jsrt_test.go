@@ -61,6 +61,28 @@ func TestRuntime_SignalInterrupt(t *testing.T) {
 	}
 }
 
+func TestRuntime_SignalError(t *testing.T) {
+	rt := New(WithPoolSize(1))
+	sig, err := rt.Exec(context.Background(), "sig-err", `signal.error("bad input")`, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if sig == nil || sig.Type != "error" {
+		t.Fatalf("signal = %+v, want error type", sig)
+	}
+}
+
+func TestRuntime_SignalDone(t *testing.T) {
+	rt := New(WithPoolSize(1))
+	sig, err := rt.Exec(context.Background(), "sig-done", `signal.done()`, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if sig == nil || sig.Type != "done" {
+		t.Fatalf("signal = %+v, want done type", sig)
+	}
+}
+
 func TestRuntime_PoolReuse(t *testing.T) {
 	rt := New(WithPoolSize(1))
 	for i := 0; i < 5; i++ {
