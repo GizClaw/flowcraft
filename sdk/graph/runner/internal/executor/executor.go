@@ -48,6 +48,14 @@ var (
 const defaultMaxIterations = 200
 
 // Executor is the interface for graph execution engines.
+//
+// Deprecated: superseded by [engine.Engine] (satisfied by
+// graph/runner.Runner). The new contract folds run identity / host /
+// initial board into typed parameters, which lets the agent runtime
+// drive any engine uniformly without reaching into a Strategy layer.
+// Scheduled for removal in v0.3.0; until then the LocalExecutor that
+// implements this interface is kept as the in-process default the
+// runner delegates to internally.
 type Executor interface {
 	Execute(ctx context.Context, g *graph.Graph, board *graph.Board, opts ...RunOption) (*graph.Board, error)
 }
@@ -140,6 +148,14 @@ type nodeConfigLocks struct {
 	m  map[graph.Configurable]*sync.Mutex
 }
 
+// WithRunID sets the run identifier the executor uses in telemetry and
+// event subjects.
+//
+// Deprecated: pass [engine.Run.ID] to [engine.Engine.Execute] (i.e. via
+// agent.Run, which mints and forwards it for you). When invoking
+// [graph/runner.Runner] directly through engine.Engine.Execute, the
+// run.ID parameter is the canonical source. Scheduled for removal in
+// v0.3.0 once executor.Executor is removed.
 func WithRunID(id string) RunOption         { return func(c *runConfig) { c.runID = id } }
 func WithMaxIterations(n int) RunOption     { return func(c *runConfig) { c.maxIterations = n } }
 func WithMaxNodeRetries(n int) RunOption    { return func(c *runConfig) { c.maxNodeRetries = n } }

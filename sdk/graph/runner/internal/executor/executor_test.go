@@ -9,7 +9,6 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/event"
 	"github.com/GizClaw/flowcraft/sdk/graph"
-	"github.com/GizClaw/flowcraft/sdk/graph/compiler"
 	"github.com/GizClaw/flowcraft/sdk/graph/variable"
 )
 
@@ -449,7 +448,6 @@ loop:
 }
 
 func TestLocalExecutor_Compiler_Integration(t *testing.T) {
-	c := compiler.NewCompiler()
 	def := &graph.GraphDefinition{
 		Name:  "integration_test",
 		Entry: "start",
@@ -463,7 +461,7 @@ func TestLocalExecutor_Compiler_Integration(t *testing.T) {
 		},
 	}
 
-	compiled, err := c.Compile(def)
+	compiled, err := graph.Compile(def)
 	if err != nil {
 		t.Fatalf("compile failed: %v", err)
 	}

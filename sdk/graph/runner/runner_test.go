@@ -8,15 +8,15 @@ import (
 	"testing"
 	"time"
 
+	"github.com/GizClaw/flowcraft/sdk/engine"
 	"github.com/GizClaw/flowcraft/sdk/engine/enginetest"
 	"github.com/GizClaw/flowcraft/sdk/event"
 	"github.com/GizClaw/flowcraft/sdk/graph"
-	"github.com/GizClaw/flowcraft/sdk/graph/executor"
 	"github.com/GizClaw/flowcraft/sdk/graph/node"
 	"github.com/GizClaw/flowcraft/sdk/graph/runner"
 )
 
-// --- test helpers (mirror graph/executor/helpers_test.go) ---
+// --- test helpers ---
 
 type testNode struct {
 	id     string
@@ -248,14 +248,15 @@ func TestRunner_WithEventBus(t *testing.T) {
 	}
 
 	const runID = "rb-1"
-	sub, err := bus.Subscribe(context.Background(), executor.PatternRun(runID), event.WithBufferSize(16))
+	sub, err := bus.Subscribe(context.Background(), runner.PatternRun(runID), event.WithBufferSize(16))
 	if err != nil {
 		t.Fatalf("subscribe: %v", err)
 	}
 
-	_, err = r.Run(context.Background(), nil, executor.WithRunID(runID))
+	_, err = r.Execute(context.Background(),
+		engine.Run{ID: runID}, r.Host(), engine.NewBoard())
 	if err != nil {
-		t.Fatalf("Run: %v", err)
+		t.Fatalf("Execute: %v", err)
 	}
 
 	wantPrefix := "graph.run." + runID + "."
@@ -310,8 +311,9 @@ func TestRunner_WithHost(t *testing.T) {
 	}
 
 	const runID = "rh-1"
-	if _, err := r.Run(context.Background(), nil, executor.WithRunID(runID)); err != nil {
-		t.Fatalf("Run: %v", err)
+	if _, err := r.Execute(context.Background(),
+		engine.Run{ID: runID}, host, engine.NewBoard()); err != nil {
+		t.Fatalf("Execute: %v", err)
 	}
 
 	envs := host.Envelopes()
@@ -359,15 +361,17 @@ func TestRunner_StreamCallback(t *testing.T) {
 		},
 	}
 
-	r, err := runner.New(def, factory)
+	var captured []graph.StreamEvent
+	r, err := runner.New(def, factory,
+		runner.WithStreamCallback(func(se graph.StreamEvent) {
+			captured = append(captured, se)
+		}),
+	)
 	if err != nil {
 		t.Fatalf("runner.New: %v", err)
 	}
 
-	var captured []graph.StreamEvent
-	_, err = r.Run(context.Background(), nil, executor.WithStreamCallback(func(se graph.StreamEvent) {
-		captured = append(captured, se)
-	}))
+	_, err = r.Run(context.Background(), nil)
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}

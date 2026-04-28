@@ -1,4 +1,4 @@
-package compiler
+package graph_test
 
 import (
 	"testing"
@@ -78,7 +78,6 @@ func TestGraphDefinition_Validate(t *testing.T) {
 }
 
 func TestCompiler_Compile_SimplePassthrough(t *testing.T) {
-	c := NewCompiler()
 	def := &graph.GraphDefinition{
 		Name:  "test",
 		Entry: "start",
@@ -90,7 +89,7 @@ func TestCompiler_Compile_SimplePassthrough(t *testing.T) {
 		},
 	}
 
-	result, err := c.Compile(def)
+	result, err := graph.Compile(def)
 	if err != nil {
 		t.Fatalf("compile failed: %v", err)
 	}
@@ -103,7 +102,6 @@ func TestCompiler_Compile_SimplePassthrough(t *testing.T) {
 }
 
 func TestCompiler_Compile_WithConditions(t *testing.T) {
-	c := NewCompiler()
 	def := &graph.GraphDefinition{
 		Name:  "test",
 		Entry: "start",
@@ -120,7 +118,7 @@ func TestCompiler_Compile_WithConditions(t *testing.T) {
 		},
 	}
 
-	result, err := c.Compile(def)
+	result, err := graph.Compile(def)
 	if err != nil {
 		t.Fatalf("compile failed: %v", err)
 	}
@@ -130,7 +128,6 @@ func TestCompiler_Compile_WithConditions(t *testing.T) {
 }
 
 func TestCompiler_Compile_SkipCondition(t *testing.T) {
-	c := NewCompiler()
 	def := &graph.GraphDefinition{
 		Name:  "test",
 		Entry: "start",
@@ -142,7 +139,7 @@ func TestCompiler_Compile_SkipCondition(t *testing.T) {
 		},
 	}
 
-	result, err := c.Compile(def)
+	result, err := graph.Compile(def)
 	if err != nil {
 		t.Fatalf("compile failed: %v", err)
 	}
@@ -152,7 +149,6 @@ func TestCompiler_Compile_SkipCondition(t *testing.T) {
 }
 
 func TestCompiler_Compile_InvalidCondition(t *testing.T) {
-	c := NewCompiler()
 	def := &graph.GraphDefinition{
 		Name:  "test",
 		Entry: "start",
@@ -164,14 +160,13 @@ func TestCompiler_Compile_InvalidCondition(t *testing.T) {
 		},
 	}
 
-	_, err := c.Compile(def)
+	_, err := graph.Compile(def)
 	if err == nil {
 		t.Fatal("expected compile error for invalid condition")
 	}
 }
 
 func TestCompiler_Compile_DeadEnd_Warning(t *testing.T) {
-	c := NewCompiler()
 	def := &graph.GraphDefinition{
 		Name:  "test",
 		Entry: "start",
@@ -185,7 +180,7 @@ func TestCompiler_Compile_DeadEnd_Warning(t *testing.T) {
 		},
 	}
 
-	result, err := c.Compile(def)
+	result, err := graph.Compile(def)
 	if err != nil {
 		t.Fatalf("compile failed: %v", err)
 	}
@@ -200,7 +195,6 @@ func TestCompiler_Compile_DeadEnd_Warning(t *testing.T) {
 }
 
 func TestCompiler_Compile_DetectsParallel(t *testing.T) {
-	c := NewCompiler()
 	def := &graph.GraphDefinition{
 		Name:  "test",
 		Entry: "start",
@@ -219,7 +213,7 @@ func TestCompiler_Compile_DetectsParallel(t *testing.T) {
 		},
 	}
 
-	result, err := c.Compile(def)
+	result, err := graph.Compile(def)
 	if err != nil {
 		t.Fatalf("compile failed: %v", err)
 	}
@@ -229,7 +223,6 @@ func TestCompiler_Compile_DetectsParallel(t *testing.T) {
 }
 
 func TestCompiler_Compile_DetectsCycles(t *testing.T) {
-	c := NewCompiler()
 	def := &graph.GraphDefinition{
 		Name:  "test",
 		Entry: "a",
@@ -244,7 +237,7 @@ func TestCompiler_Compile_DetectsCycles(t *testing.T) {
 		},
 	}
 
-	result, err := c.Compile(def)
+	result, err := graph.Compile(def)
 	if err != nil {
 		t.Fatalf("compile failed: %v", err)
 	}
@@ -254,8 +247,6 @@ func TestCompiler_Compile_DetectsCycles(t *testing.T) {
 }
 
 func TestCompiler_Compile_LLMIsolatedMessagesKeyWarning(t *testing.T) {
-	c := NewCompiler()
-
 	t.Run("warns when query_fallback missing", func(t *testing.T) {
 		def := &graph.GraphDefinition{
 			Name:  "test",
@@ -269,7 +260,7 @@ func TestCompiler_Compile_LLMIsolatedMessagesKeyWarning(t *testing.T) {
 				{From: "llm1", To: graph.END},
 			},
 		}
-		result, err := c.Compile(def)
+		result, err := graph.Compile(def)
 		if err != nil {
 			t.Fatalf("compile failed: %v", err)
 		}
@@ -298,7 +289,7 @@ func TestCompiler_Compile_LLMIsolatedMessagesKeyWarning(t *testing.T) {
 				{From: "llm1", To: graph.END},
 			},
 		}
-		result, err := c.Compile(def)
+		result, err := graph.Compile(def)
 		if err != nil {
 			t.Fatalf("compile failed: %v", err)
 		}
@@ -322,7 +313,7 @@ func TestCompiler_Compile_LLMIsolatedMessagesKeyWarning(t *testing.T) {
 				{From: "llm1", To: graph.END},
 			},
 		}
-		result, err := c.Compile(def)
+		result, err := graph.Compile(def)
 		if err != nil {
 			t.Fatalf("compile failed: %v", err)
 		}
@@ -344,7 +335,7 @@ func TestCompiler_Compile_LLMIsolatedMessagesKeyWarning(t *testing.T) {
 				{From: "llm1", To: graph.END},
 			},
 		}
-		result, err := c.Compile(def)
+		result, err := graph.Compile(def)
 		if err != nil {
 			t.Fatalf("compile failed: %v", err)
 		}

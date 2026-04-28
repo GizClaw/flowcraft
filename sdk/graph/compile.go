@@ -1,23 +1,36 @@
-// Package compiler provides the GraphCompiler that transforms a GraphDefinition
-// into a CompiledGraph with static analysis.
-package compiler
+package graph
+
+// Static-analysis compiler for GraphDefinition.
+//
+// Compile turns a declarative GraphDefinition into a CompiledGraph
+// that the runner can assemble into a runnable Graph. The compiler is
+// purely static: it constructs no node instances, performs no I/O, and
+// has no runtime dependencies. This makes it cheap to call ahead of
+// time (CI lint, validation hooks, dashboards) and lets callers cache
+// the CompiledGraph across many runs.
+//
+// Historically this code lived in sdk/graph/compiler. It moved into
+// the graph package proper because every compiler exported symbol
+// names a concept owned by graph (RawGraph, NodeDefinition,
+// CompiledCondition) and the indirection added no isolation —
+// "compile a graph" reads more naturally as a graph.Compile call.
 
 import (
 	"fmt"
 
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
-	"github.com/GizClaw/flowcraft/sdk/graph"
 )
 
-// CompiledGraph is the result of compilation, containing the raw graph structure
-// and analysis metadata. Nodes in RawGraph are passthrough placeholders; actual
-// node construction is deferred to downstream Assemble + NodeFactory.
+// CompiledGraph is the result of compilation, containing the raw graph
+// structure and analysis metadata. Nodes in RawGraph are passthrough
+// placeholders; actual node construction is deferred to downstream
+// Assemble + NodeFactory.
 type CompiledGraph struct {
-	Graph    *graph.RawGraph
-	NodeDefs []graph.NodeDefinition
-	EdgeDefs []graph.EdgeDefinition
+	Graph    *RawGraph
+	NodeDefs []NodeDefinition
+	EdgeDefs []EdgeDefinition
 	Warnings []Warning
-	Metadata graph.GraphMeta
+	Metadata GraphMeta
 }
 
 // Warning represents a non-fatal issue found during compilation.
@@ -27,58 +40,46 @@ type Warning struct {
 	NodeIDs []string `json:"node_ids,omitempty"`
 }
 
-// BuildOptions configures how the compiler processes a graph definition.
-type BuildOptions struct{}
-
-// CompilerOption configures the Compiler.
-type CompilerOption func(*Compiler)
-
-// Compiler transforms GraphDefinition into a CompiledGraph with static analysis.
-// It is purely static — no runtime node instances are constructed.
-type Compiler struct{}
-
-// NewCompiler creates a new Compiler with the given options.
-func NewCompiler(opts ...CompilerOption) *Compiler {
-	c := &Compiler{}
-	for _, opt := range opts {
-		opt(c)
-	}
-	return c
-}
-
-// Compile transforms a GraphDefinition into a CompiledGraph. All nodes are
-// represented as passthrough placeholders; the original definitions are
-// preserved in NodeDefs/EdgeDefs for downstream NodeFactory construction.
-func (c *Compiler) Compile(def *graph.GraphDefinition, opts ...BuildOptions) (*CompiledGraph, error) {
+// Compile transforms a GraphDefinition into a CompiledGraph. All nodes
+// are represented as passthrough placeholders; the original definitions
+// are preserved in NodeDefs/EdgeDefs for downstream NodeFactory
+// construction. The returned CompiledGraph is safe to cache and reuse
+// across many runner.New calls — compilation has no side effects.
+//
+// Compile is a pure static analysis pass: it constructs no node
+// instances and performs no I/O. Errors are validation failures
+// (errdefs.Validation); non-fatal issues surface as Warnings on the
+// result.
+func Compile(def *GraphDefinition) (*CompiledGraph, error) {
 	if err := def.Validate(); err != nil {
 		return nil, err
 	}
 
-	nodes := make(map[string]graph.Node, len(def.Nodes))
+	nodes := make(map[string]Node, len(def.Nodes))
 	for _, nd := range def.Nodes {
-		nodes[nd.ID] = graph.NewPassthroughNode(nd.ID, nd.Type)
+		nodes[nd.ID] = NewPassthroughNode(nd.ID, nd.Type)
 	}
 
-	edges := make(map[string][]graph.Edge, len(def.Edges))
+	edges := make(map[string][]Edge, len(def.Edges))
 	reverse := make(map[string][]string)
 	for _, ed := range def.Edges {
-		var cond *graph.CompiledCondition
+		var cond *CompiledCondition
 		if ed.Condition != "" {
 			var err error
-			cond, err = graph.CompileCondition(ed.Condition)
+			cond, err = CompileCondition(ed.Condition)
 			if err != nil {
 				return nil, err
 			}
 		}
-		edge := graph.Edge{From: ed.From, To: ed.To, Condition: cond}
+		edge := Edge{From: ed.From, To: ed.To, Condition: cond}
 		edges[ed.From] = append(edges[ed.From], edge)
 		reverse[ed.To] = append(reverse[ed.To], ed.From)
 	}
 
-	skipConditions := make(map[string]*graph.CompiledCondition)
+	skipConditions := make(map[string]*CompiledCondition)
 	for _, nd := range def.Nodes {
 		if nd.SkipCondition != "" {
-			compiled, err := graph.CompileCondition(nd.SkipCondition)
+			compiled, err := CompileCondition(nd.SkipCondition)
 			if err != nil {
 				return nil, errdefs.Validation(fmt.Errorf(
 					"invalid skip_condition for node %q: %w", nd.ID, err))
@@ -87,7 +88,7 @@ func (c *Compiler) Compile(def *graph.GraphDefinition, opts ...BuildOptions) (*C
 		}
 	}
 
-	g := &graph.RawGraph{
+	g := &RawGraph{
 		Name:           def.Name,
 		Entry:          def.Entry,
 		Nodes:          nodes,
@@ -98,7 +99,7 @@ func (c *Compiler) Compile(def *graph.GraphDefinition, opts ...BuildOptions) (*C
 
 	warnings := analyze(g, def)
 
-	meta := graph.GraphMeta{
+	meta := GraphMeta{
 		NodeCount:   len(nodes),
 		EdgeCount:   len(def.Edges),
 		HasCycles:   detectCycles(g),
@@ -106,9 +107,9 @@ func (c *Compiler) Compile(def *graph.GraphDefinition, opts ...BuildOptions) (*C
 		MaxDepth:    computeMaxDepth(g),
 	}
 
-	nodeDefs := make([]graph.NodeDefinition, len(def.Nodes))
+	nodeDefs := make([]NodeDefinition, len(def.Nodes))
 	copy(nodeDefs, def.Nodes)
-	edgeDefs := make([]graph.EdgeDefinition, len(def.Edges))
+	edgeDefs := make([]EdgeDefinition, len(def.Edges))
 	copy(edgeDefs, def.Edges)
 
 	return &CompiledGraph{
@@ -121,7 +122,7 @@ func (c *Compiler) Compile(def *graph.GraphDefinition, opts ...BuildOptions) (*C
 }
 
 // detectParallel checks if any node has multiple unconditional outgoing edges.
-func detectParallel(g *graph.RawGraph) bool {
+func detectParallel(g *RawGraph) bool {
 	for _, edges := range g.Edges {
 		uncond := 0
 		for _, e := range edges {
@@ -137,7 +138,7 @@ func detectParallel(g *graph.RawGraph) bool {
 }
 
 // computeMaxDepth computes the longest acyclic path from entry to END using DFS.
-func computeMaxDepth(g *graph.RawGraph) int {
+func computeMaxDepth(g *RawGraph) int {
 	if g.Entry == "" {
 		return 0
 	}
@@ -145,8 +146,8 @@ func computeMaxDepth(g *graph.RawGraph) int {
 	return dfsMaxDepth(g, g.Entry, visited)
 }
 
-func dfsMaxDepth(g *graph.RawGraph, nodeID string, visited map[string]bool) int {
-	if nodeID == graph.END {
+func dfsMaxDepth(g *RawGraph, nodeID string, visited map[string]bool) int {
+	if nodeID == END {
 		return 0
 	}
 	if visited[nodeID] {
@@ -170,12 +171,12 @@ func dfsMaxDepth(g *graph.RawGraph, nodeID string, visited map[string]bool) int 
 
 // detectCycles uses DFS coloring to check if the graph has any cycles.
 // Implementation delegates to findCycleNodes for code reuse.
-func detectCycles(g *graph.RawGraph) bool {
+func detectCycles(g *RawGraph) bool {
 	return len(findCycleNodes(g)) > 0
 }
 
 // successors builds a successor map from edge data.
-func successors(g *graph.RawGraph) map[string][]string {
+func successors(g *RawGraph) map[string][]string {
 	succs := make(map[string][]string)
 	for from, edges := range g.Edges {
 		for _, e := range edges {

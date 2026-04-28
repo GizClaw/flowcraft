@@ -5,8 +5,6 @@ import (
 	"testing"
 
 	"github.com/GizClaw/flowcraft/sdk/graph"
-	"github.com/GizClaw/flowcraft/sdk/graph/compiler"
-	"github.com/GizClaw/flowcraft/sdk/graph/executor"
 	"github.com/GizClaw/flowcraft/sdk/graph/node"
 	"github.com/GizClaw/flowcraft/sdk/graph/node/scriptnode"
 	"github.com/GizClaw/flowcraft/sdk/script/jsrt"
@@ -92,7 +90,7 @@ func TestNewGraphRunnable_WithFactory(t *testing.T) {
 		},
 	}
 
-	cg, err := compiler.NewCompiler().Compile(def)
+	cg, err := graph.Compile(def)
 	if err != nil {
 		t.Fatalf("compile: %v", err)
 	}
@@ -111,7 +109,11 @@ func TestNewGraphRunnable_WithFactory(t *testing.T) {
 	}
 }
 
-func TestNewGraphRunnable_WithCustomExecutor(t *testing.T) {
+// TestNewGraphRunnable_DepExecutorIgnored checks the DepExecutor key is
+// accepted but ignored (graph/runner.Runner is the only execution backend
+// since the executor was internalised). Build must not fail just because
+// the workflow.Dependencies still carries the old key.
+func TestNewGraphRunnable_DepExecutorIgnored(t *testing.T) {
 	def := &graph.GraphDefinition{
 		Name:  "test",
 		Entry: "start",
@@ -120,7 +122,7 @@ func TestNewGraphRunnable_WithCustomExecutor(t *testing.T) {
 		},
 	}
 
-	cg, err := compiler.NewCompiler().Compile(def)
+	cg, err := graph.Compile(def)
 	if err != nil {
 		t.Fatalf("compile: %v", err)
 	}
@@ -128,7 +130,7 @@ func TestNewGraphRunnable_WithCustomExecutor(t *testing.T) {
 	deps := workflow.NewDependencies()
 	fac := scriptFactory()
 	workflow.SetDep(deps, DepNodeFactory, fac)
-	workflow.SetDep(deps, DepExecutor, executor.NewLocalExecutor())
+	workflow.SetDep(deps, DepExecutor, "anything-goes-this-is-ignored")
 
 	s := FromCompiled(cg)
 	runnable, err := s.Build(context.Background(), deps)
@@ -156,7 +158,7 @@ func TestGraphRunnable_ResolvesVariableReferences(t *testing.T) {
 		},
 	}
 
-	cg, err := compiler.NewCompiler().Compile(def)
+	cg, err := graph.Compile(def)
 	if err != nil {
 		t.Fatalf("compile: %v", err)
 	}

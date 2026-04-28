@@ -5,38 +5,56 @@ import (
 	"fmt"
 	"sync"
 
+	"github.com/GizClaw/flowcraft/sdk/engine"
 	"github.com/GizClaw/flowcraft/sdk/graph"
-	"github.com/GizClaw/flowcraft/sdk/graph/compiler"
-	"github.com/GizClaw/flowcraft/sdk/graph/executor"
 	"github.com/GizClaw/flowcraft/sdk/graph/node"
 	"github.com/GizClaw/flowcraft/sdk/graph/runner"
-	"github.com/GizClaw/flowcraft/sdk/graph/variable"
 	"github.com/GizClaw/flowcraft/sdk/workflow"
 )
 
-// ExtExecutorRunOpts is the Request.Extensions key for []executor.RunOption.
+// ExtExecutorRunOpts is the Request.Extensions key for additional
+// runner-side options. The value MUST be []runner.Option (Runner
+// construction options); per-Run knobs that used to be
+// []executor.RunOption no longer have an equivalent — runner.Runner
+// owns them at construction time now.
+//
+// Deprecated: scheduled for removal in v0.3.0 together with the rest
+// of this adapter. Construct a runner.Runner directly and call
+// agent.Run with it instead.
 const ExtExecutorRunOpts = "adapter.executor_run_opts"
 
 // Dependency keys for SetDep / GetDep.
 const (
+	// DepNodeFactory is the workflow.Dependencies key holding a
+	// *node.Factory the adapter will use to assemble runnables.
 	DepNodeFactory = "node.factory"
-	DepExecutor    = "executor"
+
+	// DepExecutor used to override the underlying executor
+	// implementation. With the v0.2 → v0.3 internalisation of the
+	// executor, the only execution backend is graph/runner.Runner;
+	// the dependency is read for backwards-compatibility but its
+	// value is now ignored.
+	//
+	// Deprecated: scheduled for removal in v0.3.0.
+	DepExecutor = "executor"
 )
 
-// FromDefinition returns a graph Strategy that compiles def (cached) and executes via the local executor.
+// FromDefinition returns a graph Strategy that compiles def (cached) and
+// executes via graph/runner.Runner.
 func FromDefinition(def *graph.GraphDefinition) workflow.Strategy {
 	return &graphStrategy{def: def}
 }
 
-// FromCompiled returns a Strategy that reuses a pre-compiled graph (e.g. from a process-wide cache).
-func FromCompiled(cg *compiler.CompiledGraph) workflow.Strategy {
+// FromCompiled returns a Strategy that reuses a pre-compiled graph
+// (e.g. from a process-wide cache).
+func FromCompiled(cg *graph.CompiledGraph) workflow.Strategy {
 	return &compiledStrategy{cg: cg}
 }
 
 type graphStrategy struct {
 	def *graph.GraphDefinition
 	mu  sync.Mutex
-	cg  *compiler.CompiledGraph
+	cg  *graph.CompiledGraph
 }
 
 func (s *graphStrategy) Kind() string { return "graph" }
@@ -45,7 +63,7 @@ func (s *graphStrategy) Capabilities() workflow.StrategyCapabilities {
 	return workflow.StrategyCapabilities{AnswerKey: workflow.VarAnswer}
 }
 
-func (s *graphStrategy) compiled() (*compiler.CompiledGraph, error) {
+func (s *graphStrategy) compiled() (*graph.CompiledGraph, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.cg != nil {
@@ -54,7 +72,7 @@ func (s *graphStrategy) compiled() (*compiler.CompiledGraph, error) {
 	if s.def == nil {
 		return nil, fmt.Errorf("adapter: nil graph definition")
 	}
-	cg, err := compiler.NewCompiler().Compile(s.def)
+	cg, err := graph.Compile(s.def)
 	if err != nil {
 		return nil, err
 	}
@@ -71,7 +89,7 @@ func (s *graphStrategy) Build(ctx context.Context, deps *workflow.Dependencies) 
 }
 
 type compiledStrategy struct {
-	cg *compiler.CompiledGraph
+	cg *graph.CompiledGraph
 }
 
 func (s *compiledStrategy) Kind() string { return "graph" }
@@ -87,48 +105,65 @@ func (s *compiledStrategy) Build(ctx context.Context, deps *workflow.Dependencie
 	return newGraphRunnable(s.cg, deps)
 }
 
+// graphRunnable wraps a graph definition + factory in a workflow.Runnable.
+// It owns no executor of its own; instead it delegates each Execute to a
+// fresh runner.Runner that itself encapsulates the (now internal) execution
+// loop. This keeps the adapter on the same execution path as new agent.Run
+// callers, so behaviour stays identical between the workflow and agent
+// surfaces during the v0.2 → v0.3 transition.
 type graphRunnable struct {
-	cg       *compiler.CompiledGraph
-	factory  *node.Factory
-	executor executor.Executor
+	def     *graph.GraphDefinition
+	cg      *graph.CompiledGraph
+	factory *node.Factory
 }
 
-func newGraphRunnable(cg *compiler.CompiledGraph, deps *workflow.Dependencies) (*graphRunnable, error) {
+func newGraphRunnable(cg *graph.CompiledGraph, deps *workflow.Dependencies) (*graphRunnable, error) {
 	fac, err := workflow.GetDep[*node.Factory](deps, DepNodeFactory)
 	if err != nil {
 		return nil, fmt.Errorf("adapter: %w", err)
 	}
-	exec, _ := workflow.GetDep[executor.Executor](deps, DepExecutor)
-	if exec == nil {
-		exec = executor.NewLocalExecutor()
-	}
-	return &graphRunnable{cg: cg, factory: fac, executor: exec}, nil
+	return &graphRunnable{cg: cg, factory: fac}, nil
 }
 
 func (r *graphRunnable) Execute(ctx context.Context, board *workflow.Board, req *workflow.Request, opts ...workflow.RunOption) (*workflow.Board, error) {
-	g, err := runner.Assemble(r.cg, r.factory)
-	if err != nil {
-		return board, err
+	// Recover the original GraphDefinition from the cached CompiledGraph
+	// so we can re-feed it to runner.New. The CompiledGraph carries the
+	// raw definition pieces (NodeDefs, EdgeDefs, Name, Entry) — enough
+	// for runner.New to recompile and produce a fresh executor instance.
+	def := &graph.GraphDefinition{
+		Name:  r.cg.Graph.Name,
+		Entry: r.cg.Graph.Entry,
+		Nodes: r.cg.NodeDefs,
+		Edges: r.cg.EdgeDefs,
 	}
-	gboard := graphBoardFromWorkflow(board)
-	execOpts := []executor.RunOption{
-		executor.WithResolver(variable.NewResolver()),
-	}
+
+	rOpts := []runner.Option{}
 	if req != nil && req.Extensions != nil {
 		if raw, ok := req.Extensions[ExtExecutorRunOpts]; ok {
-			if sl, ok := raw.([]executor.RunOption); ok {
-				execOpts = append(execOpts, sl...)
+			if sl, ok := raw.([]runner.Option); ok {
+				rOpts = append(rOpts, sl...)
 			}
 		}
 	}
 	rc := workflow.ApplyRunOpts(opts)
 	if rc.StreamCallback != nil {
-		execOpts = append(execOpts, executor.WithStreamCallback(rc.StreamCallback))
+		rOpts = append(rOpts, runner.WithStreamCallback(rc.StreamCallback))
 	}
 	if rc.MaxIterations > 0 {
-		execOpts = append(execOpts, executor.WithMaxIterations(rc.MaxIterations))
+		rOpts = append(rOpts, runner.WithMaxIterations(rc.MaxIterations))
 	}
-	out, runErr := r.executor.Execute(ctx, g, gboard, execOpts...)
+
+	rn, err := runner.New(def, r.factory, rOpts...)
+	if err != nil {
+		return board, err
+	}
+
+	gboard := graphBoardFromWorkflow(board)
+	var run engine.Run
+	if req != nil {
+		run.ID = req.RunID
+	}
+	out, runErr := rn.Execute(ctx, run, nil, gboard)
 	return workflowBoardFromGraph(out), runErr
 }
 

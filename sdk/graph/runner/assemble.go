@@ -5,14 +5,13 @@ import (
 
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/graph"
-	"github.com/GizClaw/flowcraft/sdk/graph/compiler"
 	"github.com/GizClaw/flowcraft/sdk/graph/node"
 )
 
 // Assemble takes a CompiledGraph (static analysis result) and a Factory,
 // then constructs all real node instances and returns an immutable executable
 // Graph ready for the executor.
-func Assemble(compiled *compiler.CompiledGraph, factory *node.Factory) (*graph.Graph, error) {
+func Assemble(compiled *graph.CompiledGraph, factory *node.Factory) (*graph.Graph, error) {
 	if compiled == nil {
 		return nil, errdefs.Validationf("compiled graph is nil")
 	}

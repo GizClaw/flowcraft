@@ -1,15 +1,14 @@
-package compiler
+package graph
 
 import (
 	"fmt"
 	"strings"
 
-	"github.com/GizClaw/flowcraft/sdk/graph"
 	"github.com/GizClaw/flowcraft/sdk/graph/variable"
 )
 
 // analyze performs static analysis on the compiled graph, returning warnings.
-func analyze(g *graph.RawGraph, def *graph.GraphDefinition) []Warning {
+func analyze(g *RawGraph, def *GraphDefinition) []Warning {
 	var warnings []Warning
 	warnings = append(warnings, checkDeadEnds(g)...)
 	warnings = append(warnings, checkUnguardedCycles(g, def)...)
@@ -23,11 +22,11 @@ func analyze(g *graph.RawGraph, def *graph.GraphDefinition) []Warning {
 }
 
 // checkDeadEnds detects nodes that cannot reach __end__.
-func checkDeadEnds(g *graph.RawGraph) []Warning {
+func checkDeadEnds(g *RawGraph) []Warning {
 	reachable := bfsReachableReverse(g)
 	var dead []string
 	for id := range g.Nodes {
-		if !reachable[id] && id != graph.END {
+		if !reachable[id] && id != END {
 			dead = append(dead, id)
 		}
 	}
@@ -42,11 +41,11 @@ func checkDeadEnds(g *graph.RawGraph) []Warning {
 }
 
 // bfsReachableReverse finds all nodes that can reach __end__ via reverse edges.
-func bfsReachableReverse(g *graph.RawGraph) map[string]bool {
+func bfsReachableReverse(g *RawGraph) map[string]bool {
 	reachable := make(map[string]bool)
-	reachable[graph.END] = true
+	reachable[END] = true
 
-	queue := []string{graph.END}
+	queue := []string{END}
 	for len(queue) > 0 {
 		cur := queue[0]
 		queue = queue[1:]
@@ -61,7 +60,7 @@ func bfsReachableReverse(g *graph.RawGraph) map[string]bool {
 }
 
 // checkUnguardedCycles warns about cycles that lack a LoopGuard node.
-func checkUnguardedCycles(g *graph.RawGraph, def *graph.GraphDefinition) []Warning {
+func checkUnguardedCycles(g *RawGraph, def *GraphDefinition) []Warning {
 	if !detectCycles(g) {
 		return nil
 	}
@@ -102,7 +101,7 @@ func checkUnguardedCycles(g *graph.RawGraph, def *graph.GraphDefinition) []Warni
 }
 
 // findCycleNodes returns all node IDs that participate in at least one cycle.
-func findCycleNodes(g *graph.RawGraph) []string {
+func findCycleNodes(g *RawGraph) []string {
 	const (
 		white = 0
 		gray  = 1
@@ -122,7 +121,7 @@ func findCycleNodes(g *graph.RawGraph) []string {
 		stack = append(stack, id)
 
 		for _, e := range g.Edges[id] {
-			if e.To == graph.END {
+			if e.To == END {
 				continue
 			}
 			switch colors[e.To] {
@@ -161,7 +160,7 @@ func findCycleNodes(g *graph.RawGraph) []string {
 }
 
 // checkConditionCoverage warns about nodes with conditional edges but no default branch.
-func checkConditionCoverage(g *graph.RawGraph) []Warning {
+func checkConditionCoverage(g *RawGraph) []Warning {
 	var warnings []Warning
 	for nodeID, edges := range g.Edges {
 		if len(edges) <= 1 {
@@ -192,7 +191,7 @@ func checkConditionCoverage(g *graph.RawGraph) []Warning {
 // checkVariableReferences extracts all ${scope.name} variable references from
 // node configs and warns about any whose scope is not one of the well-known
 // scopes (input, output, env, system, board).
-func checkVariableReferences(def *graph.GraphDefinition) []Warning {
+func checkVariableReferences(def *GraphDefinition) []Warning {
 	wellKnown := map[string]bool{
 		"input": true, "output": true, "env": true,
 		"system": true, "board": true, "node": true,
@@ -230,13 +229,13 @@ func checkVariableReferences(def *graph.GraphDefinition) []Warning {
 
 // checkSkipConditions validates that all SkipCondition expressions on nodes
 // are syntactically valid expr-lang expressions before runtime.
-func checkSkipConditions(def *graph.GraphDefinition) []Warning {
+func checkSkipConditions(def *GraphDefinition) []Warning {
 	var warnings []Warning
 	for _, nd := range def.Nodes {
 		if nd.SkipCondition == "" {
 			continue
 		}
-		if _, err := graph.CompileCondition(nd.SkipCondition); err != nil {
+		if _, err := CompileCondition(nd.SkipCondition); err != nil {
 			warnings = append(warnings, Warning{
 				Code:    "invalid_skip_condition",
 				Message: fmt.Sprintf("node %q has invalid skip_condition: %v", nd.ID, err),
@@ -249,7 +248,7 @@ func checkSkipConditions(def *graph.GraphDefinition) []Warning {
 
 // checkParallelJoin warns when a node has multiple unconditional outgoing edges
 // (parallel fork) but the branches have no common join node.
-func checkParallelJoin(g *graph.RawGraph) []Warning {
+func checkParallelJoin(g *RawGraph) []Warning {
 	succs := successors(g)
 	var warnings []Warning
 
@@ -315,7 +314,7 @@ func findCommonSuccessor(succs map[string][]string, branchStarts []string) strin
 		}
 
 		for _, next := range succs[cur] {
-			if next != graph.END && !visited[next] {
+			if next != END && !visited[next] {
 				queue = append(queue, next)
 			}
 		}
@@ -330,7 +329,7 @@ func bfsReachableForward(succs map[string][]string, start string) map[string]boo
 	for len(queue) > 0 {
 		cur := queue[0]
 		queue = queue[1:]
-		if reached[cur] || cur == graph.END {
+		if reached[cur] || cur == END {
 			continue
 		}
 		reached[cur] = true
@@ -342,7 +341,7 @@ func bfsReachableForward(succs map[string][]string, start string) map[string]boo
 // checkLLMMessagesKey warns when an LLM node uses a non-default messages_key
 // without enabling query_fallback, which causes the isolated message list to
 // start empty and the LLM to receive no user input.
-func checkLLMMessagesKey(def *graph.GraphDefinition) []Warning {
+func checkLLMMessagesKey(def *GraphDefinition) []Warning {
 	var warnings []Warning
 	for _, nd := range def.Nodes {
 		if nd.Type != "llm" {
@@ -370,7 +369,7 @@ func checkLLMMessagesKey(def *graph.GraphDefinition) []Warning {
 }
 
 // CheckPortCompatibility checks if connected nodes have compatible port types.
-func CheckPortCompatibility(g *graph.RawGraph) []Warning {
+func CheckPortCompatibility(g *RawGraph) []Warning {
 	var warnings []Warning
 
 	for _, edges := range g.Edges {
@@ -381,13 +380,13 @@ func CheckPortCompatibility(g *graph.RawGraph) []Warning {
 				continue
 			}
 
-			fromPD, fromHasPorts := fromNode.(graph.PortDeclarable)
-			toPD, toHasPorts := toNode.(graph.PortDeclarable)
+			fromPD, fromHasPorts := fromNode.(PortDeclarable)
+			toPD, toHasPorts := toNode.(PortDeclarable)
 			if !fromHasPorts || !toHasPorts {
 				continue
 			}
 
-			outPorts := make(map[string]graph.PortType)
+			outPorts := make(map[string]PortType)
 			for _, p := range fromPD.OutputPorts() {
 				outPorts[p.Name] = p.Type
 			}
@@ -398,7 +397,7 @@ func CheckPortCompatibility(g *graph.RawGraph) []Warning {
 					if !exists {
 						continue
 					}
-					if !graph.IsCompatible(opType, ip.Type) {
+					if !IsCompatible(opType, ip.Type) {
 						warnings = append(warnings, Warning{
 							Code: "port_incompatible",
 							Message: "output port " + ip.Name + " (" + string(opType) +
