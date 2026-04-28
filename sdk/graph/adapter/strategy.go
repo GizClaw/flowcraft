@@ -163,4 +163,3 @@ func workflowBoardFromGraph(b *graph.Board) *workflow.Board {
 		Channels: gsnap.Channels,
 	})
 }
-

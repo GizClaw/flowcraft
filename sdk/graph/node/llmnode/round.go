@@ -165,9 +165,9 @@ func runRound(
 	}
 
 	var (
-		textAcc          strings.Builder
-		hostInterrupted  bool
-		hostIntr         engine.Interrupt
+		textAcc         strings.Builder
+		hostInterrupted bool
+		hostIntr        engine.Interrupt
 	)
 
 streamLoop:

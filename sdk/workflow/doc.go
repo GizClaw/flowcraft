@@ -29,8 +29,8 @@
 //
 //   - workflow.Agent / NewAgent / AgentOption / AgentCard / Skill /
 //     AgentCapabilities
-//     → sdk/agent: agent.Agent (interface) + agent.New (constructor)
-//     + agent.Card (descriptor). Skills are agent.Decider + agent.Tool
+//     → sdk/agent: agent.Agent (interface), agent.New (constructor),
+//     agent.Card (descriptor). Skills are agent.Decider + agent.Tool
 //     wiring on the agent value.
 //
 //   - workflow.Strategy / Runnable / StrategyCapabilities /
