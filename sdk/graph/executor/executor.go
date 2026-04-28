@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/GizClaw/flowcraft/sdk/engine"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/event"
 	"github.com/GizClaw/flowcraft/sdk/graph"
@@ -85,16 +86,51 @@ type CloneableResolver interface {
 }
 
 type runConfig struct {
-	runID           string
-	maxIterations   int
-	maxNodeRetries  int
-	timeout         time.Duration
+	runID          string
+	graphName      string
+	maxIterations  int
+	maxNodeRetries int
+	timeout        time.Duration
+	startNode      string
+	parallel       *ParallelConfig
+	resolver       VariableResolver
+
+	// --- event sinks (input options) ---
+
+	// host is the modern event/interrupt/ask sink. Required path
+	// going forward; defaulted to engine.NoopHost{} in Execute when
+	// the caller doesn't supply WithHost.
+	host engine.Host
+	// bus is a write-only slot used by the deprecated WithEventBus
+	// option. Execute reads it once via resolvePublisher to fold it
+	// into publisher; nothing else in the executor consults it.
+	//
+	// Deprecated: scheduled for removal in v0.3.0 together with
+	// WithEventBus. Do NOT add new reads.
+	bus event.Bus
+	// streamCallback is the legacy per-node delta sink set by
+	// WithStreamCallback. newNodePublisher fans every emit to it for
+	// v0.2 backwards compatibility; new code should subscribe to the
+	// host's event stream instead.
+	//
+	// Deprecated: scheduled for removal in v0.3.0 together with
+	// WithStreamCallback. Do NOT add new reads.
+	streamCallback graph.StreamCallback
+	// checkpointStore persists a graph-format checkpoint after every
+	// node completes. Folded into engine.Host.Checkpointer in v0.3.0;
+	// kept here so callers using the deprecated WithCheckpointStore
+	// option keep working in the meantime.
+	//
+	// Deprecated: scheduled for removal in v0.3.0 together with
+	// WithCheckpointStore. New code should rely on host.Checkpoint.
 	checkpointStore CheckpointStore
-	startNode       string
-	parallel        *ParallelConfig
-	bus             event.Bus
-	resolver        VariableResolver
-	streamCallback  graph.StreamCallback
+
+	// --- derived (set by Execute) ---
+
+	// publisher is the single event sink consumed by every
+	// publishGraph/publishNode and newNodePublisher call. Built once
+	// in Execute from host + bus; never read before that.
+	publisher engine.Publisher
 
 	nodeLocks *nodeConfigLocks
 }
@@ -109,6 +145,13 @@ func WithMaxIterations(n int) RunOption     { return func(c *runConfig) { c.maxI
 func WithMaxNodeRetries(n int) RunOption    { return func(c *runConfig) { c.maxNodeRetries = n } }
 func WithTimeout(d time.Duration) RunOption { return func(c *runConfig) { c.timeout = d } }
 func WithStartNode(id string) RunOption     { return func(c *runConfig) { c.startNode = id } }
+
+// WithCheckpointStore installs a graph-format CheckpointStore that
+// persists a checkpoint after every node completes.
+//
+// Deprecated: graph-format checkpoints will be folded into engine.Host's
+// Checkpointer in v0.3.0; new code should rely on host.Checkpoint. The
+// store still works in the meantime so existing callers keep functioning.
 func WithCheckpointStore(s CheckpointStore) RunOption {
 	return func(c *runConfig) { c.checkpointStore = s }
 }
@@ -128,6 +171,24 @@ func WithParallel(cfg ParallelConfig) RunOption {
 	}
 }
 
+// WithHost installs the engine.Host the executor will hand to nodes via
+// ExecutionContext.Host. When omitted the executor falls back to
+// engine.NoopHost{} so nodes can call ctx.Host methods unconditionally.
+//
+// WithHost subsumes WithEventBus / WithCheckpointStore: when both are
+// supplied the host wins for publishing and checkpointing while the bus /
+// store remain available for legacy code paths during the transition.
+func WithHost(h engine.Host) RunOption {
+	return func(c *runConfig) { c.host = h }
+}
+
+// WithEventBus installs the event bus used for graph- and node-level
+// envelopes.
+//
+// Deprecated: pass an engine.Host to WithHost instead — the executor now
+// publishes envelopes through host.Publish, which lets the host
+// centralise routing, fan-out and observability. Scheduled for removal in
+// v0.3.0 alongside the other host-overlapping options.
 func WithEventBus(bus event.Bus) RunOption {
 	return func(c *runConfig) { c.bus = bus }
 }
@@ -136,6 +197,12 @@ func WithResolver(r VariableResolver) RunOption {
 	return func(c *runConfig) { c.resolver = r }
 }
 
+// WithStreamCallback installs a legacy stream callback receiving every
+// node delta.
+//
+// Deprecated: subscribe to engine.Host's event bus, or read
+// ExecutionContext.Publisher inside a node, instead. Scheduled for
+// removal in v0.3.0.
 func WithStreamCallback(cb graph.StreamCallback) RunOption {
 	return func(c *runConfig) { c.streamCallback = cb }
 }
@@ -158,25 +225,19 @@ func (e *LocalExecutor) Execute(ctx context.Context, g *graph.Graph, board *grap
 		opt(&cfg)
 	}
 
-	bus := cfg.bus
-	if bus == nil {
-		bus = event.NoopBus{}
+	// cfg.host backs ExecutionContext.Host so nodes can call Host
+	// methods (Publish / Interrupts / AskUser / ...) unconditionally.
+	if cfg.host == nil {
+		cfg.host = engine.NoopHost{}
 	}
+	cfg.graphName = g.Name()
+
+	// resolvePublisher is the single seam where event sinks are
+	// chosen. After this line cfg.bus is invisible to the rest of
+	// the executor — every dispatch site reads cfg.publisher.
+	cfg.publisher = resolvePublisher(cfg.host, cfg.bus)
 
 	actorKey := actorKeyFrom(ctx)
-
-	if cfg.streamCallback == nil && cfg.bus != nil {
-		cfg.streamCallback = func(se graph.StreamEvent) {
-			payload := map[string]any{"type": se.Type}
-			if m, ok := se.Payload.(map[string]any); ok {
-				for k, v := range m {
-					payload[k] = v
-				}
-			}
-			publishNodeEvent(ctx, bus, subjNodeStreamDelta(cfg.runID, se.NodeID),
-				cfg.runID, g.Name(), actorKey, se.NodeID, payload)
-		}
-	}
 
 	if cfg.timeout > 0 {
 		var cancel context.CancelFunc
@@ -202,7 +263,7 @@ func (e *LocalExecutor) Execute(ctx context.Context, g *graph.Graph, board *grap
 		currentNodes = []string{cfg.startNode}
 	}
 
-	publishGraphEvent(ctx, bus, subjGraphStart(cfg.runID),
+	publishGraphEvent(ctx, cfg.publisher, subjGraphStart(cfg.runID),
 		cfg.runID, g.Name(), actorKey, board.Vars())
 
 	iteration := 0
@@ -224,7 +285,7 @@ func (e *LocalExecutor) Execute(ctx context.Context, g *graph.Graph, board *grap
 			if skip, err := shouldSkip(g, node, board); err != nil {
 				return board, err
 			} else if skip {
-				publishNodeEvent(ctx, bus, subjNodeSkipped(cfg.runID, nodeID),
+				publishNodeEvent(ctx, cfg.publisher, subjNodeSkipped(cfg.runID, nodeID),
 					cfg.runID, g.Name(), actorKey, nodeID, nil)
 				resolved, err := resolveNextNodes(g, node, board)
 				if err != nil {
@@ -257,7 +318,7 @@ func (e *LocalExecutor) Execute(ctx context.Context, g *graph.Graph, board *grap
 				}
 			}
 
-			publishNodeEvent(ctx, bus, subjNodeStart(cfg.runID, nodeID),
+			publishNodeEvent(ctx, cfg.publisher, subjNodeStart(cfg.runID, nodeID),
 				cfg.runID, g.Name(), actorKey, nodeID, nil)
 
 			nodeStart := time.Now()
@@ -269,7 +330,7 @@ func (e *LocalExecutor) Execute(ctx context.Context, g *graph.Graph, board *grap
 				),
 			)
 
-			err := executeWithRetry(ctx, node, board, cfg)
+			err := executeWithRetry(ctx, node, board, cfg, nodeID)
 
 			if origNodeConfig != nil {
 				node.(graph.Configurable).SetConfig(origNodeConfig)
@@ -291,9 +352,9 @@ func (e *LocalExecutor) Execute(ctx context.Context, g *graph.Graph, board *grap
 						attribute.String("status", "error"),
 					))
 
-				if errdefs.Is(err, graph.ErrInterrupt) {
+				if errdefs.IsInterrupted(err) {
 					board.SetVar(graph.VarInterruptedNode, nodeID)
-					publishGraphEvent(ctx, bus, subjGraphEnd(cfg.runID),
+					publishGraphEvent(ctx, cfg.publisher, subjGraphEnd(cfg.runID),
 						cfg.runID, g.Name(), actorKey, nil)
 					graphSpan.SetAttributes(attribute.String("graph.status", "interrupted"))
 					graphExecCount.Add(ctx, 1,
@@ -303,7 +364,7 @@ func (e *LocalExecutor) Execute(ctx context.Context, g *graph.Graph, board *grap
 						))
 					graphExecDuration.Record(ctx, time.Since(graphStart).Seconds(),
 						metric.WithAttributes(attribute.String("graph.name", g.Name())))
-					return board, graph.ErrInterrupt
+					return board, err
 				}
 
 				if ctx.Err() != nil && ctx.Err() == context.DeadlineExceeded {
@@ -317,7 +378,7 @@ func (e *LocalExecutor) Execute(ctx context.Context, g *graph.Graph, board *grap
 					otellog.String("node.id", nodeID),
 					otellog.String("error", err.Error()))
 
-				publishNodeEvent(ctx, bus, subjNodeError(cfg.runID, nodeID),
+				publishNodeEvent(ctx, cfg.publisher, subjNodeError(cfg.runID, nodeID),
 					cfg.runID, g.Name(), actorKey, nodeID,
 					map[string]any{"error": err.Error()})
 				return board, err
@@ -338,7 +399,7 @@ func (e *LocalExecutor) Execute(ctx context.Context, g *graph.Graph, board *grap
 				}
 			}
 
-			publishNodeEvent(ctx, bus, subjNodeComplete(cfg.runID, nodeID),
+			publishNodeEvent(ctx, cfg.publisher, subjNodeComplete(cfg.runID, nodeID),
 				cfg.runID, g.Name(), actorKey, nodeID,
 				map[string]any{"iteration": iteration, "vars": board.Vars()})
 
@@ -362,7 +423,7 @@ func (e *LocalExecutor) Execute(ctx context.Context, g *graph.Graph, board *grap
 			}
 
 			if cfg.parallel != nil && len(resolved) > 1 && allUnconditional(g.Edges(nodeID), resolved) {
-				joinBoard, err := executeForkJoin(ctx, g, board, resolved, cfg, bus)
+				joinBoard, err := executeForkJoin(ctx, g, board, resolved, cfg)
 				if err != nil {
 					return board, err
 				}
@@ -399,7 +460,7 @@ func (e *LocalExecutor) Execute(ctx context.Context, g *graph.Graph, board *grap
 		return board, fmt.Errorf("graph execution exceeded max iterations (%d)", cfg.maxIterations)
 	}
 
-	publishGraphEvent(ctx, bus, subjGraphEnd(cfg.runID),
+	publishGraphEvent(ctx, cfg.publisher, subjGraphEnd(cfg.runID),
 		cfg.runID, g.Name(), actorKey,
 		map[string]any{"iteration": iteration, "vars": board.Vars()})
 

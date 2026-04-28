@@ -10,7 +10,7 @@ import (
 )
 
 func dummyBuilder(id, typ string) NodeBuilder {
-	return func(def graph.NodeDefinition, bctx *BuildContext) (graph.Node, error) {
+	return func(def graph.NodeDefinition) (graph.Node, error) {
 		return graph.NewPassthroughNode(id, typ), nil
 	}
 }
@@ -19,12 +19,12 @@ func TestFactory_RegisterAndBuild(t *testing.T) {
 	f := NewFactory()
 	f.RegisterBuilder("custom", dummyBuilder("c1", "custom"))
 
-	node, err := f.Build(graph.NodeDefinition{ID: "c1", Type: "custom"})
+	n, err := f.Build(graph.NodeDefinition{ID: "c1", Type: "custom"})
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
-	if node.ID() != "c1" {
-		t.Fatalf("ID = %q, want c1", node.ID())
+	if n.ID() != "c1" {
+		t.Fatalf("ID = %q, want c1", n.ID())
 	}
 }
 
@@ -40,25 +40,45 @@ func TestFactory_FallbackBuilder(t *testing.T) {
 	f := NewFactory()
 	f.SetFallback(dummyBuilder("fb", "fallback"))
 
-	node, err := f.Build(graph.NodeDefinition{ID: "fb", Type: "any"})
+	n, err := f.Build(graph.NodeDefinition{ID: "fb", Type: "any"})
 	if err != nil {
 		t.Fatalf("Build with fallback: %v", err)
 	}
-	if node.ID() != "fb" {
-		t.Fatalf("ID = %q, want fb", node.ID())
+	if n.ID() != "fb" {
+		t.Fatalf("ID = %q, want fb", n.ID())
 	}
 }
 
 func TestFactory_Fallback_Getter(t *testing.T) {
 	f := NewFactory()
 	if f.Fallback() != nil {
-		t.Fatal("Fallback should be nil initially (after clearing default)")
+		t.Fatal("Fallback should be nil initially")
 	}
-
-	fb := dummyBuilder("fb", "t")
-	f.SetFallback(fb)
+	f.SetFallback(dummyBuilder("fb", "t"))
 	if f.Fallback() == nil {
 		t.Fatal("Fallback should not be nil after SetFallback")
+	}
+}
+
+func TestFactory_BuildEndNode(t *testing.T) {
+	f := NewFactory()
+	n, err := f.Build(graph.NodeDefinition{ID: "end", Type: "__end__"})
+	if err != nil {
+		t.Fatalf("Build __end__: %v", err)
+	}
+	if n.ID() != graph.END {
+		t.Fatalf("end node ID = %q, want %q", n.ID(), graph.END)
+	}
+}
+
+func TestFactory_BuildPassthrough(t *testing.T) {
+	f := NewFactory()
+	n, err := f.Build(graph.NodeDefinition{ID: "pt1", Type: "passthrough"})
+	if err != nil {
+		t.Fatalf("Build passthrough: %v", err)
+	}
+	if n.ID() != "pt1" {
+		t.Fatalf("passthrough ID = %q", n.ID())
 	}
 }
 
@@ -96,115 +116,22 @@ func TestFactory_ConcurrentRegisterAndBuild(t *testing.T) {
 	}
 }
 
-func TestFactory_BuildEndNode(t *testing.T) {
-	f := NewFactory()
-	node, err := f.Build(graph.NodeDefinition{ID: "end", Type: "__end__"})
-	if err != nil {
-		t.Fatalf("Build __end__: %v", err)
-	}
-	if node.ID() != graph.END {
-		t.Fatalf("end node ID = %q, want %q", node.ID(), graph.END)
+func TestPortsForType_Unknown(t *testing.T) {
+	input, output := PortsForType("__no_such_type__")
+	if input != nil || output != nil {
+		t.Fatalf("expected nil ports for unknown type, got input=%v output=%v", input, output)
 	}
 }
 
-func TestFactory_BuildPassthrough(t *testing.T) {
-	f := NewFactory()
-	node, err := f.Build(graph.NodeDefinition{ID: "pt1", Type: "passthrough"})
-	if err != nil {
-		t.Fatalf("Build passthrough: %v", err)
+func TestRegisterPorts_RoundTrip(t *testing.T) {
+	in := []graph.Port{{Name: "in", Type: graph.PortTypeString}}
+	out := []graph.Port{{Name: "out", Type: graph.PortTypeBool}}
+	RegisterPorts("__test_register_ports__", in, out)
+	gotIn, gotOut := PortsForType("__test_register_ports__")
+	if len(gotIn) != 1 || gotIn[0].Name != "in" {
+		t.Fatalf("input ports = %v", gotIn)
 	}
-	if node.ID() != "pt1" {
-		t.Fatalf("passthrough ID = %q, want pt1", node.ID())
-	}
-}
-
-func emptyFactory() *Factory {
-	return &Factory{
-		builders: make(map[string]NodeBuilder),
-		buildCtx: &BuildContext{},
-	}
-}
-
-func TestFactory_ValidateConsistency_AllMatch(t *testing.T) {
-	f := emptyFactory()
-	f.RegisterBuilder("a", dummyBuilder("a", "a"))
-	f.RegisterBuilder("b", dummyBuilder("b", "b"))
-
-	schemas := NewSchemaRegistry()
-	schemas.Register(NodeSchema{Type: "a", Label: "A"})
-	schemas.Register(NodeSchema{Type: "b", Label: "B"})
-
-	warnings := f.ValidateConsistency(schemas)
-	if len(warnings) != 0 {
-		t.Fatalf("expected no warnings, got %v", warnings)
-	}
-}
-
-func TestFactory_ValidateConsistency_MissingSchema(t *testing.T) {
-	f := emptyFactory()
-	f.RegisterBuilder("has_builder", dummyBuilder("x", "x"))
-
-	schemas := NewSchemaRegistry()
-
-	warnings := f.ValidateConsistency(schemas)
-	if len(warnings) != 1 {
-		t.Fatalf("expected 1 warning, got %d: %v", len(warnings), warnings)
-	}
-	if !strings.Contains(warnings[0], "has_builder") || !strings.Contains(warnings[0], "no schema") {
-		t.Fatalf("unexpected warning: %q", warnings[0])
-	}
-}
-
-func TestFactory_ValidateConsistency_MissingBuilder(t *testing.T) {
-	f := emptyFactory()
-
-	schemas := NewSchemaRegistry()
-	schemas.Register(NodeSchema{Type: "has_schema", Label: "X"})
-
-	warnings := f.ValidateConsistency(schemas)
-	if len(warnings) != 1 {
-		t.Fatalf("expected 1 warning, got %d: %v", len(warnings), warnings)
-	}
-	if !strings.Contains(warnings[0], "has_schema") || !strings.Contains(warnings[0], "no builder") {
-		t.Fatalf("unexpected warning: %q", warnings[0])
-	}
-}
-
-func TestFactory_ValidateConsistency_EndNodeSkipped(t *testing.T) {
-	f := emptyFactory()
-
-	schemas := NewSchemaRegistry()
-	schemas.Register(NodeSchema{Type: "__end__", Label: "End"})
-
-	warnings := f.ValidateConsistency(schemas)
-	for _, w := range warnings {
-		if strings.Contains(w, "__end__") {
-			t.Fatalf("__end__ should be skipped, got warning: %q", w)
-		}
-	}
-}
-
-func TestFactory_ValidateConsistency_BothMissing(t *testing.T) {
-	f := emptyFactory()
-	f.RegisterBuilder("only_builder", dummyBuilder("x", "x"))
-
-	schemas := NewSchemaRegistry()
-	schemas.Register(NodeSchema{Type: "only_schema", Label: "X"})
-
-	warnings := f.ValidateConsistency(schemas)
-	if len(warnings) != 2 {
-		t.Fatalf("expected 2 warnings, got %d: %v", len(warnings), warnings)
-	}
-	hasBuilder, hasSchema := false, false
-	for _, w := range warnings {
-		if strings.Contains(w, "only_builder") {
-			hasBuilder = true
-		}
-		if strings.Contains(w, "only_schema") {
-			hasSchema = true
-		}
-	}
-	if !hasBuilder || !hasSchema {
-		t.Fatalf("expected warnings for both sides, got %v", warnings)
+	if len(gotOut) != 1 || gotOut[0].Name != "out" {
+		t.Fatalf("output ports = %v", gotOut)
 	}
 }

@@ -6,7 +6,6 @@ import (
 	"testing"
 
 	"github.com/GizClaw/flowcraft/sdk/graph"
-	nodevar "github.com/GizClaw/flowcraft/sdk/graph/node"
 )
 
 func TestLocalExecutor_NodeRetry(t *testing.T) {
@@ -106,7 +105,7 @@ func TestLocalExecutor_StreamCallback_ToolCallCapture(t *testing.T) {
 		t.Fatalf("expected 4 stream events, got %d", len(captured))
 	}
 
-	tcRaw, ok := result.GetVar(nodevar.VarToolCalls)
+	tcRaw, ok := result.GetVar(graph.VarToolCalls)
 	if !ok {
 		t.Fatal("expected VarToolCalls on board")
 	}
@@ -166,7 +165,7 @@ func TestLocalExecutor_StreamCallback_NoToolCalls(t *testing.T) {
 		t.Fatalf("execute failed: %v", err)
 	}
 
-	if _, ok := result.GetVar(nodevar.VarToolCalls); ok {
+	if _, ok := result.GetVar(graph.VarToolCalls); ok {
 		t.Fatal("expected no VarToolCalls for non-tool stream events")
 	}
 }
@@ -197,7 +196,7 @@ func TestLocalExecutor_StreamCallback_NilCallback(t *testing.T) {
 		t.Fatalf("execute failed: %v", err)
 	}
 
-	tcRaw, ok := board.GetVar(nodevar.VarToolCalls)
+	tcRaw, ok := board.GetVar(graph.VarToolCalls)
 	if !ok {
 		t.Fatal("expected VarToolCalls even without external callback")
 	}

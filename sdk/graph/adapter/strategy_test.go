@@ -8,11 +8,18 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/graph/compiler"
 	"github.com/GizClaw/flowcraft/sdk/graph/executor"
 	"github.com/GizClaw/flowcraft/sdk/graph/node"
+	"github.com/GizClaw/flowcraft/sdk/graph/node/scriptnode"
 	"github.com/GizClaw/flowcraft/sdk/script/jsrt"
 	"github.com/GizClaw/flowcraft/sdk/workflow"
-
-	_ "github.com/GizClaw/flowcraft/sdk/graph/node/scriptnode"
 )
+
+// scriptFactory builds a fresh node.Factory wired with the script runtime
+// for each adapter test case.
+func scriptFactory() *node.Factory {
+	f := node.NewFactory()
+	scriptnode.Register(f, scriptnode.Deps{ScriptRuntime: jsrt.New()})
+	return f
+}
 
 func TestFromDefinition_BuildRequiresFactory(t *testing.T) {
 	s := FromDefinition(&graph.GraphDefinition{Name: "t", Entry: "x"})
@@ -91,7 +98,7 @@ func TestNewGraphRunnable_WithFactory(t *testing.T) {
 	}
 
 	deps := workflow.NewDependencies()
-	fac := node.NewFactory(node.WithScriptRuntime(jsrt.New()))
+	fac := scriptFactory()
 	workflow.SetDep(deps, DepNodeFactory, fac)
 
 	s := FromCompiled(cg)
@@ -119,7 +126,7 @@ func TestNewGraphRunnable_WithCustomExecutor(t *testing.T) {
 	}
 
 	deps := workflow.NewDependencies()
-	fac := node.NewFactory(node.WithScriptRuntime(jsrt.New()))
+	fac := scriptFactory()
 	workflow.SetDep(deps, DepNodeFactory, fac)
 	workflow.SetDep(deps, DepExecutor, executor.NewLocalExecutor())
 
@@ -155,7 +162,7 @@ func TestGraphRunnable_ResolvesVariableReferences(t *testing.T) {
 	}
 
 	deps := workflow.NewDependencies()
-	fac := node.NewFactory(node.WithScriptRuntime(jsrt.New()))
+	fac := scriptFactory()
 	workflow.SetDep(deps, DepNodeFactory, fac)
 
 	s := FromCompiled(cg)
@@ -190,7 +197,7 @@ func TestFromDefinition_CompiledCacheHit(t *testing.T) {
 	s := FromDefinition(def)
 
 	deps := workflow.NewDependencies()
-	fac := node.NewFactory(node.WithScriptRuntime(jsrt.New()))
+	fac := scriptFactory()
 	workflow.SetDep(deps, DepNodeFactory, fac)
 
 	r1, err := s.Build(context.Background(), deps)

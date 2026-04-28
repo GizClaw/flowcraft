@@ -1,16 +1,41 @@
-package executor
+package runner_test
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/GizClaw/flowcraft/sdk/engine/enginetest"
 	"github.com/GizClaw/flowcraft/sdk/event"
 	"github.com/GizClaw/flowcraft/sdk/graph"
+	"github.com/GizClaw/flowcraft/sdk/graph/executor"
 	"github.com/GizClaw/flowcraft/sdk/graph/node"
+	"github.com/GizClaw/flowcraft/sdk/graph/runner"
 )
+
+// --- test helpers (mirror graph/executor/helpers_test.go) ---
+
+type testNode struct {
+	id     string
+	typ    string
+	execFn func(ctx graph.ExecutionContext, board *graph.Board) error
+}
+
+func (n *testNode) ID() string   { return n.id }
+func (n *testNode) Type() string { return n.typ }
+func (n *testNode) ExecuteBoard(ctx graph.ExecutionContext, board *graph.Board) error {
+	if n.execFn != nil {
+		return n.execFn(ctx, board)
+	}
+	return nil
+}
+
+func newTestNode(id string, fn func(graph.ExecutionContext, *graph.Board) error) *testNode {
+	return &testNode{id: id, typ: "test", execFn: fn}
+}
 
 func testFactory(builders map[string]node.NodeBuilder) *node.Factory {
 	f := node.NewFactory()
@@ -21,10 +46,12 @@ func testFactory(builders map[string]node.NodeBuilder) *node.Factory {
 }
 
 func testNodeBuilder(fn func(graph.ExecutionContext, *graph.Board) error) node.NodeBuilder {
-	return func(def graph.NodeDefinition, _ *node.BuildContext) (graph.Node, error) {
+	return func(def graph.NodeDefinition) (graph.Node, error) {
 		return newTestNode(def.ID, fn), nil
 	}
 }
+
+// --- tests ---
 
 func TestRunner_SimpleGraph(t *testing.T) {
 	def := &graph.GraphDefinition{
@@ -38,12 +65,12 @@ func TestRunner_SimpleGraph(t *testing.T) {
 		},
 	}
 
-	runner, err := NewRunner(def, node.NewFactory())
+	r, err := runner.New(def, node.NewFactory())
 	if err != nil {
-		t.Fatalf("NewRunner: %v", err)
+		t.Fatalf("runner.New: %v", err)
 	}
 
-	result, err := runner.Run(context.Background(), map[string]any{"query": "hello"})
+	result, err := r.Run(context.Background(), map[string]any{"query": "hello"})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -77,12 +104,12 @@ func TestRunner_TwoNodePipeline(t *testing.T) {
 		},
 	}
 
-	runner, err := NewRunner(def, factory)
+	r, err := runner.New(def, factory)
 	if err != nil {
-		t.Fatalf("NewRunner: %v", err)
+		t.Fatalf("runner.New: %v", err)
 	}
 
-	result, err := runner.Run(context.Background(), nil)
+	result, err := r.Run(context.Background(), nil)
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -119,12 +146,12 @@ func TestRunner_ConditionalRouting(t *testing.T) {
 		},
 	}
 
-	runner, err := NewRunner(def, factory)
+	r, err := runner.New(def, factory)
 	if err != nil {
-		t.Fatalf("NewRunner: %v", err)
+		t.Fatalf("runner.New: %v", err)
 	}
 
-	result, err := runner.Run(context.Background(), map[string]any{"approved": true})
+	result, err := r.Run(context.Background(), map[string]any{"approved": true})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -138,7 +165,7 @@ func TestRunner_InvalidDefinition(t *testing.T) {
 		Name:  "",
 		Entry: "",
 	}
-	_, err := NewRunner(def, node.NewFactory())
+	_, err := runner.New(def, node.NewFactory())
 	if err == nil {
 		t.Fatal("expected error for invalid definition")
 	}
@@ -165,9 +192,9 @@ func TestRunner_ConcurrentSafety(t *testing.T) {
 		},
 	}
 
-	runner, err := NewRunner(def, factory)
+	r, err := runner.New(def, factory)
 	if err != nil {
-		t.Fatalf("NewRunner: %v", err)
+		t.Fatalf("runner.New: %v", err)
 	}
 
 	const goroutines = 20
@@ -178,7 +205,7 @@ func TestRunner_ConcurrentSafety(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			_, err := runner.Run(context.Background(), map[string]any{"x": 1})
+			_, err := r.Run(context.Background(), map[string]any{"x": 1})
 			if err != nil {
 				errs <- err
 			}
@@ -211,28 +238,27 @@ func TestRunner_WithEventBus(t *testing.T) {
 		},
 	}
 
-	runner, err := NewRunner(def, node.NewFactory(), WithRunnerEventBus(bus))
+	r, err := runner.New(def, node.NewFactory(), runner.WithEventBus(bus))
 	if err != nil {
-		t.Fatalf("NewRunner: %v", err)
+		t.Fatalf("runner.New: %v", err)
 	}
 
-	if runner.Bus() != bus {
+	if r.Bus() != bus {
 		t.Fatal("Bus() should return the configured bus")
 	}
 
 	const runID = "rb-1"
-	sub, err := bus.Subscribe(context.Background(), PatternRun(runID), event.WithBufferSize(16))
+	sub, err := bus.Subscribe(context.Background(), executor.PatternRun(runID), event.WithBufferSize(16))
 	if err != nil {
 		t.Fatalf("subscribe: %v", err)
 	}
 
-	_, err = runner.Run(context.Background(), nil, WithRunID(runID))
+	_, err = r.Run(context.Background(), nil, executor.WithRunID(runID))
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 
-	wantStart := subjGraphStart(runID)
-	wantEnd := subjGraphEnd(runID)
+	wantPrefix := "graph.run." + runID + "."
 	sawStart, sawEnd := false, false
 	timeout := time.After(time.Second)
 	for !(sawStart && sawEnd) {
@@ -241,15 +267,73 @@ func TestRunner_WithEventBus(t *testing.T) {
 			if !ok {
 				t.Fatalf("subscription closed before seeing start+end (sawStart=%v sawEnd=%v)", sawStart, sawEnd)
 			}
-			if env.Subject == wantStart {
+			subj := string(env.Subject)
+			if subj == wantPrefix+"start" {
 				sawStart = true
 			}
-			if env.Subject == wantEnd {
+			if subj == wantPrefix+"end" {
 				sawEnd = true
+			}
+			if !strings.HasPrefix(subj, wantPrefix) {
+				t.Fatalf("unexpected subject %q", subj)
 			}
 		case <-timeout:
 			t.Fatalf("timeout waiting for start+end (sawStart=%v sawEnd=%v)", sawStart, sawEnd)
 		}
+	}
+}
+
+// TestRunner_WithHost confirms graph lifecycle envelopes are routed through
+// engine.Host.Publish (the v0.3 path) when the user supplies WithHost. The
+// MockHost lets us assert on every envelope without standing up an event
+// bus, mirroring the way agent/agent.go drives executors today.
+func TestRunner_WithHost(t *testing.T) {
+	host := enginetest.NewMockHost()
+
+	def := &graph.GraphDefinition{
+		Name:  "host_test",
+		Entry: "start",
+		Nodes: []graph.NodeDefinition{
+			{ID: "start", Type: "passthrough"},
+		},
+		Edges: []graph.EdgeDefinition{
+			{From: "start", To: graph.END},
+		},
+	}
+
+	r, err := runner.New(def, node.NewFactory(), runner.WithHost(host))
+	if err != nil {
+		t.Fatalf("runner.New: %v", err)
+	}
+	if r.Host() != host {
+		t.Fatal("Host() should return the configured host")
+	}
+
+	const runID = "rh-1"
+	if _, err := r.Run(context.Background(), nil, executor.WithRunID(runID)); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	envs := host.Envelopes()
+	if len(envs) == 0 {
+		t.Fatal("expected host to receive envelopes")
+	}
+	wantPrefix := "graph.run." + runID + "."
+	sawStart, sawEnd := false, false
+	for _, env := range envs {
+		s := string(env.Subject)
+		if !strings.HasPrefix(s, wantPrefix) {
+			t.Fatalf("unexpected subject %q (want prefix %q)", s, wantPrefix)
+		}
+		if strings.HasSuffix(s, ".start") {
+			sawStart = true
+		}
+		if strings.HasSuffix(s, ".end") {
+			sawEnd = true
+		}
+	}
+	if !sawStart || !sawEnd {
+		t.Fatalf("missing lifecycle events (sawStart=%v sawEnd=%v)", sawStart, sawEnd)
 	}
 }
 
@@ -275,13 +359,13 @@ func TestRunner_StreamCallback(t *testing.T) {
 		},
 	}
 
-	runner, err := NewRunner(def, factory)
+	r, err := runner.New(def, factory)
 	if err != nil {
-		t.Fatalf("NewRunner: %v", err)
+		t.Fatalf("runner.New: %v", err)
 	}
 
 	var captured []graph.StreamEvent
-	_, err = runner.Run(context.Background(), nil, WithStreamCallback(func(se graph.StreamEvent) {
+	_, err = r.Run(context.Background(), nil, executor.WithStreamCallback(func(se graph.StreamEvent) {
 		captured = append(captured, se)
 	}))
 	if err != nil {
@@ -304,12 +388,12 @@ func TestRunner_Graph(t *testing.T) {
 		},
 	}
 
-	runner, err := NewRunner(def, node.NewFactory())
+	r, err := runner.New(def, node.NewFactory())
 	if err != nil {
-		t.Fatalf("NewRunner: %v", err)
+		t.Fatalf("runner.New: %v", err)
 	}
 
-	g, err := runner.Graph()
+	g, err := r.Graph()
 	if err != nil {
 		t.Fatalf("Graph: %v", err)
 	}

@@ -6,7 +6,6 @@ import (
 	"sync"
 
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
-	"github.com/GizClaw/flowcraft/sdk/event"
 	"github.com/GizClaw/flowcraft/sdk/graph"
 	"github.com/GizClaw/flowcraft/sdk/model"
 )
@@ -17,7 +16,7 @@ type branchResult struct {
 	err      error
 }
 
-func executeForkJoin(ctx context.Context, g *graph.Graph, board *graph.Board, branchStarts []string, cfg runConfig, bus event.Bus) (*graph.Board, error) {
+func executeForkJoin(ctx context.Context, g *graph.Graph, board *graph.Board, branchStarts []string, cfg runConfig) (*graph.Board, error) {
 	if cfg.parallel != nil && len(branchStarts) > cfg.parallel.MaxBranches {
 		branchStarts = branchStarts[:cfg.parallel.MaxBranches]
 	}
@@ -25,7 +24,7 @@ func executeForkJoin(ctx context.Context, g *graph.Graph, board *graph.Board, br
 	actorKey := actorKeyFrom(ctx)
 	joinNodeID := findJoinNode(g, branchStarts)
 
-	publishGraphEvent(ctx, bus, subjParallelFork(cfg.runID),
+	publishGraphEvent(ctx, cfg.publisher, subjParallelFork(cfg.runID),
 		cfg.runID, g.Name(), actorKey,
 		map[string]any{
 			"branch_ids": branchStarts,
@@ -90,7 +89,7 @@ func executeForkJoin(ctx context.Context, g *graph.Graph, board *graph.Board, br
 		return board, err
 	}
 
-	publishGraphEvent(ctx, bus, subjParallelJoin(cfg.runID),
+	publishGraphEvent(ctx, cfg.publisher, subjParallelJoin(cfg.runID),
 		cfg.runID, g.Name(), actorKey,
 		map[string]any{
 			"branch_ids": branchStarts,
@@ -139,11 +138,11 @@ func runBranch(ctx context.Context, g *graph.Graph, board *graph.Board, startID,
 			}
 			cfg.nodeConfigMu(cfgNode).Lock()
 			cfgNode.SetConfig(resolved)
-			execErr = executeWithRetry(ctx, node, board, cfg)
+			execErr = executeWithRetry(ctx, node, board, cfg, currentID)
 			cfgNode.SetConfig(origConfig)
 			cfg.nodeConfigMu(cfgNode).Unlock()
 		} else {
-			execErr = executeWithRetry(ctx, node, board, cfg)
+			execErr = executeWithRetry(ctx, node, board, cfg, currentID)
 		}
 
 		if execErr != nil {

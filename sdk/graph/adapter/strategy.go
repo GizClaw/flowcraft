@@ -9,6 +9,7 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/graph/compiler"
 	"github.com/GizClaw/flowcraft/sdk/graph/executor"
 	"github.com/GizClaw/flowcraft/sdk/graph/node"
+	"github.com/GizClaw/flowcraft/sdk/graph/runner"
 	"github.com/GizClaw/flowcraft/sdk/graph/variable"
 	"github.com/GizClaw/flowcraft/sdk/workflow"
 )
@@ -105,10 +106,11 @@ func newGraphRunnable(cg *compiler.CompiledGraph, deps *workflow.Dependencies) (
 }
 
 func (r *graphRunnable) Execute(ctx context.Context, board *workflow.Board, req *workflow.Request, opts ...workflow.RunOption) (*workflow.Board, error) {
-	g, err := executor.Assemble(r.cg, r.factory)
+	g, err := runner.Assemble(r.cg, r.factory)
 	if err != nil {
 		return board, err
 	}
+	gboard := graphBoardFromWorkflow(board)
 	execOpts := []executor.RunOption{
 		executor.WithResolver(variable.NewResolver()),
 	}
@@ -126,5 +128,39 @@ func (r *graphRunnable) Execute(ctx context.Context, board *workflow.Board, req 
 	if rc.MaxIterations > 0 {
 		execOpts = append(execOpts, executor.WithMaxIterations(rc.MaxIterations))
 	}
-	return r.executor.Execute(ctx, g, board, execOpts...)
+	out, runErr := r.executor.Execute(ctx, g, gboard, execOpts...)
+	return workflowBoardFromGraph(out), runErr
 }
+
+// graphBoardFromWorkflow projects a *workflow.Board into a *graph.Board via
+// snapshot round-trip. Used by adapter to bridge the two now-independent
+// blackboard types until workflow is removed in v0.3.0.
+func graphBoardFromWorkflow(b *workflow.Board) *graph.Board {
+	if b == nil {
+		return graph.NewBoard()
+	}
+	wsnap := b.Snapshot()
+	if wsnap == nil {
+		return graph.NewBoard()
+	}
+	return graph.RestoreBoard(&graph.BoardSnapshot{
+		Vars:     wsnap.Vars,
+		Channels: wsnap.Channels,
+	})
+}
+
+// workflowBoardFromGraph is the inverse of graphBoardFromWorkflow.
+func workflowBoardFromGraph(b *graph.Board) *workflow.Board {
+	if b == nil {
+		return workflow.NewBoard()
+	}
+	gsnap := b.Snapshot()
+	if gsnap == nil {
+		return workflow.NewBoard()
+	}
+	return workflow.RestoreBoard(&workflow.BoardSnapshot{
+		Vars:     gsnap.Vars,
+		Channels: gsnap.Channels,
+	})
+}
+

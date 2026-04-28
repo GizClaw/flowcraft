@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/GizClaw/flowcraft/sdk/engine"
 	"github.com/GizClaw/flowcraft/sdk/event"
 )
 
@@ -120,12 +121,17 @@ func PatternRunNodes(runID string) event.Pattern {
 
 // publishGraphEvent fires-and-forgets a graph-level envelope. Headers
 // carry the well-known IDs that callers may need for predicate filtering
-// when subject routing alone is insufficient (e.g. cross-run aggregations).
+// when subject routing alone is insufficient (e.g. cross-run
+// aggregations).
 //
-// Errors from bus.Publish are intentionally swallowed to preserve
-// historical behaviour: the executor must not stop graph execution
-// because an observer's bus is overloaded.
-func publishGraphEvent(ctx context.Context, bus event.Bus, subject event.Subject, runID, graphName, actorKey string, payload any) {
+// Errors from publisher.Publish are intentionally swallowed to preserve
+// the historical behaviour: the executor must not stop graph execution
+// because an observer is overloaded. The publisher is the executor's
+// composed sink (host + optional legacy bus), built once in Execute.
+func publishGraphEvent(ctx context.Context, pub engine.Publisher, subject event.Subject, runID, graphName, actorKey string, payload any) {
+	if pub == nil {
+		return
+	}
 	env, err := event.NewEnvelope(ctx, subject, payload)
 	if err != nil {
 		return
@@ -139,11 +145,14 @@ func publishGraphEvent(ctx context.Context, bus event.Bus, subject event.Subject
 	if actorKey != "" {
 		env.SetActorID(actorKey)
 	}
-	_ = bus.Publish(ctx, env)
+	_ = pub.Publish(ctx, env)
 }
 
 // publishNodeEvent is publishGraphEvent + node_id header.
-func publishNodeEvent(ctx context.Context, bus event.Bus, subject event.Subject, runID, graphName, actorKey, nodeID string, payload any) {
+func publishNodeEvent(ctx context.Context, pub engine.Publisher, subject event.Subject, runID, graphName, actorKey, nodeID string, payload any) {
+	if pub == nil {
+		return
+	}
 	env, err := event.NewEnvelope(ctx, subject, payload)
 	if err != nil {
 		return
@@ -160,5 +169,5 @@ func publishNodeEvent(ctx context.Context, bus event.Bus, subject event.Subject,
 	if nodeID != "" {
 		env.SetNodeID(nodeID)
 	}
-	_ = bus.Publish(ctx, env)
+	_ = pub.Publish(ctx, env)
 }

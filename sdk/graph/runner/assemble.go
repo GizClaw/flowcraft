@@ -1,4 +1,4 @@
-package executor
+package runner
 
 import (
 	"fmt"
@@ -10,7 +10,8 @@ import (
 )
 
 // Assemble takes a CompiledGraph (static analysis result) and a Factory,
-// then constructs all real node instances and returns an immutable executable Graph.
+// then constructs all real node instances and returns an immutable executable
+// Graph ready for the executor.
 func Assemble(compiled *compiler.CompiledGraph, factory *node.Factory) (*graph.Graph, error) {
 	if compiled == nil {
 		return nil, errdefs.Validationf("compiled graph is nil")

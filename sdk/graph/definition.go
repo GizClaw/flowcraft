@@ -64,3 +64,26 @@ type EdgeDefinition struct {
 	To        string `json:"to" yaml:"to"`
 	Condition string `json:"condition,omitempty" yaml:"condition,omitempty"`
 }
+
+// RawGraph is the intermediate graph structure produced by the compiler.
+//
+// All fields are exported for static analysis during compilation. It is NOT
+// intended for direct execution — use Assemble (graph/runner) to produce an
+// immutable *Graph for the executor.
+type RawGraph struct {
+	Name           string
+	Entry          string
+	Nodes          map[string]Node
+	Edges          map[string][]Edge
+	Reverse        map[string][]string
+	SkipConditions map[string]*CompiledCondition
+}
+
+// GraphMeta contains structural analysis results produced by the compiler.
+type GraphMeta struct {
+	NodeCount   int  `json:"node_count"`
+	EdgeCount   int  `json:"edge_count"`
+	HasCycles   bool `json:"has_cycles"`
+	HasParallel bool `json:"has_parallel"`
+	MaxDepth    int  `json:"max_depth"`
+}

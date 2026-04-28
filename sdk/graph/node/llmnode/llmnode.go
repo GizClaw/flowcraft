@@ -1,28 +1,33 @@
-// Package node provides the Go-native LLM and Knowledge graph nodes.
-package node
+package llmnode
 
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 
+	"github.com/GizClaw/flowcraft/sdk/engine"
 	"github.com/GizClaw/flowcraft/sdk/graph"
 	"github.com/GizClaw/flowcraft/sdk/llm"
 	"github.com/GizClaw/flowcraft/sdk/model"
 	"github.com/GizClaw/flowcraft/sdk/telemetry"
 	"github.com/GizClaw/flowcraft/sdk/tool"
-	"github.com/GizClaw/flowcraft/sdk/workflow"
 
 	"go.opentelemetry.io/otel/attribute"
 	otellog "go.opentelemetry.io/otel/log"
 	"go.opentelemetry.io/otel/trace"
 )
 
-// LLMConfig configures an LLM graph node.
-// Fields like SystemPrompt, OutputKey, MessagesKey, QueryFallback, and TrackSteps
-// are graph-level board I/O concerns; the pure LLM call parameters are forwarded
-// to llm.RoundConfig via the roundConfig() method.
-type LLMConfig struct {
+// Config configures an LLM graph node. Fields fall into two groups:
+//
+//   - Graph-level board I/O: SystemPrompt, OutputKey, MessagesKey,
+//     QueryFallback, TrackSteps — consumed by Node.ExecuteBoard around
+//     the round boundary.
+//   - Pure LLM call parameters: Model, Temperature, MaxTokens, JSONMode,
+//     Thinking, ToolNames — forwarded into the in-package round driver
+//     via Config.generateOptions.
+//
+// The split exists to keep the round driver (round.go) ignorant of the
+// graph board, which is essential for testing it in isolation.
+type Config struct {
 	SystemPrompt  string   `json:"system_prompt" yaml:"system_prompt"`
 	Model         string   `json:"model,omitempty" yaml:"model,omitempty"`
 	Temperature   *float64 `json:"temperature,omitempty" yaml:"temperature,omitempty"`
@@ -36,42 +41,29 @@ type LLMConfig struct {
 	ToolNames     []string `json:"tool_names,omitempty" yaml:"tool_names,omitempty"`
 }
 
-func (c LLMConfig) roundConfig() llm.RoundConfig {
-	return llm.RoundConfig{
-		Model:       c.Model,
-		Temperature: c.Temperature,
-		MaxTokens:   c.MaxTokens,
-		JSONMode:    c.JSONMode,
-		Thinking:    c.Thinking,
-		ToolNames:   c.ToolNames,
-	}
-}
-
-// LLMNode is a Go-native graph node that calls an LLM, handles tool calls,
-// and manages message history.
-type LLMNode struct {
+// Node is a Go-native graph node that calls an LLM, dispatches tool calls,
+// and manages message history on the board.
+type Node struct {
 	id           string
 	resolver     llm.LLMResolver
 	toolRegistry *tool.Registry
-	config       LLMConfig
+	config       Config
 	rawConfig    map[string]any
 	isDeferred   func(string) bool
 }
 
-// NewLLMNode creates a new LLM node.
-func NewLLMNode(id string, resolver llm.LLMResolver, toolReg *tool.Registry, config LLMConfig) *LLMNode {
-	return &LLMNode{id: id, resolver: resolver, toolRegistry: toolReg, config: config}
+// New creates a Node.
+func New(id string, resolver llm.LLMResolver, toolReg *tool.Registry, config Config) *Node {
+	return &Node{id: id, resolver: resolver, toolRegistry: toolReg, config: config}
 }
 
-func (n *LLMNode) ID() string   { return n.id }
-func (n *LLMNode) Type() string { return "llm" }
+func (n *Node) ID() string             { return n.id }
+func (n *Node) Type() string           { return "llm" }
+func (n *Node) Config() map[string]any { return n.rawConfig }
 
-// Config returns the raw config map for variable resolution by the executor.
-func (n *LLMNode) Config() map[string]any { return n.rawConfig }
-
-// SetConfig updates the raw config and re-parses the typed LLMConfig so that
+// SetConfig updates the raw config and re-parses the typed Config so that
 // resolved ${board.xxx} variables take effect (e.g. system_prompt).
-func (n *LLMNode) SetConfig(c map[string]any) {
+func (n *Node) SetConfig(c map[string]any) {
 	n.rawConfig = c
 	cfg, err := ConfigFromMap(c, n.isDeferred)
 	if err != nil {
@@ -83,26 +75,26 @@ func (n *LLMNode) SetConfig(c map[string]any) {
 	n.config = cfg
 }
 
-func (n *LLMNode) InputPorts() []graph.Port {
+func (n *Node) InputPorts() []graph.Port {
 	return []graph.Port{
-		{Name: workflow.VarMessages, Type: graph.PortTypeMessages, Required: true},
+		{Name: graph.VarMessages, Type: graph.PortTypeMessages, Required: true},
 	}
 }
 
-func (n *LLMNode) OutputPorts() []graph.Port {
+func (n *Node) OutputPorts() []graph.Port {
 	outputKey := n.config.OutputKey
 	if outputKey == "" {
 		outputKey = VarResponse
 	}
 	return []graph.Port{
 		{Name: outputKey, Type: graph.PortTypeString, Required: true},
-		{Name: workflow.VarMessages, Type: graph.PortTypeMessages, Required: true},
+		{Name: graph.VarMessages, Type: graph.PortTypeMessages, Required: true},
 		{Name: VarUsage, Type: graph.PortTypeUsage, Required: true},
 		{Name: VarToolPending, Type: graph.PortTypeBool, Required: true},
 	}
 }
 
-func (n *LLMNode) ExecuteBoard(ctx graph.ExecutionContext, board *graph.Board) error {
+func (n *Node) ExecuteBoard(ctx graph.ExecutionContext, board *graph.Board) error {
 	_, span := telemetry.Tracer().Start(ctx.Context, "node.llm.execute",
 		trace.WithAttributes(attribute.String("node.id", n.id)))
 	defer span.End()
@@ -110,28 +102,32 @@ func (n *LLMNode) ExecuteBoard(ctx graph.ExecutionContext, board *graph.Board) e
 	cfg := n.config
 	messagesKey := cfg.MessagesKey
 	if messagesKey == "" {
-		messagesKey = workflow.VarMessages
+		messagesKey = graph.VarMessages
 	}
 	chName := messagesKey
-	if chName == workflow.VarMessages {
-		chName = workflow.MainChannel
+	if chName == graph.VarMessages {
+		chName = graph.MainChannel
 	}
 
 	messages := n.buildMessages(cfg, board, chName, messagesKey)
-	if _, ok := board.GetVar(workflow.VarPrevMessageCount); !ok {
-		board.SetVar(workflow.VarPrevMessageCount, len(messages))
+	if _, ok := board.GetVar(VarPrevMessageCount); !ok {
+		board.SetVar(VarPrevMessageCount, len(messages))
 	}
 
-	result, err := llm.RunRound(
-		ctx.Context, ctx.Stream,
+	result, err := runRound(
+		ctx.Context, ctx.Host, ctx.Publisher,
 		n.resolver, n.toolRegistry,
-		n.id, messages, cfg.roundConfig(),
+		n.id, messages, cfg,
 	)
 	if err != nil {
 		span.RecordError(err)
 		return err
 	}
 
+	// Always commit the round, even when interrupted: writeResults is
+	// what materialises the partial assistant message + cancelled
+	// tool_results onto the board so the agent layer / memory writer
+	// can read them after the resume / discard decision.
 	n.writeResults(ctx, board, cfg, result, messagesKey, chName)
 
 	span.SetAttributes(
@@ -139,11 +135,23 @@ func (n *LLMNode) ExecuteBoard(ctx graph.ExecutionContext, board *graph.Board) e
 		attribute.Int64("llm.output_tokens", result.Usage.OutputTokens),
 		attribute.Bool("llm.tool_pending", result.ToolPending),
 		attribute.Int("llm.tool_calls", len(result.ToolCalls)),
+		attribute.Bool("llm.interrupted", result.Interrupted),
 	)
+
+	if result.Interrupted {
+		// Return engine.Interrupted so the executor classifies via
+		// errdefs.IsInterrupted, writes graph.VarInterruptedNode, and
+		// hands the cause/detail back to the host. ctx-cancel-only
+		// interrupts (no host signal) surface as CauseUnknown.
+		return engine.Interrupted(engine.Interrupt{
+			Cause:  result.InterruptCause,
+			Detail: result.InterruptDetail,
+		})
+	}
 	return nil
 }
 
-func (n *LLMNode) buildMessages(cfg LLMConfig, board *graph.Board, chName, messagesKey string) []llm.Message {
+func (n *Node) buildMessages(cfg Config, board *graph.Board, chName, messagesKey string) []llm.Message {
 	var messages []llm.Message
 	if msgs := board.Channel(chName); len(msgs) > 0 {
 		messages = msgs
@@ -166,7 +174,7 @@ func (n *LLMNode) buildMessages(cfg LLMConfig, board *graph.Board, chName, messa
 		}
 	}
 
-	if si, ok := board.GetVar(workflow.VarSummaryIndex); ok {
+	if si, ok := board.GetVar(VarSummaryIndex); ok {
 		if index, ok := si.(string); ok && index != "" {
 			for i, m := range messages {
 				if m.Role == llm.RoleSystem {
@@ -177,8 +185,8 @@ func (n *LLMNode) buildMessages(cfg LLMConfig, board *graph.Board, chName, messa
 		}
 	}
 
-	if cfg.QueryFallback && messagesKey != workflow.VarMessages {
-		if query, ok := board.GetVar(workflow.VarQuery); ok {
+	if cfg.QueryFallback && messagesKey != graph.VarMessages {
+		if query, ok := board.GetVar(graph.VarQuery); ok {
 			if qs, ok := query.(string); ok && qs != "" {
 				needAppend := true
 				for i := len(messages) - 1; i >= 0; i-- {
@@ -198,9 +206,9 @@ func (n *LLMNode) buildMessages(cfg LLMConfig, board *graph.Board, chName, messa
 	return messages
 }
 
-func (n *LLMNode) writeResults(
-	ctx graph.ExecutionContext, board *graph.Board, cfg LLMConfig,
-	result *llm.RoundResult, messagesKey, chName string,
+func (n *Node) writeResults(
+	ctx graph.ExecutionContext, board *graph.Board, cfg Config,
+	result *roundResult, messagesKey, chName string,
 ) {
 	if cfg.TrackSteps {
 		steps, _ := board.GetVar("agent_steps")
@@ -251,31 +259,13 @@ func (n *LLMNode) writeResults(
 	board.SetVar(VarToolPending, result.ToolPending)
 
 	usage := result.Usage
-	if existingUsage, ok := board.GetVar(workflow.VarInternalUsage); ok {
+	if existingUsage, ok := board.GetVar(VarInternalUsage); ok {
 		if u, ok := existingUsage.(model.TokenUsage); ok {
 			usage = usage.Add(u)
 		}
 	}
-	board.SetVar(workflow.VarInternalUsage, usage)
+	board.SetVar(VarInternalUsage, usage)
 	board.SetVar(VarUsage, usage)
-}
-
-// ConfigFromMap parses an LLMConfig from a generic map via JSON round-trip.
-// isDeferred is passed through to CoerceMapForStruct; see its documentation.
-func ConfigFromMap(m map[string]any, isDeferred func(string) bool) (LLMConfig, error) {
-	var cfg LLMConfig
-	if m == nil {
-		return cfg, nil
-	}
-	m = llm.CoerceMapForStruct[LLMConfig](m, isDeferred)
-	data, err := json.Marshal(m)
-	if err != nil {
-		return cfg, fmt.Errorf("node: marshal config map: %w", err)
-	}
-	if err := json.Unmarshal(data, &cfg); err != nil {
-		return cfg, fmt.Errorf("node: unmarshal config: %w", err)
-	}
-	return cfg, nil
 }
 
 func truncate(s string, n int) string {
