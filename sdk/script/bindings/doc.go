@@ -11,38 +11,45 @@
 //
 // # Dependency constraint
 //
-// bindings depends only on workflow and llm — never on graph.
-// Type aliases in the graph package (graph.Board = workflow.Board, etc.) allow
-// graph/node/scriptnode to pass *graph.Board to bindings without conversion.
+// bindings depends on llm, model, tool, engine, and (for the bridges in
+// deprecated.go) workflow. It must never depend on graph: graph composes
+// bindings, not the other way around. The Board surface bindings consume is
+// the structural bindings.Board interface, which both *engine.Board and
+// *workflow.Board satisfy — so callers can pass either without conversion
+// while we migrate fully off workflow.
 //
 // # Layering model
 //
 //  1. core: BindingFunc, BuildEnv — language-agnostic assembly primitives.
 //  2. atomic bridges: one file per host capability, named New<Domain>Bridge;
 //     the injected global is typically the lowercase domain name (board, fs, …).
-//  3. expr subsystem: compiled-program LRU cache (see expr.go), transparent to scripts.
+//  3. expr subsystem: compiled-program LRU cache (see bridge_expr.go), transparent to scripts.
 //  4. presets: common combinations as convenience functions; presets express
 //     "default assembly" and do not replace caller-level policy.
-//  5. LLM bridge (bridge_llm.go): calls llm.RunRound / llm.StreamRound and
-//     returns structured results to scripts; does NOT write to the board
-//     (scripts control data flow explicitly). Supports blocking llm.run()
-//     and iterator-based llm.stream() modes.
+//  5. LLM bridge (bridge_llm.go + bridge_llm_round.go + llm_marshal.go):
+//     drives an LLM round directly via llm.LLMResolver / llm.LLM /
+//     tool.Registry — fully self-contained, no host runtime dependency.
+//     Returns multimodal-aware structured results to scripts; does NOT
+//     write to the board (scripts control data flow explicitly via the
+//     board bridge). Supports blocking llm.run() and iterator-based
+//     llm.stream() modes; the iterator exposes per-chunk model.Part
+//     projections so scripts can branch on text / image / tool_call.
 //
 // # Directory layout
 //
 //	doc.go            package-level design notes (this file)
 //	core.go           BindingFunc, BuildEnv
-//	bridge_board.go   workflow board variables
-//	bridge_stream.go  streaming events (backed by workflow.StreamCallback)
-//	bridge_expr.go    expr-lang expressions (eval)
+//	bridge_board.go   board variables + typed message channels (engine.Board)
+//	bridge_expr.go    expr-lang expressions (eval) + LRU program cache
 //	bridge_shell.go   sandboxed subprocesses (allowlist via ShellOption)
 //	bridge_fs.go      workspace files
 //	bridge_runtime.go sub-script execScript (inherits parent bindings)
-//	run.go            run metadata (run_id, task_id)
-//	bridge_llm.go     NewLLMBridge → global "llm" (run / stream); delegates to llm.RunRound / llm.StreamRound
-//	tools.go          tool.Registry (deny-by-default, explicit allowlist or AllowAll)
-//	expr.go           LRU cache and evalExpr (unexported)
-//	presets.go        AgentStepBindings and other combinations
+//	bridge_llm.go         NewLLMBridge facade + LLMRunOptions (script-facing options schema)
+//	bridge_llm_round.go   in-bridge round driver (resolver + GenerateStream + tool.Registry)
+//	llm_marshal.go        model.* ⇄ map[string]any projections (multimodal-aware)
+//	bridge_tools.go   tool.Registry (deny-by-default, explicit allowlist or AllowAll)
+//	bridge_run.go     run metadata exposed from agent.RunInfo (run/task/agent/context ids)
+//	deprecated.go     v0.3.0 removal queue: NewStreamBridge, NewRunBridge, AgentStepBindings
 //	*_test.go         table-driven / jsrt integration tests
 //
 // # Global naming convention
@@ -52,11 +59,16 @@
 // Methods exposed by each bridge use lowercase_underscore style, consistent
 // with existing script conventions.
 //
-// # Integration with Graph / workflow
+// # Integration with hosts
 //
 //   - Graph ScriptNode: composes board+stream+expr+runtime in ExecuteBoard,
 //     then appends shell/fs per node type (see graph/node/scriptnode).
-//   - Workflow Agent: uses presets or manual composition; add NewLLMBridge when LLM access is needed.
+//   - Engine / Agent: build the env directly with BuildEnv and the bridges
+//     you need; add NewLLMBridge when LLM access is required, and use
+//     NewRunInfoBridge(runInfo) to surface run/task/agent/context ids.
+//     There is no global preset — the four lines of BuildEnv are the preset.
+//   - Legacy workflow agent step: see deprecated.go (NewRunBridge,
+//     AgentStepBindings — both slated for v0.3.0 removal).
 //
 // # Checklist for adding a new bridge
 //

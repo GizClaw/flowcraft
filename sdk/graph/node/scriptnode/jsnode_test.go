@@ -2,8 +2,11 @@ package scriptnode
 
 import (
 	"context"
+	"errors"
 	"testing"
 
+	"github.com/GizClaw/flowcraft/sdk/engine"
+	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/graph"
 	"github.com/GizClaw/flowcraft/sdk/script/jsrt"
 )
@@ -81,5 +84,32 @@ func TestScriptNode_ExecuteBoard(t *testing.T) {
 	v, ok := board.GetVar("result")
 	if !ok || v != "executed" {
 		t.Fatalf("result = %v, ok = %v", v, ok)
+	}
+}
+
+// signal.interrupt(msg) must surface as an engine.Interrupted error
+// carrying CauseCustom so the agent layer can both recognise the pause
+// (errdefs.IsInterrupted) and read the script-supplied detail.
+func TestScriptNode_SignalInterrupt_CarriesCauseAndDetail(t *testing.T) {
+	rt := jsrt.New(jsrt.WithPoolSize(1))
+	src := `signal.interrupt("need approval");`
+	n := New("n_pause", "template", src, nil, rt)
+
+	err := n.ExecuteBoard(graph.ExecutionContext{
+		Context: context.Background(),
+	}, graph.NewBoard())
+
+	if !errdefs.IsInterrupted(err) {
+		t.Fatalf("expected errdefs.IsInterrupted, got: %v", err)
+	}
+	var ie engine.InterruptedError
+	if !errors.As(err, &ie) {
+		t.Fatalf("error did not wrap engine.InterruptedError: %v", err)
+	}
+	if ie.Cause != engine.CauseCustom {
+		t.Fatalf("Cause = %q, want %q", ie.Cause, engine.CauseCustom)
+	}
+	if ie.Detail != "need approval" {
+		t.Fatalf("Detail = %q, want %q", ie.Detail, "need approval")
 	}
 }

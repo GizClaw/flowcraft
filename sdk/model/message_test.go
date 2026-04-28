@@ -68,6 +68,54 @@ func TestNewImageMessage(t *testing.T) {
 	}
 }
 
+func TestMessage_CloneDeepCopiesParts(t *testing.T) {
+	msg := Message{
+		Role: RoleAssistant,
+		Parts: []Part{
+			{Type: PartText, Text: "hello"},
+			{Type: PartImage, Image: &MediaRef{URL: "https://img.example.com/a.png"}},
+			{Type: PartData, Data: &DataRef{Value: map[string]any{
+				"k":      "v",
+				"nested": map[string]any{"n": "v"},
+				"slice":  []any{map[string]any{"s": "v"}},
+			}}},
+			{Type: PartToolCall, ToolCall: &ToolCall{ID: "tc1", Name: "search", Arguments: "{}"}},
+			{Type: PartToolResult, ToolResult: &ToolResult{ToolCallID: "tc1", Content: "ok"}},
+		},
+	}
+
+	cp := msg.Clone()
+	msg.Parts[0].Text = "mutated"
+	msg.Parts[1].Image.URL = "mutated"
+	msg.Parts[2].Data.Value["k"] = "mutated"
+	msg.Parts[2].Data.Value["nested"].(map[string]any)["n"] = "mutated"
+	msg.Parts[2].Data.Value["slice"].([]any)[0].(map[string]any)["s"] = "mutated"
+	msg.Parts[3].ToolCall.Name = "mutated"
+	msg.Parts[4].ToolResult.Content = "mutated"
+
+	if got := cp.Parts[0].Text; got != "hello" {
+		t.Fatalf("text part leaked mutation: %q", got)
+	}
+	if got := cp.Parts[1].Image.URL; got != "https://img.example.com/a.png" {
+		t.Fatalf("image ref leaked mutation: %q", got)
+	}
+	if got := cp.Parts[2].Data.Value["k"]; got != "v" {
+		t.Fatalf("data value leaked mutation: %v", got)
+	}
+	if got := cp.Parts[2].Data.Value["nested"].(map[string]any)["n"]; got != "v" {
+		t.Fatalf("nested data map leaked mutation: %v", got)
+	}
+	if got := cp.Parts[2].Data.Value["slice"].([]any)[0].(map[string]any)["s"]; got != "v" {
+		t.Fatalf("nested data slice leaked mutation: %v", got)
+	}
+	if got := cp.Parts[3].ToolCall.Name; got != "search" {
+		t.Fatalf("tool call leaked mutation: %q", got)
+	}
+	if got := cp.Parts[4].ToolResult.Content; got != "ok" {
+		t.Fatalf("tool result leaked mutation: %q", got)
+	}
+}
+
 func TestTokenUsage_Add(t *testing.T) {
 	a := TokenUsage{InputTokens: 10, OutputTokens: 20, TotalTokens: 30}
 	b := TokenUsage{InputTokens: 5, OutputTokens: 15, TotalTokens: 20}

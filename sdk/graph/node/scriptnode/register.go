@@ -7,34 +7,54 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/graph"
 	"github.com/GizClaw/flowcraft/sdk/graph/node"
 	"github.com/GizClaw/flowcraft/sdk/graph/node/scripts"
+	"github.com/GizClaw/flowcraft/sdk/script"
 	"github.com/GizClaw/flowcraft/sdk/script/bindings"
+	"github.com/GizClaw/flowcraft/sdk/workspace"
 )
 
+// Deps captures the build-time dependencies needed to instantiate a
+// scriptnode. ScriptRuntime is required; the rest are optional.
+type Deps struct {
+	ScriptRuntime script.Runtime
+	ScriptFS      fs.FS
+	Workspace     workspace.Workspace
+	CommandRunner workspace.CommandRunner
+}
+
+// Built-in jsnode types that need a shell bridge in addition to fs/runtime.
 var needsShellFS = map[string]bool{
 	"gate":    true,
 	"context": true,
 }
 
-func init() {
+// Register binds the built-in script-backed node builders ("script", every
+// type in scripts.BuiltinTypes(), plus a fallback that resolves
+// type.js from deps.ScriptFS) onto factory.
+//
+// deps.ScriptRuntime is required at build time for any node this function
+// registers; nodes whose type also needs a shell bridge will additionally
+// require deps.CommandRunner. Missing deps are reported as a build-time
+// validation error from Factory.Build.
+func Register(factory *node.Factory, deps Deps) {
 	for _, name := range scripts.BuiltinTypes() {
 		n := name
-		node.RegisterDefaultBuilder(n, func(def graph.NodeDefinition, bctx *node.BuildContext) (graph.Node, error) {
-			if bctx.ScriptRuntime == nil {
+		factory.RegisterBuilder(n, func(def graph.NodeDefinition) (graph.Node, error) {
+			if deps.ScriptRuntime == nil {
 				return nil, errdefs.Validationf(
 					"node %q (type %s): script runtime not configured", def.ID, n)
 			}
 			src := scripts.MustGet(n)
-			var extra []bindings.BindingFunc
+			var extras []bindings.BindingFunc
 			if needsShellFS[n] {
-				extra = append(extra, bindings.NewShellBridge(bctx.CommandRunner))
+				extras = append(extras, bindings.NewShellBridge(deps.CommandRunner))
 			}
-			extra = append(extra, bindings.NewFSBridge(bctx.Workspace))
-			return New(def.ID, n, src, def.Config, bctx.ScriptRuntime, extra...), nil
+			extras = append(extras, bindings.NewFSBridge(deps.Workspace))
+			return New(def.ID, n, src, def.Config, deps.ScriptRuntime, extras...), nil
 		})
 	}
 
-	node.RegisterDefaultBuilder("script", func(def graph.NodeDefinition, bctx *node.BuildContext) (graph.Node, error) {
-		if bctx.ScriptRuntime == nil {
+	factory.RegisterBuilder("script", func(def graph.NodeDefinition) (graph.Node, error) {
+		if deps.ScriptRuntime == nil {
 			return nil, errdefs.Validationf(
 				"node %q (type script): script runtime not configured", def.ID)
 		}
@@ -43,18 +63,18 @@ func init() {
 			return nil, errdefs.Validationf(
 				"node %q (type script): config.source is required", def.ID)
 		}
-		return New(def.ID, "script", source, def.Config, bctx.ScriptRuntime, bindings.NewFSBridge(bctx.Workspace)), nil
+		return New(def.ID, "script", source, def.Config, deps.ScriptRuntime, bindings.NewFSBridge(deps.Workspace)), nil
 	})
 
-	node.RegisterFallbackBuilder(func(def graph.NodeDefinition, bctx *node.BuildContext) (graph.Node, error) {
-		if bctx.ScriptFS != nil {
-			data, err := fs.ReadFile(bctx.ScriptFS, def.Type+".js")
+	factory.SetFallback(func(def graph.NodeDefinition) (graph.Node, error) {
+		if deps.ScriptFS != nil {
+			data, err := fs.ReadFile(deps.ScriptFS, def.Type+".js")
 			if err == nil {
-				if bctx.ScriptRuntime == nil {
+				if deps.ScriptRuntime == nil {
 					return nil, errdefs.Validationf(
 						"node %q (type %s): script runtime not configured", def.ID, def.Type)
 				}
-				return New(def.ID, def.Type, string(data), def.Config, bctx.ScriptRuntime, bindings.NewFSBridge(bctx.Workspace)), nil
+				return New(def.ID, def.Type, string(data), def.Config, deps.ScriptRuntime, bindings.NewFSBridge(deps.Workspace)), nil
 			}
 		}
 		return nil, errdefs.Validationf(

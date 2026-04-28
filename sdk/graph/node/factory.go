@@ -1,116 +1,58 @@
+// Package node hosts the runtime-side primitives shared by every concrete
+// graph node implementation: the per-type Builder registry (Factory) and
+// the port declarations consumed by jsnode.
+//
+// Concrete node implementations live in sub-packages and register their
+// builder explicitly into a Factory; this package no longer keeps any
+// global default registry, schema metadata, or BuildContext.
+//
+// File layout:
+//
+//	factory.go  Factory + NodeBuilder
+//	ports.go    RegisterPorts + PortsForType
 package node
 
 import (
-	"context"
 	"fmt"
-	"io/fs"
 	"sync"
 
 	"github.com/GizClaw/flowcraft/sdk/graph"
-	"github.com/GizClaw/flowcraft/sdk/llm"
-	"github.com/GizClaw/flowcraft/sdk/script"
-	"github.com/GizClaw/flowcraft/sdk/telemetry"
-	"github.com/GizClaw/flowcraft/sdk/tool"
-	"github.com/GizClaw/flowcraft/sdk/workspace"
 )
 
-// BuildContext provides runtime dependencies for node construction.
-type BuildContext struct {
-	LLMResolver   llm.LLMResolver
-	ToolRegistry  *tool.Registry
-	ScriptRuntime script.Runtime
-	ScriptFS      fs.FS
-	Workspace     workspace.Workspace
-	CommandRunner workspace.CommandRunner
-}
+// NodeBuilder constructs a graph.Node from its declarative definition.
+// Build-time dependencies (LLM resolver, tool registry, script runtime,
+// workspace, etc.) are captured by the closure that returns the builder
+// — see graph/node/llmnode, graph/node/scriptnode, graph/node/knowledgenode.
+type NodeBuilder func(def graph.NodeDefinition) (graph.Node, error)
 
-// NodeBuilder creates a graph.Node from its definition and build-time dependencies.
-type NodeBuilder func(def graph.NodeDefinition, bctx *BuildContext) (graph.Node, error)
-
-// --- Package-level default builder registry (populated by node packages via init()) ---
-
-var (
-	defaultBuildersMu      sync.RWMutex
-	defaultBuilders        = map[string]NodeBuilder{}
-	defaultFallbackBuilder NodeBuilder
-)
-
-// RegisterDefaultBuilder is called by node packages in init() to register
-// their node type builders.
-func RegisterDefaultBuilder(nodeType string, builder NodeBuilder) {
-	defaultBuildersMu.Lock()
-	defaultBuilders[nodeType] = builder
-	defaultBuildersMu.Unlock()
-}
-
-// RegisterFallbackBuilder sets the fallback builder used when no explicit
-// builder matches.
-func RegisterFallbackBuilder(builder NodeBuilder) {
-	defaultBuildersMu.Lock()
-	defaultFallbackBuilder = builder
-	defaultBuildersMu.Unlock()
-}
-
-// FactoryOption configures a Factory.
-type FactoryOption func(*Factory)
-
-func WithLLMResolver(r llm.LLMResolver) FactoryOption {
-	return func(f *Factory) { f.buildCtx.LLMResolver = r }
-}
-
-func WithToolRegistry(tr *tool.Registry) FactoryOption {
-	return func(f *Factory) { f.buildCtx.ToolRegistry = tr }
-}
-
-func WithScriptRuntime(rt script.Runtime) FactoryOption {
-	return func(f *Factory) { f.buildCtx.ScriptRuntime = rt }
-}
-
-func WithScriptFS(fsys fs.FS) FactoryOption {
-	return func(f *Factory) { f.buildCtx.ScriptFS = fsys }
-}
-
-func WithWorkspace(ws workspace.Workspace) FactoryOption {
-	return func(f *Factory) { f.buildCtx.Workspace = ws }
-}
-
-func WithCommandRunner(cr workspace.CommandRunner) FactoryOption {
-	return func(f *Factory) { f.buildCtx.CommandRunner = cr }
-}
-
-// Factory manages NodeBuilder registration and constructs nodes from definitions.
+// Factory maps node type strings to NodeBuilders and constructs node
+// instances on demand. Factory is safe for concurrent use.
 type Factory struct {
 	mu              sync.RWMutex
 	builders        map[string]NodeBuilder
 	fallbackBuilder NodeBuilder
-	buildCtx        *BuildContext
 }
 
-// NewFactory creates a new Factory, copying from the default builder registry.
-func NewFactory(opts ...FactoryOption) *Factory {
-	defaultBuildersMu.RLock()
-	builders := make(map[string]NodeBuilder, len(defaultBuilders))
-	for k, v := range defaultBuilders {
-		builders[k] = v
-	}
-	fb := defaultFallbackBuilder
-	defaultBuildersMu.RUnlock()
-
-	f := &Factory{
-		builders:        builders,
-		fallbackBuilder: fb,
-		buildCtx:        &BuildContext{},
-	}
-	for _, opt := range opts {
-		opt(f)
-	}
-	return f
+// NewFactory creates an empty Factory. Call RegisterBuilder (or the
+// per-sub-package Register helpers like llmnode.Register, scriptnode.Register,
+// knowledgenode.Register) to populate it before passing it to runner.New.
+func NewFactory() *Factory {
+	return &Factory{builders: map[string]NodeBuilder{}}
 }
 
-// RegisterBuilder registers a builder for a specific node type on this instance.
+// RegisterBuilder registers builder for the given node type. Re-registering
+// the same type overwrites the previous entry.
 func (f *Factory) RegisterBuilder(nodeType string, builder NodeBuilder) {
 	f.mu.Lock()
 	f.builders[nodeType] = builder
+	f.mu.Unlock()
+}
+
+// SetFallback installs a builder that handles every node type for which no
+// explicit builder is registered. Pass nil to clear.
+func (f *Factory) SetFallback(builder NodeBuilder) {
+	f.mu.Lock()
+	f.fallbackBuilder = builder
 	f.mu.Unlock()
 }
 
@@ -121,71 +63,27 @@ func (f *Factory) Fallback() NodeBuilder {
 	return f.fallbackBuilder
 }
 
-// SetFallback sets a builder that is tried when no explicit builder matches.
-func (f *Factory) SetFallback(builder NodeBuilder) {
-	f.mu.Lock()
-	f.fallbackBuilder = builder
-	f.mu.Unlock()
-}
-
-// Build constructs a single node from its definition.
+// Build constructs a single node from its declarative definition. The
+// engine's two reserved types (__end__ and passthrough) are handled
+// directly so callers never need to register them.
 func (f *Factory) Build(def graph.NodeDefinition) (graph.Node, error) {
 	switch def.Type {
 	case "__end__":
 		return graph.NewPassthroughNode(graph.END, "__end__"), nil
 	case "passthrough":
 		return graph.NewPassthroughNode(def.ID, def.Type), nil
-	default:
-		f.mu.RLock()
-		builder, ok := f.builders[def.Type]
-		fb := f.fallbackBuilder
-		f.mu.RUnlock()
-
-		if ok {
-			return builder(def, f.buildCtx)
-		}
-		if fb != nil {
-			return fb(def, f.buildCtx)
-		}
-		return nil, fmt.Errorf("unknown node type %q for node %q", def.Type, def.ID)
 	}
-}
 
-// ValidateConsistency checks that every registered builder has a corresponding
-// schema and vice versa. Returns a list of warning messages for any mismatches.
-// Intended for startup-time diagnostics, not hot paths.
-func (f *Factory) ValidateConsistency(schemas *SchemaRegistry) []string {
 	f.mu.RLock()
-	builderTypes := make(map[string]bool, len(f.builders))
-	for t := range f.builders {
-		builderTypes[t] = true
-	}
+	builder, ok := f.builders[def.Type]
+	fb := f.fallbackBuilder
 	f.mu.RUnlock()
 
-	schemas.mu.RLock()
-	schemaTypes := make(map[string]bool, len(schemas.schemas))
-	for t := range schemas.schemas {
-		schemaTypes[t] = true
+	if ok {
+		return builder(def)
 	}
-	schemas.mu.RUnlock()
-
-	var warnings []string
-	for t := range builderTypes {
-		if !schemaTypes[t] {
-			msg := fmt.Sprintf("node.factory: builder registered for type %q but no schema found", t)
-			telemetry.Warn(context.Background(), msg)
-			warnings = append(warnings, msg)
-		}
+	if fb != nil {
+		return fb(def)
 	}
-	for t := range schemaTypes {
-		if t == "__end__" {
-			continue
-		}
-		if !builderTypes[t] {
-			msg := fmt.Sprintf("node.factory: schema registered for type %q but no builder found", t)
-			telemetry.Warn(context.Background(), msg)
-			warnings = append(warnings, msg)
-		}
-	}
-	return warnings
+	return nil, fmt.Errorf("unknown node type %q for node %q", def.Type, def.ID)
 }

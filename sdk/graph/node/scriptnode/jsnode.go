@@ -3,6 +3,7 @@ package scriptnode
 import (
 	"fmt"
 
+	"github.com/GizClaw/flowcraft/sdk/engine"
 	"github.com/GizClaw/flowcraft/sdk/graph"
 	"github.com/GizClaw/flowcraft/sdk/graph/node"
 	"github.com/GizClaw/flowcraft/sdk/script"
@@ -47,11 +48,16 @@ func (n *ScriptNode) OutputPorts() []graph.Port  { return n.outputPorts }
 func (n *ScriptNode) Config() map[string]any     { return n.config }
 func (n *ScriptNode) SetConfig(c map[string]any) { n.config = c }
 
-// ExecuteBoard runs the script with board, expr, stream, and runtime bindings.
+// ExecuteBoard runs the script with board, expr, host, stream, and
+// runtime bindings.
 func (n *ScriptNode) ExecuteBoard(ctx graph.ExecutionContext, board *graph.Board) error {
 	allFns := []bindings.BindingFunc{
 		bindings.NewBoardBridge(board),
 		bindings.NewExprBridge(),
+		bindings.NewHostBridge(ctx.Host, n.id),
+		// NewStreamBridge is deprecated and scheduled for removal in
+		// v0.3.0; the executor still threads ctx.Stream so legacy
+		// scripts using stream.emit keep working until then.
 		bindings.NewStreamBridge(ctx.Stream, n.id),
 	}
 	allFns = append(allFns, n.extraBindFn...)
@@ -78,7 +84,15 @@ func (n *ScriptNode) ExecuteBoard(ctx graph.ExecutionContext, board *graph.Board
 		case "error":
 			return fmt.Errorf("script node %s: %s", n.id, sig.Message)
 		case "interrupt":
-			return graph.ErrInterrupt
+			// signal.interrupt(msg) is the script's "I want to pause,
+			// the agent will resume me later". We surface it as a
+			// CauseCustom interrupt so the agent layer can both detect
+			// the pause (via errdefs.IsInterrupted) and read the
+			// script-supplied detail.
+			return engine.Interrupted(engine.Interrupt{
+				Cause:  engine.CauseCustom,
+				Detail: sig.Message,
+			})
 		}
 	}
 

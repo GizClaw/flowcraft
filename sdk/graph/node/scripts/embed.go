@@ -4,6 +4,7 @@ package scripts
 import (
 	"embed"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 )
@@ -61,10 +62,5 @@ func BuiltinTypes() []string {
 // IsBuiltin reports whether the given node type has a built-in JS script.
 func IsBuiltin(nodeType string) bool {
 	loadBuiltinTypes()
-	for _, t := range builtinTypes {
-		if t == nodeType {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(builtinTypes, nodeType)
 }

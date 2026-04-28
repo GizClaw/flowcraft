@@ -5,14 +5,19 @@ import (
 	"testing"
 
 	"github.com/GizClaw/flowcraft/sdk/graph"
-	"github.com/GizClaw/flowcraft/sdk/graph/compiler"
-	"github.com/GizClaw/flowcraft/sdk/graph/executor"
 	"github.com/GizClaw/flowcraft/sdk/graph/node"
+	"github.com/GizClaw/flowcraft/sdk/graph/node/scriptnode"
 	"github.com/GizClaw/flowcraft/sdk/script/jsrt"
 	"github.com/GizClaw/flowcraft/sdk/workflow"
-
-	_ "github.com/GizClaw/flowcraft/sdk/graph/node/scriptnode"
 )
+
+// scriptFactory builds a fresh node.Factory wired with the script runtime
+// for each adapter test case.
+func scriptFactory() *node.Factory {
+	f := node.NewFactory()
+	scriptnode.Register(f, scriptnode.Deps{ScriptRuntime: jsrt.New()})
+	return f
+}
 
 func TestFromDefinition_BuildRequiresFactory(t *testing.T) {
 	s := FromDefinition(&graph.GraphDefinition{Name: "t", Entry: "x"})
@@ -85,13 +90,13 @@ func TestNewGraphRunnable_WithFactory(t *testing.T) {
 		},
 	}
 
-	cg, err := compiler.NewCompiler().Compile(def)
+	cg, err := graph.Compile(def)
 	if err != nil {
 		t.Fatalf("compile: %v", err)
 	}
 
 	deps := workflow.NewDependencies()
-	fac := node.NewFactory(node.WithScriptRuntime(jsrt.New()))
+	fac := scriptFactory()
 	workflow.SetDep(deps, DepNodeFactory, fac)
 
 	s := FromCompiled(cg)
@@ -104,7 +109,11 @@ func TestNewGraphRunnable_WithFactory(t *testing.T) {
 	}
 }
 
-func TestNewGraphRunnable_WithCustomExecutor(t *testing.T) {
+// TestNewGraphRunnable_DepExecutorIgnored checks the DepExecutor key is
+// accepted but ignored (graph/runner.Runner is the only execution backend
+// since the executor was internalised). Build must not fail just because
+// the workflow.Dependencies still carries the old key.
+func TestNewGraphRunnable_DepExecutorIgnored(t *testing.T) {
 	def := &graph.GraphDefinition{
 		Name:  "test",
 		Entry: "start",
@@ -113,15 +122,15 @@ func TestNewGraphRunnable_WithCustomExecutor(t *testing.T) {
 		},
 	}
 
-	cg, err := compiler.NewCompiler().Compile(def)
+	cg, err := graph.Compile(def)
 	if err != nil {
 		t.Fatalf("compile: %v", err)
 	}
 
 	deps := workflow.NewDependencies()
-	fac := node.NewFactory(node.WithScriptRuntime(jsrt.New()))
+	fac := scriptFactory()
 	workflow.SetDep(deps, DepNodeFactory, fac)
-	workflow.SetDep(deps, DepExecutor, executor.NewLocalExecutor())
+	workflow.SetDep(deps, DepExecutor, "anything-goes-this-is-ignored")
 
 	s := FromCompiled(cg)
 	runnable, err := s.Build(context.Background(), deps)
@@ -149,13 +158,13 @@ func TestGraphRunnable_ResolvesVariableReferences(t *testing.T) {
 		},
 	}
 
-	cg, err := compiler.NewCompiler().Compile(def)
+	cg, err := graph.Compile(def)
 	if err != nil {
 		t.Fatalf("compile: %v", err)
 	}
 
 	deps := workflow.NewDependencies()
-	fac := node.NewFactory(node.WithScriptRuntime(jsrt.New()))
+	fac := scriptFactory()
 	workflow.SetDep(deps, DepNodeFactory, fac)
 
 	s := FromCompiled(cg)
@@ -190,7 +199,7 @@ func TestFromDefinition_CompiledCacheHit(t *testing.T) {
 	s := FromDefinition(def)
 
 	deps := workflow.NewDependencies()
-	fac := node.NewFactory(node.WithScriptRuntime(jsrt.New()))
+	fac := scriptFactory()
 	workflow.SetDep(deps, DepNodeFactory, fac)
 
 	r1, err := s.Build(context.Background(), deps)
