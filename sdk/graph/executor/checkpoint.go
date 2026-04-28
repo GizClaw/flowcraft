@@ -1,6 +1,7 @@
 package executor
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -9,10 +10,17 @@ import (
 	"strings"
 	"time"
 
+	"github.com/GizClaw/flowcraft/sdk/engine"
 	"github.com/GizClaw/flowcraft/sdk/graph"
 )
 
 // Checkpoint represents a snapshot of graph execution state.
+//
+// Deprecated: use engine.Checkpoint. This type predates the
+// engine.Host.Checkpointer abstraction; the executor now persists
+// checkpoints through the host. Scheduled for removal in v0.3.0
+// together with WithCheckpointStore. Existing CheckpointStore
+// implementations keep working via storeOnlyHost.
 type Checkpoint struct {
 	GraphName string               `json:"graph_name"`
 	RunID     string               `json:"run_id,omitempty"`
@@ -22,7 +30,46 @@ type Checkpoint struct {
 	Timestamp time.Time            `json:"timestamp"`
 }
 
+// toEngine projects the legacy executor.Checkpoint onto the canonical
+// engine.Checkpoint shape. NodeID becomes Step (the engine-defined
+// position marker); GraphName lands in Attributes so subscribers that
+// index by graph still find it.
+func (c Checkpoint) toEngine() engine.Checkpoint {
+	attrs := map[string]string{}
+	if c.GraphName != "" {
+		attrs["graph_name"] = c.GraphName
+	}
+	return engine.Checkpoint{
+		ExecID:     c.RunID,
+		Step:       c.NodeID,
+		Iteration:  c.Iteration,
+		Board:      c.Board,
+		Attributes: attrs,
+		Timestamp:  c.Timestamp,
+	}
+}
+
+// checkpointFromEngine is the inverse of toEngine. Used by storeOnlyHost
+// when the executor (now host-driven) hands a checkpoint back to a
+// legacy CheckpointStore.
+func checkpointFromEngine(cp engine.Checkpoint) Checkpoint {
+	return Checkpoint{
+		GraphName: cp.Attributes["graph_name"],
+		RunID:     cp.ExecID,
+		NodeID:    cp.Step,
+		Iteration: cp.Iteration,
+		Board:     cp.Board,
+		Timestamp: cp.Timestamp,
+	}
+}
+
 // CheckpointStore is the interface for persisting and loading checkpoints.
+//
+// Deprecated: implement engine.CheckpointStore (or expose a Host with a
+// real Checkpointer) and pass it via WithHost. The executor now writes
+// every checkpoint through host.Checkpoint; this interface is kept so
+// code already using WithCheckpointStore keeps compiling and is folded
+// into the host path via storeOnlyHost. Scheduled for removal in v0.3.0.
 type CheckpointStore interface {
 	Save(cp Checkpoint) error
 	// Load retrieves the latest checkpoint. When runID is non-empty, only
@@ -259,5 +306,63 @@ func (s *FileCheckpointStore) cleanOldVersions(cp Checkpoint) {
 	})
 	for _, v := range versions[s.maxCheckpoints:] {
 		_ = os.Remove(v.path)
+	}
+}
+
+// storeOnlyHost adapts a deprecated executor.CheckpointStore into a
+// full engine.Host so the executor's main path can rely on a single
+// Checkpoint sink (host.Checkpoint) without branching on store vs host.
+//
+// It mirrors busOnlyHost (the runner.WithEventBus shim): every Host
+// method other than Checkpoint is inherited from the embedded base
+// host (typically engine.NoopHost{}). Checkpoint converts the engine
+// canonical form back to the legacy struct and forwards to the store.
+//
+// Deprecated: scheduled for removal in v0.3.0 together with
+// executor.WithCheckpointStore. New code should pass a real
+// engine.Host whose Checkpointer talks to engine.CheckpointStore
+// directly.
+type storeOnlyHost struct {
+	engine.Host
+	store CheckpointStore
+}
+
+// Checkpoint forwards to the wrapped legacy store. Errors are
+// swallowed at the call site (executor) by convention so a failing
+// observer never aborts a run; the host contract here just propagates
+// whatever the store reported so callers that wrap us can still log.
+func (h storeOnlyHost) Checkpoint(_ context.Context, cp engine.Checkpoint) error {
+	if h.store == nil {
+		return nil
+	}
+	return h.store.Save(checkpointFromEngine(cp))
+}
+
+// resolveCheckpointHost folds a legacy CheckpointStore into the
+// modern host so the executor only has one Checkpointer to call.
+//
+// Resolution rules (mirroring resolvePublisher):
+//   - host alone: use it as-is.
+//   - store alone: wrap in storeOnlyHost{NoopHost, store}.
+//   - both: host wins; the legacy store is ignored. Checkpointing is
+//     state, not observability — writing to two backends invites
+//     conflicting reads, so we deliberately do NOT fan out the way
+//     resolvePublisher does for envelopes. The deprecation comment on
+//     WithCheckpointStore tells callers to drop it once they wire a
+//     real host.
+//   - neither: host stays NoopHost{}, Checkpoint becomes a no-op.
+//
+// Returned host is always non-nil so the executor can call
+// host.Checkpoint unconditionally.
+func resolveCheckpointHost(host engine.Host, store CheckpointStore) engine.Host {
+	switch {
+	case host == nil && store == nil:
+		return engine.NoopHost{}
+	case store == nil:
+		return host
+	case host == nil:
+		return storeOnlyHost{Host: engine.NoopHost{}, store: store}
+	default:
+		return host
 	}
 }

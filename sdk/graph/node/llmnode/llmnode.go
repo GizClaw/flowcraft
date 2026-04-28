@@ -266,6 +266,18 @@ func (n *Node) writeResults(
 	}
 	board.SetVar(VarInternalUsage, usage)
 	board.SetVar(VarUsage, usage)
+
+	// Report this round's delta to the host so token-budget /
+	// quota / billing observers see traffic without having to
+	// subscribe to stream envelopes. The host contract is "each
+	// call adds delta usage" so we hand off result.Usage, NOT the
+	// accumulated total. Interrupt path also flows through here so
+	// partial usage is still attributed.
+	if ctx.Host != nil && (result.Usage.InputTokens > 0 ||
+		result.Usage.OutputTokens > 0 ||
+		result.Usage.TotalTokens > 0) {
+		ctx.Host.ReportUsage(ctx.Context, result.Usage)
+	}
 }
 
 func truncate(s string, n int) string {

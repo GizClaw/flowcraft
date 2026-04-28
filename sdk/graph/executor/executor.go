@@ -116,13 +116,13 @@ type runConfig struct {
 	// Deprecated: scheduled for removal in v0.3.0 together with
 	// WithStreamCallback. Do NOT add new reads.
 	streamCallback graph.StreamCallback
-	// checkpointStore persists a graph-format checkpoint after every
-	// node completes. Folded into engine.Host.Checkpointer in v0.3.0;
-	// kept here so callers using the deprecated WithCheckpointStore
-	// option keep working in the meantime.
+	// checkpointStore is a write-only slot used by the deprecated
+	// WithCheckpointStore option. Execute reads it once via
+	// resolveCheckpointHost to fold it into cfg.host before the main
+	// loop runs; nothing else in the executor consults it.
 	//
 	// Deprecated: scheduled for removal in v0.3.0 together with
-	// WithCheckpointStore. New code should rely on host.Checkpoint.
+	// WithCheckpointStore. Do NOT add new reads.
 	checkpointStore CheckpointStore
 
 	// --- derived (set by Execute) ---
@@ -149,9 +149,13 @@ func WithStartNode(id string) RunOption     { return func(c *runConfig) { c.star
 // WithCheckpointStore installs a graph-format CheckpointStore that
 // persists a checkpoint after every node completes.
 //
-// Deprecated: graph-format checkpoints will be folded into engine.Host's
-// Checkpointer in v0.3.0; new code should rely on host.Checkpoint. The
-// store still works in the meantime so existing callers keep functioning.
+// Deprecated: prefer WithHost with a host whose Checkpointer wraps an
+// engine.CheckpointStore. The executor now writes every checkpoint
+// through host.Checkpoint and the store passed here is folded into
+// the host via storeOnlyHost (see resolveCheckpointHost). When BOTH
+// WithHost and WithCheckpointStore are supplied the host wins and the
+// store is silently ignored — checkpointing is state, so we do not
+// fan out the way we do for events. Scheduled for removal in v0.3.0.
 func WithCheckpointStore(s CheckpointStore) RunOption {
 	return func(c *runConfig) { c.checkpointStore = s }
 }
@@ -225,12 +229,20 @@ func (e *LocalExecutor) Execute(ctx context.Context, g *graph.Graph, board *grap
 		opt(&cfg)
 	}
 
+	cfg.graphName = g.Name()
+
+	// Resolve the deprecated WithCheckpointStore into a host BEFORE
+	// defaulting cfg.host to NoopHost — the resolver needs to see a
+	// nil host as the signal "user only configured the store, wrap
+	// it". Once this returns cfg.host is the canonical Checkpointer
+	// the rest of the executor will use.
+	cfg.host = resolveCheckpointHost(cfg.host, cfg.checkpointStore)
+
 	// cfg.host backs ExecutionContext.Host so nodes can call Host
 	// methods (Publish / Interrupts / AskUser / ...) unconditionally.
 	if cfg.host == nil {
 		cfg.host = engine.NoopHost{}
 	}
-	cfg.graphName = g.Name()
 
 	// resolvePublisher is the single seam where event sinks are
 	// chosen. After this line cfg.bus is invisible to the rest of
@@ -403,18 +415,24 @@ func (e *LocalExecutor) Execute(ctx context.Context, g *graph.Graph, board *grap
 				cfg.runID, g.Name(), actorKey, nodeID,
 				map[string]any{"iteration": iteration, "vars": board.Vars()})
 
-			if cfg.checkpointStore != nil {
-				if err := cfg.checkpointStore.Save(Checkpoint{
-					GraphName: g.Name(),
-					RunID:     cfg.runID,
-					NodeID:    nodeID,
-					Iteration: iteration,
-					Board:     board.Snapshot(),
-					Timestamp: time.Now(),
-				}); err != nil {
-					graphSpan.AddEvent("checkpoint save failed",
-						trace.WithAttributes(attribute.String("error", err.Error())))
-				}
+			// Checkpoint through the host. host is always non-nil
+			// (NoopHost when the caller didn't configure one), so
+			// no guard is needed. WithCheckpointStore callers have
+			// already been folded into the host via storeOnlyHost
+			// up in Execute. Errors are intentionally swallowed —
+			// checkpointing is observability-adjacent, never a
+			// reason to abort a run.
+			cp := Checkpoint{
+				GraphName: g.Name(),
+				RunID:     cfg.runID,
+				NodeID:    nodeID,
+				Iteration: iteration,
+				Board:     board.Snapshot(),
+				Timestamp: time.Now(),
+			}
+			if err := cfg.host.Checkpoint(ctx, cp.toEngine()); err != nil {
+				graphSpan.AddEvent("checkpoint save failed",
+					trace.WithAttributes(attribute.String("error", err.Error())))
 			}
 
 			resolved, err := resolveNextNodes(g, node, board)
