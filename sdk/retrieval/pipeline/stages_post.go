@@ -191,6 +191,79 @@ func (s Dedup) Run(_ context.Context, st *State) error {
 	return nil
 }
 
+// SlotCollapse keeps only the most recent hit per
+// metadata.slot_key value. Hits without a slot_key are passed through
+// untouched (legacy / episodic data). When two hits share the same slot
+// key the one with the larger Doc.Timestamp wins; ties are broken by
+// the higher score so deterministic recall ordering is preserved.
+//
+// SlotCollapse is the read-side counterpart to recall's slot supersede
+// channel: when a writer correctly tagged the older entry with
+// superseded_by SupersededDecay alone is sufficient and SlotCollapse is
+// a no-op. SlotCollapse exists for legacy data written before slot_key
+// was introduced — it ensures the LLM only ever sees the newest entry
+// for a given (subject, predicate) tuple even when the historical doc
+// was never tagged.
+//
+// Reads/Writes: Final.
+type SlotCollapse struct{}
+
+// Name implements Stage.
+func (s SlotCollapse) Name() string { return "SlotCollapse" }
+
+// Run implements Stage.
+func (s SlotCollapse) Run(_ context.Context, st *State) error {
+	hits := pickFinalish(st)
+	if len(hits) < 2 {
+		return nil
+	}
+	type keep struct {
+		idx   int
+		ts    time.Time
+		score float64
+	}
+	bySlot := make(map[string]keep)
+	drop := make(map[int]bool)
+	for i, h := range hits {
+		slot := retrieval.SlotKeyOf(h.Doc)
+		if slot == "" {
+			continue
+		}
+		cur, ok := bySlot[slot]
+		if !ok {
+			bySlot[slot] = keep{idx: i, ts: h.Doc.Timestamp, score: h.Score}
+			continue
+		}
+		// Newer timestamp wins; on ties (or zero timestamps) keep the
+		// higher-scoring hit so collapsed ordering matches the rest of
+		// the pipeline.
+		var newer bool
+		switch {
+		case h.Doc.Timestamp.After(cur.ts):
+			newer = true
+		case h.Doc.Timestamp.Equal(cur.ts) && h.Score > cur.score:
+			newer = true
+		}
+		if newer {
+			drop[cur.idx] = true
+			bySlot[slot] = keep{idx: i, ts: h.Doc.Timestamp, score: h.Score}
+		} else {
+			drop[i] = true
+		}
+	}
+	if len(drop) == 0 {
+		return nil
+	}
+	out := hits[:0]
+	for i, h := range hits {
+		if !drop[i] {
+			out = append(out, h)
+		}
+	}
+	st.Final = out
+	return nil
+}
+
 // Limit truncates Final to TopK and drops hits below MinScore
 // . MUST be the last stage. Reads/Writes: Final.
 type Limit struct {

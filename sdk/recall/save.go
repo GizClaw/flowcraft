@@ -243,6 +243,19 @@ func (m *lt) upsertFacts(
 	ns := NamespaceFor(scope)
 	m.rememberNamespace(ctx, ns)
 
+	// 0. Normalize slot fields --------------------------------------------
+	// Predicate / Subject aliases are applied here (not in the extractor)
+	// so per-instance overrides reach every fact regardless of which
+	// extractor produced it. Running normalisation at the very top of
+	// upsertFacts also means every downstream step (MD5 dedup, slot
+	// metadata writing, slot supersede, resolver candidate gathering)
+	// observes the same canonical (subject, predicate) tuple — there
+	// is exactly one source of truth for what a fact "is about".
+	for i := range facts {
+		facts[i].Subject = normalizeSubject(facts[i].Subject, m.cfg.subjectAliases)
+		facts[i].Predicate = normalizePredicate(facts[i].Predicate, m.cfg.predicateAliases)
+	}
+
 	// 1. MD5 dedup ---------------------------------------------------------
 	hashes := make([]string, len(facts))
 	for i, f := range facts {
@@ -303,9 +316,25 @@ func (m *lt) upsertFacts(
 		if d.Metadata == nil {
 			d.Metadata = map[string]any{}
 		}
-		d.Metadata["content_hash"] = hashes[i]
+		d.Metadata[MetaContentHash] = hashes[i]
 		if f.Source != "" {
-			d.Metadata["source_label"] = f.Source
+			d.Metadata[MetaSourceLabel] = f.Source
+		}
+		// Slot fields are written only when BOTH Subject and Predicate are
+		// present so that the slot supersede channel and the SlotCollapse
+		// retrieval stage can rely on slot_key being unambiguous.
+		//
+		// Subjects/predicates that contain the slot delimiter '|' would
+		// produce ambiguous slot_keys (e.g. subject="user|alt"+
+		// predicate="lives_in" would collide with subject="user"+
+		// predicate="alt|lives_in"). The Save path drops the slot
+		// fields entirely in that case so the fact degrades to the
+		// vector / resolver supersede channels — slot writers stay
+		// strict, the rest of the pipeline keeps working.
+		if slotEligible(f) {
+			d.Metadata[MetaSubject] = f.Subject
+			d.Metadata[MetaPredicate] = f.Predicate
+			d.Metadata[MetaSlotKey] = f.Subject + slotDelimiter + f.Predicate
 		}
 		plans = append(plans, plan{entry: entry, doc: d, fact: f})
 		returnedIDs = append(returnedIDs, entry.ID)
@@ -335,14 +364,34 @@ func (m *lt) upsertFacts(
 		}
 	}
 
-	// 3. Soft-merge --------------------------------------------------------
-	if m.cfg.softMerge {
+	// 3. Supersede channels (slot + vector) -------------------------------
+	// supersedeNeighbours dispatches between the two channels and
+	// honours WithoutSlotChannel / WithoutSoftMerge independently;
+	// always call it and let the dispatcher decide.
+	for _, p := range plans {
+		m.supersedeNeighbours(ctx, scope, p.entry.ID, p.fact, p.vec, now)
+	}
+
+	// 4. LLM update resolver (opt-in fallback) -----------------------------
+	// The resolver runs at most once per Save with the full batch of
+	// non-slot facts so it can reason about combined contradictions
+	// (e.g. divorce + remarriage in the same turn). Slot-eligible facts
+	// were already handled by supersedeBySlot above and are excluded
+	// from the batch.
+	if m.cfg.updateResolver != nil {
+		batch := make([]ResolveNewFact, 0, len(plans))
 		for _, p := range plans {
-			m.supersedeNeighbours(ctx, scope, p.entry.ID, p.fact, p.vec, now)
+			if slotEligible(p.fact) {
+				continue
+			}
+			batch = append(batch, ResolveNewFact{EntryID: p.entry.ID, Fact: p.fact})
+		}
+		if len(batch) > 0 {
+			m.runResolverBatch(ctx, scope, batch, now)
 		}
 	}
 
-	// 4. Upsert new docs ---------------------------------------------------
+	// 5. Upsert new docs ---------------------------------------------------
 	docs := make([]retrieval.Doc, len(plans))
 	for i, p := range plans {
 		docs[i] = p.doc

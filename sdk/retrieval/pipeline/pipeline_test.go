@@ -461,3 +461,58 @@ func TestDedupAndPostFilter(t *testing.T) {
 		t.Fatalf("hits=%+v", resp.Hits)
 	}
 }
+
+// TestSlotCollapse_KeepsNewest verifies that SlotCollapse drops the
+// older entry sharing the same slot_key while leaving entries without a
+// slot_key alone (legacy / episodic data must pass through).
+func TestSlotCollapse_KeepsNewest(t *testing.T) {
+	st := &State{Final: []retrieval.Hit{
+		{
+			Doc: retrieval.Doc{
+				ID: "old", Timestamp: time.Now().Add(-time.Hour),
+				Metadata: map[string]any{"slot_key": "user|lives_in"},
+			},
+			Score: 0.9,
+		},
+		{
+			Doc: retrieval.Doc{
+				ID: "new", Timestamp: time.Now(),
+				Metadata: map[string]any{"slot_key": "user|lives_in"},
+			},
+			Score: 0.5, // lower score, but newer — must win.
+		},
+		{
+			Doc:   retrieval.Doc{ID: "episodic", Timestamp: time.Now()},
+			Score: 0.7,
+		},
+	}}
+	if err := (SlotCollapse{}).Run(context.Background(), st); err != nil {
+		t.Fatal(err)
+	}
+	if len(st.Final) != 2 {
+		t.Fatalf("expected 2 hits, got %d: %+v", len(st.Final), st.Final)
+	}
+	ids := map[string]bool{}
+	for _, h := range st.Final {
+		ids[h.Doc.ID] = true
+	}
+	if !ids["new"] || !ids["episodic"] || ids["old"] {
+		t.Fatalf("expected {new, episodic}, got %v", ids)
+	}
+}
+
+// TestSlotCollapse_NoSlotPassThrough is the no-op fast path: when no
+// hit carries a slot_key the stage must not allocate or mutate Final.
+func TestSlotCollapse_NoSlotPassThrough(t *testing.T) {
+	hits := []retrieval.Hit{
+		{Doc: retrieval.Doc{ID: "a"}, Score: 1},
+		{Doc: retrieval.Doc{ID: "b"}, Score: 2},
+	}
+	st := &State{Final: hits}
+	if err := (SlotCollapse{}).Run(context.Background(), st); err != nil {
+		t.Fatal(err)
+	}
+	if len(st.Final) != 2 || st.Final[0].Doc.ID != "a" || st.Final[1].Doc.ID != "b" {
+		t.Fatalf("pass-through expected, got %+v", st.Final)
+	}
+}
