@@ -1,5 +1,3 @@
-//go:build integration
-
 package llm_test
 
 import (

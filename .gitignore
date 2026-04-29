@@ -18,22 +18,16 @@
 !go.work
 !bench/
 !bench/**
-!cmd/
-!cmd/**
-!internal/
-!internal/**
-!model/
-!model/**
+!examples/
+!examples/**
 !sdk/
 !sdk/**
 !sdkx/
 !sdkx/**
 !voice/
 !voice/**
-!examples/
-!examples/**
-!skills/
-!skills/**
+!tools/
+!tools/**
 
 # ── Frontend source ──
 !web/

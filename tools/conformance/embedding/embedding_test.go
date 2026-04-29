@@ -1,5 +1,3 @@
-//go:build integration
-
 package embedding_test
 
 import (
@@ -11,7 +9,7 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/sdk/embedding"
-	"github.com/GizClaw/flowcraft/sdkx/internal/testenv"
+	"github.com/GizClaw/flowcraft/tools/conformance/internal/testenv"
 
 	_ "github.com/GizClaw/flowcraft/sdkx/embedding/azure"
 	_ "github.com/GizClaw/flowcraft/sdkx/embedding/bytedance"

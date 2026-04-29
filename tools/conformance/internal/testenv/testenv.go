@@ -1,8 +1,7 @@
-// Package testenv provides shared environment loading for integration tests.
-//
-// Usage in any _integration_test.go:
-//
-//	func init() { testenv.Load() }
+// Package testenv provides shared environment loading for the
+// conformance suites. It loads a repo-root .env file into the process
+// environment so individual suites can read provider credentials
+// without each one duplicating the lookup logic.
 package testenv
 
 import (
@@ -16,10 +15,10 @@ import (
 var once sync.Once
 
 // Load reads a repo-root `.env` file into the process environment. The
-// lookup walks up from the test's working directory so it works regardless
-// of which package directory `go test` is invoked from. Existing env vars
-// are never overwritten. The function is idempotent — concurrent or
-// repeated calls are safe.
+// lookup walks up from the test's working directory so it works
+// regardless of which package directory `go test` is invoked from.
+// Existing env vars are never overwritten. Idempotent and concurrency
+// safe.
 func Load() {
 	once.Do(func() {
 		candidates := []string{
@@ -27,6 +26,7 @@ func Load() {
 			filepath.Join("..", ".env"),
 			filepath.Join("..", "..", ".env"),
 			filepath.Join("..", "..", "..", ".env"),
+			filepath.Join("..", "..", "..", "..", ".env"),
 		}
 		for _, p := range candidates {
 			if loadFile(p) {
