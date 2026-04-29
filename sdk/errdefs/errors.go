@@ -37,17 +37,19 @@ func Fmt(format string, args ...any) error { return fmt.Errorf(format, args...) 
 // ---------------------------------------------------------------------------
 
 type (
-	notFound     interface{ NotFound() }
-	validation   interface{ Validation() }
-	unauthorized interface{ Unauthorized() }
-	forbidden    interface{ Forbidden() }
-	conflict     interface{ Conflict() }
-	rateLimit    interface{ RateLimit() }
-	timeoutErr   interface{ IsTimeout() }
-	interrupted  interface{ Interrupted() }
-	aborted      interface{ Aborted() }
-	notAvailable interface{ NotAvailable() }
-	internalErr  interface{ Internal() }
+	notFound       interface{ NotFound() }
+	validation     interface{ Validation() }
+	unauthorized   interface{ Unauthorized() }
+	forbidden      interface{ Forbidden() }
+	conflict       interface{ Conflict() }
+	rateLimit      interface{ RateLimit() }
+	timeoutErr     interface{ IsTimeout() }
+	interrupted    interface{ Interrupted() }
+	aborted        interface{ Aborted() }
+	notAvailable   interface{ NotAvailable() }
+	internalErr    interface{ Internal() }
+	budgetExceeded interface{ BudgetExceeded() }
+	policyDenied   interface{ PolicyDenied() }
 )
 
 // ---------------------------------------------------------------------------
@@ -66,47 +68,67 @@ func IsAborted(err error) bool      { var e aborted; return As(err, &e) }
 func IsNotAvailable(err error) bool { var e notAvailable; return As(err, &e) }
 func IsInternal(err error) bool     { var e internalErr; return As(err, &e) }
 
+// IsBudgetExceeded reports whether err carries the BudgetExceeded
+// classification — i.e. a per-pod / per-tenant token, cost, or quota
+// limit has been hit. Use this to distinguish "we are stopping you on
+// purpose" from external rate limits (IsRateLimit) and from generic
+// internal failures (IsInternal). Maps to HTTP 429 by default.
+func IsBudgetExceeded(err error) bool { var e budgetExceeded; return As(err, &e) }
+
+// IsPolicyDenied reports whether err was produced by a policy-layer
+// refusal — tool allow-list, network egress filter, role-based access
+// check, etc. Distinguishes "you are not allowed to do this in this
+// pod" from authentication failures (IsUnauthorized) and from external
+// authorisation failures (IsForbidden). Maps to HTTP 403 by default.
+func IsPolicyDenied(err error) bool { var e policyDenied; return As(err, &e) }
+
 // ---------------------------------------------------------------------------
 // Wrapper types — each embeds an error and adds a marker method.
 // ---------------------------------------------------------------------------
 
 type (
-	errNotFound     struct{ error }
-	errValidation   struct{ error }
-	errUnauthorized struct{ error }
-	errForbidden    struct{ error }
-	errConflict     struct{ error }
-	errRateLimit    struct{ error }
-	errTimeout      struct{ error }
-	errInterrupted  struct{ error }
-	errAborted      struct{ error }
-	errNotAvailable struct{ error }
-	errInternal     struct{ error }
+	errNotFound       struct{ error }
+	errValidation     struct{ error }
+	errUnauthorized   struct{ error }
+	errForbidden      struct{ error }
+	errConflict       struct{ error }
+	errRateLimit      struct{ error }
+	errTimeout        struct{ error }
+	errInterrupted    struct{ error }
+	errAborted        struct{ error }
+	errNotAvailable   struct{ error }
+	errInternal       struct{ error }
+	errBudgetExceeded struct{ error }
+	errPolicyDenied   struct{ error }
 )
 
-func (e errNotFound) Unwrap() error     { return e.error }
-func (e errValidation) Unwrap() error   { return e.error }
-func (e errUnauthorized) Unwrap() error { return e.error }
-func (e errForbidden) Unwrap() error    { return e.error }
-func (e errConflict) Unwrap() error     { return e.error }
-func (e errRateLimit) Unwrap() error    { return e.error }
-func (e errTimeout) Unwrap() error      { return e.error }
-func (e errInterrupted) Unwrap() error  { return e.error }
-func (e errAborted) Unwrap() error      { return e.error }
-func (e errNotAvailable) Unwrap() error { return e.error }
-func (e errInternal) Unwrap() error     { return e.error }
+func (e errNotFound) Unwrap() error       { return e.error }
+func (e errValidation) Unwrap() error     { return e.error }
+func (e errUnauthorized) Unwrap() error   { return e.error }
+func (e errForbidden) Unwrap() error      { return e.error }
+func (e errConflict) Unwrap() error       { return e.error }
+func (e errRateLimit) Unwrap() error      { return e.error }
+func (e errTimeout) Unwrap() error        { return e.error }
+func (e errInterrupted) Unwrap() error    { return e.error }
+func (e errAborted) Unwrap() error        { return e.error }
+func (e errNotAvailable) Unwrap() error   { return e.error }
+func (e errInternal) Unwrap() error       { return e.error }
+func (e errBudgetExceeded) Unwrap() error { return e.error }
+func (e errPolicyDenied) Unwrap() error   { return e.error }
 
-func (errNotFound) NotFound()         {}
-func (errValidation) Validation()     {}
-func (errUnauthorized) Unauthorized() {}
-func (errForbidden) Forbidden()       {}
-func (errConflict) Conflict()         {}
-func (errRateLimit) RateLimit()       {}
-func (errTimeout) IsTimeout()         {}
-func (errInterrupted) Interrupted()   {}
-func (errAborted) Aborted()           {}
-func (errNotAvailable) NotAvailable() {}
-func (errInternal) Internal()         {}
+func (errNotFound) NotFound()             {}
+func (errValidation) Validation()         {}
+func (errUnauthorized) Unauthorized()     {}
+func (errForbidden) Forbidden()           {}
+func (errConflict) Conflict()             {}
+func (errRateLimit) RateLimit()           {}
+func (errTimeout) IsTimeout()             {}
+func (errInterrupted) Interrupted()       {}
+func (errAborted) Aborted()               {}
+func (errNotAvailable) NotAvailable()     {}
+func (errInternal) Internal()             {}
+func (errBudgetExceeded) BudgetExceeded() {}
+func (errPolicyDenied) PolicyDenied()     {}
 
 // ---------------------------------------------------------------------------
 // Constructors — wrap an existing error with a category marker.
@@ -167,6 +189,23 @@ func Internal(err error) error {
 	return markOrNil(func(e error) errInternal { return errInternal{e} }, err)
 }
 
+// BudgetExceeded marks err as a budget / quota refusal — typically
+// raised by a host (e.g. a sandbox host wrapping engine.UsageReporter)
+// when a per-pod, per-tenant, or per-call token / cost / count limit
+// has been hit. Use this instead of RateLimit for *internal* policy
+// limits; RateLimit is for upstream / network rate-limit responses.
+func BudgetExceeded(err error) error {
+	return markOrNil(func(e error) errBudgetExceeded { return errBudgetExceeded{e} }, err)
+}
+
+// PolicyDenied marks err as a policy-layer refusal — tool allow-list
+// rejection, network egress filter, role-based access check, etc.
+// Use this instead of Forbidden for *internal* sandbox policy
+// decisions; Forbidden is for upstream / authorisation responses.
+func PolicyDenied(err error) error {
+	return markOrNil(func(e error) errPolicyDenied { return errPolicyDenied{e} }, err)
+}
+
 func NotFoundf(format string, args ...any) error   { return NotFound(fmt.Errorf(format, args...)) }
 func Validationf(format string, args ...any) error { return Validation(fmt.Errorf(format, args...)) }
 func Unauthorizedf(format string, args ...any) error {
@@ -182,6 +221,14 @@ func NotAvailablef(format string, args ...any) error {
 	return NotAvailable(fmt.Errorf(format, args...))
 }
 func Internalf(format string, args ...any) error { return Internal(fmt.Errorf(format, args...)) }
+
+func BudgetExceededf(format string, args ...any) error {
+	return BudgetExceeded(fmt.Errorf(format, args...))
+}
+
+func PolicyDeniedf(format string, args ...any) error {
+	return PolicyDenied(fmt.Errorf(format, args...))
+}
 
 // ---------------------------------------------------------------------------
 // HTTP status mapping
@@ -205,6 +252,16 @@ func HTTPStatus(err error) int {
 		return http.StatusConflict
 	case IsRateLimit(err):
 		return http.StatusTooManyRequests
+	case IsBudgetExceeded(err):
+		// Internal budget refusals share the 429 wire-shape with
+		// upstream rate limits — clients SHOULD react identically
+		// (back off, retry later) but operators can still tell them
+		// apart by inspecting the error chain via IsBudgetExceeded.
+		return http.StatusTooManyRequests
+	case IsPolicyDenied(err):
+		// Policy denials share the 403 wire-shape with upstream
+		// Forbidden responses; same rationale as BudgetExceeded above.
+		return http.StatusForbidden
 	case IsTimeout(err):
 		return http.StatusGatewayTimeout
 	case IsNotAvailable(err):

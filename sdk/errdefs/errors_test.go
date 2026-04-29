@@ -35,6 +35,8 @@ func TestCategory_CheckFunctions(t *testing.T) {
 		{"Aborted", Abortedf("cancelled"), IsAborted},
 		{"NotAvailable", NotAvailablef("down"), IsNotAvailable},
 		{"Internal", Internalf("boom"), IsInternal},
+		{"BudgetExceeded", BudgetExceededf("over %d tokens", 1000), IsBudgetExceeded},
+		{"PolicyDenied", PolicyDeniedf("tool %q not allowed", "shell"), IsPolicyDenied},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -134,6 +136,8 @@ func TestHTTPStatus(t *testing.T) {
 		{Interruptedf("x"), http.StatusConflict},
 		{Abortedf("x"), http.StatusConflict},
 		{Internalf("x"), http.StatusInternalServerError},
+		{BudgetExceededf("x"), http.StatusTooManyRequests},
+		{PolicyDeniedf("x"), http.StatusForbidden},
 		{fmt.Errorf("plain"), http.StatusInternalServerError},
 	}
 	for _, tt := range tests {
@@ -154,6 +158,57 @@ func TestHTTPStatus_SurvivesWrapping(t *testing.T) {
 	err := fmt.Errorf("outer: %w", NotFoundf("inner"))
 	if HTTPStatus(err) != http.StatusNotFound {
 		t.Fatalf("HTTPStatus through wrapping = %d", HTTPStatus(err))
+	}
+}
+
+func TestBudgetExceeded_NotConfusedWithRateLimit(t *testing.T) {
+	// Both map to HTTP 429 but represent different intents; the
+	// classification predicates MUST stay disjoint so handlers that
+	// branch on intent still get unambiguous answers.
+	be := BudgetExceededf("token cap")
+	if IsRateLimit(be) {
+		t.Fatal("BudgetExceeded should not be RateLimit")
+	}
+	if !IsBudgetExceeded(be) {
+		t.Fatal("BudgetExceeded should be itself")
+	}
+
+	rl := RateLimitf("upstream 429")
+	if IsBudgetExceeded(rl) {
+		t.Fatal("RateLimit should not be BudgetExceeded")
+	}
+}
+
+func TestPolicyDenied_NotConfusedWithForbidden(t *testing.T) {
+	// Both map to HTTP 403 but represent different intents; same
+	// disjoint-classification rationale as above.
+	pd := PolicyDeniedf("tool %q blocked", "shell")
+	if IsForbidden(pd) {
+		t.Fatal("PolicyDenied should not be Forbidden")
+	}
+	if !IsPolicyDenied(pd) {
+		t.Fatal("PolicyDenied should be itself")
+	}
+
+	fb := Forbiddenf("upstream 403")
+	if IsPolicyDenied(fb) {
+		t.Fatal("Forbidden should not be PolicyDenied")
+	}
+}
+
+func TestBudgetExceeded_SurvivesWrapping(t *testing.T) {
+	inner := BudgetExceededf("over budget")
+	outer := fmt.Errorf("llm call: %w", inner)
+	if !IsBudgetExceeded(outer) {
+		t.Fatal("BudgetExceeded should survive fmt.Errorf wrapping")
+	}
+}
+
+func TestPolicyDenied_SurvivesWrapping(t *testing.T) {
+	inner := PolicyDeniedf("network egress not allowed")
+	outer := fmt.Errorf("dispatch tool: %w", inner)
+	if !IsPolicyDenied(outer) {
+		t.Fatal("PolicyDenied should survive fmt.Errorf wrapping")
 	}
 }
 
