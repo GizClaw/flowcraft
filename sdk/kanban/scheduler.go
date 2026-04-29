@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/telemetry"
 
 	"github.com/robfig/cron/v3"
@@ -348,7 +349,7 @@ func (s *Scheduler) submitWithDelay(ctx context.Context, opts TaskOptions, delay
 	s.mu.Lock()
 	if s.closed {
 		s.mu.Unlock()
-		return "", fmt.Errorf("kanban.scheduler: stopped")
+		return "", errdefs.NotAvailablef("kanban.scheduler: stopped")
 	}
 	timer := time.AfterFunc(d, func() {
 		s.mu.Lock()

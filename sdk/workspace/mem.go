@@ -10,6 +10,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/GizClaw/flowcraft/sdk/errdefs"
 )
 
 // MemWorkspace implements Workspace entirely in memory.
@@ -136,7 +138,7 @@ func (m *MemWorkspace) RemoveAll(_ context.Context, path string) error {
 		return err
 	}
 	if p == "" {
-		return fmt.Errorf("workspace: refusing to remove root")
+		return errdefs.Forbiddenf("workspace: refusing to remove root")
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()

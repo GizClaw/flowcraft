@@ -8,6 +8,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/GizClaw/flowcraft/sdk/errdefs"
 )
 
 // LocalWorkspace implements Workspace backed by a local directory.
@@ -120,7 +122,7 @@ func (w *LocalWorkspace) RemoveAll(_ context.Context, path string) error {
 		return err
 	}
 	if full == w.root {
-		return fmt.Errorf("workspace: refusing to remove root")
+		return errdefs.Forbiddenf("workspace: refusing to remove root")
 	}
 	return os.RemoveAll(full)
 }
@@ -244,10 +246,10 @@ func (w *LocalWorkspace) GitClone(ctx context.Context, url, dest string) error {
 func validateGitURL(url string) error {
 	trimmed := strings.TrimSpace(url)
 	if trimmed == "" {
-		return fmt.Errorf("workspace: git url is empty")
+		return errdefs.Validationf("workspace: git url is empty")
 	}
 	if strings.HasPrefix(trimmed, "-") {
-		return fmt.Errorf("workspace: git url must not start with '-'")
+		return errdefs.Validationf("workspace: git url must not start with '-'")
 	}
 	return nil
 }

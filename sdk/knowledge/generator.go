@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/llm"
 )
 
@@ -78,7 +79,7 @@ type DocumentSummary struct {
 // it.
 func GenerateDocumentContext(ctx context.Context, l llm.LLM, content string) (DocumentContext, error) {
 	if l == nil {
-		return DocumentContext{}, fmt.Errorf("knowledge: llm is required")
+		return DocumentContext{}, errdefs.Validationf("knowledge: llm is required")
 	}
 	abstract, err := generate(ctx, l, fmt.Sprintf(AbstractPrompt, truncateForPrompt(content, DefaultPromptInputLimit)))
 	if err != nil {
@@ -96,7 +97,7 @@ func GenerateDocumentContext(ctx context.Context, l llm.LLM, content string) (Do
 // Returns an empty context with no error when summaries is empty.
 func GenerateDatasetContext(ctx context.Context, l llm.LLM, summaries []DocumentSummary) (DatasetContext, error) {
 	if l == nil {
-		return DatasetContext{}, fmt.Errorf("knowledge: llm is required")
+		return DatasetContext{}, errdefs.Validationf("knowledge: llm is required")
 	}
 	lines := make([]string, 0, len(summaries))
 	for _, s := range summaries {

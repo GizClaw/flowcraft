@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 
+	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/workspace"
 )
 
@@ -18,7 +19,7 @@ import (
 // do not collide on the staging path.
 func atomicWrite(ctx context.Context, ws workspace.Workspace, dst string, data []byte) error {
 	if ws == nil {
-		return fmt.Errorf("knowledge/fs: nil workspace")
+		return errdefs.Validationf("knowledge/fs: nil workspace")
 	}
 	tmp := dst + ".tmp." + randomSuffix()
 	if err := ws.Write(ctx, tmp, data); err != nil {

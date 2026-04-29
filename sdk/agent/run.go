@@ -75,10 +75,10 @@ func Run(
 	opts ...RunOption,
 ) (*Result, error) {
 	if eng == nil {
-		return nil, fmt.Errorf("agent: nil engine")
+		return nil, errdefs.Validationf("agent: nil engine")
 	}
 	if ag.ID == "" {
-		return nil, fmt.Errorf("agent: Agent.ID is empty")
+		return nil, errdefs.Validationf("agent: Agent.ID is empty")
 	}
 
 	rc := applyOptions(ag, opts)
@@ -100,7 +100,7 @@ func Run(
 		return nil, fmt.Errorf("agent: seed board: %w", err)
 	}
 	if board == nil {
-		return nil, fmt.Errorf("agent: BoardSeeder returned nil board")
+		return nil, errdefs.Validationf("agent: BoardSeeder returned nil board")
 	}
 
 	host := rc.host

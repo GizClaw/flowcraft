@@ -2,8 +2,9 @@ package fs
 
 import (
 	"encoding/binary"
-	"fmt"
 	"math"
+
+	"github.com/GizClaw/flowcraft/sdk/errdefs"
 )
 
 // vecSuffix is appended to a layer text path to form its embedding sidecar.
@@ -48,15 +49,15 @@ func decodeVec(buf []byte) ([]float32, error) {
 		return nil, nil
 	}
 	if len(buf) < vecHeaderSize {
-		return nil, fmt.Errorf("knowledge/fs: vec payload too short (%d bytes)", len(buf))
+		return nil, errdefs.Validationf("knowledge/fs: vec payload too short (%d bytes)", len(buf))
 	}
 	if [4]byte{buf[0], buf[1], buf[2], buf[3]} != vecMagic {
-		return nil, fmt.Errorf("knowledge/fs: vec magic mismatch")
+		return nil, errdefs.Validationf("knowledge/fs: vec magic mismatch")
 	}
 	n := binary.LittleEndian.Uint32(buf[4:8])
 	expected := vecHeaderSize + 4*int(n)
 	if len(buf) != expected {
-		return nil, fmt.Errorf("knowledge/fs: vec length mismatch (header=%d, got %d bytes)", expected, len(buf))
+		return nil, errdefs.Validationf("knowledge/fs: vec length mismatch (header=%d, got %d bytes)", expected, len(buf))
 	}
 	out := make([]float32, n)
 	for i := range out {

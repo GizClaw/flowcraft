@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/model"
 	"github.com/GizClaw/flowcraft/sdk/tool"
 )
@@ -38,7 +39,7 @@ func (t *SubmitTool) Definition() model.ToolDefinition {
 func (t *SubmitTool) Execute(ctx context.Context, arguments string) (string, error) {
 	k := t.resolve(ctx)
 	if k == nil {
-		return "", fmt.Errorf("kanban_submit: no kanban instance available")
+		return "", errdefs.NotAvailablef("kanban_submit: no kanban instance available")
 	}
 
 	var args struct {
@@ -108,7 +109,7 @@ func (t *TaskContextTool) Definition() model.ToolDefinition {
 func (t *TaskContextTool) Execute(ctx context.Context, arguments string) (string, error) {
 	k := t.resolve(ctx)
 	if k == nil {
-		return "", fmt.Errorf("task_context: no kanban instance available")
+		return "", errdefs.NotAvailablef("task_context: no kanban instance available")
 	}
 
 	var args struct {
