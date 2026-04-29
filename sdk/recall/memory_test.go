@@ -10,6 +10,7 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/llm"
 	"github.com/GizClaw/flowcraft/sdk/model"
 	"github.com/GizClaw/flowcraft/sdk/recall"
+	"github.com/GizClaw/flowcraft/sdk/retrieval"
 	"github.com/GizClaw/flowcraft/sdk/retrieval/journal"
 	memidx "github.com/GizClaw/flowcraft/sdk/retrieval/memory"
 )
@@ -376,5 +377,63 @@ func TestForget(t *testing.T) {
 	hits, _ := m.Recall(ctx, scope, recall.Request{Query: "forget", TopK: 5})
 	if len(hits) != 0 {
 		t.Fatalf("expected forgotten, got %+v", hits)
+	}
+}
+
+// TestTombstoneFilter_HidesByDefault_OptInReveals exercises Recall's
+// public contract for tombstoned entries (the B3 escape hatch):
+//   - With default Request, an entry whose metadata carries
+//     `tombstone=true` MUST NOT appear among the hits.
+//   - With Request.WithTombstoned=true, the same entry MUST be
+//     returned so callers can debug the resolver / stage an
+//     Auditable.Rollback.
+func TestTombstoneFilter_HidesByDefault_OptInReveals(t *testing.T) {
+	ctx := context.Background()
+	idx := memidx.New()
+	m, err := recall.New(idx, recall.WithRequireUserID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer m.Close()
+	scope := newScope()
+	// Add the entry through the public API so all the scope-derived
+	// metadata (user_id, agent_id, runtime_id) is populated correctly,
+	// then re-Upsert with MetaTombstone toggled on. This mirrors what
+	// the LLM update resolver's OpDelete branch does internally.
+	id, err := m.Add(ctx, scope, recall.Entry{Content: "user said something then deleted it"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ns := recall.NamespaceFor(scope)
+	doc, _, _ := idx.Get(ctx, ns, id)
+	if doc.Metadata == nil {
+		doc.Metadata = map[string]any{}
+	}
+	doc.Metadata[recall.MetaTombstone] = true
+	if err := idx.Upsert(ctx, ns, []retrieval.Doc{doc}); err != nil {
+		t.Fatal(err)
+	}
+	hits, err := m.Recall(ctx, scope, recall.Request{Query: "deleted", TopK: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, h := range hits {
+		if h.Entry.ID == id {
+			t.Fatalf("default Recall must hide tombstoned entry %q", id)
+		}
+	}
+	hits, err = m.Recall(ctx, scope, recall.Request{Query: "deleted", TopK: 10, WithTombstoned: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found bool
+	for _, h := range hits {
+		if h.Entry.ID == id {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("WithTombstoned=true must surface tombstoned entry %q (hits=%+v)", id, hits)
 	}
 }

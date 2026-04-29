@@ -32,12 +32,39 @@ const (
 )
 
 // ExtractedFact is one LLM-extracted memory candidate.
+//
+// Subject and Predicate are optional slot fields; when BOTH are non-empty
+// (and neither contains the slot delimiter '|') the Save path
+// activates the deterministic "slot supersede" channel (see
+// merger.supersedeBySlot) which marks any older entry sharing the
+// same (Subject, Predicate) tuple as superseded_by the new entry.
+// Leave them empty for episodic / non-slot facts; behaviour is
+// unchanged.
+//
+// The recommended v1 predicate vocabulary is enumerated in
+// [DefaultPredicates]; locale variants and common synonyms are mapped
+// to canonical entries by [PredicateAliases] (extend per-namespace
+// via [WithPredicateAlias]).
 type ExtractedFact struct {
 	Content    string   `json:"content"`
 	Categories []string `json:"categories,omitempty"`
 	Entities   []string `json:"entities,omitempty"`
 	Source     string   `json:"source,omitempty"`
 	Confidence float64  `json:"confidence,omitempty"`
+
+	Subject   string `json:"subject,omitempty"`
+	Predicate string `json:"predicate,omitempty"`
+}
+
+// DefaultPredicates is the v1 controlled predicate vocabulary rendered
+// into DefaultExtractPrompt. Predicates outside this list are still
+// honoured by the slot supersede channel (matching is exact-string), but
+// extending the prompt vocabulary should go through this slice so the
+// guidance stays consistent.
+var DefaultPredicates = []string{
+	"lives_in", "works_at", "occupation", "birthday", "language",
+	"spouse", "child", "parent", "pet",
+	"preference.<topic>", "status.<topic>",
 }
 
 // ExtractOptions carries optional context handed to an Extractor invocation.
@@ -107,6 +134,27 @@ OUTPUT FORMAT — strict JSON object with a single "facts" array, no prose:
 
 Categories (multi-label allowed): preferences | profile | episodic | procedural | semantic | events | facts | patterns | cases | entities
 Entities: people, places, organizations, products, quoted strings, compound nouns. Keep original surface form.
+
+SLOT FIELDS (optional but encouraged for STABLE attributes that can change
+over time — profile, preferences, relationships):
+  "subject":   what the fact is about ("user", "user.spouse", "pet:<name>")
+  "predicate": snake_case key from the controlled list:
+               lives_in, works_at, occupation, birthday, language,
+               spouse, child, parent, pet,
+               preference.<topic>, status.<topic>
+               If NONE fits, leave both as empty strings.
+
+Episodic events ("I went to Tokyo last week", "booked a flight on Mar 3")
+MUST leave subject and predicate empty — they are append-only timeline
+data, not slot replacements.
+
+Slot examples:
+  "I moved to Shanghai" →
+    {"content":"user lives in Shanghai","subject":"user",
+     "predicate":"lives_in","entities":["Shanghai"], ...}
+  "I love lattes" →
+    {"content":"user prefers lattes","subject":"user",
+     "predicate":"preference.coffee","entities":["latte"], ...}
 
 If no facts: return {"facts": []}.
 
@@ -265,6 +313,8 @@ func normalizeFacts(in []ExtractedFact) []ExtractedFact {
 		}
 		f.Categories = normStrings(f.Categories)
 		f.Entities = normStrings(f.Entities)
+		f.Subject = strings.TrimSpace(f.Subject)
+		f.Predicate = strings.TrimSpace(f.Predicate)
 		out = append(out, f)
 	}
 	return out
@@ -328,13 +378,15 @@ var extractedFactsSchema = llm.JSONSchemaParam{
 					// every key in `properties` must also appear in `required`.
 					// Models can still emit empty arrays / "" / 0.0 to signal
 					// "no value" — parseFactsJSON tolerates them.
-					"required": []string{"content", "categories", "entities", "source", "confidence"},
+					"required": []string{"content", "categories", "entities", "source", "confidence", "subject", "predicate"},
 					"properties": map[string]any{
 						"content":    map[string]any{"type": "string"},
 						"categories": map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
 						"entities":   map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
 						"source":     map[string]any{"type": "string"},
 						"confidence": map[string]any{"type": "number"},
+						"subject":    map[string]any{"type": "string"},
+						"predicate":  map[string]any{"type": "string"},
 					},
 				},
 			},

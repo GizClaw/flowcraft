@@ -65,6 +65,26 @@ func AgentRecallFilter(s Scope) retrieval.Filter {
 	}}
 }
 
+// TombstoneFilter returns the default filter that excludes entries
+// the LLM update resolver has marked for deletion via
+// metadata[MetaTombstone] = true. The filter accepts entries where
+// the field is missing or any value other than the boolean true.
+//
+// Recall composes this filter by default; callers that want to
+// surface tombstoned entries (debugging the resolver, or staging an
+// Auditable.Rollback) MUST set Request.WithTombstoned = true.
+//
+// MetaTombstone is a RESERVED metadata key owned by the recall
+// package — pre-existing user data accidentally stored under
+// "tombstone" will be hidden by Recall until the caller passes
+// WithTombstoned.
+func TombstoneFilter() retrieval.Filter {
+	return retrieval.Filter{Or: []retrieval.Filter{
+		{Missing: []string{MetaTombstone}},
+		{Neq: map[string]any{MetaTombstone: true}},
+	}}
+}
+
 // ExpireFilter returns the default filter that excludes expired entries
 // . Pass current time via now (use time.Now() at call site).
 func ExpireFilter(now time.Time) retrieval.Filter {

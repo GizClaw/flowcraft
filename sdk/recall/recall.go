@@ -13,11 +13,24 @@ import (
 
 // Request is the input to Memory.Recall ( + §6.2).
 type Request struct {
-	Query     string
-	TopK      int
-	Filter    map[string]any // metadata equality filters merged into pipeline filter
-	Now       time.Time      // optional clock injection (for tests / TTL)
-	WithStale bool           // if true, do NOT filter expired entries
+	Query  string
+	TopK   int
+	Filter map[string]any // metadata equality filters merged into pipeline filter
+	Now    time.Time      // optional clock injection (for tests / TTL)
+
+	// WithStale, if true, disables the default ExpireFilter so expired
+	// entries are returned alongside live ones.
+	WithStale bool
+
+	// WithTombstoned, if true, disables the default TombstoneFilter so
+	// entries the LLM update resolver marked with metadata.tombstone =
+	// true are returned alongside live ones. Use this to debug
+	// resolver behaviour or to re-surface entries before
+	// Auditable.Rollback. Note that MetaTombstone is a RESERVED
+	// metadata key written by recall internals — pre-existing user
+	// data accidentally stored under "tombstone" will be hidden by
+	// default until WithTombstoned is set.
+	WithTombstoned bool
 
 	// Debug controls how much execution detail the underlying retrieval
 	// pipeline should attach. Memory.Recall always discards it; callers
@@ -96,6 +109,14 @@ func (m *lt) runRecall(ctx context.Context, scope Scope, req Request) ([]Hit, *r
 	if !req.WithStale {
 		filter = MergeFilters(filter, ExpireFilter(now))
 	}
+	// Tombstones (set by the LLM update resolver's DELETE action) are
+	// hidden from Recall by default. Callers can opt out via
+	// Request.WithTombstoned to debug resolver behaviour or to
+	// re-surface entries before Auditable.Rollback. Forget remains
+	// the way to hard-delete them.
+	if !req.WithTombstoned {
+		filter = MergeFilters(filter, TombstoneFilter())
+	}
 	if len(req.Filter) > 0 {
 		filter = MergeFilters(filter, retrieval.Filter{Eq: req.Filter})
 	}
@@ -107,6 +128,7 @@ func (m *lt) runRecall(ctx context.Context, scope Scope, req Request) ([]Hit, *r
 		attribute.Int("top_k", topK),
 		attribute.Int("query_len", len(req.Query)),
 		attribute.Bool("with_stale", req.WithStale),
+		attribute.Bool("with_tombstoned", req.WithTombstoned),
 		attribute.Bool("debug_lanes", req.Debug.IncludeLanes),
 		attribute.Bool("debug_stages", req.Debug.IncludeStages),
 	)

@@ -3,6 +3,7 @@ package recall
 import (
 	"context"
 	"errors"
+	"maps"
 	"sync"
 	"time"
 
@@ -106,8 +107,15 @@ type config struct {
 
 	md5Dedup           bool
 	softMerge          bool
+	slotMerge          bool
 	softMergeCosineMin float64
 	softMergeTopK      int
+
+	updateResolver UpdateResolver
+	resolverTopK   int
+
+	predicateAliases map[string]string
+	subjectAliases   map[string]string
 
 	jobQueue       JobQueue
 	asyncWorkers   int
@@ -187,11 +195,99 @@ func WithSaveContext(topK int, threshold float64) Option {
 // upserts across re-extractions.
 func WithoutMD5Dedup() Option { return func(c *config) { c.md5Dedup = false } }
 
-// WithoutSoftMerge disables soft-merging of near-duplicate older
-// entries (default ON). Soft-merge marks neighbours with metadata
-// `superseded_by=<new_id>`; pair with [pipeline.SupersededDecay] for
-// retrieval-time damping.
+// WithoutSoftMerge disables the VECTOR + entity-set supersede channel
+// (default ON). The vector channel marks near-duplicate older
+// neighbours with metadata `superseded_by=<new_id>` based on cosine
+// similarity and entity overlap; pair with [pipeline.SupersededDecay]
+// for retrieval-time damping.
+//
+// This option does NOT affect the deterministic SLOT supersede
+// channel — facts that carry both Subject and Predicate continue to
+// supersede same-slot neighbours regardless. Use [WithoutSlotChannel]
+// to disable the slot channel as well. The two channels are
+// orthogonal so callers can keep the deterministic path while
+// silencing the noisier vector path (e.g. when entity extraction is
+// unreliable on their corpus).
 func WithoutSoftMerge() Option { return func(c *config) { c.softMerge = false } }
+
+// WithoutSlotChannel disables the deterministic (subject, predicate)
+// supersede channel that runs whenever an extractor populates both
+// slot fields (default ON). Use this when you want to keep the
+// vector soft-merge path but disable the slot path — for example
+// when migrating an existing namespace whose historical entries were
+// written without slot metadata, and you want the read-side
+// SupersededDecay to depend exclusively on vector-channel decisions
+// for a controlled rollout window.
+func WithoutSlotChannel() Option { return func(c *config) { c.slotMerge = false } }
+
+// WithUpdateResolver installs an opt-in LLM-driven resolver that is
+// consulted on Save for facts the slot supersede channel cannot handle
+// (i.e. ExtractedFact.Subject or Predicate is empty). The resolver
+// receives the new fact plus its top-K nearest existing memories and
+// returns a list of [ResolveAction] (ADD / UPDATE / DELETE / NOOP).
+//
+// FlowCraft applies UPDATE and DELETE non-destructively: targeted
+// entries gain superseded_by metadata (DELETE additionally sets
+// tombstone=true), preserving Auditable.History and Rollback. ADD and
+// NOOP require no action since the new entry is always written.
+//
+// topK <= 0 falls back to 5. Passing a nil resolver disables the path
+// (the default).
+//
+// Ordering note: the resolver runs AFTER the slot and vector
+// supersede channels. Candidates whose older versions were already
+// tagged by those channels will appear with damped scores (or be
+// missing from the top-K entirely) thanks to SupersededDecay; this
+// is intentional — the resolver should not re-decide what the
+// deterministic channels already handled. Operators reading the
+// resolver_actions_total counter should expect candidate counts to
+// shrink when slot vocabulary coverage improves.
+func WithUpdateResolver(r UpdateResolver, topK int) Option {
+	return func(c *config) {
+		c.updateResolver = r
+		if topK > 0 {
+			c.resolverTopK = topK
+		} else {
+			c.resolverTopK = 5
+		}
+	}
+}
+
+// WithPredicateAlias merges additional predicate aliases on top of the
+// built-in [PredicateAliases] table. Use this to teach the slot
+// supersede channel about namespace-specific synonyms (e.g. medical
+// SaaS adding "primary_care_physician" → "doctor"). Keys MUST be
+// lowercase + trimmed; values SHOULD match a canonical predicate.
+//
+// Per-instance overrides win over the global table so callers can
+// remap a built-in entry if needed without forking the source.
+func WithPredicateAlias(aliases map[string]string) Option {
+	return func(c *config) {
+		if len(aliases) == 0 {
+			return
+		}
+		if c.predicateAliases == nil {
+			c.predicateAliases = make(map[string]string, len(aliases))
+		}
+		maps.Copy(c.predicateAliases, aliases)
+	}
+}
+
+// WithSubjectAlias mirrors [WithPredicateAlias] for ExtractedFact.Subject.
+// Composite subjects (those containing ':' or '.') are passed through
+// without aliasing so per-instance subjects like "pet:Lucky" remain
+// distinguishable.
+func WithSubjectAlias(aliases map[string]string) Option {
+	return func(c *config) {
+		if len(aliases) == 0 {
+			return
+		}
+		if c.subjectAliases == nil {
+			c.subjectAliases = make(map[string]string, len(aliases))
+		}
+		maps.Copy(c.subjectAliases, aliases)
+	}
+}
 
 // WithSoftMergeThreshold tunes the cosine threshold (default 0.92) and
 // neighbour-fanout (default 3) for soft-merge. Values <= 0 keep the
@@ -339,6 +435,7 @@ func New(idx retrieval.Index, opts ...Option) (Memory, error) {
 		mode:               ModeAdditive,
 		md5Dedup:           true,
 		softMerge:          true,
+		slotMerge:          true,
 		softMergeCosineMin: 0.92,
 		softMergeTopK:      3,
 		saveCtxTopK:        10,

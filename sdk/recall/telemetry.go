@@ -50,4 +50,36 @@ var (
 		"recall_lane_duration",
 		metric.WithDescription("Per-lane recall duration in seconds inside the retrieval pipeline executed under recall.Recall, labelled by lane key"),
 	)
+
+	// supersedeTotal counts entries marked superseded_by during a Save,
+	// labelled by the channel that made the decision: "slot" for the
+	// deterministic (subject, predicate) supersede path, "vector" for
+	// the existing entity+cosine soft-merge path, "resolver" for an
+	// LLM-driven UpdateResolver action. Use this to measure the relative
+	// contribution of each channel and decide when slot vocabulary or
+	// resolver coverage should be extended.
+	supersedeTotal, _ = recallMeter.Int64Counter(
+		"supersede_total",
+		metric.WithDescription("Older entries marked superseded_by during a Save, labelled by channel (slot/vector/resolver)"),
+	)
+
+	// resolverActionsTotal counts the actions an UpdateResolver returned
+	// during Save, labelled by op (add/update/delete/noop/error). The
+	// "error" bucket includes Recall failures, Resolve() errors and
+	// downstream Upsert failures so dashboards can alert on a single
+	// counter regardless of where the failure originated.
+	resolverActionsTotal, _ = recallMeter.Int64Counter(
+		"resolver_actions_total",
+		metric.WithDescription("LLM update resolver actions returned during Save, labelled by op (add/update/delete/noop/error)"),
+	)
+
+	// resolverDuration tracks end-to-end latency of a single resolver
+	// invocation (Recall candidate fetch + LLM call + Upsert apply). One
+	// observation per fact that entered the resolver path, regardless of
+	// outcome, so the histogram reflects user-visible Save overhead when
+	// the resolver is enabled.
+	resolverDuration, _ = recallMeter.Float64Histogram(
+		"resolver_duration",
+		metric.WithDescription("Per-fact LLM update resolver duration in seconds (Recall + Resolve + apply)"),
+	)
 )

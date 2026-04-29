@@ -27,6 +27,7 @@ type ltmConfig struct {
 	limit            int
 	reranker         Reranker
 	entityExtract    EntityExtract
+	slotCollapse     bool
 }
 
 // WithRecallTopK overrides the vector recall fan-out (default 60).
@@ -80,6 +81,16 @@ func WithEntityExtractor(extract func(ctx context.Context, text string) ([]strin
 // WithLimit overrides the final TopK truncation (default 10).
 func WithLimit(k int) LTMOption {
 	return func(c *ltmConfig) { c.limit = k }
+}
+
+// WithSlotCollapse inserts a [SlotCollapse] stage after
+// [SupersededDecay] so legacy entries that were never tagged with
+// superseded_by still get collapsed to the newest hit per
+// (subject, predicate) tuple at recall time. Defaults to false; enable
+// when running on data written before the slot supersede channel
+// shipped or when the underlying writer cannot guarantee tagging.
+func WithSlotCollapse(on bool) LTMOption {
+	return func(c *ltmConfig) { c.slotCollapse = on }
 }
 
 // Default returns the general-purpose hybrid pipeline.
@@ -159,6 +170,9 @@ func LTM(emb embedding.Embedder, opts ...LTMOption) *Pipeline {
 	}
 	if cfg.supersededFactor > 0 && cfg.supersededFactor < 1 {
 		stages = append(stages, SupersededDecay{Factor: cfg.supersededFactor})
+	}
+	if cfg.slotCollapse {
+		stages = append(stages, SlotCollapse{})
 	}
 	if cfg.halfLife > 0 {
 		stages = append(stages, TimeDecay{HalfLife: cfg.halfLife})
