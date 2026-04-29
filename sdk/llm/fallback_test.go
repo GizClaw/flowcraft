@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/GizClaw/flowcraft/sdk/errdefs"
 )
 
 // ---------------------------------------------------------------------------
@@ -539,5 +541,78 @@ func TestTrackedStream_NilStream(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "nil stream") {
 		t.Fatalf("expected nil stream error, got: %v", err)
+	}
+}
+
+// TestCategoryLabel pins the metric / log label tokens emitted by
+// FallbackLLM. Dashboards filter on these strings, so the set is part
+// of the package's observable contract even though categoryLabel is
+// unexported.
+func TestCategoryLabel(t *testing.T) {
+	cases := []struct {
+		cat  errdefs.ProviderCategory
+		want string
+	}{
+		{errdefs.ProviderTransient, "transient"},
+		{errdefs.ProviderRateLimit, "rate_limit"},
+		{errdefs.ProviderAuth, "auth"},
+		{errdefs.ProviderBilling, "billing"},
+		{errdefs.ProviderContextOverflow, "context_overflow"},
+		{errdefs.ProviderPermanent, "permanent"},
+	}
+	for _, tc := range cases {
+		if got := categoryLabel(tc.cat); got != tc.want {
+			t.Errorf("categoryLabel(%d) = %q, want %q", tc.cat, got, tc.want)
+		}
+	}
+}
+
+// TestShouldFallback pins the chain-stop policy: ContextOverflow and
+// Permanent are the only categories that must NOT advance to the next
+// provider in the FallbackLLM chain (downstream sees the same input
+// and fails the same way). A regression here would either degrade UX
+// (give up too early) or burn quota (retry on a definite no).
+func TestShouldFallback(t *testing.T) {
+	cases := []struct {
+		cat    errdefs.ProviderCategory
+		expect bool
+	}{
+		{errdefs.ProviderTransient, true},
+		{errdefs.ProviderRateLimit, true},
+		{errdefs.ProviderAuth, true},
+		{errdefs.ProviderBilling, true},
+		{errdefs.ProviderContextOverflow, false},
+		{errdefs.ProviderPermanent, false},
+	}
+	for _, tc := range cases {
+		t.Run(categoryLabel(tc.cat), func(t *testing.T) {
+			if got := shouldFallback(tc.cat); got != tc.expect {
+				t.Errorf("shouldFallback(%v) = %v, want %v", tc.cat, got, tc.expect)
+			}
+		})
+	}
+}
+
+// TestCooldownMultiplier pins the per-category breaker hold:
+// Auth/Billing get the long penalty (credentials don't fix themselves),
+// RateLimit gets a moderate hold to let the upstream window roll over.
+func TestCooldownMultiplier(t *testing.T) {
+	cases := []struct {
+		cat  errdefs.ProviderCategory
+		want int
+	}{
+		{errdefs.ProviderTransient, 1},
+		{errdefs.ProviderRateLimit, 3},
+		{errdefs.ProviderAuth, 10},
+		{errdefs.ProviderBilling, 10},
+		{errdefs.ProviderContextOverflow, 1},
+		{errdefs.ProviderPermanent, 1},
+	}
+	for _, tc := range cases {
+		t.Run(categoryLabel(tc.cat), func(t *testing.T) {
+			if got := cooldownMultiplier(tc.cat); got != tc.want {
+				t.Errorf("cooldownMultiplier(%v) = %d, want %d", tc.cat, got, tc.want)
+			}
+		})
 	}
 }
