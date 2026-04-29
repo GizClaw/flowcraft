@@ -3,39 +3,26 @@ package runner
 import (
 	"context"
 
-	"github.com/GizClaw/flowcraft/sdk/event"
 	"github.com/GizClaw/flowcraft/sdk/graph/runner/internal/executor"
 )
 
 // This file re-exports the small subset of the (internal) executor
-// package that legitimate callers need to interact with: subject
-// patterns for subscribing to envelopes, parallel-execution policy
-// types for runner.WithParallel, the pluggable variable resolver
-// contract, the pluggable merge function contract, and the
-// actor-key context helper. Anything not re-exported here is an
-// implementation detail of the engine that lives entirely behind
+// package that legitimate callers need to interact with: parallel
+// execution policy types for runner.WithParallel, the pluggable
+// variable resolver contract, the pluggable merge function contract,
+// and the actor-key context helper. Anything not re-exported here is
+// an implementation detail of the engine that lives entirely behind
 // runner.Runner.
+//
+// Subject helpers are NOT re-exported. Subscribers should import
+// sdk/engine and use engine.PatternRun / engine.PatternAllRuns /
+// engine.PatternRunSteps / engine.PatternRunStream — the runner
+// publishes envelopes under the engine-contract subject convention,
+// so engine's helpers are the canonical entry point.
 //
 // Each alias names a single concept the executor owns; the runner
 // package never grows its own definition for these so there is one
 // canonical type the user can satisfy / pass around.
-
-// --- event subject helpers ---------------------------------------------------
-
-// PatternRun returns "graph.run.<runID>.>" — every event emitted by
-// the runner for the given run.
-//
-// Use it as the pattern argument to event.Bus.Subscribe when the
-// host implementation routes envelopes through a bus.
-func PatternRun(runID string) event.Pattern { return executor.PatternRun(runID) }
-
-// PatternAllRuns returns "graph.run.>" — every runner event from
-// any run.
-func PatternAllRuns() event.Pattern { return executor.PatternAllRuns() }
-
-// PatternRunNodes returns "graph.run.<runID>.node.>" — every node-level
-// event for the given run.
-func PatternRunNodes(runID string) event.Pattern { return executor.PatternRunNodes(runID) }
 
 // --- parallel execution ------------------------------------------------------
 

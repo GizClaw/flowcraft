@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/GizClaw/flowcraft/sdk/engine"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/event"
 	"github.com/GizClaw/flowcraft/sdk/graph"
@@ -393,7 +394,7 @@ func TestLocalExecutor_EventBus_Integration(t *testing.T) {
 
 	ctx := context.Background()
 	const runID = "rint-1"
-	sub, err := bus.Subscribe(ctx, PatternRun(runID))
+	sub, err := bus.Subscribe(ctx, engine.PatternRun(runID))
 	if err != nil {
 		t.Fatalf("subscribe: %v", err)
 	}
@@ -414,8 +415,8 @@ func TestLocalExecutor_EventBus_Integration(t *testing.T) {
 		t.Fatalf("execute failed: %v", err)
 	}
 
-	wantStart := subjGraphStart(runID)
-	wantEnd := subjGraphEnd(runID)
+	wantStart := engine.SubjectRunStart(runID)
+	wantEnd := engine.SubjectRunEnd(runID)
 
 	var envelopes []event.Envelope
 	timeout := time.After(time.Second)

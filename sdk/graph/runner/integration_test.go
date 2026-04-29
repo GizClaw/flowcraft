@@ -126,7 +126,7 @@ func TestAgentRun_HostReceivesEnvelopes(t *testing.T) {
 	if len(envs) == 0 {
 		t.Fatal("host received no envelopes — runner is not publishing through the agent-supplied host")
 	}
-	wantPrefix := "graph.run.run-explicit."
+	wantPrefix := string(engine.SubjectPrefix) + "run-explicit."
 	sawStart, sawEnd := false, false
 	for _, e := range envs {
 		if !strings.HasPrefix(string(e.Subject), wantPrefix) {

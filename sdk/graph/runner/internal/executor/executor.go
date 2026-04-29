@@ -291,7 +291,7 @@ func (e *LocalExecutor) Execute(ctx context.Context, g *graph.Graph, board *grap
 		currentNodes = []string{cfg.startNode}
 	}
 
-	publishGraphEvent(ctx, cfg.publisher, subjGraphStart(cfg.runID),
+	publishGraphEvent(ctx, cfg.publisher, engine.SubjectRunStart(cfg.runID),
 		cfg.runID, g.Name(), actorKey, board.Vars())
 
 	iteration := 0
@@ -346,7 +346,7 @@ func (e *LocalExecutor) Execute(ctx context.Context, g *graph.Graph, board *grap
 				}
 			}
 
-			publishNodeEvent(ctx, cfg.publisher, subjNodeStart(cfg.runID, nodeID),
+			publishNodeEvent(ctx, cfg.publisher, engine.SubjectStepStart(cfg.runID, nodeID),
 				cfg.runID, g.Name(), actorKey, nodeID, nil)
 
 			nodeStart := time.Now()
@@ -382,7 +382,7 @@ func (e *LocalExecutor) Execute(ctx context.Context, g *graph.Graph, board *grap
 
 				if errdefs.IsInterrupted(err) {
 					board.SetVar(graph.VarInterruptedNode, nodeID)
-					publishGraphEvent(ctx, cfg.publisher, subjGraphEnd(cfg.runID),
+					publishGraphEvent(ctx, cfg.publisher, engine.SubjectRunEnd(cfg.runID),
 						cfg.runID, g.Name(), actorKey, nil)
 					graphSpan.SetAttributes(attribute.String("graph.status", "interrupted"))
 					graphExecCount.Add(ctx, 1,
@@ -406,7 +406,7 @@ func (e *LocalExecutor) Execute(ctx context.Context, g *graph.Graph, board *grap
 					otellog.String("node.id", nodeID),
 					otellog.String("error", err.Error()))
 
-				publishNodeEvent(ctx, cfg.publisher, subjNodeError(cfg.runID, nodeID),
+				publishNodeEvent(ctx, cfg.publisher, engine.SubjectStepError(cfg.runID, nodeID),
 					cfg.runID, g.Name(), actorKey, nodeID,
 					map[string]any{"error": err.Error()})
 				return board, err
@@ -427,7 +427,7 @@ func (e *LocalExecutor) Execute(ctx context.Context, g *graph.Graph, board *grap
 				}
 			}
 
-			publishNodeEvent(ctx, cfg.publisher, subjNodeComplete(cfg.runID, nodeID),
+			publishNodeEvent(ctx, cfg.publisher, engine.SubjectStepComplete(cfg.runID, nodeID),
 				cfg.runID, g.Name(), actorKey, nodeID,
 				map[string]any{"iteration": iteration, "vars": board.Vars()})
 
@@ -494,7 +494,7 @@ func (e *LocalExecutor) Execute(ctx context.Context, g *graph.Graph, board *grap
 		return board, fmt.Errorf("graph execution exceeded max iterations (%d)", cfg.maxIterations)
 	}
 
-	publishGraphEvent(ctx, cfg.publisher, subjGraphEnd(cfg.runID),
+	publishGraphEvent(ctx, cfg.publisher, engine.SubjectRunEnd(cfg.runID),
 		cfg.runID, g.Name(), actorKey,
 		map[string]any{"iteration": iteration, "vars": board.Vars()})
 
