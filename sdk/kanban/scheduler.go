@@ -127,7 +127,7 @@ func (s *Scheduler) SyncAgent(agentID string, jobs []CronJob) {
 		})
 		if err != nil {
 			telemetry.Warn(context.Background(), "kanban.scheduler: invalid cron expression",
-				otellog.String("agent_id", aid),
+				otellog.String(telemetry.AttrAgentID, aid),
 				otellog.String("cron", j.Cron),
 				otellog.String("error", err.Error()))
 			continue
@@ -214,7 +214,7 @@ func (s *Scheduler) SyncAgentAppend(agentID string, job CronJob) {
 	})
 	if err != nil {
 		telemetry.Warn(context.Background(), "kanban.scheduler: invalid cron expression",
-			otellog.String("agent_id", aid),
+			otellog.String(telemetry.AttrAgentID, aid),
 			otellog.String("cron", j.Cron),
 			otellog.String("error", err.Error()))
 		return
@@ -248,7 +248,7 @@ func (s *Scheduler) schedulerCtx(parent context.Context, agentID, scheduleID, ki
 	}
 	ctx, span := telemetry.Tracer().Start(parent, "kanban.scheduler."+kind,
 		trace.WithAttributes(
-			attribute.String("kanban.scheduler.agent_id", agentID),
+			attribute.String(telemetry.AttrAgentID, agentID),
 			attribute.String("kanban.scheduler.schedule_id", scheduleID),
 		),
 	)
@@ -272,9 +272,9 @@ func (s *Scheduler) fire(agentID, scheduleID, query string) {
 		if card.Meta["schedule_id"] == scheduleID &&
 			(card.Status == CardPending || card.Status == CardClaimed) {
 			telemetry.Info(ctx, "kanban.scheduler: skipping, previous task still active",
-				otellog.String("agent_id", agentID),
+				otellog.String(telemetry.AttrAgentID, agentID),
 				otellog.String("schedule_id", scheduleID),
-				otellog.String("card_id", card.ID))
+				otellog.String(telemetry.AttrKanbanCardID, card.ID))
 			return
 		}
 	}
@@ -288,12 +288,12 @@ func (s *Scheduler) fire(agentID, scheduleID, query string) {
 	if err != nil {
 		span.RecordError(err)
 		telemetry.Warn(ctx, "kanban.scheduler: submit failed",
-			otellog.String("agent_id", agentID),
+			otellog.String(telemetry.AttrAgentID, agentID),
 			otellog.String("schedule_id", scheduleID),
 			otellog.String("error", err.Error()))
 		return
 	}
-	span.SetAttributes(attribute.String("kanban.scheduler.card_id", cardID))
+	span.SetAttributes(attribute.String(telemetry.AttrKanbanCardID, cardID))
 
 	publishCronEvent(ctx, s.kanban.board.Bus(), EventCronRuleFired, scheduleID, s.kanban.board.ScopeID(), CronRuleFiredPayload{
 		ScheduleID: scheduleID,
@@ -303,9 +303,9 @@ func (s *Scheduler) fire(agentID, scheduleID, query string) {
 	})
 
 	telemetry.Info(ctx, "kanban.scheduler: task submitted",
-		otellog.String("agent_id", agentID),
+		otellog.String(telemetry.AttrAgentID, agentID),
 		otellog.String("schedule_id", scheduleID),
-		otellog.String("card_id", cardID))
+		otellog.String(telemetry.AttrKanbanCardID, cardID))
 }
 
 // scheduleSubmit handles TaskOptions with Delay or Cron fields.

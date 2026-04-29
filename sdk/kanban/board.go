@@ -717,7 +717,7 @@ func (b *Board) notifyWatchers(snap *Card) {
 		if closed {
 			b.watcherDropped.Add(1)
 			telemetry.Warn(b.ctx, "kanban: watcher already shut down, card notification dropped",
-				otellog.String("card_id", snap.ID),
+				otellog.String(telemetry.AttrKanbanCardID, snap.ID),
 				otellog.String("status", string(snap.Status)))
 			continue
 		}

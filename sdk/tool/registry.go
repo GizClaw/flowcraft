@@ -189,10 +189,10 @@ func (r *Registry) Len() int {
 // All errors (including tool-not-found) are returned as ToolResult with
 // IsError=true, so callers never need to handle a separate error path.
 func (r *Registry) Execute(ctx context.Context, call model.ToolCall) model.ToolResult {
-	ctx, span := telemetry.Tracer().Start(ctx, fmt.Sprintf("tool.%s.execute", call.Name), trace.WithAttributes(attribute.String("tool.name", call.Name)))
+	ctx, span := telemetry.Tracer().Start(ctx, fmt.Sprintf("tool.%s.execute", call.Name), trace.WithAttributes(attribute.String(telemetry.AttrToolName, call.Name)))
 	defer span.End()
 
-	nameAttr := metric.WithAttributes(attribute.String("tool.name", call.Name))
+	nameAttr := metric.WithAttributes(attribute.String(telemetry.AttrToolName, call.Name))
 
 	r.mu.RLock()
 	t, ok := r.tools[call.Name]
@@ -200,7 +200,7 @@ func (r *Registry) Execute(ctx context.Context, call model.ToolCall) model.ToolR
 	if !ok {
 		span.SetStatus(codes.Error, "tool not found")
 		toolExecCount.Add(ctx, 1, metric.WithAttributes(
-			attribute.String("tool.name", call.Name),
+			attribute.String(telemetry.AttrToolName, call.Name),
 			attribute.String("status", "error")))
 		toolErrorCount.Add(ctx, 1, nameAttr)
 		return model.ToolResult{
@@ -228,11 +228,11 @@ func (r *Registry) Execute(ctx context.Context, call model.ToolCall) model.ToolR
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 		toolExecCount.Add(ctx, 1, metric.WithAttributes(
-			attribute.String("tool.name", call.Name),
+			attribute.String(telemetry.AttrToolName, call.Name),
 			attribute.String("status", "error")))
 		toolErrorCount.Add(ctx, 1, nameAttr)
 		telemetry.Warn(ctx, "tool execution failed",
-			otellog.String("tool.name", call.Name),
+			otellog.String(telemetry.AttrToolName, call.Name),
 			otellog.String("error", err.Error()))
 		return model.ToolResult{
 			ToolCallID: call.ID,
@@ -243,7 +243,7 @@ func (r *Registry) Execute(ctx context.Context, call model.ToolCall) model.ToolR
 
 	span.SetStatus(codes.Ok, "OK")
 	toolExecCount.Add(ctx, 1, metric.WithAttributes(
-		attribute.String("tool.name", call.Name),
+		attribute.String(telemetry.AttrToolName, call.Name),
 		attribute.String("status", "success")))
 	return model.ToolResult{
 		ToolCallID: call.ID,
@@ -264,7 +264,7 @@ func (r *Registry) ExecuteAll(ctx context.Context, calls []model.ToolCall) []mod
 			defer func() {
 				if rv := recover(); rv != nil {
 					telemetry.Error(ctx, "tool panic recovered",
-						otellog.String("tool", c.Name),
+						otellog.String(telemetry.AttrToolName, c.Name),
 						otellog.String("panic", fmt.Sprint(rv)))
 					results[idx] = model.ToolResult{
 						ToolCallID: c.ID,

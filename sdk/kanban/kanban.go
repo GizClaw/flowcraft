@@ -250,7 +250,7 @@ func (k *Kanban) Bus() event.Bus { return k.board.Bus() }
 func (k *Kanban) Submit(ctx context.Context, opts TaskOptions) (string, error) {
 	ctx, span := telemetry.Tracer().Start(ctx, "kanban.submit",
 		trace.WithAttributes(
-			attribute.String("kanban.target_agent_id", opts.TargetAgentID),
+			attribute.String(telemetry.AttrKanbanTargetAgentID, opts.TargetAgentID),
 		),
 	)
 	defer span.End()
@@ -305,7 +305,7 @@ func (k *Kanban) Submit(ctx context.Context, opts TaskOptions) (string, error) {
 	}
 	k.mu.Unlock()
 
-	k.metrics.incTasksSubmitted(ctx, attribute.String("target_agent_id", opts.TargetAgentID))
+	k.metrics.incTasksSubmitted(ctx, attribute.String(telemetry.AttrKanbanTargetAgentID, opts.TargetAgentID))
 	// EventTaskSubmitted is published by Board.Produce → publishProduceEvent.
 	// Do not re-publish here; Board.Bus() is the single source of truth.
 
@@ -321,19 +321,19 @@ func (k *Kanban) Submit(ctx context.Context, opts TaskOptions) (string, error) {
 			if err := k.executor.ExecuteTask(execCtx, k.board.ScopeID(), opts.TargetAgentID, card, opts.Query, opts.Inputs); err != nil {
 				elapsed := time.Since(startedAt)
 				k.metrics.recordTaskDuration(execCtx, elapsed.Seconds(),
-					attribute.String("target_agent_id", opts.TargetAgentID),
+					attribute.String(telemetry.AttrKanbanTargetAgentID, opts.TargetAgentID),
 					attribute.String("status", "error"),
 				)
 				// Board.Fail publishes EventTaskFailed via publishCardEvent;
 				// no need to emit a second copy from here.
 				k.board.Fail(card.ID, err.Error())
 				telemetry.Warn(ctx, "kanban executor failed",
-					otellog.String("card", card.ID),
+					otellog.String(telemetry.AttrKanbanCardID, card.ID),
 					otellog.String("error", err.Error()))
 				return
 			}
 			k.metrics.recordTaskDuration(execCtx, time.Since(startedAt).Seconds(),
-				attribute.String("target_agent_id", opts.TargetAgentID),
+				attribute.String(telemetry.AttrKanbanTargetAgentID, opts.TargetAgentID),
 				attribute.String("status", "success"),
 			)
 		}()

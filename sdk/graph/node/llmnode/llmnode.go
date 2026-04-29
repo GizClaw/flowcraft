@@ -96,7 +96,7 @@ func (n *Node) OutputPorts() []graph.Port {
 
 func (n *Node) ExecuteBoard(ctx graph.ExecutionContext, board *graph.Board) error {
 	_, span := telemetry.Tracer().Start(ctx.Context, "node.llm.execute",
-		trace.WithAttributes(attribute.String("node.id", n.id)))
+		trace.WithAttributes(attribute.String(telemetry.AttrNodeID, n.id)))
 	defer span.End()
 
 	cfg := n.config
