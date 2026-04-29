@@ -16,7 +16,12 @@ MODULES_WORK := sdk sdkx voice
 #  - bench: heavy eval datasets/CLIs we don't want polluting the workspace
 #  - examples/voice-pipeline: pinned to sdk v0.1.12 + sdkx v0.1.14 so
 #    external consumers see a real reproducible example
-MODULES_OFFWORK := bench examples/voice-pipeline
+#  - tools/conformance: manual provider conformance suites; pinned to
+#    released sdk/sdkx so we test the exact bytes consumers can pull.
+#    Tests self-skip without credentials so `make test` runs them as a
+#    compile check; `make conformance` is the documented entry point
+#    when a .env is in place.
+MODULES_OFFWORK := bench examples/voice-pipeline tools/conformance
 
 ALL_MODULES := $(MODULES_WORK) $(MODULES_OFFWORK)
 
@@ -31,11 +36,14 @@ GO_FOREACH = set -e; for m in $(1); do echo "==> $(2) $$m"; ( cd $$m && $(3) ); 
 help:
 	@echo "FlowCraft"
 	@echo ""
-	@echo "  make vet       Run go vet on all modules (incl. bench via GOWORK=off)"
-	@echo "  make test      Run tests on all modules (excl. Go benchmarks)"
-	@echo "  make fmt       Run gofmt on all modules"
-	@echo "  make tidy      Run go mod tidy on all modules"
-	@echo "  make ci        vet + test"
+	@echo "  make vet         Run go vet on all modules (incl. bench via GOWORK=off)"
+	@echo "  make test        Run tests on all modules (excl. Go benchmarks)"
+	@echo "  make fmt         Run gofmt on all modules"
+	@echo "  make tidy        Run go mod tidy on all modules"
+	@echo "  make ci          vet + test"
+	@echo "  make conformance Run provider conformance suites in tools/conformance"
+	@echo "                   (needs a repo-root .env with provider credentials;"
+	@echo "                    no env => suites self-skip and pass)"
 	@echo ""
 	@echo "Bench is in CI for vet+test only. Long-running eval CLIs"
 	@echo "(bench/locomo/cmd/eval, history-compression/cmd/eval) are main"
@@ -62,3 +70,11 @@ tidy:
 
 .PHONY: ci
 ci: vet test
+
+# Provider conformance: runs every suite under tools/conformance against
+# the pinned sdk/sdkx release. Without credentials the individual tests
+# Skip cleanly, so this also doubles as a "do the suites still compile
+# against the released API?" check.
+.PHONY: conformance
+conformance:
+	@cd tools/conformance && GOWORK=off go test -count=1 ./...

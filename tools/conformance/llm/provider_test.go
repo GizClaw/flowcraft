@@ -1,5 +1,3 @@
-//go:build integration
-
 package llm_test
 
 import (
@@ -12,7 +10,7 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/sdk/llm"
-	"github.com/GizClaw/flowcraft/sdkx/internal/testenv"
+	"github.com/GizClaw/flowcraft/tools/conformance/internal/testenv"
 
 	// trigger init() self-registration for all providers
 	_ "github.com/GizClaw/flowcraft/sdkx/llm/anthropic"
