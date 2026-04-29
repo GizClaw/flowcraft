@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/GizClaw/flowcraft/sdk/embedding"
+	"github.com/GizClaw/flowcraft/sdk/errdefs"
 
 	"github.com/volcengine/volcengine-go-sdk/service/arkruntime"
 	"github.com/volcengine/volcengine-go-sdk/service/arkruntime/model"
@@ -86,10 +87,10 @@ func (e *Embedder) embedStandard(ctx context.Context, text string) ([]float32, e
 		Model: e.model,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("bytedance embedding: %w", err)
+		return nil, errdefs.ClassifyProviderError("bytedance", err)
 	}
 	if len(resp.Data) == 0 {
-		return nil, fmt.Errorf("bytedance embedding: empty response for model %s", e.model)
+		return nil, errdefs.NotAvailablef("bytedance embedding: empty response for model %s", e.model)
 	}
 	return resp.Data[0].Embedding, nil
 }
@@ -103,10 +104,10 @@ func (e *Embedder) embedBatchStandard(ctx context.Context, texts []string) ([][]
 		Model: e.model,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("bytedance embedding: %w", err)
+		return nil, errdefs.ClassifyProviderError("bytedance", err)
 	}
 	if len(resp.Data) != len(texts) {
-		return nil, fmt.Errorf("bytedance embedding: expected %d results, got %d", len(texts), len(resp.Data))
+		return nil, errdefs.NotAvailablef("bytedance embedding: expected %d results, got %d", len(texts), len(resp.Data))
 	}
 	result := make([][]float32, len(resp.Data))
 	for i, d := range resp.Data {
@@ -125,10 +126,10 @@ func (e *Embedder) embedMultimodal(ctx context.Context, text string) ([]float32,
 		},
 	})
 	if err != nil {
-		return nil, fmt.Errorf("bytedance embedding: %w", err)
+		return nil, errdefs.ClassifyProviderError("bytedance", err)
 	}
 	if len(resp.Data.Embedding) == 0 {
-		return nil, fmt.Errorf("bytedance embedding: empty response for model %s", e.model)
+		return nil, errdefs.NotAvailablef("bytedance embedding: empty response for model %s", e.model)
 	}
 	return resp.Data.Embedding, nil
 }

@@ -2,9 +2,9 @@ package openai
 
 import (
 	"context"
-	"fmt"
 
 	"github.com/GizClaw/flowcraft/sdk/embedding"
+	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	oai "github.com/openai/openai-go"
 	"github.com/openai/openai-go/option"
 )
@@ -55,10 +55,10 @@ func (e *Embedder) Embed(ctx context.Context, text string) ([]float32, error) {
 		Model: oai.EmbeddingModel(e.model),
 	})
 	if err != nil {
-		return nil, err
+		return nil, errdefs.ClassifyProviderError("openai", err)
 	}
 	if len(resp.Data) == 0 {
-		return nil, fmt.Errorf("openai embedding: empty response for model %s", e.model)
+		return nil, errdefs.NotAvailablef("openai embedding: empty response for model %s", e.model)
 	}
 	return toFloat32(resp.Data[0].Embedding), nil
 }
@@ -76,10 +76,10 @@ func (e *Embedder) EmbedBatch(ctx context.Context, texts []string) ([][]float32,
 		Model: oai.EmbeddingModel(e.model),
 	})
 	if err != nil {
-		return nil, err
+		return nil, errdefs.ClassifyProviderError("openai", err)
 	}
 	if len(resp.Data) != len(texts) {
-		return nil, fmt.Errorf("openai embeddings: expected %d results, got %d", len(texts), len(resp.Data))
+		return nil, errdefs.NotAvailablef("openai embeddings: expected %d results, got %d", len(texts), len(resp.Data))
 	}
 	result := make([][]float32, len(resp.Data))
 	for i, d := range resp.Data {
