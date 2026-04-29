@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/event"
 )
 
@@ -267,10 +268,10 @@ type StreamDeltaPayload struct {
 func DecodeStreamDelta(env event.Envelope) (StreamDeltaPayload, error) {
 	var p StreamDeltaPayload
 	if len(env.Payload) == 0 {
-		return p, fmt.Errorf("engine: stream delta envelope %q has empty payload", env.Subject)
+		return p, errdefs.Validationf("engine: stream delta envelope %q has empty payload", env.Subject)
 	}
 	if err := json.Unmarshal(env.Payload, &p); err != nil {
-		return p, fmt.Errorf("engine: decode stream delta payload for %q: %w", env.Subject, err)
+		return p, errdefs.Validation(fmt.Errorf("engine: decode stream delta payload for %q: %w", env.Subject, err))
 	}
 	return p, nil
 }

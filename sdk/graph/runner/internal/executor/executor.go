@@ -307,7 +307,7 @@ func (e *LocalExecutor) Execute(ctx context.Context, g *graph.Graph, board *grap
 
 			node, ok := g.Node(nodeID)
 			if !ok {
-				return board, fmt.Errorf("node %q not found in graph", nodeID)
+				return board, errdefs.NotFoundf("node %q not found in graph", nodeID)
 			}
 
 			if skip, err := shouldSkip(g, node, board); err != nil {
@@ -491,7 +491,7 @@ func (e *LocalExecutor) Execute(ctx context.Context, g *graph.Graph, board *grap
 	}
 
 	if iteration >= cfg.maxIterations && len(currentNodes) > 0 {
-		return board, fmt.Errorf("graph execution exceeded max iterations (%d)", cfg.maxIterations)
+		return board, errdefs.BudgetExceededf("graph execution exceeded max iterations (%d)", cfg.maxIterations)
 	}
 
 	publishGraphEvent(ctx, cfg.publisher, engine.SubjectRunEnd(cfg.runID),

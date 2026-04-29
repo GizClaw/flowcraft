@@ -3,6 +3,7 @@ package executor
 import (
 	"fmt"
 
+	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/graph"
 	"github.com/GizClaw/flowcraft/sdk/model"
 )
@@ -68,7 +69,7 @@ func mergeErrorOnConflict(board *graph.Board, snapshot *graph.BoardSnapshot, res
 			origVal, exists := origVars[k]
 			if !exists || fmt.Sprintf("%v", origVal) != fmt.Sprintf("%v", v) {
 				if _, seen := modified[k]; seen && modified[k] != i {
-					return fmt.Errorf("parallel merge conflict on variable %q", k)
+					return errdefs.Conflictf("parallel merge conflict on variable %q", k)
 				}
 				modified[k] = i
 			}
@@ -85,7 +86,7 @@ func mergeErrorOnConflict(board *graph.Board, snapshot *graph.BoardSnapshot, res
 			origVal, exists := origCh[k]
 			if !exists || !channelMessagesEqual(origVal, msgs) {
 				if _, seen := modCh[k]; seen && modCh[k] != i {
-					return fmt.Errorf("parallel merge conflict on message channel %q", k)
+					return errdefs.Conflictf("parallel merge conflict on message channel %q", k)
 				}
 				modCh[k] = i
 			}

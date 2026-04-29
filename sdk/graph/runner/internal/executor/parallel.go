@@ -108,7 +108,7 @@ func runBranch(ctx context.Context, g *graph.Graph, board *graph.Board, startID,
 
 		node, ok := g.Node(currentID)
 		if !ok {
-			return fmt.Errorf("branch node %q not found", currentID)
+			return errdefs.NotFoundf("branch node %q not found", currentID)
 		}
 
 		if skip, err := shouldSkip(g, node, board); err != nil {
