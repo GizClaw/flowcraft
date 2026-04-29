@@ -3,6 +3,7 @@ package event
 import (
 	"context"
 	"fmt"
+	"math/rand/v2"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -172,6 +173,7 @@ type memSub struct {
 	patternSegs  []string // pre-split pattern; never mutated after Subscribe.
 	predicate    func(Envelope) bool
 	backpressure BackpressurePolicy
+	sampleRate   float64
 	ch           chan Envelope
 	done         chan struct{}
 	bus          *MemoryBus
@@ -398,6 +400,27 @@ func (b *MemoryBus) Publish(ctx context.Context, env Envelope) error {
 				}
 			}
 
+		case Sample:
+			// Sampling decision happens BEFORE the buffer-full check so
+			// the keep ratio is independent of subscriber speed: a fast
+			// consumer and a slow one both see ~rate fraction of events.
+			// Rate is clamped at construction time (WithSampleRate), so
+			// rate==1 short-circuits to a plain non-blocking send and
+			// rate==0 drops every envelope.
+			keep := sub.sampleRate >= 1 || (sub.sampleRate > 0 && rand.Float64() < sub.sampleRate)
+			if !keep {
+				b.dropped.Add(1)
+				drops = append(drops, dropCb{sub.id, DropReasonSampled})
+				continue
+			}
+			select {
+			case sub.ch <- env:
+				delivers = append(delivers, deliverCb{sub.id})
+			default:
+				b.dropped.Add(1)
+				drops = append(drops, dropCb{sub.id, DropReasonBufferFull})
+			}
+
 		default: // DropNewest
 			select {
 			case sub.ch <- env:
@@ -438,6 +461,7 @@ func (b *MemoryBus) Subscribe(ctx context.Context, pattern Pattern, opts ...SubO
 	o := subOptions{
 		bufferSize:   defaultMemoryBufferSize,
 		backpressure: DropNewest,
+		sampleRate:   1.0,
 	}
 	for _, fn := range opts {
 		fn(&o)
@@ -461,6 +485,7 @@ func (b *MemoryBus) Subscribe(ctx context.Context, pattern Pattern, opts ...SubO
 		patternSegs:  splitSubject(string(pattern)),
 		predicate:    o.predicate,
 		backpressure: o.backpressure,
+		sampleRate:   o.sampleRate,
 		ch:           make(chan Envelope, o.bufferSize),
 		done:         make(chan struct{}),
 		bus:          b,

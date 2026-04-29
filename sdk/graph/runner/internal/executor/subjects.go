@@ -85,6 +85,10 @@ func publishGraphEvent(ctx context.Context, pub engine.Publisher, subject event.
 	if actorKey != "" {
 		env.SetActorID(actorKey)
 	}
+	// Producer kind ("engine") is encoded in the leading Subject
+	// segment by SubjectPrefix; the run id is also carried via
+	// HeaderRunID. No separate Envelope.Source is needed — see
+	// event.ProducerKind.
 	_ = pub.Publish(ctx, env)
 }
 

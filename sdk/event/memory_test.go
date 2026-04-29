@@ -484,3 +484,197 @@ func drain(t *testing.T, ch <-chan Envelope, n int, timeout time.Duration) []Env
 	}
 	return out
 }
+
+// countingObserver counts OnDeliver / OnDrop per reason. Safe for
+// concurrent use because every counter is an atomic.
+type countingObserver struct {
+	delivered atomic.Int64
+	dropFull  atomic.Int64
+	dropClose atomic.Int64
+	dropSampl atomic.Int64
+}
+
+func (o *countingObserver) OnPublish(Envelope) {}
+func (o *countingObserver) OnDeliver(SubscriptionID, Envelope) {
+	o.delivered.Add(1)
+}
+func (o *countingObserver) OnDrop(_ SubscriptionID, _ Envelope, r DropReason) {
+	switch r {
+	case DropReasonBufferFull:
+		o.dropFull.Add(1)
+	case DropReasonClosed:
+		o.dropClose.Add(1)
+	case DropReasonSampled:
+		o.dropSampl.Add(1)
+	}
+}
+
+func TestWithSampleRate_ClampsToValidRange(t *testing.T) {
+	cases := []struct {
+		name string
+		in   float64
+		want float64
+	}{
+		{"negative clamps to zero", -0.5, 0},
+		{"zero stays zero", 0, 0},
+		{"mid passes through", 0.3, 0.3},
+		{"one stays one", 1, 1},
+		{"above one clamps to one", 2.5, 1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var o subOptions
+			WithSampleRate(tc.in)(&o)
+			if o.sampleRate != tc.want {
+				t.Fatalf("sampleRate = %v, want %v", o.sampleRate, tc.want)
+			}
+		})
+	}
+}
+
+func TestMemoryBus_BackpressureSample_RateZeroDropsEverything(t *testing.T) {
+	obs := &countingObserver{}
+	bus := NewMemoryBus(WithObserver(obs))
+	t.Cleanup(func() { _ = bus.Close() })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	if _, err := bus.Subscribe(ctx, "drop.>",
+		WithBackpressure(Sample),
+		WithSampleRate(0),
+	); err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+
+	for i := 0; i < 50; i++ {
+		if err := bus.Publish(ctx, mustEnv(t, "drop.zero", nil)); err != nil {
+			t.Fatalf("Publish: %v", err)
+		}
+	}
+
+	if obs.delivered.Load() != 0 {
+		t.Errorf("delivered = %d, want 0", obs.delivered.Load())
+	}
+	if obs.dropSampl.Load() != 50 {
+		t.Errorf("dropped(sampled) = %d, want 50", obs.dropSampl.Load())
+	}
+	if obs.dropFull.Load() != 0 {
+		t.Errorf("dropped(buffer_full) = %d, want 0 (sampling decision must precede buffer check)", obs.dropFull.Load())
+	}
+}
+
+func TestMemoryBus_BackpressureSample_RateOneDeliversEverything(t *testing.T) {
+	obs := &countingObserver{}
+	bus := NewMemoryBus(WithObserver(obs))
+	t.Cleanup(func() { _ = bus.Close() })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	sub, err := bus.Subscribe(ctx, "pass.>",
+		WithBackpressure(Sample),
+		WithSampleRate(1.0),
+		WithBufferSize(128),
+	)
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+
+	const n = 50
+	for i := 0; i < n; i++ {
+		if err := bus.Publish(ctx, mustEnv(t, "pass.evt", nil)); err != nil {
+			t.Fatalf("Publish: %v", err)
+		}
+	}
+
+	deadline := time.After(time.Second)
+	got := 0
+	for got < n {
+		select {
+		case _, ok := <-sub.C():
+			if !ok {
+				t.Fatalf("subscription channel closed early at %d/%d", got, n)
+			}
+			got++
+		case <-deadline:
+			t.Fatalf("only received %d/%d before deadline", got, n)
+		}
+	}
+	if obs.dropSampl.Load() != 0 {
+		t.Errorf("dropped(sampled) = %d, want 0 with rate=1.0", obs.dropSampl.Load())
+	}
+}
+
+func TestMemoryBus_BackpressureSample_PartialRateDeliversWithinBand(t *testing.T) {
+	// Keep the test deterministic by checking only a wide statistical
+	// band (rate 0.5 over 2000 publishes ⇒ expect 1000 ± 200 with very
+	// high confidence). A tighter band would be flaky on slow CI.
+	obs := &countingObserver{}
+	bus := NewMemoryBus(WithObserver(obs))
+	t.Cleanup(func() { _ = bus.Close() })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	sub, err := bus.Subscribe(ctx, "half.>",
+		WithBackpressure(Sample),
+		WithSampleRate(0.5),
+		WithBufferSize(4096),
+	)
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+
+	const n = 2000
+	for i := 0; i < n; i++ {
+		if err := bus.Publish(ctx, mustEnv(t, "half.evt", nil)); err != nil {
+			t.Fatalf("Publish: %v", err)
+		}
+	}
+
+	// Drain whatever is buffered without blocking forever.
+	delivered := 0
+drain:
+	for {
+		select {
+		case _, ok := <-sub.C():
+			if !ok {
+				break drain
+			}
+			delivered++
+		case <-time.After(50 * time.Millisecond):
+			break drain
+		}
+	}
+
+	dropped := int(obs.dropSampl.Load())
+	if delivered+dropped != n {
+		t.Fatalf("delivered+sampled-dropped = %d+%d = %d, want %d",
+			delivered, dropped, delivered+dropped, n)
+	}
+	if delivered < 800 || delivered > 1200 {
+		t.Errorf("delivered = %d, expected ~1000 (band 800..1200) with rate=0.5", delivered)
+	}
+}
+
+func TestMemoryBus_AckSubscription_NotImplemented(t *testing.T) {
+	// MemoryBus subscriptions intentionally do not implement
+	// AckSubscription — auto-ack is the documented in-process behaviour.
+	// This test pins that contract so a future change cannot silently
+	// promote the subscription type and surprise consumers that branch
+	// on the type assertion.
+	bus := NewMemoryBus()
+	t.Cleanup(func() { _ = bus.Close() })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	sub, err := bus.Subscribe(ctx, "noack.>")
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	if _, ok := sub.(AckSubscription); ok {
+		t.Fatal("MemoryBus subscription unexpectedly implements AckSubscription")
+	}
+}

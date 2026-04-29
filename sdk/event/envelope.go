@@ -42,6 +42,15 @@ const (
 	HeaderActorID = "actor_id"
 	HeaderGraphID = "graph_id"
 	HeaderTenant  = "tenant"
+
+	// HeaderKanbanScopeID identifies the sdk/kanban Board scope
+	// (Board.ScopeID) that produced an envelope. Distinct from
+	// HeaderRunID — kanban events do not happen inside an engine run
+	// — so consumers that want to fan-in by board need a dedicated
+	// dimension. Stored as a typed header (mirroring HeaderRunID /
+	// HeaderGraphID) rather than crammed into Envelope.Source so it
+	// composes with the existing well-known-header convention.
+	HeaderKanbanScopeID = "kanban_scope_id"
 )
 
 // NewEnvelope constructs an Envelope with ID and Time populated.
@@ -164,3 +173,10 @@ func (e *Envelope) SetTenant(id string) { e.SetHeader(HeaderTenant, id) }
 
 // Tenant returns the value of the well-known tenant header.
 func (e Envelope) Tenant() string { return e.Header(HeaderTenant) }
+
+// SetKanbanScopeID is a typed shorthand for
+// SetHeader(HeaderKanbanScopeID, id).
+func (e *Envelope) SetKanbanScopeID(id string) { e.SetHeader(HeaderKanbanScopeID, id) }
+
+// KanbanScopeID returns the value of the well-known kanban_scope_id header.
+func (e Envelope) KanbanScopeID() string { return e.Header(HeaderKanbanScopeID) }

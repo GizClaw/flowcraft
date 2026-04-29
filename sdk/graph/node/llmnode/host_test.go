@@ -20,10 +20,11 @@ type usageRecorderHost struct {
 	deltas []model.TokenUsage
 }
 
-func (h *usageRecorderHost) ReportUsage(_ context.Context, u model.TokenUsage) {
+func (h *usageRecorderHost) ReportUsage(_ context.Context, u model.TokenUsage) error {
 	h.mu.Lock()
 	h.deltas = append(h.deltas, u)
 	h.mu.Unlock()
+	return nil
 }
 
 // TestNode_ReportsDeltaUsageToHost guarantees the contract documented

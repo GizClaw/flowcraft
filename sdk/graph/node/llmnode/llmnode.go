@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 
 	"github.com/GizClaw/flowcraft/sdk/engine"
+	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/graph"
 	"github.com/GizClaw/flowcraft/sdk/llm"
 	"github.com/GizClaw/flowcraft/sdk/model"
@@ -128,7 +129,14 @@ func (n *Node) ExecuteBoard(ctx graph.ExecutionContext, board *graph.Board) erro
 	// what materialises the partial assistant message + cancelled
 	// tool_results onto the board so the agent layer / memory writer
 	// can read them after the resume / discard decision.
-	n.writeResults(ctx, board, cfg, result, messagesKey, chName)
+	if werr := n.writeResults(ctx, board, cfg, result, messagesKey, chName); werr != nil {
+		// writeResults only ever surfaces errors from the host's
+		// budget / quota gate (UsageReporter). Propagate so the
+		// run terminates rather than silently exceeding the budget,
+		// but only after the partial state has been written above.
+		span.RecordError(werr)
+		return werr
+	}
 
 	span.SetAttributes(
 		attribute.Int64("llm.input_tokens", result.Usage.InputTokens),
@@ -209,7 +217,7 @@ func (n *Node) buildMessages(cfg Config, board *graph.Board, chName, messagesKey
 func (n *Node) writeResults(
 	ctx graph.ExecutionContext, board *graph.Board, cfg Config,
 	result *roundResult, messagesKey, chName string,
-) {
+) error {
 	if cfg.TrackSteps {
 		steps, _ := board.GetVar("agent_steps")
 		stepList, _ := steps.([]map[string]any)
@@ -273,11 +281,25 @@ func (n *Node) writeResults(
 	// call adds delta usage" so we hand off result.Usage, NOT the
 	// accumulated total. Interrupt path also flows through here so
 	// partial usage is still attributed.
+	//
+	// An error from ReportUsage is only meaningful when it carries
+	// the BudgetExceeded classification (sandbox / pod budget); per
+	// the engine.UsageReporter contract any other error is
+	// observability-only and SHOULD be swallowed so a flaky exporter
+	// cannot kill the run.
 	if ctx.Host != nil && (result.Usage.InputTokens > 0 ||
 		result.Usage.OutputTokens > 0 ||
 		result.Usage.TotalTokens > 0) {
-		ctx.Host.ReportUsage(ctx.Context, result.Usage)
+		if err := ctx.Host.ReportUsage(ctx.Context, result.Usage); err != nil {
+			if errdefs.IsBudgetExceeded(err) {
+				return err
+			}
+			telemetry.Warn(ctx.Context, "llm: ReportUsage returned a non-budget error; ignoring",
+				otellog.String(telemetry.AttrNodeID, n.id),
+				otellog.String(telemetry.AttrErrorMessage, err.Error()))
+		}
 	}
+	return nil
 }
 
 func truncate(s string, n int) string {

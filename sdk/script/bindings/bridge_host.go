@@ -86,7 +86,12 @@ func NewHostBridge(host engine.Host, source string) BindingFunc {
 			"publish": func(subject string, payload any) error {
 				env, err := event.NewEnvelope(callCtx, event.Subject(subject), payload)
 				if err != nil {
-					return fmt.Errorf("host.publish: %w", err)
+					// Bad subject / unmarshallable payload — this is
+					// invalid input from the script side. Classify
+					// so consumers (script runtime / pod audit log)
+					// can react with the same Validation handling
+					// they use for other malformed bridge calls.
+					return errdefs.Validationf("host.publish: %s", err.Error())
 				}
 				return host.Publish(callCtx, env)
 			},
@@ -117,9 +122,22 @@ func NewHostBridge(host engine.Host, source string) BindingFunc {
 			"reportUsage": func(raw any) error {
 				usage, err := parseUsage(raw)
 				if err != nil {
+					// parseUsage rejects malformed scripts inputs; a
+					// Validation classification lets the runtime
+					// surface a typed error rather than a generic
+					// "host.reportUsage: ..." string.
+					return errdefs.Validationf("host.reportUsage: %s", err.Error())
+				}
+				// Surface budget errors back to the script runtime
+				// so a sandboxed script aborts instead of running on
+				// past its quota; other errors are observability-only
+				// per the engine.UsageReporter contract. The %w wrap
+				// preserves any classification (e.g. BudgetExceeded)
+				// the host attached, so errdefs.IsBudgetExceeded
+				// still reports true on the returned error.
+				if err := host.ReportUsage(callCtx, usage); err != nil {
 					return fmt.Errorf("host.reportUsage: %w", err)
 				}
-				host.ReportUsage(callCtx, usage)
 				return nil
 			},
 		}

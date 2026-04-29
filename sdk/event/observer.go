@@ -22,6 +22,24 @@ const (
 	// publishing context is cancelled. Use sparingly: a slow subscriber
 	// will back-pressure every publisher.
 	Block
+
+	// Sample probabilistically forwards each envelope according to the
+	// per-subscription rate set with WithSampleRate (default 1.0 =
+	// pass-through). Envelopes that pass the sampling gate are then
+	// enqueued non-blockingly; if the buffer is full at that point the
+	// envelope is dropped with reason DropReasonBufferFull. Envelopes
+	// rejected by the sampling gate itself are dropped with reason
+	// DropReasonSampled.
+	//
+	// Use this for high-volume streams (token deltas, voice frames,
+	// progress beacons) where exact delivery is unnecessary and the
+	// alternatives have undesirable side effects: DropNewest /
+	// DropOldest only kick in once the buffer fills (so a fast
+	// subscriber sees every event and a slow one loses bursts at
+	// random), while Block back-pressures the producer. Sample yields
+	// a bounded, predictable delivery ratio independent of subscriber
+	// speed.
+	Sample
 )
 
 // String returns a stable label for diagnostics.
@@ -33,6 +51,8 @@ func (p BackpressurePolicy) String() string {
 		return "drop_oldest"
 	case Block:
 		return "block"
+	case Sample:
+		return "sample"
 	default:
 		return "unknown"
 	}
@@ -50,6 +70,13 @@ const (
 	// DropReasonClosed indicates Publish raced with subscription close;
 	// the envelope was not delivered.
 	DropReasonClosed
+
+	// DropReasonSampled indicates the subscription's Sample
+	// backpressure policy probabilistically rejected this envelope.
+	// Distinct from DropReasonBufferFull so dashboards can
+	// differentiate "we voluntarily threw it away" from "the consumer
+	// could not keep up".
+	DropReasonSampled
 )
 
 // String returns a stable label for diagnostics.
@@ -59,6 +86,8 @@ func (r DropReason) String() string {
 		return "buffer_full"
 	case DropReasonClosed:
 		return "closed"
+	case DropReasonSampled:
+		return "sampled"
 	default:
 		return "unknown"
 	}
