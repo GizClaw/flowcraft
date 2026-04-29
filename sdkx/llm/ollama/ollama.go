@@ -53,8 +53,8 @@ func New(model, baseURL string) (*LLM, error) {
 
 func (c *LLM) Generate(ctx context.Context, messages []llm.Message, opts ...llm.GenerateOption) (llm.Message, llm.TokenUsage, error) {
 	ctx, span := telemetry.Tracer().Start(ctx, fmt.Sprintf("llm.ollama.generate.%s", c.model), trace.WithAttributes(
-		attribute.String("llm.provider", "ollama"),
-		attribute.String("llm.model", c.model),
+		attribute.String(telemetry.AttrLLMProvider, "ollama"),
+		attribute.String(telemetry.AttrLLMModel, c.model),
 	))
 	defer span.End()
 
@@ -119,8 +119,8 @@ func (c *LLM) Generate(ctx context.Context, messages []llm.Message, opts ...llm.
 	}
 
 	span.SetAttributes(
-		attribute.Int64("llm.input_tokens", usage.InputTokens),
-		attribute.Int64("llm.output_tokens", usage.OutputTokens),
+		attribute.Int64(telemetry.AttrLLMInputTokens, usage.InputTokens),
+		attribute.Int64(telemetry.AttrLLMOutputTokens, usage.OutputTokens),
 	)
 	span.SetStatus(codes.Ok, "OK")
 	llm.RecordLLMMetrics(ctx, "ollama", c.model, "success", dur, usage)
@@ -129,8 +129,8 @@ func (c *LLM) Generate(ctx context.Context, messages []llm.Message, opts ...llm.
 
 func (c *LLM) GenerateStream(ctx context.Context, messages []llm.Message, opts ...llm.GenerateOption) (llm.StreamMessage, error) {
 	ctx, span := telemetry.Tracer().Start(ctx, fmt.Sprintf("llm.ollama.stream.%s", c.model), trace.WithAttributes(
-		attribute.String("llm.provider", "ollama"),
-		attribute.String("llm.model", c.model),
+		attribute.String(telemetry.AttrLLMProvider, "ollama"),
+		attribute.String(telemetry.AttrLLMModel, c.model),
 	))
 
 	options := llm.ApplyOptions(opts...)

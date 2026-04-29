@@ -9,6 +9,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/llm"
+	"github.com/GizClaw/flowcraft/sdk/telemetry"
 
 	asdk "github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/packages/ssestream"
@@ -199,8 +200,8 @@ func (s *anthropicBetaStreamMessage) betaFinish(err error) {
 			})
 		} else {
 			s.span.SetAttributes(
-				attribute.Int64("llm.input_tokens", usage.InputTokens),
-				attribute.Int64("llm.output_tokens", usage.OutputTokens),
+				attribute.Int64(telemetry.AttrLLMInputTokens, usage.InputTokens),
+				attribute.Int64(telemetry.AttrLLMOutputTokens, usage.OutputTokens),
 			)
 			s.span.SetStatus(codes.Ok, "OK")
 			llm.RecordLLMMetrics(s.baseCtx, "anthropic", s.model, "success", dur, llm.TokenUsage{
@@ -436,8 +437,8 @@ func (s *anthropicStreamMessage) finish(err error) {
 			})
 		} else {
 			s.span.SetAttributes(
-				attribute.Int64("llm.input_tokens", usage.InputTokens),
-				attribute.Int64("llm.output_tokens", usage.OutputTokens),
+				attribute.Int64(telemetry.AttrLLMInputTokens, usage.InputTokens),
+				attribute.Int64(telemetry.AttrLLMOutputTokens, usage.OutputTokens),
 			)
 			s.span.SetStatus(codes.Ok, "OK")
 			llm.RecordLLMMetrics(s.baseCtx, "anthropic", s.model, "success", dur, llm.TokenUsage{

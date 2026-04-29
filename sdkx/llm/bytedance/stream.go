@@ -9,6 +9,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/llm"
+	"github.com/GizClaw/flowcraft/sdk/telemetry"
 
 	"github.com/volcengine/volcengine-go-sdk/service/arkruntime/model"
 	"go.opentelemetry.io/otel/attribute"
@@ -217,8 +218,8 @@ func (s *streamMessage) finish(err error) {
 		s.span.SetStatus(codes.Error, err.Error())
 	} else {
 		s.span.SetAttributes(
-			attribute.Int64("llm.input_tokens", usage.InputTokens),
-			attribute.Int64("llm.output_tokens", usage.OutputTokens),
+			attribute.Int64(telemetry.AttrLLMInputTokens, usage.InputTokens),
+			attribute.Int64(telemetry.AttrLLMOutputTokens, usage.OutputTokens),
 		)
 		s.span.SetStatus(codes.Ok, "OK")
 	}

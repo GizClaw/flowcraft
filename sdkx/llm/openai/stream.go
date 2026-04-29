@@ -9,6 +9,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/llm"
+	"github.com/GizClaw/flowcraft/sdk/telemetry"
 
 	oai "github.com/openai/openai-go"
 	"github.com/openai/openai-go/packages/ssestream"
@@ -218,8 +219,8 @@ func (s *openaiStreamMessage) finish(err error) {
 		llm.RecordLLMMetrics(s.baseCtx, "openai", s.model, "error", dur, llm.TokenUsage{})
 	} else {
 		s.span.SetAttributes(
-			attribute.Int64("llm.input_tokens", usage.InputTokens),
-			attribute.Int64("llm.output_tokens", usage.OutputTokens),
+			attribute.Int64(telemetry.AttrLLMInputTokens, usage.InputTokens),
+			attribute.Int64(telemetry.AttrLLMOutputTokens, usage.OutputTokens),
 		)
 		s.span.SetStatus(codes.Ok, "OK")
 		llm.RecordLLMMetrics(s.baseCtx, "openai", s.model, "success", dur, llm.TokenUsage{

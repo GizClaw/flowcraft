@@ -98,6 +98,15 @@ const (
 
 	// ----- LLM -----
 
+	// AttrLLMProvider identifies the LLM vendor / SDK family that
+	// served a call ("openai", "anthropic", "bytedance", "ollama",
+	// "azure", "deepseek", "minimax", "qwen", ...). The pod
+	// controller filters/aggregates on this dimension to apply
+	// per-provider rate limits, circuit breakers, and cost
+	// tracking; producers MUST use the lowercase short token form
+	// for cross-package join-ability.
+	AttrLLMProvider = "llm.provider"
+
 	// AttrLLMModel identifies the resolved LLM model name a call
 	// targets. Emitted by sdk/llm dispatch spans and by the
 	// run-summary span when usage is reported.
