@@ -21,13 +21,47 @@ const (
 	defaultHalfOpenProbeTimeout = 60 * time.Second
 )
 
-// Sentinel errors for FallbackLLM failure modes.
-// Use errors.Is to distinguish between "all breakers open" and
-// "all providers tried and failed".
+// Sentinel errors for FallbackLLM failure modes. Both are *plain*
+// stdlib errors so callers can do identity checks via
+// errors.Is(err, ErrAllProvidersOpen) — per the errdefs convention,
+// sentinels and behavioural classification are orthogonal and both
+// must be preserved.
+//
+// At the call sites below the sentinels are wrapped with
+// errdefs.NotAvailable so that the same value, once it crosses
+// into pod / api land, also satisfies errdefs.IsNotAvailable and
+// maps to HTTP 503 (a fallback chain that has run out is exactly the
+// "service is temporarily unavailable, retry later" semantics, not a
+// generic 500). The wrapping happens at the return sites — not here
+// in the var block — because pre-wrapping would yield a single shared
+// errNotAvailable value and break errors.Is identity for callers that
+// kept the plain pointer reference. See allOpenError / allFailedError
+// below for the helpers that perform the wrap.
 var (
 	ErrAllProvidersOpen   = errors.New("llm: all providers unavailable (circuit breaker open)")
 	ErrAllProvidersFailed = errors.New("llm: all providers failed")
 )
+
+// allOpenError returns the canonical "every provider's breaker is
+// open" terminal error: identity-equal to ErrAllProvidersOpen via
+// errors.Is, and classified as NotAvailable so HTTPStatus emits 503
+// instead of falling through to the default 500.
+func allOpenError() error {
+	return errdefs.NotAvailable(ErrAllProvidersOpen)
+}
+
+// allFailedError returns the "tried every provider, all failed"
+// terminal error joined with the last underlying provider error.
+// Identity-equal to ErrAllProvidersFailed AND to lastErr via
+// errors.Is (the %w/%w wrapper keeps both unwrap branches), and
+// classified as NotAvailable so the wire status is 503 even when
+// lastErr itself carries a different errdefs class (e.g. a
+// transient network error from one specific provider should not
+// determine the chain-level wire shape — the chain decision is
+// "service unavailable, please retry").
+func allFailedError(lastErr error) error {
+	return errdefs.NotAvailable(fmt.Errorf("%w: %w", ErrAllProvidersFailed, lastErr))
+}
 
 // FallbackLLM decision policy.
 //
@@ -238,9 +272,9 @@ func (f *FallbackLLM) Generate(ctx context.Context, messages []Message, opts ...
 			otellog.String(telemetry.AttrErrorMessage, err.Error()))
 	}
 	if lastErr == nil {
-		return Message{}, TokenUsage{}, ErrAllProvidersOpen
+		return Message{}, TokenUsage{}, allOpenError()
 	}
-	return Message{}, TokenUsage{}, fmt.Errorf("%w: %w", ErrAllProvidersFailed, lastErr)
+	return Message{}, TokenUsage{}, allFailedError(lastErr)
 }
 
 func (f *FallbackLLM) GenerateStream(ctx context.Context, messages []Message, opts ...GenerateOption) (StreamMessage, error) {
@@ -280,9 +314,9 @@ func (f *FallbackLLM) GenerateStream(ctx context.Context, messages []Message, op
 			otellog.String(telemetry.AttrErrorMessage, err.Error()))
 	}
 	if lastErr == nil {
-		return nil, ErrAllProvidersOpen
+		return nil, allOpenError()
 	}
-	return nil, fmt.Errorf("%w: %w", ErrAllProvidersFailed, lastErr)
+	return nil, allFailedError(lastErr)
 }
 
 // trackedStream wraps a StreamMessage to defer circuit breaker recording
