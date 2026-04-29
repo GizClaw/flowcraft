@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/recall"
 
 	_ "modernc.org/sqlite"
@@ -39,7 +40,7 @@ func Open(path string) (*SQLiteJobQueue, error) {
 	for _, p := range pragmas {
 		if _, err := db.Exec(p); err != nil {
 			_ = db.Close()
-			return nil, fmt.Errorf("sqlite jobqueue: pragma %q: %w", p, err)
+			return nil, errdefs.NotAvailable(fmt.Errorf("sqlite jobqueue: pragma %q: %w", p, err))
 		}
 	}
 	q := &SQLiteJobQueue{db: db}
@@ -75,7 +76,7 @@ func (q *SQLiteJobQueue) migrate() error {
 	}
 	for _, s := range stmts {
 		if _, err := q.db.Exec(s); err != nil {
-			return fmt.Errorf("sqlite jobqueue: migrate: %w", err)
+			return errdefs.NotAvailable(fmt.Errorf("sqlite jobqueue: migrate: %w", err))
 		}
 	}
 	return nil

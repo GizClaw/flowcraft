@@ -106,7 +106,7 @@ func (s *Index) ensureNS(ctx context.Context, ns string) error {
 	}
 	for _, q := range stmts {
 		if _, err := s.pool.Exec(ctx, q); err != nil {
-			return fmt.Errorf("postgres: ensureNS %s: %w", ns, err)
+			return errdefs.NotAvailable(fmt.Errorf("postgres: ensureNS %s: %w", ns, err))
 		}
 	}
 	return nil

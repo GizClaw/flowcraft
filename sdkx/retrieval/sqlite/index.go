@@ -48,7 +48,7 @@ func Open(path string) (*Index, error) {
 	for _, p := range pragmas {
 		if _, err := db.Exec(p); err != nil {
 			_ = db.Close()
-			return nil, fmt.Errorf("sqlite: pragma %q: %w", p, err)
+			return nil, errdefs.NotAvailable(fmt.Errorf("sqlite: pragma %q: %w", p, err))
 		}
 	}
 	return &Index{db: db, prepared: map[string]struct{}{}}, nil
@@ -112,7 +112,7 @@ func (s *Index) ensureNS(ctx context.Context, ns string) error {
 	}
 	for _, q := range stmts {
 		if _, err := s.db.ExecContext(ctx, q); err != nil {
-			return fmt.Errorf("sqlite: ensureNS %s: %w", ns, err)
+			return errdefs.NotAvailable(fmt.Errorf("sqlite: ensureNS %s: %w", ns, err))
 		}
 	}
 	s.prepared[ns] = struct{}{}
