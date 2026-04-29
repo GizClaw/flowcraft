@@ -1,8 +1,9 @@
 package engine
 
 import (
-	"fmt"
 	"sync"
+
+	"github.com/GizClaw/flowcraft/sdk/errdefs"
 )
 
 // Dependencies is a typed dependency-injection container that an engine
@@ -75,15 +76,20 @@ func (d *Dependencies) Has(key any) bool {
 func GetDep[T any](d *Dependencies, key any) (T, error) {
 	var zero T
 	if d == nil {
-		return zero, fmt.Errorf("engine.GetDep: nil dependencies (looking up %v)", key)
+		// nil container is a host-side wiring bug — the run was
+		// started without the dependencies it needs. Classify as
+		// Internal so callers / observability can distinguish "you
+		// forgot to wire deps" from "this specific dep is missing"
+		// (NotFound, below).
+		return zero, errdefs.Internalf("engine.GetDep: nil dependencies (looking up %v)", key)
 	}
 	raw, ok := d.Get(key)
 	if !ok {
-		return zero, fmt.Errorf("engine.GetDep: dependency %v not found", key)
+		return zero, errdefs.NotFoundf("engine.GetDep: dependency %v not found", key)
 	}
 	v, ok := raw.(T)
 	if !ok {
-		return zero, fmt.Errorf("engine.GetDep: dependency %v has type %T, want %T", key, raw, zero)
+		return zero, errdefs.Validationf("engine.GetDep: dependency %v has type %T, want %T", key, raw, zero)
 	}
 	return v, nil
 }

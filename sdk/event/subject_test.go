@@ -107,3 +107,25 @@ func TestPattern_Matches(t *testing.T) {
 		})
 	}
 }
+
+func TestProducerKind(t *testing.T) {
+	cases := []struct {
+		name string
+		in   Subject
+		want string
+	}{
+		{"engine run", "engine.run.r1.start", "engine"},
+		{"engine stream", "engine.run.r1.stream.s1.delta", "engine"},
+		{"kanban card", "kanban.card.c1.task.submitted", "kanban"},
+		{"kanban cron", "kanban.cron.s1.fired", "kanban"},
+		{"single segment has no producer", "standalone", ""},
+		{"empty subject", "", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := ProducerKind(tc.in); got != tc.want {
+				t.Fatalf("ProducerKind(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}

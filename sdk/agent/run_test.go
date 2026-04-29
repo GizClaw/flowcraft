@@ -606,11 +606,17 @@ func TestRun_AgentScopedDecidersFireBeforeCallScoped(t *testing.T) {
 	}
 }
 
-// usageReporterEngine reports a fixed delta then completes.
+// usageReporterEngine reports a fixed delta then completes. Any
+// budget error from the host is propagated so the agent layer sees
+// the same termination shape it would observe in a real sandbox host.
 func usageReporterEngine(u model.TokenUsage) engine.Engine {
 	return engine.EngineFunc(func(ctx context.Context, _ engine.Run, h engine.Host, b *engine.Board) (*engine.Board, error) {
-		h.ReportUsage(ctx, u)
-		h.ReportUsage(ctx, u)
+		if err := h.ReportUsage(ctx, u); err != nil {
+			return b, err
+		}
+		if err := h.ReportUsage(ctx, u); err != nil {
+			return b, err
+		}
 		return b, nil
 	})
 }
@@ -625,10 +631,11 @@ type usageHost struct {
 	total model.TokenUsage
 }
 
-func (h *usageHost) ReportUsage(_ context.Context, u model.TokenUsage) {
+func (h *usageHost) ReportUsage(_ context.Context, u model.TokenUsage) error {
 	h.mu.Lock()
 	h.total = h.total.Add(u)
 	h.mu.Unlock()
+	return nil
 }
 
 func (h *usageHost) Total() model.TokenUsage {

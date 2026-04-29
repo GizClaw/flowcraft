@@ -145,8 +145,8 @@ func TestBus_SubjectAndHeadersForTaskSubmitted(t *testing.T) {
 		if got := e.Header(HeaderKanbanKind); got != EventTaskSubmitted {
 			t.Errorf("Header[kanban_kind] = %q, want %q", got, EventTaskSubmitted)
 		}
-		if e.Source != sb.ScopeID() {
-			t.Errorf("Source = %q, want %q", e.Source, sb.ScopeID())
+		if got := e.KanbanScopeID(); got != sb.ScopeID() {
+			t.Errorf("Header[kanban_scope_id] = %q, want %q", got, sb.ScopeID())
 		}
 		return
 	}

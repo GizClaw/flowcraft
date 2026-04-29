@@ -126,6 +126,29 @@ func TestTokenUsage_Add(t *testing.T) {
 	}
 }
 
+func TestTokenUsage_Add_Enriched(t *testing.T) {
+	t.Run("sums latency and cost; preserves model label from accumulator", func(t *testing.T) {
+		acc := TokenUsage{InputTokens: 10, Model: "gpt-4o", LatencyMs: 100, CostMicros: 250}
+		delta := TokenUsage{OutputTokens: 5, Model: "claude", LatencyMs: 30, CostMicros: 80}
+		sum := acc.Add(delta)
+		if sum.Model != "gpt-4o" {
+			t.Errorf("Model = %q, want gpt-4o (accumulator wins on conflict)", sum.Model)
+		}
+		if sum.LatencyMs != 130 || sum.CostMicros != 330 {
+			t.Errorf("Latency=%d Cost=%d, want 130 / 330", sum.LatencyMs, sum.CostMicros)
+		}
+	})
+
+	t.Run("empty accumulator inherits delta's model", func(t *testing.T) {
+		acc := TokenUsage{}
+		delta := TokenUsage{Model: "claude", CostMicros: 80}
+		sum := acc.Add(delta)
+		if sum.Model != "claude" || sum.CostMicros != 80 {
+			t.Errorf("got %+v, want Model=claude Cost=80", sum)
+		}
+	})
+}
+
 func TestMessage_NoToolCalls(t *testing.T) {
 	msg := NewTextMessage(RoleAssistant, "just text")
 	if msg.HasToolCalls() {

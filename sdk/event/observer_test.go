@@ -10,6 +10,7 @@ func TestBackpressurePolicy_String(t *testing.T) {
 		{DropNewest, "drop_newest"},
 		{DropOldest, "drop_oldest"},
 		{Block, "block"},
+		{Sample, "sample"},
 		{BackpressurePolicy(99), "unknown"},
 	}
 	for _, c := range cases {
@@ -26,6 +27,7 @@ func TestDropReason_String(t *testing.T) {
 	}{
 		{DropReasonBufferFull, "buffer_full"},
 		{DropReasonClosed, "closed"},
+		{DropReasonSampled, "sampled"},
 		{DropReason(99), "unknown"},
 	}
 	for _, c := range cases {
@@ -47,4 +49,5 @@ func TestNoopObserver_Methods(t *testing.T) {
 	o.OnDeliver("sub-id", env)
 	o.OnDrop("sub-id", env, DropReasonBufferFull)
 	o.OnDrop("sub-id", env, DropReasonClosed)
+	o.OnDrop("sub-id", env, DropReasonSampled)
 }

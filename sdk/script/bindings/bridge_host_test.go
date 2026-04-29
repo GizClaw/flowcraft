@@ -46,8 +46,9 @@ func (h *recordingHost) Checkpoint(_ context.Context, cp engine.Checkpoint) erro
 	h.checkpts = append(h.checkpts, cp)
 	return h.checkpErr
 }
-func (h *recordingHost) ReportUsage(_ context.Context, u model.TokenUsage) {
+func (h *recordingHost) ReportUsage(_ context.Context, u model.TokenUsage) error {
 	h.usages = append(h.usages, u)
+	return nil
 }
 
 // invoke is a tiny convenience that materialises the bridge's API map

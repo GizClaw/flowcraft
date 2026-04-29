@@ -97,13 +97,25 @@ type Checkpointer interface {
 // Engines should call ReportUsage once per LLM invocation that
 // returns usage metadata (typical: streaming nodes call it on
 // completion with the per-call totals). Reports SHOULD be best-effort
-// — engines must not let a slow or failing reporter block forward
-// progress, and must not return an error to the run because of usage
-// reporting.
+// for *observability* failures — a slow exporter must not block forward
+// progress.
 //
-// Hosts without billing or token tracking should make this a no-op.
+// Budget enforcement contract:
+//
+//   - The host MAY return errdefs.BudgetExceeded (or any error
+//     classified by errdefs.IsBudgetExceeded) to signal that the
+//     accumulated usage has crossed a configured budget and the next
+//     LLM call would not be authorised.
+//   - Engines that observe such an error MUST stop performing further
+//     LLM-cost-incurring work in this run and return the error from
+//     Execute (typically wrapped). Continuing would defeat the budget.
+//   - Any other non-nil error is observability-only — engines SHOULD
+//     log/swallow and continue, matching the pre-budget contract.
+//
+// Hosts without billing or budget enforcement return nil
+// unconditionally (see [NoopHost.ReportUsage]).
 type UsageReporter interface {
-	ReportUsage(ctx context.Context, usage model.TokenUsage)
+	ReportUsage(ctx context.Context, usage model.TokenUsage) error
 }
 
 // NoopHost is a zero-cost Host implementation that discards events,
@@ -128,5 +140,6 @@ func (NoopHost) AskUser(context.Context, UserPrompt) (UserReply, error) {
 // Checkpoint discards the checkpoint.
 func (NoopHost) Checkpoint(context.Context, Checkpoint) error { return nil }
 
-// ReportUsage discards the usage report.
-func (NoopHost) ReportUsage(context.Context, model.TokenUsage) {}
+// ReportUsage discards the usage report. NoopHost has no budget so
+// always returns nil — engines never see BudgetExceeded under it.
+func (NoopHost) ReportUsage(context.Context, model.TokenUsage) error { return nil }

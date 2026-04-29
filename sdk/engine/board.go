@@ -1,11 +1,11 @@
 package engine
 
 import (
-	"fmt"
 	"maps"
 	"reflect"
 	"sync"
 
+	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/model"
 )
 
@@ -124,7 +124,7 @@ func (b *Board) AppendSliceVar(key string, value any) error {
 	}
 	slice, ok := existing.([]any)
 	if !ok {
-		return fmt.Errorf("engine.Board: var %q is %T, not []any", key, existing)
+		return errdefs.Validationf("engine.Board: var %q is %T, not []any", key, existing)
 	}
 	b.vars[key] = append(slice, value)
 	return nil

@@ -44,10 +44,13 @@ func TestNoopHost_CheckpointDrops(t *testing.T) {
 	}
 }
 
-func TestNoopHost_ReportUsageDrops(t *testing.T) {
-	// Just verify it doesn't panic; nothing observable beyond that.
-	(engine.NoopHost{}).ReportUsage(context.Background(),
-		model.TokenUsage{InputTokens: 1, OutputTokens: 1, TotalTokens: 2})
+func TestNoopHost_ReportUsageDropsAndReturnsNil(t *testing.T) {
+	// NoopHost has no budget so it MUST return nil — engines that
+	// branch on errdefs.IsBudgetExceeded never see it under noop.
+	if err := (engine.NoopHost{}).ReportUsage(context.Background(),
+		model.TokenUsage{InputTokens: 1, OutputTokens: 1, TotalTokens: 2}); err != nil {
+		t.Errorf("NoopHost.ReportUsage must return nil; got %v", err)
+	}
 }
 
 func TestEngineFunc_NilSafe(t *testing.T) {

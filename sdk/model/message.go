@@ -237,18 +237,59 @@ type Usage struct {
 }
 
 // TokenUsage tracks cumulative token consumption (includes TotalTokens).
+//
+// The Model / LatencyMs / CostMicros fields enrich the basic token
+// counts so a sandbox host (typically the planned sdk/pod controller)
+// can enforce dollar-denominated budgets and per-model rate limits
+// without a separate sidecar accumulator. All three are optional: a
+// reporter that only knows token counts leaves them zero / empty.
 type TokenUsage struct {
 	InputTokens  int64 `json:"input_tokens"`
 	OutputTokens int64 `json:"output_tokens"`
 	TotalTokens  int64 `json:"total_tokens"`
+
+	// Model is the resolved LLM model name this usage came from
+	// (e.g. "gpt-4o", "claude-3-7-sonnet-20250219"). Empty when the
+	// reporter does not know which model produced the call (test
+	// engines, aggregate reports). Hosts that bucket usage by model
+	// for budgeting / quota enforcement consume this field.
+	Model string `json:"model,omitempty"`
+
+	// LatencyMs is the wall-clock latency of the producing call in
+	// milliseconds. Zero when not measured. Used by sandbox hosts to
+	// surface per-call timing on the same dimension as token counts
+	// (avoids a parallel timing channel).
+	LatencyMs int64 `json:"latency_ms,omitempty"`
+
+	// CostMicros is the cost of the producing call in micro-units of
+	// the host's configured currency (micro-USD = USD * 1_000_000).
+	// Integer math is used so cumulative budgets do not drift.
+	// Zero when no pricing catalog is configured. Hosts enforcing $
+	// budgets accumulate this field.
+	CostMicros int64 `json:"cost_micros,omitempty"`
 }
 
 // Add returns a new TokenUsage that is the sum of u and other.
+//
+// Numeric fields (token counts, latency, cost) are summed. Model is
+// preserved from u when both are non-empty and disagree (the
+// accumulator's identity wins); when one side is empty the other
+// fills it in. Adding a per-call delta into a running total therefore
+// keeps the running total's model label intact even if the delta
+// reports a different model — callers that need per-model breakdowns
+// SHOULD bucket by Model before summing.
 func (u TokenUsage) Add(other TokenUsage) TokenUsage {
+	model := u.Model
+	if model == "" {
+		model = other.Model
+	}
 	return TokenUsage{
 		InputTokens:  u.InputTokens + other.InputTokens,
 		OutputTokens: u.OutputTokens + other.OutputTokens,
 		TotalTokens:  u.TotalTokens + other.TotalTokens,
+		Model:        model,
+		LatencyMs:    u.LatencyMs + other.LatencyMs,
+		CostMicros:   u.CostMicros + other.CostMicros,
 	}
 }
 

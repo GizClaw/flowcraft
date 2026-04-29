@@ -190,8 +190,14 @@ func publishCardEvent(ctx context.Context, bus event.Bus, kind, cardID, scopeID 
 	if cardID != "" {
 		env.SetHeader(HeaderCardID, cardID)
 	}
+	// scopeID identifies the producing Board; carry it on the
+	// well-known event.HeaderKanbanScopeID dimension (consistent with
+	// HeaderRunID / HeaderGraphID) so cross-module consumers can
+	// fan-in by board without inventing a parallel naming scheme on
+	// Envelope.Source. Producer kind ("kanban") is already encoded as
+	// the leading Subject segment — see event.ProducerKind.
 	if scopeID != "" {
-		env.Source = scopeID
+		env.SetKanbanScopeID(scopeID)
 	}
 	_ = bus.Publish(ctx, env)
 }
@@ -211,7 +217,7 @@ func publishCronEvent(ctx context.Context, bus event.Bus, kind, scheduleID, scop
 		env.SetHeader(HeaderScheduleID, scheduleID)
 	}
 	if scopeID != "" {
-		env.Source = scopeID
+		env.SetKanbanScopeID(scopeID)
 	}
 	_ = bus.Publish(ctx, env)
 }

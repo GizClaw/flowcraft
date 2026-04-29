@@ -17,16 +17,26 @@ type Run struct {
 	// across resume / checkpoint cycles.
 	ID string
 
+	// ParentRunID identifies the parent engine.Run when this Run was
+	// dispatched by another agent (multi-agent call chains). Empty
+	// for top-level runs. Promoted to a typed field — separate from
+	// Attributes — so loop / depth detection at the pod layer can
+	// rely on the contract rather than hoping every engine remembers
+	// to populate the same string attribute key.
+	ParentRunID string
+
 	// Attributes carries arbitrary host-supplied metadata that should
-	// flow into telemetry spans and event headers (run id at the
-	// agent layer, tenant id, parent span links, engine kind for
-	// observability, …).
+	// flow into telemetry spans and event headers (tenant id, agent
+	// id, parent span links, engine kind, …).
 	//
-	// There is intentionally no dedicated field for "engine kind",
-	// "run id (agent layer)" or similar: those are observability
-	// concerns whose key conventions the host owns. If the consumer
-	// side wants to filter by engine kind, the host sets
-	// Attributes["engine_kind"] (or whatever key it agreed on).
+	// Convention: keys MUST use the constants in sdk/telemetry
+	// (`telemetry.AttrTenantID`, `telemetry.AttrAgentID`,
+	// `telemetry.AttrEngineKind`, …) so cross-package consumers
+	// (dashboards, log queries) can filter without per-package
+	// translation rules. There is intentionally no dedicated typed
+	// field for those values — the typed slot is reserved for fields
+	// the engine contract itself depends on (currently ParentRunID
+	// for loop detection, ResumeFrom for recovery).
 	Attributes map[string]string
 
 	// Deps is the typed dependency container the host has populated

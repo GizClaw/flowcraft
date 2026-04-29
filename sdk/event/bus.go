@@ -68,6 +68,7 @@ type subOptions struct {
 	bufferSize   int
 	backpressure BackpressurePolicy
 	predicate    func(Envelope) bool
+	sampleRate   float64
 }
 
 // WithBufferSize sets the buffered channel capacity. Values <= 0 fall back
@@ -90,6 +91,56 @@ func WithBackpressure(p BackpressurePolicy) SubOption {
 // (e.g. multi-tenant header checks).
 func WithPredicate(fn func(Envelope) bool) SubOption {
 	return func(o *subOptions) { o.predicate = fn }
+}
+
+// WithSampleRate configures the per-envelope keep probability when the
+// subscription uses BackpressurePolicy Sample. Values are clamped to
+// [0.0, 1.0]; values <= 0 reject every envelope (DropReasonSampled),
+// values >= 1 pass every envelope through to the buffer-full check.
+//
+// Has no effect on subscriptions whose policy is not Sample, so it is
+// safe to set unconditionally on a shared option set.
+func WithSampleRate(rate float64) SubOption {
+	return func(o *subOptions) {
+		switch {
+		case rate <= 0:
+			o.sampleRate = 0
+		case rate >= 1:
+			o.sampleRate = 1
+		default:
+			o.sampleRate = rate
+		}
+	}
+}
+
+// AckSubscription is the optional capability a Subscription may expose
+// when its parent Bus implements at-least-once delivery (typically
+// cross-process buses backed by NATS / Redis Streams / Kafka). In-process
+// implementations such as MemoryBus do not implement this interface;
+// consumers should type-assert and treat the absence as "auto-ack".
+//
+// Semantics (v1, intentionally minimal):
+//
+//   - Ack confirms successful processing of the envelope identified by
+//     envelopeID. Implementations MUST tolerate duplicate Ack calls and
+//     return nil on the second invocation.
+//   - Ack on an unknown envelopeID returns nil (defensive — replays and
+//     restarts can legitimately surface envelopes outside the current
+//     subscription's tracked window).
+//   - Negative-acknowledge / explicit redelivery is intentionally NOT
+//     part of v1. Implementations that need it should expose an
+//     additional, named interface (e.g. NackSubscription) so callers can
+//     opt in without breaking the minimal contract.
+//
+// Bus implementations without persistent delivery (MemoryBus,
+// NoopBus) MUST NOT implement this interface; their consumers therefore
+// take the auto-ack branch automatically.
+type AckSubscription interface {
+	Subscription
+
+	// Ack acknowledges that envelopeID has been successfully processed.
+	// See the AckSubscription doc comment for the per-call contract.
+	Ack(envelopeID string) error
 }
 
 // NoopBus is a Bus that discards every Publish and yields a closed channel

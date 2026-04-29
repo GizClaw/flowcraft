@@ -159,10 +159,11 @@ func (h *MockHost) Checkpoints() []engine.Checkpoint {
 // ReportUsage records the usage delta. Multiple calls are kept in
 // order so tests can assert per-call totals; sum them with
 // [MockHost.TotalUsage] when only the total matters.
-func (h *MockHost) ReportUsage(_ context.Context, usage model.TokenUsage) {
+func (h *MockHost) ReportUsage(_ context.Context, usage model.TokenUsage) error {
 	h.mu.Lock()
 	h.usages = append(h.usages, usage)
 	h.mu.Unlock()
+	return nil
 }
 
 // Usages returns a copy of every usage report.

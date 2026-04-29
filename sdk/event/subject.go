@@ -140,6 +140,28 @@ func splitSubject(s string) []string {
 	return strings.Split(s, subjectSep)
 }
 
+// ProducerKind returns the leading segment of subj — by SDK convention
+// this identifies the producer ("engine", "kanban", and future "pod" /
+// "agent" / "history"). Returns "" when subj is empty or has no
+// separator.
+//
+// This is the canonical way to discriminate producer kind in a
+// fan-out subscription that matches multiple producers (e.g. ">"). It
+// avoids inventing a parallel naming system on Envelope.Source: the
+// Subject already encodes the producer, and pattern matching
+// (`engine.>` / `kanban.>`) already does the corresponding subscribe-
+// time filter without any helper.
+func ProducerKind(subj Subject) string {
+	s := string(subj)
+	if s == "" {
+		return ""
+	}
+	if i := strings.IndexByte(s, '.'); i > 0 {
+		return s[:i]
+	}
+	return ""
+}
+
 // matchSegs is the segment-level matcher shared by Pattern.Matches and the
 // MemoryBus hot path. Both inputs are non-empty.
 //
