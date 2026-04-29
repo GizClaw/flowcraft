@@ -121,6 +121,43 @@ const (
 	// milliseconds.
 	AttrLLMLatencyMs = "llm.latency.ms"
 
+	// ----- Conversation / data scope -----
+
+	// AttrConversationID identifies the conversation an operation
+	// belongs to. Shared by sdk/history (transcript / DAG / archive),
+	// sdk/recall (long-term memory writes keyed by conversation),
+	// sdk/kanban (when the kanban scope mirrors a conversation), and
+	// the future sdk/pod controller (multi-agent pods that share a
+	// conversation context). Producers MUST use this constant
+	// instead of legacy snake_case "conversation_id" string literals
+	// so dashboards can join across the four packages by a single
+	// dimension.
+	AttrConversationID = "conversation.id"
+
+	// AttrDatasetID identifies a knowledge dataset. Emitted by
+	// sdk/knowledge (rebuild / write / delete), the knowledgenode
+	// graph node, and any retrieval span that targets one specific
+	// dataset. Cross-package dimension; needed for "errors per
+	// dataset" / "latency per dataset" splits in the dashboard.
+	AttrDatasetID = "dataset.id"
+
+	// ----- Errors -----
+
+	// AttrErrorMessage carries the human-readable error string on
+	// log records and span events. Aligned with OTel semantic-
+	// conventions `exception.message` semantically, but kept under
+	// the shorter `error.message` key because flowcraft logs do not
+	// otherwise emit the OTel exception-event shape (no
+	// `exception.type` / `exception.stacktrace`); a single canonical
+	// key for the message text is enough.
+	//
+	// Producers MUST use this constant rather than the legacy
+	// "error" key so dashboards can filter by "error.message exists"
+	// uniformly. The "error" key was used inconsistently across the
+	// SDK (sometimes the message, sometimes a code) — switching to
+	// a single canonical name makes the intent unambiguous.
+	AttrErrorMessage = "error.message"
+
 	// ----- Kanban -----
 
 	// AttrKanbanCardID identifies one kanban Card (kanban.Card.ID).

@@ -329,7 +329,7 @@ func (k *Kanban) Submit(ctx context.Context, opts TaskOptions) (string, error) {
 				k.board.Fail(card.ID, err.Error())
 				telemetry.Warn(ctx, "kanban executor failed",
 					otellog.String(telemetry.AttrKanbanCardID, card.ID),
-					otellog.String("error", err.Error()))
+					otellog.String(telemetry.AttrErrorMessage, err.Error()))
 				return
 			}
 			k.metrics.recordTaskDuration(execCtx, time.Since(startedAt).Seconds(),

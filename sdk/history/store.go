@@ -311,7 +311,7 @@ func (s *FileStore) readMessages(ctx context.Context, conversationID string) ([]
 			telemetry.Warn(ctx, "memory: skipping malformed line",
 				otellog.String("path", path),
 				otellog.Int("line", lineNum),
-				otellog.String("error", err.Error()))
+				otellog.String(telemetry.AttrErrorMessage, err.Error()))
 			continue
 		}
 		msgs = append(msgs, msg)

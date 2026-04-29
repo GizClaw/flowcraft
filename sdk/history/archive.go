@@ -150,7 +150,7 @@ func recoverArchiveImpl(ctx context.Context, ws workspace.Workspace, store Store
 	}
 
 	telemetry.Info(ctx, "archive: recovering incomplete operation",
-		otellog.String("conversation_id", convID),
+		otellog.String(telemetry.AttrConversationID, convID),
 		otellog.String("phase", intent.Phase))
 
 	switch intent.Phase {
@@ -206,7 +206,7 @@ func recoverArchiveImpl(ctx context.Context, ws workspace.Workspace, store Store
 	}
 
 	deleteIntent(ctx, ws, prefix, archivePrefix, convID)
-	telemetry.Info(ctx, "archive: recovery completed", otellog.String("conversation_id", convID))
+	telemetry.Info(ctx, "archive: recovery completed", otellog.String(telemetry.AttrConversationID, convID))
 	return nil
 }
 

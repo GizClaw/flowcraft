@@ -233,7 +233,7 @@ func (r *Registry) Execute(ctx context.Context, call model.ToolCall) model.ToolR
 		toolErrorCount.Add(ctx, 1, nameAttr)
 		telemetry.Warn(ctx, "tool execution failed",
 			otellog.String(telemetry.AttrToolName, call.Name),
-			otellog.String("error", err.Error()))
+			otellog.String(telemetry.AttrErrorMessage, err.Error()))
 		return model.ToolResult{
 			ToolCallID: call.ID,
 			Content:    err.Error(),

@@ -28,6 +28,9 @@ func TestAttrConstants_StableNames(t *testing.T) {
 		{AttrLLMTotalTokens, "llm.tokens.total"},
 		{AttrLLMCostMicros, "llm.cost.micros"},
 		{AttrLLMLatencyMs, "llm.latency.ms"},
+		{AttrConversationID, "conversation.id"},
+		{AttrDatasetID, "dataset.id"},
+		{AttrErrorMessage, "error.message"},
 		{AttrKanbanCardID, "kanban.card.id"},
 		{AttrKanbanCardKind, "kanban.card.kind"},
 		{AttrKanbanProducerID, "kanban.producer.id"},
@@ -51,6 +54,7 @@ func TestAttrConstants_Unique(t *testing.T) {
 		AttrToolName, AttrToolCallID,
 		AttrLLMModel, AttrLLMInputTokens, AttrLLMOutputTokens,
 		AttrLLMTotalTokens, AttrLLMCostMicros, AttrLLMLatencyMs,
+		AttrConversationID, AttrDatasetID, AttrErrorMessage,
 		AttrKanbanCardID, AttrKanbanCardKind, AttrKanbanProducerID,
 		AttrKanbanTargetAgentID,
 	}

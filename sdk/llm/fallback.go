@@ -154,14 +154,14 @@ func (f *FallbackLLM) Generate(ctx context.Context, messages []Message, opts ...
 			telemetry.Warn(ctx, "llm permanent error, skipping fallback",
 				otellog.String("provider", p.name),
 				otellog.String("category", cat.String()),
-				otellog.String("error", err.Error()))
+				otellog.String(telemetry.AttrErrorMessage, err.Error()))
 			return Message{}, TokenUsage{}, err
 		}
 		f.recordFailureWithCategory(ctx, p.name, halfOpen, cat)
 		telemetry.Warn(ctx, "llm transient failure, trying fallback",
 			otellog.String("provider", p.name),
 			otellog.String("category", cat.String()),
-			otellog.String("error", err.Error()))
+			otellog.String(telemetry.AttrErrorMessage, err.Error()))
 	}
 	if lastErr == nil {
 		return Message{}, TokenUsage{}, ErrAllProvidersOpen
@@ -196,14 +196,14 @@ func (f *FallbackLLM) GenerateStream(ctx context.Context, messages []Message, op
 			telemetry.Warn(ctx, "llm stream permanent error, skipping fallback",
 				otellog.String("provider", p.name),
 				otellog.String("category", cat.String()),
-				otellog.String("error", err.Error()))
+				otellog.String(telemetry.AttrErrorMessage, err.Error()))
 			return nil, err
 		}
 		f.recordFailureWithCategory(ctx, p.name, halfOpen, cat)
 		telemetry.Warn(ctx, "llm stream transient failure, trying fallback",
 			otellog.String("provider", p.name),
 			otellog.String("category", cat.String()),
-			otellog.String("error", err.Error()))
+			otellog.String(telemetry.AttrErrorMessage, err.Error()))
 	}
 	if lastErr == nil {
 		return nil, ErrAllProvidersOpen

@@ -129,7 +129,7 @@ func (s *Scheduler) SyncAgent(agentID string, jobs []CronJob) {
 			telemetry.Warn(context.Background(), "kanban.scheduler: invalid cron expression",
 				otellog.String(telemetry.AttrAgentID, aid),
 				otellog.String("cron", j.Cron),
-				otellog.String("error", err.Error()))
+				otellog.String(telemetry.AttrErrorMessage, err.Error()))
 			continue
 		}
 		s.entries[agentID] = append(s.entries[agentID], entryRecord{
@@ -216,7 +216,7 @@ func (s *Scheduler) SyncAgentAppend(agentID string, job CronJob) {
 		telemetry.Warn(context.Background(), "kanban.scheduler: invalid cron expression",
 			otellog.String(telemetry.AttrAgentID, aid),
 			otellog.String("cron", j.Cron),
-			otellog.String("error", err.Error()))
+			otellog.String(telemetry.AttrErrorMessage, err.Error()))
 		return
 	}
 
@@ -290,7 +290,7 @@ func (s *Scheduler) fire(agentID, scheduleID, query string) {
 		telemetry.Warn(ctx, "kanban.scheduler: submit failed",
 			otellog.String(telemetry.AttrAgentID, agentID),
 			otellog.String("schedule_id", scheduleID),
-			otellog.String("error", err.Error()))
+			otellog.String(telemetry.AttrErrorMessage, err.Error()))
 		return
 	}
 	span.SetAttributes(attribute.String(telemetry.AttrKanbanCardID, cardID))
@@ -382,7 +382,7 @@ func (s *Scheduler) submitWithDelay(ctx context.Context, opts TaskOptions, delay
 			span.RecordError(err)
 			telemetry.Warn(fireCtx, "kanban.scheduler: delayed submit failed",
 				otellog.String("placeholder_id", placeholderID),
-				otellog.String("error", err.Error()))
+				otellog.String(telemetry.AttrErrorMessage, err.Error()))
 		}
 		span.End()
 	})

@@ -404,7 +404,7 @@ func (e *LocalExecutor) Execute(ctx context.Context, g *graph.Graph, board *grap
 
 				telemetry.Error(ctx, "node execution failed",
 					otellog.String(telemetry.AttrNodeID, nodeID),
-					otellog.String("error", err.Error()))
+					otellog.String(telemetry.AttrErrorMessage, err.Error()))
 
 				publishNodeEvent(ctx, cfg.publisher, engine.SubjectStepError(cfg.runID, nodeID),
 					cfg.runID, g.Name(), actorKey, nodeID,
@@ -448,7 +448,7 @@ func (e *LocalExecutor) Execute(ctx context.Context, g *graph.Graph, board *grap
 			}
 			if err := cfg.host.Checkpoint(ctx, cp.toEngine()); err != nil {
 				graphSpan.AddEvent("checkpoint save failed",
-					trace.WithAttributes(attribute.String("error", err.Error())))
+					trace.WithAttributes(attribute.String(telemetry.AttrErrorMessage, err.Error())))
 			}
 
 			resolved, err := resolveNextNodes(g, node, board)

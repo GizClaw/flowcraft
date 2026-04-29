@@ -556,7 +556,7 @@ func (s *FSStore) BuildIndex(ctx context.Context) error {
 		di, err := s.buildDatasetIndex(ctx, dsID)
 		if err != nil {
 			telemetry.Warn(ctx, "knowledge: failed to index dataset",
-				otellog.String("dataset", dsID), otellog.String("error", err.Error()))
+				otellog.String("dataset", dsID), otellog.String(telemetry.AttrErrorMessage, err.Error()))
 			errs = append(errs, fmt.Errorf("dataset %q: %w", dsID, err))
 			continue
 		}
