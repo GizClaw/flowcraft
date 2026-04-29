@@ -228,10 +228,10 @@ func (n *Node) writeResults(
 	if cfg.JSONMode {
 		extracted, _, extractErr := llm.ExtractJSON(result.Content)
 		if extractErr != nil {
-		telemetry.Warn(ctx.Context, "llm json_mode: extract failed, keeping existing board value",
-			otellog.String(telemetry.AttrNodeID, n.id),
-			otellog.String("raw", truncate(result.Content, 200)),
-			otellog.String(telemetry.AttrErrorMessage, extractErr.Error()))
+			telemetry.Warn(ctx.Context, "llm json_mode: extract failed, keeping existing board value",
+				otellog.String(telemetry.AttrNodeID, n.id),
+				otellog.String("raw", truncate(result.Content, 200)),
+				otellog.String(telemetry.AttrErrorMessage, extractErr.Error()))
 		} else {
 			var parsed any
 			if err := json.Unmarshal(extracted, &parsed); err == nil {
