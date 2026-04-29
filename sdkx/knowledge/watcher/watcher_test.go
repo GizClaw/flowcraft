@@ -1,3 +1,8 @@
+//lint:file-ignore SA1019 watcher itself is Deprecated; the tests
+// intentionally exercise the deprecated New / Notifier / NewReloader /
+// FSStore surface to keep the v0.2.x compatibility window honest. A
+// fresh test suite ships alongside the v0.3.0 EventNotifier rewrite.
+
 package watcher_test
 
 import (
