@@ -12,5 +12,5 @@ var (
 // IsPermanentError reports whether err represents a permanent failure that
 // should not trigger fallback. Delegates to ClassifyError internally.
 func IsPermanentError(err error) bool {
-	return !ClassifyError(err).ShouldFallback()
+	return !ShouldFallback(ClassifyError(err))
 }

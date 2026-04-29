@@ -94,7 +94,7 @@ func (c *LLM) Generate(ctx context.Context, messages []llm.Message, opts ...llm.
 		if ctx.Err() != nil {
 			return llm.Message{}, llm.TokenUsage{}, errdefs.Timeoutf("ollama.generate: %s", dur.String())
 		}
-		return llm.Message{}, llm.TokenUsage{}, llm.ClassifyProviderError("ollama", err)
+		return llm.Message{}, llm.TokenUsage{}, errdefs.ClassifyProviderError("ollama", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -103,7 +103,7 @@ func (c *LLM) Generate(ctx context.Context, messages []llm.Message, opts ...llm.
 		return llm.Message{}, llm.TokenUsage{}, errdefs.NotAvailable(fmt.Errorf("ollama: %w", err))
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return llm.Message{}, llm.TokenUsage{}, llm.ClassifyHTTPStatus("ollama", resp.StatusCode, strings.TrimSpace(string(bodyBytes)))
+		return llm.Message{}, llm.TokenUsage{}, errdefs.ClassifyHTTPStatus("ollama", resp.StatusCode, strings.TrimSpace(string(bodyBytes)))
 	}
 
 	var out chatResponse
@@ -168,14 +168,14 @@ func (c *LLM) GenerateStream(ctx context.Context, messages []llm.Message, opts .
 		if ctx.Err() != nil {
 			return nil, errdefs.FromContext(ctx.Err())
 		}
-		return nil, llm.ClassifyProviderError("ollama", err)
+		return nil, errdefs.ClassifyProviderError("ollama", err)
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		defer func() { _ = resp.Body.Close() }()
 		bodyBytes, _ := io.ReadAll(resp.Body)
 		span.End()
-		return nil, llm.ClassifyHTTPStatus("ollama", resp.StatusCode, strings.TrimSpace(string(bodyBytes)))
+		return nil, errdefs.ClassifyHTTPStatus("ollama", resp.StatusCode, strings.TrimSpace(string(bodyBytes)))
 	}
 
 	return newStreamMessage(ctx, span, c.model, resp.Body), nil

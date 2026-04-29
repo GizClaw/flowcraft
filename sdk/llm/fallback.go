@@ -150,17 +150,17 @@ func (f *FallbackLLM) Generate(ctx context.Context, messages []Message, opts ...
 		lastErr = err
 		cat := ClassifyError(err)
 		f.recordErrorMetric(ctx, p.name, cat)
-		if !cat.ShouldFallback() {
+		if !ShouldFallback(cat) {
 			telemetry.Warn(ctx, "llm permanent error, skipping fallback",
 				otellog.String("provider", p.name),
-				otellog.String("category", cat.String()),
+				otellog.String("category", CategoryString(cat)),
 				otellog.String(telemetry.AttrErrorMessage, err.Error()))
 			return Message{}, TokenUsage{}, err
 		}
 		f.recordFailureWithCategory(ctx, p.name, halfOpen, cat)
 		telemetry.Warn(ctx, "llm transient failure, trying fallback",
 			otellog.String("provider", p.name),
-			otellog.String("category", cat.String()),
+			otellog.String("category", CategoryString(cat)),
 			otellog.String(telemetry.AttrErrorMessage, err.Error()))
 	}
 	if lastErr == nil {
@@ -192,17 +192,17 @@ func (f *FallbackLLM) GenerateStream(ctx context.Context, messages []Message, op
 		lastErr = err
 		cat := ClassifyError(err)
 		f.recordErrorMetric(ctx, p.name, cat)
-		if !cat.ShouldFallback() {
+		if !ShouldFallback(cat) {
 			telemetry.Warn(ctx, "llm stream permanent error, skipping fallback",
 				otellog.String("provider", p.name),
-				otellog.String("category", cat.String()),
+				otellog.String("category", CategoryString(cat)),
 				otellog.String(telemetry.AttrErrorMessage, err.Error()))
 			return nil, err
 		}
 		f.recordFailureWithCategory(ctx, p.name, halfOpen, cat)
 		telemetry.Warn(ctx, "llm stream transient failure, trying fallback",
 			otellog.String("provider", p.name),
-			otellog.String("category", cat.String()),
+			otellog.String("category", CategoryString(cat)),
 			otellog.String(telemetry.AttrErrorMessage, err.Error()))
 	}
 	if lastErr == nil {
@@ -241,7 +241,7 @@ func (t *trackedStream) finish() {
 		if err := t.Err(); err != nil {
 			cat := ClassifyError(err)
 			t.fallback.recordErrorMetric(t.ctx, t.provider, cat)
-			if cat.ShouldFallback() {
+			if ShouldFallback(cat) {
 				t.fallback.recordFailureWithCategory(t.ctx, t.provider, t.halfOpen, cat)
 			}
 		} else {
@@ -279,7 +279,7 @@ func (f *FallbackLLM) recordFailureWithCategory(ctx context.Context, name string
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	cs := f.breaker[name]
-	cooldown := f.cooldown * time.Duration(cat.CooldownMultiplier())
+	cooldown := f.cooldown * time.Duration(CooldownMultiplier(cat))
 	if wasHalfOpen {
 		cs.halfOpen = false
 		cs.openUntil = time.Now().Add(cooldown)
@@ -304,7 +304,7 @@ func (f *FallbackLLM) recordErrorMetric(ctx context.Context, name string, cat Er
 	f.errorsByCategory.Add(ctx, 1,
 		metric.WithAttributes(
 			attribute.String("provider", name),
-			attribute.String("category", cat.String()),
+			attribute.String("category", CategoryString(cat)),
 		))
 }
 

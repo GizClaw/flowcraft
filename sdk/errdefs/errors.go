@@ -313,9 +313,10 @@ func FromContext(err error) error {
 }
 
 // HasClassification reports whether err already carries any errdefs
-// behavioural marker. Used by FromContext and by adapters such as
-// llm.ClassifyProviderError to avoid double-wrapping a pre-classified
-// error and changing its observable category. Returns false for nil.
+// behavioural marker. Used by FromContext and by ClassifyProviderError /
+// ClassifyHTTPStatus (in http.go) to avoid double-wrapping a
+// pre-classified error and changing its observable category. Returns
+// false for nil.
 func HasClassification(err error) bool {
 	switch {
 	case IsNotFound(err),

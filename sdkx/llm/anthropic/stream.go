@@ -75,7 +75,7 @@ func (s *anthropicBetaStreamMessage) Next() bool {
 		if !s.stream.Next() {
 			err := s.stream.Err()
 			if err != nil {
-				err = llm.ClassifyProviderError("anthropic", err)
+				err = errdefs.ClassifyProviderError("anthropic", err)
 			}
 			s.mu.Lock()
 			s.err = err
@@ -271,7 +271,7 @@ func (s *anthropicStreamMessage) Next() bool {
 		if !s.stream.Next() {
 			err := s.stream.Err()
 			if err != nil {
-				err = llm.ClassifyProviderError("anthropic", err)
+				err = errdefs.ClassifyProviderError("anthropic", err)
 			}
 			s.mu.Lock()
 			s.err = err

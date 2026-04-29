@@ -1,28 +1,63 @@
 package llm
 
-import (
-	"errors"
-	"fmt"
-	"regexp"
-	"strconv"
-	"strings"
+// LLM-fallback decision primitives.
+//
+// The HTTP-status / keyword / SDK-error → errdefs translation lives in
+// sdk/errdefs/http.go because it is shared by every external-provider
+// boundary in the SDK (chat completion, embeddings, rerank, ...). This
+// file is the LLM-domain layer on top:
+//
+//   - ErrorCategory aliases errdefs.ProviderCategory so the code in
+//     sdk/llm/fallback.go stays in vocabulary terms its readers expect
+//     (Auth / Billing / RateLimit / ContextOverflow / ...) rather than
+//     having to reach across packages.
+//
+//   - ShouldFallback / CooldownMultiplier / CategoryString encode the
+//     fallback chain's policy on top of that category enum: when to
+//     give up and stop trying further providers, how long to keep a
+//     tripped breaker open, and what label to emit on per-category
+//     metrics.
+//
+//   - ClassifyError is a thin domain-named alias of
+//     errdefs.ClassifyProvider; sdk/llm/fallback.go calls it on every
+//     provider error to decide what to do next.
+//
+// External LLM providers (sdkx/llm/*) and any other SDK boundary
+// (sdkx/embedding/*, future sdkx/rerank, ...) MUST call
+// errdefs.ClassifyProviderError / errdefs.ClassifyHTTPStatus directly —
+// they want the resulting errdefs class, not the LLM-fallback enum.
+// Re-exporting those helpers here would create a phantom dependency
+// from peer capabilities through sdk/llm purely for namespace reasons.
 
+import (
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 )
 
-// ErrorCategory classifies LLM provider errors for fallback decisions.
-type ErrorCategory int
+// ErrorCategory is an LLM-domain alias of errdefs.ProviderCategory used
+// by FallbackLLM to pick cooldown durations and to decide whether to
+// move on to the next provider in the chain.
+type ErrorCategory = errdefs.ProviderCategory
 
+// LLM-domain aliases for the underlying ProviderXxx constants. Kept
+// under the historical Category* names so call sites in fallback.go and
+// in tests need no migration when the underlying enum was hoisted into
+// errdefs.
 const (
-	CategoryTransient       ErrorCategory = iota // network flake, 5xx — retry/fallback
-	CategoryRateLimit                            // 429 — cooldown current provider then fallback
-	CategoryAuth                                 // 401/403 — this provider is unusable
-	CategoryBilling                              // 402 — long-term unusable
-	CategoryContextOverflow                      // context length exceeded — all providers will fail
-	CategoryPermanent                            // 400/422 — client error, no fallback
+	CategoryTransient       = errdefs.ProviderTransient
+	CategoryRateLimit       = errdefs.ProviderRateLimit
+	CategoryAuth            = errdefs.ProviderAuth
+	CategoryBilling         = errdefs.ProviderBilling
+	CategoryContextOverflow = errdefs.ProviderContextOverflow
+	CategoryPermanent       = errdefs.ProviderPermanent
 )
 
-func (c ErrorCategory) String() string {
+// CategoryString returns a stable short token suitable for log fields
+// and metric labels ("rate_limit", "auth", "billing",
+// "context_overflow", "permanent", "transient"). It lives as a free
+// function rather than a method because ErrorCategory is a type alias —
+// methods on alias types must be defined on the underlying type, and
+// errdefs deliberately doesn't carry LLM-domain naming.
+func CategoryString(c ErrorCategory) string {
 	switch c {
 	case CategoryRateLimit:
 		return "rate_limit"
@@ -39,8 +74,11 @@ func (c ErrorCategory) String() string {
 	}
 }
 
-// ShouldFallback reports whether this category should try the next provider.
-func (c ErrorCategory) ShouldFallback() bool {
+// ShouldFallback reports whether a given category should try the next
+// provider in the FallbackLLM chain. Permanent and ContextOverflow stop
+// the chain because every downstream provider will see the same input
+// and fail the same way; everything else is worth trying again.
+func ShouldFallback(c ErrorCategory) bool {
 	switch c {
 	case CategoryPermanent, CategoryContextOverflow:
 		return false
@@ -49,8 +87,12 @@ func (c ErrorCategory) ShouldFallback() bool {
 	}
 }
 
-// CooldownMultiplier returns a multiplier for the base cooldown duration.
-func (c ErrorCategory) CooldownMultiplier() int {
+// CooldownMultiplier returns the per-category multiplier for the base
+// FallbackLLM cooldown: Auth/Billing get a long penalty (the credentials
+// won't fix themselves on the next call), RateLimit gets a moderate
+// hold to let the upstream window roll over, everything else uses the
+// configured base cooldown unchanged.
+func CooldownMultiplier(c ErrorCategory) int {
 	switch c {
 	case CategoryAuth, CategoryBilling:
 		return 10
@@ -61,208 +103,9 @@ func (c ErrorCategory) CooldownMultiplier() int {
 	}
 }
 
-var httpCodePattern = regexp.MustCompile(`\b(?:http|status)\s*(\d{3})\b`)
-
-// keyword classifiers ordered by priority — checked before HTTP status codes
-// so that "http 400: maximum context length exceeded" is classified as
-// ContextOverflow rather than Permanent.
-var keywordClassifiers = []struct {
-	category ErrorCategory
-	keywords []string
-}{
-	{CategoryContextOverflow, []string{
-		"context length exceeded",
-		"maximum context length",
-		"too many tokens",
-		"content too large",
-		"request too large",
-		"payload too large",
-		"max_tokens",
-	}},
-	{CategoryAuth, []string{
-		"invalid api key",
-		"incorrect api key",
-		"unauthorized",
-		"authentication",
-		"permission denied",
-		"api key not found",
-		"invalid_api_key",
-		"invalid x-api-key",
-	}},
-	{CategoryBilling, []string{
-		"insufficient credits",
-		"insufficient credit",
-		"billing",
-		"payment required",
-		"quota exceeded",
-		"insufficient_quota",
-		"no credit",
-	}},
-	{CategoryRateLimit, []string{
-		"rate limit",
-		"rate_limit",
-		"too many requests",
-		"overloaded",
-		"resource_exhausted",
-		"at capacity",
-		"capacity exceeded",
-		"server is busy",
-		"currently overloaded",
-	}},
-}
-
-// HTTPStatusCoder is implemented by errors that carry an HTTP status code.
-// ClassifyError checks this interface first for the most reliable classification.
-type HTTPStatusCoder interface {
-	HTTPStatusCode() int
-}
-
-// ClassifyProviderError wraps a provider error into an errdefs-classified
-// error so that pod-level policies (retry, circuit breaking, fail-fast on
-// auth) can decide on it via the standard errdefs.IsXxx checks. The wrap
-// preserves the original error chain so callers that need finer-grained
-// signals (LLM ErrorCategory, vendor-specific fields) can still
-// errors.As against the inner type.
-//
-// Mapping (mirrors ErrorCategory but in errdefs vocabulary):
-//
-//	CategoryAuth            → Unauthorized
-//	CategoryBilling         → Forbidden     (long-term unusable, not a 429)
-//	CategoryRateLimit       → RateLimit
-//	CategoryContextOverflow → Validation    (input too large; client must shrink)
-//	CategoryPermanent       → Validation    (client error; bad request)
-//	CategoryTransient       → NotAvailable  (5xx / network flake; safe to retry)
-//
-// Returns nil when err is nil; returns the original err untouched when it
-// already carries any errdefs classification (so callers can pre-classify
-// known cases like ctx.Err()).
-func ClassifyProviderError(provider string, err error) error {
-	if err == nil {
-		return nil
-	}
-	if errdefs.HasClassification(err) {
-		return err
-	}
-	wrapped := fmt.Errorf("%s: %w", provider, err)
-	switch ClassifyError(err) {
-	case CategoryAuth:
-		return errdefs.Unauthorized(wrapped)
-	case CategoryBilling:
-		return errdefs.Forbidden(wrapped)
-	case CategoryRateLimit:
-		return errdefs.RateLimit(wrapped)
-	case CategoryContextOverflow, CategoryPermanent:
-		return errdefs.Validation(wrapped)
-	default: // CategoryTransient
-		return errdefs.NotAvailable(wrapped)
-	}
-}
-
-// ClassifyError determines the error category for fallback decisions.
-// Match order: structured interface (HTTPStatusCoder) → keywords → HTTP status code regex.
+// ClassifyError determines an ErrorCategory for fallback decisions.
+// Thin domain-named alias of errdefs.ClassifyProvider so fallback.go
+// reads in fallback-domain vocabulary.
 func ClassifyError(err error) ErrorCategory {
-	if err == nil {
-		return CategoryTransient
-	}
-
-	var coded HTTPStatusCoder
-	if errors.As(err, &coded) {
-		if cat, ok := categoryFromHTTPCode(coded.HTTPStatusCode()); ok {
-			return cat
-		}
-	}
-
-	msg := collectErrorMessages(err)
-
-	for _, c := range keywordClassifiers {
-		for _, kw := range c.keywords {
-			if strings.Contains(msg, kw) {
-				return c.category
-			}
-		}
-	}
-
-	if m := httpCodePattern.FindStringSubmatch(msg); len(m) == 2 {
-		if code, e := strconv.Atoi(m[1]); e == nil {
-			if cat, ok := categoryFromHTTPCode(code); ok {
-				return cat
-			}
-		}
-	}
-
-	return CategoryTransient
-}
-
-// ClassifyHTTPStatus wraps a raw HTTP status code into an
-// errdefs-classified error. It is the entry point for providers that
-// drive HTTP themselves (e.g. ollama, custom REST adapters) and need to
-// turn a non-2xx response into the same errdefs vocabulary that
-// ClassifyProviderError produces from SDK error types.
-//
-// body is included verbatim in the error message to preserve provider
-// diagnostics; callers may pass an empty string if no body is
-// available. Codes below 400 always map to Internal — we expect
-// callers to gate this helper behind `code < 200 || code >= 300`.
-func ClassifyHTTPStatus(provider string, code int, body string) error {
-	msg := fmt.Sprintf("%s: http %d", provider, code)
-	if body != "" {
-		msg = fmt.Sprintf("%s: %s", msg, body)
-	}
-	wrapped := errors.New(msg)
-	if cat, ok := categoryFromHTTPCode(code); ok {
-		switch cat {
-		case CategoryAuth:
-			return errdefs.Unauthorized(wrapped)
-		case CategoryBilling:
-			return errdefs.Forbidden(wrapped)
-		case CategoryRateLimit:
-			return errdefs.RateLimit(wrapped)
-		case CategoryPermanent:
-			return errdefs.Validation(wrapped)
-		}
-	}
-	if code >= 500 {
-		return errdefs.NotAvailable(wrapped)
-	}
-	return errdefs.Internal(wrapped)
-}
-
-func categoryFromHTTPCode(code int) (ErrorCategory, bool) {
-	switch code {
-	case 401, 403:
-		return CategoryAuth, true
-	case 402:
-		return CategoryBilling, true
-	case 429:
-		return CategoryRateLimit, true
-	case 400, 404, 405, 422:
-		return CategoryPermanent, true
-	default:
-		return CategoryTransient, false
-	}
-}
-
-// collectErrorMessages walks the error chain (including multi-errors from
-// errors.Join / multiple %w) and concatenates all messages.
-func collectErrorMessages(err error) string {
-	var b strings.Builder
-	var walk func(error)
-	walk = func(e error) {
-		if b.Len() > 0 {
-			b.WriteByte(' ')
-		}
-		b.WriteString(strings.ToLower(e.Error()))
-		switch x := e.(type) {
-		case interface{ Unwrap() error }:
-			if u := x.Unwrap(); u != nil {
-				walk(u)
-			}
-		case interface{ Unwrap() []error }:
-			for _, u := range x.Unwrap() {
-				walk(u)
-			}
-		}
-	}
-	walk(err)
-	return b.String()
+	return errdefs.ClassifyProvider(err)
 }

@@ -71,7 +71,7 @@ func (s *streamMessage) Next() bool {
 				s.finish(nil)
 				return false
 			}
-			err = llm.ClassifyProviderError("bytedance", err)
+			err = errdefs.ClassifyProviderError("bytedance", err)
 			s.mu.Lock()
 			s.stream = nil
 			s.err = err

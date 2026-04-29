@@ -97,7 +97,7 @@ func (c *LLM) Generate(ctx context.Context, messages []llm.Message, opts ...llm.
 		if ctx.Err() != nil {
 			return llm.Message{}, llm.TokenUsage{}, errdefs.Timeoutf("bytedance.generate: %s", dur.String())
 		}
-		return llm.Message{}, llm.TokenUsage{}, llm.ClassifyProviderError("bytedance", err)
+		return llm.Message{}, llm.TokenUsage{}, errdefs.ClassifyProviderError("bytedance", err)
 	}
 
 	if len(resp.Choices) == 0 || resp.Choices[0] == nil {
@@ -141,7 +141,7 @@ func (c *LLM) GenerateStream(ctx context.Context, messages []llm.Message, opts .
 		span.SetStatus(codes.Error, err.Error())
 		span.End()
 		llm.RecordLLMMetrics(ctx, "bytedance", c.model, "error", 0, llm.TokenUsage{})
-		return nil, llm.ClassifyProviderError("bytedance", err)
+		return nil, errdefs.ClassifyProviderError("bytedance", err)
 	}
 
 	return newStreamMessage(ctx, span, c.model, stream), nil

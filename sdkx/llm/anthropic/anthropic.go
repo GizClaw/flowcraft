@@ -111,7 +111,7 @@ func (c *LLM) Generate(ctx context.Context, messages []llm.Message, opts ...llm.
 			if ctx.Err() != nil {
 				return llm.Message{}, llm.TokenUsage{}, errdefs.Timeoutf("anthropic.generate: %s", err.Error())
 			}
-			return llm.Message{}, llm.TokenUsage{}, llm.ClassifyProviderError("anthropic", err)
+			return llm.Message{}, llm.TokenUsage{}, errdefs.ClassifyProviderError("anthropic", err)
 		}
 
 		text := extractBetaText(resp.Content)
@@ -147,7 +147,7 @@ func (c *LLM) Generate(ctx context.Context, messages []llm.Message, opts ...llm.
 		if ctx.Err() != nil {
 			return llm.Message{}, llm.TokenUsage{}, errdefs.Timeoutf("anthropic.generate: %s", err.Error())
 		}
-		return llm.Message{}, llm.TokenUsage{}, llm.ClassifyProviderError("anthropic", err)
+		return llm.Message{}, llm.TokenUsage{}, errdefs.ClassifyProviderError("anthropic", err)
 	}
 
 	msg := convertResponse(resp.Content)
