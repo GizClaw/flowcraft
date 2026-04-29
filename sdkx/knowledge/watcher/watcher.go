@@ -4,9 +4,34 @@
 // Pure-fs notification was deliberately split from the sdk core to keep
 // sdk/knowledge dependency-free; reuse the SDK's Reloader to compose:
 //
-//	notifier, _ := watcher.New(store)
+//	notifier, _ := watcher.New(ctx, store)
 //	r := knowledge.NewReloader(store, notifier, knowledge.ReloaderOptions{})
 //	go r.Run(ctx)
+//
+// Deprecated: Removed in sdkx/v0.3.0 (the release that follows sdk/v0.3.0).
+//
+// Every type this package consumes from sdk/knowledge has already been
+// marked Deprecated and is scheduled for removal in sdk/v0.3.0:
+//
+//	*knowledge.FSStore         (use factory.NewLocal)
+//	knowledge.ChangeNotifier   (use EventNotifier — typed ChangeEvent stream)
+//	knowledge.NewReloader      (use NewEventReloader)
+//
+// Once those go away this adapter cannot compile against the new sdk,
+// so the package will be dropped entirely. The v0.3.0 replacement is
+// architecturally different — fsnotify events get *decoded* into typed
+// knowledge.ChangeEvent values (DatasetID / DocName / Kind) instead of
+// emitting opaque struct{} ticks — which means no in-place upgrade is
+// possible. Plan to rewrite call sites against:
+//
+//	svc := factory.NewLocal(ws, ...)            // sdk/knowledge/factory
+//	notifier := <a typed EventNotifier impl>    // sdk/knowledge or your own
+//	r := knowledge.NewEventReloader(svc, notifier, knowledge.ReloaderOptions{})
+//	go r.Run(ctx)
+//
+// A typed fsnotify-backed EventNotifier is on the roadmap for sdkx
+// post-v0.3.0; until it lands, this package keeps working against
+// sdk/v0.2.x consumers and is the recommended bridge for them.
 package watcher
 
 import (
@@ -24,6 +49,8 @@ import (
 )
 
 // Notifier wraps fsnotify.Watcher to satisfy knowledge.ChangeNotifier.
+//
+// Deprecated: see package-level deprecation note. Removed in sdkx/v0.3.0.
 type Notifier struct {
 	store     *knowledge.FSStore
 	watcher   *fsnotify.Watcher
@@ -37,6 +64,8 @@ type Notifier struct {
 // New constructs a Notifier for the given knowledge store. Returns nil
 // without error when the underlying workspace doesn't expose a filesystem
 // root (e.g. in-memory workspace).
+//
+// Deprecated: see package-level deprecation note. Removed in sdkx/v0.3.0.
 func New(ctx context.Context, store *knowledge.FSStore) (*Notifier, error) {
 	if store == nil {
 		return nil, errors.New("knowledge/watcher: store is nil")
