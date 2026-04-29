@@ -248,7 +248,7 @@ func TestRunner_WithEventBus(t *testing.T) {
 	}
 
 	const runID = "rb-1"
-	sub, err := bus.Subscribe(context.Background(), runner.PatternRun(runID), event.WithBufferSize(16))
+	sub, err := bus.Subscribe(context.Background(), engine.PatternRun(runID), event.WithBufferSize(16))
 	if err != nil {
 		t.Fatalf("subscribe: %v", err)
 	}
@@ -259,7 +259,7 @@ func TestRunner_WithEventBus(t *testing.T) {
 		t.Fatalf("Execute: %v", err)
 	}
 
-	wantPrefix := "graph.run." + runID + "."
+	wantPrefix := string(engine.SubjectPrefix) + runID + "."
 	sawStart, sawEnd := false, false
 	timeout := time.After(time.Second)
 	for !(sawStart && sawEnd) {
@@ -320,7 +320,7 @@ func TestRunner_WithHost(t *testing.T) {
 	if len(envs) == 0 {
 		t.Fatal("expected host to receive envelopes")
 	}
-	wantPrefix := "graph.run." + runID + "."
+	wantPrefix := string(engine.SubjectPrefix) + runID + "."
 	sawStart, sawEnd := false, false
 	for _, env := range envs {
 		s := string(env.Subject)

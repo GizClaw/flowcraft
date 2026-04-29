@@ -83,6 +83,14 @@
 //  8. NoopHost / NoopCheckpointStore — zero-cost stand-ins for tests
 //     and embedded scenarios.
 //
+//  9. Subject schema (subjects.go) — the cross-engine event-routing
+//     convention every implementation MUST follow when publishing
+//     run lifecycle, step lifecycle, and stream-delta envelopes.
+//     Public Subject* / Pattern* builders, the StreamDeltaPayload
+//     decode contract, and SanitiseID live here so consumers (voice,
+//     SSE bridges, dashboards) can route on subject without
+//     importing any concrete engine.
+//
 // # What does NOT live here
 //
 //   - StreamCallback / StreamEvent — replaced by Publisher +
@@ -94,9 +102,9 @@
 //     sdk/agent/strategy.
 //   - VarMessages / VarQuery / VarAnswer — chat conventions that
 //     belong to sdk/agent.
-//   - Subject schema / engine kind enumeration — the host owns the
-//     event-routing convention; engine does not reserve a namespace
-//     or enumerate which engines exist.
+//   - Engine kind enumeration — engine does not reserve a "type"
+//     namespace or list which engines exist; routing on subject is
+//     the only cross-engine identification mechanism.
 //
 // See docs/agent-runtime-redesign.md for the full layering rationale.
 package engine

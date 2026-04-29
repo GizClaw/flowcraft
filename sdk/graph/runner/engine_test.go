@@ -147,7 +147,7 @@ func TestRunner_Execute_PublishesUnderRunID(t *testing.T) {
 	if len(envs) == 0 {
 		t.Fatal("host received no envelopes")
 	}
-	wantPrefix := "graph.run." + runID + "."
+	wantPrefix := string(engine.SubjectPrefix) + runID + "."
 	for _, e := range envs {
 		if !strings.HasPrefix(string(e.Subject), wantPrefix) {
 			t.Fatalf("envelope subject %q does not carry run.ID prefix %q",

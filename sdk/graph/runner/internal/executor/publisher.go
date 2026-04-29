@@ -94,7 +94,7 @@ func newNodePublisher(ctx context.Context, cfg runConfig, nodeID string) graph.S
 			return
 		}
 		pl := normalisePayload(eventType, payload)
-		publishNodeEvent(ctx, pub, subjNodeStreamDelta(cfg.runID, nodeID),
+		publishNodeEvent(ctx, pub, engine.SubjectStreamDelta(cfg.runID, nodeID),
 			cfg.runID, graphName, actorKey, nodeID, pl)
 	})
 }

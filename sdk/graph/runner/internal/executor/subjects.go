@@ -10,116 +10,56 @@ import (
 
 // Subject convention emitted by this executor:
 //
-//	graph.run.<runID>.start
-//	graph.run.<runID>.end
-//	graph.run.<runID>.parallel.fork
-//	graph.run.<runID>.parallel.join
-//	graph.run.<runID>.node.<nodeID>.start
-//	graph.run.<runID>.node.<nodeID>.complete
-//	graph.run.<runID>.node.<nodeID>.error
-//	graph.run.<runID>.node.<nodeID>.skipped
-//	graph.run.<runID>.node.<nodeID>.stream.delta
+// Engine-contract subjects (constructed via sdk/engine builders so the
+// names stay aligned with every other engine implementation):
 //
-// runID and nodeID values are inserted verbatim. Callers must keep them
-// dot-free (validateID below); IDs containing '.', '*' or '>' would
-// corrupt the resulting Subject. The executor enforces this by passing
-// every id through sanitiseID before constructing a Subject.
+//	engine.run.<runID>.start                       — engine.SubjectRunStart
+//	engine.run.<runID>.end                         — engine.SubjectRunEnd
+//	engine.run.<runID>.step.<nodeID>.start         — engine.SubjectStepStart
+//	engine.run.<runID>.step.<nodeID>.complete      — engine.SubjectStepComplete
+//	engine.run.<runID>.step.<nodeID>.error         — engine.SubjectStepError
+//	engine.run.<runID>.stream.<nodeID>.delta       — engine.SubjectStreamDelta
+//
+// graph-private extensions (still under engine.run.<runID>. so a single
+// engine.PatternRun subscription captures them; their shape is NOT part
+// of the engine contract):
+//
+//	engine.run.<runID>.parallel.fork
+//	engine.run.<runID>.parallel.join
+//	engine.run.<runID>.step.<nodeID>.skipped
+//
+// graph runner uses node id as the engine "actor" id. Both go through
+// engine.SanitiseID inside the builders so a runID / nodeID containing
+// '.' / '*' / '>' degrades to '_'-substituted segments rather than
+// corrupting the resulting Subject.
 
-const (
-	graphSubjectPrefix = "graph.run."
-)
-
-// subjGraphStart returns "graph.run.<runID>.start".
-func subjGraphStart(runID string) event.Subject {
-	return event.Subject(fmt.Sprintf("%s%s.start", graphSubjectPrefix, sanitiseID(runID)))
-}
-
-// subjGraphEnd returns "graph.run.<runID>.end".
-func subjGraphEnd(runID string) event.Subject {
-	return event.Subject(fmt.Sprintf("%s%s.end", graphSubjectPrefix, sanitiseID(runID)))
-}
-
-// subjParallelFork returns "graph.run.<runID>.parallel.fork".
+// subjParallelFork returns "engine.run.<runID>.parallel.fork".
+//
+// graph-private: declared here because engine does not standardise
+// fan-out semantics. The shared engine.run.<runID>. prefix means
+// engine.PatternRun(runID) still picks it up.
 func subjParallelFork(runID string) event.Subject {
-	return event.Subject(fmt.Sprintf("%s%s.parallel.fork", graphSubjectPrefix, sanitiseID(runID)))
+	return event.Subject(fmt.Sprintf("%s%s.parallel.fork", engine.SubjectPrefix, engine.SanitiseID(runID)))
 }
 
-// subjParallelJoin returns "graph.run.<runID>.parallel.join".
+// subjParallelJoin returns "engine.run.<runID>.parallel.join".
+//
+// graph-private: see subjParallelFork.
 func subjParallelJoin(runID string) event.Subject {
-	return event.Subject(fmt.Sprintf("%s%s.parallel.join", graphSubjectPrefix, sanitiseID(runID)))
+	return event.Subject(fmt.Sprintf("%s%s.parallel.join", engine.SubjectPrefix, engine.SanitiseID(runID)))
 }
 
-// subjNodeStart returns "graph.run.<runID>.node.<nodeID>.start".
-func subjNodeStart(runID, nodeID string) event.Subject {
-	return event.Subject(fmt.Sprintf("%s%s.node.%s.start", graphSubjectPrefix, sanitiseID(runID), sanitiseID(nodeID)))
-}
-
-// subjNodeComplete returns "graph.run.<runID>.node.<nodeID>.complete".
-func subjNodeComplete(runID, nodeID string) event.Subject {
-	return event.Subject(fmt.Sprintf("%s%s.node.%s.complete", graphSubjectPrefix, sanitiseID(runID), sanitiseID(nodeID)))
-}
-
-// subjNodeError returns "graph.run.<runID>.node.<nodeID>.error".
-func subjNodeError(runID, nodeID string) event.Subject {
-	return event.Subject(fmt.Sprintf("%s%s.node.%s.error", graphSubjectPrefix, sanitiseID(runID), sanitiseID(nodeID)))
-}
-
-// subjNodeSkipped returns "graph.run.<runID>.node.<nodeID>.skipped".
+// subjNodeSkipped returns "engine.run.<runID>.step.<nodeID>.skipped".
+//
+// graph-private: declared here because engine does not standardise
+// skip semantics. Sits under the engine "step" namespace so
+// engine.PatternRunSteps(runID) picks it up alongside the contract's
+// step.start / step.complete / step.error events.
 func subjNodeSkipped(runID, nodeID string) event.Subject {
-	return event.Subject(fmt.Sprintf("%s%s.node.%s.skipped", graphSubjectPrefix, sanitiseID(runID), sanitiseID(nodeID)))
+	return event.Subject(fmt.Sprintf("%s%s.step.%s.skipped", engine.SubjectPrefix, engine.SanitiseID(runID), engine.SanitiseID(nodeID)))
 }
 
-// subjNodeStreamDelta returns "graph.run.<runID>.node.<nodeID>.stream.delta".
-func subjNodeStreamDelta(runID, nodeID string) event.Subject {
-	return event.Subject(fmt.Sprintf("%s%s.node.%s.stream.delta", graphSubjectPrefix, sanitiseID(runID), sanitiseID(nodeID)))
-}
-
-// sanitiseID escapes characters that would corrupt a Subject. Subject
-// segments are separated by '.', and '*' / '>' are reserved for Pattern
-// wildcards. We replace each occurrence with '_' rather than rejecting
-// the input so that a misformed user-supplied runID / nodeID degrades to
-// a still-routable subject (over-broad subscriptions still match) instead
-// of silently dropping events.
-//
-// Empty IDs become "_" so the subject keeps a constant segment count.
-func sanitiseID(id string) string {
-	if id == "" {
-		return "_"
-	}
-	out := make([]byte, 0, len(id))
-	for i := 0; i < len(id); i++ {
-		switch id[i] {
-		case '.', '*', '>':
-			out = append(out, '_')
-		default:
-			out = append(out, id[i])
-		}
-	}
-	return string(out)
-}
-
-// PatternRun returns "graph.run.<runID>.>" — a Pattern that matches every
-// event emitted by the executor for the given run.
-//
-// Exposed for callers that want to subscribe to a specific run without
-// hard-coding the subject convention.
-func PatternRun(runID string) event.Pattern {
-	return event.Pattern(fmt.Sprintf("%s%s.>", graphSubjectPrefix, sanitiseID(runID)))
-}
-
-// PatternAllRuns returns "graph.run.>" — every executor event from any
-// run.
-func PatternAllRuns() event.Pattern {
-	return event.Pattern("graph.run.>")
-}
-
-// PatternRunNodes returns "graph.run.<runID>.node.>" — every node-level
-// event for the given run.
-func PatternRunNodes(runID string) event.Pattern {
-	return event.Pattern(fmt.Sprintf("%s%s.node.>", graphSubjectPrefix, sanitiseID(runID)))
-}
-
-// publishGraphEvent fires-and-forgets a graph-level envelope. Headers
+// publishGraphEvent fires-and-forgets a run-level envelope. Headers
 // carry the well-known IDs that callers may need for predicate filtering
 // when subject routing alone is insufficient (e.g. cross-run
 // aggregations).
