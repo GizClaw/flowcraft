@@ -154,7 +154,7 @@ func (r *Runtime) Exec(ctx context.Context, name, source string, env *script.Env
 				return sig, nil
 			}
 			if ctx.Err() != nil {
-				return nil, fmt.Errorf("jsrt: script %q: execution cancelled: %w", name, ctx.Err())
+				return nil, errdefs.FromContext(fmt.Errorf("jsrt: script %q: execution cancelled: %w", name, ctx.Err()))
 			}
 			return &script.Signal{Type: "interrupt"}, nil
 		}

@@ -1,6 +1,8 @@
 package errdefs
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"testing"
@@ -221,5 +223,66 @@ func TestStdlibReexports(t *testing.T) {
 	inner := Unwrap(wrapped)
 	if inner != sentinel {
 		t.Fatal("Unwrap should delegate to stdlib")
+	}
+}
+
+// TestFromContext_Mapping pins the context.Err() → errdefs translation.
+// Pod-level SLO accounting depends on these specific buckets:
+//   - DeadlineExceeded → Timeout (counts against latency SLO)
+//   - Canceled         → Aborted (does not count; user-initiated stop)
+//
+// Drifting either mapping would silently corrupt operator dashboards;
+// bumping this test forces an explicit acknowledgement.
+func TestFromContext_Mapping(t *testing.T) {
+	if got := FromContext(context.DeadlineExceeded); !IsTimeout(got) {
+		t.Errorf("DeadlineExceeded → got %v, want IsTimeout", got)
+	}
+	if got := FromContext(context.Canceled); !IsAborted(got) {
+		t.Errorf("Canceled → got %v, want IsAborted", got)
+	}
+}
+
+// TestFromContext_PreservesIdentity guarantees that callers can still
+// match against the underlying context sentinel after classification.
+// Without this, retry/back-off code that runs `errors.Is(err,
+// context.DeadlineExceeded)` would silently break.
+func TestFromContext_PreservesIdentity(t *testing.T) {
+	got := FromContext(context.DeadlineExceeded)
+	if !errors.Is(got, context.DeadlineExceeded) {
+		t.Errorf("FromContext lost the underlying sentinel: %v", got)
+	}
+}
+
+// TestFromContext_NilPassthrough lets callers run FromContext(ctx.Err())
+// unconditionally on every path without inventing a nil branch.
+func TestFromContext_NilPassthrough(t *testing.T) {
+	if got := FromContext(nil); got != nil {
+		t.Errorf("FromContext(nil) = %v, want nil", got)
+	}
+}
+
+// TestFromContext_DoesNotOverrideExistingClass proves that an error
+// already carrying an errdefs marker survives FromContext intact. This
+// is what lets stream wrappers do `s.err = errdefs.FromContext(s.err)`
+// safely even after the error has been classified upstream.
+func TestFromContext_DoesNotOverrideExistingClass(t *testing.T) {
+	pre := Internalf("downstream blew up")
+	got := FromContext(pre)
+	if !IsInternal(got) || IsTimeout(got) {
+		t.Errorf("FromContext clobbered classification: %v", got)
+	}
+}
+
+// TestFromContext_PassesThroughUnknown handles the case where a caller
+// pulls context.Cause(ctx) and gets a custom cancellation reason. We
+// must not pretend it is a Timeout / Aborted; surface the original.
+func TestFromContext_PassesThroughUnknown(t *testing.T) {
+	custom := errors.New("custom cause")
+	got := FromContext(custom)
+	if got != custom {
+		t.Errorf("FromContext mutated unknown error: got %v, want %v", got, custom)
+	}
+	if IsTimeout(got) || IsAborted(got) {
+		t.Errorf("FromContext over-classified unknown error: %v", got)
 	}
 }

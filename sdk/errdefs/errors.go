@@ -11,6 +11,7 @@
 package errdefs
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -273,4 +274,64 @@ func HTTPStatus(err error) int {
 	default:
 		return http.StatusInternalServerError
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Context error normalisation
+// ---------------------------------------------------------------------------
+
+// FromContext maps a context error to the matching errdefs classification.
+// It is the standard way for callers to surface a context.Done() failure
+// so that pod / observability layers can distinguish a real timeout from
+// a cooperative cancel:
+//
+//   - context.DeadlineExceeded → Timeout (HTTP 504; pod marks SLO miss).
+//   - context.Canceled         → Aborted (HTTP 409; pod treats as user
+//     stop, not a failure).
+//
+// FromContext returns the input error unchanged when it is nil, when it
+// already satisfies one of the errdefs marker interfaces (so callers can
+// fold ctx.Err() into ClassifyProviderError pipelines without losing the
+// original classification), or when it is some other error value
+// (defensive — context.Cause() can surface arbitrary cancellation
+// causes).
+func FromContext(err error) error {
+	if err == nil {
+		return nil
+	}
+	if HasClassification(err) {
+		return err
+	}
+	switch {
+	case errors.Is(err, context.DeadlineExceeded):
+		return Timeout(err)
+	case errors.Is(err, context.Canceled):
+		return Aborted(err)
+	default:
+		return err
+	}
+}
+
+// HasClassification reports whether err already carries any errdefs
+// behavioural marker. Used by FromContext and by adapters such as
+// llm.ClassifyProviderError to avoid double-wrapping a pre-classified
+// error and changing its observable category. Returns false for nil.
+func HasClassification(err error) bool {
+	switch {
+	case IsNotFound(err),
+		IsValidation(err),
+		IsUnauthorized(err),
+		IsForbidden(err),
+		IsConflict(err),
+		IsRateLimit(err),
+		IsTimeout(err),
+		IsInterrupted(err),
+		IsAborted(err),
+		IsNotAvailable(err),
+		IsInternal(err),
+		IsBudgetExceeded(err),
+		IsPolicyDenied(err):
+		return true
+	}
+	return false
 }

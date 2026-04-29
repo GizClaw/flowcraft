@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/llm"
 	"github.com/GizClaw/flowcraft/sdk/model"
 	"github.com/GizClaw/flowcraft/sdk/telemetry"
@@ -253,7 +254,7 @@ func (m *compactor) Compact(ctx context.Context, conversationID string) (Compact
 	}
 	select {
 	case <-ctx.Done():
-		return CompactResult{}, ctx.Err()
+		return CompactResult{}, errdefs.FromContext(ctx.Err())
 	case r := <-reply:
 		return r.res, r.err
 	}
@@ -276,7 +277,7 @@ func (m *compactor) Archive(ctx context.Context, conversationID string) (Archive
 	}
 	select {
 	case <-ctx.Done():
-		return ArchiveResult{}, ctx.Err()
+		return ArchiveResult{}, errdefs.FromContext(ctx.Err())
 	case r := <-reply:
 		return r.res, r.err
 	}
@@ -294,7 +295,7 @@ func (m *compactor) Clear(ctx context.Context, conversationID string) error {
 	}
 	select {
 	case <-ctx.Done():
-		return ctx.Err()
+		return errdefs.FromContext(ctx.Err())
 	case err := <-reply:
 		return err
 	}
@@ -332,7 +333,7 @@ func (m *compactor) Shutdown(ctx context.Context) error {
 	case <-m.shutdownDone:
 		return nil
 	case <-ctx.Done():
-		return ctx.Err()
+		return errdefs.FromContext(ctx.Err())
 	}
 }
 

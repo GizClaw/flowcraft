@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/llm"
 
 	asdk "github.com/anthropics/anthropic-sdk-go"
@@ -63,9 +64,9 @@ func (s *anthropicBetaStreamMessage) Next() bool {
 		return false
 	}
 	if err := s.baseCtx.Err(); err != nil {
-		s.err = err
+		s.err = errdefs.FromContext(err)
 		s.mu.Unlock()
-		s.betaFinish(err)
+		s.betaFinish(s.err)
 		return false
 	}
 	s.mu.Unlock()
@@ -73,6 +74,9 @@ func (s *anthropicBetaStreamMessage) Next() bool {
 	for {
 		if !s.stream.Next() {
 			err := s.stream.Err()
+			if err != nil {
+				err = llm.ClassifyProviderError("anthropic", err)
+			}
 			s.mu.Lock()
 			s.err = err
 			s.mu.Unlock()
@@ -256,9 +260,9 @@ func (s *anthropicStreamMessage) Next() bool {
 		return false
 	}
 	if err := s.baseCtx.Err(); err != nil {
-		s.err = err
+		s.err = errdefs.FromContext(err)
 		s.mu.Unlock()
-		s.finish(err)
+		s.finish(s.err)
 		return false
 	}
 	s.mu.Unlock()
@@ -266,6 +270,9 @@ func (s *anthropicStreamMessage) Next() bool {
 	for {
 		if !s.stream.Next() {
 			err := s.stream.Err()
+			if err != nil {
+				err = llm.ClassifyProviderError("anthropic", err)
+			}
 			s.mu.Lock()
 			s.err = err
 			s.mu.Unlock()

@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"testing"
+
+	"github.com/GizClaw/flowcraft/sdk/errdefs"
 )
 
 func TestClassifyError(t *testing.T) {
@@ -177,6 +179,107 @@ func TestIsPermanentError(t *testing.T) {
 				t.Errorf("IsPermanentError(%v) = %v, want %v", tt.err, got, tt.permanent)
 			}
 		})
+	}
+}
+
+// TestClassifyProviderError pins the provider-error → errdefs translation.
+// pod-level retry / circuit-breaking / fail-fast policies are written in
+// terms of these errdefs predicates, so a shift in this mapping is a
+// behaviour change for every operator running on top of the SDK and must
+// be acknowledged by bumping the test.
+func TestClassifyProviderError(t *testing.T) {
+	cases := []struct {
+		name  string
+		in    error
+		check func(error) bool
+	}{
+		{"401 → Unauthorized", &httpErr{code: 401, msg: "bad key"}, errdefs.IsUnauthorized},
+		{"403 → Unauthorized", &httpErr{code: 403, msg: "forbidden"}, errdefs.IsUnauthorized},
+		{"402 → Forbidden", &httpErr{code: 402, msg: "billing"}, errdefs.IsForbidden},
+		{"429 → RateLimit", &httpErr{code: 429, msg: "slow down"}, errdefs.IsRateLimit},
+		{"400 → Validation", &httpErr{code: 400, msg: "bad req"}, errdefs.IsValidation},
+		{"422 → Validation", &httpErr{code: 422, msg: "unprocessable"}, errdefs.IsValidation},
+		{"context overflow → Validation", fmt.Errorf("maximum context length exceeded"), errdefs.IsValidation},
+		{"500 → NotAvailable", &httpErr{code: 500, msg: "boom"}, errdefs.IsNotAvailable},
+		{"network flake → NotAvailable", fmt.Errorf("connection refused"), errdefs.IsNotAvailable},
+		{"keyword rate limit → RateLimit", fmt.Errorf("rate limit exceeded"), errdefs.IsRateLimit},
+		{"keyword auth → Unauthorized", fmt.Errorf("invalid api key"), errdefs.IsUnauthorized},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := ClassifyProviderError("openai", tc.in)
+			if !tc.check(got) {
+				t.Errorf("ClassifyProviderError(%v): predicate did not match, got %v (HTTPStatus=%d)",
+					tc.in, got, errdefs.HTTPStatus(got))
+			}
+			// Inner error must remain reachable so callers that need vendor-
+			// specific introspection (response headers, fallback decisions
+			// keyed on ErrorCategory) can still errors.As / errors.Is.
+			if !errors.Is(got, tc.in) {
+				t.Errorf("ClassifyProviderError(%v): wrap broke errors.Is chain", tc.in)
+			}
+		})
+	}
+}
+
+// TestClassifyProviderError_NilPassthrough makes sure providers can call
+// the helper unconditionally on any err return path without inventing a
+// nil-vs-non-nil branch around it.
+func TestClassifyProviderError_NilPassthrough(t *testing.T) {
+	if got := ClassifyProviderError("openai", nil); got != nil {
+		t.Errorf("ClassifyProviderError(nil) = %v, want nil", got)
+	}
+}
+
+// TestClassifyHTTPStatus pins the raw-HTTP-status → errdefs translation
+// for providers that drive their own HTTP calls (ollama, custom REST
+// adapters). The mapping must stay in lock-step with
+// ClassifyProviderError so that routing decisions are independent of
+// whether the upstream SDK exposes a typed error or just a status code.
+func TestClassifyHTTPStatus(t *testing.T) {
+	cases := []struct {
+		name  string
+		code  int
+		check func(error) bool
+	}{
+		{"401 → Unauthorized", 401, errdefs.IsUnauthorized},
+		{"403 → Unauthorized", 403, errdefs.IsUnauthorized},
+		{"402 → Forbidden", 402, errdefs.IsForbidden},
+		{"429 → RateLimit", 429, errdefs.IsRateLimit},
+		{"400 → Validation", 400, errdefs.IsValidation},
+		{"422 → Validation", 422, errdefs.IsValidation},
+		{"500 → NotAvailable", 500, errdefs.IsNotAvailable},
+		{"503 → NotAvailable", 503, errdefs.IsNotAvailable},
+		{"418 (unknown 4xx) → Internal", 418, errdefs.IsInternal},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := ClassifyHTTPStatus("ollama", tc.code, "body text")
+			if !tc.check(got) {
+				t.Errorf("status %d: predicate did not match, got %v (HTTPStatus=%d)",
+					tc.code, got, errdefs.HTTPStatus(got))
+			}
+			if !errors.Is(got, got) {
+				t.Errorf("status %d: result is not a valid error", tc.code)
+			}
+		})
+	}
+}
+
+// TestClassifyProviderError_PreservesExistingClassification covers the
+// "ctx.Err() already wrapped into errdefs.Timeout" case. If the provider
+// passes such an error through ClassifyProviderError we must not
+// downgrade it to NotAvailable: the timeout vs. server-down distinction
+// is what drives whether pod retries.
+func TestClassifyProviderError_PreservesExistingClassification(t *testing.T) {
+	original := errdefs.Timeoutf("openai.generate: 30s")
+	got := ClassifyProviderError("openai", original)
+	if !errdefs.IsTimeout(got) {
+		t.Errorf("Timeout was overwritten: got %v (IsTimeout=%v, IsNotAvailable=%v)",
+			got, errdefs.IsTimeout(got), errdefs.IsNotAvailable(got))
+	}
+	if errdefs.IsNotAvailable(got) {
+		t.Errorf("Timeout should not also report NotAvailable, got %v", got)
 	}
 }
 

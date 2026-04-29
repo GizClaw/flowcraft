@@ -83,11 +83,11 @@ func (c *LLM) Generate(ctx context.Context, messages []llm.Message, opts ...llm.
 		if ctx.Err() != nil {
 			return llm.Message{}, llm.TokenUsage{}, errdefs.Timeoutf("openai.generate: %s", dur.String())
 		}
-		return llm.Message{}, llm.TokenUsage{}, fmt.Errorf("openai: %w", err)
+		return llm.Message{}, llm.TokenUsage{}, llm.ClassifyProviderError("openai", err)
 	}
 
 	if len(resp.Choices) == 0 {
-		err := fmt.Errorf("openai: no choices returned")
+		err := errdefs.NotAvailablef("openai: no choices returned")
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 		llm.RecordLLMMetrics(ctx, "openai", c.model, "error", dur, llm.TokenUsage{})
@@ -133,7 +133,7 @@ func (c *LLM) GenerateStream(ctx context.Context, messages []llm.Message, opts .
 			span.RecordError(err2)
 			span.SetStatus(codes.Error, err2.Error())
 			span.End()
-			return nil, fmt.Errorf("openai: %w", err2)
+			return nil, llm.ClassifyProviderError("openai", err2)
 		}
 	}
 

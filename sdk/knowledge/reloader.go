@@ -4,6 +4,8 @@ import (
 	"context"
 	"sync"
 	"time"
+
+	"github.com/GizClaw/flowcraft/sdk/errdefs"
 )
 
 // EventNotifier is the v0.3.0 producer side of the reload pipeline. It
@@ -126,7 +128,7 @@ func (r *EventReloader) Run(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			r.cancelTimer()
-			return ctx.Err()
+			return errdefs.FromContext(ctx.Err())
 		case <-r.stop:
 			r.cancelTimer()
 			return nil

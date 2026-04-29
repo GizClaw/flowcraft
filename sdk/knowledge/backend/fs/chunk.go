@@ -282,8 +282,8 @@ func (r *FSChunkRepo) Search(ctx context.Context, q knowledge.ChunkQuery) ([]kno
 
 	var out []knowledge.Candidate
 	for _, sn := range snaps {
-		if ctx.Err() != nil {
-			return nil, ctx.Err()
+		if err := ctx.Err(); err != nil {
+			return nil, errdefs.FromContext(err)
 		}
 		if mode == knowledge.ModeBM25 || mode == knowledge.ModeHybrid {
 			out = append(out, scoreBM25(sn.datasetID, sn.state, keywords)...)

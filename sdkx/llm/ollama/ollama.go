@@ -75,12 +75,12 @@ func (c *LLM) Generate(ctx context.Context, messages []llm.Message, opts ...llm.
 
 	b, err := json.Marshal(req)
 	if err != nil {
-		return llm.Message{}, llm.TokenUsage{}, fmt.Errorf("ollama: %w", err)
+		return llm.Message{}, llm.TokenUsage{}, errdefs.Validation(fmt.Errorf("ollama: %w", err))
 	}
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/api/chat", bytes.NewReader(b))
 	if err != nil {
-		return llm.Message{}, llm.TokenUsage{}, fmt.Errorf("ollama: %w", err)
+		return llm.Message{}, llm.TokenUsage{}, errdefs.Validation(fmt.Errorf("ollama: %w", err))
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 
@@ -94,21 +94,21 @@ func (c *LLM) Generate(ctx context.Context, messages []llm.Message, opts ...llm.
 		if ctx.Err() != nil {
 			return llm.Message{}, llm.TokenUsage{}, errdefs.Timeoutf("ollama.generate: %s", dur.String())
 		}
-		return llm.Message{}, llm.TokenUsage{}, fmt.Errorf("ollama: %w", err)
+		return llm.Message{}, llm.TokenUsage{}, llm.ClassifyProviderError("ollama", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	bodyBytes, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return llm.Message{}, llm.TokenUsage{}, fmt.Errorf("ollama: %w", err)
+		return llm.Message{}, llm.TokenUsage{}, errdefs.NotAvailable(fmt.Errorf("ollama: %w", err))
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return llm.Message{}, llm.TokenUsage{}, fmt.Errorf("ollama: http %d: %s", resp.StatusCode, strings.TrimSpace(string(bodyBytes)))
+		return llm.Message{}, llm.TokenUsage{}, llm.ClassifyHTTPStatus("ollama", resp.StatusCode, strings.TrimSpace(string(bodyBytes)))
 	}
 
 	var out chatResponse
 	if err := json.Unmarshal(bodyBytes, &out); err != nil {
-		return llm.Message{}, llm.TokenUsage{}, fmt.Errorf("ollama: decode response: %w", err)
+		return llm.Message{}, llm.TokenUsage{}, errdefs.Validation(fmt.Errorf("ollama: decode response: %w", err))
 	}
 
 	msg := convertOllamaResponse(out.Message)
@@ -152,27 +152,30 @@ func (c *LLM) GenerateStream(ctx context.Context, messages []llm.Message, opts .
 	b, err := json.Marshal(req)
 	if err != nil {
 		span.End()
-		return nil, fmt.Errorf("ollama: %w", err)
+		return nil, errdefs.Validation(fmt.Errorf("ollama: %w", err))
 	}
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/api/chat", bytes.NewReader(b))
 	if err != nil {
 		span.End()
-		return nil, fmt.Errorf("ollama: %w", err)
+		return nil, errdefs.Validation(fmt.Errorf("ollama: %w", err))
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 
 	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {
 		span.End()
-		return nil, fmt.Errorf("ollama: %w", err)
+		if ctx.Err() != nil {
+			return nil, errdefs.FromContext(ctx.Err())
+		}
+		return nil, llm.ClassifyProviderError("ollama", err)
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		defer func() { _ = resp.Body.Close() }()
 		bodyBytes, _ := io.ReadAll(resp.Body)
 		span.End()
-		return nil, fmt.Errorf("ollama: http %d: %s", resp.StatusCode, strings.TrimSpace(string(bodyBytes)))
+		return nil, llm.ClassifyHTTPStatus("ollama", resp.StatusCode, strings.TrimSpace(string(bodyBytes)))
 	}
 
 	return newStreamMessage(ctx, span, c.model, resp.Body), nil
@@ -256,12 +259,12 @@ func convertContentParts(parts []llm.Part) (text string, images []string) {
 func normalizeImageToBase64(s string) (string, error) {
 	s = strings.TrimSpace(s)
 	if s == "" {
-		return "", fmt.Errorf("ollama: empty image")
+		return "", errdefs.Validationf("ollama: empty image")
 	}
 	if strings.HasPrefix(s, "data:") {
 		i := strings.Index(s, ";base64,")
 		if i < 0 {
-			return "", fmt.Errorf("ollama: invalid data url (missing ;base64,)")
+			return "", errdefs.Validationf("ollama: invalid data url (missing ;base64,)")
 		}
 		return s[i+len(";base64,"):], nil
 	}

@@ -82,7 +82,7 @@ func (c *LLM) Generate(ctx context.Context, messages []llm.Message, opts ...llm.
 
 	sys, msgParams, err := convertMessages(messages)
 	if err != nil {
-		return llm.Message{}, llm.TokenUsage{}, fmt.Errorf("anthropic: %w", err)
+		return llm.Message{}, llm.TokenUsage{}, errdefs.Validation(fmt.Errorf("anthropic: %w", err))
 	}
 
 	// JSON mode uses the Beta API with structured output.
@@ -111,7 +111,7 @@ func (c *LLM) Generate(ctx context.Context, messages []llm.Message, opts ...llm.
 			if ctx.Err() != nil {
 				return llm.Message{}, llm.TokenUsage{}, errdefs.Timeoutf("anthropic.generate: %s", err.Error())
 			}
-			return llm.Message{}, llm.TokenUsage{}, fmt.Errorf("anthropic: %w", err)
+			return llm.Message{}, llm.TokenUsage{}, llm.ClassifyProviderError("anthropic", err)
 		}
 
 		text := extractBetaText(resp.Content)
@@ -147,7 +147,7 @@ func (c *LLM) Generate(ctx context.Context, messages []llm.Message, opts ...llm.
 		if ctx.Err() != nil {
 			return llm.Message{}, llm.TokenUsage{}, errdefs.Timeoutf("anthropic.generate: %s", err.Error())
 		}
-		return llm.Message{}, llm.TokenUsage{}, fmt.Errorf("anthropic: %w", err)
+		return llm.Message{}, llm.TokenUsage{}, llm.ClassifyProviderError("anthropic", err)
 	}
 
 	msg := convertResponse(resp.Content)
@@ -181,7 +181,7 @@ func (c *LLM) GenerateStream(ctx context.Context, messages []llm.Message, opts .
 	sys, msgParams, err := convertMessages(messages)
 	if err != nil {
 		span.End()
-		return nil, fmt.Errorf("anthropic: %w", err)
+		return nil, errdefs.Validation(fmt.Errorf("anthropic: %w", err))
 	}
 
 	// JSON mode uses the Beta streaming API.
@@ -248,7 +248,7 @@ func convertMessages(messages []llm.Message) (system []asdk.TextBlockParam, out 
 				mergeOrAppend(&out, asdk.MessageParamRoleUser, toolResults)
 			}
 		default:
-			return nil, nil, fmt.Errorf("anthropic: unsupported role %q", msg.Role)
+			return nil, nil, errdefs.Validationf("anthropic: unsupported role %q", msg.Role)
 		}
 	}
 
@@ -491,12 +491,12 @@ func applyOptions(p *asdk.MessageNewParams, options *llm.GenerateOptions) {
 func parseDataURL(s string) (mediaType, base64Data string, err error) {
 	s = strings.TrimSpace(s)
 	if !strings.HasPrefix(s, "data:") {
-		return "", "", fmt.Errorf("expected data url")
+		return "", "", errdefs.Validationf("expected data url")
 	}
 	rest := strings.TrimPrefix(s, "data:")
 	i := strings.Index(rest, ";base64,")
 	if i <= 0 {
-		return "", "", fmt.Errorf("invalid data url")
+		return "", "", errdefs.Validationf("invalid data url")
 	}
 	return rest[:i], rest[i+len(";base64,"):], nil
 }

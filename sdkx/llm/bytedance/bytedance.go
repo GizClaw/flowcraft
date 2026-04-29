@@ -97,15 +97,15 @@ func (c *LLM) Generate(ctx context.Context, messages []llm.Message, opts ...llm.
 		if ctx.Err() != nil {
 			return llm.Message{}, llm.TokenUsage{}, errdefs.Timeoutf("bytedance.generate: %s", dur.String())
 		}
-		return llm.Message{}, llm.TokenUsage{}, fmt.Errorf("bytedance: %w", err)
+		return llm.Message{}, llm.TokenUsage{}, llm.ClassifyProviderError("bytedance", err)
 	}
 
 	if len(resp.Choices) == 0 || resp.Choices[0] == nil {
-		err := fmt.Errorf("bytedance: empty choices")
+		err := errdefs.NotAvailablef("bytedance: empty choices")
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 		llm.RecordLLMMetrics(ctx, "bytedance", c.model, "error", dur, llm.TokenUsage{})
-		return llm.Message{}, llm.TokenUsage{}, fmt.Errorf("bytedance: %w", err)
+		return llm.Message{}, llm.TokenUsage{}, err
 	}
 
 	usage := llm.TokenUsage{
@@ -141,7 +141,7 @@ func (c *LLM) GenerateStream(ctx context.Context, messages []llm.Message, opts .
 		span.SetStatus(codes.Error, err.Error())
 		span.End()
 		llm.RecordLLMMetrics(ctx, "bytedance", c.model, "error", 0, llm.TokenUsage{})
-		return nil, fmt.Errorf("bytedance: %w", err)
+		return nil, llm.ClassifyProviderError("bytedance", err)
 	}
 
 	return newStreamMessage(ctx, span, c.model, stream), nil

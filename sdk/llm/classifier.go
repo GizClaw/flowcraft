@@ -2,9 +2,12 @@ package llm
 
 import (
 	"errors"
+	"fmt"
 	"regexp"
 	"strconv"
 	"strings"
+
+	"github.com/GizClaw/flowcraft/sdk/errdefs"
 )
 
 // ErrorCategory classifies LLM provider errors for fallback decisions.
@@ -114,6 +117,47 @@ type HTTPStatusCoder interface {
 	HTTPStatusCode() int
 }
 
+// ClassifyProviderError wraps a provider error into an errdefs-classified
+// error so that pod-level policies (retry, circuit breaking, fail-fast on
+// auth) can decide on it via the standard errdefs.IsXxx checks. The wrap
+// preserves the original error chain so callers that need finer-grained
+// signals (LLM ErrorCategory, vendor-specific fields) can still
+// errors.As against the inner type.
+//
+// Mapping (mirrors ErrorCategory but in errdefs vocabulary):
+//
+//	CategoryAuth            → Unauthorized
+//	CategoryBilling         → Forbidden     (long-term unusable, not a 429)
+//	CategoryRateLimit       → RateLimit
+//	CategoryContextOverflow → Validation    (input too large; client must shrink)
+//	CategoryPermanent       → Validation    (client error; bad request)
+//	CategoryTransient       → NotAvailable  (5xx / network flake; safe to retry)
+//
+// Returns nil when err is nil; returns the original err untouched when it
+// already carries any errdefs classification (so callers can pre-classify
+// known cases like ctx.Err()).
+func ClassifyProviderError(provider string, err error) error {
+	if err == nil {
+		return nil
+	}
+	if errdefs.HasClassification(err) {
+		return err
+	}
+	wrapped := fmt.Errorf("%s: %w", provider, err)
+	switch ClassifyError(err) {
+	case CategoryAuth:
+		return errdefs.Unauthorized(wrapped)
+	case CategoryBilling:
+		return errdefs.Forbidden(wrapped)
+	case CategoryRateLimit:
+		return errdefs.RateLimit(wrapped)
+	case CategoryContextOverflow, CategoryPermanent:
+		return errdefs.Validation(wrapped)
+	default: // CategoryTransient
+		return errdefs.NotAvailable(wrapped)
+	}
+}
+
 // ClassifyError determines the error category for fallback decisions.
 // Match order: structured interface (HTTPStatusCoder) → keywords → HTTP status code regex.
 func ClassifyError(err error) ErrorCategory {
@@ -147,6 +191,40 @@ func ClassifyError(err error) ErrorCategory {
 	}
 
 	return CategoryTransient
+}
+
+// ClassifyHTTPStatus wraps a raw HTTP status code into an
+// errdefs-classified error. It is the entry point for providers that
+// drive HTTP themselves (e.g. ollama, custom REST adapters) and need to
+// turn a non-2xx response into the same errdefs vocabulary that
+// ClassifyProviderError produces from SDK error types.
+//
+// body is included verbatim in the error message to preserve provider
+// diagnostics; callers may pass an empty string if no body is
+// available. Codes below 400 always map to Internal — we expect
+// callers to gate this helper behind `code < 200 || code >= 300`.
+func ClassifyHTTPStatus(provider string, code int, body string) error {
+	msg := fmt.Sprintf("%s: http %d", provider, code)
+	if body != "" {
+		msg = fmt.Sprintf("%s: %s", msg, body)
+	}
+	wrapped := errors.New(msg)
+	if cat, ok := categoryFromHTTPCode(code); ok {
+		switch cat {
+		case CategoryAuth:
+			return errdefs.Unauthorized(wrapped)
+		case CategoryBilling:
+			return errdefs.Forbidden(wrapped)
+		case CategoryRateLimit:
+			return errdefs.RateLimit(wrapped)
+		case CategoryPermanent:
+			return errdefs.Validation(wrapped)
+		}
+	}
+	if code >= 500 {
+		return errdefs.NotAvailable(wrapped)
+	}
+	return errdefs.Internal(wrapped)
 }
 
 func categoryFromHTTPCode(code int) (ErrorCategory, bool) {

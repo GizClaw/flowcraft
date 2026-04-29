@@ -25,7 +25,7 @@ func executeWithRetry(ctx context.Context, node graph.Node, board *graph.Board, 
 			backoff := time.Duration(attempt) * 500 * time.Millisecond
 			select {
 			case <-ctx.Done():
-				return ctx.Err()
+				return errdefs.FromContext(ctx.Err())
 			case <-time.After(backoff):
 			}
 		}

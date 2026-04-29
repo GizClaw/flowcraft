@@ -7,6 +7,7 @@ import (
 	"sort"
 	"sync"
 
+	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/llm"
 
 	"github.com/volcengine/volcengine-go-sdk/service/arkruntime/model"
@@ -53,9 +54,9 @@ func (s *streamMessage) Next() bool {
 		return false
 	}
 	if err := s.baseCtx.Err(); err != nil {
-		s.err = err
+		s.err = errdefs.FromContext(err)
 		s.mu.Unlock()
-		s.finish(err)
+		s.finish(s.err)
 		return false
 	}
 	s.mu.Unlock()
@@ -70,6 +71,7 @@ func (s *streamMessage) Next() bool {
 				s.finish(nil)
 				return false
 			}
+			err = llm.ClassifyProviderError("bytedance", err)
 			s.mu.Lock()
 			s.stream = nil
 			s.err = err

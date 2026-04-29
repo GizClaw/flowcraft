@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/llm"
 
 	oai "github.com/openai/openai-go"
@@ -51,9 +52,9 @@ func (s *openaiStreamMessage) Next() bool {
 		return false
 	}
 	if err := s.baseCtx.Err(); err != nil {
-		s.err = err
+		s.err = errdefs.FromContext(err)
 		s.mu.Unlock()
-		s.finish(err)
+		s.finish(s.err)
 		return false
 	}
 	s.mu.Unlock()
@@ -61,6 +62,9 @@ func (s *openaiStreamMessage) Next() bool {
 	for {
 		if !s.stream.Next() {
 			err := s.stream.Err()
+			if err != nil {
+				err = llm.ClassifyProviderError("openai", err)
+			}
 			s.mu.Lock()
 			s.err = err
 			s.mu.Unlock()
