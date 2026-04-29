@@ -275,16 +275,16 @@ func (e *LocalExecutor) Execute(ctx context.Context, g *graph.Graph, board *grap
 
 	ctx, graphSpan := telemetry.Tracer().Start(ctx, "graph.execute",
 		trace.WithAttributes(
-			attribute.String("graph.name", g.Name()),
-			attribute.String("run.id", cfg.runID),
+			attribute.String(telemetry.AttrGraphName, g.Name()),
+			attribute.String(telemetry.AttrRunID, cfg.runID),
 		),
 	)
 	defer graphSpan.End()
 
 	graphStart := time.Now()
 	telemetry.Info(ctx, "graph execution started",
-		otellog.String("graph.name", g.Name()),
-		otellog.String("run.id", cfg.runID))
+		otellog.String(telemetry.AttrGraphName, g.Name()),
+		otellog.String(telemetry.AttrRunID, cfg.runID))
 
 	currentNodes := []string{g.Entry()}
 	if cfg.startNode != "" {
@@ -307,7 +307,7 @@ func (e *LocalExecutor) Execute(ctx context.Context, g *graph.Graph, board *grap
 
 			node, ok := g.Node(nodeID)
 			if !ok {
-				return board, fmt.Errorf("node %q not found in graph", nodeID)
+				return board, errdefs.NotFoundf("node %q not found in graph", nodeID)
 			}
 
 			if skip, err := shouldSkip(g, node, board); err != nil {
@@ -352,9 +352,9 @@ func (e *LocalExecutor) Execute(ctx context.Context, g *graph.Graph, board *grap
 			nodeStart := time.Now()
 			_, nodeSpan := telemetry.Tracer().Start(ctx, "node."+node.Type()+".execute",
 				trace.WithAttributes(
-					attribute.String("node.id", nodeID),
+					attribute.String(telemetry.AttrNodeID, nodeID),
 					attribute.String("node.type", node.Type()),
-					attribute.String("run.id", cfg.runID),
+					attribute.String(telemetry.AttrRunID, cfg.runID),
 				),
 			)
 
@@ -376,7 +376,7 @@ func (e *LocalExecutor) Execute(ctx context.Context, g *graph.Graph, board *grap
 				nodeExecCount.Add(ctx, 1,
 					metric.WithAttributes(
 						attribute.String("node.type", node.Type()),
-						attribute.String("node.id", nodeID),
+						attribute.String(telemetry.AttrNodeID, nodeID),
 						attribute.String("status", "error"),
 					))
 
@@ -387,11 +387,11 @@ func (e *LocalExecutor) Execute(ctx context.Context, g *graph.Graph, board *grap
 					graphSpan.SetAttributes(attribute.String("graph.status", "interrupted"))
 					graphExecCount.Add(ctx, 1,
 						metric.WithAttributes(
-							attribute.String("graph.name", g.Name()),
+							attribute.String(telemetry.AttrGraphName, g.Name()),
 							attribute.String("status", "interrupted"),
 						))
 					graphExecDuration.Record(ctx, time.Since(graphStart).Seconds(),
-						metric.WithAttributes(attribute.String("graph.name", g.Name())))
+						metric.WithAttributes(attribute.String(telemetry.AttrGraphName, g.Name())))
 					return board, err
 				}
 
@@ -403,8 +403,8 @@ func (e *LocalExecutor) Execute(ctx context.Context, g *graph.Graph, board *grap
 				}
 
 				telemetry.Error(ctx, "node execution failed",
-					otellog.String("node.id", nodeID),
-					otellog.String("error", err.Error()))
+					otellog.String(telemetry.AttrNodeID, nodeID),
+					otellog.String(telemetry.AttrErrorMessage, err.Error()))
 
 				publishNodeEvent(ctx, cfg.publisher, engine.SubjectStepError(cfg.runID, nodeID),
 					cfg.runID, g.Name(), actorKey, nodeID,
@@ -417,7 +417,7 @@ func (e *LocalExecutor) Execute(ctx context.Context, g *graph.Graph, board *grap
 			nodeExecCount.Add(ctx, 1,
 				metric.WithAttributes(
 					attribute.String("node.type", node.Type()),
-					attribute.String("node.id", nodeID),
+					attribute.String(telemetry.AttrNodeID, nodeID),
 					attribute.String("status", "success"),
 				))
 
@@ -448,7 +448,7 @@ func (e *LocalExecutor) Execute(ctx context.Context, g *graph.Graph, board *grap
 			}
 			if err := cfg.host.Checkpoint(ctx, cp.toEngine()); err != nil {
 				graphSpan.AddEvent("checkpoint save failed",
-					trace.WithAttributes(attribute.String("error", err.Error())))
+					trace.WithAttributes(attribute.String(telemetry.AttrErrorMessage, err.Error())))
 			}
 
 			resolved, err := resolveNextNodes(g, node, board)
@@ -467,7 +467,7 @@ func (e *LocalExecutor) Execute(ctx context.Context, g *graph.Graph, board *grap
 					nextNodes = append(nextNodes, joinNode)
 				} else {
 					telemetry.Warn(ctx, "parallel fork has no join node, branches terminate at __end__",
-						otellog.String("graph.name", g.Name()),
+						otellog.String(telemetry.AttrGraphName, g.Name()),
 						otellog.String("fork_node", nodeID))
 				}
 				continue
@@ -491,7 +491,7 @@ func (e *LocalExecutor) Execute(ctx context.Context, g *graph.Graph, board *grap
 	}
 
 	if iteration >= cfg.maxIterations && len(currentNodes) > 0 {
-		return board, fmt.Errorf("graph execution exceeded max iterations (%d)", cfg.maxIterations)
+		return board, errdefs.BudgetExceededf("graph execution exceeded max iterations (%d)", cfg.maxIterations)
 	}
 
 	publishGraphEvent(ctx, cfg.publisher, engine.SubjectRunEnd(cfg.runID),
@@ -504,14 +504,14 @@ func (e *LocalExecutor) Execute(ctx context.Context, g *graph.Graph, board *grap
 	)
 	graphExecCount.Add(ctx, 1,
 		metric.WithAttributes(
-			attribute.String("graph.name", g.Name()),
+			attribute.String(telemetry.AttrGraphName, g.Name()),
 			attribute.String("status", graphStatus),
 		))
 	graphExecDuration.Record(ctx, time.Since(graphStart).Seconds(),
-		metric.WithAttributes(attribute.String("graph.name", g.Name())))
+		metric.WithAttributes(attribute.String(telemetry.AttrGraphName, g.Name())))
 
 	telemetry.Info(ctx, "graph execution completed",
-		otellog.String("graph.name", g.Name()),
+		otellog.String(telemetry.AttrGraphName, g.Name()),
 		otellog.Int("iterations", iteration))
 
 	return board, nil

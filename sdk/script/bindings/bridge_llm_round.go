@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/llm"
 	"github.com/GizClaw/flowcraft/sdk/model"
 	"github.com/GizClaw/flowcraft/sdk/tool"
@@ -156,7 +157,7 @@ func startRound(
 	ro roundOptions,
 ) (*roundStream, error) {
 	if resolver == nil {
-		return nil, fmt.Errorf("llm round %q: resolver is nil", source)
+		return nil, errdefs.Validationf("llm round %q: resolver is nil", source)
 	}
 
 	l, err := resolver.Resolve(ctx, ro.Model)
@@ -256,7 +257,7 @@ func (s *roundStream) Finish() (*roundResult, error) {
 	defer s.Close()
 
 	if s.inner == nil {
-		return nil, fmt.Errorf("llm round %q: stream already closed", s.source)
+		return nil, errdefs.NotAvailablef("llm round %q: stream already closed", s.source)
 	}
 
 	if err := s.inner.Err(); err != nil {

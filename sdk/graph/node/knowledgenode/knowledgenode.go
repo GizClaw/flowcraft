@@ -147,7 +147,7 @@ func (n *Node) ExecuteBoard(ectx graph.ExecutionContext, board *graph.Board) err
 // runOne executes one Service.Search and tags telemetry with dataset id.
 func (n *Node) runOne(ectx graph.ExecutionContext, query, datasetID string, mode knowledge.Mode, layer knowledge.Layer, topK int) ([]knowledge.Hit, error) {
 	ctx, span := telemetry.Tracer().Start(ectx.Context, "node.knowledge.search",
-		trace.WithAttributes(attribute.String("dataset_id", datasetID)))
+		trace.WithAttributes(attribute.String(telemetry.AttrDatasetID, datasetID)))
 	defer span.End()
 
 	q := knowledge.Query{
@@ -166,8 +166,8 @@ func (n *Node) runOne(ectx graph.ExecutionContext, query, datasetID string, mode
 	res, err := n.svc.Search(ctx, q)
 	if err != nil {
 		telemetry.Warn(ctx, "knowledge search failed",
-			otellog.String("dataset_id", datasetID),
-			otellog.String("error", err.Error()))
+			otellog.String(telemetry.AttrDatasetID, datasetID),
+			otellog.String(telemetry.AttrErrorMessage, err.Error()))
 		// Intentionally swallow per-dataset failure so one bad dataset
 		// does not abort the whole fan-out; failed datasets contribute
 		// zero hits and the remaining datasets still surface results.

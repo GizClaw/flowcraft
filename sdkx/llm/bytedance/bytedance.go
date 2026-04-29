@@ -79,8 +79,8 @@ func New(modelName, apiKey, baseURL, region string, retryTimes int) (*LLM, error
 
 func (c *LLM) Generate(ctx context.Context, messages []llm.Message, opts ...llm.GenerateOption) (llm.Message, llm.TokenUsage, error) {
 	ctx, span := telemetry.Tracer().Start(ctx, fmt.Sprintf("llm.bytedance.generate.%s", c.model), trace.WithAttributes(
-		attribute.String("llm.provider", "bytedance"),
-		attribute.String("llm.model", c.model),
+		attribute.String(telemetry.AttrLLMProvider, "bytedance"),
+		attribute.String(telemetry.AttrLLMModel, c.model),
 	))
 	defer span.End()
 
@@ -97,15 +97,15 @@ func (c *LLM) Generate(ctx context.Context, messages []llm.Message, opts ...llm.
 		if ctx.Err() != nil {
 			return llm.Message{}, llm.TokenUsage{}, errdefs.Timeoutf("bytedance.generate: %s", dur.String())
 		}
-		return llm.Message{}, llm.TokenUsage{}, fmt.Errorf("bytedance: %w", err)
+		return llm.Message{}, llm.TokenUsage{}, errdefs.ClassifyProviderError("bytedance", err)
 	}
 
 	if len(resp.Choices) == 0 || resp.Choices[0] == nil {
-		err := fmt.Errorf("bytedance: empty choices")
+		err := errdefs.NotAvailablef("bytedance: empty choices")
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 		llm.RecordLLMMetrics(ctx, "bytedance", c.model, "error", dur, llm.TokenUsage{})
-		return llm.Message{}, llm.TokenUsage{}, fmt.Errorf("bytedance: %w", err)
+		return llm.Message{}, llm.TokenUsage{}, err
 	}
 
 	usage := llm.TokenUsage{
@@ -115,8 +115,8 @@ func (c *LLM) Generate(ctx context.Context, messages []llm.Message, opts ...llm.
 	}
 
 	span.SetAttributes(
-		attribute.Int64("llm.input_tokens", usage.InputTokens),
-		attribute.Int64("llm.output_tokens", usage.OutputTokens),
+		attribute.Int64(telemetry.AttrLLMInputTokens, usage.InputTokens),
+		attribute.Int64(telemetry.AttrLLMOutputTokens, usage.OutputTokens),
 	)
 	span.SetStatus(codes.Ok, "OK")
 	llm.RecordLLMMetrics(ctx, "bytedance", c.model, "success", dur, usage)
@@ -127,8 +127,8 @@ func (c *LLM) Generate(ctx context.Context, messages []llm.Message, opts ...llm.
 
 func (c *LLM) GenerateStream(ctx context.Context, messages []llm.Message, opts ...llm.GenerateOption) (llm.StreamMessage, error) {
 	ctx, span := telemetry.Tracer().Start(ctx, fmt.Sprintf("llm.bytedance.stream.%s", c.model), trace.WithAttributes(
-		attribute.String("llm.provider", "bytedance"),
-		attribute.String("llm.model", c.model),
+		attribute.String(telemetry.AttrLLMProvider, "bytedance"),
+		attribute.String(telemetry.AttrLLMModel, c.model),
 	))
 
 	options := llm.ApplyOptions(opts...)
@@ -141,7 +141,7 @@ func (c *LLM) GenerateStream(ctx context.Context, messages []llm.Message, opts .
 		span.SetStatus(codes.Error, err.Error())
 		span.End()
 		llm.RecordLLMMetrics(ctx, "bytedance", c.model, "error", 0, llm.TokenUsage{})
-		return nil, fmt.Errorf("bytedance: %w", err)
+		return nil, errdefs.ClassifyProviderError("bytedance", err)
 	}
 
 	return newStreamMessage(ctx, span, c.model, stream), nil

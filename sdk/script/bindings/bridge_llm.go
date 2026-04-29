@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/llm"
 	"github.com/GizClaw/flowcraft/sdk/model"
 	"github.com/GizClaw/flowcraft/sdk/tool"
@@ -166,7 +167,7 @@ func parseRunOptions(v any) (LLMRunOptions, error) {
 	}
 	m, ok := v.(map[string]any)
 	if !ok {
-		return LLMRunOptions{}, fmt.Errorf("llm: options must be an object, got %T", v)
+		return LLMRunOptions{}, errdefs.Validationf("llm: options must be an object, got %T", v)
 	}
 	if len(m) == 0 {
 		return LLMRunOptions{}, nil

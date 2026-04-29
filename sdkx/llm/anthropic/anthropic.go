@@ -69,8 +69,8 @@ func New(model, apiKey, baseURL string, httpClient *http.Client) (*LLM, error) {
 
 func (c *LLM) Generate(ctx context.Context, messages []llm.Message, opts ...llm.GenerateOption) (llm.Message, llm.TokenUsage, error) {
 	ctx, span := telemetry.Tracer().Start(ctx, fmt.Sprintf("llm.anthropic.generate.%s", c.model), trace.WithAttributes(
-		attribute.String("llm.provider", "anthropic"),
-		attribute.String("llm.model", string(c.model)),
+		attribute.String(telemetry.AttrLLMProvider, "anthropic"),
+		attribute.String(telemetry.AttrLLMModel, string(c.model)),
 	))
 	defer span.End()
 
@@ -82,7 +82,7 @@ func (c *LLM) Generate(ctx context.Context, messages []llm.Message, opts ...llm.
 
 	sys, msgParams, err := convertMessages(messages)
 	if err != nil {
-		return llm.Message{}, llm.TokenUsage{}, fmt.Errorf("anthropic: %w", err)
+		return llm.Message{}, llm.TokenUsage{}, errdefs.Validation(fmt.Errorf("anthropic: %w", err))
 	}
 
 	// JSON mode uses the Beta API with structured output.
@@ -111,7 +111,7 @@ func (c *LLM) Generate(ctx context.Context, messages []llm.Message, opts ...llm.
 			if ctx.Err() != nil {
 				return llm.Message{}, llm.TokenUsage{}, errdefs.Timeoutf("anthropic.generate: %s", err.Error())
 			}
-			return llm.Message{}, llm.TokenUsage{}, fmt.Errorf("anthropic: %w", err)
+			return llm.Message{}, llm.TokenUsage{}, errdefs.ClassifyProviderError("anthropic", err)
 		}
 
 		text := extractBetaText(resp.Content)
@@ -121,8 +121,8 @@ func (c *LLM) Generate(ctx context.Context, messages []llm.Message, opts ...llm.
 			TotalTokens:  resp.Usage.InputTokens + resp.Usage.OutputTokens,
 		}
 		span.SetAttributes(
-			attribute.Int64("llm.input_tokens", usage.InputTokens),
-			attribute.Int64("llm.output_tokens", usage.OutputTokens),
+			attribute.Int64(telemetry.AttrLLMInputTokens, usage.InputTokens),
+			attribute.Int64(telemetry.AttrLLMOutputTokens, usage.OutputTokens),
 		)
 		span.SetStatus(codes.Ok, "OK")
 		llm.RecordLLMMetrics(ctx, "anthropic", string(c.model), "success", dur, usage)
@@ -147,7 +147,7 @@ func (c *LLM) Generate(ctx context.Context, messages []llm.Message, opts ...llm.
 		if ctx.Err() != nil {
 			return llm.Message{}, llm.TokenUsage{}, errdefs.Timeoutf("anthropic.generate: %s", err.Error())
 		}
-		return llm.Message{}, llm.TokenUsage{}, fmt.Errorf("anthropic: %w", err)
+		return llm.Message{}, llm.TokenUsage{}, errdefs.ClassifyProviderError("anthropic", err)
 	}
 
 	msg := convertResponse(resp.Content)
@@ -158,8 +158,8 @@ func (c *LLM) Generate(ctx context.Context, messages []llm.Message, opts ...llm.
 	}
 
 	span.SetAttributes(
-		attribute.Int64("llm.input_tokens", usage.InputTokens),
-		attribute.Int64("llm.output_tokens", usage.OutputTokens),
+		attribute.Int64(telemetry.AttrLLMInputTokens, usage.InputTokens),
+		attribute.Int64(telemetry.AttrLLMOutputTokens, usage.OutputTokens),
 	)
 	span.SetStatus(codes.Ok, "OK")
 	llm.RecordLLMMetrics(ctx, "anthropic", string(c.model), "success", dur, usage)
@@ -168,8 +168,8 @@ func (c *LLM) Generate(ctx context.Context, messages []llm.Message, opts ...llm.
 
 func (c *LLM) GenerateStream(ctx context.Context, messages []llm.Message, opts ...llm.GenerateOption) (llm.StreamMessage, error) {
 	ctx, span := telemetry.Tracer().Start(ctx, fmt.Sprintf("llm.anthropic.stream.%s", c.model), trace.WithAttributes(
-		attribute.String("llm.provider", "anthropic"),
-		attribute.String("llm.model", string(c.model)),
+		attribute.String(telemetry.AttrLLMProvider, "anthropic"),
+		attribute.String(telemetry.AttrLLMModel, string(c.model)),
 	))
 
 	options := llm.ApplyOptions(opts...)
@@ -181,7 +181,7 @@ func (c *LLM) GenerateStream(ctx context.Context, messages []llm.Message, opts .
 	sys, msgParams, err := convertMessages(messages)
 	if err != nil {
 		span.End()
-		return nil, fmt.Errorf("anthropic: %w", err)
+		return nil, errdefs.Validation(fmt.Errorf("anthropic: %w", err))
 	}
 
 	// JSON mode uses the Beta streaming API.
@@ -248,7 +248,7 @@ func convertMessages(messages []llm.Message) (system []asdk.TextBlockParam, out 
 				mergeOrAppend(&out, asdk.MessageParamRoleUser, toolResults)
 			}
 		default:
-			return nil, nil, fmt.Errorf("anthropic: unsupported role %q", msg.Role)
+			return nil, nil, errdefs.Validationf("anthropic: unsupported role %q", msg.Role)
 		}
 	}
 
@@ -491,12 +491,12 @@ func applyOptions(p *asdk.MessageNewParams, options *llm.GenerateOptions) {
 func parseDataURL(s string) (mediaType, base64Data string, err error) {
 	s = strings.TrimSpace(s)
 	if !strings.HasPrefix(s, "data:") {
-		return "", "", fmt.Errorf("expected data url")
+		return "", "", errdefs.Validationf("expected data url")
 	}
 	rest := strings.TrimPrefix(s, "data:")
 	i := strings.Index(rest, ";base64,")
 	if i <= 0 {
-		return "", "", fmt.Errorf("invalid data url")
+		return "", "", errdefs.Validationf("invalid data url")
 	}
 	return rest[:i], rest[i+len(";base64,"):], nil
 }

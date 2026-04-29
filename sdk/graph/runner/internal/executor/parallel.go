@@ -102,13 +102,13 @@ func executeForkJoin(ctx context.Context, g *graph.Graph, board *graph.Board, br
 func runBranch(ctx context.Context, g *graph.Graph, board *graph.Board, startID, joinID string, cfg runConfig) error {
 	currentID := startID
 	for currentID != joinID && currentID != graph.END {
-		if ctx.Err() != nil {
-			return ctx.Err()
+		if err := ctx.Err(); err != nil {
+			return errdefs.FromContext(err)
 		}
 
 		node, ok := g.Node(currentID)
 		if !ok {
-			return fmt.Errorf("branch node %q not found", currentID)
+			return errdefs.NotFoundf("branch node %q not found", currentID)
 		}
 
 		if skip, err := shouldSkip(g, node, board); err != nil {

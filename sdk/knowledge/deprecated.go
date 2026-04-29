@@ -556,7 +556,7 @@ func (s *FSStore) BuildIndex(ctx context.Context) error {
 		di, err := s.buildDatasetIndex(ctx, dsID)
 		if err != nil {
 			telemetry.Warn(ctx, "knowledge: failed to index dataset",
-				otellog.String("dataset", dsID), otellog.String("error", err.Error()))
+				otellog.String("dataset", dsID), otellog.String(telemetry.AttrErrorMessage, err.Error()))
 			errs = append(errs, fmt.Errorf("dataset %q: %w", dsID, err))
 			continue
 		}
@@ -606,7 +606,7 @@ func (s *FSStore) buildDatasetIndex(ctx context.Context, datasetID string) (*dat
 
 func (s *FSStore) AddDocument(ctx context.Context, datasetID, name, content string) error {
 	if datasetID == "" || name == "" {
-		return fmt.Errorf("knowledge: dataset_id and name are required")
+		return errdefs.Validationf("knowledge: dataset_id and name are required")
 	}
 	path := s.docPath(datasetID, name)
 	if err := s.ws.Write(ctx, path, []byte(content)); err != nil {
@@ -655,7 +655,7 @@ func (s *FSStore) AddDocument(ctx context.Context, datasetID, name, content stri
 
 func (s *FSStore) AddDocuments(ctx context.Context, datasetID string, docs []DocInput) error {
 	if datasetID == "" {
-		return fmt.Errorf("knowledge: dataset_id is required")
+		return errdefs.Validationf("knowledge: dataset_id is required")
 	}
 	if len(docs) == 0 {
 		return nil

@@ -717,7 +717,7 @@ func (b *Board) notifyWatchers(snap *Card) {
 		if closed {
 			b.watcherDropped.Add(1)
 			telemetry.Warn(b.ctx, "kanban: watcher already shut down, card notification dropped",
-				otellog.String("card_id", snap.ID),
+				otellog.String(telemetry.AttrKanbanCardID, snap.ID),
 				otellog.String("status", string(snap.Status)))
 			continue
 		}
@@ -762,13 +762,13 @@ func deepCopyJSONValue(v any) any {
 	data, err := json.Marshal(v)
 	if err != nil {
 		telemetry.Warn(context.Background(), "kanban: deepCopyJSONValue marshal failed, returning nil",
-			otellog.String("error", err.Error()))
+			otellog.String(telemetry.AttrErrorMessage, err.Error()))
 		return nil
 	}
 	var cp any
 	if err := json.Unmarshal(data, &cp); err != nil {
 		telemetry.Warn(context.Background(), "kanban: deepCopyJSONValue unmarshal failed, returning nil",
-			otellog.String("error", err.Error()))
+			otellog.String(telemetry.AttrErrorMessage, err.Error()))
 		return nil
 	}
 	return cp

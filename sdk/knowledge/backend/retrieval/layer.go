@@ -187,8 +187,8 @@ func (r *RetrievalLayerRepo) Search(ctx context.Context, q knowledge.LayerQuery)
 		if datasetID == "" {
 			continue
 		}
-		if ctx.Err() != nil {
-			return nil, ctx.Err()
+		if err := ctx.Err(); err != nil {
+			return nil, errdefs.FromContext(err)
 		}
 		ns := layersNamespace(datasetID)
 		filter := rt.Filter{Eq: map[string]any{mdLayer: string(q.Layer)}}

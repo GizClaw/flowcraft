@@ -289,8 +289,8 @@ func (s *Service) Rebuild(ctx context.Context, scope RebuildScope) error {
 		return err
 	}
 	for _, ds := range datasets {
-		if ctx.Err() != nil {
-			return ctx.Err()
+		if err := ctx.Err(); err != nil {
+			return errdefs.FromContext(err)
 		}
 		docs, err := s.rebuildDocuments(ctx, ds, scope)
 		if err != nil {

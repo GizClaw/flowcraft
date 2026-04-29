@@ -69,7 +69,7 @@ func (n *Node) SetConfig(c map[string]any) {
 	if err != nil {
 		telemetry.Warn(context.Background(), "llm node: invalid config map",
 			otellog.String("node_id", n.id),
-			otellog.String("error", err.Error()))
+			otellog.String(telemetry.AttrErrorMessage, err.Error()))
 		return
 	}
 	n.config = cfg
@@ -96,7 +96,7 @@ func (n *Node) OutputPorts() []graph.Port {
 
 func (n *Node) ExecuteBoard(ctx graph.ExecutionContext, board *graph.Board) error {
 	_, span := telemetry.Tracer().Start(ctx.Context, "node.llm.execute",
-		trace.WithAttributes(attribute.String("node.id", n.id)))
+		trace.WithAttributes(attribute.String(telemetry.AttrNodeID, n.id)))
 	defer span.End()
 
 	cfg := n.config
@@ -229,9 +229,9 @@ func (n *Node) writeResults(
 		extracted, _, extractErr := llm.ExtractJSON(result.Content)
 		if extractErr != nil {
 			telemetry.Warn(ctx.Context, "llm json_mode: extract failed, keeping existing board value",
-				otellog.String("node_id", n.id),
+				otellog.String(telemetry.AttrNodeID, n.id),
 				otellog.String("raw", truncate(result.Content, 200)),
-				otellog.String("error", extractErr.Error()))
+				otellog.String(telemetry.AttrErrorMessage, extractErr.Error()))
 		} else {
 			var parsed any
 			if err := json.Unmarshal(extracted, &parsed); err == nil {
@@ -247,7 +247,7 @@ func (n *Node) writeResults(
 				telemetry.Warn(ctx.Context, "llm json_mode: parse failed, keeping existing board value",
 					otellog.String("node_id", n.id),
 					otellog.String("raw", truncate(result.Content, 200)),
-					otellog.String("error", err.Error()))
+					otellog.String(telemetry.AttrErrorMessage, err.Error()))
 			}
 		}
 	} else {

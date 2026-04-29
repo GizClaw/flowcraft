@@ -150,8 +150,8 @@ func (r *RetrievalChunkRepo) Search(ctx context.Context, q knowledge.ChunkQuery)
 
 	var out []knowledge.Candidate
 	for _, p := range plans {
-		if ctx.Err() != nil {
-			return nil, ctx.Err()
+		if err := ctx.Err(); err != nil {
+			return nil, errdefs.FromContext(err)
 		}
 		hits, err := r.recallOne(ctx, p.ns, p.datasetID, q, mode, topK)
 		if err != nil {

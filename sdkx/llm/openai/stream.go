@@ -7,7 +7,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/llm"
+	"github.com/GizClaw/flowcraft/sdk/telemetry"
 
 	oai "github.com/openai/openai-go"
 	"github.com/openai/openai-go/packages/ssestream"
@@ -51,9 +53,9 @@ func (s *openaiStreamMessage) Next() bool {
 		return false
 	}
 	if err := s.baseCtx.Err(); err != nil {
-		s.err = err
+		s.err = errdefs.FromContext(err)
 		s.mu.Unlock()
-		s.finish(err)
+		s.finish(s.err)
 		return false
 	}
 	s.mu.Unlock()
@@ -61,6 +63,9 @@ func (s *openaiStreamMessage) Next() bool {
 	for {
 		if !s.stream.Next() {
 			err := s.stream.Err()
+			if err != nil {
+				err = errdefs.ClassifyProviderError("openai", err)
+			}
 			s.mu.Lock()
 			s.err = err
 			s.mu.Unlock()
@@ -214,8 +219,8 @@ func (s *openaiStreamMessage) finish(err error) {
 		llm.RecordLLMMetrics(s.baseCtx, "openai", s.model, "error", dur, llm.TokenUsage{})
 	} else {
 		s.span.SetAttributes(
-			attribute.Int64("llm.input_tokens", usage.InputTokens),
-			attribute.Int64("llm.output_tokens", usage.OutputTokens),
+			attribute.Int64(telemetry.AttrLLMInputTokens, usage.InputTokens),
+			attribute.Int64(telemetry.AttrLLMOutputTokens, usage.OutputTokens),
 		)
 		s.span.SetStatus(codes.Ok, "OK")
 		llm.RecordLLMMetrics(s.baseCtx, "openai", s.model, "success", dur, llm.TokenUsage{

@@ -178,7 +178,7 @@ func (r *Runtime) Exec(ctx context.Context, name, source string, env *script.Env
 		}
 		discardVM = true
 		if ctx.Err() != nil {
-			return nil, fmt.Errorf("luart: script %q: execution cancelled: %w", name, ctx.Err())
+			return nil, errdefs.FromContext(fmt.Errorf("luart: script %q: execution cancelled: %w", name, ctx.Err()))
 		}
 		return nil, fmt.Errorf("luart: script %q: %w", name, runErr)
 	}

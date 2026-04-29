@@ -6,6 +6,7 @@ import (
 	"sync"
 
 	"github.com/GizClaw/flowcraft/sdk/engine"
+	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/event"
 	"github.com/GizClaw/flowcraft/sdk/model"
 )
@@ -140,7 +141,7 @@ func parseUserPrompt(raw any, source string) (engine.UserPrompt, error) {
 	}
 	m, ok := raw.(map[string]any)
 	if !ok {
-		return prompt, fmt.Errorf("askUser: prompt must be an object, got %T", raw)
+		return prompt, errdefs.Validationf("askUser: prompt must be an object, got %T", raw)
 	}
 
 	if rawParts, ok := m["parts"]; ok && rawParts != nil {
@@ -166,14 +167,14 @@ func parseUserPrompt(raw any, source string) (engine.UserPrompt, error) {
 		case []byte:
 			prompt.Schema = v
 		default:
-			return prompt, fmt.Errorf("askUser.schema: expected string or bytes, got %T", v)
+			return prompt, errdefs.Validationf("askUser.schema: expected string or bytes, got %T", v)
 		}
 	}
 
 	if rawSrc, ok := m["source"]; ok && rawSrc != nil {
 		s, ok := rawSrc.(string)
 		if !ok {
-			return prompt, fmt.Errorf("askUser.source: expected string, got %T", rawSrc)
+			return prompt, errdefs.Validationf("askUser.source: expected string, got %T", rawSrc)
 		}
 		// Caller-supplied source overrides the bridge default so a
 		// script can attribute the prompt to a sub-step of itself.
@@ -215,7 +216,7 @@ func parseUsage(raw any) (model.TokenUsage, error) {
 	}
 	m, ok := raw.(map[string]any)
 	if !ok {
-		return usage, fmt.Errorf("usage: expected object, got %T", raw)
+		return usage, errdefs.Validationf("usage: expected object, got %T", raw)
 	}
 	if v, ok := m["input"]; ok {
 		n, err := asInt64(v, "input")
@@ -263,20 +264,20 @@ func asInt64(v any, field string) (int64, error) {
 	case float64:
 		return int64(n), nil
 	default:
-		return 0, fmt.Errorf("usage.%s: expected number, got %T", field, v)
+		return 0, errdefs.Validationf("usage.%s: expected number, got %T", field, v)
 	}
 }
 
 func parseStringMap(raw any, field string) (map[string]string, error) {
 	m, ok := raw.(map[string]any)
 	if !ok {
-		return nil, fmt.Errorf("%s: expected object, got %T", field, raw)
+		return nil, errdefs.Validationf("%s: expected object, got %T", field, raw)
 	}
 	out := make(map[string]string, len(m))
 	for k, v := range m {
 		s, ok := v.(string)
 		if !ok {
-			return nil, fmt.Errorf("%s.%s: expected string, got %T", field, k, v)
+			return nil, errdefs.Validationf("%s.%s: expected string, got %T", field, k, v)
 		}
 		out[k] = s
 	}

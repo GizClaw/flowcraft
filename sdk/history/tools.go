@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/model"
 	"github.com/GizClaw/flowcraft/sdk/tool"
 	"github.com/GizClaw/flowcraft/sdk/workspace"
@@ -88,11 +89,11 @@ func (t *historyExpandTool) Execute(ctx context.Context, arguments string) (stri
 
 	convID := ConversationIDFrom(ctx)
 	if convID == "" {
-		return "", fmt.Errorf("history_expand: no conversation ID in context")
+		return "", errdefs.Validationf("history_expand: no conversation ID in context")
 	}
 
 	if t.deps.SummaryStore == nil {
-		return "", fmt.Errorf("history_expand: summary store not available")
+		return "", errdefs.NotAvailablef("history_expand: summary store not available")
 	}
 
 	node, err := t.deps.SummaryStore.GetByConvID(ctx, convID, args.SummaryID)

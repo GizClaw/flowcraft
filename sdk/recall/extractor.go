@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/llm"
 	"github.com/GizClaw/flowcraft/sdk/model"
 )
@@ -245,7 +246,7 @@ func parseFactsJSON(raw string) ([]ExtractedFact, error) {
 		return normalizeFacts([]ExtractedFact{single}), nil
 	}
 
-	return nil, fmt.Errorf("ltm: extractor: cannot parse facts JSON: %s", truncate(payload, 200))
+	return nil, errdefs.Validationf("ltm: extractor: cannot parse facts JSON: %s", truncate(payload, 200))
 }
 
 func truncate(b []byte, n int) string {

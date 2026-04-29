@@ -65,8 +65,8 @@ func New(model, apiKey, baseURL string, extraOpts ...option.RequestOption) (*LLM
 
 func (c *LLM) Generate(ctx context.Context, messages []llm.Message, opts ...llm.GenerateOption) (llm.Message, llm.TokenUsage, error) {
 	ctx, span := telemetry.Tracer().Start(ctx, fmt.Sprintf("llm.openai.generate.%s", c.model), trace.WithAttributes(
-		attribute.String("llm.provider", "openai"),
-		attribute.String("llm.model", c.model),
+		attribute.String(telemetry.AttrLLMProvider, "openai"),
+		attribute.String(telemetry.AttrLLMModel, c.model),
 	))
 	defer span.End()
 
@@ -83,11 +83,11 @@ func (c *LLM) Generate(ctx context.Context, messages []llm.Message, opts ...llm.
 		if ctx.Err() != nil {
 			return llm.Message{}, llm.TokenUsage{}, errdefs.Timeoutf("openai.generate: %s", dur.String())
 		}
-		return llm.Message{}, llm.TokenUsage{}, fmt.Errorf("openai: %w", err)
+		return llm.Message{}, llm.TokenUsage{}, errdefs.ClassifyProviderError("openai", err)
 	}
 
 	if len(resp.Choices) == 0 {
-		err := fmt.Errorf("openai: no choices returned")
+		err := errdefs.NotAvailablef("openai: no choices returned")
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 		llm.RecordLLMMetrics(ctx, "openai", c.model, "error", dur, llm.TokenUsage{})
@@ -102,8 +102,8 @@ func (c *LLM) Generate(ctx context.Context, messages []llm.Message, opts ...llm.
 	}
 
 	span.SetAttributes(
-		attribute.Int64("llm.input_tokens", usage.InputTokens),
-		attribute.Int64("llm.output_tokens", usage.OutputTokens),
+		attribute.Int64(telemetry.AttrLLMInputTokens, usage.InputTokens),
+		attribute.Int64(telemetry.AttrLLMOutputTokens, usage.OutputTokens),
 	)
 	span.SetStatus(codes.Ok, "OK")
 	llm.RecordLLMMetrics(ctx, "openai", c.model, "success", dur, usage)
@@ -113,8 +113,8 @@ func (c *LLM) Generate(ctx context.Context, messages []llm.Message, opts ...llm.
 
 func (c *LLM) GenerateStream(ctx context.Context, messages []llm.Message, opts ...llm.GenerateOption) (llm.StreamMessage, error) {
 	ctx, span := telemetry.Tracer().Start(ctx, fmt.Sprintf("llm.openai.stream.%s", c.model), trace.WithAttributes(
-		attribute.String("llm.provider", "openai"),
-		attribute.String("llm.model", c.model),
+		attribute.String(telemetry.AttrLLMProvider, "openai"),
+		attribute.String(telemetry.AttrLLMModel, c.model),
 	))
 
 	options := llm.ApplyOptions(opts...)
@@ -133,7 +133,7 @@ func (c *LLM) GenerateStream(ctx context.Context, messages []llm.Message, opts .
 			span.RecordError(err2)
 			span.SetStatus(codes.Error, err2.Error())
 			span.End()
-			return nil, fmt.Errorf("openai: %w", err2)
+			return nil, errdefs.ClassifyProviderError("openai", err2)
 		}
 	}
 

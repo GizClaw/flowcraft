@@ -123,7 +123,7 @@ func (n *Notifier) loop(ctx context.Context) {
 			if !ok {
 				return
 			}
-			telemetry.Warn(ctx, "knowledge: watcher error", otellog.String("error", err.Error()))
+			telemetry.Warn(ctx, "knowledge: watcher error", otellog.String(telemetry.AttrErrorMessage, err.Error()))
 		}
 	}
 }

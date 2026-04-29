@@ -272,7 +272,7 @@ func (m *lt) worker() {
 			m.log("ltm.worker.lease: %v", err)
 			jobLeaseErrors.Add(m.workerCtx, 1)
 			telemetry.Warn(m.workerCtx, "recall: worker lease failed",
-				otellog.String("error", err.Error()))
+				otellog.String(telemetry.AttrErrorMessage, err.Error()))
 			select {
 			case <-m.stopCh:
 				return
@@ -336,7 +336,7 @@ func (m *lt) handleJob(rec *JobRecord) {
 		m.log("ltm.worker.complete: %v", err)
 		telemetry.Warn(bookCtx, "recall: job complete bookkeeping failed",
 			otellog.String("job_id", string(rec.ID)),
-			otellog.String("error", err.Error()))
+			otellog.String(telemetry.AttrErrorMessage, err.Error()))
 	}
 	jobTotal.Add(jobCtx, 1, metric.WithAttributes(
 		attribute.String("outcome", "succeeded"),
@@ -364,7 +364,7 @@ func (m *lt) recordJobFailure(ctx context.Context, rec *JobRecord, err error, st
 		otellog.String("stage", stage),
 		otellog.String("outcome", outcome),
 		otellog.Int("attempts", rec.Attempts),
-		otellog.String("error", err.Error()))
+		otellog.String(telemetry.AttrErrorMessage, err.Error()))
 }
 
 func (m *lt) failOrRetry(rec *JobRecord, err error) {
@@ -380,7 +380,7 @@ func (m *lt) failOrRetry(rec *JobRecord, err error) {
 		telemetry.Warn(bookCtx, "recall: async job dead-lettered",
 			otellog.String("job_id", string(rec.ID)),
 			otellog.Int("attempts", rec.Attempts),
-			otellog.String("error", err.Error()))
+			otellog.String(telemetry.AttrErrorMessage, err.Error()))
 		return
 	}
 	d := m.cfg.jobBackoffBase

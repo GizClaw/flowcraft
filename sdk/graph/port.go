@@ -1,7 +1,7 @@
 package graph
 
 import (
-	"fmt"
+	"github.com/GizClaw/flowcraft/sdk/errdefs"
 )
 
 // PortType identifies the data type of a node port.
@@ -65,7 +65,7 @@ func ValidateInputsWithConfig(b *Board, node PortDeclarable, config map[string]a
 				continue
 			}
 		}
-		return fmt.Errorf("missing required input port %q for node", p.Name)
+		return errdefs.Validationf("missing required input port %q for node", p.Name)
 	}
 	return nil
 }
@@ -75,7 +75,7 @@ func ValidateOutputs(b *Board, node PortDeclarable) error {
 	for _, p := range node.OutputPorts() {
 		if p.Required {
 			if _, ok := b.GetVar(p.Name); !ok {
-				return fmt.Errorf("missing required output port %q from node", p.Name)
+				return errdefs.Validationf("missing required output port %q from node", p.Name)
 			}
 		}
 	}

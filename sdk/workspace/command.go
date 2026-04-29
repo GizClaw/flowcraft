@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/GizClaw/flowcraft/sdk/errdefs"
 )
 
 const defaultMaxCommandOutput int64 = 10 * 1024 * 1024
@@ -125,7 +127,7 @@ func (r *LocalCommandRunner) Exec(ctx context.Context, cmd string, args []string
 	}
 	if err != nil {
 		if ctx.Err() != nil {
-			return result, fmt.Errorf("workspace: exec %s: %w", cmd, ctx.Err())
+			return result, errdefs.FromContext(fmt.Errorf("workspace: exec %s: %w", cmd, ctx.Err()))
 		}
 		if exitErr, ok := err.(*exec.ExitError); ok {
 			result.ExitCode = exitErr.ExitCode()

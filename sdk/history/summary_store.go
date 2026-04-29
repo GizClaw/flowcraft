@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/textsearch"
 	"github.com/GizClaw/flowcraft/sdk/workspace"
 	"github.com/rs/xid"
@@ -279,10 +280,10 @@ func (s *FileSummaryStore) GetByConvID(ctx context.Context, convID, id string) (
 			return n, nil
 		}
 		if n.ID == id && n.Deleted {
-			return nil, fmt.Errorf("summary_store: node %q deleted", id)
+			return nil, errdefs.NotFoundf("summary_store: node %q deleted", id)
 		}
 	}
-	return nil, fmt.Errorf("summary_store: node %q not found", id)
+	return nil, errdefs.NotFoundf("summary_store: node %q not found", id)
 }
 
 func (s *FileSummaryStore) List(ctx context.Context, convID string, opts SummaryListOptions) ([]*SummaryNode, error) {

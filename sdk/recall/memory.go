@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/sdk/embedding"
+	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/llm"
 	"github.com/GizClaw/flowcraft/sdk/retrieval"
 	"github.com/GizClaw/flowcraft/sdk/retrieval/journal"
@@ -423,7 +424,7 @@ func (m *lt) AwaitJob(ctx context.Context, id JobID, timeout time.Duration) (Job
 		}
 		select {
 		case <-ctx.Done():
-			return s, ctx.Err()
+			return s, errdefs.FromContext(ctx.Err())
 		case <-time.After(50 * time.Millisecond):
 		}
 	}

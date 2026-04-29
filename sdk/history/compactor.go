@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/llm"
 	"github.com/GizClaw/flowcraft/sdk/model"
 	"github.com/GizClaw/flowcraft/sdk/telemetry"
@@ -210,8 +211,8 @@ func (m *compactor) Append(ctx context.Context, conversationID string, newMessag
 		// On Shutdown race the messages are already durable; lose only
 		// the async DAG ingest, which would have been best-effort anyway.
 		telemetry.Warn(ctx, "history: async ingest dropped during shutdown",
-			otellog.String("conversation_id", conversationID),
-			otellog.String("error", err.Error()))
+			otellog.String(telemetry.AttrConversationID, conversationID),
+			otellog.String(telemetry.AttrErrorMessage, err.Error()))
 	}
 	return nil
 }
@@ -253,7 +254,7 @@ func (m *compactor) Compact(ctx context.Context, conversationID string) (Compact
 	}
 	select {
 	case <-ctx.Done():
-		return CompactResult{}, ctx.Err()
+		return CompactResult{}, errdefs.FromContext(ctx.Err())
 	case r := <-reply:
 		return r.res, r.err
 	}
@@ -276,7 +277,7 @@ func (m *compactor) Archive(ctx context.Context, conversationID string) (Archive
 	}
 	select {
 	case <-ctx.Done():
-		return ArchiveResult{}, ctx.Err()
+		return ArchiveResult{}, errdefs.FromContext(ctx.Err())
 	case r := <-reply:
 		return r.res, r.err
 	}
@@ -294,7 +295,7 @@ func (m *compactor) Clear(ctx context.Context, conversationID string) error {
 	}
 	select {
 	case <-ctx.Done():
-		return ctx.Err()
+		return errdefs.FromContext(ctx.Err())
 	case err := <-reply:
 		return err
 	}
@@ -332,7 +333,7 @@ func (m *compactor) Shutdown(ctx context.Context) error {
 	case <-m.shutdownDone:
 		return nil
 	case <-ctx.Done():
-		return ctx.Err()
+		return errdefs.FromContext(ctx.Err())
 	}
 }
 
@@ -434,8 +435,8 @@ func (m *compactor) lazyRecover(convID string, q *convQueue) {
 	defer cancel()
 	if err := recoverArchiveImpl(ctx, m.ws, m.store, m.prefix, archivePrefix, convID); err != nil {
 		telemetry.Warn(ctx, "history: lazy archive recovery failed",
-			otellog.String("conversation_id", convID),
-			otellog.String("error", err.Error()))
+			otellog.String(telemetry.AttrConversationID, convID),
+			otellog.String(telemetry.AttrErrorMessage, err.Error()))
 	}
 }
 
@@ -445,8 +446,8 @@ func (m *compactor) runTask(convID string, task convTask) {
 		ingestCtx, cancelIngest := context.WithTimeout(context.Background(), defaultIngestTimeout)
 		if err := m.dag.Ingest(ingestCtx, convID, task.msgs, task.startSeq); err != nil {
 			telemetry.Warn(ingestCtx, "history: async ingest failed",
-				otellog.String("conversation_id", convID),
-				otellog.String("error", err.Error()))
+				otellog.String(telemetry.AttrConversationID, convID),
+				otellog.String(telemetry.AttrErrorMessage, err.Error()))
 		}
 		cancelIngest()
 
@@ -456,8 +457,8 @@ func (m *compactor) runTask(convID string, task convTask) {
 		archiveCtx, cancelArchive := context.WithTimeout(context.Background(), defaultArchiveTimeout)
 		if _, err := internalArchive(archiveCtx, m.ws, m.store, m.prefix, convID, m.config.Archive); err != nil {
 			telemetry.Warn(archiveCtx, "history: async archive failed",
-				otellog.String("conversation_id", convID),
-				otellog.String("error", err.Error()))
+				otellog.String(telemetry.AttrConversationID, convID),
+				otellog.String(telemetry.AttrErrorMessage, err.Error()))
 		}
 		cancelArchive()
 
@@ -553,8 +554,8 @@ func (m *compactor) kickoffStartupRecovery() {
 			convID := e.Name()
 			if err := recoverArchiveImpl(ctx, m.ws, m.store, prefix, archivePrefix, convID); err != nil {
 				telemetry.Warn(ctx, "history: startup archive recovery failed",
-					otellog.String("conversation_id", convID),
-					otellog.String("error", err.Error()))
+					otellog.String(telemetry.AttrConversationID, convID),
+					otellog.String(telemetry.AttrErrorMessage, err.Error()))
 				continue
 			}
 			// Pre-create the queue so the lazy path skips its own
@@ -872,7 +873,7 @@ func (d *SummaryDAG) Ingest(ctx context.Context, convID string, messages []llm.M
 		content, expandHint, err := d.summarizeWithFallback(ctx, chunk, 0)
 		if err != nil {
 			telemetry.Warn(ctx, "dag: ingest summarize failed, using fallback",
-				otellog.String("error", err.Error()))
+				otellog.String(telemetry.AttrErrorMessage, err.Error()))
 			continue
 		}
 
@@ -891,7 +892,7 @@ func (d *SummaryDAG) Ingest(ctx context.Context, convID string, messages []llm.M
 		}
 
 		if err := d.store.Save(ctx, node); err != nil {
-			telemetry.Warn(ctx, "dag: save leaf failed", otellog.String("error", err.Error()))
+			telemetry.Warn(ctx, "dag: save leaf failed", otellog.String(telemetry.AttrErrorMessage, err.Error()))
 			continue
 		}
 		dagNodesTotal.Add(ctx, 1)
@@ -902,7 +903,7 @@ func (d *SummaryDAG) Ingest(ctx context.Context, convID string, messages []llm.M
 	d0Nodes, err := d.store.List(ctx, convID, SummaryListOptions{Depth: depth0})
 	if err == nil && len(d0Nodes) >= d.config.CondenseThreshold {
 		if err := d.condense(ctx, convID, 0); err != nil {
-			telemetry.Warn(ctx, "dag: condense after ingest failed", otellog.String("error", err.Error()))
+			telemetry.Warn(ctx, "dag: condense after ingest failed", otellog.String(telemetry.AttrErrorMessage, err.Error()))
 		}
 	}
 
@@ -979,7 +980,7 @@ func (d *SummaryDAG) condense(ctx context.Context, convID string, depth int) err
 
 		content, expandHint, err := d.summarizeText(ctx, combined.String(), depth+1)
 		if err != nil {
-			telemetry.Warn(ctx, "dag: condense summarize failed", otellog.String("error", err.Error()))
+			telemetry.Warn(ctx, "dag: condense summarize failed", otellog.String(telemetry.AttrErrorMessage, err.Error()))
 			continue
 		}
 
@@ -997,7 +998,7 @@ func (d *SummaryDAG) condense(ctx context.Context, convID string, depth int) err
 		}
 
 		if err := d.store.Save(ctx, node); err != nil {
-			telemetry.Warn(ctx, "dag: save condensed failed", otellog.String("error", err.Error()))
+			telemetry.Warn(ctx, "dag: save condensed failed", otellog.String(telemetry.AttrErrorMessage, err.Error()))
 			continue
 		}
 		dagNodesTotal.Add(ctx, 1)
@@ -1007,7 +1008,7 @@ func (d *SummaryDAG) condense(ctx context.Context, convID string, depth int) err
 	allNodes, err := d.store.ListAll(ctx, convID)
 	if err == nil && len(allNodes) >= d.config.Compact.CompactThreshold {
 		if _, err := d.Compact(ctx, convID); err != nil {
-			telemetry.Warn(ctx, "dag: compact after condense failed", otellog.String("error", err.Error()))
+			telemetry.Warn(ctx, "dag: compact after condense failed", otellog.String(telemetry.AttrErrorMessage, err.Error()))
 		}
 	}
 

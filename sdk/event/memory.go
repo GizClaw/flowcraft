@@ -7,6 +7,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/rs/xid"
 	"go.opentelemetry.io/otel/trace"
 )
@@ -364,7 +365,7 @@ func (b *MemoryBus) Publish(ctx context.Context, env Envelope) error {
 				sub.senders.Done()
 				// Re-acquire to keep the loop invariant before bailing.
 				b.fireObserver(env, delivers, drops)
-				return ctx.Err()
+				return errdefs.FromContext(ctx.Err())
 			}
 			sub.senders.Done()
 			b.mu.RLock()

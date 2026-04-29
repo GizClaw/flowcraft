@@ -7,7 +7,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/llm"
+	"github.com/GizClaw/flowcraft/sdk/telemetry"
 
 	asdk "github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/packages/ssestream"
@@ -63,9 +65,9 @@ func (s *anthropicBetaStreamMessage) Next() bool {
 		return false
 	}
 	if err := s.baseCtx.Err(); err != nil {
-		s.err = err
+		s.err = errdefs.FromContext(err)
 		s.mu.Unlock()
-		s.betaFinish(err)
+		s.betaFinish(s.err)
 		return false
 	}
 	s.mu.Unlock()
@@ -73,6 +75,9 @@ func (s *anthropicBetaStreamMessage) Next() bool {
 	for {
 		if !s.stream.Next() {
 			err := s.stream.Err()
+			if err != nil {
+				err = errdefs.ClassifyProviderError("anthropic", err)
+			}
 			s.mu.Lock()
 			s.err = err
 			s.mu.Unlock()
@@ -195,8 +200,8 @@ func (s *anthropicBetaStreamMessage) betaFinish(err error) {
 			})
 		} else {
 			s.span.SetAttributes(
-				attribute.Int64("llm.input_tokens", usage.InputTokens),
-				attribute.Int64("llm.output_tokens", usage.OutputTokens),
+				attribute.Int64(telemetry.AttrLLMInputTokens, usage.InputTokens),
+				attribute.Int64(telemetry.AttrLLMOutputTokens, usage.OutputTokens),
 			)
 			s.span.SetStatus(codes.Ok, "OK")
 			llm.RecordLLMMetrics(s.baseCtx, "anthropic", s.model, "success", dur, llm.TokenUsage{
@@ -256,9 +261,9 @@ func (s *anthropicStreamMessage) Next() bool {
 		return false
 	}
 	if err := s.baseCtx.Err(); err != nil {
-		s.err = err
+		s.err = errdefs.FromContext(err)
 		s.mu.Unlock()
-		s.finish(err)
+		s.finish(s.err)
 		return false
 	}
 	s.mu.Unlock()
@@ -266,6 +271,9 @@ func (s *anthropicStreamMessage) Next() bool {
 	for {
 		if !s.stream.Next() {
 			err := s.stream.Err()
+			if err != nil {
+				err = errdefs.ClassifyProviderError("anthropic", err)
+			}
 			s.mu.Lock()
 			s.err = err
 			s.mu.Unlock()
@@ -429,8 +437,8 @@ func (s *anthropicStreamMessage) finish(err error) {
 			})
 		} else {
 			s.span.SetAttributes(
-				attribute.Int64("llm.input_tokens", usage.InputTokens),
-				attribute.Int64("llm.output_tokens", usage.OutputTokens),
+				attribute.Int64(telemetry.AttrLLMInputTokens, usage.InputTokens),
+				attribute.Int64(telemetry.AttrLLMOutputTokens, usage.OutputTokens),
 			)
 			s.span.SetStatus(codes.Ok, "OK")
 			llm.RecordLLMMetrics(s.baseCtx, "anthropic", s.model, "success", dur, llm.TokenUsage{

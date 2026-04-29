@@ -4,9 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/GizClaw/flowcraft/sdk/errdefs"
 )
 
 // ---------------------------------------------------------------------------
@@ -191,6 +194,65 @@ func TestFallbackLLM_AllFail(t *testing.T) {
 	if !errors.Is(err, ErrAllProvidersFailed) {
 		t.Fatalf("expected ErrAllProvidersFailed, got: %v", err)
 	}
+}
+
+// TestFallbackLLM_TerminalErrors_AreNotAvailable pins the dual
+// contract on the chain-terminal errors:
+//
+//   - identity:     errors.Is(err, ErrAllProvidersOpen|Failed) — so
+//     callers and tests can branch on which exhaustion mode hit.
+//   - last-err id:  errors.Is(err, lastErr) — so the underlying
+//     provider error survives the wrap (the %w/%w in allFailedError
+//     keeps both unwrap branches reachable).
+//   - classification: errdefs.IsNotAvailable(err) — so HTTPStatus
+//     emits 503 instead of falling through to the default 500. A
+//     fallback chain that has run out is the textbook "service
+//     unavailable, retry later" semantics, not an internal bug.
+//
+// A regression in any one of these three would silently degrade
+// either observability (sentinel branching) or wire status (pod /
+// api would surface a 500 to clients).
+func TestFallbackLLM_TerminalErrors_AreNotAvailable(t *testing.T) {
+	t.Run("all_open", func(t *testing.T) {
+		fb := NewFallbackLLM(&failLLM{name: "p1"}, "p1",
+			[]FallbackEntry{{Name: "p2", LLM: &failLLM{name: "p2"}}},
+			WithBreakerThreshold(1), WithBreakerCooldown(10*time.Second))
+
+		_, _, _ = fb.Generate(context.Background(), nil)
+		_, _, _ = fb.Generate(context.Background(), nil)
+
+		_, _, err := fb.Generate(context.Background(), nil)
+		if !errors.Is(err, ErrAllProvidersOpen) {
+			t.Fatalf("identity lost: want ErrAllProvidersOpen, got: %v", err)
+		}
+		if !errdefs.IsNotAvailable(err) {
+			t.Fatalf("classification lost: want IsNotAvailable, got: %v", err)
+		}
+		if got := errdefs.HTTPStatus(err); got != http.StatusServiceUnavailable {
+			t.Fatalf("HTTPStatus = %d, want 503", got)
+		}
+	})
+
+	t.Run("all_failed_preserves_last_err_identity", func(t *testing.T) {
+		sentinel := errors.New("upstream-specific failure")
+		fb := NewFallbackLLM(
+			&failLLM{name: "primary", err: sentinel}, "primary",
+			[]FallbackEntry{{Name: "secondary", LLM: &failLLM{name: "secondary", err: sentinel}}})
+
+		_, _, err := fb.Generate(context.Background(), nil)
+		if !errors.Is(err, ErrAllProvidersFailed) {
+			t.Fatalf("chain identity lost: want ErrAllProvidersFailed, got: %v", err)
+		}
+		if !errors.Is(err, sentinel) {
+			t.Fatalf("provider identity lost: want sentinel reachable via Is, got: %v", err)
+		}
+		if !errdefs.IsNotAvailable(err) {
+			t.Fatalf("classification lost: want IsNotAvailable, got: %v", err)
+		}
+		if got := errdefs.HTTPStatus(err); got != http.StatusServiceUnavailable {
+			t.Fatalf("HTTPStatus = %d, want 503", got)
+		}
+	})
 }
 
 // ---------------------------------------------------------------------------
@@ -539,5 +601,78 @@ func TestTrackedStream_NilStream(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "nil stream") {
 		t.Fatalf("expected nil stream error, got: %v", err)
+	}
+}
+
+// TestCategoryLabel pins the metric / log label tokens emitted by
+// FallbackLLM. Dashboards filter on these strings, so the set is part
+// of the package's observable contract even though categoryLabel is
+// unexported.
+func TestCategoryLabel(t *testing.T) {
+	cases := []struct {
+		cat  errdefs.ProviderCategory
+		want string
+	}{
+		{errdefs.ProviderTransient, "transient"},
+		{errdefs.ProviderRateLimit, "rate_limit"},
+		{errdefs.ProviderAuth, "auth"},
+		{errdefs.ProviderBilling, "billing"},
+		{errdefs.ProviderContextOverflow, "context_overflow"},
+		{errdefs.ProviderPermanent, "permanent"},
+	}
+	for _, tc := range cases {
+		if got := categoryLabel(tc.cat); got != tc.want {
+			t.Errorf("categoryLabel(%d) = %q, want %q", tc.cat, got, tc.want)
+		}
+	}
+}
+
+// TestShouldFallback pins the chain-stop policy: ContextOverflow and
+// Permanent are the only categories that must NOT advance to the next
+// provider in the FallbackLLM chain (downstream sees the same input
+// and fails the same way). A regression here would either degrade UX
+// (give up too early) or burn quota (retry on a definite no).
+func TestShouldFallback(t *testing.T) {
+	cases := []struct {
+		cat    errdefs.ProviderCategory
+		expect bool
+	}{
+		{errdefs.ProviderTransient, true},
+		{errdefs.ProviderRateLimit, true},
+		{errdefs.ProviderAuth, true},
+		{errdefs.ProviderBilling, true},
+		{errdefs.ProviderContextOverflow, false},
+		{errdefs.ProviderPermanent, false},
+	}
+	for _, tc := range cases {
+		t.Run(categoryLabel(tc.cat), func(t *testing.T) {
+			if got := shouldFallback(tc.cat); got != tc.expect {
+				t.Errorf("shouldFallback(%v) = %v, want %v", tc.cat, got, tc.expect)
+			}
+		})
+	}
+}
+
+// TestCooldownMultiplier pins the per-category breaker hold:
+// Auth/Billing get the long penalty (credentials don't fix themselves),
+// RateLimit gets a moderate hold to let the upstream window roll over.
+func TestCooldownMultiplier(t *testing.T) {
+	cases := []struct {
+		cat  errdefs.ProviderCategory
+		want int
+	}{
+		{errdefs.ProviderTransient, 1},
+		{errdefs.ProviderRateLimit, 3},
+		{errdefs.ProviderAuth, 10},
+		{errdefs.ProviderBilling, 10},
+		{errdefs.ProviderContextOverflow, 1},
+		{errdefs.ProviderPermanent, 1},
+	}
+	for _, tc := range cases {
+		t.Run(categoryLabel(tc.cat), func(t *testing.T) {
+			if got := cooldownMultiplier(tc.cat); got != tc.want {
+				t.Errorf("cooldownMultiplier(%v) = %d, want %d", tc.cat, got, tc.want)
+			}
+		})
 	}
 }

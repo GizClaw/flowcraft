@@ -2,10 +2,12 @@ package llm
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
 
+	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/telemetry"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -18,6 +20,112 @@ const (
 	defaultBreakerCooldown      = 30 * time.Second
 	defaultHalfOpenProbeTimeout = 60 * time.Second
 )
+
+// Sentinel errors for FallbackLLM failure modes. Both are *plain*
+// stdlib errors so callers can do identity checks via
+// errors.Is(err, ErrAllProvidersOpen) — per the errdefs convention,
+// sentinels and behavioural classification are orthogonal and both
+// must be preserved.
+//
+// At the call sites below the sentinels are wrapped with
+// errdefs.NotAvailable so that the same value, once it crosses
+// into pod / api land, also satisfies errdefs.IsNotAvailable and
+// maps to HTTP 503 (a fallback chain that has run out is exactly the
+// "service is temporarily unavailable, retry later" semantics, not a
+// generic 500). The wrapping happens at the return sites — not here
+// in the var block — because pre-wrapping would yield a single shared
+// errNotAvailable value and break errors.Is identity for callers that
+// kept the plain pointer reference. See allOpenError / allFailedError
+// below for the helpers that perform the wrap.
+var (
+	ErrAllProvidersOpen   = errors.New("llm: all providers unavailable (circuit breaker open)")
+	ErrAllProvidersFailed = errors.New("llm: all providers failed")
+)
+
+// allOpenError returns the canonical "every provider's breaker is
+// open" terminal error: identity-equal to ErrAllProvidersOpen via
+// errors.Is, and classified as NotAvailable so HTTPStatus emits 503
+// instead of falling through to the default 500.
+func allOpenError() error {
+	return errdefs.NotAvailable(ErrAllProvidersOpen)
+}
+
+// allFailedError returns the "tried every provider, all failed"
+// terminal error joined with the last underlying provider error.
+// Identity-equal to ErrAllProvidersFailed AND to lastErr via
+// errors.Is (the %w/%w wrapper keeps both unwrap branches), and
+// classified as NotAvailable so the wire status is 503 even when
+// lastErr itself carries a different errdefs class (e.g. a
+// transient network error from one specific provider should not
+// determine the chain-level wire shape — the chain decision is
+// "service unavailable, please retry").
+func allFailedError(lastErr error) error {
+	return errdefs.NotAvailable(fmt.Errorf("%w: %w", ErrAllProvidersFailed, lastErr))
+}
+
+// FallbackLLM decision policy.
+//
+// The HTTP-status / keyword / SDK-error → category dispatcher lives in
+// sdk/errdefs/http.go because every external-provider boundary in the
+// SDK reuses it. What FallbackLLM specifically needs on top is just
+// three small policy decisions per category: should we move on to the
+// next provider in the chain, how long should the breaker stay open
+// after a trip, and what label to attach on per-category metrics.
+// They are package-private helpers because nobody outside this file
+// calls them — peers (sdkx/llm/*, sdkx/embedding/*, future
+// sdkx/rerank, ...) consume the errdefs class directly via
+// errdefs.IsXxx and don't need the LLM-fallback lens.
+
+// shouldFallback reports whether a given category should try the next
+// provider in the chain. Permanent and ContextOverflow stop the chain
+// because every downstream provider will see the same input and fail
+// the same way; everything else is worth trying again.
+func shouldFallback(c errdefs.ProviderCategory) bool {
+	switch c {
+	case errdefs.ProviderPermanent, errdefs.ProviderContextOverflow:
+		return false
+	default:
+		return true
+	}
+}
+
+// cooldownMultiplier returns the per-category multiplier for the base
+// breaker cooldown: Auth/Billing get a long penalty (the credentials
+// won't fix themselves on the next call), RateLimit gets a moderate
+// hold to let the upstream window roll over, everything else uses the
+// configured base cooldown unchanged.
+func cooldownMultiplier(c errdefs.ProviderCategory) int {
+	switch c {
+	case errdefs.ProviderAuth, errdefs.ProviderBilling:
+		return 10
+	case errdefs.ProviderRateLimit:
+		return 3
+	default:
+		return 1
+	}
+}
+
+// categoryLabel returns the stable short token attached to per-category
+// metrics and log records ("rate_limit" / "auth" / "billing" /
+// "context_overflow" / "permanent" / "transient"). Dashboards filter
+// on these strings, so the set is part of FallbackLLM's observable
+// contract — even though the function is unexported.
+func categoryLabel(c errdefs.ProviderCategory) string {
+	switch c {
+	case errdefs.ProviderRateLimit:
+		return "rate_limit"
+	case errdefs.ProviderAuth:
+		return "auth"
+	case errdefs.ProviderBilling:
+		return "billing"
+	case errdefs.ProviderContextOverflow:
+		return "context_overflow"
+	case errdefs.ProviderPermanent:
+		return "permanent"
+	default:
+		return "transient"
+	}
+}
 
 // FallbackLLM wraps a primary LLM with ordered fallbacks. When the primary
 // fails, fallbacks are tried in sequence. A built-in circuit breaker
@@ -148,25 +256,25 @@ func (f *FallbackLLM) Generate(ctx context.Context, messages []Message, opts ...
 			return resp, usage, nil
 		}
 		lastErr = err
-		cat := ClassifyError(err)
+		cat := errdefs.ClassifyProvider(err)
 		f.recordErrorMetric(ctx, p.name, cat)
-		if !cat.ShouldFallback() {
+		if !shouldFallback(cat) {
 			telemetry.Warn(ctx, "llm permanent error, skipping fallback",
 				otellog.String("provider", p.name),
-				otellog.String("category", cat.String()),
-				otellog.String("error", err.Error()))
+				otellog.String("category", categoryLabel(cat)),
+				otellog.String(telemetry.AttrErrorMessage, err.Error()))
 			return Message{}, TokenUsage{}, err
 		}
 		f.recordFailureWithCategory(ctx, p.name, halfOpen, cat)
 		telemetry.Warn(ctx, "llm transient failure, trying fallback",
 			otellog.String("provider", p.name),
-			otellog.String("category", cat.String()),
-			otellog.String("error", err.Error()))
+			otellog.String("category", categoryLabel(cat)),
+			otellog.String(telemetry.AttrErrorMessage, err.Error()))
 	}
 	if lastErr == nil {
-		return Message{}, TokenUsage{}, ErrAllProvidersOpen
+		return Message{}, TokenUsage{}, allOpenError()
 	}
-	return Message{}, TokenUsage{}, fmt.Errorf("%w: %w", ErrAllProvidersFailed, lastErr)
+	return Message{}, TokenUsage{}, allFailedError(lastErr)
 }
 
 func (f *FallbackLLM) GenerateStream(ctx context.Context, messages []Message, opts ...GenerateOption) (StreamMessage, error) {
@@ -190,25 +298,25 @@ func (f *FallbackLLM) GenerateStream(ctx context.Context, messages []Message, op
 			}, nil
 		}
 		lastErr = err
-		cat := ClassifyError(err)
+		cat := errdefs.ClassifyProvider(err)
 		f.recordErrorMetric(ctx, p.name, cat)
-		if !cat.ShouldFallback() {
+		if !shouldFallback(cat) {
 			telemetry.Warn(ctx, "llm stream permanent error, skipping fallback",
 				otellog.String("provider", p.name),
-				otellog.String("category", cat.String()),
-				otellog.String("error", err.Error()))
+				otellog.String("category", categoryLabel(cat)),
+				otellog.String(telemetry.AttrErrorMessage, err.Error()))
 			return nil, err
 		}
 		f.recordFailureWithCategory(ctx, p.name, halfOpen, cat)
 		telemetry.Warn(ctx, "llm stream transient failure, trying fallback",
 			otellog.String("provider", p.name),
-			otellog.String("category", cat.String()),
-			otellog.String("error", err.Error()))
+			otellog.String("category", categoryLabel(cat)),
+			otellog.String(telemetry.AttrErrorMessage, err.Error()))
 	}
 	if lastErr == nil {
-		return nil, ErrAllProvidersOpen
+		return nil, allOpenError()
 	}
-	return nil, fmt.Errorf("%w: %w", ErrAllProvidersFailed, lastErr)
+	return nil, allFailedError(lastErr)
 }
 
 // trackedStream wraps a StreamMessage to defer circuit breaker recording
@@ -239,9 +347,9 @@ func (t *trackedStream) Close() error {
 func (t *trackedStream) finish() {
 	t.once.Do(func() {
 		if err := t.Err(); err != nil {
-			cat := ClassifyError(err)
+			cat := errdefs.ClassifyProvider(err)
 			t.fallback.recordErrorMetric(t.ctx, t.provider, cat)
-			if cat.ShouldFallback() {
+			if shouldFallback(cat) {
 				t.fallback.recordFailureWithCategory(t.ctx, t.provider, t.halfOpen, cat)
 			}
 		} else {
@@ -275,11 +383,11 @@ func (f *FallbackLLM) canAttempt(ctx context.Context, name string) (allow, halfO
 	return true, true
 }
 
-func (f *FallbackLLM) recordFailureWithCategory(ctx context.Context, name string, wasHalfOpen bool, cat ErrorCategory) {
+func (f *FallbackLLM) recordFailureWithCategory(ctx context.Context, name string, wasHalfOpen bool, cat errdefs.ProviderCategory) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	cs := f.breaker[name]
-	cooldown := f.cooldown * time.Duration(cat.CooldownMultiplier())
+	cooldown := f.cooldown * time.Duration(cooldownMultiplier(cat))
 	if wasHalfOpen {
 		cs.halfOpen = false
 		cs.openUntil = time.Now().Add(cooldown)
@@ -297,14 +405,14 @@ func (f *FallbackLLM) recordFailureWithCategory(ctx context.Context, name string
 	}
 }
 
-func (f *FallbackLLM) recordErrorMetric(ctx context.Context, name string, cat ErrorCategory) {
+func (f *FallbackLLM) recordErrorMetric(ctx context.Context, name string, cat errdefs.ProviderCategory) {
 	if f.errorsByCategory == nil {
 		return
 	}
 	f.errorsByCategory.Add(ctx, 1,
 		metric.WithAttributes(
 			attribute.String("provider", name),
-			attribute.String("category", cat.String()),
+			attribute.String("category", categoryLabel(cat)),
 		))
 }
 

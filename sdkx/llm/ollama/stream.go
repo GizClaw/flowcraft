@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"github.com/GizClaw/flowcraft/sdk/llm"
+	"github.com/GizClaw/flowcraft/sdk/telemetry"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -233,8 +234,8 @@ func (s *ollamaStreamMessage) finish(err error) {
 		s.span.SetStatus(codes.Error, err.Error())
 	} else {
 		s.span.SetAttributes(
-			attribute.Int64("llm.input_tokens", usage.InputTokens),
-			attribute.Int64("llm.output_tokens", usage.OutputTokens),
+			attribute.Int64(telemetry.AttrLLMInputTokens, usage.InputTokens),
+			attribute.Int64(telemetry.AttrLLMOutputTokens, usage.OutputTokens),
 		)
 		s.span.SetStatus(codes.Ok, "OK")
 	}

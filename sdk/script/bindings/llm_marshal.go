@@ -3,6 +3,7 @@ package bindings
 import (
 	"fmt"
 
+	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/model"
 )
 
@@ -290,7 +291,7 @@ func parseMessage(raw any, ctx string) (model.Message, error) {
 
 	partsRaw, hasParts := m["parts"]
 	if !hasParts {
-		return model.Message{}, fmt.Errorf("%s: missing required field %q", ctx, "parts")
+		return model.Message{}, errdefs.Validationf("%s: missing required field %q", ctx, "parts")
 	}
 	partsList, err := asAnyList(partsRaw, ctx+".parts")
 	if err != nil {
@@ -392,7 +393,7 @@ func parsePart(raw any, ctx string) (model.Part, error) {
 		return model.Part{Type: pt, ToolResult: tr}, nil
 
 	default:
-		return model.Part{}, fmt.Errorf("%s: unknown part type %q", ctx, typeStr)
+		return model.Part{}, errdefs.Validationf("%s: unknown part type %q", ctx, typeStr)
 	}
 }
 
@@ -471,7 +472,7 @@ func optionalDataRef(m map[string]any, key, ctx string) (*model.DataRef, error) 
 	// verbatim because the model contract already says it is JSON-shaped.
 	valRaw, ok := sub["value"]
 	if !ok {
-		return nil, fmt.Errorf("%s.%s: missing required field %q", ctx, key, "value")
+		return nil, errdefs.Validationf("%s.%s: missing required field %q", ctx, key, "value")
 	}
 	val, err := asStringMap(valRaw, ctx+"."+key+".value")
 	if err != nil {
@@ -531,7 +532,7 @@ func optionalToolResult(m map[string]any, key, ctx string) (*model.ToolResult, e
 	if v, ok := sub["is_error"]; ok && v != nil {
 		b, ok := v.(bool)
 		if !ok {
-			return nil, fmt.Errorf("%s.%s.is_error: expected bool, got %T", ctx, key, v)
+			return nil, errdefs.Validationf("%s.%s.is_error: expected bool, got %T", ctx, key, v)
 		}
 		isErr = b
 	}
@@ -548,11 +549,11 @@ func optionalToolResult(m map[string]any, key, ctx string) (*model.ToolResult, e
 //     responsible for "not provided" decide the policy)
 func asStringMap(v any, ctx string) (map[string]any, error) {
 	if v == nil {
-		return nil, fmt.Errorf("%s: expected object, got nil", ctx)
+		return nil, errdefs.Validationf("%s: expected object, got nil", ctx)
 	}
 	m, ok := v.(map[string]any)
 	if !ok {
-		return nil, fmt.Errorf("%s: expected object, got %T", ctx, v)
+		return nil, errdefs.Validationf("%s: expected object, got %T", ctx, v)
 	}
 	return m, nil
 }
@@ -583,18 +584,18 @@ func asAnyList(v any, ctx string) ([]any, error) {
 		}
 		return out, nil
 	default:
-		return nil, fmt.Errorf("%s: expected array, got %T", ctx, v)
+		return nil, errdefs.Validationf("%s: expected array, got %T", ctx, v)
 	}
 }
 
 func requiredString(m map[string]any, key, ctx string) (string, error) {
 	v, ok := m[key]
 	if !ok {
-		return "", fmt.Errorf("%s: missing required field %q", ctx, key)
+		return "", errdefs.Validationf("%s: missing required field %q", ctx, key)
 	}
 	s, ok := v.(string)
 	if !ok {
-		return "", fmt.Errorf("%s.%s: expected string, got %T", ctx, key, v)
+		return "", errdefs.Validationf("%s.%s: expected string, got %T", ctx, key, v)
 	}
 	return s, nil
 }
@@ -606,7 +607,7 @@ func optionalString(m map[string]any, key, ctx string) (string, error) {
 	}
 	s, ok := v.(string)
 	if !ok {
-		return "", fmt.Errorf("%s.%s: expected string, got %T", ctx, key, v)
+		return "", errdefs.Validationf("%s.%s: expected string, got %T", ctx, key, v)
 	}
 	return s, nil
 }
@@ -614,7 +615,7 @@ func optionalString(m map[string]any, key, ctx string) (string, error) {
 func rejectUnknownKeys(m map[string]any, allowed map[string]struct{}, ctx string) error {
 	for k := range m {
 		if _, ok := allowed[k]; !ok {
-			return fmt.Errorf("%s: unknown field %q", ctx, k)
+			return errdefs.Validationf("%s: unknown field %q", ctx, k)
 		}
 	}
 	return nil
