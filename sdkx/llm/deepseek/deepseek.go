@@ -1,9 +1,23 @@
 package deepseek
 
 import (
+	"time"
+
 	"github.com/GizClaw/flowcraft/sdk/llm"
 	"github.com/GizClaw/flowcraft/sdkx/llm/openai"
 )
+
+// legacyAliasRetiresAt is the announced shutdown moment for the
+// `deepseek-chat` and `deepseek-reasoner` aliases per
+// https://api-docs.deepseek.com/news/news260424:
+//
+//	"deepseek-chat & deepseek-reasoner will be fully retired and
+//	 inaccessible after Jul 24th, 2026, 15:59 (UTC Time)."
+//
+// ModelDeprecation.RetiresAt documents that the HH:MM:SS portion is
+// ignored by the telemetry warning formatter, but we keep the precise
+// minute here so the source mirrors the upstream announcement.
+var legacyAliasRetiresAt = time.Date(2026, 7, 24, 15, 59, 0, 0, time.UTC)
 
 func init() {
 	llm.RegisterProvider("deepseek", func(model string, config map[string]any) (llm.LLM, error) {
@@ -88,6 +102,11 @@ func init() {
 					MaxOutputTokens:  8_000,
 				},
 			},
+			Deprecation: llm.ModelDeprecation{
+				RetiresAt:   legacyAliasRetiresAt,
+				Replacement: "deepseek/deepseek-v4-flash",
+				Notes:       "https://api-docs.deepseek.com/news/news260424 (legacy alias → v4-flash non-thinking)",
+			},
 		},
 		{
 			// Routes to deepseek-v4-flash thinking mode. Per
@@ -114,6 +133,11 @@ func init() {
 					MaxContextTokens: 1_000_000,
 					MaxOutputTokens:  64_000,
 				},
+			},
+			Deprecation: llm.ModelDeprecation{
+				RetiresAt:   legacyAliasRetiresAt,
+				Replacement: "deepseek/deepseek-v4-flash",
+				Notes:       "https://api-docs.deepseek.com/news/news260424 (legacy alias → v4-flash thinking)",
 			},
 		},
 	})
