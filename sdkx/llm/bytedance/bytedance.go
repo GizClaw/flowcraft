@@ -264,5 +264,19 @@ func (c *LLM) buildRequest(msgs []llm.Message, opts *llm.GenerateOptions) model.
 		}
 	}
 
+	// parallel_tool_calls: the Volcengine SDK exposes this as the typed
+	// field req.ParallelToolCalls (*bool) rather than a free-form Extra
+	// passthrough. We bridge it from opts.Extra["parallel_tool_calls"]
+	// so callers get the same control surface as on the OpenAI adapter.
+	//
+	// When the model's CapParallelTools is disabled, the WithCaps
+	// middleware strips this key from Extra before we get here — so
+	// the typed field stays nil and Doubao falls back to its API
+	// default, never seeing a parallel-tool toggle the model can't
+	// honour.
+	if v, ok := opts.Extra["parallel_tool_calls"].(bool); ok {
+		req.ParallelToolCalls = &v
+	}
+
 	return req
 }
