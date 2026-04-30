@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/model"
@@ -236,22 +237,81 @@ func (c *capsLLM) filtered(ctx context.Context, opts []GenerateOption) []Generat
 			}
 			o.ToolChoice = nil
 		}
-		// CapParallelTools is intentionally informational-only at the
-		// middleware layer: the request payload has no top-level
-		// "parallel_tools" field — it lives in Extra under
-		// provider-specific keys (e.g. OpenAI's "parallel_tool_calls",
-		// Anthropic's "disable_parallel_tool_use"). Stripping arbitrary
-		// Extra keys here would be brittle and risks silently breaking
-		// other adapters that share the namespace.
+		// CapParallelTools enforcement: parallel-tool toggles are
+		// carried per-provider as Extra map entries (no top-level
+		// GenerateOptions field), so we strip the known protocol-
+		// reserved keys when the cap is disabled. The list is kept
+		// narrow to exactly the keys defined by OpenAI / Anthropic
+		// chat APIs — these are reserved namespaces, not free-form
+		// labels that another adapter could plausibly repurpose.
 		//
-		// Contract: provider adapters MUST consult
-		// `caps.Supports(CapParallelTools)` themselves before passing
-		// the corresponding Extra key to their backend. The catalog
-		// declaration via this cap is the single source of truth that
-		// adapters read at request build time. See
-		// doc/sdk-llm-redesign.md §3.5 for the rationale.
+		// Adapters built on those protocols (incl. OpenAI-compatible
+		// wrappers like Qwen, ByteDance, MiniMax, DeepSeek) all
+		// honour these key names, so the strip works uniformly.
+		// New adapters introducing a different parallel-tool key
+		// must register it via RegisterParallelToolExtraKey at init
+		// time so the middleware can tear it down here too.
+		if !c.caps.Supports(CapParallelTools) && len(o.Extra) > 0 {
+			stripParallelToolExtras(ctx, o)
+		}
 	})
 	return out
+}
+
+// parallelToolExtraKeys lists Extra map keys that adapters use to
+// toggle parallel tool calling on their backend. WithCaps deletes
+// these keys from GenerateOptions.Extra when the model's
+// CapParallelTools is disabled, so a catalog declaration of "this
+// model cannot run tools in parallel" actually takes effect at the
+// request boundary instead of being a silent no-op.
+//
+// Default contents cover the only two protocols the SDK ships
+// adapters for today:
+//   - "parallel_tool_calls"       — OpenAI Chat Completions / Responses
+//   - "disable_parallel_tool_use" — Anthropic Messages API (also via
+//     the MiniMax /anthropic-compat endpoint)
+//
+// Guarded by parallelToolExtraKeysMu for the rare init-time mutation.
+var (
+	parallelToolExtraKeysMu sync.RWMutex
+	parallelToolExtraKeys   = map[string]struct{}{
+		"parallel_tool_calls":       {},
+		"disable_parallel_tool_use": {},
+	}
+)
+
+// RegisterParallelToolExtraKey adds an Extra-map key name to the set
+// of keys WithCaps strips when CapParallelTools is disabled. New
+// provider adapters introducing a non-standard parallel-tool toggle
+// MUST call this from init() so the catalog cap actually enforces
+// the constraint at request time.
+func RegisterParallelToolExtraKey(key string) {
+	if key == "" {
+		return
+	}
+	parallelToolExtraKeysMu.Lock()
+	defer parallelToolExtraKeysMu.Unlock()
+	parallelToolExtraKeys[key] = struct{}{}
+}
+
+func stripParallelToolExtras(ctx context.Context, o *GenerateOptions) {
+	parallelToolExtraKeysMu.RLock()
+	keys := make([]string, 0, len(parallelToolExtraKeys))
+	for k := range parallelToolExtraKeys {
+		if _, ok := o.Extra[k]; ok {
+			keys = append(keys, k)
+		}
+	}
+	parallelToolExtraKeysMu.RUnlock()
+	if len(keys) == 0 {
+		return
+	}
+	for _, k := range keys {
+		delete(o.Extra, k)
+	}
+	telemetry.Warn(ctx,
+		"llm: dropping parallel-tool extras — model does not support parallel tool calls",
+		otellog.String("dropped_keys", strings.Join(keys, ",")))
 }
 
 // ---------------------------------------------------------------------------

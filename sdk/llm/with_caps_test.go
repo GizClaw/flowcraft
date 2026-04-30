@@ -259,3 +259,70 @@ func TestWithCaps_AudioDisabled_RejectsAudioPart(t *testing.T) {
 		t.Fatalf("expected Validation error, got %v", err)
 	}
 }
+
+func TestWithCaps_ParallelToolsDisabled_StripsKnownExtras(t *testing.T) {
+	// Disabling CapParallelTools must remove the protocol-reserved
+	// Extra keys so adapters never forward a parallel-tool toggle to
+	// the backend. Other Extra keys must be preserved untouched.
+	mock := &capsMockLLM{}
+	wrapped := WithCaps(mock, DisabledCaps(CapParallelTools))
+
+	_, _, err := wrapped.Generate(context.Background(),
+		[]Message{NewTextMessage(model.RoleUser, "hi")},
+		WithExtra("parallel_tool_calls", false),
+		WithExtra("disable_parallel_tool_use", true),
+		WithExtra("unrelated", "keep-me"),
+	)
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if mock.lastOpts == nil {
+		t.Fatal("mock did not capture opts")
+	}
+	if _, ok := mock.lastOpts.Extra["parallel_tool_calls"]; ok {
+		t.Error("parallel_tool_calls should have been stripped")
+	}
+	if _, ok := mock.lastOpts.Extra["disable_parallel_tool_use"]; ok {
+		t.Error("disable_parallel_tool_use should have been stripped")
+	}
+	if got, ok := mock.lastOpts.Extra["unrelated"]; !ok || got != "keep-me" {
+		t.Errorf("unrelated key was modified or dropped: got %v ok=%v", got, ok)
+	}
+}
+
+func TestWithCaps_ParallelToolsEnabled_PreservesExtras(t *testing.T) {
+	// Sanity: when the cap is supported the Extra map must pass
+	// through verbatim. Catches accidental unconditional stripping.
+	mock := &capsMockLLM{}
+	wrapped := WithCaps(mock, DisabledCaps(CapTemperature)) // unrelated cap disabled
+
+	_, _, err := wrapped.Generate(context.Background(),
+		[]Message{NewTextMessage(model.RoleUser, "hi")},
+		WithExtra("parallel_tool_calls", false),
+	)
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if got, ok := mock.lastOpts.Extra["parallel_tool_calls"]; !ok || got != false {
+		t.Errorf("parallel_tool_calls should have survived: got %v ok=%v", got, ok)
+	}
+}
+
+func TestRegisterParallelToolExtraKey_PicksUpCustomKey(t *testing.T) {
+	// New adapter registers a custom toggle name → middleware must
+	// strip it under CapParallelTools=disabled just like the built-ins.
+	RegisterParallelToolExtraKey("custom_parallel_toggle")
+
+	mock := &capsMockLLM{}
+	wrapped := WithCaps(mock, DisabledCaps(CapParallelTools))
+	_, _, err := wrapped.Generate(context.Background(),
+		[]Message{NewTextMessage(model.RoleUser, "hi")},
+		WithExtra("custom_parallel_toggle", "off"),
+	)
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if _, ok := mock.lastOpts.Extra["custom_parallel_toggle"]; ok {
+		t.Error("custom registered key should have been stripped")
+	}
+}
