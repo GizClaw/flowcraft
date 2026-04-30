@@ -69,6 +69,7 @@ type Registry struct {
 	mu             sync.RWMutex
 	tools          map[string]Tool
 	scopes         map[string]string
+	middlewares    []Middleware
 	maxConcurrency int64
 	execTimeout    time.Duration
 	sem            *semaphore.Weighted
@@ -185,10 +186,26 @@ func (r *Registry) Len() int {
 	return len(r.tools)
 }
 
-// Execute runs a single tool call with OTel tracing and metrics.
-// All errors (including tool-not-found) are returned as ToolResult with
-// IsError=true, so callers never need to handle a separate error path.
+// Execute runs a single tool call through the registered middleware
+// chain (outermost first) and the core dispatch (lookup + timeout +
+// telemetry). All errors (including tool-not-found) are returned as
+// ToolResult with IsError=true, so callers never need to handle a
+// separate error path.
+//
+// Tool errors should be classified via sdk/errdefs markers
+// (PolicyDenied, BudgetExceeded, RateLimit, NotFound, ...) when the
+// classification matters for upstream retry / restart decisions.
+// Built-in tools are expected to follow this convention; third-party
+// tools are encouraged to do the same.
 func (r *Registry) Execute(ctx context.Context, call model.ToolCall) model.ToolResult {
+	dispatch := composeDispatch(r.coreDispatch, r.snapshotMiddlewares())
+	return dispatch(ctx, call)
+}
+
+// coreDispatch is the un-decorated execution path: span/log setup,
+// lookup, optional timeout, and the actual Tool.Execute call.
+// Middlewares wrap this Dispatch via Registry.Use.
+func (r *Registry) coreDispatch(ctx context.Context, call model.ToolCall) model.ToolResult {
 	ctx, span := telemetry.Tracer().Start(ctx, fmt.Sprintf("tool.%s.execute", call.Name), trace.WithAttributes(attribute.String(telemetry.AttrToolName, call.Name)))
 	defer span.End()
 

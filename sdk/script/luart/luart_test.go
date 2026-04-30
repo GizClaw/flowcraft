@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/script"
 )
 
@@ -270,5 +272,38 @@ func TestPushGoValue_UintKeyMap(t *testing.T) {
 	`, env)
 	if err != nil {
 		t.Fatalf("uint key map: %v", err)
+	}
+}
+
+func TestRuntime_MaxExecTime_RuntimeEnforced(t *testing.T) {
+	rt := New(WithPoolSize(1), WithMaxExecTime(50*time.Millisecond))
+	defer rt.Close()
+	start := time.Now()
+	_, err := rt.Exec(context.Background(), "loop", `while true do end`, nil)
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatal("expected timeout from runtime-enforced cap")
+	}
+	if !errdefs.IsTimeout(err) {
+		t.Errorf("expected errdefs.IsTimeout, got %v", err)
+	}
+	if elapsed > 2*time.Second {
+		t.Errorf("cap did not enforce, elapsed=%v", elapsed)
+	}
+}
+
+func TestRuntime_MaxExecTime_CallerCtxStillWins(t *testing.T) {
+	rt := New(WithPoolSize(1), WithMaxExecTime(10*time.Second))
+	defer rt.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	_, err := rt.Exec(ctx, "loop", `while true do end`, nil)
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatal("expected timeout from caller ctx")
+	}
+	if elapsed > 2*time.Second {
+		t.Errorf("caller ctx did not win, elapsed=%v", elapsed)
 	}
 }

@@ -13,7 +13,7 @@ import (
 type stubResolver struct{}
 
 func (s *stubResolver) Resolve(_ context.Context, _ string) (llm.LLM, error) { return nil, nil }
-func (s *stubResolver) InvalidateCache(_ string)                             {}
+func (s *stubResolver) InvalidateCache(_ ...llm.InvalidateOption)            {}
 
 func TestRegister_NilResolverFailsBuild(t *testing.T) {
 	f := node.NewFactory()

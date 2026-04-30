@@ -25,6 +25,50 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
+// ============================================================================
+// Spec-redesign aliases (added 2026-04-30, scheduled for removal in v0.3.0).
+//
+// These symbols are kept as thin shims so that callers using the old
+// caps-only / extra-caps / model-caps API surface keep compiling
+// during the migration window. Internal sdk/llm code MUST use the
+// new names directly (WithCaps / WithPolicyCaps / LookupModelSpec).
+// See doc/sdk-llm-redesign.md §7 "Deprecation housekeeping" for the
+// placement convention.
+// ============================================================================
+
+// CapsMiddleware wraps an LLM with the caps filter.
+//
+// Deprecated: use [WithCaps] directly. Scheduled for removal in v0.3.0;
+// kept only so existing call sites compile during the migration.
+func CapsMiddleware(inner LLM, caps ModelCaps) LLM {
+	return WithCaps(inner, caps)
+}
+
+// WithExtraCaps merges resolver-wide caps into every produced LLM.
+//
+// Deprecated: renamed to [WithPolicyCaps] to make the resolver-wide
+// policy intent explicit (vs per-model caps). Scheduled for removal
+// in v0.3.0.
+func WithExtraCaps(caps ModelCaps) ResolverOption {
+	return WithPolicyCaps(caps)
+}
+
+// LookupModelCaps returns the catalog ModelCaps for a registered
+// model.
+//
+// Deprecated: use (*ProviderRegistry).LookupModelSpec(provider,
+// model).Caps. Scheduled for removal in v0.3.0.
+func (r *ProviderRegistry) LookupModelCaps(provider, model string) ModelCaps {
+	return r.LookupModelSpec(provider, model).Caps
+}
+
+// ============================================================================
+// Workflow-era round helpers (RunRound / RoundConfig family). Scheduled
+// for removal in v0.3.0 alongside the rest of the workflow package
+// surface, once the agent + engine runtime owns per-call streaming
+// and tool execution end-to-end.
+// ============================================================================
+
 // RoundResult is the structured output of one LLM round.
 //
 // Deprecated: RoundResult is part of the workflow-based round helper

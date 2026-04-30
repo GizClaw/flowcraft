@@ -39,9 +39,16 @@ func newResolverMockStore() *resolverMockStore {
 	return &resolverMockStore{configs: make(map[string]*ProviderConfig)}
 }
 
-func (s *resolverMockStore) GetProviderConfig(_ context.Context, key string) (*ProviderConfig, error) {
+func (s *resolverMockStore) GetProviderConfig(_ context.Context, provider, profile string) (*ProviderConfig, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	// Tests that only set "<provider>" entries see profile=="" requests as
+	// equivalent. Tests that exercise multi-profile behavior set keys of
+	// the form "<provider>#<profile>" directly.
+	key := provider
+	if profile != "" {
+		key = provider + "#" + profile
+	}
 	pc, ok := s.configs[key]
 	if !ok {
 		return nil, errdefs.NotFoundf("provider_config %q not found", key)
@@ -78,11 +85,15 @@ func newLayeredMockStore() *layeredMockStore {
 	}
 }
 
-func (s *layeredMockStore) GetProviderConfig(_ context.Context, provider string) (*ProviderConfig, error) {
-	if pc, ok := s.providers[provider]; ok {
+func (s *layeredMockStore) GetProviderConfig(_ context.Context, provider, profile string) (*ProviderConfig, error) {
+	key := provider
+	if profile != "" {
+		key = provider + "#" + profile
+	}
+	if pc, ok := s.providers[key]; ok {
 		return pc, nil
 	}
-	return nil, errdefs.NotFoundf("provider %q not found", provider)
+	return nil, errdefs.NotFoundf("provider %q not found", key)
 }
 
 func (s *layeredMockStore) GetModelConfig(_ context.Context, provider, model string) (*ModelConfig, error) {
@@ -104,7 +115,10 @@ func (s *layeredMockStore) GetDefaultModel(_ context.Context) (*DefaultModelRef,
 // stay opt-in.
 type providerOnlyStore struct{ providers map[string]*ProviderConfig }
 
-func (s *providerOnlyStore) GetProviderConfig(_ context.Context, provider string) (*ProviderConfig, error) {
+func (s *providerOnlyStore) GetProviderConfig(_ context.Context, provider, profile string) (*ProviderConfig, error) {
+	if profile != "" {
+		return nil, errdefs.NotFoundf("provider %q has no profile %q", provider, profile)
+	}
 	if pc, ok := s.providers[provider]; ok {
 		return pc, nil
 	}
@@ -264,7 +278,7 @@ func TestResolver_InvalidateCache_ByProvider(t *testing.T) {
 		t.Fatalf("expected 2 initial calls, got %d", factoryCalls.Load())
 	}
 
-	r.InvalidateCache("p1")
+	r.InvalidateCache(WithProvider("p1"))
 	_, _ = r.Resolve(ctx, "p1/model-a")
 	if factoryCalls.Load() != 3 {
 		t.Fatalf("expected p1 cache miss after invalidate, got %d calls", factoryCalls.Load())
@@ -292,7 +306,7 @@ func TestResolver_InvalidateCache_All(t *testing.T) {
 
 	_, _ = r.Resolve(ctx, "prov/m1")
 	_, _ = r.Resolve(ctx, "prov/m2")
-	r.InvalidateCache("")
+	r.InvalidateCache()
 	_, _ = r.Resolve(ctx, "prov/m1")
 	_, _ = r.Resolve(ctx, "prov/m2")
 
@@ -505,15 +519,15 @@ func TestResolver_Caps_LayeredMerge(t *testing.T) {
 	reg.RegisterModels("p", []ModelInfo{
 		{Name: "reason-model", Caps: DisabledCaps(CapTemperature)},
 	})
-	// Layer 2: ProviderConfig.Caps disables JSON mode for everything under p.
+	// Layer 2: ProviderConfig.SpecOverride disables JSON mode for everything under p.
 	store.providers["p"] = &ProviderConfig{
 		Provider: "p", Config: map[string]any{"api_key": "k"},
-		Caps: DisabledCaps(CapJSONMode),
+		SpecOverride: ModelSpec{Caps: DisabledCaps(CapJSONMode)},
 	}
-	// Layer 3: ModelConfig.Caps disables JSON schema for this model.
+	// Layer 3: ModelConfig.SpecOverride disables JSON schema for this model.
 	store.models["p/reason-model"] = &ModelConfig{
 		Provider: "p", Model: "reason-model",
-		Caps: DisabledCaps(CapJSONSchema),
+		SpecOverride: ModelSpec{Caps: DisabledCaps(CapJSONSchema)},
 	}
 
 	r := newResolverWithRegistry(store, reg)
@@ -614,5 +628,332 @@ func TestShallowMergeConfig_EmptyOverlay_ReturnsBaseAsIs(t *testing.T) {
 	base["a"] = 2
 	if got["a"] != 2 {
 		t.Errorf("expected zero-overlay path to return base verbatim, got snapshot %v", got["a"])
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Profile routing — end-to-end ctx-tagged profile picks the right
+// ProviderConfig record, missing profile fails loud, default profile
+// stays untouched, and per-profile invalidation has the expected
+// scope.
+//
+// Documented contracts under test:
+//   - doc/sdk-llm-redesign.md §3.4: WithCredentialProfile installs
+//     the profile; CredentialProfileFromContext reads it; the
+//     resolver passes it verbatim to ProviderConfigStore.
+//   - §3.4 strict-match policy: missing profile errors instead of
+//     silently falling back to the default profile.
+//   - §5: WithProfile narrows InvalidateCache to one credential
+//     without disturbing other profiles or providers.
+// ---------------------------------------------------------------------------
+
+func TestResolver_Profile_RoutesToTaggedConfig(t *testing.T) {
+	store := newResolverMockStore()
+	reg := NewProviderRegistry()
+	reg.Register("p", func(_ string, config map[string]any) (LLM, error) {
+		// Bake the api_key into the model name so we can assert which
+		// credential record the factory actually saw.
+		return &resolverMockLLM{model: config["api_key"].(string)}, nil
+	})
+	store.configs["p"] = &ProviderConfig{
+		Provider: "p", Config: map[string]any{"api_key": "default-key"},
+	}
+	store.configs["p#tenant-a"] = &ProviderConfig{
+		Provider: "p", Profile: "tenant-a",
+		Config: map[string]any{"api_key": "tenant-a-key"},
+	}
+
+	r := newResolverWithRegistry(store, reg)
+
+	// Untagged ctx → default profile entry.
+	def, err := r.Resolve(context.Background(), "p/m")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := def.(*resolverMockLLM).model; got != "default-key" {
+		t.Errorf("default profile: want 'default-key', got %q", got)
+	}
+
+	// Tagged ctx → tenant-a entry.
+	ctx := WithCredentialProfile(context.Background(), "tenant-a")
+	tA, err := r.Resolve(ctx, "p/m")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := tA.(*resolverMockLLM).model; got != "tenant-a-key" {
+		t.Errorf("tagged profile: want 'tenant-a-key', got %q", got)
+	}
+
+	// Default and tenant-a must be cached separately — re-resolving
+	// with each ctx returns the same instance respectively.
+	def2, _ := r.Resolve(context.Background(), "p/m")
+	if def2 != def {
+		t.Error("default-profile cache should be hit on re-resolve")
+	}
+	tA2, _ := r.Resolve(ctx, "p/m")
+	if tA2 != tA {
+		t.Error("tenant-a-profile cache should be hit on re-resolve")
+	}
+	if def == tA {
+		t.Fatal("default and tenant-a must be distinct cached instances")
+	}
+}
+
+func TestResolver_Profile_MissingProfile_FailsLoud(t *testing.T) {
+	store := newResolverMockStore()
+	reg := NewProviderRegistry()
+	reg.Register("p", func(_ string, _ map[string]any) (LLM, error) {
+		return &resolverMockLLM{}, nil
+	})
+	// Only the default-profile entry exists.
+	store.configs["p"] = &ProviderConfig{
+		Provider: "p", Config: map[string]any{"api_key": "k"},
+	}
+
+	r := newResolverWithRegistry(store, reg)
+	ctx := WithCredentialProfile(context.Background(), "ghost")
+	_, err := r.Resolve(ctx, "p/m")
+	if err == nil {
+		t.Fatal("missing profile must fail; silent fallback to default would be a billing/safety incident")
+	}
+}
+
+func TestResolver_InvalidateCache_ByProfile_ScopesToOneTenant(t *testing.T) {
+	store := newResolverMockStore()
+	reg := NewProviderRegistry()
+	var factoryCalls atomic.Int32
+	reg.Register("p", func(_ string, _ map[string]any) (LLM, error) {
+		factoryCalls.Add(1)
+		return &resolverMockLLM{}, nil
+	})
+	store.configs["p"] = &ProviderConfig{Provider: "p", Config: map[string]any{"api_key": "default"}}
+	store.configs["p#tenant-a"] = &ProviderConfig{Provider: "p", Profile: "tenant-a", Config: map[string]any{"api_key": "a"}}
+	store.configs["p#tenant-b"] = &ProviderConfig{Provider: "p", Profile: "tenant-b", Config: map[string]any{"api_key": "b"}}
+
+	r := newResolverWithRegistry(store, reg)
+	ctxA := WithCredentialProfile(context.Background(), "tenant-a")
+	ctxB := WithCredentialProfile(context.Background(), "tenant-b")
+
+	_, _ = r.Resolve(context.Background(), "p/m")
+	_, _ = r.Resolve(ctxA, "p/m")
+	_, _ = r.Resolve(ctxB, "p/m")
+	if factoryCalls.Load() != 3 {
+		t.Fatalf("expected 3 initial factory calls (one per profile), got %d", factoryCalls.Load())
+	}
+
+	// Evict ONLY tenant-a.
+	r.InvalidateCache(WithProvider("p"), WithProfile("tenant-a"))
+
+	_, _ = r.Resolve(ctxA, "p/m")
+	if factoryCalls.Load() != 4 {
+		t.Errorf("tenant-a should have re-instantiated, calls=%d", factoryCalls.Load())
+	}
+	_, _ = r.Resolve(ctxB, "p/m")
+	_, _ = r.Resolve(context.Background(), "p/m")
+	if factoryCalls.Load() != 4 {
+		t.Errorf("tenant-b and default should still be cached, calls=%d", factoryCalls.Load())
+	}
+}
+
+func TestResolver_InvalidateCache_ByProfile_AcrossProviders(t *testing.T) {
+	// WithProfile alone (no WithProvider) clears every provider's
+	// matching profile — the AND-filter is independent on each
+	// dimension, see doc §5.
+	store := newResolverMockStore()
+	reg := NewProviderRegistry()
+	var factoryCalls atomic.Int32
+	for _, p := range []string{"p1", "p2"} {
+		reg.Register(p, func(_ string, _ map[string]any) (LLM, error) {
+			factoryCalls.Add(1)
+			return &resolverMockLLM{}, nil
+		})
+		store.configs[p+"#shared"] = &ProviderConfig{Provider: p, Profile: "shared", Config: map[string]any{}}
+		store.configs[p] = &ProviderConfig{Provider: p, Config: map[string]any{}}
+	}
+
+	r := newResolverWithRegistry(store, reg)
+	ctxShared := WithCredentialProfile(context.Background(), "shared")
+	_, _ = r.Resolve(ctxShared, "p1/m")
+	_, _ = r.Resolve(ctxShared, "p2/m")
+	_, _ = r.Resolve(context.Background(), "p1/m")
+	_, _ = r.Resolve(context.Background(), "p2/m")
+	if factoryCalls.Load() != 4 {
+		t.Fatalf("expected 4 initial calls, got %d", factoryCalls.Load())
+	}
+
+	r.InvalidateCache(WithProfile("shared"))
+
+	_, _ = r.Resolve(ctxShared, "p1/m")
+	_, _ = r.Resolve(ctxShared, "p2/m")
+	if factoryCalls.Load() != 6 {
+		t.Errorf("both providers' shared profile should re-instantiate, calls=%d", factoryCalls.Load())
+	}
+	_, _ = r.Resolve(context.Background(), "p1/m")
+	_, _ = r.Resolve(context.Background(), "p2/m")
+	if factoryCalls.Load() != 6 {
+		t.Errorf("default-profile entries should remain cached, calls=%d", factoryCalls.Load())
+	}
+}
+
+// Coverage for the cross-middleware contract documented in
+// doc/sdk-llm-redesign.md §3.6 (defaults → caps → limits) and §4
+// (one-shot resolver assembly, no unwrap dance).
+
+// ---------------------------------------------------------------------------
+// §3.6 — three-layer composition order
+// ---------------------------------------------------------------------------
+
+// TestCompose_DefaultsThenCapsThenLimits validates the full chain:
+//
+//  1. Defaults installs Temperature=0.7 and MaxTokens=999 because the
+//     caller left both nil.
+//  2. Caps disables Temperature → it gets stripped to nil even though
+//     the default just set it (caps run AFTER defaults).
+//  3. Limits clamps MaxTokens=999 down to MaxOutputTokens=100 (limits
+//     run AFTER caps; if caps had stripped MaxTokens nothing would
+//     need clamping — but here MaxTokens stays supported).
+//
+// Failure of any of the three steps produces a distinct symptom on
+// the captured opts so a regression points right at the broken layer.
+func TestCompose_DefaultsThenCapsThenLimits(t *testing.T) {
+	inner := &capsMockLLM{}
+	defaults := GenerateOptions{
+		Temperature: floatPtr(0.7),
+		MaxTokens:   int64Ptr(999),
+	}
+	chain := WithDefaults(
+		WithCaps(
+			WithLimits(inner, ModelLimits{MaxOutputTokens: 100}),
+			DisabledCaps(CapTemperature),
+		),
+		defaults,
+	)
+
+	_, _, _ = chain.Generate(context.Background(), nil) // no caller opts at all
+
+	if inner.lastOpts.Temperature != nil {
+		t.Errorf("Temperature should be nil — defaults set it but caps must drop it: got %v", *inner.lastOpts.Temperature)
+	}
+	if inner.lastOpts.MaxTokens == nil {
+		t.Fatal("MaxTokens should have been installed by defaults")
+	}
+	if *inner.lastOpts.MaxTokens != 100 {
+		t.Errorf("MaxTokens should be clamped to 100 by limits; got %d", *inner.lastOpts.MaxTokens)
+	}
+}
+
+// TestCompose_CallerWinsOverDefaults_AndStillObeysCaps verifies the
+// "caller > defaults" invariant survives wrapping while caps still
+// have final say over what the model sees.
+func TestCompose_CallerWinsOverDefaults_AndStillObeysCaps(t *testing.T) {
+	inner := &capsMockLLM{}
+	chain := WithDefaults(
+		WithCaps(inner, DisabledCaps(CapTopP)),
+		GenerateOptions{TopP: floatPtr(0.5)}, // default TopP=0.5
+	)
+
+	// Caller overrides TopP=0.99. Caps then disables TopP entirely.
+	// Final: nil (caps wins over both default and caller).
+	_, _, _ = chain.Generate(context.Background(), nil, WithTopP(0.99))
+	if inner.lastOpts.TopP != nil {
+		t.Fatalf("CapTopP must drop TopP regardless of caller / defaults: got %v", *inner.lastOpts.TopP)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// §4 — resolver one-shot assembly: no double-wrap, exact wrap order
+// ---------------------------------------------------------------------------
+
+// TestResolver_AssemblyOrder_DefaultsOuterCapsMiddleLimitsInner asserts
+// the chain shape resolver builds when all three spec fields are non-zero.
+// The inner-most wrapper must be limits, then caps, then defaults outermost
+// so the per-call invocation flows defaults → caps → limits → provider.
+func TestResolver_AssemblyOrder_DefaultsOuterCapsMiddleLimitsInner(t *testing.T) {
+	store := newResolverMockStore()
+	reg := NewProviderRegistry()
+	raw := &capsMockLLM{}
+	reg.Register("p", func(_ string, _ map[string]any) (LLM, error) { return raw, nil })
+	reg.RegisterModels("p", []ModelInfo{
+		{Name: "m", Spec: ModelSpec{
+			Caps:     DisabledCaps(CapTemperature),
+			Defaults: GenerateOptions{TopP: floatPtr(0.5)},
+			Limits:   ModelLimits{MaxOutputTokens: 100},
+		}},
+	})
+	store.configs["p"] = &ProviderConfig{Provider: "p", Config: map[string]any{}}
+
+	r := newResolverWithRegistry(store, reg)
+	inst, err := r.Resolve(context.Background(), "p/m")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Outermost must be defaults.
+	d, ok := inst.(*defaultsLLM)
+	if !ok {
+		t.Fatalf("outermost wrapper: want *defaultsLLM, got %T", inst)
+	}
+	// Then caps.
+	c, ok := d.inner.(*capsLLM)
+	if !ok {
+		t.Fatalf("layer 2: want *capsLLM, got %T", d.inner)
+	}
+	// Then limits.
+	l, ok := c.inner.(*limitsLLM)
+	if !ok {
+		t.Fatalf("layer 3: want *limitsLLM, got %T", c.inner)
+	}
+	// Innermost is the raw provider (no double-wrap).
+	if l.inner != LLM(raw) {
+		t.Fatalf("innermost: want raw provider, got %T", l.inner)
+	}
+}
+
+// TestResolver_AssemblyOrder_SkipsZeroLayers proves the resolver does
+// NOT introduce dummy wrappers for zero-value spec layers — the docs
+// promise "no-op when input is zero, no struct in the chain".
+func TestResolver_AssemblyOrder_SkipsZeroLayers(t *testing.T) {
+	store := newResolverMockStore()
+	reg := NewProviderRegistry()
+	raw := &capsMockLLM{}
+	reg.Register("p", func(_ string, _ map[string]any) (LLM, error) { return raw, nil })
+	// No spec at all — every wrapper should short-circuit.
+	reg.RegisterModels("p", []ModelInfo{{Name: "m"}})
+	store.configs["p"] = &ProviderConfig{Provider: "p", Config: map[string]any{}}
+
+	r := newResolverWithRegistry(store, reg)
+	inst, err := r.Resolve(context.Background(), "p/m")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if inst != LLM(raw) {
+		t.Fatalf("zero spec must yield raw provider; got %T", inst)
+	}
+}
+
+// TestResolver_AssemblyOrder_OnlyCaps proves partial specs only wrap
+// the relevant layer. With caps but zero defaults / limits, the chain
+// is exactly capsLLM → raw (no defaults / limits wrappers).
+func TestResolver_AssemblyOrder_OnlyCaps(t *testing.T) {
+	store := newResolverMockStore()
+	reg := NewProviderRegistry()
+	raw := &capsMockLLM{}
+	reg.Register("p", func(_ string, _ map[string]any) (LLM, error) { return raw, nil })
+	reg.RegisterModels("p", []ModelInfo{
+		{Name: "m", Spec: ModelSpec{Caps: DisabledCaps(CapTemperature)}},
+	})
+	store.configs["p"] = &ProviderConfig{Provider: "p", Config: map[string]any{}}
+
+	r := newResolverWithRegistry(store, reg)
+	inst, err := r.Resolve(context.Background(), "p/m")
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, ok := inst.(*capsLLM)
+	if !ok {
+		t.Fatalf("partial spec (caps-only): outer wrapper want *capsLLM, got %T", inst)
+	}
+	if c.inner != LLM(raw) {
+		t.Fatalf("partial spec (caps-only): inner want raw, got %T", c.inner)
 	}
 }

@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/script"
 )
 
@@ -193,5 +195,51 @@ func TestRuntime_Bindings(t *testing.T) {
 	}
 	if captured != "hello from js" {
 		t.Fatalf("captured = %q, want %q", captured, "hello from js")
+	}
+}
+
+func TestRuntime_MaxCallStackSize(t *testing.T) {
+	rt := New(WithPoolSize(1), WithMaxCallStackSize(64))
+	_, err := rt.Exec(context.Background(), "stack", `
+		function rec(n){ return rec(n+1); }
+		rec(0);
+	`, nil)
+	if err == nil {
+		t.Fatal("expected stack-overflow error from bounded call stack")
+	}
+}
+
+func TestRuntime_MaxExecTime_RuntimeEnforced(t *testing.T) {
+	// Caller passes a generous ctx; the per-Exec cap must still cut in.
+	rt := New(WithPoolSize(1), WithMaxExecTime(50*time.Millisecond))
+	start := time.Now()
+	_, err := rt.Exec(context.Background(), "loop", `while(true){}`, nil)
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatal("expected timeout error from runtime-enforced cap")
+	}
+	if !errdefs.IsTimeout(err) {
+		t.Errorf("expected errdefs.IsTimeout, got %v", err)
+	}
+	if elapsed > 2*time.Second {
+		t.Errorf("cap did not enforce, elapsed=%v", elapsed)
+	}
+	if !strings.Contains(err.Error(), "cancelled") && !strings.Contains(err.Error(), "deadline") {
+		t.Logf("error message: %v", err)
+	}
+}
+
+func TestRuntime_MaxExecTime_CallerCtxStillWins(t *testing.T) {
+	rt := New(WithPoolSize(1), WithMaxExecTime(10*time.Second))
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	_, err := rt.Exec(ctx, "loop", `while(true){}`, nil)
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatal("expected timeout from caller ctx")
+	}
+	if elapsed > 2*time.Second {
+		t.Errorf("caller ctx did not win, elapsed=%v", elapsed)
 	}
 }

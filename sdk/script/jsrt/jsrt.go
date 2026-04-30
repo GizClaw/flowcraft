@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/script"
@@ -28,12 +29,42 @@ func WithPoolSize(n int) Option {
 	}
 }
 
+// WithMaxCallStackSize bounds the maximum call-stack depth a script
+// may reach. Hits raise a goja runtime error and abort the script.
+// Zero / negative leaves goja's default in place.
+func WithMaxCallStackSize(n int) Option {
+	return func(r *Runtime) {
+		if n > 0 {
+			r.maxCallStackSize = n
+		}
+	}
+}
+
+// WithMaxExecTime sets a runtime-enforced wall-clock ceiling on each
+// Exec call. The ceiling is independent of the caller's context: even
+// if the caller passes context.Background(), no script may run longer
+// than d. The shorter of (caller deadline, d) wins. Zero disables the
+// extra cap (caller ctx alone applies).
+//
+// On expiry the script is interrupted via goja's Interrupt mechanism
+// and Exec returns a context-deadline error classified by
+// sdk/errdefs.IsTimeout.
+func WithMaxExecTime(d time.Duration) Option {
+	return func(r *Runtime) {
+		if d > 0 {
+			r.maxExecTime = d
+		}
+	}
+}
+
 // Runtime manages a pool of goja VMs for JS script execution.
 // It implements script.Runtime.
 type Runtime struct {
-	pool     chan *goja.Runtime
-	poolSize int
-	once     sync.Once
+	pool             chan *goja.Runtime
+	poolSize         int
+	maxCallStackSize int
+	maxExecTime      time.Duration
+	once             sync.Once
 }
 
 // New creates a new JS runtime with a VM pool.
@@ -56,9 +87,20 @@ func (r *Runtime) init() {
 	r.once.Do(func() {
 		r.pool = make(chan *goja.Runtime, r.poolSize)
 		for i := 0; i < r.poolSize; i++ {
-			r.pool <- goja.New()
+			r.pool <- r.newVM()
 		}
 	})
+}
+
+// newVM constructs a single goja VM with the Runtime's per-VM caps
+// applied. Centralised so pool init and any future replacement path
+// stay in sync.
+func (r *Runtime) newVM() *goja.Runtime {
+	vm := goja.New()
+	if r.maxCallStackSize > 0 {
+		vm.SetMaxCallStackSize(r.maxCallStackSize)
+	}
+	return vm
 }
 
 // ErrVMPoolExhausted is returned when all VMs are in use and the context
@@ -84,6 +126,12 @@ func (r *Runtime) release(vm *goja.Runtime) {
 // A built-in "signal" global is always injected, providing interrupt/error/done
 // control flow back to the host.
 func (r *Runtime) Exec(ctx context.Context, name, source string, env *script.Env) (*script.Signal, error) {
+	if r.maxExecTime > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, r.maxExecTime)
+		defer cancel()
+	}
+
 	vm, err := r.acquire(ctx)
 	if err != nil {
 		return nil, err

@@ -36,11 +36,56 @@ func init() {
 		return New(modelName, apiKey, baseURL, region, retryTimes)
 	})
 
+	// Catalog reflects the Doubao 2.0 launch (2026-02-14) lineup as
+	// of 2026-04-30. Sources:
+	//   - https://baike.baidu.com/en/item/Doubao-Seed-2.0/1515788
+	//   - https://www.binance.com/en/square/post/291464529173265
+	//   - https://xairouter.com/en/models/doubao-seed-2.0-mini/
+	//   - https://www.reuters.com/world/asia-pacific/chinas-bytedance-releases-doubao-20-ai-chatbot-2026-02-14/
+	//
+	// All Doubao Seed 2.0 variants share a 256K context window and a
+	// 32K max output cap per the unified family doc. Vision and tool
+	// use are first-class. The Volcengine Ark API is OpenAI-style and
+	// supports streaming + structured output natively, so no
+	// negative caps need declaring there.
 	llm.RegisterProviderModels("bytedance", []llm.ModelInfo{
-		{Label: "Doubao Seed 2.0 Pro", Name: "doubao-seed-2-0-pro-260215"},
-		{Label: "Doubao Seed 2.0 Lite", Name: "doubao-seed-2-0-lite-260215"},
-		{Label: "Doubao Seed 2.0 Mini", Name: "doubao-seed-2-0-mini-260215"},
-		{Label: "Doubao Seed 1.8", Name: "doubao-seed-1-8-251228"},
+		{
+			Label: "Doubao Seed 2.0 Pro",
+			Name:  "doubao-seed-2-0-pro-260215",
+			Spec: llm.ModelSpec{
+				Limits: llm.ModelLimits{
+					MaxContextTokens: 256_000,
+					MaxOutputTokens:  32_000,
+				},
+			},
+		},
+		{
+			Label: "Doubao Seed 2.0 Lite",
+			Name:  "doubao-seed-2-0-lite-260215",
+			Spec: llm.ModelSpec{
+				Limits: llm.ModelLimits{
+					MaxContextTokens: 256_000,
+					MaxOutputTokens:  32_000,
+				},
+			},
+		},
+		{
+			Label: "Doubao Seed 2.0 Mini",
+			Name:  "doubao-seed-2-0-mini-260215",
+			Spec: llm.ModelSpec{
+				Limits: llm.ModelLimits{
+					MaxContextTokens: 256_000,
+					MaxOutputTokens:  32_000,
+				},
+			},
+		},
+		{
+			// Predecessor generation, kept for callers pinning the
+			// 1.8 SKU. Limits not republished in the 2.0 launch
+			// material we have on file; left unset.
+			Label: "Doubao Seed 1.8",
+			Name:  "doubao-seed-1-8-251228",
+		},
 	})
 }
 
