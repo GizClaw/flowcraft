@@ -91,6 +91,16 @@
 //     SSE bridges, dashboards) can route on subject without
 //     importing any concrete engine.
 //
+//  10. Stream-delta emit helpers (stream_emit.go) — EmitStreamToken /
+//     EmitStreamToolCall / EmitStreamToolResult / EmitStreamDelta let
+//     ANY node (not just LLM nodes) publish in-flight increments
+//     without re-implementing the envelope construction +
+//     header-stamping boilerplate. Custom long-running nodes (RAG
+//     loaders, batch transformers, externally-driven tool wrappers)
+//     can surface progress on the same SubjectStreamDelta channel
+//     LLM nodes use, so consumer code stays uniform regardless of
+//     which node generated the increment.
+//
 // # What does NOT live here
 //
 //   - StreamCallback / StreamEvent — replaced by Publisher +

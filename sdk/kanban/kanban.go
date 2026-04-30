@@ -356,6 +356,147 @@ func (k *Kanban) GetCard(_ context.Context, cardID string) (*Card, error) {
 	return c, nil
 }
 
+// CallResult is the synchronous outcome of Kanban.Call. It mirrors the
+// terminal state of the underlying Card so callers do not have to round
+// trip back through Board.GetCardByID. Status is one of CardDone,
+// CardFailed or CardCancelled.
+type CallResult struct {
+	CardID    string
+	Status    CardStatus
+	Output    string
+	Error     string
+	ElapsedMs int64
+}
+
+// Call submits a task synchronously and blocks until the underlying card
+// reaches a terminal state (Done / Failed / Cancelled), or until ctx is
+// cancelled.
+//
+// On ctx cancellation Call calls Cancel(cardID, reason) on a best-effort
+// basis (using context.WithoutCancel so the cancel transition is not
+// itself blocked by the now-dead context) and returns ctx.Err(), so
+// callers can rely on the standard context error semantics for
+// timeouts and parent-cancellation. The card state will reflect the
+// cancellation even though Call itself returns the ctx error.
+//
+// On a CardFailed terminal Call returns the wrapped executor error;
+// CardDone returns nil. CardCancelled returns an errdefs.Aborted-
+// classified error so it can be distinguished from CardFailed
+// (errdefs.Internal).
+//
+// Call subscribes to board state changes BEFORE submitting so it cannot
+// miss a fast Done/Fail transition.
+func (k *Kanban) Call(ctx context.Context, opts TaskOptions) (CallResult, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	// Subscribe with a card-type filter first; Submit happens after the
+	// watcher is registered so a fast executor cannot complete before
+	// we are listening. The dedicated cancel ctx lets us tear the
+	// watcher down deterministically once we have the result.
+	watchCtx, watchCancel := context.WithCancel(ctx)
+	defer watchCancel()
+	ch := k.board.WatchFiltered(watchCtx, CardFilter{Type: "task"})
+
+	cardID, err := k.Submit(ctx, opts)
+	if err != nil {
+		return CallResult{}, err
+	}
+
+	for {
+		select {
+		case <-ctx.Done():
+			// Best-effort cancel using a detached context so the
+			// transition does not race with the just-cancelled ctx.
+			detached := context.WithoutCancel(ctx)
+			_ = k.Cancel(detached, cardID, ctx.Err().Error())
+			return CallResult{CardID: cardID}, ctx.Err()
+
+		case snap, ok := <-ch:
+			if !ok {
+				// Watcher torn down before terminal — fall back to a
+				// direct lookup so callers still get a usable result.
+				if c, found := k.board.GetCardByID(cardID); found && isTerminalStatus(c.Status) {
+					return callResultFromCard(c), terminalErr(c)
+				}
+				return CallResult{CardID: cardID}, errdefs.NotAvailablef("kanban: watcher closed before card %s reached terminal state", cardID)
+			}
+			if snap.ID != cardID || !isTerminalStatus(snap.Status) {
+				continue
+			}
+			return callResultFromCard(snap), terminalErr(snap)
+		}
+	}
+}
+
+// Cancel marks the given card cancelled. It is the synchronous entry
+// point that Pod controllers (or any external coordinator) should use
+// during graceful shutdown / user-initiated cancellation. The card
+// transitions to CardCancelled and EventTaskCancelled is published on
+// Board.Bus().
+//
+// Returns errdefs.NotFoundf when the card does not exist, and
+// errdefs.FailedPreconditionf when it is already terminal. The reason
+// is stored on Card.Error for display purposes.
+func (k *Kanban) Cancel(ctx context.Context, cardID, reason string) error {
+	c, ok := k.board.GetCardByID(cardID)
+	if !ok {
+		return errdefs.NotFoundf("card %q not found", cardID)
+	}
+	if isTerminalStatus(c.Status) {
+		return errdefs.Conflictf("card %q already terminal (%s)", cardID, c.Status)
+	}
+	if !k.board.Cancel(cardID, reason) {
+		// Lost a race with another transition; surface as a state
+		// conflict so callers can decide whether to retry.
+		return errdefs.Conflictf("card %q transitioned before cancel could apply", cardID)
+	}
+	k.metrics.incTasksCancelled(ctx,
+		attribute.String(telemetry.AttrKanbanCardID, cardID),
+	)
+	return nil
+}
+
+// callResultFromCard projects a Card snapshot into a CallResult. The
+// payload shape mirrors the one produced by Board.Done / Board.Fail.
+func callResultFromCard(c *Card) CallResult {
+	r := CallResult{
+		CardID: c.ID,
+		Status: c.Status,
+		Error:  c.Error,
+	}
+	if c.UpdatedAt.After(c.CreatedAt) {
+		r.ElapsedMs = c.UpdatedAt.Sub(c.CreatedAt).Milliseconds()
+	}
+	if p, ok := c.Payload.(map[string]any); ok {
+		if out, _ := p["output"].(string); out != "" {
+			r.Output = out
+		}
+	}
+	return r
+}
+
+// terminalErr maps a terminal Card snapshot to the error contract Call
+// returns to its caller. CardDone → nil; CardFailed → wrapped Internal
+// error; CardCancelled → wrapped Cancelled error.
+func terminalErr(c *Card) error {
+	switch c.Status {
+	case CardDone:
+		return nil
+	case CardFailed:
+		if c.Error == "" {
+			return errdefs.Internalf("kanban: card %s failed without error message", c.ID)
+		}
+		return errdefs.Internalf("kanban: card %s failed: %s", c.ID, c.Error)
+	case CardCancelled:
+		if c.Error == "" {
+			return errdefs.Abortedf("kanban: card %s cancelled", c.ID)
+		}
+		return errdefs.Abortedf("kanban: card %s cancelled: %s", c.ID, c.Error)
+	}
+	return nil
+}
+
 // Broadcast produces a signal card visible to all agents.
 func (k *Kanban) Broadcast(ctx context.Context, signalType string, payload any) {
 	if k.isClosed() {

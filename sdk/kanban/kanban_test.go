@@ -540,3 +540,189 @@ func TestKanban_Submit_RacesWithStop(t *testing.T) {
 		t.Fatalf("unexpected submit error during Submit/Stop race: %v", err)
 	}
 }
+
+// TestKanban_Call_HappyPath exercises the synchronous sugar against an
+// executor that returns a structured result. Call must block until the
+// underlying card transitions to CardDone and surface the output via
+// CallResult.
+func TestKanban_Call_HappyPath(t *testing.T) {
+	t.Parallel()
+	b := newBoard(t)
+	exec := &mockExecutor{
+		fn: func(_ context.Context, _, _ string, card *Card, query string, _ map[string]any) error {
+			b.Claim(card.ID, "agent-A")
+			b.Done(card.ID, map[string]any{"output": "answer to: " + query, "target_agent_id": "copilot"})
+			return nil
+		},
+	}
+	k := New(context.Background(), b, WithAgentExecutor(exec))
+	t.Cleanup(k.Stop)
+
+	res, err := k.Call(context.Background(), TaskOptions{TargetAgentID: "copilot", Query: "what is 2+2?"})
+	if err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	if res.Status != CardDone {
+		t.Fatalf("status = %s, want CardDone", res.Status)
+	}
+	if res.Output != "answer to: what is 2+2?" {
+		t.Fatalf("output = %q", res.Output)
+	}
+	if res.CardID == "" {
+		t.Fatal("CardID empty")
+	}
+}
+
+// TestKanban_Call_FailedReturnsError ensures that when the executor
+// fails, Call surfaces an Internal-classified error and the CallResult
+// carries the failure reason.
+func TestKanban_Call_FailedReturnsError(t *testing.T) {
+	t.Parallel()
+	b := newBoard(t)
+	exec := &mockExecutor{
+		fn: func(_ context.Context, _, _ string, card *Card, _ string, _ map[string]any) error {
+			b.Claim(card.ID, "agent-X")
+			return errors.New("provider timeout")
+		},
+	}
+	k := New(context.Background(), b, WithAgentExecutor(exec))
+	t.Cleanup(k.Stop)
+
+	res, err := k.Call(context.Background(), TaskOptions{TargetAgentID: "copilot", Query: "boom"})
+	if err == nil {
+		t.Fatal("expected error from Call")
+	}
+	if !errdefs.IsInternal(err) {
+		t.Fatalf("expected Internal-classified error, got %T %v", err, err)
+	}
+	if res.Status != CardFailed {
+		t.Fatalf("status = %s, want CardFailed", res.Status)
+	}
+}
+
+// TestKanban_Call_CtxCancel verifies that cancelling the caller's
+// context cancels the in-flight card (CardCancelled), returns ctx.Err()
+// to the caller, and records the transition on the board.
+func TestKanban_Call_CtxCancel(t *testing.T) {
+	t.Parallel()
+	b := newBoard(t)
+	hold := make(chan struct{})
+	exec := &mockExecutor{
+		fn: func(ctx context.Context, _, _ string, card *Card, _ string, _ map[string]any) error {
+			b.Claim(card.ID, "agent-slow")
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-hold:
+				return nil
+			}
+		},
+	}
+	k := New(context.Background(), b, WithAgentExecutor(exec))
+	t.Cleanup(k.Stop)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	type ret struct {
+		res CallResult
+		err error
+	}
+	done := make(chan ret, 1)
+	go func() {
+		r, e := k.Call(ctx, TaskOptions{TargetAgentID: "copilot", Query: "long task"})
+		done <- ret{r, e}
+	}()
+
+	// Give the watcher / executor a moment to register before cancel.
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+
+	var got ret
+	select {
+	case got = <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Call did not return after ctx cancel")
+	}
+	if !errors.Is(got.err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", got.err)
+	}
+	if got.res.CardID == "" {
+		t.Fatal("CardID empty")
+	}
+	close(hold)
+
+	// Cancel is best-effort and races with the executor returning; allow
+	// a short grace window for the cancel transition to land.
+	deadline := time.Now().Add(1 * time.Second)
+	for time.Now().Before(deadline) {
+		if c, ok := b.GetCardByID(got.res.CardID); ok && c.Status == CardCancelled {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	c, _ := b.GetCardByID(got.res.CardID)
+	t.Fatalf("status = %v, want CardCancelled", c)
+}
+
+// TestKanban_Cancel_StateMachine asserts the explicit state transitions
+// for Kanban.Cancel: NotFound → unknown id, Conflict → already terminal,
+// success → CardCancelled with reason recorded.
+func TestKanban_Cancel_StateMachine(t *testing.T) {
+	t.Parallel()
+	k, board := newKanban(t)
+
+	if err := k.Cancel(context.Background(), "missing", "x"); !errdefs.IsNotFound(err) {
+		t.Fatalf("missing card → %v, want NotFound", err)
+	}
+
+	cardID, err := k.Submit(context.Background(), TaskOptions{TargetAgentID: "copilot", Query: "q"})
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	if err := k.Cancel(context.Background(), cardID, "user clicked stop"); err != nil {
+		t.Fatalf("Cancel: %v", err)
+	}
+	c, _ := board.GetCardByID(cardID)
+	if c.Status != CardCancelled {
+		t.Fatalf("status = %s, want CardCancelled", c.Status)
+	}
+	if c.Error != "user clicked stop" {
+		t.Fatalf("reason = %q", c.Error)
+	}
+
+	// Second cancel must return Conflict — terminal cards are immutable.
+	if err := k.Cancel(context.Background(), cardID, "again"); !errdefs.IsConflict(err) {
+		t.Fatalf("double-cancel → %v, want Conflict", err)
+	}
+}
+
+// TestBoard_Cancel_PublishesEvent ensures the board emits
+// EventTaskCancelled on Bus() when a card is cancelled.
+func TestBoard_Cancel_PublishesEvent(t *testing.T) {
+	t.Parallel()
+	b := newBoard(t)
+	sub, err := b.Bus().Subscribe(context.Background(), PatternAllCards())
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	defer sub.Close()
+
+	card := b.Produce("task", "tester", map[string]any{"target_agent_id": "copilot"})
+	if !b.Cancel(card.ID, "shutdown") {
+		t.Fatal("Cancel returned false")
+	}
+
+	deadline := time.After(1 * time.Second)
+	for {
+		select {
+		case env, ok := <-sub.C():
+			if !ok {
+				t.Fatal("subscription closed")
+			}
+			if env.Headers[HeaderKanbanKind] == EventTaskCancelled {
+				return
+			}
+		case <-deadline:
+			t.Fatal("timed out waiting for EventTaskCancelled")
+		}
+	}
+}

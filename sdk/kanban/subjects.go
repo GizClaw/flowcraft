@@ -13,6 +13,7 @@ import (
 //	kanban.card.<cardID>.task.claimed
 //	kanban.card.<cardID>.task.completed
 //	kanban.card.<cardID>.task.failed
+//	kanban.card.<cardID>.task.cancelled
 //	kanban.card.<cardID>.callback.start
 //	kanban.card.<cardID>.callback.done
 //	kanban.cron.<scheduleID>.rule.created
@@ -51,6 +52,10 @@ func subjTaskCompleted(cardID string) event.Subject {
 
 func subjTaskFailed(cardID string) event.Subject {
 	return event.Subject(fmt.Sprintf("%s%s.task.failed", kanbanCardSubjectPrefix, sanitiseID(cardID)))
+}
+
+func subjTaskCancelled(cardID string) event.Subject {
+	return event.Subject(fmt.Sprintf("%s%s.task.cancelled", kanbanCardSubjectPrefix, sanitiseID(cardID)))
 }
 
 // Subject helpers — callback domain.

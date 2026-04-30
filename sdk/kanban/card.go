@@ -10,7 +10,24 @@ const (
 	CardClaimed CardStatus = "claimed"
 	CardDone    CardStatus = "done"
 	CardFailed  CardStatus = "failed"
+
+	// CardCancelled marks a card that was deliberately cancelled by the
+	// pod controller / caller — distinct from CardFailed (which means
+	// the task itself errored) and from CardDone (which means it
+	// completed). Pod-driven shutdown should mark in-flight cards
+	// CardCancelled, not CardFailed, so failure-rate dashboards stay
+	// honest. Cancelled cards are terminal: they enter eviction
+	// alongside CardDone / CardFailed.
+	CardCancelled CardStatus = "cancelled"
 )
+
+// isTerminalStatus reports whether s is a terminal lifecycle state — i.e.
+// the card is no longer eligible for further transitions and may be
+// evicted by Board's TTL / cap pruning. Cancelled is terminal alongside
+// Done / Failed.
+func isTerminalStatus(s CardStatus) bool {
+	return s == CardDone || s == CardFailed || s == CardCancelled
+}
 
 // Card is a status-tracked message on the board for async multi-agent coordination.
 type Card struct {

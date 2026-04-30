@@ -267,6 +267,37 @@ func (b *Board) Done(cardID string, result any) bool {
 	return false
 }
 
+// Cancel transitions a pending or claimed card to the cancelled status
+// with an optional reason. It is the deliberate-shutdown counterpart to
+// Fail (which means the task errored): Pod controllers calling Cancel on
+// in-flight cards during graceful shutdown keep failure-rate metrics
+// uncontaminated by orderly stops.
+//
+// Publishes EventTaskCancelled to Bus() for task-typed cards. Returns
+// false when no card matches the ID or when the card is already in a
+// terminal state (Done / Failed / Cancelled).
+func (b *Board) Cancel(cardID string, reason string) bool {
+	b.cardMu.Lock()
+	var snap *Card
+	if c, ok := b.cardIndex[cardID]; ok && (c.Status == CardClaimed || c.Status == CardPending) {
+		b.statusCount[c.Status]--
+		c.Status = CardCancelled
+		c.Error = reason
+		c.UpdatedAt = time.Now()
+		b.statusCount[c.Status]++
+		cp := *c
+		cp.Meta = copyMetaStringMap(c.Meta)
+		snap = &cp
+	}
+	b.cardMu.Unlock()
+	if snap != nil {
+		b.notifyWatchers(snap)
+		b.publishCardEvent(snap)
+		return true
+	}
+	return false
+}
+
 // Fail transitions a pending or claimed card to failed status with an error message.
 // Publishes EventTaskFailed to Bus() for task-typed cards.
 func (b *Board) Fail(cardID string, errMsg string) bool {
@@ -337,6 +368,14 @@ func (b *Board) publishCardEvent(snap *Card) {
 			TargetAgentID: target,
 			RuntimeID:     b.scopeID,
 			Error:         snap.Error,
+			ElapsedMs:     elapsedMs,
+		})
+	case CardCancelled:
+		publishCardEvent(ctx, b.bus, EventTaskCancelled, snap.ID, b.scopeID, TaskCancelledPayload{
+			CardID:        snap.ID,
+			TargetAgentID: target,
+			RuntimeID:     b.scopeID,
+			Reason:        snap.Error,
 			ElapsedMs:     elapsedMs,
 		})
 	}
@@ -422,7 +461,7 @@ func (b *Board) evictTerminalCardsLocked() {
 	now := time.Now()
 	alive := b.cards[:0]
 	for _, c := range b.cards {
-		terminal := c.Status == CardDone || c.Status == CardFailed
+		terminal := isTerminalStatus(c.Status)
 		evict := false
 		if terminal && b.cardTTL > 0 && now.Sub(c.UpdatedAt) > b.cardTTL {
 			evict = true
@@ -441,7 +480,7 @@ func (b *Board) evictTerminalCardsLocked() {
 		evicted := 0
 		alive = b.cards[:0]
 		for _, c := range b.cards {
-			terminal := c.Status == CardDone || c.Status == CardFailed
+			terminal := isTerminalStatus(c.Status)
 			if terminal && evicted < excess {
 				delete(b.cardIndex, c.ID)
 				b.statusCount[c.Status]--
