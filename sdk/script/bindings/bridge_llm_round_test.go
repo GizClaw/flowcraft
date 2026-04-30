@@ -99,7 +99,7 @@ func (r *fakeResolver) Resolve(_ context.Context, modelStr string) (llm.LLM, err
 	return r.llm, nil
 }
 
-func (r *fakeResolver) InvalidateCache(_ string) {}
+func (r *fakeResolver) InvalidateCache(_ ...llm.InvalidateOption) {}
 
 // ---------------------------------------------------------------------------
 // startRound — wiring + early-failure paths

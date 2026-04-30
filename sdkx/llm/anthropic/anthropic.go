@@ -21,7 +21,7 @@ import (
 )
 
 const (
-	defaultModel     = "claude-sonnet-4-20250514"
+	defaultModel     = "claude-opus-4-6"
 	defaultMaxTokens = int64(4096)
 )
 
@@ -32,10 +32,90 @@ func init() {
 		return New(model, apiKey, baseURL, nil)
 	})
 
+	// Catalog reflects Anthropic's public model lineup as of 2026-04-30.
+	// Sources:
+	//   - https://www.anthropic.com/news/claude-opus-4-6
+	//   - https://www.anthropic.com/news/claude-sonnet-4-6
+	//   - https://platform.claude.com/docs/en/build-with-claude/context-windows
+	//   - https://www-cdn.anthropic.com/...claude-opus-4-6-system-card.pdf
+	//
+	// CapJSONSchema is disabled for the entire family: the Anthropic
+	// Messages API has no first-class schema-constrained structured
+	// output mode (no equivalent to OpenAI's
+	// `response_format: {"type": "json_schema", schema: …}`). This
+	// adapter does NOT translate GenerateOptions.JSONSchema into tool
+	// definitions either — see Generate / GenerateStream below; the
+	// JSONSchema field is silently unused.
+	//
+	// CapJSONMode IS supported. The adapter routes JSONMode=true to
+	// the Beta Messages API with BetaJSONOutputFormatParam (a generic
+	// object schema), giving callers an "emit valid JSON" toggle that
+	// is the moral equivalent of OpenAI's `json_object` mode.
+	//
+	// The caps-middleware downgrade rule (CapJSONSchema disabled →
+	// set JSONMode=true) means callers asking for schema-constrained
+	// output will land on JSONMode=true here without code changes.
+	// Per platform.claude.com/docs/en/about-claude/models/overview
+	// (read 2026-04-30) every current Claude SKU supports vision and
+	// tool use, so only CapJSONSchema is disabled per family.
+	noJSONSchema := llm.DisabledCaps(llm.CapJSONSchema)
+
 	llm.RegisterProviderModels("anthropic", []llm.ModelInfo{
-		{Label: "Claude Opus 4.6", Name: "claude-opus-4-6"},
-		{Label: "Claude Sonnet 4.6", Name: "claude-sonnet-4-6"},
-		{Label: "Claude Haiku 4.5", Name: "claude-4-5-haiku-20251001"},
+		{
+			// New flagship as of 2026-04. 1M ctx / 128K output.
+			// Source: https://www.anthropic.com/news/claude-opus-4-7
+			Label: "Claude Opus 4.7",
+			Name:  "claude-opus-4-7",
+			Spec: llm.ModelSpec{
+				Caps: noJSONSchema,
+				Limits: llm.ModelLimits{
+					MaxContextTokens: 1_000_000,
+					MaxOutputTokens:  128_000,
+				},
+			},
+		},
+		{
+			// Previous flagship; kept for callers pinned to it.
+			// 1M ctx / 128K output per anthropic.com/news/claude-opus-4-6.
+			Label: "Claude Opus 4.6",
+			Name:  "claude-opus-4-6",
+			Spec: llm.ModelSpec{
+				Caps: noJSONSchema,
+				Limits: llm.ModelLimits{
+					MaxContextTokens: 1_000_000,
+					MaxOutputTokens:  128_000,
+				},
+			},
+		},
+		{
+			// Balanced workhorse. 1M ctx (beta header) / 64K output
+			// per platform.claude.com models overview.
+			Label: "Claude Sonnet 4.6",
+			Name:  "claude-sonnet-4-6",
+			Spec: llm.ModelSpec{
+				Caps: noJSONSchema,
+				Limits: llm.ModelLimits{
+					MaxContextTokens: 1_000_000,
+					MaxOutputTokens:  64_000,
+				},
+			},
+		},
+		{
+			// Compact / fastest tier. 200K ctx / 64K output per
+			// platform.claude.com models overview. Note: the API ID
+			// follows the new family-first convention introduced
+			// with the 4.x series — claude-haiku-4-5-{date}, not
+			// claude-4-5-haiku-{date}.
+			Label: "Claude Haiku 4.5",
+			Name:  "claude-haiku-4-5-20251001",
+			Spec: llm.ModelSpec{
+				Caps: noJSONSchema,
+				Limits: llm.ModelLimits{
+					MaxContextTokens: 200_000,
+					MaxOutputTokens:  64_000,
+				},
+			},
+		},
 	})
 }
 
@@ -474,17 +554,45 @@ func applyOptions(p *asdk.MessageNewParams, options *llm.GenerateOptions) {
 		p.Tools = tools
 	}
 
+	// disable_parallel_tool_use is nested inside tool_choice in the
+	// Anthropic Messages API (param.Opt[bool] on Auto / Any / Tool —
+	// not on None, where it would be meaningless). We bridge it from
+	// opts.Extra["disable_parallel_tool_use"] (bool). When the caller
+	// sets the toggle without an explicit ToolChoice, we default to
+	// the Auto variant since omitted tool_choice = auto on Anthropic
+	// anyway, and Auto is the only variant where the toggle composes
+	// with the model's normal selection behaviour.
+	disableParallel, hasDisableParallel := options.Extra["disable_parallel_tool_use"].(bool)
+
 	if options.ToolChoice != nil {
 		switch options.ToolChoice.Type {
 		case llm.ToolChoiceAuto:
-			p.ToolChoice = asdk.ToolChoiceUnionParam{OfAuto: &asdk.ToolChoiceAutoParam{}}
+			tc := &asdk.ToolChoiceAutoParam{}
+			if hasDisableParallel {
+				tc.DisableParallelToolUse = param.NewOpt(disableParallel)
+			}
+			p.ToolChoice = asdk.ToolChoiceUnionParam{OfAuto: tc}
 		case llm.ToolChoiceNone:
 			p.ToolChoice = asdk.ToolChoiceUnionParam{OfNone: &asdk.ToolChoiceNoneParam{}}
 		case llm.ToolChoiceRequired:
-			p.ToolChoice = asdk.ToolChoiceUnionParam{OfAny: &asdk.ToolChoiceAnyParam{}}
+			tc := &asdk.ToolChoiceAnyParam{}
+			if hasDisableParallel {
+				tc.DisableParallelToolUse = param.NewOpt(disableParallel)
+			}
+			p.ToolChoice = asdk.ToolChoiceUnionParam{OfAny: tc}
 		case llm.ToolChoiceSpecific:
-			p.ToolChoice = asdk.ToolChoiceUnionParam{OfTool: &asdk.ToolChoiceToolParam{Name: options.ToolChoice.Name}}
+			tc := &asdk.ToolChoiceToolParam{Name: options.ToolChoice.Name}
+			if hasDisableParallel {
+				tc.DisableParallelToolUse = param.NewOpt(disableParallel)
+			}
+			p.ToolChoice = asdk.ToolChoiceUnionParam{OfTool: tc}
 		}
+	} else if hasDisableParallel {
+		// Caller wants the toggle but didn't pick a ToolChoice — fall
+		// back to Auto since that's the API default semantically.
+		p.ToolChoice = asdk.ToolChoiceUnionParam{OfAuto: &asdk.ToolChoiceAutoParam{
+			DisableParallelToolUse: param.NewOpt(disableParallel),
+		}}
 	}
 }
 

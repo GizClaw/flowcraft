@@ -68,7 +68,7 @@ type mockResolver struct {
 func (r *mockResolver) Resolve(_ context.Context, _ string) (llm.LLM, error) {
 	return r.llmInst, r.err
 }
-func (r *mockResolver) InvalidateCache(_ string) {}
+func (r *mockResolver) InvalidateCache(_ ...llm.InvalidateOption) {}
 
 type mockTool struct {
 	name   string

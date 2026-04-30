@@ -14,11 +14,68 @@ func init() {
 		return New(model, apiKey, baseURL)
 	})
 
+	// Catalog reflects Alibaba DashScope's Qwen commercial lineup as
+	// of 2026-04-30. Sources:
+	//   - https://www.alibabacloud.com/help/en/model-studio/models
+	//   - https://cloudprice.net/models/alibaba-qwen-plus
+	//   - https://www.appaca.ai/resources/llm-comparison/qwen-flash-vs-qwen-turbo
+	//
+	// Caveat on context window: the published architectural ceiling
+	// (e.g. 1M for Plus / Flash / Turbo) is not always the effective
+	// per-request limit on every DashScope plan; coding-tier accounts
+	// have been reported to cap requests around 170K. We declare the
+	// architectural ceiling as MaxContextTokens (informational) and
+	// rely on the API surface to error if the deployment plan is
+	// stricter.
+	//
+	// Audio / file modalities go through dedicated DashScope endpoints
+	// (qwen-audio, qwen-omni) — disable both at the caps middleware
+	// for these chat-completions models so callers get a fail-fast
+	// rather than a backend error. Vision is supported across the
+	// commercial chat models (qwen-max et al.) per Model Studio docs.
+	qwenChatCaps := llm.DisabledCaps(llm.CapAudio, llm.CapFile)
+
 	llm.RegisterProviderModels("qwen", []llm.ModelInfo{
-		{Label: "Qwen Max", Name: "qwen-max"},
-		{Label: "Qwen Plus", Name: "qwen-plus"},
-		{Label: "Qwen Turbo", Name: "qwen-turbo"},
-		{Label: "Qwen Flash", Name: "qwen-flash"},
+		{
+			// Flagship; 256K context per Model Studio docs.
+			Label: "Qwen Max",
+			Name:  "qwen-max",
+			Spec: llm.ModelSpec{
+				Caps:   qwenChatCaps,
+				Limits: llm.ModelLimits{MaxContextTokens: 262_144},
+			},
+		},
+		{
+			// Balanced; 1M context, 33K max output per CloudPrice listing.
+			Label: "Qwen Plus",
+			Name:  "qwen-plus",
+			Spec: llm.ModelSpec{
+				Caps: qwenChatCaps,
+				Limits: llm.ModelLimits{
+					MaxContextTokens: 1_000_000,
+					MaxOutputTokens:  33_000,
+				},
+			},
+		},
+		{
+			// 1M context per Appaca comparison; max output not stated.
+			Label: "Qwen Turbo",
+			Name:  "qwen-turbo",
+			Spec: llm.ModelSpec{
+				Caps:   qwenChatCaps,
+				Limits: llm.ModelLimits{MaxContextTokens: 1_000_000},
+			},
+		},
+		{
+			// Successor SKU to qwen-turbo (per Appaca comparison);
+			// shares the 1M context ceiling.
+			Label: "Qwen Flash",
+			Name:  "qwen-flash",
+			Spec: llm.ModelSpec{
+				Caps:   qwenChatCaps,
+				Limits: llm.ModelLimits{MaxContextTokens: 1_000_000},
+			},
+		},
 	})
 }
 

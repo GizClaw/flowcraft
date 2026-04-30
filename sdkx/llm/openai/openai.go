@@ -19,7 +19,15 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-const defaultModel = "gpt-4o"
+// defaultModel is the fallback when callers create an OpenAI LLM
+// without an explicit model id. We pick gpt-5 (not gpt-5.5) to stay
+// on the cheapest current-generation SKU and avoid silently routing
+// production traffic onto the flagship tier.
+//
+// Note: this used to be "gpt-4o", which was API-sunset on 2026-02-16
+// per openai.com/index/retiring-gpt-4o-and-older-models/ — leaving
+// it pointed there meant zero-config callers got hard 404s.
+const defaultModel = "gpt-5"
 
 func init() {
 	llm.RegisterProvider("openai", func(model string, config map[string]any) (llm.LLM, error) {
@@ -28,13 +36,214 @@ func init() {
 		return New(model, apiKey, baseURL)
 	})
 
+	// Catalog reflects OpenAI's public model lineup as of 2026-04-30.
+	// Sources:
+	//   - https://developers.openai.com/api/docs/models/gpt-5.4
+	//   - https://developers.openai.com/api/docs/models/gpt-5.4-pro
+	//   - https://openai.com/index/introducing-gpt-5-4/
+	//   - https://openai.com/index/introducing-gpt-5-4-mini-and-nano/
+	//   - https://openai.com/gpt-5/
+	//
+	// Across the gpt-5 / gpt-5.4 family the chat-completions surface
+	// is text+image only — audio and file modalities go through
+	// separate APIs (gpt-4o-audio-preview / Files endpoint), so
+	// CapAudio and CapFile are disabled here to fail-fast at the
+	// caps middleware rather than at the OpenAI API edge.
+	openaiTextImageOnly := llm.DisabledCaps(llm.CapAudio, llm.CapFile)
+
 	llm.RegisterProviderModels("openai", []llm.ModelInfo{
-		{Label: "GPT-5.4", Name: "gpt-5.4"},
-		{Label: "GPT-5.4 Pro", Name: "gpt-5.4-pro"},
-		{Label: "GPT-5", Name: "gpt-5"},
-		{Label: "GPT-5 nano", Name: "gpt-5-nano"},
-		{Label: "GPT-5 Mini", Name: "gpt-5-mini"},
-		{Label: "GPT-4.1", Name: "gpt-4.1"},
+		// --- GPT-5.5 (current flagship, released 2026-04-23) -------
+		// Sources:
+		//   - https://openai.com/index/introducing-gpt-5-5/
+		//   - https://developers.openai.com/api/docs/models/gpt-5.5
+		//   - https://llm-stats.com/blog/research/gpt-5-5-vs-gpt-5-4
+		//
+		// 1.05M ctx / 128K output. Text + image input. Tool use,
+		// streaming, function calling all supported on the standard
+		// Chat Completions / Responses APIs.
+		{
+			Label: "GPT-5.5",
+			Name:  "gpt-5.5",
+			Spec: llm.ModelSpec{
+				Caps: openaiTextImageOnly,
+				Limits: llm.ModelLimits{
+					MaxContextTokens: 1_050_000,
+					MaxOutputTokens:  128_000,
+				},
+			},
+		},
+		{
+			Label: "GPT-5.5 Pro",
+			Name:  "gpt-5.5-pro",
+			Spec: llm.ModelSpec{
+				Caps: openaiTextImageOnly,
+				Limits: llm.ModelLimits{
+					MaxContextTokens: 1_050_000,
+					MaxOutputTokens:  128_000,
+				},
+			},
+		},
+
+		{
+			Label: "GPT-5.4",
+			Name:  "gpt-5.4",
+			Spec: llm.ModelSpec{
+				Caps: openaiTextImageOnly,
+				Limits: llm.ModelLimits{
+					MaxContextTokens: 1_050_000,
+					MaxOutputTokens:  128_000,
+				},
+			},
+		},
+		{
+			Label: "GPT-5.4 Pro",
+			Name:  "gpt-5.4-pro",
+			Spec: llm.ModelSpec{
+				Caps: openaiTextImageOnly,
+				Limits: llm.ModelLimits{
+					MaxContextTokens: 1_050_000,
+					MaxOutputTokens:  128_000,
+				},
+			},
+		},
+		{
+			// GPT-5 base family share 400K context / 128K output per
+			// openai.com/gpt-5/.
+			Label: "GPT-5",
+			Name:  "gpt-5",
+			Spec: llm.ModelSpec{
+				Caps: openaiTextImageOnly,
+				Limits: llm.ModelLimits{
+					MaxContextTokens: 400_000,
+					MaxOutputTokens:  128_000,
+				},
+			},
+		},
+		{
+			Label: "GPT-5 nano",
+			Name:  "gpt-5-nano",
+			Spec: llm.ModelSpec{
+				Caps: openaiTextImageOnly,
+				Limits: llm.ModelLimits{
+					MaxContextTokens: 400_000,
+					MaxOutputTokens:  128_000,
+				},
+			},
+		},
+		{
+			Label: "GPT-5 Mini",
+			Name:  "gpt-5-mini",
+			Spec: llm.ModelSpec{
+				Caps: openaiTextImageOnly,
+				Limits: llm.ModelLimits{
+					MaxContextTokens: 400_000,
+					MaxOutputTokens:  128_000,
+				},
+			},
+		},
+		// gpt-4.1 was removed from this catalog on 2026-04-30. It is
+		// still served by the OpenAI API at the time of writing, but
+		// is positioned as a migration target away from for new work
+		// (Azure Foundry Standard already retired 2026-03-31; direct
+		// API has no published shutdown date but official guidance
+		// recommends gpt-5+). Callers that pinned the name still go
+		// through r.registry.NewFromConfig — they will hit the
+		// provider directly without spec wrapping. Re-add here with
+		// ModelInfo.Deprecation set if a graceful warn-and-serve
+		// window is needed; see ModelDeprecation in sdk/llm.
+
+		// --- GPT-5.4 mini / nano (subagent-tier) --------------------
+		// Sources:
+		//   - https://openai.com/index/introducing-gpt-5-4-mini-and-nano/
+		//   - https://developers.openai.com/api/docs/models
+		//   - https://apxml.com/models/gpt-54-nano
+		{
+			Label: "GPT-5.4 Mini",
+			Name:  "gpt-5.4-mini",
+			Spec: llm.ModelSpec{
+				Caps: openaiTextImageOnly,
+				Limits: llm.ModelLimits{
+					MaxContextTokens: 400_000,
+					MaxOutputTokens:  128_000,
+				},
+			},
+		},
+		{
+			// Smallest cost-efficient variant. Per apxml.com/models/gpt-54-nano
+			// the surface is text-only (no image input). Limits not
+			// stated authoritatively in the 2026 snapshot; left unset.
+			Label: "GPT-5.4 Nano",
+			Name:  "gpt-5.4-nano",
+			Spec: llm.ModelSpec{
+				Caps: llm.DisabledCaps(llm.CapVision, llm.CapAudio, llm.CapFile),
+			},
+		},
+
+		// --- o-series reasoning models ------------------------------
+		// Sources:
+		//   - https://developers.openai.com/api/docs/models/o3-pro
+		//   - https://openai.com/index/introducing-o3-and-o4-mini/
+		//
+		// o-series convention (carried forward from o1): the chat
+		// completions surface drops sampling controls (temperature,
+		// top_p, presence/frequency penalties) and the system role
+		// in favour of a "developer" role + reasoning_effort knob.
+		// Caps below reflect that convention; verify against the
+		// current model card if behavior changes.
+		{
+			Label: "o3",
+			Name:  "o3",
+			Spec: llm.ModelSpec{
+				Caps: llm.DisabledCaps(
+					llm.CapTemperature, llm.CapTopP, llm.CapTopK,
+					llm.CapFrequencyPenalty, llm.CapPresencePenalty,
+					llm.CapStopWords,
+					llm.CapAudio, llm.CapFile,
+				),
+				Limits: llm.ModelLimits{MaxContextTokens: 200_000},
+			},
+		},
+		{
+			Label: "o3 Pro",
+			Name:  "o3-pro",
+			Spec: llm.ModelSpec{
+				Caps: llm.DisabledCaps(
+					llm.CapTemperature, llm.CapTopP, llm.CapTopK,
+					llm.CapFrequencyPenalty, llm.CapPresencePenalty,
+					llm.CapStopWords,
+					llm.CapAudio, llm.CapFile,
+				),
+				Limits: llm.ModelLimits{
+					MaxContextTokens: 200_000,
+					MaxOutputTokens:  100_000,
+				},
+			},
+		},
+		{
+			// DEPRECATED. Per the 2026-04-22 deprecation announcement
+			// at developers.openai.com/api/docs/deprecations, the
+			// alias `o4-mini` (pointing at snapshot
+			// `o4-mini-2025-04-16`) is scheduled for shutdown on
+			// 2026-10-23 with `gpt-5-mini` as the recommended
+			// replacement. Resolver emits a one-shot telemetry
+			// warning per process when this model is resolved —
+			// see ModelDeprecation in sdk/llm.
+			Label: "o4 Mini",
+			Name:  "o4-mini",
+			Spec: llm.ModelSpec{
+				Caps: llm.DisabledCaps(
+					llm.CapTemperature, llm.CapTopP, llm.CapTopK,
+					llm.CapFrequencyPenalty, llm.CapPresencePenalty,
+					llm.CapStopWords,
+					llm.CapAudio, llm.CapFile,
+				),
+			},
+			Deprecation: llm.ModelDeprecation{
+				RetiresAt:   time.Date(2026, 10, 23, 0, 0, 0, 0, time.UTC),
+				Replacement: "openai/gpt-5-mini",
+				Notes:       "https://developers.openai.com/api/docs/deprecations (2026-04-22 batch)",
+			},
+		},
 	})
 }
 

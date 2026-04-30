@@ -10,33 +10,72 @@ import (
 	"golang.org/x/sync/singleflight"
 )
 
-// ProviderConfig holds provider-level configuration for LLM resolution.
-//
-// Config carries provider connection settings (api_key, base_url, ...)
-// and is forwarded as-is to ProviderFactory. Caps is a strongly-typed
-// per-provider capability override (applied to every model under this
-// provider). For per-model overrides, implement ModelConfigStore.
-type ProviderConfig struct {
-	Provider string         `json:"provider"`
-	Config   map[string]any `json:"config"`
-	// Caps disables capabilities for every model of this provider.
-	// Merged (OR) with registry caps and ModelConfig.Caps at resolve time.
-	Caps ModelCaps `json:"caps,omitempty"`
+var (
+	inferMu    sync.RWMutex
+	inferRules []InferRule
+)
+
+func init() {
+	defaultRules := []InferRule{
+		{"gpt-", "openai"},
+		{"o1", "openai"},
+		{"o3", "openai"},
+		{"claude-", "anthropic"},
+		{"deepseek-", "deepseek"},
+		{"qwen-", "qwen"},
+		{"doubao-", "bytedance"},
+		{"abab", "minimax"},
+		{"llama", "ollama"},
+		{"mistral", "ollama"},
+		{"gemma", "ollama"},
+	}
+	inferRules = defaultRules
 }
 
-// ModelConfig holds user-supplied per-model overrides that layer on top
-// of a ProviderConfig at resolve time. Returned by ModelConfigStore.
+// ProviderConfig holds provider-level configuration for LLM resolution.
 //
-// Caps merges (OR) with ProviderConfig.Caps and the registry caps —
-// any layer disabling a capability wins. Extra is shallow-merged into
-// ProviderConfig.Config (per-model values overwrite provider values),
-// useful for routing one model through a different base_url while
-// other models of the same provider keep the default.
+// A single provider (e.g. "openai") can have multiple ProviderConfig
+// entries distinguished by Profile, supporting multi-tenant
+// deployments, key-pool spreading, and prod/staging splits.
+//
+// Config carries provider connection settings (api_key, base_url, ...)
+// and is forwarded as-is to ProviderFactory. SpecOverride layers on
+// top of the catalog ModelSpec at resolve time (see mergeSpec for
+// the field-wise merge rules).
+type ProviderConfig struct {
+	Provider string `json:"provider"`
+
+	// Profile identifies a credential profile within a provider.
+	// Empty string is the default profile, equivalent to today's
+	// single-credential semantics. See doc/sdk-llm-redesign.md §3.4
+	// for usage scenarios.
+	Profile string `json:"profile,omitempty" yaml:"profile,omitempty"`
+
+	// Config is forwarded as-is to ProviderFactory.
+	Config map[string]any `json:"config"`
+
+	// SpecOverride layers on top of the catalog ModelSpec. Field-wise
+	// merge: zero values in SpecOverride do not mask catalog values;
+	// non-zero values win. Limits use stricter-wins semantics
+	// (see mergeLimits) to prevent loosening catalog declarations.
+	SpecOverride ModelSpec `json:"spec,omitempty" yaml:"spec,omitempty"`
+}
+
+// ModelConfig holds user-supplied per-model overrides that layer on
+// top of a ProviderConfig at resolve time. Returned by ModelConfigStore.
 type ModelConfig struct {
-	Provider string         `json:"provider"`
-	Model    string         `json:"model"`
-	Caps     ModelCaps      `json:"caps,omitempty"`
-	Extra    map[string]any `json:"extra,omitempty"`
+	Provider string `json:"provider"`
+	Model    string `json:"model"`
+
+	// SpecOverride layers on top of (catalog ⊕ ProviderConfig.SpecOverride)
+	// using the same field-wise merge as ProviderConfig.SpecOverride.
+	SpecOverride ModelSpec `json:"spec,omitempty" yaml:"spec,omitempty"`
+
+	// Extra is shallow-merged into ProviderConfig.Config (per-model
+	// values overwrite provider values). Useful for routing one
+	// model through a different base_url while sibling models keep
+	// the default.
+	Extra map[string]any `json:"extra,omitempty"`
 }
 
 // DefaultModelRef points at the resolver's current default model. Used
@@ -47,9 +86,18 @@ type DefaultModelRef struct {
 }
 
 // ProviderConfigStore is the only required store interface. It looks
-// up provider-level configuration by provider name.
+// up provider-level configuration by (provider, profile) tuple.
+//
+// Lookup contract: exact match on (provider, profile). When the
+// caller did not set a credential profile, profile is "" — the store
+// returns the default-profile entry. When the caller set a specific
+// profile, the store returns the matching entry or
+// errdefs.NotFound — silently falling back to the default profile is
+// FORBIDDEN (it would silently route a tenant-scoped call to the
+// wrong credential, a billing / safety incident waiting to happen).
+// Stores wanting fallback semantics must implement them explicitly.
 type ProviderConfigStore interface {
-	GetProviderConfig(ctx context.Context, provider string) (*ProviderConfig, error)
+	GetProviderConfig(ctx context.Context, provider, profile string) (*ProviderConfig, error)
 }
 
 // ModelConfigStore is an optional extension. When the store passed to
@@ -70,11 +118,16 @@ type DefaultModelStore interface {
 	GetDefaultModel(ctx context.Context) (*DefaultModelRef, error)
 }
 
-// LLMResolver resolves a model string (e.g. "openai/gpt-4o") into an LLM
-// instance.
+// LLMResolver resolves a model string (e.g. "openai/gpt-4o") into an
+// LLM instance, with a profile-aware cache and selective
+// invalidation.
 type LLMResolver interface {
 	Resolve(ctx context.Context, model string) (LLM, error)
-	InvalidateCache(provider string)
+
+	// InvalidateCache removes cached LLM instances. With no options it
+	// clears every entry; options narrow the scope. See
+	// WithProvider / WithModel / WithProfile.
+	InvalidateCache(opts ...InvalidateOption)
 }
 
 // ResolverOption configures a defaultResolver.
@@ -86,12 +139,14 @@ func WithFallbackModel(model string) ResolverOption {
 	return func(r *defaultResolver) { r.fallback = model }
 }
 
-// WithExtraCaps merges additional ModelCaps into every LLM the resolver
-// produces. Useful for runtime-wide policy (e.g. a debug switch that
-// disables JSON mode globally). Combined (OR) with registry, provider
-// and per-model caps at resolve time.
-func WithExtraCaps(caps ModelCaps) ResolverOption {
-	return func(r *defaultResolver) { r.extraCaps = mergeCaps(r.extraCaps, caps) }
+// WithPolicyCaps merges resolver-wide policy caps into every LLM the
+// resolver produces. Distinct from a model's own ModelCaps in intent:
+// these are runtime-enforced policy switches (e.g. a debug flag that
+// disables JSON mode globally, a feature-gate that hides streaming
+// across the fleet). OR-merged with catalog and config caps at
+// resolve time — any layer disabling a cap wins.
+func WithPolicyCaps(caps ModelCaps) ResolverOption {
+	return func(r *defaultResolver) { r.policyCaps = mergeCaps(r.policyCaps, caps) }
 }
 
 // DefaultResolver creates an LLMResolver backed by the DefaultRegistry
@@ -102,7 +157,7 @@ func DefaultResolver(store ProviderConfigStore, opts ...ResolverOption) LLMResol
 	r := &defaultResolver{
 		registry: DefaultRegistry,
 		store:    store,
-		cache:    make(map[string]LLM),
+		cache:    make(map[cacheKey]LLM),
 	}
 	for _, o := range opts {
 		o(r)
@@ -111,14 +166,31 @@ func DefaultResolver(store ProviderConfigStore, opts ...ResolverOption) LLMResol
 }
 
 type defaultResolver struct {
-	registry  *ProviderRegistry
-	store     ProviderConfigStore
-	fallback  string
-	extraCaps ModelCaps
+	registry   *ProviderRegistry
+	store      ProviderConfigStore
+	fallback   string
+	policyCaps ModelCaps
 
 	mu    sync.RWMutex
-	cache map[string]LLM
+	cache map[cacheKey]LLM
 	sf    singleflight.Group
+}
+
+// cacheKey is the three-dimensional resolver cache key. Using a struct
+// (rather than a "/-or-#-separated" string) avoids collision /
+// ambiguity in the unlikely case any of provider / model / profile
+// contains a delimiter character.
+type cacheKey struct {
+	provider string
+	model    string
+	profile  string
+}
+
+func (k cacheKey) String() string {
+	if k.profile == "" {
+		return k.provider + "/" + k.model
+	}
+	return k.provider + "/" + k.model + "#" + k.profile
 }
 
 // Resolve maps a "provider/model" string to an LLM instance. Empty
@@ -126,6 +198,9 @@ type defaultResolver struct {
 //
 //  1. DefaultModelStore.GetDefaultModel (preferred)
 //  2. WithFallbackModel
+//
+// Per-call credential profile is read from the context via
+// CredentialProfileFromContext; "" means the default profile.
 func (r *defaultResolver) Resolve(ctx context.Context, modelStr string) (LLM, error) {
 	if modelStr == "" {
 		modelStr = r.resolveDefaultModel(ctx)
@@ -134,15 +209,19 @@ func (r *defaultResolver) Resolve(ctx context.Context, modelStr string) (LLM, er
 		return nil, errdefs.Validationf("no model specified and no fallback configured")
 	}
 
+	profile := CredentialProfileFromContext(ctx)
+	provider, modelName := parseModelString(modelStr)
+	key := cacheKey{provider: provider, model: modelName, profile: profile}
+
 	r.mu.RLock()
-	if cached, ok := r.cache[modelStr]; ok {
+	if cached, ok := r.cache[key]; ok {
 		r.mu.RUnlock()
 		return cached, nil
 	}
 	r.mu.RUnlock()
 
-	v, err, _ := r.sf.Do(modelStr, func() (any, error) {
-		return r.createLLM(ctx, modelStr)
+	v, err, _ := r.sf.Do(key.String(), func() (any, error) {
+		return r.createLLM(ctx, key)
 	})
 	if err != nil {
 		return nil, err
@@ -164,60 +243,75 @@ func (r *defaultResolver) resolveDefaultModel(ctx context.Context) string {
 	return r.fallback
 }
 
-func (r *defaultResolver) createLLM(ctx context.Context, modelStr string) (LLM, error) {
-	provider, modelName := parseModelString(modelStr)
-
-	pc, err := r.store.GetProviderConfig(ctx, provider)
+// createLLM does the one-shot assembly: resolve config, build the
+// raw provider, then wrap with the spec-driven middleware stack. No
+// unwrapping / re-wrapping — every layer is applied exactly once.
+func (r *defaultResolver) createLLM(ctx context.Context, key cacheKey) (LLM, error) {
+	pc, err := r.store.GetProviderConfig(ctx, key.provider, key.profile)
 	if err != nil {
-		return nil, fmt.Errorf("resolve provider config for %s: %w", provider, err)
+		return nil, fmt.Errorf("resolve provider config for %s: %w", key, err)
 	}
 
 	// Per-model overrides are optional. NotFound is silent; any other
 	// store error fails resolve so we don't hide misconfiguration.
 	var mc *ModelConfig
 	if mcs, ok := r.store.(ModelConfigStore); ok {
-		got, mErr := mcs.GetModelConfig(ctx, provider, modelName)
+		got, mErr := mcs.GetModelConfig(ctx, key.provider, key.model)
 		if mErr == nil {
 			mc = got
 		} else if !errdefs.IsNotFound(mErr) {
-			return nil, fmt.Errorf("resolve model config for %s/%s: %w", provider, modelName, mErr)
+			return nil, fmt.Errorf("resolve model config for %s: %w", key, mErr)
 		}
 	}
 
 	// Shallow merge: per-model Extra overwrites provider Config keys.
-	// We never deep-merge — predictable, and matches user mental model
-	// of "the value I set wins as-is".
-	merged := pc.Config
+	// Predictable, matches the user mental model of "the value I set
+	// wins as-is" — never deep-merged.
+	connConfig := pc.Config
 	if mc != nil && len(mc.Extra) > 0 {
-		merged = shallowMergeConfig(pc.Config, mc.Extra)
+		connConfig = shallowMergeConfig(pc.Config, mc.Extra)
 	}
 
-	inst, err := r.registry.NewFromConfig(provider, modelName, merged)
+	inst, err := r.registry.NewFromConfig(key.provider, key.model, connConfig)
 	if err != nil {
 		return nil, err
 	}
 
-	// Caps merge order (OR — any layer disabling a cap wins):
-	//   1) Registry catalog caps for this model
-	//   2) ProviderConfig.Caps (user-supplied, applies to all models of provider)
-	//   3) ModelConfig.Caps (user-supplied, this model only)
-	//   4) Resolver-wide extra caps from WithExtraCaps
-	//
-	// NewFromConfig already applies (1) and wraps the instance once.
-	// We unwrap+rewrap here so the additional layers (2, 3, 4) compose
-	// cleanly without nesting CapsMiddleware twice.
-	caps := mergeCaps(
-		r.registry.LookupModelCaps(provider, modelName),
-		pc.Caps,
-	)
-	if mc != nil {
-		caps = mergeCaps(caps, mc.Caps)
+	// Surface catalog deprecation as a one-shot telemetry warning
+	// per (provider, model). Fires AFTER the factory call so we
+	// don't spam warnings for misconfigured providers that fail at
+	// instantiation.
+	if info, ok := r.registry.LookupModel(key.provider, key.model); ok && !info.Deprecation.IsZero() {
+		warnDeprecatedModel(ctx, key.provider, key.model, info.Deprecation)
 	}
-	caps = mergeCaps(caps, r.extraCaps)
-	inst = CapsMiddleware(unwrapCaps(inst), caps)
+
+	// Spec merge order — later layers override earlier non-zero fields,
+	// with caps OR-merged and limits stricter-winning.
+	specLayers := []ModelSpec{
+		r.registry.LookupModelSpec(key.provider, key.model), // catalog
+		pc.SpecOverride, // provider override
+	}
+	if mc != nil {
+		specLayers = append(specLayers, mc.SpecOverride) // per-model override
+	}
+	spec := mergeSpec(specLayers...)
+	// Resolver-wide policy caps are the LAST OR layer — they always
+	// have the final say across every (provider, model, profile).
+	spec.Caps = mergeCaps(spec.Caps, r.policyCaps)
+
+	// Wrap order is innermost → outermost so per-call invocation runs
+	// defaults → caps → limits (see RFC §3.6 for rationale):
+	//
+	//   inst        ← raw provider call
+	//   WithLimits  ← clamp numeric fields (innermost)
+	//   WithCaps    ← drop / downgrade unsupported fields, validate msgs
+	//   WithDefaults← fill nil fields from defaults (outermost)
+	inst = WithLimits(inst, spec.Limits)
+	inst = WithCaps(inst, spec.Caps)
+	inst = WithDefaults(inst, spec.Defaults)
 
 	r.mu.Lock()
-	r.cache[modelStr] = inst
+	r.cache[key] = inst
 	r.mu.Unlock()
 
 	return inst, nil
@@ -240,26 +334,74 @@ func shallowMergeConfig(base, overlay map[string]any) map[string]any {
 	return out
 }
 
-func (r *defaultResolver) InvalidateCache(provider string) {
+// InvalidateOption narrows the scope of InvalidateCache. With no
+// options the entire cache is cleared. Options compose with AND
+// semantics: only entries matching every supplied option are removed.
+type InvalidateOption func(*invalidateFilter)
+
+type invalidateFilter struct {
+	provider    string
+	model       string
+	profile     string
+	hasProvider bool
+	hasModel    bool
+	hasProfile  bool
+}
+
+// WithProvider scopes invalidation to one provider.
+func WithProvider(p string) InvalidateOption {
+	return func(f *invalidateFilter) { f.provider = p; f.hasProvider = true }
+}
+
+// WithModel scopes invalidation to one model name (regardless of
+// provider unless WithProvider is also supplied).
+func WithModel(m string) InvalidateOption {
+	return func(f *invalidateFilter) { f.model = m; f.hasModel = true }
+}
+
+// WithProfile scopes invalidation to one credential profile. Useful
+// for evicting a single tenant's cached LLM instances after rotating
+// their key.
+func WithProfile(p string) InvalidateOption {
+	return func(f *invalidateFilter) { f.profile = p; f.hasProfile = true }
+}
+
+func (f *invalidateFilter) matches(k cacheKey) bool {
+	if f.hasProvider && k.provider != f.provider {
+		return false
+	}
+	if f.hasModel && k.model != f.model {
+		return false
+	}
+	if f.hasProfile && k.profile != f.profile {
+		return false
+	}
+	return true
+}
+
+// InvalidateCache removes cached LLM instances matching every supplied
+// option. With no options the whole cache is cleared.
+func (r *defaultResolver) InvalidateCache(opts ...InvalidateOption) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if provider == "" {
-		r.cache = make(map[string]LLM)
+	if len(opts) == 0 {
+		r.cache = make(map[cacheKey]LLM)
 		return
 	}
-	for key := range r.cache {
-		p, _ := parseModelString(key)
-		if p == provider {
-			delete(r.cache, key)
+	f := &invalidateFilter{}
+	for _, o := range opts {
+		o(f)
+	}
+	for k := range r.cache {
+		if f.matches(k) {
+			delete(r.cache, k)
 		}
 	}
 }
 
 // parseModelString splits "provider/model" into (provider, model).
 // If there is no "/" separator, the whole string is treated as the model
-// name and the provider is inferred as the model name itself (covers
-// cases like "gpt-4o" → provider "openai" etc., but we fall back to using
-// the raw string as provider which will be resolved by the registry).
+// name and the provider is inferred via the global InferRule table.
 func parseModelString(s string) (provider, modelName string) {
 	if idx := strings.Index(s, "/"); idx >= 0 {
 		return s[:idx], s[idx+1:]
@@ -271,28 +413,6 @@ func parseModelString(s string) (provider, modelName string) {
 type InferRule struct {
 	Prefix   string
 	Provider string
-}
-
-var (
-	inferMu    sync.RWMutex
-	inferRules []InferRule
-)
-
-func init() {
-	defaultRules := []InferRule{
-		{"gpt-", "openai"},
-		{"o1", "openai"},
-		{"o3", "openai"},
-		{"claude-", "anthropic"},
-		{"deepseek-", "deepseek"},
-		{"qwen-", "qwen"},
-		{"doubao-", "bytedance"},
-		{"abab", "minimax"},
-		{"llama", "ollama"},
-		{"mistral", "ollama"},
-		{"gemma", "ollama"},
-	}
-	inferRules = defaultRules
 }
 
 // RegisterInferRule adds a model-prefix → provider mapping used when

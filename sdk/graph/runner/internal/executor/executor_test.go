@@ -735,7 +735,8 @@ func TestLocalExecutor_TemplateRef_StringNumericBoardVars(t *testing.T) {
 	}
 
 	// When board vars are strings, resolveTyped returns the string value.
-	// The node's SetConfig → CoerceMapForStruct should still handle them.
+	// Whatever coercion the node performs in SetConfig is the node's
+	// concern; the executor must pass the raw resolved value through.
 	if capturedConfig["temperature"] != "0.7" {
 		t.Fatalf("temperature: got %T %v", capturedConfig["temperature"], capturedConfig["temperature"])
 	}

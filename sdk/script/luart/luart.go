@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/script"
@@ -30,14 +31,38 @@ func WithPoolSize(n int) Option {
 	}
 }
 
+// WithMaxExecTime sets a runtime-enforced wall-clock ceiling on each
+// Exec call. Independent of the caller's context: even ctx.Background
+// cannot exceed d. The shorter of (caller deadline, d) wins. Zero
+// disables the cap.
+//
+// On expiry the script is interrupted via gopher-lua's context hook
+// and Exec returns a context-deadline error classified by
+// sdk/errdefs.IsTimeout.
+func WithMaxExecTime(d time.Duration) Option {
+	return func(r *Runtime) {
+		if d > 0 {
+			r.maxExecTime = d
+		}
+	}
+}
+
 // Runtime manages a pool of gopher-lua VMs for Lua script execution.
 // It implements script.Runtime. Close is safe to call multiple times.
+//
+// Note on memory caps: gopher-lua exposes no safe memory or
+// instruction-count quota (its SetMx hook calls os.Exit on overflow,
+// which is unusable in a library). The wall-clock ceiling installed
+// via WithMaxExecTime is therefore the only "hard cut" available
+// today; for stronger isolation run the script under a separate OS
+// process with cgroup/rlimit applied.
 type Runtime struct {
-	pool      chan *lua.LState
-	poolSize  int
-	once      sync.Once
-	closeOnce sync.Once
-	closed    atomic.Bool
+	pool        chan *lua.LState
+	poolSize    int
+	maxExecTime time.Duration
+	once        sync.Once
+	closeOnce   sync.Once
+	closed      atomic.Bool
 }
 
 // New creates a new Lua runtime with a VM pool.
@@ -60,9 +85,16 @@ func (r *Runtime) init() {
 	r.once.Do(func() {
 		r.pool = make(chan *lua.LState, r.poolSize)
 		for i := 0; i < r.poolSize; i++ {
-			r.pool <- lua.NewState()
+			r.pool <- r.newVM()
 		}
 	})
+}
+
+// newVM constructs one LState. Used by both pool init and the
+// discard / replace path inside Exec so any future per-VM caps land
+// in one place.
+func (r *Runtime) newVM() *lua.LState {
+	return lua.NewState()
 }
 
 // ErrVMPoolExhausted is returned when all VMs are in use and the context
@@ -114,6 +146,12 @@ func (r *Runtime) Close() error {
 // config and bindings as globals. A built-in "signal" global is always
 // injected for interrupt/error/done control flow back to the host.
 func (r *Runtime) Exec(ctx context.Context, name, source string, env *script.Env) (*script.Signal, error) {
+	if r.maxExecTime > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, r.maxExecTime)
+		defer cancel()
+	}
+
 	L, err := r.acquire(ctx)
 	if err != nil {
 		return nil, err
@@ -130,7 +168,7 @@ func (r *Runtime) Exec(ctx context.Context, name, source string, env *script.Env
 		}
 		if discardVM {
 			L.Close()
-			r.release(lua.NewState())
+			r.release(r.newVM())
 		} else {
 			r.release(L)
 		}
