@@ -64,6 +64,8 @@ func BuildTaskContext(card *Card) string {
 		b.WriteString("Status: running (agent is processing, wait for callback, do not resubmit)\n")
 	case CardFailed:
 		fmt.Fprintf(&b, "Status: failed\nError: %s\n", card.Error)
+	case CardCancelled:
+		fmt.Fprintf(&b, "Status: cancelled\nReason: %s\n", card.Error)
 	case CardDone:
 		output, _ := p["output"].(string)
 		fmt.Fprintf(&b, "Status: completed\n%s\n", output)

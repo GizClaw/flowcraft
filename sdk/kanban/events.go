@@ -20,6 +20,7 @@ const (
 	EventTaskClaimed      = "kanban.task.claimed"
 	EventTaskCompleted    = "kanban.task.completed"
 	EventTaskFailed       = "kanban.task.failed"
+	EventTaskCancelled    = "kanban.task.cancelled"
 	EventCallbackStart    = "kanban.callback.start"
 	EventCallbackDone     = "kanban.callback.done"
 	EventCronRuleCreated  = "kanban.cron.rule.created"
@@ -85,6 +86,19 @@ type TaskFailedPayload struct {
 	ElapsedMs     int64  `json:"elapsed_ms"`
 }
 
+// TaskCancelledPayload is published when a task is cancelled deliberately
+// (e.g. by Pod controller graceful shutdown), as distinct from a task
+// failure. Reason carries an optional human-readable note explaining why
+// cancellation happened; consumers may display it but should not parse it.
+type TaskCancelledPayload struct {
+	Version       int    `json:"version"`
+	CardID        string `json:"card_id"`
+	TargetAgentID string `json:"target_agent_id"`
+	RuntimeID     string `json:"runtime_id"`
+	Reason        string `json:"reason,omitempty"`
+	ElapsedMs     int64  `json:"elapsed_ms"`
+}
+
 // CallbackStartPayload is published just before the callback message is sent
 // to the Dispatcher Actor, so WS subscribers can start streaming.
 type CallbackStartPayload struct {
@@ -147,6 +161,9 @@ func stampVersion(payload any) any {
 		p.Version = payloadVersion
 		return p
 	case TaskFailedPayload:
+		p.Version = payloadVersion
+		return p
+	case TaskCancelledPayload:
 		p.Version = payloadVersion
 		return p
 	case CallbackStartPayload:
@@ -235,6 +252,8 @@ func cardSubjectFor(kind, cardID string) event.Subject {
 		return subjTaskCompleted(cardID)
 	case EventTaskFailed:
 		return subjTaskFailed(cardID)
+	case EventTaskCancelled:
+		return subjTaskCancelled(cardID)
 	case EventCallbackStart:
 		return subjCallbackStart(cardID)
 	case EventCallbackDone:

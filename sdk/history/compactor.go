@@ -164,6 +164,20 @@ func (m *compactor) Load(ctx context.Context, conversationID string, budget Budg
 	return clampPreservingSystem(msgs, budget.MaxMessages), nil
 }
 
+// LoadFiltered honours [LoadOptions] in addition to the budget. It
+// reuses Load + the in-memory [ApplyLoadOptions] helper because the
+// DAG already collapses the raw transcript into a "system + summaries +
+// tail" shape; pushing role / sequence filters down into the DAG would
+// invalidate that assembly and is not worth the complexity for the
+// moderation / inspection use cases LoadOptions targets.
+func (m *compactor) LoadFiltered(ctx context.Context, conversationID string, opts LoadOptions) ([]model.Message, error) {
+	msgs, err := m.Load(ctx, conversationID, opts.Budget)
+	if err != nil {
+		return nil, err
+	}
+	return ApplyLoadOptions(msgs, opts), nil
+}
+
 // clampPreservingSystem keeps the leading system message (if any) when
 // trimming from the head to satisfy MaxMessages.
 func clampPreservingSystem(msgs []model.Message, maxMsgs int) []model.Message {

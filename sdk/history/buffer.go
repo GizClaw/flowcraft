@@ -72,6 +72,19 @@ func (m *buffer) Load(ctx context.Context, conversationID string, budget Budget)
 
 // Append persists newMessages, serializing concurrent calls per conversation
 // so a read-modify-write fallback path can never lose data.
+// LoadFiltered honours [LoadOptions] in addition to the budget. The
+// underlying buffer has no per-message metadata, so filtering is a
+// straightforward in-memory pass over the slice returned by Load — it
+// satisfies [FilterableHistory] mostly so callers don't need the type
+// assertion at the call site.
+func (m *buffer) LoadFiltered(ctx context.Context, conversationID string, opts LoadOptions) ([]model.Message, error) {
+	msgs, err := m.Load(ctx, conversationID, opts.Budget)
+	if err != nil {
+		return nil, err
+	}
+	return ApplyLoadOptions(msgs, opts), nil
+}
+
 func (m *buffer) Append(ctx context.Context, conversationID string, newMessages []model.Message) error {
 	if len(newMessages) == 0 {
 		return nil

@@ -13,6 +13,7 @@ import (
 // kanbanMetrics holds OTel instruments for the Kanban system.
 type kanbanMetrics struct {
 	tasksSubmitted metric.Int64Counter
+	tasksCancelled metric.Int64Counter
 	tasksDuration  metric.Float64Histogram
 	agentsActive   metric.Int64UpDownCounter
 }
@@ -27,6 +28,12 @@ func newKanbanMetrics(ctx context.Context) *kanbanMetrics {
 		metric.WithDescription("Total tasks submitted"))
 	if err != nil {
 		telemetry.Warn(ctx, "kanban: failed to create tasks.submitted metric", otellog.String(telemetry.AttrErrorMessage, err.Error()))
+	}
+
+	km.tasksCancelled, err = m.Int64Counter("kanban.tasks.cancelled.total",
+		metric.WithDescription("Total tasks cancelled deliberately (distinct from failed)"))
+	if err != nil {
+		telemetry.Warn(ctx, "kanban: failed to create tasks.cancelled metric", otellog.String(telemetry.AttrErrorMessage, err.Error()))
 	}
 
 	km.tasksDuration, err = m.Float64Histogram("kanban.tasks.duration.seconds",
@@ -48,6 +55,12 @@ func newKanbanMetrics(ctx context.Context) *kanbanMetrics {
 func (km *kanbanMetrics) incTasksSubmitted(ctx context.Context, attrs ...attribute.KeyValue) {
 	if km.tasksSubmitted != nil {
 		km.tasksSubmitted.Add(ctx, 1, metric.WithAttributes(attrs...))
+	}
+}
+
+func (km *kanbanMetrics) incTasksCancelled(ctx context.Context, attrs ...attribute.KeyValue) {
+	if km.tasksCancelled != nil {
+		km.tasksCancelled.Add(ctx, 1, metric.WithAttributes(attrs...))
 	}
 }
 
