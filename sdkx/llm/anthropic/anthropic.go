@@ -554,17 +554,45 @@ func applyOptions(p *asdk.MessageNewParams, options *llm.GenerateOptions) {
 		p.Tools = tools
 	}
 
+	// disable_parallel_tool_use is nested inside tool_choice in the
+	// Anthropic Messages API (param.Opt[bool] on Auto / Any / Tool —
+	// not on None, where it would be meaningless). We bridge it from
+	// opts.Extra["disable_parallel_tool_use"] (bool). When the caller
+	// sets the toggle without an explicit ToolChoice, we default to
+	// the Auto variant since omitted tool_choice = auto on Anthropic
+	// anyway, and Auto is the only variant where the toggle composes
+	// with the model's normal selection behaviour.
+	disableParallel, hasDisableParallel := options.Extra["disable_parallel_tool_use"].(bool)
+
 	if options.ToolChoice != nil {
 		switch options.ToolChoice.Type {
 		case llm.ToolChoiceAuto:
-			p.ToolChoice = asdk.ToolChoiceUnionParam{OfAuto: &asdk.ToolChoiceAutoParam{}}
+			tc := &asdk.ToolChoiceAutoParam{}
+			if hasDisableParallel {
+				tc.DisableParallelToolUse = param.NewOpt(disableParallel)
+			}
+			p.ToolChoice = asdk.ToolChoiceUnionParam{OfAuto: tc}
 		case llm.ToolChoiceNone:
 			p.ToolChoice = asdk.ToolChoiceUnionParam{OfNone: &asdk.ToolChoiceNoneParam{}}
 		case llm.ToolChoiceRequired:
-			p.ToolChoice = asdk.ToolChoiceUnionParam{OfAny: &asdk.ToolChoiceAnyParam{}}
+			tc := &asdk.ToolChoiceAnyParam{}
+			if hasDisableParallel {
+				tc.DisableParallelToolUse = param.NewOpt(disableParallel)
+			}
+			p.ToolChoice = asdk.ToolChoiceUnionParam{OfAny: tc}
 		case llm.ToolChoiceSpecific:
-			p.ToolChoice = asdk.ToolChoiceUnionParam{OfTool: &asdk.ToolChoiceToolParam{Name: options.ToolChoice.Name}}
+			tc := &asdk.ToolChoiceToolParam{Name: options.ToolChoice.Name}
+			if hasDisableParallel {
+				tc.DisableParallelToolUse = param.NewOpt(disableParallel)
+			}
+			p.ToolChoice = asdk.ToolChoiceUnionParam{OfTool: tc}
 		}
+	} else if hasDisableParallel {
+		// Caller wants the toggle but didn't pick a ToolChoice — fall
+		// back to Auto since that's the API default semantically.
+		p.ToolChoice = asdk.ToolChoiceUnionParam{OfAuto: &asdk.ToolChoiceAutoParam{
+			DisableParallelToolUse: param.NewOpt(disableParallel),
+		}}
 	}
 }
 
