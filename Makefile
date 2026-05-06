@@ -16,12 +16,19 @@ MODULES_WORK := sdk sdkx voice
 #  - bench: heavy eval datasets/CLIs we don't want polluting the workspace
 #  - examples/voice-pipeline: pinned to sdk v0.1.12 + sdkx v0.1.14 so
 #    external consumers see a real reproducible example
-#  - tools/conformance: manual provider conformance suites; pinned to
+#  - tests/conformance: manual provider conformance suites; pinned to
 #    released sdk/sdkx so we test the exact bytes consumers can pull.
 #    Tests self-skip without credentials so `make test` runs them as a
 #    compile check; `make conformance` is the documented entry point
 #    when a .env is in place.
-MODULES_OFFWORK := bench examples/voice-pipeline tools/conformance
+#  - tests/quality/knowledge: in-process retrieval-quality regression
+#    suite for sdk/knowledge. Pins sdk/sdkx via go.mod so quality
+#    drifts are evaluated against the released bytes consumers run,
+#    and the 100-doc corpus stays out of every sdk patch tag. The
+#    default lane (BM25 only) needs no credentials; the `integration`
+#    lane requires `EMBEDDING_*` env vars and is opt-in via a build
+#    tag, so `make test` exercises the compile path here too.
+MODULES_OFFWORK := bench examples/voice-pipeline tests/conformance tests/quality/knowledge
 
 ALL_MODULES := $(MODULES_WORK) $(MODULES_OFFWORK)
 
@@ -41,9 +48,18 @@ help:
 	@echo "  make fmt         Run gofmt on all modules"
 	@echo "  make tidy        Run go mod tidy on all modules"
 	@echo "  make ci          vet + test"
-	@echo "  make conformance Run provider conformance suites in tools/conformance"
-	@echo "                   (needs a repo-root .env with provider credentials;"
-	@echo "                    no env => suites self-skip and pass)"
+	@echo ""
+	@echo "Test suites under tests/ (default 'make test' already runs them"
+	@echo "in compile-check / no-credential mode; the targets below are the"
+	@echo "documented entry points for the credentialed / build-tagged lanes):"
+	@echo ""
+	@echo "  make test-conformance  Provider conformance suites (tests/conformance)."
+	@echo "                         Needs a repo-root .env with provider credentials;"
+	@echo "                         no env => suites self-skip and pass."
+	@echo "  make test-quality      Retrieval-quality regression suite"
+	@echo "                         (tests/quality/knowledge, integration lane)."
+	@echo "                         Needs EMBEDDING_PROVIDER / EMBEDDING_API_KEY /"
+	@echo "                         EMBEDDING_MODEL (or skips cleanly)."
 	@echo ""
 	@echo "Bench is in CI for vet+test only. Long-running eval CLIs"
 	@echo "(bench/locomo/cmd/eval, history-compression/cmd/eval) are main"
@@ -71,10 +87,21 @@ tidy:
 .PHONY: ci
 ci: vet test
 
-# Provider conformance: runs every suite under tools/conformance against
+# Provider conformance: runs every suite under tests/conformance against
 # the pinned sdk/sdkx release. Without credentials the individual tests
 # Skip cleanly, so this also doubles as a "do the suites still compile
 # against the released API?" check.
-.PHONY: conformance
-conformance:
-	@cd tools/conformance && GOWORK=off go test -count=1 ./...
+.PHONY: test-conformance
+test-conformance:
+	@cd tests/conformance && GOWORK=off go test -count=1 ./...
+
+# Retrieval-quality regression suite. The default lane (BM25 only)
+# is exercised by `make test` because tests/quality/knowledge is in
+# MODULES_OFFWORK. This target opts into the //go:build integration
+# lane that exercises the vector + hybrid lanes against a live
+# embedding provider; tests self-skip when EMBEDDING_PROVIDER /
+# EMBEDDING_API_KEY / EMBEDDING_MODEL are unset, so a credential-less
+# run is still a no-op.
+.PHONY: test-quality
+test-quality:
+	@cd tests/quality/knowledge && GOWORK=off go test -tags=integration -count=1 ./...

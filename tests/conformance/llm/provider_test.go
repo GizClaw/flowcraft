@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/sdk/llm"
-	"github.com/GizClaw/flowcraft/tools/conformance/internal/testenv"
+	"github.com/GizClaw/flowcraft/tests/conformance/internal/testenv"
 
 	// trigger init() self-registration for all providers
 	_ "github.com/GizClaw/flowcraft/sdkx/llm/anthropic"

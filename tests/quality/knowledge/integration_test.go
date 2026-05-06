@@ -1,6 +1,6 @@
 //go:build integration
 
-package e2e_test
+package knowledgequality_test
 
 import (
 	"context"
@@ -10,7 +10,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/sdk/embedding"
 	"github.com/GizClaw/flowcraft/sdk/knowledge"
-	"github.com/GizClaw/flowcraft/sdk/knowledge/e2e/internal/testenv"
+	"github.com/GizClaw/flowcraft/tests/quality/knowledge/internal/testenv"
 
 	_ "github.com/GizClaw/flowcraft/sdkx/embedding/azure"
 	_ "github.com/GizClaw/flowcraft/sdkx/embedding/bytedance"

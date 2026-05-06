@@ -1,4 +1,4 @@
-module github.com/GizClaw/flowcraft/tools/conformance
+module github.com/GizClaw/flowcraft/tests/conformance
 
 go 1.25.0
 

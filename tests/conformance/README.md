@@ -23,7 +23,7 @@ so any of the candidates work.
 
 ## Required env vars
 
-### LLM providers (`tools/conformance/llm/`)
+### LLM providers (`tests/conformance/llm/`)
 
 Each provider is configured via a single JSON env var. Tests for an
 unset provider are skipped.
@@ -52,7 +52,7 @@ JSON shape:
 it; the suite reads it to decide whether to skip scenarios that need
 a capability the model doesn't support.
 
-### Embedding providers (`tools/conformance/embedding/`)
+### Embedding providers (`tests/conformance/embedding/`)
 
 | Env var | Notes |
 | --- | --- |
@@ -64,10 +64,10 @@ a capability the model doesn't support.
 
 ## Adding a new suite
 
-Drop a new directory under `tools/conformance/` with:
+Drop a new directory under `tests/conformance/` with:
 
 - `doc.go` declaring the package and documenting the env vars.
 - One or more `_test.go` files that `t.Skip` cleanly when their env
   is missing.
-- Import `github.com/GizClaw/flowcraft/tools/conformance/internal/testenv`
+- Import `github.com/GizClaw/flowcraft/tests/conformance/internal/testenv`
   and call `testenv.Load()` from `init()` if you need `.env` loading.
