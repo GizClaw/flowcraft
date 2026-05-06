@@ -26,12 +26,8 @@
 !sdkx/**
 !voice/
 !voice/**
-!tools/
-!tools/**
-
-# ── Frontend source ──
-!web/
-!web/**
+!tests/
+!tests/**
 
 # ── Container ──
 !Dockerfile
