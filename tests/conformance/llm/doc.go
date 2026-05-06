@@ -8,8 +8,8 @@
 //
 // or directly:
 //
-//	cd tools/conformance && go test -count=1 ./llm/...
+//	cd tests/conformance && go test -count=1 ./llm/...
 //
 // Credentials live in a repo-root `.env` file (see
-// tools/conformance/README.md).
+// tests/conformance/README.md).
 package llm

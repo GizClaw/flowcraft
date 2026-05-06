@@ -7,5 +7,5 @@
 //	make conformance
 //
 // Credentials live in a repo-root `.env` file (see
-// tools/conformance/README.md).
+// tests/conformance/README.md).
 package embedding
