@@ -14,9 +14,9 @@ package tool
 //     re-invoke the tool with the same arguments.
 //
 // Network / filesystem / cost claims were deliberately deferred:
-// in-process pods cannot enforce process-boundary isolation
-// (see docs/sdk-pod-runtime-gaps.md §3.5), and $-denominated cost
-// caps presuppose the LLM pricing catalog that is also deferred.
+// the in-process runtime cannot enforce process-boundary isolation,
+// and $-denominated cost caps presuppose an LLM pricing catalog
+// that is also deferred.
 // Add fields here when (and only when) a concrete sandbox component
 // is ready to consume them.
 type ToolMeta struct {

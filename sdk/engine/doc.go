@@ -115,6 +115,4 @@
 //   - Engine kind enumeration — engine does not reserve a "type"
 //     namespace or list which engines exist; routing on subject is
 //     the only cross-engine identification mechanism.
-//
-// See docs/agent-runtime-redesign.md for the full layering rationale.
 package engine

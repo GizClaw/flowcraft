@@ -128,6 +128,4 @@
 //
 //   - Strategy adapter for compiled engines (sdk/agent/strategy will host
 //     it once we know what shape it should have).
-//
-// See docs/agent-runtime-redesign.md for the full layering rationale.
 package agent

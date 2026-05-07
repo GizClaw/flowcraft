@@ -7,6 +7,7 @@ on:
       - "sdk/**"
       - "sdkx/**"
       - "voice/**"
+      - "vessel/**"
 
 permissions:
   contents: write
@@ -70,7 +71,7 @@ jobs:
           # and surface them as MODULE_SKIP_<MOD>=1 env vars consumed by
           # tag_module. Case-insensitive on the keyword, exact match on
           # the module token.
-          for mod in sdk sdkx voice; do
+          for mod in sdk sdkx voice vessel; do
             if echo "$msg" | grep -qiE "\[skip[-_]tag:${mod}\]"; then
               key="MODULE_SKIP_$(echo "$mod" | tr '[:lower:]' '[:upper:]')"
               echo "${key}=1" >> "$GITHUB_ENV"
@@ -136,3 +137,9 @@ jobs:
           tag_module "sdk"
           tag_module "sdkx"
           tag_module "voice"
+          # vessel is auto-patched the same way once a seed tag exists
+          # (e.g. vessel/v0.1.0). The first-ever tag must be created
+          # by hand: latest_tag returns empty and tag_module logs a
+          # warning + skips, so we never accidentally publish v0.0.1
+          # for a never-released module.
+          tag_module "vessel"
