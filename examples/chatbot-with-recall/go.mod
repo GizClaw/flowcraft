@@ -2,7 +2,7 @@ module github.com/GizClaw/flowcraft/examples/chatbot-with-recall
 
 go 1.25.0
 
-require github.com/GizClaw/flowcraft/sdk v0.1.11
+require github.com/GizClaw/flowcraft/sdk v0.2.7
 
 require (
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
@@ -24,5 +24,3 @@ require (
 	golang.org/x/sync v0.19.0 // indirect
 	golang.org/x/sys v0.41.0 // indirect
 )
-
-replace github.com/GizClaw/flowcraft/sdk => ../../sdk

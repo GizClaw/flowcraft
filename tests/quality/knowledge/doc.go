@@ -20,13 +20,14 @@
 //
 // Test layout:
 //
-//   - bm25_test.go        no external dependency; runs by default
-//   - helper_test.go      service builder + corpus loader
-//   - integration_test.go //go:build integration; requires
-//                         EMBEDDING_PROVIDER / EMBEDDING_API_KEY /
-//                         EMBEDDING_MODEL env vars to exercise the
-//                         vector + hybrid lanes against a live
-//                         embedding provider
+//   - bm25_test.go — no external dependency; runs by default.
+//   - helper_test.go — service builder + corpus loader.
+//   - integration_test.go — gated by //go:build integration.
+//
+// The integration suite exercises the vector + hybrid lanes against a
+// live embedding provider and therefore requires the EMBEDDING_PROVIDER,
+// EMBEDDING_API_KEY, and EMBEDDING_MODEL env vars (typically loaded from
+// a .env file at the repo root).
 //
 // Invocation:
 //
