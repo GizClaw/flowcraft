@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestAPI_Metrics_TextExposition asserts that /metrics renders the
@@ -22,12 +23,31 @@ func TestAPI_Metrics_TextExposition(t *testing.T) {
 	_ = httpServerCall(t, s, http.MethodPost, "/v1/vessels/support/call",
 		strings.NewReader(`{"agent":"helper","query":"hi"}`))
 
+	// /call returns when the Handle's Wait resolves, but the run
+	// registry's terminal-state goroutine may not have observed
+	// h.Done() yet. Poll /metrics until the completed counter
+	// shows up rather than racing the bookkeeping goroutine.
+	deadline := time.Now().Add(2 * time.Second)
+	var got string
+	for time.Now().Before(deadline) {
+		w := httptest.NewRecorder()
+		s.Handler().ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+		if w.Code != http.StatusOK {
+			t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+		}
+		got = w.Body.String()
+		if strings.Contains(got, `vesseld_runs_total{vessel="support",state="completed"}`) {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
 	w := httptest.NewRecorder()
 	s.Handler().ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/metrics", nil))
 	if w.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
 	}
-	got := w.Body.String()
+	got = w.Body.String()
 
 	// Content-type must be the standard exposition format, else
 	// some scraper implementations refuse the payload.

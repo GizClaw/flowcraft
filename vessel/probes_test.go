@@ -145,21 +145,25 @@ func TestProbe_RestartOnFailure(t *testing.T) {
 		t.Fatalf("Launch: %v", err)
 	}
 
-	// Track that the phase transitioned through Failed and back
-	// into Running.
-	deadline := time.Now().Add(3 * time.Second)
-	sawFailed := false
+	// Confirm a restart happened: the captain should bump
+	// restartAttempts (persists across generations) AND end up
+	// healthy in PhaseRunning. We can't reliably catch the
+	// transient PhaseFailed window via polling under -race; the
+	// restart counter is the persistent artefact of the cycle.
+	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		ph := c.Phase()
-		if ph == PhaseFailed {
-			sawFailed = true
-		}
-		if sawFailed && ph == PhaseRunning {
+		c.mu.Lock()
+		attempts := c.restartAttempts
+		c.mu.Unlock()
+		if attempts >= 1 && c.Phase() == PhaseRunning {
 			return
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
-	t.Fatalf("never observed Failed→Running cycle (sawFailed=%v, phase=%s)", sawFailed, c.Phase())
+	c.mu.Lock()
+	attempts := c.restartAttempts
+	c.mu.Unlock()
+	t.Fatalf("never observed restart cycle (restartAttempts=%d, phase=%s)", attempts, c.Phase())
 }
 
 // TestProbe_PanicCaught ensures a panicking probe surfaces as a
