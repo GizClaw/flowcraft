@@ -1,0 +1,109 @@
+name: Release vesseld
+
+on:
+  push:
+    tags:
+      - "vesseld/v*"
+
+permissions:
+  contents: write
+
+jobs:
+  # build cross-compiles vesseld for the matrix platforms and uploads
+  # tarballs as workflow artifacts. Each tarball is paired with a
+  # SHA-256 checksum file so the release page surfaces verifiable
+  # integrity hashes alongside the binary.
+  build:
+    name: Build vesseld (${{ matrix.goos }}/${{ matrix.goarch }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - { goos: linux, goarch: amd64 }
+          - { goos: linux, goarch: arm64 }
+          - { goos: darwin, goarch: amd64 }
+          - { goos: darwin, goarch: arm64 }
+          - { goos: windows, goarch: amd64 }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.25"
+
+      - name: Build
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          # GOWORK=off so the published vessel / sdk / sdkx
+          # versions in cmd/vesseld/go.mod actually drive the
+          # build — we don't want a release shadowed by an
+          # uncommitted local checkout.
+          GOWORK: "off"
+          CGO_ENABLED: "0"
+        run: |
+          set -euo pipefail
+          ext=""
+          [ "$GOOS" = "windows" ] && ext=".exe"
+          version="${GITHUB_REF_NAME#vesseld/}"
+          base="vesseld-${version}-${GOOS}-${GOARCH}"
+
+          (cd cmd/vesseld && go build \
+            -trimpath \
+            -ldflags="-s -w -X github.com/GizClaw/flowcraft/cmd/vesseld/cli.Version=${version}" \
+            -o "../../${base}${ext}" .)
+
+          if [ "$GOOS" = "windows" ]; then
+            zip "${base}.zip" "${base}${ext}"
+            sha256sum "${base}.zip" | tee "${base}.zip.sha256"
+          else
+            tar -czf "${base}.tar.gz" "${base}"
+            sha256sum "${base}.tar.gz" | tee "${base}.tar.gz.sha256"
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vesseld-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: |
+            vesseld-*.tar.gz
+            vesseld-*.tar.gz.sha256
+            vesseld-*.zip
+            vesseld-*.zip.sha256
+          if-no-files-found: error
+
+  # publish drains the build matrix's artifacts into a single GitHub
+  # Release. The release notes are auto-generated from PRs since the
+  # last vesseld/* tag — operators get a usable changelog without us
+  # hand-maintaining one.
+  publish:
+    name: Publish GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#vesseld/}"
+          # Pre-release flag is auto-set when the tag carries a
+          # SemVer pre-release suffix (e.g. v0.1.0-rc.1). Without
+          # this, GitHub would mark every rc as the latest stable
+          # release and drown the changelog feed.
+          prerelease=""
+          case "$version" in
+            *-*) prerelease="--prerelease" ;;
+          esac
+          gh release create "$GITHUB_REF_NAME" \
+            --title "vesseld $version" \
+            --generate-notes \
+            $prerelease \
+            dist/*
