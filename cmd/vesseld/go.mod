@@ -5,7 +5,7 @@ go 1.25.0
 require (
 	github.com/GizClaw/flowcraft/sdk v0.2.7
 	github.com/GizClaw/flowcraft/sdkx v0.2.5
-	github.com/GizClaw/flowcraft/vessel v0.1.0-rc.1
+	github.com/GizClaw/flowcraft/vessel v0.1.0-rc.2
 	go.opentelemetry.io/otel/log v0.16.0
 	gopkg.in/yaml.v3 v3.0.1
 )

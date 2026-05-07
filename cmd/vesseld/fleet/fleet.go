@@ -163,28 +163,25 @@ func (f *Fleet) Submit(ctx context.Context, vesselName, agentName string, req ag
 	if err := f.acquireGate(ctx); err != nil {
 		return nil, err
 	}
-	// We cannot release the slot before the Handle finishes; wrap
-	// release into the Captain's Wait path. Submit returns
-	// immediately with the Handle, so we attach a goroutine that
-	// releases when Wait completes.
 	h, err := cap.Submit(ctx, agentName, req)
 	if err != nil {
 		f.releaseGate()
 		return nil, err
 	}
-	// Release the gate slot once the underlying Run finishes.
-	// Wait drains the Handle's done channel without re-blocking;
-	// errors are not propagated here because the caller already
-	// owns the Handle and will Wait on it themselves.
-	go func() {
-		_, _ = h.Wait(context.Background())
-		f.releaseGate()
-	}()
 	// Track the run so HTTP /v1/runs/{run_id} can answer after
 	// the Submit caller has long since disconnected. Cheap when
 	// nobody queries (registry is just a map write); essential
-	// for the fire-and-forget submit endpoint.
+	// for the fire-and-forget submit endpoint. track() registers
+	// its own OnTerminate hook to record terminal state.
 	f.runs.track(vesselName, h)
+	// Release the daemon-wide concurrency slot when the run
+	// terminates. OnTerminate fires synchronously inside the
+	// captain's dispatch goroutine BEFORE Done is closed, so
+	// the slot is freed in time for any waiting Submit to claim
+	// it without an extra goroutine round-trip.
+	h.OnTerminate(func(_ *agent.Result, _ error) {
+		f.releaseGate()
+	})
 	return h, nil
 }
 

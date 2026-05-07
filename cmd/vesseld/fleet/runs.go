@@ -54,10 +54,18 @@ func newRunRegistry(retention time.Duration) *runRegistry {
 	}
 }
 
-// track records a new run and starts a goroutine that waits for
-// its Handle to terminate, then writes the result into the entry.
-// The goroutine exits on Handle termination, no separate cancel
-// signal needed: Stop / Drain naturally tear handles down.
+// track records a new run and registers a Handle.OnTerminate
+// hook to capture the terminal state. The hook fires
+// synchronously inside the captain's dispatch goroutine BEFORE
+// h.Done is closed and BEFORE any Wait caller observes the
+// result — which is the contract /metrics and /v1/runs scrape
+// endpoints rely on (a /call HTTP response cannot return before
+// this entry is recorded).
+//
+// Previously this method spawned a private goroutine watching
+// <-h.Done() and racing the HTTP handler's own Wait, leaving
+// scrape consumers occasionally observing "completed run, no
+// terminal counter". OnTerminate eliminates that race by design.
 func (r *runRegistry) track(vesselName string, h *vessel.Handle) {
 	if r == nil || h == nil {
 		return
@@ -72,15 +80,7 @@ func (r *runRegistry) track(vesselName string, h *vessel.Handle) {
 	r.runs[h.RunID] = entry
 	r.mu.Unlock()
 
-	// Wait in the background. The fleet already keeps a separate
-	// gate-release goroutine Waiting for its own bookkeeping; both
-	// can coexist now that vessel.Handle supports multi-consumer
-	// Wait. We DON'T cancel the run when the registry's parent
-	// scope shuts down — Stop / Drain handle that on the Captain
-	// side; here we only care about reading the terminal state.
-	go func() {
-		<-h.Done()
-		res, err := h.Wait(noopCtx{})
+	h.OnTerminate(func(res *agent.Result, err error) {
 		r.mu.Lock()
 		entry.CompletedAt = time.Now()
 		if res != nil {
@@ -89,7 +89,7 @@ func (r *runRegistry) track(vesselName string, h *vessel.Handle) {
 		}
 		entry.Err = err
 		r.mu.Unlock()
-	}()
+	})
 }
 
 // lookup returns a snapshot of the entry. Always returns a copy of
@@ -211,14 +211,3 @@ func (r *runRegistry) sweep(now time.Time) {
 	}
 }
 
-// noopCtx is a never-cancelling context.Context implementation we
-// pass to Handle.Wait inside the registry goroutine — the goroutine
-// is intentionally tied to Handle.Done and not to any caller ctx,
-// because the registry must observe terminal state regardless of
-// whether the original Submit caller is still around.
-type noopCtx struct{}
-
-func (noopCtx) Deadline() (time.Time, bool) { return time.Time{}, false }
-func (noopCtx) Done() <-chan struct{}       { return nil }
-func (noopCtx) Err() error                  { return nil }
-func (noopCtx) Value(any) any               { return nil }
