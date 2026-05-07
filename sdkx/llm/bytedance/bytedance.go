@@ -47,12 +47,23 @@ func init() {
 	// 32K max output cap per the unified family doc. Vision and tool
 	// use are first-class. The Volcengine Ark API is OpenAI-style and
 	// supports streaming + structured output natively, so no
-	// negative caps need declaring there.
+	// negative input/protocol caps need declaring.
+	//
+	// Output modality: text only. Image generation lives in
+	// dedicated Doubao image SKUs and audio/video in Seedance 2.0 —
+	// separate adapters not catalogued here. Disable the matching
+	// output modality caps so policy matching does not route
+	// image-output / audio-output slots onto these chat models.
+	chatTextOutputOnly := llm.DisabledCaps(
+		llm.CapImageOutput, llm.CapAudioOutput,
+	)
+
 	llm.RegisterProviderModels("bytedance", []llm.ModelInfo{
 		{
 			Label: "Doubao Seed 2.0 Pro",
 			Name:  "doubao-seed-2-0-pro-260215",
 			Spec: llm.ModelSpec{
+				Caps: chatTextOutputOnly,
 				Limits: llm.ModelLimits{
 					MaxContextTokens: 256_000,
 					MaxOutputTokens:  32_000,
@@ -63,6 +74,7 @@ func init() {
 			Label: "Doubao Seed 2.0 Lite",
 			Name:  "doubao-seed-2-0-lite-260215",
 			Spec: llm.ModelSpec{
+				Caps: chatTextOutputOnly,
 				Limits: llm.ModelLimits{
 					MaxContextTokens: 256_000,
 					MaxOutputTokens:  32_000,
@@ -73,6 +85,7 @@ func init() {
 			Label: "Doubao Seed 2.0 Mini",
 			Name:  "doubao-seed-2-0-mini-260215",
 			Spec: llm.ModelSpec{
+				Caps: chatTextOutputOnly,
 				Limits: llm.ModelLimits{
 					MaxContextTokens: 256_000,
 					MaxOutputTokens:  32_000,
@@ -85,6 +98,9 @@ func init() {
 			// material we have on file; left unset.
 			Label: "Doubao Seed 1.8",
 			Name:  "doubao-seed-1-8-251228",
+			Spec: llm.ModelSpec{
+				Caps: chatTextOutputOnly,
+			},
 		},
 	})
 }

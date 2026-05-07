@@ -33,7 +33,16 @@ func init() {
 	// for these chat-completions models so callers get a fail-fast
 	// rather than a backend error. Vision is supported across the
 	// commercial chat models (qwen-max et al.) per Model Studio docs.
-	qwenChatCaps := llm.DisabledCaps(llm.CapAudio, llm.CapFile)
+	//
+	// Output modality: text only. Image generation lives in the
+	// dedicated Qwen-Image SKU and audio output in Qwen3-Omni /
+	// Qwen3.5-Omni — separate adapters not catalogued here. Disable
+	// the matching output caps so policy matching does not route
+	// image-output / audio-output slots onto these chat models.
+	qwenChatCaps := llm.DisabledCaps(
+		llm.CapAudio, llm.CapFile,
+		llm.CapImageOutput, llm.CapAudioOutput,
+	)
 
 	llm.RegisterProviderModels("qwen", []llm.ModelInfo{
 		{

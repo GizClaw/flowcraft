@@ -46,8 +46,12 @@ func init() {
 	// (free-form JSON), not schema-constrained structured output.
 	// CapVision / CapAudio / CapFile are disabled because the V4
 	// series is text-only per artificialanalysis.ai/articles/...-v4-pro-and-v4-flash.
+	// Output is text-only as well (no native image / audio
+	// generation in the DeepSeek API), so disable the matching
+	// output modality caps too.
 	deepseekTextOnly := llm.DisabledCaps(
 		llm.CapJSONSchema, llm.CapVision, llm.CapAudio, llm.CapFile,
+		llm.CapImageOutput, llm.CapAudioOutput,
 	)
 
 	llm.RegisterProviderModels("deepseek", []llm.ModelInfo{
@@ -128,6 +132,8 @@ func init() {
 					llm.CapVision,
 					llm.CapAudio,
 					llm.CapFile,
+					llm.CapImageOutput,
+					llm.CapAudioOutput,
 				),
 				Limits: llm.ModelLimits{
 					MaxContextTokens: 1_000_000,

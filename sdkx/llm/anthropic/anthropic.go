@@ -58,7 +58,16 @@ func init() {
 	// Per platform.claude.com/docs/en/about-claude/models/overview
 	// (read 2026-04-30) every current Claude SKU supports vision and
 	// tool use, so only CapJSONSchema is disabled per family.
-	noJSONSchema := llm.DisabledCaps(llm.CapJSONSchema)
+	//
+	// Output modality: text only. Claude has no native image or
+	// audio output across the 4.x family — vision is input-only per
+	// docs.anthropic.com/en/docs/vision (analyse / understand,
+	// not generate). Disable both output modality caps so policy
+	// matching does not route image-output slots here.
+	textOnlyOutput := llm.DisabledCaps(
+		llm.CapJSONSchema,
+		llm.CapImageOutput, llm.CapAudioOutput,
+	)
 
 	llm.RegisterProviderModels("anthropic", []llm.ModelInfo{
 		{
@@ -67,7 +76,7 @@ func init() {
 			Label: "Claude Opus 4.7",
 			Name:  "claude-opus-4-7",
 			Spec: llm.ModelSpec{
-				Caps: noJSONSchema,
+				Caps: textOnlyOutput,
 				Limits: llm.ModelLimits{
 					MaxContextTokens: 1_000_000,
 					MaxOutputTokens:  128_000,
@@ -80,7 +89,7 @@ func init() {
 			Label: "Claude Opus 4.6",
 			Name:  "claude-opus-4-6",
 			Spec: llm.ModelSpec{
-				Caps: noJSONSchema,
+				Caps: textOnlyOutput,
 				Limits: llm.ModelLimits{
 					MaxContextTokens: 1_000_000,
 					MaxOutputTokens:  128_000,
@@ -93,7 +102,7 @@ func init() {
 			Label: "Claude Sonnet 4.6",
 			Name:  "claude-sonnet-4-6",
 			Spec: llm.ModelSpec{
-				Caps: noJSONSchema,
+				Caps: textOnlyOutput,
 				Limits: llm.ModelLimits{
 					MaxContextTokens: 1_000_000,
 					MaxOutputTokens:  64_000,
@@ -109,7 +118,7 @@ func init() {
 			Label: "Claude Haiku 4.5",
 			Name:  "claude-haiku-4-5-20251001",
 			Spec: llm.ModelSpec{
-				Caps: noJSONSchema,
+				Caps: textOnlyOutput,
 				Limits: llm.ModelLimits{
 					MaxContextTokens: 200_000,
 					MaxOutputTokens:  64_000,

@@ -51,6 +51,10 @@ func init() {
 	textOnlyAnthropicStyle := llm.DisabledCaps(
 		llm.CapVision, llm.CapAudio, llm.CapFile,
 		llm.CapJSONMode, llm.CapJSONSchema,
+		// Output: text only. Image generation lives in the
+		// minimax-image adapter (sdkx/llm/minimax/image); audio
+		// generation has no in-tree adapter today.
+		llm.CapImageOutput, llm.CapAudioOutput,
 	)
 
 	llm.RegisterProviderModels("minimax", []llm.ModelInfo{
