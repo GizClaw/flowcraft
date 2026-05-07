@@ -115,10 +115,18 @@ type Captain struct {
 // generously so transient hiccups don't reset the counter while
 // a genuinely-recovered vessel does.
 //
-// var (not const) so the package's own tests can compress it for
-// fast iteration; production callers should not rely on this
-// being mutable from the outside.
-var restartStableWindow = 30 * time.Second
+// Stored as an atomic int64 of nanoseconds so the package's own
+// tests can compress it for fast iteration without racing
+// captain goroutines; production callers should not rely on it
+// being mutable from outside the package.
+var restartStableWindow atomic.Int64
+
+func init() { restartStableWindow.Store(int64(30 * time.Second)) }
+
+// stableWindow returns the current restart stable window. Always
+// use this accessor instead of reading the var directly: race-free,
+// and lets tests swap the value via overrideStableWindow.
+func stableWindow() time.Duration { return time.Duration(restartStableWindow.Load()) }
 
 // New constructs a Captain from spec. It validates the spec, applies
 // options, builds the per-agent runtime view (engine, seeder,
@@ -715,7 +723,7 @@ func (c *Captain) transitionPhaseLocked(next Phase, reason string) {
 		return
 	}
 	if prev == PhaseRunning && next != PhaseRunning {
-		if !c.enteredRunningAt.IsZero() && time.Since(c.enteredRunningAt) >= restartStableWindow {
+		if !c.enteredRunningAt.IsZero() && time.Since(c.enteredRunningAt) >= stableWindow() {
 			c.restartAttempts = 0
 		}
 	}

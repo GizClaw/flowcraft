@@ -181,9 +181,9 @@ func TestCaptain_ProbeFlap_RespectsMaxRestarts(t *testing.T) {
 // flap/forgiveness behaviour be exercised in milliseconds instead
 // of waiting the production 30s window.
 func overrideStableWindow(d time.Duration) func() {
-	prev := restartStableWindow
-	restartStableWindow = d
-	return func() { restartStableWindow = prev }
+	prev := restartStableWindow.Load()
+	restartStableWindow.Store(int64(d))
+	return func() { restartStableWindow.Store(prev) }
 }
 
 // waitFor polls c.Phase until it equals want or budget elapses.
