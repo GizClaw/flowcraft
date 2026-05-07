@@ -17,9 +17,11 @@ credential-less run is a no-op (useful as a compile check):
 make conformance
 ```
 
-To actually exercise the providers, populate a repo-root `.env` and
-re-run `make conformance`. The loader walks up from each test's CWD,
-so any of the candidates work.
+To actually exercise the providers, copy `.env.example` from the repo
+root to `.env`, fill in credentials, and re-run `make conformance`.
+The loader walks up from each test's CWD, so any of the candidates
+work. `.env` is git-ignored; `.env.example` is the source-of-truth
+template.
 
 ## Required env vars
 
@@ -35,6 +37,34 @@ unset provider are skipped.
 | `FLOWCRAFT_TEST_BYTEDANCE` | bytedance |
 | `FLOWCRAFT_TEST_AZURE` | azure |
 | `FLOWCRAFT_TEST_DEEPSEEK` | deepseek |
+
+### LLM image-generation providers (`tests/conformance/llm/image_test.go`)
+
+Same JSON shape as the chat providers, registered under separate
+provider keys so chat and image catalogs stay decoupled. See
+`.env.example` at the repo root for ready-to-paste templates.
+
+| Env var | Provider key | Default model |
+| --- | --- | --- |
+| `FLOWCRAFT_TEST_MINIMAX_IMAGE` | `minimax-image` | `image-01` |
+| `FLOWCRAFT_TEST_BYTEDANCE_IMAGE` | `bytedance-image` | `doubao-seedream-5-0-260128` |
+| `FLOWCRAFT_TEST_QWEN_IMAGE` | `qwen-image` | `qwen-image-2.0-pro` |
+
+Scenarios:
+
+- Basic text-to-image (all three).
+- Explicit `Width`/`Height` mapping (verifies `WxH` vs `W*H` size syntax).
+- Streaming via `NewOneChunkStream` (single chunk + final message).
+- Image-to-image with a reference URL (`minimax-image`, `bytedance-image`).
+- `qwen-image` rejection of `PartImage` inputs (the t2i-only contract).
+
+Generated image URLs are normally just logged. To download every
+returned image to `tests/conformance/llm/_out/` for offline visual
+review (the directory is git-ignored), set `SAVE_GENERATED_IMAGES=1`:
+
+```bash
+SAVE_GENERATED_IMAGES=1 make test-conformance
+```
 
 JSON shape:
 
