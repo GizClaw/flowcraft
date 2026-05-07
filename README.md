@@ -157,7 +157,7 @@ Layered bottom-up. Each layer only depends on layers below it; siblings on the s
 
 ### Hybrid memory that actually recalls (`sdk/recall`)
 
-- BM25 lexical + vector semantic search with entity boost and TTL filtering — not just embedding similarity.
+- Three-lane retrieval (BM25 + vector + entity), fused via **Reciprocal Rank Fusion** (K=60), then re-weighted by entity-overlap boost, supersede decay, and time decay.
 - Predicate alias normalisation so "favourite color" and "favorite colour" hit the same memory.
 - Pluggable `retrieval.Index` backend — bring your own vector store; the in-tree implementation is in-memory.
 
