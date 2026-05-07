@@ -159,7 +159,7 @@ Layered bottom-up. Each layer only depends on layers below it; siblings on the s
 
 - Three-lane retrieval (BM25 + vector + entity), fused via **Reciprocal Rank Fusion** (K=60), then re-weighted by entity-overlap boost, supersede decay, and time decay.
 - Predicate alias normalisation so "favourite color" and "favorite colour" hit the same memory.
-- Pluggable `retrieval.Index` backend — bring your own vector store; the in-tree implementation is in-memory.
+- Pluggable `retrieval.Index` backend — `sdk/retrieval/memory` (in-memory), `sdkx/retrieval/sqlite` (SQLite), and `sdkx/retrieval/postgres` (Postgres + pgvector) ship in-tree; bring your own by implementing `retrieval.Index`.
 
 ### Streaming, durable, resumable (`sdk/engine`)
 
