@@ -46,6 +46,7 @@
 # ── Global excludes (override all allowed dirs) ──
 # Example: go build in examples/voice-pipeline produces ./voice-pipeline
 examples/voice-pipeline/voice-pipeline
+examples/chatbot-with-recall/chatbot-with-recall
 **/.DS_Store
 **/Thumbs.db
 **/*.exe
