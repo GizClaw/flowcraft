@@ -110,7 +110,7 @@ Layered bottom-up. Each layer only depends on layers below it; siblings on the s
          │   (daemon)  │                            │
          └──────┬──────┘                            │
                 │ composes vessel + sdkx            │
-   ┌────────────┼─────────────────┐          ┌─────▼──────┐
+   ┌────────────┼─────────────────┐          ┌──────▼─────┐
    │     ┌──────▼───────┐  ┌──────▼──────┐   │   voice/   │  WebRTC
    │     │   vessel/    │  │    sdkx/    │   │ (pipeline) │
    │     │  (runtime)   │  │ (providers) │   └─────┬──────┘
