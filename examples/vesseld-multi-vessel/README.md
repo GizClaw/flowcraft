@@ -30,7 +30,7 @@ go build -o ./vesseld ./cmd/vesseld    # from the repo root
 ./vesseld validate --config examples/vesseld-multi-vessel -R
 
 # Start the daemon (foreground; Ctrl-C to stop).
-./vesseld start --config examples/vesseld-multi-vessel -R
+./vesseld run --config examples/vesseld-multi-vessel -R
 
 # In another shell, dump the resolved plan as JSON.
 ./vesseld plan --config examples/vesseld-multi-vessel -R
