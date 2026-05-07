@@ -55,7 +55,7 @@ func (c *capsLLM) GenerateStream(ctx context.Context, msgs []Message, opts ...Ge
 		if err != nil {
 			return nil, err
 		}
-		return newOneChunkStream(msg, usage), nil
+		return NewOneChunkStream(msg, usage), nil
 	}
 	return c.inner.GenerateStream(ctx, msgs, c.filtered(ctx, opts)...)
 }
@@ -313,54 +313,3 @@ func stripParallelToolExtras(ctx context.Context, o *GenerateOptions) {
 		"llm: dropping parallel-tool extras — model does not support parallel tool calls",
 		otellog.String("dropped_keys", strings.Join(keys, ",")))
 }
-
-// ---------------------------------------------------------------------------
-// oneChunkStream — streaming downgrade target used by WithCaps when
-// CapStreaming is disabled. Wraps a single completed Generate result
-// as a StreamMessage that yields exactly one chunk and then ends, so
-// the caller's GenerateStream loop still gets a uniform iterator
-// interface.
-//
-// Semantics:
-//   - First Next() returns true; Current() yields a StreamChunk
-//     synthesised from the message (Role + concatenated text +
-//     ToolCalls + FinishReason="stop").
-//   - Second Next() returns false. Err() returns nil.
-//   - Message() returns the original message; Usage() returns the
-//     captured usage.
-//   - Close() is a no-op and idempotent.
-// ---------------------------------------------------------------------------
-
-func newOneChunkStream(msg Message, usage TokenUsage) *oneChunkStream {
-	return &oneChunkStream{
-		msg:   msg,
-		usage: model.Usage{InputTokens: usage.InputTokens, OutputTokens: usage.OutputTokens},
-	}
-}
-
-type oneChunkStream struct {
-	msg     Message
-	usage   model.Usage
-	emitted bool
-	cur     model.StreamChunk
-}
-
-func (s *oneChunkStream) Next() bool {
-	if s.emitted {
-		return false
-	}
-	s.cur = model.StreamChunk{
-		Role:         s.msg.Role,
-		Content:      s.msg.Content(),
-		ToolCalls:    s.msg.ToolCalls(),
-		FinishReason: "stop",
-	}
-	s.emitted = true
-	return true
-}
-
-func (s *oneChunkStream) Current() model.StreamChunk { return s.cur }
-func (s *oneChunkStream) Err() error                 { return nil }
-func (s *oneChunkStream) Close() error               { return nil }
-func (s *oneChunkStream) Message() Message           { return s.msg }
-func (s *oneChunkStream) Usage() model.Usage         { return s.usage }
