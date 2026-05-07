@@ -40,9 +40,14 @@ require (
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
 
-replace (
-	github.com/GizClaw/flowcraft/cmd/vesseld => ../../../cmd/vesseld
-	github.com/GizClaw/flowcraft/sdk => ../../../sdk
-	github.com/GizClaw/flowcraft/sdkx => ../../../sdkx
-	github.com/GizClaw/flowcraft/vessel => ../../../vessel
-)
+// Only replace modules that have no published version we can pin
+// against. sdk / sdkx / vessel ARE published so they stay
+// version-pinned — this isolates the e2e suite from in-flight
+// library PRs and keeps a downstream PR's CI from breaking just
+// because it bumps an indirect dep here.
+//
+// cmd/vesseld is the lone exception: it is intentionally never
+// tagged as a Go module (it ships as a binary release artifact —
+// see .github/workflows/auto-tag.yml), so the local-tree replace
+// is mandatory.
+replace github.com/GizClaw/flowcraft/cmd/vesseld => ../../../cmd/vesseld

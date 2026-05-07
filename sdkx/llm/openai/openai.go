@@ -45,11 +45,21 @@ func init() {
 	//   - https://openai.com/gpt-5/
 	//
 	// Across the gpt-5 / gpt-5.4 family the chat-completions surface
-	// is text+image only — audio and file modalities go through
-	// separate APIs (gpt-4o-audio-preview / Files endpoint), so
-	// CapAudio and CapFile are disabled here to fail-fast at the
+	// is text+image *input* only — audio and file modalities go
+	// through separate APIs (gpt-4o-audio-preview / Files endpoint),
+	// so CapAudio and CapFile are disabled here to fail-fast at the
 	// caps middleware rather than at the OpenAI API edge.
-	openaiTextImageOnly := llm.DisabledCaps(llm.CapAudio, llm.CapFile)
+	//
+	// Output modality: text only. Image generation goes through the
+	// dedicated gpt-image-1 / Images API surface (separate adapter),
+	// and audio output goes through gpt-realtime-* / TTS endpoints.
+	// Verified against developers.openai.com/api/docs/models/gpt-5
+	// and developers.openai.com/docs/guides/audio (Chat Completions
+	// audio path covers gpt-realtime-* SKUs only) as of 2026-04-30.
+	openaiTextImageOnly := llm.DisabledCaps(
+		llm.CapAudio, llm.CapFile,
+		llm.CapImageOutput, llm.CapAudioOutput,
+	)
 
 	llm.RegisterProviderModels("openai", []llm.ModelInfo{
 		// --- GPT-5.5 (current flagship, released 2026-04-23) -------
@@ -175,7 +185,10 @@ func init() {
 			Label: "GPT-5.4 Nano",
 			Name:  "gpt-5.4-nano",
 			Spec: llm.ModelSpec{
-				Caps: llm.DisabledCaps(llm.CapVision, llm.CapAudio, llm.CapFile),
+				Caps: llm.DisabledCaps(
+					llm.CapVision, llm.CapAudio, llm.CapFile,
+					llm.CapImageOutput, llm.CapAudioOutput,
+				),
 			},
 		},
 
@@ -199,6 +212,7 @@ func init() {
 					llm.CapFrequencyPenalty, llm.CapPresencePenalty,
 					llm.CapStopWords,
 					llm.CapAudio, llm.CapFile,
+					llm.CapImageOutput, llm.CapAudioOutput,
 				),
 				Limits: llm.ModelLimits{MaxContextTokens: 200_000},
 			},
@@ -212,6 +226,7 @@ func init() {
 					llm.CapFrequencyPenalty, llm.CapPresencePenalty,
 					llm.CapStopWords,
 					llm.CapAudio, llm.CapFile,
+					llm.CapImageOutput, llm.CapAudioOutput,
 				),
 				Limits: llm.ModelLimits{
 					MaxContextTokens: 200_000,
@@ -236,6 +251,7 @@ func init() {
 					llm.CapFrequencyPenalty, llm.CapPresencePenalty,
 					llm.CapStopWords,
 					llm.CapAudio, llm.CapFile,
+					llm.CapImageOutput, llm.CapAudioOutput,
 				),
 			},
 			Deprecation: llm.ModelDeprecation{
