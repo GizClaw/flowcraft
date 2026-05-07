@@ -10,7 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/GizClaw/flowcraft/sdk/workflow"
+	"github.com/GizClaw/flowcraft/sdk/agent"
+	"github.com/GizClaw/flowcraft/sdk/engine"
 	"github.com/GizClaw/flowcraft/voice"
 	"github.com/GizClaw/flowcraft/voice/audio"
 	"github.com/GizClaw/flowcraft/voice/provider"
@@ -256,52 +257,75 @@ func (s *slowSTT) Recognize(ctx context.Context, input audio.Frame, opts ...stt.
 }
 
 // ---------------------------------------------------------------------------
-// Fake workflow.Runtime / workflow.Agent
+// Fake engine.Engine / agent.Agent
 // ---------------------------------------------------------------------------
 
-type fakeAgent struct{}
+// fakeAgent is the agent value the tests pass to voice.NewPipeline.
+// agent.Agent is a plain data struct in the new SDK, so a single
+// package-level value is enough — no per-test variation needed.
+var fakeAgent = agent.Agent{ID: "test"}
 
-func (fakeAgent) ID() string                  { return "test" }
-func (fakeAgent) Card() workflow.AgentCard    { return workflow.AgentCard{} }
-func (fakeAgent) Strategy() workflow.Strategy { return nil }
-func (fakeAgent) Tools() []string             { return nil }
+// nodeID is the actor id every fake engine uses when emitting stream
+// deltas. It is arbitrary; voice does not care about the value, only
+// that the deltas decode into the canonical [engine.StreamDeltaPayload].
+const fakeNodeID = "fake-llm"
 
-// fakeRuntime emits StreamEvents via the StreamCallback then returns.
-type fakeRuntime struct {
-	tokens     []string
-	toolEvents []map[string]any
+// streamToolEvent is a small DSL the fake engines use to describe tool
+// stream-deltas without re-typing the StreamDeltaPayload boilerplate.
+// Type is "tool_call" or "tool_result"; Name / Content / ID
+// correspond to the canonical fields.
+type streamToolEvent struct {
+	Type    string
+	Name    string
+	Content string
+	ID      string
 }
 
-func (r *fakeRuntime) Run(ctx context.Context, agent workflow.Agent, req *workflow.Request, opts ...workflow.RunOption) (*workflow.Result, error) {
-	rc := workflow.ApplyRunOpts(opts)
+func emitToolDelta(ctx context.Context, host engine.Host, runID string, e streamToolEvent) {
+	switch e.Type {
+	case "tool_call":
+		id := e.ID
+		if id == "" {
+			id = "call-" + e.Name
+		}
+		_ = engine.EmitStreamToolCall(ctx, host, runID, fakeNodeID, id, e.Name, nil)
+	case "tool_result":
+		id := e.ID
+		if id == "" {
+			id = "call-" + e.Name
+		}
+		_ = engine.EmitStreamToolResult(ctx, host, runID, fakeNodeID, id, e.Name, e.Content, false, false)
+	}
+}
 
+// fakeRuntime emits assistant tokens via the host's stream-delta
+// channel, then optional tool-call / tool-result deltas, then returns.
+// Default tokens reproduce a minimal two-chunk completion so most
+// tests can omit the field.
+type fakeRuntime struct {
+	tokens     []string
+	toolEvents []streamToolEvent
+}
+
+func (r *fakeRuntime) Execute(ctx context.Context, run engine.Run, host engine.Host, board *engine.Board) (*engine.Board, error) {
 	tokens := r.tokens
 	if len(tokens) == 0 {
 		tokens = []string{"Hello ", "world."}
 	}
-	if rc.StreamCallback != nil {
-		for _, tok := range tokens {
-			rc.StreamCallback(workflow.StreamEvent{
-				Type:    "token",
-				Payload: map[string]any{"content": tok},
-			})
-		}
-		for _, p := range r.toolEvents {
-			evType, _ := p["type"].(string)
-			rc.StreamCallback(workflow.StreamEvent{
-				Type:    evType,
-				Payload: p,
-			})
-		}
+	for _, tok := range tokens {
+		_ = engine.EmitStreamToken(ctx, host, run.ID, fakeNodeID, tok)
 	}
-	return &workflow.Result{}, nil
+	for _, e := range r.toolEvents {
+		emitToolDelta(ctx, host, run.ID, e)
+	}
+	return board, nil
 }
 
 // errRuntime always returns an error.
 type errRuntime struct{ err error }
 
-func (r *errRuntime) Run(ctx context.Context, _ workflow.Agent, _ *workflow.Request, opts ...workflow.RunOption) (*workflow.Result, error) {
-	return nil, r.err
+func (r *errRuntime) Execute(ctx context.Context, _ engine.Run, _ engine.Host, board *engine.Board) (*engine.Board, error) {
+	return board, r.err
 }
 
 // blockingRuntime blocks until ctx is cancelled (for Abort testing).
@@ -309,10 +333,10 @@ type blockingRuntime struct {
 	running atomic.Bool
 }
 
-func (r *blockingRuntime) Run(ctx context.Context, _ workflow.Agent, _ *workflow.Request, opts ...workflow.RunOption) (*workflow.Result, error) {
+func (r *blockingRuntime) Execute(ctx context.Context, _ engine.Run, _ engine.Host, board *engine.Board) (*engine.Board, error) {
 	r.running.Store(true)
 	<-ctx.Done()
-	return nil, ctx.Err()
+	return board, ctx.Err()
 }
 
 // slowRuntime does not emit any tokens for the given delay, for timeout testing.
@@ -320,12 +344,12 @@ type slowRuntime struct {
 	delay time.Duration
 }
 
-func (r *slowRuntime) Run(ctx context.Context, _ workflow.Agent, _ *workflow.Request, opts ...workflow.RunOption) (*workflow.Result, error) {
+func (r *slowRuntime) Execute(ctx context.Context, _ engine.Run, _ engine.Host, board *engine.Board) (*engine.Board, error) {
 	select {
 	case <-time.After(r.delay):
-		return &workflow.Result{}, nil
+		return board, nil
 	case <-ctx.Done():
-		return nil, ctx.Err()
+		return board, ctx.Err()
 	}
 }
 
@@ -338,7 +362,7 @@ func TestPipeline_RunAudio_Basic(t *testing.T) {
 		&fakeSTT{preset: "hello"},
 		&fakeTTS{},
 		&fakeRuntime{},
-		fakeAgent{},
+		fakeAgent,
 		voice.WithSegmenterOptions(tts.WithMinChars(1)),
 	)
 
@@ -389,7 +413,7 @@ func TestPipeline_RunAudio_EmptyTranscript(t *testing.T) {
 		&fakeSTT{preset: ""},
 		&fakeTTS{},
 		&fakeRuntime{},
-		fakeAgent{},
+		fakeAgent,
 	)
 
 	ctx := context.Background()
@@ -432,7 +456,7 @@ func TestPipeline_RunAudioStream_WithStreamSTT(t *testing.T) {
 		&fakeStreamSTT{preset: "hello"},
 		&fakeTTS{},
 		&fakeRuntime{},
-		fakeAgent{},
+		fakeAgent,
 		voice.WithSegmenterOptions(tts.WithMinChars(1)),
 	)
 
@@ -481,7 +505,7 @@ func TestPipeline_RunAudioStream_PreservesSTTTailAfterFirstFinal(t *testing.T) {
 		tailingStreamSTT{},
 		&fakeTTS{},
 		&fakeRuntime{},
-		fakeAgent{},
+		fakeAgent,
 		voice.WithSegmenterOptions(tts.WithMinChars(1)),
 	)
 
@@ -515,7 +539,7 @@ func TestPipeline_RunAudioStream_WithNonStreamSTT(t *testing.T) {
 		&fakeSTT{preset: "hello"},
 		&fakeTTS{},
 		&fakeRuntime{},
-		fakeAgent{},
+		fakeAgent,
 		voice.WithSegmenterOptions(tts.WithMinChars(1)),
 	)
 
@@ -559,7 +583,7 @@ func TestPipeline_RunAudioStream_WithStreamTTS(t *testing.T) {
 		&fakeSTT{preset: "hello"},
 		&fakeStreamTTS{fakeTTS: &fakeTTS{}},
 		&fakeRuntime{},
-		fakeAgent{},
+		fakeAgent,
 		voice.WithSegmenterOptions(tts.WithMinChars(1)),
 	)
 
@@ -591,7 +615,7 @@ func TestPipeline_RunnerError(t *testing.T) {
 		&fakeSTT{preset: "hello"},
 		&fakeTTS{},
 		&errRuntime{err: io.ErrClosedPipe},
-		fakeAgent{},
+		fakeAgent,
 		voice.WithSegmenterOptions(tts.WithMinChars(1)),
 	)
 
@@ -626,7 +650,7 @@ func TestPipeline_RunAudio_STTFinalTimeout(t *testing.T) {
 		},
 		&fakeTTS{},
 		&fakeRuntime{},
-		fakeAgent{},
+		fakeAgent,
 		voice.WithTimeouts(voice.PipelineTimeouts{
 			STTFinal: 20 * time.Millisecond,
 		}),
@@ -657,7 +681,7 @@ func TestPipeline_RunText_RunnerFirstTokenTimeout(t *testing.T) {
 		nil,
 		&fakeTTS{},
 		&slowRuntime{delay: 2 * time.Second},
-		fakeAgent{},
+		fakeAgent,
 		voice.WithTimeouts(voice.PipelineTimeouts{
 			RunnerFirstToken: 20 * time.Millisecond,
 		}),
@@ -692,7 +716,7 @@ func TestPipeline_RunAudio_AttachesSTTProviderReport(t *testing.T) {
 		fallbackSTT,
 		&fakeTTS{},
 		&fakeRuntime{},
-		fakeAgent{},
+		fakeAgent,
 		voice.WithSegmenterOptions(tts.WithMinChars(1)),
 	)
 
@@ -730,7 +754,7 @@ func TestPipeline_RunAudio_AttachesTTSProviderReport(t *testing.T) {
 		&fakeSTT{preset: "hello"},
 		fallbackTTS,
 		&fakeRuntime{},
-		fakeAgent{},
+		fakeAgent,
 		voice.WithSegmenterOptions(tts.WithMinChars(1)),
 	)
 
@@ -764,7 +788,7 @@ func TestPipeline_RunAudio_TranscriptMetadata(t *testing.T) {
 		metadataSTT{},
 		&fakeTTS{},
 		&fakeRuntime{},
-		fakeAgent{},
+		fakeAgent,
 	)
 
 	stream, err := p.RunAudio(context.Background(), audio.Frame{Data: []byte("wav")})
@@ -795,7 +819,7 @@ func TestPipeline_RunAudioStream_TranscriptRevisionIncrements(t *testing.T) {
 		metadataStreamSTT{},
 		&fakeTTS{},
 		&fakeRuntime{},
-		fakeAgent{},
+		fakeAgent,
 		voice.WithSegmenterOptions(tts.WithMinChars(1)),
 	)
 
@@ -844,7 +868,7 @@ func TestPipeline_TranscriptAudio(t *testing.T) {
 		&fakeSTT{preset: "hello"},
 		&fakeTTS{},
 		&fakeRuntime{},
-		fakeAgent{},
+		fakeAgent,
 		voice.WithSegmenterOptions(tts.WithMinChars(1)),
 	)
 
@@ -870,9 +894,9 @@ func TestPipeline_TranscriptAudio(t *testing.T) {
 func TestPipeline_ToolCallEvents(t *testing.T) {
 	toolRuntime := &fakeRuntime{
 		tokens: []string{"Use ", "the ", "tool."},
-		toolEvents: []map[string]any{
-			{"type": "tool_call", "name": "get_weather"},
-			{"type": "tool_result", "content": "sunny"},
+		toolEvents: []streamToolEvent{
+			{Type: "tool_call", Name: "get_weather"},
+			{Type: "tool_result", Name: "get_weather", Content: "sunny"},
 		},
 	}
 
@@ -880,7 +904,7 @@ func TestPipeline_ToolCallEvents(t *testing.T) {
 		&fakeSTT{preset: "hello"},
 		&fakeTTS{},
 		toolRuntime,
-		fakeAgent{},
+		fakeAgent,
 		voice.WithSegmenterOptions(tts.WithMinChars(1)),
 	)
 
@@ -921,7 +945,7 @@ func TestPipeline_Abort(t *testing.T) {
 		nil,
 		&fakeTTS{},
 		rt,
-		fakeAgent{},
+		fakeAgent,
 	)
 
 	ctx := context.Background()
@@ -954,7 +978,7 @@ func TestPipeline_NonStreamTTS(t *testing.T) {
 		&fakeSTT{preset: "hello"},
 		&fakeTTS{},
 		&fakeRuntime{},
-		fakeAgent{},
+		fakeAgent,
 		voice.WithSegmenterOptions(tts.WithMinChars(1)),
 	)
 
@@ -986,7 +1010,7 @@ func TestPipeline_RunText_Basic(t *testing.T) {
 		nil,
 		&fakeTTS{},
 		&fakeRuntime{},
-		fakeAgent{},
+		fakeAgent,
 		voice.WithSegmenterOptions(tts.WithMinChars(1)),
 	)
 
@@ -1033,7 +1057,7 @@ func TestPipeline_RunText_Basic(t *testing.T) {
 }
 
 func TestPipeline_RunText_EmptyText(t *testing.T) {
-	p := voice.NewPipeline(nil, &fakeTTS{}, &fakeRuntime{}, fakeAgent{})
+	p := voice.NewPipeline(nil, &fakeTTS{}, &fakeRuntime{}, fakeAgent)
 
 	ctx := context.Background()
 	stream, err := p.RunText(ctx, "")
@@ -1067,7 +1091,7 @@ func TestPipeline_RunText_EmptyText(t *testing.T) {
 }
 
 func TestPipeline_RunAudio_NilSTT(t *testing.T) {
-	p := voice.NewPipeline(nil, &fakeTTS{}, &fakeRuntime{}, fakeAgent{})
+	p := voice.NewPipeline(nil, &fakeTTS{}, &fakeRuntime{}, fakeAgent)
 
 	_, err := p.RunAudio(context.Background(), audio.Frame{Data: []byte("wav")})
 	if err == nil {
@@ -1076,7 +1100,7 @@ func TestPipeline_RunAudio_NilSTT(t *testing.T) {
 }
 
 func TestPipeline_RunAudioStream_NilSTT(t *testing.T) {
-	p := voice.NewPipeline(nil, &fakeTTS{}, &fakeRuntime{}, fakeAgent{})
+	p := voice.NewPipeline(nil, &fakeTTS{}, &fakeRuntime{}, fakeAgent)
 
 	input := audio.NewPipe[audio.Frame](8)
 	input.Close()
@@ -1095,7 +1119,7 @@ func TestPipeline_InputInterruptClosesOutput(t *testing.T) {
 		&fakeStreamSTT{preset: "hello"},
 		&fakeTTS{},
 		&fakeRuntime{},
-		fakeAgent{},
+		fakeAgent,
 	)
 
 	ctx := context.Background()
@@ -1126,7 +1150,7 @@ func TestPipeline_RunText_NonStreamTTS_SynthesizeError_EmitsErrorEvent(t *testin
 		nil,
 		failingTTSAdapter{err: synthErr},
 		&fakeRuntime{tokens: []string{"Hello."}},
-		fakeAgent{},
+		fakeAgent,
 		voice.WithSegmenterOptions(tts.WithMinChars(1)),
 	)
 
@@ -1165,22 +1189,17 @@ func collectTextDeltas(events []voice.Event) string {
 // eventCh overflow (S-4)
 // ---------------------------------------------------------------------------
 
-// overflowRuntime emits a burst of tokens synchronously.
+// overflowRuntime emits a burst of tokens synchronously to exercise
+// the voice pipeline's bounded eventCh + overflow counter.
 type overflowRuntime struct {
 	count int
 }
 
-func (r *overflowRuntime) Run(ctx context.Context, _ workflow.Agent, _ *workflow.Request, opts ...workflow.RunOption) (*workflow.Result, error) {
-	rc := workflow.ApplyRunOpts(opts)
-	if rc.StreamCallback != nil {
-		for i := 0; i < r.count; i++ {
-			rc.StreamCallback(workflow.StreamEvent{
-				Type:    "token",
-				Payload: map[string]any{"content": "x"},
-			})
-		}
+func (r *overflowRuntime) Execute(ctx context.Context, run engine.Run, host engine.Host, board *engine.Board) (*engine.Board, error) {
+	for i := 0; i < r.count; i++ {
+		_ = engine.EmitStreamToken(ctx, host, run.ID, fakeNodeID, "x")
 	}
-	return &workflow.Result{}, nil
+	return board, nil
 }
 
 func TestPipeline_RunText_EventOverflowWarning(t *testing.T) {
@@ -1188,7 +1207,7 @@ func TestPipeline_RunText_EventOverflowWarning(t *testing.T) {
 		nil,
 		&fakeTTS{},
 		&overflowRuntime{count: 2000},
-		fakeAgent{},
+		fakeAgent,
 	)
 
 	stream, err := p.RunText(context.Background(), "hello")
@@ -1242,7 +1261,7 @@ func TestPipeline_RunText_WarmupLifecycle(t *testing.T) {
 		nil,
 		wt,
 		&fakeRuntime{},
-		fakeAgent{},
+		fakeAgent,
 		voice.WithSegmenterOptions(tts.WithMinChars(1)),
 	)
 
@@ -1272,7 +1291,7 @@ func TestPipeline_EventOrdering_Strict(t *testing.T) {
 		&fakeSTT{preset: "hello"},
 		&fakeTTS{},
 		&fakeRuntime{},
-		fakeAgent{},
+		fakeAgent,
 		voice.WithSegmenterOptions(tts.WithMinChars(1)),
 	)
 
@@ -1332,7 +1351,7 @@ func TestPipeline_RunText_AllEventsShareRunID(t *testing.T) {
 		nil,
 		&fakeTTS{},
 		&fakeRuntime{},
-		fakeAgent{},
+		fakeAgent,
 		voice.WithSegmenterOptions(tts.WithMinChars(1)),
 	)
 
@@ -1364,7 +1383,7 @@ func TestPipeline_ContextCancel_TerminatesCleanly(t *testing.T) {
 		nil,
 		&fakeTTS{},
 		rt,
-		fakeAgent{},
+		fakeAgent,
 	)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -1403,7 +1422,7 @@ func TestPipeline_RunAudioStream_ContextCancel_NoHang(t *testing.T) {
 		&fakeStreamSTT{preset: "hello"},
 		&fakeTTS{},
 		&blockingRuntime{},
-		fakeAgent{},
+		fakeAgent,
 	)
 
 	input := audio.NewPipe[audio.Frame](8)
@@ -1437,7 +1456,7 @@ func TestPipeline_RunText_MultipleSentences(t *testing.T) {
 		nil,
 		&fakeTTS{},
 		&fakeRuntime{tokens: []string{"First sentence.", " Second sentence."}},
-		fakeAgent{},
+		fakeAgent,
 		voice.WithSegmenterOptions(tts.WithMinChars(1)),
 	)
 
@@ -1464,7 +1483,7 @@ func TestPipeline_Abort_EmitsLifecycleEvents(t *testing.T) {
 		nil,
 		&fakeTTS{},
 		rt,
-		fakeAgent{},
+		fakeAgent,
 	)
 
 	stream, err := p.RunText(context.Background(), "hello")
@@ -1537,7 +1556,7 @@ func TestPipeline_RunText_TTSFirstAudioTimeout(t *testing.T) {
 		nil,
 		slowStreamTTS{},
 		&fakeRuntime{tokens: []string{"Hello."}},
-		fakeAgent{},
+		fakeAgent,
 		voice.WithTimeouts(voice.PipelineTimeouts{
 			TTSFirstAudio: 50 * time.Millisecond,
 		}),
@@ -1570,7 +1589,7 @@ func TestPipeline_EventOrdering_StreamTTS(t *testing.T) {
 		&fakeSTT{preset: "hello"},
 		&fakeStreamTTS{fakeTTS: &fakeTTS{}},
 		&fakeRuntime{},
-		fakeAgent{},
+		fakeAgent,
 		voice.WithSegmenterOptions(tts.WithMinChars(1)),
 	)
 
@@ -1615,7 +1634,7 @@ func TestPipeline_RunText_StreamTTS_EventOrdering(t *testing.T) {
 		nil,
 		&fakeStreamTTS{fakeTTS: &fakeTTS{}},
 		&fakeRuntime{tokens: []string{"One.", " Two."}},
-		fakeAgent{},
+		fakeAgent,
 		voice.WithSegmenterOptions(tts.WithMinChars(1)),
 	)
 
@@ -1663,7 +1682,7 @@ func TestPipeline_RunAudio_WarmupLifecycle(t *testing.T) {
 		&fakeSTT{preset: "hello"},
 		wt,
 		&fakeRuntime{},
-		fakeAgent{},
+		fakeAgent,
 		voice.WithSegmenterOptions(tts.WithMinChars(1)),
 	)
 

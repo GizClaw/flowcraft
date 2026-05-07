@@ -8,8 +8,10 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/GizClaw/flowcraft/sdk/agent"
+	"github.com/GizClaw/flowcraft/sdk/engine"
+	"github.com/GizClaw/flowcraft/sdk/event"
 	"github.com/GizClaw/flowcraft/sdk/model"
-	"github.com/GizClaw/flowcraft/sdk/workflow"
 	"github.com/GizClaw/flowcraft/voice/audio"
 	"github.com/GizClaw/flowcraft/voice/provider"
 	"github.com/GizClaw/flowcraft/voice/stt"
@@ -100,13 +102,29 @@ func WithTimeouts(timeouts PipelineTimeouts) PipelineOption {
 	return func(p *Pipeline) { p.timeouts = timeouts }
 }
 
-// Pipeline orchestrates STT → Runtime.Run → TTS into a stream of
+// Pipeline orchestrates STT → agent.Run → TTS into a stream of
 // voice events using a linear pipeline architecture.
+//
+// Execution is delegated to an [engine.Engine] driven by [agent.Run].
+// The pipeline owns its own internal [engine.Host] so it can capture
+// the engine's stream-delta envelopes (assistant tokens, tool calls,
+// tool results) and turn them into voice events. Callers that want
+// their own host capabilities (event bus fan-out, OTel, checkpointing,
+// interrupts, …) can layer one in via [WithEngineHost]; the pipeline
+// will fan every envelope to both sinks.
+//
+// History loading and conversation memory are NOT a pipeline concern.
+// Callers who need them register an [agent.BoardSeeder] /
+// [agent.Observer] via [WithRunOptions]; the pipeline forwards those
+// options unchanged to [agent.Run].
 type Pipeline struct {
-	stt   stt.STT
-	tts   tts.TTS
-	rt    workflow.Runtime
-	agent workflow.Agent
+	stt stt.STT
+	tts tts.TTS
+	eng engine.Engine
+	ag  agent.Agent
+
+	externalHost engine.Host
+	extraRunOpts []agent.RunOption
 
 	turnMu     sync.Mutex
 	turnCancel context.CancelFunc
@@ -117,8 +135,6 @@ type Pipeline struct {
 
 	dynamicTTSOpts []func() []tts.TTSOption
 	timeouts       PipelineTimeouts
-	history        []model.Message
-	contextID      string
 	skipWarmup     bool
 }
 
@@ -142,20 +158,32 @@ func (p *Pipeline) currentTTSOpts() []tts.TTSOption {
 	return merged
 }
 
-// WithTurnHistory sets message history for the current turn.
-// Only effective when the Runtime has no MemoryFactory configured;
-// when a MemoryFactory is present, use WithContextID instead.
-func WithTurnHistory(msgs []model.Message) PipelineOption {
-	return func(p *Pipeline) {
-		p.history = append([]model.Message(nil), msgs...)
-	}
+// WithEngineHost installs an [engine.Host] that the pipeline will
+// fan engine envelopes to in addition to its internal sink.
+//
+// The internal sink (which captures stream-delta envelopes to drive
+// TTS) is always present and cannot be removed. The external host
+// receives a copy of every envelope the engine publishes — including
+// stream deltas — so callers can wire OTel exporters, an event.Bus,
+// kanban dashboards, etc. without affecting voice output.
+//
+// The external host's Interrupter / UserPrompter / Checkpointer /
+// UsageReporter methods are also surfaced to the engine (the internal
+// host falls back to [engine.NoopHost] for those).
+func WithEngineHost(h engine.Host) PipelineOption {
+	return func(p *Pipeline) { p.externalHost = h }
 }
 
-// WithContextID sets the memory context identifier passed to Runtime.Run.
-// When the Runtime is configured with a MemoryFactory, this enables
-// automatic history load/save across turns.
-func WithContextID(id string) PipelineOption {
-	return func(p *Pipeline) { p.contextID = id }
+// WithRunOptions appends [agent.RunOption] values that are forwarded
+// unchanged to every [agent.Run] invocation the pipeline makes. Use
+// this to install a [agent.BoardSeeder] (for history / RAG injection),
+// observers, deciders, dependencies, or extra attributes.
+//
+// The internal host installed for stream capture is appended AFTER
+// these options, so a caller-supplied host via this option would be
+// overridden — use [WithEngineHost] for hosts.
+func WithRunOptions(opts ...agent.RunOption) PipelineOption {
+	return func(p *Pipeline) { p.extraRunOpts = append(p.extraRunOpts, opts...) }
 }
 
 func (p *Pipeline) clone() *Pipeline {
@@ -163,22 +191,22 @@ func (p *Pipeline) clone() *Pipeline {
 		return nil
 	}
 	cp := Pipeline{
-		stt:        p.stt,
-		tts:        p.tts,
-		rt:         p.rt,
-		agent:      p.agent,
-		timeouts:   p.timeouts,
-		contextID:  p.contextID,
-		skipWarmup: p.skipWarmup,
-		segOpts:    append([]tts.SegmenterOption(nil), p.segOpts...),
-		sttOpts:    append([]stt.STTOption(nil), p.sttOpts...),
-		ttsOpts:    append([]tts.TTSOption(nil), p.ttsOpts...),
+		stt:          p.stt,
+		tts:          p.tts,
+		eng:          p.eng,
+		ag:           p.ag,
+		externalHost: p.externalHost,
+		timeouts:     p.timeouts,
+		skipWarmup:   p.skipWarmup,
+		segOpts:      append([]tts.SegmenterOption(nil), p.segOpts...),
+		sttOpts:      append([]stt.STTOption(nil), p.sttOpts...),
+		ttsOpts:      append([]tts.TTSOption(nil), p.ttsOpts...),
 	}
 	if len(p.dynamicTTSOpts) > 0 {
 		cp.dynamicTTSOpts = append([]func() []tts.TTSOption(nil), p.dynamicTTSOpts...)
 	}
-	if len(p.history) > 0 {
-		cp.history = append([]model.Message(nil), p.history...)
+	if len(p.extraRunOpts) > 0 {
+		cp.extraRunOpts = append([]agent.RunOption(nil), p.extraRunOpts...)
 	}
 	return &cp
 }
@@ -191,9 +219,17 @@ func (p *Pipeline) addDynamicTTSOptionsProvider(fn func() []tts.TTSOption) {
 }
 
 // NewPipeline creates a new voice pipeline.
-// The stt parameter may be nil if only text input (RunText) is used.
-func NewPipeline(s stt.STT, t tts.TTS, rt workflow.Runtime, agent workflow.Agent, opts ...PipelineOption) *Pipeline {
-	p := &Pipeline{stt: s, tts: t, rt: rt, agent: agent}
+//
+// stt may be nil when only text input (RunText) is used. eng + ag are
+// the execution stack: the pipeline calls [agent.Run] with them on
+// every turn. Pass an [engine.Engine] from sdk/graph/runner (or any
+// custom one) and an [agent.Agent] describing identity / tools /
+// agent-level observers.
+//
+// History loading and conversation memory are not handled here — wire
+// them through [WithRunOptions] (typically a [agent.BoardSeeder]).
+func NewPipeline(s stt.STT, t tts.TTS, eng engine.Engine, ag agent.Agent, opts ...PipelineOption) *Pipeline {
+	p := &Pipeline{stt: s, tts: t, eng: eng, ag: ag}
 	for _, o := range opts {
 		o(p)
 	}
@@ -568,7 +604,7 @@ func (p *Pipeline) startFlow(ctx context.Context, transcript string) *flowRun {
 	sentences := make(chan string, 32)
 	done := make(chan struct{})
 
-	eventCh := make(chan workflow.StreamEvent, 256)
+	eventCh := make(chan engine.StreamDeltaPayload, 256)
 	runCtx, runCancel := context.WithCancel(ctx)
 
 	p.turnMu.Lock()
@@ -577,31 +613,35 @@ func (p *Pipeline) startFlow(ctx context.Context, transcript string) *flowRun {
 
 	var runErr error
 
+	host := newVoiceHost(p.externalHost, runID, eventCh, &overflow)
+
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
 		defer close(eventCh)
 
-		req := &workflow.Request{
-			RunID:     runID,
-			ContextID: p.contextID,
-			Message:   model.NewTextMessage(model.RoleUser, transcript),
+		req := agent.Request{
+			RunID:   runID,
+			Message: model.NewTextMessage(model.RoleUser, transcript),
 		}
-		var runOpts []workflow.RunOption
-		runOpts = append(runOpts, workflow.WithStreamCallback(func(ev workflow.StreamEvent) {
-			select {
-			case eventCh <- ev:
-			default:
-				overflow.Add(1)
-			}
-		}))
-		if len(p.history) > 0 {
-			runOpts = append(runOpts, workflow.WithHistory(p.history))
-		}
+		runOpts := make([]agent.RunOption, 0, len(p.extraRunOpts)+1)
+		runOpts = append(runOpts, p.extraRunOpts...)
+		runOpts = append(runOpts, agent.WithEngineHost(host))
 
-		_, err := p.rt.Run(runCtx, p.agent, req, runOpts...)
-		if err != nil && runCtx.Err() == nil {
+		res, err := agent.Run(runCtx, p.ag, p.eng, req, runOpts...)
+		// agent.Run returns (nil, err) only for infrastructure
+		// failures; engine-side failures land on Result.Err with a
+		// non-completed Status. Surface both back to the pipeline so
+		// the consumer goroutine can publish a EventError downstream.
+		// runCtx.Err() filters out the race where agent.Run reports
+		// the cancellation we triggered ourselves (Abort, ctx
+		// cancel) — those should not turn into user-visible errors.
+		switch {
+		case err != nil && runCtx.Err() == nil:
 			runErr = err
+		case res != nil && res.Err != nil && runCtx.Err() == nil &&
+			res.Status != agent.StatusCanceled && res.Status != agent.StatusInterrupted:
+			runErr = res.Err
 		}
 	}()
 
@@ -643,24 +683,18 @@ func (p *Pipeline) startFlow(ctx context.Context, transcript string) *flowRun {
 					return
 				}
 
-				payload, ok := ev.Payload.(map[string]any)
-				if !ok {
-					continue
-				}
-
 				switch ev.Type {
-				case "token":
-					content, _ := payload["content"].(string)
-					if content == "" {
+				case engine.StreamDeltaToken:
+					if ev.Content == "" {
 						continue
 					}
 					select {
-					case events <- withRunID(Event{Type: EventTextDelta, Text: content}, runID):
+					case events <- withRunID(Event{Type: EventTextDelta, Text: ev.Content}, runID):
 					case <-ctx.Done():
 						runCancel()
 						return
 					}
-					if sentence, segOK := seg.Feed(content); segOK && sentence != "" {
+					if sentence, segOK := seg.Feed(ev.Content); segOK && sentence != "" {
 						select {
 						case sentences <- sentence:
 						case <-ctx.Done():
@@ -668,18 +702,16 @@ func (p *Pipeline) startFlow(ctx context.Context, transcript string) *flowRun {
 							return
 						}
 					}
-				case "tool_call":
-					name, _ := payload["name"].(string)
+				case engine.StreamDeltaToolCall:
 					select {
-					case events <- withRunID(Event{Type: EventToolCall, Text: name, Data: payload}, runID):
+					case events <- withRunID(Event{Type: EventToolCall, Text: ev.Name, Data: streamDeltaToData(ev)}, runID):
 					case <-ctx.Done():
 						runCancel()
 						return
 					}
-				case "tool_result":
-					content, _ := payload["content"].(string)
+				case engine.StreamDeltaToolResult:
 					select {
-					case events <- withRunID(Event{Type: EventToolResult, Text: content, Data: payload}, runID):
+					case events <- withRunID(Event{Type: EventToolResult, Text: ev.Content, Data: streamDeltaToData(ev)}, runID):
 					case <-ctx.Done():
 						runCancel()
 						return
@@ -970,6 +1002,122 @@ func drainStream[T any](s audio.Stream[T]) {
 			return
 		}
 	}
+}
+
+// voiceHost is the [engine.Host] the pipeline installs on every
+// agent.Run call. It captures stream-delta envelopes whose subject
+// matches the active runID and forwards the decoded payload to a
+// buffered channel the pipeline consumes; everything else is either
+// dropped (when no external host is configured) or fanned out to the
+// caller-supplied host (set via [WithEngineHost]).
+//
+// Non-Publisher Host methods (Interrupts / AskUser / Checkpoint /
+// ReportUsage) delegate to the external host when present, falling
+// back to [engine.NoopHost] semantics when nil.
+type voiceHost struct {
+	external engine.Host
+	runID    string
+	events   chan<- engine.StreamDeltaPayload
+	overflow *atomic.Int64
+}
+
+func newVoiceHost(external engine.Host, runID string, events chan<- engine.StreamDeltaPayload, overflow *atomic.Int64) *voiceHost {
+	return &voiceHost{external: external, runID: runID, events: events, overflow: overflow}
+}
+
+// runIDSegment is the dot-delimited segment that "engine.run.<id>." sits
+// around in a [event.Subject]. We do a cheap string match instead of
+// re-parsing the subject because we already paid the SanitiseID cost on
+// the engine side; runID never contains '.' here.
+func (h *voiceHost) belongsToRun(s event.Subject) bool {
+	const prefix = engine.SubjectPrefix
+	str := string(s)
+	if len(str) <= len(prefix)+len(h.runID)+1 {
+		return false
+	}
+	if str[:len(prefix)] != prefix {
+		return false
+	}
+	return str[len(prefix):len(prefix)+len(h.runID)] == h.runID && str[len(prefix)+len(h.runID)] == '.'
+}
+
+func (h *voiceHost) Publish(ctx context.Context, env event.Envelope) error {
+	if h.external != nil {
+		_ = h.external.Publish(ctx, env)
+	}
+	if !engine.IsStreamDelta(env.Subject) || !h.belongsToRun(env.Subject) {
+		return nil
+	}
+	payload, err := engine.DecodeStreamDelta(env)
+	if err != nil {
+		return nil
+	}
+	select {
+	case h.events <- payload:
+	default:
+		h.overflow.Add(1)
+	}
+	return nil
+}
+
+func (h *voiceHost) Interrupts() <-chan engine.Interrupt {
+	if h.external != nil {
+		return h.external.Interrupts()
+	}
+	return nil
+}
+
+func (h *voiceHost) AskUser(ctx context.Context, prompt engine.UserPrompt) (engine.UserReply, error) {
+	if h.external != nil {
+		return h.external.AskUser(ctx, prompt)
+	}
+	return engine.NoopHost{}.AskUser(ctx, prompt)
+}
+
+func (h *voiceHost) Checkpoint(ctx context.Context, cp engine.Checkpoint) error {
+	if h.external != nil {
+		return h.external.Checkpoint(ctx, cp)
+	}
+	return nil
+}
+
+func (h *voiceHost) ReportUsage(ctx context.Context, usage model.TokenUsage) error {
+	if h.external != nil {
+		return h.external.ReportUsage(ctx, usage)
+	}
+	return nil
+}
+
+// streamDeltaToData re-projects a [engine.StreamDeltaPayload] into the
+// untyped map[string]any shape that voice [Event].Data has historically
+// carried, so downstream consumers (TUI, dashboards, tests) keep
+// working without churn. Empty fields are omitted to keep the map
+// compact.
+func streamDeltaToData(p engine.StreamDeltaPayload) map[string]any {
+	d := make(map[string]any, 6)
+	d["type"] = string(p.Type)
+	if p.Content != "" {
+		d["content"] = p.Content
+	}
+	if p.ID != "" {
+		d["id"] = p.ID
+	}
+	if p.Name != "" {
+		d["name"] = p.Name
+	}
+	if p.Arguments != nil {
+		d["arguments"] = p.Arguments
+	}
+	if p.ToolCallID != "" {
+		d["tool_call_id"] = p.ToolCallID
+	}
+	if p.IsError {
+		d["is_error"] = true
+	}
+	if p.Cancelled {
+		d["cancelled"] = true
+	}
+	return d
 }
 
 func bindPipeToContext[T any](ctx context.Context, pipe *audio.Pipe[T]) func() bool {
