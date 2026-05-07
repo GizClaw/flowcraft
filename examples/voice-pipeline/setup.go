@@ -2,15 +2,18 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"time"
 
+	"github.com/GizClaw/flowcraft/sdk/agent"
+	"github.com/GizClaw/flowcraft/sdk/engine"
 	"github.com/GizClaw/flowcraft/sdk/graph"
-	"github.com/GizClaw/flowcraft/sdk/graph/adapter"
-	"github.com/GizClaw/flowcraft/sdk/graph/executor"
 	"github.com/GizClaw/flowcraft/sdk/graph/node"
+	"github.com/GizClaw/flowcraft/sdk/graph/node/llmnode"
+	"github.com/GizClaw/flowcraft/sdk/graph/node/scriptnode"
+	"github.com/GizClaw/flowcraft/sdk/graph/runner"
 	"github.com/GizClaw/flowcraft/sdk/llm"
 	"github.com/GizClaw/flowcraft/sdk/script/jsrt"
-	"github.com/GizClaw/flowcraft/sdk/workflow"
 	"github.com/GizClaw/flowcraft/voice"
 	"github.com/GizClaw/flowcraft/voice/audio"
 	"github.com/GizClaw/flowcraft/voice/stt"
@@ -19,24 +22,20 @@ import (
 	minimaxTTS "github.com/GizClaw/flowcraft/voice/tts/minimax"
 )
 
-// setupWorkflow creates a workflow.Runtime + Agent backed by the graph definition.
-func setupWorkflow(def *graph.GraphDefinition, mmAPIKey, minimaxModelRef string) (workflow.Runtime, workflow.Agent) {
+// setupEngine builds the graph runner (engine.Engine) and the agent value
+// that the voice pipeline drives on every turn.
+func setupEngine(def *graph.GraphDefinition, mmAPIKey, minimaxModelRef string) (engine.Engine, agent.Agent, error) {
 	store := &StaticProviderStore{Provider: "minimax", APIKey: mmAPIKey, Model: minimaxShortModel(minimaxModelRef)}
 	resolver := llm.DefaultResolver(store, llm.WithFallbackModel(minimaxModelRef))
-	nodeFactory := node.NewFactory(
-		node.WithLLMResolver(resolver),
-		node.WithScriptRuntime(jsrt.New()),
-	)
+	nodeFactory := node.NewFactory()
+	llmnode.Register(nodeFactory, resolver, nil)
+	scriptnode.Register(nodeFactory, scriptnode.Deps{ScriptRuntime: jsrt.New()})
 
-	strategy := adapter.FromDefinition(def)
-	agent := workflow.NewAgent("voice-agent", strategy)
-	deps := workflow.NewDependencies()
-	workflow.SetDep(deps, adapter.DepNodeFactory, nodeFactory)
-	workflow.SetDep(deps, adapter.DepExecutor, executor.NewLocalExecutor())
-	rt := workflow.NewRuntime(
-		workflow.WithDependencies(deps),
-	)
-	return rt, agent
+	eng, err := runner.New(def, nodeFactory)
+	if err != nil {
+		return nil, agent.Agent{}, fmt.Errorf("build graph runner: %w", err)
+	}
+	return eng, agent.Agent{ID: "voice-agent"}, nil
 }
 
 // setupCloudVoice creates STT/TTS providers and fetches the TTS voice list for the TUI.
@@ -64,15 +63,15 @@ func setupCloudVoice(ctx context.Context, bdAppID, bdToken, mmAPIKey string) (st
 func setupVoicePipeline(
 	sttProvider stt.STT,
 	ttsProvider tts.TTS,
-	rt workflow.Runtime,
-	agent workflow.Agent,
+	eng engine.Engine,
+	ag agent.Agent,
 	voiceID *string,
 ) *voice.Pipeline {
 	return voice.NewPipeline(
 		sttProvider,
 		ttsProvider,
-		rt,
-		agent,
+		eng,
+		ag,
 		voice.WithSTTOptions(stt.WithLanguage("zh"), stt.WithTargetSampleRate(16000)),
 		voice.WithTTSOptions(tts.WithCodec(audio.CodecMP3)),
 		voice.WithDynamicTTSOptions(func() []tts.TTSOption {

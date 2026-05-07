@@ -49,15 +49,15 @@ func loadDotEnv() {
 // Voice credentials: prefer FLOWCRAFT_VOICE_*, then legacy names.
 
 func getenvBytedanceAppID() string {
-	return getenvFirst("FLOWCRAFT_VOICE_BYTEDANCE_APP_ID", "BYTEDANCE_APP_ID", "ANIMUS_BYTEDANCE_APP_ID")
+	return getenvFirst("FLOWCRAFT_VOICE_BYTEDANCE_APP_ID", "BYTEDANCE_APP_ID")
 }
 
 func getenvBytedanceAccessToken() string {
-	return getenvFirst("FLOWCRAFT_VOICE_BYTEDANCE_ACCESS_TOKEN", "BYTEDANCE_ACCESS_TOKEN", "ANIMUS_BYTEDANCE_ACCESS_TOKEN")
+	return getenvFirst("FLOWCRAFT_VOICE_BYTEDANCE_ACCESS_TOKEN", "BYTEDANCE_ACCESS_TOKEN")
 }
 
 func getenvMinimaxAPIKey() string {
-	if v := getenvFirst("FLOWCRAFT_VOICE_MINIMAX_API_KEY", "MINIMAX_API_KEY", "ANIMUS_MINIMAX_API_KEY"); v != "" {
+	if v := getenvFirst("FLOWCRAFT_VOICE_MINIMAX_API_KEY", "MINIMAX_API_KEY"); v != "" {
 		return v
 	}
 	return jsonStringField(os.Getenv("FLOWCRAFT_TEST_MINIMAX"), "api_key")

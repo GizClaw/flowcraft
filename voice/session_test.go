@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/GizClaw/flowcraft/sdk/workflow"
+	"github.com/GizClaw/flowcraft/sdk/engine"
 	"github.com/GizClaw/flowcraft/voice"
 	"github.com/GizClaw/flowcraft/voice/audio"
 	"github.com/GizClaw/flowcraft/voice/detect"
@@ -197,26 +197,19 @@ func newDelayedRuntime(tokens []string, delay time.Duration) *delayedRuntime {
 	return &delayedRuntime{tokens: tokens, delay: delay}
 }
 
-func (r *delayedRuntime) Run(ctx context.Context, _ workflow.Agent, _ *workflow.Request, opts ...workflow.RunOption) (*workflow.Result, error) {
-	rc := workflow.ApplyRunOpts(opts)
-
+func (r *delayedRuntime) Execute(ctx context.Context, run engine.Run, host engine.Host, board *engine.Board) (*engine.Board, error) {
 	tokens := r.tokens
 	if len(tokens) == 0 {
 		tokens = []string{"Hello "}
 	}
-	if rc.StreamCallback != nil {
-		for _, tok := range tokens {
-			rc.StreamCallback(workflow.StreamEvent{
-				Type:    "token",
-				Payload: map[string]any{"content": tok},
-			})
-		}
+	for _, tok := range tokens {
+		_ = engine.EmitStreamToken(ctx, host, run.ID, fakeNodeID, tok)
 	}
 	select {
 	case <-time.After(r.delay):
-		return &workflow.Result{}, nil
+		return board, nil
 	case <-ctx.Done():
-		return nil, ctx.Err()
+		return board, ctx.Err()
 	}
 }
 
@@ -228,35 +221,23 @@ type staleTokenRuntime struct {
 	startCnt atomic.Int32
 }
 
-func (r *staleTokenRuntime) Run(ctx context.Context, _ workflow.Agent, _ *workflow.Request, opts ...workflow.RunOption) (*workflow.Result, error) {
-	rc := workflow.ApplyRunOpts(opts)
+func (r *staleTokenRuntime) Execute(ctx context.Context, run engine.Run, host engine.Host, board *engine.Board) (*engine.Board, error) {
 	turn := r.startCnt.Add(1)
 
-	if rc.StreamCallback != nil {
-		switch turn {
-		case 1:
-			rc.StreamCallback(workflow.StreamEvent{
-				Type:    "token",
-				Payload: map[string]any{"content": "old-early "},
-			})
-			select {
-			case <-time.After(200 * time.Millisecond):
-			case <-ctx.Done():
-				return nil, ctx.Err()
-			}
-			rc.StreamCallback(workflow.StreamEvent{
-				Type:    "token",
-				Payload: map[string]any{"content": "old-late "},
-			})
-		default:
-			time.Sleep(30 * time.Millisecond)
-			rc.StreamCallback(workflow.StreamEvent{
-				Type:    "token",
-				Payload: map[string]any{"content": "new-turn "},
-			})
+	switch turn {
+	case 1:
+		_ = engine.EmitStreamToken(ctx, host, run.ID, fakeNodeID, "old-early ")
+		select {
+		case <-time.After(200 * time.Millisecond):
+		case <-ctx.Done():
+			return board, ctx.Err()
 		}
+		_ = engine.EmitStreamToken(ctx, host, run.ID, fakeNodeID, "old-late ")
+	default:
+		time.Sleep(30 * time.Millisecond)
+		_ = engine.EmitStreamToken(ctx, host, run.ID, fakeNodeID, "new-turn ")
 	}
-	return &workflow.Result{}, nil
+	return board, nil
 }
 
 func newSessionPipeline(transcript string) *voice.Pipeline {
@@ -268,7 +249,7 @@ func newSessionPipeline(transcript string) *voice.Pipeline {
 		&fakeStreamSTT{preset: transcript},
 		&fakeStreamTTS{fakeTTS: &fakeTTS{}},
 		&fakeRuntime{tokens: tokens},
-		fakeAgent{},
+		fakeAgent,
 		voice.WithSegmenterOptions(tts.WithMinChars(1)),
 	)
 }
@@ -279,7 +260,7 @@ func newTextOnlyPipeline() *voice.Pipeline {
 		nil,
 		&fakeStreamTTS{fakeTTS: &fakeTTS{}},
 		&fakeRuntime{tokens: []string{"reply"}},
-		fakeAgent{},
+		fakeAgent,
 		voice.WithSegmenterOptions(tts.WithMinChars(1)),
 	)
 }
@@ -294,7 +275,7 @@ func newSessionPipelineForBargeIn(transcript string) (*voice.Pipeline, *delayedR
 		&fakeStreamSTT{preset: transcript},
 		&fakeStreamTTS{fakeTTS: &fakeTTS{}},
 		rt,
-		fakeAgent{},
+		fakeAgent,
 		voice.WithSegmenterOptions(tts.WithMinChars(1)),
 	)
 	return pipeline, rt
@@ -508,7 +489,7 @@ func TestSession_VoiceProfileAppliesDynamicTTSOptions(t *testing.T) {
 		nil,
 		ttsCapture,
 		&fakeRuntime{tokens: []string{"reply"}},
-		fakeAgent{},
+		fakeAgent,
 		voice.WithSegmenterOptions(tts.WithMinChars(1)),
 	)
 	session := voice.NewSession(pipeline, nil, &fakeAudioSink{},
@@ -959,7 +940,7 @@ func TestSession_TextInterruptsResponding(t *testing.T) {
 		nil,
 		&fakeStreamTTS{fakeTTS: &fakeTTS{}},
 		rt,
-		fakeAgent{},
+		fakeAgent,
 		voice.WithSegmenterOptions(tts.WithMinChars(1)),
 	)
 
@@ -998,7 +979,7 @@ func TestSession_TextInterruptStopsOldTurnEvents(t *testing.T) {
 		nil,
 		&fakeStreamTTS{fakeTTS: &fakeTTS{}},
 		rt,
-		fakeAgent{},
+		fakeAgent,
 		voice.WithSegmenterOptions(tts.WithMinChars(1)),
 	)
 
@@ -1326,7 +1307,7 @@ func TestSession_TurnMetricsIncludeProviderReports(t *testing.T) {
 			okStreamTTSAdapter{payload: "audio"},
 		),
 		&fakeRuntime{tokens: []string{"reply"}},
-		fakeAgent{},
+		fakeAgent,
 		voice.WithSegmenterOptions(tts.WithMinChars(1)),
 	)
 	source := newFakeAudioSource([]audio.Frame{

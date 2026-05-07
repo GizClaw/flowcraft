@@ -235,9 +235,6 @@ func (s *Session) pipelineForTurn() *Pipeline {
 	}
 	p := s.pipeline.clone()
 	p.skipWarmup = true
-	if p.contextID == "" {
-		p.contextID = s.sessionID
-	}
 	if s.cfg.voiceProfileSet {
 		profile := s.cfg.voiceProfile
 		p.addDynamicTTSOptionsProvider(func() []tts.TTSOption {

@@ -25,6 +25,12 @@ jobs:
   #
   # Per-module skip is below: `[skip-tag:sdk]` keeps the workflow
   # running but bypasses the sdk module specifically.
+  #
+  # Scoping rule (since 2026-05): auto-tag will ONLY consider modules
+  # whose files were modified in the current push (event.before..
+  # event.after). Earlier `[skip-tag:X]` accumulated diff is no longer
+  # charged to the next unrelated PR — the next PR that touches X
+  # will pick it up instead. See workflow body for details.
   guard:
     name: Check skip-tag marker
     runs-on: ubuntu-latest
@@ -79,6 +85,48 @@ jobs:
             fi
           done
 
+      - name: Detect modules touched by THIS push
+        id: touched
+        env:
+          BEFORE_SHA: ${{ github.event.before }}
+          AFTER_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          # We only consider modules whose files were modified between
+          # the previous main tip (event.before) and the new tip
+          # (event.after / github.sha). This is what stops auto-tag
+          # from charging unrelated modules for diff that accumulated
+          # across earlier `[skip-tag:X]` PRs — the canonical bug fix
+          # behind this rewrite.
+          #
+          # Edge case: when this is the very first push that creates
+          # main (or after a force-push that rewrote history),
+          # event.before is the all-zeros SHA. In that case we fall
+          # back to "module has any tracked file" which is a safe
+          # superset and reproduces the pre-fix behaviour.
+          zeros="0000000000000000000000000000000000000000"
+          if [ -z "${BEFORE_SHA}" ] || [ "${BEFORE_SHA}" = "${zeros}" ]; then
+            echo "no usable BEFORE_SHA, treating every module as touched"
+            for mod in sdk sdkx voice; do
+              key="MODULE_TOUCHED_$(echo "$mod" | tr '[:lower:]' '[:upper:]')"
+              echo "${key}=1" >> "$GITHUB_ENV"
+            done
+            exit 0
+          fi
+          # Make sure the before SHA is actually fetched. checkout@v4
+          # with fetch-depth: 0 already pulls full history, but a defensive
+          # fetch keeps the workflow robust against shallow-clone tweaks.
+          git fetch --no-tags origin "${BEFORE_SHA}" >/dev/null 2>&1 || true
+          for mod in sdk sdkx voice; do
+            if [ -n "$(git diff --name-only "${BEFORE_SHA}".."${AFTER_SHA}" -- "$mod/")" ]; then
+              key="MODULE_TOUCHED_$(echo "$mod" | tr '[:lower:]' '[:upper:]')"
+              echo "${key}=1" >> "$GITHUB_ENV"
+              echo "$mod: touched by this push"
+            else
+              echo "$mod: not touched by this push"
+            fi
+          done
+
       - name: Detect changes and tag
         run: |
           set -euo pipefail
@@ -100,20 +148,39 @@ jobs:
             [ -n "$(git diff --name-only "$latest"..HEAD -- "$mod/")" ]
           }
 
-          # tag_module tags a module if it has changes since its last tag.
-          # Honours the per-module skip marker captured by the previous
-          # step (MODULE_SKIP_<MOD>=1 from `[skip-tag:<mod>]`).
+          # tag_module tags a module if both:
           #
-          # Each module is tagged independently: bumping sdk does NOT
-          # trigger any automated PR to refresh sdkx/voice's `require
-          # github.com/GizClaw/flowcraft/sdk` directive. Downstream
-          # modules are bumped by hand (or by a follow-up PR), and on
-          # the next push of that PR they get tagged on their own.
+          #   1. THIS push touched files inside the module directory
+          #      (MODULE_TOUCHED_<MOD>=1 from the previous step), AND
+          #   2. there are diffs in the module directory since the
+          #      latest module tag (so we capture any prior commits
+          #      that were left untagged due to `[skip-tag:<mod>]`).
+          #
+          # Rule 1 is the fix for the cross-module bleed bug: a PR
+          # that only modifies voice/ no longer wakes up sdk's tag
+          # logic just because some earlier sdk-only PR carried
+          # `[skip-tag:sdk]`. That earlier PR's accumulated diff will
+          # only be released the next time someone actually pushes
+          # an sdk/ change.
+          #
+          # Rule 2 is preserved so that a single PR that touches a
+          # module gets credited for the full untagged window — e.g.
+          # if PR#56 carried [skip-tag:sdk] and PR#60 (our hypothetical
+          # next sdk PR) does not, PR#60 patches up to v0.x.(N+2) in
+          # one go, which is the documented "skip == defer" semantics.
+          #
+          # Per-module SKIP marker still wins over both rules so a
+          # release coordinator can hand-tag a SemVer-major bump.
           tag_module() {
             local mod=$1
             local skip_var="MODULE_SKIP_$(echo "$mod" | tr '[:lower:]' '[:upper:]')"
             if [ "${!skip_var:-}" = "1" ]; then
               echo "$mod: skipped via [skip-tag:${mod}]"
+              return
+            fi
+            local touched_var="MODULE_TOUCHED_$(echo "$mod" | tr '[:lower:]' '[:upper:]')"
+            if [ "${!touched_var:-}" != "1" ]; then
+              echo "$mod: not touched by this push, skipping"
               return
             fi
             local latest
