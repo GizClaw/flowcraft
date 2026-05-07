@@ -1,0 +1,24 @@
+apiVersion: vessel.flowcraft.io/v1alpha1
+kind: Daemon
+metadata:
+  name: vesseld-bad
+spec:
+  control:
+    socket: /tmp/bad.sock
+---
+apiVersion: vessel.flowcraft.io/v1alpha1
+kind: Vessel
+metadata:
+  name: orphan
+spec:
+  agents: [a1]
+---
+apiVersion: vessel.flowcraft.io/v1alpha1
+kind: Agent
+metadata:
+  name: a1
+spec:
+  engine:
+    ref: this-engine-kind-does-not-exist
+    config:
+      llmProfile: x

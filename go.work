@@ -6,4 +6,5 @@ use (
 	./vessel
 	./voice
 	./cmd/vesseld
+	./tests/quality/vessel
 )

@@ -8,7 +8,7 @@ SHELL := /bin/bash
 # sdk + sdkx + voice are the tightly-coupled core that needs atomic
 # in-tree edits (sdkx imports sdk packages that may not yet exist in
 # any released sdk version; voice depends on the same sdk source).
-MODULES_WORK := sdk sdkx voice
+MODULES_WORK := sdk sdkx vessel voice cmd/vesseld tests/quality/vessel
 
 # Modules intentionally outside go.work — they pin sdk/sdkx via go.mod
 # require directives and run with GOWORK=off so the pin is honoured.
@@ -28,7 +28,11 @@ MODULES_WORK := sdk sdkx voice
 #    default lane (BM25 only) needs no credentials; the `integration`
 #    lane requires `EMBEDDING_*` env vars and is opt-in via a build
 #    tag, so `make test` exercises the compile path here too.
-MODULES_OFFWORK := bench examples/voice-pipeline tests/conformance tests/quality/knowledge
+#  - tests/e2e/vesseld: black-box subprocess tests for the vesseld
+#    binary. Tagged with `//go:build e2e` so `make test`'s default
+#    sweep is just a compile check; the credentialed / build-tagged
+#    lane runs via `make test-e2e`.
+MODULES_OFFWORK := bench examples/voice-pipeline tests/conformance tests/quality/knowledge tests/e2e/vesseld
 
 ALL_MODULES := $(MODULES_WORK) $(MODULES_OFFWORK)
 
@@ -60,6 +64,12 @@ help:
 	@echo "                         (tests/quality/knowledge, integration lane)."
 	@echo "                         Needs EMBEDDING_PROVIDER / EMBEDDING_API_KEY /"
 	@echo "                         EMBEDDING_MODEL (or skips cleanly)."
+	@echo "  make test-e2e          Black-box e2e suite for vesseld"
+	@echo "                         (tests/e2e/vesseld, //go:build e2e)."
+	@echo "                         Builds the vesseld binary and runs it"
+	@echo "                         against an in-process mock OpenAI server;"
+	@echo "                         no network or API key required."
+	@echo "  make ci-e2e            ci + test-e2e."
 	@echo ""
 	@echo "Bench is in CI for vet+test only. Long-running eval CLIs"
 	@echo "(bench/locomo/cmd/eval, history-compression/cmd/eval) are main"
@@ -86,6 +96,23 @@ tidy:
 
 .PHONY: ci
 ci: vet test
+
+# `make test-e2e` runs the build-tagged e2e suite against a freshly
+# `go build`-ed vesseld binary. Each test spins up a subprocess
+# bound to a per-test temp socket and a per-test mock OpenAI HTTP
+# server, so the suite has no external dependencies (no API key,
+# no network).
+#
+# Default `make test` excludes this lane because each test pays a
+# ~1s build cost and a few seconds of subprocess setup; CI runs it
+# explicitly via `make ci-e2e` (or by adding it to your local
+# pre-push hook).
+.PHONY: test-e2e
+test-e2e:
+	@cd tests/e2e/vesseld && GOWORK=off go test -tags=e2e -count=1 ./...
+
+.PHONY: ci-e2e
+ci-e2e: ci test-e2e
 
 # Provider conformance: runs every suite under tests/conformance against
 # the pinned sdk/sdkx release. Without credentials the individual tests
