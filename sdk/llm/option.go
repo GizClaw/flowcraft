@@ -30,9 +30,47 @@ type GenerateOptions struct {
 	// unsupported providers simply ignore the field.
 	Thinking *bool
 
+	// ImageGen carries image-generation-specific options. Only honored
+	// by providers that advertise [CapImageOutput]; chat-only
+	// providers ignore the field.
+	ImageGen *ImageGenOptions
+
 	// Extra carries provider-specific parameters as key-value pairs.
 	// Providers read the keys they care about and ignore the rest.
 	Extra map[string]any
+}
+
+// ResponseFormat selects how generated images are returned.
+type ResponseFormat string
+
+const (
+	// ResponseFormatURL returns short-lived asset URLs (default for
+	// most providers; URLs typically expire within 24h).
+	ResponseFormatURL ResponseFormat = "url"
+	// ResponseFormatBase64 inlines image bytes as base64. Useful for
+	// air-gapped pipelines that cannot reach the provider's CDN.
+	ResponseFormatBase64 ResponseFormat = "base64"
+)
+
+// ImageGenOptions configures image generation calls. All fields are
+// optional; providers fall back to their own defaults when a field is
+// the zero value. Provider-specific knobs go through [GenerateOptions.Extra].
+type ImageGenOptions struct {
+	// AspectRatio in "W:H" form, e.g. "1:1", "16:9". Mutually
+	// exclusive with Width/Height on most providers.
+	AspectRatio string
+	// Width / Height in pixels. Providers may quantise to their own
+	// step (MiniMax: divisible by 8, range [512, 2048]).
+	Width  int
+	Height int
+	// N is the number of images to generate. Zero means "provider
+	// default" (typically 1).
+	N int
+	// Seed makes generation reproducible when non-nil and supported.
+	Seed *int64
+	// ResponseFormat selects URL vs base64 delivery. Empty string
+	// means provider default.
+	ResponseFormat ResponseFormat
 }
 
 // ToolChoiceType specifies how the model selects tools.
@@ -122,6 +160,12 @@ func WithToolChoiceSpecific(name string) GenerateOption {
 
 func WithThinking(on bool) GenerateOption {
 	return func(o *GenerateOptions) { o.Thinking = &on }
+}
+
+// WithImageGen attaches image-generation options. Providers that do
+// not advertise [CapImageOutput] ignore the field.
+func WithImageGen(opts ImageGenOptions) GenerateOption {
+	return func(o *GenerateOptions) { o.ImageGen = &opts }
 }
 
 func WithExtra(key string, value any) GenerateOption {

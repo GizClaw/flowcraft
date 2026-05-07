@@ -45,6 +45,17 @@ const (
 	CapVision Capability = "vision"
 	CapAudio  Capability = "audio"
 	CapFile   Capability = "file"
+
+	// Output modality caps — these advertise non-text *response*
+	// modalities. Disabled is the conservative default for chat
+	// completion models; image-generation / audio-generation
+	// providers enable them. The caps middleware does not currently
+	// enforce these on the response side (providers populate the
+	// response Parts directly), but [LLMResolver] uses them when
+	// matching policy requirements such as "this slot needs an
+	// image-output model" via [WithPolicyCaps].
+	CapImageOutput Capability = "image_output"
+	CapAudioOutput Capability = "audio_output"
 )
 
 // ModelCaps declares which capabilities a model does not support.
