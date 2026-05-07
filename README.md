@@ -33,7 +33,7 @@ Everything ships as Go modules with semantic versioning — depend on what you n
 | Strict separation between **engine** and **agent**           | `sdk/engine` is a leaf package; `sdk/agent` orchestrates above it. No "framework is the runtime" coupling.                |
 | **Long-term memory** that actually retrieves what's relevant | `sdk/recall` ships hybrid BM25 + vector retrieval with predicate-alias normalisation, not just embedding similarity.      |
 | **Multi-agent collaboration** without a graph DSL            | `sdk/kanban` exposes any agent as a tool to any other agent — composition is just function calls.                         |
-| **A daemon you can deploy**                                  | `vesseld` is a single static binary: `vesseld start --config ./config -R`. No runtime, no Python, no Docker required.     |
+| **A daemon you can deploy**                                  | `vesseld` is a single static binary: `vesseld run --config ./config -R`. No runtime, no Python, no Docker required.       |
 | **Voice agents** that don't reinvent VAD                     | `voice/` ships VAD, endpointing, barge-in, WebRTC — wire it to any STT/TTS provider in `sdkx`.                            |
 | **Provider portability**                                     | The same agent code runs against OpenAI, Anthropic, DeepSeek, MiniMax, or Volcengine — switch by changing one YAML field. |
 
@@ -41,115 +41,99 @@ Everything ships as Go modules with semantic versioning — depend on what you n
 
 ## Quickstart
 
-### Library — a 20-line agent
-
-```bash
-go get github.com/GizClaw/flowcraft/sdk@latest
-go get github.com/GizClaw/flowcraft/sdkx@latest
-```
-
-```go
-package main
-
-import (
- "context"
- "fmt"
-
- "github.com/GizClaw/flowcraft/sdk/agent"
- "github.com/GizClaw/flowcraft/sdk/graph/runner"
- "github.com/GizClaw/flowcraft/sdk/llm"
- "github.com/GizClaw/flowcraft/sdk/model"
- "github.com/GizClaw/flowcraft/sdkx/openai"
-)
-
-func main() {
- llm.Register("gpt", openai.New("gpt-4o-mini"))
-
- a := &agent.Agent{
-  ID:   "hello",
-  Card: agent.Card{Name: "Hello", System: "You are a friendly greeter."},
- }
-
- res, _ := agent.Run(context.Background(), a, runner.New(),
-  agent.Request{Message: model.UserText("Greet me in one sentence.")})
-
- fmt.Println(res.Messages[len(res.Messages)-1].Text())
-}
-```
-
 ### Daemon — declarative multi-vessel deployment
+
+The fastest way to ship something runnable: write YAML, point `vesseld` at it.
 
 ```bash
 go install github.com/GizClaw/flowcraft/cmd/vesseld@latest
 
 # One daemon, two independently configured vessels, sharing one OpenAI client.
 vesseld validate --config examples/vesseld-multi-vessel -R
-vesseld start    --config examples/vesseld-multi-vessel -R
+vesseld run      --config examples/vesseld-multi-vessel -R
 ```
 
 ```bash
-# Synchronous call:
-curl --unix-socket /tmp/vesseld.sock -X POST http://vesseld/v1/vessels/support/call \
+SOCK=/tmp/vesseld-multi-vessel.sock   # set in examples/vesseld-multi-vessel/daemon.yaml
+
+# Synchronous call (waits for completion):
+curl --unix-socket $SOCK -X POST http://vesseld/v1/vessels/support/call \
   -H 'content-type: application/json' \
   -d '{"agent":"support-agent","query":"What are your business hours?"}'
 
 # Async submit + SSE log tail:
-RUN=$(curl -s --unix-socket /tmp/vesseld.sock -X POST http://vesseld/v1/vessels/triage/submit \
+RUN=$(curl -s --unix-socket $SOCK -X POST http://vesseld/v1/vessels/triage/submit \
   -H 'content-type: application/json' \
   -d '{"agent":"triage-dispatcher","query":"My order is two weeks late."}' | jq -r .run_id)
 
-curl --unix-socket /tmp/vesseld.sock "http://vesseld/v1/vessels/triage/logs?run_id=$RUN"
+curl --unix-socket $SOCK "http://vesseld/v1/vessels/triage/logs?run_id=$RUN"
 ```
 
 See [`examples/vesseld-multi-vessel/`](examples/vesseld-multi-vessel/) for the full walkthrough.
 
-### Voice — STT/LLM/TTS with one struct
+### Library — programmatic SDK usage
+
+For embedding agents directly into a Go service (no daemon), use `sdk` + `sdkx` directly. The minimum viable wiring is a graph DAG (`graph.GraphDefinition` + `node.Factory` with `llmnode.Register`) driven by `agent.Run`. See:
+
+- [`sdk/agent/run_test.go`](sdk/agent/run_test.go) — minimal `agent.Run` patterns
+- [`tests/quality/vessel/`](tests/quality/vessel/) — full integration examples (history, sidecars, kanban)
+- [`examples/voice-pipeline/setup.go`](examples/voice-pipeline/setup.go) — a real graph-runner build wiring an LLM provider + script node
+
+### Voice — STT → LLM → TTS
 
 ```go
-p := voice.NewPipeline(voice.Config{
-    STT: deepgram.New(...),
-    LLM: openai.New("gpt-4o-mini"),
-    TTS: elevenlabs.New(...),
-    VAD: detect.NewWebRTC(),
-})
-p.Run(ctx, micStream, speakerStream)
+p := voice.NewPipeline(
+    sttProvider,                 // any voice/stt backend (e.g. bytedance, …)
+    ttsProvider,                 // any voice/tts backend (e.g. minimax, …)
+    eng,                         // engine.Engine driving each turn
+    agent.Agent{ID: "voice"},
+    voice.WithSTTOptions(stt.WithLanguage("zh"), stt.WithTargetSampleRate(16000)),
+    voice.WithTTSOptions(tts.WithCodec(audio.CodecMP3)),
+)
 ```
+
+End-to-end: [`examples/voice-pipeline/`](examples/voice-pipeline/) — a runnable WebRTC voice agent.
 
 ---
 
 ## Architecture
 
+Layered bottom-up. Each layer only depends on layers below it; siblings on the same row are independent of each other.
+
 ```
-┌──────────────────────────────────────────────────────────────────┐
-│                       Your Application                           │
-└─────────────┬─────────────────────────────────────┬──────────────┘
-              │                                     │
-       ┌──────▼──────┐                       ┌──────▼──────┐
-       │  vesseld    │  ── HTTP + SSE ──┐    │   voice/    │  WebRTC / WS
-       │   (daemon)  │                  │    │ (pipeline)  │
-       └──────┬──────┘                  │    └──────┬──────┘
-              │                         │           │
-       ┌──────▼─────────────────────────▼───────────▼────────┐
-       │                      vessel/                        │
-       │   Captain ▸ Submit / Drain / Stop / Restart         │
-       │   Multi-Agent + Kanban + Sidecars + Shared History  │
-       └──────────────────────┬──────────────────────────────┘
-                              │
-       ┌──────────────────────▼──────────────────────────────┐
-       │                       sdk/                          │
-       │   agent ▸ engine ▸ graph                            │
-       │   recall ▸ history ▸ knowledge ▸ kanban ▸ tool      │
-       │   model ▸ llm ▸ event ▸ workspace ▸ telemetry       │
-       └──────────────────────┬──────────────────────────────┘
-                              │
-       ┌──────────────────────▼──────────────────────────────┐
-       │                      sdkx/                          │
-       │   openai • anthropic • deepseek • minimax • ...     │
-       │   embedding • retrieval • reranker                  │
-       └─────────────────────────────────────────────────────┘
+   ┌──────────────────────────────────────────────────────────────┐
+   │                      Your Application                        │
+   └────────────┬───────────────────────────────────┬─────────────┘
+                │                                   │
+         ┌──────▼──────┐                            │
+         │   vesseld   │ ── HTTP + SSE control ──   │
+         │   (daemon)  │                            │
+         └──────┬──────┘                            │
+                │ composes vessel + sdkx            │
+   ┌────────────┼─────────────────┐          ┌─────▼──────┐
+   │     ┌──────▼───────┐  ┌──────▼──────┐   │   voice/   │  WebRTC
+   │     │   vessel/    │  │    sdkx/    │   │ (pipeline) │
+   │     │  (runtime)   │  │ (providers) │   └─────┬──────┘
+   │     │ Captain ▸    │  │ openai ·    │         │
+   │     │ Probe · Re-  │  │ anthropic · │         │
+   │     │ start ·      │  │ deepseek ·  │         │
+   │     │ Sidecar ·    │  │ minimax ·   │         │
+   │     │ Kanban       │  │ volcengine  │         │
+   │     └──────┬───────┘  └──────┬──────┘         │
+   │            │                 │                │
+   │            └─────────┬───────┴────────────────┘
+   │                      │ all sit on sdk
+   │             ┌────────▼───────────────────────┐
+   └────────────►│             sdk/               │
+                 │ agent · engine · graph         │
+                 │ recall · history · knowledge   │
+                 │ kanban · tool · model · llm    │
+                 │ event · telemetry · workspace  │
+                 └────────────────────────────────┘
+                  Foundation — depends on no other in-tree module.
 ```
 
-**Constraint**: `sdk/engine` is a leaf — it does NOT import `agent`, `graph`, `history`, `recall`, `llm`, `tool`, or `workflow`. New execution engines plug in by implementing `engine.Engine` against the `Host` capability interface.
+**Layering rule**: `sdk/engine` is a leaf inside `sdk/` — it does NOT import `agent`, `graph`, `history`, `recall`, `llm`, `tool`, or `workflow`. New execution engines plug in by implementing `engine.Engine` against the `Host` capability interface, which keeps the runtime contract narrow.
 
 ---
 
@@ -173,9 +157,9 @@ p.Run(ctx, micStream, speakerStream)
 
 ### Hybrid memory that actually recalls (`sdk/recall`)
 
-- BM25 lexical + vector semantic, combined via Reciprocal Rank Fusion.
+- BM25 lexical + vector semantic search with entity boost and TTL filtering — not just embedding similarity.
 - Predicate alias normalisation so "favourite color" and "favorite colour" hit the same memory.
-- Pluggable persistence (in-memory, SQLite, Postgres + pgvector).
+- Pluggable `retrieval.Index` backend — bring your own vector store; the in-tree implementation is in-memory.
 
 ### Streaming, durable, resumable (`sdk/engine`)
 
