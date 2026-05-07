@@ -210,3 +210,8 @@ jobs:
           # warning + skips, so we never accidentally publish v0.0.1
           # for a never-released module.
           tag_module "vessel"
+          # NOTE: cmd/vesseld is intentionally NOT auto-tagged. It
+          # is a daemon binary, not a library — releases ship as
+          # GitHub Release artifacts (cross-platform binaries +
+          # optional container image), not as Go module tags. See
+          # .github/workflows/release-vesseld.yml.
