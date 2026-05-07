@@ -1,0 +1,26 @@
+apiVersion: vessel.flowcraft.io/v1alpha1
+kind: Daemon
+metadata:
+  name: multi-vessel-demo
+spec:
+  control:
+    # Unix socket path for the control plane. Pick something the
+    # current user can write to; keep it under 100 chars on macOS.
+    socket: /tmp/vesseld-multi-vessel.sock
+  # Daemon-wide cap. Each vessel can also set a per-vessel cap;
+  # whichever is lower wins.
+  resources:
+    maxConcurrentRuns: 32
+  # One shared rate-limit bucket for the OpenAI profile so the two
+  # vessels can't combined exceed the 600 RPM budget. Per-vessel
+  # fairshare splits the bucket evenly when both are saturated.
+  llmRateLimits:
+    - llmProfile: shared-openai
+      requestsPerMinute: 600
+      perVesselFairshare: true
+  logging:
+    format: text
+    level: info
+  shutdown:
+    # Time to wait for in-flight runs to settle before a hard kill.
+    drainTimeout: 10s
