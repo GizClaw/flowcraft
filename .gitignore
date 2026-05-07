@@ -7,6 +7,10 @@
 # ── Root documentation ──
 !README.md
 !LICENSE
+!CHANGELOG.md
+!SECURITY.md
+!CONTRIBUTING.md
+!CODE_OF_CONDUCT.md
 
 # ── Go source ──
 !go.mod
