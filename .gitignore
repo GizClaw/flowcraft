@@ -8,22 +8,22 @@
 !README.md
 !LICENSE
 
-# ── Architecture docs ──
-!docs/
-!docs/**
-
 # ── Go source ──
 !go.mod
 !go.sum
 !go.work
 !bench/
 !bench/**
+!cmd/
+!cmd/**
 !examples/
 !examples/**
 !sdk/
 !sdk/**
 !sdkx/
 !sdkx/**
+!vessel/
+!vessel/**
 !voice/
 !voice/**
 !tests/

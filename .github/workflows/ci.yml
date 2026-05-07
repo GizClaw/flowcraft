@@ -17,6 +17,8 @@ jobs:
       voice: ${{ steps.filter.outputs.voice }}
       vessel: ${{ steps.filter.outputs.vessel }}
       vesseld: ${{ steps.filter.outputs.vesseld }}
+      vessel_quality: ${{ steps.filter.outputs.vessel_quality }}
+      vesseld_e2e: ${{ steps.filter.outputs.vesseld_e2e }}
       ci: ${{ steps.filter.outputs.ci }}
     steps:
       - uses: actions/checkout@v4
@@ -34,6 +36,10 @@ jobs:
               - 'vessel/**'
             vesseld:
               - 'cmd/vesseld/**'
+            vessel_quality:
+              - 'tests/quality/vessel/**'
+            vesseld_e2e:
+              - 'tests/e2e/vesseld/**'
             ci:
               - '.github/workflows/**'
               - 'Makefile'
@@ -50,13 +56,19 @@ jobs:
           go-version: "1.25"
       - name: go vet
         run: |
-          for m in sdk sdkx voice vessel cmd/vesseld; do
+          for m in sdk sdkx voice vessel cmd/vesseld tests/quality/vessel; do
             echo "==> vet $m"
             (cd "$m" && go vet ./...)
           done
+          # The e2e module is GOWORK=off, build-tagged (//go:build
+          # e2e), and pulls released sdk/sdkx — vet it separately
+          # so a refactor that breaks the public surface is caught
+          # without needing to spin up the binary.
+          echo "==> vet tests/e2e/vesseld (e2e tag, GOWORK=off)"
+          (cd tests/e2e/vesseld && GOWORK=off go vet -tags=e2e ./...)
       - name: gofmt check
         run: |
-          diff=$(gofmt -l sdk sdkx voice vessel cmd/vesseld)
+          diff=$(gofmt -l sdk sdkx voice vessel cmd/vesseld tests/quality/vessel tests/e2e/vesseld)
           if [ -n "$diff" ]; then
             echo "Files not formatted:"
             echo "$diff"
@@ -152,12 +164,56 @@ jobs:
         run: go test -count=1 -race ./...
         working-directory: cmd/vesseld
 
+  test-vessel-quality:
+    name: Test vessel quality (Go ${{ matrix.go-version }})
+    needs: detect
+    # In-process quality suite for the vessel runtime; reruns on
+    # sdk/vessel changes plus when the suite itself moves.
+    if: needs.detect.outputs.sdk == 'true' || needs.detect.outputs.vessel == 'true' || needs.detect.outputs.vessel_quality == 'true' || needs.detect.outputs.ci == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        go-version: ["1.25", "1.26"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v6
+        with:
+          go-version: ${{ matrix.go-version }}
+      - name: Test
+        run: go test -count=1 -race ./...
+        working-directory: tests/quality/vessel
+
+  test-vesseld-e2e:
+    name: E2E vesseld (Go ${{ matrix.go-version }})
+    needs: detect
+    # Black-box subprocess suite for the vesseld binary; reruns
+    # when the daemon, vessel, sdk, or the suite itself moves.
+    if: needs.detect.outputs.sdk == 'true' || needs.detect.outputs.sdkx == 'true' || needs.detect.outputs.vessel == 'true' || needs.detect.outputs.vesseld == 'true' || needs.detect.outputs.vesseld_e2e == 'true' || needs.detect.outputs.ci == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        go-version: ["1.25", "1.26"]
+    env:
+      # The e2e module pins released sdk/sdkx versions and uses
+      # `replace` directives to swap in the in-tree source. It must
+      # NOT participate in the workspace, otherwise go.work would
+      # take precedence and the replace lines become dead code.
+      GOWORK: "off"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v6
+        with:
+          go-version: ${{ matrix.go-version }}
+      - name: Test
+        run: go test -tags=e2e -count=1 -race ./...
+        working-directory: tests/e2e/vesseld
+
   # Gate job: single required status check for branch protection.
   # Always runs; succeeds only when all triggered jobs pass.
   ci-pass:
     name: CI
     if: always()
-    needs: [lint, test-sdk, test-sdkx, test-voice, test-vessel, test-vesseld]
+    needs: [lint, test-sdk, test-sdkx, test-voice, test-vessel, test-vesseld, test-vessel-quality, test-vesseld-e2e]
     runs-on: ubuntu-latest
     steps:
       - name: Check results
@@ -169,6 +225,8 @@ jobs:
             "${{ needs.test-voice.result }}" \
             "${{ needs.test-vessel.result }}" \
             "${{ needs.test-vesseld.result }}" \
+            "${{ needs.test-vessel-quality.result }}" \
+            "${{ needs.test-vesseld-e2e.result }}" \
           )
           for r in "${results[@]}"; do
             if [[ "$r" == "failure" || "$r" == "cancelled" ]]; then
