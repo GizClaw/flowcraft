@@ -3,8 +3,8 @@ module github.com/GizClaw/flowcraft/tests/conformance
 go 1.25.0
 
 require (
-	github.com/GizClaw/flowcraft/sdk v0.2.4
-	github.com/GizClaw/flowcraft/sdkx v0.2.2
+	github.com/GizClaw/flowcraft/sdk v0.2.8
+	github.com/GizClaw/flowcraft/sdkx v0.2.6
 )
 
 require (

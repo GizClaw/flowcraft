@@ -1,0 +1,4 @@
+# Conformance test artefacts: images downloaded by image_test.go when
+# SAVE_GENERATED_IMAGES=1. Never committed.
+/llm/_out/
+
