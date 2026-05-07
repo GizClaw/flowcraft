@@ -5,7 +5,7 @@ go 1.25.0
 require github.com/GizClaw/flowcraft/cmd/vesseld v0.0.0
 
 require (
-	github.com/GizClaw/flowcraft/sdk v0.2.7 // indirect
+	github.com/GizClaw/flowcraft/sdk v0.2.8 // indirect
 	github.com/GizClaw/flowcraft/sdkx v0.2.5 // indirect
 	github.com/GizClaw/flowcraft/vessel v0.1.0-rc.2 // indirect
 	github.com/anthropics/anthropic-sdk-go v1.26.0 // indirect
