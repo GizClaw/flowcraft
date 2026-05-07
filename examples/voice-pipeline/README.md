@@ -45,14 +45,14 @@ If your `.env` lives at the repo root, run from this directory so `loadDotEnv()`
 
 - Shows partial/final transcripts, assistant streaming text, and simple turn metrics.
 - Text input instead of speaking; **`/voice`** lists or sets TTS voice when the API returns a list.
-- **`/reset`**: stops the current generation/playback (`Pipeline.Abort` + `Session.StopSpeaking`) and clears the on-screen log. This example does **not** enable `workflow.WithMemoryFactory`, so there is no persisted multi-turn server memory to wipe—only in-flight work and the terminal buffer.
+- **`/reset`**: stops the current generation/playback (`Pipeline.Abort` + `Session.StopSpeaking`) and clears the on-screen log. This example does **not** wire any history / recall store into the agent run, so there is no persisted multi-turn server memory to wipe—only in-flight work and the terminal buffer.
 
 ## Project layout (short)
 
 | File | Role |
 |------|------|
 | `main.go` | Entry: env check, PortAudio, delegates to setup + UI |
-| `setup.go` | Workflow runtime, cloud STT/TTS, `voice.Pipeline` options |
+| `setup.go` | Graph runner (`engine.Engine`) + `agent.Agent`, cloud STT/TTS, `voice.Pipeline` options |
 | `run_ui.go` | Mic session + bubbletea program; `/reset` wiring |
 | `bridge_tui.go` | Maps speech metrics/events into bubbletea messages |
 | `react_agent.yaml` | Declarative graph definition |

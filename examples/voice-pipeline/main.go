@@ -18,7 +18,6 @@ import (
 
 	"github.com/gordonklaus/portaudio"
 
-	_ "github.com/GizClaw/flowcraft/sdk/graph/node/scriptnode"
 	_ "github.com/GizClaw/flowcraft/sdkx/llm/minimax"
 )
 
@@ -44,7 +43,10 @@ func main() {
 	}
 	defer portaudio.Terminate()
 
-	rt, agent := setupWorkflow(def, mmAPIKey, minimaxModelRef)
+	eng, ag, err := setupEngine(def, mmAPIKey, minimaxModelRef)
+	if err != nil {
+		fatal("setup engine:", err)
+	}
 
 	ctx, stop := context.WithCancel(context.Background())
 
@@ -53,7 +55,7 @@ func main() {
 		fatal("create STT/TTS:", err)
 	}
 
-	pipeline := setupVoicePipeline(sttProvider, ttsProvider, rt, agent, voicePtr)
+	pipeline := setupVoicePipeline(sttProvider, ttsProvider, eng, ag, voicePtr)
 
 	source, err := NewPortAudioSource()
 	if err != nil {
@@ -83,7 +85,7 @@ func requireVoiceCredentials() (bdAppID, bdToken, mmAPIKey string) {
 	mmAPIKey = getenvMinimaxAPIKey()
 	if bdAppID == "" || bdToken == "" || mmAPIKey == "" {
 		fmt.Fprintf(os.Stderr, "error: set FLOWCRAFT_VOICE_BYTEDANCE_APP_ID, FLOWCRAFT_VOICE_BYTEDANCE_ACCESS_TOKEN, "+
-			"FLOWCRAFT_VOICE_MINIMAX_API_KEY, or legacy BYTEDANCE_* / ANIMUS_* / FLOWCRAFT_TEST_MINIMAX\n")
+			"FLOWCRAFT_VOICE_MINIMAX_API_KEY, or legacy BYTEDANCE_* / FLOWCRAFT_TEST_MINIMAX\n")
 		os.Exit(1)
 	}
 	return bdAppID, bdToken, mmAPIKey

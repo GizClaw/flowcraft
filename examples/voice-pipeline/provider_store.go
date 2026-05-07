@@ -16,7 +16,7 @@ type StaticProviderStore struct {
 	Model string
 }
 
-func (s *StaticProviderStore) GetProviderConfig(_ context.Context, provider string) (*llm.ProviderConfig, error) {
+func (s *StaticProviderStore) GetProviderConfig(_ context.Context, provider, _ string) (*llm.ProviderConfig, error) {
 	if provider != s.Provider {
 		return nil, errdefs.NotFoundf("provider_config %q not found", provider)
 	}
