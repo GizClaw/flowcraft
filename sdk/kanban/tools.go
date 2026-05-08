@@ -13,6 +13,13 @@ import (
 // SubmitTool allows LLM to submit tasks to the Kanban board.
 // Kanban is injected via struct field (when the instance is known at construction)
 // or resolved from context at execution time via KanbanFrom.
+//
+// Deprecated: this LLM tool implementation will be moved to
+// sdkx/tool/kanban in v0.3.0. The new home matches the existing
+// "sdk = interface, sdkx = concrete adapter" layering rule (cf.
+// sdk/llm → sdkx/llm/{qwen,...}). The struct shape is preserved
+// across the move; only the import path changes. See
+// docs/migrations/v0.3.0.md.
 type SubmitTool struct {
 	Kanban *Kanban
 }
@@ -93,6 +100,11 @@ func (t *SubmitTool) Execute(ctx context.Context, arguments string) (string, err
 // TaskContextTool allows the Dispatcher to retrieve the full context of a
 // previously dispatched async task, including the original user request,
 // dispatch note, task instruction, and execution result.
+//
+// Deprecated: this LLM tool implementation will be moved to
+// sdkx/tool/kanban in v0.3.0 alongside [SubmitTool]. The struct
+// shape is preserved across the move; only the import path changes.
+// See docs/migrations/v0.3.0.md.
 type TaskContextTool struct {
 	Kanban *Kanban
 }
@@ -142,10 +154,22 @@ func (t *SubmitTool) resolve(ctx context.Context) *Kanban {
 	return KanbanFrom(ctx)
 }
 
+// WithKanban attaches a [Kanban] instance to ctx so the LLM-facing
+// [SubmitTool] / [TaskContextTool] can resolve it without a struct
+// field. Used by hosts that wire tools into a registry before the
+// Kanban instance is constructed.
+//
+// Deprecated: moves to sdkx/tool/kanban in v0.3.0 alongside the
+// tool types. See docs/migrations/v0.3.0.md.
 func WithKanban(ctx context.Context, k *Kanban) context.Context {
 	return context.WithValue(ctx, ctxKeyKanban, k)
 }
 
+// KanbanFrom retrieves the [Kanban] instance previously installed by
+// [WithKanban], or nil when absent.
+//
+// Deprecated: moves to sdkx/tool/kanban in v0.3.0 alongside the tool
+// types. See docs/migrations/v0.3.0.md.
 func KanbanFrom(ctx context.Context) *Kanban {
 	k, _ := ctx.Value(ctxKeyKanban).(*Kanban)
 	return k
