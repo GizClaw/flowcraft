@@ -19,6 +19,7 @@ jobs:
       vesseld: ${{ steps.filter.outputs.vesseld }}
       vessel_quality: ${{ steps.filter.outputs.vessel_quality }}
       vesseld_e2e: ${{ steps.filter.outputs.vesseld_e2e }}
+      retrieval_e2e: ${{ steps.filter.outputs.retrieval_e2e }}
       ci: ${{ steps.filter.outputs.ci }}
     steps:
       - uses: actions/checkout@v4
@@ -40,6 +41,8 @@ jobs:
               - 'tests/quality/vessel/**'
             vesseld_e2e:
               - 'tests/e2e/vesseld/**'
+            retrieval_e2e:
+              - 'tests/e2e/retrieval/**'
             ci:
               - '.github/workflows/**'
               - 'Makefile'
@@ -56,19 +59,25 @@ jobs:
           go-version: "1.25"
       - name: go vet
         run: |
-          for m in sdk sdkx voice vessel cmd/vesseld tests/quality/vessel; do
+          for m in sdk sdkx voice vessel cmd/vesseld; do
             echo "==> vet $m"
             (cd "$m" && go vet ./...)
           done
-          # The e2e module is GOWORK=off, build-tagged (//go:build
-          # e2e), and pulls released sdk/sdkx — vet it separately
-          # so a refactor that breaks the public surface is caught
-          # without needing to spin up the binary.
-          echo "==> vet tests/e2e/vesseld (e2e tag, GOWORK=off)"
-          (cd tests/e2e/vesseld && GOWORK=off go vet -tags=e2e ./...)
+          # Modules that pin released sdk/sdkx/vessel via require
+          # directives — vet them with GOWORK=off so the pinned
+          # versions are honoured. The e2e suites are also build-
+          # tagged (//go:build e2e) so we pass -tags=e2e.
+          for m in tests/quality/vessel; do
+            echo "==> vet $m (GOWORK=off)"
+            (cd "$m" && GOWORK=off go vet ./...)
+          done
+          for m in tests/e2e/vesseld tests/e2e/retrieval; do
+            echo "==> vet $m (e2e tag, GOWORK=off)"
+            (cd "$m" && GOWORK=off go vet -tags=e2e ./...)
+          done
       - name: gofmt check
         run: |
-          diff=$(gofmt -l sdk sdkx voice vessel cmd/vesseld tests/quality/vessel tests/e2e/vesseld)
+          diff=$(gofmt -l sdk sdkx voice vessel cmd/vesseld tests/quality/vessel tests/e2e/vesseld tests/e2e/retrieval)
           if [ -n "$diff" ]; then
             echo "Files not formatted:"
             echo "$diff"
@@ -180,7 +189,7 @@ jobs:
         with:
           go-version: ${{ matrix.go-version }}
       - name: Test
-        run: go test -count=1 -race ./...
+        run: GOWORK=off go test -count=1 -race ./...
         working-directory: tests/quality/vessel
 
   test-vesseld-e2e:
@@ -208,12 +217,35 @@ jobs:
         run: go test -tags=e2e -count=1 -race ./...
         working-directory: tests/e2e/vesseld
 
+  test-retrieval-e2e:
+    name: E2E retrieval (Go ${{ matrix.go-version }})
+    needs: detect
+    # On-disk LocalWorkspace conformance suite for sdkx/retrieval/workspace.
+    # Reruns when sdk/sdkx changes or the suite itself moves.
+    if: needs.detect.outputs.sdk == 'true' || needs.detect.outputs.sdkx == 'true' || needs.detect.outputs.retrieval_e2e == 'true' || needs.detect.outputs.ci == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        go-version: ["1.25", "1.26"]
+    env:
+      # Pinned to released sdk/sdkx tags via go.mod; keep go.work
+      # out of the resolution path so the pin is honoured.
+      GOWORK: "off"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v6
+        with:
+          go-version: ${{ matrix.go-version }}
+      - name: Test
+        run: go test -tags=e2e -count=1 -race -timeout 120s ./...
+        working-directory: tests/e2e/retrieval
+
   # Gate job: single required status check for branch protection.
   # Always runs; succeeds only when all triggered jobs pass.
   ci-pass:
     name: CI
     if: always()
-    needs: [lint, test-sdk, test-sdkx, test-voice, test-vessel, test-vesseld, test-vessel-quality, test-vesseld-e2e]
+    needs: [lint, test-sdk, test-sdkx, test-voice, test-vessel, test-vesseld, test-vessel-quality, test-vesseld-e2e, test-retrieval-e2e]
     runs-on: ubuntu-latest
     steps:
       - name: Check results
@@ -227,6 +259,7 @@ jobs:
             "${{ needs.test-vesseld.result }}" \
             "${{ needs.test-vessel-quality.result }}" \
             "${{ needs.test-vesseld-e2e.result }}" \
+            "${{ needs.test-retrieval-e2e.result }}" \
           )
           for r in "${results[@]}"; do
             if [[ "$r" == "failure" || "$r" == "cancelled" ]]; then
