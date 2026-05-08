@@ -74,6 +74,18 @@ type manifest struct {
 	// LastWALSeq is the highest WAL sequence number ever assigned.
 	LastWALSeq uint64 `json:"last_wal_seq"`
 
+	// FirstUnconsumedWALSeq is the lowest WAL sequence number whose
+	// records have not yet been incorporated into a segment. On
+	// replay, only wal/<seq>.log files with seq >=
+	// FirstUnconsumedWALSeq are applied to the memtable; logs with
+	// seq < this value are stale and may be garbage-collected. This
+	// is what guarantees correctness when the writer crashes between
+	// the manifest swap (which makes a new segment durable) and the
+	// WAL-file deletion that would normally retire the now-redundant
+	// records: the next manifest already advanced this counter, so
+	// re-replaying the old log is skipped.
+	FirstUnconsumedWALSeq uint64 `json:"first_unconsumed_wal_seq"`
+
 	// UpdatedAt is the writer's local clock at the time of swap.
 	// Used only for diagnostics; readers don't rely on it.
 	UpdatedAt time.Time `json:"updated_at"`

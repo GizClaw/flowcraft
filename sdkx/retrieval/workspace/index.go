@@ -150,7 +150,8 @@ type Index struct {
 // pointer so callers can keep a reference across the surrounding
 // nsMu being released.
 type namespaceState struct {
-	name string
+	name  string
+	paths pathHelper
 
 	// rwMu serializes writes within this namespace and lets reads
 	// run concurrently. Manifest swaps acquire the write lock.
@@ -159,9 +160,16 @@ type namespaceState struct {
 	// manifest is the latest committed snapshot. Read under rwMu.
 	manifest *manifest
 
-	// Implementation fields (memtable, walWriter, segment cache,
-	// lockfile heartbeat goroutine) are added in subsequent commits
-	// alongside the corresponding code paths.
+	// memtable is the in-memory staging buffer that absorbs Upsert /
+	// Delete batches between flushes. Swapped wholesale during
+	// flush so reads observing the post-swap manifest see a
+	// memtable that has already been drained.
+	memtable *memtable
+
+	// wal is the active write-ahead log writer; rotated during
+	// flush so each flush corresponds to a contiguous range of
+	// WAL sequence numbers.
+	wal *walWriter
 }
 
 // New constructs an [Index] on top of ws. The namespace state is
@@ -191,14 +199,29 @@ func New(ws sdkworkspace.Workspace, opts ...Option) (*Index, error) {
 // Close releases per-namespace resources (WAL writers, lockfile
 // heartbeats, background compactors) and marks the index as closed.
 // Subsequent operations return [ErrClosed]. Close is idempotent.
+//
+// Close does NOT force a final flush — pending memtable contents
+// remain in the WAL for the next opener to recover. Callers who
+// want the memtable persisted should call [Index.Flush] before
+// Close.
 func (idx *Index) Close() error {
 	if !idx.closed.CompareAndSwap(false, true) {
 		return nil
 	}
-	// Per-namespace teardown is filled in alongside the components
-	// it owns: WAL writers (write-path commit), lockfile heartbeat
-	// (concurrency commit), background compactor (compaction
-	// commit). At this skeleton stage there is nothing to release.
+	idx.nsMu.Lock()
+	states := make([]*namespaceState, 0, len(idx.namespaces))
+	for _, st := range idx.namespaces {
+		states = append(states, st)
+	}
+	idx.namespaces = map[string]*namespaceState{}
+	idx.nsMu.Unlock()
+	for _, st := range states {
+		st.rwMu.Lock()
+		if st.wal != nil {
+			_ = st.wal.Close()
+		}
+		st.rwMu.Unlock()
+	}
 	return nil
 }
 
