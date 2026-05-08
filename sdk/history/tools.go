@@ -33,6 +33,11 @@ import (
 //	    Prefix:       prefix,
 //	    Config:       cfg,
 //	})
+//
+// Deprecated: this LLM tool dependency bundle moves to
+// sdkx/tool/history in v0.3.0 alongside [RegisterTools]. The struct
+// shape is preserved across the move; only the import path changes.
+// See docs/migrations/v0.3.0.md.
 type ToolDeps struct {
 	// Coordinator, when non-nil, makes history_compact go through the
 	// per-conversation queue. Leaving it nil preserves the v0.2 "direct
@@ -54,6 +59,11 @@ type ToolDeps struct {
 //
 // See [ToolDeps] for the recommended way to construct deps from an
 // existing [History] / [Coordinator] pair.
+//
+// Deprecated: this LLM tool registration helper moves to
+// sdkx/tool/history in v0.3.0. The function signature is preserved
+// across the move; only the import path changes. See
+// docs/migrations/v0.3.0.md.
 func RegisterTools(registry *tool.Registry, deps ToolDeps) {
 	registry.Register(newHistoryExpandTool(deps))
 	registry.RegisterWithScope(newHistoryCompactTool(deps), tool.ScopePlatform)

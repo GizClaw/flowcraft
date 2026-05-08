@@ -31,6 +31,13 @@ const defaultDatasetID = "default"
 // Backwards compatibility: when callers send only the legacy
 // {query, top_k} fields, the tool defaults to scope=all/mode=bm25/layer=L2
 // — the same behaviour as the deprecated NewSearchTool(Store) helper.
+//
+// Deprecated: this LLM tool implementation will be moved to
+// sdkx/tool/knowledge in v0.3.0. The new home matches the existing
+// "sdk = interface, sdkx = concrete adapter" layering rule that
+// sdk/llm and sdk/embedding already follow. The function signature is
+// unchanged across the move; only the import path differs. New code
+// SHOULD pin sdkx/tool/knowledge directly. See docs/migrations/v0.3.0.md.
 func NewSearchServiceTool(svc *Service) tool.Tool {
 	return tool.FuncTool(
 		tool.DefineSchema("knowledge_search",
@@ -112,6 +119,11 @@ func NewSearchServiceTool(svc *Service) tool.Tool {
 // The tool returns the new SourceDocument.Version so callers can chain
 // derivation work (layer generation, vector backfill) keyed off the
 // freshness signal.
+//
+// Deprecated: this LLM tool implementation will be moved to
+// sdkx/tool/knowledge in v0.3.0 alongside [NewSearchServiceTool]. The
+// function signature is preserved across the move; only the import
+// path changes. See docs/migrations/v0.3.0.md.
 func NewPutServiceTool(svc *Service) tool.Tool {
 	return tool.FuncTool(
 		tool.DefineSchema("knowledge_put",

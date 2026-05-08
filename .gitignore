@@ -11,6 +11,9 @@
 !SECURITY.md
 !CONTRIBUTING.md
 !CODE_OF_CONDUCT.md
+!docs/
+!docs/migrations/
+!docs/migrations/**
 
 # ── Go source ──
 !go.mod
