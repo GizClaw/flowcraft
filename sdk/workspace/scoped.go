@@ -51,6 +51,18 @@ func NewScopedWorkspace(inner Workspace, opts ...ScopedOption) *ScopedWorkspace 
 	return sw
 }
 
+// Capabilities forwards to the wrapped Workspace, since scoping
+// is a security boundary that does not change durability /
+// atomicity / consistency / distribution semantics. A wrapped
+// Workspace that does not implement [CapabilityReporter] yields a
+// zero-value (all-false) [Capabilities] via [CapabilitiesOf].
+//
+// ScopedGitWorkspace embeds ScopedWorkspace and therefore inherits
+// this method.
+func (s *ScopedWorkspace) Capabilities() Capabilities {
+	return CapabilitiesOf(s.inner)
+}
+
 func (s *ScopedWorkspace) Read(ctx context.Context, path string) ([]byte, error) {
 	if err := s.checkRead(ctx, path); err != nil {
 		return nil, err
