@@ -91,7 +91,12 @@
 //     SSE bridges, dashboards) can route on subject without
 //     importing any concrete engine.
 //
-//  10. Stream-delta emit helpers (stream_emit.go) — EmitStreamToken /
+//  10. Resume primitives (resume.go) — the optional [Resumer] capability
+//     interface, [ResumeContext] (per-attempt metadata threaded through
+//     ctx) and the [LoadAndResume] helper that wires a CheckpointStore
+//     to an Engine in one call. See "Resume usage" below for examples.
+//
+//  11. Stream-delta emit helpers (stream_emit.go) — EmitStreamToken /
 //     EmitStreamToolCall / EmitStreamToolResult / EmitStreamDelta let
 //     ANY node (not just LLM nodes) publish in-flight increments
 //     without re-implementing the envelope construction +
@@ -115,4 +120,40 @@
 //   - Engine kind enumeration — engine does not reserve a "type"
 //     namespace or list which engines exist; routing on subject is
 //     the only cross-engine identification mechanism.
+//
+// # Resume usage
+//
+// Hosts that want to drive resumable execution typically reach for
+// [LoadAndResume]. It loads the most recent checkpoint, validates it
+// against the engine's [Resumer] (if implemented), populates
+// [Run.ResumeFrom], threads a [ResumeContext] onto ctx and finally
+// calls Execute:
+//
+//	board, err := engine.LoadAndResume(ctx, eng, host, store,
+//	    engine.Run{ID: runID}, nil,
+//	    engine.WithResumeSignal("crash"),
+//	    engine.WithResumeAttempt(2),
+//	    engine.WithFreshStartAllowed(false),
+//	)
+//
+// Engines opt in to resume validation by implementing [Resumer]:
+//
+//	func (e *myEngine) CanResume(cp engine.Checkpoint) error {
+//	    if cp.Payload == nil {
+//	        return errdefs.Validation(errors.New("missing payload"))
+//	    }
+//	    return nil
+//	}
+//
+// Engines (and observers / middleware) read replay metadata from ctx
+// inside Execute:
+//
+//	if rc, ok := engine.ResumeContextFromContext(ctx); ok && rc.Attempt > 1 {
+//	    // mark telemetry: this is a replay
+//	}
+//
+// The contract intentionally separates WHERE (engine-defined
+// [Run.ResumeFrom]) from WHY (host-defined [ResumeContext]); engines
+// that do not implement [Resumer] still honour the resume contract
+// described on [Run.ResumeFrom].
 package engine
