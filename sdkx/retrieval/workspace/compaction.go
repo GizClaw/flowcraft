@@ -114,6 +114,12 @@ func (idx *Index) runCompactionRound(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
+		// Skip fenced namespaces: their writer was taken over,
+		// and any compaction we run from this Index would race
+		// the new holder's manifest swaps.
+		if st.fenced.Load() {
+			continue
+		}
 		// One compaction at a time per namespace; skip if another
 		// caller (e.g. an explicit Index.Compact call) holds it.
 		if !st.compactMu.TryLock() {
@@ -139,6 +145,9 @@ func (idx *Index) Compact(ctx context.Context, namespace string) error {
 	}
 	st, err := idx.ensureNamespace(ctx, namespace)
 	if err != nil {
+		return err
+	}
+	if err := fenceCheck(st); err != nil {
 		return err
 	}
 	st.compactMu.Lock()

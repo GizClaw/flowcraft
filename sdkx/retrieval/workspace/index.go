@@ -279,6 +279,26 @@ type namespaceState struct {
 	// flush so each flush corresponds to a contiguous range of
 	// WAL sequence numbers.
 	wal *walWriter
+
+	// lockHolder identifies our acquire of the namespace's
+	// .lock file. Empty means the locking protocol is disabled
+	// (the workspace lacks AtomicRename); the heartbeat and
+	// release paths skip such namespaces.
+	lockHolder string
+
+	// lockCancel cancels the heartbeat goroutine. nil when the
+	// protocol is disabled. Called by Close.
+	lockCancel context.CancelFunc
+
+	// lockDone is closed when the heartbeat goroutine exits.
+	// Close waits on this to drain the goroutine cleanly.
+	lockDone chan struct{}
+
+	// fenced is set to true when the heartbeat loop observes that
+	// the lockfile no longer names us as holder — i.e., another
+	// writer has taken over. Mutating / reading methods inspect
+	// this via [fenceCheck] and refuse to proceed when set.
+	fenced atomic.Bool
 }
 
 // New constructs an [Index] on top of ws. The namespace state is
@@ -344,11 +364,21 @@ func (idx *Index) Close() error {
 	idx.namespaces = map[string]*namespaceState{}
 	idx.nsMu.Unlock()
 	for _, st := range states {
+		// Stop the heartbeat first so we don't race a final tick
+		// with the lock release Delete.
+		if st.lockCancel != nil {
+			st.lockCancel()
+			<-st.lockDone
+		}
 		st.rwMu.Lock()
 		if st.wal != nil {
 			_ = st.wal.Close()
 		}
 		st.rwMu.Unlock()
+		// Best-effort release: only deletes when the file still
+		// names us as Holder, so a fenced Index never erases the
+		// new holder's lockfile.
+		idx.releaseLock(context.Background(), st)
 	}
 	return nil
 }

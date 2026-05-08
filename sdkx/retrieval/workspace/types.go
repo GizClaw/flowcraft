@@ -46,7 +46,63 @@ var (
 	// Categorised as [errdefs.NotAvailable] because the resource is
 	// no longer usable, but the caller can recover by reopening.
 	ErrClosed = errdefs.NotAvailablef("retrieval/workspace: index is closed")
+
+	// ErrFenced is returned when a namespace's lockfile has been
+	// observed to belong to a different holder than ours, meaning
+	// another writer has taken over (typically because our
+	// heartbeat lapsed past the staleness window). Once fenced, a
+	// namespace permanently rejects further mutations from this
+	// Index instance to avoid double-write races against the new
+	// holder. The caller can recover by closing the Index and
+	// reopening — the new instance will acquire the lock cleanly
+	// or itself observe ErrLocked.
+	//
+	// Categorised as [errdefs.NotAvailable] because the local
+	// resource is no longer usable; like ErrClosed but specifically
+	// scoped to one namespace.
+	ErrFenced = errdefs.NotAvailablef("retrieval/workspace: namespace lock was taken over by another writer")
 )
+
+// lockState is the JSON payload of <ns>/.lock. The protocol is
+// best-effort advisory locking: the file's content names the
+// current holder and the most recent heartbeat. A second writer
+// observing a heartbeat older than 3× LockHeartbeat treats the
+// lock as stale and overwrites it; the now-fenced original holder
+// detects the takeover on its next heartbeat tick (the Holder
+// field no longer matches its own randomly-generated UUID) and
+// trips ErrFenced for every subsequent operation.
+//
+// The protocol assumes [sdkworkspace.Workspace.Rename] is atomic
+// (Capabilities.AtomicRename = true). When the underlying medium
+// does not provide that — e.g. an object store — locking is
+// disabled and single-writer use is the caller's responsibility;
+// see the package doc.
+type lockState struct {
+	// Version pins the schema. Mismatches are treated as corrupt
+	// and trigger a fresh acquire.
+	Version int `json:"version"`
+
+	// Holder is the random UUID identifying ONE Index instance.
+	// Two acquires from the same process generate two distinct
+	// holders so the protocol works even within a single binary.
+	Holder string `json:"holder"`
+
+	// PID + Hostname are diagnostic only — operators inspecting
+	// the file see "who has this".
+	PID      int    `json:"pid"`
+	Hostname string `json:"hostname,omitempty"`
+
+	// AcquiredAt is when the holder first wrote the file. Static
+	// for the lifetime of one acquire.
+	AcquiredAt time.Time `json:"acquired_at"`
+
+	// HeartbeatAt is the most recent refresh. Updated on every
+	// heartbeat tick. Stale > 3× LockHeartbeat triggers takeover.
+	HeartbeatAt time.Time `json:"heartbeat_at"`
+}
+
+// lockStateVersion is the on-disk schema version of [lockState].
+const lockStateVersion = 1
 
 // manifest is the atomic snapshot of one namespace's live state.
 // Written via temp-file + Rename so readers always observe a

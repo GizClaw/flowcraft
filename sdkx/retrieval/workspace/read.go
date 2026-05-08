@@ -58,6 +58,9 @@ func (idx *Index) Search(
 	if err != nil {
 		return nil, err
 	}
+	if err := fenceCheck(st); err != nil {
+		return nil, err
+	}
 
 	// Snapshot under the read lock so memtable + manifest are
 	// mutually consistent. Concurrent writes that arrive after we
@@ -353,6 +356,9 @@ func (idx *Index) List(
 	if err != nil {
 		return nil, err
 	}
+	if err := fenceCheck(st); err != nil {
+		return nil, err
+	}
 
 	st.rwMu.RLock()
 	manifestSnap := st.manifest
@@ -459,6 +465,9 @@ func (idx *Index) Get(ctx context.Context, namespace, id string) (retrieval.Doc,
 	}
 	st, err := idx.ensureNamespace(ctx, namespace)
 	if err != nil {
+		return retrieval.Doc{}, false, err
+	}
+	if err := fenceCheck(st); err != nil {
 		return retrieval.Doc{}, false, err
 	}
 	st.rwMu.RLock()

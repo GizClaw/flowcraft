@@ -52,8 +52,20 @@ func (idx *Index) ensureNamespace(ctx context.Context, name string) (*namespaceS
 // openNamespaceLocked performs the actual open. Caller holds
 // st.rwMu in write mode and the namespace is *not* yet visible to
 // concurrent readers.
+//
+// Order is: (1) acquire the cross-process lock so manifest reads
+// and WAL replays below are not racing a second writer, (2) read
+// manifest, (3) GC abandoned segments, (4) replay WAL into the
+// memtable, (5) wire up the WAL writer, (6) start the heartbeat
+// goroutine that keeps our lock alive.
 func (idx *Index) openNamespaceLocked(ctx context.Context, st *namespaceState) error {
 	st.paths = newPathHelper(idx.cfg.root, st.name)
+
+	lock, err := acquireLock(ctx, idx.ws, st.paths, idx.cfg.lockHeartbeat, idx.cfg.now())
+	if err != nil {
+		return err
+	}
+	st.lockHolder = lock.Holder // empty when protocol is disabled
 
 	man, err := readManifest(ctx, idx.ws, st.paths)
 	if err != nil {
@@ -83,6 +95,16 @@ func (idx *Index) openNamespaceLocked(ctx context.Context, st *namespaceState) e
 		startSeq = highest
 	}
 	st.wal = newWALWriter(idx.ws, st.paths, idx.cfg.walMaxBytes, startSeq)
+
+	// Heartbeat goroutine. Skipped when the protocol is disabled
+	// (lockHolder=="" via acquireLock) so unsupported workspaces
+	// don't spawn a no-op refresh loop.
+	if st.lockHolder != "" {
+		hbCtx, cancel := context.WithCancel(context.Background())
+		st.lockCancel = cancel
+		st.lockDone = make(chan struct{})
+		go idx.runHeartbeat(hbCtx, st, st.lockHolder, st.lockDone)
+	}
 
 	return nil
 }

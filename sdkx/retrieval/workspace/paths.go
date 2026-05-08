@@ -88,5 +88,7 @@ func (p pathHelper) segmentVectorPath(id uint64) string {
 }
 
 // lockPath is the per-namespace lockfile honoured by the
-// (Stage E) cross-process advisory protocol.
-func (p pathHelper) lockPath() string { return path.Join(p.nsDir(), ".lock") }
+// cross-process advisory protocol. lockTmpPath is the staging path
+// used by the temp-write + Rename publication step.
+func (p pathHelper) lockPath() string    { return path.Join(p.nsDir(), ".lock") }
+func (p pathHelper) lockTmpPath() string { return path.Join(p.nsDir(), ".lock.tmp") }

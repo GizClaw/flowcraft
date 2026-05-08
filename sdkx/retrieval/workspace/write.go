@@ -35,6 +35,9 @@ func (idx *Index) Upsert(ctx context.Context, namespace string, docs []retrieval
 	if err != nil {
 		return err
 	}
+	if err := fenceCheck(st); err != nil {
+		return err
+	}
 
 	st.rwMu.Lock()
 	defer st.rwMu.Unlock()
@@ -71,6 +74,9 @@ func (idx *Index) Delete(ctx context.Context, namespace string, ids []string) er
 
 	st, err := idx.ensureNamespace(ctx, namespace)
 	if err != nil {
+		return err
+	}
+	if err := fenceCheck(st); err != nil {
 		return err
 	}
 
@@ -118,6 +124,9 @@ func (idx *Index) Flush(ctx context.Context, namespace string) error {
 	}
 	st, err := idx.ensureNamespace(ctx, namespace)
 	if err != nil {
+		return err
+	}
+	if err := fenceCheck(st); err != nil {
 		return err
 	}
 	st.rwMu.Lock()
