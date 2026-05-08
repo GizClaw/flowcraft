@@ -13,6 +13,10 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/llm"
 	"github.com/GizClaw/flowcraft/sdk/model"
+	"github.com/GizClaw/flowcraft/sdk/telemetry"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
 
 const (
@@ -139,6 +143,30 @@ func New(modelName, apiKey, baseURL string, opts ...Option) (*LLM, error) {
 // (one per generated image). TokenUsage is left zero — the endpoint
 // reports image_count rather than token counts.
 func (l *LLM) Generate(ctx context.Context, messages []llm.Message, opts ...llm.GenerateOption) (llm.Message, llm.TokenUsage, error) {
+	ctx, span := telemetry.Tracer().Start(ctx,
+		fmt.Sprintf("llm.qwen-image.generate.%s", l.model),
+		trace.WithAttributes(
+			attribute.String(telemetry.AttrLLMProvider, providerKey),
+			attribute.String(telemetry.AttrLLMModel, l.model),
+		))
+	defer span.End()
+
+	start := time.Now()
+	msg, usage, err := l.generate(ctx, messages, opts...)
+	dur := time.Since(start)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		llm.RecordLLMMetrics(ctx, providerKey, l.model, "error", dur, llm.TokenUsage{})
+		return llm.Message{}, llm.TokenUsage{}, err
+	}
+	span.SetAttributes(attribute.Int64(telemetry.AttrLLMOutputTokens, usage.OutputTokens))
+	span.SetStatus(codes.Ok, "OK")
+	llm.RecordLLMMetrics(ctx, providerKey, l.model, "success", dur, usage)
+	return msg, usage, nil
+}
+
+func (l *LLM) generate(ctx context.Context, messages []llm.Message, opts ...llm.GenerateOption) (llm.Message, llm.TokenUsage, error) {
 	o := llm.ApplyOptions(opts...)
 	prompt, refsCount := extractPrompt(messages)
 	if prompt == "" {
