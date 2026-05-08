@@ -66,9 +66,18 @@ func TestSearch_BM25_RanksTermMatches(t *testing.T) {
 	if got != "alpha" && got != "bravo" {
 		t.Errorf("top hit = %q, want one of [alpha bravo]", got)
 	}
-	for _, h := range resp.Hits {
-		if h.Doc.ID == "charlie" {
-			t.Errorf("charlie matched none of the query terms; should not appear")
+	// charlie tokenizes to no query-matching terms, so it must
+	// rank below alpha/bravo even though the contract keeps
+	// zero-score docs in the ranked list.
+	rank := map[string]int{}
+	for i, h := range resp.Hits {
+		rank[h.Doc.ID] = i
+	}
+	if cR, ok := rank["charlie"]; ok {
+		for _, top := range []string{"alpha", "bravo"} {
+			if tR, ok := rank[top]; ok && cR < tR {
+				t.Errorf("charlie ranked above %s: ranks=%v", top, rank)
+			}
 		}
 	}
 }
@@ -325,6 +334,44 @@ func TestGet_HitsMissesAndTombstones(t *testing.T) {
 	}
 	if _, ok, _ := idx.Get(ctx, "ns", "alpha"); ok {
 		t.Errorf("Get(alpha) ok=true after tombstone")
+	}
+}
+
+func TestDeleteByFilter_RemovesMatchingDocs(t *testing.T) {
+	idx := flushedIdx(t)
+	ctx := context.Background()
+	d, ok := any(idx).(retrieval.DeletableByFilter)
+	if !ok {
+		t.Fatal("workspace Index should implement DeletableByFilter")
+	}
+	n, err := d.DeleteByFilter(ctx, "ns",
+		retrieval.Filter{Eq: map[string]any{"kind": "fable"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 2 {
+		t.Errorf("DeleteByFilter deleted %d, want 2 (alpha+bravo)", n)
+	}
+	resp, err := idx.List(ctx, "ns", retrieval.ListRequest{PageSize: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, doc := range resp.Items {
+		if doc.Metadata["kind"] == "fable" {
+			t.Errorf("DeleteByFilter missed %s", doc.ID)
+		}
+	}
+}
+
+func TestDeleteByFilter_EmptyFilterRejected(t *testing.T) {
+	idx := flushedIdx(t)
+	d := any(idx).(retrieval.DeletableByFilter)
+	_, err := d.DeleteByFilter(context.Background(), "ns", retrieval.Filter{})
+	if err == nil {
+		t.Fatal("expected ErrEmptyDeleteFilter")
+	}
+	if !strings.Contains(err.Error(), "non-empty") {
+		t.Errorf("err = %v, want ErrEmptyDeleteFilter", err)
 	}
 }
 

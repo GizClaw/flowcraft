@@ -153,12 +153,14 @@ func (idx *Index) Search(
 			if hasVec && len(d.Vector) == len(queryVec) {
 				p.cos = scoring.CosineSim(queryVec, d.Vector)
 			}
-			// Skip docs that scored zero on every active lane:
-			// they would only inflate the ranking with documents
-			// the query never actually matched.
-			if !hasContribution(p, hasText, hasVec) {
-				continue
-			}
+			// We deliberately keep zero-score docs in the result
+			// set: the [retrieval.Index] contract (matched by the
+			// in-memory backend) is "every filter-passing doc is
+			// a candidate; the caller decides via MinScore /
+			// TopK". Search would otherwise diverge on the
+			// degenerate "QueryText='x' (one-char, tokenizes to
+			// nothing) + Filter only" pattern that the contract
+			// suite exercises.
 			merged[d.ID] = p
 		}
 	}
@@ -177,18 +179,6 @@ type partial struct {
 	doc retrieval.Doc
 	bm  float64
 	cos float64
-}
-
-// hasContribution returns true when the doc has a non-zero score on
-// at least one active lane.
-func hasContribution(p *partial, hasText, hasVec bool) bool {
-	if hasText && p.bm > 0 {
-		return true
-	}
-	if hasVec && p.cos > 0 {
-		return true
-	}
-	return false
 }
 
 // scoreMemtableBM25 scores a single memtable doc against the query
@@ -539,3 +529,98 @@ func projectDoc(d retrieval.Doc, fields []string, withVector bool) retrieval.Doc
 // backend evaluates every operator natively against
 // [retrieval.Doc], so we accept all filters.
 func (idx *Index) SupportsFilter(_ retrieval.Filter) bool { return true }
+
+// DeleteByFilter implements [retrieval.DeletableByFilter]. Walks
+// every doc in the namespace, applies the filter, and issues a
+// single Delete with the matching IDs. Empty filters are rejected
+// with [retrieval.ErrEmptyDeleteFilter] to prevent accidental
+// "delete everything" calls — same contract the in-memory backend
+// honours.
+//
+// Implemented as List + Delete rather than a manifest-time
+// physical purge so the writer's WAL/segment story stays
+// linear: each tombstone goes through Upsert/Delete -> WAL ->
+// memtable -> flush -> segment, exactly like a per-ID Delete.
+// At the cost of one tombstone per matched doc this keeps
+// crash recovery semantics uniform.
+func (idx *Index) DeleteByFilter(ctx context.Context, namespace string, f retrieval.Filter) (int64, error) {
+	if idx.closed.Load() {
+		return 0, ErrClosed
+	}
+	if isEmptyFilter(f) {
+		return 0, retrieval.ErrEmptyDeleteFilter
+	}
+	st, err := idx.ensureNamespace(ctx, namespace)
+	if err != nil {
+		return 0, err
+	}
+	if err := fenceCheck(st); err != nil {
+		return 0, err
+	}
+
+	st.rwMu.RLock()
+	manifestSnap := st.manifest
+	memSnap := snapshotMemtable(st.memtable)
+	st.rwMu.RUnlock()
+
+	deleted := make(map[string]struct{})
+	docsByID := make(map[string]retrieval.Doc)
+	for _, it := range memSnap {
+		if it.op == walOpDelete {
+			deleted[it.id] = struct{}{}
+			continue
+		}
+		if it.doc != nil {
+			docsByID[it.id] = *it.doc
+		}
+	}
+	segs := append([]segmentRef(nil), manifestSnap.Segments...)
+	sort.Slice(segs, func(i, j int) bool { return segs[i].ID > segs[j].ID })
+	for _, ref := range segs {
+		seg, err := openSegmentReader(ctx, idx.ws, st.paths, ref)
+		if err != nil {
+			return 0, err
+		}
+		for id := range seg.tombSet {
+			if _, ok := docsByID[id]; ok {
+				delete(docsByID, id)
+			}
+			deleted[id] = struct{}{}
+		}
+		if err := seg.loadDocs(ctx); err != nil {
+			return 0, err
+		}
+		for _, d := range seg.docs {
+			if _, ok := deleted[d.ID]; ok {
+				continue
+			}
+			if _, ok := docsByID[d.ID]; ok {
+				continue
+			}
+			docsByID[d.ID] = d
+		}
+	}
+
+	matched := make([]string, 0)
+	for id, d := range docsByID {
+		if retrieval.DocMatchesFilter(d, f) {
+			matched = append(matched, id)
+		}
+	}
+	if len(matched) == 0 {
+		return 0, nil
+	}
+	if err := idx.Delete(ctx, namespace, matched); err != nil {
+		return 0, err
+	}
+	return int64(len(matched)), nil
+}
+
+// isEmptyFilter mirrors [retrieval/memory.isEmptyFilter]; an empty
+// predicate must NOT silently delete every doc in the namespace.
+func isEmptyFilter(f retrieval.Filter) bool {
+	return len(f.And) == 0 && len(f.Or) == 0 && f.Not == nil &&
+		len(f.Eq) == 0 && len(f.Neq) == 0 && len(f.In) == 0 && len(f.NotIn) == 0 &&
+		len(f.Range) == 0 && len(f.Exists) == 0 && len(f.Missing) == 0 && len(f.Match) == 0 &&
+		len(f.Contains) == 0 && len(f.IContains) == 0 && len(f.ContainsAny) == 0 && len(f.ContainsAll) == 0
+}

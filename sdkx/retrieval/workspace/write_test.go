@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -14,13 +15,15 @@ import (
 )
 
 // fixedClock returns a deterministic time so segment timestamps
-// across test runs are reproducible.
+// across test runs are reproducible. Concurrent callers (e.g.
+// background compactor + main test goroutine) are safe because the
+// offset is incremented atomically.
 func fixedClock(seed int64) func() time.Time {
 	t := time.Unix(seed, 0).UTC()
-	var off int64
+	var off atomic.Int64
 	return func() time.Time {
-		off++
-		return t.Add(time.Duration(off) * time.Second)
+		n := off.Add(1)
+		return t.Add(time.Duration(n) * time.Second)
 	}
 }
 
