@@ -55,10 +55,17 @@ func writeSegment(
 	}
 	tombBytes := encodeTombstones(tombs)
 
+	// Tombstone-only flushes (pure-delete batches) carry no docs;
+	// docs.jsonl / docs.offsets.bin are omitted entirely. The
+	// segment reader keys "should I read this file" off membership
+	// in FileChecksums so a missing entry simply means "no upserts
+	// in this segment" rather than corruption.
 	checksums := map[string]uint32{
-		"docs.jsonl":       crc32.ChecksumIEEE(docsBytes),
-		"docs.offsets.bin": crc32.ChecksumIEEE(offsetsBytes),
-		"tombstones.bin":   crc32.ChecksumIEEE(tombBytes),
+		"tombstones.bin": crc32.ChecksumIEEE(tombBytes),
+	}
+	if len(docsBytes) > 0 {
+		checksums["docs.jsonl"] = crc32.ChecksumIEEE(docsBytes)
+		checksums["docs.offsets.bin"] = crc32.ChecksumIEEE(offsetsBytes)
 	}
 
 	avgDocLen := 0.0
@@ -76,11 +83,13 @@ func writeSegment(
 		FileChecksums: checksums,
 	}
 
-	if err := ws.Write(ctx, paths.segmentDocsPath(id), docsBytes); err != nil {
-		return nil, fmt.Errorf("writeSegment: docs: %w", err)
-	}
-	if err := ws.Write(ctx, paths.segmentOffsetsPath(id), offsetsBytes); err != nil {
-		return nil, fmt.Errorf("writeSegment: offsets: %w", err)
+	if len(docsBytes) > 0 {
+		if err := ws.Write(ctx, paths.segmentDocsPath(id), docsBytes); err != nil {
+			return nil, fmt.Errorf("writeSegment: docs: %w", err)
+		}
+		if err := ws.Write(ctx, paths.segmentOffsetsPath(id), offsetsBytes); err != nil {
+			return nil, fmt.Errorf("writeSegment: offsets: %w", err)
+		}
 	}
 	if err := ws.Write(ctx, paths.segmentTombstonesPath(id), tombBytes); err != nil {
 		return nil, fmt.Errorf("writeSegment: tombstones: %w", err)

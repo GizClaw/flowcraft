@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/sdk/retrieval"
+	"github.com/GizClaw/flowcraft/sdk/textsearch"
 	sdkworkspace "github.com/GizClaw/flowcraft/sdk/workspace"
 )
 
@@ -50,6 +51,7 @@ type Config struct {
 	lockHeartbeat    time.Duration
 	now              func() time.Time
 	autoCompact      bool
+	tokenizer        textsearch.Tokenizer
 }
 
 func defaultConfig() Config {
@@ -61,6 +63,11 @@ func defaultConfig() Config {
 		lockHeartbeat:    DefaultLockHeartbeat,
 		now:              time.Now,
 		autoCompact:      true,
+		// CJKTokenizer falls back to SimpleTokenizer for ASCII so
+		// it is a strict superset; choosing it as default avoids
+		// "search returned 0 hits in Chinese" footguns at zero
+		// cost on English-only corpora.
+		tokenizer: &textsearch.CJKTokenizer{},
 	}
 }
 
@@ -126,6 +133,19 @@ func WithClock(now func() time.Time) Option {
 // Default is true. Disable for tests that want to assert raw
 // segment layout without compaction reshuffling it.
 func WithAutoCompact(on bool) Option { return func(c *Config) { c.autoCompact = on } }
+
+// WithTokenizer overrides the BM25 tokenizer used for query parsing
+// and segment-local corpus rebuild. Both sides MUST use the same
+// tokenizer instance or query tokens won't match the indexed
+// corpus; passing a single Tokenizer for both is the only supported
+// configuration. Default is [textsearch.CJKTokenizer].
+func WithTokenizer(t textsearch.Tokenizer) Option {
+	return func(c *Config) {
+		if t != nil {
+			c.tokenizer = t
+		}
+	}
+}
 
 // Index is the [retrieval.Index] backed by a [sdkworkspace.Workspace].
 //
