@@ -8,7 +8,7 @@ SHELL := /bin/bash
 # sdk + sdkx + voice are the tightly-coupled core that needs atomic
 # in-tree edits (sdkx imports sdk packages that may not yet exist in
 # any released sdk version; voice depends on the same sdk source).
-MODULES_WORK := sdk sdkx vessel voice cmd/vesseld tests/quality/vessel
+MODULES_WORK := sdk sdkx vessel voice cmd/vesseld
 
 # Modules intentionally outside go.work — they pin sdk/sdkx via go.mod
 # require directives and run with GOWORK=off so the pin is honoured.
@@ -32,7 +32,7 @@ MODULES_WORK := sdk sdkx vessel voice cmd/vesseld tests/quality/vessel
 #    binary. Tagged with `//go:build e2e` so `make test`'s default
 #    sweep is just a compile check; the credentialed / build-tagged
 #    lane runs via `make test-e2e`.
-MODULES_OFFWORK := bench examples/voice-pipeline tests/conformance tests/quality/knowledge tests/e2e/vesseld
+MODULES_OFFWORK := bench examples/voice-pipeline tests/conformance tests/quality/knowledge tests/quality/vessel tests/e2e/vesseld tests/e2e/retrieval
 
 ALL_MODULES := $(MODULES_WORK) $(MODULES_OFFWORK)
 
@@ -110,6 +110,7 @@ ci: vet test
 .PHONY: test-e2e
 test-e2e:
 	@cd tests/e2e/vesseld && GOWORK=off go test -tags=e2e -count=1 ./...
+	@cd tests/e2e/retrieval && GOWORK=off go test -tags=e2e -count=1 -timeout 120s ./...
 
 .PHONY: ci-e2e
 ci-e2e: ci test-e2e

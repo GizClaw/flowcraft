@@ -3,13 +3,10 @@ module github.com/GizClaw/flowcraft/tests/quality/vessel
 go 1.25.0
 
 // In-process quality / integration tests for the vessel runtime.
-// Unlike tests/quality/knowledge — which pins released sdk/sdkx
-// because it asserts user-observable retrieval quality — this
-// module exercises the unreleased vessel source tree directly.
-// Once vessel ships v0.1.0 we will switch to a pinned require
-// + manual bump cadence; until then this module is consumed
-// through go.work and never via `go mod tidy` against released
-// tags.
+// Pinned to vessel/v0.1.0-rc.* + a released sdk tag so the suite
+// runs against the same bytes consumers would `go get`. Lives
+// outside go.work and is invoked with GOWORK=off — see Makefile
+// MODULES_OFFWORK + the `make test` target.
 
 require (
 	github.com/GizClaw/flowcraft/sdk v0.2.7
