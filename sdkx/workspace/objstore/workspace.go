@@ -40,6 +40,34 @@ type objectWorkspace struct {
 	prefix string
 }
 
+// Capabilities reports the conservative envelope for an object-store
+// backed Workspace:
+//
+//   - AtomicRename is false because [Rename] is implemented as
+//     copy + delete; a crash between the two leaves both objects
+//     visible. Adapters that rely on atomic manifest swaps (LSM-style
+//     retrieval indexes, Memory-Tool checkpoints) MUST pick a
+//     different Workspace implementation when running on this one.
+//   - ReadAfterWrite is false because many object stores still expose
+//     eventual list / listing inconsistency under high churn even
+//     when single-key Get is strongly consistent. Callers that know
+//     their concrete store offers strong RaW (e.g. S3 since 2020)
+//     can wrap this Workspace and override with a tighter Capabilities
+//     reporter.
+//   - DurableOnWrite is true because Put returns only after the
+//     object is committed to the store.
+//   - Distributed is true because object stores are concurrent-access
+//     by design; multiple processes / hosts may share the same
+//     bucket and prefix.
+func (w *objectWorkspace) Capabilities() workspace.Capabilities {
+	return workspace.Capabilities{
+		AtomicRename:   false,
+		ReadAfterWrite: false,
+		DurableOnWrite: true,
+		Distributed:    true,
+	}
+}
+
 func (w *objectWorkspace) Read(ctx context.Context, path string) ([]byte, error) {
 	key, err := w.resolve(path)
 	if err != nil {
