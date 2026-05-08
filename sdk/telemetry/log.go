@@ -18,6 +18,9 @@ type logOptions struct {
 	processors     []sdklog.Processor
 	serviceName    string
 	serviceVersion string
+
+	// optErr — see options.optErr in trace.go.
+	optErr error
 }
 
 // LogOption configures InitLog behaviour.
@@ -70,6 +73,9 @@ func InitLog(ctx context.Context, opts ...LogOption) (func(context.Context) erro
 	}
 	for _, fn := range opts {
 		fn(o)
+	}
+	if o.optErr != nil {
+		return nil, o.optErr
 	}
 
 	res, err := buildResource(ctx, o.serviceName, o.serviceVersion)
