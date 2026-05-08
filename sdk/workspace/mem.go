@@ -228,6 +228,19 @@ func (m *MemWorkspace) Stat(_ context.Context, path string) (fs.FileInfo, error)
 	return nil, fmt.Errorf("%w: %s", ErrNotFound, path)
 }
 
+// Capabilities reports MemWorkspace's storage characteristics:
+// in-memory map under a single mutex, so writes are immediately
+// observable, Rename is atomic, but nothing reaches stable storage
+// and the workspace is single-process by construction.
+func (m *MemWorkspace) Capabilities() Capabilities {
+	return Capabilities{
+		AtomicRename:   true,
+		ReadAfterWrite: true,
+		DurableOnWrite: false,
+		Distributed:    false,
+	}
+}
+
 // MustWrite panics on error — intended for tests.
 func (m *MemWorkspace) MustWrite(path string, data []byte) {
 	if err := m.Write(context.Background(), path, data); err != nil {

@@ -38,6 +38,21 @@ func NewLocalWorkspace(root string) (*LocalWorkspace, error) {
 // Root returns the absolute path of the workspace root.
 func (w *LocalWorkspace) Root() string { return w.root }
 
+// Capabilities reports LocalWorkspace's storage characteristics:
+// backed by the host filesystem, so Rename is atomic on the same
+// device, writes are read-after-write consistent, and durability
+// matches the underlying filesystem's default flush behaviour.
+// Distributed is false because LocalWorkspace assumes exclusive
+// access to its directory tree.
+func (w *LocalWorkspace) Capabilities() Capabilities {
+	return Capabilities{
+		AtomicRename:   true,
+		ReadAfterWrite: true,
+		DurableOnWrite: true,
+		Distributed:    false,
+	}
+}
+
 func (w *LocalWorkspace) Read(_ context.Context, path string) ([]byte, error) {
 	full, err := w.resolve(path)
 	if err != nil {
