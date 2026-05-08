@@ -9,8 +9,26 @@
 // rename and the client (this package) executes them against a
 // sandboxed file store, then returns the result back to the model.
 // All paths the model produces are required to begin with the
-// "/memories" prefix; this package strips that prefix and routes
-// the operation against the workspace root.
+// "/memories" prefix.
+//
+// # Path layout inside the workspace
+//
+// The "memories" segment is *preserved* when forwarding to the
+// underlying [workspace.Workspace]: the model's "/memories/foo.md"
+// becomes the workspace-relative path "memories/foo.md". The Memory
+// Tool therefore lives in a dedicated subtree at
+// <workspace>/memories/, peer to the other workspace consumers:
+//
+//	<workspace>/
+//	├── memories/   <-- written by Memory Tool
+//	├── recall/     <-- managed by recall.Service (when fs-backed)
+//	├── knowledge/  <-- managed by knowledge.Service (when fs-backed)
+//	└── history/    <-- managed by history.Coordinator
+//
+// This isolation is what lets a single Workspace be shared across
+// every memory subsystem without their writes colliding. Hosts can
+// optionally wrap the workspace with [workspace.NewScopedWorkspace]
+// to enforce the boundary defensively.
 //
 // # Why sdkx
 //

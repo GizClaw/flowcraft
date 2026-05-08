@@ -56,12 +56,22 @@ func TestPathPrefixEnforced(t *testing.T) {
 }
 
 func TestCreateAndView(t *testing.T) {
-	tool, _ := newTool(t)
+	tool, ws := newTool(t)
 	exec(t, tool, map[string]any{
 		"command":   "create",
 		"path":      "/memories/notes/a.txt",
 		"file_text": "hello\nworld\n",
 	})
+
+	// Verify the write landed under memories/ (not at workspace root)
+	// so the Memory Tool subtree coexists with recall/knowledge/...
+	data, err := ws.Read(context.Background(), "memories/notes/a.txt")
+	if err != nil {
+		t.Fatalf("expected file at memories/notes/a.txt: %v", err)
+	}
+	if string(data) != "hello\nworld\n" {
+		t.Errorf("workspace content = %q", data)
+	}
 
 	out := exec(t, tool, map[string]any{
 		"command": "view",
@@ -69,6 +79,44 @@ func TestCreateAndView(t *testing.T) {
 	})
 	if !strings.Contains(out, "hello") || !strings.Contains(out, "world") {
 		t.Errorf("view output missing content: %s", out)
+	}
+}
+
+func TestSubtreeIsolation(t *testing.T) {
+	tool, ws := newTool(t)
+
+	// Pre-seed peer subtrees that another subsystem (recall, etc.)
+	// would own; the Memory Tool must not see or touch them.
+	if err := ws.Write(context.Background(), "recall/facts.json", []byte(`{}`)); err != nil {
+		t.Fatal(err)
+	}
+	if err := ws.Write(context.Background(), "knowledge/chunks.bin", []byte("x")); err != nil {
+		t.Fatal(err)
+	}
+
+	exec(t, tool, map[string]any{"command": "create", "path": "/memories/note.md", "file_text": "hi"})
+
+	out := exec(t, tool, map[string]any{"command": "view", "path": "/memories"})
+	if strings.Contains(out, "recall") || strings.Contains(out, "knowledge") {
+		t.Errorf("memory view leaked sibling subtree: %s", out)
+	}
+	if !strings.Contains(out, "note.md") {
+		t.Errorf("memory view missing own file: %s", out)
+	}
+
+	// Peer subtree must remain untouched.
+	if exists, _ := ws.Exists(context.Background(), "recall/facts.json"); !exists {
+		t.Error("peer subtree recall/facts.json was disturbed")
+	}
+}
+
+func TestViewMemoriesRoot(t *testing.T) {
+	tool, _ := newTool(t)
+	// Empty memories/ root should still be viewable; List on a
+	// non-existent dir is tolerated and returns empty entries.
+	out := exec(t, tool, map[string]any{"command": "view", "path": "/memories"})
+	if !strings.Contains(out, `"entries":[]`) {
+		t.Errorf("empty memories root view = %s", out)
 	}
 }
 

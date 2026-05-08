@@ -3,6 +3,7 @@ package memory
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -132,47 +133,63 @@ func (t *Tool) Execute(ctx context.Context, arguments string) (string, error) {
 	}
 }
 
-// stripPrefix validates and strips PathPrefix, returning the
-// workspace-relative path. An empty result is the workspace root.
-func stripPrefix(p string) (string, error) {
+// toWorkspacePath validates the LLM-emitted path and returns the
+// equivalent workspace-relative path. The "memories" segment is
+// preserved so the tool stays sandboxed inside <workspace>/memories/,
+// peer to other workspace consumers (recall/, knowledge/, history/).
+//
+// Examples (with default PathPrefix "/memories"):
+//
+//	"/memories"            -> "memories"          (the memories root)
+//	"/memories/notes.md"   -> "memories/notes.md"
+//	"/memories/sub/a.txt"  -> "memories/sub/a.txt"
+//	"/etc/passwd"          -> error (missing prefix)
+//	"/memories/../escape"  -> error (traversal denied)
+func toWorkspacePath(p string) (string, error) {
 	if p == "" {
 		return "", errdefs.Validationf("memory: path is required")
 	}
-	if !strings.HasPrefix(p, PathPrefix) {
+	if p != PathPrefix && !strings.HasPrefix(p, PathPrefix+"/") {
 		return "", errdefs.Validationf("memory: path %q must begin with %s", p, PathPrefix)
 	}
-	rel := strings.TrimPrefix(p, PathPrefix)
-	rel = strings.TrimPrefix(rel, "/")
+	rel := strings.TrimPrefix(p, "/")
 	if strings.Contains(rel, "..") {
 		return "", errdefs.Validationf("memory: path traversal denied")
 	}
 	return rel, nil
 }
 
+// memoriesRoot is the workspace-relative path to the memories
+// subtree (i.e. PathPrefix without the leading slash).
+var memoriesRoot = strings.TrimPrefix(PathPrefix, "/")
+
 func (t *Tool) view(ctx context.Context, a args) (string, error) {
-	rel, err := stripPrefix(a.Path)
+	rel, err := toWorkspacePath(a.Path)
 	if err != nil {
 		return "", err
 	}
 
-	// Empty rel == list workspace root; otherwise probe Stat to
-	// distinguish file from directory.
-	if rel == "" {
-		return t.viewDir(ctx, "")
+	// rel == memoriesRoot means "list /memories". Probe Stat for
+	// anything deeper to distinguish file from directory. If the
+	// memories root has never been written to, Stat fails with
+	// NotFound — return an empty directory listing instead so the
+	// LLM can bootstrap.
+	if rel == memoriesRoot {
+		return t.viewDir(ctx, rel, true)
 	}
 	info, err := t.ws.Stat(ctx, rel)
 	if err != nil {
 		return "", fmt.Errorf("memory.view: %w", err)
 	}
 	if info.IsDir() {
-		return t.viewDir(ctx, rel)
+		return t.viewDir(ctx, rel, false)
 	}
 	return t.viewFile(ctx, rel, a.ViewRange)
 }
 
-func (t *Tool) viewDir(ctx context.Context, rel string) (string, error) {
+func (t *Tool) viewDir(ctx context.Context, rel string, tolerateMissing bool) (string, error) {
 	entries, err := t.ws.List(ctx, rel)
-	if err != nil {
+	if err != nil && !(tolerateMissing && errors.Is(err, workspace.ErrNotFound)) {
 		return "", fmt.Errorf("memory.view: %w", err)
 	}
 	names := make([]string, 0, len(entries))
@@ -185,15 +202,8 @@ func (t *Tool) viewDir(ctx context.Context, rel string) (string, error) {
 	}
 	sort.Strings(names)
 
-	display := PathPrefix + "/" + rel
-	display = strings.TrimSuffix(display, "/")
-	if rel == "" {
-		display = PathPrefix + "/"
-	} else {
-		display += "/"
-	}
 	out := map[string]any{
-		"path":    display,
+		"path":    "/" + rel + "/",
 		"entries": names,
 	}
 	return marshal(out), nil
@@ -230,7 +240,7 @@ func (t *Tool) viewFile(ctx context.Context, rel string, viewRange []int) (strin
 		fmt.Fprintf(&b, "%6d\t%s\n", i+1, lines[i])
 	}
 	out := map[string]any{
-		"path":      PathPrefix + "/" + rel,
+		"path":      "/" + rel,
 		"content":   b.String(),
 		"truncated": truncated,
 	}
@@ -238,12 +248,12 @@ func (t *Tool) viewFile(ctx context.Context, rel string, viewRange []int) (strin
 }
 
 func (t *Tool) create(ctx context.Context, a args) (string, error) {
-	rel, err := stripPrefix(a.Path)
+	rel, err := toWorkspacePath(a.Path)
 	if err != nil {
 		return "", err
 	}
-	if rel == "" {
-		return "", errdefs.Validationf("memory.create: cannot create at root")
+	if rel == memoriesRoot {
+		return "", errdefs.Validationf("memory.create: cannot create at %s", PathPrefix)
 	}
 	if err := t.ws.Write(ctx, rel, []byte(a.FileText)); err != nil {
 		return "", fmt.Errorf("memory.create: %w", err)
@@ -255,7 +265,7 @@ func (t *Tool) create(ctx context.Context, a args) (string, error) {
 }
 
 func (t *Tool) strReplace(ctx context.Context, a args) (string, error) {
-	rel, err := stripPrefix(a.Path)
+	rel, err := toWorkspacePath(a.Path)
 	if err != nil {
 		return "", err
 	}
@@ -282,7 +292,7 @@ func (t *Tool) strReplace(ctx context.Context, a args) (string, error) {
 }
 
 func (t *Tool) insert(ctx context.Context, a args) (string, error) {
-	rel, err := stripPrefix(a.Path)
+	rel, err := toWorkspacePath(a.Path)
 	if err != nil {
 		return "", err
 	}
@@ -314,12 +324,12 @@ func (t *Tool) insert(ctx context.Context, a args) (string, error) {
 }
 
 func (t *Tool) del(ctx context.Context, a args) (string, error) {
-	rel, err := stripPrefix(a.Path)
+	rel, err := toWorkspacePath(a.Path)
 	if err != nil {
 		return "", err
 	}
-	if rel == "" {
-		return "", errdefs.Validationf("memory.delete: refusing to delete root")
+	if rel == memoriesRoot {
+		return "", errdefs.Validationf("memory.delete: refusing to delete %s root", PathPrefix)
 	}
 	info, err := t.ws.Stat(ctx, rel)
 	if err != nil {
@@ -338,16 +348,16 @@ func (t *Tool) del(ctx context.Context, a args) (string, error) {
 }
 
 func (t *Tool) rename(ctx context.Context, a args) (string, error) {
-	src, err := stripPrefix(a.OldPath)
+	src, err := toWorkspacePath(a.OldPath)
 	if err != nil {
 		return "", fmt.Errorf("memory.rename old_path: %w", err)
 	}
-	dst, err := stripPrefix(a.NewPath)
+	dst, err := toWorkspacePath(a.NewPath)
 	if err != nil {
 		return "", fmt.Errorf("memory.rename new_path: %w", err)
 	}
-	if src == "" || dst == "" {
-		return "", errdefs.Validationf("memory.rename: cannot rename root")
+	if src == memoriesRoot || dst == memoriesRoot {
+		return "", errdefs.Validationf("memory.rename: cannot rename %s root", PathPrefix)
 	}
 	if err := t.ws.Rename(ctx, src, dst); err != nil {
 		return "", fmt.Errorf("memory.rename: %w", err)
