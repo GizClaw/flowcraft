@@ -1,6 +1,7 @@
 package workspace
 
 import (
+	"context"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -38,6 +39,26 @@ const (
 	// lockfile mtime. Stale lockfiles older than 3× this value are
 	// considered abandoned and overridden on Open.
 	DefaultLockHeartbeat = 5 * time.Second
+
+	// DefaultCompactionInterval is the period of the background
+	// size-tiered compactor's wake-up tick. Flushes also poke the
+	// compactor inline so the worst-case lag between a flush
+	// crossing a merge threshold and the merge starting is min(
+	// DefaultCompactionInterval, one tick after that flush).
+	DefaultCompactionInterval = 5 * time.Second
+
+	// DefaultCompactionMinSegments is the smallest number of
+	// segments in one size bucket that triggers a merge. Picking
+	// 4 follows the LSM literature's "amplification vs read-side
+	// reader fan-out" sweet spot for small indices; large
+	// deployments may bump this.
+	DefaultCompactionMinSegments = 4
+
+	// DefaultCompactionMaxSize caps the per-segment size at which
+	// further compaction stops. Beyond this, merging would produce
+	// a single huge segment whose write amplification dominates
+	// the gain in read fan-out.
+	DefaultCompactionMaxSize = 256 * 1024 * 1024 // 256 MiB
 )
 
 // Config bundles the resolved configuration of an [Index]. It is
@@ -52,6 +73,10 @@ type Config struct {
 	now              func() time.Time
 	autoCompact      bool
 	tokenizer        textsearch.Tokenizer
+
+	compactInterval time.Duration
+	compactMin      int
+	compactMaxSize  int64
 }
 
 func defaultConfig() Config {
@@ -68,6 +93,10 @@ func defaultConfig() Config {
 		// "search returned 0 hits in Chinese" footguns at zero
 		// cost on English-only corpora.
 		tokenizer: &textsearch.CJKTokenizer{},
+
+		compactInterval: DefaultCompactionInterval,
+		compactMin:      DefaultCompactionMinSegments,
+		compactMaxSize:  DefaultCompactionMaxSize,
 	}
 }
 
@@ -130,9 +159,46 @@ func WithClock(now func() time.Time) Option {
 }
 
 // WithAutoCompact toggles the background size-tiered compactor.
-// Default is true. Disable for tests that want to assert raw
-// segment layout without compaction reshuffling it.
+// Default is true. With auto-compact disabled callers MUST drive
+// merges themselves via [Index.Compact] or segment counts will
+// grow unbounded.
 func WithAutoCompact(on bool) Option { return func(c *Config) { c.autoCompact = on } }
+
+// WithCompactionInterval overrides the background compactor's
+// wake-up tick. Flushes also poke the compactor inline, so this
+// only bounds worst-case lag for namespaces that have stopped
+// receiving writes.
+func WithCompactionInterval(d time.Duration) Option {
+	return func(c *Config) {
+		if d > 0 {
+			c.compactInterval = d
+		}
+	}
+}
+
+// WithCompactionMinSegments sets the per-bucket segment count
+// that triggers a merge. Lower values amplify writes; higher
+// values amplify reads (because more segments must be opened per
+// Search). Default 4 is the LSM literature's typical sweet spot.
+func WithCompactionMinSegments(n int) Option {
+	return func(c *Config) {
+		if n >= 2 {
+			c.compactMin = n
+		}
+	}
+}
+
+// WithCompactionMaxSize sets the per-segment byte budget at which
+// compaction stops. Segments that already exceed this are not
+// further merged; new segments produced by compaction inherit
+// roughly the sum of the merged inputs.
+func WithCompactionMaxSize(bytes int64) Option {
+	return func(c *Config) {
+		if bytes > 0 {
+			c.compactMaxSize = bytes
+		}
+	}
+}
 
 // WithTokenizer overrides the BM25 tokenizer used for query parsing
 // and segment-local corpus rebuild. Both sides MUST use the same
@@ -164,6 +230,21 @@ type Index struct {
 	namespaces map[string]*namespaceState
 
 	closed atomic.Bool
+
+	// compactWake is buffered (cap 1) so flushLocked can post a
+	// non-blocking "wake up, segments may need compaction" signal
+	// without serialising on the worker loop.
+	compactWake chan struct{}
+
+	// compactDone closes when the worker goroutine exits. Close()
+	// waits on it so callers see a clean shutdown — no orphaned
+	// background work after the public Close returns.
+	compactDone chan struct{}
+
+	// compactCancel cancels the worker's root context so periodic
+	// I/O (List, Read, Write, Rename, RemoveAll) returns promptly
+	// on shutdown rather than hanging until the next manifest swap.
+	compactCancel context.CancelFunc
 }
 
 // namespaceState carries the live state of one namespace. Held by
@@ -176,6 +257,14 @@ type namespaceState struct {
 	// rwMu serializes writes within this namespace and lets reads
 	// run concurrently. Manifest swaps acquire the write lock.
 	rwMu sync.RWMutex
+
+	// compactMu serialises compaction tasks within this namespace.
+	// Held for the entire compaction (read sources -> write dest
+	// -> manifest swap -> retire). Held SEPARATELY from rwMu so
+	// reading source segments and writing the destination segment
+	// do not block writers; only the brief manifest swap takes
+	// rwMu.
+	compactMu sync.Mutex
 
 	// manifest is the latest committed snapshot. Read under rwMu.
 	manifest *manifest
@@ -209,11 +298,23 @@ func New(ws sdkworkspace.Workspace, opts ...Option) (*Index, error) {
 			o(&cfg)
 		}
 	}
-	return &Index{
-		ws:         ws,
-		cfg:        cfg,
-		namespaces: make(map[string]*namespaceState),
-	}, nil
+	idx := &Index{
+		ws:          ws,
+		cfg:         cfg,
+		namespaces:  make(map[string]*namespaceState),
+		compactWake: make(chan struct{}, 1),
+		compactDone: make(chan struct{}),
+	}
+	if cfg.autoCompact {
+		ctx, cancel := context.WithCancel(context.Background())
+		idx.compactCancel = cancel
+		go idx.compactionLoop(ctx)
+	} else {
+		// Even with autoCompact off we close compactDone so Close
+		// can uniformly block on it without conditional plumbing.
+		close(idx.compactDone)
+	}
+	return idx, nil
 }
 
 // Close releases per-namespace resources (WAL writers, lockfile
@@ -228,6 +329,13 @@ func (idx *Index) Close() error {
 	if !idx.closed.CompareAndSwap(false, true) {
 		return nil
 	}
+	if idx.compactCancel != nil {
+		idx.compactCancel()
+	}
+	// Wait for the compaction worker to drain so an in-flight
+	// merge cannot race a Close that is also closing WAL writers.
+	<-idx.compactDone
+
 	idx.nsMu.Lock()
 	states := make([]*namespaceState, 0, len(idx.namespaces))
 	for _, st := range idx.namespaces {
@@ -243,6 +351,20 @@ func (idx *Index) Close() error {
 		st.rwMu.Unlock()
 	}
 	return nil
+}
+
+// pokeCompactor schedules a non-blocking wake-up of the background
+// worker. Called by [flushLocked] when a fresh segment has just
+// landed and may push some bucket past the merge threshold.
+//
+// Safe to call when autoCompact is disabled — the channel is
+// drained by no one, but the cap-1 buffer absorbs the post and
+// the next poke replaces the queued one.
+func (idx *Index) pokeCompactor() {
+	select {
+	case idx.compactWake <- struct{}{}:
+	default:
+	}
 }
 
 // Capabilities advertises what this backend supports. The retrieval

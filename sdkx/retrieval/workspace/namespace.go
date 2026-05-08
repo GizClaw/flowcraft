@@ -143,6 +143,11 @@ func (idx *Index) flushLocked(ctx context.Context, st *namespaceState) error {
 	// FirstUnconsumedWALSeq, so correctness is preserved.
 	deleteStaleWALs(ctx, idx.ws, st.paths, newMan.FirstUnconsumedWALSeq)
 
+	// Wake the compactor: a fresh segment has just landed and the
+	// new total may have crossed a merge threshold. Posted async
+	// so the writer doesn't block on the worker's bookkeeping.
+	idx.pokeCompactor()
+
 	return nil
 }
 
