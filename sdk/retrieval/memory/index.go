@@ -3,7 +3,6 @@ package memory
 import (
 	"context"
 	"maps"
-	"math"
 	"sort"
 	"strings"
 	"sync"
@@ -11,6 +10,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/retrieval"
+	"github.com/GizClaw/flowcraft/sdk/retrieval/scoring"
 	"github.com/GizClaw/flowcraft/sdk/textsearch"
 )
 
@@ -185,7 +185,7 @@ func (m *Index) Search(_ context.Context, namespace string, req retrieval.Search
 		}
 		var cos float64
 		if hasVec && len(d.Vector) > 0 && len(d.Vector) == len(req.QueryVector) {
-			cos = cosineSim(d.Vector, req.QueryVector)
+			cos = scoring.CosineSim(d.Vector, req.QueryVector)
 		}
 		var sp float64
 		if hasSparse && len(d.SparseVector) > 0 {
@@ -440,20 +440,4 @@ func sparseDot(doc, q map[string]float32) float64 {
 		}
 	}
 	return s
-}
-
-func cosineSim(a, b []float32) float64 {
-	if len(a) != len(b) || len(a) == 0 {
-		return 0
-	}
-	var dot, na, nb float64
-	for i := range a {
-		dot += float64(a[i]) * float64(b[i])
-		na += float64(a[i]) * float64(a[i])
-		nb += float64(b[i]) * float64(b[i])
-	}
-	if na == 0 || nb == 0 {
-		return 0
-	}
-	return dot / (math.Sqrt(na) * math.Sqrt(nb))
 }
