@@ -12,6 +12,9 @@ type meterOptions struct {
 	export         sdkmetric.Exporter
 	serviceName    string
 	serviceVersion string
+
+	// optErr — see options.optErr in trace.go.
+	optErr error
 }
 
 // MeterOption configures InitMeter behaviour.
@@ -47,6 +50,9 @@ func InitMeter(ctx context.Context, opts ...MeterOption) (func(context.Context) 
 	}
 	for _, fn := range opts {
 		fn(o)
+	}
+	if o.optErr != nil {
+		return nil, o.optErr
 	}
 
 	res, err := buildResource(ctx, o.serviceName, o.serviceVersion)

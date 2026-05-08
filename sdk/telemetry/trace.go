@@ -12,6 +12,13 @@ type options struct {
 	export         sdktrace.SpanExporter
 	serviceName    string
 	serviceVersion string
+
+	// optErr captures errors raised by TraceOption implementations
+	// that build their own exporter (e.g. WithOTLPTraceExporter).
+	// The zero-arg option signature does not allow returning an
+	// error directly, so we stash it here and surface it from
+	// InitTracer.
+	optErr error
 }
 
 // TraceOption configures InitTracer behaviour.
@@ -48,6 +55,9 @@ func InitTracer(ctx context.Context, opts ...TraceOption) (func(context.Context)
 	}
 	for _, fn := range opts {
 		fn(o)
+	}
+	if o.optErr != nil {
+		return nil, o.optErr
 	}
 
 	userProvidedExporter := o.export != nil
