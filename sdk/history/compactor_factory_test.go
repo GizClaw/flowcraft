@@ -47,8 +47,8 @@ func TestNewCompacted_SmokeBoots(t *testing.T) {
 		t.Fatal("NewCompacted returned nil")
 	}
 	t.Cleanup(func() {
-		if c, ok := mem.(Closer); ok {
-			c.Close()
+		if c, ok := mem.(Coordinator); ok {
+			_ = c.Shutdown(context.Background())
 		}
 	})
 	ctx := context.Background()

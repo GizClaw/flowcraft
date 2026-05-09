@@ -34,14 +34,6 @@ type SearchRequest struct {
 	// stable; hybrid / fused scores live on backend-specific scales and
 	// are NOT subject to MinScore — use pipeline.ScoreThreshold there.
 	MinScore float64
-
-	// ReturnRaw asks the backend to expose per-lane raw hits via the legacy
-	// SearchResponse.RawByRetriever map.
-	//
-	// Deprecated: use Debug.IncludeLanes and read SearchResponse.Execution
-	// instead. This field will be removed in v0.3.0; backends populate
-	// RawByRetriever as a projection of Execution while it is still present.
-	ReturnRaw bool
 }
 
 // SearchResponse holds ranked hits.
@@ -52,13 +44,6 @@ type SearchResponse struct {
 	// Execution is the structured explanation of how this response was
 	// produced. Populated when SearchRequest.Debug requests it; otherwise nil.
 	Execution *SearchExecution
-
-	// RawByRetriever is the per-lane raw hits map produced by older callers.
-	//
-	// Deprecated: use Execution.Lanes instead. Backends keep this populated
-	// (as a projection of Execution) until v0.3.0, when this field will be
-	// removed.
-	RawByRetriever map[string][]Hit
 }
 
 // Hit is one ranked document.

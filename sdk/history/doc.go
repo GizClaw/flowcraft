@@ -41,30 +41,27 @@
 //
 // Two graph tools surface this package to LLMs: history_expand fetches
 // the verbatim messages behind a summary node, history_compact triggers
-// a manual compaction. Wire them through [RegisterTools] with a
-// [ToolDeps] whose Coordinator field is populated, so the tools observe
-// per-conversation serialization rather than mutating raw stores.
+// a manual compaction. The in-tree tool wrappers (taking a Coordinator
+// for per-conversation serialization) live in an adapter package
+// outside sdk; this package exposes only the underlying primitives.
 //
-// # Migration to v0.3.0
+// # v0.3.0 surface
 //
 // The v0.3 surface narrows on the [History] / [Coordinator] interfaces.
-// The following v0.2 entry points are now Deprecated and will be removed
-// in v0.3.0:
+// The following v0.2 entry points were removed in v0.3.0:
 //
-//   - [Closer] / [compactor].Close — replaced by
-//     [Coordinator.Shutdown] (context-aware, refuses late writes).
-//   - Top-level [Archive], [RecoverArchive], [LoadArchivedMessages],
-//     [LoadManifest], [SaveManifest] — replaced by [Coordinator] (which
-//     also auto-recovers in-flight archives at construction).
-//   - [SummaryCacheStore] — superseded by [SummaryStore] which the DAG
-//     already consumes; nothing in the package reads SummaryCacheStore.
-//
-// [ToolDeps] / [RegisterTools] stay supported in v0.3 — they now take
-// an optional Coordinator field that, when set, makes history_compact
-// route through the per-conversation queue.
-//
-// All deprecated symbols live in deprecated.go and continue to compile
-// against the v0.2 ABI for one release.
+//   - Closer / compactor.Close — replaced by [Coordinator.Shutdown]
+//     (context-aware, refuses late writes).
+//   - Top-level RecoverArchive, SaveManifest helpers — folded into the
+//     internal recoverArchiveImpl/saveManifestImpl helpers exercised by
+//     [Coordinator]. The exported [Archive], [LoadManifest] and
+//     [LoadArchivedMessages] survive for adapter packages that need
+//     direct archive access; [Coordinator] auto-recovers in-flight
+//     archives at construction.
+//   - SummaryCacheStore — superseded by [SummaryStore] which the DAG
+//     already consumes.
+//   - In-package ToolDeps / RegisterTools — moved out of sdk into the
+//     adapter layer.
 //
 // # Naming history
 //

@@ -1,0 +1,17 @@
+title: FlowCraft
+description: Go SDK for building AI agents with long-term memory, knowledge retrieval, and voice
+theme: jekyll-theme-cayman
+markdown: GFM
+
+plugins:
+  - jekyll-relative-links
+
+relative_links:
+  enabled: true
+  collections: true
+
+include:
+  - migrations
+
+exclude:
+  - roadmap.md

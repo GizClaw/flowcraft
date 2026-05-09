@@ -14,14 +14,12 @@
 //	condition.go   compiled boolean expressions for edge / skip conditions
 //	stream.go      StreamPublisher abstraction handed to nodes
 //	vars.go        well-known board variable keys
-//	deprecated.go  legacy aliases scheduled for removal in v0.3.0
 package graph
 
 import (
 	"context"
 
 	"github.com/GizClaw/flowcraft/sdk/engine"
-	"github.com/GizClaw/flowcraft/sdk/errdefs"
 )
 
 // ---------------------------------------------------------------------------
@@ -30,14 +28,6 @@ import (
 
 // END is a sentinel node ID that marks the end of execution.
 const END = "__end__"
-
-// ErrInterrupt is the legacy graceful-exit sentinel returned by nodes.
-//
-// Deprecated: prefer engine.Interrupted(engine.Interrupt{Cause: …}) which
-// carries a typed Cause and Detail; the executor classifies both via
-// errdefs.IsInterrupted so they share the resume code path. Scheduled for
-// removal in v0.3.0.
-var ErrInterrupt = errdefs.Interrupted(errdefs.New("execution interrupted"))
 
 // ---------------------------------------------------------------------------
 // Node interface family
@@ -87,19 +77,11 @@ type PortDeclarable interface {
 // Publisher is a thin wrapper around Host.Publish kept for backwards
 // compatibility and ergonomic event emission with (type, payload) pairs;
 // new code MAY call Host.Publish directly with a fully formed envelope.
-//
-// Stream is the legacy callback-based sink scheduled for removal in v0.3.0.
 type ExecutionContext struct {
 	Context   context.Context
 	Host      engine.Host
 	Publisher StreamPublisher
-	// Stream is the legacy callback-based sink for streaming deltas.
-	//
-	// Deprecated: use Publisher.Emit instead. The executor still populates
-	// this field via a shim that forwards to Publisher, so existing nodes
-	// continue to work; scheduled for removal in v0.3.0.
-	Stream StreamCallback
-	RunID  string
+	RunID     string
 }
 
 // ---------------------------------------------------------------------------

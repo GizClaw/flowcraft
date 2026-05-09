@@ -351,20 +351,8 @@ func (m *compactor) Shutdown(ctx context.Context) error {
 	}
 }
 
-// Close is the legacy v0.2.x entry point preserved for callers still on
-// the [Closer] sub-interface. It blocks until all queues drain.
-//
-// Deprecated: use [Coordinator.Shutdown] (with a context for bounded
-// waits). Will be removed in v0.3.0.
-func (m *compactor) Close() {
-	_ = m.Shutdown(context.Background())
-}
-
-// Compile-time guarantees.
-var (
-	_ Coordinator = (*compactor)(nil)
-	_ Closer      = (*compactor)(nil)
-)
+// Compile-time guarantee.
+var _ Coordinator = (*compactor)(nil)
 
 // enqueueAsync routes a fire-and-forget task (ingest) to the conv queue.
 // Returns ErrClosed if Shutdown has started in the meantime; never
@@ -469,7 +457,7 @@ func (m *compactor) runTask(convID string, task convTask) {
 			return
 		}
 		archiveCtx, cancelArchive := context.WithTimeout(context.Background(), defaultArchiveTimeout)
-		if _, err := internalArchive(archiveCtx, m.ws, m.store, m.prefix, convID, m.config.Archive); err != nil {
+		if _, err := Archive(archiveCtx, m.ws, m.store, m.prefix, convID, m.config.Archive); err != nil {
 			telemetry.Warn(archiveCtx, "history: async archive failed",
 				otellog.String(telemetry.AttrConversationID, convID),
 				otellog.String(telemetry.AttrErrorMessage, err.Error()))
@@ -478,7 +466,7 @@ func (m *compactor) runTask(convID string, task convTask) {
 
 	case taskArchive:
 		ctx, cancel := context.WithTimeout(context.Background(), defaultArchiveTimeout)
-		res, err := internalArchive(ctx, m.ws, m.store, m.prefix, convID, m.config.Archive)
+		res, err := Archive(ctx, m.ws, m.store, m.prefix, convID, m.config.Archive)
 		cancel()
 		task.replyArchive <- archiveReply{res: res, err: err}
 
@@ -589,14 +577,6 @@ func (m *compactor) kickoffStartupRecovery() {
 			m.mu.Unlock()
 		}
 	}()
-}
-
-// internalArchive is the package-private archive entry point used by the
-// coordinator. The exported [Archive] function in deprecated.go calls
-// through to this implementation; new code should prefer
-// [Coordinator.Archive].
-func internalArchive(ctx context.Context, ws workspace.Workspace, store Store, prefix, convID string, cfg ArchiveConfig) (ArchiveResult, error) {
-	return archiveImpl(ctx, ws, store, prefix, convID, cfg)
 }
 
 // CompactOption customizes a [History] built by [NewCompacted].

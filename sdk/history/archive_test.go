@@ -123,7 +123,7 @@ func TestRecoverArchive_NoIntent(t *testing.T) {
 	ctx := context.Background()
 
 	// No pending intent — should be a no-op.
-	if err := RecoverArchive(ctx, ws, store, "memory", "archive", "no-intent-conv"); err != nil {
+	if err := recoverArchiveImpl(ctx, ws, store, "memory", "archive", "no-intent-conv"); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -172,7 +172,7 @@ func TestRecoverArchive_GzipWrittenPhase(t *testing.T) {
 	_ = writeIntent(ctx, ws, "memory", "archive", convID, intent)
 
 	// Recovery should: update manifest, trim messages.
-	if err := RecoverArchive(ctx, ws, store, "memory", "archive", convID); err != nil {
+	if err := recoverArchiveImpl(ctx, ws, store, "memory", "archive", convID); err != nil {
 		t.Fatal(err)
 	}
 
@@ -221,7 +221,7 @@ func TestRecoverArchive_ManifestUpdatedPhase(t *testing.T) {
 	}
 	_ = writeIntent(ctx, ws, "memory", "archive", convID, intent)
 
-	if err := RecoverArchive(ctx, ws, store, "memory", "archive", convID); err != nil {
+	if err := recoverArchiveImpl(ctx, ws, store, "memory", "archive", convID); err != nil {
 		t.Fatal(err)
 	}
 
@@ -264,9 +264,9 @@ func TestArchive_IntentCleanup(t *testing.T) {
 	}
 }
 
-// TestSaveManifest_RoundTrip exercises the deprecated SaveManifest /
-// LoadManifest pair declared in deprecated.go: write a manifest, read it
-// back, and assert all fields survive the JSON round-trip.
+// TestSaveManifest_RoundTrip exercises the saveManifestImpl /
+// LoadManifest pair: write a manifest, read it back, and assert all
+// fields survive the JSON round-trip.
 func TestSaveManifest_RoundTrip(t *testing.T) {
 	ws, err := workspace.NewLocalWorkspace(t.TempDir())
 	if err != nil {
@@ -282,7 +282,7 @@ func TestSaveManifest_RoundTrip(t *testing.T) {
 			{File: "messages_10_24.jsonl.gz", StartSeq: 10, EndSeq: 24, Count: 15, CreatedAt: time.Now().UTC().Truncate(time.Second)},
 		},
 	}
-	if err := SaveManifest(ctx, ws, "memory", "archive", convID, in); err != nil {
+	if err := saveManifestImpl(ctx, ws, "memory", "archive", convID, in); err != nil {
 		t.Fatalf("SaveManifest: %v", err)
 	}
 

@@ -57,7 +57,7 @@ func ValidateInputsWithConfig(b *Board, node PortDeclarable, config map[string]a
 		if _, ok := b.GetVar(p.Name); ok {
 			continue
 		}
-		if (p.Name == VarMessages || p.Type == PortTypeMessages) && len(b.Channel(MainChannel)) > 0 {
+		if p.Type == PortTypeMessages && len(b.Channel(p.Name)) > 0 {
 			continue
 		}
 		if config != nil {

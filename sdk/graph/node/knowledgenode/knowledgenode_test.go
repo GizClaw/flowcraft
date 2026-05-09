@@ -75,7 +75,7 @@ func TestNode_SingleScope_PerDatasetStateKey(t *testing.T) {
 	n := knowledgenode.New("k", svc, knowledgenode.Config{
 		Scope: knowledge.ScopeSingleDataset,
 		Mode:  knowledge.ModeBM25,
-		Datasets: []knowledge.DatasetQuery{
+		Datasets: []knowledgenode.DatasetQuery{
 			{DatasetID: "docs", StateKey: "docsHits", TopK: 5},
 		},
 	})
@@ -159,6 +159,42 @@ func TestConfigFromMap_AllScopeAndDatasets(t *testing.T) {
 	}
 	if len(cfg.Datasets) != 1 || cfg.Datasets[0].DatasetID != "docs" || cfg.Datasets[0].TopK != 3 {
 		t.Fatalf("Datasets = %+v", cfg.Datasets)
+	}
+}
+
+func TestNode_CustomQueryKey(t *testing.T) {
+	svc := newLocalService(t)
+	if err := svc.PutDocument(context.Background(), "ds1", "a.md", "alpha banana"); err != nil {
+		t.Fatalf("put: %v", err)
+	}
+
+	n := knowledgenode.New("k", svc, knowledgenode.Config{
+		QueryKey: "search_text",
+		Datasets: []knowledgenode.DatasetQuery{{DatasetID: "ds1", TopK: 3}},
+	})
+
+	ports := n.InputPorts()
+	if len(ports) == 0 || ports[0].Name != "search_text" {
+		t.Fatalf("input port[0] = %+v, want name=search_text", ports[0])
+	}
+
+	ectx, board := newNodeBoardCtx()
+	board.SetVar("search_text", "alpha")
+
+	if err := n.ExecuteBoard(ectx, board); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	hits, _ := board.GetVar("hits")
+	h, ok := hits.([]knowledge.Hit)
+	if !ok || len(h) == 0 {
+		t.Fatalf("hits = %v, want non-empty []Hit", hits)
+	}
+}
+
+func TestConfigFromMap_QueryKey(t *testing.T) {
+	cfg := knowledgenode.ConfigFromMap(map[string]any{"query_key": "user_input"})
+	if cfg.QueryKey != "user_input" {
+		t.Fatalf("QueryKey = %q", cfg.QueryKey)
 	}
 }
 

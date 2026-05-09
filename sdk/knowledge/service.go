@@ -9,9 +9,9 @@ import (
 )
 
 // Service orchestrates document lifecycle, derived-data persistence and
-// search. All public Knowledge entry points (graph node, tools,
-// deprecated stores) route through Service so contract guarantees
-// (#1..#7 in doc.go) live in one place.
+// search. All public Knowledge entry points (graph node, tool
+// adapters) route through Service so contract guarantees live in one
+// place.
 type Service struct {
 	docs   DocumentRepo
 	chunks ChunkRepo
@@ -234,8 +234,7 @@ func (s *Service) DatasetLayer(ctx context.Context, datasetID string, layer Laye
 //
 // Validation (the only place these checks live, contract #2):
 //   - q.Layer defaults to LayerDetail when zero; rejected otherwise.
-//   - q.Mode  defaults to ModeBM25 when zero; ModeSemantic is normalised
-//     to ModeVector for backwards compatibility.
+//   - q.Mode  defaults to ModeBM25 when zero; rejected otherwise.
 //   - q.Scope=ScopeSingleDataset requires q.DatasetID to be non-empty.
 //
 // For ScopeAllDatasets the dataset list is resolved once via

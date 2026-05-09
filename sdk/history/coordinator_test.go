@@ -228,7 +228,7 @@ func TestCoordinator_LazyArchiveRecovery(t *testing.T) {
 
 	// First archive: completes normally so we have a manifest.
 	cfg := ArchiveConfig{ArchiveThreshold: 20, ArchiveBatchSize: 15}
-	if _, err := archiveImpl(ctx, ws, store, "memory", convID, cfg); err != nil {
+	if _, err := Archive(ctx, ws, store, "memory", convID, cfg); err != nil {
 		t.Fatal(err)
 	}
 

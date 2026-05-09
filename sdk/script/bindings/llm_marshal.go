@@ -211,9 +211,9 @@ func usageToMap(u model.TokenUsage) map[string]any {
 // (setChannel / appendChannel). The shape on the script side mirrors
 // what messageToMap / partToMap emit, so a script can round-trip:
 //
-//	var msgs = board.channel("main");
+//	var msgs = board.channel(board.MAIN_CHANNEL);
 //	msgs.push({ role: "user", parts: [{ type: "text", text: "go on" }] });
-//	board.setChannel("main", msgs);
+//	board.setChannel(board.MAIN_CHANNEL, msgs);
 //
 // Reverse marshalers are intentionally strict:
 //   - Unknown keys at any level are rejected with a path-prefixed error
@@ -254,7 +254,7 @@ var (
 // into a []model.Message ready for board.SetChannel.
 //
 // ctx labels the script entry point that triggered the call so that
-// errors point back to setChannel("main", …) rather than just "msgs[1]".
+// errors point back to setChannel(name, …) rather than just "msgs[1]".
 func parseChannelMessages(raw any, ctx string) ([]model.Message, error) {
 	if raw == nil {
 		return nil, nil

@@ -69,27 +69,3 @@ type SearchDebug struct {
 	IncludeLanes  bool
 	IncludeStages bool
 }
-
-// ProjectRawByRetriever copies the lane hits from a SearchExecution into the
-// legacy RawByRetriever map shape used by SearchResponse before v0.3.0.
-//
-// Returns nil when execution is nil or carries no lanes; the caller may use
-// this as the value for the deprecated SearchResponse.RawByRetriever field.
-func ProjectRawByRetriever(execution *SearchExecution) map[string][]Hit {
-	if execution == nil || len(execution.Lanes) == 0 {
-		return nil
-	}
-	out := make(map[string][]Hit, len(execution.Lanes))
-	for _, lane := range execution.Lanes {
-		if lane.Key == "" || len(lane.Hits) == 0 {
-			continue
-		}
-		cp := make([]Hit, len(lane.Hits))
-		copy(cp, lane.Hits)
-		out[string(lane.Key)] = cp
-	}
-	if len(out) == 0 {
-		return nil
-	}
-	return out
-}

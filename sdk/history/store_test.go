@@ -381,63 +381,6 @@ func TestFileStore_DeleteAndReuse(t *testing.T) {
 	}
 }
 
-// --- FileStore: deprecated SummaryCacheStore surface ---
-
-func TestFileStore_SaveAndGetSummary(t *testing.T) {
-	ws := workspace.NewMemWorkspace()
-	store := NewFileStore(ws, "memory")
-	ctx := context.Background()
-
-	if err := store.SaveSummary(ctx, "conv-sum", "the summary text", 42); err != nil {
-		t.Fatalf("SaveSummary: %v", err)
-	}
-
-	text, count, err := store.GetSummary(ctx, "conv-sum")
-	if err != nil {
-		t.Fatalf("GetSummary: %v", err)
-	}
-	if text != "the summary text" {
-		t.Fatalf("text mismatch: got %q", text)
-	}
-	if count != 42 {
-		t.Fatalf("count mismatch: got %d", count)
-	}
-}
-
-func TestFileStore_GetSummary_Missing(t *testing.T) {
-	ws := workspace.NewMemWorkspace()
-	store := NewFileStore(ws, "memory")
-	ctx := context.Background()
-
-	text, count, err := store.GetSummary(ctx, "no-such-conv")
-	if err != nil {
-		t.Fatalf("GetSummary on missing should be (\"\",0,nil), got err=%v", err)
-	}
-	if text != "" || count != 0 {
-		t.Fatalf("expected zero values for missing conv, got %q,%d", text, count)
-	}
-}
-
-func TestFileStore_SaveSummary_OverwritesPrevious(t *testing.T) {
-	ws := workspace.NewMemWorkspace()
-	store := NewFileStore(ws, "memory")
-	ctx := context.Background()
-
-	if err := store.SaveSummary(ctx, "c", "first", 1); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.SaveSummary(ctx, "c", "second", 2); err != nil {
-		t.Fatal(err)
-	}
-	text, count, err := store.GetSummary(ctx, "c")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if text != "second" || count != 2 {
-		t.Fatalf("expected overwrite to win, got %q,%d", text, count)
-	}
-}
-
 // --- InMemoryStore: options + lifecycle ---
 
 func TestInMemoryStore_LenReflectsSaves(t *testing.T) {

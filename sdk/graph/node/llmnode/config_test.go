@@ -22,15 +22,14 @@ func mustConfigFromMap(t *testing.T, m map[string]any) Config {
 
 func TestConfigFromMap_Full(t *testing.T) {
 	m := map[string]any{
-		"system_prompt":  "You are helpful.",
-		"model":          "openai/gpt-4o",
-		"temperature":    0.7,
-		"max_tokens":     float64(1024),
-		"output_key":     "answer",
-		"messages_key":   "msgs",
-		"json_mode":      true,
-		"query_fallback": false,
-		"track_steps":    true,
+		"system_prompt":    "You are helpful.",
+		"model":            "openai/gpt-4o",
+		"temperature":      0.7,
+		"max_tokens":       float64(1024),
+		"output_key":       "answer",
+		"messages_channel": "msgs",
+		"json_mode":        true,
+		"track_steps":      true,
 	}
 	cfg := mustConfigFromMap(t, m)
 
@@ -49,8 +48,8 @@ func TestConfigFromMap_Full(t *testing.T) {
 	if cfg.OutputKey != "answer" {
 		t.Fatalf("OutputKey = %q", cfg.OutputKey)
 	}
-	if cfg.MessagesKey != "msgs" {
-		t.Fatalf("MessagesKey = %q", cfg.MessagesKey)
+	if cfg.MessagesChannel != "msgs" {
+		t.Fatalf("MessagesChannel = %q", cfg.MessagesChannel)
 	}
 	if !cfg.JSONMode {
 		t.Fatal("JSONMode should be true")
@@ -180,7 +179,7 @@ func TestBuildMessages_NoSystemDuplicate(t *testing.T) {
 		model.NewTextMessage(model.RoleUser, "hi"),
 	})
 
-	msgs := n.buildMessages(n.config, board, graph.MainChannel, graph.VarMessages)
+	msgs := n.buildMessages(n.config, board, graph.MainChannel)
 	systemCount := 0
 	for _, m := range msgs {
 		if m.Role == model.RoleSystem {
@@ -192,19 +191,6 @@ func TestBuildMessages_NoSystemDuplicate(t *testing.T) {
 	}
 }
 
-func TestBuildMessages_FallbackToVar(t *testing.T) {
-	n := New("n", nil, nil, Config{})
-	board := newTestBoard()
-	board.SetVar(graph.VarMessages, []model.Message{
-		model.NewTextMessage(model.RoleUser, "from var"),
-	})
-
-	msgs := n.buildMessages(n.config, board, "empty_channel", graph.VarMessages)
-	if len(msgs) != 1 || msgs[0].Content() != "from var" {
-		t.Fatalf("expected message from var, got %v", msgs)
-	}
-}
-
 func TestBuildMessages_SummaryIndexInjection(t *testing.T) {
 	board := newTestBoard()
 	board.SetChannel(graph.MainChannel, []model.Message{
@@ -213,7 +199,7 @@ func TestBuildMessages_SummaryIndexInjection(t *testing.T) {
 	board.SetVar(VarSummaryIndex, "## 摘要\n[s1] seq 0-10")
 
 	n := New("n", nil, nil, Config{SystemPrompt: "You are helpful."})
-	msgs := n.buildMessages(n.config, board, graph.MainChannel, graph.VarMessages)
+	msgs := n.buildMessages(n.config, board, graph.MainChannel)
 
 	if len(msgs) != 2 {
 		t.Fatalf("expected 2 messages, got %d", len(msgs))

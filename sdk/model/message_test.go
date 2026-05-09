@@ -175,3 +175,28 @@ func TestMarshalToolArgs_Error(t *testing.T) {
 		t.Fatal("MarshalToolArgs should return error for unsupported type")
 	}
 }
+
+func TestLastByRole(t *testing.T) {
+	msgs := []Message{
+		NewTextMessage(RoleUser, "u1"),
+		NewTextMessage(RoleAssistant, "a1"),
+		NewTextMessage(RoleUser, "u2"),
+		NewTextMessage(RoleAssistant, "a2"),
+	}
+
+	if m, ok := LastByRole(msgs, RoleUser); !ok || m.Content() != "u2" {
+		t.Fatalf("LastByRole(user) = (%q, %v), want (\"u2\", true)", m.Content(), ok)
+	}
+	if m, ok := LastByRole(msgs, RoleAssistant); !ok || m.Content() != "a2" {
+		t.Fatalf("LastByRole(assistant) = (%q, %v), want (\"a2\", true)", m.Content(), ok)
+	}
+	if _, ok := LastByRole(msgs, RoleSystem); ok {
+		t.Fatal("LastByRole(system) should report not-found on a transcript without system turns")
+	}
+	if _, ok := LastByRole(nil, RoleUser); ok {
+		t.Fatal("LastByRole on nil slice should report not-found")
+	}
+	if _, ok := LastByRole([]Message{}, RoleUser); ok {
+		t.Fatal("LastByRole on empty slice should report not-found")
+	}
+}

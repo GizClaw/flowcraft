@@ -1,15 +1,11 @@
 package llm
 
 import (
-	"context"
 	"sort"
 	"sync"
 	"time"
 
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
-	"github.com/GizClaw/flowcraft/sdk/telemetry"
-
-	otellog "go.opentelemetry.io/otel/log"
 )
 
 // ProviderFactory creates an LLM instance for the given model.
@@ -24,27 +20,8 @@ type ModelInfo struct {
 	Name     string `json:"name"`
 
 	// Spec carries the model-fixed property set (caps + defaults +
-	// limits). Replaces the old bare Caps field; see RegisterModels
-	// for the auto-promote that keeps Caps-only registrations working
-	// during the deprecation window.
+	// limits).
 	Spec ModelSpec `json:"spec,omitempty" yaml:"spec,omitempty"`
-
-	// Caps is a deprecated alias for Spec.Caps, kept until v0.3.0
-	// for backward compatibility with existing provider registrations.
-	// When both are non-zero, Spec.Caps wins; when only Caps is set,
-	// RegisterModels auto-promotes it into Spec.Caps so the rest of
-	// the system reads a unified Spec.
-	//
-	// JSON / YAML tags are intentionally `"-"` to remove the alias
-	// from serialized output: writers SHOULD use Spec.Caps.
-	// Deserializers reading legacy YAML that names `caps:` at the
-	// top level are expected to migrate the call site (set Spec.Caps
-	// before passing to RegisterModels) — see doc/sdk-llm-redesign.md
-	// §3.3 for the rationale.
-	//
-	// Deprecated: set ModelInfo.Spec.Caps directly. Scheduled for
-	// removal in v0.3.0.
-	Caps ModelCaps `json:"-" yaml:"-"`
 
 	// Deprecation, when non-zero, marks this catalog entry as a
 	// legacy model the provider has scheduled (or already executed)
@@ -166,54 +143,16 @@ func (r *ProviderRegistry) ListProviders() []string {
 	return names
 }
 
-// RegisterModels associates a list of models with a provider. As part
-// of registration, any ModelInfo that uses the deprecated Caps field
-// without filling Spec.Caps gets auto-promoted (Spec.Caps = Caps) so
-// downstream lookups always see the unified Spec form. When both
-// Spec.Caps and Caps are non-zero, Spec.Caps wins (the new field is
-// authoritative).
-//
-// The first time a provider registers any model that triggers the
-// auto-promote path, a single deprecation warning is emitted via
-// telemetry.Warn. Subsequent re-registrations of the same provider
-// stay silent — see deprecatedCapsWarned for the dedup state.
+// RegisterModels associates a list of models with a provider.
 func (r *ProviderRegistry) RegisterModels(provider string, models []ModelInfo) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	cp := make([]ModelInfo, len(models))
 	copy(cp, models)
-	usesLegacy := false
 	for i := range cp {
 		cp[i].Provider = provider
-		// Auto-promote deprecated Caps → Spec.Caps. Skip when Spec.Caps
-		// is already set (the caller migrated; respect their choice).
-		if cp[i].Spec.Caps.IsZero() && !cp[i].Caps.IsZero() {
-			cp[i].Spec.Caps = cp[i].Caps
-			usesLegacy = true
-		}
 	}
 	r.providerModels[provider] = cp
-	if usesLegacy {
-		warnLegacyModelInfoCaps(provider)
-	}
-}
-
-// deprecatedCapsWarned dedupes the legacy ModelInfo.Caps warning so
-// each provider triggers it at most once per process. Using a
-// dedicated sync.Map (instead of mu-guarded set) keeps RegisterModels
-// fast and lock-free for the dedup probe.
-var deprecatedCapsWarned sync.Map // map[string]struct{} keyed by provider
-
-func warnLegacyModelInfoCaps(provider string) {
-	if _, loaded := deprecatedCapsWarned.LoadOrStore(provider, struct{}{}); loaded {
-		return
-	}
-	// Background ctx is intentional — the warning belongs to the
-	// process startup path, not to any per-call ctx that might be
-	// cancelled. telemetry.Warn handles a nil exporter gracefully.
-	telemetry.Warn(context.Background(),
-		"llm: ModelInfo.Caps is deprecated; set ModelInfo.Spec.Caps directly (removal: v0.3.0)",
-		otellog.String("provider", provider))
 }
 
 // ListAllModels returns all registered models across all providers.

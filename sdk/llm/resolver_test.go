@@ -157,7 +157,8 @@ func (p *probeProviderLLM) GenerateStream(_ context.Context, _ []Message, _ ...G
 
 // captureGenOpts returns a factory that records the GenerateOption set
 // applied by the most recent Generate call into *into. Used by caps
-// tests to assert which user-supplied options survived CapsMiddleware.
+// tests to assert which user-supplied options survived the capsLLM
+// wrapper installed by WithCaps / WithPolicyCaps.
 func captureGenOpts(reg *ProviderRegistry, provider string, into *GenerateOptions) {
 	reg.Register(provider, func(model string, _ map[string]any) (LLM, error) {
 		return &probeProviderLLM{model: model, onGen: func(opts []GenerateOption) {
@@ -391,14 +392,14 @@ func TestResolver_NoModelNoFallback(t *testing.T) {
 	}
 }
 
-func TestResolver_CapsMiddleware_Integration(t *testing.T) {
+func TestResolver_Caps_Integration(t *testing.T) {
 	store := newResolverMockStore()
 	reg := NewProviderRegistry()
 	reg.Register("test-prov", func(model string, config map[string]any) (LLM, error) {
 		return &resolverMockLLM{model: model}, nil
 	})
 	reg.RegisterModels("test-prov", []ModelInfo{
-		{Label: "Test Model", Name: "capped-model", Caps: DisabledCaps(CapTemperature)},
+		{Label: "Test Model", Name: "capped-model", Spec: ModelSpec{Caps: DisabledCaps(CapTemperature)}},
 	})
 	store.configs["test-prov"] = &ProviderConfig{Provider: "test-prov", Config: map[string]any{"api_key": "k"}}
 
@@ -517,7 +518,7 @@ func TestResolver_Caps_LayeredMerge(t *testing.T) {
 
 	// Layer 1: registry catalog disables temperature for "reason-model".
 	reg.RegisterModels("p", []ModelInfo{
-		{Name: "reason-model", Caps: DisabledCaps(CapTemperature)},
+		{Name: "reason-model", Spec: ModelSpec{Caps: DisabledCaps(CapTemperature)}},
 	})
 	// Layer 2: ProviderConfig.SpecOverride disables JSON mode for everything under p.
 	store.providers["p"] = &ProviderConfig{
@@ -551,26 +552,6 @@ func TestResolver_Caps_LayeredMerge(t *testing.T) {
 	// disabled at the provider layer, no schema fallback survives.
 	if capturedOpts.JSONSchema != nil {
 		t.Errorf("json_schema should be downgraded then cleared, got %v", capturedOpts.JSONSchema)
-	}
-}
-
-func TestResolver_Caps_ExtraFromOption(t *testing.T) {
-	store := newLayeredMockStore()
-	reg := NewProviderRegistry()
-
-	var capturedOpts GenerateOptions
-	captureGenOpts(reg, "p", &capturedOpts)
-	store.providers["p"] = &ProviderConfig{Provider: "p", Config: map[string]any{"api_key": "k"}}
-
-	r := newResolverWithRegistry(store, reg, WithExtraCaps(DisabledCaps(CapTemperature)))
-	llm, err := r.Resolve(context.Background(), "p/m")
-	if err != nil {
-		t.Fatal(err)
-	}
-	temp := 0.7
-	_, _, _ = llm.Generate(context.Background(), nil, WithTemperature(temp))
-	if capturedOpts.Temperature != nil {
-		t.Fatalf("WithExtraCaps should disable temperature, got %v", *capturedOpts.Temperature)
 	}
 }
 

@@ -3,9 +3,8 @@ package graph
 // StreamPublisher emits in-flight node events (token / tool_call / tool_result / ...).
 //
 // Nodes obtain a publisher from ExecutionContext.Publisher and call Emit to
-// push deltas. The executor decides where the events ultimately go
-// (engine.Host.Publisher, legacy StreamCallback, both) so nodes never see
-// those concerns.
+// push deltas. The executor decides where the events ultimately go (typically
+// engine.Host.Publish via the run's host) so nodes never see that concern.
 //
 // Emit is fire-and-forget: implementations must not block the caller and must
 // not return errors. Implementations are expected to be safe for concurrent

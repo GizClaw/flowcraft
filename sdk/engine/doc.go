@@ -115,8 +115,6 @@
 //   - Strategy / Runnable / Disposition / ResumeToken — those are
 //     agent ↔ engine adapter contracts and live in sdk/agent and
 //     sdk/agent/strategy.
-//   - VarMessages / VarQuery / VarAnswer — chat conventions that
-//     belong to sdk/agent.
 //   - Engine kind enumeration — engine does not reserve a "type"
 //     namespace or list which engines exist; routing on subject is
 //     the only cross-engine identification mechanism.

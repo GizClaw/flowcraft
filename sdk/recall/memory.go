@@ -305,7 +305,8 @@ func WithSoftMergeThreshold(cosineMin float64, topK int) Option {
 
 // WithJobQueue plugs in a durable [JobQueue] for SaveAsync. Defaults to
 // an in-memory queue suitable for tests; production deployments should
-// use [sdkx/recall/jobqueue/sqlite] or similar.
+// supply a persistent adapter (e.g. a SQLite-backed queue) from an
+// external package.
 func WithJobQueue(q JobQueue) Option { return func(c *config) { c.jobQueue = q } }
 
 // WithAsyncWorkers sets the number of background workers draining the

@@ -19,8 +19,8 @@ func (e *httpErr) HTTPStatusCode() int { return e.code }
 
 // TestClassifyProvider pins the structured-error / keyword / regex
 // dispatcher. Behaviour change here means every dependent (sdk/llm
-// fallback, sdkx/embedding, future sdkx/rerank) silently shifts how it
-// classifies the same upstream error.
+// fallback plus external embedding / rerank adapters) silently shifts
+// how it classifies the same upstream error.
 func TestClassifyProvider(t *testing.T) {
 	cases := []struct {
 		name string

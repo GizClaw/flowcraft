@@ -3,6 +3,7 @@ package bindings
 import (
 	"context"
 
+	"github.com/GizClaw/flowcraft/sdk/engine"
 	"github.com/GizClaw/flowcraft/sdk/model"
 )
 
@@ -43,12 +44,20 @@ type Board interface {
 //   - setChannel(name, msgs)     → throws on validation errors
 //   - appendChannel(name, msg)   → throws on validation errors
 //
+// Constants:
+//   - MAIN_CHANNEL — the engine's reserved default channel name; scripts
+//     should reference this rather than hard-coding the literal string
+//     so future renames do not break existing scripts.
+//
 // All channel APIs require an explicit name — scripts must opt into
-// MainChannel by passing "" themselves. This avoids accidentally
-// stitching unrelated conversations together via an implicit default.
+// MainChannel by passing board.MAIN_CHANNEL themselves. This avoids
+// accidentally stitching unrelated conversations together via an
+// implicit default.
 func NewBoardBridge(board Board) BindingFunc {
 	return func(_ context.Context) (string, any) {
 		return "board", map[string]any{
+			"MAIN_CHANNEL": engine.MainChannel,
+
 			"getVar":  func(key string) any { v, _ := board.GetVar(key); return v },
 			"setVar":  func(key string, value any) { board.SetVar(key, value) },
 			"getVars": func() map[string]any { return board.Vars() },

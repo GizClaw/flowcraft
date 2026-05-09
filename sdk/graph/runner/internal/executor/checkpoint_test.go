@@ -9,50 +9,6 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/graph"
 )
 
-func TestLocalExecutor_Checkpoint(t *testing.T) {
-	dir := t.TempDir()
-	store, err := NewFileCheckpointStore(FileCheckpointConfig{Dir: dir})
-	if err != nil {
-		t.Fatalf("create checkpoint store: %v", err)
-	}
-
-	g := buildGraph("test", "a",
-		map[string]graph.Node{
-			"a": newTestNode("a", func(_ graph.ExecutionContext, b *graph.Board) error {
-				b.SetVar("a_done", true)
-				return nil
-			}),
-			"b": newTestNode("b", func(_ graph.ExecutionContext, b *graph.Board) error {
-				b.SetVar("b_done", true)
-				return nil
-			}),
-		},
-		[]graph.Edge{
-			{From: "a", To: "b"},
-			{From: "b", To: graph.END},
-		},
-	)
-
-	board := graph.NewBoard()
-	exec := NewLocalExecutor()
-	_, err = exec.Execute(context.Background(), g, board,
-		WithCheckpointStore(store))
-	if err != nil {
-		t.Fatalf("execute failed: %v", err)
-	}
-
-	cp, err := store.Load("test", "")
-	if err != nil {
-		t.Fatalf("load checkpoint: %v", err)
-	}
-	if cp == nil {
-		t.Fatal("expected checkpoint to exist")
-	}
-	if cp.NodeID != "b" {
-		t.Fatalf("expected last checkpoint at node 'b', got %q", cp.NodeID)
-	}
-}
-
 func TestFileCheckpointStore_ListSkipsBackups(t *testing.T) {
 	dir := t.TempDir()
 	store, err := NewFileCheckpointStore(FileCheckpointConfig{Dir: dir})
@@ -269,45 +225,6 @@ func TestCheckpoint_RunID_InStruct(t *testing.T) {
 	}
 }
 
-func TestCheckpoint_WithRunID_IntegrationExecution(t *testing.T) {
-	dir := t.TempDir()
-	store, err := NewFileCheckpointStore(FileCheckpointConfig{Dir: dir})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	g := buildGraph("test", "a",
-		map[string]graph.Node{
-			"a": newTestNode("a", func(_ graph.ExecutionContext, b *graph.Board) error {
-				b.SetVar("done", true)
-				return nil
-			}),
-		},
-		[]graph.Edge{{From: "a", To: graph.END}},
-	)
-
-	board := graph.NewBoard()
-	exec := NewLocalExecutor()
-	_, err = exec.Execute(context.Background(), g, board,
-		WithRunID("run-abc"),
-		WithCheckpointStore(store),
-	)
-	if err != nil {
-		t.Fatalf("execute failed: %v", err)
-	}
-
-	cp, err := store.Load("test", "run-abc")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cp == nil {
-		t.Fatal("expected checkpoint with runID")
-	}
-	if cp.RunID != "run-abc" {
-		t.Fatalf("expected RunID=run-abc, got %q", cp.RunID)
-	}
-}
-
 // recordingCheckpointHost embeds engine.NoopHost so it satisfies the
 // full Host interface; only Checkpoint is overridden so executor-side
 // tests can assert on the engine.Checkpoint shape without standing up
@@ -322,19 +239,10 @@ func (h *recordingCheckpointHost) Checkpoint(_ context.Context, cp engine.Checkp
 	return nil
 }
 
-// TestExecutor_HostCheckpoint_PreferredOverStore verifies the contract
-// resolveCheckpointHost documents: when WithHost is supplied, the
-// deprecated WithCheckpointStore is ignored. Checkpointing is state
-// (not observability), so unlike the publisher path we do NOT fan out
-// to both sinks — that would invite conflicting reads.
-func TestExecutor_HostCheckpoint_PreferredOverStore(t *testing.T) {
+// TestExecutor_HostCheckpoint verifies host.Checkpoint is invoked once
+// per node by the executor's main loop.
+func TestExecutor_HostCheckpoint(t *testing.T) {
 	host := &recordingCheckpointHost{}
-
-	dir := t.TempDir()
-	store, err := NewFileCheckpointStore(FileCheckpointConfig{Dir: dir})
-	if err != nil {
-		t.Fatal(err)
-	}
 
 	g := buildGraph("test", "a",
 		map[string]graph.Node{
@@ -346,12 +254,10 @@ func TestExecutor_HostCheckpoint_PreferredOverStore(t *testing.T) {
 		[]graph.Edge{{From: "a", To: graph.END}},
 	)
 
-	board := graph.NewBoard()
 	exec := NewLocalExecutor()
-	_, err = exec.Execute(context.Background(), g, board,
+	_, err := exec.Execute(context.Background(), g, graph.NewBoard(),
 		WithRunID("run-host"),
 		WithHost(host),
-		WithCheckpointStore(store), // intentionally also set; should be ignored
 	)
 	if err != nil {
 		t.Fatalf("execute failed: %v", err)
@@ -370,57 +276,5 @@ func TestExecutor_HostCheckpoint_PreferredOverStore(t *testing.T) {
 	if got.Attributes["graph_name"] != "test" {
 		t.Fatalf("Attributes[graph_name] = %q, want %q",
 			got.Attributes["graph_name"], "test")
-	}
-
-	// The legacy file store must remain empty: when the user supplied
-	// a host, the deprecated path is silently shadowed.
-	cp, err := store.Load("test", "run-host")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cp != nil {
-		t.Fatalf("legacy store should be empty when host is set, got %+v", cp)
-	}
-}
-
-// TestExecutor_StoreOnlyHost_ForwardsToStore confirms that the
-// transitional path (only WithCheckpointStore, no WithHost) keeps
-// working: the store is folded into a storeOnlyHost so the executor's
-// host-driven main loop ends up calling the deprecated Save.
-func TestExecutor_StoreOnlyHost_ForwardsToStore(t *testing.T) {
-	dir := t.TempDir()
-	store, err := NewFileCheckpointStore(FileCheckpointConfig{Dir: dir})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	g := buildGraph("test", "a",
-		map[string]graph.Node{
-			"a": newTestNode("a", func(_ graph.ExecutionContext, b *graph.Board) error {
-				b.SetVar("done", true)
-				return nil
-			}),
-		},
-		[]graph.Edge{{From: "a", To: graph.END}},
-	)
-
-	exec := NewLocalExecutor()
-	_, err = exec.Execute(context.Background(), g, graph.NewBoard(),
-		WithRunID("run-store"),
-		WithCheckpointStore(store),
-	)
-	if err != nil {
-		t.Fatalf("execute failed: %v", err)
-	}
-
-	cp, err := store.Load("test", "run-store")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cp == nil {
-		t.Fatal("legacy store should have received the checkpoint")
-	}
-	if cp.RunID != "run-store" || cp.NodeID != "a" || cp.GraphName != "test" {
-		t.Fatalf("checkpoint round-trip wrong: %+v", cp)
 	}
 }

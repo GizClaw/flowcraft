@@ -104,15 +104,9 @@
 //     on (provider, model, profile), so per-tenant eviction is
 //     possible via [WithProfile].
 //
-// # Compatibility
-//
-// New code should consume [WithCaps] / [WithDefaults] / [WithLimits]
+// New code consumes [WithCaps] / [WithDefaults] / [WithLimits]
 // directly, [ProviderRegistry.LookupModelSpec] for catalog lookups,
-// and [WithPolicyCaps] for resolver-wide policy. The pre-redesign
-// names — [CapsMiddleware], [WithExtraCaps],
-// [ProviderRegistry.LookupModelCaps], [ModelInfo.Caps] — are kept
-// as thin shims in deprecated.go and on the deprecation field, all
-// scheduled for removal in v0.3.0.
+// and [WithPolicyCaps] for resolver-wide policy.
 //
 // See doc/sdk-llm-redesign.md for the full design rationale,
 // per-cap behavior table, and migration guide.

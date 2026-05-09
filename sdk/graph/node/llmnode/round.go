@@ -21,9 +21,8 @@ import (
 //     them once via tool.Registry.ExecuteAll and stop. Multi-turn loops
 //     are the graph's job (loopguard + condition edges), not the round's.
 //   - Streaming events flow into graph.StreamPublisher as token / tool_call
-//     / tool_result envelopes; the executor fans them onto the event bus
-//     and the deprecated StreamCallback shim if a legacy caller registered
-//     one.
+//     / tool_result envelopes; the executor forwards them to the run's
+//     engine.Host.Publish.
 //   - Cooperative interrupts (engine.Host.Interrupts()) are observed
 //     between every chunk in the streaming loop. On interrupt, runRound
 //     returns a roundResult with Interrupted set; ExecuteBoard commits

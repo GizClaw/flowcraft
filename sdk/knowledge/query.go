@@ -10,9 +10,9 @@ const (
 	ScopeAllDatasets
 )
 
-// Mode is the v0.3.0 name for SearchMode. It is declared as a type alias
-// so values flow seamlessly between old and new APIs during the
-// deprecation window. The constant set lives in types.go.
+// Mode is an alias for SearchMode, kept so newer call-sites can read
+// "knowledge.Mode" without the redundant Search prefix while older
+// "knowledge.SearchMode" call sites keep working unchanged.
 type Mode = SearchMode
 
 // IsValidMode reports whether m is a recognised mode.
@@ -21,24 +21,20 @@ type Mode = SearchMode
 // callers used "" to mean BM25); ResolveMode normalises it to ModeBM25.
 func IsValidMode(m Mode) bool {
 	switch m {
-	case ModeBM25, ModeVector, ModeSemantic, ModeHybrid, "":
+	case ModeBM25, ModeVector, ModeHybrid, "":
 		return true
 	}
 	return false
 }
 
-// ResolveMode normalises legacy and zero values to a canonical Mode.
+// ResolveMode normalises zero values to a canonical Mode.
 //
 //   - ""           -> ModeBM25 (legacy default)
-//   - ModeSemantic -> ModeVector (Deprecated alias, removed in v0.3.0)
 //
 // Any other recognised mode is returned unchanged.
 func ResolveMode(m Mode) Mode {
-	switch m {
-	case "":
+	if m == "" {
 		return ModeBM25
-	case ModeSemantic:
-		return ModeVector
 	}
 	return m
 }
