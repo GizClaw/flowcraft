@@ -15,6 +15,27 @@ with its own tag prefix (e.g. `sdk/vX.Y.Z`, `vessel/vX.Y.Z`,
 ### Added
 - Top-level `README.md`, `CHANGELOG.md`, and `SECURITY.md`.
 
+### Changed
+- **Breaking (internal)**: 评测代码统一迁移到 `eval/` 目录，命名对齐 AI 行业
+  `eval` 约定（区分于 Go 的 `Benchmark*` 性能基准）。`bench/locomo` →
+  `eval/locomo`，`bench/history-compression` → `eval/history`，
+  `tests/quality/knowledge` → `eval/knowledge`。共享的 `dataset/` 与
+  `metrics/` 包提升到 `eval/` 顶层；新增 `eval/report/` 作为 v0.4 统一
+  Report schema 的落地点（当前仅占位）。`bench/` 目录与独立的
+  `tests/quality/knowledge/go.mod` 已删除，三个 suite 现在共享单个
+  off-workspace 模块 `github.com/GizClaw/flowcraft/eval`。Makefile 新增
+  `make eval` / `make eval-smoke`，CI 新增 `test-eval` lane。外部 import
+  受影响的项目按下表替换 import path 即可：
+
+  | Old | New |
+  |---|---|
+  | `…/bench/locomo` | `…/eval/locomo` |
+  | `…/bench/locomo/dataset` | `…/eval/dataset` |
+  | `…/bench/locomo/metrics` | `…/eval/metrics` |
+  | `…/bench/locomo/runners…` | `…/eval/locomo/runners…` |
+  | `…/bench/history-compression` | `…/eval/history` |
+  | `…/tests/quality/knowledge` | `…/eval/knowledge` |
+
 ---
 
 ## `vesseld/v0.1.0-rc.1` — 2026-05-07
