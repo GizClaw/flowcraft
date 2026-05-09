@@ -18,6 +18,7 @@ require (
 	go.opentelemetry.io/otel/sdk/log/logtest v0.16.0
 	go.opentelemetry.io/otel/trace v1.40.0
 	golang.org/x/net v0.52.0
+	gopkg.in/yaml.v2 v2.4.0
 	gopkg.in/natefinch/lumberjack.v2 v2.2.1
 	modernc.org/sqlite v1.49.1
 )
@@ -71,7 +72,6 @@ require (
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260427160629-7cedc36a6bc4 // indirect
 	google.golang.org/grpc v1.80.0 // indirect
 	google.golang.org/protobuf v1.36.11 // indirect
-	gopkg.in/yaml.v2 v2.4.0 // indirect
 	modernc.org/libc v1.72.0 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect
