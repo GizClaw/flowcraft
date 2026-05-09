@@ -8,32 +8,25 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 )
 
-// EventNotifier is the v0.3.0 producer side of the reload pipeline. It
-// supersedes the deprecated ChangeNotifier (defined in deprecated.go):
-// events carry dataset/doc granularity so the consumer can issue
-// targeted Rebuilds instead of a global one.
+// EventNotifier is the producer side of the reload pipeline. Events
+// carry dataset/doc granularity so the consumer can issue targeted
+// Rebuilds instead of a global one.
 //
-// Implementations live in adapter packages (e.g. sdkx/knowledge/watcher,
-// once it migrates) so the sdk core stays dependency-free.
-// Implementations MUST close the Events channel when Close() is called.
+// Implementations live in adapter packages so the sdk core stays
+// dependency-free. Implementations MUST close the Events channel when
+// Close() is called.
 type EventNotifier interface {
 	Events() <-chan ChangeEvent
 	Close() error
 }
 
-// ReloaderOptions configures EventReloader (and the deprecated Reloader).
+// ReloaderOptions configures EventReloader.
 //
-// Field set is the union of both consumers:
-//   - Debounce       controls the trailing-edge window (both consumers).
-//   - RebuildTimeout caps each rebuild call (EventReloader only; the
-//     legacy Reloader hard-codes 30s).
-//   - Rebuild        is the legacy hook used by the deprecated Reloader to
-//     swap the rebuild callback. EventReloader ignores it and always
-//     calls Rebuilder.Rebuild on the supplied target.
+//   - Debounce       controls the trailing-edge window.
+//   - RebuildTimeout caps each rebuild call.
 type ReloaderOptions struct {
 	Debounce       time.Duration
 	RebuildTimeout time.Duration
-	Rebuild        func(context.Context) error
 }
 
 // EventReloader debounces ChangeEvents and triggers Rebuild on the
@@ -45,11 +38,6 @@ type ReloaderOptions struct {
 // that pair; when it touches multiple datasets or any EventBulk event,
 // a dataset-wide rebuild is issued instead. Mixed datasets in one
 // window collapse to a global RebuildScope{} (every dataset).
-//
-// EventReloader is the v0.3.0 successor to Reloader. The legacy
-// Reloader (with its struct{}-channel ChangeNotifier, both in
-// deprecated.go) remains exported during the deprecation window and
-// will be removed in v0.3.0.
 type EventReloader struct {
 	target   Rebuilder
 	notifier EventNotifier

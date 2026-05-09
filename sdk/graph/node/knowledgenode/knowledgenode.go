@@ -13,22 +13,36 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
+type DatasetQuery struct {
+	DatasetID string `json:"dataset_id"`
+	StateKey  string `json:"state_key"`
+	TopK      int    `json:"top_k"`
+}
+
 // Config configures a knowledge graph node.
 //
 // Field semantics:
+//   - QueryKey  names the board var the node reads as the search query;
+//     empty means [DefaultQueryKey] ("query").
 //   - Scope     selects whether to search a specific dataset list (Datasets)
 //     or every known dataset (knowledge.ScopeAllDatasets).
 //   - Datasets  is consulted only when Scope == knowledge.ScopeSingleDataset;
 //     each entry can override TopK and choose a board key for its hits.
 //   - Mode/Layer/TopK/Threshold are forwarded into knowledge.Query.
 type Config struct {
-	Scope     knowledge.Scope          `json:"scope,omitempty"`
-	Datasets  []knowledge.DatasetQuery `json:"datasets,omitempty"`
-	Mode      knowledge.Mode           `json:"mode,omitempty"`
-	Layer     knowledge.Layer          `json:"layer,omitempty"`
-	TopK      int                      `json:"top_k,omitempty"`
-	Threshold float64                  `json:"threshold,omitempty"`
+	QueryKey  string          `json:"query_key,omitempty"`
+	Scope     knowledge.Scope `json:"scope,omitempty"`
+	Datasets  []DatasetQuery  `json:"datasets,omitempty"`
+	Mode      knowledge.Mode  `json:"mode,omitempty"`
+	Layer     knowledge.Layer `json:"layer,omitempty"`
+	TopK      int             `json:"top_k,omitempty"`
+	Threshold float64         `json:"threshold,omitempty"`
 }
+
+// DefaultQueryKey is the board-var key the node reads when Config.QueryKey
+// is empty. Held as a constant rather than a magic string so callers can
+// reference it from BoardSeeders / tests without hard-coding "query".
+const DefaultQueryKey = "query"
 
 // Node is a graph node that retrieves documents from a knowledge.Service.
 // It delegates to Service so contract guarantees (Mode/Layer normalisation,
@@ -64,9 +78,17 @@ func (n *Node) SetConfig(c map[string]any) {
 // InputPorts implements graph.Node.
 func (n *Node) InputPorts() []graph.Port {
 	return []graph.Port{
-		{Name: "query", Type: graph.PortTypeString, Required: true},
+		{Name: n.queryKey(), Type: graph.PortTypeString, Required: true},
 		{Name: "dataset_id", Type: graph.PortTypeString},
 	}
+}
+
+// queryKey returns the board-var key the node reads as the search query.
+func (n *Node) queryKey() string {
+	if n.cfg.QueryKey == "" {
+		return DefaultQueryKey
+	}
+	return n.cfg.QueryKey
 }
 
 // OutputPorts implements graph.Node. New callers should consume "hits"
@@ -86,7 +108,7 @@ func (n *Node) OutputPorts() []graph.Port {
 // every known dataset (ScopeAllDatasets), then publishes the hits onto
 // the board under "hits" / "by_dataset" / "results".
 func (n *Node) ExecuteBoard(ectx graph.ExecutionContext, board *graph.Board) error {
-	queryVal, _ := board.GetVar("query")
+	queryVal, _ := board.GetVar(n.queryKey())
 	query := fmt.Sprint(queryVal)
 
 	if n.svc == nil {
@@ -120,7 +142,7 @@ func (n *Node) ExecuteBoard(ectx graph.ExecutionContext, board *graph.Board) err
 		// Allow boards that pass dataset_id at runtime: fall back to
 		// a single anonymous dataset query when none was configured.
 		if id, ok := board.GetVar("dataset_id"); ok {
-			datasets = []knowledge.DatasetQuery{{DatasetID: fmt.Sprint(id), TopK: topK}}
+			datasets = []DatasetQuery{{DatasetID: fmt.Sprint(id), TopK: topK}}
 		}
 	}
 	for _, dq := range datasets {
@@ -211,6 +233,9 @@ func hitsToCompatSlice(hits []knowledge.Hit) []map[string]any {
 //   - "scope" accepts "single" (default) and "all".
 func ConfigFromMap(m map[string]any) Config {
 	cfg := Config{}
+	if v, ok := m["query_key"].(string); ok {
+		cfg.QueryKey = v
+	}
 	if v, ok := m["scope"].(string); ok && v == "all" {
 		cfg.Scope = knowledge.ScopeAllDatasets
 	}
@@ -244,8 +269,8 @@ func ConfigFromMap(m map[string]any) Config {
 	return cfg
 }
 
-func datasetQueryFromMap(m map[string]any) knowledge.DatasetQuery {
-	dq := knowledge.DatasetQuery{}
+func datasetQueryFromMap(m map[string]any) DatasetQuery {
+	dq := DatasetQuery{}
 	if v, ok := m["dataset_id"].(string); ok {
 		dq.DatasetID = v
 	}

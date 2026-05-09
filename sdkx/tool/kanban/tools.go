@@ -157,24 +157,26 @@ func (t *TaskContextTool) resolve(ctx context.Context) *sdkkanban.Kanban {
 	return KanbanFrom(ctx)
 }
 
+// ctxKey is the package-private type backing the Kanban context value;
+// using a private type guarantees no external package can collide with
+// our key by accident.
+type ctxKey int
+
+const ctxKeyKanban ctxKey = iota
+
 // WithKanban attaches a [*sdkkanban.Kanban] instance to ctx so the
 // LLM-facing [SubmitTool] / [TaskContextTool] can resolve it without
 // a struct field. Used by hosts that wire tools into a registry
 // before the Kanban instance is constructed.
-//
-// The implementation re-exports [sdkkanban.WithKanban] so contexts
-// installed by either package interoperate during the v0.2.x →
-// v0.3.0 transition. After sdk/v0.3.0 the sdk-side helper is
-// deleted and this function will hold the canonical implementation.
 func WithKanban(ctx context.Context, k *sdkkanban.Kanban) context.Context {
-	return sdkkanban.WithKanban(ctx, k)
+	return context.WithValue(ctx, ctxKeyKanban, k)
 }
 
 // KanbanFrom retrieves the [*sdkkanban.Kanban] instance previously
-// installed by [WithKanban] (or by [sdkkanban.WithKanban]), or nil
-// when absent.
+// installed by [WithKanban], or nil when absent.
 func KanbanFrom(ctx context.Context) *sdkkanban.Kanban {
-	return sdkkanban.KanbanFrom(ctx)
+	k, _ := ctx.Value(ctxKeyKanban).(*sdkkanban.Kanban)
+	return k
 }
 
 // Compile-time interface check.

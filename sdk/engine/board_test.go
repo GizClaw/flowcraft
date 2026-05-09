@@ -292,6 +292,45 @@ func TestBoard_RestoreFrom_EmptyChannelsRehydratesMain(t *testing.T) {
 	}
 }
 
+func TestBoard_RestoreBoard_MigratesLegacyMainChannelKey(t *testing.T) {
+	// Pre-v0.3.0 checkpoints stored MainChannel under the empty-string
+	// key. RestoreBoard must lift those messages onto the new key so
+	// resume on a v0.3+ binary keeps the transcript.
+	snap := &engine.BoardSnapshot{
+		Channels: map[string][]model.Message{
+			"": {model.NewTextMessage(model.RoleUser, "from-legacy")},
+		},
+	}
+
+	b := engine.RestoreBoard(snap)
+
+	if got := b.Channel(engine.MainChannel); len(got) != 1 || got[0].Content() != "from-legacy" {
+		t.Fatalf("MainChannel = %+v, want one legacy message", got)
+	}
+	if got := b.Channel(""); got != nil {
+		t.Fatalf("legacy empty-string channel should not be reachable, got %+v", got)
+	}
+}
+
+func TestBoard_RestoreBoard_LegacyDoesNotOverwriteNewKey(t *testing.T) {
+	// A snapshot that carries both the legacy "" key and the modern
+	// MainChannel key is treated as already migrated: the modern
+	// content wins and the legacy bucket is dropped.
+	snap := &engine.BoardSnapshot{
+		Channels: map[string][]model.Message{
+			"":                 {model.NewTextMessage(model.RoleUser, "legacy")},
+			engine.MainChannel: {model.NewTextMessage(model.RoleUser, "modern")},
+		},
+	}
+
+	b := engine.RestoreBoard(snap)
+
+	got := b.Channel(engine.MainChannel)
+	if len(got) != 1 || got[0].Content() != "modern" {
+		t.Fatalf("MainChannel = %+v, want modern content", got)
+	}
+}
+
 func TestBoard_RestoreFrom_NilIsNoOp(t *testing.T) {
 	b := engine.NewBoard()
 	b.SetVar("k", "v")

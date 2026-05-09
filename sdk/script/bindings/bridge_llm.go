@@ -94,7 +94,7 @@ type LLMRunOptions struct {
 //	}
 //	var r = s.finish();          // round result map
 //	board.setVar("answer", r.content);
-//	board.setChannel("main", r.messages);
+//	board.setChannel(board.MAIN_CHANNEL, r.messages);
 //
 // Neither mode writes to the board; the script controls what to do
 // with results (typically via the board bridge: board.setVar /

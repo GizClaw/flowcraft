@@ -62,22 +62,15 @@ func TestSubmitTool_FromContext(t *testing.T) {
 	}
 }
 
-// Round-trip with sdk-side WithKanban: contexts installed via the
-// deprecated sdk helper must be readable by the sdkx KanbanFrom and
-// vice-versa during the v0.2.x → v0.3.0 transition.
-func TestContextInterop(t *testing.T) {
+// Round-trip with the sdkx-side WithKanban: contexts installed via
+// [tool.WithKanban] must be readable by [tool.KanbanFrom] (the
+// canonical helpers post-v0.3.0).
+func TestContextRoundTrip(t *testing.T) {
 	k := newKanban(t)
 
-	// sdk-installed → sdkx readable
-	ctx := sdkkanban.WithKanban(context.Background(), k)
+	ctx := tool.WithKanban(context.Background(), k)
 	if got := tool.KanbanFrom(ctx); got != k {
-		t.Errorf("sdk install / sdkx read: got %v want %v", got, k)
-	}
-
-	// sdkx-installed → sdk readable
-	ctx2 := tool.WithKanban(context.Background(), k)
-	if got := sdkkanban.KanbanFrom(ctx2); got != k {
-		t.Errorf("sdkx install / sdk read: got %v want %v", got, k)
+		t.Errorf("KanbanFrom round-trip: got %v want %v", got, k)
 	}
 }
 

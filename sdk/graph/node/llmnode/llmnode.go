@@ -19,27 +19,31 @@ import (
 
 // Config configures an LLM graph node. Fields fall into two groups:
 //
-//   - Graph-level board I/O: SystemPrompt, OutputKey, MessagesKey,
-//     QueryFallback, TrackSteps — consumed by Node.ExecuteBoard around
-//     the round boundary.
+//   - Graph-level board I/O: SystemPrompt, OutputKey, MessagesChannel,
+//     TrackSteps — consumed by Node.ExecuteBoard around the round boundary.
 //   - Pure LLM call parameters: Model, Temperature, MaxTokens, JSONMode,
 //     Thinking, ToolNames — forwarded into the in-package round driver
 //     via Config.generateOptions.
 //
 // The split exists to keep the round driver (round.go) ignorant of the
 // graph board, which is essential for testing it in isolation.
+//
+// MessagesChannel selects the typed-message channel the node reads from
+// and writes to. The empty string (zero value) means [graph.MainChannel],
+// shared by every LLM node in the graph. Any other name produces an
+// "isolated" channel; an upstream node (or the caller) is responsible
+// for seeding it with at least one message before the node runs.
 type Config struct {
-	SystemPrompt  string   `json:"system_prompt" yaml:"system_prompt"`
-	Model         string   `json:"model,omitempty" yaml:"model,omitempty"`
-	Temperature   *float64 `json:"temperature,omitempty" yaml:"temperature,omitempty"`
-	MaxTokens     int64    `json:"max_tokens,omitempty" yaml:"max_tokens,omitempty"`
-	OutputKey     string   `json:"output_key,omitempty" yaml:"output_key,omitempty"`
-	MessagesKey   string   `json:"messages_key,omitempty" yaml:"messages_key,omitempty"`
-	JSONMode      bool     `json:"json_mode,omitempty" yaml:"json_mode,omitempty"`
-	Thinking      bool     `json:"thinking,omitempty" yaml:"thinking,omitempty"`
-	QueryFallback bool     `json:"query_fallback,omitempty" yaml:"query_fallback,omitempty"`
-	TrackSteps    bool     `json:"track_steps,omitempty" yaml:"track_steps,omitempty"`
-	ToolNames     []string `json:"tool_names,omitempty" yaml:"tool_names,omitempty"`
+	SystemPrompt    string   `json:"system_prompt" yaml:"system_prompt"`
+	Model           string   `json:"model,omitempty" yaml:"model,omitempty"`
+	Temperature     *float64 `json:"temperature,omitempty" yaml:"temperature,omitempty"`
+	MaxTokens       int64    `json:"max_tokens,omitempty" yaml:"max_tokens,omitempty"`
+	OutputKey       string   `json:"output_key,omitempty" yaml:"output_key,omitempty"`
+	MessagesChannel string   `json:"messages_channel,omitempty" yaml:"messages_channel,omitempty"`
+	JSONMode        bool     `json:"json_mode,omitempty" yaml:"json_mode,omitempty"`
+	Thinking        bool     `json:"thinking,omitempty" yaml:"thinking,omitempty"`
+	TrackSteps      bool     `json:"track_steps,omitempty" yaml:"track_steps,omitempty"`
+	ToolNames       []string `json:"tool_names,omitempty" yaml:"tool_names,omitempty"`
 }
 
 // Node is a Go-native graph node that calls an LLM, dispatches tool calls,
@@ -78,7 +82,7 @@ func (n *Node) SetConfig(c map[string]any) {
 
 func (n *Node) InputPorts() []graph.Port {
 	return []graph.Port{
-		{Name: graph.VarMessages, Type: graph.PortTypeMessages, Required: true},
+		{Name: n.channelName(), Type: graph.PortTypeMessages, Required: true},
 	}
 }
 
@@ -89,10 +93,20 @@ func (n *Node) OutputPorts() []graph.Port {
 	}
 	return []graph.Port{
 		{Name: outputKey, Type: graph.PortTypeString, Required: true},
-		{Name: graph.VarMessages, Type: graph.PortTypeMessages, Required: true},
+		{Name: n.channelName(), Type: graph.PortTypeMessages, Required: true},
 		{Name: VarUsage, Type: graph.PortTypeUsage, Required: true},
 		{Name: VarToolPending, Type: graph.PortTypeBool, Required: true},
 	}
+}
+
+// channelName returns the typed-message channel this node binds to.
+// Empty MessagesChannel maps to [graph.MainChannel] (shared transcript);
+// any other value names an isolated per-node channel.
+func (n *Node) channelName() string {
+	if n.config.MessagesChannel == "" {
+		return graph.MainChannel
+	}
+	return n.config.MessagesChannel
 }
 
 func (n *Node) ExecuteBoard(ctx graph.ExecutionContext, board *graph.Board) error {
@@ -101,16 +115,20 @@ func (n *Node) ExecuteBoard(ctx graph.ExecutionContext, board *graph.Board) erro
 	defer span.End()
 
 	cfg := n.config
-	messagesKey := cfg.MessagesKey
-	if messagesKey == "" {
-		messagesKey = graph.VarMessages
-	}
-	chName := messagesKey
-	if chName == graph.VarMessages {
-		chName = graph.MainChannel
-	}
+	chName := n.channelName()
 
-	messages := n.buildMessages(cfg, board, chName, messagesKey)
+	messages := n.buildMessages(cfg, board, chName)
+	if len(messages) == 0 {
+		// Empty channel + no system prompt → nothing to send. This is
+		// always a graph wiring mistake (no upstream node populated the
+		// channel and the operator did not configure a system prompt);
+		// fail fast with a clear message rather than emitting a
+		// provider-dependent error (Anthropic 400, OpenAI silent
+		// behaviour, …) that varies across the LLM stack.
+		return errdefs.Validationf(
+			"llm node %q has nothing to send: messages_channel %q is empty and system_prompt is unset",
+			n.id, chName)
+	}
 	if _, ok := board.GetVar(VarPrevMessageCount); !ok {
 		board.SetVar(VarPrevMessageCount, len(messages))
 	}
@@ -129,7 +147,7 @@ func (n *Node) ExecuteBoard(ctx graph.ExecutionContext, board *graph.Board) erro
 	// what materialises the partial assistant message + cancelled
 	// tool_results onto the board so the agent layer / memory writer
 	// can read them after the resume / discard decision.
-	if werr := n.writeResults(ctx, board, cfg, result, messagesKey, chName); werr != nil {
+	if werr := n.writeResults(ctx, board, cfg, result, chName); werr != nil {
 		// writeResults only ever surfaces errors from the host's
 		// budget / quota gate (UsageReporter). Propagate so the
 		// run terminates rather than silently exceeding the budget,
@@ -159,15 +177,10 @@ func (n *Node) ExecuteBoard(ctx graph.ExecutionContext, board *graph.Board) erro
 	return nil
 }
 
-func (n *Node) buildMessages(cfg Config, board *graph.Board, chName, messagesKey string) []llm.Message {
-	var messages []llm.Message
-	if msgs := board.Channel(chName); len(msgs) > 0 {
-		messages = msgs
-	} else if existing, ok := board.GetVar(messagesKey); ok {
-		if msgs, ok := existing.([]llm.Message); ok {
-			messages = append([]llm.Message(nil), msgs...)
-		}
-	}
+func (n *Node) buildMessages(cfg Config, board *graph.Board, chName string) []llm.Message {
+	// Defensive copy: we mutate the slice below (system-prompt prepend,
+	// summary-index injection) and must not write back into board state.
+	messages := append([]llm.Message(nil), board.Channel(chName)...)
 
 	if cfg.SystemPrompt != "" {
 		hasSystem := false
@@ -193,30 +206,12 @@ func (n *Node) buildMessages(cfg Config, board *graph.Board, chName, messagesKey
 		}
 	}
 
-	if cfg.QueryFallback && messagesKey != graph.VarMessages {
-		if query, ok := board.GetVar(graph.VarQuery); ok {
-			if qs, ok := query.(string); ok && qs != "" {
-				needAppend := true
-				for i := len(messages) - 1; i >= 0; i-- {
-					if messages[i].Role == llm.RoleUser {
-						if messages[i].Content() == qs {
-							needAppend = false
-						}
-						break
-					}
-				}
-				if needAppend {
-					messages = append(messages, llm.NewTextMessage(llm.RoleUser, qs))
-				}
-			}
-		}
-	}
 	return messages
 }
 
 func (n *Node) writeResults(
 	ctx graph.ExecutionContext, board *graph.Board, cfg Config,
-	result *roundResult, messagesKey, chName string,
+	result *roundResult, chName string,
 ) error {
 	if cfg.TrackSteps {
 		steps, _ := board.GetVar("agent_steps")
@@ -262,7 +257,6 @@ func (n *Node) writeResults(
 		board.SetVar(outputKey, result.Content)
 	}
 
-	board.SetVar(messagesKey, result.Messages)
 	board.SetChannel(chName, result.Messages)
 	board.SetVar(VarToolPending, result.ToolPending)
 

@@ -65,11 +65,9 @@ var ErrClosed = errors.New("history: coordinator closed")
 //	coord, _ := hist.(history.Coordinator)
 //	defer func() { _ = coord.Shutdown(context.Background()) }()
 //
-// Migration: the previous [Closer] sub-interface is retained for one
-// release behind a Deprecated marker; new code should prefer Coordinator
-// because it offers context-aware shutdown plus first-class maintenance
-// entry points that internally share the per-conversation queue used by
-// background ingest/archive.
+// Coordinator offers context-aware shutdown plus first-class
+// maintenance entry points (Compact / Archive) that internally share
+// the per-conversation queue used by background ingest/archive.
 type Coordinator interface {
 	// Compact runs DAG compact for one conversation. Serialized against
 	// concurrent Append/Archive on the same conversationID.
@@ -91,15 +89,4 @@ type Coordinator interface {
 	// the second call falls onto the same drain and returns nil once
 	// all workers have exited.
 	Shutdown(ctx context.Context) error
-}
-
-// Closer is the legacy lifecycle interface that the [History] returned by
-// [NewCompacted] still satisfies for one release.
-//
-// Deprecated: use [Coordinator] (and its context-aware Shutdown) instead.
-// Closer.Close has no way to bound its wait, no way to refuse late writes,
-// and no way to surface a drain error to the caller. It will be removed
-// in v0.3.0.
-type Closer interface {
-	Close()
 }

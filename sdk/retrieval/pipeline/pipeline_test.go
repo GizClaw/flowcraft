@@ -59,57 +59,6 @@ func TestPipelineMultiRetrieveAndRRF(t *testing.T) {
 	}
 }
 
-func TestPipelineReturnRawIncludesRetrieverHits(t *testing.T) {
-	ctx := context.Background()
-	idx := memory.New()
-	ns := "ns"
-	_ = idx.Upsert(ctx, ns, []retrieval.Doc{
-		{ID: "1", Content: "coffee tea", Vector: []float32{1, 0, 0}, Timestamp: time.Now()},
-		{ID: "2", Content: "unrelated", Vector: []float32{0, 1, 0}, Timestamp: time.Now()},
-	})
-	pipe := New(
-		MultiRetrieve{
-			"bm25":   {Mode: ModeBM25, TopK: 10},
-			"vector": {Mode: ModeVector, TopK: 10},
-		},
-		RRFFusion{K: 60},
-		Limit{TopK: 5},
-	)
-	resp, err := pipe.Run(ctx, idx, ns, retrieval.SearchRequest{
-		QueryText:   "coffee",
-		QueryVector: []float32{1, 0, 0},
-		TopK:        5,
-		ReturnRaw:   true,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(resp.RawByRetriever) != 2 {
-		t.Fatalf("expected raw hits for 2 retrievers, got %+v", resp.RawByRetriever)
-	}
-	if len(resp.RawByRetriever["bm25"]) == 0 {
-		t.Fatalf("expected bm25 raw hits, got %+v", resp.RawByRetriever)
-	}
-	if len(resp.RawByRetriever["vector"]) == 0 {
-		t.Fatalf("expected vector raw hits, got %+v", resp.RawByRetriever)
-	}
-	if resp.Execution == nil {
-		t.Fatal("expected Execution to be populated when ReturnRaw=true")
-	}
-	if len(resp.Execution.Lanes) != 2 {
-		t.Fatalf("expected 2 lanes in Execution, got %+v", resp.Execution.Lanes)
-	}
-	for _, lane := range resp.Execution.Lanes {
-		raw, ok := resp.RawByRetriever[string(lane.Key)]
-		if !ok {
-			t.Fatalf("lane %q missing in RawByRetriever projection", lane.Key)
-		}
-		if len(raw) != len(lane.Hits) {
-			t.Fatalf("lane %q raw/exec mismatch: raw=%d exec=%d", lane.Key, len(raw), len(lane.Hits))
-		}
-	}
-}
-
 func TestPipelineDebugIncludeStagesRecordsTrace(t *testing.T) {
 	ctx := context.Background()
 	idx := memory.New()
@@ -142,9 +91,6 @@ func TestPipelineDebugIncludeStagesRecordsTrace(t *testing.T) {
 	if len(resp.Execution.Lanes) != 0 {
 		t.Fatalf("expected no lanes when IncludeLanes=false, got %+v", resp.Execution.Lanes)
 	}
-	if resp.RawByRetriever != nil {
-		t.Fatalf("RawByRetriever should remain nil when ReturnRaw=false, got %+v", resp.RawByRetriever)
-	}
 }
 
 func TestPipelineDebugIncludeLanesWithoutLegacyProjection(t *testing.T) {
@@ -169,9 +115,6 @@ func TestPipelineDebugIncludeLanesWithoutLegacyProjection(t *testing.T) {
 	}
 	if resp.Execution == nil || len(resp.Execution.Lanes) != 1 {
 		t.Fatalf("expected one lane in Execution, got %+v", resp.Execution)
-	}
-	if resp.RawByRetriever != nil {
-		t.Fatalf("RawByRetriever should only be populated by ReturnRaw, got %+v", resp.RawByRetriever)
 	}
 }
 

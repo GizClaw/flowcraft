@@ -72,8 +72,8 @@ func allFailedError(lastErr error) error {
 // next provider in the chain, how long should the breaker stay open
 // after a trip, and what label to attach on per-category metrics.
 // They are package-private helpers because nobody outside this file
-// calls them — peers (sdkx/llm/*, sdkx/embedding/*, future
-// sdkx/rerank, ...) consume the errdefs class directly via
+// calls them — peer adapters (LLM providers, embedders, rerankers in
+// external packages) consume the errdefs class directly via
 // errdefs.IsXxx and don't need the LLM-fallback lens.
 
 // shouldFallback reports whether a given category should try the next

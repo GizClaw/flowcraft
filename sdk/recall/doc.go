@@ -11,8 +11,8 @@
 //   - Entity linking via Doc.Metadata["entities"], consumed by
 //     EntityBoost.
 //   - Sync Save and async SaveAsync backed by a [JobQueue] (default
-//     in-memory; sdkx/recall/jobqueue/sqlite provides a durable
-//     SQLite queue).
+//     in-memory; durable adapters such as a SQLite queue live in
+//     external adapter packages).
 //   - Three-axis [Scope] (RuntimeID + AgentID + UserID) plus a
 //     [Partitions] selector that controls whether a recall visits the
 //     per-user bucket, the runtime-global bucket, or both.

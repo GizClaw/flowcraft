@@ -12,8 +12,7 @@
 !CONTRIBUTING.md
 !CODE_OF_CONDUCT.md
 !docs/
-!docs/migrations/
-!docs/migrations/**
+!docs/**
 
 # ── Go source ──
 !go.mod

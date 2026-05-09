@@ -9,13 +9,26 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/model"
 )
 
-// MainChannel is the default message channel key (empty string).
+// MainChannel is the default message channel key.
 //
 // Channels are an engine-level primitive: they let nodes/steps share
 // ordered message sequences without going through Vars. Convention-level
 // keys for "the chat transcript", "the answer", etc. belong to the
 // agent layer; this package only provides the channel mechanism.
-const MainChannel = ""
+//
+// Naming rule: any board key (var or channel) reserved by the engine
+// itself uses the "__" prefix. User-domain code MUST NOT introduce
+// channel or var names beginning with "__"; doing so risks colliding
+// with a future engine-managed slot. Existing reserved names besides
+// MainChannel include graph-level vars VarInterruptedNode and
+// VarToolCalls (see sdk/graph).
+const MainChannel = "__main_channel"
+
+// legacyMainChannel is the pre-v0.3.0 MainChannel value (the empty
+// string). Snapshot restore paths translate it to the current
+// MainChannel so checkpoint blobs taken with older SDK builds still
+// resume cleanly. Slated for removal in v0.4.
+const legacyMainChannel = ""
 
 // Cloneable may be implemented by values stored in Board vars to
 // provide a type-safe deep copy instead of the reflection fallback used
@@ -239,6 +252,7 @@ func RestoreBoard(snap *BoardSnapshot) *Board {
 		for k, msgs := range snap.Channels {
 			b.channels[k] = model.CloneMessages(msgs)
 		}
+		migrateLegacyMainChannel(b.channels)
 	} else {
 		b.channels[MainChannel] = []model.Message{}
 	}
@@ -261,11 +275,28 @@ func (b *Board) RestoreFrom(snap *BoardSnapshot) {
 		for k, msgs := range snap.Channels {
 			b.channels[k] = model.CloneMessages(msgs)
 		}
+		migrateLegacyMainChannel(b.channels)
 	} else {
 		// Mirror RestoreBoard / NewBoard: every Board must expose
 		// MainChannel even when the snapshot didn't carry channels.
 		b.channels[MainChannel] = []model.Message{}
 	}
+}
+
+// migrateLegacyMainChannel rewrites pre-v0.3.0 checkpoint blobs that
+// used the empty-string MainChannel. If the snapshot already carries
+// the new key, the legacy key is dropped; otherwise its messages move
+// over. Slated for removal in v0.4 once all stored checkpoints have
+// been re-taken with v0.3+ writers.
+func migrateLegacyMainChannel(channels map[string][]model.Message) {
+	legacy, hasLegacy := channels[legacyMainChannel]
+	if !hasLegacy {
+		return
+	}
+	if _, hasNew := channels[MainChannel]; !hasNew {
+		channels[MainChannel] = legacy
+	}
+	delete(channels, legacyMainChannel)
 }
 
 // ---------- internal ----------

@@ -98,10 +98,14 @@ func TestNode_DoesNotReportZeroUsage(t *testing.T) {
 	}}
 	n := New("llm1", resolver, nil, Config{})
 
+	board := graph.NewBoard()
+	board.SetChannel(graph.MainChannel, []model.Message{
+		model.NewTextMessage(model.RoleUser, "hi"),
+	})
 	err := n.ExecuteBoard(graph.ExecutionContext{
 		Context: context.Background(),
 		Host:    host,
-	}, graph.NewBoard())
+	}, board)
 	if err != nil {
 		t.Fatalf("ExecuteBoard error: %v", err)
 	}

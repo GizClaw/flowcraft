@@ -11,12 +11,10 @@
 //
 // # Dependency constraint
 //
-// bindings depends on llm, model, tool, engine, and (for the bridges in
-// deprecated.go) workflow. It must never depend on graph: graph composes
-// bindings, not the other way around. The Board surface bindings consume is
-// the structural bindings.Board interface, which both *engine.Board and
-// *workflow.Board satisfy — so callers can pass either without conversion
-// while we migrate fully off workflow.
+// bindings depends on llm, model, tool, engine. It must never depend on
+// graph: graph composes bindings, not the other way around. The Board
+// surface bindings consume is the structural bindings.Board interface,
+// which *engine.Board satisfies directly.
 //
 // # Layering model
 //
@@ -49,7 +47,6 @@
 //	llm_marshal.go        model.* ⇄ map[string]any projections (multimodal-aware)
 //	bridge_tools.go   tool.Registry (deny-by-default, explicit allowlist or AllowAll)
 //	bridge_run.go     run metadata exposed from agent.RunInfo (run/task/agent/context ids)
-//	deprecated.go     v0.3.0 removal queue: NewStreamBridge, NewRunBridge, AgentStepBindings
 //	*_test.go         table-driven / jsrt integration tests
 //
 // # Global naming convention
@@ -67,8 +64,6 @@
 //     you need; add NewLLMBridge when LLM access is required, and use
 //     NewRunInfoBridge(runInfo) to surface run/task/agent/context ids.
 //     There is no global preset — the four lines of BuildEnv are the preset.
-//   - Legacy workflow agent step: see deprecated.go (NewRunBridge,
-//     AgentStepBindings — both slated for v0.3.0 removal).
 //
 // # Checklist for adding a new bridge
 //

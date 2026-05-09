@@ -88,29 +88,6 @@ func TestProviderRegistry_RegisterModels_DoesNotMutateInput(t *testing.T) {
 	}
 }
 
-func TestLookupModelCaps(t *testing.T) {
-	reg := NewProviderRegistry()
-	reg.RegisterModels("prov", []ModelInfo{
-		{Label: "A", Name: "model-a", Caps: DisabledCaps(CapTemperature)},
-		{Label: "B", Name: "model-b"},
-	})
-
-	caps := reg.LookupModelCaps("prov", "model-a")
-	if caps.Supports(CapTemperature) {
-		t.Fatal("expected CapTemperature disabled for model-a")
-	}
-
-	caps = reg.LookupModelCaps("prov", "model-b")
-	if !caps.IsZero() {
-		t.Fatal("expected zero caps for model-b")
-	}
-
-	caps = reg.LookupModelCaps("prov", "nonexistent")
-	if !caps.IsZero() {
-		t.Fatal("expected zero caps for nonexistent model")
-	}
-}
-
 func TestNewFromConfig_ReturnsRawInstance_NoSpecWrap(t *testing.T) {
 	// Post-redesign contract: NewFromConfig is the bare-provider entry
 	// point; spec wrapping (caps / defaults / limits) is the resolver's
@@ -132,39 +109,5 @@ func TestNewFromConfig_ReturnsRawInstance_NoSpecWrap(t *testing.T) {
 	}
 	if inst != raw {
 		t.Fatal("NewFromConfig must return the raw provider instance unwrapped")
-	}
-}
-
-func TestRegisterModels_AutoPromotesDeprecatedCapsToSpec(t *testing.T) {
-	// Backward-compat contract: callers using the deprecated ModelInfo.Caps
-	// field (from before the Spec rename) should still see their caps
-	// reflected in LookupModelSpec — the registry auto-promotes the
-	// alias on registration.
-	reg := NewProviderRegistry()
-	reg.RegisterModels("p", []ModelInfo{
-		{Name: "legacy", Caps: DisabledCaps(CapTemperature)}, // old shape
-	})
-	spec := reg.LookupModelSpec("p", "legacy")
-	if spec.Caps.Supports(CapTemperature) {
-		t.Fatal("expected auto-promoted Caps→Spec.Caps to disable temperature")
-	}
-}
-
-func TestRegisterModels_SpecWinsOverDeprecatedCaps(t *testing.T) {
-	// When both fields are non-zero, Spec.Caps is authoritative.
-	reg := NewProviderRegistry()
-	reg.RegisterModels("p", []ModelInfo{
-		{
-			Name: "mixed",
-			Spec: ModelSpec{Caps: DisabledCaps(CapJSONMode)},
-			Caps: DisabledCaps(CapTemperature),
-		},
-	})
-	spec := reg.LookupModelSpec("p", "mixed")
-	if spec.Caps.Supports(CapJSONMode) {
-		t.Fatal("Spec.Caps should disable JSONMode")
-	}
-	if !spec.Caps.Supports(CapTemperature) {
-		t.Fatal("deprecated Caps should NOT have leaked in when Spec.Caps was set")
 	}
 }

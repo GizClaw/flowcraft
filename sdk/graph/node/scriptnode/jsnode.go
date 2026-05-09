@@ -55,10 +55,6 @@ func (n *ScriptNode) ExecuteBoard(ctx graph.ExecutionContext, board *graph.Board
 		bindings.NewBoardBridge(board),
 		bindings.NewExprBridge(),
 		bindings.NewHostBridge(ctx.Host, n.id),
-		// NewStreamBridge is deprecated and scheduled for removal in
-		// v0.3.0; the executor still threads ctx.Stream so legacy
-		// scripts using stream.emit keep working until then.
-		bindings.NewStreamBridge(ctx.Stream, n.id),
 	}
 	allFns = append(allFns, n.extraBindFn...)
 

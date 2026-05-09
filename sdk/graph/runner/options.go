@@ -3,7 +3,6 @@ package runner
 import (
 	"time"
 
-	"github.com/GizClaw/flowcraft/sdk/graph"
 	"github.com/GizClaw/flowcraft/sdk/graph/runner/internal/executor"
 )
 
@@ -67,27 +66,6 @@ func WithParallel(cfg executor.ParallelConfig) Option {
 // omitted (see runner.go).
 func WithResolver(r executor.VariableResolver) Option {
 	return appendRunOpt(executor.WithResolver(r))
-}
-
-// --- deprecated forwarders (kept for v0.2 callers) ---------------------------
-
-// WithStreamCallback installs a legacy node-delta stream callback.
-//
-// Deprecated: subscribe to engine.Host's event bus, or read
-// ExecutionContext.Publisher inside a node, instead. Scheduled for
-// removal in v0.3.0 together with executor.WithStreamCallback.
-func WithStreamCallback(cb graph.StreamCallback) Option {
-	return appendRunOpt(executor.WithStreamCallback(cb))
-}
-
-// WithCheckpointStore installs a graph-format CheckpointStore that
-// persists a checkpoint after every node completes.
-//
-// Deprecated: prefer WithHost with a host whose Checkpointer wraps an
-// engine.CheckpointStore. Scheduled for removal in v0.3.0 together with
-// executor.WithCheckpointStore.
-func WithCheckpointStore(s executor.CheckpointStore) Option { //nolint:staticcheck // forwards to deprecated executor option for transitional callers
-	return appendRunOpt(executor.WithCheckpointStore(s))
 }
 
 // appendRunOpt is the single seam that grows Runner.runOpts so all

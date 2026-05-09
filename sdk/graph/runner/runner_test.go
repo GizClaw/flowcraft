@@ -6,11 +6,9 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/GizClaw/flowcraft/sdk/engine"
 	"github.com/GizClaw/flowcraft/sdk/engine/enginetest"
-	"github.com/GizClaw/flowcraft/sdk/event"
 	"github.com/GizClaw/flowcraft/sdk/graph"
 	"github.com/GizClaw/flowcraft/sdk/graph/node"
 	"github.com/GizClaw/flowcraft/sdk/graph/runner"
@@ -223,67 +221,6 @@ func TestRunner_ConcurrentSafety(t *testing.T) {
 	}
 }
 
-func TestRunner_WithEventBus(t *testing.T) {
-	bus := event.NewMemoryBus()
-	defer func() { _ = bus.Close() }()
-
-	def := &graph.GraphDefinition{
-		Name:  "bus_test",
-		Entry: "start",
-		Nodes: []graph.NodeDefinition{
-			{ID: "start", Type: "passthrough"},
-		},
-		Edges: []graph.EdgeDefinition{
-			{From: "start", To: graph.END},
-		},
-	}
-
-	r, err := runner.New(def, node.NewFactory(), runner.WithEventBus(bus))
-	if err != nil {
-		t.Fatalf("runner.New: %v", err)
-	}
-
-	if r.Bus() != bus {
-		t.Fatal("Bus() should return the configured bus")
-	}
-
-	const runID = "rb-1"
-	sub, err := bus.Subscribe(context.Background(), engine.PatternRun(runID), event.WithBufferSize(16))
-	if err != nil {
-		t.Fatalf("subscribe: %v", err)
-	}
-
-	_, err = r.Execute(context.Background(),
-		engine.Run{ID: runID}, r.Host(), engine.NewBoard())
-	if err != nil {
-		t.Fatalf("Execute: %v", err)
-	}
-
-	wantPrefix := string(engine.SubjectPrefix) + runID + "."
-	sawStart, sawEnd := false, false
-	timeout := time.After(time.Second)
-	for !(sawStart && sawEnd) {
-		select {
-		case env, ok := <-sub.C():
-			if !ok {
-				t.Fatalf("subscription closed before seeing start+end (sawStart=%v sawEnd=%v)", sawStart, sawEnd)
-			}
-			subj := string(env.Subject)
-			if subj == wantPrefix+"start" {
-				sawStart = true
-			}
-			if subj == wantPrefix+"end" {
-				sawEnd = true
-			}
-			if !strings.HasPrefix(subj, wantPrefix) {
-				t.Fatalf("unexpected subject %q", subj)
-			}
-		case <-timeout:
-			t.Fatalf("timeout waiting for start+end (sawStart=%v sawEnd=%v)", sawStart, sawEnd)
-		}
-	}
-}
-
 // TestRunner_WithHost confirms graph lifecycle envelopes are routed through
 // engine.Host.Publish (the v0.3 path) when the user supplies WithHost. The
 // MockHost lets us assert on every envelope without standing up an event
@@ -336,47 +273,6 @@ func TestRunner_WithHost(t *testing.T) {
 	}
 	if !sawStart || !sawEnd {
 		t.Fatalf("missing lifecycle events (sawStart=%v sawEnd=%v)", sawStart, sawEnd)
-	}
-}
-
-func TestRunner_StreamCallback(t *testing.T) {
-	factory := testFactory(map[string]node.NodeBuilder{
-		"emitter": testNodeBuilder(func(ctx graph.ExecutionContext, b *graph.Board) error {
-			if ctx.Stream != nil {
-				ctx.Stream(graph.StreamEvent{Type: "token", NodeID: "emit", Payload: map[string]any{"content": "hi"}})
-			}
-			b.SetVar("done", true)
-			return nil
-		}),
-	})
-
-	def := &graph.GraphDefinition{
-		Name:  "stream",
-		Entry: "emit",
-		Nodes: []graph.NodeDefinition{
-			{ID: "emit", Type: "emitter"},
-		},
-		Edges: []graph.EdgeDefinition{
-			{From: "emit", To: graph.END},
-		},
-	}
-
-	var captured []graph.StreamEvent
-	r, err := runner.New(def, factory,
-		runner.WithStreamCallback(func(se graph.StreamEvent) {
-			captured = append(captured, se)
-		}),
-	)
-	if err != nil {
-		t.Fatalf("runner.New: %v", err)
-	}
-
-	_, err = r.Run(context.Background(), nil)
-	if err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	if len(captured) != 1 {
-		t.Fatalf("expected 1 stream event, got %d", len(captured))
 	}
 }
 

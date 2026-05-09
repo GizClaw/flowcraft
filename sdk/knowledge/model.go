@@ -2,10 +2,11 @@ package knowledge
 
 import "time"
 
-// Layer is the v0.3.0 name for ContextLayer. It is declared as a type
-// alias so values flow seamlessly between old and new APIs during the
-// deprecation window. The constant set lives in types.go.
-type Layer = ContextLayer
+// ContextLayer is the pre-v0.3.0 name for [Layer]. Retained as a type
+// alias so external code that referenced knowledge.ContextLayer keeps
+// compiling. The constant set (LayerAbstract / LayerOverview /
+// LayerDetail) lives in types.go.
+type ContextLayer = Layer
 
 // IsValidLayer reports whether l is a recognised layer.
 //

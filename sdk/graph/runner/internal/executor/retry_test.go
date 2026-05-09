@@ -41,43 +41,27 @@ func TestLocalExecutor_NodeRetry(t *testing.T) {
 	}
 }
 
-func TestLocalExecutor_StreamCallback_ToolCallCapture(t *testing.T) {
+func TestLocalExecutor_StreamPublisher_ToolCallCapture(t *testing.T) {
 	node := newTestNode("llm", func(ctx graph.ExecutionContext, b *graph.Board) error {
-		if ctx.Stream != nil {
-			ctx.Stream(graph.StreamEvent{
-				Type:   "tool_call",
-				NodeID: "llm",
-				Payload: map[string]any{
-					"id":        "tc-1",
-					"name":      "web_search",
-					"arguments": `{"q":"golang"}`,
-				},
+		if ctx.Publisher != nil {
+			ctx.Publisher.Emit("tool_call", map[string]any{
+				"id":        "tc-1",
+				"name":      "web_search",
+				"arguments": `{"q":"golang"}`,
 			})
-			ctx.Stream(graph.StreamEvent{
-				Type:   "tool_call",
-				NodeID: "llm",
-				Payload: map[string]any{
-					"id":        "tc-2",
-					"name":      "code_run",
-					"arguments": `{"code":"fmt.Println()"}`,
-				},
+			ctx.Publisher.Emit("tool_call", map[string]any{
+				"id":        "tc-2",
+				"name":      "code_run",
+				"arguments": `{"code":"fmt.Println()"}`,
 			})
-			ctx.Stream(graph.StreamEvent{
-				Type:   "tool_result",
-				NodeID: "llm",
-				Payload: map[string]any{
-					"tool_call_id": "tc-1",
-					"content":      "search result",
-				},
+			ctx.Publisher.Emit("tool_result", map[string]any{
+				"tool_call_id": "tc-1",
+				"content":      "search result",
 			})
-			ctx.Stream(graph.StreamEvent{
-				Type:   "tool_result",
-				NodeID: "llm",
-				Payload: map[string]any{
-					"tool_call_id": "tc-2",
-					"content":      "error output",
-					"is_error":     true,
-				},
+			ctx.Publisher.Emit("tool_result", map[string]any{
+				"tool_call_id": "tc-2",
+				"content":      "error output",
+				"is_error":     true,
 			})
 		}
 		b.SetVar("answer", "done")
@@ -89,20 +73,11 @@ func TestLocalExecutor_StreamCallback_ToolCallCapture(t *testing.T) {
 		[]graph.Edge{{From: "llm", To: graph.END}},
 	)
 
-	var captured []graph.StreamEvent
-	cb := func(se graph.StreamEvent) {
-		captured = append(captured, se)
-	}
-
 	board := graph.NewBoard()
 	exec := NewLocalExecutor()
-	result, err := exec.Execute(context.Background(), g, board, WithStreamCallback(cb))
+	result, err := exec.Execute(context.Background(), g, board)
 	if err != nil {
 		t.Fatalf("execute failed: %v", err)
-	}
-
-	if len(captured) != 4 {
-		t.Fatalf("expected 4 stream events, got %d", len(captured))
 	}
 
 	tcRaw, ok := result.GetVar(graph.VarToolCalls)
@@ -140,14 +115,10 @@ func TestLocalExecutor_StreamCallback_ToolCallCapture(t *testing.T) {
 	}
 }
 
-func TestLocalExecutor_StreamCallback_NoToolCalls(t *testing.T) {
+func TestLocalExecutor_StreamPublisher_NoToolCalls(t *testing.T) {
 	node := newTestNode("simple", func(ctx graph.ExecutionContext, b *graph.Board) error {
-		if ctx.Stream != nil {
-			ctx.Stream(graph.StreamEvent{
-				Type:    "token",
-				NodeID:  "simple",
-				Payload: map[string]any{"chunk": "hello"},
-			})
+		if ctx.Publisher != nil {
+			ctx.Publisher.Emit("token", map[string]any{"chunk": "hello"})
 		}
 		b.SetVar("answer", "done")
 		return nil
@@ -160,48 +131,12 @@ func TestLocalExecutor_StreamCallback_NoToolCalls(t *testing.T) {
 
 	board := graph.NewBoard()
 	exec := NewLocalExecutor()
-	result, err := exec.Execute(context.Background(), g, board, WithStreamCallback(func(se graph.StreamEvent) {}))
+	result, err := exec.Execute(context.Background(), g, board)
 	if err != nil {
 		t.Fatalf("execute failed: %v", err)
 	}
 
 	if _, ok := result.GetVar(graph.VarToolCalls); ok {
 		t.Fatal("expected no VarToolCalls for non-tool stream events")
-	}
-}
-
-func TestLocalExecutor_StreamCallback_NilCallback(t *testing.T) {
-	node := newTestNode("llm", func(ctx graph.ExecutionContext, b *graph.Board) error {
-		if ctx.Stream != nil {
-			ctx.Stream(graph.StreamEvent{
-				Type:   "tool_call",
-				NodeID: "llm",
-				Payload: map[string]any{
-					"id": "tc-1", "name": "search", "arguments": "{}",
-				},
-			})
-		}
-		return nil
-	})
-
-	g := buildGraph("test", "llm",
-		map[string]graph.Node{"llm": node},
-		[]graph.Edge{{From: "llm", To: graph.END}},
-	)
-
-	board := graph.NewBoard()
-	exec := NewLocalExecutor()
-	_, err := exec.Execute(context.Background(), g, board)
-	if err != nil {
-		t.Fatalf("execute failed: %v", err)
-	}
-
-	tcRaw, ok := board.GetVar(graph.VarToolCalls)
-	if !ok {
-		t.Fatal("expected VarToolCalls even without external callback")
-	}
-	tc := tcRaw.([]any)
-	if len(tc) != 1 {
-		t.Fatalf("expected 1 tool call, got %d", len(tc))
 	}
 }

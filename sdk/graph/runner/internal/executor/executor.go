@@ -9,7 +9,6 @@ import (
 
 	"github.com/GizClaw/flowcraft/sdk/engine"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
-	"github.com/GizClaw/flowcraft/sdk/event"
 	"github.com/GizClaw/flowcraft/sdk/graph"
 	"github.com/GizClaw/flowcraft/sdk/graph/variable"
 	"github.com/GizClaw/flowcraft/sdk/telemetry"
@@ -46,19 +45,6 @@ var (
 )
 
 const defaultMaxIterations = 200
-
-// Executor is the interface for graph execution engines.
-//
-// Deprecated: superseded by [engine.Engine] (satisfied by
-// graph/runner.Runner). The new contract folds run identity / host /
-// initial board into typed parameters, which lets the agent runtime
-// drive any engine uniformly without reaching into a Strategy layer.
-// Scheduled for removal in v0.3.0; until then the LocalExecutor that
-// implements this interface is kept as the in-process default the
-// runner delegates to internally.
-type Executor interface {
-	Execute(ctx context.Context, g *graph.Graph, board *graph.Board, opts ...RunOption) (*graph.Board, error)
-}
 
 // RunOption configures a single graph execution run.
 type RunOption func(*runConfig)
@@ -109,35 +95,11 @@ type runConfig struct {
 	// going forward; defaulted to engine.NoopHost{} in Execute when
 	// the caller doesn't supply WithHost.
 	host engine.Host
-	// bus is a write-only slot used by the deprecated WithEventBus
-	// option. Execute reads it once via resolvePublisher to fold it
-	// into publisher; nothing else in the executor consults it.
-	//
-	// Deprecated: scheduled for removal in v0.3.0 together with
-	// WithEventBus. Do NOT add new reads.
-	bus event.Bus
-	// streamCallback is the legacy per-node delta sink set by
-	// WithStreamCallback. newNodePublisher fans every emit to it for
-	// v0.2 backwards compatibility; new code should subscribe to the
-	// host's event stream instead.
-	//
-	// Deprecated: scheduled for removal in v0.3.0 together with
-	// WithStreamCallback. Do NOT add new reads.
-	streamCallback graph.StreamCallback
-	// checkpointStore is a write-only slot used by the deprecated
-	// WithCheckpointStore option. Execute reads it once via
-	// resolveCheckpointHost to fold it into cfg.host before the main
-	// loop runs; nothing else in the executor consults it.
-	//
-	// Deprecated: scheduled for removal in v0.3.0 together with
-	// WithCheckpointStore. Do NOT add new reads.
-	checkpointStore CheckpointStore
-
 	// --- derived (set by Execute) ---
 
 	// publisher is the single event sink consumed by every
 	// publishGraph/publishNode and newNodePublisher call. Built once
-	// in Execute from host + bus; never read before that.
+	// in Execute from host; never read before that.
 	publisher engine.Publisher
 
 	nodeLocks *nodeConfigLocks
@@ -150,31 +112,11 @@ type nodeConfigLocks struct {
 
 // WithRunID sets the run identifier the executor uses in telemetry and
 // event subjects.
-//
-// Deprecated: pass [engine.Run.ID] to [engine.Engine.Execute] (i.e. via
-// agent.Run, which mints and forwards it for you). When invoking
-// [graph/runner.Runner] directly through engine.Engine.Execute, the
-// run.ID parameter is the canonical source. Scheduled for removal in
-// v0.3.0 once executor.Executor is removed.
 func WithRunID(id string) RunOption         { return func(c *runConfig) { c.runID = id } }
 func WithMaxIterations(n int) RunOption     { return func(c *runConfig) { c.maxIterations = n } }
 func WithMaxNodeRetries(n int) RunOption    { return func(c *runConfig) { c.maxNodeRetries = n } }
 func WithTimeout(d time.Duration) RunOption { return func(c *runConfig) { c.timeout = d } }
 func WithStartNode(id string) RunOption     { return func(c *runConfig) { c.startNode = id } }
-
-// WithCheckpointStore installs a graph-format CheckpointStore that
-// persists a checkpoint after every node completes.
-//
-// Deprecated: prefer WithHost with a host whose Checkpointer wraps an
-// engine.CheckpointStore. The executor now writes every checkpoint
-// through host.Checkpoint and the store passed here is folded into
-// the host via storeOnlyHost (see resolveCheckpointHost). When BOTH
-// WithHost and WithCheckpointStore are supplied the host wins and the
-// store is silently ignored — checkpointing is state, so we do not
-// fan out the way we do for events. Scheduled for removal in v0.3.0.
-func WithCheckpointStore(s CheckpointStore) RunOption {
-	return func(c *runConfig) { c.checkpointStore = s }
-}
 
 func WithParallel(cfg ParallelConfig) RunOption {
 	return func(c *runConfig) {
@@ -194,37 +136,12 @@ func WithParallel(cfg ParallelConfig) RunOption {
 // WithHost installs the engine.Host the executor will hand to nodes via
 // ExecutionContext.Host. When omitted the executor falls back to
 // engine.NoopHost{} so nodes can call ctx.Host methods unconditionally.
-//
-// WithHost subsumes WithEventBus / WithCheckpointStore: when both are
-// supplied the host wins for publishing and checkpointing while the bus /
-// store remain available for legacy code paths during the transition.
 func WithHost(h engine.Host) RunOption {
 	return func(c *runConfig) { c.host = h }
 }
 
-// WithEventBus installs the event bus used for graph- and node-level
-// envelopes.
-//
-// Deprecated: pass an engine.Host to WithHost instead — the executor now
-// publishes envelopes through host.Publish, which lets the host
-// centralise routing, fan-out and observability. Scheduled for removal in
-// v0.3.0 alongside the other host-overlapping options.
-func WithEventBus(bus event.Bus) RunOption {
-	return func(c *runConfig) { c.bus = bus }
-}
-
 func WithResolver(r VariableResolver) RunOption {
 	return func(c *runConfig) { c.resolver = r }
-}
-
-// WithStreamCallback installs a legacy stream callback receiving every
-// node delta.
-//
-// Deprecated: subscribe to engine.Host's event bus, or read
-// ExecutionContext.Publisher inside a node, instead. Scheduled for
-// removal in v0.3.0.
-func WithStreamCallback(cb graph.StreamCallback) RunOption {
-	return func(c *runConfig) { c.streamCallback = cb }
 }
 
 // LocalExecutor is the default single-process executor.
@@ -247,23 +164,12 @@ func (e *LocalExecutor) Execute(ctx context.Context, g *graph.Graph, board *grap
 
 	cfg.graphName = g.Name()
 
-	// Resolve the deprecated WithCheckpointStore into a host BEFORE
-	// defaulting cfg.host to NoopHost — the resolver needs to see a
-	// nil host as the signal "user only configured the store, wrap
-	// it". Once this returns cfg.host is the canonical Checkpointer
-	// the rest of the executor will use.
-	cfg.host = resolveCheckpointHost(cfg.host, cfg.checkpointStore)
-
 	// cfg.host backs ExecutionContext.Host so nodes can call Host
 	// methods (Publish / Interrupts / AskUser / ...) unconditionally.
 	if cfg.host == nil {
 		cfg.host = engine.NoopHost{}
 	}
-
-	// resolvePublisher is the single seam where event sinks are
-	// chosen. After this line cfg.bus is invisible to the rest of
-	// the executor — every dispatch site reads cfg.publisher.
-	cfg.publisher = resolvePublisher(cfg.host, cfg.bus)
+	cfg.publisher = cfg.host
 
 	actorKey := actorKeyFrom(ctx)
 
@@ -433,11 +339,9 @@ func (e *LocalExecutor) Execute(ctx context.Context, g *graph.Graph, board *grap
 
 			// Checkpoint through the host. host is always non-nil
 			// (NoopHost when the caller didn't configure one), so
-			// no guard is needed. WithCheckpointStore callers have
-			// already been folded into the host via storeOnlyHost
-			// up in Execute. Errors are intentionally swallowed —
-			// checkpointing is observability-adjacent, never a
-			// reason to abort a run.
+			// no guard is needed. Errors are intentionally
+			// swallowed — checkpointing is observability-adjacent,
+			// never a reason to abort a run.
 			cp := Checkpoint{
 				GraphName: g.Name(),
 				RunID:     cfg.runID,

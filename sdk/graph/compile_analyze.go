@@ -17,7 +17,6 @@ func analyze(g *RawGraph, def *GraphDefinition) []Warning {
 	warnings = append(warnings, checkSkipConditions(def)...)
 	warnings = append(warnings, CheckPortCompatibility(g)...)
 	warnings = append(warnings, checkParallelJoin(g)...)
-	warnings = append(warnings, checkLLMMessagesKey(def)...)
 	return warnings
 }
 
@@ -336,36 +335,6 @@ func bfsReachableForward(succs map[string][]string, start string) map[string]boo
 		queue = append(queue, succs[cur]...)
 	}
 	return reached
-}
-
-// checkLLMMessagesKey warns when an LLM node uses a non-default messages_key
-// without enabling query_fallback, which causes the isolated message list to
-// start empty and the LLM to receive no user input.
-func checkLLMMessagesKey(def *GraphDefinition) []Warning {
-	var warnings []Warning
-	for _, nd := range def.Nodes {
-		if nd.Type != "llm" {
-			continue
-		}
-		mk, _ := nd.Config["messages_key"].(string)
-		if mk == "" || mk == "messages" {
-			continue
-		}
-		qf, _ := nd.Config["query_fallback"].(bool)
-		if qf {
-			continue
-		}
-		warnings = append(warnings, Warning{
-			Code: "llm_isolated_messages_no_fallback",
-			Message: fmt.Sprintf(
-				"node %q uses messages_key=%q but query_fallback is not enabled; "+
-					"the isolated message list starts empty so the LLM receives no user input — "+
-					"set query_fallback=true or use the default messages_key",
-				nd.ID, mk),
-			NodeIDs: []string{nd.ID},
-		})
-	}
-	return warnings
 }
 
 // CheckPortCompatibility checks if connected nodes have compatible port types.

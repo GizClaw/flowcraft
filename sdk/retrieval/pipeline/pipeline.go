@@ -165,9 +165,6 @@ func (p *Pipeline) Run(ctx context.Context, idx retrieval.Index, namespace strin
 	resp := &retrieval.SearchResponse{Hits: hits, Took: time.Since(overall)}
 
 	debug := req.Debug
-	if req.ReturnRaw {
-		debug.IncludeLanes = true
-	}
 
 	if debug.IncludeLanes || debug.IncludeStages {
 		exec := &retrieval.SearchExecution{}
@@ -220,9 +217,6 @@ func (p *Pipeline) Run(ctx context.Context, idx retrieval.Index, namespace strin
 			exec.Stages = append(exec.Stages, st.HybridExecution.Stages...)
 		}
 		resp.Execution = exec
-		if req.ReturnRaw {
-			resp.RawByRetriever = retrieval.ProjectRawByRetriever(exec)
-		}
 	}
 	return resp, nil
 }

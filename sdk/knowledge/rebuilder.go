@@ -18,12 +18,6 @@ const (
 
 // ChangeEvent carries enough granularity for targeted rebuilds.
 // DocName == "" denotes a dataset-level event.
-//
-// NOTE (v0.2.x): The deprecated ChangeNotifier in deprecated.go still
-// emits opaque struct{} events; sdkx/knowledge/watcher remains its only
-// in-tree producer. The ChangeEvent shape declared here is what
-// EventNotifier implementations will emit once watcher migrates in
-// v0.3.0.
 type ChangeEvent struct {
 	DatasetID string
 	DocName   string

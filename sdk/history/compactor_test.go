@@ -199,7 +199,7 @@ func TestCompacted_CloseWaitsForAsync(t *testing.T) {
 	// Close should block until all async goroutines complete (not panic or deadlock).
 	done := make(chan struct{})
 	go func() {
-		mem.Close()
+		_ = mem.Shutdown(context.Background())
 		close(done)
 	}()
 
@@ -246,7 +246,7 @@ func TestCompacted_NoIngestDrop(t *testing.T) {
 			t.Fatalf("Append %d: %v", i, err)
 		}
 	}
-	mem.Close()
+	_ = mem.Shutdown(context.Background())
 
 	for i := 0; i < conversations; i++ {
 		got, err := store.GetMessages(ctx, fmt.Sprintf("conv-%d", i))

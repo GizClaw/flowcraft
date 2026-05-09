@@ -8,7 +8,6 @@ import (
 
 	"github.com/GizClaw/flowcraft/sdk/engine"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
-	"github.com/GizClaw/flowcraft/sdk/event"
 	"github.com/GizClaw/flowcraft/sdk/graph"
 	"github.com/GizClaw/flowcraft/sdk/graph/variable"
 )
@@ -142,7 +141,7 @@ func TestLocalExecutor_Interrupt_Resume(t *testing.T) {
 				n := atomic.AddInt32(&callCount, 1)
 				if n == 1 {
 					b.SetVar("approval_status", "pending")
-					return graph.ErrInterrupt
+					return engine.Interrupted(engine.Interrupt{Cause: engine.CauseUnknown})
 				}
 				b.SetVar("approval_status", "approved")
 				return nil
@@ -162,8 +161,8 @@ func TestLocalExecutor_Interrupt_Resume(t *testing.T) {
 	exec := NewLocalExecutor()
 
 	result, err := exec.Execute(context.Background(), g, board)
-	if !errdefs.Is(err, graph.ErrInterrupt) {
-		t.Fatalf("expected ErrInterrupt, got %v", err)
+	if !errdefs.IsInterrupted(err) {
+		t.Fatalf("expected interrupt error, got %v", err)
 	}
 
 	interruptedNode := result.GetVarString(graph.VarInterruptedNode)
@@ -385,66 +384,6 @@ func TestLocalExecutor_AbortBetweenNodes(t *testing.T) {
 	}
 	if !errdefs.IsAborted(err) {
 		t.Fatalf("expected Aborted error, got %v", err)
-	}
-}
-
-func TestLocalExecutor_EventBus_Integration(t *testing.T) {
-	bus := event.NewMemoryBus()
-	defer func() { _ = bus.Close() }()
-
-	ctx := context.Background()
-	const runID = "rint-1"
-	sub, err := bus.Subscribe(ctx, engine.PatternRun(runID))
-	if err != nil {
-		t.Fatalf("subscribe: %v", err)
-	}
-
-	g := buildGraph("test", "start",
-		map[string]graph.Node{
-			"start": graph.NewPassthroughNode("start", "passthrough"),
-		},
-		[]graph.Edge{
-			{From: "start", To: graph.END},
-		},
-	)
-
-	board := graph.NewBoard()
-	exec := NewLocalExecutor()
-	_, err = exec.Execute(ctx, g, board, WithEventBus(bus), WithRunID(runID))
-	if err != nil {
-		t.Fatalf("execute failed: %v", err)
-	}
-
-	wantStart := engine.SubjectRunStart(runID)
-	wantEnd := engine.SubjectRunEnd(runID)
-
-	var envelopes []event.Envelope
-	timeout := time.After(time.Second)
-loop:
-	for {
-		select {
-		case env, ok := <-sub.C():
-			if !ok {
-				break loop
-			}
-			envelopes = append(envelopes, env)
-			if env.Subject == wantEnd {
-				break loop
-			}
-		case <-timeout:
-			break loop
-		}
-	}
-
-	if len(envelopes) < 2 {
-		t.Fatalf("expected at least 2 envelopes (start+end), got %d", len(envelopes))
-	}
-	if envelopes[0].Subject != wantStart {
-		t.Fatalf("first envelope should be %s, got %s", wantStart, envelopes[0].Subject)
-	}
-	// Headers must carry the run id for downstream predicate filters.
-	if envelopes[0].RunID() != runID {
-		t.Fatalf("envelope missing run_id header, got %q", envelopes[0].RunID())
 	}
 }
 

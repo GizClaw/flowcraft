@@ -46,8 +46,8 @@ type ArchiveResult struct {
 	HotStartSeq      int    `json:"hot_start_seq"`
 }
 
-// loadManifestImpl reads the archive manifest for a conversation.
-func loadManifestImpl(ctx context.Context, ws workspace.Workspace, prefix, archivePrefix, convID string) (*ArchiveManifest, error) {
+// LoadManifest reads the archive manifest for a conversation.
+func LoadManifest(ctx context.Context, ws workspace.Workspace, prefix, archivePrefix, convID string) (*ArchiveManifest, error) {
 	path := manifestPath(prefix, archivePrefix, convID)
 	exists, err := ws.Exists(ctx, path)
 	if err != nil {
@@ -168,7 +168,7 @@ func recoverArchiveImpl(ctx context.Context, ws workspace.Workspace, store Store
 		}
 	case "gzip_written":
 		// Gzip done but manifest not updated — update manifest then trim.
-		manifest, err := loadManifestImpl(ctx, ws, prefix, archivePrefix, convID)
+		manifest, err := LoadManifest(ctx, ws, prefix, archivePrefix, convID)
 		if err != nil {
 			return fmt.Errorf("archive: recovery load manifest: %w", err)
 		}
@@ -210,14 +210,18 @@ func recoverArchiveImpl(ctx context.Context, ws workspace.Workspace, store Store
 	return nil
 }
 
-// archiveImpl moves old messages to gzip-compressed archive files. It is
-// the package-private implementation called by the [Coordinator] (via
-// internalArchive) and by the deprecated top-level [Archive] shim.
+// Archive moves old messages to gzip-compressed archive files. The
+// [Coordinator] drives it through its per-conversation worker queue;
+// LLM tools (history_compact in particular) call it directly when the
+// caller has not wired a Coordinator.
 //
-// Crash recovery is handled by recoverArchiveImpl; new callers should
-// drive both through [Coordinator] rather than invoking the package
-// helpers directly.
-func archiveImpl(ctx context.Context, ws workspace.Workspace, store Store, prefix, convID string, cfg ArchiveConfig) (ArchiveResult, error) {
+// Crash recovery is handled by recoverArchiveImpl, which the
+// Coordinator runs lazily on first contact with a conversation.
+// Callers that own a [History] from [NewCompacted] should always
+// reach archive through [Coordinator.Archive] to inherit the
+// per-conversation serialization that protects against racing
+// Append/trim sequences.
+func Archive(ctx context.Context, ws workspace.Workspace, store Store, prefix, convID string, cfg ArchiveConfig) (ArchiveResult, error) {
 	start := time.Now()
 	defer func() {
 		archiveDuration.Record(ctx, time.Since(start).Seconds())
@@ -257,7 +261,7 @@ func archiveImpl(ctx context.Context, ws workspace.Workspace, store Store, prefi
 		archivePrefix = "archive"
 	}
 
-	manifest, err := loadManifestImpl(ctx, ws, prefix, archivePrefix, convID)
+	manifest, err := LoadManifest(ctx, ws, prefix, archivePrefix, convID)
 	if err != nil {
 		return result, err
 	}
@@ -342,12 +346,12 @@ func archiveDir(prefix, archivePrefix, convID string) string {
 	return fmt.Sprintf("%s/%s", convID, archivePrefix)
 }
 
-// loadArchivedMessagesImpl reads messages from gzip archive segments. It
+// LoadArchivedMessages reads messages from gzip archive segments. It
 // powers history_expand's cold-segment path; callers outside the
 // history package should obtain archived turns via the history_expand
-// tool registered through [RegisterTools].
-func loadArchivedMessagesImpl(ctx context.Context, ws workspace.Workspace, prefix, archivePrefix, convID string, startSeq, endSeq int) ([]model.Message, error) {
-	manifest, err := loadManifestImpl(ctx, ws, prefix, archivePrefix, convID)
+// tool wrapper, not by reading archive files directly.
+func LoadArchivedMessages(ctx context.Context, ws workspace.Workspace, prefix, archivePrefix, convID string, startSeq, endSeq int) ([]model.Message, error) {
+	manifest, err := LoadManifest(ctx, ws, prefix, archivePrefix, convID)
 	if err != nil {
 		return nil, err
 	}

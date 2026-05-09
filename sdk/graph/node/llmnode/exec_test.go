@@ -5,6 +5,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/graph"
 	"github.com/GizClaw/flowcraft/sdk/llm"
 	"github.com/GizClaw/flowcraft/sdk/model"
@@ -224,22 +225,6 @@ func TestNode_ExecuteBoard_JSONMode_InvalidJSON(t *testing.T) {
 	}
 }
 
-func TestNode_ExecuteBoard_QueryFallback(t *testing.T) {
-	stream := &mockStream{chunks: []model.StreamChunk{{Content: "resp"}}}
-	resolver := &mockResolver{llmInst: &streamOnlyLLM{stream: stream}}
-	n := New("llm1", resolver, nil, Config{
-		MessagesKey:   "alt_msgs",
-		QueryFallback: true,
-	})
-
-	board := graph.NewBoard()
-	board.SetVar(graph.VarQuery, "what is this?")
-
-	if err := n.ExecuteBoard(execCtx(), board); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
 func TestNode_ExecuteBoard_TrackSteps(t *testing.T) {
 	stream := &mockStream{chunks: []model.StreamChunk{{Content: "step1"}}}
 	resolver := &mockResolver{llmInst: &streamOnlyLLM{stream: stream}}
@@ -327,5 +312,40 @@ func TestNode_ExecuteBoard_WithToolCalls(t *testing.T) {
 	}
 	if !hasToolCall || !hasToolResult {
 		t.Fatalf("expected tool_call and tool_result events, got %v", events)
+	}
+}
+
+func TestNode_ExecuteBoard_EmptyMessages_RejectsRequest(t *testing.T) {
+	resolver := &mockResolver{llmInst: &mockLLM{}}
+	n := New("llm1", resolver, nil, Config{
+		MessagesChannel: "isolated",
+	})
+
+	board := graph.NewBoard()
+
+	err := n.ExecuteBoard(execCtx(), board)
+	if err == nil {
+		t.Fatal("expected validation error for empty messages, got nil")
+	}
+	if !errdefs.IsValidation(err) {
+		t.Fatalf("expected validation error, got %v", err)
+	}
+}
+
+func TestNode_ExecuteBoard_SystemPromptOnly_Allowed(t *testing.T) {
+	stream := &mockStream{chunks: []model.StreamChunk{{Content: "hi from system-only"}}}
+	resolver := &mockResolver{llmInst: &streamOnlyLLM{stream: stream}}
+	n := New("llm1", resolver, nil, Config{
+		SystemPrompt:    "You are an autonomous worker. Greet the user.",
+		MessagesChannel: "isolated",
+	})
+
+	board := graph.NewBoard()
+
+	if err := n.ExecuteBoard(execCtx(), board); err != nil {
+		t.Fatalf("system-only request should be allowed, got %v", err)
+	}
+	if resp, _ := board.GetVar(VarResponse); resp != "hi from system-only" {
+		t.Fatalf("response = %q", resp)
 	}
 }

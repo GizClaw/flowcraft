@@ -92,6 +92,27 @@ func (m Message) Clone() Message {
 	}
 }
 
+// LastByRole returns the last message in msgs whose Role matches role.
+// The boolean is false when no such message exists. The returned Message
+// is the slice element itself (not a deep copy); callers that intend to
+// mutate it should call [Message.Clone] first.
+//
+// Typical use is for graph nodes that need to read a single role-scoped
+// turn from a board channel — e.g. "the latest user message on
+// MainChannel" — without re-implementing the reverse scan everywhere:
+//
+//	if m, ok := model.LastByRole(b.Channel(engine.MainChannel), model.RoleUser); ok {
+//	    query = m.Content()
+//	}
+func LastByRole(msgs []Message, role Role) (Message, bool) {
+	for i := len(msgs) - 1; i >= 0; i-- {
+		if msgs[i].Role == role {
+			return msgs[i], true
+		}
+	}
+	return Message{}, false
+}
+
 // CloneMessages returns a deep copy of msgs. Nil stays nil so callers can
 // preserve the usual JSON / len semantics.
 func CloneMessages(msgs []Message) []Message {

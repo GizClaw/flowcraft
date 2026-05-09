@@ -17,10 +17,7 @@ import (
 
 type ctxKey int
 
-const (
-	ctxKeyProducerID ctxKey = iota
-	ctxKeyKanban
-)
+const ctxKeyProducerID ctxKey = iota
 
 // WithProducerID injects the producer ID (e.g. agent ID) into the context.
 func WithProducerID(ctx context.Context, id string) context.Context {

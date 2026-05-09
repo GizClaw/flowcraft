@@ -141,48 +141,5 @@ func TestCompactArchive_ManualCompact(t *testing.T) {
 	}
 }
 
-func TestCompactArchive_ArchiveAndExpand(t *testing.T) {
-	ws, err := workspace.NewLocalWorkspace(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	store := NewFileStore(ws, "memory")
-	ctx := context.Background()
-	convID := "archive-expand"
-
-	msgs := make([]model.Message, 30)
-	for i := range msgs {
-		msgs[i] = model.NewTextMessage(model.RoleUser, "content message")
-	}
-	_ = store.SaveMessages(ctx, convID, msgs)
-
-	// Archive first 15.
-	cfg := ArchiveConfig{ArchiveThreshold: 20, ArchiveBatchSize: 15}
-	ar, err := Archive(ctx, ws, store, "memory", convID, cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if ar.MessagesArchived != 15 {
-		t.Fatalf("expected 15 archived, got %d", ar.MessagesArchived)
-	}
-
-	// Expand across boundary (seq 10-20).
-	summaryStore := NewFileSummaryStore(ws, "memory")
-	_ = summaryStore.Save(ctx, &SummaryNode{
-		ID: "cross-node", ConversationID: convID, Depth: 0,
-		Content: "summary", EarliestSeq: 10, LatestSeq: 20,
-	})
-
-	expandTool := newHistoryExpandTool(ToolDeps{
-		SummaryStore: summaryStore, MessageStore: store,
-		Workspace: ws, Prefix: "memory",
-	})
-	expandCtx := WithConversationID(ctx, convID)
-	result, err := expandTool.Execute(expandCtx, `{"summary_id":"cross-node","max_messages":50}`)
-	if err != nil {
-		t.Fatalf("expand: %v", err)
-	}
-	if result == "" {
-		t.Fatal("expand returned empty")
-	}
-}
+// Boundary expand (cold archive + hot tail) is exercised by the
+// history_expand tool's own tests in the adapter package.

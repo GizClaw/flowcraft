@@ -18,7 +18,6 @@ func executeWithRetry(ctx context.Context, node graph.Node, board *graph.Board, 
 
 	publisher := newNodePublisher(ctx, cfg, nodeID)
 	wrappedPublisher := wrapToolCapture(publisher, board)
-	streamShim := legacyStreamShim(wrappedPublisher)
 
 	for attempt := range maxAttempts {
 		if attempt > 0 {
@@ -35,7 +34,6 @@ func executeWithRetry(ctx context.Context, node graph.Node, board *graph.Board, 
 			Context:   ctx,
 			Host:      cfg.host,
 			Publisher: wrappedPublisher,
-			Stream:    streamShim,
 			RunID:     cfg.runID,
 		}
 
@@ -43,9 +41,10 @@ func executeWithRetry(ctx context.Context, node graph.Node, board *graph.Board, 
 		if lastErr == nil {
 			return nil
 		}
-		// Both legacy graph.ErrInterrupt and engine.Interrupted satisfy
-		// errdefs.IsInterrupted, so we never retry an interrupted node
-		// regardless of which sentinel the node chose.
+		// Cooperative interrupts (engine.Interrupted) are never retried:
+		// the node returned with intent, not failure, so re-running would
+		// either burn budget on a duplicate side effect or simply trip
+		// the same interrupt again.
 		if errdefs.IsInterrupted(lastErr) {
 			return lastErr
 		}
@@ -80,19 +79,6 @@ func wrapToolCapture(inner graph.StreamPublisher, board *graph.Board) graph.Stre
 			updateBoardToolResult(board, m)
 		}
 	})
-}
-
-// legacyStreamShim adapts a StreamPublisher into the deprecated StreamCallback
-// shape so nodes that still read ctx.Stream keep working. The shim ignores
-// se.NodeID because the publisher is already bound to the executing node;
-// scheduled for removal in v0.3.0 alongside ExecutionContext.Stream.
-func legacyStreamShim(p graph.StreamPublisher) graph.StreamCallback {
-	if p == nil {
-		return nil
-	}
-	return func(se graph.StreamEvent) {
-		p.Emit(se.Type, se.Payload)
-	}
 }
 
 func updateBoardToolResult(board *graph.Board, m map[string]any) {
