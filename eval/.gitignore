@@ -14,8 +14,9 @@ locomo/cmd/*/compare
 locomo/cmd/*/fetch
 locomo/cmd/*/ingest
 # `go build ./locomo/cmd/<x>` from eval/ drops the binary at eval/<x>.
+/compare
 /convert-locomo
 /eval
-/compare
 /fetch
 /ingest
+/results

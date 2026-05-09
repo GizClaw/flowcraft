@@ -43,7 +43,7 @@ is set too aggressively for the dataset at hand — it lets you separate
 GOWORK=off go test ./eval/history/... -count=1
 
 # full eval (LoCoMo10 dataset, qwen extractor + judge)
-export QWEN_API_KEY=sk-...
+export FLOWCRAFT_QWEN='{"api_key":"sk-...","model":"qwen-max"}'
 GOWORK=off go run ./eval/history/cmd/eval \
     --dataset      eval/locomo/data/locomo10.jsonl \
     --answer-llm   qwen:qwen-max \

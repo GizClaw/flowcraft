@@ -8,17 +8,61 @@ FlowCraft 的质量评测套件。
 
 ## 套件清单
 
-| Suite | 测什么 | 入口 |
-|---|---|---|
-| `locomo/` | 长期记忆（recall）的 EM / F1 / qa.judge / recall.k_hit | `go run ./locomo/cmd/eval` |
-| `history/` | history compactor 的质量与 token 成本 trade-off | `go run ./history/cmd/eval` |
-| `knowledge/` | knowledge retrieval（BM25/vector/hybrid）质量回归 | `go test -tags=integration ./knowledge/...` |
+| Suite        | 测什么                                                 | 入口                                        |
+| ------------ | ------------------------------------------------------ | ------------------------------------------- |
+| `locomo/`    | 长期记忆（recall）的 EM / F1 / qa.judge / recall.k_hit | `go run ./locomo/cmd/eval`                  |
+| `history/`   | history compactor 的质量与 token 成本 trade-off        | `go run ./history/cmd/eval`                 |
+| `knowledge/` | knowledge retrieval（BM25/vector/hybrid）质量回归      | `go test -tags=integration ./knowledge/...` |
 
 ## 共享包
 
 - `dataset/` —— LoCoMo 风格 conversation/question schema
 - `metrics/` —— EM、F1、LLM-as-Judge、Latency 聚合
 - `report/` —— 统一 Report schema 与 compare（演进中，v0.4 落地）
+- `internal/env/` —— 把 `--*-llm <alias>[:<model>]` flag 解析成
+  `sdk/llm.NewFromConfig` 期望的 `(provider, model, config)` 三元组；
+  详见下文 "Provider 凭据"。
+
+## Provider 凭据
+
+CLI flag 形如 `--answer-llm <alias>[:<model>]`。`<alias>` 命名 env 变量，
+`:<model>` 可选地覆盖 JSON 里的默认 model。
+
+凭据通过 **JSON blob 单 env 变量** 传入，shape 与 `sdk/llm.NewFromConfig`
+的 `config map[string]any` 一致：
+
+```json
+{
+  "provider": "azure",
+  "api_key": "sk-...",
+  "model": "gpt-5.4",
+  "base_url": "https://...",
+  "api_version": "2024-08-01-preview",
+  "caps": { "no_temperature": true }
+}
+```
+
+读取顺序（先非空者胜）：
+
+1. `FLOWCRAFT_<ALIAS>` —— 推荐
+2. `FLOWCRAFT_TEST_<ALIAS>` —— 复用 `tests/conformance/llm` 已有 .env
+
+`<ALIAS>` 是 spec 里 `:` 之前那段（大写）；通常等于 provider 名。
+但你可以注册多个 alias 复用同一个 provider，用于挂载不同的连接 profile：
+
+```bash
+# Azure 一份资源、两套 caps
+export FLOWCRAFT_AZURE_REASONING='{"provider":"azure","api_key":"...","model":"o1-mini","caps":{"no_temperature":true}}'
+export FLOWCRAFT_AZURE_FAST='{"provider":"azure","api_key":"...","model":"gpt-4o-mini"}'
+
+go run ./locomo/cmd/eval \
+    --extractor-llm azure_reasoning  \
+    --answer-llm    azure_fast       \
+    --judge-llm     azure_reasoning  \
+    --embedder      qwen:text-embedding-v4
+```
+
+这时 alias 不再等于 factory；factory 名字从 JSON 的 `"provider"` 字段读。
 
 ## 模块边界
 
@@ -50,8 +94,8 @@ GOWORK=off go run ./locomo/cmd/eval \
     --dataset eval/locomo/data/locomo10.jsonl \
     --out     eval/locomo/results/locomo10.json
 
-# 3) history compactor（需要 QWEN_API_KEY 之类，否则只跑 none/buffer）
-export QWEN_API_KEY=sk-...
+# 3) history compactor（需 FLOWCRAFT_QWEN JSON blob，否则只跑 none/buffer）
+export FLOWCRAFT_QWEN='{"api_key":"sk-...","model":"qwen-max"}'
 GOWORK=off go run ./history/cmd/eval \
     --dataset      eval/locomo/data/locomo10.jsonl \
     --answer-llm   qwen:qwen-max \

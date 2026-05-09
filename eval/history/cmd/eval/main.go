@@ -13,10 +13,12 @@ import (
 
 	"github.com/GizClaw/flowcraft/eval/dataset"
 	"github.com/GizClaw/flowcraft/eval/history"
+	"github.com/GizClaw/flowcraft/eval/internal/env"
 	"github.com/GizClaw/flowcraft/eval/metrics"
-	"github.com/GizClaw/flowcraft/sdk/llm"
 
 	_ "github.com/GizClaw/flowcraft/sdkx/llm/azure"
+	_ "github.com/GizClaw/flowcraft/sdkx/llm/deepseek"
+	_ "github.com/GizClaw/flowcraft/sdkx/llm/minimax"
 	_ "github.com/GizClaw/flowcraft/sdkx/llm/qwen"
 )
 
@@ -35,18 +37,18 @@ func main() {
 	out := flag.String("out", "", "output report path (default: stdout)")
 	flag.Parse()
 
-	ans, err := buildLLM(*answerLLM)
+	ans, err := env.BuildLLM(*answerLLM)
 	if err != nil {
 		log.Fatalf("--answer-llm: %v", err)
 	}
 	if ans == nil {
 		log.Fatal("--answer-llm is required (e.g. qwen:qwen-max)")
 	}
-	sum, err := buildLLM(*summaryLLM)
+	sum, err := env.BuildLLM(*summaryLLM)
 	if err != nil {
 		log.Fatalf("--summary-llm: %v", err)
 	}
-	judge, err := buildLLM(*judgeLLM)
+	judge, err := env.BuildLLM(*judgeLLM)
 	if err != nil {
 		log.Fatalf("--judge-llm: %v", err)
 	}
@@ -118,44 +120,4 @@ func parseStrategies(s string) []history.Strategy {
 		out = append(out, history.Strategy(p))
 	}
 	return out
-}
-
-// buildLLM mirrors eval/locomo/cmd/eval's helper. Kept verbatim so the two
-// benches can drift independently without one breaking the other; the surface
-// area is small enough that abstracting is not worth the cross-package
-// dependency.
-func buildLLM(spec string) (llm.LLM, error) {
-	if spec == "" {
-		return nil, nil
-	}
-	provider, model, ok := strings.Cut(spec, ":")
-	if !ok || provider == "" {
-		return nil, fmt.Errorf("expected provider:model, got %q", spec)
-	}
-	envPrefix := strings.ToUpper(provider)
-	apiKey := os.Getenv(envPrefix + "_API_KEY")
-	if apiKey == "" {
-		return nil, fmt.Errorf("%s_API_KEY env var is empty", envPrefix)
-	}
-	cfg := map[string]any{"api_key": apiKey}
-	if v := os.Getenv(envPrefix + "_BASE_URL"); v != "" {
-		cfg["base_url"] = v
-	}
-	if v := os.Getenv(envPrefix + "_API_VERSION"); v != "" {
-		cfg["api_version"] = v
-	}
-	caps := map[string]any{}
-	if os.Getenv(envPrefix+"_NO_TEMPERATURE") != "" {
-		caps["no_temperature"] = true
-	}
-	if os.Getenv(envPrefix+"_NO_JSON_SCHEMA") != "" {
-		caps["no_json_schema"] = true
-	}
-	if os.Getenv(envPrefix+"_NO_JSON_MODE") != "" {
-		caps["no_json_mode"] = true
-	}
-	if len(caps) > 0 {
-		cfg["caps"] = caps
-	}
-	return llm.NewFromConfig(provider, model, cfg)
 }

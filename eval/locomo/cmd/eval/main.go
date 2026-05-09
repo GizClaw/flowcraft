@@ -6,7 +6,7 @@
 //	go run ./eval/locomo/cmd/eval --dataset eval/locomo/data/locomo10.jsonl --out r.json
 //
 //	# full LLM-driven run: LLM extractor + LLM answer + LLM judge + Qwen embedder
-//	export QWEN_API_KEY=sk-...
+//	export FLOWCRAFT_QWEN='{"api_key":"sk-...","model":"qwen-max"}'
 //	go run ./eval/locomo/cmd/eval \
 //	    --dataset      eval/locomo/data/locomo10.jsonl \
 //	    --extractor                                  \
@@ -23,20 +23,20 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/GizClaw/flowcraft/eval/dataset"
+	"github.com/GizClaw/flowcraft/eval/internal/env"
 	"github.com/GizClaw/flowcraft/eval/locomo"
 	"github.com/GizClaw/flowcraft/eval/locomo/runners/flowcraft"
 	"github.com/GizClaw/flowcraft/eval/metrics"
-	"github.com/GizClaw/flowcraft/sdk/embedding"
-	"github.com/GizClaw/flowcraft/sdk/llm"
 
 	// Side-effect imports register the providers we accept on the CLI.
 	_ "github.com/GizClaw/flowcraft/sdkx/embedding/azure"
 	_ "github.com/GizClaw/flowcraft/sdkx/embedding/qwen"
 	_ "github.com/GizClaw/flowcraft/sdkx/llm/azure"
+	_ "github.com/GizClaw/flowcraft/sdkx/llm/deepseek"
+	_ "github.com/GizClaw/flowcraft/sdkx/llm/minimax"
 	_ "github.com/GizClaw/flowcraft/sdkx/llm/qwen"
 )
 
@@ -60,6 +60,8 @@ func main() {
 	maxFacts := flag.Int("max-facts", 200, "extractor: max facts per Save call")
 	tunedPrompts := flag.Bool("tuned-prompts", true, "use the LoCoMo-tuned extractor & answer prompts (recommended)")
 	rerankerLLM := flag.String("reranker-llm", "", "LLM for cross-encoder rerank, format provider:model; empty disables")
+	judgeStyle := flag.String("judge-style", "locomo", "judge prompt style: locomo (mem0-aligned, lenient) | strict (semantic-equivalence)")
+	judgeTemp := flag.Float64("judge-temperature", 0.0, "judge LLM temperature (0=deterministic, mem0-aligned)")
 	scoreThreshold := flag.Float64("score-threshold", 0, "drop recall hits below this score before rerank/limit (0 = SDK default 0.05)")
 	saveWithContext := flag.Bool("save-with-context", false, "before extraction, recall existing facts and inject as prompt context")
 	softMerge := flag.Bool("soft-merge", true, "mark older near-duplicate entries as superseded_by; SupersededDecay damps them at recall")
@@ -100,23 +102,23 @@ func main() {
 	}
 
 	// Build provider-backed components.
-	extractor, err := buildLLM(*extractorLLM)
+	extractor, err := env.BuildLLM(*extractorLLM)
 	if err != nil {
 		log.Fatalf("--extractor-llm: %v", err)
 	}
-	answer, err := buildLLM(*answerLLM)
+	answer, err := env.BuildLLM(*answerLLM)
 	if err != nil {
 		log.Fatalf("--answer-llm: %v", err)
 	}
-	judge, err := buildLLM(*judgeLLM)
+	judge, err := env.BuildLLM(*judgeLLM)
 	if err != nil {
 		log.Fatalf("--judge-llm: %v", err)
 	}
-	embedder, err := buildEmbedder(*embedderFlag)
+	embedder, err := env.BuildEmbedder(*embedderFlag)
 	if err != nil {
 		log.Fatalf("--embedder: %v", err)
 	}
-	reranker, err := buildLLM(*rerankerLLM)
+	reranker, err := env.BuildLLM(*rerankerLLM)
 	if err != nil {
 		log.Fatalf("--reranker-llm: %v", err)
 	}
@@ -158,7 +160,16 @@ func main() {
 		opts.AnswerPrompt = locomoAnswerPrompt
 	}
 	if judge != nil {
-		opts.Judge = metrics.LLMJudge{LLM: judge}
+		j := metrics.LLMJudge{LLM: judge, Temperature: judgeTemp}
+		switch *judgeStyle {
+		case "locomo", "mem0":
+			j.Prompt = metrics.LocoMoLLMJudgePrompt
+		case "strict", "default":
+			// keep empty → DefaultLLMJudgePrompt
+		default:
+			log.Fatalf("--judge-style: unknown %q (want locomo|strict)", *judgeStyle)
+		}
+		opts.Judge = j
 	}
 
 	report, err := locomo.Run(context.Background(), r, ds, opts)
@@ -246,69 +257,3 @@ Guidelines:
 %s
 
 Answer:`
-
-// providerConfig builds the {api_key, base_url, api_version, caps} map a
-// provider factory expects. All fields except api_key are optional and read
-// from <PROVIDER>_<KEY> env vars so the same flag plumbing supports Qwen
-// (api_key only) and Azure (api_key + base_url + api_version + no_temperature
-// caps for o1/gpt-5 deployments). Returns "" provider when spec is empty.
-func providerConfig(spec string) (provider, model string, cfg map[string]any, err error) {
-	provider, model, ok := strings.Cut(spec, ":")
-	if !ok || provider == "" {
-		return "", "", nil, fmt.Errorf("expected provider:model, got %q", spec)
-	}
-	envPrefix := strings.ToUpper(provider)
-	apiKey := os.Getenv(envPrefix + "_API_KEY")
-	if apiKey == "" {
-		return "", "", nil, fmt.Errorf("%s_API_KEY env var is empty", envPrefix)
-	}
-	cfg = map[string]any{"api_key": apiKey}
-	if v := os.Getenv(envPrefix + "_BASE_URL"); v != "" {
-		cfg["base_url"] = v
-	}
-	if v := os.Getenv(envPrefix + "_API_VERSION"); v != "" {
-		cfg["api_version"] = v
-	}
-	caps := map[string]any{}
-	if os.Getenv(envPrefix+"_NO_TEMPERATURE") != "" {
-		caps["no_temperature"] = true
-	}
-	if os.Getenv(envPrefix+"_NO_JSON_SCHEMA") != "" {
-		caps["no_json_schema"] = true
-	}
-	if os.Getenv(envPrefix+"_NO_JSON_MODE") != "" {
-		caps["no_json_mode"] = true
-	}
-	if len(caps) > 0 {
-		cfg["caps"] = caps
-	}
-	return provider, model, cfg, nil
-}
-
-// buildLLM parses "provider:model" and constructs an LLM via the global
-// provider registry. Returns (nil, nil) when spec is empty.
-//
-// Connection settings come from env vars: <PROVIDER>_API_KEY (required),
-// <PROVIDER>_BASE_URL, <PROVIDER>_API_VERSION, <PROVIDER>_NO_TEMPERATURE.
-func buildLLM(spec string) (llm.LLM, error) {
-	if spec == "" {
-		return nil, nil
-	}
-	provider, model, cfg, err := providerConfig(spec)
-	if err != nil {
-		return nil, err
-	}
-	return llm.NewFromConfig(provider, model, cfg)
-}
-
-// buildEmbedder mirrors buildLLM for the embedding registry.
-func buildEmbedder(spec string) (embedding.Embedder, error) {
-	if spec == "" {
-		return nil, nil
-	}
-	provider, model, cfg, err := providerConfig(spec)
-	if err != nil {
-		return nil, err
-	}
-	return embedding.NewFromConfig(provider, model, cfg)
-}

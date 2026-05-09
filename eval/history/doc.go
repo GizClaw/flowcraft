@@ -28,7 +28,7 @@
 //	# the `compacted` strategy is skipped when no LLM is configured).
 //	go run ./eval/history/cmd/eval --dataset synthetic --out r.json
 //
-//	# full run (compactor enabled; requires QWEN_API_KEY or similar):
+//	# full run (compactor enabled; requires FLOWCRAFT_QWEN JSON env or similar):
 //	go run ./eval/history/cmd/eval \
 //	    --dataset      eval/locomo/data/locomo10.jsonl \
 //	    --answer-llm   qwen:qwen-max \

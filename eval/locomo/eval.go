@@ -399,6 +399,16 @@ func ingestFlat(ctx context.Context, r runners.Runner, scopeOf func(string) reca
 					latencies = append(latencies, d)
 					a.facts += n
 				}
+				// Per-batch heartbeat: without this the run looks frozen for
+				// 5-15 min on slow extractor models because the only previous
+				// log point was per-conversation completion. Now the user
+				// gets a line every Save call (success or failure) so they
+				// can spot rate-limit walls or hung calls early.
+				if opts.ProgressEvery > 0 {
+					if err == nil {
+						log.Printf("[locomo] ingest %s/%s batch %d/%d in %s, %d facts (overall %d/%d)", job.convID, job.batch.session, job.batchIdx+1, job.convTotal, d.Truncate(100*time.Millisecond), n, done, totalJobs)
+					}
+				}
 				if a.remaining == 0 {
 					log.Printf("[locomo] ingest %s done in %s, %d facts saved (%d batches, overall %d/%d)", job.convID, time.Since(a.start).Truncate(time.Second), a.facts, a.total, done, totalJobs)
 				}
