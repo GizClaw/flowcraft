@@ -2,12 +2,11 @@ module github.com/GizClaw/flowcraft/sdkx
 
 go 1.25.0
 
-require github.com/GizClaw/flowcraft/sdk v0.2.11
+require github.com/GizClaw/flowcraft/sdk v0.3.0
 
 require (
 	github.com/PuerkitoBio/goquery v1.11.0
 	github.com/anthropics/anthropic-sdk-go v1.26.0
-	github.com/fsnotify/fsnotify v1.9.0
 	github.com/go-shiori/go-readability v0.0.0-20251205110129-5db1dc9836f0
 	github.com/jackc/pgx/v5 v5.9.2
 	github.com/microcosm-cc/bluemonday v1.0.27
