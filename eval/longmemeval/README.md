@@ -106,6 +106,26 @@ minimax answer + azure judge + deepseek reranker, k=30) `_s` takes
 roughly 4-5h end-to-end and `_m` is closer to 30-40h — gate the latter
 behind a manual nightly until ingest concurrency is tuned upward.
 
+## Baselines
+
+Headline `oracle` numbers from periodic full-sweep runs. Raw JSON
+reports are NOT committed (gitignored under `results/`); ask the
+on-call eval owner for the artefact if you need the per-question
+detail. Numbers are recorded here so the trend is visible at a
+glance from the repo.
+
+| Date       | Stack (extractor / answer / judge / reranker / embedder)                                                              | k  | n   | qa.judge | qa.em | qa.f1 | recall.p95 | save.p95 |
+| ---------- | --------------------------------------------------------------------------------------------------------------------- | -- | --- | -------- | ----- | ----- | ---------- | -------- |
+| 2026-05-11 | deepseek-v4-flash / minimax-m2.7-highspeed / azure-gpt-5 (locomo prompt) / qwen-flash / qwen text-embedding-v4         | 30 | 500 | **0.812**| 0.484 | 0.134 | 7.5 s      | 244 s    |
+
+The 2026-05-11 sweep was the first oracle baseline against
+`feat/eval-migration`'s unified runner — see PR #91 for the code
+under test. mem0's published LongMemEval oracle reference range is
+~0.70-0.80 on qa.judge, so flowcraft's 0.812 is a competitive
+starting point; gains from here are expected to come from per-type
+prompts (the `*_abs` abstention class still drags) rather than the
+core pipeline.
+
 ## Citation
 
 ```bibtex
