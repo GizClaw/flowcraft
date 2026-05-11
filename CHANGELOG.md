@@ -37,15 +37,19 @@ with its own tag prefix (e.g. `sdk/vX.Y.Z`, `vessel/vX.Y.Z`,
   `Save`) so slow extractors and rate-limit walls are visible
   immediately instead of looking frozen.
 - `eval/internal/notify` + `eval/scripts/run-eval.sh`: Feishu CardKit
-  notifications for long-running evals. The runner emits structured
-  lifecycle events (`start`, `ingest_progress`, `ingest_done`,
-  `qa_progress`, `done`, one-shot `error` on high QA failure rate) via
-  new `locomo.Options.{Hook,ProgressPct}` and CLI flags `--notify-name`,
-  `--notify-progress-pct` (default 25 %), `--notify-dry-run`. Each run
-  becomes ONE live-updated CardKit card whose markdown body is rewritten
-  in place on every event, so a 50-hour LongMemEval run produces a
-  single chat message instead of hundreds. Credentials are read from
-  env (`FEISHU_APP_ID`, `FEISHU_APP_SECRET`, `FEISHU_CHAT_ID`) so they
+  notifications for long-running evals. Both runners (`locomo` and
+  `history`) emit structured lifecycle events via their respective
+  `Options.{Hook,ProgressPct}` fields and a shared CLI flag set
+  (`--notify-name`, `--notify-progress-pct`, `--notify-dry-run`)
+  registered via the new `notify.CLIFlags` helper. Locomo / LongMemEval
+  emit `start`, `ingest_progress`, `ingest_done`, `qa_progress`,
+  `done`, plus a one-shot `error` on high QA failure rate. History
+  compression emits `start`, `strategy_start`, `strategy_progress`,
+  `strategy_done`, `done`, plus per-strategy `error`. Each run becomes
+  ONE live-updated CardKit card whose markdown body is rewritten in
+  place on every event, so a 50-hour LongMemEval run produces a single
+  chat message instead of hundreds. Credentials are read from env
+  (`FEISHU_APP_ID`, `FEISHU_APP_SECRET`, `FEISHU_CHAT_ID`) so they
   never appear in `ps` output. A companion `eval/scripts/run-eval.sh`
   wraps the binary as a pure process supervisor: PID-file lock,
   pre-flight disk check, log tee, and a 30-min log-idle watchdog. The

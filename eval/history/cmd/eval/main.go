@@ -14,6 +14,7 @@ import (
 	"github.com/GizClaw/flowcraft/eval/dataset"
 	"github.com/GizClaw/flowcraft/eval/history"
 	"github.com/GizClaw/flowcraft/eval/internal/env"
+	"github.com/GizClaw/flowcraft/eval/internal/notify"
 	"github.com/GizClaw/flowcraft/eval/metrics"
 
 	_ "github.com/GizClaw/flowcraft/sdkx/llm/azure"
@@ -35,7 +36,13 @@ func main() {
 	concurrency := flag.Int("concurrency", 1, "questions answered in parallel per strategy (default 1 = sequential)")
 	progressEvery := flag.Int("progress-every", 0, "log a progress line every N completed questions per strategy (0 = silent)")
 	out := flag.String("out", "", "output report path (default: stdout)")
+	notifyFlags := notify.RegisterFlags(flag.CommandLine)
 	flag.Parse()
+
+	notifier, err := notifyFlags.Build()
+	if err != nil {
+		log.Fatalf("notify: %v", err)
+	}
 
 	ans, err := env.BuildLLM(*answerLLM)
 	if err != nil {
@@ -73,6 +80,16 @@ func main() {
 		Strategies:         parseStrategies(*stratFlag),
 		Concurrency:        *concurrency,
 		ProgressEvery:      *progressEvery,
+		ProgressPct:        *notifyFlags.ProgressPct,
+		Hook: func(ctx context.Context, e history.Event) {
+			notify.Forward(ctx, notifier, notify.Event{
+				Kind:   e.Kind,
+				Time:   e.Time,
+				Title:  e.Title,
+				Body:   e.Body,
+				Fields: e.Fields,
+			})
+		},
 	}
 	if judge != nil {
 		opts.Judge = metrics.LLMJudge{LLM: judge}

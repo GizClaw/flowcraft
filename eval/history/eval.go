@@ -76,7 +76,44 @@ type Options struct {
 	// logger every ProgressEvery completed questions. Use 0 for silent
 	// runs (tests).
 	ProgressEvery int
+
+	// Hook, when non-nil, is invoked at every lifecycle checkpoint
+	// (start, per-strategy progress, strategy_done, done, error). The
+	// CLI wires this to a Feishu notifier so 30+-min runs surface a
+	// live status card; tests leave it nil for hermetic determinism.
+	Hook EventHook
+
+	// ProgressPct gates intra-strategy progress events: each strategy's
+	// QA loop fires a progress event every ProgressPct percent of
+	// completed questions. <=0 disables intermediate progress entirely
+	// (start/strategy_done/done still fire).
+	ProgressPct int
 }
+
+// Event is the payload pushed to [Options.Hook] at each lifecycle moment.
+//
+// Kinds emitted by [Run]:
+//   - "start"            — before any strategy runs (Fields: dataset, n_convs, n_qs, strategies)
+//   - "strategy_start"   — before a strategy begins ingest+QA (Fields: strategy)
+//   - "strategy_progress"— every ProgressPct % of QA done (Fields: strategy, done, total)
+//   - "strategy_done"    — after a strategy completes (Fields: strategy, qa_judge, qa_em, qa_f1, prompt_tokens_p95, errors)
+//   - "done"             — final summary across strategies (Fields: duration, plus per-strategy qa_judge.<s>)
+//   - "error"            — a strategy aborted (Fields: strategy, err)
+//
+// The shape mirrors notify.Event field-for-field so adapters can copy by
+// value rather than re-deriving each map.
+type Event struct {
+	Kind   string
+	Time   time.Time
+	Title  string
+	Body   string
+	Fields map[string]string
+}
+
+// EventHook receives lifecycle events. It MUST be non-blocking on the hot
+// path: Run invokes it synchronously and a slow notifier would stall the
+// next ingest/QA batch.
+type EventHook func(ctx context.Context, e Event)
 
 // DefaultAnswerPrompt mirrors the LoCoMo answer prompt's neutral framing so
 // quality numbers across the two benches are comparable.
@@ -167,17 +204,83 @@ func Run(ctx context.Context, ds *dataset.Dataset, opts Options) (*Report, error
 	}
 	defer func() { rep.DurationMS = time.Since(rep.StartedAt).Milliseconds() }()
 
+	emit := func(e Event) {
+		if opts.Hook == nil {
+			return
+		}
+		if e.Time.IsZero() {
+			e.Time = time.Now()
+		}
+		opts.Hook(ctx, e)
+	}
+
+	stratNames := make([]string, 0, len(opts.Strategies))
 	for _, s := range opts.Strategies {
-		r, err := runStrategy(ctx, ds, s, opts)
+		stratNames = append(stratNames, string(s))
+	}
+	emit(Event{
+		Kind:  "start",
+		Title: ds.Name,
+		Body:  fmt.Sprintf("history-compression — %d conv / %d qs across %d strategies", len(ds.Conversations), len(ds.Questions), len(opts.Strategies)),
+		Fields: map[string]string{
+			"dataset":    ds.Name,
+			"n_convs":    fmt.Sprintf("%d", len(ds.Conversations)),
+			"n_qs":       fmt.Sprintf("%d", len(ds.Questions)),
+			"strategies": strings.Join(stratNames, ","),
+		},
+	})
+
+	for _, s := range opts.Strategies {
+		emit(Event{
+			Kind:   "strategy_start",
+			Title:  string(s),
+			Body:   fmt.Sprintf("strategy %s starting", s),
+			Fields: map[string]string{"strategy": string(s)},
+		})
+		r, err := runStrategy(ctx, ds, s, opts, emit)
 		if err != nil {
+			emit(Event{
+				Kind:   "error",
+				Title:  string(s),
+				Body:   err.Error(),
+				Fields: map[string]string{"strategy": string(s), "err": err.Error()},
+			})
 			return nil, fmt.Errorf("strategy %s: %w", s, err)
 		}
 		rep.Strategies[s] = r
+		emit(Event{
+			Kind:  "strategy_done",
+			Title: string(s),
+			Body:  fmt.Sprintf("judge=%.3f em=%.3f f1=%.3f prompt_p95=%d errors=%d", r.Judge, r.EM, r.F1, r.PromptTokensP95, r.Errors),
+			Fields: map[string]string{
+				"strategy":          string(s),
+				"qa_judge":          fmt.Sprintf("%.3f", r.Judge),
+				"qa_em":             fmt.Sprintf("%.3f", r.EM),
+				"qa_f1":             fmt.Sprintf("%.3f", r.F1),
+				"prompt_tokens_p95": fmt.Sprintf("%d", r.PromptTokensP95),
+				"errors":            fmt.Sprintf("%d", r.Errors),
+			},
+		})
 	}
+
+	doneFields := map[string]string{"duration": time.Since(rep.StartedAt).Round(time.Second).String()}
+	doneParts := make([]string, 0, len(opts.Strategies))
+	for _, s := range opts.Strategies {
+		if r := rep.Strategies[s]; r != nil {
+			doneFields["judge_"+string(s)] = fmt.Sprintf("%.3f", r.Judge)
+			doneParts = append(doneParts, fmt.Sprintf("%s=%.3f", s, r.Judge))
+		}
+	}
+	emit(Event{
+		Kind:   "done",
+		Title:  ds.Name,
+		Body:   strings.Join(doneParts, " | "),
+		Fields: doneFields,
+	})
 	return rep, nil
 }
 
-func runStrategy(ctx context.Context, ds *dataset.Dataset, s Strategy, opts Options) (*PerStrategyReport, error) {
+func runStrategy(ctx context.Context, ds *dataset.Dataset, s Strategy, opts Options, emit func(Event)) (*PerStrategyReport, error) {
 	r := &PerStrategyReport{Strategy: s}
 	if s == StrategyCompacted && opts.SummaryLLM == nil {
 		r.Skipped = "summary-llm not configured"
@@ -226,6 +329,21 @@ func runStrategy(ctx context.Context, ds *dataset.Dataset, s Strategy, opts Opti
 	var wg sync.WaitGroup
 	var done int64
 	total := len(ds.Questions)
+
+	// progress milestones: integer thresholds derived from ProgressPct.
+	// We compute them once (rather than dividing inside the hot loop) so
+	// the doneCounter only does a single atomic compare-with-array lookup.
+	var milestones []int64
+	if total > 0 && opts.ProgressPct > 0 && emit != nil {
+		for pct := opts.ProgressPct; pct <= 99; pct += opts.ProgressPct {
+			ms := int64(total) * int64(pct) / 100
+			if ms < 1 {
+				ms = 1
+			}
+			milestones = append(milestones, ms)
+		}
+	}
+	var nextMilestoneIdx int64 // first unsent milestone
 
 	for i := range ds.Questions {
 		i := i
@@ -282,9 +400,30 @@ func runStrategy(ctx context.Context, ds *dataset.Dataset, s Strategy, opts Opti
 			out.em = metrics.ExactMatch(pred, q.GoldAnswers)
 			results[i] = out
 
-			if opts.ProgressEvery > 0 {
-				if d := atomic.AddInt64(&done, 1); d%int64(opts.ProgressEvery) == 0 {
-					log.Printf("[history-compression] %s %d/%d questions done", s, d, total)
+			d := atomic.AddInt64(&done, 1)
+			if opts.ProgressEvery > 0 && d%int64(opts.ProgressEvery) == 0 {
+				log.Printf("[history-compression] %s %d/%d questions done", s, d, total)
+			}
+			// Milestone emission: cheap fast-path (one atomic load) for
+			// the common case where no milestone has been crossed.
+			if len(milestones) > 0 {
+				idx := atomic.LoadInt64(&nextMilestoneIdx)
+				if idx < int64(len(milestones)) && d >= milestones[idx] {
+					// Only the goroutine that wins the CAS sends the
+					// event; others observe the bumped idx and skip.
+					if atomic.CompareAndSwapInt64(&nextMilestoneIdx, idx, idx+1) {
+						pct := int64(opts.ProgressPct) * (idx + 1)
+						emit(Event{
+							Kind: "strategy_progress",
+							Body: fmt.Sprintf("%s %d/%d (~%d%%)", s, d, total, pct),
+							Fields: map[string]string{
+								"strategy": string(s),
+								"done":     fmt.Sprintf("%d", d),
+								"total":    fmt.Sprintf("%d", total),
+								"pct":      fmt.Sprintf("%d", pct),
+							},
+						})
+					}
 				}
 			}
 		}()
