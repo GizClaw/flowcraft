@@ -187,8 +187,7 @@ with its own tag prefix (e.g. `sdk/vX.Y.Z`, `vessel/vX.Y.Z`,
   `bench/locomo` → `eval/locomo`, `bench/history-compression` →
   `eval/history`, `tests/quality/knowledge` → `eval/knowledge`. The
   shared `dataset/` and `metrics/` packages were promoted to `eval/`'s
-  top level; a new `eval/report/` placeholder anchors the v0.4 unified
-  Report schema. The old `bench/` directory and the standalone
+  top level. The old `bench/` directory and the standalone
   `tests/quality/knowledge/go.mod` were removed — the four suites now
   share a single off-workspace module
   `github.com/GizClaw/flowcraft/eval`. `make eval` and `make eval-smoke`

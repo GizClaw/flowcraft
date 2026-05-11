@@ -208,8 +208,10 @@ type Options struct {
 	ProgressPct int
 }
 
-// LaneReport mirrors eval/knowledge's shape so a future
-// eval/report/compare tool can render either suite uniformly.
+// LaneReport's field names deliberately mirror eval/knowledge's
+// LaneReport — same NDCG/Recall/MRR/LatencyP50/LatencyP95 layout —
+// so anyone bouncing between the two suites' JSON output sees a
+// consistent shape.
 type LaneReport struct {
 	Lane    Lane   `json:"lane"`
 	Skipped string `json:"skipped,omitempty"`

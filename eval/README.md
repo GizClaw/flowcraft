@@ -38,7 +38,6 @@ across LoCoMo and LongMemEval reports.
 
 - `dataset/` — LoCoMo-style conversation/question schema.
 - `metrics/` — EM, F1, LLM-as-judge, latency aggregation.
-- `report/` — unified Report schema and compare CLI (evolving; lands in v0.4).
 - `internal/env/` — resolves `--*-llm <alias>[:<model>]` CLI flags into
   the `(provider, model, config)` triple consumed by
   `sdk/llm.NewFromConfig`. Details below under "Provider credentials".
