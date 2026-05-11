@@ -64,13 +64,13 @@ export FLOWCRAFT_AZURE='{"api_key":"...","model":"gpt-5","base_url":"..."}'
 
 cd eval
 # Single-shot-only smoke (no CustomerLLM needed).
-GOWORK=off go run ./taubench/cmd/eval \
+GOWORK=off go run ./cmd/eval taubench \
     --agent-llm qwen:qwen-max \
     --limit     5 \
     --out       /tmp/taubench-singleshot.json
 
 # Full mini-pack including multi-turn tasks.
-GOWORK=off go run ./taubench/cmd/eval \
+GOWORK=off go run ./cmd/eval taubench \
     --agent-llm              qwen:qwen-max \
     --customer-llm           azure \
     --max-conversation-turns 10 \
@@ -97,7 +97,7 @@ git clone https://github.com/sierra-research/tau-bench /tmp/tau-bench
 # 2. Point the CLI at the JSON pair. --domain selects the tool registry;
 #    --upstream-tasks + --upstream-initial-state takes over from the
 #    bundled mini dataset.
-GOWORK=off go run ./taubench/cmd/eval \
+GOWORK=off go run ./cmd/eval taubench \
     --agent-llm              qwen:qwen-max \
     --customer-llm           azure \
     --domain                 retail \
@@ -144,10 +144,10 @@ the on-disk JSON.
 export FLOWCRAFT_QWEN='{"api_key":"sk-...","model":"qwen-max"}'
 
 cd eval
-GOWORK=off go run ./taubench/cmd/eval \
-    --agent-llm qwen:qwen-max \
-    --max-turns 12 \
-    --out       /tmp/taubench-qwenmax.json
+GOWORK=off go run ./cmd/eval taubench \
+    --agent-llm       qwen:qwen-max \
+    --max-agent-turns 12 \
+    --out             /tmp/taubench-qwenmax.json
 ```
 
 Sample stderr summary (multi-turn pack):

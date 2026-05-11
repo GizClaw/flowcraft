@@ -26,10 +26,10 @@
 //
 //	# cheap CI run (synthetic dataset, EM judge, no LLMs needed for `none`/`buffer`;
 //	# the `compacted` strategy is skipped when no LLM is configured).
-//	go run ./eval/history/cmd/eval --dataset synthetic --out r.json
+//	go run ./eval/cmd/eval history --dataset synthetic --out r.json
 //
 //	# full run (compactor enabled; requires FLOWCRAFT_QWEN JSON env or similar):
-//	go run ./eval/history/cmd/eval \
+//	go run ./eval/cmd/eval history \
 //	    --dataset      eval/locomo/data/locomo10.jsonl \
 //	    --answer-llm   qwen:qwen-max \
 //	    --summary-llm  qwen:qwen-turbo \

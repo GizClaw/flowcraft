@@ -14,6 +14,23 @@ with its own tag prefix (e.g. `sdk/vX.Y.Z`, `vessel/vX.Y.Z`,
 
 ### Added
 - Top-level `README.md`, `CHANGELOG.md`, and `SECURITY.md`.
+- `eval/cmd/eval`: unified Cobra-powered CLI that replaces the seven
+  per-suite `eval/<suite>/cmd/eval` main packages. Every suite now
+  registers itself via a public `RegisterCobra(parent, *cliflags.Global)`
+  constructor (`eval/<suite>/cli.go`), and the root binary owns the
+  shared persistent flags (`--env-file`, `--out`, `--verbose`,
+  `--notify-*`). LoCoMo gains discoverable sub-subcommands for its
+  auxiliary tools — `eval locomo run / convert / compare / fetch /
+  ingest` — and LongMemEval's converter moves to `eval longmemeval
+  convert`. Auto-generated `--help`, shell-completion (`eval
+  completion bash|zsh|fish`) and consistent `eval <suite> --help`
+  navigation come along for free. The Makefile's `eval-smoke` target
+  and every README example switch to the new `go run ./cmd/eval …`
+  invocation; old paths like `go run ./locomo/cmd/eval` no longer
+  exist. `eval/internal/cliflags` hosts the shared global flag set
+  and a `WriteReport` helper that replaces ~10 lines of
+  `json.MarshalIndent` + `--out vs stdout` boilerplate previously
+  duplicated across every suite's `main()`.
 - `eval/internal/env`: shared provider-credential loader for the evaluation
   CLIs. Reads a single JSON-encoded env var (`FLOWCRAFT_<ALIAS>` preferred,
   `FLOWCRAFT_TEST_<ALIAS>` fallback) whose shape mirrors

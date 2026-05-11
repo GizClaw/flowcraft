@@ -48,6 +48,18 @@ func LoadDotEnv() {
 	})
 }
 
+// LoadFile is the single-file analogue of LoadDotEnv: it reads the
+// supplied path (no auto-discovery) and sets every key into the
+// process environment without overwriting existing values. Used by
+// the cli `--env-file` flag so the operator can point at an
+// alternative dotenv (e.g. `.env.prod`, `.env.eval`) without renaming
+// the local checkout. Silently no-ops when the file is missing — the
+// command is free to continue if the user expected to rely solely on
+// the ambient shell.
+func LoadFile(path string) bool {
+	return loadDotEnvFile(path)
+}
+
 func loadDotEnvFile(path string) bool {
 	f, err := os.Open(path)
 	if err != nil {

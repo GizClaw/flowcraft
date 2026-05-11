@@ -10,7 +10,7 @@
 // helpers live in eval/metrics — both are shared with eval/history.
 //
 // The scaffold deliberately ships with a tiny synthetic CN+EN dataset so that
-// `go test ./eval/locomo/...` and `go run ./eval/locomo/cmd/eval` work
+// `go test ./eval/locomo/...` and `go run ./eval/cmd/eval locomo run` work
 // out-of-the-box without network access. Real LoCoMo / LongMemEval datasets
 // are downloaded on demand by `cmd/fetch`.
 package locomo

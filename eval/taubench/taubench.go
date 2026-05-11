@@ -31,7 +31,7 @@
 //
 // τ-bench burns LLM calls. The multi-turn flavour is roughly
 //
-//	   per_task_calls ≈ MaxConversationTurns × (1 customer + 1-3 agent)
+//	per_task_calls ≈ MaxConversationTurns × (1 customer + 1-3 agent)
 //
 // across 100+ tasks per domain, which is two orders of magnitude
 // more expensive than the other suites in eval/. This suite is meant
@@ -232,7 +232,7 @@ func MergeDatasets(name string, datasets ...*Dataset) *Dataset {
 type TaskResult struct {
 	ID            string   `json:"id"`
 	Domain        string   `json:"domain"`
-	Mode          string   `json:"mode"`                     // "single-shot" or "multi-turn"
+	Mode          string   `json:"mode"` // "single-shot" or "multi-turn"
 	Success       bool     `json:"success"`
 	Reason        string   `json:"reason,omitempty"`         // why failed (state mismatch / max turns / etc.)
 	AgentTurns    int      `json:"agent_turns"`              // agent.Generate calls consumed
@@ -251,16 +251,16 @@ type DomainReport struct {
 
 // Report is the top-level JSON document.
 type Report struct {
-	Dataset    string                    `json:"dataset"`
-	Model      string                    `json:"model"`
-	StartedAt  time.Time                 `json:"started_at"`
-	DurationMS int64                     `json:"duration_ms"`
-	N          int                       `json:"n"`
-	Passed     int                       `json:"passed"`
-	PassRate   float64                   `json:"pass_rate"`
-	PerDomain  map[string]*DomainReport  `json:"per_domain,omitempty"`
-	Tasks      []TaskResult              `json:"tasks,omitempty"`
-	Options    map[string]any            `json:"options"`
+	Dataset    string                   `json:"dataset"`
+	Model      string                   `json:"model"`
+	StartedAt  time.Time                `json:"started_at"`
+	DurationMS int64                    `json:"duration_ms"`
+	N          int                      `json:"n"`
+	Passed     int                      `json:"passed"`
+	PassRate   float64                  `json:"pass_rate"`
+	PerDomain  map[string]*DomainReport `json:"per_domain,omitempty"`
+	Tasks      []TaskResult             `json:"tasks,omitempty"`
+	Options    map[string]any           `json:"options"`
 }
 
 // Event is the canonical lifecycle event shape.

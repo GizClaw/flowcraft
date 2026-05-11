@@ -73,9 +73,10 @@ help:
 	@echo "                         no network or API key required."
 	@echo "  make ci-e2e            ci + test-e2e."
 	@echo ""
-	@echo "Eval suites under eval/ run vet+test in CI; long-running CLIs"
-	@echo "(eval/locomo/cmd/eval, eval/history/cmd/eval) are main packages"
-	@echo "and are not invoked by 'go test ./...'."
+	@echo "Eval suites under eval/ run vet+test in CI; the long-running"
+	@echo "unified CLI lives at eval/cmd/eval (run as 'go run ./cmd/eval'"
+	@echo "from inside eval/) and is a main package, not invoked by"
+	@echo "'go test ./...'."
 
 .PHONY: vet
 vet:
@@ -132,12 +133,13 @@ test-conformance:
 eval:
 	@cd eval && GOWORK=off go test ./... -count=1
 
-# eval-smoke is the end-to-end "do the CLIs still link?" check. It runs
-# the LoCoMo eval CLI against the bundled synthetic dataset with no LLM
-# wired up, so a clean environment can run it as part of CI / pre-push.
+# eval-smoke is the end-to-end "does the unified CLI still link?"
+# check. It runs `eval locomo run` against the bundled synthetic
+# dataset with no LLM wired up, so a clean environment can run it as
+# part of CI / pre-push.
 .PHONY: eval-smoke
 eval-smoke:
-	@cd eval && GOWORK=off go run ./locomo/cmd/eval --dataset synthetic --out /tmp/eval-locomo-synthetic.json
+	@cd eval && GOWORK=off go run ./cmd/eval locomo run --dataset synthetic --out /tmp/eval-locomo-synthetic.json
 	@echo "wrote /tmp/eval-locomo-synthetic.json"
 
 # Backwards-compat alias for the pre-eval/ migration entry point. The old

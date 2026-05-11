@@ -6,20 +6,20 @@ Evaluation scaffold for `sdk/memory/ltm` against the LoCoMo / LongMemEval benchm
 
 ```bash
 # 1) bundled synthetic dataset (no network, no LLM)
-go run ./eval/locomo/cmd/eval --dataset synthetic --out results/synthetic.json
+cd eval && GOWORK=off go run ./cmd/eval locomo run --dataset synthetic --out results/synthetic.json
 
 # 2) compare against a previous report
-go run ./eval/locomo/cmd/compare results/baseline.json results/synthetic.json
+GOWORK=off go run ./cmd/eval locomo compare results/baseline.json results/synthetic.json
 
 # 3) (optional) external datasets — see fetch instructions
-go run ./eval/locomo/cmd/fetch
+GOWORK=off go run ./cmd/eval locomo fetch
 
 # 4) full LoCoMo10 (10 conversations, 1542 questions, ~1m no-LLM run)
 git clone https://github.com/snap-research/locomo eval/locomo/data/locomo
-go run ./eval/locomo/cmd/convert-locomo \
-    -in  eval/locomo/data/locomo/data/locomo10.json \
-    -out eval/locomo/data/locomo10.jsonl
-go run ./eval/locomo/cmd/eval \
+GOWORK=off go run ./cmd/eval locomo convert \
+    --in  eval/locomo/data/locomo/data/locomo10.json \
+    --out eval/locomo/data/locomo10.jsonl
+GOWORK=off go run ./cmd/eval locomo run \
     --dataset eval/locomo/data/locomo10.jsonl \
     --out     eval/locomo/results/locomo10.json
 ```
@@ -31,13 +31,11 @@ go run ./eval/locomo/cmd/eval \
 
 ```
 eval/locomo/
-├── runners/   Runner interface (one per memory backend)
+├── runners/         Runner interface (one per memory backend)
 │   └── flowcraft/   default in-memory retrieval Index runner
-└── cmd/
-    ├── fetch/    download instructions for LoCoMo / LongMemEval
-    ├── ingest/   warm up runner with a dataset's conversations
-    ├── eval/     ingest + Q&A loop + report
-    └── compare/  markdown diff between two reports
+├── cli.go           Cobra wiring for `eval locomo run / fetch / compare`
+├── cli_convert.go   converter sub-subcommand `eval locomo convert`
+└── cli_ingest.go    warm-up sub-subcommand `eval locomo ingest`
 ```
 
 The `dataset/` and `metrics/` helpers live one level up at `eval/dataset/` and

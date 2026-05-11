@@ -31,7 +31,7 @@ export FLOWCRAFT_QWEN='{"api_key":"sk-...","model":"qwen-max"}'
 export FLOWCRAFT_AZURE='{"api_key":"...","model":"gpt-5","base_url":"..."}'
 
 cd eval
-GOWORK=off go run ./simpleqa/cmd/eval \
+GOWORK=off go run ./cmd/eval simpleqa \
     --dataset    /tmp/simple_qa_test_set.csv \
     --answer-llm qwen:qwen-max \
     --judge-llm  azure \

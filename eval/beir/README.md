@@ -31,10 +31,10 @@ unzip -q /tmp/scifact.zip -d /tmp
 
 # 2. BM25 lane only (no credentials)
 cd eval
-GOWORK=off go run ./beir/cmd/eval --root /tmp/scifact --lanes bm25
+GOWORK=off go run ./cmd/eval beir --root /tmp/scifact --lanes bm25
 
 # 3. Full lane comparison (FLOWCRAFT_QWEN must be set)
-GOWORK=off go run ./beir/cmd/eval \
+GOWORK=off go run ./cmd/eval beir \
     --root      /tmp/scifact \
     --embedder  qwen:text-embedding-v4 \
     --lanes     bm25,vector,hybrid \

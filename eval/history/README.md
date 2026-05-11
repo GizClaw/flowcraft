@@ -44,7 +44,7 @@ GOWORK=off go test ./eval/history/... -count=1
 
 # full eval (LoCoMo10 dataset, qwen extractor + judge)
 export FLOWCRAFT_QWEN='{"api_key":"sk-...","model":"qwen-max"}'
-GOWORK=off go run ./eval/history/cmd/eval \
+GOWORK=off go run ./cmd/eval history \
     --dataset      eval/locomo/data/locomo10.jsonl \
     --answer-llm   qwen:qwen-max \
     --summary-llm  qwen:qwen-turbo \

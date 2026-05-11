@@ -82,7 +82,7 @@ func LoadJSONL(path string) (*Dataset, error) {
 }
 
 // Synthetic returns the bundled tiny dataset (no I/O), so unit tests and
-// `go run ./eval/locomo/cmd/eval --dataset synthetic` always work.
+// `go run ./eval/cmd/eval locomo run --dataset synthetic` always work.
 func Synthetic() *Dataset {
 	return &Dataset{
 		Name: "synthetic",

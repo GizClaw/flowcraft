@@ -9,22 +9,30 @@ FlowCraft's quality-evaluation suites.
 
 ## Suite catalogue
 
-| Suite          | What it tests                                              | Entry point                                                |
-| -------------- | ---------------------------------------------------------- | ---------------------------------------------------------- |
-| `locomo/`      | Long-term memory (recall) — LoCoMo benchmark               | `go run ./locomo/cmd/eval`                                 |
-| `longmemeval/` | Long-term memory (recall) — LongMemEval (ICLR 2025)        | `go run ./longmemeval/cmd/convert` + `locomo/cmd/eval`     |
-| `history/`     | History compactor quality vs. token-cost trade-off          | `go run ./history/cmd/eval`                                |
-| `knowledge/`   | Knowledge retrieval (BM25 / vector / hybrid) regressions   | `go run ./knowledge/cmd/eval` *or* `go test ./knowledge/...` |
-| `beir/`        | BEIR-format retrieval baselines (nDCG@k / Recall@k / MRR)   | `go run ./beir/cmd/eval --root <beir-dataset>`              |
-| `simpleqa/`    | SimpleQA short-form factuality + calibration (LLM-as-judge) | `go run ./simpleqa/cmd/eval --dataset simple_qa_test_set.csv` |
-| `taubench/`    | τ-bench-style tool use (Go-native, retail-mini bundled)    | `go run ./taubench/cmd/eval --agent-llm qwen:qwen-max`        |
+All suites are dispatched from a **single Cobra-powered binary** at
+`eval/cmd/eval`. Invoke them as `eval <suite>` (or
+`eval <suite> <subcommand>` for suites with auxiliary tools).
+
+| Suite          | What it tests                                              | Entry point                                                                            |
+| -------------- | ---------------------------------------------------------- | -------------------------------------------------------------------------------------- |
+| `locomo/`      | Long-term memory (recall) — LoCoMo benchmark               | `eval locomo run` (+ `convert`, `compare`, `fetch`, `ingest`)                          |
+| `longmemeval/` | Long-term memory (recall) — LongMemEval (ICLR 2025)        | `eval longmemeval convert` then `eval locomo run --dataset ...`                        |
+| `history/`     | History compactor quality vs. token-cost trade-off         | `eval history`                                                                         |
+| `knowledge/`   | Knowledge retrieval (BM25 / vector / hybrid) regressions   | `eval knowledge` *or* `go test ./knowledge/...`                                        |
+| `beir/`        | BEIR-format retrieval baselines (nDCG@k / Recall@k / MRR)  | `eval beir --root <beir-dataset>`                                                      |
+| `simpleqa/`    | SimpleQA short-form factuality + calibration (LLM-as-judge)| `eval simpleqa --dataset simple_qa_test_set.csv`                                       |
+| `taubench/`    | τ-bench-style tool use (Go-native, multi-domain)           | `eval taubench --agent-llm qwen:qwen-max`                                              |
 
 `longmemeval` deliberately ships no runner of its own: the data schema is
-compatible with LoCoMo, so once converted the same `locomo/cmd/eval`
-runs it end-to-end. This keeps prompts, judge model, reranker, and CLI
+compatible with LoCoMo, so once converted the same `eval locomo run`
+drives it end-to-end. This keeps prompts, judge model, reranker, and CLI
 flags identical between the two suites — a number like "qwen-flash
 reranker is 5× faster than deepseek-flash" is then directly comparable
 across LoCoMo and LongMemEval reports.
+
+> Throughout this README `eval` is shorthand for
+> `GOWORK=off go run ./cmd/eval` (inside `eval/`). Build a release
+> binary with `cd eval && GOWORK=off go build -o /usr/local/bin/eval ./cmd/eval`.
 
 ## Shared packages
 
@@ -69,7 +77,7 @@ that share a provider, to mount different connection profiles:
 export FLOWCRAFT_AZURE_REASONING='{"provider":"azure","api_key":"...","model":"o1-mini","caps":{"no_temperature":true}}'
 export FLOWCRAFT_AZURE_FAST='{"provider":"azure","api_key":"...","model":"gpt-4o-mini"}'
 
-go run ./locomo/cmd/eval \
+GOWORK=off go run ./cmd/eval locomo run \
     --extractor-llm azure_reasoning  \
     --answer-llm    azure_fast       \
     --judge-llm     azure_reasoning  \
@@ -103,14 +111,14 @@ you.
 make eval
 
 # 1) LoCoMo synthetic (no network, no LLM, ~1s)
-GOWORK=off go run ./locomo/cmd/eval --dataset synthetic --out /tmp/locomo.json
+GOWORK=off go run ./cmd/eval locomo run --dataset synthetic --out /tmp/locomo.json
 
 # 2) LoCoMo10 (10 conversations, ~1.5k questions, ~1m without an LLM)
 git clone https://github.com/snap-research/locomo eval/locomo/data/locomo
-GOWORK=off go run ./locomo/cmd/convert-locomo \
-    -in  eval/locomo/data/locomo/data/locomo10.json \
-    -out eval/locomo/data/locomo10.jsonl
-GOWORK=off go run ./locomo/cmd/eval \
+GOWORK=off go run ./cmd/eval locomo convert \
+    --in  eval/locomo/data/locomo/data/locomo10.json \
+    --out eval/locomo/data/locomo10.jsonl
+GOWORK=off go run ./cmd/eval locomo run \
     --dataset eval/locomo/data/locomo10.jsonl \
     --out     eval/locomo/results/locomo10.json
 
@@ -118,14 +126,14 @@ GOWORK=off go run ./locomo/cmd/eval \
 mkdir -p eval/longmemeval/data
 wget -O eval/longmemeval/data/longmemeval_oracle.json \
     https://huggingface.co/datasets/xiaowu0162/longmemeval-cleaned/resolve/main/longmemeval_oracle.json
-GOWORK=off go run ./longmemeval/cmd/convert \
-    -in  eval/longmemeval/data/longmemeval_oracle.json \
-    -out eval/longmemeval/data/longmemeval_oracle.jsonl
-# Then run with `locomo/cmd/eval --dataset longmemeval/data/longmemeval_oracle.jsonl ...`
+GOWORK=off go run ./cmd/eval longmemeval convert \
+    --in  eval/longmemeval/data/longmemeval_oracle.json \
+    --out eval/longmemeval/data/longmemeval_oracle.jsonl
+# Then run with `eval locomo run --dataset longmemeval/data/longmemeval_oracle.jsonl ...`
 
 # 4) history compactor (needs FLOWCRAFT_QWEN; otherwise only none/buffer run)
 export FLOWCRAFT_QWEN='{"api_key":"sk-...","model":"qwen-max"}'
-GOWORK=off go run ./history/cmd/eval \
+GOWORK=off go run ./cmd/eval history \
     --dataset      eval/locomo/data/locomo10.jsonl \
     --answer-llm   qwen:qwen-max \
     --summary-llm  qwen:qwen-turbo \
@@ -140,8 +148,8 @@ GOWORK=off go test ./knowledge/... -count=1
 KNOWLEDGE_EVAL_EMBEDDER=qwen:text-embedding-v4 \
     GOWORK=off go test -tags=integration ./knowledge/... -count=1
 
-# or run the same engine as a binary and write a JSON report
-go run ./knowledge/cmd/eval \
+# or run the same engine through the unified CLI and write a JSON report
+GOWORK=off go run ./cmd/eval knowledge \
     --corpus    eval/knowledge/testdata/corpus \
     --golden    eval/knowledge/testdata/golden.jsonl \
     --embedder  qwen:text-embedding-v4 \
@@ -201,7 +209,7 @@ export FEISHU_APP_ID=cli_xxxxxxxxxxxxxxxx
 export FEISHU_APP_SECRET=<32-char secret>
 export FEISHU_CHAT_ID=oc_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 
-GOWORK=off go run ./locomo/cmd/eval \
+GOWORK=off go run ./cmd/eval locomo run \
     --dataset             eval/locomo/data/locomo10.jsonl \
     --notify-name         locomo10-nightly \
     --notify-progress-pct 25 \

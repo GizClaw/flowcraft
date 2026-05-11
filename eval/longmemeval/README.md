@@ -47,17 +47,17 @@ wget https://huggingface.co/datasets/xiaowu0162/longmemeval-cleaned/resolve/main
 cd ../../..
 
 # 2) Convert each into our .jsonl shape
-GOWORK=off go run ./longmemeval/cmd/convert \
+GOWORK=off go run ./cmd/eval longmemeval convert \
     -in  longmemeval/data/longmemeval_oracle.json \
     -out longmemeval/data/longmemeval_oracle.jsonl
 
-GOWORK=off go run ./longmemeval/cmd/convert \
+GOWORK=off go run ./cmd/eval longmemeval convert \
     -in  longmemeval/data/longmemeval_s_cleaned.json \
     -out longmemeval/data/longmemeval_s.jsonl
 
 # 3) Run via the locomo CLI (same flags, same prompts)
 export FLOWCRAFT_QWEN='{"api_key":"sk-...","model":"qwen-max"}'
-GOWORK=off go run ./locomo/cmd/eval \
+GOWORK=off go run ./cmd/eval locomo run \
     --dataset      longmemeval/data/longmemeval_s.jsonl \
     --extractor                                          \
     --extractor-llm   deepseek                           \
