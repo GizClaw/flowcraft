@@ -21,8 +21,11 @@ type Deps struct {
 	CommandRunner workspace.CommandRunner
 }
 
-// Built-in jsnode types that need a shell bridge in addition to fs/runtime.
-var needsShellFS = map[string]bool{
+// needsShell lists built-in jsnode types that additionally require a
+// shell bridge. Every built-in node already gets fs / board / expr /
+// host / runtime bridges unconditionally below; the entries here are
+// the *additional* shell bridge gate (driven by deps.CommandRunner).
+var needsShell = map[string]bool{
 	"gate":    true,
 	"context": true,
 }
@@ -45,7 +48,7 @@ func Register(factory *node.Factory, deps Deps) {
 			}
 			src := scripts.MustGet(n)
 			var extras []bindings.BindingFunc
-			if needsShellFS[n] {
+			if needsShell[n] {
 				extras = append(extras, bindings.NewShellBridge(deps.CommandRunner))
 			}
 			extras = append(extras, bindings.NewFSBridge(deps.Workspace))

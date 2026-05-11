@@ -8,7 +8,7 @@
       board.setVar("approval_status", "pending");
       board.setVar("approval_request", {
           prompt: config.prompt || "Please approve or reject this action.",
-          node_id: config.__node_id,
+          node_id: node.id(),
       });
       signal.interrupt("waiting for approval");
   }
