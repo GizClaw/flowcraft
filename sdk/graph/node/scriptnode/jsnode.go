@@ -4,12 +4,15 @@ import (
 	"fmt"
 
 	"github.com/GizClaw/flowcraft/sdk/agent"
-	"github.com/GizClaw/flowcraft/sdk/engine"
 	"github.com/GizClaw/flowcraft/sdk/graph"
 	"github.com/GizClaw/flowcraft/sdk/graph/node"
 	"github.com/GizClaw/flowcraft/sdk/script"
 	"github.com/GizClaw/flowcraft/sdk/script/bindings"
 )
+
+// (intentionally no direct dependency on engine / errdefs here:
+// script.SignalToError owns the classification mapping so the
+// translation lives in one place.)
 
 // ScriptNode is a script-based graph node that delegates execution to a
 // language-agnostic script.Runtime.
@@ -96,21 +99,18 @@ func (n *ScriptNode) ExecuteBoard(ctx graph.ExecutionContext, board *graph.Board
 		return fmt.Errorf("script node %s execution failed: %w", n.id, err)
 	}
 
-	if sig != nil {
-		switch sig.Type {
-		case "error":
-			return fmt.Errorf("script node %s: %s", n.id, sig.Message)
-		case "interrupt":
-			// signal.interrupt(msg) is the script's "I want to pause,
-			// the agent will resume me later". We surface it as a
-			// CauseCustom interrupt so the agent layer can both detect
-			// the pause (via errdefs.IsInterrupted) and read the
-			// script-supplied detail.
-			return engine.Interrupted(engine.Interrupt{
-				Cause:  engine.CauseCustom,
-				Detail: sig.Message,
-			})
-		}
+	// script.SignalToError centralises the {interrupt, error, done}
+	// → {engine.Interrupted, errdefs.<Kind>, nil} mapping. Scripts
+	// classify failures via signal.error({ kind, message }) and pauses
+	// via signal.interrupt({ cause, detail }); unknown kinds degrade
+	// inside the helper rather than here so every host (scriptnode,
+	// future scriptengine, …) interprets signals identically.
+	//
+	// %w-wrap preserves the errdefs / engine.InterruptedError
+	// classification so callers can still use errdefs.Is… and
+	// errors.As without losing the "script node X" provenance.
+	if mapped := script.SignalToError(sig); mapped != nil {
+		return fmt.Errorf("script node %s: %w", n.id, mapped)
 	}
 
 	return nil

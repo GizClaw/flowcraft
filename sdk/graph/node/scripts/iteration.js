@@ -14,10 +14,21 @@
       if (sig) {
           if (sig.Type === "interrupt") {
               board.setVar("iteration_results", results);
-              signal.interrupt(sig.Message);
+              // Forward kind (engine.Cause) / detail through so the
+              // child's classification reaches the host instead of
+              // collapsing to a bare-message CauseCustom interrupt.
+              signal.interrupt({
+                  kind: sig.Kind,
+                  message: sig.Message,
+                  detail: sig.Detail
+              });
               return;
           } else if (sig.Type === "error") {
-              signal.error(sig.Message);
+              signal.error({
+                  kind: sig.Kind,
+                  message: sig.Message,
+                  detail: sig.Detail
+              });
               return;
           } else if (sig.Type === "done") {
               break;
