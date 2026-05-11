@@ -29,14 +29,14 @@ import (
 // shared with every other suite.
 func RegisterCobra(parent *cobra.Command, g *cliflags.Global) {
 	var (
-		datasetPath        string
-		answerLLMSpec      string
-		judgeLLMSpec       string
-		concurrency        int
-		limit              int
-		perQTimeout        time.Duration
-		maxSamples         int
-		includeTopic       bool
+		datasetPath   string
+		answerLLMSpec string
+		judgeLLMSpec  string
+		concurrency   int
+		limit         int
+		perQTimeout   time.Duration
+		maxSamples    int
+		includeTopic  bool
 	)
 
 	cmd := &cobra.Command{

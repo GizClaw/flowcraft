@@ -102,4 +102,3 @@ func (g *Global) WriteReport(rep any) error {
 	_, _ = os.Stdout.WriteString("wrote " + g.OutPath + "\n")
 	return nil
 }
-

@@ -366,4 +366,3 @@ func rowDur(name string, a, b metrics.LatencySummary) {
 	}
 	fmt.Printf("| %s | %s | %s | %s |\n", name, a.P95, b.P95, signed)
 }
-
