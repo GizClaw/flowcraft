@@ -1,0 +1,12 @@
+apiVersion: vessel.flowcraft.io/v1alpha1
+kind: LLMProfile
+metadata:
+  name: shared-openai
+spec:
+  provider: openai
+  config:
+    defaultModel: gpt-4o-mini
+  auth:
+    apiKey:
+      valueFrom:
+        env: OPENAI_API_KEY

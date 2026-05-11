@@ -1,0 +1,20 @@
+apiVersion: vessel.flowcraft.io/v1alpha1
+kind: Daemon
+metadata:
+  name: history-demo
+spec:
+  control:
+    # Local control plane only — for a TCP listener + bearer token
+    # config, see examples/vesseld-multi-vessel/README.md.
+    socket: /tmp/vesseld-with-history.sock
+  resources:
+    maxConcurrentRuns: 8
+  llmRateLimits:
+    - llmProfile: shared-openai
+      requestsPerMinute: 300
+      perVesselFairshare: true
+  logging:
+    format: text
+    level: info
+  shutdown:
+    drainTimeout: 5s
