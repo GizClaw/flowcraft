@@ -289,9 +289,18 @@ func (f *FeishuApp) replyLifecycle(ctx context.Context, e Event) error {
 	}
 
 	contentJSON, _ := json.Marshal(map[string]string{"text": text})
-	body, _ := json.Marshal(map[string]string{
-		"msg_type": "text",
-		"content":  string(contentJSON),
+	// `reply_in_thread: true` confines the reply to the card's thread —
+	// it does NOT bubble up into the main chat-list as a fresh message.
+	// Without this flag Feishu treats `/reply` as a "quote-reply" that
+	// also lands in the main timeline, which defeats the whole
+	// silent-card design (the chat list still gets one new bullet per
+	// lifecycle event). Threaded replies still fire the normal
+	// per-device notification, so operators get pinged exactly once
+	// per phase boundary without screen real-estate cost.
+	body, _ := json.Marshal(map[string]any{
+		"msg_type":        "text",
+		"content":         string(contentJSON),
+		"reply_in_thread": true,
 	})
 	url := fmt.Sprintf("/open-apis/im/v1/messages/%s/reply", f.messageID)
 	var resp struct {

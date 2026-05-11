@@ -287,9 +287,15 @@ func TestFeishuApp_LifecycleReply(t *testing.T) {
 	if !strings.HasPrefix(mock.lastReplyPath, "/open-apis/im/v1/messages/om_fake/reply") {
 		t.Errorf("reply path must embed parent message_id; got %s", mock.lastReplyPath)
 	}
-	// Reply payload is {msg_type: text, content: JSON-string-with-text}
+	// Reply payload is {msg_type: text, content: JSON-string-with-text,
+	// reply_in_thread: true}. The thread flag is the difference between
+	// "tidy thread under the card" and "flooding the main chat list" —
+	// see the doc on replyLifecycle for the rationale.
 	if got := mock.lastReplyBody["msg_type"]; got != "text" {
 		t.Errorf("reply msg_type: got %v want text", got)
+	}
+	if got := mock.lastReplyBody["reply_in_thread"]; got != true {
+		t.Errorf("reply MUST set reply_in_thread=true so the reply stays inside the card's thread; got %v", got)
 	}
 	contentRaw, _ := mock.lastReplyBody["content"].(string)
 	var content map[string]string
