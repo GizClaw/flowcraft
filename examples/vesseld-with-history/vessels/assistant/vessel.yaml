@@ -1,0 +1,41 @@
+apiVersion: vessel.flowcraft.io/v1alpha1
+kind: Vessel
+metadata:
+  name: assistant
+spec:
+  agents:
+    - assistant-agent
+  # Wire the vessel onto the shared HistoryStore. Every agent in
+  # this vessel that opts into history access sees the same
+  # conversation transcript, keyed by the request's context_id.
+  history:
+    ref: assistant-history
+  resources:
+    maxConcurrentRuns: 4
+    turnTimeout: 60s
+---
+apiVersion: vessel.flowcraft.io/v1alpha1
+kind: Agent
+metadata:
+  name: assistant-agent
+spec:
+  card:
+    name: Memory-Aware Assistant
+    description: |
+      Single-agent vessel that remembers the user across turns of
+      the same context_id, demonstrating buffer-history wiring.
+  # read_write = the agent's BoardSeeder loads prior turns AND
+  # the post-run Observer appends the new turn to the transcript.
+  # Use read_only for sidecars / monitors that should see history
+  # without writing.
+  historyAccess: read_write
+  engine:
+    ref: graph-llm
+    config:
+      llmProfile: shared-openai
+      systemPrompt: |
+        You are a helpful assistant with conversational memory.
+        Refer back to facts the user told you earlier in the
+        conversation when relevant. If asked something you have
+        not been told, say so plainly — don't fabricate.
+      maxIterations: 4

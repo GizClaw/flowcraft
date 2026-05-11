@@ -69,7 +69,27 @@ RUN=$(curl -s --unix-socket $SOCK -X POST http://vesseld/v1/vessels/triage/submi
 curl --unix-socket $SOCK "http://vesseld/v1/vessels/triage/logs?run_id=$RUN"
 ```
 
-See [`examples/vesseld-multi-vessel/`](examples/vesseld-multi-vessel/) for the full walkthrough.
+**Remote access via TCP + bearer token.** Set `spec.control.listen` and a `tokenFile` in `daemon.yaml`; validation refuses to start a TCP listener without auth:
+
+```yaml
+spec:
+  control:
+    socket: /tmp/vesseld-multi-vessel.sock   # local debugging stays available
+    listen: 0.0.0.0:8443                     # remote access
+    auth:
+      tokenFile: /etc/vesseld/token           # one line: the bearer token
+```
+
+```bash
+TOKEN=$(cat /etc/vesseld/token)
+curl -H "Authorization: Bearer $TOKEN" http://localhost:8443/v1/vessels/support/call \
+  -H 'content-type: application/json' \
+  -d '{"agent":"support-agent","query":"hello"}'
+```
+
+mTLS support is on the `v0.2` track; until then keep the listener behind a TLS-terminating proxy or restrict it to a trusted network.
+
+See [`examples/vesseld-multi-vessel/`](examples/vesseld-multi-vessel/) for the multi-agent + Kanban delegation walkthrough, and [`examples/vesseld-with-history/`](examples/vesseld-with-history/) for an agent that remembers earlier turns of the same conversation.
 
 ### Library — programmatic SDK usage
 
@@ -193,11 +213,15 @@ The canonical reference is the per-package `doc.go` files, browsable on pkg.go.d
 
 Worked examples live under [`examples/`](examples/) — each one is runnable end-to-end with a single command.
 
+For the daemon specifically, see [`internal-docs/vesseld-cli.md`](internal-docs/vesseld-cli.md) — CLI sub-commands, HTTP control-plane endpoints, and the supported YAML kinds for `vesseld/v0.1.0`.
+
 ---
 
 ## Status
 
-`sdk` and `sdkx` are stable and released continuously. `vessel` and `cmd/vesseld` are at `v0.1.0-rc.*` and stabilising. The next milestone (`v0.2`) covers durable execution, MCP support, OTel exporters, and an evaluation harness.
+`sdk` and `sdkx` are stable and released continuously. `vessel` and `cmd/vesseld` have shipped `v0.1.0` and are production-ready for single-node deployments. Durable execution (Postgres + SQLite checkpoint stores), OTel exporters, Prometheus `/metrics`, the seven-suite `eval/` harness, and end-to-end `tests/e2e/vesseld` conformance are all in place.
+
+The next milestone (`v0.2`) hardens vesseld for "comfortable to operate": per-run session storage, mTLS, a `SecretProvider` interface, and a `vesseld migrate` subcommand. `v0.3` brings the protocol trio — MCP, Agent Skills (SKILL.md), and A2A — plus agent-writable memory Slots.
 
 API surface is governed by SemVer per module. Breaking changes ship as minor bumps until each module reaches `v1.0.0`.
 
