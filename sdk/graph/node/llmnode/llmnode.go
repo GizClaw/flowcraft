@@ -93,7 +93,12 @@ func (n *Node) OutputPorts() []graph.Port {
 	}
 	return []graph.Port{
 		{Name: outputKey, Type: graph.PortTypeString, Required: true},
-		{Name: n.channelName(), Type: graph.PortTypeMessages, Required: true},
+		// Messages live on a typed channel (board.SetChannel), not on
+		// board vars. ValidateOutputs only inspects board vars unless
+		// the port is PortTypeMessages, so this port is intentionally
+		// not Required: doing otherwise short-circuits the executor
+		// after every successful llm round.
+		{Name: n.channelName(), Type: graph.PortTypeMessages, Required: false},
 		{Name: VarUsage, Type: graph.PortTypeUsage, Required: true},
 		{Name: VarToolPending, Type: graph.PortTypeBool, Required: true},
 	}
