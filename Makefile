@@ -13,7 +13,13 @@ MODULES_WORK := sdk sdkx vessel voice cmd/vesseld
 # Modules intentionally outside go.work — they pin sdk/sdkx via go.mod
 # require directives and run with GOWORK=off so the pin is honoured.
 #
-#  - bench: heavy eval datasets/CLIs we don't want polluting the workspace
+#  - eval: AI-quality evaluation suites (LoCoMo, history compactor,
+#    knowledge retrieval). Pins sdk/sdkx via go.mod so quality drifts
+#    are evaluated against the released bytes consumers run, and the
+#    heavy LoCoMo / corpora / report artifacts stay out of every sdk
+#    patch tag. The default lane is hermetic (synthetic dataset, no
+#    credentials); the LLM-judge lanes self-skip when credentials are
+#    absent, so `make test` exercises the compile path here too.
 #  - examples/voice-pipeline: pinned to sdk v0.1.12 + sdkx v0.1.14 so
 #    external consumers see a real reproducible example
 #  - tests/conformance: manual provider conformance suites; pinned to
@@ -21,18 +27,11 @@ MODULES_WORK := sdk sdkx vessel voice cmd/vesseld
 #    Tests self-skip without credentials so `make test` runs them as a
 #    compile check; `make conformance` is the documented entry point
 #    when a .env is in place.
-#  - tests/quality/knowledge: in-process retrieval-quality regression
-#    suite for sdk/knowledge. Pins sdk/sdkx via go.mod so quality
-#    drifts are evaluated against the released bytes consumers run,
-#    and the 100-doc corpus stays out of every sdk patch tag. The
-#    default lane (BM25 only) needs no credentials; the `integration`
-#    lane requires `EMBEDDING_*` env vars and is opt-in via a build
-#    tag, so `make test` exercises the compile path here too.
 #  - tests/e2e/vesseld: black-box subprocess tests for the vesseld
 #    binary. Tagged with `//go:build e2e` so `make test`'s default
 #    sweep is just a compile check; the credentialed / build-tagged
 #    lane runs via `make test-e2e`.
-MODULES_OFFWORK := bench examples/voice-pipeline tests/conformance tests/quality/knowledge tests/quality/vessel tests/e2e/vesseld tests/e2e/retrieval
+MODULES_OFFWORK := eval examples/voice-pipeline tests/conformance tests/quality/vessel tests/e2e/vesseld tests/e2e/retrieval
 
 ALL_MODULES := $(MODULES_WORK) $(MODULES_OFFWORK)
 
@@ -47,7 +46,7 @@ GO_FOREACH = set -e; for m in $(1); do echo "==> $(2) $$m"; ( cd $$m && $(3) ); 
 help:
 	@echo "FlowCraft"
 	@echo ""
-	@echo "  make vet         Run go vet on all modules (incl. bench via GOWORK=off)"
+	@echo "  make vet         Run go vet on all modules (incl. eval via GOWORK=off)"
 	@echo "  make test        Run tests on all modules (excl. Go benchmarks)"
 	@echo "  make fmt         Run gofmt on all modules"
 	@echo "  make tidy        Run go mod tidy on all modules"
@@ -60,10 +59,13 @@ help:
 	@echo "  make test-conformance  Provider conformance suites (tests/conformance)."
 	@echo "                         Needs a repo-root .env with provider credentials;"
 	@echo "                         no env => suites self-skip and pass."
-	@echo "  make test-quality      Retrieval-quality regression suite"
-	@echo "                         (tests/quality/knowledge, integration lane)."
-	@echo "                         Needs EMBEDDING_PROVIDER / EMBEDDING_API_KEY /"
-	@echo "                         EMBEDDING_MODEL (or skips cleanly)."
+	@echo "  make eval              AI-quality eval suites (eval/, all sub-packages)."
+	@echo "                         Hermetic synthetic lanes only; LLM-backed lanes"
+	@echo "                         self-skip without credentials."
+	@echo "  make eval-smoke        End-to-end smoke: run the LoCoMo eval CLI on the"
+	@echo "                         bundled synthetic dataset and write a report."
+	@echo "  make test-quality      Alias of 'make eval' kept for compatibility with"
+	@echo "                         the pre-eval/ migration entry point."
 	@echo "  make test-e2e          Black-box e2e suite for vesseld"
 	@echo "                         (tests/e2e/vesseld, //go:build e2e)."
 	@echo "                         Builds the vesseld binary and runs it"
@@ -71,9 +73,10 @@ help:
 	@echo "                         no network or API key required."
 	@echo "  make ci-e2e            ci + test-e2e."
 	@echo ""
-	@echo "Bench is in CI for vet+test only. Long-running eval CLIs"
-	@echo "(bench/locomo/cmd/eval, history-compression/cmd/eval) are main"
-	@echo "packages and are not invoked by 'go test ./...'."
+	@echo "Eval suites under eval/ run vet+test in CI; the long-running"
+	@echo "unified CLI lives at eval/cmd/eval (run as 'go run ./cmd/eval'"
+	@echo "from inside eval/) and is a main package, not invoked by"
+	@echo "'go test ./...'."
 
 .PHONY: vet
 vet:
@@ -123,13 +126,28 @@ ci-e2e: ci test-e2e
 test-conformance:
 	@cd tests/conformance && GOWORK=off go test -count=1 ./...
 
-# Retrieval-quality regression suite. The default lane (BM25 only)
-# is exercised by `make test` because tests/quality/knowledge is in
-# MODULES_OFFWORK. This target opts into the //go:build integration
-# lane that exercises the vector + hybrid lanes against a live
-# embedding provider; tests self-skip when EMBEDDING_PROVIDER /
-# EMBEDDING_API_KEY / EMBEDDING_MODEL are unset, so a credential-less
-# run is still a no-op.
+# AI-quality evaluation suites under eval/. The default lane is hermetic
+# (no credentials, synthetic LoCoMo fixture, BM25-only knowledge corpus);
+# integration lanes self-skip without credentials.
+.PHONY: eval
+eval:
+	@cd eval && GOWORK=off go test ./... -count=1
+
+# eval-smoke is the end-to-end "does the unified CLI still link?"
+# check. It runs `eval locomo run` against the bundled synthetic
+# dataset with no LLM wired up, so a clean environment can run it as
+# part of CI / pre-push.
+.PHONY: eval-smoke
+eval-smoke:
+	@cd eval && GOWORK=off go run ./cmd/eval locomo run --dataset synthetic --out /tmp/eval-locomo-synthetic.json
+	@echo "wrote /tmp/eval-locomo-synthetic.json"
+
+# Backwards-compat alias for the pre-eval/ migration entry point. The old
+# target only ran the //go:build integration lane of tests/quality/knowledge;
+# the post-migration `make eval` covers more (LoCoMo, history, knowledge),
+# but the integration lane still requires KNOWLEDGE_EVAL_EMBEDDER (e.g.
+# `qwen:text-embedding-v4`) plus the matching FLOWCRAFT_<ALIAS> JSON to
+# actually do work.
 .PHONY: test-quality
 test-quality:
-	@cd tests/quality/knowledge && GOWORK=off go test -tags=integration -count=1 ./...
+	@cd eval/knowledge && GOWORK=off go test -tags=integration -count=1 ./...

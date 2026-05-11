@@ -18,8 +18,8 @@
 !go.mod
 !go.sum
 !go.work
-!bench/
-!bench/**
+!eval/
+!eval/**
 !cmd/
 !cmd/**
 !examples/
