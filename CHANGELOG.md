@@ -191,8 +191,13 @@ the `v0.1.0` vessel runtime with declarative YAML, multi-vessel fleet
 supervision, and a Prometheus-instrumented HTTP control plane into a
 single static binary suitable for production single-node deployments.
 
-This is a documentation / coordination release on top of the RC series;
-no API-level changes between `vesseld/v0.1.0-rc.2` and GA.
+The cut goes directly from `vesseld/v0.1.0-rc.1` to GA — no `rc.2`
+tag was published. The `vessel` dependency bump to `v0.1.0-rc.2`
+landed in `main` shortly after the vessel tag (consumed
+`Handle.OnTerminate` so the fleet supervisor can release the
+concurrency gate + prune the run registry deterministically on
+termination, eliminating a class of latent races surfaced by chaos
+tests), and shipped as part of this GA.
 
 ### Highlights
 
@@ -204,6 +209,9 @@ no API-level changes between `vesseld/v0.1.0-rc.2` and GA.
   rate limiting, and the seven catalog-registered probes
   (`TokenBudgetProbe`, `ToolReachableProbe`, `PromptResponseProbe`,
   …) all on by default.
+- Fleet supervisor uses `vessel.Handle.OnTerminate` for deterministic
+  concurrency-gate release + run-registry pruning on termination
+  (chaos-test hardened).
 - End-to-end `tests/e2e/vesseld` (25+ test files: allowlist, auth,
   chaos, concurrency, drain, restart, sidecar reject, …) gates the
   release.
@@ -227,17 +235,6 @@ no API-level changes between `vesseld/v0.1.0-rc.2` and GA.
 - mTLS / SecretProvider / `vesseld migrate` subcommand are not yet
   shipped — runbook recommends fronting the TCP listener with a
   TLS-terminating proxy in the meantime.
-
-## `vesseld/v0.1.0-rc.2` — 2026-05-11
-
-### Changed
-
-- Bump `vessel` dependency to `v0.1.0-rc.2`, picking up the
-  `Handle.OnTerminate` lifecycle hook. The fleet supervisor now uses
-  this hook to release concurrency gate entries and prune the run
-  registry in deterministic order on vessel termination, eliminating
-  a class of latent races in the rc.1 supervisor that surfaced under
-  rapid drain-restart cycles in chaos tests.
 
 ## `vesseld/v0.1.0-rc.1` — 2026-05-07
 
