@@ -55,6 +55,19 @@ with its own tag prefix (e.g. `sdk/vX.Y.Z`, `vessel/vX.Y.Z`,
   pre-flight disk check, log tee, and a 30-min log-idle watchdog. The
   Feishu custom-bot webhook backend is deliberately not supported — at
   evaluation timescales it floods the destination chat.
+- `eval/beir`: new public-dataset retrieval suite that drives
+  `sdk/knowledge` against any [BEIR](https://arxiv.org/abs/2104.08663)
+  task (SciFact, NFCorpus, FiQA, …) and emits the metrics the BEIR
+  leaderboard publishes — graded nDCG@k, binary Recall@k, MRR. Same
+  `Run(ctx, ds, opts) → Report` shape as `eval/knowledge` and shares
+  its embedder pipeline, but the scoring layer differs because BEIR
+  qrels carry per-query *graded* relevance (0/1/2) rather than a single
+  ExpectedDoc. Internal metric helpers (`dcg`, `nDCG`, `recall`, `mrr`)
+  ship with closed-form unit tests so a wrong-log-base or off-by-one
+  in the rank loop is caught independently of the retrieval pipeline.
+  `cmd/eval` accepts BEIR's canonical 3-file layout (`corpus.jsonl`,
+  `queries.jsonl`, `qrels/test.tsv`) directly, no converter step
+  required.
 - `eval/knowledge`: lifted retrieval-quality suite from `go test`-only
   into the standard `Run(ctx, ds, opts) → Report` shape and added a
   `cmd/eval` binary. Lanes (`bm25` / `vector` / `hybrid`) can now be

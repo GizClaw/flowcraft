@@ -15,6 +15,7 @@ FlowCraft's quality-evaluation suites.
 | `longmemeval/` | Long-term memory (recall) — LongMemEval (ICLR 2025)        | `go run ./longmemeval/cmd/convert` + `locomo/cmd/eval`     |
 | `history/`     | History compactor quality vs. token-cost trade-off          | `go run ./history/cmd/eval`                                |
 | `knowledge/`   | Knowledge retrieval (BM25 / vector / hybrid) regressions   | `go run ./knowledge/cmd/eval` *or* `go test ./knowledge/...` |
+| `beir/`        | BEIR-format retrieval baselines (nDCG@k / Recall@k / MRR)   | `go run ./beir/cmd/eval --root <beir-dataset>`              |
 
 `longmemeval` deliberately ships no runner of its own: the data schema is
 compatible with LoCoMo, so once converted the same `locomo/cmd/eval`
