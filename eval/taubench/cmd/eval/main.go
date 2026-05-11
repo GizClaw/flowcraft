@@ -27,6 +27,7 @@ import (
 	"github.com/GizClaw/flowcraft/eval/internal/env"
 	"github.com/GizClaw/flowcraft/eval/internal/notify"
 	"github.com/GizClaw/flowcraft/eval/taubench"
+	"github.com/GizClaw/flowcraft/sdk/llm"
 
 	_ "github.com/GizClaw/flowcraft/sdkx/llm/azure"
 	_ "github.com/GizClaw/flowcraft/sdkx/llm/deepseek"
@@ -37,8 +38,11 @@ import (
 
 func main() {
 	agentSpec := flag.String("agent-llm", "", "model under test, format provider:model (required)")
+	customerSpec := flag.String("customer-llm", "", "customer-role LLM for multi-turn tasks; required iff dataset has any CustomerScenario task")
 	domain := flag.String("domain", "retail", "domain pack (currently only \"retail\" — airline is on the roadmap)")
-	maxTurns := flag.Int("max-turns", 12, "agent turn ceiling before a task is failed for stalling")
+	maxAgentTurns := flag.Int("max-agent-turns", 12, "ceiling on agent Generate calls per task")
+	maxConvTurns := flag.Int("max-conversation-turns", 10, "ceiling on customer↔agent exchanges per multi-turn task")
+	stopToken := flag.String("stop-token", "###STOP###", "substring the customer can emit to end the dialog cleanly")
 	concurrency := flag.Int("concurrency", 4, "parallel tasks")
 	limit := flag.Int("limit", 0, "run only the first N tasks (0 = all)")
 	perTaskTimeout := flag.Duration("per-task-timeout", 5*time.Minute, "wall-clock cap per task; 0 inherits the ambient ctx")
@@ -61,6 +65,16 @@ func main() {
 	if agent == nil {
 		log.Fatal("--agent-llm resolved to nil; check FLOWCRAFT_<ALIAS> env var")
 	}
+	var customer llm.LLM
+	if *customerSpec != "" {
+		customer, err = env.BuildLLM(*customerSpec)
+		if err != nil {
+			log.Fatalf("--customer-llm: %v", err)
+		}
+		if customer == nil {
+			log.Fatal("--customer-llm resolved to nil; check FLOWCRAFT_<ALIAS> env var")
+		}
+	}
 
 	var ds *taubench.Dataset
 	var tools map[string]taubench.Tool
@@ -73,14 +87,17 @@ func main() {
 	}
 
 	opts := taubench.Options{
-		AgentLLM:          agent,
-		Tools:             tools,
-		MaxTurns:          *maxTurns,
-		Concurrency:       *concurrency,
-		LimitTasks:        *limit,
-		PerTaskTimeout:    *perTaskTimeout,
-		IncludeTranscript: *includeTranscript,
-		ProgressPct:       *notifyFlags.ProgressPct,
+		AgentLLM:             agent,
+		CustomerLLM:          customer,
+		Tools:                tools,
+		StopToken:            *stopToken,
+		MaxAgentTurns:        *maxAgentTurns,
+		MaxConversationTurns: *maxConvTurns,
+		Concurrency:          *concurrency,
+		LimitTasks:           *limit,
+		PerTaskTimeout:       *perTaskTimeout,
+		IncludeTranscript:    *includeTranscript,
+		ProgressPct:          *notifyFlags.ProgressPct,
 		Hook: func(ctx context.Context, e taubench.Event) {
 			notify.Forward(ctx, notifier, notify.Event{
 				Kind: e.Kind, Time: e.Time, Title: e.Title, Body: e.Body, Fields: e.Fields,
@@ -118,7 +135,7 @@ func main() {
 		if !tr.Success {
 			marker = "FAIL"
 		}
-		fmt.Fprintf(os.Stderr, "    [%s] %-32s turns=%d tools=%d %s\n",
-			marker, tr.ID, tr.NumTurns, len(tr.ToolCalls), tr.Reason)
+		fmt.Fprintf(os.Stderr, "    [%s] %-32s mode=%-11s agent_turns=%d customer_turns=%d tools=%d %s\n",
+			marker, tr.ID, tr.Mode, tr.AgentTurns, tr.CustomerTurns, len(tr.ToolCalls), tr.Reason)
 	}
 }

@@ -20,24 +20,70 @@ full FlowCraft agent loop: read intent → invoke a Go tool with the
 right structured arguments → ingest the tool result → potentially
 chain more calls → confirm in natural language.
 
+## NOT a PR gate
+
+τ-bench is the most LLM-expensive suite in `eval/`. The multi-turn
+flavour spends roughly
+
+    per_task_calls ≈ MaxConversationTurns × (1 customer + 1-3 agent)
+
+so a 100-task retail run with the published parameters cuts ~3 000
+LLM completions. This is a **periodic regression** (weekly, release
+gate, model swap), NOT a per-PR check. CI should at most run a
+`--limit 5 --domain retail` smoke that excludes multi-turn tasks; the
+full pack belongs in scheduled jobs.
+
 ## What we ship today
 
-- **Retail mini** task pack (5 hand-curated tasks) baked into the
-  binary so a smoke run needs no external assets.
-- **Retail tools** (`get_order`, `cancel_order`, `update_shipping`,
-  `list_orders_for_customer`, `get_product`, `search_products`).
-- **State checker** with dot-path predicates (`orders.ORD-1001.status == "cancelled"`).
-- Single-turn instruction harness (the customer's full goal goes in
-  one user message; the agent then chains tool calls until done).
+- **Single-shot** harness — Task.Instruction → agent tool loop → done.
+- **Multi-turn dialog** harness — Task.CustomerScenario + Options.CustomerLLM
+  → customer ↔ agent exchange until customer emits `###STOP###` or
+  the conversation cap is hit. The customer NEVER sees tool calls or
+  tool results; only the agent's natural-language utterances.
+- **Retail-mini** dataset baked into the binary: 5 single-shot tasks
+  (cancel / update-shipping / search / refuse-protected-state) +
+  2 multi-turn tasks (forgot-order-id; refuse-delivered-politely).
+- **Retail tools**: `get_order`, `cancel_order`, `update_shipping`,
+  `list_orders_for_customer`, `get_product`, `search_products`.
+- **State checker** with dot-path predicates and RequiredTools.
 - CardKit-driven event stream and JSON Report shape consistent with
   every other suite under `eval/`.
 
+## Quick start
+
+```bash
+export FLOWCRAFT_QWEN='{"api_key":"sk-...","model":"qwen-max"}'
+export FLOWCRAFT_AZURE='{"api_key":"...","model":"gpt-5","base_url":"..."}'
+
+cd eval
+# Single-shot-only smoke (no CustomerLLM needed).
+GOWORK=off go run ./taubench/cmd/eval \
+    --agent-llm qwen:qwen-max \
+    --limit     5 \
+    --out       /tmp/taubench-singleshot.json
+
+# Full mini-pack including multi-turn tasks.
+GOWORK=off go run ./taubench/cmd/eval \
+    --agent-llm              qwen:qwen-max \
+    --customer-llm           azure \
+    --max-conversation-turns 10 \
+    --max-agent-turns        12 \
+    --out                    /tmp/taubench-multiturn.json
+```
+
+The customer LLM picks the **calibration** of the eval: a strong
+roleplaying customer (gpt-5 / claude-opus / qwen-max) stays in
+character and tests the agent honestly; a weak customer can leak the
+answer or give up early, which inflates or deflates the pass rate
+unpredictably. Pick a tier comparable to the agent under test.
+
 ## Roadmap
 
-- LLM-as-customer multi-turn dialog harness.
-- Airline-domain tools and tasks.
+- Airline-domain tools and tasks (queued next).
 - Converter for the upstream τ-bench task JSON so the official
-  retail (≈115) and airline (≈50) sets can be run unmodified.
+  retail (≈115) and airline (≈50) sets can be run unmodified, with
+  "shadow-execution of gold actions" scoring (matches published
+  τ-bench numbers).
 
 ## Quick start
 
@@ -51,16 +97,18 @@ GOWORK=off go run ./taubench/cmd/eval \
     --out       /tmp/taubench-qwenmax.json
 ```
 
-Sample stderr summary:
+Sample stderr summary (multi-turn pack):
 
 ```
-  total=5  passed=4  pass_rate=0.800  duration=18743ms
-    retail     pass_rate=0.800 (4/5)
-    [PASS] retail-cancel-pending             turns=2 tools=1
-    [PASS] retail-cancel-processing          turns=2 tools=1
-    [PASS] retail-update-shipping            turns=2 tools=1
-    [FAIL] retail-cannot-cancel-delivered    turns=3 tools=2 state mismatch: ...
-    [PASS] retail-product-search             turns=2 tools=1
+  total=7  passed=6  pass_rate=0.857  duration=51284ms
+    retail     pass_rate=0.857 (6/7)
+    [PASS] retail-cancel-pending             mode=single-shot agent_turns=2 customer_turns=0 tools=1
+    [PASS] retail-cancel-processing          mode=single-shot agent_turns=2 customer_turns=0 tools=1
+    [PASS] retail-update-shipping            mode=single-shot agent_turns=2 customer_turns=0 tools=1
+    [FAIL] retail-cannot-cancel-delivered    mode=single-shot agent_turns=3 customer_turns=0 tools=2 state mismatch: ...
+    [PASS] retail-product-search             mode=single-shot agent_turns=2 customer_turns=0 tools=1
+    [PASS] retail-dialog-forgot-order-id     mode=multi-turn  agent_turns=4 customer_turns=2 tools=2
+    [PASS] retail-dialog-refuse-delivered    mode=multi-turn  agent_turns=2 customer_turns=2 tools=1
 ```
 
 ## Authoring new tasks
@@ -94,5 +142,7 @@ string on each `TaskResult` is actionable:
 |---------------|---------|
 | `state mismatch: ...` | Agent finished but the world wasn't mutated correctly. |
 | `required tools never called: [...]` | Agent finished without calling a tool the fixture demanded. |
-| `agent did not finish within N turns` | Hit `--max-turns`; agent kept calling tools forever. |
+| `agent did not finish within N turns` | Hit `--max-agent-turns`; agent kept calling tools forever. |
+| `conversation did not terminate within N turns` | Multi-turn task: customer never emitted `###STOP###` and hit `--max-conversation-turns`. |
+| `customer LLM error: ...` | Customer-side provider error; usually a credential issue. |
 | `agent LLM error: ...` | Upstream provider error; check the model spec. |

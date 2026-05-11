@@ -3,15 +3,42 @@
 // sdk/agent are designed for: read the user's intent, call the right
 // tools in the right order, mutate the world to satisfy the goal.
 //
-// # What we ship
+// # Two task forms
 //
-// This is a Go-native re-implementation of τ-bench's "single-turn
-// instruction" variant: the customer's goal is fed to the agent in a
-// single user message and the agent then chains tool calls until it
-// either succeeds or hits the max-turns ceiling. The official
-// τ-bench also supports an LLM-as-customer multi-turn dialog flavour;
-// porting that costs another ~500 LOC of harness code and is queued
-// as a follow-up.
+// A Task is scored in either of two modes, picked per-task:
+//
+//   - **Single-shot** — Task.Instruction is non-empty. The customer's
+//     full goal is delivered to the agent as one user message and
+//     the agent then chains tool calls until it stops. No customer
+//     LLM is invoked. Cheap, deterministic, useful for first-cut
+//     tool-call regressions.
+//
+//   - **Multi-turn** — Task.CustomerScenario is non-empty. A second
+//     LLM (Options.CustomerLLM) roleplays the customer using the
+//     scenario as private context. The customer and the agent
+//     exchange messages until the customer emits the
+//     Options.StopToken or either party's per-task turn cap is hit.
+//     The customer NEVER sees tool calls or tool results — only the
+//     agent's natural-language utterances. This is the form that
+//     matches the published τ-bench numbers and tests skills like
+//     handling clarifying questions and ambiguous instructions.
+//
+// Both modes share scoring (StateChecks + RequiredTools applied to
+// the post-run World). The Report distinguishes them via per-task
+// fields so a multi-domain run can mix them freely.
+//
+// # Cost / NOT a PR gate
+//
+// τ-bench burns LLM calls. The multi-turn flavour is roughly
+//
+//	   per_task_calls ≈ MaxConversationTurns × (1 customer + 1-3 agent)
+//
+// across 100+ tasks per domain, which is two orders of magnitude
+// more expensive than the other suites in eval/. This suite is meant
+// to run as a periodic regression (weekly / release-time / model
+// swap), NOT inline on every PR. CI gates should pick a subset
+// (--limit, --domain retail) at most. See the README for the
+// recommended cadence per environment.
 //
 // We deliberately re-implement the harness rather than wrap the
 // Python upstream:
@@ -109,17 +136,46 @@ type ExpectedOutcome struct {
 	RequiredTools []string
 }
 
-// Task is one τ-bench scenario.
+// Task is one τ-bench scenario. Exactly one of Instruction or
+// CustomerScenario should be set; if both are set the multi-turn
+// CustomerScenario path wins because it is the higher-fidelity test.
 type Task struct {
 	ID           string
 	Domain       string
-	Instruction  string // shown to the agent as the opening user turn
 	InitialState State
 	Expected     ExpectedOutcome
+
+	// Instruction is the closed-book, single-shot goal. Used as the
+	// opening (and only) user message in single-shot mode.
+	Instruction string
+
+	// CustomerScenario is private context fed to the CustomerLLM in
+	// multi-turn mode. The customer is told to roleplay this scenario
+	// and to emit Options.StopToken when the goal is reached or it
+	// gives up. Conventional shape:
+	//
+	//   "You are CUST-1 (Ada Lovelace). Your reservation RES-42 needs
+	//    to be cancelled because you got sick. You don't remember
+	//    the reservation id at first; you'll have to ask the agent
+	//    to look it up by your name."
+	//
+	// Leave empty to use single-shot mode.
+	CustomerScenario string
+
+	// CustomerOpening, when set, replaces the customer's first LLM
+	// call. Useful when a deterministic first utterance keeps the
+	// agent from wandering on benchmark warm-up. Ignored unless
+	// CustomerScenario is set.
+	CustomerOpening string
+
 	// Tools restricts which tools are exposed to the agent. Empty =
 	// use every tool registered for the task's domain.
 	Tools []string
 }
+
+// IsMultiTurn reports whether the task should run through the
+// customer-LLM dialog harness rather than the single-shot path.
+func (t Task) IsMultiTurn() bool { return t.CustomerScenario != "" }
 
 // Dataset is a collection of tasks.
 type Dataset struct {
@@ -129,13 +185,15 @@ type Dataset struct {
 
 // TaskResult is one row in the report's Tasks slice.
 type TaskResult struct {
-	ID         string   `json:"id"`
-	Domain     string   `json:"domain"`
-	Success    bool     `json:"success"`
-	Reason     string   `json:"reason,omitempty"`     // why failed (state mismatch / max turns / etc.)
-	NumTurns   int      `json:"num_turns"`            // LLM completions consumed
-	ToolCalls  []string `json:"tool_calls,omitempty"` // names called, in order
-	Transcript string   `json:"transcript,omitempty"` // human-readable log (debug only)
+	ID        string   `json:"id"`
+	Domain    string   `json:"domain"`
+	Mode      string   `json:"mode"`                 // "single-shot" or "multi-turn"
+	Success   bool     `json:"success"`
+	Reason    string   `json:"reason,omitempty"`     // why failed (state mismatch / max turns / etc.)
+	AgentTurns    int      `json:"agent_turns"`           // agent.Generate calls consumed
+	CustomerTurns int      `json:"customer_turns,omitempty"` // customer.Generate calls consumed (multi-turn only)
+	ToolCalls     []string `json:"tool_calls,omitempty"`  // names called, in order
+	Transcript    string   `json:"transcript,omitempty"`  // human-readable log (debug only)
 }
 
 // DomainReport is the per-domain headline number.
@@ -175,19 +233,43 @@ type Options struct {
 	// AgentLLM is the model under test. Required.
 	AgentLLM llm.LLM
 
+	// CustomerLLM roleplays the customer side in multi-turn tasks.
+	// REQUIRED only when the dataset contains at least one task with
+	// CustomerScenario set; single-shot-only datasets can leave it
+	// nil. Picking a STRONG customer model (e.g. gpt-5 / qwen-max)
+	// keeps the customer convincingly in-character; a weak customer
+	// can sabotage even a perfect agent.
+	CustomerLLM llm.LLM
+
 	// Tools maps tool name → implementation. The set is intersected
 	// with each task's Tools list (or used as-is for tasks that don't
 	// specify). Required.
 	Tools map[string]Tool
 
-	// SystemPrompt prefixes every conversation. Default: a generic
-	// "be helpful, call tools when needed" instruction.
+	// SystemPrompt prefixes every agent conversation. Default:
+	// DefaultSystemPrompt.
 	SystemPrompt string
 
-	// MaxTurns caps consecutive Generate calls per task. The agent
-	// makes one Generate per turn; tool calls count as one turn
-	// regardless of how many tools are invoked. Default: 12.
-	MaxTurns int
+	// CustomerSystemPrompt prefixes every customer conversation in
+	// multi-turn mode. The literal substring "{scenario}" is
+	// replaced with Task.CustomerScenario. Default:
+	// DefaultCustomerSystemPrompt.
+	CustomerSystemPrompt string
+
+	// StopToken is the substring the customer can include in any
+	// reply to terminate the dialog (e.g. when its goal is met or
+	// it has given up). Default: "###STOP###".
+	StopToken string
+
+	// MaxAgentTurns caps the agent's Generate calls per task. Each
+	// tool-call round trip counts as one agent turn regardless of
+	// how many tools are dispatched in parallel. Default: 12.
+	MaxAgentTurns int
+
+	// MaxConversationTurns caps customer↔agent exchanges in
+	// multi-turn mode. One exchange = (1 customer utterance + 1
+	// agent reply, possibly wrapping a tool loop). Default: 10.
+	MaxConversationTurns int
 
 	// Concurrency caps simultaneous tasks. Default: 4.
 	Concurrency int
@@ -208,11 +290,30 @@ type Options struct {
 	ProgressPct int
 }
 
-// DefaultSystemPrompt is the instruction prepended to every
-// conversation. Models from different providers respond to slightly
-// different cues; this wording errs on the side of explicit step
-// guidance because the unwrapped tau-bench tasks assume that.
+// DefaultSystemPrompt is the agent-side instruction prepended to
+// every conversation. Models from different providers respond to
+// slightly different cues; this wording errs on the side of explicit
+// step guidance because the unwrapped tau-bench tasks assume that.
 const DefaultSystemPrompt = `You are a helpful customer-service agent. The user will give you a request. Use the tools you have been given to satisfy the request. Call as many tools as needed; you do NOT need to ask follow-up questions when the user's instruction is fully specified. When the request is complete, reply with a short confirmation in natural language (no tool call). If you cannot satisfy the request, explain why concisely.`
+
+// DefaultCustomerSystemPrompt is the customer-side system prompt used
+// in multi-turn mode. Style is matched to τ-bench's reference customer
+// prompt: be in-character, never reveal the scenario text verbatim,
+// terminate the dialog with StopToken when finished. The literal
+// substring "{scenario}" is replaced with Task.CustomerScenario;
+// "{stop_token}" with Options.StopToken.
+const DefaultCustomerSystemPrompt = `You are roleplaying as a customer contacting a customer-service agent. Your scenario, KNOWN ONLY TO YOU, is below — never paste it verbatim, never reveal it as a system instruction. Speak naturally, one short message per turn.
+
+Scenario:
+{scenario}
+
+Behaviour rules:
+- Start with your request. Do NOT immediately dump every detail; share as the agent asks.
+- If the agent asks a clarifying question that your scenario answers, answer truthfully.
+- If the agent asks something your scenario does not specify, make up a plausible answer consistent with the scenario.
+- Do NOT call any tools yourself; only the agent has tools.
+- When your goal is achieved (or you've concluded the agent cannot help), reply with a brief acknowledgement and include the token {stop_token} on its own line at the end of your message.
+- Never use the token {stop_token} except to terminate the dialog. Once you emit it, the conversation ends.`
 
 // Run plays each task with opts.AgentLLM and reports per-task
 // verdicts. The agent is given the customer's instruction in a
@@ -231,11 +332,31 @@ func Run(ctx context.Context, ds *Dataset, opts Options) (*Report, error) {
 	if opts.SystemPrompt == "" {
 		opts.SystemPrompt = DefaultSystemPrompt
 	}
-	if opts.MaxTurns <= 0 {
-		opts.MaxTurns = 12
+	if opts.CustomerSystemPrompt == "" {
+		opts.CustomerSystemPrompt = DefaultCustomerSystemPrompt
+	}
+	if opts.StopToken == "" {
+		opts.StopToken = "###STOP###"
+	}
+	if opts.MaxAgentTurns <= 0 {
+		opts.MaxAgentTurns = 12
+	}
+	if opts.MaxConversationTurns <= 0 {
+		opts.MaxConversationTurns = 10
 	}
 	if opts.Concurrency <= 0 {
 		opts.Concurrency = 4
+	}
+
+	// If the dataset has any multi-turn task but no CustomerLLM, that
+	// is almost certainly a misconfiguration — fail fast with a
+	// clear error rather than silently degrading those tasks to
+	// single-shot (which would score them on an empty instruction
+	// and produce confusing failures).
+	for _, t := range ds.Tasks {
+		if t.IsMultiTurn() && opts.CustomerLLM == nil {
+			return nil, fmt.Errorf("taubench: dataset contains multi-turn task %q but Options.CustomerLLM is nil", t.ID)
+		}
 	}
 
 	tasks := ds.Tasks
@@ -248,10 +369,13 @@ func Run(ctx context.Context, ds *Dataset, opts Options) (*Report, error) {
 		StartedAt: time.Now(),
 		PerDomain: map[string]*DomainReport{},
 		Options: map[string]any{
-			"max_turns":     opts.MaxTurns,
-			"concurrency":   opts.Concurrency,
-			"n_tasks":       len(tasks),
-			"system_prompt": opts.SystemPrompt,
+			"max_agent_turns":        opts.MaxAgentTurns,
+			"max_conversation_turns": opts.MaxConversationTurns,
+			"concurrency":            opts.Concurrency,
+			"n_tasks":                len(tasks),
+			"system_prompt":          opts.SystemPrompt,
+			"stop_token":             opts.StopToken,
+			"has_customer_llm":       opts.CustomerLLM != nil,
 		},
 	}
 	defer func() { rep.DurationMS = time.Since(rep.StartedAt).Milliseconds() }()
@@ -266,14 +390,22 @@ func Run(ctx context.Context, ds *Dataset, opts Options) (*Report, error) {
 		opts.Hook(ctx, e)
 	}
 
+	multiTurnCount := 0
+	for _, t := range tasks {
+		if t.IsMultiTurn() {
+			multiTurnCount++
+		}
+	}
 	emit(Event{
 		Kind:  "start",
 		Title: ds.Name,
-		Body:  fmt.Sprintf("τ-bench — %d tasks, max %d turns", len(tasks), opts.MaxTurns),
+		Body: fmt.Sprintf("τ-bench — %d tasks (%d multi-turn / %d single-shot), max %d agent turns",
+			len(tasks), multiTurnCount, len(tasks)-multiTurnCount, opts.MaxAgentTurns),
 		Fields: map[string]string{
-			"dataset":   ds.Name,
-			"n_tasks":   fmt.Sprintf("%d", len(tasks)),
-			"max_turns": fmt.Sprintf("%d", opts.MaxTurns),
+			"dataset":         ds.Name,
+			"n_tasks":         fmt.Sprintf("%d", len(tasks)),
+			"n_multi_turn":    fmt.Sprintf("%d", multiTurnCount),
+			"max_agent_turns": fmt.Sprintf("%d", opts.MaxAgentTurns),
 		},
 	})
 
@@ -383,53 +515,222 @@ func Run(ctx context.Context, ds *Dataset, opts Options) (*Report, error) {
 	return rep, nil
 }
 
-// runTask is the per-task agent loop. We clone the InitialState so
-// tasks running in parallel cannot interfere; the cloned State is
-// what the StateChecks ultimately evaluate against.
+// runTask dispatches a single task to the appropriate harness and
+// scores the resulting state. The dispatch decision lives here (not
+// inside Run) so unit tests can drive either mode directly.
 func runTask(ctx context.Context, t Task, opts Options) TaskResult {
 	r := TaskResult{ID: t.ID, Domain: t.Domain}
 	state := cloneState(t.InitialState)
 
-	available := opts.Tools
-	if len(t.Tools) > 0 {
-		// Restrict the agent to the task's whitelisted subset.
-		filtered := map[string]Tool{}
-		for _, name := range t.Tools {
-			if tool, ok := opts.Tools[name]; ok {
-				filtered[name] = tool
-			}
-		}
-		available = filtered
+	available := availableTools(t, opts)
+	defs := toolDefs(available)
+
+	var transcript strings.Builder
+
+	if t.IsMultiTurn() {
+		r.Mode = "multi-turn"
+		runDialog(ctx, t, opts, available, defs, state, &r, &transcript)
+	} else {
+		r.Mode = "single-shot"
+		runSingleShot(ctx, t, opts, available, defs, state, &r, &transcript)
 	}
-	defs := make([]model.ToolDefinition, 0, len(available))
-	for _, tool := range available {
+
+	// Score regardless of how the loop terminated. If the loop set a
+	// Reason already (LLM error / turn cap), we keep it; scoring then
+	// runs on the partial state to surface "missed required tool"
+	// alongside the primary failure.
+	if missing := checkRequiredTools(t.Expected.RequiredTools, r.ToolCalls); len(missing) > 0 {
+		if r.Reason == "" {
+			r.Reason = fmt.Sprintf("required tools never called: %v", missing)
+		}
+		r.Transcript = transcript.String()
+		return r
+	}
+	if mismatch, ok := checkStateChecks(t.Expected.StateChecks, state); !ok {
+		if r.Reason == "" {
+			r.Reason = "state mismatch: " + mismatch
+		}
+		r.Transcript = transcript.String()
+		return r
+	}
+	if r.Reason != "" {
+		// Loop bailed out but scoring would have passed; preserve
+		// the loop's reason because the agent technically did not
+		// "complete" the dialog properly.
+		r.Transcript = transcript.String()
+		return r
+	}
+	r.Success = true
+	r.Transcript = transcript.String()
+	return r
+}
+
+// availableTools intersects the task's tool whitelist with the
+// run-wide registry. Empty whitelist = "use all".
+func availableTools(t Task, opts Options) map[string]Tool {
+	if len(t.Tools) == 0 {
+		return opts.Tools
+	}
+	filtered := map[string]Tool{}
+	for _, name := range t.Tools {
+		if tool, ok := opts.Tools[name]; ok {
+			filtered[name] = tool
+		}
+	}
+	return filtered
+}
+
+// toolDefs returns a stable-ordered slice of the tool wire definitions
+// so different runs send the same prompt bytes (helps cache hit on
+// providers that fingerprint the tools list).
+func toolDefs(tools map[string]Tool) []model.ToolDefinition {
+	defs := make([]model.ToolDefinition, 0, len(tools))
+	for _, tool := range tools {
 		defs = append(defs, tool.ToolDefinition())
 	}
-	// Stable order so different runs send the same prompt bytes.
 	sort.Slice(defs, func(i, j int) bool { return defs[i].Name < defs[j].Name })
+	return defs
+}
 
+// runSingleShot drives the closed-book path: one user message in,
+// agent tool loop until empty reply, no customer LLM.
+func runSingleShot(
+	ctx context.Context,
+	t Task,
+	opts Options,
+	available map[string]Tool,
+	defs []model.ToolDefinition,
+	state State,
+	r *TaskResult,
+	transcript *strings.Builder,
+) {
 	msgs := []llm.Message{
 		{Role: model.RoleSystem, Parts: []model.Part{{Type: model.PartText, Text: opts.SystemPrompt}}},
 		{Role: model.RoleUser, Parts: []model.Part{{Type: model.PartText, Text: t.Instruction}}},
 	}
-
-	var transcript strings.Builder
 	if opts.IncludeTranscript {
-		fmt.Fprintf(&transcript, "USER: %s\n", t.Instruction)
+		fmt.Fprintf(transcript, "USER: %s\n", t.Instruction)
 	}
 
-	for turn := 0; turn < opts.MaxTurns; turn++ {
-		r.NumTurns++
-		ans, _, err := opts.AgentLLM.Generate(ctx, msgs, llm.WithTools(defs...))
-		if err != nil {
-			r.Reason = fmt.Sprintf("agent LLM error: %v", err)
-			r.Transcript = transcript.String()
-			return r
+	_, reason := pumpAgent(ctx, opts, available, defs, state, &msgs, r, transcript, opts.MaxAgentTurns)
+	if reason != "" {
+		r.Reason = reason
+	}
+}
+
+// runDialog drives the multi-turn path. Two parallel message lists
+// (one per LLM, with mirrored roles) keep the customer scoped to
+// natural-language exchanges — it never sees tool calls or tool
+// results, only the agent's natural-language utterances.
+func runDialog(
+	ctx context.Context,
+	t Task,
+	opts Options,
+	available map[string]Tool,
+	defs []model.ToolDefinition,
+	state State,
+	r *TaskResult,
+	transcript *strings.Builder,
+) {
+	customerSys := strings.ReplaceAll(opts.CustomerSystemPrompt, "{scenario}", t.CustomerScenario)
+	customerSys = strings.ReplaceAll(customerSys, "{stop_token}", opts.StopToken)
+
+	customerMsgs := []llm.Message{
+		{Role: model.RoleSystem, Parts: []model.Part{{Type: model.PartText, Text: customerSys}}},
+	}
+	agentMsgs := []llm.Message{
+		{Role: model.RoleSystem, Parts: []model.Part{{Type: model.PartText, Text: opts.SystemPrompt}}},
+	}
+
+	for conv := 0; conv < opts.MaxConversationTurns; conv++ {
+		// 1. Customer speaks. First exchange may use a deterministic
+		//    Opening to keep the first agent turn comparable across
+		//    runs; later turns always come from the customer LLM.
+		var customerText string
+		if conv == 0 && t.CustomerOpening != "" {
+			customerText = t.CustomerOpening
+			// Seed the customer's own history with the opening so its
+			// next turn knows what it just said.
+			customerMsgs = append(customerMsgs,
+				model.NewTextMessage(model.RoleAssistant, customerText))
+		} else {
+			ans, _, err := opts.CustomerLLM.Generate(ctx, customerMsgs)
+			if err != nil {
+				r.Reason = fmt.Sprintf("customer LLM error: %v", err)
+				return
+			}
+			r.CustomerTurns++
+			customerText = ans.Content()
+			customerMsgs = append(customerMsgs, ans)
+		}
+		if opts.IncludeTranscript {
+			fmt.Fprintf(transcript, "CUSTOMER: %s\n", customerText)
 		}
 
-		// Collect tool calls from the response parts.
+		// Strip the stop token before feeding the message to the
+		// agent — the agent should never see the bookkeeping token.
+		stripped, stop := stripStopToken(customerText, opts.StopToken)
+		if strings.TrimSpace(stripped) != "" {
+			agentMsgs = append(agentMsgs,
+				model.NewTextMessage(model.RoleUser, stripped))
+		}
+		if stop {
+			// Customer ended the dialog. We do NOT call the agent
+			// again — scoring runs on the current state.
+			return
+		}
+
+		// 2. Agent runs its tool loop until it produces a
+		//    natural-language utterance.
+		agentText, reason := pumpAgent(ctx, opts, available, defs, state, &agentMsgs, r, transcript, opts.MaxAgentTurns-r.AgentTurns)
+		if reason != "" {
+			r.Reason = reason
+			return
+		}
+		if strings.TrimSpace(agentText) == "" {
+			// Agent kept tool-calling but never produced text. We
+			// synthesise a hint so the customer has something to
+			// react to; otherwise the customer LLM gets confused.
+			agentText = "(agent did not reply with text)"
+		}
+		// 3. Relay the agent's text to the customer (as user role,
+		//    because from the customer's perspective the agent IS
+		//    the user of the conversation).
+		customerMsgs = append(customerMsgs,
+			model.NewTextMessage(model.RoleUser, agentText))
+	}
+
+	r.Reason = fmt.Sprintf("conversation did not terminate within %d turns", opts.MaxConversationTurns)
+}
+
+// pumpAgent runs the agent's tool-call inner loop until it produces a
+// natural-language text reply (returned) or the per-task turn cap is
+// hit (reason set, text empty). `budget` is the remaining agent-turn
+// budget for THIS pump (may be smaller than opts.MaxAgentTurns in
+// multi-turn mode because earlier exchanges already consumed some).
+func pumpAgent(
+	ctx context.Context,
+	opts Options,
+	available map[string]Tool,
+	defs []model.ToolDefinition,
+	state State,
+	msgs *[]llm.Message,
+	r *TaskResult,
+	transcript *strings.Builder,
+	budget int,
+) (agentText, reason string) {
+	if budget <= 0 {
+		return "", fmt.Sprintf("agent did not finish within %d turns", opts.MaxAgentTurns)
+	}
+	for i := 0; i < budget; i++ {
+		ans, _, err := opts.AgentLLM.Generate(ctx, *msgs, llm.WithTools(defs...))
+		if err != nil {
+			return "", fmt.Sprintf("agent LLM error: %v", err)
+		}
+		r.AgentTurns++
+
 		var calls []model.ToolCall
-		var assistantText string
+		var text string
 		for _, p := range ans.Parts {
 			switch p.Type {
 			case model.PartToolCall:
@@ -437,80 +738,82 @@ func runTask(ctx context.Context, t Task, opts Options) TaskResult {
 					calls = append(calls, *p.ToolCall)
 				}
 			case model.PartText:
-				assistantText += p.Text
+				text += p.Text
 			}
 		}
-		if assistantText != "" && opts.IncludeTranscript {
-			fmt.Fprintf(&transcript, "AGENT: %s\n", assistantText)
+		if text != "" && opts.IncludeTranscript {
+			fmt.Fprintf(transcript, "AGENT: %s\n", text)
 		}
 
 		if len(calls) == 0 {
-			// Agent stopped calling tools — task is "finished" from
-			// its perspective. Move on to scoring.
-			break
+			return text, ""
 		}
+		// Agent issued tool calls — append the assistant message
+		// (with the tool-call parts) and the tool result(s).
+		*msgs = append(*msgs, ans)
+		executeToolBatch(calls, available, state, msgs, r, transcript, opts.IncludeTranscript)
+	}
+	return "", fmt.Sprintf("agent did not finish within %d turns", opts.MaxAgentTurns)
+}
 
-		// Append the assistant message that issued the tool calls
-		// (with tool-call parts intact), then run each call and
-		// append the tool results so the LLM sees them on the next
-		// turn.
-		msgs = append(msgs, ans)
-		for _, call := range calls {
-			r.ToolCalls = append(r.ToolCalls, call.Name)
-			tool, ok := available[call.Name]
-			if !ok {
-				appendToolResult(&msgs, call.ID, fmt.Sprintf("error: tool %q is not registered", call.Name), true)
-				if opts.IncludeTranscript {
-					fmt.Fprintf(&transcript, "TOOL[%s] -> error: not registered\n", call.Name)
+// executeToolBatch runs every tool call in `calls` against `state`
+// and appends a corresponding tool-result message for each. Unknown
+// tools and bad-args JSON are surfaced as error tool results rather
+// than aborting the task — this mirrors how a real provider tolerates
+// agent mistakes and gives the LLM a chance to recover.
+func executeToolBatch(
+	calls []model.ToolCall,
+	available map[string]Tool,
+	state State,
+	msgs *[]llm.Message,
+	r *TaskResult,
+	transcript *strings.Builder,
+	transcripting bool,
+) {
+	for _, call := range calls {
+		r.ToolCalls = append(r.ToolCalls, call.Name)
+		tool, ok := available[call.Name]
+		if !ok {
+			appendToolResult(msgs, call.ID, fmt.Sprintf("error: tool %q is not registered", call.Name), true)
+			if transcripting {
+				fmt.Fprintf(transcript, "TOOL[%s] -> error: not registered\n", call.Name)
+			}
+			continue
+		}
+		var args map[string]any
+		if call.Arguments != "" {
+			if err := json.Unmarshal([]byte(call.Arguments), &args); err != nil {
+				appendToolResult(msgs, call.ID, fmt.Sprintf("error: invalid arguments JSON: %v", err), true)
+				if transcripting {
+					fmt.Fprintf(transcript, "TOOL[%s] -> error: bad args %v\n", call.Name, err)
 				}
 				continue
 			}
-			var args map[string]any
-			if call.Arguments != "" {
-				if err := json.Unmarshal([]byte(call.Arguments), &args); err != nil {
-					appendToolResult(&msgs, call.ID, fmt.Sprintf("error: invalid arguments JSON: %v", err), true)
-					if opts.IncludeTranscript {
-						fmt.Fprintf(&transcript, "TOOL[%s] -> error: bad args %v\n", call.Name, err)
-					}
-					continue
-				}
-			}
-			out, err := tool.Handler(state, args)
-			if err != nil {
-				appendToolResult(&msgs, call.ID, fmt.Sprintf("error: %v", err), true)
-				if opts.IncludeTranscript {
-					fmt.Fprintf(&transcript, "TOOL[%s](%v) -> error: %v\n", call.Name, args, err)
-				}
-				continue
-			}
-			payload, _ := json.Marshal(out)
-			appendToolResult(&msgs, call.ID, string(payload), false)
-			if opts.IncludeTranscript {
-				fmt.Fprintf(&transcript, "TOOL[%s](%v) -> %s\n", call.Name, args, payload)
-			}
 		}
-
-		if r.NumTurns == opts.MaxTurns {
-			r.Reason = fmt.Sprintf("agent did not finish within %d turns", opts.MaxTurns)
-			r.Transcript = transcript.String()
-			return r
+		out, err := tool.Handler(state, args)
+		if err != nil {
+			appendToolResult(msgs, call.ID, fmt.Sprintf("error: %v", err), true)
+			if transcripting {
+				fmt.Fprintf(transcript, "TOOL[%s](%v) -> error: %v\n", call.Name, args, err)
+			}
+			continue
+		}
+		payload, _ := json.Marshal(out)
+		appendToolResult(msgs, call.ID, string(payload), false)
+		if transcripting {
+			fmt.Fprintf(transcript, "TOOL[%s](%v) -> %s\n", call.Name, args, payload)
 		}
 	}
+}
 
-	// Score.
-	if missing := checkRequiredTools(t.Expected.RequiredTools, r.ToolCalls); len(missing) > 0 {
-		r.Reason = fmt.Sprintf("required tools never called: %v", missing)
-		r.Transcript = transcript.String()
-		return r
+// stripStopToken removes the stop token from the customer's reply if
+// present, and reports whether it WAS present. We strip rather than
+// keep because we don't want the agent to see the bookkeeping token.
+func stripStopToken(s, token string) (stripped string, stopped bool) {
+	if !strings.Contains(s, token) {
+		return s, false
 	}
-	if mismatch, ok := checkStateChecks(t.Expected.StateChecks, state); !ok {
-		r.Reason = "state mismatch: " + mismatch
-		r.Transcript = transcript.String()
-		return r
-	}
-	r.Success = true
-	r.Transcript = transcript.String()
-	return r
+	return strings.TrimSpace(strings.ReplaceAll(s, token, "")), true
 }
 
 // appendToolResult is a convenience for emitting the per-call tool

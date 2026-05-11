@@ -3,6 +3,7 @@ package taubench_test
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/GizClaw/flowcraft/eval/taubench"
@@ -153,6 +154,144 @@ func TestRun_StateMismatchFails(t *testing.T) {
 	}
 	if rep.Tasks[0].Success {
 		t.Errorf("task should be marked unsuccessful")
+	}
+}
+
+// scriptedCustomer is the customer-side counterpart of scriptedAgent:
+// it returns plain text replies in order, optionally terminating the
+// dialog by including the stop token. The customer never produces
+// tool calls.
+type scriptedCustomer struct {
+	replies []string
+	idx     int
+}
+
+func (s *scriptedCustomer) Generate(_ context.Context, _ []llm.Message, _ ...llm.GenerateOption) (llm.Message, llm.TokenUsage, error) {
+	if s.idx >= len(s.replies) {
+		// Exhausting the script silently emits an empty reply rather
+		// than panicking; the harness's MaxConversationTurns will
+		// catch a runaway dialog if the test forgot a stop entry.
+		return model.NewTextMessage(model.RoleAssistant, ""), llm.TokenUsage{}, nil
+	}
+	r := s.replies[s.idx]
+	s.idx++
+	return model.NewTextMessage(model.RoleAssistant, r), llm.TokenUsage{}, nil
+}
+
+func (s *scriptedCustomer) GenerateStream(_ context.Context, _ []llm.Message, _ ...llm.GenerateOption) (llm.StreamMessage, error) {
+	return nil, nil
+}
+
+// TestRun_DialogHappyPath drives one round-trip of the multi-turn
+// harness:
+//
+//	customer opens  → agent calls cancel_order → agent says "done"
+//	customer acks  → ###STOP### terminates the loop
+//
+// The task's StateCheck (status=cancelled) must pass, and the report
+// must mark Mode="multi-turn" with both AgentTurns AND CustomerTurns
+// > 0. Customer turns >= 1 (the "thanks ###STOP###" reply); opening
+// utterance is hard-coded so it does NOT count as a customer-LLM
+// call.
+func TestRun_DialogHappyPath(t *testing.T) {
+	task := taubench.NewRetailMiniDataset().Tasks[5] // retail-dialog-forgot-order-id
+	// The agent must figure out the order id; we hardcode the
+	// "right" sequence: list_orders_for_customer → cancel_order →
+	// "I cancelled ORD-1001."
+	agent := &scriptedAgent{turns: []scriptedTurn{
+		{toolName: "list_orders_for_customer", args: map[string]any{"customer_id": "CUST-1"}},
+		{toolName: "cancel_order", args: map[string]any{"order_id": "ORD-1001", "reason": "wrong size"}},
+		{text: "Done — your pending order ORD-1001 has been cancelled."},
+	}}
+	// The scripted customer just acknowledges and terminates. The
+	// opening utterance is deterministic (CustomerOpening on the
+	// task), so it does NOT consume a customer LLM call — only the
+	// follow-up reply does.
+	customer := &scriptedCustomer{replies: []string{"Thanks! ###STOP###"}}
+
+	ds := &taubench.Dataset{Name: "single", Tasks: []taubench.Task{task}}
+	rep, err := taubench.Run(context.Background(), ds, taubench.Options{
+		AgentLLM:    agent,
+		CustomerLLM: customer,
+		Tools:       taubench.NewRetailTools(),
+		Concurrency: 1,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if rep.N != 1 || rep.Passed != 1 {
+		t.Fatalf("expected 1/1 pass, got %d/%d (reason: %s)", rep.Passed, rep.N, rep.Tasks[0].Reason)
+	}
+	got := rep.Tasks[0]
+	if got.Mode != "multi-turn" {
+		t.Errorf("Mode: want multi-turn, got %q", got.Mode)
+	}
+	if got.AgentTurns != 3 {
+		t.Errorf("AgentTurns: want 3 (list, cancel, confirm), got %d", got.AgentTurns)
+	}
+	if got.CustomerTurns != 1 {
+		t.Errorf("CustomerTurns: want 1 (the ###STOP### reply), got %d (opening doesn't count)", got.CustomerTurns)
+	}
+	if want, got := []string{"list_orders_for_customer", "cancel_order"}, got.ToolCalls; len(got) != len(want) {
+		t.Errorf("ToolCalls: want %v, got %v", want, got)
+	}
+}
+
+// TestRun_DialogMissingCustomerLLMFails covers the input-validation
+// guard: a dataset with a multi-turn task BUT no CustomerLLM is a
+// misconfiguration we want to fail loudly, not silently degrade.
+func TestRun_DialogMissingCustomerLLMFails(t *testing.T) {
+	task := taubench.NewRetailMiniDataset().Tasks[5]
+	ds := &taubench.Dataset{Name: "single", Tasks: []taubench.Task{task}}
+	_, err := taubench.Run(context.Background(), ds, taubench.Options{
+		AgentLLM:    &scriptedAgent{},
+		Tools:       taubench.NewRetailTools(),
+		Concurrency: 1,
+		// Deliberately no CustomerLLM.
+	})
+	if err == nil {
+		t.Fatal("expected an error when multi-turn task is given without CustomerLLM, got nil")
+	}
+}
+
+// TestRun_DialogConversationCap exercises the upper turn cap: a
+// customer that NEVER emits the stop token must end up as a timeout
+// failure, NOT a success, even if the underlying state-check would
+// have passed.
+func TestRun_DialogConversationCap(t *testing.T) {
+	task := taubench.NewRetailMiniDataset().Tasks[5] // forgot-order-id
+	agent := &scriptedAgent{turns: []scriptedTurn{
+		{toolName: "cancel_order", args: map[string]any{"order_id": "ORD-1001", "reason": "test"}},
+		{text: "Cancelled."},
+		{text: "Anything else?"},
+		{text: "Anything else?"},
+		{text: "Anything else?"},
+	}}
+	customer := &scriptedCustomer{replies: []string{
+		"Wait, can you double check?",
+		"And the refund?",
+		"Are you still there?",
+		"Hello?",
+	}}
+	rep, err := taubench.Run(context.Background(), &taubench.Dataset{
+		Name:  "single",
+		Tasks: []taubench.Task{task},
+	}, taubench.Options{
+		AgentLLM:             agent,
+		CustomerLLM:          customer,
+		Tools:                taubench.NewRetailTools(),
+		Concurrency:          1,
+		MaxConversationTurns: 3, // tight cap to hit the limit fast
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	got := rep.Tasks[0]
+	if got.Success {
+		t.Errorf("task should NOT have succeeded; customer never said ###STOP###")
+	}
+	if !strings.Contains(got.Reason, "conversation did not terminate") {
+		t.Errorf("Reason: want \"conversation did not terminate ...\", got %q", got.Reason)
 	}
 }
 

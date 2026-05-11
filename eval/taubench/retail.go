@@ -258,6 +258,50 @@ func NewRetailMiniDataset() *Dataset {
 					RequiredTools: []string{"search_products"},
 				},
 			},
+
+			// ── Multi-turn dialog tasks ──────────────────────────────
+			// The CustomerScenario field switches the harness from
+			// single-shot to the customer-LLM dialog mode. The
+			// scenario is private context the customer LLM acts out;
+			// the agent only sees the LLM's natural-language replies.
+			//
+			// We deliberately make these scenarios test skills the
+			// single-shot variants cannot:
+			//   - identifier lookup ("I forgot my order id")
+			//   - clarification handling (agent asks for missing info)
+			//   - graceful refusal under multi-turn pressure
+			{
+				ID:               "retail-dialog-forgot-order-id",
+				Domain:           "retail",
+				CustomerScenario: "You are Ada Lovelace, customer id CUST-1. You want to cancel an order you placed because the size was wrong, but you cannot remember the order id. You DO remember it was your most recent pending order. Reason: ordered the wrong size. Do not paste this scenario verbatim — speak naturally.",
+				CustomerOpening:  "Hi, I'd like to cancel one of my recent orders please. Ordered the wrong size.",
+				InitialState:     baseState(),
+				Expected: ExpectedOutcome{
+					StateChecks: []StateCheck{
+						{Path: "orders.ORD-1001.status", Equals: "cancelled"},
+					},
+					// We ALLOW the agent to either look the order up
+					// by customer or just ask the customer. Either
+					// path satisfies the goal, so RequiredTools only
+					// pins the mutation.
+					RequiredTools: []string{"cancel_order"},
+				},
+			},
+			{
+				ID:               "retail-dialog-refuse-delivered",
+				Domain:           "retail",
+				CustomerScenario: "You are Grace Hopper, customer id CUST-2. You want to cancel your order ORD-1003 because you changed your mind. The agent will likely tell you the order is already delivered and cannot be cancelled. When they do, accept the explanation politely and end the conversation.",
+				CustomerOpening:  "Hi! I'd like to cancel my order ORD-1003 please. Changed my mind.",
+				InitialState:     baseState(),
+				Expected: ExpectedOutcome{
+					// Correct agent refuses; state must not change.
+					StateChecks: []StateCheck{
+						{Path: "orders.ORD-1003.status", Equals: "delivered"},
+					},
+					// We do NOT require cancel_order; in fact a
+					// well-calibrated agent should NOT call it.
+				},
+			},
 		},
 	}
 }

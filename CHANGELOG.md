@@ -55,6 +55,18 @@ with its own tag prefix (e.g. `sdk/vX.Y.Z`, `vessel/vX.Y.Z`,
   pre-flight disk check, log tee, and a 30-min log-idle watchdog. The
   Feishu custom-bot webhook backend is deliberately not supported — at
   evaluation timescales it floods the destination chat.
+- `eval/taubench`: multi-turn dialog mode lands — second LLM
+  (`Options.CustomerLLM`) roleplays the customer using a private
+  `Task.CustomerScenario` while the agent only sees the customer's
+  natural-language utterances (never tool calls or tool results).
+  The customer terminates the dialog with a configurable stop token
+  (default `###STOP###`); both `MaxAgentTurns` and a new
+  `MaxConversationTurns` cap stalled runs. `TaskResult.Mode` ("single-shot"
+  | "multi-turn") + `CustomerTurns` field surface the split in the
+  report. The single-shot path from the previous commit is preserved
+  unchanged. README emphasises this suite is **NOT a PR gate** —
+  multi-turn runs cost ~3 000 LLM calls per 100 tasks, suitable for
+  weekly/release-time regression only.
 - `eval/taubench`: new tool-use suite — a Go-native re-implementation
   of [τ-bench](https://arxiv.org/abs/2406.12045)'s single-turn
   instruction variant. The customer's full goal is fed to the agent
