@@ -26,7 +26,10 @@ compare/fetch/ingest`, `eval longmemeval convert`). Shell completion
 - `eval/internal/notify` + `eval/scripts/run-eval.sh`: Feishu CardKit
   notifications (one live-updated card per run; webhook backend
   intentionally unsupported) plus a process supervisor with PID lock,
-  disk check, log tee, and idle watchdog.
+  disk check, log tee, and idle watchdog. Lifecycle events
+  (`ingest_done` / `done` / `error`) post a threaded text reply so
+  operators get a phone-buzz at phase boundaries; intra-phase
+  `*_progress` milestones stay as silent card edits.
 - `eval/locomo`: `--judge-style {locomo|strict}` and
   `--judge-temperature` flags; mem0-aligned LoCoMo judge prompt at
   `metrics.LocoMoLLMJudgePrompt`. Per-batch ingest heartbeats so slow
