@@ -102,9 +102,9 @@ type TopicReport struct {
 
 // Report is the top-level JSON document the cmd writes.
 type Report struct {
-	Dataset    string `json:"dataset"`
-	Model      string `json:"model"`
-	Judge      string `json:"judge"`
+	Dataset    string    `json:"dataset"`
+	Model      string    `json:"model"`
+	Judge      string    `json:"judge"`
 	StartedAt  time.Time `json:"started_at"`
 	DurationMS int64     `json:"duration_ms"`
 
@@ -128,8 +128,8 @@ type Report struct {
 	// looked at from the "how often did it answer wrong" angle.
 	HallucinationRate float64 `json:"hallucination_rate"`
 
-	PerTopic map[string]*TopicReport  `json:"per_topic,omitempty"`
-	Samples  []QuestionResult         `json:"samples,omitempty"`
+	PerTopic map[string]*TopicReport `json:"per_topic,omitempty"`
+	Samples  []QuestionResult        `json:"samples,omitempty"`
 
 	Options map[string]any `json:"options"`
 }
@@ -420,10 +420,10 @@ func Run(ctx context.Context, ds *Dataset, opts Options) (*Report, error) {
 		Title: ds.Name,
 		Body:  fmt.Sprintf("SimpleQA — %d questions", len(questions)),
 		Fields: map[string]string{
-			"dataset":   ds.Name,
-			"n_qs":      fmt.Sprintf("%d", len(questions)),
-			"judge":     "configured",
-			"answer":    "configured",
+			"dataset": ds.Name,
+			"n_qs":    fmt.Sprintf("%d", len(questions)),
+			"judge":   "configured",
+			"answer":  "configured",
 		},
 	})
 

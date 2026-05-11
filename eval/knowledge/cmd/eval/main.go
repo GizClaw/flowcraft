@@ -32,9 +32,9 @@ import (
 	"os"
 	"strings"
 
-	knowledgequality "github.com/GizClaw/flowcraft/eval/knowledge"
 	"github.com/GizClaw/flowcraft/eval/internal/env"
 	"github.com/GizClaw/flowcraft/eval/internal/notify"
+	knowledgequality "github.com/GizClaw/flowcraft/eval/knowledge"
 	"github.com/GizClaw/flowcraft/sdk/knowledge"
 
 	_ "github.com/GizClaw/flowcraft/sdkx/embedding/azure"

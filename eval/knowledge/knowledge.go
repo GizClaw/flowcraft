@@ -202,18 +202,18 @@ type LaneReport struct {
 	LatencyP50 time.Duration `json:"latency_p50"`
 	LatencyP95 time.Duration `json:"latency_p95"`
 
-	Misses             []MissSample       `json:"misses,omitempty"`
-	KeywordShortfalls  []KeywordShortfall `json:"keyword_shortfalls,omitempty"`
-	NegativeBreachIDs  []string           `json:"negative_breach_ids,omitempty"`
+	Misses            []MissSample       `json:"misses,omitempty"`
+	KeywordShortfalls []KeywordShortfall `json:"keyword_shortfalls,omitempty"`
+	NegativeBreachIDs []string           `json:"negative_breach_ids,omitempty"`
 }
 
 // Report is the top-level JSON document the cmd writes.
 type Report struct {
-	Dataset    string                `json:"dataset"`
-	StartedAt  time.Time             `json:"started_at"`
-	DurationMS int64                 `json:"duration_ms"`
-	Options    map[string]any        `json:"options"`
-	Lanes      map[Lane]*LaneReport  `json:"lanes"`
+	Dataset    string               `json:"dataset"`
+	StartedAt  time.Time            `json:"started_at"`
+	DurationMS int64                `json:"duration_ms"`
+	Options    map[string]any       `json:"options"`
+	Lanes      map[Lane]*LaneReport `json:"lanes"`
 }
 
 // Event mirrors the locomo/history event shape so a single notify
@@ -397,14 +397,14 @@ func runLane(ctx context.Context, svc *knowledge.Service, ds *Dataset, lane Lane
 	}
 
 	type sample struct {
-		err          bool
-		latency      time.Duration
-		recallHit    bool
-		keywordHit   bool
-		keywordMiss  *KeywordShortfall
-		miss         *MissSample
-		negative     bool
-		negBreached  bool
+		err         bool
+		latency     time.Duration
+		recallHit   bool
+		keywordHit  bool
+		keywordMiss *KeywordShortfall
+		miss        *MissSample
+		negative    bool
+		negBreached bool
 	}
 
 	results := make([]sample, len(ds.Questions))

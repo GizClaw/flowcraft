@@ -214,14 +214,14 @@ type LaneReport struct {
 	Lane    Lane   `json:"lane"`
 	Skipped string `json:"skipped,omitempty"`
 
-	N         int `json:"n"`         // queries scored (errors excluded)
-	Errors    int `json:"errors"`
-	NumQrels  int `json:"num_qrels"` // total positive judgments observed
+	N        int `json:"n"` // queries scored (errors excluded)
+	Errors   int `json:"errors"`
+	NumQrels int `json:"num_qrels"` // total positive judgments observed
 
 	// Aggregate metrics, indexed by cutoff.
-	NDCG    map[int]float64 `json:"ndcg"`    // nDCG@k, graded
-	Recall  map[int]float64 `json:"recall"`  // Recall@k, binary
-	MRR     float64         `json:"mrr"`     // Mean reciprocal rank of the first relevant doc
+	NDCG   map[int]float64 `json:"ndcg"`   // nDCG@k, graded
+	Recall map[int]float64 `json:"recall"` // Recall@k, binary
+	MRR    float64         `json:"mrr"`    // Mean reciprocal rank of the first relevant doc
 
 	LatencyP50 time.Duration `json:"latency_p50"`
 	LatencyP95 time.Duration `json:"latency_p95"`

@@ -55,6 +55,23 @@ with its own tag prefix (e.g. `sdk/vX.Y.Z`, `vessel/vX.Y.Z`,
   pre-flight disk check, log tee, and a 30-min log-idle watchdog. The
   Feishu custom-bot webhook backend is deliberately not supported — at
   evaluation timescales it floods the destination chat.
+- `eval/taubench`: new tool-use suite — a Go-native re-implementation
+  of [τ-bench](https://arxiv.org/abs/2406.12045)'s single-turn
+  instruction variant. The customer's full goal is fed to the agent
+  in one user message and the agent then chains tool calls until it
+  either succeeds (StateChecks pass + RequiredTools were called) or
+  hits the `--max-turns` ceiling. A bundled retail-mini task pack
+  (5 hand-curated tasks covering cancel / update-shipping / search /
+  refuse-protected-state) + 6 retail tools (`get_order`,
+  `list_orders_for_customer`, `cancel_order`, `update_shipping`,
+  `get_product`, `search_products`) lets a smoke run execute with
+  zero external assets. The harness re-implements the loop natively
+  rather than wrapping the Python upstream so eval/ stays a single
+  Go module with no Python toolchain in CI. Three actionable failure
+  modes are surfaced on each `TaskResult.Reason` (state mismatch /
+  required tool never called / max-turns exceeded). Roadmap:
+  LLM-as-customer multi-turn dialog harness, airline-domain tools,
+  and a converter for the upstream task JSON.
 - `eval/simpleqa`: new [SimpleQA](https://openai.com/index/introducing-simpleqa/)
   suite (4 326 short-form factual questions, LLM-as-judge graded with
   OpenAI's official rubric). Headline metric is *attempted accuracy*

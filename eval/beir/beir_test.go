@@ -14,12 +14,13 @@ import (
 // every metric has a closed-form answer the test can compare against.
 //
 // Layout:
-//   q1: "apple pie recipe"     → doc1 (grade 2, perfect match)
-//                                doc2 (grade 1, partially relevant)
-//                                doc3, doc4 irrelevant
-//   q2: "tax filing deadline"  → doc3 (grade 2)
-//                                doc4 (grade 1)
-//                                doc1, doc2 irrelevant
+//
+//	q1: "apple pie recipe"     → doc1 (grade 2, perfect match)
+//	                             doc2 (grade 1, partially relevant)
+//	                             doc3, doc4 irrelevant
+//	q2: "tax filing deadline"  → doc3 (grade 2)
+//	                             doc4 (grade 1)
+//	                             doc1, doc2 irrelevant
 func syntheticDataset() *beir.Dataset {
 	return &beir.Dataset{
 		Name: "synth",
