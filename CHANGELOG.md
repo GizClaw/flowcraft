@@ -55,6 +55,21 @@ with its own tag prefix (e.g. `sdk/vX.Y.Z`, `vessel/vX.Y.Z`,
   pre-flight disk check, log tee, and a 30-min log-idle watchdog. The
   Feishu custom-bot webhook backend is deliberately not supported — at
   evaluation timescales it floods the destination chat.
+- `eval/knowledge`: lifted retrieval-quality suite from `go test`-only
+  into the standard `Run(ctx, ds, opts) → Report` shape and added a
+  `cmd/eval` binary. Lanes (`bm25` / `vector` / `hybrid`) can now be
+  scored from CI, a script, or a notebook with identical metrics and a
+  JSON report. The integration suite migrates off the legacy
+  `EMBEDDING_PROVIDER` + `EMBEDDING_API_KEY` + `EMBEDDING_MODEL` env
+  trio onto a single `KNOWLEDGE_EVAL_EMBEDDER="qwen:text-embedding-v4"`
+  variable resolved via the shared `eval/internal/env` loader, so one
+  `.env` now unlocks every eval suite. Emits the same Feishu CardKit
+  events as locomo / history (`start`, `lane_start`, `lane_progress`,
+  `lane_done`, `done`) — short runs typically finish before the second
+  milestone fires but the framework is identical for future
+  10k-document corpora. BM25 lane still runs in CI by default (no
+  credentials needed); recall@5 stays pinned at the historical 1.00
+  baseline.
 - `eval/longmemeval`: [LongMemEval](https://arxiv.org/abs/2410.10813)
   (ICLR 2025) baseline suite. 500 independent instances, each carrying
   its own ~40-session haystack, covering the five core long-term-memory

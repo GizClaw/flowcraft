@@ -1,201 +1,94 @@
 package knowledgequality_test
 
 import (
-	"bufio"
 	"context"
-	"encoding/json"
-	"os"
-	"path/filepath"
-	"strings"
+	"fmt"
 	"testing"
 
+	knowledgequality "github.com/GizClaw/flowcraft/eval/knowledge"
 	"github.com/GizClaw/flowcraft/sdk/knowledge"
-	"github.com/GizClaw/flowcraft/sdk/knowledge/factory"
-	"github.com/GizClaw/flowcraft/sdk/workspace"
 )
 
 const (
-	corpusDir   = "testdata/corpus"
-	goldenPath  = "testdata/golden.jsonl"
-	datasetID   = "e2e"
-	defaultTopK = 5
+	corpusDir  = "testdata/corpus"
+	goldenPath = "testdata/golden.jsonl"
 )
 
-// goldenItem mirrors a single line of golden.jsonl. expected_doc is
-// the empty string for "negative" rows that should not match anything.
-type goldenItem struct {
-	ID               string   `json:"id"`
-	Category         string   `json:"category"`
-	Question         string   `json:"question"`
-	ExpectedDoc      string   `json:"expected_doc"`
-	ExpectedKeywords []string `json:"expected_keywords"`
-}
-
-// thresholds bundles the per-mode pass/fail bars. They are intentionally
-// generous so flake risk is low; the relative invariants (hybrid ≥
-// bm25) are what catch real regressions.
+// thresholds bundles the per-lane pass/fail bars used by the tests. The
+// numbers are intentionally generous; the relative invariants
+// (`hybrid ≥ bm25`) are what catch real regressions.
 type thresholds struct {
-	recall   float64 // fraction of positive-class queries whose expected_doc must appear in top-K
-	keyword  float64 // among the hits where expected_doc was found, fraction whose content covers all expected_keywords
-	negative float64 // for negative queries, max acceptable top-1 score (0 disables this check)
+	recall   float64 // minimum RecallAtK
+	keyword  float64 // minimum KeywordRate
+	negative float64 // NegativeScoreCeiling forwarded to Run
 }
 
-// loadGolden parses the JSONL golden file. Lines are kept in disk order
-// so test failures can be matched to the file by line number.
-func loadGolden(t *testing.T) []goldenItem {
+// runOne loads the dataset, runs a single lane through knowledgequality.Run
+// and returns the LaneReport for caller assertions. The dataset load is
+// cheap (100 short markdowns + 40 questions) so we re-load per test
+// rather than carrying a t.Cleanup-managed cache.
+func runOne(t *testing.T, lane knowledge.SearchMode, emb knowledge.Embedder, neg float64) *knowledgequality.LaneReport {
 	t.Helper()
-	f, err := os.Open(goldenPath)
+	ds, err := knowledgequality.LoadDatasetFromDir(corpusDir, goldenPath)
 	if err != nil {
-		t.Fatalf("open golden: %v", err)
+		t.Fatalf("load dataset: %v", err)
 	}
-	defer f.Close()
-	var out []goldenItem
-	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-	for sc.Scan() {
-		line := strings.TrimSpace(sc.Text())
-		if line == "" {
-			continue
-		}
-		var g goldenItem
-		if err := json.Unmarshal([]byte(line), &g); err != nil {
-			t.Fatalf("parse golden line %q: %v", line, err)
-		}
-		out = append(out, g)
+	rep, err := knowledgequality.Run(context.Background(), ds, knowledgequality.Options{
+		Embedder:             emb,
+		Lanes:                []knowledgequality.Lane{lane},
+		Concurrency:          4,
+		NegativeScoreCeiling: neg,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
 	}
-	if err := sc.Err(); err != nil {
-		t.Fatalf("scan golden: %v", err)
+	r := rep.Lanes[lane]
+	if r == nil {
+		t.Fatalf("lane %s missing from report", lane)
+	}
+	if r.Skipped != "" {
+		t.Fatalf("lane %s skipped: %s", lane, r.Skipped)
+	}
+	return r
+}
+
+// assertLane logs the lane summary and asserts th. Misses /
+// shortfalls / negative breaches are surfaced via t.Logf so a failing
+// run pinpoints which questions regressed without re-running.
+func assertLane(t *testing.T, r *knowledgequality.LaneReport, th thresholds) {
+	t.Helper()
+	t.Logf("lane=%s n=%d positives=%d recall@%d=%.3f (%d/%d) keyword=%.3f (%d/%d) negBreach=%d errors=%d p95=%s",
+		r.Lane, r.N, r.Positives, knowledgequality.DefaultTopK,
+		r.RecallAtK, r.RecallHits, r.Positives,
+		r.KeywordRate, r.KeywordHits, r.RecallHits,
+		r.NegativeBreach, r.Errors, r.LatencyP95)
+
+	for _, m := range r.Misses {
+		t.Logf("  MISS [%s] expected=%s topK=%v question=%q", m.ID, m.Expected, m.TopK, m.Question)
+	}
+	for _, k := range r.KeywordShortfalls {
+		t.Logf("  KW   [%s] expected=%s missing=%v", k.ID, k.Expected, k.Missing)
+	}
+	if len(r.NegativeBreachIDs) > 0 {
+		t.Logf("  NEG  breach=%v", r.NegativeBreachIDs)
+	}
+
+	if r.RecallAtK < th.recall {
+		t.Errorf("lane=%s recall@%d=%.3f below threshold %.3f", r.Lane, knowledgequality.DefaultTopK, r.RecallAtK, th.recall)
+	}
+	if r.KeywordRate < th.keyword {
+		t.Errorf("lane=%s keyword=%.3f below threshold %.3f", r.Lane, r.KeywordRate, th.keyword)
+	}
+	if r.NegativeBreach > 0 {
+		t.Errorf("lane=%s negative-class breach (ceiling=%.3f): %v", r.Lane, th.negative, r.NegativeBreachIDs)
+	}
+}
+
+// formatLanes is a small helper for diagnostic messages.
+func formatLanes(lanes ...*knowledgequality.LaneReport) string {
+	out := ""
+	for _, l := range lanes {
+		out += fmt.Sprintf(" %s=%.3f", l.Lane, l.RecallAtK)
 	}
 	return out
-}
-
-// buildService spins up a fresh in-memory workspace, ingests every
-// markdown under testdata/corpus and returns a ready-to-search Service.
-//
-// Each test gets its own service so subtests stay isolated; the corpus
-// is small enough (100 short markdowns) that the ingest cost is
-// negligible. When embedder is non-nil the vector lane is also wired.
-func buildService(t *testing.T, embedder knowledge.Embedder) *knowledge.Service {
-	t.Helper()
-	ws := workspace.NewMemWorkspace()
-	opts := []factory.LocalOption{}
-	if embedder != nil {
-		opts = append(opts, factory.WithLocalEmbedder(embedder, "e2e"))
-	}
-	svc := factory.NewLocal(ws, opts...)
-
-	entries, err := os.ReadDir(corpusDir)
-	if err != nil {
-		t.Fatalf("read corpus dir: %v", err)
-	}
-	ctx := context.Background()
-	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".md") {
-			continue
-		}
-		body, err := os.ReadFile(filepath.Join(corpusDir, e.Name()))
-		if err != nil {
-			t.Fatalf("read %s: %v", e.Name(), err)
-		}
-		if err := svc.PutDocument(ctx, datasetID, e.Name(), string(body)); err != nil {
-			t.Fatalf("put %s: %v", e.Name(), err)
-		}
-	}
-	return svc
-}
-
-// runEval scores the service against the golden set under the given
-// mode and asserts the recall / keyword / negative bars in th. The
-// returned recallRate is what cross-mode invariants compare on.
-func runEval(t *testing.T, svc *knowledge.Service, mode knowledge.Mode, th thresholds) (recallRate float64) {
-	t.Helper()
-	golden := loadGolden(t)
-	ctx := context.Background()
-
-	var (
-		positives    int
-		recallHits   int
-		keywordTotal int
-		keywordOk    int
-		negFails     []string
-	)
-
-	for _, g := range golden {
-		res, err := svc.Search(ctx, knowledge.Query{
-			DatasetID: datasetID,
-			Scope:     knowledge.ScopeSingleDataset,
-			Text:      g.Question,
-			Mode:      mode,
-			TopK:      defaultTopK,
-		})
-		if err != nil {
-			t.Fatalf("[%s] search %q: %v", g.ID, g.Question, err)
-		}
-
-		if g.Category == "negative" {
-			if th.negative > 0 && len(res.Hits) > 0 && res.Hits[0].Score > th.negative {
-				negFails = append(negFails, g.ID)
-			}
-			continue
-		}
-
-		positives++
-		matched := false
-		for rank, h := range res.Hits {
-			if h.DocName == g.ExpectedDoc {
-				matched = true
-				keywordTotal++
-				if hasAllKeywords(h.Content, g.ExpectedKeywords) {
-					keywordOk++
-				} else {
-					t.Logf("[%s] mode=%s: doc hit at rank=%d but missing keywords %v in %.80q",
-						g.ID, mode, rank+1, g.ExpectedKeywords, h.Content)
-				}
-				break
-			}
-		}
-		if matched {
-			recallHits++
-		} else {
-			topNames := make([]string, 0, len(res.Hits))
-			for _, h := range res.Hits {
-				topNames = append(topNames, h.DocName)
-			}
-			t.Logf("[%s] mode=%s MISS expected=%s topK=%v question=%q",
-				g.ID, mode, g.ExpectedDoc, topNames, g.Question)
-		}
-	}
-
-	recallRate = ratio(recallHits, positives)
-	keywordRate := ratio(keywordOk, keywordTotal)
-	t.Logf("mode=%s recall@%d=%.2f (%d/%d) keyword=%.2f (%d/%d) negFails=%v",
-		mode, defaultTopK, recallRate, recallHits, positives,
-		keywordRate, keywordOk, keywordTotal, negFails)
-
-	if recallRate < th.recall {
-		t.Errorf("mode=%s recall@%d=%.2f below threshold %.2f", mode, defaultTopK, recallRate, th.recall)
-	}
-	if keywordRate < th.keyword {
-		t.Errorf("mode=%s keyword=%.2f below threshold %.2f", mode, keywordRate, th.keyword)
-	}
-	if len(negFails) > 0 {
-		t.Errorf("mode=%s negative-class queries broke score ceiling: %v", mode, negFails)
-	}
-	return recallRate
-}
-
-func hasAllKeywords(content string, kws []string) bool {
-	for _, kw := range kws {
-		if !strings.Contains(content, kw) {
-			return false
-		}
-	}
-	return true
-}
-
-func ratio(n, d int) float64 {
-	if d == 0 {
-		return 1
-	}
-	return float64(n) / float64(d)
 }

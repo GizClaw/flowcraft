@@ -14,7 +14,7 @@ FlowCraft's quality-evaluation suites.
 | `locomo/`      | Long-term memory (recall) — LoCoMo benchmark               | `go run ./locomo/cmd/eval`                                 |
 | `longmemeval/` | Long-term memory (recall) — LongMemEval (ICLR 2025)        | `go run ./longmemeval/cmd/convert` + `locomo/cmd/eval`     |
 | `history/`     | History compactor quality vs. token-cost trade-off          | `go run ./history/cmd/eval`                                |
-| `knowledge/`   | Knowledge retrieval (BM25 / vector / hybrid) regressions   | `go test -tags=integration ./knowledge/...`                |
+| `knowledge/`   | Knowledge retrieval (BM25 / vector / hybrid) regressions   | `go run ./knowledge/cmd/eval` *or* `go test ./knowledge/...` |
 
 `longmemeval` deliberately ships no runner of its own: the data schema is
 compatible with LoCoMo, so once converted the same `locomo/cmd/eval`
@@ -130,10 +130,20 @@ GOWORK=off go run ./history/cmd/eval \
     --out          /tmp/history.json
 
 # 5) knowledge retrieval (BM25 lane needs no credentials; integration tag
-#    enables the vector/hybrid lanes)
+#    or the standalone binary unlock the vector/hybrid lanes)
 GOWORK=off go test ./knowledge/... -count=1
-EMBEDDING_PROVIDER=qwen EMBEDDING_API_KEY=sk-... EMBEDDING_MODEL=text-embedding-v3 \
+
+# integration suite: single env var picks the embedder alias defined in .env
+KNOWLEDGE_EVAL_EMBEDDER=qwen:text-embedding-v4 \
     GOWORK=off go test -tags=integration ./knowledge/... -count=1
+
+# or run the same engine as a binary and write a JSON report
+go run ./knowledge/cmd/eval \
+    --corpus    eval/knowledge/testdata/corpus \
+    --golden    eval/knowledge/testdata/golden.jsonl \
+    --embedder  qwen:text-embedding-v4 \
+    --lanes     bm25,vector,hybrid \
+    --out       /tmp/knowledge.json
 ```
 
 `eval/{locomo,longmemeval}/data/`, `eval/{locomo,longmemeval,history}/results/`

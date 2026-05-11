@@ -143,8 +143,9 @@ eval-smoke:
 # Backwards-compat alias for the pre-eval/ migration entry point. The old
 # target only ran the //go:build integration lane of tests/quality/knowledge;
 # the post-migration `make eval` covers more (LoCoMo, history, knowledge),
-# but the integration lane still requires EMBEDDING_PROVIDER /
-# EMBEDDING_API_KEY / EMBEDDING_MODEL to actually do work.
+# but the integration lane still requires KNOWLEDGE_EVAL_EMBEDDER (e.g.
+# `qwen:text-embedding-v4`) plus the matching FLOWCRAFT_<ALIAS> JSON to
+# actually do work.
 .PHONY: test-quality
 test-quality:
 	@cd eval/knowledge && GOWORK=off go test -tags=integration -count=1 ./...
