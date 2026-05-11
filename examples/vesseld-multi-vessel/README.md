@@ -7,12 +7,12 @@ for the YAML schema.
 
 ## What it shows
 
-| File | Concept |
-|---|---|
-| `daemon.yaml` | Daemon-wide config: control socket, drain timeout, LLM rate-limit bucket. |
-| `shared/openai.yaml` | One `LLMProfile` referenced by every vessel — the daemon shares the underlying client + limiter across them. |
-| `vessels/triage/vessel.yaml` | A multi-agent vessel with **dispatcher + worker** + `Kanban` agent-as-tool delegation. |
-| `vessels/support/vessel.yaml` | A simple single-agent vessel for plain Q&A. |
+| File                          | Concept                                                                                                      |
+| ----------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| `daemon.yaml`                 | Daemon-wide config: control socket, drain timeout, LLM rate-limit bucket.                                    |
+| `shared/openai.yaml`          | One `LLMProfile` referenced by every vessel — the daemon shares the underlying client + limiter across them. |
+| `vessels/triage/vessel.yaml`  | A multi-agent vessel with **dispatcher + worker** + `Kanban` agent-as-tool delegation.                       |
+| `vessels/support/vessel.yaml` | A simple single-agent vessel for plain Q&A.                                                                  |
 
 The two vessels live in the same daemon, share the LLM profile, but have independent agent rosters, history, and `Resources` caps.
 
@@ -84,9 +84,39 @@ curl --unix-socket /tmp/vesseld-multi-vessel.sock \
 
 `SIGTERM` to the daemon also runs drain semantics, bounded by `daemon.spec.shutdown.drainTimeout`.
 
+## Remote access via TCP + bearer token
+
+The default `daemon.yaml` only exposes the unix socket. To reach the daemon over the network, set `spec.control.listen` and a `tokenFile`. The validator refuses to start a TCP listener without a token — it's an explicit "no open ports without auth" guarantee:
+
+```yaml
+# daemon.yaml
+spec:
+  control:
+    socket: /tmp/vesseld-multi-vessel.sock # keep the unix socket for local debugging
+    listen: 0.0.0.0:8443 # remote endpoint
+    auth:
+      tokenFile: ./token # one-line file: the bearer secret
+```
+
+```bash
+echo "$(openssl rand -hex 32)" > ./token
+chmod 600 ./token
+./vesseld run --config examples/vesseld-multi-vessel -R
+
+# In another shell:
+TOKEN=$(cat examples/vesseld-multi-vessel/token)
+curl -H "Authorization: Bearer $TOKEN" http://localhost:8443/v1/vessels/support/call \
+  -H 'content-type: application/json' \
+  -d '{"agent":"support-agent","query":"hello"}'
+```
+
+The unix-socket path and TCP path are equivalent — they hit the same handler. Keep the unix socket for in-host operator access (no TLS overhead) and TCP for cross-host.
+
+> **mTLS / OIDC** are on the `v0.2` track. Until then, place the TCP listener behind a TLS-terminating proxy (nginx / envoy / Caddy) or restrict it to a trusted network.
+
 ## Going further
 
 - Swap `provider: openai` → `provider: deepseek` / `anthropic` / `bytedance` / `minimax`. The same YAML works.
 - Add a sidecar agent (`sidecar: true` + `subscribeTo: agent.run.completed`) to the triage vessel to log every completed turn.
-- Set `auth.token: <string>` on the daemon and a `Listen: :8443` to expose the API over TCP with bearer-token auth.
+- For an agent that remembers across turns of the same conversation, see [`examples/vesseld-with-history/`](../vesseld-with-history/) — wires a shared `HistoryStore` and a `context_id`-keyed transcript.
 - For the smaller single-vessel "hello world", strip this directory down to one `Vessel` + one `Agent` + one `LLMProfile` document — the daemon will validate and run with as few as four `kind:` blocks.

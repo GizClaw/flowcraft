@@ -184,6 +184,61 @@ for the full removed-symbol table and upgrade recipe.
 
 ---
 
+## `vesseld/v0.1.0` — 2026-05-11
+
+General availability of the `vesseld` orchestration daemon. Composes
+the `v0.1.0` vessel runtime with declarative YAML, multi-vessel fleet
+supervision, and a Prometheus-instrumented HTTP control plane into a
+single static binary suitable for production single-node deployments.
+
+This is a documentation / coordination release on top of the RC series;
+no API-level changes between `vesseld/v0.1.0-rc.2` and GA.
+
+### Highlights
+
+- Vessel lifecycle (`/v1/vessels/{id}/call`, `/submit`, `/drain`,
+  `/phase`) wired through unix socket **and** TCP + bearer-token auth.
+  The TCP listener refuses to start without a `tokenFile`; mTLS is on
+  the `v0.2` track.
+- Per-vessel concurrency gate, shared LLM clients with cross-vessel
+  rate limiting, and the seven catalog-registered probes
+  (`TokenBudgetProbe`, `ToolReachableProbe`, `PromptResponseProbe`,
+  …) all on by default.
+- End-to-end `tests/e2e/vesseld` (25+ test files: allowlist, auth,
+  chaos, concurrency, drain, restart, sidecar reject, …) gates the
+  release.
+- Cross-platform binaries (linux/amd64, linux/arm64, darwin/amd64,
+  darwin/arm64, windows/amd64) with SHA-256 checksums via
+  `.github/workflows/release-vesseld.yml`.
+
+### Examples
+
+- [`examples/vesseld-multi-vessel/`](examples/vesseld-multi-vessel/) —
+  the canonical multi-agent demo with Kanban-style delegation.
+- [`examples/vesseld-with-history/`](examples/vesseld-with-history/) —
+  single-vessel demo wiring a shared `HistoryStore` so the agent
+  remembers earlier turns of the same `context_id` conversation.
+  (Cross-restart persistence ships in `v0.2`.)
+
+### Known limitations (tracked for `v0.2`)
+
+- No per-run filesystem session storage (`vessel.WithSessionStore` is
+  not yet wired).
+- mTLS / SecretProvider / `vesseld migrate` subcommand are not yet
+  shipped — runbook recommends fronting the TCP listener with a
+  TLS-terminating proxy in the meantime.
+
+## `vesseld/v0.1.0-rc.2` — 2026-05-11
+
+### Changed
+
+- Bump `vessel` dependency to `v0.1.0-rc.2`, picking up the
+  `Handle.OnTerminate` lifecycle hook. The fleet supervisor now uses
+  this hook to release concurrency gate entries and prune the run
+  registry in deterministic order on vessel termination, eliminating
+  a class of latent races in the rc.1 supervisor that surfaced under
+  rapid drain-restart cycles in chaos tests.
+
 ## `vesseld/v0.1.0-rc.1` — 2026-05-07
 
 First release candidate of the `vesseld` orchestration daemon.
@@ -196,6 +251,33 @@ First release candidate of the `vesseld` orchestration daemon.
   `/v1/runs` (paginated), `/metrics` (Prometheus text exposition).
 - Multi-vessel fleet supervision with per-vessel concurrency gates.
 - Cross-platform release artifacts via `release-vesseld.yml`.
+
+## `vessel/v0.1.0` — 2026-05-11
+
+General availability of the in-process `vessel` runtime. No API-level
+changes between `vessel/v0.1.0-rc.2` and GA — this is a stability /
+documentation coordination release that pairs with `vesseld/v0.1.0`.
+
+### Highlights
+
+- Captain lifecycle (`Submit` / `Drain` / `Stop` / `Restart`) with
+  per-vessel concurrency gates and deterministic termination via
+  `Handle.OnTerminate`.
+- `Spec.Resources.MaxTokensPerTurn` / `MaxTokensPerHour` budget caps
+  enforced end-to-end through `vessel/budget.go` + `vessel/sandbox.go`.
+- Built-in probes (`TokenBudgetProbe`, `ToolReachableProbe`,
+  `PromptResponseProbe`) for liveness / readiness signals; custom
+  probes register via `Probe` interface.
+- Multi-agent routing, Kanban agent-as-tool delegation, sidecar
+  agents, and shared history across the agent roster.
+- Decoupled from `sdk/workflow` (removed in `sdk/v0.3.0`); composes
+  cleanly on `sdk/engine` + `sdk/agent`.
+
+### Known limitations (tracked for `v0.2`)
+
+- `WithSessionStore` (per-run isolated filesystem workspace) is not
+  yet wired; long-running agents that need disk state should use a
+  Captain-scoped workspace today and migrate when `v0.2` lands.
 
 ## `vessel/v0.1.0-rc.2` — 2026-05-07
 
