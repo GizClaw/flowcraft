@@ -7,7 +7,6 @@ import (
 	"testing"
 
 	"github.com/GizClaw/flowcraft/eval/internal/env"
-	"github.com/GizClaw/flowcraft/eval/knowledge/internal/testenv"
 	"github.com/GizClaw/flowcraft/sdk/knowledge"
 
 	_ "github.com/GizClaw/flowcraft/sdkx/embedding/azure"
@@ -16,7 +15,7 @@ import (
 	_ "github.com/GizClaw/flowcraft/sdkx/embedding/qwen"
 )
 
-func init() { testenv.Load() }
+func init() { env.LoadDotEnv() }
 
 // embedderSpec is the FLOWCRAFT alias + model to use for the
 // integration lanes, e.g. "qwen:text-embedding-v4". A single
