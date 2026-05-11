@@ -3,6 +3,7 @@ package scriptnode
 import (
 	"fmt"
 
+	"github.com/GizClaw/flowcraft/sdk/agent"
 	"github.com/GizClaw/flowcraft/sdk/engine"
 	"github.com/GizClaw/flowcraft/sdk/graph"
 	"github.com/GizClaw/flowcraft/sdk/graph/node"
@@ -51,10 +52,30 @@ func (n *ScriptNode) SetConfig(c map[string]any) { n.config = c }
 // ExecuteBoard runs the script with board, expr, host, stream, and
 // runtime bindings.
 func (n *ScriptNode) ExecuteBoard(ctx graph.ExecutionContext, board *graph.Board) error {
+	// Bridge wiring rationale:
+	//
+	//   - host: engine.Host control plane (publish / askUser / ...) plus
+	//           the per-node stream channel via host.emit, fed by the
+	//           executor-installed ctx.Publisher. Carries no identity
+	//           accessors.
+	//   - run:  agent.RunInfo identification bundle (per-run, immutable).
+	//           Under direct graph execution only RunID is known, so
+	//           the agent-layer fields (task / agent / context) are
+	//           empty per bridge contract.
+	//   - node: graph-layer per-step identity (id, type). Lives in
+	//           scriptnode rather than in bindings because "node" is a
+	//           graph concept that bindings deliberately does not know
+	//           about (see sdk/script/bindings/doc.go).
+	//
+	// The node id passed to NewHostBridge is still used internally as
+	// the askUser default source and for error annotations, but is no
+	// longer surfaced as a script-readable accessor (use node.id()).
 	allFns := []bindings.BindingFunc{
 		bindings.NewBoardBridge(board),
 		bindings.NewExprBridge(),
-		bindings.NewHostBridge(ctx.Host, n.id),
+		bindings.NewHostBridge(ctx.Host, n.id, ctx.Publisher),
+		bindings.NewRunInfoBridge(agent.RunInfo{RunID: ctx.RunID}),
+		newNodeBridge(n.id, n.nodeType),
 	}
 	allFns = append(allFns, n.extraBindFn...)
 

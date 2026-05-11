@@ -24,6 +24,6 @@
   board.setVar("answer", answer);
 
   if (config.stream !== false) {
-      stream.emit("answer", answer);
+      host.emit("token", { content: answer });
   }
 })();

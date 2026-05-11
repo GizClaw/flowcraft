@@ -54,9 +54,32 @@ func (h *recordingHost) ReportUsage(_ context.Context, u model.TokenUsage) error
 // invoke is a tiny convenience that materialises the bridge's API map
 // and returns it ready for assertions. The bridge name "host" is also
 // returned so tests can verify the canonical global name didn't drift.
+// emitter is nil for the existing test set; tests that exercise
+// host.emit use invokeWithEmitter below.
 func invoke(host engine.Host) (string, map[string]any) {
-	name, raw := NewHostBridge(host, "test-source")(context.Background())
+	name, raw := NewHostBridge(host, "test-source", nil)(context.Background())
 	return name, raw.(map[string]any)
+}
+
+func invokeWithEmitter(host engine.Host, emitter StreamEmitter) map[string]any {
+	_, raw := NewHostBridge(host, "test-source", emitter)(context.Background())
+	return raw.(map[string]any)
+}
+
+// recordingEmitter captures every Emit so host.emit tests can assert
+// the (type, payload) pair without simulating the executor's full
+// publishNodeEvent pipeline.
+type recordingEmitter struct {
+	events []recordedEmit
+}
+
+type recordedEmit struct {
+	Type    string
+	Payload any
+}
+
+func (e *recordingEmitter) Emit(eventType string, payload any) {
+	e.events = append(e.events, recordedEmit{Type: eventType, Payload: payload})
 }
 
 func TestHostBridge_Name(t *testing.T) {
@@ -244,10 +267,44 @@ func TestHostBridge_ReportUsage_RejectsNonNumber(t *testing.T) {
 	}
 }
 
+// host.emit forwards (type, payload) to the StreamEmitter installed at
+// wire time. The bridge does not interpret payload — that is the
+// executor's normalisePayload job downstream — so a script that hands
+// in a map gets the same map back at the publisher.
+func TestHostBridge_Emit_ForwardsToEmitter(t *testing.T) {
+	emitter := &recordingEmitter{}
+	api := invokeWithEmitter(newRecordingHost(), emitter)
+	emit := api["emit"].(func(string, any))
+
+	emit("token", map[string]any{"content": "hi"})
+	if len(emitter.events) != 1 {
+		t.Fatalf("emit calls = %d, want 1", len(emitter.events))
+	}
+	got := emitter.events[0]
+	if got.Type != "token" {
+		t.Fatalf("type = %q", got.Type)
+	}
+	m, ok := got.Payload.(map[string]any)
+	if !ok || m["content"] != "hi" {
+		t.Fatalf("payload = %v (%T)", got.Payload, got.Payload)
+	}
+}
+
+// host.emit must be a silent no-op when the bridge was built without a
+// StreamEmitter (test harnesses that don't wire ctx.Publisher) so
+// scripts stay callable.
+func TestHostBridge_Emit_NoEmitterIsNoOp(t *testing.T) {
+	api := invokeWithEmitter(newRecordingHost(), nil)
+	emit := api["emit"].(func(string, any))
+	// Must not panic. There is no observable side effect to assert
+	// beyond "did not crash" since the bridge silently drops.
+	emit("token", "anything")
+}
+
 func TestHostBridge_NilHost_FallsBackToNoop(t *testing.T) {
 	// NewHostBridge must accept a nil Host (callers that forgot to
 	// install one should still get callable, no-op-ish bindings).
-	name, raw := NewHostBridge(nil, "src")(context.Background())
+	name, raw := NewHostBridge(nil, "src", nil)(context.Background())
 	if name != "host" {
 		t.Fatalf("name = %q", name)
 	}
