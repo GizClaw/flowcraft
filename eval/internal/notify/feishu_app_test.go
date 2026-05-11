@@ -21,10 +21,13 @@ type fakeFeishu struct {
 	createCalls    int
 	sendCalls      int
 	patchCalls     int
+	replyCalls     int
 	lastCreateBody map[string]any
 	lastSendBody   map[string]any
 	lastPatchBody  map[string]any
 	lastPatchPath  string
+	lastReplyBody  map[string]any
+	lastReplyPath  string
 	cardID         string
 }
 
@@ -46,6 +49,12 @@ func (s *fakeFeishu) handler(t *testing.T) http.HandlerFunc {
 			s.lastCreateBody = parsed
 			s.cardID = "AAqcardfake"
 			_, _ = w.Write([]byte(`{"code":0,"msg":"ok","data":{"card_id":"AAqcardfake"}}`))
+
+		case strings.HasPrefix(r.URL.Path, "/open-apis/im/v1/messages/") && strings.HasSuffix(r.URL.Path, "/reply"):
+			s.replyCalls++
+			s.lastReplyBody = parsed
+			s.lastReplyPath = r.URL.Path
+			_, _ = w.Write([]byte(`{"code":0,"msg":"ok"}`))
 
 		case strings.HasPrefix(r.URL.Path, "/open-apis/im/v1/messages"):
 			s.sendCalls++
@@ -229,6 +238,89 @@ func TestFeishuApp_ProgressEventsFilteredFromHistory(t *testing.T) {
 		if strings.Contains(final, title) {
 			t.Errorf("%s title %q must be dropped from History once superseded; body=%s", k, title, final)
 		}
+	}
+}
+
+// TestFeishuApp_LifecycleReply verifies that lifecycle events
+// (ingest_done / done / error) additionally post a threaded text reply
+// to the parent card message, while progress and start events do not.
+// The reply path embeds the message_id captured from the initial card
+// send, so this also indirectly checks the message_id wire-up.
+func TestFeishuApp_LifecycleReply(t *testing.T) {
+	mock := &fakeFeishu{}
+	srv := httptest.NewServer(mock.handler(t))
+	defer srv.Close()
+
+	app := &FeishuApp{
+		AppID: "cli", AppSecret: "s", ChatID: "oc",
+		Name: "lme-s", Base: srv.URL,
+	}
+	ctx := context.Background()
+
+	// 1. start: creates card, sends to chat — no reply expected.
+	if err := app.Notify(ctx, Event{Kind: "start", Title: "begin"}); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if mock.replyCalls != 0 {
+		t.Errorf("start must NOT trigger reply; got %d reply calls", mock.replyCalls)
+	}
+
+	// 2. ingest_progress (any *_progress): silent patch only.
+	if err := app.Notify(ctx, Event{Kind: "ingest_progress", Title: "ingest 5%"}); err != nil {
+		t.Fatalf("ingest_progress: %v", err)
+	}
+	if mock.replyCalls != 0 {
+		t.Errorf("ingest_progress must NOT trigger reply; got %d reply calls", mock.replyCalls)
+	}
+
+	// 3. ingest_done: lifecycle — reply expected.
+	if err := app.Notify(ctx, Event{
+		Kind:  "ingest_done",
+		Title: "ingest done in 2h48m (2436 Save calls)",
+		Body:  "save.p50=42s save.p95=2m18s",
+	}); err != nil {
+		t.Fatalf("ingest_done: %v", err)
+	}
+	if mock.replyCalls != 1 {
+		t.Fatalf("ingest_done must trigger 1 reply; got %d", mock.replyCalls)
+	}
+	if !strings.HasPrefix(mock.lastReplyPath, "/open-apis/im/v1/messages/om_fake/reply") {
+		t.Errorf("reply path must embed parent message_id; got %s", mock.lastReplyPath)
+	}
+	// Reply payload is {msg_type: text, content: JSON-string-with-text}
+	if got := mock.lastReplyBody["msg_type"]; got != "text" {
+		t.Errorf("reply msg_type: got %v want text", got)
+	}
+	contentRaw, _ := mock.lastReplyBody["content"].(string)
+	var content map[string]string
+	_ = json.Unmarshal([]byte(contentRaw), &content)
+	if !strings.Contains(content["text"], "ingest_done") || !strings.Contains(content["text"], "2436 Save calls") {
+		t.Errorf("reply text should surface kind + headline title; got %q", content["text"])
+	}
+	if !strings.Contains(content["text"], "save.p95=2m18s") {
+		t.Errorf("reply text should append first line of Body for the notification preview; got %q", content["text"])
+	}
+
+	// 4. done: lifecycle — second reply.
+	if err := app.Notify(ctx, Event{Kind: "done", Title: "eval done in 2h50m", Body: "qa.judge=0.960"}); err != nil {
+		t.Fatalf("done: %v", err)
+	}
+	if mock.replyCalls != 2 {
+		t.Errorf("done must trigger 1 additional reply; got total %d", mock.replyCalls)
+	}
+
+	// 5. error: lifecycle — third reply.
+	if err := app.Notify(ctx, Event{Kind: "error", Title: "extractor blew up"}); err != nil {
+		t.Fatalf("error: %v", err)
+	}
+	if mock.replyCalls != 3 {
+		t.Errorf("error must trigger 1 additional reply; got total %d", mock.replyCalls)
+	}
+
+	// Sanity: silent patches kept growing across every non-start event
+	// (start used inline content, no patch yet).
+	if mock.patchCalls != 4 {
+		t.Errorf("expected 4 patches (progress + ingest_done + done + error); got %d", mock.patchCalls)
 	}
 }
 

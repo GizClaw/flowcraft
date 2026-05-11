@@ -34,6 +34,21 @@ import (
 //   - POST /open-apis/cardkit/v1/cards
 //   - POST /open-apis/im/v1/messages?receive_id_type=chat_id
 //   - PATCH /open-apis/cardkit/v1/cards/{card_id}/elements/{element_id}
+//   - POST /open-apis/im/v1/messages/{message_id}/reply
+//
+// Notification model:
+//
+//   - The initial `interactive` card send triggers a normal chat
+//     notification (mobile + desktop), so operators see the run begin.
+//   - Every subsequent CardKit PATCH updates the body silently — Feishu
+//     does NOT notify on card edits and there is no "edited" badge. This
+//     is by design: a 100-milestone run does not spam the chat.
+//   - For lifecycle kinds {ingest_done, done, error} we additionally
+//     post a one-line TEXT reply threaded to the card. Replies DO fire
+//     normal notifications, so the operator gets pinged exactly at the
+//     handful of moments they actually need to look (phase boundaries,
+//     final scores, failures) while progress milestones remain silent
+//     edits on the same card.
 type FeishuApp struct {
 	AppID     string
 	AppSecret string
@@ -46,6 +61,7 @@ type FeishuApp struct {
 
 	mu          sync.Mutex
 	cardID      string
+	messageID   string // chat message that hosts the card; reply target for lifecycle pings
 	events      []renderedEvent
 	token       string
 	tokenExpiry time.Time
@@ -83,9 +99,41 @@ func (f *FeishuApp) Notify(ctx context.Context, e Event) error {
 	}
 
 	if f.cardID == "" {
+		// First event always creates the card. The interactive message
+		// send fires its own chat notification, so we don't double-ping
+		// with a thread reply on `start`.
 		return f.createAndSendCard(ctx)
 	}
-	return f.updateLogElement(ctx)
+	if err := f.updateLogElement(ctx); err != nil {
+		return err
+	}
+	// Silent patches above keep progress noise off the chat list.
+	// Lifecycle events get a thread reply so the operator's device
+	// actually buzzes when the phase boundary lands.
+	if isLifecycleNotify(e.Kind) && f.messageID != "" {
+		if err := f.replyLifecycle(ctx, e); err != nil {
+			return fmt.Errorf("feishu reply: %w", err)
+		}
+	}
+	return nil
+}
+
+// isLifecycleNotify returns true for the small set of event kinds we
+// surface as threaded chat replies (in addition to the silent card
+// patch). The list is hard-coded — every suite that adds a new lifecycle
+// kind makes a conscious decision whether it warrants a phone-buzz, and
+// progress milestones intentionally stay silent.
+//
+// Excluded: "start" (the card's own creation notification covers it),
+// every *_progress kind (transient, would defeat the whole point of
+// CardKit consolidation), and the heartbeat-style events some suites
+// may add later.
+func isLifecycleNotify(kind string) bool {
+	switch kind {
+	case "ingest_done", "done", "error":
+		return true
+	}
+	return false
 }
 
 func (f *FeishuApp) now() time.Time {
@@ -184,6 +232,9 @@ func (f *FeishuApp) createAndSendCard(ctx context.Context) error {
 	var sendResp struct {
 		Code int    `json:"code"`
 		Msg  string `json:"msg"`
+		Data struct {
+			MessageID string `json:"message_id"`
+		} `json:"data"`
 	}
 	if err := f.doJSON(ctx, "POST", "/open-apis/im/v1/messages?receive_id_type=chat_id", sendBody, f.token, &sendResp); err != nil {
 		return fmt.Errorf("feishu send card: %w", err)
@@ -193,6 +244,66 @@ func (f *FeishuApp) createAndSendCard(ctx context.Context) error {
 	}
 
 	f.cardID = cardID
+	// message_id is the parent for lifecycle replies; we tolerate an
+	// empty value (older Feishu API shapes) and just degrade to silent
+	// patches in that case rather than failing the whole run.
+	f.messageID = sendResp.Data.MessageID
+	return nil
+}
+
+// replyLifecycle posts a one-line TEXT reply threaded to the card
+// message. Unlike CardKit PATCHes (silent edits), replies trigger the
+// normal Feishu chat notification path, so operators get pinged on
+// phase boundaries / final scores / failures without subscribing to
+// every milestone.
+//
+// Endpoint: `POST /open-apis/im/v1/messages/{message_id}/reply`
+//
+// Body fields:
+//
+//   - msg_type:  "text" — keeps the reply lightweight; nested cards
+//     would re-render unnecessary chrome under the parent
+//   - content:   JSON string with a single "text" field, capped at
+//     ~300 chars so a long error body doesn't blow past
+//     Feishu's per-message limit
+func (f *FeishuApp) replyLifecycle(ctx context.Context, e Event) error {
+	icon := iconFor(e.Kind)
+	text := strings.TrimSpace(fmt.Sprintf("%s [%s] %s", icon, e.Kind, firstLine(e.Title)))
+	// Compact body summary onto a second line when present so the
+	// notification preview surfaces the headline number (qa.judge, p95,
+	// error message). Trim aggressively — the full body lives on the
+	// card; replies are just notification bait.
+	if e.Body != "" {
+		body := firstLine(e.Body)
+		if len(text)+len(body)+1 > 300 {
+			cut := 300 - len(text) - 4
+			if cut < 0 {
+				cut = 0
+			}
+			body = body[:cut] + "…"
+		}
+		text = text + "\n" + body
+	}
+	if len(text) > 300 {
+		text = text[:297] + "…"
+	}
+
+	contentJSON, _ := json.Marshal(map[string]string{"text": text})
+	body, _ := json.Marshal(map[string]string{
+		"msg_type": "text",
+		"content":  string(contentJSON),
+	})
+	url := fmt.Sprintf("/open-apis/im/v1/messages/%s/reply", f.messageID)
+	var resp struct {
+		Code int    `json:"code"`
+		Msg  string `json:"msg"`
+	}
+	if err := f.doJSON(ctx, "POST", url, body, f.token, &resp); err != nil {
+		return err
+	}
+	if resp.Code != 0 {
+		return fmt.Errorf("code=%d msg=%q", resp.Code, resp.Msg)
+	}
 	return nil
 }
 
