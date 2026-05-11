@@ -162,13 +162,22 @@ func (r *Runtime) Exec(ctx context.Context, name, source string, env *script.Env
 	}
 
 	var sig *script.Signal
+	// signal.interrupt and signal.error accept either:
+	//   - a bare string (back-compat): used as Message; Kind stays empty
+	//     (engine.CauseCustom / errdefs.Internal under SignalToError).
+	//   - an object { kind, message, detail }: Kind classifies the
+	//     signal per script.ErrorKind (errors) or engine.Cause
+	//     (interrupts). Unknown Kind values degrade safely host-side
+	//     rather than aborting the script.
 	signalObj := map[string]any{
-		"interrupt": func(message string) {
-			sig = &script.Signal{Type: "interrupt", Message: message}
+		"interrupt": func(arg any) {
+			kind, msg, detail := parseSignalArg(arg)
+			sig = &script.Signal{Type: "interrupt", Kind: kind, Message: msg, Detail: detail}
 			vm.Interrupt("interrupt")
 		},
-		"error": func(message string) {
-			sig = &script.Signal{Type: "error", Message: message}
+		"error": func(arg any) {
+			kind, msg, detail := parseSignalArg(arg)
+			sig = &script.Signal{Type: "error", Kind: kind, Message: msg, Detail: detail}
 			vm.Interrupt("error")
 		},
 		"done": func() {
@@ -229,6 +238,36 @@ func wrapIIFE(source string) string {
 		return source
 	}
 	return "(function(){\n" + source + "\n})();"
+}
+
+// parseSignalArg decodes the polymorphic argument to signal.interrupt
+// / signal.error. Strings populate Message only; objects may supply
+// kind / message / detail keys. Anything else is silently coerced to
+// an empty message — invalid shapes do not abort the VM; the host's
+// SignalToError translation handles unknown Kind values safely.
+func parseSignalArg(arg any) (kind, message string, detail map[string]any) {
+	switch v := arg.(type) {
+	case nil:
+		return "", "", nil
+	case string:
+		return "", v, nil
+	case map[string]any:
+		if k, ok := v["kind"].(string); ok {
+			kind = k
+		}
+		if m, ok := v["message"].(string); ok {
+			message = m
+		}
+		if d, ok := v["detail"].(map[string]any); ok {
+			detail = d
+		}
+		return kind, message, detail
+	default:
+		// goja widens unrecognised JS values into interface{}; falling
+		// through with a stringified form keeps the surface safe while
+		// still leaving a trail for the script author to spot.
+		return "", fmt.Sprintf("%v", v), nil
+	}
 }
 
 func enrichError(scriptName string, err error) error {

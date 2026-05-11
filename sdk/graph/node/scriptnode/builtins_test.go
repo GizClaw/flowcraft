@@ -2,9 +2,11 @@ package scriptnode
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
+	"github.com/GizClaw/flowcraft/sdk/engine"
 	"github.com/GizClaw/flowcraft/sdk/engine/enginetest"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/graph"
@@ -253,6 +255,67 @@ func TestBuiltin_Approval_DecisionRecorded(t *testing.T) {
 	}
 	if v, _ := board.GetVar("approval_status"); v != "approved" {
 		t.Fatalf("approval_status = %v", v)
+	}
+}
+
+// ---------- signal classification (cross-cuts every script) ----------
+
+// signal.error({ kind: "validation", ... }) at the script level must
+// emerge from ScriptNode.ExecuteBoard as an errdefs.IsValidation error
+// — without callers needing to know about the script-layer mapping.
+// This is the contract scriptnode + future scriptengine hosts share.
+func TestScriptNode_SignalErrorKindFlowsToErrdefs(t *testing.T) {
+	rt := jsrt.New(jsrt.WithPoolSize(1))
+	n := New("validate1", "template", `
+		signal.error({
+			kind: "validation",
+			message: "model field is required",
+			detail: { field: "model" }
+		});
+	`, nil, rt)
+	board := graph.NewBoard()
+	err := n.ExecuteBoard(graph.ExecutionContext{
+		Context: context.Background(),
+		RunID:   runIDForTests,
+	}, board)
+	if err == nil {
+		t.Fatal("expected error from signal.error, got nil")
+	}
+	if !errdefs.IsValidation(err) {
+		t.Fatalf("expected IsValidation, got %v (kind classification lost in the chain?)", err)
+	}
+	if !strings.Contains(err.Error(), "model field is required") {
+		t.Errorf("error string missing message: %q", err.Error())
+	}
+	if !strings.Contains(err.Error(), "validate1") {
+		t.Errorf("error string missing node id: %q", err.Error())
+	}
+}
+
+// signal.interrupt({ kind: "user_input", ... }) must map to
+// engine.Cause=user_input, not collapse to CauseCustom.
+func TestScriptNode_SignalInterruptCauseFlowsThrough(t *testing.T) {
+	rt := jsrt.New(jsrt.WithPoolSize(1))
+	n := New("pause1", "template", `
+		signal.interrupt({ kind: "user_input", message: "barge" });
+	`, nil, rt)
+	board := graph.NewBoard()
+	err := n.ExecuteBoard(graph.ExecutionContext{
+		Context: context.Background(),
+		RunID:   runIDForTests,
+	}, board)
+	if !errdefs.IsInterrupted(err) {
+		t.Fatalf("expected IsInterrupted, got %v", err)
+	}
+	var ie engine.InterruptedError
+	if !errors.As(err, &ie) {
+		t.Fatalf("expected engine.InterruptedError in chain, got %v", err)
+	}
+	if ie.Cause != engine.CauseUserInput {
+		t.Errorf("Cause = %q, want %q", ie.Cause, engine.CauseUserInput)
+	}
+	if ie.Detail != "barge" {
+		t.Errorf("Detail = %q", ie.Detail)
 	}
 }
 

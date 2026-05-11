@@ -61,6 +61,55 @@ func TestRuntime_SignalInterrupt(t *testing.T) {
 	if sig.Message != "need approval" {
 		t.Fatalf("signal.Message = %q", sig.Message)
 	}
+	// Bare-string form keeps Kind empty.
+	if sig.Kind != "" {
+		t.Errorf("bare-string interrupt should leave Kind empty, got %q", sig.Kind)
+	}
+}
+
+func TestRuntime_SignalError_TableFormCarriesKind(t *testing.T) {
+	rt := New(WithPoolSize(1))
+	sig, err := rt.Exec(context.Background(), "sig-err-tbl", `
+		signal.error({
+			kind = "validation",
+			message = "model is required",
+			detail = { field = "model" }
+		})
+	`, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if sig == nil || sig.Type != "error" {
+		t.Fatalf("signal = %+v, want error", sig)
+	}
+	if sig.Kind != "validation" {
+		t.Errorf("Kind = %q, want %q", sig.Kind, "validation")
+	}
+	if sig.Message != "model is required" {
+		t.Errorf("Message = %q", sig.Message)
+	}
+	if sig.Detail["field"] != "model" {
+		t.Errorf("Detail[field] = %v, want %q", sig.Detail["field"], "model")
+	}
+}
+
+func TestRuntime_SignalInterrupt_TableFormCarriesCause(t *testing.T) {
+	rt := New(WithPoolSize(1))
+	sig, err := rt.Exec(context.Background(), "sig-int-tbl", `
+		signal.interrupt({ kind = "user_input", message = "barge" })
+	`, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if sig == nil || sig.Type != "interrupt" {
+		t.Fatalf("signal = %+v, want interrupt", sig)
+	}
+	if sig.Kind != "user_input" {
+		t.Errorf("Kind = %q, want %q", sig.Kind, "user_input")
+	}
+	if sig.Message != "barge" {
+		t.Errorf("Message = %q", sig.Message)
+	}
 }
 
 func TestRuntime_PoolReuse(t *testing.T) {

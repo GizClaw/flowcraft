@@ -7,12 +7,23 @@ import (
 )
 
 func TestSignal_Fields(t *testing.T) {
-	s := Signal{Type: "abort", Message: "something went wrong"}
-	if s.Type != "abort" {
-		t.Errorf("Type = %q, want %q", s.Type, "abort")
+	s := Signal{
+		Type:    "error",
+		Kind:    "validation",
+		Message: "something went wrong",
+		Detail:  map[string]any{"field": "model"},
+	}
+	if s.Type != "error" {
+		t.Errorf("Type = %q, want %q", s.Type, "error")
+	}
+	if s.Kind != "validation" {
+		t.Errorf("Kind = %q, want %q", s.Kind, "validation")
 	}
 	if s.Message != "something went wrong" {
 		t.Errorf("Message = %q, want %q", s.Message, "something went wrong")
+	}
+	if s.Detail["field"] != "model" {
+		t.Errorf("Detail[field] = %v, want %q", s.Detail["field"], "model")
 	}
 }
 
@@ -21,8 +32,14 @@ func TestSignal_ZeroValue(t *testing.T) {
 	if s.Type != "" {
 		t.Errorf("zero Type = %q, want empty", s.Type)
 	}
+	if s.Kind != "" {
+		t.Errorf("zero Kind = %q, want empty", s.Kind)
+	}
 	if s.Message != "" {
 		t.Errorf("zero Message = %q, want empty", s.Message)
+	}
+	if s.Detail != nil {
+		t.Errorf("zero Detail = %v, want nil", s.Detail)
 	}
 }
 

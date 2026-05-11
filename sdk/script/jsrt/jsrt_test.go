@@ -72,6 +72,63 @@ func TestRuntime_SignalError(t *testing.T) {
 	if sig == nil || sig.Type != "error" {
 		t.Fatalf("signal = %+v, want error type", sig)
 	}
+	// Bare-string form keeps Kind empty so SignalToError can degrade
+	// it to errdefs.Internal — exercised by the script-level helper
+	// tests in sdk/script/signal_test.go.
+	if sig.Kind != "" {
+		t.Errorf("bare-string error should leave Kind empty, got %q", sig.Kind)
+	}
+	if sig.Message != "bad input" {
+		t.Errorf("Message = %q", sig.Message)
+	}
+}
+
+func TestRuntime_SignalError_ObjectFormCarriesKind(t *testing.T) {
+	rt := New(WithPoolSize(1))
+	sig, err := rt.Exec(context.Background(), "sig-err-obj", `
+		signal.error({
+			kind: "validation",
+			message: "model is required",
+			detail: { field: "model" }
+		});
+	`, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if sig == nil {
+		t.Fatal("expected signal")
+	}
+	if sig.Type != "error" {
+		t.Errorf("Type = %q, want %q", sig.Type, "error")
+	}
+	if sig.Kind != "validation" {
+		t.Errorf("Kind = %q, want %q", sig.Kind, "validation")
+	}
+	if sig.Message != "model is required" {
+		t.Errorf("Message = %q", sig.Message)
+	}
+	if sig.Detail["field"] != "model" {
+		t.Errorf("Detail[field] = %v, want %q", sig.Detail["field"], "model")
+	}
+}
+
+func TestRuntime_SignalInterrupt_ObjectFormCarriesCause(t *testing.T) {
+	rt := New(WithPoolSize(1))
+	sig, err := rt.Exec(context.Background(), "sig-int-obj", `
+		signal.interrupt({ kind: "user_input", message: "barge" });
+	`, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if sig == nil || sig.Type != "interrupt" {
+		t.Fatalf("signal = %+v, want interrupt", sig)
+	}
+	if sig.Kind != "user_input" {
+		t.Errorf("Kind = %q, want %q", sig.Kind, "user_input")
+	}
+	if sig.Message != "barge" {
+		t.Errorf("Message = %q", sig.Message)
+	}
 }
 
 func TestRuntime_SignalDone(t *testing.T) {
