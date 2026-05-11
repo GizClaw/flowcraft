@@ -39,7 +39,7 @@ import (
 func main() {
 	agentSpec := flag.String("agent-llm", "", "model under test, format provider:model (required)")
 	customerSpec := flag.String("customer-llm", "", "customer-role LLM for multi-turn tasks; required iff dataset has any CustomerScenario task")
-	domain := flag.String("domain", "retail", "domain pack (currently only \"retail\" — airline is on the roadmap)")
+	domain := flag.String("domain", "retail", "domain pack: retail | airline | all (mini fixtures bundled inline)")
 	maxAgentTurns := flag.Int("max-agent-turns", 12, "ceiling on agent Generate calls per task")
 	maxConvTurns := flag.Int("max-conversation-turns", 10, "ceiling on customer↔agent exchanges per multi-turn task")
 	stopToken := flag.String("stop-token", "###STOP###", "substring the customer can emit to end the dialog cleanly")
@@ -82,8 +82,21 @@ func main() {
 	case "retail":
 		ds = taubench.NewRetailMiniDataset()
 		tools = taubench.NewRetailTools()
+	case "airline":
+		ds = taubench.NewAirlineMiniDataset()
+		tools = taubench.NewAirlineTools()
+	case "all":
+		// Combine both mini packs into a single run. Tools are
+		// disjoint by design (retail vs airline) so a flat union is
+		// safe; tasks carry Domain so the per-domain breakdown in
+		// the report still splits cleanly.
+		ds = taubench.MergeDatasets("retail+airline",
+			taubench.NewRetailMiniDataset(),
+			taubench.NewAirlineMiniDataset(),
+		)
+		tools = mergeTools(taubench.NewRetailTools(), taubench.NewAirlineTools())
 	default:
-		log.Fatalf("--domain: unknown domain %q (only \"retail\" is shipped)", *domain)
+		log.Fatalf("--domain: unknown domain %q (want retail | airline | all)", *domain)
 	}
 
 	opts := taubench.Options{
@@ -138,4 +151,22 @@ func main() {
 		fmt.Fprintf(os.Stderr, "    [%s] %-32s mode=%-11s agent_turns=%d customer_turns=%d tools=%d %s\n",
 			marker, tr.ID, tr.Mode, tr.AgentTurns, tr.CustomerTurns, len(tr.ToolCalls), tr.Reason)
 	}
+}
+
+// mergeTools is the CLI-side helper for --domain all. Two maps, flat
+// union; tool-name collisions across domains are a programmer error
+// (retail and airline are deliberately disjoint) so we panic loudly
+// rather than silently let one overwrite the other.
+func mergeTools(a, b map[string]taubench.Tool) map[string]taubench.Tool {
+	out := make(map[string]taubench.Tool, len(a)+len(b))
+	for k, v := range a {
+		out[k] = v
+	}
+	for k, v := range b {
+		if _, dup := out[k]; dup {
+			log.Fatalf("taubench: duplicate tool %q across merged domains", k)
+		}
+		out[k] = v
+	}
+	return out
 }

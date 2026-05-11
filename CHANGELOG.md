@@ -55,6 +55,16 @@ with its own tag prefix (e.g. `sdk/vX.Y.Z`, `vessel/vX.Y.Z`,
   pre-flight disk check, log tee, and a 30-min log-idle watchdog. The
   Feishu custom-bot webhook backend is deliberately not supported — at
   evaluation timescales it floods the destination chat.
+- `eval/taubench`: airline domain — adds `NewAirlineTools()` (7 tools:
+  `get_user`, `get_reservation`, `list_user_reservations`,
+  `cancel_reservation`, `update_baggage`, `search_flight`,
+  `get_flight`) and `NewAirlineMiniDataset()` (5 hand-curated tasks
+  covering cancel / update-baggage / search-info / refuse-departed,
+  plus one multi-turn cancel-via-lookup dialog). The CLI grows a
+  `--domain airline` value and `--domain all` merges both packs into
+  a single report. `taubench.MergeDatasets()` ships as a public
+  helper for the merge; tool handlers tolerate stringified ints
+  (a common provider quirk).
 - `eval/taubench`: multi-turn dialog mode lands — second LLM
   (`Options.CustomerLLM`) roleplays the customer using a private
   `Task.CustomerScenario` while the agent only sees the customer's

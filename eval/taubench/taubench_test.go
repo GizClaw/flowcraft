@@ -295,6 +295,94 @@ func TestRun_DialogConversationCap(t *testing.T) {
 	}
 }
 
+// TestAirlineTools_Smoke mirrors TestRetailTools_Smoke against the
+// airline domain: each handler runs once, the status-protected paths
+// refuse, and the integer-coercing helper accepts both float64 and
+// stringified arguments (the most common provider quirks).
+func TestAirlineTools_Smoke(t *testing.T) {
+	tools := taubench.NewAirlineTools()
+	state := taubench.NewAirlineMiniDataset().Tasks[0].InitialState
+
+	// get_user → tier=gold (sanity).
+	out, err := tools["get_user"].Handler(state, map[string]any{"user_id": "USER-1"})
+	if err != nil {
+		t.Fatalf("get_user: %v", err)
+	}
+	if m, _ := out.(map[string]any); m["tier"] != "gold" {
+		t.Errorf("get_user: want tier=gold, got %v", out)
+	}
+
+	// cancel_reservation on a confirmed one succeeds.
+	if _, err := tools["cancel_reservation"].Handler(state, map[string]any{"reservation_id": "RES-1", "reason": "test"}); err != nil {
+		t.Fatalf("cancel_reservation: %v", err)
+	}
+	if got := state["reservations"].(map[string]any)["RES-1"].(map[string]any)["status"]; got != "cancelled" {
+		t.Errorf("cancel did not flip status: %v", got)
+	}
+
+	// cancel_reservation on a departed flight is refused (returns
+	// error payload, NOT a Go error).
+	out, _ = tools["cancel_reservation"].Handler(state, map[string]any{"reservation_id": "RES-3", "reason": "test"})
+	if m, _ := out.(map[string]any); m["error"] == nil {
+		t.Errorf("cancel_reservation on departed: should return error payload, got %v", out)
+	}
+
+	// update_baggage accepts BOTH the canonical float64 (json
+	// unmarshal default) and a stringified integer — this is the
+	// most common provider quirk and the handler must tolerate it.
+	for _, n := range []any{2.0, "2", 2} {
+		state := taubench.NewAirlineMiniDataset().Tasks[0].InitialState // fresh state per case
+		out, err := tools["update_baggage"].Handler(state, map[string]any{"reservation_id": "RES-1", "num_bags": n})
+		if err != nil {
+			t.Errorf("update_baggage(num_bags=%v): %v", n, err)
+			continue
+		}
+		if m, _ := out.(map[string]any); m["error"] != nil {
+			t.Errorf("update_baggage(num_bags=%v): want success, got error %v", n, m["error"])
+			continue
+		}
+		got := state["reservations"].(map[string]any)["RES-1"].(map[string]any)["baggage"].(map[string]any)["checked"]
+		if got != 2 {
+			t.Errorf("update_baggage(num_bags=%v): want baggage.checked=2, got %v", n, got)
+		}
+	}
+
+	// update_baggage out of range refused.
+	out, _ = tools["update_baggage"].Handler(state, map[string]any{"reservation_id": "RES-2", "num_bags": 5.0})
+	if m, _ := out.(map[string]any); m["error"] == nil {
+		t.Errorf("update_baggage(num_bags=5): should return error payload, got %v", out)
+	}
+
+	// search_flight returns 2 candidates on JFK→LAX 2026-06-01.
+	out, _ = tools["search_flight"].Handler(state, map[string]any{"origin": "JFK", "destination": "LAX", "date": "2026-06-01"})
+	if ids, _ := out.(map[string]any)["flight_ids"].([]string); len(ids) != 2 {
+		t.Errorf("search_flight: want 2 flight_ids, got %v", ids)
+	}
+}
+
+// TestMergeDatasets sanity-checks the helper used by --domain all:
+// names propagate, every task is preserved, duplicate IDs panic.
+func TestMergeDatasets(t *testing.T) {
+	retail := taubench.NewRetailMiniDataset()
+	airline := taubench.NewAirlineMiniDataset()
+	merged := taubench.MergeDatasets("retail+airline", retail, airline)
+	if merged.Name != "retail+airline" {
+		t.Errorf("Name: want retail+airline, got %q", merged.Name)
+	}
+	if got, want := len(merged.Tasks), len(retail.Tasks)+len(airline.Tasks); got != want {
+		t.Errorf("task count: want %d, got %d", want, got)
+	}
+
+	// Duplicate ID -> panic.
+	defer func() {
+		if recover() == nil {
+			t.Error("MergeDatasets with duplicate IDs did not panic")
+		}
+	}()
+	dup := &taubench.Dataset{Tasks: []taubench.Task{retail.Tasks[0], retail.Tasks[0]}}
+	_ = taubench.MergeDatasets("dup", dup)
+}
+
 // TestRun_HookEvents pins the lifecycle event sequence so the Feishu
 // adapter doesn't silently regress.
 func TestRun_HookEvents(t *testing.T) {

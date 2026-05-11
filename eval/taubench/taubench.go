@@ -183,6 +183,31 @@ type Dataset struct {
 	Tasks []Task
 }
 
+// MergeDatasets concatenates multiple Datasets into one. Useful for
+// --domain all style runs where the operator wants retail + airline
+// in a single Report (the per-task Domain field keeps the per-domain
+// breakdown clean on the way out). Task IDs across the inputs are
+// assumed to be globally unique; we panic on collision because
+// duplicate IDs would corrupt the deterministic sort the Report
+// relies on.
+func MergeDatasets(name string, datasets ...*Dataset) *Dataset {
+	out := &Dataset{Name: name}
+	seen := map[string]string{}
+	for _, ds := range datasets {
+		if ds == nil {
+			continue
+		}
+		for _, t := range ds.Tasks {
+			if prev, dup := seen[t.ID]; dup {
+				panic(fmt.Sprintf("taubench: duplicate task id %q in datasets %q and %q", t.ID, prev, ds.Name))
+			}
+			seen[t.ID] = ds.Name
+			out.Tasks = append(out.Tasks, t)
+		}
+	}
+	return out
+}
+
 // TaskResult is one row in the report's Tasks slice.
 type TaskResult struct {
 	ID        string   `json:"id"`

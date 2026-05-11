@@ -40,11 +40,18 @@ full pack belongs in scheduled jobs.
   → customer ↔ agent exchange until customer emits `###STOP###` or
   the conversation cap is hit. The customer NEVER sees tool calls or
   tool results; only the agent's natural-language utterances.
-- **Retail-mini** dataset baked into the binary: 5 single-shot tasks
-  (cancel / update-shipping / search / refuse-protected-state) +
-  2 multi-turn tasks (forgot-order-id; refuse-delivered-politely).
-- **Retail tools**: `get_order`, `cancel_order`, `update_shipping`,
+- **Retail-mini** dataset (7 tasks): cancel-pending / cancel-processing /
+  update-shipping / search / cannot-cancel-delivered + 2 multi-turn
+  (forgot-order-id; refuse-delivered-politely).
+- **Airline-mini** dataset (5 tasks): cancel / update-baggage /
+  search-info / refuse-departed + 1 multi-turn (cancel-via-lookup).
+- **Retail tools** (6): `get_order`, `cancel_order`, `update_shipping`,
   `list_orders_for_customer`, `get_product`, `search_products`.
+- **Airline tools** (7): `get_user`, `get_reservation`,
+  `list_user_reservations`, `cancel_reservation`, `update_baggage`,
+  `search_flight`, `get_flight`.
+- `--domain all` merges retail + airline into one Report so a single
+  invocation covers both stacks.
 - **State checker** with dot-path predicates and RequiredTools.
 - CardKit-driven event stream and JSON Report shape consistent with
   every other suite under `eval/`.
@@ -79,7 +86,6 @@ unpredictably. Pick a tier comparable to the agent under test.
 
 ## Roadmap
 
-- Airline-domain tools and tasks (queued next).
 - Converter for the upstream τ-bench task JSON so the official
   retail (≈115) and airline (≈50) sets can be run unmodified, with
   "shadow-execution of gold actions" scoring (matches published
