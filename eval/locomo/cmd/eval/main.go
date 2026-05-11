@@ -27,6 +27,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/eval/dataset"
 	"github.com/GizClaw/flowcraft/eval/internal/env"
+	"github.com/GizClaw/flowcraft/eval/internal/notify"
 	"github.com/GizClaw/flowcraft/eval/locomo"
 	"github.com/GizClaw/flowcraft/eval/locomo/runners/flowcraft"
 	"github.com/GizClaw/flowcraft/eval/metrics"
@@ -65,6 +66,9 @@ func main() {
 	scoreThreshold := flag.Float64("score-threshold", 0, "drop recall hits below this score before rerank/limit (0 = SDK default 0.05)")
 	saveWithContext := flag.Bool("save-with-context", false, "before extraction, recall existing facts and inject as prompt context")
 	softMerge := flag.Bool("soft-merge", true, "mark older near-duplicate entries as superseded_by; SupersededDecay damps them at recall")
+	notifyName := flag.String("notify-name", "", "run identifier shown in the Feishu card header (e.g. lme-oracle); empty disables prefix")
+	notifyProgressPct := flag.Int("notify-progress-pct", 25, "send milestone notifications every N percent of ingest + QA (0 disables intermediate updates)")
+	notifyDryRun := flag.Bool("notify-dry-run", false, "print events to stderr instead of posting to Feishu (for CI / smoke tests)")
 	flag.Parse()
 
 	if *runner != "flowcraft" {
@@ -146,6 +150,19 @@ func main() {
 	}
 	defer r.Close()
 
+	// Feishu CardKit credentials are read from env so they never appear in
+	// `ps` output and can be shared across all eval CLIs. If any of the
+	// three is missing, FromFlags falls back to NoOp.
+	notifier, err := notify.FromFlags(notify.FlagOptions{
+		Name:            *notifyName,
+		DryRun:          *notifyDryRun,
+		FeishuAppID:     os.Getenv("FEISHU_APP_ID"),
+		FeishuAppSecret: os.Getenv("FEISHU_APP_SECRET"),
+		FeishuChatID:    os.Getenv("FEISHU_CHAT_ID"),
+	})
+	if err != nil {
+		log.Fatalf("notify: %v", err)
+	}
 	opts := locomo.Options{
 		TopK:              *topK,
 		UseExtractor:      *useExtractor,
@@ -155,6 +172,15 @@ func main() {
 		ProgressEvery:     *progressEvery,
 		IngestTimeout:     *ingestTimeout,
 		QATimeout:         *qaTimeout,
+		ProgressPct:       *notifyProgressPct,
+		Hook: func(ctx context.Context, e locomo.Event) {
+			if err := notifier.Notify(ctx, notify.Event{
+				Kind: e.Kind, Time: e.Time,
+				Title: e.Title, Body: e.Body, Fields: e.Fields,
+			}); err != nil {
+				log.Printf("[notify] %s: %v", e.Kind, err)
+			}
+		},
 	}
 	if *tunedPrompts {
 		opts.AnswerPrompt = locomoAnswerPrompt

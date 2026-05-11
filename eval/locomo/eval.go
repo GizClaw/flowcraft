@@ -81,7 +81,38 @@ type Options struct {
 	RuntimeID         string
 	UserID            string
 	AgentID           string
+
+	// Hook is invoked at lifecycle checkpoints (start, ingest_done,
+	// qa_progress milestones, done, error). The hook is a synchronous
+	// best-effort call — backends like Feishu webhooks add ~100ms each
+	// time, so we only fire it at coarse-grained events. Set to nil to
+	// disable notifications.
+	Hook EventHook
+
+	// ProgressPct controls the milestone resolution in percent (e.g. 25
+	// fires the hook at 25%, 50%, 75%; 0 disables milestones but still
+	// emits start / *_done / error). Must divide 100 cleanly for the
+	// "every Nth percent" message to land on exact boundaries.
+	ProgressPct int
 }
+
+// Event describes one lifecycle checkpoint. See [EventHook].
+//
+// Backends (notify.Feishu, etc.) render Title as the headline and Body as a
+// multi-line detail block; Fields carries the structured payload for richer
+// transports (cards, JSON sinks).
+type Event struct {
+	Kind   string            // start | ingest_progress | ingest_done | qa_progress | done | error
+	Time   time.Time         // event timestamp
+	Title  string            // single-line summary
+	Body   string            // multi-line details
+	Fields map[string]string // structured key/value payload
+}
+
+// EventHook is invoked at lifecycle checkpoints. It runs in the caller's
+// goroutine and SHOULD not block: a slow hook will stall the eval. Errors
+// from hooks are swallowed (the hook itself decides whether to log).
+type EventHook func(ctx context.Context, e Event)
 
 // DefaultAnswerPrompt is a closed-book QA prompt: ground the answer
 // strictly in the recalled memories, otherwise say "I don't know".
@@ -128,6 +159,30 @@ func Run(ctx context.Context, r runners.Runner, ds *dataset.Dataset, opts Option
 		Latency:   map[string]metrics.LatencySummary{},
 	}
 
+	emit := func(e Event) {
+		if opts.Hook == nil {
+			return
+		}
+		if e.Time.IsZero() {
+			e.Time = time.Now()
+		}
+		opts.Hook(ctx, e)
+	}
+
+	emit(Event{
+		Kind:  "start",
+		Title: fmt.Sprintf("eval start: runner=%s dataset=%s", report.Runner, report.Dataset),
+		Body: fmt.Sprintf(
+			"conversations=%d  questions=%d  topk=%d  extractor=%v  qa_concurrency=%d  ingest_concurrency=%d",
+			len(ds.Conversations), len(ds.Questions),
+			opts.TopK, opts.UseExtractor, opts.Concurrency, opts.IngestConcurrency,
+		),
+		Fields: map[string]string{
+			"runner":  report.Runner,
+			"dataset": report.Dataset,
+		},
+	})
+
 	// LoCoMo conversations are 13k-28k tokens each (40+ sessions); feeding
 	// them whole to an LLM extractor blows past output limits and yields
 	// 1-2 facts. Slice by session so each Save sees ~1k-3k tokens, the
@@ -140,10 +195,19 @@ func Run(ctx context.Context, r runners.Runner, ds *dataset.Dataset, opts Option
 	// one conv has fewer sessions than another and cuts the 10-conv ingest
 	// wall time from ~20 min (conv-serial / batch-parallel) to ~5 min
 	// (fully flat) on LoCoMo10.
-	saveLatencies := ingestFlat(ctx, r, scopeOf, ds.Conversations, opts)
+	ingestStart := time.Now()
+	saveLatencies := ingestFlat(ctx, r, scopeOf, ds.Conversations, opts, emit)
+	ingestSummary := metrics.Summarize(saveLatencies)
+	emit(Event{
+		Kind: "ingest_done",
+		Title: fmt.Sprintf("ingest done in %s (%d Save calls)",
+			time.Since(ingestStart).Truncate(time.Second), len(saveLatencies)),
+		Body: fmt.Sprintf("save.p50=%s save.p95=%s", ingestSummary.P50, ingestSummary.P95),
+	})
 
-	scores, recallLatencies, err := evalQuestions(ctx, r, scopeOf, ds.Questions, opts)
+	scores, recallLatencies, err := evalQuestions(ctx, r, scopeOf, ds.Questions, opts, emit)
 	if err != nil {
+		emit(Event{Kind: "error", Title: "eval failed during QA", Body: err.Error()})
 		return nil, err
 	}
 	report.PerQuestion = scores
@@ -175,6 +239,29 @@ func Run(ctx context.Context, r runners.Runner, ds *dataset.Dataset, opts Option
 	report.Latency["save"] = metrics.Summarize(saveLatencies)
 	report.Latency["recall"] = metrics.Summarize(recallLatencies)
 	report.FinishedAt = time.Now()
+
+	khit := "N/A"
+	if report.Aggregate.KHitRate != nil {
+		khit = fmt.Sprintf("%.3f", *report.Aggregate.KHitRate)
+	}
+	emit(Event{
+		Kind: "done",
+		Title: fmt.Sprintf("eval done in %s",
+			report.FinishedAt.Sub(report.StartedAt).Truncate(time.Second)),
+		Body: fmt.Sprintf(
+			"qa.judge=%.3f  qa.f1=%.3f  qa.em=%.3f  recall.k_hit=%s\nsave.p95=%s  recall.p95=%s  n=%d",
+			report.Aggregate.Judge, report.Aggregate.F1, report.Aggregate.EM, khit,
+			report.Latency["save"].P95, report.Latency["recall"].P95, report.N,
+		),
+		Fields: map[string]string{
+			"qa.judge":     fmt.Sprintf("%.6f", report.Aggregate.Judge),
+			"qa.f1":        fmt.Sprintf("%.6f", report.Aggregate.F1),
+			"qa.em":        fmt.Sprintf("%.6f", report.Aggregate.EM),
+			"recall.k_hit": khit,
+			"n":            fmt.Sprintf("%d", report.N),
+		},
+	})
+
 	return report, nil
 }
 
@@ -314,7 +401,11 @@ type ingestJob struct {
 //
 // Failures on any single batch are logged + skipped so one rate-limited or
 // truncated extractor response can't disqualify an entire conversation.
-func ingestFlat(ctx context.Context, r runners.Runner, scopeOf func(string) recall.Scope, convs []dataset.Conversation, opts Options) []time.Duration {
+//
+// emit is a checkpoint callback that fires at coarse-grained progress
+// boundaries (controlled by opts.ProgressPct). Passing a no-op closure
+// disables notifications without touching the inner loop.
+func ingestFlat(ctx context.Context, r runners.Runner, scopeOf func(string) recall.Scope, convs []dataset.Conversation, opts Options, emit func(Event)) []time.Duration {
 	// Precompute conversation-level counters + expand every conv into its
 	// batches. Keeping convStart out of the worker path means no
 	// synchronization is needed for timing.
@@ -356,13 +447,19 @@ func ingestFlat(ctx context.Context, r runners.Runner, scopeOf func(string) reca
 	}
 
 	var (
-		mu        sync.Mutex
-		latencies []time.Duration
-		done      int
-		jobCh     = make(chan ingestJob)
-		wg        sync.WaitGroup
+		mu          sync.Mutex
+		latencies   []time.Duration
+		done        int
+		totalFacts  int
+		nextPctMark int
+		jobCh       = make(chan ingestJob)
+		wg          sync.WaitGroup
 	)
 	totalJobs := len(jobs)
+	if opts.ProgressPct > 0 {
+		nextPctMark = opts.ProgressPct
+	}
+	ingestStarted := time.Now()
 
 	for w := 0; w < conc; w++ {
 		wg.Add(1)
@@ -398,6 +495,7 @@ func ingestFlat(ctx context.Context, r runners.Runner, scopeOf func(string) reca
 				} else {
 					latencies = append(latencies, d)
 					a.facts += n
+					totalFacts += n
 				}
 				// Per-batch heartbeat: without this the run looks frozen for
 				// 5-15 min on slow extractor models because the only previous
@@ -412,7 +510,30 @@ func ingestFlat(ctx context.Context, r runners.Runner, scopeOf func(string) reca
 				if a.remaining == 0 {
 					log.Printf("[locomo] ingest %s done in %s, %d facts saved (%d batches, overall %d/%d)", job.convID, time.Since(a.start).Truncate(time.Second), a.facts, a.total, done, totalJobs)
 				}
+				// Milestone notification (e.g. every 25%): emit on the
+				// completing worker so we don't need a separate goroutine.
+				// Done count is monotonic and protected by mu, so the
+				// first worker to cross the boundary fires exactly once.
+				var milestone *Event
+				if nextPctMark > 0 && totalJobs > 0 {
+					pct := done * 100 / totalJobs
+					if pct >= nextPctMark && pct < 100 {
+						milestone = &Event{
+							Kind: "ingest_progress",
+							Title: fmt.Sprintf("ingest %d%% (%d/%d batches)",
+								pct, done, totalJobs),
+							Body: fmt.Sprintf("facts=%d  elapsed=%s",
+								totalFacts, time.Since(ingestStarted).Truncate(time.Second)),
+						}
+						for nextPctMark <= pct {
+							nextPctMark += opts.ProgressPct
+						}
+					}
+				}
 				mu.Unlock()
+				if milestone != nil {
+					emit(*milestone)
+				}
 			}
 		}()
 	}
@@ -425,7 +546,7 @@ func ingestFlat(ctx context.Context, r runners.Runner, scopeOf func(string) reca
 	return latencies
 }
 
-func evalQuestions(ctx context.Context, r runners.Runner, scopeOf func(string) recall.Scope, qs []dataset.Question, opts Options) ([]QuestionScore, []time.Duration, error) {
+func evalQuestions(ctx context.Context, r runners.Runner, scopeOf func(string) recall.Scope, qs []dataset.Question, opts Options, emit func(Event)) ([]QuestionScore, []time.Duration, error) {
 	n := len(qs)
 	scores := make([]QuestionScore, n)
 	latencies := make([]time.Duration, n)
@@ -441,12 +562,48 @@ func evalQuestions(ctx context.Context, r runners.Runner, scopeOf func(string) r
 	type job struct{ idx int }
 	jobs := make(chan job)
 	var done, failed atomic.Int64
+	// nextPctMark gates milestone notifications. Bumped atomically by
+	// whichever worker first crosses each threshold.
+	var nextPctMark atomic.Int64
+	if opts.ProgressPct > 0 {
+		nextPctMark.Store(int64(opts.ProgressPct))
+	}
+	qaStart := time.Now()
+	maybeMilestone := func(cur int64) {
+		mark := nextPctMark.Load()
+		if mark <= 0 || n == 0 {
+			return
+		}
+		pct := cur * 100 / int64(n)
+		if pct < mark || pct >= 100 {
+			return
+		}
+		// Try to claim the milestone; only one worker wins per boundary.
+		next := mark
+		for next <= pct {
+			next += int64(opts.ProgressPct)
+		}
+		if !nextPctMark.CompareAndSwap(mark, next) {
+			return
+		}
+		emit(Event{
+			Kind: "qa_progress",
+			Title: fmt.Sprintf("qa %d%% (%d/%d questions)",
+				pct, cur, n),
+			Body: fmt.Sprintf("failed=%d  elapsed=%s",
+				failed.Load(), time.Since(qaStart).Truncate(time.Second)),
+		})
+	}
 
 	// recordFailure scores a question as 0/0/0 and logs the cause. We do
 	// NOT fail the whole run on a single LLM error: Azure content filters,
 	// Qwen rate limits and per-question timeouts are common enough that
 	// a 1-in-1500 question reliably trips one — propagating that as an
 	// exit-1 throws away the other 1499 results.
+	// alertedHighFailure fires the "systemic failure" notification at most
+	// once per run: once we cross the 5% threshold, every subsequent failure
+	// still keeps the ratio bad, so resending would spam the webhook.
+	var alertedHighFailure atomic.Bool
 	recordFailure := func(idx int, q dataset.Question, stage string, err error) {
 		log.Printf("[locomo] WARN %s %s: %v (scored 0)", stage, q.ID, err)
 		var khitPtr *float64
@@ -458,7 +615,18 @@ func evalQuestions(ctx context.Context, r runners.Runner, scopeOf func(string) r
 			ID: q.ID, Query: q.Query, Prediction: "",
 			EM: 0, F1: 0, Judge: 0, KHit: khitPtr,
 		}
-		failed.Add(1)
+		f := failed.Add(1)
+		// Hard-failure threshold: if more than 5% of QA fail after the
+		// first 100 questions, something systemic is broken (bad
+		// credentials, dead provider). Notify once so the operator can
+		// stop the run instead of burning 50h producing zeros.
+		if d := done.Load() + 1; d >= 100 && f*20 > d && alertedHighFailure.CompareAndSwap(false, true) {
+			emit(Event{
+				Kind:  "error",
+				Title: fmt.Sprintf("qa failure rate %.0f%% on first %d questions", float64(f)/float64(d)*100, d),
+				Body:  fmt.Sprintf("most recent: %s on %s — %v\n(further failures will be logged but not re-notified)", stage, q.ID, err),
+			})
+		}
 	}
 
 	var wg sync.WaitGroup
@@ -473,7 +641,7 @@ func evalQuestions(ctx context.Context, r runners.Runner, scopeOf func(string) r
 				if err != nil {
 					cancel()
 					recordFailure(j.idx, q, "recall", err)
-					done.Add(1)
+					maybeMilestone(done.Add(1))
 					continue
 				}
 				latencies[j.idx] = d
@@ -481,7 +649,7 @@ func evalQuestions(ctx context.Context, r runners.Runner, scopeOf func(string) r
 				if err != nil {
 					cancel()
 					recordFailure(j.idx, q, "answer", err)
-					done.Add(1)
+					maybeMilestone(done.Add(1))
 					continue
 				}
 				em := boolFloat(metrics.ExactMatch(pred, q.GoldAnswers))
@@ -490,7 +658,7 @@ func evalQuestions(ctx context.Context, r runners.Runner, scopeOf func(string) r
 				cancel()
 				if err != nil {
 					recordFailure(j.idx, q, "judge", err)
-					done.Add(1)
+					maybeMilestone(done.Add(1))
 					continue
 				}
 				// k_hit only applies on raw-ingest runs: MemoryEntry.ID is the
@@ -511,6 +679,7 @@ func evalQuestions(ctx context.Context, r runners.Runner, scopeOf func(string) r
 				if opts.ProgressEvery > 0 && cur%int64(opts.ProgressEvery) == 0 {
 					log.Printf("[locomo] %d/%d questions done", cur, n)
 				}
+				maybeMilestone(cur)
 			}
 		}()
 	}

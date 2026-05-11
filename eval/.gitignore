@@ -1,18 +1,21 @@
 # Eval-local artifacts; not tracked.
 #
-# - locomo/data/        upstream LoCoMo / LongMemEval dumps + converted .jsonl
-#                       (CC-BY but bulky; users fetch via cmd/fetch + cmd/convert-locomo)
-# - locomo/results/     per-run report JSON written by cmd/eval
-# - history/results/    per-run report JSON written by cmd/eval
-# - compiled binaries from `go build ./locomo/cmd/...`
+# - {locomo,longmemeval}/data/    upstream dumps + converted .jsonl
+#                                 (CC-BY but bulky; users fetch via
+#                                 each suite's cmd/ helpers)
+# - {locomo,longmemeval,history}/results/  per-run report JSON
+# - compiled binaries from `go build ./<suite>/cmd/...`
 locomo/data/
 locomo/results/
+longmemeval/data/
+longmemeval/results/
 history/results/
 locomo/cmd/*/convert-locomo
 locomo/cmd/*/eval
 locomo/cmd/*/compare
 locomo/cmd/*/fetch
 locomo/cmd/*/ingest
+longmemeval/cmd/*/convert
 # `go build ./locomo/cmd/<x>` from eval/ drops the binary at eval/<x>.
 /compare
 /convert-locomo
