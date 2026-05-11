@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/GizClaw/flowcraft/eval/internal/env"
@@ -39,7 +40,9 @@ import (
 func main() {
 	agentSpec := flag.String("agent-llm", "", "model under test, format provider:model (required)")
 	customerSpec := flag.String("customer-llm", "", "customer-role LLM for multi-turn tasks; required iff dataset has any CustomerScenario task")
-	domain := flag.String("domain", "retail", "domain pack: retail | airline | all (mini fixtures bundled inline)")
+	domain := flag.String("domain", "retail", "domain pack when using bundled mini fixtures: retail | airline | all")
+	upstreamTasks := flag.String("upstream-tasks", "", "path to an upstream τ-bench tasks JSON; overrides the bundled mini pack")
+	upstreamState := flag.String("upstream-initial-state", "", "path to the initial DB JSON paired with --upstream-tasks; required when that flag is set")
 	maxAgentTurns := flag.Int("max-agent-turns", 12, "ceiling on agent Generate calls per task")
 	maxConvTurns := flag.Int("max-conversation-turns", 10, "ceiling on customer↔agent exchanges per multi-turn task")
 	stopToken := flag.String("stop-token", "###STOP###", "substring the customer can emit to end the dialog cleanly")
@@ -78,25 +81,51 @@ func main() {
 
 	var ds *taubench.Dataset
 	var tools map[string]taubench.Tool
+	// Pick the tool registry first; upstream-tasks mode still needs
+	// it for shadow execution. Tool selection follows --domain even
+	// when --upstream-tasks is set so the operator can run the
+	// official retail JSON against retail tools (and not silently
+	// expose airline tools too).
 	switch *domain {
 	case "retail":
-		ds = taubench.NewRetailMiniDataset()
 		tools = taubench.NewRetailTools()
 	case "airline":
-		ds = taubench.NewAirlineMiniDataset()
 		tools = taubench.NewAirlineTools()
 	case "all":
-		// Combine both mini packs into a single run. Tools are
-		// disjoint by design (retail vs airline) so a flat union is
-		// safe; tasks carry Domain so the per-domain breakdown in
-		// the report still splits cleanly.
-		ds = taubench.MergeDatasets("retail+airline",
-			taubench.NewRetailMiniDataset(),
-			taubench.NewAirlineMiniDataset(),
-		)
 		tools = mergeTools(taubench.NewRetailTools(), taubench.NewAirlineTools())
 	default:
 		log.Fatalf("--domain: unknown domain %q (want retail | airline | all)", *domain)
+	}
+	if *upstreamTasks != "" {
+		// Upstream-JSON path: shadow-run the gold actions to produce
+		// each task's ExpectedFinalState and pin Outputs onto
+		// ExpectedTextFragments. Initial state JSON is mandatory in
+		// this mode because the upstream fixtures separate tasks
+		// from the DB.
+		if *upstreamState == "" {
+			log.Fatal("--upstream-initial-state is required when --upstream-tasks is set")
+		}
+		initState, err := taubench.LoadInitialState(*upstreamState)
+		if err != nil {
+			log.Fatalf("load initial state: %v", err)
+		}
+		tasks, err := taubench.LoadUpstreamTasks(*upstreamTasks, initState, tools, *domain)
+		if err != nil {
+			log.Fatalf("load upstream tasks: %v", err)
+		}
+		ds = &taubench.Dataset{Name: filepath.Base(*upstreamTasks), Tasks: tasks}
+	} else {
+		switch *domain {
+		case "retail":
+			ds = taubench.NewRetailMiniDataset()
+		case "airline":
+			ds = taubench.NewAirlineMiniDataset()
+		case "all":
+			ds = taubench.MergeDatasets("retail+airline",
+				taubench.NewRetailMiniDataset(),
+				taubench.NewAirlineMiniDataset(),
+			)
+		}
 	}
 
 	opts := taubench.Options{

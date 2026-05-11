@@ -134,6 +134,26 @@ type ExpectedOutcome struct {
 	// where the mutation is internally undetectable from the State
 	// alone (e.g. "send confirmation email" with no email log).
 	RequiredTools []string
+
+	// ExpectedFinalState, when non-nil, requires the post-run State
+	// to deep-equal this snapshot. Populated by upstream loaders
+	// (LoadUpstreamTasks) where the canonical success criterion is
+	// "the database after the agent matches the database after
+	// running gold actions". When both StateChecks and
+	// ExpectedFinalState are set, BOTH must pass — the granular
+	// checks give a better failure reason for the most common
+	// regression points, and the snapshot guarantees we did not
+	// miss any side effect the gold trace produces.
+	ExpectedFinalState State
+
+	// ExpectedTextFragments, when non-empty, requires every fragment
+	// to appear (case-insensitive substring) somewhere in the agent's
+	// final natural-language reply. Mirrors the upstream "outputs"
+	// field of τ-bench tasks — useful when the goal includes a
+	// confirmation number the agent must echo back verbatim. Pass
+	// scoring still runs if the reply is empty (e.g. multi-turn
+	// task where the customer terminated first).
+	ExpectedTextFragments []string
 }
 
 // Task is one τ-bench scenario. Exactly one of Instruction or
@@ -210,15 +230,16 @@ func MergeDatasets(name string, datasets ...*Dataset) *Dataset {
 
 // TaskResult is one row in the report's Tasks slice.
 type TaskResult struct {
-	ID        string   `json:"id"`
-	Domain    string   `json:"domain"`
-	Mode      string   `json:"mode"`                 // "single-shot" or "multi-turn"
-	Success   bool     `json:"success"`
-	Reason    string   `json:"reason,omitempty"`     // why failed (state mismatch / max turns / etc.)
-	AgentTurns    int      `json:"agent_turns"`           // agent.Generate calls consumed
+	ID            string   `json:"id"`
+	Domain        string   `json:"domain"`
+	Mode          string   `json:"mode"`                     // "single-shot" or "multi-turn"
+	Success       bool     `json:"success"`
+	Reason        string   `json:"reason,omitempty"`         // why failed (state mismatch / max turns / etc.)
+	AgentTurns    int      `json:"agent_turns"`              // agent.Generate calls consumed
 	CustomerTurns int      `json:"customer_turns,omitempty"` // customer.Generate calls consumed (multi-turn only)
-	ToolCalls     []string `json:"tool_calls,omitempty"`  // names called, in order
-	Transcript    string   `json:"transcript,omitempty"`  // human-readable log (debug only)
+	ToolCalls     []string `json:"tool_calls,omitempty"`     // names called, in order
+	FinalReply    string   `json:"final_reply,omitempty"`    // the agent's last natural-language utterance (for ExpectedTextFragments scoring + debugging)
+	Transcript    string   `json:"transcript,omitempty"`     // human-readable log (debug only)
 }
 
 // DomainReport is the per-domain headline number.
@@ -578,6 +599,20 @@ func runTask(ctx context.Context, t Task, opts Options) TaskResult {
 		r.Transcript = transcript.String()
 		return r
 	}
+	if mismatch, ok := checkExpectedFinalState(t.Expected.ExpectedFinalState, state); !ok {
+		if r.Reason == "" {
+			r.Reason = "expected-state mismatch: " + mismatch
+		}
+		r.Transcript = transcript.String()
+		return r
+	}
+	if mismatch, ok := checkTextFragments(t.Expected.ExpectedTextFragments, r.FinalReply); !ok {
+		if r.Reason == "" {
+			r.Reason = mismatch
+		}
+		r.Transcript = transcript.String()
+		return r
+	}
 	if r.Reason != "" {
 		// Loop bailed out but scoring would have passed; preserve
 		// the loop's reason because the agent technically did not
@@ -637,10 +672,11 @@ func runSingleShot(
 		fmt.Fprintf(transcript, "USER: %s\n", t.Instruction)
 	}
 
-	_, reason := pumpAgent(ctx, opts, available, defs, state, &msgs, r, transcript, opts.MaxAgentTurns)
+	text, reason := pumpAgent(ctx, opts, available, defs, state, &msgs, r, transcript, opts.MaxAgentTurns)
 	if reason != "" {
 		r.Reason = reason
 	}
+	r.FinalReply = text
 }
 
 // runDialog drives the multi-turn path. Two parallel message lists
@@ -711,6 +747,13 @@ func runDialog(
 		if reason != "" {
 			r.Reason = reason
 			return
+		}
+		// Track the most-recent agent text so the post-run scorer
+		// can apply ExpectedTextFragments (the customer's last
+		// follow-up does NOT mutate the world, so the LAST agent
+		// reply is the canonical "final answer").
+		if strings.TrimSpace(agentText) != "" {
+			r.FinalReply = agentText
 		}
 		if strings.TrimSpace(agentText) == "" {
 			// Agent kept tool-calling but never produced text. We
@@ -881,6 +924,91 @@ func checkStateChecks(checks []StateCheck, state State) (mismatch string, ok boo
 		}
 		if fmt.Sprint(got) != fmt.Sprint(c.Equals) {
 			return fmt.Sprintf("path %q = %v, want %v", c.Path, got, c.Equals), false
+		}
+	}
+	return "", true
+}
+
+// checkExpectedFinalState compares the post-run State to the snapshot
+// the gold action trace would have produced. Returns the first
+// differing dot-path so the failure reason stays actionable rather
+// than dumping the whole tree.
+func checkExpectedFinalState(want State, got State) (string, bool) {
+	if want == nil {
+		return "", true
+	}
+	diff := firstStateDiff("", want, got)
+	if diff != "" {
+		return diff, false
+	}
+	// Also catch keys present in `got` that the gold trace did NOT
+	// touch — those signal an over-eager agent (e.g. cancelled an
+	// extra order) and we want to fail loudly rather than passing on
+	// a superset.
+	if diff := firstStateDiff("", got, want); diff != "" {
+		return "agent mutated something the gold trace did not: " + diff, false
+	}
+	return "", true
+}
+
+func firstStateDiff(prefix string, want, got any) string {
+	switch w := want.(type) {
+	case map[string]any:
+		g, ok := got.(map[string]any)
+		if !ok {
+			return fmt.Sprintf("path %q: type mismatch (want map, got %T)", prefix, got)
+		}
+		// Iterate `want`'s keys; "extra keys in got" is checked by
+		// the second pass with arguments swapped at the call site.
+		for k, wv := range w {
+			p := joinPath(prefix, k)
+			gv, has := g[k]
+			if !has {
+				return fmt.Sprintf("path %q missing (want %v)", p, wv)
+			}
+			if msg := firstStateDiff(p, wv, gv); msg != "" {
+				return msg
+			}
+		}
+	case []any:
+		g, ok := got.([]any)
+		if !ok || len(w) != len(g) {
+			return fmt.Sprintf("path %q: slice length / type mismatch", prefix)
+		}
+		for i := range w {
+			if msg := firstStateDiff(fmt.Sprintf("%s[%d]", prefix, i), w[i], g[i]); msg != "" {
+				return msg
+			}
+		}
+	default:
+		// Scalar leaves are compared via fmt.Sprint to dodge
+		// JSON-vs-Go number-type mismatches (float64 vs int) the
+		// same way StateCheck does.
+		if fmt.Sprint(want) != fmt.Sprint(got) {
+			return fmt.Sprintf("path %q = %v, want %v", prefix, got, want)
+		}
+	}
+	return ""
+}
+
+func joinPath(prefix, key string) string {
+	if prefix == "" {
+		return key
+	}
+	return prefix + "." + key
+}
+
+// checkTextFragments ensures every required substring appears in the
+// agent's final reply (case-insensitive). Empty reply with non-empty
+// requirements counts as a failure (the agent never said anything).
+func checkTextFragments(fragments []string, reply string) (string, bool) {
+	if len(fragments) == 0 {
+		return "", true
+	}
+	lower := strings.ToLower(reply)
+	for _, f := range fragments {
+		if !strings.Contains(lower, strings.ToLower(f)) {
+			return fmt.Sprintf("agent reply missing expected fragment %q", f), false
 		}
 	}
 	return "", true

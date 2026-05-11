@@ -55,6 +55,20 @@ with its own tag prefix (e.g. `sdk/vX.Y.Z`, `vessel/vX.Y.Z`,
   pre-flight disk check, log tee, and a 30-min log-idle watchdog. The
   Feishu custom-bot webhook backend is deliberately not supported — at
   evaluation timescales it floods the destination chat.
+- `eval/taubench`: upstream τ-bench JSON loader — `LoadUpstreamTasks()`
+  reads the official task JSON (`tau_bench/envs/<domain>/tasks.json`)
+  alongside the paired initial DB state, **shadow-executes** each
+  task's gold action list against a clone of the initial state, and
+  pins the resulting snapshot as `ExpectedFinalState`. Scoring then
+  requires the agent's post-run State to deep-equal that snapshot
+  AND every fragment from the upstream `outputs` array to appear in
+  the agent's final reply (case-insensitive substring match,
+  configurable via `ExpectedTextFragments`). Unknown tool names in
+  the gold trace abort the loader with the offending action index —
+  no silent skipping. CLI grows `--upstream-tasks` and
+  `--upstream-initial-state` flags. The schema is documented inline
+  at `upstream.go::UpstreamTask`; upstream column-name shifts call
+  for a loader bump rather than mutating the on-disk JSON.
 - `eval/taubench`: airline domain — adds `NewAirlineTools()` (7 tools:
   `get_user`, `get_reservation`, `list_user_reservations`,
   `cancel_reservation`, `update_baggage`, `search_flight`,

@@ -84,12 +84,59 @@ character and tests the agent honestly; a weak customer can leak the
 answer or give up early, which inflates or deflates the pass rate
 unpredictably. Pick a tier comparable to the agent under test.
 
+## Upstream τ-bench task JSON
+
+The bundled `*-mini` datasets are hand-curated regression fixtures.
+For numbers comparable to the published τ-bench leaderboard, load the
+official task JSON (≈115 retail + ≈50 airline) directly:
+
+```bash
+# 1. Vendor the upstream fixtures (sierra-research/tau-bench) somewhere local.
+git clone https://github.com/sierra-research/tau-bench /tmp/tau-bench
+
+# 2. Point the CLI at the JSON pair. --domain selects the tool registry;
+#    --upstream-tasks + --upstream-initial-state takes over from the
+#    bundled mini dataset.
+GOWORK=off go run ./taubench/cmd/eval \
+    --agent-llm              qwen:qwen-max \
+    --customer-llm           azure \
+    --domain                 retail \
+    --upstream-tasks         /tmp/tau-bench/tau_bench/envs/retail/tasks.json \
+    --upstream-initial-state /tmp/tau-bench/tau_bench/envs/retail/data.json \
+    --out                    /tmp/taubench-retail-full.json
+```
+
+Scoring: for every upstream task we **shadow-execute** the `actions`
+list (the gold trace) against a clone of the initial state and pin
+the resulting State as the task's `ExpectedFinalState`. The agent
+under test passes when its post-run State deep-equals that snapshot
+AND every fragment from the upstream `outputs` array appears in its
+final reply (case-insensitive substring match).
+
+If the upstream JSON references a tool name that isn't in our
+registry, `LoadUpstreamTasks` fails LOUDLY with the offending action
+index — fix the registry or fix the JSON, never silently skip.
+
+### Schema assumptions
+
+The loader currently expects the schema documented inline at
+`upstream.go::UpstreamTask`. Upstream `tau-bench` has shifted column
+names across revisions; when porting a new commit, audit `UpstreamTask`
+against `tau_bench/types.py` and bump the loader rather than mutating
+the on-disk JSON.
+
 ## Roadmap
 
-- Converter for the upstream τ-bench task JSON so the official
-  retail (≈115) and airline (≈50) sets can be run unmodified, with
-  "shadow-execution of gold actions" scoring (matches published
-  τ-bench numbers).
+- LLM-as-customer multi-turn for upstream tasks: today
+  `LoadUpstreamTasks` lifts `instruction` onto `Task.Instruction`
+  (single-shot). The upstream "user persona" is roughly equivalent
+  to our `CustomerScenario` — a later commit can choose the form
+  per-task or behind a flag.
+- Confirmation-number extraction: the upstream `outputs` array
+  occasionally encodes a "score = LLM judgment of agent reply"
+  rubric; ours uses strict substring match for portability. A
+  judge-LLM mode could be added when the heuristic produces too many
+  false negatives.
 
 ## Quick start
 
