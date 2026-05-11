@@ -82,7 +82,11 @@ func pushGoValue(L *lua.LState, v any) lua.LValue {
 		}
 		t := L.NewTable()
 		L.SetField(t, "type", lua.LString(x.Type))
+		L.SetField(t, "kind", lua.LString(x.Kind))
 		L.SetField(t, "message", lua.LString(x.Message))
+		if x.Detail != nil {
+			L.SetField(t, "detail", pushGoValue(L, x.Detail))
+		}
 		return t
 	}
 

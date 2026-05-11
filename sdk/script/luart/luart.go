@@ -192,13 +192,22 @@ func (r *Runtime) Exec(ctx context.Context, name, source string, env *script.Env
 	}
 
 	var sig *script.Signal
+	// signal.interrupt and signal.error accept either:
+	//   - a bare string (back-compat): used as Message; Kind stays empty
+	//     (engine.CauseCustom / errdefs.Internal under SignalToError).
+	//   - a table { kind, message, detail }: Kind classifies the signal
+	//     per script.ErrorKind (errors) or engine.Cause (interrupts).
+	//     Unknown Kind values degrade safely host-side rather than
+	//     aborting the script.
 	setGlobal("signal", pushGoValue(L, map[string]any{
-		"interrupt": func(message string) {
-			sig = &script.Signal{Type: "interrupt", Message: message}
+		"interrupt": func(arg any) {
+			kind, msg, detail := parseSignalArg(arg)
+			sig = &script.Signal{Type: "interrupt", Kind: kind, Message: msg, Detail: detail}
 			L.RaiseError(signalRaiseMarker)
 		},
-		"error": func(message string) {
-			sig = &script.Signal{Type: "error", Message: message}
+		"error": func(arg any) {
+			kind, msg, detail := parseSignalArg(arg)
+			sig = &script.Signal{Type: "error", Kind: kind, Message: msg, Detail: detail}
 			L.RaiseError(signalRaiseMarker)
 		},
 		"done": func() {
@@ -226,6 +235,33 @@ func (r *Runtime) Exec(ctx context.Context, name, source string, env *script.Env
 	}
 
 	return nil, nil
+}
+
+// parseSignalArg decodes the polymorphic argument to signal.interrupt
+// / signal.error. Strings populate Message only; tables may supply
+// kind / message / detail keys. See jsrt.parseSignalArg for the JS
+// twin — keeping the two implementations textually parallel is
+// deliberate so a behavioural drift between runtimes is easy to spot.
+func parseSignalArg(arg any) (kind, message string, detail map[string]any) {
+	switch v := arg.(type) {
+	case nil:
+		return "", "", nil
+	case string:
+		return "", v, nil
+	case map[string]any:
+		if k, ok := v["kind"].(string); ok {
+			kind = k
+		}
+		if m, ok := v["message"].(string); ok {
+			message = m
+		}
+		if d, ok := v["detail"].(map[string]any); ok {
+			detail = d
+		}
+		return kind, message, detail
+	default:
+		return "", fmt.Sprintf("%v", v), nil
+	}
 }
 
 func wrapChunk(source string) string {

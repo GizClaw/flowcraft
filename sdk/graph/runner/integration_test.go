@@ -221,6 +221,83 @@ func TestAgentRun_RunIDPropagates(t *testing.T) {
 	}
 }
 
+// channelMessagesNode is a minimal graph.Node that exercises the
+// v0.3 messages-only-on-channel contract end-to-end through
+// runner.Runner. It declares a Required PortTypeMessages output port
+// (just like llmnode), satisfies it solely via board.SetChannel (no
+// SetVar), and otherwise behaves like echoNode. The combination is
+// exactly the path issue #87 broke: executor.runNode invokes
+// graph.ValidateOutputs against a PortDeclarable node whose required
+// messages output lives on a channel, not a var.
+//
+// Defining the type here (rather than depending on llmnode) keeps the
+// regression structural — any future change to ValidateOutputs is
+// caught regardless of whether llmnode happens to be in the binary.
+type channelMessagesNode struct{ id string }
+
+func (n channelMessagesNode) ID() string   { return n.id }
+func (n channelMessagesNode) Type() string { return "chan-msg" }
+func (n channelMessagesNode) InputPorts() []graph.Port {
+	return []graph.Port{
+		{Name: graph.MainChannel, Type: graph.PortTypeMessages, Required: true},
+	}
+}
+func (n channelMessagesNode) OutputPorts() []graph.Port {
+	return []graph.Port{
+		{Name: graph.MainChannel, Type: graph.PortTypeMessages, Required: true},
+	}
+}
+func (n channelMessagesNode) ExecuteBoard(_ graph.ExecutionContext, b *graph.Board) error {
+	main := b.Channel(engine.MainChannel)
+	if len(main) == 0 {
+		return nil
+	}
+	last := main[len(main)-1]
+	reply := model.NewTextMessage(model.RoleAssistant, "echo: "+last.Content())
+	b.AppendChannelMessage(engine.MainChannel, reply)
+	return nil
+}
+
+// TestAgentRun_PortDeclarable_MessagesChannelOutput regression-guards
+// issue #87. Before the fix (sdk@v0.3.0), driving any PortDeclarable
+// node whose required PortTypeMessages output is written via
+// board.SetChannel — the exact shape llmnode adopted in v0.3 — through
+// runner.Runner produced Result.Status="failed" with
+// Result.Err = "missing required output port ... from node", because
+// graph.ValidateOutputs only consulted board vars. The existing
+// echoNode coverage in this file did not implement PortDeclarable, so
+// this code path had no e2e test.
+func TestAgentRun_PortDeclarable_MessagesChannelOutput(t *testing.T) {
+	factory := node.NewFactory()
+	factory.RegisterBuilder("chan-msg", func(def graph.NodeDefinition) (graph.Node, error) {
+		return channelMessagesNode{id: def.ID}, nil
+	})
+	def := &graph.GraphDefinition{
+		Name:  "chan-msg",
+		Entry: "n",
+		Nodes: []graph.NodeDefinition{{ID: "n", Type: "chan-msg"}},
+		Edges: []graph.EdgeDefinition{{From: "n", To: graph.END}},
+	}
+	r, err := runner.New(def, factory)
+	if err != nil {
+		t.Fatalf("runner.New: %v", err)
+	}
+
+	res, err := agent.Run(context.Background(),
+		agent.Agent{ID: "chan-msg-agent"}, r,
+		agent.Request{Message: model.NewTextMessage(model.RoleUser, "hello")},
+	)
+	if err != nil {
+		t.Fatalf("agent.Run: %v", err)
+	}
+	if res.Status != agent.StatusCompleted {
+		t.Fatalf("Status = %q (Err=%v), want completed — likely a regression of issue #87 (graph.ValidateOutputs not channel-aware for PortTypeMessages)", res.Status, res.Err)
+	}
+	if got := res.Text(); got != "echo: hello" {
+		t.Fatalf("Text = %q, want %q", got, "echo: hello")
+	}
+}
+
 // interruptObservingNode is a tiny graph.Node that does the same
 // "drain the host interrupt channel before doing any work" dance
 // LLMNode performs in production. Defining it here keeps the

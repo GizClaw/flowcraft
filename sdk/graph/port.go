@@ -71,13 +71,24 @@ func ValidateInputsWithConfig(b *Board, node PortDeclarable, config map[string]a
 }
 
 // ValidateOutputs checks that all required output ports have been written to the Board.
+//
+// Symmetric with ValidateInputsWithConfig: PortTypeMessages outputs may be
+// satisfied either by a board variable or by a non-empty channel of the
+// same name. Without this fallback, nodes that follow the v0.3 channels-
+// only messages contract (e.g. llmnode.writeResults' board.SetChannel)
+// would fail validation despite writing the data the port describes.
 func ValidateOutputs(b *Board, node PortDeclarable) error {
 	for _, p := range node.OutputPorts() {
-		if p.Required {
-			if _, ok := b.GetVar(p.Name); !ok {
-				return errdefs.Validationf("missing required output port %q from node", p.Name)
-			}
+		if !p.Required {
+			continue
 		}
+		if _, ok := b.GetVar(p.Name); ok {
+			continue
+		}
+		if p.Type == PortTypeMessages && len(b.Channel(p.Name)) > 0 {
+			continue
+		}
+		return errdefs.Validationf("missing required output port %q from node", p.Name)
 	}
 	return nil
 }

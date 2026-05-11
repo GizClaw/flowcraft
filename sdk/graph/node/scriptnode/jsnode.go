@@ -3,12 +3,16 @@ package scriptnode
 import (
 	"fmt"
 
-	"github.com/GizClaw/flowcraft/sdk/engine"
+	"github.com/GizClaw/flowcraft/sdk/agent"
 	"github.com/GizClaw/flowcraft/sdk/graph"
 	"github.com/GizClaw/flowcraft/sdk/graph/node"
 	"github.com/GizClaw/flowcraft/sdk/script"
 	"github.com/GizClaw/flowcraft/sdk/script/bindings"
 )
+
+// (intentionally no direct dependency on engine / errdefs here:
+// script.SignalToError owns the classification mapping so the
+// translation lives in one place.)
 
 // ScriptNode is a script-based graph node that delegates execution to a
 // language-agnostic script.Runtime.
@@ -51,10 +55,30 @@ func (n *ScriptNode) SetConfig(c map[string]any) { n.config = c }
 // ExecuteBoard runs the script with board, expr, host, stream, and
 // runtime bindings.
 func (n *ScriptNode) ExecuteBoard(ctx graph.ExecutionContext, board *graph.Board) error {
+	// Bridge wiring rationale:
+	//
+	//   - host: engine.Host control plane (publish / askUser / ...) plus
+	//           the per-node stream channel via host.emit, fed by the
+	//           executor-installed ctx.Publisher. Carries no identity
+	//           accessors.
+	//   - run:  agent.RunInfo identification bundle (per-run, immutable).
+	//           Under direct graph execution only RunID is known, so
+	//           the agent-layer fields (task / agent / context) are
+	//           empty per bridge contract.
+	//   - node: graph-layer per-step identity (id, type). Lives in
+	//           scriptnode rather than in bindings because "node" is a
+	//           graph concept that bindings deliberately does not know
+	//           about (see sdk/script/bindings/doc.go).
+	//
+	// The node id passed to NewHostBridge is still used internally as
+	// the askUser default source and for error annotations, but is no
+	// longer surfaced as a script-readable accessor (use node.id()).
 	allFns := []bindings.BindingFunc{
 		bindings.NewBoardBridge(board),
 		bindings.NewExprBridge(),
-		bindings.NewHostBridge(ctx.Host, n.id),
+		bindings.NewHostBridge(ctx.Host, n.id, ctx.Publisher),
+		bindings.NewRunInfoBridge(agent.RunInfo{RunID: ctx.RunID}),
+		newNodeBridge(n.id, n.nodeType),
 	}
 	allFns = append(allFns, n.extraBindFn...)
 
@@ -75,21 +99,18 @@ func (n *ScriptNode) ExecuteBoard(ctx graph.ExecutionContext, board *graph.Board
 		return fmt.Errorf("script node %s execution failed: %w", n.id, err)
 	}
 
-	if sig != nil {
-		switch sig.Type {
-		case "error":
-			return fmt.Errorf("script node %s: %s", n.id, sig.Message)
-		case "interrupt":
-			// signal.interrupt(msg) is the script's "I want to pause,
-			// the agent will resume me later". We surface it as a
-			// CauseCustom interrupt so the agent layer can both detect
-			// the pause (via errdefs.IsInterrupted) and read the
-			// script-supplied detail.
-			return engine.Interrupted(engine.Interrupt{
-				Cause:  engine.CauseCustom,
-				Detail: sig.Message,
-			})
-		}
+	// script.SignalToError centralises the {interrupt, error, done}
+	// → {engine.Interrupted, errdefs.<Kind>, nil} mapping. Scripts
+	// classify failures via signal.error({ kind, message }) and pauses
+	// via signal.interrupt({ cause, detail }); unknown kinds degrade
+	// inside the helper rather than here so every host (scriptnode,
+	// future scriptengine, …) interprets signals identically.
+	//
+	// %w-wrap preserves the errdefs / engine.InterruptedError
+	// classification so callers can still use errdefs.Is… and
+	// errors.As without losing the "script node X" provenance.
+	if mapped := script.SignalToError(sig); mapped != nil {
+		return fmt.Errorf("script node %s: %w", n.id, mapped)
 	}
 
 	return nil

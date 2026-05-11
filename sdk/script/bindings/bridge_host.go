@@ -11,20 +11,63 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/model"
 )
 
+// StreamEmitter is the structural contract NewHostBridge accepts for
+// per-node delta emission, exposed to scripts via host.emit. The
+// executor's per-node publisher (built by executor.newNodePublisher)
+// satisfies it; the bridge takes the smaller shape so the bindings
+// package does not depend on sdk/graph.
+//
+// The Emit signature mirrors graph.StreamPublisher exactly so callers
+// can hand the bridge their existing publisher without an adapter.
+type StreamEmitter interface {
+	Emit(eventType string, payload any)
+}
+
 // NewHostBridge exposes the engine.Host control plane to scripts as the
 // global "host". It is the script-side mirror of the small interfaces
 // composed in engine.Host (Publisher, Interrupter, UserPrompter,
-// Checkpointer, UsageReporter).
+// Checkpointer, UsageReporter), with one extra method (host.emit)
+// surfacing the per-node stream publisher the executor pre-baked with
+// the right run / node identity.
 //
 // Script-facing API (every method returns nil / "" on a NoopHost so
 // scripts can call it unconditionally):
 //
 //	host.publish(subject, payload)         -> nil | error
+//	host.emit(type, payload)               -> void   (per-node stream
+//	                                          delta; subject is composed
+//	                                          by the executor from the
+//	                                          runID and nodeID it
+//	                                          installed at wire time)
 //	host.checkInterrupt()                  -> {cause, detail} | null
 //	host.askUser({ parts, schema, source, metadata })
 //	                                       -> { parts, metadata }
 //	host.reportUsage({ input, output, total })
 //	                                       -> nil
+//
+// Identity (which run / which node) is intentionally NOT exposed on
+// host: it lives on the canonical NewRunInfoBridge "run" global
+// (run.get_run_id() / run.get_node_id() / ...). There is one source of
+// truth for "where am I", separate from the host control plane.
+//
+// host.publish vs host.emit:
+//
+//   - host.publish is the low-level escape hatch. Scripts that need a
+//     specific Subject (kanban callbacks, custom analytics subjects,
+//     cross-run signalling) construct the subject themselves and pass
+//     a full envelope payload.
+//   - host.emit is the high-level node-stream channel. The executor
+//     installed a per-node publisher that already knows the runID and
+//     nodeID, so scripts only supply (type, payload) and the envelope
+//     fans out under the canonical
+//     engine.run.<runID>.stream.<nodeID>.delta subject. This is the
+//     same channel Go-side nodes write to via ctx.Publisher.Emit.
+//
+// Payload conventions for host.emit mirror the executor's
+// normalisePayload behaviour: passing an object literal merges in the
+// {type} field so a {content: "..."} payload for type "token" decodes
+// cleanly into engine.StreamDeltaPayload; passing a bare value is wrapped
+// as {type, payload: value} for legacy consumers.
 //
 // Checkpointing is intentionally NOT exposed: scripts have no access to
 // the executing engine's ExecID / Board snapshot / Step marker, so a
@@ -34,7 +77,13 @@ import (
 // than a generic bag.
 //
 // Source labels diagnostic strings (errors carry it, future tracing may
-// too); it mirrors the bridge_llm.LLMBridgeOptions.Source convention.
+// too) and supplies the default UserPrompt.Source for askUser when the
+// script does not override it. It mirrors the
+// bridge_llm.LLMBridgeOptions.Source convention. scriptnode passes the
+// node id as source so an askUser interruption is naturally attributed
+// to the calling node; scripts that want to read the node id should
+// use run.get_node_id() from NewRunInfoBridge, not infer it from this
+// label.
 //
 // Interrupt latching: the first interrupt the bridge observes is cached
 // inside the closure so subsequent host.checkInterrupt() calls keep
@@ -43,10 +92,12 @@ import (
 // "have I been told to stop?" — instead of forcing them to either save
 // the value at first sight or risk losing it on a re-poll.
 //
-// The bridge does NOT own the engine.Host; the caller (typically
-// scriptnode.ScriptNode) feeds it whatever ctx.Host the executor
-// installed and reuses the same Host instance for all bindings.
-func NewHostBridge(host engine.Host, source string) BindingFunc {
+// The bridge does NOT own the engine.Host nor the StreamEmitter; the
+// caller (typically scriptnode.ScriptNode) feeds it whatever
+// ctx.Host / ctx.Publisher the executor installed and reuses those
+// instances for all bindings. When emitter is nil host.emit silently
+// drops the call, matching graph.NoopPublisher on the Go side.
+func NewHostBridge(host engine.Host, source string, emitter StreamEmitter) BindingFunc {
 	return func(callCtx context.Context) (string, any) {
 		if host == nil {
 			host = engine.NoopHost{}
@@ -83,6 +134,13 @@ func NewHostBridge(host engine.Host, source string) BindingFunc {
 		}
 
 		return "host", map[string]any{
+			"emit": func(eventType string, payload any) {
+				if emitter == nil {
+					return
+				}
+				emitter.Emit(eventType, payload)
+			},
+
 			"publish": func(subject string, payload any) error {
 				env, err := event.NewEnvelope(callCtx, event.Subject(subject), payload)
 				if err != nil {
