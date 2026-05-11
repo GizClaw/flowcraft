@@ -168,9 +168,66 @@ func TestFeishuApp_SubsequentEventsPatch(t *testing.T) {
 	if _, ok := mock.lastPatchBody["sequence"]; !ok {
 		t.Errorf("patch body must include sequence for ordering: %v", mock.lastPatchBody)
 	}
-	for _, want := range []string{"begin", "25%", "complete", "qa.judge=0.612", "✅"} {
+	// The final patch (after `done`) MUST contain the done title +
+	// body and the start title (which lives in History). It MUST NOT
+	// contain the qa_progress title — _progress events are transient
+	// and are dropped from History once superseded by the next event,
+	// so the card doesn't bloat over a 50 h run with dozens of
+	// progress milestones.
+	for _, want := range []string{"begin", "complete", "qa.judge=0.612", "✅"} {
 		if !strings.Contains(elementStr, want) {
 			t.Errorf("patched element should contain %q\n--- element ---\n%s", want, elementStr)
+		}
+	}
+	if strings.Contains(elementStr, "25%") {
+		t.Errorf("patched element MUST NOT contain superseded qa_progress title %q\n--- element ---\n%s", "25%", elementStr)
+	}
+}
+
+// TestFeishuApp_ProgressEventsFilteredFromHistory pins the filter
+// rule end-to-end across every *_progress kind we know about:
+// ingest_progress (locomo/longmemeval), qa_progress (locomo /
+// longmemeval / simpleqa / beir / taubench), strategy_progress
+// (history), lane_progress (knowledge). All of them must be visible
+// in Latest while they're the most recent event, then dropped from
+// History the moment a non-progress event arrives.
+func TestFeishuApp_ProgressEventsFilteredFromHistory(t *testing.T) {
+	mock := &fakeFeishu{}
+	srv := httptest.NewServer(mock.handler(t))
+	defer srv.Close()
+
+	app := &FeishuApp{
+		AppID: "cli_test", AppSecret: "s", ChatID: "oc_test", Name: "smoke",
+		Base: srv.URL,
+		Now:  func() time.Time { return time.Date(2026, 5, 11, 13, 0, 0, 0, time.UTC) },
+	}
+	ctx := context.Background()
+	progressKinds := []string{"ingest_progress", "qa_progress", "strategy_progress", "lane_progress"}
+	if err := app.Notify(ctx, Event{Kind: "start", Title: "begin"}); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	for i, k := range progressKinds {
+		title := k + "-25%"
+		if err := app.Notify(ctx, Event{Kind: k, Title: title}); err != nil {
+			t.Fatalf("%d %s: %v", i, k, err)
+		}
+		// While this kind is Latest its title must be visible.
+		body, _ := mock.lastPatchBody["partial_element"].(string)
+		if !strings.Contains(body, title) {
+			t.Errorf("Latest must show current %s title %q; body=%s", k, title, body)
+		}
+	}
+	if err := app.Notify(ctx, Event{Kind: "done", Title: "complete"}); err != nil {
+		t.Fatalf("done: %v", err)
+	}
+	final, _ := mock.lastPatchBody["partial_element"].(string)
+	if !strings.Contains(final, "begin") || !strings.Contains(final, "complete") {
+		t.Errorf("final card must keep start (in History) + done (in Latest); body=%s", final)
+	}
+	for _, k := range progressKinds {
+		title := k + "-25%"
+		if strings.Contains(final, title) {
+			t.Errorf("%s title %q must be dropped from History once superseded; body=%s", k, title, final)
 		}
 	}
 }

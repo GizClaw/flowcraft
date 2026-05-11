@@ -337,14 +337,23 @@ func (f *FeishuApp) renderMarkdown() string {
 		var historyLines []string
 		for i := 0; i < len(f.events)-1; i++ {
 			e := f.events[i]
-			// ingest_progress milestones are transient: they give live
-			// visibility while ingest is running but are superseded by
-			// ingest_done. Keeping them in History bloats the card on
-			// long runs (4 progress lines + ingest_done all saying
-			// essentially the same thing), so we drop them once a newer
-			// event arrives. The current ingest_progress is still
-			// rendered in the Latest block.
-			if e.Kind == "ingest_progress" {
+			// *_progress milestones are transient: they give live
+			// visibility while a phase is running but are superseded
+			// by the matching *_done. Keeping them in History bloats
+			// the card on long runs (many progress lines + one done
+			// line all saying essentially the same thing), so we drop
+			// them once a newer event arrives. The current progress
+			// event is still rendered in the Latest block.
+			//
+			// Covered kinds: ingest_progress, qa_progress, and the
+			// history-suite per-strategy progress events
+			// (strategy_progress, lane_progress). Hard-coded on
+			// purpose: future eval suites that add their own *_progress
+			// kind opt in by extending this list, which forces the
+			// author to think about History-vs-Latest semantics.
+			switch e.Kind {
+			case "ingest_progress", "qa_progress",
+				"strategy_progress", "lane_progress":
 				continue
 			}
 			since := e.At.Sub(first.At).Truncate(time.Second)
