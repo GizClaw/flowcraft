@@ -55,6 +55,20 @@ with its own tag prefix (e.g. `sdk/vX.Y.Z`, `vessel/vX.Y.Z`,
   pre-flight disk check, log tee, and a 30-min log-idle watchdog. The
   Feishu custom-bot webhook backend is deliberately not supported — at
   evaluation timescales it floods the destination chat.
+- `eval/simpleqa`: new [SimpleQA](https://openai.com/index/introducing-simpleqa/)
+  suite (4 326 short-form factual questions, LLM-as-judge graded with
+  OpenAI's official rubric). Headline metric is *attempted accuracy*
+  (`CORRECT / (CORRECT + INCORRECT)`) which rewards calibration —
+  a model that abstains rather than hallucinates scores higher even
+  at lower raw accuracy. Accepts both the upstream CSV
+  (`simple_qa_test_set.csv`) and a converted JSONL form; the verdict
+  parser mirrors OpenAI's `\b(A|B|C)\b` regex so judge replies like
+  "Honestly I AM not sure" are NOT mis-bucketed as CORRECT on the
+  stray 'A'. Per-topic breakdown is on by default so per-category
+  regressions surface alongside the headline number. The current eval
+  is closed-book; a follow-up commit will add a knowledge-grounded
+  variant that wraps the answer LLM with `sdk/knowledge.Search` so
+  raw-model vs RAG-augmented calibration can be measured side by side.
 - `eval/beir`: new public-dataset retrieval suite that drives
   `sdk/knowledge` against any [BEIR](https://arxiv.org/abs/2104.08663)
   task (SciFact, NFCorpus, FiQA, …) and emits the metrics the BEIR
