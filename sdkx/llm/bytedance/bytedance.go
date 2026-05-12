@@ -1,5 +1,24 @@
 // Package bytedance provides the ByteDance Doubao LLM provider using
 // the Volcengine ArkRuntime Go SDK.
+//
+// # Prompt caching
+//
+// Doubao implements automatic prefix caching server-side. Callers
+// using the shared multi-segment system-prompt convention (multiple
+// llm.Message{Role:System} entries at the head of the request) get
+// the benefit transparently: convertMessages preserves each system
+// message as its own ChatCompletionMessage rather than joining them
+// into one string, keeping the byte-exact prefix stable across calls
+// whose stable segments are unchanged.
+//
+// Unlike sdkx/llm/openai and sdkx/llm/anthropic, the ArkRuntime SDK
+// does not expose a routing-hint field analogous to OpenAI's
+// `prompt_cache_key` or an explicit `cache_control` breakpoint, so
+// there is no per-request opt-in surface to wire. Routing locality
+// is governed entirely by Doubao's backend. The `User` field on
+// ChatCompletionRequest is reserved for caller-supplied end-user
+// identifiers (abuse monitoring) and is left alone to avoid
+// clobbering that semantics.
 package bytedance
 
 import (
@@ -158,7 +177,7 @@ func (c *LLM) Generate(ctx context.Context, messages []llm.Message, opts ...llm.
 		if ctx.Err() != nil {
 			return llm.Message{}, llm.TokenUsage{}, errdefs.Timeoutf("bytedance.generate: %s", dur.String())
 		}
-		return llm.Message{}, llm.TokenUsage{}, errdefs.ClassifyProviderError("bytedance", err)
+		return llm.Message{}, llm.TokenUsage{}, classifyAPIError(err)
 	}
 
 	if len(resp.Choices) == 0 || resp.Choices[0] == nil {
@@ -173,6 +192,12 @@ func (c *LLM) Generate(ctx context.Context, messages []llm.Message, opts ...llm.
 		InputTokens:  int64(resp.Usage.PromptTokens),
 		OutputTokens: int64(resp.Usage.CompletionTokens),
 		TotalTokens:  int64(resp.Usage.TotalTokens),
+		// Doubao prefix caching is transparent — when a prefix of
+		// the prompt has been seen recently the response reports
+		// usage.prompt_tokens_details.cached_tokens as the cached
+		// subset, billed roughly 1/10 of the standard input rate.
+		// Plumb it through so callers can compute hit-rate uniformly.
+		CachedInputTokens: int64(resp.Usage.PromptTokensDetails.CachedTokens),
 	}
 
 	span.SetAttributes(
@@ -202,7 +227,7 @@ func (c *LLM) GenerateStream(ctx context.Context, messages []llm.Message, opts .
 		span.SetStatus(codes.Error, err.Error())
 		span.End()
 		llm.RecordLLMMetrics(ctx, "bytedance", c.model, "error", 0, llm.TokenUsage{})
-		return nil, errdefs.ClassifyProviderError("bytedance", err)
+		return nil, classifyAPIError(err)
 	}
 	// Defensive: the ark SDK has not been observed returning a nil
 	// stream alongside a nil error, but the pointer-return convention

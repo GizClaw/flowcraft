@@ -21,28 +21,39 @@ import (
 type openaiStreamMessage struct {
 	baseCtx context.Context
 	span    trace.Span
-	model   string
-	start   time.Time
-	stream  *ssestream.Stream[oai.ChatCompletionChunk]
+	// provider carries the OTel/metrics tag through the streaming
+	// finish path so a qwen / deepseek / azure stream lands its
+	// success/error metric under the sub-provider name rather than
+	// the underlying "openai" SDK name.
+	provider string
+	model    string
+	start    time.Time
+	stream   *ssestream.Stream[oai.ChatCompletionChunk]
 
-	mu        sync.Mutex
-	usage     llm.Usage
-	content   strings.Builder
-	toolCalls map[int]llm.ToolCall
-	closeOnce sync.Once
-	spanEnded bool
+	mu    sync.Mutex
+	usage llm.Usage
+	// cachedInputTokens shadows usage so we can plumb the cached
+	// subset (which llm.Usage intentionally omits to stay minimal
+	// at the Provider layer) into the finish-path TokenUsage
+	// without changing the Usage() return shape.
+	cachedInputTokens int64
+	content           strings.Builder
+	toolCalls         map[int]llm.ToolCall
+	closeOnce         sync.Once
+	spanEnded         bool
 
 	cur llm.StreamChunk
 	err error
 }
 
-func newStreamMessage(ctx context.Context, span trace.Span, model string, stream *ssestream.Stream[oai.ChatCompletionChunk]) llm.StreamMessage {
+func newStreamMessage(ctx context.Context, span trace.Span, provider, model string, stream *ssestream.Stream[oai.ChatCompletionChunk]) llm.StreamMessage {
 	return &openaiStreamMessage{
-		baseCtx: ctx,
-		span:    span,
-		model:   model,
-		start:   time.Now(),
-		stream:  stream,
+		baseCtx:  ctx,
+		span:     span,
+		provider: provider,
+		model:    model,
+		start:    time.Now(),
+		stream:   stream,
 	}
 }
 
@@ -64,7 +75,7 @@ func (s *openaiStreamMessage) Next() bool {
 		if !s.stream.Next() {
 			err := s.stream.Err()
 			if err != nil {
-				err = errdefs.ClassifyProviderError("openai", err)
+				err = classifyAPIErrorWithProvider(s.provider, err)
 			}
 			s.mu.Lock()
 			s.err = err
@@ -184,6 +195,7 @@ func (s *openaiStreamMessage) updateUsage(chunk oai.ChatCompletionChunk) {
 	s.mu.Lock()
 	s.usage.InputTokens = chunk.Usage.PromptTokens
 	s.usage.OutputTokens = chunk.Usage.CompletionTokens
+	s.cachedInputTokens = chunk.Usage.PromptTokensDetails.CachedTokens
 	s.mu.Unlock()
 }
 
@@ -209,6 +221,7 @@ func (s *openaiStreamMessage) finish(err error) {
 	}
 	s.spanEnded = true
 	usage := s.usage
+	cached := s.cachedInputTokens
 	s.mu.Unlock()
 
 	dur := time.Since(s.start)
@@ -216,17 +229,18 @@ func (s *openaiStreamMessage) finish(err error) {
 	if err != nil {
 		s.span.RecordError(err)
 		s.span.SetStatus(codes.Error, err.Error())
-		llm.RecordLLMMetrics(s.baseCtx, "openai", s.model, "error", dur, llm.TokenUsage{})
+		llm.RecordLLMMetrics(s.baseCtx, s.provider, s.model, "error", dur, llm.TokenUsage{})
 	} else {
 		s.span.SetAttributes(
 			attribute.Int64(telemetry.AttrLLMInputTokens, usage.InputTokens),
 			attribute.Int64(telemetry.AttrLLMOutputTokens, usage.OutputTokens),
 		)
 		s.span.SetStatus(codes.Ok, "OK")
-		llm.RecordLLMMetrics(s.baseCtx, "openai", s.model, "success", dur, llm.TokenUsage{
-			InputTokens:  usage.InputTokens,
-			OutputTokens: usage.OutputTokens,
-			TotalTokens:  usage.InputTokens + usage.OutputTokens,
+		llm.RecordLLMMetrics(s.baseCtx, s.provider, s.model, "success", dur, llm.TokenUsage{
+			InputTokens:       usage.InputTokens,
+			CachedInputTokens: cached,
+			OutputTokens:      usage.OutputTokens,
+			TotalTokens:       usage.InputTokens + usage.OutputTokens,
 		})
 	}
 	s.span.End()

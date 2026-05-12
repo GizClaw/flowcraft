@@ -16,6 +16,24 @@ with its own tag prefix (e.g. `sdk/vX.Y.Z`, `vessel/vX.Y.Z`,
 
 #### sdk
 
+- `sdk/model`: `TokenUsage.CachedInputTokens` field for prompt-cache
+  observability. All three families of cache-aware providers expose
+  cached input tokens under different wire names —
+  OpenAI / Azure / DeepSeek / Qwen-flash report
+  `usage.prompt_tokens_details.cached_tokens`,
+  Anthropic / Minimax report `usage.cache_read_input_tokens`,
+  ByteDance Doubao reports
+  `usage.prompt_tokens_details.cached_tokens`. The new field lets
+  sdkx adapters normalise these into a single observable so callers
+  can compute a uniform `CachedInputTokens / InputTokens` hit-rate
+  without provider-specific branching. The field is additive,
+  `omitempty`-tagged (zero value vanishes from the wire format),
+  participates in `TokenUsage.Add` so cumulative reporters
+  aggregate cached counts the same way they aggregate input /
+  output tokens, and stays zero on providers (or model SKUs) that
+  do not surface a cache breakdown — wire-format back-compatible
+  with v0.3.4 readers. A follow-up sdkx release wires the three
+  cache-aware adapters to populate the field.
 - `sdk/engine`: capabilities / resume / revise lifecycle. New
   `engine/depname` package centralises Dependencies keys (LLMClient,
   ToolRegistry, ToolAllowedNames, …) so engine authors and host
@@ -122,9 +140,51 @@ compare/fetch/ingest`, `eval longmemeval convert`). Shell completion
   JSON loader with shadow-run scoring. NOT a PR gate (LLM-call-heavy;
   weekly/release-time use only).
 
+#### tests/conformance
+
+- `tests/conformance/llm/cached_tokens_test.go`: live double-call
+  prompt-cache hit-rate probe. Issues two back-to-back Generate
+  calls with a ≥ 22 KB (~4000-token) byte-identical system prefix
+  and asserts `CachedInputTokens > 0` on the second call for
+  providers where caching is contractually expected (anthropic /
+  minimax via adapter `cache_control`, bytedance Doubao
+  transparent prefix caching) and warns when implicit caching
+  providers (azure / deepseek / qwen) return zero. Validates the
+  full chain: sdkx-side `cache_control` / `prompt_cache_key`
+  injection → provider honours it → adapter populates
+  `TokenUsage.CachedInputTokens` correctly. Measured against live
+  providers from the repo `.env`: azure 96.6%, deepseek 98.0%,
+  minimax (anthropic-family) 99.5% — providing concrete evidence
+  that the prompt-cache optimisation work shipped over PR #109 and
+  the cached-tokens plumbing shipped over the sdkx v0.3.3 follow-up
+  is rewarded with the expected cheaper billing. Self-skips per
+  provider when its FLOWCRAFT_TEST_* env var is missing, matching
+  the existing conformance suite convention.
+
 ### Fixed
 
 #### sdkx
+
+- `sdkx/llm/{openai,anthropic,bytedance}`: status-code-aware error
+  classification. The generic `errdefs.ClassifyProvider` regex
+  (`\b(?:http|status)\s*(\d{3})\b`) misses the SDK error format used
+  by openai-go, anthropic-sdk-go, and volcengine arkruntime — all
+  three format their `Error.Error()` as `<METHOD> "<URL>": <code>
+  <status>` (or `"Error code: <code>"` for arkruntime), and the
+  `"https://"` URL prefix or the literal `"code:"` keyword defeat
+  the heuristic. Result: real 400 / 404 / 422 client errors fell
+  through to the `ProviderTransient` default → `NotAvailable`,
+  which the locomo runner's new retry-once would then quietly
+  retry instead of fail-fast. Per-provider `classifyAPIError` now
+  routes by `StatusCode` (401/403→Unauthorized, 402→Forbidden,
+  429→RateLimit, 400/405/422→Validation, 408/409/≥500→NotAvailable).
+  The openai variant additionally splits 404 by `error.code` body
+  field so Azure AI Foundry's bare-body "capacity blip" 404s stay
+  `NotAvailable` (transient, retryable) while structured
+  `DeploymentNotFound` 404s become `Validation` (fail-fast, no
+  retry storm on a wrong deployment name). `ollama` and the image
+  generators already drive `ClassifyHTTPStatus` / explicit
+  `switch resp.StatusCode` so they're unaffected.
 
 - `sdkx/llm/{openai,anthropic,bytedance,ollama,*/image}`: guard every
   chat-completion / image-generation entry point against `(nil, nil)`
@@ -144,6 +204,86 @@ compare/fetch/ingest`, `eval longmemeval convert`). Shell completion
   exactly) and a misbehaving `RoundTripper` for ollama.
 
 ### Changed
+
+#### sdkx
+
+- `sdkx/llm/{anthropic,openai,bytedance}`: automatic prompt-caching
+  optimisation across all three families, sharing a single caller
+  convention: emit multiple `llm.Message{Role:System}` entries to
+  declare independent system-prompt segments (stable / persona /
+  rules first, volatile / now / fresh-context last). Each provider
+  adapter applies its own best-fit strategy on top of that
+  convention:
+  - `anthropic`: convertMessages stops joining system messages —
+    each segment becomes its own `TextBlockParam`. The new
+    `cache.go` heuristic auto-places `cache_control:
+    {type: ephemeral}` breakpoints on long-enough segments (≥4096
+    chars) plus the last tool definition and the second-to-last
+    history message, sharing Anthropic's hard 4-breakpoint global
+    budget by priority (tools → history → system-latest → earlier
+    system). 5-min ephemeral TTL. Caller-facing API unchanged.
+  - `openai`: `buildParams` now auto-injects `prompt_cache_key`
+    (16-hex-char SHA-256 of canonicalised system + tools) so
+    requests with identical stable prefixes land on the same
+    backend node deterministically instead of round-robin —
+    flipping implicit prompt-cache hit-rate from "lottery" to
+    "deterministic hit when the prefix is identical". Message
+    history is excluded from the hash so multi-turn calls don't
+    rotate off the cached node. Canonical JSON serialisation
+    absorbs Go map iteration nondeterminism.
+  - `bytedance`: no code change (the ArkRuntime SDK exposes no
+    routing-hint field analogous to `prompt_cache_key` and no
+    explicit cache_control breakpoint surface). `convertMessages`
+    already preserved multi-segment system messages, so Doubao's
+    automatic prefix caching benefits from the shared convention
+    transparently. Package godoc updated to document the
+    contract.
+
+  End-to-end tests use `httptest` to capture the actual wire body
+  and assert the expected `cache_control` placements / non-empty
+  `prompt_cache_key` field for representative scenarios (long
+  stable + short volatile, history anchor on multi-turn, budget
+  trimming with 5 long segments, no-marker emission when nothing
+  qualifies, deterministic key under reordered map iteration).
+
+- `sdkx/llm/{anthropic,openai,bytedance}`: populate
+  `TokenUsage.CachedInputTokens` on every Generate / streaming
+  finish path so callers can read cache hit-rate uniformly across
+  providers. Anthropic / Minimax additionally normalise
+  Anthropic's three-bucket prompt-token wire format
+  (`input_tokens` + `cache_read_input_tokens` +
+  `cache_creation_input_tokens`) into a single gross
+  `InputTokens` (matching OpenAI's `prompt_tokens` semantics) so
+  `CachedInputTokens / InputTokens` is a provider-agnostic
+  hit-rate ratio. The three-bucket arithmetic is factored into
+  `normalizeAnthropicUsage` and pinned by a dedicated unit test so
+  a future refactor cannot silently under-count InputTokens for
+  Anthropic-family providers — that bug had hidden in the adapter
+  for the entire pre-cache history of the project. A follow-up
+  conformance suite under `tests/conformance/llm/` exercises this
+  end-to-end against live providers (double-call with ≥ 1024-token
+  stable prefix, asserts CachedInputTokens > 0 on the second call);
+  measured hit-rates 96–99% on azure / deepseek / minimax against
+  the live APIs.
+
+- `sdkx/llm/{openai,anthropic}`: configurable OTel / metrics provider
+  tag via new `LLM.WithProviderName(name)` + `LLM.Provider()`. Wrapping
+  adapters (`sdkx/llm/{azure,deepseek,qwen,minimax}`) now stamp their
+  own name on every span (`llm.<provider>.generate.<model>`),
+  attribute (`telemetry.AttrLLMProvider`), and metric label produced
+  by the upstream base provider. Previously, traffic from every
+  OpenAI-compatible sub-provider was silently aggregated under
+  `"openai"` in traces and dashboards (and MiniMax under
+  `"anthropic"`), because the base implementations hardcoded the
+  provider label deep in their hot path. Sub-providers had no way to
+  override it without re-implementing the whole `Generate` /
+  `GenerateStream` / streaming-finalize path. The same plumbing
+  routes through `classifyAPIError`'s fallback, so wrapped
+  network-shaped errors now surface under the right sub-provider
+  name. Direct callers of `openai.New` / `anthropic.New` are
+  unaffected (the historical "openai" / "anthropic" tags remain the
+  defaults). The image generators and `ollama` are already direct
+  providers and report their own names; not touched.
 
 #### eval
 
