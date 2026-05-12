@@ -121,6 +121,74 @@ func TestRunner_Execute_HostInjection(t *testing.T) {
 	}
 }
 
+// TestRunner_Execute_PropagatesRunDepsAndAttributes asserts that
+// engine.Run.Deps and engine.Run.Attributes flow from the runner
+// boundary all the way to ExecutionContext on the node side. This
+// closes contract-audit #2 ("engine.Run.Deps had zero readers") at
+// the Runner→executor seam: future regressions that drop the
+// propagation here would silently break every node that resolves
+// dependencies via engine.GetDep instead of builder closures.
+func TestRunner_Execute_PropagatesRunDepsAndAttributes(t *testing.T) {
+	type registryKey struct{}
+	deps := &engine.Dependencies{}
+	deps.Set(registryKey{}, "tool-registry-stub")
+	attrs := map[string]string{
+		"agent.id":   "researcher",
+		"task.id":    "task-9",
+		"context.id": "thread-3",
+	}
+
+	var (
+		gotDeps  *engine.Dependencies
+		gotAttrs map[string]string
+		gotVal   any
+		gotOK    bool
+	)
+	factory := node.NewFactory()
+	factory.RegisterBuilder("capture_runctx", func(def graph.NodeDefinition) (graph.Node, error) {
+		return testNodeFunc(def.ID, func(ctx graph.ExecutionContext, _ *graph.Board) error {
+			gotDeps = ctx.Deps
+			gotAttrs = ctx.Attributes
+			if ctx.Deps != nil {
+				gotVal, gotOK = ctx.Deps.Get(registryKey{})
+			}
+			return nil
+		}), nil
+	})
+
+	def := &graph.GraphDefinition{
+		Name:  "deps_attrs_propagation",
+		Entry: "cap",
+		Nodes: []graph.NodeDefinition{{ID: "cap", Type: "capture_runctx"}},
+		Edges: []graph.EdgeDefinition{{From: "cap", To: graph.END}},
+	}
+	r, err := runner.New(def, factory)
+	if err != nil {
+		t.Fatalf("runner.New: %v", err)
+	}
+
+	if _, err := r.Execute(context.Background(),
+		engine.Run{ID: "run-prop", Deps: deps, Attributes: attrs},
+		enginetest.NewMockHost(), engine.NewBoard()); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	if gotDeps != deps {
+		t.Errorf("ExecutionContext.Deps: pointer differs from engine.Run.Deps; got %p want %p", gotDeps, deps)
+	}
+	if !gotOK || gotVal != "tool-registry-stub" {
+		t.Errorf("Deps payload missing through propagation: ok=%v val=%v", gotOK, gotVal)
+	}
+	if len(gotAttrs) != len(attrs) {
+		t.Fatalf("ExecutionContext.Attributes len = %d, want %d", len(gotAttrs), len(attrs))
+	}
+	for k, v := range attrs {
+		if gotAttrs[k] != v {
+			t.Errorf("Attributes[%q] = %q, want %q", k, gotAttrs[k], v)
+		}
+	}
+}
+
 // TestRunner_Execute_PublishesUnderRunID asserts that the run.ID
 // parameter (and only that — no executor.WithRunID needed) drives
 // the executor's lifecycle subjects. Confirms agent.Run's mintRunID

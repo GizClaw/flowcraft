@@ -103,6 +103,25 @@ type runConfig struct {
 	// going forward; defaulted to engine.NoopHost{} in Execute when
 	// the caller doesn't supply WithHost.
 	host engine.Host
+
+	// deps carries the engine.Dependencies the upstream caller
+	// (agent.Run / engine host) populated for this run. The
+	// executor forwards it verbatim into [graph.ExecutionContext]
+	// so nodes can recover host-supplied dependencies (LLM clients,
+	// tool registries, …) via [engine.GetDep] instead of being
+	// builder-closure-bound. nil is allowed; nodes that need a dep
+	// must tolerate it (engine.GetDep does).
+	deps *engine.Dependencies
+
+	// attributes carries the string-keyed bag agent.Run promoted
+	// from agent.Request / agent.RunInfo (canonical keys under
+	// sdk/telemetry — AttrAgentID, AttrTaskID, AttrContextID, …).
+	// Forwarded into ExecutionContext.Attributes so nodes that
+	// need agent-scoped identity (scriptnode RunInfoBridge,
+	// telemetry hooks) can read them without a parallel ctx-key
+	// transport. nil = no attributes.
+	attributes map[string]string
+
 	// --- derived (set by Execute) ---
 
 	// publisher is the single event sink consumed by every
@@ -146,6 +165,29 @@ func WithParallel(cfg ParallelConfig) RunOption {
 // engine.NoopHost{} so nodes can call ctx.Host methods unconditionally.
 func WithHost(h engine.Host) RunOption {
 	return func(c *runConfig) { c.host = h }
+}
+
+// WithDeps installs the engine.Dependencies the executor will forward
+// into [graph.ExecutionContext.Deps] so nodes can recover host-supplied
+// dependencies (LLM clients, tool registries, …) via [engine.GetDep].
+// nil is allowed and means "no deps for this run"; nodes that need a
+// dep must tolerate the nil case.
+//
+// runner.Runner.Execute populates this from engine.Run.Deps, so callers
+// that drive the executor through the Engine surface get the wiring
+// for free.
+func WithDeps(d *engine.Dependencies) RunOption {
+	return func(c *runConfig) { c.deps = d }
+}
+
+// WithAttributes installs the string-keyed attribute bag the executor
+// will forward into [graph.ExecutionContext.Attributes]. Used for
+// canonical agent-scoped identity (sdk/telemetry.AttrAgentID,
+// AttrTaskID, AttrContextID) and any caller-supplied tags. nil clears.
+//
+// runner.Runner.Execute populates this from engine.Run.Attributes.
+func WithAttributes(m map[string]string) RunOption {
+	return func(c *runConfig) { c.attributes = m }
 }
 
 func WithResolver(r VariableResolver) RunOption {

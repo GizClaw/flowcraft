@@ -31,10 +31,12 @@ func executeWithRetry(ctx context.Context, node graph.Node, board *graph.Board, 
 
 		snapshot := board.Snapshot()
 		execCtx := graph.ExecutionContext{
-			Context:   ctx,
-			Host:      cfg.host,
-			Publisher: wrappedPublisher,
-			RunID:     cfg.runID,
+			Context:    ctx,
+			Host:       cfg.host,
+			Publisher:  wrappedPublisher,
+			RunID:      cfg.runID,
+			Deps:       cfg.deps,
+			Attributes: cfg.attributes,
 		}
 
 		lastErr = node.ExecuteBoard(execCtx, board)

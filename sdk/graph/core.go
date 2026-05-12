@@ -77,11 +77,29 @@ type PortDeclarable interface {
 // Publisher is a thin wrapper around Host.Publish kept for backwards
 // compatibility and ergonomic event emission with (type, payload) pairs;
 // new code MAY call Host.Publish directly with a fully formed envelope.
+//
+// Deps is the typed dependency container the upstream agent.Run handed
+// to the engine via [engine.Run.Deps]. The graph runner propagates it
+// verbatim so nodes can recover host-supplied dependencies (LLM clients,
+// tool registries, retrievers, …) via [engine.GetDep] instead of
+// closure-binding them at builder time. May be nil when the engine was
+// invoked directly without [engine.Run.Deps]; nodes that need a dep MUST
+// handle the nil case (engine.GetDep does).
+//
+// Attributes is the read-only string-keyed bag that the upstream
+// agent.Run promoted from [agent.Request] / [agent.RunInfo]. Canonical
+// keys live under [github.com/GizClaw/flowcraft/sdk/telemetry] (e.g.
+// AttrAgentID / AttrTaskID / AttrContextID) so nodes that need
+// agent-scoped identity (scriptnode RunInfoBridge, telemetry hooks,
+// envelope actor_id) can read them without inventing a parallel
+// transport. May be nil when the engine was invoked without attributes.
 type ExecutionContext struct {
-	Context   context.Context
-	Host      engine.Host
-	Publisher StreamPublisher
-	RunID     string
+	Context    context.Context
+	Host       engine.Host
+	Publisher  StreamPublisher
+	RunID      string
+	Deps       *engine.Dependencies
+	Attributes map[string]string
 }
 
 // ---------------------------------------------------------------------------
