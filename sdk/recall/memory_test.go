@@ -301,6 +301,144 @@ func TestHistoryAndRollback(t *testing.T) {
 	}
 }
 
+// TestAddSlotMetadataAndSupersede pins the contract that Add, given a
+// slot-eligible (Subject, Predicate) tuple, writes slot metadata and
+// participates in the slot supersede channel identically to Save's
+// upsertFacts path. Regression test for issue #100: per-fact scope
+// routing callers (which must drive Add instead of Save) were
+// previously locked out of slot dedup even with WithSlotMerge on and
+// SlotCollapse wired on the read side.
+func TestAddSlotMetadataAndSupersede(t *testing.T) {
+	ctx := context.Background()
+	idx := memidx.New()
+	m, err := recall.New(idx, recall.WithRequireUserID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer m.Close()
+	scope := newScope()
+	ns := recall.NamespaceFor(scope)
+
+	id1, err := m.Add(ctx, scope, recall.Entry{
+		Content:    "user lives in Tokyo",
+		Categories: []string{"profile"},
+		Subject:    "user",
+		Predicate:  "lives_in",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc1, ok, _ := idx.Get(ctx, ns, id1)
+	if !ok {
+		t.Fatalf("doc1 missing in index")
+	}
+	if got, _ := doc1.Metadata[recall.MetaSlotKey].(string); got != "user|lives_in" {
+		t.Fatalf("slot_key not written by Add: metadata=%+v", doc1.Metadata)
+	}
+	if got, _ := doc1.Metadata[recall.MetaSubject].(string); got != "user" {
+		t.Fatalf("MetaSubject missing/wrong: %v", doc1.Metadata[recall.MetaSubject])
+	}
+	if got, _ := doc1.Metadata[recall.MetaPredicate].(string); got != "lives_in" {
+		t.Fatalf("MetaPredicate missing/wrong: %v", doc1.Metadata[recall.MetaPredicate])
+	}
+
+	id2, err := m.Add(ctx, scope, recall.Entry{
+		Content:    "user lives in Osaka",
+		Categories: []string{"profile"},
+		Subject:    "user",
+		Predicate:  "lives_in",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id2 == id1 {
+		t.Fatalf("expected distinct IDs, got %q twice", id1)
+	}
+	doc1After, _, _ := idx.Get(ctx, ns, id1)
+	sup, _ := doc1After.Metadata[recall.MetaSupersededBy].(string)
+	if sup != id2 {
+		t.Fatalf("expected doc1.superseded_by=%q, got %q (metadata=%+v)",
+			id2, sup, doc1After.Metadata)
+	}
+}
+
+// TestAddSlotIneligibleSilentlyDegrades pins the contract from
+// upsertFacts: subjects or predicates containing the slot delimiter
+// '|' produce ambiguous slot_keys and are silently dropped from the
+// slot channel. The entry still persists, just without slot metadata.
+func TestAddSlotIneligibleSilentlyDegrades(t *testing.T) {
+	ctx := context.Background()
+	idx := memidx.New()
+	m, _ := recall.New(idx, recall.WithRequireUserID())
+	defer m.Close()
+	scope := newScope()
+	ns := recall.NamespaceFor(scope)
+
+	cases := []struct {
+		name               string
+		subject, predicate string
+	}{
+		{"empty subject", "", "lives_in"},
+		{"empty predicate", "user", ""},
+		{"delimiter in subject", "user|alt", "lives_in"},
+		{"delimiter in predicate", "user", "alt|lives_in"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			id, err := m.Add(ctx, scope, recall.Entry{
+				Content:    "fact " + tc.name,
+				Categories: []string{"profile"},
+				Subject:    tc.subject,
+				Predicate:  tc.predicate,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			doc, ok, _ := idx.Get(ctx, ns, id)
+			if !ok {
+				t.Fatalf("doc missing")
+			}
+			if _, has := doc.Metadata[recall.MetaSlotKey]; has {
+				t.Fatalf("ineligible tuple wrote slot_key: %+v", doc.Metadata)
+			}
+		})
+	}
+}
+
+// TestAddWithoutSlotChannelSkipsSupersede confirms that opting out of
+// the slot channel via WithoutSlotChannel disables Add-side supersede
+// even when the entry is slot-eligible. Parity with how Save honours
+// the same option.
+func TestAddWithoutSlotChannelSkipsSupersede(t *testing.T) {
+	ctx := context.Background()
+	idx := memidx.New()
+	m, _ := recall.New(idx,
+		recall.WithRequireUserID(),
+		recall.WithoutSlotChannel(),
+	)
+	defer m.Close()
+	scope := newScope()
+	ns := recall.NamespaceFor(scope)
+
+	id1, _ := m.Add(ctx, scope, recall.Entry{
+		Content: "a", Categories: []string{"profile"},
+		Subject: "user", Predicate: "lives_in",
+	})
+	_, _ = m.Add(ctx, scope, recall.Entry{
+		Content: "b", Categories: []string{"profile"},
+		Subject: "user", Predicate: "lives_in",
+	})
+	doc1, _, _ := idx.Get(ctx, ns, id1)
+	if _, has := doc1.Metadata[recall.MetaSupersededBy]; has {
+		t.Fatalf("WithoutSlotChannel should suppress supersede; doc1 metadata=%+v", doc1.Metadata)
+	}
+	// Slot metadata is still written so future opt-ins can collapse
+	// historical rows.
+	if got, _ := doc1.Metadata[recall.MetaSlotKey].(string); got != "user|lives_in" {
+		t.Fatalf("slot_key should still be written even with slot-merge off: %+v", doc1.Metadata)
+	}
+}
+
 // TestAddEmptyContentFailsFast pins the contract that recall.Add
 // validates Content before doing any derived work (ID hash, timestamps,
 // embedding). Regression test for the previous order which generated a

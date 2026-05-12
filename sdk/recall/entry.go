@@ -156,6 +156,21 @@ type Entry struct {
 	Entities   []string   `json:"entities,omitempty"`   // linked entities
 	Confidence float64    `json:"confidence,omitempty"` // LLM-reported [0,1]
 	ExpiresAt  *time.Time `json:"expires_at,omitempty"` // soft TTL; nil = never
+
+	// Subject and Predicate, when both are non-empty and slot-eligible
+	// (neither contains the '|' slot delimiter), opt this entry into the
+	// slot supersede / SlotCollapse machinery. With these set, [Memory.Add]
+	// writes slot metadata identical to what [Memory.Save]'s built-in
+	// extractor produces and (when slot-merge is enabled via the default
+	// config or explicitly retained) marks older entries sharing the same
+	// (Subject, Predicate) tuple as superseded_by the new entry.
+	//
+	// Use case: callers that run their own extractor and fan out facts to
+	// different scopes per-fact (which Save's single-scope contract cannot
+	// model). Leaving both empty preserves the historical Add behaviour —
+	// no slot metadata, no supersede, no breakage of existing callers.
+	Subject   string `json:"subject,omitempty"`
+	Predicate string `json:"predicate,omitempty"`
 }
 
 // Source records the origin of a memory entry.
