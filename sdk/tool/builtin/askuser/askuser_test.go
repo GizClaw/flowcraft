@@ -9,8 +9,26 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/engine"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/model"
+	"github.com/GizClaw/flowcraft/sdk/tool"
 	"github.com/GizClaw/flowcraft/sdk/tool/builtin/askuser"
+	"github.com/GizClaw/flowcraft/sdk/tool/tooltest"
 )
+
+// TestAskUser_Contract pins the askuser tool against the generic
+// tool.Tool contract suite. ask_user has a slightly unusual schema
+// — it requires a non-empty `prompt` property — so we declare
+// SkipEmptyArgsTolerance: the suite would otherwise complain that
+// empty args raised a Validation error.
+//
+// SkipContextCancel is left false (= the suite will check
+// cancellation responsiveness). ask_user's Execute returns
+// promptly when there's no host on ctx, so it satisfies the
+// "return within the deadline of a pre-cancelled ctx" check.
+func TestAskUser_Contract(t *testing.T) {
+	tooltest.RunSuite(t, func() tool.Tool { return askuser.New() }, tooltest.Capabilities{
+		SkipEmptyArgsTolerance: true,
+	})
+}
 
 // captureHost records the prompt and returns a programmable reply.
 // Used by tests to assert prompt translation + reply marshalling.
