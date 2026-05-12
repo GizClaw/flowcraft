@@ -196,6 +196,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /v1/vessels/{id}/phase", s.authn(s.handlePhase))
 	s.mux.HandleFunc("POST /v1/vessels/{id}/submit", s.authn(s.handleSubmit))
 	s.mux.HandleFunc("POST /v1/vessels/{id}/call", s.authn(s.handleCall))
+	s.mux.HandleFunc("POST /v1/vessels/{id}/resume", s.authn(s.handleResume))
 	s.mux.HandleFunc("POST /v1/vessels/{id}/drain", s.authn(s.handleDrain))
 	s.mux.HandleFunc("POST /v1/vessels/{id}/stop", s.authn(s.handleStop))
 	s.mux.HandleFunc("GET /v1/vessels/{id}/logs", s.authn(s.handleLogs))
@@ -398,6 +399,45 @@ func (s *Server) handleCall(w http.ResponseWriter, r *http.Request) {
 		out["error"] = res.Err.Error()
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// resumeBody is the wire form for POST /resume.
+type resumeBody struct {
+	RunID string `json:"run_id"`
+}
+
+// handleResume re-launches a previously interrupted run via
+// [vessel.Captain.Resume]. Body shape:
+//
+//	{ "run_id": "..." }
+//
+// On success returns 202 Accepted with {"run_id": "..."} so the
+// caller can poll /v1/runs/{run_id} for terminal state — same
+// contract as /submit.
+//
+// Error classes are propagated from the underlying Captain.Resume
+// (NotAvailable when no checkpoint store, NotFound when the
+// checkpoint or its agent are missing, Validation when run_id is
+// empty); writeError maps them to HTTP status codes.
+//
+// Like /submit we use context.Background() for the dispatch so the
+// HTTP request lifecycle does not cancel the resumed run mid-flight.
+func (s *Server) handleResume(w http.ResponseWriter, r *http.Request) {
+	var body resumeBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, errdefs.Validationf("vesseld api: decode body: %v", err))
+		return
+	}
+	if body.RunID == "" {
+		writeError(w, errdefs.Validationf("vesseld api: body.run_id is required"))
+		return
+	}
+	h, err := s.fleet.Resume(context.Background(), r.PathValue("id"), body.RunID)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]string{"run_id": h.RunID})
 }
 
 // handleDrain triggers Captain.Drain. Honours the request context

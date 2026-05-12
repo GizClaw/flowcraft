@@ -35,6 +35,8 @@ func Execute(args []string) error {
 		return cmdValidate(args[1:])
 	case "plan":
 		return cmdPlan(args[1:])
+	case "resume":
+		return cmdResume(args[1:])
 	default:
 		return fmt.Errorf("vesseld: unknown subcommand %q (try `vesseld help`)", args[0])
 	}
@@ -47,6 +49,8 @@ Usage:
   vesseld run      --config DIR [-R]    start the daemon
   vesseld validate --config DIR [-R]    schema + ref check, no IO
   vesseld plan     --config DIR [-R]    print resolved Plan (secrets redacted)
+  vesseld resume   --vessel V --run-id R --socket P
+                                        re-launch a checkpointed run
   vesseld version                       module versions
   vesseld help                          this message
 

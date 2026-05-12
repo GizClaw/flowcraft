@@ -31,6 +31,12 @@ import (
 type Fleet struct {
 	plan resolver.Plan
 
+	// buildCfg holds variadic options applied once at Build time.
+	// Per-captain wiring (buildCaptain) reads from it to thread
+	// shared infra (checkpoint store, …) into vessel.Option lists.
+	// nil-safe: helpers check for nil before dereferencing.
+	buildCfg *buildConfig
+
 	mu       sync.RWMutex
 	captains map[string]*captainEntry
 
@@ -72,7 +78,17 @@ type captainEntry struct {
 // If any Captain fails to construct, Build stops and tears down
 // the Captains it already created — partial fleets are never
 // returned.
-func Build(plan resolver.Plan) (*Fleet, error) {
+//
+// Variadic BuildOption inputs let the daemon (or tests) inject
+// shared infrastructure that the Plan does not carry — the
+// canonical example is a per-deployment [engine.CheckpointStore]
+// installed via [WithCheckpointStore]. Options are applied to
+// every captain at construction time.
+func Build(plan resolver.Plan, opts ...BuildOption) (*Fleet, error) {
+	bcfg := &buildConfig{}
+	for _, opt := range opts {
+		opt(bcfg)
+	}
 	f := &Fleet{
 		plan:           plan,
 		captains:       make(map[string]*captainEntry, len(plan.Vessels)),
@@ -80,6 +96,7 @@ func Build(plan resolver.Plan) (*Fleet, error) {
 		runs:           newRunRegistry(time.Hour),
 		runSweeperStop: make(chan struct{}),
 		runSweeperDone: make(chan struct{}),
+		buildCfg:       bcfg,
 	}
 	if plan.Daemon.MaxConcurrentRuns > 0 {
 		f.gate = make(chan struct{}, plan.Daemon.MaxConcurrentRuns)
@@ -95,6 +112,37 @@ func Build(plan resolver.Plan) (*Fleet, error) {
 		f.captains[vp.Name] = ent
 	}
 	return f, nil
+}
+
+// BuildOption configures Fleet construction. Applied once during
+// [Build]; each option mutates an internal config the per-captain
+// builder consults when wiring its [vessel.Option] list.
+type BuildOption func(*buildConfig)
+
+// buildConfig collects the cross-cutting wiring callers can inject
+// at fleet build time but the resolver.Plan does not (and should
+// not) carry — typically because the wiring depends on runtime
+// infrastructure (a process-wide DB connection, an in-test
+// in-memory store, …) that has no declarative form.
+type buildConfig struct {
+	checkpointStore engine.CheckpointStore
+}
+
+// WithCheckpointStore installs a process-wide [engine.CheckpointStore]
+// that every captain in the fleet will use to persist + load
+// engine.Checkpoint values. Without this option, captains run
+// without a store, every Resume request returns errdefs.NotAvailable,
+// and the /v1/vessels/{id}/resume HTTP route is effectively dead.
+//
+// Daemon callers typically pass an [executor.FileCheckpointStore]
+// rooted under the deployment's state dir; tests pass an
+// in-memory implementation. The store is shared (same instance is
+// handed to every captain) so resume routing within the daemon is
+// consistent: a checkpoint persisted by vessel A's run is
+// retrievable by /v1/vessels/A/resume even if the daemon was
+// restarted in between (when the underlying store is durable).
+func WithCheckpointStore(store engine.CheckpointStore) BuildOption {
+	return func(c *buildConfig) { c.checkpointStore = store }
 }
 
 // Launch starts every Captain. Returns the first non-nil Launch
@@ -179,6 +227,40 @@ func (f *Fleet) Submit(ctx context.Context, vesselName, agentName string, req ag
 	// captain's dispatch goroutine BEFORE Done is closed, so
 	// the slot is freed in time for any waiting Submit to claim
 	// it without an extra goroutine round-trip.
+	h.OnTerminate(func(_ *agent.Result, _ error) {
+		f.releaseGate()
+	})
+	return h, nil
+}
+
+// Resume re-launches a previously interrupted run by delegating
+// to [vessel.Captain.Resume]. The Fleet keeps the same admission
+// gate semantics as Submit so concurrent resume requests respect
+// the daemon-wide slot budget; the resumed Handle is registered
+// with the run registry so /v1/runs/{run_id} continues to surface
+// state across the resume boundary.
+//
+// Error classes match Captain.Resume:
+//
+//   - errdefs.NotAvailable when the targeted vessel has no
+//     CheckpointStore wired (= no durable state to resume from).
+//   - errdefs.NotFound when the runID has no stored checkpoint or
+//     names an agent the vessel no longer hosts.
+//   - errdefs.Validation when runID is empty.
+func (f *Fleet) Resume(ctx context.Context, vesselName, runID string) (*vessel.Handle, error) {
+	cap, err := f.Captain(vesselName)
+	if err != nil {
+		return nil, err
+	}
+	if err := f.acquireGate(ctx); err != nil {
+		return nil, err
+	}
+	h, err := cap.Resume(ctx, runID)
+	if err != nil {
+		f.releaseGate()
+		return nil, err
+	}
+	f.runs.track(vesselName, h)
 	h.OnTerminate(func(_ *agent.Result, _ error) {
 		f.releaseGate()
 	})
@@ -506,6 +588,9 @@ func (f *Fleet) buildCaptain(vp resolver.VesselPlan) (*captainEntry, error) {
 		if h, ok := f.plan.SharedHistories[vp.HistoryName]; ok {
 			options = append(options, vessel.WithHistory(h))
 		}
+	}
+	if f.buildCfg != nil && f.buildCfg.checkpointStore != nil {
+		options = append(options, vessel.WithCheckpointStore(f.buildCfg.checkpointStore))
 	}
 
 	cap, err := vessel.New(vp.Spec, options...)
