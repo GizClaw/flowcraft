@@ -1,7 +1,11 @@
 cloud.google.com/go v0.26.0/go.mod h1:aQUYkXzVsufM+DwF1aE+0xfcU+56JwCaLick0ClmMTw=
 github.com/BurntSushi/toml v0.3.1/go.mod h1:xHWCNGjB5oqiDr8zfno3MHue2Ht5sIBksp03qcyfWMU=
-github.com/GizClaw/flowcraft/sdkx v0.2.5 h1:n5astpfg5UuKS6DrG0As2awjeWFlpyAsV2eNAoIgNEw=
-github.com/GizClaw/flowcraft/sdkx v0.2.5/go.mod h1:KnamFfKt1q/8v6ArviMBePE0eIUeMpNtrovcLvO18hE=
+github.com/GizClaw/flowcraft/sdk v0.3.4 h1:Bma2skumOsm4Mrts8/or03iIugSQz3P/rinKIuaRBsQ=
+github.com/GizClaw/flowcraft/sdk v0.3.4/go.mod h1:VeMqVBxnMGHtFO9ypHhsA591XoLCWxucXR+gqpxQt5s=
+github.com/GizClaw/flowcraft/sdkx v0.3.1 h1:2HzXK+FmOGlnJ01m4NbUR+N7bx2O4SXHz5flvN+yizY=
+github.com/GizClaw/flowcraft/sdkx v0.3.1/go.mod h1:AuzpJHWVDNZKD8J8frY5qjmYU2IoEg4X3Rs0q232pnY=
+github.com/GizClaw/flowcraft/vessel v0.1.0-rc.3 h1:n8mIYGrHqO2SRenHT1WhS2GcS6sYafxPlafBy9xbghM=
+github.com/GizClaw/flowcraft/vessel v0.1.0-rc.3/go.mod h1:iG2UBuoipcCTy4GgLDyBReqphtEDoneDJxxsHBt1Tf8=
 github.com/anthropics/anthropic-sdk-go v1.26.0 h1:oUTzFaUpAevfuELAP1sjL6CQJ9HHAfT7CoSYSac11PY=
 github.com/anthropics/anthropic-sdk-go v1.26.0/go.mod h1:qUKmaW+uuPB64iy1l+4kOSvaLqPXnHTTBKH6RVZ7q5Q=
 github.com/avast/retry-go v3.0.0+incompatible/go.mod h1:XtSnn+n/sHqQIpZ10K1qAevBhOOCWBLXXy3hyiqqBrY=
