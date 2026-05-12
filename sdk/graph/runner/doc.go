@@ -28,13 +28,13 @@
 //     engine package — [engine.EmitStreamToken],
 //     [engine.EmitStreamToolCall], [engine.EmitStreamToolResult] or
 //     the lower-level [engine.EmitStreamDelta]. These build the
-//     envelope, attach HeaderRunID / HeaderActorID / HeaderNodeID,
+//     envelope, attach HeaderRunID / HeaderAgentID / HeaderNodeID,
 //     and validate per-Type required fields before publishing, so a
 //     malformed delta is caught at emit time instead of silently
 //     flowing to subscribers.
 //
 // Both paths land on the same Subject (engine.run.<runID>.stream.
-// <actorID>.delta), so consumers subscribing via
+// <stepActor>.delta), so consumers subscribing via
 // [engine.PatternRunStream] observe LLM-emitted and node-emitted
 // deltas through one subscription.
 package runner

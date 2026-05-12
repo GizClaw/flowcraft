@@ -91,7 +91,7 @@ type PortDeclarable interface {
 // keys live under [github.com/GizClaw/flowcraft/sdk/telemetry] (e.g.
 // AttrAgentID / AttrTaskID / AttrContextID) so nodes that need
 // agent-scoped identity (scriptnode RunInfoBridge, telemetry hooks,
-// envelope actor_id) can read them without inventing a parallel
+// envelope agent_id) can read them without inventing a parallel
 // transport. May be nil when the engine was invoked without attributes.
 type ExecutionContext struct {
 	Context    context.Context

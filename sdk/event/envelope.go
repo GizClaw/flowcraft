@@ -37,9 +37,28 @@ type Envelope struct {
 // Well-known header keys. Consumers may add arbitrary headers; these
 // constants exist to prevent key drift across producers.
 const (
-	HeaderRunID   = "run_id"
-	HeaderNodeID  = "node_id"
+	HeaderRunID  = "run_id"
+	HeaderNodeID = "node_id"
+
+	// HeaderAgentID identifies the agent (sdk/agent.Agent.ID) that
+	// produced this envelope — i.e. the executor identity in
+	// engine-neutral terms. The producer end is sdk/agent.Run, which
+	// promotes Agent.ID into engine.Run.Attributes under
+	// telemetry.AttrAgentID; engines forward that into the envelope
+	// header via SetAgentID. Consumers that need to fan-in / filter
+	// by "which agent did this" subscribe on this dimension.
+	HeaderAgentID = "agent_id"
+
+	// HeaderActorID is the legacy spelling of HeaderAgentID. It
+	// exists for back-compat with envelopes produced by pre-v0.4
+	// SDK consumers; SetAgentID dual-writes both header keys until
+	// v0.5.0 so existing observers keep working without a coordinated
+	// flag day.
+	//
+	// Deprecated: use HeaderAgentID. This constant and the matching
+	// SetActorID / ActorID accessors are removed in v0.5.0.
 	HeaderActorID = "actor_id"
+
 	HeaderGraphID = "graph_id"
 	HeaderTenant  = "tenant"
 
@@ -156,11 +175,44 @@ func (e *Envelope) SetNodeID(id string) { e.SetHeader(HeaderNodeID, id) }
 // NodeID returns the value of the well-known node_id header.
 func (e Envelope) NodeID() string { return e.Header(HeaderNodeID) }
 
-// SetActorID is a typed shorthand for SetHeader(HeaderActorID, id).
-func (e *Envelope) SetActorID(id string) { e.SetHeader(HeaderActorID, id) }
+// SetAgentID stamps the agent identifier (sdk/agent.Agent.ID) of the
+// producer onto the envelope.
+//
+// The call is dual-write: it sets both HeaderAgentID (the canonical
+// post-v0.4 key) AND HeaderActorID (the legacy spelling) so observers
+// that have not yet migrated keep working unchanged. The legacy
+// header is removed in v0.5.0; producers should call SetAgentID and
+// stop relying on SetActorID.
+func (e *Envelope) SetAgentID(id string) {
+	e.SetHeader(HeaderAgentID, id)
+	e.SetHeader(HeaderActorID, id) // legacy mirror; removed in v0.5.0
+}
 
-// ActorID returns the value of the well-known actor_id header.
-func (e Envelope) ActorID() string { return e.Header(HeaderActorID) }
+// AgentID returns the producer's agent identifier. It prefers
+// HeaderAgentID (the post-v0.4 canonical key) and falls back to the
+// legacy HeaderActorID so envelopes produced by older SDK versions
+// still resolve correctly. After v0.5.0 only HeaderAgentID is read.
+func (e Envelope) AgentID() string {
+	if v := e.Header(HeaderAgentID); v != "" {
+		return v
+	}
+	return e.Header(HeaderActorID)
+}
+
+// SetActorID is the legacy spelling of SetAgentID.
+//
+// Deprecated: use [Envelope.SetAgentID]. The "actor" terminology
+// pre-dates the agent / step-actor distinction settled in v0.4
+// (envelope header "actor_id" is the producer agent identity;
+// the per-step "actor" segment in engine.SubjectStep* subjects is
+// a separate dimension, see sdk/engine/subjects.go). Removed in
+// v0.5.0.
+func (e *Envelope) SetActorID(id string) { e.SetAgentID(id) }
+
+// ActorID is the legacy spelling of [Envelope.AgentID].
+//
+// Deprecated: use [Envelope.AgentID]. Removed in v0.5.0.
+func (e Envelope) ActorID() string { return e.AgentID() }
 
 // SetGraphID is a typed shorthand for SetHeader(HeaderGraphID, id).
 func (e *Envelope) SetGraphID(id string) { e.SetHeader(HeaderGraphID, id) }

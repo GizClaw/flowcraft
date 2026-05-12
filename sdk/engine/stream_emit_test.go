@@ -22,21 +22,32 @@ func (c *capturePublisher) Publish(_ context.Context, env event.Envelope) error 
 func TestEmitStreamToken_HappyPath(t *testing.T) {
 	t.Parallel()
 	pub := &capturePublisher{}
-	if err := EmitStreamToken(context.Background(), pub, "run-1", "node-A", "hello"); err != nil {
+	const stepActor = "agent-A.node.node-1"
+	if err := EmitStreamToken(context.Background(), pub, "run-1", stepActor, "hello"); err != nil {
 		t.Fatalf("EmitStreamToken: %v", err)
 	}
 	if len(pub.got) != 1 {
 		t.Fatalf("publish count = %d, want 1", len(pub.got))
 	}
 	env := pub.got[0]
-	if env.Subject != SubjectStreamDelta("run-1", "node-A") {
+	if env.Subject != SubjectStreamDelta("run-1", stepActor) {
 		t.Fatalf("subject = %s", env.Subject)
 	}
 	if env.Headers[event.HeaderRunID] != "run-1" {
 		t.Fatalf("HeaderRunID missing: %v", env.Headers)
 	}
-	if env.Headers[event.HeaderActorID] != "node-A" || env.Headers[event.HeaderNodeID] != "node-A" {
-		t.Fatalf("Actor / Node header mismatch: %v", env.Headers)
+	// stepActor is split into the agent.id prefix + the optional
+	// ".node.<nodeID>" suffix; the helper projects them onto
+	// HeaderAgentID / HeaderNodeID respectively. HeaderActorID is the
+	// legacy mirror written by SetAgentID's dual-write.
+	if got := env.Headers[event.HeaderAgentID]; got != "agent-A" {
+		t.Errorf("HeaderAgentID = %q, want agent-A", got)
+	}
+	if got := env.Headers[event.HeaderNodeID]; got != "node-1" {
+		t.Errorf("HeaderNodeID = %q, want node-1", got)
+	}
+	if got := env.Headers[event.HeaderActorID]; got != "agent-A" {
+		t.Errorf("HeaderActorID (legacy mirror) = %q, want agent-A", got)
 	}
 	p, err := DecodeStreamDelta(env)
 	if err != nil {
@@ -44,6 +55,29 @@ func TestEmitStreamToken_HappyPath(t *testing.T) {
 	}
 	if p.Type != StreamDeltaToken || p.Content != "hello" {
 		t.Fatalf("payload = %+v", p)
+	}
+}
+
+// TestEmitStreamDelta_StepActorWithoutNodeSuffix documents that
+// engines whose step convention is NOT graph-runner-shaped (e.g.
+// vessel inline's "<agent>.iter<N>") still get HeaderAgentID
+// populated correctly — splitStepActor returns the whole stepActor
+// as the agent.id prefix when no ".node." marker is present, and
+// leaves HeaderNodeID unset so the header doesn't accidentally
+// claim a node id that does not exist.
+func TestEmitStreamDelta_StepActorWithoutNodeSuffix(t *testing.T) {
+	t.Parallel()
+	pub := &capturePublisher{}
+	if err := EmitStreamDelta(context.Background(), pub, "r", "agent-A.iter3",
+		StreamDeltaPayload{Type: StreamDeltaToken, Content: "x"}); err != nil {
+		t.Fatalf("EmitStreamDelta: %v", err)
+	}
+	env := pub.got[0]
+	if got := env.Headers[event.HeaderAgentID]; got != "agent-A.iter3" {
+		t.Errorf("HeaderAgentID = %q, want agent-A.iter3 (no .node. suffix → whole stepActor is prefix)", got)
+	}
+	if _, ok := env.Headers[event.HeaderNodeID]; ok {
+		t.Errorf("HeaderNodeID should be unset when stepActor has no .node. suffix, got %q", env.Headers[event.HeaderNodeID])
 	}
 }
 

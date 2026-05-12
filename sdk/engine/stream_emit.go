@@ -28,10 +28,8 @@ import (
 // host built with NoopHost{}) keeps running.
 
 // EmitStreamToken publishes one assistant-token delta on the canonical
-// stream subject. The payload is a [StreamDeltaPayload] of type
-// [StreamDeltaToken] with Content set; runID and actorID feed the
-// subject builder so any consumer subscribed via [PatternRunStream]
-// observes it.
+// stream subject. See [EmitStreamDelta] for the stepActor format
+// requirement.
 //
 // Use this from any node that produces incremental textual output —
 // for example a custom RAG retriever streaming its working notes, or a
@@ -39,8 +37,8 @@ import (
 // be empty (callers that want "still alive" heartbeats should typically
 // mark them differently); empty content is published as-is so the
 // helper stays predictable.
-func EmitStreamToken(ctx context.Context, pub Publisher, runID, actorID, content string) error {
-	return EmitStreamDelta(ctx, pub, runID, actorID, StreamDeltaPayload{
+func EmitStreamToken(ctx context.Context, pub Publisher, runID, stepActor, content string) error {
+	return EmitStreamDelta(ctx, pub, runID, stepActor, StreamDeltaPayload{
 		Type:    StreamDeltaToken,
 		Content: content,
 	})
@@ -50,19 +48,20 @@ func EmitStreamToken(ctx context.Context, pub Publisher, runID, actorID, content
 // required (consumers correlate the eventual tool_result by ID); args
 // is the tool input the model produced and may be either a JSON string
 // or an already-decoded map / slice — both are valid per the
-// [StreamDeltaPayload] contract.
+// [StreamDeltaPayload] contract. See [EmitStreamDelta] for the
+// stepActor format requirement.
 //
 // The helper validates the required fields up-front and returns a
 // descriptive error instead of publishing a malformed envelope; callers
 // that already validated upstream can ignore the error safely.
-func EmitStreamToolCall(ctx context.Context, pub Publisher, runID, actorID, id, name string, args any) error {
+func EmitStreamToolCall(ctx context.Context, pub Publisher, runID, stepActor, id, name string, args any) error {
 	if id == "" {
 		return fmt.Errorf("engine: EmitStreamToolCall: id is required")
 	}
 	if name == "" {
 		return fmt.Errorf("engine: EmitStreamToolCall: name is required")
 	}
-	return EmitStreamDelta(ctx, pub, runID, actorID, StreamDeltaPayload{
+	return EmitStreamDelta(ctx, pub, runID, stepActor, StreamDeltaPayload{
 		Type:      StreamDeltaToolCall,
 		ID:        id,
 		Name:      name,
@@ -75,12 +74,13 @@ func EmitStreamToolCall(ctx context.Context, pub Publisher, runID, actorID, id, 
 // tool_call); name is recommended so consumers can render the result
 // without a separate dispatch table. isError marks unsuccessful
 // results; cancelled marks synthesised cancellations emitted when the
-// round was interrupted before the call dispatched.
-func EmitStreamToolResult(ctx context.Context, pub Publisher, runID, actorID, toolCallID, name, content string, isError, cancelled bool) error {
+// round was interrupted before the call dispatched. See
+// [EmitStreamDelta] for the stepActor format requirement.
+func EmitStreamToolResult(ctx context.Context, pub Publisher, runID, stepActor, toolCallID, name, content string, isError, cancelled bool) error {
 	if toolCallID == "" {
 		return fmt.Errorf("engine: EmitStreamToolResult: toolCallID is required")
 	}
-	return EmitStreamDelta(ctx, pub, runID, actorID, StreamDeltaPayload{
+	return EmitStreamDelta(ctx, pub, runID, stepActor, StreamDeltaPayload{
 		Type:       StreamDeltaToolResult,
 		ToolCallID: toolCallID,
 		Name:       name,
@@ -98,25 +98,34 @@ func EmitStreamToolResult(ctx context.Context, pub Publisher, runID, actorID, to
 // [DecodeStreamDelta] on the consumer side, so a malformed delta is
 // caught at publish time instead of silently flowing to subscribers.
 //
-// runID and actorID feed the subject builder; both are sanitised by
-// [SanitiseID] so caller-supplied IDs cannot fragment the resulting
-// subject. The envelope is stamped with HeaderRunID, HeaderActorID and
-// (for parity with the executor) HeaderNodeID = actorID so subscribers
-// that filter on headers behave identically whether the delta came
-// from a built-in node or a custom emitter.
+// stepActor follows the contract documented at the top of subjects.go:
+// it MUST start with the executing agent.id (so [PatternRunAgentStream]
+// can fan-in by agent) and MAY append an engine-private suffix
+// (graph runner: ".node.<nodeID>"; vessel inline: ".iter<N>"). Both
+// runID and stepActor are sanitised by [SanitiseID] so caller-supplied
+// values cannot fragment the resulting subject.
+//
+// The envelope is stamped with HeaderRunID. The agent identifier is
+// derived from the stepActor segment ahead of any optional ".node." /
+// ".iter" suffix — it goes onto HeaderAgentID (and the legacy
+// HeaderActorID via [event.Envelope.SetAgentID] dual-write). For
+// header-routed subscribers that key off the node id, the
+// HeaderNodeID is populated whenever stepActor carries the
+// graph runner's "<agent>.node.<nodeID>" form so the two transports
+// stay aligned.
 //
 // Publish errors are returned to the caller (unlike the executor's
 // fire-and-forget convention) so node authors can decide whether to
 // retry or surface the failure; in practice most callers just discard
 // the error because stream deltas are observability, not control flow.
-func EmitStreamDelta(ctx context.Context, pub Publisher, runID, actorID string, payload StreamDeltaPayload) error {
+func EmitStreamDelta(ctx context.Context, pub Publisher, runID, stepActor string, payload StreamDeltaPayload) error {
 	if pub == nil {
 		return nil
 	}
 	if err := validateStreamDelta(payload); err != nil {
 		return err
 	}
-	subject := SubjectStreamDelta(runID, actorID)
+	subject := SubjectStreamDelta(runID, stepActor)
 	env, err := event.NewEnvelope(ctx, subject, payload)
 	if err != nil {
 		return err
@@ -124,16 +133,33 @@ func EmitStreamDelta(ctx context.Context, pub Publisher, runID, actorID string, 
 	if runID != "" {
 		env.SetRunID(runID)
 	}
-	if actorID != "" {
-		env.SetActorID(actorID)
-		// HeaderNodeID is set in addition to HeaderActorID for
-		// header-routed subscribers that key off the node. Inside the
-		// graph runner the two values coincide; custom emitters MAY
-		// pass a distinct nodeID by populating Headers themselves
-		// before publishing.
-		env.SetNodeID(actorID)
+	agentID, nodeID := splitStepActor(stepActor)
+	if agentID != "" {
+		env.SetAgentID(agentID)
+	}
+	if nodeID != "" {
+		env.SetNodeID(nodeID)
 	}
 	return pub.Publish(ctx, env)
+}
+
+// splitStepActor extracts the agent.id prefix and the optional graph
+// runner ".node.<nodeID>" suffix from a stepActor string. Returns
+// (stepActor, "") when no recognised suffix is present, so engines
+// that use a different suffix scheme (e.g. vessel inline's ".iter<N>")
+// only get the agent.id projected onto HeaderAgentID and rely on
+// other facilities for the rest.
+//
+// Kept private because the suffix vocabulary is not part of any
+// consumer-facing contract — only the agent.id prefix is.
+func splitStepActor(stepActor string) (agentID, nodeID string) {
+	const nodeSep = ".node."
+	for i := 0; i+len(nodeSep) <= len(stepActor); i++ {
+		if stepActor[i:i+len(nodeSep)] == nodeSep {
+			return stepActor[:i], stepActor[i+len(nodeSep):]
+		}
+	}
+	return stepActor, ""
 }
 
 // validateStreamDelta mirrors the per-Type field requirements

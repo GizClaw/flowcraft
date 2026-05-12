@@ -12,10 +12,18 @@ import (
 // translates each emit into a fully-formed engine event.Envelope and
 // pushes it through the executor's host publisher.
 //
+// agentID is resolved once (from engine.Run.Attributes /
+// WithActorKey ctx-key fallback) so every emit pays a constant cost
+// rather than re-walking ctx for each payload. The stepActor segment
+// stamped onto the subject is "<agentID>.node.<nodeID>" — the
+// envelope.HeaderAgentID and HeaderNodeID transports carry the two
+// dimensions separately for header-routed subscribers.
+//
 // The wrapper is always non-nil so nodes can call ctx.Publisher.Emit
 // without nil-checks.
 func newNodePublisher(ctx context.Context, cfg runConfig, nodeID string) graph.StreamPublisher {
-	actorKey := actorKeyFrom(ctx)
+	agentID := agentIDFor(ctx, cfg)
+	stepActor := stepActorFor(agentID, nodeID)
 	graphName := cfg.graphName
 	pub := cfg.publisher
 
@@ -24,8 +32,8 @@ func newNodePublisher(ctx context.Context, cfg runConfig, nodeID string) graph.S
 			return
 		}
 		pl := normalisePayload(eventType, payload)
-		publishNodeEvent(ctx, pub, engine.SubjectStreamDelta(cfg.runID, nodeID),
-			cfg.runID, graphName, actorKey, nodeID, pl)
+		publishNodeEvent(ctx, pub, engine.SubjectStreamDelta(cfg.runID, stepActor),
+			cfg.runID, graphName, agentID, nodeID, pl)
 	})
 }
 

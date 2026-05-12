@@ -24,6 +24,16 @@ type ctxKey int
 
 const ctxKeyActorKey ctxKey = iota
 
+// WithActorKey stamps an agent identifier onto ctx for legacy
+// callers that drive the executor directly (no agent.Run wrapper).
+//
+// Deprecated: prefer populating engine.Run.Attributes with the
+// canonical telemetry.AttrAgentID key — agent.Run already does
+// this, and unlike a context value the attribute survives
+// cross-process hand-offs (HTTP, A2A, vessel inline engines). The
+// executor's agentIDFor resolver still honours this ctx-key as a
+// fallback when no attribute is set, so existing callers keep
+// working until the v0.5.0 removal.
 func WithActorKey(ctx context.Context, key string) context.Context {
 	return context.WithValue(ctx, ctxKeyActorKey, key)
 }
@@ -33,6 +43,58 @@ func actorKeyFrom(ctx context.Context) string {
 		return v
 	}
 	return ""
+}
+
+// agentIDFor resolves the agent.id the executor stamps onto every
+// published envelope (HeaderAgentID) and uses as the prefix of the
+// step subject segment (engine.SubjectStep* / SubjectStreamDelta).
+//
+// Precedence:
+//
+//  1. cfg.attributes[telemetry.AttrAgentID] — the canonical wire
+//     key. agent.Run promotes Agent.ID into engine.Run.Attributes
+//     under this key (sdk/agent.mergeAttributes), and runner.Runner
+//     forwards engine.Run.Attributes into cfg.attributes via
+//     executor.WithAttributes. This path survives cross-process
+//     hand-offs (HTTP, vessel inline, A2A) because the attribute
+//     bag is part of the engine.Run contract.
+//  2. actorKeyFrom(ctx) — legacy WithActorKey ctx-key. Kept until
+//     v0.5.0 so direct executor callers (tests, embedded users)
+//     keep working without code change. The "actor" naming is
+//     historical; the value is treated as an agent identifier.
+//
+// Returns "" when neither source has a value; envelope publishers
+// then skip the SetAgentID call and the step subject degrades to
+// the bare nodeID (no agent prefix).
+func agentIDFor(ctx context.Context, cfg runConfig) string {
+	if id := cfg.attributes[telemetry.AttrAgentID]; id != "" {
+		return id
+	}
+	return actorKeyFrom(ctx)
+}
+
+// stepActorFor builds the engine.SubjectStep* "stepActor" segment
+// for a graph runner step. The contract documented at
+// sdk/engine/subjects.go demands the segment start with agent.id so
+// the engine.PatternRunAgentSteps wildcard fans-in cleanly across
+// runs of the same agent; graph runner appends ".node.<nodeID>" as
+// its engine-private suffix to disambiguate the per-node sub-units.
+//
+// Empty agentID degrades to a bare nodeID (legacy path for direct
+// executor callers that do not populate engine.Run.Attributes);
+// empty nodeID degrades to a bare agentID (run-level events have
+// no node dimension).
+func stepActorFor(agentID, nodeID string) string {
+	switch {
+	case agentID == "" && nodeID == "":
+		return ""
+	case agentID == "":
+		return nodeID
+	case nodeID == "":
+		return agentID
+	default:
+		return agentID + ".node." + nodeID
+	}
 }
 
 var (
@@ -242,7 +304,7 @@ func (e *LocalExecutor) Execute(ctx context.Context, g *graph.Graph, board *grap
 	}
 	cfg.publisher = cfg.host
 
-	actorKey := actorKeyFrom(ctx)
+	agentID := agentIDFor(ctx, cfg)
 
 	if cfg.timeout > 0 {
 		var cancel context.CancelFunc
@@ -325,9 +387,9 @@ func (e *LocalExecutor) Execute(ctx context.Context, g *graph.Graph, board *grap
 		}
 		if len(live) == 0 {
 			publishGraphEvent(ctx, cfg.publisher, engine.SubjectRunStart(cfg.runID),
-				cfg.runID, g.Name(), actorKey, board.Vars())
+				cfg.runID, g.Name(), agentID, board.Vars())
 			publishGraphEvent(ctx, cfg.publisher, engine.SubjectRunEnd(cfg.runID),
-				cfg.runID, g.Name(), actorKey,
+				cfg.runID, g.Name(), agentID,
 				map[string]any{"iteration": cfg.resumeFrom.Iteration, "vars": board.Vars(), "resumed": true})
 			return board, nil
 		}
@@ -336,7 +398,7 @@ func (e *LocalExecutor) Execute(ctx context.Context, g *graph.Graph, board *grap
 	}
 
 	publishGraphEvent(ctx, cfg.publisher, engine.SubjectRunStart(cfg.runID),
-		cfg.runID, g.Name(), actorKey, board.Vars())
+		cfg.runID, g.Name(), agentID, board.Vars())
 
 	graphStatus := "success"
 	for len(currentNodes) > 0 && iteration < cfg.maxIterations {
@@ -356,8 +418,8 @@ func (e *LocalExecutor) Execute(ctx context.Context, g *graph.Graph, board *grap
 			if skip, err := shouldSkip(g, node, board); err != nil {
 				return board, err
 			} else if skip {
-				publishNodeEvent(ctx, cfg.publisher, subjNodeSkipped(cfg.runID, nodeID),
-					cfg.runID, g.Name(), actorKey, nodeID, nil)
+				publishNodeEvent(ctx, cfg.publisher, subjNodeSkipped(cfg.runID, stepActorFor(agentID, nodeID)),
+					cfg.runID, g.Name(), agentID, nodeID, nil)
 				resolved, err := resolveNextNodes(g, node, board)
 				if err != nil {
 					return board, err
@@ -389,8 +451,8 @@ func (e *LocalExecutor) Execute(ctx context.Context, g *graph.Graph, board *grap
 				}
 			}
 
-			publishNodeEvent(ctx, cfg.publisher, engine.SubjectStepStart(cfg.runID, nodeID),
-				cfg.runID, g.Name(), actorKey, nodeID, nil)
+			publishNodeEvent(ctx, cfg.publisher, engine.SubjectStepStart(cfg.runID, stepActorFor(agentID, nodeID)),
+				cfg.runID, g.Name(), agentID, nodeID, nil)
 
 			nodeStart := time.Now()
 			_, nodeSpan := telemetry.Tracer().Start(ctx, "node."+node.Type()+".execute",
@@ -426,7 +488,7 @@ func (e *LocalExecutor) Execute(ctx context.Context, g *graph.Graph, board *grap
 				if errdefs.IsInterrupted(err) {
 					board.SetVar(graph.VarInterruptedNode, nodeID)
 					publishGraphEvent(ctx, cfg.publisher, engine.SubjectRunEnd(cfg.runID),
-						cfg.runID, g.Name(), actorKey, nil)
+						cfg.runID, g.Name(), agentID, nil)
 					graphSpan.SetAttributes(attribute.String("graph.status", "interrupted"))
 					graphExecCount.Add(ctx, 1,
 						metric.WithAttributes(
@@ -449,8 +511,8 @@ func (e *LocalExecutor) Execute(ctx context.Context, g *graph.Graph, board *grap
 					otellog.String(telemetry.AttrNodeID, nodeID),
 					otellog.String(telemetry.AttrErrorMessage, err.Error()))
 
-				publishNodeEvent(ctx, cfg.publisher, engine.SubjectStepError(cfg.runID, nodeID),
-					cfg.runID, g.Name(), actorKey, nodeID,
+				publishNodeEvent(ctx, cfg.publisher, engine.SubjectStepError(cfg.runID, stepActorFor(agentID, nodeID)),
+					cfg.runID, g.Name(), agentID, nodeID,
 					map[string]any{"error": err.Error()})
 				return board, err
 			}
@@ -470,8 +532,8 @@ func (e *LocalExecutor) Execute(ctx context.Context, g *graph.Graph, board *grap
 				}
 			}
 
-			publishNodeEvent(ctx, cfg.publisher, engine.SubjectStepComplete(cfg.runID, nodeID),
-				cfg.runID, g.Name(), actorKey, nodeID,
+			publishNodeEvent(ctx, cfg.publisher, engine.SubjectStepComplete(cfg.runID, stepActorFor(agentID, nodeID)),
+				cfg.runID, g.Name(), agentID, nodeID,
 				map[string]any{"iteration": iteration, "vars": board.Vars()})
 
 			// Checkpoint through the host. host is always non-nil
@@ -537,7 +599,7 @@ func (e *LocalExecutor) Execute(ctx context.Context, g *graph.Graph, board *grap
 	}
 
 	publishGraphEvent(ctx, cfg.publisher, engine.SubjectRunEnd(cfg.runID),
-		cfg.runID, g.Name(), actorKey,
+		cfg.runID, g.Name(), agentID,
 		map[string]any{"iteration": iteration, "vars": board.Vars()})
 
 	graphSpan.SetAttributes(

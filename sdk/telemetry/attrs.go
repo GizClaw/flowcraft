@@ -52,6 +52,15 @@ const (
 	// top-level runs.
 	AttrParentRunID = "parent.run.id"
 
+	// AttrTaskID identifies the A2A-aligned task an operation
+	// belongs to (sdk/agent.Request.TaskID, mirrored into
+	// sdk/agent.Result.TaskID). Promoted by sdk/agent.Run into
+	// engine.Run.Attributes so engines / nodes / observers can
+	// recover it without reaching back through agent state.
+	// Optional: empty when the upstream Request did not carry a
+	// task identifier.
+	AttrTaskID = "task.id"
+
 	// AttrEngineKind identifies the concrete engine.Engine
 	// implementation (graph runner, future script engine, remote
 	// A2A bridge, ...). Producers SHOULD use a stable short token
@@ -78,11 +87,15 @@ const (
 
 	// ----- Generic actor (engine-neutral) -----
 
-	// AttrActorID is the engine-neutral identifier of the unit of
-	// work that produced an event. Mirrors the engine.SubjectStep* /
-	// engine.SubjectStreamDelta `actor_id` segment. Graph runner
-	// sets it to the node id; script/other engines use their own
-	// stable id.
+	// AttrActorID is the legacy spelling of AttrAgentID. The "actor"
+	// terminology pre-dates the agent / step-actor distinction
+	// settled in v0.4: the producer identity (envelope agent_id /
+	// span attribute) and the engine.SubjectStep* "actor" segment
+	// (graph runner: agent.id + ".node." + node id) are two
+	// different dimensions, and the single "actor" name conflated
+	// them.
+	//
+	// Deprecated: use [AttrAgentID]. Removed in v0.5.0.
 	AttrActorID = "actor.id"
 
 	// ----- Tools -----
