@@ -126,6 +126,27 @@ compare/fetch/ingest`, `eval longmemeval convert`). Shell completion
 
 #### sdkx
 
+- `sdkx/llm/{openai,anthropic,bytedance}`: status-code-aware error
+  classification. The generic `errdefs.ClassifyProvider` regex
+  (`\b(?:http|status)\s*(\d{3})\b`) misses the SDK error format used
+  by openai-go, anthropic-sdk-go, and volcengine arkruntime — all
+  three format their `Error.Error()` as `<METHOD> "<URL>": <code>
+  <status>` (or `"Error code: <code>"` for arkruntime), and the
+  `"https://"` URL prefix or the literal `"code:"` keyword defeat
+  the heuristic. Result: real 400 / 404 / 422 client errors fell
+  through to the `ProviderTransient` default → `NotAvailable`,
+  which the locomo runner's new retry-once would then quietly
+  retry instead of fail-fast. Per-provider `classifyAPIError` now
+  routes by `StatusCode` (401/403→Unauthorized, 402→Forbidden,
+  429→RateLimit, 400/405/422→Validation, 408/409/≥500→NotAvailable).
+  The openai variant additionally splits 404 by `error.code` body
+  field so Azure AI Foundry's bare-body "capacity blip" 404s stay
+  `NotAvailable` (transient, retryable) while structured
+  `DeploymentNotFound` 404s become `Validation` (fail-fast, no
+  retry storm on a wrong deployment name). `ollama` and the image
+  generators already drive `ClassifyHTTPStatus` / explicit
+  `switch resp.StatusCode` so they're unaffected.
+
 - `sdkx/llm/{openai,anthropic,bytedance,ollama,*/image}`: guard every
   chat-completion / image-generation entry point against `(nil, nil)`
   return tuples from upstream SDKs. The openai-go family does in
@@ -144,6 +165,27 @@ compare/fetch/ingest`, `eval longmemeval convert`). Shell completion
   exactly) and a misbehaving `RoundTripper` for ollama.
 
 ### Changed
+
+#### sdkx
+
+- `sdkx/llm/{openai,anthropic}`: configurable OTel / metrics provider
+  tag via new `LLM.WithProviderName(name)` + `LLM.Provider()`. Wrapping
+  adapters (`sdkx/llm/{azure,deepseek,qwen,minimax}`) now stamp their
+  own name on every span (`llm.<provider>.generate.<model>`),
+  attribute (`telemetry.AttrLLMProvider`), and metric label produced
+  by the upstream base provider. Previously, traffic from every
+  OpenAI-compatible sub-provider was silently aggregated under
+  `"openai"` in traces and dashboards (and MiniMax under
+  `"anthropic"`), because the base implementations hardcoded the
+  provider label deep in their hot path. Sub-providers had no way to
+  override it without re-implementing the whole `Generate` /
+  `GenerateStream` / streaming-finalize path. The same plumbing
+  routes through `classifyAPIError`'s fallback, so wrapped
+  network-shaped errors now surface under the right sub-provider
+  name. Direct callers of `openai.New` / `anthropic.New` are
+  unaffected (the historical "openai" / "anthropic" tags remain the
+  defaults). The image generators and `ollama` are already direct
+  providers and report their own names; not touched.
 
 #### eval
 

@@ -154,5 +154,14 @@ func New(model, apiKey, baseURL string) (*anthropic.LLM, error) {
 	if model == "" {
 		model = defaultModel
 	}
-	return anthropic.New(model, apiKey, baseURL, nil)
+	inner, err := anthropic.New(model, apiKey, baseURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	// Tag the OTel/metrics provider as "minimax" so MiniMax traffic
+	// (which speaks the Anthropic Messages API over /anthropic) is
+	// observable as its own bucket instead of being aggregated under
+	// the upstream "anthropic" tag. See sdkx/llm/anthropic/anthropic.go
+	// ▸ WithProviderName.
+	return inner.WithProviderName("minimax"), nil
 }

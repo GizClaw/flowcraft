@@ -111,6 +111,11 @@ func New(model, apiKey, baseURL string) (*LLM, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Tag the OTel/metrics provider as "qwen" so dashboards split out
+	// Qwen traffic from the upstream openai.LLM that delegates the HTTP
+	// transport. See sdkx/llm/openai/openai.go ▸ WithProviderName for
+	// the contract.
+	inner.WithProviderName("qwen")
 	return &LLM{inner: inner}, nil
 }
 
