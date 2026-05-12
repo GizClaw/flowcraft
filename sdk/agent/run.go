@@ -327,15 +327,19 @@ func mintRunID() string {
 // mergeAttributes combines RunOption-supplied attributes with the
 // well-known agent / task / context ids. Keys explicitly set by the
 // caller win — agent never overwrites.
+//
+// Key names live in runinfo_attrs.go and stay private to this
+// package; downstream readers go through [RunInfoFromAttributes] so
+// the wire format can be migrated without sweeping the codebase.
 func mergeAttributes(extra map[string]string, req Request, ag Agent, runID string) map[string]string {
 	out := make(map[string]string, len(extra)+4)
-	out["agent_id"] = ag.ID
-	out["run_id"] = runID
+	out[attrAgentID] = ag.ID
+	out[attrRunID] = runID
 	if req.TaskID != "" {
-		out["task_id"] = req.TaskID
+		out[attrTaskID] = req.TaskID
 	}
 	if req.ContextID != "" {
-		out["context_id"] = req.ContextID
+		out[attrContextID] = req.ContextID
 	}
 	for k, v := range extra {
 		out[k] = v
