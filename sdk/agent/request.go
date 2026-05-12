@@ -41,9 +41,27 @@ type Request struct {
 	// Maps to A2A's "configuration".
 	Config *RequestConfig `json:"configuration,omitempty"`
 
-	// Extensions is host-passed-through metadata. agent does NOT
-	// interpret it; engines may read it from Run.Attributes if the
-	// host chose to forward it.
+	// Extensions is host-passed-through metadata.
+	//
+	// Deprecated: agent has never interpreted this field — the
+	// previous godoc only documented "engines may read it from
+	// Run.Attributes if the host chose to forward it", and no
+	// such forwarding was ever implemented (contract-audit #8).
+	// The map[string]any → map[string]string type mismatch with
+	// engine.Run.Attributes also forces an ad-hoc serialisation
+	// strategy on every host that wants to forward.
+	//
+	// Use [WithAttributes] instead: it is a typed map[string]string
+	// the caller controls, the wire format is uniform with the
+	// canonical attribute bag (sdk/telemetry.Attr* dot-keys), and
+	// engines find it under engine.Run.Attributes via the same
+	// codepath as agent_id / run_id / task_id / context_id.
+	//
+	// This field is scheduled for removal in sdk v0.5.0. Migrate
+	// callers by serialising any non-string values at the call
+	// site and passing them through agent.WithAttributes(...) on
+	// the agent.Run option list. Engines that need to introspect
+	// caller-supplied metadata read engine.Run.Attributes today.
 	Extensions map[string]any `json:"extensions,omitempty"`
 }
 
