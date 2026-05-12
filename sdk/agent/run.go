@@ -162,9 +162,10 @@ func Run(
 		}
 		attemptAttrs["agent.attempt"] = itoa(attempt)
 		engRun := engine.Run{
-			ID:         runID,
-			Attributes: attemptAttrs,
-			Deps:       runDeps,
+			ID:          runID,
+			ParentRunID: rc.parentRunID,
+			Attributes:  attemptAttrs,
+			Deps:        runDeps,
 		}
 		if attempt == 1 {
 			engRun.ResumeFrom = rc.resumeFrom
@@ -405,15 +406,16 @@ func mergeAttributes(extra map[string]string, req Request, ag Agent, runID strin
 type RunOption func(*runConfig)
 
 type runConfig struct {
-	seeder     BoardSeeder
-	deps       *engine.Dependencies
-	host       engine.Host
-	attributes map[string]string
-	observers  []Observer
-	deciders   []Decider
-	resumeFrom *engine.Checkpoint
-	runID      string
-	maxRevise  int
+	seeder      BoardSeeder
+	deps        *engine.Dependencies
+	host        engine.Host
+	attributes  map[string]string
+	observers   []Observer
+	deciders    []Decider
+	resumeFrom  *engine.Checkpoint
+	runID       string
+	parentRunID string
+	maxRevise   int
 }
 
 // applyOptions threads ag through so we can apply Agent-scoped
@@ -548,6 +550,27 @@ func WithMaxRevise(n int) RunOption {
 		}
 		rc.maxRevise = n
 	}
+}
+
+// WithParentRunID stamps every engine.Run this call dispatches with
+// the supplied parent run id (engine.Run.ParentRunID). Use it when
+// one agent.Run is spawned by another (multi-agent call chain,
+// handoff, sub-agent dispatch) so dashboards / pod controllers can
+// reconstruct the call tree and apply loop-detection / depth budgets
+// against a stable correlation key.
+//
+// The empty string is a no-op; passing the parent's runID
+// (typically obtained from agent.RunInfo.RunID inside an Observer
+// / Decider on the parent run) is the canonical use. agent.Run does
+// NOT auto-derive ParentRunID from any ambient context — explicit
+// is the only contract that survives ctx propagation rewrites and
+// cross-process dispatch (vessel, A2A bridge).
+//
+// Engines / hosts that don't read ParentRunID are unaffected. The
+// field is also surfaced under telemetry.AttrParentRunID by
+// observers that emit run-summary spans (sdk/telemetry/run_summary).
+func WithParentRunID(id string) RunOption {
+	return func(rc *runConfig) { rc.parentRunID = id }
 }
 
 // WithResumeFrom replays an interrupted run from a previously

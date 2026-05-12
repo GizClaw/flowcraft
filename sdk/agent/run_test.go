@@ -1110,3 +1110,56 @@ func TestRun_AgentToolsDoesNotOverwriteCallerSuppliedToolAllowedNames(t *testing
 		t.Errorf("ToolAllowedNames = %v, want [caller-pin] (caller-supplied must win)", got)
 	}
 }
+
+// TestRun_WithParentRunID_PropagatesToEngineRun is the regression
+// test for contract-audit #3. engine.Run.ParentRunID was a typed
+// field with zero writers before this PR; agent.Run now promotes
+// the WithParentRunID value into every dispatched engine.Run so
+// the multi-agent call chain finally has a stable correlation
+// dimension dashboards / pod controllers can rely on.
+func TestRun_WithParentRunID_PropagatesToEngineRun(t *testing.T) {
+	var observed string
+	eng := engine.EngineFunc(func(_ context.Context, run engine.Run, _ engine.Host, b *engine.Board) (*engine.Board, error) {
+		observed = run.ParentRunID
+		b.AppendChannelMessage(engine.MainChannel,
+			model.NewTextMessage(model.RoleAssistant, "ok"))
+		return b, nil
+	})
+
+	if _, err := agent.Run(context.Background(),
+		agent.Agent{ID: "child"}, eng, newReq("hi"),
+		agent.WithParentRunID("run-parent-42"),
+	); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if observed != "run-parent-42" {
+		t.Fatalf("engine.Run.ParentRunID = %q, want %q", observed, "run-parent-42")
+	}
+}
+
+// TestRun_WithParentRunID_EmptyIsNoop documents the no-op contract:
+// callers (vessel, future pod controller) that don't have a parent
+// id MUST be able to omit the option without seeing an "empty
+// parent" appear downstream.
+func TestRun_WithParentRunID_EmptyIsNoop(t *testing.T) {
+	var observed string
+	var sawHookCall bool
+	eng := engine.EngineFunc(func(_ context.Context, run engine.Run, _ engine.Host, b *engine.Board) (*engine.Board, error) {
+		sawHookCall = true
+		observed = run.ParentRunID
+		b.AppendChannelMessage(engine.MainChannel,
+			model.NewTextMessage(model.RoleAssistant, "ok"))
+		return b, nil
+	})
+
+	if _, err := agent.Run(context.Background(),
+		agent.Agent{ID: "x"}, eng, newReq("hi")); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !sawHookCall {
+		t.Fatal("engine never called")
+	}
+	if observed != "" {
+		t.Fatalf("ParentRunID should default to empty string, got %q", observed)
+	}
+}
