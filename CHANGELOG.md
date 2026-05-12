@@ -145,6 +145,17 @@ compare/fetch/ingest`, `eval longmemeval convert`). Shell completion
 
 ### Changed
 
+#### eval
+
+- `eval/go.mod`: bump `sdk` v0.3.0 → v0.3.4 and `sdkx` v0.3.0 → v0.3.1.
+  Picks up the `sdk/recall.Add` slot-metadata fix (issue #100) and the
+  `sdkx/llm` nil-response guards (PR #103) so the LongMemEval `_s`
+  runner no longer panics at `sdkx/llm/openai/openai.go:314` when
+  DeepSeek's OpenAI-compatible backend answers a queued request with
+  literal JSON `null` — failures now surface as clean
+  `errdefs.NotAvailable` errors that the per-question scorer reports
+  as `error` instead of crashing the whole run.
+
 - **Breaking (internal)**: evaluation code consolidated under `eval/`,
   freeing the word `bench` for Go's `Benchmark*` performance
   benchmarks. Shared `dataset/` and `metrics/` packages were promoted
