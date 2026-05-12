@@ -211,6 +211,16 @@ func (m *lt) Add(ctx context.Context, scope Scope, e Entry) (string, error) {
 	d := EntryToDoc(e)
 	ns := NamespaceFor(scope)
 	m.rememberNamespace(ctx, ns)
+	// Slot supersede runs before the new doc lands so the new entry is
+	// never returned by supersedeBySlot's List(). The defensive
+	// "d.ID == newID" guard inside supersedeBySlot covers the race-free
+	// case where the new doc has already been inserted (eg async
+	// retry), but running before Upsert avoids it entirely in the
+	// happy path. Matches the ordering in upsertFacts.
+	if m.cfg.slotMerge && entrySlotEligible(e.Subject, e.Predicate) {
+		m.supersedeBySlot(ctx, scope, e.ID,
+			ExtractedFact{Subject: e.Subject, Predicate: e.Predicate}, now)
+	}
 	if err := m.idx.Upsert(ctx, ns, []retrieval.Doc{d}); err != nil {
 		span.RecordError(err)
 		addTotal.Add(ctx, 1, metric.WithAttributes(attribute.String("outcome", "fail"), attribute.String("reason", "upsert")))
@@ -302,6 +312,14 @@ func (m *lt) upsertFacts(
 				RuntimeID: scope.RuntimeID,
 				Timestamp: now,
 			},
+			// Subject / Predicate flow through Entry so EntryToDoc is the
+			// single source of truth for slot metadata writes. Eligibility
+			// (both fields set, neither containing '|') is enforced inside
+			// EntryToDoc; ineligible tuples silently degrade and the fact
+			// falls back to the vector / resolver supersede channels —
+			// same contract the slot writer had before this refactor.
+			Subject:   f.Subject,
+			Predicate: f.Predicate,
 		}
 		if len(entry.Categories) > 0 {
 			entry.Category = Category(entry.Categories[0])
@@ -319,22 +337,6 @@ func (m *lt) upsertFacts(
 		d.Metadata[MetaContentHash] = hashes[i]
 		if f.Source != "" {
 			d.Metadata[MetaSourceLabel] = f.Source
-		}
-		// Slot fields are written only when BOTH Subject and Predicate are
-		// present so that the slot supersede channel and the SlotCollapse
-		// retrieval stage can rely on slot_key being unambiguous.
-		//
-		// Subjects/predicates that contain the slot delimiter '|' would
-		// produce ambiguous slot_keys (e.g. subject="user|alt"+
-		// predicate="lives_in" would collide with subject="user"+
-		// predicate="alt|lives_in"). The Save path drops the slot
-		// fields entirely in that case so the fact degrades to the
-		// vector / resolver supersede channels — slot writers stay
-		// strict, the rest of the pipeline keeps working.
-		if slotEligible(f) {
-			d.Metadata[MetaSubject] = f.Subject
-			d.Metadata[MetaPredicate] = f.Predicate
-			d.Metadata[MetaSlotKey] = f.Subject + slotDelimiter + f.Predicate
 		}
 		plans = append(plans, plan{entry: entry, doc: d, fact: f})
 		returnedIDs = append(returnedIDs, entry.ID)

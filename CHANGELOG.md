@@ -14,6 +14,71 @@ with its own tag prefix (e.g. `sdk/vX.Y.Z`, `vessel/vX.Y.Z`,
 
 ### Added
 
+#### sdk
+
+- `sdk/engine`: capabilities / resume / revise lifecycle. New
+  `engine/depname` package centralises Dependencies keys (LLMClient,
+  ToolRegistry, ToolAllowedNames, …) so engine authors and host
+  wiring stop relying on stringly-typed map keys. New
+  `engine.WithCapabilities` helper + `engineWithCaps` adapter lets
+  any engine declare a `Describer` without re-implementing the round
+  driver, finally honouring the long-standing "engines may declare
+  capabilities / may be resumable / Decider may ask for a revise"
+  contract in the public godocs.
+- `sdk/engine` + `sdk/tool`: built-in `ask_user` tool with
+  host-on-context plumbing. New `engine.WithHost(ctx, host)` /
+  `engine.HostFromContext(ctx)` helpers let any tool reach
+  `engine.Host.AskUser` from inside `tool.Tool.Execute`. The
+  llmnode round driver now wraps the tool dispatch context with
+  the live `Host`. Contract is advisory: tools that truly require a
+  host must surface `errdefs.NotAvailable` when absent.
+- `sdk/agent`: `WithParentRunID(string) RunOption` threads a parent
+  run ID through `runConfig` and stamps it onto every
+  `engine.Run.ParentRunID` the revise loop dispatches. Closes the
+  contract-audit gap where `engine.Run.ParentRunID` had been a typed
+  field with zero writers since v0.1; multi-agent call-chain loop /
+  depth detection now has the data it always claimed to have.
+- `sdk/agent`: `WithArtifactChannels(channels ...string) RunOption`
+  harvests board channels into `Result.Artifacts` at the end of a
+  run. Closes the contract-audit gap where `Result.Artifacts` had
+  been documented since v0.1 but no `agent.Run` code path
+  populated it — hosts that wrote artifact channels previously saw
+  the data vanish at the agent boundary.
+- `sdk/agent`: `Agent.Tools` finally takes effect as a policy gate.
+  `agent.Run` now promotes the agent's tool list into
+  `engine.Run.Deps[depname.ToolAllowedNames]` once per run, and
+  `llmnode.Node.resolveTools` enforces it on each tool dispatch.
+  Allow-list semantics: empty list = no gate (back-compat); non-empty
+  list = tools outside the set return `errdefs.PermissionDenied`.
+- `sdk/agent` + `sdk/graph/node/scriptnode`: `agent.RunInfoFromAttributes`
+  reads the standard agent_id / run_id / task_id / context_id
+  attribute keys back into a fully-populated `agent.RunInfo`.
+  scriptnode now uses it, so scripts see the full run identity
+  instead of `RunInfo{RunID: ec.RunID}` with empty AgentID / TaskID /
+  ContextID.
+- `sdk/graph`: `ExecutionContext.Deps` (`*engine.Dependencies`) and
+  `ExecutionContext.Attributes` (`map[string]string`) propagate from
+  `engine.Run` down to every node. Tools and scriptnode can now
+  resolve host-supplied dependencies (LLM clients, tool registries,
+  retrievers, …) without closure-binding them at builder time.
+- `sdk/graph/node/llmnode`: tool registry + allow-list resolution
+  from `ExecutionContext.Deps`. Per-run `*tool.Registry` and
+  per-agent allow-list flow through the graph cleanly; constructor-
+  bound registry is still honoured when no run-scoped registry is
+  present.
+- `sdk/recall`: `Entry.Subject` and `Entry.Predicate` opt-in fields.
+  When both are non-empty and slot-eligible (neither contains `|`),
+  `Memory.Add` now writes `MetaSubject` / `MetaPredicate` /
+  `MetaSlotKey` and participates in the slot supersede channel,
+  matching `Memory.Save`'s built-in extractor path. Closes
+  [#100](https://github.com/GizClaw/flowcraft/issues/100): callers
+  that fan out facts to different scopes per-fact (and therefore
+  must drive `Add` instead of `Save`) can now combine per-fact scope
+  routing with slot dedup. Backwards-compatible: existing `Add`
+  callers that leave both fields zero are unchanged.
+
+#### eval / docs
+
 - Top-level `README.md`, `CHANGELOG.md`, and `SECURITY.md`.
 - `eval/cmd/eval`: unified Cobra CLI replaces the per-suite
   `eval/<suite>/cmd/eval` mains. Invoke as `eval <suite>`; LoCoMo +
@@ -74,6 +139,19 @@ compare/fetch/ingest`, `eval longmemeval convert`). Shell completion
   | `…/bench/locomo/runners…`     | `…/eval/locomo/runners…` |
   | `…/bench/history-compression` | `…/eval/history`         |
   | `…/tests/quality/knowledge`   | `…/eval/knowledge`       |
+
+### Deprecated
+
+#### sdk
+
+- `agent.Request.Extensions`. Agent never interpreted the field, no
+  engine ever read it, and the `map[string]any` →
+  `map[string]string` type mismatch with `engine.Run.Attributes`
+  meant any future forwarding would have needed ad-hoc per-host
+  serialisation. Use `agent.WithAttributes(...)` instead — same
+  wire format, same codepath, no serialisation guesswork. The
+  field is retained for source compatibility but ignored on every
+  write path.
 
 ---
 
