@@ -170,6 +170,12 @@ func (l *LLM) generate(ctx context.Context, messages []llm.Message, opts ...llm.
 	if err != nil {
 		return llm.Message{}, llm.TokenUsage{}, err
 	}
+	// Family-wide nil-resp guard — same rationale as the openai /
+	// anthropic / bytedance fixes. Cheap insurance against a future
+	// do() refactor that drops an error branch.
+	if resp == nil {
+		return llm.Message{}, llm.TokenUsage{}, errdefs.NotAvailable(errdefs.New("minimax-image: nil response with no error (provider misbehaviour)"))
+	}
 	if resp.BaseResp.StatusCode != 0 {
 		return llm.Message{}, llm.TokenUsage{}, mapAPIError(resp.BaseResp)
 	}

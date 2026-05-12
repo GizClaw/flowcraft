@@ -202,6 +202,19 @@ func (c *LLM) Generate(ctx context.Context, messages []llm.Message, opts ...llm.
 			}
 			return llm.Message{}, llm.TokenUsage{}, errdefs.ClassifyProviderError("anthropic", err)
 		}
+		// anthropic-sdk-go and Anthropic-compatible backends (MiniMax via
+		// /anthropic) have been observed returning (nil, nil) under flaky
+		// network conditions; see the same guard in sdkx/llm/openai. The
+		// "err==nil ⇒ resp!=nil" pointer-return convention is not a
+		// language guarantee, and the alternative (raw deref) crashes
+		// the whole runner.
+		if resp == nil {
+			err := errdefs.NotAvailablef("anthropic: nil beta response with no error (provider misbehaviour)")
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+			llm.RecordLLMMetrics(ctx, "anthropic", string(c.model), "error", dur, llm.TokenUsage{})
+			return llm.Message{}, llm.TokenUsage{}, err
+		}
 
 		text := extractBetaText(resp.Content)
 		usage := llm.TokenUsage{
@@ -237,6 +250,15 @@ func (c *LLM) Generate(ctx context.Context, messages []llm.Message, opts ...llm.
 			return llm.Message{}, llm.TokenUsage{}, errdefs.Timeoutf("anthropic.generate: %s", err.Error())
 		}
 		return llm.Message{}, llm.TokenUsage{}, errdefs.ClassifyProviderError("anthropic", err)
+	}
+	// See nil-check rationale in the beta branch above and in
+	// sdkx/llm/openai.
+	if resp == nil {
+		err := errdefs.NotAvailablef("anthropic: nil response with no error (provider misbehaviour)")
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		llm.RecordLLMMetrics(ctx, "anthropic", string(c.model), "error", dur, llm.TokenUsage{})
+		return llm.Message{}, llm.TokenUsage{}, err
 	}
 
 	msg := convertResponse(resp.Content)
@@ -290,6 +312,17 @@ func (c *LLM) GenerateStream(ctx context.Context, messages []llm.Message, opts .
 		applyBetaOptions(&p, options)
 
 		stream := c.client.Beta.Messages.NewStreaming(ctx, p)
+		// Match the nil-resp guard on the non-streaming path: SDKs can
+		// fail before allocating a stream handle (HTTP dial failure,
+		// internal panic recovery). Without the guard, the very next
+		// stream.Recv inside newBetaStreamMessage would deref nil.
+		if stream == nil {
+			err := errdefs.NotAvailablef("anthropic: nil beta stream handle (provider misbehaviour)")
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+			span.End()
+			return nil, err
+		}
 		return newBetaStreamMessage(ctx, span, string(c.model), stream), nil
 	}
 
@@ -302,6 +335,13 @@ func (c *LLM) GenerateStream(ctx context.Context, messages []llm.Message, opts .
 	applyOptions(&p, options)
 
 	stream := c.client.Messages.NewStreaming(ctx, p)
+	if stream == nil {
+		err := errdefs.NotAvailablef("anthropic: nil stream handle (provider misbehaviour)")
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		span.End()
+		return nil, err
+	}
 	return newStreamMessage(ctx, span, string(c.model), stream), nil
 }
 
