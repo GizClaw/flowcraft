@@ -200,7 +200,7 @@ func (c *LLM) Generate(ctx context.Context, messages []llm.Message, opts ...llm.
 			if ctx.Err() != nil {
 				return llm.Message{}, llm.TokenUsage{}, errdefs.Timeoutf("anthropic.generate: %s", err.Error())
 			}
-			return llm.Message{}, llm.TokenUsage{}, errdefs.ClassifyProviderError("anthropic", err)
+			return llm.Message{}, llm.TokenUsage{}, classifyAPIError(err)
 		}
 		// anthropic-sdk-go and Anthropic-compatible backends (MiniMax via
 		// /anthropic) have been observed returning (nil, nil) under flaky
@@ -249,7 +249,7 @@ func (c *LLM) Generate(ctx context.Context, messages []llm.Message, opts ...llm.
 		if ctx.Err() != nil {
 			return llm.Message{}, llm.TokenUsage{}, errdefs.Timeoutf("anthropic.generate: %s", err.Error())
 		}
-		return llm.Message{}, llm.TokenUsage{}, errdefs.ClassifyProviderError("anthropic", err)
+		return llm.Message{}, llm.TokenUsage{}, classifyAPIError(err)
 	}
 	// See nil-check rationale in the beta branch above and in
 	// sdkx/llm/openai.

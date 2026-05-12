@@ -64,7 +64,7 @@ func (s *openaiStreamMessage) Next() bool {
 		if !s.stream.Next() {
 			err := s.stream.Err()
 			if err != nil {
-				err = errdefs.ClassifyProviderError("openai", err)
+				err = classifyAPIError(err)
 			}
 			s.mu.Lock()
 			s.err = err

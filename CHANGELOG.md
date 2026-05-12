@@ -126,6 +126,27 @@ compare/fetch/ingest`, `eval longmemeval convert`). Shell completion
 
 #### sdkx
 
+- `sdkx/llm/{openai,anthropic,bytedance}`: status-code-aware error
+  classification. The generic `errdefs.ClassifyProvider` regex
+  (`\b(?:http|status)\s*(\d{3})\b`) misses the SDK error format used
+  by openai-go, anthropic-sdk-go, and volcengine arkruntime — all
+  three format their `Error.Error()` as `<METHOD> "<URL>": <code>
+  <status>` (or `"Error code: <code>"` for arkruntime), and the
+  `"https://"` URL prefix or the literal `"code:"` keyword defeat
+  the heuristic. Result: real 400 / 404 / 422 client errors fell
+  through to the `ProviderTransient` default → `NotAvailable`,
+  which the locomo runner's new retry-once would then quietly
+  retry instead of fail-fast. Per-provider `classifyAPIError` now
+  routes by `StatusCode` (401/403→Unauthorized, 402→Forbidden,
+  429→RateLimit, 400/405/422→Validation, 408/409/≥500→NotAvailable).
+  The openai variant additionally splits 404 by `error.code` body
+  field so Azure AI Foundry's bare-body "capacity blip" 404s stay
+  `NotAvailable` (transient, retryable) while structured
+  `DeploymentNotFound` 404s become `Validation` (fail-fast, no
+  retry storm on a wrong deployment name). `ollama` and the image
+  generators already drive `ClassifyHTTPStatus` / explicit
+  `switch resp.StatusCode` so they're unaffected.
+
 - `sdkx/llm/{openai,anthropic,bytedance,ollama,*/image}`: guard every
   chat-completion / image-generation entry point against `(nil, nil)`
   return tuples from upstream SDKs. The openai-go family does in

@@ -72,7 +72,7 @@ func (s *streamMessage) Next() bool {
 				s.finish(nil)
 				return false
 			}
-			err = errdefs.ClassifyProviderError("bytedance", err)
+			err = classifyAPIError(err)
 			s.mu.Lock()
 			s.stream = nil
 			s.err = err

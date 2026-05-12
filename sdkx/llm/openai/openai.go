@@ -308,7 +308,7 @@ func (c *LLM) Generate(ctx context.Context, messages []llm.Message, opts ...llm.
 		if ctx.Err() != nil {
 			return llm.Message{}, llm.TokenUsage{}, errdefs.Timeoutf("openai.generate: %s", dur.String())
 		}
-		return llm.Message{}, llm.TokenUsage{}, errdefs.ClassifyProviderError("openai", err)
+		return llm.Message{}, llm.TokenUsage{}, classifyAPIError(err)
 	}
 	// openai-go and OpenAI-compatible backends (deepseek, qwen-flash on
 	// busy hours, self-hosted) have been observed returning (nil, nil)
@@ -393,7 +393,7 @@ func (c *LLM) GenerateStream(ctx context.Context, messages []llm.Message, opts .
 			span.RecordError(err2)
 			span.SetStatus(codes.Error, err2.Error())
 			span.End()
-			return nil, errdefs.ClassifyProviderError("openai", err2)
+			return nil, classifyAPIError(err2)
 		}
 	}
 
