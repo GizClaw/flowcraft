@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/GizClaw/flowcraft/sdk/history"
 	"github.com/GizClaw/flowcraft/sdk/llm"
@@ -16,12 +17,17 @@ import (
 func main() {
 	ctx := context.Background()
 	hist := history.NewBuffer(history.NewInMemoryStore(), history.WithBufferMax(20))
-	// NewBuffer does not satisfy history.Closer; if you swap in
-	// history.NewCompacted (or any implementation with background
-	// goroutines), the type-assert below drains them on shutdown.
+	// NewBuffer is stateless, nothing to drain. If you swap in
+	// history.NewCompacted (or any implementation that owns
+	// background workers / archive recovery goroutines), the
+	// type-assert below drains them on shutdown — see the
+	// sdk/history package docs ("Lifecycle" section) for the
+	// canonical pattern.
 	defer func() {
-		if c, ok := hist.(history.Closer); ok {
-			c.Close()
+		if coord, ok := hist.(history.Coordinator); ok {
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			_ = coord.Shutdown(shutdownCtx)
 		}
 	}()
 	mem, err := recall.New(memidx.New(),
