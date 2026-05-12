@@ -34,10 +34,21 @@ type anthropicBetaStreamMessage struct {
 
 	allowPartialJSON bool
 
-	mu         sync.Mutex
-	usage      llm.Usage
-	closeOnce  sync.Once
-	finishOnce sync.Once
+	mu    sync.Mutex
+	usage llm.Usage
+	// cachedInputTokens shadows usage so the finish path can plumb
+	// the cache-read subset (which llm.Usage intentionally omits)
+	// into TokenUsage. See sdkx/llm/openai/stream.go for the same
+	// pattern.
+	cachedInputTokens int64
+	// grossInputTokens is the sum of new + cache_read +
+	// cache_creation input tokens. Anthropic's wire `input_tokens`
+	// is the *non-cached new* portion only; we recombine it with
+	// the cache buckets here to honour the TokenUsage contract
+	// that InputTokens is the gross prompt size.
+	grossInputTokens int64
+	closeOnce        sync.Once
+	finishOnce       sync.Once
 
 	blockTypes map[int64]string
 	textBuf    strings.Builder
@@ -150,18 +161,32 @@ func (s *anthropicBetaStreamMessage) Message() llm.Message {
 func (s *anthropicBetaStreamMessage) betaUpdateUsage(ev asdk.BetaRawMessageStreamEventUnion) {
 	switch ev.Type {
 	case "message_start":
-		in := ev.Message.Usage.InputTokens
-		out := ev.Message.Usage.OutputTokens
-		if in == 0 && out == 0 {
+		u := ev.Message.Usage
+		if u.InputTokens == 0 && u.OutputTokens == 0 && u.CacheReadInputTokens == 0 && u.CacheCreationInputTokens == 0 {
 			return
 		}
+		// Anthropic ships the cache buckets in message_start only;
+		// later message_delta events refresh output_tokens and
+		// (rarely) input_tokens but never re-publish the cache
+		// counters, so we latch them here via the shared helper.
+		gross, cached := normalizeAnthropicUsage(u.InputTokens, u.CacheReadInputTokens, u.CacheCreationInputTokens)
 		s.mu.Lock()
-		s.usage.InputTokens = in
-		s.usage.OutputTokens = out
+		s.usage.InputTokens = gross
+		s.usage.OutputTokens = u.OutputTokens
+		s.cachedInputTokens = cached
+		s.grossInputTokens = gross
 		s.mu.Unlock()
 	case "message_delta":
 		s.mu.Lock()
-		s.usage.InputTokens = ev.Usage.InputTokens
+		// Preserve gross input from message_start; the SDK's delta
+		// only republishes the non-cached portion, so writing
+		// ev.Usage.InputTokens directly would erase the cached
+		// contribution we just latched.
+		if s.grossInputTokens > 0 {
+			s.usage.InputTokens = s.grossInputTokens
+		} else {
+			s.usage.InputTokens = ev.Usage.InputTokens
+		}
 		s.usage.OutputTokens = ev.Usage.OutputTokens
 		s.mu.Unlock()
 	}
@@ -197,7 +222,10 @@ func (s *anthropicBetaStreamMessage) betaExtractDeltaText(ev asdk.BetaRawMessage
 func (s *anthropicBetaStreamMessage) betaFinish(err error) {
 	s.finishOnce.Do(func() {
 		dur := time.Since(s.start)
-		usage := s.Usage()
+		s.mu.Lock()
+		usage := s.usage
+		cached := s.cachedInputTokens
+		s.mu.Unlock()
 		if err != nil {
 			s.span.RecordError(err)
 			s.span.SetStatus(codes.Error, err.Error())
@@ -211,7 +239,10 @@ func (s *anthropicBetaStreamMessage) betaFinish(err error) {
 			)
 			s.span.SetStatus(codes.Ok, "OK")
 			llm.RecordLLMMetrics(s.baseCtx, s.provider, s.model, "success", dur, llm.TokenUsage{
-				InputTokens: usage.InputTokens, OutputTokens: usage.OutputTokens,
+				InputTokens:       usage.InputTokens,
+				CachedInputTokens: cached,
+				OutputTokens:      usage.OutputTokens,
+				TotalTokens:       usage.InputTokens + usage.OutputTokens,
 			})
 		}
 		s.span.End()
@@ -230,10 +261,13 @@ type anthropicStreamMessage struct {
 	start    time.Time
 	stream   *ssestream.Stream[asdk.MessageStreamEventUnion]
 
-	mu         sync.Mutex
-	usage      llm.Usage
-	closeOnce  sync.Once
-	finishOnce sync.Once
+	mu    sync.Mutex
+	usage llm.Usage
+	// cachedInputTokens / grossInputTokens — see anthropicBetaStreamMessage.
+	cachedInputTokens int64
+	grossInputTokens  int64
+	closeOnce         sync.Once
+	finishOnce        sync.Once
 
 	blockTypes map[int64]string
 
@@ -362,18 +396,24 @@ func (s *anthropicStreamMessage) Message() llm.Message {
 func (s *anthropicStreamMessage) updateUsage(ev asdk.MessageStreamEventUnion) {
 	switch ev.Type {
 	case "message_start":
-		in := ev.Message.Usage.InputTokens
-		out := ev.Message.Usage.OutputTokens
-		if in == 0 && out == 0 {
+		u := ev.Message.Usage
+		if u.InputTokens == 0 && u.OutputTokens == 0 && u.CacheReadInputTokens == 0 && u.CacheCreationInputTokens == 0 {
 			return
 		}
+		gross, cached := normalizeAnthropicUsage(u.InputTokens, u.CacheReadInputTokens, u.CacheCreationInputTokens)
 		s.mu.Lock()
-		s.usage.InputTokens = in
-		s.usage.OutputTokens = out
+		s.usage.InputTokens = gross
+		s.usage.OutputTokens = u.OutputTokens
+		s.cachedInputTokens = cached
+		s.grossInputTokens = gross
 		s.mu.Unlock()
 	case "message_delta":
 		s.mu.Lock()
-		s.usage.InputTokens = ev.Usage.InputTokens
+		if s.grossInputTokens > 0 {
+			s.usage.InputTokens = s.grossInputTokens
+		} else {
+			s.usage.InputTokens = ev.Usage.InputTokens
+		}
 		s.usage.OutputTokens = ev.Usage.OutputTokens
 		s.mu.Unlock()
 	}
@@ -437,7 +477,10 @@ func (s *anthropicStreamMessage) extractDeltaText(ev asdk.MessageStreamEventUnio
 func (s *anthropicStreamMessage) finish(err error) {
 	s.finishOnce.Do(func() {
 		dur := time.Since(s.start)
-		usage := s.Usage()
+		s.mu.Lock()
+		usage := s.usage
+		cached := s.cachedInputTokens
+		s.mu.Unlock()
 
 		if err != nil {
 			s.span.RecordError(err)
@@ -452,7 +495,10 @@ func (s *anthropicStreamMessage) finish(err error) {
 			)
 			s.span.SetStatus(codes.Ok, "OK")
 			llm.RecordLLMMetrics(s.baseCtx, s.provider, s.model, "success", dur, llm.TokenUsage{
-				InputTokens: usage.InputTokens, OutputTokens: usage.OutputTokens,
+				InputTokens:       usage.InputTokens,
+				CachedInputTokens: cached,
+				OutputTokens:      usage.OutputTokens,
+				TotalTokens:       usage.InputTokens + usage.OutputTokens,
 			})
 		}
 		s.span.End()

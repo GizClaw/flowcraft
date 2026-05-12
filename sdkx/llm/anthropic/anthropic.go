@@ -25,6 +25,35 @@ const (
 	defaultMaxTokens = int64(4096)
 )
 
+// normalizeAnthropicUsage maps Anthropic's three-bucket prompt-token
+// breakdown onto the sdk's two-field TokenUsage contract.
+//
+// Anthropic returns prompt tokens in three independent counters:
+//
+//   - inputTokens          – NEW, non-cached input on this call
+//   - cacheReadInputTokens – cached subset served at ~10% read rate
+//   - cacheCreationInputTokens – tokens written to cache this call
+//     (1.25x rate on the SKUs that support it)
+//
+// `inputTokens` alone therefore UNDER-counts the wire prompt size,
+// which is the cause of the historical "Anthropic TokenUsage looks
+// smaller than the equivalent OpenAI call" complaint. The sdk
+// contract for TokenUsage.InputTokens is the *gross* prompt size
+// (matching OpenAI's `prompt_tokens` semantics), so this helper sums
+// all three buckets. CachedInputTokens then names the cache-read
+// subset alone — a uniform observable across providers for callers
+// computing hit-rate via CachedInputTokens / InputTokens.
+//
+// Extracted as a named function so the three-bucket arithmetic
+// (used identically in Generate, GenerateStream's beta and stable
+// paths, plus their `updateUsage` event handlers) has a single
+// regression-test surface.
+func normalizeAnthropicUsage(inputTokens, cacheReadInputTokens, cacheCreationInputTokens int64) (gross, cached int64) {
+	gross = inputTokens + cacheReadInputTokens + cacheCreationInputTokens
+	cached = cacheReadInputTokens
+	return gross, cached
+}
+
 func init() {
 	llm.RegisterProvider("anthropic", func(model string, config map[string]any) (llm.LLM, error) {
 		apiKey, _ := config["api_key"].(string)
@@ -229,6 +258,14 @@ func (c *LLM) Generate(ctx context.Context, messages []llm.Message, opts ...llm.
 			},
 		}
 		applyBetaOptions(&p, options)
+		// Plan anchors against the stable params (planCacheAnchors
+		// reads only Text / content-length fields, which are
+		// identical across the stable / beta type pair) and then
+		// re-apply to the beta slices. JSON mode currently has no
+		// tools surface, so the toolsLast anchor is dropped.
+		plan := planCacheAnchors(sys, msgParams, nil)
+		applyAnchorsToBetaSystem(p.System, plan.systemBlocks)
+		applyAnchorToBetaHistory(p.Messages, plan.historyMsgIdx)
 
 		start := time.Now()
 		resp, err := c.client.Beta.Messages.New(ctx, p)
@@ -257,10 +294,12 @@ func (c *LLM) Generate(ctx context.Context, messages []llm.Message, opts ...llm.
 		}
 
 		text := extractBetaText(resp.Content)
+		gross, cached := normalizeAnthropicUsage(resp.Usage.InputTokens, resp.Usage.CacheReadInputTokens, resp.Usage.CacheCreationInputTokens)
 		usage := llm.TokenUsage{
-			InputTokens:  resp.Usage.InputTokens,
-			OutputTokens: resp.Usage.OutputTokens,
-			TotalTokens:  resp.Usage.InputTokens + resp.Usage.OutputTokens,
+			InputTokens:       gross,
+			CachedInputTokens: cached,
+			OutputTokens:      resp.Usage.OutputTokens,
+			TotalTokens:       gross + resp.Usage.OutputTokens,
 		}
 		span.SetAttributes(
 			attribute.Int64(telemetry.AttrLLMInputTokens, usage.InputTokens),
@@ -278,6 +317,18 @@ func (c *LLM) Generate(ctx context.Context, messages []llm.Message, opts ...llm.
 		System:    sys,
 	}
 	applyOptions(&p, options)
+	// Cache-anchor planning must run *after* applyOptions has
+	// populated p.Tools — the plan's tools-end anchor needs the
+	// final tool slice to mutate in place. System / history
+	// anchors operate on the same slices held by p.System and
+	// p.Messages (Go pass-by-slice semantics), so mutating
+	// through the local handles is observable on p.
+	plan := planCacheAnchors(p.System, p.Messages, p.Tools)
+	applyAnchorsToSystem(p.System, plan.systemBlocks)
+	applyAnchorToHistory(p.Messages, plan.historyMsgIdx)
+	if plan.toolsLast {
+		applyAnchorToTools(p.Tools)
+	}
 
 	start := time.Now()
 	resp, err := c.client.Messages.New(ctx, p)
@@ -302,10 +353,12 @@ func (c *LLM) Generate(ctx context.Context, messages []llm.Message, opts ...llm.
 	}
 
 	msg := convertResponse(resp.Content)
+	gross, cached := normalizeAnthropicUsage(resp.Usage.InputTokens, resp.Usage.CacheReadInputTokens, resp.Usage.CacheCreationInputTokens)
 	usage := llm.TokenUsage{
-		InputTokens:  resp.Usage.InputTokens,
-		OutputTokens: resp.Usage.OutputTokens,
-		TotalTokens:  resp.Usage.InputTokens + resp.Usage.OutputTokens,
+		InputTokens:       gross,
+		CachedInputTokens: cached,
+		OutputTokens:      resp.Usage.OutputTokens,
+		TotalTokens:       gross + resp.Usage.OutputTokens,
 	}
 
 	span.SetAttributes(
@@ -351,6 +404,11 @@ func (c *LLM) GenerateStream(ctx context.Context, messages []llm.Message, opts .
 			},
 		}
 		applyBetaOptions(&p, options)
+		// Same cache-anchor plumbing as the non-streaming Beta
+		// branch; see the comment there.
+		plan := planCacheAnchors(sys, msgParams, nil)
+		applyAnchorsToBetaSystem(p.System, plan.systemBlocks)
+		applyAnchorToBetaHistory(p.Messages, plan.historyMsgIdx)
 
 		stream := c.client.Beta.Messages.NewStreaming(ctx, p)
 		// Match the nil-resp guard on the non-streaming path: SDKs can
@@ -374,6 +432,12 @@ func (c *LLM) GenerateStream(ctx context.Context, messages []llm.Message, opts .
 		System:    sys,
 	}
 	applyOptions(&p, options)
+	plan := planCacheAnchors(p.System, p.Messages, p.Tools)
+	applyAnchorsToSystem(p.System, plan.systemBlocks)
+	applyAnchorToHistory(p.Messages, plan.historyMsgIdx)
+	if plan.toolsLast {
+		applyAnchorToTools(p.Tools)
+	}
 
 	stream := c.client.Messages.NewStreaming(ctx, p)
 	if stream == nil {
@@ -388,13 +452,32 @@ func (c *LLM) GenerateStream(ctx context.Context, messages []llm.Message, opts .
 
 // --- message conversion ---
 
+// convertMessages translates the SDK's [llm.Message] slice into
+// Anthropic's split (system, []MessageParam) shape. Multiple
+// llm.Message{Role: System} entries are preserved as **independent
+// text blocks** in the system slice rather than being string-joined,
+// because the upstream caller convention is that each Role:System
+// message represents one prompt segment that may be a cache anchor.
+// The downstream automatic cache_control placement (see cache.go)
+// relies on this segmentation to decide where prompt-caching
+// breakpoints go; joining here would silently collapse the
+// caller's intent.
+//
+// Tools and message-history caching are applied separately by the
+// caller after convertMessages returns — they need access to the
+// fully-built ToolUnionParam / MessageParam slices and are placed
+// alongside the system anchors as part of the same 4-breakpoint
+// budget.
 func convertMessages(messages []llm.Message) (system []asdk.TextBlockParam, out []asdk.MessageParam, err error) {
-	var sysParts []string
 	for _, msg := range messages {
 		switch msg.Role {
 		case llm.RoleSystem:
+			// One TextBlockParam per llm.Message{Role:System}: that
+			// is the cache-segmentation primitive shared with
+			// callers. Empty / whitespace-only segments are dropped
+			// (they would never qualify for cache_control anyway).
 			if t := strings.TrimSpace(msg.Content()); t != "" {
-				sysParts = append(sysParts, t)
+				system = append(system, asdk.TextBlockParam{Text: t})
 			}
 		case llm.RoleUser, llm.RoleAssistant:
 			blocks, convErr := convertContentParts(msg.Parts)
@@ -428,9 +511,6 @@ func convertMessages(messages []llm.Message) (system []asdk.TextBlockParam, out 
 		}
 	}
 
-	if joined := strings.Join(sysParts, "\n"); strings.TrimSpace(joined) != "" {
-		system = []asdk.TextBlockParam{{Text: joined}}
-	}
 	return system, out, nil
 }
 
