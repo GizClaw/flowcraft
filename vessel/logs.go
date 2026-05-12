@@ -45,7 +45,13 @@ const (
 	LogEntryRunEnded LogEntryType = "run.ended"
 
 	// LogEntryStepStarted maps to engine.SubjectStepStart. ActorID
-	// is set to the engine's actor identifier (graph: node id).
+	// is set to the stepActor segment of the subject — which per
+	// the engine contract starts with the executing agent.id and
+	// MAY be followed by an engine-private suffix (graph runner:
+	// "<agent>_node_<nodeID>"; vessel inline: "<agent>_iter<N>").
+	// Consumers that want only the agent.id portion should read
+	// the envelope's HeaderAgentID instead, which is stamped by
+	// every engine and never carries the suffix.
 	LogEntryStepStarted LogEntryType = "step.started"
 
 	// LogEntryStepEnded maps to engine.SubjectStepComplete (success
