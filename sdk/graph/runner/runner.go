@@ -107,10 +107,13 @@ func (r *Runner) Run(ctx context.Context, vars map[string]any, opts ...executor.
 // run identifier. board MUST be non-nil; engines mutate in place by
 // contract and Execute therefore returns the same pointer on success.
 //
-// Resume support: the graph runner does not implement run.ResumeFrom
-// today. Supplying a non-nil ResumeFrom yields an
-// errdefs.NotAvailable-classified error (see [Runner.Execute]'s
-// implementation in engine.go).
+// Resume support: when run.ResumeFrom is non-nil the runner restores
+// board state from cp.Board, locates the node id recorded in cp.Step,
+// and continues from that node's downstream edges instead of
+// re-executing it. The checkpoint MUST originate from a previous run
+// of the same graph and run.ID; mismatched ExecID surfaces
+// errdefs.Validation, mismatched GraphName surfaces errdefs.Validation
+// via the [Resumer.CanResume] probe.
 func (r *Runner) Execute(
 	ctx context.Context,
 	run engine.Run,
@@ -150,18 +153,19 @@ func (r *Runner) executeBound(
 		board = graph.NewBoard()
 	}
 
-	// Reject foreign / unsupported resume up front so the executor
-	// never sees the parameter and stays a pure single-shot engine.
-	// This also makes the error class deterministic for callers — the
-	// engine contract requires Validation for foreign ExecID and
-	// NotAvailable for "resume not implemented", and we match both.
+	// Validate resume preconditions before handing the checkpoint
+	// to the executor. validateResume enforces the engine.Engine
+	// resume contract (foreign ExecID is a Validation error) plus
+	// the graph-runner-specific GraphName check; the executor then
+	// trusts the checkpoint and only handles the executor-local
+	// work of restoring board state and locating downstream nodes.
 	if run.ResumeFrom != nil {
-		if err := classifyResume(run); err != nil {
+		if err := r.validateResume(*run.ResumeFrom, run.ID); err != nil {
 			return board, err
 		}
 	}
 
-	opts := make([]executor.RunOption, 0, 3+len(r.runOpts)+len(extra))
+	opts := make([]executor.RunOption, 0, 4+len(r.runOpts)+len(extra))
 	opts = append(opts, executor.WithHost(host))
 	if run.ID != "" {
 		opts = append(opts, executor.WithRunID(run.ID))
@@ -169,6 +173,9 @@ func (r *Runner) executeBound(
 	// Default resolver is harmless if the caller already supplied one
 	// via runner.WithResolver — executor.runConfig is last-write-wins.
 	opts = append(opts, executor.WithResolver(variable.NewResolver()))
+	if run.ResumeFrom != nil {
+		opts = append(opts, executor.WithResumeFrom(run.ResumeFrom))
+	}
 	opts = append(opts, r.runOpts...)
 	opts = append(opts, extra...)
 

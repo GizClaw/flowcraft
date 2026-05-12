@@ -45,14 +45,26 @@ type Resumer interface {
 //
 //	if r, ok := engine.AsResumer(eng); ok { _ = r.CanResume(cp) }
 func IsResumable(eng Engine) bool {
-	_, ok := eng.(Resumer)
+	_, ok := AsResumer(eng)
 	return ok
 }
 
-// AsResumer is the typed counterpart of [IsResumable].
+// AsResumer is the typed counterpart of [IsResumable]. It walks any
+// [WithCapabilities]-style wrappers via Unwrap (errors.As-style) so
+// a Resumer wrapped to advertise additional capabilities still
+// surfaces correctly.
 func AsResumer(eng Engine) (Resumer, bool) {
-	r, ok := eng.(Resumer)
-	return r, ok
+	for eng != nil {
+		if r, ok := eng.(Resumer); ok {
+			return r, true
+		}
+		u, ok := eng.(interface{ Unwrap() Engine })
+		if !ok {
+			return nil, false
+		}
+		eng = u.Unwrap()
+	}
+	return nil, false
 }
 
 // ---------------------------------------------------------------------------
@@ -264,11 +276,20 @@ func LoadAndResume(
 	}
 
 	run.ResumeFrom = cp
+	// Prefer the checkpoint's OriginalStartedAt so dashboards see
+	// one continuous wall-clock run across resume boundaries. Fall
+	// back to the caller-supplied o.startedAt for older checkpoints
+	// produced before that field existed (zero time means "not
+	// recorded" per Checkpoint.OriginalStartedAt godoc).
+	startedAt := cp.OriginalStartedAt
+	if startedAt.IsZero() {
+		startedAt = o.startedAt
+	}
 	rc := ResumeContext{
 		// First resume after a fresh attempt → 2; honour
 		// caller-supplied attempt so retry loops can override.
 		Attempt:      max2(o.attempt, 2),
-		StartedAt:    o.startedAt,
+		StartedAt:    startedAt,
 		Signal:       o.signal,
 		CheckpointAt: cp.Timestamp,
 	}

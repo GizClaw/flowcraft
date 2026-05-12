@@ -128,3 +128,56 @@ func TestAPI_NotFound(t *testing.T) {
 		t.Fatalf("status %d", w.Code)
 	}
 }
+
+// TestAPI_Resume_MissingRunID asserts the body validation: an
+// empty run_id surfaces 400 Validation rather than dispatching a
+// resume against an unspecified run.
+func TestAPI_Resume_MissingRunID(t *testing.T) {
+	t.Parallel()
+	s := newTestServer(t)
+	w := httptest.NewRecorder()
+	s.Handler().ServeHTTP(w, httptest.NewRequest(http.MethodPost,
+		"/v1/vessels/support/resume",
+		strings.NewReader(`{}`)))
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status %d body=%s, want 400", w.Code, w.Body.String())
+	}
+	var body errorBody
+	if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Reason != "Validation" {
+		t.Fatalf("reason = %q, want Validation", body.Reason)
+	}
+}
+
+// TestAPI_Resume_NoStoreReturnsServiceUnavailable: the test
+// server has no CheckpointStore wired (catalog default), so a
+// well-formed Resume request must surface 503 NotAvailable —
+// pinning the route's error mapping for the most common
+// misconfiguration.
+func TestAPI_Resume_NoStoreReturnsServiceUnavailable(t *testing.T) {
+	t.Parallel()
+	s := newTestServer(t)
+	w := httptest.NewRecorder()
+	s.Handler().ServeHTTP(w, httptest.NewRequest(http.MethodPost,
+		"/v1/vessels/support/resume",
+		strings.NewReader(`{"run_id":"any"}`)))
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status %d body=%s, want 503", w.Code, w.Body.String())
+	}
+}
+
+// TestAPI_Resume_UnknownVessel: routing mismatch surfaces 404
+// before the body is even examined.
+func TestAPI_Resume_UnknownVessel(t *testing.T) {
+	t.Parallel()
+	s := newTestServer(t)
+	w := httptest.NewRecorder()
+	s.Handler().ServeHTTP(w, httptest.NewRequest(http.MethodPost,
+		"/v1/vessels/ghost/resume",
+		strings.NewReader(`{"run_id":"any"}`)))
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("status %d body=%s, want 404", w.Code, w.Body.String())
+	}
+}

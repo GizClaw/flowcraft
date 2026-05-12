@@ -47,7 +47,7 @@ type agentEntry struct {
 // the sidecar bus loop (background); keeping it in one spot
 // guarantees observers + history wiring + telemetry semantics stay
 // identical regardless of trigger type.
-func (c *Captain) dispatch(ctx context.Context, entry *agentEntry, req agent.Request) (*agent.Result, error) {
+func (c *Captain) dispatch(ctx context.Context, entry *agentEntry, req agent.Request, extraOpts ...agent.RunOption) (*agent.Result, error) {
 	// Surface the dispatcher's ContextID through ctx so the
 	// vessel-aware kanban_submit tool can route the eventual
 	// callback back to the same conversation. ctx is the only
@@ -82,6 +82,11 @@ func (c *Captain) dispatch(ctx context.Context, entry *agentEntry, req agent.Req
 	for _, d := range c.globalDeciders {
 		opts = append(opts, agent.WithDecider(d))
 	}
+	// extraOpts come last so callers like Captain.Resume can
+	// override defaults (e.g. inject WithResumeFrom). agent.Run
+	// applies options in order; later wins for fields like
+	// resumeFrom.
+	opts = append(opts, extraOpts...)
 	return agent.Run(ctx, entry.agent, entry.engine, req, opts...)
 }
 

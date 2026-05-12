@@ -10,6 +10,14 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/model"
 )
 
+// checkpointAttrAgentName is the engine.Checkpoint.Attributes key the
+// sandbox host stamps with the dispatching agent's name. Captain.Resume
+// reads the same key to route a runID back to the right agent without
+// requiring callers to remember the original target. Namespaced under
+// "vessel." so engine-level attributes (graph_name, etc.) do not
+// collide.
+const checkpointAttrAgentName = "vessel.agent_name"
+
 // sandboxHost wraps the caller-supplied [engine.Host] (or a fallback
 // engine.NoopHost) so that engine envelopes are forwarded to the
 // vessel bus. Every other [engine.Host] capability — Interrupts,
@@ -49,6 +57,22 @@ func newSandboxHost(base engine.Host, bus event.Bus, store engine.CheckpointStor
 // result, because the store is the system-of-record and the base
 // host is auxiliary observability.
 func (h *sandboxHost) Checkpoint(ctx context.Context, cp engine.Checkpoint) error {
+	// Stamp the dispatching agent name on every checkpoint so
+	// Captain.Resume can route a runID back to the right agent
+	// without forcing callers to remember which agent owned the
+	// run. Skip when the ctx has no dispatcher (raw test paths,
+	// engine-level usage outside a vessel dispatch).
+	if name := dispatcherFromCtx(ctx); name != "" {
+		if cp.Attributes == nil {
+			cp.Attributes = make(map[string]string, 1)
+		}
+		// Namespace under "vessel." so engine-level attributes
+		// (graph_name, etc.) do not collide. Resume reads the
+		// same key.
+		if _, exists := cp.Attributes[checkpointAttrAgentName]; !exists {
+			cp.Attributes[checkpointAttrAgentName] = name
+		}
+	}
 	if h.store != nil {
 		if err := h.store.Save(ctx, cp); err != nil {
 			return err

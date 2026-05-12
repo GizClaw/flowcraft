@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"fmt"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -39,6 +40,15 @@ type Captain struct {
 	gate     *admissionGate
 	budget   *tokenBudget // nil when neither token cap is configured
 	probes   *probeRunner
+
+	// checkpointStore mirrors the store wired into the sandbox host
+	// via [WithCheckpointStore]. The Captain keeps its own
+	// reference so [Resume] can Load checkpoints without going
+	// through the host (which only exposes the Save side via
+	// engine.Checkpointer). nil when no store was configured —
+	// Resume then surfaces NotAvailable, since the durability
+	// promise the API is built on is missing.
+	checkpointStore engine.CheckpointStore
 
 	// kanban is the Kanban subsystem when spec.Kanban is non-nil;
 	// otherwise nil (no agent-as-tool dispatch). The runtime owns
@@ -205,6 +215,7 @@ func New(vs spec.Spec, opts ...Option) (*Captain, error) {
 		busOwned:        owned,
 		gate:            gate,
 		budget:          budget,
+		checkpointStore: cfg.checkpointStore,
 		kanban:          kbRuntime,
 		globalObservers: cfg.observers,
 		globalDeciders:  cfg.deciders,
@@ -341,6 +352,75 @@ func (c *Captain) Launch(_ context.Context) error {
 // errdefs.NotAvailable so callers can drain gracefully without
 // races.
 func (c *Captain) Submit(ctx context.Context, agentName string, req agent.Request) (*Handle, error) {
+	return c.submit(ctx, agentName, req, nil)
+}
+
+// Resume re-launches a previously interrupted (or persisted) run by
+// loading its checkpoint from the wired [engine.CheckpointStore] and
+// dispatching the original agent with engine.Run.ResumeFrom set.
+//
+// Lookup contract:
+//
+//   - The store MUST be configured via [WithCheckpointStore]; without
+//     it Resume returns errdefs.NotAvailable (resume requires durable
+//     state and there is none).
+//
+//   - runID MUST identify a previously-saved checkpoint
+//     (cp.ExecID == runID). Missing checkpoints surface as
+//     errdefs.NotFound.
+//
+//   - The checkpoint MUST carry the originating agent name in
+//     cp.Attributes["vessel.agent_name"] (the sandbox host stamps
+//     this on every Save). Older checkpoints without the field, or
+//     checkpoints that name an agent the Captain no longer hosts,
+//     surface as errdefs.NotFound — the agent topology has drifted
+//     and a silent fallback to a different agent would be wrong.
+//
+// Resume reuses the same dispatch plumbing as Submit (admission
+// gate, token budget, run ctx, handle), so observers / deciders
+// fire the same way they did on the original attempt. The synthetic
+// agent.Request carries only RunID == cp.ExecID; the engine's
+// Resumer restores board state from cp.Board so the message body
+// being empty is correct. Callers that want to inject metadata
+// (a fresh ContextID, custom Inputs) can pass req via the
+// lower-level [Submit] + [agent.WithResumeFrom] path on the
+// engine factory side.
+//
+// Returns a [Handle] just like Submit; the caller can Wait on it
+// for the resumed run's terminal state.
+func (c *Captain) Resume(ctx context.Context, runID string) (*Handle, error) {
+	if c.checkpointStore == nil {
+		return nil, errdefs.NotAvailablef("vessel: resume requires a CheckpointStore (WithCheckpointStore not configured)")
+	}
+	if runID == "" {
+		return nil, errdefs.Validationf("vessel: resume runID must be non-empty")
+	}
+	cp, err := c.checkpointStore.Load(ctx, runID)
+	if err != nil {
+		return nil, fmt.Errorf("vessel: load checkpoint %q: %w", runID, err)
+	}
+	if cp == nil {
+		return nil, errdefs.NotFoundf("vessel: no checkpoint for runID %q", runID)
+	}
+	agentName := cp.Attributes[checkpointAttrAgentName]
+	if agentName == "" {
+		return nil, errdefs.NotFoundf(
+			"vessel: checkpoint %q has no %s attribute; cannot route resume",
+			runID, checkpointAttrAgentName)
+	}
+	if _, ok := c.entries[agentName]; !ok {
+		return nil, errdefs.NotFoundf(
+			"vessel: checkpoint %q targets agent %q, which is not hosted by this vessel",
+			runID, agentName)
+	}
+	req := agent.Request{RunID: cp.ExecID}
+	return c.submit(ctx, agentName, req, []agent.RunOption{agent.WithResumeFrom(cp)})
+}
+
+// submit is the shared dispatch path used by both Submit and Resume.
+// extraOpts lets Resume inject agent.WithResumeFrom without
+// duplicating the admission / handle / goroutine plumbing.
+func (c *Captain) submit(ctx context.Context, agentName string, req agent.Request, extraOpts []agent.RunOption) (*Handle, error) {
 	if !c.Phase().AcceptsRequests() {
 		return nil, errdefs.NotAvailablef("vessel: not accepting requests in phase %q", c.Phase())
 	}
@@ -352,9 +432,6 @@ func (c *Captain) Submit(ctx context.Context, agentName string, req agent.Reques
 		return nil, errdefs.Conflictf("vessel: agent %q is a sidecar; trigger via bus, not Submit", agentName)
 	}
 
-	// Pre-flight token-budget check: refuse when the rolling-hour
-	// total has already saturated. We don't pre-check the per-turn
-	// cap because nothing has been spent yet.
 	if c.budget.hourExhausted() {
 		return nil, errdefs.RateLimitf("vessel: hourly token budget exhausted")
 	}
@@ -395,7 +472,7 @@ func (c *Captain) Submit(ctx context.Context, agentName string, req agent.Reques
 			defer c.budget.end(req.RunID)
 		}
 
-		res, runErr := c.dispatch(runCtx, entry, req)
+		res, runErr := c.dispatch(runCtx, entry, req, extraOpts...)
 		if runErr != nil {
 			telemetry.Warn(runCtx, "vessel: agent.Run returned error",
 				otellog.String("vessel_id", c.vs.ID),

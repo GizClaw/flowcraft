@@ -117,4 +117,5 @@ type panicAll struct{}
 
 func (panicAll) OnRunStart(context.Context, RunInfo, *Request)          { panic("boom") }
 func (panicAll) OnInterrupt(context.Context, RunInfo, engine.Interrupt) { panic("boom") }
+func (panicAll) OnRunRevise(context.Context, RunInfo, *Result, int)     { panic("boom") }
 func (panicAll) OnRunEnd(context.Context, RunInfo, *Result)             { panic("boom") }

@@ -141,6 +141,58 @@ func TestLoadAndResume_ResumePathPopulatesContext(t *testing.T) {
 	}
 }
 
+// TestLoadAndResume_PrefersCheckpointOriginalStartedAt asserts the
+// resume helper threads cp.OriginalStartedAt into the
+// ResumeContext.StartedAt field, ignoring caller-supplied
+// WithResumeStartedAt for resumes (only fresh runs use the
+// caller-supplied value). This keeps wall-clock SLO budgets
+// continuous across replays.
+func TestLoadAndResume_PrefersCheckpointOriginalStartedAt(t *testing.T) {
+	originalStart := time.Now().Add(-2 * time.Hour)
+	store := &memStore{cp: &engine.Checkpoint{
+		ExecID:            "r1",
+		Step:              "step",
+		Timestamp:         time.Now().Add(-time.Hour),
+		OriginalStartedAt: originalStart,
+	}}
+
+	t.Run("inherits_from_checkpoint", func(t *testing.T) {
+		eng := &stubEngine{}
+		callerStart := time.Now() // would-be fallback
+		_, err := engine.LoadAndResume(context.Background(), eng, engine.NoopHost{}, store,
+			engine.Run{ID: "r1"}, nil,
+			engine.WithResumeStartedAt(callerStart),
+		)
+		if err != nil {
+			t.Fatalf("LoadAndResume: %v", err)
+		}
+		if !eng.gotResume.StartedAt.Equal(originalStart) {
+			t.Errorf("StartedAt = %v, want %v (cp.OriginalStartedAt)", eng.gotResume.StartedAt, originalStart)
+		}
+	})
+
+	t.Run("falls_back_when_checkpoint_missing_field", func(t *testing.T) {
+		oldCp := &engine.Checkpoint{
+			ExecID:    "r1",
+			Step:      "step",
+			Timestamp: time.Now().Add(-time.Hour),
+		}
+		oldStore := &memStore{cp: oldCp}
+		eng := &stubEngine{}
+		callerStart := time.Now().Add(-30 * time.Minute)
+		_, err := engine.LoadAndResume(context.Background(), eng, engine.NoopHost{}, oldStore,
+			engine.Run{ID: "r1"}, nil,
+			engine.WithResumeStartedAt(callerStart),
+		)
+		if err != nil {
+			t.Fatalf("LoadAndResume: %v", err)
+		}
+		if !eng.gotResume.StartedAt.Equal(callerStart) {
+			t.Errorf("StartedAt = %v, want %v (caller fallback for old cp)", eng.gotResume.StartedAt, callerStart)
+		}
+	})
+}
+
 func TestLoadAndResume_RejectsExecIDMismatch(t *testing.T) {
 	eng := &stubEngine{}
 	store := &memStore{cp: &engine.Checkpoint{ExecID: "other"}}
