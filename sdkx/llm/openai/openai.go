@@ -513,6 +513,20 @@ func (c *LLM) buildParams(msgs []llm.Message, opts *llm.GenerateOptions) oai.Cha
 	if opts.ToolChoice != nil {
 		params.ToolChoice = convertToolChoice(*opts.ToolChoice)
 	}
+	// Auto-inject `prompt_cache_key` derived from the
+	// cache-eligible prefix (system messages + tool definitions) so
+	// requests with identical stable parts land on the same backend
+	// node consistently — flipping implicit prompt-cache hit rate
+	// from "round-robin lottery" to "deterministic hit when the
+	// prefix is identical". See sdkx/llm/openai/cache.go for the
+	// derivation rationale and what's excluded (message history is
+	// turn-varying, so feeding it into the key would defeat the
+	// purpose). Caller can override by passing
+	// llm.WithExtra("prompt_cache_key", "custom") which buildParams
+	// honours via the extraRequestOpts path used downstream.
+	if key := computePromptCacheKey(msgs, opts.Tools); key != "" {
+		params.PromptCacheKey = oai.String(key)
+	}
 
 	return params
 }

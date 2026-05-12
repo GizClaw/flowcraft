@@ -168,6 +168,45 @@ compare/fetch/ingest`, `eval longmemeval convert`). Shell completion
 
 #### sdkx
 
+- `sdkx/llm/{anthropic,openai,bytedance}`: automatic prompt-caching
+  optimisation across all three families, sharing a single caller
+  convention: emit multiple `llm.Message{Role:System}` entries to
+  declare independent system-prompt segments (stable / persona /
+  rules first, volatile / now / fresh-context last). Each provider
+  adapter applies its own best-fit strategy on top of that
+  convention:
+  - `anthropic`: convertMessages stops joining system messages —
+    each segment becomes its own `TextBlockParam`. The new
+    `cache.go` heuristic auto-places `cache_control:
+    {type: ephemeral}` breakpoints on long-enough segments (≥4096
+    chars) plus the last tool definition and the second-to-last
+    history message, sharing Anthropic's hard 4-breakpoint global
+    budget by priority (tools → history → system-latest → earlier
+    system). 5-min ephemeral TTL. Caller-facing API unchanged.
+  - `openai`: `buildParams` now auto-injects `prompt_cache_key`
+    (16-hex-char SHA-256 of canonicalised system + tools) so
+    requests with identical stable prefixes land on the same
+    backend node deterministically instead of round-robin —
+    flipping implicit prompt-cache hit-rate from "lottery" to
+    "deterministic hit when the prefix is identical". Message
+    history is excluded from the hash so multi-turn calls don't
+    rotate off the cached node. Canonical JSON serialisation
+    absorbs Go map iteration nondeterminism.
+  - `bytedance`: no code change (the ArkRuntime SDK exposes no
+    routing-hint field analogous to `prompt_cache_key` and no
+    explicit cache_control breakpoint surface). `convertMessages`
+    already preserved multi-segment system messages, so Doubao's
+    automatic prefix caching benefits from the shared convention
+    transparently. Package godoc updated to document the
+    contract.
+
+  End-to-end tests use `httptest` to capture the actual wire body
+  and assert the expected `cache_control` placements / non-empty
+  `prompt_cache_key` field for representative scenarios (long
+  stable + short volatile, history anchor on multi-turn, budget
+  trimming with 5 long segments, no-marker emission when nothing
+  qualifies, deterministic key under reordered map iteration).
+
 - `sdkx/llm/{openai,anthropic}`: configurable OTel / metrics provider
   tag via new `LLM.WithProviderName(name)` + `LLM.Provider()`. Wrapping
   adapters (`sdkx/llm/{azure,deepseek,qwen,minimax}`) now stamp their

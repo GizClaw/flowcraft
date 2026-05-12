@@ -1,5 +1,24 @@
 // Package bytedance provides the ByteDance Doubao LLM provider using
 // the Volcengine ArkRuntime Go SDK.
+//
+// # Prompt caching
+//
+// Doubao implements automatic prefix caching server-side. Callers
+// using the shared multi-segment system-prompt convention (multiple
+// llm.Message{Role:System} entries at the head of the request) get
+// the benefit transparently: convertMessages preserves each system
+// message as its own ChatCompletionMessage rather than joining them
+// into one string, keeping the byte-exact prefix stable across calls
+// whose stable segments are unchanged.
+//
+// Unlike sdkx/llm/openai and sdkx/llm/anthropic, the ArkRuntime SDK
+// does not expose a routing-hint field analogous to OpenAI's
+// `prompt_cache_key` or an explicit `cache_control` breakpoint, so
+// there is no per-request opt-in surface to wire. Routing locality
+// is governed entirely by Doubao's backend. The `User` field on
+// ChatCompletionRequest is reserved for caller-supplied end-user
+// identifiers (abuse monitoring) and is left alone to avoid
+// clobbering that semantics.
 package bytedance
 
 import (
