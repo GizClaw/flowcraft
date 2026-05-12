@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/sdk/engine"
+	"github.com/GizClaw/flowcraft/sdk/engine/depname"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/model"
 )
@@ -109,6 +110,13 @@ func Run(
 	}
 
 	attrs := mergeAttributes(rc.attributes, req, ag, runID)
+	// Promote agent.Agent.Tools into engine.Run.Deps under
+	// depname.ToolAllowedNames so engines that honour the
+	// allow-list (graph runner llmnode today; vessel inline engine
+	// after Epic D) finally see the policy gate. Caller-supplied
+	// rc.deps[ToolAllowedNames] wins so tests / power users can
+	// override the agent-level claim per call.
+	runDeps := promoteAgentTools(rc.deps, ag.Tools)
 	obs := composeObservers(rc.observers)
 
 	// Revise loop: each iteration is one engine.Execute attempt
@@ -156,7 +164,7 @@ func Run(
 		engRun := engine.Run{
 			ID:         runID,
 			Attributes: attemptAttrs,
-			Deps:       rc.deps,
+			Deps:       runDeps,
 		}
 		if attempt == 1 {
 			engRun.ResumeFrom = rc.resumeFrom
@@ -322,6 +330,49 @@ func mintRunID() string {
 		return fmt.Sprintf("run-%d", time.Now().UnixNano())
 	}
 	return "run-" + hex.EncodeToString(b)
+}
+
+// promoteAgentTools is the agent-level policy gate hand-off. When
+// agent.Agent.Tools is set and the caller's Dependencies container
+// does NOT already define [depname.ToolAllowedNames], the helper
+// returns a CLONE of the caller's container with the agent's tool
+// list set under that key. Engines that honour the allow-list
+// (graph runner llmnode; vessel inline engine after Epic D) then
+// see it via engine.GetDep at run time.
+//
+// Cloning preserves Run's "callers' container is immutable from
+// our perspective" rule — a caller that reuses one Dependencies
+// across many runs (different agents) won't see this run's tool
+// list bleed into the next.
+//
+// Caller-supplied wins: if the caller already set
+// depname.ToolAllowedNames on the container (e.g. tests, or a
+// power user overriding the agent claim), the helper returns the
+// container unchanged and the agent's Tools field is silently
+// shadowed for this call. This matches the "caller-supplied wins"
+// rule mergeAttributes uses for the attribute bag.
+//
+// When agent.Tools is nil/empty the helper is a no-op; agents that
+// do not opt into the policy gate keep getting the caller's deps
+// verbatim (back-compat for code that hasn't yet started populating
+// agent.Tools).
+func promoteAgentTools(callerDeps *engine.Dependencies, agentTools []string) *engine.Dependencies {
+	if len(agentTools) == 0 {
+		return callerDeps
+	}
+	if callerDeps != nil && callerDeps.Has(depname.ToolAllowedNames) {
+		return callerDeps
+	}
+	cloned := callerDeps.Clone()
+	if cloned == nil {
+		cloned = engine.NewDependencies()
+	}
+	// Defensive copy of agentTools — agent owns ag.Tools and may
+	// mutate it after Run returns; the engine should see a stable
+	// snapshot for the duration of this call.
+	tools := append([]string(nil), agentTools...)
+	cloned.Set(depname.ToolAllowedNames, tools)
+	return cloned
 }
 
 // mergeAttributes combines RunOption-supplied attributes with the

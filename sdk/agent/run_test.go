@@ -10,6 +10,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/sdk/agent"
 	"github.com/GizClaw/flowcraft/sdk/engine"
+	"github.com/GizClaw/flowcraft/sdk/engine/depname"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/model"
 )
@@ -1040,5 +1041,72 @@ func TestRun_Revise_NotTriggeredOnNonCompleted(t *testing.T) {
 	}
 	if res.Attempts != 1 {
 		t.Errorf("Attempts = %d, want 1", res.Attempts)
+	}
+}
+
+// TestRun_PromotesAgentToolsIntoEngineRunDeps is the end-to-end
+// regression for contract-audit #1 ("Agent.Tools is silently
+// ignored"). After the run-context plumbing is wired (commits
+// 1–3 on this branch), agent.Run MUST surface ag.Tools to the
+// engine via engine.Run.Deps[depname.ToolAllowedNames] so the
+// llmnode policy gate can act on it.
+func TestRun_PromotesAgentToolsIntoEngineRunDeps(t *testing.T) {
+	var observed *engine.Dependencies
+	eng := engine.EngineFunc(func(_ context.Context, run engine.Run, _ engine.Host, b *engine.Board) (*engine.Board, error) {
+		observed = run.Deps
+		b.AppendChannelMessage(engine.MainChannel,
+			model.NewTextMessage(model.RoleAssistant, "ok"))
+		return b, nil
+	})
+
+	ag := agent.Agent{ID: "researcher", Tools: []string{"search", "fetch"}}
+	if _, err := agent.Run(context.Background(), ag, eng, newReq("hi")); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	if observed == nil {
+		t.Fatal("engine.Run.Deps was nil — Agent.Tools was not promoted")
+	}
+	got, gerr := engine.GetDep[[]string](observed, depname.ToolAllowedNames)
+	if gerr != nil {
+		t.Fatalf("ToolAllowedNames missing in engine.Run.Deps: %v", gerr)
+	}
+	want := []string{"search", "fetch"}
+	if len(got) != len(want) {
+		t.Fatalf("ToolAllowedNames len = %d, want %d (got %v)", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("ToolAllowedNames[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
+// TestRun_AgentToolsDoesNotOverwriteCallerSuppliedToolAllowedNames
+// asserts the same "caller-supplied wins" rule that mergeAttributes
+// uses for the attribute bag: a power user that overrode the
+// allow-list via WithDependencies must see their value reach the
+// engine, not the agent's claim.
+func TestRun_AgentToolsDoesNotOverwriteCallerSuppliedToolAllowedNames(t *testing.T) {
+	var observed *engine.Dependencies
+	eng := engine.EngineFunc(func(_ context.Context, run engine.Run, _ engine.Host, b *engine.Board) (*engine.Board, error) {
+		observed = run.Deps
+		b.AppendChannelMessage(engine.MainChannel,
+			model.NewTextMessage(model.RoleAssistant, "ok"))
+		return b, nil
+	})
+
+	deps := engine.NewDependencies()
+	deps.Set(depname.ToolAllowedNames, []string{"caller-pin"})
+
+	ag := agent.Agent{ID: "researcher", Tools: []string{"agent-claim"}}
+	if _, err := agent.Run(context.Background(), ag, eng, newReq("hi"),
+		agent.WithDependencies(deps)); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	got, _ := engine.GetDep[[]string](observed, depname.ToolAllowedNames)
+	if len(got) != 1 || got[0] != "caller-pin" {
+		t.Errorf("ToolAllowedNames = %v, want [caller-pin] (caller-supplied must win)", got)
 	}
 }

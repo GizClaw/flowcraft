@@ -68,6 +68,33 @@ func (d *Dependencies) Has(key any) bool {
 	return ok
 }
 
+// Clone returns a new Dependencies with a shallow copy of d's items.
+// Stored values are NOT deep-copied — callers that mutate a stored
+// value via the clone WILL also mutate the original (this matches
+// the standard "container clone" semantics: shape is independent,
+// payload is shared).
+//
+// Cloning is the canonical way for callers that own a base
+// Dependencies (e.g. an agent.Agent's per-run wiring) to derive a
+// per-call container with extra entries (e.g. agent.Run promoting
+// agent.Agent.Tools into [depname.ToolAllowedNames]) without
+// poisoning the caller's container.
+//
+// Cloning a nil receiver returns nil so callers can chain Clone
+// without a guard. The returned container is independently lockable.
+func (d *Dependencies) Clone() *Dependencies {
+	if d == nil {
+		return nil
+	}
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	cloned := &Dependencies{items: make(map[any]any, len(d.items))}
+	for k, v := range d.items {
+		cloned.items[k] = v
+	}
+	return cloned
+}
+
 // GetDep is a generic helper that retrieves a typed dependency. It
 // returns an error when the key is missing or when the stored value is
 // not assignable to T, so callers can surface configuration mistakes
