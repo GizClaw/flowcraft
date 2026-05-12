@@ -24,12 +24,14 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/engine/depname"
 	"github.com/GizClaw/flowcraft/sdk/engine/enginetest"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
+	"github.com/GizClaw/flowcraft/sdk/event"
 	"github.com/GizClaw/flowcraft/sdk/graph"
 	"github.com/GizClaw/flowcraft/sdk/graph/node"
 	"github.com/GizClaw/flowcraft/sdk/graph/node/llmnode"
 	"github.com/GizClaw/flowcraft/sdk/graph/runner"
 	"github.com/GizClaw/flowcraft/sdk/llm"
 	"github.com/GizClaw/flowcraft/sdk/model"
+	"github.com/GizClaw/flowcraft/sdk/telemetry"
 	"github.com/GizClaw/flowcraft/sdk/tool"
 )
 
@@ -691,5 +693,175 @@ func TestAgentRun_NoAgentToolsKeepsLegacyBehaviour(t *testing.T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("legacy back-compat broken: got %v want %v "+
 			"(agent without Tools should not constrain Config.ToolNames)", got, want)
+	}
+}
+
+// TestAgentRun_EnvelopeAgentIDIsAgentID is the vertical E2E that
+// closes contract-audit #15. The chain under test:
+//
+//	agent.Run -> mergeAttributes writes telemetry.AttrAgentID into
+//	             engine.Run.Attributes
+//	          -> runner.Runner.Execute forwards Attributes into
+//	             executor.WithAttributes
+//	          -> agentIDFor reads cfg.attributes[AttrAgentID]
+//	          -> publishGraphEvent / publishNodeEvent /
+//	             newNodePublisher stamp env.SetAgentID
+//	          -> host observes envelope.AgentID() == ag.ID
+//
+// Before the fix the executor only consulted runner.WithActorKey
+// (a ctx-key), which agent.Run never set; envelopes published
+// through agent.Run therefore carried empty agent_id headers,
+// breaking multi-agent observability in vessel mode (multiple
+// agents publishing to the same NATS topic could not be split by
+// producer).
+func TestAgentRun_EnvelopeAgentIDIsAgentID(t *testing.T) {
+	r := buildEchoRunner(t)
+	host := enginetest.NewMockHost()
+
+	const agentID = "researcher"
+	res, err := agent.Run(context.Background(),
+		agent.Agent{ID: agentID},
+		r,
+		agent.Request{
+			RunID:   "run-actor",
+			Message: model.NewTextMessage(model.RoleUser, "hi"),
+		},
+		agent.WithEngineHost(host),
+	)
+	if err != nil {
+		t.Fatalf("agent.Run: %v", err)
+	}
+	if res.Status != agent.StatusCompleted {
+		t.Fatalf("Status = %q, want completed", res.Status)
+	}
+
+	envs := host.Envelopes()
+	if len(envs) == 0 {
+		t.Fatal("host received no envelopes — runner is not publishing through the agent-supplied host")
+	}
+
+	missing := 0
+	for _, e := range envs {
+		// Every envelope (run.start, step.*, run.end, parallel.*, …)
+		// MUST carry agent_id == ag.ID. Tolerating "some envelopes
+		// missing" would let a regression in any single publish
+		// call site (publisher.go / parallel.go / executor.go) slip
+		// through unnoticed.
+		if got := e.AgentID(); got != agentID {
+			missing++
+			t.Errorf("envelope %q: AgentID = %q, want %q",
+				string(e.Subject), got, agentID)
+		}
+	}
+	if missing > 0 {
+		t.Fatalf("%d / %d envelopes missing agent_id (agent.Run -> executor seam regression)",
+			missing, len(envs))
+	}
+}
+
+// TestAgentRun_LegacyActorIDHeaderStillSet pins the dual-write
+// migration contract at the integration boundary: even after
+// agent.Run/runner moved to SetAgentID semantics, the legacy
+// envelope header HeaderActorID must keep being populated so
+// pre-v0.4 consumers (vessel/logs, dashboards inspecting raw
+// Headers["actor_id"]) keep working unchanged until v0.5.0
+// removes the mirror.
+func TestAgentRun_LegacyActorIDHeaderStillSet(t *testing.T) {
+	r := buildEchoRunner(t)
+	host := enginetest.NewMockHost()
+
+	_, err := agent.Run(context.Background(),
+		agent.Agent{ID: "researcher"},
+		r,
+		agent.Request{Message: model.NewTextMessage(model.RoleUser, "hi")},
+		agent.WithEngineHost(host),
+	)
+	if err != nil {
+		t.Fatalf("agent.Run: %v", err)
+	}
+
+	for _, e := range host.Envelopes() {
+		// HeaderActorID is the legacy spelling; SetAgentID's
+		// dual-write keeps it populated until v0.5.0.
+		if got := e.Headers[event.HeaderActorID]; got != "researcher" {
+			t.Errorf("envelope %q: legacy actor_id mirror = %q, want %q",
+				string(e.Subject), got, "researcher")
+		}
+	}
+}
+
+// TestAgentRun_StepSubjectsCarryAgentPrefix asserts every per-step
+// subject ends up with the stepActor segment shaped as
+// "<agent>_node_<nodeID>" (the SanitiseID-collapsed form of
+// "<agent>.node.<nodeID>"). This pins the contract documented at
+// sdk/engine/subjects.go: the segment MUST start with the agent.id
+// for human-readable debugging, even though agent-level NATS
+// wildcard fan-in goes through HeaderAgentID rather than the
+// subject.
+func TestAgentRun_StepSubjectsCarryAgentPrefix(t *testing.T) {
+	r := buildEchoRunner(t)
+	host := enginetest.NewMockHost()
+
+	_, err := agent.Run(context.Background(),
+		agent.Agent{ID: "researcher"},
+		r,
+		agent.Request{
+			RunID:   "run-step",
+			Message: model.NewTextMessage(model.RoleUser, "hi"),
+		},
+		agent.WithEngineHost(host),
+	)
+	if err != nil {
+		t.Fatalf("agent.Run: %v", err)
+	}
+
+	const wantSegment = ".step.researcher_node_echo."
+	var sawStep bool
+	for _, e := range host.Envelopes() {
+		s := string(e.Subject)
+		if strings.Contains(s, ".step.") {
+			sawStep = true
+			if !strings.Contains(s, wantSegment) {
+				t.Errorf("step subject = %q, must contain %q", s, wantSegment)
+			}
+		}
+	}
+	if !sawStep {
+		t.Fatal("no step subject published — graph never executed the echo node?")
+	}
+}
+
+// TestAgentRun_CallerSuppliedAgentIDOverridesAgentField asserts the
+// "caller-supplied wins" rule documented on agent.WithAttributes
+// extends to envelope agent_id: a caller that explicitly stamps
+// telemetry.AttrAgentID via WithAttributes should see that value
+// on the wire, not Agent.ID. This matters for impersonation /
+// shadow-run debugging where the operator wants envelopes
+// attributed to the impersonated identity.
+func TestAgentRun_CallerSuppliedAgentIDOverridesAgentField(t *testing.T) {
+	r := buildEchoRunner(t)
+	host := enginetest.NewMockHost()
+
+	_, err := agent.Run(context.Background(),
+		agent.Agent{ID: "default-agent"},
+		r,
+		agent.Request{
+			RunID:   "run-override",
+			Message: model.NewTextMessage(model.RoleUser, "hi"),
+		},
+		agent.WithEngineHost(host),
+		agent.WithAttributes(map[string]string{
+			telemetry.AttrAgentID: "impersonated",
+		}),
+	)
+	if err != nil {
+		t.Fatalf("agent.Run: %v", err)
+	}
+
+	for _, e := range host.Envelopes() {
+		if got := e.AgentID(); got != "impersonated" {
+			t.Errorf("envelope %q: AgentID = %q, want %q (caller WithAttributes should win)",
+				string(e.Subject), got, "impersonated")
+		}
 	}
 }

@@ -13,6 +13,7 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/engine/depname"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/model"
+	"github.com/GizClaw/flowcraft/sdk/telemetry"
 )
 
 // completedEngine appends a single assistant reply and returns nil.
@@ -110,7 +111,7 @@ func TestRun_AttributesContainWellKnownKeys(t *testing.T) {
 	req.RunID = "run-1"
 
 	_, err := agent.Run(context.Background(), agent.Agent{ID: "agent-x"}, eng, req,
-		agent.WithAttributes(map[string]string{"tenant": "acme", "agent_id": "caller-overrides"}),
+		agent.WithAttributes(map[string]string{"tenant": "acme", telemetry.AttrAgentID: "caller-overrides"}),
 	)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -118,13 +119,16 @@ func TestRun_AttributesContainWellKnownKeys(t *testing.T) {
 
 	// Caller-supplied keys win on conflict — that's the documented
 	// rule on mergeAttributes ("agent never overwrites" = the
-	// well-known seed never overwrites caller intent).
+	// well-known seed never overwrites caller intent). Keys are the
+	// canonical sdk/telemetry dot-key format so executor /
+	// dashboards can resolve them without an agent-private lookup
+	// table.
 	want := map[string]string{
-		"agent_id":   "caller-overrides",
-		"run_id":     "run-1",
-		"task_id":    "task-1",
-		"context_id": "ctx-1",
-		"tenant":     "acme",
+		telemetry.AttrAgentID:        "caller-overrides",
+		telemetry.AttrRunID:          "run-1",
+		telemetry.AttrTaskID:         "task-1",
+		telemetry.AttrConversationID: "ctx-1",
+		"tenant":                     "acme",
 	}
 	for k, v := range want {
 		if got[k] != v {

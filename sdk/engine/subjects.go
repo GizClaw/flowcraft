@@ -37,17 +37,32 @@ import (
 //
 //	engine.run.<runID>.start
 //	engine.run.<runID>.end
-//	engine.run.<runID>.step.<actorID>.start
-//	engine.run.<runID>.step.<actorID>.complete
-//	engine.run.<runID>.step.<actorID>.error
-//	engine.run.<runID>.stream.<actorID>.delta
+//	engine.run.<runID>.step.<stepActor>.start
+//	engine.run.<runID>.step.<stepActor>.complete
+//	engine.run.<runID>.step.<stepActor>.error
+//	engine.run.<runID>.stream.<stepActor>.delta
 //
-// "step" is the engine-neutral name for one unit of work in a run; an
-// engine implementation MAY map it onto its own concept (graph runner
-// maps "step" → "node", a future script engine might map it onto a
-// statement). "actorID" is whatever stable identifier the engine uses
-// for that unit; engines are responsible for keeping the value
-// dot/wildcard-free (use [SanitiseID]).
+// "step" is the engine-neutral name for one unit of work in a run.
+// "stepActor" identifies one such unit; it MUST start with the
+// agent.id of the executing agent and MAY append an engine-private
+// suffix to disambiguate units within the same agent run:
+//
+//   - graph runner: "<agent.id>.node.<node id>"
+//   - vessel inline: "<agent.id>.iter<N>"
+//   - script engine (future): "<agent.id>.stmt<N>"
+//
+// Engines are responsible for keeping the value dot/wildcard-free
+// (use [SanitiseID]); SanitiseID also collapses any literal '.'
+// inside the suffix into '_', so the resulting NATS segment is one
+// flat token (e.g. "<agent>_node_<node>") rather than separate
+// segments. This means agent-level fan-in via NATS subject
+// wildcards is NOT supported on the bare segment — it would require
+// schema-revising "step" into multiple segments, which the engine
+// contract avoids to keep the wildcard surface stable. Consumers
+// that want "show me only agent X's events" filter on the
+// [event.HeaderAgentID] envelope header instead — that header is
+// stamped by every engine alongside the subject and survives the
+// segment collapse.
 //
 // "stream" is intentionally a sibling of "step" rather than a child:
 // consumers that only care about LLM token / tool deltas (voice TTS,
@@ -79,42 +94,50 @@ func SubjectRunEnd(runID string) event.Subject {
 }
 
 // SubjectStepStart returns the subject every engine MUST publish when
-// it begins executing one step. actorID identifies the unit of work
-// (graph runner: node id; script engine: statement id; etc.).
+// it begins executing one step. stepActor identifies the unit of
+// work; it MUST start with the executing agent.id (so consumers can
+// reconstruct the agent identity from the subject when the envelope
+// header is unavailable). See the file header for the per-engine
+// suffix conventions (graph: ".node.<id>"; vessel inline:
+// ".iter<N>") and for why agent-level NATS wildcard fan-in goes
+// through the [event.HeaderAgentID] header instead of the subject.
 //
-//	engine.run.<runID>.step.<actorID>.start
-func SubjectStepStart(runID, actorID string) event.Subject {
-	return event.Subject(fmt.Sprintf("%s%s.step.%s.start", SubjectPrefix, SanitiseID(runID), SanitiseID(actorID)))
+//	engine.run.<runID>.step.<stepActor>.start
+func SubjectStepStart(runID, stepActor string) event.Subject {
+	return event.Subject(fmt.Sprintf("%s%s.step.%s.start", SubjectPrefix, SanitiseID(runID), SanitiseID(stepActor)))
 }
 
 // SubjectStepComplete returns the subject every engine MUST publish
-// when one step finishes successfully.
+// when one step finishes successfully. See [SubjectStepStart] for
+// the stepActor format.
 //
-//	engine.run.<runID>.step.<actorID>.complete
-func SubjectStepComplete(runID, actorID string) event.Subject {
-	return event.Subject(fmt.Sprintf("%s%s.step.%s.complete", SubjectPrefix, SanitiseID(runID), SanitiseID(actorID)))
+//	engine.run.<runID>.step.<stepActor>.complete
+func SubjectStepComplete(runID, stepActor string) event.Subject {
+	return event.Subject(fmt.Sprintf("%s%s.step.%s.complete", SubjectPrefix, SanitiseID(runID), SanitiseID(stepActor)))
 }
 
 // SubjectStepError returns the subject every engine MUST publish when
 // one step fails (i.e. when it would normally cause Execute to return
-// a non-nil non-interrupt error).
+// a non-nil non-interrupt error). See [SubjectStepStart] for the
+// stepActor format.
 //
-//	engine.run.<runID>.step.<actorID>.error
-func SubjectStepError(runID, actorID string) event.Subject {
-	return event.Subject(fmt.Sprintf("%s%s.step.%s.error", SubjectPrefix, SanitiseID(runID), SanitiseID(actorID)))
+//	engine.run.<runID>.step.<stepActor>.error
+func SubjectStepError(runID, stepActor string) event.Subject {
+	return event.Subject(fmt.Sprintf("%s%s.step.%s.error", SubjectPrefix, SanitiseID(runID), SanitiseID(stepActor)))
 }
 
 // SubjectStreamDelta returns the subject every engine MUST use when
 // emitting an in-flight increment from the step identified by
-// actorID — the canonical example is one LLM token, one dispatched
-// tool call, or one tool result.
+// stepActor — the canonical example is one LLM token, one dispatched
+// tool call, or one tool result. See [SubjectStepStart] for the
+// stepActor format.
 //
 // Payload MUST decode to a [StreamDeltaPayload]; see its docs for the
 // per-Type field requirements.
 //
-//	engine.run.<runID>.stream.<actorID>.delta
-func SubjectStreamDelta(runID, actorID string) event.Subject {
-	return event.Subject(fmt.Sprintf("%s%s.stream.%s.delta", SubjectPrefix, SanitiseID(runID), SanitiseID(actorID)))
+//	engine.run.<runID>.stream.<stepActor>.delta
+func SubjectStreamDelta(runID, stepActor string) event.Subject {
+	return event.Subject(fmt.Sprintf("%s%s.stream.%s.delta", SubjectPrefix, SanitiseID(runID), SanitiseID(stepActor)))
 }
 
 // ---------- Patterns ----------
@@ -148,6 +171,13 @@ func PatternRunSteps(runID string) event.Pattern {
 // delta of one run. Use this when you want LLM token / tool deltas but
 // not the step lifecycle events.
 //
+// Agent-level fan-in ("only agent X's events in this run") is NOT
+// available as a NATS wildcard because the stepActor segment is
+// collapsed into one token by [SanitiseID] (see the file header).
+// Consumers route by agent through the [event.HeaderAgentID]
+// envelope header instead — subscribe with PatternRun(runID) and
+// filter on env.AgentID() in the consumer.
+//
 //	engine.run.<runID>.stream.>
 func PatternRunStream(runID string) event.Pattern {
 	return event.Pattern(fmt.Sprintf("%s%s.stream.>", SubjectPrefix, SanitiseID(runID)))
@@ -160,8 +190,8 @@ func PatternRunStream(runID string) event.Pattern {
 // expensive payload decode.
 //
 // Implementation note: matches subjects shaped like
-// "engine.run.<runID>.stream.<actorID>.delta" — i.e. the prefix is
-// SubjectPrefix, contains ".stream." and ends with ".delta".
+// "engine.run.<runID>.stream.<stepActor>.delta" — i.e. the prefix
+// is SubjectPrefix, contains ".stream." and ends with ".delta".
 func IsStreamDelta(s event.Subject) bool {
 	str := string(s)
 	if len(str) < len(SubjectPrefix) || str[:len(SubjectPrefix)] != SubjectPrefix {
@@ -172,7 +202,7 @@ func IsStreamDelta(s event.Subject) bool {
 		return false
 	}
 	// Cheap "contains .stream." check without splitting; subjects with
-	// a literal ".stream." in an actor id are rejected by SanitiseID
+	// a literal ".stream." in a stepActor are rejected by SanitiseID
 	// before they reach this point.
 	for i := len(SubjectPrefix); i+len(".stream.") <= len(str)-len(tail); i++ {
 		if str[i:i+len(".stream.")] == ".stream." {
@@ -281,7 +311,7 @@ func DecodeStreamDelta(env event.Envelope) (StreamDeltaPayload, error) {
 // SanitiseID escapes characters that would corrupt an event.Subject
 // when the input is concatenated into one. event.Subject segments are
 // separated by '.', and '*' / '>' are reserved by event.Pattern for
-// wildcards; any of these in a runID / actorID would either fragment
+// wildcards; any of these in a runID / stepActor would either fragment
 // the subject or turn it into an unintended pattern. SanitiseID
 // replaces each occurrence with '_'.
 //

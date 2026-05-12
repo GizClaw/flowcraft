@@ -18,7 +18,17 @@ import (
 // hand-rolls run-level subjects. Centralising the construction
 // keeps run.start and run.end identical in shape so consumers
 // (vessel.Logs, /v1/vessels/{id}/logs) can treat them as a pair.
-func publishLifecycle(ctx context.Context, pub engine.Publisher, subject event.Subject, runID string, payload any) {
+// publishLifecycle stamps a run/step lifecycle envelope. agentID is
+// the executor identity (= deps.AgentName); it goes onto
+// HeaderAgentID so observers can fan-in by agent. The optional
+// stepKey carries the engine-private "what sub-unit inside this
+// agent run" suffix the inline engine builds (e.g. "iter5" for the
+// 6th iteration); it is ONLY used by the caller to assemble the
+// step subject segment via stepActor — it does not need a separate
+// envelope header because vessel inline does not have a graph node
+// dimension to surface. Empty agentID is allowed (degraded run-level
+// publish before the agent identity is known).
+func publishLifecycle(ctx context.Context, pub engine.Publisher, subject event.Subject, runID, agentID string, payload any) {
 	if pub == nil {
 		return
 	}
@@ -29,7 +39,28 @@ func publishLifecycle(ctx context.Context, pub engine.Publisher, subject event.S
 	if runID != "" {
 		env.SetRunID(runID)
 	}
+	if agentID != "" {
+		env.SetAgentID(agentID)
+	}
 	_ = pub.Publish(ctx, env)
+}
+
+// stepActor builds the engine.SubjectStep* segment for the inline
+// engine. Per the engine contract (sdk/engine/subjects.go), the
+// segment MUST start with the executing agent.id; vessel inline
+// appends ".iter<N>" as its engine-private sub-unit suffix. The
+// literal "." is collapsed to "_" by SubjectStep*'s SanitiseID, so
+// the resulting NATS segment is one flat token (e.g.
+// "researcher_iter3") — matching graph runner's "<agent>_node_<id>"
+// shape.
+func stepActor(agentID, stepKey string) string {
+	if stepKey == "" {
+		return agentID
+	}
+	if agentID == "" {
+		return stepKey
+	}
+	return agentID + "." + stepKey
 }
 
 // graphLLMEngineFactory builds the v0.1.0 default engine: a small
@@ -103,14 +134,14 @@ func graphLLMEngineFactory(ref string, cfg map[string]any, deps Deps) (engine.En
 	//     turns this into a fully run-deps-driven engine.
 	return engine.WithCapabilities(engine.EngineFunc(func(ctx context.Context, run engine.Run, host engine.Host, board *engine.Board) (*engine.Board, error) {
 		allowSet := resolveAllowSet(run, deps)
-		// actorID is the engine "actor" key used in step-level
-		// subjects. We use the agent name so SSE consumers can
-		// see "agent X started step Y" without having to consult
-		// a separate registry for an opaque node id. For the
-		// engine-contract subjects this maps to the
-		// engine.run.<runID>.step.<actorID>.{start,complete,error}
-		// shape (see sdk/engine/subjects.go).
-		actorID := deps.AgentName
+		// agentID is the executor identity (engine.HeaderAgentID
+		// on every envelope) and the prefix of every step subject
+		// segment (engine.SubjectStep*). We use the agent name so
+		// SSE consumers can see "agent X started step Y" without
+		// consulting a registry for an opaque id, matching the
+		// graph runner's behaviour where agent.Run promotes
+		// Agent.ID into engine.Run.Attributes.
+		agentID := deps.AgentName
 
 		// Lifecycle: run.started fires exactly once at entry,
 		// run.ended fires exactly once on exit (defer), regardless
@@ -119,9 +150,9 @@ func graphLLMEngineFactory(ref string, cfg map[string]any, deps Deps) (engine.En
 		// consumers can rely on the start/end pair existing for
 		// every Submit, mirroring sdk/graph/runner's behaviour
 		// even though we are an in-line executor.
-		publishLifecycle(ctx, host, engine.SubjectRunStart(run.ID), run.ID, map[string]any{
-			"vessel": deps.VesselID,
-			"agent":  deps.AgentName,
+		publishLifecycle(ctx, host, engine.SubjectRunStart(run.ID), run.ID, agentID, map[string]any{
+			"vessel":   deps.VesselID,
+			"agent_id": agentID,
 		})
 		var runErr error
 		defer func() {
@@ -133,7 +164,7 @@ func graphLLMEngineFactory(ref string, cfg map[string]any, deps Deps) (engine.En
 			if runErr != nil {
 				payload["error"] = runErr.Error()
 			}
-			publishLifecycle(ctx, host, engine.SubjectRunEnd(run.ID), run.ID, payload)
+			publishLifecycle(ctx, host, engine.SubjectRunEnd(run.ID), run.ID, agentID, payload)
 		}()
 
 		// Pull the current message stream from MainChannel; the
@@ -159,12 +190,28 @@ func graphLLMEngineFactory(ref string, cfg map[string]any, deps Deps) (engine.En
 			// inside the SAME step; that keeps the step.start /
 			// step.complete pair anchored to "one model turn"
 			// rather than fragmenting across each tool call.
-			stepActor := fmt.Sprintf("%s.iter%d", actorID, iter)
-			publishLifecycle(ctx, host, engine.SubjectStepStart(run.ID, stepActor), run.ID, map[string]any{
-				"actor_id":  stepActor,
-				"iteration": iter,
-				"kind":      "llm",
-			})
+			stepKey := fmt.Sprintf("iter%d", iter)
+			step := stepActor(agentID, stepKey)
+			// step_actor is duplicated in payload because the
+			// stepActor segment is collapsed into one NATS token
+			// by SanitiseID — payload subscribers that only see
+			// envelope.Subject can still recover the original
+			// "<agent>.<stepKey>" form.
+			stepPayload := func(extra map[string]any) map[string]any {
+				out := map[string]any{
+					"agent_id":   agentID,
+					"step_actor": step,
+					"step_key":   stepKey,
+					"iteration":  iter,
+				}
+				for k, v := range extra {
+					out[k] = v
+				}
+				return out
+			}
+			publishLifecycle(ctx, host, engine.SubjectStepStart(run.ID, step), run.ID, agentID, stepPayload(map[string]any{
+				"kind": "llm",
+			}))
 
 			// Honour the daemon-wide LLM rate limit before each
 			// Generate call. v0.1.0 only enforces the requests-
@@ -174,9 +221,9 @@ func graphLLMEngineFactory(ref string, cfg map[string]any, deps Deps) (engine.En
 			if limiter != nil {
 				if err := limiter.Acquire(ctx, deps.VesselID, 0); err != nil {
 					runErr = fmt.Errorf("graph-llm[%s/%s]: rate limit acquire iter=%d: %w", deps.VesselID, deps.AgentName, iter, err)
-					publishLifecycle(ctx, host, engine.SubjectStepError(run.ID, stepActor), run.ID, map[string]any{
-						"actor_id": stepActor, "error": runErr.Error(),
-					})
+					publishLifecycle(ctx, host, engine.SubjectStepError(run.ID, step), run.ID, agentID, stepPayload(map[string]any{
+						"error": runErr.Error(),
+					}))
 					return board, runErr
 				}
 			}
@@ -184,21 +231,21 @@ func graphLLMEngineFactory(ref string, cfg map[string]any, deps Deps) (engine.En
 			if len(toolDefs) > 0 {
 				opts = append(opts, llm.WithTools(toolDefs...))
 			}
-			reply, err := streamLLMRound(ctx, host, run.ID, stepActor, client, msgs, opts)
+			reply, err := streamLLMRound(ctx, host, run.ID, step, client, msgs, opts)
 			if err != nil {
 				runErr = fmt.Errorf("graph-llm[%s/%s]: generate iter=%d: %w", deps.VesselID, deps.AgentName, iter, err)
-				publishLifecycle(ctx, host, engine.SubjectStepError(run.ID, stepActor), run.ID, map[string]any{
-					"actor_id": stepActor, "error": runErr.Error(),
-				})
+				publishLifecycle(ctx, host, engine.SubjectStepError(run.ID, step), run.ID, agentID, stepPayload(map[string]any{
+					"error": runErr.Error(),
+				}))
 				return board, runErr
 			}
 			msgs = append(msgs, reply)
 			board.AppendChannelMessage(engine.MainChannel, reply)
 
 			if !reply.HasToolCalls() {
-				publishLifecycle(ctx, host, engine.SubjectStepComplete(run.ID, stepActor), run.ID, map[string]any{
-					"actor_id": stepActor, "final": true,
-				})
+				publishLifecycle(ctx, host, engine.SubjectStepComplete(run.ID, step), run.ID, agentID, stepPayload(map[string]any{
+					"final": true,
+				}))
 				return board, nil
 			}
 
@@ -208,7 +255,7 @@ func graphLLMEngineFactory(ref string, cfg map[string]any, deps Deps) (engine.En
 			results := make([]model.ToolResult, 0, len(reply.ToolCalls()))
 			for _, call := range reply.ToolCalls() {
 				out, terr := executeToolCall(ctx, deps, allowSet, call)
-				_ = engine.EmitStreamToolResult(ctx, host, run.ID, stepActor, call.ID, call.Name, out, terr != nil, false)
+				_ = engine.EmitStreamToolResult(ctx, host, run.ID, step, call.ID, call.Name, out, terr != nil, false)
 				results = append(results, model.ToolResult{
 					ToolCallID: call.ID,
 					Content:    out,
@@ -218,10 +265,9 @@ func graphLLMEngineFactory(ref string, cfg map[string]any, deps Deps) (engine.En
 			toolMsg := model.NewToolResultMessage(results)
 			msgs = append(msgs, toolMsg)
 			board.AppendChannelMessage(engine.MainChannel, toolMsg)
-			publishLifecycle(ctx, host, engine.SubjectStepComplete(run.ID, stepActor), run.ID, map[string]any{
-				"actor_id":   stepActor,
+			publishLifecycle(ctx, host, engine.SubjectStepComplete(run.ID, step), run.ID, agentID, stepPayload(map[string]any{
 				"tool_calls": len(reply.ToolCalls()),
-			})
+			}))
 		}
 		runErr = errdefs.Conflictf("graph-llm[%s/%s]: max iterations (%d) reached without final answer", deps.VesselID, deps.AgentName, maxIter)
 		return board, runErr
@@ -246,7 +292,7 @@ func graphLLMEngineFactory(ref string, cfg map[string]any, deps Deps) (engine.En
 func streamLLMRound(
 	ctx context.Context,
 	host engine.Host,
-	runID, actorID string,
+	runID, stepActor string,
 	client llm.LLM,
 	msgs []model.Message,
 	opts []llm.GenerateOption,
@@ -263,7 +309,7 @@ func streamLLMRound(
 		if gerr != nil {
 			return reply, gerr
 		}
-		_ = engine.EmitStreamToken(ctx, host, runID, actorID, reply.Content())
+		_ = engine.EmitStreamToken(ctx, host, runID, stepActor, reply.Content())
 		return reply, nil
 	}
 	defer stream.Close()
@@ -271,10 +317,10 @@ func streamLLMRound(
 	for stream.Next() {
 		chunk := stream.Current()
 		if chunk.Content != "" {
-			_ = engine.EmitStreamToken(ctx, host, runID, actorID, chunk.Content)
+			_ = engine.EmitStreamToken(ctx, host, runID, stepActor, chunk.Content)
 		}
 		for _, tc := range chunk.ToolCalls {
-			_ = engine.EmitStreamToolCall(ctx, host, runID, actorID, tc.ID, tc.Name, tc.Arguments)
+			_ = engine.EmitStreamToolCall(ctx, host, runID, stepActor, tc.ID, tc.Name, tc.Arguments)
 		}
 	}
 	if serr := stream.Err(); serr != nil {

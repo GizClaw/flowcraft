@@ -30,8 +30,10 @@ import (
 //     i.e. the SSE stream and the registry are two consistent views
 //     of the same fact.
 //  5. The decoded JSON envelope on the wire has the exact field
-//     names documented (type / run_id / actor_id / subject / seq /
-//     ts / payload).
+//     names documented (type / run_id / agent_id / subject / seq /
+//     ts / payload). agent_id replaces the legacy "actor_id"
+//     spelling; the legacy header is still mirrored on the wire
+//     until v0.5.0 — see sdk/event/envelope.go SetAgentID dual-write.
 func TestE2E_Conformance_LifecycleEnvelope(t *testing.T) {
 	if testing.Short() {
 		t.Skip("e2e: skipped in -short mode")
