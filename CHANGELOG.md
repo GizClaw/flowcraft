@@ -140,6 +140,27 @@ compare/fetch/ingest`, `eval longmemeval convert`). Shell completion
   JSON loader with shadow-run scoring. NOT a PR gate (LLM-call-heavy;
   weekly/release-time use only).
 
+#### tests/conformance
+
+- `tests/conformance/llm/cached_tokens_test.go`: live double-call
+  prompt-cache hit-rate probe. Issues two back-to-back Generate
+  calls with a ≥ 22 KB (~4000-token) byte-identical system prefix
+  and asserts `CachedInputTokens > 0` on the second call for
+  providers where caching is contractually expected (anthropic /
+  minimax via adapter `cache_control`, bytedance Doubao
+  transparent prefix caching) and warns when implicit caching
+  providers (azure / deepseek / qwen) return zero. Validates the
+  full chain: sdkx-side `cache_control` / `prompt_cache_key`
+  injection → provider honours it → adapter populates
+  `TokenUsage.CachedInputTokens` correctly. Measured against live
+  providers from the repo `.env`: azure 96.6%, deepseek 98.0%,
+  minimax (anthropic-family) 99.5% — providing concrete evidence
+  that the prompt-cache optimisation work shipped over PR #109 and
+  the cached-tokens plumbing shipped over the sdkx v0.3.3 follow-up
+  is rewarded with the expected cheaper billing. Self-skips per
+  provider when its FLOWCRAFT_TEST_* env var is missing, matching
+  the existing conformance suite convention.
+
 ### Fixed
 
 #### sdkx
