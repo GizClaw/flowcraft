@@ -188,6 +188,7 @@ func Run(
 			Attempts:  attempt,
 		}
 		res.Messages = newAssistantMessages(finalBoard)
+		res.Artifacts = collectArtifacts(finalBoard, rc.artifactChannels)
 
 		switch {
 		case execErr == nil:
@@ -322,6 +323,47 @@ func newAssistantMessages(b *engine.Board) []model.Message {
 	return out
 }
 
+// collectArtifacts harvests the named board channels into Result.Artifacts
+// per the [WithArtifactChannels] contract. One Artifact per channel that
+// holds at least one Part after the run; Parts are flat-concatenated in
+// board-write order. Channels are processed in the order callers
+// registered them and de-duplicated so accumulating per-agent + per-call
+// lists never produces duplicate Artifact entries.
+//
+// Channels that hold messages but no Parts (e.g. role-only system
+// markers) produce no Artifact entry — empty Parts would be confusing
+// to consumers that expect "Artifact present means there is something
+// to render".
+//
+// nil channels list returns nil so the unaltered nil-Artifacts default
+// for callers that don't opt in is preserved.
+func collectArtifacts(b *engine.Board, channels []string) []Artifact {
+	if len(channels) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(channels))
+	var out []Artifact
+	for _, name := range channels {
+		if _, dup := seen[name]; dup {
+			continue
+		}
+		seen[name] = struct{}{}
+		msgs := b.Channel(name)
+		if len(msgs) == 0 {
+			continue
+		}
+		var parts []model.Part
+		for _, m := range msgs {
+			parts = append(parts, m.Parts...)
+		}
+		if len(parts) == 0 {
+			continue
+		}
+		out = append(out, Artifact{Name: name, Parts: parts})
+	}
+	return out
+}
+
 // mintRunID returns a fresh "run-<hex>" identifier. Falls back to a
 // nanos-suffixed string if crypto/rand is unavailable (extremely rare
 // — typically only sandboxes).
@@ -406,16 +448,17 @@ func mergeAttributes(extra map[string]string, req Request, ag Agent, runID strin
 type RunOption func(*runConfig)
 
 type runConfig struct {
-	seeder      BoardSeeder
-	deps        *engine.Dependencies
-	host        engine.Host
-	attributes  map[string]string
-	observers   []Observer
-	deciders    []Decider
-	resumeFrom  *engine.Checkpoint
-	runID       string
-	parentRunID string
-	maxRevise   int
+	seeder           BoardSeeder
+	deps             *engine.Dependencies
+	host             engine.Host
+	attributes       map[string]string
+	observers        []Observer
+	deciders         []Decider
+	resumeFrom       *engine.Checkpoint
+	runID            string
+	parentRunID      string
+	maxRevise        int
+	artifactChannels []string
 }
 
 // applyOptions threads ag through so we can apply Agent-scoped
@@ -557,6 +600,51 @@ func WithMaxRevise(n int) RunOption {
 			n = 0
 		}
 		rc.maxRevise = n
+	}
+}
+
+// WithArtifactChannels names the [engine.Board] channels [Run] should
+// harvest into [Result.Artifacts] on the way out. One Artifact per
+// listed channel: Artifact.Name = channel name; Artifact.Parts =
+// flat concatenation of every Part across every Message in the
+// channel (in board-write order). Channels that hold no messages
+// after the run produce no Artifact entry — empty channels do not
+// pollute the result with empty bundles.
+//
+// This is the writer side of the Result.Artifacts contract that
+// contract-audit #6 flagged: the godoc had been promising
+// "engines store them in a board channel; agent collects channel
+// contents into Artifacts on the way out" since v0.1, but no
+// agent.Run code path actually performed the collection so the
+// field was permanently nil for every caller.
+//
+// MUST NOT include [engine.MainChannel] — Run already promotes
+// that channel into [Result.Messages] and a duplicate harvest
+// would surface the same payload twice with confusing semantics
+// (Messages keeps role + tool metadata; Artifacts is the
+// modality-bundle view). Run silently skips MainChannel if the
+// caller mistakenly passes it.
+//
+// Example: an engine that writes a "summary" markdown blob and
+// an "audio" TTS clip to dedicated channels:
+//
+//	res, _ := agent.Run(ctx, ag, eng, req,
+//	    agent.WithArtifactChannels("summary", "audio"))
+//	for _, a := range res.Artifacts {
+//	    switch a.Name { ... }
+//	}
+//
+// Multiple WithArtifactChannels calls accumulate (deduped at
+// collection time) so per-agent and per-call lists compose. nil
+// / empty input is a no-op.
+func WithArtifactChannels(channels ...string) RunOption {
+	return func(rc *runConfig) {
+		for _, c := range channels {
+			if c == "" || c == engine.MainChannel {
+				continue
+			}
+			rc.artifactChannels = append(rc.artifactChannels, c)
+		}
 	}
 }
 
