@@ -3,8 +3,8 @@ module github.com/GizClaw/flowcraft/tests/e2e/retrieval
 go 1.25.0
 
 require (
-	github.com/GizClaw/flowcraft/sdk v0.2.11
-	github.com/GizClaw/flowcraft/sdkx v0.2.9
+	github.com/GizClaw/flowcraft/sdk v0.3.4
+	github.com/GizClaw/flowcraft/sdkx v0.3.1
 )
 
 require (

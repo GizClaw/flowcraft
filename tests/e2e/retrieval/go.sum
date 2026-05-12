@@ -1,7 +1,7 @@
-github.com/GizClaw/flowcraft/sdk v0.2.11 h1:rHVCi+iH77jrxr9WV5nD5MjLBPq8yfMZXy65EtVZ1x4=
-github.com/GizClaw/flowcraft/sdk v0.2.11/go.mod h1:VeMqVBxnMGHtFO9ypHhsA591XoLCWxucXR+gqpxQt5s=
-github.com/GizClaw/flowcraft/sdkx v0.2.9 h1:sdpcfo1WZrUP7RgluC0nf9Uq0xa93P5wVSUSCNct1H4=
-github.com/GizClaw/flowcraft/sdkx v0.2.9/go.mod h1:CFKuqbc+h7Lwam7ZjUL5g1snO2mlpPlis+pF9rWE89k=
+github.com/GizClaw/flowcraft/sdk v0.3.4 h1:Bma2skumOsm4Mrts8/or03iIugSQz3P/rinKIuaRBsQ=
+github.com/GizClaw/flowcraft/sdk v0.3.4/go.mod h1:VeMqVBxnMGHtFO9ypHhsA591XoLCWxucXR+gqpxQt5s=
+github.com/GizClaw/flowcraft/sdkx v0.3.1 h1:2HzXK+FmOGlnJ01m4NbUR+N7bx2O4SXHz5flvN+yizY=
+github.com/GizClaw/flowcraft/sdkx v0.3.1/go.mod h1:AuzpJHWVDNZKD8J8frY5qjmYU2IoEg4X3Rs0q232pnY=
 github.com/cenkalti/backoff/v5 v5.0.3 h1:ZN+IMa753KfX5hd8vVaMixjnqRZ3y8CuJKRKj1xcsSM=
 github.com/cenkalti/backoff/v5 v5.0.3/go.mod h1:rkhZdG3JZukswDf7f0cwqPNk4K0sa+F97BxZthm/crw=
 github.com/cespare/xxhash/v2 v2.3.0 h1:UL815xU9SqsFlibzuggzjXhog7bL6oX9BbNZnL2UFvs=
