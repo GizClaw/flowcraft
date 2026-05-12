@@ -127,6 +127,19 @@ type Result struct {
 	// Status != StatusCompleted). agent does not persist it; the
 	// host can choose to checkpoint via engine's Checkpointer.
 	LastBoard *engine.Board `json:"-"`
+
+	// Attempts is the number of engine.Execute invocations Run made
+	// before settling on this Result. 1 for fresh (single-shot)
+	// runs; >1 only when WithMaxRevise was enabled and at least
+	// one Decider returned FinalizeDecision{Revise: true}.
+	//
+	// Attempts is the post-loop count, not "remaining budget":
+	// Attempts == 2 means the engine was invoked twice. Observers
+	// reading res.Attempts in OnRunEnd see the final value.
+	//
+	// Zero is reserved for "Run never reached engine.Execute"
+	// (infrastructure error). Real runs always have Attempts >= 1.
+	Attempts int `json:"attempts,omitempty"`
 }
 
 // Text returns the last assistant text message in Result.Messages, or

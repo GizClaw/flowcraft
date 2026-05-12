@@ -468,6 +468,9 @@ func (p *panicObs) OnRunStart(context.Context, agent.RunInfo, *agent.Request) { 
 func (p *panicObs) OnInterrupt(context.Context, agent.RunInfo, engine.Interrupt) {
 	panic("boom")
 }
+func (p *panicObs) OnRunRevise(context.Context, agent.RunInfo, *agent.Result, int) {
+	panic("boom")
+}
 func (p *panicObs) OnRunEnd(context.Context, agent.RunInfo, *agent.Result) { panic("boom") }
 
 func TestRun_AgentScopedObserversFireBeforeCallScoped(t *testing.T) {
@@ -781,5 +784,261 @@ func TestRun_RaceSmoke(t *testing.T) {
 
 	if got := atomic.LoadInt64(&counter); got != 16 {
 		t.Errorf("expected 16 runs; got %d", got)
+	}
+}
+
+// TestRun_WithResumeFrom_PropagatesCheckpointAndOverridesRunID
+// asserts that the agent threads ResumeFrom into engine.Run and
+// rewrites Run.ID to cp.ExecID so the engine's CanResume sees a
+// matching id pair (cross-id is the engine's "fork, not resume"
+// signal, which the engine surfaces as Validation).
+func TestRun_WithResumeFrom_PropagatesCheckpointAndOverridesRunID(t *testing.T) {
+	var sawRun engine.Run
+	eng := engine.EngineFunc(func(_ context.Context, r engine.Run, _ engine.Host, b *engine.Board) (*engine.Board, error) {
+		sawRun = r
+		return b, nil
+	})
+
+	cp := &engine.Checkpoint{ExecID: "saved-run-7", Step: "node-x"}
+
+	_, err := agent.Run(context.Background(), agent.Agent{ID: "a"}, eng,
+		// req.RunID intentionally different so the override path is exercised.
+		agent.Request{Message: model.NewTextMessage(model.RoleUser, "hi"), RunID: "fresh-id"},
+		agent.WithResumeFrom(cp),
+	)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if sawRun.ResumeFrom != cp {
+		t.Errorf("ResumeFrom = %+v, want pointer to cp", sawRun.ResumeFrom)
+	}
+	if sawRun.ID != "saved-run-7" {
+		t.Errorf("Run.ID = %q, want cp.ExecID %q (resume must override req.RunID)", sawRun.ID, "saved-run-7")
+	}
+}
+
+// TestRun_WithResumeFrom_NilIsNoop documents that passing a nil
+// checkpoint behaves exactly like not passing the option at all —
+// fresh start, fresh run id from req.RunID or mintRunID().
+func TestRun_WithResumeFrom_NilIsNoop(t *testing.T) {
+	var sawRun engine.Run
+	eng := engine.EngineFunc(func(_ context.Context, r engine.Run, _ engine.Host, b *engine.Board) (*engine.Board, error) {
+		sawRun = r
+		return b, nil
+	})
+	_, err := agent.Run(context.Background(), agent.Agent{ID: "a"}, eng,
+		agent.Request{Message: model.NewTextMessage(model.RoleUser, "hi"), RunID: "fresh-id"},
+		agent.WithResumeFrom(nil),
+	)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if sawRun.ResumeFrom != nil {
+		t.Errorf("ResumeFrom = %+v, want nil for fresh start", sawRun.ResumeFrom)
+	}
+	if sawRun.ID != "fresh-id" {
+		t.Errorf("Run.ID = %q, want %q (no resume → no override)", sawRun.ID, "fresh-id")
+	}
+}
+
+// reviseDecider asks for revise on every Decider call until the
+// configured number of decisions has been made. Lets tests pin the
+// "stop asking after N" boundary independently of WithMaxRevise.
+type reviseDecider struct {
+	agent.BaseDecider
+	mu      sync.Mutex
+	calls   int
+	stopAt  int // stop asking for revise once calls > stopAt
+	reason  string
+	discard bool
+}
+
+func (d *reviseDecider) BeforeFinalize(_ context.Context, _ agent.RunInfo, _ *agent.Request, _ *agent.Result) (agent.FinalizeDecision, error) {
+	d.mu.Lock()
+	d.calls++
+	calls := d.calls
+	d.mu.Unlock()
+	dec := agent.FinalizeDecision{Reason: d.reason, DiscardOutput: d.discard}
+	if d.stopAt == 0 || calls <= d.stopAt {
+		dec.Revise = true
+	}
+	return dec, nil
+}
+
+// reviseObs records every OnRunRevise call so tests can assert the
+// next-attempt index sequence and that the prev result is the
+// pre-replacement Result (Status / Attempts as of that attempt).
+type reviseObs struct {
+	agent.BaseObserver
+	mu     sync.Mutex
+	starts int
+	revise []reviseEvent
+	end    *agent.Result
+}
+
+type reviseEvent struct {
+	prevAttempts int
+	nextAttempt  int
+}
+
+func (r *reviseObs) OnRunStart(context.Context, agent.RunInfo, *agent.Request) {
+	r.mu.Lock()
+	r.starts++
+	r.mu.Unlock()
+}
+
+func (r *reviseObs) OnRunRevise(_ context.Context, _ agent.RunInfo, prev *agent.Result, next int) {
+	r.mu.Lock()
+	r.revise = append(r.revise, reviseEvent{prevAttempts: prev.Attempts, nextAttempt: next})
+	r.mu.Unlock()
+}
+
+func (r *reviseObs) OnRunEnd(_ context.Context, _ agent.RunInfo, res *agent.Result) {
+	r.mu.Lock()
+	r.end = res
+	r.mu.Unlock()
+}
+
+// TestRun_Revise_DefaultDisabled asserts the safe default: a
+// Decider that asks for Revise has its Reason recorded but does
+// NOT trigger another engine call when WithMaxRevise was not set.
+func TestRun_Revise_DefaultDisabled(t *testing.T) {
+	var calls int
+	eng := engine.EngineFunc(func(_ context.Context, _ engine.Run, _ engine.Host, b *engine.Board) (*engine.Board, error) {
+		calls++
+		b.AppendChannelMessage(engine.MainChannel, model.NewTextMessage(model.RoleAssistant, "ok"))
+		return b, nil
+	})
+	d := &reviseDecider{reason: "needs better citations"}
+	res, err := agent.Run(context.Background(), agent.Agent{ID: "a"}, eng, newReq("hi"),
+		agent.WithDecider(d),
+	)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if calls != 1 {
+		t.Errorf("engine calls = %d, want 1 (revise disabled by default)", calls)
+	}
+	if res.Attempts != 1 {
+		t.Errorf("Attempts = %d, want 1", res.Attempts)
+	}
+	if got := res.State["finalize_reason"]; got != "needs better citations" {
+		t.Errorf("finalize_reason = %v, want recorded even when revise dropped", got)
+	}
+}
+
+// TestRun_Revise_HonoursMaxBudget asserts the loop runs until the
+// budget is reached, not until the Decider stops asking. Caps
+// runaway loops on always-asking Deciders.
+func TestRun_Revise_HonoursMaxBudget(t *testing.T) {
+	var calls int
+	eng := engine.EngineFunc(func(_ context.Context, _ engine.Run, _ engine.Host, b *engine.Board) (*engine.Board, error) {
+		calls++
+		b.AppendChannelMessage(engine.MainChannel, model.NewTextMessage(model.RoleAssistant, "ok"))
+		return b, nil
+	})
+	d := &reviseDecider{} // always asks for revise
+	res, err := agent.Run(context.Background(), agent.Agent{ID: "a"}, eng, newReq("hi"),
+		agent.WithDecider(d),
+		agent.WithMaxRevise(3),
+	)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if calls != 3 {
+		t.Errorf("engine calls = %d, want 3 (budget cap)", calls)
+	}
+	if res.Attempts != 3 {
+		t.Errorf("Attempts = %d, want 3", res.Attempts)
+	}
+}
+
+// TestRun_Revise_StopsWhenDeciderSatisfied asserts the loop exits
+// early when no Decider asks for revise — Attempts reflects the
+// actual count, not the budget.
+func TestRun_Revise_StopsWhenDeciderSatisfied(t *testing.T) {
+	var calls int
+	eng := engine.EngineFunc(func(_ context.Context, _ engine.Run, _ engine.Host, b *engine.Board) (*engine.Board, error) {
+		calls++
+		b.AppendChannelMessage(engine.MainChannel, model.NewTextMessage(model.RoleAssistant, "ok"))
+		return b, nil
+	})
+	d := &reviseDecider{stopAt: 2} // asks twice, then satisfied
+	res, err := agent.Run(context.Background(), agent.Agent{ID: "a"}, eng, newReq("hi"),
+		agent.WithDecider(d),
+		agent.WithMaxRevise(5),
+	)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if calls != 3 {
+		t.Errorf("engine calls = %d, want 3 (2 revises then satisfied)", calls)
+	}
+	if res.Attempts != 3 {
+		t.Errorf("Attempts = %d, want 3", res.Attempts)
+	}
+}
+
+// TestRun_Revise_ObserverReceivesPrevResultAndNextAttempt asserts
+// the OnRunRevise hook fires once per revise transition with the
+// pre-replacement Result and the next attempt index.
+func TestRun_Revise_ObserverReceivesPrevResultAndNextAttempt(t *testing.T) {
+	eng := engine.EngineFunc(func(_ context.Context, _ engine.Run, _ engine.Host, b *engine.Board) (*engine.Board, error) {
+		b.AppendChannelMessage(engine.MainChannel, model.NewTextMessage(model.RoleAssistant, "ok"))
+		return b, nil
+	})
+	d := &reviseDecider{}
+	obs := &reviseObs{}
+	_, err := agent.Run(context.Background(), agent.Agent{ID: "a"}, eng, newReq("hi"),
+		agent.WithDecider(d),
+		agent.WithObserver(obs),
+		agent.WithMaxRevise(3),
+	)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got := obs.starts; got != 3 {
+		t.Errorf("OnRunStart count = %d, want 3", got)
+	}
+	if len(obs.revise) != 2 {
+		t.Fatalf("OnRunRevise count = %d, want 2 (between attempts 1→2 and 2→3)", len(obs.revise))
+	}
+	wantSeq := []reviseEvent{
+		{prevAttempts: 1, nextAttempt: 2},
+		{prevAttempts: 2, nextAttempt: 3},
+	}
+	for i, ev := range obs.revise {
+		if ev != wantSeq[i] {
+			t.Errorf("OnRunRevise[%d] = %+v, want %+v", i, ev, wantSeq[i])
+		}
+	}
+}
+
+// TestRun_Revise_NotTriggeredOnNonCompleted asserts a flapping engine
+// (returning errors) cannot consume the revise budget — Revise only
+// fires for completed runs, so transient infrastructure failures
+// surface immediately.
+func TestRun_Revise_NotTriggeredOnNonCompleted(t *testing.T) {
+	var calls int
+	eng := engine.EngineFunc(func(_ context.Context, _ engine.Run, _ engine.Host, b *engine.Board) (*engine.Board, error) {
+		calls++
+		return b, errors.New("engine flap")
+	})
+	d := &reviseDecider{} // always asks for revise
+	res, err := agent.Run(context.Background(), agent.Agent{ID: "a"}, eng, newReq("hi"),
+		agent.WithDecider(d),
+		agent.WithMaxRevise(5),
+	)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if calls != 1 {
+		t.Errorf("engine calls = %d, want 1 (failed runs do not retry on revise)", calls)
+	}
+	if res.Status != agent.StatusFailed {
+		t.Errorf("Status = %v, want failed", res.Status)
+	}
+	if res.Attempts != 1 {
+		t.Errorf("Attempts = %d, want 1", res.Attempts)
 	}
 }

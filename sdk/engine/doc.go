@@ -106,6 +106,28 @@
 //     LLM nodes use, so consumer code stays uniform regardless of
 //     which node generated the increment.
 //
+//  12. Capability description (capabilities.go) — the optional
+//     [Describer] interface lets engines advertise SupportsResume,
+//     EmitsUserPrompt, EmitsCheckpoint and RequiredDepNames. Hosts
+//     read via [CapabilitiesOf] (works on Describer + non-Describer
+//     engines via zero-value default). [WithCapabilities] wraps an
+//     [EngineFunc] with a Describer adapter so closure-style engines
+//     can declare their capabilities without becoming named structs.
+//
+//  13. Dependency naming (depname/) — string constants for
+//     conventional [Dependencies] keys (depname.LLMClient,
+//     depname.ToolRegistry, …). Engines that publish
+//     RequiredDepNames in their Capabilities should reference these
+//     constants so hosts and engines agree on the wire vocabulary.
+//
+//  14. Host-on-context plumbing (host_ctx.go) — [WithHost] /
+//     [HostFromContext] let engines hand the Host to extension
+//     points whose signatures don't carry it (canonically:
+//     sdk/tool's Tool.Execute). Built-in tools that need host
+//     capabilities (e.g. sdk/tool/builtin/askuser) recover the host
+//     this way without each engine inventing its own ctx-key
+//     convention.
+//
 // # What does NOT live here
 //
 //   - StreamCallback / StreamEvent — replaced by Publisher +
@@ -154,4 +176,36 @@
 // [Run.ResumeFrom]) from WHY (host-defined [ResumeContext]); engines
 // that do not implement [Resumer] still honour the resume contract
 // described on [Run.ResumeFrom].
+//
+// # Capability discovery
+//
+// Hosts that need to know what an engine can do BEFORE invoking
+// Execute (e.g. agent.Run preflight, dashboard rendering, vessel
+// admission) call [CapabilitiesOf]:
+//
+//	caps := engine.CapabilitiesOf(eng)
+//	if !caps.SupportsResume && run.ResumeFrom != nil {
+//	    return errdefs.NotAvailablef("engine cannot resume")
+//	}
+//
+// Engines opt in by implementing [Describer]:
+//
+//	func (e *myEngine) Capabilities() engine.Capabilities {
+//	    return engine.Capabilities{
+//	        SupportsResume:   true,
+//	        EmitsCheckpoint:  true,
+//	        RequiredDepNames: []string{depname.LLMClient},
+//	    }
+//	}
+//
+// Closure-style engines wrap with [WithCapabilities]:
+//
+//	return engine.WithCapabilities(
+//	    engine.EngineFunc(func(...) (...) { ... }),
+//	    engine.Capabilities{EmitsCheckpoint: true},
+//	), nil
+//
+// Capabilities are declarative — the matching behaviour MUST exist.
+// Tests should pin the pairing (see graph runner's
+// HonestlyReportsCurrentBehaviour test for the pattern).
 package engine

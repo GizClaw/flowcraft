@@ -21,6 +21,12 @@ type Checkpoint struct {
 	Iteration int                  `json:"iteration"`
 	Board     *graph.BoardSnapshot `json:"board"`
 	Timestamp time.Time            `json:"timestamp"`
+
+	// OriginalStartedAt mirrors [engine.Checkpoint.OriginalStartedAt].
+	// Stored at the executor's own checkpoint type so the
+	// FileCheckpointStore round-trips it in JSON without losing the
+	// resume-anchored start time.
+	OriginalStartedAt time.Time `json:"original_started_at,omitempty"`
 }
 
 // toEngine projects the legacy executor.Checkpoint onto the canonical
@@ -33,12 +39,13 @@ func (c Checkpoint) toEngine() engine.Checkpoint {
 		attrs["graph_name"] = c.GraphName
 	}
 	return engine.Checkpoint{
-		ExecID:     c.RunID,
-		Step:       c.NodeID,
-		Iteration:  c.Iteration,
-		Board:      c.Board,
-		Attributes: attrs,
-		Timestamp:  c.Timestamp,
+		ExecID:            c.RunID,
+		Step:              c.NodeID,
+		Iteration:         c.Iteration,
+		Board:             c.Board,
+		Attributes:        attrs,
+		Timestamp:         c.Timestamp,
+		OriginalStartedAt: c.OriginalStartedAt,
 	}
 }
 
