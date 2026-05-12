@@ -9,8 +9,8 @@ go 1.25.0
 // PR rather than coupling sdk's release cadence to this directory.
 
 require (
-	github.com/GizClaw/flowcraft/sdk v0.3.4
-	github.com/GizClaw/flowcraft/sdkx v0.3.1
+	github.com/GizClaw/flowcraft/sdk v0.3.5
+	github.com/GizClaw/flowcraft/sdkx v0.3.3
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/pflag v1.0.9
 )
