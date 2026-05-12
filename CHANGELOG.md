@@ -16,6 +16,24 @@ with its own tag prefix (e.g. `sdk/vX.Y.Z`, `vessel/vX.Y.Z`,
 
 #### sdk
 
+- `sdk/model`: `TokenUsage.CachedInputTokens` field for prompt-cache
+  observability. All three families of cache-aware providers expose
+  cached input tokens under different wire names —
+  OpenAI / Azure / DeepSeek / Qwen-flash report
+  `usage.prompt_tokens_details.cached_tokens`,
+  Anthropic / Minimax report `usage.cache_read_input_tokens`,
+  ByteDance Doubao reports
+  `usage.prompt_tokens_details.cached_tokens`. The new field lets
+  sdkx adapters normalise these into a single observable so callers
+  can compute a uniform `CachedInputTokens / InputTokens` hit-rate
+  without provider-specific branching. The field is additive,
+  `omitempty`-tagged (zero value vanishes from the wire format),
+  participates in `TokenUsage.Add` so cumulative reporters
+  aggregate cached counts the same way they aggregate input /
+  output tokens, and stays zero on providers (or model SKUs) that
+  do not surface a cache breakdown — wire-format back-compatible
+  with v0.3.4 readers. A follow-up sdkx release wires the three
+  cache-aware adapters to populate the field.
 - `sdk/engine`: capabilities / resume / revise lifecycle. New
   `engine/depname` package centralises Dependencies keys (LLMClient,
   ToolRegistry, ToolAllowedNames, …) so engine authors and host

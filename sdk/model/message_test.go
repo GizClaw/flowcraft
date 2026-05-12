@@ -1,6 +1,10 @@
 package model
 
-import "testing"
+import (
+	"bytes"
+	"encoding/json"
+	"testing"
+)
 
 func TestMessage_Content(t *testing.T) {
 	msg := Message{
@@ -145,6 +149,46 @@ func TestTokenUsage_Add_Enriched(t *testing.T) {
 		sum := acc.Add(delta)
 		if sum.Model != "claude" || sum.CostMicros != 80 {
 			t.Errorf("got %+v, want Model=claude Cost=80", sum)
+		}
+	})
+
+	t.Run("cached input tokens sum across deltas", func(t *testing.T) {
+		acc := TokenUsage{InputTokens: 100, CachedInputTokens: 60}
+		delta := TokenUsage{InputTokens: 80, CachedInputTokens: 50}
+		sum := acc.Add(delta)
+		if sum.InputTokens != 180 || sum.CachedInputTokens != 110 {
+			t.Errorf("Input=%d Cached=%d, want 180 / 110", sum.InputTokens, sum.CachedInputTokens)
+		}
+	})
+}
+
+func TestTokenUsage_CachedInputTokens_JSON(t *testing.T) {
+	t.Run("zero value omits cached_input_tokens (back-compat with v<=0.3.4)", func(t *testing.T) {
+		u := TokenUsage{InputTokens: 10, OutputTokens: 5, TotalTokens: 15}
+		b, err := json.Marshal(u)
+		if err != nil {
+			t.Fatalf("Marshal: %v", err)
+		}
+		if bytes.Contains(b, []byte("cached_input_tokens")) {
+			t.Errorf("zero value should omit cached_input_tokens, got %s", b)
+		}
+	})
+
+	t.Run("non-zero serialises and round-trips", func(t *testing.T) {
+		u := TokenUsage{InputTokens: 1000, CachedInputTokens: 800, OutputTokens: 50, TotalTokens: 1050}
+		b, err := json.Marshal(u)
+		if err != nil {
+			t.Fatalf("Marshal: %v", err)
+		}
+		if !bytes.Contains(b, []byte(`"cached_input_tokens":800`)) {
+			t.Errorf("expected cached_input_tokens in JSON, got %s", b)
+		}
+		var got TokenUsage
+		if err := json.Unmarshal(b, &got); err != nil {
+			t.Fatalf("Unmarshal: %v", err)
+		}
+		if got.CachedInputTokens != 800 {
+			t.Errorf("round-trip CachedInputTokens = %d, want 800", got.CachedInputTokens)
 		}
 	})
 }
