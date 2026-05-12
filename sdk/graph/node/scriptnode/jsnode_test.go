@@ -9,6 +9,7 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/graph"
 	"github.com/GizClaw/flowcraft/sdk/script/jsrt"
+	"github.com/GizClaw/flowcraft/sdk/telemetry"
 )
 
 func TestScriptNode_IDAndType(t *testing.T) {
@@ -138,11 +139,12 @@ func TestScriptNode_RunInfo_AllFieldsPropagate(t *testing.T) {
 		Context: context.Background(),
 		RunID:   "run-x",
 		Attributes: map[string]string{
-			"agent_id":   "researcher",
-			"task_id":    "task-7",
-			"context_id": "thread-3",
-			// run_id is intentionally absent: ExecutionContext.RunID
-			// is the dedicated source.
+			telemetry.AttrAgentID:        "researcher",
+			telemetry.AttrTaskID:         "task-7",
+			telemetry.AttrConversationID: "thread-3",
+			// AttrRunID is intentionally absent: ExecutionContext.RunID
+			// is the dedicated source agent.RunInfoFromAttributes
+			// trusts over any attribute copy.
 		},
 	}
 	if err := n.ExecuteBoard(ctx, board); err != nil {

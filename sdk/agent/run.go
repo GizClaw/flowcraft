@@ -13,6 +13,7 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/engine/depname"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/model"
+	"github.com/GizClaw/flowcraft/sdk/telemetry"
 )
 
 // Run executes one turn of ag against eng with the given req.
@@ -419,21 +420,25 @@ func promoteAgentTools(callerDeps *engine.Dependencies, agentTools []string) *en
 }
 
 // mergeAttributes combines RunOption-supplied attributes with the
-// well-known agent / task / context ids. Keys explicitly set by the
-// caller win — agent never overwrites.
+// well-known agent / run / task / conversation ids. Keys explicitly
+// set by the caller win — agent never overwrites.
 //
-// Key names live in runinfo_attrs.go and stay private to this
-// package; downstream readers go through [RunInfoFromAttributes] so
-// the wire format can be migrated without sweeping the codebase.
+// The wire format is the canonical OpenTelemetry-style dot-key set
+// defined in sdk/telemetry/attrs.go. Downstream readers go through
+// [RunInfoFromAttributes] (RunInfo recovery) or read
+// telemetry.Attr* directly (executor actor_id resolution,
+// observers, dashboards) — there is one canonical key set, so the
+// agent → engine → executor → envelope hand-off does not need a
+// per-layer translation table.
 func mergeAttributes(extra map[string]string, req Request, ag Agent, runID string) map[string]string {
 	out := make(map[string]string, len(extra)+4)
-	out[attrAgentID] = ag.ID
-	out[attrRunID] = runID
+	out[telemetry.AttrAgentID] = ag.ID
+	out[telemetry.AttrRunID] = runID
 	if req.TaskID != "" {
-		out[attrTaskID] = req.TaskID
+		out[telemetry.AttrTaskID] = req.TaskID
 	}
 	if req.ContextID != "" {
-		out[attrContextID] = req.ContextID
+		out[telemetry.AttrConversationID] = req.ContextID
 	}
 	for k, v := range extra {
 		out[k] = v

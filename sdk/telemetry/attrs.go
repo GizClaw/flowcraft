@@ -52,6 +52,15 @@ const (
 	// top-level runs.
 	AttrParentRunID = "parent.run.id"
 
+	// AttrTaskID identifies the A2A-aligned task an operation
+	// belongs to (sdk/agent.Request.TaskID, mirrored into
+	// sdk/agent.Result.TaskID). Promoted by sdk/agent.Run into
+	// engine.Run.Attributes so engines / nodes / observers can
+	// recover it without reaching back through agent state.
+	// Optional: empty when the upstream Request did not carry a
+	// task identifier.
+	AttrTaskID = "task.id"
+
 	// AttrEngineKind identifies the concrete engine.Engine
 	// implementation (graph runner, future script engine, remote
 	// A2A bridge, ...). Producers SHOULD use a stable short token

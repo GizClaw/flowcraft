@@ -1,30 +1,24 @@
 package agent
 
+import "github.com/GizClaw/flowcraft/sdk/telemetry"
+
 // runinfo_attrs.go owns the contract between [Run] (which promotes
 // per-call identity into [engine.Run.Attributes]) and downstream
 // readers that need to reconstruct a [RunInfo] from those attributes.
 //
-// The string keys are deliberately kept private to the agent package:
-// callers never type the key strings themselves; they go through
-// [RunInfoFromAttributes] (read side) or rely on Run's promotion (write
-// side). That way migrating the wire format (e.g. switching to
-// telemetry.Attr* canonical dot-keys) is a one-edit change here, not a
-// codebase-wide grep-and-replace.
-const (
-	// attrAgentID — agent.Agent.ID promoted by Run into engine.Run.Attributes.
-	attrAgentID = "agent_id"
-
-	// attrRunID — the engine.Run.ID promoted by Run. Engines that key
-	// telemetry off engine.Run.ID directly do NOT need to read this;
-	// it exists so a node looking at engine.Run.Attributes alone can
-	// recover the full RunInfo without consulting engine.Run.
-	attrRunID = "run_id"
-
-	// attrTaskID / attrContextID — Request.TaskID / Request.ContextID
-	// (A2A-aligned identifiers) promoted by Run when non-empty.
-	attrTaskID    = "task_id"
-	attrContextID = "context_id"
-)
+// The wire format is the canonical OpenTelemetry-style dot-key set
+// defined in sdk/telemetry/attrs.go (AttrAgentID, AttrRunID,
+// AttrTaskID, AttrConversationID). Routing identity through the
+// telemetry catalog instead of agent-private snake_case constants
+// gives downstream consumers (executor actor_id resolver, dashboards,
+// future sdk/pod controller) one canonical key set to filter on,
+// closing the contract-audit #15 gap where the executor had no
+// process-portable channel for agent.id.
+//
+// The mapping ContextID → AttrConversationID reflects A2A semantics:
+// "context" / "conversation" name the same thread-of-interaction
+// scope; collapsing onto one canonical key avoids dashboard joins
+// having to know about both spellings.
 
 // RunInfoFromAttributes reconstructs a [RunInfo] from the
 // engine.Run.Attributes map [Run] populates on every attempt. runID
@@ -51,9 +45,9 @@ const (
 // engine.Run.Attributes.
 func RunInfoFromAttributes(runID string, attrs map[string]string) RunInfo {
 	return RunInfo{
-		AgentID:   attrs[attrAgentID],
+		AgentID:   attrs[telemetry.AttrAgentID],
 		RunID:     runID,
-		TaskID:    attrs[attrTaskID],
-		ContextID: attrs[attrContextID],
+		TaskID:    attrs[telemetry.AttrTaskID],
+		ContextID: attrs[telemetry.AttrConversationID],
 	}
 }
