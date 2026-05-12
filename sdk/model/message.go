@@ -269,6 +269,25 @@ type TokenUsage struct {
 	OutputTokens int64 `json:"output_tokens"`
 	TotalTokens  int64 `json:"total_tokens"`
 
+	// CachedInputTokens is the subset of InputTokens that hit the
+	// provider's prompt cache and are therefore billed at a reduced
+	// rate (typically 10x cheaper). It is always <= InputTokens.
+	//
+	// Different providers expose this under different names but the
+	// semantics are aligned: OpenAI / DeepSeek / Azure / Qwen report
+	// `usage.prompt_tokens_details.cached_tokens`, Anthropic /
+	// Minimax report `usage.cache_read_input_tokens`, ByteDance
+	// Doubao reports `usage.prompt_tokens_details.cached_tokens`.
+	// The Generate / stream paths normalise these into this single
+	// field so callers can compute a cache hit-rate uniformly via
+	// CachedInputTokens / InputTokens without provider-specific
+	// branching.
+	//
+	// Zero means either the provider does not expose cache stats
+	// or no cache hit occurred on this call. omitempty keeps the
+	// wire format stable for providers that never set it.
+	CachedInputTokens int64 `json:"cached_input_tokens,omitempty"`
+
 	// Model is the resolved LLM model name this usage came from
 	// (e.g. "gpt-4o", "claude-3-7-sonnet-20250219"). Empty when the
 	// reporter does not know which model produced the call (test
@@ -305,12 +324,13 @@ func (u TokenUsage) Add(other TokenUsage) TokenUsage {
 		model = other.Model
 	}
 	return TokenUsage{
-		InputTokens:  u.InputTokens + other.InputTokens,
-		OutputTokens: u.OutputTokens + other.OutputTokens,
-		TotalTokens:  u.TotalTokens + other.TotalTokens,
-		Model:        model,
-		LatencyMs:    u.LatencyMs + other.LatencyMs,
-		CostMicros:   u.CostMicros + other.CostMicros,
+		InputTokens:       u.InputTokens + other.InputTokens,
+		CachedInputTokens: u.CachedInputTokens + other.CachedInputTokens,
+		OutputTokens:      u.OutputTokens + other.OutputTokens,
+		TotalTokens:       u.TotalTokens + other.TotalTokens,
+		Model:             model,
+		LatencyMs:         u.LatencyMs + other.LatencyMs,
+		CostMicros:        u.CostMicros + other.CostMicros,
 	}
 }
 
