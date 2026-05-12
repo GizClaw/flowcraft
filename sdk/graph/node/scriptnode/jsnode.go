@@ -77,7 +77,14 @@ func (n *ScriptNode) ExecuteBoard(ctx graph.ExecutionContext, board *graph.Board
 		bindings.NewBoardBridge(board),
 		bindings.NewExprBridge(),
 		bindings.NewHostBridge(ctx.Host, n.id, ctx.Publisher),
-		bindings.NewRunInfoBridge(agent.RunInfo{RunID: ctx.RunID}),
+		// Reconstruct the full RunInfo from engine.Run.Attributes
+		// (promoted by agent.Run upstream) instead of the legacy
+		// RunInfo{RunID: ec.RunID} one-field bridge that left
+		// AgentID / TaskID / ContextID permanently empty —
+		// contract-audit #12. agent.RunInfoFromAttributes is the
+		// canonical reader so the key strings stay private to the
+		// agent package.
+		bindings.NewRunInfoBridge(agent.RunInfoFromAttributes(ctx.RunID, ctx.Attributes)),
 		newNodeBridge(n.id, n.nodeType),
 	}
 	allFns = append(allFns, n.extraBindFn...)

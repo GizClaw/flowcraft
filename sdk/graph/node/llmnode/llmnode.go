@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 
 	"github.com/GizClaw/flowcraft/sdk/engine"
+	"github.com/GizClaw/flowcraft/sdk/engine/depname"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/graph"
 	"github.com/GizClaw/flowcraft/sdk/llm"
@@ -49,17 +50,94 @@ type Config struct {
 // Node is a Go-native graph node that calls an LLM, dispatches tool calls,
 // and manages message history on the board.
 type Node struct {
-	id           string
-	resolver     llm.LLMResolver
+	id       string
+	resolver llm.LLMResolver
+
+	// toolRegistry is the legacy "builder closure" tool registry,
+	// retained as a fallback only. The runtime now prefers the
+	// engine.Run-scoped *tool.Registry exposed via
+	// graph.ExecutionContext.Deps[depname.ToolRegistry] (populated
+	// by agent.Run from agent.WithDependencies). Closure-binding
+	// here remains supported for callers that construct llmnode
+	// without an upstream agent.Run wiring deps (vessel inline
+	// engine, hand-built test graphs).
 	toolRegistry *tool.Registry
-	config       Config
-	rawConfig    map[string]any
-	isDeferred   func(string) bool
+
+	config     Config
+	rawConfig  map[string]any
+	isDeferred func(string) bool
 }
 
 // New creates a Node.
+//
+// toolReg is optional: pass nil when the surrounding engine.Run is
+// expected to supply the registry via [engine.Dependencies] under the
+// [depname.ToolRegistry] key. Pass a non-nil registry to keep the
+// legacy "builder closure" behaviour for callers driving the node
+// outside agent.Run (e.g. the vessel inline engine, unit tests).
+// At runtime the run-scoped registry wins when both are present.
 func New(id string, resolver llm.LLMResolver, toolReg *tool.Registry, config Config) *Node {
 	return &Node{id: id, resolver: resolver, toolRegistry: toolReg, config: config}
+}
+
+// resolveTools returns the tool registry and effective allow-list for
+// one round, applying contract-audit Epic A's policy:
+//
+//  1. Registry: graph.ExecutionContext.Deps[depname.ToolRegistry]
+//     wins when present and well-typed; falls back to the
+//     constructor-bound n.toolRegistry. This lets agent.Run swap a
+//     run-scoped registry in without touching the graph builder.
+//  2. Allow list: when ec.Deps carries [depname.ToolAllowedNames]
+//     it acts as the run-level CEILING. agent.Run populates that
+//     key from agent.Agent.Tools, so this is where the historically
+//     ignored policy gate finally takes effect.
+//     - ceiling absent → fall back to Config.ToolNames verbatim
+//     (preserves legacy behaviour for engines that don't wire
+//     deps).
+//     - ceiling present and empty → no tools permitted (fail
+//     closed).
+//     - ceiling present and non-empty → INTERSECT with
+//     Config.ToolNames so the node still controls which subset
+//     to expose to the LLM for this round.
+//
+// The returned slice is a fresh allocation; callers may pass it into
+// downstream Config copies without aliasing concerns.
+func (n *Node) resolveTools(ec graph.ExecutionContext) (*tool.Registry, []string) {
+	reg := n.toolRegistry
+	if r, err := engine.GetDep[*tool.Registry](ec.Deps, depname.ToolRegistry); err == nil && r != nil {
+		reg = r
+	}
+
+	requested := n.config.ToolNames
+	if ec.Deps == nil {
+		return reg, requested
+	}
+	ceiling, err := engine.GetDep[[]string](ec.Deps, depname.ToolAllowedNames)
+	if err != nil {
+		return reg, requested
+	}
+	return reg, intersectAllow(requested, ceiling)
+}
+
+// intersectAllow returns the names present in both requested and
+// ceiling. Either input being empty means "deny all" — empty
+// requested is the node opting out, empty ceiling is the run-level
+// gate closing everything.
+func intersectAllow(requested, ceiling []string) []string {
+	if len(requested) == 0 || len(ceiling) == 0 {
+		return nil
+	}
+	cset := make(map[string]struct{}, len(ceiling))
+	for _, name := range ceiling {
+		cset[name] = struct{}{}
+	}
+	out := make([]string, 0, len(requested))
+	for _, name := range requested {
+		if _, ok := cset[name]; ok {
+			out = append(out, name)
+		}
+	}
+	return out
 }
 
 func (n *Node) ID() string             { return n.id }
@@ -138,9 +216,17 @@ func (n *Node) ExecuteBoard(ctx graph.ExecutionContext, board *graph.Board) erro
 		board.SetVar(VarPrevMessageCount, len(messages))
 	}
 
+	// Resolve registry + allow-list at runtime so agent.Run-supplied
+	// dependencies (and Agent.Tools as the policy gate) actually
+	// reach the LLM call. cfg is a value-copied Config above; we
+	// overwrite ToolNames on the local copy without aliasing the
+	// node-level field.
+	reg, allowedNames := n.resolveTools(ctx)
+	cfg.ToolNames = allowedNames
+
 	result, err := runRound(
 		ctx.Context, ctx.Host, ctx.Publisher,
-		n.resolver, n.toolRegistry,
+		n.resolver, reg,
 		n.id, messages, cfg,
 	)
 	if err != nil {

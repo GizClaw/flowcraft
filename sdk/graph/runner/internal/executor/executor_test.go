@@ -734,3 +734,96 @@ func TestLocalExecutor_PartialTemplateRef_PreservesLiteral(t *testing.T) {
 		t.Fatalf("model: got %T %v", capturedConfig["model"], capturedConfig["model"])
 	}
 }
+
+// TestLocalExecutor_PropagatesDepsAndAttributes asserts the
+// engine.Run.Deps + engine.Run.Attributes channel reaches every
+// node via [graph.ExecutionContext]. Without this regression test
+// the runner could silently drop the propagation (which is exactly
+// the contract gap audit #2 identified — Deps was a zero-reader
+// channel for months because no executor populated it on the way
+// down).
+func TestLocalExecutor_PropagatesDepsAndAttributes(t *testing.T) {
+	type ctxAuditKey struct{}
+	deps := &engine.Dependencies{}
+	deps.Set(ctxAuditKey{}, "audit-token")
+	attrs := map[string]string{
+		"agent.id":   "researcher",
+		"task.id":    "task-42",
+		"context.id": "thread-7",
+	}
+
+	var (
+		gotDeps  *engine.Dependencies
+		gotAttrs map[string]string
+		gotVal   any
+		gotOK    bool
+	)
+	probe := newTestNode("probe", func(ec graph.ExecutionContext, _ *graph.Board) error {
+		gotDeps = ec.Deps
+		gotAttrs = ec.Attributes
+		if ec.Deps != nil {
+			gotVal, gotOK = ec.Deps.Get(ctxAuditKey{})
+		}
+		return nil
+	})
+
+	g := buildGraph("test", "probe",
+		map[string]graph.Node{"probe": probe},
+		[]graph.Edge{{From: "probe", To: graph.END}},
+	)
+
+	exec := NewLocalExecutor()
+	_, err := exec.Execute(context.Background(), g, graph.NewBoard(),
+		WithDeps(deps),
+		WithAttributes(attrs),
+	)
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+
+	if gotDeps != deps {
+		t.Errorf("ExecutionContext.Deps: pointer differs from WithDeps argument; got %p want %p", gotDeps, deps)
+	}
+	if !gotOK || gotVal != "audit-token" {
+		t.Errorf("Deps payload missing through propagation: ok=%v val=%v", gotOK, gotVal)
+	}
+	if len(gotAttrs) != len(attrs) {
+		t.Fatalf("ExecutionContext.Attributes: len mismatch; got %d want %d (%v)", len(gotAttrs), len(attrs), gotAttrs)
+	}
+	for k, v := range attrs {
+		if gotAttrs[k] != v {
+			t.Errorf("Attributes[%q] = %q, want %q", k, gotAttrs[k], v)
+		}
+	}
+}
+
+// TestLocalExecutor_NilDepsAndAttributesAreTolerated documents that
+// engines invoked without WithDeps / WithAttributes still work — the
+// executor MUST surface nil maps / pointers verbatim instead of
+// inventing default values nodes might mistake for real state.
+func TestLocalExecutor_NilDepsAndAttributesAreTolerated(t *testing.T) {
+	var (
+		gotDeps  *engine.Dependencies
+		gotAttrs map[string]string
+	)
+	probe := newTestNode("probe", func(ec graph.ExecutionContext, _ *graph.Board) error {
+		gotDeps = ec.Deps
+		gotAttrs = ec.Attributes
+		return nil
+	})
+
+	g := buildGraph("test", "probe",
+		map[string]graph.Node{"probe": probe},
+		[]graph.Edge{{From: "probe", To: graph.END}},
+	)
+
+	if _, err := NewLocalExecutor().Execute(context.Background(), g, graph.NewBoard()); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if gotDeps != nil {
+		t.Errorf("ExecutionContext.Deps: expected nil when WithDeps absent, got %v", gotDeps)
+	}
+	if gotAttrs != nil {
+		t.Errorf("ExecutionContext.Attributes: expected nil when WithAttributes absent, got %v", gotAttrs)
+	}
+}

@@ -13,18 +13,24 @@ package runner_test
 
 import (
 	"context"
+	"reflect"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
 
 	"github.com/GizClaw/flowcraft/sdk/agent"
 	"github.com/GizClaw/flowcraft/sdk/engine"
+	"github.com/GizClaw/flowcraft/sdk/engine/depname"
 	"github.com/GizClaw/flowcraft/sdk/engine/enginetest"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/graph"
 	"github.com/GizClaw/flowcraft/sdk/graph/node"
+	"github.com/GizClaw/flowcraft/sdk/graph/node/llmnode"
 	"github.com/GizClaw/flowcraft/sdk/graph/runner"
+	"github.com/GizClaw/flowcraft/sdk/llm"
 	"github.com/GizClaw/flowcraft/sdk/model"
+	"github.com/GizClaw/flowcraft/sdk/tool"
 )
 
 // echoNode appends an assistant reply to MainChannel quoting the last
@@ -485,4 +491,205 @@ func (o *reviseRecordingObserver) lastNextAttempt() int {
 		return -1
 	}
 	return o.events[len(o.events)-1].nextAttempt
+}
+
+// ============================================================================
+// Vertical E2E: Agent.Tools → agent.Run → graph runner → llmnode
+// ----------------------------------------------------------------------------
+// These tests wire the full chain landed in this PR (run-context-deps-plumbing):
+// agent.Agent.Tools is promoted into engine.Run.Deps[depname.ToolAllowedNames];
+// the graph runner forwards Deps into ExecutionContext.Deps; and llmnode
+// resolves its tool registry + allow-list from there. If ANY seam in that
+// chain regresses, these tests fail before any PR ships.
+
+// captureLLM records the GenerateOptions every llm.Generate{,Stream} call
+// receives so the test can extract the tool definitions the model was
+// offered. Because GenerateOption is an opaque func(*GenerateOptions),
+// extraction works by applying the recorded slice to a fresh
+// GenerateOptions and reading back .Tools.
+type captureLLM struct {
+	mu          sync.Mutex
+	lastOptions []llm.GenerateOption
+}
+
+func (c *captureLLM) record(opts []llm.GenerateOption) {
+	c.mu.Lock()
+	c.lastOptions = opts
+	c.mu.Unlock()
+}
+
+func (c *captureLLM) toolsSeen() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var resolved llm.GenerateOptions
+	for _, opt := range c.lastOptions {
+		opt(&resolved)
+	}
+	out := make([]string, 0, len(resolved.Tools))
+	for _, t := range resolved.Tools {
+		out = append(out, t.Name)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func (c *captureLLM) Generate(_ context.Context, _ []model.Message, opts ...llm.GenerateOption) (model.Message, model.TokenUsage, error) {
+	c.record(opts)
+	return model.NewTextMessage(model.RoleAssistant, "ok"), model.TokenUsage{}, nil
+}
+
+func (c *captureLLM) GenerateStream(_ context.Context, _ []model.Message, opts ...llm.GenerateOption) (llm.StreamMessage, error) {
+	c.record(opts)
+	return &capturedStream{final: model.NewTextMessage(model.RoleAssistant, "ok")}, nil
+}
+
+type capturedStream struct {
+	final model.Message
+	done  bool
+}
+
+func (s *capturedStream) Next() bool                 { return false }
+func (s *capturedStream) Current() model.StreamChunk { return model.StreamChunk{} }
+func (s *capturedStream) Err() error                 { return nil }
+func (s *capturedStream) Close() error               { s.done = true; return nil }
+func (s *capturedStream) Message() model.Message     { return s.final }
+func (s *capturedStream) Usage() model.Usage         { return model.Usage{} }
+
+type fixedResolver struct{ inst llm.LLM }
+
+func (r *fixedResolver) Resolve(_ context.Context, _ string) (llm.LLM, error) { return r.inst, nil }
+func (r *fixedResolver) InvalidateCache(_ ...llm.InvalidateOption)            {}
+
+// noopTool is a tool.Tool the registry can hold but which the LLM never
+// actually executes in these tests (the captureLLM returns no tool calls).
+// Only the tool's Definition().Name reaches the assertion site.
+type noopTool struct{ name string }
+
+func (t *noopTool) Definition() model.ToolDefinition {
+	return model.ToolDefinition{Name: t.name, Description: "noop"}
+}
+
+func (t *noopTool) Execute(_ context.Context, _ string) (string, error) {
+	return "", nil
+}
+
+// buildLLMRunner registers a single llm node that pulls its registry +
+// allow-list from ExecutionContext.Deps (Register's toolReg is nil). The
+// node config requests three tools — the test then varies agent.Tools to
+// see which subset the LLM actually receives.
+func buildLLMRunner(t *testing.T, resolver llm.LLMResolver, requestedToolNames []string) *runner.Runner {
+	t.Helper()
+	factory := node.NewFactory()
+	llmnode.Register(factory, resolver, nil) // nil toolReg → resolved from Deps at runtime
+
+	def := &graph.GraphDefinition{
+		Name:  "llm_only",
+		Entry: "llm",
+		Nodes: []graph.NodeDefinition{
+			{ID: "llm", Type: "llm", Config: map[string]any{
+				"system_prompt": "you are a test",
+				"tool_names":    sliceAsAny(requestedToolNames),
+			}},
+		},
+		Edges: []graph.EdgeDefinition{{From: "llm", To: graph.END}},
+	}
+	r, err := runner.New(def, factory)
+	if err != nil {
+		t.Fatalf("runner.New: %v", err)
+	}
+	return r
+}
+
+func sliceAsAny(in []string) []any {
+	out := make([]any, len(in))
+	for i, v := range in {
+		out[i] = v
+	}
+	return out
+}
+
+// TestAgentRun_AgentToolsActsAsPolicyGate is the vertical E2E that
+// verifies the entire chain from contract-audit Epics A+B:
+//
+//	agent.Agent.Tools                                        (PR commit 4 write)
+//	  → agent.Run promotes into engine.Run.Deps[...AllowedNames]
+//	  → graph runner forwards Deps into ExecutionContext.Deps   (commit 1)
+//	  → llmnode.resolveTools intersects with Config.ToolNames   (commit 3)
+//	  → llm.GenerateStream receives only the intersected defs
+//
+// The node asks for [search, fetch, delete_world] but the agent only
+// allows [search, fetch]. delete_world MUST be filtered before the
+// model call — proving Agent.Tools is now a real, enforced policy gate
+// rather than the cosmetic field the audit flagged (#1).
+func TestAgentRun_AgentToolsActsAsPolicyGate(t *testing.T) {
+	cap := &captureLLM{}
+	resolver := &fixedResolver{inst: cap}
+
+	reg := tool.NewRegistry()
+	reg.Register(&noopTool{name: "search"})
+	reg.Register(&noopTool{name: "fetch"})
+	reg.Register(&noopTool{name: "delete_world"})
+
+	deps := engine.NewDependencies()
+	deps.Set(depname.ToolRegistry, reg)
+
+	r := buildLLMRunner(t, resolver,
+		[]string{"search", "fetch", "delete_world"})
+
+	ag := agent.Agent{ID: "researcher", Tools: []string{"search", "fetch"}}
+	res, err := agent.Run(context.Background(), ag, r,
+		agent.Request{Message: model.NewTextMessage(model.RoleUser, "go")},
+		agent.WithDependencies(deps),
+	)
+	if err != nil {
+		t.Fatalf("agent.Run: %v", err)
+	}
+	if res.Status != agent.StatusCompleted {
+		t.Fatalf("Status = %q, want completed", res.Status)
+	}
+
+	got := cap.toolsSeen()
+	want := []string{"fetch", "search"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("LLM tool defs = %v, want %v\n"+
+			"This means Agent.Tools failed to act as the run-level\n"+
+			"ceiling somewhere on the chain agent → engine.Run.Deps\n"+
+			"→ ExecutionContext.Deps → llmnode.resolveTools.",
+			got, want)
+	}
+}
+
+// TestAgentRun_NoAgentToolsKeepsLegacyBehaviour is the back-compat
+// guard: agents that haven't opted into Agent.Tools (the vast
+// majority of pre-Epic-A code) MUST continue to see the per-node
+// Config.ToolNames as the only filter. Without this guard the new
+// "deny-by-default" semantics could quietly break every existing
+// graph that relies on node-level tool config.
+func TestAgentRun_NoAgentToolsKeepsLegacyBehaviour(t *testing.T) {
+	cap := &captureLLM{}
+	resolver := &fixedResolver{inst: cap}
+
+	reg := tool.NewRegistry()
+	reg.Register(&noopTool{name: "search"})
+	reg.Register(&noopTool{name: "fetch"})
+
+	deps := engine.NewDependencies()
+	deps.Set(depname.ToolRegistry, reg)
+
+	r := buildLLMRunner(t, resolver, []string{"search", "fetch"})
+
+	ag := agent.Agent{ID: "noop"} // no Tools → no policy gate
+	if _, err := agent.Run(context.Background(), ag, r,
+		agent.Request{Message: model.NewTextMessage(model.RoleUser, "go")},
+		agent.WithDependencies(deps),
+	); err != nil {
+		t.Fatalf("agent.Run: %v", err)
+	}
+
+	got := cap.toolsSeen()
+	want := []string{"fetch", "search"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("legacy back-compat broken: got %v want %v "+
+			"(agent without Tools should not constrain Config.ToolNames)", got, want)
+	}
 }

@@ -165,10 +165,22 @@ func (r *Runner) executeBound(
 		}
 	}
 
-	opts := make([]executor.RunOption, 0, 4+len(r.runOpts)+len(extra))
+	opts := make([]executor.RunOption, 0, 6+len(r.runOpts)+len(extra))
 	opts = append(opts, executor.WithHost(host))
 	if run.ID != "" {
 		opts = append(opts, executor.WithRunID(run.ID))
+	}
+	// Forward engine.Run.Deps + Attributes verbatim so nodes can
+	// recover host-supplied dependencies via engine.GetDep
+	// (ToolRegistry, LLMClient, …) and read agent-scoped identity
+	// attributes (telemetry.AttrAgentID, …) without inventing a
+	// parallel ctx-key channel. nil values are no-ops at the
+	// executor layer.
+	if run.Deps != nil {
+		opts = append(opts, executor.WithDeps(run.Deps))
+	}
+	if len(run.Attributes) > 0 {
+		opts = append(opts, executor.WithAttributes(run.Attributes))
 	}
 	// Default resolver is harmless if the caller already supplied one
 	// via runner.WithResolver — executor.runConfig is last-write-wins.
