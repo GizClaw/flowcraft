@@ -66,9 +66,19 @@ type CloneableResolver = executor.CloneableResolver
 
 // --- context helpers ---------------------------------------------------------
 
-// WithActorKey stamps an actor identifier onto ctx. The runner reads
-// it and forwards it onto every envelope header so multi-tenant
-// observers can filter by tenant without inspecting payload.
+// WithActorKey stamps an agent identifier onto ctx so the runner
+// forwards it onto every envelope header (HeaderAgentID) and uses
+// it as the prefix of the step subject segment.
+//
+// Deprecated: as of v0.4 the runner resolves the agent id from the
+// canonical [engine.Run.Attributes][telemetry.AttrAgentID] key first
+// (populated automatically by [agent.Run]) and only falls back to
+// this ctx-key when the attribute is absent. Prefer driving the
+// runner through [agent.Run] (or stamp the attribute directly on
+// engine.Run.Attributes) — that path survives cross-process
+// hand-offs (HTTP, vessel inline, A2A) where context values are
+// dropped at the wire boundary. WithActorKey will be removed in
+// v0.5.0.
 func WithActorKey(ctx context.Context, key string) context.Context {
 	return executor.WithActorKey(ctx, key)
 }

@@ -44,24 +44,25 @@ import (
 //
 // "step" is the engine-neutral name for one unit of work in a run.
 // "stepActor" identifies one such unit; it MUST start with the
-// agent.id of the executing agent so observers can fan-in by agent
-// using the [PatternRunAgentSteps] / [PatternRunAgentStream]
-// wildcards. An engine implementation MAY append an engine-private
+// agent.id of the executing agent and MAY append an engine-private
 // suffix to disambiguate units within the same agent run:
 //
 //   - graph runner: "<agent.id>.node.<node id>"
 //   - vessel inline: "<agent.id>.iter<N>"
 //   - script engine (future): "<agent.id>.stmt<N>"
 //
-// The agent.id prefix is the contract; the suffix is the engine's
-// own dimension and not standardised here. Engines are responsible
-// for keeping the value dot/wildcard-free (use [SanitiseID]).
-//
-// stepActor is distinct from the envelope's [event.HeaderAgentID]
-// header (= the bare agent.id, no suffix). The header is the routing
-// key for "which agent produced this"; the subject segment is the
-// routing key for "which step of that agent". Both ride on the same
-// envelope.
+// Engines are responsible for keeping the value dot/wildcard-free
+// (use [SanitiseID]); SanitiseID also collapses any literal '.'
+// inside the suffix into '_', so the resulting NATS segment is one
+// flat token (e.g. "<agent>_node_<node>") rather than separate
+// segments. This means agent-level fan-in via NATS subject
+// wildcards is NOT supported on the bare segment — it would require
+// schema-revising "step" into multiple segments, which the engine
+// contract avoids to keep the wildcard surface stable. Consumers
+// that want "show me only agent X's events" filter on the
+// [event.HeaderAgentID] envelope header instead — that header is
+// stamped by every engine alongside the subject and survives the
+// segment collapse.
 //
 // "stream" is intentionally a sibling of "step" rather than a child:
 // consumers that only care about LLM token / tool deltas (voice TTS,
@@ -94,10 +95,12 @@ func SubjectRunEnd(runID string) event.Subject {
 
 // SubjectStepStart returns the subject every engine MUST publish when
 // it begins executing one step. stepActor identifies the unit of
-// work; it MUST start with the executing agent.id so the
-// [PatternRunAgentSteps] wildcard fans-in cleanly. See the file
-// header for the per-engine suffix conventions (graph: ".node.<id>";
-// vessel inline: ".iter<N>").
+// work; it MUST start with the executing agent.id (so consumers can
+// reconstruct the agent identity from the subject when the envelope
+// header is unavailable). See the file header for the per-engine
+// suffix conventions (graph: ".node.<id>"; vessel inline:
+// ".iter<N>") and for why agent-level NATS wildcard fan-in goes
+// through the [event.HeaderAgentID] header instead of the subject.
 //
 //	engine.run.<runID>.step.<stepActor>.start
 func SubjectStepStart(runID, stepActor string) event.Subject {
@@ -168,36 +171,16 @@ func PatternRunSteps(runID string) event.Pattern {
 // delta of one run. Use this when you want LLM token / tool deltas but
 // not the step lifecycle events.
 //
+// Agent-level fan-in ("only agent X's events in this run") is NOT
+// available as a NATS wildcard because the stepActor segment is
+// collapsed into one token by [SanitiseID] (see the file header).
+// Consumers route by agent through the [event.HeaderAgentID]
+// envelope header instead — subscribe with PatternRun(runID) and
+// filter on env.AgentID() in the consumer.
+//
 //	engine.run.<runID>.stream.>
 func PatternRunStream(runID string) event.Pattern {
 	return event.Pattern(fmt.Sprintf("%s%s.stream.>", SubjectPrefix, SanitiseID(runID)))
-}
-
-// PatternRunAgentSteps returns the wildcard pattern matching every
-// step lifecycle event produced by one agent inside one run. Relies
-// on the stepActor convention documented in this file's header: the
-// segment MUST start with agent.id, so the wildcard
-// engine.run.<runID>.step.<agentID>.> picks up every per-engine
-// suffix (graph "<agentID>.node.<id>", vessel "<agentID>.iter<N>",
-// …).
-//
-//	engine.run.<runID>.step.<agentID>.>
-//
-// In multi-agent vessel mode this is the canonical "show me only
-// agent X's events in run R" subscription — it complements the
-// envelope-header path (filter by HeaderAgentID) for subscribers
-// that route on subject alone.
-func PatternRunAgentSteps(runID, agentID string) event.Pattern {
-	return event.Pattern(fmt.Sprintf("%s%s.step.%s.>", SubjectPrefix, SanitiseID(runID), SanitiseID(agentID)))
-}
-
-// PatternRunAgentStream is the stream-side counterpart of
-// [PatternRunAgentSteps]: every stream delta produced by one agent
-// inside one run.
-//
-//	engine.run.<runID>.stream.<agentID>.>
-func PatternRunAgentStream(runID, agentID string) event.Pattern {
-	return event.Pattern(fmt.Sprintf("%s%s.stream.%s.>", SubjectPrefix, SanitiseID(runID), SanitiseID(agentID)))
 }
 
 // ---------- Classification helpers ----------

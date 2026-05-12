@@ -21,11 +21,11 @@ func executeForkJoin(ctx context.Context, g *graph.Graph, board *graph.Board, br
 		branchStarts = branchStarts[:cfg.parallel.MaxBranches]
 	}
 
-	actorKey := actorKeyFrom(ctx)
+	agentID := agentIDFor(ctx, cfg)
 	joinNodeID := findJoinNode(g, branchStarts)
 
 	publishGraphEvent(ctx, cfg.publisher, subjParallelFork(cfg.runID),
-		cfg.runID, g.Name(), actorKey,
+		cfg.runID, g.Name(), agentID,
 		map[string]any{
 			"branch_ids": branchStarts,
 			"join_node":  joinNodeID,
@@ -90,7 +90,7 @@ func executeForkJoin(ctx context.Context, g *graph.Graph, board *graph.Board, br
 	}
 
 	publishGraphEvent(ctx, cfg.publisher, subjParallelJoin(cfg.runID),
-		cfg.runID, g.Name(), actorKey,
+		cfg.runID, g.Name(), agentID,
 		map[string]any{
 			"branch_ids": branchStarts,
 			"vars":       board.Vars(),
