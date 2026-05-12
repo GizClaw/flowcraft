@@ -204,6 +204,20 @@ func (c *LLM) GenerateStream(ctx context.Context, messages []llm.Message, opts .
 		llm.RecordLLMMetrics(ctx, "bytedance", c.model, "error", 0, llm.TokenUsage{})
 		return nil, errdefs.ClassifyProviderError("bytedance", err)
 	}
+	// Defensive: the ark SDK has not been observed returning a nil
+	// stream alongside a nil error, but the pointer-return convention
+	// is not a language guarantee — the openai-go variant has caused
+	// a runner crash in production (see PR description). Guarding
+	// symmetrically keeps every chat-completion provider on the
+	// same contract.
+	if stream == nil {
+		err := errdefs.NotAvailablef("bytedance: nil stream handle with no error (provider misbehaviour)")
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		span.End()
+		llm.RecordLLMMetrics(ctx, "bytedance", c.model, "error", 0, llm.TokenUsage{})
+		return nil, err
+	}
 
 	return newStreamMessage(ctx, span, c.model, stream), nil
 }

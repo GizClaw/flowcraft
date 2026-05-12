@@ -310,6 +310,21 @@ func (c *LLM) Generate(ctx context.Context, messages []llm.Message, opts ...llm.
 		}
 		return llm.Message{}, llm.TokenUsage{}, errdefs.ClassifyProviderError("openai", err)
 	}
+	// openai-go and OpenAI-compatible backends (deepseek, qwen-flash on
+	// busy hours, self-hosted) have been observed returning (nil, nil)
+	// in the wild — HTTP 200 with an empty body, decoder failure that
+	// gets swallowed, or internal retry+timeout races. The Go pointer-
+	// return convention "err==nil ⇒ resp!=nil" is *not* a language-level
+	// guarantee, so dereferencing without checking would crash the whole
+	// runner. Classify as NotAvailable so upstream retry logic treats it
+	// like any other transient provider misbehaviour.
+	if resp == nil {
+		err := errdefs.NotAvailablef("openai: nil response with no error (provider misbehaviour)")
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		llm.RecordLLMMetrics(ctx, "openai", c.model, "error", dur, llm.TokenUsage{})
+		return llm.Message{}, llm.TokenUsage{}, err
+	}
 
 	if len(resp.Choices) == 0 {
 		err := errdefs.NotAvailablef("openai: no choices returned")
@@ -350,10 +365,30 @@ func (c *LLM) GenerateStream(ctx context.Context, messages []llm.Message, opts .
 
 	reqOpts := extraRequestOpts(options)
 	stream := c.client.Chat.Completions.NewStreaming(ctx, params, reqOpts...)
+	// NewStreaming may return nil if the SDK fails before allocating the
+	// SSE handle (HTTP transport dial failure, panic recovery, etc.).
+	// The non-streaming Generate has the same family of failure modes —
+	// see the resp==nil nil-check above. Guard both stream-handle
+	// allocations symmetrically so a flaky provider can't take down
+	// the eval runner.
+	if stream == nil {
+		err := errdefs.NotAvailablef("openai: nil stream handle (provider misbehaviour)")
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		span.End()
+		return nil, err
+	}
 	if err := stream.Err(); err != nil {
 		// Some OpenAI-compatible providers don't support stream_options; retry without it.
 		params.StreamOptions = oai.ChatCompletionStreamOptionsParam{}
 		stream = c.client.Chat.Completions.NewStreaming(ctx, params, reqOpts...)
+		if stream == nil {
+			err := errdefs.NotAvailablef("openai: nil stream handle on retry without stream_options")
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+			span.End()
+			return nil, err
+		}
 		if err2 := stream.Err(); err2 != nil {
 			span.RecordError(err2)
 			span.SetStatus(codes.Error, err2.Error())

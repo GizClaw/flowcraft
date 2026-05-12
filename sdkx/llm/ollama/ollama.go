@@ -96,6 +96,18 @@ func (c *LLM) Generate(ctx context.Context, messages []llm.Message, opts ...llm.
 		}
 		return llm.Message{}, llm.TokenUsage{}, errdefs.ClassifyProviderError("ollama", err)
 	}
+	// net/http's documented contract is "err==nil ⇒ resp!=nil", but
+	// callers can inject a custom *http.Client whose RoundTripper
+	// violates it (middleware, recording proxies). Guard symmetrically
+	// with the other providers so a misbehaving transport surfaces a
+	// clean error instead of a nil-deref panic.
+	if resp == nil {
+		err := errdefs.NotAvailable(fmt.Errorf("ollama: nil http response with no error (custom transport misbehaviour)"))
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		llm.RecordLLMMetrics(ctx, "ollama", c.model, "error", dur, llm.TokenUsage{})
+		return llm.Message{}, llm.TokenUsage{}, err
+	}
 	defer func() { _ = resp.Body.Close() }()
 
 	bodyBytes, err := io.ReadAll(resp.Body)
@@ -169,6 +181,11 @@ func (c *LLM) GenerateStream(ctx context.Context, messages []llm.Message, opts .
 			return nil, errdefs.FromContext(ctx.Err())
 		}
 		return nil, errdefs.ClassifyProviderError("ollama", err)
+	}
+	// See nil-resp guard rationale on the non-streaming path above.
+	if resp == nil {
+		span.End()
+		return nil, errdefs.NotAvailable(fmt.Errorf("ollama: nil http response with no error (custom transport misbehaviour)"))
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {

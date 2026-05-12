@@ -122,6 +122,27 @@ compare/fetch/ingest`, `eval longmemeval convert`). Shell completion
   JSON loader with shadow-run scoring. NOT a PR gate (LLM-call-heavy;
   weekly/release-time use only).
 
+### Fixed
+
+#### sdkx
+
+- `sdkx/llm/{openai,anthropic,bytedance,ollama,*/image}`: guard every
+  chat-completion / image-generation entry point against `(nil, nil)`
+  return tuples from upstream SDKs. The openai-go family does in
+  fact return `(nil, nil)` when an OpenAI-compatible backend answers
+  with literal JSON `null` — a real-world DeepSeek failure mode that
+  crashed the LongMemEval `_s` eval runner at ~9% ingest with a
+  `nil pointer dereference` at `sdkx/llm/openai/openai.go:314`. The
+  anthropic-sdk-go family shares the same pointer-return shape and
+  the same latent bug. The pointer-return convention `err==nil ⇒
+  resp!=nil` is not a Go language guarantee — guard symmetrically
+  across every provider so a flaky upstream is surfaced as a clean
+  `errdefs.NotAvailable` instead of taking down the calling
+  goroutine. Streaming variants get the matching `nil stream handle`
+  check. Regression tests use `httptest` with `body=null` for the
+  openai/anthropic families (which reproduces the live failure
+  exactly) and a misbehaving `RoundTripper` for ollama.
+
 ### Changed
 
 - **Breaking (internal)**: evaluation code consolidated under `eval/`,

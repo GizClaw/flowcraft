@@ -181,6 +181,15 @@ func (l *LLM) generate(ctx context.Context, messages []llm.Message, opts ...llm.
 	if err != nil {
 		return llm.Message{}, llm.TokenUsage{}, err
 	}
+	// Defensive nil-resp guard. The hand-rolled do() currently
+	// returns (nil, err) on every error path, but the contract is
+	// load-bearing for safety: a future refactor that accidentally
+	// drops an error branch would otherwise crash the caller at
+	// the next deref. Matches the family-wide guard added to
+	// sdkx/llm/{openai,anthropic,bytedance}.
+	if resp == nil {
+		return llm.Message{}, llm.TokenUsage{}, errdefs.NotAvailable(errdefs.New("qwen-image: nil response with no error (provider misbehaviour)"))
+	}
 	parts, err := imagesToParts(resp)
 	if err != nil {
 		return llm.Message{}, llm.TokenUsage{}, err
