@@ -59,6 +59,20 @@ type Deps struct {
 	// spec.Agent.Tools (with kanban auto-injection already
 	// applied by the vessel runtime when the agent is a
 	// Dispatcher).
+	//
+	// Deprecated: this field is the legacy "build-time closure"
+	// transport for the policy gate. The canonical SDK path is
+	// engine.Run.Deps[depname.ToolAllowedNames] (populated by
+	// agent.Run from agent.Agent.Tools — see contract-audit
+	// Epic A + D). The vessel inline engine still falls back to
+	// this field when the engine is invoked outside agent.Run
+	// (custom drivers, legacy tests), but new engine factories
+	// MUST resolve the allow-list from engine.Run.Deps via
+	// engine.GetDep[[]string](run.Deps, depname.ToolAllowedNames).
+	//
+	// Scheduled for removal in v0.5.0 once all in-tree call sites
+	// drive vessel through agent.Run. The field will then become
+	// fully redundant with the run-deps path.
 	AgentTools []string
 
 	// Bus is the vessel's event bus. Factories MAY publish onto

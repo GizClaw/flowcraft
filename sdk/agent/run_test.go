@@ -1110,3 +1110,212 @@ func TestRun_AgentToolsDoesNotOverwriteCallerSuppliedToolAllowedNames(t *testing
 		t.Errorf("ToolAllowedNames = %v, want [caller-pin] (caller-supplied must win)", got)
 	}
 }
+
+// TestRun_WithParentRunID_PropagatesToEngineRun is the regression
+// test for contract-audit #3. engine.Run.ParentRunID was a typed
+// field with zero writers before this PR; agent.Run now promotes
+// the WithParentRunID value into every dispatched engine.Run so
+// the multi-agent call chain finally has a stable correlation
+// dimension dashboards / pod controllers can rely on.
+func TestRun_WithParentRunID_PropagatesToEngineRun(t *testing.T) {
+	var observed string
+	eng := engine.EngineFunc(func(_ context.Context, run engine.Run, _ engine.Host, b *engine.Board) (*engine.Board, error) {
+		observed = run.ParentRunID
+		b.AppendChannelMessage(engine.MainChannel,
+			model.NewTextMessage(model.RoleAssistant, "ok"))
+		return b, nil
+	})
+
+	if _, err := agent.Run(context.Background(),
+		agent.Agent{ID: "child"}, eng, newReq("hi"),
+		agent.WithParentRunID("run-parent-42"),
+	); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if observed != "run-parent-42" {
+		t.Fatalf("engine.Run.ParentRunID = %q, want %q", observed, "run-parent-42")
+	}
+}
+
+// TestRun_WithParentRunID_EmptyIsNoop documents the no-op contract:
+// callers (vessel, future pod controller) that don't have a parent
+// id MUST be able to omit the option without seeing an "empty
+// parent" appear downstream.
+func TestRun_WithParentRunID_EmptyIsNoop(t *testing.T) {
+	var observed string
+	var sawHookCall bool
+	eng := engine.EngineFunc(func(_ context.Context, run engine.Run, _ engine.Host, b *engine.Board) (*engine.Board, error) {
+		sawHookCall = true
+		observed = run.ParentRunID
+		b.AppendChannelMessage(engine.MainChannel,
+			model.NewTextMessage(model.RoleAssistant, "ok"))
+		return b, nil
+	})
+
+	if _, err := agent.Run(context.Background(),
+		agent.Agent{ID: "x"}, eng, newReq("hi")); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !sawHookCall {
+		t.Fatal("engine never called")
+	}
+	if observed != "" {
+		t.Fatalf("ParentRunID should default to empty string, got %q", observed)
+	}
+}
+
+// TestRun_WithArtifactChannels_HarvestsRegisteredChannels is the
+// regression for contract-audit #6. Result.Artifacts had been
+// promised since v0.1 ("engines store them in a board channel;
+// agent collects channel contents into Artifacts on the way
+// out") but no agent.Run code path implemented the harvest, so
+// the field was permanently nil for every caller.
+func TestRun_WithArtifactChannels_HarvestsRegisteredChannels(t *testing.T) {
+	eng := engine.EngineFunc(func(_ context.Context, _ engine.Run, _ engine.Host, b *engine.Board) (*engine.Board, error) {
+		// Engine writes artifacts onto two dedicated channels.
+		b.AppendChannelMessage("summary",
+			model.Message{Role: model.RoleAssistant, Parts: []model.Part{
+				{Type: model.PartText, Text: "tl;dr line 1"},
+			}})
+		b.AppendChannelMessage("summary",
+			model.Message{Role: model.RoleAssistant, Parts: []model.Part{
+				{Type: model.PartText, Text: "tl;dr line 2"},
+			}})
+		b.AppendChannelMessage("audio",
+			model.Message{Role: model.RoleAssistant, Parts: []model.Part{
+				{Type: model.PartText, Text: "<wav-blob>"},
+			}})
+		// MainChannel reply still happens (Result.Messages path).
+		b.AppendChannelMessage(engine.MainChannel,
+			model.NewTextMessage(model.RoleAssistant, "ok"))
+		return b, nil
+	})
+
+	res, err := agent.Run(context.Background(),
+		agent.Agent{ID: "x"}, eng, newReq("hi"),
+		agent.WithArtifactChannels("summary", "audio"),
+	)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	if len(res.Artifacts) != 2 {
+		t.Fatalf("len(Artifacts) = %d, want 2 (got %+v)", len(res.Artifacts), res.Artifacts)
+	}
+	if res.Artifacts[0].Name != "summary" || res.Artifacts[1].Name != "audio" {
+		t.Errorf("artifacts not in registration order: got %q / %q",
+			res.Artifacts[0].Name, res.Artifacts[1].Name)
+	}
+	if len(res.Artifacts[0].Parts) != 2 {
+		t.Errorf("summary.Parts len = %d, want 2 (one Part per Message)",
+			len(res.Artifacts[0].Parts))
+	}
+	if res.Artifacts[0].Parts[0].Text != "tl;dr line 1" ||
+		res.Artifacts[0].Parts[1].Text != "tl;dr line 2" {
+		t.Errorf("summary parts not in board-write order: %+v", res.Artifacts[0].Parts)
+	}
+}
+
+// TestRun_WithArtifactChannels_DefaultIsNilArtifacts asserts the
+// back-compat invariant: callers that don't opt in must keep
+// seeing nil Artifacts. Without this guard a future "auto-harvest
+// every non-Main channel" refactor could surface unrelated
+// internal channels and break consumers that switch on
+// len(res.Artifacts) == 0.
+func TestRun_WithArtifactChannels_DefaultIsNilArtifacts(t *testing.T) {
+	eng := engine.EngineFunc(func(_ context.Context, _ engine.Run, _ engine.Host, b *engine.Board) (*engine.Board, error) {
+		b.AppendChannelMessage("internal",
+			model.NewTextMessage(model.RoleAssistant, "noise"))
+		b.AppendChannelMessage(engine.MainChannel,
+			model.NewTextMessage(model.RoleAssistant, "ok"))
+		return b, nil
+	})
+	res, err := agent.Run(context.Background(),
+		agent.Agent{ID: "x"}, eng, newReq("hi"))
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if res.Artifacts != nil {
+		t.Errorf("Artifacts = %+v, want nil (no opt-in)", res.Artifacts)
+	}
+}
+
+// TestRun_WithArtifactChannels_EmptyChannelDropped documents the
+// "no empty bundles" rule: channels that exist but hold zero
+// messages (or zero Parts across all messages) are silently
+// skipped so consumers can rely on `for _, a := range Artifacts`
+// always yielding renderable payload.
+func TestRun_WithArtifactChannels_EmptyChannelDropped(t *testing.T) {
+	eng := engine.EngineFunc(func(_ context.Context, _ engine.Run, _ engine.Host, b *engine.Board) (*engine.Board, error) {
+		b.AppendChannelMessage("populated",
+			model.NewTextMessage(model.RoleAssistant, "hello"))
+		b.AppendChannelMessage(engine.MainChannel,
+			model.NewTextMessage(model.RoleAssistant, "ok"))
+		return b, nil
+	})
+
+	res, err := agent.Run(context.Background(),
+		agent.Agent{ID: "x"}, eng, newReq("hi"),
+		agent.WithArtifactChannels("populated", "missing-channel"),
+	)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(res.Artifacts) != 1 || res.Artifacts[0].Name != "populated" {
+		t.Fatalf("missing-channel should have been dropped, got %+v", res.Artifacts)
+	}
+}
+
+// TestRun_WithArtifactChannels_MainChannelSilentlySkipped documents
+// the explicit "MainChannel is not an artifact channel" rule. Run
+// already promotes MainChannel into Result.Messages; harvesting it
+// again would duplicate the same payload across two semantically
+// different fields (Messages keeps role + tool metadata; Artifacts
+// is the modality-bundle view).
+func TestRun_WithArtifactChannels_MainChannelSilentlySkipped(t *testing.T) {
+	eng := engine.EngineFunc(func(_ context.Context, _ engine.Run, _ engine.Host, b *engine.Board) (*engine.Board, error) {
+		b.AppendChannelMessage(engine.MainChannel,
+			model.NewTextMessage(model.RoleAssistant, "would-duplicate"))
+		return b, nil
+	})
+
+	res, err := agent.Run(context.Background(),
+		agent.Agent{ID: "x"}, eng, newReq("hi"),
+		agent.WithArtifactChannels(engine.MainChannel, ""),
+	)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if res.Artifacts != nil {
+		t.Errorf("MainChannel + empty must be filtered out, got %+v", res.Artifacts)
+	}
+}
+
+// TestRun_WithArtifactChannels_AccumulatesAndDedupes confirms
+// per-agent / per-call composition: multiple WithArtifactChannels
+// calls accumulate so an Agent can declare the standard channels
+// once and individual callers can extend the list.
+func TestRun_WithArtifactChannels_AccumulatesAndDedupes(t *testing.T) {
+	eng := engine.EngineFunc(func(_ context.Context, _ engine.Run, _ engine.Host, b *engine.Board) (*engine.Board, error) {
+		b.AppendChannelMessage("a", model.NewTextMessage(model.RoleAssistant, "a-msg"))
+		b.AppendChannelMessage("b", model.NewTextMessage(model.RoleAssistant, "b-msg"))
+		b.AppendChannelMessage(engine.MainChannel,
+			model.NewTextMessage(model.RoleAssistant, "ok"))
+		return b, nil
+	})
+
+	res, err := agent.Run(context.Background(),
+		agent.Agent{ID: "x"}, eng, newReq("hi"),
+		agent.WithArtifactChannels("a"),
+		agent.WithArtifactChannels("a", "b"), // dup "a" must not double-emit
+	)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(res.Artifacts) != 2 {
+		t.Fatalf("dedup failed: got %d artifacts (%+v)", len(res.Artifacts), res.Artifacts)
+	}
+	if res.Artifacts[0].Name != "a" || res.Artifacts[1].Name != "b" {
+		t.Errorf("registration-order broken: %+v", res.Artifacts)
+	}
+}

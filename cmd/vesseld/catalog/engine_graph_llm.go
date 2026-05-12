@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/GizClaw/flowcraft/sdk/engine"
+	"github.com/GizClaw/flowcraft/sdk/engine/depname"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/event"
 	"github.com/GizClaw/flowcraft/sdk/llm"
@@ -72,7 +73,13 @@ func graphLLMEngineFactory(ref string, cfg map[string]any, deps Deps) (engine.En
 	}
 
 	limiter := deps.LLMLimiters[profile]
-	allowSet := buildAllowSet(deps.AgentTools)
+	// Allow-list resolution moved INTO the EngineFunc closure
+	// (contract-audit Epic D / #11): the inline engine now reads
+	// the per-run agent.Agent.Tools snapshot agent.Run promotes
+	// into engine.Run.Deps[depname.ToolAllowedNames] and falls
+	// back to the legacy factory-time deps.AgentTools for callers
+	// that still wire vessel without driving it through agent.Run.
+	// See resolveAllowSet for the precedence rules.
 
 	// Wrap the inline executor with the engine's declared
 	// capabilities so hosts (agent.Run preflight, dashboards, the
@@ -87,11 +94,15 @@ func graphLLMEngineFactory(ref string, cfg map[string]any, deps Deps) (engine.En
 	//   - EmitsCheckpoint = false: the inline loop never invokes
 	//     host.Checkpoint (graph runner is the engine that does, but
 	//     this factory does not delegate to it).
-	//   - RequiredDepNames = nil: the inline engine takes its
-	//     dependencies from catalog.Deps (LLMClients / ToolRegistry /
-	//     AgentTools) at factory time, not from engine.Run.Deps —
-	//     declaring run-deps requirements here would be misleading.
+	//   - RequiredDepNames = []string{depname.ToolAllowedNames}:
+	//     declares the only dep this engine resolves at run time
+	//     (the policy gate). LLMClient / ToolRegistry are still
+	//     wired through factory-time catalog.Deps for v0.1.0 so
+	//     they're not declared here; teaching the inline engine
+	//     to resolve those from run.Deps too is a follow-up that
+	//     turns this into a fully run-deps-driven engine.
 	return engine.WithCapabilities(engine.EngineFunc(func(ctx context.Context, run engine.Run, host engine.Host, board *engine.Board) (*engine.Board, error) {
+		allowSet := resolveAllowSet(run, deps)
 		// actorID is the engine "actor" key used in step-level
 		// subjects. We use the agent name so SSE consumers can
 		// see "agent X started step Y" without having to consult
@@ -218,7 +229,7 @@ func graphLLMEngineFactory(ref string, cfg map[string]any, deps Deps) (engine.En
 		SupportsResume:   false,
 		EmitsUserPrompt:  false,
 		EmitsCheckpoint:  false,
-		RequiredDepNames: nil,
+		RequiredDepNames: []string{depname.ToolAllowedNames},
 	}), nil
 }
 
@@ -276,6 +287,32 @@ func streamLLMRound(
 // the per-iteration filter and the per-call execution gate run in
 // O(1). nil / empty input yields an empty set that buildToolDefinitions
 // and executeToolCall interpret as "deny all".
+// resolveAllowSet returns the per-run tool allow-set the inline
+// engine should enforce. Precedence (contract-audit Epic D):
+//
+//  1. engine.Run.Deps[depname.ToolAllowedNames] when present and
+//     well-typed. agent.Run promotes agent.Agent.Tools into this
+//     key (see sdk/agent/run.go::promoteAgentTools), so this is
+//     the canonical SDK-wide path: the same allow-list reaches
+//     this engine, sdk/graph/node/llmnode, and any future engine
+//     that honours the contract.
+//  2. Factory-time catalog.Deps.AgentTools fallback. Preserves
+//     back-compat for hosts that build vessel without going
+//     through agent.Run (custom drivers, legacy tests). Marked
+//     Deprecated on the catalog struct; scheduled for removal in
+//     v0.5.0.
+//
+// An empty / absent allow-set yields an empty map (the strict
+// default — buildToolDefinitions and executeToolCall both
+// interpret empty as "deny all", a misconfigured agent gets a
+// safe failure instead of a silent permission escalation).
+func resolveAllowSet(run engine.Run, deps Deps) map[string]struct{} {
+	if names, err := engine.GetDep[[]string](run.Deps, depname.ToolAllowedNames); err == nil {
+		return buildAllowSet(names)
+	}
+	return buildAllowSet(deps.AgentTools)
+}
+
 func buildAllowSet(tools []string) map[string]struct{} {
 	if len(tools) == 0 {
 		return map[string]struct{}{}

@@ -64,17 +64,26 @@ require (
 // is mandatory.
 replace github.com/GizClaw/flowcraft/cmd/vesseld => ../../../cmd/vesseld
 
-// TEMPORARY (PR #96 — feat/engine-lifecycle-contracts): this PR
-// introduces new sdk + vessel APIs (engine.WithCapabilities,
-// vessel.Captain.Resume, …) that cmd/vesseld immediately consumes.
-// Because cmd/vesseld is replace-pinned to the local tree but
-// sdk + vessel are version-pinned, the e2e module would otherwise
+// TEMPORARY (rolling — last extended by feat/agent-run-funnel-and-
+// vessel-deps): each in-flight PR that introduces new sdk + vessel
+// APIs immediately consumed by cmd/vesseld carries this same
+// workaround. The pattern is necessary because cmd/vesseld is
+// replace-pinned to the local tree but sdk + vessel are
+// version-pinned — without these replaces the e2e module would
 // fail to build against the unreleased symbols.
 //
-// These two replaces relax the isolation policy for ONE PR; they
-// MUST be removed in a follow-up after sdk + vessel auto-tag
-// publishes the new versions and the `require` lines above are
-// bumped accordingly. Tracking removal: TODO(post-tag).
+// Currently active for:
+//   - sdk: depname.ToolAllowedNames (PR #98) and the new
+//     engine.Run.Deps reader path (this PR's vessel inline
+//     engine refactor).
+//   - vessel: vessel.Captain.Resume + Captain.* surface
+//     introduced in PR #96.
+//
+// These two replaces MUST be removed in the FIRST follow-up PR
+// that does NOT carry [skip-tag], so an sdk + vessel auto-tag
+// run can publish the accumulated changes and the `require`
+// lines above can be bumped accordingly. Tracking removal:
+// TODO(post-tag).
 replace github.com/GizClaw/flowcraft/sdk => ../../../sdk
 
 replace github.com/GizClaw/flowcraft/vessel => ../../../vessel

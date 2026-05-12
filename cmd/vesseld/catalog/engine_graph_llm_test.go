@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/GizClaw/flowcraft/sdk/engine"
+	"github.com/GizClaw/flowcraft/sdk/engine/depname"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/llm"
 	"github.com/GizClaw/flowcraft/sdk/model"
@@ -170,5 +171,159 @@ func TestGraphLLM_AllowlistEnforcedAtExecution(t *testing.T) {
 	}
 	if out != "ok" {
 		t.Fatalf("calc returned %q, want \"ok\"", out)
+	}
+}
+
+// TestGraphLLM_RunDepsAllowedNamesOverridesAgentTools is the
+// regression for contract-audit Epic D / #11. Once the inline
+// engine resolves the allow-list from engine.Run.Deps, the
+// per-run policy gate (which agent.Run populates from
+// agent.Agent.Tools) MUST take precedence over the legacy
+// factory-time catalog.Deps.AgentTools closure.
+//
+// Setup: factory wires the LEGACY closure with [calc, shell]; the
+// run carries Run.Deps[ToolAllowedNames] = [calc] only. Without
+// the resolution change, the LLM would see both calc + shell
+// because allowSet was computed at factory time. With the change,
+// the LLM sees only calc.
+func TestGraphLLM_RunDepsAllowedNamesOverridesAgentTools(t *testing.T) {
+	t.Parallel()
+
+	reg := tool.NewRegistry()
+	reg.Register(fakeTool("calc"))
+	reg.Register(fakeTool("shell"))
+
+	stub := &stubLLM{}
+	deps := Deps{
+		VesselID:     "v",
+		AgentName:    "primary",
+		AgentTools:   []string{"calc", "shell"}, // legacy claim — superset
+		ToolRegistry: reg,
+		LLMClients:   map[string]llm.LLM{"openai-default": stub},
+	}
+	eng, err := graphLLMEngineFactory("graph-llm", map[string]any{
+		"llmProfile":    "openai-default",
+		"maxIterations": 1,
+	}, deps)
+	if err != nil {
+		t.Fatalf("graphLLMEngineFactory: %v", err)
+	}
+
+	// Per-run override: the agent.Run-promoted allow-list permits
+	// only calc. The inline engine MUST honour this over the
+	// closure.
+	runDeps := engine.NewDependencies()
+	runDeps.Set(depname.ToolAllowedNames, []string{"calc"})
+
+	board := engine.NewBoard()
+	board.AppendChannelMessage(engine.MainChannel, model.NewTextMessage(model.RoleUser, "hi"))
+	if _, err := eng.Execute(context.Background(),
+		engine.Run{ID: "r1", Deps: runDeps},
+		engine.NoopHost{}, board); err != nil {
+		t.Fatalf("engine.Execute: %v", err)
+	}
+
+	got := map[string]bool{}
+	for _, td := range stub.gotTools {
+		got[td.Name] = true
+	}
+	if !got["calc"] {
+		t.Errorf("LLM did not see calc (run.Deps allow-list dropped a permitted tool)")
+	}
+	if got["shell"] {
+		t.Errorf("LLM saw shell — run.Deps allow-list did NOT override factory closure")
+	}
+}
+
+// TestGraphLLM_RunDepsEmptyAllowedNamesDeniesAll asserts the
+// fail-closed semantics at the new resolution path: an explicit
+// empty []string under depname.ToolAllowedNames is a deliberate
+// "no tools permitted" signal — even when the factory closure
+// permits some. Without this rule a deployment that wants to
+// strip tools per-run could not do so without rebuilding the
+// factory.
+func TestGraphLLM_RunDepsEmptyAllowedNamesDeniesAll(t *testing.T) {
+	t.Parallel()
+
+	reg := tool.NewRegistry()
+	reg.Register(fakeTool("calc"))
+
+	stub := &stubLLM{}
+	deps := Deps{
+		VesselID:     "v",
+		AgentName:    "primary",
+		AgentTools:   []string{"calc"}, // legacy: would permit calc
+		ToolRegistry: reg,
+		LLMClients:   map[string]llm.LLM{"openai-default": stub},
+	}
+	eng, err := graphLLMEngineFactory("graph-llm", map[string]any{
+		"llmProfile":    "openai-default",
+		"maxIterations": 1,
+	}, deps)
+	if err != nil {
+		t.Fatalf("graphLLMEngineFactory: %v", err)
+	}
+
+	runDeps := engine.NewDependencies()
+	runDeps.Set(depname.ToolAllowedNames, []string{}) // explicit deny-all
+
+	board := engine.NewBoard()
+	board.AppendChannelMessage(engine.MainChannel, model.NewTextMessage(model.RoleUser, "hi"))
+	if _, err := eng.Execute(context.Background(),
+		engine.Run{ID: "r1", Deps: runDeps},
+		engine.NoopHost{}, board); err != nil {
+		t.Fatalf("engine.Execute: %v", err)
+	}
+	if len(stub.gotTools) != 0 {
+		t.Fatalf("LLM saw %d tools, want 0 (explicit empty allow-list MUST deny all)",
+			len(stub.gotTools))
+	}
+}
+
+// TestGraphLLM_AbsentRunDepsKeyFallsBackToAgentTools is the
+// back-compat guard: callers (custom drivers, legacy tests) that
+// build vessel without driving it through agent.Run won't
+// populate engine.Run.Deps[ToolAllowedNames]. The inline engine
+// MUST keep honouring the factory-time closure for them.
+func TestGraphLLM_AbsentRunDepsKeyFallsBackToAgentTools(t *testing.T) {
+	t.Parallel()
+
+	reg := tool.NewRegistry()
+	reg.Register(fakeTool("calc"))
+	reg.Register(fakeTool("shell"))
+
+	stub := &stubLLM{}
+	deps := Deps{
+		VesselID:     "v",
+		AgentName:    "primary",
+		AgentTools:   []string{"calc"}, // factory closure permits calc only
+		ToolRegistry: reg,
+		LLMClients:   map[string]llm.LLM{"openai-default": stub},
+	}
+	eng, err := graphLLMEngineFactory("graph-llm", map[string]any{
+		"llmProfile":    "openai-default",
+		"maxIterations": 1,
+	}, deps)
+	if err != nil {
+		t.Fatalf("graphLLMEngineFactory: %v", err)
+	}
+
+	board := engine.NewBoard()
+	board.AppendChannelMessage(engine.MainChannel, model.NewTextMessage(model.RoleUser, "hi"))
+	// Note: engine.Run.Deps is nil — no run-deps key set.
+	if _, err := eng.Execute(context.Background(),
+		engine.Run{ID: "r1"}, engine.NoopHost{}, board); err != nil {
+		t.Fatalf("engine.Execute: %v", err)
+	}
+
+	got := map[string]bool{}
+	for _, td := range stub.gotTools {
+		got[td.Name] = true
+	}
+	if !got["calc"] {
+		t.Error("legacy fallback broken: calc missing from LLM-visible defs")
+	}
+	if got["shell"] {
+		t.Error("legacy fallback broken: shell leaked through (closure permitted only calc)")
 	}
 }
