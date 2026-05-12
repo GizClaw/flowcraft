@@ -82,16 +82,25 @@ func New(opts Options) (runners.Runner, error) {
 			PromptTemplate:   opts.ExtractPrompt,
 		}))
 	}
-	pipeOpts := []pipeline.LTMOption{}
+	// SlotCollapse is enabled unconditionally so the recall lane is the
+	// single source of truth for "which fact wins per (subject, predicate)
+	// tuple". The write-side soft-merge channels in sdk/recall (slot +
+	// vector) do a READ-tag-WRITE sequence that races across concurrent
+	// same-scope Saves: at ingest-concurrency 48 we observed qa.judge
+	// drop from 0.96 → 0.86 because older facts ended up either un-tagged
+	// or pointing at the wrong superseder. Read-time collapse sidesteps
+	// the race entirely — it groups by metadata.slot_key, keeps the
+	// newest Doc.Timestamp, and never writes anything during recall.
+	// Older facts stay queryable for Auditable.History; only the
+	// LLM-facing Final list is collapsed.
+	pipeOpts := []pipeline.LTMOption{pipeline.WithSlotCollapse(true)}
 	if opts.ScoreThreshold > 0 {
 		pipeOpts = append(pipeOpts, pipeline.WithScoreThreshold(opts.ScoreThreshold))
 	}
 	if opts.RerankerLLM != nil {
 		pipeOpts = append(pipeOpts, pipeline.WithReranker(&pipeline.LLMReranker{LLM: opts.RerankerLLM}))
 	}
-	if len(pipeOpts) > 0 {
-		memOpts = append(memOpts, recall.WithPipeline(pipeline.LTM(opts.Embedder, pipeOpts...)))
-	}
+	memOpts = append(memOpts, recall.WithPipeline(pipeline.LTM(opts.Embedder, pipeOpts...)))
 
 	mem, err := recall.New(idx, memOpts...)
 	if err != nil {
