@@ -87,11 +87,15 @@ const (
 
 	// ----- Generic actor (engine-neutral) -----
 
-	// AttrActorID is the engine-neutral identifier of the unit of
-	// work that produced an event. Mirrors the engine.SubjectStep* /
-	// engine.SubjectStreamDelta `actor_id` segment. Graph runner
-	// sets it to the node id; script/other engines use their own
-	// stable id.
+	// AttrActorID is the legacy spelling of AttrAgentID. The "actor"
+	// terminology pre-dates the agent / step-actor distinction
+	// settled in v0.4: the producer identity (envelope agent_id /
+	// span attribute) and the engine.SubjectStep* "actor" segment
+	// (graph runner: agent.id + ".node." + node id) are two
+	// different dimensions, and the single "actor" name conflated
+	// them.
+	//
+	// Deprecated: use [AttrAgentID]. Removed in v0.5.0.
 	AttrActorID = "actor.id"
 
 	// ----- Tools -----
