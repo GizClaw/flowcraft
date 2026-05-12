@@ -14,10 +14,18 @@ import (
 	"github.com/GizClaw/flowcraft/eval/dataset"
 	"github.com/GizClaw/flowcraft/eval/locomo/runners"
 	"github.com/GizClaw/flowcraft/eval/metrics"
+	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/llm"
 	"github.com/GizClaw/flowcraft/sdk/model"
 	"github.com/GizClaw/flowcraft/sdk/recall"
 )
+
+// ingestRetryDelay is the cool-off before the single NotAvailable retry.
+// Sized for typical Azure MaaS cold-start / capacity blips (a few seconds)
+// without dragging out a sustained outage — at 2 s a full backoff bucket
+// of 18-ish 404s in a 50-conv c50 run adds ~40 s wall, negligible next to
+// per-batch ingest time of ~2 min.
+const ingestRetryDelay = 2 * time.Second
 
 // IngestSaver is implemented by runners that can ingest verbatim turns
 // (the default Flowcraft runner exposes SaveRaw to bypass an LLM extractor for
@@ -466,25 +474,42 @@ func ingestFlat(ctx context.Context, r runners.Runner, scopeOf func(string) reca
 		go func() {
 			defer wg.Done()
 			for job := range jobCh {
-				ingestCtx, cancel := perQuestionCtx(ctx, opts.IngestTimeout)
-				var (
-					n   int
-					d   time.Duration
-					err error
-				)
-				if !opts.UseExtractor {
-					switch rs := r.(type) {
-					case runners.RawIngestSaver:
-						n, d, err = rs.SaveRawTurns(ingestCtx, job.scope, job.batch.rawTurns)
-					case IngestSaver:
-						n, d, err = rs.SaveRaw(ingestCtx, job.scope, job.batch.msgs)
-					default:
-						n, d, err = r.Save(ingestCtx, job.scope, job.batch.msgs)
+				// attempt does one Save dispatch with a fresh per-batch
+				// context. Pulled into a closure so the NotAvailable
+				// retry below reuses the exact same provider/extractor
+				// switch without duplicating it.
+				attempt := func() (int, time.Duration, error) {
+					ingestCtx, cancel := perQuestionCtx(ctx, opts.IngestTimeout)
+					defer cancel()
+					if !opts.UseExtractor {
+						switch rs := r.(type) {
+						case runners.RawIngestSaver:
+							return rs.SaveRawTurns(ingestCtx, job.scope, job.batch.rawTurns)
+						case IngestSaver:
+							return rs.SaveRaw(ingestCtx, job.scope, job.batch.msgs)
+						}
 					}
-				} else {
-					n, d, err = r.Save(ingestCtx, job.scope, job.batch.msgs)
+					return r.Save(ingestCtx, job.scope, job.batch.msgs)
 				}
-				cancel()
+
+				n, d, err := attempt()
+				// Single-shot retry on transient provider errors
+				// (errdefs.NotAvailable = 5xx, network flake, plus
+				// Azure MaaS capacity 404s that ClassifyProviderError
+				// falls through to the default bucket). One retry only
+				// — it's cheap, recovers the common Azure cold-start
+				// blip seen on the c50-azure run, and won't mask a
+				// sustained outage.
+				if err != nil && errdefs.IsNotAvailable(err) {
+					log.Printf("[locomo] retry ingest %s/%s (batch %d/%d): %v", job.convID, job.batch.session, job.batchIdx+1, job.convTotal, err)
+					select {
+					case <-ctx.Done():
+					case <-time.After(ingestRetryDelay):
+					}
+					if ctx.Err() == nil {
+						n, d, err = attempt()
+					}
+				}
 
 				mu.Lock()
 				done++
