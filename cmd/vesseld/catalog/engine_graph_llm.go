@@ -74,7 +74,24 @@ func graphLLMEngineFactory(ref string, cfg map[string]any, deps Deps) (engine.En
 	limiter := deps.LLMLimiters[profile]
 	allowSet := buildAllowSet(deps.AgentTools)
 
-	return engine.EngineFunc(func(ctx context.Context, run engine.Run, host engine.Host, board *engine.Board) (*engine.Board, error) {
+	// Wrap the inline executor with the engine's declared
+	// capabilities so hosts (agent.Run preflight, dashboards, the
+	// vessel build path) can introspect the engine via
+	// engine.CapabilitiesOf without ad-hoc type assertions. The
+	// claim list deliberately mirrors the inline engine's true
+	// behaviour today:
+	//
+	//   - SupportsResume = false: the inline executor restarts from
+	//     scratch every time; ResumeFrom is unused.
+	//   - EmitsUserPrompt = false: no host.AskUser call sites.
+	//   - EmitsCheckpoint = false: the inline loop never invokes
+	//     host.Checkpoint (graph runner is the engine that does, but
+	//     this factory does not delegate to it).
+	//   - RequiredDepNames = nil: the inline engine takes its
+	//     dependencies from catalog.Deps (LLMClients / ToolRegistry /
+	//     AgentTools) at factory time, not from engine.Run.Deps —
+	//     declaring run-deps requirements here would be misleading.
+	return engine.WithCapabilities(engine.EngineFunc(func(ctx context.Context, run engine.Run, host engine.Host, board *engine.Board) (*engine.Board, error) {
 		// actorID is the engine "actor" key used in step-level
 		// subjects. We use the agent name so SSE consumers can
 		// see "agent X started step Y" without having to consult
@@ -197,6 +214,11 @@ func graphLLMEngineFactory(ref string, cfg map[string]any, deps Deps) (engine.En
 		}
 		runErr = errdefs.Conflictf("graph-llm[%s/%s]: max iterations (%d) reached without final answer", deps.VesselID, deps.AgentName, maxIter)
 		return board, runErr
+	}), engine.Capabilities{
+		SupportsResume:   false,
+		EmitsUserPrompt:  false,
+		EmitsCheckpoint:  false,
+		RequiredDepNames: nil,
 	}), nil
 }
 

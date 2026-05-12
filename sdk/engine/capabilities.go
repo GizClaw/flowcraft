@@ -36,17 +36,25 @@ type Capabilities struct {
 	EmitsCheckpoint bool
 
 	// RequiredDepNames lists the named dependencies the engine
-	// expects in Run.Deps. Names are conventional strings agreed
-	// between the engine and its host (e.g. "llm.resolver",
-	// "tool.registry"). Pods iterate this list at Apply time and
-	// reject the spec when a required dep is absent. Empty when the
-	// engine has no required deps.
+	// expects in Run.Deps. Names follow the convention enumerated
+	// in the [sdk/engine/depname] package — engines reference the
+	// constants there rather than open-coding strings so a typo
+	// becomes a compile-time error. Hosts populate Dependencies
+	// under the same names the engine declares here.
 	//
-	// This is a *named* declaration deliberately — the underlying
-	// Dependencies map keys are `any`, so the engine cannot
-	// meaningfully expose its concrete typed keys to a generic pod
-	// controller. The host populates Dependencies under the same
-	// names the engine declares here.
+	// Pods, agent.Run pre-flight, and the vessel build path
+	// iterate this list and reject the spec / run when a required
+	// dep is absent — surfacing wiring mistakes before any
+	// engine.Execute call. Empty when the engine has no required
+	// deps.
+	//
+	// This is a *named* declaration deliberately. The underlying
+	// Dependencies map is keyed by any so engines cannot
+	// meaningfully expose their concrete typed keys to a generic
+	// pod controller; the string convention is the only thing
+	// dashboards / admin APIs can serialise.
+	//
+	// [sdk/engine/depname]: https://pkg.go.dev/github.com/GizClaw/flowcraft/sdk/engine/depname
 	RequiredDepNames []string
 }
 
@@ -73,6 +81,50 @@ func CapabilitiesOf(e Engine) Capabilities {
 	}
 	return Capabilities{}
 }
+
+// WithCapabilities wraps eng so it advertises caps via the
+// [Describer] interface. Use it when the underlying engine cannot
+// add a Capabilities() method itself — typically EngineFunc-based
+// adapters where the engine value is a function type and methods
+// cannot carry extra state.
+//
+// Example:
+//
+//	eng := engine.WithCapabilities(
+//	    engine.EngineFunc(func(...) (...) { ... }),
+//	    engine.Capabilities{
+//	        EmitsCheckpoint:  true,
+//	        RequiredDepNames: []string{depname.LLMClient},
+//	    })
+//
+// Wrapping is a no-op view: the wrapper forwards every call to the
+// underlying engine and also satisfies any optional interface the
+// underlying engine satisfies (Resumer / CheckpointSuggester) via
+// type-assertion delegation in the per-feature helpers
+// (AsResumer / SuggestCheckpoint). The capability claim is the only
+// behaviour the wrapper adds.
+func WithCapabilities(eng Engine, caps Capabilities) Engine {
+	if eng == nil {
+		return nil
+	}
+	return engineWithCaps{Engine: eng, caps: caps}
+}
+
+// engineWithCaps is the concrete adapter returned by
+// [WithCapabilities]. Exported only via the Engine interface so the
+// wrapper is opaque to consumers.
+type engineWithCaps struct {
+	Engine
+	caps Capabilities
+}
+
+// Capabilities satisfies [Describer].
+func (e engineWithCaps) Capabilities() Capabilities { return e.caps }
+
+// Unwrap exposes the underlying engine so optional interface probes
+// (AsResumer, type-assertion to CheckpointSuggester, …) can reach
+// past the wrapper. Standard errors.As-style unwrap convention.
+func (e engineWithCaps) Unwrap() Engine { return e.Engine }
 
 // CheckpointSuggester is the optional engine-side interface a host
 // uses to ask the engine to write a Checkpoint at the next safe
@@ -103,9 +155,19 @@ type CheckpointSuggester interface {
 // no-op. Returns the engine's error directly so the host can log /
 // retry; nil is returned both for "engine does not support
 // suggestion" and for "engine accepted the suggestion".
+//
+// Walks any [WithCapabilities]-style wrappers via Unwrap so a
+// suggester wrapped to advertise capabilities still surfaces.
 func SuggestCheckpoint(e Engine) error {
-	if s, ok := e.(CheckpointSuggester); ok {
-		return s.SuggestCheckpoint()
+	for e != nil {
+		if s, ok := e.(CheckpointSuggester); ok {
+			return s.SuggestCheckpoint()
+		}
+		u, ok := e.(interface{ Unwrap() Engine })
+		if !ok {
+			return nil
+		}
+		e = u.Unwrap()
 	}
 	return nil
 }

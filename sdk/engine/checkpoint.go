@@ -47,6 +47,44 @@ type Checkpoint struct {
 	// Timestamp is the wall-clock time the engine produced the
 	// checkpoint. Hosts may overwrite when they actually persist.
 	Timestamp time.Time `json:"timestamp"`
+
+	// OriginalStartedAt is the wall-clock time the original (fresh)
+	// run started. Stays constant across resumes so dashboards
+	// computing total wall time (e.g. SLO budget burn) don't reset
+	// every time a host re-loads the checkpoint and resumes.
+	//
+	// Engines SHOULD copy this from [ResumeContext.StartedAt] (when
+	// resuming) or from the time they began the fresh run (when
+	// producing the first checkpoint). Hosts driving resume via
+	// [LoadAndResume] thread the value through automatically — the
+	// helper reads OriginalStartedAt off the loaded checkpoint and
+	// stamps it back on the next ResumeContext.
+	//
+	// Zero time means "not recorded" (engines that ship before this
+	// field was added, or that don't track wall time). Consumers
+	// should fall back to Timestamp in that case.
+	OriginalStartedAt time.Time `json:"original_started_at,omitempty"`
+
+	// SpecVersion identifies the engine's spec / definition version
+	// at the time the checkpoint was produced. The format is
+	// engine-defined: graph runner uses the [GraphMeta.Version]
+	// string; a script engine could store a content hash; vessel
+	// composes the spec document version.
+	//
+	// CanResume implementations compare this against the engine's
+	// current version: a mismatch means the underlying spec has
+	// drifted (graph re-edited, script reloaded, vessel reapplied
+	// with new agent definition) and silently resuming would replay
+	// against semantics the original run never saw. Engines that
+	// detect drift surface errdefs.NotAvailable from CanResume so
+	// the host can either fall back to a fresh run or surface the
+	// mismatch to the operator.
+	//
+	// Empty means "no version recorded" — older checkpoints, or
+	// engines that have no concept of versioned spec. CanResume
+	// MUST treat empty as "skip drift check" rather than "always
+	// fail" so old checkpoints stay loadable.
+	SpecVersion string `json:"spec_version,omitempty"`
 }
 
 // CheckpointStore is the host-side persistence contract. The host's

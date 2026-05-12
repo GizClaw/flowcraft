@@ -102,9 +102,11 @@
 //     lifecycle hooks fired around engine.Execute.
 //
 //  5. [Decider] / [BaseDecider] / [FinalizeDecision] — the
-//     decision-making counterpart of Observer. Round B exposes
-//     BeforeFinalize for disposition / moderation; future rounds
-//     will add more boundaries.
+//     decision-making counterpart of Observer. BeforeFinalize fires
+//     after every engine.Execute attempt; the merged decision drives
+//     [Result.Committed], records the [FinalizeDecision.Reason] in
+//     Result.State["finalize_reason"], and (when [WithMaxRevise] is
+//     enabled) gates the revise loop.
 //
 //  6. [DiscardOnInterruptCauses] — the canonical disposition
 //     Decider for voice / streaming UX. Constructs a Decider that
@@ -112,19 +114,40 @@
 //
 //  7. [Run] — the entry point that wires Request + Agent + Engine +
 //     observers + deciders + seeder together for one turn, returning
-//     a Result.
+//     a Result. Honours [WithResumeFrom] for checkpoint replay and
+//     [WithMaxRevise] for Decider-driven re-attempts (see
+//     "Resume / Revise" below).
 //
 //  8. [RunOption] and the WithXxx helpers — plumb optional behaviours
 //     into Run without making the function signature unwieldy.
 //
-// # What does NOT live here yet (round C / later)
+// # Resume / Revise
 //
-//   - Honouring [FinalizeDecision.Revise] — the field is reserved on
-//     the wire today; engine support and a re-execute loop come in
-//     a later round.
+// Two attempt-shaping options compose with everything else:
+//
+//   - [WithResumeFrom](cp) replays a previous run from cp by setting
+//     engine.Run.ResumeFrom and overriding the run id to cp.ExecID.
+//     Engines without [engine.Resumer] surface NotAvailable; engines
+//     with it (graph runner, future script engine) restore board
+//     state from cp.Board and continue from cp.Step. ResumeFrom
+//     applies to attempt 1 only — see Revise.
+//
+//   - [WithMaxRevise](n) opts in to the
+//     [FinalizeDecision.Revise] loop. When n>=2, deciders that
+//     return Revise=true on a completed attempt trigger another
+//     engine.Execute pass with a freshly-seeded board (revise is a
+//     fresh retry, not a checkpoint replay — ResumeFrom is dropped
+//     after attempt 1). The loop exits when no decider asks for
+//     revise OR the attempt counter reaches n. Failed /
+//     interrupted / canceled / aborted attempts NEVER consume
+//     budget; transient infrastructure errors surface immediately.
+//     [Result.Attempts] reports the actual count;
+//     [Observer.OnRunRevise] fires once per attempt transition.
+//
+// # What does NOT live here yet (later)
 //
 //   - RunHandle / ResumeToken for in-flight run management
-//     (deferred until graph adapter supplies real checkpoints).
+//     (deferred until vessel-level handle plumbing matures).
 //
 //   - Strategy adapter for compiled engines (sdk/agent/strategy will host
 //     it once we know what shape it should have).

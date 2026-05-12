@@ -53,6 +53,26 @@ type Observer interface {
 	// reason supplied by the host.
 	OnInterrupt(ctx context.Context, info RunInfo, intr engine.Interrupt)
 
+	// OnRunRevise fires when a Decider asked agent.Run to re-invoke
+	// engine.Execute (FinalizeDecision{Revise: true}) AND the
+	// per-call WithMaxRevise budget allows another attempt. It
+	// runs after the discarded attempt's classification but BEFORE
+	// the next OnRunStart, so observers see the lifecycle as:
+	//
+	//	OnRunStart → engine.Execute → OnRunRevise → OnRunStart → engine.Execute → OnRunEnd
+	//
+	// prevRes is the (about-to-be-replaced) Result from the failed
+	// attempt — observers MUST treat it as read-only. nextAttempt
+	// is the 1-indexed attempt number the next engine.Execute will
+	// be (== prevRes.Attempts + 1).
+	//
+	// OnRunRevise is the canonical hook for "log how many times the
+	// answer needed revision" / "page on excessive revise loops" /
+	// "snapshot intermediate boards before they are discarded". It
+	// fires zero times for runs that complete on the first attempt
+	// or whose Decider never asks for revise.
+	OnRunRevise(ctx context.Context, info RunInfo, prevRes *Result, nextAttempt int)
+
 	// OnRunEnd fires after engine.Execute returned and Run finished
 	// classifying the outcome. res is the same pointer Run is about
 	// to return; observers MUST treat it as read-only.
@@ -79,6 +99,9 @@ func (BaseObserver) OnRunStart(context.Context, RunInfo, *Request) {}
 
 // OnInterrupt is a no-op.
 func (BaseObserver) OnInterrupt(context.Context, RunInfo, engine.Interrupt) {}
+
+// OnRunRevise is a no-op.
+func (BaseObserver) OnRunRevise(context.Context, RunInfo, *Result, int) {}
 
 // OnRunEnd is a no-op.
 func (BaseObserver) OnRunEnd(context.Context, RunInfo, *Result) {}
@@ -138,6 +161,12 @@ func (m multiObserver) OnRunStart(ctx context.Context, info RunInfo, req *Reques
 func (m multiObserver) OnInterrupt(ctx context.Context, info RunInfo, intr engine.Interrupt) {
 	for _, o := range m {
 		safeRun(func() { o.OnInterrupt(ctx, info, intr) })
+	}
+}
+
+func (m multiObserver) OnRunRevise(ctx context.Context, info RunInfo, prev *Result, next int) {
+	for _, o := range m {
+		safeRun(func() { o.OnRunRevise(ctx, info, prev, next) })
 	}
 }
 

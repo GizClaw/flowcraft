@@ -79,11 +79,34 @@ type FinalizeDecision struct {
 	// not persist it").
 	DiscardOutput bool
 
-	// Revise is reserved for round B+ engine support. When true,
-	// agent will (eventually) re-invoke the engine with the same
-	// inputs. Round B does NOT yet honour Revise; it is included so
-	// the FinalizeDecision shape does not need to break when the
-	// behaviour is wired up.
+	// Revise asks agent.Run to discard this attempt's output and
+	// re-invoke engine.Execute with a fresh board (re-seeded from
+	// the original Request). Honoured ONLY when the per-call
+	// [WithMaxRevise] budget allows another attempt; the option
+	// defaults to 0, so by default Revise is recorded as a
+	// finalize_reason but does NOT trigger another engine call —
+	// callers must opt in explicitly to avoid runaway loops on
+	// faulty Deciders.
+	//
+	// When honoured the lifecycle is:
+	//
+	//   1. Decider returns Revise=true (and optionally Reason).
+	//   2. Run fires [Observer.OnRunRevise] with the about-to-be-
+	//      discarded Result and the next attempt index.
+	//   3. Board is re-seeded via the configured BoardSeeder; the
+	//      same engine.Run identifier is reused so observers that
+	//      key by run id can correlate attempts.
+	//   4. engine.Execute runs again. The Decider chain runs again
+	//      on the new Result.
+	//   5. The loop exits when either Revise=false or the attempt
+	//      counter reaches WithMaxRevise. The final Result.Attempts
+	//      reflects how many engine.Execute calls were made.
+	//
+	// Revise interacts with [WithResumeFrom]: ResumeFrom applies
+	// to the FIRST attempt only. Revise restarts are fresh runs
+	// (the engine should be re-entered from the start), so
+	// subsequent attempts drop ResumeFrom — replaying a checkpoint
+	// repeatedly would defeat the purpose of asking for a revision.
 	Revise bool
 
 	// Reason is a free-form short string explaining the decision.

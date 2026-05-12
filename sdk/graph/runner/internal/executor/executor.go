@@ -89,6 +89,14 @@ type runConfig struct {
 	parallel       *ParallelConfig
 	resolver       VariableResolver
 
+	// resumeFrom carries an engine.Checkpoint the executor should
+	// resume from. Set via [WithResumeFrom]. When non-nil, Execute
+	// restores board state from cp.Board, locates the node id
+	// recorded in cp.Step, and continues from that node's
+	// downstream edges instead of re-executing it. Set to nil
+	// (default) for fresh starts.
+	resumeFrom *engine.Checkpoint
+
 	// --- event sinks (input options) ---
 
 	// host is the modern event/interrupt/ask sink. Required path
@@ -144,6 +152,27 @@ func WithResolver(r VariableResolver) RunOption {
 	return func(c *runConfig) { c.resolver = r }
 }
 
+// WithResumeFrom installs an engine.Checkpoint the executor should
+// resume from. The checkpoint must come from a previous run of the
+// same graph: cp.Step names a node already executed, cp.Board carries
+// the snapshot taken right after that node completed, and cp.Iteration
+// is the iteration count at that point.
+//
+// Execute restores cp.Board over the caller-supplied board (the
+// checkpoint is the source of truth for state at the resume point),
+// resolves the downstream nodes of cp.Step against the restored
+// board (so conditional edges branch correctly on resumed state),
+// and continues execution from there. The completed node is NOT
+// re-executed.
+//
+// nil is a no-op (= fresh start). Suppling an unknown cp.Step
+// surfaces errdefs.Validation; Run.ResumeFrom contract validation
+// (foreign ExecID, etc.) is the runner.Runner's responsibility,
+// not the executor's.
+func WithResumeFrom(cp *engine.Checkpoint) RunOption {
+	return func(c *runConfig) { c.resumeFrom = cp }
+}
+
 // LocalExecutor is the default single-process executor.
 type LocalExecutor struct{}
 
@@ -192,15 +221,81 @@ func (e *LocalExecutor) Execute(ctx context.Context, g *graph.Graph, board *grap
 		otellog.String(telemetry.AttrGraphName, g.Name()),
 		otellog.String(telemetry.AttrRunID, cfg.runID))
 
+	// originalStartedAt persists "when did the user-visible run
+	// begin?" across resume boundaries. On a fresh start we use
+	// graphStart; on resume we inherit the value from the
+	// checkpoint so dashboards computing total wall time see one
+	// continuous run instead of resetting on every replay.
+	originalStartedAt := graphStart
+	if cfg.resumeFrom != nil && !cfg.resumeFrom.OriginalStartedAt.IsZero() {
+		originalStartedAt = cfg.resumeFrom.OriginalStartedAt
+	}
+
 	currentNodes := []string{g.Entry()}
 	if cfg.startNode != "" {
 		currentNodes = []string{cfg.startNode}
 	}
 
+	iteration := 0
+
+	// Resume from a checkpoint takes precedence over startNode and
+	// graph entry. The runner has already validated checkpoint
+	// integrity (ExecID + GraphName) via Resumer.CanResume; here we
+	// only do the executor-local work of restoring board state and
+	// computing where to continue.
+	if cfg.resumeFrom != nil {
+		completedID := cfg.resumeFrom.Step
+		completedNode, ok := g.Node(completedID)
+		if !ok {
+			return board, errdefs.Validationf(
+				"graph runner: resume: checkpoint Step %q is not a node in graph %q",
+				completedID, g.Name())
+		}
+
+		// Restore board state from the checkpoint snapshot. The
+		// checkpoint is the source of truth for state at the resume
+		// point — the caller-supplied board is discarded so resumed
+		// execution sees exactly the vars / channels the original
+		// run had when it produced the checkpoint.
+		if cfg.resumeFrom.Board != nil {
+			if restored := graph.RestoreBoard(cfg.resumeFrom.Board); restored != nil {
+				board = restored
+			}
+		}
+
+		// Resolve the downstream of the completed node against the
+		// restored board so conditional edges branch correctly.
+		next, err := resolveNextNodes(g, completedNode, board)
+		if err != nil {
+			return board, errdefs.Validationf(
+				"graph runner: resume: cannot resolve nodes after %q: %v",
+				completedID, err)
+		}
+		// Filter out END markers; if every downstream is END the run
+		// was already complete when the checkpoint was taken. We still
+		// emit run.start/run.end so subscribers see a coherent resume
+		// envelope pair, then return cleanly.
+		var live []string
+		for _, n := range next {
+			if n != graph.END {
+				live = append(live, n)
+			}
+		}
+		if len(live) == 0 {
+			publishGraphEvent(ctx, cfg.publisher, engine.SubjectRunStart(cfg.runID),
+				cfg.runID, g.Name(), actorKey, board.Vars())
+			publishGraphEvent(ctx, cfg.publisher, engine.SubjectRunEnd(cfg.runID),
+				cfg.runID, g.Name(), actorKey,
+				map[string]any{"iteration": cfg.resumeFrom.Iteration, "vars": board.Vars(), "resumed": true})
+			return board, nil
+		}
+		currentNodes = live
+		iteration = cfg.resumeFrom.Iteration
+	}
+
 	publishGraphEvent(ctx, cfg.publisher, engine.SubjectRunStart(cfg.runID),
 		cfg.runID, g.Name(), actorKey, board.Vars())
 
-	iteration := 0
 	graphStatus := "success"
 	for len(currentNodes) > 0 && iteration < cfg.maxIterations {
 		iteration++
@@ -343,12 +438,13 @@ func (e *LocalExecutor) Execute(ctx context.Context, g *graph.Graph, board *grap
 			// swallowed — checkpointing is observability-adjacent,
 			// never a reason to abort a run.
 			cp := Checkpoint{
-				GraphName: g.Name(),
-				RunID:     cfg.runID,
-				NodeID:    nodeID,
-				Iteration: iteration,
-				Board:     board.Snapshot(),
-				Timestamp: time.Now(),
+				GraphName:         g.Name(),
+				RunID:             cfg.runID,
+				NodeID:            nodeID,
+				Iteration:         iteration,
+				Board:             board.Snapshot(),
+				Timestamp:         time.Now(),
+				OriginalStartedAt: originalStartedAt,
 			}
 			if err := cfg.host.Checkpoint(ctx, cp.toEngine()); err != nil {
 				graphSpan.AddEvent("checkpoint save failed",

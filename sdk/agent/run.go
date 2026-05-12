@@ -87,6 +87,14 @@ func Run(
 	if runID == "" {
 		runID = mintRunID()
 	}
+	// Resume MUST execute under the original run id so the engine's
+	// Resumer.CanResume sees ExecID == Run.ID. Honour the
+	// checkpoint's ExecID over a freshly-minted id; explicit
+	// req.RunID disagreements are caller errors and surface as
+	// engine.Engine Validation when the engine compares them.
+	if rc.resumeFrom != nil && rc.resumeFrom.ExecID != "" {
+		runID = rc.resumeFrom.ExecID
+	}
 
 	info := RunInfo{
 		AgentID:   ag.ID,
@@ -95,106 +103,155 @@ func Run(
 		ContextID: req.ContextID,
 	}
 
-	board, err := rc.seeder.SeedBoard(ctx, info, &req)
-	if err != nil {
-		return nil, fmt.Errorf("agent: seed board: %w", err)
-	}
-	if board == nil {
-		return nil, errdefs.Validationf("agent: BoardSeeder returned nil board")
-	}
-
 	host := rc.host
 	if host == nil {
 		host = engine.NoopHost{}
 	}
 
 	attrs := mergeAttributes(rc.attributes, req, ag, runID)
-
-	engRun := engine.Run{
-		ID:         runID,
-		Attributes: attrs,
-		Deps:       rc.deps,
-	}
-
 	obs := composeObservers(rc.observers)
 
-	if obs != nil {
-		obs.OnRunStart(ctx, info, &req)
+	// Revise loop: each iteration is one engine.Execute attempt
+	// followed by Decider chain. Loop exits when a Decider does
+	// not ask for revise OR the attempt counter reaches the
+	// configured WithMaxRevise budget. attempts is 1-indexed: 1
+	// means "first engine call". maxAttempts >= 1 always (the
+	// default 0 / 1 disable the loop entirely after the first
+	// attempt — by zeroing rc.maxRevise we keep the math uniform).
+	maxAttempts := rc.maxRevise
+	if maxAttempts < 1 {
+		maxAttempts = 1
 	}
 
-	finalBoard, execErr := eng.Execute(ctx, engRun, host, board)
-	if finalBoard == nil {
-		// Defensive: engines must return a non-nil board even on
-		// error per their contract. Fall back to the seeded one
-		// rather than panic.
-		finalBoard = board
-	}
+	var (
+		res         *Result
+		execDecided bool // set when a non-recoverable Decider error short-circuited
+		decErr      error
+	)
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		// Re-seed board on every attempt so revise restarts see a
+		// fresh state derived from the same Request. The first
+		// attempt's seeder error is fatal (infrastructure); a seeder
+		// error on a revise attempt is also surfaced as nil result +
+		// error so callers do not silently see stale Messages.
+		board, err := rc.seeder.SeedBoard(ctx, info, &req)
+		if err != nil {
+			return nil, fmt.Errorf("agent: seed board (attempt %d): %w", attempt, err)
+		}
+		if board == nil {
+			return nil, errdefs.Validationf("agent: BoardSeeder returned nil board")
+		}
 
-	res := &Result{
-		TaskID:    req.TaskID,
-		RunID:     runID,
-		LastBoard: finalBoard,
-		State:     map[string]any{"run_id": runID},
-	}
+		// engine.Run is rebuilt each attempt: ResumeFrom is honoured
+		// for attempt 1 only (revise is not "resume", it is a fresh
+		// retry), and Attributes carry the attempt index so engines
+		// / hosts can correlate retries in their telemetry. RunID
+		// stays constant across attempts so observers / dashboards
+		// see one logical run with N attempts, not N separate runs.
+		attemptAttrs := maps.Clone(attrs)
+		if attemptAttrs == nil {
+			attemptAttrs = map[string]string{}
+		}
+		attemptAttrs["agent.attempt"] = itoa(attempt)
+		engRun := engine.Run{
+			ID:         runID,
+			Attributes: attemptAttrs,
+			Deps:       rc.deps,
+		}
+		if attempt == 1 {
+			engRun.ResumeFrom = rc.resumeFrom
+		}
 
-	res.Messages = newAssistantMessages(finalBoard)
+		if obs != nil {
+			obs.OnRunStart(ctx, info, &req)
+		}
 
-	switch {
-	case execErr == nil:
-		res.Status = StatusCompleted
+		finalBoard, execErr := eng.Execute(ctx, engRun, host, board)
+		if finalBoard == nil {
+			finalBoard = board
+		}
 
-	case errdefs.IsInterrupted(execErr):
-		res.Status = StatusInterrupted
-		res.Err = execErr
-		// OnInterrupt requires the structured cause/detail. We only
-		// fire it when errors.As surfaces a real engine.InterruptedError
-		// — a foreign-shape error that merely satisfies the
-		// errdefs.Interrupted marker is still classified as interrupted
-		// (Status + IsInterrupted), but observers receive nothing
-		// rather than a misleading zero-value Interrupt.
-		var ie engine.InterruptedError
-		if errors.As(execErr, &ie) {
-			res.Cause = ie.Cause
-			if obs != nil {
-				obs.OnInterrupt(ctx, info, ie.Interrupt)
+		res = &Result{
+			TaskID:    req.TaskID,
+			RunID:     runID,
+			LastBoard: finalBoard,
+			State:     map[string]any{"run_id": runID},
+			Attempts:  attempt,
+		}
+		res.Messages = newAssistantMessages(finalBoard)
+
+		switch {
+		case execErr == nil:
+			res.Status = StatusCompleted
+
+		case errdefs.IsInterrupted(execErr):
+			res.Status = StatusInterrupted
+			res.Err = execErr
+			var ie engine.InterruptedError
+			if errors.As(execErr, &ie) {
+				res.Cause = ie.Cause
+				if obs != nil {
+					obs.OnInterrupt(ctx, info, ie.Interrupt)
+				}
+			}
+
+		case errors.Is(execErr, context.Canceled),
+			errors.Is(execErr, context.DeadlineExceeded):
+			res.Status = StatusCanceled
+			res.Err = execErr
+
+		case errdefs.IsAborted(execErr):
+			res.Status = StatusAborted
+			res.Err = execErr
+
+		default:
+			res.Status = StatusFailed
+			res.Err = execErr
+		}
+
+		res.Committed = res.Status == StatusCompleted
+
+		// Non-completed outcomes short-circuit the revise loop. A
+		// canceled / aborted / interrupted / failed engine is the
+		// host's signal to stop; revising would either repeat the
+		// failure mode (no model output to revise) or fight an
+		// active cancellation. Deciders still run on the final
+		// attempt so DiscardOutput / Reason are honoured.
+		decision := FinalizeDecision{}
+		if len(rc.deciders) > 0 {
+			d, derr := runDeciders(ctx, rc.deciders, info, &req, res)
+			if derr != nil {
+				execDecided = true
+				decErr = derr
+				break
+			}
+			decision = d
+			if decision.DiscardOutput {
+				res.Committed = false
+			}
+			if decision.Reason != "" {
+				res.State["finalize_reason"] = decision.Reason
 			}
 		}
 
-	case errors.Is(execErr, context.Canceled),
-		errors.Is(execErr, context.DeadlineExceeded):
-		res.Status = StatusCanceled
-		res.Err = execErr
-
-	case errdefs.IsAborted(execErr):
-		res.Status = StatusAborted
-		res.Err = execErr
-
-	default:
-		res.Status = StatusFailed
-		res.Err = execErr
+		// Revise gate: only fires for completed attempts that have
+		// budget remaining AND a Decider asked for revision. A
+		// non-completed status NEVER triggers revise (see comment
+		// above) so a flapping engine cannot consume the entire
+		// budget against transient failures.
+		if !decision.Revise || res.Status != StatusCompleted || attempt >= maxAttempts {
+			break
+		}
+		if obs != nil {
+			obs.OnRunRevise(ctx, info, res, attempt+1)
+		}
 	}
 
-	// Default disposition: only completed runs commit by default.
-	res.Committed = res.Status == StatusCompleted
-
-	if len(rc.deciders) > 0 {
-		decision, derr := runDeciders(ctx, rc.deciders, info, &req, res)
-		if derr != nil {
-			// Observer's OnRunEnd still fires on the way out so
-			// metric / log observers see the full lifecycle.
-			if obs != nil {
-				obs.OnRunEnd(ctx, info, res)
-			}
-			return res, derr
+	if execDecided {
+		if obs != nil {
+			obs.OnRunEnd(ctx, info, res)
 		}
-		if decision.DiscardOutput {
-			res.Committed = false
-		}
-		if decision.Reason != "" {
-			res.State["finalize_reason"] = decision.Reason
-		}
-		// FinalizeDecision.Revise is reserved on the wire for a
-		// later round; agent does not surface it to callers yet.
+		return res, decErr
 	}
 
 	if obs != nil {
@@ -202,6 +259,32 @@ func Run(
 	}
 
 	return res, nil
+}
+
+// itoa is a zero-alloc small-int formatter used for the attempt
+// attribute. strconv.Itoa would work but pulls in strconv just for
+// this single callsite; the manual base-10 conversion is small
+// enough to keep inline.
+func itoa(n int) string {
+	if n == 0 {
+		return "0"
+	}
+	negative := n < 0
+	if negative {
+		n = -n
+	}
+	var buf [20]byte
+	i := len(buf)
+	for n > 0 {
+		i--
+		buf[i] = byte('0' + n%10)
+		n /= 10
+	}
+	if negative {
+		i--
+		buf[i] = '-'
+	}
+	return string(buf[i:])
 }
 
 // newAssistantMessages returns the assistant messages produced during
@@ -273,6 +356,9 @@ type runConfig struct {
 	attributes map[string]string
 	observers  []Observer
 	deciders   []Decider
+	resumeFrom *engine.Checkpoint
+	runID      string
+	maxRevise  int
 }
 
 // applyOptions threads ag through so we can apply Agent-scoped
@@ -376,6 +462,60 @@ func WithObserver(o Observer) RunOption {
 			rc.observers = append(rc.observers, o)
 		}
 	}
+}
+
+// WithMaxRevise sets the upper bound on engine.Execute invocations
+// per Run call when a Decider returns FinalizeDecision{Revise: true}.
+//
+//   - n <= 1 (default 0) disables the revise loop entirely. A Decider
+//     asking to revise records its Reason but Run still returns after
+//     the first attempt — the safe default avoids surprise infinite
+//     loops on misconfigured Deciders.
+//
+//   - n >= 2 caps total attempts at n. The loop exits as soon as
+//     either no Decider asks for revise OR the attempt counter
+//     reaches n. The final Result.Attempts is the actual number of
+//     engine.Execute calls made.
+//
+// Revise restarts re-seed the board from the original Request via
+// the configured BoardSeeder, so the engine sees fresh inputs.
+// engine.Run.ResumeFrom is dropped after the first attempt — Revise
+// means "retry from scratch", not "replay a checkpoint".
+//
+// Negative values are treated as 0 (disabled). Callers that want the
+// engine to drive its own retry policy (rate-limit backoff, transient
+// LLM errors, …) MUST keep WithMaxRevise at the default; the revise
+// loop is the agent-policy layer, not the engine-transport one.
+func WithMaxRevise(n int) RunOption {
+	return func(rc *runConfig) {
+		if n < 0 {
+			n = 0
+		}
+		rc.maxRevise = n
+	}
+}
+
+// WithResumeFrom replays an interrupted run from a previously
+// captured engine.Checkpoint. The agent threads cp into
+// engine.Run.ResumeFrom and overrides the run id to cp.ExecID so
+// the underlying engine's Resumer.CanResume sees ExecID == Run.ID
+// (cross-run checkpoints are programmer errors and surface as
+// errdefs.Validation from the engine).
+//
+// Typical use: a host loaded a checkpoint via its CheckpointStore,
+// possibly after a process restart, and wants the agent to keep
+// going from that point rather than start fresh. The host still
+// passes the ORIGINAL agent.Request (same task id, same inputs);
+// the engine restores board state from the checkpoint so the
+// re-seeded inputs are effectively overwritten by the resumed
+// state. Engines without engine.Resumer surface NotAvailable
+// (per the engine.Engine contract); resume against an unsupported
+// engine is a configuration error, not silent fall-through.
+//
+// nil cp is a no-op (= fresh start). Multiple WithResumeFrom calls
+// last-write-wins; agent does not attempt to merge checkpoints.
+func WithResumeFrom(cp *engine.Checkpoint) RunOption {
+	return func(rc *runConfig) { rc.resumeFrom = cp }
 }
 
 // WithDecider registers a [Decider] for this run. Multiple

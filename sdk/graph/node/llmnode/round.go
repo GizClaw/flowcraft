@@ -280,7 +280,12 @@ streamLoop:
 			})
 		}
 
-		results = reg.ExecuteAll(ctx, calls)
+		// Stash the engine.Host on ctx so built-in tools that need
+		// host capabilities (ask_user → host.AskUser, future
+		// emit_event → host.Publish, …) can recover it via
+		// engine.HostFromContext. The Tool.Execute signature does
+		// not carry a Host, so this is the ratified plumbing path.
+		results = reg.ExecuteAll(engine.WithHost(ctx, host), calls)
 
 		nameByID := make(map[string]string, len(calls))
 		for _, c := range calls {
