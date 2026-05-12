@@ -166,6 +166,27 @@ compare/fetch/ingest`, `eval longmemeval convert`). Shell completion
 
 ### Changed
 
+#### sdkx
+
+- `sdkx/llm/{openai,anthropic}`: configurable OTel / metrics provider
+  tag via new `LLM.WithProviderName(name)` + `LLM.Provider()`. Wrapping
+  adapters (`sdkx/llm/{azure,deepseek,qwen,minimax}`) now stamp their
+  own name on every span (`llm.<provider>.generate.<model>`),
+  attribute (`telemetry.AttrLLMProvider`), and metric label produced
+  by the upstream base provider. Previously, traffic from every
+  OpenAI-compatible sub-provider was silently aggregated under
+  `"openai"` in traces and dashboards (and MiniMax under
+  `"anthropic"`), because the base implementations hardcoded the
+  provider label deep in their hot path. Sub-providers had no way to
+  override it without re-implementing the whole `Generate` /
+  `GenerateStream` / streaming-finalize path. The same plumbing
+  routes through `classifyAPIError`'s fallback, so wrapped
+  network-shaped errors now surface under the right sub-provider
+  name. Direct callers of `openai.New` / `anthropic.New` are
+  unaffected (the historical "openai" / "anthropic" tags remain the
+  defaults). The image generators and `ollama` are already direct
+  providers and report their own names; not touched.
+
 #### eval
 
 - `eval/go.mod`: bump `sdk` v0.3.0 → v0.3.4 and `sdkx` v0.3.0 → v0.3.1.

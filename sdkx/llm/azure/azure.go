@@ -23,9 +23,17 @@ func New(model, apiKey, baseURL, apiVersion string) (*openai.LLM, error) {
 	if apiVersion == "" {
 		apiVersion = defaultAPIVersion
 	}
-	return openai.New(model, "", "", // apiKey/baseURL handled by azure options
+	inner, err := openai.New(model, "", "", // apiKey/baseURL handled by azure options
 		azureClientOptions(apiKey, baseURL, apiVersion)...,
 	)
+	if err != nil {
+		return nil, err
+	}
+	// Tag the OTel/metrics provider as "azure" so dashboards split out
+	// Azure-routed traffic (different region, capacity, billing) from
+	// the direct openai.com endpoint. See sdkx/llm/openai/openai.go ▸
+	// WithProviderName.
+	return inner.WithProviderName("azure"), nil
 }
 
 func azureClientOptions(apiKey, endpoint, apiVersion string) []option.RequestOption {

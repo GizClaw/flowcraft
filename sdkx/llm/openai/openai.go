@@ -267,9 +267,23 @@ func init() {
 type LLM struct {
 	client *oai.Client
 	model  string
+
+	// provider is the tag that lands on OTel spans, metrics, and the
+	// fallback path of [classifyAPIError]'s error wrapping. It defaults
+	// to "openai" so direct callers see the historical behaviour; the
+	// sibling adapter packages (sdkx/llm/{azure,deepseek,qwen}) call
+	// [LLM.WithProviderName] to override it so their traffic shows up
+	// under their own name in observability tooling instead of being
+	// silently aggregated under "openai". Same story on the Anthropic
+	// side via sdkx/llm/minimax.
+	provider string
 }
 
 var _ llm.LLM = (*LLM)(nil)
+
+// defaultProviderName is the OTel/metrics tag stamped on every direct
+// openai.New call. Wrapping adapters override it via WithProviderName.
+const defaultProviderName = "openai"
 
 // New creates an OpenAI LLM instance.
 func New(model, apiKey, baseURL string, extraOpts ...option.RequestOption) (*LLM, error) {
@@ -285,12 +299,37 @@ func New(model, apiKey, baseURL string, extraOpts ...option.RequestOption) (*LLM
 	}
 	clientOpts = append(clientOpts, extraOpts...)
 	client := oai.NewClient(clientOpts...)
-	return &LLM{client: &client, model: model}, nil
+	return &LLM{client: &client, model: model, provider: defaultProviderName}, nil
+}
+
+// WithProviderName overrides the OTel / metrics provider tag used by
+// this LLM instance. Wrapping adapters (sdkx/llm/azure, deepseek, qwen,
+// ...) call this so each sub-provider's calls land under its own
+// name in traces and metric labels instead of being aggregated under
+// generic "openai". Returns the receiver for chaining; safe to ignore
+// the return value. Empty names are silently ignored to keep the
+// default intact when a caller passes an unset config.
+func (c *LLM) WithProviderName(name string) *LLM {
+	if c != nil && name != "" {
+		c.provider = name
+	}
+	return c
+}
+
+// Provider returns the OTel / metrics tag used by this instance. Mostly
+// a debugging aid; exported so eval drivers and observability dashboards
+// can introspect what name they'll see in traces.
+func (c *LLM) Provider() string {
+	if c == nil || c.provider == "" {
+		return defaultProviderName
+	}
+	return c.provider
 }
 
 func (c *LLM) Generate(ctx context.Context, messages []llm.Message, opts ...llm.GenerateOption) (llm.Message, llm.TokenUsage, error) {
-	ctx, span := telemetry.Tracer().Start(ctx, fmt.Sprintf("llm.openai.generate.%s", c.model), trace.WithAttributes(
-		attribute.String(telemetry.AttrLLMProvider, "openai"),
+	provider := c.Provider()
+	ctx, span := telemetry.Tracer().Start(ctx, fmt.Sprintf("llm.%s.generate.%s", provider, c.model), trace.WithAttributes(
+		attribute.String(telemetry.AttrLLMProvider, provider),
 		attribute.String(telemetry.AttrLLMModel, c.model),
 	))
 	defer span.End()
@@ -304,11 +343,11 @@ func (c *LLM) Generate(ctx context.Context, messages []llm.Message, opts ...llm.
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
-		llm.RecordLLMMetrics(ctx, "openai", c.model, "error", dur, llm.TokenUsage{})
+		llm.RecordLLMMetrics(ctx, provider, c.model, "error", dur, llm.TokenUsage{})
 		if ctx.Err() != nil {
-			return llm.Message{}, llm.TokenUsage{}, errdefs.Timeoutf("openai.generate: %s", dur.String())
+			return llm.Message{}, llm.TokenUsage{}, errdefs.Timeoutf("%s.generate: %s", provider, dur.String())
 		}
-		return llm.Message{}, llm.TokenUsage{}, classifyAPIError(err)
+		return llm.Message{}, llm.TokenUsage{}, c.classifyAPIError(err)
 	}
 	// openai-go and OpenAI-compatible backends (deepseek, qwen-flash on
 	// busy hours, self-hosted) have been observed returning (nil, nil)
@@ -319,18 +358,18 @@ func (c *LLM) Generate(ctx context.Context, messages []llm.Message, opts ...llm.
 	// runner. Classify as NotAvailable so upstream retry logic treats it
 	// like any other transient provider misbehaviour.
 	if resp == nil {
-		err := errdefs.NotAvailablef("openai: nil response with no error (provider misbehaviour)")
+		err := errdefs.NotAvailablef("%s: nil response with no error (provider misbehaviour)", provider)
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
-		llm.RecordLLMMetrics(ctx, "openai", c.model, "error", dur, llm.TokenUsage{})
+		llm.RecordLLMMetrics(ctx, provider, c.model, "error", dur, llm.TokenUsage{})
 		return llm.Message{}, llm.TokenUsage{}, err
 	}
 
 	if len(resp.Choices) == 0 {
-		err := errdefs.NotAvailablef("openai: no choices returned")
+		err := errdefs.NotAvailablef("%s: no choices returned", provider)
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
-		llm.RecordLLMMetrics(ctx, "openai", c.model, "error", dur, llm.TokenUsage{})
+		llm.RecordLLMMetrics(ctx, provider, c.model, "error", dur, llm.TokenUsage{})
 		return llm.Message{}, llm.TokenUsage{}, err
 	}
 
@@ -346,14 +385,15 @@ func (c *LLM) Generate(ctx context.Context, messages []llm.Message, opts ...llm.
 		attribute.Int64(telemetry.AttrLLMOutputTokens, usage.OutputTokens),
 	)
 	span.SetStatus(codes.Ok, "OK")
-	llm.RecordLLMMetrics(ctx, "openai", c.model, "success", dur, usage)
+	llm.RecordLLMMetrics(ctx, provider, c.model, "success", dur, usage)
 
 	return msg, usage, nil
 }
 
 func (c *LLM) GenerateStream(ctx context.Context, messages []llm.Message, opts ...llm.GenerateOption) (llm.StreamMessage, error) {
-	ctx, span := telemetry.Tracer().Start(ctx, fmt.Sprintf("llm.openai.stream.%s", c.model), trace.WithAttributes(
-		attribute.String(telemetry.AttrLLMProvider, "openai"),
+	provider := c.Provider()
+	ctx, span := telemetry.Tracer().Start(ctx, fmt.Sprintf("llm.%s.stream.%s", provider, c.model), trace.WithAttributes(
+		attribute.String(telemetry.AttrLLMProvider, provider),
 		attribute.String(telemetry.AttrLLMModel, c.model),
 	))
 
@@ -372,7 +412,7 @@ func (c *LLM) GenerateStream(ctx context.Context, messages []llm.Message, opts .
 	// allocations symmetrically so a flaky provider can't take down
 	// the eval runner.
 	if stream == nil {
-		err := errdefs.NotAvailablef("openai: nil stream handle (provider misbehaviour)")
+		err := errdefs.NotAvailablef("%s: nil stream handle (provider misbehaviour)", provider)
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 		span.End()
@@ -383,7 +423,7 @@ func (c *LLM) GenerateStream(ctx context.Context, messages []llm.Message, opts .
 		params.StreamOptions = oai.ChatCompletionStreamOptionsParam{}
 		stream = c.client.Chat.Completions.NewStreaming(ctx, params, reqOpts...)
 		if stream == nil {
-			err := errdefs.NotAvailablef("openai: nil stream handle on retry without stream_options")
+			err := errdefs.NotAvailablef("%s: nil stream handle on retry without stream_options", provider)
 			span.RecordError(err)
 			span.SetStatus(codes.Error, err.Error())
 			span.End()
@@ -393,11 +433,11 @@ func (c *LLM) GenerateStream(ctx context.Context, messages []llm.Message, opts .
 			span.RecordError(err2)
 			span.SetStatus(codes.Error, err2.Error())
 			span.End()
-			return nil, classifyAPIError(err2)
+			return nil, c.classifyAPIError(err2)
 		}
 	}
 
-	return newStreamMessage(ctx, span, c.model, stream), nil
+	return newStreamMessage(ctx, span, provider, c.model, stream), nil
 }
 
 // extraRequestOpts converts GenerateOptions.Extra into per-request

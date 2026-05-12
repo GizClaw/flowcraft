@@ -42,7 +42,23 @@ import (
 // *oai.Error (network errors, ctx errors that already round-tripped through
 // errdefs.FromContext, etc.) so the existing keyword/regex fallbacks still
 // catch their cases.
+// classifyAPIError is the legacy package-level entry point. It delegates to
+// classifyAPIErrorWithProvider using the bare "openai" tag and exists only
+// for tests and code paths that don't have an *LLM in scope; production
+// call sites should prefer (*LLM).classifyAPIError so sub-providers
+// (azure / deepseek / qwen) get their real name on the wrapped error.
 func classifyAPIError(err error) error {
+	return classifyAPIErrorWithProvider("openai", err)
+}
+
+// classifyAPIError is the LLM-method variant that picks up the per-instance
+// provider name set by WithProviderName, so sub-providers see their own tag
+// in the fallback path.
+func (c *LLM) classifyAPIError(err error) error {
+	return classifyAPIErrorWithProvider(c.Provider(), err)
+}
+
+func classifyAPIErrorWithProvider(provider string, err error) error {
 	if err == nil {
 		return nil
 	}
@@ -51,7 +67,7 @@ func classifyAPIError(err error) error {
 	}
 	var ae *oai.Error
 	if !errors.As(err, &ae) {
-		return errdefs.ClassifyProviderError("openai", err)
+		return errdefs.ClassifyProviderError(provider, err)
 	}
 	switch ae.StatusCode {
 	case 401, 403:
@@ -97,5 +113,5 @@ func classifyAPIError(err error) error {
 	// Unknown 2xx/3xx status reaching this branch is a contract violation
 	// of openai-go (it only constructs *oai.Error for non-2xx), but rather
 	// than panicking we treat it as a generic provider error.
-	return errdefs.ClassifyProviderError("openai", err)
+	return errdefs.ClassifyProviderError(provider, err)
 }

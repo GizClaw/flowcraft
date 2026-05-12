@@ -23,9 +23,14 @@ import (
 type anthropicBetaStreamMessage struct {
 	baseCtx context.Context
 	span    trace.Span
-	model   string
-	start   time.Time
-	stream  *ssestream.Stream[asdk.BetaRawMessageStreamEventUnion]
+	// provider carries the OTel/metrics tag through the streaming
+	// finish path so a minimax / direct-anthropic stream lands its
+	// success/error metric under the right sub-provider name. See
+	// sdkx/llm/openai/stream.go for the same pattern.
+	provider string
+	model    string
+	start    time.Time
+	stream   *ssestream.Stream[asdk.BetaRawMessageStreamEventUnion]
 
 	allowPartialJSON bool
 
@@ -44,12 +49,13 @@ type anthropicBetaStreamMessage struct {
 func newBetaStreamMessage(
 	ctx context.Context,
 	span trace.Span,
-	model string,
+	provider, model string,
 	stream *ssestream.Stream[asdk.BetaRawMessageStreamEventUnion],
 ) llm.StreamMessage {
 	return &anthropicBetaStreamMessage{
 		baseCtx:          ctx,
 		span:             span,
+		provider:         provider,
 		model:            model,
 		start:            time.Now(),
 		stream:           stream,
@@ -76,7 +82,7 @@ func (s *anthropicBetaStreamMessage) Next() bool {
 		if !s.stream.Next() {
 			err := s.stream.Err()
 			if err != nil {
-				err = classifyAPIError(err)
+				err = classifyAPIErrorWithProvider(s.provider, err)
 			}
 			s.mu.Lock()
 			s.err = err
@@ -195,7 +201,7 @@ func (s *anthropicBetaStreamMessage) betaFinish(err error) {
 		if err != nil {
 			s.span.RecordError(err)
 			s.span.SetStatus(codes.Error, err.Error())
-			llm.RecordLLMMetrics(s.baseCtx, "anthropic", s.model, "error", dur, llm.TokenUsage{
+			llm.RecordLLMMetrics(s.baseCtx, s.provider, s.model, "error", dur, llm.TokenUsage{
 				InputTokens: usage.InputTokens, OutputTokens: usage.OutputTokens,
 			})
 		} else {
@@ -204,7 +210,7 @@ func (s *anthropicBetaStreamMessage) betaFinish(err error) {
 				attribute.Int64(telemetry.AttrLLMOutputTokens, usage.OutputTokens),
 			)
 			s.span.SetStatus(codes.Ok, "OK")
-			llm.RecordLLMMetrics(s.baseCtx, "anthropic", s.model, "success", dur, llm.TokenUsage{
+			llm.RecordLLMMetrics(s.baseCtx, s.provider, s.model, "success", dur, llm.TokenUsage{
 				InputTokens: usage.InputTokens, OutputTokens: usage.OutputTokens,
 			})
 		}
@@ -217,9 +223,12 @@ func (s *anthropicBetaStreamMessage) betaFinish(err error) {
 type anthropicStreamMessage struct {
 	baseCtx context.Context
 	span    trace.Span
-	model   string
-	start   time.Time
-	stream  *ssestream.Stream[asdk.MessageStreamEventUnion]
+	// provider carries the OTel/metrics tag through the streaming
+	// finish path; see anthropicBetaStreamMessage above.
+	provider string
+	model    string
+	start    time.Time
+	stream   *ssestream.Stream[asdk.MessageStreamEventUnion]
 
 	mu         sync.Mutex
 	usage      llm.Usage
@@ -240,12 +249,13 @@ type anthropicStreamMessage struct {
 func newStreamMessage(
 	ctx context.Context,
 	span trace.Span,
-	model string,
+	provider, model string,
 	stream *ssestream.Stream[asdk.MessageStreamEventUnion],
 ) llm.StreamMessage {
 	return &anthropicStreamMessage{
 		baseCtx:    ctx,
 		span:       span,
+		provider:   provider,
 		model:      model,
 		start:      time.Now(),
 		stream:     stream,
@@ -272,7 +282,7 @@ func (s *anthropicStreamMessage) Next() bool {
 		if !s.stream.Next() {
 			err := s.stream.Err()
 			if err != nil {
-				err = classifyAPIError(err)
+				err = classifyAPIErrorWithProvider(s.provider, err)
 			}
 			s.mu.Lock()
 			s.err = err
@@ -432,7 +442,7 @@ func (s *anthropicStreamMessage) finish(err error) {
 		if err != nil {
 			s.span.RecordError(err)
 			s.span.SetStatus(codes.Error, err.Error())
-			llm.RecordLLMMetrics(s.baseCtx, "anthropic", s.model, "error", dur, llm.TokenUsage{
+			llm.RecordLLMMetrics(s.baseCtx, s.provider, s.model, "error", dur, llm.TokenUsage{
 				InputTokens: usage.InputTokens, OutputTokens: usage.OutputTokens,
 			})
 		} else {
@@ -441,7 +451,7 @@ func (s *anthropicStreamMessage) finish(err error) {
 				attribute.Int64(telemetry.AttrLLMOutputTokens, usage.OutputTokens),
 			)
 			s.span.SetStatus(codes.Ok, "OK")
-			llm.RecordLLMMetrics(s.baseCtx, "anthropic", s.model, "success", dur, llm.TokenUsage{
+			llm.RecordLLMMetrics(s.baseCtx, s.provider, s.model, "success", dur, llm.TokenUsage{
 				InputTokens: usage.InputTokens, OutputTokens: usage.OutputTokens,
 			})
 		}

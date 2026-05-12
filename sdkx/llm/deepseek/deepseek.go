@@ -162,5 +162,13 @@ func New(model, apiKey, baseURL string) (*openai.LLM, error) {
 	if model == "" {
 		model = defaultModel
 	}
-	return openai.New(model, apiKey, baseURL)
+	inner, err := openai.New(model, apiKey, baseURL)
+	if err != nil {
+		return nil, err
+	}
+	// Tag the OTel/metrics provider as "deepseek" so DeepSeek traffic
+	// is observable as its own bucket instead of getting silently
+	// aggregated under "openai" (the upstream HTTP transport). See
+	// sdkx/llm/openai/openai.go ▸ WithProviderName.
+	return inner.WithProviderName("deepseek"), nil
 }

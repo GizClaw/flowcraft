@@ -33,7 +33,23 @@ import (
 // Unlike openai-go's Error, *anth.Error has no `Code` field — Anthropic's
 // own backend doesn't have the Azure-MaaS-style cold-start 404 problem,
 // so all 4xx (incl. 404) are treated as permanent client errors.
+// classifyAPIError is the legacy package-level entry point. It delegates to
+// classifyAPIErrorWithProvider using the bare "anthropic" tag and exists
+// only for tests and code paths that don't have an *LLM in scope;
+// production call sites should prefer (*LLM).classifyAPIError so
+// sub-providers (minimax) get their real name on the wrapped error.
 func classifyAPIError(err error) error {
+	return classifyAPIErrorWithProvider("anthropic", err)
+}
+
+// classifyAPIError is the LLM-method variant that picks up the per-instance
+// provider name set by WithProviderName, so sub-providers see their own
+// tag in the fallback path.
+func (c *LLM) classifyAPIError(err error) error {
+	return classifyAPIErrorWithProvider(c.Provider(), err)
+}
+
+func classifyAPIErrorWithProvider(provider string, err error) error {
 	if err == nil {
 		return nil
 	}
@@ -42,7 +58,7 @@ func classifyAPIError(err error) error {
 	}
 	var ae *anth.Error
 	if !errors.As(err, &ae) {
-		return errdefs.ClassifyProviderError("anthropic", err)
+		return errdefs.ClassifyProviderError(provider, err)
 	}
 	switch ae.StatusCode {
 	case 401, 403:
@@ -59,5 +75,5 @@ func classifyAPIError(err error) error {
 	if ae.StatusCode >= 500 {
 		return errdefs.NotAvailable(err)
 	}
-	return errdefs.ClassifyProviderError("anthropic", err)
+	return errdefs.ClassifyProviderError(provider, err)
 }

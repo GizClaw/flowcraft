@@ -132,9 +132,24 @@ func init() {
 type LLM struct {
 	client asdk.Client
 	model  asdk.Model
+
+	// provider is the tag that lands on OTel spans, metrics, and the
+	// fallback path of [classifyAPIError]'s error wrapping. It defaults
+	// to "anthropic" so direct callers see the historical behaviour;
+	// the sibling adapter sdkx/llm/minimax (which wraps this package
+	// over the Anthropic-compatible /anthropic endpoint) calls
+	// [LLM.WithProviderName] to override it so MiniMax traffic shows
+	// up under "minimax" in observability tooling instead of being
+	// silently aggregated under "anthropic". Same pattern as
+	// sdkx/llm/openai for the OpenAI-compatible sub-providers.
+	provider string
 }
 
 var _ llm.LLM = (*LLM)(nil)
+
+// defaultProviderName is the OTel/metrics tag stamped on every direct
+// anthropic.New call. Wrapping adapters override it via WithProviderName.
+const defaultProviderName = "anthropic"
 
 // New creates an Anthropic LLM instance.
 func New(model, apiKey, baseURL string, httpClient *http.Client) (*LLM, error) {
@@ -153,12 +168,37 @@ func New(model, apiKey, baseURL string, httpClient *http.Client) (*LLM, error) {
 		ropts = append(ropts, sdkopt.WithHTTPClient(httpClient))
 	}
 	client := asdk.NewClient(ropts...)
-	return &LLM{client: client, model: asdk.Model(model)}, nil
+	return &LLM{client: client, model: asdk.Model(model), provider: defaultProviderName}, nil
+}
+
+// WithProviderName overrides the OTel / metrics provider tag used by
+// this LLM instance. Wrapping adapters (sdkx/llm/minimax) call this
+// so each sub-provider's calls land under its own name in traces and
+// metric labels instead of being aggregated under generic "anthropic".
+// Returns the receiver for chaining; safe to ignore the return value.
+// Empty names are silently ignored to keep the default intact when a
+// caller passes an unset config.
+func (c *LLM) WithProviderName(name string) *LLM {
+	if c != nil && name != "" {
+		c.provider = name
+	}
+	return c
+}
+
+// Provider returns the OTel / metrics tag used by this instance. Mostly
+// a debugging aid; exported so eval drivers and observability dashboards
+// can introspect what name they'll see in traces.
+func (c *LLM) Provider() string {
+	if c == nil || c.provider == "" {
+		return defaultProviderName
+	}
+	return c.provider
 }
 
 func (c *LLM) Generate(ctx context.Context, messages []llm.Message, opts ...llm.GenerateOption) (llm.Message, llm.TokenUsage, error) {
-	ctx, span := telemetry.Tracer().Start(ctx, fmt.Sprintf("llm.anthropic.generate.%s", c.model), trace.WithAttributes(
-		attribute.String(telemetry.AttrLLMProvider, "anthropic"),
+	provider := c.Provider()
+	ctx, span := telemetry.Tracer().Start(ctx, fmt.Sprintf("llm.%s.generate.%s", provider, c.model), trace.WithAttributes(
+		attribute.String(telemetry.AttrLLMProvider, provider),
 		attribute.String(telemetry.AttrLLMModel, string(c.model)),
 	))
 	defer span.End()
@@ -196,11 +236,11 @@ func (c *LLM) Generate(ctx context.Context, messages []llm.Message, opts ...llm.
 		if err != nil {
 			span.RecordError(err)
 			span.SetStatus(codes.Error, err.Error())
-			llm.RecordLLMMetrics(ctx, "anthropic", string(c.model), "error", dur, llm.TokenUsage{})
+			llm.RecordLLMMetrics(ctx, provider, string(c.model), "error", dur, llm.TokenUsage{})
 			if ctx.Err() != nil {
-				return llm.Message{}, llm.TokenUsage{}, errdefs.Timeoutf("anthropic.generate: %s", err.Error())
+				return llm.Message{}, llm.TokenUsage{}, errdefs.Timeoutf("%s.generate: %s", provider, err.Error())
 			}
-			return llm.Message{}, llm.TokenUsage{}, classifyAPIError(err)
+			return llm.Message{}, llm.TokenUsage{}, c.classifyAPIError(err)
 		}
 		// anthropic-sdk-go and Anthropic-compatible backends (MiniMax via
 		// /anthropic) have been observed returning (nil, nil) under flaky
@@ -209,10 +249,10 @@ func (c *LLM) Generate(ctx context.Context, messages []llm.Message, opts ...llm.
 		// language guarantee, and the alternative (raw deref) crashes
 		// the whole runner.
 		if resp == nil {
-			err := errdefs.NotAvailablef("anthropic: nil beta response with no error (provider misbehaviour)")
+			err := errdefs.NotAvailablef("%s: nil beta response with no error (provider misbehaviour)", provider)
 			span.RecordError(err)
 			span.SetStatus(codes.Error, err.Error())
-			llm.RecordLLMMetrics(ctx, "anthropic", string(c.model), "error", dur, llm.TokenUsage{})
+			llm.RecordLLMMetrics(ctx, provider, string(c.model), "error", dur, llm.TokenUsage{})
 			return llm.Message{}, llm.TokenUsage{}, err
 		}
 
@@ -227,7 +267,7 @@ func (c *LLM) Generate(ctx context.Context, messages []llm.Message, opts ...llm.
 			attribute.Int64(telemetry.AttrLLMOutputTokens, usage.OutputTokens),
 		)
 		span.SetStatus(codes.Ok, "OK")
-		llm.RecordLLMMetrics(ctx, "anthropic", string(c.model), "success", dur, usage)
+		llm.RecordLLMMetrics(ctx, provider, string(c.model), "success", dur, usage)
 		return llm.NewTextMessage(llm.RoleAssistant, text), usage, nil
 	}
 
@@ -245,19 +285,19 @@ func (c *LLM) Generate(ctx context.Context, messages []llm.Message, opts ...llm.
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
-		llm.RecordLLMMetrics(ctx, "anthropic", string(c.model), "error", dur, llm.TokenUsage{})
+		llm.RecordLLMMetrics(ctx, provider, string(c.model), "error", dur, llm.TokenUsage{})
 		if ctx.Err() != nil {
-			return llm.Message{}, llm.TokenUsage{}, errdefs.Timeoutf("anthropic.generate: %s", err.Error())
+			return llm.Message{}, llm.TokenUsage{}, errdefs.Timeoutf("%s.generate: %s", provider, err.Error())
 		}
-		return llm.Message{}, llm.TokenUsage{}, classifyAPIError(err)
+		return llm.Message{}, llm.TokenUsage{}, c.classifyAPIError(err)
 	}
 	// See nil-check rationale in the beta branch above and in
 	// sdkx/llm/openai.
 	if resp == nil {
-		err := errdefs.NotAvailablef("anthropic: nil response with no error (provider misbehaviour)")
+		err := errdefs.NotAvailablef("%s: nil response with no error (provider misbehaviour)", provider)
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
-		llm.RecordLLMMetrics(ctx, "anthropic", string(c.model), "error", dur, llm.TokenUsage{})
+		llm.RecordLLMMetrics(ctx, provider, string(c.model), "error", dur, llm.TokenUsage{})
 		return llm.Message{}, llm.TokenUsage{}, err
 	}
 
@@ -273,13 +313,14 @@ func (c *LLM) Generate(ctx context.Context, messages []llm.Message, opts ...llm.
 		attribute.Int64(telemetry.AttrLLMOutputTokens, usage.OutputTokens),
 	)
 	span.SetStatus(codes.Ok, "OK")
-	llm.RecordLLMMetrics(ctx, "anthropic", string(c.model), "success", dur, usage)
+	llm.RecordLLMMetrics(ctx, provider, string(c.model), "success", dur, usage)
 	return msg, usage, nil
 }
 
 func (c *LLM) GenerateStream(ctx context.Context, messages []llm.Message, opts ...llm.GenerateOption) (llm.StreamMessage, error) {
-	ctx, span := telemetry.Tracer().Start(ctx, fmt.Sprintf("llm.anthropic.stream.%s", c.model), trace.WithAttributes(
-		attribute.String(telemetry.AttrLLMProvider, "anthropic"),
+	provider := c.Provider()
+	ctx, span := telemetry.Tracer().Start(ctx, fmt.Sprintf("llm.%s.stream.%s", provider, c.model), trace.WithAttributes(
+		attribute.String(telemetry.AttrLLMProvider, provider),
 		attribute.String(telemetry.AttrLLMModel, string(c.model)),
 	))
 
@@ -317,13 +358,13 @@ func (c *LLM) GenerateStream(ctx context.Context, messages []llm.Message, opts .
 		// internal panic recovery). Without the guard, the very next
 		// stream.Recv inside newBetaStreamMessage would deref nil.
 		if stream == nil {
-			err := errdefs.NotAvailablef("anthropic: nil beta stream handle (provider misbehaviour)")
+			err := errdefs.NotAvailablef("%s: nil beta stream handle (provider misbehaviour)", provider)
 			span.RecordError(err)
 			span.SetStatus(codes.Error, err.Error())
 			span.End()
 			return nil, err
 		}
-		return newBetaStreamMessage(ctx, span, string(c.model), stream), nil
+		return newBetaStreamMessage(ctx, span, provider, string(c.model), stream), nil
 	}
 
 	p := asdk.MessageNewParams{
@@ -336,13 +377,13 @@ func (c *LLM) GenerateStream(ctx context.Context, messages []llm.Message, opts .
 
 	stream := c.client.Messages.NewStreaming(ctx, p)
 	if stream == nil {
-		err := errdefs.NotAvailablef("anthropic: nil stream handle (provider misbehaviour)")
+		err := errdefs.NotAvailablef("%s: nil stream handle (provider misbehaviour)", provider)
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 		span.End()
 		return nil, err
 	}
-	return newStreamMessage(ctx, span, string(c.model), stream), nil
+	return newStreamMessage(ctx, span, provider, string(c.model), stream), nil
 }
 
 // --- message conversion ---
