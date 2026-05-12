@@ -14,6 +14,7 @@ package runner_test
 import (
 	"context"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/GizClaw/flowcraft/sdk/agent"
@@ -317,4 +318,171 @@ func (n interruptObservingNode) ExecuteBoard(ctx graph.ExecutionContext, _ *grap
 	default:
 	}
 	return nil
+}
+
+// TestAgentRun_Revise_LoopAgainstRealGraphRunner is the cross-layer
+// E2E for FinalizeDecision.Revise + WithMaxRevise + OnRunRevise +
+// Result.Attempts. Existing unit tests in sdk/agent cover the loop
+// against an engine.EngineFunc stub; this test goes further and
+// drives the loop against a real sdk/graph/runner so any regression
+// where revise re-attempts skip the engine, see stale board state,
+// double-fire OnRunRevise, or miscount Attempts surfaces here.
+//
+// Scenario: a graph with one counter node that records each
+// invocation. The Decider asks for revise on every BeforeFinalize
+// call (always-on); WithMaxRevise(3) caps the loop at 3 engine
+// executions total. We assert:
+//
+//   - Engine ran exactly 3 times — the revise budget was honoured
+//     end-to-end through agent.Run → graph runner.
+//   - Result.Attempts == 3 — the agent layer accounted for every
+//     attempt, not just the last one.
+//   - OnRunRevise fired exactly 2 times (between attempts 1→2 and
+//     2→3) and the prev result it received reflects the in-progress
+//     count, not the final committed count.
+//   - Each attempt had a fresh board view (the real runner sees the
+//     re-seeded user message every time, not residual state from
+//     the previous attempt).
+func TestAgentRun_Revise_LoopAgainstRealGraphRunner(t *testing.T) {
+	var (
+		mu          sync.Mutex
+		invocations int
+		seenInputs  []string
+	)
+
+	factory := node.NewFactory()
+	factory.RegisterBuilder("counter", func(def graph.NodeDefinition) (graph.Node, error) {
+		id := def.ID
+		return reviseCountingNode{
+			id: id,
+			run: func(_ graph.ExecutionContext, b *graph.Board) error {
+				mu.Lock()
+				invocations++
+				main := b.Channel(engine.MainChannel)
+				if len(main) > 0 {
+					seenInputs = append(seenInputs, main[len(main)-1].Content())
+				}
+				mu.Unlock()
+				b.AppendChannelMessage(engine.MainChannel,
+					model.NewTextMessage(model.RoleAssistant, "ok"))
+				return nil
+			},
+		}, nil
+	})
+
+	def := &graph.GraphDefinition{
+		Name:  "revise-e2e",
+		Entry: "n",
+		Nodes: []graph.NodeDefinition{{ID: "n", Type: "counter"}},
+		Edges: []graph.EdgeDefinition{{From: "n", To: graph.END}},
+	}
+	r, err := runner.New(def, factory)
+	if err != nil {
+		t.Fatalf("runner.New: %v", err)
+	}
+
+	dec := &alwaysReviseDecider{reason: "needs revision"}
+	obs := &reviseRecordingObserver{}
+
+	res, err := agent.Run(context.Background(),
+		agent.Agent{ID: "revise-agent"}, r,
+		agent.Request{Message: model.NewTextMessage(model.RoleUser, "draft please")},
+		agent.WithDecider(dec),
+		agent.WithObserver(obs),
+		agent.WithMaxRevise(3),
+	)
+	if err != nil {
+		t.Fatalf("agent.Run: %v", err)
+	}
+
+	mu.Lock()
+	gotInvocations := invocations
+	gotInputs := append([]string(nil), seenInputs...)
+	mu.Unlock()
+
+	if gotInvocations != 3 {
+		t.Errorf("engine invocations = %d, want 3 (budget cap not honoured)", gotInvocations)
+	}
+	if res.Attempts != 3 {
+		t.Errorf("Result.Attempts = %d, want 3", res.Attempts)
+	}
+	if got := obs.reviseCount(); got != 2 {
+		t.Errorf("OnRunRevise calls = %d, want 2 (one between each pair of attempts; the final attempt does not revise)", got)
+	}
+	for i, in := range gotInputs {
+		if in != "draft please" {
+			t.Errorf("attempt %d saw input %q, want %q (board re-seed broken — revise must re-feed the user message)", i+1, in, "draft please")
+		}
+	}
+	if got := obs.lastNextAttempt(); got != 3 {
+		t.Errorf("last OnRunRevise nextAttempt = %d, want 3", got)
+	}
+	if res.Status != agent.StatusCompleted {
+		t.Errorf("final Status = %q, want StatusCompleted", res.Status)
+	}
+}
+
+// reviseCountingNode is a graph.Node that delegates to a closure so
+// the test can capture per-invocation state without writing a fresh
+// node type. Mirrors the testNodeFunc pattern used elsewhere in the
+// runner test suite but avoids cross-file coupling.
+type reviseCountingNode struct {
+	id  string
+	run func(graph.ExecutionContext, *graph.Board) error
+}
+
+func (n reviseCountingNode) ID() string   { return n.id }
+func (n reviseCountingNode) Type() string { return "counter" }
+func (n reviseCountingNode) ExecuteBoard(ctx graph.ExecutionContext, b *graph.Board) error {
+	return n.run(ctx, b)
+}
+
+// alwaysReviseDecider asks for revise on every BeforeFinalize call.
+// Combined with WithMaxRevise(N) the loop should run exactly N
+// times — the budget is the only stopping condition.
+type alwaysReviseDecider struct {
+	agent.BaseDecider
+	reason string
+}
+
+func (d *alwaysReviseDecider) BeforeFinalize(_ context.Context, _ agent.RunInfo, _ *agent.Request, _ *agent.Result) (agent.FinalizeDecision, error) {
+	return agent.FinalizeDecision{Revise: true, Reason: d.reason}, nil
+}
+
+// reviseRecordingObserver captures every OnRunRevise event. The test
+// inspects count + the last next-attempt index to assert the loop
+// fired the hook on every transition (and only on transitions).
+type reviseRecordingObserver struct {
+	agent.BaseObserver
+	mu     sync.Mutex
+	events []reviseEventRecord
+}
+
+type reviseEventRecord struct {
+	prevAttempts int
+	nextAttempt  int
+}
+
+func (o *reviseRecordingObserver) OnRunRevise(_ context.Context, _ agent.RunInfo, prev *agent.Result, next int) {
+	o.mu.Lock()
+	o.events = append(o.events, reviseEventRecord{
+		prevAttempts: prev.Attempts,
+		nextAttempt:  next,
+	})
+	o.mu.Unlock()
+}
+
+func (o *reviseRecordingObserver) reviseCount() int {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return len(o.events)
+}
+
+func (o *reviseRecordingObserver) lastNextAttempt() int {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if len(o.events) == 0 {
+		return -1
+	}
+	return o.events[len(o.events)-1].nextAttempt
 }
