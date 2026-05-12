@@ -192,6 +192,12 @@ func (c *LLM) Generate(ctx context.Context, messages []llm.Message, opts ...llm.
 		InputTokens:  int64(resp.Usage.PromptTokens),
 		OutputTokens: int64(resp.Usage.CompletionTokens),
 		TotalTokens:  int64(resp.Usage.TotalTokens),
+		// Doubao prefix caching is transparent — when a prefix of
+		// the prompt has been seen recently the response reports
+		// usage.prompt_tokens_details.cached_tokens as the cached
+		// subset, billed roughly 1/10 of the standard input rate.
+		// Plumb it through so callers can compute hit-rate uniformly.
+		CachedInputTokens: int64(resp.Usage.PromptTokensDetails.CachedTokens),
 	}
 
 	span.SetAttributes(

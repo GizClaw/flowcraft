@@ -225,6 +225,26 @@ compare/fetch/ingest`, `eval longmemeval convert`). Shell completion
   trimming with 5 long segments, no-marker emission when nothing
   qualifies, deterministic key under reordered map iteration).
 
+- `sdkx/llm/{anthropic,openai,bytedance}`: populate
+  `TokenUsage.CachedInputTokens` on every Generate / streaming
+  finish path so callers can read cache hit-rate uniformly across
+  providers. Anthropic / Minimax additionally normalise
+  Anthropic's three-bucket prompt-token wire format
+  (`input_tokens` + `cache_read_input_tokens` +
+  `cache_creation_input_tokens`) into a single gross
+  `InputTokens` (matching OpenAI's `prompt_tokens` semantics) so
+  `CachedInputTokens / InputTokens` is a provider-agnostic
+  hit-rate ratio. The three-bucket arithmetic is factored into
+  `normalizeAnthropicUsage` and pinned by a dedicated unit test so
+  a future refactor cannot silently under-count InputTokens for
+  Anthropic-family providers — that bug had hidden in the adapter
+  for the entire pre-cache history of the project. A follow-up
+  conformance suite under `tests/conformance/llm/` exercises this
+  end-to-end against live providers (double-call with ≥ 1024-token
+  stable prefix, asserts CachedInputTokens > 0 on the second call);
+  measured hit-rates 96–99% on azure / deepseek / minimax against
+  the live APIs.
+
 - `sdkx/llm/{openai,anthropic}`: configurable OTel / metrics provider
   tag via new `LLM.WithProviderName(name)` + `LLM.Provider()`. Wrapping
   adapters (`sdkx/llm/{azure,deepseek,qwen,minimax}`) now stamp their

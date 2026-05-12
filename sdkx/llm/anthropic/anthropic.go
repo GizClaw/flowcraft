@@ -25,6 +25,35 @@ const (
 	defaultMaxTokens = int64(4096)
 )
 
+// normalizeAnthropicUsage maps Anthropic's three-bucket prompt-token
+// breakdown onto the sdk's two-field TokenUsage contract.
+//
+// Anthropic returns prompt tokens in three independent counters:
+//
+//   - inputTokens          – NEW, non-cached input on this call
+//   - cacheReadInputTokens – cached subset served at ~10% read rate
+//   - cacheCreationInputTokens – tokens written to cache this call
+//     (1.25x rate on the SKUs that support it)
+//
+// `inputTokens` alone therefore UNDER-counts the wire prompt size,
+// which is the cause of the historical "Anthropic TokenUsage looks
+// smaller than the equivalent OpenAI call" complaint. The sdk
+// contract for TokenUsage.InputTokens is the *gross* prompt size
+// (matching OpenAI's `prompt_tokens` semantics), so this helper sums
+// all three buckets. CachedInputTokens then names the cache-read
+// subset alone — a uniform observable across providers for callers
+// computing hit-rate via CachedInputTokens / InputTokens.
+//
+// Extracted as a named function so the three-bucket arithmetic
+// (used identically in Generate, GenerateStream's beta and stable
+// paths, plus their `updateUsage` event handlers) has a single
+// regression-test surface.
+func normalizeAnthropicUsage(inputTokens, cacheReadInputTokens, cacheCreationInputTokens int64) (gross, cached int64) {
+	gross = inputTokens + cacheReadInputTokens + cacheCreationInputTokens
+	cached = cacheReadInputTokens
+	return gross, cached
+}
+
 func init() {
 	llm.RegisterProvider("anthropic", func(model string, config map[string]any) (llm.LLM, error) {
 		apiKey, _ := config["api_key"].(string)
@@ -265,10 +294,12 @@ func (c *LLM) Generate(ctx context.Context, messages []llm.Message, opts ...llm.
 		}
 
 		text := extractBetaText(resp.Content)
+		gross, cached := normalizeAnthropicUsage(resp.Usage.InputTokens, resp.Usage.CacheReadInputTokens, resp.Usage.CacheCreationInputTokens)
 		usage := llm.TokenUsage{
-			InputTokens:  resp.Usage.InputTokens,
-			OutputTokens: resp.Usage.OutputTokens,
-			TotalTokens:  resp.Usage.InputTokens + resp.Usage.OutputTokens,
+			InputTokens:       gross,
+			CachedInputTokens: cached,
+			OutputTokens:      resp.Usage.OutputTokens,
+			TotalTokens:       gross + resp.Usage.OutputTokens,
 		}
 		span.SetAttributes(
 			attribute.Int64(telemetry.AttrLLMInputTokens, usage.InputTokens),
@@ -322,10 +353,12 @@ func (c *LLM) Generate(ctx context.Context, messages []llm.Message, opts ...llm.
 	}
 
 	msg := convertResponse(resp.Content)
+	gross, cached := normalizeAnthropicUsage(resp.Usage.InputTokens, resp.Usage.CacheReadInputTokens, resp.Usage.CacheCreationInputTokens)
 	usage := llm.TokenUsage{
-		InputTokens:  resp.Usage.InputTokens,
-		OutputTokens: resp.Usage.OutputTokens,
-		TotalTokens:  resp.Usage.InputTokens + resp.Usage.OutputTokens,
+		InputTokens:       gross,
+		CachedInputTokens: cached,
+		OutputTokens:      resp.Usage.OutputTokens,
+		TotalTokens:       gross + resp.Usage.OutputTokens,
 	}
 
 	span.SetAttributes(
