@@ -58,7 +58,7 @@ func TestRunInfoFromAttributes_MissingKeys(t *testing.T) {
 // TestMergeAttributes_WriteSideUsesTelemetryDotKeys pins the wire
 // format on the write side. Migrating off snake_case "agent_id" /
 // "run_id" / "task_id" / "context_id" was the precondition for the
-// executor reading actor_id from engine.Run.Attributes (contract-
+// executor reading agent_id from engine.Run.Attributes (contract-
 // audit #15): the executor — across module boundaries — has no
 // access to agent-private constants, so the keys MUST live in
 // sdk/telemetry where every layer can reference them.

@@ -10,7 +10,7 @@ import "github.com/GizClaw/flowcraft/sdk/telemetry"
 // defined in sdk/telemetry/attrs.go (AttrAgentID, AttrRunID,
 // AttrTaskID, AttrConversationID). Routing identity through the
 // telemetry catalog instead of agent-private snake_case constants
-// gives downstream consumers (executor actor_id resolver, dashboards,
+// gives downstream consumers (executor agent_id resolver, dashboards,
 // future sdk/pod controller) one canonical key set to filter on,
 // closing the contract-audit #15 gap where the executor had no
 // process-portable channel for agent.id.

@@ -426,7 +426,7 @@ func promoteAgentTools(callerDeps *engine.Dependencies, agentTools []string) *en
 // The wire format is the canonical OpenTelemetry-style dot-key set
 // defined in sdk/telemetry/attrs.go. Downstream readers go through
 // [RunInfoFromAttributes] (RunInfo recovery) or read
-// telemetry.Attr* directly (executor actor_id resolution,
+// telemetry.Attr* directly (executor agent_id resolution,
 // observers, dashboards) — there is one canonical key set, so the
 // agent → engine → executor → envelope hand-off does not need a
 // per-layer translation table.
