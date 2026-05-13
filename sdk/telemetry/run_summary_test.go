@@ -72,19 +72,20 @@ func TestRecordRunSummary_PopulatesAttributesAndStatusOk(t *testing.T) {
 	started := time.Now().Add(-200 * time.Millisecond)
 	ended := started.Add(150 * time.Millisecond)
 	RecordRunSummary(context.Background(), RunSummary{
-		RunID:        "r1",
-		ParentRunID:  "r0",
-		AgentID:      "agent-1",
-		PodID:        "pod-1",
-		EngineKind:   "graph",
-		LLMModel:     "gpt-4o",
-		InputTokens:  100,
-		OutputTokens: 200,
-		TotalTokens:  300,
-		CostMicros:   1500,
-		StartedAt:    started,
-		EndedAt:      ended,
-		Extra:        []attribute.KeyValue{attribute.String(AttrTenantID, "acme")},
+		RunID:             "r1",
+		ParentRunID:       "r0",
+		AgentID:           "agent-1",
+		PodID:             "pod-1",
+		EngineKind:        "graph",
+		LLMModel:          "gpt-4o",
+		InputTokens:       100,
+		OutputTokens:      200,
+		TotalTokens:       300,
+		CachedInputTokens: 80,
+		CostMicros:        1500,
+		StartedAt:         started,
+		EndedAt:           ended,
+		Extra:             []attribute.KeyValue{attribute.String(AttrTenantID, "acme")},
 	})
 
 	spans := exp.snapshot()
@@ -101,19 +102,20 @@ func TestRecordRunSummary_PopulatesAttributesAndStatusOk(t *testing.T) {
 	}
 
 	want := map[string]any{
-		AttrRunID:           "r1",
-		AttrParentRunID:     "r0",
-		AttrAgentID:         "agent-1",
-		AttrPodID:           "pod-1",
-		AttrEngineKind:      "graph",
-		AttrRunStatus:       "ok",
-		AttrLLMModel:        "gpt-4o",
-		AttrLLMInputTokens:  int64(100),
-		AttrLLMOutputTokens: int64(200),
-		AttrLLMTotalTokens:  int64(300),
-		AttrLLMCostMicros:   int64(1500),
-		AttrLLMLatencyMs:    int64(150),
-		AttrTenantID:        "acme",
+		AttrRunID:                "r1",
+		AttrParentRunID:          "r0",
+		AttrAgentID:              "agent-1",
+		AttrPodID:                "pod-1",
+		AttrEngineKind:           "graph",
+		AttrRunStatus:            "ok",
+		AttrLLMModel:             "gpt-4o",
+		AttrLLMInputTokens:       int64(100),
+		AttrLLMOutputTokens:      int64(200),
+		AttrLLMTotalTokens:       int64(300),
+		AttrLLMCachedInputTokens: int64(80),
+		AttrLLMCostMicros:        int64(1500),
+		AttrLLMLatencyMs:         int64(150),
+		AttrTenantID:             "acme",
 	}
 	for k, expectedRaw := range want {
 		kv, ok := findAttr(span.Attributes(), k)
@@ -226,6 +228,7 @@ func TestRecordRunSummary_OmitsZeroValueOptionalAttributes(t *testing.T) {
 		AttrLLMInputTokens,
 		AttrLLMOutputTokens,
 		AttrLLMTotalTokens,
+		AttrLLMCachedInputTokens,
 		AttrLLMCostMicros,
 	}
 	for _, k := range mustAbsent {
@@ -259,6 +262,46 @@ func TestRecordRunSummary_HandlesNilContextAndZeroValue(t *testing.T) {
 	if !ok || kv.Value.AsString() != "ok" {
 		t.Fatalf("zero-value RunSummary should still emit Status=ok, got present=%v val=%v", ok, kv.Value.AsString())
 	}
+}
+
+func TestRecordRunSummary_CachedInputTokensEmittedOnlyWhenPositive(t *testing.T) {
+	t.Run("zero is omitted", func(t *testing.T) {
+		exp := installMemTracer(t)
+		RecordRunSummary(context.Background(), RunSummary{
+			RunID:             "r1",
+			InputTokens:       100,
+			OutputTokens:      50,
+			CachedInputTokens: 0,
+		})
+		spans := exp.snapshot()
+		if len(spans) != 1 {
+			t.Fatalf("want 1 span, got %d", len(spans))
+		}
+		if _, ok := findAttr(spans[0].Attributes(), AttrLLMCachedInputTokens); ok {
+			t.Errorf("AttrLLMCachedInputTokens should be omitted when zero")
+		}
+	})
+
+	t.Run("positive value emitted under canonical key", func(t *testing.T) {
+		exp := installMemTracer(t)
+		RecordRunSummary(context.Background(), RunSummary{
+			RunID:             "r1",
+			InputTokens:       100,
+			OutputTokens:      50,
+			CachedInputTokens: 75,
+		})
+		spans := exp.snapshot()
+		if len(spans) != 1 {
+			t.Fatalf("want 1 span, got %d", len(spans))
+		}
+		kv, ok := findAttr(spans[0].Attributes(), AttrLLMCachedInputTokens)
+		if !ok {
+			t.Fatalf("AttrLLMCachedInputTokens should be set when positive")
+		}
+		if got := kv.Value.AsInt64(); got != 75 {
+			t.Errorf("AttrLLMCachedInputTokens = %d, want 75", got)
+		}
+	})
 }
 
 func TestRecordRunSummary_LatencyOnlyEmittedWhenPositive(t *testing.T) {

@@ -6,13 +6,12 @@ import (
 	"io"
 	"sort"
 	"sync"
+	"time"
 
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/llm"
-	"github.com/GizClaw/flowcraft/sdk/telemetry"
 
 	"github.com/volcengine/volcengine-go-sdk/service/arkruntime/model"
-	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
 )
@@ -27,6 +26,10 @@ type streamMessage struct {
 	span    trace.Span
 	model   string
 	stream  arkStream
+	// start anchors the stream-call wall clock so finish() can hand
+	// llm.RecordLLMMetrics a real duration. Mirrors the
+	// openai/anthropic stream adapters.
+	start time.Time
 
 	mu    sync.Mutex
 	usage llm.Usage
@@ -50,6 +53,7 @@ func newStreamMessage(ctx context.Context, span trace.Span, modelName string, st
 		span:    span,
 		model:   modelName,
 		stream:  stream,
+		start:   time.Now(),
 	}
 }
 
@@ -217,17 +221,33 @@ func (s *streamMessage) finish(err error) {
 	}
 	s.spanEnded = true
 	usage := s.usage
+	cached := s.cachedInputTokens
 	s.mu.Unlock()
+
+	dur := time.Since(s.start)
 
 	if err != nil {
 		s.span.RecordError(err)
 		s.span.SetStatus(codes.Error, err.Error())
+		// The sync path emits an error metric — keep the streaming
+		// path symmetric so dashboards see comparable error rates
+		// across blocking vs. streaming bytedance traffic. Earlier
+		// revisions of this file silently dropped the metric here,
+		// which made stream errors invisible to alerting; the
+		// openai / anthropic stream adapters had the same call.
+		llm.RecordLLMMetrics(s.baseCtx, "bytedance", s.model, "error", dur, llm.TokenUsage{
+			InputTokens: usage.InputTokens, OutputTokens: usage.OutputTokens,
+		})
 	} else {
-		s.span.SetAttributes(
-			attribute.Int64(telemetry.AttrLLMInputTokens, usage.InputTokens),
-			attribute.Int64(telemetry.AttrLLMOutputTokens, usage.OutputTokens),
-		)
+		final := llm.TokenUsage{
+			InputTokens:       usage.InputTokens,
+			CachedInputTokens: cached,
+			OutputTokens:      usage.OutputTokens,
+			TotalTokens:       usage.InputTokens + usage.OutputTokens,
+		}
+		s.span.SetAttributes(llm.UsageSpanAttrs(final)...)
 		s.span.SetStatus(codes.Ok, "OK")
+		llm.RecordLLMMetrics(s.baseCtx, "bytedance", s.model, "success", dur, final)
 	}
 	s.span.End()
 }
