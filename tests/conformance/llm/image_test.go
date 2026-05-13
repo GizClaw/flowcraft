@@ -251,7 +251,8 @@ func TestImageProviders_ExplicitDimensions(t *testing.T) {
 			msgs := []llm.Message{
 				llm.NewTextMessage(llm.RoleUser, "A simple geometric pattern in pastel colors."),
 			}
-			resp, _, err := provider.Generate(ctx, msgs,
+			resp, _, err := provider.Generate(
+				ctx, msgs,
 				llm.WithImageGen(llm.ImageGenOptions{Width: tc.w, Height: tc.h}),
 			)
 			if err != nil {
