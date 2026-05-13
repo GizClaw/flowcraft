@@ -301,10 +301,7 @@ func (c *LLM) Generate(ctx context.Context, messages []llm.Message, opts ...llm.
 			OutputTokens:      resp.Usage.OutputTokens,
 			TotalTokens:       gross + resp.Usage.OutputTokens,
 		}
-		span.SetAttributes(
-			attribute.Int64(telemetry.AttrLLMInputTokens, usage.InputTokens),
-			attribute.Int64(telemetry.AttrLLMOutputTokens, usage.OutputTokens),
-		)
+		span.SetAttributes(llm.UsageSpanAttrs(usage)...)
 		span.SetStatus(codes.Ok, "OK")
 		llm.RecordLLMMetrics(ctx, provider, string(c.model), "success", dur, usage)
 		return llm.NewTextMessage(llm.RoleAssistant, text), usage, nil
@@ -361,10 +358,7 @@ func (c *LLM) Generate(ctx context.Context, messages []llm.Message, opts ...llm.
 		TotalTokens:       gross + resp.Usage.OutputTokens,
 	}
 
-	span.SetAttributes(
-		attribute.Int64(telemetry.AttrLLMInputTokens, usage.InputTokens),
-		attribute.Int64(telemetry.AttrLLMOutputTokens, usage.OutputTokens),
-	)
+	span.SetAttributes(llm.UsageSpanAttrs(usage)...)
 	span.SetStatus(codes.Ok, "OK")
 	llm.RecordLLMMetrics(ctx, provider, string(c.model), "success", dur, usage)
 	return msg, usage, nil

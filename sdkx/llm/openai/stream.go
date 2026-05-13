@@ -9,11 +9,9 @@ import (
 
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/llm"
-	"github.com/GizClaw/flowcraft/sdk/telemetry"
 
 	oai "github.com/openai/openai-go"
 	"github.com/openai/openai-go/packages/ssestream"
-	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
 )
@@ -231,17 +229,15 @@ func (s *openaiStreamMessage) finish(err error) {
 		s.span.SetStatus(codes.Error, err.Error())
 		llm.RecordLLMMetrics(s.baseCtx, s.provider, s.model, "error", dur, llm.TokenUsage{})
 	} else {
-		s.span.SetAttributes(
-			attribute.Int64(telemetry.AttrLLMInputTokens, usage.InputTokens),
-			attribute.Int64(telemetry.AttrLLMOutputTokens, usage.OutputTokens),
-		)
-		s.span.SetStatus(codes.Ok, "OK")
-		llm.RecordLLMMetrics(s.baseCtx, s.provider, s.model, "success", dur, llm.TokenUsage{
+		final := llm.TokenUsage{
 			InputTokens:       usage.InputTokens,
 			CachedInputTokens: cached,
 			OutputTokens:      usage.OutputTokens,
 			TotalTokens:       usage.InputTokens + usage.OutputTokens,
-		})
+		}
+		s.span.SetAttributes(llm.UsageSpanAttrs(final)...)
+		s.span.SetStatus(codes.Ok, "OK")
+		llm.RecordLLMMetrics(s.baseCtx, s.provider, s.model, "success", dur, final)
 	}
 	s.span.End()
 }

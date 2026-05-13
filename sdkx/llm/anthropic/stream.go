@@ -9,11 +9,9 @@ import (
 
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/llm"
-	"github.com/GizClaw/flowcraft/sdk/telemetry"
 
 	asdk "github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/packages/ssestream"
-	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
 )
@@ -233,17 +231,15 @@ func (s *anthropicBetaStreamMessage) betaFinish(err error) {
 				InputTokens: usage.InputTokens, OutputTokens: usage.OutputTokens,
 			})
 		} else {
-			s.span.SetAttributes(
-				attribute.Int64(telemetry.AttrLLMInputTokens, usage.InputTokens),
-				attribute.Int64(telemetry.AttrLLMOutputTokens, usage.OutputTokens),
-			)
-			s.span.SetStatus(codes.Ok, "OK")
-			llm.RecordLLMMetrics(s.baseCtx, s.provider, s.model, "success", dur, llm.TokenUsage{
+			final := llm.TokenUsage{
 				InputTokens:       usage.InputTokens,
 				CachedInputTokens: cached,
 				OutputTokens:      usage.OutputTokens,
 				TotalTokens:       usage.InputTokens + usage.OutputTokens,
-			})
+			}
+			s.span.SetAttributes(llm.UsageSpanAttrs(final)...)
+			s.span.SetStatus(codes.Ok, "OK")
+			llm.RecordLLMMetrics(s.baseCtx, s.provider, s.model, "success", dur, final)
 		}
 		s.span.End()
 	})
@@ -489,17 +485,15 @@ func (s *anthropicStreamMessage) finish(err error) {
 				InputTokens: usage.InputTokens, OutputTokens: usage.OutputTokens,
 			})
 		} else {
-			s.span.SetAttributes(
-				attribute.Int64(telemetry.AttrLLMInputTokens, usage.InputTokens),
-				attribute.Int64(telemetry.AttrLLMOutputTokens, usage.OutputTokens),
-			)
-			s.span.SetStatus(codes.Ok, "OK")
-			llm.RecordLLMMetrics(s.baseCtx, s.provider, s.model, "success", dur, llm.TokenUsage{
+			final := llm.TokenUsage{
 				InputTokens:       usage.InputTokens,
 				CachedInputTokens: cached,
 				OutputTokens:      usage.OutputTokens,
 				TotalTokens:       usage.InputTokens + usage.OutputTokens,
-			})
+			}
+			s.span.SetAttributes(llm.UsageSpanAttrs(final)...)
+			s.span.SetStatus(codes.Ok, "OK")
+			llm.RecordLLMMetrics(s.baseCtx, s.provider, s.model, "success", dur, final)
 		}
 		s.span.End()
 	})

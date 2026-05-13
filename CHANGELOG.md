@@ -34,6 +34,29 @@ with its own tag prefix (e.g. `sdk/vX.Y.Z`, `vessel/vX.Y.Z`,
   do not surface a cache breakdown — wire-format back-compatible
   with v0.3.4 readers. A follow-up sdkx release wires the three
   cache-aware adapters to populate the field.
+- `sdk/llm`: `tokens.input.cached.total` OTel counter +
+  `UsageSpanAttrs(TokenUsage)` helper close the cached-tokens
+  telemetry gap that the v0.3.5 `TokenUsage.CachedInputTokens`
+  field left half-wired. Even though sdkx v0.3.3 adapters were
+  already populating the field on every Generate / stream call,
+  `RecordLLMMetrics` previously only emitted `tokens.input.total`
+  and `tokens.output.total`, so dashboards could not compute a
+  cache hit-rate from the metric stream. The new counter accumulates
+  the cached subset under the same `provider` / `model` label set
+  as the existing token counters and is omitted entirely when
+  `CachedInputTokens == 0` (cache-unaware provider call) so a
+  hit-rate panel divides the two counters directly without per-row
+  sanity checks. `UsageSpanAttrs` returns the canonical attribute
+  slice for both the input/output pair and the cached attribute
+  (omitted when zero), keeping per-call spans and per-call metrics
+  on the same shape via a single helper that adapters call.
+- `sdk/telemetry`: `AttrLLMCachedInputTokens` constant
+  (`llm.tokens.input.cached`) + `RunSummary.CachedInputTokens`
+  field. The attribute key mirrors the existing
+  `AttrLLMInputTokens` family so per-call spans and per-run
+  `engine.run.summary` spans use the same canonical name; the
+  new RunSummary field is only emitted when > 0 (back-compat with
+  callers that never aggregated cached counts).
 - `sdk/engine`: capabilities / resume / revise lifecycle. New
   `engine/depname` package centralises Dependencies keys (LLMClient,
   ToolRegistry, ToolAllowedNames, …) so engine authors and host
@@ -164,6 +187,17 @@ compare/fetch/ingest`, `eval longmemeval convert`). Shell completion
 ### Fixed
 
 #### sdkx
+
+- `sdkx/llm/bytedance`: streaming `finish` path now calls
+  `llm.RecordLLMMetrics` symmetrically with the sync path. Earlier
+  revisions silently ended the span without emitting a request /
+  duration / token / error metric, so `bytedance` stream traffic
+  was invisible to error-rate and token-cost dashboards even though
+  the sync path was instrumented correctly. The streaming path now
+  also threads `cachedInputTokens` into the success-path
+  `TokenUsage` so the new `tokens.input.cached.total` counter and
+  the `llm.tokens.input.cached` span attribute land for stream
+  responses too — matching the openai / anthropic stream adapters.
 
 - `sdkx/llm/{openai,anthropic,bytedance}`: status-code-aware error
   classification. The generic `errdefs.ClassifyProvider` regex

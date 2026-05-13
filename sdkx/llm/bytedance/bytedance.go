@@ -200,10 +200,7 @@ func (c *LLM) Generate(ctx context.Context, messages []llm.Message, opts ...llm.
 		CachedInputTokens: int64(resp.Usage.PromptTokensDetails.CachedTokens),
 	}
 
-	span.SetAttributes(
-		attribute.Int64(telemetry.AttrLLMInputTokens, usage.InputTokens),
-		attribute.Int64(telemetry.AttrLLMOutputTokens, usage.OutputTokens),
-	)
+	span.SetAttributes(llm.UsageSpanAttrs(usage)...)
 	span.SetStatus(codes.Ok, "OK")
 	llm.RecordLLMMetrics(ctx, "bytedance", c.model, "success", dur, usage)
 

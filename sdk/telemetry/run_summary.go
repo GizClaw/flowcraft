@@ -69,6 +69,18 @@ type RunSummary struct {
 	TotalTokens  int64
 	CostMicros   int64
 
+	// CachedInputTokens, when > 0, mirrors
+	// model.TokenUsage.CachedInputTokens summed across the run —
+	// the subset of InputTokens served from the provider's prompt
+	// cache. Always <= InputTokens (enforced by the per-call
+	// adapter normalisation in sdkx/llm). Producers that aggregate
+	// per-call usage SHOULD sum this field via TokenUsage.Add so
+	// the run-summary span exposes a uniform cache hit-rate
+	// (CachedInputTokens / InputTokens) without dashboards needing
+	// to drill into per-call spans. Omitted from span attributes
+	// when zero.
+	CachedInputTokens int64
+
 	// Extra carries additional caller-supplied attributes that
 	// should land on the same span (tenant id, custom dimensions,
 	// …). Use the Attr* constants when applicable.
@@ -149,6 +161,9 @@ func RecordRunSummary(ctx context.Context, summary RunSummary) {
 	}
 	if summary.TotalTokens > 0 {
 		attrs = append(attrs, attribute.Int64(AttrLLMTotalTokens, summary.TotalTokens))
+	}
+	if summary.CachedInputTokens > 0 {
+		attrs = append(attrs, attribute.Int64(AttrLLMCachedInputTokens, summary.CachedInputTokens))
 	}
 	if summary.CostMicros > 0 {
 		attrs = append(attrs, attribute.Int64(AttrLLMCostMicros, summary.CostMicros))
