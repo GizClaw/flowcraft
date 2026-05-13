@@ -1,0 +1,232 @@
+name: eval / taubench
+
+# ---------------------------------------------------------------------
+# τ-bench tool-use benchmark (single-shot + multi-turn dialog). NOT a
+# PR gate — runs real LLM tool-call chains, expensive. The default
+# bundled mini-datasets (retail / airline / all) ship in-tree, so no
+# host-side staging is required unless --upstream-tasks is used.
+# ---------------------------------------------------------------------
+
+on:
+  workflow_dispatch:
+    inputs:
+      agent_llm:
+        description: "Agent LLM under test (required)"
+        required: true
+        default: "azure_gpt54"
+      customer_llm:
+        description: "Customer-role LLM (required iff dataset has multi-turn tasks)"
+        required: false
+        default: "azure_gpt54"
+      domain:
+        description: "Bundled domain pack: retail | airline | all"
+        required: false
+        default: "retail"
+      upstream_tasks:
+        description: "Path to upstream τ-bench tasks JSON (overrides bundled mini pack)"
+        required: false
+        default: ""
+      upstream_initial_state:
+        description: "Path to initial DB JSON paired with upstream_tasks"
+        required: false
+        default: ""
+      max_agent_turns:
+        description: "Ceiling on agent Generate calls per task"
+        required: false
+        default: "12"
+      max_conversation_turns:
+        description: "Ceiling on customer↔agent exchanges per multi-turn task"
+        required: false
+        default: "10"
+      stop_token:
+        description: "Substring the customer can emit to end a dialog cleanly"
+        required: false
+        default: "###STOP###"
+      concurrency:
+        description: "Parallel tasks"
+        required: false
+        default: "4"
+      limit:
+        description: "Run only the first N tasks (0 = all)"
+        required: false
+        default: "0"
+      per_task_timeout:
+        description: "Wall-clock cap per task (Go duration; 0 inherits ambient ctx)"
+        required: false
+        default: "5m"
+      include_transcript:
+        description: "Embed per-task agent transcript in the report"
+        required: false
+        type: boolean
+        default: false
+      notify_progress_pct:
+        description: "Feishu milestone resolution (% of work; 0=off)"
+        required: false
+        default: "25"
+
+concurrency:
+  group: eval-taubench
+  cancel-in-progress: false
+
+env:
+  REPORT_DIR: /var/lib/flowcraft-eval/reports
+  RUN_TAG: taubench-${{ github.run_id }}
+
+jobs:
+  run:
+    runs-on: [self-hosted, flowcraft-eval]
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Load secrets from runner host
+        run: |
+          set -eu
+          test -f /etc/flowcraft-eval/.env
+          set -a
+          # shellcheck disable=SC1091
+          source /etc/flowcraft-eval/.env
+          set +a
+          while IFS= read -r key; do
+            [ -z "$key" ] && continue
+            value="${!key:-}"
+            [ -z "$value" ] && continue
+            while IFS= read -r line; do
+              [ -n "$line" ] && echo "::add-mask::$line"
+            done <<< "$value"
+            if [[ "$value" == *$'\n'* ]]; then
+              DELIM="EOF_${RANDOM}${RANDOM}"
+              {
+                echo "${key}<<${DELIM}"
+                echo "$value"
+                echo "$DELIM"
+              } >> "$GITHUB_ENV"
+            else
+              echo "${key}=${value}" >> "$GITHUB_ENV"
+            fi
+          done < <(grep -E '^[A-Z_][A-Z_0-9]*=' /etc/flowcraft-eval/.env | sed 's/=.*$//' | sort -u)
+          cp /etc/flowcraft-eval/.env .env
+          chmod 600 .env
+
+      - name: Ensure report dir
+        run: |
+          mkdir -p "$REPORT_DIR"
+          chmod 0750 "$REPORT_DIR" || true
+
+      - name: Verify upstream dataset (if provided)
+        if: ${{ inputs.upstream_tasks != '' }}
+        # Only validates the upstream-tasks pairing; bundled domain
+        # packs need no staging.
+        run: |
+          set -eu
+          if [ ! -s "${{ inputs.upstream_tasks }}" ]; then
+            echo "Missing or empty: ${{ inputs.upstream_tasks }}"
+            exit 1
+          fi
+          if [ -z "${{ inputs.upstream_initial_state }}" ] || [ ! -s "${{ inputs.upstream_initial_state }}" ]; then
+            echo "upstream_initial_state is required and must be non-empty when upstream_tasks is set"
+            exit 1
+          fi
+
+      - name: Build eval binary
+        run: |
+          cd eval
+          GOWORK=off go build -trimpath -o /tmp/eval ./cmd/eval
+
+      - name: Notify Feishu — started
+        if: success()
+        run: |
+          set -eu
+          if [ -z "${FEISHU_WEBHOOK_URL:-}" ]; then
+            echo "FEISHU_WEBHOOK_URL not set; skipping started ping"
+            exit 0
+          fi
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          DS_DESC="bundled:${{ inputs.domain }}"
+          if [ -n "${{ inputs.upstream_tasks }}" ]; then
+            DS_DESC="upstream:$(basename "${{ inputs.upstream_tasks }}")"
+          fi
+          curl -sS -X POST "$FEISHU_WEBHOOK_URL" \
+            -H 'Content-Type: application/json' \
+            -d @- <<EOF
+          {
+            "msg_type": "text",
+            "content": {
+              "text": "▶ taubench run started\nrun_id=${{ github.run_id }}\nagent=${{ inputs.agent_llm }} customer=${{ inputs.customer_llm }} domain=${{ inputs.domain }} limit=${{ inputs.limit }}\ndataset=$DS_DESC\nlogs: $RUN_URL"
+            }
+          }
+          EOF
+
+      - name: Run taubench
+        env:
+          REPORT_OUT: ${{ env.REPORT_DIR }}/${{ github.run_id }}.json
+        run: |
+          set -eu
+          ARGS=(
+            taubench
+            --agent-llm "${{ inputs.agent_llm }}"
+            --domain "${{ inputs.domain }}"
+            --max-agent-turns "${{ inputs.max_agent_turns }}"
+            --max-conversation-turns "${{ inputs.max_conversation_turns }}"
+            --stop-token "${{ inputs.stop_token }}"
+            --concurrency "${{ inputs.concurrency }}"
+            --limit "${{ inputs.limit }}"
+            --per-task-timeout "${{ inputs.per_task_timeout }}"
+            --include-transcript="${{ inputs.include_transcript }}"
+            --notify-name "$RUN_TAG"
+            --notify-progress-pct "${{ inputs.notify_progress_pct }}"
+            --out "$REPORT_OUT"
+          )
+          if [ -n "${{ inputs.customer_llm }}" ]; then
+            ARGS+=( --customer-llm "${{ inputs.customer_llm }}" )
+          fi
+          if [ -n "${{ inputs.upstream_tasks }}" ]; then
+            ARGS+=( --upstream-tasks "${{ inputs.upstream_tasks }}" --upstream-initial-state "${{ inputs.upstream_initial_state }}" )
+          fi
+          /tmp/eval "${ARGS[@]}"
+
+      - name: Upload report artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: taubench-report-${{ github.run_id }}
+          path: ${{ env.REPORT_DIR }}/${{ github.run_id }}.json
+          if-no-files-found: warn
+          retention-days: 90
+
+      - name: Notify Feishu — final
+        if: always()
+        # τ-bench Report shape:
+        #   {n, passed, pass_rate, duration_ms,
+        #    per_domain: {<name>: {tasks, passed, pass_rate}}}
+        run: |
+          set +e
+          REPORT="$REPORT_DIR/${{ github.run_id }}.json"
+          STATUS="${{ job.status }}"
+          ICON="✅"
+          [ "$STATUS" != "success" ] && ICON="❌"
+          if [ -s "$REPORT" ]; then
+            METRICS=$(jq -r '
+              "n=\(.n) passed=\(.passed) pass_rate=\(.pass_rate) duration_ms=\(.duration_ms)\n" +
+              ((.per_domain // {}) | to_entries | map(
+                "[\(.key)] pass_rate=\(.value.pass_rate) (\(.value.passed)/\(.value.tasks))"
+              ) | join("\n"))
+            ' "$REPORT" 2>/dev/null)
+          else
+            METRICS="report not produced"
+          fi
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          if [ -n "${FEISHU_WEBHOOK_URL:-}" ]; then
+            curl -sS -X POST "$FEISHU_WEBHOOK_URL" \
+              -H 'Content-Type: application/json' \
+              -d @- <<EOF
+          {
+            "msg_type": "text",
+            "content": {
+              "text": "$ICON taubench run finished\nstatus=$STATUS\n$METRICS\nlogs: $RUN_URL"
+            }
+          }
+          EOF
+          else
+            echo "FEISHU_WEBHOOK_URL not set; skipping final ping"
+          fi
