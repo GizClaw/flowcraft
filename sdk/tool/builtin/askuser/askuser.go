@@ -2,6 +2,18 @@
 // human-in-the-loop bridge that lets the model explicitly hand a
 // question back to the operator via [engine.Host.AskUser].
 //
+// Deprecated: moved to sdkx/tool/askuser. The new canonical import
+// path is "github.com/GizClaw/flowcraft/sdkx/tool/askuser". This
+// package continues to host the implementation only because sdk
+// cannot import sdkx (the dependency runs one-way); the sdkx path
+// is a thin forwarder during the migration window. Will be removed
+// in v0.5.0 — same window as catalog.Deps.AgentTools,
+// runner.WithActorKey, and workspace.CommandRunner. Migrate via a
+// pure import-path swap:
+//
+//	-import "github.com/GizClaw/flowcraft/sdk/tool/builtin/askuser"
+//	+import "github.com/GizClaw/flowcraft/sdkx/tool/askuser"
+//
 // Without a real consumer, host.AskUser is a dead capability: the
 // engine.NoopHost rejects it, scriptnode forwards a script-side
 // API to it, but no model-driven path ever called it. ask_user
@@ -66,6 +78,11 @@ import (
 // Name is the canonical tool id callers register and LLMs invoke.
 // Stable across versions so prompts referring to the tool by name
 // keep working.
+//
+// Deprecated: use sdkx/tool/askuser.Name. Will be removed in v0.5.0
+// (same window as catalog.Deps.AgentTools, runner.WithActorKey, and
+// workspace.CommandRunner). The value is preserved verbatim across
+// both paths so prompts / registry lookups keep working.
 const Name = "ask_user"
 
 // args is the wire-side argument struct. JSON-only; no positional
@@ -80,6 +97,11 @@ type askUserTool struct{}
 
 // New constructs the built-in ask_user tool. The returned value
 // satisfies tool.Tool and can be passed to Registry.Register.
+//
+// Deprecated: use sdkx/tool/askuser.New. Will be removed in v0.5.0
+// (same window as catalog.Deps.AgentTools, runner.WithActorKey, and
+// workspace.CommandRunner). The sdkx forwarder returns the exact
+// same tool implementation, so a pure import-path swap is enough.
 func New() tool.Tool { return askUserTool{} }
 
 // Definition returns the model-facing schema. Description is the
