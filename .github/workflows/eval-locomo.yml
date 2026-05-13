@@ -25,22 +25,32 @@ on:
         description: "Recall top-k"
         required: false
         default: "30"
+      # Alias conventions in this repo (see eval/internal/env/provider.go):
+      #   <env_suffix>[:<model>] → uses FLOWCRAFT_<ENV_SUFFIX> /
+      #                            FLOWCRAFT_TEST_<ENV_SUFFIX> as the
+      #                            JSON profile; :model overrides the
+      #                            JSON's "model" field. With no :model
+      #                            suffix the profile's own model is used.
+      # Defaults below mirror the historical lme-launch.sh values that
+      # the user ran for months under run-eval.sh, so they are known to
+      # match the Azure deployments named in the seeded .env (gpt-5.4
+      # under AZURE_GPT54, DeepSeek-V4-Flash under AZURE_DS_FLASH).
       extractor_llm:
-        description: "Extractor model alias (e.g. azure:deepseek-flash)"
+        description: "Extractor model alias (default uses Azure DeepSeek-V4-Flash deployment)"
         required: false
-        default: "azure:deepseek-flash"
+        default: "azure_ds_flash"
       answer_llm:
         description: "Answer-synthesis model alias"
         required: false
-        default: "azure:deepseek-flash"
+        default: "azure_ds_flash"
       judge_llm:
-        description: "Judge model alias"
+        description: "Judge model alias (default uses Azure gpt-5.4 deployment)"
         required: false
-        default: "azure:gpt-5.4"
+        default: "azure_gpt54"
       reranker_llm:
         description: "Reranker LLM alias ('' to disable)"
         required: false
-        default: ""
+        default: "qwen:qwen-flash"
       embedder:
         description: "Embedder alias (e.g. qwen:text-embedding-v4)"
         required: false

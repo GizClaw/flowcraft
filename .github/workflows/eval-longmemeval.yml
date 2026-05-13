@@ -24,22 +24,26 @@ on:
         description: "Recall top-k"
         required: false
         default: "30"
+      # See eval-locomo.yml for the alias convention. Defaults below
+      # mirror the historical lme-launch.sh values (azure_ds_flash /
+      # azure_gpt54 / qwen:qwen-flash) that have been validated against
+      # the Azure deployments seeded in the runner host's .env.
       extractor_llm:
         description: "Extractor model alias"
         required: false
-        default: "azure:deepseek-flash"
+        default: "azure_ds_flash"
       answer_llm:
-        description: "Answer-synthesis model alias"
+        description: "Answer-synthesis model alias (minimax for cost; azure_ds_flash for speed)"
         required: false
-        default: "azure:deepseek-flash"
+        default: "minimax"
       judge_llm:
         description: "Judge model alias"
         required: false
-        default: "azure:gpt-5.4"
+        default: "azure_gpt54"
       reranker_llm:
         description: "Reranker LLM alias ('' to disable)"
         required: false
-        default: ""
+        default: "qwen:qwen-flash"
       embedder:
         description: "Embedder alias"
         required: false
