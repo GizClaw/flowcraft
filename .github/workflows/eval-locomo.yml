@@ -1,0 +1,244 @@
+name: eval / locomo
+
+# ---------------------------------------------------------------------
+# LoCoMo-10 dialog-memory benchmark, executed on the self-hosted
+# runner labelled `flowcraft-eval`. See internal-docs/eval-runbook.md
+# for the host-side setup (runner install, /etc/flowcraft-eval/.env,
+# /var/lib/flowcraft-eval/reports).
+#
+# Canonical CLI: `eval locomo run --dataset <path> --topk N
+#                  --extractor --extractor-llm <alias>
+#                  --answer-llm <alias> --judge-llm <alias>
+#                  --reranker-llm <alias> --embedder <alias>
+#                  --concurrency N --ingest-concurrency N
+#                  --out <report.json>`
+# ---------------------------------------------------------------------
+
+on:
+  workflow_dispatch:
+    inputs:
+      dataset:
+        description: "Dataset path (.jsonl) or 'synthetic' (smoke)"
+        required: true
+        default: "eval/locomo/data/locomo10.jsonl"
+      topk:
+        description: "Recall top-k"
+        required: false
+        default: "30"
+      extractor_llm:
+        description: "Extractor model alias (e.g. azure:deepseek-flash)"
+        required: false
+        default: "azure:deepseek-flash"
+      answer_llm:
+        description: "Answer-synthesis model alias"
+        required: false
+        default: "azure:deepseek-flash"
+      judge_llm:
+        description: "Judge model alias"
+        required: false
+        default: "azure:gpt-5.4"
+      reranker_llm:
+        description: "Reranker LLM alias ('' to disable)"
+        required: false
+        default: ""
+      embedder:
+        description: "Embedder alias (e.g. qwen:text-embedding-v4)"
+        required: false
+        default: "qwen:text-embedding-v4"
+      concurrency:
+        description: "QA-loop parallelism"
+        required: false
+        default: "8"
+      ingest_concurrency:
+        description: "Per-conversation extractor parallelism"
+        required: false
+        default: "8"
+      notify_progress_pct:
+        description: "Feishu milestone resolution (% of work; 0=off)"
+        required: false
+        default: "10"
+      limit_questions:
+        description: "Debug: cap to first N questions (0 = full set)"
+        required: false
+        default: "0"
+
+# Per-kind serialisation: at most one locomo run at a time. Other eval
+# kinds (longmemeval / beir / …) have their own concurrency.group and
+# run independently.
+concurrency:
+  group: eval-locomo
+  cancel-in-progress: false
+
+env:
+  RUN_ID: ${{ github.run_id }}
+  REPORT_DIR: /var/lib/flowcraft-eval/reports
+  RUN_TAG: locomo-${{ github.run_id }}
+
+jobs:
+  run:
+    runs-on: [self-hosted, flowcraft-eval]
+    # 12h ceiling. LoCoMo-10 with topk=30 + LLM judge fits well within
+    # 4h on the current azure:deepseek-flash + azure:gpt-5.4 combo;
+    # the headroom guards against accidental --dataset bumps.
+    timeout-minutes: 720
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Load secrets from runner host
+        # All credentials (LLM provider keys + FEISHU_*) live in
+        # /etc/flowcraft-eval/.env on this runner, mode 0600. We pipe
+        # each KEY=VALUE line through ::add-mask:: (so an accidental
+        # `echo $AZURE_API_KEY` in any downstream step still renders
+        # as *** in the GH UI) and then into $GITHUB_ENV so all
+        # subsequent steps in this job inherit them. Reading the file
+        # via `read` (not `cat | …`) keeps the values off any log.
+        # A copy is also placed at ./.env for `eval` binaries that
+        # call into eval/internal/env.LoadDotEnv().
+        run: |
+          set -eu
+          test -f /etc/flowcraft-eval/.env
+          while IFS='=' read -r key value; do
+            [[ -z "$key" || "$key" =~ ^# ]] && continue
+            echo "::add-mask::$value"
+            echo "$key=$value" >> "$GITHUB_ENV"
+          done < /etc/flowcraft-eval/.env
+          cp /etc/flowcraft-eval/.env .env
+          chmod 600 .env
+
+      - name: Ensure report dir
+        run: |
+          mkdir -p "$REPORT_DIR"
+          # 0750: runner OS user + group readable; world denied.
+          chmod 0750 "$REPORT_DIR" || true
+
+      - name: Show eval binary toolchain
+        run: |
+          go version
+          go env GOMODCACHE GOCACHE
+
+      - name: Build eval binary
+        # The eval module pins released sdk/sdkx via go.mod and uses
+        # GOWORK=off in CI; mirror that here so we use the pinned
+        # versions, not the workspace overlay.
+        run: |
+          cd eval
+          GOWORK=off go build -trimpath -o /tmp/eval ./cmd/eval
+          /tmp/eval --help | head -20
+
+      - name: Notify Feishu — started
+        if: success()
+        # Plain text message at start. The live CardKit progress
+        # updates emitted by the running eval binary use FEISHU_APP_*
+        # credentials (also loaded above) and are independent of this
+        # webhook ping.
+        run: |
+          set -eu
+          if [ -z "${FEISHU_WEBHOOK_URL:-}" ]; then
+            echo "FEISHU_WEBHOOK_URL not set in /etc/flowcraft-eval/.env; skipping started ping"
+            exit 0
+          fi
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          curl -sS -X POST "$FEISHU_WEBHOOK_URL" \
+            -H 'Content-Type: application/json' \
+            -d @- <<EOF
+          {
+            "msg_type": "text",
+            "content": {
+              "text": "▶ locomo run started\nrun_id=${{ github.run_id }}\ndataset=${{ inputs.dataset }}\ntopk=${{ inputs.topk }} extractor=${{ inputs.extractor_llm }} judge=${{ inputs.judge_llm }}\nlogs: $RUN_URL"
+            }
+          }
+          EOF
+
+      - name: Run locomo
+        env:
+          REPORT_OUT: ${{ env.REPORT_DIR }}/${{ github.run_id }}.json
+        # CardKit live-update flags:
+        #   --notify-name      identifies this run in the card header
+        #   --notify-progress-pct  milestone resolution
+        # We default reranker/embedder/limit-questions to optional so a
+        # smoke run (`--dataset synthetic --limit-questions 50`) reuses
+        # the same workflow.
+        run: |
+          set -eu
+          ARGS=(
+            locomo run
+            --dataset "${{ inputs.dataset }}"
+            --topk "${{ inputs.topk }}"
+            --extractor
+            --extractor-llm "${{ inputs.extractor_llm }}"
+            --answer-llm "${{ inputs.answer_llm }}"
+            --judge-llm "${{ inputs.judge_llm }}"
+            --concurrency "${{ inputs.concurrency }}"
+            --ingest-concurrency "${{ inputs.ingest_concurrency }}"
+            --notify-name "$RUN_TAG"
+            --notify-progress-pct "${{ inputs.notify_progress_pct }}"
+            --out "$REPORT_OUT"
+          )
+          if [ -n "${{ inputs.reranker_llm }}" ]; then
+            ARGS+=( --reranker-llm "${{ inputs.reranker_llm }}" )
+          fi
+          if [ -n "${{ inputs.embedder }}" ]; then
+            ARGS+=( --embedder "${{ inputs.embedder }}" )
+          fi
+          if [ "${{ inputs.limit_questions }}" != "0" ]; then
+            ARGS+=( --limit-questions "${{ inputs.limit_questions }}" )
+          fi
+          /tmp/eval "${ARGS[@]}"
+
+      - name: Upload report artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: locomo-report-${{ github.run_id }}
+          path: ${{ env.REPORT_DIR }}/${{ github.run_id }}.json
+          if-no-files-found: warn
+          retention-days: 90
+
+      - name: Notify Feishu — final
+        if: always()
+        # Final summary. We pull headline numbers via jq from the
+        # locomo Report shape (aggregate.qa.em / qa.f1 / qa.judge / n).
+        # Token-usage isn't in the Report today; once `internal-docs/
+        # eval-platform-design-actions.md` §4.5 lands the cached/input
+        # rollup, extend the METRICS line to include them.
+        run: |
+          set +e
+          REPORT="$REPORT_DIR/${{ github.run_id }}.json"
+          STATUS="${{ job.status }}"
+          ICON="✅"
+          [ "$STATUS" != "success" ] && ICON="❌"
+          # latency.*.p95 is raw nanoseconds (Go time.Duration marshals
+          # to int64); convert to ms here so the Feishu summary stays
+          # human-readable. tostring is forced on every numeric field so
+          # the final concat never sees mixed string+number arithmetic.
+          if [ -s "$REPORT" ]; then
+            METRICS=$(jq -r '
+              def ns2ms(x): if x == null then "n/a" else ((x/1000000)|tostring) + "ms" end;
+              "n=" + (.n|tostring)
+              + " qa.judge=" + (.aggregate."qa.judge"|tostring)
+              + " qa.f1=" + (.aggregate."qa.f1"|tostring)
+              + " qa.em=" + (.aggregate."qa.em"|tostring)
+              + (if .aggregate."recall.k_hit" != null
+                   then " recall.k_hit=" + (.aggregate."recall.k_hit"|tostring)
+                   else "" end)
+              + " save.p95=" + ns2ms(.latency.save.p95)
+              + " recall.p95=" + ns2ms(.latency.recall.p95)
+            ' "$REPORT" 2>/dev/null)
+          else
+            METRICS="report not produced"
+          fi
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          if [ -n "${FEISHU_WEBHOOK_URL:-}" ]; then
+            curl -sS -X POST "$FEISHU_WEBHOOK_URL" \
+              -H 'Content-Type: application/json' \
+              -d @- <<EOF
+          {
+            "msg_type": "text",
+            "content": {
+              "text": "$ICON locomo run finished\nstatus=$STATUS\n$METRICS\nlogs: $RUN_URL"
+            }
+          }
+          EOF
+          else
+            echo "FEISHU_WEBHOOK_URL not set; skipping final ping"
+          fi

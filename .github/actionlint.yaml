@@ -1,0 +1,7 @@
+# actionlint configuration.
+# Custom self-hosted runner labels we use. Without this entry,
+# actionlint flags `runs-on: [self-hosted, flowcraft-eval]` as an
+# unknown label and would fail CI lints.
+self-hosted-runner:
+  labels:
+    - flowcraft-eval
