@@ -29,7 +29,8 @@ type expectedMemory struct {
 func newLTM(t *testing.T, l llm.LLM) (recall.Memory, retrieval.Index) {
 	t.Helper()
 	idx := retmem.New()
-	mem, err := recall.New(idx,
+	mem, err := recall.New(
+		idx,
 		recall.WithLLM(l),
 		recall.WithExtractMode(recall.ModeAdditive),
 		recall.WithMaxFactsPerCall(8),
@@ -396,7 +397,8 @@ Only return the JSON object, nothing else.`
 					t.Logf("--- Answer A (no memory) ---\n%s", truncateForLog(answerA, 300))
 					t.Logf("--- Answer B (with memory) ---\n%s", truncateForLog(answerB, 300))
 
-					judgeMsg := fmt.Sprintf(judgePrompt,
+					judgeMsg := fmt.Sprintf(
+						judgePrompt,
 						tc.followUpQuery, tc.judgeHint,
 						truncateForLog(answerA, 800), truncateForLog(answerB, 800),
 					)

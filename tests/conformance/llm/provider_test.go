@@ -430,7 +430,8 @@ func TestProviders_LargeMessageCount(t *testing.T) {
 					llm.NewTextMessage(llm.RoleSystem, "You are a dispatcher. Reply briefly."),
 				}
 				for i := 0; i < n; i++ {
-					msgs = append(msgs,
+					msgs = append(
+						msgs,
 						llm.NewTextMessage(llm.RoleUser, fmt.Sprintf("Check task %d", i)),
 						llm.NewToolCallMessage([]llm.ToolCall{
 							{ID: fmt.Sprintf("call_%d", i), Name: "kanban_submit", Arguments: fmt.Sprintf(`{"target_agent_id":"agent-%d","query":"task %d"}`, i, i)},
