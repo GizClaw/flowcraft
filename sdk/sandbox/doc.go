@@ -17,13 +17,14 @@
 //     is unsafe in a multi-tenant agent harness.
 //   - Net (NetPolicy): mode + (future) allow-list / proxy URL. LocalRunner
 //     only accepts NetDefault; non-default modes require a sandboxing
-//     backend such as sdkx/sandbox/{nsjail,container,microvm} (planned).
+//     backend (namespace-based, container-based, or microVM-based) that
+//     can actually enforce the policy at the kernel level.
 //   - Resources (ResourceLimits): CPU / memory / disk caps plus
 //     MaxOutputBytes. LocalRunner only enforces MaxOutputBytes today; the
-//     hard caps require kernel-level mechanisms shipped by sdkx backends.
+//     hard caps require the same kernel-level enforcement as Net.
 //
 // LocalRunner is the in-process, no-isolation backend used by tests and
 // single-tenant operators. Production deployments should compose it with
 // AllowCommands (whitelist) and eventually swap to a sandboxed Runner
-// when sdkx ships them.
+// once a real isolation backend is available.
 package sandbox

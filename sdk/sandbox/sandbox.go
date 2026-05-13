@@ -89,8 +89,8 @@ const (
 
 // NetPolicy controls outbound networking for the child process.
 // LocalRunner only honours NetDefault; any other mode is rejected with
-// errdefs.NotAvailable until a sandboxed backend (sdkx/sandbox/{nsjail,
-// container,microvm}) is wired up.
+// errdefs.NotAvailable until a sandboxed backend with kernel-level
+// enforcement is wired up.
 type NetPolicy struct {
 	Mode       NetMode
 	AllowHosts []string
