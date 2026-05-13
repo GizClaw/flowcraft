@@ -24,22 +24,26 @@ on:
         description: "Recall top-k"
         required: false
         default: "30"
+      # See eval-locomo.yml for the alias convention. Defaults below
+      # mirror the historical lme-launch.sh values (azure_ds_flash /
+      # azure_gpt54 / qwen:qwen-flash) that have been validated against
+      # the Azure deployments seeded in the runner host's .env.
       extractor_llm:
         description: "Extractor model alias"
         required: false
-        default: "azure:deepseek-flash"
+        default: "azure_ds_flash"
       answer_llm:
-        description: "Answer-synthesis model alias"
+        description: "Answer-synthesis model alias (minimax for cost; azure_ds_flash for speed)"
         required: false
-        default: "azure:deepseek-flash"
+        default: "minimax"
       judge_llm:
         description: "Judge model alias"
         required: false
-        default: "azure:gpt-5.4"
+        default: "azure_gpt54"
       reranker_llm:
         description: "Reranker LLM alias ('' to disable)"
         required: false
-        default: ""
+        default: "qwen:qwen-flash"
       embedder:
         description: "Embedder alias"
         required: false
@@ -60,6 +64,29 @@ on:
         description: "Debug: cap to first N questions (0 = full set)"
         required: false
         default: "0"
+      # ---- Tuning knobs that historically diverged from sdk defaults ----
+      soft_merge:
+        # Legacy lme-launch.sh ran with --soft-merge=false; sdk default
+        # is true. Behaviour delta: near-duplicate fact merging (older
+        # entries marked superseded_by + damped at recall) vs distinct.
+        description: "Mark near-duplicate facts as superseded_by (sdk default true)"
+        required: false
+        type: boolean
+        default: true
+      qa_timeout:
+        # Default 3m (vs CLI default 2m) because Azure azure.generate
+        # observed at ~2m in the loomo smoke; LME questions have longer
+        # contexts so a wider envelope reduces spurious timeouts.
+        description: "Per-question recall+answer+judge deadline (Go duration)"
+        required: false
+        default: "3m"
+      ingest_timeout:
+        # LME-s has up to 500-session haystacks per instance; extraction
+        # at concurrency=48 can cluster, so the 10m CLI default holds
+        # but tunable here for stress runs.
+        description: "Per-conversation ingest deadline (Go duration)"
+        required: false
+        default: "10m"
 
 # LongMemEval-s 500 instances at concurrency=8 still saturates one
 # Azure endpoint; serialise per kind.
@@ -79,14 +106,35 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Load secrets from runner host
+        # See eval-locomo.yml for the rationale. The .env on the
+        # runner host uses shell-quoted multi-line JSON values which
+        # require bash's own parser; a naive `while IFS='=' read`
+        # corrupts them.
         run: |
           set -eu
           test -f /etc/flowcraft-eval/.env
-          while IFS='=' read -r key value; do
-            [[ -z "$key" || "$key" =~ ^# ]] && continue
-            echo "::add-mask::$value"
-            echo "$key=$value" >> "$GITHUB_ENV"
-          done < /etc/flowcraft-eval/.env
+          set -a
+          # shellcheck disable=SC1091
+          source /etc/flowcraft-eval/.env
+          set +a
+          while IFS= read -r key; do
+            [ -z "$key" ] && continue
+            value="${!key:-}"
+            [ -z "$value" ] && continue
+            while IFS= read -r line; do
+              [ -n "$line" ] && echo "::add-mask::$line"
+            done <<< "$value"
+            if [[ "$value" == *$'\n'* ]]; then
+              DELIM="EOF_${RANDOM}${RANDOM}"
+              {
+                echo "${key}<<${DELIM}"
+                echo "$value"
+                echo "$DELIM"
+              } >> "$GITHUB_ENV"
+            else
+              echo "${key}=${value}" >> "$GITHUB_ENV"
+            fi
+          done < <(grep -E '^[A-Z_][A-Z_0-9]*=' /etc/flowcraft-eval/.env | sed 's/=.*$//' | sort -u)
           cp /etc/flowcraft-eval/.env .env
           chmod 600 .env
 
@@ -150,6 +198,9 @@ jobs:
             --judge-llm "${{ inputs.judge_llm }}"
             --concurrency "${{ inputs.concurrency }}"
             --ingest-concurrency "${{ inputs.ingest_concurrency }}"
+            --soft-merge=${{ inputs.soft_merge }}
+            --qa-timeout "${{ inputs.qa_timeout }}"
+            --ingest-timeout "${{ inputs.ingest_timeout }}"
             --notify-name "$RUN_TAG"
             --notify-progress-pct "${{ inputs.notify_progress_pct }}"
             --out "$REPORT_OUT"

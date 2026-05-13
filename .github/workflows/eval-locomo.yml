@@ -25,22 +25,32 @@ on:
         description: "Recall top-k"
         required: false
         default: "30"
+      # Alias conventions in this repo (see eval/internal/env/provider.go):
+      #   <env_suffix>[:<model>] → uses FLOWCRAFT_<ENV_SUFFIX> /
+      #                            FLOWCRAFT_TEST_<ENV_SUFFIX> as the
+      #                            JSON profile; :model overrides the
+      #                            JSON's "model" field. With no :model
+      #                            suffix the profile's own model is used.
+      # Defaults below mirror the historical lme-launch.sh values that
+      # the user ran for months under run-eval.sh, so they are known to
+      # match the Azure deployments named in the seeded .env (gpt-5.4
+      # under AZURE_GPT54, DeepSeek-V4-Flash under AZURE_DS_FLASH).
       extractor_llm:
-        description: "Extractor model alias (e.g. azure:deepseek-flash)"
+        description: "Extractor model alias (default uses Azure DeepSeek-V4-Flash deployment)"
         required: false
-        default: "azure:deepseek-flash"
+        default: "azure_ds_flash"
       answer_llm:
         description: "Answer-synthesis model alias"
         required: false
-        default: "azure:deepseek-flash"
+        default: "azure_ds_flash"
       judge_llm:
-        description: "Judge model alias"
+        description: "Judge model alias (default uses Azure gpt-5.4 deployment)"
         required: false
-        default: "azure:gpt-5.4"
+        default: "azure_gpt54"
       reranker_llm:
         description: "Reranker LLM alias ('' to disable)"
         required: false
-        default: ""
+        default: "qwen:qwen-flash"
       embedder:
         description: "Embedder alias (e.g. qwen:text-embedding-v4)"
         required: false
@@ -61,6 +71,30 @@ on:
         description: "Debug: cap to first N questions (0 = full set)"
         required: false
         default: "0"
+      # ---- Tuning knobs that historically diverged from sdk defaults ----
+      soft_merge:
+        # CLI default: true. The legacy lme-launch.sh ran with
+        # --soft-merge=false; flipping this affects whether near-duplicate
+        # facts are marked superseded_by (the soft-merge path) vs kept
+        # as distinct entries. Recall ranking can shift either way.
+        description: "Mark near-duplicate facts as superseded_by (sdk default true)"
+        required: false
+        type: boolean
+        default: true
+      qa_timeout:
+        # CLI default: 2m. The first smoke run showed a single
+        # azure.generate hitting 1m59s — too tight for the current
+        # Azure latency profile. Larger envelopes are safer for the
+        # full LoCoMo-10 198-question set against Azure.
+        description: "Per-question recall+answer+judge deadline (Go duration)"
+        required: false
+        default: "3m"
+      ingest_timeout:
+        # CLI default: 10m. Per-conversation cap, before falling back
+        # to whatever was extracted so far.
+        description: "Per-conversation ingest deadline (Go duration)"
+        required: false
+        default: "10m"
 
 # Per-kind serialisation: at most one locomo run at a time. Other eval
 # kinds (longmemeval / beir / …) have their own concurrency.group and
@@ -86,22 +120,52 @@ jobs:
 
       - name: Load secrets from runner host
         # All credentials (LLM provider keys + FEISHU_*) live in
-        # /etc/flowcraft-eval/.env on this runner, mode 0600. We pipe
-        # each KEY=VALUE line through ::add-mask:: (so an accidental
-        # `echo $AZURE_API_KEY` in any downstream step still renders
-        # as *** in the GH UI) and then into $GITHUB_ENV so all
-        # subsequent steps in this job inherit them. Reading the file
-        # via `read` (not `cat | …`) keeps the values off any log.
-        # A copy is also placed at ./.env for `eval` binaries that
-        # call into eval/internal/env.LoadDotEnv().
+        # /etc/flowcraft-eval/.env on this runner, mode 0600. The
+        # file is shell-quoted dotenv format: each value is a JSON
+        # blob wrapped in single quotes, often spanning multiple
+        # physical lines, e.g.
+        #     FLOWCRAFT_TEST_AZURE='{
+        #       "provider":"azure",
+        #       "api_key":"sk-...",
+        #     }'
+        # A naive `while IFS='=' read` would preserve the quotes AND
+        # truncate at the first newline, breaking both JSON parsing
+        # and key/value boundaries.
+        #
+        # Strategy: let bash itself parse the file via `source`
+        # (under `set -a` to auto-export every assignment), then
+        # transfer only the explicitly-declared keys into
+        # $GITHUB_ENV with proper multi-line heredoc syntax.
+        # ::add-mask:: is registered per line of every secret value
+        # so even a multi-line JSON dump masks correctly in the UI.
+        # A copy is also placed at ./.env for the eval binary's own
+        # dotenv loader (eval/internal/env/dotenv.go handles quotes
+        # + multi-line natively, independent of this path).
         run: |
           set -eu
           test -f /etc/flowcraft-eval/.env
-          while IFS='=' read -r key value; do
-            [[ -z "$key" || "$key" =~ ^# ]] && continue
-            echo "::add-mask::$value"
-            echo "$key=$value" >> "$GITHUB_ENV"
-          done < /etc/flowcraft-eval/.env
+          set -a
+          # shellcheck disable=SC1091
+          source /etc/flowcraft-eval/.env
+          set +a
+          while IFS= read -r key; do
+            [ -z "$key" ] && continue
+            value="${!key:-}"
+            [ -z "$value" ] && continue
+            while IFS= read -r line; do
+              [ -n "$line" ] && echo "::add-mask::$line"
+            done <<< "$value"
+            if [[ "$value" == *$'\n'* ]]; then
+              DELIM="EOF_${RANDOM}${RANDOM}"
+              {
+                echo "${key}<<${DELIM}"
+                echo "$value"
+                echo "$DELIM"
+              } >> "$GITHUB_ENV"
+            else
+              echo "${key}=${value}" >> "$GITHUB_ENV"
+            fi
+          done < <(grep -E '^[A-Z_][A-Z_0-9]*=' /etc/flowcraft-eval/.env | sed 's/=.*$//' | sort -u)
           cp /etc/flowcraft-eval/.env .env
           chmod 600 .env
 
@@ -160,6 +224,9 @@ jobs:
         # the same workflow.
         run: |
           set -eu
+          # --soft-merge takes its boolean via `=true|=false` so the
+          # workflow's `type: boolean` input maps cleanly. The other
+          # timeouts are Go duration strings (e.g. "3m", "30s").
           ARGS=(
             locomo run
             --dataset "${{ inputs.dataset }}"
@@ -170,6 +237,9 @@ jobs:
             --judge-llm "${{ inputs.judge_llm }}"
             --concurrency "${{ inputs.concurrency }}"
             --ingest-concurrency "${{ inputs.ingest_concurrency }}"
+            --soft-merge=${{ inputs.soft_merge }}
+            --qa-timeout "${{ inputs.qa_timeout }}"
+            --ingest-timeout "${{ inputs.ingest_timeout }}"
             --notify-name "$RUN_TAG"
             --notify-progress-pct "${{ inputs.notify_progress_pct }}"
             --out "$REPORT_OUT"
