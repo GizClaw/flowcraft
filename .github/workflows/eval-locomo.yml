@@ -86,22 +86,52 @@ jobs:
 
       - name: Load secrets from runner host
         # All credentials (LLM provider keys + FEISHU_*) live in
-        # /etc/flowcraft-eval/.env on this runner, mode 0600. We pipe
-        # each KEY=VALUE line through ::add-mask:: (so an accidental
-        # `echo $AZURE_API_KEY` in any downstream step still renders
-        # as *** in the GH UI) and then into $GITHUB_ENV so all
-        # subsequent steps in this job inherit them. Reading the file
-        # via `read` (not `cat | …`) keeps the values off any log.
-        # A copy is also placed at ./.env for `eval` binaries that
-        # call into eval/internal/env.LoadDotEnv().
+        # /etc/flowcraft-eval/.env on this runner, mode 0600. The
+        # file is shell-quoted dotenv format: each value is a JSON
+        # blob wrapped in single quotes, often spanning multiple
+        # physical lines, e.g.
+        #     FLOWCRAFT_TEST_AZURE='{
+        #       "provider":"azure",
+        #       "api_key":"sk-...",
+        #     }'
+        # A naive `while IFS='=' read` would preserve the quotes AND
+        # truncate at the first newline, breaking both JSON parsing
+        # and key/value boundaries.
+        #
+        # Strategy: let bash itself parse the file via `source`
+        # (under `set -a` to auto-export every assignment), then
+        # transfer only the explicitly-declared keys into
+        # $GITHUB_ENV with proper multi-line heredoc syntax.
+        # ::add-mask:: is registered per line of every secret value
+        # so even a multi-line JSON dump masks correctly in the UI.
+        # A copy is also placed at ./.env for the eval binary's own
+        # dotenv loader (eval/internal/env/dotenv.go handles quotes
+        # + multi-line natively, independent of this path).
         run: |
           set -eu
           test -f /etc/flowcraft-eval/.env
-          while IFS='=' read -r key value; do
-            [[ -z "$key" || "$key" =~ ^# ]] && continue
-            echo "::add-mask::$value"
-            echo "$key=$value" >> "$GITHUB_ENV"
-          done < /etc/flowcraft-eval/.env
+          set -a
+          # shellcheck disable=SC1091
+          source /etc/flowcraft-eval/.env
+          set +a
+          while IFS= read -r key; do
+            [ -z "$key" ] && continue
+            value="${!key:-}"
+            [ -z "$value" ] && continue
+            while IFS= read -r line; do
+              [ -n "$line" ] && echo "::add-mask::$line"
+            done <<< "$value"
+            if [[ "$value" == *$'\n'* ]]; then
+              DELIM="EOF_${RANDOM}${RANDOM}"
+              {
+                echo "${key}<<${DELIM}"
+                echo "$value"
+                echo "$DELIM"
+              } >> "$GITHUB_ENV"
+            else
+              echo "${key}=${value}" >> "$GITHUB_ENV"
+            fi
+          done < <(grep -E '^[A-Z_][A-Z_0-9]*=' /etc/flowcraft-eval/.env | sed 's/=.*$//' | sort -u)
           cp /etc/flowcraft-eval/.env .env
           chmod 600 .env
 
