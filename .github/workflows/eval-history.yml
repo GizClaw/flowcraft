@@ -1,0 +1,214 @@
+name: eval / history
+
+# ---------------------------------------------------------------------
+# History-compression regression. Replays a LoCoMo-style dataset
+# through {none, buffer, compacted} compactor strategies so we can
+# trade off prompt cost vs. answer quality. The default dataset
+# (eval/locomo/data/locomo10.jsonl) ships in-tree, so no host-side
+# staging is needed.
+# ---------------------------------------------------------------------
+
+on:
+  workflow_dispatch:
+    inputs:
+      dataset:
+        description: "Dataset path (.jsonl) or 'synthetic' (fastest smoke)"
+        required: true
+        default: "eval/locomo/data/locomo10.jsonl"
+      answer_llm:
+        description: "Answer LLM alias (required)"
+        required: true
+        default: "azure_gpt54"
+      summary_llm:
+        description: "Compactor summary LLM (empty skips 'compacted' strategy)"
+        required: false
+        default: "azure_gpt54"
+      judge_llm:
+        description: "Judge LLM alias (empty falls back to EM)"
+        required: false
+        default: "azure_gpt54"
+      strategies:
+        description: "Comma-separated subset of {none,buffer,compacted}"
+        required: false
+        default: "none,buffer,compacted"
+      buffer_max:
+        description: "StrategyBuffer window size"
+        required: false
+        default: "10"
+      compact_token_budget:
+        description: "Token budget per Load for compacted strategy"
+        required: false
+        default: "1500"
+      limit_convs:
+        description: "Evaluate first N conversations only (0 = all)"
+        required: false
+        default: "0"
+      limit_questions:
+        description: "Evaluate first N questions only (0 = all)"
+        required: false
+        default: "0"
+      concurrency:
+        description: "Parallel questions per strategy"
+        required: false
+        default: "1"
+      progress_every:
+        description: "Stderr progress every N questions (0=silent)"
+        required: false
+        default: "0"
+      notify_progress_pct:
+        description: "Feishu milestone resolution (% of work; 0=off)"
+        required: false
+        default: "25"
+
+concurrency:
+  group: eval-history
+  cancel-in-progress: false
+
+env:
+  REPORT_DIR: /var/lib/flowcraft-eval/reports
+  RUN_TAG: history-${{ github.run_id }}
+
+jobs:
+  run:
+    runs-on: [self-hosted, flowcraft-eval]
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Load secrets from runner host
+        run: |
+          set -eu
+          test -f /etc/flowcraft-eval/.env
+          set -a
+          # shellcheck disable=SC1091
+          source /etc/flowcraft-eval/.env
+          set +a
+          while IFS= read -r key; do
+            [ -z "$key" ] && continue
+            value="${!key:-}"
+            [ -z "$value" ] && continue
+            while IFS= read -r line; do
+              [ -n "$line" ] && echo "::add-mask::$line"
+            done <<< "$value"
+            if [[ "$value" == *$'\n'* ]]; then
+              DELIM="EOF_${RANDOM}${RANDOM}"
+              {
+                echo "${key}<<${DELIM}"
+                echo "$value"
+                echo "$DELIM"
+              } >> "$GITHUB_ENV"
+            else
+              echo "${key}=${value}" >> "$GITHUB_ENV"
+            fi
+          done < <(grep -E '^[A-Z_][A-Z_0-9]*=' /etc/flowcraft-eval/.env | sed 's/=.*$//' | sort -u)
+          cp /etc/flowcraft-eval/.env .env
+          chmod 600 .env
+
+      - name: Ensure report dir
+        run: |
+          mkdir -p "$REPORT_DIR"
+          chmod 0750 "$REPORT_DIR" || true
+
+      - name: Build eval binary
+        run: |
+          cd eval
+          GOWORK=off go build -trimpath -o /tmp/eval ./cmd/eval
+
+      - name: Notify Feishu — started
+        if: success()
+        run: |
+          set -eu
+          if [ -z "${FEISHU_WEBHOOK_URL:-}" ]; then
+            echo "FEISHU_WEBHOOK_URL not set; skipping started ping"
+            exit 0
+          fi
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          curl -sS -X POST "$FEISHU_WEBHOOK_URL" \
+            -H 'Content-Type: application/json' \
+            -d @- <<EOF
+          {
+            "msg_type": "text",
+            "content": {
+              "text": "▶ history run started\nrun_id=${{ github.run_id }}\nstrategies=${{ inputs.strategies }} answer=${{ inputs.answer_llm }} summary=${{ inputs.summary_llm }} judge=${{ inputs.judge_llm }}\ndataset=${{ inputs.dataset }}\nlogs: $RUN_URL"
+            }
+          }
+          EOF
+
+      - name: Run history
+        env:
+          REPORT_OUT: ${{ env.REPORT_DIR }}/${{ github.run_id }}.json
+        run: |
+          set -eu
+          ARGS=(
+            history
+            --dataset "${{ inputs.dataset }}"
+            --answer-llm "${{ inputs.answer_llm }}"
+            --strategies "${{ inputs.strategies }}"
+            --buffer-max "${{ inputs.buffer_max }}"
+            --compact-token-budget "${{ inputs.compact_token_budget }}"
+            --limit-convs "${{ inputs.limit_convs }}"
+            --limit-questions "${{ inputs.limit_questions }}"
+            --concurrency "${{ inputs.concurrency }}"
+            --progress-every "${{ inputs.progress_every }}"
+            --notify-name "$RUN_TAG"
+            --notify-progress-pct "${{ inputs.notify_progress_pct }}"
+            --out "$REPORT_OUT"
+          )
+          if [ -n "${{ inputs.summary_llm }}" ]; then
+            ARGS+=( --summary-llm "${{ inputs.summary_llm }}" )
+          fi
+          if [ -n "${{ inputs.judge_llm }}" ]; then
+            ARGS+=( --judge-llm "${{ inputs.judge_llm }}" )
+          fi
+          /tmp/eval "${ARGS[@]}"
+
+      - name: Upload report artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: history-report-${{ github.run_id }}
+          path: ${{ env.REPORT_DIR }}/${{ github.run_id }}.json
+          if-no-files-found: warn
+          retention-days: 90
+
+      - name: Notify Feishu — final
+        if: always()
+        # History Report shape:
+        #   .strategies[name] = {qa_judge, qa_em, qa_f1,
+        #                        prompt_tokens_p95, history_load_p95(ns),
+        #                        n, errors, skipped}
+        run: |
+          set +e
+          REPORT="$REPORT_DIR/${{ github.run_id }}.json"
+          STATUS="${{ job.status }}"
+          ICON="✅"
+          [ "$STATUS" != "success" ] && ICON="❌"
+          if [ -s "$REPORT" ]; then
+            METRICS=$(jq -r '
+              def ns2ms(x): if x == null then "n/a" else ((x/1000000)|tostring) + "ms" end;
+              .strategies | to_entries | map(
+                if (.value.skipped // "") != "" then
+                  "[\(.key)] SKIPPED (\(.value.skipped))"
+                else
+                  "[\(.key)] judge=\(.value.qa_judge) f1=\(.value.qa_f1) em=\(.value.qa_em) tokens.p95=\(.value.prompt_tokens_p95) load.p95=" + ns2ms(.value.history_load_p95)
+                end
+              ) | join("\n")
+            ' "$REPORT" 2>/dev/null)
+          else
+            METRICS="report not produced"
+          fi
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          if [ -n "${FEISHU_WEBHOOK_URL:-}" ]; then
+            curl -sS -X POST "$FEISHU_WEBHOOK_URL" \
+              -H 'Content-Type: application/json' \
+              -d @- <<EOF
+          {
+            "msg_type": "text",
+            "content": {
+              "text": "$ICON history run finished\nstatus=$STATUS\n$METRICS\nlogs: $RUN_URL"
+            }
+          }
+          EOF
+          else
+            echo "FEISHU_WEBHOOK_URL not set; skipping final ping"
+          fi

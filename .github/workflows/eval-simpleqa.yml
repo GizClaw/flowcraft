@@ -1,0 +1,204 @@
+name: eval / simpleqa
+
+# ---------------------------------------------------------------------
+# OpenAI's SimpleQA short-form factuality + calibration benchmark.
+# Requires the operator to stage simple_qa_test_set.csv on the runner
+# under /var/lib/flowcraft-eval/datasets/. A full run is ~4.3k
+# questions; use `limit` to smoke-test.
+#
+# Source CSV:
+#   curl -L https://openaipublic.blob.core.windows.net/simple-evals/simple_qa_test_set.csv \
+#     -o /var/lib/flowcraft-eval/datasets/simple_qa_test_set.csv
+# ---------------------------------------------------------------------
+
+on:
+  workflow_dispatch:
+    inputs:
+      dataset:
+        description: "Path to simple_qa_test_set.csv (or converted .jsonl)"
+        required: true
+        default: "/var/lib/flowcraft-eval/datasets/simple_qa_test_set.csv"
+      answer_llm:
+        description: "Model under test (required)"
+        required: true
+        default: "azure_gpt54"
+      judge_llm:
+        description: "Judge LLM (required)"
+        required: true
+        default: "azure_gpt54"
+      limit:
+        description: "Evaluate first N questions only (0 = all; use 50 for smoke)"
+        required: false
+        default: "0"
+      concurrency:
+        description: "Parallel (answer, judge) pairs"
+        required: false
+        default: "4"
+      per_question_timeout:
+        description: "Deadline for one answer+judge pair (Go duration; 0 disables)"
+        required: false
+        default: "90s"
+      max_samples:
+        description: "Cap on Report.Samples (debug detail rows)"
+        required: false
+        default: "200"
+      include_topic_breakdown:
+        description: "Populate Report.PerTopic"
+        required: false
+        type: boolean
+        default: true
+      notify_progress_pct:
+        description: "Feishu milestone resolution (% of work; 0=off)"
+        required: false
+        default: "10"
+
+concurrency:
+  group: eval-simpleqa
+  cancel-in-progress: false
+
+env:
+  REPORT_DIR: /var/lib/flowcraft-eval/reports
+  RUN_TAG: simpleqa-${{ github.run_id }}
+
+jobs:
+  run:
+    runs-on: [self-hosted, flowcraft-eval]
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Load secrets from runner host
+        run: |
+          set -eu
+          test -f /etc/flowcraft-eval/.env
+          set -a
+          # shellcheck disable=SC1091
+          source /etc/flowcraft-eval/.env
+          set +a
+          while IFS= read -r key; do
+            [ -z "$key" ] && continue
+            value="${!key:-}"
+            [ -z "$value" ] && continue
+            while IFS= read -r line; do
+              [ -n "$line" ] && echo "::add-mask::$line"
+            done <<< "$value"
+            if [[ "$value" == *$'\n'* ]]; then
+              DELIM="EOF_${RANDOM}${RANDOM}"
+              {
+                echo "${key}<<${DELIM}"
+                echo "$value"
+                echo "$DELIM"
+              } >> "$GITHUB_ENV"
+            else
+              echo "${key}=${value}" >> "$GITHUB_ENV"
+            fi
+          done < <(grep -E '^[A-Z_][A-Z_0-9]*=' /etc/flowcraft-eval/.env | sed 's/=.*$//' | sort -u)
+          cp /etc/flowcraft-eval/.env .env
+          chmod 600 .env
+
+      - name: Ensure report dir
+        run: |
+          mkdir -p "$REPORT_DIR"
+          chmod 0750 "$REPORT_DIR" || true
+
+      - name: Verify dataset exists
+        run: |
+          set -eu
+          if [ ! -s "${{ inputs.dataset }}" ]; then
+            echo "Missing or empty: ${{ inputs.dataset }}"
+            echo "Stage the SimpleQA CSV under /var/lib/flowcraft-eval/datasets/ — see internal-docs/eval-runbook.md."
+            exit 1
+          fi
+
+      - name: Build eval binary
+        run: |
+          cd eval
+          GOWORK=off go build -trimpath -o /tmp/eval ./cmd/eval
+
+      - name: Notify Feishu — started
+        if: success()
+        run: |
+          set -eu
+          if [ -z "${FEISHU_WEBHOOK_URL:-}" ]; then
+            echo "FEISHU_WEBHOOK_URL not set; skipping started ping"
+            exit 0
+          fi
+          DS_NAME=$(basename "${{ inputs.dataset }}")
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          curl -sS -X POST "$FEISHU_WEBHOOK_URL" \
+            -H 'Content-Type: application/json' \
+            -d @- <<EOF
+          {
+            "msg_type": "text",
+            "content": {
+              "text": "▶ simpleqa run started\nrun_id=${{ github.run_id }}\nanswer=${{ inputs.answer_llm }} judge=${{ inputs.judge_llm }} limit=${{ inputs.limit }} concurrency=${{ inputs.concurrency }}\ndataset=$DS_NAME\nlogs: $RUN_URL"
+            }
+          }
+          EOF
+
+      - name: Run simpleqa
+        env:
+          REPORT_OUT: ${{ env.REPORT_DIR }}/${{ github.run_id }}.json
+        run: |
+          set -eu
+          ARGS=(
+            simpleqa
+            --dataset "${{ inputs.dataset }}"
+            --answer-llm "${{ inputs.answer_llm }}"
+            --judge-llm "${{ inputs.judge_llm }}"
+            --limit "${{ inputs.limit }}"
+            --concurrency "${{ inputs.concurrency }}"
+            --per-question-timeout "${{ inputs.per_question_timeout }}"
+            --max-samples "${{ inputs.max_samples }}"
+            --include-topic-breakdown="${{ inputs.include_topic_breakdown }}"
+            --notify-name "$RUN_TAG"
+            --notify-progress-pct "${{ inputs.notify_progress_pct }}"
+            --out "$REPORT_OUT"
+          )
+          /tmp/eval "${ARGS[@]}"
+
+      - name: Upload report artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: simpleqa-report-${{ github.run_id }}
+          path: ${{ env.REPORT_DIR }}/${{ github.run_id }}.json
+          if-no-files-found: warn
+          retention-days: 90
+
+      - name: Notify Feishu — final
+        if: always()
+        # SimpleQA Report shape (flat):
+        #   {n, correct, incorrect, not_attempted, judge_failures,
+        #    accuracy, attempted_accuracy, abstention_rate,
+        #    hallucination_rate, duration_ms}
+        run: |
+          set +e
+          REPORT="$REPORT_DIR/${{ github.run_id }}.json"
+          STATUS="${{ job.status }}"
+          ICON="✅"
+          [ "$STATUS" != "success" ] && ICON="❌"
+          if [ -s "$REPORT" ]; then
+            METRICS=$(jq -r '
+              "n=\(.n) correct=\(.correct) incorrect=\(.incorrect) not_attempted=\(.not_attempted) judge_failures=\(.judge_failures)\n" +
+              "accuracy=\(.accuracy) attempted_accuracy=\(.attempted_accuracy)\n" +
+              "abstention=\(.abstention_rate) hallucination=\(.hallucination_rate)"
+            ' "$REPORT" 2>/dev/null)
+          else
+            METRICS="report not produced"
+          fi
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          if [ -n "${FEISHU_WEBHOOK_URL:-}" ]; then
+            curl -sS -X POST "$FEISHU_WEBHOOK_URL" \
+              -H 'Content-Type: application/json' \
+              -d @- <<EOF
+          {
+            "msg_type": "text",
+            "content": {
+              "text": "$ICON simpleqa run finished\nstatus=$STATUS\n$METRICS\nlogs: $RUN_URL"
+            }
+          }
+          EOF
+          else
+            echo "FEISHU_WEBHOOK_URL not set; skipping final ping"
+          fi

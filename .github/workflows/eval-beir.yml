@@ -1,0 +1,207 @@
+name: eval / beir
+
+# ---------------------------------------------------------------------
+# Public BEIR-format retrieval benchmark (nDCG@k / Recall@k / MRR).
+# Requires the operator to stage a BEIR dataset on the runner host
+# under /var/lib/flowcraft-eval/datasets/<dataset>/ with the canonical
+# three-file layout (corpus.jsonl, queries.jsonl, qrels/test.tsv).
+# See internal-docs/eval-runbook.md §"Datasets".
+# ---------------------------------------------------------------------
+
+on:
+  workflow_dispatch:
+    inputs:
+      root:
+        description: "Path to BEIR dataset root (e.g. /var/lib/flowcraft-eval/datasets/scifact)"
+        required: true
+        default: "/var/lib/flowcraft-eval/datasets/scifact"
+      embedder:
+        description: "Embedder alias (empty restricts to BM25)"
+        required: false
+        default: "qwen:text-embedding-v4"
+      lanes:
+        description: "Comma-separated subset of {bm25,vector,hybrid}"
+        required: false
+        default: "bm25,vector,hybrid"
+      cutoffs:
+        description: "Comma-separated nDCG / Recall rank cutoffs"
+        required: false
+        default: "10,100"
+      ingest_concurrency:
+        description: "Concurrent PutDocument calls during ingest"
+        required: false
+        default: "8"
+      query_concurrency:
+        description: "Concurrent Search calls during scoring"
+        required: false
+        default: "8"
+      limit_queries:
+        description: "Evaluate only first N queries (0 = all; use 50 for smoke)"
+        required: false
+        default: "0"
+      notify_progress_pct:
+        description: "Feishu milestone resolution (% of work; 0=off)"
+        required: false
+        default: "10"
+
+concurrency:
+  group: eval-beir
+  cancel-in-progress: false
+
+env:
+  REPORT_DIR: /var/lib/flowcraft-eval/reports
+  RUN_TAG: beir-${{ github.run_id }}
+
+jobs:
+  run:
+    runs-on: [self-hosted, flowcraft-eval]
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Load secrets from runner host
+        run: |
+          set -eu
+          test -f /etc/flowcraft-eval/.env
+          set -a
+          # shellcheck disable=SC1091
+          source /etc/flowcraft-eval/.env
+          set +a
+          while IFS= read -r key; do
+            [ -z "$key" ] && continue
+            value="${!key:-}"
+            [ -z "$value" ] && continue
+            while IFS= read -r line; do
+              [ -n "$line" ] && echo "::add-mask::$line"
+            done <<< "$value"
+            if [[ "$value" == *$'\n'* ]]; then
+              DELIM="EOF_${RANDOM}${RANDOM}"
+              {
+                echo "${key}<<${DELIM}"
+                echo "$value"
+                echo "$DELIM"
+              } >> "$GITHUB_ENV"
+            else
+              echo "${key}=${value}" >> "$GITHUB_ENV"
+            fi
+          done < <(grep -E '^[A-Z_][A-Z_0-9]*=' /etc/flowcraft-eval/.env | sed 's/=.*$//' | sort -u)
+          cp /etc/flowcraft-eval/.env .env
+          chmod 600 .env
+
+      - name: Ensure report dir
+        run: |
+          mkdir -p "$REPORT_DIR"
+          chmod 0750 "$REPORT_DIR" || true
+
+      - name: Verify dataset exists
+        # BEIR datasets are large (10s-100s MB) and aren't tracked in
+        # git. Fail loudly here rather than buried in `eval beir` logs.
+        run: |
+          set -eu
+          for f in corpus.jsonl queries.jsonl qrels/test.tsv; do
+            if [ ! -s "${{ inputs.root }}/$f" ]; then
+              echo "Missing or empty: ${{ inputs.root }}/$f"
+              echo "Stage a BEIR dataset under /var/lib/flowcraft-eval/datasets/ — see internal-docs/eval-runbook.md."
+              exit 1
+            fi
+          done
+
+      - name: Build eval binary
+        run: |
+          cd eval
+          GOWORK=off go build -trimpath -o /tmp/eval ./cmd/eval
+
+      - name: Notify Feishu — started
+        if: success()
+        run: |
+          set -eu
+          if [ -z "${FEISHU_WEBHOOK_URL:-}" ]; then
+            echo "FEISHU_WEBHOOK_URL not set; skipping started ping"
+            exit 0
+          fi
+          DS_NAME=$(basename "${{ inputs.root }}")
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          curl -sS -X POST "$FEISHU_WEBHOOK_URL" \
+            -H 'Content-Type: application/json' \
+            -d @- <<EOF
+          {
+            "msg_type": "text",
+            "content": {
+              "text": "▶ beir run started\nrun_id=${{ github.run_id }}\ndataset=$DS_NAME lanes=${{ inputs.lanes }} cutoffs=${{ inputs.cutoffs }} embedder=${{ inputs.embedder }} limit_queries=${{ inputs.limit_queries }}\nlogs: $RUN_URL"
+            }
+          }
+          EOF
+
+      - name: Run beir
+        env:
+          REPORT_OUT: ${{ env.REPORT_DIR }}/${{ github.run_id }}.json
+        run: |
+          set -eu
+          ARGS=(
+            beir
+            --root "${{ inputs.root }}"
+            --lanes "${{ inputs.lanes }}"
+            --cutoffs "${{ inputs.cutoffs }}"
+            --ingest-concurrency "${{ inputs.ingest_concurrency }}"
+            --query-concurrency "${{ inputs.query_concurrency }}"
+            --limit-queries "${{ inputs.limit_queries }}"
+            --notify-name "$RUN_TAG"
+            --notify-progress-pct "${{ inputs.notify_progress_pct }}"
+            --out "$REPORT_OUT"
+          )
+          if [ -n "${{ inputs.embedder }}" ]; then
+            ARGS+=( --embedder "${{ inputs.embedder }}" )
+          fi
+          /tmp/eval "${ARGS[@]}"
+
+      - name: Upload report artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: beir-report-${{ github.run_id }}
+          path: ${{ env.REPORT_DIR }}/${{ github.run_id }}.json
+          if-no-files-found: warn
+          retention-days: 90
+
+      - name: Notify Feishu — final
+        if: always()
+        # BEIR Report shape:
+        #   .lanes[lane] = {ndcg: {<k>: f}, recall: {<k>: f}, mrr,
+        #                   n, errors, latency_p95(ns)}
+        # We surface one line per lane, flattening the ndcg/recall maps
+        # in lane key order so the message stays predictable across
+        # any --cutoffs the operator picked.
+        run: |
+          set +e
+          REPORT="$REPORT_DIR/${{ github.run_id }}.json"
+          STATUS="${{ job.status }}"
+          ICON="✅"
+          [ "$STATUS" != "success" ] && ICON="❌"
+          if [ -s "$REPORT" ]; then
+            METRICS=$(jq -r '
+              def ns2ms(x): if x == null then "n/a" else ((x/1000000)|tostring) + "ms" end;
+              .lanes | to_entries | map(
+                .key as $lane
+                | (.value.ndcg | to_entries | map("ndcg@\(.key)=\(.value)") | join(" ")) as $ndcg
+                | (.value.recall | to_entries | map("recall@\(.key)=\(.value)") | join(" ")) as $rec
+                | "[\($lane)] \($ndcg) \($rec) mrr=\(.value.mrr) errors=\(.value.errors) p95=" + ns2ms(.value.latency_p95)
+              ) | join("\n")
+            ' "$REPORT" 2>/dev/null)
+          else
+            METRICS="report not produced"
+          fi
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          if [ -n "${FEISHU_WEBHOOK_URL:-}" ]; then
+            curl -sS -X POST "$FEISHU_WEBHOOK_URL" \
+              -H 'Content-Type: application/json' \
+              -d @- <<EOF
+          {
+            "msg_type": "text",
+            "content": {
+              "text": "$ICON beir run finished\nstatus=$STATUS\n$METRICS\nlogs: $RUN_URL"
+            }
+          }
+          EOF
+          else
+            echo "FEISHU_WEBHOOK_URL not set; skipping final ping"
+          fi
