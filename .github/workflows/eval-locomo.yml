@@ -71,6 +71,30 @@ on:
         description: "Debug: cap to first N questions (0 = full set)"
         required: false
         default: "0"
+      # ---- Tuning knobs that historically diverged from sdk defaults ----
+      soft_merge:
+        # CLI default: true. The legacy lme-launch.sh ran with
+        # --soft-merge=false; flipping this affects whether near-duplicate
+        # facts are marked superseded_by (the soft-merge path) vs kept
+        # as distinct entries. Recall ranking can shift either way.
+        description: "Mark near-duplicate facts as superseded_by (sdk default true)"
+        required: false
+        type: boolean
+        default: true
+      qa_timeout:
+        # CLI default: 2m. The first smoke run showed a single
+        # azure.generate hitting 1m59s — too tight for the current
+        # Azure latency profile. Larger envelopes are safer for the
+        # full LoCoMo-10 198-question set against Azure.
+        description: "Per-question recall+answer+judge deadline (Go duration)"
+        required: false
+        default: "3m"
+      ingest_timeout:
+        # CLI default: 10m. Per-conversation cap, before falling back
+        # to whatever was extracted so far.
+        description: "Per-conversation ingest deadline (Go duration)"
+        required: false
+        default: "10m"
 
 # Per-kind serialisation: at most one locomo run at a time. Other eval
 # kinds (longmemeval / beir / …) have their own concurrency.group and
@@ -200,6 +224,9 @@ jobs:
         # the same workflow.
         run: |
           set -eu
+          # --soft-merge takes its boolean via `=true|=false` so the
+          # workflow's `type: boolean` input maps cleanly. The other
+          # timeouts are Go duration strings (e.g. "3m", "30s").
           ARGS=(
             locomo run
             --dataset "${{ inputs.dataset }}"
@@ -210,6 +237,9 @@ jobs:
             --judge-llm "${{ inputs.judge_llm }}"
             --concurrency "${{ inputs.concurrency }}"
             --ingest-concurrency "${{ inputs.ingest_concurrency }}"
+            --soft-merge=${{ inputs.soft_merge }}
+            --qa-timeout "${{ inputs.qa_timeout }}"
+            --ingest-timeout "${{ inputs.ingest_timeout }}"
             --notify-name "$RUN_TAG"
             --notify-progress-pct "${{ inputs.notify_progress_pct }}"
             --out "$REPORT_OUT"
