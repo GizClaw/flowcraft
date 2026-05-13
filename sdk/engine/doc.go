@@ -123,9 +123,9 @@
 //  14. Host-on-context plumbing (host_ctx.go) — [WithHost] /
 //     [HostFromContext] let engines hand the Host to extension
 //     points whose signatures don't carry it (canonically:
-//     sdk/tool's Tool.Execute). Built-in tools that need host
-//     capabilities (e.g. sdk/tool/builtin/askuser) recover the host
-//     this way without each engine inventing its own ctx-key
+//     sdk/tool's Tool.Execute). Tools that need host capabilities
+//     (the ask_user tool is the canonical example) recover the
+//     host this way without each engine inventing its own ctx-key
 //     convention.
 //
 // # What does NOT live here

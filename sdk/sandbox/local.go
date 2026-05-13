@@ -33,8 +33,8 @@ func WithMaxOutputBytes(n int64) Option {
 
 // LocalRunner executes commands directly on the host using os/exec. It is
 // the no-isolation backend; production deployments that need real
-// boundaries should swap it for a sandboxed Runner from
-// sdkx/sandbox/{nsjail,container,microvm} (planned).
+// boundaries should swap it for a sandboxed Runner with kernel-level
+// enforcement (namespace / container / microVM).
 //
 // Policy support matrix:
 //
@@ -72,7 +72,7 @@ func NewLocalRunner(rootDir string, opts ...Option) *LocalRunner {
 func (r *LocalRunner) Exec(ctx context.Context, cmd string, args []string, opts ExecOptions) (*ExecResult, error) {
 	if opts.Net.Mode != NetDefault {
 		return nil, errdefs.NotAvailablef(
-			"sandbox: net policy not supported by local runner; use sdkx/sandbox/{nsjail,container,microvm}")
+			"sandbox: net policy not supported by local runner; requires a kernel-level isolation backend")
 	}
 	if opts.Resources.CPUMillicores != 0 || opts.Resources.MemoryBytes != 0 || opts.Resources.DiskBytes != 0 {
 		return nil, errdefs.NotAvailablef(
