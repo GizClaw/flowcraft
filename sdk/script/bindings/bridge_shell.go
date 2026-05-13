@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/GizClaw/flowcraft/sdk/workspace"
+	"github.com/GizClaw/flowcraft/sdk/sandbox"
 )
 
 // ShellOption configures a shell bridge.
@@ -27,7 +27,7 @@ func WithAllowedCommands(cmds ...string) ShellOption {
 }
 
 // NewShellBridge exposes shell execution as global "shell".
-func NewShellBridge(runner workspace.CommandRunner, opts ...ShellOption) BindingFunc {
+func NewShellBridge(runner sandbox.Runner, opts ...ShellOption) BindingFunc {
 	cfg := &shellConfig{}
 	for _, opt := range opts {
 		opt(cfg)
@@ -49,7 +49,7 @@ func NewShellBridge(runner workspace.CommandRunner, opts ...ShellOption) Binding
 				}
 				args := parts[1:]
 				args = append(args, argsRaw...)
-				result, err := runner.Exec(ctx, cmdName, args, workspace.ExecOptions{})
+				result, err := runner.Exec(ctx, cmdName, args, sandbox.ExecOptions{})
 				if err != nil {
 					return map[string]any{"exit_code": -1, "stdout": "", "stderr": err.Error()}, nil
 				}

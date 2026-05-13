@@ -5,12 +5,12 @@ import (
 	"testing"
 
 	"github.com/GizClaw/flowcraft/sdk/engine"
+	"github.com/GizClaw/flowcraft/sdk/sandbox"
 	"github.com/GizClaw/flowcraft/sdk/script/bindings"
 	"github.com/GizClaw/flowcraft/sdk/script/jsrt"
-	"github.com/GizClaw/flowcraft/sdk/workspace"
 )
 
-// fakeCommandRunner is a CommandRunner stub that returns canned output
+// fakeCommandRunner is a sandbox.Runner stub that returns canned output
 // without actually shelling out — keeps these tests hermetic and fast.
 type fakeCommandRunner struct {
 	stdout   string
@@ -18,15 +18,15 @@ type fakeCommandRunner struct {
 	exitCode int
 }
 
-func (f *fakeCommandRunner) Exec(_ context.Context, _ string, _ []string, _ workspace.ExecOptions) (*workspace.ExecResult, error) {
-	return &workspace.ExecResult{Stdout: f.stdout, Stderr: f.stderr, ExitCode: f.exitCode}, nil
+func (f *fakeCommandRunner) Exec(_ context.Context, _ string, _ []string, _ sandbox.ExecOptions) (*sandbox.ExecResult, error) {
+	return &sandbox.ExecResult{Stdout: f.stdout, Stderr: f.stderr, ExitCode: f.exitCode}, nil
 }
 
 // errorCommandRunner always fails — used to verify the bridge's error
 // translation branch (Go err → exit_code -1 + stderr).
 type errorCommandRunner struct{ err error }
 
-func (e *errorCommandRunner) Exec(_ context.Context, _ string, _ []string, _ workspace.ExecOptions) (*workspace.ExecResult, error) {
+func (e *errorCommandRunner) Exec(_ context.Context, _ string, _ []string, _ sandbox.ExecOptions) (*sandbox.ExecResult, error) {
 	return nil, e.err
 }
 
