@@ -50,6 +50,12 @@ type Captain struct {
 	// promise the API is built on is missing.
 	checkpointStore engine.CheckpointStore
 
+	// sessionStore provisions a per-run workspace.Workspace view
+	// for every Submit / Resume dispatch. nil when no store was
+	// wired via [WithSessionStore]; in that case WorkspaceFromContext
+	// returns (nil, false) inside every run.
+	sessionStore SessionStore
+
 	// kanban is the Kanban subsystem when spec.Kanban is non-nil;
 	// otherwise nil (no agent-as-tool dispatch). The runtime owns
 	// the board, kanban instance, and the cardID→dispatcher map
@@ -216,6 +222,7 @@ func New(vs spec.Spec, opts ...Option) (*Captain, error) {
 		gate:            gate,
 		budget:          budget,
 		checkpointStore: cfg.checkpointStore,
+		sessionStore:    cfg.sessionStore,
 		kanban:          kbRuntime,
 		globalObservers: cfg.observers,
 		globalDeciders:  cfg.deciders,
@@ -470,6 +477,23 @@ func (c *Captain) submit(ctx context.Context, agentName string, req agent.Reques
 		if ru != nil {
 			runCtx = context.WithValue(runCtx, budgetCtxKey{}, ru)
 			defer c.budget.end(req.RunID)
+		}
+
+		// Provision the per-run workspace BEFORE dispatch so engines
+		// / tools see it via WorkspaceFromContext from the very first
+		// node. Close runs on baseCtx (not runCtx) so cleanup
+		// survives a runCtx cancellation — the Open path is what
+		// reserved the resource, the Close path must always run.
+		if c.sessionStore != nil {
+			ws, err := c.sessionStore.Open(runCtx, req.RunID)
+			if err != nil {
+				h.deliver(nil, errdefs.Internalf("vessel: open session for run %q: %v", req.RunID, err))
+				return
+			}
+			runCtx = context.WithValue(runCtx, sessionCtxKey{}, ws)
+			defer func() {
+				_ = c.sessionStore.Close(c.baseCtx, req.RunID)
+			}()
 		}
 
 		res, runErr := c.dispatch(runCtx, entry, req, extraOpts...)
