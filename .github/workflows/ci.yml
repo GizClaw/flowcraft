@@ -138,9 +138,26 @@ jobs:
         with:
           go-version: "1.25"
       - name: Install nsjail
+        # Ubuntu 24.04 (noble) dropped the nsjail package from
+        # universe, so we build from source. The compile takes ~30s
+        # on a GitHub-hosted runner — cheap enough to do every run
+        # given how rarely this job triggers (sdk/sdkx changes only).
         run: |
+          set -euo pipefail
+          if command -v nsjail >/dev/null 2>&1; then
+            echo "nsjail already present: $(command -v nsjail)"
+            nsjail --help 2>&1 | head -3 || true
+            exit 0
+          fi
           sudo apt-get update
-          sudo apt-get install -y nsjail
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config \
+            libcap-dev libprotobuf-dev protobuf-compiler \
+            libnl-3-dev libnl-route-3-dev \
+            bison flex
+          git clone --depth 1 https://github.com/google/nsjail.git /tmp/nsjail
+          make -C /tmp/nsjail -j"$(nproc)"
+          sudo install -m 0755 /tmp/nsjail/nsjail /usr/local/bin/nsjail
           nsjail --help 2>&1 | head -3 || true
           which nsjail
       - name: Test
