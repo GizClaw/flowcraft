@@ -242,6 +242,43 @@ compare/fetch/ingest`, `eval longmemeval convert`). Shell completion
 
 #### vesseld
 
+- `cmd/vesseld/apispec`: `Daemon.spec.control.auth.mtls` schema
+  carrying `cert`, `key`, `clientCA`, and an optional `minVersion`
+  (defaulting to `"1.3"`, `"1.2"` also accepted). Each ref accepts
+  the URL-keyed syntax the `secrets.Provider` already understands
+  (`env://NAME`, `file:///abs/path`, `vault://...`). The validator
+  treats mTLS as a first-class auth mode: `spec.control.listen`
+  now requires `tokenFile` OR `mtls` (was `tokenFile` only), and
+  any non-nil `mtls` block must specify all three refs — the
+  "thought we had mutual TLS, accepted any client" footgun is
+  caught at config-shape time.
+- `cmd/vesseld/tlsconfig`: new package that resolves the three
+  refs through a `secrets.Provider` and builds the
+  `*crypto/tls.Config` the TCP listener consumes. The package
+  pins `ClientAuth = RequireAndVerifyClientCert` and the
+  `MinVersion` mapping in one place so the path that crypto
+  reviewers care about lives in a single ~120-line file with
+  unit tests for happy-path, malformed PEM, key/cert mismatch,
+  unsupported `MinVersion`, and provider-error propagation.
+- `cmd/vesseld/api`: TCP listener now terminates mutual TLS when
+  `Config.TLS` is non-nil. `tls.NewListener` wraps the raw TCP
+  listener so a handshake without a valid client cert is refused
+  before the HTTP mux is ever consulted. Token-file remains
+  optional once mTLS is configured — the client certificate IS
+  the credential — though operators may keep `tokenFile` set for
+  defence in depth. The `Start` precondition is updated
+  accordingly: a TCP listener now requires `Token != ""` OR
+  `TLS != nil`. The unix-socket listener is unaffected
+  (filesystem permissions remain the auth boundary there).
+- `cmd/vesseld/cli`: `vesseld run` accepts `--cert`, `--key`, and
+  `--client-ca` flags that override the corresponding YAML
+  fields. The three follow an all-or-none contract — passing any
+  of them implies the operator wants mTLS, so the resulting plan
+  must end up with all three refs populated (either from
+  matching YAML fields or from sibling flags) or the daemon
+  refuses to start. Drop-in workflow: dev workstations swap
+  certs without editing the manifest, production deployments
+  keep everything in YAML.
 - `cmd/vesseld/secrets`: new URL-keyed `Provider` abstraction +
   `env://NAME`, `file:///abs/path`, and `vault://server/path?key=…`
   backends, plus a `Multi` router and a `Default()` constructor that

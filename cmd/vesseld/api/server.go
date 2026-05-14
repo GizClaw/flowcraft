@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -35,10 +36,24 @@ type Config struct {
 	Listen string
 
 	// Token is the bearer token TCP requests must present in the
-	// Authorization header. Required when Listen is non-empty;
-	// the runtime layer reads the token-file and passes its
-	// contents here.
+	// Authorization header. Required when Listen is non-empty and
+	// TLS is nil (no mTLS); the runtime layer reads the token-file
+	// and passes its contents here. Optional when TLS is non-nil:
+	// the client certificate IS the credential, though operators
+	// may still configure a token for defence in depth.
 	Token string
+
+	// TLS, when non-nil, terminates mutual TLS on the TCP
+	// listener. The Config must have a non-empty Certificates
+	// slice, a ClientCAs pool, and ClientAuth set to
+	// RequireAndVerifyClientCert; the tlsconfig package builds
+	// such a Config from the resolver DaemonMTLSPlan.
+	//
+	// The unix-socket listener is unaffected by this field —
+	// filesystem permissions are the auth boundary there and
+	// wrapping it in TLS would surprise local clients without
+	// any security gain.
+	TLS *tls.Config
 
 	// Version is the daemon version string returned by /v1/version.
 	Version string
@@ -101,12 +116,21 @@ func (s *Server) Start(ctx context.Context) error {
 		go s.serveListener("unix", l)
 	}
 	if s.cfg.Listen != "" {
-		if s.cfg.Token == "" {
-			return fmt.Errorf("vesseld api: TCP listener requires a non-empty token")
+		if s.cfg.Token == "" && s.cfg.TLS == nil {
+			return fmt.Errorf("vesseld api: TCP listener requires a non-empty token or a non-nil TLS config")
 		}
 		l, err := net.Listen("tcp", s.cfg.Listen)
 		if err != nil {
 			return fmt.Errorf("vesseld api: bind tcp %s: %w", s.cfg.Listen, err)
+		}
+		if s.cfg.TLS != nil {
+			// tls.NewListener wraps the underlying TCP listener so
+			// every accepted connection is handshake-terminated
+			// before the HTTP server ever sees it. A handshake
+			// without a valid client cert (per ClientAuth =
+			// RequireAndVerifyClientCert in tlsconfig) fails at
+			// this layer and the request never reaches the mux.
+			l = tls.NewListener(l, s.cfg.TLS)
 		}
 		s.listeners = append(s.listeners, l)
 		go s.serveListener("tcp", l)
