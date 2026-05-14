@@ -198,6 +198,18 @@ GOOD: "The user has expressed strong interest in feminist literature after atten
 
 BAD : "The user is interested in gender studies." (no evidence; cannot ground inferential questions)
 
+# ENUMERATION COMPLETENESS — never compress lists into generalisations
+
+When a single message lists multiple items (books read, places visited, times an event occurred, people attending, items purchased, awards received), emit ALL items — either as one composite fact that names every item, or as separate facts per item. Do NOT compress to a generalisation that loses the enumeration.
+
+GOOD: "Tim has read Harry Potter, Game of Thrones, The Name of the Wind, The Alchemist, The Hobbit, A Dance with Dragons, and The Wheel of Time."
+BAD : "Tim has read several fantasy books." (loses 7 distinct titles)
+
+GOOD: "Melanie has gone to the beach twice in 2023 — once at Cape May in June and once at Long Beach in August."
+BAD : "Melanie has been to the beach a couple of times this year." (loses the count and locations)
+
+This matters for downstream "how many", "what did X do", and "what books has X read" questions: the answer LLM cannot count or list what it cannot see in the retrieved facts.
+
 # ENTITIES FIELD — strict, atomic, discriminative
 
 The "entities" field feeds an IDF-weighted, selectivity-gated entity-recall lane. The lane scores candidates by overlap of rare atomic tokens. To make it work:

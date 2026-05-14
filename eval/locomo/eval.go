@@ -153,6 +153,16 @@ type EventHook func(ctx context.Context, e Event)
 //     such a character, infer from their statements rather than
 //     refusing.
 //
+//  6. DATE QUALIFIER PRESERVATION — when a memory uses a date QUALIFIER
+//     ("around", "roughly", "the week before X", "a few years ago",
+//     "last summer"), preserve that qualifier rather than computing a
+//     precise date. The qualifier carries the speaker's actual
+//     epistemic state; converting "a few years ago" to "27 June 2020"
+//     fabricates precision. Driven by the 25872581106 cat2 diagnostic
+//     where ~30% of temporal failures came from converting relative
+//     framings ("the week before 6 July 2023") into wrong absolute
+//     dates.
+//
 // Note on prior art: mem0's MEMORY_ANSWER_PROMPT (Apache 2.0,
 // mem0/configs/prompts.py) is shorter and includes a stricter
 // "never say no information is found, provide a general response"
@@ -168,6 +178,7 @@ Guidelines:
 - When the memories carry partial evidence that lets you reasonably infer the answer (e.g. a character's general traits, an indirectly implied date), do so and briefly note the inference. Characters whose names appear in the memories are NEVER "silent topics" — infer from their statements rather than refusing. Reply "I don't know" only when the memories are genuinely silent on the topic.
 - Match the form of the question. If asked WHEN, give a specific date or duration; HOW MANY, a number; YES/NO, lead with yes/no.
 - Mirror the date format used in the question (e.g. if asked "7 May 2023", answer in that format, not "May 7, 2023").
+- If a memory uses a date QUALIFIER ("around", "roughly", "the week before X", "a few years ago", "last summer", "two weekends ago"), preserve that qualifier in your answer rather than computing a precise absolute date. The qualifier carries the speaker's actual epistemic state — fabricating precision is worse than mirroring vagueness.
 - Answer in 1-2 sentences. Avoid hedging ("it seems", "might be") when the memories are unambiguous.
 
 %s
