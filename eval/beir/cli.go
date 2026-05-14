@@ -155,13 +155,13 @@ Example:
 	f.IntVar(&limitQueries, "limit-queries", 0, "evaluate only the first N queries (0 = all)")
 	f.IntVar(&overfetch, "overfetch", DefaultOverfetchFactor,
 		"chunk over-fetch factor applied before chunks→docID collapse "+
-			"(1 = top-K chunks only; useful for ablation but typically "+
-			"degrades sum-pool quality since fewer chunks to aggregate)")
+			"(1 = top-K chunks only; useful for ablation)")
 	f.StringVar(&collapseStrategy, "collapse-strategy", string(DefaultCollapseStrategy),
-		"chunk→doc aggregation: sum (default; re-aggregates multi-keyword "+
-			"BM25 signal across chunks of the same doc) | max (keep best "+
-			"chunk per doc; loses split-keyword signal) | first (keep "+
-			"first chunk per doc in score-desc order)")
+		"chunk→doc aggregation: max (default; most stable on length-"+
+			"skewed corpora) | sum (length-biased on scifact, kept for "+
+			"ablation) | first (legacy; keep first hit per doc in "+
+			"score-desc order). See eval/beir/beir.go CollapseStrategy "+
+			"doc for the scifact ablation table and tracking issue #126.")
 
 	parent.AddCommand(cmd)
 }

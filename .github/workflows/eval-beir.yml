@@ -44,9 +44,9 @@ on:
         required: false
         default: "4"
       collapse_strategy:
-        description: "Chunk→doc aggregation: sum (default) | max | first"
+        description: "Chunk→doc aggregation: max (default; stable on length-skewed corpora) | sum (ablation; length-biased) | first (legacy)"
         required: false
-        default: "sum"
+        default: "max"
       notify_progress_pct:
         description: "Feishu milestone resolution (% of work; 0=off)"
         required: false

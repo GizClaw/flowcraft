@@ -213,26 +213,34 @@ type Options struct {
 
 	// CollapseStrategy selects how chunk scores are aggregated when
 	// collapsing chunks→docID. The BEIR protocol expects doc-level
-	// ranking (qrels are doc-level), so some aggregation is mandatory;
-	// the choice between max-pool and sum-pool is a known empirical
-	// trade-off (see #126).
+	// ranking (qrels are doc-level), so some aggregation is mandatory.
 	//
-	//   - CollapseSum (default): sum chunk scores per docID. Re-
-	//     aggregates the multi-keyword signal that chunk-level BM25
-	//     splits across chunks. Standard Pyserini / ColBERT BEIR
-	//     adapter behaviour.
+	// scifact ablation (BM25 lane, 300 test queries):
 	//
-	//   - CollapseMax: keep highest-scoring chunk per docID. Rank-
-	//     stable but loses signal whose keywords are distributed
-	//     across chunks. We empirically measured a 0.18 nDCG@10 floor
-	//     on scifact with this strategy vs 0.679 public BM25
-	//     baseline — useful as an ablation reference, not for
-	//     headline numbers.
+	//   strategy   overfetch   nDCG@10   recall@100   note
+	//   max            4         0.180       0.255    default
+	//   max            8         0.152       0.212    extra chunks dilute the best-chunk signal
+	//   sum            4         0.054       0.207    length-biased on scifact
+	//
+	// Sum-pool was attempted on the textbook "re-aggregate multi-
+	// keyword signal split across chunks" reasoning, but on scifact
+	// it backfired: long non-relevant docs accumulate noise across
+	// many chunks and outrank short relevant docs. Both numbers
+	// remain far below the Lucene/Anserini doc-level BM25 baseline
+	// (0.679) because the underlying retrieval path is chunk-level
+	// by design; closing that gap requires a doc-level Search API
+	// in sdk/knowledge (tracked in #126), not adapter-side tweaks.
+	//
+	//   - CollapseMax (default): keep highest-scoring chunk per
+	//     docID. Most stable on length-skewed corpora.
+	//
+	//   - CollapseSum: sum chunk scores per docID. Kept for
+	//     ablation; biased toward long docs on length-skewed
+	//     corpora like scifact.
 	//
 	//   - CollapseFirst: keep first hit per docID in score-desc order
-	//     (== max-pool for backend that returns score-desc Hits, but
-	//     does not require the backend to populate Hit.Score). Kept
-	//     for legacy parity; prefer CollapseMax or CollapseSum.
+	//     (== max-pool for backends that return score-desc Hits, but
+	//     does not require Hit.Score to be populated). Legacy.
 	CollapseStrategy CollapseStrategy
 
 	Hook        EventHook
@@ -254,9 +262,10 @@ const (
 const DefaultOverfetchFactor = 4
 
 // DefaultCollapseStrategy is the aggregation function used when
-// Options.CollapseStrategy is empty. Sum-pool is the BEIR-conformant
-// default; see CollapseStrategy doc for the alternatives.
-const DefaultCollapseStrategy = CollapseSum
+// Options.CollapseStrategy is empty. Max-pool is the most stable
+// choice on length-skewed corpora; see CollapseStrategy doc for the
+// ablation data.
+const DefaultCollapseStrategy = CollapseMax
 
 // LaneReport's field names deliberately mirror eval/knowledge's
 // LaneReport — same NDCG/Recall/MRR/LatencyP50/LatencyP95 layout —
