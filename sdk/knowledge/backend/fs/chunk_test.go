@@ -255,6 +255,165 @@ func TestChunkRepo_UTF8Content(t *testing.T) {
 	}
 }
 
+func TestChunkRepo_SearchDocs_ImplementsDocLevelSearcher(t *testing.T) {
+	r, _ := newChunkRepo(t)
+	if _, ok := any(r).(knowledge.DocLevelSearcher); !ok {
+		t.Fatalf("FSChunkRepo must implement knowledge.DocLevelSearcher")
+	}
+}
+
+func TestChunkRepo_SearchDocs_AggregatesAcrossChunks(t *testing.T) {
+	// A doc whose query keywords are SPLIT across two chunks must
+	// outrank a non-relevant doc that dense-hits one of those
+	// keywords in a single chunk. This is the exact failure mode of
+	// max-pool chunk-collapse documented in #126; doc-level scoring
+	// folds the per-chunk evidence into one doc score.
+	r, _ := newChunkRepo(t)
+	ctx := context.Background()
+	if err := r.Replace(ctx, "ds", "rel.md", []knowledge.DerivedChunk{
+		chunk("rel.md", 0, "alpha bravo charlie"),
+		chunk("rel.md", 1, "delta echo foxtrot"),
+	}); err != nil {
+		t.Fatalf("replace rel: %v", err)
+	}
+	if err := r.Replace(ctx, "ds", "noise.md", []knowledge.DerivedChunk{
+		chunk("noise.md", 0, "alpha alpha alpha zulu"),
+	}); err != nil {
+		t.Fatalf("replace noise: %v", err)
+	}
+
+	cands, err := r.SearchDocs(ctx, knowledge.ChunkQuery{
+		DatasetIDs: []string{"ds"},
+		Text:       "alpha foxtrot",
+		Mode:       knowledge.ModeBM25,
+		TopK:       5,
+	})
+	if err != nil {
+		t.Fatalf("search docs: %v", err)
+	}
+	if len(cands) < 2 {
+		t.Fatalf("expected both docs, got %d", len(cands))
+	}
+	// Exactly one Hit per doc; ChunkIndex must be -1; Layer empty.
+	seen := map[string]int{}
+	for _, c := range cands {
+		seen[c.Hit.DocName]++
+		if c.Hit.ChunkIndex != -1 {
+			t.Fatalf("doc-level hit has ChunkIndex %d, want -1", c.Hit.ChunkIndex)
+		}
+		if c.Hit.Layer != "" {
+			t.Fatalf("doc-level hit has Layer %q, want \"\"", c.Hit.Layer)
+		}
+	}
+	for name, n := range seen {
+		if n != 1 {
+			t.Fatalf("docName %q surfaced %d times, want 1", name, n)
+		}
+	}
+	// rel.md should outrank noise.md: it covers BOTH keywords (one
+	// per chunk → tf=1 each at doc level for both terms), whereas
+	// noise.md only covers foxtrot once and alpha 3x — but alpha has
+	// half the IDF since both docs contain it.
+	if cands[0].Hit.DocName != "rel.md" {
+		t.Fatalf("top doc = %q, want rel.md; full ranking = %+v",
+			cands[0].Hit.DocName, cands)
+	}
+}
+
+func TestChunkRepo_SearchDocs_NoDoubleCountAcrossChunksOfSameDoc(t *testing.T) {
+	// A query whose keyword appears in N chunks of the same doc must
+	// still produce exactly ONE doc-level hit for that doc.
+	r, _ := newChunkRepo(t)
+	ctx := context.Background()
+	if err := r.Replace(ctx, "ds", "a.md", []knowledge.DerivedChunk{
+		chunk("a.md", 0, "alpha"),
+		chunk("a.md", 1, "alpha"),
+		chunk("a.md", 2, "alpha"),
+	}); err != nil {
+		t.Fatalf("replace: %v", err)
+	}
+	cands, err := r.SearchDocs(ctx, knowledge.ChunkQuery{
+		DatasetIDs: []string{"ds"},
+		Text:       "alpha",
+		Mode:       knowledge.ModeBM25,
+		TopK:       5,
+	})
+	if err != nil {
+		t.Fatalf("search docs: %v", err)
+	}
+	if len(cands) != 1 {
+		t.Fatalf("expected 1 doc-level hit, got %d (cands=%+v)", len(cands), cands)
+	}
+	if cands[0].Hit.DocName != "a.md" {
+		t.Fatalf("docName = %q, want a.md", cands[0].Hit.DocName)
+	}
+}
+
+func TestChunkRepo_SearchDocs_RebuildsOnReplace(t *testing.T) {
+	// Doc-level state must be rebuilt by Replace just like the
+	// chunk-level index; stale docs must not surface after their
+	// last chunk is removed.
+	r, _ := newChunkRepo(t)
+	ctx := context.Background()
+	if err := r.Replace(ctx, "ds", "a.md", []knowledge.DerivedChunk{
+		chunk("a.md", 0, "alpha"),
+	}); err != nil {
+		t.Fatalf("replace v1: %v", err)
+	}
+	cands, _ := r.SearchDocs(ctx, knowledge.ChunkQuery{
+		DatasetIDs: []string{"ds"}, Text: "alpha", Mode: knowledge.ModeBM25, TopK: 5,
+	})
+	if len(cands) != 1 {
+		t.Fatalf("pre-replace: got %d, want 1", len(cands))
+	}
+	if err := r.Replace(ctx, "ds", "a.md", []knowledge.DerivedChunk{
+		chunk("a.md", 0, "epsilon"),
+	}); err != nil {
+		t.Fatalf("replace v2: %v", err)
+	}
+	cands, _ = r.SearchDocs(ctx, knowledge.ChunkQuery{
+		DatasetIDs: []string{"ds"}, Text: "alpha", Mode: knowledge.ModeBM25, TopK: 5,
+	})
+	if len(cands) != 0 {
+		t.Fatalf("post-replace stale: %+v", cands)
+	}
+	cands, _ = r.SearchDocs(ctx, knowledge.ChunkQuery{
+		DatasetIDs: []string{"ds"}, Text: "epsilon", Mode: knowledge.ModeBM25, TopK: 5,
+	})
+	if len(cands) != 1 {
+		t.Fatalf("post-replace new term not found: %+v", cands)
+	}
+}
+
+func TestChunkRepo_SearchDocs_SurvivesPersistLoadRoundtrip(t *testing.T) {
+	// Doc-level index is derived state; a freshly-loaded repo must
+	// rebuild it correctly from the persisted chunks file.
+	r, ws := newChunkRepo(t)
+	ctx := context.Background()
+	if err := r.Replace(ctx, "ds", "a.md", []knowledge.DerivedChunk{
+		chunk("a.md", 0, "alpha bravo"),
+		chunk("a.md", 1, "charlie delta"),
+	}); err != nil {
+		t.Fatalf("replace: %v", err)
+	}
+	r2 := NewChunkRepo(ws, "kb", &textsearch.SimpleTokenizer{})
+	if err := r2.Load(ctx); err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	cands, err := r2.SearchDocs(ctx, knowledge.ChunkQuery{
+		DatasetIDs: []string{"ds"},
+		Text:       "alpha charlie",
+		Mode:       knowledge.ModeBM25,
+		TopK:       5,
+	})
+	if err != nil {
+		t.Fatalf("post-load search: %v", err)
+	}
+	if len(cands) != 1 || cands[0].Hit.DocName != "a.md" {
+		t.Fatalf("post-load doc-level search = %+v", cands)
+	}
+}
+
 func TestChunkRepo_LegacyEmptyModeIsBM25(t *testing.T) {
 	r, _ := newChunkRepo(t)
 	ctx := context.Background()

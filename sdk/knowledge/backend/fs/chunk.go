@@ -32,22 +32,60 @@ type chunkPosting struct {
 	dl       int
 }
 
+// docPosting is a per-term occurrence inside the in-memory doc-level
+// inverted index. Built by aggregating chunk-level tokens per docName at
+// installState time (no separate retokenize pass).
+type docPosting struct {
+	docIdx int // index into datasetState.docs
+	tf     int
+}
+
+// docEntry records a docName plus its aggregated token-length, in the
+// order docs are first seen during installState. This is the doc-level
+// analogue of datasetState.chunks.
+type docEntry struct {
+	docName string
+	dl      int // total tokens summed across this doc's chunks
+}
+
 // datasetState keeps the live inverted index plus vector map for one dataset.
 //
 // Replace and Search synchronise on the parent FSChunkRepo's mu; the
 // state itself never holds its own lock. This avoids fine-grained
 // locking races and keeps reasoning simple.
+//
+// Two parallel BM25 indices are maintained:
+//
+//   - Chunk-level (chunks / stats / inverted): primary RAG retrieval
+//     unit. ChunkRepo.Search uses this.
+//   - Doc-level (docs / docStats / docInverted): used by SearchDocs to
+//     produce a doc-level ranking against doc-level qrels (e.g. BEIR).
+//     Doc-level TF, doc length and DocFreq are derived by summing
+//     chunk-level token contributions per docName; ChunkOverlap induces
+//     a small (<= overlap/chunk_size) duplicate-count offset that is
+//     applied uniformly to every doc and therefore does not affect
+//     intra-corpus ranking (#126).
 type datasetState struct {
+	// chunk-level
 	chunks   []knowledge.DerivedChunk
 	stats    *textsearch.CorpusStats
 	inverted map[string][]chunkPosting
+
+	// doc-level (derived from chunks at install time)
+	docs        []docEntry
+	docByName   map[string]int
+	docStats    *textsearch.CorpusStats
+	docInverted map[string][]docPosting
 }
 
 // newDatasetState builds an empty state with corpus stats initialised.
 func newDatasetState() *datasetState {
 	return &datasetState{
-		stats:    textsearch.NewCorpusStats(),
-		inverted: make(map[string][]chunkPosting),
+		stats:       textsearch.NewCorpusStats(),
+		inverted:    make(map[string][]chunkPosting),
+		docByName:   make(map[string]int),
+		docStats:    textsearch.NewCorpusStats(),
+		docInverted: make(map[string][]docPosting),
 	}
 }
 
@@ -121,15 +159,7 @@ func (r *FSChunkRepo) loadDataset(ctx context.Context, datasetID string) error {
 	if err := json.Unmarshal(data, &file); err != nil {
 		return fmt.Errorf("knowledge/fs: parse chunks %s: %w", datasetID, err)
 	}
-	state := newDatasetState()
-	tok := r.resolveTokenizer()
-	for _, c := range file.Chunks {
-		idx := len(state.chunks)
-		state.chunks = append(state.chunks, c)
-		tokens := tok.Tokenize(c.Content)
-		state.stats.AddDocument(tokens)
-		addToInverted(state.inverted, idx, tokens)
-	}
+	state := r.buildState(file.Chunks)
 	r.mu.Lock()
 	r.states[datasetID] = state
 	r.mu.Unlock()
@@ -227,18 +257,64 @@ func (r *FSChunkRepo) persistDataset(ctx context.Context, datasetID string, chun
 // installState rebuilds the live in-memory state from the canonical
 // chunks slice (the just-persisted version).
 func (r *FSChunkRepo) installState(datasetID string, chunks []knowledge.DerivedChunk) {
+	state := r.buildState(chunks)
+	r.mu.Lock()
+	r.states[datasetID] = state
+	r.mu.Unlock()
+}
+
+// buildState constructs a datasetState (both chunk-level and doc-level
+// indices) from a chunk slice. Single tokenize pass per chunk; doc-level
+// stats are derived inline from the per-chunk token streams.
+func (r *FSChunkRepo) buildState(chunks []knowledge.DerivedChunk) *datasetState {
 	tok := r.resolveTokenizer()
 	state := newDatasetState()
+
+	// Per-doc accumulators kept around for the whole walk so we can
+	// emit doc-level postings only once, after every chunk has been
+	// folded in. Doing this inline avoids retokenizing the corpus.
+	docTF := make(map[string]map[string]int)
+	docLen := make(map[string]int)
+	docOrder := make([]string, 0)
+
 	for _, c := range chunks {
 		idx := len(state.chunks)
 		state.chunks = append(state.chunks, c)
 		tokens := tok.Tokenize(c.Content)
 		state.stats.AddDocument(tokens)
 		addToInverted(state.inverted, idx, tokens)
+
+		dn := c.DocName
+		if _, seen := docTF[dn]; !seen {
+			docTF[dn] = make(map[string]int)
+			docOrder = append(docOrder, dn)
+		}
+		for _, t := range tokens {
+			docTF[dn][t]++
+		}
+		docLen[dn] += len(tokens)
 	}
-	r.mu.Lock()
-	r.states[datasetID] = state
-	r.mu.Unlock()
+
+	// Materialise doc-level state in first-seen order so docIdx is
+	// stable across rebuilds when the chunk slice ordering is stable.
+	totalDL := 0.0
+	for _, dn := range docOrder {
+		dl := docLen[dn]
+		docIdx := len(state.docs)
+		state.docs = append(state.docs, docEntry{docName: dn, dl: dl})
+		state.docByName[dn] = docIdx
+		totalDL += float64(dl)
+
+		state.docStats.DocCount++
+		for term, tf := range docTF[dn] {
+			state.docStats.DocFreq[term]++
+			state.docInverted[term] = append(state.docInverted[term], docPosting{docIdx: docIdx, tf: tf})
+		}
+	}
+	if state.docStats.DocCount > 0 {
+		state.docStats.AvgLength = totalDL / float64(state.docStats.DocCount)
+	}
+	return state
 }
 
 // Search runs the requested mode against the in-memory index. Vector
@@ -358,6 +434,116 @@ func scoreBM25(datasetID string, state *datasetState, keywords []string) []knowl
 				Score:      sc,
 				ChunkIndex: c.Index,
 				Sig:        c.Sig,
+			},
+		})
+	}
+	return out
+}
+
+// SearchDocs runs a doc-level BM25 query against the dataset.
+//
+// This is the doc-granularity counterpart of Search: instead of
+// returning one Candidate per matching chunk (which forces callers like
+// eval/beir to collapse chunks→docID themselves), SearchDocs scores
+// every doc as a whole and returns at most one Candidate per matching
+// docName. ChunkIndex is set to -1 and Layer is left empty in the
+// resulting Hit, signalling "doc-level, no specific chunk".
+//
+// Vector / Hybrid modes are not supported at the doc level yet (vectors
+// are chunk-embedded by design); ModeVector/ModeHybrid currently fall
+// back to BM25-only doc scoring with a soft error log. Tracked in #126.
+func (r *FSChunkRepo) SearchDocs(ctx context.Context, q knowledge.ChunkQuery) ([]knowledge.Candidate, error) {
+	if q.TopK <= 0 {
+		q.TopK = 5
+	}
+	mode := knowledge.ResolveMode(q.Mode)
+
+	type snapshot struct {
+		datasetID string
+		state     *datasetState
+	}
+	var snaps []snapshot
+
+	r.mu.RLock()
+	if len(q.DatasetIDs) == 0 {
+		for id, st := range r.states {
+			snaps = append(snaps, snapshot{datasetID: id, state: st})
+		}
+	} else {
+		for _, id := range q.DatasetIDs {
+			if st, ok := r.states[id]; ok {
+				snaps = append(snaps, snapshot{datasetID: id, state: st})
+			}
+		}
+	}
+	r.mu.RUnlock()
+
+	tok := r.resolveTokenizer()
+	var keywords []string
+	if mode == knowledge.ModeBM25 || mode == knowledge.ModeHybrid {
+		keywords = textsearch.ExtractKeywords(q.Text, tok)
+	}
+
+	var out []knowledge.Candidate
+	for _, sn := range snaps {
+		if err := ctx.Err(); err != nil {
+			return nil, errdefs.FromContext(err)
+		}
+		if mode == knowledge.ModeBM25 || mode == knowledge.ModeHybrid {
+			out = append(out, scoreBM25Docs(sn.datasetID, sn.state, keywords)...)
+		}
+		// ModeVector / ModeHybrid: doc-level vector scoring is not yet
+		// supported. Doing chunk-vector + collapse here would silently
+		// re-create the BEIR-adapter problem we are fixing. Tracked
+		// in #126.
+	}
+
+	sort.SliceStable(out, func(i, j int) bool { return out[i].Hit.Score > out[j].Hit.Score })
+	if q.TopK > 0 && len(out) > q.TopK*2 {
+		out = out[:q.TopK*2]
+	}
+	return out, nil
+}
+
+// scoreBM25Docs runs BM25 against the doc-level inverted index. Same
+// k1/b parameters as scoreBM25, just one tier up.
+func scoreBM25Docs(datasetID string, state *datasetState, keywords []string) []knowledge.Candidate {
+	if state == nil || len(keywords) == 0 || len(state.docInverted) == 0 {
+		return nil
+	}
+	const (
+		k1 = 1.2
+		b  = 0.75
+	)
+	avgDL := state.docStats.AvgLength
+	if avgDL <= 0 {
+		avgDL = 1
+	}
+	scores := make(map[int]float64)
+	for _, kw := range keywords {
+		postings, ok := state.docInverted[kw]
+		if !ok {
+			continue
+		}
+		df := state.docStats.DocFreq[kw]
+		n := float64(state.docStats.DocCount)
+		idf := math.Log((n-float64(df)+0.5)/(float64(df)+0.5) + 1.0)
+		for _, p := range postings {
+			dl := float64(state.docs[p.docIdx].dl)
+			tfNorm := float64(p.tf) * (k1 + 1) / (float64(p.tf) + k1*(1-b+b*dl/avgDL))
+			scores[p.docIdx] += idf * tfNorm
+		}
+	}
+	out := make([]knowledge.Candidate, 0, len(scores))
+	for idx, sc := range scores {
+		d := state.docs[idx]
+		out = append(out, knowledge.Candidate{
+			Source: "bm25",
+			Hit: knowledge.Hit{
+				DatasetID:  datasetID,
+				DocName:    d.docName,
+				Score:      sc,
+				ChunkIndex: -1, // doc-level, no specific chunk
 			},
 		})
 	}

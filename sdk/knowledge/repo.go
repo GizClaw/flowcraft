@@ -41,6 +41,22 @@ type ChunkRepo interface {
 	Search(ctx context.Context, q ChunkQuery) ([]Candidate, error)
 }
 
+// DocLevelSearcher is an OPTIONAL extension that ChunkRepo
+// implementations may also satisfy. When supported, the backend can
+// answer searches at doc-level granularity (one Candidate per docName,
+// scored over the whole document rather than per chunk), avoiding the
+// chunks→docID collapse that callers (e.g. eval/beir) would otherwise
+// have to implement themselves.
+//
+// Service.SearchDocuments type-asserts the configured ChunkRepo to this
+// interface; backends that do not implement it will surface a clear
+// error from SearchDocuments rather than silently fall back to a
+// chunk-level + collapse strategy (which is exactly what landing this
+// interface was meant to retire). See #126 for the rationale.
+type DocLevelSearcher interface {
+	SearchDocs(ctx context.Context, q ChunkQuery) ([]Candidate, error)
+}
+
 // LayerQuery is the recall input for layer-tier searches.
 type LayerQuery struct {
 	DatasetIDs []string
