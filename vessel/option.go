@@ -194,6 +194,25 @@ func WithCheckpointStore(store engine.CheckpointStore) Option {
 	return func(c *config) { c.checkpointStore = store }
 }
 
+// WithSessionStore wires the [SessionStore] used to provision a
+// per-run [workspace.Workspace] for every dispatched agent.Run.
+//
+// When set, the Captain calls store.Open(runCtx, runID) at the start
+// of Submit and stashes the returned Workspace onto runCtx so engines
+// / tools can reach it via [WorkspaceFromContext]; store.Close is
+// invoked on the vessel baseCtx when the run terminates so cleanup
+// survives a runCtx cancellation.
+//
+// When omitted, [WorkspaceFromContext] returns (nil, false) inside
+// every run — tools that need a workspace must fall back to their
+// own wiring. There is intentionally no default SessionStore: making
+// every Captain own a temporary directory would surprise callers who
+// never asked for one, and the choice between in-memory vs. on-disk
+// is workload-dependent.
+func WithSessionStore(store SessionStore) Option {
+	return func(c *config) { c.sessionStore = store }
+}
+
 // WithBaseContext sets the parent context every Submit / Call
 // inherits from. The default is context.Background(); supplying a
 // scoped parent lets the caller propagate a tenant / request id
@@ -225,6 +244,7 @@ type config struct {
 	llmResolver     llm.LLMResolver
 	historyOverride history.History
 	checkpointStore engine.CheckpointStore
+	sessionStore    SessionStore
 
 	baseCtx context.Context
 }

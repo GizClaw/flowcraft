@@ -216,6 +216,30 @@ compare/fetch/ingest`, `eval longmemeval convert`). Shell completion
   mount integration is gated on the RFC that needs to align with
   `sdk/workspace`'s ScopedWorkspace contract.
 
+#### vessel
+
+- `vessel.SessionStore` + `WithSessionStore` option: per-run
+  filesystem boundary for every dispatched `agent.Run`. The
+  Captain calls `store.Open(runCtx, runID)` at the start of
+  Submit / Resume, stashes the returned `workspace.Workspace` on
+  runCtx, and invokes `store.Close(baseCtx, runID)` when the run
+  terminates (baseCtx so cleanup survives a runCtx cancellation).
+  Engines / tools reach the per-run workspace via the new
+  `vessel.WorkspaceFromContext(ctx)` helper, which falls back to
+  `(nil, false)` when no store was wired so call sites can degrade
+  gracefully. Ships with two implementations: `MemorySessionStore`
+  (in-process `MemWorkspace` per run, data discarded on Close —
+  for tests and ephemeral demos) and `FilesystemSessionStore`
+  (`<root>/<runID>/` directory tree, data preserved on Close so a
+  CheckpointStore-backed Resume can reach the on-disk state an
+  interrupted run left behind). The exported `ValidateRunID`
+  helper enforces a strict `[A-Za-z0-9_-]+` allow-list on runIDs
+  before they reach the filesystem path component, rejecting `.`,
+  `..`, `/`, and `\` so a hostile runID cannot escape the store
+  root. There is no default SessionStore: the Captain only opens a
+  session when one is wired, because the choice between in-memory
+  and on-disk is workload-dependent.
+
 ### Fixed
 
 #### sdkx
