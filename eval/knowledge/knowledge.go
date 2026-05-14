@@ -28,7 +28,9 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/sdk/knowledge"
+	"github.com/GizClaw/flowcraft/sdk/knowledge/backend/fs"
 	"github.com/GizClaw/flowcraft/sdk/knowledge/factory"
+	"github.com/GizClaw/flowcraft/sdk/retrieval/memory"
 	"github.com/GizClaw/flowcraft/sdk/workspace"
 )
 
@@ -359,18 +361,27 @@ func Run(ctx context.Context, ds *Dataset, opts Options) (*Report, error) {
 	return rep, nil
 }
 
-// buildService spins up a fresh in-memory workspace + Service. The
+// buildService spins up a fresh in-memory workspace + Service backed
+// by the retrieval backend (chunks/layers in sdk/retrieval/memory,
+// documents in FSDocumentRepo on a workspace.MemWorkspace). The
 // embedder is wired only when non-nil — a nil embedder produces a
 // BM25-only Service that still answers ModeBM25 queries correctly but
 // returns empty results for ModeVector / ModeHybrid (we surface those
 // as Skipped lanes upstream rather than crashing).
+//
+// We avoid factory.NewLocal here: FSChunkRepo's O(N) per-ingest cost
+// (see #134) is not visible at this corpus size (~100 docs) but using
+// the same backend choice across eval suites keeps regressions
+// detected by either suite reproducible on the same code path.
 func buildService(opts Options) (*knowledge.Service, error) {
 	ws := workspace.NewMemWorkspace()
-	var localOpts []factory.LocalOption
+	docs := fs.NewDocumentRepo(ws, fs.DefaultPrefix)
+	idx := memory.New()
+	var retOpts []factory.RetrievalOption
 	if opts.Embedder != nil {
-		localOpts = append(localOpts, factory.WithLocalEmbedder(opts.Embedder, opts.DatasetID))
+		retOpts = append(retOpts, factory.WithRetrievalEmbedder(opts.Embedder, opts.DatasetID))
 	}
-	return factory.NewLocal(ws, localOpts...), nil
+	return factory.NewRetrieval(docs, idx, retOpts...), nil
 }
 
 // ingest puts every dataset document into svc under datasetID.
