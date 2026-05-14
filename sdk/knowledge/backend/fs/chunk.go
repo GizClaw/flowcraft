@@ -169,11 +169,25 @@ func (r *FSChunkRepo) loadDataset(ctx context.Context, datasetID string) error {
 // Replace atomically swaps every chunk for (datasetID, docName). The
 // in-memory index is rebuilt from the merged chunk set and the dataset
 // chunks.json is written atomically.
+//
+// The full read-merge-persist-install sequence runs under the write
+// lock. The pre-fix layout dropped the lock between read-merge and
+// install so persist (slow IO) could overlap other Replace calls; that
+// races against any concurrent Replace because both goroutines see the
+// SAME pre-mutation state, build conflicting merged slices, and
+// whichever installs last silently drops the other's chunks. Observed
+// on BEIR scifact: ingest_concurrency=8 lost ~60% of docs vs ingest=1,
+// dragging chunk-level BM25 nDCG@10 from 0.180 to 0.071 (see
+// eval/leaderboard.md follow-up). Correctness wins over the
+// persist-out-of-lock micro-optimisation; callers that need higher
+// throughput should batch upstream.
 func (r *FSChunkRepo) Replace(ctx context.Context, datasetID, docName string, chunks []knowledge.DerivedChunk) error {
 	if datasetID == "" || docName == "" {
 		return errdefs.Validationf("knowledge/fs: dataset_id and doc_name are required")
 	}
 	r.mu.Lock()
+	defer r.mu.Unlock()
+
 	state, ok := r.states[datasetID]
 	if !ok {
 		state = newDatasetState()
@@ -190,23 +204,27 @@ func (r *FSChunkRepo) Replace(ctx context.Context, datasetID, docName string, ch
 		c.DocName = docName
 		merged = append(merged, c)
 	}
-	r.mu.Unlock()
 
 	if err := r.persistDataset(ctx, datasetID, merged); err != nil {
 		return err
 	}
-	r.installState(datasetID, merged)
+	r.states[datasetID] = r.buildState(merged)
 	return nil
 }
 
 // DeleteByDoc removes every chunk for (datasetID, docName).
+//
+// Same locking discipline as Replace: read-mutate-persist-install runs
+// under the write lock so concurrent Delete + Replace cannot lose
+// docs by racing on a stale state snapshot.
 func (r *FSChunkRepo) DeleteByDoc(ctx context.Context, datasetID, docName string) error {
 	if datasetID == "" || docName == "" {
 		return errdefs.Validationf("knowledge/fs: dataset_id and doc_name are required")
 	}
-	r.mu.RLock()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
 	state, ok := r.states[datasetID]
-	r.mu.RUnlock()
 	if !ok {
 		return nil
 	}
@@ -219,7 +237,7 @@ func (r *FSChunkRepo) DeleteByDoc(ctx context.Context, datasetID, docName string
 	if err := r.persistDataset(ctx, datasetID, merged); err != nil {
 		return err
 	}
-	r.installState(datasetID, merged)
+	r.states[datasetID] = r.buildState(merged)
 	return nil
 }
 
@@ -252,15 +270,6 @@ func (r *FSChunkRepo) persistDataset(ctx context.Context, datasetID string, chun
 		return fmt.Errorf("knowledge/fs: marshal chunks %s: %w", datasetID, err)
 	}
 	return atomicWrite(ctx, r.ws, path, payload)
-}
-
-// installState rebuilds the live in-memory state from the canonical
-// chunks slice (the just-persisted version).
-func (r *FSChunkRepo) installState(datasetID string, chunks []knowledge.DerivedChunk) {
-	state := r.buildState(chunks)
-	r.mu.Lock()
-	r.states[datasetID] = state
-	r.mu.Unlock()
 }
 
 // buildState constructs a datasetState (both chunk-level and doc-level
