@@ -200,3 +200,102 @@ func containsNamePrefix(names []string, prefix string) bool {
 	}
 	return false
 }
+
+// TestEntityRecall_IDFPrefersRareAtoms is the regression test for the
+// LoCoMo 25865344372 collapse: when the entity lane fired naively,
+// every doc containing a high-frequency calendar atom ("tuesday")
+// got the same overlap=1 score, drowning the few docs that also
+// matched a rare proper noun ("lgbtq"). IDF weighting must rank the
+// rare-atom doc strictly above docs that match only the common atom.
+func TestEntityRecall_IDFPrefersRareAtoms(t *testing.T) {
+	ctx := context.Background()
+	idx := memory.New()
+	ns := "ns"
+	now := time.Now()
+
+	docs := make([]retrieval.Doc, 0, 25)
+	// 20 facts each carry the common atom "tuesday" but nothing else
+	// distinctive. Without IDF the entity lane would return any of
+	// these (sorted only by timestamp) as a plausible top-1.
+	for i := 0; i < 20; i++ {
+		docs = append(docs, retrieval.Doc{
+			ID:        "common-" + string(rune('a'+i)),
+			Content:   "miscellaneous tuesday note",
+			Metadata:  map[string]any{"entities": []any{"tuesday"}},
+			Timestamp: now,
+		})
+	}
+	// 1 fact carries the rare atom "lgbtq" alongside "tuesday".
+	// IDF must lift this above the common-only docs.
+	docs = append(docs, retrieval.Doc{
+		ID:        "rare",
+		Content:   "caroline joined the lgbtq group on tuesday",
+		Metadata:  map[string]any{"entities": []any{"tuesday", "lgbtq", "caroline"}},
+		Timestamp: now,
+	})
+	if err := idx.Upsert(ctx, ns, docs); err != nil {
+		t.Fatal(err)
+	}
+
+	// Manually construct the state because we're testing the recall
+	// stage in isolation, not the full LTM pipeline.
+	st := &State{
+		Request:       &retrieval.SearchRequest{TopK: 5},
+		Index:         idx,
+		Namespace:     ns,
+		QueryEntities: []string{"tuesday", "lgbtq"},
+	}
+	hits, err := runEntityRecall(ctx, st, *st.Request, RetrieveSpec{Mode: ModeEntity, TopK: 5})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hits) == 0 {
+		t.Fatalf("expected entity hits, got 0")
+	}
+	if hits[0].Doc.ID != "rare" {
+		t.Fatalf("expected rare-atom doc first, got %v", hits[0].Doc.ID)
+	}
+	// The rare doc's score must exceed any common-only doc by at
+	// least the IDF gap of "lgbtq" (which appears in 1/21 docs).
+	rare := hits[0].Score
+	for _, h := range hits[1:] {
+		if h.Doc.ID == "rare" {
+			continue
+		}
+		if h.Score >= rare {
+			t.Fatalf("common-only doc %q tied or beat rare doc: %.3f vs %.3f",
+				h.Doc.ID, h.Score, rare)
+		}
+	}
+}
+
+// TestEntityRecall_DropsZeroIDFMatches asserts that docs which only
+// match query atoms appearing in every namespace doc are dropped
+// from the lane — keeping them would let RRF rank-vote them in
+// regardless, which is the pre-IDF failure mode.
+func TestEntityRecall_DropsZeroIDFMatches(t *testing.T) {
+	ctx := context.Background()
+	idx := memory.New()
+	ns := "ns"
+	now := time.Now()
+	for i := 0; i < 5; i++ {
+		_ = idx.Upsert(ctx, ns, []retrieval.Doc{{
+			ID:        "only-tuesday-" + string(rune('a'+i)),
+			Metadata:  map[string]any{"entities": []any{"tuesday"}},
+			Timestamp: now,
+		}})
+	}
+	st := &State{
+		Request:       &retrieval.SearchRequest{TopK: 5},
+		Index:         idx,
+		Namespace:     ns,
+		QueryEntities: []string{"tuesday"},
+	}
+	hits, err := runEntityRecall(ctx, st, *st.Request, RetrieveSpec{Mode: ModeEntity, TopK: 5})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hits) != 0 {
+		t.Fatalf("expected zero hits when all candidates match only a corpus-universal atom, got %d", len(hits))
+	}
+}

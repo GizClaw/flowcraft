@@ -2,7 +2,9 @@ package pipeline
 
 import (
 	"context"
+	"math"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -147,50 +149,7 @@ func runOneRecall(ctx context.Context, st *State, _ string, spec RetrieveSpec) (
 			return nil, nil
 		}
 	case ModeEntity:
-		if len(st.QueryEntities) == 0 {
-			return nil, nil
-		}
-		entities := make([]any, 0, len(st.QueryEntities))
-		for _, e := range st.QueryEntities {
-			entities = append(entities, e)
-		}
-		entityFilter := retrieval.Filter{ContainsAny: map[string][]any{"entities": entities}}
-		mergedFilter := mergeFilter(req.Filter, entityFilter)
-		listResp, err := st.Index.List(ctx, st.Namespace, retrieval.ListRequest{
-			Filter:   mergedFilter,
-			PageSize: spec.TopK,
-		})
-		if err != nil || listResp == nil {
-			return nil, err
-		}
-		// Score the entity lane by overlap count so downstream fusion
-		// stages (WeightedFusion / RRF) have a real signal to work
-		// with. Without this every entity hit looks identical and the
-		// lane behaves as a binary filter.
-		qSet := make(map[string]struct{}, len(st.QueryEntities))
-		for _, e := range st.QueryEntities {
-			qSet[e] = struct{}{}
-		}
-		hits := make([]retrieval.Hit, 0, len(listResp.Items))
-		for _, d := range listResp.Items {
-			overlap := 0
-			for _, e := range docEntities(d) {
-				if _, ok := qSet[e]; ok {
-					overlap++
-				}
-			}
-			score := float64(overlap)
-			if score == 0 {
-				score = 1 // matched the filter but no exact normalised hit
-			}
-			hits = append(hits, retrieval.Hit{
-				Doc:    d,
-				Score:  score,
-				Scores: map[string]float64{"entity": score},
-			})
-		}
-		sort.SliceStable(hits, func(i, j int) bool { return hits[i].Score > hits[j].Score })
-		return hits, nil
+		return runEntityRecall(ctx, st, req, spec)
 	}
 	resp, err := st.Index.Search(ctx, st.Namespace, req)
 	if err != nil || resp == nil {
@@ -216,6 +175,150 @@ func runOneRecall(ctx context.Context, st *State, _ string, spec RetrieveSpec) (
 	}
 	sort.SliceStable(out, func(i, j int) bool { return out[i].Score > out[j].Score })
 	return out, nil
+}
+
+// entityCandidatePageSize caps how many entity-matching docs we
+// rerank client-side per recall. Raw overlap-count scoring was
+// indifferent to which docs the backend returned first; IDF scoring
+// is not, because the highest-IDF doc may sit deep in the
+// timestamp-ordered List page. Picking a wide page-size avoids
+// silently dropping high-signal candidates to the page boundary.
+// The actual cost on the in-memory backend is one map scan; for
+// production backends this becomes "scan up to N candidates per
+// recall" which is bounded by the per-namespace fact count.
+const entityCandidatePageSize = 1000
+
+// runEntityRecall implements the entity-lane recall with corpus-IDF
+// weighting. The previous overlap-count scorer behaved well only when
+// the entity lane was effectively dead (case-sensitive ContainsAny
+// vs lowercased query atoms never fired in production) — once
+// sdk/recall.NormalizeEntities atomised stored phrases at ingest and
+// the filter started firing, the lane immediately surfaced high-
+// frequency calendar atoms ("tuesday", "morning", "meeting") as
+// top-ranked matches, polluting RRF fusion and dropping LoCoMo
+// qa.judge by ~21 pp.
+//
+// IDF weighting fixes this by valuing each query atom by how rare it
+// is in the namespace under the request's existing scope filter:
+//
+//	idf(atom) = log( (N + 1) / (df(atom) + 1) )
+//
+// where N is the total docs visible to the request filter and df is
+// the count of docs whose `entities` metadata contains `atom`. The
+// +1 smoothing avoids divide-by-zero and keeps an atom that appears
+// in every doc at exactly zero weight rather than negative.
+//
+// Cost: O(len(QueryEntities) + 1) cheap List(PageSize=1) calls to
+// build the IDF table, plus one List(PageSize=entityCandidatePageSize)
+// to retrieve candidates. On the in-memory backend the cheap calls
+// touch only the term-frequency aggregate (Total field) and skip
+// page materialisation.
+func runEntityRecall(ctx context.Context, st *State, req retrieval.SearchRequest, spec RetrieveSpec) ([]retrieval.Hit, error) {
+	if len(st.QueryEntities) == 0 {
+		return nil, nil
+	}
+	// 1. Universe size (under the request's pre-existing scope filter).
+	nResp, err := st.Index.List(ctx, st.Namespace, retrieval.ListRequest{
+		Filter:   req.Filter,
+		PageSize: 1,
+	})
+	if err != nil {
+		return nil, err
+	}
+	N := int64(0)
+	if nResp != nil {
+		N = nResp.Total
+	}
+	if N < 1 {
+		N = 1
+	}
+
+	// 2. Per-atom df. We resolve atoms case-insensitively against
+	//    stored entities by lowercasing both sides; QueryEntities is
+	//    already lowercase courtesy of dedupStringsLower in
+	//    EntityExtract, so we only need to normalise the query side
+	//    on the way in.
+	idfs := make(map[string]float64, len(st.QueryEntities))
+	for _, e := range st.QueryEntities {
+		atom := strings.ToLower(strings.TrimSpace(e))
+		if atom == "" {
+			continue
+		}
+		if _, seen := idfs[atom]; seen {
+			continue
+		}
+		dfFilter := mergeFilter(req.Filter, retrieval.Filter{
+			ContainsAny: map[string][]any{"entities": {atom}},
+		})
+		dfResp, err := st.Index.List(ctx, st.Namespace, retrieval.ListRequest{
+			Filter:   dfFilter,
+			PageSize: 1,
+		})
+		if err != nil {
+			continue
+		}
+		df := int64(0)
+		if dfResp != nil {
+			df = dfResp.Total
+		}
+		idfs[atom] = math.Log(float64(N+1) / float64(df+1))
+	}
+	if len(idfs) == 0 {
+		return nil, nil
+	}
+
+	// 3. Materialise candidates (union of any-atom-match) and rank
+	//    client-side by IDF-weighted overlap.
+	atomsAny := make([]any, 0, len(idfs))
+	for a := range idfs {
+		atomsAny = append(atomsAny, a)
+	}
+	entityFilter := retrieval.Filter{ContainsAny: map[string][]any{"entities": atomsAny}}
+	mergedFilter := mergeFilter(req.Filter, entityFilter)
+	listResp, err := st.Index.List(ctx, st.Namespace, retrieval.ListRequest{
+		Filter:   mergedFilter,
+		PageSize: entityCandidatePageSize,
+	})
+	if err != nil || listResp == nil {
+		return nil, err
+	}
+
+	hits := make([]retrieval.Hit, 0, len(listResp.Items))
+	for _, d := range listResp.Items {
+		seen := make(map[string]struct{})
+		score := 0.0
+		for _, raw := range docEntities(d) {
+			a := strings.ToLower(strings.TrimSpace(raw))
+			if a == "" {
+				continue
+			}
+			if _, dup := seen[a]; dup {
+				continue
+			}
+			seen[a] = struct{}{}
+			if w, ok := idfs[a]; ok && w > 0 {
+				score += w
+			}
+		}
+		if score <= 0 {
+			// Filter matched (so at least one query atom is in this
+			// doc's entities) but every matching atom had IDF ≤ 0,
+			// i.e. appears in every doc. Skip — keeping it at zero
+			// would still let RRF pull it in via rank, which is the
+			// pre-IDF failure mode we are fixing.
+			continue
+		}
+		hits = append(hits, retrieval.Hit{
+			Doc:    d,
+			Score:  score,
+			Scores: map[string]float64{"entity_idf": score},
+		})
+	}
+	sort.SliceStable(hits, func(i, j int) bool { return hits[i].Score > hits[j].Score })
+	if spec.TopK > 0 && len(hits) > spec.TopK {
+		hits = hits[:spec.TopK]
+	}
+	return hits, nil
 }
 
 // liftRecall promotes Recalls[Lane] into Final, letting subsequent stages
