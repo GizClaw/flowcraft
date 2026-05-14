@@ -73,14 +73,18 @@ EM** (which requires full-string equality). F1 is the standard
 token-overlap form. Numbers from a harness that uses strict EM are
 not directly comparable.
 
-### C. Default extractor prompt is LoCoMo-specialised
+### C. Extractor prompt is the SDK default (no LoCoMo overlay)
 
-`LocoMoExtractorPrompt` asks the LLM extractor for "100+ facts per
-30-session conversation" and "embed dates inline". This is reasonable
-for any long-dialog memory task — any production deployment would
-write a similar prompt — but it is more aggressive than a
-domain-neutral default would be. `--tuned-prompts=false` switches to
-the SDK's neutral default; running both forms a useful A/B.
+The LoCoMo runner intentionally does NOT override
+`sdk/recall.DefaultExtractPrompt`. The SDK default already encodes
+every architectural rule a long-term memory extractor needs
+(self-containedness, atomic entities, composite-fact rule for
+multi-hop, inference-evidence rule for preferences, canonical
+cross-reference naming) — those rules are derived from FlowCraft's
+retrieval pipeline (entity lane, single-pass answer LLM, NormalizeEntities),
+not from LoCoMo's question categories. Keeping the eval prompt in
+lockstep with the SDK default removes the silent-drift risk between
+eval scores and production deployments.
 
 ### D. Default judge style is `locomo` (lenient)
 

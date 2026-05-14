@@ -27,16 +27,16 @@ import (
 type LTMOption func(*ltmConfig)
 
 type ltmConfig struct {
-	recallTopK       int
-	bm25Weight       float64
-	entityBoost      float64
-	scoreThreshold   float64
-	supersededFactor float64
-	halfLife         time.Duration
-	limit            int
-	reranker         Reranker
-	entityExtract    EntityExtract
-	slotCollapse     bool
+	recallTopK               int
+	bm25Weight               float64
+	entityBoost              float64
+	scoreThreshold           float64
+	supersededFactor         float64
+	halfLife                 time.Duration
+	limit                    int
+	reranker                 Reranker
+	entityExtract            EntityExtract
+	slotCollapse             bool
 	multiRecall              bool
 	bm25LaneTopK             int
 	entityLaneTopK           int

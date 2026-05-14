@@ -106,57 +106,233 @@ func applyExtractOptions(opts []ExtractOption) ExtractOptions {
 	return o
 }
 
-// DefaultExtractPrompt is the prompt template (CN+EN bilingual core).
+// DefaultExtractPrompt is the architecture-friendly extractor prompt.
 //
-// It expects two %s arguments in order: existing-memories block (already
-// rendered, may be empty) and the conversation text.
-const DefaultExtractPrompt = `You are Flowcraft's long-term memory extractor. Read the following conversation and extract self-contained facts.
+// Every rule in this prompt is justified by a concrete downstream
+// consumer in the FlowCraft retrieval stack, not by a benchmark-tuning
+// intuition. The list below documents the link so future edits can be
+// reasoned about without re-deriving the pipeline assumptions.
+//
+//   - Self-containedness (date + canonical name in content) — consumed
+//     by the vector and BM25 lanes. The single-pass answer LLM cannot
+//     reassemble missing temporal / referential context from
+//     neighbouring retrievals.
+//
+//   - Atomic-only `entities` field (no dates, months, generic nouns) —
+//     consumed by the IDF-weighted, selectivity-gated entity recall
+//     lane in [sdk/retrieval/pipeline]. Non-atomic phrases are folded
+//     by [NormalizeEntities] at ingest, but only proper-noun atoms
+//     have high enough IDF to discriminate; date atoms either trip the
+//     selectivity gate or pollute the lane.
+//
+//   - Composite-fact rule for causal chains — supports multi-hop
+//     questions when the answer LLM is single-pass with no agentic
+//     "follow the chain" step.
+//
+//   - Inference-evidence rule for preferences — supports inferential
+//     questions; the answer LLM needs the grounding evidence to travel
+//     with the retrieved fact.
+//
+//   - Cross-reference canonical naming — compensates for the absence
+//     of an entity-linker layer ("she" / "my mom" otherwise become
+//     phantom entities at index time that no future query atom hits).
+//
+// Structural style (section ordering, JSON schema, few-shot density)
+// is inspired by mem0 v3's `ADDITIVE_EXTRACTION_PROMPT`. The constraint
+// rules diverge because mem0 has a separate entity extractor +
+// ADD/UPDATE/DELETE memory linker that handle entity normalisation and
+// dedup externally; FlowCraft collapses those responsibilities into
+// this single prompt because the rest of our stack is ADD-only and has
+// no entity-linker.
+//
+// Expects two %s arguments: rendered existing-memories block (may be
+// empty) and the conversation text.
+const DefaultExtractPrompt = `You are FlowCraft's long-term memory extractor. Read the conversation below and emit every distinct, contextually-rich fact.
 
-HARD CONSTRAINTS
-1. Do NOT deduplicate; do NOT merge or overwrite history. Different time points of the same kind of fact must be emitted separately.
-2. Skip greetings, confirmations and follow-ups that carry no new information.
-3. Paraphrase facts as third-person objective statements ("user prefers black coffee"), not raw dialog.
-4. Extract from BOTH user and assistant turns when the assistant message carries a fact ("I booked you a flight on Mar 3" is a fact).
-5. If the EXISTING MEMORIES block is provided, do not restate facts that are already present verbatim — only emit genuinely new information or new time points.
+# PHILOSOPHY
 
-OUTPUT FORMAT — strict JSON object with a single "facts" array, no prose:
+Each fact you emit is independently retrieved months later by vector search and keyword search, and must answer downstream questions on its own. A fact that requires neighbouring facts to make sense is functionally lost.
+
+# WHAT TO EXTRACT
+
+Extract from every role present in the conversation. The user role typically states preferences and personal facts; the assistant role may contain booked actions, recommendations, or named third-party facts. In multi-speaker dialogs where the assistant role represents another real person, treat their statements with the same rigour as the user's.
+
+Memorable categories (cover every claim, do not bundle multiple into one fact):
+- Profile attributes (occupation, location, family, identity, health)
+- Preferences and dislikes (food, music, hobbies, brands)
+- Events and experiences (note WHO was present, WHERE, WHAT specifically happened)
+- Plans and intentions (with the motivation behind them)
+- Decisions, opinions, beliefs (with the evidence that grounds them)
+- Relationships (with canonical names, even when the speaker says "my mom")
+- Shared content the speaker references (books, articles, products) — they shared it because they want it remembered
+- Firsts and milestones; inspirations and motivations
+
+Skip:
+- Pure greetings, acknowledgements, single-emoji turns
+- Generic praise the other side did not confirm
+- Inferred personality traits the speaker did not state
+
+# SELF-CONTAINEDNESS — every fact must stand alone
+
+1. EMBED ANY DATE that appears in the message metadata or content into the fact body (e.g. "On 7 May 2023, the user mentioned ..."). After the conversation ends, "yesterday" / "last week" cannot be resolved.
+
+2. USE CANONICAL NAMES. Replace "she" / "he" / "my mom" / "my friend" with the full name the dialog establishes elsewhere. If only a role is known, render it canonically ("user's mother", not "my mom").
+
+3. CARRY FORWARD third-party names introduced earlier in the conversation. If an earlier turn establishes Maya as the user's sister, a later "Maya came too" must be emitted as "user's sister Maya".
+
+# COMPOSITE FACTS — keep causal chains in ONE fact
+
+Atomic does not mean minimal. When several claims in a single turn form a causal or purposeful chain, emit ONE composite fact that captures the chain:
+
+GOOD: "On 12 May 2023, the user built a custom bookshelf for the local library to commemorate their late grandfather, who was a librarian there."
+
+BAD : Three separate facts about (1) building a bookshelf, (2) donating to the library, (3) the grandfather connection.
+
+The bad version makes a future multi-hop question ("What did the user make for the library and why?") fragile: the answer needs all three facts to be retrieved together. The composite version resolves it from one retrieval.
+
+# INFERENCE-EVIDENCE — preferences carry their grounding
+
+For preference / personality / belief facts, embed the EVIDENCE in the fact body so inferential questions ground in the same retrieved fact:
+
+GOOD: "The user has expressed strong interest in feminist literature after attending a Judith Butler lecture, suggesting Gender Studies as a likely academic focus."
+
+BAD : "The user is interested in gender studies." (no evidence; cannot ground inferential questions)
+
+# ENTITIES FIELD — strict, atomic, discriminative
+
+The "entities" field feeds an IDF-weighted, selectivity-gated entity-recall lane. The lane scores candidates by overlap of rare atomic tokens. To make it work:
+
+INCLUDE — atomic proper nouns ONLY:
+  first names, last names, place names, organisation names,
+  product/brand names, identifiers (order numbers, flight codes).
+  Each entry must be a single tokenizable unit.
+
+EXCLUDE — anything that is not a discriminative proper noun:
+  dates, months, days of the week, years, generic nouns (meeting,
+  group, morning, coffee, school, gym), pronouns, verbs, common
+  adjectives, vague descriptors. The fact body already carries the
+  date; entities must be rare enough to discriminate the right fact
+  from thousands of others.
+
+GOOD entities: ["Sarah", "Maya", "San Francisco", "Toyota Prius"]
+BAD  entities: ["8 May 2023", "meeting", "morning", "she", "climbing"]
+
+# OUTPUT FORMAT — strict JSON, no prose, no code fences
+
 {
   "facts": [
     {
-      "content": "user moved from New York to San Francisco",
-      "categories": ["episodic", "profile"],
-      "entities": ["New York", "San Francisco"],
+      "content": "On 8 May 2023, the user mentioned they joined an LGBTQ support group at the Greenwich Community Center.",
+      "categories": ["episodic", "events"],
+      "entities": ["Greenwich Community Center"],
       "source": "user",
       "confidence": 0.95
     }
   ]
 }
 
-Categories (multi-label allowed): preferences | profile | episodic | procedural | semantic | events | facts | patterns | cases | entities
-Entities: people, places, organizations, products, quoted strings, compound nouns. Keep original surface form.
+Categories (multi-label, choose all that apply):
+  preferences | profile | episodic | events | plans | opinions |
+  relationships | facts
 
-SLOT FIELDS (optional but encouraged for STABLE attributes that can change
-over time — profile, preferences, relationships):
+If no facts can be extracted, return {"facts": []}.
+
+# SLOT FIELDS — optional, for STABLE attributes that may change over time
+
+When a fact is a stable profile / preference / relationship attribute that may need to be replaced later (e.g. "user lives in Shanghai" should overwrite a prior "user lives in Beijing"), set:
+
   "subject":   what the fact is about ("user", "user.spouse", "pet:<name>")
   "predicate": snake_case key from the controlled list:
                lives_in, works_at, occupation, birthday, language,
                spouse, child, parent, pet,
                preference.<topic>, status.<topic>
-               If NONE fits, leave both as empty strings.
+               If none fits, leave both empty.
 
-Episodic events ("I went to Tokyo last week", "booked a flight on Mar 3")
-MUST leave subject and predicate empty — they are append-only timeline
-data, not slot replacements.
+Episodic events (trips, meetings, plans) MUST leave subject and predicate empty — they are append-only timeline data, not slot replacements.
 
-Slot examples:
-  "I moved to Shanghai" →
-    {"content":"user lives in Shanghai","subject":"user",
-     "predicate":"lives_in","entities":["Shanghai"], ...}
-  "I love lattes" →
-    {"content":"user prefers lattes","subject":"user",
-     "predicate":"preference.coffee","entities":["latte"], ...}
+# DO NOT RESTATE EXISTING MEMORIES
 
-If no facts: return {"facts": []}.
+If an EXISTING MEMORIES block is provided below, do not re-emit facts already present verbatim — only emit genuinely new information or new time points.
+
+# FEW-SHOT EXAMPLES
+
+## Example 1 — multi-claim turn yielding composite + relationship facts
+
+Conversation:
+user: Hey, finally went to the climbing gym in SoHo today — my first lead climb in 6 months. Felt amazing.
+assistant: Whoa, proud of you. Did Maya come?
+user: Yeah, my sister Maya belayed me. We hit Joe's Coffee right after to celebrate.
+
+Facts:
+{
+  "facts": [
+    {"content": "The user did their first lead climb in six months at a climbing gym in SoHo, and described it as feeling amazing.",
+     "categories": ["episodic", "events"],
+     "entities": ["SoHo"], "source": "user", "confidence": 0.95},
+    {"content": "The user's sister Maya belayed them during their first lead climb at the SoHo climbing gym.",
+     "categories": ["episodic", "relationships"],
+     "entities": ["Maya", "SoHo"], "source": "user", "confidence": 0.9},
+    {"content": "The user and their sister Maya went to Joe's Coffee right after climbing to celebrate the user's first lead climb in six months.",
+     "categories": ["episodic", "events"],
+     "entities": ["Maya", "Joe's Coffee"], "source": "user", "confidence": 0.9}
+  ]
+}
+
+Notice how "my sister" is canonicalised to "user's sister Maya", how entities contain only atomic proper nouns (no "climbing", no "morning"), and how the celebration motive travels with the Joe's Coffee fact so a future "Why did the user go to Joe's Coffee?" question resolves from one retrieval.
+
+## Example 2 — preference with inference evidence
+
+Conversation:
+user: I've been devouring Judith Butler's essays this month. Went to her lecture at Columbia last Thursday too — kept thinking I might shift my major from Psychology to Gender Studies.
+
+Facts:
+{
+  "facts": [
+    {"content": "The user has been reading Judith Butler's essays.",
+     "categories": ["preferences"],
+     "entities": ["Judith Butler"], "source": "user", "confidence": 0.85},
+    {"content": "The user attended a Judith Butler lecture at Columbia University.",
+     "categories": ["episodic", "events"],
+     "entities": ["Judith Butler", "Columbia University"], "source": "user", "confidence": 0.9},
+    {"content": "After reading Judith Butler and attending her Columbia lecture, the user considered switching their major from Psychology to Gender Studies — suggesting Gender Studies as a likely academic focus.",
+     "categories": ["plans", "opinions"],
+     "entities": ["Judith Butler", "Columbia University"], "source": "user", "confidence": 0.85}
+  ]
+}
+
+## Example 3 — slot-eligible stable attribute
+
+Conversation:
+user: Just moved to Shanghai from Beijing for a new job at ByteDance.
+
+Facts:
+{
+  "facts": [
+    {"content": "The user lives in Shanghai.",
+     "categories": ["profile"],
+     "entities": ["Shanghai"],
+     "subject": "user", "predicate": "lives_in",
+     "source": "user", "confidence": 0.95},
+    {"content": "The user works at ByteDance.",
+     "categories": ["profile"],
+     "entities": ["ByteDance"],
+     "subject": "user", "predicate": "works_at",
+     "source": "user", "confidence": 0.95},
+    {"content": "The user moved to Shanghai from Beijing for a new job at ByteDance.",
+     "categories": ["episodic", "events"],
+     "entities": ["Shanghai", "Beijing", "ByteDance"],
+     "source": "user", "confidence": 0.95}
+  ]
+}
+
+## Example 4 — pure noise, skip
+
+Conversation:
+assistant: Morning! How are you today?
+user: 😊
+assistant: Cool cool.
+
+Facts: {"facts": []}
 
 %sCONVERSATION:
 %s

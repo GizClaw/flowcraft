@@ -168,9 +168,13 @@ Example (LLM extractor + LLM answer + LLM judge + Qwen embedder):
 				ScoreThreshold:   scoreThreshold,
 				MultiRecall:      multiRecall,
 			}
-			if tunedPrompts {
-				rOpts.ExtractPrompt = LocoMoExtractorPrompt
-			}
+			// Extractor prompt is intentionally not overridden here: every
+			// architectural rule that helps LoCoMo (self-containedness,
+			// atomic entities, composite facts, inference-evidence,
+			// canonical naming) lives in sdk/recall.DefaultExtractPrompt
+			// so SDK consumers get the same benefit. Re-introducing a
+			// LoCoMo-only overlay would risk silent drift between eval
+			// numbers and production behaviour.
 			r, err := flowcraft.New(rOpts)
 			if err != nil {
 				return fmt.Errorf("runner: %w", err)
