@@ -19,7 +19,7 @@ on:
         required: false
         default: "azure_gpt54"
       domain:
-        description: "Bundled domain pack: retail | airline | all"
+        description: "Domain: retail | airline | all (bundled mini packs) OR sierra-retail | sierra-airline (Sierra official 115/50 task set; requires upstream_tasks + upstream_initial_state)"
         required: false
         default: "retail"
       upstream_tasks:
