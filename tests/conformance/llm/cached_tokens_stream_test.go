@@ -16,14 +16,20 @@ import (
 )
 
 // pkgMetricReader is the package-level OTel ManualReader installed
-// once via TestMain. It exists for one reason: the streaming half of
-// the LLM API surface (sdkx/llm/{openai,anthropic,bytedance}/stream.go
-// → finish() → llm.RecordLLMMetrics) is the only public observable
-// for TokenUsage.CachedInputTokens on the stream path. The
-// llm.StreamMessage interface returns a minimal Usage{Input,Output}
-// (sdk/model/message.go:255) that does not surface the cache field —
-// asserting via stream.Usage() therefore cannot regress-protect the
-// stream finish path.
+// once via TestMain. It exists because this test asserts on
+// llm.RecordLLMMetrics counters as the regression surface for the
+// streaming half of the LLM API (sdkx/llm/{openai,anthropic,
+// bytedance}/stream.go → finish() → RecordLLMMetrics).
+//
+// Historical note: stream.Usage() used to return a minimal
+// Usage{Input,Output} that did not surface CachedInputTokens, so
+// the OTel counter was the only public observable for stream-path
+// cache stats. As of #136 the model.Usage struct carries
+// CachedInputTokens too, but this conformance module is pinned to
+// an older sdk version and still treats the counter as authoritative.
+// Once the module bumps sdk past #136, an additional
+// stream.Usage().CachedInputTokens assertion is straightforward to
+// add as a second, cheaper regression layer.
 //
 // The OTel global meter delegation rebinds package-level instruments
 // only on the FIRST SetMeterProvider call per process (see
@@ -89,21 +95,20 @@ func counterSumByProvider(t *testing.T, name, providerName string) int64 {
 // traffic in the framework's primary callers (sdk/agent, copilot
 // dispatcher, run-loop nodes) flows through GenerateStream. The
 // per-adapter stream finish() functions latch CachedInputTokens
-// through a SEPARATE code path (s.cachedInputTokens shadow field
-// + finish()-time TokenUsage construction) than the synchronous
-// adapter.Generate, so a regression in the stream-side latching
-// would not be caught by TestProviders_PromptCacheHitRate.
+// through a separate code path than the synchronous adapter.Generate,
+// so a regression in the stream-side latching would not be caught by
+// TestProviders_PromptCacheHitRate.
 //
-// Specifically, the gap users have hit in production:
+// Specifically, the gaps users have hit in production:
 //
-//   - sdkx/llm/openai/stream.go:196 latches
+//   - sdkx/llm/openai/stream.go latches
 //     chunk.Usage.PromptTokensDetails.CachedTokens onto
-//     s.cachedInputTokens, then stream.go:222→234 packages it into
+//     s.usage.CachedInputTokens, then finish() packages it into
 //     llm.TokenUsage.CachedInputTokens for RecordLLMMetrics. If any
-//     of these three steps regress (SDK rename, refactor drops the
-//     plumbing, finish() forgets to read the shadow), the
-//     synchronous Generate path remains unaffected — but the
-//     cached-tokens metric vanishes for every streaming caller.
+//     step regresses (SDK rename, refactor drops the plumbing,
+//     finish() forgets to read the field), the synchronous Generate
+//     path remains unaffected — but the cached-tokens metric
+//     vanishes for every streaming caller.
 //   - sdkx/llm/anthropic/stream.go has TWO finish paths (stable +
 //     beta JSON-mode) each with their own latching site, doubling
 //     the surface a sync-only test would miss.
@@ -112,16 +117,14 @@ func counterSumByProvider(t *testing.T, name, providerName string) int64 {
 //     PR added it back; that bug shipped to production undetected
 //     because no stream-path metric coverage existed.
 //
-// Why we observe via the OTel ManualReader rather than
-// stream.Usage(): the StreamMessage.Usage() return type is
-// model.Usage (sdk/model/message.go:255), a minimal pair
-// {InputTokens, OutputTokens}. The cache breakdown is intentionally
-// kept off the streaming-call hot path (avoiding mutex traffic for
-// callers that don't observe it), so the metric counter is the
-// *only* public observable for stream-path CachedInputTokens.
-// Asserting on the counter is what the user actually wants
-// regression-protected anyway — the bug report was "the metric
-// never prints", not "stream.Usage().Cached is wrong".
+// We observe via the OTel ManualReader (counter) because this
+// conformance module is pinned to an older sdk version whose
+// model.Usage did not expose CachedInputTokens — the metric was the
+// only public observable. Post-#136 the streaming Usage() also
+// carries the field, so once this module's sdk pin is bumped a
+// second assertion on stream.Usage().CachedInputTokens is a cheap
+// way to catch adapter-side regressions before they reach the
+// telemetry boundary.
 func TestProviders_PromptCacheHitRate_Stream(t *testing.T) {
 	stableSystem := buildStableSystemPrompt()
 
