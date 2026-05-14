@@ -517,43 +517,56 @@ tendency to overwrite memory entries it deems "outdated".
 | multilingual-e5-large           | dense (multi-lingual)           |                 **0.7041** |                     0.9387 | [intfloat/multilingual-e5-large HF model-index YAML](https://huggingface.co/intfloat/multilingual-e5-large/blob/main/README.md)                                                                                                                                             |
 | BGE-M3 (dense mode)             | dense (multi-lingual, long-doc) | `[not published per-task]` | `[not published per-task]` | [BGE-M3 paper](https://arxiv.org/abs/2402.03216) publishes BEIR-avg only; SciFact breakdown not in the [HF model card](https://huggingface.co/BAAI/bge-m3) (no `model-index` YAML). Pull from [MTEB leaderboard](https://huggingface.co/spaces/mteb/leaderboard) if needed. |
 | OpenAI text-embedding-3-large   | dense                           | `[not published per-task]` | `[not published per-task]` | [OpenAI embedding blog](https://openai.com/index/new-embedding-models-and-api-updates/) only publishes MTEB-avg 64.6 and MIRACL-avg 54.9; no SciFact breakdown. Community-submitted MTEB results circulate but lack a canonical author-blessed citation.                    |
-| **FlowCraft (chunk-level BM25)** | sparse / lexical, chunk-level | **0.180** †          | 0.255 †                  | run [`25839108340`](https://github.com/GizClaw/flowcraft/actions/runs/25839108340); `--lanes bm25 --collapse-strategy max --overfetch 4 --root /var/lib/flowcraft-eval/datasets/scifact` |
+| **FlowCraft (doc-level BM25, `retrieval` backend)** | sparse / lexical, doc-level | **0.6725** | **0.9076** | run [`25851783774`](https://github.com/GizClaw/flowcraft/actions/runs/25851783774); `--lanes bm25 --root /var/lib/flowcraft-eval/datasets/scifact --ingest_concurrency 8` (sdk v0.3.14) |
 | **FlowCraft (vector / hybrid)** | dense / hybrid                  |                `[pending]` |                `[pending]` | same, with `--embedder qwen:text-embedding-v4`                                                                                                                                                                                                                              |
 
-† **Not directly comparable to the Anserini / Lucene baseline above.**
-FlowCraft's retrieval path is **chunk-level by design**
-(`sdk/knowledge/backend/fs`): each scifact abstract is split into
-≤512-rune chunks, BM25 ranks chunks, and the BEIR adapter collapses
-them to a doc-level ranking against the doc-level qrels. Lucene's
-0.665 is **doc-level** BM25 over the full abstract. The ~0.5
-absolute-nDCG gap is the cost of chunking, not a defect in our BM25
-implementation. A native doc-level Search API is tracked in
-[#126](https://github.com/GizClaw/flowcraft/issues/126); once it
-lands we expect this row to close most of the gap.
+**Reading the FlowCraft row**: 0.6725 nDCG@10 / 0.9076 Recall@100
+matches Anserini's Lucene BM25 baseline (0.665 nDCG@10) within
+noise — both implementations score against doc-level BM25 corpus
+stats (DocCount = 5,183 logical docs, AvgLength = avg doc length).
+We get there via the `sdk/knowledge/backend/retrieval` adapter
+backed by `sdk/retrieval/memory`, which since
+[#143](https://github.com/GizClaw/flowcraft/pull/143) maintains a
+dedicated `__docs` namespace alongside the per-chunk namespace
+inside the same `retrieval.Index` and routes `SearchDocuments`
+queries through it. MRR was 0.6352, errors = 0, ingest wall-clock
+~10 min @ `ingest_concurrency=8`.
 
-**chunks→docID aggregation ablation** (BM25 lane, scifact, 300 test queries):
-
-| `--collapse-strategy` | `--overfetch` | run                                                                            | nDCG@10    | recall@100 | comment                                           |
-| --------------------- | ------------: | ------------------------------------------------------------------------------ | ---------: | ---------: | ------------------------------------------------- |
-| max (default)         | 4             | [`25839108340`](https://github.com/GizClaw/flowcraft/actions/runs/25839108340) | **0.180**  | 0.255      | most stable on length-skewed corpora              |
-| max                   | 8             | [`25839125186`](https://github.com/GizClaw/flowcraft/actions/runs/25839125186) | 0.152      | 0.212      | extra chunks dilute the best-chunk signal         |
-| sum                   | 4             | [`25840471567`](https://github.com/GizClaw/flowcraft/actions/runs/25840471567) | 0.054      | 0.207      | length-biased: long non-rel docs accumulate noise |
-
-We initially expected sum-pool to recover multi-keyword signal split
-across chunks (the Pyserini / ColBERT default), but on scifact's
-length-skewed abstract collection it backfires — long irrelevant
-docs accumulate small per-chunk scores across many chunks and
-outrank short relevant docs. Both numbers remain well below the
-Lucene doc-level baseline because the bottleneck is the chunk-level
-retrieval path, not the aggregation function. See
+**Why this row is new** — earlier results on this row (`0.180`
+nDCG@10 from run [`25839108340`](https://github.com/GizClaw/flowcraft/actions/runs/25839108340)
+and the chunks→docID `max` / `sum` / `first` aggregation ablation)
+used the `fs` backend's chunk-level Search path with adapter-side
+collapse. That path is mathematically incapable of recovering
+doc-level BM25 (the BM25 IDF term `log((N − df + 0.5) / (df + 0.5) + 1)`
+is highly nonlinear in `N`, and sum/max-pooling chunk-level scores
+cannot recover the doc-level signal — see
 [#126](https://github.com/GizClaw/flowcraft/issues/126) for the
-follow-up.
+math). [#134](https://github.com/GizClaw/flowcraft/issues/134)
+chartered the fix; the now-merged
+[#127](https://github.com/GizClaw/flowcraft/pull/127) and
+[#143](https://github.com/GizClaw/flowcraft/pull/143) deliver it.
+
+**Backend rotation log** — keep this table when you're reproducing
+or comparing historical numbers; the `retrieval` row above is the
+current canonical FlowCraft BM25 number on scifact.
+
+| backend / config                                                                              | run                                                                            | nDCG@10    | Recall@100 | wall-clock | note                                                                                            |
+| --------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------ | ---------: | ---------: | ---------: | ----------------------------------------------------------------------------------------------- |
+| **`retrieval` (doc-level via #143 `__docs` namespace, current)**                              | [`25851783774`](https://github.com/GizClaw/flowcraft/actions/runs/25851783774) | **0.6725** | **0.9076** | ~13.5 min  | this is the leaderboard row; matches Anserini Lucene within noise                              |
+| `fs` (doc-level via #127 bespoke per-dataset doc-level inverted index)                        | [`25844184454`](https://github.com/GizClaw/flowcraft/actions/runs/25844184454) | 0.6725     | 0.9076     | ~30 min    | identical numbers, 2× slower ingest; FSChunkRepo is deprecated for v0.5.0 removal               |
+| `retrieval` (chunk-overfetch + sum-pool, [#137](https://github.com/GizClaw/flowcraft/pull/137) original design) | [`25848699992`](https://github.com/GizClaw/flowcraft/actions/runs/25848699992) | 0.1325     | 0.7266     | ~14 min    | failed #134 acceptance (5× degradation); root cause = chunk-level corpus stats, fixed by #143   |
+| `fs` chunk-level Search + adapter-side `max`-pool aggregation (historical)                    | [`25839108340`](https://github.com/GizClaw/flowcraft/actions/runs/25839108340) | 0.180      | 0.255      | —          | original incorrect path before #126/#127/#134 work; kept for archaeology only                   |
+| `fs` chunk-level Search + adapter-side `sum`-pool aggregation (ablation)                      | [`25840471567`](https://github.com/GizClaw/flowcraft/actions/runs/25840471567) | 0.054      | 0.207      | —          | length-biased on scifact (long non-rel docs accumulate per-chunk noise); same archaeology       |
 
 **Methodology**: all rows use the standard BEIR scifact split
 (corpus.jsonl + queries.jsonl + qrels/test.tsv, 5,183 docs, 300 test
 queries). BM25 numbers from BEIR are Anserini's Lucene
-implementation with default parameters; cite that explicitly when
-comparing to our in-process Go BM25 (`sdk/textsearch`).
+implementation with default parameters; FlowCraft's in-process Go
+BM25 (`sdk/textsearch`, k1=1.2, b=0.75, CJKTokenizer) now scores
+within ±0.01 of that baseline once it sees the same doc-level
+corpus statistics, confirming the implementation is correct and
+the historical ~0.5-nDCG gap was purely a granularity-mismatch
+artefact.
 
 ### τ-bench — retail (Pass@1)
 
