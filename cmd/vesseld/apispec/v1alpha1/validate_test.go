@@ -70,7 +70,7 @@ func TestDaemon_ValidateOK(t *testing.T) {
 	}
 }
 
-func TestDaemon_TCPRequiresToken(t *testing.T) {
+func TestDaemon_TCPRequiresAuth(t *testing.T) {
 	t.Parallel()
 	d := Daemon{
 		TypeMeta:   tmDaemon(),
@@ -79,6 +79,62 @@ func TestDaemon_TCPRequiresToken(t *testing.T) {
 	}
 	if err := d.Validate(); !errdefs.IsValidation(err) {
 		t.Fatalf("expected Validation, got %v", err)
+	}
+}
+
+func TestDaemon_TCPMTLSSatisfiesAuth(t *testing.T) {
+	t.Parallel()
+	// mTLS alone (no tokenFile) is a valid auth posture: the
+	// client cert IS the credential.
+	d := Daemon{
+		TypeMeta:   tmDaemon(),
+		ObjectMeta: ObjectMeta{Name: "d"},
+		Spec: DaemonSpec{
+			Control: DaemonControl{
+				Listen: "0.0.0.0:8080",
+				Auth: DaemonAuth{
+					MTLS: &DaemonMTLS{
+						Cert:     "file:///tmp/cert.pem",
+						Key:      "file:///tmp/key.pem",
+						ClientCA: "file:///tmp/ca.pem",
+					},
+				},
+			},
+		},
+	}
+	if err := d.Validate(); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+}
+
+func TestDaemon_MTLSFieldsRequired(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		m    DaemonMTLS
+	}{
+		{"missing-cert", DaemonMTLS{Key: "file:///k", ClientCA: "file:///ca"}},
+		{"missing-key", DaemonMTLS{Cert: "file:///c", ClientCA: "file:///ca"}},
+		{"missing-clientCA", DaemonMTLS{Cert: "file:///c", Key: "file:///k"}},
+		{"bad-minVersion", DaemonMTLS{Cert: "file:///c", Key: "file:///k", ClientCA: "file:///ca", MinVersion: "1.1"}},
+	} {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			d := Daemon{
+				TypeMeta:   tmDaemon(),
+				ObjectMeta: ObjectMeta{Name: "d"},
+				Spec: DaemonSpec{
+					Control: DaemonControl{
+						Listen: "0.0.0.0:8080",
+						Auth:   DaemonAuth{TokenFile: "/tmp/t", MTLS: &tc.m},
+					},
+				},
+			}
+			if err := d.Validate(); !errdefs.IsValidation(err) {
+				t.Fatalf("expected Validation, got %v", err)
+			}
+		})
 	}
 }
 

@@ -55,11 +55,26 @@ type DaemonPlan struct {
 	Socket            string
 	Listen            string
 	TokenFile         string
+	MTLS              *DaemonMTLSPlan
 	MaxConcurrentRuns int
 	LLMRateLimits     []v1alpha1.LLMRateLimit
 	LoggingFormat     string
 	LoggingLevel      string
 	DrainTimeout      time.Duration
+}
+
+// DaemonMTLSPlan is the resolved mTLS configuration. The Ref
+// fields use the secrets.Provider URL-keyed syntax (env://...,
+// file:///..., vault://...); the runtime layer is responsible for
+// fetching the actual PEM bytes via the daemon-wide Provider when
+// constructing the tls.Config.
+type DaemonMTLSPlan struct {
+	CertRef     string
+	KeyRef      string
+	ClientCARef string
+	// MinVersion is "1.2" or "1.3" (defaulted to "1.3" by Resolve
+	// if the apispec field was empty).
+	MinVersion string
 }
 
 // VesselPlan is one resolved Vessel: enough information for the

@@ -113,6 +113,18 @@ func buildDaemonPlan(d v1alpha1.Daemon) DaemonPlan {
 	if dp.LoggingLevel == "" {
 		dp.LoggingLevel = "info"
 	}
+	if mtls := d.Spec.Control.Auth.MTLS; mtls != nil {
+		minVer := mtls.MinVersion
+		if minVer == "" {
+			minVer = "1.3"
+		}
+		dp.MTLS = &DaemonMTLSPlan{
+			CertRef:     mtls.Cert,
+			KeyRef:      mtls.Key,
+			ClientCARef: mtls.ClientCA,
+			MinVersion:  minVer,
+		}
+	}
 	return dp
 }
 

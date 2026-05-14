@@ -74,10 +74,57 @@ type DaemonControl struct {
 	Auth DaemonAuth `json:"auth,omitempty" yaml:"auth,omitempty"`
 }
 
-// DaemonAuth holds authentication configuration. Token-file is the
-// only mode in v0.1.0; mTLS / OIDC are explicitly v0.2.0+ scope.
+// DaemonAuth holds authentication configuration. Two modes are
+// supported and may be combined (defence in depth):
+//
+//   - TokenFile: shared bearer token in the Authorization header.
+//     v0.1.0 default.
+//   - MTLS:      mutual TLS — server presents Cert/Key, clients
+//     present a cert signed by ClientCA. v0.2.0 addition.
+//
+// When TCP is enabled (Control.Listen != ""), at least one of the
+// two MUST be configured; Validate enforces this so an open TCP
+// port without any auth can never start.
 type DaemonAuth struct {
-	TokenFile string `json:"tokenFile,omitempty" yaml:"tokenFile,omitempty"`
+	TokenFile string      `json:"tokenFile,omitempty" yaml:"tokenFile,omitempty"`
+	MTLS      *DaemonMTLS `json:"mtls,omitempty" yaml:"mtls,omitempty"`
+}
+
+// DaemonMTLS pins the server certificate, server key, and the
+// trusted client-CA bundle that the TCP listener uses to terminate
+// mutual TLS. All three reference fields use the secrets package's
+// URL-keyed syntax (env://NAME, file:///abs/path, vault://...) so
+// the same indirection that resolves bearer-token files extends to
+// cryptographic material.
+//
+// Setting MTLS is sufficient to authenticate TCP requests — the
+// client cert IS the credential. Operators may still configure
+// TokenFile alongside it for defence in depth (Authorization header
+// is checked after the TLS handshake completes); without an
+// MTLS-only mode option, the auth filter stays unchanged.
+//
+// MinVersion is optional and defaults to TLS 1.3. Operators stuck
+// with legacy clients can drop to "1.2" explicitly; older versions
+// are intentionally not supported.
+type DaemonMTLS struct {
+	// Cert is the secret reference to the PEM-encoded server
+	// certificate. Required.
+	Cert string `json:"cert" yaml:"cert"`
+
+	// Key is the secret reference to the PEM-encoded server
+	// private key. Required.
+	Key string `json:"key" yaml:"key"`
+
+	// ClientCA is the secret reference to the PEM-encoded trusted
+	// client CA bundle. Required — without it the listener would
+	// accept any client, which is plain TLS, not mutual TLS.
+	ClientCA string `json:"clientCA" yaml:"clientCA"`
+
+	// MinVersion clamps the TLS version negotiated with clients.
+	// Empty defaults to "1.3"; "1.2" is the only other accepted
+	// value. Anything older is rejected because the protocol
+	// itself is no longer considered secure.
+	MinVersion string `json:"minVersion,omitempty" yaml:"minVersion,omitempty"`
 }
 
 // DaemonResources holds daemon-wide resource caps.
@@ -132,8 +179,29 @@ func (d Daemon) Validate() error {
 		// "" + resolver default, or any explicit value. The
 		// strict check is "do not allow listen without auth".
 	}
-	if d.Spec.Control.Listen != "" && d.Spec.Control.Auth.TokenFile == "" {
-		return errdefs.Validationf("vesseld Daemon %q: spec.control.listen requires spec.control.auth.tokenFile", d.Name)
+	if d.Spec.Control.Listen != "" {
+		auth := d.Spec.Control.Auth
+		if auth.TokenFile == "" && auth.MTLS == nil {
+			return errdefs.Validationf(
+				"vesseld Daemon %q: spec.control.listen requires at least one of spec.control.auth.tokenFile or spec.control.auth.mtls",
+				d.Name)
+		}
+	}
+	if mtls := d.Spec.Control.Auth.MTLS; mtls != nil {
+		if mtls.Cert == "" {
+			return errdefs.Validationf("vesseld Daemon %q: spec.control.auth.mtls.cert is required", d.Name)
+		}
+		if mtls.Key == "" {
+			return errdefs.Validationf("vesseld Daemon %q: spec.control.auth.mtls.key is required", d.Name)
+		}
+		if mtls.ClientCA == "" {
+			return errdefs.Validationf("vesseld Daemon %q: spec.control.auth.mtls.clientCA is required (without it the listener accepts any client → not mutual TLS)", d.Name)
+		}
+		switch mtls.MinVersion {
+		case "", "1.2", "1.3":
+		default:
+			return errdefs.Validationf("vesseld Daemon %q: spec.control.auth.mtls.minVersion %q invalid (want 1.2|1.3)", d.Name, mtls.MinVersion)
+		}
 	}
 	if d.Spec.Resources.MaxConcurrentRuns < 0 {
 		return errdefs.Validationf("vesseld Daemon %q: spec.resources.maxConcurrentRuns must be >= 0", d.Name)
