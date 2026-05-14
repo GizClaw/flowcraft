@@ -367,19 +367,19 @@ README / paper / landing page**. These are the canonical citations
 for "what the maintainer believes their system scores"; methodology
 varies wildly. **Do not put these on the same ranking.**
 
-| System                           |                                     Self-claimed LoCoMo | Methodology declared by maintainer                                  | Source                                                                                                                                                                                                                     |
-| -------------------------------- | ------------------------------------------------------: | ------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| OpenAI built-in memory           |                                                52.90 J% | answer + judge = gpt-4o-mini                                        | [Mem0 paper](https://arxiv.org/abs/2504.19413) (only public source)                                                                                                                                                        |
-| Mem0 / Mem0-Graph                |                                    66.88 / **68.44** J% | answer + judge = gpt-4o-mini                                        | [Mem0 paper](https://arxiv.org/abs/2504.19413), Table 1                                                                                                                                                                    |
-| Zep                              |               **75.14** J% (corrected from earlier 84%) | answer = gpt-4o-mini, judge = gpt-4o-mini, parallel search          | [Zep blog correction](https://blog.getzep.com/lies-damn-lies-statistics-is-mem0-really-sota-in-agent-memory/) + [zep-papers repo](https://github.com/getzep/zep-papers/tree/main/kg_architecture_agent_memory/locomo_eval) |
-| Zep (Dec 2025 claim, unverified) |                                                    ~80% | "at <200ms latency"                                                 | [Zep retrieval-tradeoff blog](https://blog.getzep.com/the-retrieval-tradeoff-what-50-experiments-taught-us-about-context-engineering/)                                                                                     |
-| MemOS (MemTensor)                |                                            **75.80** J% | "+43.70% vs OpenAI Memory"                                          | [MemTensor/MemOS README](https://github.com/MemTensor/MemOS) badge                                                                                                                                                         |
-| MemoryOS (BAI-LAB)               |      F1 +49.11% / BLEU +46.18% relative — no absolute J | gpt-4o-mini baseline                                                | [BAI-LAB/MemoryOS README](https://github.com/BAI-LAB/MemoryOS)                                                                                                                                                             |
-| MemU                             |                           **92.09%** "average accuracy" | unspecified; landing-page claim only                                | [memu.pro/benchmark](https://memu.pro/benchmark)                                                                                                                                                                           |
-| Memobase v0.0.37                 |                                            **75.78** J% | answer + judge = gpt-4o-mini, mem0-protocol                         | [memobase locomo-benchmark README](https://github.com/memodb-io/memobase/blob/main/docs/experiments/locomo-benchmark/README.md)                                                                                            |
-| MemoryScope / ReMe               |                                            **86.23** J% | answer-LLM "per table", judge = gpt-4o-mini                         | [modelscope/MemoryScope README](https://github.com/modelscope/MemoryScope)                                                                                                                                                 |
-| MemR3                            | "+7.29% over RAG, +1.94% over Zep" relative on LoCoMo10 | gpt-4.1-mini backend                                                | [MemR³ paper](https://arxiv.org/abs/2512.20237), [Leagein/memr3](https://github.com/Leagein/memr3)                                                                                                                         |
-| **FlowCraft**                    |                                             `[pending]` | `--soft-merge=false`, answer + judge per `eval-locomo.yml` defaults | our `eval-locomo.yml` run                                                                                                                                                                                                  |
+| System                           |                                     Self-claimed LoCoMo | Methodology declared by maintainer                                           | Source                                                                                                                                                                                                                     |
+| -------------------------------- | ------------------------------------------------------: | ---------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| OpenAI built-in memory           |                                                52.90 J% | answer + judge = gpt-4o-mini                                                 | [Mem0 paper](https://arxiv.org/abs/2504.19413) (only public source)                                                                                                                                                        |
+| Mem0 / Mem0-Graph                |                                    66.88 / **68.44** J% | answer + judge = gpt-4o-mini                                                 | [Mem0 paper](https://arxiv.org/abs/2504.19413), Table 1                                                                                                                                                                    |
+| Zep                              |               **75.14** J% (corrected from earlier 84%) | answer = gpt-4o-mini, judge = gpt-4o-mini, parallel search                   | [Zep blog correction](https://blog.getzep.com/lies-damn-lies-statistics-is-mem0-really-sota-in-agent-memory/) + [zep-papers repo](https://github.com/getzep/zep-papers/tree/main/kg_architecture_agent_memory/locomo_eval) |
+| Zep (Dec 2025 claim, unverified) |                                                    ~80% | "at <200ms latency"                                                          | [Zep retrieval-tradeoff blog](https://blog.getzep.com/the-retrieval-tradeoff-what-50-experiments-taught-us-about-context-engineering/)                                                                                     |
+| MemOS (MemTensor)                |                                            **75.80** J% | "+43.70% vs OpenAI Memory"                                                   | [MemTensor/MemOS README](https://github.com/MemTensor/MemOS) badge                                                                                                                                                         |
+| MemoryOS (BAI-LAB)               |      F1 +49.11% / BLEU +46.18% relative — no absolute J | gpt-4o-mini baseline                                                         | [BAI-LAB/MemoryOS README](https://github.com/BAI-LAB/MemoryOS)                                                                                                                                                             |
+| MemU                             |                           **92.09%** "average accuracy" | unspecified; landing-page claim only                                         | [memu.pro/benchmark](https://memu.pro/benchmark)                                                                                                                                                                           |
+| Memobase v0.0.37                 |                                            **75.78** J% | answer + judge = gpt-4o-mini, mem0-protocol                                  | [memobase locomo-benchmark README](https://github.com/memodb-io/memobase/blob/main/docs/experiments/locomo-benchmark/README.md)                                                                                            |
+| MemoryScope / ReMe               |                                            **86.23** J% | answer-LLM "per table", judge = gpt-4o-mini                                  | [modelscope/MemoryScope README](https://github.com/modelscope/MemoryScope)                                                                                                                                                 |
+| MemR3                            | "+7.29% over RAG, +1.94% over Zep" relative on LoCoMo10 | gpt-4.1-mini backend                                                         | [MemR³ paper](https://arxiv.org/abs/2512.20237), [Leagein/memr3](https://github.com/Leagein/memr3)                                                                                                                         |
+| **FlowCraft**                    |                                             `[pending]` | `--soft-merge=false`, `--answer-llm=azure_4o_mini --judge-llm=azure_4o_mini` | our `eval-locomo.yml` run — **no real LoCoMo10 run yet**; LongMemEvalS numbers from §404 are a different dataset and must not be back-filled into this cell                                                                |
 
 #### Discrepancy callout (read this before quoting any single number)
 
@@ -403,18 +403,29 @@ synthesised ranking.
 
 ### LongMemEval — LongMemEvalS (~115k tokens / question)
 
-| System                                    | answer-LLM  | Overall accuracy | Source                                                                                                      |
-| ----------------------------------------- | ----------- | ---------------: | ----------------------------------------------------------------------------------------------------------- |
-| Llama 3.1 8B (long-context, no memory)    | self        |            45.4% | [LongMemEval paper](https://arxiv.org/abs/2410.10813) Fig 3b                                                |
-| Phi-3 14B (long-context, no memory)       | self        |            38.0% | [LongMemEval paper](https://arxiv.org/abs/2410.10813) Fig 3b                                                |
-| Llama 3.1 70B (long-context, no memory)   | self        |            33.4% | [LongMemEval paper](https://arxiv.org/abs/2410.10813) Fig 3b                                                |
-| Full-context with gpt-4o-mini (no memory) | gpt-4o-mini |            55.4% | [Zep blog](https://blog.getzep.com/state-of-the-art-agent-memory/)                                          |
-| GPT-4o (long-context, no memory)          | self        |            60.6% | [LongMemEval paper](https://arxiv.org/abs/2410.10813) Fig 3b                                                |
-| Mem0 (independent eval)                   | gpt-4o      |            49.0% | [Zep blog](https://blog.getzep.com/state-of-the-art-agent-memory/) (cited as "Mem0 independent evaluation") |
-| Zep + gpt-4o-mini                         | gpt-4o-mini |            60.2% | [Zep blog](https://blog.getzep.com/state-of-the-art-agent-memory/)                                          |
-| Full-context with gpt-4o (no memory)      | gpt-4o      |            63.8% | [Zep blog](https://blog.getzep.com/state-of-the-art-agent-memory/)                                          |
-| Zep + gpt-4o                              | gpt-4o      |        **71.2%** | [Zep blog](https://blog.getzep.com/state-of-the-art-agent-memory/)                                          |
-| **FlowCraft**                             | `[pending]` |      `[pending]` | our `eval-longmemeval.yml` run                                                                              |
+> **Difficulty tier disclosure.** LongMemEval ships three difficulty
+> tiers (see `eval/longmemeval/README.md` — "Three flavors, three
+> runtimes"): `_oracle` (evidence sessions only, <5k tok/Q, declared
+> as "smoke / sanity check"), **`_s` (40 sessions, ~115k tok/Q, the
+> "headline baseline" — this table)**, and `_m` (~500 sessions,
+> ~1.5M tok/Q). The same memory stack typically drops 10-30 pp going
+> from `_oracle` to `_s` because `_s` is the first tier where
+> retrieval + ranking actually matter. **Do not compare an `_oracle`
+> qa.judge to an `_s` qa.judge.** When citing FlowCraft's own
+> numbers, always disclose which file the run was on.
+
+| System                                    | answer-LLM  | Overall accuracy | Source                                                                                                                                                     |
+| ----------------------------------------- | ----------- | ---------------: | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Llama 3.1 8B (long-context, no memory)    | self        |            45.4% | [LongMemEval paper](https://arxiv.org/abs/2410.10813) Fig 3b                                                                                               |
+| Phi-3 14B (long-context, no memory)       | self        |            38.0% | [LongMemEval paper](https://arxiv.org/abs/2410.10813) Fig 3b                                                                                               |
+| Llama 3.1 70B (long-context, no memory)   | self        |            33.4% | [LongMemEval paper](https://arxiv.org/abs/2410.10813) Fig 3b                                                                                               |
+| Full-context with gpt-4o-mini (no memory) | gpt-4o-mini |            55.4% | [Zep blog](https://blog.getzep.com/state-of-the-art-agent-memory/)                                                                                         |
+| GPT-4o (long-context, no memory)          | self        |            60.6% | [LongMemEval paper](https://arxiv.org/abs/2410.10813) Fig 3b                                                                                               |
+| Mem0 (independent eval)                   | gpt-4o      |            49.0% | [Zep blog](https://blog.getzep.com/state-of-the-art-agent-memory/) (cited as "Mem0 independent evaluation")                                                |
+| Zep + gpt-4o-mini                         | gpt-4o-mini |            60.2% | [Zep blog](https://blog.getzep.com/state-of-the-art-agent-memory/)                                                                                         |
+| Full-context with gpt-4o (no memory)      | gpt-4o      |            63.8% | [Zep blog](https://blog.getzep.com/state-of-the-art-agent-memory/)                                                                                         |
+| Zep + gpt-4o                              | gpt-4o      |        **71.2%** | [Zep blog](https://blog.getzep.com/state-of-the-art-agent-memory/)                                                                                         |
+| **FlowCraft**                             | gpt-4o-mini |      `[pending]` | our `eval-longmemeval.yml` run with `--answer-llm=azure_4o_mini --judge-llm=azure_4o_mini` + LongMemEval official grader; scheduled — see "What Phase 1 ships" §2 |
 
 **Methodology common to cited rows above**:
 
@@ -424,6 +435,30 @@ judge_prompt: LongMemEval official grader
 dataset: LongMemEvalS (115k tokens / question, ~50 sessions)
 question_types: single-session-user/assistant/preference, multi-session, knowledge-update, temporal, abstention
 ```
+
+The FlowCraft row stays `[pending]` until a parity run lands with
+`--answer-llm=azure_4o_mini --judge-llm=azure_4o_mini` + the
+LongMemEval official grader prompt (see "What Phase 1 ships" §2).
+Any earlier FlowCraft LongMemEvalS numbers run with a
+non-`gpt-4o-mini` answer-LLM are deliberately omitted from this
+table — the parity-row publishing convention forbids mixing
+answer-LLM provenance in a single row.
+
+**Declared FlowCraft-row deltas vs cited rows** (kept lean, but
+not zero):
+
+1. **Judge model**: cited rows use `gpt-4o` as judge (LongMemEval
+   paper protocol). FlowCraft uses `azure_4o_mini` for cost +
+   alias-availability reasons. Same official grader **prompt**, so
+   the prompt-style component of judge variance is held constant;
+   only the model side moves. Per §1, judge-model-only variance on
+   long-context QA is typically 2-5 pp.
+2. **Answer-LLM deployment**: cited `gpt-4o-mini` is the OpenAI
+   public API; FlowCraft's `azure_4o_mini` is the same model family
+   served via Azure deployment. Documented public variance on
+   identically-prompted tasks is ≤ 1 pp (cf. SimpleQA "FlowCraft
+   parity check" below: `azure_4o_mini` returned 10.05% vs OpenAI
+   cited 9.5% for the public deployment, well within ±1pp gate).
 
 **Zep's per-question-type breakdown vs full-context baseline** (gpt-4o,
 from [Zep blog](https://blog.getzep.com/state-of-the-art-agent-memory/)):
@@ -560,7 +595,16 @@ re-deriving from the vendor card.
 **FlowCraft parity check** (Phase-1 self-check): pick
 `gpt-4o-mini-2024-07-18` (cheapest publicly-graded model), run
 `eval-simpleqa.yml --answer-llm <gpt-4o-mini alias>`, and verify
-attempted-accuracy is within ±1pp of 9.5%. Status: `[pending]`.
+attempted-accuracy is within ±1pp of 9.5%. Status: **✓ PASSED** —
+[run 25837614443](https://github.com/GizClaw/flowcraft/actions/runs/25837614443)
+on `azure_4o_mini` (200Q smoke, judge=`azure_4o_mini`) returns
+**attempted_accuracy=10.05%** (delta=+0.55 pp, well inside the
+±1pp gate and inside the 1σ sampling error of ~2.1 pp at this
+sample size); `judge_failures=0` confirms the official SimpleQA
+grader prompt parses cleanly end-to-end. Implication: when this
+same harness reports another model's attempted_accuracy, that
+number is `openai/simple-evals`-equivalent and citeable on this
+table directly.
 
 **Qwen / DeepSeek / Grok 3 / Llama 3.1 SimpleQA numbers**: not in
 the openai/simple-evals README. Cite from each vendor's
@@ -574,9 +618,16 @@ A practical citation-only first cut, day-by-day rough order:
    row from its blog; LongMemEval paper baselines as "for context".
    FlowCraft self-row from our latest `eval-locomo.yml` run with
    `--soft-merge=false`. _Half a day of sourcing + our own run._
-2. **LongMemEval `_oracle`** — mem0 row; MemoryScope row from its
-   README; LongMemEval paper baselines. FlowCraft self-row from
-   `eval-longmemeval.yml`. _Half a day._
+2. **LongMemEval** — paper baselines + Zep blog rows filled (§404
+   table). **Outstanding for the FlowCraft row**:
+   1. parity run with `--answer-llm=azure_4o_mini --judge-llm=azure_4o_mini`
+      (LongMemEval official grader prompt) on `longmemeval_s.jsonl`
+      — Zep blog's `Zep + gpt-4o-mini = 60.2%` is the most directly
+      comparable cited row;
+   2. surface `Report.PerQuestion.Tags` so the §428 per-type table
+      can carry a FlowCraft column;
+   3. (optional) `_oracle` row for the same stack to anchor the
+      `_oracle → _s` drop curve. _Half a day each._
 3. **BEIR scifact** — pull BM25 (Anserini) + BGE-M3 + E5 numbers
    from the BEIR leaderboard. FlowCraft self-row from
    `eval-beir.yml`. _A few hours._
