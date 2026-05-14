@@ -7,6 +7,7 @@ import (
 	"github.com/GizClaw/flowcraft/cmd/vesseld/catalog"
 	"github.com/GizClaw/flowcraft/sdk/history"
 	"github.com/GizClaw/flowcraft/sdk/llm"
+	"github.com/GizClaw/flowcraft/sdk/sandbox"
 	"github.com/GizClaw/flowcraft/sdk/tool"
 	"github.com/GizClaw/flowcraft/vessel"
 	"github.com/GizClaw/flowcraft/vessel/spec"
@@ -48,6 +49,12 @@ type Plan struct {
 	// history.History instance. Fleet looks the right one up by
 	// name when constructing each Captain.
 	SharedHistories map[string]history.History
+
+	// SharedSandboxes is the resolved map of Sandbox.metadata.name
+	// → sandbox.Runner. Empty when no kind: Sandbox documents are
+	// declared. The fleet consults this to build per-Agent exec
+	// tools when Agent.spec.sandbox names an entry here.
+	SharedSandboxes map[string]sandbox.Runner
 
 	// SharedSessionStore is the daemon-wide vessel.SessionStore
 	// instance built from Daemon.spec.sessionStore. Nil when
@@ -135,6 +142,25 @@ type VesselPlan struct {
 	// DispatcherAgents lists agent names with Dispatcher=true.
 	// Cached so the fleet does not repeatedly walk the spec.
 	DispatcherAgents []string
+
+	// SandboxName is the metadata.name of the [Sandbox] every
+	// sandbox-using agent in this vessel references. Empty when
+	// no agent in the vessel has spec.sandbox set. v0.2.0
+	// enforces "at most one Sandbox per Vessel": two agents in
+	// the same vessel referencing different Sandbox documents
+	// would collide on the per-Captain tool registry's "exec"
+	// key, and untangling that demands an LLM-visible naming
+	// scheme nobody has signed off on yet. Multi-sandbox-per-
+	// vessel is a future RFC; until then the resolver enforces
+	// the constraint at validation time.
+	SandboxName string
+
+	// SandboxAgents lists which agents in this vessel actually
+	// reference SandboxName (subset of vp.Spec.Agents). The
+	// fleet uses this to know which agents to inject the
+	// auto-generated "exec" tool into via aspec.Tools at
+	// captain build time.
+	SandboxAgents []string
 }
 
 // RuntimeDeps carries the per-call inputs the fleet hands to an
@@ -154,6 +180,15 @@ type VesselPlan struct {
 type RuntimeDeps struct {
 	AgentTools  []string
 	LLMLimiters map[string]catalog.Limiter
+
+	// ToolRegistry, when non-nil, replaces the daemon-shared
+	// registry the resolveAgent closure captured at resolve
+	// time. The fleet uses this seam to hand each Captain its
+	// per-Vessel registry overlay (today: the sandbox-derived
+	// exec tool). Nil falls back to the resolver-time
+	// registry, preserving zero-overhead behaviour for vessels
+	// with no sandbox-using agent.
+	ToolRegistry *tool.Registry
 }
 
 // EngineBuilder is the resolved engine factory closure, already

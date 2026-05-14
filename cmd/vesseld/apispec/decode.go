@@ -172,6 +172,12 @@ func decodeV1Alpha1(node *yaml.Node, kind string) (Object, error) {
 			return nil, errdefs.Validationf("vesseld: decode Secret: %v", err)
 		}
 		return s, nil
+	case v1alpha1.KindSandbox:
+		var sb v1alpha1.Sandbox
+		if err := node.Decode(&sb); err != nil {
+			return nil, errdefs.Validationf("vesseld: decode Sandbox: %v", err)
+		}
+		return sb, nil
 	default:
 		return nil, errdefs.Validationf("vesseld: unsupported kind %q under %s (known: %v)", kind, v1alpha1.APIVersion, v1alpha1.AllKinds())
 	}

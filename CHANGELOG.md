@@ -242,6 +242,30 @@ compare/fetch/ingest`, `eval longmemeval convert`). Shell completion
 
 #### vesseld
 
+- `cmd/vesseld/apispec` + resolver + fleet: `kind: Sandbox` resource
+  type + `Agent.spec.sandbox: <name>` reference exposing
+  `sdk/sandbox.Runner` and `sdkx/sandbox/nsjail` as a declarative
+  primitive. One Sandbox document materialises one runner via the
+  spec's `backend` (`local | nsjail`), `rootDir`, and optional
+  `env / net / resources / nsjail` policy fields; the resolver
+  layers `sandbox.WithDefaults` so the YAML policy acts as a floor
+  per-call ExecOptions cannot widen. Agents that declare
+  `spec.sandbox` auto-gain an `exec` tool (sdkx/tool/exec) wired to
+  the referenced runner, registered into a per-Captain registry
+  overlay so different vessels can hold different `exec` bindings
+  without name collision. The new `resolver.RuntimeDeps.ToolRegistry`
+  seam threads that overlay into the engine factory's
+  `catalog.Deps.ToolRegistry` so the engine sees the same registry
+  the LLM tool-call dispatcher consults. The resolver enforces
+  "at most one Sandbox per Vessel" at validation time — multi-
+  sandbox-per-vessel would need an LLM-visible disambiguation
+  scheme that is out of scope for v0.2.0; until then the constraint
+  keeps the registry overlay unambiguous. nsjail-on-non-Linux
+  surfaces as `errdefs.NotAvailable` at resolve time (matching the
+  runner constructor's own classification) so operators developing
+  on macOS get the verdict at boot instead of first run. Consumes
+  `sdk v0.3.13` and `sdkx v0.3.9` (bumped in a separate commit on
+  this PR).
 - `cmd/vesseld/apispec` + resolver + fleet: `Daemon.spec.sessionStore`
   YAML schema (`backend: memory|filesystem`, `root` required for
   filesystem) that wires `vessel.WithSessionStore` onto every

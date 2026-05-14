@@ -52,6 +52,17 @@ type AgentSpec struct {
 	// Engine selects the EngineFactory and supplies its config.
 	// Required: every agent needs a runnable engine.
 	Engine AgentEngine `json:"engine" yaml:"engine"`
+
+	// Sandbox is the metadata.name of a [Sandbox] document the
+	// resolver wires into the agent. When set, the agent
+	// automatically gains a sandbox-backed exec tool whose
+	// sandbox.Runner is fixed by the referenced Sandbox's spec
+	// (per-call ExecOptions cannot widen the configured policy).
+	// Empty means no shell tool is auto-injected — the agent's
+	// engine and its declared Tools list run with whatever
+	// capabilities they already have. The resolver rejects
+	// references to unknown Sandbox names.
+	Sandbox string `json:"sandbox,omitempty" yaml:"sandbox,omitempty"`
 }
 
 // AgentCard mirrors the agent.AgentCard wire fields the resolver

@@ -194,6 +194,90 @@ func TestDaemon_SessionStore_RejectsInvalid(t *testing.T) {
 	}
 }
 
+func tmSandbox() TypeMeta { return TypeMeta{APIVersion: APIVersion, Kind: KindSandbox} }
+
+func TestSandbox_ValidateOK(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		s    Sandbox
+	}{
+		{
+			"local-minimal",
+			Sandbox{
+				TypeMeta:   tmSandbox(),
+				ObjectMeta: ObjectMeta{Name: "dev"},
+				Spec:       SandboxSpec{Backend: "local", RootDir: "/tmp/dev"},
+			},
+		},
+		{
+			"nsjail-with-knobs",
+			Sandbox{
+				TypeMeta:   tmSandbox(),
+				ObjectMeta: ObjectMeta{Name: "prod"},
+				Spec: SandboxSpec{
+					Backend: "nsjail",
+					RootDir: "/var/lib/vesseld/prod",
+					Env: &SandboxEnv{
+						Allow:  []string{"PATH", "HOME"},
+						Inject: map[string]string{"X": "1"},
+					},
+					Net:       &SandboxNet{Mode: "deny-all"},
+					Resources: &SandboxResources{CPUMillicores: 1000, MemoryBytes: 1 << 30},
+					Nsjail:    &SandboxNsjail{Binary: "/usr/local/bin/nsjail"},
+				},
+			},
+		},
+	} {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if err := tc.s.Validate(); err != nil {
+				t.Fatalf("Validate: %v", err)
+			}
+		})
+	}
+}
+
+func TestSandbox_ValidateRejections(t *testing.T) {
+	t.Parallel()
+	base := Sandbox{
+		TypeMeta:   tmSandbox(),
+		ObjectMeta: ObjectMeta{Name: "s"},
+		Spec:       SandboxSpec{Backend: "local", RootDir: "/tmp/s"},
+	}
+	for _, tc := range []struct {
+		name string
+		mut  func(*Sandbox)
+	}{
+		{"empty-backend", func(s *Sandbox) { s.Spec.Backend = "" }},
+		{"unknown-backend", func(s *Sandbox) { s.Spec.Backend = "docker" }},
+		{"empty-rootDir", func(s *Sandbox) { s.Spec.RootDir = "" }},
+		{"nsjail-on-local", func(s *Sandbox) {
+			s.Spec.Nsjail = &SandboxNsjail{Binary: "/x"}
+		}},
+		{"bad-net-mode", func(s *Sandbox) {
+			s.Spec.Net = &SandboxNet{Mode: "passthrough"}
+		}},
+		{"negative-cpu", func(s *Sandbox) {
+			s.Spec.Resources = &SandboxResources{CPUMillicores: -1}
+		}},
+		{"negative-mem", func(s *Sandbox) {
+			s.Spec.Resources = &SandboxResources{MemoryBytes: -1}
+		}},
+	} {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			s := base
+			tc.mut(&s)
+			if err := s.Validate(); !errdefs.IsValidation(err) {
+				t.Fatalf("expected Validation, got %v", err)
+			}
+		})
+	}
+}
+
 func TestVessel_RequiresAgents(t *testing.T) {
 	t.Parallel()
 	v := Vessel{TypeMeta: tmVessel(), ObjectMeta: ObjectMeta{Name: "x"}}

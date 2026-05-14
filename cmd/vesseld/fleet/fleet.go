@@ -17,6 +17,8 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/event"
 	"github.com/GizClaw/flowcraft/sdk/model"
+	"github.com/GizClaw/flowcraft/sdk/tool"
+	exectool "github.com/GizClaw/flowcraft/sdkx/tool/exec"
 	"github.com/GizClaw/flowcraft/vessel"
 	"github.com/GizClaw/flowcraft/vessel/spec"
 )
@@ -555,14 +557,34 @@ func (f *Fleet) teardownAll() {
 // + history + tool registry through vessel.Deps.
 func (f *Fleet) buildCaptain(vp resolver.VesselPlan) (*captainEntry, error) {
 	bus := event.NewMemoryBus()
+	toolReg, err := f.buildCaptainToolRegistry(vp)
+	if err != nil {
+		return nil, err
+	}
+	sandboxAgents := make(map[string]struct{}, len(vp.SandboxAgents))
+	for _, name := range vp.SandboxAgents {
+		sandboxAgents[name] = struct{}{}
+	}
 	options := []vessel.Option{
 		vessel.WithBus(bus),
-		vessel.WithToolRegistry(f.plan.SharedToolRegistry),
+		vessel.WithToolRegistry(toolReg),
 		vessel.WithLLMResolver(f.plan.SharedLLMResolver),
 		vessel.WithEngineFactory(func(aspec spec.Agent, deps vessel.Deps) (engine.Engine, error) {
 			builder, ok := vp.EngineFactoriesByAgent[aspec.Name]
 			if !ok {
 				return nil, errdefs.NotFoundf("vesseld fleet: no engine builder for %s/%s", vp.Name, aspec.Name)
+			}
+			tools := aspec.Tools
+			// Inject the auto-wired exec tool's name into the
+			// allow-list of every agent that declared
+			// spec.sandbox. The tool itself was registered into
+			// toolReg above under exectool.Name; appending the
+			// name here ensures the engine's per-agent tool
+			// resolution actually sees it. Idempotent — if the
+			// user already listed "exec" explicitly we do not
+			// duplicate.
+			if _, ok := sandboxAgents[aspec.Name]; ok && !containsString(tools, exectool.Name) {
+				tools = append(append([]string(nil), tools...), exectool.Name)
 			}
 			// aspec.Tools at this layer already carries the
 			// vessel-runtime kanban auto-injection for Dispatcher
@@ -570,9 +592,19 @@ func (f *Fleet) buildCaptain(vp resolver.VesselPlan) (*captainEntry, error) {
 			// it straight through so the engine factory honours
 			// the same allow-list the agent.Agent will be built
 			// with.
+			// Hand the per-Captain registry through so the
+			// engine factory's catalog.Deps.ToolRegistry sees
+			// the sandbox-derived overlay (if any). Nil for
+			// vanilla vessels keeps the resolver-time shared
+			// registry in play.
+			var perCaptainReg *tool.Registry
+			if toolReg != f.plan.SharedToolRegistry {
+				perCaptainReg = toolReg
+			}
 			res, err := builder(resolver.RuntimeDeps{
-				AgentTools:  aspec.Tools,
-				LLMLimiters: f.limitersAsCatalog(),
+				AgentTools:   tools,
+				LLMLimiters:  f.limitersAsCatalog(),
+				ToolRegistry: perCaptainReg,
 			})
 			if err != nil {
 				return nil, err
@@ -606,6 +638,58 @@ func (f *Fleet) buildCaptain(vp resolver.VesselPlan) (*captainEntry, error) {
 		return nil, err
 	}
 	return &captainEntry{cap: cap, bus: bus}, nil
+}
+
+// buildCaptainToolRegistry returns the *tool.Registry the captain
+// for vp should consume. When vp does not reference a Sandbox the
+// daemon-shared registry is returned verbatim (zero allocation,
+// historical behaviour). When vp.SandboxName is set we shallow-
+// copy the shared entries and overlay an auto-generated `exec`
+// tool wired to the per-Vessel sandbox.Runner. Per-Captain
+// isolation is the reason for the copy: another vessel using a
+// different Sandbox needs a different `exec` binding, and a
+// single daemon-wide registry cannot hold two tools with the
+// same Definition().Name.
+func (f *Fleet) buildCaptainToolRegistry(vp resolver.VesselPlan) (*tool.Registry, error) {
+	if vp.SandboxName == "" {
+		return f.plan.SharedToolRegistry, nil
+	}
+	runner, ok := f.plan.SharedSandboxes[vp.SandboxName]
+	if !ok {
+		// resolver should already have caught this; defensive
+		// surface so a Plan stitched together by hand (e.g. in
+		// a test) gets a structured error rather than a nil
+		// dereference.
+		return nil, errdefs.NotFoundf("vesseld fleet: vessel %q references Sandbox %q but no runner was resolved",
+			vp.Name, vp.SandboxName)
+	}
+	t, err := exectool.New(runner)
+	if err != nil {
+		return nil, fmt.Errorf("vesseld fleet: build exec tool for vessel %q: %w", vp.Name, err)
+	}
+	reg := tool.NewRegistry()
+	for _, name := range f.plan.SharedToolRegistry.Names() {
+		got, ok := f.plan.SharedToolRegistry.Get(name)
+		if !ok {
+			continue
+		}
+		reg.RegisterWithScope(got, f.plan.SharedToolRegistry.ScopeOf(name))
+	}
+	reg.Register(t)
+	return reg, nil
+}
+
+// containsString is a small "is name already present" check used
+// when deciding whether to append the auto-injected exec tool to
+// an agent's allow-list. Kept here rather than in a general utils
+// file because it is the only caller in the fleet package.
+func containsString(haystack []string, needle string) bool {
+	for _, s := range haystack {
+		if s == needle {
+			return true
+		}
+	}
+	return false
 }
 
 // Sorted returns a sorted copy of the vessel-name list. Helpful
