@@ -8,13 +8,16 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/graph/node"
 	"github.com/GizClaw/flowcraft/sdk/graph/node/knowledgenode"
 	"github.com/GizClaw/flowcraft/sdk/knowledge"
+	"github.com/GizClaw/flowcraft/sdk/knowledge/backend/fs"
 	"github.com/GizClaw/flowcraft/sdk/knowledge/factory"
+	"github.com/GizClaw/flowcraft/sdk/retrieval/memory"
 	"github.com/GizClaw/flowcraft/sdk/workspace"
 )
 
-func newLocalService(t *testing.T) *knowledge.Service {
+func newService(t *testing.T) *knowledge.Service {
 	t.Helper()
-	return factory.NewLocal(workspace.NewMemWorkspace())
+	ws := workspace.NewMemWorkspace()
+	return factory.NewRetrieval(fs.NewDocumentRepo(ws, fs.DefaultPrefix), memory.New())
 }
 
 func newNodeBoardCtx() (graph.ExecutionContext, *graph.Board) {
@@ -39,7 +42,7 @@ func TestNode_NilService_ReturnsEmpty(t *testing.T) {
 }
 
 func TestNode_AllScope_FansOut(t *testing.T) {
-	svc := newLocalService(t)
+	svc := newService(t)
 	ctx := context.Background()
 	if err := svc.PutDocument(ctx, "ds1", "a.md", "alpha banana"); err != nil {
 		t.Fatalf("put ds1: %v", err)
@@ -66,7 +69,7 @@ func TestNode_AllScope_FansOut(t *testing.T) {
 }
 
 func TestNode_SingleScope_PerDatasetStateKey(t *testing.T) {
-	svc := newLocalService(t)
+	svc := newService(t)
 	ctx := context.Background()
 	if err := svc.PutDocument(ctx, "docs", "a.md", "alpha banana"); err != nil {
 		t.Fatalf("put: %v", err)
@@ -98,7 +101,7 @@ func TestNode_SingleScope_PerDatasetStateKey(t *testing.T) {
 }
 
 func TestNode_SingleScope_FallsBackToBoardDataset(t *testing.T) {
-	svc := newLocalService(t)
+	svc := newService(t)
 	ctx := context.Background()
 	if err := svc.PutDocument(ctx, "docs", "a.md", "alpha banana"); err != nil {
 		t.Fatalf("put: %v", err)
@@ -163,7 +166,7 @@ func TestConfigFromMap_AllScopeAndDatasets(t *testing.T) {
 }
 
 func TestNode_CustomQueryKey(t *testing.T) {
-	svc := newLocalService(t)
+	svc := newService(t)
 	if err := svc.PutDocument(context.Background(), "ds1", "a.md", "alpha banana"); err != nil {
 		t.Fatalf("put: %v", err)
 	}

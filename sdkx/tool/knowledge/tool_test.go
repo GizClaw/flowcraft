@@ -7,18 +7,21 @@ import (
 	"testing"
 
 	sdkknowledge "github.com/GizClaw/flowcraft/sdk/knowledge"
+	"github.com/GizClaw/flowcraft/sdk/knowledge/backend/fs"
 	"github.com/GizClaw/flowcraft/sdk/knowledge/factory"
+	"github.com/GizClaw/flowcraft/sdk/retrieval/memory"
 	"github.com/GizClaw/flowcraft/sdk/workspace"
 	tool "github.com/GizClaw/flowcraft/sdkx/tool/knowledge"
 )
 
-func newLocalService(t *testing.T) *sdkknowledge.Service {
+func newService(t *testing.T) *sdkknowledge.Service {
 	t.Helper()
-	return factory.NewLocal(workspace.NewMemWorkspace())
+	ws := workspace.NewMemWorkspace()
+	return factory.NewRetrieval(fs.NewDocumentRepo(ws, fs.DefaultPrefix), memory.New())
 }
 
 func TestSearchServiceTool_BasicSearch(t *testing.T) {
-	svc := newLocalService(t)
+	svc := newService(t)
 	ctx := context.Background()
 	if err := svc.PutDocument(ctx, "ds", "go.md", "Go is a compiled programming language"); err != nil {
 		t.Fatalf("put: %v", err)
@@ -48,7 +51,7 @@ func TestSearchServiceTool_NilService(t *testing.T) {
 }
 
 func TestSearchServiceTool_InvalidScope(t *testing.T) {
-	svc := newLocalService(t)
+	svc := newService(t)
 	x := tool.NewSearchServiceTool(svc)
 	_, err := x.Execute(context.Background(), `{"query":"q","scope":"weird"}`)
 	if err == nil || !strings.Contains(err.Error(), "invalid scope") {
@@ -57,7 +60,7 @@ func TestSearchServiceTool_InvalidScope(t *testing.T) {
 }
 
 func TestPutServiceTool_RoundTrip(t *testing.T) {
-	svc := newLocalService(t)
+	svc := newService(t)
 	ctx := context.Background()
 	x := tool.NewPutServiceTool(svc)
 	if got := x.Definition().Name; got != "knowledge_put" {

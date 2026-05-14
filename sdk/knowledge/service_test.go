@@ -7,7 +7,9 @@ import (
 	"testing"
 
 	"github.com/GizClaw/flowcraft/sdk/knowledge"
+	"github.com/GizClaw/flowcraft/sdk/knowledge/backend/fs"
 	"github.com/GizClaw/flowcraft/sdk/knowledge/factory"
+	"github.com/GizClaw/flowcraft/sdk/retrieval/memory"
 	"github.com/GizClaw/flowcraft/sdk/workspace"
 )
 
@@ -38,14 +40,20 @@ func (e *stubEmbedder) EmbedBatch(ctx context.Context, texts []string) ([][]floa
 	return out, nil
 }
 
-func newLocalService(t *testing.T, opts ...factory.LocalOption) *knowledge.Service {
+// newService spins up a Service backed by the retrieval backend
+// (RetrievalChunkRepo/LayerRepo on sdk/retrieval/memory; documents in
+// FSDocumentRepo on a workspace.MemWorkspace). factory.NewLocal is
+// deprecated as of v0.4 (#134) — new tests should reach for this
+// helper.
+func newService(t *testing.T, opts ...factory.RetrievalOption) *knowledge.Service {
 	t.Helper()
 	ws := workspace.NewMemWorkspace()
-	return factory.NewLocal(ws, opts...)
+	docs := fs.NewDocumentRepo(ws, fs.DefaultPrefix)
+	return factory.NewRetrieval(docs, memory.New(), opts...)
 }
 
 func TestService_PutDocumentIncrementsVersion(t *testing.T) {
-	svc := newLocalService(t)
+	svc := newService(t)
 	ctx := context.Background()
 	if err := svc.PutDocument(ctx, "ds", "a.md", "alpha"); err != nil {
 		t.Fatalf("first put: %v", err)
@@ -66,7 +74,7 @@ func TestService_PutDocumentIncrementsVersion(t *testing.T) {
 }
 
 func TestService_PutDocumentReplacesChunks(t *testing.T) {
-	svc := newLocalService(t)
+	svc := newService(t)
 	ctx := context.Background()
 	if err := svc.PutDocument(ctx, "ds", "a.md", "alpha banana"); err != nil {
 		t.Fatalf("put: %v", err)
@@ -93,7 +101,7 @@ func TestService_PutDocumentReplacesChunks(t *testing.T) {
 }
 
 func TestService_DeleteDocumentRemovesChunks(t *testing.T) {
-	svc := newLocalService(t)
+	svc := newService(t)
 	ctx := context.Background()
 	if err := svc.PutDocument(ctx, "ds", "a.md", "alpha"); err != nil {
 		t.Fatalf("put: %v", err)
@@ -122,7 +130,7 @@ func TestService_DeleteDocumentRemovesChunks(t *testing.T) {
 }
 
 func TestService_SearchSingleDatasetRequiresID(t *testing.T) {
-	svc := newLocalService(t)
+	svc := newService(t)
 	_, err := svc.Search(context.Background(), knowledge.Query{
 		Scope: knowledge.ScopeSingleDataset,
 		Text:  "x",
@@ -133,7 +141,7 @@ func TestService_SearchSingleDatasetRequiresID(t *testing.T) {
 }
 
 func TestService_SearchAllDatasetsFanOut(t *testing.T) {
-	svc := newLocalService(t)
+	svc := newService(t)
 	ctx := context.Background()
 	if err := svc.PutDocument(ctx, "ds1", "a.md", "shared apple"); err != nil {
 		t.Fatalf("put ds1: %v", err)
@@ -160,7 +168,7 @@ func TestService_SearchAllDatasetsFanOut(t *testing.T) {
 }
 
 func TestService_SearchInvalidLayer(t *testing.T) {
-	svc := newLocalService(t)
+	svc := newService(t)
 	_, err := svc.Search(context.Background(), knowledge.Query{
 		Scope: knowledge.ScopeAllDatasets,
 		Layer: knowledge.Layer("L99"),
@@ -172,7 +180,7 @@ func TestService_SearchInvalidLayer(t *testing.T) {
 }
 
 func TestService_PutDocumentLayerStoresBoth(t *testing.T) {
-	svc := newLocalService(t)
+	svc := newService(t)
 	ctx := context.Background()
 	if err := svc.PutDocument(ctx, "ds", "a.md", "alpha"); err != nil {
 		t.Fatalf("put doc: %v", err)
@@ -190,7 +198,7 @@ func TestService_PutDocumentLayerStoresBoth(t *testing.T) {
 }
 
 func TestService_PutDatasetLayer(t *testing.T) {
-	svc := newLocalService(t)
+	svc := newService(t)
 	ctx := context.Background()
 	if err := svc.PutDatasetLayer(context.Background(), "ds", knowledge.LayerOverview, "ds overview"); err != nil {
 		t.Fatalf("put: %v", err)
@@ -205,7 +213,7 @@ func TestService_PutDatasetLayer(t *testing.T) {
 }
 
 func TestService_PutLayerRejectsLayerDetail(t *testing.T) {
-	svc := newLocalService(t)
+	svc := newService(t)
 	err := svc.PutDocumentLayer(context.Background(), "ds", "a.md", knowledge.LayerDetail, "x")
 	if err == nil {
 		t.Fatalf("expected validation error for LayerDetail")
@@ -213,7 +221,7 @@ func TestService_PutLayerRejectsLayerDetail(t *testing.T) {
 }
 
 func TestService_RebuildScopedDocument(t *testing.T) {
-	svc := newLocalService(t)
+	svc := newService(t)
 	ctx := context.Background()
 	if err := svc.PutDocument(ctx, "ds", "a.md", "alpha"); err != nil {
 		t.Fatalf("put: %v", err)
@@ -234,7 +242,7 @@ func TestService_RebuildScopedDocument(t *testing.T) {
 }
 
 func TestService_RebuildWholeDataset(t *testing.T) {
-	svc := newLocalService(t)
+	svc := newService(t)
 	ctx := context.Background()
 	if err := svc.PutDocument(ctx, "ds", "a.md", "alpha"); err != nil {
 		t.Fatalf("put: %v", err)
@@ -246,8 +254,8 @@ func TestService_RebuildWholeDataset(t *testing.T) {
 
 func TestService_VectorEnabledStampsEmbedSig(t *testing.T) {
 	emb := &stubEmbedder{dim: 4}
-	svc := newLocalService(t,
-		factory.WithLocalEmbedder(emb, "stub:v1"),
+	svc := newService(t,
+		factory.WithRetrievalEmbedder(emb, "stub:v1"),
 	)
 	ctx := context.Background()
 	if err := svc.PutDocument(ctx, "ds", "a.md", "alpha"); err != nil {
@@ -271,7 +279,7 @@ func TestService_VectorEnabledStampsEmbedSig(t *testing.T) {
 }
 
 func TestService_HybridFallsBackToBM25WhenNoVector(t *testing.T) {
-	svc := newLocalService(t)
+	svc := newService(t)
 	ctx := context.Background()
 	if err := svc.PutDocument(ctx, "ds", "a.md", "alpha"); err != nil {
 		t.Fatalf("put: %v", err)
@@ -291,7 +299,7 @@ func TestService_HybridFallsBackToBM25WhenNoVector(t *testing.T) {
 }
 
 func TestService_NoDocsReturnsEmpty(t *testing.T) {
-	svc := newLocalService(t)
+	svc := newService(t)
 	res, err := svc.Search(context.Background(), knowledge.Query{
 		Scope: knowledge.ScopeAllDatasets,
 		Text:  "anything",
@@ -307,7 +315,7 @@ func TestService_NoDocsReturnsEmpty(t *testing.T) {
 }
 
 func TestService_DeleteUnknownDocumentNoError(t *testing.T) {
-	svc := newLocalService(t)
+	svc := newService(t)
 	if err := svc.DeleteDocument(context.Background(), "ds", "missing.md"); err != nil {
 		t.Fatalf("delete missing: %v", err)
 	}
@@ -324,8 +332,8 @@ func (e *errEmbedder) EmbedBatch(context.Context, []string) ([][]float32, error)
 }
 
 func TestService_PutDocumentSurfacesEmbedderError(t *testing.T) {
-	svc := newLocalService(t,
-		factory.WithLocalEmbedder(&errEmbedder{}, "err:v1"),
+	svc := newService(t,
+		factory.WithRetrievalEmbedder(&errEmbedder{}, "err:v1"),
 	)
 	err := svc.PutDocument(context.Background(), "ds", "a.md", "alpha")
 	if err == nil {
@@ -336,7 +344,7 @@ func TestService_PutDocumentSurfacesEmbedderError(t *testing.T) {
 // --- SearchDocuments (doc-level granularity, #126) --------------------------
 
 func TestService_SearchDocumentsReturnsOneHitPerDoc(t *testing.T) {
-	svc := newLocalService(t)
+	svc := newService(t)
 	ctx := context.Background()
 	if err := svc.PutDocument(ctx, "ds", "a.md", "alpha beta gamma alpha beta gamma"); err != nil {
 		t.Fatalf("put a: %v", err)
@@ -370,7 +378,7 @@ func TestService_SearchDocumentsRanksDocAcrossChunks(t *testing.T) {
 	// the chunks→doc aggregation path inside fs.SearchDocs. Doc "a"
 	// has the query keyword once in each of its two chunks (doc TF=2);
 	// doc "b" has the keyword only in its first chunk (doc TF=1).
-	svc := newLocalService(t, factory.WithLocalChunker(
+	svc := newService(t, factory.WithRetrievalChunker(
 		knowledge.NewDefaultChunker(knowledge.ChunkConfig{ChunkSize: 16, ChunkOverlap: 0}),
 	))
 	ctx := context.Background()
@@ -400,7 +408,7 @@ func TestService_SearchDocumentsRanksDocAcrossChunks(t *testing.T) {
 }
 
 func TestService_SearchDocumentsRespectsTopK(t *testing.T) {
-	svc := newLocalService(t)
+	svc := newService(t)
 	ctx := context.Background()
 	for _, name := range []string{"a.md", "b.md", "c.md", "d.md"} {
 		if err := svc.PutDocument(ctx, "ds", name, "alpha "+name); err != nil {
@@ -423,7 +431,7 @@ func TestService_SearchDocumentsRespectsTopK(t *testing.T) {
 }
 
 func TestService_SearchDocumentsScopeAllDatasets(t *testing.T) {
-	svc := newLocalService(t)
+	svc := newService(t)
 	ctx := context.Background()
 	if err := svc.PutDocument(ctx, "ds1", "a.md", "alpha"); err != nil {
 		t.Fatalf("put ds1: %v", err)
@@ -453,7 +461,7 @@ func TestService_SearchDocumentsScopeAllDatasets(t *testing.T) {
 }
 
 func TestService_SearchDocumentsRequiresDatasetIDForSingleScope(t *testing.T) {
-	svc := newLocalService(t)
+	svc := newService(t)
 	_, err := svc.SearchDocuments(context.Background(), knowledge.Query{
 		Scope: knowledge.ScopeSingleDataset,
 		Text:  "alpha",
