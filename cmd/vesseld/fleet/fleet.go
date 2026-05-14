@@ -592,6 +592,14 @@ func (f *Fleet) buildCaptain(vp resolver.VesselPlan) (*captainEntry, error) {
 	if f.buildCfg != nil && f.buildCfg.checkpointStore != nil {
 		options = append(options, vessel.WithCheckpointStore(f.buildCfg.checkpointStore))
 	}
+	if f.plan.SharedSessionStore != nil {
+		// One daemon-wide SessionStore feeds every Captain. Run
+		// IDs are globally unique within a daemon lifetime, so
+		// Open/Close on the same instance from concurrent
+		// Captains never collide on a key. See the doc on
+		// Plan.SharedSessionStore for the safety argument.
+		options = append(options, vessel.WithSessionStore(f.plan.SharedSessionStore))
+	}
 
 	cap, err := vessel.New(vp.Spec, options...)
 	if err != nil {

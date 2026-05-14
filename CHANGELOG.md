@@ -242,6 +242,24 @@ compare/fetch/ingest`, `eval longmemeval convert`). Shell completion
 
 #### vesseld
 
+- `cmd/vesseld/apispec` + resolver + fleet: `Daemon.spec.sessionStore`
+  YAML schema (`backend: memory|filesystem`, `root` required for
+  filesystem) that wires `vessel.WithSessionStore` onto every
+  Captain in the daemon. One store instance is built at resolve
+  time and shared across all captains — run IDs are globally
+  unique within a daemon lifetime so concurrent Open/Close on the
+  same store is race-free. Engines / tools reach the per-run
+  workspace via `vessel.WorkspaceFromContext`. Backend selection
+  is intentionally a fixed enum rather than a catalog factory ref:
+  v0.2.0 ships exactly two backends and a third (Redis,
+  object-storage) is a future RFC, so the catalog-factory
+  indirection costs more than it earns today. The schema field is
+  additive (omitting it preserves the v0.1.0 behaviour where
+  `WorkspaceFromContext` returns `(nil, false)`); the validator
+  rejects `backend: memory` with a non-empty `root` and
+  `backend: filesystem` with an empty `root` so misconfiguration
+  fails at boot instead of silently picking a different backend.
+  Consumes `vessel/v0.2.0` (bumped in a separate commit on this PR).
 - `cmd/vesseld/apispec`: `Daemon.spec.control.auth.mtls` schema
   carrying `cert`, `key`, `clientCA`, and an optional `minVersion`
   (defaulting to `"1.3"`, `"1.2"` also accepted). Each ref accepts

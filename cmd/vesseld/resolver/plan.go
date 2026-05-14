@@ -8,6 +8,7 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/history"
 	"github.com/GizClaw/flowcraft/sdk/llm"
 	"github.com/GizClaw/flowcraft/sdk/tool"
+	"github.com/GizClaw/flowcraft/vessel"
 	"github.com/GizClaw/flowcraft/vessel/spec"
 )
 
@@ -47,6 +48,16 @@ type Plan struct {
 	// history.History instance. Fleet looks the right one up by
 	// name when constructing each Captain.
 	SharedHistories map[string]history.History
+
+	// SharedSessionStore is the daemon-wide vessel.SessionStore
+	// instance built from Daemon.spec.sessionStore. Nil when
+	// sessionStore is unset — in that case the fleet wires no
+	// WithSessionStore option and WorkspaceFromContext returns
+	// (nil, false) on every run. Sharing one instance across
+	// Captains is safe because vessel run IDs are globally
+	// unique within a daemon lifetime, so two captains never
+	// race on the same key.
+	SharedSessionStore vessel.SessionStore
 }
 
 // DaemonPlan is the resolved Daemon document.

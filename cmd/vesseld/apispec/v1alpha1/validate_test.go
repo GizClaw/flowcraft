@@ -138,6 +138,62 @@ func TestDaemon_MTLSFieldsRequired(t *testing.T) {
 	}
 }
 
+func TestDaemon_SessionStore_OK(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		ss   DaemonSessionStore
+	}{
+		{"memory", DaemonSessionStore{Backend: "memory"}},
+		{"filesystem", DaemonSessionStore{Backend: "filesystem", Root: "/var/lib/vesseld/sessions"}},
+	} {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			d := Daemon{
+				TypeMeta:   tmDaemon(),
+				ObjectMeta: ObjectMeta{Name: "d"},
+				Spec: DaemonSpec{
+					Control:      DaemonControl{Socket: "/tmp/v.sock"},
+					SessionStore: &tc.ss,
+				},
+			}
+			if err := d.Validate(); err != nil {
+				t.Fatalf("Validate: %v", err)
+			}
+		})
+	}
+}
+
+func TestDaemon_SessionStore_RejectsInvalid(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		ss   DaemonSessionStore
+	}{
+		{"empty-backend", DaemonSessionStore{}},
+		{"unknown-backend", DaemonSessionStore{Backend: "redis"}},
+		{"filesystem-needs-root", DaemonSessionStore{Backend: "filesystem"}},
+		{"memory-rejects-root", DaemonSessionStore{Backend: "memory", Root: "/some/path"}},
+	} {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			d := Daemon{
+				TypeMeta:   tmDaemon(),
+				ObjectMeta: ObjectMeta{Name: "d"},
+				Spec: DaemonSpec{
+					Control:      DaemonControl{Socket: "/tmp/v.sock"},
+					SessionStore: &tc.ss,
+				},
+			}
+			if err := d.Validate(); !errdefs.IsValidation(err) {
+				t.Fatalf("expected Validation, got %v", err)
+			}
+		})
+	}
+}
+
 func TestVessel_RequiresAgents(t *testing.T) {
 	t.Parallel()
 	v := Vessel{TypeMeta: tmVessel(), ObjectMeta: ObjectMeta{Name: "x"}}
