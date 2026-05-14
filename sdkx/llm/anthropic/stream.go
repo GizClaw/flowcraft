@@ -34,11 +34,6 @@ type anthropicBetaStreamMessage struct {
 
 	mu    sync.Mutex
 	usage llm.Usage
-	// cachedInputTokens shadows usage so the finish path can plumb
-	// the cache-read subset (which llm.Usage intentionally omits)
-	// into TokenUsage. See sdkx/llm/openai/stream.go for the same
-	// pattern.
-	cachedInputTokens int64
 	// grossInputTokens is the sum of new + cache_read +
 	// cache_creation input tokens. Anthropic's wire `input_tokens`
 	// is the *non-cached new* portion only; we recombine it with
@@ -170,8 +165,8 @@ func (s *anthropicBetaStreamMessage) betaUpdateUsage(ev asdk.BetaRawMessageStrea
 		gross, cached := normalizeAnthropicUsage(u.InputTokens, u.CacheReadInputTokens, u.CacheCreationInputTokens)
 		s.mu.Lock()
 		s.usage.InputTokens = gross
+		s.usage.CachedInputTokens = cached
 		s.usage.OutputTokens = u.OutputTokens
-		s.cachedInputTokens = cached
 		s.grossInputTokens = gross
 		s.mu.Unlock()
 	case "message_delta":
@@ -222,7 +217,6 @@ func (s *anthropicBetaStreamMessage) betaFinish(err error) {
 		dur := time.Since(s.start)
 		s.mu.Lock()
 		usage := s.usage
-		cached := s.cachedInputTokens
 		s.mu.Unlock()
 		if err != nil {
 			s.span.RecordError(err)
@@ -233,7 +227,7 @@ func (s *anthropicBetaStreamMessage) betaFinish(err error) {
 		} else {
 			final := llm.TokenUsage{
 				InputTokens:       usage.InputTokens,
-				CachedInputTokens: cached,
+				CachedInputTokens: usage.CachedInputTokens,
 				OutputTokens:      usage.OutputTokens,
 				TotalTokens:       usage.InputTokens + usage.OutputTokens,
 			}
@@ -259,11 +253,10 @@ type anthropicStreamMessage struct {
 
 	mu    sync.Mutex
 	usage llm.Usage
-	// cachedInputTokens / grossInputTokens — see anthropicBetaStreamMessage.
-	cachedInputTokens int64
-	grossInputTokens  int64
-	closeOnce         sync.Once
-	finishOnce        sync.Once
+	// grossInputTokens — see anthropicBetaStreamMessage.
+	grossInputTokens int64
+	closeOnce        sync.Once
+	finishOnce       sync.Once
 
 	blockTypes map[int64]string
 
@@ -399,8 +392,8 @@ func (s *anthropicStreamMessage) updateUsage(ev asdk.MessageStreamEventUnion) {
 		gross, cached := normalizeAnthropicUsage(u.InputTokens, u.CacheReadInputTokens, u.CacheCreationInputTokens)
 		s.mu.Lock()
 		s.usage.InputTokens = gross
+		s.usage.CachedInputTokens = cached
 		s.usage.OutputTokens = u.OutputTokens
-		s.cachedInputTokens = cached
 		s.grossInputTokens = gross
 		s.mu.Unlock()
 	case "message_delta":
@@ -475,7 +468,6 @@ func (s *anthropicStreamMessage) finish(err error) {
 		dur := time.Since(s.start)
 		s.mu.Lock()
 		usage := s.usage
-		cached := s.cachedInputTokens
 		s.mu.Unlock()
 
 		if err != nil {
@@ -487,7 +479,7 @@ func (s *anthropicStreamMessage) finish(err error) {
 		} else {
 			final := llm.TokenUsage{
 				InputTokens:       usage.InputTokens,
-				CachedInputTokens: cached,
+				CachedInputTokens: usage.CachedInputTokens,
 				OutputTokens:      usage.OutputTokens,
 				TotalTokens:       usage.InputTokens + usage.OutputTokens,
 			}

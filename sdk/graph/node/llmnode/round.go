@@ -219,9 +219,10 @@ streamLoop:
 
 	rawUsage := inner.Usage()
 	usage := model.TokenUsage{
-		InputTokens:  rawUsage.InputTokens,
-		OutputTokens: rawUsage.OutputTokens,
-		TotalTokens:  rawUsage.InputTokens + rawUsage.OutputTokens,
+		InputTokens:       rawUsage.InputTokens,
+		CachedInputTokens: rawUsage.CachedInputTokens,
+		OutputTokens:      rawUsage.OutputTokens,
+		TotalTokens:       rawUsage.InputTokens + rawUsage.OutputTokens,
 	}
 
 	assistant := inner.Message()

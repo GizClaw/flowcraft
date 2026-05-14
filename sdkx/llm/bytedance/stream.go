@@ -31,17 +31,12 @@ type streamMessage struct {
 	// openai/anthropic stream adapters.
 	start time.Time
 
-	mu    sync.Mutex
-	usage llm.Usage
-	// cachedInputTokens shadows usage so the finish path can surface
-	// Doubao's transparent prefix-cache hit count (which llm.Usage
-	// intentionally omits to stay minimal). Mirrors the openai/anthropic
-	// stream adapters.
-	cachedInputTokens int64
-	content           string
-	toolCalls         map[int]llm.ToolCall
-	closeOnce         sync.Once
-	spanEnded         bool
+	mu        sync.Mutex
+	usage     llm.Usage
+	content   string
+	toolCalls map[int]llm.ToolCall
+	closeOnce sync.Once
+	spanEnded bool
 
 	cur llm.StreamChunk
 	err error
@@ -209,7 +204,7 @@ func (s *streamMessage) updateUsage(resp model.ChatCompletionStreamResponse) {
 	s.mu.Lock()
 	s.usage.InputTokens = int64(resp.Usage.PromptTokens)
 	s.usage.OutputTokens = int64(resp.Usage.CompletionTokens)
-	s.cachedInputTokens = int64(resp.Usage.PromptTokensDetails.CachedTokens)
+	s.usage.CachedInputTokens = int64(resp.Usage.PromptTokensDetails.CachedTokens)
 	s.mu.Unlock()
 }
 
@@ -221,7 +216,6 @@ func (s *streamMessage) finish(err error) {
 	}
 	s.spanEnded = true
 	usage := s.usage
-	cached := s.cachedInputTokens
 	s.mu.Unlock()
 
 	dur := time.Since(s.start)
@@ -241,7 +235,7 @@ func (s *streamMessage) finish(err error) {
 	} else {
 		final := llm.TokenUsage{
 			InputTokens:       usage.InputTokens,
-			CachedInputTokens: cached,
+			CachedInputTokens: usage.CachedInputTokens,
 			OutputTokens:      usage.OutputTokens,
 			TotalTokens:       usage.InputTokens + usage.OutputTokens,
 		}

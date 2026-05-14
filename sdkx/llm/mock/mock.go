@@ -66,9 +66,13 @@ func (m *MockLLM) GenerateStream(ctx context.Context, messages []llm.Message, op
 		return nil, err
 	}
 	return &mockStream{
-		msg:   msg,
-		text:  msg.Content(),
-		usage: llm.Usage{InputTokens: usage.InputTokens, OutputTokens: usage.OutputTokens},
+		msg:  msg,
+		text: msg.Content(),
+		usage: llm.Usage{
+			InputTokens:       usage.InputTokens,
+			CachedInputTokens: usage.CachedInputTokens,
+			OutputTokens:      usage.OutputTokens,
+		},
 	}, nil
 }
 
