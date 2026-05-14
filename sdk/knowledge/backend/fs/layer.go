@@ -51,6 +51,14 @@ type datasetLayersFileSchema struct {
 // Detail (L2) layers are not persisted by this repo: detail content
 // already lives in chunks via FSChunkRepo. Put for LayerDetail returns a
 // validation error.
+//
+// Deprecated: FSLayerRepo is a unit-test / demo-grade backend. Like
+// FSChunkRepo it scales poorly on multi-doc datasets and is paired
+// exclusively with FSChunkRepo through factory.NewLocal — once that
+// pairing is retired in v0.5.0 there is no remaining caller. For
+// production wiring use factory.NewRetrieval, which stores layers
+// inside the retrieval.Index alongside chunks (see #134 and
+// docs/migrations/v0.5.0.md).
 type FSLayerRepo struct {
 	ws        workspace.Workspace
 	paths     pathBuilder
@@ -60,6 +68,9 @@ type FSLayerRepo struct {
 }
 
 // NewLayerRepo wires an FSLayerRepo to ws under prefix.
+//
+// Deprecated: see FSLayerRepo. Use factory.NewRetrieval instead;
+// slated for removal in v0.5.0.
 func NewLayerRepo(ws workspace.Workspace, prefix string, tok textsearch.Tokenizer) *FSLayerRepo {
 	return &FSLayerRepo{
 		ws:        ws,

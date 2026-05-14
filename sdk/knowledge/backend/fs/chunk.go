@@ -95,6 +95,16 @@ func newDatasetState() *datasetState {
 //
 // Concurrency: every public method is safe for concurrent use; the
 // repo's RWMutex protects the state map and each datasetState.
+//
+// Deprecated: FSChunkRepo is a unit-test / demo-grade backend. Replace
+// rewrites the entire dataset .chunks.json on every per-doc ingest and
+// rebuilds both chunk-level and doc-level inverted indices from
+// scratch, all under a single write lock — making per-doc ingest O(N)
+// and total ingest O(N^2) in the dataset (see #134). For any
+// non-trivial dataset use factory.NewRetrieval with an in-process
+// sdk/retrieval/memory.Index or a production retrieval.Index from
+// sdkx/retrieval/{sqlite,postgres,workspace}. Slated for removal in
+// v0.5.0; see docs/migrations/v0.5.0.md.
 type FSChunkRepo struct {
 	ws        workspace.Workspace
 	paths     pathBuilder
@@ -106,6 +116,10 @@ type FSChunkRepo struct {
 
 // NewChunkRepo constructs an FSChunkRepo. Tokenizer is auto-detected from
 // the first content seen when nil; explicit override wins.
+//
+// Deprecated: see FSChunkRepo. Use factory.NewRetrieval with a
+// sdk/retrieval/memory.Index (or any production retrieval.Index)
+// instead. Slated for removal in v0.5.0.
 func NewChunkRepo(ws workspace.Workspace, prefix string, tok textsearch.Tokenizer) *FSChunkRepo {
 	return &FSChunkRepo{
 		ws:        ws,
