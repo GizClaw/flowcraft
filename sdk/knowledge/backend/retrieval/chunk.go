@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/knowledge"
@@ -40,16 +41,23 @@ func NewChunkRepo(idx rt.Index) *RetrievalChunkRepo {
 	return &RetrievalChunkRepo{idx: idx}
 }
 
-// Replace atomically swaps every chunk for (datasetID, docName).
+// Replace atomically swaps every chunk for (datasetID, docName), and
+// keeps the doc-level virtual document in the __docs namespace in
+// sync so SearchDocs can answer doc-level BM25 from the underlying
+// retrieval.Index's native scorer (#134).
 //
 // Implementation: when the underlying Index satisfies DeletableByFilter
 // we issue a single bulk delete, then upsert the new chunks. Otherwise
 // we fall back to List + Delete by ID, which is O(N) in the document's
-// chunk count.
+// chunk count. The doc-level upsert is a single retrieval.Doc per
+// Replace call (O(1) in chunk count), so the doc-level update does
+// not change the asymptotic cost.
 //
-// Atomicity is best-effort: if the upsert fails after the delete the
-// document ends up empty rather than partially updated. Backends that
-// support transactions can override this by implementing both
+// Atomicity is best-effort: if any of the three writes (chunks
+// delete, chunks upsert, docs upsert) fails after a previous one
+// succeeds, the doc ends up partially updated. This matches the
+// existing fs and pre-#134 retrieval contract; backends that support
+// transactions can override this by implementing both
 // DeletableByFilter and an atomic Upsert.
 func (r *RetrievalChunkRepo) Replace(ctx context.Context, datasetID, docName string, chunks []knowledge.DerivedChunk) error {
 	if datasetID == "" || docName == "" {
@@ -61,7 +69,10 @@ func (r *RetrievalChunkRepo) Replace(ctx context.Context, datasetID, docName str
 		return err
 	}
 	if len(chunks) == 0 {
-		return nil
+		// Doc has no chunks anymore; drop it from the doc-level
+		// namespace too so SearchDocs does not surface a stale
+		// empty entry.
+		return r.deleteDocLevel(ctx, datasetID, docName)
 	}
 
 	docs := make([]rt.Doc, len(chunks))
@@ -84,24 +95,91 @@ func (r *RetrievalChunkRepo) Replace(ctx context.Context, datasetID, docName str
 	if err := r.idx.Upsert(ctx, ns, docs); err != nil {
 		return fmt.Errorf("knowledge/retrieval: upsert %s/%s: %w", datasetID, docName, err)
 	}
+	return r.replaceDocLevel(ctx, datasetID, docName, chunks)
+}
+
+// replaceDocLevel rewrites a single (datasetID, docName) entry in the
+// __docs namespace. The doc-level Content is the chunk Content
+// concatenated in chunk-index order (newline-delimited); this is
+// what feeds the retrieval.Index's BM25 scorer when SearchDocs hits
+// the namespace.
+//
+// CHUNK OVERLAP CAVEAT: when the chunker emits overlapping chunks
+// (ChunkOverlap > 0), the concatenated Content double-counts tokens
+// in the overlap region, slightly inflating that doc's TF for those
+// tokens. The inflation is uniform per overlap setting across every
+// doc in the corpus, so BM25 *ranking* is unaffected — only absolute
+// scores drift. Callers running doc-level eval against published
+// baselines (BEIR / MS-MARCO / TREC) should configure their chunker
+// with ChunkOverlap=0 to eliminate the offset entirely.
+func (r *RetrievalChunkRepo) replaceDocLevel(ctx context.Context, datasetID, docName string, chunks []knowledge.DerivedChunk) error {
+	sorted := make([]knowledge.DerivedChunk, len(chunks))
+	copy(sorted, chunks)
+	sort.SliceStable(sorted, func(i, j int) bool { return sorted[i].Index < sorted[j].Index })
+	var sb strings.Builder
+	for i, c := range sorted {
+		if i > 0 {
+			sb.WriteByte('\n')
+		}
+		sb.WriteString(c.Content)
+	}
+	doc := rt.Doc{
+		ID:      docName,
+		Content: sb.String(),
+		Metadata: map[string]any{
+			mdDatasetID: datasetID,
+			mdDocName:   docName,
+			mdLayer:     string(knowledge.LayerDetail),
+			mdSourceVer: sorted[0].Sig.SourceVer,
+		},
+	}
+	if err := r.idx.Upsert(ctx, docsNamespace(datasetID), []rt.Doc{doc}); err != nil {
+		return fmt.Errorf("knowledge/retrieval: upsert doc %s/%s: %w", datasetID, docName, err)
+	}
 	return nil
 }
 
-// DeleteByDoc removes every chunk for (datasetID, docName).
+// deleteDocLevel removes (datasetID, docName) from the __docs
+// namespace. Backends that return NotFound on missing IDs are
+// tolerated — this is also the path used when the doc never had a
+// doc-level entry to begin with (e.g. legacy data ingested before
+// #134, dropped via Replace([])).
+func (r *RetrievalChunkRepo) deleteDocLevel(ctx context.Context, datasetID, docName string) error {
+	if err := r.idx.Delete(ctx, docsNamespace(datasetID), []string{docName}); err != nil && !errdefs.IsNotFound(err) {
+		return fmt.Errorf("knowledge/retrieval: delete doc %s/%s: %w", datasetID, docName, err)
+	}
+	return nil
+}
+
+// DeleteByDoc removes every chunk for (datasetID, docName) and the
+// matching doc-level entry from the __docs namespace.
 func (r *RetrievalChunkRepo) DeleteByDoc(ctx context.Context, datasetID, docName string) error {
 	if datasetID == "" || docName == "" {
 		return errdefs.Validationf("knowledge/retrieval: dataset_id and doc_name are required")
 	}
-	return r.deleteByDoc(ctx, chunksNamespace(datasetID), docName)
+	if err := r.deleteByDoc(ctx, chunksNamespace(datasetID), docName); err != nil {
+		return err
+	}
+	return r.deleteDocLevel(ctx, datasetID, docName)
 }
 
-// DeleteByDataset drops the dataset's namespace when the backend
-// supports it; otherwise it falls back to filter-driven deletes.
+// DeleteByDataset drops the dataset's chunks AND doc-level namespaces
+// when the backend supports it; otherwise it falls back to
+// filter-driven deletes on both.
 func (r *RetrievalChunkRepo) DeleteByDataset(ctx context.Context, datasetID string) error {
 	if datasetID == "" {
 		return errdefs.Validationf("knowledge/retrieval: dataset_id is required")
 	}
-	ns := chunksNamespace(datasetID)
+	if err := r.deleteDatasetNamespace(ctx, datasetID, chunksNamespace(datasetID)); err != nil {
+		return err
+	}
+	return r.deleteDatasetNamespace(ctx, datasetID, docsNamespace(datasetID))
+}
+
+// deleteDatasetNamespace clears every doc carrying the dataset_id
+// from a single namespace using whichever capability the backend
+// advertises.
+func (r *RetrievalChunkRepo) deleteDatasetNamespace(ctx context.Context, datasetID, ns string) error {
 	if d, ok := r.idx.(rt.Droppable); ok {
 		if err := d.Drop(ctx, ns); err != nil && !errdefs.IsNotFound(err) {
 			return fmt.Errorf("knowledge/retrieval: drop %s: %w", ns, err)

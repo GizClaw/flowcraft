@@ -5,12 +5,37 @@ import (
 	"testing"
 
 	"github.com/GizClaw/flowcraft/sdk/knowledge"
+	rt "github.com/GizClaw/flowcraft/sdk/retrieval"
 	"github.com/GizClaw/flowcraft/sdk/retrieval/memory"
 )
 
 func newChunkRepo(t *testing.T) *RetrievalChunkRepo {
 	t.Helper()
 	return NewChunkRepo(memory.New())
+}
+
+// newChunkRepoWithIndex returns both the repo and the underlying
+// in-memory index so tests can inspect the doc-level namespace
+// directly without going through SearchDocs.
+func newChunkRepoWithIndex(t *testing.T) (*RetrievalChunkRepo, *memory.Index) {
+	t.Helper()
+	idx := memory.New()
+	return NewChunkRepo(idx), idx
+}
+
+// listDocsNamespace dumps every retrieval.Doc currently held in the
+// dataset's __docs namespace; used to assert doc-level write
+// behaviour independently of the SearchDocs query path.
+func listDocsNamespace(t *testing.T, idx *memory.Index, datasetID string) []rt.Doc {
+	t.Helper()
+	resp, err := idx.List(context.Background(), docsNamespace(datasetID), rt.ListRequest{PageSize: 100})
+	if err != nil {
+		t.Fatalf("list docs namespace: %v", err)
+	}
+	if resp == nil {
+		return nil
+	}
+	return resp.Items
 }
 
 func chunk(doc string, idx int, content string) knowledge.DerivedChunk {
@@ -511,6 +536,108 @@ func TestRetrievalChunkRepo_SearchDocs_NoResults(t *testing.T) {
 	}
 	if len(cands) != 0 {
 		t.Fatalf("expected 0 hits for non-matching query, got %+v", cands)
+	}
+}
+
+// --- __docs namespace cascade (#134) ---------------------------------------
+
+func TestRetrievalChunkRepo_Replace_PopulatesDocsNamespace(t *testing.T) {
+	// Replace must seed the doc-level namespace with one Doc per
+	// logical document, ID = docName, Content = concatenation of
+	// chunk contents in chunk-index order.
+	r, idx := newChunkRepoWithIndex(t)
+	ctx := context.Background()
+	if err := r.Replace(ctx, "ds", "a.md", []knowledge.DerivedChunk{
+		chunk("a.md", 1, "beta gamma"),
+		chunk("a.md", 0, "alpha"),
+	}); err != nil {
+		t.Fatalf("replace: %v", err)
+	}
+	docs := listDocsNamespace(t, idx, "ds")
+	if len(docs) != 1 {
+		t.Fatalf("expected 1 doc-level entry, got %d (%+v)", len(docs), docs)
+	}
+	if docs[0].ID != "a.md" {
+		t.Fatalf("doc.ID = %q, want a.md", docs[0].ID)
+	}
+	if want := "alpha\nbeta gamma"; docs[0].Content != want {
+		t.Fatalf("doc.Content = %q, want %q", docs[0].Content, want)
+	}
+}
+
+func TestRetrievalChunkRepo_Replace_RebuildsDocOnSubsequentCall(t *testing.T) {
+	// A second Replace for the same (ds, docName) must overwrite the
+	// doc-level Content with the new chunk concatenation, not leave
+	// the previous version lingering.
+	r, idx := newChunkRepoWithIndex(t)
+	ctx := context.Background()
+	if err := r.Replace(ctx, "ds", "a.md", []knowledge.DerivedChunk{chunk("a.md", 0, "old text")}); err != nil {
+		t.Fatalf("replace v1: %v", err)
+	}
+	if err := r.Replace(ctx, "ds", "a.md", []knowledge.DerivedChunk{chunk("a.md", 0, "new text")}); err != nil {
+		t.Fatalf("replace v2: %v", err)
+	}
+	docs := listDocsNamespace(t, idx, "ds")
+	if len(docs) != 1 {
+		t.Fatalf("expected 1 doc-level entry after rebuild, got %d", len(docs))
+	}
+	if docs[0].Content != "new text" {
+		t.Fatalf("doc.Content = %q, want %q", docs[0].Content, "new text")
+	}
+}
+
+func TestRetrievalChunkRepo_Replace_EmptyChunksClearsDocsNamespace(t *testing.T) {
+	// Replace with no chunks is the canonical "doc deleted" signal
+	// in the ChunkRepo contract; the doc-level namespace must
+	// observe the deletion too so SearchDocs cannot resurrect it.
+	r, idx := newChunkRepoWithIndex(t)
+	ctx := context.Background()
+	if err := r.Replace(ctx, "ds", "a.md", []knowledge.DerivedChunk{chunk("a.md", 0, "alpha")}); err != nil {
+		t.Fatalf("replace seed: %v", err)
+	}
+	if err := r.Replace(ctx, "ds", "a.md", nil); err != nil {
+		t.Fatalf("replace empty: %v", err)
+	}
+	if docs := listDocsNamespace(t, idx, "ds"); len(docs) != 0 {
+		t.Fatalf("expected docs namespace empty after empty replace, got %+v", docs)
+	}
+}
+
+func TestRetrievalChunkRepo_DeleteByDoc_CascadesToDocsNamespace(t *testing.T) {
+	r, idx := newChunkRepoWithIndex(t)
+	ctx := context.Background()
+	if err := r.Replace(ctx, "ds", "a.md", []knowledge.DerivedChunk{chunk("a.md", 0, "alpha")}); err != nil {
+		t.Fatalf("replace a: %v", err)
+	}
+	if err := r.Replace(ctx, "ds", "b.md", []knowledge.DerivedChunk{chunk("b.md", 0, "beta")}); err != nil {
+		t.Fatalf("replace b: %v", err)
+	}
+	if err := r.DeleteByDoc(ctx, "ds", "a.md"); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	docs := listDocsNamespace(t, idx, "ds")
+	if len(docs) != 1 || docs[0].ID != "b.md" {
+		t.Fatalf("expected only b.md left in docs namespace, got %+v", docs)
+	}
+}
+
+func TestRetrievalChunkRepo_DeleteByDataset_CascadesToDocsNamespace(t *testing.T) {
+	r, idx := newChunkRepoWithIndex(t)
+	ctx := context.Background()
+	if err := r.Replace(ctx, "ds1", "a.md", []knowledge.DerivedChunk{chunk("a.md", 0, "alpha")}); err != nil {
+		t.Fatalf("replace ds1: %v", err)
+	}
+	if err := r.Replace(ctx, "ds2", "b.md", []knowledge.DerivedChunk{chunk("b.md", 0, "beta")}); err != nil {
+		t.Fatalf("replace ds2: %v", err)
+	}
+	if err := r.DeleteByDataset(ctx, "ds1"); err != nil {
+		t.Fatalf("delete ds1: %v", err)
+	}
+	if docs := listDocsNamespace(t, idx, "ds1"); len(docs) != 0 {
+		t.Fatalf("ds1 docs namespace not cleared: %+v", docs)
+	}
+	if docs := listDocsNamespace(t, idx, "ds2"); len(docs) != 1 {
+		t.Fatalf("ds2 docs namespace corrupted by ds1 drop: %+v", docs)
 	}
 }
 
