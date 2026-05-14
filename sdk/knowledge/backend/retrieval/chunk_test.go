@@ -675,6 +675,98 @@ func TestRetrievalChunkRepo_DeleteByDataset_CascadesToDocsNamespace(t *testing.T
 	}
 }
 
+// --- RebuildDocIndex (#134 in-place upgrade path) --------------------------
+
+func TestRetrievalChunkRepo_RebuildDocIndex_RecoversFromChunksOnly(t *testing.T) {
+	// Simulate a pre-#134 deployment: chunks are present in the
+	// __chunks namespace but the __docs namespace was never seeded.
+	// RebuildDocIndex must reconstruct the doc-level entries from
+	// the chunks alone so SearchDocs immediately works.
+	r, idx := newChunkRepoWithIndex(t)
+	ctx := context.Background()
+	if err := r.Replace(ctx, "ds", "a.md", []knowledge.DerivedChunk{
+		chunk("a.md", 0, "alpha"),
+		chunk("a.md", 1, "beta"),
+	}); err != nil {
+		t.Fatalf("seed a: %v", err)
+	}
+	if err := r.Replace(ctx, "ds", "b.md", []knowledge.DerivedChunk{
+		chunk("b.md", 0, "gamma"),
+	}); err != nil {
+		t.Fatalf("seed b: %v", err)
+	}
+	// Wipe the __docs namespace to fake the pre-#134 state, leaving
+	// chunks untouched.
+	if err := idx.Delete(ctx, docsNamespace("ds"), []string{"a.md", "b.md"}); err != nil {
+		t.Fatalf("wipe docs ns: %v", err)
+	}
+	if docs := listDocsNamespace(t, idx, "ds"); len(docs) != 0 {
+		t.Fatalf("setup precondition: docs ns must be empty, got %+v", docs)
+	}
+	if err := r.RebuildDocIndex(ctx, "ds"); err != nil {
+		t.Fatalf("rebuild: %v", err)
+	}
+	docs := listDocsNamespace(t, idx, "ds")
+	if len(docs) != 2 {
+		t.Fatalf("expected 2 doc-level entries after rebuild, got %d (%+v)", len(docs), docs)
+	}
+	byID := map[string]string{}
+	for _, d := range docs {
+		byID[d.ID] = d.Content
+	}
+	if got, want := byID["a.md"], "alpha\nbeta"; got != want {
+		t.Fatalf("a.md content = %q, want %q (chunk_index-ordered concat)", got, want)
+	}
+	if got, want := byID["b.md"], "gamma"; got != want {
+		t.Fatalf("b.md content = %q, want %q", got, want)
+	}
+	// And SearchDocs must now answer.
+	cands, err := r.SearchDocs(ctx, knowledge.ChunkQuery{
+		DatasetIDs: []string{"ds"}, Text: "alpha", Mode: knowledge.ModeBM25, TopK: 5,
+	})
+	if err != nil {
+		t.Fatalf("search after rebuild: %v", err)
+	}
+	if len(cands) != 1 || cands[0].Hit.DocName != "a.md" {
+		t.Fatalf("post-rebuild SearchDocs returned %+v, want a.md", cands)
+	}
+}
+
+func TestRetrievalChunkRepo_RebuildDocIndex_IsIdempotent(t *testing.T) {
+	r, idx := newChunkRepoWithIndex(t)
+	ctx := context.Background()
+	if err := r.Replace(ctx, "ds", "a.md", []knowledge.DerivedChunk{chunk("a.md", 0, "alpha")}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	for i := 0; i < 3; i++ {
+		if err := r.RebuildDocIndex(ctx, "ds"); err != nil {
+			t.Fatalf("rebuild %d: %v", i, err)
+		}
+	}
+	docs := listDocsNamespace(t, idx, "ds")
+	if len(docs) != 1 || docs[0].ID != "a.md" || docs[0].Content != "alpha" {
+		t.Fatalf("idempotent rebuild produced %+v", docs)
+	}
+}
+
+func TestRetrievalChunkRepo_RebuildDocIndex_EmptyDatasetIsNoop(t *testing.T) {
+	r, idx := newChunkRepoWithIndex(t)
+	ctx := context.Background()
+	if err := r.RebuildDocIndex(ctx, "ds-empty"); err != nil {
+		t.Fatalf("rebuild empty: %v", err)
+	}
+	if docs := listDocsNamespace(t, idx, "ds-empty"); len(docs) != 0 {
+		t.Fatalf("expected no doc entries, got %+v", docs)
+	}
+}
+
+func TestRetrievalChunkRepo_RebuildDocIndex_RequiresDatasetID(t *testing.T) {
+	r := newChunkRepo(t)
+	if err := r.RebuildDocIndex(context.Background(), ""); err == nil {
+		t.Fatalf("expected validation error for empty datasetID")
+	}
+}
+
 func TestRetrievalChunkRepo_SigRoundtrip(t *testing.T) {
 	r := newChunkRepo(t)
 	ctx := context.Background()

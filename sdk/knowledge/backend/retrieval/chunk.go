@@ -163,6 +163,99 @@ func (r *RetrievalChunkRepo) DeleteByDoc(ctx context.Context, datasetID, docName
 	return r.deleteDocLevel(ctx, datasetID, docName)
 }
 
+// RebuildDocIndex re-derives the __docs namespace for a dataset by
+// iterating every chunk currently held in the __chunks namespace,
+// grouping by doc_name, and re-running replaceDocLevel per doc.
+//
+// Intended for one-shot in-place upgrades from sdk versions that did
+// not maintain a doc-level namespace (pre-#134). Operators should
+// call it once per dataset after upgrading the binary, before
+// SearchDocs traffic kicks in; subsequent regular Replace / Delete
+// calls keep the namespace in sync automatically.
+//
+// Behaviour:
+//   - For each (datasetID, docName) cluster, the chunks are sorted
+//     by chunk_index and concatenated; the result is upserted into
+//     the __docs namespace. This is exactly what a fresh Replace
+//     would have produced.
+//   - The method does NOT pre-clean the __docs namespace; existing
+//     entries with the same docName are overwritten by Upsert, and
+//     stale entries for docs that no longer have chunks are NOT
+//     removed (call DeleteByDoc explicitly to clear them, or
+//     DeleteByDataset to wipe the dataset and re-ingest).
+//   - It is safe to call repeatedly: the operation is idempotent up
+//     to the contents of the __chunks namespace at call time.
+//
+// O(N) in the dataset's chunk count; one Index.Upsert per logical
+// doc plus one Index.List per page of chunks. No additional locks
+// are taken inside the repo — concurrent Replace calls during a
+// rebuild race in the usual best-effort sense and the last writer
+// wins per (ds, doc).
+func (r *RetrievalChunkRepo) RebuildDocIndex(ctx context.Context, datasetID string) error {
+	if datasetID == "" {
+		return errdefs.Validationf("knowledge/retrieval: dataset_id is required")
+	}
+	chunkNS := chunksNamespace(datasetID)
+	// Buckets keep insertion order of doc_names for deterministic
+	// rebuilds across calls and across backends.
+	clusters := make(map[string][]knowledge.DerivedChunk)
+	order := make([]string, 0)
+	pageToken := ""
+	for {
+		if err := ctx.Err(); err != nil {
+			return errdefs.FromContext(err)
+		}
+		page, err := r.idx.List(ctx, chunkNS, rt.ListRequest{
+			Filter:   rt.Filter{Eq: map[string]any{mdLayer: string(knowledge.LayerDetail)}},
+			PageSize: 200, PageToken: pageToken,
+		})
+		if err != nil {
+			if errdefs.IsNotFound(err) {
+				return nil
+			}
+			return fmt.Errorf("knowledge/retrieval: list %s: %w", chunkNS, err)
+		}
+		if page == nil {
+			return nil
+		}
+		for _, doc := range page.Items {
+			docName := metadataString(doc.Metadata[mdDocName])
+			if docName == "" {
+				continue
+			}
+			idx, _ := metadataInt(doc.Metadata[mdChunkIndex])
+			derived := knowledge.DerivedChunk{
+				DatasetID: datasetID,
+				DocName:   docName,
+				Index:     idx,
+				Content:   doc.Content,
+				Sig: knowledge.DerivedSig{
+					SourceVer:  metadataUint64(doc.Metadata[mdSourceVer]),
+					ChunkerSig: metadataString(doc.Metadata[mdChunkerSig]),
+					EmbedSig:   metadataString(doc.Metadata[mdEmbedSig]),
+				},
+			}
+			if _, seen := clusters[docName]; !seen {
+				order = append(order, docName)
+			}
+			clusters[docName] = append(clusters[docName], derived)
+		}
+		if page.NextPageToken == "" {
+			break
+		}
+		pageToken = page.NextPageToken
+	}
+	for _, docName := range order {
+		if err := ctx.Err(); err != nil {
+			return errdefs.FromContext(err)
+		}
+		if err := r.replaceDocLevel(ctx, datasetID, docName, clusters[docName]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // DeleteByDataset drops the dataset's chunks AND doc-level namespaces
 // when the backend supports it; otherwise it falls back to
 // filter-driven deletes on both.
