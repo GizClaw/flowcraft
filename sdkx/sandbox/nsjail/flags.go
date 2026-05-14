@@ -23,7 +23,20 @@ func buildFlags(opts sandbox.ExecOptions, hostEnv []string) ([]string, error) {
 	flags := []string{
 		"-Mo",
 		"--quiet",
+		// --disable_clone_newns: keep the host filesystem visible;
+		// WorkDir confinement is handled in Go. See doc.go for the
+		// rationale (full mount-ns isolation is a future RFC).
 		"--disable_clone_newns",
+		// --disable_clone_newuts: nsjail's default UTS-namespace
+		// behaviour invokes sethostname("NSJAIL"), which needs
+		// CAP_SYS_ADMIN in the new namespace. Unprivileged user-ns
+		// mappings on hosts that haven't enabled
+		// kernel.unprivileged_userns_clone the "permissive" way
+		// (notably GitHub Actions runners) refuse the sethostname
+		// call and the child fails to launch. The MVP does not rely
+		// on hostname isolation as a security boundary, so we opt
+		// out of UTS-namespace cloning entirely.
+		"--disable_clone_newuts",
 	}
 
 	if opts.WorkDir != "" {
