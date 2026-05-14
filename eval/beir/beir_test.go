@@ -131,9 +131,10 @@ func TestRun_HookEvents(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 
-	// We expect the canonical sequence; intermediate lane_progress is
-	// optional (depends on ProgressPct, which we left at zero here).
-	want := []string{"start", "ingest_done", "lane_start", "lane_done", "done"}
+	// We expect the canonical sequence; intermediate ingest_progress
+	// and lane_progress emits are optional (gated by ProgressPct,
+	// which we leave at zero here).
+	want := []string{"start", "ingest_start", "ingest_done", "lane_start", "lane_done", "done"}
 	if len(kinds) < len(want) {
 		t.Fatalf("not enough events; want at least %d, got %v", len(want), kinds)
 	}

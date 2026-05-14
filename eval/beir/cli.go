@@ -6,6 +6,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -31,6 +32,8 @@ func RegisterCobra(parent *cobra.Command, g *cliflags.Global) {
 		ingestConcurrency int
 		queryConcurrency  int
 		limitQueries      int
+		overfetch         int
+		collapseStrategy  string
 	)
 
 	cmd := &cobra.Command{
@@ -73,6 +76,13 @@ Example:
 				return fmt.Errorf("--cutoffs: %w", err)
 			}
 
+			cs := CollapseStrategy(strings.ToLower(strings.TrimSpace(collapseStrategy)))
+			switch cs {
+			case "", CollapseSum, CollapseMax, CollapseFirst:
+				// ok
+			default:
+				return fmt.Errorf("--collapse-strategy: unknown %q (want sum|max|first)", collapseStrategy)
+			}
 			opts := Options{
 				Embedder:          emb,
 				Lanes:             lanes,
@@ -80,11 +90,30 @@ Example:
 				IngestConcurrency: ingestConcurrency,
 				QueryConcurrency:  queryConcurrency,
 				LimitQueries:      limitQueries,
+				OverfetchFactor:   overfetch,
+				CollapseStrategy:  cs,
 				ProgressPct:       g.Notify.ProgressPct,
 				Hook: func(ctx context.Context, e Event) {
 					notify.Forward(ctx, notifier, notify.Event{
 						Kind: e.Kind, Time: e.Time, Title: e.Title, Body: e.Body, Fields: e.Fields,
 					})
+					// Mirror milestone events to stderr so operators
+					// running the binary directly (or tailing
+					// `nohup`-style logs) get the same progress signal
+					// the Feishu webhook receives — silent multi-minute
+					// ingest is the #1 "is it stuck?" page driver. The
+					// allow-list keeps lower-resolution debug emits off
+					// the operator's screen.
+					switch e.Kind {
+					case "start", "ingest_start", "ingest_progress", "ingest_done",
+						"lane_start", "lane_progress", "lane_done", "done", "error":
+						body := e.Body
+						if e.Title != "" && body == "" {
+							body = e.Title
+						}
+						fmt.Fprintf(os.Stderr, "[%s] %s %s\n",
+							time.Now().Format("15:04:05"), e.Kind, body)
+					}
 				},
 			}
 
@@ -124,6 +153,15 @@ Example:
 	f.IntVar(&ingestConcurrency, "ingest-concurrency", 8, "concurrent PutDocument calls during ingest")
 	f.IntVar(&queryConcurrency, "query-concurrency", 8, "concurrent Search calls during scoring")
 	f.IntVar(&limitQueries, "limit-queries", 0, "evaluate only the first N queries (0 = all)")
+	f.IntVar(&overfetch, "overfetch", DefaultOverfetchFactor,
+		"chunk over-fetch factor applied before chunks→docID collapse "+
+			"(1 = top-K chunks only; useful for ablation)")
+	f.StringVar(&collapseStrategy, "collapse-strategy", string(DefaultCollapseStrategy),
+		"chunk→doc aggregation: max (default; most stable on length-"+
+			"skewed corpora) | sum (length-biased on scifact, kept for "+
+			"ablation) | first (legacy; keep first hit per doc in "+
+			"score-desc order). See eval/beir/beir.go CollapseStrategy "+
+			"doc for the scifact ablation table and tracking issue #126.")
 
 	parent.AddCommand(cmd)
 }

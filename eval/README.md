@@ -13,15 +13,15 @@ All suites are dispatched from a **single Cobra-powered binary** at
 `eval/cmd/eval`. Invoke them as `eval <suite>` (or
 `eval <suite> <subcommand>` for suites with auxiliary tools).
 
-| Suite          | What it tests                                              | Entry point                                                                            |
-| -------------- | ---------------------------------------------------------- | -------------------------------------------------------------------------------------- |
-| `locomo/`      | Long-term memory (recall) — LoCoMo benchmark               | `eval locomo run` (+ `convert`, `compare`, `fetch`, `ingest`)                          |
-| `longmemeval/` | Long-term memory (recall) — LongMemEval (ICLR 2025)        | `eval longmemeval convert` then `eval locomo run --dataset ...`                        |
-| `history/`     | History compactor quality vs. token-cost trade-off         | `eval history`                                                                         |
-| `knowledge/`   | Knowledge retrieval (BM25 / vector / hybrid) regressions   | `eval knowledge` *or* `go test ./knowledge/...`                                        |
-| `beir/`        | BEIR-format retrieval baselines (nDCG@k / Recall@k / MRR)  | `eval beir --root <beir-dataset>`                                                      |
-| `simpleqa/`    | SimpleQA short-form factuality + calibration (LLM-as-judge)| `eval simpleqa --dataset simple_qa_test_set.csv`                                       |
-| `taubench/`    | τ-bench-style tool use (Go-native, multi-domain)           | `eval taubench --agent-llm qwen:qwen-max`                                              |
+| Suite          | What it tests                                               | Entry point                                                     |
+| -------------- | ----------------------------------------------------------- | --------------------------------------------------------------- |
+| `locomo/`      | Long-term memory (recall) — LoCoMo benchmark                | `eval locomo run` (+ `convert`, `compare`, `fetch`, `ingest`)   |
+| `longmemeval/` | Long-term memory (recall) — LongMemEval (ICLR 2025)         | `eval longmemeval convert` then `eval locomo run --dataset ...` |
+| `history/`     | History compactor quality vs. token-cost trade-off          | `eval history`                                                  |
+| `knowledge/`   | Knowledge retrieval (BM25 / vector / hybrid) regressions    | `eval knowledge` _or_ `go test ./knowledge/...`                 |
+| `beir/`        | BEIR-format retrieval baselines (nDCG@k / Recall@k / MRR)   | `eval beir --root <beir-dataset>`                               |
+| `simpleqa/`    | SimpleQA short-form factuality + calibration (LLM-as-judge) | `eval simpleqa --dataset simple_qa_test_set.csv`                |
+| `taubench/`    | τ-bench-style tool use (Go-native, multi-domain)            | `eval taubench --agent-llm qwen:qwen-max`                       |
 
 `longmemeval` deliberately ships no runner of its own: the data schema is
 compatible with LoCoMo, so once converted the same `eval locomo run`
@@ -41,6 +41,128 @@ across LoCoMo and LongMemEval reports.
 - `internal/env/` — resolves `--*-llm <alias>[:<model>]` CLI flags into
   the `(provider, model, config)` triple consumed by
   `sdk/llm.NewFromConfig`. Details below under "Provider credentials".
+
+## Methodology disclosures
+
+The numbers these suites emit are useful for tracking FlowCraft over
+time and for comparing against published baselines, but they ride on
+methodology choices that materially affect headline figures. If you
+ever publish a number from this harness, disclose the following along
+with it; we treat these as features, not bugs, but they need to be in
+the open so a reader can decide whether two systems' numbers are
+actually comparable.
+
+### A. Per-conversation memory scope (LoCoMo / LongMemEval)
+
+The locomo runner gives every conversation its own
+`UserID::convID` namespace. Without this, conv-N's questions retrieve
+top-k from the pool of all 10 conversations combined and judge drops
+from ~0.67 to ~0.17 on LoCoMo10 — facts about other personas drown
+out the right answer. Production memory systems always partition
+this way (each end-user has their own namespace), so we model the
+benchmark the same way. **A competing system that pools all 10
+conversations under one user_id will look 4× worse on this
+harness**. Always compare like-with-like.
+
+### B. "Loose EM" = substring containment (LoCoMo / LongMemEval)
+
+`metrics.ExactMatch` returns true iff a normalized gold string is
+contained in the normalized prediction. This is the LongMemEval
+convention (see `eval/metrics/em.go`); it is **looser than textbook
+EM** (which requires full-string equality). F1 is the standard
+token-overlap form. Numbers from a harness that uses strict EM are
+not directly comparable.
+
+### C. Default extractor prompt is LoCoMo-specialised
+
+`LocoMoExtractorPrompt` asks the LLM extractor for "100+ facts per
+30-session conversation" and "embed dates inline". This is reasonable
+for any long-dialog memory task — any production deployment would
+write a similar prompt — but it is more aggressive than a
+domain-neutral default would be. `--tuned-prompts=false` switches to
+the SDK's neutral default; running both forms a useful A/B.
+
+### D. Default judge style is `locomo` (lenient)
+
+`--judge-style=locomo` uses the mem0-aligned LoCoMo judge prompt
+verbatim (eval/metrics/judge.go: `LocoMoLLMJudgePrompt`) so qa.judge
+numbers are comparable to mem0's published figures. The prompt is
+explicitly lenient: "as long as it touches on the same topic as the
+gold answer, it should be counted as CORRECT". `--judge-style=strict`
+uses our older semantic-equivalence prompt; the code comment notes
+that the lenient style typically scores ~3-5pp higher on the same
+predictions ("methodology alignment, not framework improvement").
+When publishing a number, declare which style you used; for fairest
+cross-paper comparison, publish both.
+
+### E. soft-merge: CLI default vs. leaderboard convention
+
+soft-merge is the SDK's near-duplicate damping mechanism: when a
+newer fact supersedes an older one, the old entry's recall score is
+decayed. This is core memory-hygiene behaviour for any production
+system — without it stale facts dominate retrieval after a few
+sessions — so the SDK / CLI default (`--soft-merge=true`) matches
+production behaviour and **stays unchanged**.
+
+Observed effect on LoCoMo10: ~10-15pp qa.judge swing when toggled.
+
+**The leaderboard convention is the opposite — `--soft-merge=false`.**
+We publish headline numbers without this assist because (i) most
+competing memory frameworks have no equivalent toggle, so leaving
+soft-merge on creates a confound we can't subtract out of their
+numbers, and (ii) the `false` number cleanly answers "how good is
+our extraction + retrieval pipeline on its own", which is the more
+defensible quality claim.
+
+When you publish:
+
+- Headline number → `--soft-merge=false`.
+- Adjacent number → `--soft-merge=true`, labelled "production
+  default; includes near-duplicate damping" so readers can see the
+  delta the feature buys in practice.
+
+### Anti-cheating discipline (what we deliberately do not do)
+
+For completeness, here are sharp edges we ruled out:
+
+- **No SDK-side eval-mode branches.** The flowcraft runner is a thin
+  wrapper around `recall.New(...)`; everything quality-impacting is a
+  public SDK option. `rg -i 'isEval|inEval|eval mode|FLOWCRAFT_EVAL'
+sdk/` returns zero non-comment hits.
+- **No gold-answer leak.** `GoldAnswers` / `EvidenceIDs` are scoped
+  to `eval/dataset/` and `metrics/`. Runners never see them; the
+  answer LLM is only handed `(query, top-k recalled memories)`.
+- **No answer-prompt EM tuning.** `LocoMoAnswerPrompt`'s comment
+  records that earlier versions had three "EM-friendly" rules (force
+  minimal answers, mirror date format, suppress IDK); we removed
+  them because they shifted bench numbers without reflecting real
+  memory quality. The current prompt is intentionally neutral.
+- **No dataset filtering.** `LoadJSONL` reads every record;
+  `--limit-{convs,questions}` truncates to the first N for debug,
+  not by difficulty.
+- **No retry-to-win on QA.** Ingest has a single-shot retry on
+  `errdefs.NotAvailable` (Azure cold-start blips); QA does not retry.
+  LLM-call failures score 0/0/0 and a 5% systemic-failure threshold
+  fires a Feishu alert so the operator can stop a poisoned run.
+- **Upstream judge prompts.** SimpleQA's `GradePrompt` is a verbatim
+  copy of OpenAI's official simple-evals grader; the LoCoMo judge
+  mirrors mem0's published prompt. Where we deviate (`strict` style)
+  the deviation is explicit and opt-in.
+
+## Comparative ranking
+
+This harness was originally built to track FlowCraft against itself
+(release N vs. release N-1). Cross-framework comparisons are
+methodologically harder because LLM-under-test, dataset version,
+judge prompt, and scope-isolation strategy all leak into the
+headline number.
+
+We treat ranking as a separate, slower-moving deliverable: see
+[`eval/leaderboard.md`](leaderboard.md) for the methodology,
+direction-by-direction competitor inventory, and the phased rollout
+plan. Numbers land in `eval/leaderboard.md` only after a competitor
+has been wired through the same harness with the same answer-LLM /
+judge-LLM and a documented reproduction script.
 
 ## Provider credentials
 
@@ -169,7 +291,7 @@ the body rewritten in place on every event (`start`, every
 `--notify-progress-pct` percent of ingest + QA, `ingest_done`, `done`, and
 a one-shot `error` when QA failure rate exceeds 5 % after 100 questions).
 
-The Feishu **custom-bot webhook** path is intentionally *not* supported:
+The Feishu **custom-bot webhook** path is intentionally _not_ supported:
 on a 50 h run it produces hundreds of separate chat messages and floods
 the destination group. CardKit is the only sane UX at that timescale.
 
@@ -177,7 +299,7 @@ the destination group. CardKit is the only sane UX at that timescale.
 
 You only need to do this once.
 
-1. Create a self-built app at https://open.feishu.cn/app and note the
+1. Create a self-built app at <https://open.feishu.cn/app> and note the
    `App ID` (`cli_…`) + `App Secret` (32-hex).
 2. Enable the **Bot** ability for the app.
 3. Apply for these scopes: `im:chat:readonly`, `im:message`,

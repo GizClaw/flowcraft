@@ -204,9 +204,68 @@ type Options struct {
 	// LimitQueries trims the query set for smoke runs. 0 = all.
 	LimitQueries int
 
+	// OverfetchFactor controls how many chunks we ask Search for per
+	// unit of unique-doc cutoff before collapsing chunks-per-doc. Set
+	// to 1 to disable over-fetch (top-K chunks only; rarely useful
+	// once CollapseStrategy=sum is enabled because sum-pool needs
+	// chunks beyond top-K to aggregate signal). Default: 4.
+	OverfetchFactor int
+
+	// CollapseStrategy selects how chunk scores are aggregated when
+	// collapsing chunks→docID. The BEIR protocol expects doc-level
+	// ranking (qrels are doc-level), so some aggregation is mandatory.
+	//
+	// scifact ablation (BM25 lane, 300 test queries):
+	//
+	//   strategy   overfetch   nDCG@10   recall@100   note
+	//   max            4         0.180       0.255    default
+	//   max            8         0.152       0.212    extra chunks dilute the best-chunk signal
+	//   sum            4         0.054       0.207    length-biased on scifact
+	//
+	// Sum-pool was attempted on the textbook "re-aggregate multi-
+	// keyword signal split across chunks" reasoning, but on scifact
+	// it backfired: long non-relevant docs accumulate noise across
+	// many chunks and outrank short relevant docs. Both numbers
+	// remain far below the Lucene/Anserini doc-level BM25 baseline
+	// (0.679) because the underlying retrieval path is chunk-level
+	// by design; closing that gap requires a doc-level Search API
+	// in sdk/knowledge (tracked in #126), not adapter-side tweaks.
+	//
+	//   - CollapseMax (default): keep highest-scoring chunk per
+	//     docID. Most stable on length-skewed corpora.
+	//
+	//   - CollapseSum: sum chunk scores per docID. Kept for
+	//     ablation; biased toward long docs on length-skewed
+	//     corpora like scifact.
+	//
+	//   - CollapseFirst: keep first hit per docID in score-desc order
+	//     (== max-pool for backends that return score-desc Hits, but
+	//     does not require Hit.Score to be populated). Legacy.
+	CollapseStrategy CollapseStrategy
+
 	Hook        EventHook
 	ProgressPct int
 }
+
+// CollapseStrategy names the chunks→docID aggregation function used
+// by runLane. See Options.CollapseStrategy for the full rationale.
+type CollapseStrategy string
+
+const (
+	CollapseSum   CollapseStrategy = "sum"
+	CollapseMax   CollapseStrategy = "max"
+	CollapseFirst CollapseStrategy = "first"
+)
+
+// DefaultOverfetchFactor is the chunk-overfetch multiplier applied
+// before doc-collapse when Options.OverfetchFactor is zero.
+const DefaultOverfetchFactor = 4
+
+// DefaultCollapseStrategy is the aggregation function used when
+// Options.CollapseStrategy is empty. Max-pool is the most stable
+// choice on length-skewed corpora; see CollapseStrategy doc for the
+// ablation data.
+const DefaultCollapseStrategy = CollapseMax
 
 // LaneReport's field names deliberately mirror eval/knowledge's
 // LaneReport — same NDCG/Recall/MRR/LatencyP50/LatencyP95 layout —
@@ -271,8 +330,25 @@ func Run(ctx context.Context, ds *Dataset, opts Options) (*Report, error) {
 	if len(opts.Lanes) == 0 {
 		opts.Lanes = []Lane{knowledge.ModeBM25, knowledge.ModeVector, knowledge.ModeHybrid}
 	}
+	if opts.OverfetchFactor <= 0 {
+		opts.OverfetchFactor = DefaultOverfetchFactor
+	}
+	if opts.CollapseStrategy == "" {
+		opts.CollapseStrategy = DefaultCollapseStrategy
+	}
 
-	queries := ds.Queries
+	// BEIR `queries.jsonl` carries all splits (train/dev/test). Only
+	// queries present in `qrels/test.tsv` belong to the evaluation set;
+	// the rest have hasIdeal=false and are silently dropped during
+	// scoring. Filtering up-front avoids 3-4× wasted Search calls
+	// (especially costly on the vector lane which also wastes
+	// embedding-API quota).
+	queries := make([]Query, 0, len(ds.Queries))
+	for _, q := range ds.Queries {
+		if len(ds.Qrels[q.ID]) > 0 {
+			queries = append(queries, q)
+		}
+	}
 	if opts.LimitQueries > 0 && len(queries) > opts.LimitQueries {
 		queries = queries[:opts.LimitQueries]
 	}
@@ -287,6 +363,12 @@ func Run(ctx context.Context, ds *Dataset, opts Options) (*Report, error) {
 			"query_concurrency":  opts.QueryConcurrency,
 			"has_embedder":       opts.Embedder != nil,
 			"n_queries":          len(queries),
+			// Chunk→doc collapse settings are stable per-run audit
+			// trail for leaderboard.md (BEIR protocol requires
+			// doc-level ranking; sdk/knowledge returns chunk-level).
+			"collapse_to_doc":   true,
+			"collapse_strategy": string(opts.CollapseStrategy),
+			"overfetch_factor":  opts.OverfetchFactor,
 		},
 	}
 	defer func() { rep.DurationMS = time.Since(rep.StartedAt).Milliseconds() }()
@@ -319,7 +401,8 @@ func Run(ctx context.Context, ds *Dataset, opts Options) (*Report, error) {
 	})
 
 	svc := buildService(opts)
-	if err := ingest(ctx, svc, ds, opts); err != nil {
+	emit(Event{Kind: "ingest_start", Body: fmt.Sprintf("ingesting %d documents (concurrency=%d)", len(ds.Documents), opts.IngestConcurrency)})
+	if err := ingest(ctx, svc, ds, opts, emit); err != nil {
 		emit(Event{Kind: "error", Title: "ingest", Body: err.Error()})
 		return nil, err
 	}
@@ -377,10 +460,29 @@ func buildService(opts Options) *knowledge.Service {
 // usually carry a title; we prefix it onto text with a blank line so
 // the BM25 tokenizer sees both surfaces and dense models that pool
 // title + text behave as their published baselines do.
-func ingest(ctx context.Context, svc *knowledge.Service, ds *Dataset, opts Options) error {
+//
+// Emits an "ingest_progress" Event each time the cumulative doc count
+// crosses an opts.ProgressPct milestone (default 10% steps). Ingest is
+// typically the longest phase on bm25-only runs (entire corpus must be
+// tokenized + reverse-indexed before any query can start), so silent
+// ingest is the #1 driver of "is it stuck?" pages.
+func ingest(ctx context.Context, svc *knowledge.Service, ds *Dataset, opts Options, emit func(Event)) error {
 	sem := make(chan struct{}, opts.IngestConcurrency)
 	var wg sync.WaitGroup
 	var firstErr atomic.Value // error
+
+	total := int64(len(ds.Documents))
+	var milestones []int64
+	if total > 0 && opts.ProgressPct > 0 && emit != nil {
+		for pct := opts.ProgressPct; pct <= 99; pct += opts.ProgressPct {
+			ms := total * int64(pct) / 100
+			if ms < 1 {
+				ms = 1
+			}
+			milestones = append(milestones, ms)
+		}
+	}
+	var nextMs, done int64
 
 	for _, d := range ds.Documents {
 		d := d
@@ -398,6 +500,28 @@ func ingest(ctx context.Context, svc *knowledge.Service, ds *Dataset, opts Optio
 			if err := svc.PutDocument(ctx, opts.DatasetID, d.ID, body); err != nil {
 				firstErr.CompareAndSwap(nil, fmt.Errorf("put %s: %w", d.ID, err))
 			}
+
+			n := atomic.AddInt64(&done, 1)
+			if len(milestones) == 0 {
+				return
+			}
+			idx := atomic.LoadInt64(&nextMs)
+			if idx >= int64(len(milestones)) || n < milestones[idx] {
+				return
+			}
+			if !atomic.CompareAndSwapInt64(&nextMs, idx, idx+1) {
+				return
+			}
+			pct := int64(opts.ProgressPct) * (idx + 1)
+			emit(Event{
+				Kind: "ingest_progress",
+				Body: fmt.Sprintf("ingested %d/%d docs (~%d%%)", n, total, pct),
+				Fields: map[string]string{
+					"done":  fmt.Sprintf("%d", n),
+					"total": fmt.Sprintf("%d", total),
+					"pct":   fmt.Sprintf("%d", pct),
+				},
+			})
 		}()
 	}
 	wg.Wait()
@@ -470,12 +594,20 @@ func runLane(
 
 			out := result{}
 			t0 := time.Now()
+			// Over-fetch chunks because we collapse chunks→docID
+			// below. Without this, top-K chunks can map to far
+			// fewer than K unique docs (esp. for long-form
+			// corpora), under-stating nDCG@K. Factor 4 covers
+			// scifact's ~1-2 chunks/doc with margin; tune via
+			// --overfetch / Options.OverfetchFactor (1 = disable
+			// collapse, used only for ablation studies).
+			fetchK := topK * opts.OverfetchFactor
 			res, err := svc.Search(ctx, knowledge.Query{
 				DatasetID: opts.DatasetID,
 				Scope:     knowledge.ScopeSingleDataset,
 				Text:      q.Text,
 				Mode:      lane,
-				TopK:      topK,
+				TopK:      fetchK,
 			})
 			out.latency = time.Since(t0)
 			if err != nil {
@@ -498,10 +630,24 @@ func runLane(
 			sort.Sort(sort.Reverse(sort.IntSlice(ideal)))
 			out.idealRanking = ideal
 
-			ranked := make([]int, 0, len(res.Hits))
-			for _, h := range res.Hits {
-				ranked = append(ranked, qrels[h.DocName])
-			}
+			// Collapse chunks→docID using the configured strategy.
+			// BEIR qrels are doc-level, so we MUST emit doc-level
+			// ranking — the only question is how to aggregate the
+			// chunk-level scores returned by Search.
+			//
+			// Sum-pool re-aggregates multi-keyword BM25 signal
+			// distributed across a doc's chunks (the standard BEIR
+			// adapter behaviour). Max-pool keeps the single best
+			// chunk per doc; first-pool keeps the first hit per
+			// doc in score-desc order (== max-pool for backends
+			// that emit score-desc Hits but doesn't depend on
+			// Hit.Score).
+			//
+			// All three sort docs by aggregated score (desc) and
+			// truncate to topK AFTER aggregation. Doc grade is
+			// looked up against qrels once per doc, regardless of
+			// how many chunks contributed.
+			ranked := collapseChunksToDocs(res.Hits, qrels, topK, opts.CollapseStrategy)
 			out.rankedRelevance = ranked
 
 			results[i] = out
@@ -582,6 +728,90 @@ func dcg(grades []int, k int) float64 {
 
 // nDCG computes nDCG@k normalising against the ideal ranking
 // (descending list of all positive grades for the query).
+// collapseChunksToDocs aggregates chunk-level Hits to a doc-level
+// ranked list, applying the requested CollapseStrategy. The returned
+// slice is len ≤ topK; each element is the qrels grade of the doc at
+// that rank (0 = non-relevant or not-in-qrels).
+//
+// Sum-pool aggregates chunk scores per docID (re-aggregating signal
+// that chunk-level BM25 splits across chunks of the same doc).
+// Max-pool keeps the single highest-scoring chunk per docID.
+// First-pool keeps the first hit per docID in input order (== max-pool
+// when the caller's Hits are score-desc sorted; doesn't depend on
+// Hit.Score being populated).
+//
+// All three sort by aggregated score (desc), with docID lexicographic
+// ascending as a deterministic tie-breaker so two scorers with
+// identical chunk-score distributions produce identical rankings
+// across re-runs.
+func collapseChunksToDocs(hits []knowledge.Hit, qrels map[string]int, topK int, strategy CollapseStrategy) []int {
+	if topK <= 0 {
+		return nil
+	}
+	type docAccum struct {
+		score float64
+		grade int
+		first int // input-order index of first hit, for CollapseFirst
+		idx   int // input-order index for tie-breaking
+	}
+	docs := make(map[string]*docAccum, topK)
+	order := make([]string, 0, topK)
+	for i, h := range hits {
+		if h.DocName == "" {
+			continue
+		}
+		d, ok := docs[h.DocName]
+		if !ok {
+			d = &docAccum{grade: qrels[h.DocName], first: i, idx: i}
+			docs[h.DocName] = d
+			order = append(order, h.DocName)
+		}
+		switch strategy {
+		case CollapseSum:
+			d.score += h.Score
+		case CollapseMax:
+			if h.Score > d.score || !ok {
+				d.score = h.Score
+			}
+		case CollapseFirst:
+			if !ok {
+				d.score = h.Score
+			}
+		default:
+			// Unknown strategy → behave as sum (defensive default).
+			d.score += h.Score
+		}
+	}
+
+	type rankedDoc struct {
+		name  string
+		score float64
+		grade int
+		idx   int
+	}
+	out := make([]rankedDoc, 0, len(docs))
+	for _, name := range order {
+		d := docs[name]
+		out = append(out, rankedDoc{name: name, score: d.score, grade: d.grade, idx: d.idx})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].score != out[j].score {
+			return out[i].score > out[j].score
+		}
+		// Stable, deterministic tie-break: earliest-seen docID wins.
+		// This makes re-runs against the same backend bit-identical.
+		return out[i].idx < out[j].idx
+	})
+	if len(out) > topK {
+		out = out[:topK]
+	}
+	ranked := make([]int, 0, len(out))
+	for _, d := range out {
+		ranked = append(ranked, d.grade)
+	}
+	return ranked
+}
+
 func nDCG(ranked, ideal []int, k int) float64 {
 	idealDCG := dcg(ideal, k)
 	if idealDCG == 0 {
