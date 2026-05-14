@@ -66,6 +66,23 @@ func TestOneChunkStream_ToolCallsReplayed(t *testing.T) {
 	}
 }
 
+func TestOneChunkStream_PropagatesCachedInputTokens(t *testing.T) {
+	// Regression for #136: model.Usage now carries CachedInputTokens
+	// so the synchronous-only Generate → NewOneChunkStream adapter
+	// must surface it to callers that observe via Usage() (e.g.
+	// llmnode → host.ReportUsage).
+	msg := NewTextMessage(RoleAssistant, "hi")
+	usage := TokenUsage{InputTokens: 100, CachedInputTokens: 80, OutputTokens: 5, TotalTokens: 105}
+	stream := NewOneChunkStream(msg, usage)
+	if !stream.Next() {
+		t.Fatal("Next() = false")
+	}
+	got := stream.Usage()
+	if got.InputTokens != 100 || got.CachedInputTokens != 80 || got.OutputTokens != 5 {
+		t.Errorf("Usage = %+v, want {Input:100 Cached:80 Output:5}", got)
+	}
+}
+
 func TestOneChunkStream_NonTextPartsAreInMessageNotChunk(t *testing.T) {
 	// Multimodal output: chunk only carries text concat (empty here);
 	// callers must read Message() for image parts.

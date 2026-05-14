@@ -28,17 +28,12 @@ type openaiStreamMessage struct {
 	start    time.Time
 	stream   *ssestream.Stream[oai.ChatCompletionChunk]
 
-	mu    sync.Mutex
-	usage llm.Usage
-	// cachedInputTokens shadows usage so we can plumb the cached
-	// subset (which llm.Usage intentionally omits to stay minimal
-	// at the Provider layer) into the finish-path TokenUsage
-	// without changing the Usage() return shape.
-	cachedInputTokens int64
-	content           strings.Builder
-	toolCalls         map[int]llm.ToolCall
-	closeOnce         sync.Once
-	spanEnded         bool
+	mu        sync.Mutex
+	usage     llm.Usage
+	content   strings.Builder
+	toolCalls map[int]llm.ToolCall
+	closeOnce sync.Once
+	spanEnded bool
 
 	cur llm.StreamChunk
 	err error
@@ -193,7 +188,7 @@ func (s *openaiStreamMessage) updateUsage(chunk oai.ChatCompletionChunk) {
 	s.mu.Lock()
 	s.usage.InputTokens = chunk.Usage.PromptTokens
 	s.usage.OutputTokens = chunk.Usage.CompletionTokens
-	s.cachedInputTokens = chunk.Usage.PromptTokensDetails.CachedTokens
+	s.usage.CachedInputTokens = chunk.Usage.PromptTokensDetails.CachedTokens
 	s.mu.Unlock()
 }
 
@@ -219,7 +214,6 @@ func (s *openaiStreamMessage) finish(err error) {
 	}
 	s.spanEnded = true
 	usage := s.usage
-	cached := s.cachedInputTokens
 	s.mu.Unlock()
 
 	dur := time.Since(s.start)
@@ -231,7 +225,7 @@ func (s *openaiStreamMessage) finish(err error) {
 	} else {
 		final := llm.TokenUsage{
 			InputTokens:       usage.InputTokens,
-			CachedInputTokens: cached,
+			CachedInputTokens: usage.CachedInputTokens,
 			OutputTokens:      usage.OutputTokens,
 			TotalTokens:       usage.InputTokens + usage.OutputTokens,
 		}
