@@ -11,6 +11,7 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/history"
 	"github.com/GizClaw/flowcraft/sdk/llm"
 	"github.com/GizClaw/flowcraft/sdk/tool"
+	"github.com/GizClaw/flowcraft/vessel"
 	"github.com/GizClaw/flowcraft/vessel/spec"
 )
 
@@ -77,6 +78,11 @@ func Resolve(objs []apispec.Object, cat *catalog.Catalog, opts ResolveOptions) (
 
 	if len(inv.Daemons) >= 1 {
 		plan.Daemon = buildDaemonPlan(inv.Daemons[0])
+		store, err := buildSessionStore(inv.Daemons[0].Spec.SessionStore)
+		if err != nil {
+			errs.add(err)
+		}
+		plan.SharedSessionStore = store
 	}
 
 	for _, v := range inv.Vessels {
@@ -126,6 +132,37 @@ func buildDaemonPlan(d v1alpha1.Daemon) DaemonPlan {
 		}
 	}
 	return dp
+}
+
+// buildSessionStore materialises the daemon-wide vessel.SessionStore
+// from the apispec block. Returns (nil, nil) when the operator did
+// not configure sessionStore; the fleet treats that as "skip
+// WithSessionStore" and tools fall back to their own wiring.
+//
+// FilesystemSessionStore's constructor calls os.MkdirAll on Root,
+// so this is the first filesystem-touching step in the resolver
+// path. That is consistent with the existing resolveLLMs / loader
+// behaviour (resolver IS allowed to touch the filesystem; only
+// apispec.Validate is required to stay side-effect free).
+func buildSessionStore(ss *v1alpha1.DaemonSessionStore) (vessel.SessionStore, error) {
+	if ss == nil {
+		return nil, nil
+	}
+	switch ss.Backend {
+	case "memory":
+		return vessel.NewMemorySessionStore(), nil
+	case "filesystem":
+		store, err := vessel.NewFilesystemSessionStore(ss.Root)
+		if err != nil {
+			return nil, errdefs.Validationf("vesseld resolver: build filesystem session store at %q: %v", ss.Root, err)
+		}
+		return store, nil
+	default:
+		// apispec.Validate already covers this, but be defensive
+		// so a misconfigured catch-around-Validate caller still
+		// gets a structured error rather than a nil-store panic.
+		return nil, errdefs.Validationf("vesseld resolver: unknown sessionStore backend %q", ss.Backend)
+	}
 }
 
 // resolveHistories builds one history.History per HistoryStore

@@ -52,6 +52,45 @@ type DaemonSpec struct {
 	// adding shutdown-related fields later does not require a
 	// schema bump.
 	Shutdown DaemonShutdown `json:"shutdown,omitempty" yaml:"shutdown,omitempty"`
+
+	// SessionStore, when non-nil, provisions a per-run
+	// workspace.Workspace for every dispatched agent.Run via
+	// vessel.WithSessionStore. The same instance is shared
+	// across every Captain in the daemon (run IDs are globally
+	// unique within a daemon's lifetime, so sharing is
+	// race-free). When omitted, tools that depend on a
+	// workspace must fall back to their own wiring — there is
+	// intentionally no default backend because the choice
+	// between in-memory (ephemeral, fast) and filesystem
+	// (persistent, restart-survivable) is workload-dependent.
+	SessionStore *DaemonSessionStore `json:"sessionStore,omitempty" yaml:"sessionStore,omitempty"`
+}
+
+// DaemonSessionStore selects the backend that materialises per-run
+// workspaces. v0.2.0 ships two backends; new ones (e.g. Redis,
+// object-storage) would slot in here additively without changing
+// the field's shape.
+type DaemonSessionStore struct {
+	// Backend names the implementation. Allowed values:
+	//
+	//   "memory"     — in-process vessel.MemorySessionStore.
+	//                  Workspaces vanish on daemon restart; good
+	//                  for ephemeral CI runs and integration tests.
+	//   "filesystem" — vessel.FilesystemSessionStore rooted at
+	//                  Root. Workspaces persist across restarts so
+	//                  a resumed run sees the same files it left.
+	//                  Root is required.
+	//
+	// Required.
+	Backend string `json:"backend" yaml:"backend"`
+
+	// Root is the on-disk root for "filesystem". Each run gets
+	// "<Root>/<runID>/" as its workspace. Required when
+	// Backend == "filesystem"; rejected when Backend == "memory"
+	// to keep the schema honest (the "memory" backend simply
+	// cannot use Root, so accepting it silently would mask
+	// typos).
+	Root string `json:"root,omitempty" yaml:"root,omitempty"`
 }
 
 // DaemonControl carries the listener configuration.
@@ -226,6 +265,22 @@ func (d Daemon) Validate() error {
 	}
 	if d.Spec.Shutdown.DrainTimeout < 0 {
 		return errdefs.Validationf("vesseld Daemon %q: spec.shutdown.drainTimeout must be >= 0", d.Name)
+	}
+	if ss := d.Spec.SessionStore; ss != nil {
+		switch ss.Backend {
+		case "memory":
+			if ss.Root != "" {
+				return errdefs.Validationf("vesseld Daemon %q: spec.sessionStore.root must be empty when backend=memory", d.Name)
+			}
+		case "filesystem":
+			if ss.Root == "" {
+				return errdefs.Validationf("vesseld Daemon %q: spec.sessionStore.root is required when backend=filesystem", d.Name)
+			}
+		case "":
+			return errdefs.Validationf("vesseld Daemon %q: spec.sessionStore.backend is required when sessionStore is set (memory|filesystem)", d.Name)
+		default:
+			return errdefs.Validationf("vesseld Daemon %q: spec.sessionStore.backend %q invalid (want memory|filesystem)", d.Name, ss.Backend)
+		}
 	}
 	return nil
 }
