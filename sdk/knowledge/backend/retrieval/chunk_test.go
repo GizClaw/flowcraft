@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/knowledge"
 	rt "github.com/GizClaw/flowcraft/sdk/retrieval"
 	"github.com/GizClaw/flowcraft/sdk/retrieval/memory"
@@ -302,12 +303,14 @@ func TestRetrievalChunkRepo_SearchDocs_OneHitPerDoc(t *testing.T) {
 	}
 }
 
-func TestRetrievalChunkRepo_SearchDocs_SumPoolAggregatesAcrossChunks(t *testing.T) {
+func TestRetrievalChunkRepo_SearchDocs_RanksDocAcrossSplitTerms(t *testing.T) {
 	// A doc whose query keywords are SPLIT across two chunks must
-	// outrank a non-relevant doc that only matches one of those
-	// keywords (even repeatedly) in a single chunk. This is the exact
-	// failure mode of max-pool chunk-collapse documented in #126;
-	// sum-pool folds the per-chunk evidence into one doc score.
+	// outrank a noise doc that only matches one of those keywords
+	// (even repeatedly) in a single chunk. This is the exact
+	// failure mode of max-pool chunk-collapse documented in #126.
+	// Under the doc-level namespace, the concatenated Content sees
+	// both keywords as one doc and BM25 scores it accordingly,
+	// without the sum-pool double-counting hazard #137 introduced.
 	r := newChunkRepo(t)
 	ctx := context.Background()
 	if err := r.Replace(ctx, "ds", "rel.md", []knowledge.DerivedChunk{
@@ -335,8 +338,100 @@ func TestRetrievalChunkRepo_SearchDocs_SumPoolAggregatesAcrossChunks(t *testing.
 		t.Fatalf("expected both docs, got %d", len(cands))
 	}
 	if cands[0].Hit.DocName != "rel.md" {
-		t.Fatalf("top doc = %q, want rel.md (sum-pool should let two-keyword coverage beat one-keyword repetition); ranking = %+v",
+		t.Fatalf("top doc = %q, want rel.md (split-term coverage should beat single-term repetition at doc-level); ranking = %+v",
 			cands[0].Hit.DocName, cands)
+	}
+}
+
+func TestRetrievalChunkRepo_SearchDocs_ModeVectorReturnsNotAvailable(t *testing.T) {
+	r := newChunkRepo(t)
+	ctx := context.Background()
+	if err := r.Replace(ctx, "ds", "a.md", []knowledge.DerivedChunk{chunk("a.md", 0, "alpha")}); err != nil {
+		t.Fatalf("replace: %v", err)
+	}
+	_, err := r.SearchDocs(ctx, knowledge.ChunkQuery{
+		DatasetIDs: []string{"ds"},
+		Vector:     []float32{1, 0, 0},
+		Mode:       knowledge.ModeVector,
+		TopK:       5,
+	})
+	if err == nil {
+		t.Fatalf("expected NotAvailable error for ModeVector, got nil")
+	}
+	if !errdefs.IsNotAvailable(err) {
+		t.Fatalf("expected NotAvailable, got %v", err)
+	}
+}
+
+func TestRetrievalChunkRepo_SearchDocs_ModeHybridReturnsNotAvailable(t *testing.T) {
+	r := newChunkRepo(t)
+	ctx := context.Background()
+	if err := r.Replace(ctx, "ds", "a.md", []knowledge.DerivedChunk{chunk("a.md", 0, "alpha")}); err != nil {
+		t.Fatalf("replace: %v", err)
+	}
+	_, err := r.SearchDocs(ctx, knowledge.ChunkQuery{
+		DatasetIDs: []string{"ds"},
+		Text:       "alpha",
+		Vector:     []float32{1, 0, 0},
+		Mode:       knowledge.ModeHybrid,
+		TopK:       5,
+	})
+	if !errdefs.IsNotAvailable(err) {
+		t.Fatalf("expected NotAvailable for ModeHybrid, got %v", err)
+	}
+}
+
+func TestRetrievalChunkRepo_SearchDocs_CorpusStatsAreDocLevel(t *testing.T) {
+	// Seed 100 docs where exactly ONE doc contains the term "rare"
+	// and EVERY doc contains the term "common". A doc-level BM25
+	// scorer working on doc-level N / df / avgdl will surface the
+	// rare-bearing doc at the top of a "rare" query and rank every
+	// other doc above zero only for "common" — but the rare doc's
+	// score for "rare" must be much higher than the common-only
+	// docs' score for "common" because rare has df=1 while common
+	// has df=100. This is the exact regime the chunk-level +
+	// sum-pool implementation cannot reproduce (#134 root cause:
+	// chunk-level N inflates and IDF collapses toward log(2)).
+	r := newChunkRepo(t)
+	ctx := context.Background()
+	const N = 100
+	for i := 0; i < N; i++ {
+		name := "doc" + itoa(i) + ".md"
+		content := "common token"
+		if i == 0 {
+			content = "rare common token"
+		}
+		if err := r.Replace(ctx, "ds", name, []knowledge.DerivedChunk{chunk(name, 0, content)}); err != nil {
+			t.Fatalf("seed %s: %v", name, err)
+		}
+	}
+	rare, err := r.SearchDocs(ctx, knowledge.ChunkQuery{
+		DatasetIDs: []string{"ds"}, Text: "rare", Mode: knowledge.ModeBM25, TopK: 5,
+	})
+	if err != nil {
+		t.Fatalf("rare search: %v", err)
+	}
+	if len(rare) != 1 || rare[0].Hit.DocName != "doc0.md" {
+		t.Fatalf("rare query: expected exactly doc0.md, got %+v", rare)
+	}
+	common, err := r.SearchDocs(ctx, knowledge.ChunkQuery{
+		DatasetIDs: []string{"ds"}, Text: "common", Mode: knowledge.ModeBM25, TopK: 5,
+	})
+	if err != nil {
+		t.Fatalf("common search: %v", err)
+	}
+	if len(common) == 0 {
+		t.Fatalf("common query returned nothing")
+	}
+	// The rare doc's score for "rare" (df=1, N=100) must be
+	// strictly greater than any common doc's score for "common"
+	// (df=100, N=100) — IDF saturates to ~0 when df==N. This is
+	// the smoking gun that the scorer is working on doc-level
+	// stats, not chunk-level.
+	if rare[0].Hit.Score <= common[0].Hit.Score {
+		t.Fatalf("doc-level IDF discrimination failed: rare.score=%v common.score=%v "+
+			"(rare term df=1/N=100 should dominate common term df=100/N=100)",
+			rare[0].Hit.Score, common[0].Hit.Score)
 	}
 }
 
@@ -428,72 +523,11 @@ func TestRetrievalChunkRepo_SearchDocs_FanOutAcrossDatasets(t *testing.T) {
 	}
 }
 
-func TestRetrievalChunkRepo_SearchDocs_HybridContributesBothLanes(t *testing.T) {
-	// Hybrid mode should let both BM25 and vector signal contribute
-	// to the doc's aggregate score.
-	r := newChunkRepo(t)
-	ctx := context.Background()
-	c := chunk("a.md", 0, "apple")
-	c.Vector = []float32{1, 0, 0}
-	if err := r.Replace(ctx, "ds", "a.md", []knowledge.DerivedChunk{c}); err != nil {
-		t.Fatalf("replace: %v", err)
-	}
-	cands, err := r.SearchDocs(ctx, knowledge.ChunkQuery{
-		DatasetIDs: []string{"ds"},
-		Text:       "apple",
-		Vector:     []float32{1, 0, 0},
-		Mode:       knowledge.ModeHybrid,
-		TopK:       5,
-	})
-	if err != nil {
-		t.Fatalf("search docs: %v", err)
-	}
-	if len(cands) != 1 {
-		t.Fatalf("expected 1 doc-level hit, got %d", len(cands))
-	}
-	if cands[0].Hit.Score <= 0 {
-		t.Fatalf("hybrid doc-level score = %v, expected > 0 (both lanes should contribute)", cands[0].Hit.Score)
-	}
-}
-
-func TestRetrievalChunkRepo_SearchDocs_SourceLabelsCrossLaneAggregateAsSumpool(t *testing.T) {
-	// When a doc's matching chunks span more than one lane
-	// (hybrid bm25 + vector for the same chunk → two candidates),
-	// the aggregated doc Candidate must carry sumpoolSource rather
-	// than whichever lane was encountered first. Downstream
-	// lane-aware code (fusion / labelling) would otherwise be
-	// silently misled by iteration order.
-	r := newChunkRepo(t)
-	ctx := context.Background()
-	c := chunk("a.md", 0, "apple")
-	c.Vector = []float32{1, 0, 0}
-	if err := r.Replace(ctx, "ds", "a.md", []knowledge.DerivedChunk{c}); err != nil {
-		t.Fatalf("replace: %v", err)
-	}
-	cands, err := r.SearchDocs(ctx, knowledge.ChunkQuery{
-		DatasetIDs: []string{"ds"},
-		Text:       "apple",
-		Vector:     []float32{1, 0, 0},
-		Mode:       knowledge.ModeHybrid,
-		TopK:       5,
-	})
-	if err != nil {
-		t.Fatalf("search docs: %v", err)
-	}
-	if len(cands) != 1 {
-		t.Fatalf("expected 1 doc-level hit, got %d", len(cands))
-	}
-	if got := cands[0].Source; got != "sumpool" {
-		t.Fatalf("cross-lane aggregate Source = %q, want \"sumpool\"", got)
-	}
-}
-
-func TestRetrievalChunkRepo_SearchDocs_SourceLabelsSingleLanePreserved(t *testing.T) {
-	// When every contributing chunk shares one lane (BM25-only),
-	// the aggregate must keep that lane's label rather than
-	// promoting to sumpoolSource. Lane-aware downstream code on the
-	// BM25-only eval path (e.g. BEIR scifact lanes=bm25) depends on
-	// this.
+func TestRetrievalChunkRepo_SearchDocs_BM25OnlySourceLabel(t *testing.T) {
+	// SearchDocs is BM25-only on the v1 path (vector/hybrid return
+	// NotAvailable). Every Candidate must carry Source="bm25" so
+	// downstream lane-aware code does not have to special-case
+	// doc-level output.
 	r := newChunkRepo(t)
 	ctx := context.Background()
 	if err := r.Replace(ctx, "ds", "a.md", []knowledge.DerivedChunk{
@@ -515,7 +549,7 @@ func TestRetrievalChunkRepo_SearchDocs_SourceLabelsSingleLanePreserved(t *testin
 		t.Fatalf("expected 1 doc-level hit, got %d", len(cands))
 	}
 	if got := cands[0].Source; got != "bm25" {
-		t.Fatalf("single-lane aggregate Source = %q, want \"bm25\"", got)
+		t.Fatalf("doc-level Source = %q, want \"bm25\"", got)
 	}
 }
 
