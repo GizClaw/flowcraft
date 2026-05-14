@@ -39,7 +39,9 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/sdk/knowledge"
+	"github.com/GizClaw/flowcraft/sdk/knowledge/backend/fs"
 	"github.com/GizClaw/flowcraft/sdk/knowledge/factory"
+	"github.com/GizClaw/flowcraft/sdk/retrieval/memory"
 	"github.com/GizClaw/flowcraft/sdk/workspace"
 )
 
@@ -447,13 +449,23 @@ func Run(ctx context.Context, ds *Dataset, opts Options) (*Report, error) {
 	return rep, nil
 }
 
+// buildService assembles a knowledge.Service backed by the retrieval
+// backend (chunks/layers in an in-memory retrieval.Index, documents in
+// the workspace filesystem). We avoid factory.NewLocal here because
+// FSChunkRepo's Replace rewrites the entire dataset chunks file on
+// every doc ingest (O(N) per call) → at scifact's N=5183 this
+// dominates wall-clock by an order of magnitude. The retrieval +
+// memidx pair has the same in-process / no-external-deps property
+// while doing only O(1) work per doc. See #134.
 func buildService(opts Options) *knowledge.Service {
 	ws := workspace.NewMemWorkspace()
-	var localOpts []factory.LocalOption
+	docs := fs.NewDocumentRepo(ws, fs.DefaultPrefix)
+	idx := memory.New()
+	var retOpts []factory.RetrievalOption
 	if opts.Embedder != nil {
-		localOpts = append(localOpts, factory.WithLocalEmbedder(opts.Embedder, opts.DatasetID))
+		retOpts = append(retOpts, factory.WithRetrievalEmbedder(opts.Embedder, opts.DatasetID))
 	}
-	return factory.NewLocal(ws, localOpts...)
+	return factory.NewRetrieval(docs, idx, retOpts...)
 }
 
 // ingest puts every dataset document through PutDocument. BEIR corpora
