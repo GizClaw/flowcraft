@@ -31,6 +31,7 @@ func RegisterCobra(parent *cobra.Command, g *cliflags.Global) {
 		ingestConcurrency int
 		queryConcurrency  int
 		limitQueries      int
+		overfetch         int
 	)
 
 	cmd := &cobra.Command{
@@ -80,6 +81,7 @@ Example:
 				IngestConcurrency: ingestConcurrency,
 				QueryConcurrency:  queryConcurrency,
 				LimitQueries:      limitQueries,
+				OverfetchFactor:   overfetch,
 				ProgressPct:       g.Notify.ProgressPct,
 				Hook: func(ctx context.Context, e Event) {
 					notify.Forward(ctx, notifier, notify.Event{
@@ -124,6 +126,9 @@ Example:
 	f.IntVar(&ingestConcurrency, "ingest-concurrency", 8, "concurrent PutDocument calls during ingest")
 	f.IntVar(&queryConcurrency, "query-concurrency", 8, "concurrent Search calls during scoring")
 	f.IntVar(&limitQueries, "limit-queries", 0, "evaluate only the first N queries (0 = all)")
+	f.IntVar(&overfetch, "overfetch", DefaultOverfetchFactor,
+		"chunk over-fetch factor applied before chunks→docID collapse "+
+			"(1 = disable collapse; ablation only — non-conformant with BEIR protocol)")
 
 	parent.AddCommand(cmd)
 }

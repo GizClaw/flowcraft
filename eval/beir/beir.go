@@ -204,9 +204,26 @@ type Options struct {
 	// LimitQueries trims the query set for smoke runs. 0 = all.
 	LimitQueries int
 
+	// OverfetchFactor controls how many chunks we ask Search for per
+	// unit of unique-doc cutoff before collapsing chunks-per-doc. Set
+	// to 1 to disable collapsing (chunk-level ranking; non-conformant
+	// with BEIR protocol — only for ablation). Default: 4.
+	//
+	// Rationale: sdk/knowledge.Search returns chunk-level Hits, but
+	// BEIR qrels judge at doc-level. Counting each chunk of a relevant
+	// doc as a separate hit inflates recall (we observed recall@100 =
+	// 3.003 on scifact pre-fix). We over-fetch chunks then keep the
+	// FIRST occurrence per docID — since Hits are score-desc sorted,
+	// this is equivalent to max-pooling chunk scores per docID.
+	OverfetchFactor int
+
 	Hook        EventHook
 	ProgressPct int
 }
+
+// DefaultOverfetchFactor is the chunk-overfetch multiplier applied
+// before doc-collapse when Options.OverfetchFactor is zero.
+const DefaultOverfetchFactor = 4
 
 // LaneReport's field names deliberately mirror eval/knowledge's
 // LaneReport — same NDCG/Recall/MRR/LatencyP50/LatencyP95 layout —
@@ -271,8 +288,22 @@ func Run(ctx context.Context, ds *Dataset, opts Options) (*Report, error) {
 	if len(opts.Lanes) == 0 {
 		opts.Lanes = []Lane{knowledge.ModeBM25, knowledge.ModeVector, knowledge.ModeHybrid}
 	}
+	if opts.OverfetchFactor <= 0 {
+		opts.OverfetchFactor = DefaultOverfetchFactor
+	}
 
-	queries := ds.Queries
+	// BEIR `queries.jsonl` carries all splits (train/dev/test). Only
+	// queries present in `qrels/test.tsv` belong to the evaluation set;
+	// the rest have hasIdeal=false and are silently dropped during
+	// scoring. Filtering up-front avoids 3-4× wasted Search calls
+	// (especially costly on the vector lane which also wastes
+	// embedding-API quota).
+	queries := make([]Query, 0, len(ds.Queries))
+	for _, q := range ds.Queries {
+		if len(ds.Qrels[q.ID]) > 0 {
+			queries = append(queries, q)
+		}
+	}
 	if opts.LimitQueries > 0 && len(queries) > opts.LimitQueries {
 		queries = queries[:opts.LimitQueries]
 	}
@@ -287,6 +318,11 @@ func Run(ctx context.Context, ds *Dataset, opts Options) (*Report, error) {
 			"query_concurrency":  opts.QueryConcurrency,
 			"has_embedder":       opts.Embedder != nil,
 			"n_queries":          len(queries),
+			// Chunk→doc collapse settings are stable per-run audit
+			// trail for leaderboard.md (BEIR protocol requires
+			// doc-level ranking; sdk/knowledge returns chunk-level).
+			"collapse_to_doc":  opts.OverfetchFactor > 1,
+			"overfetch_factor": opts.OverfetchFactor,
 		},
 	}
 	defer func() { rep.DurationMS = time.Since(rep.StartedAt).Milliseconds() }()
@@ -470,12 +506,20 @@ func runLane(
 
 			out := result{}
 			t0 := time.Now()
+			// Over-fetch chunks because we collapse chunks→docID
+			// below. Without this, top-K chunks can map to far
+			// fewer than K unique docs (esp. for long-form
+			// corpora), under-stating nDCG@K. Factor 4 covers
+			// scifact's ~1-2 chunks/doc with margin; tune via
+			// --overfetch / Options.OverfetchFactor (1 = disable
+			// collapse, used only for ablation studies).
+			fetchK := topK * opts.OverfetchFactor
 			res, err := svc.Search(ctx, knowledge.Query{
 				DatasetID: opts.DatasetID,
 				Scope:     knowledge.ScopeSingleDataset,
 				Text:      q.Text,
 				Mode:      lane,
-				TopK:      topK,
+				TopK:      fetchK,
 			})
 			out.latency = time.Since(t0)
 			if err != nil {
@@ -498,9 +542,28 @@ func runLane(
 			sort.Sort(sort.Reverse(sort.IntSlice(ideal)))
 			out.idealRanking = ideal
 
-			ranked := make([]int, 0, len(res.Hits))
+			// Collapse chunks→docID: keep the first occurrence per
+			// docID, drop later chunks of the same doc. Since
+			// res.Hits is score-desc sorted by Search, the first
+			// occurrence is the highest-scoring chunk for that
+			// doc — equivalent to max-pooling chunk scores per
+			// docID, which is the standard BEIR adapter behaviour
+			// across Pyserini / sentence-transformers / ColBERT
+			// runners. Truncate to topK after collapse.
+			seen := make(map[string]struct{}, topK)
+			ranked := make([]int, 0, topK)
 			for _, h := range res.Hits {
+				if h.DocName == "" {
+					continue
+				}
+				if _, dup := seen[h.DocName]; dup {
+					continue
+				}
+				seen[h.DocName] = struct{}{}
 				ranked = append(ranked, qrels[h.DocName])
+				if len(ranked) >= topK {
+					break
+				}
 			}
 			out.rankedRelevance = ranked
 
