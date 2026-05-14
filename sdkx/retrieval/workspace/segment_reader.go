@@ -53,13 +53,19 @@ type segmentReader struct {
 
 	bm25Once sync.Once
 	bm25Err  error
-	// corpus is the segment-local BM25 corpus statistics. Set
-	// alongside docTokens by [loadBM25]; nil for tombstone-only
-	// segments.
-	corpus *textsearch.CorpusStats
 	// docTokens parallels docs: docTokens[i] is the tokenizer
-	// output for docs[i].Content. Held so search can call
-	// [textsearch.BM25] without re-tokenizing on every keyword.
+	// output for docs[i].Content. Held so [Index.Search] can both
+	// fold this segment's docs into a per-Search global corpus and
+	// score against that corpus without re-tokenizing.
+	//
+	// Note: BM25 corpus stats themselves are NOT cached on the
+	// segment. A segment-local corpus would let segments answer
+	// scoring requests in isolation, but BM25 IDF is corpus-
+	// relative and merging per-segment scores at the top of Search
+	// produces ranks that depend on which segment a doc landed in
+	// rather than its global frequency. Search rebuilds the corpus
+	// across all live (non-tombstoned) segment + memtable docs
+	// each call; tokens are the only segment-cacheable piece.
 	docTokens [][]string
 }
 
@@ -185,14 +191,13 @@ func (r *segmentReader) loadDocs(ctx context.Context) error {
 	return r.docsErr
 }
 
-// loadBM25 lazily tokenizes every doc and accumulates them into a
-// segment-local [textsearch.CorpusStats]. The corpus is segment-
-// local on purpose: BM25 is a corpus-relative score, and a per-
-// segment corpus gives stable scores across compactions (a doc's
-// score doesn't shift when a sibling segment is merged away).
+// loadBM25 lazily tokenizes every doc into r.docTokens. It does NOT
+// build a segment-local corpus: see the comment on docTokens for
+// why. Search aggregates tokens across segments + memtable into a
+// single per-call corpus before scoring.
 //
-// loadBM25 is a no-op for tombstone-only segments — the corpus
-// stays nil, which scoring code treats as "no contribution".
+// loadBM25 is a no-op for tombstone-only segments — docTokens stays
+// nil, which the search loop treats as "no contribution".
 func (r *segmentReader) loadBM25(ctx context.Context, tok textsearch.Tokenizer) error {
 	if err := r.loadDocs(ctx); err != nil {
 		return err
@@ -201,13 +206,10 @@ func (r *segmentReader) loadBM25(ctx context.Context, tok textsearch.Tokenizer) 
 		if len(r.docs) == 0 {
 			return
 		}
-		corpus := textsearch.NewCorpusStats()
 		docTokens := make([][]string, len(r.docs))
 		for i, d := range r.docs {
 			docTokens[i] = tok.Tokenize(d.Content)
-			corpus.AddDocument(docTokens[i])
 		}
-		r.corpus = corpus
 		r.docTokens = docTokens
 	})
 	return r.bm25Err
