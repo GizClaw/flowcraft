@@ -24,6 +24,7 @@ type Inventory struct {
 	ToolPacks     map[string]v1alpha1.ToolPack
 	HistoryStores map[string]v1alpha1.HistoryStore
 	Secrets       []v1alpha1.Secret
+	Sandboxes     map[string]v1alpha1.Sandbox
 }
 
 // buildInventory partitions the loader output into the per-kind
@@ -41,6 +42,7 @@ func buildInventory(objs []apispec.Object) (Inventory, *Errors) {
 		Probes:        map[string]v1alpha1.Probe{},
 		ToolPacks:     map[string]v1alpha1.ToolPack{},
 		HistoryStores: map[string]v1alpha1.HistoryStore{},
+		Sandboxes:     map[string]v1alpha1.Sandbox{},
 	}
 	errs := &Errors{}
 	seen := map[string]struct{}{} // "kind/name" → {}
@@ -92,6 +94,10 @@ func buildInventory(objs []apispec.Object) (Inventory, *Errors) {
 		case v1alpha1.Secret:
 			if dedupe(v1alpha1.KindSecret, o.Name) {
 				inv.Secrets = append(inv.Secrets, o)
+			}
+		case v1alpha1.Sandbox:
+			if dedupe(v1alpha1.KindSandbox, o.Name) {
+				inv.Sandboxes[o.Name] = o
 			}
 		default:
 			errs.add(errdefs.Validationf("vesseld resolver: unhandled object type %T", obj))

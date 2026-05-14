@@ -23,6 +23,7 @@ const (
 	KindToolPack     = "ToolPack"
 	KindHistoryStore = "HistoryStore"
 	KindSecret       = "Secret"
+	KindSandbox      = "Sandbox"
 )
 
 // AllKinds returns every well-known kind registered for this
@@ -32,6 +33,7 @@ func AllKinds() []string {
 	return []string{
 		KindDaemon, KindVessel, KindAgent, KindLLMProfile,
 		KindProbe, KindToolPack, KindHistoryStore, KindSecret,
+		KindSandbox,
 	}
 }
 
