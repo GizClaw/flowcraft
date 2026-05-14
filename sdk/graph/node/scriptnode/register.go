@@ -7,6 +7,7 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/graph"
 	"github.com/GizClaw/flowcraft/sdk/graph/node"
 	"github.com/GizClaw/flowcraft/sdk/graph/node/scripts"
+	"github.com/GizClaw/flowcraft/sdk/sandbox"
 	"github.com/GizClaw/flowcraft/sdk/script"
 	"github.com/GizClaw/flowcraft/sdk/script/bindings"
 	"github.com/GizClaw/flowcraft/sdk/workspace"
@@ -14,11 +15,17 @@ import (
 
 // Deps captures the build-time dependencies needed to instantiate a
 // scriptnode. ScriptRuntime is required; the rest are optional.
+//
+// CommandRunner keeps its field name (rather than tracking the
+// sandbox.Runner rename) so existing wiring in callers like vesseld
+// does not have to chase the v0.2.0 rename. The field type is now
+// sandbox.Runner; workspace.CommandRunner remains a working alias until
+// v0.5.0.
 type Deps struct {
 	ScriptRuntime script.Runtime
 	ScriptFS      fs.FS
 	Workspace     workspace.Workspace
-	CommandRunner workspace.CommandRunner
+	CommandRunner sandbox.Runner
 }
 
 // needsShell lists built-in jsnode types that additionally require a

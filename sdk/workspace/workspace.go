@@ -1,6 +1,7 @@
-// Package workspace provides a file-system sandbox abstraction.
-// Knowledge, Skills, and Memory subsystems share a single Workspace
-// to manage persistent state as a unified file tree.
+// Package workspace provides a persistent filesystem abstraction for
+// agent state. Knowledge, Skills, and Memory subsystems share a single
+// Workspace. Execution-boundary concerns (command runners, network
+// policy, resource limits) live in sibling package sdk/sandbox.
 package workspace
 
 import (
