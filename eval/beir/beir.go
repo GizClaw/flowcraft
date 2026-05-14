@@ -355,7 +355,8 @@ func Run(ctx context.Context, ds *Dataset, opts Options) (*Report, error) {
 	})
 
 	svc := buildService(opts)
-	if err := ingest(ctx, svc, ds, opts); err != nil {
+	emit(Event{Kind: "ingest_start", Body: fmt.Sprintf("ingesting %d documents (concurrency=%d)", len(ds.Documents), opts.IngestConcurrency)})
+	if err := ingest(ctx, svc, ds, opts, emit); err != nil {
 		emit(Event{Kind: "error", Title: "ingest", Body: err.Error()})
 		return nil, err
 	}
@@ -413,10 +414,29 @@ func buildService(opts Options) *knowledge.Service {
 // usually carry a title; we prefix it onto text with a blank line so
 // the BM25 tokenizer sees both surfaces and dense models that pool
 // title + text behave as their published baselines do.
-func ingest(ctx context.Context, svc *knowledge.Service, ds *Dataset, opts Options) error {
+//
+// Emits an "ingest_progress" Event each time the cumulative doc count
+// crosses an opts.ProgressPct milestone (default 10% steps). Ingest is
+// typically the longest phase on bm25-only runs (entire corpus must be
+// tokenized + reverse-indexed before any query can start), so silent
+// ingest is the #1 driver of "is it stuck?" pages.
+func ingest(ctx context.Context, svc *knowledge.Service, ds *Dataset, opts Options, emit func(Event)) error {
 	sem := make(chan struct{}, opts.IngestConcurrency)
 	var wg sync.WaitGroup
 	var firstErr atomic.Value // error
+
+	total := int64(len(ds.Documents))
+	var milestones []int64
+	if total > 0 && opts.ProgressPct > 0 && emit != nil {
+		for pct := opts.ProgressPct; pct <= 99; pct += opts.ProgressPct {
+			ms := total * int64(pct) / 100
+			if ms < 1 {
+				ms = 1
+			}
+			milestones = append(milestones, ms)
+		}
+	}
+	var nextMs, done int64
 
 	for _, d := range ds.Documents {
 		d := d
@@ -434,6 +454,28 @@ func ingest(ctx context.Context, svc *knowledge.Service, ds *Dataset, opts Optio
 			if err := svc.PutDocument(ctx, opts.DatasetID, d.ID, body); err != nil {
 				firstErr.CompareAndSwap(nil, fmt.Errorf("put %s: %w", d.ID, err))
 			}
+
+			n := atomic.AddInt64(&done, 1)
+			if len(milestones) == 0 {
+				return
+			}
+			idx := atomic.LoadInt64(&nextMs)
+			if idx >= int64(len(milestones)) || n < milestones[idx] {
+				return
+			}
+			if !atomic.CompareAndSwapInt64(&nextMs, idx, idx+1) {
+				return
+			}
+			pct := int64(opts.ProgressPct) * (idx + 1)
+			emit(Event{
+				Kind: "ingest_progress",
+				Body: fmt.Sprintf("ingested %d/%d docs (~%d%%)", n, total, pct),
+				Fields: map[string]string{
+					"done":  fmt.Sprintf("%d", n),
+					"total": fmt.Sprintf("%d", total),
+					"pct":   fmt.Sprintf("%d", pct),
+				},
+			})
 		}()
 	}
 	wg.Wait()
