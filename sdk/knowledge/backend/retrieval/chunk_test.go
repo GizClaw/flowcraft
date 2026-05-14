@@ -431,6 +431,69 @@ func TestRetrievalChunkRepo_SearchDocs_HybridContributesBothLanes(t *testing.T) 
 	}
 }
 
+func TestRetrievalChunkRepo_SearchDocs_SourceLabelsCrossLaneAggregateAsSumpool(t *testing.T) {
+	// When a doc's matching chunks span more than one lane
+	// (hybrid bm25 + vector for the same chunk → two candidates),
+	// the aggregated doc Candidate must carry sumpoolSource rather
+	// than whichever lane was encountered first. Downstream
+	// lane-aware code (fusion / labelling) would otherwise be
+	// silently misled by iteration order.
+	r := newChunkRepo(t)
+	ctx := context.Background()
+	c := chunk("a.md", 0, "apple")
+	c.Vector = []float32{1, 0, 0}
+	if err := r.Replace(ctx, "ds", "a.md", []knowledge.DerivedChunk{c}); err != nil {
+		t.Fatalf("replace: %v", err)
+	}
+	cands, err := r.SearchDocs(ctx, knowledge.ChunkQuery{
+		DatasetIDs: []string{"ds"},
+		Text:       "apple",
+		Vector:     []float32{1, 0, 0},
+		Mode:       knowledge.ModeHybrid,
+		TopK:       5,
+	})
+	if err != nil {
+		t.Fatalf("search docs: %v", err)
+	}
+	if len(cands) != 1 {
+		t.Fatalf("expected 1 doc-level hit, got %d", len(cands))
+	}
+	if got := cands[0].Source; got != "sumpool" {
+		t.Fatalf("cross-lane aggregate Source = %q, want \"sumpool\"", got)
+	}
+}
+
+func TestRetrievalChunkRepo_SearchDocs_SourceLabelsSingleLanePreserved(t *testing.T) {
+	// When every contributing chunk shares one lane (BM25-only),
+	// the aggregate must keep that lane's label rather than
+	// promoting to sumpoolSource. Lane-aware downstream code on the
+	// BM25-only eval path (e.g. BEIR scifact lanes=bm25) depends on
+	// this.
+	r := newChunkRepo(t)
+	ctx := context.Background()
+	if err := r.Replace(ctx, "ds", "a.md", []knowledge.DerivedChunk{
+		chunk("a.md", 0, "apple"),
+		chunk("a.md", 1, "apple banana"),
+	}); err != nil {
+		t.Fatalf("replace: %v", err)
+	}
+	cands, err := r.SearchDocs(ctx, knowledge.ChunkQuery{
+		DatasetIDs: []string{"ds"},
+		Text:       "apple",
+		Mode:       knowledge.ModeBM25,
+		TopK:       5,
+	})
+	if err != nil {
+		t.Fatalf("search docs: %v", err)
+	}
+	if len(cands) != 1 {
+		t.Fatalf("expected 1 doc-level hit, got %d", len(cands))
+	}
+	if got := cands[0].Source; got != "bm25" {
+		t.Fatalf("single-lane aggregate Source = %q, want \"bm25\"", got)
+	}
+}
+
 func TestRetrievalChunkRepo_SearchDocs_NoResults(t *testing.T) {
 	r := newChunkRepo(t)
 	ctx := context.Background()

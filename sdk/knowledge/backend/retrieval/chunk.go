@@ -235,6 +235,13 @@ func (r *RetrievalChunkRepo) searchOne(ctx context.Context, ns string, q knowled
 // in the ~5-20 chunks-per-doc range.
 const docOverfetchFactor = 4
 
+// sumpoolSource is the Candidate.Source label used when SearchDocs
+// aggregates chunks from more than one lane (e.g. ModeHybrid mixing
+// bm25 + vector candidates for the same doc). When all aggregated
+// chunks share a single lane, that lane's original Source is kept so
+// downstream lane-aware code keeps working on the BM25-only path.
+const sumpoolSource = "sumpool"
+
 // SearchDocs runs a doc-level query by over-fetching chunk-level Hits
 // and collapsing them by docName via sum-pool aggregation.
 //
@@ -251,9 +258,37 @@ const docOverfetchFactor = 4
 // chunk-granularity path uses. For hybrid, both BM25 and vector
 // candidates for the same chunk contribute to the doc's aggregate.
 //
+// HYBRID CAVEAT: BM25 scores (range ~0–30+) and cosine similarities
+// (range 0–1) live on incomparable scales; sum-pooling them lets the
+// BM25 lane dominate the aggregate while the vector lane contributes
+// negligible weight. At the chunk level this is what
+// SearchEngine.Ranker exists to solve (RRF / rank-based fusion across
+// non-comparable scoring domains). SearchDocs intentionally bypasses
+// the Ranker today because it operates below the SearchEngine layer;
+// callers running production hybrid retrieval should prefer the
+// chunk-granularity Search path. A doc-level Ranker hook that
+// preserves hybrid fusion semantics is tracked as a follow-up.
+// BEIR / MS-MARCO / TREC doc-level eval suites run BM25-only so this
+// limitation does not affect #134 acceptance.
+//
+// OVER-FETCH ASSUMPTION: docOverfetchFactor (= 4) assumes
+// chunks-per-doc ≤ 4 in the typical case; corpora that produce many
+// chunks per doc (long PDFs, codebases) may see the top-K*4 chunk
+// page filled by a small number of strong docs and silently drop
+// other matching docs from the result set. Surfacing this as a
+// Query.OverfetchFactor knob, or refetching when the unique-doc
+// count falls short of TopK, is tracked as a follow-up.
+//
 // Returned Hits have ChunkIndex = -1 and Layer = "" (doc-level results
 // have no specific chunk); Content / Sig / Metadata are intentionally
 // dropped because they belong to a specific chunk, not the doc.
+//
+// Candidate.Source reflects the originating lane when every chunk
+// contributing to a doc came from the same lane (e.g. "bm25" or
+// "vector"); when a doc is aggregated across more than one lane
+// (hybrid), Source is set to sumpoolSource ("sumpool") so downstream
+// lane-aware code is not silently misled by the first-seen lane
+// label.
 //
 // Doc-level results are deterministically ordered: primary by score
 // (desc), tie-broken by (datasetID, docName) ascending so two scorers
@@ -279,6 +314,10 @@ func (r *RetrievalChunkRepo) SearchDocs(ctx context.Context, q knowledge.ChunkQu
 	// achieves the same by only emitting docs with a posting hit.
 	type key struct{ ds, doc string }
 	agg := make(map[key]*knowledge.Candidate, len(cands))
+	// sources tracks the distinct chunk-level Source values that
+	// contributed to each doc; promoted to sumpoolSource when more
+	// than one lane participated.
+	sources := make(map[key]string, len(cands))
 	order := make([]key, 0, len(cands))
 	for i := range cands {
 		c := cands[i]
@@ -288,6 +327,10 @@ func (r *RetrievalChunkRepo) SearchDocs(ctx context.Context, q knowledge.ChunkQu
 		k := key{c.Hit.DatasetID, c.Hit.DocName}
 		if existing, ok := agg[k]; ok {
 			existing.Hit.Score += c.Hit.Score
+			if sources[k] != "" && sources[k] != c.Source {
+				existing.Source = sumpoolSource
+				sources[k] = sumpoolSource
+			}
 			continue
 		}
 		agg[k] = &knowledge.Candidate{
@@ -299,6 +342,7 @@ func (r *RetrievalChunkRepo) SearchDocs(ctx context.Context, q knowledge.ChunkQu
 				ChunkIndex: -1,
 			},
 		}
+		sources[k] = c.Source
 		order = append(order, k)
 	}
 	out := make([]knowledge.Candidate, 0, len(order))
