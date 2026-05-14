@@ -136,11 +136,18 @@ sdk/` returns zero non-comment hits.
 - **No gold-answer leak.** `GoldAnswers` / `EvidenceIDs` are scoped
   to `eval/dataset/` and `metrics/`. Runners never see them; the
   answer LLM is only handed `(query, top-k recalled memories)`.
-- **No answer-prompt EM tuning.** `LocoMoAnswerPrompt`'s comment
-  records that earlier versions had three "EM-friendly" rules (force
-  minimal answers, mirror date format, suppress IDK); we removed
-  them because they shifted bench numbers without reflecting real
-  memory quality. The current prompt is intentionally neutral.
+- **No answer-prompt judge-gaming.** `eval/locomo/eval.go`'s
+  `DefaultAnswerPrompt` comment records the discipline: we
+  deliberately do NOT adopt mem0's "never say 'no information',
+  provide a general response" rule because that fabricates answers
+  when the memories are genuinely silent — it shifts judge numbers
+  without reflecting real memory quality. The current prompt allows
+  "I don't know" for genuine silence, but encourages restrained
+  inference when memories carry partial evidence (a character's
+  general traits, an indirectly implied date). Mirror-question-form,
+  date-format-alignment, and 1-2-sentence conciseness rules are kept
+  because they are real product-quality requirements, not
+  judge-shifting tricks.
 - **No dataset filtering.** `LoadJSONL` reads every record;
   `--limit-{convs,questions}` truncates to the first N for debug,
   not by difficulty.

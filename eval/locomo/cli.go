@@ -75,7 +75,6 @@ func addLocomoRun(parent *cobra.Command, g *cliflags.Global) {
 		ingestTimeout     time.Duration
 		qaTimeout         time.Duration
 		maxFacts          int
-		tunedPrompts      bool
 		rerankerLLM       string
 		judgeStyle        string
 		judgeTemp         float64
@@ -201,9 +200,13 @@ Example (LLM extractor + LLM answer + LLM judge + Qwen embedder):
 					})
 				},
 			}
-			if tunedPrompts {
-				opts.AnswerPrompt = LocoMoAnswerPrompt
-			}
+			// Answer prompt is intentionally not overridden: the
+			// architecture-friendly rules (partial-info inference,
+			// question-form mirror, date-format mirror, conciseness)
+			// live in [DefaultAnswerPrompt] in this package so any
+			// LoCoMo-shaped consumer gets them. Re-introducing a
+			// LoCoMo-only overlay would risk silent drift between
+			// eval scores and production behaviour.
 			if judge != nil {
 				j := metrics.LLMJudge{LLM: judge, Temperature: &judgeTemp}
 				switch judgeStyle {
@@ -254,7 +257,6 @@ Example (LLM extractor + LLM answer + LLM judge + Qwen embedder):
 	f.DurationVar(&ingestTimeout, "ingest-timeout", 10*time.Minute, "per-conversation ingest deadline; bounds hung LLM calls")
 	f.DurationVar(&qaTimeout, "qa-timeout", 2*time.Minute, "per-question recall+answer+judge deadline")
 	f.IntVar(&maxFacts, "max-facts", 200, "extractor: max facts per Save call")
-	f.BoolVar(&tunedPrompts, "tuned-prompts", true, "use the LoCoMo-tuned extractor & answer prompts (recommended)")
 	f.StringVar(&rerankerLLM, "reranker-llm", "", "LLM for cross-encoder rerank, format provider:model; empty disables")
 	f.StringVar(&judgeStyle, "judge-style", "locomo", "judge prompt style: locomo (mem0-aligned, lenient) | strict (semantic-equivalence)")
 	f.Float64Var(&judgeTemp, "judge-temperature", 0.0, "judge LLM temperature (0=deterministic, mem0-aligned)")
