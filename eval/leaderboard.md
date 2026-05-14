@@ -202,11 +202,15 @@ harnesses make different turn-budget / planning decisions.
 - **AgentBench**, **ToolBench**, **AutoGen** — too divergent in
   tool definitions to compare; out of scope for citation.
 
-**Caveat**: τ-bench scores are tied to a specific tool-call schema.
-Our `eval taubench` uses the same retail / airline mini-fixtures
-Sierra ships, so retail numbers are at least nominally comparable.
-The `all` domain is our merge; no direct upstream equivalent —
-declare the merge per row.
+**Caveat**: τ-bench scores are tied to a specific tool-call schema
+**and** the exact task set. The leaderboard rows below cite Sierra's
+115-task retail / 50-task airline test sets, so the only fair
+FlowCraft baseline is `eval-taubench.yml --domain sierra-retail` /
+`--domain sierra-airline`, which loads Sierra's official `tasks_test.py`
+and `data/*.json` (see `eval/taubench/sierra/README.md` for the
+one-time staging on the runner). The `--domain retail | airline`
+mini packs (5+7 hand-curated tasks) are harness smoke checks only —
+their pass-rate is **not** the leaderboard number.
 
 ## Reproduction protocol
 
@@ -576,7 +580,7 @@ artefact.
 | TC + claude-3-5-sonnet-20240620     |       0.626 |       0.387 | [Sierra README](https://github.com/sierra-research/tau-bench)             |
 | TC + gpt-4o                         |       0.604 |       0.383 | [Sierra README](https://github.com/sierra-research/tau-bench)             |
 | TC + claude-3-5-sonnet-20241022     |   **0.692** |   **0.462** | [Sierra README](https://github.com/sierra-research/tau-bench)             |
-| **FlowCraft (TC + same agent-LLM)** | `[pending]` | `[pending]` | our `eval-taubench.yml --domain retail`                                   |
+| **FlowCraft (TC + same agent-LLM)** | `[pending]` | `[pending]` | our `eval-taubench.yml --domain sierra-retail` (Sierra's 115-task `tasks_test.py`; staging in `eval/taubench/sierra/README.md`) |
 
 ### τ-bench — airline (Pass@1)
 
@@ -588,7 +592,7 @@ artefact.
 | TC + claude-3-5-sonnet-20241022     |   **0.460** |   **0.225** | [Sierra README](https://github.com/sierra-research/tau-bench) |
 | Act (gpt-4o)                        |       0.365 |       0.140 | [Sierra README](https://github.com/sierra-research/tau-bench) |
 | ReAct (gpt-4o)                      |       0.325 |       0.160 | [Sierra README](https://github.com/sierra-research/tau-bench) |
-| **FlowCraft (TC + same agent-LLM)** | `[pending]` | `[pending]` | our `eval-taubench.yml --domain airline`                      |
+| **FlowCraft (TC + same agent-LLM)** | `[pending]` | `[pending]` | our `eval-taubench.yml --domain sierra-airline` (Sierra's 50-task `tasks_test.py`; staging in `eval/taubench/sierra/README.md`) |
 
 **Caveat**: Sierra's main README warns that the original retail /
 airline task definitions are outdated; they recommend

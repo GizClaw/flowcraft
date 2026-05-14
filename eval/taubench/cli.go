@@ -94,8 +94,12 @@ Example:
 				tools = NewAirlineTools()
 			case "all":
 				tools = mergeToolMaps(NewRetailTools(), NewAirlineTools())
+			case "sierra-retail":
+				tools = NewSierraRetailTools()
+			case "sierra-airline":
+				tools = NewSierraAirlineTools()
 			default:
-				return fmt.Errorf("--domain: unknown domain %q (want retail | airline | all)", domain)
+				return fmt.Errorf("--domain: unknown domain %q (want retail | airline | all | sierra-retail | sierra-airline)", domain)
 			}
 			if upstreamTasks != "" {
 				if upstreamState == "" {
@@ -118,6 +122,8 @@ Example:
 					ds = NewAirlineMiniDataset()
 				case "all":
 					ds = MergeDatasets("retail+airline", NewRetailMiniDataset(), NewAirlineMiniDataset())
+				case "sierra-retail", "sierra-airline":
+					return fmt.Errorf("--domain %s requires --upstream-tasks and --upstream-initial-state (stage Sierra fixtures via eval/taubench/sierra/prep.py)", domain)
 				}
 			}
 
