@@ -304,7 +304,14 @@ func (m *lt) upsertFacts(
 			Scope:      scope,
 			Content:    f.Content,
 			Categories: f.Categories,
-			Entities:   f.Entities,
+			// NormalizeEntities folds the LLM-supplied phrasal entities
+			// (e.g. "Caroline's LGBTQ support group") into the same
+			// lower-cased, per-token-atom key space that the
+			// retrieval pipeline's rule-based query extractor uses
+			// — without it the entity recall lane silently degrades
+			// to zero recall because the stored phrase and the
+			// per-token query atom never share a string.
+			Entities:   NormalizeEntities(f.Entities),
 			Confidence: f.Confidence,
 			CreatedAt:  now,
 			UpdatedAt:  now,
