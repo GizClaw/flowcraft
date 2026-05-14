@@ -15,6 +15,15 @@ import (
 //	vector-only recall (top 60) → BM25 boost → entity boost →
 //	ScoreThreshold 0.05 → SupersededDecay → TimeDecay 30d → (optional) Rerank →
 //	Limit{TopK: 10}
+//
+// When [WithMultiRecall] is enabled, the recall topology switches to
+//
+//	MultiRetrieve(vector top 60, bm25 top 50, entity top 30) → RRFFusion(K=60) →
+//	entity boost → ScoreThreshold → SupersededDecay → TimeDecay → (optional) Rerank →
+//	Limit{TopK: 10}
+//
+// (BM25 boost is suppressed under multi-recall because BM25 is now a recall
+// lane and a post-fusion BM25 boost would double-count its contribution.)
 type LTMOption func(*ltmConfig)
 
 type ltmConfig struct {
@@ -28,6 +37,10 @@ type ltmConfig struct {
 	reranker         Reranker
 	entityExtract    EntityExtract
 	slotCollapse     bool
+	multiRecall      bool
+	bm25LaneTopK     int
+	entityLaneTopK   int
+	rrfK             float64
 }
 
 // WithRecallTopK overrides the vector recall fan-out (default 60).
@@ -83,6 +96,61 @@ func WithLimit(k int) LTMOption {
 	return func(c *ltmConfig) { c.limit = k }
 }
 
+// WithMultiRecall switches the LTM recall topology from "single-lane
+// vector recall + BM25/entity boosts" to "three-lane recall
+// (vector + bm25 + entity) followed by Reciprocal-Rank-Fusion".
+// Defaults to false (preserves the legacy single-lane behavior).
+//
+// The infrastructure for all three lanes already existed in this
+// package (MultiRetrieve, ModeEntity, RRFFusion); this option just
+// wires them into the LTM recipe so callers can opt into a hybrid
+// recall topology without hand-assembling a custom Pipeline.
+//
+// When enabled:
+//   - BM25 is moved from boost-time to recall-time. The BM25 lane
+//     fan-out is controlled by [WithBM25LaneTopK] (default 50).
+//   - The entity lane fan-out is controlled by [WithEntityLaneTopK]
+//     (default 30). The entity lane filters memories by entity-set
+//     overlap (Doc.Metadata["entities"] ContainsAny QueryEntities),
+//     so it depends on docs having an `entities` field populated at
+//     ingest time (sdk/recall does this automatically when its
+//     extractor returns the entities field).
+//   - Vector recall fan-out is taken from [WithRecallTopK] (default
+//     60) so the primary semantic channel keeps the same budget as
+//     legacy LTM.
+//   - The post-recall BM25Boost is suppressed (BM25 already
+//     contributed to the fused score; boosting again double-counts).
+//     EntityBoost is kept — it operates on the fused score and
+//     provides a final entity-overlap nudge.
+//   - RRFFusion's K is taken from [WithRRFK] (default 60).
+//
+// Falls back to single-lane recall when the embedder is nil (no
+// vector lane means the multi-recall topology degrades to "bm25 +
+// entity", at which point the legacy BM25-only path is simpler).
+func WithMultiRecall(on bool) LTMOption {
+	return func(c *ltmConfig) { c.multiRecall = on }
+}
+
+// WithBM25LaneTopK overrides the BM25 recall-lane fan-out under
+// [WithMultiRecall] (default 50). No-op when multi-recall is off.
+func WithBM25LaneTopK(k int) LTMOption {
+	return func(c *ltmConfig) { c.bm25LaneTopK = k }
+}
+
+// WithEntityLaneTopK overrides the entity recall-lane fan-out under
+// [WithMultiRecall] (default 30). No-op when multi-recall is off.
+func WithEntityLaneTopK(k int) LTMOption {
+	return func(c *ltmConfig) { c.entityLaneTopK = k }
+}
+
+// WithRRFK overrides the K parameter of RRFFusion under
+// [WithMultiRecall] (default 60). Lower K weights top-ranked hits
+// more aggressively; the default 60 matches the published RRF paper.
+// No-op when multi-recall is off.
+func WithRRFK(k float64) LTMOption {
+	return func(c *ltmConfig) { c.rrfK = k }
+}
+
 // WithSlotCollapse inserts a [SlotCollapse] stage after
 // [SupersededDecay] so legacy entries that were never tagged with
 // superseded_by still get collapsed to the newest hit per
@@ -136,29 +204,66 @@ func LTM(emb embedding.Embedder, opts ...LTMOption) *Pipeline {
 
 	// Without an embedder the vector lane is silent; fall back to BM25 recall
 	// so memory tests / in-process indexes that ship without embeddings keep
-	// working.
+	// working. The multi-recall topology also requires an embedder
+	// (otherwise it degenerates to "bm25 + entity", which the legacy
+	// single-lane BM25 path covers more simply) — fall back to legacy in
+	// that case rather than emit a partially-realised multi-recall.
 	primaryMode := ModeVector
 	primaryLane := string(retrieval.LaneVector)
 	if emb == nil {
 		primaryMode = ModeBM25
 		primaryLane = string(retrieval.LaneBM25)
 	}
+	useMultiRecall := cfg.multiRecall && emb != nil
 
-	stages := []Stage{
-		HybridShortCircuit{},
-		&EmbedQuery{Embedder: emb},
-		cfg.entityExtract,
-		Retrieve{Lane: primaryLane, Spec: RetrieveSpec{Mode: primaryMode, TopK: cfg.recallTopK}},
-		// Lift the recall lane into Final so subsequent boosts operate on a
-		// single ranked list (vector-first; BM25/entity are boost signals,
-		// not recall expanders).
-		liftRecall{Lane: primaryLane},
+	var stages []Stage
+	addBM25Boost := false
+	if useMultiRecall {
+		bm25K := cfg.bm25LaneTopK
+		if bm25K <= 0 {
+			bm25K = 50
+		}
+		entK := cfg.entityLaneTopK
+		if entK <= 0 {
+			entK = 30
+		}
+		rrfK := cfg.rrfK
+		if rrfK <= 0 {
+			rrfK = 60
+		}
+		stages = []Stage{
+			HybridShortCircuit{},
+			&EmbedQuery{Embedder: emb},
+			cfg.entityExtract,
+			MultiRetrieve{
+				string(retrieval.LaneVector): {Mode: ModeVector, TopK: cfg.recallTopK},
+				string(retrieval.LaneBM25):   {Mode: ModeBM25, TopK: bm25K},
+				string(retrieval.LaneEntity): {Mode: ModeEntity, TopK: entK},
+			},
+			RRFFusion{K: rrfK},
+		}
+		// Under multi-recall, BM25 is a recall lane, not a boost.
+		// Boosting again would double-count its contribution.
+		// EntityBoost is intentionally kept downstream because it
+		// re-scales the fused score by overlap count rather than
+		// inserting a duplicate signal.
+	} else {
+		stages = []Stage{
+			HybridShortCircuit{},
+			&EmbedQuery{Embedder: emb},
+			cfg.entityExtract,
+			Retrieve{Lane: primaryLane, Spec: RetrieveSpec{Mode: primaryMode, TopK: cfg.recallTopK}},
+			// Lift the recall lane into Final so subsequent boosts operate
+			// on a single ranked list (vector-first; BM25/entity are boost
+			// signals, not recall expanders).
+			liftRecall{Lane: primaryLane},
+		}
+		// BM25Boost is a re-ranking signal layered on top of the recall lane;
+		// when the recall lane is itself BM25 the boost would double-count, so
+		// we suppress it. This expresses "BM25 is a complement to vector
+		// recall, not its own additive lane" in one place.
+		addBM25Boost = primaryMode != ModeBM25 && cfg.bm25Weight > 0
 	}
-	// BM25Boost is a re-ranking signal layered on top of the recall lane;
-	// when the recall lane is itself BM25 the boost would double-count, so
-	// we suppress it. This expresses "BM25 is a complement to vector
-	// recall, not its own additive lane" in one place.
-	addBM25Boost := primaryMode != ModeBM25 && cfg.bm25Weight > 0
 	if addBM25Boost {
 		stages = append(stages, BM25Boost{Weight: cfg.bm25Weight})
 	}

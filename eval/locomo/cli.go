@@ -82,6 +82,7 @@ func addLocomoRun(parent *cobra.Command, g *cliflags.Global) {
 		scoreThreshold    float64
 		saveWithContext   bool
 		softMerge         bool
+		multiRecall       bool
 	)
 
 	cmd := &cobra.Command{
@@ -165,6 +166,7 @@ Example (LLM extractor + LLM answer + LLM judge + Qwen embedder):
 				SoftMerge:        &softMerge,
 				RerankerLLM:      reranker,
 				ScoreThreshold:   scoreThreshold,
+				MultiRecall:      multiRecall,
 			}
 			if tunedPrompts {
 				rOpts.ExtractPrompt = LocoMoExtractorPrompt
@@ -255,6 +257,7 @@ Example (LLM extractor + LLM answer + LLM judge + Qwen embedder):
 	f.Float64Var(&scoreThreshold, "score-threshold", 0, "drop recall hits below this score before rerank/limit (0 = SDK default 0.05)")
 	f.BoolVar(&saveWithContext, "save-with-context", false, "before extraction, recall existing facts and inject as prompt context")
 	f.BoolVar(&softMerge, "soft-merge", true, "mark older near-duplicate entries as superseded_by; SupersededDecay damps them at recall")
+	f.BoolVar(&multiRecall, "multi-recall", false, "switch LTM to 3-lane recall (vector+bm25+entity) + RRFFusion; defaults to legacy single-lane vector recall + BM25/entity boosts")
 
 	parent.AddCommand(cmd)
 }

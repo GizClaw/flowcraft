@@ -11,6 +11,7 @@ name: eval / locomo
 #                  --answer-llm <alias> --judge-llm <alias>
 #                  --reranker-llm <alias> --embedder <alias>
 #                  --concurrency N --ingest-concurrency N
+#                  [--multi-recall=true]
 #                  --out <report.json>`
 # ---------------------------------------------------------------------
 
@@ -81,6 +82,16 @@ on:
         required: false
         type: boolean
         default: true
+      multi_recall:
+        # CLI default: false (keeps legacy single-lane vector recall + BM25/entity
+        # boost behaviour). Flip to true to switch LTM to 3-lane recall
+        # (vector + bm25 + entity) + RRFFusion. See
+        # sdk/retrieval/pipeline/factory.go WithMultiRecall for the
+        # exact stage topology.
+        description: "Use 3-lane recall (vector+bm25+entity) + RRFFusion"
+        required: false
+        type: boolean
+        default: false
       qa_timeout:
         # CLI default: 2m. The first smoke run showed a single
         # azure.generate hitting 1m59s — too tight for the current
@@ -238,6 +249,7 @@ jobs:
             --concurrency "${{ inputs.concurrency }}"
             --ingest-concurrency "${{ inputs.ingest_concurrency }}"
             --soft-merge=${{ inputs.soft_merge }}
+            --multi-recall=${{ inputs.multi_recall }}
             --qa-timeout "${{ inputs.qa_timeout }}"
             --ingest-timeout "${{ inputs.ingest_timeout }}"
             --notify-name "$RUN_TAG"

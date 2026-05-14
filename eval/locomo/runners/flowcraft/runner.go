@@ -43,6 +43,12 @@ type Options struct {
 	// ScoreThreshold forwards to pipeline.WithScoreThreshold. 0 keeps the
 	// SDK default (0.05).
 	ScoreThreshold float64
+
+	// MultiRecall forwards to pipeline.WithMultiRecall. When true,
+	// LTM uses three-lane recall (vector + bm25 + entity) + RRFFusion
+	// instead of the legacy single-lane vector + boost topology.
+	// Defaults to false to keep historical runs reproducible.
+	MultiRecall bool
 }
 
 // Runner is the default bench Runner.
@@ -88,6 +94,9 @@ func New(opts Options) (runners.Runner, error) {
 	}
 	if opts.RerankerLLM != nil {
 		pipeOpts = append(pipeOpts, pipeline.WithReranker(&pipeline.LLMReranker{LLM: opts.RerankerLLM}))
+	}
+	if opts.MultiRecall {
+		pipeOpts = append(pipeOpts, pipeline.WithMultiRecall(true))
 	}
 	if len(pipeOpts) > 0 {
 		memOpts = append(memOpts, recall.WithPipeline(pipeline.LTM(opts.Embedder, pipeOpts...)))

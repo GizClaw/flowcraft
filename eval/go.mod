@@ -15,6 +15,17 @@ require (
 	github.com/spf13/pflag v1.0.9
 )
 
+// TEMPORARY: point sdk + sdkx at the monorepo working copies so this
+// branch can build against pipeline.WithMultiRecall before sdk is
+// tagged. Remove these replace lines once an sdk release containing
+// WithMultiRecall is cut and bump the require above to that tag.
+// (CI honours `replace` even under GOWORK=off — actions/checkout
+// brings in ../sdk and ../sdkx from the same monorepo workspace.)
+replace (
+	github.com/GizClaw/flowcraft/sdk => ../sdk
+	github.com/GizClaw/flowcraft/sdkx => ../sdkx
+)
+
 require (
 	github.com/Azure/azure-sdk-for-go/sdk/azcore v1.17.0 // indirect
 	github.com/Azure/azure-sdk-for-go/sdk/internal v1.10.0 // indirect
