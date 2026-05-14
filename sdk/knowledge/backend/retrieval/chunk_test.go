@@ -234,6 +234,286 @@ func TestRetrievalChunkRepo_NamespaceIsolation(t *testing.T) {
 	}
 }
 
+func TestRetrievalChunkRepo_SearchDocs_ImplementsDocLevelSearcher(t *testing.T) {
+	r := newChunkRepo(t)
+	if _, ok := any(r).(knowledge.DocLevelSearcher); !ok {
+		t.Fatalf("RetrievalChunkRepo must implement knowledge.DocLevelSearcher")
+	}
+}
+
+func TestRetrievalChunkRepo_SearchDocs_OneHitPerDoc(t *testing.T) {
+	// A query whose keyword appears in N chunks of the same doc must
+	// still produce exactly ONE doc-level hit for that doc — the
+	// whole point of doc-level collapse.
+	r := newChunkRepo(t)
+	ctx := context.Background()
+	if err := r.Replace(ctx, "ds", "a.md", []knowledge.DerivedChunk{
+		chunk("a.md", 0, "alpha"),
+		chunk("a.md", 1, "alpha"),
+		chunk("a.md", 2, "alpha"),
+	}); err != nil {
+		t.Fatalf("replace: %v", err)
+	}
+	cands, err := r.SearchDocs(ctx, knowledge.ChunkQuery{
+		DatasetIDs: []string{"ds"},
+		Text:       "alpha",
+		Mode:       knowledge.ModeBM25,
+		TopK:       5,
+	})
+	if err != nil {
+		t.Fatalf("search docs: %v", err)
+	}
+	if len(cands) != 1 {
+		t.Fatalf("expected 1 doc-level hit, got %d (cands=%+v)", len(cands), cands)
+	}
+	if cands[0].Hit.DocName != "a.md" {
+		t.Fatalf("docName = %q, want a.md", cands[0].Hit.DocName)
+	}
+	if cands[0].Hit.ChunkIndex != -1 {
+		t.Fatalf("doc-level hit has ChunkIndex %d, want -1", cands[0].Hit.ChunkIndex)
+	}
+	if cands[0].Hit.Layer != "" {
+		t.Fatalf("doc-level hit has Layer %q, want \"\"", cands[0].Hit.Layer)
+	}
+}
+
+func TestRetrievalChunkRepo_SearchDocs_SumPoolAggregatesAcrossChunks(t *testing.T) {
+	// A doc whose query keywords are SPLIT across two chunks must
+	// outrank a non-relevant doc that only matches one of those
+	// keywords (even repeatedly) in a single chunk. This is the exact
+	// failure mode of max-pool chunk-collapse documented in #126;
+	// sum-pool folds the per-chunk evidence into one doc score.
+	r := newChunkRepo(t)
+	ctx := context.Background()
+	if err := r.Replace(ctx, "ds", "rel.md", []knowledge.DerivedChunk{
+		chunk("rel.md", 0, "alpha bravo charlie"),
+		chunk("rel.md", 1, "delta echo foxtrot"),
+	}); err != nil {
+		t.Fatalf("replace rel: %v", err)
+	}
+	if err := r.Replace(ctx, "ds", "noise.md", []knowledge.DerivedChunk{
+		chunk("noise.md", 0, "alpha alpha alpha zulu"),
+	}); err != nil {
+		t.Fatalf("replace noise: %v", err)
+	}
+
+	cands, err := r.SearchDocs(ctx, knowledge.ChunkQuery{
+		DatasetIDs: []string{"ds"},
+		Text:       "alpha foxtrot",
+		Mode:       knowledge.ModeBM25,
+		TopK:       5,
+	})
+	if err != nil {
+		t.Fatalf("search docs: %v", err)
+	}
+	if len(cands) < 2 {
+		t.Fatalf("expected both docs, got %d", len(cands))
+	}
+	if cands[0].Hit.DocName != "rel.md" {
+		t.Fatalf("top doc = %q, want rel.md (sum-pool should let two-keyword coverage beat one-keyword repetition); ranking = %+v",
+			cands[0].Hit.DocName, cands)
+	}
+}
+
+func TestRetrievalChunkRepo_SearchDocs_RebuildsOnReplace(t *testing.T) {
+	// Doc-level results derive from the chunk index; a Replace that
+	// rewrites a doc's chunks must immediately surface the new tokens
+	// and stop surfacing the old ones — no stale cache layer.
+	r := newChunkRepo(t)
+	ctx := context.Background()
+	if err := r.Replace(ctx, "ds", "a.md", []knowledge.DerivedChunk{
+		chunk("a.md", 0, "alpha"),
+	}); err != nil {
+		t.Fatalf("replace v1: %v", err)
+	}
+	cands, _ := r.SearchDocs(ctx, knowledge.ChunkQuery{
+		DatasetIDs: []string{"ds"}, Text: "alpha", Mode: knowledge.ModeBM25, TopK: 5,
+	})
+	if len(cands) != 1 {
+		t.Fatalf("pre-replace: got %d, want 1", len(cands))
+	}
+	if err := r.Replace(ctx, "ds", "a.md", []knowledge.DerivedChunk{
+		chunk("a.md", 0, "epsilon"),
+	}); err != nil {
+		t.Fatalf("replace v2: %v", err)
+	}
+	cands, _ = r.SearchDocs(ctx, knowledge.ChunkQuery{
+		DatasetIDs: []string{"ds"}, Text: "alpha", Mode: knowledge.ModeBM25, TopK: 5,
+	})
+	if len(cands) != 0 {
+		t.Fatalf("post-replace stale: %+v", cands)
+	}
+	cands, _ = r.SearchDocs(ctx, knowledge.ChunkQuery{
+		DatasetIDs: []string{"ds"}, Text: "epsilon", Mode: knowledge.ModeBM25, TopK: 5,
+	})
+	if len(cands) != 1 {
+		t.Fatalf("post-replace new term not found: %+v", cands)
+	}
+}
+
+func TestRetrievalChunkRepo_SearchDocs_RespectsTopK(t *testing.T) {
+	r := newChunkRepo(t)
+	ctx := context.Background()
+	for i := 0; i < 8; i++ {
+		name := "doc" + itoa(i) + ".md"
+		if err := r.Replace(ctx, "ds", name, []knowledge.DerivedChunk{
+			chunk(name, 0, "shared keyword body "+name),
+		}); err != nil {
+			t.Fatalf("replace %s: %v", name, err)
+		}
+	}
+	cands, err := r.SearchDocs(ctx, knowledge.ChunkQuery{
+		DatasetIDs: []string{"ds"},
+		Text:       "shared",
+		Mode:       knowledge.ModeBM25,
+		TopK:       3,
+	})
+	if err != nil {
+		t.Fatalf("search docs: %v", err)
+	}
+	if len(cands) != 3 {
+		t.Fatalf("topK=3 returned %d hits", len(cands))
+	}
+}
+
+func TestRetrievalChunkRepo_SearchDocs_FanOutAcrossDatasets(t *testing.T) {
+	r := newChunkRepo(t)
+	ctx := context.Background()
+	if err := r.Replace(ctx, "ds1", "a.md", []knowledge.DerivedChunk{chunk("a.md", 0, "shared apple")}); err != nil {
+		t.Fatalf("replace ds1: %v", err)
+	}
+	if err := r.Replace(ctx, "ds2", "b.md", []knowledge.DerivedChunk{chunk("b.md", 0, "shared banana")}); err != nil {
+		t.Fatalf("replace ds2: %v", err)
+	}
+	cands, err := r.SearchDocs(ctx, knowledge.ChunkQuery{
+		DatasetIDs: []string{"ds1", "ds2"},
+		Text:       "shared",
+		Mode:       knowledge.ModeBM25,
+		TopK:       5,
+	})
+	if err != nil {
+		t.Fatalf("search docs: %v", err)
+	}
+	seen := map[string]bool{}
+	for _, c := range cands {
+		seen[c.Hit.DatasetID] = true
+	}
+	if !seen["ds1"] || !seen["ds2"] {
+		t.Fatalf("doc-level fan-out missed a dataset: seen=%v", seen)
+	}
+}
+
+func TestRetrievalChunkRepo_SearchDocs_HybridContributesBothLanes(t *testing.T) {
+	// Hybrid mode should let both BM25 and vector signal contribute
+	// to the doc's aggregate score.
+	r := newChunkRepo(t)
+	ctx := context.Background()
+	c := chunk("a.md", 0, "apple")
+	c.Vector = []float32{1, 0, 0}
+	if err := r.Replace(ctx, "ds", "a.md", []knowledge.DerivedChunk{c}); err != nil {
+		t.Fatalf("replace: %v", err)
+	}
+	cands, err := r.SearchDocs(ctx, knowledge.ChunkQuery{
+		DatasetIDs: []string{"ds"},
+		Text:       "apple",
+		Vector:     []float32{1, 0, 0},
+		Mode:       knowledge.ModeHybrid,
+		TopK:       5,
+	})
+	if err != nil {
+		t.Fatalf("search docs: %v", err)
+	}
+	if len(cands) != 1 {
+		t.Fatalf("expected 1 doc-level hit, got %d", len(cands))
+	}
+	if cands[0].Hit.Score <= 0 {
+		t.Fatalf("hybrid doc-level score = %v, expected > 0 (both lanes should contribute)", cands[0].Hit.Score)
+	}
+}
+
+func TestRetrievalChunkRepo_SearchDocs_SourceLabelsCrossLaneAggregateAsSumpool(t *testing.T) {
+	// When a doc's matching chunks span more than one lane
+	// (hybrid bm25 + vector for the same chunk → two candidates),
+	// the aggregated doc Candidate must carry sumpoolSource rather
+	// than whichever lane was encountered first. Downstream
+	// lane-aware code (fusion / labelling) would otherwise be
+	// silently misled by iteration order.
+	r := newChunkRepo(t)
+	ctx := context.Background()
+	c := chunk("a.md", 0, "apple")
+	c.Vector = []float32{1, 0, 0}
+	if err := r.Replace(ctx, "ds", "a.md", []knowledge.DerivedChunk{c}); err != nil {
+		t.Fatalf("replace: %v", err)
+	}
+	cands, err := r.SearchDocs(ctx, knowledge.ChunkQuery{
+		DatasetIDs: []string{"ds"},
+		Text:       "apple",
+		Vector:     []float32{1, 0, 0},
+		Mode:       knowledge.ModeHybrid,
+		TopK:       5,
+	})
+	if err != nil {
+		t.Fatalf("search docs: %v", err)
+	}
+	if len(cands) != 1 {
+		t.Fatalf("expected 1 doc-level hit, got %d", len(cands))
+	}
+	if got := cands[0].Source; got != "sumpool" {
+		t.Fatalf("cross-lane aggregate Source = %q, want \"sumpool\"", got)
+	}
+}
+
+func TestRetrievalChunkRepo_SearchDocs_SourceLabelsSingleLanePreserved(t *testing.T) {
+	// When every contributing chunk shares one lane (BM25-only),
+	// the aggregate must keep that lane's label rather than
+	// promoting to sumpoolSource. Lane-aware downstream code on the
+	// BM25-only eval path (e.g. BEIR scifact lanes=bm25) depends on
+	// this.
+	r := newChunkRepo(t)
+	ctx := context.Background()
+	if err := r.Replace(ctx, "ds", "a.md", []knowledge.DerivedChunk{
+		chunk("a.md", 0, "apple"),
+		chunk("a.md", 1, "apple banana"),
+	}); err != nil {
+		t.Fatalf("replace: %v", err)
+	}
+	cands, err := r.SearchDocs(ctx, knowledge.ChunkQuery{
+		DatasetIDs: []string{"ds"},
+		Text:       "apple",
+		Mode:       knowledge.ModeBM25,
+		TopK:       5,
+	})
+	if err != nil {
+		t.Fatalf("search docs: %v", err)
+	}
+	if len(cands) != 1 {
+		t.Fatalf("expected 1 doc-level hit, got %d", len(cands))
+	}
+	if got := cands[0].Source; got != "bm25" {
+		t.Fatalf("single-lane aggregate Source = %q, want \"bm25\"", got)
+	}
+}
+
+func TestRetrievalChunkRepo_SearchDocs_NoResults(t *testing.T) {
+	r := newChunkRepo(t)
+	ctx := context.Background()
+	if err := r.Replace(ctx, "ds", "a.md", []knowledge.DerivedChunk{chunk("a.md", 0, "alpha")}); err != nil {
+		t.Fatalf("replace: %v", err)
+	}
+	cands, err := r.SearchDocs(ctx, knowledge.ChunkQuery{
+		DatasetIDs: []string{"ds"},
+		Text:       "no-such-term",
+		Mode:       knowledge.ModeBM25,
+		TopK:       5,
+	})
+	if err != nil {
+		t.Fatalf("search docs: %v", err)
+	}
+	if len(cands) != 0 {
+		t.Fatalf("expected 0 hits for non-matching query, got %+v", cands)
+	}
+}
+
 func TestRetrievalChunkRepo_SigRoundtrip(t *testing.T) {
 	r := newChunkRepo(t)
 	ctx := context.Background()

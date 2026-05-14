@@ -20,6 +20,9 @@ import (
 )
 
 // LocalOption configures NewLocal.
+//
+// Deprecated: see NewLocal. Use RetrievalOption with NewRetrieval
+// instead; slated for removal in v0.5.0.
 type LocalOption func(*localConfig)
 
 type localConfig struct {
@@ -31,6 +34,9 @@ type localConfig struct {
 }
 
 // WithLocalChunker overrides the chunker used by the local service.
+//
+// Deprecated: use WithRetrievalChunker with NewRetrieval. Slated for
+// removal in v0.5.0.
 func WithLocalChunker(c knowledge.Chunker) LocalOption {
 	return func(cfg *localConfig) { cfg.chunker = c }
 }
@@ -38,6 +44,9 @@ func WithLocalChunker(c knowledge.Chunker) LocalOption {
 // WithLocalEmbedder enables vector-aware indexing on the local
 // backend. When sig is empty, the embedder's Go type name is used as
 // the EmbedSig; pass an explicit identifier for production wiring.
+//
+// Deprecated: use WithRetrievalEmbedder with NewRetrieval. Slated for
+// removal in v0.5.0.
 func WithLocalEmbedder(e knowledge.Embedder, sig string) LocalOption {
 	return func(cfg *localConfig) {
 		cfg.embedder = e
@@ -46,11 +55,22 @@ func WithLocalEmbedder(e knowledge.Embedder, sig string) LocalOption {
 }
 
 // WithLocalPrefix overrides the workspace prefix (default "knowledge").
+//
+// Deprecated: NewRetrieval has no equivalent — the retrieval.Index
+// owns chunk/layer storage and is independent of the workspace
+// filesystem prefix used by FSDocumentRepo. Slated for removal in
+// v0.5.0.
 func WithLocalPrefix(prefix string) LocalOption {
 	return func(cfg *localConfig) { cfg.prefix = prefix }
 }
 
 // WithLocalTokenizer overrides the BM25 tokenizer (default CJKTokenizer).
+//
+// Deprecated: the tokenizer used by NewRetrieval is owned by the
+// configured retrieval.Index (e.g. sdk/retrieval/memory.Index uses
+// CJKTokenizer; sdkx/retrieval/{sqlite,postgres} expose backend-native
+// analyzers). Configure tokenization at the Index constructor instead.
+// Slated for removal in v0.5.0.
 func WithLocalTokenizer(tok textsearch.Tokenizer) LocalOption {
 	return func(cfg *localConfig) { cfg.tok = tok }
 }
@@ -59,6 +79,16 @@ func WithLocalTokenizer(tok textsearch.Tokenizer) LocalOption {
 // workspace filesystem. ChunkRepo.Load is called eagerly so BM25
 // indexes rehydrate from disk before the first search; load errors
 // are swallowed (treated as "empty index").
+//
+// Deprecated: NewLocal wires FSChunkRepo + FSLayerRepo, both
+// demo-grade backends whose O(N) per-doc ingest does not scale beyond
+// unit-test / small-fixture sizes (see #134). Use NewRetrieval with
+// an in-process sdk/retrieval/memory.Index for tests and a production
+// retrieval.Index (sdkx/retrieval/{sqlite,postgres,workspace}) for
+// real workloads. FSDocumentRepo is NOT deprecated and remains the
+// canonical document store for both factories. Slated for removal in
+// v0.5.0; see docs/migrations/v0.5.0.md for the one-liner migration
+// recipe.
 func NewLocal(ws workspace.Workspace, opts ...LocalOption) *knowledge.Service {
 	cfg := localConfig{
 		prefix: fs.DefaultPrefix,
