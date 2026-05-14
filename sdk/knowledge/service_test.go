@@ -332,3 +332,136 @@ func TestService_PutDocumentSurfacesEmbedderError(t *testing.T) {
 		t.Fatalf("expected embedder error to bubble up")
 	}
 }
+
+// --- SearchDocuments (doc-level granularity, #126) --------------------------
+
+func TestService_SearchDocumentsReturnsOneHitPerDoc(t *testing.T) {
+	svc := newLocalService(t)
+	ctx := context.Background()
+	if err := svc.PutDocument(ctx, "ds", "a.md", "alpha beta gamma alpha beta gamma"); err != nil {
+		t.Fatalf("put a: %v", err)
+	}
+	if err := svc.PutDocument(ctx, "ds", "b.md", "delta epsilon zeta"); err != nil {
+		t.Fatalf("put b: %v", err)
+	}
+	res, err := svc.SearchDocuments(ctx, knowledge.Query{
+		Scope:     knowledge.ScopeSingleDataset,
+		DatasetID: "ds",
+		Text:      "alpha",
+		Mode:      knowledge.ModeBM25,
+		TopK:      10,
+	})
+	if err != nil {
+		t.Fatalf("SearchDocuments: %v", err)
+	}
+	if len(res.Hits) != 1 {
+		t.Fatalf("hits = %d, want 1 (one per matching doc)", len(res.Hits))
+	}
+	if res.Hits[0].DocName != "a.md" {
+		t.Fatalf("docName = %q, want a.md", res.Hits[0].DocName)
+	}
+	if res.Hits[0].ChunkIndex != -1 {
+		t.Fatalf("ChunkIndex = %d, want -1 (doc-level)", res.Hits[0].ChunkIndex)
+	}
+}
+
+func TestService_SearchDocumentsRanksDocAcrossChunks(t *testing.T) {
+	// Force the chunker to produce TWO chunks per doc so we exercise
+	// the chunks→doc aggregation path inside fs.SearchDocs. Doc "a"
+	// has the query keyword once in each of its two chunks (doc TF=2);
+	// doc "b" has the keyword only in its first chunk (doc TF=1).
+	svc := newLocalService(t, factory.WithLocalChunker(
+		knowledge.NewDefaultChunker(knowledge.ChunkConfig{ChunkSize: 16, ChunkOverlap: 0}),
+	))
+	ctx := context.Background()
+	// Each doc is ~30 chars → two 16-char chunks given overlap=0.
+	if err := svc.PutDocument(ctx, "ds", "a.md", "alpha alpha alpha alpha alpha"); err != nil {
+		t.Fatalf("put a: %v", err)
+	}
+	if err := svc.PutDocument(ctx, "ds", "b.md", "alpha bravo bravo bravo bravo"); err != nil {
+		t.Fatalf("put b: %v", err)
+	}
+	res, err := svc.SearchDocuments(ctx, knowledge.Query{
+		Scope:     knowledge.ScopeSingleDataset,
+		DatasetID: "ds",
+		Text:      "alpha",
+		Mode:      knowledge.ModeBM25,
+		TopK:      10,
+	})
+	if err != nil {
+		t.Fatalf("SearchDocuments: %v", err)
+	}
+	if len(res.Hits) != 2 {
+		t.Fatalf("hits = %d, want 2", len(res.Hits))
+	}
+	if res.Hits[0].DocName != "a.md" {
+		t.Fatalf("top docName = %q, want a.md (higher doc TF must win)", res.Hits[0].DocName)
+	}
+}
+
+func TestService_SearchDocumentsRespectsTopK(t *testing.T) {
+	svc := newLocalService(t)
+	ctx := context.Background()
+	for _, name := range []string{"a.md", "b.md", "c.md", "d.md"} {
+		if err := svc.PutDocument(ctx, "ds", name, "alpha "+name); err != nil {
+			t.Fatalf("put %s: %v", name, err)
+		}
+	}
+	res, err := svc.SearchDocuments(ctx, knowledge.Query{
+		Scope:     knowledge.ScopeSingleDataset,
+		DatasetID: "ds",
+		Text:      "alpha",
+		Mode:      knowledge.ModeBM25,
+		TopK:      2,
+	})
+	if err != nil {
+		t.Fatalf("SearchDocuments: %v", err)
+	}
+	if len(res.Hits) != 2 {
+		t.Fatalf("hits = %d, want 2 (TopK)", len(res.Hits))
+	}
+}
+
+func TestService_SearchDocumentsScopeAllDatasets(t *testing.T) {
+	svc := newLocalService(t)
+	ctx := context.Background()
+	if err := svc.PutDocument(ctx, "ds1", "a.md", "alpha"); err != nil {
+		t.Fatalf("put ds1: %v", err)
+	}
+	if err := svc.PutDocument(ctx, "ds2", "b.md", "alpha"); err != nil {
+		t.Fatalf("put ds2: %v", err)
+	}
+	res, err := svc.SearchDocuments(ctx, knowledge.Query{
+		Scope: knowledge.ScopeAllDatasets,
+		Text:  "alpha",
+		Mode:  knowledge.ModeBM25,
+		TopK:  10,
+	})
+	if err != nil {
+		t.Fatalf("SearchDocuments: %v", err)
+	}
+	if len(res.Hits) != 2 {
+		t.Fatalf("hits = %d, want 2 (one per dataset)", len(res.Hits))
+	}
+	seen := map[string]bool{}
+	for _, h := range res.Hits {
+		seen[h.DatasetID] = true
+	}
+	if !seen["ds1"] || !seen["ds2"] {
+		t.Fatalf("cross-dataset miss: %v", seen)
+	}
+}
+
+func TestService_SearchDocumentsRequiresDatasetIDForSingleScope(t *testing.T) {
+	svc := newLocalService(t)
+	_, err := svc.SearchDocuments(context.Background(), knowledge.Query{
+		Scope: knowledge.ScopeSingleDataset,
+		Text:  "alpha",
+	})
+	if err == nil {
+		t.Fatalf("expected validation error for empty DatasetID")
+	}
+	if !strings.Contains(err.Error(), "dataset_id is required") {
+		t.Fatalf("err = %v, want dataset_id validation", err)
+	}
+}

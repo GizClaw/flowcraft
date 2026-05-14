@@ -271,6 +271,68 @@ func (s *Service) Search(ctx context.Context, q Query) (*Result, error) {
 	return s.engine.Search(ctx, q.withDatasets(ids))
 }
 
+// SearchDocuments executes the query at DOC granularity: each Hit
+// represents one matching docName scored over the entire document
+// rather than per chunk. Use this when the consumer (e.g. eval/beir or
+// any IR benchmark with doc-level qrels) needs an apples-to-apples
+// doc-level ranking; for RAG-style top-K-chunks-to-LLM workflows keep
+// using Search.
+//
+// Requires the underlying ChunkRepo to implement DocLevelSearcher.
+// Backends that do not — returning ErrDocLevelSearchUnsupported — are
+// explicitly NOT folded back to a chunk-level + collapse fallback;
+// that fallback is exactly what landing this API is meant to retire.
+// See #126.
+//
+// The returned Hits have ChunkIndex = -1 and Layer = "" (doc-level
+// results have no specific chunk). Validation matches Search except
+// the Layer field is ignored (always doc-granular).
+func (s *Service) SearchDocuments(ctx context.Context, q Query) (*Result, error) {
+	if s == nil || s.chunks == nil {
+		return &Result{}, nil
+	}
+	searcher, ok := s.chunks.(DocLevelSearcher)
+	if !ok {
+		return nil, errdefs.NotAvailablef("knowledge: chunk repo %T does not implement DocLevelSearcher", s.chunks)
+	}
+	q.Mode = ResolveMode(q.Mode)
+	if !IsValidMode(q.Mode) {
+		return nil, errdefs.Validationf("knowledge: invalid mode %q", q.Mode)
+	}
+	if q.Scope == ScopeSingleDataset && q.DatasetID == "" {
+		return nil, errdefs.Validationf("knowledge: dataset_id is required for ScopeSingleDataset")
+	}
+	if q.TopK <= 0 {
+		q.TopK = 5
+	}
+
+	ids, err := s.resolveDatasetIDs(ctx, q)
+	if err != nil {
+		return nil, err
+	}
+	if len(ids) == 0 {
+		return &Result{}, nil
+	}
+
+	cands, err := searcher.SearchDocs(ctx, ChunkQuery{
+		DatasetIDs: ids,
+		Text:       q.Text,
+		Mode:       q.Mode,
+		TopK:       q.TopK,
+	})
+	if err != nil {
+		return nil, err
+	}
+	hits := make([]Hit, 0, len(cands))
+	for _, c := range cands {
+		hits = append(hits, c.Hit)
+	}
+	if len(hits) > q.TopK {
+		hits = hits[:q.TopK]
+	}
+	return &Result{Hits: hits}, nil
+}
+
 // --- Rebuild ---------------------------------------------------------------
 
 // Rebuild re-derives chunks for the requested scope, comparing
