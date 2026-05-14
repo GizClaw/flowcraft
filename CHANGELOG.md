@@ -184,6 +184,38 @@ compare/fetch/ingest`, `eval longmemeval convert`). Shell completion
   provider when its FLOWCRAFT_TEST_* env var is missing, matching
   the existing conformance suite convention.
 
+#### sdkx
+
+- `sdkx/sandbox/nsjail`: new isolation backend that implements
+  `sandbox.Runner` on top of the [nsjail](https://github.com/google/nsjail)
+  binary. First backend that actually enforces
+  `sandbox.NetPolicy{Mode: NetDenyAll}` (fresh net namespace) and
+  `sandbox.ResourceLimits{CPUMillicores, MemoryBytes}` (cgroup v2
+  caps); `LocalRunner` returns `errdefs.NotAvailable` for both, so
+  the runtime had no production path for these policy fields before
+  this package landed. Translation of `ExecOptions` to nsjail CLI
+  flags is a pure function (`buildFlags`) so the policy contract is
+  unit-testable on every platform without nsjail installed; the
+  Linux-only `Runner` then shells out to the resolved binary,
+  honouring `Stdin`, `Timeout` (--time_limit + Go-side context
+  deadline as a belt-and-braces fallback), `WorkDir` (same root-
+  confinement rules as `LocalRunner`), `Env.Allow` / `Env.Inject`
+  (host env is snapshotted on the Go side and re-injected as
+  --env KEY=VALUE so the policy semantics match `LocalRunner.buildEnv`
+  one-for-one), and `Resources.MaxOutputBytes` (in-process truncation
+  identical to `LocalRunner`). Unsupported policy fields
+  (`NetAllowList`, `NetProxy`, `ResourceLimits.DiskBytes`) fail with
+  `errdefs.NotAvailable` rather than silently downgrading. `New`
+  returns `errdefs.NotAvailable` when the nsjail binary is missing
+  (with `WithBinary` as the escape hatch for vendored builds), or on
+  non-Linux platforms (a `runner_other.go` stub keeps the package
+  importable on macOS / Windows for type references and translation
+  tests). Filesystem isolation is deliberately not part of this
+  drop — `--disable_clone_newns` keeps the host filesystem visible
+  and `WorkDir` confinement is handled in Go; full chroot / bind-
+  mount integration is gated on the RFC that needs to align with
+  `sdk/workspace`'s ScopedWorkspace contract.
+
 ### Fixed
 
 #### sdkx
