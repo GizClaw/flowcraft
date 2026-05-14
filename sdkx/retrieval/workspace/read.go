@@ -20,10 +20,16 @@ import (
 //     The memtable wins over any segment for an ID it stages, and
 //     a newer segment's tombstone wins over an older segment's
 //     content.
-//  3. Per-segment scoring: BM25 for QueryText is computed by
-//     [textsearch.BM25] against the segment-local
-//     [textsearch.CorpusStats] (rebuilt on first load by
-//     [segmentReader.loadBM25]); cosine for QueryVector is
+//  3. BM25 scoring uses a per-Search GLOBAL corpus aggregated from
+//     every live (non-tombstoned, not-overridden) segment +
+//     memtable doc. Each segment caches its [textsearch.Tokenizer]
+//     output via [segmentReader.loadBM25]; Search folds those
+//     tokens (plus freshly-tokenized memtable docs) into a single
+//     [textsearch.CorpusStats] before scoring. This matches the
+//     reference [sdk/retrieval/memory.Index] behaviour and the
+//     BM25 protocol — IDF is corpus-relative, so a per-segment
+//     corpus would make a doc's rank depend on which segment it
+//     happens to live in. Cosine for QueryVector is
 //     [scoring.CosineSim] over the doc's Vector field. Hybrid
 //     fuses the per-modality rankings via [scoring.RRF].
 //  4. Filter pushdown: the workspace backend evaluates the full
@@ -74,38 +80,32 @@ func (idx *Index) Search(
 	keywords := textsearch.ExtractKeywords(req.QueryText, idx.cfg.tokenizer)
 	queryVec := req.QueryVector
 
-	// merged tracks the best score per ID across segments + memtable.
-	// Newest writer wins on ID collisions; the search loop only
-	// records a doc the first time it sees the ID and skips later
-	// (older) copies.
-	merged := make(map[string]*partial)
+	// Phase 1: walk the snapshot newest-first, collecting one
+	// liveDoc per surviving ID. Filter is NOT applied here — the
+	// global BM25 corpus must reflect every live doc in the
+	// namespace (Lucene/`sdk/retrieval/memory.Index` behaviour);
+	// applying the filter pre-scoring would bake the filtered
+	// subset into IDF and break ranking when the same query is
+	// run with different filters.
+	live := make(map[string]*liveDoc)
 	deleted := make(map[string]struct{})
 
-	// Memtable first: it is the freshest writer.
 	for _, it := range memSnap {
 		if it.op == walOpDelete {
 			deleted[it.id] = struct{}{}
-			delete(merged, it.id)
+			delete(live, it.id)
 			continue
 		}
 		if it.doc == nil {
 			continue
 		}
-		if !retrieval.DocMatchesFilter(*it.doc, req.Filter) {
-			continue
+		ld := &liveDoc{doc: cloneDoc(*it.doc)}
+		if hasText {
+			ld.tokens = idx.cfg.tokenizer.Tokenize(it.doc.Content)
 		}
-		p := &partial{doc: cloneDoc(*it.doc)}
-		if hasText && len(keywords) > 0 {
-			p.bm = scoreMemtableBM25(it.doc.Content, keywords, idx.cfg.tokenizer)
-		}
-		if hasVec && len(it.doc.Vector) == len(queryVec) {
-			p.cos = scoring.CosineSim(queryVec, it.doc.Vector)
-		}
-		merged[it.id] = p
+		live[it.id] = ld
 	}
 
-	// Newest segment first so a fresh tombstone overrides an old
-	// content row.
 	segs := append([]segmentRef(nil), manifestSnap.Segments...)
 	sort.Slice(segs, func(i, j int) bool { return segs[i].ID > segs[j].ID })
 
@@ -114,13 +114,12 @@ func (idx *Index) Search(
 		if err != nil {
 			return nil, err
 		}
-		// Apply this segment's tombstones to the cumulative set
-		// FIRST: a segment's tombstone for ID X means X was deleted
+		// A segment's tombstone for ID X means X was deleted
 		// at the time of this segment's flush, so any older
 		// segment must not surface X.
 		for id := range seg.tombSet {
-			if _, ok := merged[id]; ok {
-				delete(merged, id)
+			if _, ok := live[id]; ok {
+				delete(live, id)
 			}
 			deleted[id] = struct{}{}
 		}
@@ -138,31 +137,49 @@ func (idx *Index) Search(
 			if _, ok := deleted[d.ID]; ok {
 				continue
 			}
-			if _, ok := merged[d.ID]; ok {
-				// A fresher copy already ranks the doc; segments
-				// can't override the freshest writer.
+			if _, ok := live[d.ID]; ok {
+				// A fresher writer already claimed this ID; older
+				// segments can't override the freshest copy.
 				continue
 			}
-			if !retrieval.DocMatchesFilter(d, req.Filter) {
-				continue
+			ld := &liveDoc{doc: cloneDoc(d)}
+			if hasText && seg.docTokens != nil {
+				ld.tokens = seg.docTokens[i]
 			}
-			p := &partial{doc: cloneDoc(d)}
-			if hasText && seg.corpus != nil && len(keywords) > 0 {
-				p.bm = textsearch.BM25(seg.docTokens[i], keywords, seg.corpus)
-			}
-			if hasVec && len(d.Vector) == len(queryVec) {
-				p.cos = scoring.CosineSim(queryVec, d.Vector)
-			}
-			// We deliberately keep zero-score docs in the result
-			// set: the [retrieval.Index] contract (matched by the
-			// in-memory backend) is "every filter-passing doc is
-			// a candidate; the caller decides via MinScore /
-			// TopK". Search would otherwise diverge on the
-			// degenerate "QueryText='x' (one-char, tokenizes to
-			// nothing) + Filter only" pattern that the contract
-			// suite exercises.
-			merged[d.ID] = p
+			live[d.ID] = ld
 		}
+	}
+
+	// Phase 2: build the per-Search global corpus. Memtable docs
+	// and segment docs go through the same path (AddDocument), so
+	// pre-flush ranks match post-flush ranks for the same doc set.
+	var globalCorpus *textsearch.CorpusStats
+	if hasText {
+		globalCorpus = textsearch.NewCorpusStats()
+		for _, ld := range live {
+			if len(ld.tokens) > 0 {
+				globalCorpus.AddDocument(ld.tokens)
+			}
+		}
+	}
+
+	// Phase 3: score against the global corpus and apply the
+	// filter as a post-step. Zero-score docs are deliberately kept
+	// (matches the in-memory backend contract — every filter-
+	// passing doc is a candidate; MinScore / TopK trims later).
+	merged := make(map[string]*partial, len(live))
+	for id, ld := range live {
+		if !retrieval.DocMatchesFilter(ld.doc, req.Filter) {
+			continue
+		}
+		p := &partial{doc: ld.doc}
+		if hasText && globalCorpus != nil && globalCorpus.DocCount > 0 && len(keywords) > 0 {
+			p.bm = textsearch.BM25(ld.tokens, keywords, globalCorpus)
+		}
+		if hasVec && len(ld.doc.Vector) == len(queryVec) {
+			p.cos = scoring.CosineSim(queryVec, ld.doc.Vector)
+		}
+		merged[id] = p
 	}
 
 	scoreds := make([]partial, 0, len(merged))
@@ -174,32 +191,21 @@ func (idx *Index) Search(
 	return &retrieval.SearchResponse{Hits: hits, Took: idx.cfg.now().Sub(start)}, nil
 }
 
+// liveDoc is the per-Search snapshot of one doc that survived the
+// memtable / segment / tombstone merge. tokens is non-nil only on
+// the BM25 path; an empty tokens slice (content tokenizes to
+// nothing) is preserved so the doc is still ranked as a zero-score
+// candidate.
+type liveDoc struct {
+	doc    retrieval.Doc
+	tokens []string
+}
+
 // partial holds the per-doc accumulated lane scores during a Search.
 type partial struct {
 	doc retrieval.Doc
 	bm  float64
 	cos float64
-}
-
-// scoreMemtableBM25 scores a single memtable doc against the query
-// keywords using a synthetic 1-doc corpus. Numerically inferior to
-// a "real" segment hit (because the corpus stats are tiny) but
-// keeps memtable docs from being absent from results pre-flush;
-// post-flush the segment-local scores dominate the ranking.
-func scoreMemtableBM25(content string, keywords []string, tok textsearch.Tokenizer) float64 {
-	tokens := tok.Tokenize(content)
-	if len(tokens) == 0 {
-		return 0
-	}
-	corpus := &textsearch.CorpusStats{
-		DocCount:  1,
-		AvgLength: float64(len(tokens)),
-		DocFreq:   make(map[string]int, len(keywords)),
-	}
-	for _, k := range keywords {
-		corpus.DocFreq[k] = 1
-	}
-	return textsearch.BM25(tokens, keywords, corpus)
 }
 
 // rankAndProject sorts scoreds, applies MinScore on single-modality
