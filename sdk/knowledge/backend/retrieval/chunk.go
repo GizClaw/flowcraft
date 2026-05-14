@@ -226,6 +226,100 @@ func (r *RetrievalChunkRepo) searchOne(ctx context.Context, ns string, q knowled
 	return resp.Hits, nil
 }
 
+// docOverfetchFactor controls how many chunks SearchDocs pulls from the
+// chunk-level index per requested doc. The collapse below dedupes
+// chunks→docs, so we must over-fetch to guarantee that the top-K *docs*
+// are reachable even when one strong doc occupies the chunk-level top
+// hits with multiple chunks. 4x mirrors eval/beir's
+// DefaultOverfetchFactor and is empirically enough for chunker configs
+// in the ~5-20 chunks-per-doc range.
+const docOverfetchFactor = 4
+
+// SearchDocs runs a doc-level query by over-fetching chunk-level Hits
+// and collapsing them by docName via sum-pool aggregation.
+//
+// Score semantics: each doc's score is the sum of its matching chunks'
+// scores from the underlying retrieval.Index.Search response. This
+// re-aggregates BM25 signal that chunking split across passages —
+// closer to Anserini doc-level BM25 than max-pool, which only retains
+// the single strongest chunk. ChunkOverlap induces a small uniform
+// duplicate-count offset across every doc and therefore does not
+// affect intra-corpus ranking; see #126.
+//
+// Mode handling delegates to the chunk-level Search: BM25 / Vector /
+// Hybrid all flow through, with the same per-lane retrieval the
+// chunk-granularity path uses. For hybrid, both BM25 and vector
+// candidates for the same chunk contribute to the doc's aggregate.
+//
+// Returned Hits have ChunkIndex = -1 and Layer = "" (doc-level results
+// have no specific chunk); Content / Sig / Metadata are intentionally
+// dropped because they belong to a specific chunk, not the doc.
+//
+// Doc-level results are deterministically ordered: primary by score
+// (desc), tie-broken by (datasetID, docName) ascending so two scorers
+// with identical chunk-score distributions produce identical rankings
+// across re-runs.
+func (r *RetrievalChunkRepo) SearchDocs(ctx context.Context, q knowledge.ChunkQuery) ([]knowledge.Candidate, error) {
+	topK := q.TopK
+	if topK <= 0 {
+		topK = 5
+	}
+	chunkQ := q
+	chunkQ.TopK = topK * docOverfetchFactor
+	cands, err := r.Search(ctx, chunkQ)
+	if err != nil {
+		return nil, err
+	}
+
+	// Aggregate by (datasetID, docName). Zero-score chunk hits are
+	// dropped: some retrieval.Index implementations (notably
+	// sdk/retrieval/memory) surface every filter-matched doc with
+	// Score = 0 when no query term hit, which would otherwise leak
+	// into doc-level rankings and trash BEIR nDCG. FSChunkRepo
+	// achieves the same by only emitting docs with a posting hit.
+	type key struct{ ds, doc string }
+	agg := make(map[key]*knowledge.Candidate, len(cands))
+	order := make([]key, 0, len(cands))
+	for i := range cands {
+		c := cands[i]
+		if c.Hit.DocName == "" || c.Hit.Score <= 0 {
+			continue
+		}
+		k := key{c.Hit.DatasetID, c.Hit.DocName}
+		if existing, ok := agg[k]; ok {
+			existing.Hit.Score += c.Hit.Score
+			continue
+		}
+		agg[k] = &knowledge.Candidate{
+			Source: c.Source,
+			Hit: knowledge.Hit{
+				DatasetID:  c.Hit.DatasetID,
+				DocName:    c.Hit.DocName,
+				Score:      c.Hit.Score,
+				ChunkIndex: -1,
+			},
+		}
+		order = append(order, k)
+	}
+	out := make([]knowledge.Candidate, 0, len(order))
+	for _, k := range order {
+		out = append(out, *agg[k])
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].Hit.Score != out[j].Hit.Score {
+			return out[i].Hit.Score > out[j].Hit.Score
+		}
+		if out[i].Hit.DatasetID != out[j].Hit.DatasetID {
+			return out[i].Hit.DatasetID < out[j].Hit.DatasetID
+		}
+		return out[i].Hit.DocName < out[j].Hit.DocName
+	})
+	if len(out) > topK {
+		out = out[:topK]
+	}
+	return out, nil
+}
+
 // hitToChunkCandidate projects a retrieval.Hit into a Candidate carrying
 // the chunk metadata back into the knowledge layer.
 func hitToChunkCandidate(datasetID, source string, h rt.Hit) knowledge.Candidate {
@@ -387,4 +481,7 @@ func copyAnyMetadata(m map[string]any) map[string]any {
 	return out
 }
 
-var _ knowledge.ChunkRepo = (*RetrievalChunkRepo)(nil)
+var (
+	_ knowledge.ChunkRepo        = (*RetrievalChunkRepo)(nil)
+	_ knowledge.DocLevelSearcher = (*RetrievalChunkRepo)(nil)
+)
