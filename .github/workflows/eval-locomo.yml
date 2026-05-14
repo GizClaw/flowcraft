@@ -12,6 +12,7 @@ name: eval / locomo
 #                  --reranker-llm <alias> --embedder <alias>
 #                  --concurrency N --ingest-concurrency N
 #                  [--multi-recall=true]
+#                  [--update-resolver=<alias>]
 #                  --out <report.json>`
 # ---------------------------------------------------------------------
 
@@ -92,6 +93,16 @@ on:
         required: false
         type: boolean
         default: false
+      update_resolver:
+        # Enables mem0 v3-style ADD/UPDATE/DELETE/NOOP memory linker.
+        # See sdk/recall/resolver_llm.go LLMUpdateResolver. Each Save
+        # batch issues one extra LLM call (resolver decision) plus
+        # N×Recall (one per new fact, top-K=20). Cost is non-trivial
+        # but offers cleaner long-term memory (no stale facts) for
+        # multi-session benches. Empty alias disables.
+        description: "LLM alias for the memory update resolver (empty = disabled)"
+        required: false
+        default: ""
       qa_timeout:
         # CLI default: 2m. The first smoke run showed a single
         # azure.generate hitting 1m59s — too tight for the current
@@ -261,6 +272,9 @@ jobs:
           fi
           if [ -n "${{ inputs.embedder }}" ]; then
             ARGS+=( --embedder "${{ inputs.embedder }}" )
+          fi
+          if [ -n "${{ inputs.update_resolver }}" ]; then
+            ARGS+=( --update-resolver "${{ inputs.update_resolver }}" )
           fi
           if [ "${{ inputs.limit_questions }}" != "0" ]; then
             ARGS+=( --limit-questions "${{ inputs.limit_questions }}" )

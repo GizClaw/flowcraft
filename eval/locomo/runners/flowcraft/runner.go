@@ -49,6 +49,18 @@ type Options struct {
 	// instead of the legacy single-lane vector + boost topology.
 	// Defaults to false to keep historical runs reproducible.
 	MultiRecall bool
+
+	// UpdateResolverLLM, when set, installs an LLMUpdateResolver via
+	// recall.WithUpdateResolver. The resolver runs once per Save call
+	// after extraction and decides ADD / UPDATE / DELETE / NOOP for
+	// each candidate memory against the new fact batch — equivalent
+	// to mem0 v3's memory linker. Empty disables the resolver
+	// (default).
+	//
+	// UpdateResolverTopK bounds the candidates fed to the resolver
+	// LLM. 0 keeps the SDK default (20).
+	UpdateResolverLLM  llm.LLM
+	UpdateResolverTopK int
 }
 
 // Runner is the default bench Runner.
@@ -79,6 +91,16 @@ func New(opts Options) (runners.Runner, error) {
 	}
 	if opts.SoftMerge != nil && !*opts.SoftMerge {
 		memOpts = append(memOpts, recall.WithoutSoftMerge())
+	}
+	if opts.UpdateResolverLLM != nil {
+		topK := opts.UpdateResolverTopK
+		if topK <= 0 {
+			topK = 20
+		}
+		memOpts = append(memOpts, recall.WithUpdateResolver(
+			&recall.LLMUpdateResolver{LLM: opts.UpdateResolverLLM},
+			topK,
+		))
 	}
 	if opts.ExtractPrompt != "" || opts.LLM != nil {
 		memOpts = append(memOpts, recall.WithExtractor(&recall.AdditiveExtractor{
