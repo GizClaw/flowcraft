@@ -24,8 +24,12 @@ import "github.com/GizClaw/flowcraft/sdk/model"
 //     captured usage.
 func NewOneChunkStream(msg Message, usage TokenUsage) StreamMessage {
 	return &oneChunkStream{
-		msg:   msg,
-		usage: model.Usage{InputTokens: usage.InputTokens, OutputTokens: usage.OutputTokens},
+		msg: msg,
+		usage: model.Usage{
+			InputTokens:       usage.InputTokens,
+			CachedInputTokens: usage.CachedInputTokens,
+			OutputTokens:      usage.OutputTokens,
+		},
 	}
 }
 

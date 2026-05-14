@@ -252,9 +252,21 @@ func NewImageMessage(role Role, text, imageURL string) Message {
 }
 
 // Usage represents raw token usage from a single LLM call (Provider layer).
+//
+// CachedInputTokens carries the same semantics as
+// TokenUsage.CachedInputTokens: it is the subset of InputTokens that
+// hit the provider's prompt cache and is billed at a reduced rate
+// (typically ~10x cheaper). Always <= InputTokens. Zero means either
+// the provider does not expose cache stats or no cache hit occurred
+// on this call.
+//
+// omitempty keeps the wire format stable for providers (e.g. ollama)
+// that never set it — pre-existing JSON consumers of Usage continue
+// to observe the historical {input_tokens, output_tokens} shape.
 type Usage struct {
-	InputTokens  int64 `json:"input_tokens"`
-	OutputTokens int64 `json:"output_tokens"`
+	InputTokens       int64 `json:"input_tokens"`
+	CachedInputTokens int64 `json:"cached_input_tokens,omitempty"`
+	OutputTokens      int64 `json:"output_tokens"`
 }
 
 // TokenUsage tracks cumulative token consumption (includes TotalTokens).
