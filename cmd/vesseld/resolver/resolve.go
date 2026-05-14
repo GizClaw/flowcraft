@@ -70,10 +70,14 @@ func Resolve(objs []apispec.Object, cat *catalog.Catalog, opts ResolveOptions) (
 	histories, histErrs := resolveHistories(cat, inv.HistoryStores, sharedToolReg, llmClients)
 	errs.addAll(histErrs)
 
+	sandboxes, sbErrs := resolveSandboxes(inv.Sandboxes)
+	errs.addAll(sbErrs)
+
 	plan := &Plan{
 		SharedToolRegistry: sharedToolReg,
 		SharedLLMResolver:  llmResolver,
 		SharedHistories:    histories,
+		SharedSandboxes:    sandboxes,
 	}
 
 	if len(inv.Daemons) >= 1 {
@@ -241,6 +245,26 @@ func resolveVessel(
 		if specAgent.Dispatcher {
 			vp.DispatcherAgents = append(vp.DispatcherAgents, agent.Name)
 		}
+		// Sandbox reference handling. The agent's spec.sandbox
+		// must name a known Sandbox document; v0.2.0 also
+		// enforces "at most one Sandbox per Vessel" so the
+		// per-Captain tool registry can register the auto-
+		// generated `exec` tool under its canonical name
+		// without disambiguation.
+		if ref := agent.Spec.Sandbox; ref != "" {
+			if _, ok := inv.Sandboxes[ref]; !ok {
+				errs.add(errdefs.NotFoundf("vesseld Agent %q: spec.sandbox %q not found in loaded Sandbox docs", agent.Name, ref))
+			} else {
+				if vp.SandboxName == "" {
+					vp.SandboxName = ref
+				} else if vp.SandboxName != ref {
+					errs.add(errdefs.Validationf(
+						"vesseld Vessel %q: agents reference %d distinct Sandboxes (%q and %q); v0.2.0 supports at most one Sandbox per Vessel",
+						v.Name, 2, vp.SandboxName, ref))
+				}
+				vp.SandboxAgents = append(vp.SandboxAgents, agent.Name)
+			}
+		}
 		vs.Agents = append(vs.Agents, specAgent)
 	}
 
@@ -371,13 +395,17 @@ func resolveAgent(
 	}
 
 	builder := EngineBuilder(func(rd RuntimeDeps) (engineBuildResult, error) {
+		reg := toolReg
+		if rd.ToolRegistry != nil {
+			reg = rd.ToolRegistry
+		}
 		eng, err := fn(a.Spec.Engine.Ref, a.Spec.Engine.Config, catalog.Deps{
 			VesselID:     v.Name,
 			AgentName:    a.Name,
 			AgentTools:   rd.AgentTools,
 			Bus:          nil, // fleet injects per-Captain bus before invoking
 			History:      hist,
-			ToolRegistry: toolReg,
+			ToolRegistry: reg,
 			LLMClients:   clients,
 			LLMLimiters:  rd.LLMLimiters,
 		})
