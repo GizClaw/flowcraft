@@ -33,6 +33,7 @@ func RegisterCobra(parent *cobra.Command, g *cliflags.Global) {
 		queryConcurrency  int
 		limitQueries      int
 		overfetch         int
+		collapseStrategy  string
 	)
 
 	cmd := &cobra.Command{
@@ -75,6 +76,13 @@ Example:
 				return fmt.Errorf("--cutoffs: %w", err)
 			}
 
+			cs := CollapseStrategy(strings.ToLower(strings.TrimSpace(collapseStrategy)))
+			switch cs {
+			case "", CollapseSum, CollapseMax, CollapseFirst:
+				// ok
+			default:
+				return fmt.Errorf("--collapse-strategy: unknown %q (want sum|max|first)", collapseStrategy)
+			}
 			opts := Options{
 				Embedder:          emb,
 				Lanes:             lanes,
@@ -83,6 +91,7 @@ Example:
 				QueryConcurrency:  queryConcurrency,
 				LimitQueries:      limitQueries,
 				OverfetchFactor:   overfetch,
+				CollapseStrategy:  cs,
 				ProgressPct:       g.Notify.ProgressPct,
 				Hook: func(ctx context.Context, e Event) {
 					notify.Forward(ctx, notifier, notify.Event{
@@ -146,7 +155,13 @@ Example:
 	f.IntVar(&limitQueries, "limit-queries", 0, "evaluate only the first N queries (0 = all)")
 	f.IntVar(&overfetch, "overfetch", DefaultOverfetchFactor,
 		"chunk over-fetch factor applied before chunks→docID collapse "+
-			"(1 = disable collapse; ablation only — non-conformant with BEIR protocol)")
+			"(1 = top-K chunks only; useful for ablation but typically "+
+			"degrades sum-pool quality since fewer chunks to aggregate)")
+	f.StringVar(&collapseStrategy, "collapse-strategy", string(DefaultCollapseStrategy),
+		"chunk→doc aggregation: sum (default; re-aggregates multi-keyword "+
+			"BM25 signal across chunks of the same doc) | max (keep best "+
+			"chunk per doc; loses split-keyword signal) | first (keep "+
+			"first chunk per doc in score-desc order)")
 
 	parent.AddCommand(cmd)
 }

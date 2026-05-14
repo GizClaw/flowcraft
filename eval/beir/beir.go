@@ -206,24 +206,57 @@ type Options struct {
 
 	// OverfetchFactor controls how many chunks we ask Search for per
 	// unit of unique-doc cutoff before collapsing chunks-per-doc. Set
-	// to 1 to disable collapsing (chunk-level ranking; non-conformant
-	// with BEIR protocol — only for ablation). Default: 4.
-	//
-	// Rationale: sdk/knowledge.Search returns chunk-level Hits, but
-	// BEIR qrels judge at doc-level. Counting each chunk of a relevant
-	// doc as a separate hit inflates recall (we observed recall@100 =
-	// 3.003 on scifact pre-fix). We over-fetch chunks then keep the
-	// FIRST occurrence per docID — since Hits are score-desc sorted,
-	// this is equivalent to max-pooling chunk scores per docID.
+	// to 1 to disable over-fetch (top-K chunks only; rarely useful
+	// once CollapseStrategy=sum is enabled because sum-pool needs
+	// chunks beyond top-K to aggregate signal). Default: 4.
 	OverfetchFactor int
+
+	// CollapseStrategy selects how chunk scores are aggregated when
+	// collapsing chunks→docID. The BEIR protocol expects doc-level
+	// ranking (qrels are doc-level), so some aggregation is mandatory;
+	// the choice between max-pool and sum-pool is a known empirical
+	// trade-off (see #126).
+	//
+	//   - CollapseSum (default): sum chunk scores per docID. Re-
+	//     aggregates the multi-keyword signal that chunk-level BM25
+	//     splits across chunks. Standard Pyserini / ColBERT BEIR
+	//     adapter behaviour.
+	//
+	//   - CollapseMax: keep highest-scoring chunk per docID. Rank-
+	//     stable but loses signal whose keywords are distributed
+	//     across chunks. We empirically measured a 0.18 nDCG@10 floor
+	//     on scifact with this strategy vs 0.679 public BM25
+	//     baseline — useful as an ablation reference, not for
+	//     headline numbers.
+	//
+	//   - CollapseFirst: keep first hit per docID in score-desc order
+	//     (== max-pool for backend that returns score-desc Hits, but
+	//     does not require the backend to populate Hit.Score). Kept
+	//     for legacy parity; prefer CollapseMax or CollapseSum.
+	CollapseStrategy CollapseStrategy
 
 	Hook        EventHook
 	ProgressPct int
 }
 
+// CollapseStrategy names the chunks→docID aggregation function used
+// by runLane. See Options.CollapseStrategy for the full rationale.
+type CollapseStrategy string
+
+const (
+	CollapseSum   CollapseStrategy = "sum"
+	CollapseMax   CollapseStrategy = "max"
+	CollapseFirst CollapseStrategy = "first"
+)
+
 // DefaultOverfetchFactor is the chunk-overfetch multiplier applied
 // before doc-collapse when Options.OverfetchFactor is zero.
 const DefaultOverfetchFactor = 4
+
+// DefaultCollapseStrategy is the aggregation function used when
+// Options.CollapseStrategy is empty. Sum-pool is the BEIR-conformant
+// default; see CollapseStrategy doc for the alternatives.
+const DefaultCollapseStrategy = CollapseSum
 
 // LaneReport's field names deliberately mirror eval/knowledge's
 // LaneReport — same NDCG/Recall/MRR/LatencyP50/LatencyP95 layout —
@@ -291,6 +324,9 @@ func Run(ctx context.Context, ds *Dataset, opts Options) (*Report, error) {
 	if opts.OverfetchFactor <= 0 {
 		opts.OverfetchFactor = DefaultOverfetchFactor
 	}
+	if opts.CollapseStrategy == "" {
+		opts.CollapseStrategy = DefaultCollapseStrategy
+	}
 
 	// BEIR `queries.jsonl` carries all splits (train/dev/test). Only
 	// queries present in `qrels/test.tsv` belong to the evaluation set;
@@ -321,8 +357,9 @@ func Run(ctx context.Context, ds *Dataset, opts Options) (*Report, error) {
 			// Chunk→doc collapse settings are stable per-run audit
 			// trail for leaderboard.md (BEIR protocol requires
 			// doc-level ranking; sdk/knowledge returns chunk-level).
-			"collapse_to_doc":  opts.OverfetchFactor > 1,
-			"overfetch_factor": opts.OverfetchFactor,
+			"collapse_to_doc":   true,
+			"collapse_strategy": string(opts.CollapseStrategy),
+			"overfetch_factor":  opts.OverfetchFactor,
 		},
 	}
 	defer func() { rep.DurationMS = time.Since(rep.StartedAt).Milliseconds() }()
@@ -584,29 +621,24 @@ func runLane(
 			sort.Sort(sort.Reverse(sort.IntSlice(ideal)))
 			out.idealRanking = ideal
 
-			// Collapse chunks→docID: keep the first occurrence per
-			// docID, drop later chunks of the same doc. Since
-			// res.Hits is score-desc sorted by Search, the first
-			// occurrence is the highest-scoring chunk for that
-			// doc — equivalent to max-pooling chunk scores per
-			// docID, which is the standard BEIR adapter behaviour
-			// across Pyserini / sentence-transformers / ColBERT
-			// runners. Truncate to topK after collapse.
-			seen := make(map[string]struct{}, topK)
-			ranked := make([]int, 0, topK)
-			for _, h := range res.Hits {
-				if h.DocName == "" {
-					continue
-				}
-				if _, dup := seen[h.DocName]; dup {
-					continue
-				}
-				seen[h.DocName] = struct{}{}
-				ranked = append(ranked, qrels[h.DocName])
-				if len(ranked) >= topK {
-					break
-				}
-			}
+			// Collapse chunks→docID using the configured strategy.
+			// BEIR qrels are doc-level, so we MUST emit doc-level
+			// ranking — the only question is how to aggregate the
+			// chunk-level scores returned by Search.
+			//
+			// Sum-pool re-aggregates multi-keyword BM25 signal
+			// distributed across a doc's chunks (the standard BEIR
+			// adapter behaviour). Max-pool keeps the single best
+			// chunk per doc; first-pool keeps the first hit per
+			// doc in score-desc order (== max-pool for backends
+			// that emit score-desc Hits but doesn't depend on
+			// Hit.Score).
+			//
+			// All three sort docs by aggregated score (desc) and
+			// truncate to topK AFTER aggregation. Doc grade is
+			// looked up against qrels once per doc, regardless of
+			// how many chunks contributed.
+			ranked := collapseChunksToDocs(res.Hits, qrels, topK, opts.CollapseStrategy)
 			out.rankedRelevance = ranked
 
 			results[i] = out
@@ -687,6 +719,90 @@ func dcg(grades []int, k int) float64 {
 
 // nDCG computes nDCG@k normalising against the ideal ranking
 // (descending list of all positive grades for the query).
+// collapseChunksToDocs aggregates chunk-level Hits to a doc-level
+// ranked list, applying the requested CollapseStrategy. The returned
+// slice is len ≤ topK; each element is the qrels grade of the doc at
+// that rank (0 = non-relevant or not-in-qrels).
+//
+// Sum-pool aggregates chunk scores per docID (re-aggregating signal
+// that chunk-level BM25 splits across chunks of the same doc).
+// Max-pool keeps the single highest-scoring chunk per docID.
+// First-pool keeps the first hit per docID in input order (== max-pool
+// when the caller's Hits are score-desc sorted; doesn't depend on
+// Hit.Score being populated).
+//
+// All three sort by aggregated score (desc), with docID lexicographic
+// ascending as a deterministic tie-breaker so two scorers with
+// identical chunk-score distributions produce identical rankings
+// across re-runs.
+func collapseChunksToDocs(hits []knowledge.Hit, qrels map[string]int, topK int, strategy CollapseStrategy) []int {
+	if topK <= 0 {
+		return nil
+	}
+	type docAccum struct {
+		score float64
+		grade int
+		first int // input-order index of first hit, for CollapseFirst
+		idx   int // input-order index for tie-breaking
+	}
+	docs := make(map[string]*docAccum, topK)
+	order := make([]string, 0, topK)
+	for i, h := range hits {
+		if h.DocName == "" {
+			continue
+		}
+		d, ok := docs[h.DocName]
+		if !ok {
+			d = &docAccum{grade: qrels[h.DocName], first: i, idx: i}
+			docs[h.DocName] = d
+			order = append(order, h.DocName)
+		}
+		switch strategy {
+		case CollapseSum:
+			d.score += h.Score
+		case CollapseMax:
+			if h.Score > d.score || !ok {
+				d.score = h.Score
+			}
+		case CollapseFirst:
+			if !ok {
+				d.score = h.Score
+			}
+		default:
+			// Unknown strategy → behave as sum (defensive default).
+			d.score += h.Score
+		}
+	}
+
+	type rankedDoc struct {
+		name  string
+		score float64
+		grade int
+		idx   int
+	}
+	out := make([]rankedDoc, 0, len(docs))
+	for _, name := range order {
+		d := docs[name]
+		out = append(out, rankedDoc{name: name, score: d.score, grade: d.grade, idx: d.idx})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].score != out[j].score {
+			return out[i].score > out[j].score
+		}
+		// Stable, deterministic tie-break: earliest-seen docID wins.
+		// This makes re-runs against the same backend bit-identical.
+		return out[i].idx < out[j].idx
+	})
+	if len(out) > topK {
+		out = out[:topK]
+	}
+	ranked := make([]int, 0, len(out))
+	for _, d := range out {
+		ranked = append(ranked, d.grade)
+	}
+	return ranked
+}
+
 func nDCG(ranked, ideal []int, k int) float64 {
 	idealDCG := dcg(ideal, k)
 	if idealDCG == 0 {

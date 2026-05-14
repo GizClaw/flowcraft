@@ -40,9 +40,13 @@ on:
         required: false
         default: "0"
       overfetch:
-        description: "Chunk over-fetch factor before chunks→docID collapse (1 = disable; ablation only)"
+        description: "Chunk over-fetch factor before chunks→docID collapse"
         required: false
         default: "4"
+      collapse_strategy:
+        description: "Chunk→doc aggregation: sum (default) | max | first"
+        required: false
+        default: "sum"
       notify_progress_pct:
         description: "Feishu milestone resolution (% of work; 0=off)"
         required: false
@@ -152,6 +156,7 @@ jobs:
             --query-concurrency "${{ inputs.query_concurrency }}"
             --limit-queries "${{ inputs.limit_queries }}"
             --overfetch "${{ inputs.overfetch }}"
+            --collapse-strategy "${{ inputs.collapse_strategy }}"
             --notify-name "$RUN_TAG"
             --notify-progress-pct "${{ inputs.notify_progress_pct }}"
             --out "$REPORT_OUT"
