@@ -39,7 +39,9 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/sdk/knowledge"
+	"github.com/GizClaw/flowcraft/sdk/knowledge/backend/fs"
 	"github.com/GizClaw/flowcraft/sdk/knowledge/factory"
+	"github.com/GizClaw/flowcraft/sdk/retrieval/memory"
 	"github.com/GizClaw/flowcraft/sdk/workspace"
 )
 
@@ -449,37 +451,31 @@ func Run(ctx context.Context, ds *Dataset, opts Options) (*Report, error) {
 
 // buildService assembles a knowledge.Service for the BEIR adapter.
 //
-// We stay on factory.NewLocal (FSChunkRepo + DocLevelSearcher) despite
-// FSChunkRepo's known O(N) per-doc-ingest cost because the retrieval
-// backend's RetrievalChunkRepo.SearchDocs (#137) scores against
-// chunk-level corpus stats (DocCount inflated by chunker fan-out,
-// AvgLength = avg chunk length) and then sum-pools chunk-level BM25
-// scores. BM25 is nonlinear in TF and DocLength, so chunk-level scores
-// cannot be re-aggregated into doc-level BM25 scores. On scifact
-// (N=5183) this produced nDCG@10 = 0.133 vs FSChunkRepo's native
-// doc-level index at 0.672 (run 25848699992 vs 25844184454, a 5x
-// degradation). FSChunkRepo's SearchDocs maintains a parallel
-// doc-level inverted index (#127) so it scores against the right
-// corpus stats; that is what published BEIR baselines (Anserini,
-// Lucene field_collapse over doc-level Lucene) actually do.
+// Uses factory.NewRetrieval (RetrievalChunkRepo backed by an in-process
+// retrieval.Index). Doc-level BM25 corpus stats are produced by the
+// __docs namespace introduced in #143 (sdk v0.3.14): every Replace
+// upserts one retrieval.Doc per logical document (Content =
+// chunk-index-ordered concatenation) alongside the per-chunk entries,
+// and SearchDocs queries that doc-level namespace directly. As a
+// result the BM25 scorer sees doc-level N / df / avgdl — the same
+// regime Anserini uses for its BEIR baselines, and the same regime
+// FSChunkRepo's deprecated bespoke doc-level inverted index used to
+// produce. This is the v2 attempt after #141 reverted the original
+// switch (#137 sum-pool over chunk-level stats produced nDCG@10 0.133
+// vs fs baseline 0.672, see run 25848699992 vs 25844184454).
 //
-// This restores main's BEIR baseline. The retrieval backend keeps its
-// SearchDocs implementation for non-eval doc-level callers but is not
-// suitable for IR benchmarking until #134 is reworked with native
-// doc-level corpus stats (or a per-Index doc-level inverted index).
-// Tracked in #134.
+// Expected post-merge validation against scifact: nDCG@10 within
+// ±0.005 of the 0.6725 fs baseline (#134 acceptance band), ingest
+// wall-clock ≤14 min @ ingest_concurrency=8 (#137 perf target).
 func buildService(opts Options) *knowledge.Service {
 	ws := workspace.NewMemWorkspace()
-	var localOpts []factory.LocalOption
+	docs := fs.NewDocumentRepo(ws, fs.DefaultPrefix)
+	idx := memory.New()
+	var retrievalOpts []factory.RetrievalOption
 	if opts.Embedder != nil {
-		localOpts = append(localOpts, factory.WithLocalEmbedder(opts.Embedder, opts.DatasetID))
+		retrievalOpts = append(retrievalOpts, factory.WithRetrievalEmbedder(opts.Embedder, opts.DatasetID))
 	}
-	//nolint:staticcheck // factory.NewLocal is deprecated for v0.5.0 removal
-	// (see #137 commit 38512b85), but its FSChunkRepo's doc-level BM25
-	// is the only in-tree implementation that produces correct BEIR
-	// numbers today. Re-evaluate after #134 reworks
-	// RetrievalChunkRepo.SearchDocs to use doc-level corpus stats.
-	return factory.NewLocal(ws, localOpts...)
+	return factory.NewRetrieval(docs, idx, retrievalOpts...)
 }
 
 // ingest puts every dataset document through PutDocument. BEIR corpora
