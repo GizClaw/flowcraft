@@ -3,7 +3,9 @@ package fs
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/GizClaw/flowcraft/sdk/knowledge"
@@ -252,6 +254,99 @@ func TestChunkRepo_UTF8Content(t *testing.T) {
 	}
 	if len(cands) == 0 {
 		t.Skip("simple tokenizer cannot split CJK; skipped (covered by CJK tokenizer in higher tiers)")
+	}
+}
+
+// TestChunkRepo_Replace_ConcurrentDoesNotLoseDocs exercises the
+// previously-racy Replace path that lost docs under concurrent ingest.
+// Each goroutine writes a distinct (docName, content) pair where the
+// content contains both a unique token and a shared one; a final BM25
+// search for the shared token must return all N docs. Pre-fix, the
+// observed loss rate on BEIR scifact at ingest_concurrency=8 was ~60%
+// of docs (nDCG@10 dropping from 0.180 to 0.071); this test is small
+// enough to keep CI under a second yet large enough that the race
+// reliably manifested before the fix.
+func TestChunkRepo_Replace_ConcurrentDoesNotLoseDocs(t *testing.T) {
+	r, _ := newChunkRepo(t)
+	ctx := context.Background()
+	const N = 200
+
+	var wg sync.WaitGroup
+	for i := 0; i < N; i++ {
+		i := i
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			name := fmt.Sprintf("doc%d.md", i)
+			content := fmt.Sprintf("uniquetoken%d sharedtoken", i)
+			c := chunk(name, 0, content)
+			if err := r.Replace(ctx, "ds", name, []knowledge.DerivedChunk{c}); err != nil {
+				t.Errorf("replace %s: %v", name, err)
+			}
+		}()
+	}
+	wg.Wait()
+
+	cands, err := r.Search(ctx, knowledge.ChunkQuery{
+		DatasetIDs: []string{"ds"},
+		Text:       "sharedtoken",
+		Mode:       knowledge.ModeBM25,
+		TopK:       N * 4,
+	})
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	seen := make(map[string]bool, N)
+	for _, c := range cands {
+		seen[c.Hit.DocName] = true
+	}
+	if len(seen) != N {
+		t.Fatalf("doc-loss race regressed: %d/%d docs survived concurrent ingest", len(seen), N)
+	}
+}
+
+// TestChunkRepo_Replace_ConcurrentDocLevelStateIsConsistent verifies
+// that the doc-level state (added in #127) is also rebuilt
+// consistently when Replace runs concurrently. The doc-level index is
+// rebuilt by buildState off the same merged slice as the chunk-level
+// index, so a race that loses docs from one would also lose them from
+// the other; this test checks SearchDocs explicitly to lock in that
+// the two indices stay in lock-step under concurrency.
+func TestChunkRepo_Replace_ConcurrentDocLevelStateIsConsistent(t *testing.T) {
+	r, _ := newChunkRepo(t)
+	ctx := context.Background()
+	const N = 100
+
+	var wg sync.WaitGroup
+	for i := 0; i < N; i++ {
+		i := i
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			name := fmt.Sprintf("doc%d.md", i)
+			content := fmt.Sprintf("uniquetoken%d sharedtoken", i)
+			if err := r.Replace(ctx, "ds", name, []knowledge.DerivedChunk{chunk(name, 0, content)}); err != nil {
+				t.Errorf("replace %s: %v", name, err)
+			}
+		}()
+	}
+	wg.Wait()
+
+	cands, err := r.SearchDocs(ctx, knowledge.ChunkQuery{
+		DatasetIDs: []string{"ds"},
+		Text:       "sharedtoken",
+		Mode:       knowledge.ModeBM25,
+		TopK:       N * 4,
+	})
+	if err != nil {
+		t.Fatalf("search docs: %v", err)
+	}
+	seen := make(map[string]bool, N)
+	for _, c := range cands {
+		seen[c.Hit.DocName] = true
+	}
+	if len(seen) != N {
+		t.Fatalf("doc-level state out of sync: %d/%d docs surfaced at doc-level after concurrent ingest", len(seen), N)
 	}
 }
 
