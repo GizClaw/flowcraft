@@ -37,10 +37,11 @@ type ltmConfig struct {
 	reranker         Reranker
 	entityExtract    EntityExtract
 	slotCollapse     bool
-	multiRecall      bool
-	bm25LaneTopK     int
-	entityLaneTopK   int
-	rrfK             float64
+	multiRecall              bool
+	bm25LaneTopK             int
+	entityLaneTopK           int
+	rrfK                     float64
+	entityLaneMinSelectivity float64
 }
 
 // WithRecallTopK overrides the vector recall fan-out (default 60).
@@ -151,6 +152,29 @@ func WithRRFK(k float64) LTMOption {
 	return func(c *ltmConfig) { c.rrfK = k }
 }
 
+// WithEntityLaneMinSelectivity gates the entity recall lane on
+// query-side IDF selectivity. The entity lane fires only when at
+// least one query atom is "rare" within the namespace — i.e. appears
+// in strictly fewer than `ratio * N` docs (N = universe size under
+// the request filter).
+//
+// Defaults to 0.1 under [WithMultiRecall] (atom must match < 10% of
+// namespace). Pass 0 to disable the gate (legacy behaviour: lane
+// fires for any non-empty QueryEntities).
+//
+// Background: the LoCoMo 25866478422 ablation showed that even
+// IDF-weighted entity recall regressed qa.judge by 17 pp because
+// queries dominated by universal atoms (`tuesday`, `morning`,
+// `favorite`, `food`) flooded the lane with low-information
+// candidates whose RRF rank vote displaced vector's precision
+// picks. Gating on selectivity collapses those queries back to
+// "lane returns nothing", leaving the fused result driven by
+// vector + BM25 alone — see
+// internal-docs/eval-entity-lane-ablation-2026-05-14.md.
+func WithEntityLaneMinSelectivity(ratio float64) LTMOption {
+	return func(c *ltmConfig) { c.entityLaneMinSelectivity = ratio }
+}
+
 // WithSlotCollapse inserts a [SlotCollapse] stage after
 // [SupersededDecay] so legacy entries that were never tagged with
 // superseded_by still get collapsed to the newest hit per
@@ -231,6 +255,14 @@ func LTM(emb embedding.Embedder, opts ...LTMOption) *Pipeline {
 		if rrfK <= 0 {
 			rrfK = 60
 		}
+		// Default entity-lane selectivity gate: 10% of namespace.
+		// Pass `WithEntityLaneMinSelectivity(0)` to disable.
+		entSelect := cfg.entityLaneMinSelectivity
+		if entSelect == 0 {
+			entSelect = 0.1
+		} else if entSelect < 0 {
+			entSelect = 0
+		}
 		stages = []Stage{
 			HybridShortCircuit{},
 			&EmbedQuery{Embedder: emb},
@@ -238,7 +270,7 @@ func LTM(emb embedding.Embedder, opts ...LTMOption) *Pipeline {
 			MultiRetrieve{
 				string(retrieval.LaneVector): {Mode: ModeVector, TopK: cfg.recallTopK},
 				string(retrieval.LaneBM25):   {Mode: ModeBM25, TopK: bm25K},
-				string(retrieval.LaneEntity): {Mode: ModeEntity, TopK: entK},
+				string(retrieval.LaneEntity): {Mode: ModeEntity, TopK: entK, MinSelectivity: entSelect},
 			},
 			RRFFusion{K: rrfK},
 		}

@@ -121,6 +121,13 @@ func TestLTMMultiRecall_RunsEndToEnd(t *testing.T) {
 		}),
 		WithLimit(5),
 		WithScoreThreshold(0), // disable threshold so the test is not at the mercy of tiny fused scores
+		// Disable the entity-lane selectivity gate: this synthetic
+		// corpus only has 3 docs, so "alice" can't be ">10% rare"
+		// against itself. Real LoCoMo namespaces have hundreds of
+		// docs and the gate's default 0.1 ratio is meaningful;
+		// here we just want the lane to fire so we can verify
+		// fusion picks up the entity hit.
+		WithEntityLaneMinSelectivity(-1),
 	)
 	resp, err := pipe.Run(ctx, idx, ns, retrieval.SearchRequest{
 		QueryText: "favourite coffee",
@@ -267,6 +274,79 @@ func TestEntityRecall_IDFPrefersRareAtoms(t *testing.T) {
 				h.Doc.ID, h.Score, rare)
 		}
 	}
+}
+
+// TestEntityRecall_MinSelectivityGate is the regression test for the
+// 25866478422 → query-routing fix: when every query atom is
+// "universal" (appears in >= MinSelectivity * N docs), the lane
+// short-circuits to zero hits regardless of how many candidates the
+// filter matched. This is the precision-protection mechanism that
+// keeps queries dominated by calendar / common-noun atoms from
+// flooding RRF with low-information candidates.
+func TestEntityRecall_MinSelectivityGate(t *testing.T) {
+	ctx := context.Background()
+	idx := memory.New()
+	ns := "ns"
+	now := time.Now()
+
+	// 10 docs all carry "tuesday" (universal atom for this corpus).
+	// 1 doc additionally carries "lgbtq" (rare atom).
+	docs := make([]retrieval.Doc, 0, 11)
+	for i := 0; i < 10; i++ {
+		docs = append(docs, retrieval.Doc{
+			ID:        "tue-" + string(rune('a'+i)),
+			Metadata:  map[string]any{"entities": []any{"tuesday"}},
+			Timestamp: now,
+		})
+	}
+	docs = append(docs, retrieval.Doc{
+		ID:        "rare",
+		Metadata:  map[string]any{"entities": []any{"tuesday", "lgbtq"}},
+		Timestamp: now,
+	})
+	if err := idx.Upsert(ctx, ns, docs); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("only-universal-atom-gated-out", func(t *testing.T) {
+		st := &State{
+			Request:       &retrieval.SearchRequest{TopK: 5},
+			Index:         idx,
+			Namespace:     ns,
+			QueryEntities: []string{"tuesday"},
+		}
+		hits, err := runEntityRecall(ctx, st, *st.Request, RetrieveSpec{
+			Mode: ModeEntity, TopK: 5, MinSelectivity: 0.5,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		// "tuesday" df=11, threshold = floor(0.5*11) = 5; df 11 is
+		// not strictly less than 5, no rare atom, lane skips.
+		if len(hits) != 0 {
+			t.Fatalf("expected gate to skip lane when only universal atoms in query, got %d hits", len(hits))
+		}
+	})
+
+	t.Run("rare-atom-fires-lane", func(t *testing.T) {
+		st := &State{
+			Request:       &retrieval.SearchRequest{TopK: 5},
+			Index:         idx,
+			Namespace:     ns,
+			QueryEntities: []string{"tuesday", "lgbtq"},
+		}
+		hits, err := runEntityRecall(ctx, st, *st.Request, RetrieveSpec{
+			Mode: ModeEntity, TopK: 5, MinSelectivity: 0.5,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		// "lgbtq" df=1, threshold = 5; df 1 < 5, lane fires and
+		// must rank the rare doc first via IDF.
+		if len(hits) == 0 || hits[0].Doc.ID != "rare" {
+			t.Fatalf("expected lane to fire and rank rare doc first, got %+v", hits)
+		}
+	})
 }
 
 // TestEntityRecall_DropsZeroIDFMatches asserts that docs which only

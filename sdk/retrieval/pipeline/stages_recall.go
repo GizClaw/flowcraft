@@ -31,6 +31,26 @@ type RetrieveSpec struct {
 	Mode   RetrieveMode
 	TopK   int
 	Filter retrieval.Filter
+
+	// MinSelectivity is an entity-lane-only gate that skips the
+	// lane when no query atom is selective enough — i.e. when every
+	// atom appears in MinSelectivity * N or more docs (where N is
+	// the universe size under Filter). 0 disables the gate.
+	//
+	// Motivation: the entity recall lane on its own does
+	// "filter by entity overlap → rank by IDF". When all query
+	// atoms are universal ("tuesday", "morning", "favorite"),
+	// IDF saturates near zero across all candidates and the lane
+	// degrades to "return ~N docs in undefined order", whose
+	// rank vote in RRF then displaces vector recall's precision
+	// picks. Gating on selectivity collapses this case to "lane
+	// returns nothing" so the fused result falls back to vector +
+	// BM25 alone.
+	//
+	// Default in pipeline.LTM (when WithMultiRecall is enabled) is
+	// 0.1, meaning the lane fires only when at least one query
+	// atom matches fewer than 10% of the namespace's docs.
+	MinSelectivity float64
 }
 
 // Retrieve runs one recall lane and stores hits in Recalls[name]
@@ -239,6 +259,7 @@ func runEntityRecall(ctx context.Context, st *State, req retrieval.SearchRequest
 	//    EntityExtract, so we only need to normalise the query side
 	//    on the way in.
 	idfs := make(map[string]float64, len(st.QueryEntities))
+	dfs := make(map[string]int64, len(st.QueryEntities))
 	for _, e := range st.QueryEntities {
 		atom := strings.ToLower(strings.TrimSpace(e))
 		if atom == "" {
@@ -261,10 +282,38 @@ func runEntityRecall(ctx context.Context, st *State, req retrieval.SearchRequest
 		if dfResp != nil {
 			df = dfResp.Total
 		}
+		dfs[atom] = df
 		idfs[atom] = math.Log(float64(N+1) / float64(df+1))
 	}
 	if len(idfs) == 0 {
 		return nil, nil
+	}
+
+	// 2a. Selectivity gate. Skip the lane when no query atom is
+	//     rare enough to discriminate within the namespace — see
+	//     RetrieveSpec.MinSelectivity for the rationale. The
+	//     threshold is an *upper bound* on df: an atom is "selective"
+	//     iff it matches strictly fewer than MinSelectivity * N docs.
+	if spec.MinSelectivity > 0 {
+		// floor of MinSelectivity*N, with a +0 floor of 1 so even
+		// the smallest namespace can have a "rare" atom.
+		threshold := int64(float64(N) * spec.MinSelectivity)
+		if threshold < 1 {
+			threshold = 1
+		}
+		hasRare := false
+		for _, df := range dfs {
+			// df==0 means the atom has no matching docs at all, so
+			// the lane will return nothing regardless — treat as
+			// not-rare to keep the early-skip path consistent.
+			if df > 0 && df < threshold {
+				hasRare = true
+				break
+			}
+		}
+		if !hasRare {
+			return nil, nil
+		}
 	}
 
 	// 3. Materialise candidates (union of any-atom-match) and rank
