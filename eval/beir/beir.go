@@ -616,20 +616,23 @@ func runLane(
 
 			out := result{}
 			t0 := time.Now()
-			// Over-fetch chunks because we collapse chunks→docID
-			// below. Without this, top-K chunks can map to far
-			// fewer than K unique docs (esp. for long-form
-			// corpora), under-stating nDCG@K. Factor 4 covers
-			// scifact's ~1-2 chunks/doc with margin; tune via
-			// --overfetch / Options.OverfetchFactor (1 = disable
-			// collapse, used only for ablation studies).
-			fetchK := topK * opts.OverfetchFactor
-			res, err := svc.Search(ctx, knowledge.Query{
+			// Use the doc-level retrieval path (SearchDocuments)
+			// introduced by #127 and made correct on the retrieval
+			// backend by #143's __docs namespace. BEIR qrels are
+			// doc-level by construction, so we want doc-level BM25
+			// corpus stats (DocCount = number of logical docs,
+			// AvgLength = average doc length) and not chunk-level
+			// stats — that mathematical obstacle is what blew up
+			// the chunk-overfetch+sum-pool design (#137) on scifact
+			// (nDCG@10 0.133 vs fs baseline 0.672, run 25848699992).
+			// collapseChunksToDocs below still runs but is a no-op
+			// when SearchDocuments returns one hit per doc.
+			res, err := svc.SearchDocuments(ctx, knowledge.Query{
 				DatasetID: opts.DatasetID,
 				Scope:     knowledge.ScopeSingleDataset,
 				Text:      q.Text,
 				Mode:      lane,
-				TopK:      fetchK,
+				TopK:      topK,
 			})
 			out.latency = time.Since(t0)
 			if err != nil {
