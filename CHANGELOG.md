@@ -240,6 +240,34 @@ compare/fetch/ingest`, `eval longmemeval convert`). Shell completion
   session when one is wired, because the choice between in-memory
   and on-disk is workload-dependent.
 
+#### vesseld
+
+- `cmd/vesseld/secrets`: new URL-keyed `Provider` abstraction +
+  `env://NAME`, `file:///abs/path`, and `vault://server/path?key=…`
+  backends, plus a `Multi` router and a `Default()` constructor that
+  registers all three. The forward-looking surface every upcoming
+  daemon subsystem (mTLS, `kind: Sandbox` env injection, future
+  `kind: Secret` resolver) will consume so a credential's storage
+  backend is a registration concern, not call-site branching. The
+  package intentionally does NOT touch `cmd/vesseld/resolver/secret.go`
+  yet — the apispec `ValueRef` path (typed `valueFrom.env / file /
+  secretRef`) is BC-pinned and handles a different syntactic shape;
+  consolidation between the two systems is a future RFC, this PR ships
+  the new surface only. Backends classify failures distinctly:
+  `errdefs.Validation` for malformed refs / unknown schemes,
+  `errdefs.NotFound` for unset env vars / missing files,
+  `errdefs.Forbidden` for files whose mode allows group/other read
+  (caught by default; opt out with `FileProvider{EnforceMode:false}`)
+  or for OS-level EACCES, and `errdefs.NotAvailable` for `vault://`
+  (the stub returns this for every well-formed ref so callers can
+  wire vault references today and pick up real reads when the Vault
+  client implementation lands). `FileProvider` trims a single
+  trailing LF / CRLF so editor-appended newlines do not silently
+  change a copy-pasted credential, preserves internal newlines for
+  PEM-shaped payloads, and on Windows skips the POSIX permission
+  check (the synthesised mode bits are unreliable there) instead of
+  surfacing false positives.
+
 ### Fixed
 
 #### sdkx
