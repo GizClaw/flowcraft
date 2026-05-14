@@ -32,6 +32,17 @@ sub-row** that declares the five variables above plus the source
 URL. A row missing any of them is "preview" and is excluded from
 the headline table.
 
+> **Freshness check before quoting.** Memory-system numbers move fast
+> in 2026 (mem0 alone jumped LoCoMo +20 pp in 6 months, v2 → v3). Any
+> row in this file dated more than ~6 months stale must be
+> double-checked against the upstream project's latest blog / release
+> notes / open-source `memory-benchmarks` repo before being cited
+> externally. When a row's `Source` link points to a paper but the
+> project's docs / blog have moved on (the mem0 paper vs the mem0 v3
+> blog is the canonical example), surface the **newer** number with
+> the older one kept as a historical line — never silently overwrite,
+> never silently let the older number stand.
+
 ## Approach
 
 Three approaches; **Phase 0-1 uses B exclusively. C / A are
@@ -78,17 +89,33 @@ cite. Adapter work, if it ever happens, lives in Phase 3.
 
 **Public-source candidates** for Phase-1 citations:
 
-- **mem0** — has LoCoMo numbers in the [mem0 paper](https://arxiv.org/abs/2504.19413)
-  - its [github readme](https://github.com/mem0ai/mem0). Most direct
-    competitor; both their LoCoMo and LongMemEval cells go here.
+- **mem0** — two distinct sets of numbers as of 2026:
+  - **v2 (April 2025)**: the [mem0 paper](https://arxiv.org/abs/2504.19413)
+    + their [github readme](https://github.com/mem0ai/mem0); LoCoMo 66.88,
+    LongMemEval 67.8. Historical baseline.
+  - **v3 (April 2026)**: the [token-efficient algorithm blog](https://mem0.ai/blog/mem0-the-token-efficient-memory-algorithm)
+    + [memory-benchmarks](https://github.com/mem0ai/memory-benchmarks); LoCoMo
+    91.6, LongMemEval 93.4, BEAM 64.1@1M / 48.6@10M. Single-pass
+    ADD-only extraction + entity linking + 3-signal (semantic +
+    lemmatized BM25 + entity-graph) retrieval; this is the current
+    SOTA reference and what new memory systems should be measured
+    against.
 - **Letta** (formerly MemGPT) — [letta-ai/letta](https://github.com/letta-ai/letta)
   - the MemGPT [paper](https://arxiv.org/abs/2310.08560). Check
     whether they have a current LoCoMo number; if not, mark `N/A`.
 - **Zep** — [getzep/zep](https://github.com/getzep/zep) +
   [blog comparisons](https://blog.getzep.com/). Production memory
   store with public benchmarks.
-- **MemoryScope** (Alibaba) — [modelscope/MemoryScope](https://github.com/modelscope/MemoryScope).
-  Has LongMemEval numbers in its README.
+- **MemoryScope / ReMe** (Alibaba) — was
+  [modelscope/MemoryScope](https://github.com/modelscope/MemoryScope),
+  rebranded mid-2026 to [agentscope-ai/ReMe](https://github.com/agentscope-ai/ReMe)
+  under the AgentScope umbrella. Heavyweight multi-worker pipeline
+  (20+ workers: info filter, observation extractor, time extractor,
+  contradiction-repeat filter, …), four memory layers (Personal /
+  Task / Tool / Working). Self-claims LoCoMo 86.23; harder to
+  reproduce apples-to-apples than mem0's single-pipeline
+  architecture, but does set the high water mark for "academic
+  pipeline" style memory systems.
 - **A-MEM** — agentic memory, open source; locate the canonical repo
   before citing.
 - **Cognee** — [topoteretes/cognee](https://github.com/topoteretes/cognee).
@@ -275,6 +302,15 @@ Reproduced verbatim from
 [memodb-io/memobase locomo-benchmark README](https://github.com/memodb-io/memobase/blob/main/docs/experiments/locomo-benchmark/README.md)
 which copy-pasted the table from the mem0 paper.
 
+> **⚠️ Source A is now historical.** As of April 2026 Mem0 has
+> superseded these paper numbers with a redesigned algorithm —
+> see Source A' below. The 66.88 / 68.44 figures correspond to the
+> deprecated 2-pass ADD+UPDATE+DELETE pipeline. Use them only when
+> comparing against systems that were themselves evaluated against
+> this 2-pass Mem0 baseline (e.g. Zep's "75.14 corrected" row was
+> measured against Mem0 v2; the meaningful question now is "how do
+> you do against Mem0 v3" — see Source A').
+
 | System                                    | Single-hop | Multi-hop | Open-domain |  Temporal | Overall (J%) |
 | ----------------------------------------- | ---------: | --------: | ----------: | --------: | -----------: |
 | OpenAI built-in memory                    |      63.79 |     42.92 |       62.29 |     21.71 |        52.90 |
@@ -300,6 +336,58 @@ the `created_at` field, sequential vs. parallel search). Zep's own
 correct implementation, evaluated on the same benchmark and reported
 on Memobase's repo issue tracker, scores **75.14** ± 0.17 — see
 Source B.
+
+#### Source A' — Mem0 v3 token-efficient algorithm (April 2026)
+
+In April 2026 Mem0 released a re-architected memory pipeline
+([blog](https://mem0.ai/blog/mem0-the-token-efficient-memory-algorithm),
+[v2→v3 migration docs](https://docs.mem0.ai/migration/oss-v2-to-v3),
+[memory-benchmarks](https://github.com/mem0ai/memory-benchmarks))
+that replaces the Source-A 2-pass extraction with **single-pass
+ADD-only extraction + entity linking + 3-signal retrieval (semantic
++ lemmatized BM25 + entity-graph, rank-fused)**. The published
+numbers are a step-change from the paper's Source-A rows:
+
+| Category    | v2 (Source A) | v3 (Apr 2026) |   Delta |
+| ----------- | ------------: | ------------: | ------: |
+| Overall     |         71.4¹ |     **91.6** | **+20.2** |
+| Single-hop  |          76.6 |          92.3 |   +15.7 |
+| Multi-hop   |          70.2 |          93.3 |   +23.1 |
+| Open-domain |          57.3 |          76.0 |   +18.7 |
+| Temporal    |          63.2 |          92.8 |   +29.6 |
+
+¹ v2 overall reported as 71.4 in the v3 blog; the 66.88 / 68.44 in
+Source A are the **non-graph** / **graph** breakdowns from the
+paper's Table 1, and the 71.4 reflects Mem0's pooled v2 number used
+as the comparison baseline in the v3 blog. We keep both rows in the
+table so the discrepancy is visible rather than papered over.
+
+**Methodology (per the v3 blog)**:
+
+```yaml
+answer_llm: gpt-4o-mini   # single-pass retrieval, no agentic loops
+judge_model: gpt-4o-mini
+dataset: snap-research/locomo v1 (10 conversations)
+mean_tokens_per_query: 6,956   # under 7k token budget
+confidence: ±1 pp (judge inconsistency)
+```
+
+The v3 numbers are Mem0's managed-platform scores ("includes
+proprietary optimizations not available in the open-source SDK").
+Open-source v3 is expected to land "directionally similar" but not
+identical — exact OSS numbers TBA. The open-source pipeline
+([mem0ai/mem0](https://github.com/mem0ai/mem0)) is the right
+reference implementation for anyone rebuilding the architecture
+from primitives.
+
+**Why this matters for FlowCraft**: our current `sdk/recall` pipeline
+already does ADD-only extraction and assistant-fact ingestion (✓
+parity with mem0 v3 on those two axes), but **lacks the entity
+linking layer and lemmatized-keyword fusion** that drove most of
+mem0's +20 pp. Any FlowCraft LoCoMo row that doesn't close those
+gaps will land in the 75-80 band (Zep-corrected / Memobase-37
+neighbourhood), not the 90+ band — see "What Phase 1 ships" for the
+entity-layer + lemmatization work-tickets.
 
 #### Source B — Zep's corrected number + Memobase's own rows
 
@@ -374,14 +462,15 @@ varies wildly. **Do not put these on the same ranking.**
 | System                           |                                     Self-claimed LoCoMo | Methodology declared by maintainer                                           | Source                                                                                                                                                                                                                     |
 | -------------------------------- | ------------------------------------------------------: | ---------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | OpenAI built-in memory           |                                                52.90 J% | answer + judge = gpt-4o-mini                                                 | [Mem0 paper](https://arxiv.org/abs/2504.19413) (only public source)                                                                                                                                                        |
-| Mem0 / Mem0-Graph                |                                    66.88 / **68.44** J% | answer + judge = gpt-4o-mini                                                 | [Mem0 paper](https://arxiv.org/abs/2504.19413), Table 1                                                                                                                                                                    |
+| Mem0 / Mem0-Graph                |                                    66.88 / **68.44** J% | answer + judge = gpt-4o-mini                                                 | [Mem0 paper](https://arxiv.org/abs/2504.19413), Table 1 — **historical** (April 2025); see next row                                                                                                                       |
+| **Mem0 v3 (April 2026 algorithm, managed platform)** |                              **91.6** J% | answer + judge = gpt-4o-mini, single-pass ADD + entity-link + 3-signal       | [Mem0 v3 blog](https://mem0.ai/blog/mem0-the-token-efficient-memory-algorithm) (April 16, 2026); ±1 pp judge variance; **~7k tokens / query** budget                                                                       |
 | Zep                              |               **75.14** J% (corrected from earlier 84%) | answer = gpt-4o-mini, judge = gpt-4o-mini, parallel search                   | [Zep blog correction](https://blog.getzep.com/lies-damn-lies-statistics-is-mem0-really-sota-in-agent-memory/) + [zep-papers repo](https://github.com/getzep/zep-papers/tree/main/kg_architecture_agent_memory/locomo_eval) |
 | Zep (Dec 2025 claim, unverified) |                                                    ~80% | "at <200ms latency"                                                          | [Zep retrieval-tradeoff blog](https://blog.getzep.com/the-retrieval-tradeoff-what-50-experiments-taught-us-about-context-engineering/)                                                                                     |
 | MemOS (MemTensor)                |                                            **75.80** J% | "+43.70% vs OpenAI Memory"                                                   | [MemTensor/MemOS README](https://github.com/MemTensor/MemOS) badge                                                                                                                                                         |
 | MemoryOS (BAI-LAB)               |      F1 +49.11% / BLEU +46.18% relative — no absolute J | gpt-4o-mini baseline                                                         | [BAI-LAB/MemoryOS README](https://github.com/BAI-LAB/MemoryOS)                                                                                                                                                             |
 | MemU                             |                           **92.09%** "average accuracy" | unspecified; landing-page claim only                                         | [memu.pro/benchmark](https://memu.pro/benchmark)                                                                                                                                                                           |
 | Memobase v0.0.37                 |                                            **75.78** J% | answer + judge = gpt-4o-mini, mem0-protocol                                  | [memobase locomo-benchmark README](https://github.com/memodb-io/memobase/blob/main/docs/experiments/locomo-benchmark/README.md)                                                                                            |
-| MemoryScope / ReMe               |                                            **86.23** J% | answer-LLM "per table", judge = gpt-4o-mini                                  | [modelscope/MemoryScope README](https://github.com/modelscope/MemoryScope)                                                                                                                                                 |
+| MemoryScope / ReMe               |                                            **86.23** J% | answer-LLM "per table", judge = gpt-4o-mini                                  | [modelscope/MemoryScope README](https://github.com/modelscope/MemoryScope) (project rebranded mid-2026 to [agentscope-ai/ReMe](https://github.com/agentscope-ai/ReMe))                                                      |
 | MemR3                            | "+7.29% over RAG, +1.94% over Zep" relative on LoCoMo10 | gpt-4.1-mini backend                                                         | [MemR³ paper](https://arxiv.org/abs/2512.20237), [Leagein/memr3](https://github.com/Leagein/memr3)                                                                                                                         |
 | **FlowCraft**                    |                                             `[pending]` | `--soft-merge=false`, `--answer-llm=azure_4o_mini --judge-llm=azure_4o_mini` | our `eval-locomo.yml` run — **no real LoCoMo10 run yet**; LongMemEvalS numbers from §404 are a different dataset and must not be back-filled into this cell                                                                |
 
@@ -396,8 +485,10 @@ harness:
 - **Zep**: 65.99 (Mem0's disputed eval) vs **75.14** (Zep's
   correction) vs ~80% (Zep's Dec-2025 unverified claim) vs 0.573 J
   ≈ 57.3 (MemEval, but on graphiti-core not commercial Zep).
-- **Mem0**: 66.88 (own paper) vs 0.497 J ≈ 49.7 (MemEval, with
-  known timestamp bug). Spread: **17pp**.
+- **Mem0**: 66.88 (own paper, v2) vs 0.497 J ≈ 49.7 (MemEval, with
+  known timestamp bug) vs **91.6** (v3 algorithm, April 2026 blog).
+  Spread: **42pp** — and the v3 jump is what every new memory
+  system now has to beat.
 
 This is why FlowCraft's leaderboard headline will be a **single
 `--soft-merge=false` row tied to one commit hash, one report
@@ -425,10 +516,11 @@ synthesised ranking.
 | Llama 3.1 70B (long-context, no memory)   | self        |            33.4% | [LongMemEval paper](https://arxiv.org/abs/2410.10813) Fig 3b                                                                                               |
 | Full-context with gpt-4o-mini (no memory) | gpt-4o-mini |            55.4% | [Zep blog](https://blog.getzep.com/state-of-the-art-agent-memory/)                                                                                         |
 | GPT-4o (long-context, no memory)          | self        |            60.6% | [LongMemEval paper](https://arxiv.org/abs/2410.10813) Fig 3b                                                                                               |
-| Mem0 (independent eval)                   | gpt-4o      |            49.0% | [Zep blog](https://blog.getzep.com/state-of-the-art-agent-memory/) (cited as "Mem0 independent evaluation")                                                |
+| Mem0 v2 (independent eval, paper era)     | gpt-4o      |            49.0% | [Zep blog](https://blog.getzep.com/state-of-the-art-agent-memory/) (cited as "Mem0 independent evaluation"); deprecated by v3 below                       |
 | Zep + gpt-4o-mini                         | gpt-4o-mini |            60.2% | [Zep blog](https://blog.getzep.com/state-of-the-art-agent-memory/)                                                                                         |
 | Full-context with gpt-4o (no memory)      | gpt-4o      |            63.8% | [Zep blog](https://blog.getzep.com/state-of-the-art-agent-memory/)                                                                                         |
-| Zep + gpt-4o                              | gpt-4o      |        **71.2%** | [Zep blog](https://blog.getzep.com/state-of-the-art-agent-memory/)                                                                                         |
+| Zep + gpt-4o                              | gpt-4o      |            71.2% | [Zep blog](https://blog.getzep.com/state-of-the-art-agent-memory/)                                                                                         |
+| **Mem0 v3 (April 2026 algorithm, managed platform)** | gpt-4o-mini |     **93.4%** | [Mem0 v3 blog](https://mem0.ai/blog/mem0-the-token-efficient-memory-algorithm) (April 16, 2026); +25.6 pp vs v2's 67.8. Per-category: single-session-assistant 100.0 (+53.6), temporal 93.2 (+42.1), knowledge-update 96.2 (+16.7) |
 | **FlowCraft**                             | gpt-4o-mini |      `[pending]` | our `eval-longmemeval.yml` run with `--answer-llm=azure_4o_mini --judge-llm=azure_4o_mini` + LongMemEval official grader; scheduled — see "What Phase 1 ships" §2 |
 
 **Methodology common to cited rows above**:
@@ -660,10 +752,17 @@ announcement post when filling in. Status: `[pending]`.
 
 A practical citation-only first cut, day-by-day rough order:
 
-1. **LoCoMo10** — mem0 row from its paper; Letta row if any; Zep
-   row from its blog; LongMemEval paper baselines as "for context".
-   FlowCraft self-row from our latest `eval-locomo.yml` run with
-   `--soft-merge=false`. _Half a day of sourcing + our own run._
+1. **LoCoMo10** — mem0 v2 paper row + **mem0 v3 (April 2026) blog
+   row (currently the SOTA at 91.6)**; Letta row if any; Zep row from
+   its blog; LongMemEval paper baselines as "for context". FlowCraft
+   self-row deferred until the "entity-layer + lemmatized BM25"
+   work lands (see §New work below) — current `sdk/recall` is
+   single-pass ADD-only but lacks the entity-index + 3-signal
+   fusion that drove mem0 v2 → v3's +20pp, so any "all gpt-4o-mini"
+   FlowCraft row published today would land in the 56-80 band
+   depending on extractor choice and be misleading to readers
+   expecting current SOTA. _Half a day of sourcing once the
+   FlowCraft side is ready._
 2. **LongMemEval** — paper baselines + Zep blog rows filled (§404
    table). **Outstanding for the FlowCraft row**:
    1. parity run with `--answer-llm=azure_4o_mini --judge-llm=azure_4o_mini`
@@ -687,6 +786,34 @@ A practical citation-only first cut, day-by-day rough order:
 After this lands, the table is comparable on inspection (everyone
 can see the methodology gaps) and we have a credible "where do we
 stand" picture without writing a line of adapter code.
+
+### New work surfaced by the mem0 v3 (April 2026) release
+
+The April-2026 mem0 v3 algorithm jumped LoCoMo from 71.4 → 91.6 by
+adding two architectural primitives FlowCraft does not currently
+have. Closing each is a discrete tracked work-item before any
+FlowCraft LoCoMo row is published:
+
+1. **Entity-index retrieval layer** — auto-extract entities (proper
+   nouns, quoted strings, compound noun phrases) into a dedicated
+   index alongside the chunk/dense indices, and have `pipeline.LTM`
+   query all three in parallel with rank-fusion. Today `sdk/recall`
+   carries an `entities` field on every fact but does **not**
+   maintain a separate retrieval channel keyed by them. Expected
+   contribution: +10~15 pp on multi-hop / open-domain LoCoMo
+   categories (where entity overlap is the dominant signal).
+2. **Lemmatized BM25** — `sdk/textsearch`'s tokenizer/stemmer needs
+   a verb-form normalization pass so "attending a meeting" and
+   "what meetings did I attend" share a key. mem0 v3 blog calls
+   out this single change as "measurable impact" — expected +2~5 pp
+   spread across the standard categories.
+3. **(Tracking only)** BEAM benchmark (1M / 10M token scales,
+   [mem0ai/memory-benchmarks](https://github.com/mem0ai/memory-benchmarks)
+   contains the harness). New benchmark direction; we are not
+   committing to ship a FlowCraft BEAM row in Phase 1 because the
+   evaluation cost is significant and BEAM is solving a problem
+   (10M token context retrieval) FlowCraft is not yet optimised
+   for. Re-evaluate after the entity-layer + lemmatization land.
 
 ## Open questions for the operator
 
