@@ -54,6 +54,22 @@ type ExtractedFact struct {
 
 	Subject   string `json:"subject,omitempty"`
 	Predicate string `json:"predicate,omitempty"`
+
+	// Episodic flags this fact as an append-only timeline record (a
+	// dated event, a trip, a meeting, a one-off interaction). It is
+	// a first-class architectural signal, NOT a category label: the
+	// vector supersede channel in [sdk/recall.supersedeNeighbours]
+	// refuses to mark older neighbours as superseded when the new
+	// fact is Episodic, so two events sharing the same actors and
+	// places but different timestamps never collide on entity-set
+	// equality.
+	//
+	// DefaultExtractPrompt instructs the LLM to emit this field
+	// directly. For backward compatibility with extractors that only
+	// emit categories, [normalizeFacts] also infers Episodic=true
+	// when Categories contains the legacy strings "episodic" or
+	// "events".
+	Episodic bool `json:"episodic,omitempty"`
 }
 
 // DefaultPredicates is the v1 controlled predicate vocabulary rendered
@@ -225,6 +241,7 @@ BAD  entities: ["8 May 2023", "meeting", "morning", "she", "climbing"]
       "content": "On 8 May 2023, the user mentioned they joined an LGBTQ support group at the Greenwich Community Center.",
       "categories": ["episodic", "events"],
       "entities": ["Greenwich Community Center"],
+      "episodic": true,
       "source": "user",
       "confidence": 0.95
     }
@@ -237,6 +254,12 @@ Categories (multi-label, choose all that apply):
 
 If no facts can be extracted, return {"facts": []}.
 
+# EPISODIC FLAG — first-class architectural signal
+
+Set "episodic": true when the fact records a dated event, trip, meeting, encounter, or any one-off interaction with a specific timestamp. Two different events sharing the same actors / places but different dates ("Caroline went to the support group on 7 May" vs "on 8 May") MUST both be marked episodic so the downstream merger keeps them as parallel timeline entries rather than collapsing one into the other.
+
+Set "episodic": false (or omit) for stable attributes that describe an ongoing state (preferences, profile traits, opinions, relationships, plans). These can be replaced over time when contradicted.
+
 # SLOT FIELDS — optional, for STABLE attributes that may change over time
 
 When a fact is a stable profile / preference / relationship attribute that may need to be replaced later (e.g. "user lives in Shanghai" should overwrite a prior "user lives in Beijing"), set:
@@ -248,7 +271,7 @@ When a fact is a stable profile / preference / relationship attribute that may n
                preference.<topic>, status.<topic>
                If none fits, leave both empty.
 
-Episodic events (trips, meetings, plans) MUST leave subject and predicate empty — they are append-only timeline data, not slot replacements.
+Episodic facts (episodic=true) MUST leave subject and predicate empty — they are append-only timeline data, not slot replacements.
 
 # DO NOT RESTATE EXISTING MEMORIES
 
@@ -268,13 +291,13 @@ Facts:
   "facts": [
     {"content": "The user did their first lead climb in six months at a climbing gym in SoHo, and described it as feeling amazing.",
      "categories": ["episodic", "events"],
-     "entities": ["SoHo"], "source": "user", "confidence": 0.95},
+     "entities": ["SoHo"], "episodic": true, "source": "user", "confidence": 0.95},
     {"content": "The user's sister Maya belayed them during their first lead climb at the SoHo climbing gym.",
      "categories": ["episodic", "relationships"],
-     "entities": ["Maya", "SoHo"], "source": "user", "confidence": 0.9},
+     "entities": ["Maya", "SoHo"], "episodic": true, "source": "user", "confidence": 0.9},
     {"content": "The user and their sister Maya went to Joe's Coffee right after climbing to celebrate the user's first lead climb in six months.",
      "categories": ["episodic", "events"],
-     "entities": ["Maya", "Joe's Coffee"], "source": "user", "confidence": 0.9}
+     "entities": ["Maya", "Joe's Coffee"], "episodic": true, "source": "user", "confidence": 0.9}
   ]
 }
 
@@ -290,13 +313,13 @@ Facts:
   "facts": [
     {"content": "The user has been reading Judith Butler's essays.",
      "categories": ["preferences"],
-     "entities": ["Judith Butler"], "source": "user", "confidence": 0.85},
+     "entities": ["Judith Butler"], "episodic": false, "source": "user", "confidence": 0.85},
     {"content": "The user attended a Judith Butler lecture at Columbia University.",
      "categories": ["episodic", "events"],
-     "entities": ["Judith Butler", "Columbia University"], "source": "user", "confidence": 0.9},
+     "entities": ["Judith Butler", "Columbia University"], "episodic": true, "source": "user", "confidence": 0.9},
     {"content": "After reading Judith Butler and attending her Columbia lecture, the user considered switching their major from Psychology to Gender Studies — suggesting Gender Studies as a likely academic focus.",
      "categories": ["plans", "opinions"],
-     "entities": ["Judith Butler", "Columbia University"], "source": "user", "confidence": 0.85}
+     "entities": ["Judith Butler", "Columbia University"], "episodic": false, "source": "user", "confidence": 0.85}
   ]
 }
 
@@ -312,16 +335,16 @@ Facts:
      "categories": ["profile"],
      "entities": ["Shanghai"],
      "subject": "user", "predicate": "lives_in",
-     "source": "user", "confidence": 0.95},
+     "episodic": false, "source": "user", "confidence": 0.95},
     {"content": "The user works at ByteDance.",
      "categories": ["profile"],
      "entities": ["ByteDance"],
      "subject": "user", "predicate": "works_at",
-     "source": "user", "confidence": 0.95},
+     "episodic": false, "source": "user", "confidence": 0.95},
     {"content": "The user moved to Shanghai from Beijing for a new job at ByteDance.",
      "categories": ["episodic", "events"],
      "entities": ["Shanghai", "Beijing", "ByteDance"],
-     "source": "user", "confidence": 0.95}
+     "episodic": true, "source": "user", "confidence": 0.95}
   ]
 }
 
@@ -491,6 +514,21 @@ func normalizeFacts(in []ExtractedFact) []ExtractedFact {
 		f.Entities = normStrings(f.Entities)
 		f.Subject = strings.TrimSpace(f.Subject)
 		f.Predicate = strings.TrimSpace(f.Predicate)
+		// Back-compat: if the extractor did not emit the explicit
+		// episodic flag (older or custom prompts), infer it from
+		// the legacy category vocabulary so downstream supersede
+		// guards behave the same regardless of prompt vintage.
+		if !f.Episodic {
+			for _, c := range f.Categories {
+				switch strings.ToLower(c) {
+				case "episodic", "events":
+					f.Episodic = true
+				}
+				if f.Episodic {
+					break
+				}
+			}
+		}
 		out = append(out, f)
 	}
 	return out
@@ -554,7 +592,7 @@ var extractedFactsSchema = llm.JSONSchemaParam{
 					// every key in `properties` must also appear in `required`.
 					// Models can still emit empty arrays / "" / 0.0 to signal
 					// "no value" — parseFactsJSON tolerates them.
-					"required": []string{"content", "categories", "entities", "source", "confidence", "subject", "predicate"},
+					"required": []string{"content", "categories", "entities", "source", "confidence", "subject", "predicate", "episodic"},
 					"properties": map[string]any{
 						"content":    map[string]any{"type": "string"},
 						"categories": map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
@@ -563,6 +601,7 @@ var extractedFactsSchema = llm.JSONSchemaParam{
 						"confidence": map[string]any{"type": "number"},
 						"subject":    map[string]any{"type": "string"},
 						"predicate":  map[string]any{"type": "string"},
+						"episodic":   map[string]any{"type": "boolean"},
 					},
 				},
 			},
