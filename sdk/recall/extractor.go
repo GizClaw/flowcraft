@@ -153,13 +153,12 @@ func applyExtractOptions(opts []ExtractOption) ExtractOptions {
 //     of an entity-linker layer ("she" / "my mom" otherwise become
 //     phantom entities at index time that no future query atom hits).
 //
-// Structural style (section ordering, JSON schema, few-shot density)
-// is inspired by mem0 v3's `ADDITIVE_EXTRACTION_PROMPT`. The constraint
-// rules diverge because mem0 has a separate entity extractor +
-// ADD/UPDATE/DELETE memory linker that handle entity normalisation and
-// dedup externally; FlowCraft collapses those responsibilities into
-// this single prompt because the rest of our stack is ADD-only and has
-// no entity-linker.
+// The prompt is intentionally dense in two ways the rest of the stack
+// relies on: the section ordering puts the highest-leverage rules
+// (multi-speaker awareness, temporal grounding, episodic flag) at
+// the top so smaller models give them attention budget; and every
+// few-shot demonstrates a specific failure mode the JSON post-parser
+// or the supersede channels react to.
 //
 // Expects two %s arguments: rendered existing-memories block (may be
 // empty) and the conversation text.
@@ -169,11 +168,44 @@ const DefaultExtractPrompt = `You are FlowCraft's long-term memory extractor. Re
 
 Each fact you emit is independently retrieved months later by vector search and keyword search, and must answer downstream questions on its own. A fact that requires neighbouring facts to make sense is functionally lost.
 
+# MULTI-SPEAKER — both "user" and "assistant" can be real people
+
+The conversation is exchanged between named speakers. The "user" / "assistant" role labels are wire-protocol artefacts, not a guide to whose facts matter. Treat both roles as equal sources of personal facts unless the assistant is plainly an AI agent (generic acknowledgements, model meta-commentary, recommendation lists with no first-person claims).
+
+Indicators that the assistant role is a real person:
+- It uses first-person ("I went to the gym today")
+- It carries a named-speaker prefix like "[<datetime>] <Name>: ..."
+- It references its own family / job / location / preferences
+- It exchanges memories the user reciprocates
+
+When the assistant is a real person, attribute facts to them BY NAME (not "the assistant"). Failing to extract from the second speaker drops roughly half the facts in the conversation and makes any question about them unanswerable.
+
+GOOD: "Caroline went to the LGBTQ support group on 7 May 2023."
+BAD : "The user went to the LGBTQ support group on 7 May 2023." (when the conversation establishes Caroline as the speaker_b real person)
+BAD : (skipping the fact because it was uttered by the assistant role)
+
+# TEMPORAL GROUNDING — anchor every fact to an absolute date
+
+Message turns often arrive with a "[<datetime>] <speaker>:" prefix in the content. That prefix is your authoritative observation timestamp for everything that turn says. Use it to resolve relative time references INSIDE the turn:
+
+- "yesterday" → day before the prefix datetime
+- "last week" → week preceding the prefix datetime
+- "two weekends ago" → ground to a specific calendar weekend
+- "recently" / "just" / "today" → on or near the prefix datetime
+- "in two months" → calendar month + 2 from the prefix datetime
+
+EVERY fact body must carry an absolute date or duration the answer LLM can read months later. A fact that contains only a relative reference is functionally lost — there is no second pass that can resolve "last week" back to an absolute date.
+
+GOOD: "Caroline went to the LGBTQ support group on 7 May 2023."
+GOOD: "The user moved to Shanghai in early March 2024 (around two weeks before the conversation of 18 March 2024)." (qualifier preserved, anchor explicit)
+BAD : "Caroline recently went to the support group." (no anchor; useless after the conversation ends)
+BAD : "The user moved last month." (relative; unresolvable)
+
+If the conversation never provides any datetime anywhere, omit the date qualifier rather than fabricating one — but flag such facts as low confidence.
+
 # WHAT TO EXTRACT
 
-Extract from every role present in the conversation. The user role typically states preferences and personal facts; the assistant role may contain booked actions, recommendations, or named third-party facts. In multi-speaker dialogs where the assistant role represents another real person, treat their statements with the same rigour as the user's.
-
-Memorable categories (cover every claim, do not bundle multiple into one fact):
+Memorable categories (cover every claim by every speaker, do not bundle multiple into one fact):
 - Profile attributes (occupation, location, family, identity, health)
 - Preferences and dislikes (food, music, hobbies, brands)
 - Events and experiences (note WHO was present, WHERE, WHAT specifically happened)
@@ -190,11 +222,9 @@ Skip:
 
 # SELF-CONTAINEDNESS — every fact must stand alone
 
-1. EMBED ANY DATE that appears in the message metadata or content into the fact body (e.g. "On 7 May 2023, the user mentioned ..."). After the conversation ends, "yesterday" / "last week" cannot be resolved.
+1. USE CANONICAL NAMES. Replace "she" / "he" / "my mom" / "my friend" with the full name the dialog establishes elsewhere. If only a role is known, render it canonically ("user's mother", not "my mom").
 
-2. USE CANONICAL NAMES. Replace "she" / "he" / "my mom" / "my friend" with the full name the dialog establishes elsewhere. If only a role is known, render it canonically ("user's mother", not "my mom").
-
-3. CARRY FORWARD third-party names introduced earlier in the conversation. If an earlier turn establishes Maya as the user's sister, a later "Maya came too" must be emitted as "user's sister Maya".
+2. CARRY FORWARD third-party names introduced earlier in the conversation. If an earlier turn establishes Maya as the user's sister, a later "Maya came too" must be emitted as "user's sister Maya".
 
 # COMPOSITE FACTS — keep causal chains in ONE fact
 
@@ -273,37 +303,67 @@ When a fact is a stable profile / preference / relationship attribute that may n
 
 Episodic facts (episodic=true) MUST leave subject and predicate empty — they are append-only timeline data, not slot replacements.
 
-# DO NOT RESTATE EXISTING MEMORIES
+# EXISTING MEMORIES — dedup only, NEVER silence new facts
 
-If an EXISTING MEMORIES block is provided below, do not re-emit facts already present verbatim — only emit genuinely new information or new time points.
+If an EXISTING MEMORIES block is provided below, use it ONLY to avoid emitting a fact whose specific content is already captured verbatim or as a near-paraphrase. The block is NOT a topic filter.
+
+CRITICAL: An existing memory that mentions an entity does NOT mean every claim about that entity is already captured. New events, attributes, opinions, or experiences involving a known entity MUST still be emitted as new facts.
+
+GOOD: Existing memory "Caroline has a dog named Max." + new turn "Caroline took Max to the beach on 7 May 2023." → emit the beach trip as a new fact (the dog ownership is the only thing already captured).
+
+BAD : Skipping the beach trip because Caroline + Max already appear in existing memories.
+
+Two facts are duplicates only when the SPECIFIC EVENT / CLAIM is the same, not when they share actors or topics. Different timestamps, different motivations, different outcomes ⇒ different facts.
 
 # FEW-SHOT EXAMPLES
 
-## Example 1 — multi-claim turn yielding composite + relationship facts
+## Example 1 — multi-speaker turn with named speakers + temporal anchor + relationship
 
 Conversation:
-user: Hey, finally went to the climbing gym in SoHo today — my first lead climb in 6 months. Felt amazing.
-assistant: Whoa, proud of you. Did Maya come?
-user: Yeah, my sister Maya belayed me. We hit Joe's Coffee right after to celebrate.
+user: [2023-05-07 10:30 am] Caroline: Hey Melanie, finally went to the climbing gym in SoHo this morning — my first lead climb in 6 months. Felt amazing.
+assistant: [2023-05-07 10:35 am] Melanie: Whoa, proud of you. Did Maya come?
+user: [2023-05-07 10:40 am] Caroline: Yeah, my sister Maya belayed me. We hit Joe's Coffee right after to celebrate.
 
 Facts:
 {
   "facts": [
-    {"content": "The user did their first lead climb in six months at a climbing gym in SoHo, and described it as feeling amazing.",
+    {"content": "On 7 May 2023, Caroline did her first lead climb in six months at a climbing gym in SoHo, and described it as feeling amazing.",
      "categories": ["episodic", "events"],
-     "entities": ["SoHo"], "episodic": true, "source": "user", "confidence": 0.95},
-    {"content": "The user's sister Maya belayed them during their first lead climb at the SoHo climbing gym.",
+     "entities": ["Caroline", "SoHo"], "episodic": true, "source": "user", "confidence": 0.95},
+    {"content": "Caroline's sister Maya belayed her during her first lead climb at the SoHo climbing gym on 7 May 2023.",
      "categories": ["episodic", "relationships"],
-     "entities": ["Maya", "SoHo"], "episodic": true, "source": "user", "confidence": 0.9},
-    {"content": "The user and their sister Maya went to Joe's Coffee right after climbing to celebrate the user's first lead climb in six months.",
+     "entities": ["Caroline", "Maya", "SoHo"], "episodic": true, "source": "user", "confidence": 0.9},
+    {"content": "On 7 May 2023, Caroline and her sister Maya went to Joe's Coffee right after climbing to celebrate Caroline's first lead climb in six months.",
      "categories": ["episodic", "events"],
-     "entities": ["Maya", "Joe's Coffee"], "episodic": true, "source": "user", "confidence": 0.9}
+     "entities": ["Caroline", "Maya", "Joe's Coffee"], "episodic": true, "source": "user", "confidence": 0.9}
   ]
 }
 
-Notice how "my sister" is canonicalised to "user's sister Maya", how entities contain only atomic proper nouns (no "climbing", no "morning"), and how the celebration motive travels with the Joe's Coffee fact so a future "Why did the user go to Joe's Coffee?" question resolves from one retrieval.
+Notice: the speaker prefix names Caroline (the speaker_a) and Melanie (speaker_b) — facts are attributed to Caroline by name, NOT to "the user". The "[2023-05-07 10:30 am]" prefix grounds "this morning" to 7 May 2023. "My sister" is canonicalised to "Caroline's sister Maya". Entities are atomic proper nouns only.
 
-## Example 2 — preference with inference evidence
+## Example 2 — facts uttered by the SECOND speaker (real person, not AI)
+
+Conversation:
+user: [2023-05-08 7:15 pm] Caroline: How did the marathon go yesterday?
+assistant: [2023-05-08 7:20 pm] Melanie: Finished my first half-marathon in Brooklyn — 2h 14m. My knee is killing me but I'm proud.
+user: [2023-05-08 7:22 pm] Caroline: Amazing!! Did Daniel run with you?
+assistant: [2023-05-08 7:25 pm] Melanie: No, he was at his mom's in Queens. He cheered from the finish line though.
+
+Facts:
+{
+  "facts": [
+    {"content": "On 7 May 2023, Melanie ran and finished her first half-marathon in Brooklyn with a time of 2h 14m, and was sore in the knee afterwards.",
+     "categories": ["episodic", "events"],
+     "entities": ["Melanie", "Brooklyn"], "episodic": true, "source": "assistant", "confidence": 0.95},
+    {"content": "On 7 May 2023, Melanie's partner Daniel was at his mother's place in Queens during Melanie's half-marathon but came to the finish line to cheer her on.",
+     "categories": ["episodic", "relationships"],
+     "entities": ["Melanie", "Daniel", "Queens"], "episodic": true, "source": "assistant", "confidence": 0.85}
+  ]
+}
+
+Notice how facts uttered by the assistant role about Melanie's own life are extracted with the SAME rigour as Caroline's facts — Melanie is a real person here, not an AI. "Yesterday" in the prefix-anchored turn of 8 May 2023 is grounded to 7 May 2023.
+
+## Example 3 — preference with inference evidence
 
 Conversation:
 user: I've been devouring Judith Butler's essays this month. Went to her lecture at Columbia last Thursday too — kept thinking I might shift my major from Psychology to Gender Studies.
@@ -323,7 +383,7 @@ Facts:
   ]
 }
 
-## Example 3 — slot-eligible stable attribute
+## Example 4 — slot-eligible stable attribute
 
 Conversation:
 user: Just moved to Shanghai from Beijing for a new job at ByteDance.
@@ -348,7 +408,7 @@ Facts:
   ]
 }
 
-## Example 4 — pure noise, skip
+## Example 5 — pure noise, skip
 
 Conversation:
 assistant: Morning! How are you today?
