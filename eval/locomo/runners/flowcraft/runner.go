@@ -65,6 +65,28 @@ type Options struct {
 	// No-op when EntityStore is false.
 	EntityStoreMaxLinkedCount int
 
+	// EntityLinkBoost forwards to pipeline.WithEntityLinkBoost. When
+	// > 0 the entity-store contribution switches from "4th RRF lane"
+	// to "post-fusion score boost" — vector + BM25 own candidate
+	// generation, entity-link only re-ranks the fused result by
+	// multiplying matched hits' scores by (1 + w). Multi-hop and
+	// open-domain questions, which depend on candidate diversity,
+	// no longer get starved by lane flooding. No-op when EntityStore
+	// is false. See pipeline.WithEntityLinkBoost docstring for the
+	// LoCoMo failure mode the boost mode mitigates.
+	EntityLinkBoost float64
+
+	// QueryEntityLLM forwards to recall.WithQueryEntityExtractor.
+	// When non-nil, the retrieval pipeline replaces its rule-based
+	// query-side entity extractor with an LLM call that mirrors the
+	// write-side extractor's noun-phrase vocabulary, closing the
+	// asymmetry between QueryEntities and the EntityStore keys. Cost:
+	// ~1 LLM call per recall. Recommended to share the same alias as
+	// ExtractorLLM so query / write sides agree on what counts as an
+	// entity. No-op when EntityStore is false (no entity-link path
+	// to exercise).
+	QueryEntityLLM llm.LLM
+
 	// UpdateResolverLLM, when set, installs an LLMUpdateResolver via
 	// recall.WithUpdateResolver. The resolver runs once per Save call
 	// after extraction and decides ADD / UPDATE / DELETE / NOOP for
@@ -171,6 +193,9 @@ func New(opts Options) (runners.Runner, error) {
 	if opts.MultiRecall {
 		pipeOpts = append(pipeOpts, pipeline.WithMultiRecall(true))
 	}
+	if opts.EntityLinkBoost > 0 {
+		pipeOpts = append(pipeOpts, pipeline.WithEntityLinkBoost(opts.EntityLinkBoost))
+	}
 	if len(pipeOpts) > 0 {
 		memOpts = append(memOpts, recall.WithLTMOption(pipeOpts...))
 	}
@@ -180,6 +205,9 @@ func New(opts Options) (runners.Runner, error) {
 		memOpts = append(memOpts, recall.WithEntityStore(0))
 		if opts.EntityStoreMaxLinkedCount > 0 {
 			memOpts = append(memOpts, recall.WithEntityStoreMaxLinkedCount(opts.EntityStoreMaxLinkedCount))
+		}
+		if opts.QueryEntityLLM != nil {
+			memOpts = append(memOpts, recall.WithQueryEntityExtractor(opts.QueryEntityLLM))
 		}
 	}
 

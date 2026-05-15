@@ -87,6 +87,8 @@ func addLocomoRun(parent *cobra.Command, g *cliflags.Global) {
 		multiRecall       bool
 		entityStore       bool
 		entityStoreMaxLnk int
+		entityLinkBoost   float64
+		queryEntityLLM    bool
 		updateResolver    string
 		recentTurnsK      int
 		dumpFactsPath     string
@@ -167,6 +169,17 @@ Example (LLM extractor + LLM answer + LLM judge + Qwen embedder):
 					return fmt.Errorf("--update-resolver: %w", err)
 				}
 			}
+			// Query-side entity extractor reuses the SAME LLM as the
+			// write-side extractor — the whole point of opting in is
+			// to make the two ends share a single entity vocabulary
+			// so EntityStore.Lookup keys (saved at write time) actually
+			// match the QueryEntities (extracted at recall time).
+			// Defaulting to a different alias here would silently
+			// re-introduce the asymmetry the feature exists to fix.
+			var queryEntLLM llm.LLM
+			if queryEntityLLM {
+				queryEntLLM = extractor
+			}
 			if useExtractor && extractor == nil {
 				extractor = answer
 			}
@@ -212,6 +225,8 @@ Example (LLM extractor + LLM answer + LLM judge + Qwen embedder):
 				MultiRecall:               multiRecall,
 				EntityStore:               entityStore,
 				EntityStoreMaxLinkedCount: entityStoreMaxLnk,
+				EntityLinkBoost:           entityLinkBoost,
+				QueryEntityLLM:            queryEntLLM,
 				UpdateResolverLLM:         resolverLLM,
 				RecentTurnsK:              recentTurnsK,
 				OnFactsExtracted:          onFacts,
@@ -253,11 +268,12 @@ Example (LLM extractor + LLM answer + LLM judge + Qwen embedder):
 					recallMu.Lock()
 					defer recallMu.Unlock()
 					type hitRec struct {
-						ID       string   `json:"id"`
-						Score    float64  `json:"score"`
-						Content  string   `json:"content"`
-						Episodic bool     `json:"episodic,omitempty"`
-						Cats     []string `json:"categories,omitempty"`
+						ID       string             `json:"id"`
+						Score    float64            `json:"score"`
+						Content  string             `json:"content"`
+						Episodic bool               `json:"episodic,omitempty"`
+						Cats     []string           `json:"categories,omitempty"`
+						Scores   map[string]float64 `json:"scores,omitempty"`
 					}
 					recs := make([]hitRec, 0, len(hits))
 					for _, h := range hits {
@@ -266,6 +282,7 @@ Example (LLM extractor + LLM answer + LLM judge + Qwen embedder):
 							Score:   h.Score,
 							Content: h.Entry.Content,
 							Cats:    h.Entry.Categories,
+							Scores:  h.Scores,
 						})
 					}
 					_ = recallEnc.Encode(struct {
@@ -361,6 +378,8 @@ Example (LLM extractor + LLM answer + LLM judge + Qwen embedder):
 	f.BoolVar(&multiRecall, "multi-recall", false, "switch LTM to 3-lane recall (vector+bm25+entity) + RRFFusion; defaults to legacy single-lane vector recall + BM25/entity boosts")
 	f.BoolVar(&entityStore, "entity-store", false, "enable the entity-link inverted index (4th MultiRetrieve lane); writes a sibling namespace per Save Link and adds a ModeEntityLink lane that materialises linked entries via DocGetter — auto-enables --multi-recall")
 	f.IntVar(&entityStoreMaxLnk, "entity-store-max-linked", 0, "common-noun pollution gate: skip entity rows whose linked_ids count exceeds this threshold at Lookup time (0 disables; recommended 60-80 for LoCoMo)")
+	f.Float64Var(&entityLinkBoost, "entity-link-boost", 0, "switch the entity-store integration from RRF lane to post-fusion score boost when > 0 (recommended 0.2-0.5); vector + BM25 own candidate generation, entity-link only re-ranks the fused result. Mitigates the lane-flooding regression that hits multi-hop questions when one entity dominates the namespace.")
+	f.BoolVar(&queryEntityLLM, "query-entity-extractor", false, "swap the rule-based query-side entity extractor for an LLM call using the SAME LLM as --extractor-llm; closes the asymmetry between QueryEntities (capitalized single tokens) and the multi-word EntityStore keys (LLM-extracted noun phrases). Adds 1 LLM call per recall. No-op when --entity-store is false.")
 	f.StringVar(&updateResolver, "update-resolver", "", "LLM alias for the memory update resolver (ADD/UPDATE/DELETE/NOOP); empty disables. Adds one LLM call per Save batch.")
 	f.IntVar(&recentTurnsK, "recent-turns", 0, "if >0, inject the previous K messages from prior Save batches into the extractor for cross-batch pronoun/entity reference resolution")
 	f.StringVar(&dumpFactsPath, "dump-facts", "", "diagnostic: write one JSONL record per Save batch with the extractor's facts to this path (audits extract-miss vs recall-miss)")
