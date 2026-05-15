@@ -34,38 +34,43 @@ on:
       #                            JSON profile; :model overrides the
       #                            JSON's "model" field. With no :model
       #                            suffix the profile's own model is used.
-      # Defaults below mirror the historical lme-launch.sh values that
-      # the user ran for months under run-eval.sh, so they are known to
-      # match the Azure deployments named in the seeded .env (gpt-5.4
-      # under AZURE_GPT54, DeepSeek-V4-Flash under AZURE_DS_FLASH).
+      #
+      # Defaults below mirror the **validated 0.7575 qa.judge baseline**
+      # established by run [25896493084] (May 15, 2026, n=1542 on
+      # LoCoMo10). A blank dispatch must reproduce that result; future
+      # bumps go through a fresh paired-run on the runner. The aliases
+      # all resolve to gpt-4o-mini Azure deployments (seeded in
+      # /etc/flowcraft-eval/.env as FLOWCRAFT_TEST_AZURE_4O_MINI),
+      # mirroring the mem0 / Zep / memobase published methodology so
+      # cross-leaderboard comparisons stay apples-to-apples.
       extractor_llm:
-        description: "Extractor model alias (default uses Azure DeepSeek-V4-Flash deployment)"
+        description: "Extractor model alias (validated baseline: azure_4o_mini)"
         required: false
-        default: "azure_ds_flash"
+        default: "azure_4o_mini"
       answer_llm:
-        description: "Answer-synthesis model alias"
+        description: "Answer-synthesis model alias (validated baseline: azure_4o_mini)"
         required: false
-        default: "azure_ds_flash"
+        default: "azure_4o_mini"
       judge_llm:
-        description: "Judge model alias (default uses Azure gpt-5.4 deployment)"
+        description: "Judge model alias (validated baseline: azure_4o_mini, aligned with mem0/Zep/memobase)"
         required: false
-        default: "azure_gpt54"
+        default: "azure_4o_mini"
       reranker_llm:
-        description: "Reranker LLM alias ('' to disable)"
+        description: "Reranker LLM alias ('' to disable) (validated baseline: azure_4o_mini)"
         required: false
-        default: "qwen:qwen-flash"
+        default: "azure_4o_mini"
       embedder:
         description: "Embedder alias (e.g. qwen:text-embedding-v4)"
         required: false
         default: "qwen:text-embedding-v4"
       concurrency:
-        description: "QA-loop parallelism"
+        description: "QA-loop parallelism (validated baseline: 16)"
         required: false
-        default: "8"
+        default: "16"
       ingest_concurrency:
-        description: "Per-conversation extractor parallelism"
+        description: "Per-conversation extractor parallelism (validated baseline: 16)"
         required: false
-        default: "8"
+        default: "16"
       notify_progress_pct:
         description: "Feishu milestone resolution (% of work; 0=off)"
         required: false
@@ -76,24 +81,28 @@ on:
         default: "0"
       # ---- Tuning knobs that historically diverged from sdk defaults ----
       soft_merge:
-        # CLI default: true. The legacy lme-launch.sh ran with
-        # --soft-merge=false; flipping this affects whether near-duplicate
-        # facts are marked superseded_by (the soft-merge path) vs kept
-        # as distinct entries. Recall ranking can shift either way.
-        description: "Mark near-duplicate facts as superseded_by (sdk default true)"
+        # CLI / SDK default: true. From May 15, 2026 the SDK skips
+        # episodic facts in the vector supersede channel (see
+        # sdk/recall/merger.go isEpisodicFact), so leaving this on no
+        # longer regresses episodic-heavy datasets like LoCoMo —
+        # the previously-required `--soft-merge=false` workaround is
+        # gone. Only stable-attribute facts whose extractor did not
+        # set Subject+Predicate are eligible for the vector supersede
+        # path. The validated 0.7575 baseline runs with true.
+        description: "Mark near-duplicate stable-attribute facts as superseded_by (sdk default true)"
         required: false
         type: boolean
         default: true
       multi_recall:
         # CLI default: false (keeps legacy single-lane vector recall + BM25/entity
-        # boost behaviour). Flip to true to switch LTM to 3-lane recall
-        # (vector + bm25 + entity) + RRFFusion. See
-        # sdk/retrieval/pipeline/factory.go WithMultiRecall for the
-        # exact stage topology.
-        description: "Use 3-lane recall (vector+bm25+entity) + RRFFusion"
+        # boost behaviour). The validated 0.7575 baseline runs with true,
+        # which switches LTM to 3-lane recall (vector + bm25 + entity)
+        # + RRFFusion. See sdk/retrieval/pipeline/factory.go
+        # WithMultiRecall for the exact stage topology.
+        description: "Use 3-lane recall (vector+bm25+entity) + RRFFusion (validated baseline: true)"
         required: false
         type: boolean
-        default: false
+        default: true
       update_resolver:
         # Enables mem0 v3-style ADD/UPDATE/DELETE/NOOP memory linker.
         # See sdk/recall/resolver_llm.go LLMUpdateResolver. Each Save
