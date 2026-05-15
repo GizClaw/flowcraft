@@ -82,7 +82,10 @@ func addLocomoConvert(parent *cobra.Command) {
 					if len(ans) == 0 {
 						continue
 					}
-					tags := []string{fmt.Sprintf("cat%d", q.Category)}
+					tags := []string{
+						fmt.Sprintf("cat%d", q.Category),
+						convCategoryName(q.Category),
+					}
 					ev := make([]string, 0, len(q.Evidence))
 					for _, e := range q.Evidence {
 						if e == "" {
@@ -285,6 +288,39 @@ func convFlattenSessions(c map[string]json.RawMessage, speakerA, speakerB string
 		}
 	}
 	return out
+}
+
+// convCategoryName returns the canonical LoCoMo category label for a
+// numeric `category` field, matching the mapping pinned by mem0 (see
+// mem0ai/mem0 issue #2609, May 2025): cat2 and cat3 indices in the
+// upstream JSON are swapped relative to the paper's prose ordering, so
+// we MUST not assume "cat3 = temporal". Emitting the canonical names as
+// tags alongside the raw `catN` lets reports and cross-project tables
+// (mem0, Memobase, ReMe) compare apples-to-apples without re-running
+// the index-mapping investigation each time.
+//
+//	1 → "single-hop"   (282 questions on LoCoMo10)
+//	2 → "temporal"     (321)
+//	3 → "multi-hop"    (96)
+//	4 → "open-domain"  (841)
+//	5 → "adversarial"  (446 upstream; 2 with a real `answer` field — the
+//	                    remaining 444 carry only `adversarial_answer`
+//	                    and the converter drops them as no-gold rows)
+func convCategoryName(cat int) string {
+	switch cat {
+	case 1:
+		return "single-hop"
+	case 2:
+		return "temporal"
+	case 3:
+		return "multi-hop"
+	case 4:
+		return "open-domain"
+	case 5:
+		return "adversarial"
+	default:
+		return fmt.Sprintf("cat%d", cat)
+	}
 }
 
 func convAnswerToStrings(v any) []string {

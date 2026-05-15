@@ -93,6 +93,26 @@ type ScoreAggregate struct {
 	F1       float64  `json:"qa.f1"`
 	Judge    float64  `json:"qa.judge"`
 	KHitRate *float64 `json:"recall.k_hit,omitempty"`
+
+	// ByCategory carries per-question-category breakdowns of the
+	// headline metrics. The key is one of the canonical LoCoMo labels
+	// emitted by the converter ("single-hop", "temporal", "multi-hop",
+	// "open-domain", "adversarial"); raw `catN` tags are intentionally
+	// skipped here so the map shape stays stable across upstream
+	// re-numbering changes. Only present when the dataset's questions
+	// carry tags; left nil otherwise so legacy datasets keep their
+	// previous report shape.
+	ByCategory map[string]CategoryScore `json:"byCategory,omitempty"`
+}
+
+// CategoryScore is one category's slice of the headline metrics. Count
+// is the number of questions matching the category tag; the metric
+// fields are means over those questions (NOT over the whole dataset).
+type CategoryScore struct {
+	Count int     `json:"count"`
+	EM    float64 `json:"qa.em"`
+	F1    float64 `json:"qa.f1"`
+	Judge float64 `json:"qa.judge"`
 }
 
 // QuestionScore is one question's per-metric breakdown.
@@ -107,6 +127,12 @@ type QuestionScore struct {
 	F1         float64  `json:"f1"`
 	Judge      float64  `json:"judge"`
 	KHit       *float64 `json:"k_hit,omitempty"`
+
+	// Tags carries the question's category tags from the source dataset
+	// (e.g. "cat1", "single-hop"). Propagated unchanged so downstream
+	// per-category aggregation works on either the canonical names or
+	// raw catN — see ScoreAggregate.ByCategory.
+	Tags []string `json:"tags,omitempty"`
 }
 
 // Options controls the evaluation behavior.
@@ -343,6 +369,7 @@ func Run(ctx context.Context, r runners.Runner, ds *dataset.Dataset, opts Option
 			avg := sumKHit / float64(nKHit)
 			report.Aggregate.KHitRate = &avg
 		}
+		report.Aggregate.ByCategory = aggregateByCategory(scores)
 	}
 	report.N = len(ds.Questions)
 	report.Latency["save"] = metrics.Summarize(saveLatencies)
@@ -435,6 +462,61 @@ func composePrediction(hits []recall.Hit) string {
 		b.WriteString(hits[i].Entry.Content)
 	}
 	return b.String()
+}
+
+// aggregateByCategory groups per-question scores by their canonical
+// category tag and returns the mean of each headline metric per group.
+// Only canonical labels (see convCategoryName in cli_convert.go) are
+// emitted as keys — the raw `catN` tags are filtered out so the report
+// surface stays stable even if the upstream JSON renumbers categories.
+// Questions without a canonical tag are skipped silently rather than
+// bucketed into a synthetic "unknown" group: a missing breakdown is
+// less misleading than a wrong one.
+func aggregateByCategory(scores []QuestionScore) map[string]CategoryScore {
+	canonical := map[string]bool{
+		"single-hop":  true,
+		"temporal":    true,
+		"multi-hop":   true,
+		"open-domain": true,
+		"adversarial": true,
+	}
+	type acc struct {
+		n                  int
+		sumEM, sumF1, sumJ float64
+	}
+	groups := map[string]*acc{}
+	for _, s := range scores {
+		for _, tag := range s.Tags {
+			if !canonical[tag] {
+				continue
+			}
+			g, ok := groups[tag]
+			if !ok {
+				g = &acc{}
+				groups[tag] = g
+			}
+			g.n++
+			g.sumEM += s.EM
+			g.sumF1 += s.F1
+			g.sumJ += s.Judge
+		}
+	}
+	if len(groups) == 0 {
+		return nil
+	}
+	out := make(map[string]CategoryScore, len(groups))
+	for tag, g := range groups {
+		if g.n == 0 {
+			continue
+		}
+		out[tag] = CategoryScore{
+			Count: g.n,
+			EM:    g.sumEM / float64(g.n),
+			F1:    g.sumF1 / float64(g.n),
+			Judge: g.sumJ / float64(g.n),
+		}
+	}
+	return out
 }
 
 func evidenceKHit(hits []recall.Hit, want []string) float64 {
@@ -740,6 +822,7 @@ func evalQuestions(ctx context.Context, r runners.Runner, scopeOf func(string) r
 		scores[idx] = QuestionScore{
 			ID: q.ID, Query: q.Query, Prediction: "",
 			EM: 0, F1: 0, Judge: 0, KHit: khitPtr,
+			Tags: q.Tags,
 		}
 		f := failed.Add(1)
 		// Hard-failure threshold: if more than 5% of QA fail after the
@@ -824,6 +907,7 @@ func evalQuestions(ctx context.Context, r runners.Runner, scopeOf func(string) r
 				scores[j.idx] = QuestionScore{
 					ID: q.ID, Query: q.Query, Prediction: pred,
 					EM: em, F1: f1, Judge: judge, KHit: khitPtr,
+					Tags: q.Tags,
 				}
 				cur := done.Add(1)
 				if opts.ProgressEvery > 0 && cur%int64(opts.ProgressEvery) == 0 {

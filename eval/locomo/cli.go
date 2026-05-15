@@ -348,6 +348,21 @@ Example (LLM extractor + LLM answer + LLM judge + Qwen embedder):
 				report.Aggregate.Judge, report.Aggregate.F1, report.Aggregate.EM, khit,
 				report.Latency["save"].P95, report.Latency["recall"].P95,
 			)
+			if bc := report.Aggregate.ByCategory; len(bc) > 0 {
+				// Canonical ordering matches the mem0 / Memobase
+				// publication tables so cross-project diff is a
+				// line-by-line eyeball, not a column reorder game.
+				for _, name := range []string{"single-hop", "temporal", "multi-hop", "open-domain", "adversarial"} {
+					c, ok := bc[name]
+					if !ok {
+						continue
+					}
+					fmt.Fprintf(os.Stderr,
+						"    %-12s n=%-4d qa.judge=%.3f qa.f1=%.3f qa.em=%.3f\n",
+						name, c.Count, c.Judge, c.F1, c.EM,
+					)
+				}
+			}
 			return nil
 		},
 	}
