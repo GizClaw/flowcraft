@@ -2,28 +2,17 @@ module github.com/GizClaw/flowcraft/eval
 
 go 1.25.0
 
-// Pin sdk + sdkx to released tags. Bumping is a manual step (not auto-tagged) —
-// the eval suites live outside the workspace precisely so heavy datasets and
-// LLM-judge corpora do not inflate every sdk patch release. When sdk drops a
-// new version that needs re-validating, bump these requires in a follow-up
-// PR rather than coupling sdk's release cadence to this directory.
+// `eval` is a workspace member (see ../go.work) — `github.com/GizClaw/
+// flowcraft/sdk` and `.../sdkx` resolve to ../sdk and ../sdkx at the
+// monorepo HEAD, not to the v0.3.x require pins below. The pins exist
+// only to satisfy `GOWORK=off` / `go mod tidy` runs; in CI and local
+// development the workspace overlay is authoritative.
 
 require (
 	github.com/GizClaw/flowcraft/sdk v0.3.14
 	github.com/GizClaw/flowcraft/sdkx v0.3.9
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/pflag v1.0.9
-)
-
-// TEMPORARY: point sdk + sdkx at the monorepo working copies so this
-// branch can build against pipeline.WithMultiRecall before sdk is
-// tagged. Remove these replace lines once an sdk release containing
-// WithMultiRecall is cut and bump the require above to that tag.
-// (CI honours `replace` even under GOWORK=off — actions/checkout
-// brings in ../sdk and ../sdkx from the same monorepo workspace.)
-replace (
-	github.com/GizClaw/flowcraft/sdk => ../sdk
-	github.com/GizClaw/flowcraft/sdkx => ../sdkx
 )
 
 require (

@@ -62,7 +62,9 @@ jobs:
           go-version: "1.25"
       - name: go vet
         run: |
-          for m in sdk sdkx voice vessel cmd/vesseld; do
+          # Workspace members (go.work) — vetted with the workspace
+          # overlay so cross-module symbols at monorepo HEAD resolve.
+          for m in sdk sdkx voice vessel cmd/vesseld eval; do
             echo "==> vet $m"
             (cd "$m" && go vet ./...)
           done
@@ -70,7 +72,7 @@ jobs:
           # directives — vet them with GOWORK=off so the pinned
           # versions are honoured. The e2e suites are also build-
           # tagged (//go:build e2e) so we pass -tags=e2e.
-          for m in eval tests/quality/vessel; do
+          for m in tests/quality/vessel; do
             echo "==> vet $m (GOWORK=off)"
             (cd "$m" && GOWORK=off go vet ./...)
           done
@@ -288,16 +290,14 @@ jobs:
   test-eval:
     name: Test eval (Go ${{ matrix.go-version }})
     needs: detect
-    # eval pins released sdk/sdkx via go.mod and runs with GOWORK=off, so
-    # rerun whenever sdk/sdkx changes (the pin may need a bump) or the
-    # suites themselves move.
+    # eval is a workspace member (see go.work) — sdk/sdkx resolve to
+    # monorepo HEAD via the workspace overlay, so rerun whenever sdk,
+    # sdkx, or eval source changes.
     if: needs.detect.outputs.sdk == 'true' || needs.detect.outputs.sdkx == 'true' || needs.detect.outputs.eval == 'true' || needs.detect.outputs.ci == 'true'
     runs-on: ubuntu-latest
     strategy:
       matrix:
         go-version: ["1.25", "1.26"]
-    env:
-      GOWORK: "off"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v6
