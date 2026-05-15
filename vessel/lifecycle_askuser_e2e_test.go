@@ -7,8 +7,8 @@ package vessel_test
 //	   → host.AskUser(prompt) → reply round-trips back as the
 //	   tool result body
 //
-// The audit (internal-docs/contract-audit.md) flagged that
-// host.AskUser was a documented but practically unreachable
+// The audit flagged that host.AskUser was a documented but
+// practically unreachable
 // capability for LLM-driven flows: every wiring step existed in
 // isolation but no test verified the round trip end-to-end. This
 // test closes that gap. It deliberately mimics what

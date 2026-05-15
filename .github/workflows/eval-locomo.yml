@@ -2,9 +2,9 @@ name: eval / locomo
 
 # ---------------------------------------------------------------------
 # LoCoMo-10 dialog-memory benchmark, executed on the self-hosted
-# runner labelled `flowcraft-eval`. See internal-docs/eval-runbook.md
-# for the host-side setup (runner install, /etc/flowcraft-eval/.env,
-# /var/lib/flowcraft-eval/reports).
+# runner labelled `flowcraft-eval`. Host-side setup (runner install,
+# /etc/flowcraft-eval/.env, /var/lib/flowcraft-eval/reports) is
+# tracked out-of-band by the eval owners.
 #
 # Canonical CLI: `eval locomo run --dataset <path> --topk N
 #                  --extractor --extractor-llm <alias>
@@ -426,9 +426,9 @@ jobs:
         if: always()
         # Final summary. We pull headline numbers via jq from the
         # locomo Report shape (aggregate.qa.em / qa.f1 / qa.judge / n).
-        # Token-usage isn't in the Report today; once `internal-docs/
-        # eval-platform-design-actions.md` §4.5 lands the cached/input
-        # rollup, extend the METRICS line to include them.
+        # Token-usage isn't in the Report today; once the cached /
+        # input rollup lands on the Report shape, extend the METRICS
+        # line to include them.
         run: |
           set +e
           REPORT="$REPORT_DIR/${{ github.run_id }}.json"

@@ -6,7 +6,7 @@ spec:
   # v0.1.0 ships a single factory ("buffer") backed by an
   # in-memory store. Hierarchical SummaryDAG ("compacted") and
   # persistent backends (sqlite / postgres / redis) are on the
-  # v0.2 track — see internal-docs/roadmap.md.
+  # v0.2 track.
   ref: buffer
   config:
     # Per-conversation cap. The buffer evicts oldest turns when

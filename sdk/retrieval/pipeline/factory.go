@@ -179,8 +179,7 @@ func WithRRFK(k float64) LTMOption {
 // candidates whose RRF rank vote displaced vector's precision
 // picks. Gating on selectivity collapses those queries back to
 // "lane returns nothing", leaving the fused result driven by
-// vector + BM25 alone — see
-// internal-docs/eval-entity-lane-ablation-2026-05-14.md.
+// vector + BM25 alone.
 func WithEntityLaneMinSelectivity(ratio float64) LTMOption {
 	return func(c *ltmConfig) { c.entityLaneMinSelectivity = ratio }
 }

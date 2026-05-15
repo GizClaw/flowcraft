@@ -213,7 +213,7 @@ The canonical reference is the per-package `doc.go` files, browsable on pkg.go.d
 
 Worked examples live under [`examples/`](examples/) — each one is runnable end-to-end with a single command.
 
-For the daemon specifically, see [`internal-docs/vesseld-cli.md`](internal-docs/vesseld-cli.md) — CLI sub-commands, HTTP control-plane endpoints, and the supported YAML kinds for `vesseld/v0.1.0`.
+For the daemon specifically, run `vesseld --help` for CLI sub-commands and supported YAML kinds; HTTP control-plane endpoints are documented inline on the command handlers.
 
 ---
 

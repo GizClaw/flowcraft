@@ -88,8 +88,7 @@ type Options struct {
 	// Note: validated -1.75pp on LoCoMo10 (session-batched ingest);
 	// the feature is architecturally targeted at multi-batch /
 	// streaming ingest topologies where the current batch carries
-	// minimal context. See
-	// internal-docs/eval-recent-turns-session-batch-mismatch-2026-05-15.md.
+	// minimal context.
 	RecentTurnsK int
 
 	// OnFactsExtracted is invoked synchronously after every

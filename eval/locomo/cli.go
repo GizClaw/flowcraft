@@ -200,21 +200,21 @@ Example (LLM extractor + LLM answer + LLM judge + Qwen embedder):
 			}
 
 			rOpts := flowcraft.Options{
-				Name:              runnerName,
-				LLM:               extractor,
-				Embedder:          embedder,
-				MaxFactsPerCall:   maxFacts,
-				IncludeAssistant:  true,
-				SaveWithContext:   saveWithContext,
-				SoftMerge:         &softMerge,
-				RerankerLLM:       reranker,
-				ScoreThreshold:    scoreThreshold,
-				MultiRecall:       multiRecall,
+				Name:                      runnerName,
+				LLM:                       extractor,
+				Embedder:                  embedder,
+				MaxFactsPerCall:           maxFacts,
+				IncludeAssistant:          true,
+				SaveWithContext:           saveWithContext,
+				SoftMerge:                 &softMerge,
+				RerankerLLM:               reranker,
+				ScoreThreshold:            scoreThreshold,
+				MultiRecall:               multiRecall,
 				EntityStore:               entityStore,
 				EntityStoreMaxLinkedCount: entityStoreMaxLnk,
 				UpdateResolverLLM:         resolverLLM,
-				RecentTurnsK:      recentTurnsK,
-				OnFactsExtracted:  onFacts,
+				RecentTurnsK:              recentTurnsK,
+				OnFactsExtracted:          onFacts,
 			}
 			// Extractor prompt is intentionally not overridden here: every
 			// architectural rule that helps LoCoMo (self-containedness,

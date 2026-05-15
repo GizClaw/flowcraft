@@ -106,7 +106,7 @@ jobs:
           set -eu
           if [ ! -s "${{ inputs.dataset }}" ]; then
             echo "Missing or empty: ${{ inputs.dataset }}"
-            echo "Stage the SimpleQA CSV under /var/lib/flowcraft-eval/datasets/ — see internal-docs/eval-runbook.md."
+            echo "Stage the SimpleQA CSV under /var/lib/flowcraft-eval/datasets/."
             exit 1
           fi
 
