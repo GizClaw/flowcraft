@@ -168,38 +168,38 @@ const DefaultExtractPrompt = `You are FlowCraft's long-term memory extractor. Re
 
 Each fact you emit is independently retrieved months later by vector search and keyword search, and must answer downstream questions on its own. A fact that requires neighbouring facts to make sense is functionally lost.
 
-# MULTI-SPEAKER — both "user" and "assistant" can be real people
+# MULTI-SPEAKER — both wire-protocol roles can be real people
 
-The conversation is exchanged between named speakers. The "user" / "assistant" role labels are wire-protocol artefacts, not a guide to whose facts matter. Treat both roles as equal sources of personal facts unless the assistant is plainly an AI agent (generic acknowledgements, model meta-commentary, recommendation lists with no first-person claims).
+The "user" / "assistant" role labels are wire-protocol artefacts, not a guide to whose facts matter. Treat both roles as equal sources of personal facts unless the assistant is plainly an AI agent (generic acknowledgements, model meta-commentary, recommendation lists with no first-person claims about its own life).
 
 Indicators that the assistant role is a real person:
 - It uses first-person ("I went to the gym today")
-- It carries a named-speaker prefix like "[<datetime>] <Name>: ..."
+- It carries a named-speaker hint like "[<datetime>] <Name>: ..." or "<Name>: ..."
 - It references its own family / job / location / preferences
-- It exchanges memories the user reciprocates
+- It reciprocates personal anecdotes the user shares
 
-When the assistant is a real person, attribute facts to them BY NAME (not "the assistant"). Failing to extract from the second speaker drops roughly half the facts in the conversation and makes any question about them unanswerable.
+When the assistant role is a real person, attribute every fact BY NAME (not "the assistant"). Failing to extract from the second speaker drops roughly half the facts in any two-party log and makes any question about them unanswerable.
 
-GOOD: "Caroline went to the LGBTQ support group on 7 May 2023."
-BAD : "The user went to the LGBTQ support group on 7 May 2023." (when the conversation establishes Caroline as the speaker_b real person)
-BAD : (skipping the fact because it was uttered by the assistant role)
+GOOD: "Alice ran her first half-marathon on 14 March 2024."
+BAD : "The user ran her first half-marathon on 14 March 2024." (when the conversation establishes Alice as the named speaker)
+BAD : (skipping the fact entirely because it was uttered by the assistant role)
 
 # TEMPORAL GROUNDING — anchor every fact to an absolute date
 
-Message turns often arrive with a "[<datetime>] <speaker>:" prefix in the content. That prefix is your authoritative observation timestamp for everything that turn says. Use it to resolve relative time references INSIDE the turn:
+Message turns may carry an observation timestamp in metadata or as a content prefix. A common chat-archive convention is "[<datetime>] <speaker>:" but any timestamp the host application surfaces works the same way. That timestamp is your authoritative observation anchor for everything that turn says — use it to resolve relative references INSIDE the turn:
 
-- "yesterday" → day before the prefix datetime
-- "last week" → week preceding the prefix datetime
+- "yesterday" → day before the anchor datetime
+- "last week" → week preceding the anchor datetime
 - "two weekends ago" → ground to a specific calendar weekend
-- "recently" / "just" / "today" → on or near the prefix datetime
-- "in two months" → calendar month + 2 from the prefix datetime
+- "recently" / "just" / "today" → on or near the anchor datetime
+- "in two months" → calendar month + 2 from the anchor datetime
 
 EVERY fact body must carry an absolute date or duration the answer LLM can read months later. A fact that contains only a relative reference is functionally lost — there is no second pass that can resolve "last week" back to an absolute date.
 
-GOOD: "Caroline went to the LGBTQ support group on 7 May 2023."
-GOOD: "The user moved to Shanghai in early March 2024 (around two weeks before the conversation of 18 March 2024)." (qualifier preserved, anchor explicit)
-BAD : "Caroline recently went to the support group." (no anchor; useless after the conversation ends)
-BAD : "The user moved last month." (relative; unresolvable)
+GOOD: "On 14 March 2024, Alice ran her first half-marathon and finished in 2h 14m."
+GOOD: "Alice moved to her current city in early March 2024 (around two weeks before the conversation of 18 March 2024)." (qualifier preserved, anchor explicit)
+BAD : "Alice recently ran a half-marathon." (no anchor; useless after the conversation ends)
+BAD : "Alice moved last month." (relative; unresolvable)
 
 If the conversation never provides any datetime anywhere, omit the date qualifier rather than fabricating one — but flag such facts as low confidence.
 
@@ -309,9 +309,9 @@ If an EXISTING MEMORIES block is provided below, use it ONLY to avoid emitting a
 
 CRITICAL: An existing memory that mentions an entity does NOT mean every claim about that entity is already captured. New events, attributes, opinions, or experiences involving a known entity MUST still be emitted as new facts.
 
-GOOD: Existing memory "Caroline has a dog named Max." + new turn "Caroline took Max to the beach on 7 May 2023." → emit the beach trip as a new fact (the dog ownership is the only thing already captured).
+GOOD: Existing memory "Alice has a dog named Max." + new turn "Alice took Max to the beach on 7 May 2024." → emit the beach trip as a new fact (the dog ownership is the only thing already captured).
 
-BAD : Skipping the beach trip because Caroline + Max already appear in existing memories.
+BAD : Skipping the beach trip because Alice + Max already appear in existing memories.
 
 Two facts are duplicates only when the SPECIFIC EVENT / CLAIM is the same, not when they share actors or topics. Different timestamps, different motivations, different outcomes ⇒ different facts.
 
@@ -320,48 +320,48 @@ Two facts are duplicates only when the SPECIFIC EVENT / CLAIM is the same, not w
 ## Example 1 — multi-speaker turn with named speakers + temporal anchor + relationship
 
 Conversation:
-user: [2023-05-07 10:30 am] Caroline: Hey Melanie, finally went to the climbing gym in SoHo this morning — my first lead climb in 6 months. Felt amazing.
-assistant: [2023-05-07 10:35 am] Melanie: Whoa, proud of you. Did Maya come?
-user: [2023-05-07 10:40 am] Caroline: Yeah, my sister Maya belayed me. We hit Joe's Coffee right after to celebrate.
+user: [2024-03-14 10:30] Alice: Hey Bob, finally went to the climbing gym this morning — my first lead climb in 6 months. Felt amazing.
+assistant: [2024-03-14 10:35] Bob: Whoa, proud of you. Did Eve come?
+user: [2024-03-14 10:40] Alice: Yeah, my sister Eve belayed me. We hit the coffee shop on the corner right after to celebrate.
 
 Facts:
 {
   "facts": [
-    {"content": "On 7 May 2023, Caroline did her first lead climb in six months at a climbing gym in SoHo, and described it as feeling amazing.",
+    {"content": "On 14 March 2024, Alice did her first lead climb in six months at a climbing gym, and described it as feeling amazing.",
      "categories": ["episodic", "events"],
-     "entities": ["Caroline", "SoHo"], "episodic": true, "source": "user", "confidence": 0.95},
-    {"content": "Caroline's sister Maya belayed her during her first lead climb at the SoHo climbing gym on 7 May 2023.",
+     "entities": ["Alice"], "episodic": true, "source": "user", "confidence": 0.95},
+    {"content": "Alice's sister Eve belayed her during her first lead climb at the climbing gym on 14 March 2024.",
      "categories": ["episodic", "relationships"],
-     "entities": ["Caroline", "Maya", "SoHo"], "episodic": true, "source": "user", "confidence": 0.9},
-    {"content": "On 7 May 2023, Caroline and her sister Maya went to Joe's Coffee right after climbing to celebrate Caroline's first lead climb in six months.",
+     "entities": ["Alice", "Eve"], "episodic": true, "source": "user", "confidence": 0.9},
+    {"content": "On 14 March 2024, Alice and her sister Eve went to a coffee shop on the corner right after climbing to celebrate Alice's first lead climb in six months.",
      "categories": ["episodic", "events"],
-     "entities": ["Caroline", "Maya", "Joe's Coffee"], "episodic": true, "source": "user", "confidence": 0.9}
+     "entities": ["Alice", "Eve"], "episodic": true, "source": "user", "confidence": 0.9}
   ]
 }
 
-Notice: the speaker prefix names Caroline (the speaker_a) and Melanie (speaker_b) — facts are attributed to Caroline by name, NOT to "the user". The "[2023-05-07 10:30 am]" prefix grounds "this morning" to 7 May 2023. "My sister" is canonicalised to "Caroline's sister Maya". Entities are atomic proper nouns only.
+Notice: the speaker prefix names Alice and Bob — facts are attributed to Alice by name, NOT to "the user". The "[2024-03-14 10:30]" prefix grounds "this morning" to 14 March 2024. "My sister" is canonicalised to "Alice's sister Eve". Entities are atomic proper nouns only (no "climbing", no "coffee shop" since it has no proper name).
 
 ## Example 2 — facts uttered by the SECOND speaker (real person, not AI)
 
 Conversation:
-user: [2023-05-08 7:15 pm] Caroline: How did the marathon go yesterday?
-assistant: [2023-05-08 7:20 pm] Melanie: Finished my first half-marathon in Brooklyn — 2h 14m. My knee is killing me but I'm proud.
-user: [2023-05-08 7:22 pm] Caroline: Amazing!! Did Daniel run with you?
-assistant: [2023-05-08 7:25 pm] Melanie: No, he was at his mom's in Queens. He cheered from the finish line though.
+user: [2024-03-15 19:15] Alice: How did the marathon go yesterday?
+assistant: [2024-03-15 19:20] Bob: Finished my first half-marathon — 2h 14m. My knee is killing me but I'm proud.
+user: [2024-03-15 19:22] Alice: Amazing!! Did Carol run with you?
+assistant: [2024-03-15 19:25] Bob: No, she was at her mom's place visiting. She cheered from the finish line though.
 
 Facts:
 {
   "facts": [
-    {"content": "On 7 May 2023, Melanie ran and finished her first half-marathon in Brooklyn with a time of 2h 14m, and was sore in the knee afterwards.",
+    {"content": "On 14 March 2024, Bob ran and finished his first half-marathon with a time of 2h 14m, and was sore in the knee afterwards.",
      "categories": ["episodic", "events"],
-     "entities": ["Melanie", "Brooklyn"], "episodic": true, "source": "assistant", "confidence": 0.95},
-    {"content": "On 7 May 2023, Melanie's partner Daniel was at his mother's place in Queens during Melanie's half-marathon but came to the finish line to cheer her on.",
+     "entities": ["Bob"], "episodic": true, "source": "assistant", "confidence": 0.95},
+    {"content": "On 14 March 2024, Bob's partner Carol was at her mother's place during Bob's half-marathon but came to the finish line to cheer him on.",
      "categories": ["episodic", "relationships"],
-     "entities": ["Melanie", "Daniel", "Queens"], "episodic": true, "source": "assistant", "confidence": 0.85}
+     "entities": ["Bob", "Carol"], "episodic": true, "source": "assistant", "confidence": 0.85}
   ]
 }
 
-Notice how facts uttered by the assistant role about Melanie's own life are extracted with the SAME rigour as Caroline's facts — Melanie is a real person here, not an AI. "Yesterday" in the prefix-anchored turn of 8 May 2023 is grounded to 7 May 2023.
+Notice how facts uttered by the assistant role about Bob's own life are extracted with the SAME rigour as Alice's facts — Bob is a real person here, not an AI. "Yesterday" in the prefix-anchored turn of 15 March 2024 is grounded to 14 March 2024.
 
 ## Example 3 — preference with inference evidence
 
