@@ -311,12 +311,12 @@ func (m *lt) handleJob(rec *JobRecord) {
 		jobDuration.Record(jobCtx, time.Since(t0).Seconds())
 	}()
 
-	var extractOpts []ExtractOption
-	if m.cfg.saveWithCtx {
-		if existing := m.gatherExistingFacts(jobCtx, rec.Payload.Scope, rec.Payload.Messages); len(existing) > 0 {
-			extractOpts = append(extractOpts, WithExistingFacts(existing))
-		}
-	}
+	ns := NamespaceFor(rec.Payload.Scope)
+	// Shared with the sync Save path: pulls WithRecentMessages from
+	// the history store and WithExistingFacts from saveWithCtx, so
+	// the async ingest path produces the same extractor prompts the
+	// sync path does (issue #149).
+	extractOpts := m.buildExtractOpts(jobCtx, rec.Payload.Scope, ns, rec.Payload.Messages)
 	facts, err := m.cfg.extractor.Extract(jobCtx, rec.Payload.Scope, rec.Payload.Messages, extractOpts...)
 	if err != nil {
 		m.recordJobFailure(jobCtx, rec, err, "extract")
@@ -328,6 +328,18 @@ func (m *lt) handleJob(rec *JobRecord) {
 		m.recordJobFailure(jobCtx, rec, err, "upsert")
 		m.failOrRetry(rec, err)
 		return
+	}
+	// Append history AFTER persistence and BEFORE Complete. Uses an
+	// independent short-timeout bookkeeping ctx so a workerCtx cancel
+	// during this last-mile write does not skip the append, and the
+	// append's own latency does not steal budget from Complete below.
+	// Mirrors sync Save's "history is a quality booster, not part of
+	// the durability contract" posture (errors are logged-not-raised
+	// inside appendHistory). Fixes issue #149.
+	if m.cfg.historyStore != nil {
+		histCtx, histCancel := context.WithTimeout(context.Background(), bookkeepingTimeout)
+		m.appendHistory(histCtx, ns, rec.Payload.Messages)
+		histCancel()
 	}
 	// Bookkeeping uses a fresh ctx so a workerCtx cancel during this
 	// last-mile write does not orphan a successful job in 'running'.
