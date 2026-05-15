@@ -172,7 +172,7 @@ func runOneRecall(ctx context.Context, st *State, _ string, spec RetrieveSpec) (
 	case ModeEntity:
 		return runEntityRecall(ctx, st, req, spec)
 	case ModeEntityLink:
-		return runEntityLinkRecall(ctx, st, spec)
+		return runEntityLinkRecall(ctx, st, req, spec)
 	}
 	resp, err := st.Index.Search(ctx, st.Namespace, req)
 	if err != nil || resp == nil {
@@ -437,14 +437,15 @@ func filterIsZero(f retrieval.Filter) bool {
 // entity-filter alone. This is the same defensive posture as
 // recall.NewIndexEntityStore.
 //
-// Backend Filter compatibility: the request's existing Filter is
-// applied client-side AFTER materialisation so docs the resolver
-// references but the request's scope filter excludes (agent
-// boundary, tombstones, expiry) are correctly hidden. We re-use
-// the per-spec Filter mechanism rather than threading req.Filter
-// twice; req.Filter is already merged into spec.Filter by
-// runOneRecall before this function runs.
-func runEntityLinkRecall(ctx context.Context, st *State, spec RetrieveSpec) ([]retrieval.Hit, error) {
+// Backend Filter compatibility: the request's existing Filter
+// (AgentRecallFilter + ExpireFilter + TombstoneFilter, merged in by
+// recall.Memory.Recall) is applied client-side after Get-ing each
+// candidate doc. The resolver may legitimately reference an id whose
+// row is now tombstoned, expired, or owned by a different agent —
+// without this check, those rows would leak into the fused result
+// via the entity-link lane (fixed for issue #148). When req.Filter is
+// zero (DocMatchesFilter returns true for all docs) this is a no-op.
+func runEntityLinkRecall(ctx context.Context, st *State, req retrieval.SearchRequest, spec RetrieveSpec) ([]retrieval.Hit, error) {
 	if len(st.CandidateEntityIDs) == 0 || st.Index == nil {
 		return nil, nil
 	}
@@ -454,6 +455,7 @@ func runEntityLinkRecall(ctx context.Context, st *State, spec RetrieveSpec) ([]r
 		// whole pipeline if a backend without DocGetter is used.
 		return nil, nil
 	}
+	applyFilter := !filterIsZero(req.Filter)
 	cap := len(st.CandidateEntityIDs)
 	if spec.TopK > 0 && spec.TopK < cap {
 		cap = spec.TopK
@@ -466,7 +468,12 @@ func runEntityLinkRecall(ctx context.Context, st *State, spec RetrieveSpec) ([]r
 		doc, found, err := g.Get(ctx, st.Namespace, id)
 		if err != nil || !found {
 			// Stale id (entry deleted post-Link but Forget hasn't
-			// reached the entity row yet) -> skip silently.
+			// reached the entity row yet) -> skip silently. Same
+			// posture as a filter-rejected doc: rank does NOT
+			// decrement, preserving the resolver's order.
+			continue
+		}
+		if applyFilter && !retrieval.DocMatchesFilter(doc, req.Filter) {
 			continue
 		}
 		score := 1.0 / float64(rank+1)

@@ -126,7 +126,7 @@ func TestRunEntityLinkRecall_MaterializesHitsScoredByRank(t *testing.T) {
 		Request:            &retrieval.SearchRequest{},
 		CandidateEntityIDs: []string{"e1", "e2", "e3-missing", "e4"},
 	}
-	hits, err := runEntityLinkRecall(context.Background(), st, RetrieveSpec{Mode: ModeEntityLink, TopK: 10})
+	hits, err := runEntityLinkRecall(context.Background(), st, retrieval.SearchRequest{}, RetrieveSpec{Mode: ModeEntityLink, TopK: 10})
 	if err != nil {
 		t.Fatalf("runEntityLinkRecall: %v", err)
 	}
@@ -158,7 +158,7 @@ func TestRunEntityLinkRecall_HonoursTopK(t *testing.T) {
 		Request:            &retrieval.SearchRequest{},
 		CandidateEntityIDs: []string{"e1", "e2", "e3"},
 	}
-	hits, err := runEntityLinkRecall(context.Background(), st, RetrieveSpec{Mode: ModeEntityLink, TopK: 2})
+	hits, err := runEntityLinkRecall(context.Background(), st, retrieval.SearchRequest{}, RetrieveSpec{Mode: ModeEntityLink, TopK: 2})
 	if err != nil {
 		t.Fatalf("runEntityLinkRecall: %v", err)
 	}
@@ -174,9 +174,53 @@ func TestRunEntityLinkRecall_EmptyCandidates(t *testing.T) {
 		Namespace: "ns1",
 		Request:   &retrieval.SearchRequest{},
 	}
-	hits, err := runEntityLinkRecall(context.Background(), st, RetrieveSpec{Mode: ModeEntityLink})
+	hits, err := runEntityLinkRecall(context.Background(), st, retrieval.SearchRequest{}, RetrieveSpec{Mode: ModeEntityLink})
 	if err != nil || len(hits) != 0 {
 		t.Fatalf("empty candidates should produce no hits; got hits=%v err=%v", hits, err)
+	}
+}
+
+// TestRunEntityLinkRecall_HonoursRequestFilter pins the fix for #148:
+// docs the resolver references but the request's Filter excludes
+// (tombstoned / expired / cross-agent rows) must NOT leak into the
+// fused result. The resolver-returned rank order is preserved for
+// the docs that DO pass — i.e. the filter-rejected slots do not
+// shift the next id up.
+func TestRunEntityLinkRecall_HonoursRequestFilter(t *testing.T) {
+	idx := &docGetterIndex{docs: map[string]retrieval.Doc{
+		"e1": {ID: "e1", Metadata: map[string]any{"tombstone": true}},
+		"e2": {ID: "e2", Metadata: map[string]any{"tombstone": false}},
+		"e3": {ID: "e3", Metadata: map[string]any{"tombstone": true}},
+		"e4": {ID: "e4", Metadata: map[string]any{"tombstone": false}},
+	}}
+	st := &State{
+		Index:              idx,
+		Namespace:          "ns1",
+		Request:            &retrieval.SearchRequest{},
+		CandidateEntityIDs: []string{"e1", "e2", "e3", "e4"},
+	}
+	req := retrieval.SearchRequest{
+		Filter: retrieval.Filter{Neq: map[string]any{"tombstone": true}},
+	}
+	hits, err := runEntityLinkRecall(context.Background(), st, req, RetrieveSpec{Mode: ModeEntityLink, TopK: 10})
+	if err != nil {
+		t.Fatalf("runEntityLinkRecall: %v", err)
+	}
+	if len(hits) != 2 {
+		t.Fatalf("expected 2 hits after filter (e1/e3 tombstoned); got %d hits=%+v", len(hits), hits)
+	}
+	if hits[0].Doc.ID != "e2" || hits[1].Doc.ID != "e4" {
+		t.Fatalf("hit ordering = [%s, %s]; want [e2, e4]", hits[0].Doc.ID, hits[1].Doc.ID)
+	}
+	// Rank invariant: filter-rejected slots must NOT promote the
+	// next surviving id. e2 was at rank 2 (score 1/2), e4 at rank 4
+	// (score 1/4). If we had used hits[*]'s position instead, e4
+	// would have scored 1/2 — wrong.
+	if hits[0].Score != 1.0/2.0 {
+		t.Fatalf("hit[e2].Score = %v; want 1/2 (rank preserved across filtered slots)", hits[0].Score)
+	}
+	if hits[1].Score != 1.0/4.0 {
+		t.Fatalf("hit[e4].Score = %v; want 1/4 (rank preserved across filtered slots)", hits[1].Score)
 	}
 }
 
@@ -202,7 +246,7 @@ func TestRunEntityLinkRecall_SilentOnNonDocGetterBackend(t *testing.T) {
 		Request:            &retrieval.SearchRequest{},
 		CandidateEntityIDs: []string{"e1"},
 	}
-	hits, err := runEntityLinkRecall(context.Background(), st, RetrieveSpec{Mode: ModeEntityLink})
+	hits, err := runEntityLinkRecall(context.Background(), st, retrieval.SearchRequest{}, RetrieveSpec{Mode: ModeEntityLink})
 	if err != nil {
 		t.Fatalf("err=%v; want nil (graceful degrade)", err)
 	}
