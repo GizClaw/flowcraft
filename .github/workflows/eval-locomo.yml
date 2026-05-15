@@ -177,6 +177,15 @@ on:
         description: "Per-conversation ingest deadline (Go duration)"
         required: false
         default: "10m"
+      locomo_ref:
+        # Upstream snap-research/locomo git ref used to materialise the
+        # raw JSON. Pin to a commit SHA for byte-stable reproducibility
+        # (also doubles as the host-side cache key — same SHA = no
+        # re-download). 'main' keeps the previous always-fresh behaviour
+        # but loses cache hits across runs.
+        description: "Upstream snap-research/locomo git ref (commit SHA or branch)"
+        required: false
+        default: "main"
 
 # Per-kind serialisation: at most one locomo run at a time. Other eval
 # kinds (longmemeval / beir / …) have their own concurrency.group and
@@ -287,10 +296,23 @@ jobs:
         # in-binary synthetic set), or when the input is already a
         # non-default custom path (e.g. an ad-hoc local override on
         # the runner host).
+        #
+        # Fetch strategy (CN-friendly, May 15 2026):
+        #   1. Cache by upstream git ref under the host-persistent
+        #      /var/lib/flowcraft-eval/datasets/cache/. Same ref =>
+        #      zero network. Pinning `locomo_ref` to a commit SHA
+        #      gives byte-stable runs across the lifetime of the host
+        #      cache directory (it's never auto-pruned).
+        #   2. Primary fetch is jsDelivr's GitHub mirror — has CN
+        #      edge nodes and is typically 20-50x faster than
+        #      raw.githubusercontent.com on this runner.
+        #   3. Fall back to raw.githubusercontent.com if jsDelivr is
+        #      unreachable or the ref isn't yet propagated to its
+        #      edge cache (can lag GitHub by minutes-hours).
         env:
           DATASET_IN: ${{ inputs.dataset }}
           DEFAULT_DATASET: /var/lib/flowcraft-eval/datasets/locomo10.jsonl
-          UPSTREAM_URL: https://raw.githubusercontent.com/snap-research/locomo/main/data/locomo10.json
+          LOCOMO_REF: ${{ inputs.locomo_ref }}
         run: |
           set -eu
           if [ "$DATASET_IN" = "synthetic" ] || [ "$DATASET_IN" != "$DEFAULT_DATASET" ]; then
@@ -298,11 +320,29 @@ jobs:
             exit 0
           fi
           mkdir -p /var/lib/flowcraft-eval/datasets
+          CACHE_DIR=/var/lib/flowcraft-eval/datasets/cache
+          mkdir -p "$CACHE_DIR"
+          CACHE="$CACHE_DIR/locomo10-${LOCOMO_REF}.json"
           RAW=/tmp/locomo-raw/locomo10.json
           mkdir -p "$(dirname "$RAW")"
-          echo "downloading upstream → $RAW"
-          curl -sSLf -o "$RAW" "$UPSTREAM_URL"
-          echo "raw size: $(wc -c < "$RAW") bytes"
+          if [ -s "$CACHE" ]; then
+            echo "cache hit ($CACHE, $(wc -c < "$CACHE") bytes) — skipping download"
+          else
+            URL_PRIMARY="https://cdn.jsdelivr.net/gh/snap-research/locomo@${LOCOMO_REF}/data/locomo10.json"
+            URL_FALLBACK="https://raw.githubusercontent.com/snap-research/locomo/${LOCOMO_REF}/data/locomo10.json"
+            TMP="${CACHE}.partial"
+            echo "downloading (primary: jsDelivr) ref=$LOCOMO_REF → $CACHE"
+            if curl -sSLf --max-time 90 -o "$TMP" "$URL_PRIMARY"; then
+              mv "$TMP" "$CACHE"
+            else
+              echo "jsDelivr unavailable, falling back to raw.githubusercontent.com"
+              rm -f "$TMP"
+              curl -sSLf --max-time 300 -o "$TMP" "$URL_FALLBACK"
+              mv "$TMP" "$CACHE"
+            fi
+            echo "downloaded $(wc -c < "$CACHE") bytes"
+          fi
+          cp "$CACHE" "$RAW"
           /tmp/eval locomo convert --in "$RAW" --out "$DEFAULT_DATASET"
           echo "fresh dataset size: $(wc -c < "$DEFAULT_DATASET") bytes"
           echo "image-annotated turns: $(grep -o 'shared image' "$DEFAULT_DATASET" | wc -l)"
