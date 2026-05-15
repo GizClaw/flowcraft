@@ -18,7 +18,7 @@
 
 | Benchmark                |                            FlowCraft (current) |                                                             Closest cited row |                      Headline gap | Notes                                                                                                                                        |
 | ------------------------ | ---------------------------------------------: | ----------------------------------------------------------------------------: | --------------------------------: | -------------------------------------------------------------------------------------------------------------------------------------------- |
-| LoCoMo10 qa.judge        | **0.7665** (gpt-4o-mini, image annotations on) | Mem0 v3 managed 91.6, ReMe 86.23, Memobase v0.0.37 75.78, Zep-corrected 75.14 | −15 pp vs current SOTA self-claim | All cited rows are self-runs; see [Source D](#source-d--each-systems-own-self-published-number-canonical-claims) and the cross-source table. |
+| LoCoMo10 qa.judge        | **0.7659** (gpt-4o-mini, post-topK-fix, image annotations on) | Mem0 v3 managed 91.6 ⚠ unreproducible, ReMe 86.23, Memobase v0.0.37 75.78, Zep-corrected 75.14 | +1 pp vs Memobase 75.78; +28 pp vs every reproducible mem0 number | See [Source D](#source-d--each-systems-own-self-published-number-canonical-claims), the cross-source table, and the [reproducibility addendum](#reproducibility-addendum-mem0-issue-2800) below. |
 | LongMemEval `_s`         |                                    `[pending]` |                                Zep + gpt-4o-mini 60.2%, Mem0 v3 managed 93.4% |                               tbd | Parity run blocked on `--judge-llm` switch — [Phase-1 §2](#what-phase-1-ships).                                                              |
 | BEIR scifact nDCG@10     |                    **0.6725** (doc-level BM25) |                                                         Anserini Lucene 0.665 |                      within noise | Implementation parity confirmed — see [BEIR scifact](#beir-scifact).                                                                         |
 | τ-bench retail Pass@1    |                                    `[pending]` |                                         claude-3-5-sonnet 0.692, gpt-4o 0.604 |                               tbd | Sierra's published numbers held as the citation set.                                                                                         |
@@ -56,7 +56,7 @@ quoting any single LoCoMo number externally.**
 | TSM                       |                     — |                    — |                                — |                                           76.69 |                       — |                 n/a |
 | OpenAI built-in           |                 52.90 |                    — |                                — |                                               — |                       — | n/a (no own number) |
 | LangMem                   |                 58.10 |                    — |                                — |                                               — |                       — | n/a (no own number) |
-| **FlowCraft (this repo)** |                     — |                    — |                                — |                                               — | **76.65** (gpt-4o-mini) | n/a — see TL;DR row |
+| **FlowCraft (this repo)** |                     — |                    — |                                — |                                               — | **76.59** (gpt-4o-mini) | n/a — see TL;DR row |
 
 ¹ Mem0 v3 blog reports v2 as **71.4** pooled (graph + non-graph)
 when comparing to v3's 91.6. The paper itself reports 66.88
@@ -84,6 +84,81 @@ when comparing to v3's 91.6. The paper itself reports 66.88
 The architectural reasons these numbers diverge are summarised in
 [§ Architectural paradigms behind the 90+ self-claims](#architectural-paradigms-behind-the-90-self-claims)
 under Methodology.
+
+### Reproducibility addendum (mem0 issue #2800)
+
+The 91.6 mem0-v3 number anchoring the cross-source table is **not
+reproducible by the open community**, including by users running on
+the official mem0 managed platform. We surface this because the
+TL;DR row would otherwise read "FlowCraft trails the SOTA by 15 pp"
+when the comparable reproducible numbers are 28 pp lower than the
+self-claim.
+
+Tracking issue: [mem0ai/mem0 #2800](https://github.com/mem0ai/mem0/issues/2800)
+("Unable to reproduce locomo eval scores locally", open May 2025 -
+March 2026, 18 👍 / 6 👀). Selected community measurements collected
+from the issue thread (all on LoCoMo10, gpt-4o-mini answer + judge
+where stated):
+
+| Reporter / setup                                | qa.judge (overall) | Source                                                                                 |
+| ----------------------------------------------- | -----------------: | -------------------------------------------------------------------------------------- |
+| Mem0 paper self-claim, v3 managed (April 2026)  |             **91.6** | [Mem0 v3 blog](https://mem0.ai/blog/mem0-the-token-efficient-memory-algorithm)         |
+| jisuozhao — mem0 platform paid API + 4o-mini    |                **48.57** | [#2800 comment](https://github.com/mem0ai/mem0/issues/2800), Oct 2025                  |
+| Li-Qingyun — mem0 platform free tier            |                **41.62** | [#2800 comment](https://github.com/mem0ai/mem0/issues/2800), Nov 2025                  |
+| bufapiqi — local OSS + 4o-mini + custom prompt  |       ~52 (cat1+cat2) | [#2800 comment](https://github.com/mem0ai/mem0/issues/2800), Jan 2026                  |
+| Donghua-Cai — mem0 platform + 4o-mini           |                  ~20 | [#2800 comment](https://github.com/mem0ai/mem0/issues/2800), Jan 2026                  |
+| shenshiqi — local OSS + Qwen3-235B              |                **33.70** | [#2800 comment](https://github.com/mem0ai/mem0/issues/2800), Aug 2025                  |
+| mem0 paper "SoTA" rows (cat1 + cat2 only)       |        67.13 / 51.15 | mem0 paper Table 1 / cross-checked in the same issue thread                            |
+| **FlowCraft (this repo, 25912693189)**          |             **76.59** | LoCoMo10 n=1542, post-topK-fix; per-category cat1=77.66 cat2=70.09 cat3=55.21 cat4=81.09 |
+
+mem0's maintainer position
+([@prateekchhikara, June 2025](https://github.com/mem0ai/mem0/issues/2800#issuecomment-2802617570)):
+the 91.6 figure relies on the managed platform's proprietary
+**Contextual ADD** and **Custom Instructions** features that are
+not present in the open-source `mem0ai/mem0` repo. As of the
+issue's March 2026 closure, mem0 has not published the recipe
+that reproduces 91.6 from any combination of public artifacts.
+
+**Reading the cross-source table with this context**: the 91.6
+cell sits in a row with no independent verifier; the 75.14 / 75.78
+/ 86.23 cells sit in rows that other operators have re-evaluated.
+The headline gap from FlowCraft's 76.59 to the **next reproducible**
+LoCoMo number is **+0.81 pp vs Memobase v0.0.37 (75.78)**, not
+-15 pp.
+
+### Limit-stage bug fix (May 2026)
+
+Pre-`db16b7f2`, `Memory.Recall(req{TopK: N})` silently capped at
+**10 hits regardless of N**: `sdk/retrieval/pipeline/factory.go`'s
+LTM pipeline hard-coded `Limit{TopK: 10}` as the final stage, and
+`Limit.Run` truncated to its own stage TopK without consulting
+`st.Request.TopK`. Recall lanes already honoured `Request.TopK`
+for per-lane fan-out (vector top-60, BM25 top-50, entity top-30),
+but the final Limit squashed the fused result back to 10 every
+time.
+
+Evidence from `25910887436` recall dump:
+
+- 1317 / 1542 questions returned **exactly 10 hits**
+- The "On 7 May 2023 LGBTQ support group" fact for conv-26-q1 was
+  in the namespace yet ranked outside the top-10 after fusion — it
+  could not surface, regardless of `--topk=30`
+- Every prior `--topk=N` ablation for `N > 10` was a no-op for the
+  answer LLM (only changing lane fan-out / RRF candidate diversity)
+
+The fix lets `Request.TopK` override the stage's own TopK when set,
+keeping the stage TopK as a fallback default. Paired runs that
+isolate the fix:
+
+| Run         | Config              | qa.judge | Note                                              |
+| ----------- | ------------------- | -------: | ------------------------------------------------- |
+| 25896493084 | topk=30 (effective 10, BUG) |   75.7 | canonical pre-fix baseline                        |
+| 25912690228 | topk=10 (real 10)   |   74.06 | post-fix at the same effective topK ⇒ within noise of baseline |
+| **25912693189** | **topk=30 (real 30)** | **76.59** | post-fix with the budget the flag advertises ⇒ +0.89 pp net    |
+
+Test: `TestLimitHonoursRequestTopK` in
+`sdk/retrieval/pipeline/pipeline_test.go` pins the three cases
+(request > stage / request < stage / request unset).
 
 ## Result tables
 
@@ -253,7 +328,7 @@ these on the same ranking.**
 | Memobase v0.0.37                           |                                                                                  **75.78** J% | answer + judge = gpt-4o-mini, mem0-protocol                                                                                                                                             | [memobase locomo-benchmark README](https://github.com/memodb-io/memobase/blob/main/docs/experiments/locomo-benchmark/README.md)                                                                                                                                                              |
 | MemoryScope / ReMe                         |                                                                                  **86.23** J% | originally heavy multi-worker pipeline; rebranded to AgentScope's ReMe with simplified file+vector design; the 86.23 is **still ReMe's own headline number** (Source E table)           | [agentscope-ai/ReMe](https://github.com/agentscope-ai/ReMe) (current home), formerly [modelscope/MemoryScope](https://github.com/modelscope/MemoryScope)                                                                                                                                     |
 | MemR3                                      | "+7.29% vs RAG, +1.94% vs Zep" relative on LoCoMo10; ReMe README puts MemR3 at 81.55 absolute | gpt-4.1-mini backend                                                                                                                                                                    | [MemR³ paper](https://arxiv.org/abs/2512.20237), [Leagein/memr3](https://github.com/Leagein/memr3), absolute via [ReMe README](https://github.com/agentscope-ai/ReMe)                                                                                                                        |
-| **FlowCraft**                              |                                              **76.65** J% (gpt-4o-mini, image annotations on) | `--soft-merge=true`, `--multi-recall=true`, `--answer-llm=azure_4o_mini --judge-llm=azure_4o_mini --reranker-llm=azure_4o_mini`, topk=30, image annotations from upstream `query` field | run [25903391272](https://github.com/GizClaw/flowcraft/actions/runs/25903391272) (May 15, 2026); n=1542 questions on LoCoMo10                                                                                                                                                                |
+| **FlowCraft**                              |                                              **76.59** J% (gpt-4o-mini, post-topK-fix, image annotations on) | `--soft-merge=true`, `--multi-recall=true`, `--answer-llm=azure_4o_mini --judge-llm=azure_4o_mini --reranker-llm=azure_4o_mini`, topk=30 (now actually 30 — see [§ Limit-stage bug fix](#limit-stage-bug-fix-may-2026)), image annotations from upstream `query` field | run [25912693189](https://github.com/GizClaw/flowcraft/actions/runs/25912693189) (May 15, 2026); n=1542 questions on LoCoMo10. Per-category: single-hop 77.66, temporal 70.09, multi-hop 55.21, open-domain 81.09, adversarial 100.00 (n=2). Prior `25903391272` row at 76.65 used effectively topK=10 due to a `Limit` stage bug (since fixed in `db16b7f2`). |
 
 #### Source E — ReMe README leaderboard (April 2026)
 
