@@ -92,6 +92,15 @@ type ExtractOptions struct {
 	// memories already in store, intended to be injected into the prompt so
 	// the model can avoid restating them. Empty when SaveWithContext is off.
 	ExistingFacts []string
+
+	// RecentMessages are the most recent conversation turns from prior
+	// Save calls on the same scope (read from [MessageBuffer] BEFORE
+	// the current Save runs extraction). They feed the prompt's
+	// RECENT TURNS section so the LLM can resolve pronouns and
+	// references that were established in earlier batches but are
+	// absent from the current batch. Empty when the parent Memory was
+	// not configured with [WithRecentTurns] or [WithMessageBuffer].
+	RecentMessages []llm.Message
 }
 
 // ExtractOption mutates ExtractOptions.
@@ -100,6 +109,15 @@ type ExtractOption func(*ExtractOptions)
 // WithExistingFacts injects existing memory snippets to dampen duplication.
 func WithExistingFacts(facts []string) ExtractOption {
 	return func(o *ExtractOptions) { o.ExistingFacts = facts }
+}
+
+// WithRecentMessages injects raw prior-turn messages so the extractor
+// can resolve pronouns / anaphora / entity references that were
+// established in earlier batches. The slice is expected in
+// chronological order (oldest first); rendered into the prompt's
+// RECENT TURNS section by the default extractor.
+func WithRecentMessages(msgs []llm.Message) ExtractOption {
+	return func(o *ExtractOptions) { o.RecentMessages = msgs }
 }
 
 // Extractor produces facts from a list of conversational messages.
@@ -303,6 +321,16 @@ When a fact is a stable profile / preference / relationship attribute that may n
 
 Episodic facts (episodic=true) MUST leave subject and predicate empty — they are append-only timeline data, not slot replacements.
 
+# RECENT TURNS — pronoun and reference resolution context
+
+If a RECENT TURNS block is provided below (above CONVERSATION), it carries raw messages from PRIOR Save batches on the same conversation. Use it ONLY to resolve references that appear in the CURRENT CONVERSATION but were established earlier:
+
+- pronouns ("she", "he", "they") whose antecedent was named in a prior turn
+- short references ("the gym", "the trip", "Maya") whose introduction happened earlier
+- chronology hints ("the day after we spoke about it") that anchor relative time
+
+CRITICAL: do NOT extract facts directly from RECENT TURNS — those messages were already processed by an earlier Save and their facts (if any) are stored. Your extractions must come exclusively from the CURRENT CONVERSATION block. RECENT TURNS is a reference dictionary, not an extraction source.
+
 # EXISTING MEMORIES — dedup only, NEVER silence new facts
 
 If an EXISTING MEMORIES block is provided below, use it ONLY to avoid emitting a fact whose specific content is already captured verbatim or as a near-paraphrase. The block is NOT a topic filter.
@@ -417,19 +445,51 @@ assistant: Cool cool.
 
 Facts: {"facts": []}
 
-%sCONVERSATION:
+%s%sCONVERSATION:
 %s
 `
 
-// renderExistingFacts formats existing memories as a "EXISTING MEMORIES" prefix
-// suitable for direct insertion into DefaultExtractPrompt's first %s. Returns
-// the empty string when facts is empty so the prompt collapses cleanly.
+// renderRecentTurns formats prior-batch messages as a "RECENT TURNS"
+// prefix suitable for direct insertion into DefaultExtractPrompt's
+// first %s slot. Returns the empty string when no messages are
+// available so the prompt collapses cleanly. The role label is
+// preserved verbatim (user / assistant) so the LLM can match
+// references against the same wire-protocol vocabulary it sees in
+// the CONVERSATION slot below.
+func renderRecentTurns(msgs []llm.Message) string {
+	if len(msgs) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("RECENT TURNS (prior to this batch, for pronoun and reference resolution; do NOT extract from these):\n")
+	for _, m := range msgs {
+		content := strings.TrimSpace(m.Content())
+		if content == "" {
+			continue
+		}
+		role := string(m.Role)
+		if role == "" {
+			role = "speaker"
+		}
+		b.WriteString(role)
+		b.WriteString(": ")
+		b.WriteString(content)
+		b.WriteByte('\n')
+	}
+	b.WriteByte('\n')
+	return b.String()
+}
+
+// renderExistingFacts formats existing memories as an "EXISTING MEMORIES"
+// prefix suitable for direct insertion into DefaultExtractPrompt's
+// second %s slot. Returns the empty string when facts is empty so the
+// prompt collapses cleanly.
 func renderExistingFacts(facts []string) string {
 	if len(facts) == 0 {
 		return ""
 	}
 	var b strings.Builder
-	b.WriteString("EXISTING MEMORIES (do not restate verbatim):\n")
+	b.WriteString("EXISTING MEMORIES (dedup only — do not restate verbatim, but new claims about these entities are still in-scope):\n")
 	for _, f := range facts {
 		f = strings.TrimSpace(f)
 		if f == "" {
@@ -473,7 +533,7 @@ func (e *AdditiveExtractor) Extract(ctx context.Context, _ Scope, msgs []llm.Mes
 	if tmpl == "" {
 		tmpl = DefaultExtractPrompt
 	}
-	prompt := fmt.Sprintf(tmpl, renderExistingFacts(o.ExistingFacts), convo)
+	prompt := fmt.Sprintf(tmpl, renderRecentTurns(o.RecentMessages), renderExistingFacts(o.ExistingFacts), convo)
 
 	resp, _, err := e.LLM.Generate(ctx, []llm.Message{
 		{Role: model.RoleUser, Parts: []model.Part{{Type: model.PartText, Text: prompt}}},

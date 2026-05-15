@@ -105,6 +105,9 @@ type config struct {
 	saveCtxTopK      int
 	saveCtxThreshold float64
 
+	msgBuffer   MessageBuffer
+	recentMsgsK int
+
 	md5Dedup           bool
 	softMerge          bool
 	slotMerge          bool
@@ -187,6 +190,48 @@ func WithSaveContext(topK int, threshold float64) Option {
 		c.saveWithCtx = true
 		c.saveCtxTopK = topK
 		c.saveCtxThreshold = threshold
+	}
+}
+
+// WithRecentTurns enables a bounded in-memory [MessageBuffer] that
+// keeps the most recent conversation turns per scope. On every Save,
+// the previous K messages are read from the buffer and injected into
+// the extractor as [ExtractOptions.RecentMessages] so the LLM can
+// resolve cross-batch pronoun / anaphora / entity references; after
+// extraction succeeds, the current Save's messages are appended.
+//
+// k is the number of recent messages exposed to the extractor per
+// Save (typical: 10-20). bufferCap is the per-scope ring capacity;
+// non-positive values default to max(2*k, 40). Set k <= 0 to disable.
+//
+// For multi-process / persistent deployments, supply a custom
+// implementation via [WithMessageBuffer] instead.
+func WithRecentTurns(k, bufferCap int) Option {
+	return func(c *config) {
+		if k <= 0 {
+			return
+		}
+		if bufferCap <= 0 {
+			bufferCap = 2 * k
+			if bufferCap < 40 {
+				bufferCap = 40
+			}
+		}
+		c.recentMsgsK = k
+		c.msgBuffer = NewMemoryBuffer(bufferCap)
+	}
+}
+
+// WithMessageBuffer injects a custom [MessageBuffer] (e.g. backed by
+// Redis or SQLite) and sets the per-Save read window. Mutually
+// exclusive with [WithRecentTurns]; the option applied last wins.
+func WithMessageBuffer(buf MessageBuffer, k int) Option {
+	return func(c *config) {
+		if buf == nil || k <= 0 {
+			return
+		}
+		c.msgBuffer = buf
+		c.recentMsgsK = k
 	}
 }
 

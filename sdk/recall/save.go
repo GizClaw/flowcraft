@@ -58,6 +58,16 @@ func (m *lt) Save(ctx context.Context, scope Scope, msgs []llm.Message) (SaveRes
 	}
 	m.rememberNamespace(ctx, NamespaceFor(scope))
 	var extractOpts []ExtractOption
+	// Recent turns must be read BEFORE the current msgs are appended so
+	// the extractor only ever sees prior conversational context — the
+	// current batch goes into the CONVERSATION slot, not the RECENT
+	// TURNS slot. Buffer errors are non-fatal: missing context degrades
+	// extractor quality but never breaks the save.
+	if m.cfg.msgBuffer != nil && m.cfg.recentMsgsK > 0 {
+		if recent, err := m.cfg.msgBuffer.Recent(ctx, scope, m.cfg.recentMsgsK); err == nil && len(recent) > 0 {
+			extractOpts = append(extractOpts, WithRecentMessages(recent))
+		}
+	}
 	if m.cfg.saveWithCtx {
 		if existing := m.gatherExistingFacts(ctx, scope, msgs); len(existing) > 0 {
 			extractOpts = append(extractOpts, WithExistingFacts(existing))
@@ -70,6 +80,13 @@ func (m *lt) Save(ctx context.Context, scope Scope, msgs []llm.Message) (SaveRes
 	ids, err := m.upsertFacts(ctx, scope, msgs, facts, m.cfg.now())
 	if err != nil {
 		return SaveResult{}, err
+	}
+	// Append AFTER persistence: a Save that failed mid-extract must not
+	// poison the next Save's context. Append errors are also non-fatal —
+	// the buffer is a quality booster, not part of the durability
+	// contract.
+	if m.cfg.msgBuffer != nil {
+		_ = m.cfg.msgBuffer.Append(ctx, scope, msgs)
 	}
 	return SaveResult{EntryIDs: ids, Facts: facts}, nil
 }
