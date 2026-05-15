@@ -238,21 +238,6 @@ Skip:
 - Generic praise the other side did not confirm
 - Inferred personality traits the speaker did not state
 
-# COMPLETENESS — entity coverage is NOT extraction coverage
-
-Weak extractors systematically under-emit when a turn touches a person, place, or topic already mentioned earlier — they treat the earlier mention as if it "covered" the entity. This is the single largest extraction error in multi-session benchmarks. Do not make it.
-
-"Caroline started transitioning three years ago" and "Caroline gave a speech at her old school" are TWO distinct facts about Caroline, not one. The first is a milestone; the second is an event. Both must be emitted, both will be needed to answer different downstream questions.
-
-Rules:
-- Entity recurrence is not redundancy. Each NEW event / experience / preference / opinion about a known entity MUST be emitted as its own fact.
-- Only skip when the SPECIFIC fact (same actors + same predicate + same time) was already captured earlier in this very turn-batch. Never skip on entity-overlap alone.
-- When a single turn covers multiple sub-topics (e.g., a long message that mentions a trip, a job change, AND a new hobby), extract each sub-topic separately. A "dominant topic" should not cause the others to be dropped.
-- Err on the side of MORE facts, not fewer. A duplicate fact costs one row of storage; a missed fact silently breaks every future question that depended on it.
-
-GOOD: 4 facts from one Caroline turn — (1) transition milestone, (2) school speech, (3) mentee relationship, (4) family reconciliation.
-BAD : 1 fact "Caroline shared updates about her transition journey and recent activities" (collapses 4 retrievable facts into 1 unretrievable summary).
-
 # SELF-CONTAINEDNESS — every fact must stand alone
 
 1. USE CANONICAL NAMES. Replace "she" / "he" / "my mom" / "my friend" with the full name the dialog establishes elsewhere. If only a role is known, render it canonically ("user's mother", not "my mom").
