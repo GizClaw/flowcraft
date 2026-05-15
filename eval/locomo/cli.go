@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -16,6 +17,7 @@ import (
 	"github.com/GizClaw/flowcraft/eval/locomo/runners/flowcraft"
 	"github.com/GizClaw/flowcraft/eval/metrics"
 	"github.com/GizClaw/flowcraft/sdk/llm"
+	"github.com/GizClaw/flowcraft/sdk/recall"
 
 	_ "github.com/GizClaw/flowcraft/sdkx/embedding/azure"
 	_ "github.com/GizClaw/flowcraft/sdkx/embedding/qwen"
@@ -85,6 +87,8 @@ func addLocomoRun(parent *cobra.Command, g *cliflags.Global) {
 		multiRecall       bool
 		updateResolver    string
 		recentTurnsK      int
+		dumpFactsPath     string
+		dumpRecallPath    string
 	)
 
 	cmd := &cobra.Command{
@@ -165,6 +169,34 @@ Example (LLM extractor + LLM answer + LLM judge + Qwen embedder):
 				extractor = answer
 			}
 
+			// --dump-facts diagnostic: stream every Save batch's
+			// extracted facts to a JSONL sidecar so we can audit
+			// "extract miss vs recall miss" failures without
+			// rerunning the index.
+			var (
+				dumpMu  sync.Mutex
+				dumpW   *os.File
+				dumpEnc *json.Encoder
+				onFacts func(recall.Scope, []recall.ExtractedFact)
+			)
+			if dumpFactsPath != "" {
+				dumpW, err = os.Create(dumpFactsPath)
+				if err != nil {
+					return fmt.Errorf("--dump-facts: %w", err)
+				}
+				defer dumpW.Close()
+				dumpEnc = json.NewEncoder(dumpW)
+				onFacts = func(scope recall.Scope, facts []recall.ExtractedFact) {
+					dumpMu.Lock()
+					defer dumpMu.Unlock()
+					_ = dumpEnc.Encode(struct {
+						TS    time.Time              `json:"ts"`
+						Scope recall.Scope           `json:"scope"`
+						Facts []recall.ExtractedFact `json:"facts"`
+					}{time.Now(), scope, facts})
+				}
+			}
+
 			rOpts := flowcraft.Options{
 				Name:              runnerName,
 				LLM:               extractor,
@@ -178,6 +210,7 @@ Example (LLM extractor + LLM answer + LLM judge + Qwen embedder):
 				MultiRecall:       multiRecall,
 				UpdateResolverLLM: resolverLLM,
 				RecentTurnsK:      recentTurnsK,
+				OnFactsExtracted:  onFacts,
 			}
 			// Extractor prompt is intentionally not overridden here: every
 			// architectural rule that helps LoCoMo (self-containedness,
@@ -196,6 +229,51 @@ Example (LLM extractor + LLM answer + LLM judge + Qwen embedder):
 			if err != nil {
 				return fmt.Errorf("notify: %w", err)
 			}
+			// --dump-recall diagnostic: capture per-question recall
+			// hits (id, score, content) to JSONL so we can audit
+			// "recall miss vs answer miss" — does the retrieval
+			// pipeline surface the gold-evidence fact at all?
+			var (
+				recallMu  sync.Mutex
+				recallEnc *json.Encoder
+				onRecall  func(q dataset.Question, hits []recall.Hit)
+			)
+			if dumpRecallPath != "" {
+				rw, rerr := os.Create(dumpRecallPath)
+				if rerr != nil {
+					return fmt.Errorf("--dump-recall: %w", rerr)
+				}
+				defer rw.Close()
+				recallEnc = json.NewEncoder(rw)
+				onRecall = func(q dataset.Question, hits []recall.Hit) {
+					recallMu.Lock()
+					defer recallMu.Unlock()
+					type hitRec struct {
+						ID       string   `json:"id"`
+						Score    float64  `json:"score"`
+						Content  string   `json:"content"`
+						Episodic bool     `json:"episodic,omitempty"`
+						Cats     []string `json:"categories,omitempty"`
+					}
+					recs := make([]hitRec, 0, len(hits))
+					for _, h := range hits {
+						recs = append(recs, hitRec{
+							ID:      h.Entry.ID,
+							Score:   h.Score,
+							Content: h.Entry.Content,
+							Cats:    h.Entry.Categories,
+						})
+					}
+					_ = recallEnc.Encode(struct {
+						TS    time.Time `json:"ts"`
+						QID   string    `json:"qid"`
+						Query string    `json:"query"`
+						Gold  []string  `json:"gold_answers,omitempty"`
+						Hits  []hitRec  `json:"hits"`
+					}{time.Now(), q.ID, q.Query, q.GoldAnswers, recs})
+				}
+			}
+
 			opts := Options{
 				TopK:              topK,
 				UseExtractor:      useExtractor,
@@ -206,6 +284,7 @@ Example (LLM extractor + LLM answer + LLM judge + Qwen embedder):
 				IngestTimeout:     ingestTimeout,
 				QATimeout:         qaTimeout,
 				ProgressPct:       g.Notify.ProgressPct,
+				OnQuestionRecall:  onRecall,
 				Hook: func(ctx context.Context, e Event) {
 					notify.Forward(ctx, notifier, notify.Event{
 						Kind: e.Kind, Time: e.Time, Title: e.Title, Body: e.Body, Fields: e.Fields,
@@ -278,6 +357,8 @@ Example (LLM extractor + LLM answer + LLM judge + Qwen embedder):
 	f.BoolVar(&multiRecall, "multi-recall", false, "switch LTM to 3-lane recall (vector+bm25+entity) + RRFFusion; defaults to legacy single-lane vector recall + BM25/entity boosts")
 	f.StringVar(&updateResolver, "update-resolver", "", "LLM alias for the memory update resolver (ADD/UPDATE/DELETE/NOOP); empty disables. Adds one LLM call per Save batch.")
 	f.IntVar(&recentTurnsK, "recent-turns", 0, "if >0, inject the previous K messages from prior Save batches into the extractor for cross-batch pronoun/entity reference resolution")
+	f.StringVar(&dumpFactsPath, "dump-facts", "", "diagnostic: write one JSONL record per Save batch with the extractor's facts to this path (audits extract-miss vs recall-miss)")
+	f.StringVar(&dumpRecallPath, "dump-recall", "", "diagnostic: write one JSONL record per question with the top-k recall hits to this path (audits recall-miss vs answer-miss)")
 
 	parent.AddCommand(cmd)
 }

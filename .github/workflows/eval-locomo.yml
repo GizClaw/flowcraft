@@ -251,6 +251,42 @@ jobs:
           GOWORK=off go build -trimpath -o /tmp/eval ./cmd/eval
           /tmp/eval --help | head -20
 
+      - name: Refresh dataset from upstream
+        # The `eval locomo convert` step is the single source of truth
+        # for upstream-LoCoMo→eval-JSONL normalisation (speaker→role
+        # mapping, session date_time injection, image-annotation
+        # surfacing for the ~15 % of turns where the visual is the
+        # answer, nil-answer pruning). Until May 15 2026 the runner
+        # consumed a pre-staged JSONL that pre-dated the image-
+        # annotation work, so any change to the convert layer was
+        # silently dead code on CI. We now ALWAYS regenerate the JSONL
+        # from a freshly-downloaded upstream JSON so every run is
+        # reproducible from a single immutable source.
+        #
+        # Skipped when dataset == "synthetic" (smoke runs use the
+        # in-binary synthetic set), or when the input is already a
+        # non-default custom path (e.g. an ad-hoc local override on
+        # the runner host).
+        env:
+          DATASET_IN: ${{ inputs.dataset }}
+          DEFAULT_DATASET: /var/lib/flowcraft-eval/datasets/locomo10.jsonl
+          UPSTREAM_URL: https://raw.githubusercontent.com/snap-research/locomo/main/data/locomo10.json
+        run: |
+          set -eu
+          if [ "$DATASET_IN" = "synthetic" ] || [ "$DATASET_IN" != "$DEFAULT_DATASET" ]; then
+            echo "skipping refresh: dataset='$DATASET_IN' is not the default JSONL path"
+            exit 0
+          fi
+          mkdir -p /var/lib/flowcraft-eval/datasets
+          RAW=/tmp/locomo-raw/locomo10.json
+          mkdir -p "$(dirname "$RAW")"
+          echo "downloading upstream → $RAW"
+          curl -sSLf -o "$RAW" "$UPSTREAM_URL"
+          echo "raw size: $(wc -c < "$RAW") bytes"
+          /tmp/eval locomo convert --in "$RAW" --out "$DEFAULT_DATASET"
+          echo "fresh dataset size: $(wc -c < "$DEFAULT_DATASET") bytes"
+          echo "image-annotated turns: $(grep -o 'shared image' "$DEFAULT_DATASET" | wc -l)"
+
       - name: Notify Feishu — started
         if: success()
         # Plain text message at start. The live CardKit progress
@@ -278,6 +314,17 @@ jobs:
       - name: Run locomo
         env:
           REPORT_OUT: ${{ env.REPORT_DIR }}/${{ github.run_id }}.json
+          # Diagnostic dumps are emitted unconditionally for every run.
+          # They are cheap to produce (in-process JSONL writes) and
+          # invaluable when classifying regressions after the fact —
+          # without them an "I don't know" failure can't be attributed
+          # to extract-miss vs recall-miss vs answer-miss without
+          # rerunning the whole eval. They are deliberately NOT exposed
+          # as workflow inputs: making them a knob would tempt people
+          # to forget to enable them, and forensic value compounds when
+          # we have dumps for every historical run.
+          FACTS_OUT: ${{ env.REPORT_DIR }}/${{ github.run_id }}-facts.jsonl
+          RECALL_OUT: ${{ env.REPORT_DIR }}/${{ github.run_id }}-recall.jsonl
         # CardKit live-update flags:
         #   --notify-name      identifies this run in the card header
         #   --notify-progress-pct  milestone resolution
@@ -306,6 +353,8 @@ jobs:
             --ingest-timeout "${{ inputs.ingest_timeout }}"
             --notify-name "$RUN_TAG"
             --notify-progress-pct "${{ inputs.notify_progress_pct }}"
+            --dump-facts "$FACTS_OUT"
+            --dump-recall "$RECALL_OUT"
             --out "$REPORT_OUT"
           )
           if [ -n "${{ inputs.reranker_llm }}" ]; then
@@ -333,6 +382,23 @@ jobs:
           path: ${{ env.REPORT_DIR }}/${{ github.run_id }}.json
           if-no-files-found: warn
           retention-days: 90
+
+      - name: Upload diagnostic dumps artifact
+        if: always()
+        # Bundles the per-Save extracted-facts JSONL and the per-question
+        # recall-hits JSONL so a post-hoc audit can classify any failure
+        # into extract-miss / recall-miss / answer-miss without rerunning
+        # the eval. Retention is shorter than the report because the
+        # dumps are larger (~2-5 MB each) but they only matter when
+        # debugging a specific run.
+        uses: actions/upload-artifact@v4
+        with:
+          name: locomo-dumps-${{ github.run_id }}
+          path: |
+            ${{ env.REPORT_DIR }}/${{ github.run_id }}-facts.jsonl
+            ${{ env.REPORT_DIR }}/${{ github.run_id }}-recall.jsonl
+          if-no-files-found: warn
+          retention-days: 30
 
       - name: Notify Feishu — final
         if: always()

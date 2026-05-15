@@ -102,6 +102,17 @@ type Options struct {
 	// emits start / *_done / error). Must divide 100 cleanly for the
 	// "every Nth percent" message to land on exact boundaries.
 	ProgressPct int
+
+	// OnQuestionRecall is invoked synchronously after every successful
+	// Recall in the QA loop, before the answer LLM is called. It
+	// enables the --dump-recall diagnostic to capture which facts the
+	// retrieval pipeline actually surfaces for each question — the
+	// recall-miss vs answer-miss probe complement to the extractor's
+	// OnFactsExtracted hook on the ingest side. nil disables.
+	//
+	// Callback runs in the QA worker goroutine, so it MUST be
+	// goroutine-safe when Concurrency > 1.
+	OnQuestionRecall func(q dataset.Question, hits []recall.Hit)
 }
 
 // Event describes one lifecycle checkpoint. See [EventHook].
@@ -725,6 +736,9 @@ func evalQuestions(ctx context.Context, r runners.Runner, scopeOf func(string) r
 					continue
 				}
 				latencies[j.idx] = d
+				if opts.OnQuestionRecall != nil {
+					opts.OnQuestionRecall(q, hits)
+				}
 				pred, err := buildPrediction(qctx, opts, q.Query, hits)
 				if err != nil {
 					cancel()

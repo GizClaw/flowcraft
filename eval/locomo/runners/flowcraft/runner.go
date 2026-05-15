@@ -76,12 +76,27 @@ type Options struct {
 	// minimal context. See
 	// internal-docs/eval-recent-turns-session-batch-mismatch-2026-05-15.md.
 	RecentTurnsK int
+
+	// OnFactsExtracted is invoked synchronously after every
+	// successful Save with the scope and the extractor's output
+	// before any retrieval mutation (soft-merge / supersede /
+	// MD5 dedup). It enables diagnostics that need to inspect what
+	// the extractor actually produced for a given batch — e.g. the
+	// --dump-facts probe in eval/locomo/cli.go used to distinguish
+	// extract miss from recall miss without bolting yet another
+	// abstraction onto recall.Memory.
+	//
+	// The callback runs in the caller's goroutine, so it MUST be
+	// goroutine-safe when the eval's ingest_concurrency > 1.
+	// nil disables the callback.
+	OnFactsExtracted func(scope recall.Scope, facts []recall.ExtractedFact)
 }
 
 // Runner is the default bench Runner.
 type Runner struct {
-	name string
-	mem  recall.Memory
+	name      string
+	mem       recall.Memory
+	onExtract func(scope recall.Scope, facts []recall.ExtractedFact)
 }
 
 // New returns a new bench runner. Caller must Close().
@@ -146,7 +161,7 @@ func New(opts Options) (runners.Runner, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Runner{name: opts.Name, mem: mem}, nil
+	return &Runner{name: opts.Name, mem: mem, onExtract: opts.OnFactsExtracted}, nil
 }
 
 // Name implements runners.Runner.
@@ -158,6 +173,9 @@ func (r *Runner) Save(ctx context.Context, scope recall.Scope, msgs []llm.Messag
 	res, err := r.mem.Save(ctx, scope, msgs)
 	if err != nil {
 		return 0, time.Since(t0), err
+	}
+	if r.onExtract != nil && len(res.Facts) > 0 {
+		r.onExtract(scope, res.Facts)
 	}
 	return len(res.EntryIDs), time.Since(t0), nil
 }
