@@ -99,8 +99,17 @@ func NewLayerRetriever(l LayerRepo, e Embedder) *LayerRetriever {
 // Name implements Retriever.
 func (r *LayerRetriever) Name() string { return "layer" }
 
-// Recall implements Retriever. Vector lane is skipped when Embedder is
-// nil; ModeHybrid degrades gracefully to BM25 in that case.
+// Recall implements Retriever. Mode handling:
+//
+//   - ModeBM25: BM25-only.
+//   - ModeVector: vector-only. Returns nil when Embedder is missing
+//     or q.Text is empty — matches BM25Retriever / VectorRetriever's
+//     "mode I cannot serve → nil" contract instead of silently
+//     downgrading to BM25 (issue #156). A misconfigured deployment
+//     gets a loud empty result rather than a different lane's
+//     answer masquerading as vector.
+//   - ModeHybrid: hybrid when Embedder is wired; documented graceful
+//     degrade to BM25-only when Embedder is nil.
 func (r *LayerRetriever) Recall(ctx context.Context, q Query) ([]Candidate, error) {
 	if r == nil || r.Layers == nil {
 		return nil, nil
@@ -109,8 +118,14 @@ func (r *LayerRetriever) Recall(ctx context.Context, q Query) ([]Candidate, erro
 		return nil, nil
 	}
 	mode := ResolveMode(q.Mode)
+	// A pure-vector request with no way to vectorise: return nil
+	// instead of silently downgrading. Hybrid keeps the documented
+	// graceful BM25 fallback.
+	if mode == ModeVector && (r.Embedder == nil || q.Text == "") {
+		return nil, nil
+	}
 	wantVector := (mode == ModeVector || mode == ModeHybrid) && r.Embedder != nil && q.Text != ""
-	wantBM25 := mode == ModeBM25 || mode == ModeHybrid || (mode == ModeVector && r.Embedder == nil)
+	wantBM25 := mode == ModeBM25 || mode == ModeHybrid
 
 	var vec []float32
 	if wantVector {

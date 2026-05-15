@@ -162,10 +162,36 @@ func TestLayerRetriever_OnlyForLayerQueries(t *testing.T) {
 	}
 }
 
-func TestLayerRetriever_VectorLaneSkippedWithoutEmbedder(t *testing.T) {
+// TestLayerRetriever_ModeVectorWithoutEmbedderReturnsNil pins the
+// fix for issue #156: a pure ModeVector request with no Embedder is
+// a request the retriever cannot serve, and it must return nil
+// rather than silently rewrite to BM25. Matches the "mode I cannot
+// serve → nil" contract of BM25Retriever (rejects ModeVector) and
+// VectorRetriever (rejects ModeBM25).
+func TestLayerRetriever_ModeVectorWithoutEmbedderReturnsNil(t *testing.T) {
 	repo := &stubLayerRepo{}
 	r := NewLayerRetriever(repo, nil)
 	q := Query{Layer: LayerAbstract, Mode: ModeVector, Text: "x"}.withDatasets([]string{"ds"})
+	out, err := r.Recall(context.Background(), q)
+	if err != nil {
+		t.Fatalf("recall: %v", err)
+	}
+	if out != nil {
+		t.Fatalf("expected nil result for ModeVector without Embedder, got %v", out)
+	}
+	if len(repo.calls) != 0 {
+		t.Fatalf("repo should not be called; got %d calls", len(repo.calls))
+	}
+}
+
+// TestLayerRetriever_HybridWithoutEmbedderDegradesToBM25 pins the
+// documented graceful-degrade exception: ModeHybrid with no Embedder
+// is still served via the BM25 lane (callers asked for "any of",
+// not "only vector"). Issue #156 explicitly preserves this branch.
+func TestLayerRetriever_HybridWithoutEmbedderDegradesToBM25(t *testing.T) {
+	repo := &stubLayerRepo{}
+	r := NewLayerRetriever(repo, nil)
+	q := Query{Layer: LayerAbstract, Mode: ModeHybrid, Text: "x"}.withDatasets([]string{"ds"})
 	if _, err := r.Recall(context.Background(), q); err != nil {
 		t.Fatalf("recall: %v", err)
 	}
@@ -173,7 +199,7 @@ func TestLayerRetriever_VectorLaneSkippedWithoutEmbedder(t *testing.T) {
 		t.Fatalf("calls = %d, want 1", len(repo.calls))
 	}
 	if repo.calls[0].Mode != ModeBM25 {
-		t.Fatalf("mode = %q, want bm25 (vector degraded)", repo.calls[0].Mode)
+		t.Fatalf("mode = %q, want bm25 (hybrid degrades when no embedder)", repo.calls[0].Mode)
 	}
 }
 
