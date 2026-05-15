@@ -23,7 +23,10 @@ on:
       dataset:
         description: "Dataset path (.jsonl) or 'synthetic' (smoke)"
         required: true
-        default: "eval/locomo/data/locomo10.jsonl"
+        # Runner-host path (the flowcraft-eval VM stages datasets under
+        # /var/lib/flowcraft-eval/datasets). Override when smoke-testing
+        # locally with 'synthetic' or with a repo-relative path.
+        default: "/var/lib/flowcraft-eval/datasets/locomo10.jsonl"
       topk:
         description: "Recall top-k"
         required: false
