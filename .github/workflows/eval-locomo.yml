@@ -163,6 +163,31 @@ on:
         description: "Skip entity rows with > N linked entries at Lookup (0 disables; 60-80 recommended for LoCoMo)"
         required: false
         default: "0"
+      entity_link_boost:
+        # Post-fusion entity-link integration mode. When > 0, the
+        # ModeEntityLink lane is REMOVED from MultiRetrieve and instead
+        # an EntityLinkBoost stage multiplies the score of every fused
+        # hit whose Doc.ID appears in CandidateEntityIDs by (1 + boost).
+        # Vector + BM25 keep ownership of candidate generation so
+        # multi-hop questions don't starve, and entity-link only acts
+        # as a re-ranking nudge. 0 keeps legacy 4-lane RRF integration.
+        # No-op when entity_store=false.
+        description: "Switch entity-link integration from RRF lane to post-fusion boost (0 = lane, 0.2-0.5 = boost)"
+        required: false
+        default: "0"
+      query_entity_extractor:
+        # Closes the entity-vocabulary asymmetry: write-side uses the
+        # LLM-based AdditiveExtractor (multi-word noun phrases like
+        # "LGBTQ support group"), query-side defaults to a rule-based
+        # capitalized-token splitter ("lgbtq" only). When true, we
+        # reuse the --extractor-llm to extract query entities with the
+        # same vocabulary as the EntityStore keys. Adds 1 LLM call per
+        # recall (cheap; same model + JSON mode). No-op when
+        # entity_store=false.
+        description: "Use LLM-backed query-side entity extractor (reuses --extractor-llm)"
+        required: false
+        type: boolean
+        default: false
       qa_timeout:
         # CLI default: 2m. The first smoke run showed a single
         # azure.generate hitting 1m59s — too tight for the current
@@ -411,6 +436,8 @@ jobs:
             --save-with-context=${{ inputs.save_with_context }}
             --entity-store=${{ inputs.entity_store }}
             --entity-store-max-linked=${{ inputs.entity_store_max_linked }}
+            --entity-link-boost=${{ inputs.entity_link_boost }}
+            --query-entity-extractor=${{ inputs.query_entity_extractor }}
             --qa-timeout "${{ inputs.qa_timeout }}"
             --ingest-timeout "${{ inputs.ingest_timeout }}"
             --notify-name "$RUN_TAG"
