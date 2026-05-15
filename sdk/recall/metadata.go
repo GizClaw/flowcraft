@@ -54,6 +54,31 @@ const (
 	// products, …) the extractor attached to the fact. Stored as
 	// []string but tolerated as []any for adapter round-trips.
 	MetaEntities = "entities"
+
+	// MetaEntityName is the display-form (first-seen capitalization)
+	// name of an entity row inside the Entity Store sibling namespace
+	// (EntityNamespaceFor). The row's Doc.ID is the composite
+	// (UserID :: normalized_name) — see [EntityKey]. The name field
+	// itself is telemetry; lookups never read it.
+	MetaEntityName = "entity_name"
+
+	// MetaEntityLinked is the list of memory entry IDs (from the
+	// SIBLING entry namespace) that mention this entity. FIFO order
+	// with oldest evicted first when len exceeds the configured cap
+	// (default 200). Stored as []string; tolerated as []any for
+	// round-trip safety the way MetaEntities is.
+	MetaEntityLinked = "entity_linked"
+
+	// MetaEntityCount is len(MetaEntityLinked) at write time, kept as
+	// a separate metadata field so backends supporting Range filters
+	// can answer "drop common-noun entities with > N links" without
+	// reading the full id list.
+	MetaEntityCount = "entity_count"
+
+	// MetaEntityLast is the unix-millis timestamp of the most recent
+	// Link operation that touched this entity row. Lets future ranker
+	// stages weight by recency without re-walking the entry namespace.
+	MetaEntityLast = "entity_last_seen_ms"
 )
 
 // MetaSlotKey is re-exported from the retrieval package so recall

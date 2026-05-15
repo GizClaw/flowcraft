@@ -14,6 +14,7 @@ type scriptedExtractor struct {
 	err         error
 	calls       int
 	gotExisting [][]string
+	gotRecent   [][]llm.Message
 }
 
 func (e *scriptedExtractor) Extract(_ context.Context, _ recall.Scope, _ []llm.Message, opts ...recall.ExtractOption) ([]recall.ExtractedFact, error) {
@@ -24,6 +25,7 @@ func (e *scriptedExtractor) Extract(_ context.Context, _ recall.Scope, _ []llm.M
 		}
 	}
 	e.gotExisting = append(e.gotExisting, append([]string(nil), o.ExistingFacts...))
+	e.gotRecent = append(e.gotRecent, append([]llm.Message(nil), o.RecentMessages...))
 	if e.err != nil {
 		return nil, e.err
 	}

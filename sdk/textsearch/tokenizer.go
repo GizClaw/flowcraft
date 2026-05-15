@@ -25,7 +25,13 @@ func (t *SimpleTokenizer) Tokenize(text string) []string {
 		if len(w) < 2 || stopWords[w] {
 			continue
 		}
-		out = append(out, Stem(w))
+		// Lemmatize first so irregular verb forms (went/bought/taught)
+		// and irregular noun plurals (children/feet/mice) collapse to
+		// their base form before Porter strips regular morphology.
+		// Stem alone cannot do this because it operates on suffixes
+		// only and irregular forms differ in their stem vowel or are
+		// suppletive — see textsearch/lemma.go.
+		out = append(out, Stem(Lemmatize(w)))
 	}
 	return out
 }

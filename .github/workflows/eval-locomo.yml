@@ -2,15 +2,19 @@ name: eval / locomo
 
 # ---------------------------------------------------------------------
 # LoCoMo-10 dialog-memory benchmark, executed on the self-hosted
-# runner labelled `flowcraft-eval`. See internal-docs/eval-runbook.md
-# for the host-side setup (runner install, /etc/flowcraft-eval/.env,
-# /var/lib/flowcraft-eval/reports).
+# runner labelled `flowcraft-eval`. Host-side setup (runner install,
+# /etc/flowcraft-eval/.env, /var/lib/flowcraft-eval/reports) is
+# tracked out-of-band by the eval owners.
 #
 # Canonical CLI: `eval locomo run --dataset <path> --topk N
 #                  --extractor --extractor-llm <alias>
 #                  --answer-llm <alias> --judge-llm <alias>
 #                  --reranker-llm <alias> --embedder <alias>
 #                  --concurrency N --ingest-concurrency N
+#                  [--multi-recall=true]
+#                  [--save-with-context=true]
+#                  [--update-resolver=<alias>]
+#                  [--recent-turns N]
 #                  --out <report.json>`
 # ---------------------------------------------------------------------
 
@@ -20,7 +24,10 @@ on:
       dataset:
         description: "Dataset path (.jsonl) or 'synthetic' (smoke)"
         required: true
-        default: "eval/locomo/data/locomo10.jsonl"
+        # Runner-host path (the flowcraft-eval VM stages datasets under
+        # /var/lib/flowcraft-eval/datasets). Override when smoke-testing
+        # locally with 'synthetic' or with a repo-relative path.
+        default: "/var/lib/flowcraft-eval/datasets/locomo10.jsonl"
       topk:
         description: "Recall top-k"
         required: false
@@ -31,38 +38,43 @@ on:
       #                            JSON profile; :model overrides the
       #                            JSON's "model" field. With no :model
       #                            suffix the profile's own model is used.
-      # Defaults below mirror the historical lme-launch.sh values that
-      # the user ran for months under run-eval.sh, so they are known to
-      # match the Azure deployments named in the seeded .env (gpt-5.4
-      # under AZURE_GPT54, DeepSeek-V4-Flash under AZURE_DS_FLASH).
+      #
+      # Defaults below mirror the **validated 0.7575 qa.judge baseline**
+      # established by run [25896493084] (May 15, 2026, n=1542 on
+      # LoCoMo10). A blank dispatch must reproduce that result; future
+      # bumps go through a fresh paired-run on the runner. The aliases
+      # all resolve to gpt-4o-mini Azure deployments (seeded in
+      # /etc/flowcraft-eval/.env as FLOWCRAFT_TEST_AZURE_4O_MINI),
+      # mirroring the mem0 / Zep / memobase published methodology so
+      # cross-leaderboard comparisons stay apples-to-apples.
       extractor_llm:
-        description: "Extractor model alias (default uses Azure DeepSeek-V4-Flash deployment)"
+        description: "Extractor model alias (validated baseline: azure_4o_mini)"
         required: false
-        default: "azure_ds_flash"
+        default: "azure_4o_mini"
       answer_llm:
-        description: "Answer-synthesis model alias"
+        description: "Answer-synthesis model alias (validated baseline: azure_4o_mini)"
         required: false
-        default: "azure_ds_flash"
+        default: "azure_4o_mini"
       judge_llm:
-        description: "Judge model alias (default uses Azure gpt-5.4 deployment)"
+        description: "Judge model alias (validated baseline: azure_4o_mini, aligned with mem0/Zep/memobase)"
         required: false
-        default: "azure_gpt54"
+        default: "azure_4o_mini"
       reranker_llm:
-        description: "Reranker LLM alias ('' to disable)"
+        description: "Reranker LLM alias ('' to disable) (validated baseline: azure_4o_mini)"
         required: false
-        default: "qwen:qwen-flash"
+        default: "azure_4o_mini"
       embedder:
         description: "Embedder alias (e.g. qwen:text-embedding-v4)"
         required: false
         default: "qwen:text-embedding-v4"
       concurrency:
-        description: "QA-loop parallelism"
+        description: "QA-loop parallelism (validated baseline: 16)"
         required: false
-        default: "8"
+        default: "16"
       ingest_concurrency:
-        description: "Per-conversation extractor parallelism"
+        description: "Per-conversation extractor parallelism (validated baseline: 16)"
         required: false
-        default: "8"
+        default: "16"
       notify_progress_pct:
         description: "Feishu milestone resolution (% of work; 0=off)"
         required: false
@@ -73,14 +85,109 @@ on:
         default: "0"
       # ---- Tuning knobs that historically diverged from sdk defaults ----
       soft_merge:
-        # CLI default: true. The legacy lme-launch.sh ran with
-        # --soft-merge=false; flipping this affects whether near-duplicate
-        # facts are marked superseded_by (the soft-merge path) vs kept
-        # as distinct entries. Recall ranking can shift either way.
-        description: "Mark near-duplicate facts as superseded_by (sdk default true)"
+        # CLI / SDK default: true. From May 15, 2026 the SDK skips
+        # episodic facts in the vector supersede channel (see
+        # sdk/recall/merger.go isEpisodicFact), so leaving this on no
+        # longer regresses episodic-heavy datasets like LoCoMo —
+        # the previously-required `--soft-merge=false` workaround is
+        # gone. Only stable-attribute facts whose extractor did not
+        # set Subject+Predicate are eligible for the vector supersede
+        # path. The validated 0.7575 baseline runs with true.
+        description: "Mark near-duplicate stable-attribute facts as superseded_by (sdk default true)"
         required: false
         type: boolean
         default: true
+      multi_recall:
+        # CLI default: false (keeps legacy single-lane vector recall + BM25/entity
+        # boost behaviour). The validated 0.7575 baseline runs with true,
+        # which switches LTM to 3-lane recall (vector + bm25 + entity)
+        # + RRFFusion. See sdk/retrieval/pipeline/factory.go
+        # WithMultiRecall for the exact stage topology.
+        description: "Use 3-lane recall (vector+bm25+entity) + RRFFusion (validated baseline: true)"
+        required: false
+        type: boolean
+        default: true
+      update_resolver:
+        # Enables mem0 v3-style ADD/UPDATE/DELETE/NOOP memory linker.
+        # See sdk/recall/resolver_llm.go LLMUpdateResolver. Each Save
+        # batch issues one extra LLM call (resolver decision) plus
+        # N×Recall (one per new fact, top-K=20). Cost is non-trivial
+        # but offers cleaner long-term memory (no stale facts) for
+        # multi-session benches. Empty alias disables.
+        description: "LLM alias for the memory update resolver (empty = disabled)"
+        required: false
+        default: ""
+      recent_turns:
+        # Cross-batch reference-resolution context window. When >0,
+        # the extractor receives the previous K messages from prior
+        # Save batches on the same scope as RECENT TURNS — used to
+        # resolve pronouns, anaphora, short references, and
+        # chronology hints that were established earlier but absent
+        # from the current batch. The buffer lives in-process; see
+        # sdk/recall/message_buffer.go for the persistent-backend
+        # contract. Cost is one extra prompt section per Save (no
+        # extra LLM call). 0 disables.
+        description: "Inject previous K messages from prior batches into extractor (0 = disabled)"
+        required: false
+        default: "0"
+      save_with_context:
+        # Before extraction, recall existing facts for the current scope
+        # and inject them into the extractor prompt as EXISTING MEMORIES.
+        # This is mem0 v3's actual "memory linking" path: a single LLM
+        # call sees prior facts and self-dedups / skips semantic
+        # duplicates, without a destructive UPDATE/DELETE second call.
+        # Far cheaper than --update-resolver and architecturally suited
+        # to episodic-heavy datasets (LoCoMo) where old facts must
+        # never be tombstoned.
+        description: "Inject existing facts into extractor prompt (mem0 v3-style inline dedup)"
+        required: false
+        type: boolean
+        default: false
+      entity_store:
+        # Enables the entity-link inverted index lane (4th lane in
+        # MultiRetrieve, fed by EntityStore.Lookup on the entities the
+        # query extractor surfaces). Auto-enables --multi-recall. Adds
+        # a sibling namespace per Scope (ltm_<rt>__u_<user>__entities)
+        # with one row per normalised entity name; row writes happen
+        # synchronously after every Save batch via Memory.linkEntities.
+        description: "Enable entity-link inverted-index lane (architectural ablation)"
+        required: false
+        type: boolean
+        default: false
+      entity_store_max_linked:
+        # Common-noun pollution gate (row-8 hardening). Entity rows
+        # whose linked_ids count exceeds this threshold are skipped at
+        # Lookup time, preventing RRF rank-vote flooding by saturated
+        # entities (the failure mode that took entity-filter lane down
+        # 17pp on run 25866478422). No-op when entity_store=false.
+        description: "Skip entity rows with > N linked entries at Lookup (0 disables; 60-80 recommended for LoCoMo)"
+        required: false
+        default: "0"
+      entity_link_boost:
+        # Post-fusion entity-link integration mode. When > 0, the
+        # ModeEntityLink lane is REMOVED from MultiRetrieve and instead
+        # an EntityLinkBoost stage multiplies the score of every fused
+        # hit whose Doc.ID appears in CandidateEntityIDs by (1 + boost).
+        # Vector + BM25 keep ownership of candidate generation so
+        # multi-hop questions don't starve, and entity-link only acts
+        # as a re-ranking nudge. 0 keeps legacy 4-lane RRF integration.
+        # No-op when entity_store=false.
+        description: "Switch entity-link integration from RRF lane to post-fusion boost (0 = lane, 0.2-0.5 = boost)"
+        required: false
+        default: "0"
+      query_entity_extractor:
+        # Closes the entity-vocabulary asymmetry: write-side uses the
+        # LLM-based AdditiveExtractor (multi-word noun phrases like
+        # "LGBTQ support group"), query-side defaults to a rule-based
+        # capitalized-token splitter ("lgbtq" only). When true, we
+        # reuse the --extractor-llm to extract query entities with the
+        # same vocabulary as the EntityStore keys. Adds 1 LLM call per
+        # recall (cheap; same model + JSON mode). No-op when
+        # entity_store=false.
+        description: "Use LLM-backed query-side entity extractor (reuses --extractor-llm)"
+        required: false
+        type: boolean
+        default: false
       qa_timeout:
         # CLI default: 2m. The first smoke run showed a single
         # azure.generate hitting 1m59s — too tight for the current
@@ -95,6 +202,15 @@ on:
         description: "Per-conversation ingest deadline (Go duration)"
         required: false
         default: "10m"
+      locomo_ref:
+        # Upstream snap-research/locomo git ref used to materialise the
+        # raw JSON. Pin to a commit SHA for byte-stable reproducibility
+        # (also doubles as the host-side cache key — same SHA = no
+        # re-download). 'main' keeps the previous always-fresh behaviour
+        # but loses cache hits across runs.
+        description: "Upstream snap-research/locomo git ref (commit SHA or branch)"
+        required: false
+        default: "main"
 
 # Per-kind serialisation: at most one locomo run at a time. Other eval
 # kinds (longmemeval / beir / …) have their own concurrency.group and
@@ -189,6 +305,73 @@ jobs:
           GOWORK=off go build -trimpath -o /tmp/eval ./cmd/eval
           /tmp/eval --help | head -20
 
+      - name: Refresh dataset from upstream
+        # The `eval locomo convert` step is the single source of truth
+        # for upstream-LoCoMo→eval-JSONL normalisation (speaker→role
+        # mapping, session date_time injection, image-annotation
+        # surfacing for the ~15 % of turns where the visual is the
+        # answer, nil-answer pruning). Until May 15 2026 the runner
+        # consumed a pre-staged JSONL that pre-dated the image-
+        # annotation work, so any change to the convert layer was
+        # silently dead code on CI. We now ALWAYS regenerate the JSONL
+        # from a freshly-downloaded upstream JSON so every run is
+        # reproducible from a single immutable source.
+        #
+        # Skipped when dataset == "synthetic" (smoke runs use the
+        # in-binary synthetic set), or when the input is already a
+        # non-default custom path (e.g. an ad-hoc local override on
+        # the runner host).
+        #
+        # Fetch strategy (CN-friendly, May 15 2026):
+        #   1. Cache by upstream git ref under the host-persistent
+        #      /var/lib/flowcraft-eval/datasets/cache/. Same ref =>
+        #      zero network. Pinning `locomo_ref` to a commit SHA
+        #      gives byte-stable runs across the lifetime of the host
+        #      cache directory (it's never auto-pruned).
+        #   2. Primary fetch is jsDelivr's GitHub mirror — has CN
+        #      edge nodes and is typically 20-50x faster than
+        #      raw.githubusercontent.com on this runner.
+        #   3. Fall back to raw.githubusercontent.com if jsDelivr is
+        #      unreachable or the ref isn't yet propagated to its
+        #      edge cache (can lag GitHub by minutes-hours).
+        env:
+          DATASET_IN: ${{ inputs.dataset }}
+          DEFAULT_DATASET: /var/lib/flowcraft-eval/datasets/locomo10.jsonl
+          LOCOMO_REF: ${{ inputs.locomo_ref }}
+        run: |
+          set -eu
+          if [ "$DATASET_IN" = "synthetic" ] || [ "$DATASET_IN" != "$DEFAULT_DATASET" ]; then
+            echo "skipping refresh: dataset='$DATASET_IN' is not the default JSONL path"
+            exit 0
+          fi
+          mkdir -p /var/lib/flowcraft-eval/datasets
+          CACHE_DIR=/var/lib/flowcraft-eval/datasets/cache
+          mkdir -p "$CACHE_DIR"
+          CACHE="$CACHE_DIR/locomo10-${LOCOMO_REF}.json"
+          RAW=/tmp/locomo-raw/locomo10.json
+          mkdir -p "$(dirname "$RAW")"
+          if [ -s "$CACHE" ]; then
+            echo "cache hit ($CACHE, $(wc -c < "$CACHE") bytes) — skipping download"
+          else
+            URL_PRIMARY="https://cdn.jsdelivr.net/gh/snap-research/locomo@${LOCOMO_REF}/data/locomo10.json"
+            URL_FALLBACK="https://raw.githubusercontent.com/snap-research/locomo/${LOCOMO_REF}/data/locomo10.json"
+            TMP="${CACHE}.partial"
+            echo "downloading (primary: jsDelivr) ref=$LOCOMO_REF → $CACHE"
+            if curl -sSLf --max-time 90 -o "$TMP" "$URL_PRIMARY"; then
+              mv "$TMP" "$CACHE"
+            else
+              echo "jsDelivr unavailable, falling back to raw.githubusercontent.com"
+              rm -f "$TMP"
+              curl -sSLf --max-time 300 -o "$TMP" "$URL_FALLBACK"
+              mv "$TMP" "$CACHE"
+            fi
+            echo "downloaded $(wc -c < "$CACHE") bytes"
+          fi
+          cp "$CACHE" "$RAW"
+          /tmp/eval locomo convert --in "$RAW" --out "$DEFAULT_DATASET"
+          echo "fresh dataset size: $(wc -c < "$DEFAULT_DATASET") bytes"
+          echo "image-annotated turns: $(grep -o 'shared image' "$DEFAULT_DATASET" | wc -l)"
+
       - name: Notify Feishu — started
         if: success()
         # Plain text message at start. The live CardKit progress
@@ -216,6 +399,17 @@ jobs:
       - name: Run locomo
         env:
           REPORT_OUT: ${{ env.REPORT_DIR }}/${{ github.run_id }}.json
+          # Diagnostic dumps are emitted unconditionally for every run.
+          # They are cheap to produce (in-process JSONL writes) and
+          # invaluable when classifying regressions after the fact —
+          # without them an "I don't know" failure can't be attributed
+          # to extract-miss vs recall-miss vs answer-miss without
+          # rerunning the whole eval. They are deliberately NOT exposed
+          # as workflow inputs: making them a knob would tempt people
+          # to forget to enable them, and forensic value compounds when
+          # we have dumps for every historical run.
+          FACTS_OUT: ${{ env.REPORT_DIR }}/${{ github.run_id }}-facts.jsonl
+          RECALL_OUT: ${{ env.REPORT_DIR }}/${{ github.run_id }}-recall.jsonl
         # CardKit live-update flags:
         #   --notify-name      identifies this run in the card header
         #   --notify-progress-pct  milestone resolution
@@ -238,10 +432,18 @@ jobs:
             --concurrency "${{ inputs.concurrency }}"
             --ingest-concurrency "${{ inputs.ingest_concurrency }}"
             --soft-merge=${{ inputs.soft_merge }}
+            --multi-recall=${{ inputs.multi_recall }}
+            --save-with-context=${{ inputs.save_with_context }}
+            --entity-store=${{ inputs.entity_store }}
+            --entity-store-max-linked=${{ inputs.entity_store_max_linked }}
+            --entity-link-boost=${{ inputs.entity_link_boost }}
+            --query-entity-extractor=${{ inputs.query_entity_extractor }}
             --qa-timeout "${{ inputs.qa_timeout }}"
             --ingest-timeout "${{ inputs.ingest_timeout }}"
             --notify-name "$RUN_TAG"
             --notify-progress-pct "${{ inputs.notify_progress_pct }}"
+            --dump-facts "$FACTS_OUT"
+            --dump-recall "$RECALL_OUT"
             --out "$REPORT_OUT"
           )
           if [ -n "${{ inputs.reranker_llm }}" ]; then
@@ -250,8 +452,14 @@ jobs:
           if [ -n "${{ inputs.embedder }}" ]; then
             ARGS+=( --embedder "${{ inputs.embedder }}" )
           fi
+          if [ -n "${{ inputs.update_resolver }}" ]; then
+            ARGS+=( --update-resolver "${{ inputs.update_resolver }}" )
+          fi
           if [ "${{ inputs.limit_questions }}" != "0" ]; then
             ARGS+=( --limit-questions "${{ inputs.limit_questions }}" )
+          fi
+          if [ "${{ inputs.recent_turns }}" != "0" ]; then
+            ARGS+=( --recent-turns "${{ inputs.recent_turns }}" )
           fi
           /tmp/eval "${ARGS[@]}"
 
@@ -264,13 +472,30 @@ jobs:
           if-no-files-found: warn
           retention-days: 90
 
+      - name: Upload diagnostic dumps artifact
+        if: always()
+        # Bundles the per-Save extracted-facts JSONL and the per-question
+        # recall-hits JSONL so a post-hoc audit can classify any failure
+        # into extract-miss / recall-miss / answer-miss without rerunning
+        # the eval. Retention is shorter than the report because the
+        # dumps are larger (~2-5 MB each) but they only matter when
+        # debugging a specific run.
+        uses: actions/upload-artifact@v4
+        with:
+          name: locomo-dumps-${{ github.run_id }}
+          path: |
+            ${{ env.REPORT_DIR }}/${{ github.run_id }}-facts.jsonl
+            ${{ env.REPORT_DIR }}/${{ github.run_id }}-recall.jsonl
+          if-no-files-found: warn
+          retention-days: 30
+
       - name: Notify Feishu — final
         if: always()
         # Final summary. We pull headline numbers via jq from the
         # locomo Report shape (aggregate.qa.em / qa.f1 / qa.judge / n).
-        # Token-usage isn't in the Report today; once `internal-docs/
-        # eval-platform-design-actions.md` §4.5 lands the cached/input
-        # rollup, extend the METRICS line to include them.
+        # Token-usage isn't in the Report today; once the cached /
+        # input rollup lands on the Report shape, extend the METRICS
+        # line to include them.
         run: |
           set +e
           REPORT="$REPORT_DIR/${{ github.run_id }}.json"

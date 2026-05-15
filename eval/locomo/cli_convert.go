@@ -82,7 +82,10 @@ func addLocomoConvert(parent *cobra.Command) {
 					if len(ans) == 0 {
 						continue
 					}
-					tags := []string{fmt.Sprintf("cat%d", q.Category)}
+					tags := []string{
+						fmt.Sprintf("cat%d", q.Category),
+						convCategoryName(q.Category),
+					}
 					ev := make([]string, 0, len(q.Evidence))
 					for _, e := range q.Evidence {
 						if e == "" {
@@ -122,6 +125,58 @@ type convRawTurn struct {
 	Speaker string `json:"speaker"`
 	DiaID   string `json:"dia_id"`
 	Text    string `json:"text"`
+
+	// Image-bearing turns in the upstream LoCoMo schema carry up to
+	// three side-fields per turn that text-only ingestion would
+	// otherwise silently drop, breaking ~15 % of turns (910/5882 on
+	// locomo10) where the visual is the answer:
+	//
+	//   img_url      — the public image URL the speaker "shared"
+	//   query        — the author-supplied search query that found
+	//                  the image; this is the cleanest channel for
+	//                  noun-level signals (book titles, place names,
+	//                  brand names) that never appear in the spoken
+	//                  text. Example: text "drove somewhere fun, the
+	//                  views were amazing" + query "banff national
+	//                  park rocky mountains snow" — without query,
+	//                  the location is unrecoverable.
+	//   blip_caption — a BLIP vision-model caption. Often a generic
+	//                  stock-photo description ("a photo of a dog
+	//                  in a boat") even when the image is a book
+	//                  cover, so we keep it only as a fallback when
+	//                  query is empty.
+	//
+	// We flatten the chosen annotation into the turn content so the
+	// LTM extractor sees it inline as part of the same speaker turn,
+	// matching the way published LoCoMo runs (Mem0 et al.) ingest the
+	// multimodal dataset on a text-only stack.
+	Query       string   `json:"query,omitempty"`
+	BlipCaption string   `json:"blip_caption,omitempty"`
+	ImgURL      []string `json:"img_url,omitempty"`
+}
+
+// imageAnnotation returns the inline annotation appended to a text turn
+// that also shared an image. Returns "" when the turn has no image
+// side-fields. See convRawTurn for the rationale on preferring
+// `query` over `blip_caption`.
+func (t convRawTurn) imageAnnotation() string {
+	// We gate on img_url presence because the upstream schema also
+	// emits stale query/blip_caption fields on ~316 turns (locomo10)
+	// that no longer reference an actual shared image. Surfacing
+	// those would inject noise into ~5 % of turns where the speaker
+	// only said "Congrats!" but the JSON still carries an orphan
+	// blip caption like "a photo of a book shelf with many books".
+	if len(t.ImgURL) == 0 {
+		return ""
+	}
+	hint := strings.TrimSpace(t.Query)
+	if hint == "" {
+		hint = strings.TrimSpace(t.BlipCaption)
+	}
+	if hint == "" {
+		return ""
+	}
+	return "[shared image: " + hint + "]"
 }
 
 type convRawQA struct {
@@ -207,23 +262,65 @@ func convFlattenSessions(c map[string]json.RawMessage, speakerA, speakerB string
 				role = "user"
 			}
 			text := strings.TrimSpace(t.Text)
-			if text == "" {
+			imgAnnot := t.imageAnnotation()
+			if text == "" && imgAnnot == "" {
 				continue
 			}
 			speaker := t.Speaker
 			if speaker == "" {
 				speaker = role
 			}
-			content := text
+			body := text
+			if imgAnnot != "" {
+				if body == "" {
+					body = imgAnnot
+				} else {
+					body = body + " " + imgAnnot
+				}
+			}
+			content := body
 			if s.dateTime != "" {
-				content = fmt.Sprintf("[%s] %s: %s", s.dateTime, speaker, text)
+				content = fmt.Sprintf("[%s] %s: %s", s.dateTime, speaker, body)
 			} else {
-				content = fmt.Sprintf("%s: %s", speaker, text)
+				content = fmt.Sprintf("%s: %s", speaker, body)
 			}
 			out = append(out, convOutConvTurn{Role: role, Content: content, EvidenceID: t.DiaID, SessionID: s.key})
 		}
 	}
 	return out
+}
+
+// convCategoryName returns the canonical LoCoMo category label for a
+// numeric `category` field, matching the mapping pinned by mem0 (see
+// mem0ai/mem0 issue #2609, May 2025): cat2 and cat3 indices in the
+// upstream JSON are swapped relative to the paper's prose ordering, so
+// we MUST not assume "cat3 = temporal". Emitting the canonical names as
+// tags alongside the raw `catN` lets reports and cross-project tables
+// (mem0, Memobase, ReMe) compare apples-to-apples without re-running
+// the index-mapping investigation each time.
+//
+//	1 → "single-hop"   (282 questions on LoCoMo10)
+//	2 → "temporal"     (321)
+//	3 → "multi-hop"    (96)
+//	4 → "open-domain"  (841)
+//	5 → "adversarial"  (446 upstream; 2 with a real `answer` field — the
+//	                    remaining 444 carry only `adversarial_answer`
+//	                    and the converter drops them as no-gold rows)
+func convCategoryName(cat int) string {
+	switch cat {
+	case 1:
+		return "single-hop"
+	case 2:
+		return "temporal"
+	case 3:
+		return "multi-hop"
+	case 4:
+		return "open-domain"
+	case 5:
+		return "adversarial"
+	default:
+		return fmt.Sprintf("cat%d", cat)
+	}
 }
 
 func convAnswerToStrings(v any) []string {

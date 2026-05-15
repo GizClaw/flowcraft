@@ -5,7 +5,6 @@ name: eval / beir
 # Requires the operator to stage a BEIR dataset on the runner host
 # under /var/lib/flowcraft-eval/datasets/<dataset>/ with the canonical
 # three-file layout (corpus.jsonl, queries.jsonl, qrels/test.tsv).
-# See internal-docs/eval-runbook.md §"Datasets".
 # ---------------------------------------------------------------------
 
 on:
@@ -109,7 +108,7 @@ jobs:
           for f in corpus.jsonl queries.jsonl qrels/test.tsv; do
             if [ ! -s "${{ inputs.root }}/$f" ]; then
               echo "Missing or empty: ${{ inputs.root }}/$f"
-              echo "Stage a BEIR dataset under /var/lib/flowcraft-eval/datasets/ — see internal-docs/eval-runbook.md."
+              echo "Stage a BEIR dataset under /var/lib/flowcraft-eval/datasets/."
               exit 1
             fi
           done

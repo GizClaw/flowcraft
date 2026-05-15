@@ -122,6 +122,75 @@ func TestSaveSoftMergeMarksSupersededNeighbour(t *testing.T) {
 	}
 }
 
+// TestSaveSoftMergeSkipsEpisodicFacts asserts that two episodic
+// records with identical entities and a high cosine never collapse
+// onto each other: the extractor prompt contract declares episodic
+// events as append-only timeline data, and the vector supersede
+// channel must honour that contract regardless of how similar the
+// vectors look (real LoCoMo case: "Caroline went to the support
+// group on 7 May" vs "on 8 May" — same actors, same place, the
+// date lives in the body, NOT in entities). Without this guard, the
+// older event would be damped at recall time and the temporal /
+// single-hop questions about it would fail.
+func TestSaveSoftMergeSkipsEpisodicFacts(t *testing.T) {
+	ctx := context.Background()
+	idx := memidx.New()
+	var clockHolder atomic.Pointer[time.Time]
+	setNow := func(t time.Time) { clockHolder.Store(&t) }
+	getNow := func() time.Time { return *clockHolder.Load() }
+	setNow(time.Now())
+	oldFact := "On 7 May 2023, Caroline went to the LGBTQ support group at the Greenwich Community Center."
+	newFact := "On 8 May 2023, Caroline went to the LGBTQ support group at the Greenwich Community Center."
+	ex := &scriptedExtractor{
+		facts: [][]recall.ExtractedFact{
+			{{Content: oldFact, Entities: []string{"Caroline", "Greenwich Community Center"}, Episodic: true}},
+			{{Content: newFact, Entities: []string{"Caroline", "Greenwich Community Center"}, Episodic: true}},
+		},
+	}
+	emb := &mapEmbedder{
+		vectors: map[string][]float32{
+			oldFact: {1, 0},
+			newFact: {1, 0},
+		},
+	}
+	m, err := recall.New(idx,
+		recall.WithRequireUserID(),
+		recall.WithExtractor(ex),
+		recall.WithEmbedder(emb),
+		recall.WithClock(getNow),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer m.Close()
+
+	scope := newScope()
+	first, err := m.Save(ctx, scope, []llm.Message{
+		{Role: model.RoleUser, Parts: []model.Part{{Type: model.PartText, Text: "Caroline went to the support group on May 7."}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	setNow(getNow().Add(24 * time.Hour))
+	_, err = m.Save(ctx, scope, []llm.Message{
+		{Role: model.RoleUser, Parts: []model.Part{{Type: model.PartText, Text: "Caroline went again on May 8."}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	doc, ok, err := idx.Get(ctx, recall.NamespaceFor(scope), first.EntryIDs[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok {
+		t.Fatalf("missing original episodic doc %q", first.EntryIDs[0])
+	}
+	if got, has := doc.Metadata["superseded_by"]; has {
+		t.Fatalf("episodic fact must not be marked superseded, got superseded_by=%v", got)
+	}
+}
+
 // TestSlotSupersede_CityChange asserts the deterministic slot channel
 // tags an older lives_in entry as superseded when the new fact carries
 // the same (subject, predicate) tuple, even though the entities differ

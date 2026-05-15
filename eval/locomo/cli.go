@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -15,6 +16,8 @@ import (
 	"github.com/GizClaw/flowcraft/eval/internal/notify"
 	"github.com/GizClaw/flowcraft/eval/locomo/runners/flowcraft"
 	"github.com/GizClaw/flowcraft/eval/metrics"
+	"github.com/GizClaw/flowcraft/sdk/llm"
+	"github.com/GizClaw/flowcraft/sdk/recall"
 
 	_ "github.com/GizClaw/flowcraft/sdkx/embedding/azure"
 	_ "github.com/GizClaw/flowcraft/sdkx/embedding/qwen"
@@ -75,13 +78,21 @@ func addLocomoRun(parent *cobra.Command, g *cliflags.Global) {
 		ingestTimeout     time.Duration
 		qaTimeout         time.Duration
 		maxFacts          int
-		tunedPrompts      bool
 		rerankerLLM       string
 		judgeStyle        string
 		judgeTemp         float64
 		scoreThreshold    float64
 		saveWithContext   bool
 		softMerge         bool
+		multiRecall       bool
+		entityStore       bool
+		entityStoreMaxLnk int
+		entityLinkBoost   float64
+		queryEntityLLM    bool
+		updateResolver    string
+		recentTurnsK      int
+		dumpFactsPath     string
+		dumpRecallPath    string
 	)
 
 	cmd := &cobra.Command{
@@ -151,24 +162,82 @@ Example (LLM extractor + LLM answer + LLM judge + Qwen embedder):
 			if err != nil {
 				return fmt.Errorf("--reranker-llm: %w", err)
 			}
+			var resolverLLM llm.LLM
+			if updateResolver != "" {
+				resolverLLM, err = env.BuildLLM(updateResolver)
+				if err != nil {
+					return fmt.Errorf("--update-resolver: %w", err)
+				}
+			}
+			// Query-side entity extractor reuses the SAME LLM as the
+			// write-side extractor — the whole point of opting in is
+			// to make the two ends share a single entity vocabulary
+			// so EntityStore.Lookup keys (saved at write time) actually
+			// match the QueryEntities (extracted at recall time).
+			// Defaulting to a different alias here would silently
+			// re-introduce the asymmetry the feature exists to fix.
+			var queryEntLLM llm.LLM
+			if queryEntityLLM {
+				queryEntLLM = extractor
+			}
 			if useExtractor && extractor == nil {
 				extractor = answer
 			}
 
+			// --dump-facts diagnostic: stream every Save batch's
+			// extracted facts to a JSONL sidecar so we can audit
+			// "extract miss vs recall miss" failures without
+			// rerunning the index.
+			var (
+				dumpMu  sync.Mutex
+				dumpW   *os.File
+				dumpEnc *json.Encoder
+				onFacts func(recall.Scope, []recall.ExtractedFact)
+			)
+			if dumpFactsPath != "" {
+				dumpW, err = os.Create(dumpFactsPath)
+				if err != nil {
+					return fmt.Errorf("--dump-facts: %w", err)
+				}
+				defer dumpW.Close()
+				dumpEnc = json.NewEncoder(dumpW)
+				onFacts = func(scope recall.Scope, facts []recall.ExtractedFact) {
+					dumpMu.Lock()
+					defer dumpMu.Unlock()
+					_ = dumpEnc.Encode(struct {
+						TS    time.Time              `json:"ts"`
+						Scope recall.Scope           `json:"scope"`
+						Facts []recall.ExtractedFact `json:"facts"`
+					}{time.Now(), scope, facts})
+				}
+			}
+
 			rOpts := flowcraft.Options{
-				Name:             runnerName,
-				LLM:              extractor,
-				Embedder:         embedder,
-				MaxFactsPerCall:  maxFacts,
-				IncludeAssistant: true,
-				SaveWithContext:  saveWithContext,
-				SoftMerge:        &softMerge,
-				RerankerLLM:      reranker,
-				ScoreThreshold:   scoreThreshold,
+				Name:                      runnerName,
+				LLM:                       extractor,
+				Embedder:                  embedder,
+				MaxFactsPerCall:           maxFacts,
+				IncludeAssistant:          true,
+				SaveWithContext:           saveWithContext,
+				SoftMerge:                 &softMerge,
+				RerankerLLM:               reranker,
+				ScoreThreshold:            scoreThreshold,
+				MultiRecall:               multiRecall,
+				EntityStore:               entityStore,
+				EntityStoreMaxLinkedCount: entityStoreMaxLnk,
+				EntityLinkBoost:           entityLinkBoost,
+				QueryEntityLLM:            queryEntLLM,
+				UpdateResolverLLM:         resolverLLM,
+				RecentTurnsK:              recentTurnsK,
+				OnFactsExtracted:          onFacts,
 			}
-			if tunedPrompts {
-				rOpts.ExtractPrompt = LocoMoExtractorPrompt
-			}
+			// Extractor prompt is intentionally not overridden here: every
+			// architectural rule that helps LoCoMo (self-containedness,
+			// atomic entities, composite facts, inference-evidence,
+			// canonical naming) lives in sdk/recall.DefaultExtractPrompt
+			// so SDK consumers get the same benefit. Re-introducing a
+			// LoCoMo-only overlay would risk silent drift between eval
+			// numbers and production behaviour.
 			r, err := flowcraft.New(rOpts)
 			if err != nil {
 				return fmt.Errorf("runner: %w", err)
@@ -179,6 +248,53 @@ Example (LLM extractor + LLM answer + LLM judge + Qwen embedder):
 			if err != nil {
 				return fmt.Errorf("notify: %w", err)
 			}
+			// --dump-recall diagnostic: capture per-question recall
+			// hits (id, score, content) to JSONL so we can audit
+			// "recall miss vs answer miss" — does the retrieval
+			// pipeline surface the gold-evidence fact at all?
+			var (
+				recallMu  sync.Mutex
+				recallEnc *json.Encoder
+				onRecall  func(q dataset.Question, hits []recall.Hit)
+			)
+			if dumpRecallPath != "" {
+				rw, rerr := os.Create(dumpRecallPath)
+				if rerr != nil {
+					return fmt.Errorf("--dump-recall: %w", rerr)
+				}
+				defer rw.Close()
+				recallEnc = json.NewEncoder(rw)
+				onRecall = func(q dataset.Question, hits []recall.Hit) {
+					recallMu.Lock()
+					defer recallMu.Unlock()
+					type hitRec struct {
+						ID       string             `json:"id"`
+						Score    float64            `json:"score"`
+						Content  string             `json:"content"`
+						Episodic bool               `json:"episodic,omitempty"`
+						Cats     []string           `json:"categories,omitempty"`
+						Scores   map[string]float64 `json:"scores,omitempty"`
+					}
+					recs := make([]hitRec, 0, len(hits))
+					for _, h := range hits {
+						recs = append(recs, hitRec{
+							ID:      h.Entry.ID,
+							Score:   h.Score,
+							Content: h.Entry.Content,
+							Cats:    h.Entry.Categories,
+							Scores:  h.Scores,
+						})
+					}
+					_ = recallEnc.Encode(struct {
+						TS    time.Time `json:"ts"`
+						QID   string    `json:"qid"`
+						Query string    `json:"query"`
+						Gold  []string  `json:"gold_answers,omitempty"`
+						Hits  []hitRec  `json:"hits"`
+					}{time.Now(), q.ID, q.Query, q.GoldAnswers, recs})
+				}
+			}
+
 			opts := Options{
 				TopK:              topK,
 				UseExtractor:      useExtractor,
@@ -189,15 +305,20 @@ Example (LLM extractor + LLM answer + LLM judge + Qwen embedder):
 				IngestTimeout:     ingestTimeout,
 				QATimeout:         qaTimeout,
 				ProgressPct:       g.Notify.ProgressPct,
+				OnQuestionRecall:  onRecall,
 				Hook: func(ctx context.Context, e Event) {
 					notify.Forward(ctx, notifier, notify.Event{
 						Kind: e.Kind, Time: e.Time, Title: e.Title, Body: e.Body, Fields: e.Fields,
 					})
 				},
 			}
-			if tunedPrompts {
-				opts.AnswerPrompt = LocoMoAnswerPrompt
-			}
+			// Answer prompt is intentionally not overridden: the
+			// architecture-friendly rules (partial-info inference,
+			// question-form mirror, date-format mirror, conciseness)
+			// live in [DefaultAnswerPrompt] in this package so any
+			// LoCoMo-shaped consumer gets them. Re-introducing a
+			// LoCoMo-only overlay would risk silent drift between
+			// eval scores and production behaviour.
 			if judge != nil {
 				j := metrics.LLMJudge{LLM: judge, Temperature: &judgeTemp}
 				switch judgeStyle {
@@ -227,6 +348,21 @@ Example (LLM extractor + LLM answer + LLM judge + Qwen embedder):
 				report.Aggregate.Judge, report.Aggregate.F1, report.Aggregate.EM, khit,
 				report.Latency["save"].P95, report.Latency["recall"].P95,
 			)
+			if bc := report.Aggregate.ByCategory; len(bc) > 0 {
+				// Canonical ordering matches the mem0 / Memobase
+				// publication tables so cross-project diff is a
+				// line-by-line eyeball, not a column reorder game.
+				for _, name := range []string{"single-hop", "temporal", "multi-hop", "open-domain", "adversarial"} {
+					c, ok := bc[name]
+					if !ok {
+						continue
+					}
+					fmt.Fprintf(os.Stderr,
+						"    %-12s n=%-4d qa.judge=%.3f qa.f1=%.3f qa.em=%.3f\n",
+						name, c.Count, c.Judge, c.F1, c.EM,
+					)
+				}
+			}
 			return nil
 		},
 	}
@@ -248,13 +384,21 @@ Example (LLM extractor + LLM answer + LLM judge + Qwen embedder):
 	f.DurationVar(&ingestTimeout, "ingest-timeout", 10*time.Minute, "per-conversation ingest deadline; bounds hung LLM calls")
 	f.DurationVar(&qaTimeout, "qa-timeout", 2*time.Minute, "per-question recall+answer+judge deadline")
 	f.IntVar(&maxFacts, "max-facts", 200, "extractor: max facts per Save call")
-	f.BoolVar(&tunedPrompts, "tuned-prompts", true, "use the LoCoMo-tuned extractor & answer prompts (recommended)")
 	f.StringVar(&rerankerLLM, "reranker-llm", "", "LLM for cross-encoder rerank, format provider:model; empty disables")
 	f.StringVar(&judgeStyle, "judge-style", "locomo", "judge prompt style: locomo (mem0-aligned, lenient) | strict (semantic-equivalence)")
 	f.Float64Var(&judgeTemp, "judge-temperature", 0.0, "judge LLM temperature (0=deterministic, mem0-aligned)")
 	f.Float64Var(&scoreThreshold, "score-threshold", 0, "drop recall hits below this score before rerank/limit (0 = SDK default 0.05)")
 	f.BoolVar(&saveWithContext, "save-with-context", false, "before extraction, recall existing facts and inject as prompt context")
 	f.BoolVar(&softMerge, "soft-merge", true, "mark older near-duplicate entries as superseded_by; SupersededDecay damps them at recall")
+	f.BoolVar(&multiRecall, "multi-recall", false, "switch LTM to 3-lane recall (vector+bm25+entity) + RRFFusion; defaults to legacy single-lane vector recall + BM25/entity boosts")
+	f.BoolVar(&entityStore, "entity-store", false, "enable the entity-link inverted index (4th MultiRetrieve lane); writes a sibling namespace per Save Link and adds a ModeEntityLink lane that materialises linked entries via DocGetter — auto-enables --multi-recall")
+	f.IntVar(&entityStoreMaxLnk, "entity-store-max-linked", 0, "common-noun pollution gate: skip entity rows whose linked_ids count exceeds this threshold at Lookup time (0 disables; recommended 60-80 for LoCoMo)")
+	f.Float64Var(&entityLinkBoost, "entity-link-boost", 0, "switch the entity-store integration from RRF lane to post-fusion score boost when > 0 (recommended 0.2-0.5); vector + BM25 own candidate generation, entity-link only re-ranks the fused result. Mitigates the lane-flooding regression that hits multi-hop questions when one entity dominates the namespace.")
+	f.BoolVar(&queryEntityLLM, "query-entity-extractor", false, "swap the rule-based query-side entity extractor for an LLM call using the SAME LLM as --extractor-llm; closes the asymmetry between QueryEntities (capitalized single tokens) and the multi-word EntityStore keys (LLM-extracted noun phrases). Adds 1 LLM call per recall. No-op when --entity-store is false.")
+	f.StringVar(&updateResolver, "update-resolver", "", "LLM alias for the memory update resolver (ADD/UPDATE/DELETE/NOOP); empty disables. Adds one LLM call per Save batch.")
+	f.IntVar(&recentTurnsK, "recent-turns", 0, "if >0, inject the previous K messages from prior Save batches into the extractor for cross-batch pronoun/entity reference resolution")
+	f.StringVar(&dumpFactsPath, "dump-facts", "", "diagnostic: write one JSONL record per Save batch with the extractor's facts to this path (audits extract-miss vs recall-miss)")
+	f.StringVar(&dumpRecallPath, "dump-recall", "", "diagnostic: write one JSONL record per question with the top-k recall hits to this path (audits recall-miss vs answer-miss)")
 
 	parent.AddCommand(cmd)
 }

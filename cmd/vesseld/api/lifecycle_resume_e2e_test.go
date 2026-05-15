@@ -4,8 +4,8 @@ package api
 // Existing api/server_test.go covers each endpoint in isolation
 // (Resume validation, NoStore, UnknownVessel) using the noop engine
 // stub. None of those tests actually persist a checkpoint and round
-// it back through /resume — the audit (internal-docs/contract-audit.md)
-// flagged that as a P2 gap because every regression in the
+// it back through /resume — the audit flagged that as a P2 gap
+// because every regression in the
 // fleet→captain→agent.Run→Resumer chain that surfaces over HTTP
 // (CheckpointStore not threaded into captains, Resume returning
 // 503 in production, run_id not echoed back, etc.) was invisible

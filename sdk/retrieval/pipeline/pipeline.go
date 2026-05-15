@@ -22,10 +22,11 @@ var wellKnownLaneOrder = map[retrieval.LaneKey]int{
 	retrieval.LaneVector:     1,
 	retrieval.LaneSparse:     2,
 	retrieval.LaneEntity:     3,
-	retrieval.LaneHybrid:     4,
-	retrieval.LaneFusion:     5,
-	retrieval.LaneRerank:     6,
-	retrieval.LanePostFilter: 7,
+	retrieval.LaneEntityLink: 4,
+	retrieval.LaneHybrid:     5,
+	retrieval.LaneFusion:     6,
+	retrieval.LaneRerank:     7,
+	retrieval.LanePostFilter: 8,
 }
 
 func sortedLaneNames(recalls map[string][]retrieval.Hit) []string {
@@ -75,7 +76,18 @@ type State struct {
 	QueryVariants []string
 	QueryVector   []float32
 	QueryEntities []string
-	Recalls       map[string][]retrieval.Hit
+
+	// CandidateEntityIDs is the entry-id list produced by the
+	// EntityLinkLookup stage (and consumed by MultiRetrieve's
+	// ModeEntityLink lane). The order encodes the resolver's
+	// recency / fan-out preference — earlier ids will receive a
+	// higher RRF rank. Stages that materialise these into Hit
+	// objects MUST go through retrieval.DocGetter so a stale id
+	// (entry deleted between Link and Recall) is silently skipped
+	// rather than producing a zero-content hit.
+	CandidateEntityIDs []string
+
+	Recalls map[string][]retrieval.Hit
 	// RecallTimings is keyed identically to Recalls and records how long
 	// the corresponding recall lane took. Populated by Retrieve /
 	// MultiRetrieve; consumed by pipeline.Run to fill LaneResult.Took.

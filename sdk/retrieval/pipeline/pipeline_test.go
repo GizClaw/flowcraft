@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -29,6 +30,61 @@ func TestPipelineBM25Only(t *testing.T) {
 	}
 	if len(resp.Hits) != 1 || resp.Hits[0].Doc.ID != "a" {
 		t.Fatalf("hits=%+v", resp.Hits)
+	}
+}
+
+// TestLimitHonoursRequestTopK pins the contract that the caller's
+// SearchRequest.TopK overrides Limit's own stage TopK. The factory
+// hard-codes Limit{TopK: 10} as a fallback default; without this
+// override, every Recall(req{TopK: 30}) silently returned at most 10
+// hits and the framework's --topk knob was effectively a no-op.
+// See sdk/retrieval/pipeline/stages_post.go Limit.Run.
+func TestLimitHonoursRequestTopK(t *testing.T) {
+	ctx := context.Background()
+	idx := memory.New()
+	ns := "ns"
+	now := time.Now()
+	docs := make([]retrieval.Doc, 25)
+	for i := range docs {
+		docs[i] = retrieval.Doc{
+			ID:        fmt.Sprintf("d%02d", i),
+			Content:   fmt.Sprintf("alpha bravo doc number %d here", i),
+			Timestamp: now,
+		}
+	}
+	if err := idx.Upsert(ctx, ns, docs); err != nil {
+		t.Fatal(err)
+	}
+	pipe := New(
+		Retrieve{Lane: "bm25", Spec: RetrieveSpec{Mode: ModeBM25, TopK: 50}},
+		RRFFusion{K: 60}, // lift Recalls → Fused so Limit has something to truncate
+		Limit{TopK: 10},  // fallback default that must be overridable
+	)
+	// Request 20: caller wants more than stage's default cap of 10.
+	// Pre-fix: returned 10. Post-fix: returns 20.
+	resp, err := pipe.Run(ctx, idx, ns, retrieval.SearchRequest{QueryText: "alpha", TopK: 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := len(resp.Hits); got != 20 {
+		t.Fatalf("Request.TopK=20 with Limit{TopK:10}: got %d hits, want 20 (caller's request must win)", got)
+	}
+	// Request 5: caller wants fewer than stage default. Limit must
+	// truncate to 5, not 10.
+	resp, err = pipe.Run(ctx, idx, ns, retrieval.SearchRequest{QueryText: "alpha", TopK: 5})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := len(resp.Hits); got != 5 {
+		t.Fatalf("Request.TopK=5 with Limit{TopK:10}: got %d hits, want 5", got)
+	}
+	// Request 0 (unset): falls back to stage TopK (10).
+	resp, err = pipe.Run(ctx, idx, ns, retrieval.SearchRequest{QueryText: "alpha", TopK: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := len(resp.Hits); got != 10 {
+		t.Fatalf("Request.TopK=0 with Limit{TopK:10}: got %d hits, want 10 (stage fallback)", got)
 	}
 }
 

@@ -73,6 +73,23 @@ func (m *lt) dedupHashes(ctx context.Context, scope Scope, hashes []string) (map
 // multiplies the score of any hit carrying MetaSupersededBy by its
 // Factor (default 0.3).
 //
+// Episodic guard: the vector path SKIPS any fact whose categories mark
+// it as an episodic / events record (see isEpisodicFact). The extractor
+// prompt contract states "Episodic events MUST leave subject and
+// predicate empty — they are append-only timeline data, not slot
+// replacements", and the merger must honour the same contract. Without
+// this guard, two events sharing the same actors / places but
+// different dates (e.g. "Caroline went to the support group on
+// 7 May 2023" vs "Caroline went to the support group on 8 May 2023")
+// would collide on entity-set equality and cos ≥ SoftMergeCosineMin
+// because the architecture-friendly extractor prompt deliberately
+// keeps dates OUT of the entities field (they live in the fact body).
+// The older event would then be damped at recall time and the
+// downstream temporal / single-hop questions about it would fail.
+// Stable-attribute facts that never reached the slot channel (e.g.
+// "user enjoys X" with no controlled predicate) still benefit from the
+// vector fallback.
+//
 // Execution surface: the vector path is a single-lane vector lookup
 // that bypasses the configured pipeline by design (we only need
 // cosines, not the ranked answer). It therefore never asks the
@@ -95,6 +112,14 @@ func (m *lt) supersedeNeighbours(
 		return
 	}
 	if !m.cfg.softMerge {
+		return
+	}
+	// Episodic records are append-only — see godoc above. Even when the
+	// older event has identical entities and high cosine similarity to
+	// the newer one, the two must coexist (different timestamps, both
+	// retrievable). Stable-attribute facts (preferences / opinions /
+	// profile traits) remain eligible for the vector fallback.
+	if isEpisodicFact(fact) {
 		return
 	}
 	if m.cfg.embedder == nil || len(vec) == 0 {
@@ -249,6 +274,17 @@ func (m *lt) supersedeBySlot(
 		supersedeTotal.Add(ctx, 1,
 			metric.WithAttributes(attribute.String("channel", "slot")))
 	}
+}
+
+// isEpisodicFact reports whether the extractor flagged the fact as
+// an append-only timeline record. The signal is the explicit
+// ExtractedFact.Episodic boolean, a first-class architectural field;
+// parseFactsJSON also infers it from the legacy "episodic" / "events"
+// category strings so extractors that have not been migrated yet
+// still benefit from the supersede guard. See godoc on
+// supersedeNeighbours for the architectural rationale.
+func isEpisodicFact(f ExtractedFact) bool {
+	return f.Episodic
 }
 
 // slotEligible reports whether a fact qualifies for the deterministic

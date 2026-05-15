@@ -9,8 +9,8 @@ package vessel_test
 //   - It exercises the Captain through its public surface (Submit /
 //     Resume / Wait), the same API consumers use.
 //
-// The audit that motivated this PR (internal-docs/contract-audit.md)
-// flagged that the previous quality suite covered only happy-path
+// The audit that motivated this PR flagged that the previous
+// quality suite covered only happy-path
 // chat scenarios — every lifecycle promise (resume, interrupt,
 // capabilities gating, ask-user) was exercised by unit tests with
 // hand-rolled stubs but never end-to-end against a real engine. These

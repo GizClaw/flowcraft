@@ -73,14 +73,18 @@ EM** (which requires full-string equality). F1 is the standard
 token-overlap form. Numbers from a harness that uses strict EM are
 not directly comparable.
 
-### C. Default extractor prompt is LoCoMo-specialised
+### C. Extractor prompt is the SDK default (no LoCoMo overlay)
 
-`LocoMoExtractorPrompt` asks the LLM extractor for "100+ facts per
-30-session conversation" and "embed dates inline". This is reasonable
-for any long-dialog memory task — any production deployment would
-write a similar prompt — but it is more aggressive than a
-domain-neutral default would be. `--tuned-prompts=false` switches to
-the SDK's neutral default; running both forms a useful A/B.
+The LoCoMo runner intentionally does NOT override
+`sdk/recall.DefaultExtractPrompt`. The SDK default already encodes
+every architectural rule a long-term memory extractor needs
+(self-containedness, atomic entities, composite-fact rule for
+multi-hop, inference-evidence rule for preferences, canonical
+cross-reference naming) — those rules are derived from FlowCraft's
+retrieval pipeline (entity lane, single-pass answer LLM, NormalizeEntities),
+not from LoCoMo's question categories. Keeping the eval prompt in
+lockstep with the SDK default removes the silent-drift risk between
+eval scores and production deployments.
 
 ### D. Default judge style is `locomo` (lenient)
 
@@ -132,11 +136,18 @@ sdk/` returns zero non-comment hits.
 - **No gold-answer leak.** `GoldAnswers` / `EvidenceIDs` are scoped
   to `eval/dataset/` and `metrics/`. Runners never see them; the
   answer LLM is only handed `(query, top-k recalled memories)`.
-- **No answer-prompt EM tuning.** `LocoMoAnswerPrompt`'s comment
-  records that earlier versions had three "EM-friendly" rules (force
-  minimal answers, mirror date format, suppress IDK); we removed
-  them because they shifted bench numbers without reflecting real
-  memory quality. The current prompt is intentionally neutral.
+- **No answer-prompt judge-gaming.** `eval/locomo/eval.go`'s
+  `DefaultAnswerPrompt` comment records the discipline: we
+  deliberately do NOT adopt mem0's "never say 'no information',
+  provide a general response" rule because that fabricates answers
+  when the memories are genuinely silent — it shifts judge numbers
+  without reflecting real memory quality. The current prompt allows
+  "I don't know" for genuine silence, but encourages restrained
+  inference when memories carry partial evidence (a character's
+  general traits, an indirectly implied date). Mirror-question-form,
+  date-format-alignment, and 1-2-sentence conciseness rules are kept
+  because they are real product-quality requirements, not
+  judge-shifting tricks.
 - **No dataset filtering.** `LoadJSONL` reads every record;
   `--limit-{convs,questions}` truncates to the first N for debug,
   not by difficulty.

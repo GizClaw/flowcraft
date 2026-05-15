@@ -52,7 +52,7 @@ The second response should reference coffee. Change `CONV` to a new value and as
 
 > **The buffer history lives in the daemon's memory.** Restart `vesseld` and every conversation is gone.
 >
-> Persistent transcripts across daemon restarts arrive in `v0.2.0` via the `Compacted` history flavor (hierarchical SummaryDAG + SQLite/Postgres-backed `Store`). The declarative YAML schema and the `vessel.WithSessionStore` option are tracked under [`internal-docs/roadmap.md`](../../internal-docs/roadmap.md) §4 v0.2.0.
+> Persistent transcripts across daemon restarts arrive in `v0.2.0` via the `Compacted` history flavor (hierarchical SummaryDAG + SQLite/Postgres-backed `Store`). The declarative YAML schema and the `vessel.WithSessionStore` option are on the v0.2.0 roadmap.
 >
 > If you need cross-restart memory **today**, embed `vessel` as a library and pass `history.NewCompacted(store, llm, ws)` directly — see `examples/chatbot-with-recall/` for the in-process pattern.
 

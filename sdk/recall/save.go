@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/sdk/embedding"
+	"github.com/GizClaw/flowcraft/sdk/history"
 	"github.com/GizClaw/flowcraft/sdk/llm"
 	"github.com/GizClaw/flowcraft/sdk/retrieval"
 	"github.com/GizClaw/flowcraft/sdk/telemetry"
@@ -40,6 +41,17 @@ type SaveResult struct {
 	Facts    []ExtractedFact
 }
 
+// plan is the per-fact bookkeeping record threaded through
+// upsertFacts and its post-write hooks (linkEntities). It is
+// package-level so the hooks can accept []plan without exposing
+// retrieval.Doc / ExtractedFact wiring to callers.
+type plan struct {
+	entry Entry
+	doc   retrieval.Doc
+	fact  ExtractedFact
+	vec   []float32
+}
+
 // validateScope is enforced by every write path.
 func (m *lt) validateScope(s Scope) error {
 	if s.RuntimeID == "" {
@@ -56,13 +68,9 @@ func (m *lt) Save(ctx context.Context, scope Scope, msgs []llm.Message) (SaveRes
 	if err := m.validateScope(scope); err != nil {
 		return SaveResult{}, err
 	}
-	m.rememberNamespace(ctx, NamespaceFor(scope))
-	var extractOpts []ExtractOption
-	if m.cfg.saveWithCtx {
-		if existing := m.gatherExistingFacts(ctx, scope, msgs); len(existing) > 0 {
-			extractOpts = append(extractOpts, WithExistingFacts(existing))
-		}
-	}
+	ns := NamespaceFor(scope)
+	m.rememberNamespace(ctx, ns)
+	extractOpts := m.buildExtractOpts(ctx, scope, ns, msgs)
 	facts, err := m.cfg.extractor.Extract(ctx, scope, msgs, extractOpts...)
 	if err != nil {
 		return SaveResult{}, err
@@ -71,7 +79,92 @@ func (m *lt) Save(ctx context.Context, scope Scope, msgs []llm.Message) (SaveRes
 	if err != nil {
 		return SaveResult{}, err
 	}
+	// Append AFTER persistence: a Save that failed mid-extract must
+	// not poison the next Save's context. Append errors are also
+	// non-fatal — the history store is a quality booster, not part
+	// of the durability contract.
+	if m.cfg.historyStore != nil {
+		m.appendHistory(ctx, ns, msgs)
+	}
 	return SaveResult{EntryIDs: ids, Facts: facts}, nil
+}
+
+// buildExtractOpts assembles the WithRecentMessages / WithExistingFacts
+// extractor options from the configured history store and save-with-
+// context settings. Both blocks are best-effort quality boosters: a
+// missing history store, an empty recent window, or a recall failure
+// degrade extraction without breaking the save.
+//
+// Shared between Save (sync) and handleJob (SaveAsync worker) so the
+// async ingest path honours WithHistoryStore / WithRecentMessagesK /
+// WithSaveWithCtx identically to the sync path (issue #149).
+func (m *lt) buildExtractOpts(ctx context.Context, scope Scope, ns string, msgs []llm.Message) []ExtractOption {
+	var extractOpts []ExtractOption
+	// Recent turns must be read BEFORE the current msgs are appended
+	// so the extractor only ever sees PRIOR conversational context —
+	// the current batch goes into the CONVERSATION slot, not the
+	// RECENT TURNS slot.
+	if m.cfg.historyStore != nil && m.cfg.recentMsgsK > 0 {
+		if recent := m.readRecentHistory(ctx, ns, m.cfg.recentMsgsK); len(recent) > 0 {
+			extractOpts = append(extractOpts, WithRecentMessages(recent))
+		}
+	}
+	if m.cfg.saveWithCtx {
+		if existing := m.gatherExistingFacts(ctx, scope, msgs); len(existing) > 0 {
+			extractOpts = append(extractOpts, WithExistingFacts(existing))
+		}
+	}
+	return extractOpts
+}
+
+// readRecentHistory pulls the last k messages from the configured
+// history.Store, preferring the cheap RecentReader path when the
+// store implements it. The conversation key is the recall namespace
+// so one Scope maps to one conversation; multi-conversation
+// deployments should partition Scopes accordingly.
+//
+// llm.Message is an alias for model.Message (sdk/llm/aliases.go), so
+// no shape conversion is needed at the package boundary.
+func (m *lt) readRecentHistory(ctx context.Context, namespace string, k int) []llm.Message {
+	if rr, ok := m.cfg.historyStore.(history.RecentReader); ok {
+		recent, err := rr.GetRecentMessages(ctx, namespace, k)
+		if err != nil {
+			m.log("recall: history GetRecentMessages: %v", err)
+			return nil
+		}
+		return recent
+	}
+	all, err := m.cfg.historyStore.GetMessages(ctx, namespace)
+	if err != nil {
+		m.log("recall: history GetMessages: %v", err)
+		return nil
+	}
+	if k < len(all) {
+		all = all[len(all)-k:]
+	}
+	return all
+}
+
+// appendHistory writes the current Save's messages into the store,
+// preferring the incremental AppendMessages path when available so
+// large conversations don't incur a full re-write per Save.
+func (m *lt) appendHistory(ctx context.Context, namespace string, msgs []llm.Message) {
+	if len(msgs) == 0 {
+		return
+	}
+	if ap, ok := m.cfg.historyStore.(history.MessageAppender); ok {
+		if err := ap.AppendMessages(ctx, namespace, msgs); err != nil {
+			m.log("recall: history AppendMessages: %v", err)
+		}
+		return
+	}
+	// Fallback: read-modify-write. Acceptable for the simple
+	// in-memory Store; persistent backends should implement
+	// MessageAppender so each Save stays O(|batch|).
+	existing, _ := m.cfg.historyStore.GetMessages(ctx, namespace)
+	if err := m.cfg.historyStore.SaveMessages(ctx, namespace, append(existing, msgs...)); err != nil {
+		m.log("recall: history SaveMessages: %v", err)
+	}
 }
 
 // gatherExistingFacts runs a best-effort Recall using the conversation as
@@ -157,8 +250,15 @@ func (m *lt) SaveAsync(ctx context.Context, scope Scope, msgs []llm.Message) (Jo
 }
 
 // Add bypasses extraction and writes one entry verbatim. The returned
-// string is the assigned entry ID (content-addressable when the caller
-// leaves Entry.ID empty).
+// string is the assigned entry ID.
+//
+// Add stamps the per-namespace content hash on the doc so a later
+// Save's MD5-dedup probe can recognise verbatim-written entries and
+// avoid producing a duplicate (issue #163). Add itself does NOT run
+// the dedup probe — two Add calls with identical (scope, content)
+// still insert two docs, matching the long-standing "Add is a raw
+// write, Save is the de-duplicating ingest path" contract. Callers
+// that want idempotent writes should funnel through Save.
 //
 // Telemetry: emits span memory.recall.add with attributes
 // runtime_id / has_user_id / has_vector, increments counter
@@ -209,6 +309,14 @@ func (m *lt) Add(ctx context.Context, scope Scope, e Entry) (string, error) {
 		}
 	}
 	d := EntryToDoc(e)
+	// Stamp the per-namespace content hash so a subsequent Save's
+	// dedupHashes probe (sdk/recall/merger.go) recognises this entry
+	// as already-present and short-circuits the duplicate write
+	// (issue #163). Mirrors the unconditional stamp in upsertFacts.
+	if d.Metadata == nil {
+		d.Metadata = map[string]any{}
+	}
+	d.Metadata[MetaContentHash] = contentHash(scope, e.Content)
 	ns := NamespaceFor(scope)
 	m.rememberNamespace(ctx, ns)
 	// Slot supersede runs before the new doc lands so the new entry is
@@ -282,12 +390,6 @@ func (m *lt) upsertFacts(
 	}
 
 	// 2. Build entries + embed --------------------------------------------
-	type plan struct {
-		entry Entry
-		doc   retrieval.Doc
-		fact  ExtractedFact
-		vec   []float32
-	}
 	plans := make([]plan, 0, len(facts))
 	// returnedIDs tracks the ID we report back per fact, including those
 	// short-circuited by MD5 dedup so callers see idempotent behaviour.
@@ -304,7 +406,14 @@ func (m *lt) upsertFacts(
 			Scope:      scope,
 			Content:    f.Content,
 			Categories: f.Categories,
-			Entities:   f.Entities,
+			// NormalizeEntities folds the LLM-supplied phrasal entities
+			// (e.g. "Caroline's LGBTQ support group") into the same
+			// lower-cased, per-token-atom key space that the
+			// retrieval pipeline's rule-based query extractor uses
+			// — without it the entity recall lane silently degrades
+			// to zero recall because the stored phrase and the
+			// per-token query atom never share a string.
+			Entities:   NormalizeEntities(f.Entities),
 			Confidence: f.Confidence,
 			CreatedAt:  now,
 			UpdatedAt:  now,
@@ -401,5 +510,46 @@ func (m *lt) upsertFacts(
 	if err := m.idx.Upsert(ctx, ns, docs); err != nil {
 		return nil, err
 	}
+
+	// 6. Entity-link inverted index ---------------------------------------
+	// Best-effort: a Link failure logs but does NOT roll back the entry
+	// writes above. The entry namespace is the durability boundary;
+	// the entity sibling namespace is a retrieval accelerator and can
+	// be rebuilt offline by replaying the entries. This matches the
+	// existing "embedder failed -> entry still written" contract.
+	m.linkEntities(ctx, scope, plans)
+
 	return returnedIDs, nil
+}
+
+// linkEntities flushes the entity → entry-id edges produced by the
+// current upsertFacts batch into the configured EntityStore. The
+// edge set is rebuilt from p.entry.Entities (which is already the
+// NormalizeEntities-atomized form, so the same atoms the read-side
+// query extractor emits) — no extra normalization happens here so
+// write-time and read-time keys stay byte-identical.
+//
+// Same-entity duplicates within a batch collapse into one Link list
+// (the EntityStore further dedupes against existing rows). Empty or
+// nil entity slices are skipped silently — facts without entities
+// remain reachable through the vector / BM25 lanes.
+func (m *lt) linkEntities(ctx context.Context, scope Scope, plans []plan) {
+	if m.cfg.entityStore == nil || len(plans) == 0 {
+		return
+	}
+	edges := make(map[string][]string, len(plans))
+	for _, p := range plans {
+		for _, e := range p.entry.Entities {
+			if e == "" {
+				continue
+			}
+			edges[e] = append(edges[e], p.entry.ID)
+		}
+	}
+	if len(edges) == 0 {
+		return
+	}
+	if err := m.cfg.entityStore.Link(ctx, scope, edges); err != nil {
+		m.log("ltm: entity_store Link failed: %v", err)
+	}
 }

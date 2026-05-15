@@ -87,6 +87,14 @@ on:
         description: "Per-conversation ingest deadline (Go duration)"
         required: false
         default: "10m"
+      lme_ref:
+        # HuggingFace revision of xiaowu0162/longmemeval-cleaned to
+        # fetch. 'main' resolves to the latest cleaned-dataset commit;
+        # pin to a specific SHA before publishing a leaderboard row so
+        # the dataset bytes are immutable (HF allows edits on main).
+        description: "HF revision of xiaowu0162/longmemeval-cleaned (commit SHA or 'main')"
+        required: false
+        default: "main"
 
 # LongMemEval-s 500 instances at concurrency=8 still saturates one
 # Azure endpoint; serialise per kind.
@@ -143,25 +151,89 @@ jobs:
           mkdir -p "$REPORT_DIR"
           chmod 0750 "$REPORT_DIR" || true
 
-      - name: Verify dataset exists on the runner host
-        # LongMemEval datasets are large and live on the runner host
-        # (not in git). Fail fast with a clear message rather than a
-        # 30-min-deep "file not found" trace inside the eval binary.
-        run: |
-          set -eu
-          DS="${{ inputs.dataset }}"
-          if [ ! -s "$DS" ]; then
-            echo "::error::LongMemEval dataset $DS missing or empty on runner host."
-            echo "Generate it once with:"
-            echo "  /tmp/eval longmemeval convert --in <upstream.json> --out $DS"
-            exit 1
-          fi
-          echo "dataset $DS: $(wc -l < "$DS") lines"
-
       - name: Build eval binary
         run: |
           cd eval
           GOWORK=off go build -trimpath -o /tmp/eval ./cmd/eval
+
+      - name: Refresh dataset from upstream
+        # LongMemEval datasets are published on HuggingFace under
+        # xiaowu0162/longmemeval-cleaned (the 2025/09 cleaned variant,
+        # which removes noisy history sessions interfering with answer
+        # correctness — paper: https://arxiv.org/abs/2410.10813). We
+        # mirror the eval-locomo.yml bootstrap strategy:
+        #
+        #   1. Cache the raw upstream JSON under
+        #      /var/lib/flowcraft-eval/datasets/cache/, keyed by HF ref.
+        #      Same ref => zero network (cache is never auto-pruned).
+        #      Pin `lme_ref` to a commit SHA before a leaderboard row.
+        #   2. Always re-convert from cache so the on-disk JSONL is a
+        #      pure function of (cache, converter version). Avoids the
+        #      pre-cleaning bug class where an old manually-staged JSONL
+        #      silently invalidates all subsequent runs.
+        #   3. Only auto-fetch when `dataset` matches a canonical
+        #      eval/longmemeval/data/*.jsonl path; arbitrary paths
+        #      (smoke runs, ad-hoc overrides) are left untouched.
+        #
+        # Why HF and not jsDelivr like LoCoMo? jsDelivr only mirrors
+        # GitHub repos, not HF datasets, and the upstream LMEdata only
+        # lives on HF. HF's CDN works in CN with measurable but
+        # acceptable latency for one-time downloads (~30s-2min for
+        # _s_cleaned at ~80MB).
+        env:
+          DATASET_IN: ${{ inputs.dataset }}
+          LME_REF: ${{ inputs.lme_ref }}
+        run: |
+          set -eu
+          DS="$DATASET_IN"
+          case "$DS" in
+            eval/longmemeval/data/longmemeval_oracle.jsonl)
+              UPSTREAM_FILE="longmemeval_oracle.json"
+              ;;
+            eval/longmemeval/data/longmemeval_s.jsonl|eval/longmemeval/data/longmemeval_s_cleaned.jsonl)
+              UPSTREAM_FILE="longmemeval_s_cleaned.json"
+              ;;
+            eval/longmemeval/data/longmemeval_m.jsonl|eval/longmemeval/data/longmemeval_m_cleaned.jsonl)
+              UPSTREAM_FILE="longmemeval_m_cleaned.json"
+              ;;
+            *)
+              echo "skipping refresh: '$DS' not a canonical LME path"
+              exit 0
+              ;;
+          esac
+          mkdir -p "$(dirname "$DS")"
+          CACHE_DIR=/var/lib/flowcraft-eval/datasets/cache
+          mkdir -p "$CACHE_DIR"
+          CACHE="$CACHE_DIR/${UPSTREAM_FILE%.json}-${LME_REF}.json"
+          RAW="/tmp/lme-raw/$UPSTREAM_FILE"
+          mkdir -p "$(dirname "$RAW")"
+          if [ -s "$CACHE" ]; then
+            echo "cache hit ($CACHE, $(wc -c < "$CACHE") bytes)"
+          else
+            URL="https://huggingface.co/datasets/xiaowu0162/longmemeval-cleaned/resolve/${LME_REF}/${UPSTREAM_FILE}"
+            TMP="${CACHE}.partial"
+            echo "downloading ref=$LME_REF → $CACHE"
+            curl -sSLf --max-time 600 -o "$TMP" "$URL"
+            mv "$TMP" "$CACHE"
+            echo "downloaded $(wc -c < "$CACHE") bytes"
+          fi
+          cp "$CACHE" "$RAW"
+          /tmp/eval longmemeval convert --in "$RAW" --out "$DS"
+          echo "fresh dataset: $(wc -l < "$DS") lines, $(wc -c < "$DS") bytes"
+
+      - name: Verify dataset exists
+        # Final guard against typos in `dataset` input that the refresh
+        # step's case-match silently skipped (e.g. wrong filename).
+        run: |
+          set -eu
+          DS="${{ inputs.dataset }}"
+          if [ ! -s "$DS" ]; then
+            echo "::error::LongMemEval dataset $DS missing or empty after refresh."
+            echo "If this is a custom path, stage it manually with:"
+            echo "  /tmp/eval longmemeval convert --in <upstream.json> --out $DS"
+            exit 1
+          fi
+          echo "dataset $DS: $(wc -l < "$DS") lines"
 
       - name: Notify Feishu — started
         if: success()
