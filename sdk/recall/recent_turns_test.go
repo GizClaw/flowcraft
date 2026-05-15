@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/GizClaw/flowcraft/sdk/history"
 	"github.com/GizClaw/flowcraft/sdk/llm"
 	"github.com/GizClaw/flowcraft/sdk/model"
 	"github.com/GizClaw/flowcraft/sdk/recall"
@@ -19,73 +20,15 @@ func msgAssistant(text string) llm.Message {
 	return llm.Message{Role: model.RoleAssistant, Parts: []model.Part{{Type: model.PartText, Text: text}}}
 }
 
-// TestMemoryBufferRingEviction exercises the default in-memory
-// MessageBuffer directly: appending past the cap must evict the
-// oldest entries so Recent always reads the freshest K from the tail.
-func TestMemoryBufferRingEviction(t *testing.T) {
-	ctx := context.Background()
-	buf := recall.NewMemoryBuffer(3)
-	scope := newScope()
-
-	for i, txt := range []string{"a", "b", "c", "d", "e"} {
-		if err := buf.Append(ctx, scope, []llm.Message{msgUser(txt)}); err != nil {
-			t.Fatalf("append %d: %v", i, err)
-		}
-	}
-
-	got, err := buf.Recent(ctx, scope, 10)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(got) != 3 {
-		t.Fatalf("len=%d want 3 (ring cap)", len(got))
-	}
-	want := []string{"c", "d", "e"}
-	for i, m := range got {
-		if m.Content() != want[i] {
-			t.Fatalf("buf[%d]=%q want %q", i, m.Content(), want[i])
-		}
-	}
-
-	tail, err := buf.Recent(ctx, scope, 2)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(tail) != 2 || tail[0].Content() != "d" || tail[1].Content() != "e" {
-		t.Fatalf("tail=%+v", tail)
-	}
-}
-
-// TestMemoryBufferIsolatesScopes verifies that two scopes do not see
-// each other's messages (canonical scope key namespacing).
-func TestMemoryBufferIsolatesScopes(t *testing.T) {
-	ctx := context.Background()
-	buf := recall.NewMemoryBuffer(8)
-
-	scopeA := recall.Scope{RuntimeID: "rt1", UserID: "alice"}
-	scopeB := recall.Scope{RuntimeID: "rt1", UserID: "bob"}
-
-	_ = buf.Append(ctx, scopeA, []llm.Message{msgUser("alice-1"), msgUser("alice-2")})
-	_ = buf.Append(ctx, scopeB, []llm.Message{msgUser("bob-1")})
-
-	a, _ := buf.Recent(ctx, scopeA, 10)
-	if len(a) != 2 || a[0].Content() != "alice-1" {
-		t.Fatalf("scopeA leaked or missing entries: %+v", a)
-	}
-	b, _ := buf.Recent(ctx, scopeB, 10)
-	if len(b) != 1 || b[0].Content() != "bob-1" {
-		t.Fatalf("scopeB leaked or missing entries: %+v", b)
-	}
-}
-
-// TestSaveInjectsRecentTurns wires WithRecentTurns into a real Memory
-// and asserts that:
-//  1. the first Save sees no recent turns (buffer is empty);
-//  2. the extractor's RecentMessages on the SECOND Save contains the
-//     messages of the FIRST Save, in chronological order;
-//  3. RecentMessages never includes the current batch (which lives in
-//     the CONVERSATION slot instead).
-func TestSaveInjectsRecentTurns(t *testing.T) {
+// TestSaveInjectsRecentTurnsFromHistory wires the recall layer to
+// the existing sdk/history.Store primitive (instead of a bespoke
+// MessageBuffer) and asserts:
+//  1. the FIRST Save sees no recent turns (history is empty);
+//  2. the SECOND Save's extractor receives the messages of the
+//     FIRST Save, in chronological order, via RecentMessages;
+//  3. the current batch never bleeds into RecentMessages — it
+//     belongs to CONVERSATION, not RECENT TURNS.
+func TestSaveInjectsRecentTurnsFromHistory(t *testing.T) {
 	ctx := context.Background()
 	idx := memidx.New()
 	ex := &scriptedExtractor{
@@ -97,7 +40,7 @@ func TestSaveInjectsRecentTurns(t *testing.T) {
 	m, err := recall.New(idx,
 		recall.WithRequireUserID(),
 		recall.WithExtractor(ex),
-		recall.WithRecentTurns(5, 0),
+		recall.WithRecentTurns(5),
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -134,7 +77,6 @@ func TestSaveInjectsRecentTurns(t *testing.T) {
 	if !strings.Contains(ex.gotRecent[1][1].Content(), "which one") {
 		t.Fatalf("newest recent message wrong: %q", ex.gotRecent[1][1].Content())
 	}
-	// Current batch must NOT bleed into RecentMessages.
 	for _, msg := range ex.gotRecent[1] {
 		if strings.Contains(msg.Content(), "every Saturday") {
 			t.Fatalf("current batch leaked into RecentMessages: %q", msg.Content())
@@ -142,10 +84,10 @@ func TestSaveInjectsRecentTurns(t *testing.T) {
 	}
 }
 
-// TestSaveDoesNotInjectRecentTurnsWhenDisabled ensures the option is
-// opt-in: a Memory built WITHOUT WithRecentTurns must hand the
-// extractor an empty RecentMessages slice on every call.
-func TestSaveDoesNotInjectRecentTurnsWhenDisabled(t *testing.T) {
+// TestSaveSkipsRecentTurnsWhenDisabled guarantees the opt-in
+// semantics: without WithRecentTurns/WithHistoryStore, no Save
+// should ever populate ExtractOptions.RecentMessages.
+func TestSaveSkipsRecentTurnsWhenDisabled(t *testing.T) {
 	ctx := context.Background()
 	idx := memidx.New()
 	ex := &scriptedExtractor{
@@ -176,23 +118,25 @@ func TestSaveDoesNotInjectRecentTurnsWhenDisabled(t *testing.T) {
 	}
 }
 
-// TestSaveAppendsBufferAfterExtraction guards the ordering contract:
-// the current batch must be appended AFTER extraction so a Save that
-// fails mid-extract does not poison the next Save's context.
-func TestSaveAppendsBufferAfterExtraction(t *testing.T) {
+// TestSaveWithCustomHistoryStore exercises the WithHistoryStore
+// path: a caller-supplied store (e.g. history.FileStore in
+// production) is honoured end-to-end. We use a counting wrapper to
+// also assert that the RecentReader / MessageAppender optional
+// fast-paths are taken when the store implements them.
+func TestSaveWithCustomHistoryStore(t *testing.T) {
 	ctx := context.Background()
 	idx := memidx.New()
 	ex := &scriptedExtractor{
 		facts: [][]recall.ExtractedFact{
-			{{Content: "first batch fact"}},
-			{{Content: "second batch fact"}},
+			{{Content: "f1"}},
+			{{Content: "f2"}},
 		},
 	}
-	buf := recall.NewMemoryBuffer(16)
+	store := &countingHistoryStore{InMemoryStore: history.NewInMemoryStore()}
 	m, err := recall.New(idx,
 		recall.WithRequireUserID(),
 		recall.WithExtractor(ex),
-		recall.WithMessageBuffer(buf, 10),
+		recall.WithHistoryStore(store, 4),
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -207,8 +151,52 @@ func TestSaveAppendsBufferAfterExtraction(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	stored, _ := buf.Recent(ctx, scope, 10)
-	if len(stored) != 2 || stored[0].Content() != "batch-1" || stored[1].Content() != "batch-2" {
-		t.Fatalf("buffer state after two saves wrong: %+v", stored)
+	if store.appendCalls != 2 {
+		t.Fatalf("AppendMessages calls=%d want 2 (MessageAppender fast-path missed)", store.appendCalls)
 	}
+	if store.recentCalls != 2 {
+		t.Fatalf("GetRecentMessages calls=%d want 2 (RecentReader fast-path missed)", store.recentCalls)
+	}
+
+	// The buffer must reflect both batches in chronological order.
+	all, err := store.GetMessages(ctx, recall.NamespaceFor(scope))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 2 || all[0].Content() != "batch-1" || all[1].Content() != "batch-2" {
+		t.Fatalf("history buffer state wrong: %+v", all)
+	}
+}
+
+// countingHistoryStore wraps an InMemoryStore and counts how often
+// the optional RecentReader / MessageAppender fast-paths are taken.
+// The wrapper provides the optional fast-path interfaces itself
+// (the base InMemoryStore only implements the Store contract), so
+// asserting the call counts here also asserts that the recall
+// layer's interface-detection logic dispatches correctly.
+type countingHistoryStore struct {
+	*history.InMemoryStore
+	recentCalls int
+	appendCalls int
+}
+
+func (s *countingHistoryStore) GetRecentMessages(ctx context.Context, convID string, k int) ([]model.Message, error) {
+	s.recentCalls++
+	all, err := s.InMemoryStore.GetMessages(ctx, convID)
+	if err != nil {
+		return nil, err
+	}
+	if k > 0 && k < len(all) {
+		all = all[len(all)-k:]
+	}
+	return all, nil
+}
+
+func (s *countingHistoryStore) AppendMessages(ctx context.Context, convID string, msgs []model.Message) error {
+	s.appendCalls++
+	existing, err := s.InMemoryStore.GetMessages(ctx, convID)
+	if err != nil {
+		return err
+	}
+	return s.InMemoryStore.SaveMessages(ctx, convID, append(existing, msgs...))
 }

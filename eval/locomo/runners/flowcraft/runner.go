@@ -63,11 +63,18 @@ type Options struct {
 	UpdateResolverTopK int
 
 	// RecentTurnsK enables the cross-batch reference-resolution
-	// context window: on every Save, the most recent K messages from
-	// PRIOR Save batches on the same scope are injected into the
+	// context window backed by sdk/history.InMemoryStore: on every
+	// Save the most recent K messages from PRIOR Save batches on
+	// the same scope are read from the store and injected into the
 	// extractor as ExtractOptions.RecentMessages so pronouns / short
 	// references / chronology hints established in earlier batches
 	// remain resolvable. 0 disables (default); typical: 10-20.
+	//
+	// Note: validated -1.75pp on LoCoMo10 (session-batched ingest);
+	// the feature is architecturally targeted at multi-batch /
+	// streaming ingest topologies where the current batch carries
+	// minimal context. See
+	// internal-docs/eval-recent-turns-session-batch-mismatch-2026-05-15.md.
 	RecentTurnsK int
 }
 
@@ -101,7 +108,7 @@ func New(opts Options) (runners.Runner, error) {
 		memOpts = append(memOpts, recall.WithoutSoftMerge())
 	}
 	if opts.RecentTurnsK > 0 {
-		memOpts = append(memOpts, recall.WithRecentTurns(opts.RecentTurnsK, 0))
+		memOpts = append(memOpts, recall.WithRecentTurns(opts.RecentTurnsK))
 	}
 	if opts.UpdateResolverLLM != nil {
 		topK := opts.UpdateResolverTopK

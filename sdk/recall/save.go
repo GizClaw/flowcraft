@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/sdk/embedding"
+	"github.com/GizClaw/flowcraft/sdk/history"
 	"github.com/GizClaw/flowcraft/sdk/llm"
 	"github.com/GizClaw/flowcraft/sdk/retrieval"
 	"github.com/GizClaw/flowcraft/sdk/telemetry"
@@ -40,6 +41,17 @@ type SaveResult struct {
 	Facts    []ExtractedFact
 }
 
+// plan is the per-fact bookkeeping record threaded through
+// upsertFacts and its post-write hooks (linkEntities). It is
+// package-level so the hooks can accept []plan without exposing
+// retrieval.Doc / ExtractedFact wiring to callers.
+type plan struct {
+	entry Entry
+	doc   retrieval.Doc
+	fact  ExtractedFact
+	vec   []float32
+}
+
 // validateScope is enforced by every write path.
 func (m *lt) validateScope(s Scope) error {
 	if s.RuntimeID == "" {
@@ -56,15 +68,16 @@ func (m *lt) Save(ctx context.Context, scope Scope, msgs []llm.Message) (SaveRes
 	if err := m.validateScope(scope); err != nil {
 		return SaveResult{}, err
 	}
-	m.rememberNamespace(ctx, NamespaceFor(scope))
+	ns := NamespaceFor(scope)
+	m.rememberNamespace(ctx, ns)
 	var extractOpts []ExtractOption
-	// Recent turns must be read BEFORE the current msgs are appended so
-	// the extractor only ever sees prior conversational context — the
-	// current batch goes into the CONVERSATION slot, not the RECENT
-	// TURNS slot. Buffer errors are non-fatal: missing context degrades
-	// extractor quality but never breaks the save.
-	if m.cfg.msgBuffer != nil && m.cfg.recentMsgsK > 0 {
-		if recent, err := m.cfg.msgBuffer.Recent(ctx, scope, m.cfg.recentMsgsK); err == nil && len(recent) > 0 {
+	// Recent turns must be read BEFORE the current msgs are appended
+	// so the extractor only ever sees PRIOR conversational context —
+	// the current batch goes into the CONVERSATION slot, not the
+	// RECENT TURNS slot. History errors are non-fatal: missing
+	// context degrades extractor quality but never breaks the save.
+	if m.cfg.historyStore != nil && m.cfg.recentMsgsK > 0 {
+		if recent := m.readRecentHistory(ctx, ns, m.cfg.recentMsgsK); len(recent) > 0 {
 			extractOpts = append(extractOpts, WithRecentMessages(recent))
 		}
 	}
@@ -81,14 +94,64 @@ func (m *lt) Save(ctx context.Context, scope Scope, msgs []llm.Message) (SaveRes
 	if err != nil {
 		return SaveResult{}, err
 	}
-	// Append AFTER persistence: a Save that failed mid-extract must not
-	// poison the next Save's context. Append errors are also non-fatal —
-	// the buffer is a quality booster, not part of the durability
-	// contract.
-	if m.cfg.msgBuffer != nil {
-		_ = m.cfg.msgBuffer.Append(ctx, scope, msgs)
+	// Append AFTER persistence: a Save that failed mid-extract must
+	// not poison the next Save's context. Append errors are also
+	// non-fatal — the history store is a quality booster, not part
+	// of the durability contract.
+	if m.cfg.historyStore != nil {
+		m.appendHistory(ctx, ns, msgs)
 	}
 	return SaveResult{EntryIDs: ids, Facts: facts}, nil
+}
+
+// readRecentHistory pulls the last k messages from the configured
+// history.Store, preferring the cheap RecentReader path when the
+// store implements it. The conversation key is the recall namespace
+// so one Scope maps to one conversation; multi-conversation
+// deployments should partition Scopes accordingly.
+//
+// llm.Message is an alias for model.Message (sdk/llm/aliases.go), so
+// no shape conversion is needed at the package boundary.
+func (m *lt) readRecentHistory(ctx context.Context, namespace string, k int) []llm.Message {
+	if rr, ok := m.cfg.historyStore.(history.RecentReader); ok {
+		recent, err := rr.GetRecentMessages(ctx, namespace, k)
+		if err != nil {
+			m.log("recall: history GetRecentMessages: %v", err)
+			return nil
+		}
+		return recent
+	}
+	all, err := m.cfg.historyStore.GetMessages(ctx, namespace)
+	if err != nil {
+		m.log("recall: history GetMessages: %v", err)
+		return nil
+	}
+	if k < len(all) {
+		all = all[len(all)-k:]
+	}
+	return all
+}
+
+// appendHistory writes the current Save's messages into the store,
+// preferring the incremental AppendMessages path when available so
+// large conversations don't incur a full re-write per Save.
+func (m *lt) appendHistory(ctx context.Context, namespace string, msgs []llm.Message) {
+	if len(msgs) == 0 {
+		return
+	}
+	if ap, ok := m.cfg.historyStore.(history.MessageAppender); ok {
+		if err := ap.AppendMessages(ctx, namespace, msgs); err != nil {
+			m.log("recall: history AppendMessages: %v", err)
+		}
+		return
+	}
+	// Fallback: read-modify-write. Acceptable for the simple
+	// in-memory Store; persistent backends should implement
+	// MessageAppender so each Save stays O(|batch|).
+	existing, _ := m.cfg.historyStore.GetMessages(ctx, namespace)
+	if err := m.cfg.historyStore.SaveMessages(ctx, namespace, append(existing, msgs...)); err != nil {
+		m.log("recall: history SaveMessages: %v", err)
+	}
 }
 
 // gatherExistingFacts runs a best-effort Recall using the conversation as
@@ -299,12 +362,6 @@ func (m *lt) upsertFacts(
 	}
 
 	// 2. Build entries + embed --------------------------------------------
-	type plan struct {
-		entry Entry
-		doc   retrieval.Doc
-		fact  ExtractedFact
-		vec   []float32
-	}
 	plans := make([]plan, 0, len(facts))
 	// returnedIDs tracks the ID we report back per fact, including those
 	// short-circuited by MD5 dedup so callers see idempotent behaviour.
@@ -425,5 +482,6 @@ func (m *lt) upsertFacts(
 	if err := m.idx.Upsert(ctx, ns, docs); err != nil {
 		return nil, err
 	}
+
 	return returnedIDs, nil
 }

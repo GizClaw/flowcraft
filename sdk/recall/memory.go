@@ -9,6 +9,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/sdk/embedding"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
+	"github.com/GizClaw/flowcraft/sdk/history"
 	"github.com/GizClaw/flowcraft/sdk/llm"
 	"github.com/GizClaw/flowcraft/sdk/retrieval"
 	"github.com/GizClaw/flowcraft/sdk/retrieval/journal"
@@ -105,8 +106,15 @@ type config struct {
 	saveCtxTopK      int
 	saveCtxThreshold float64
 
-	msgBuffer   MessageBuffer
-	recentMsgsK int
+	// historyStore is the per-conversation message log consulted
+	// before extraction so the LLM can resolve pronoun / short-
+	// reference / chronology references established in PRIOR Save
+	// batches but absent from the current batch. See
+	// WithHistoryStore + WithRecentTurns. recentMsgsK is the number
+	// of messages the Save path injects into the extractor; 0
+	// disables the feature even if a store is configured.
+	historyStore history.Store
+	recentMsgsK  int
 
 	md5Dedup           bool
 	softMerge          bool
@@ -193,44 +201,47 @@ func WithSaveContext(topK int, threshold float64) Option {
 	}
 }
 
-// WithRecentTurns enables a bounded in-memory [MessageBuffer] that
-// keeps the most recent conversation turns per scope. On every Save,
-// the previous K messages are read from the buffer and injected into
-// the extractor as [ExtractOptions.RecentMessages] so the LLM can
-// resolve cross-batch pronoun / anaphora / entity references; after
-// extraction succeeds, the current Save's messages are appended.
+// WithHistoryStore wires a [history.Store] into the recall pipeline
+// so every Save reads the previous K messages from the same
+// conversation BEFORE extraction (injected as
+// [ExtractOptions.RecentMessages]) and APPENDS the current Save's
+// messages AFTER persistence. This unlocks cross-batch pronoun /
+// anaphora / entity-reference resolution for ingest topologies that
+// hand the recall layer many small Save batches per conversation
+// (chat applications, streaming transcripts, per-turn ingestion).
 //
-// k is the number of recent messages exposed to the extractor per
-// Save (typical: 10-20). bufferCap is the per-scope ring capacity;
-// non-positive values default to max(2*k, 40). Set k <= 0 to disable.
+// k <= 0 disables the injection even when store is non-nil. A nil
+// store also disables the feature.
 //
-// For multi-process / persistent deployments, supply a custom
-// implementation via [WithMessageBuffer] instead.
-func WithRecentTurns(k, bufferCap int) Option {
+// The conversation key fed to the store is derived from the Save's
+// Scope via [NamespaceFor]; one conversation per Scope is the
+// expected mapping. Callers needing finer-grained conversation
+// boundaries (e.g. several distinct chats per user) should layer
+// per-conversation scopes on top of this option instead of inventing
+// a parallel buffer.
+func WithHistoryStore(store history.Store, k int) Option {
+	return func(c *config) {
+		if store == nil || k <= 0 {
+			return
+		}
+		c.historyStore = store
+		c.recentMsgsK = k
+	}
+}
+
+// WithRecentTurns is a convenience shortcut that installs an
+// in-process [history.InMemoryStore] and sets the per-Save read
+// window to k. Use [WithHistoryStore] directly to plug in a
+// persistent backend (history.FileStore, a Redis-backed
+// implementation, etc.).
+//
+// k <= 0 disables the feature.
+func WithRecentTurns(k int) Option {
 	return func(c *config) {
 		if k <= 0 {
 			return
 		}
-		if bufferCap <= 0 {
-			bufferCap = 2 * k
-			if bufferCap < 40 {
-				bufferCap = 40
-			}
-		}
-		c.recentMsgsK = k
-		c.msgBuffer = NewMemoryBuffer(bufferCap)
-	}
-}
-
-// WithMessageBuffer injects a custom [MessageBuffer] (e.g. backed by
-// Redis or SQLite) and sets the per-Save read window. Mutually
-// exclusive with [WithRecentTurns]; the option applied last wins.
-func WithMessageBuffer(buf MessageBuffer, k int) Option {
-	return func(c *config) {
-		if buf == nil || k <= 0 {
-			return
-		}
-		c.msgBuffer = buf
+		c.historyStore = history.NewInMemoryStore()
 		c.recentMsgsK = k
 	}
 }
