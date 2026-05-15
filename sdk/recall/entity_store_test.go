@@ -1,0 +1,373 @@
+package recall_test
+
+import (
+	"context"
+	"testing"
+	"time"
+
+	"github.com/GizClaw/flowcraft/sdk/llm"
+	"github.com/GizClaw/flowcraft/sdk/model"
+	"github.com/GizClaw/flowcraft/sdk/recall"
+	memidx "github.com/GizClaw/flowcraft/sdk/retrieval/memory"
+)
+
+// fixedClock returns a deterministic time source so we can assert
+// MetaEntityLast moves between writes without depending on wall
+// time.
+func fixedClock(t *testing.T) (advance func(d time.Duration), now func() time.Time) {
+	t.Helper()
+	current := time.Date(2026, 5, 15, 0, 0, 0, 0, time.UTC)
+	return func(d time.Duration) {
+			current = current.Add(d)
+		}, func() time.Time {
+			return current
+		}
+}
+
+func newEntityStore(t *testing.T, capN int) (*recall.IndexEntityStore, func(time.Duration)) {
+	t.Helper()
+	idx := memidx.New()
+	advance, now := fixedClock(t)
+	store := recall.NewIndexEntityStore(idx, recall.IndexEntityStoreOptions{
+		LinkedCap: capN,
+		Clock:     now,
+	})
+	if store == nil {
+		t.Fatalf("NewIndexEntityStore returned nil; memidx.Index does not satisfy DocGetter?")
+	}
+	return store, advance
+}
+
+// TestEntityKeyComposite pins the row ID encoding so backends that
+// log writes can rely on the format.
+func TestEntityKeyComposite(t *testing.T) {
+	// UserID is fed through saneNS, so the raw test inputs are
+	// pre-sanitised to match what the row key will actually be. This
+	// keeps the encoding contract symmetric with NamespaceFor.
+	cases := []struct {
+		name  string
+		scope recall.Scope
+		raw   string
+		want  string
+	}{
+		{"user_lowercase", recall.Scope{UserID: "u1"}, "Alice", "u1::alice"},
+		{"user_possessive", recall.Scope{UserID: "u1"}, "Alice's", "u1::alice"},
+		{"user_trimmed_punct", recall.Scope{UserID: "u1"}, "  Alice.  ", "u1::alice"},
+		{"empty_user_is_global", recall.Scope{UserID: ""}, "Bob", "anon::bob"},
+		{"conv_isolation_sanitised", recall.Scope{UserID: "conv-26"}, "Alice", "conv_26::alice"},
+		{"different_convs_no_collide", recall.Scope{UserID: "conv-30"}, "Alice", "conv_30::alice"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := recall.EntityKey(tc.scope, tc.raw); got != tc.want {
+				t.Fatalf("EntityKey(%q, %q) = %q; want %q", tc.scope.UserID, tc.raw, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestEntityNamespaceFor(t *testing.T) {
+	scope := recall.Scope{RuntimeID: "rt1", UserID: "conv-26"}
+	got := recall.EntityNamespaceFor(scope)
+	want := recall.NamespaceFor(scope) + "__entities"
+	if got != want {
+		t.Fatalf("EntityNamespaceFor(%v) = %q; want %q", scope, got, want)
+	}
+	// Must remain in [A-Za-z0-9_] character set so backend
+	// namespace validators accept it.
+	for _, r := range got {
+		switch {
+		case r >= 'a' && r <= 'z',
+			r >= 'A' && r <= 'Z',
+			r >= '0' && r <= '9',
+			r == '_':
+		default:
+			t.Fatalf("EntityNamespaceFor returned char %q outside saneNS set: %q", r, got)
+		}
+	}
+}
+
+// TestLinkAndLookupRoundtrip is the happy path: a few entities, a
+// few entries each, Lookup returns the deduplicated union in
+// deterministic order.
+func TestLinkAndLookupRoundtrip(t *testing.T) {
+	store, _ := newEntityStore(t, 100)
+	scope := recall.Scope{UserID: "u1"}
+	ctx := context.Background()
+
+	err := store.Link(ctx, scope, map[string][]string{
+		"alice": {"e1", "e2"},
+		"bob":   {"e2", "e3"},
+	})
+	if err != nil {
+		t.Fatalf("Link: %v", err)
+	}
+
+	// Query in mixed case to ensure normalize() is applied; ask for
+	// both Alice and Bob to verify union + dedup.
+	got, err := store.Lookup(ctx, scope, []string{"Alice", "BOB"}, 0)
+	if err != nil {
+		t.Fatalf("Lookup: %v", err)
+	}
+	// Sort what we got for assertion stability — entity order is
+	// alpha-sorted by Lookup so we expect e1,e2 (alice) then e3 (bob);
+	// e2 deduped because already seen.
+	if want := []string{"e1", "e2", "e3"}; !equalSlice(got, want) {
+		t.Fatalf("Lookup union got %v; want %v", got, want)
+	}
+}
+
+// TestLinkIdempotent verifies that linking the same (entity, id)
+// twice does not double-count — needed for Save retries.
+func TestLinkIdempotent(t *testing.T) {
+	store, _ := newEntityStore(t, 100)
+	scope := recall.Scope{UserID: "u1"}
+	ctx := context.Background()
+	if err := store.Link(ctx, scope, map[string][]string{"alice": {"e1", "e2"}}); err != nil {
+		t.Fatalf("Link1: %v", err)
+	}
+	// Retry with overlap + new id.
+	if err := store.Link(ctx, scope, map[string][]string{"alice": {"e1", "e2", "e3"}}); err != nil {
+		t.Fatalf("Link2: %v", err)
+	}
+	got, err := store.Lookup(ctx, scope, []string{"alice"}, 0)
+	if err != nil {
+		t.Fatalf("Lookup: %v", err)
+	}
+	if want := []string{"e1", "e2", "e3"}; !equalSlice(got, want) {
+		t.Fatalf("Lookup got %v; want %v", got, want)
+	}
+}
+
+// TestLinkFIFOCap verifies cap eviction is FIFO and drops the
+// oldest id when len would exceed LinkedCap.
+func TestLinkFIFOCap(t *testing.T) {
+	store, _ := newEntityStore(t, 3)
+	scope := recall.Scope{UserID: "u1"}
+	ctx := context.Background()
+	// Three separate Link calls so insertion order is unambiguous.
+	for _, id := range []string{"e1", "e2", "e3", "e4", "e5"} {
+		if err := store.Link(ctx, scope, map[string][]string{"alice": {id}}); err != nil {
+			t.Fatalf("Link %s: %v", id, err)
+		}
+	}
+	got, err := store.Lookup(ctx, scope, []string{"alice"}, 0)
+	if err != nil {
+		t.Fatalf("Lookup: %v", err)
+	}
+	if want := []string{"e3", "e4", "e5"}; !equalSlice(got, want) {
+		t.Fatalf("FIFO cap: got %v; want %v (oldest two should be evicted)", got, want)
+	}
+}
+
+// TestLookupPerEntityCap verifies the recency-first cap.
+func TestLookupPerEntityCap(t *testing.T) {
+	store, _ := newEntityStore(t, 100)
+	scope := recall.Scope{UserID: "u1"}
+	ctx := context.Background()
+	if err := store.Link(ctx, scope, map[string][]string{
+		"alice": {"e1", "e2", "e3", "e4", "e5"},
+	}); err != nil {
+		t.Fatalf("Link: %v", err)
+	}
+	got, err := store.Lookup(ctx, scope, []string{"alice"}, 2)
+	if err != nil {
+		t.Fatalf("Lookup: %v", err)
+	}
+	// Cap = 2 should return the LAST two (most recent under FIFO
+	// write order).
+	if want := []string{"e4", "e5"}; !equalSlice(got, want) {
+		t.Fatalf("per-entity cap=2 got %v; want %v", got, want)
+	}
+}
+
+// TestLookupMissingEntity returns empty without error.
+func TestLookupMissingEntity(t *testing.T) {
+	store, _ := newEntityStore(t, 100)
+	scope := recall.Scope{UserID: "u1"}
+	ctx := context.Background()
+	got, err := store.Lookup(ctx, scope, []string{"nobody"}, 0)
+	if err != nil {
+		t.Fatalf("Lookup: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("missing entity should return empty; got %v", got)
+	}
+}
+
+// TestLookupEmptyInputs short-circuits without backend round-trip.
+func TestLookupEmptyInputs(t *testing.T) {
+	store, _ := newEntityStore(t, 100)
+	scope := recall.Scope{UserID: "u1"}
+	ctx := context.Background()
+	got, err := store.Lookup(ctx, scope, nil, 0)
+	if err != nil {
+		t.Fatalf("Lookup(nil): %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("Lookup(nil) want empty; got %v", got)
+	}
+	got, err = store.Lookup(ctx, scope, []string{""}, 0)
+	if err != nil {
+		t.Fatalf("Lookup(empty atom): %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("Lookup(empty atom) want empty; got %v", got)
+	}
+}
+
+// TestScopeIsolation verifies that the composite key keeps different
+// users separated.
+func TestScopeIsolation(t *testing.T) {
+	store, _ := newEntityStore(t, 100)
+	a := recall.Scope{UserID: "conv-26"}
+	b := recall.Scope{UserID: "conv-30"}
+	ctx := context.Background()
+	if err := store.Link(ctx, a, map[string][]string{"alice": {"e-a1", "e-a2"}}); err != nil {
+		t.Fatalf("Link a: %v", err)
+	}
+	if err := store.Link(ctx, b, map[string][]string{"alice": {"e-b1"}}); err != nil {
+		t.Fatalf("Link b: %v", err)
+	}
+	// Different scopes share the same entity NAME but the rows are
+	// in different namespaces. Each Lookup must see only its own.
+	gotA, _ := store.Lookup(ctx, a, []string{"alice"}, 0)
+	gotB, _ := store.Lookup(ctx, b, []string{"alice"}, 0)
+	if want := []string{"e-a1", "e-a2"}; !equalSlice(gotA, want) {
+		t.Fatalf("scope a: got %v; want %v", gotA, want)
+	}
+	if want := []string{"e-b1"}; !equalSlice(gotB, want) {
+		t.Fatalf("scope b: got %v; want %v", gotB, want)
+	}
+}
+
+// TestForgetPrunesAllReferences ensures every entity row that
+// references the removed entry id is rewritten.
+func TestForgetPrunesAllReferences(t *testing.T) {
+	store, _ := newEntityStore(t, 100)
+	scope := recall.Scope{UserID: "u1"}
+	ctx := context.Background()
+	if err := store.Link(ctx, scope, map[string][]string{
+		"alice": {"e1", "e2"},
+		"bob":   {"e2", "e3"},
+		"carol": {"e4"},
+	}); err != nil {
+		t.Fatalf("Link: %v", err)
+	}
+
+	if err := store.Forget(ctx, scope, "e2"); err != nil {
+		t.Fatalf("Forget: %v", err)
+	}
+
+	// alice should now have only [e1]; bob only [e3]; carol unchanged.
+	if got, _ := store.Lookup(ctx, scope, []string{"alice"}, 0); !equalSlice(got, []string{"e1"}) {
+		t.Fatalf("alice after Forget(e2): got %v; want [e1]", got)
+	}
+	if got, _ := store.Lookup(ctx, scope, []string{"bob"}, 0); !equalSlice(got, []string{"e3"}) {
+		t.Fatalf("bob after Forget(e2): got %v; want [e3]", got)
+	}
+	if got, _ := store.Lookup(ctx, scope, []string{"carol"}, 0); !equalSlice(got, []string{"e4"}) {
+		t.Fatalf("carol untouched by Forget(e2): got %v; want [e4]", got)
+	}
+}
+
+// TestForgetNoOpForUnknownID exercises the "id is not referenced"
+// path; nothing should change.
+func TestForgetNoOpForUnknownID(t *testing.T) {
+	store, _ := newEntityStore(t, 100)
+	scope := recall.Scope{UserID: "u1"}
+	ctx := context.Background()
+	if err := store.Link(ctx, scope, map[string][]string{"alice": {"e1"}}); err != nil {
+		t.Fatalf("Link: %v", err)
+	}
+	if err := store.Forget(ctx, scope, "ghost-id"); err != nil {
+		t.Fatalf("Forget ghost: %v", err)
+	}
+	got, _ := store.Lookup(ctx, scope, []string{"alice"}, 0)
+	if want := []string{"e1"}; !equalSlice(got, want) {
+		t.Fatalf("after no-op Forget got %v; want %v", got, want)
+	}
+}
+
+// TestNewIndexEntityStoreNilOnNilIndex ensures we degrade rather
+// than panic when the index is nil. The other half of this contract
+// (index that does not satisfy DocGetter -> nil store) is exercised
+// at the retrieval-package boundary; we deliberately keep this test
+// scope narrow so we don't have to define a hand-rolled Index stub
+// inside the recall package's external test binary.
+func TestNewIndexEntityStoreNilOnNilIndex(t *testing.T) {
+	if got := recall.NewIndexEntityStore(nil, recall.IndexEntityStoreOptions{}); got != nil {
+		t.Fatalf("nil index should produce nil store; got %T", got)
+	}
+}
+
+// TestSaveLinksEntitiesIntoStore verifies the upsertFacts → Link
+// integration: enabling WithEntityStore should make every fact's
+// normalized entities reachable via EntityStore.Lookup keyed on the
+// same atoms produced by NormalizeEntities.
+func TestSaveLinksEntitiesIntoStore(t *testing.T) {
+	ctx := context.Background()
+	idx := memidx.New()
+	resp := `[
+        {"content":"Alice likes black coffee","entities":["Alice","black coffee"]},
+        {"content":"Bob plays tennis","entities":["Bob","tennis"]}
+    ]`
+	m, err := recall.New(idx,
+		recall.WithLLM(&stubLLM{resp: resp}),
+		recall.WithEntityStore(0),
+	)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer m.Close()
+
+	scope := recall.Scope{RuntimeID: "rt1", UserID: "u1"}
+	res, err := m.Save(ctx, scope, []llm.Message{
+		{Role: model.RoleUser, Parts: []model.Part{{Type: model.PartText, Text: "I like Alice and Bob"}}},
+	})
+	if err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	if len(res.EntryIDs) != 2 {
+		t.Fatalf("expected 2 entries; got %v", res.EntryIDs)
+	}
+
+	store := recall.NewIndexEntityStore(idx, recall.IndexEntityStoreOptions{})
+	if store == nil {
+		t.Skip("memidx does not satisfy DocGetter on this build")
+	}
+	gotAlice, err := store.Lookup(ctx, scope, []string{"alice"}, 0)
+	if err != nil {
+		t.Fatalf("Lookup alice: %v", err)
+	}
+	if len(gotAlice) == 0 {
+		t.Fatalf("entity store has no link for 'alice'; entries=%v", res.EntryIDs)
+	}
+	gotBob, _ := store.Lookup(ctx, scope, []string{"bob"}, 0)
+	if len(gotBob) == 0 {
+		t.Fatalf("entity store has no link for 'bob'; entries=%v", res.EntryIDs)
+	}
+
+	// Forget should drop the entry id from the inverted index.
+	if err := m.Forget(ctx, scope, res.EntryIDs[0], "test"); err != nil {
+		t.Fatalf("Forget: %v", err)
+	}
+	post, _ := store.Lookup(ctx, scope, []string{"alice"}, 0)
+	for _, id := range post {
+		if id == res.EntryIDs[0] {
+			t.Fatalf("Forget did not prune entity link for %q", id)
+		}
+	}
+}
+
+func equalSlice(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}

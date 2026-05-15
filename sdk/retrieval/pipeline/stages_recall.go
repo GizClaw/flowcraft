@@ -20,10 +20,11 @@ import (
 type RetrieveMode string
 
 const (
-	ModeBM25   RetrieveMode = RetrieveMode(retrieval.LaneBM25)
-	ModeVector RetrieveMode = RetrieveMode(retrieval.LaneVector)
-	ModeSparse RetrieveMode = RetrieveMode(retrieval.LaneSparse)
-	ModeEntity RetrieveMode = RetrieveMode(retrieval.LaneEntity)
+	ModeBM25       RetrieveMode = RetrieveMode(retrieval.LaneBM25)
+	ModeVector     RetrieveMode = RetrieveMode(retrieval.LaneVector)
+	ModeSparse     RetrieveMode = RetrieveMode(retrieval.LaneSparse)
+	ModeEntity     RetrieveMode = RetrieveMode(retrieval.LaneEntity)
+	ModeEntityLink RetrieveMode = RetrieveMode(retrieval.LaneEntityLink)
 )
 
 // RetrieveSpec controls one recall lane.
@@ -170,6 +171,8 @@ func runOneRecall(ctx context.Context, st *State, _ string, spec RetrieveSpec) (
 		}
 	case ModeEntity:
 		return runEntityRecall(ctx, st, req, spec)
+	case ModeEntityLink:
+		return runEntityLinkRecall(ctx, st, spec)
 	}
 	resp, err := st.Index.Search(ctx, st.Namespace, req)
 	if err != nil || resp == nil {
@@ -406,6 +409,74 @@ func filterIsZero(f retrieval.Filter) bool {
 		len(f.Eq) == 0 && len(f.Neq) == 0 && len(f.In) == 0 && len(f.NotIn) == 0 &&
 		len(f.Range) == 0 && len(f.Exists) == 0 && len(f.Missing) == 0 && len(f.Match) == 0 &&
 		len(f.Contains) == 0 && len(f.IContains) == 0 && len(f.ContainsAny) == 0 && len(f.ContainsAll) == 0
+}
+
+// runEntityLinkRecall materialises [State.CandidateEntityIDs] into
+// retrieval.Hit by Get-ing each id under the search namespace, then
+// scoring `1.0 / rank` so RRF (which uses rank, not raw score) sees
+// a deterministic order matching the resolver's recency preference.
+//
+// Why this is different from runEntityRecall:
+//
+//   - runEntityRecall does "filter docs whose `entities` metadata
+//     overlaps with query atoms, rerank by IDF". It is permissive
+//     (returns up to entityCandidatePageSize candidates) and pays
+//     IDF to push high-frequency atoms down. With dense user
+//     conversations the lane still produces ~hundreds of candidates
+//     for common atoms.
+//   - runEntityLinkRecall does "look up the entity, fetch its
+//     stored memEntryID list directly". The candidate set is
+//     bounded by EntityStore.LinkedCap (default 200) per entity,
+//     pre-filtered by the resolver's own selectivity decisions.
+//     No IDF is needed because the resolver already returns the
+//     most-recent ids first.
+//
+// Backends without retrieval.DocGetter cause every id to be a
+// silent miss (we cannot materialise the hit) — the lane returns
+// zero hits and the overall pipeline degrades to vector + BM25 +
+// entity-filter alone. This is the same defensive posture as
+// recall.NewIndexEntityStore.
+//
+// Backend Filter compatibility: the request's existing Filter is
+// applied client-side AFTER materialisation so docs the resolver
+// references but the request's scope filter excludes (agent
+// boundary, tombstones, expiry) are correctly hidden. We re-use
+// the per-spec Filter mechanism rather than threading req.Filter
+// twice; req.Filter is already merged into spec.Filter by
+// runOneRecall before this function runs.
+func runEntityLinkRecall(ctx context.Context, st *State, spec RetrieveSpec) ([]retrieval.Hit, error) {
+	if len(st.CandidateEntityIDs) == 0 || st.Index == nil {
+		return nil, nil
+	}
+	g, ok := st.Index.(retrieval.DocGetter)
+	if !ok {
+		// Defensive: keep the lane silent rather than aborting the
+		// whole pipeline if a backend without DocGetter is used.
+		return nil, nil
+	}
+	cap := len(st.CandidateEntityIDs)
+	if spec.TopK > 0 && spec.TopK < cap {
+		cap = spec.TopK
+	}
+	hits := make([]retrieval.Hit, 0, cap)
+	for rank, id := range st.CandidateEntityIDs {
+		if spec.TopK > 0 && len(hits) >= spec.TopK {
+			break
+		}
+		doc, found, err := g.Get(ctx, st.Namespace, id)
+		if err != nil || !found {
+			// Stale id (entry deleted post-Link but Forget hasn't
+			// reached the entity row yet) -> skip silently.
+			continue
+		}
+		score := 1.0 / float64(rank+1)
+		hits = append(hits, retrieval.Hit{
+			Doc:    doc,
+			Score:  score,
+			Scores: map[string]float64{"entity_link": score},
+		})
+	}
+	return hits, nil
 }
 
 func mergeFilter(a, b retrieval.Filter) retrieval.Filter {

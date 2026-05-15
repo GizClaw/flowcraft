@@ -27,6 +27,41 @@ import (
 // per-batch ingest time of ~2 min.
 const ingestRetryDelay = 2 * time.Second
 
+// qaRetryDelay mirrors ingestRetryDelay for the recall / answer / judge
+// stages of the QA loop. A real-world DS-Flash run on c50 showed ~3 % of
+// LLM calls flapping with transient 404s; without retry every flap landed
+// in recordFailure and was scored 0, contaminating the qa.judge headline.
+// The cost analysis is the same as ingest's: 2 s × ~5 % flap rate × 1500
+// questions ≈ 150 s extra wall on a ~30 min QA loop, well under a 10 %
+// slowdown and dwarfed by the value of not losing 50+ questions to
+// provider transients. We deliberately use the same 2 s constant as
+// ingest so future operators see one retry budget, not two.
+const qaRetryDelay = 2 * time.Second
+
+// retryOnNotAvailable runs attempt once; if it returns a NotAvailable
+// error (5xx, network flake, Azure MaaS capacity 404 — see errdefs.go's
+// ClassifyProviderError default bucket) it waits qaRetryDelay then tries
+// once more. Single-shot to recover transient blips without masking
+// sustained outages. Shares the question's existing context: if the
+// first attempt burned most of the QA budget, the retry inherits the
+// remainder, which is the desired bound for a per-question SLA.
+func retryOnNotAvailable(ctx context.Context, stage, qid string, attempt func() error) error {
+	err := attempt()
+	if err == nil || !errdefs.IsNotAvailable(err) {
+		return err
+	}
+	log.Printf("[locomo] retry %s %s: %v", stage, qid, err)
+	select {
+	case <-ctx.Done():
+		return err
+	case <-time.After(qaRetryDelay):
+	}
+	if ctx.Err() != nil {
+		return err
+	}
+	return attempt()
+}
+
 // IngestSaver is implemented by runners that can ingest verbatim turns
 // (the default Flowcraft runner exposes SaveRaw to bypass an LLM extractor for
 // CI-friendly runs without API keys).
@@ -728,7 +763,18 @@ func evalQuestions(ctx context.Context, r runners.Runner, scopeOf func(string) r
 			for j := range jobs {
 				q := qs[j.idx]
 				qctx, cancel := perQuestionCtx(ctx, opts.QATimeout)
-				hits, d, err := r.Recall(qctx, scopeOf(q.ConversationID), q.Query, opts.TopK)
+				// Each of the three stages is wrapped in a closure so
+				// retryOnNotAvailable can fire it twice on a transient
+				// provider blip without us threading the return values
+				// through a generic helper. Same single-shot policy as
+				// the ingest path.
+				var hits []recall.Hit
+				var d time.Duration
+				err := retryOnNotAvailable(qctx, "recall", q.ID, func() error {
+					var rerr error
+					hits, d, rerr = r.Recall(qctx, scopeOf(q.ConversationID), q.Query, opts.TopK)
+					return rerr
+				})
 				if err != nil {
 					cancel()
 					recordFailure(j.idx, q, "recall", err)
@@ -739,7 +785,12 @@ func evalQuestions(ctx context.Context, r runners.Runner, scopeOf func(string) r
 				if opts.OnQuestionRecall != nil {
 					opts.OnQuestionRecall(q, hits)
 				}
-				pred, err := buildPrediction(qctx, opts, q.Query, hits)
+				var pred string
+				err = retryOnNotAvailable(qctx, "answer", q.ID, func() error {
+					var aerr error
+					pred, aerr = buildPrediction(qctx, opts, q.Query, hits)
+					return aerr
+				})
 				if err != nil {
 					cancel()
 					recordFailure(j.idx, q, "answer", err)
@@ -748,7 +799,12 @@ func evalQuestions(ctx context.Context, r runners.Runner, scopeOf func(string) r
 				}
 				em := boolFloat(metrics.ExactMatch(pred, q.GoldAnswers))
 				f1 := metrics.F1(pred, q.GoldAnswers)
-				judge, err := opts.Judge.Score(qctx, q.Query, pred, q.GoldAnswers)
+				var judge float64
+				err = retryOnNotAvailable(qctx, "judge", q.ID, func() error {
+					var jerr error
+					judge, jerr = opts.Judge.Score(qctx, q.Query, pred, q.GoldAnswers)
+					return jerr
+				})
 				cancel()
 				if err != nil {
 					recordFailure(j.idx, q, "judge", err)

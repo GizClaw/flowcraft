@@ -116,6 +116,20 @@ type config struct {
 	historyStore history.Store
 	recentMsgsK  int
 
+	// entityStore is the inverted-index accelerator written
+	// alongside every entry upsert and consulted at recall time by
+	// the EntityLinkLookup pipeline stage. Nil disables the feature
+	// — Save then skips its Link call and Recall sees no
+	// candidate IDs from this lane. See [EntityStore] and
+	// [WithEntityStore] for the lifecycle contract.
+	//
+	// entityStoreLinkedCap mirrors IndexEntityStoreOptions.LinkedCap
+	// and is captured here only so the lt.upsertFacts path can pass
+	// the option through to the concrete IndexEntityStore at
+	// construction time; once a store is wired its own cap wins.
+	entityStore          EntityStore
+	entityStoreLinkedCap int
+
 	md5Dedup           bool
 	softMerge          bool
 	slotMerge          bool
@@ -148,6 +162,15 @@ type config struct {
 	logger func(string, ...any)
 
 	journal journal.Journal
+
+	// ltmOpts are passed verbatim into [pipeline.LTM] when the
+	// auto-wired pipeline is constructed (i.e. when WithPipeline is
+	// NOT used). Single source of truth for LTM tuning so the
+	// auto-wire path can append its own options
+	// (entity-link lane et al.) without the caller having to
+	// remember to thread them too. See [WithLTMOption] for the
+	// design rationale.
+	ltmOpts []pipeline.LTMOption
 }
 
 // Option mutates a Memory configuration. All knobs are optional; the
@@ -161,9 +184,40 @@ type Option func(*config)
 // BM25-only.
 func WithEmbedder(e embedding.Embedder) Option { return func(c *config) { c.embedder = e } }
 
-// WithPipeline overrides the default [pipeline.LTM]. Use this to plug
-// in a custom rerank or score-decay strategy.
+// WithPipeline overrides the default [pipeline.LTM]. Use this to
+// plug in a fully custom topology that is NOT LTM-shaped. When
+// supplied, [WithLTMOption] and feature flags that auto-wire LTM
+// (notably [WithEntityStore]) are SKIPPED — the caller has taken
+// full responsibility for the read path.
+//
+// Prefer [WithLTMOption] for the common case of "I want LTM with a
+// few knobs adjusted"; that path keeps feature auto-wiring intact.
 func WithPipeline(p *pipeline.Pipeline) Option { return func(c *config) { c.pipe = p } }
+
+// WithLTMOption appends [pipeline.LTMOption]s to the auto-wired
+// [pipeline.LTM] pipeline. Stack multiple calls — they accumulate
+// in declaration order, and feature flags ([WithEntityStore], …)
+// then append THEIR options on top so the final pipeline reflects
+// both the caller's tuning AND every wired feature.
+//
+// Design rationale: prior to this option, callers who wanted to
+// tune LTM had to build the pipeline themselves and pass it via
+// [WithPipeline] — which bypassed every feature flag's auto-wire
+// path. The net effect was that turning on, say,
+// [WithEntityStore] would silently activate the WRITE path (Link
+// on Save) while leaving the READ path (entity-link lane) absent
+// because the user's custom pipeline did not include it. Funneling
+// LTM tuning through this option restores a single source of
+// truth: features add to the recipe; users add to the recipe; the
+// pipeline gets built once at the end.
+//
+// No-op when [WithPipeline] is also set (the custom pipeline wins
+// and a warning is logged).
+func WithLTMOption(opts ...pipeline.LTMOption) Option {
+	return func(c *config) {
+		c.ltmOpts = append(c.ltmOpts, opts...)
+	}
+}
 
 // WithLLM injects an LLM for the default additive extractor. When
 // omitted, the extractor falls back to a heuristic (assistant-included)
@@ -245,6 +299,58 @@ func WithRecentTurns(k int) Option {
 		c.recentMsgsK = k
 	}
 }
+
+// WithEntityStore enables the entity-link inverted index. The store
+// is written synchronously on Save (best-effort: failure logs but
+// does not roll back the entry upsert) and consulted at Recall time
+// by the EntityLinkLookup pipeline stage when the configured
+// pipeline includes it (see [pipeline.WithEntityLink]).
+//
+// Pass linkedCap <= 0 to keep the default ([defaultEntityLinkedCap]).
+// The store is constructed lazily inside [New] so callers do not
+// have to thread the underlying retrieval.Index themselves: the same
+// index passed to New backs both the entry rows and the sibling
+// entity namespace. Backends that do not implement
+// [retrieval.DocGetter] cause the feature to silently degrade to
+// "not wired" — a log line is emitted at construction time and
+// Save/Recall behave exactly as if the option were absent.
+//
+// Default OFF. Phased rollout: opt in per-deployment, observe
+// retrieval-quality metrics, then promote to default once the
+// LoCoMo ablation closes the architectural gap documented in
+// internal-docs/sdk-entity-store-design-2026-05-15.md.
+func WithEntityStore(linkedCap int) Option {
+	return func(c *config) {
+		// We can't construct the IndexEntityStore here because the
+		// retrieval.Index isn't available until New(); record the
+		// caller's intent + cap and let New() finish the wire-up.
+		c.entityStore = entityStoreSentinel
+		c.entityStoreLinkedCap = linkedCap
+	}
+}
+
+// entityStoreSentinel is an unexported singleton used as a "build
+// me later" marker — New() detects this exact pointer and replaces
+// it with a real IndexEntityStore once it has the backing index. We
+// reuse the EntityStore interface (rather than introducing a config
+// boolean) so a future caller that wants to inject a custom store
+// can set c.entityStore to their own implementation through a
+// future WithCustomEntityStore option without churning the field
+// list.
+var entityStoreSentinel EntityStore = sentinelEntityStore{}
+
+// sentinelEntityStore satisfies EntityStore so the field can hold
+// it before New() rewires; its methods are intentionally no-ops to
+// avoid masking a wire-up bug behind a partially functional store.
+type sentinelEntityStore struct{}
+
+func (sentinelEntityStore) Link(context.Context, Scope, map[string][]string) error {
+	return nil
+}
+func (sentinelEntityStore) Lookup(context.Context, Scope, []string, int) ([]string, error) {
+	return nil, nil
+}
+func (sentinelEntityStore) Forget(context.Context, Scope, string) error { return nil }
 
 // WithoutMD5Dedup disables the per-fact md5(scope.UserID|content) dedup
 // probe (default ON). Disable only if you actively want duplicate
@@ -528,9 +634,60 @@ func New(idx retrieval.Index, opts ...Option) (Memory, error) {
 	if cfg.journal != nil {
 		wrapped = journal.Wrap(idx, cfg.journal)
 	}
+	// Construct the entity store now that we have a concrete index.
+	// WithEntityStore stashed a sentinel marker; replace it with the
+	// IndexEntityStore (or with nil, keeping the feature disabled,
+	// when the index can't satisfy DocGetter — NewIndexEntityStore
+	// signals this by returning nil).
+	if _, isSentinel := cfg.entityStore.(sentinelEntityStore); isSentinel {
+		es := NewIndexEntityStore(idx, IndexEntityStoreOptions{
+			LinkedCap: cfg.entityStoreLinkedCap,
+			Clock:     cfg.now,
+		})
+		// Assign as an explicit nil interface (not a typed-nil
+		// wrapper) when the index doesn't satisfy DocGetter so
+		// downstream `if cfg.entityStore == nil` checks behave.
+		if es == nil {
+			cfg.entityStore = nil
+		} else {
+			cfg.entityStore = es
+		}
+	}
 	pipe := cfg.pipe
 	if pipe == nil {
-		pipe = pipeline.LTM(cfg.embedder)
+		// Compose: user-supplied LTM tuning (cfg.ltmOpts) FIRST,
+		// auto-wired feature options LAST. Later options win in
+		// pipeline.LTM so this gives features the last word —
+		// callers who want to OVERRIDE a feature's auto-wire (e.g.
+		// turn off the entity-link lane while keeping the store
+		// for write-path Link telemetry) should reach for
+		// [WithPipeline] explicitly. Within "I want LTM" the
+		// recall package owns the final composition.
+		ltmOpts := append([]pipeline.LTMOption(nil), cfg.ltmOpts...)
+		if cfg.entityStore != nil {
+			// The entity-link lane only participates under
+			// multi-recall (it's a 4th MultiRetrieve mode);
+			// enabling it without multi-recall would silently
+			// no-op. Force multi-recall on too so
+			// [WithEntityStore] has a single, predictable
+			// activation contract: opt in once and both the
+			// write path (Link) and the read path (lane + RRF
+			// fusion) light up together.
+			ltmOpts = append(ltmOpts,
+				pipeline.WithMultiRecall(true),
+				pipeline.WithEntityLinkLane(true),
+				pipeline.WithEntityLinkResolver(newInternalEntityLinkResolver(cfg.entityStore)),
+			)
+		}
+		pipe = pipeline.LTM(cfg.embedder, ltmOpts...)
+	} else if len(cfg.ltmOpts) > 0 {
+		// User passed both WithPipeline AND WithLTMOption — the
+		// latter is dead in this combination. Log so accidental
+		// double-wiring shows up in CI rather than silently
+		// degrades a feature.
+		if cfg.logger != nil {
+			cfg.logger("recall: WithLTMOption ignored because WithPipeline is set; pass tuning options via the pipeline construction instead")
+		}
 	}
 	workerCtx, workerCancel := context.WithCancel(context.Background())
 	m := &lt{

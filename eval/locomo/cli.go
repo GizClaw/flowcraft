@@ -85,6 +85,7 @@ func addLocomoRun(parent *cobra.Command, g *cliflags.Global) {
 		saveWithContext   bool
 		softMerge         bool
 		multiRecall       bool
+		entityStore       bool
 		updateResolver    string
 		recentTurnsK      int
 		dumpFactsPath     string
@@ -208,6 +209,7 @@ Example (LLM extractor + LLM answer + LLM judge + Qwen embedder):
 				RerankerLLM:       reranker,
 				ScoreThreshold:    scoreThreshold,
 				MultiRecall:       multiRecall,
+				EntityStore:       entityStore,
 				UpdateResolverLLM: resolverLLM,
 				RecentTurnsK:      recentTurnsK,
 				OnFactsExtracted:  onFacts,
@@ -355,6 +357,7 @@ Example (LLM extractor + LLM answer + LLM judge + Qwen embedder):
 	f.BoolVar(&saveWithContext, "save-with-context", false, "before extraction, recall existing facts and inject as prompt context")
 	f.BoolVar(&softMerge, "soft-merge", true, "mark older near-duplicate entries as superseded_by; SupersededDecay damps them at recall")
 	f.BoolVar(&multiRecall, "multi-recall", false, "switch LTM to 3-lane recall (vector+bm25+entity) + RRFFusion; defaults to legacy single-lane vector recall + BM25/entity boosts")
+	f.BoolVar(&entityStore, "entity-store", false, "enable the entity-link inverted index (4th MultiRetrieve lane); writes a sibling namespace per Save Link and adds a ModeEntityLink lane that materialises linked entries via DocGetter — auto-enables --multi-recall")
 	f.StringVar(&updateResolver, "update-resolver", "", "LLM alias for the memory update resolver (ADD/UPDATE/DELETE/NOOP); empty disables. Adds one LLM call per Save batch.")
 	f.IntVar(&recentTurnsK, "recent-turns", 0, "if >0, inject the previous K messages from prior Save batches into the extractor for cross-batch pronoun/entity reference resolution")
 	f.StringVar(&dumpFactsPath, "dump-facts", "", "diagnostic: write one JSONL record per Save batch with the extractor's facts to this path (audits extract-miss vs recall-miss)")

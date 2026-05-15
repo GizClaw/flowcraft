@@ -50,6 +50,17 @@ type Options struct {
 	// Defaults to false to keep historical runs reproducible.
 	MultiRecall bool
 
+	// EntityStore forwards to recall.WithEntityStore. When true,
+	// every Save Links its facts' entities into a sibling inverted
+	// index, and the recall pipeline gains a 4th lane
+	// (pipeline.ModeEntityLink) that materialises the linked entry
+	// ids via DocGetter and fuses them with the vector / BM25 /
+	// entity-filter lanes through RRF. Auto-enables multi-recall.
+	//
+	// Architectural background:
+	// internal-docs/sdk-entity-store-design-2026-05-15.md.
+	EntityStore bool
+
 	// UpdateResolverLLM, when set, installs an LLMUpdateResolver via
 	// recall.WithUpdateResolver. The resolver runs once per Save call
 	// after extraction and decides ADD / UPDATE / DELETE / NOOP for
@@ -143,6 +154,10 @@ func New(opts Options) (runners.Runner, error) {
 			PromptTemplate:   opts.ExtractPrompt,
 		}))
 	}
+	// LTM tuning is funneled through recall.WithLTMOption so feature
+	// flags (e.g. recall.WithEntityStore) can layer their own auto-
+	// wired LTM options on top without us having to remember to
+	// thread them on the bench side. See recall.WithLTMOption.
 	pipeOpts := []pipeline.LTMOption{}
 	if opts.ScoreThreshold > 0 {
 		pipeOpts = append(pipeOpts, pipeline.WithScoreThreshold(opts.ScoreThreshold))
@@ -154,7 +169,12 @@ func New(opts Options) (runners.Runner, error) {
 		pipeOpts = append(pipeOpts, pipeline.WithMultiRecall(true))
 	}
 	if len(pipeOpts) > 0 {
-		memOpts = append(memOpts, recall.WithPipeline(pipeline.LTM(opts.Embedder, pipeOpts...)))
+		memOpts = append(memOpts, recall.WithLTMOption(pipeOpts...))
+	}
+	if opts.EntityStore {
+		// recall auto-wires the lookup stage + lane + resolver on
+		// top of pipeOpts; no need to thread them here.
+		memOpts = append(memOpts, recall.WithEntityStore(0))
 	}
 
 	mem, err := recall.New(idx, memOpts...)

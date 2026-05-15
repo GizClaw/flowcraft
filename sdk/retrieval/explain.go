@@ -20,6 +20,7 @@ const (
 	LaneVector     LaneKey = "vector"
 	LaneSparse     LaneKey = "sparse"
 	LaneEntity     LaneKey = "entity"
+	LaneEntityLink LaneKey = "entity_link"
 	LaneHybrid     LaneKey = "hybrid"
 	LaneFusion     LaneKey = "fusion"
 	LaneRerank     LaneKey = "rerank"

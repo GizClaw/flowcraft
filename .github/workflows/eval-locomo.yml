@@ -143,6 +143,19 @@ on:
         required: false
         type: boolean
         default: false
+      entity_store:
+        # Enables the entity-link inverted index lane (4th lane in
+        # MultiRetrieve, fed by EntityStore.Lookup on the entities the
+        # query extractor surfaces). Auto-enables --multi-recall. Adds
+        # a sibling namespace per Scope (ltm_<rt>__u_<user>__entities)
+        # with one row per normalised entity name; row writes happen
+        # synchronously after every Save batch via Memory.linkEntities.
+        # Architectural background:
+        # internal-docs/sdk-entity-store-design-2026-05-15.md.
+        description: "Enable entity-link inverted-index lane (architectural ablation)"
+        required: false
+        type: boolean
+        default: false
       qa_timeout:
         # CLI default: 2m. The first smoke run showed a single
         # azure.generate hitting 1m59s — too tight for the current
@@ -349,6 +362,7 @@ jobs:
             --soft-merge=${{ inputs.soft_merge }}
             --multi-recall=${{ inputs.multi_recall }}
             --save-with-context=${{ inputs.save_with_context }}
+            --entity-store=${{ inputs.entity_store }}
             --qa-timeout "${{ inputs.qa_timeout }}"
             --ingest-timeout "${{ inputs.ingest_timeout }}"
             --notify-name "$RUN_TAG"

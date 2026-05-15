@@ -287,5 +287,18 @@ func (m *lt) Forget(ctx context.Context, scope Scope, id, reason string) error {
 	_ = reason // reason is captured by Journal actor (caller can WithActor)
 	ns := NamespaceFor(scope)
 	m.rememberNamespace(ctx, ns)
-	return m.idx.Delete(ctx, ns, []string{id})
+	if err := m.idx.Delete(ctx, ns, []string{id}); err != nil {
+		return err
+	}
+	// Prune the entity-link inverted index AFTER the entry deletion
+	// so a Forget that fails to land never advances the entity row's
+	// MetaEntityLast. Failures are non-fatal — the entry is gone;
+	// the orphan id in the inverted index merely points to a tombstone
+	// and the read path's standard tombstone filter will drop it.
+	if m.cfg.entityStore != nil {
+		if err := m.cfg.entityStore.Forget(ctx, scope, id); err != nil {
+			m.log("ltm: entity_store Forget failed for %q: %v", id, err)
+		}
+	}
+	return nil
 }

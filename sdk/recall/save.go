@@ -483,5 +483,45 @@ func (m *lt) upsertFacts(
 		return nil, err
 	}
 
+	// 6. Entity-link inverted index ---------------------------------------
+	// Best-effort: a Link failure logs but does NOT roll back the entry
+	// writes above. The entry namespace is the durability boundary;
+	// the entity sibling namespace is a retrieval accelerator and can
+	// be rebuilt offline by replaying the entries. This matches the
+	// existing "embedder failed -> entry still written" contract.
+	m.linkEntities(ctx, scope, plans)
+
 	return returnedIDs, nil
+}
+
+// linkEntities flushes the entity → entry-id edges produced by the
+// current upsertFacts batch into the configured EntityStore. The
+// edge set is rebuilt from p.entry.Entities (which is already the
+// NormalizeEntities-atomized form, so the same atoms the read-side
+// query extractor emits) — no extra normalization happens here so
+// write-time and read-time keys stay byte-identical.
+//
+// Same-entity duplicates within a batch collapse into one Link list
+// (the EntityStore further dedupes against existing rows). Empty or
+// nil entity slices are skipped silently — facts without entities
+// remain reachable through the vector / BM25 lanes.
+func (m *lt) linkEntities(ctx context.Context, scope Scope, plans []plan) {
+	if m.cfg.entityStore == nil || len(plans) == 0 {
+		return
+	}
+	edges := make(map[string][]string, len(plans))
+	for _, p := range plans {
+		for _, e := range p.entry.Entities {
+			if e == "" {
+				continue
+			}
+			edges[e] = append(edges[e], p.entry.ID)
+		}
+	}
+	if len(edges) == 0 {
+		return
+	}
+	if err := m.cfg.entityStore.Link(ctx, scope, edges); err != nil {
+		m.log("ltm: entity_store Link failed: %v", err)
+	}
 }

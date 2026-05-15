@@ -42,6 +42,16 @@ type ltmConfig struct {
 	entityLaneTopK           int
 	rrfK                     float64
 	entityLaneMinSelectivity float64
+
+	// Entity-link lane (4th MultiRetrieve mode). `entityLinkLane`
+	// gates the feature so callers can keep the resolver wired but
+	// run an A/B comparison via a single boolean flip. The lane
+	// stays a no-op when entityLinkResolver is nil regardless of
+	// this flag — see [WithEntityLinkLane].
+	entityLinkLane         bool
+	entityLinkResolver     EntityLinkResolver
+	entityLinkLaneTopK     int
+	entityLinkPerEntityCap int
 }
 
 // WithRecallTopK overrides the vector recall fan-out (default 60).
@@ -175,6 +185,48 @@ func WithEntityLaneMinSelectivity(ratio float64) LTMOption {
 	return func(c *ltmConfig) { c.entityLaneMinSelectivity = ratio }
 }
 
+// WithEntityLinkLane enables the entity-link recall lane. Requires
+// a resolver to be supplied via [WithEntityLinkResolver]; without a
+// resolver the lane is wired but stays a no-op (the
+// [EntityLinkLookup] stage produces no [State.CandidateEntityIDs] and
+// the lane sees an empty input). Defaults to false.
+//
+// Layer this on top of [WithMultiRecall]. Without multi-recall the
+// lane has nothing to fuse with — the LTM factory ignores
+// entityLinkLane in single-lane mode.
+//
+// Architectural rationale: see
+// internal-docs/sdk-entity-store-design-2026-05-15.md §9.
+func WithEntityLinkLane(on bool) LTMOption {
+	return func(c *ltmConfig) { c.entityLinkLane = on }
+}
+
+// WithEntityLinkResolver installs the [EntityLinkResolver] consumed
+// by the [EntityLinkLookup] stage and the [ModeEntityLink] lane.
+// nil disables the feature even when [WithEntityLinkLane] is true
+// (see internal-docs/sdk-entity-store-design-2026-05-15.md §10 for
+// how sdk/recall wires its internalEntityLinkResolver here).
+func WithEntityLinkResolver(r EntityLinkResolver) LTMOption {
+	return func(c *ltmConfig) { c.entityLinkResolver = r }
+}
+
+// WithEntityLinkLaneTopK caps the [ModeEntityLink] lane fan-out
+// (default 30, matching the entity-filter lane). Larger values
+// increase the number of candidate ids the lane contributes to RRF
+// fusion at the cost of more DocGetter round-trips.
+func WithEntityLinkLaneTopK(k int) LTMOption {
+	return func(c *ltmConfig) { c.entityLinkLaneTopK = k }
+}
+
+// WithEntityLinkPerEntityCap caps the ids drawn from each entity
+// during [EntityLinkLookup] (default 50). The cap is applied
+// recency-first by the resolver, so a low value still surfaces the
+// most-recent linked entries for hot entities. 0 = no cap (return
+// the full EntityStore list).
+func WithEntityLinkPerEntityCap(n int) LTMOption {
+	return func(c *ltmConfig) { c.entityLinkPerEntityCap = n }
+}
+
 // WithSlotCollapse inserts a [SlotCollapse] stage after
 // [SupersededDecay] so legacy entries that were never tagged with
 // superseded_by still get collapsed to the newest hit per
@@ -263,17 +315,39 @@ func LTM(emb embedding.Embedder, opts ...LTMOption) *Pipeline {
 		} else if entSelect < 0 {
 			entSelect = 0
 		}
+		lanes := MultiRetrieve{
+			string(retrieval.LaneVector): {Mode: ModeVector, TopK: cfg.recallTopK},
+			string(retrieval.LaneBM25):   {Mode: ModeBM25, TopK: bm25K},
+			string(retrieval.LaneEntity): {Mode: ModeEntity, TopK: entK, MinSelectivity: entSelect},
+		}
 		stages = []Stage{
 			HybridShortCircuit{},
 			&EmbedQuery{Embedder: emb},
 			cfg.entityExtract,
-			MultiRetrieve{
-				string(retrieval.LaneVector): {Mode: ModeVector, TopK: cfg.recallTopK},
-				string(retrieval.LaneBM25):   {Mode: ModeBM25, TopK: bm25K},
-				string(retrieval.LaneEntity): {Mode: ModeEntity, TopK: entK, MinSelectivity: entSelect},
-			},
-			RRFFusion{K: rrfK},
 		}
+		// Entity-link lane requires (a) the WithEntityLinkLane flag
+		// set, (b) a non-nil resolver. We insert the lookup stage
+		// BEFORE MultiRetrieve so State.CandidateEntityIDs is
+		// populated by the time the ModeEntityLink lane runs.
+		if cfg.entityLinkLane && cfg.entityLinkResolver != nil {
+			perEntityCap := cfg.entityLinkPerEntityCap
+			if perEntityCap <= 0 {
+				perEntityCap = entityLinkLookupDefaultCap
+			}
+			stages = append(stages, EntityLinkLookup{
+				Resolver:     cfg.entityLinkResolver,
+				PerEntityCap: perEntityCap,
+			})
+			linkK := cfg.entityLinkLaneTopK
+			if linkK <= 0 {
+				linkK = 30
+			}
+			lanes[string(retrieval.LaneEntityLink)] = RetrieveSpec{
+				Mode: ModeEntityLink,
+				TopK: linkK,
+			}
+		}
+		stages = append(stages, lanes, RRFFusion{K: rrfK})
 		// Under multi-recall, BM25 is a recall lane, not a boost.
 		// Boosting again would double-count its contribution.
 		// EntityBoost is intentionally kept downstream because it
