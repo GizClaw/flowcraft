@@ -61,6 +61,14 @@ type Options struct {
 	// LLM. 0 keeps the SDK default (20).
 	UpdateResolverLLM  llm.LLM
 	UpdateResolverTopK int
+
+	// RecentTurnsK enables the cross-batch reference-resolution
+	// context window: on every Save, the most recent K messages from
+	// PRIOR Save batches on the same scope are injected into the
+	// extractor as ExtractOptions.RecentMessages so pronouns / short
+	// references / chronology hints established in earlier batches
+	// remain resolvable. 0 disables (default); typical: 10-20.
+	RecentTurnsK int
 }
 
 // Runner is the default bench Runner.
@@ -91,6 +99,9 @@ func New(opts Options) (runners.Runner, error) {
 	}
 	if opts.SoftMerge != nil && !*opts.SoftMerge {
 		memOpts = append(memOpts, recall.WithoutSoftMerge())
+	}
+	if opts.RecentTurnsK > 0 {
+		memOpts = append(memOpts, recall.WithRecentTurns(opts.RecentTurnsK, 0))
 	}
 	if opts.UpdateResolverLLM != nil {
 		topK := opts.UpdateResolverTopK

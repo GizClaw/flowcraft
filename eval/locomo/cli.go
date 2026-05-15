@@ -84,6 +84,7 @@ func addLocomoRun(parent *cobra.Command, g *cliflags.Global) {
 		softMerge         bool
 		multiRecall       bool
 		updateResolver    string
+		recentTurnsK      int
 	)
 
 	cmd := &cobra.Command{
@@ -176,6 +177,7 @@ Example (LLM extractor + LLM answer + LLM judge + Qwen embedder):
 				ScoreThreshold:    scoreThreshold,
 				MultiRecall:       multiRecall,
 				UpdateResolverLLM: resolverLLM,
+				RecentTurnsK:      recentTurnsK,
 			}
 			// Extractor prompt is intentionally not overridden here: every
 			// architectural rule that helps LoCoMo (self-containedness,
@@ -275,6 +277,7 @@ Example (LLM extractor + LLM answer + LLM judge + Qwen embedder):
 	f.BoolVar(&softMerge, "soft-merge", true, "mark older near-duplicate entries as superseded_by; SupersededDecay damps them at recall")
 	f.BoolVar(&multiRecall, "multi-recall", false, "switch LTM to 3-lane recall (vector+bm25+entity) + RRFFusion; defaults to legacy single-lane vector recall + BM25/entity boosts")
 	f.StringVar(&updateResolver, "update-resolver", "", "LLM alias for the memory update resolver (ADD/UPDATE/DELETE/NOOP); empty disables. Adds one LLM call per Save batch.")
+	f.IntVar(&recentTurnsK, "recent-turns", 0, "if >0, inject the previous K messages from prior Save batches into the extractor for cross-batch pronoun/entity reference resolution")
 
 	parent.AddCommand(cmd)
 }

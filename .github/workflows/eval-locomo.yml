@@ -14,6 +14,7 @@ name: eval / locomo
 #                  [--multi-recall=true]
 #                  [--save-with-context=true]
 #                  [--update-resolver=<alias>]
+#                  [--recent-turns N]
 #                  --out <report.json>`
 # ---------------------------------------------------------------------
 
@@ -116,6 +117,19 @@ on:
         description: "LLM alias for the memory update resolver (empty = disabled)"
         required: false
         default: ""
+      recent_turns:
+        # Cross-batch reference-resolution context window. When >0,
+        # the extractor receives the previous K messages from prior
+        # Save batches on the same scope as RECENT TURNS — used to
+        # resolve pronouns, anaphora, short references, and
+        # chronology hints that were established earlier but absent
+        # from the current batch. The buffer lives in-process; see
+        # sdk/recall/message_buffer.go for the persistent-backend
+        # contract. Cost is one extra prompt section per Save (no
+        # extra LLM call). 0 disables.
+        description: "Inject previous K messages from prior batches into extractor (0 = disabled)"
+        required: false
+        default: "0"
       save_with_context:
         # Before extraction, recall existing facts for the current scope
         # and inject them into the extractor prompt as EXISTING MEMORIES.
@@ -305,6 +319,9 @@ jobs:
           fi
           if [ "${{ inputs.limit_questions }}" != "0" ]; then
             ARGS+=( --limit-questions "${{ inputs.limit_questions }}" )
+          fi
+          if [ "${{ inputs.recent_turns }}" != "0" ]; then
+            ARGS+=( --recent-turns "${{ inputs.recent_turns }}" )
           fi
           /tmp/eval "${ARGS[@]}"
 
