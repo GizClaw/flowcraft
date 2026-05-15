@@ -70,22 +70,7 @@ func (m *lt) Save(ctx context.Context, scope Scope, msgs []llm.Message) (SaveRes
 	}
 	ns := NamespaceFor(scope)
 	m.rememberNamespace(ctx, ns)
-	var extractOpts []ExtractOption
-	// Recent turns must be read BEFORE the current msgs are appended
-	// so the extractor only ever sees PRIOR conversational context —
-	// the current batch goes into the CONVERSATION slot, not the
-	// RECENT TURNS slot. History errors are non-fatal: missing
-	// context degrades extractor quality but never breaks the save.
-	if m.cfg.historyStore != nil && m.cfg.recentMsgsK > 0 {
-		if recent := m.readRecentHistory(ctx, ns, m.cfg.recentMsgsK); len(recent) > 0 {
-			extractOpts = append(extractOpts, WithRecentMessages(recent))
-		}
-	}
-	if m.cfg.saveWithCtx {
-		if existing := m.gatherExistingFacts(ctx, scope, msgs); len(existing) > 0 {
-			extractOpts = append(extractOpts, WithExistingFacts(existing))
-		}
-	}
+	extractOpts := m.buildExtractOpts(ctx, scope, ns, msgs)
 	facts, err := m.cfg.extractor.Extract(ctx, scope, msgs, extractOpts...)
 	if err != nil {
 		return SaveResult{}, err
@@ -102,6 +87,34 @@ func (m *lt) Save(ctx context.Context, scope Scope, msgs []llm.Message) (SaveRes
 		m.appendHistory(ctx, ns, msgs)
 	}
 	return SaveResult{EntryIDs: ids, Facts: facts}, nil
+}
+
+// buildExtractOpts assembles the WithRecentMessages / WithExistingFacts
+// extractor options from the configured history store and save-with-
+// context settings. Both blocks are best-effort quality boosters: a
+// missing history store, an empty recent window, or a recall failure
+// degrade extraction without breaking the save.
+//
+// Shared between Save (sync) and handleJob (SaveAsync worker) so the
+// async ingest path honours WithHistoryStore / WithRecentMessagesK /
+// WithSaveWithCtx identically to the sync path (issue #149).
+func (m *lt) buildExtractOpts(ctx context.Context, scope Scope, ns string, msgs []llm.Message) []ExtractOption {
+	var extractOpts []ExtractOption
+	// Recent turns must be read BEFORE the current msgs are appended
+	// so the extractor only ever sees PRIOR conversational context —
+	// the current batch goes into the CONVERSATION slot, not the
+	// RECENT TURNS slot.
+	if m.cfg.historyStore != nil && m.cfg.recentMsgsK > 0 {
+		if recent := m.readRecentHistory(ctx, ns, m.cfg.recentMsgsK); len(recent) > 0 {
+			extractOpts = append(extractOpts, WithRecentMessages(recent))
+		}
+	}
+	if m.cfg.saveWithCtx {
+		if existing := m.gatherExistingFacts(ctx, scope, msgs); len(existing) > 0 {
+			extractOpts = append(extractOpts, WithExistingFacts(existing))
+		}
+	}
+	return extractOpts
 }
 
 // readRecentHistory pulls the last k messages from the configured
@@ -237,8 +250,15 @@ func (m *lt) SaveAsync(ctx context.Context, scope Scope, msgs []llm.Message) (Jo
 }
 
 // Add bypasses extraction and writes one entry verbatim. The returned
-// string is the assigned entry ID (content-addressable when the caller
-// leaves Entry.ID empty).
+// string is the assigned entry ID.
+//
+// Add stamps the per-namespace content hash on the doc so a later
+// Save's MD5-dedup probe can recognise verbatim-written entries and
+// avoid producing a duplicate (issue #163). Add itself does NOT run
+// the dedup probe — two Add calls with identical (scope, content)
+// still insert two docs, matching the long-standing "Add is a raw
+// write, Save is the de-duplicating ingest path" contract. Callers
+// that want idempotent writes should funnel through Save.
 //
 // Telemetry: emits span memory.recall.add with attributes
 // runtime_id / has_user_id / has_vector, increments counter
@@ -289,6 +309,14 @@ func (m *lt) Add(ctx context.Context, scope Scope, e Entry) (string, error) {
 		}
 	}
 	d := EntryToDoc(e)
+	// Stamp the per-namespace content hash so a subsequent Save's
+	// dedupHashes probe (sdk/recall/merger.go) recognises this entry
+	// as already-present and short-circuits the duplicate write
+	// (issue #163). Mirrors the unconditional stamp in upsertFacts.
+	if d.Metadata == nil {
+		d.Metadata = map[string]any{}
+	}
+	d.Metadata[MetaContentHash] = contentHash(scope, e.Content)
 	ns := NamespaceFor(scope)
 	m.rememberNamespace(ctx, ns)
 	// Slot supersede runs before the new doc lands so the new entry is
