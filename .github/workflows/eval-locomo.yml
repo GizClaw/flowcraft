@@ -297,12 +297,13 @@ jobs:
           go env GOMODCACHE GOCACHE
 
       - name: Build eval binary
-        # The eval module pins released sdk/sdkx via go.mod and uses
-        # GOWORK=off in CI; mirror that here so we use the pinned
-        # versions, not the workspace overlay.
+        # `eval` is a workspace member (see ../go.work) — build with
+        # the workspace overlay so sdk/sdkx resolve to monorepo HEAD
+        # rather than the v0.3.x require pins (which are only a
+        # GOWORK=off / `go mod tidy` fallback).
         run: |
           cd eval
-          GOWORK=off go build -trimpath -o /tmp/eval ./cmd/eval
+          go build -trimpath -o /tmp/eval ./cmd/eval
           /tmp/eval --help | head -20
 
       - name: Refresh dataset from upstream

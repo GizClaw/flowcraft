@@ -95,9 +95,12 @@ jobs:
           chmod 0750 "$REPORT_DIR" || true
 
       - name: Build eval binary
+        # `eval` is a workspace member (see ../go.work) — build with
+        # the workspace overlay so sdk/sdkx resolve to monorepo HEAD
+        # rather than the v0.3.x require pins.
         run: |
           cd eval
-          GOWORK=off go build -trimpath -o /tmp/eval ./cmd/eval
+          go build -trimpath -o /tmp/eval ./cmd/eval
 
       - name: Notify Feishu — started
         if: success()

@@ -1,9 +1,10 @@
 go 1.25.0
 
 use (
+	./cmd/vesseld
+	./eval
 	./sdk
 	./sdkx
 	./vessel
 	./voice
-	./cmd/vesseld
 )

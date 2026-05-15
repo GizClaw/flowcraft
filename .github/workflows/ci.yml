@@ -62,7 +62,9 @@ jobs:
           go-version: "1.25"
       - name: go vet
         run: |
-          for m in sdk sdkx voice vessel cmd/vesseld; do
+          # Workspace members (go.work) — vetted with the workspace
+          # overlay so cross-module symbols at monorepo HEAD resolve.
+          for m in sdk sdkx voice vessel cmd/vesseld eval; do
             echo "==> vet $m"
             (cd "$m" && go vet ./...)
           done
@@ -70,7 +72,7 @@ jobs:
           # directives — vet them with GOWORK=off so the pinned
           # versions are honoured. The e2e suites are also build-
           # tagged (//go:build e2e) so we pass -tags=e2e.
-          for m in eval tests/quality/vessel; do
+          for m in tests/quality/vessel; do
             echo "==> vet $m (GOWORK=off)"
             (cd "$m" && GOWORK=off go vet ./...)
           done
