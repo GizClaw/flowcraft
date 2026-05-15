@@ -208,6 +208,31 @@ type IndexEntityStoreOptions struct {
 	// namespace; only the entity-link lane loses it.
 	LinkedCap int
 
+	// MaxLinkedCount is the common-noun pollution gate applied at
+	// Lookup time. An entity row whose MetaEntityCount strictly
+	// exceeds this threshold is treated as a saturated "common
+	// noun" — Lookup returns NO ids for it, so the
+	// EntityLinkLookup stage does not feed it into the lane and
+	// RRF cannot vote it past the precision picks of vector /
+	// BM25 recall. Zero (default) disables the gate, preserving
+	// pre-row-8 behaviour.
+	//
+	// Why a threshold AT ALL: an entity that appears in N entries
+	// returns N candidate ids — RRF treats those as N rank votes
+	// even when each is low-confidence, which the pre-IDF entity-
+	// filter lane regression on 25866478422 (-17pp qa.judge)
+	// already proved is a real footgun. The gate is the EntityStore
+	// equivalent of [pipeline.WithEntityLaneMinSelectivity], with
+	// the same intent and a cheaper read (the count is already in
+	// metadata; no extra List/df probe needed).
+	//
+	// Recommended starting value: 60–80 for LoCoMo-shaped
+	// (~250 facts/conv) datasets. Operators can tune from the
+	// --dump-recall sidecar: histogram MetaEntityCount across the
+	// Lookup calls that miss the gold-evidence fact, and set the
+	// threshold above the noise peak.
+	MaxLinkedCount int
+
 	// Clock is the time source for MetaEntityLast. Defaults to
 	// time.Now. Tests use a fixed clock to assert ordering without
 	// depending on wall time.
@@ -247,10 +272,11 @@ const defaultEntityLinkedCap = 200
 // level (one transcript turn = one Save), and within one Save the
 // caller already constructs a single entityToIDs map.
 type IndexEntityStore struct {
-	idx       retrieval.Index
-	getter    retrieval.DocGetter
-	linkedCap int
-	now       func() time.Time
+	idx            retrieval.Index
+	getter         retrieval.DocGetter
+	linkedCap      int
+	maxLinkedCount int
+	now            func() time.Time
 }
 
 // NewIndexEntityStore returns a retrieval.Index-backed EntityStore.
@@ -273,7 +299,13 @@ func NewIndexEntityStore(idx retrieval.Index, opts IndexEntityStoreOptions) *Ind
 	if now == nil {
 		now = time.Now
 	}
-	return &IndexEntityStore{idx: idx, getter: g, linkedCap: cap, now: now}
+	return &IndexEntityStore{
+		idx:            idx,
+		getter:         g,
+		linkedCap:      cap,
+		maxLinkedCount: opts.MaxLinkedCount,
+		now:            now,
+	}
 }
 
 // Link implements EntityStore.
@@ -397,6 +429,17 @@ func (s *IndexEntityStore) Lookup(ctx context.Context, scope Scope, entities []s
 		if !ok {
 			continue
 		}
+		// Common-noun pollution gate. An entity that's mentioned
+		// in too many entries provides poor IDF signal — returning
+		// its full list would let RRF vote all those entries past
+		// the precision picks of the vector / BM25 lanes (the same
+		// failure mode 25866478422 documented for the entity-filter
+		// lane). We use the cached MetaEntityCount instead of
+		// len(linked) so the check stays valid against future row
+		// shapes that might page their linked_ids.
+		if s.maxLinkedCount > 0 && entityLinkedCount(doc) > s.maxLinkedCount {
+			continue
+		}
 		linked := entityLinkedSlice(doc)
 		if perEntityCap > 0 && len(linked) > perEntityCap {
 			// Recency-first cap: keep the LAST perEntityCap ids
@@ -497,6 +540,27 @@ func entityLinkedSlice(d retrieval.Doc) []string {
 		return out
 	}
 	return nil
+}
+
+// entityLinkedCount returns MetaEntityCount as an int, tolerating
+// the multiple numeric types backends may unmarshal it into
+// (int64 native, float64 after JSON round-trip, int as a fallback
+// for hand-built docs). Returns the live slice length when the
+// metadata is missing or unparseable — that path is only hit on
+// rows written before the count field was added, which we want to
+// behave defensively rather than fail closed.
+func entityLinkedCount(d retrieval.Doc) int {
+	if d.Metadata != nil {
+		switch v := d.Metadata[MetaEntityCount].(type) {
+		case int64:
+			return int(v)
+		case int:
+			return v
+		case float64:
+			return int(v)
+		}
+	}
+	return len(entityLinkedSlice(d))
 }
 
 // entityDisplayName returns MetaEntityName, falling back to

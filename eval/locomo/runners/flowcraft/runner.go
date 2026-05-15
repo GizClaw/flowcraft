@@ -56,10 +56,14 @@ type Options struct {
 	// (pipeline.ModeEntityLink) that materialises the linked entry
 	// ids via DocGetter and fuses them with the vector / BM25 /
 	// entity-filter lanes through RRF. Auto-enables multi-recall.
-	//
-	// Architectural background:
-	// internal-docs/sdk-entity-store-design-2026-05-15.md.
 	EntityStore bool
+
+	// EntityStoreMaxLinkedCount forwards to
+	// recall.WithEntityStoreMaxLinkedCount. When > 0, entity rows
+	// whose linked_ids count exceeds this threshold are skipped at
+	// Lookup time — the common-noun pollution gate. 0 disables.
+	// No-op when EntityStore is false.
+	EntityStoreMaxLinkedCount int
 
 	// UpdateResolverLLM, when set, installs an LLMUpdateResolver via
 	// recall.WithUpdateResolver. The resolver runs once per Save call
@@ -175,6 +179,9 @@ func New(opts Options) (runners.Runner, error) {
 		// recall auto-wires the lookup stage + lane + resolver on
 		// top of pipeOpts; no need to thread them here.
 		memOpts = append(memOpts, recall.WithEntityStore(0))
+		if opts.EntityStoreMaxLinkedCount > 0 {
+			memOpts = append(memOpts, recall.WithEntityStoreMaxLinkedCount(opts.EntityStoreMaxLinkedCount))
+		}
 	}
 
 	mem, err := recall.New(idx, memOpts...)

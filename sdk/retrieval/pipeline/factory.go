@@ -194,18 +194,15 @@ func WithEntityLaneMinSelectivity(ratio float64) LTMOption {
 // Layer this on top of [WithMultiRecall]. Without multi-recall the
 // lane has nothing to fuse with — the LTM factory ignores
 // entityLinkLane in single-lane mode.
-//
-// Architectural rationale: see
-// internal-docs/sdk-entity-store-design-2026-05-15.md §9.
 func WithEntityLinkLane(on bool) LTMOption {
 	return func(c *ltmConfig) { c.entityLinkLane = on }
 }
 
 // WithEntityLinkResolver installs the [EntityLinkResolver] consumed
 // by the [EntityLinkLookup] stage and the [ModeEntityLink] lane.
-// nil disables the feature even when [WithEntityLinkLane] is true
-// (see internal-docs/sdk-entity-store-design-2026-05-15.md §10 for
-// how sdk/recall wires its internalEntityLinkResolver here).
+// nil disables the feature even when [WithEntityLinkLane] is true.
+// sdk/recall installs its internalEntityLinkResolver here when
+// [recall.WithEntityStore] is used.
 func WithEntityLinkResolver(r EntityLinkResolver) LTMOption {
 	return func(c *ltmConfig) { c.entityLinkResolver = r }
 }

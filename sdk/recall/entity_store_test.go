@@ -289,6 +289,72 @@ func TestForgetNoOpForUnknownID(t *testing.T) {
 	}
 }
 
+// TestLookupCommonNounGate verifies that MaxLinkedCount silently
+// drops entity rows whose linked count exceeds the threshold while
+// preserving rows under the threshold. This is the row-8
+// pollution-defence: an entity that has linked to "too many"
+// entries is treated as a common noun and yields zero candidates
+// at Lookup time so RRF cannot rank-vote that low-signal set into
+// the fused output.
+func TestLookupCommonNounGate(t *testing.T) {
+	idx := memidx.New()
+	_, now := fixedClock(t)
+	store := recall.NewIndexEntityStore(idx, recall.IndexEntityStoreOptions{
+		LinkedCap:      100,
+		MaxLinkedCount: 5,
+		Clock:          now,
+	})
+	if store == nil {
+		t.Fatalf("NewIndexEntityStore returned nil")
+	}
+	scope := recall.Scope{UserID: "u1"}
+	ctx := context.Background()
+
+	// "alice" stays under the gate (3 linked); "the" exceeds it
+	// (8 linked).
+	if err := store.Link(ctx, scope, map[string][]string{
+		"alice": {"e1", "e2", "e3"},
+		"the":   {"x1", "x2", "x3", "x4", "x5", "x6", "x7", "x8"},
+	}); err != nil {
+		t.Fatalf("Link: %v", err)
+	}
+
+	gotAlice, _ := store.Lookup(ctx, scope, []string{"alice"}, 0)
+	if !equalSlice(gotAlice, []string{"e1", "e2", "e3"}) {
+		t.Fatalf("alice (under gate) got %v; want full list", gotAlice)
+	}
+	gotThe, _ := store.Lookup(ctx, scope, []string{"the"}, 0)
+	if len(gotThe) != 0 {
+		t.Fatalf("the (over gate) got %v; want empty (common-noun gate should drop)", gotThe)
+	}
+
+	// Union query: alice (rare) survives, the (common) is dropped
+	// silently — operator does not lose recall just because the
+	// query touched a common atom alongside a rare one.
+	gotUnion, _ := store.Lookup(ctx, scope, []string{"alice", "the"}, 0)
+	if !equalSlice(gotUnion, []string{"e1", "e2", "e3"}) {
+		t.Fatalf("union got %v; want alice's list (the should be silently dropped)", gotUnion)
+	}
+}
+
+// TestLookupCommonNounGate_DisabledByDefault asserts the gate is
+// opt-in: MaxLinkedCount==0 keeps the historic "return every
+// linked id" behaviour so existing callers see no recall delta.
+func TestLookupCommonNounGate_DisabledByDefault(t *testing.T) {
+	store, _ := newEntityStore(t, 100) // MaxLinkedCount unset
+	scope := recall.Scope{UserID: "u1"}
+	ctx := context.Background()
+	if err := store.Link(ctx, scope, map[string][]string{
+		"the": {"x1", "x2", "x3", "x4", "x5", "x6", "x7", "x8"},
+	}); err != nil {
+		t.Fatalf("Link: %v", err)
+	}
+	got, _ := store.Lookup(ctx, scope, []string{"the"}, 0)
+	if len(got) != 8 {
+		t.Fatalf("gate disabled: got %d ids; want 8", len(got))
+	}
+}
+
 // TestNewIndexEntityStoreNilOnNilIndex ensures we degrade rather
 // than panic when the index is nil. The other half of this contract
 // (index that does not satisfy DocGetter -> nil store) is exercised

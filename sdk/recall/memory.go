@@ -127,8 +127,9 @@ type config struct {
 	// and is captured here only so the lt.upsertFacts path can pass
 	// the option through to the concrete IndexEntityStore at
 	// construction time; once a store is wired its own cap wins.
-	entityStore          EntityStore
-	entityStoreLinkedCap int
+	entityStore             EntityStore
+	entityStoreLinkedCap    int
+	entityStoreMaxLinkedCnt int
 
 	md5Dedup           bool
 	softMerge          bool
@@ -317,8 +318,8 @@ func WithRecentTurns(k int) Option {
 //
 // Default OFF. Phased rollout: opt in per-deployment, observe
 // retrieval-quality metrics, then promote to default once the
-// LoCoMo ablation closes the architectural gap documented in
-// internal-docs/sdk-entity-store-design-2026-05-15.md.
+// LoCoMo ablation closes the architectural gap to entity-graph
+// systems (mem0 v3 et al).
 func WithEntityStore(linkedCap int) Option {
 	return func(c *config) {
 		// We can't construct the IndexEntityStore here because the
@@ -326,6 +327,26 @@ func WithEntityStore(linkedCap int) Option {
 		// caller's intent + cap and let New() finish the wire-up.
 		c.entityStore = entityStoreSentinel
 		c.entityStoreLinkedCap = linkedCap
+	}
+}
+
+// WithEntityStoreMaxLinkedCount enables the common-noun pollution
+// gate documented on [IndexEntityStoreOptions.MaxLinkedCount]: any
+// entity row whose linked_ids count strictly exceeds n is silently
+// skipped at Lookup time so the entity-link lane does not vote that
+// row's (low-signal) entries past the vector / BM25 lanes' picks.
+//
+// 0 (default) disables the gate. Must be paired with
+// [WithEntityStore] — sets the option on the IndexEntityStore that
+// auto-constructs in [New].
+//
+// Recommended starting value: 60–80 for LoCoMo-shaped datasets
+// (~250 facts/conv); higher for production conversations.
+func WithEntityStoreMaxLinkedCount(n int) Option {
+	return func(c *config) {
+		if n > 0 {
+			c.entityStoreMaxLinkedCnt = n
+		}
 	}
 }
 
@@ -641,8 +662,9 @@ func New(idx retrieval.Index, opts ...Option) (Memory, error) {
 	// signals this by returning nil).
 	if _, isSentinel := cfg.entityStore.(sentinelEntityStore); isSentinel {
 		es := NewIndexEntityStore(idx, IndexEntityStoreOptions{
-			LinkedCap: cfg.entityStoreLinkedCap,
-			Clock:     cfg.now,
+			LinkedCap:      cfg.entityStoreLinkedCap,
+			MaxLinkedCount: cfg.entityStoreMaxLinkedCnt,
+			Clock:          cfg.now,
 		})
 		// Assign as an explicit nil interface (not a typed-nil
 		// wrapper) when the index doesn't satisfy DocGetter so

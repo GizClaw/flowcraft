@@ -150,12 +150,19 @@ on:
         # a sibling namespace per Scope (ltm_<rt>__u_<user>__entities)
         # with one row per normalised entity name; row writes happen
         # synchronously after every Save batch via Memory.linkEntities.
-        # Architectural background:
-        # internal-docs/sdk-entity-store-design-2026-05-15.md.
         description: "Enable entity-link inverted-index lane (architectural ablation)"
         required: false
         type: boolean
         default: false
+      entity_store_max_linked:
+        # Common-noun pollution gate (row-8 hardening). Entity rows
+        # whose linked_ids count exceeds this threshold are skipped at
+        # Lookup time, preventing RRF rank-vote flooding by saturated
+        # entities (the failure mode that took entity-filter lane down
+        # 17pp on run 25866478422). No-op when entity_store=false.
+        description: "Skip entity rows with > N linked entries at Lookup (0 disables; 60-80 recommended for LoCoMo)"
+        required: false
+        default: "0"
       qa_timeout:
         # CLI default: 2m. The first smoke run showed a single
         # azure.generate hitting 1m59s — too tight for the current
@@ -363,6 +370,7 @@ jobs:
             --multi-recall=${{ inputs.multi_recall }}
             --save-with-context=${{ inputs.save_with_context }}
             --entity-store=${{ inputs.entity_store }}
+            --entity-store-max-linked=${{ inputs.entity_store_max_linked }}
             --qa-timeout "${{ inputs.qa_timeout }}"
             --ingest-timeout "${{ inputs.ingest_timeout }}"
             --notify-name "$RUN_TAG"
