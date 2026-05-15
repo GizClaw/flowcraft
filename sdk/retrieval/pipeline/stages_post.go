@@ -57,6 +57,76 @@ func (s TimeDecay) Run(_ context.Context, st *State) error {
 	return nil
 }
 
+// EntityLinkBoost upweights hits whose Doc.ID appears in
+// State.CandidateEntityIDs (populated by [EntityLinkLookup]).
+// . Reads: Fused or Final, CandidateEntityIDs. Writes: same slice.
+//
+// Architectural difference from [EntityBoost]:
+//   - EntityBoost compares each Doc's INTRINSIC `entities` metadata to
+//     the query's entities (overlap is computed at Doc granularity).
+//   - EntityLinkBoost looks each Doc.ID up in a discrete inverted index
+//     pre-built at write time by `recall.EntityStore`. The candidate set
+//     is much smaller and more discriminative than the entities-field
+//     overlap test, because the index is keyed on the canonical
+//     normalized entity name (matching the same normalization used at
+//     query time by [EntityExtract.LLMExtractor]).
+//
+// Why this exists alongside the [ModeEntityLink] RRF lane: feeding the
+// entity-store as a 4th RRF lane regresses qa.judge in datasets where
+// most entries already mention the dominant speaker entity — the lane
+// floods top-K with speaker-anchored low-precision candidates and
+// displaces the high-quality vector/BM25 hits. Treating the entity
+// store as a POST-fusion BOOST instead lets vector+BM25 own candidate
+// generation while entity-link contributes only a final re-ranking
+// signal. Multi-hop questions, which depend on candidate diversity,
+// are no longer starved.
+//
+// Score scaling: hit.Score is multiplied by (1 + Boost) when Doc.ID
+// is in CandidateEntityIDs (capped at 2× to preserve relative gaps).
+// Boost defaults to 0.3 when zero or negative.
+type EntityLinkBoost struct {
+	Boost float64
+}
+
+// Name implements Stage.
+func (s EntityLinkBoost) Name() string { return "EntityLinkBoost" }
+
+// Run implements Stage.
+func (s EntityLinkBoost) Run(_ context.Context, st *State) error {
+	if len(st.CandidateEntityIDs) == 0 {
+		return nil
+	}
+	boost := s.Boost
+	if boost <= 0 {
+		boost = 0.3
+	}
+	hits := pickFinalish(st)
+	if len(hits) == 0 {
+		return nil
+	}
+	idSet := make(map[string]struct{}, len(st.CandidateEntityIDs))
+	for _, id := range st.CandidateEntityIDs {
+		idSet[id] = struct{}{}
+	}
+	for i, h := range hits {
+		if _, hit := idSet[h.Doc.ID]; !hit {
+			continue
+		}
+		factor := 1 + boost
+		if factor > 2 {
+			factor = 2
+		}
+		hits[i].Score = h.Score * factor
+		if hits[i].Scores == nil {
+			hits[i].Scores = map[string]float64{}
+		}
+		hits[i].Scores["entity_link_boost"] = factor
+	}
+	sort.SliceStable(hits, func(i, j int) bool { return hits[i].Score > hits[j].Score })
+	st.Final = hits
+	return nil
+}
+
 // EntityBoost upweights hits whose Doc.Metadata["entities"] overlaps with QueryEntities
 // . Reads: Fused or Final, QueryEntities. Writes: same slice.
 //

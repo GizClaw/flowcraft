@@ -52,6 +52,15 @@ type ltmConfig struct {
 	entityLinkResolver     EntityLinkResolver
 	entityLinkLaneTopK     int
 	entityLinkPerEntityCap int
+	// entityLinkBoost > 0 switches the entity-link contribution from
+	// "4th RRF recall lane" to "post-fusion score boost" — vector +
+	// BM25 own candidate generation, entity-link only re-ranks the
+	// fused result. See [WithEntityLinkBoost] for the motivating
+	// LoCoMo regression. When > 0, the [ModeEntityLink] lane is NOT
+	// inserted into MultiRetrieve; only the [EntityLinkLookup] stage
+	// (which populates State.CandidateEntityIDs) plus an
+	// [EntityLinkBoost] stage after RRFFusion are wired in.
+	entityLinkBoost float64
 }
 
 // WithRecallTopK overrides the vector recall fan-out (default 60).
@@ -223,6 +232,31 @@ func WithEntityLinkPerEntityCap(n int) LTMOption {
 	return func(c *ltmConfig) { c.entityLinkPerEntityCap = n }
 }
 
+// WithEntityLinkBoost switches the entity-link integration from
+// "RRF recall lane" (default when 0) to "post-fusion score boost"
+// (when > 0). The argument is the boost weight applied to fused hits
+// whose Doc.ID is in State.CandidateEntityIDs — the final score is
+// multiplied by (1 + weight), capped at 2× to preserve relative gaps.
+//
+// Mode comparison:
+//
+//	weight == 0 (default) → 4th RRF lane (legacy)
+//	weight  > 0           → post-fusion boost (NEW, multi-hop safe)
+//
+// Why this exists: the RRF-lane mode regresses LoCoMo by 30 pp when
+// the entity-store contains speaker-name → all-entries edges (every
+// fact in the namespace mentions the speaker, so the lane returns
+// the whole namespace, displacing high-precision vector/BM25 hits in
+// RRF). Boost mode keeps vector + BM25 as the candidate-generation
+// authorities and only nudges the entity-anchored ones up at
+// re-ranking time, so multi-hop diversity is preserved.
+//
+// Requires both [WithEntityLinkLane](true) and a non-nil
+// [WithEntityLinkResolver].
+func WithEntityLinkBoost(weight float64) LTMOption {
+	return func(c *ltmConfig) { c.entityLinkBoost = weight }
+}
+
 // WithSlotCollapse inserts a [SlotCollapse] stage after
 // [SupersededDecay] so legacy entries that were never tagged with
 // superseded_by still get collapsed to the newest hit per
@@ -321,10 +355,21 @@ func LTM(emb embedding.Embedder, opts ...LTMOption) *Pipeline {
 			&EmbedQuery{Embedder: emb},
 			cfg.entityExtract,
 		}
-		// Entity-link lane requires (a) the WithEntityLinkLane flag
-		// set, (b) a non-nil resolver. We insert the lookup stage
-		// BEFORE MultiRetrieve so State.CandidateEntityIDs is
-		// populated by the time the ModeEntityLink lane runs.
+		// Entity-link integration requires (a) WithEntityLinkLane=true,
+		// (b) a non-nil resolver. Two wiring modes:
+		//
+		//   1. cfg.entityLinkBoost == 0 → legacy 4th RRF lane.
+		//      EntityLinkLookup + ModeEntityLink lane.
+		//
+		//   2. cfg.entityLinkBoost  > 0 → post-fusion BOOST.
+		//      EntityLinkLookup populates CandidateEntityIDs, vector
+		//      and BM25 own candidate generation (no ModeEntityLink
+		//      lane), and EntityLinkBoost runs AFTER RRFFusion.
+		//
+		// EntityLinkLookup is inserted in both modes (it has zero
+		// dependencies on lane-vs-boost choice and is what produces
+		// State.CandidateEntityIDs).
+		useEntityLinkBoost := false
 		if cfg.entityLinkLane && cfg.entityLinkResolver != nil {
 			perEntityCap := cfg.entityLinkPerEntityCap
 			if perEntityCap <= 0 {
@@ -334,16 +379,23 @@ func LTM(emb embedding.Embedder, opts ...LTMOption) *Pipeline {
 				Resolver:     cfg.entityLinkResolver,
 				PerEntityCap: perEntityCap,
 			})
-			linkK := cfg.entityLinkLaneTopK
-			if linkK <= 0 {
-				linkK = 30
-			}
-			lanes[string(retrieval.LaneEntityLink)] = RetrieveSpec{
-				Mode: ModeEntityLink,
-				TopK: linkK,
+			if cfg.entityLinkBoost > 0 {
+				useEntityLinkBoost = true
+			} else {
+				linkK := cfg.entityLinkLaneTopK
+				if linkK <= 0 {
+					linkK = 30
+				}
+				lanes[string(retrieval.LaneEntityLink)] = RetrieveSpec{
+					Mode: ModeEntityLink,
+					TopK: linkK,
+				}
 			}
 		}
 		stages = append(stages, lanes, RRFFusion{K: rrfK})
+		if useEntityLinkBoost {
+			stages = append(stages, EntityLinkBoost{Boost: cfg.entityLinkBoost})
+		}
 		// Under multi-recall, BM25 is a recall lane, not a boost.
 		// Boosting again would double-count its contribution.
 		// EntityBoost is intentionally kept downstream because it

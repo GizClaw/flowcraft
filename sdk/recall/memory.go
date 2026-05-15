@@ -131,6 +131,16 @@ type config struct {
 	entityStoreLinkedCap    int
 	entityStoreMaxLinkedCnt int
 
+	// queryEntityLLM, when set, swaps the pipeline's rule-based
+	// query-side entity extraction for an LLM-backed extractor. The
+	// rule extractor pulls only capitalized single tokens + quoted
+	// runs, so multi-word noun phrases ("LGBTQ support group") never
+	// land in QueryEntities — making them un-joinable against the
+	// LLM-extracted entity names persisted by EntityStore.Link at
+	// write time. The LLM extractor closes this asymmetry. See
+	// [WithQueryEntityExtractor].
+	queryEntityLLM llm.LLM
+
 	md5Dedup           bool
 	softMerge          bool
 	slotMerge          bool
@@ -347,6 +357,35 @@ func WithEntityStoreMaxLinkedCount(n int) Option {
 		if n > 0 {
 			c.entityStoreMaxLinkedCnt = n
 		}
+	}
+}
+
+// WithQueryEntityExtractor installs an LLM-backed extractor for the
+// query-side `QueryEntities` slot in the retrieval pipeline state.
+//
+// Default (when this option is absent) is the rule-based extractor
+// (see [pipeline.EntityExtract] / pipeline.ruleEntities) — capitalized
+// single tokens + quoted runs only. That is sufficient for vector +
+// BM25 entity boost, but it is asymmetric with the LLM-extracted,
+// multi-word entity phrases the write-side extractor persists into
+// the EntityStore (e.g. "LGBTQ support group"). The asymmetry
+// silently collapses entity-link recall to a tiny join surface —
+// see [LoCoMo run 25908012719 / 25909308192 ablation results].
+//
+// Wiring this option causes the auto-wired LTM pipeline to swap its
+// rule-based [pipeline.EntityExtract] for an LLM-backed extractor
+// (built on top of `client`) so query-side entity strings share the
+// same vocabulary as the write-side EntityStore keys.
+//
+// Cost: one extra LLM call per recall, ~150-400 ms latency added.
+// Best-effort: on any LLM / parse error, the extractor returns an
+// empty slice and the recall still completes (no extra failure
+// surface).
+//
+// nil disables the feature (rule extractor remains).
+func WithQueryEntityExtractor(client llm.LLM) Option {
+	return func(c *config) {
+		c.queryEntityLLM = client
 	}
 }
 
@@ -699,6 +738,16 @@ func New(idx retrieval.Index, opts ...Option) (Memory, error) {
 				pipeline.WithMultiRecall(true),
 				pipeline.WithEntityLinkLane(true),
 				pipeline.WithEntityLinkResolver(newInternalEntityLinkResolver(cfg.entityStore)),
+			)
+		}
+		if cfg.queryEntityLLM != nil {
+			// Wire the LLM-backed query entity extractor LAST so
+			// it overrides any rule-based extractor a caller may
+			// have set via WithLTMOption. Cost: 1 LLM call per
+			// recall. Best-effort: errors fall back to "no
+			// entities" rather than failing the recall.
+			ltmOpts = append(ltmOpts,
+				pipeline.WithEntityExtractor(llmQueryEntityExtractor(cfg.queryEntityLLM)),
 			)
 		}
 		pipe = pipeline.LTM(cfg.embedder, ltmOpts...)
