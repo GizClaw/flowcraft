@@ -336,6 +336,15 @@ func (s SlotCollapse) Run(_ context.Context, st *State) error {
 
 // Limit truncates Final to TopK and drops hits below MinScore
 // . MUST be the last stage. Reads/Writes: Final.
+//
+// TopK semantics: the stage value is a fallback / default, not a hard
+// cap. When the caller's SearchRequest.TopK is positive it OVERRIDES
+// the stage TopK — recall callers ask for exactly N results and that
+// contract must hold end-to-end. The stage TopK only takes effect when
+// the request leaves TopK unset (zero), and as a final guard against
+// unbounded result sets when neither value is set. This matches the
+// way the recall lanes already honour SearchRequest.TopK for their
+// own fan-out budgets.
 type Limit struct {
 	TopK     int
 	MinScore float64
@@ -359,8 +368,12 @@ func (s Limit) Run(_ context.Context, st *State) error {
 		}
 		hits = out
 	}
-	if s.TopK > 0 && len(hits) > s.TopK {
-		hits = hits[:s.TopK]
+	cap := s.TopK
+	if st.Request != nil && st.Request.TopK > 0 {
+		cap = st.Request.TopK
+	}
+	if cap > 0 && len(hits) > cap {
+		hits = hits[:cap]
 	}
 	st.Final = hits
 	return nil
