@@ -39,8 +39,27 @@ type Memory interface {
 	// returns immediately.
 	SaveAsync(ctx context.Context, scope Scope, msgs []llm.Message) (JobID, error)
 
-	// Add inserts one pre-built Entry verbatim. Returns the assigned
-	// entry ID (content-addressable when e.ID is empty).
+	// Add inserts one pre-built Entry verbatim and returns the
+	// assigned entry ID.
+	//
+	// Two ingest modes:
+	//
+	//   - e.ID == "" (content-addressable): the ID is derived
+	//     deterministically from (scope, Content). Two Adds with
+	//     the same payload collide on ID; the second call is
+	//     short-circuited via the per-namespace content-hash
+	//     dedup probe (the same gate that [Memory.Save] uses for
+	//     fact upsert), making Add idempotent against retries.
+	//     Set [WithoutMD5Dedup] to skip the probe; repeat content
+	//     still collides on ID, so the Upsert overwrites in
+	//     place.
+	//   - e.ID != "" (caller-owned identity): the supplied ID is
+	//     honoured verbatim and the dedup probe is SKIPPED so
+	//     two writes with the same Content but different IDs
+	//     (e.g. timestamped event replays) stay as separate
+	//     rows.
+	//
+	// Fix landed in #155.
 	Add(ctx context.Context, scope Scope, e Entry) (string, error)
 
 	// Recall runs the configured retrieval pipeline against the
@@ -760,7 +779,15 @@ func New(idx retrieval.Index, opts ...Option) (Memory, error) {
 	if cfg.jobQueue == nil {
 		cfg.jobQueue = NewMemoryJobQueue()
 	}
-	if cfg.sweeperEnabled && cfg.nsRegistry == nil {
+	// Always initialise the in-memory namespace registry. It is
+	// cheap (a sync.Map plus a string slice) and removes the
+	// invariant "nsRegistry is nil unless WithSweeper or
+	// WithNamespaceRegistry is used" — that invariant was the
+	// trigger for #160 (SweepOnce nil-pointer panic when callers
+	// drove TTL passes from their own scheduler). Sweeper /
+	// projections / SweepOnce / rememberNamespace all now share
+	// one registry by default.
+	if cfg.nsRegistry == nil {
 		cfg.nsRegistry = NewMemoryNamespaceRegistry()
 	}
 	wrapped := idx
@@ -858,7 +885,9 @@ func New(idx retrieval.Index, opts ...Option) (Memory, error) {
 	// to walk. Construct one on demand if no other component (TTL
 	// sweeper) already required it — the registry is cheap and
 	// projections without a registry would be unable to find
-	// scopes to reconcile.
+	// scopes to reconcile. The default-init above already ensures
+	// nsRegistry is non-nil, but the guard is kept defensively in
+	// case a future refactor revisits the default.
 	if len(projections) > 0 && cfg.nsRegistry == nil {
 		cfg.nsRegistry = NewMemoryNamespaceRegistry()
 	}

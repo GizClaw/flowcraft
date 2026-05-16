@@ -55,6 +55,50 @@ func saneNS(s string) string {
 // .
 //
 // When AgentID is empty the filter is empty (cross-agent recall).
+// namespacesForRecall returns the set of namespaces a single Recall
+// call must visit, derived from scope.EffectivePartitions(). Order
+// preserves the caller's partition list; duplicates are removed.
+//
+// Mapping (mirrors [NamespaceFor]):
+//   - [PartitionUser]:   ltm_<rt>__u_<user>  (requires non-empty UserID; skipped otherwise)
+//   - [PartitionGlobal]: ltm_<rt>__global
+//
+// When the resolved set is empty (e.g. PartitionUser on a scope
+// with no UserID) the legacy single-namespace path is used as a
+// fallback so callers asking for impossible buckets still get a
+// well-formed query. This is the entry point that fixed #150 —
+// pre-fix Recall ignored Partitions entirely and always issued
+// against NamespaceFor(scope).
+func namespacesForRecall(scope Scope) []string {
+	parts := scope.EffectivePartitions()
+	seen := make(map[string]struct{}, len(parts))
+	var out []string
+	for _, p := range parts {
+		s := Scope{RuntimeID: scope.RuntimeID}
+		switch p {
+		case PartitionUser:
+			if scope.UserID == "" {
+				continue
+			}
+			s.UserID = scope.UserID
+		case PartitionGlobal:
+			// s.UserID stays empty → global namespace.
+		default:
+			continue
+		}
+		ns := NamespaceFor(s)
+		if _, ok := seen[ns]; ok {
+			continue
+		}
+		seen[ns] = struct{}{}
+		out = append(out, ns)
+	}
+	if len(out) == 0 {
+		out = []string{NamespaceFor(scope)}
+	}
+	return out
+}
+
 func AgentRecallFilter(s Scope) retrieval.Filter {
 	if s.AgentID == "" {
 		return retrieval.Filter{}

@@ -178,7 +178,18 @@ func (r *EventReloader) enqueue(ctx context.Context, ev ChangeEvent) {
 //   - one (datasetID, docName)            -> RebuildScope{datasetID, docName}
 //   - one datasetID, multiple docs/bulk   -> RebuildScope{datasetID}
 //   - multiple datasetIDs                 -> RebuildScope{} (everything)
+//
+// Concurrency: flush registers itself with the same waitgroup that
+// Run uses BEFORE checking stopped, so [Close] (which calls
+// wg.Wait) blocks until any in-flight Rebuild returns. Pre-fix
+// (#159) the rebuild happened on a time.AfterFunc goroutine that
+// was untracked, letting Close return while Rebuild was still
+// running — the godoc claim "no further Rebuild call or
+// timer-driven flush can happen after Close" was broken.
 func (r *EventReloader) flush(ctx context.Context) {
+	r.wg.Add(1)
+	defer r.wg.Done()
+
 	r.mu.Lock()
 	if r.stopped {
 		r.mu.Unlock()

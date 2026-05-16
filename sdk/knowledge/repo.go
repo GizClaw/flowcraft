@@ -85,6 +85,25 @@ type DocVectorSearcher interface {
 	SearchDocsByVector(ctx context.Context, q ChunkQuery) ([]Candidate, error)
 }
 
+// ChunkSigReader is an OPTIONAL extension that ChunkRepo
+// implementations may also satisfy. When supported,
+// [Service.Rebuild] can compare the on-disk [DerivedSig] of an
+// existing doc against the current (SourceVer, ChunkerSig,
+// EmbedSig) and skip the chunk + embed work when the doc is
+// already fresh — honouring the [DerivedSig.IsStale] contract
+// documented on Rebuild.
+//
+// Return (DerivedSig{}, false, nil) when the doc has no chunks
+// yet (first ingest). Return an error only for backend faults;
+// missing docs are NOT an error.
+//
+// Backends that do not implement ChunkSigReader force Rebuild
+// onto the unconditional re-chunk + re-embed path. Fix landed
+// in #152.
+type ChunkSigReader interface {
+	GetDocSig(ctx context.Context, datasetID, docName string) (DerivedSig, bool, error)
+}
+
 // LayerQuery is the recall input for layer-tier searches.
 type LayerQuery struct {
 	DatasetIDs []string

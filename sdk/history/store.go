@@ -322,11 +322,17 @@ func (s *FileStore) SaveMessages(ctx context.Context, conversationID string, mes
 	if len(existing) == 0 {
 		return s.writeAll(ctx, path, messages)
 	}
+	// Pre-fix (#153) returned nil whenever len(messages) ==
+	// len(existing) under the assumption "same length ⇒ same
+	// content". That silently dropped in-place rewrites
+	// (moderation passes, redactions, single-message
+	// replacements). SaveMessages now always rewrites unless the
+	// new slice is strictly longer than the existing one — in
+	// which case the incremental append path is correct and
+	// cheaper. Callers wanting an explicit append-only fast path
+	// should reach for [MessageAppender] instead.
 	if len(messages) <= len(existing) {
-		if len(messages) < len(existing) {
-			return s.writeAll(ctx, path, messages)
-		}
-		return nil
+		return s.writeAll(ctx, path, messages)
 	}
 
 	newMsgs := messages[len(existing):]

@@ -58,12 +58,23 @@ func (m *lt) sweeperLoop() {
 	}
 }
 
-// SweepOnce performs one round of TTL cleanup; exposed for tests.
+// SweepOnce performs one round of TTL cleanup; exposed for callers
+// that drive TTL passes from their own scheduler instead of the
+// built-in sweeper loop.
 //
 // Strategy:
 //  1. Try DeletableByFilter.DeleteByFilter once.
 //  2. Otherwise List(Range{expires_at:{Lte:now}}) → Delete(ids) in batches.
+//
+// As of #160 [New] always initialises an in-memory namespace
+// registry, so SweepOnce is safe to call without [WithSweeper] /
+// [WithNamespaceRegistry]. The defensive nil-check below preserves
+// that contract against any future refactor that revisits the
+// default; it returns a clear error instead of a nil-deref panic.
 func (m *lt) SweepOnce(ctx context.Context) error {
+	if m.cfg.nsRegistry == nil {
+		return errors.New("recall: SweepOnce: namespace registry not initialised; pass WithNamespaceRegistry or WithSweeper")
+	}
 	now := m.cfg.now().UnixMilli()
 	filter := retrieval.Filter{
 		And: []retrieval.Filter{

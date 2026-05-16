@@ -163,6 +163,42 @@ func (r *RetrievalChunkRepo) DeleteByDoc(ctx context.Context, datasetID, docName
 	return r.deleteDocLevel(ctx, datasetID, docName)
 }
 
+// GetDocSig satisfies the [knowledge.ChunkSigReader] capability:
+// it returns the current [knowledge.DerivedSig] persisted with
+// the chunks of (datasetID, docName) without re-running the
+// chunker or embedder. Used by [knowledge.Service.Rebuild] to
+// short-circuit the unconditional re-chunk + re-embed path when
+// the on-disk sig already matches the desired one (#152).
+//
+// Returns (DerivedSig{}, false, nil) when no chunks exist for the
+// doc (first ingest); returns an error only on backend faults.
+// One Index.List with PageSize=1 — O(1) in the doc's chunk count.
+func (r *RetrievalChunkRepo) GetDocSig(ctx context.Context, datasetID, docName string) (knowledge.DerivedSig, bool, error) {
+	if datasetID == "" || docName == "" {
+		return knowledge.DerivedSig{}, false, errdefs.Validationf("knowledge/retrieval: dataset_id and doc_name are required")
+	}
+	page, err := r.idx.List(ctx, chunksNamespace(datasetID), rt.ListRequest{
+		Filter:   rt.Filter{Eq: map[string]any{mdDocName: docName}},
+		PageSize: 1,
+	})
+	if err != nil {
+		if errdefs.IsNotFound(err) {
+			return knowledge.DerivedSig{}, false, nil
+		}
+		return knowledge.DerivedSig{}, false, fmt.Errorf("knowledge/retrieval: list %s/%s sig: %w", datasetID, docName, err)
+	}
+	if page == nil || len(page.Items) == 0 {
+		return knowledge.DerivedSig{}, false, nil
+	}
+	md := page.Items[0].Metadata
+	return knowledge.DerivedSig{
+		SourceVer:  metadataUint64(md[mdSourceVer]),
+		ChunkerSig: metadataString(md[mdChunkerSig]),
+		PromptSig:  metadataString(md[mdPromptSig]),
+		EmbedSig:   metadataString(md[mdEmbedSig]),
+	}, true, nil
+}
+
 // RebuildDocIndex re-derives the __docs namespace for a dataset by
 // iterating every chunk currently held in the __chunks namespace,
 // grouping by doc_name, and re-running replaceDocLevel per doc.
