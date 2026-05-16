@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
+	"github.com/GizClaw/flowcraft/sdk/internal/syncx"
 	"github.com/GizClaw/flowcraft/sdk/llm"
 	"github.com/GizClaw/flowcraft/sdk/model"
 	"github.com/GizClaw/flowcraft/sdk/telemetry"
@@ -57,6 +58,21 @@ type compactor struct {
 	queues  map[string]*convQueue
 	state   atomic.Int32 // open(0) → closing(1) → closed(2)
 	closeWg sync.WaitGroup
+
+	// persistMu serialises persistAppend per conversation so two
+	// concurrent Append calls cannot interleave the read-then-
+	// write pair (either the MessageAppender path's
+	// GetMessages+AppendMessages, or the RMW fallback's
+	// GetMessages+SaveMessages). Without this both paths can lose
+	// batches OR mis-report startSeq under contention (#162).
+	//
+	// We hold this lock OUTSIDE the per-conversation worker queue
+	// because persistAppend deliberately runs synchronously in the
+	// caller's goroutine (its docstring describes the queued-
+	// startSeq pattern); routing it through the queue would change
+	// Append's latency profile. The keyed mutex is the smallest
+	// fix that restores the documented atomicity.
+	persistMu syncx.KeyedMutex
 
 	// shutdownOnce + shutdownDone form the "single drain-watcher" pattern:
 	// the first Shutdown call flips state, closes every queue, and starts
@@ -231,7 +247,28 @@ func (m *compactor) Append(ctx context.Context, conversationID string, newMessag
 	return nil
 }
 
+// persistAppend writes newMessages durably to the underlying Store
+// and returns the pre-append message count as startSeq (the index
+// in the conversation log at which newMessages[0] now lives).
+//
+// Concurrency: the per-conversation [syncx.KeyedMutex] makes the
+// read-then-write pair atomic for both the MessageAppender and the
+// RMW fallback paths. Without this lock:
+//
+//   - The RMW fallback (default for [InMemoryStore] pre-#154 /
+//     [FileStore] without MessageAppender) drops entire batches
+//     last-writer-wins on every concurrent same-conversation
+//     Append.
+//   - The MessageAppender path persists messages correctly but
+//     mis-reports startSeq, which the DAG ingest task downstream
+//     uses to align summary nodes to message ranges — wrong
+//     startSeq corrupts the summary index, not just the log.
+//
+// See issue #162.
 func (m *compactor) persistAppend(ctx context.Context, conversationID string, newMessages []model.Message) (int, error) {
+	m.persistMu.Lock(conversationID)
+	defer m.persistMu.Unlock(conversationID)
+
 	if appender, ok := m.store.(MessageAppender); ok {
 		existing, err := m.store.GetMessages(ctx, conversationID)
 		if err != nil {
