@@ -314,12 +314,31 @@ func (s *Service) SearchDocuments(ctx context.Context, q Query) (*Result, error)
 		return &Result{}, nil
 	}
 
-	cands, err := searcher.SearchDocs(ctx, ChunkQuery{
+	// Capability-routing (#145): SearchDocs is the BM25 doc-level
+	// path; doc-level vector / hybrid is opted into by implementing
+	// [DocVectorSearcher]. We probe via type assertion so the failure
+	// mode for backends without doc-level vectors is a clear up-front
+	// NotAvailable, not a partial-execution error buried inside the
+	// chosen ChunkQuery.
+	chunkQ := ChunkQuery{
 		DatasetIDs: ids,
 		Text:       q.Text,
 		Mode:       q.Mode,
 		TopK:       q.TopK,
-	})
+	}
+	var cands []Candidate
+	switch q.Mode {
+	case ModeVector, ModeHybrid:
+		dvs, hasVec := s.chunks.(DocVectorSearcher)
+		if !hasVec {
+			return nil, errdefs.NotAvailablef(
+				"knowledge: doc-level mode %q not supported by chunk repo %T (implement DocVectorSearcher; #145)",
+				q.Mode, s.chunks)
+		}
+		cands, err = dvs.SearchDocsByVector(ctx, chunkQ)
+	default: // ModeBM25
+		cands, err = searcher.SearchDocs(ctx, chunkQ)
+	}
 	if err != nil {
 		return nil, err
 	}

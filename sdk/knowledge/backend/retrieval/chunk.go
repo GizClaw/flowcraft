@@ -412,13 +412,14 @@ func (r *RetrievalChunkRepo) searchOne(ctx context.Context, ns string, q knowled
 //
 // Mode handling:
 //   - ModeBM25:   primary path. Hits land at doc-level granularity.
-//   - ModeVector / ModeHybrid: returns errdefs.NotAvailable. The
-//     __docs namespace holds no per-doc vector (chunk vectors do
-//     not compose into a doc vector without a model choice);
-//     building doc-level vectors via mean-pool / late-chunking is
-//     tracked as a follow-up. BEIR / MS-MARCO / TREC doc-level eval
-//     suites are BM25-only, so this limitation does not affect
-//     #134's acceptance criteria.
+//   - ModeVector / ModeHybrid: BM25-only repo. The __docs namespace
+//     holds no per-doc vector (chunk vectors do not compose into a
+//     doc vector without a model choice). Use [Service.SearchDocuments]
+//     with q.Mode == ModeVector instead — it routes via the explicit
+//     [knowledge.DocVectorSearcher] capability assertion (issue #145).
+//     If called directly with a non-BM25 mode this method still
+//     surfaces errdefs.NotAvailable so external direct callers get
+//     the migration hint.
 //
 // Returned Hits have ChunkIndex = -1 and Layer = "" (doc-level
 // results have no specific chunk); Content / Sig / Metadata are
@@ -436,8 +437,10 @@ func (r *RetrievalChunkRepo) SearchDocs(ctx context.Context, q knowledge.ChunkQu
 	mode := knowledge.ResolveMode(q.Mode)
 	if mode != knowledge.ModeBM25 {
 		return nil, errdefs.NotAvailablef(
-			"knowledge/retrieval: SearchDocs supports ModeBM25 only in v1 (got %q); "+
-				"doc-level vector/hybrid is tracked as a follow-up of #134",
+			"knowledge/retrieval: SearchDocs is BM25-only (got %q); "+
+				"implement DocVectorSearcher on this repo or call "+
+				"Service.SearchDocuments which routes Vector/Hybrid via "+
+				"the explicit capability interface (#145)",
 			mode)
 	}
 	topK := q.TopK

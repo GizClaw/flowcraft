@@ -52,15 +52,23 @@ func (s HybridShortCircuit) Run(ctx context.Context, st *State) error {
 	if err != nil {
 		return err
 	}
-	if resp != nil {
-		st.Final = resp.Hits
-		// Preserve the backend's structured explanation so the wrapping
-		// pipeline can surface it on the short-circuit path. Without this
-		// the pipeline would observe empty Recalls/Trace and produce a
-		// nil SearchResponse.Execution even when the backend tried to
-		// honour Debug.
-		st.HybridExecution = resp.Execution
+	// Only short-circuit when the backend actually returned a response.
+	// A nil resp means the backend is a "type-assertion-positive but
+	// no-op" bridge (the historic shape of [journal.Wrap]'s false
+	// Hybridable advertisement, issue #157). Treating that as a
+	// successful short-circuit silently empties Recall (issue #161);
+	// the remaining LTM stages — SupersededDecay, SlotCollapse,
+	// TimeDecay, EntityBoost / EntityLinkBoost — must run instead.
+	if resp == nil {
+		return nil
 	}
+	st.Final = resp.Hits
+	// Preserve the backend's structured explanation so the wrapping
+	// pipeline can surface it on the short-circuit path. Without this
+	// the pipeline would observe empty Recalls/Trace and produce a
+	// nil SearchResponse.Execution even when the backend tried to
+	// honour Debug.
+	st.HybridExecution = resp.Execution
 	st.ShortCircuit = true
 	return nil
 }

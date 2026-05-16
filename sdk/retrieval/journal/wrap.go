@@ -2,7 +2,6 @@ package journal
 
 import (
 	"context"
-	"io"
 	"time"
 
 	"github.com/GizClaw/flowcraft/sdk/retrieval"
@@ -37,10 +36,24 @@ type journaledIndex struct {
 
 // Wrap returns retrieval.Index that records mutations to j after inner success.
 //
-// The wrapper transparently delegates the optional retrieval sub-interfaces
-// (DocGetter, Filterable, DeletableByFilter, Droppable, Iterable,
-// Snapshottable, Hybridable, Vectorizable) so that callers who type-assert
-// on the wrapped value still reach the inner backend's native fast paths.
+// Capability projection (issue #157): the wrapper exposes ONLY the optional
+// sub-interfaces the inner actually implements. Pre-fix, the base type
+// embedded bridge methods for every optional sub-interface, so a wrapped
+// index always satisfied `idx.(retrieval.Hybridable)` even when the inner
+// did not — and the bridge silently returned (nil, nil), which collapsed
+// the recall pipeline through [pipeline.HybridShortCircuit] to zero hits.
+//
+// Currently transparently delegates: [retrieval.DocGetter],
+// [retrieval.Filterable], [retrieval.DeletableByFilter],
+// [retrieval.Droppable], [retrieval.Iterable]. These have in-tree
+// implementations and the bridge logic on `*journaledIndex` is correct.
+// [retrieval.Hybridable], [retrieval.Snapshottable], and
+// [retrieval.Vectorizable] are NOT delegated by the base wrapper today —
+// no in-tree backend implements them. When a future backend does, add a
+// specialised variant type that explicitly defines the corresponding
+// methods (the same pattern as [wrappedFull] / [wrappedAuditable] below)
+// rather than restoring the leaky base-type bridge.
+//
 // DeleteByFilter and Drop additionally emit OpDelete events for every
 // affected document so the journal stays a complete audit log; this can be
 // expensive on bulk deletes — call directly on the inner Index when audit
@@ -291,65 +304,25 @@ func (w *journaledIndex) Iterate(ctx context.Context, namespace, cursor string, 
 	return nil, "", nil
 }
 
-func (w *journaledIndex) Snapshot(ctx context.Context, namespace string, dst io.Writer) error {
-	if s, ok := w.inner.(retrieval.Snapshottable); ok {
-		return s.Snapshot(ctx, namespace, dst)
-	}
-	return nil
-}
-
-func (w *journaledIndex) Restore(ctx context.Context, namespace string, src io.Reader) error {
-	if s, ok := w.inner.(retrieval.Snapshottable); ok {
-		return s.Restore(ctx, namespace, src)
-	}
-	return nil
-}
-
-func (w *journaledIndex) SearchHybrid(ctx context.Context, namespace string, req retrieval.HybridRequest) (*retrieval.SearchResponse, error) {
-	if h, ok := w.inner.(retrieval.Hybridable); ok {
-		return h.SearchHybrid(ctx, namespace, req)
-	}
-	return nil, nil
-}
-
-func (w *journaledIndex) UpsertWithEmbed(ctx context.Context, namespace string, docs []retrieval.Doc) error {
-	v, ok := w.inner.(retrieval.Vectorizable)
-	if !ok {
-		return nil
-	}
-	if err := v.UpsertWithEmbed(ctx, namespace, docs); err != nil {
-		return err
-	}
-	now := time.Now()
-	act := ""
-	if w.actor != nil {
-		act = w.actor(ctx)
-	}
-	for i := range docs {
-		d := docs[i]
-		after := cloneDocPtr(&d)
-		ev := Event{
-			Namespace: namespace,
-			Op:        OpUpsert,
-			DocID:     d.ID,
-			After:     after,
-			Actor:     act,
-			Timestamp: now,
-		}
-		if err := w.j.Record(ctx, ev); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func (w *journaledIndex) SearchByText(ctx context.Context, namespace, text string, topK int) (*retrieval.SearchResponse, error) {
-	if v, ok := w.inner.(retrieval.Vectorizable); ok {
-		return v.SearchByText(ctx, namespace, text, topK)
-	}
-	return nil, nil
-}
-
+// REMOVED in PR-4 (issue #157):
+//   - Snapshot / Restore
+//   - SearchHybrid
+//   - UpsertWithEmbed / SearchByText
+//
+// Pre-fix, these existed on *journaledIndex as 'return (nil, nil)' bridges
+// that fell through to the inner only when it implemented the corresponding
+// optional sub-interface. Embedding *journaledIndex into every variant type
+// then made every wrapped value satisfy [retrieval.Hybridable] etc. via
+// method-set promotion, regardless of the inner's real capabilities. The
+// downstream [pipeline.HybridShortCircuit] then short-circuited recall to
+// zero hits.
+//
+// Reintroducing them — even gated by type assertions — requires committing
+// to specialised variant types (see newWrapped's matrix) that ONLY embed
+// the relevant bridge when the inner truly implements it. No in-tree
+// backend implements these today, so they have been deleted rather than
+// kept as a foot-gun.
+//
 // newWrapped returns a retrieval.Index whose method set mirrors the optional
 // interfaces implemented by base.inner. The matrix is small, so we
 // enumerate the combinations rather than rely on dynamic proxying.
