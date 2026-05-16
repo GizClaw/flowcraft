@@ -2,6 +2,7 @@ package recall
 
 import (
 	"context"
+	"sort"
 	"time"
 
 	"github.com/GizClaw/flowcraft/sdk/retrieval"
@@ -120,8 +121,17 @@ func (m *lt) runRecall(ctx context.Context, scope Scope, req Request) ([]Hit, *r
 	if len(req.Filter) > 0 {
 		filter = MergeFilters(filter, retrieval.Filter{Eq: req.Filter})
 	}
-	ns := NamespaceFor(scope)
-	m.rememberNamespace(ctx, ns)
+	// Multi-partition recall (#150): each effective partition maps
+	// to its own namespace; the pipeline runs per-namespace and the
+	// per-partition results are merged client-side (dedup by
+	// Doc.ID with max-score retention, sort by score desc, truncate
+	// to TopK). Single-partition recall is the hot path and is
+	// returned verbatim — no merge overhead, full Execution
+	// preserved.
+	nss := namespacesForRecall(scope)
+	for _, ns := range nss {
+		m.rememberNamespace(ctx, ns)
+	}
 	span.SetAttributes(
 		attribute.String("runtime_id", scope.RuntimeID),
 		attribute.Bool("has_user_id", scope.UserID != ""),
@@ -131,6 +141,7 @@ func (m *lt) runRecall(ctx context.Context, scope Scope, req Request) ([]Hit, *r
 		attribute.Bool("with_tombstoned", req.WithTombstoned),
 		attribute.Bool("debug_lanes", req.Debug.IncludeLanes),
 		attribute.Bool("debug_stages", req.Debug.IncludeStages),
+		attribute.Int("partitions", len(nss)),
 	)
 	// Always ask the pipeline for stage + lane trace so we can feed
 	// recallStageDuration / recallLaneDuration without depending on
@@ -142,21 +153,39 @@ func (m *lt) runRecall(ctx context.Context, scope Scope, req Request) ([]Hit, *r
 	pipeDebug := req.Debug
 	pipeDebug.IncludeStages = true
 	pipeDebug.IncludeLanes = true
-	resp, err := m.pipe.Run(ctx, m.idx, ns, retrieval.SearchRequest{
+	searchReq := retrieval.SearchRequest{
 		QueryText: req.Query,
 		Filter:    filter,
 		TopK:      topK,
 		Debug:     pipeDebug,
-	})
-	if err != nil {
-		span.RecordError(err)
-		recallTotal.Add(ctx, 1, metric.WithAttributes(attribute.String("outcome", "fail"), attribute.String("reason", "pipeline")))
-		return nil, nil, err
 	}
-	recordStageDurations(ctx, resp.Execution)
-	recordLaneDurations(ctx, resp.Execution)
-	out := make([]Hit, 0, len(resp.Hits))
-	for _, h := range resp.Hits {
+	var (
+		allHits   []retrieval.Hit
+		firstExec *retrieval.SearchExecution
+	)
+	for _, ns := range nss {
+		resp, err := m.pipe.Run(ctx, m.idx, ns, searchReq)
+		if err != nil {
+			span.RecordError(err)
+			recallTotal.Add(ctx, 1, metric.WithAttributes(attribute.String("outcome", "fail"), attribute.String("reason", "pipeline")))
+			return nil, nil, err
+		}
+		recordStageDurations(ctx, resp.Execution)
+		recordLaneDurations(ctx, resp.Execution)
+		if firstExec == nil {
+			firstExec = resp.Execution
+		}
+		allHits = append(allHits, resp.Hits...)
+	}
+	// Merge across partitions when more than one was visited. The
+	// single-partition path is the common case and stays verbatim
+	// (no merge sort, identical hit ordering).
+	merged := allHits
+	if len(nss) > 1 {
+		merged = mergePartitionHits(allHits, topK)
+	}
+	out := make([]Hit, 0, len(merged))
+	for _, h := range merged {
 		out = append(out, Hit{
 			Entry:  DocToEntry(h.Doc),
 			Score:  h.Score,
@@ -166,7 +195,45 @@ func (m *lt) runRecall(ctx context.Context, scope Scope, req Request) ([]Hit, *r
 	span.SetAttributes(attribute.Int("hits", len(out)))
 	recallHits.Record(ctx, int64(len(out)))
 	recallTotal.Add(ctx, 1, metric.WithAttributes(attribute.String("outcome", "success")))
-	return out, projectExecution(resp.Execution, req.Debug), nil
+	return out, projectExecution(firstExec, req.Debug), nil
+}
+
+// mergePartitionHits deduplicates per-doc hits across multiple
+// partitions, keeping the highest-scored copy of each Doc.ID,
+// orders by score descending (Doc.ID asc as a deterministic tie
+// breaker), and truncates to topK. Empty inputs return nil to
+// match the single-partition behaviour.
+//
+// This is the merge half of the [namespacesForRecall] fan-out: each
+// partition runs its own LTM pipeline (per-namespace SupersededDecay
+// / SlotCollapse / TimeDecay / EntityBoost), so cross-partition
+// soft-ranking signals stay correct; only the final per-doc winner
+// is picked here.
+func mergePartitionHits(hits []retrieval.Hit, topK int) []retrieval.Hit {
+	if len(hits) == 0 {
+		return nil
+	}
+	best := make(map[string]int, len(hits))
+	for i, h := range hits {
+		prevIdx, ok := best[h.Doc.ID]
+		if !ok || h.Score > hits[prevIdx].Score {
+			best[h.Doc.ID] = i
+		}
+	}
+	out := make([]retrieval.Hit, 0, len(best))
+	for _, idx := range best {
+		out = append(out, hits[idx])
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Score != out[j].Score {
+			return out[i].Score > out[j].Score
+		}
+		return out[i].Doc.ID < out[j].Doc.ID
+	})
+	if topK > 0 && len(out) > topK {
+		out = out[:topK]
+	}
+	return out
 }
 
 // projectExecution returns the caller-visible slice of pipe.Execution

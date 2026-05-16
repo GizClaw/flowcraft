@@ -2,6 +2,7 @@ package knowledge
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -137,18 +138,29 @@ func (s *Service) DeleteDocument(ctx context.Context, datasetID, name string) er
 	if datasetID == "" || name == "" {
 		return errdefs.Validationf("knowledge: dataset_id and name are required")
 	}
+	// Issue #172: the godoc promises "best-effort", but the pre-fix
+	// implementation aborted on the first non-NotFound error,
+	// leaving downstream stores untouched (chunks orphaned when
+	// docs.Delete fails; layers orphaned when chunks.DeleteByDoc
+	// fails). Collect errors and continue so every downstream store
+	// gets a chance to clean up; return the aggregated error at the
+	// end so the caller still observes the failure.
+	var errs []error
 	if err := s.docs.Delete(ctx, datasetID, name); err != nil && !errdefs.IsNotFound(err) {
-		return err
+		errs = append(errs, fmt.Errorf("docs.Delete: %w", err))
 	}
 	if s.chunks != nil {
 		if err := s.chunks.DeleteByDoc(ctx, datasetID, name); err != nil && !errdefs.IsNotFound(err) {
-			return err
+			errs = append(errs, fmt.Errorf("chunks.DeleteByDoc: %w", err))
 		}
 	}
 	if s.layers != nil {
 		if err := s.layers.DeleteByDoc(ctx, datasetID, name); err != nil && !errdefs.IsNotFound(err) {
-			return err
+			errs = append(errs, fmt.Errorf("layers.DeleteByDoc: %w", err))
 		}
+	}
+	if len(errs) > 0 {
+		return errors.Join(errs...)
 	}
 	return nil
 }
@@ -354,9 +366,18 @@ func (s *Service) SearchDocuments(ctx context.Context, q Query) (*Result, error)
 
 // --- Rebuild ---------------------------------------------------------------
 
-// Rebuild re-derives chunks for the requested scope, comparing
-// DerivedSig against the current (SourceVer, ChunkerSig). Stale chunks
-// are recomputed; up-to-date chunks are left alone.
+// Rebuild re-derives chunks for every document in the requested
+// scope.
+//
+// Freshness gate (issue #152): when the configured ChunkRepo
+// implements [ChunkSigReader], each doc's on-disk [DerivedSig]
+// is compared against the current (SourceVer, ChunkerSig,
+// EmbedSig) via [DerivedSig.IsStale]; up-to-date docs are
+// skipped, stale docs are re-chunked and (if an embedder is
+// configured) re-embedded. Backends that do NOT implement
+// ChunkSigReader fall through to the unconditional re-chunk +
+// re-embed path, so operators wanting the embedding-budget
+// optimisation must wire a sig-aware ChunkRepo backend.
 //
 // Layers are not regenerated automatically; callers drive layer
 // rebuilds explicitly via PutDocumentLayer / PutDatasetLayer.
@@ -391,8 +412,6 @@ func (s *Service) replaceChunks(ctx context.Context, doc SourceDocument) error {
 	if s.chunks == nil {
 		return nil
 	}
-	specs := s.chunker.Split(doc.Content)
-	chunks := make([]DerivedChunk, len(specs))
 	sig := DerivedSig{
 		SourceVer:  doc.Version,
 		ChunkerSig: s.chunker.Sig(),
@@ -400,6 +419,23 @@ func (s *Service) replaceChunks(ctx context.Context, doc SourceDocument) error {
 	if s.embedder != nil {
 		sig.EmbedSig = s.embedSig
 	}
+	// Skip-when-fresh optimisation (#152): when the backing
+	// ChunkRepo supports ChunkSigReader, read the current on-disk
+	// sig and bail out before the (expensive) chunk + embed work
+	// if it's already up-to-date. Backends without the capability
+	// fall through to the unconditional path, preserving prior
+	// behaviour for callers that have not adopted the interface.
+	if reader, ok := s.chunks.(ChunkSigReader); ok {
+		existing, present, err := reader.GetDocSig(ctx, doc.DatasetID, doc.Name)
+		if err != nil {
+			return fmt.Errorf("knowledge: GetDocSig: %w", err)
+		}
+		if present && !existing.IsStale(sig) {
+			return nil
+		}
+	}
+	specs := s.chunker.Split(doc.Content)
+	chunks := make([]DerivedChunk, len(specs))
 	for i, sp := range specs {
 		c := DerivedChunk{
 			DatasetID: doc.DatasetID,

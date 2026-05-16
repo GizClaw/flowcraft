@@ -297,8 +297,36 @@ func (m *lt) Add(ctx context.Context, scope Scope, e Entry) (string, error) {
 		return "", err
 	}
 	now := m.cfg.now()
+	// Content-addressable ID derivation: when the caller does not
+	// pre-supply an ID, derive it from (scope, content) ONLY — no
+	// timestamp suffix. Two Adds with the same (scope, content)
+	// thus collide on ID, making Add idempotent under retry. The
+	// godoc contract is honoured (#155).
+	//
+	// callerSuppliedID = true short-circuits the content-hash
+	// dedup probe below. The probe is reserved for the
+	// content-addressable path (e.ID == "" coming in), because
+	// it is the ONLY path the caller has signed up for collapsing
+	// equal-content writes. When the caller pre-set e.ID, they
+	// have asserted "this entry has its own identity" — collapsing
+	// two distinct IDs onto each other would be a silent data-loss
+	// surprise (e.g. CategoryEvents replays where two timestamps
+	// share the same Content).
+	callerSuppliedID := e.ID != ""
 	if e.ID == "" {
-		e.ID = deterministicEntryID(scope, nil, 0, e.Content+"|"+now.Format(time.RFC3339Nano))
+		e.ID = deterministicEntryID(scope, nil, 0, e.Content)
+	}
+	ns := NamespaceFor(scope)
+	if m.cfg.md5Dedup && !callerSuppliedID {
+		hash := contentHash(scope, e.Content)
+		existing, derr := m.dedupHashes(ctx, scope, []string{hash})
+		if derr == nil {
+			if existingID, ok := existing[hash]; ok {
+				m.rememberNamespace(ctx, ns)
+				addTotal.Add(ctx, 1, metric.WithAttributes(attribute.String("outcome", "success"), attribute.String("reason", "dedup_hit")))
+				return existingID, nil
+			}
+		}
 	}
 	if e.CreatedAt.IsZero() {
 		e.CreatedAt = now
@@ -326,7 +354,6 @@ func (m *lt) Add(ctx context.Context, scope Scope, e Entry) (string, error) {
 		d.Metadata = map[string]any{}
 	}
 	d.Metadata[MetaContentHash] = contentHash(scope, e.Content)
-	ns := NamespaceFor(scope)
 	m.rememberNamespace(ctx, ns)
 	if err := m.idx.Upsert(ctx, ns, []retrieval.Doc{d}); err != nil {
 		span.RecordError(err)

@@ -87,11 +87,25 @@ func AllCategoryStrings() []string {
 //
 // Recall dimension:
 //
-//   - Partitions selects which buckets a List/Search visits. nil/empty
-//     means "auto": global scopes recall the global bucket only, and
-//     non-global scopes recall the user bucket only. Set explicitly when
-//     a single call must union both buckets, e.g. when shared and
-//     per-user facts both contribute to the answer.
+//   - Partitions selects which buckets a List/Search visits.
+//     nil/empty means "auto": global scopes recall the global
+//     bucket only, and non-global scopes recall the user bucket
+//     only. Set explicitly when a single call must union both
+//     buckets, e.g. when shared and per-user facts both
+//     contribute to the answer.
+//   - [Memory.Recall] fans out across the resolved partitions
+//     (one pipeline run per namespace, see
+//     [namespacesForRecall]); per-partition results are merged
+//     client-side: dedup by Doc.ID with max-score retention,
+//     sort by score desc, truncate to TopK. Each pipeline run
+//     executes the full LTM stage chain (SupersededDecay,
+//     SlotCollapse, TimeDecay, EntityBoost,
+//     EntityLinkBoost) inside its own namespace so cross-
+//     partition soft-ranking signals stay correct.
+//   - Performance: 2× pipeline cost when Partitions=[User,
+//     Global]; the cost is paid only when callers explicitly
+//     ask for multi-partition recall. The default (single
+//     partition) path is unchanged. Fix landed in #150.
 //
 // Note: SessionID was intentionally removed in v0.2.0. It conflated
 // conversation-thread state (which belongs in sdk/history) with
