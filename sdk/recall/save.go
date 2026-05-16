@@ -64,18 +64,16 @@ func (m *lt) validateScope(s Scope) error {
 }
 
 // Save (sync) extracts then upserts; returns generated entry IDs.
+//
+// The durable portion (validate → extract → upsert) runs through
+// the shared [executeWrite] pipeline so the sync and async
+// (handleJob) paths cannot diverge on validation, extractor
+// options, or upsert ordering. The post-success history append
+// remains here because its ctx-lifecycle differs from the async
+// caller's (sync reuses the user ctx; async uses a fresh
+// bookkeeping ctx — see handleJob for rationale).
 func (m *lt) Save(ctx context.Context, scope Scope, msgs []llm.Message) (SaveResult, error) {
-	if err := m.validateScope(scope); err != nil {
-		return SaveResult{}, err
-	}
-	ns := NamespaceFor(scope)
-	m.rememberNamespace(ctx, ns)
-	extractOpts := m.buildExtractOpts(ctx, scope, ns, msgs)
-	facts, err := m.cfg.extractor.Extract(ctx, scope, msgs, extractOpts...)
-	if err != nil {
-		return SaveResult{}, err
-	}
-	ids, err := m.upsertFacts(ctx, scope, msgs, facts, m.cfg.now())
+	ids, facts, err := m.executeWrite(ctx, scope, msgs, m.cfg.now())
 	if err != nil {
 		return SaveResult{}, err
 	}
@@ -84,7 +82,7 @@ func (m *lt) Save(ctx context.Context, scope Scope, msgs []llm.Message) (SaveRes
 	// non-fatal — the history store is a quality booster, not part
 	// of the durability contract.
 	if m.cfg.historyStore != nil {
-		m.appendHistory(ctx, ns, msgs)
+		m.appendHistory(ctx, NamespaceFor(scope), msgs)
 	}
 	return SaveResult{EntryIDs: ids, Facts: facts}, nil
 }

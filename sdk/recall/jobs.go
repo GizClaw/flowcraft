@@ -294,14 +294,27 @@ func (m *lt) worker() {
 }
 
 // handleJob runs one leased job under a per-job context derived from
-// workerCtx with the configured timeout. Two failure modes share the
-// retry path:
+// workerCtx with the configured timeout. The durable validate →
+// extract → upsert portion goes through the shared [executeWrite]
+// pipeline so the async path cannot drift from the sync ([Save]) one.
 //
-//  1. extractor / upsert returned an error → failOrRetry as before.
-//  2. ctx was canceled (timeout or Close) → ctx.Err() flows through
-//     extractor's return value and lands in failOrRetry too. The job
-//     is rescheduled with a short backoff so a transient cancel does
-//     not advance attempts beyond the cap on shutdown.
+// Failure routing has three modes:
+//
+//  1. [writeStageError.Permanent] (validate stage today) → the
+//     payload will never succeed under the current policy. Mark Fail
+//     immediately so the queue does not waste retries on a payload
+//     that was, e.g., enqueued before requireUserID was tightened
+//     (issue #165) or originated from a direct queue Enqueue that
+//     bypassed SaveAsync.
+//  2. extractor / upsert returned a transient error → failOrRetry as
+//     before. Includes ctx.Err() flowing through extractor on timeout
+//     / Close, which is rescheduled with a short backoff so a
+//     transient cancel does not advance attempts beyond the cap.
+//  3. success → append history on a fresh bookkeeping ctx, then
+//     Complete. Both bookkeeping calls deliberately run on a fresh
+//     ctx (not jobCtx) so a workerCtx cancel during this last-mile
+//     window does not skip the history append (issue #149) or orphan
+//     the job in 'running'.
 func (m *lt) handleJob(rec *JobRecord) {
 	jobCtx, cancel := context.WithTimeout(m.workerCtx, m.cfg.jobTimeout)
 	defer cancel()
@@ -311,24 +324,24 @@ func (m *lt) handleJob(rec *JobRecord) {
 		jobDuration.Record(jobCtx, time.Since(t0).Seconds())
 	}()
 
+	ids, _, err := m.executeWrite(jobCtx, rec.Payload.Scope, rec.Payload.Messages, m.cfg.now())
+	if err != nil {
+		stage := classifyWriteStage(err)
+		m.recordJobFailure(jobCtx, rec, err, stage)
+		if isPermanentWriteError(err) {
+			// Skip retry — a permanent stage failure (validate)
+			// will never succeed under the current policy.
+			bookCtx, bookCancel := context.WithTimeout(context.Background(), bookkeepingTimeout)
+			defer bookCancel()
+			if ferr := m.cfg.jobQueue.Fail(bookCtx, rec.ID, err.Error()); ferr != nil {
+				m.log("ltm.worker.fail: %v", ferr)
+			}
+			return
+		}
+		m.failOrRetry(rec, err)
+		return
+	}
 	ns := NamespaceFor(rec.Payload.Scope)
-	// Shared with the sync Save path: pulls WithRecentMessages from
-	// the history store and WithExistingFacts from saveWithCtx, so
-	// the async ingest path produces the same extractor prompts the
-	// sync path does (issue #149).
-	extractOpts := m.buildExtractOpts(jobCtx, rec.Payload.Scope, ns, rec.Payload.Messages)
-	facts, err := m.cfg.extractor.Extract(jobCtx, rec.Payload.Scope, rec.Payload.Messages, extractOpts...)
-	if err != nil {
-		m.recordJobFailure(jobCtx, rec, err, "extract")
-		m.failOrRetry(rec, err)
-		return
-	}
-	ids, err := m.upsertFacts(jobCtx, rec.Payload.Scope, rec.Payload.Messages, facts, m.cfg.now())
-	if err != nil {
-		m.recordJobFailure(jobCtx, rec, err, "upsert")
-		m.failOrRetry(rec, err)
-		return
-	}
 	// Append history AFTER persistence and BEFORE Complete. Uses an
 	// independent short-timeout bookkeeping ctx so a workerCtx cancel
 	// during this last-mile write does not skip the append, and the
@@ -355,6 +368,30 @@ func (m *lt) handleJob(rec *JobRecord) {
 		attribute.String("outcome", "succeeded"),
 		attribute.Int("attempts", rec.Attempts),
 	))
+}
+
+// classifyWriteStage extracts the phase tag from a writeStageError
+// for telemetry attribution. Returns "unknown" when the failure did
+// not originate from executeWrite — defensive default so the metric
+// dimension stays well-typed.
+func classifyWriteStage(err error) string {
+	var werr *writeStageError
+	if errors.As(err, &werr) {
+		return werr.Stage()
+	}
+	return "unknown"
+}
+
+// isPermanentWriteError reports whether the failure is a permanent
+// stage failure (currently only the validate stage). Permanent
+// failures must skip the retry loop — repeating the same JobPayload
+// through the same gate produces the same rejection.
+func isPermanentWriteError(err error) bool {
+	var werr *writeStageError
+	if errors.As(err, &werr) {
+		return werr.Permanent()
+	}
+	return false
 }
 
 // recordJobFailure emits the OTel signal for a failed handleJob attempt.
