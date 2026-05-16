@@ -319,20 +319,19 @@ func (m *lt) Add(ctx context.Context, scope Scope, e Entry) (string, error) {
 	d.Metadata[MetaContentHash] = contentHash(scope, e.Content)
 	ns := NamespaceFor(scope)
 	m.rememberNamespace(ctx, ns)
-	// Slot supersede runs before the new doc lands so the new entry is
-	// never returned by supersedeBySlot's List(). The defensive
-	// "d.ID == newID" guard inside supersedeBySlot covers the race-free
-	// case where the new doc has already been inserted (eg async
-	// retry), but running before Upsert avoids it entirely in the
-	// happy path. Matches the ordering in upsertFacts.
-	if m.cfg.slotMerge && entrySlotEligible(e.Subject, e.Predicate) {
-		m.supersedeBySlot(ctx, scope, e.ID,
-			ExtractedFact{Subject: e.Subject, Predicate: e.Predicate}, now)
-	}
 	if err := m.idx.Upsert(ctx, ns, []retrieval.Doc{d}); err != nil {
 		span.RecordError(err)
 		addTotal.Add(ctx, 1, metric.WithAttributes(attribute.String("outcome", "fail"), attribute.String("reason", "upsert")))
 		return "", err
+	}
+	// Slot supersede runs AFTER the new doc lands (issue #167). The
+	// "d.ID == newID" guard inside supersedeBySlot keeps the new
+	// entry from super-seding itself when the post-upsert List sees
+	// it. Running after Upsert means an Upsert failure can never
+	// leave orphan MetaSupersededBy pointers on older slot-mates.
+	if m.cfg.slotMerge && entrySlotEligible(e.Subject, e.Predicate) {
+		m.supersedeBySlot(ctx, scope, e.ID,
+			ExtractedFact{Subject: e.Subject, Predicate: e.Predicate}, now)
 	}
 	span.SetAttributes(
 		attribute.String("runtime_id", scope.RuntimeID),
@@ -475,15 +474,41 @@ func (m *lt) upsertFacts(
 		}
 	}
 
-	// 3. Supersede channels (slot + vector) -------------------------------
+	// 3. Upsert new docs FIRST (issue #167) -------------------------------
+	// Supersede channels and the LLM update resolver write
+	// MetaSupersededBy / MetaTombstone metadata on OLD docs that
+	// reference the NEW entry IDs we are about to write. Running
+	// those steps BEFORE Upsert would leave dangling pointers on
+	// the index if the Upsert below fails: old docs already point
+	// at entry IDs that never existed.
+	//
+	// Reordering: write the new doc batch first, THEN run the
+	// supersede + resolver passes. The self-skip guards inside
+	// supersedeBySlot / supersedeNeighbours / runResolverBatch
+	// (each checks d.ID == newID) guarantee the new entries are
+	// not super-seded by themselves on the post-upsert scan, so
+	// correctness is preserved while #167's "Upsert-fail leaves
+	// orphan supersede tags" hazard goes away.
+	docs := make([]retrieval.Doc, len(plans))
+	for i, p := range plans {
+		docs[i] = p.doc
+	}
+	if err := m.idx.Upsert(ctx, ns, docs); err != nil {
+		return nil, err
+	}
+
+	// 4. Supersede channels (slot + vector) -------------------------------
 	// supersedeNeighbours dispatches between the two channels and
 	// honours WithoutSlotChannel / WithoutSoftMerge independently;
-	// always call it and let the dispatcher decide.
+	// always call it and let the dispatcher decide. Failures here
+	// leave the new entries written and the older entries
+	// un-superseded — the worst case is recall returning a near-
+	// duplicate, which is preferable to a dangling pointer.
 	for _, p := range plans {
 		m.supersedeNeighbours(ctx, scope, p.entry.ID, p.fact, p.vec, now)
 	}
 
-	// 4. LLM update resolver (opt-in fallback) -----------------------------
+	// 5. LLM update resolver (opt-in fallback) -----------------------------
 	// The resolver runs at most once per Save with the full batch of
 	// non-slot facts so it can reason about combined contradictions
 	// (e.g. divorce + remarriage in the same turn). Slot-eligible facts
@@ -500,15 +525,6 @@ func (m *lt) upsertFacts(
 		if len(batch) > 0 {
 			m.runResolverBatch(ctx, scope, batch, now)
 		}
-	}
-
-	// 5. Upsert new docs ---------------------------------------------------
-	docs := make([]retrieval.Doc, len(plans))
-	for i, p := range plans {
-		docs[i] = p.doc
-	}
-	if err := m.idx.Upsert(ctx, ns, docs); err != nil {
-		return nil, err
 	}
 
 	// 6. Entity-link inverted index ---------------------------------------
