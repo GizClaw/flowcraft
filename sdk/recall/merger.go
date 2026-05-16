@@ -26,6 +26,12 @@ func contentHash(scope Scope, content string) string {
 // dedupHashes returns hash → existingDocID for content hashes already present
 // in the namespace. Implemented via Index.List with an In filter; backends
 // without native filter pushdown fall back to client-side scans.
+//
+// The query composes the In-filter with [TombstoneFilter] so a hash that
+// belongs ONLY to tombstoned (logically deleted) docs does not count as
+// "already present" (issue #158). Without the filter, Save would see the
+// dead hash and skip re-writing the fact — leaving the namespace with no
+// live copy of an entry the user just asked to save.
 func (m *lt) dedupHashes(ctx context.Context, scope Scope, hashes []string) (map[string]string, error) {
 	out := make(map[string]string, len(hashes))
 	if len(hashes) == 0 {
@@ -37,7 +43,10 @@ func (m *lt) dedupHashes(ctx context.Context, scope Scope, hashes []string) (map
 		in = append(in, h)
 	}
 	resp, err := m.idx.List(ctx, ns, retrieval.ListRequest{
-		Filter:   retrieval.Filter{In: map[string][]any{MetaContentHash: in}},
+		Filter: MergeFilters(
+			retrieval.Filter{In: map[string][]any{MetaContentHash: in}},
+			TombstoneFilter(),
+		),
 		PageSize: len(hashes),
 	})
 	if err != nil || resp == nil {

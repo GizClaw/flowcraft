@@ -72,6 +72,21 @@ type JobController interface {
 	AwaitJob(ctx context.Context, id JobID, timeout time.Duration) (JobStatus, error)
 }
 
+// SideStoreSyncer is implemented by [Memory] flavours that register
+// one or more [Projection]s. Calling SyncSideStores runs one
+// synchronous reconcile pass for the given scope, bringing every
+// registered projection to the alive state of the primary index as
+// of now.
+//
+// Use this from tests and from callers that just performed a write
+// outside the eager hot path (Add, Auditable.Rollback, Memory.Forget,
+// TTL sweep, resolver OpDelete) and want 0-lag entity-lane recall
+// before the next background tick. Returns nil immediately when no
+// projection is registered.
+type SideStoreSyncer interface {
+	SyncSideStores(ctx context.Context, scope Scope) error
+}
+
 // RecallExplainer is implemented by [Memory] flavours whose underlying
 // retrieval pipeline can produce a structured [retrieval.SearchExecution]
 // (lanes, stages, …) alongside the ranked hits.
@@ -168,6 +183,15 @@ type config struct {
 	sweeperInterval time.Duration
 	sweeperBatchMax int
 	nsRegistry      NamespaceRegistry
+
+	// reconcileInterval controls the cadence of the background
+	// [Reconciler] that brings side-store projections (currently
+	// the EntityStore) into eventual consistency with the primary
+	// index. Zero falls back to [defaultReconcileInterval] (5 min)
+	// whenever any projection is active; negative disables the
+	// background tick (synchronous [Memory.SyncSideStores] still
+	// works). See [WithReconcileInterval].
+	reconcileInterval time.Duration
 
 	now    func() time.Time
 	logger func(string, ...any)
@@ -358,6 +382,26 @@ func WithEntityStoreMaxLinkedCount(n int) Option {
 			c.entityStoreMaxLinkedCnt = n
 		}
 	}
+}
+
+// WithReconcileInterval sets the cadence of the background
+// [Reconciler] that keeps side-store [Projection]s eventually
+// consistent with the primary index.
+//
+//   - d > 0: the Reconciler ticks every d. Smaller d = fresher
+//     projections at the cost of more namespace scans.
+//   - d == 0: the recall package uses [defaultReconcileInterval]
+//     (5 min) whenever any projection is registered.
+//   - d  < 0: the background loop is disabled. Synchronous
+//     [Memory.SyncSideStores] still works — useful in tests and
+//     in deployments that drive reconciliation from their own
+//     scheduler.
+//
+// This option has no effect when no projection is configured
+// ([WithEntityStore] is the only projection source today; future
+// graph / analytics views will register through the same channel).
+func WithReconcileInterval(d time.Duration) Option {
+	return func(c *config) { c.reconcileInterval = d }
 }
 
 // WithQueryEntityExtractor installs an LLM-backed extractor for the
@@ -639,13 +683,32 @@ type lt struct {
 
 	workerCtx    context.Context
 	workerCancel context.CancelFunc
+
+	// reconciler keeps registered side-store [Projection]s
+	// eventually consistent with idx. Nil when no projection was
+	// registered. Lifecycle is tied to (start in [New], stop in
+	// [Close]).
+	reconciler *Reconciler
 }
 
 var (
-	_ Memory        = (*lt)(nil)
-	_ Auditable     = (*lt)(nil)
-	_ JobController = (*lt)(nil)
+	_ Memory          = (*lt)(nil)
+	_ Auditable       = (*lt)(nil)
+	_ JobController   = (*lt)(nil)
+	_ SideStoreSyncer = (*lt)(nil)
 )
+
+// SyncSideStores implements [SideStoreSyncer]. No-op when no
+// projection is registered (the EntityStore was not enabled).
+func (m *lt) SyncSideStores(ctx context.Context, scope Scope) error {
+	if m.reconciler == nil {
+		return nil
+	}
+	if err := m.validateScope(scope); err != nil {
+		return err
+	}
+	return m.reconciler.SyncScope(ctx, scope)
+}
 
 // New constructs a Memory backed by idx. Caller must Close() on
 // shutdown. idx is a positional parameter because it is the only
@@ -769,6 +832,41 @@ func New(idx retrieval.Index, opts ...Option) (Memory, error) {
 		workerCtx:    workerCtx,
 		workerCancel: workerCancel,
 	}
+	// Wire side-store projections. The EntityStore — when enabled
+	// via [WithEntityStore] — is the only projection today. New
+	// projections (GraphStore, SearchAnalytics, …) plug in by
+	// adding an [entityStoreProjection]-style adapter here. The
+	// [Reconciler] takes ownership of keeping them in sync with
+	// the primary index; write paths stay uninstrumented.
+	var projections []Projection
+	if cfg.entityStore != nil {
+		if pr := newEntityStoreProjection(cfg.entityStore, idx); pr != nil {
+			projections = append(projections, pr)
+		}
+	}
+	// Reconciler needs the namespace registry to know which scopes
+	// to walk. Construct one on demand if no other component (TTL
+	// sweeper) already required it — the registry is cheap and
+	// projections without a registry would be unable to find
+	// scopes to reconcile.
+	if len(projections) > 0 && cfg.nsRegistry == nil {
+		cfg.nsRegistry = NewMemoryNamespaceRegistry()
+	}
+	if len(projections) > 0 {
+		// The reconciler is created whenever a projection exists so
+		// the synchronous [Memory.SyncSideStores] path works in all
+		// modes — including [WithReconcileInterval](-1), which only
+		// disables the BACKGROUND ticker (see reconciler.start()
+		// below).
+		m.reconciler = newReconciler(
+			wrapped,
+			projections,
+			cfg.nsRegistry,
+			cfg.reconcileInterval,
+			cfg.now,
+			cfg.logger,
+		)
+	}
 	for i := 0; i < cfg.asyncWorkers; i++ {
 		m.wgWorkers.Add(1)
 		go m.worker()
@@ -776,6 +874,12 @@ func New(idx retrieval.Index, opts ...Option) (Memory, error) {
 	if cfg.sweeperEnabled && cfg.ttlPolicy != nil {
 		m.wgWorkers.Add(1)
 		go m.sweeperLoop()
+	}
+	if m.reconciler != nil && cfg.reconcileInterval >= 0 {
+		// Negative interval disables the background loop; the
+		// synchronous [Memory.SyncSideStores] entry point keeps
+		// working (e.g. for tests, deterministic schedulers).
+		m.reconciler.start()
 	}
 	return m, nil
 }
@@ -833,6 +937,13 @@ func (m *lt) Close() error {
 		close(m.stopCh)
 	}
 	m.workerCancel()
+	// Stop the background reconciler before draining other workers
+	// so a long namespace scan does not extend Close beyond its
+	// expected budget. The reconciler's loop honours its own stop
+	// channel and the per-tick context derived from the loop body.
+	if m.reconciler != nil {
+		m.reconciler.stop()
+	}
 	m.wgWorkers.Wait()
 	var nsErr error
 	if m.cfg.nsRegistry != nil {

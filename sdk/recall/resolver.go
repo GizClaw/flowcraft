@@ -147,9 +147,22 @@ func (m *lt) runResolverBatch(
 // (per-fact ranking is preserved on first occurrence). Recall errors
 // are logged but do not abort the batch — the resolver still runs on
 // whatever candidates were collected.
+//
+// The new-fact entries (already written to the primary index by the
+// upstream upsertFacts step — see issue #167 reorder) are filtered
+// out so the resolver does not see them as candidates of themselves.
+// Without this filter, every Save's resolver call would consume the
+// newly-written facts as its own contradiction targets and produce
+// self-supersede actions on each new entry.
 func (m *lt) gatherResolverCandidates(
 	ctx context.Context, scope Scope, newFacts []ResolveNewFact,
 ) []Hit {
+	newIDs := make(map[string]struct{}, len(newFacts))
+	for _, nf := range newFacts {
+		if nf.EntryID != "" {
+			newIDs[nf.EntryID] = struct{}{}
+		}
+	}
 	seen := make(map[string]struct{})
 	var out []Hit
 	for _, nf := range newFacts {
@@ -162,6 +175,9 @@ func (m *lt) gatherResolverCandidates(
 			continue
 		}
 		for _, h := range hits {
+			if _, isNew := newIDs[h.Entry.ID]; isNew {
+				continue
+			}
 			if _, dup := seen[h.Entry.ID]; dup {
 				continue
 			}
