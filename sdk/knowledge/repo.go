@@ -48,13 +48,41 @@ type ChunkRepo interface {
 // chunks→docID collapse that callers (e.g. eval/beir) would otherwise
 // have to implement themselves.
 //
-// Service.SearchDocuments type-asserts the configured ChunkRepo to this
-// interface; backends that do not implement it will surface a clear
-// error from SearchDocuments rather than silently fall back to a
-// chunk-level + collapse strategy (which is exactly what landing this
-// interface was meant to retire). See #126 for the rationale.
+// SCOPE: BM25 only. Doc-level vector / hybrid retrieval is a separate
+// capability — see [DocVectorSearcher]. Service.SearchDocuments routes
+// q.Mode == ModeBM25 here and ModeVector / ModeHybrid to
+// DocVectorSearcher; backends that do not implement the requested
+// capability surface a clear error rather than silently degrading.
+// See #126 for the BM25 rationale, #145 for the vector rationale.
 type DocLevelSearcher interface {
 	SearchDocs(ctx context.Context, q ChunkQuery) ([]Candidate, error)
+}
+
+// DocVectorSearcher is an OPTIONAL extension declaring doc-level vector
+// (and hybrid) retrieval as an explicit capability (issue #145).
+//
+// Pre-fix, ChunkRepo.SearchDocs accepted q.Mode and returned
+// errdefs.NotAvailable mid-call when the requested mode was anything
+// other than ModeBM25. That mixed two unrelated concerns — "what
+// granularity is supported" (DocLevelSearcher) and "what scoring
+// modes are supported" — into a runtime error that callers had to
+// pattern-match on. This interface separates them: the capability is
+// declared at compile time and probed via type assertion in
+// [Service.SearchDocuments]. Backends that do not implement it
+// surface a clear NotAvailable up front, not a buried mid-search
+// error.
+//
+// Hybrid handling is the implementer's responsibility (BM25 + cosine
+// fusion, late-chunking, etc.). The interface accepts the same
+// [ChunkQuery] as DocLevelSearcher and is expected to honour
+// q.Mode == ModeVector or ModeHybrid.
+//
+// No in-tree implementation yet — both [FSChunkRepo] and
+// [RetrievalChunkRepo] hold per-chunk vectors but no per-doc
+// representation. Mean-pool / late-chunking will land via a
+// follow-up that adds SearchDocsByVector to one or both repos.
+type DocVectorSearcher interface {
+	SearchDocsByVector(ctx context.Context, q ChunkQuery) ([]Candidate, error)
 }
 
 // LayerQuery is the recall input for layer-tier searches.
