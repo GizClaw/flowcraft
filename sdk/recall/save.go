@@ -146,6 +146,14 @@ func (m *lt) readRecentHistory(ctx context.Context, namespace string, k int) []l
 // appendHistory writes the current Save's messages into the store,
 // preferring the incremental AppendMessages path when available so
 // large conversations don't incur a full re-write per Save.
+//
+// Concurrency: the fallback read-modify-write path holds the
+// per-namespace [KeyedMutex] entry across the GetMessages /
+// SaveMessages pair so two concurrent same-namespace Saves cannot
+// interleave (issue #154 RMW race). Stores that implement
+// MessageAppender are presumed to provide their own atomicity and
+// do NOT acquire the KeyedMutex — the cost (one map probe per
+// Save) is paid only where it is needed.
 func (m *lt) appendHistory(ctx context.Context, namespace string, msgs []llm.Message) {
 	if len(msgs) == 0 {
 		return
@@ -156,9 +164,12 @@ func (m *lt) appendHistory(ctx context.Context, namespace string, msgs []llm.Mes
 		}
 		return
 	}
-	// Fallback: read-modify-write. Acceptable for the simple
-	// in-memory Store; persistent backends should implement
-	// MessageAppender so each Save stays O(|batch|).
+	// Fallback: read-modify-write. Acceptable only for stores that
+	// cannot offer MessageAppender; the per-namespace mutex makes
+	// the pair atomic so two concurrent same-namespace Saves cannot
+	// clobber each other's appends.
+	m.historyAppendMu.Lock(namespace)
+	defer m.historyAppendMu.Unlock(namespace)
 	existing, _ := m.cfg.historyStore.GetMessages(ctx, namespace)
 	if err := m.cfg.historyStore.SaveMessages(ctx, namespace, append(existing, msgs...)); err != nil {
 		m.log("recall: history SaveMessages: %v", err)

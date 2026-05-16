@@ -68,14 +68,20 @@ func (idx *Index) Search(
 		return nil, err
 	}
 
-	// Snapshot under the read lock so memtable + manifest are
-	// mutually consistent. Concurrent writes that arrive after we
-	// release see a fresh manifest; readers in flight see the
-	// snapshot they started with.
+	// Hold the namespace RLock for the entire Search body so the
+	// snapshot's segment refs remain physically valid while we
+	// open + loadDocs / loadBM25 them. Releasing the lock right
+	// after the snapshot (the pre-fix pattern) let a concurrent
+	// compactor swap the manifest AND RemoveAll the merged source
+	// segment dirs while in-flight Search was iterating its now-
+	// stale segment list, surfacing 'segment file not found' to
+	// callers (issue #170). RLock vs Lock contention is minimal —
+	// only compaction and writers on the SAME namespace are
+	// blocked; concurrent Searches still parallelise.
 	st.rwMu.RLock()
+	defer st.rwMu.RUnlock()
 	manifestSnap := st.manifest
 	memSnap := snapshotMemtable(st.memtable)
-	st.rwMu.RUnlock()
 
 	keywords := textsearch.ExtractKeywords(req.QueryText, idx.cfg.tokenizer)
 	queryVec := req.QueryVector
@@ -356,10 +362,16 @@ func (idx *Index) List(
 		return nil, err
 	}
 
+	// Hold RLock through the segment scan so a concurrent compactor
+	// cannot RemoveAll the segment dirs we are about to open
+	// (issue #170). Pagination / filter / sort work post-scan
+	// happens against in-memory data; the deferred unlock still
+	// covers that, which is a minor over-extension we accept to
+	// keep the code simple.
 	st.rwMu.RLock()
+	defer st.rwMu.RUnlock()
 	manifestSnap := st.manifest
 	memSnap := snapshotMemtable(st.memtable)
-	st.rwMu.RUnlock()
 
 	deleted := make(map[string]struct{})
 	docsByID := make(map[string]retrieval.Doc)
@@ -466,10 +478,12 @@ func (idx *Index) Get(ctx context.Context, namespace, id string) (retrieval.Doc,
 	if err := fenceCheck(st); err != nil {
 		return retrieval.Doc{}, false, err
 	}
+	// Hold RLock through segment open so compaction's RemoveAll
+	// cannot race us into 'segment file not found' (issue #170).
 	st.rwMu.RLock()
+	defer st.rwMu.RUnlock()
 	manifestSnap := st.manifest
 	memSnap := snapshotMemtable(st.memtable)
-	st.rwMu.RUnlock()
 
 	// Memtable wins; scan in reverse so the freshest staged op is
 	// returned first.
@@ -564,54 +578,64 @@ func (idx *Index) DeleteByFilter(ctx context.Context, namespace string, f retrie
 		return 0, err
 	}
 
-	st.rwMu.RLock()
-	manifestSnap := st.manifest
-	memSnap := snapshotMemtable(st.memtable)
-	st.rwMu.RUnlock()
+	// Run the scan-to-collect-IDs phase under RLock so a concurrent
+	// compactor cannot RemoveAll our snapshot's segment dirs mid-
+	// scan (issue #170). The follow-up Delete acquires Lock for
+	// the same namespace, so we MUST release RLock before invoking
+	// it — defer is not safe here.
+	matched, err := func() ([]string, error) {
+		st.rwMu.RLock()
+		defer st.rwMu.RUnlock()
+		manifestSnap := st.manifest
+		memSnap := snapshotMemtable(st.memtable)
 
-	deleted := make(map[string]struct{})
-	docsByID := make(map[string]retrieval.Doc)
-	for _, it := range memSnap {
-		if it.op == walOpDelete {
-			deleted[it.id] = struct{}{}
-			continue
-		}
-		if it.doc != nil {
-			docsByID[it.id] = *it.doc
-		}
-	}
-	segs := append([]segmentRef(nil), manifestSnap.Segments...)
-	sort.Slice(segs, func(i, j int) bool { return segs[i].ID > segs[j].ID })
-	for _, ref := range segs {
-		seg, err := openSegmentReader(ctx, idx.ws, st.paths, ref)
-		if err != nil {
-			return 0, err
-		}
-		for id := range seg.tombSet {
-			if _, ok := docsByID[id]; ok {
-				delete(docsByID, id)
-			}
-			deleted[id] = struct{}{}
-		}
-		if err := seg.loadDocs(ctx); err != nil {
-			return 0, err
-		}
-		for _, d := range seg.docs {
-			if _, ok := deleted[d.ID]; ok {
+		deleted := make(map[string]struct{})
+		docsByID := make(map[string]retrieval.Doc)
+		for _, it := range memSnap {
+			if it.op == walOpDelete {
+				deleted[it.id] = struct{}{}
 				continue
 			}
-			if _, ok := docsByID[d.ID]; ok {
-				continue
+			if it.doc != nil {
+				docsByID[it.id] = *it.doc
 			}
-			docsByID[d.ID] = d
 		}
-	}
-
-	matched := make([]string, 0)
-	for id, d := range docsByID {
-		if retrieval.DocMatchesFilter(d, f) {
-			matched = append(matched, id)
+		segs := append([]segmentRef(nil), manifestSnap.Segments...)
+		sort.Slice(segs, func(i, j int) bool { return segs[i].ID > segs[j].ID })
+		for _, ref := range segs {
+			seg, err := openSegmentReader(ctx, idx.ws, st.paths, ref)
+			if err != nil {
+				return nil, err
+			}
+			for id := range seg.tombSet {
+				if _, ok := docsByID[id]; ok {
+					delete(docsByID, id)
+				}
+				deleted[id] = struct{}{}
+			}
+			if err := seg.loadDocs(ctx); err != nil {
+				return nil, err
+			}
+			for _, d := range seg.docs {
+				if _, ok := deleted[d.ID]; ok {
+					continue
+				}
+				if _, ok := docsByID[d.ID]; ok {
+					continue
+				}
+				docsByID[d.ID] = d
+			}
 		}
+		out := make([]string, 0)
+		for id, d := range docsByID {
+			if retrieval.DocMatchesFilter(d, f) {
+				out = append(out, id)
+			}
+		}
+		return out, nil
+	}()
+	if err != nil {
+		return 0, err
 	}
 	if len(matched) == 0 {
 		return 0, nil
