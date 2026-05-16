@@ -10,6 +10,7 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/embedding"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/history"
+	"github.com/GizClaw/flowcraft/sdk/internal/syncx"
 	"github.com/GizClaw/flowcraft/sdk/llm"
 	"github.com/GizClaw/flowcraft/sdk/retrieval"
 	"github.com/GizClaw/flowcraft/sdk/retrieval/journal"
@@ -689,6 +690,15 @@ type lt struct {
 	// registered. Lifecycle is tied to (start in [New], stop in
 	// [Close]).
 	reconciler *Reconciler
+
+	// historyAppendMu serialises the read-modify-write fallback in
+	// [lt.appendHistory] on a per-namespace basis. Only the
+	// fallback path uses it; stores that implement
+	// [history.MessageAppender] are expected to provide their own
+	// atomicity. Fixes the silent-message-drop race in #154 for
+	// third-party stores that don't (yet) implement
+	// MessageAppender.
+	historyAppendMu syncx.KeyedMutex
 }
 
 var (

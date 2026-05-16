@@ -172,6 +172,43 @@ func (s *InMemoryStore) SaveMessages(_ context.Context, conversationID string, m
 	return nil
 }
 
+// AppendMessages implements [MessageAppender] atomically under s.mu
+// so concurrent same-conversation Append calls cannot read-modify-
+// write each other's batches. The pre-fix path (no MessageAppender
+// implementation here) forced callers into a manual
+// GetMessages+SaveMessages loop where the two sides were unlocked
+// between calls — issue #154's documented failure mode.
+//
+// Same eviction rules as [SaveMessages]: a new conversation that
+// pushes len(s.data) past maxConversations triggers LRU eviction.
+func (s *InMemoryStore) AppendMessages(_ context.Context, conversationID string, messages []model.Message) error {
+	if len(messages) == 0 {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	entry, exists := s.data[conversationID]
+	if !exists {
+		if len(s.data) >= s.maxConversations {
+			s.evictOldest()
+		}
+		cp := make([]model.Message, len(messages))
+		copy(cp, messages)
+		s.data[conversationID] = &memEntry{messages: cp, lastAccess: time.Now()}
+		return nil
+	}
+	entry.messages = append(entry.messages, messages...)
+	entry.lastAccess = time.Now()
+	return nil
+}
+
+// Compile-time assertion that InMemoryStore satisfies the optional
+// [MessageAppender] capability. Callers (notably sdk/recall's
+// appendHistory and sdk/history's compactor.persistAppend) prefer
+// this path because it avoids the racy read-modify-write fallback
+// (#154 / #162).
+var _ MessageAppender = (*InMemoryStore)(nil)
+
 func (s *InMemoryStore) DeleteMessages(_ context.Context, conversationID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
