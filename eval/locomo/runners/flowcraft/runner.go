@@ -59,9 +59,17 @@ type Options struct {
 	EntityStore bool
 
 	// EntityStoreMaxLinkedCount forwards to
-	// recall.WithEntityStoreMaxLinkedCount. When > 0, entity rows
-	// whose linked_ids count exceeds this threshold are skipped at
-	// Lookup time — the common-noun pollution gate. 0 disables.
+	// recall.WithEntityStoreMaxLinkedCount. Sentinel semantics
+	// (matches the SDK option):
+	//
+	//   - 0: do NOT forward — the SDK applies its safe default
+	//     ([defaultEntityMaxLinkedCount] = 100). Use this when you
+	//     have no specific opinion.
+	//   - >0: exact threshold; forwarded verbatim.
+	//   - <0: forwarded verbatim — explicit, audited gate-off
+	//     opt-out. The SDK emits a one-time warning via the
+	//     configured logger.
+	//
 	// No-op when EntityStore is false.
 	EntityStoreMaxLinkedCount int
 
@@ -203,7 +211,14 @@ func New(opts Options) (runners.Runner, error) {
 		// recall auto-wires the lookup stage + lane + resolver on
 		// top of pipeOpts; no need to thread them here.
 		memOpts = append(memOpts, recall.WithEntityStore(0))
-		if opts.EntityStoreMaxLinkedCount > 0 {
+		// Forward both positive (exact threshold) and negative
+		// (explicit gate-off opt-out) values verbatim; only "0"
+		// means "no opinion, let the SDK pick the safe default" —
+		// it must NOT call WithEntityStoreMaxLinkedCount so the
+		// explicit-tracking flag in cfg stays false and the safe
+		// default applies. Aligns with the es-default semantics on
+		// the SDK side.
+		if opts.EntityStoreMaxLinkedCount != 0 {
 			memOpts = append(memOpts, recall.WithEntityStoreMaxLinkedCount(opts.EntityStoreMaxLinkedCount))
 		}
 		if opts.QueryEntityLLM != nil {

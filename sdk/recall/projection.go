@@ -23,11 +23,22 @@ import (
 //     example). It MAY lag, it MAY be missing entries, it MAY
 //     retain stale entries — but reads must validate against the
 //     primary and the [Reconciler] eventually converges the view.
-//   - Write paths (Save, Add, Rollback, TTL sweeper, resolver
-//     OpDelete, …) DO NOT instrument Projection updates. Only the
-//     Reconciler does. This is the durable form of "the entity
-//     sibling namespace can be rebuilt offline by replaying the
-//     entries"; every Reconciler pass IS such a replay.
+//   - Eager write paths ([Memory.Save] via upsertFacts and
+//     [Memory.Add]) call [Projection.Project] inline AFTER the
+//     durable Upsert so the caller observes 0-lag recall against
+//     their own writes. The exact same Project method the
+//     [Reconciler] drives is used — there is ONE entry point,
+//     additive semantics — so the projection can never see two
+//     contracts. This was unified in #179.1; pre-fix the eager
+//     paths talked directly to the projection's backing
+//     primitives (e.g. [EntityStore.Link]) and Save/Add could
+//     drift independently of each other and of Reconciler.
+//   - Non-eager write paths (Rollback, TTL sweeper, resolver
+//     OpDelete, …) DO NOT instrument Projection updates. They
+//     rely entirely on the [Reconciler]'s tick to drop stale
+//     references via [Projection.Forget]. The contract guarantee
+//     is "every Reconciler pass IS a replay sufficient to rebuild
+//     the view offline".
 //
 // Implementations MUST be idempotent: Project called twice with the
 // same scope + entries produces the same view state as once. Forget
@@ -42,12 +53,20 @@ type Projection interface {
 	Name() string
 
 	// Project conveys "these entries currently exist (alive, not
-	// tombstoned/expired) in the primary index, under scope". The
-	// projection MUST treat this as the current truth for the
-	// scope: it may upsert new edges, refresh existing ones, and
-	// — when paired with [ProjectionInspector.AllEntryIDs] — drop
-	// references the projection retains but that are absent from
-	// the provided entries. Idempotent.
+	// tombstoned/expired) in the primary index, under scope".
+	//
+	// Semantics are ADDITIVE: the projection MUST incorporate
+	// every edge implied by entries[*] (upsert new edges, refresh
+	// existing ones) but MUST NOT drop edges that are absent from
+	// the supplied slice — the caller may be the eager write path
+	// passing only one batch, not a full snapshot. Stale-edge
+	// cleanup is the [Reconciler]'s responsibility, driven by
+	// [Projection.Forget] in a separate phase computed against
+	// [ProjectionInspector.AllEntryIDs].
+	//
+	// Called from two paths sharing this exact contract: eager
+	// write paths (Save's upsertFacts, Add) AFTER the durable
+	// Upsert, and the [Reconciler] tick. Idempotent.
 	Project(ctx context.Context, scope Scope, entries []Entry) error
 
 	// Forget conveys "these entry IDs are no longer alive in

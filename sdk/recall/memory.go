@@ -165,6 +165,14 @@ type config struct {
 	entityStore             EntityStore
 	entityStoreLinkedCap    int
 	entityStoreMaxLinkedCnt int
+	// entityStoreMaxLinkedCntExplicit tracks whether the caller
+	// passed [WithEntityStoreMaxLinkedCount] at all. Needed because
+	// the field's zero value coincides with "use safe default"
+	// AND with "caller wrote 0" — we only emit the construction-
+	// time warning when the caller EXPLICITLY chose the disabled
+	// path (n < 0), and we only override the safe default when the
+	// caller deliberately passed n > 0.
+	entityStoreMaxLinkedCntExplicit bool
 
 	// queryEntityLLM, when set, swaps the pipeline's rule-based
 	// query-side entity extraction for an LLM-backed extractor. The
@@ -374,6 +382,14 @@ func WithRecentTurns(k int) Option {
 // retrieval-quality metrics, then promote to default once the
 // LoCoMo ablation closes the architectural gap to entity-graph
 // systems (mem0 v3 et al).
+//
+// Common-noun gate: enabling the entity store also activates the
+// pollution gate at [defaultEntityMaxLinkedCount] (100). Tune via
+// [WithEntityStoreMaxLinkedCount]. Disabling the gate (negative
+// value) is the documented audited opt-out — pre-#179.4 the gate
+// was off by default and silently cratered LoCoMo scores by 31pp
+// on run 25980251192; "just turn the feature on" now lands on the
+// safe path.
 func WithEntityStore(linkedCap int) Option {
 	return func(c *config) {
 		// We can't construct the IndexEntityStore here because the
@@ -384,23 +400,32 @@ func WithEntityStore(linkedCap int) Option {
 	}
 }
 
-// WithEntityStoreMaxLinkedCount enables the common-noun pollution
+// WithEntityStoreMaxLinkedCount tunes the common-noun pollution
 // gate documented on [IndexEntityStoreOptions.MaxLinkedCount]: any
 // entity row whose linked_ids count strictly exceeds n is silently
 // skipped at Lookup time so the entity-link lane does not vote that
 // row's (low-signal) entries past the vector / BM25 lanes' picks.
 //
-// 0 (default) disables the gate. Must be paired with
-// [WithEntityStore] — sets the option on the IndexEntityStore that
-// auto-constructs in [New].
+// Sentinel semantics:
 //
-// Recommended starting value: 60–80 for LoCoMo-shaped datasets
-// (~250 facts/conv); higher for production conversations.
+//   - n > 0: that exact threshold.
+//   - n == 0: leave the default in place ([defaultEntityMaxLinkedCount]
+//     = 100, applied by [NewIndexEntityStore]). Use this when you
+//     just want the safe production default, no opinion.
+//   - n < 0: EXPLICITLY DISABLE the gate. Pre-#179.4 / es-default
+//     the gate was off by default and silently cratered LoCoMo
+//     scores by 31pp on run 25980251192; turning it off now is
+//     intentional and audited — [Memory.New] logs a one-time
+//     warning at construction so the opt-out leaves a paper
+//     trail. Use only when --dump-recall histograms prove your
+//     corpus's MetaEntityCount distribution is gate-tolerant.
+//
+// Must be paired with [WithEntityStore]; sets the option on the
+// IndexEntityStore that auto-constructs in [New].
 func WithEntityStoreMaxLinkedCount(n int) Option {
 	return func(c *config) {
-		if n > 0 {
-			c.entityStoreMaxLinkedCnt = n
-		}
+		c.entityStoreMaxLinkedCnt = n
+		c.entityStoreMaxLinkedCntExplicit = true
 	}
 }
 
@@ -710,6 +735,16 @@ type lt struct {
 	// [Close]).
 	reconciler *Reconciler
 
+	// projections is the same slice the reconciler holds, exposed
+	// here so eager write paths (upsertFacts, Add) can fan out
+	// the just-upserted entries to every registered projection
+	// via [lt.projectEager] without going through the reconciler.
+	// Both the eager path and the reconciler call [Projection.
+	// Project] with the same additive semantics; the reconciler
+	// adds the diff+Forget step the eager path skips. Wiring
+	// landed via #179.1.
+	projections []Projection
+
 	// historyAppendMu serialises the read-modify-write fallback in
 	// [lt.appendHistory] on a per-namespace basis. Only the
 	// fallback path uses it; stores that implement
@@ -800,6 +835,16 @@ func New(idx retrieval.Index, opts ...Option) (Memory, error) {
 	// when the index can't satisfy DocGetter — NewIndexEntityStore
 	// signals this by returning nil).
 	if _, isSentinel := cfg.entityStore.(sentinelEntityStore); isSentinel {
+		// Audit the explicit-disable opt-out at construction time
+		// (es-default). The store's NewIndexEntityStore normalises
+		// negative to 0 (gate off) without complaint; the warning
+		// only fires when the caller went out of their way to pass
+		// a negative — silent default → safe gate stays silent.
+		if cfg.entityStoreMaxLinkedCntExplicit && cfg.entityStoreMaxLinkedCnt < 0 && cfg.logger != nil {
+			cfg.logger("recall: WithEntityStoreMaxLinkedCount(%d) explicitly disables the common-noun pollution gate; "+
+				"this regressed LoCoMo qa.judge by 31pp on run 25980251192 and is only safe when --dump-recall "+
+				"histograms confirm your corpus's MetaEntityCount distribution is gate-tolerant", cfg.entityStoreMaxLinkedCnt)
+		}
 		es := NewIndexEntityStore(idx, IndexEntityStoreOptions{
 			LinkedCap:      cfg.entityStoreLinkedCap,
 			MaxLinkedCount: cfg.entityStoreMaxLinkedCnt,
@@ -891,6 +936,7 @@ func New(idx retrieval.Index, opts ...Option) (Memory, error) {
 	if len(projections) > 0 && cfg.nsRegistry == nil {
 		cfg.nsRegistry = NewMemoryNamespaceRegistry()
 	}
+	m.projections = projections
 	if len(projections) > 0 {
 		// The reconciler is created whenever a projection exists so
 		// the synchronous [Memory.SyncSideStores] path works in all

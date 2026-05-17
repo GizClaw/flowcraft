@@ -14,19 +14,23 @@ import (
 	memidx "github.com/GizClaw/flowcraft/sdk/retrieval/memory"
 )
 
-// TestReconciler_AddBackfillsEntityStore pins issue #171: a
-// Memory.Add invocation has no eager linkEntities pass — only
-// upsertFacts does. The Reconciler must therefore make the new
-// entry visible to the entity-link inverted index after one
-// synchronous SyncSideStores tick.
-func TestReconciler_AddBackfillsEntityStore(t *testing.T) {
+// TestReconciler_AddEagerlyLinksEntityStore pins the post-#179.1
+// contract: both Memory.Save and Memory.Add fan the just-written
+// entries out through [recall.Projection.Project] inline, so the
+// entity-link inverted index is populated with 0 lag — no Reconciler
+// tick required for caller-visible recall on own writes. A
+// subsequent SyncSideStores tick MUST be a no-op (idempotent
+// additive Project semantics), which doubles as the regression
+// guard against re-introducing the pre-#171 Add↔Save asymmetry
+// where Add quietly skipped the projection.
+func TestReconciler_AddEagerlyLinksEntityStore(t *testing.T) {
 	ctx := context.Background()
 	idx := memidx.New()
 	m, err := recall.New(idx,
 		recall.WithRequireUserID(),
 		recall.WithEntityStore(0),
 		// Disable the background loop so the test deterministically
-		// owns when reconciliation happens.
+		// owns when (if at all) reconciliation runs.
 		recall.WithReconcileInterval(-1),
 	)
 	if err != nil {
@@ -43,18 +47,23 @@ func TestReconciler_AddBackfillsEntityStore(t *testing.T) {
 		t.Fatalf("Add: %v", err)
 	}
 
-	// Before reconcile the entity store has no link — Add is not
-	// eager-instrumented (issue #171's pre-fix complaint).
+	// Eager Project: store sees the link the moment Add returns.
 	store := recall.NewIndexEntityStore(idx, recall.IndexEntityStoreOptions{})
 	if store == nil {
 		t.Skip("memidx does not satisfy DocGetter on this build")
 	}
 	got, _ := store.Lookup(ctx, scope, []string{"alice"}, 0)
-	if len(got) != 0 {
-		t.Fatalf("entity store unexpectedly populated before reconcile; got %v", got)
+	if len(got) != 1 || got[0] != id {
+		t.Fatalf("alice link missing after Add (eager projection); got %v want [%q]", got, id)
+	}
+	gotBob, _ := store.Lookup(ctx, scope, []string{"bob"}, 0)
+	if len(gotBob) != 1 || gotBob[0] != id {
+		t.Fatalf("bob link missing after Add (eager projection); got %v want [%q]", gotBob, id)
 	}
 
-	// One synchronous reconcile pass must converge the projection.
+	// And SyncSideStores is idempotent against the eager write:
+	// replaying Project for the same entry must not duplicate the
+	// edge nor change Lookup output.
 	syncer, ok := m.(recall.SideStoreSyncer)
 	if !ok {
 		t.Fatalf("Memory does not implement SideStoreSyncer")
@@ -64,11 +73,11 @@ func TestReconciler_AddBackfillsEntityStore(t *testing.T) {
 	}
 	got, _ = store.Lookup(ctx, scope, []string{"alice"}, 0)
 	if len(got) != 1 || got[0] != id {
-		t.Fatalf("alice link missing post-reconcile; got %v want [%q]", got, id)
+		t.Fatalf("alice link diverged after idempotent reconcile; got %v want [%q]", got, id)
 	}
-	gotBob, _ := store.Lookup(ctx, scope, []string{"bob"}, 0)
+	gotBob, _ = store.Lookup(ctx, scope, []string{"bob"}, 0)
 	if len(gotBob) != 1 || gotBob[0] != id {
-		t.Fatalf("bob link missing post-reconcile; got %v want [%q]", gotBob, id)
+		t.Fatalf("bob link diverged after idempotent reconcile; got %v want [%q]", gotBob, id)
 	}
 }
 
@@ -260,6 +269,94 @@ func TestDedupHashes_IgnoresTombstoned(t *testing.T) {
 	}
 	if v, _ := revived.Metadata[recall.MetaTombstone].(bool); v {
 		t.Fatalf("post-Save row is still tombstoned; #158 fix is not effective. metadata=%v", revived.Metadata)
+	}
+}
+
+// TestDedupHashes_IgnoresExpired pins issue #179.3: a content hash
+// that exists ONLY on an expired (TTL'd) doc must not block re-Save
+// of the same content. Pre-fix dedupHashes filtered tombstoned rows
+// (#158) but not expired rows, so:
+//
+//   - Save returned success on the dedup_hit branch with the
+//     expired row's ID.
+//   - Recall composes ExpireFilter by default and silently hid the
+//     row.
+//   - Net effect: Save succeeded but the fact was unreachable
+//     until the TTL sweeper hard-deleted the row on its next pass.
+//
+// The fix mirrors dedup's "alive" cutoff to Recall's reachability
+// gate by composing ExpireFilter(m.cfg.now()) into the dedup query.
+// We assert the post-fix invariant: re-Save of the same content
+// after the previous entry expires produces a NEW, live row
+// whose metadata no longer carries an in-the-past expires_at.
+func TestDedupHashes_IgnoresExpired(t *testing.T) {
+	ctx := context.Background()
+	idx := memidx.New()
+	resp := `[{"content":"user owns a labrador named Lucky","entities":["lucky"]}]`
+	// Pin the clock so we can place expires_at strictly in the past
+	// regardless of how slow CI machines walk wall time.
+	frozen := time.Date(2026, 5, 17, 12, 0, 0, 0, time.UTC)
+	m, err := recall.New(idx,
+		recall.WithRequireUserID(),
+		recall.WithLLM(&stubLLM{resp: resp}),
+		recall.WithClock(func() time.Time { return frozen }),
+	)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer m.Close()
+
+	scope := recall.Scope{RuntimeID: "rt1", UserID: "u1"}
+	first, err := m.Save(ctx, scope, []llm.Message{
+		{Role: model.RoleUser, Parts: []model.Part{{Type: model.PartText, Text: "I own a labrador named Lucky"}}},
+	})
+	if err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	if len(first.EntryIDs) == 0 {
+		t.Fatalf("Save returned no entries")
+	}
+	firstID := first.EntryIDs[0]
+
+	// Force the freshly-written row to be already expired by
+	// patching expires_at to 1ms before the (frozen) clock. This
+	// reproduces the "TTL elapsed before a re-Save attempt"
+	// scenario without touching the sweeper.
+	ns := recall.NamespaceFor(scope)
+	doc, ok, err := idx.Get(ctx, ns, firstID)
+	if err != nil || !ok {
+		t.Fatalf("Get: ok=%v err=%v", ok, err)
+	}
+	if doc.Metadata == nil {
+		doc.Metadata = map[string]any{}
+	}
+	doc.Metadata["expires_at"] = frozen.Add(-time.Millisecond).UnixMilli()
+	if err := idx.Upsert(ctx, ns, []retrieval.Doc{doc}); err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+
+	// Re-Save the same fact. Pre-#179.3 this hits the dedup_hit
+	// branch and returns without writing — the row stays expired,
+	// Recall keeps hiding it. Post-fix, dedupHashes filters the
+	// expired row out, the write path proceeds, and the
+	// deterministic content-derived ID collides on the same slot —
+	// the Upsert REPLACES the expired doc with a fresh one whose
+	// expires_at is either unset or a future timestamp.
+	second, err := m.Save(ctx, scope, []llm.Message{
+		{Role: model.RoleUser, Parts: []model.Part{{Type: model.PartText, Text: "I own a labrador named Lucky"}}},
+	})
+	if err != nil {
+		t.Fatalf("Save #2: %v", err)
+	}
+	if len(second.EntryIDs) == 0 {
+		t.Fatalf("second Save returned no IDs; dedup may still be expiry-blind (#179.3 regression)")
+	}
+	revived, ok, err := idx.Get(ctx, ns, firstID)
+	if err != nil || !ok {
+		t.Fatalf("post-Save row missing: ok=%v err=%v", ok, err)
+	}
+	if v, ok := revived.Metadata["expires_at"].(int64); ok && v < frozen.UnixMilli() {
+		t.Fatalf("post-Save row still carries in-the-past expires_at=%d (clock=%d); #179.3 fix not effective", v, frozen.UnixMilli())
 	}
 }
 

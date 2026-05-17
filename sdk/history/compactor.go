@@ -59,19 +59,30 @@ type compactor struct {
 	state   atomic.Int32 // open(0) → closing(1) → closed(2)
 	closeWg sync.WaitGroup
 
-	// persistMu serialises persistAppend per conversation so two
-	// concurrent Append calls cannot interleave the read-then-
-	// write pair (either the MessageAppender path's
-	// GetMessages+AppendMessages, or the RMW fallback's
-	// GetMessages+SaveMessages). Without this both paths can lose
-	// batches OR mis-report startSeq under contention (#162).
+	// persistMu serialises Append per conversation across two
+	// critical sections that must be one:
 	//
-	// We hold this lock OUTSIDE the per-conversation worker queue
-	// because persistAppend deliberately runs synchronously in the
-	// caller's goroutine (its docstring describes the queued-
-	// startSeq pattern); routing it through the queue would change
-	// Append's latency profile. The keyed mutex is the smallest
-	// fix that restores the documented atomicity.
+	//  1. The durable persist (persistAppendLocked's read-then-
+	//     write pair, either MessageAppender's
+	//     GetMessages+AppendMessages or the RMW fallback's
+	//     GetMessages+SaveMessages). Without it both paths can
+	//     lose batches OR mis-report startSeq under contention
+	//     (#162).
+	//  2. The subsequent enqueueAsync handoff. Without holding
+	//     across this step, persist-order can diverge from
+	//     enqueue-order on the same conversation, and the DAG
+	//     ingest worker (which is positional on startSeq) wires
+	//     summary node parents/children against the wrong slice
+	//     of the log (#179.2).
+	//
+	// Held OUTSIDE the per-conversation worker queue because the
+	// persist step deliberately runs synchronously in the
+	// caller's goroutine; routing it through the queue would
+	// change Append's latency profile. The keyed mutex is the
+	// smallest fix that restores documented atomicity AND
+	// persist↔enqueue ordering. enqueueAsync only does a bounded
+	// channel send and never re-enters persistMu, so widening the
+	// critical section cannot deadlock.
 	persistMu syncx.KeyedMutex
 
 	// shutdownOnce + shutdownDone form the "single drain-watcher" pattern:
@@ -228,7 +239,21 @@ func (m *compactor) Append(ctx context.Context, conversationID string, newMessag
 		return ErrClosed
 	}
 
-	startSeq, err := m.persistAppend(ctx, conversationID, newMessages)
+	// Hold persistMu across BOTH the durable write and the
+	// enqueueAsync handoff so persist-order == enqueue-order for
+	// the same conversation. Pre-fix the two steps lived in
+	// separate critical sections (persistAppend acquired+released
+	// the lock, then Append called enqueueAsync unprotected) and
+	// the worker could see a later task (startSeq=N) ahead of the
+	// earlier task (startSeq=0) that produced N — corrupting DAG
+	// summary parent/child wiring because ingest is positional on
+	// startSeq. enqueueAsync only does a bounded channel handoff
+	// and never re-enters persistMu, so the extended critical
+	// section cannot deadlock. See issue #179.2.
+	m.persistMu.Lock(conversationID)
+	defer m.persistMu.Unlock(conversationID)
+
+	startSeq, err := m.persistAppendLocked(ctx, conversationID, newMessages)
 	if err != nil {
 		return err
 	}
@@ -247,13 +272,17 @@ func (m *compactor) Append(ctx context.Context, conversationID string, newMessag
 	return nil
 }
 
-// persistAppend writes newMessages durably to the underlying Store
-// and returns the pre-append message count as startSeq (the index
-// in the conversation log at which newMessages[0] now lives).
+// persistAppendLocked writes newMessages durably to the underlying
+// Store and returns the pre-append message count as startSeq (the
+// index in the conversation log at which newMessages[0] now lives).
 //
-// Concurrency: the per-conversation [syncx.KeyedMutex] makes the
-// read-then-write pair atomic for both the MessageAppender and the
-// RMW fallback paths. Without this lock:
+// Concurrency: the caller MUST already hold
+// m.persistMu.Lock(conversationID). Append owns the lock for the
+// full persist-then-enqueue critical section so persist-order
+// equals enqueue-order on the same conversation (#179.2); this
+// helper therefore no longer acquires the lock itself.
+//
+// Why the lock is required at all:
 //
 //   - The RMW fallback (default for [InMemoryStore] pre-#154 /
 //     [FileStore] without MessageAppender) drops entire batches
@@ -264,11 +293,9 @@ func (m *compactor) Append(ctx context.Context, conversationID string, newMessag
 //     uses to align summary nodes to message ranges — wrong
 //     startSeq corrupts the summary index, not just the log.
 //
-// See issue #162.
-func (m *compactor) persistAppend(ctx context.Context, conversationID string, newMessages []model.Message) (int, error) {
-	m.persistMu.Lock(conversationID)
-	defer m.persistMu.Unlock(conversationID)
-
+// See issues #162 (lock introduced) and #179.2 (lock scope
+// extended to cover enqueue).
+func (m *compactor) persistAppendLocked(ctx context.Context, conversationID string, newMessages []model.Message) (int, error) {
 	if appender, ok := m.store.(MessageAppender); ok {
 		existing, err := m.store.GetMessages(ctx, conversationID)
 		if err != nil {
