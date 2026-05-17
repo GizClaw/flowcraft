@@ -9,7 +9,7 @@ go 1.25.0
 // development the workspace overlay is authoritative.
 
 require (
-	github.com/GizClaw/flowcraft/sdk v0.3.16
+	github.com/GizClaw/flowcraft/sdk v0.3.17
 	github.com/GizClaw/flowcraft/sdkx v0.3.9
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/pflag v1.0.9
