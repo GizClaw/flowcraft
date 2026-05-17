@@ -2,6 +2,7 @@ package recall_test
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -337,22 +338,164 @@ func TestLookupCommonNounGate(t *testing.T) {
 	}
 }
 
-// TestLookupCommonNounGate_DisabledByDefault asserts the gate is
-// opt-in: MaxLinkedCount==0 keeps the historic "return every
-// linked id" behaviour so existing callers see no recall delta.
-func TestLookupCommonNounGate_DisabledByDefault(t *testing.T) {
-	store, _ := newEntityStore(t, 100) // MaxLinkedCount unset
+// TestLookupCommonNounGate_DefaultIsSafe pins the post-es-default
+// semantic flip: MaxLinkedCount==0 now means "apply the safe
+// production default" (100), not "no gate". Pre-change 0 was the
+// dangerous path that silently regressed LoCoMo by 31pp on run
+// 25980251192; making the safe value the no-opinion default
+// prevents accidental footgun.
+//
+// Asserted indirectly: link 150 ids under a single entity — well
+// above the 100 default — and Lookup must return ZERO ids (the
+// gate fired). With the pre-change semantic Lookup would have
+// returned all 150 verbatim.
+func TestLookupCommonNounGate_DefaultIsSafe(t *testing.T) {
+	store, _ := newEntityStore(t, 200) // MaxLinkedCount unset → default 100
 	scope := recall.Scope{UserID: "u1"}
 	ctx := context.Background()
-	if err := store.Link(ctx, scope, map[string][]string{
-		"the": {"x1", "x2", "x3", "x4", "x5", "x6", "x7", "x8"},
-	}); err != nil {
+	// 150 ids under one entity — saturates the row well past the
+	// safe default (100).
+	ids := make([]string, 150)
+	for i := range ids {
+		ids[i] = fmt.Sprintf("x%03d", i)
+	}
+	if err := store.Link(ctx, scope, map[string][]string{"crowded": ids}); err != nil {
 		t.Fatalf("Link: %v", err)
 	}
-	got, _ := store.Lookup(ctx, scope, []string{"the"}, 0)
-	if len(got) != 8 {
-		t.Fatalf("gate disabled: got %d ids; want 8", len(got))
+	got, _ := store.Lookup(ctx, scope, []string{"crowded"}, 0)
+	if len(got) != 0 {
+		t.Fatalf("safe default not applied: got %d ids past gate=100; want 0", len(got))
 	}
+}
+
+// TestLookupCommonNounGate_ExplicitlyDisabled covers the opt-out
+// path documented on [IndexEntityStoreOptions.MaxLinkedCount]: a
+// negative value means "I have audited my corpus, turn the gate
+// off". The store honours it (Lookup returns the full list),
+// distinct from "unset" (default applies).
+func TestLookupCommonNounGate_ExplicitlyDisabled(t *testing.T) {
+	idx := memidx.New()
+	_, now := fixedClock(t)
+	store := recall.NewIndexEntityStore(idx, recall.IndexEntityStoreOptions{
+		LinkedCap:      200,
+		MaxLinkedCount: -1, // explicit opt-out
+		Clock:          now,
+	})
+	if store == nil {
+		t.Fatalf("NewIndexEntityStore returned nil")
+	}
+	scope := recall.Scope{UserID: "u1"}
+	ctx := context.Background()
+	ids := make([]string, 150)
+	for i := range ids {
+		ids[i] = fmt.Sprintf("x%03d", i)
+	}
+	if err := store.Link(ctx, scope, map[string][]string{"crowded": ids}); err != nil {
+		t.Fatalf("Link: %v", err)
+	}
+	got, _ := store.Lookup(ctx, scope, []string{"crowded"}, 0)
+	if len(got) != 150 {
+		t.Fatalf("explicit disable not honoured: got %d ids; want 150 (full list)", len(got))
+	}
+}
+
+// TestWithEntityStoreMaxLinkedCount_WarnsOnExplicitDisable pins the
+// audit trail half of es-default: passing a negative value to
+// [WithEntityStoreMaxLinkedCount] is the documented opt-out for
+// the common-noun pollution gate, but because that path is the
+// known LoCoMo footgun (-31pp on run 25980251192) [Memory.New]
+// MUST log a one-time warning at construction so the choice is
+// not silently lost in deployment.
+//
+// The complementary assertions:
+//
+//   - No-opinion default (no option set) → no warning, gate at
+//     safe default 100.
+//   - Explicit positive override → no warning, that value applies.
+func TestWithEntityStoreMaxLinkedCount_WarnsOnExplicitDisable(t *testing.T) {
+	t.Run("explicit_disable_warns", func(t *testing.T) {
+		var lines []string
+		m, err := recall.New(memidx.New(),
+			recall.WithRequireUserID(),
+			recall.WithEntityStore(0),
+			recall.WithEntityStoreMaxLinkedCount(-1),
+			recall.WithLogger(func(format string, args ...any) {
+				lines = append(lines, fmt.Sprintf(format, args...))
+			}),
+		)
+		if err != nil {
+			t.Fatalf("New: %v", err)
+		}
+		defer m.Close()
+		found := false
+		for _, l := range lines {
+			if containsAll(l, []string{"WithEntityStoreMaxLinkedCount", "explicitly disables"}) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("explicit-disable warning not emitted; logger lines=%v", lines)
+		}
+	})
+
+	t.Run("default_is_silent", func(t *testing.T) {
+		var lines []string
+		m, err := recall.New(memidx.New(),
+			recall.WithRequireUserID(),
+			recall.WithEntityStore(0), // no explicit MaxLinkedCount
+			recall.WithLogger(func(format string, args ...any) {
+				lines = append(lines, fmt.Sprintf(format, args...))
+			}),
+		)
+		if err != nil {
+			t.Fatalf("New: %v", err)
+		}
+		defer m.Close()
+		for _, l := range lines {
+			if containsAll(l, []string{"WithEntityStoreMaxLinkedCount", "explicitly disables"}) {
+				t.Fatalf("safe default path should not warn; got %q", l)
+			}
+		}
+	})
+
+	t.Run("positive_override_silent", func(t *testing.T) {
+		var lines []string
+		m, err := recall.New(memidx.New(),
+			recall.WithRequireUserID(),
+			recall.WithEntityStore(0),
+			recall.WithEntityStoreMaxLinkedCount(64),
+			recall.WithLogger(func(format string, args ...any) {
+				lines = append(lines, fmt.Sprintf(format, args...))
+			}),
+		)
+		if err != nil {
+			t.Fatalf("New: %v", err)
+		}
+		defer m.Close()
+		for _, l := range lines {
+			if containsAll(l, []string{"WithEntityStoreMaxLinkedCount", "explicitly disables"}) {
+				t.Fatalf("positive override should not warn; got %q", l)
+			}
+		}
+	})
+}
+
+// containsAll reports whether s contains every substring in subs.
+func containsAll(s string, subs []string) bool {
+	for _, sub := range subs {
+		idx := -1
+		for i := 0; i+len(sub) <= len(s); i++ {
+			if s[i:i+len(sub)] == sub {
+				idx = i
+				break
+			}
+		}
+		if idx < 0 {
+			return false
+		}
+	}
+	return true
 }
 
 // TestNewIndexEntityStoreNilOnNilIndex ensures we degrade rather

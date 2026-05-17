@@ -42,9 +42,9 @@ type SaveResult struct {
 }
 
 // plan is the per-fact bookkeeping record threaded through
-// upsertFacts and its post-write hooks (linkEntities). It is
-// package-level so the hooks can accept []plan without exposing
-// retrieval.Doc / ExtractedFact wiring to callers.
+// upsertFacts. It is package-level so post-write hooks can accept
+// []plan without exposing retrieval.Doc / ExtractedFact wiring to
+// callers.
 type plan struct {
 	entry Entry
 	doc   retrieval.Doc
@@ -369,6 +369,12 @@ func (m *lt) Add(ctx context.Context, scope Scope, e Entry) (string, error) {
 		m.supersedeBySlot(ctx, scope, e.ID,
 			ExtractedFact{Subject: e.Subject, Predicate: e.Predicate}, now)
 	}
+	// Eager Projection fan-out — same single entry point Save's
+	// upsertFacts uses, so Add and Save can never drift on which
+	// projections they instrument (#179.1). Entry is already
+	// stamped with Scope + canonical IDs + content hash at this
+	// point, identical to what upsertFacts would synthesise.
+	m.projectEager(ctx, scope, []Entry{e})
 	span.SetAttributes(
 		attribute.String("runtime_id", scope.RuntimeID),
 		attribute.Bool("has_user_id", scope.UserID != ""),
@@ -563,45 +569,49 @@ func (m *lt) upsertFacts(
 		}
 	}
 
-	// 6. Entity-link inverted index ---------------------------------------
-	// Best-effort: a Link failure logs but does NOT roll back the entry
-	// writes above. The entry namespace is the durability boundary;
-	// the entity sibling namespace is a retrieval accelerator and can
-	// be rebuilt offline by replaying the entries. This matches the
-	// existing "embedder failed -> entry still written" contract.
-	m.linkEntities(ctx, scope, plans)
+	// 6. Eager Projection fan-out ------------------------------------------
+	// Best-effort: a Project failure logs but does NOT roll back the
+	// entry writes above. The entry namespace is the durability
+	// boundary; every side store backing a Projection is a derived
+	// accelerator and can be rebuilt offline by replaying the
+	// entries (see [Projection] godoc + [Reconciler]). Both Save and
+	// Add funnel through [lt.projectEager] so the two write paths
+	// can never drift on which projections they instrument (#179.1).
+	entries := make([]Entry, len(plans))
+	for i, p := range plans {
+		entries[i] = p.entry
+	}
+	m.projectEager(ctx, scope, entries)
 
 	return returnedIDs, nil
 }
 
-// linkEntities flushes the entity → entry-id edges produced by the
-// current upsertFacts batch into the configured EntityStore. The
-// edge set is rebuilt from p.entry.Entities (which is already the
-// NormalizeEntities-atomized form, so the same atoms the read-side
-// query extractor emits) — no extra normalization happens here so
-// write-time and read-time keys stay byte-identical.
+// projectEager fans the just-upserted entries out to every
+// registered [Projection] so the entity-link lane (and any future
+// side store) sees them with 0 lag — instead of waiting for the
+// next [Reconciler] tick. Save (via upsertFacts) and Add both
+// funnel through this single helper, so write paths can never
+// drift from each other again: the moment we add a new eager
+// write path, it just needs to call [lt.projectEager] after Upsert.
 //
-// Same-entity duplicates within a batch collapse into one Link list
-// (the EntityStore further dedupes against existing rows). Empty or
-// nil entity slices are skipped silently — facts without entities
-// remain reachable through the vector / BM25 lanes.
-func (m *lt) linkEntities(ctx context.Context, scope Scope, plans []plan) {
-	if m.cfg.entityStore == nil || len(plans) == 0 {
+// Semantics match [Projection.Project]'s additive contract:
+// projections incorporate the supplied entries' edges idempotently.
+// The Reconciler's full-replay + Forget cleanup is a separate path
+// and is NOT triggered from here. Errors are logged but do not
+// fail the Upsert — Projections are derived views; the primary
+// index is already durable.
+//
+// No-op when len(entries) == 0 or no projection is registered.
+// Replaces the pre-#179.1 [lt.linkEntities] helper that talked
+// straight to [EntityStore.Link] and was duplicated in Save but
+// missing in Add.
+func (m *lt) projectEager(ctx context.Context, scope Scope, entries []Entry) {
+	if len(entries) == 0 || len(m.projections) == 0 {
 		return
 	}
-	edges := make(map[string][]string, len(plans))
-	for _, p := range plans {
-		for _, e := range p.entry.Entities {
-			if e == "" {
-				continue
-			}
-			edges[e] = append(edges[e], p.entry.ID)
+	for _, p := range m.projections {
+		if err := p.Project(ctx, scope, entries); err != nil {
+			m.log("ltm: projection %s Project (eager): %v", p.Name(), err)
 		}
-	}
-	if len(edges) == 0 {
-		return
-	}
-	if err := m.cfg.entityStore.Link(ctx, scope, edges); err != nil {
-		m.log("ltm: entity_store Link failed: %v", err)
 	}
 }

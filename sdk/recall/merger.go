@@ -27,11 +27,22 @@ func contentHash(scope Scope, content string) string {
 // in the namespace. Implemented via Index.List with an In filter; backends
 // without native filter pushdown fall back to client-side scans.
 //
-// The query composes the In-filter with [TombstoneFilter] so a hash that
-// belongs ONLY to tombstoned (logically deleted) docs does not count as
-// "already present" (issue #158). Without the filter, Save would see the
-// dead hash and skip re-writing the fact — leaving the namespace with no
-// live copy of an entry the user just asked to save.
+// Filter composition (must mirror Recall's reachability gate so dedup and
+// retrieval agree on which rows are alive):
+//
+//   - In: MetaContentHash ∈ hashes — the actual candidate match.
+//   - [TombstoneFilter] — exclude logically deleted rows; without this a
+//     hash that belongs ONLY to tombstoned docs falsely counts as
+//     "already present" and Save short-circuits, leaving the namespace
+//     with no live copy of the just-saved fact (#158).
+//   - [ExpireFilter] keyed on m.cfg.now() — exclude rows whose
+//     persisted expires_at metadata is in the past. Without this an expired row with
+//     matching hash makes Save return success on the dedup_hit branch
+//     while Recall's default ExpireFilter still hides it — i.e. Save
+//     reported success but the fact is unreachable until the row gets
+//     swept (#179.3). Same now() source the rest of the package (TTL
+//     sweep, supersede, Recall) uses, so dedup's "alive" cutoff and the
+//     readers' cutoff stay byte-identical.
 func (m *lt) dedupHashes(ctx context.Context, scope Scope, hashes []string) (map[string]string, error) {
 	out := make(map[string]string, len(hashes))
 	if len(hashes) == 0 {
@@ -46,6 +57,7 @@ func (m *lt) dedupHashes(ctx context.Context, scope Scope, hashes []string) (map
 		Filter: MergeFilters(
 			retrieval.Filter{In: map[string][]any{MetaContentHash: in}},
 			TombstoneFilter(),
+			ExpireFilter(m.cfg.now()),
 		),
 		PageSize: len(hashes),
 	})

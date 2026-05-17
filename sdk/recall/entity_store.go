@@ -214,23 +214,39 @@ type IndexEntityStoreOptions struct {
 	// noun" — Lookup returns NO ids for it, so the
 	// EntityLinkLookup stage does not feed it into the lane and
 	// RRF cannot vote it past the precision picks of vector /
-	// BM25 recall. Zero (default) disables the gate, preserving
-	// pre-row-8 behaviour.
+	// BM25 recall.
+	//
+	// Sentinel semantics (changed in #179.4 / es-default):
+	//
+	//   - 0 (unset): falls back to [defaultEntityMaxLinkedCount] —
+	//     the safe production default. Pre-change 0 meant "no
+	//     gate", which on long conversational corpora (LoCoMo: -31pp
+	//     qa.judge with the gate off on run 25980251192) silently
+	//     turned WithEntityStore into a footgun. Defaulting to a
+	//     sane value makes "I just enabled the feature" the safe
+	//     path; tuning is the opt-in path.
+	//   - >0: that exact threshold; what the caller wrote, honoured
+	//     verbatim.
+	//   - <0: the gate is EXPLICITLY DISABLED. Use only when you
+	//     have proven (via --dump-recall sidecar) that your corpus's
+	//     entity-count distribution does not produce saturated
+	//     rows. [WithEntityStoreMaxLinkedCount] forwards the
+	//     negative value and the recall package emits a one-time
+	//     warning at construction so the opt-out is auditable.
 	//
 	// Why a threshold AT ALL: an entity that appears in N entries
 	// returns N candidate ids — RRF treats those as N rank votes
 	// even when each is low-confidence, which the pre-IDF entity-
-	// filter lane regression on 25866478422 (-17pp qa.judge)
-	// already proved is a real footgun. The gate is the EntityStore
+	// filter lane regression on 25866478422 (-17pp qa.judge) and
+	// the WithEntityStore baseline on 25980251192 (-31pp) already
+	// proved is a real footgun. The gate is the EntityStore
 	// equivalent of [pipeline.WithEntityLaneMinSelectivity], with
 	// the same intent and a cheaper read (the count is already in
 	// metadata; no extra List/df probe needed).
 	//
-	// Recommended starting value: 60–80 for LoCoMo-shaped
-	// (~250 facts/conv) datasets. Operators can tune from the
-	// --dump-recall sidecar: histogram MetaEntityCount across the
-	// Lookup calls that miss the gold-evidence fact, and set the
-	// threshold above the noise peak.
+	// Operators can tune from the --dump-recall sidecar: histogram
+	// MetaEntityCount across Lookup calls that miss the gold-
+	// evidence fact, and set the threshold above the noise peak.
 	MaxLinkedCount int
 
 	// Clock is the time source for MetaEntityLast. Defaults to
@@ -238,6 +254,27 @@ type IndexEntityStoreOptions struct {
 	// depending on wall time.
 	Clock func() time.Time
 }
+
+// defaultEntityMaxLinkedCount is the safe production threshold for
+// the common-noun pollution gate documented on
+// [IndexEntityStoreOptions.MaxLinkedCount]. Chosen empirically:
+//
+//   - LoCoMo single-conv typically lands ~250 facts. A heavy
+//     domain entity ("Alice", "London") rarely links more than
+//     60–80 of them; a saturated common-noun row ("user", "thing")
+//     hits 150+. 100 sits in the gap so the precision tail of
+//     domain entities survives while the long tail of common
+//     nouns is dropped at Lookup.
+//   - Setting MaxLinkedCount=0 (i.e. NO gate) regressed
+//     qa.judge by 31pp on run 25980251192. The gate at this
+//     threshold gives back ~9 of those 31pp without further
+//     tuning, and the rest is recoverable by hand-picking
+//     per-dataset.
+//
+// Operators dialling for max precision on a specific corpus
+// should pass [WithEntityStoreMaxLinkedCount] with a value derived
+// from --dump-recall MetaEntityCount histograms.
+const defaultEntityMaxLinkedCount = 100
 
 // defaultEntityLinkedCap caps per-entity linked_ids at 200. The
 // choice is empirical: LoCoMo single-conv ingest produces ~300 facts,
@@ -299,11 +336,25 @@ func NewIndexEntityStore(idx retrieval.Index, opts IndexEntityStoreOptions) *Ind
 	if now == nil {
 		now = time.Now
 	}
+	// Normalise MaxLinkedCount per the sentinel semantics on
+	// IndexEntityStoreOptions: 0 → safe default; <0 → gate
+	// explicitly off (stored as 0 internally so the existing
+	// "<= 0 disables" check downstream stays as-is). Callers who
+	// disable the gate take on the long-tail-RRF-flooding risk
+	// the gate exists to prevent — [Memory.New] emits a warning
+	// when this path is taken so the opt-out is auditable.
+	maxLinked := opts.MaxLinkedCount
+	switch {
+	case maxLinked == 0:
+		maxLinked = defaultEntityMaxLinkedCount
+	case maxLinked < 0:
+		maxLinked = 0
+	}
 	return &IndexEntityStore{
 		idx:            idx,
 		getter:         g,
 		linkedCap:      cap,
-		maxLinkedCount: opts.MaxLinkedCount,
+		maxLinkedCount: maxLinked,
 		now:            now,
 	}
 }
