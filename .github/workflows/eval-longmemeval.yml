@@ -337,27 +337,6 @@ jobs:
             exit 1
           fi
           echo "dataset $DS: $(wc -l < "$DS") lines"
-
-      - name: Notify Feishu — started
-        if: success()
-        run: |
-          set -eu
-          if [ -z "${FEISHU_WEBHOOK_URL:-}" ]; then
-            echo "FEISHU_WEBHOOK_URL not set; skipping started ping"
-            exit 0
-          fi
-          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-          curl -sS -X POST "$FEISHU_WEBHOOK_URL" \
-            -H 'Content-Type: application/json' \
-            -d @- <<EOF
-          {
-            "msg_type": "text",
-            "content": {
-              "text": "▶ longmemeval run started\nrun_id=${{ github.run_id }}\ndataset=${{ inputs.dataset }}\ntopk=${{ inputs.topk }} extractor=${{ inputs.extractor_llm }} judge=${{ inputs.judge_llm }}\nlogs: $RUN_URL"
-            }
-          }
-          EOF
-
       - name: Run longmemeval (via locomo runner)
         env:
           REPORT_OUT: ${{ env.REPORT_DIR }}/${{ github.run_id }}.json
@@ -419,45 +398,3 @@ jobs:
           path: ${{ env.REPORT_DIR }}/${{ github.run_id }}.json
           if-no-files-found: warn
           retention-days: 90
-
-      - name: Notify Feishu — final
-        if: always()
-        run: |
-          set +e
-          REPORT="$REPORT_DIR/${{ github.run_id }}.json"
-          STATUS="${{ job.status }}"
-          ICON="✅"
-          [ "$STATUS" != "success" ] && ICON="❌"
-          # latency.*.p95 is raw nanoseconds (Go time.Duration marshals
-          # to int64); convert to ms for the Feishu summary.
-          if [ -s "$REPORT" ]; then
-            METRICS=$(jq -r '
-              def ns2ms(x): if x == null then "n/a" else ((x/1000000)|tostring) + "ms" end;
-              "n=" + (.n|tostring)
-              + " qa.judge=" + (.aggregate."qa.judge"|tostring)
-              + " qa.f1=" + (.aggregate."qa.f1"|tostring)
-              + " qa.em=" + (.aggregate."qa.em"|tostring)
-              + (if .aggregate."recall.k_hit" != null
-                   then " recall.k_hit=" + (.aggregate."recall.k_hit"|tostring)
-                   else "" end)
-              + " save.p95=" + ns2ms(.latency.save.p95)
-              + " recall.p95=" + ns2ms(.latency.recall.p95)
-            ' "$REPORT" 2>/dev/null)
-          else
-            METRICS="report not produced"
-          fi
-          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-          if [ -n "${FEISHU_WEBHOOK_URL:-}" ]; then
-            curl -sS -X POST "$FEISHU_WEBHOOK_URL" \
-              -H 'Content-Type: application/json' \
-              -d @- <<EOF
-          {
-            "msg_type": "text",
-            "content": {
-              "text": "$ICON longmemeval run finished\nstatus=$STATUS\n$METRICS\nlogs: $RUN_URL"
-            }
-          }
-          EOF
-          else
-            echo "FEISHU_WEBHOOK_URL not set; skipping final ping"
-          fi

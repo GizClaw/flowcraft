@@ -116,27 +116,6 @@ jobs:
         run: |
           cd eval
           go build -trimpath -o /tmp/eval ./cmd/eval
-
-      - name: Notify Feishu — started
-        if: success()
-        run: |
-          set -eu
-          if [ -z "${FEISHU_WEBHOOK_URL:-}" ]; then
-            echo "FEISHU_WEBHOOK_URL not set; skipping started ping"
-            exit 0
-          fi
-          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-          curl -sS -X POST "$FEISHU_WEBHOOK_URL" \
-            -H 'Content-Type: application/json' \
-            -d @- <<EOF
-          {
-            "msg_type": "text",
-            "content": {
-              "text": "▶ history run started\nrun_id=${{ github.run_id }}\nstrategies=${{ inputs.strategies }} answer=${{ inputs.answer_llm }} summary=${{ inputs.summary_llm }} judge=${{ inputs.judge_llm }}\ndataset=${{ inputs.dataset }}\nlogs: $RUN_URL"
-            }
-          }
-          EOF
-
       - name: Run history
         env:
           REPORT_OUT: ${{ env.REPORT_DIR }}/${{ github.run_id }}.json
@@ -173,45 +152,3 @@ jobs:
           path: ${{ env.REPORT_DIR }}/${{ github.run_id }}.json
           if-no-files-found: warn
           retention-days: 90
-
-      - name: Notify Feishu — final
-        if: always()
-        # History Report shape:
-        #   .strategies[name] = {qa_judge, qa_em, qa_f1,
-        #                        prompt_tokens_p95, history_load_p95(ns),
-        #                        n, errors, skipped}
-        run: |
-          set +e
-          REPORT="$REPORT_DIR/${{ github.run_id }}.json"
-          STATUS="${{ job.status }}"
-          ICON="✅"
-          [ "$STATUS" != "success" ] && ICON="❌"
-          if [ -s "$REPORT" ]; then
-            METRICS=$(jq -r '
-              def ns2ms(x): if x == null then "n/a" else ((x/1000000)|tostring) + "ms" end;
-              .strategies | to_entries | map(
-                if (.value.skipped // "") != "" then
-                  "[\(.key)] SKIPPED (\(.value.skipped))"
-                else
-                  "[\(.key)] judge=\(.value.qa_judge) f1=\(.value.qa_f1) em=\(.value.qa_em) tokens.p95=\(.value.prompt_tokens_p95) load.p95=" + ns2ms(.value.history_load_p95)
-                end
-              ) | join("\n")
-            ' "$REPORT" 2>/dev/null)
-          else
-            METRICS="report not produced"
-          fi
-          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-          if [ -n "${FEISHU_WEBHOOK_URL:-}" ]; then
-            curl -sS -X POST "$FEISHU_WEBHOOK_URL" \
-              -H 'Content-Type: application/json' \
-              -d @- <<EOF
-          {
-            "msg_type": "text",
-            "content": {
-              "text": "$ICON history run finished\nstatus=$STATUS\n$METRICS\nlogs: $RUN_URL"
-            }
-          }
-          EOF
-          else
-            echo "FEISHU_WEBHOOK_URL not set; skipping final ping"
-          fi
