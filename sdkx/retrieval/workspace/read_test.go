@@ -217,6 +217,61 @@ func TestSearch_MemtableOverridesSegment(t *testing.T) {
 	}
 }
 
+func TestFreshMemtableUpsertSurvivesOlderSegmentTombstone(t *testing.T) {
+	idx, _ := newIdx(t)
+	ctx := context.Background()
+	old := retrieval.Doc{ID: "x", Content: "old fox", Metadata: map[string]any{"version": "old"}}
+	if err := idx.Upsert(ctx, "ns", []retrieval.Doc{old}); err != nil {
+		t.Fatal(err)
+	}
+	if err := idx.Flush(ctx, "ns"); err != nil {
+		t.Fatal(err)
+	}
+	if err := idx.Delete(ctx, "ns", []string{"x"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := idx.Flush(ctx, "ns"); err != nil {
+		t.Fatal(err)
+	}
+	fresh := retrieval.Doc{ID: "x", Content: "fresh wolf", Metadata: map[string]any{"version": "new"}}
+	if err := idx.Upsert(ctx, "ns", []retrieval.Doc{fresh}); err != nil {
+		t.Fatal(err)
+	}
+
+	got, ok, err := idx.Get(ctx, "ns", "x")
+	if err != nil || !ok {
+		t.Fatalf("Get fresh x ok=%v err=%v", ok, err)
+	}
+	if got.Content != "fresh wolf" {
+		t.Fatalf("Get returned stale content %q", got.Content)
+	}
+	search, err := idx.Search(ctx, "ns", retrieval.SearchRequest{QueryText: "wolf", TopK: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(search.Hits) == 0 || search.Hits[0].Doc.ID != "x" || search.Hits[0].Doc.Content != "fresh wolf" {
+		t.Fatalf("Search did not return fresh x: %+v", search.Hits)
+	}
+	list, err := idx.List(ctx, "ns", retrieval.ListRequest{PageSize: 10, OrderBy: retrieval.OrderByIDAsc})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list.Items) != 1 || list.Items[0].ID != "x" || list.Items[0].Content != "fresh wolf" {
+		t.Fatalf("List did not return fresh x: %+v", list.Items)
+	}
+	d, ok := any(idx).(retrieval.DeletableByFilter)
+	if !ok {
+		t.Fatal("workspace Index should implement DeletableByFilter")
+	}
+	n, err := d.DeleteByFilter(ctx, "ns", retrieval.Filter{Eq: map[string]any{"version": "new"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("DeleteByFilter deleted %d, want 1", n)
+	}
+}
+
 func TestSearch_NoQueryReturnsErrNoQuery(t *testing.T) {
 	idx := flushedIdx(t)
 	_, err := idx.Search(context.Background(), "ns", retrieval.SearchRequest{TopK: 5})

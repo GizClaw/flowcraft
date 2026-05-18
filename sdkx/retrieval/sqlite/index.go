@@ -84,6 +84,13 @@ func (s *Index) Capabilities() retrieval.Capabilities {
 
 		ReadAfterWrite: true,
 		Distributed:    false,
+		Extensions: retrieval.ExtensionCapabilities{
+			DocGetter:      true,
+			Iterable:       true,
+			Count:          true,
+			DeleteByFilter: true,
+			DropNamespace:  true,
+		},
 	}
 }
 
@@ -176,14 +183,10 @@ func (s *Index) Upsert(ctx context.Context, ns string, docs []retrieval.Doc) err
 	if err := s.ensureNS(ctx, ns); err != nil {
 		return err
 	}
-	var partial []retrieval.DocUpsertResult
 	for _, d := range docs {
 		if strings.TrimSpace(d.ID) == "" {
-			partial = append(partial, retrieval.DocUpsertResult{ID: d.ID, Err: errdefs.Validationf("sqlite: doc id required")})
+			return errdefs.Validationf("sqlite: doc id required")
 		}
-	}
-	if len(partial) > 0 {
-		return &retrieval.PartialError{Results: partial}
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -318,34 +321,56 @@ func (s *Index) Search(ctx context.Context, ns string, req retrieval.SearchReque
 			FROM "fts_%s" JOIN "docs_%s" d ON d.rowid = "fts_%s".rowid
 			WHERE "fts_%s" MATCH ?
 			ORDER BY score DESC
-			LIMIT ?`, ns, ns, ns, ns, ns)
-		r, err := s.db.QueryContext(ctx, query, q, topK*4)
-		if err != nil {
-			return nil, err
+			LIMIT ? OFFSET ?`, ns, ns, ns, ns, ns)
+		pageSize := topK * 4
+		if pageSize < 100 {
+			pageSize = 100
 		}
-		defer r.Close()
-		for r.Next() {
-			var (
-				id, content                string
-				mdRaw, vecBlob, sparseBlob []byte
-				tsUnix                     int64
-				bm                         float64
-			)
-			if err := r.Scan(&id, &content, &mdRaw, &vecBlob, &sparseBlob, &tsUnix, &bm); err != nil {
+		maxScan := topK * 256
+		if maxScan < 1000 {
+			maxScan = 1000
+		}
+		for offset := 0; offset < maxScan; offset += pageSize {
+			r, err := s.db.QueryContext(ctx, query, q, pageSize, offset)
+			if err != nil {
 				return nil, err
 			}
-			d := retrieval.Doc{
-				ID: id, Content: content,
-				Vector: decodeVector(vecBlob), SparseVector: decodeSparse(sparseBlob),
-				Timestamp: time.Unix(0, tsUnix).UTC(),
+			n := 0
+			for r.Next() {
+				n++
+				var (
+					id, content                string
+					mdRaw, vecBlob, sparseBlob []byte
+					tsUnix                     int64
+					bm                         float64
+				)
+				if err := r.Scan(&id, &content, &mdRaw, &vecBlob, &sparseBlob, &tsUnix, &bm); err != nil {
+					_ = r.Close()
+					return nil, err
+				}
+				d := retrieval.Doc{
+					ID: id, Content: content,
+					Vector: decodeVector(vecBlob), SparseVector: decodeSparse(sparseBlob),
+					Timestamp: time.Unix(0, tsUnix).UTC(),
+				}
+				if len(mdRaw) > 0 {
+					_ = json.Unmarshal(mdRaw, &d.Metadata)
+				}
+				if !retrieval.DocMatchesFilter(d, req.Filter) {
+					continue
+				}
+				rows = append(rows, cand{d: d, bm25: bm})
 			}
-			if len(mdRaw) > 0 {
-				_ = json.Unmarshal(mdRaw, &d.Metadata)
+			if err := r.Err(); err != nil {
+				_ = r.Close()
+				return nil, err
 			}
-			if !retrieval.DocMatchesFilter(d, req.Filter) {
-				continue
+			if err := r.Close(); err != nil {
+				return nil, err
 			}
-			rows = append(rows, cand{d: d, bm25: bm})
+			if n < pageSize || (!hasVec && len(rows) >= topK) {
+				break
+			}
 		}
 	} else {
 		all, err := s.scanAll(ctx, ns, req.Filter, 4*topK)
@@ -380,7 +405,9 @@ func (s *Index) Search(ctx context.Context, ns string, req retrieval.SearchReque
 	out := make([]retrieval.Hit, 0, topK)
 	for _, c := range rows {
 		score := c.bm25
-		if hasVec && !hasText {
+		if hasText && hasVec {
+			score = c.bm25 + c.cos
+		} else if hasVec && !hasText {
 			score = c.cos
 		}
 		if score < req.MinScore {
@@ -430,7 +457,282 @@ func (s *Index) scanAll(ctx context.Context, ns string, f retrieval.Filter, limi
 			out = append(out, d)
 		}
 	}
-	return out, nil
+	return out, rows.Err()
+}
+
+// Count implements retrieval.Countable.
+func (s *Index) Count(ctx context.Context, ns string, f retrieval.Filter) (int64, error) {
+	if err := s.ensureNS(ctx, ns); err != nil {
+		return 0, err
+	}
+	if where, args, ok := sqliteFilterWhere(f); ok {
+		var total int64
+		query := fmt.Sprintf(`SELECT COUNT(*) FROM "docs_%s"`, ns)
+		if where != "" {
+			query += " WHERE " + where
+		}
+		if err := s.db.QueryRowContext(ctx, query, args...).Scan(&total); err != nil {
+			return 0, err
+		}
+		return total, nil
+	}
+	rows, err := s.db.QueryContext(ctx,
+		fmt.Sprintf(`SELECT id,content,metadata,vector,sparse,ts FROM "docs_%s"`, ns))
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+	var total int64
+	for rows.Next() {
+		var (
+			id, content                string
+			mdRaw, vecBlob, sparseBlob []byte
+			tsUnix                     int64
+		)
+		if err := rows.Scan(&id, &content, &mdRaw, &vecBlob, &sparseBlob, &tsUnix); err != nil {
+			return 0, err
+		}
+		d := retrieval.Doc{
+			ID: id, Content: content,
+			Vector: decodeVector(vecBlob), SparseVector: decodeSparse(sparseBlob),
+			Timestamp: time.Unix(0, tsUnix).UTC(),
+		}
+		if len(mdRaw) > 0 {
+			_ = json.Unmarshal(mdRaw, &d.Metadata)
+		}
+		if retrieval.DocMatchesFilter(d, f) {
+			total++
+		}
+	}
+	return total, rows.Err()
+}
+
+func scanSQLiteDocs(rows *sql.Rows) ([]retrieval.Doc, error) {
+	var out []retrieval.Doc
+	for rows.Next() {
+		var (
+			id, content                string
+			mdRaw, vecBlob, sparseBlob []byte
+			tsUnix                     int64
+		)
+		if err := rows.Scan(&id, &content, &mdRaw, &vecBlob, &sparseBlob, &tsUnix); err != nil {
+			return nil, err
+		}
+		d := retrieval.Doc{
+			ID: id, Content: content,
+			Vector: decodeVector(vecBlob), SparseVector: decodeSparse(sparseBlob),
+			Timestamp: time.Unix(0, tsUnix).UTC(),
+		}
+		if len(mdRaw) > 0 {
+			_ = json.Unmarshal(mdRaw, &d.Metadata)
+		}
+		out = append(out, d)
+	}
+	return out, rows.Err()
+}
+
+func sqliteFilterWhere(f retrieval.Filter) (string, []any, bool) {
+	return sqliteCompileFilter(f)
+}
+
+func sqliteCompileFilter(f retrieval.Filter) (string, []any, bool) {
+	if isEmptyFilter(f) {
+		return "", nil, true
+	}
+	if len(f.Match) > 0 || len(f.Contains) > 0 || len(f.IContains) > 0 ||
+		len(f.ContainsAny) > 0 || len(f.ContainsAll) > 0 {
+		return "", nil, false
+	}
+	var parts []string
+	var args []any
+
+	if f.Not != nil {
+		expr, subArgs, ok := sqliteCompileFilter(*f.Not)
+		if !ok {
+			return "", nil, false
+		}
+		parts = append(parts, "NOT ("+sqliteTrueExpr(expr)+")")
+		args = append(args, subArgs...)
+	}
+	for _, sub := range f.And {
+		expr, subArgs, ok := sqliteCompileFilter(sub)
+		if !ok {
+			return "", nil, false
+		}
+		if expr != "" {
+			parts = append(parts, "("+expr+")")
+			args = append(args, subArgs...)
+		}
+	}
+	if len(f.Or) > 0 {
+		orParts := make([]string, 0, len(f.Or))
+		for _, sub := range f.Or {
+			expr, subArgs, ok := sqliteCompileFilter(sub)
+			if !ok {
+				return "", nil, false
+			}
+			orParts = append(orParts, "("+sqliteTrueExpr(expr)+")")
+			args = append(args, subArgs...)
+		}
+		parts = append(parts, "("+strings.Join(orParts, " OR ")+")")
+	}
+	for k, v := range f.Eq {
+		if !sqliteScalar(v) {
+			return "", nil, false
+		}
+		parts = append(parts, `json_extract(metadata, ?) = ?`)
+		args = append(args, sqliteJSONPath(k), sqliteJSONValue(v))
+	}
+	for k, v := range f.Neq {
+		if !sqliteScalar(v) {
+			return "", nil, false
+		}
+		path := sqliteJSONPath(k)
+		parts = append(parts, `(json_type(metadata, ?) IS NULL OR json_type(metadata, ?) = 'null' OR json_extract(metadata, ?) <> ?)`)
+		args = append(args, path, path, path, sqliteJSONValue(v))
+	}
+	for k, values := range f.In {
+		if len(values) == 0 {
+			parts = append(parts, "0")
+			continue
+		}
+		path := sqliteJSONPath(k)
+		placeholders := make([]string, 0, len(values))
+		args = append(args, path)
+		for _, v := range values {
+			if !sqliteScalar(v) {
+				return "", nil, false
+			}
+			placeholders = append(placeholders, "?")
+			args = append(args, sqliteJSONValue(v))
+		}
+		parts = append(parts, `json_extract(metadata, ?) IN (`+strings.Join(placeholders, ",")+`)`)
+	}
+	for k, values := range f.NotIn {
+		if len(values) == 0 {
+			continue
+		}
+		path := sqliteJSONPath(k)
+		placeholders := make([]string, 0, len(values))
+		args = append(args, path, path, path)
+		for _, v := range values {
+			if !sqliteScalar(v) {
+				return "", nil, false
+			}
+			placeholders = append(placeholders, "?")
+			args = append(args, sqliteJSONValue(v))
+		}
+		parts = append(parts, `(json_type(metadata, ?) IS NULL OR json_type(metadata, ?) = 'null' OR json_extract(metadata, ?) NOT IN (`+strings.Join(placeholders, ",")+`))`)
+	}
+	for k, r := range f.Range {
+		rangeExpr, rangeArgs, ok := sqliteRangeWhere(k, r)
+		if !ok {
+			return "", nil, false
+		}
+		parts = append(parts, rangeExpr)
+		args = append(args, rangeArgs...)
+	}
+	for _, k := range f.Exists {
+		parts = append(parts, `json_type(metadata, ?) IS NOT NULL`)
+		args = append(args, sqliteJSONPath(k))
+	}
+	for _, k := range f.Missing {
+		parts = append(parts, `json_type(metadata, ?) IS NULL`)
+		args = append(args, sqliteJSONPath(k))
+	}
+	return strings.Join(parts, " AND "), args, true
+}
+
+func sqliteTrueExpr(expr string) string {
+	if expr == "" {
+		return "1"
+	}
+	return expr
+}
+
+func sqliteJSONPath(k string) string {
+	escaped := strings.ReplaceAll(k, `"`, `\"`)
+	return `$."` + escaped + `"`
+}
+
+func sqliteScalar(v any) bool {
+	if v == nil {
+		return false
+	}
+	switch v.(type) {
+	case string, bool, float64, float32, int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64:
+		return true
+	default:
+		return false
+	}
+}
+
+func sqliteJSONValue(v any) any {
+	if b, ok := v.(bool); ok {
+		if b {
+			return 1
+		}
+		return 0
+	}
+	return v
+}
+
+func sqliteRangeWhere(k string, r retrieval.Range) (string, []any, bool) {
+	path := sqliteJSONPath(k)
+	expr := `(json_type(metadata, ?) IN ('integer','real'))`
+	args := []any{path}
+	valueExpr := `CAST(json_extract(metadata, ?) AS REAL)`
+	for _, bound := range []struct {
+		op string
+		v  any
+	}{
+		{">", r.Gt},
+		{">=", r.Gte},
+		{"<", r.Lt},
+		{"<=", r.Lte},
+	} {
+		if bound.v == nil {
+			continue
+		}
+		fv, ok := sqlFloat64(bound.v)
+		if !ok {
+			return "", nil, false
+		}
+		expr += " AND " + valueExpr + " " + bound.op + " ?"
+		args = append(args, path, fv)
+	}
+	return "(" + expr + ")", args, true
+}
+
+func sqlFloat64(v any) (float64, bool) {
+	switch x := v.(type) {
+	case float64:
+		return x, true
+	case float32:
+		return float64(x), true
+	case int:
+		return float64(x), true
+	case int8:
+		return float64(x), true
+	case int16:
+		return float64(x), true
+	case int32:
+		return float64(x), true
+	case int64:
+		return float64(x), true
+	case uint:
+		return float64(x), true
+	case uint8:
+		return float64(x), true
+	case uint16:
+		return float64(x), true
+	case uint32:
+		return float64(x), true
+	case uint64:
+		return float64(x), true
+	default:
+		return 0, false
+	}
 }
 
 // List implements retrieval.Index.
@@ -445,7 +747,7 @@ func (s *Index) List(ctx context.Context, ns string, req retrieval.ListRequest) 
 	if pageSize > 1000 {
 		pageSize = 1000
 	}
-	offset, err := retrieval.DecodeListPageToken(req.PageToken)
+	offset, err := retrieval.DecodeListPageTokenFor(req.PageToken, req)
 	if err != nil {
 		return nil, err
 	}
@@ -455,6 +757,45 @@ func (s *Index) List(ctx context.Context, ns string, req retrieval.ListRequest) 
 		order = "ts ASC, id ASC"
 	case retrieval.OrderByIDAsc:
 		order = "id ASC"
+	}
+	if where, args, ok := sqliteFilterWhere(req.Filter); ok {
+		var total int64
+		countQuery := fmt.Sprintf(`SELECT COUNT(*) FROM "docs_%s"`, ns)
+		if where != "" {
+			countQuery += " WHERE " + where
+		}
+		if err := s.db.QueryRowContext(ctx, countQuery, args...).Scan(&total); err != nil {
+			return nil, err
+		}
+		selectArgs := append([]any(nil), args...)
+		selectArgs = append(selectArgs, pageSize, offset)
+		query := fmt.Sprintf(`SELECT id,content,metadata,vector,sparse,ts FROM "docs_%s"`, ns)
+		if where != "" {
+			query += " WHERE " + where
+		}
+		query += fmt.Sprintf(` ORDER BY %s LIMIT ? OFFSET ?`, order)
+		rows, err := s.db.QueryContext(ctx,
+			query,
+			selectArgs...)
+		if err != nil {
+			return nil, err
+		}
+		defer rows.Close()
+		page, err := scanSQLiteDocs(rows)
+		if err != nil {
+			return nil, err
+		}
+		for i := range page {
+			page[i] = projectDoc(page[i], req.Project, req.WithVector)
+		}
+		next := ""
+		if int64(offset+len(page)) < total {
+			next, err = retrieval.EncodeListPageTokenFor(offset+len(page), req)
+			if err != nil {
+				return nil, err
+			}
+		}
+		return &retrieval.ListResponse{Items: page, NextPageToken: next, Total: total}, nil
 	}
 	rows, err := s.db.QueryContext(ctx,
 		fmt.Sprintf(`SELECT id,content,metadata,vector,sparse,ts FROM "docs_%s" ORDER BY %s`, ns, order))
@@ -498,7 +839,7 @@ func (s *Index) List(ctx context.Context, ns string, req retrieval.ListRequest) 
 	}
 	next := ""
 	if end < len(all) {
-		next, err = retrieval.EncodeListPageToken(end)
+		next, err = retrieval.EncodeListPageTokenFor(end, req)
 		if err != nil {
 			return nil, err
 		}

@@ -208,14 +208,23 @@ func (idx *Index) compactNamespaceLocked(ctx context.Context, st *namespaceState
 		}
 		newSegs = append(newSegs, r)
 	}
+	var mergedRef *segmentRef
 	if merged != nil {
-		newSegs = append(newSegs, *merged)
+		destID := st.manifest.LastSegmentID + 1
+		build, err := writeSegment(ctx, idx.ws, st.paths, destID, merged, idx.cfg.now())
+		if err != nil {
+			return fmt.Errorf("compact: write merged segment %x: %w", destID, err)
+		}
+		if build != nil {
+			mergedRef = &build.ref
+			newSegs = append(newSegs, build.ref)
+		}
 	}
 	newMan := *st.manifest
 	newMan.Generation++
 	newMan.Segments = newSegs
-	if merged != nil && newMan.LastSegmentID < merged.ID {
-		newMan.LastSegmentID = merged.ID
+	if mergedRef != nil && newMan.LastSegmentID < mergedRef.ID {
+		newMan.LastSegmentID = mergedRef.ID
 	}
 	newMan.UpdatedAt = idx.cfg.now()
 	if err := writeManifest(ctx, idx.ws, st.paths, &newMan); err != nil {
@@ -315,8 +324,7 @@ func isTailAnchored(segs, group []segmentRef) bool {
 // mergeSegments reads every source segment, deduplicates by doc ID
 // (newest-segment wins), applies tombstones, optionally drops them
 // when the group is tail-anchored, and writes the result as one
-// new segment. Returns the segmentRef to record in the manifest;
-// returns nil with no error when the merged result is empty
+// new segment snapshot. Returns nil with no error when the merged result is empty
 // (everything was tombstoned away in a tail-anchored group).
 func mergeSegments(
 	ctx context.Context,
@@ -324,7 +332,7 @@ func mergeSegments(
 	st *namespaceState,
 	group []segmentRef,
 	tailAnchored bool,
-) (*segmentRef, error) {
+) (*memtableSnapshot, error) {
 	// Process group OLDEST -> NEWEST. We track per-ID the freshest
 	// state seen so far: a later (newer) tombstone overrides an
 	// earlier upsert; a later upsert overrides an earlier
@@ -384,13 +392,6 @@ func mergeSegments(
 		return nil, nil
 	}
 
-	// Allocate the destination ID against the latest manifest so
-	// it is unique even if a flush has landed between the picker
-	// and now.
-	st.rwMu.RLock()
-	destID := st.manifest.LastSegmentID + 1
-	st.rwMu.RUnlock()
-
 	snap := &memtableSnapshot{}
 	for _, d := range upserts {
 		snap.items = append(snap.items, memtableItem{op: walOpUpsert, id: d.ID, doc: cloneDocPtr(d)})
@@ -399,14 +400,7 @@ func mergeSegments(
 		snap.items = append(snap.items, memtableItem{op: walOpDelete, id: id})
 	}
 
-	build, err := writeSegment(ctx, idx.ws, st.paths, destID, snap, idx.cfg.now())
-	if err != nil {
-		return nil, fmt.Errorf("compact merge: write seg %x: %w", destID, err)
-	}
-	if build == nil {
-		return nil, nil
-	}
-	return &build.ref, nil
+	return snap, nil
 }
 
 // cloneDocPtr returns a heap-allocated clone, suitable for

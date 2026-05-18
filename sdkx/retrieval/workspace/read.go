@@ -4,6 +4,7 @@ import (
 	"context"
 	"sort"
 
+	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/retrieval"
 	"github.com/GizClaw/flowcraft/sdk/retrieval/scoring"
 	"github.com/GizClaw/flowcraft/sdk/textsearch"
@@ -56,7 +57,11 @@ func (idx *Index) Search(
 
 	hasText := req.QueryText != ""
 	hasVec := len(req.QueryVector) > 0
+	hasSparse := len(req.SparseVec) > 0
 	if !hasText && !hasVec {
+		if hasSparse {
+			return nil, errdefs.Validationf("workspace retrieval: sparse_vec search is not supported")
+		}
 		return nil, retrieval.ErrNoQuery
 	}
 
@@ -124,10 +129,9 @@ func (idx *Index) Search(
 		// at the time of this segment's flush, so any older
 		// segment must not surface X.
 		for id := range seg.tombSet {
-			if _, ok := live[id]; ok {
-				delete(live, id)
+			if _, ok := live[id]; !ok {
+				deleted[id] = struct{}{}
 			}
-			deleted[id] = struct{}{}
 		}
 
 		if err := seg.loadDocs(ctx); err != nil {
@@ -349,7 +353,7 @@ func (idx *Index) List(
 	if caps.MaxListPageSize > 0 && pageSize > caps.MaxListPageSize {
 		pageSize = caps.MaxListPageSize
 	}
-	offset, err := retrieval.DecodeListPageToken(req.PageToken)
+	offset, err := retrieval.DecodeListPageTokenFor(req.PageToken, req)
 	if err != nil {
 		return nil, err
 	}
@@ -373,79 +377,33 @@ func (idx *Index) List(
 	manifestSnap := st.manifest
 	memSnap := snapshotMemtable(st.memtable)
 
-	deleted := make(map[string]struct{})
-	docsByID := make(map[string]retrieval.Doc)
-
-	// Memtable wins.
-	for _, it := range memSnap {
-		if it.op == walOpDelete {
-			deleted[it.id] = struct{}{}
-			continue
-		}
-		if it.doc != nil {
-			docsByID[it.id] = *it.doc
-		}
-	}
-
-	segs := append([]segmentRef(nil), manifestSnap.Segments...)
-	sort.Slice(segs, func(i, j int) bool { return segs[i].ID > segs[j].ID })
-	for _, ref := range segs {
-		seg, err := openSegmentReader(ctx, idx.ws, st.paths, ref)
-		if err != nil {
-			return nil, err
-		}
-		for id := range seg.tombSet {
-			if _, ok := docsByID[id]; ok {
-				delete(docsByID, id)
-			}
-			deleted[id] = struct{}{}
-		}
-		if err := seg.loadDocs(ctx); err != nil {
-			return nil, err
-		}
-		for _, d := range seg.docs {
-			if _, ok := deleted[d.ID]; ok {
-				continue
-			}
-			if _, ok := docsByID[d.ID]; ok {
-				continue
-			}
-			docsByID[d.ID] = d
-		}
-	}
-
-	all := make([]retrieval.Doc, 0, len(docsByID))
-	for _, d := range docsByID {
-		if !retrieval.DocMatchesFilter(d, req.Filter) {
-			continue
-		}
-		all = append(all, d)
-	}
-
 	order := req.OrderBy
 	if order == "" {
 		order = retrieval.OrderByTimestampDesc
 	}
-	sort.SliceStable(all, func(i, j int) bool {
-		switch order {
-		case retrieval.OrderByTimestampAsc:
-			return all[i].Timestamp.Before(all[j].Timestamp)
-		case retrieval.OrderByIDAsc:
-			return all[i].ID < all[j].ID
-		default:
-			if all[i].Timestamp.Equal(all[j].Timestamp) {
-				return all[i].ID > all[j].ID
-			}
-			return all[i].Timestamp.After(all[j].Timestamp)
+	limit := offset + pageSize
+	if limit < pageSize {
+		limit = pageSize
+	}
+	collector := boundedListCollector{order: order, limit: limit}
+	var total int64
+	if err := idx.scanLiveDocsNewestFirst(ctx, st, manifestSnap, memSnap, func(d retrieval.Doc) error {
+		if !retrieval.DocMatchesFilter(d, req.Filter) {
+			return nil
 		}
-	})
+		total++
+		collector.add(d)
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+	all := collector.sorted()
 
-	total := int64(len(all))
-	if offset >= len(all) {
+	if int64(offset) >= total {
 		return &retrieval.ListResponse{Items: []retrieval.Doc{}, Total: total}, nil
 	}
 	end := offset + pageSize
-	if end > len(all) {
+	if end < offset || end > len(all) {
 		end = len(all)
 	}
 	page := append([]retrieval.Doc(nil), all[offset:end]...)
@@ -453,13 +411,141 @@ func (idx *Index) List(
 		page[i] = projectDoc(cloneDoc(page[i]), req.Project, req.WithVector)
 	}
 	next := ""
-	if end < len(all) {
-		next, err = retrieval.EncodeListPageToken(end)
+	if int64(end) < total {
+		next, err = retrieval.EncodeListPageTokenFor(end, req)
 		if err != nil {
 			return nil, err
 		}
 	}
 	return &retrieval.ListResponse{Items: page, NextPageToken: next, Total: total}, nil
+}
+
+type boundedListCollector struct {
+	order retrieval.ListOrderBy
+	limit int
+	docs  []retrieval.Doc
+}
+
+func (c *boundedListCollector) add(d retrieval.Doc) {
+	if c.limit <= 0 {
+		return
+	}
+	if len(c.docs) < c.limit {
+		c.docs = append(c.docs, d)
+		return
+	}
+	worst := 0
+	for i := 1; i < len(c.docs); i++ {
+		if listDocLess(c.docs[worst], c.docs[i], c.order) {
+			worst = i
+		}
+	}
+	if listDocLess(d, c.docs[worst], c.order) {
+		c.docs[worst] = d
+	}
+}
+
+func (c *boundedListCollector) sorted() []retrieval.Doc {
+	sort.SliceStable(c.docs, func(i, j int) bool {
+		return listDocLess(c.docs[i], c.docs[j], c.order)
+	})
+	return c.docs
+}
+
+func listDocLess(a, b retrieval.Doc, order retrieval.ListOrderBy) bool {
+	switch order {
+	case retrieval.OrderByTimestampAsc:
+		if a.Timestamp.Equal(b.Timestamp) {
+			return a.ID < b.ID
+		}
+		return a.Timestamp.Before(b.Timestamp)
+	case retrieval.OrderByIDAsc:
+		return a.ID < b.ID
+	default:
+		if a.Timestamp.Equal(b.Timestamp) {
+			return a.ID > b.ID
+		}
+		return a.Timestamp.After(b.Timestamp)
+	}
+}
+
+func (idx *Index) scanLiveDocsNewestFirst(
+	ctx context.Context,
+	st *namespaceState,
+	manifestSnap *manifest,
+	memSnap []memtableItem,
+	visit func(retrieval.Doc) error,
+) error {
+	seen := make(map[string]struct{}, len(memSnap))
+	for _, it := range memSnap {
+		if it.id == "" {
+			continue
+		}
+		seen[it.id] = struct{}{}
+		if it.op == walOpUpsert && it.doc != nil {
+			if err := visit(*it.doc); err != nil {
+				return err
+			}
+		}
+	}
+	if manifestSnap == nil {
+		return nil
+	}
+	segs := append([]segmentRef(nil), manifestSnap.Segments...)
+	sort.Slice(segs, func(i, j int) bool { return segs[i].ID > segs[j].ID })
+	for _, ref := range segs {
+		seg, err := openSegmentReader(ctx, idx.ws, st.paths, ref)
+		if err != nil {
+			return err
+		}
+		for id := range seg.tombSet {
+			if _, ok := seen[id]; !ok {
+				seen[id] = struct{}{}
+			}
+		}
+		if err := seg.loadDocs(ctx); err != nil {
+			return err
+		}
+		for _, d := range seg.docs {
+			if _, ok := seen[d.ID]; ok {
+				continue
+			}
+			seen[d.ID] = struct{}{}
+			if err := visit(d); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// Count implements retrieval.Countable.
+func (idx *Index) Count(ctx context.Context, namespace string, f retrieval.Filter) (int64, error) {
+	if idx.closed.Load() {
+		return 0, ErrClosed
+	}
+	st, err := idx.ensureNamespace(ctx, namespace)
+	if err != nil {
+		return 0, err
+	}
+	if err := fenceCheck(st); err != nil {
+		return 0, err
+	}
+	st.rwMu.RLock()
+	defer st.rwMu.RUnlock()
+	manifestSnap := st.manifest
+	memSnap := snapshotMemtable(st.memtable)
+
+	var total int64
+	if err := idx.scanLiveDocsNewestFirst(ctx, st, manifestSnap, memSnap, func(d retrieval.Doc) error {
+		if retrieval.DocMatchesFilter(d, f) {
+			total++
+		}
+		return nil
+	}); err != nil {
+		return 0, err
+	}
+	return total, nil
 }
 
 // Get implements [retrieval.DocGetter]. Returns ok=false (no error)
@@ -589,48 +675,14 @@ func (idx *Index) DeleteByFilter(ctx context.Context, namespace string, f retrie
 		manifestSnap := st.manifest
 		memSnap := snapshotMemtable(st.memtable)
 
-		deleted := make(map[string]struct{})
-		docsByID := make(map[string]retrieval.Doc)
-		for _, it := range memSnap {
-			if it.op == walOpDelete {
-				deleted[it.id] = struct{}{}
-				continue
-			}
-			if it.doc != nil {
-				docsByID[it.id] = *it.doc
-			}
-		}
-		segs := append([]segmentRef(nil), manifestSnap.Segments...)
-		sort.Slice(segs, func(i, j int) bool { return segs[i].ID > segs[j].ID })
-		for _, ref := range segs {
-			seg, err := openSegmentReader(ctx, idx.ws, st.paths, ref)
-			if err != nil {
-				return nil, err
-			}
-			for id := range seg.tombSet {
-				if _, ok := docsByID[id]; ok {
-					delete(docsByID, id)
-				}
-				deleted[id] = struct{}{}
-			}
-			if err := seg.loadDocs(ctx); err != nil {
-				return nil, err
-			}
-			for _, d := range seg.docs {
-				if _, ok := deleted[d.ID]; ok {
-					continue
-				}
-				if _, ok := docsByID[d.ID]; ok {
-					continue
-				}
-				docsByID[d.ID] = d
-			}
-		}
 		out := make([]string, 0)
-		for id, d := range docsByID {
+		if err := idx.scanLiveDocsNewestFirst(ctx, st, manifestSnap, memSnap, func(d retrieval.Doc) error {
 			if retrieval.DocMatchesFilter(d, f) {
-				out = append(out, id)
+				out = append(out, d.ID)
 			}
+			return nil
+		}); err != nil {
+			return nil, err
 		}
 		return out, nil
 	}()

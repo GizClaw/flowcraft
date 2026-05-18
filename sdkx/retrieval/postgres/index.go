@@ -68,6 +68,13 @@ func (s *Index) Capabilities() retrieval.Capabilities {
 
 		ReadAfterWrite: true,
 		Distributed:    false,
+		Extensions: retrieval.ExtensionCapabilities{
+			DocGetter:      true,
+			Iterable:       true,
+			Count:          true,
+			DeleteByFilter: true,
+			DropNamespace:  true,
+		},
 	}
 }
 
@@ -156,14 +163,10 @@ func (s *Index) Upsert(ctx context.Context, ns string, docs []retrieval.Doc) err
 	if err := s.ensureNS(ctx, ns); err != nil {
 		return err
 	}
-	var partial []retrieval.DocUpsertResult
 	for _, d := range docs {
 		if strings.TrimSpace(d.ID) == "" {
-			partial = append(partial, retrieval.DocUpsertResult{ID: d.ID, Err: errdefs.Validationf("postgres: doc id required")})
+			return errdefs.Validationf("postgres: doc id required")
 		}
-	}
-	if len(partial) > 0 {
-		return &retrieval.PartialError{Results: partial}
 	}
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -255,37 +258,57 @@ func (s *Index) Search(ctx context.Context, ns string, req retrieval.SearchReque
 	var rows []cand
 	if hasText {
 		q := tsQuery(req.QueryText)
-		rs, err := s.pool.Query(ctx, fmt.Sprintf(
+		query := fmt.Sprintf(
 			`SELECT id, content, metadata::text, vector, sparse::text, ts, ts_rank(tsv, plainto_tsquery('simple',$1)) AS score
 			 FROM %q WHERE tsv @@ plainto_tsquery('simple',$1)
-			 ORDER BY score DESC LIMIT $2`, tableName(ns)), q, topK*4)
-		if err != nil {
-			return nil, err
+			 ORDER BY score DESC LIMIT $2 OFFSET $3`, tableName(ns))
+		pageSize := topK * 4
+		if pageSize < 100 {
+			pageSize = 100
 		}
-		defer rs.Close()
-		for rs.Next() {
-			var (
-				id, content string
-				mdText      *string
-				vecBlob     []byte
-				spText      *string
-				ts          time.Time
-				score       float64
-			)
-			if err := rs.Scan(&id, &content, &mdText, &vecBlob, &spText, &ts, &score); err != nil {
+		maxScan := topK * 256
+		if maxScan < 1000 {
+			maxScan = 1000
+		}
+		for offset := 0; offset < maxScan; offset += pageSize {
+			rs, err := s.pool.Query(ctx, query, q, pageSize, offset)
+			if err != nil {
 				return nil, err
 			}
-			d := retrieval.Doc{ID: id, Content: content, Vector: decodeVector(vecBlob), Timestamp: ts.UTC()}
-			if mdText != nil && *mdText != "" {
-				_ = json.Unmarshal([]byte(*mdText), &d.Metadata)
+			n := 0
+			for rs.Next() {
+				n++
+				var (
+					id, content string
+					mdText      *string
+					vecBlob     []byte
+					spText      *string
+					ts          time.Time
+					score       float64
+				)
+				if err := rs.Scan(&id, &content, &mdText, &vecBlob, &spText, &ts, &score); err != nil {
+					rs.Close()
+					return nil, err
+				}
+				d := retrieval.Doc{ID: id, Content: content, Vector: decodeVector(vecBlob), Timestamp: ts.UTC()}
+				if mdText != nil && *mdText != "" {
+					_ = json.Unmarshal([]byte(*mdText), &d.Metadata)
+				}
+				if spText != nil && *spText != "" {
+					_ = json.Unmarshal([]byte(*spText), &d.SparseVector)
+				}
+				if !retrieval.DocMatchesFilter(d, req.Filter) {
+					continue
+				}
+				rows = append(rows, cand{d: d, bm25: score})
 			}
-			if spText != nil && *spText != "" {
-				_ = json.Unmarshal([]byte(*spText), &d.SparseVector)
+			rs.Close()
+			if err := rs.Err(); err != nil {
+				return nil, err
 			}
-			if !retrieval.DocMatchesFilter(d, req.Filter) {
-				continue
+			if n < pageSize || (!hasVec && len(rows) >= topK) {
+				break
 			}
-			rows = append(rows, cand{d: d, bm25: score})
 		}
 	} else {
 		all, err := s.scanAll(ctx, ns, req.Filter, 4*topK)
@@ -315,7 +338,9 @@ func (s *Index) Search(ctx context.Context, ns string, req retrieval.SearchReque
 	out := make([]retrieval.Hit, 0, topK)
 	for _, c := range rows {
 		score := c.bm25
-		if hasVec && !hasText {
+		if hasText && hasVec {
+			score = c.bm25 + c.cos
+		} else if hasVec && !hasText {
 			score = c.cos
 		}
 		if score < req.MinScore {
@@ -361,7 +386,280 @@ func (s *Index) scanAll(ctx context.Context, ns string, f retrieval.Filter, limi
 			out = append(out, d)
 		}
 	}
-	return out, nil
+	return out, rs.Err()
+}
+
+// Count implements retrieval.Countable.
+func (s *Index) Count(ctx context.Context, ns string, f retrieval.Filter) (int64, error) {
+	if err := s.ensureNS(ctx, ns); err != nil {
+		return 0, err
+	}
+	if where, args, ok := postgresFilterWhere(f, 1); ok {
+		var total int64
+		query := fmt.Sprintf(`SELECT COUNT(*) FROM %q`, tableName(ns))
+		if where != "" {
+			query += " WHERE " + where
+		}
+		if err := s.pool.QueryRow(ctx, query, args...).Scan(&total); err != nil {
+			return 0, err
+		}
+		return total, nil
+	}
+	rs, err := s.pool.Query(ctx, fmt.Sprintf(`SELECT id,content,metadata::text,vector,sparse::text,ts FROM %q`, tableName(ns)))
+	if err != nil {
+		return 0, err
+	}
+	defer rs.Close()
+	var total int64
+	for rs.Next() {
+		var (
+			id, content string
+			mdText      *string
+			vecBlob     []byte
+			spText      *string
+			ts          time.Time
+		)
+		if err := rs.Scan(&id, &content, &mdText, &vecBlob, &spText, &ts); err != nil {
+			return 0, err
+		}
+		d := retrieval.Doc{ID: id, Content: content, Vector: decodeVector(vecBlob), Timestamp: ts.UTC()}
+		if mdText != nil && *mdText != "" {
+			_ = json.Unmarshal([]byte(*mdText), &d.Metadata)
+		}
+		if spText != nil && *spText != "" {
+			_ = json.Unmarshal([]byte(*spText), &d.SparseVector)
+		}
+		if retrieval.DocMatchesFilter(d, f) {
+			total++
+		}
+	}
+	return total, rs.Err()
+}
+
+func scanPostgresDocs(rs pgx.Rows) ([]retrieval.Doc, error) {
+	var out []retrieval.Doc
+	for rs.Next() {
+		var (
+			id, content string
+			mdText      *string
+			vecBlob     []byte
+			spText      *string
+			ts          time.Time
+		)
+		if err := rs.Scan(&id, &content, &mdText, &vecBlob, &spText, &ts); err != nil {
+			return nil, err
+		}
+		d := retrieval.Doc{ID: id, Content: content, Vector: decodeVector(vecBlob), Timestamp: ts.UTC()}
+		if mdText != nil && *mdText != "" {
+			_ = json.Unmarshal([]byte(*mdText), &d.Metadata)
+		}
+		if spText != nil && *spText != "" {
+			_ = json.Unmarshal([]byte(*spText), &d.SparseVector)
+		}
+		out = append(out, d)
+	}
+	return out, rs.Err()
+}
+
+func postgresFilterWhere(f retrieval.Filter, startArg int) (string, []any, bool) {
+	c := postgresFilterCompiler{next: startArg}
+	expr, ok := c.compile(f)
+	return expr, c.args, ok
+}
+
+type postgresFilterCompiler struct {
+	next int
+	args []any
+}
+
+func (c *postgresFilterCompiler) arg(v any) string {
+	c.args = append(c.args, v)
+	n := c.next
+	c.next++
+	return fmt.Sprintf("$%d", n)
+}
+
+func (c *postgresFilterCompiler) compile(f retrieval.Filter) (string, bool) {
+	if isEmptyFilter(f) {
+		return "", true
+	}
+	if len(f.Match) > 0 || len(f.Contains) > 0 || len(f.IContains) > 0 ||
+		len(f.ContainsAny) > 0 || len(f.ContainsAll) > 0 {
+		return "", false
+	}
+	var parts []string
+
+	if f.Not != nil {
+		expr, ok := c.compile(*f.Not)
+		if !ok {
+			return "", false
+		}
+		parts = append(parts, "NOT ("+postgresTrueExpr(expr)+")")
+	}
+	for _, sub := range f.And {
+		expr, ok := c.compile(sub)
+		if !ok {
+			return "", false
+		}
+		if expr != "" {
+			parts = append(parts, "("+expr+")")
+		}
+	}
+	if len(f.Or) > 0 {
+		orParts := make([]string, 0, len(f.Or))
+		for _, sub := range f.Or {
+			expr, ok := c.compile(sub)
+			if !ok {
+				return "", false
+			}
+			orParts = append(orParts, "("+postgresTrueExpr(expr)+")")
+		}
+		parts = append(parts, "("+strings.Join(orParts, " OR ")+")")
+	}
+	for k, v := range f.Eq {
+		if !postgresScalar(v) {
+			return "", false
+		}
+		parts = append(parts, fmt.Sprintf(`metadata ->> %s = %s`, c.arg(k), c.arg(postgresTextValue(v))))
+	}
+	for k, v := range f.Neq {
+		if !postgresScalar(v) {
+			return "", false
+		}
+		keyArg := c.arg(k)
+		valArg := c.arg(postgresTextValue(v))
+		parts = append(parts, fmt.Sprintf(`(NOT (metadata ? %s) OR jsonb_typeof(metadata -> %s) = 'null' OR metadata ->> %s <> %s)`, keyArg, keyArg, keyArg, valArg))
+	}
+	for k, values := range f.In {
+		if len(values) == 0 {
+			parts = append(parts, "FALSE")
+			continue
+		}
+		vals, ok := postgresTextValues(values)
+		if !ok {
+			return "", false
+		}
+		parts = append(parts, fmt.Sprintf(`metadata ->> %s = ANY(%s)`, c.arg(k), c.arg(vals)))
+	}
+	for k, values := range f.NotIn {
+		if len(values) == 0 {
+			continue
+		}
+		vals, ok := postgresTextValues(values)
+		if !ok {
+			return "", false
+		}
+		keyArg := c.arg(k)
+		valArg := c.arg(vals)
+		parts = append(parts, fmt.Sprintf(`(NOT (metadata ? %s) OR jsonb_typeof(metadata -> %s) = 'null' OR NOT (metadata ->> %s = ANY(%s)))`, keyArg, keyArg, keyArg, valArg))
+	}
+	for k, r := range f.Range {
+		expr, ok := c.rangeExpr(k, r)
+		if !ok {
+			return "", false
+		}
+		parts = append(parts, expr)
+	}
+	for _, k := range f.Exists {
+		parts = append(parts, fmt.Sprintf(`metadata ? %s`, c.arg(k)))
+	}
+	for _, k := range f.Missing {
+		parts = append(parts, fmt.Sprintf(`NOT (metadata ? %s)`, c.arg(k)))
+	}
+	return strings.Join(parts, " AND "), true
+}
+
+func (c *postgresFilterCompiler) rangeExpr(k string, r retrieval.Range) (string, bool) {
+	keyArg := c.arg(k)
+	valueExpr := fmt.Sprintf(`(metadata ->> %s)::double precision`, keyArg)
+	parts := []string{
+		fmt.Sprintf(`metadata ? %s`, keyArg),
+		fmt.Sprintf(`jsonb_typeof(metadata -> %s) = 'number'`, keyArg),
+	}
+	for _, bound := range []struct {
+		op string
+		v  any
+	}{
+		{">", r.Gt},
+		{">=", r.Gte},
+		{"<", r.Lt},
+		{"<=", r.Lte},
+	} {
+		if bound.v == nil {
+			continue
+		}
+		fv, ok := sqlFloat64(bound.v)
+		if !ok {
+			return "", false
+		}
+		parts = append(parts, fmt.Sprintf(`%s %s %s`, valueExpr, bound.op, c.arg(fv)))
+	}
+	return "(" + strings.Join(parts, " AND ") + ")", true
+}
+
+func postgresTrueExpr(expr string) string {
+	if expr == "" {
+		return "TRUE"
+	}
+	return expr
+}
+
+func postgresScalar(v any) bool {
+	if v == nil {
+		return false
+	}
+	switch v.(type) {
+	case string, bool, float64, float32, int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64:
+		return true
+	default:
+		return false
+	}
+}
+
+func postgresTextValue(v any) string {
+	return fmt.Sprint(v)
+}
+
+func postgresTextValues(values []any) ([]string, bool) {
+	out := make([]string, 0, len(values))
+	for _, v := range values {
+		if !postgresScalar(v) {
+			return nil, false
+		}
+		out = append(out, postgresTextValue(v))
+	}
+	return out, true
+}
+
+func sqlFloat64(v any) (float64, bool) {
+	switch x := v.(type) {
+	case float64:
+		return x, true
+	case float32:
+		return float64(x), true
+	case int:
+		return float64(x), true
+	case int8:
+		return float64(x), true
+	case int16:
+		return float64(x), true
+	case int32:
+		return float64(x), true
+	case int64:
+		return float64(x), true
+	case uint:
+		return float64(x), true
+	case uint8:
+		return float64(x), true
+	case uint16:
+		return float64(x), true
+	case uint32:
+		return float64(x), true
+	case uint64:
+		return float64(x), true
+	default:
+		return 0, false
+	}
 }
 
 // List implements retrieval.Index.
@@ -376,7 +674,7 @@ func (s *Index) List(ctx context.Context, ns string, req retrieval.ListRequest) 
 	if pageSize > 1000 {
 		pageSize = 1000
 	}
-	offset, err := retrieval.DecodeListPageToken(req.PageToken)
+	offset, err := retrieval.DecodeListPageTokenFor(req.PageToken, req)
 	if err != nil {
 		return nil, err
 	}
@@ -386,6 +684,47 @@ func (s *Index) List(ctx context.Context, ns string, req retrieval.ListRequest) 
 		order = "ts ASC, id ASC"
 	case retrieval.OrderByIDAsc:
 		order = "id ASC"
+	}
+	if where, args, ok := postgresFilterWhere(req.Filter, 1); ok {
+		var total int64
+		countQuery := fmt.Sprintf(`SELECT COUNT(*) FROM %q`, tableName(ns))
+		if where != "" {
+			countQuery += " WHERE " + where
+		}
+		if err := s.pool.QueryRow(ctx, countQuery, args...).Scan(&total); err != nil {
+			return nil, err
+		}
+		limitArg := len(args) + 1
+		offsetArg := len(args) + 2
+		query := fmt.Sprintf(`SELECT id,content,metadata::text,vector,sparse::text,ts FROM %q`, tableName(ns))
+		if where != "" {
+			query += " WHERE " + where
+		}
+		query += fmt.Sprintf(` ORDER BY %s LIMIT $%d OFFSET $%d`, order, limitArg, offsetArg)
+		selectArgs := append([]any(nil), args...)
+		selectArgs = append(selectArgs, pageSize, offset)
+		rs, err := s.pool.Query(ctx,
+			query,
+			selectArgs...)
+		if err != nil {
+			return nil, err
+		}
+		defer rs.Close()
+		page, err := scanPostgresDocs(rs)
+		if err != nil {
+			return nil, err
+		}
+		for i := range page {
+			page[i] = projectDoc(page[i], req.Project, req.WithVector)
+		}
+		next := ""
+		if int64(offset+len(page)) < total {
+			next, err = retrieval.EncodeListPageTokenFor(offset+len(page), req)
+			if err != nil {
+				return nil, err
+			}
+		}
+		return &retrieval.ListResponse{Items: page, NextPageToken: next, Total: total}, nil
 	}
 	rs, err := s.pool.Query(ctx, fmt.Sprintf(`SELECT id,content,metadata::text,vector,sparse::text,ts FROM %q ORDER BY %s`, tableName(ns), order))
 	if err != nil {
@@ -429,7 +768,7 @@ func (s *Index) List(ctx context.Context, ns string, req retrieval.ListRequest) 
 	}
 	next := ""
 	if end < len(all) {
-		next, err = retrieval.EncodeListPageToken(end)
+		next, err = retrieval.EncodeListPageTokenFor(end, req)
 		if err != nil {
 			return nil, err
 		}
