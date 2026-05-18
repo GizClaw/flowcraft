@@ -3,7 +3,7 @@ package recall
 import (
 	"context"
 
-	"github.com/GizClaw/flowcraft/sdk/retrieval/pipeline"
+	recallpipe "github.com/GizClaw/flowcraft/sdk/recall/pipeline"
 )
 
 // internalEntityLinkResolver bridges an [EntityStore] (Scope-keyed)
@@ -28,7 +28,7 @@ type internalEntityLinkResolver struct {
 // or nil when `store` is nil so [pipeline.WithEntityLinkResolver]
 // receives an explicit-nil interface (typed-nil interfaces would
 // fail the `if resolver != nil` guard inside the stage).
-func newInternalEntityLinkResolver(store EntityStore) pipeline.EntityLinkResolver {
+func newInternalEntityLinkResolver(store EntityStore) recallpipe.EntityLinkResolver {
 	if store == nil {
 		return nil
 	}

@@ -29,6 +29,7 @@ type EmbedQuery struct {
 
 	mu    sync.Mutex
 	cache map[string]embedCacheEntry
+	calls map[string]*embedInflight
 }
 
 const defaultEmbedCacheMax = 1024
@@ -36,6 +37,12 @@ const defaultEmbedCacheMax = 1024
 type embedCacheEntry struct {
 	vec []float32
 	exp time.Time
+}
+
+type embedInflight struct {
+	done chan struct{}
+	vec  []float32
+	err  error
 }
 
 // Name implements Stage.
@@ -81,34 +88,58 @@ func (s *EmbedQuery) Run(ctx context.Context, st *State) error {
 		// map size honest under high-churn workloads.
 		delete(s.cache, key)
 	}
+	if s.calls == nil {
+		s.calls = make(map[string]*embedInflight)
+	}
+	if c, ok := s.calls[key]; ok {
+		s.mu.Unlock()
+		select {
+		case <-c.done:
+			if c.err != nil {
+				return c.err
+			}
+			st.Request.QueryVector = append([]float32(nil), c.vec...)
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	c := &embedInflight{done: make(chan struct{})}
+	s.calls[key] = c
 	s.mu.Unlock()
 	v, err := s.Embedder.Embed(ctx, key)
+	s.mu.Lock()
+	if err == nil {
+		if len(s.cache) >= maxEntries {
+			// Evict any single expired entry first, then fall back to a
+			// random victim. This is intentionally cheap: the cache is a
+			// best-effort latency optimisation, not a correctness boundary.
+			now := time.Now()
+			evicted := false
+			for k, e := range s.cache {
+				if !now.Before(e.exp) {
+					delete(s.cache, k)
+					evicted = true
+					break
+				}
+			}
+			if !evicted {
+				for k := range s.cache {
+					delete(s.cache, k)
+					break
+				}
+			}
+		}
+		s.cache[key] = embedCacheEntry{vec: append([]float32(nil), v...), exp: time.Now().Add(ttl)}
+	}
+	c.vec = append([]float32(nil), v...)
+	c.err = err
+	delete(s.calls, key)
+	close(c.done)
+	s.mu.Unlock()
 	if err != nil {
 		return err
 	}
-	s.mu.Lock()
-	if len(s.cache) >= maxEntries {
-		// Evict any single expired entry first, then fall back to a
-		// random victim. This is intentionally cheap: the cache is a
-		// best-effort latency optimisation, not a correctness boundary.
-		now := time.Now()
-		evicted := false
-		for k, e := range s.cache {
-			if !now.Before(e.exp) {
-				delete(s.cache, k)
-				evicted = true
-				break
-			}
-		}
-		if !evicted {
-			for k := range s.cache {
-				delete(s.cache, k)
-				break
-			}
-		}
-	}
-	s.cache[key] = embedCacheEntry{vec: append([]float32(nil), v...), exp: time.Now().Add(ttl)}
-	s.mu.Unlock()
 	st.Request.QueryVector = v
 	return nil
 }
@@ -142,6 +173,9 @@ func (s QueryRewrite) Run(ctx context.Context, st *State) error {
 // . Reads: Request.QueryText. Writes: QueryEntities.
 //
 // Provide LLMExtractor to override with an LLM-based extractor.
+//
+// Deprecated: use sdk/recall/pipeline.EntityExtract. The retrieval-level
+// entity extractor will be removed in v0.5.0.
 type EntityExtract struct {
 	LLMExtractor func(ctx context.Context, text string) ([]string, error)
 }

@@ -12,9 +12,10 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/history"
 	"github.com/GizClaw/flowcraft/sdk/internal/syncx"
 	"github.com/GizClaw/flowcraft/sdk/llm"
+	recallpipe "github.com/GizClaw/flowcraft/sdk/recall/pipeline"
 	"github.com/GizClaw/flowcraft/sdk/retrieval"
 	"github.com/GizClaw/flowcraft/sdk/retrieval/journal"
-	"github.com/GizClaw/flowcraft/sdk/retrieval/pipeline"
+	basepipe "github.com/GizClaw/flowcraft/sdk/retrieval/pipeline"
 )
 
 // Memory is the long-term-memory facade — the read/write contract every
@@ -128,7 +129,7 @@ type RecallExplainer interface {
 // makes the surface backwards-compatible across additions.
 type config struct {
 	embedder embedding.Embedder
-	pipe     *pipeline.Pipeline
+	pipe     *basepipe.Pipeline
 
 	mode       ExtractMode
 	llm        llm.LLM
@@ -233,7 +234,8 @@ type config struct {
 	// (entity-link lane et al.) without the caller having to
 	// remember to thread them too. See [WithLTMOption] for the
 	// design rationale.
-	ltmOpts []pipeline.LTMOption
+	ltmOpts       []recallpipe.LTMOption
+	legacyLTMOpts []basepipe.LTMOption
 }
 
 // Option mutates a Memory configuration. All knobs are optional; the
@@ -255,7 +257,7 @@ func WithEmbedder(e embedding.Embedder) Option { return func(c *config) { c.embe
 //
 // Prefer [WithLTMOption] for the common case of "I want LTM with a
 // few knobs adjusted"; that path keeps feature auto-wiring intact.
-func WithPipeline(p *pipeline.Pipeline) Option { return func(c *config) { c.pipe = p } }
+func WithPipeline(p *basepipe.Pipeline) Option { return func(c *config) { c.pipe = p } }
 
 // WithLTMOption appends [pipeline.LTMOption]s to the auto-wired
 // [pipeline.LTM] pipeline. Stack multiple calls — they accumulate
@@ -274,11 +276,25 @@ func WithPipeline(p *pipeline.Pipeline) Option { return func(c *config) { c.pipe
 // truth: features add to the recipe; users add to the recipe; the
 // pipeline gets built once at the end.
 //
+// Accepts sdk/recall/pipeline.LTMOption. Deprecated
+// sdk/retrieval/pipeline.LTMOption values are still accepted as a compatibility
+// bridge, but that path constructs the old retrieval-level LTM recipe and will
+// be removed in v0.5.0.
+//
 // No-op when [WithPipeline] is also set (the custom pipeline wins
 // and a warning is logged).
-func WithLTMOption(opts ...pipeline.LTMOption) Option {
+func WithLTMOption(opts ...any) Option {
 	return func(c *config) {
-		c.ltmOpts = append(c.ltmOpts, opts...)
+		for _, opt := range opts {
+			switch o := opt.(type) {
+			case nil:
+				continue
+			case basepipe.LTMOption:
+				c.legacyLTMOpts = append(c.legacyLTMOpts, o)
+			default:
+				c.ltmOpts = append(c.ltmOpts, o)
+			}
+		}
 	}
 }
 
@@ -722,7 +738,7 @@ func WithJournal(j journal.Journal) Option { return func(c *config) { c.journal 
 type lt struct {
 	cfg       config
 	idx       retrieval.Index
-	pipe      *pipeline.Pipeline
+	pipe      *basepipe.Pipeline
 	stopCh    chan struct{}
 	wgWorkers sync.WaitGroup
 
@@ -803,6 +819,9 @@ func New(idx retrieval.Index, opts ...Option) (Memory, error) {
 			opt(&cfg)
 		}
 	}
+	if len(cfg.ltmOpts) > 0 && len(cfg.legacyLTMOpts) > 0 {
+		return nil, errors.New("recall: cannot mix sdk/recall/pipeline and deprecated sdk/retrieval/pipeline LTM options")
+	}
 	if cfg.extractor == nil {
 		cfg.extractor = &AdditiveExtractor{
 			LLM:              cfg.llm,
@@ -869,34 +888,51 @@ func New(idx retrieval.Index, opts ...Option) (Memory, error) {
 		// for write-path Link telemetry) should reach for
 		// [WithPipeline] explicitly. Within "I want LTM" the
 		// recall package owns the final composition.
-		ltmOpts := append([]pipeline.LTMOption(nil), cfg.ltmOpts...)
-		if cfg.entityStore != nil {
-			// The entity-link lane only participates under
-			// multi-recall (it's a 4th MultiRetrieve mode);
-			// enabling it without multi-recall would silently
-			// no-op. Force multi-recall on too so
-			// [WithEntityStore] has a single, predictable
-			// activation contract: opt in once and both the
-			// write path (Link) and the read path (lane + RRF
-			// fusion) light up together.
-			ltmOpts = append(ltmOpts,
-				pipeline.WithMultiRecall(true),
-				pipeline.WithEntityLinkLane(true),
-				pipeline.WithEntityLinkResolver(newInternalEntityLinkResolver(cfg.entityStore)),
-			)
+		if len(cfg.legacyLTMOpts) > 0 {
+			legacyOpts := append([]basepipe.LTMOption(nil), cfg.legacyLTMOpts...)
+			if cfg.entityStore != nil {
+				legacyOpts = append(legacyOpts,
+					basepipe.WithMultiRecall(true),
+					basepipe.WithEntityLinkLane(true),
+					basepipe.WithEntityLinkResolver(newInternalEntityLinkResolver(cfg.entityStore)),
+				)
+			}
+			if cfg.queryEntityLLM != nil {
+				legacyOpts = append(legacyOpts,
+					basepipe.WithEntityExtractor(llmQueryEntityExtractor(cfg.queryEntityLLM)),
+				)
+			}
+			pipe = basepipe.LTM(cfg.embedder, legacyOpts...)
+		} else {
+			ltmOpts := append([]recallpipe.LTMOption(nil), cfg.ltmOpts...)
+			if cfg.entityStore != nil {
+				// The entity-link lane only participates under
+				// multi-recall (it's a 4th MultiRetrieve mode);
+				// enabling it without multi-recall would silently
+				// no-op. Force multi-recall on too so
+				// [WithEntityStore] has a single, predictable
+				// activation contract: opt in once and both the
+				// write path (Link) and the read path (lane + RRF
+				// fusion) light up together.
+				ltmOpts = append(ltmOpts,
+					recallpipe.WithMultiRecall(true),
+					recallpipe.WithEntityLinkLane(true),
+					recallpipe.WithEntityLinkResolver(newInternalEntityLinkResolver(cfg.entityStore)),
+				)
+			}
+			if cfg.queryEntityLLM != nil {
+				// Wire the LLM-backed query entity extractor LAST so
+				// it overrides any rule-based extractor a caller may
+				// have set via WithLTMOption. Cost: 1 LLM call per
+				// recall. Best-effort: errors fall back to "no
+				// entities" rather than failing the recall.
+				ltmOpts = append(ltmOpts,
+					recallpipe.WithEntityExtractor(llmQueryEntityExtractor(cfg.queryEntityLLM)),
+				)
+			}
+			pipe = recallpipe.LTM(cfg.embedder, ltmOpts...)
 		}
-		if cfg.queryEntityLLM != nil {
-			// Wire the LLM-backed query entity extractor LAST so
-			// it overrides any rule-based extractor a caller may
-			// have set via WithLTMOption. Cost: 1 LLM call per
-			// recall. Best-effort: errors fall back to "no
-			// entities" rather than failing the recall.
-			ltmOpts = append(ltmOpts,
-				pipeline.WithEntityExtractor(llmQueryEntityExtractor(cfg.queryEntityLLM)),
-			)
-		}
-		pipe = pipeline.LTM(cfg.embedder, ltmOpts...)
-	} else if len(cfg.ltmOpts) > 0 {
+	} else if len(cfg.ltmOpts) > 0 || len(cfg.legacyLTMOpts) > 0 {
 		// User passed both WithPipeline AND WithLTMOption — the
 		// latter is dead in this combination. Log so accidental
 		// double-wiring shows up in CI rather than silently

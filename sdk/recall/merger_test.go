@@ -9,9 +9,9 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/llm"
 	"github.com/GizClaw/flowcraft/sdk/model"
 	"github.com/GizClaw/flowcraft/sdk/recall"
+	"github.com/GizClaw/flowcraft/sdk/recall/pipeline"
 	"github.com/GizClaw/flowcraft/sdk/retrieval"
 	memidx "github.com/GizClaw/flowcraft/sdk/retrieval/memory"
-	"github.com/GizClaw/flowcraft/sdk/retrieval/pipeline"
 )
 
 func TestSaveDedupsSameFactAcrossDifferentMessages(t *testing.T) {

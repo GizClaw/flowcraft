@@ -41,6 +41,9 @@ const entityLinkLookupDefaultCap = 50
 //     usefulness (typically: per-entity recency-first, with
 //     cross-entity deduplication maintaining the first-occurrence
 //     position).
+//
+// Deprecated: use sdk/recall/pipeline.EntityLinkResolver. The retrieval-level
+// entity-link resolver surface will be removed in v0.5.0.
 type EntityLinkResolver interface {
 	ResolveLinks(
 		ctx context.Context,
@@ -68,6 +71,9 @@ type EntityLinkResolver interface {
 // Pipeline.Run, which aborts. This matches the existing recall
 // stages' policy (a failing Retrieve aborts the pipeline). Future
 // "tolerant" mode tracked under the recall-degrade RFC.
+//
+// Deprecated: use sdk/recall/pipeline.EntityLinkLookup. The retrieval-level
+// entity-link stage will be removed in v0.5.0.
 type EntityLinkLookup struct {
 	// Resolver is the entity → entry-id index implementation.
 	// nil = stage is a no-op (still safe to keep in the pipeline).
