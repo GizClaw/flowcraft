@@ -9,6 +9,7 @@ func TestDocMatchesFilter_NumericTypesAreInterchangeable(t *testing.T) {
 			"score": float64(5),
 			"count": int64(7),
 			"ratio": float32(1.5),
+			"small": int32(3),
 		},
 	}
 	cases := []Filter{
@@ -18,11 +19,24 @@ func TestDocMatchesFilter_NumericTypesAreInterchangeable(t *testing.T) {
 		{Eq: map[string]any{"ratio": 1.5}},
 		{In: map[string][]any{"score": {1, 5, 9}}},
 		{Range: map[string]Range{"score": {Gte: int64(5), Lt: 6}}},
+		{Range: map[string]Range{"small": {Gte: int8(3), Lte: uint32(3)}}},
 	}
 	for i, f := range cases {
 		if !DocMatchesFilter(doc, f) {
 			t.Fatalf("case %d: expected match for %+v", i, f)
 		}
+	}
+}
+
+func TestDocMatchesFilter_ContainsStringSliceCoercesWant(t *testing.T) {
+	doc := Doc{ID: "s", Metadata: map[string]any{
+		"tags": []string{"42", "go"},
+	}}
+	if !DocMatchesFilter(doc, Filter{Contains: map[string]any{"tags": 42}}) {
+		t.Fatal("Contains should coerce numeric want to string for []string metadata")
+	}
+	if !DocMatchesFilter(doc, Filter{ContainsAny: map[string][]any{"tags": {7, 42}}}) {
+		t.Fatal("ContainsAny should coerce numeric atoms to string for []string metadata")
 	}
 }
 

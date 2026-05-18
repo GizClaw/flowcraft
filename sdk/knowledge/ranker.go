@@ -1,6 +1,11 @@
 package knowledge
 
-import "sort"
+import (
+	"sort"
+
+	"github.com/GizClaw/flowcraft/sdk/retrieval"
+	"github.com/GizClaw/flowcraft/sdk/retrieval/scoring"
+)
 
 // DefaultRRFK is the conventional fusion constant for reciprocal-rank fusion.
 // Smaller K weights the head of each ranked list more heavily.
@@ -43,36 +48,34 @@ func (r *RRFRanker) Rank(candidates []Candidate, q Query) []Hit {
 		groups[src] = g
 	}
 
-	type fused struct {
-		hit   Hit
-		score float64
-	}
-	merged := make(map[string]*fused)
-	keyOrder := make([]string, 0)
+	firstHit := make(map[string]Hit)
+	lanes := make([][]retrieval.Hit, 0, len(order))
 	for _, src := range order {
+		lane := make([]retrieval.Hit, 0, len(groups[src]))
 		for rank, c := range groups[src] {
+			_ = rank
 			key := candidateKey(c)
-			contrib := 1.0 / float64(k+rank+1)
-			if existing, ok := merged[key]; ok {
-				existing.score += contrib
-				continue
+			if _, ok := firstHit[key]; !ok {
+				firstHit[key] = c.Hit
 			}
-			merged[key] = &fused{hit: c.Hit, score: contrib}
-			keyOrder = append(keyOrder, key)
+			lane = append(lane, retrieval.Hit{
+				Doc:   retrieval.Doc{ID: key},
+				Score: c.Hit.Score,
+			})
 		}
+		lanes = append(lanes, lane)
 	}
 
-	out := make([]Hit, 0, len(keyOrder))
-	for _, key := range keyOrder {
-		f := merged[key]
-		if q.Threshold > 0 && f.score < q.Threshold {
+	fused := scoring.RRF(lanes, float64(k))
+	out := make([]Hit, 0, len(fused))
+	for _, fh := range fused {
+		if q.Threshold > 0 && fh.Score < q.Threshold {
 			continue
 		}
-		h := f.hit
-		h.Score = f.score
+		h := firstHit[fh.Doc.ID]
+		h.Score = fh.Score
 		out = append(out, h)
 	}
-	sort.SliceStable(out, func(i, j int) bool { return out[i].Score > out[j].Score })
 	if q.TopK > 0 && len(out) > q.TopK {
 		out = out[:q.TopK]
 	}
@@ -114,31 +117,26 @@ func FuseHits(perRetriever [][]Hit, k int) []Hit {
 	if k <= 0 {
 		k = DefaultRRFK
 	}
-	type fused struct {
-		hit   Hit
-		score float64
-	}
-	merged := make(map[string]*fused)
-	order := make([]string, 0)
+	firstHit := make(map[string]Hit)
+	lanes := make([][]retrieval.Hit, 0, len(perRetriever))
 	for _, list := range perRetriever {
+		lane := make([]retrieval.Hit, 0, len(list))
 		for rank, h := range list {
+			_ = rank
 			key := h.DatasetID + "\x00" + h.DocName + "\x00" + string(h.Layer) + "\x00" + itoa(h.ChunkIndex)
-			contrib := 1.0 / float64(k+rank+1)
-			if existing, ok := merged[key]; ok {
-				existing.score += contrib
-				continue
+			if _, ok := firstHit[key]; !ok {
+				firstHit[key] = h
 			}
-			merged[key] = &fused{hit: h, score: contrib}
-			order = append(order, key)
+			lane = append(lane, retrieval.Hit{Doc: retrieval.Doc{ID: key}, Score: h.Score})
 		}
+		lanes = append(lanes, lane)
 	}
-	out := make([]Hit, 0, len(order))
-	for _, key := range order {
-		f := merged[key]
-		h := f.hit
-		h.Score = f.score
+	fused := scoring.RRF(lanes, float64(k))
+	out := make([]Hit, 0, len(fused))
+	for _, fh := range fused {
+		h := firstHit[fh.Doc.ID]
+		h.Score = fh.Score
 		out = append(out, h)
 	}
-	sort.SliceStable(out, func(i, j int) bool { return out[i].Score > out[j].Score })
 	return out
 }

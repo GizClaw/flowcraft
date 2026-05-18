@@ -65,14 +65,10 @@ func (m *Index) Upsert(_ context.Context, namespace string, docs []retrieval.Doc
 	if namespace == "" {
 		return errdefs.Validationf("retrieval: namespace is required")
 	}
-	var partial []retrieval.DocUpsertResult
 	for _, d := range docs {
 		if strings.TrimSpace(d.ID) == "" {
-			partial = append(partial, retrieval.DocUpsertResult{ID: d.ID, Err: errdefs.Validationf("retrieval: doc id is required")})
+			return errdefs.Validationf("retrieval: doc id is required")
 		}
-	}
-	if len(partial) > 0 {
-		return &retrieval.PartialError{Results: partial}
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -140,6 +136,23 @@ func (m *Index) DeleteByFilter(_ context.Context, namespace string, f retrieval.
 	return count, nil
 }
 
+// Count implements retrieval.Countable.
+func (m *Index) Count(_ context.Context, namespace string, f retrieval.Filter) (int64, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	n, ok := m.namespaces[namespace]
+	if !ok {
+		return 0, nil
+	}
+	var total int64
+	for _, d := range n.docs {
+		if retrieval.DocMatchesFilter(d, f) {
+			total++
+		}
+	}
+	return total, nil
+}
+
 // Drop implements retrieval.Droppable.
 func (m *Index) Drop(_ context.Context, namespace string) error {
 	m.mu.Lock()
@@ -199,6 +212,9 @@ func (m *Index) Search(_ context.Context, namespace string, req retrieval.Search
 		bmOrder := append([]scored(nil), out...)
 		sort.SliceStable(bmOrder, func(i, j int) bool {
 			if bmOrder[i].bm25 == bmOrder[j].bm25 {
+				if bmOrder[i].cos == bmOrder[j].cos {
+					return bmOrder[i].d.ID < bmOrder[j].d.ID
+				}
 				return bmOrder[i].cos > bmOrder[j].cos
 			}
 			return bmOrder[i].bm25 > bmOrder[j].bm25
@@ -210,6 +226,9 @@ func (m *Index) Search(_ context.Context, namespace string, req retrieval.Search
 		vecOrder := append([]scored(nil), out...)
 		sort.SliceStable(vecOrder, func(i, j int) bool {
 			if vecOrder[i].cos == vecOrder[j].cos {
+				if vecOrder[i].bm25 == vecOrder[j].bm25 {
+					return vecOrder[i].d.ID < vecOrder[j].d.ID
+				}
 				return vecOrder[i].bm25 > vecOrder[j].bm25
 			}
 			return vecOrder[i].cos > vecOrder[j].cos
@@ -233,7 +252,12 @@ func (m *Index) Search(_ context.Context, namespace string, req retrieval.Search
 				Scores: map[string]float64{"bm25": s.bm25, "cos": s.cos, "rrf": rrf},
 			})
 		}
-		sort.SliceStable(hits, func(i, j int) bool { return hits[i].Score > hits[j].Score })
+		sort.SliceStable(hits, func(i, j int) bool {
+			if hits[i].Score == hits[j].Score {
+				return hits[i].Doc.ID < hits[j].Doc.ID
+			}
+			return hits[i].Score > hits[j].Score
+		})
 		if len(hits) > req.TopK {
 			hits = hits[:req.TopK]
 		}
@@ -281,7 +305,7 @@ func (m *Index) List(_ context.Context, namespace string, req retrieval.ListRequ
 	if caps.MaxListPageSize > 0 && pageSize > caps.MaxListPageSize {
 		pageSize = caps.MaxListPageSize
 	}
-	offset, err := retrieval.DecodeListPageToken(req.PageToken)
+	offset, err := retrieval.DecodeListPageTokenFor(req.PageToken, req)
 	if err != nil {
 		return nil, err
 	}
@@ -327,7 +351,7 @@ func (m *Index) List(_ context.Context, namespace string, req retrieval.ListRequ
 	}
 	next := ""
 	if end < len(all) {
-		next, err = retrieval.EncodeListPageToken(end)
+		next, err = retrieval.EncodeListPageTokenFor(end, req)
 		if err != nil {
 			return nil, err
 		}

@@ -38,31 +38,29 @@
 //	embed_sig    string  (DerivedSig.EmbedSig)
 package retrieval
 
-import "strings"
+import retrievalns "github.com/GizClaw/flowcraft/sdk/retrieval/namespace"
 
-// namespacePrefix prefixes every knowledge namespace so they can coexist
-// with other consumers (recall, history, ...) of the same retrieval.Index.
-const namespacePrefix = "kb_"
+var knowledgeNamespace = retrievalns.MustRegister("kb")
 
 // chunksSuffix is appended to dataset namespaces holding DerivedChunks.
-const chunksSuffix = "__chunks"
+const chunksSuffix = "chunks"
 
 // layersSuffix is appended to dataset namespaces holding DerivedLayers.
-const layersSuffix = "__layers"
+const layersSuffix = "layers"
 
 // docsSuffix is appended to dataset namespaces holding the doc-level
 // virtual documents used by SearchDocs. See package doc for the
 // motivation (#134).
-const docsSuffix = "__docs"
+const docsSuffix = "docs"
 
 // chunksNamespace returns the namespace for the dataset's chunks.
 func chunksNamespace(datasetID string) string {
-	return namespacePrefix + sanitiseDatasetID(datasetID) + chunksSuffix
+	return knowledgeNamespace.DatasetScope(datasetID, chunksSuffix)
 }
 
 // layersNamespace returns the namespace for the dataset's layers.
 func layersNamespace(datasetID string) string {
-	return namespacePrefix + sanitiseDatasetID(datasetID) + layersSuffix
+	return knowledgeNamespace.DatasetScope(datasetID, layersSuffix)
 }
 
 // docsNamespace returns the namespace for the dataset's doc-level
@@ -70,31 +68,16 @@ func layersNamespace(datasetID string) string {
 // through SearchDocs / Replace; touching the namespace directly
 // would let stale doc-level data drift from the chunks namespace.
 func docsNamespace(datasetID string) string {
-	return namespacePrefix + sanitiseDatasetID(datasetID) + docsSuffix
+	return knowledgeNamespace.DatasetScope(datasetID, docsSuffix)
 }
 
 // sanitiseDatasetID mirrors recall.saneNS so the namespaces produced
 // here are accepted by every retrieval backend (Postgres / SQLite
 // validation rejects non [A-Za-z0-9_] characters).
+//
+// Deprecated: use retrieval/namespace.Sanitize. This compatibility shim will
+// be removed in v0.5.0 after knowledge namespace construction is fully
+// centralised in sdk/retrieval/namespace.
 func sanitiseDatasetID(s string) string {
-	if s == "" {
-		return "anon"
-	}
-	var b strings.Builder
-	b.Grow(len(s))
-	for _, r := range s {
-		switch {
-		case r >= 'a' && r <= 'z',
-			r >= 'A' && r <= 'Z',
-			r >= '0' && r <= '9',
-			r == '_':
-			b.WriteRune(r)
-		default:
-			b.WriteRune('_')
-		}
-	}
-	if b.Len() == 0 {
-		return "anon"
-	}
-	return b.String()
+	return retrievalns.Sanitize(s)
 }

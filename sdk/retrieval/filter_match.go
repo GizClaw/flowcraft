@@ -204,7 +204,21 @@ func toFloat64(v any) (float64, bool) {
 		return float64(x), true
 	case int:
 		return float64(x), true
+	case int8:
+		return float64(x), true
+	case int16:
+		return float64(x), true
+	case int32:
+		return float64(x), true
 	case int64:
+		return float64(x), true
+	case uint:
+		return float64(x), true
+	case uint8:
+		return float64(x), true
+	case uint16:
+		return float64(x), true
+	case uint32:
 		return float64(x), true
 	case uint64:
 		return float64(x), true
@@ -232,7 +246,10 @@ func containsValue(field any, want any, fold bool) bool {
 		}
 		return false
 	case []string:
-		ws, _ := want.(string)
+		ws, ok := want.(string)
+		if !ok {
+			ws = fmt.Sprint(want)
+		}
 		if !fold {
 			return slices.Contains(fv, ws)
 		}

@@ -113,7 +113,7 @@ func (m *lt) sweepNamespace(ctx context.Context, ns string, filter retrieval.Fil
 	if ns == "" {
 		return nil
 	}
-	if d, ok := m.idx.(retrieval.DeletableByFilter); ok && m.idx.Capabilities().NativeDeleteByFilter {
+	if d, ok := retrieval.AsDeletableByFilter(m.idx); ok && retrieval.Supports(m.idx, retrieval.CapabilityNativeDeleteByFilter) {
 		_, err := d.DeleteByFilter(ctx, ns, filter)
 		return err
 	}

@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"testing"
 	"time"
@@ -30,6 +31,30 @@ func TestPipelineBM25Only(t *testing.T) {
 	}
 	if len(resp.Hits) != 1 || resp.Hits[0].Doc.ID != "a" {
 		t.Fatalf("hits=%+v", resp.Hits)
+	}
+}
+
+type errStage struct{}
+
+func (errStage) Name() string { return "ErrStage" }
+func (errStage) Run(context.Context, *State) error {
+	return errors.New("boom")
+}
+
+func TestPipelineDebugErrorReturnsPartialExecution(t *testing.T) {
+	pipe := New(errStage{})
+	resp, err := pipe.Run(context.Background(), memory.New(), "ns", retrieval.SearchRequest{
+		QueryText: "alpha",
+		Debug:     retrieval.SearchDebug{IncludeStages: true},
+	})
+	if err == nil {
+		t.Fatal("expected stage error")
+	}
+	if resp == nil || resp.Execution == nil {
+		t.Fatalf("expected partial execution with error, got resp=%+v", resp)
+	}
+	if len(resp.Execution.Stages) != 1 || resp.Execution.Stages[0].Err == "" {
+		t.Fatalf("stage error missing from execution: %+v", resp.Execution.Stages)
 	}
 }
 

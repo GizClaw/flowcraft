@@ -439,5 +439,12 @@ func (idx *Index) Capabilities() retrieval.Capabilities {
 		ReadAfterWrite: wsc.ReadAfterWrite,
 		Distributed:    wsc.Distributed,
 		Debug:          false,
+		Extensions: retrieval.ExtensionCapabilities{
+			DocGetter:      true,
+			Filterable:     true,
+			Iterable:       true,
+			Count:          true,
+			DeleteByFilter: true,
+		},
 	}
 }

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/sdk/retrieval"
+	retrievalns "github.com/GizClaw/flowcraft/sdk/retrieval/namespace"
 )
 
 // EntityStore is a per-scope inverted index keyed by normalized entity
@@ -69,19 +70,14 @@ type EntityStore interface {
 }
 
 // EntityNamespaceFor returns the retrieval namespace for the entity
-// store sibling table of a given scope. The encoding mirrors
-// [NamespaceFor] and appends "__entities" so backends that support
-// prefix-scan can drop both the entry namespace and its entity
-// sibling in one pass.
+// store sibling table of a given scope. The encoding mirrors [NamespaceFor]
+// through sdk/retrieval/namespace and appends the subsystem-owned "entities"
+// suffix.
 //
-//	entries:   "ltm_default__u_conv-26"
-//	entities:  "ltm_default__u_conv-26__entities"
-//
-// The suffix lives in the saneNS character set ([A-Za-z0-9_]) so
-// adapter-side namespace validation (sqlite/postgres §6.2/§6.3)
-// continues to pass.
+//	entries:   "ltm_default__u7_conv_26"
+//	entities:  "ltm_default__u7_conv_26__entities"
 func EntityNamespaceFor(s Scope) string {
-	return NamespaceFor(s) + "__entities"
+	return recallNamespace.SuffixedScope(s.RuntimeID, s.UserID, "entities")
 }
 
 // EntityKey returns the canonical retrieval.Doc.ID for the given
@@ -123,7 +119,7 @@ func entityKeyPrefix(s Scope) string {
 	if u == "" {
 		u = "anon"
 	}
-	return saneNS(u) + "::"
+	return retrievalns.Sanitize(u) + "::"
 }
 
 // ScopeFromNamespace reverses [NamespaceFor]: given an entry
@@ -137,8 +133,9 @@ func entityKeyPrefix(s Scope) string {
 //
 // Recognised shapes (matching the [NamespaceFor] grammar):
 //
-//	"ltm_<rt>__u_<user>"   ⇒ Scope{RuntimeID: <rt>, UserID: <user>}
-//	"ltm_<rt>__global"     ⇒ Scope{RuntimeID: <rt>}
+//	"ltm_<rt>__u<len>_<user>" ⇒ Scope{RuntimeID: <rt>, UserID: <user>}
+//	"ltm_<rt>__u_<user>"      ⇒ legacy V1 fallback (deprecated; v0.5.0 removal)
+//	"ltm_<rt>__global"        ⇒ Scope{RuntimeID: <rt>}
 //
 // Strings that do not match either grammar return (Scope{}, false).
 // The grammar deliberately does not accept the "__entities" sibling
@@ -146,28 +143,15 @@ func entityKeyPrefix(s Scope) string {
 // resolver is invoked with the ENTRY namespace and looks up its
 // sibling itself via [EntityNamespaceFor].
 func ScopeFromNamespace(ns string) (Scope, bool) {
-	const prefix = "ltm_"
-	if !strings.HasPrefix(ns, prefix) {
+	rt, user, isUser, ok := recallNamespace.DecodeScope(ns)
+	if !ok {
 		return Scope{}, false
 	}
-	rest := ns[len(prefix):]
-	// Prefer the per-user shape: split on the unique "__u_" infix
-	// so a runtime name that happens to contain "__" stays intact
-	// (saneNS allows underscores, and double-underscore in saneNS
-	// output cannot be produced by collapsing characters because
-	// saneNS replaces one rune at a time).
-	if i := strings.LastIndex(rest, "__u_"); i >= 0 {
-		return Scope{
-			RuntimeID: rest[:i],
-			UserID:    rest[i+len("__u_"):],
-		}, true
+	scope := Scope{RuntimeID: rt}
+	if isUser {
+		scope.UserID = user
 	}
-	if strings.HasSuffix(rest, "__global") {
-		return Scope{
-			RuntimeID: rest[:len(rest)-len("__global")],
-		}, true
-	}
-	return Scope{}, false
+	return scope, true
 }
 
 // normalizeEntityName produces the canonical lookup key for an

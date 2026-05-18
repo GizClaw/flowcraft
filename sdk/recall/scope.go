@@ -1,53 +1,36 @@
 package recall
 
 import (
-	"strings"
 	"time"
 
 	"github.com/GizClaw/flowcraft/sdk/retrieval"
+	retrievalns "github.com/GizClaw/flowcraft/sdk/retrieval/namespace"
 )
+
+var recallNamespace = retrievalns.MustRegister("ltm")
 
 // NamespaceFor returns the retrieval namespace for a scope:
 //
-//	ltm_<runtime>__u_<user>   when UserID != ""
-//	ltm_<runtime>__global     otherwise
+//	ltm_<runtime>__u<len>_<user>   when UserID != ""
+//	ltm_<runtime>__global          otherwise
 //
 // AgentID is a soft-isolation dimension stored in metadata, not in the
 // namespace, so a single agent can union its own facts with shared ones
 // in a single recall call.
 func NamespaceFor(s Scope) string {
-	rt := s.RuntimeID
-	if rt == "" {
-		rt = "anon"
-	}
 	if s.UserID != "" {
-		return "ltm_" + saneNS(rt) + "__u_" + saneNS(s.UserID)
+		return recallNamespace.UserScope(s.RuntimeID, s.UserID)
 	}
-	return "ltm_" + saneNS(rt) + "__global"
+	return recallNamespace.GlobalScope(s.RuntimeID)
 }
 
-// saneNS replaces non [A-Za-z0-9_] chars with '_' so namespace satisfies
-// adapter validation (sqlite/postgres §6.2/§6.3).
+// saneNS is the pre-v0.5 local namespace sanitizer.
+//
+// Deprecated: use retrieval/namespace.Sanitize. This compatibility shim will
+// be removed in v0.5.0 after recall namespace construction is fully centralised
+// in sdk/retrieval/namespace.
 func saneNS(s string) string {
-	if s == "" {
-		return "anon"
-	}
-	var b strings.Builder
-	for _, r := range s {
-		switch {
-		case r >= 'a' && r <= 'z',
-			r >= 'A' && r <= 'Z',
-			r >= '0' && r <= '9',
-			r == '_':
-			b.WriteRune(r)
-		default:
-			b.WriteRune('_')
-		}
-	}
-	if b.Len() == 0 {
-		return "anon"
-	}
-	return b.String()
+	return retrievalns.Sanitize(s)
 }
 
 // AgentRecallFilter returns the default filter that limits hits to the agent

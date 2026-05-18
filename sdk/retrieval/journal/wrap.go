@@ -248,7 +248,7 @@ var matchAllFilter = retrieval.Filter{Or: []retrieval.Filter{{}}}
 // a wrapper variant whose method set matches the inner backend's optional
 // interfaces so callers' type assertions keep working.
 
-func (w *journaledIndex) Get(ctx context.Context, namespace, id string) (retrieval.Doc, bool, error) {
+func (w *journaledIndex) get(ctx context.Context, namespace, id string) (retrieval.Doc, bool, error) {
 	g, ok := w.inner.(retrieval.DocGetter)
 	if !ok {
 		return retrieval.Doc{}, false, nil
@@ -256,14 +256,14 @@ func (w *journaledIndex) Get(ctx context.Context, namespace, id string) (retriev
 	return g.Get(ctx, namespace, id)
 }
 
-func (w *journaledIndex) SupportsFilter(f retrieval.Filter) bool {
+func (w *journaledIndex) supportsFilter(f retrieval.Filter) bool {
 	if x, ok := w.inner.(retrieval.Filterable); ok {
 		return x.SupportsFilter(f)
 	}
 	return false
 }
 
-func (w *journaledIndex) DeleteByFilter(ctx context.Context, namespace string, f retrieval.Filter) (int64, error) {
+func (w *journaledIndex) deleteByFilter(ctx context.Context, namespace string, f retrieval.Filter) (int64, error) {
 	d, ok := w.inner.(retrieval.DeletableByFilter)
 	if !ok {
 		return 0, nil
@@ -282,7 +282,7 @@ func (w *journaledIndex) DeleteByFilter(ctx context.Context, namespace string, f
 	return n, nil
 }
 
-func (w *journaledIndex) Drop(ctx context.Context, namespace string) error {
+func (w *journaledIndex) drop(ctx context.Context, namespace string) error {
 	d, ok := w.inner.(retrieval.Droppable)
 	if !ok {
 		return nil
@@ -297,11 +297,18 @@ func (w *journaledIndex) Drop(ctx context.Context, namespace string) error {
 	return w.recordDocEvents(ctx, namespace, docs)
 }
 
-func (w *journaledIndex) Iterate(ctx context.Context, namespace, cursor string, batch int) ([]retrieval.Doc, string, error) {
+func (w *journaledIndex) iterate(ctx context.Context, namespace, cursor string, batch int) ([]retrieval.Doc, string, error) {
 	if it, ok := w.inner.(retrieval.Iterable); ok {
 		return it.Iterate(ctx, namespace, cursor, batch)
 	}
 	return nil, "", nil
+}
+
+func (w *journaledIndex) count(ctx context.Context, namespace string, f retrieval.Filter) (int64, error) {
+	if c, ok := w.inner.(retrieval.Countable); ok {
+		return c.Count(ctx, namespace, f)
+	}
+	return 0, nil
 }
 
 // REMOVED in PR-4 (issue #157):
@@ -337,11 +344,22 @@ func newWrapped(base *journaledIndex) retrieval.Index {
 	_, hasDF := inner.(retrieval.DeletableByFilter)
 	_, hasDrop := inner.(retrieval.Droppable)
 	_, hasIter := inner.(retrieval.Iterable)
+	_, hasCount := inner.(retrieval.Countable)
 	switch {
+	case hasGet && hasFlt && hasDF && hasDrop && hasIter && hasCount:
+		return &wrappedFullCount{wrappedFull: &wrappedFull{journaledIndex: base}}
 	case hasGet && hasFlt && hasDF && hasDrop && hasIter:
 		return &wrappedFull{journaledIndex: base}
+	case hasGet && hasFlt && hasDF && hasIter && hasCount:
+		return &wrappedFilterAuditableCount{wrappedFilterAuditable: &wrappedFilterAuditable{journaledIndex: base}}
+	case hasGet && hasFlt && hasDF && hasIter:
+		return &wrappedFilterAuditable{journaledIndex: base}
+	case hasGet && hasDF && hasDrop && hasIter && hasCount:
+		return &wrappedAuditableCount{wrappedAuditable: &wrappedAuditable{journaledIndex: base}}
 	case hasGet && hasDF && hasDrop && hasIter:
 		return &wrappedAuditable{journaledIndex: base}
+	case hasGet && hasIter && hasCount:
+		return &wrappedReadableCount{wrappedReadable: &wrappedReadable{journaledIndex: base}}
 	case hasGet && hasIter:
 		return &wrappedReadable{journaledIndex: base}
 	case hasGet:
@@ -357,9 +375,76 @@ func newWrapped(base *journaledIndex) retrieval.Index {
 // above remain the single source of truth for behaviour.
 
 type wrappedFull struct{ *journaledIndex }
+type wrappedFilterAuditable struct{ *journaledIndex }
 type wrappedAuditable struct{ *journaledIndex }
 type wrappedReadable struct{ *journaledIndex }
 type wrappedGetter struct{ *journaledIndex }
+type wrappedFullCount struct{ *wrappedFull }
+type wrappedFilterAuditableCount struct{ *wrappedFilterAuditable }
+type wrappedAuditableCount struct{ *wrappedAuditable }
+type wrappedReadableCount struct{ *wrappedReadable }
+
+func (w *wrappedFull) Get(ctx context.Context, namespace, id string) (retrieval.Doc, bool, error) {
+	return w.get(ctx, namespace, id)
+}
+func (w *wrappedFull) SupportsFilter(f retrieval.Filter) bool { return w.supportsFilter(f) }
+func (w *wrappedFull) DeleteByFilter(ctx context.Context, namespace string, f retrieval.Filter) (int64, error) {
+	return w.deleteByFilter(ctx, namespace, f)
+}
+func (w *wrappedFull) Drop(ctx context.Context, namespace string) error {
+	return w.drop(ctx, namespace)
+}
+func (w *wrappedFull) Iterate(ctx context.Context, namespace, cursor string, batch int) ([]retrieval.Doc, string, error) {
+	return w.iterate(ctx, namespace, cursor, batch)
+}
+
+func (w *wrappedFilterAuditable) Get(ctx context.Context, namespace, id string) (retrieval.Doc, bool, error) {
+	return w.get(ctx, namespace, id)
+}
+func (w *wrappedFilterAuditable) SupportsFilter(f retrieval.Filter) bool { return w.supportsFilter(f) }
+func (w *wrappedFilterAuditable) DeleteByFilter(ctx context.Context, namespace string, f retrieval.Filter) (int64, error) {
+	return w.deleteByFilter(ctx, namespace, f)
+}
+func (w *wrappedFilterAuditable) Iterate(ctx context.Context, namespace, cursor string, batch int) ([]retrieval.Doc, string, error) {
+	return w.iterate(ctx, namespace, cursor, batch)
+}
+
+func (w *wrappedAuditable) Get(ctx context.Context, namespace, id string) (retrieval.Doc, bool, error) {
+	return w.get(ctx, namespace, id)
+}
+func (w *wrappedAuditable) DeleteByFilter(ctx context.Context, namespace string, f retrieval.Filter) (int64, error) {
+	return w.deleteByFilter(ctx, namespace, f)
+}
+func (w *wrappedAuditable) Drop(ctx context.Context, namespace string) error {
+	return w.drop(ctx, namespace)
+}
+func (w *wrappedAuditable) Iterate(ctx context.Context, namespace, cursor string, batch int) ([]retrieval.Doc, string, error) {
+	return w.iterate(ctx, namespace, cursor, batch)
+}
+
+func (w *wrappedReadable) Get(ctx context.Context, namespace, id string) (retrieval.Doc, bool, error) {
+	return w.get(ctx, namespace, id)
+}
+func (w *wrappedReadable) Iterate(ctx context.Context, namespace, cursor string, batch int) ([]retrieval.Doc, string, error) {
+	return w.iterate(ctx, namespace, cursor, batch)
+}
+
+func (w *wrappedGetter) Get(ctx context.Context, namespace, id string) (retrieval.Doc, bool, error) {
+	return w.get(ctx, namespace, id)
+}
+
+func (w *wrappedFullCount) Count(ctx context.Context, namespace string, f retrieval.Filter) (int64, error) {
+	return w.count(ctx, namespace, f)
+}
+func (w *wrappedFilterAuditableCount) Count(ctx context.Context, namespace string, f retrieval.Filter) (int64, error) {
+	return w.count(ctx, namespace, f)
+}
+func (w *wrappedAuditableCount) Count(ctx context.Context, namespace string, f retrieval.Filter) (int64, error) {
+	return w.count(ctx, namespace, f)
+}
+func (w *wrappedReadableCount) Count(ctx context.Context, namespace string, f retrieval.Filter) (int64, error) {
+	return w.count(ctx, namespace, f)
+}
 
 var (
 	_ retrieval.Index             = (*journaledIndex)(nil)
@@ -370,5 +455,16 @@ var (
 	_ retrieval.DeletableByFilter = (*wrappedAuditable)(nil)
 	_ retrieval.Droppable         = (*wrappedAuditable)(nil)
 	_ retrieval.Iterable          = (*wrappedAuditable)(nil)
+	_ retrieval.DocGetter         = (*wrappedFilterAuditable)(nil)
+	_ retrieval.Filterable        = (*wrappedFilterAuditable)(nil)
+	_ retrieval.DeletableByFilter = (*wrappedFilterAuditable)(nil)
+	_ retrieval.Iterable          = (*wrappedFilterAuditable)(nil)
 	_ retrieval.Filterable        = (*wrappedFull)(nil)
+	_ retrieval.DeletableByFilter = (*wrappedFull)(nil)
+	_ retrieval.Droppable         = (*wrappedFull)(nil)
+	_ retrieval.Iterable          = (*wrappedFull)(nil)
+	_ retrieval.Countable         = (*wrappedFullCount)(nil)
+	_ retrieval.Countable         = (*wrappedFilterAuditableCount)(nil)
+	_ retrieval.Countable         = (*wrappedAuditableCount)(nil)
+	_ retrieval.Countable         = (*wrappedReadableCount)(nil)
 )

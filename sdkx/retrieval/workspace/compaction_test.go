@@ -114,6 +114,39 @@ func TestCompact_PreservesSearchResults(t *testing.T) {
 	}
 }
 
+func TestCompactAllocatesSegmentIDAfterConcurrentFlushWindow(t *testing.T) {
+	idx, ws := newIdx(t,
+		wsindex.WithAutoCompact(false),
+		wsindex.WithCompactionMinSegments(2),
+	)
+	ctx := context.Background()
+	makeFlushedSegments(t, idx, "ns", 2)
+
+	if err := idx.Compact(ctx, "ns"); err != nil {
+		t.Fatal(err)
+	}
+	if err := idx.Upsert(ctx, "ns", []retrieval.Doc{{ID: "after", Content: "after compact"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := idx.Flush(ctx, "ns"); err != nil {
+		t.Fatal(err)
+	}
+	dirs := segmentDirs(t, ws, "ns")
+	seen := map[string]struct{}{}
+	for _, d := range dirs {
+		if _, ok := seen[d]; ok {
+			t.Fatalf("duplicate segment dir %q in %v", d, dirs)
+		}
+		seen[d] = struct{}{}
+	}
+	if len(dirs) != 2 {
+		t.Fatalf("segment dirs = %v, want merged segment + post-compact flush", dirs)
+	}
+	if _, ok, err := idx.Get(ctx, "ns", "after"); err != nil || !ok {
+		t.Fatalf("post-compact flush doc missing: ok=%v err=%v", ok, err)
+	}
+}
+
 func TestCompact_TailAnchoredDropsTombstones(t *testing.T) {
 	idx, ws := newIdx(t,
 		wsindex.WithAutoCompact(false),

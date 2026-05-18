@@ -135,3 +135,29 @@ func TestHybridRRF(t *testing.T) {
 		t.Fatalf("hits=%+v", resp.Hits)
 	}
 }
+
+func TestHybridRRFDeterministicTieBreak(t *testing.T) {
+	ctx := context.Background()
+	idx := New()
+	ns := "ns_ties"
+	if err := idx.Upsert(ctx, ns, []retrieval.Doc{
+		{ID: "c", Content: "alpha", Vector: []float32{1, 0}},
+		{ID: "a", Content: "alpha", Vector: []float32{1, 0}},
+		{ID: "b", Content: "alpha", Vector: []float32{1, 0}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	resp, err := idx.Search(ctx, ns, retrieval.SearchRequest{
+		QueryText: "alpha", QueryVector: []float32{1, 0}, TopK: 3,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := []string{resp.Hits[0].Doc.ID, resp.Hits[1].Doc.ID, resp.Hits[2].Doc.ID}
+	want := []string{"a", "b", "c"}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("tie order = %v, want %v", got, want)
+		}
+	}
+}

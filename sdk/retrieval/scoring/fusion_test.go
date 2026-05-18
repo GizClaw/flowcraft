@@ -65,6 +65,28 @@ func TestRRF_HighestScoreSurvives(t *testing.T) {
 	}
 }
 
+func TestRRF_TiesUseInputOrder(t *testing.T) {
+	out := RRF([][]retrieval.Hit{{hit("b", 1), hit("a", 1)}}, DefaultRRFK)
+	if len(out) != 2 {
+		t.Fatalf("len = %d", len(out))
+	}
+	if out[0].Doc.ID != "b" || out[1].Doc.ID != "a" {
+		t.Fatalf("tie order = %v, want [b a]", []string{out[0].Doc.ID, out[1].Doc.ID})
+	}
+}
+
+func TestRRF_DoesNotMutateInputScoresMap(t *testing.T) {
+	in := retrieval.Hit{Doc: retrieval.Doc{ID: "x", Metadata: map[string]any{"k": "v"}}, Score: 1, Scores: map[string]float64{"orig": 1}}
+	out := RRF([][]retrieval.Hit{{in}}, DefaultRRFK)
+	if _, ok := in.Scores["rrf"]; ok {
+		t.Fatal("input Scores map was mutated")
+	}
+	out[0].Doc.Metadata["k"] = "changed"
+	if in.Doc.Metadata["k"] != "v" {
+		t.Fatal("input Metadata map was shared with output")
+	}
+}
+
 func TestWeightedFusion_BasicWeights(t *testing.T) {
 	bm := []retrieval.Hit{hit("a", 10), hit("b", 5)}
 	vec := []retrieval.Hit{hit("b", 1), hit("c", 0.5)}
@@ -108,6 +130,22 @@ func TestWeightedFusion_MissingWeightDefaultsToOne(t *testing.T) {
 	// 'a' max → 1.0, 'b' min → 0.0
 	if out[0].Doc.ID != "a" || out[0].Score != 1.0 {
 		t.Errorf("got %v, want a=1.0 first", out)
+	}
+}
+
+func TestWeightedFusion_DeterministicLaneOrderOnTies(t *testing.T) {
+	out := WeightedFusion(
+		map[string][]retrieval.Hit{
+			"vector": {hit("v", 1)},
+			"bm25":   {hit("b", 1)},
+		},
+		nil,
+	)
+	if len(out) != 2 {
+		t.Fatalf("len = %d", len(out))
+	}
+	if out[0].Doc.ID != "b" || out[1].Doc.ID != "v" {
+		t.Fatalf("tie order = %v, want [b v]", []string{out[0].Doc.ID, out[1].Doc.ID})
 	}
 }
 

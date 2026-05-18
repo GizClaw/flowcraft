@@ -37,17 +37,23 @@ func RRF(rankedLists [][]retrieval.Hit, k float64) []retrieval.Hit {
 	}
 	scores := map[string]float64{}
 	docs := map[string]retrieval.Hit{}
+	firstSeen := map[string]int{}
+	seq := 0
 	for _, hits := range rankedLists {
 		for rank, h := range hits {
+			if _, ok := firstSeen[h.Doc.ID]; !ok {
+				firstSeen[h.Doc.ID] = seq
+				seq++
+			}
 			scores[h.Doc.ID] += 1.0 / (k + float64(rank+1))
 			if cur, ok := docs[h.Doc.ID]; !ok || h.Score > cur.Score {
-				docs[h.Doc.ID] = h
+				docs[h.Doc.ID] = retrieval.CloneHit(h)
 			}
 		}
 	}
 	out := make([]retrieval.Hit, 0, len(scores))
 	for id, s := range scores {
-		h := docs[id]
+		h := retrieval.CloneHit(docs[id])
 		h.Score = s
 		if h.Scores == nil {
 			h.Scores = map[string]float64{}
@@ -55,7 +61,15 @@ func RRF(rankedLists [][]retrieval.Hit, k float64) []retrieval.Hit {
 		h.Scores["rrf"] = s
 		out = append(out, h)
 	}
-	sort.SliceStable(out, func(i, j int) bool { return out[i].Score > out[j].Score })
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].Score != out[j].Score {
+			return out[i].Score > out[j].Score
+		}
+		if firstSeen[out[i].Doc.ID] != firstSeen[out[j].Doc.ID] {
+			return firstSeen[out[i].Doc.ID] < firstSeen[out[j].Doc.ID]
+		}
+		return out[i].Doc.ID < out[j].Doc.ID
+	})
 	return out
 }
 
@@ -81,7 +95,15 @@ func WeightedFusion(lanes map[string][]retrieval.Hit, weights map[string]float64
 	}
 	totals := map[string]float64{}
 	docs := map[string]retrieval.Hit{}
-	for lane, hits := range lanes {
+	firstSeen := map[string]int{}
+	seq := 0
+	laneNames := make([]string, 0, len(lanes))
+	for lane := range lanes {
+		laneNames = append(laneNames, lane)
+	}
+	sort.Strings(laneNames)
+	for _, lane := range laneNames {
+		hits := lanes[lane]
 		w := 1.0
 		if v, ok := weights[lane]; ok {
 			w = v
@@ -97,6 +119,10 @@ func WeightedFusion(lanes map[string][]retrieval.Hit, weights map[string]float64
 		}
 		span := max - min
 		for _, h := range hits {
+			if _, ok := firstSeen[h.Doc.ID]; !ok {
+				firstSeen[h.Doc.ID] = seq
+				seq++
+			}
 			n := 0.0
 			if span > 0 {
 				n = (h.Score - min) / span
@@ -105,16 +131,24 @@ func WeightedFusion(lanes map[string][]retrieval.Hit, weights map[string]float64
 			}
 			totals[h.Doc.ID] += w * n
 			if cur, ok := docs[h.Doc.ID]; !ok || h.Score > cur.Score {
-				docs[h.Doc.ID] = h
+				docs[h.Doc.ID] = retrieval.CloneHit(h)
 			}
 		}
 	}
 	out := make([]retrieval.Hit, 0, len(totals))
 	for id, t := range totals {
-		h := docs[id]
+		h := retrieval.CloneHit(docs[id])
 		h.Score = t
 		out = append(out, h)
 	}
-	sort.SliceStable(out, func(i, j int) bool { return out[i].Score > out[j].Score })
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].Score != out[j].Score {
+			return out[i].Score > out[j].Score
+		}
+		if firstSeen[out[i].Doc.ID] != firstSeen[out[j].Doc.ID] {
+			return firstSeen[out[i].Doc.ID] < firstSeen[out[j].Doc.ID]
+		}
+		return out[i].Doc.ID < out[j].Doc.ID
+	})
 	return out
 }
