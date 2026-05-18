@@ -120,28 +120,6 @@ jobs:
         run: |
           cd eval
           go build -trimpath -o /tmp/eval ./cmd/eval
-
-      - name: Notify Feishu — started
-        if: success()
-        run: |
-          set -eu
-          if [ -z "${FEISHU_WEBHOOK_URL:-}" ]; then
-            echo "FEISHU_WEBHOOK_URL not set; skipping started ping"
-            exit 0
-          fi
-          DS_NAME=$(basename "${{ inputs.root }}")
-          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-          curl -sS -X POST "$FEISHU_WEBHOOK_URL" \
-            -H 'Content-Type: application/json' \
-            -d @- <<EOF
-          {
-            "msg_type": "text",
-            "content": {
-              "text": "▶ beir run started\nrun_id=${{ github.run_id }}\ndataset=$DS_NAME lanes=${{ inputs.lanes }} cutoffs=${{ inputs.cutoffs }} embedder=${{ inputs.embedder }} limit_queries=${{ inputs.limit_queries }} overfetch=${{ inputs.overfetch }}\nlogs: $RUN_URL"
-            }
-          }
-          EOF
-
       - name: Run beir
         env:
           REPORT_OUT: ${{ env.REPORT_DIR }}/${{ github.run_id }}.json
@@ -191,46 +169,3 @@ jobs:
           path: ${{ env.REPORT_DIR }}/${{ github.run_id }}.json
           if-no-files-found: warn
           retention-days: 90
-
-      - name: Notify Feishu — final
-        if: always()
-        # BEIR Report shape:
-        #   .lanes[lane] = {ndcg: {<k>: f}, recall: {<k>: f}, mrr,
-        #                   n, errors, latency_p95(ns)}
-        # We surface one line per lane, flattening the ndcg/recall maps
-        # in lane key order so the message stays predictable across
-        # any --cutoffs the operator picked.
-        run: |
-          set +e
-          REPORT="$REPORT_DIR/${{ github.run_id }}.json"
-          STATUS="${{ job.status }}"
-          ICON="✅"
-          [ "$STATUS" != "success" ] && ICON="❌"
-          if [ -s "$REPORT" ]; then
-            METRICS=$(jq -r '
-              def ns2ms(x): if x == null then "n/a" else ((x/1000000)|tostring) + "ms" end;
-              .lanes | to_entries | map(
-                .key as $lane
-                | (.value.ndcg | to_entries | map("ndcg@\(.key)=\(.value)") | join(" ")) as $ndcg
-                | (.value.recall | to_entries | map("recall@\(.key)=\(.value)") | join(" ")) as $rec
-                | "[\($lane)] \($ndcg) \($rec) mrr=\(.value.mrr) errors=\(.value.errors) p95=" + ns2ms(.value.latency_p95)
-              ) | join("\n")
-            ' "$REPORT" 2>/dev/null)
-          else
-            METRICS="report not produced"
-          fi
-          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-          if [ -n "${FEISHU_WEBHOOK_URL:-}" ]; then
-            curl -sS -X POST "$FEISHU_WEBHOOK_URL" \
-              -H 'Content-Type: application/json' \
-              -d @- <<EOF
-          {
-            "msg_type": "text",
-            "content": {
-              "text": "$ICON beir run finished\nstatus=$STATUS\n$METRICS\nlogs: $RUN_URL"
-            }
-          }
-          EOF
-          else
-            echo "FEISHU_WEBHOOK_URL not set; skipping final ping"
-          fi

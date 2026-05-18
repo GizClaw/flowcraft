@@ -372,31 +372,6 @@ jobs:
           /tmp/eval locomo convert --in "$RAW" --out "$DEFAULT_DATASET"
           echo "fresh dataset size: $(wc -c < "$DEFAULT_DATASET") bytes"
           echo "image-annotated turns: $(grep -o 'shared image' "$DEFAULT_DATASET" | wc -l)"
-
-      - name: Notify Feishu — started
-        if: success()
-        # Plain text message at start. The live CardKit progress
-        # updates emitted by the running eval binary use FEISHU_APP_*
-        # credentials (also loaded above) and are independent of this
-        # webhook ping.
-        run: |
-          set -eu
-          if [ -z "${FEISHU_WEBHOOK_URL:-}" ]; then
-            echo "FEISHU_WEBHOOK_URL not set in /etc/flowcraft-eval/.env; skipping started ping"
-            exit 0
-          fi
-          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-          curl -sS -X POST "$FEISHU_WEBHOOK_URL" \
-            -H 'Content-Type: application/json' \
-            -d @- <<EOF
-          {
-            "msg_type": "text",
-            "content": {
-              "text": "▶ locomo run started\nrun_id=${{ github.run_id }}\ndataset=${{ inputs.dataset }}\ntopk=${{ inputs.topk }} extractor=${{ inputs.extractor_llm }} judge=${{ inputs.judge_llm }}\nlogs: $RUN_URL"
-            }
-          }
-          EOF
-
       - name: Run locomo
         env:
           REPORT_OUT: ${{ env.REPORT_DIR }}/${{ github.run_id }}.json
@@ -489,52 +464,3 @@ jobs:
             ${{ env.REPORT_DIR }}/${{ github.run_id }}-recall.jsonl
           if-no-files-found: warn
           retention-days: 30
-
-      - name: Notify Feishu — final
-        if: always()
-        # Final summary. We pull headline numbers via jq from the
-        # locomo Report shape (aggregate.qa.em / qa.f1 / qa.judge / n).
-        # Token-usage isn't in the Report today; once the cached /
-        # input rollup lands on the Report shape, extend the METRICS
-        # line to include them.
-        run: |
-          set +e
-          REPORT="$REPORT_DIR/${{ github.run_id }}.json"
-          STATUS="${{ job.status }}"
-          ICON="✅"
-          [ "$STATUS" != "success" ] && ICON="❌"
-          # latency.*.p95 is raw nanoseconds (Go time.Duration marshals
-          # to int64); convert to ms here so the Feishu summary stays
-          # human-readable. tostring is forced on every numeric field so
-          # the final concat never sees mixed string+number arithmetic.
-          if [ -s "$REPORT" ]; then
-            METRICS=$(jq -r '
-              def ns2ms(x): if x == null then "n/a" else ((x/1000000)|tostring) + "ms" end;
-              "n=" + (.n|tostring)
-              + " qa.judge=" + (.aggregate."qa.judge"|tostring)
-              + " qa.f1=" + (.aggregate."qa.f1"|tostring)
-              + " qa.em=" + (.aggregate."qa.em"|tostring)
-              + (if .aggregate."recall.k_hit" != null
-                   then " recall.k_hit=" + (.aggregate."recall.k_hit"|tostring)
-                   else "" end)
-              + " save.p95=" + ns2ms(.latency.save.p95)
-              + " recall.p95=" + ns2ms(.latency.recall.p95)
-            ' "$REPORT" 2>/dev/null)
-          else
-            METRICS="report not produced"
-          fi
-          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-          if [ -n "${FEISHU_WEBHOOK_URL:-}" ]; then
-            curl -sS -X POST "$FEISHU_WEBHOOK_URL" \
-              -H 'Content-Type: application/json' \
-              -d @- <<EOF
-          {
-            "msg_type": "text",
-            "content": {
-              "text": "$ICON locomo run finished\nstatus=$STATUS\n$METRICS\nlogs: $RUN_URL"
-            }
-          }
-          EOF
-          else
-            echo "FEISHU_WEBHOOK_URL not set; skipping final ping"
-          fi

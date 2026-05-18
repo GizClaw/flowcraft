@@ -101,27 +101,6 @@ jobs:
         run: |
           cd eval
           go build -trimpath -o /tmp/eval ./cmd/eval
-
-      - name: Notify Feishu — started
-        if: success()
-        run: |
-          set -eu
-          if [ -z "${FEISHU_WEBHOOK_URL:-}" ]; then
-            echo "FEISHU_WEBHOOK_URL not set; skipping started ping"
-            exit 0
-          fi
-          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-          curl -sS -X POST "$FEISHU_WEBHOOK_URL" \
-            -H 'Content-Type: application/json' \
-            -d @- <<EOF
-          {
-            "msg_type": "text",
-            "content": {
-              "text": "▶ knowledge run started\nrun_id=${{ github.run_id }}\nlanes=${{ inputs.lanes }} topk=${{ inputs.topk }} embedder=${{ inputs.embedder }}\nlogs: $RUN_URL"
-            }
-          }
-          EOF
-
       - name: Run knowledge
         env:
           REPORT_OUT: ${{ env.REPORT_DIR }}/${{ github.run_id }}.json
@@ -152,41 +131,3 @@ jobs:
           path: ${{ env.REPORT_DIR }}/${{ github.run_id }}.json
           if-no-files-found: warn
           retention-days: 90
-
-      - name: Notify Feishu — final
-        if: always()
-        # Knowledge Report shape:
-        #   .lanes[lane] = {recall_at_k, keyword_rate, negative_breach,
-        #                   n, errors, latency_p95(ns)}
-        # We surface one line per lane in the order bm25/vector/hybrid.
-        run: |
-          set +e
-          REPORT="$REPORT_DIR/${{ github.run_id }}.json"
-          STATUS="${{ job.status }}"
-          ICON="✅"
-          [ "$STATUS" != "success" ] && ICON="❌"
-          if [ -s "$REPORT" ]; then
-            METRICS=$(jq -r '
-              def ns2ms(x): if x == null then "n/a" else ((x/1000000)|tostring) + "ms" end;
-              .lanes | to_entries | map(
-                "[\(.key)] recall@k=\(.value.recall_at_k) keyword=\(.value.keyword_rate) neg_breach=\(.value.negative_breach) errors=\(.value.errors) p95=" + ns2ms(.value.latency_p95)
-              ) | join("\n")
-            ' "$REPORT" 2>/dev/null)
-          else
-            METRICS="report not produced"
-          fi
-          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-          if [ -n "${FEISHU_WEBHOOK_URL:-}" ]; then
-            curl -sS -X POST "$FEISHU_WEBHOOK_URL" \
-              -H 'Content-Type: application/json' \
-              -d @- <<EOF
-          {
-            "msg_type": "text",
-            "content": {
-              "text": "$ICON knowledge run finished\nstatus=$STATUS\n$METRICS\nlogs: $RUN_URL"
-            }
-          }
-          EOF
-          else
-            echo "FEISHU_WEBHOOK_URL not set; skipping final ping"
-          fi
