@@ -243,8 +243,11 @@ func (s *FileSummaryStore) Save(ctx context.Context, node *SummaryNode) error {
 		node.CreatedAt = time.Now()
 	}
 
-	// Warm cache before disk write so the new node isn't double-counted.
-	if _, err := s.loadCached(ctx, node.ConversationID); err != nil {
+	// Warm cache before disk write so the new node isn't double-counted. Keep a
+	// snapshot locally because the global LRU may evict this entry while the
+	// workspace append is in flight.
+	nodes, err := s.loadCached(ctx, node.ConversationID)
+	if err != nil {
 		return err
 	}
 
@@ -259,7 +262,10 @@ func (s *FileSummaryStore) Save(ctx context.Context, node *SummaryNode) error {
 		return fmt.Errorf("summary_store: append %q: %w", path, err)
 	}
 
-	s.appendCache(node.ConversationID, node)
+	updated := make([]*SummaryNode, 0, len(nodes)+1)
+	updated = append(updated, nodes...)
+	updated = append(updated, node)
+	s.setCache(node.ConversationID, updated)
 	return nil
 }
 

@@ -208,8 +208,9 @@ func (m *compactor) LoadFiltered(ctx context.Context, conversationID string, opt
 	return ApplyLoadOptions(msgs, opts), nil
 }
 
-// clampPreservingSystem keeps the leading system message (if any) when
-// trimming from the head to satisfy MaxMessages.
+// clampPreservingSystem keeps the leading system message (if any) when there is
+// room for both system and conversation content. With maxMsgs==1 the most recent
+// non-system message is more useful than a system-only prompt.
 func clampPreservingSystem(msgs []model.Message, maxMsgs int) []model.Message {
 	if maxMsgs <= 0 || len(msgs) <= maxMsgs {
 		return msgs
@@ -217,6 +218,11 @@ func clampPreservingSystem(msgs []model.Message, maxMsgs int) []model.Message {
 	if len(msgs) > 0 && msgs[0].Role == model.RoleSystem {
 		head := msgs[0]
 		if maxMsgs == 1 {
+			for i := len(msgs) - 1; i >= 1; i-- {
+				if msgs[i].Role != model.RoleSystem {
+					return []model.Message{msgs[i]}
+				}
+			}
 			return []model.Message{head}
 		}
 		tail := msgs[1:]
@@ -1161,9 +1167,13 @@ func (d *SummaryDAG) Assemble(ctx context.Context, convID string, tokenBudget in
 		availableBudget = tokenBudget / 2
 	}
 
-	recentBudget := int(float64(availableBudget) * d.config.RecentRatio)
-	midBudget := int(float64(availableBudget) * d.config.MidRatio)
+	recentRatio, midRatio := normalizedHistoryRatios(d.config.RecentRatio, d.config.MidRatio)
+	recentBudget := int(float64(availableBudget) * recentRatio)
+	midBudget := int(float64(availableBudget) * midRatio)
 	farBudget := availableBudget - recentBudget - midBudget
+	if farBudget < 0 {
+		farBudget = 0
+	}
 
 	// Recent messages (from tail).
 	var recentMsgs []llm.Message
@@ -1181,6 +1191,11 @@ func (d *SummaryDAG) Assemble(ctx context.Context, convID string, tokenBudget in
 		}
 	}
 	recentMsgs = nonSystemMsgs[recentCutoff:]
+	if len(recentMsgs) == 0 && len(nonSystemMsgs) > 0 {
+		recentMsgs = nonSystemMsgs[len(nonSystemMsgs)-1:]
+		recentCutoff = len(nonSystemMsgs) - 1
+		recentTokens = d.countMsg(recentMsgs[0])
+	}
 
 	// Get summaries for earlier messages.
 	allSummaries, _ := d.store.List(ctx, convID, SummaryListOptions{})
@@ -1241,6 +1256,20 @@ func (d *SummaryDAG) Assemble(ctx context.Context, convID string, tokenBudget in
 
 	result = append(result, recentMsgs...)
 	return sanitizeToolPairs(result), nil
+}
+
+func normalizedHistoryRatios(recent, mid float64) (float64, float64) {
+	if recent < 0 {
+		recent = 0
+	}
+	if mid < 0 {
+		mid = 0
+	}
+	sum := recent + mid
+	if sum <= 1 {
+		return recent, mid
+	}
+	return recent / sum, mid / sum
 }
 
 // Compact removes deleted nodes and prunes leaf content.

@@ -444,7 +444,7 @@ func LoadArchivedMessages(ctx context.Context, ws workspace.Workspace, prefix, a
 		for scanner.More() {
 			var msg model.Message
 			if err := scanner.Decode(&msg); err != nil {
-				break
+				return nil, fmt.Errorf("archive: decode %q at seq %d: %w", path, seq, err)
 			}
 			if seq >= startSeq && seq <= endSeq {
 				result = append(result, msg)

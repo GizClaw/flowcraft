@@ -1,7 +1,10 @@
 package history
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -111,6 +114,41 @@ func TestLoadArchivedMessages(t *testing.T) {
 	}
 	if len(archived) != 15 {
 		t.Fatalf("expected 15 archived msgs, got %d", len(archived))
+	}
+}
+
+func TestLoadArchivedMessages_ReturnsDecodeError(t *testing.T) {
+	ws, err := workspace.NewLocalWorkspace(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	convID := "archive-decode-error"
+	path := "memory/" + convID + "/archive/bad.jsonl.gz"
+
+	var buf bytes.Buffer
+	gw := gzip.NewWriter(&buf)
+	if _, err := gw.Write([]byte("{bad-json\n")); err != nil {
+		t.Fatal(err)
+	}
+	if err := gw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := ws.Write(ctx, path, buf.Bytes()); err != nil {
+		t.Fatal(err)
+	}
+	if err := saveManifestImpl(ctx, ws, "memory", "archive", convID, &ArchiveManifest{
+		HotStartSeq: 1,
+		Segments: []ArchiveSegment{{
+			File: "bad.jsonl.gz", StartSeq: 0, EndSeq: 0, Count: 1, CreatedAt: time.Now(),
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = LoadArchivedMessages(ctx, ws, "memory", "archive", convID, 0, 0)
+	if err == nil || !strings.Contains(err.Error(), "decode") {
+		t.Fatalf("expected decode error, got %v", err)
 	}
 }
 

@@ -429,6 +429,65 @@ func TestLoad_PreservesSystemMessage(t *testing.T) {
 	}
 }
 
+func TestLoad_MaxMessagesOnePrefersConversationContent(t *testing.T) {
+	store := NewInMemoryStore()
+	summaryStore := &inMemSummaryStore{data: make(map[string][]*SummaryNode)}
+	dag := NewSummaryDAG(summaryStore, store, &mockSummaryLLM{}, DefaultDAGConfig(), &EstimateCounter{})
+	c := newCompactor(store, dag, DefaultDAGConfig(), nil, "memory")
+	defer func() { _ = c.Shutdown(context.Background()) }()
+
+	ctx := context.Background()
+	convID := "max-one-prefers-tail"
+	_ = store.SaveMessages(ctx, convID, []model.Message{
+		model.NewTextMessage(model.RoleSystem, "you are an assistant"),
+		model.NewTextMessage(model.RoleUser, "question"),
+		model.NewTextMessage(model.RoleAssistant, "answer"),
+	})
+
+	got, err := c.Load(ctx, convID, Budget{MaxMessages: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("expected 1 msg, got %d", len(got))
+	}
+	if got[0].Role != model.RoleAssistant || got[0].Content() != "answer" {
+		t.Fatalf("MaxMessages=1 should keep latest non-system message, got role=%s content=%q", got[0].Role, got[0].Content())
+	}
+}
+
+func TestLoad_TinyTokenBudgetStillKeepsRecentMessage(t *testing.T) {
+	store := NewInMemoryStore()
+	summaryStore := &inMemSummaryStore{data: make(map[string][]*SummaryNode)}
+	cfg := DefaultDAGConfig()
+	cfg.TokenBudget = 1
+	cfg.RecentRatio = 0.9
+	cfg.MidRatio = 0.9 // deliberately invalid; Assemble should normalize.
+	dag := NewSummaryDAG(summaryStore, store, &mockSummaryLLM{}, cfg, &EstimateCounter{})
+	c := newCompactor(store, dag, cfg, nil, "memory")
+	defer func() { _ = c.Shutdown(context.Background()) }()
+
+	ctx := context.Background()
+	convID := "tiny-token-keeps-tail"
+	_ = store.SaveMessages(ctx, convID, []model.Message{
+		model.NewTextMessage(model.RoleSystem, "very long system prompt that exceeds tiny budget"),
+		model.NewTextMessage(model.RoleUser, "first user turn with enough text to exceed budget"),
+		model.NewTextMessage(model.RoleAssistant, "latest answer must survive"),
+	})
+
+	got, err := c.Load(ctx, convID, Budget{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) == 0 {
+		t.Fatal("expected at least one message")
+	}
+	last := got[len(got)-1]
+	if last.Role != model.RoleAssistant || last.Content() != "latest answer must survive" {
+		t.Fatalf("tiny budget should preserve latest non-system message, got role=%s content=%q", last.Role, last.Content())
+	}
+}
+
 // TestCoordinator_LazyArchiveRecovery checks D-R3: a stranded intent file
 // from a prior crash is recovered the first time the conversation is
 // touched after restart.
