@@ -110,7 +110,8 @@ func (r *RetrievalLayerRepo) Get(ctx context.Context, datasetID, docName string,
 	return docToLayer(datasetID, docName, layer, page.Items[0]), nil
 }
 
-// DeleteByDoc removes both layers for a single document.
+// DeleteByDoc removes both layers for a single document. Missing target
+// documents are idempotent success and do not return NotFound.
 func (r *RetrievalLayerRepo) DeleteByDoc(ctx context.Context, datasetID, docName string) error {
 	if datasetID == "" || docName == "" {
 		return errdefs.Validationf("knowledge/retrieval: dataset_id and doc_name are required")

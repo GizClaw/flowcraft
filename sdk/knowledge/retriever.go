@@ -2,7 +2,11 @@ package knowledge
 
 import (
 	"context"
+	"errors"
 	"fmt"
+
+	"github.com/GizClaw/flowcraft/sdk/telemetry"
+	otellog "go.opentelemetry.io/otel/log"
 )
 
 // BM25Retriever queries ChunkRepo with Mode=ModeBM25. It is layered:
@@ -136,19 +140,43 @@ func (r *LayerRetriever) Recall(ctx context.Context, q Query) ([]Candidate, erro
 		vec = v
 	}
 
-	lq := LayerQuery{
+	base := LayerQuery{
 		DatasetIDs: q.datasetIDs(),
 		Layer:      q.Layer,
 		Text:       q.Text,
 		Vector:     vec,
 		TopK:       q.TopK,
 	}
-	switch {
-	case wantVector && wantBM25:
-		lq.Mode = ModeHybrid
-	case wantVector:
+	if wantVector && wantBM25 {
+		var (
+			out       []Candidate
+			errs      []error
+			successes int
+		)
+		for _, mode := range []Mode{ModeBM25, ModeVector} {
+			lq := base
+			lq.Mode = mode
+			cands, err := r.Layers.Search(ctx, lq)
+			if err != nil {
+				errs = append(errs, err)
+				telemetry.Warn(ctx, "knowledge hybrid layer lane failed",
+					otellog.String("mode", string(mode)),
+					otellog.String("layer", string(q.Layer)),
+					otellog.String("error", err.Error()))
+				continue
+			}
+			successes++
+			out = append(out, cands...)
+		}
+		if len(errs) > 0 && successes == 0 {
+			return nil, errors.Join(errs...)
+		}
+		return out, nil
+	}
+	lq := base
+	if wantVector {
 		lq.Mode = ModeVector
-	default:
+	} else {
 		lq.Mode = ModeBM25
 	}
 	return r.Layers.Search(ctx, lq)

@@ -206,6 +206,12 @@ func (r *FSChunkRepo) Replace(ctx context.Context, datasetID, docName string, ch
 	if !ok {
 		state = newDatasetState()
 	}
+	if len(chunks) > 0 {
+		wantSourceVer := chunksSourceVer(chunks)
+		if existing, present := docSigFromState(state, docName); present && existing.SourceVer > wantSourceVer {
+			return nil
+		}
+	}
 	merged := make([]knowledge.DerivedChunk, 0, len(state.chunks)+len(chunks))
 	for _, c := range state.chunks {
 		if c.DocName == docName {
@@ -226,7 +232,8 @@ func (r *FSChunkRepo) Replace(ctx context.Context, datasetID, docName string, ch
 	return nil
 }
 
-// DeleteByDoc removes every chunk for (datasetID, docName).
+// DeleteByDoc removes every chunk for (datasetID, docName). Missing
+// target documents are idempotent success and do not return NotFound.
 //
 // Same locking discipline as Replace: read-mutate-persist-install runs
 // under the write lock so concurrent Delete + Replace cannot lose
@@ -253,6 +260,37 @@ func (r *FSChunkRepo) DeleteByDoc(ctx context.Context, datasetID, docName string
 	}
 	r.states[datasetID] = r.buildState(merged)
 	return nil
+}
+
+// GetDocSig satisfies knowledge.ChunkSigReader for the filesystem backend.
+// Missing datasets or documents return (DerivedSig{}, false, nil).
+func (r *FSChunkRepo) GetDocSig(ctx context.Context, datasetID, docName string) (knowledge.DerivedSig, bool, error) {
+	if datasetID == "" || docName == "" {
+		return knowledge.DerivedSig{}, false, errdefs.Validationf("knowledge/fs: dataset_id and doc_name are required")
+	}
+	if err := ctx.Err(); err != nil {
+		return knowledge.DerivedSig{}, false, errdefs.FromContext(err)
+	}
+	r.mu.RLock()
+	state, ok := r.states[datasetID]
+	if ok {
+		if sig, present := docSigFromState(state, docName); present {
+			r.mu.RUnlock()
+			return sig, true, nil
+		}
+	}
+	r.mu.RUnlock()
+	if err := r.loadDataset(ctx, datasetID); err != nil {
+		return knowledge.DerivedSig{}, false, err
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	state, ok = r.states[datasetID]
+	if !ok {
+		return knowledge.DerivedSig{}, false, nil
+	}
+	sig, present := docSigFromState(state, docName)
+	return sig, present, nil
 }
 
 // DeleteByDataset removes every chunk for the dataset and the chunks.json file.
@@ -338,6 +376,28 @@ func (r *FSChunkRepo) buildState(chunks []knowledge.DerivedChunk) *datasetState 
 		state.docStats.AvgLength = totalDL / float64(state.docStats.DocCount)
 	}
 	return state
+}
+
+func chunksSourceVer(chunks []knowledge.DerivedChunk) uint64 {
+	var out uint64
+	for _, c := range chunks {
+		if c.Sig.SourceVer > out {
+			out = c.Sig.SourceVer
+		}
+	}
+	return out
+}
+
+func docSigFromState(state *datasetState, docName string) (knowledge.DerivedSig, bool) {
+	if state == nil {
+		return knowledge.DerivedSig{}, false
+	}
+	for _, c := range state.chunks {
+		if c.DocName == docName {
+			return c.Sig, true
+		}
+	}
+	return knowledge.DerivedSig{}, false
 }
 
 // Search runs the requested mode against the in-memory index. Vector
@@ -605,4 +665,7 @@ func scoreVector(datasetID string, state *datasetState, qvec []float32) []knowle
 }
 
 // Compile-time interface assertion.
-var _ knowledge.ChunkRepo = (*FSChunkRepo)(nil)
+var (
+	_ knowledge.ChunkRepo      = (*FSChunkRepo)(nil)
+	_ knowledge.ChunkSigReader = (*FSChunkRepo)(nil)
+)

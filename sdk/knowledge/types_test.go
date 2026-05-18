@@ -23,3 +23,14 @@ func TestContextLayers(t *testing.T) {
 		t.Fatalf("expected L2, got %s", LayerDetail)
 	}
 }
+
+func TestDerivedSigIsStaleComparesEmbedSigStrictly(t *testing.T) {
+	got := DerivedSig{SourceVer: 1, ChunkerSig: "chunker:v1", EmbedSig: "embed:v1"}
+	want := DerivedSig{SourceVer: 1, ChunkerSig: "chunker:v1"}
+	if !got.IsStale(want) {
+		t.Fatalf("expected vectors to be stale when desired EmbedSig is empty")
+	}
+	if !want.IsStale(got) {
+		t.Fatalf("expected missing vectors to be stale when desired EmbedSig is set")
+	}
+}

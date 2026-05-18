@@ -211,11 +211,14 @@ func TestLayerRetriever_HybridUsesBoth(t *testing.T) {
 	if _, err := r.Recall(context.Background(), q); err != nil {
 		t.Fatalf("recall: %v", err)
 	}
-	if repo.calls[0].Mode != ModeHybrid {
-		t.Fatalf("mode = %q, want hybrid", repo.calls[0].Mode)
+	if len(repo.calls) != 2 {
+		t.Fatalf("calls = %d, want BM25 and vector lanes", len(repo.calls))
 	}
-	if len(repo.calls[0].Vector) != 2 {
-		t.Fatalf("vector not pushed: %+v", repo.calls[0].Vector)
+	if repo.calls[0].Mode != ModeBM25 || repo.calls[1].Mode != ModeVector {
+		t.Fatalf("modes = [%q %q], want [bm25 vector]", repo.calls[0].Mode, repo.calls[1].Mode)
+	}
+	if len(repo.calls[1].Vector) != 2 {
+		t.Fatalf("vector not pushed: %+v", repo.calls[1].Vector)
 	}
 }
 
@@ -231,6 +234,40 @@ func TestRRFRanker_FusesMultipleSources(t *testing.T) {
 	}
 	if out[0].DocName != "a.md" {
 		t.Fatalf("a.md should rank first, got %+v", out)
+	}
+}
+
+type namedRetriever struct {
+	name string
+	hits []Candidate
+	err  error
+}
+
+func (r namedRetriever) Name() string { return r.name }
+func (r namedRetriever) Recall(context.Context, Query) ([]Candidate, error) {
+	return r.hits, r.err
+}
+
+func TestSearchEngine_HybridSoftFailsSingleLaneError(t *testing.T) {
+	engine := NewSearchEngine([]Retriever{
+		namedRetriever{name: "bm25", hits: []Candidate{{Source: "bm25", Hit: Hit{DocName: "a.md", Score: 1}}}},
+		namedRetriever{name: "vector", err: errors.New("vector down")},
+	}, nil, nil)
+	res, err := engine.Search(context.Background(), Query{Layer: LayerDetail, Mode: ModeHybrid, TopK: 5})
+	if err != nil {
+		t.Fatalf("hybrid search returned error despite a successful lane: %v", err)
+	}
+	if len(res.Hits) != 1 || res.Hits[0].DocName != "a.md" {
+		t.Fatalf("hits = %+v, want successful lane result", res.Hits)
+	}
+}
+
+func TestSearchEngine_PureModeHardFailsLaneError(t *testing.T) {
+	engine := NewSearchEngine([]Retriever{
+		namedRetriever{name: "bm25", err: errors.New("bm25 down")},
+	}, nil, nil)
+	if _, err := engine.Search(context.Background(), Query{Layer: LayerDetail, Mode: ModeBM25, TopK: 5}); err == nil {
+		t.Fatalf("expected pure BM25 lane error to hard-fail")
 	}
 }
 

@@ -55,7 +55,8 @@ type DerivedSig struct {
 // IsStale returns true when sig was produced for an earlier source version
 // or with a different chunker / prompt / embed configuration than want.
 //
-// A zero EmbedSig in want is treated as "don't care".
+// EmbedSig is compared strictly, including the empty string. This makes
+// vectors stale when an embedder is removed so a rebuild can clear them.
 func (sig DerivedSig) IsStale(want DerivedSig) bool {
 	if sig.SourceVer != want.SourceVer {
 		return true
@@ -66,7 +67,7 @@ func (sig DerivedSig) IsStale(want DerivedSig) bool {
 	if want.PromptSig != "" && sig.PromptSig != want.PromptSig {
 		return true
 	}
-	if want.EmbedSig != "" && sig.EmbedSig != want.EmbedSig {
+	if sig.EmbedSig != want.EmbedSig {
 		return true
 	}
 	return false

@@ -1,6 +1,12 @@
 package knowledge
 
-import "context"
+import (
+	"context"
+	"errors"
+
+	"github.com/GizClaw/flowcraft/sdk/telemetry"
+	otellog "go.opentelemetry.io/otel/log"
+)
 
 // Retriever produces a candidate set for a Query. Implementations are
 // stateless with respect to the Query; all state lives in the underlying
@@ -50,15 +56,30 @@ func (e *SearchEngine) Search(ctx context.Context, q Query) (*Result, error) {
 		retrievers = e.Layer
 	}
 	var all []Candidate
+	var laneErrs []error
+	var successfulLanes int
 	for _, r := range retrievers {
 		if r == nil {
 			continue
 		}
 		cands, err := r.Recall(ctx, q)
 		if err != nil {
-			return nil, err
+			if ResolveMode(q.Mode) != ModeHybrid {
+				return nil, err
+			}
+			laneErrs = append(laneErrs, err)
+			telemetry.Warn(ctx, "knowledge hybrid recall lane failed",
+				otellog.String("retriever", r.Name()),
+				otellog.String("mode", string(q.Mode)),
+				otellog.String("layer", string(q.Layer)),
+				otellog.String("error", err.Error()))
+			continue
 		}
+		successfulLanes++
 		all = append(all, cands...)
+	}
+	if len(laneErrs) > 0 && successfulLanes == 0 {
+		return nil, errors.Join(laneErrs...)
 	}
 	hits := e.Rank.Rank(all, q)
 	return &Result{Hits: hits}, nil
