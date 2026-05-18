@@ -14,6 +14,7 @@ type Turn struct {
 	Content    string `json:"content"`               // raw text
 	EvidenceID string `json:"evidence_id,omitempty"` // upstream id (e.g. LoCoMo dia_id "D1:3"); preserved as MemoryEntry.ID by SaveRaw so recall.k_hit is meaningful.
 	SessionID  string `json:"session_id,omitempty"`  // upstream session bucket (e.g. LoCoMo "session_3"); used by eval to chunk LLM extractor calls so a single Save doesn't exceed model context / output budget.
+	HasAnswer  bool   `json:"has_answer,omitempty"`  // upstream evidence flag (LongMemEval `has_answer`): true for turns that contain the gold evidence for the question. Carried through so the converter can promote these turns into Question.EvidenceIDs for turn-level recall.k_hit.
 }
 
 // Conversation is a single dialog history that the runner ingests via Save.
@@ -30,6 +31,16 @@ type Question struct {
 	GoldAnswers    []string `json:"gold_answers"`           // any-match counts as correct (EM)
 	Tags           []string `json:"tags,omitempty"`         // e.g. "temporal", "entity"
 	EvidenceIDs    []string `json:"evidence_ids,omitempty"` // optional: doc IDs that should rank top-k
+
+	// AskedAt is the wall-clock timestamp the user posed the question
+	// at, preserved as the upstream string (LongMemEval's
+	// `question_date`, e.g. "2023/05/30 (Tue) 23:40"). Required to
+	// resolve relative-time expressions in the query ("last week",
+	// "two months ago") — without it temporal-reasoning questions
+	// have no anchor and the answer LLM degenerates to guessing.
+	// Empty for datasets that do not record a question time
+	// (synthetic, LoCoMo10).
+	AskedAt string `json:"asked_at,omitempty"`
 }
 
 // Dataset is one ingest+evaluate corpus.

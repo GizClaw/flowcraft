@@ -55,7 +55,15 @@ func addLMEConvert(parent *cobra.Command) {
   instance.question           → Question.Query
   instance.answer             → Question.GoldAnswers (single-element)
   instance.question_type      → Question.Tags ["qtype:<type>", "abs" if _abs id]
-  instance.answer_session_ids → Question.EvidenceIDs`,
+  instance.question_date      → Question.AskedAt (verbatim, used by the
+                                answer prompt to anchor relative-time
+                                expressions like "last week")
+  haystack turns has_answer   → promoted to Question.EvidenceIDs (turn-
+                                level) when present; recall.k_hit then
+                                checks "did we recall a gold-evidence
+                                turn". Falls back to
+                                instance.answer_session_ids (session-
+                                level) when no turn carries has_answer.`,
 		RunE: func(c *cobra.Command, _ []string) error {
 			if in == "" || out == "" {
 				return fmt.Errorf("--in and --out are required")
@@ -90,7 +98,7 @@ func addLMEConvert(parent *cobra.Command) {
 					continue
 				}
 				convID := inst.QuestionID
-				turns := lmeFlattenSessions(inst, convID)
+				turns, hasAnswerEvIDs := lmeFlattenSessions(inst, convID)
 				if len(turns) == 0 {
 					continue
 				}
@@ -106,12 +114,27 @@ func addLMEConvert(parent *cobra.Command) {
 				}
 				typeCounts[qtype]++
 
-				ev := make([]string, 0, len(inst.AnswerSessionIDs))
-				for _, s := range inst.AnswerSessionIDs {
-					if s == "" {
-						continue
+				// EvidenceIDs preference: turn-level (`has_answer`)
+				// when ANY turn carries it — every Recall hit on a
+				// save_with_context run lands the upstream turn's
+				// EvidenceID into MemoryEntry.ID, so turn-level
+				// recall.k_hit is the only granularity that
+				// matches what `mem.Recall` actually returns. We
+				// fall back to session-level `answer_session_ids`
+				// only when no turn-level evidence exists so the
+				// metric stays meaningful for legacy datasets that
+				// pre-date the `has_answer` flag.
+				var ev []string
+				if len(hasAnswerEvIDs) > 0 {
+					ev = hasAnswerEvIDs
+				} else {
+					ev = make([]string, 0, len(inst.AnswerSessionIDs))
+					for _, s := range inst.AnswerSessionIDs {
+						if s == "" {
+							continue
+						}
+						ev = append(ev, convID+":"+s)
 					}
-					ev = append(ev, convID+":"+s)
 				}
 
 				gold := []string{lmeAnswerToString(inst.Answer)}
@@ -127,6 +150,7 @@ func addLMEConvert(parent *cobra.Command) {
 					GoldAnswers:    gold,
 					Tags:           tags,
 					EvidenceIDs:    ev,
+					AskedAt:        strings.TrimSpace(inst.QuestionDate),
 				}); err != nil {
 					return fmt.Errorf("encode qa: %w", err)
 				}
@@ -170,6 +194,7 @@ type lmeOutTurn struct {
 	Content    string `json:"content"`
 	EvidenceID string `json:"evidence_id,omitempty"`
 	SessionID  string `json:"session_id,omitempty"`
+	HasAnswer  bool   `json:"has_answer,omitempty"`
 }
 
 type lmeOutConv struct {
@@ -186,6 +211,7 @@ type lmeOutQuestion struct {
 	GoldAnswers    []string `json:"gold_answers"`
 	Tags           []string `json:"tags,omitempty"`
 	EvidenceIDs    []string `json:"evidence_ids,omitempty"`
+	AskedAt        string   `json:"asked_at,omitempty"`
 }
 
 func lmeAnswerToString(raw json.RawMessage) string {
@@ -203,8 +229,20 @@ func lmeAnswerToString(raw json.RawMessage) string {
 	return strings.TrimSpace(string(raw))
 }
 
-func lmeFlattenSessions(inst lmeRawInstance, convID string) []lmeOutTurn {
-	var out []lmeOutTurn
+// lmeFlattenSessions returns the conversation turns AND the list of
+// turn-level evidence IDs (those upstream turns whose `has_answer:true`
+// marks them as containing the gold evidence for the question).
+//
+// Turn index `ti` is preserved verbatim across content-empty skips so
+// the produced EvidenceID (`{convID}:{sessID}:t{ti}`) stays aligned
+// with the upstream turn's position in `haystack_sessions[i]` — that
+// alignment is what lets the runner stamp it onto MemoryEntry.ID and
+// what makes recall.k_hit meaningful.
+func lmeFlattenSessions(inst lmeRawInstance, convID string) ([]lmeOutTurn, []string) {
+	var (
+		out            []lmeOutTurn
+		hasAnswerEvIDs []string
+	)
 	for i, sess := range inst.HaystackSessions {
 		sessID := ""
 		if i < len(inst.HaystackSessionIDs) {
@@ -241,8 +279,12 @@ func lmeFlattenSessions(inst lmeRawInstance, convID string) []lmeOutTurn {
 				Content:    content,
 				EvidenceID: evID,
 				SessionID:  scopedSessID,
+				HasAnswer:  t.HasAnswer,
 			})
+			if t.HasAnswer && evID != "" {
+				hasAnswerEvIDs = append(hasAnswerEvIDs, evID)
+			}
 		}
 	}
-	return out
+	return out, hasAnswerEvIDs
 }

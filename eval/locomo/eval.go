@@ -251,6 +251,7 @@ Guidelines:
 - Match the form of the question. If asked WHEN, give a specific date or duration; HOW MANY, a number; YES/NO, lead with yes/no.
 - Mirror the date format used in the question (e.g. if asked "7 May 2023", answer in that format, not "May 7, 2023").
 - If a memory uses a date QUALIFIER ("around", "roughly", "the week before X", "a few years ago", "last summer", "two weekends ago"), preserve that qualifier in your answer rather than computing a precise absolute date. The qualifier carries the speaker's actual epistemic state — fabricating precision is worse than mirroring vagueness.
+- When an ASKED_AT line is present, treat that timestamp as the "now" for the question. Relative-time phrases ("last week", "two months ago", "yesterday", "this morning") are interpreted RELATIVE TO ASKED_AT, not to today's wall clock. Memories carry their own timestamps in the leading "[YYYY/MM/DD …]" prefix — use ASKED_AT to compute the requested window over those memory timestamps.
 - Answer in 1-2 sentences. Avoid hedging ("it seems", "might be") when the memories are unambiguous.
 
 %s
@@ -406,7 +407,7 @@ func Run(ctx context.Context, r runners.Runner, ds *dataset.Dataset, opts Option
 //     the recalled memories (closed-book QA over LTM).
 //   - otherwise              → cheap fallback: concatenate top-3 hits, so
 //     EM/F1 still surface a "did retrieval find the right text" signal.
-func buildPrediction(ctx context.Context, opts Options, query string, hits []recall.Hit) (string, error) {
+func buildPrediction(ctx context.Context, opts Options, q dataset.Question, hits []recall.Hit) (string, error) {
 	if opts.AnswerLLM == nil {
 		return composePrediction(hits), nil
 	}
@@ -414,7 +415,7 @@ func buildPrediction(ctx context.Context, opts Options, query string, hits []rec
 	if prompt == "" {
 		prompt = DefaultAnswerPrompt
 	}
-	body := buildAnswerBody(query, hits)
+	body := buildAnswerBody(q, hits)
 	resp, _, err := opts.AnswerLLM.Generate(ctx, []llm.Message{
 		{Role: model.RoleUser, Parts: []model.Part{{Type: model.PartText, Text: fmt.Sprintf(prompt, body)}}},
 	})
@@ -424,12 +425,28 @@ func buildPrediction(ctx context.Context, opts Options, query string, hits []rec
 	return strings.TrimSpace(resp.Content()), nil
 }
 
-// buildAnswerBody renders the "Q + MEMORIES" block fed into the QA prompt.
-// Top-k memories are listed as bullets; ordering matches RecallHit ranking.
-func buildAnswerBody(query string, hits []recall.Hit) string {
+// buildAnswerBody renders the "ASKED_AT? + Q + MEMORIES" block fed into
+// the QA prompt. Top-k memories are listed as bullets in RecallHit
+// ranking order.
+//
+// The optional ASKED_AT line ([dataset.Question.AskedAt], populated by
+// the LongMemEval converter from `question_date`) is emitted only when
+// the source dataset records when the question was asked. Without it
+// the answer LLM has no anchor for "last week" / "two months ago"
+// relative-time phrases that dominate temporal-reasoning questions —
+// pre-fix LongMemEval temporal-reasoning was effectively unanswerable.
+// Synthetic / LoCoMo datasets that omit the field keep the legacy
+// QUESTION-then-MEMORIES layout so the prompt stays stable for those
+// benchmarks.
+func buildAnswerBody(q dataset.Question, hits []recall.Hit) string {
 	var b strings.Builder
+	if asked := strings.TrimSpace(q.AskedAt); asked != "" {
+		b.WriteString("ASKED_AT: ")
+		b.WriteString(asked)
+		b.WriteString("\n\n")
+	}
 	b.WriteString("QUESTION: ")
-	b.WriteString(query)
+	b.WriteString(q.Query)
 	b.WriteString("\n\nMEMORIES:\n")
 	if len(hits) == 0 {
 		b.WriteString("(none)\n")
@@ -871,7 +888,7 @@ func evalQuestions(ctx context.Context, r runners.Runner, scopeOf func(string) r
 				var pred string
 				err = retryOnNotAvailable(qctx, "answer", q.ID, func() error {
 					var aerr error
-					pred, aerr = buildPrediction(qctx, opts, q.Query, hits)
+					pred, aerr = buildPrediction(qctx, opts, q, hits)
 					return aerr
 				})
 				if err != nil {
