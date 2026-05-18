@@ -2,9 +2,9 @@ package recall
 
 import (
 	"context"
-	"sync"
 	"time"
 
+	"github.com/GizClaw/flowcraft/sdk/internal/background"
 	"github.com/GizClaw/flowcraft/sdk/retrieval"
 )
 
@@ -24,21 +24,19 @@ import (
 //     retain stale entries — but reads must validate against the
 //     primary and the [Reconciler] eventually converges the view.
 //   - Eager write paths ([Memory.Save] via upsertFacts and
-//     [Memory.Add]) call [Projection.Project] inline AFTER the
-//     durable Upsert so the caller observes 0-lag recall against
-//     their own writes. The exact same Project method the
-//     [Reconciler] drives is used — there is ONE entry point,
-//     additive semantics — so the projection can never see two
-//     contracts. This was unified in #179.1; pre-fix the eager
-//     paths talked directly to the projection's backing
-//     primitives (e.g. [EntityStore.Link]) and Save/Add could
-//     drift independently of each other and of Reconciler.
-//   - Non-eager write paths (Rollback, TTL sweeper, resolver
-//     OpDelete, …) DO NOT instrument Projection updates. They
-//     rely entirely on the [Reconciler]'s tick to drop stale
-//     references via [Projection.Forget]. The contract guarantee
-//     is "every Reconciler pass IS a replay sufficient to rebuild
-//     the view offline".
+//     [Memory.Add]) call the replacement-capable projection path
+//     inline AFTER the durable Upsert so the caller observes
+//     0-lag recall against their own writes. If a projection
+//     implements [ProjectionReplacer], the entry's derived state
+//     is replaced with exactly what Entry currently says; otherwise
+//     the legacy additive [Projection.Project] contract is used.
+//   - [Memory.Forget] fans out through every registered Projection's
+//     Forget method after the primary delete succeeds. Other
+//     non-eager mutation paths (Rollback, TTL sweeper, resolver
+//     OpDelete, …) rely on the [Reconciler]'s tick. A reconciler
+//     pass is a full replay over alive primary entries, using
+//     [ProjectionReplacer] when available and [Projection.Forget]
+//     for IDs absent from primary.
 //
 // Implementations MUST be idempotent: Project called twice with the
 // same scope + entries produces the same view state as once. Forget
@@ -75,6 +73,23 @@ type Projection interface {
 	// IDs. Idempotent on (scope, id) — calling Forget for an ID
 	// the projection never knew about is a no-op.
 	Forget(ctx context.Context, scope Scope, entryIDs []string) error
+}
+
+// ProjectionReplacer is an optional extension to [Projection] for
+// per-entry replacement.
+//
+// Replace conveys "for each supplied entry, the projection state owned
+// by that entry ID must now equal the state implied by Entry". For the
+// entity-link projection, that means the entry ID appears under exactly
+// Entry.Entities: old entity rows that still referenced the alive entry
+// are pruned, and current rows are linked. This is stronger than
+// additive [Projection.Project] and is what lets eager writes and
+// Reconciler repair stale edges when an existing entry's Entities change.
+//
+// Idempotent on (scope, entry.ID). Empty entries and entries with no
+// projected fields remove that entry's old projection edges.
+type ProjectionReplacer interface {
+	Replace(ctx context.Context, scope Scope, entries []Entry) error
 }
 
 // ProjectionInspector is an optional extension to [Projection]. The
@@ -121,8 +136,7 @@ type Reconciler struct {
 	now         func() time.Time
 	log         func(format string, args ...any)
 
-	stopCh chan struct{}
-	wg     sync.WaitGroup
+	group *background.Group
 }
 
 // newReconciler is the package-internal constructor. Callers go
@@ -153,7 +167,7 @@ func newReconciler(
 		batchSize:   defaultReconcileBatch,
 		now:         now,
 		log:         log,
-		stopCh:      make(chan struct{}),
+		group:       background.NewGroup(context.Background()),
 	}
 }
 
@@ -176,8 +190,7 @@ func (r *Reconciler) start() {
 	if r == nil || len(r.projections) == 0 {
 		return
 	}
-	r.wg.Add(1)
-	go r.loop()
+	r.group.Start(r.loop)
 }
 
 // stop cancels the tick goroutine and waits for it to drain.
@@ -185,27 +198,18 @@ func (r *Reconciler) stop() {
 	if r == nil {
 		return
 	}
-	select {
-	case <-r.stopCh:
-		// already stopped
-	default:
-		close(r.stopCh)
-	}
-	r.wg.Wait()
+	r.group.Close()
 }
 
-func (r *Reconciler) loop() {
-	defer r.wg.Done()
+func (r *Reconciler) loop(ctx context.Context) {
 	t := time.NewTicker(r.interval)
 	defer t.Stop()
 	for {
 		select {
-		case <-r.stopCh:
+		case <-ctx.Done():
 			return
 		case <-t.C:
-			ctx, cancel := context.WithTimeout(context.Background(), r.interval)
 			r.tick(ctx)
-			cancel()
 		}
 	}
 }
@@ -223,13 +227,19 @@ func (r *Reconciler) tick(ctx context.Context) {
 		return
 	}
 	for _, ns := range nss {
+		if err := ctx.Err(); err != nil {
+			return
+		}
 		scope, ok := ScopeFromNamespace(ns)
 		if !ok {
 			// Sibling / unknown namespace (e.g. "..__entities");
 			// skip — the entry namespace's reconcile will cover it.
 			continue
 		}
-		if err := r.reconcileScope(ctx, scope); err != nil {
+		scopeCtx, cancel := context.WithTimeout(ctx, r.interval)
+		err := r.reconcileScope(scopeCtx, scope)
+		cancel()
+		if err != nil {
 			r.log("recall: reconcile scope %q: %v", ns, err)
 		}
 	}
@@ -270,8 +280,8 @@ func (r *Reconciler) reconcileScope(ctx context.Context, scope Scope) error {
 	}
 	// 2. Fan out to projections.
 	for _, p := range r.projections {
-		if err := p.Project(ctx, scope, aliveEntries); err != nil {
-			r.log("recall: projection %s Project: %v", p.Name(), err)
+		if err := projectReplaceOrAdd(ctx, p, scope, aliveEntries); err != nil {
+			r.log("recall: projection %s sync: %v", p.Name(), err)
 		}
 		// 3. Diff against the projection's retained IDs and Forget
 		// anything the projection has that primary does not.
@@ -302,6 +312,16 @@ func (r *Reconciler) reconcileScope(ctx context.Context, scope Scope) error {
 		}
 	}
 	return nil
+}
+
+func projectReplaceOrAdd(ctx context.Context, p Projection, scope Scope, entries []Entry) error {
+	if p == nil || len(entries) == 0 {
+		return nil
+	}
+	if replacer, ok := p.(ProjectionReplacer); ok {
+		return replacer.Replace(ctx, scope, entries)
+	}
+	return p.Project(ctx, scope, entries)
 }
 
 // listAll pages through retrieval.Index.List collecting every doc

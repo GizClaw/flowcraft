@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/GizClaw/flowcraft/sdk/internal/background"
 	"github.com/GizClaw/flowcraft/sdk/llm"
 	"github.com/GizClaw/flowcraft/sdk/telemetry"
 	"go.opentelemetry.io/otel/attribute"
@@ -27,6 +28,7 @@ type JobState string
 
 const (
 	JobPending   JobState = "pending"
+	JobLeased    JobState = "leased"
 	JobRunning   JobState = "running"
 	JobSucceeded JobState = "succeeded"
 	JobFailed    JobState = "failed"
@@ -74,6 +76,7 @@ type JobRecord struct {
 type JobQueue interface {
 	Enqueue(ctx context.Context, namespace string, payload JobPayload) (JobID, error)
 	Lease(ctx context.Context, now time.Time) (*JobRecord, bool, error)
+	Start(ctx context.Context, id JobID, now time.Time) (*JobRecord, error)
 	Reschedule(ctx context.Context, id JobID, nextRun time.Time, lastErr string) error
 	Complete(ctx context.Context, id JobID, entryIDs []string) error
 	Fail(ctx context.Context, id JobID, lastErr string) error
@@ -149,12 +152,34 @@ func (q *MemoryJobQueue) Lease(_ context.Context, now time.Time) (*JobRecord, bo
 	if best == nil {
 		return nil, false, nil
 	}
-	best.State = JobRunning
-	best.Attempts++
+	best.State = JobLeased
 	best.UpdatedAt = now
 	q.leased[best.ID] = struct{}{}
 	cp := *best
 	return &cp, true, nil
+}
+
+// Start marks a leased job as running and consumes one attempt.
+func (q *MemoryJobQueue) Start(ctx context.Context, id JobID, now time.Time) (*JobRecord, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	j, ok := q.jobs[id]
+	if !ok {
+		return nil, ErrJobNotFound
+	}
+	if j.State != JobLeased && j.State != JobRunning {
+		return nil, errors.New("ltm: job is not leased")
+	}
+	if j.State == JobLeased {
+		j.State = JobRunning
+		j.Attempts++
+		j.UpdatedAt = now
+	}
+	cp := *j
+	return &cp, nil
 }
 
 // Reschedule pushes a leased job back to pending with a new NextRunAt.
@@ -289,7 +314,46 @@ func (m *lt) worker() {
 			}
 			continue
 		}
-		m.handleJob(rec)
+		if m.workerCtx.Err() != nil || m.stopping() {
+			m.releaseLeasedJob(rec)
+			return
+		}
+		started, err := m.cfg.jobQueue.Start(m.workerCtx, rec.ID, m.cfg.now())
+		if err != nil {
+			if m.workerCtx.Err() != nil || m.stopping() {
+				m.releaseLeasedJob(rec)
+				return
+			}
+			m.log("ltm.worker.start: %v", err)
+			m.releaseLeasedJob(rec)
+			select {
+			case <-m.stopCh:
+				return
+			case <-time.After(100 * time.Millisecond):
+			}
+			continue
+		}
+		m.handleJob(started)
+	}
+}
+
+func (m *lt) stopping() bool {
+	select {
+	case <-m.stopCh:
+		return true
+	default:
+		return false
+	}
+}
+
+func (m *lt) releaseLeasedJob(rec *JobRecord) {
+	if rec == nil {
+		return
+	}
+	bookCtx, cancel := context.WithTimeout(context.Background(), bookkeepingTimeout)
+	defer cancel()
+	if err := m.cfg.jobQueue.Reschedule(bookCtx, rec.ID, m.cfg.now(), rec.LastError); err != nil {
+		m.log("ltm.worker.release: %v", err)
 	}
 }
 
@@ -400,10 +464,7 @@ func isPermanentWriteError(err error) bool {
 // transitions are still owned by failOrRetry; this only annotates the
 // observation.
 func (m *lt) recordJobFailure(ctx context.Context, rec *JobRecord, err error, stage string) {
-	outcome := "failed"
-	if errors.Is(err, context.DeadlineExceeded) {
-		outcome = "timeout"
-	}
+	outcome := jobFailureOutcome(err)
 	jobTotal.Add(ctx, 1, metric.WithAttributes(
 		attribute.String("outcome", outcome),
 		attribute.String("stage", stage),
@@ -415,6 +476,10 @@ func (m *lt) recordJobFailure(ctx context.Context, rec *JobRecord, err error, st
 		otellog.String("outcome", outcome),
 		otellog.Int("attempts", rec.Attempts),
 		otellog.String(telemetry.AttrErrorMessage, err.Error()))
+}
+
+func jobFailureOutcome(err error) string {
+	return background.Classify(err).String()
 }
 
 func (m *lt) failOrRetry(rec *JobRecord, err error) {

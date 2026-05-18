@@ -88,15 +88,10 @@ func (m *lt) runRecall(ctx context.Context, scope Scope, req Request) ([]Hit, *r
 		recallDuration.Record(ctx, time.Since(t0).Seconds())
 	}()
 
-	if scope.RuntimeID == "" {
-		span.RecordError(ErrMissingRuntimeID)
+	if err := m.validateScope(scope); err != nil {
+		span.RecordError(err)
 		recallTotal.Add(ctx, 1, metric.WithAttributes(attribute.String("outcome", "fail"), attribute.String("reason", "scope")))
-		return nil, nil, ErrMissingRuntimeID
-	}
-	if m.cfg.requireUserID && scope.UserID == "" && !m.cfg.allowGlobal {
-		span.RecordError(ErrMissingUserID)
-		recallTotal.Add(ctx, 1, metric.WithAttributes(attribute.String("outcome", "fail"), attribute.String("reason", "scope")))
-		return nil, nil, ErrMissingUserID
+		return nil, nil, err
 	}
 	now := req.Now
 	if now.IsZero() {
@@ -311,6 +306,9 @@ func (m *lt) History(ctx context.Context, scope Scope, id string) ([]journal.Eve
 	if m.cfg.journal == nil {
 		return nil, ErrJournalRequired
 	}
+	if err := m.validateScope(scope); err != nil {
+		return nil, err
+	}
 	ns := NamespaceFor(scope)
 	m.rememberNamespace(ctx, ns)
 	return m.cfg.journal.History(ctx, ns, id)
@@ -321,6 +319,9 @@ func (m *lt) History(ctx context.Context, scope Scope, id string) ([]journal.Eve
 func (m *lt) Rollback(ctx context.Context, scope Scope, id string, before time.Time) error {
 	if m.cfg.journal == nil {
 		return ErrJournalRequired
+	}
+	if err := m.validateScope(scope); err != nil {
+		return err
 	}
 	ns := NamespaceFor(scope)
 	m.rememberNamespace(ctx, ns)
@@ -352,20 +353,14 @@ func (m *lt) Rollback(ctx context.Context, scope Scope, id string, before time.T
 // Forget hard-deletes one entry; Journal records OpDelete{reason}.
 func (m *lt) Forget(ctx context.Context, scope Scope, id, reason string) error {
 	_ = reason // reason is captured by Journal actor (caller can WithActor)
+	if err := m.validateScope(scope); err != nil {
+		return err
+	}
 	ns := NamespaceFor(scope)
 	m.rememberNamespace(ctx, ns)
 	if err := m.idx.Delete(ctx, ns, []string{id}); err != nil {
 		return err
 	}
-	// Prune the entity-link inverted index AFTER the entry deletion
-	// so a Forget that fails to land never advances the entity row's
-	// MetaEntityLast. Failures are non-fatal — the entry is gone;
-	// the orphan id in the inverted index merely points to a tombstone
-	// and the read path's standard tombstone filter will drop it.
-	if m.cfg.entityStore != nil {
-		if err := m.cfg.entityStore.Forget(ctx, scope, id); err != nil {
-			m.log("ltm: entity_store Forget failed for %q: %v", id, err)
-		}
-	}
+	m.forgetProjections(ctx, scope, []string{id})
 	return nil
 }
