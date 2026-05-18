@@ -25,8 +25,8 @@ import (
 //     removes stale edges when an alive entry changes entities.
 //   - Forget loops [EntityStore.Forget] over the stale ids. Most
 //     backends scan the entity namespace per call; for typical
-//     LoCoMo-shaped scopes (tens of stale ids per reconcile after a
-//     TTL sweep or rollback) the cost is negligible. Optimise via a
+//     medium conversation scopes (tens of stale ids per reconcile after
+//     a TTL sweep or rollback) the cost is negligible. Optimise via a
 //     batch interface if production telemetry shows the loop is
 //     hot.
 //   - AllEntryIDs scans the entity namespace via the wrapped index

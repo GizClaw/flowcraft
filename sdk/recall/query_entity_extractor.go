@@ -1,21 +1,19 @@
 // Package recall — query-time LLM entity extractor.
 //
 // At write time the additive extractor produces an "entities" field per
-// fact: open-vocabulary noun phrases like "Greenwich Community Center"
-// or "LGBTQ support group". These are persisted by EntityStore.Link as
+// fact: open-vocabulary noun phrases like "Helios community arts hall"
+// or "photography club". These are persisted by EntityStore.Link as
 // inverted-index keys (normalized → memEntryID list).
 //
 // At query time the default pipeline extractor (rule-based,
 // pipeline.ruleEntities) returns only capitalized single tokens and
-// quoted runs. A query like "When did Caroline go to the LGBTQ
-// support group?" produces ["caroline", "lgbtq"] — never the noun
+// quoted runs. A query like "When did Theo go to the photography
+// club?" produces ["theo"] — never the noun
 // phrase the write side stored, so the EntityStore lookup join never
-// hits the discriminative entry. Our entity-store ablation
-// (run 25908012719 / 25909308192) showed this asymmetry collapses the
-// entity-link contribution to ~baseline regardless of pollution gate
-// settings, because the only entities that DO join are speaker
-// names — and those get either flood-filtered (gate=0 lane) or
-// silently dropped (gate=N, lane skipped).
+// hits the discriminative entry. In entity-dense conversational
+// workloads this asymmetry collapses the entity-link contribution
+// regardless of pollution gate settings, because the only entities
+// that DO join are speaker names — and those are often saturated.
 //
 // LLMQueryEntityExtractor closes the asymmetry by using an LLM
 // (same model as the write-side extractor) to produce normalised
@@ -39,8 +37,8 @@ const defaultQueryEntityPrompt = `You are extracting retrieval entities from a s
 Return a STRICT JSON object {"entities": ["..."]} listing the discriminative entities in the query — the rare proper nouns and specific noun phrases a retrieval system should use to find the matching memory.
 
 INCLUDE:
-- Atomic proper nouns: "Caroline", "Maya", "San Francisco", "Toyota Prius"
-- Multi-word specific noun phrases: "LGBTQ support group", "Greenwich Community Center", "graduate art history program"
+- Atomic proper nouns: "Theo", "Ren", "Lyon", "Tesla Model 3"
+- Multi-word specific noun phrases: "photography club", "Helios community arts hall", "graduate art history program"
 - Concrete artefacts the query references: book titles, products, brands, identifiers
 
 EXCLUDE:
@@ -56,17 +54,17 @@ If the query has NO discriminative entities, return {"entities": []}.
 
 Examples:
 
-Query: When did Caroline go to the LGBTQ support group?
-Output: {"entities": ["caroline", "lgbtq support group"]}
+Query: When did Theo go to the photography club?
+Output: {"entities": ["theo", "photography club"]}
 
-Query: How long has Caroline been transitioning?
-Output: {"entities": ["caroline"]}
+Query: How long has Theo been training for marathons?
+Output: {"entities": ["theo"]}
 
 Query: What did Melanie read last summer?
 Output: {"entities": ["melanie"]}
 
-Query: Did Caroline mention any specific therapists at Greenwich Community Center?
-Output: {"entities": ["caroline", "greenwich community center"]}
+Query: Did Theo mention any specific workshops at Helios community arts hall?
+Output: {"entities": ["theo", "helios community arts hall"]}
 
 Query: %s
 

@@ -59,7 +59,7 @@ type ltmConfig struct {
 	// "4th RRF recall lane" to "post-fusion score boost" — vector +
 	// BM25 own candidate generation, entity-link only re-ranks the
 	// fused result. See [WithEntityLinkBoost] for the motivating
-	// LoCoMo regression. When > 0, the [ModeEntityLink] lane is NOT
+	// entity-flooding failure mode. When > 0, the [ModeEntityLink] lane is NOT
 	// inserted into MultiRetrieve; only the [EntityLinkLookup] stage
 	// (which populates State.CandidateEntityIDs) plus an
 	// [EntityLinkBoost] stage after RRFFusion are wired in.
@@ -210,14 +210,12 @@ func WithRRFK(k float64) LTMOption {
 // namespace). Pass 0 to disable the gate (legacy behaviour: lane
 // fires for any non-empty QueryEntities).
 //
-// Background: the LoCoMo 25866478422 ablation showed that even
-// IDF-weighted entity recall regressed qa.judge by 17 pp because
-// queries dominated by universal atoms (`tuesday`, `morning`,
-// `favorite`, `food`) flooded the lane with low-information
-// candidates whose RRF rank vote displaced vector's precision
-// picks. Gating on selectivity collapses those queries back to
-// "lane returns nothing", leaving the fused result driven by
-// vector + BM25 alone.
+// Background: even IDF-weighted entity recall can regress when
+// queries are dominated by universal atoms (`tuesday`, `morning`,
+// `favorite`, `food`). Those atoms flood the lane with low-information
+// candidates whose RRF rank vote displaces vector's precision picks.
+// Gating on selectivity collapses those queries back to "lane returns
+// nothing", leaving the fused result driven by vector + BM25 alone.
 //
 // Deprecated: use sdk/recall/pipeline.WithEntityLaneMinSelectivity. Removed in v0.5.0.
 func WithEntityLaneMinSelectivity(ratio float64) LTMOption {
@@ -282,9 +280,9 @@ func WithEntityLinkPerEntityCap(n int) LTMOption {
 //	weight == 0 (default) → 4th RRF lane (legacy)
 //	weight  > 0           → post-fusion boost (NEW, multi-hop safe)
 //
-// Why this exists: the RRF-lane mode regresses LoCoMo by 30 pp when
-// the entity-store contains speaker-name → all-entries edges (every
-// fact in the namespace mentions the speaker, so the lane returns
+// Why this exists: the RRF-lane mode can regress badly when the
+// entity-store contains speaker-name → all-entries edges (every fact
+// in the namespace mentions the speaker, so the lane returns
 // the whole namespace, displacing high-precision vector/BM25 hits in
 // RRF). Boost mode keeps vector + BM25 as the candidate-generation
 // authorities and only nudges the entity-anchored ones up at

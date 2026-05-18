@@ -218,8 +218,8 @@ const entityCandidatePageSize = 1000
 // sdk/recall.NormalizeEntities atomised stored phrases at ingest and
 // the filter started firing, the lane immediately surfaced high-
 // frequency calendar atoms ("tuesday", "morning", "meeting") as
-// top-ranked matches, polluting RRF fusion and dropping LoCoMo
-// qa.judge by ~21 pp.
+// top-ranked matches, polluting RRF fusion with low-information
+// candidates.
 //
 // IDF weighting fixes this by valuing each query atom by how rare it
 // is in the namespace under the request's existing scope filter:

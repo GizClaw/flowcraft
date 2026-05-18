@@ -102,11 +102,10 @@ func EntityNamespaceFor(s Scope) string {
 //   - scope.UserID == "" (global scope) sane's to "anon"; same
 //     partitioning convention as [NamespaceFor].
 //
-// LoCoMo evaluations bind scope.UserID == conversation_id, so
-// "conv-26::alice" and "conv-30::alice" automatically isolate
-// distinct Alices across conversations. Production multi-user
-// deployments inherit the same isolation through scope.UserID ==
-// the end-user identifier.
+// Conversation-level evaluations can bind scope.UserID == conversation_id,
+// so "conv-26::alice" and "conv-30::alice" automatically isolate distinct
+// Alices across conversations. Production multi-user deployments inherit the
+// same isolation through scope.UserID == the end-user identifier.
 func EntityKey(s Scope, name string) string {
 	return entityKeyPrefix(s) + normalizeEntityName(name)
 }
@@ -161,7 +160,7 @@ func ScopeFromNamespace(ns string) (Scope, bool) {
 // entity. It is intentionally simpler than [NormalizeEntities]:
 // EntityStore stores ONE row per phrase as the LLM extractor
 // produced it (after lowercasing / trimming). The atomization step
-// that turns "Alice's LGBTQ support group" into individual atoms
+// that turns "Mira's photography club" into individual atoms
 // happens at WRITE time (upsertFacts feeds normalized atoms back
 // through this function) and at READ time (ruleEntities emits the
 // atoms the pipeline asks for).
@@ -207,9 +206,8 @@ type IndexEntityStoreOptions struct {
 	//
 	//   - 0 (unset): falls back to [defaultEntityMaxLinkedCount] —
 	//     the safe production default. Pre-change 0 meant "no
-	//     gate", which on long conversational corpora (LoCoMo: -31pp
-	//     qa.judge with the gate off on run 25980251192) silently
-	//     turned WithEntityStore into a footgun. Defaulting to a
+	//     gate", which on long conversational corpora could silently
+	//     turn WithEntityStore into a footgun. Defaulting to a
 	//     sane value makes "I just enabled the feature" the safe
 	//     path; tuning is the opt-in path.
 	//   - >0: that exact threshold; what the caller wrote, honoured
@@ -223,10 +221,8 @@ type IndexEntityStoreOptions struct {
 	//
 	// Why a threshold AT ALL: an entity that appears in N entries
 	// returns N candidate ids — RRF treats those as N rank votes
-	// even when each is low-confidence, which the pre-IDF entity-
-	// filter lane regression on 25866478422 (-17pp qa.judge) and
-	// the WithEntityStore baseline on 25980251192 (-31pp) already
-	// proved is a real footgun. The gate is the EntityStore
+	// even when each is low-confidence, which can displace precision
+	// picks from vector / BM25 recall. The gate is the EntityStore
 	// equivalent of [pipeline.WithEntityLaneMinSelectivity], with
 	// the same intent and a cheaper read (the count is already in
 	// metadata; no extra List/df probe needed).
@@ -246,17 +242,13 @@ type IndexEntityStoreOptions struct {
 // the common-noun pollution gate documented on
 // [IndexEntityStoreOptions.MaxLinkedCount]. Chosen empirically:
 //
-//   - LoCoMo single-conv typically lands ~250 facts. A heavy
-//     domain entity ("Alice", "London") rarely links more than
-//     60–80 of them; a saturated common-noun row ("user", "thing")
-//     hits 150+. 100 sits in the gap so the precision tail of
-//     domain entities survives while the long tail of common
-//     nouns is dropped at Lookup.
-//   - Setting MaxLinkedCount=0 (i.e. NO gate) regressed
-//     qa.judge by 31pp on run 25980251192. The gate at this
-//     threshold gives back ~9 of those 31pp without further
-//     tuning, and the rest is recoverable by hand-picking
-//     per-dataset.
+//   - Medium conversation scopes commonly land hundreds of facts. A
+//     heavy domain entity ("Alice", "London") should remain usable,
+//     while a saturated common-noun row ("user", "thing") should not
+//     be allowed to flood a recall lane.
+//   - 100 sits in that operational gap for the default path: domain
+//     entities survive while the long tail of common nouns is dropped
+//     at Lookup.
 //
 // Operators dialling for max precision on a specific corpus
 // should pass [WithEntityStoreMaxLinkedCount] with a value derived
@@ -264,13 +256,13 @@ type IndexEntityStoreOptions struct {
 const defaultEntityMaxLinkedCount = 100
 
 // defaultEntityLinkedCap caps per-entity linked_ids at 200. The
-// choice is empirical: LoCoMo single-conv ingest produces ~300 facts,
-// a heavy entity rarely appears in more than 100 of them, so 200
-// gives a 2× safety margin. At ~26 B per ULID + 4 B overhead per
+// choice is empirical: medium conversation scopes often produce a few
+// hundred facts, and heavy entities rarely need more than 100 links,
+// so 200 gives a 2× safety margin. At ~26 B per ULID + 4 B overhead per
 // list cell the metadata row sits under 6 KB, well within sqlite /
 // postgres JSON-blob limits.
 //
-// Re-evaluate if Phase-1 LoCoMo ablation shows the cap is thrashing
+// Re-evaluate if production telemetry shows the cap is thrashing
 // (signal: MetaEntityCount stuck at 200 across many entities); pass
 // [WithEntityStoreLinkedCap] to override at construction time.
 const defaultEntityLinkedCap = 200
@@ -361,7 +353,7 @@ func (s *IndexEntityStore) Link(ctx context.Context, scope Scope, entityToIDs ma
 	// can merge linked_ids deterministically. Backends without
 	// native batch-get fall through to N Get calls — acceptable
 	// because |entityToIDs| is bounded by facts*entities_per_fact
-	// (~5-20 in LoCoMo).
+	// in typical conversation scopes.
 	existing := make(map[string]retrieval.Doc, len(entityToIDs))
 	for raw := range entityToIDs {
 		key := EntityKey(scope, raw)
@@ -470,9 +462,8 @@ func (s *IndexEntityStore) Lookup(ctx context.Context, scope Scope, entities []s
 		// Common-noun pollution gate. An entity that's mentioned
 		// in too many entries provides poor IDF signal — returning
 		// its full list would let RRF vote all those entries past
-		// the precision picks of the vector / BM25 lanes (the same
-		// failure mode 25866478422 documented for the entity-filter
-		// lane). We use the cached MetaEntityCount instead of
+		// the precision picks of the vector / BM25 lanes. We use the
+		// cached MetaEntityCount instead of
 		// len(linked) so the check stays valid against future row
 		// shapes that might page their linked_ids.
 		if s.maxLinkedCount > 0 && entityLinkedCount(doc) > s.maxLinkedCount {

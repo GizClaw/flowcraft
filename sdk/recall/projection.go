@@ -180,7 +180,7 @@ const defaultReconcileInterval = 5 * time.Minute
 
 // defaultReconcileBatch caps how many entries the Reconciler holds
 // in memory per scope while computing the diff. Set high enough
-// that LoCoMo-shaped (~250 entries/scope) scopes fit in one pass
+// that medium scopes (hundreds of entries/scope) fit in one pass
 // while still bounding RSS for production-scale namespaces.
 const defaultReconcileBatch = 2000
 
@@ -326,9 +326,8 @@ func projectReplaceOrAdd(ctx context.Context, p Projection, scope Scope, entries
 
 // listAll pages through retrieval.Index.List collecting every doc
 // matching the filter. Used by the Reconciler — its caller bounds
-// memory implicitly by the per-scope alive-entry count, which for
-// LoCoMo-shaped workloads is ~250 per scope. Production deployments
-// with >batchSize entries per scope should consider raising
+// memory implicitly by the per-scope alive-entry count. Production
+// deployments with >batchSize entries per scope should consider raising
 // WithReconcileBatch (currently unexposed; revisit when needed).
 func listAll(
 	ctx context.Context,

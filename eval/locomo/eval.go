@@ -230,10 +230,8 @@ type EventHook func(ctx context.Context, e Event)
 //     "last summer"), preserve that qualifier rather than computing a
 //     precise date. The qualifier carries the speaker's actual
 //     epistemic state; converting "a few years ago" to "27 June 2020"
-//     fabricates precision. Driven by the 25872581106 cat2 diagnostic
-//     where ~30% of temporal failures came from converting relative
-//     framings ("the week before 6 July 2023") into wrong absolute
-//     dates.
+//     fabricates precision and can turn a vague but correct memory into
+//     a wrong absolute-date answer.
 //
 // Note on prior art: mem0's MEMORY_ANSWER_PROMPT (Apache 2.0,
 // mem0/configs/prompts.py) is shorter and includes a stricter

@@ -322,12 +322,12 @@ Example (LLM extractor + LLM answer + LLM judge + Qwen embedder):
 			if judge != nil {
 				j := metrics.LLMJudge{LLM: judge, Temperature: &judgeTemp}
 				switch judgeStyle {
-				case "locomo", "mem0":
+				case "locomo":
 					j.Prompt = metrics.LocoMoLLMJudgePrompt
-				case "strict", "default":
+				case "default":
 					// keep empty → DefaultLLMJudgePrompt
 				default:
-					return fmt.Errorf("--judge-style: unknown %q (want locomo|strict)", judgeStyle)
+					return fmt.Errorf("--judge-style: unknown %q (want default|locomo)", judgeStyle)
 				}
 				opts.Judge = j
 			}
@@ -385,8 +385,8 @@ Example (LLM extractor + LLM answer + LLM judge + Qwen embedder):
 	f.DurationVar(&qaTimeout, "qa-timeout", 2*time.Minute, "per-question recall+answer+judge deadline")
 	f.IntVar(&maxFacts, "max-facts", 200, "extractor: max facts per Save call")
 	f.StringVar(&rerankerLLM, "reranker-llm", "", "LLM for cross-encoder rerank, format provider:model; empty disables")
-	f.StringVar(&judgeStyle, "judge-style", "locomo", "judge prompt style: locomo (mem0-aligned, lenient) | strict (semantic-equivalence)")
-	f.Float64Var(&judgeTemp, "judge-temperature", 0.0, "judge LLM temperature (0=deterministic, mem0-aligned)")
+	f.StringVar(&judgeStyle, "judge-style", "default", "judge prompt style: default (FlowCraft answer-inclusion semantics) | locomo (leaderboard reproducer, lenient)")
+	f.Float64Var(&judgeTemp, "judge-temperature", 0.0, "judge LLM temperature (0=deterministic)")
 	f.Float64Var(&scoreThreshold, "score-threshold", 0, "drop recall hits below this score before rerank/limit (0 = SDK default 0.05)")
 	f.BoolVar(&saveWithContext, "save-with-context", false, "before extraction, recall existing facts and inject as prompt context")
 	f.BoolVar(&softMerge, "soft-merge", true, "mark older near-duplicate entries as superseded_by; SupersededDecay damps them at recall")

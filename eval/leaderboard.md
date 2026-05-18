@@ -653,8 +653,8 @@ quality":
 
 1. **Model under test** — LoCoMo qa.judge on Qwen-Max vs gpt-4o
    diverges by 10-20 pp regardless of framework.
-2. **Judge LLM + judge prompt** — a lenient mem0 prompt scores
-   3-5 pp higher than strict semantic-equivalence on the same
+2. **Judge LLM + judge prompt** — a lenient leaderboard prompt can
+   score several points higher than a stricter prompt on the same
    predictions.
 3. **Scope isolation** — pooling all LoCoMo conversations under
    one `user_id` cuts qa.judge by ~4× (see
@@ -669,6 +669,13 @@ A leaderboard that ignores these is fast to publish and
 dishonest. Every row in this document therefore ships with a
 methodology disclosure (YAML block or inline column) declaring
 the variables above plus the source URL.
+
+FlowCraft rows must also declare their profile. `sdk-default` means the
+run is intended to measure default SDK behaviour. `locomo-leaderboard`
+means the run is a benchmark-oriented reproducer and may use LoCoMo
+specific choices such as larger top-k, leaderboard judge style, or
+extra retrieval lanes. The profiles are both valid, but they answer
+different questions and must not be merged into one headline number.
 
 ### Approach
 
@@ -824,11 +831,13 @@ satisfy:
 4. **Disclosure block ticked** — explicit YAML declares §A-§E:
 
    ```yaml
+   profile: locomo-leaderboard
    scope_isolation: per_conversation # §A
    em_definition: loose # §B
-   extractor_prompt: tuned # §C
+   extractor_prompt: default # §C
    judge_style: locomo # §D
-   soft_merge: false # §E (publishing convention)
+   topk: 30
+   soft_merge: true # §E
    ```
 
 For cited competitor rows, points 1-3 are replaced by a single

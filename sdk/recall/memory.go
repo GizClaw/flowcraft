@@ -178,7 +178,7 @@ type config struct {
 	// queryEntityLLM, when set, swaps the pipeline's rule-based
 	// query-side entity extraction for an LLM-backed extractor. The
 	// rule extractor pulls only capitalized single tokens + quoted
-	// runs, so multi-word noun phrases ("LGBTQ support group") never
+	// runs, so multi-word noun phrases ("photography club") never
 	// land in QueryEntities — making them un-joinable against the
 	// LLM-extracted entity names persisted by EntityStore.Link at
 	// write time. The LLM extractor closes this asymmetry. See
@@ -395,17 +395,15 @@ func WithRecentTurns(k int) Option {
 // Save/Recall behave exactly as if the option were absent.
 //
 // Default OFF. Phased rollout: opt in per-deployment, observe
-// retrieval-quality metrics, then promote to default once the
-// LoCoMo ablation closes the architectural gap to entity-graph
-// systems (mem0 v3 et al).
+// retrieval-quality metrics, then promote to default once broad
+// conversational-memory workloads justify the extra write/read cost.
 //
 // Common-noun gate: enabling the entity store also activates the
 // pollution gate at [defaultEntityMaxLinkedCount] (100). Tune via
 // [WithEntityStoreMaxLinkedCount]. Disabling the gate (negative
-// value) is the documented audited opt-out — pre-#179.4 the gate
-// was off by default and silently cratered LoCoMo scores by 31pp
-// on run 25980251192; "just turn the feature on" now lands on the
-// safe path.
+// value) is the documented audited opt-out. The gate exists because
+// saturated entity rows can otherwise flood RRF with low-information
+// candidates; "just turn the feature on" now lands on the safe path.
 func WithEntityStore(linkedCap int) Option {
 	return func(c *config) {
 		// We can't construct the IndexEntityStore here because the
@@ -428,9 +426,7 @@ func WithEntityStore(linkedCap int) Option {
 //   - n == 0: leave the default in place ([defaultEntityMaxLinkedCount]
 //     = 100, applied by [NewIndexEntityStore]). Use this when you
 //     just want the safe production default, no opinion.
-//   - n < 0: EXPLICITLY DISABLE the gate. Pre-#179.4 / es-default
-//     the gate was off by default and silently cratered LoCoMo
-//     scores by 31pp on run 25980251192; turning it off now is
+//   - n < 0: EXPLICITLY DISABLE the gate. Turning it off is
 //     intentional and audited — [Memory.New] logs a one-time
 //     warning at construction so the opt-out leaves a paper
 //     trail. Use only when --dump-recall histograms prove your
@@ -473,9 +469,9 @@ func WithReconcileInterval(d time.Duration) Option {
 // single tokens + quoted runs only. That is sufficient for vector +
 // BM25 entity boost, but it is asymmetric with the LLM-extracted,
 // multi-word entity phrases the write-side extractor persists into
-// the EntityStore (e.g. "LGBTQ support group"). The asymmetry
-// silently collapses entity-link recall to a tiny join surface —
-// see [LoCoMo run 25908012719 / 25909308192 ablation results].
+// the EntityStore (e.g. "photography club"). The asymmetry
+// silently collapses entity-link recall to a tiny join surface in
+// entity-dense conversational workloads.
 //
 // Wiring this option causes the auto-wired LTM pipeline to swap its
 // rule-based [pipeline.EntityExtract] for an LLM-backed extractor
@@ -861,8 +857,8 @@ func New(idx retrieval.Index, opts ...Option) (Memory, error) {
 		// a negative — silent default → safe gate stays silent.
 		if cfg.entityStoreMaxLinkedCntExplicit && cfg.entityStoreMaxLinkedCnt < 0 && cfg.logger != nil {
 			cfg.logger("recall: WithEntityStoreMaxLinkedCount(%d) explicitly disables the common-noun pollution gate; "+
-				"this regressed LoCoMo qa.judge by 31pp on run 25980251192 and is only safe when --dump-recall "+
-				"histograms confirm your corpus's MetaEntityCount distribution is gate-tolerant", cfg.entityStoreMaxLinkedCnt)
+				"this is only safe when --dump-recall histograms confirm your corpus's MetaEntityCount distribution "+
+				"is gate-tolerant", cfg.entityStoreMaxLinkedCnt)
 		}
 		es := NewIndexEntityStore(idx, IndexEntityStoreOptions{
 			LinkedCap:      cfg.entityStoreLinkedCap,

@@ -341,9 +341,8 @@ func TestLookupCommonNounGate(t *testing.T) {
 // TestLookupCommonNounGate_DefaultIsSafe pins the post-es-default
 // semantic flip: MaxLinkedCount==0 now means "apply the safe
 // production default" (100), not "no gate". Pre-change 0 was the
-// dangerous path that silently regressed LoCoMo by 31pp on run
-// 25980251192; making the safe value the no-opinion default
-// prevents accidental footgun.
+// dangerous path for entity-dense conversational corpora; making the
+// safe value the no-opinion default prevents accidental footguns.
 //
 // Asserted indirectly: link 150 ids under a single entity — well
 // above the 100 default — and Lookup must return ZERO ids (the
@@ -402,9 +401,9 @@ func TestLookupCommonNounGate_ExplicitlyDisabled(t *testing.T) {
 // TestWithEntityStoreMaxLinkedCount_WarnsOnExplicitDisable pins the
 // audit trail half of es-default: passing a negative value to
 // [WithEntityStoreMaxLinkedCount] is the documented opt-out for
-// the common-noun pollution gate, but because that path is the
-// known LoCoMo footgun (-31pp on run 25980251192) [Memory.New]
-// MUST log a one-time warning at construction so the choice is
+// the common-noun pollution gate, but because that path can be a
+// footgun in entity-dense corpora [Memory.New] MUST log a one-time
+// warning at construction so the choice is
 // not silently lost in deployment.
 //
 // The complementary assertions:

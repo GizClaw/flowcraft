@@ -34,26 +34,38 @@ func (EMJudge) Score(_ context.Context, _ string, prediction string, golds []str
 // The model is constrained to a strict {"correct": true|false} JSON-Schema so
 // formatting drift ("Yes.", "Correct", "✓") can't degrade the score.
 //
-// Temperature defaults to 0 (deterministic, mem0-aligned) when nil. Set it
-// explicitly to override.
+// Temperature defaults to 0 (deterministic) when nil. Set it explicitly to
+// override.
 type LLMJudge struct {
 	LLM         llm.LLM
 	Prompt      string   // %s receives "Q: …\nGold: …\nPrediction: …"; default below
-	Temperature *float64 // nil → 0 (deterministic, mem0-aligned)
+	Temperature *float64 // nil → 0 (deterministic)
 }
 
-// DefaultLLMJudgePrompt is our original strict prompt: "semantic equivalence"
-// without explicit leniency hints. Kept for backward compatibility but
-// LocoMoLLMJudgePrompt is recommended for cross-project comparability.
-const DefaultLLMJudgePrompt = `You are an evaluator. Given the QUESTION, the GOLD answers, and a PREDICTION, decide if the prediction is semantically correct.
+// DefaultLLMJudgePrompt is FlowCraft's default answer-inclusion judge.
+// It marks a prediction correct when it conveys the gold answer's core
+// information, including as a paraphrase or inside a longer sentence with
+// additional context. It deliberately rejects topic-only matches and
+// ungrounded relative-time answers, which makes it less strict than exact
+// semantic equivalence but less permissive than the LoCoMo leaderboard prompt.
+const DefaultLLMJudgePrompt = `You are an evaluator. Given the QUESTION, the GOLD answers, and a PREDICTION, decide whether the prediction includes the core information from at least one gold answer.
 
 %s
 
-Output JSON: {"correct": true} if the prediction matches one of the gold answers (semantic equivalence is fine), otherwise {"correct": false}.`
+Mark {"correct": true} when the prediction states the gold answer's core information, either verbatim, as a paraphrase, or as part of a longer sentence with additional supported context.
 
-// LocoMoLLMJudgePrompt mirrors the prompt used by the upstream mem0 LoCoMo
-// evaluation harness (https://github.com/mem0ai/mem0/blob/main/evaluation/
-// metrics/llm_judge.py) so qa.judge numbers are comparable across projects.
+Mark {"correct": false} when:
+- the prediction merely touches on the same topic without stating the gold information;
+- the prediction contradicts the gold answer;
+- the prediction uses a relative time reference that cannot be grounded to the gold answer's absolute date or the provided conversation context.
+
+Formatting differences are fine: "May 7th" and "7 May" can match when they refer to the same date.
+
+Output strict JSON only: {"correct": true} or {"correct": false}.`
+
+// LocoMoLLMJudgePrompt mirrors the prompt used by common LoCoMo leaderboard
+// harnesses. It is opt-in only; use it when reproducing published LoCoMo
+// comparison numbers, not as FlowCraft's default judge semantics.
 //
 // Three substantive differences from DefaultLLMJudgePrompt:
 //   - explicit "be generous" instruction (topic-level match counts as CORRECT)

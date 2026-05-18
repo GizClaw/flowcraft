@@ -6,6 +6,13 @@ name: eval / locomo
 # /etc/flowcraft-eval/.env, /var/lib/flowcraft-eval/reports) is
 # tracked out-of-band by the eval owners.
 #
+# This workflow defaults to the `locomo-leaderboard` profile: a
+# benchmark-oriented configuration for reproducing public LoCoMo-style
+# comparisons. It is intentionally allowed to differ from SDK defaults.
+# Report and leaderboard consumers must treat this as a named profile, not
+# as "the SDK default score". Use `profile=sdk-default` plus matching inputs
+# when the goal is measuring default SDK behaviour.
+#
 # Canonical CLI: `eval locomo run --dataset <path> --topk N
 #                  --extractor --extractor-llm <alias>
 #                  --answer-llm <alias> --judge-llm <alias>
@@ -28,8 +35,12 @@ on:
         # /var/lib/flowcraft-eval/datasets). Override when smoke-testing
         # locally with 'synthetic' or with a repo-relative path.
         default: "/var/lib/flowcraft-eval/datasets/locomo10.jsonl"
+      profile:
+        description: "Methodology profile label: locomo-leaderboard or sdk-default"
+        required: false
+        default: "locomo-leaderboard"
       topk:
-        description: "Recall top-k"
+        description: "Recall top-k (profile default: locomo-leaderboard uses 30; sdk-default should use 10)"
         required: false
         default: "30"
       # Alias conventions in this repo (see eval/internal/env/provider.go):
@@ -39,28 +50,27 @@ on:
       #                            JSON's "model" field. With no :model
       #                            suffix the profile's own model is used.
       #
-      # Defaults below mirror the **validated 0.7575 qa.judge baseline**
-      # established by run [25896493084] (May 15, 2026, n=1542 on
-      # LoCoMo10). A blank dispatch must reproduce that result; future
-      # bumps go through a fresh paired-run on the runner. The aliases
-      # all resolve to gpt-4o-mini Azure deployments (seeded in
-      # /etc/flowcraft-eval/.env as FLOWCRAFT_TEST_AZURE_4O_MINI),
-      # mirroring the mem0 / Zep / memobase published methodology so
-      # cross-leaderboard comparisons stay apples-to-apples.
+      # Defaults below are the locomo-leaderboard profile's model aliases.
+      # They are benchmark-runner inputs, not SDK defaults. Publish the
+      # selected profile and all non-default knobs with every report.
       extractor_llm:
-        description: "Extractor model alias (validated baseline: azure_4o_mini)"
+        description: "Extractor model alias"
         required: false
         default: "azure_4o_mini"
       answer_llm:
-        description: "Answer-synthesis model alias (validated baseline: azure_4o_mini)"
+        description: "Answer-synthesis model alias"
         required: false
         default: "azure_4o_mini"
       judge_llm:
-        description: "Judge model alias (validated baseline: azure_4o_mini, aligned with mem0/Zep/memobase)"
+        description: "Judge model alias"
         required: false
         default: "azure_4o_mini"
+      judge_style:
+        description: "Judge prompt style: default (answer-inclusion) or locomo (leaderboard reproducer)"
+        required: false
+        default: "locomo"
       reranker_llm:
-        description: "Reranker LLM alias ('' to disable) (validated baseline: azure_4o_mini)"
+        description: "Reranker LLM alias ('' to disable)"
         required: false
         default: "azure_4o_mini"
       embedder:
@@ -68,11 +78,11 @@ on:
         required: false
         default: "qwen:text-embedding-v4"
       concurrency:
-        description: "QA-loop parallelism (validated baseline: 16)"
+        description: "QA-loop parallelism"
         required: false
         default: "16"
       ingest_concurrency:
-        description: "Per-conversation extractor parallelism (validated baseline: 16)"
+        description: "Per-conversation extractor parallelism"
         required: false
         default: "16"
       notify_progress_pct:
@@ -92,23 +102,22 @@ on:
         # the previously-required `--soft-merge=false` workaround is
         # gone. Only stable-attribute facts whose extractor did not
         # set Subject+Predicate are eligible for the vector supersede
-        # path. The validated 0.7575 baseline runs with true.
+        # path.
         description: "Mark near-duplicate stable-attribute facts as superseded_by (sdk default true)"
         required: false
         type: boolean
         default: true
       multi_recall:
-        # CLI default: false (keeps legacy single-lane vector recall + BM25/entity
-        # boost behaviour). The validated 0.7575 baseline runs with true,
-        # which switches LTM to 3-lane recall (vector + bm25 + entity)
-        # + RRFFusion. See sdk/retrieval/pipeline/factory.go
+        # CLI / SDK default: false. The locomo-leaderboard profile runs
+        # with true, switching LTM to 3-lane recall (vector + bm25 +
+        # entity) + RRFFusion. See sdk/retrieval/pipeline/factory.go
         # WithMultiRecall for the exact stage topology.
-        description: "Use 3-lane recall (vector+bm25+entity) + RRFFusion (validated baseline: true)"
+        description: "Use 3-lane recall (vector+bm25+entity) + RRFFusion"
         required: false
         type: boolean
         default: true
       update_resolver:
-        # Enables mem0 v3-style ADD/UPDATE/DELETE/NOOP memory linker.
+        # Enables LLM-backed ADD/UPDATE/DELETE/NOOP memory linking.
         # See sdk/recall/resolver_llm.go LLMUpdateResolver. Each Save
         # batch issues one extra LLM call (resolver decision) plus
         # N×Recall (one per new fact, top-K=20). Cost is non-trivial
@@ -133,13 +142,12 @@ on:
       save_with_context:
         # Before extraction, recall existing facts for the current scope
         # and inject them into the extractor prompt as EXISTING MEMORIES.
-        # This is mem0 v3's actual "memory linking" path: a single LLM
-        # call sees prior facts and self-dedups / skips semantic
-        # duplicates, without a destructive UPDATE/DELETE second call.
-        # Far cheaper than --update-resolver and architecturally suited
-        # to episodic-heavy datasets (LoCoMo) where old facts must
-        # never be tombstoned.
-        description: "Inject existing facts into extractor prompt (mem0 v3-style inline dedup)"
+        # A single LLM call sees prior facts and self-dedups / skips
+        # semantic duplicates, without a destructive UPDATE/DELETE second
+        # call. Far cheaper than --update-resolver and architecturally
+        # suited to episodic-heavy datasets where old facts must never be
+        # tombstoned.
+        description: "Inject existing facts into extractor prompt for inline dedup"
         required: false
         type: boolean
         default: false
@@ -158,9 +166,8 @@ on:
         # Common-noun pollution gate (row-8 hardening). Entity rows
         # whose linked_ids count exceeds this threshold are skipped at
         # Lookup time, preventing RRF rank-vote flooding by saturated
-        # entities (the failure mode that took entity-filter lane down
-        # 17pp on run 25866478422). No-op when entity_store=false.
-        description: "Skip entity rows with > N linked entries at Lookup (0 disables; 60-80 recommended for LoCoMo)"
+        # entities. No-op when entity_store=false.
+        description: "Skip entity rows with > N linked entries at Lookup (0 disables; tune per corpus)"
         required: false
         default: "0"
       entity_link_boost:
@@ -222,7 +229,7 @@ concurrency:
 env:
   RUN_ID: ${{ github.run_id }}
   REPORT_DIR: /var/lib/flowcraft-eval/reports
-  RUN_TAG: locomo-${{ github.run_id }}
+  RUN_TAG: locomo-${{ inputs.profile }}-${{ github.run_id }}
 
 jobs:
   run:
@@ -405,6 +412,7 @@ jobs:
             --extractor-llm "${{ inputs.extractor_llm }}"
             --answer-llm "${{ inputs.answer_llm }}"
             --judge-llm "${{ inputs.judge_llm }}"
+            --judge-style "${{ inputs.judge_style }}"
             --concurrency "${{ inputs.concurrency }}"
             --ingest-concurrency "${{ inputs.ingest_concurrency }}"
             --soft-merge=${{ inputs.soft_merge }}
