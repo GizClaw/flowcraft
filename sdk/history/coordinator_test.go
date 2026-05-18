@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"runtime"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -150,6 +152,225 @@ func TestCoordinator_AppendArchiveSerialized(t *testing.T) {
 	if store.maxConcurrent.Load() > 1 {
 		t.Fatalf("SaveMessages observed concurrency on the same conversation: max=%d",
 			store.maxConcurrent.Load())
+	}
+}
+
+func TestCoordinator_HotLogOwnerSerializesArchiveRecoverClearWithAppend(t *testing.T) {
+	t.Run("Archive", func(t *testing.T) {
+		ws := workspace.NewMemWorkspace()
+		store := newBlockingHotLogStore()
+		convID := "archive-append-owner"
+		seedMessages(t, store.inner, convID, 10)
+
+		cfg := DefaultDAGConfig()
+		cfg.Archive.ArchiveThreshold = 5
+		cfg.Archive.ArchiveBatchSize = 5
+		c := newCompactor(store, newNoopDAG(store, cfg), cfg, ws, "memory")
+		defer func() { _ = c.Shutdown(context.Background()) }()
+
+		entered := make(chan struct{})
+		release := make(chan struct{})
+		var once sync.Once
+		store.saveHook = func(id string, msgs []model.Message) {
+			if id == convID && len(msgs) == 5 {
+				once.Do(func() { close(entered) })
+				<-release
+			}
+		}
+
+		archiveDone := make(chan error, 1)
+		go func() {
+			_, err := c.Archive(context.Background(), convID)
+			archiveDone <- err
+		}()
+		waitForSignal(t, entered, "archive trim")
+
+		appendDone := make(chan error, 1)
+		go func() {
+			appendDone <- c.Append(context.Background(), convID, []model.Message{
+				model.NewTextMessage(model.RoleUser, "after-archive"),
+			})
+		}()
+		assertStillBlocked(t, appendDone, "Append while Archive owns hot log")
+
+		close(release)
+		if err := <-archiveDone; err != nil {
+			t.Fatalf("Archive: %v", err)
+		}
+		if err := <-appendDone; err != nil {
+			t.Fatalf("Append: %v", err)
+		}
+		got, err := store.GetMessages(context.Background(), convID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(got) != 6 {
+			t.Fatalf("expected archived remainder plus append, got %d messages", len(got))
+		}
+	})
+
+	t.Run("RecoverArchive", func(t *testing.T) {
+		ws := workspace.NewMemWorkspace()
+		store := newBlockingHotLogStore()
+		convID := "recover-append-owner"
+		seedMessages(t, store.inner, convID, 10)
+		if err := writeIntent(context.Background(), ws, "memory", "archive", convID, &archiveIntent{
+			ConvID: convID, StartSeq: 0, EndSeq: 4, BatchSize: 5,
+			ArchiveFile: "messages_0_4.jsonl.gz", Phase: archivePhaseManifestUpdate,
+		}); err != nil {
+			t.Fatal(err)
+		}
+
+		entered := make(chan struct{})
+		release := make(chan struct{})
+		var once sync.Once
+		store.saveHook = func(id string, msgs []model.Message) {
+			if id == convID && len(msgs) == 5 {
+				once.Do(func() { close(entered) })
+				<-release
+			}
+		}
+
+		c := newCompactor(store, newNoopDAG(store, DefaultDAGConfig()), DefaultDAGConfig(), ws, "memory")
+		defer func() { _ = c.Shutdown(context.Background()) }()
+		waitForSignal(t, entered, "startup recovery trim")
+
+		appendDone := make(chan error, 1)
+		go func() {
+			appendDone <- c.Append(context.Background(), convID, []model.Message{
+				model.NewTextMessage(model.RoleUser, "after-recover"),
+			})
+		}()
+		assertStillBlocked(t, appendDone, "Append while recovery owns hot log")
+
+		close(release)
+		if err := <-appendDone; err != nil {
+			t.Fatalf("Append: %v", err)
+		}
+		got, err := store.GetMessages(context.Background(), convID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(got) != 6 {
+			t.Fatalf("expected recovered remainder plus append, got %d messages", len(got))
+		}
+	})
+
+	t.Run("Clear", func(t *testing.T) {
+		store := newBlockingHotLogStore()
+		convID := "clear-append-owner"
+		seedMessages(t, store.inner, convID, 3)
+		c := newCompactor(store, newNoopDAG(store, DefaultDAGConfig()), DefaultDAGConfig(), nil, "memory")
+		defer func() { _ = c.Shutdown(context.Background()) }()
+
+		entered := make(chan struct{})
+		release := make(chan struct{})
+		store.deleteHook = func(id string) {
+			if id == convID {
+				close(entered)
+				<-release
+			}
+		}
+
+		clearDone := make(chan error, 1)
+		go func() { clearDone <- c.Clear(context.Background(), convID) }()
+		waitForSignal(t, entered, "clear")
+
+		appendDone := make(chan error, 1)
+		go func() {
+			appendDone <- c.Append(context.Background(), convID, []model.Message{
+				model.NewTextMessage(model.RoleUser, "after-clear"),
+			})
+		}()
+		assertStillBlocked(t, appendDone, "Append while Clear owns hot log")
+
+		close(release)
+		if err := <-clearDone; err != nil {
+			t.Fatalf("Clear: %v", err)
+		}
+		if err := <-appendDone; err != nil {
+			t.Fatalf("Append: %v", err)
+		}
+		got, err := store.GetMessages(context.Background(), convID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(got) != 1 {
+			t.Fatalf("expected only post-clear append, got %d messages", len(got))
+		}
+	})
+}
+
+func TestCoordinator_EnqueueClosedRaceReturnsErrClosed(t *testing.T) {
+	c := &compactor{
+		queues:       map[string]*convQueue{"race": {tasks: make(chan convTask)}},
+		shutdownDone: make(chan struct{}),
+	}
+	close(c.queues["race"].tasks)
+
+	if err := c.enqueueAsync(context.Background(), "race", convTask{kind: taskIngest}); !errors.Is(err, ErrClosed) {
+		t.Fatalf("enqueueAsync expected ErrClosed, got %v", err)
+	}
+	if err := c.enqueueSync("race", convTask{kind: taskCompact, replyCompact: make(chan compactReply, 1)}); !errors.Is(err, ErrClosed) {
+		t.Fatalf("enqueueSync expected ErrClosed, got %v", err)
+	}
+}
+
+func TestCoordinator_StartupRecoveryShutdownCancelsScan(t *testing.T) {
+	ws := &cancelAwareListWorkspace{
+		MemWorkspace: workspace.NewMemWorkspace(),
+		entered:      make(chan struct{}),
+	}
+	store := NewInMemoryStore()
+	c := newCompactor(store, newNoopDAG(store, DefaultDAGConfig()), DefaultDAGConfig(), ws, "memory")
+	waitForSignal(t, ws.entered, "startup recovery List")
+
+	start := time.Now()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := c.Shutdown(ctx); err != nil {
+		t.Fatalf("Shutdown: %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > 250*time.Millisecond {
+		t.Fatalf("Shutdown waited too long for startup recovery: %s", elapsed)
+	}
+}
+
+func TestCoordinator_LazyRecoveryFailureCanRetry(t *testing.T) {
+	ws := &lazyRetryWorkspace{MemWorkspace: workspace.NewMemWorkspace()}
+	store := NewInMemoryStore()
+	convID := "lazy-retry"
+	seedMessages(t, store, convID, 10)
+	if err := writeIntent(context.Background(), ws, "memory", "archive", convID, &archiveIntent{
+		ConvID: convID, StartSeq: 0, EndSeq: 4, BatchSize: 5,
+		ArchiveFile: "messages_0_4.jsonl.gz", Phase: archivePhaseManifestUpdate,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	c := newCompactor(store, newNoopDAG(store, DefaultDAGConfig()), DefaultDAGConfig(), ws, "memory")
+	defer func() { _ = c.Shutdown(context.Background()) }()
+
+	if _, err := c.Compact(context.Background(), convID); err != nil {
+		t.Fatalf("first Compact: %v", err)
+	}
+	intent, err := loadIntent(context.Background(), ws.MemWorkspace, "memory", "archive", convID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if intent == nil {
+		t.Fatal("first failed lazy recovery should leave intent for retry")
+	}
+
+	if _, err := c.Compact(context.Background(), convID); err != nil {
+		t.Fatalf("second Compact: %v", err)
+	}
+	intent, err = loadIntent(context.Background(), ws.MemWorkspace, "memory", "archive", convID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if intent != nil {
+		t.Fatal("second lazy recovery should clear intent")
 	}
 }
 
@@ -434,6 +655,100 @@ func (s *concurrencyAssertingStore) DeleteMessages(ctx context.Context, convID s
 // Ensure the wrapper participates as a plain Store (no MessageAppender)
 // so persistAppend goes through the SaveMessages path the test asserts.
 var _ Store = (*concurrencyAssertingStore)(nil)
+
+type cancelAwareListWorkspace struct {
+	*workspace.MemWorkspace
+	entered chan struct{}
+	once    sync.Once
+}
+
+func (w *cancelAwareListWorkspace) List(ctx context.Context, dir string) ([]fs.DirEntry, error) {
+	w.once.Do(func() { close(w.entered) })
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+type lazyRetryWorkspace struct {
+	*workspace.MemWorkspace
+	failReadOnce sync.Once
+}
+
+func (w *lazyRetryWorkspace) List(ctx context.Context, dir string) ([]fs.DirEntry, error) {
+	return nil, workspace.ErrNotFound
+}
+
+func (w *lazyRetryWorkspace) Read(ctx context.Context, path string) ([]byte, error) {
+	var fail bool
+	if strings.HasSuffix(path, "/intent.json") {
+		w.failReadOnce.Do(func() { fail = true })
+	}
+	if fail {
+		return nil, errors.New("injected intent read failure")
+	}
+	return w.MemWorkspace.Read(ctx, path)
+}
+
+type blockingHotLogStore struct {
+	inner      *InMemoryStore
+	saveHook   func(string, []model.Message)
+	deleteHook func(string)
+}
+
+func newBlockingHotLogStore() *blockingHotLogStore {
+	return &blockingHotLogStore{inner: NewInMemoryStore()}
+}
+
+func (s *blockingHotLogStore) GetMessages(ctx context.Context, convID string) ([]model.Message, error) {
+	return s.inner.GetMessages(ctx, convID)
+}
+
+func (s *blockingHotLogStore) SaveMessages(ctx context.Context, convID string, msgs []model.Message) error {
+	if s.saveHook != nil {
+		s.saveHook(convID, msgs)
+	}
+	return s.inner.SaveMessages(ctx, convID, msgs)
+}
+
+func (s *blockingHotLogStore) DeleteMessages(ctx context.Context, convID string) error {
+	if s.deleteHook != nil {
+		s.deleteHook(convID)
+	}
+	return s.inner.DeleteMessages(ctx, convID)
+}
+
+func seedMessages(t *testing.T, store *InMemoryStore, convID string, n int) {
+	t.Helper()
+	msgs := make([]model.Message, n)
+	for i := range msgs {
+		msgs[i] = model.NewTextMessage(model.RoleUser, fmt.Sprintf("seed-%d", i))
+	}
+	if err := store.SaveMessages(context.Background(), convID, msgs); err != nil {
+		t.Fatalf("seed messages: %v", err)
+	}
+}
+
+func newNoopDAG(store Store, cfg DAGConfig) *SummaryDAG {
+	summaryStore := &inMemSummaryStore{data: make(map[string][]*SummaryNode)}
+	return NewSummaryDAG(summaryStore, store, &mockSummaryLLM{}, cfg, &EstimateCounter{})
+}
+
+func waitForSignal(t *testing.T, ch <-chan struct{}, name string) {
+	t.Helper()
+	select {
+	case <-ch:
+	case <-time.After(time.Second):
+		t.Fatalf("timed out waiting for %s", name)
+	}
+}
+
+func assertStillBlocked(t *testing.T, ch <-chan error, name string) {
+	t.Helper()
+	select {
+	case err := <-ch:
+		t.Fatalf("%s returned before owner released: %v", name, err)
+	case <-time.After(25 * time.Millisecond):
+	}
+}
 
 // noopMessage placeholder helper used by the deadline test to avoid
 // importing llm in places that already have model.

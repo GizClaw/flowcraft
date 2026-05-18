@@ -189,6 +189,49 @@ func TestRecoverArchive_GzipWrittenPhase(t *testing.T) {
 	}
 }
 
+func TestRecoverArchive_GzipPendingPhaseWritesGzip(t *testing.T) {
+	ws, err := workspace.NewLocalWorkspace(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := NewFileStore(ws, "memory")
+	ctx := context.Background()
+	convID := "recover-pending"
+
+	msgs := make([]model.Message, 20)
+	for i := range msgs {
+		msgs[i] = model.NewTextMessage(model.RoleUser, "pending")
+	}
+	_ = store.SaveMessages(ctx, convID, msgs)
+
+	intent := &archiveIntent{
+		ConvID: convID, StartSeq: 0, EndSeq: 9,
+		BatchSize: 10, ArchiveFile: "messages_0_9.jsonl.gz", Phase: archivePhaseGzipPending,
+	}
+	if err := writeIntent(ctx, ws, "memory", "archive", convID, intent); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := recoverArchiveImpl(ctx, ws, store, "memory", "archive", convID); err != nil {
+		t.Fatal(err)
+	}
+
+	archived, err := LoadArchivedMessages(ctx, ws, "memory", "archive", convID, 0, 9)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(archived) != 10 {
+		t.Fatalf("expected 10 archived messages, got %d", len(archived))
+	}
+	remaining, err := store.GetMessages(ctx, convID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(remaining) != 10 {
+		t.Fatalf("expected 10 remaining after recovery, got %d", len(remaining))
+	}
+}
+
 func TestRecoverArchive_ManifestUpdatedPhase(t *testing.T) {
 	ws, err := workspace.NewLocalWorkspace(t.TempDir())
 	if err != nil {

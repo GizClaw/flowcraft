@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"sync"
 	"time"
 
@@ -334,6 +335,9 @@ func (s *FileStore) SaveMessages(ctx context.Context, conversationID string, mes
 	if len(messages) <= len(existing) {
 		return s.writeAll(ctx, path, messages)
 	}
+	if !messagesPrefixEqual(messages, existing) {
+		return s.writeAll(ctx, path, messages)
+	}
 
 	newMsgs := messages[len(existing):]
 	var buf bytes.Buffer
@@ -348,6 +352,18 @@ func (s *FileStore) SaveMessages(ctx context.Context, conversationID string, mes
 		return fmt.Errorf("memory: append %q: %w", path, err)
 	}
 	return nil
+}
+
+func messagesPrefixEqual(messages, prefix []model.Message) bool {
+	if len(prefix) > len(messages) {
+		return false
+	}
+	for i := range prefix {
+		if !reflect.DeepEqual(messages[i], prefix[i]) {
+			return false
+		}
+	}
+	return true
 }
 
 func (s *FileStore) DeleteMessages(ctx context.Context, conversationID string) error {
