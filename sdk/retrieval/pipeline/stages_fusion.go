@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"context"
+	"sort"
 
 	"github.com/GizClaw/flowcraft/sdk/retrieval"
 	"github.com/GizClaw/flowcraft/sdk/retrieval/scoring"
@@ -24,8 +25,8 @@ func (s RRFFusion) Run(_ context.Context, st *State) error {
 		return nil
 	}
 	lists := make([][]retrieval.Hit, 0, len(st.Recalls))
-	for _, hits := range st.Recalls {
-		lists = append(lists, hits)
+	for _, lane := range sortedRecallNames(st.Recalls) {
+		lists = append(lists, st.Recalls[lane])
 	}
 	st.Fused = scoring.RRF(lists, s.K)
 	return nil
@@ -67,7 +68,7 @@ type ConvexFusion struct {
 func (s ConvexFusion) Name() string { return "ConvexFusion" }
 
 // Run implements Stage.
-func (s ConvexFusion) Run(_ context.Context, st *State) error {
+func (s ConvexFusion) Run(ctx context.Context, st *State) error {
 	a := s.Alpha
 	if a < 0 {
 		a = 0
@@ -79,5 +80,14 @@ func (s ConvexFusion) Run(_ context.Context, st *State) error {
 		string(retrieval.LaneBM25):   a,
 		string(retrieval.LaneVector): 1 - a,
 	}}
-	return wf.Run(context.Background(), st)
+	return wf.Run(ctx, st)
+}
+
+func sortedRecallNames(recalls map[string][]retrieval.Hit) []string {
+	names := make([]string, 0, len(recalls))
+	for name := range recalls {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }

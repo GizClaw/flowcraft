@@ -164,9 +164,16 @@ func (p *Pipeline) Run(ctx context.Context, idx retrieval.Index, namespace strin
 			HitsOut:  hitsOut,
 		})
 		if err != nil {
+			if req.Debug.IncludeLanes || req.Debug.IncludeStages {
+				return responseFromState(st, req.Debug, time.Since(overall)), err
+			}
 			return nil, err
 		}
 	}
+	return responseFromState(st, req.Debug, time.Since(overall)), nil
+}
+
+func responseFromState(st *State, debug retrieval.SearchDebug, took time.Duration) *retrieval.SearchResponse {
 	hits := st.Final
 	if hits == nil {
 		hits = st.Reranked
@@ -174,9 +181,7 @@ func (p *Pipeline) Run(ctx context.Context, idx retrieval.Index, namespace strin
 	if hits == nil {
 		hits = st.Fused
 	}
-	resp := &retrieval.SearchResponse{Hits: hits, Took: time.Since(overall)}
-
-	debug := req.Debug
+	resp := &retrieval.SearchResponse{Hits: hits, Took: took}
 
 	if debug.IncludeLanes || debug.IncludeStages {
 		exec := &retrieval.SearchExecution{}
@@ -185,11 +190,9 @@ func (p *Pipeline) Run(ctx context.Context, idx retrieval.Index, namespace strin
 			exec.Lanes = make([]retrieval.LaneResult, 0, len(names))
 			for _, name := range names {
 				laneHits := st.Recalls[name]
-				cp := make([]retrieval.Hit, len(laneHits))
-				copy(cp, laneHits)
 				exec.Lanes = append(exec.Lanes, retrieval.LaneResult{
 					Key:  retrieval.LaneKey(name),
-					Hits: cp,
+					Hits: retrieval.CloneHits(laneHits),
 					Took: st.RecallTimings[name],
 				})
 			}
@@ -199,11 +202,9 @@ func (p *Pipeline) Run(ctx context.Context, idx retrieval.Index, namespace strin
 		// whether the pipeline ran its own lanes.
 		if debug.IncludeLanes && st.HybridExecution != nil {
 			for _, lane := range st.HybridExecution.Lanes {
-				cp := make([]retrieval.Hit, len(lane.Hits))
-				copy(cp, lane.Hits)
 				exec.Lanes = append(exec.Lanes, retrieval.LaneResult{
 					Key:      lane.Key,
-					Hits:     cp,
+					Hits:     retrieval.CloneHits(lane.Hits),
 					Took:     lane.Took,
 					Filtered: lane.Filtered,
 					Note:     lane.Note,
@@ -230,7 +231,7 @@ func (p *Pipeline) Run(ctx context.Context, idx retrieval.Index, namespace strin
 		}
 		resp.Execution = exec
 	}
-	return resp, nil
+	return resp
 }
 
 // currentHitCount returns the most-advanced hit slice length so we can

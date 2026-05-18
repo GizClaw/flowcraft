@@ -241,16 +241,9 @@ func runEntityRecall(ctx context.Context, st *State, req retrieval.SearchRequest
 		return nil, nil
 	}
 	// 1. Universe size (under the request's pre-existing scope filter).
-	nResp, err := st.Index.List(ctx, st.Namespace, retrieval.ListRequest{
-		Filter:   req.Filter,
-		PageSize: 1,
-	})
+	N, err := countDocs(ctx, st.Index, st.Namespace, req.Filter)
 	if err != nil {
 		return nil, err
-	}
-	N := int64(0)
-	if nResp != nil {
-		N = nResp.Total
 	}
 	if N < 1 {
 		N = 1
@@ -274,16 +267,9 @@ func runEntityRecall(ctx context.Context, st *State, req retrieval.SearchRequest
 		dfFilter := mergeFilter(req.Filter, retrieval.Filter{
 			ContainsAny: map[string][]any{"entities": {atom}},
 		})
-		dfResp, err := st.Index.List(ctx, st.Namespace, retrieval.ListRequest{
-			Filter:   dfFilter,
-			PageSize: 1,
-		})
+		df, err := countDocs(ctx, st.Index, st.Namespace, dfFilter)
 		if err != nil {
 			continue
-		}
-		df := int64(0)
-		if dfResp != nil {
-			df = dfResp.Total
 		}
 		dfs[atom] = df
 		idfs[atom] = math.Log(float64(N+1) / float64(df+1))
@@ -371,6 +357,17 @@ func runEntityRecall(ctx context.Context, st *State, req retrieval.SearchRequest
 		hits = hits[:spec.TopK]
 	}
 	return hits, nil
+}
+
+func countDocs(ctx context.Context, idx retrieval.Index, namespace string, f retrieval.Filter) (int64, error) {
+	if c, ok := retrieval.AsCountable(idx); ok {
+		return c.Count(ctx, namespace, f)
+	}
+	resp, err := idx.List(ctx, namespace, retrieval.ListRequest{Filter: f, PageSize: 1})
+	if err != nil || resp == nil {
+		return 0, err
+	}
+	return resp.Total, nil
 }
 
 // liftRecall promotes Recalls[Lane] into Final, letting subsequent stages
