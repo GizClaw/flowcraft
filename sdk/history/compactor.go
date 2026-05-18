@@ -515,7 +515,7 @@ func (m *compactor) lazyRecover(convID string, q *convQueue) {
 		return
 	}
 	archivePrefix := m.archivePrefix()
-	ctx, cancel := context.WithTimeout(context.Background(), defaultArchiveTimeout)
+	ctx, cancel := context.WithTimeout(m.bg.Context(), defaultArchiveTimeout)
 	defer cancel()
 	if err := m.recoverArchive(ctx, archivePrefix, convID); err != nil {
 		telemetry.Warn(ctx, "history: lazy archive recovery failed",
