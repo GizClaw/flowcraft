@@ -61,6 +61,12 @@ type Iterable interface {
 	Iterate(ctx context.Context, namespace string, cursor string, batch int) ([]Doc, string, error)
 }
 
+// Countable supports counting documents that match a filter without returning
+// a page of documents.
+type Countable interface {
+	Count(ctx context.Context, namespace string, f Filter) (int64, error)
+}
+
 // DeletableByFilter supports bulk delete by metadata predicate.
 type DeletableByFilter interface {
 	DeleteByFilter(ctx context.Context, namespace string, f Filter) (deleted int64, err error)
