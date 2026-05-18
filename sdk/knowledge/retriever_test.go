@@ -233,3 +233,46 @@ func TestRRFRanker_FusesMultipleSources(t *testing.T) {
 		t.Fatalf("a.md should rank first, got %+v", out)
 	}
 }
+
+func TestRRFRanker_ThresholdAndTopKAfterFusion(t *testing.T) {
+	r := NewRRFRanker()
+	out := r.Rank([]Candidate{
+		{Source: "bm25", Hit: Hit{DocName: "a.md", ChunkIndex: 0, Score: 3}},
+		{Source: "bm25", Hit: Hit{DocName: "b.md", ChunkIndex: 0, Score: 2}},
+		{Source: "vector", Hit: Hit{DocName: "a.md", ChunkIndex: 0, Score: 1}},
+		{Source: "vector", Hit: Hit{DocName: "c.md", ChunkIndex: 0, Score: 0.9}},
+	}, Query{TopK: 1, Threshold: 0.03})
+	if len(out) != 1 {
+		t.Fatalf("len(out)=%d, want 1: %+v", len(out), out)
+	}
+	if out[0].DocName != "a.md" {
+		t.Fatalf("top fused hit = %+v, want a.md", out[0])
+	}
+}
+
+func TestRRFRanker_DeterministicTieBreak(t *testing.T) {
+	r := NewRRFRanker()
+	out := r.Rank([]Candidate{
+		{Source: "bm25", Hit: Hit{DocName: "b.md", ChunkIndex: 0, Score: 1}},
+		{Source: "bm25", Hit: Hit{DocName: "a.md", ChunkIndex: 0, Score: 1}},
+	}, Query{TopK: 5})
+	if len(out) != 2 {
+		t.Fatalf("len(out)=%d, want 2", len(out))
+	}
+	if out[0].DocName != "b.md" || out[1].DocName != "a.md" {
+		t.Fatalf("tie order = [%s %s], want [b.md a.md]", out[0].DocName, out[1].DocName)
+	}
+}
+
+func TestFuseHitsUsesSharedRRFScoring(t *testing.T) {
+	out := FuseHits([][]Hit{
+		{{DocName: "a.md", ChunkIndex: 0, Score: 10}, {DocName: "b.md", ChunkIndex: 0, Score: 5}},
+		{{DocName: "b.md", ChunkIndex: 0, Score: 10}, {DocName: "a.md", ChunkIndex: 0, Score: 5}},
+	}, DefaultRRFK)
+	if len(out) != 2 {
+		t.Fatalf("len(out)=%d, want 2", len(out))
+	}
+	if out[0].Score != out[1].Score {
+		t.Fatalf("expected symmetric RRF scores, got %+v", out)
+	}
+}
