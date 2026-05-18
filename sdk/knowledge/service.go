@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
+	"github.com/GizClaw/flowcraft/sdk/telemetry"
+	otellog "go.opentelemetry.io/otel/log"
 )
 
 // Service orchestrates document lifecycle, derived-data persistence and
@@ -41,7 +43,11 @@ type ServiceOptions struct {
 	// freshness checks within a single binary but not stable across
 	// processes — production wiring should set it explicitly.
 	EmbedSig string
-	// Now overrides the clock; nil means time.Now (unit-test hook).
+	// Now overrides the legacy Service clock.
+	//
+	// Deprecated: DocumentRepo.Put is authoritative for UpdatedAt as of
+	// the final stateful-modules architecture. This hook no longer
+	// affects document timestamps and will be removed in v0.5.0.
 	Now func() time.Time
 }
 
@@ -86,7 +92,8 @@ func NewService(
 // PutDocument writes raw content under (datasetID, name).
 //
 // Behaviour:
-//   - SourceDocument.Version is incremented atomically by DocumentRepo.
+//   - SourceDocument.Version / UpdatedAt are assigned atomically by
+//     DocumentRepo.Put and the returned SourceDocument is authoritative.
 //   - DerivedChunks are recomputed and ChunkRepo.Replace is called.
 //   - DerivedLayers are NOT touched (layer generation is explicit; see
 //     PutDocumentLayer / PutDatasetLayer).
@@ -107,24 +114,22 @@ func (s *Service) PutDocument(ctx context.Context, datasetID, name, raw string) 
 	if err != nil && !errdefs.IsNotFound(err) {
 		return err
 	}
-	version := uint64(1)
-	if prev != nil {
-		version = prev.Version + 1
-	}
 	doc := SourceDocument{
 		DatasetID: datasetID,
 		Name:      name,
 		Content:   raw,
-		Version:   version,
-		UpdatedAt: s.now(),
 	}
 	if prev != nil {
 		doc.Metadata = copyStringMetadata(prev.Metadata)
 	}
-	if err := s.docs.Put(ctx, doc); err != nil {
+	stored, err := s.docs.Put(ctx, doc)
+	if err != nil {
 		return err
 	}
-	return s.replaceChunks(ctx, doc)
+	if stored == nil {
+		return errdefs.Validationf("knowledge: document repo returned nil SourceDocument")
+	}
+	return s.replaceChunks(ctx, *stored)
 }
 
 // DeleteDocument removes the document and all its derived data
@@ -430,6 +435,9 @@ func (s *Service) replaceChunks(ctx context.Context, doc SourceDocument) error {
 		if err != nil {
 			return fmt.Errorf("knowledge: GetDocSig: %w", err)
 		}
+		if present && existing.SourceVer > sig.SourceVer {
+			return nil
+		}
 		if present && !existing.IsStale(sig) {
 			return nil
 		}
@@ -448,11 +456,28 @@ func (s *Service) replaceChunks(ctx context.Context, doc SourceDocument) error {
 		if s.embedder != nil {
 			vec, err := s.embedder.Embed(ctx, sp.Content)
 			if err != nil {
+				telemetry.Error(ctx, "knowledge chunk embed failed",
+					otellog.String("dataset_id", doc.DatasetID),
+					otellog.String("doc_name", doc.Name),
+					otellog.Int("chunk_index", sp.Index),
+					otellog.String("error", err.Error()))
 				return fmt.Errorf("knowledge: embed chunk %d: %w", sp.Index, err)
 			}
 			c.Vector = vec
 		}
 		chunks[i] = c
+	}
+	if reader, ok := s.chunks.(ChunkSigReader); ok {
+		existing, present, err := reader.GetDocSig(ctx, doc.DatasetID, doc.Name)
+		if err != nil {
+			return fmt.Errorf("knowledge: GetDocSig: %w", err)
+		}
+		if present && existing.SourceVer > sig.SourceVer {
+			return nil
+		}
+		if present && !existing.IsStale(sig) {
+			return nil
+		}
 	}
 	return s.chunks.Replace(ctx, doc.DatasetID, doc.Name, chunks)
 }
@@ -494,18 +519,21 @@ func (s *Service) putLayer(ctx context.Context, datasetID, docName string, layer
 // document-level layers borrow the source's Version; dataset-level
 // layers use 0 (no single source).
 func (s *Service) layerSource(ctx context.Context, datasetID, docName string) (uint64, error) {
-	if docName == "" || s.docs == nil {
+	if docName == "" {
 		return 0, nil
+	}
+	if s.docs == nil {
+		return 0, errdefs.Validationf("knowledge: document store is required for document-level layers")
 	}
 	doc, err := s.docs.Get(ctx, datasetID, docName)
 	if err != nil {
 		if errdefs.IsNotFound(err) {
-			return 0, nil
+			return 0, err
 		}
 		return 0, err
 	}
 	if doc == nil {
-		return 0, nil
+		return 0, errdefs.NotFoundf("knowledge: source document %s/%s", datasetID, docName)
 	}
 	return doc.Version, nil
 }
@@ -548,7 +576,30 @@ func (s *Service) rebuildDocuments(ctx context.Context, datasetID string, scope 
 		}
 		return []SourceDocument{*doc}, nil
 	}
-	return s.docs.List(ctx, datasetID)
+	listed, err := s.docs.List(ctx, datasetID)
+	if err != nil {
+		return nil, err
+	}
+	docs := make([]SourceDocument, 0, len(listed))
+	for _, d := range listed {
+		if err := ctx.Err(); err != nil {
+			return nil, errdefs.FromContext(err)
+		}
+		if d.Name == "" {
+			continue
+		}
+		doc, err := s.docs.Get(ctx, datasetID, d.Name)
+		if err != nil {
+			if errdefs.IsNotFound(err) {
+				continue
+			}
+			return nil, err
+		}
+		if doc != nil {
+			docs = append(docs, *doc)
+		}
+	}
+	return docs, nil
 }
 
 // layerPromptSig stamps a deterministic prompt identifier onto layers.

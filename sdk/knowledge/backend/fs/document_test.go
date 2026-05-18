@@ -25,8 +25,12 @@ func TestDocumentRepo_PutIncrementsVersion(t *testing.T) {
 	ctx := context.Background()
 	doc := knowledge.SourceDocument{DatasetID: "ds1", Name: "a.md", Content: "hello"}
 
-	if err := repo.Put(ctx, doc); err != nil {
+	stored, err := repo.Put(ctx, doc)
+	if err != nil {
 		t.Fatalf("first put: %v", err)
+	}
+	if stored.Version != 1 {
+		t.Fatalf("stored first version = %d, want 1", stored.Version)
 	}
 	got, err := repo.Get(ctx, "ds1", "a.md")
 	if err != nil {
@@ -37,8 +41,12 @@ func TestDocumentRepo_PutIncrementsVersion(t *testing.T) {
 	}
 
 	doc.Content = "hello v2"
-	if err := repo.Put(ctx, doc); err != nil {
+	stored, err = repo.Put(ctx, doc)
+	if err != nil {
 		t.Fatalf("second put: %v", err)
+	}
+	if stored.Version != 2 {
+		t.Fatalf("stored second version = %d, want 2", stored.Version)
 	}
 	got, err = repo.Get(ctx, "ds1", "a.md")
 	if err != nil {
@@ -56,7 +64,7 @@ func TestDocumentRepo_GetLosslessContent(t *testing.T) {
 	repo, _ := newRepo(t)
 	ctx := context.Background()
 	raw := "---\ntitle: Demo\n---\nbody line one\nbody line two\n"
-	if err := repo.Put(ctx, knowledge.SourceDocument{DatasetID: "ds", Name: "doc.md", Content: raw}); err != nil {
+	if _, err := repo.Put(ctx, knowledge.SourceDocument{DatasetID: "ds", Name: "doc.md", Content: raw}); err != nil {
 		t.Fatalf("put: %v", err)
 	}
 	got, err := repo.Get(ctx, "ds", "doc.md")
@@ -79,7 +87,7 @@ func TestDocumentRepo_GetMissingReturnsNotFound(t *testing.T) {
 func TestDocumentRepo_DeleteRemovesSidecars(t *testing.T) {
 	repo, ws := newRepo(t)
 	ctx := context.Background()
-	if err := repo.Put(ctx, knowledge.SourceDocument{DatasetID: "ds", Name: "a.md", Content: "x"}); err != nil {
+	if _, err := repo.Put(ctx, knowledge.SourceDocument{DatasetID: "ds", Name: "a.md", Content: "x"}); err != nil {
 		t.Fatalf("put: %v", err)
 	}
 	// Drop a sidecar to verify Delete cleans it up.
@@ -111,7 +119,7 @@ func TestDocumentRepo_ListSortedByName(t *testing.T) {
 	repo, _ := newRepo(t)
 	ctx := context.Background()
 	for _, n := range []string{"c.md", "a.md", "b.md"} {
-		if err := repo.Put(ctx, knowledge.SourceDocument{DatasetID: "ds", Name: n, Content: n}); err != nil {
+		if _, err := repo.Put(ctx, knowledge.SourceDocument{DatasetID: "ds", Name: n, Content: n}); err != nil {
 			t.Fatalf("put %s: %v", n, err)
 		}
 	}
@@ -134,7 +142,7 @@ func TestDocumentRepo_ListDatasets(t *testing.T) {
 	repo, _ := newRepo(t)
 	ctx := context.Background()
 	for _, ds := range []string{"alpha", "beta", "gamma"} {
-		if err := repo.Put(ctx, knowledge.SourceDocument{DatasetID: ds, Name: "x.md", Content: "x"}); err != nil {
+		if _, err := repo.Put(ctx, knowledge.SourceDocument{DatasetID: ds, Name: "x.md", Content: "x"}); err != nil {
 			t.Fatalf("put %s: %v", ds, err)
 		}
 	}
@@ -149,10 +157,10 @@ func TestDocumentRepo_ListDatasets(t *testing.T) {
 
 func TestDocumentRepo_PutValidatesInputs(t *testing.T) {
 	repo, _ := newRepo(t)
-	if err := repo.Put(context.Background(), knowledge.SourceDocument{DatasetID: "", Name: "x", Content: "y"}); !errdefs.IsValidation(err) {
+	if _, err := repo.Put(context.Background(), knowledge.SourceDocument{DatasetID: "", Name: "x", Content: "y"}); !errdefs.IsValidation(err) {
 		t.Fatalf("missing dataset: got %v, want Validation", err)
 	}
-	if err := repo.Put(context.Background(), knowledge.SourceDocument{DatasetID: "ds", Name: "", Content: "y"}); !errdefs.IsValidation(err) {
+	if _, err := repo.Put(context.Background(), knowledge.SourceDocument{DatasetID: "ds", Name: "", Content: "y"}); !errdefs.IsValidation(err) {
 		t.Fatalf("missing name: got %v, want Validation", err)
 	}
 }

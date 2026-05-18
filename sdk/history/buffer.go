@@ -15,7 +15,12 @@ type buffer struct {
 	maxMessages int
 
 	mu    sync.Mutex
-	locks map[string]*sync.Mutex
+	locks map[string]*bufferLock
+}
+
+type bufferLock struct {
+	mu   sync.Mutex
+	refs int
 }
 
 // BufferOption customizes a [History] built by [NewBuffer].
@@ -44,7 +49,7 @@ func NewBuffer(store Store, opts ...BufferOption) History {
 	b := &buffer{
 		store:       store,
 		maxMessages: 50,
-		locks:       make(map[string]*sync.Mutex),
+		locks:       make(map[string]*bufferLock),
 	}
 	for _, opt := range opts {
 		opt(b)
@@ -89,9 +94,8 @@ func (m *buffer) Append(ctx context.Context, conversationID string, newMessages 
 	if len(newMessages) == 0 {
 		return nil
 	}
-	mu := m.convMu(conversationID)
-	mu.Lock()
-	defer mu.Unlock()
+	unlock := m.lockConv(conversationID)
+	defer unlock()
 
 	if appender, ok := m.store.(MessageAppender); ok {
 		return appender.AppendMessages(ctx, conversationID, newMessages)
@@ -110,19 +114,33 @@ func (m *buffer) Append(ctx context.Context, conversationID string, newMessages 
 }
 
 func (m *buffer) Clear(ctx context.Context, conversationID string) error {
-	mu := m.convMu(conversationID)
-	mu.Lock()
-	defer mu.Unlock()
-	return m.store.DeleteMessages(ctx, conversationID)
+	unlock := m.lockConv(conversationID)
+	defer unlock()
+	if err := m.store.DeleteMessages(ctx, conversationID); err != nil {
+		return err
+	}
+	return nil
 }
 
-func (m *buffer) convMu(convID string) *sync.Mutex {
+func (m *buffer) lockConv(convID string) func() {
 	m.mu.Lock()
-	defer m.mu.Unlock()
-	mu, ok := m.locks[convID]
+	entry, ok := m.locks[convID]
 	if !ok {
-		mu = &sync.Mutex{}
-		m.locks[convID] = mu
+		entry = &bufferLock{}
+		m.locks[convID] = entry
 	}
-	return mu
+	entry.refs++
+	m.mu.Unlock()
+
+	entry.mu.Lock()
+	return func() {
+		entry.mu.Unlock()
+
+		m.mu.Lock()
+		entry.refs--
+		if entry.refs == 0 {
+			delete(m.locks, convID)
+		}
+		m.mu.Unlock()
+	}
 }

@@ -1,7 +1,10 @@
 package history
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -114,6 +117,41 @@ func TestLoadArchivedMessages(t *testing.T) {
 	}
 }
 
+func TestLoadArchivedMessages_ReturnsDecodeError(t *testing.T) {
+	ws, err := workspace.NewLocalWorkspace(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	convID := "archive-decode-error"
+	path := "memory/" + convID + "/archive/bad.jsonl.gz"
+
+	var buf bytes.Buffer
+	gw := gzip.NewWriter(&buf)
+	if _, err := gw.Write([]byte("{bad-json\n")); err != nil {
+		t.Fatal(err)
+	}
+	if err := gw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := ws.Write(ctx, path, buf.Bytes()); err != nil {
+		t.Fatal(err)
+	}
+	if err := saveManifestImpl(ctx, ws, "memory", "archive", convID, &ArchiveManifest{
+		HotStartSeq: 1,
+		Segments: []ArchiveSegment{{
+			File: "bad.jsonl.gz", StartSeq: 0, EndSeq: 0, Count: 1, CreatedAt: time.Now(),
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = LoadArchivedMessages(ctx, ws, "memory", "archive", convID, 0, 0)
+	if err == nil || !strings.Contains(err.Error(), "decode") {
+		t.Fatalf("expected decode error, got %v", err)
+	}
+}
+
 func TestRecoverArchive_NoIntent(t *testing.T) {
 	ws, err := workspace.NewLocalWorkspace(t.TempDir())
 	if err != nil {
@@ -186,6 +224,49 @@ func TestRecoverArchive_GzipWrittenPhase(t *testing.T) {
 	loadedIntent, _ := loadIntent(ctx, ws, "memory", "archive", convID)
 	if loadedIntent != nil {
 		t.Fatal("intent should be cleaned up after recovery")
+	}
+}
+
+func TestRecoverArchive_GzipPendingPhaseWritesGzip(t *testing.T) {
+	ws, err := workspace.NewLocalWorkspace(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := NewFileStore(ws, "memory")
+	ctx := context.Background()
+	convID := "recover-pending"
+
+	msgs := make([]model.Message, 20)
+	for i := range msgs {
+		msgs[i] = model.NewTextMessage(model.RoleUser, "pending")
+	}
+	_ = store.SaveMessages(ctx, convID, msgs)
+
+	intent := &archiveIntent{
+		ConvID: convID, StartSeq: 0, EndSeq: 9,
+		BatchSize: 10, ArchiveFile: "messages_0_9.jsonl.gz", Phase: archivePhaseGzipPending,
+	}
+	if err := writeIntent(ctx, ws, "memory", "archive", convID, intent); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := recoverArchiveImpl(ctx, ws, store, "memory", "archive", convID); err != nil {
+		t.Fatal(err)
+	}
+
+	archived, err := LoadArchivedMessages(ctx, ws, "memory", "archive", convID, 0, 9)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(archived) != 10 {
+		t.Fatalf("expected 10 archived messages, got %d", len(archived))
+	}
+	remaining, err := store.GetMessages(ctx, convID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(remaining) != 10 {
+		t.Fatalf("expected 10 remaining after recovery, got %d", len(remaining))
 	}
 }
 

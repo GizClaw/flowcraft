@@ -143,6 +143,9 @@ func entityKeyPrefix(s Scope) string {
 // resolver is invoked with the ENTRY namespace and looks up its
 // sibling itself via [EntityNamespaceFor].
 func ScopeFromNamespace(ns string) (Scope, bool) {
+	if strings.HasSuffix(ns, "__entities") {
+		return Scope{}, false
+	}
 	rt, user, isUser, ok := recallNamespace.DecodeScope(ns)
 	if !ok {
 		return Scope{}, false
@@ -509,13 +512,13 @@ func (s *IndexEntityStore) Forget(ctx context.Context, scope Scope, memEntryID s
 	// rewrite the ones that match. Forget is rare relative to Link,
 	// so the O(N) scan is acceptable.
 	var page string
+	var toUpsert []retrieval.Doc
 	for {
 		req := retrieval.ListRequest{PageSize: 500, PageToken: page}
 		resp, err := s.idx.List(ctx, ns, req)
 		if err != nil || resp == nil {
 			return err
 		}
-		var toUpsert []retrieval.Doc
 		for _, d := range resp.Items {
 			linked := entityLinkedSlice(d)
 			pruned := make([]string, 0, len(linked))
@@ -538,16 +541,17 @@ func (s *IndexEntityStore) Forget(ctx context.Context, scope Scope, memEntryID s
 			d.Metadata[MetaEntityLast] = now
 			toUpsert = append(toUpsert, d)
 		}
-		if len(toUpsert) > 0 {
-			if err := s.idx.Upsert(ctx, ns, toUpsert); err != nil {
-				return fmt.Errorf("entity_store: forget rewrite: %w", err)
-			}
-		}
 		if resp.NextPageToken == "" {
-			return nil
+			break
 		}
 		page = resp.NextPageToken
 	}
+	if len(toUpsert) > 0 {
+		if err := s.idx.Upsert(ctx, ns, toUpsert); err != nil {
+			return fmt.Errorf("entity_store: forget rewrite: %w", err)
+		}
+	}
+	return nil
 }
 
 // entityLinkedSlice extracts MetaEntityLinked from a Doc, tolerating

@@ -90,6 +90,12 @@ func intentPath(prefix, archivePrefix, convID string) string {
 	return archiveDir(prefix, archivePrefix, convID) + "/intent.json"
 }
 
+const (
+	archivePhaseGzipPending    = "gzip_pending"
+	archivePhaseGzipWritten    = "gzip_written"
+	archivePhaseManifestUpdate = "manifest_updated"
+)
+
 // archiveIntent records the in-progress archive operation for crash recovery.
 type archiveIntent struct {
 	ConvID      string `json:"conv_id"`
@@ -97,7 +103,7 @@ type archiveIntent struct {
 	EndSeq      int    `json:"end_seq"`
 	BatchSize   int    `json:"batch_size"`
 	ArchiveFile string `json:"archive_file"`
-	Phase       string `json:"phase"` // "gzip_written" | "manifest_updated"
+	Phase       string `json:"phase"` // gzip_pending | gzip_written | manifest_updated
 }
 
 // writeIntent records the in-progress archive operation atomically.
@@ -154,59 +160,98 @@ func recoverArchiveImpl(ctx context.Context, ws workspace.Workspace, store Store
 		otellog.String("phase", intent.Phase))
 
 	switch intent.Phase {
-	case "manifest_updated":
+	case archivePhaseManifestUpdate:
 		// Gzip + manifest done, just need to trim messages.
-		msgs, err := store.GetMessages(ctx, convID)
-		if err != nil {
-			return fmt.Errorf("archive: recovery get messages: %w", err)
+		if err := trimRecoveredHotLog(ctx, store, convID, intent.BatchSize); err != nil {
+			return err
 		}
-		if len(msgs) > intent.BatchSize {
-			remaining := msgs[intent.BatchSize:]
-			if err := store.SaveMessages(ctx, convID, remaining); err != nil {
-				return fmt.Errorf("archive: recovery rewrite messages: %w", err)
+	case archivePhaseGzipPending:
+		archivePath := archiveDir(prefix, archivePrefix, convID) + "/" + intent.ArchiveFile
+		exists, err := ws.Exists(ctx, archivePath)
+		if err != nil {
+			return fmt.Errorf("archive: recovery check gzip: %w", err)
+		}
+		if !exists {
+			msgs, err := store.GetMessages(ctx, convID)
+			if err != nil {
+				return fmt.Errorf("archive: recovery get messages: %w", err)
+			}
+			if len(msgs) < intent.BatchSize {
+				return fmt.Errorf("archive: recovery gzip pending with only %d hot messages, need %d", len(msgs), intent.BatchSize)
+			}
+			data, err := encodeArchiveGzip(msgs[:intent.BatchSize])
+			if err != nil {
+				return err
+			}
+			if err := ws.Write(ctx, archivePath, data); err != nil {
+				return fmt.Errorf("archive: recovery write gzip: %w", err)
 			}
 		}
-	case "gzip_written":
+		intent.Phase = archivePhaseGzipWritten
+		if err := writeIntent(ctx, ws, prefix, archivePrefix, convID, intent); err != nil {
+			return fmt.Errorf("archive: recovery update intent: %w", err)
+		}
+		if err := recoverGzipWritten(ctx, ws, store, prefix, archivePrefix, convID, intent); err != nil {
+			return err
+		}
+	case archivePhaseGzipWritten:
 		// Gzip done but manifest not updated — update manifest then trim.
-		manifest, err := LoadManifest(ctx, ws, prefix, archivePrefix, convID)
-		if err != nil {
-			return fmt.Errorf("archive: recovery load manifest: %w", err)
+		if err := recoverGzipWritten(ctx, ws, store, prefix, archivePrefix, convID, intent); err != nil {
+			return err
 		}
-		// Check idempotency: skip if segment already in manifest.
-		alreadyDone := false
-		for _, seg := range manifest.Segments {
-			if seg.File == intent.ArchiveFile {
-				alreadyDone = true
-				break
-			}
-		}
-		if !alreadyDone {
-			manifest.Segments = append(manifest.Segments, ArchiveSegment{
-				File:      intent.ArchiveFile,
-				StartSeq:  intent.StartSeq,
-				EndSeq:    intent.EndSeq,
-				Count:     intent.BatchSize,
-				CreatedAt: time.Now(),
-			})
-			manifest.HotStartSeq = intent.EndSeq + 1
-			if err := saveManifestImpl(ctx, ws, prefix, archivePrefix, convID, manifest); err != nil {
-				return fmt.Errorf("archive: recovery save manifest: %w", err)
-			}
-		}
-		msgs, err := store.GetMessages(ctx, convID)
-		if err != nil {
-			return fmt.Errorf("archive: recovery get messages: %w", err)
-		}
-		if len(msgs) > intent.BatchSize {
-			remaining := msgs[intent.BatchSize:]
-			if err := store.SaveMessages(ctx, convID, remaining); err != nil {
-				return fmt.Errorf("archive: recovery rewrite messages: %w", err)
-			}
-		}
+	default:
+		return fmt.Errorf("archive: unknown recovery phase %q", intent.Phase)
 	}
 
 	deleteIntent(ctx, ws, prefix, archivePrefix, convID)
 	telemetry.Info(ctx, "archive: recovery completed", otellog.String(telemetry.AttrConversationID, convID))
+	return nil
+}
+
+func recoverGzipWritten(ctx context.Context, ws workspace.Workspace, store Store, prefix, archivePrefix, convID string, intent *archiveIntent) error {
+	manifest, err := LoadManifest(ctx, ws, prefix, archivePrefix, convID)
+	if err != nil {
+		return fmt.Errorf("archive: recovery load manifest: %w", err)
+	}
+	// Check idempotency: skip if segment already in manifest.
+	alreadyDone := false
+	for _, seg := range manifest.Segments {
+		if seg.File == intent.ArchiveFile {
+			alreadyDone = true
+			break
+		}
+	}
+	if !alreadyDone {
+		manifest.Segments = append(manifest.Segments, ArchiveSegment{
+			File:      intent.ArchiveFile,
+			StartSeq:  intent.StartSeq,
+			EndSeq:    intent.EndSeq,
+			Count:     intent.BatchSize,
+			CreatedAt: time.Now(),
+		})
+		manifest.HotStartSeq = intent.EndSeq + 1
+		if err := saveManifestImpl(ctx, ws, prefix, archivePrefix, convID, manifest); err != nil {
+			return fmt.Errorf("archive: recovery save manifest: %w", err)
+		}
+	}
+	intent.Phase = archivePhaseManifestUpdate
+	if err := writeIntent(ctx, ws, prefix, archivePrefix, convID, intent); err != nil {
+		return fmt.Errorf("archive: recovery update intent: %w", err)
+	}
+	return trimRecoveredHotLog(ctx, store, convID, intent.BatchSize)
+}
+
+func trimRecoveredHotLog(ctx context.Context, store Store, convID string, batchSize int) error {
+	msgs, err := store.GetMessages(ctx, convID)
+	if err != nil {
+		return fmt.Errorf("archive: recovery get messages: %w", err)
+	}
+	if len(msgs) >= batchSize {
+		remaining := msgs[batchSize:]
+		if err := store.SaveMessages(ctx, convID, remaining); err != nil {
+			return fmt.Errorf("archive: recovery rewrite messages: %w", err)
+		}
+	}
 	return nil
 }
 
@@ -273,32 +318,28 @@ func Archive(ctx context.Context, ws workspace.Workspace, store Store, prefix, c
 	endSeq := startSeq + batchSize - 1
 	archiveFile := fmt.Sprintf("messages_%d_%d.jsonl.gz", startSeq, endSeq)
 
-	// Phase 1: compress and write gzip.
-	var buf bytes.Buffer
-	gw := gzip.NewWriter(&buf)
-	enc := json.NewEncoder(gw)
-	enc.SetEscapeHTML(false)
-	for _, msg := range toArchive {
-		if err := enc.Encode(msg); err != nil {
-			_ = gw.Close()
-			return result, fmt.Errorf("archive: encode message: %w", err)
-		}
-	}
-	if err := gw.Close(); err != nil {
-		return result, fmt.Errorf("archive: gzip close: %w", err)
-	}
-
-	archivePath := archiveDir(prefix, archivePrefix, convID) + "/" + archiveFile
-	if err := ws.Write(ctx, archivePath, buf.Bytes()); err != nil {
-		return result, fmt.Errorf("archive: write gzip: %w", err)
-	}
-
 	intent := &archiveIntent{
 		ConvID: convID, StartSeq: startSeq, EndSeq: endSeq,
-		BatchSize: batchSize, ArchiveFile: archiveFile, Phase: "gzip_written",
+		BatchSize: batchSize, ArchiveFile: archiveFile, Phase: archivePhaseGzipPending,
 	}
 	if err := writeIntent(ctx, ws, prefix, archivePrefix, convID, intent); err != nil {
 		return result, fmt.Errorf("archive: write intent: %w", err)
+	}
+
+	// Phase 1: compress and write gzip.
+	data, err := encodeArchiveGzip(toArchive)
+	if err != nil {
+		return result, err
+	}
+
+	archivePath := archiveDir(prefix, archivePrefix, convID) + "/" + archiveFile
+	if err := ws.Write(ctx, archivePath, data); err != nil {
+		return result, fmt.Errorf("archive: write gzip: %w", err)
+	}
+
+	intent.Phase = archivePhaseGzipWritten
+	if err := writeIntent(ctx, ws, prefix, archivePrefix, convID, intent); err != nil {
+		return result, fmt.Errorf("archive: update intent: %w", err)
 	}
 
 	// Phase 2: update manifest.
@@ -315,7 +356,7 @@ func Archive(ctx context.Context, ws workspace.Workspace, store Store, prefix, c
 		return result, fmt.Errorf("archive: save manifest: %w", err)
 	}
 
-	intent.Phase = "manifest_updated"
+	intent.Phase = archivePhaseManifestUpdate
 	if err := writeIntent(ctx, ws, prefix, archivePrefix, convID, intent); err != nil {
 		return result, fmt.Errorf("archive: update intent: %w", err)
 	}
@@ -337,6 +378,23 @@ func Archive(ctx context.Context, ws workspace.Workspace, store Store, prefix, c
 		otellog.String("file", archiveFile))
 
 	return result, nil
+}
+
+func encodeArchiveGzip(messages []model.Message) ([]byte, error) {
+	var buf bytes.Buffer
+	gw := gzip.NewWriter(&buf)
+	enc := json.NewEncoder(gw)
+	enc.SetEscapeHTML(false)
+	for _, msg := range messages {
+		if err := enc.Encode(msg); err != nil {
+			_ = gw.Close()
+			return nil, fmt.Errorf("archive: encode message: %w", err)
+		}
+	}
+	if err := gw.Close(); err != nil {
+		return nil, fmt.Errorf("archive: gzip close: %w", err)
+	}
+	return buf.Bytes(), nil
 }
 
 func archiveDir(prefix, archivePrefix, convID string) string {
@@ -386,7 +444,7 @@ func LoadArchivedMessages(ctx context.Context, ws workspace.Workspace, prefix, a
 		for scanner.More() {
 			var msg model.Message
 			if err := scanner.Decode(&msg); err != nil {
-				break
+				return nil, fmt.Errorf("archive: decode %q at seq %d: %w", path, seq, err)
 			}
 			if seq >= startSeq && seq <= endSeq {
 				result = append(result, msg)

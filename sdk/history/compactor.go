@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
+	"github.com/GizClaw/flowcraft/sdk/internal/background"
 	"github.com/GizClaw/flowcraft/sdk/internal/syncx"
 	"github.com/GizClaw/flowcraft/sdk/llm"
 	"github.com/GizClaw/flowcraft/sdk/model"
@@ -58,6 +59,7 @@ type compactor struct {
 	queues  map[string]*convQueue
 	state   atomic.Int32 // open(0) → closing(1) → closed(2)
 	closeWg sync.WaitGroup
+	bg      *background.Group
 
 	// persistMu serialises Append per conversation across two
 	// critical sections that must be one:
@@ -167,6 +169,7 @@ func newCompactor(store Store, dag *SummaryDAG, config DAGConfig, ws workspace.W
 		ws:           ws,
 		prefix:       prefix,
 		queues:       make(map[string]*convQueue),
+		bg:           background.NewGroup(context.Background()),
 		shutdownDone: make(chan struct{}),
 	}
 	c.kickoffStartupRecovery()
@@ -205,8 +208,9 @@ func (m *compactor) LoadFiltered(ctx context.Context, conversationID string, opt
 	return ApplyLoadOptions(msgs, opts), nil
 }
 
-// clampPreservingSystem keeps the leading system message (if any) when
-// trimming from the head to satisfy MaxMessages.
+// clampPreservingSystem keeps the leading system message (if any) when there is
+// room for both system and conversation content. With maxMsgs==1 the most recent
+// non-system message is more useful than a system-only prompt.
 func clampPreservingSystem(msgs []model.Message, maxMsgs int) []model.Message {
 	if maxMsgs <= 0 || len(msgs) <= maxMsgs {
 		return msgs
@@ -214,6 +218,11 @@ func clampPreservingSystem(msgs []model.Message, maxMsgs int) []model.Message {
 	if len(msgs) > 0 && msgs[0].Role == model.RoleSystem {
 		head := msgs[0]
 		if maxMsgs == 1 {
+			for i := len(msgs) - 1; i >= 1; i-- {
+				if msgs[i].Role != model.RoleSystem {
+					return []model.Message{msgs[i]}
+				}
+			}
 			return []model.Message{head}
 		}
 		tail := msgs[1:]
@@ -247,9 +256,9 @@ func (m *compactor) Append(ctx context.Context, conversationID string, newMessag
 	// the worker could see a later task (startSeq=N) ahead of the
 	// earlier task (startSeq=0) that produced N — corrupting DAG
 	// summary parent/child wiring because ingest is positional on
-	// startSeq. enqueueAsync only does a bounded channel handoff
-	// and never re-enters persistMu, so the extended critical
-	// section cannot deadlock. See issue #179.2.
+	// startSeq. enqueueAsync now uses a bounded, context-aware channel
+	// handoff, so this critical section preserves ordering without
+	// waiting indefinitely on queue backpressure. See issue #179.2.
 	m.persistMu.Lock(conversationID)
 	defer m.persistMu.Unlock(conversationID)
 
@@ -258,14 +267,14 @@ func (m *compactor) Append(ctx context.Context, conversationID string, newMessag
 		return err
 	}
 
-	if err := m.enqueueAsync(conversationID, convTask{
+	if err := m.enqueueAsync(ctx, conversationID, convTask{
 		kind:     taskIngest,
 		msgs:     newMessages,
 		startSeq: startSeq,
 	}); err != nil {
-		// On Shutdown race the messages are already durable; lose only
-		// the async DAG ingest, which would have been best-effort anyway.
-		telemetry.Warn(ctx, "history: async ingest dropped during shutdown",
+		// The messages are already durable; lose only the async DAG ingest,
+		// which is best-effort when shutdown or backpressure intervenes.
+		telemetry.Warn(ctx, "history: async ingest dropped",
 			otellog.String(telemetry.AttrConversationID, conversationID),
 			otellog.String(telemetry.AttrErrorMessage, err.Error()))
 	}
@@ -401,6 +410,7 @@ func (m *compactor) Shutdown(ctx context.Context) error {
 		m.mu.Unlock()
 
 		go func() {
+			m.bg.Close()
 			m.closeWg.Wait()
 			m.state.Store(stateClosed)
 			close(m.shutdownDone)
@@ -419,37 +429,51 @@ func (m *compactor) Shutdown(ctx context.Context) error {
 var _ Coordinator = (*compactor)(nil)
 
 // enqueueAsync routes a fire-and-forget task (ingest) to the conv queue.
-// Returns ErrClosed if Shutdown has started in the meantime; never
-// returns a backpressure error because Append falls back to telemetry
-// rather than failing user writes.
-func (m *compactor) enqueueAsync(convID string, task convTask) error {
+// Returns ErrClosed if Shutdown has started in the meantime. Queue
+// backpressure is bounded by ctx/defaultIngestTimeout because Append already
+// holds the hot-log owner to preserve persist->enqueue ordering.
+func (m *compactor) enqueueAsync(ctx context.Context, convID string, task convTask) (err error) {
 	q, err := m.queueFor(convID)
 	if err != nil {
 		return err
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	enqueueCtx, cancel := context.WithTimeout(ctx, defaultIngestTimeout)
+	defer cancel()
 	defer func() {
 		// Recover from a "send on closed channel" panic that can occur
-		// only if Shutdown closes the channel between our state-check
-		// and the send below. Treat it as ErrClosed.
-		_ = recover()
+		// only if Shutdown/Clear closes the channel between our state-check
+		// and the send below. Treat it as ErrClosed so callers do not wait
+		// on a reply that can never arrive.
+		if recover() != nil {
+			err = ErrClosed
+		}
 	}()
 	if m.state.Load() != stateOpen {
 		return ErrClosed
 	}
-	q.tasks <- task
-	return nil
+	select {
+	case q.tasks <- task:
+		return nil
+	case <-enqueueCtx.Done():
+		return errdefs.FromContext(enqueueCtx.Err())
+	}
 }
 
 // enqueueSync routes a request/reply task and waits for the worker to
 // pick it up. Synchronous callers (Compact/Archive/Clear) handle their
 // own reply channel + ctx wait.
-func (m *compactor) enqueueSync(convID string, task convTask) error {
+func (m *compactor) enqueueSync(convID string, task convTask) (err error) {
 	q, err := m.queueFor(convID)
 	if err != nil {
 		return err
 	}
 	defer func() {
-		_ = recover()
+		if recover() != nil {
+			err = ErrClosed
+		}
 	}()
 	if m.state.Load() != stateOpen {
 		return ErrClosed
@@ -493,17 +517,19 @@ func (m *compactor) lazyRecover(convID string, q *convQueue) {
 	if m.ws == nil {
 		return
 	}
-	if !q.recovered.CompareAndSwap(false, true) {
+	if q.recovered.Load() {
 		return
 	}
 	archivePrefix := m.archivePrefix()
-	ctx, cancel := context.WithTimeout(context.Background(), defaultArchiveTimeout)
+	ctx, cancel := context.WithTimeout(m.bg.Context(), defaultArchiveTimeout)
 	defer cancel()
-	if err := recoverArchiveImpl(ctx, m.ws, m.store, m.prefix, archivePrefix, convID); err != nil {
+	if err := m.recoverArchive(ctx, archivePrefix, convID); err != nil {
 		telemetry.Warn(ctx, "history: lazy archive recovery failed",
 			otellog.String(telemetry.AttrConversationID, convID),
 			otellog.String(telemetry.AttrErrorMessage, err.Error()))
+		return
 	}
+	q.recovered.Store(true)
 }
 
 func (m *compactor) runTask(convID string, task convTask) {
@@ -521,7 +547,7 @@ func (m *compactor) runTask(convID string, task convTask) {
 			return
 		}
 		archiveCtx, cancelArchive := context.WithTimeout(context.Background(), defaultArchiveTimeout)
-		if _, err := Archive(archiveCtx, m.ws, m.store, m.prefix, convID, m.config.Archive); err != nil {
+		if _, err := m.archive(archiveCtx, convID); err != nil {
 			telemetry.Warn(archiveCtx, "history: async archive failed",
 				otellog.String(telemetry.AttrConversationID, convID),
 				otellog.String(telemetry.AttrErrorMessage, err.Error()))
@@ -530,7 +556,7 @@ func (m *compactor) runTask(convID string, task convTask) {
 
 	case taskArchive:
 		ctx, cancel := context.WithTimeout(context.Background(), defaultArchiveTimeout)
-		res, err := Archive(ctx, m.ws, m.store, m.prefix, convID, m.config.Archive)
+		res, err := m.archive(ctx, convID)
 		cancel()
 		task.replyArchive <- archiveReply{res: res, err: err}
 
@@ -562,10 +588,24 @@ func (m *compactor) runTask(convID string, task convTask) {
 }
 
 func (m *compactor) runClear(ctx context.Context, convID string) error {
+	m.persistMu.Lock(convID)
+	defer m.persistMu.Unlock(convID)
 	if err := m.store.DeleteMessages(ctx, convID); err != nil {
 		return err
 	}
 	return m.dag.store.Rewrite(ctx, convID, nil)
+}
+
+func (m *compactor) archive(ctx context.Context, convID string) (ArchiveResult, error) {
+	m.persistMu.Lock(convID)
+	defer m.persistMu.Unlock(convID)
+	return Archive(ctx, m.ws, m.store, m.prefix, convID, m.config.Archive)
+}
+
+func (m *compactor) recoverArchive(ctx context.Context, archivePrefix, convID string) error {
+	m.persistMu.Lock(convID)
+	defer m.persistMu.Unlock(convID)
+	return recoverArchiveImpl(ctx, m.ws, m.store, m.prefix, archivePrefix, convID)
 }
 
 // removeQueue closes and removes a per-conversation queue. Safe to call
@@ -603,10 +643,8 @@ func (m *compactor) kickoffStartupRecovery() {
 	archivePrefix := m.archivePrefix()
 	prefix := m.prefix
 
-	m.closeWg.Add(1)
-	go func() {
-		defer m.closeWg.Done()
-		ctx, cancel := context.WithTimeout(context.Background(), defaultArchiveTimeout)
+	m.bg.Start(func(groupCtx context.Context) {
+		ctx, cancel := context.WithTimeout(groupCtx, defaultArchiveTimeout)
 		defer cancel()
 		entries, err := m.ws.List(ctx, prefix)
 		if err != nil {
@@ -618,7 +656,7 @@ func (m *compactor) kickoffStartupRecovery() {
 				continue
 			}
 			convID := e.Name()
-			if err := recoverArchiveImpl(ctx, m.ws, m.store, prefix, archivePrefix, convID); err != nil {
+			if err := m.recoverArchive(ctx, archivePrefix, convID); err != nil {
 				telemetry.Warn(ctx, "history: startup archive recovery failed",
 					otellog.String(telemetry.AttrConversationID, convID),
 					otellog.String(telemetry.AttrErrorMessage, err.Error()))
@@ -640,7 +678,7 @@ func (m *compactor) kickoffStartupRecovery() {
 			}
 			m.mu.Unlock()
 		}
-	}()
+	})
 }
 
 // CompactOption customizes a [History] built by [NewCompacted].
@@ -1129,9 +1167,13 @@ func (d *SummaryDAG) Assemble(ctx context.Context, convID string, tokenBudget in
 		availableBudget = tokenBudget / 2
 	}
 
-	recentBudget := int(float64(availableBudget) * d.config.RecentRatio)
-	midBudget := int(float64(availableBudget) * d.config.MidRatio)
+	recentRatio, midRatio := normalizedHistoryRatios(d.config.RecentRatio, d.config.MidRatio)
+	recentBudget := int(float64(availableBudget) * recentRatio)
+	midBudget := int(float64(availableBudget) * midRatio)
 	farBudget := availableBudget - recentBudget - midBudget
+	if farBudget < 0 {
+		farBudget = 0
+	}
 
 	// Recent messages (from tail).
 	var recentMsgs []llm.Message
@@ -1149,6 +1191,11 @@ func (d *SummaryDAG) Assemble(ctx context.Context, convID string, tokenBudget in
 		}
 	}
 	recentMsgs = nonSystemMsgs[recentCutoff:]
+	if len(recentMsgs) == 0 && len(nonSystemMsgs) > 0 {
+		recentMsgs = nonSystemMsgs[len(nonSystemMsgs)-1:]
+		recentCutoff = len(nonSystemMsgs) - 1
+		recentTokens = d.countMsg(recentMsgs[0])
+	}
 
 	// Get summaries for earlier messages.
 	allSummaries, _ := d.store.List(ctx, convID, SummaryListOptions{})
@@ -1209,6 +1256,20 @@ func (d *SummaryDAG) Assemble(ctx context.Context, convID string, tokenBudget in
 
 	result = append(result, recentMsgs...)
 	return sanitizeToolPairs(result), nil
+}
+
+func normalizedHistoryRatios(recent, mid float64) (float64, float64) {
+	if recent < 0 {
+		recent = 0
+	}
+	if mid < 0 {
+		mid = 0
+	}
+	sum := recent + mid
+	if sum <= 1 {
+		return recent, mid
+	}
+	return recent / sum, mid / sum
 }
 
 // Compact removes deleted nodes and prunes leaf content.

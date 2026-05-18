@@ -64,6 +64,13 @@ func (r *RetrievalChunkRepo) Replace(ctx context.Context, datasetID, docName str
 		return errdefs.Validationf("knowledge/retrieval: dataset_id and doc_name are required")
 	}
 	ns := chunksNamespace(datasetID)
+	if len(chunks) > 0 {
+		if existing, present, err := r.GetDocSig(ctx, datasetID, docName); err != nil {
+			return err
+		} else if present && existing.SourceVer > chunksSourceVer(chunks) {
+			return nil
+		}
+	}
 
 	if err := r.deleteByDoc(ctx, ns, docName); err != nil {
 		return err
@@ -152,7 +159,8 @@ func (r *RetrievalChunkRepo) deleteDocLevel(ctx context.Context, datasetID, docN
 }
 
 // DeleteByDoc removes every chunk for (datasetID, docName) and the
-// matching doc-level entry from the __docs namespace.
+// matching doc-level entry from the __docs namespace. Missing target
+// documents are idempotent success and do not return NotFound.
 func (r *RetrievalChunkRepo) DeleteByDoc(ctx context.Context, datasetID, docName string) error {
 	if datasetID == "" || docName == "" {
 		return errdefs.Validationf("knowledge/retrieval: dataset_id and doc_name are required")
@@ -431,6 +439,16 @@ func (r *RetrievalChunkRepo) searchOne(ctx context.Context, ns string, q knowled
 		return nil, nil
 	}
 	return resp.Hits, nil
+}
+
+func chunksSourceVer(chunks []knowledge.DerivedChunk) uint64 {
+	var out uint64
+	for _, c := range chunks {
+		if c.Sig.SourceVer > out {
+			out = c.Sig.SourceVer
+		}
+	}
+	return out
 }
 
 // SearchDocs runs a doc-level BM25 query directly against the

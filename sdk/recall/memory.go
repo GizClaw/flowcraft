@@ -1016,7 +1016,17 @@ func (m *lt) JobStatus(ctx context.Context, id JobID) (JobStatus, error) {
 
 // AwaitJob polls JobQueue until terminal state or timeout.
 func (m *lt) AwaitJob(ctx context.Context, id JobID, timeout time.Duration) (JobStatus, error) {
-	deadline := m.cfg.now().Add(timeout)
+	if timeout <= 0 {
+		s, err := m.JobStatus(ctx, id)
+		if err != nil {
+			return JobStatus{}, err
+		}
+		return s, ErrAwaitTimeout
+	}
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	ticker := time.NewTicker(50 * time.Millisecond)
+	defer ticker.Stop()
 	for {
 		s, err := m.JobStatus(ctx, id)
 		if err != nil {
@@ -1026,13 +1036,12 @@ func (m *lt) AwaitJob(ctx context.Context, id JobID, timeout time.Duration) (Job
 		case JobSucceeded, JobFailed, JobDead:
 			return s, nil
 		}
-		if !m.cfg.now().Before(deadline) {
-			return s, ErrAwaitTimeout
-		}
 		select {
 		case <-ctx.Done():
 			return s, errdefs.FromContext(ctx.Err())
-		case <-time.After(50 * time.Millisecond):
+		case <-timer.C:
+			return s, ErrAwaitTimeout
+		case <-ticker.C:
 		}
 	}
 }

@@ -3,14 +3,20 @@ package knowledge
 import "context"
 
 // DocumentRepo persists SourceDocuments. Implementations MUST guarantee:
-//   - Put atomically increments SourceDocument.Version.
+//   - Put atomically assigns SourceDocument.Version / UpdatedAt and
+//     returns the authoritative stored document.
 //   - Get returns the most recent Put with Content losslessly preserved
 //     (contract guarantee #4).
 //   - Delete is idempotent.
 //
+// Put used to return only error, leaving Service to predict the final
+// SourceDocument.Version. That contract is deprecated in favour of the
+// repository-authoritative return value and will be removed entirely in
+// v0.5.0.
+//
 // Implementations live in sdk/knowledge/backend/*.
 type DocumentRepo interface {
-	Put(ctx context.Context, doc SourceDocument) error
+	Put(ctx context.Context, doc SourceDocument) (*SourceDocument, error)
 	Get(ctx context.Context, datasetID, name string) (*SourceDocument, error)
 	Delete(ctx context.Context, datasetID, name string) error
 	List(ctx context.Context, datasetID string) ([]SourceDocument, error)
@@ -36,6 +42,8 @@ type ChunkQuery struct {
 // when a SourceDocument is updated (contract guarantee #5).
 type ChunkRepo interface {
 	Replace(ctx context.Context, datasetID, docName string, chunks []DerivedChunk) error
+	// DeleteByDoc removes all chunks for a document. Missing target
+	// documents are idempotent success and MUST NOT return NotFound.
 	DeleteByDoc(ctx context.Context, datasetID, docName string) error
 	DeleteByDataset(ctx context.Context, datasetID string) error
 	Search(ctx context.Context, q ChunkQuery) ([]Candidate, error)
@@ -118,6 +126,9 @@ type LayerQuery struct {
 type LayerRepo interface {
 	Put(ctx context.Context, layer DerivedLayer) error
 	Get(ctx context.Context, datasetID, docName string, layer Layer) (*DerivedLayer, error)
+	// DeleteByDoc removes all document-level layers for a document.
+	// Missing target documents are idempotent success and MUST NOT
+	// return NotFound.
 	DeleteByDoc(ctx context.Context, datasetID, docName string) error
 	DeleteByDataset(ctx context.Context, datasetID string) error
 	Search(ctx context.Context, q LayerQuery) ([]Candidate, error)

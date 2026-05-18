@@ -3,6 +3,7 @@ package history
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/GizClaw/flowcraft/sdk/workspace"
@@ -188,6 +189,54 @@ func TestFileSummaryStore_CacheUpdatedOnSave(t *testing.T) {
 	if len(cached) != 2 {
 		t.Fatalf("expected 2 in cache, got %d", len(cached))
 	}
+}
+
+func TestFileSummaryStore_SaveRestoresCacheAfterLRUEviction(t *testing.T) {
+	base := workspace.NewMemWorkspace()
+	ctx := context.Background()
+	var store *FileSummaryStore
+	ws := &appendHookWorkspace{Workspace: base}
+	ws.onAppend = func(path string) {
+		if !strings.Contains(path, "mem/c/summaries.jsonl") {
+			return
+		}
+		ws.onAppend = nil
+		_ = store.Save(ctx, &SummaryNode{ConversationID: "other", Content: "evicting node"})
+	}
+	store = NewFileSummaryStore(ws, "mem", WithSummaryStoreCapacity(1))
+
+	if err := store.Save(ctx, &SummaryNode{ConversationID: "c", Content: "first"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Save(ctx, &SummaryNode{ConversationID: "c", Content: "second"}); err != nil {
+		t.Fatal(err)
+	}
+
+	cached, ok := cacheSnapshot(store, "c")
+	if !ok {
+		t.Fatal("expected c cache to be restored after save")
+	}
+	if len(cached) != 2 {
+		t.Fatalf("expected restored cache to contain both nodes, got %d", len(cached))
+	}
+	if cached[0].Content != "first" || cached[1].Content != "second" {
+		t.Fatalf("unexpected cache contents: %+v", cached)
+	}
+}
+
+type appendHookWorkspace struct {
+	workspace.Workspace
+	onAppend func(path string)
+}
+
+func (w *appendHookWorkspace) Append(ctx context.Context, path string, data []byte) error {
+	if err := w.Workspace.Append(ctx, path, data); err != nil {
+		return err
+	}
+	if w.onAppend != nil {
+		w.onAppend(path)
+	}
+	return nil
 }
 
 func TestFileSummaryStore_CacheUpdatedOnRewrite(t *testing.T) {
