@@ -472,13 +472,30 @@ func (m *memory) lockWriteScope(scope Scope) func() {
 // the resolver issued. First failure aborts and returns the prefix
 // of closes that already committed so the caller's rollback can
 // reopen exactly those — leaving any close that never landed alone.
+//
+// ErrValidityAlreadyClosed is intentionally NOT propagated: the
+// resolver decided the prior fact must be closed and another writer
+// has already achieved that post-state (with a different correctedBy
+// /validTo tuple). Failing the whole Save would roll back the new
+// fact we just appended, which is strictly worse than silently
+// accepting that the prior fact is closed by someone else — the new
+// fact still carries the Supersedes pointer the resolver added, so
+// the supersede chain stays reconstructable from the new fact alone.
+// The benign close is recorded via pipeline telemetry so operators
+// can still spot pathological rates.
 func (m *memory) applyValidityCloses(ctx context.Context, closes []compiler.ValidityClose) ([]compiler.ValidityClose, error) {
 	applied := make([]compiler.ValidityClose, 0, len(closes))
 	for _, c := range closes {
-		if err := m.store.UpdateValidity(ctx, c.Scope, c.FactID, c.ValidTo, c.CorrectedBy); err != nil {
-			return applied, fmt.Errorf("update validity %s: %w", c.FactID, err)
+		err := m.store.UpdateValidity(ctx, c.Scope, c.FactID, c.ValidTo, c.CorrectedBy)
+		if err == nil {
+			applied = append(applied, c)
+			continue
 		}
-		applied = append(applied, c)
+		if errors.Is(err, temporalstore.ErrValidityAlreadyClosed) {
+			m.emitPipeline(c.Scope, "store", "validity_close_already_closed", 1, time.Now(), err)
+			continue
+		}
+		return applied, fmt.Errorf("update validity %s: %w", c.FactID, err)
 	}
 	return applied, nil
 }

@@ -27,6 +27,19 @@ var ErrNotFound = errdefs.NotFound(errdefs.New("recall temporal store: fact not 
 // "guard failed, do not retry" case from a transient store error.
 var ErrReopenConflict = errdefs.Conflict(errdefs.New("recall temporal store: reopen guard mismatch"))
 
+// ErrValidityAlreadyClosed is returned by UpdateValidity when the
+// target fact already carries a non-zero ValidTo and the caller
+// supplies a (validTo, correctedBy) tuple that does not match the
+// existing one. The store stays strict so callers that DO require
+// exclusive close semantics (e.g. RebuildAll) see the conflict; the
+// canonical Save pipeline treats it as a benign race signal because
+// the desired post-state ("prior fact is closed") is already true.
+//
+// Classified as errdefs.Conflict so it remains a 409-shaped failure
+// at the public boundary for any caller that has not opted in to the
+// tolerant interpretation.
+var ErrValidityAlreadyClosed = errdefs.Conflict(errdefs.New("recall temporal store: fact validity already closed"))
+
 // ListQuery filters scope-local List results. Empty fields are
 // interpreted as "match anything" so callers can issue scope-wide
 // scans by passing the zero value.

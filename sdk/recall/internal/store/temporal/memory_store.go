@@ -240,7 +240,7 @@ func (s *MemoryStore) UpdateValidity(_ context.Context, scope model.Scope, factI
 		if f.ValidTo.Equal(validTo) && f.CorrectedBy == correctedBy {
 			return nil
 		}
-		return errdefs.Conflictf("recall temporal store: fact validity already closed")
+		return ErrValidityAlreadyClosed
 	}
 	vt := validTo
 	f.ValidTo = &vt

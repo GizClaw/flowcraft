@@ -325,6 +325,103 @@ func TestSave_StateUpdatesChainWithinSingleBatch(t *testing.T) {
 	}
 }
 
+// TestSave_TolerantOfRaceSupersedeClose simulates two memory
+// instances sharing one store racing to supersede the same prior
+// state fact. The first reaches UpdateValidity and wins; the second
+// must NOT fail Save just because the prior's CorrectedBy got
+// claimed by a different (semantically equivalent) successor — the
+// race-loser's new fact still gets appended with its Supersedes
+// pointer, so the supersede chain stays reconstructable. This is
+// the safety net for the LoCoMo-style cross-instance race that
+// triggered "fact validity already closed" WARNs in long ingests.
+func TestSave_TolerantOfRaceSupersedeClose(t *testing.T) {
+	store := temporalstore.NewMemoryStore()
+	scope := Scope{RuntimeID: "rt", UserID: "u1"}
+
+	memA, _ := New(withTemporalStore(store))
+	if _, err := memA.Save(context.Background(), scope, SaveRequest{
+		Facts: []TemporalFact{{
+			Kind: FactState, Subject: "alice", Predicate: "city",
+			Content: "Paris",
+		}},
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	// Second memory shares the same store but has its own write lock,
+	// so concurrent Saves emulate two replicas with no cross-process
+	// serialization (the LoCoMo failure mode).
+	memB, _ := New(withTemporalStore(store))
+
+	resA, err := memA.Save(context.Background(), scope, SaveRequest{
+		Facts: []TemporalFact{{
+			Kind: FactState, Subject: "alice", Predicate: "city",
+			Content: "Berlin",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("memA save: %v", err)
+	}
+
+	// memB still has the resolver looking at the pre-supersede view
+	// because it never observed memA's close — emulate that by saving
+	// a different successor for the SAME merge_key. memB's resolver
+	// will compute a close against the prior fact that memA already
+	// closed. Without tolerance, this Save fails.
+	resB, err := memB.Save(context.Background(), scope, SaveRequest{
+		Facts: []TemporalFact{{
+			Kind: FactState, Subject: "alice", Predicate: "city",
+			Content: "Rome",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("memB save (race close): %v", err)
+	}
+	if len(resA.FactIDs) != 1 || len(resB.FactIDs) != 1 {
+		t.Fatalf("expected one fact per save, got %+v / %+v", resA.FactIDs, resB.FactIDs)
+	}
+
+	// memB's new fact must still carry the Supersedes pointer.
+	got, err := store.Get(context.Background(), scope, resB.FactIDs[0])
+	if err != nil {
+		t.Fatalf("get B: %v", err)
+	}
+	if len(got.Supersedes) == 0 {
+		t.Errorf("memB fact should record what it supersedes, got %+v", got.Supersedes)
+	}
+}
+
+// TestStore_ErrValidityAlreadyClosed_HasSentinelIdentity pins the
+// classification: the sentinel must still satisfy errors.Is so the
+// Save tolerance path matches, and IsConflict so callers that DO
+// want strict semantics keep their behavior.
+func TestStore_ErrValidityAlreadyClosed_HasSentinelIdentity(t *testing.T) {
+	store := temporalstore.NewMemoryStore()
+	ctx := context.Background()
+	scope := model.Scope{RuntimeID: "rt"}
+	fact := model.TemporalFact{
+		ID: "a", Scope: scope, Kind: model.KindState,
+		Subject: "alice", Predicate: "city", Content: "Paris",
+		ObservedAt: time.Unix(1, 0),
+	}
+	if err := store.Append(ctx, []model.TemporalFact{fact}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpdateValidity(ctx, scope, "a", time.Unix(10, 0), "b"); err != nil {
+		t.Fatal(err)
+	}
+	err := store.UpdateValidity(ctx, scope, "a", time.Unix(20, 0), "c")
+	if err == nil {
+		t.Fatal("want re-close mismatch error")
+	}
+	if !errors.Is(err, temporalstore.ErrValidityAlreadyClosed) {
+		t.Errorf("errors.Is(err, ErrValidityAlreadyClosed) lost: %v", err)
+	}
+	if !errdefs.IsConflict(err) {
+		t.Errorf("errdefs.IsConflict(err) lost: %v", err)
+	}
+}
+
 func TestSave_EventIsAlwaysAppendOnly(t *testing.T) {
 	store := temporalstore.NewMemoryStore()
 	mem, _ := New(withTemporalStore(store))
