@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/llm"
@@ -79,6 +80,19 @@ const ExtractedFactSchema = `{
           "valid_to_hint": {"type": "string"},
           "confidence": {"type": "number"},
           "evidence_text": {"type": "string"},
+          "evidence_refs": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {"type": "string"},
+                "message_id": {"type": "string"},
+                "role": {"type": "string"},
+                "text": {"type": "string"},
+                "timestamp": {"type": "string"}
+              }
+            }
+          },
           "source_message_ids": {"type": "array", "items": {"type": "string"}}
         },
         "required": ["kind"]
@@ -100,19 +114,32 @@ type ExtractedFactList struct {
 // the TimeResolver later parses; IDs, MergeKey, Supersedes etc.
 // are owned by the compiler / store and never produced by the LLM.
 type ExtractedFact struct {
-	Kind             string   `json:"kind"`
-	Content          string   `json:"content,omitempty"`
-	Subject          string   `json:"subject,omitempty"`
-	Predicate        string   `json:"predicate,omitempty"`
-	Object           string   `json:"object,omitempty"`
-	Entities         []string `json:"entities,omitempty"`
-	Participants     []string `json:"participants,omitempty"`
-	Location         string   `json:"location,omitempty"`
-	ValidFromHint    string   `json:"valid_from_hint,omitempty"`
-	ValidToHint      string   `json:"valid_to_hint,omitempty"`
-	Confidence       float64  `json:"confidence,omitempty"`
-	EvidenceText     string   `json:"evidence_text,omitempty"`
-	SourceMessageIDs []string `json:"source_message_ids,omitempty"`
+	Kind             string                 `json:"kind"`
+	Content          string                 `json:"content,omitempty"`
+	Subject          string                 `json:"subject,omitempty"`
+	Predicate        string                 `json:"predicate,omitempty"`
+	Object           string                 `json:"object,omitempty"`
+	Entities         []string               `json:"entities,omitempty"`
+	Participants     []string               `json:"participants,omitempty"`
+	Location         string                 `json:"location,omitempty"`
+	ValidFromHint    string                 `json:"valid_from_hint,omitempty"`
+	ValidToHint      string                 `json:"valid_to_hint,omitempty"`
+	Confidence       float64                `json:"confidence,omitempty"`
+	EvidenceText     string                 `json:"evidence_text,omitempty"`
+	EvidenceRefs     []ExtractedEvidenceRef `json:"evidence_refs,omitempty"`
+	SourceMessageIDs []string               `json:"source_message_ids,omitempty"`
+}
+
+// ExtractedEvidenceRef is the LLM wire shape for evidence pointers.
+// The timestamp is intentionally a string so eval adapters can pass
+// RFC3339 values when available while leaving benchmark-specific date
+// formats to the surrounding raw text.
+type ExtractedEvidenceRef struct {
+	ID        string `json:"id,omitempty"`
+	MessageID string `json:"message_id,omitempty"`
+	Role      string `json:"role,omitempty"`
+	Text      string `json:"text,omitempty"`
+	Timestamp string `json:"timestamp,omitempty"`
 }
 
 // LLMExtractorSystemPrompt is the canonical system framing. It is
@@ -122,7 +149,8 @@ const LLMExtractorSystemPrompt = `You extract structured memory facts from a con
 Return JSON matching the supplied schema. Only emit facts that are
 clearly present in the snippet; never fabricate facts to fill the
 schema. Use the closed enum for "kind": event | state | preference
-| relation | plan | note.`
+| relation | plan | note. If the input marks turns with ids, cite
+the supporting turns in evidence_refs and source_message_ids.`
 
 // LLMExtractor calls a sdk/llm.LLM and converts its JSON reply
 // into model.TemporalFact values.
@@ -251,6 +279,7 @@ func (e ExtractedFact) toTemporalFact() model.TemporalFact {
 		Location:         e.Location,
 		Confidence:       e.Confidence,
 		EvidenceText:     e.EvidenceText,
+		EvidenceRefs:     e.toEvidenceRefs(),
 		SourceMessageIDs: append([]string(nil), e.SourceMessageIDs...),
 	}
 	if e.ValidFromHint != "" || e.ValidToHint != "" {
@@ -263,6 +292,44 @@ func (e ExtractedFact) toTemporalFact() model.TemporalFact {
 		}
 	}
 	return f
+}
+
+func (e ExtractedFact) toEvidenceRefs() []model.EvidenceRef {
+	if len(e.EvidenceRefs) == 0 {
+		return nil
+	}
+	out := make([]model.EvidenceRef, 0, len(e.EvidenceRefs))
+	for _, ref := range e.EvidenceRefs {
+		id := strings.TrimSpace(ref.ID)
+		messageID := strings.TrimSpace(ref.MessageID)
+		text := strings.TrimSpace(ref.Text)
+		role := strings.TrimSpace(ref.Role)
+		if id == "" && messageID == "" && text == "" {
+			continue
+		}
+		out = append(out, model.EvidenceRef{
+			ID:        id,
+			MessageID: messageID,
+			Role:      role,
+			Text:      text,
+			Timestamp: parseEvidenceTimestamp(ref.Timestamp),
+		})
+	}
+	return out
+}
+
+func parseEvidenceTimestamp(raw string) time.Time {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return time.Time{}
+	}
+	if t, err := time.Parse(time.RFC3339, raw); err == nil {
+		return t
+	}
+	if t, err := time.Parse("2006-01-02", raw); err == nil {
+		return t
+	}
+	return time.Time{}
 }
 
 // StaticExtractor returns a fixed list of facts on every call. It

@@ -679,7 +679,14 @@ func (s *scriptedLLM) GenerateStream(context.Context, []llm.Message, ...llm.Gene
 
 func TestWithLLMExtractor_WiresExtractorIntoSavePath(t *testing.T) {
 	store := temporalstore.NewMemoryStore()
-	client := &scriptedLLM{Response: `{"facts":[{"kind":"preference","subject":"alice","predicate":"city","content":"Paris"}]}`}
+	client := &scriptedLLM{Response: `{"facts":[{
+		"kind":"preference",
+		"subject":"alice",
+		"predicate":"city",
+		"content":"Paris",
+		"source_message_ids":["D1:3"],
+		"evidence_refs":[{"id":"D1:3","message_id":"m-3","role":"user","text":"Alice said Paris is her city.","timestamp":"2026-05-19T05:00:00Z"}]
+	}]}`}
 
 	mem, err := New(
 		withTemporalStore(store),
@@ -695,15 +702,7 @@ func TestWithLLMExtractor_WiresExtractorIntoSavePath(t *testing.T) {
 
 	scope := Scope{RuntimeID: "rt", UserID: "u1"}
 	res, err := mem.Save(context.Background(), scope, SaveRequest{
-		// Free-form input — caller has not pre-extracted facts.
-		// The LLM extractor turns Input.Text into structured facts;
-		// SaveRequest does not currently expose Text, so the call
-		// path covered here is the "compiler.Input.Text routed via
-		// caller-extended pipeline" scenario. To keep the public
-		// surface narrow for PR-4 we exercise the option-wiring +
-		// LLM-call path via a structured Facts list that mirrors
-		// the extractor's expected behaviour.
-		Facts: []TemporalFact{{Kind: FactPreference, Subject: "alice", Predicate: "city", Content: "Paris"}},
+		Text: "TURN id=D1:3 role=user\nAlice said Paris is her city.",
 	})
 	if err != nil {
 		t.Fatalf("save: %v", err)
@@ -711,28 +710,15 @@ func TestWithLLMExtractor_WiresExtractorIntoSavePath(t *testing.T) {
 	if len(res.FactIDs) != 1 {
 		t.Fatalf("save returned %d ids", len(res.FactIDs))
 	}
-
-	// Verify the wired-in extractor's options carry through when
-	// the LLM is invoked. We trigger the LLM call by re-running
-	// Compile through the compiler directly (the facade does not
-	// expose raw text yet — that's the next iteration). This still
-	// validates that WithLLMExtractorTemperature /
-	// WithLLMExtractorSchemaName threaded through to the option
-	// list.
-	cp := compiler.New(compiler.Stages{
-		Extractor: func() compiler.Extractor {
-			ex := compiler.NewLLMExtractor(client)
-			ex.Temperature = 0.2
-			ex.SchemaName = "recall_facts_v1"
-			return ex
-		}(),
-	})
-	_, err = cp.Compile(context.Background(), compiler.Input{
-		Scope: model.Scope{RuntimeID: "rt"},
-		Text:  "Alice lives in Paris",
-	})
+	fact, err := store.Get(context.Background(), scope, res.FactIDs[0])
 	if err != nil {
-		t.Fatalf("compile: %v", err)
+		t.Fatalf("get fact: %v", err)
+	}
+	if len(fact.EvidenceRefs) != 1 || fact.EvidenceRefs[0].ID != "D1:3" {
+		t.Fatalf("LLM-extracted evidence refs not persisted: %+v", fact.EvidenceRefs)
+	}
+	if len(fact.SourceMessageIDs) != 1 || fact.SourceMessageIDs[0] != "D1:3" {
+		t.Fatalf("source message ids not persisted: %+v", fact.SourceMessageIDs)
 	}
 	if len(client.Options) == 0 {
 		t.Fatal("expected at least one LLM call to record options")

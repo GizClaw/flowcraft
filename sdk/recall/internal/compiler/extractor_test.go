@@ -60,7 +60,9 @@ func TestLLMExtractor_EmptyTextSkipsLLM(t *testing.T) {
 func TestLLMExtractor_ParsesJSONIntoTemporalFacts(t *testing.T) {
 	client := &fakeLLM{
 		Responses: []string{`{"facts":[
-			{"kind":"preference","subject":"alice","predicate":"favorite_color","content":"blue","confidence":0.9},
+			{"kind":"preference","subject":"alice","predicate":"favorite_color","content":"blue","confidence":0.9,
+			 "source_message_ids":["D1:3"],
+			 "evidence_refs":[{"id":"D1:3","message_id":"m-3","role":"user","text":"Alice says blue is her favorite color.","timestamp":"2026-05-19T05:00:00Z"}]},
 			{"kind":"plan","content":"visit Paris","valid_from_hint":"tomorrow"}
 		]}`},
 	}
@@ -77,6 +79,15 @@ func TestLLMExtractor_ParsesJSONIntoTemporalFacts(t *testing.T) {
 	}
 	if out[0].Kind != model.KindPreference || out[0].Subject != "alice" || out[0].Content != "blue" {
 		t.Errorf("first fact = %+v", out[0])
+	}
+	if len(out[0].SourceMessageIDs) != 1 || out[0].SourceMessageIDs[0] != "D1:3" {
+		t.Errorf("source ids not preserved: %+v", out[0].SourceMessageIDs)
+	}
+	if len(out[0].EvidenceRefs) != 1 {
+		t.Fatalf("evidence refs not preserved: %+v", out[0].EvidenceRefs)
+	}
+	if ref := out[0].EvidenceRefs[0]; ref.ID != "D1:3" || ref.MessageID != "m-3" || ref.Role != "user" || ref.Text == "" || ref.Timestamp.IsZero() {
+		t.Errorf("evidence ref = %+v", ref)
 	}
 	if out[1].Kind != model.KindPlan {
 		t.Errorf("second fact kind = %q", out[1].Kind)
