@@ -2,12 +2,11 @@ package temporal
 
 import (
 	"context"
-	"errors"
-	"fmt"
 	"sort"
 	"sync"
 	"time"
 
+	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/model"
 )
 
@@ -81,17 +80,17 @@ func (s *MemoryStore) Append(_ context.Context, facts []model.TemporalFact) erro
 	batchSeen := make(map[scopeKey]map[string]struct{}, len(facts))
 	for _, f := range facts {
 		if f.ID == "" {
-			return fmt.Errorf("recall temporal store: fact id is required")
+			return errdefs.Validationf("recall temporal store: fact id is required")
 		}
 		if !f.Kind.IsValid() {
-			return fmt.Errorf("recall temporal store: invalid fact kind %q for fact %q", f.Kind, f.ID)
+			return errdefs.Validationf("recall temporal store: invalid fact kind %q for fact %q", f.Kind, f.ID)
 		}
 		if f.Scope.RuntimeID == "" {
-			return fmt.Errorf("recall temporal store: fact %q missing scope.runtime_id", f.ID)
+			return errdefs.Validationf("recall temporal store: fact %q missing scope.runtime_id", f.ID)
 		}
 		sh := s.shardLocked(f.Scope)
 		if _, exists := sh.byID[f.ID]; exists {
-			return fmt.Errorf("recall temporal store: duplicate fact id %q in scope", f.ID)
+			return errdefs.Conflictf("recall temporal store: duplicate fact id %q in scope", f.ID)
 		}
 		k := keyOf(f.Scope)
 		seen, ok := batchSeen[k]
@@ -100,7 +99,7 @@ func (s *MemoryStore) Append(_ context.Context, facts []model.TemporalFact) erro
 			batchSeen[k] = seen
 		}
 		if _, dup := seen[f.ID]; dup {
-			return fmt.Errorf("recall temporal store: duplicate fact id %q within append batch", f.ID)
+			return errdefs.Conflictf("recall temporal store: duplicate fact id %q within append batch", f.ID)
 		}
 		seen[f.ID] = struct{}{}
 		staged = append(staged, f.Clone())
@@ -241,7 +240,7 @@ func (s *MemoryStore) UpdateValidity(_ context.Context, scope model.Scope, factI
 		if f.ValidTo.Equal(validTo) && f.CorrectedBy == correctedBy {
 			return nil
 		}
-		return errors.New("recall temporal store: fact validity already closed")
+		return errdefs.Conflictf("recall temporal store: fact validity already closed")
 	}
 	vt := validTo
 	f.ValidTo = &vt
@@ -249,6 +248,45 @@ func (s *MemoryStore) UpdateValidity(_ context.Context, scope model.Scope, factI
 	f.CorrectedBy = correctedBy
 	if correctedBy != "" && prev != correctedBy {
 		sh.correctedIdx[correctedBy] = append(sh.correctedIdx[correctedBy], factID)
+	}
+	return nil
+}
+
+// ReopenValidity clears the ValidTo / CorrectedBy fields on factID,
+// guarded by expectedCorrectedBy. Used by Memory.Save's projection
+// rollback to undo a supersede close after a downstream failure.
+//
+// The guard is essential: between the original close and the
+// rollback another writer may legitimately have updated the same
+// fact (different CorrectedBy). In that case ReopenValidity returns
+// ErrReopenConflict and the caller must surface it via telemetry
+// without touching the fact.
+func (s *MemoryStore) ReopenValidity(_ context.Context, scope model.Scope, factID string, expectedCorrectedBy string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	sh, ok := s.byScope[keyOf(scope)]
+	if !ok {
+		return ErrNotFound
+	}
+	f, ok := sh.byID[factID]
+	if !ok {
+		return ErrNotFound
+	}
+	// Already open — no-op; rollback can re-issue safely.
+	if f.ValidTo == nil && f.CorrectedBy == "" {
+		return nil
+	}
+	if f.CorrectedBy != expectedCorrectedBy {
+		return ErrReopenConflict
+	}
+	prev := f.CorrectedBy
+	f.ValidTo = nil
+	f.CorrectedBy = ""
+	if prev != "" {
+		sh.correctedIdx[prev] = removeID(sh.correctedIdx[prev], factID)
+		if len(sh.correctedIdx[prev]) == 0 {
+			delete(sh.correctedIdx, prev)
+		}
 	}
 	return nil
 }

@@ -1,0 +1,224 @@
+package compiler
+
+import (
+	"context"
+	"errors"
+	"testing"
+	"time"
+
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/model"
+)
+
+// fakeView is the resolver View backed by a slice of facts. It
+// keeps tests free of the temporal store package.
+type fakeView struct {
+	facts []model.TemporalFact
+}
+
+func (v *fakeView) FindByMergeKey(_ context.Context, scope model.Scope, mergeKey string) ([]model.TemporalFact, error) {
+	if mergeKey == "" {
+		return nil, nil
+	}
+	var out []model.TemporalFact
+	for _, f := range v.facts {
+		if f.Scope == scope && f.MergeKey == mergeKey {
+			out = append(out, f)
+		}
+	}
+	return out, nil
+}
+
+func (v *fakeView) Get(_ context.Context, scope model.Scope, factID string) (model.TemporalFact, error) {
+	for _, f := range v.facts {
+		if f.Scope == scope && f.ID == factID {
+			return f, nil
+		}
+	}
+	return model.TemporalFact{}, ErrNotInView
+}
+
+func TestResolver_SameMergeKeyIdenticalContentIsNoop(t *testing.T) {
+	scope := model.Scope{RuntimeID: "rt"}
+	existing := model.TemporalFact{
+		ID: "old", Scope: scope, Kind: model.KindState,
+		Subject: "alice", Predicate: "city", Content: "Paris",
+		MergeKey: "state|alice|city",
+	}
+	view := &fakeView{facts: []model.TemporalFact{existing}}
+	r := NewResolver()
+	out, err := r.ResolveConflicts(context.Background(), view, []model.TemporalFact{{
+		ID: "new", Scope: scope, Kind: model.KindState,
+		Subject: "alice", Predicate: "city", Content: "Paris",
+		MergeKey: "state|alice|city",
+	}})
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if len(out.Facts) != 0 {
+		t.Errorf("identical content must be noop, got %+v", out.Facts)
+	}
+	if len(out.Drops) != 1 || out.Drops[0].Reason != "conflict:duplicate_content" {
+		t.Errorf("drops = %+v", out.Drops)
+	}
+	if len(out.Closes) != 0 {
+		t.Errorf("noop must not close anything, got %+v", out.Closes)
+	}
+}
+
+func TestResolver_StateSupersedesOnChange(t *testing.T) {
+	scope := model.Scope{RuntimeID: "rt"}
+	existing := model.TemporalFact{
+		ID: "old", Scope: scope, Kind: model.KindState,
+		Subject: "alice", Predicate: "city", Content: "Paris",
+		MergeKey:   "state|alice|city",
+		ObservedAt: time.Unix(1, 0),
+	}
+	view := &fakeView{facts: []model.TemporalFact{existing}}
+	r := &DefaultResolver{Clock: func() time.Time { return time.Unix(100, 0) }}
+	out, err := r.ResolveConflicts(context.Background(), view, []model.TemporalFact{{
+		ID: "new", Scope: scope, Kind: model.KindState,
+		Subject: "alice", Predicate: "city", Content: "Berlin",
+		MergeKey:   "state|alice|city",
+		ObservedAt: time.Unix(50, 0),
+	}})
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if len(out.Facts) != 1 {
+		t.Fatalf("want 1 fact, got %+v", out.Facts)
+	}
+	if got := out.Facts[0].Supersedes; len(got) != 1 || got[0] != "old" {
+		t.Errorf("supersedes = %v", got)
+	}
+	if len(out.Closes) != 1 {
+		t.Fatalf("want 1 close, got %+v", out.Closes)
+	}
+	cl := out.Closes[0]
+	if cl.FactID != "old" || cl.CorrectedBy != "new" || !cl.ValidTo.Equal(time.Unix(50, 0)) {
+		t.Errorf("close instruction = %+v", cl)
+	}
+}
+
+func TestResolver_PreferenceSupersedesOnChange(t *testing.T) {
+	scope := model.Scope{RuntimeID: "rt"}
+	existing := model.TemporalFact{
+		ID: "p1", Scope: scope, Kind: model.KindPreference,
+		Subject: "alice", Predicate: "favourite_color", Content: "blue",
+		MergeKey: "preference|alice|favourite_color",
+	}
+	view := &fakeView{facts: []model.TemporalFact{existing}}
+	r := NewResolver()
+	out, _ := r.ResolveConflicts(context.Background(), view, []model.TemporalFact{{
+		ID: "p2", Scope: scope, Kind: model.KindPreference,
+		Subject: "alice", Predicate: "favourite_color", Content: "green",
+		MergeKey: "preference|alice|favourite_color",
+	}})
+	if len(out.Facts) != 1 || len(out.Closes) != 1 {
+		t.Fatalf("preference supersede failed: %+v / %+v", out.Facts, out.Closes)
+	}
+	if out.Closes[0].FactID != "p1" {
+		t.Errorf("wrong close target: %+v", out.Closes[0])
+	}
+}
+
+func TestResolver_EventIsAppendOnly(t *testing.T) {
+	scope := model.Scope{RuntimeID: "rt"}
+	existing := model.TemporalFact{
+		ID: "e1", Scope: scope, Kind: model.KindEvent,
+		Content: "ate ramen", MergeKey: "event|||ate-ramen-hash",
+	}
+	view := &fakeView{facts: []model.TemporalFact{existing}}
+	r := NewResolver()
+	out, _ := r.ResolveConflicts(context.Background(), view, []model.TemporalFact{{
+		ID: "e2", Scope: scope, Kind: model.KindEvent,
+		Content: "ate ramen", MergeKey: "event|||ate-ramen-hash",
+	}})
+	if len(out.Facts) != 1 || out.Facts[0].ID != "e2" {
+		t.Errorf("events must be append-only: %+v", out.Facts)
+	}
+	if len(out.Closes) != 0 {
+		t.Errorf("events must never close prior facts, got %+v", out.Closes)
+	}
+}
+
+func TestResolver_RelationDifferentObjectAppends(t *testing.T) {
+	scope := model.Scope{RuntimeID: "rt"}
+	existing := model.TemporalFact{
+		ID: "r1", Scope: scope, Kind: model.KindRelation,
+		Subject: "alice", Predicate: "spouse", Object: "bob",
+		MergeKey: "relation|alice|spouse|bob",
+	}
+	view := &fakeView{facts: []model.TemporalFact{existing}}
+	r := NewResolver()
+	out, _ := r.ResolveConflicts(context.Background(), view, []model.TemporalFact{{
+		ID: "r2", Scope: scope, Kind: model.KindRelation,
+		Subject: "alice", Predicate: "spouse", Object: "carol",
+		MergeKey: "relation|alice|spouse|carol",
+	}})
+	if len(out.Facts) != 1 || out.Facts[0].ID != "r2" {
+		t.Errorf("different relation object must append: %+v", out.Facts)
+	}
+	if len(out.Closes) != 0 {
+		t.Errorf("different relation object must not close prior: %+v", out.Closes)
+	}
+}
+
+func TestResolver_NoteDedupesByContent(t *testing.T) {
+	scope := model.Scope{RuntimeID: "rt"}
+	existing := model.TemporalFact{
+		ID: "n1", Scope: scope, Kind: model.KindNote,
+		Content: "buy milk", MergeKey: "note|hash",
+	}
+	view := &fakeView{facts: []model.TemporalFact{existing}}
+	r := NewResolver()
+	out, _ := r.ResolveConflicts(context.Background(), view, []model.TemporalFact{{
+		ID: "n2", Scope: scope, Kind: model.KindNote,
+		Content: "buy milk", MergeKey: "note|hash",
+	}})
+	if len(out.Facts) != 0 {
+		t.Errorf("duplicate note must be noop, got %+v", out.Facts)
+	}
+}
+
+func TestResolver_NilViewPassthrough(t *testing.T) {
+	scope := model.Scope{RuntimeID: "rt"}
+	r := NewResolver()
+	in := []model.TemporalFact{
+		{ID: "x", Scope: scope, Kind: model.KindNote, Content: "hi", MergeKey: "k"},
+	}
+	out, err := r.ResolveConflicts(context.Background(), nil, in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Facts) != 1 {
+		t.Errorf("nil view must not suppress facts, got %+v", out.Facts)
+	}
+}
+
+func TestResolver_PropagatesViewLookupError(t *testing.T) {
+	r := NewResolver()
+	_, err := r.ResolveConflicts(context.Background(), errView{err: errors.New("store unavailable")}, []model.TemporalFact{{
+		ID:        "new",
+		Scope:     model.Scope{RuntimeID: "rt"},
+		Kind:      model.KindState,
+		Subject:   "alice",
+		Predicate: "city",
+		Content:   "Paris",
+		MergeKey:  "state|alice|city",
+	}})
+	if err == nil {
+		t.Fatal("store lookup errors must abort conflict resolution, not degrade to append")
+	}
+}
+
+type errView struct {
+	err error
+}
+
+func (v errView) FindByMergeKey(context.Context, model.Scope, string) ([]model.TemporalFact, error) {
+	return nil, v.err
+}
+
+func (v errView) Get(context.Context, model.Scope, string) (model.TemporalFact, error) {
+	return model.TemporalFact{}, v.err
+}

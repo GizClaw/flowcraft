@@ -55,15 +55,17 @@ type Compiler interface {
 // without churning the facade. The zero value of each interface is
 // the deterministic Phase 1 implementation.
 type Stages struct {
-	Extractor        Extractor
-	Normalizer       Normalizer
-	EntityResolver   EntityResolver
-	TimeResolver     TimeResolver
-	ConflictDetector ConflictDetector
-	SalienceScorer   SalienceScorer
-	Policy           Policy
-	IDGen            IDGenerator
-	Clock            func() time.Time
+	Extractor         Extractor
+	Normalizer        Normalizer
+	PredicateSynonyms PredicateSynonyms
+	EntityResolver    EntityResolver
+	AliasResolver     AliasResolver
+	TimeResolver      TimeResolver
+	ConflictDetector  ConflictDetector
+	SalienceScorer    SalienceScorer
+	Policy            Policy
+	IDGen             IDGenerator
+	Clock             func() time.Time
 }
 
 // Default returns a Compiler with deterministic Phase 1 stages wired
@@ -79,11 +81,17 @@ func New(s Stages) Compiler {
 	if s.Extractor == nil {
 		s.Extractor = passthroughExtractor{}
 	}
+	if s.PredicateSynonyms == nil {
+		s.PredicateSynonyms = NopPredicateSynonyms{}
+	}
 	if s.Normalizer == nil {
-		s.Normalizer = defaultNormalizer{}
+		s.Normalizer = newDefaultNormalizer(s.PredicateSynonyms)
+	}
+	if s.AliasResolver == nil {
+		s.AliasResolver = NopAliasResolver{}
 	}
 	if s.EntityResolver == nil {
-		s.EntityResolver = passthroughEntityResolver{}
+		s.EntityResolver = newAliasEntityResolver(s.AliasResolver)
 	}
 	if s.TimeResolver == nil {
 		s.TimeResolver = passthroughTimeResolver{}

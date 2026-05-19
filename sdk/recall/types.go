@@ -43,11 +43,19 @@ type TemporalFact = model.TemporalFact
 // SaveRequest is the v2 ingestion input. Higher-level integrations
 // build these from raw messages before calling Save.
 type SaveRequest struct {
-	// Facts are caller-supplied structured facts. PR-2 treats them
-	// as authoritative content and runs them through the compiler
-	// for deterministic field hardening (id, observed_at, merge_key,
-	// salience, policy).
+	// Facts are caller-supplied structured facts. The default
+	// passthrough extractor treats them as authoritative content
+	// and runs them through the compiler for deterministic field
+	// hardening (id, observed_at, merge_key, salience, policy).
 	Facts []TemporalFact
+
+	// Text is the optional free-form input consumed by opt-in
+	// extractors (notably LLMExtractor wired via WithLLMExtractor).
+	// The default passthrough extractor ignores Text — only
+	// extractors that opt in to text-driven extraction read it,
+	// so PR-2/PR-3 callers passing structured Facts only stay
+	// unaffected.
+	Text string
 }
 
 // SaveResult reports the canonical fact ids that were appended to the

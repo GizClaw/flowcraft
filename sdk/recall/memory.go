@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/compiler"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/fusion"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/materialize"
@@ -34,6 +35,7 @@ type memory struct {
 	store          temporalstore.Store
 	retrievalIndex retrieval.Index
 	compiler       compiler.Compiler
+	resolver       compiler.ConflictResolver
 	fanout         *projection.Fanout
 	telemetry      projection.TelemetryHook
 
@@ -63,7 +65,20 @@ func New(opts ...Option) (Memory, error) {
 		cfg.retrievalIndex = retrievalmem.New()
 	}
 	if cfg.compiler == nil {
-		cfg.compiler = compiler.Default()
+		stages := compiler.Stages{}
+		if cfg.llmExtractor != nil {
+			ex := compiler.NewLLMExtractor(cfg.llmExtractor.client)
+			for _, opt := range cfg.llmExtractor.tune {
+				if opt != nil {
+					opt(ex)
+				}
+			}
+			stages.Extractor = ex
+		}
+		cfg.compiler = compiler.New(stages)
+	}
+	if !cfg.resolverSet {
+		cfg.resolver = compiler.NewResolver()
 	}
 
 	retrievalProj, err := retrievalproj.New(cfg.retrievalIndex)
@@ -109,6 +124,7 @@ func New(opts ...Option) (Memory, error) {
 		store:          cfg.store,
 		retrievalIndex: cfg.retrievalIndex,
 		compiler:       cfg.compiler,
+		resolver:       cfg.resolver,
 		fanout:         projection.New(projections, cfg.telemetry),
 		telemetry:      cfg.telemetry,
 		planner:        planr,
@@ -122,7 +138,22 @@ func New(opts ...Option) (Memory, error) {
 // Save runs the canonical write pipeline with strict transactional
 // semantics:
 //
-//	compile -> store.Append -> fanout.ProjectRequired -> fanout.ProjectOptional
+//	compile -> conflict resolve -> store.Append -> UpdateValidity
+//	         -> fanout.ProjectRequired -> fanout.ProjectOptional
+//
+// Conflict resolution runs against a read-only store view, so the
+// compiler stays free of write side-effects. Resolution emits two
+// disjoint outputs:
+//
+//   - Facts to append (already include Supersedes pointers for
+//     state/preference revisions).
+//   - Validity closes to apply to prior facts AFTER the new facts
+//     have been appended (so the ledger never carries a closed
+//     fact pointing at a not-yet-written successor).
+//
+// If validity close fails after Append succeeds, Save best-effort
+// deletes the just-appended facts and returns the original error so
+// the ledger does not end up with an orphan close.
 //
 // If a required projection fails the call rolls back: best-effort
 // fanout.ForgetRequired/Optional cleans up partially-projected
@@ -138,46 +169,121 @@ func (m *memory) Save(ctx context.Context, scope Scope, req SaveRequest) (SaveRe
 		return SaveResult{}, err
 	}
 	if scope.RuntimeID == "" {
-		return SaveResult{}, fmt.Errorf("recall.Save: scope.runtime_id is required")
+		return SaveResult{}, errdefs.Validationf("recall.Save: scope.runtime_id is required")
 	}
 
-	result, err := m.compiler.Compile(ctx, compiler.Input{
+	compiled, err := m.compiler.Compile(ctx, compiler.Input{
 		Scope: scope,
 		Facts: req.Facts,
+		Text:  req.Text,
 	})
 	if err != nil {
 		return SaveResult{}, err
 	}
-	if len(result.Facts) == 0 {
+	if len(compiled.Facts) == 0 {
 		return SaveResult{}, nil
 	}
 
-	if err := m.store.Append(ctx, result.Facts); err != nil {
+	// Conflict resolution short-circuits noop dedupes and queues
+	// supersede closes for after Append succeeds.
+	resolution := compiler.Resolution{Facts: compiled.Facts}
+	if m.resolver != nil {
+		view := compiler.StoreView{
+			FindByMergeKeyFn: m.store.FindByMergeKey,
+			GetFn:            m.store.Get,
+		}
+		resolution, err = m.resolver.ResolveConflicts(ctx, view, compiled.Facts)
+		if err != nil {
+			return SaveResult{}, fmt.Errorf("recall.Save: resolve conflicts: %w", err)
+		}
+	}
+	if len(resolution.Facts) == 0 {
+		return SaveResult{}, nil
+	}
+
+	if err := m.store.Append(ctx, resolution.Facts); err != nil {
 		return SaveResult{}, fmt.Errorf("recall.Save: store append: %w", err)
 	}
 
-	ids := make([]string, len(result.Facts))
-	for i, f := range result.Facts {
+	ids := make([]string, len(resolution.Facts))
+	for i, f := range resolution.Facts {
 		ids[i] = f.ID
 	}
 
-	if projErr := m.fanout.ProjectRequired(ctx, result.Facts); projErr != nil {
-		m.rollbackSave(ctx, scope, ids, projErr)
+	// Close validity on superseded prior facts. We do this AFTER
+	// Append so a failed close never leaves a closed fact pointing
+	// at a missing successor. If close fails partway through, the
+	// resolver-issued Supersedes pointer still exists on the new
+	// fact (so reconcile can finish the job), but we roll back the
+	// new facts so callers see an atomic failure rather than a
+	// half-applied write. applied tracks the prefix that did
+	// commit, so rollback can reopen exactly those.
+	applied, err := m.applyValidityCloses(ctx, resolution.Closes)
+	if err != nil {
+		m.rollbackAppendedFacts(ctx, scope, ids, applied, err)
+		return SaveResult{}, fmt.Errorf("recall.Save: close superseded: %w", err)
+	}
+
+	if projErr := m.fanout.ProjectRequired(ctx, resolution.Facts); projErr != nil {
+		m.rollbackSave(ctx, scope, ids, resolution.Closes, projErr)
 		return SaveResult{}, projErr
 	}
 
-	m.fanout.ProjectOptional(ctx, result.Facts)
+	m.fanout.ProjectOptional(ctx, resolution.Facts)
 
 	return SaveResult{FactIDs: ids}, nil
 }
 
+// applyValidityCloses runs UpdateValidity for each close instruction
+// the resolver issued. First failure aborts and returns the prefix
+// of closes that already committed so the caller's rollback can
+// reopen exactly those — leaving any close that never landed alone.
+func (m *memory) applyValidityCloses(ctx context.Context, closes []compiler.ValidityClose) ([]compiler.ValidityClose, error) {
+	applied := make([]compiler.ValidityClose, 0, len(closes))
+	for _, c := range closes {
+		if err := m.store.UpdateValidity(ctx, c.Scope, c.FactID, c.ValidTo, c.CorrectedBy); err != nil {
+			return applied, fmt.Errorf("update validity %s: %w", c.FactID, err)
+		}
+		applied = append(applied, c)
+	}
+	return applied, nil
+}
+
+// rollbackAppendedFacts removes just-appended facts after a failed
+// downstream step (validity close). It additionally reopens any
+// close that DID commit before the failure so the prior fact's
+// validity window is restored. Best-effort: cleanup failures only
+// surface through telemetry, the user-visible error stays
+// attributable to the original cause.
+func (m *memory) rollbackAppendedFacts(ctx context.Context, scope Scope, factIDs []string, applied []compiler.ValidityClose, cause error) {
+	cleanupCtx := detachCancel(ctx)
+	hook := m.fanout.Telemetry()
+	if err := m.store.Delete(cleanupCtx, scope, factIDs); err != nil {
+		hook.OnProjection(projection.ProjectionEvent{
+			Projection:  "save_rollback.appended_facts",
+			Op:          projection.OpForget,
+			Consistency: projection.Required,
+			FactCount:   len(factIDs),
+			Err:         fmt.Errorf("rollback cleanup after %w: %v", cause, err),
+		})
+	}
+	m.reopenAfterRollback(cleanupCtx, applied, cause)
+}
+
 // rollbackSave best-effort undoes the canonical effects of a
-// partially-completed Save. It runs both required and optional
-// projection forgets (so an upstream Optional projection that
-// happened to succeed before we returned does not leak), then deletes
-// the canonical facts. Any failure here is reported via telemetry
-// but never overrides the original projection error.
-func (m *memory) rollbackSave(ctx context.Context, scope Scope, factIDs []string, cause error) {
+// partially-completed Save. It:
+//
+//  1. runs required and optional projection forgets so an
+//     upstream Optional projection that happened to succeed before
+//     we returned does not leak;
+//  2. deletes the canonical facts that were appended; and
+//  3. reopens the validity of any prior facts the resolver closed
+//     during this Save so a downstream projection failure does not
+//     leave the ledger with a closed-but-no-successor revision.
+//
+// Any failure here is reported via telemetry but never overrides
+// the original projection error.
+func (m *memory) rollbackSave(ctx context.Context, scope Scope, factIDs []string, closes []compiler.ValidityClose, cause error) {
 	cleanupCtx := detachCancel(ctx)
 	hook := m.fanout.Telemetry()
 	if err := m.fanout.ForgetRequired(cleanupCtx, scope, factIDs); err != nil {
@@ -197,6 +303,34 @@ func (m *memory) rollbackSave(ctx context.Context, scope Scope, factIDs []string
 			Consistency: projection.Required,
 			FactCount:   len(factIDs),
 			Err:         fmt.Errorf("rollback cleanup after %w: %v", cause, err),
+		})
+	}
+	m.reopenAfterRollback(cleanupCtx, closes, cause)
+}
+
+// reopenAfterRollback walks every close this Save applied and tries
+// to revert it via Store.ReopenValidity. The guard (expectedCorrectedBy)
+// ensures we only undo our own close — if another writer has since
+// re-closed the fact for a different reason we surface that as
+// telemetry and leave the fact alone. ErrNotFound is also tolerated
+// silently: the prior fact may already have been deleted by an
+// unrelated forget.
+func (m *memory) reopenAfterRollback(ctx context.Context, closes []compiler.ValidityClose, cause error) {
+	if len(closes) == 0 {
+		return
+	}
+	hook := m.fanout.Telemetry()
+	for _, c := range closes {
+		err := m.store.ReopenValidity(ctx, c.Scope, c.FactID, c.CorrectedBy)
+		if err == nil || errors.Is(err, temporalstore.ErrNotFound) {
+			continue
+		}
+		hook.OnProjection(projection.ProjectionEvent{
+			Projection:  "save_rollback.reopen_validity",
+			Op:          projection.OpProject,
+			Consistency: projection.Required,
+			FactCount:   1,
+			Err:         fmt.Errorf("reopen %s after %w: %v", c.FactID, cause, err),
 		})
 	}
 }
@@ -227,7 +361,7 @@ func (m *memory) runRecall(ctx context.Context, scope Scope, query Query, withTr
 		return nil, trace, err
 	}
 	if scope.RuntimeID == "" {
-		return nil, trace, fmt.Errorf("recall.Recall: scope.runtime_id is required")
+		return nil, trace, errdefs.Validationf("recall.Recall: scope.runtime_id is required")
 	}
 
 	overall := time.Now()
@@ -336,7 +470,7 @@ func (m *memory) Forget(ctx context.Context, scope Scope, factID string) error {
 		return err
 	}
 	if factID == "" {
-		return fmt.Errorf("recall.Forget: fact id is required")
+		return errdefs.Validationf("recall.Forget: fact id is required")
 	}
 
 	snapshot, err := m.store.Get(ctx, scope, factID)

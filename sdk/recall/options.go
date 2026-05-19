@@ -1,6 +1,7 @@
 package recall
 
 import (
+	"github.com/GizClaw/flowcraft/sdk/llm"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/compiler"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/fusion"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/materialize"
@@ -23,6 +24,9 @@ type config struct {
 	store          temporalstore.Store
 	retrievalIndex retrieval.Index
 	compiler       compiler.Compiler
+	llmExtractor   *llmExtractorConfig
+	resolver       compiler.ConflictResolver
+	resolverSet    bool
 	telemetry      projection.TelemetryHook
 
 	// extraProjections are appended to the canonical projection set.
@@ -61,11 +65,95 @@ func WithRetrievalIndex(idx retrieval.Index) Option {
 
 // WithCompiler overrides the write-time compiler. The default is
 // compiler.Default() with deterministic Phase 1 stages.
+//
+// Passing WithCompiler replaces the whole compiler pipeline; if you
+// only want to enable LLM extraction on top of the default stages,
+// use WithLLMExtractor instead.
 func WithCompiler(cp compiler.Compiler) Option {
 	return func(c *config) {
 		if cp != nil {
 			c.compiler = cp
 		}
+	}
+}
+
+// llmExtractorConfig captures the args to compiler.NewLLMExtractor
+// so we can defer the wiring until New() decides whether to build
+// the default compiler.
+type llmExtractorConfig struct {
+	client llm.LLM
+	tune   []LLMExtractorOption
+}
+
+// LLMExtractorOption configures the LLM extractor wired by
+// WithLLMExtractor. Tunable knobs live behind small option types so
+// the facade doesn't grow positional arguments as quality features
+// land in later phases.
+type LLMExtractorOption func(*compiler.LLMExtractor)
+
+// WithLLMExtractorSystemPrompt overrides the default system prompt.
+func WithLLMExtractorSystemPrompt(prompt string) LLMExtractorOption {
+	return func(e *compiler.LLMExtractor) {
+		if prompt != "" {
+			e.System = prompt
+		}
+	}
+}
+
+// WithLLMExtractorTemperature sets the sampling temperature. Zero
+// means "use provider default".
+func WithLLMExtractorTemperature(t float64) LLMExtractorOption {
+	return func(e *compiler.LLMExtractor) { e.Temperature = t }
+}
+
+// WithLLMExtractorSchemaName labels the JSON schema for structured
+// output (some providers display this in their dashboards / logs).
+func WithLLMExtractorSchemaName(name string) LLMExtractorOption {
+	return func(e *compiler.LLMExtractor) {
+		if name != "" {
+			e.SchemaName = name
+		}
+	}
+}
+
+// WithLLMExtractorExtraOptions forwards provider-specific
+// llm.GenerateOption values on every extraction call (e.g. provider
+// extra params, reasoning toggles).
+func WithLLMExtractorExtraOptions(opts ...llm.GenerateOption) LLMExtractorOption {
+	return func(e *compiler.LLMExtractor) {
+		e.ExtraOptions = append(e.ExtraOptions, opts...)
+	}
+}
+
+// WithLLMExtractor enables LLM-driven fact extraction in the
+// default compiler pipeline. The supplied client is consulted on
+// Save calls whose SaveRequest carries a non-empty Input.Text path.
+//
+// Interaction with WithCompiler:
+//   - If only WithLLMExtractor is passed, New constructs the
+//     default compiler stages and substitutes the LLM extractor.
+//   - If WithCompiler is also passed, the caller-supplied compiler
+//     wins and WithLLMExtractor is ignored (the caller is wiring
+//     stages manually anyway).
+//
+// nil client falls back to the deterministic passthrough extractor.
+func WithLLMExtractor(client llm.LLM, opts ...LLMExtractorOption) Option {
+	return func(c *config) {
+		if client == nil {
+			return
+		}
+		c.llmExtractor = &llmExtractorConfig{client: client, tune: opts}
+	}
+}
+
+// WithConflictResolver overrides the conflict resolver consulted
+// between compile and store.Append. Defaults to compiler.NewResolver().
+// Pass a nil-checked resolver to disable supersede behaviour
+// entirely (treat every compiled fact as a fresh append).
+func WithConflictResolver(r compiler.ConflictResolver) Option {
+	return func(c *config) {
+		c.resolver = r
+		c.resolverSet = true
 	}
 }
 
