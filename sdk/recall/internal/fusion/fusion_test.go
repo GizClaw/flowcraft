@@ -67,6 +67,87 @@ func TestWeightedRRF_PerSourceCapEmitsDrops(t *testing.T) {
 	}
 }
 
+func TestWeightedRRF_OutlierBoost_RescuesRareTokenMatch(t *testing.T) {
+	// Reproduces the LoCoMo "Sweden" failure mode in miniature:
+	//
+	// - retrieval lane returns one rare-token outlier ("sweden_fact")
+	//   with a BM25 score ~7x the median of the rest of the lane
+	// - several mid-rank candidates appear in BOTH retrieval and
+	//   entity lanes (the multi-source corroboration that vanilla RRF
+	//   rewards), with BM25 scores around the lane's typical noise
+	//
+	// Without the outlier boost, RRF prefers the multi-source
+	// candidate because rank-based aggregation discards BM25's
+	// magnitude. With the boost, the within-source rank-1 outlier's
+	// contribution is amplified just enough to overcome the
+	// dual-source rank-2 corroboration — the rare-token match wins.
+	retrievalCands := []model.Candidate{
+		{FactID: "sweden_fact", Source: "retrieval", Rank: 1, Score: 14.0},
+		{FactID: "filler1", Source: "retrieval", Rank: 2, Score: 2.0},
+		{FactID: "filler2", Source: "retrieval", Rank: 3, Score: 2.0},
+		{FactID: "filler3", Source: "retrieval", Rank: 4, Score: 2.0},
+		{FactID: "filler4", Source: "retrieval", Rank: 5, Score: 2.0},
+	}
+	entityCands := []model.Candidate{
+		{FactID: "filler1", Source: "entity", Rank: 1, Score: 1.0},
+	}
+	results := []model.SourceResult{
+		{Source: "retrieval", Candidates: retrievalCands},
+		{Source: "entity", Candidates: entityCands},
+	}
+
+	// Baseline (boost disabled): filler1 wins because it's
+	// multi-source corroborated.
+	fused, _, _ := WeightedRRF{}.Fuse(context.Background(), results, Options{
+		Weights:         map[string]float64{"retrieval": 1.0, "entity": 1.0},
+		OutlierBoostCap: 1.0, // disable boost
+	})
+	if fused[0].FactID != "filler1" {
+		t.Fatalf("baseline: expected multi-source 'filler1' to win without boost, got %+v", fused[0])
+	}
+
+	// With boost on: the rare-token outlier wins.
+	fused, _, _ = WeightedRRF{}.Fuse(context.Background(), results, Options{
+		Weights: map[string]float64{"retrieval": 1.0, "entity": 1.0},
+		// rely on defaults (cap=2.0, threshold=2.0, max-rank=5)
+	})
+	if fused[0].FactID != "sweden_fact" {
+		t.Errorf("with boost: expected rare-token 'sweden_fact' to win, got rank order: %+v",
+			func() []string {
+				out := []string{}
+				for _, c := range fused {
+					out = append(out, c.FactID)
+				}
+				return out
+			}())
+	}
+}
+
+func TestWeightedRRF_OutlierBoost_NoOpOnUniformScores(t *testing.T) {
+	// Sources whose candidates all share the same score (entity /
+	// graph / profile in presence-signal mode) should NOT receive
+	// boosts — there's no magnitude signal to amplify. We verify the
+	// boost factor stays at 1 by checking that fused scores equal
+	// the plain RRF formula.
+	results := []model.SourceResult{
+		{
+			Source: "entity",
+			Candidates: []model.Candidate{
+				{FactID: "a", Source: "entity", Rank: 1, Score: 1.0},
+				{FactID: "b", Source: "entity", Rank: 2, Score: 1.0},
+				{FactID: "c", Source: "entity", Rank: 3, Score: 1.0},
+			},
+		},
+	}
+	fused, _, _ := WeightedRRF{}.Fuse(context.Background(), results, Options{
+		Weights: map[string]float64{"entity": 1.0},
+	})
+	wantTop := 1.0 / float64(DefaultRRFK+1)
+	if fused[0].FactID != "a" || fused[0].Score != wantTop {
+		t.Errorf("uniform-score source should not boost top: got %+v, want top=a with score=%v", fused[0], wantTop)
+	}
+}
+
 func TestWeightedRRF_TotalCapEmitsDrops(t *testing.T) {
 	results := []model.SourceResult{
 		{
