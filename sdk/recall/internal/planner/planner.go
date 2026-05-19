@@ -37,6 +37,16 @@ const DefaultLimit = 10
 // MaxLimit is the hard cap on returned hits.
 const MaxLimit = 100
 
+// SourceOverfetchMultiplier controls per-source candidate budgets.
+// QueryPlan.TotalCap remains the final hit cap; source budgets are
+// intentionally larger so fusion/ranking can choose from a broader
+// candidate pool.
+const SourceOverfetchMultiplier = 2
+
+// MaxSourceOverfetch caps individual source budgets to keep broad
+// multi-source reads bounded.
+const MaxSourceOverfetch = 50
+
 // Input is the planner contract.
 type Input struct {
 	Scope        model.Scope
@@ -96,7 +106,7 @@ func (r *RuleBased) Plan(_ context.Context, input Input) (model.QueryPlan, error
 	}
 
 	order := buildSourceOrder(intent)
-	budgets := allocateBudgets(order, limit, r.retrievalEntityOnly(intent), r.RetrievalShare)
+	budgets := allocateBudgets(order, limit)
 
 	return model.QueryPlan{
 		Intent:        intent,
@@ -173,69 +183,33 @@ func kindsIntersectTimeline(kinds []model.FactKind) bool {
 // retrieval+entity are active the PR-3 RetrievalShare split applies.
 // Otherwise budgets are weight-normalized to sum to limit. When
 // limit < len(sources) the first limit sources each get budget 1.
-func allocateBudgets(order []string, limit int, retrievalEntityOnly bool, retrievalShare float64) map[string]int {
+func allocateBudgets(order []string, limit int) map[string]int {
 	budgets := make(map[string]int, len(order))
 	if len(order) == 0 {
 		return budgets
 	}
-	if limit < len(order) {
-		picked := order
-		if !retrievalEntityOnly {
-			picked = prioritizeStructuredForTinyLimit(order, limit)
-		} else {
-			picked = order[:limit]
-		}
-		for _, src := range picked {
-			budgets[src] = 1
-		}
-		return budgets
-	}
-
-	if retrievalEntityOnly && len(order) == 2 {
-		share := retrievalShare
-		if share <= 0 || share >= 1 {
-			share = 0.6
-		}
-		retrievalBudget := maxInt(1, int(float64(limit)*share+0.5))
-		entityBudget := maxInt(1, limit-retrievalBudget)
-		budgets[SourceRetrieval] = retrievalBudget
-		budgets[SourceEntity] = entityBudget
-		return budgets
-	}
-
-	if len(order) == 1 {
-		budgets[order[0]] = limit
-		return budgets
-	}
-
-	weights := defaultWeights()
-	var sumW float64
+	b := sourceBudget(limit)
 	for _, src := range order {
-		sumW += weights[src]
-	}
-	allocated := 0
-	for i, src := range order {
-		if i == len(order)-1 {
-			budgets[src] = limit - allocated
-			if budgets[src] < 1 {
-				budgets[src] = 1
-			}
-			continue
-		}
-		w := weights[src]
-		b := maxInt(1, int(float64(limit)*w/sumW+0.5))
-		// avoid stealing all budget from trailing sources
-		remaining := len(order) - i - 1
-		if allocated+b > limit-remaining {
-			b = limit - allocated - remaining
-			if b < 1 {
-				b = 1
-			}
-		}
 		budgets[src] = b
-		allocated += b
 	}
 	return budgets
+}
+
+func sourceBudget(limit int) int {
+	if limit <= 0 {
+		limit = DefaultLimit
+	}
+	overfetch := limit * SourceOverfetchMultiplier
+	if overfetch > MaxSourceOverfetch {
+		overfetch = MaxSourceOverfetch
+	}
+	if overfetch < limit {
+		overfetch = limit
+	}
+	if overfetch < 1 {
+		overfetch = 1
+	}
+	return overfetch
 }
 
 func defaultWeights() map[string]float64 {

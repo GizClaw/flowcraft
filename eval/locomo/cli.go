@@ -14,10 +14,12 @@ import (
 	"github.com/GizClaw/flowcraft/eval/internal/cliflags"
 	"github.com/GizClaw/flowcraft/eval/internal/env"
 	"github.com/GizClaw/flowcraft/eval/internal/notify"
-	"github.com/GizClaw/flowcraft/eval/locomo/runners/flowcraft"
+	"github.com/GizClaw/flowcraft/eval/locomo/runners"
+	"github.com/GizClaw/flowcraft/eval/locomo/runners/flowcraftv2"
 	"github.com/GizClaw/flowcraft/eval/metrics"
 	"github.com/GizClaw/flowcraft/sdk/llm"
-	"github.com/GizClaw/flowcraft/sdk/recall_v1"
+	"github.com/GizClaw/flowcraft/sdk/recall"
+	recallv1 "github.com/GizClaw/flowcraft/sdk/recall_v1"
 
 	_ "github.com/GizClaw/flowcraft/sdkx/embedding/azure"
 	_ "github.com/GizClaw/flowcraft/sdkx/embedding/qwen"
@@ -93,6 +95,7 @@ func addLocomoRun(parent *cobra.Command, g *cliflags.Global) {
 		recentTurnsK      int
 		dumpFactsPath     string
 		dumpRecallPath    string
+		diagnosticsPath   string
 	)
 
 	cmd := &cobra.Command{
@@ -110,12 +113,15 @@ Example (LLM extractor + LLM answer + LLM judge + Qwen embedder):
       --embedder   qwen:text-embedding-v4 \
       --out r.json`,
 		RunE: func(c *cobra.Command, _ []string) error {
-			if runnerName != "flowcraft" {
-				return fmt.Errorf("unknown runner: %s", runnerName)
+			canonical, err := normalizeRunnerName(runnerName)
+			if err != nil {
+				return err
+			}
+			if canonical == "flowcraft-v2" && dumpFactsPath != "" {
+				return fmt.Errorf("--dump-facts is not supported for flowcraft-v2 bootstrap")
 			}
 
 			var ds *dataset.Dataset
-			var err error
 			if datasetFlag == "synthetic" {
 				ds = dataset.Synthetic()
 			} else {
@@ -183,6 +189,9 @@ Example (LLM extractor + LLM answer + LLM judge + Qwen embedder):
 			if useExtractor && extractor == nil {
 				extractor = answer
 			}
+			if canonical == "flowcraft-v2" && useExtractor && extractor == nil {
+				return flowcraftv2.ErrExtractorNotSupported
+			}
 
 			// --dump-facts diagnostic: stream every Save batch's
 			// extracted facts to a JSONL sidecar so we can audit
@@ -192,7 +201,7 @@ Example (LLM extractor + LLM answer + LLM judge + Qwen embedder):
 				dumpMu  sync.Mutex
 				dumpW   *os.File
 				dumpEnc *json.Encoder
-				onFacts func(recall.Scope, []recall.ExtractedFact)
+				onFacts func(recallv1.Scope, []recallv1.ExtractedFact)
 			)
 			if dumpFactsPath != "" {
 				dumpW, err = os.Create(dumpFactsPath)
@@ -201,19 +210,45 @@ Example (LLM extractor + LLM answer + LLM judge + Qwen embedder):
 				}
 				defer dumpW.Close()
 				dumpEnc = json.NewEncoder(dumpW)
-				onFacts = func(scope recall.Scope, facts []recall.ExtractedFact) {
+				onFacts = func(scope recallv1.Scope, facts []recallv1.ExtractedFact) {
 					dumpMu.Lock()
 					defer dumpMu.Unlock()
 					_ = dumpEnc.Encode(struct {
-						TS    time.Time              `json:"ts"`
-						Scope recall.Scope           `json:"scope"`
-						Facts []recall.ExtractedFact `json:"facts"`
+						TS    time.Time                `json:"ts"`
+						Scope recallv1.Scope           `json:"scope"`
+						Facts []recallv1.ExtractedFact `json:"facts"`
 					}{time.Now(), scope, facts})
 				}
 			}
 
-			rOpts := flowcraft.Options{
-				Name:                      runnerName,
+			// --diagnostics (v2 only): accumulate per-stage health across
+			// the run so the operator can answer "where in the pipeline
+			// is accuracy lost" from a single JSON.
+			var (
+				diagHealth *recall.PipelineHealth
+				diagMu     sync.Mutex
+				v2Diag     *v2DiagnosticHooks
+			)
+			if diagnosticsPath != "" {
+				if canonical != "flowcraft-v2" {
+					return fmt.Errorf("--diagnostics is only supported for flowcraft-v2 (got %s)", canonical)
+				}
+				diagHealth = recall.NewPipelineHealth()
+				v2Diag = &v2DiagnosticHooks{
+					OnSave: func(_ runners.Scope, d recall.SaveDiagnostics) {
+						diagMu.Lock()
+						defer diagMu.Unlock()
+						diagHealth.RecordSave(d)
+					},
+					OnRecall: func(_ runners.Scope, d recall.RecallDiagnostics) {
+						diagMu.Lock()
+						defer diagMu.Unlock()
+						diagHealth.RecordRecall(d)
+					},
+				}
+			}
+
+			r, err := buildLocomoRunner(canonical, v1RunnerConfig{
 				LLM:                       extractor,
 				Embedder:                  embedder,
 				MaxFactsPerCall:           maxFacts,
@@ -230,15 +265,7 @@ Example (LLM extractor + LLM answer + LLM judge + Qwen embedder):
 				UpdateResolverLLM:         resolverLLM,
 				RecentTurnsK:              recentTurnsK,
 				OnFactsExtracted:          onFacts,
-			}
-			// Extractor prompt is intentionally not overridden here: every
-			// architectural rule that helps LoCoMo (self-containedness,
-			// atomic entities, composite facts, inference-evidence,
-			// canonical naming) lives in sdk/recall.DefaultExtractPrompt
-			// so SDK consumers get the same benefit. Re-introducing a
-			// LoCoMo-only overlay would risk silent drift between eval
-			// numbers and production behaviour.
-			r, err := flowcraft.New(rOpts)
+			}, nil, v2Diag)
 			if err != nil {
 				return fmt.Errorf("runner: %w", err)
 			}
@@ -255,7 +282,7 @@ Example (LLM extractor + LLM answer + LLM judge + Qwen embedder):
 			var (
 				recallMu  sync.Mutex
 				recallEnc *json.Encoder
-				onRecall  func(q dataset.Question, hits []recall.Hit)
+				onRecall  func(q dataset.Question, hits []runners.Hit)
 			)
 			if dumpRecallPath != "" {
 				rw, rerr := os.Create(dumpRecallPath)
@@ -264,7 +291,7 @@ Example (LLM extractor + LLM answer + LLM judge + Qwen embedder):
 				}
 				defer rw.Close()
 				recallEnc = json.NewEncoder(rw)
-				onRecall = func(q dataset.Question, hits []recall.Hit) {
+				onRecall = func(q dataset.Question, hits []runners.Hit) {
 					recallMu.Lock()
 					defer recallMu.Unlock()
 					type hitRec struct {
@@ -277,13 +304,20 @@ Example (LLM extractor + LLM answer + LLM judge + Qwen embedder):
 					}
 					recs := make([]hitRec, 0, len(hits))
 					for _, h := range hits {
-						recs = append(recs, hitRec{
-							ID:      h.Entry.ID,
+						rec := hitRec{
+							ID:      h.ID,
 							Score:   h.Score,
-							Content: h.Entry.Content,
-							Cats:    h.Entry.Categories,
-							Scores:  h.Scores,
-						})
+							Content: h.Content,
+						}
+						if h.Metadata != nil {
+							if cats, ok := h.Metadata["categories"].([]string); ok {
+								rec.Cats = cats
+							}
+							if scores, ok := h.Metadata["scores"].(map[string]float64); ok {
+								rec.Scores = scores
+							}
+						}
+						recs = append(recs, rec)
 					}
 					_ = recallEnc.Encode(struct {
 						TS    time.Time `json:"ts"`
@@ -339,6 +373,12 @@ Example (LLM extractor + LLM answer + LLM judge + Qwen embedder):
 			if err := g.WriteReport(report); err != nil {
 				return err
 			}
+			if diagHealth != nil {
+				if err := writeDiagnosticsReport(diagnosticsPath, diagHealth); err != nil {
+					return fmt.Errorf("write diagnostics: %w", err)
+				}
+				fmt.Fprintf(os.Stderr, "  diagnostics -> %s\n", diagnosticsPath)
+			}
 			khit := "N/A"
 			if report.Aggregate.KHitRate != nil {
 				khit = fmt.Sprintf("%.3f", *report.Aggregate.KHitRate)
@@ -368,7 +408,7 @@ Example (LLM extractor + LLM answer + LLM judge + Qwen embedder):
 	}
 
 	f := cmd.Flags()
-	f.StringVar(&runnerName, "runner", "flowcraft", "runner name (currently: flowcraft)")
+	f.StringVar(&runnerName, "runner", "flowcraft-v1", "runner: flowcraft-v1 (default) | flowcraft-v2 (v2 bootstrap)")
 	f.StringVar(&datasetFlag, "dataset", "synthetic", "dataset (synthetic) or path to .jsonl")
 	f.IntVar(&topK, "topk", 10, "Recall top-k")
 	f.BoolVar(&useExtractor, "extractor", false, "use LLM extractor on Save (requires --extractor-llm or shared --answer-llm)")
@@ -399,6 +439,7 @@ Example (LLM extractor + LLM answer + LLM judge + Qwen embedder):
 	f.IntVar(&recentTurnsK, "recent-turns", 0, "if >0, inject the previous K messages from prior Save batches into the extractor for cross-batch pronoun/entity reference resolution")
 	f.StringVar(&dumpFactsPath, "dump-facts", "", "diagnostic: write one JSONL record per Save batch with the extractor's facts to this path (audits extract-miss vs recall-miss)")
 	f.StringVar(&dumpRecallPath, "dump-recall", "", "diagnostic: write one JSONL record per question with the top-k recall hits to this path (audits recall-miss vs answer-miss)")
+	f.StringVar(&diagnosticsPath, "diagnostics", "", "diagnostic (flowcraft-v2 only): write per-stage Save+Recall health summary to this JSON path (uses SaveExplain/RecallExplain)")
 
 	parent.AddCommand(cmd)
 }

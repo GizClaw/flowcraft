@@ -12,8 +12,24 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/sdk/llm"
-	"github.com/GizClaw/flowcraft/sdk/recall_v1"
 )
+
+// Scope identifies a memory partition for ingest and recall. Eval-owned so
+// drivers are not locked to sdk/recall_v1 or sdk/recall types.
+type Scope struct {
+	RuntimeID string
+	UserID    string
+	AgentID   string
+}
+
+// Hit is one recall result in runner-neutral form.
+type Hit struct {
+	ID          string
+	Content     string
+	Score       float64
+	EvidenceIDs []string
+	Metadata    map[string]any
+}
 
 // Runner abstracts a Memory implementation under evaluation.
 //
@@ -24,8 +40,8 @@ import (
 // "extractor returned 0 facts on conv-X" without an interactive debugger.
 type Runner interface {
 	Name() string
-	Save(ctx context.Context, scope recall.Scope, msgs []llm.Message) (saveCount int, saveLatency time.Duration, err error)
-	Recall(ctx context.Context, scope recall.Scope, query string, topK int) (hits []recall.Hit, recallLatency time.Duration, err error)
+	Save(ctx context.Context, scope Scope, msgs []llm.Message) (saveCount int, saveLatency time.Duration, err error)
+	Recall(ctx context.Context, scope Scope, query string, topK int) (hits []Hit, recallLatency time.Duration, err error)
 	Close() error
 }
 
@@ -37,11 +53,20 @@ type RawTurn struct {
 	Role       string
 	Content    string
 	EvidenceID string
+	SessionID  string
 }
 
 // RawIngestSaver is an optional Runner extension that ingests verbatim turns
 // while preserving each turn's EvidenceID. Only used when the eval driver
 // runs without an LLM extractor.
 type RawIngestSaver interface {
-	SaveRawTurns(ctx context.Context, scope recall.Scope, turns []RawTurn) (saveCount int, saveLatency time.Duration, err error)
+	SaveRawTurns(ctx context.Context, scope Scope, turns []RawTurn) (saveCount int, saveLatency time.Duration, err error)
+}
+
+// SourceTurnSaver is an optional Runner extension for extractor-backed ingest
+// that needs source metadata (EvidenceID / SessionID) in addition to text. It
+// lets v2 render source turns into SaveRequest.Text so extracted facts can cite
+// the original evidence ids.
+type SourceTurnSaver interface {
+	SaveSourceTurns(ctx context.Context, scope Scope, turns []RawTurn) (saveCount int, saveLatency time.Duration, err error)
 }

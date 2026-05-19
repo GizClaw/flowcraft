@@ -56,6 +56,14 @@ func (passthroughExtractor) Extract(_ context.Context, input Input) ([]model.Tem
 // a closed Kind enum and explicit field types so structured-output
 // modes (OpenAI strict mode, Gemini schema, etc.) validate
 // server-side.
+//
+// OpenAI structured-output strict mode rejects any object whose
+// `properties` set does not equal its `required` set, and requires
+// `additionalProperties: false` on every object. We therefore mark
+// every listed property as required; the LLM is allowed to emit
+// empty strings / empty arrays for fields that do not apply (the
+// normalizer / resolver already treat empties as "not set"). The
+// closed enum on `kind` remains the only true constraint.
 const ExtractedFactSchema = `{
   "type": "object",
   "properties": {
@@ -89,16 +97,25 @@ const ExtractedFactSchema = `{
                 "role": {"type": "string"},
                 "text": {"type": "string"},
                 "timestamp": {"type": "string"}
-              }
+              },
+              "required": ["id", "message_id", "role", "text", "timestamp"],
+              "additionalProperties": false
             }
           },
           "source_message_ids": {"type": "array", "items": {"type": "string"}}
         },
-        "required": ["kind"]
+        "required": [
+          "kind", "content", "subject", "predicate", "object",
+          "entities", "participants", "location",
+          "valid_from_hint", "valid_to_hint", "confidence",
+          "evidence_text", "evidence_refs", "source_message_ids"
+        ],
+        "additionalProperties": false
       }
     }
   },
-  "required": ["facts"]
+  "required": ["facts"],
+  "additionalProperties": false
 }`
 
 // ExtractedFactList is the wire shape returned by the LLM. Kept
@@ -144,12 +161,74 @@ type ExtractedEvidenceRef struct {
 // LLMExtractorSystemPrompt is the canonical system framing. It is
 // intentionally short — product-specific prompt tuning belongs at the
 // LLM-client adapter or caller option layer, not inside the compiler.
+//
+// Two empirically critical demands are baked in:
+//
+//   - every fact MUST carry a one-sentence natural language `content`
+//     summary. The retrieval projection indexes Content + S/P/O +
+//     Evidence together; a fact with empty content gives the BM25
+//     lane no fuel and the answer LLM no grounding (the recall
+//     pipeline can still surface the fact via structured lanes, but
+//     downstream answer quality collapses when the snippet has no
+//     prose to cite).
+//   - whenever the snippet mentions an absolute or relative time for
+//     an event / state / plan, the LLM MUST fill `valid_from_hint`
+//     (and `valid_to_hint` when an end is stated). Use RFC3339 when a
+//     calendar date is present (e.g. "2024-05-07" or
+//     "2024-05-07T09:00:00Z"); otherwise use one of the relative
+//     tokens: now | today | tomorrow | yesterday | next week |
+//     last week | next month | last month | next year | last year.
+//     Time-resolver normalises both shapes into canonical
+//     ValidFrom / ValidTo; missing this signal makes the temporal
+//     subset of queries score near zero (`recall.k_hit` on temporal
+//     drops to 0 when ValidFrom is never set).
 const LLMExtractorSystemPrompt = `You extract structured memory facts from a conversation snippet.
 Return JSON matching the supplied schema. Only emit facts that are
 clearly present in the snippet; never fabricate facts to fill the
-schema. Use the closed enum for "kind": event | state | preference
-| relation | plan | note. If the input marks turns with ids, cite
-the supporting turns in evidence_refs and source_message_ids.`
+schema.
+
+For every fact you emit:
+- "kind" MUST be one of: event | state | preference | relation | plan | note.
+- "content" MUST be a single concise natural-language sentence that
+  states the fact in plain English so an answering LLM can cite it
+  verbatim. Never leave content empty, even when subject/predicate/
+  object are also filled.
+- Use "subject" / "predicate" / "object" for the structural triple
+  whenever it applies. For preferences, the subject is the holder of
+  the preference; the object is what they prefer.
+- "entities" lists every named person, place, organisation, product,
+  or concept mentioned in the fact (lowercased, no quotes).
+- For event / state / plan facts, when the snippet states a time
+  (absolute or relative), fill "valid_from_hint" with an ABSOLUTE
+  date whenever you can resolve one. Conversation snippets often
+  carry their own timestamp — it may appear as an ISO datetime
+  ("2023-03-18T14:00:00Z"), a bracketed prefix on the turn ("[7:18
+  pm on 27 May, 2023] Speaker: …"), a chat-header line, message
+  metadata, or any other format. Look for the nearest such
+  timestamp; when the speaker uses a relative expression
+  ("yesterday", "last weekend", "two weeks ago", "next Friday",
+  "tomorrow"), resolve it AGAINST THAT TIMESTAMP and emit the
+  resulting YYYY-MM-DD (or RFC3339 when the time-of-day is also
+  stated). Examples:
+    • turn dated 2023-03-18, speaker says "I signed up yesterday."
+      → valid_from_hint = "2023-03-17"
+    • turn dated 2023-05-27, speaker says "Saw it last Friday."
+      → valid_from_hint = "2023-05-26"
+  Only fall back to one of the relative tokens (now | today |
+  tomorrow | yesterday | next week | last week | next month |
+  last month | next year | last year) when no turn timestamp is
+  available. If a span is stated, also fill "valid_to_hint" with the
+  same conventions. Leave both blank only when the snippet says
+  nothing about timing.
+- When the input marks turns with ids, cite the supporting turn ids
+  in both "evidence_refs[].id" and "source_message_ids".
+- "evidence_text" MUST quote a short span from the snippet that
+  supports the fact (≤ 200 chars) AND retain the turn's "[…]"
+  timestamp prefix when present, so downstream answer prompts can
+  see the absolute date the fact pertains to.
+- "confidence" is a number in [0,1] reflecting how directly the
+  snippet states the fact; 0.9+ for verbatim, 0.5-0.8 for paraphrase
+  or inference.`
 
 // LLMExtractor calls a sdk/llm.LLM and converts its JSON reply
 // into model.TemporalFact values.

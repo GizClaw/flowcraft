@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"sync"
 	"testing"
 	"time"
 
@@ -221,6 +222,106 @@ func TestSave_StateSecondWriteIdenticalContentIsNoop(t *testing.T) {
 	}
 	if prior.ValidTo != nil {
 		t.Errorf("prior fact must remain active, ValidTo=%v", *prior.ValidTo)
+	}
+}
+
+func TestSave_ConcurrentStateUpdatesSerializeByScope(t *testing.T) {
+	store := temporalstore.NewMemoryStore()
+	mem, _ := New(withTemporalStore(store))
+	scope := Scope{RuntimeID: "rt", UserID: "u1"}
+
+	if _, err := mem.Save(context.Background(), scope, SaveRequest{
+		Facts: []TemporalFact{{
+			Kind: FactState, Subject: "alice", Predicate: "city",
+			Content: "city-00",
+		}},
+	}); err != nil {
+		t.Fatalf("seed save: %v", err)
+	}
+
+	const updates = 24
+	start := make(chan struct{})
+	errs := make(chan error, updates)
+	var wg sync.WaitGroup
+	for i := 0; i < updates; i++ {
+		i := i
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			_, err := mem.Save(context.Background(), scope, SaveRequest{
+				Facts: []TemporalFact{{
+					Kind: FactState, Subject: "alice", Predicate: "city",
+					Content: "city-" + time.Unix(int64(i+1), 0).Format("05"),
+				}},
+			})
+			errs <- err
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("concurrent save failed: %v", err)
+		}
+	}
+
+	facts, err := store.List(context.Background(), scope, temporalstore.ListQuery{IncludeSuperseded: true})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	active := 0
+	for _, f := range facts {
+		if f.Kind != FactState || f.Subject != "alice" || f.Predicate != "city" {
+			continue
+		}
+		if f.CorrectedBy == "" && f.ValidTo == nil {
+			active++
+		}
+	}
+	if active != 1 {
+		t.Fatalf("active city facts = %d, want 1; facts=%+v", active, facts)
+	}
+}
+
+func TestSave_StateUpdatesChainWithinSingleBatch(t *testing.T) {
+	store := temporalstore.NewMemoryStore()
+	mem, _ := New(withTemporalStore(store))
+	scope := Scope{RuntimeID: "rt", UserID: "u1"}
+
+	first, err := mem.Save(context.Background(), scope, SaveRequest{
+		Facts: []TemporalFact{{
+			Kind: FactState, Subject: "alice", Predicate: "city",
+			Content: "Paris",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("seed save: %v", err)
+	}
+	res, err := mem.Save(context.Background(), scope, SaveRequest{
+		Facts: []TemporalFact{
+			{Kind: FactState, Subject: "alice", Predicate: "city", Content: "Berlin"},
+			{Kind: FactState, Subject: "alice", Predicate: "city", Content: "Rome"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("batch save: %v", err)
+	}
+	if len(res.FactIDs) != 2 {
+		t.Fatalf("ids = %+v", res.FactIDs)
+	}
+	old, _ := store.Get(context.Background(), scope, first.FactIDs[0])
+	mid, _ := store.Get(context.Background(), scope, res.FactIDs[0])
+	latest, _ := store.Get(context.Background(), scope, res.FactIDs[1])
+	if old.CorrectedBy != res.FactIDs[0] {
+		t.Fatalf("old.CorrectedBy = %q, want %q", old.CorrectedBy, res.FactIDs[0])
+	}
+	if mid.CorrectedBy != res.FactIDs[1] {
+		t.Fatalf("mid.CorrectedBy = %q, want %q", mid.CorrectedBy, res.FactIDs[1])
+	}
+	if latest.CorrectedBy != "" || latest.ValidTo != nil {
+		t.Fatalf("latest should be active: %+v", latest)
 	}
 }
 

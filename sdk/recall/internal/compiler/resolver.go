@@ -91,9 +91,10 @@ func (r *DefaultResolver) ResolveConflicts(ctx context.Context, view View, facts
 		clock = time.Now
 	}
 	var res Resolution
+	batch := newBatchView(view)
 
 	for _, f := range facts {
-		decision, err := r.classify(ctx, view, f)
+		decision, err := r.classify(ctx, batch, f)
 		if err != nil {
 			return Resolution{}, err
 		}
@@ -102,6 +103,7 @@ func (r *DefaultResolver) ResolveConflicts(ctx context.Context, view View, facts
 			res.Drops = append(res.Drops, DroppedFact{Fact: f, Reason: decision.reason})
 		case actionAppend:
 			res.Facts = append(res.Facts, f)
+			batch.trackAppend(f)
 		case actionSupersede:
 			// Append new fact carrying Supersedes pointer; queue a
 			// validity close on the prior fact. ValidTo uses the
@@ -121,9 +123,77 @@ func (r *DefaultResolver) ResolveConflicts(ctx context.Context, view View, facts
 				ValidTo:     closeTime,
 				CorrectedBy: updated.ID,
 			})
+			batch.trackClose(decision.priorID)
+			batch.trackAppend(updated)
 		}
 	}
 	return res, nil
+}
+
+type batchView struct {
+	base              View
+	pendingByMergeKey map[string]model.TemporalFact
+	closing           map[string]struct{}
+}
+
+func newBatchView(base View) *batchView {
+	return &batchView{
+		base:              base,
+		pendingByMergeKey: make(map[string]model.TemporalFact),
+		closing:           make(map[string]struct{}),
+	}
+}
+
+func (v *batchView) trackAppend(f model.TemporalFact) {
+	if f.MergeKey == "" {
+		return
+	}
+	v.pendingByMergeKey[f.MergeKey] = f
+}
+
+func (v *batchView) trackClose(factID string) {
+	if factID == "" {
+		return
+	}
+	v.closing[factID] = struct{}{}
+}
+
+func (v *batchView) FindByMergeKey(ctx context.Context, scope model.Scope, mergeKey string) ([]model.TemporalFact, error) {
+	var out []model.TemporalFact
+	if pending, ok := v.pendingByMergeKey[mergeKey]; ok {
+		if _, closing := v.closing[pending.ID]; !closing {
+			out = append(out, pending)
+		}
+	}
+	if v.base == nil {
+		return out, nil
+	}
+	base, err := v.base.FindByMergeKey(ctx, scope, mergeKey)
+	if err != nil {
+		return nil, err
+	}
+	for _, f := range base {
+		if _, closing := v.closing[f.ID]; closing {
+			continue
+		}
+		out = append(out, f)
+	}
+	return out, nil
+}
+
+func (v *batchView) Get(ctx context.Context, scope model.Scope, factID string) (model.TemporalFact, error) {
+	if _, closing := v.closing[factID]; closing {
+		return model.TemporalFact{}, fmt.Errorf("recall compiler batch view: fact %q is pending close", factID)
+	}
+	for _, f := range v.pendingByMergeKey {
+		if f.ID == factID {
+			return f, nil
+		}
+	}
+	if v.base == nil {
+		return model.TemporalFact{}, fmt.Errorf("recall compiler batch view: fact %q not found", factID)
+	}
+	return v.base.Get(ctx, scope, factID)
 }
 
 type resolverAction int

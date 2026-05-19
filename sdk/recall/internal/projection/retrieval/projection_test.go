@@ -41,7 +41,7 @@ func TestProjection_UpsertsReservedMetadata(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("expected doc upserted, ok=%v err=%v", ok, err)
 	}
-	if got.Content != "Alice lives in Paris" {
+	if got.Content != "Alice lives in Paris alice city paris alice" {
 		t.Errorf("content = %q", got.Content)
 	}
 	for key, want := range map[string]any{
@@ -58,6 +58,42 @@ func TestProjection_UpsertsReservedMetadata(t *testing.T) {
 	}
 	if got.Metadata[model.MetaValidFrom].(int64) != validFrom.UnixMilli() {
 		t.Errorf("valid_from metadata not in unix-millis: %v", got.Metadata[model.MetaValidFrom])
+	}
+}
+
+func TestProjection_SearchContentIncludesEvidenceGrounding(t *testing.T) {
+	idx := retrievalmem.New()
+	p, err := New(idx)
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	scope := model.Scope{RuntimeID: "rt", UserID: "u1"}
+	f := model.TemporalFact{
+		ID:           "f1",
+		Scope:        scope,
+		Kind:         model.KindEvent,
+		Content:      "Caroline joined a support group",
+		MergeKey:     "event|caroline|support",
+		ObservedAt:   time.Unix(1, 0),
+		EvidenceText: "[9:00 am on 7 May, 2024] Caroline went to the LGBTQ support group.",
+		EvidenceRefs: []model.EvidenceRef{{
+			ID:   "D1:3",
+			Text: "Caroline said the group met downtown on 7 May.",
+		}},
+	}
+	if err := p.Project(context.Background(), []model.TemporalFact{f}); err != nil {
+		t.Fatalf("project: %v", err)
+	}
+
+	resp, err := idx.Search(context.Background(), NamespaceFor(scope), retrieval.SearchRequest{
+		QueryText: "LGBTQ downtown 7 May",
+		TopK:      5,
+	})
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	if len(resp.Hits) != 1 || resp.Hits[0].Doc.ID != "f1" {
+		t.Fatalf("evidence grounding should be searchable, hits=%+v", resp.Hits)
 	}
 }
 

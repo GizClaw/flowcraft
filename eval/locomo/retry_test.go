@@ -8,9 +8,9 @@ import (
 
 	"github.com/GizClaw/flowcraft/eval/dataset"
 	"github.com/GizClaw/flowcraft/eval/locomo"
+	"github.com/GizClaw/flowcraft/eval/locomo/runners"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/llm"
-	"github.com/GizClaw/flowcraft/sdk/recall_v1"
 )
 
 // retryRunner is a minimal locomo.Runner that fails Save calls a configurable
@@ -26,7 +26,7 @@ type retryRunner struct {
 
 func (r *retryRunner) Name() string { return r.name }
 
-func (r *retryRunner) Save(_ context.Context, _ recall.Scope, _ []llm.Message) (int, time.Duration, error) {
+func (r *retryRunner) Save(_ context.Context, _ runners.Scope, _ []llm.Message) (int, time.Duration, error) {
 	r.saveCalls.Add(1)
 	if r.failuresPer.Load() > 0 {
 		r.failuresPer.Add(-1)
@@ -35,7 +35,7 @@ func (r *retryRunner) Save(_ context.Context, _ recall.Scope, _ []llm.Message) (
 	return 1, time.Millisecond, nil
 }
 
-func (r *retryRunner) Recall(_ context.Context, _ recall.Scope, _ string, _ int) ([]recall.Hit, time.Duration, error) {
+func (r *retryRunner) Recall(_ context.Context, _ runners.Scope, _ string, _ int) ([]runners.Hit, time.Duration, error) {
 	return nil, time.Millisecond, nil
 }
 

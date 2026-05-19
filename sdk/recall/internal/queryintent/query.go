@@ -46,6 +46,7 @@ func Default() Compiler { return RuleBased{} }
 
 // Compile merges explicit entities with rule-based extraction from Text.
 func (RuleBased) Compile(_ context.Context, input Input) (Compiled, error) {
+	entities := mergeEntities(input.Entities, extractEntitiesFromText(input.Text))
 	out := Compiled{
 		Text:      input.Text,
 		Subject:   input.Subject,
@@ -53,8 +54,14 @@ func (RuleBased) Compile(_ context.Context, input Input) (Compiled, error) {
 		Object:    input.Object,
 		Kinds:     append([]model.FactKind(nil), input.Kinds...),
 		TimeRange: input.TimeRange,
+		Entities:  entities,
 	}
-	out.Entities = mergeEntities(input.Entities, extractEntitiesFromText(input.Text))
+	if len(out.Kinds) == 0 {
+		out.Kinds = inferKinds(input.Text)
+	}
+	if out.Subject == "" && shouldInferSubject(input.Text) {
+		out.Subject = inferSubject(input.Text, entities)
+	}
 	return out, nil
 }
 
@@ -135,6 +142,66 @@ func extractEntitiesFromText(text string) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+func inferKinds(text string) []model.FactKind {
+	lower := strings.ToLower(text)
+	if isTemporalQuestion(lower) {
+		return []model.FactKind{model.KindEvent, model.KindState, model.KindPlan}
+	}
+	return nil
+}
+
+func inferSubject(text string, entities []string) string {
+	if len(entities) == 0 {
+		return ""
+	}
+	lower := strings.ToLower(text)
+	best := ""
+	bestIdx := len(lower) + 1
+	for _, e := range entities {
+		e = normalizeEntityMention(e)
+		if e == "" {
+			continue
+		}
+		idx := strings.Index(lower, e)
+		if idx >= 0 && idx < bestIdx {
+			best = e
+			bestIdx = idx
+		}
+	}
+	if best != "" {
+		return best
+	}
+	return entities[0]
+}
+
+func shouldInferSubject(text string) bool {
+	lower := strings.TrimSpace(strings.ToLower(text))
+	if isTemporalQuestion(lower) {
+		return false
+	}
+	return strings.HasSuffix(lower, "?") ||
+		strings.HasPrefix(lower, "who ") ||
+		strings.HasPrefix(lower, "what ") ||
+		strings.HasPrefix(lower, "when ") ||
+		strings.HasPrefix(lower, "where ") ||
+		strings.HasPrefix(lower, "which ") ||
+		strings.HasPrefix(lower, "how ") ||
+		strings.Contains(lower, "'s ")
+}
+
+func isTemporalQuestion(lower string) bool {
+	return hasAny(lower, "when", "what date", "which date", "how long", "how many days", "how many months", "how many years")
+}
+
+func hasAny(s string, needles ...string) bool {
+	for _, n := range needles {
+		if strings.Contains(s, n) {
+			return true
+		}
+	}
+	return false
 }
 
 func extractQuotedSpans(s string) []string {

@@ -88,7 +88,17 @@ func TimeRangeFrom(from, to time.Time) TimeRange {
 
 // Hit is a materialized recall result. Score semantics are owned by
 // the fusion layer.
+// Hit is one recall winner. Score is the fused score after the
+// post-materialize ranker has applied its boost. Sources lists every
+// CandidateSource that surfaced this fact, in the order fusion saw
+// them; consumers can read it to attribute winners to specific
+// sources (retrieval / entity / timeline / relation / profile /
+// graph) for diagnostics and explainability, or to weight downstream
+// rendering by source provenance. An empty Sources slice means the
+// candidate carried no provenance metadata (legacy / test-only
+// paths); it does not imply the hit is invalid.
 type Hit struct {
-	Fact  TemporalFact
-	Score float64
+	Fact    TemporalFact
+	Score   float64
+	Sources []string
 }

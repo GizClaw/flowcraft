@@ -37,7 +37,7 @@ func TestRuleBased_ActivatesStructuredSources(t *testing.T) {
 	}
 }
 
-func TestRuleBased_WeightNormalizedBudgetsSumToLimit(t *testing.T) {
+func TestRuleBased_StructuredBudgetsOverfetchFinalLimit(t *testing.T) {
 	p := New()
 	limit := 10
 	plan, err := p.Plan(context.Background(), Input{
@@ -49,16 +49,17 @@ func TestRuleBased_WeightNormalizedBudgetsSumToLimit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sum := 0
 	for _, src := range plan.SourceOrder {
-		sum += plan.SourceBudgets[src]
+		if got := plan.SourceBudgets[src]; got != limit*SourceOverfetchMultiplier {
+			t.Fatalf("budget[%s] = %d, want %d (%+v)", src, got, limit*SourceOverfetchMultiplier, plan.SourceBudgets)
+		}
 	}
-	if sum != limit {
-		t.Errorf("budget sum = %d, want %d (%+v)", sum, limit, plan.SourceBudgets)
+	if plan.TotalCap != limit {
+		t.Errorf("total cap = %d, want %d", plan.TotalCap, limit)
 	}
 }
 
-func TestRuleBased_LimitLessThanSourcesGivesOneEach(t *testing.T) {
+func TestRuleBased_LimitLessThanSourcesStillOverfetchesEachSource(t *testing.T) {
 	p := New()
 	plan, err := p.Plan(context.Background(), Input{
 		Scope:     model.Scope{RuntimeID: "rt"},
@@ -69,14 +70,13 @@ func TestRuleBased_LimitLessThanSourcesGivesOneEach(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	active := 0
-	for _, b := range plan.SourceBudgets {
-		if b > 0 {
-			active++
+	for _, src := range plan.SourceOrder {
+		if got := plan.SourceBudgets[src]; got != 4 {
+			t.Fatalf("budget[%s] = %d, want 4 (%+v)", src, got, plan.SourceBudgets)
 		}
 	}
-	if active != 2 {
-		t.Errorf("want 2 sources with budget 1, got %+v", plan.SourceBudgets)
+	if plan.TotalCap != 2 {
+		t.Errorf("total cap = %d, want 2", plan.TotalCap)
 	}
 }
 

@@ -17,7 +17,6 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/llm"
 	"github.com/GizClaw/flowcraft/sdk/model"
-	"github.com/GizClaw/flowcraft/sdk/recall_v1"
 )
 
 // ingestRetryDelay is the cool-off before the single NotAvailable retry.
@@ -66,19 +65,21 @@ func retryOnNotAvailable(ctx context.Context, stage, qid string, attempt func() 
 // (the default Flowcraft runner exposes SaveRaw to bypass an LLM extractor for
 // CI-friendly runs without API keys).
 type IngestSaver interface {
-	SaveRaw(ctx context.Context, scope recall.Scope, msgs []llm.Message) (saveCount int, saveLatency time.Duration, err error)
+	SaveRaw(ctx context.Context, scope runners.Scope, msgs []llm.Message) (saveCount int, saveLatency time.Duration, err error)
 }
 
 // Report aggregates one full evaluation run.
 type Report struct {
-	Runner      string                            `json:"runner"`
-	Dataset     string                            `json:"dataset"`
-	N           int                               `json:"n"`
-	Aggregate   ScoreAggregate                    `json:"aggregate"`
-	PerQuestion []QuestionScore                   `json:"per_question"`
-	Latency     map[string]metrics.LatencySummary `json:"latency"`
-	StartedAt   time.Time                         `json:"started_at"`
-	FinishedAt  time.Time                         `json:"finished_at"`
+	Runner        string                            `json:"runner"`
+	RecallVersion string                            `json:"recall_version,omitempty"`
+	Baseline      string                            `json:"baseline,omitempty"`
+	Dataset       string                            `json:"dataset"`
+	N             int                               `json:"n"`
+	Aggregate     ScoreAggregate                    `json:"aggregate"`
+	PerQuestion   []QuestionScore                   `json:"per_question"`
+	Latency       map[string]metrics.LatencySummary `json:"latency"`
+	StartedAt     time.Time                         `json:"started_at"`
+	FinishedAt    time.Time                         `json:"finished_at"`
 }
 
 // ScoreAggregate is the headline numbers (qa.em, qa.f1, qa.judge, recall.k_hit).
@@ -173,7 +174,7 @@ type Options struct {
 	//
 	// Callback runs in the QA worker goroutine, so it MUST be
 	// goroutine-safe when Concurrency > 1.
-	OnQuestionRecall func(q dataset.Question, hits []recall.Hit)
+	OnQuestionRecall func(q dataset.Question, hits []runners.Hit)
 }
 
 // Event describes one lifecycle checkpoint. See [EventHook].
@@ -278,12 +279,12 @@ func Run(ctx context.Context, r runners.Runner, ds *dataset.Dataset, opts Option
 	// top-k from a pool of all 10 convs combined and relevant facts get
 	// drowned out by other conversations (observed: judge=0.67 on a single
 	// conv but 0.17 across 10).
-	scopeOf := func(convID string) recall.Scope {
+	scopeOf := func(convID string) runners.Scope {
 		uid := opts.UserID
 		if convID != "" {
 			uid = opts.UserID + "::" + convID
 		}
-		return recall.Scope{RuntimeID: opts.RuntimeID, UserID: uid, AgentID: opts.AgentID}
+		return runners.Scope{RuntimeID: opts.RuntimeID, UserID: uid, AgentID: opts.AgentID}
 	}
 
 	report := &Report{
@@ -291,6 +292,13 @@ func Run(ctx context.Context, r runners.Runner, ds *dataset.Dataset, opts Option
 		Dataset:   ds.Name,
 		StartedAt: time.Now(),
 		Latency:   map[string]metrics.LatencySummary{},
+	}
+	switch report.Runner {
+	case "flowcraft-v2":
+		report.RecallVersion = "v2"
+		report.Baseline = "bootstrap-raw"
+	default:
+		report.RecallVersion = "v1"
 	}
 
 	emit := func(e Event) {
@@ -405,7 +413,7 @@ func Run(ctx context.Context, r runners.Runner, ds *dataset.Dataset, opts Option
 //     the recalled memories (closed-book QA over LTM).
 //   - otherwise              → cheap fallback: concatenate top-3 hits, so
 //     EM/F1 still surface a "did retrieval find the right text" signal.
-func buildPrediction(ctx context.Context, opts Options, q dataset.Question, hits []recall.Hit) (string, error) {
+func buildPrediction(ctx context.Context, opts Options, q dataset.Question, hits []runners.Hit) (string, error) {
 	if opts.AnswerLLM == nil {
 		return composePrediction(hits), nil
 	}
@@ -436,7 +444,7 @@ func buildPrediction(ctx context.Context, opts Options, q dataset.Question, hits
 // Synthetic / LoCoMo datasets that omit the field keep the legacy
 // QUESTION-then-MEMORIES layout so the prompt stays stable for those
 // benchmarks.
-func buildAnswerBody(q dataset.Question, hits []recall.Hit) string {
+func buildAnswerBody(q dataset.Question, hits []runners.Hit) string {
 	var b strings.Builder
 	if asked := strings.TrimSpace(q.AskedAt); asked != "" {
 		b.WriteString("ASKED_AT: ")
@@ -452,7 +460,7 @@ func buildAnswerBody(q dataset.Question, hits []recall.Hit) string {
 	}
 	for _, h := range hits {
 		b.WriteString("- ")
-		b.WriteString(strings.ReplaceAll(h.Entry.Content, "\n", " "))
+		b.WriteString(strings.ReplaceAll(h.Content, "\n", " "))
 		b.WriteString("\n")
 	}
 	return b.String()
@@ -461,7 +469,7 @@ func buildAnswerBody(q dataset.Question, hits []recall.Hit) string {
 // composePrediction concatenates the top-3 hit contents — the "answer" we feed
 // to EM/F1/Judge when no AnswerLLM is configured. Cheap, deterministic, and
 // good enough to surface "did retrieval find the right text" without an API key.
-func composePrediction(hits []recall.Hit) string {
+func composePrediction(hits []runners.Hit) string {
 	if len(hits) == 0 {
 		return ""
 	}
@@ -474,7 +482,7 @@ func composePrediction(hits []recall.Hit) string {
 		if i > 0 {
 			b.WriteString(" || ")
 		}
-		b.WriteString(hits[i].Entry.Content)
+		b.WriteString(hits[i].Content)
 	}
 	return b.String()
 }
@@ -534,13 +542,18 @@ func aggregateByCategory(scores []QuestionScore) map[string]CategoryScore {
 	return out
 }
 
-func evidenceKHit(hits []recall.Hit, want []string) float64 {
+func evidenceKHit(hits []runners.Hit, want []string) float64 {
 	if len(want) == 0 {
 		return 0
 	}
 	got := map[string]struct{}{}
 	for _, h := range hits {
-		got[h.Entry.ID] = struct{}{}
+		if h.ID != "" {
+			got[h.ID] = struct{}{}
+		}
+		for _, eid := range h.EvidenceIDs {
+			got[eid] = struct{}{}
+		}
 	}
 	for _, w := range want {
 		if _, ok := got[w]; ok {
@@ -587,7 +600,7 @@ func perQuestionCtx(parent context.Context, timeout time.Duration) (context.Cont
 // conversation has fewer sessions than another.
 type ingestJob struct {
 	convID    string
-	scope     recall.Scope
+	scope     runners.Scope
 	batch     turnBatch
 	batchIdx  int // 0-based position within its conversation, for WARN logs
 	convTotal int // total batches for the owning conversation, for WARN logs
@@ -611,7 +624,7 @@ type ingestJob struct {
 // emit is a checkpoint callback that fires at coarse-grained progress
 // boundaries (controlled by opts.ProgressPct). Passing a no-op closure
 // disables notifications without touching the inner loop.
-func ingestFlat(ctx context.Context, r runners.Runner, scopeOf func(string) recall.Scope, convs []dataset.Conversation, opts Options, emit func(Event)) []time.Duration {
+func ingestFlat(ctx context.Context, r runners.Runner, scopeOf func(string) runners.Scope, convs []dataset.Conversation, opts Options, emit func(Event)) []time.Duration {
 	// Precompute conversation-level counters + expand every conv into its
 	// batches. Keeping convStart out of the worker path means no
 	// synchronization is needed for timing.
@@ -686,6 +699,9 @@ func ingestFlat(ctx context.Context, r runners.Runner, scopeOf func(string) reca
 						case IngestSaver:
 							return rs.SaveRaw(ingestCtx, job.scope, job.batch.msgs)
 						}
+					}
+					if ts, ok := r.(runners.SourceTurnSaver); ok {
+						return ts.SaveSourceTurns(ingestCtx, job.scope, job.batch.rawTurns)
 					}
 					return r.Save(ingestCtx, job.scope, job.batch.msgs)
 				}
@@ -769,7 +785,7 @@ func ingestFlat(ctx context.Context, r runners.Runner, scopeOf func(string) reca
 	return latencies
 }
 
-func evalQuestions(ctx context.Context, r runners.Runner, scopeOf func(string) recall.Scope, qs []dataset.Question, opts Options, emit func(Event)) ([]QuestionScore, []time.Duration, error) {
+func evalQuestions(ctx context.Context, r runners.Runner, scopeOf func(string) runners.Scope, qs []dataset.Question, opts Options, emit func(Event)) ([]QuestionScore, []time.Duration, error) {
 	n := len(qs)
 	scores := make([]QuestionScore, n)
 	latencies := make([]time.Duration, n)
@@ -866,7 +882,7 @@ func evalQuestions(ctx context.Context, r runners.Runner, scopeOf func(string) r
 				// provider blip without us threading the return values
 				// through a generic helper. Same single-shot policy as
 				// the ingest path.
-				var hits []recall.Hit
+				var hits []runners.Hit
 				var d time.Duration
 				err := retryOnNotAvailable(qctx, "recall", q.ID, func() error {
 					var rerr error
@@ -953,6 +969,7 @@ func convoToRawTurns(c dataset.Conversation) []runners.RawTurn {
 			Role:       t.Role,
 			Content:    t.Content,
 			EvidenceID: t.EvidenceID,
+			SessionID:  t.SessionID,
 		})
 	}
 	return out
@@ -990,6 +1007,7 @@ func batchTurnsBySession(c dataset.Conversation) []turnBatch {
 			Role:       t.Role,
 			Content:    t.Content,
 			EvidenceID: t.EvidenceID,
+			SessionID:  t.SessionID,
 		})
 	}
 	batches = append(batches, cur)

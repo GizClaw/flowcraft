@@ -25,8 +25,8 @@ func TestRuleBased_RetrievalOnlyWithoutEntities(t *testing.T) {
 	if plan.TotalCap != DefaultLimit {
 		t.Errorf("total cap = %d, want %d", plan.TotalCap, DefaultLimit)
 	}
-	if plan.SourceBudgets[SourceRetrieval] <= 0 {
-		t.Errorf("retrieval budget must be > 0, got %d", plan.SourceBudgets[SourceRetrieval])
+	if got := plan.SourceBudgets[SourceRetrieval]; got != DefaultLimit*SourceOverfetchMultiplier {
+		t.Errorf("retrieval budget = %d, want overfetch budget %d", got, DefaultLimit*SourceOverfetchMultiplier)
 	}
 }
 
@@ -50,7 +50,7 @@ func TestRuleBased_EntityActivatedByHints(t *testing.T) {
 	}
 }
 
-func TestRuleBased_EntityBudgetsRespectConfiguredShare(t *testing.T) {
+func TestRuleBased_SourceBudgetsOverfetchFinalLimit(t *testing.T) {
 	p := New()
 	plan, err := p.Plan(context.Background(), Input{
 		Scope:    model.Scope{RuntimeID: "rt"},
@@ -60,14 +60,31 @@ func TestRuleBased_EntityBudgetsRespectConfiguredShare(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := plan.SourceBudgets[SourceRetrieval]; got != 6 {
-		t.Errorf("retrieval budget = %d, want 6", got)
+	if got := plan.SourceBudgets[SourceRetrieval]; got != 20 {
+		t.Errorf("retrieval budget = %d, want 20", got)
 	}
-	if got := plan.SourceBudgets[SourceEntity]; got != 4 {
-		t.Errorf("entity budget = %d, want 4", got)
+	if got := plan.SourceBudgets[SourceEntity]; got != 20 {
+		t.Errorf("entity budget = %d, want 20", got)
 	}
 	if plan.TotalCap != 10 {
 		t.Errorf("total cap = %d, want 10", plan.TotalCap)
+	}
+}
+
+func TestRuleBased_SourceBudgetCapsAtMaxOverfetch(t *testing.T) {
+	p := New()
+	plan, err := p.Plan(context.Background(), Input{
+		Scope: model.Scope{RuntimeID: "rt"},
+		Limit: 30,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := plan.SourceBudgets[SourceRetrieval]; got != MaxSourceOverfetch {
+		t.Errorf("retrieval budget = %d, want %d", got, MaxSourceOverfetch)
+	}
+	if plan.TotalCap != 30 {
+		t.Errorf("total cap = %d, want 30", plan.TotalCap)
 	}
 }
 

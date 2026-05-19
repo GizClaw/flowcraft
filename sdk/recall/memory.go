@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
@@ -65,6 +66,19 @@ type memory struct {
 	fusionOpts    fusion.Options
 	graphEnabled  bool
 	evolution     evolution.Runner
+
+	writeMu    sync.Mutex
+	writeLocks map[writeScopeKey]*writeLock
+}
+
+type writeScopeKey struct {
+	runtimeID string
+	userID    string
+}
+
+type writeLock struct {
+	mu   sync.Mutex
+	refs int
 }
 
 // New constructs a v2 Memory. The defaults wire a fully in-memory
@@ -196,6 +210,7 @@ func New(opts ...Option) (Memory, error) {
 		fusionOpts:     fusionOpts,
 		graphEnabled:   cfg.graphEnabled,
 		evolution:      cfg.evolution,
+		writeLocks:     make(map[writeScopeKey]*writeLock),
 	}, nil
 }
 
@@ -229,11 +244,24 @@ func New(opts ...Option) (Memory, error) {
 // Optional projections run after required ones; their failure does
 // not affect the Save outcome (telemetry only).
 func (m *memory) Save(ctx context.Context, scope Scope, req SaveRequest) (SaveResult, error) {
+	res, _, err := m.runSave(ctx, scope, req, false)
+	return res, err
+}
+
+// SaveExplain runs the canonical write pipeline like Save and also
+// returns the compiled facts and compiler drops so callers can run
+// diagnostics on the extractor / compiler / resolver stages.
+func (m *memory) SaveExplain(ctx context.Context, scope Scope, req SaveRequest) (SaveResult, SaveTrace, error) {
+	return m.runSave(ctx, scope, req, true)
+}
+
+func (m *memory) runSave(ctx context.Context, scope Scope, req SaveRequest, withTrace bool) (SaveResult, SaveTrace, error) {
+	var trace SaveTrace
 	if err := ctx.Err(); err != nil {
-		return SaveResult{}, err
+		return SaveResult{}, trace, err
 	}
 	if scope.RuntimeID == "" {
-		return SaveResult{}, errdefs.Validationf("recall.Save: scope.runtime_id is required")
+		return SaveResult{}, trace, errdefs.Validationf("recall.Save: scope.runtime_id is required")
 	}
 
 	stageStarted := time.Now()
@@ -244,11 +272,23 @@ func (m *memory) Save(ctx context.Context, scope Scope, req SaveRequest) (SaveRe
 	})
 	m.emitPipeline(scope, "compiler", "compile", len(compiled.Facts), stageStarted, err)
 	if err != nil {
-		return SaveResult{}, err
+		return SaveResult{}, trace, err
+	}
+	if withTrace {
+		trace.CompiledFacts = append([]TemporalFact(nil), compiled.Facts...)
+		if len(compiled.Dropped) > 0 {
+			trace.Dropped = make([]DroppedFact, len(compiled.Dropped))
+			for i, d := range compiled.Dropped {
+				trace.Dropped[i] = DroppedFact{Fact: d.Fact, Reason: d.Reason}
+			}
+		}
 	}
 	if len(compiled.Facts) == 0 {
-		return SaveResult{}, nil
+		return SaveResult{}, trace, nil
 	}
+
+	unlock := m.lockWriteScope(scope)
+	defer unlock()
 
 	// Conflict resolution short-circuits noop dedupes and queues
 	// supersede closes for after Append succeeds.
@@ -262,23 +302,26 @@ func (m *memory) Save(ctx context.Context, scope Scope, req SaveRequest) (SaveRe
 		resolution, err = m.resolver.ResolveConflicts(ctx, view, compiled.Facts)
 		m.emitPipeline(scope, "conflict_resolve", "resolve", len(resolution.Facts), stageStarted, err)
 		if err != nil {
-			return SaveResult{}, fmt.Errorf("recall.Save: resolve conflicts: %w", err)
+			return SaveResult{}, trace, fmt.Errorf("recall.Save: resolve conflicts: %w", err)
 		}
 	}
 	if len(resolution.Facts) == 0 {
-		return SaveResult{}, nil
+		return SaveResult{}, trace, nil
 	}
 
 	stageStarted = time.Now()
 	if err := m.store.Append(ctx, resolution.Facts); err != nil {
 		m.emitPipeline(scope, "store", "append", len(resolution.Facts), stageStarted, err)
-		return SaveResult{}, fmt.Errorf("recall.Save: store append: %w", err)
+		return SaveResult{}, trace, fmt.Errorf("recall.Save: store append: %w", err)
 	}
 	m.emitPipeline(scope, "store", "append", len(resolution.Facts), stageStarted, nil)
 
 	ids := make([]string, len(resolution.Facts))
 	for i, f := range resolution.Facts {
 		ids[i] = f.ID
+	}
+	if withTrace {
+		trace.Appended = append([]TemporalFact(nil), resolution.Facts...)
 	}
 
 	// Close validity on superseded prior facts. We do this AFTER
@@ -294,7 +337,7 @@ func (m *memory) Save(ctx context.Context, scope Scope, req SaveRequest) (SaveRe
 	m.emitPipeline(scope, "store", "validity_close", len(resolution.Closes), stageStarted, err)
 	if err != nil {
 		m.rollbackAppendedFacts(ctx, scope, ids, applied, err)
-		return SaveResult{}, fmt.Errorf("recall.Save: close superseded: %w", err)
+		return SaveResult{}, trace, fmt.Errorf("recall.Save: close superseded: %w", err)
 	}
 
 	// Mirror evidence into the secondary lookup store before the
@@ -319,7 +362,7 @@ func (m *memory) Save(ctx context.Context, scope Scope, req SaveRequest) (SaveRe
 	if projErr := m.fanout.ProjectRequired(ctx, resolution.Facts); projErr != nil {
 		m.emitPipeline(scope, "projection", "project_required", len(resolution.Facts), stageStarted, projErr)
 		m.rollbackSave(ctx, scope, ids, resolution.Closes, projErr)
-		return SaveResult{}, projErr
+		return SaveResult{}, trace, projErr
 	}
 	m.emitPipeline(scope, "projection", "project_required", len(resolution.Facts), stageStarted, nil)
 
@@ -329,7 +372,7 @@ func (m *memory) Save(ctx context.Context, scope Scope, req SaveRequest) (SaveRe
 
 	m.runEvolutionAfterSave(ctx, scope, ids)
 
-	return SaveResult{FactIDs: ids}, nil
+	return SaveResult{FactIDs: ids}, trace, nil
 }
 
 // mirrorEvidence appends EvidenceRefs into the secondary lookup
@@ -387,6 +430,34 @@ func (m *memory) emitPipeline(scope Scope, stage, op string, count int, started 
 		Latency: time.Since(started),
 		Err:     err,
 	})
+}
+
+func (m *memory) lockWriteScope(scope Scope) func() {
+	key := writeScopeKey{runtimeID: scope.RuntimeID, userID: scope.UserID}
+
+	m.writeMu.Lock()
+	if m.writeLocks == nil {
+		m.writeLocks = make(map[writeScopeKey]*writeLock)
+	}
+	wl := m.writeLocks[key]
+	if wl == nil {
+		wl = &writeLock{}
+		m.writeLocks[key] = wl
+	}
+	wl.refs++
+	m.writeMu.Unlock()
+
+	wl.mu.Lock()
+	return func() {
+		wl.mu.Unlock()
+
+		m.writeMu.Lock()
+		wl.refs--
+		if wl.refs == 0 {
+			delete(m.writeLocks, key)
+		}
+		m.writeMu.Unlock()
+	}
 }
 
 // applyValidityCloses runs UpdateValidity for each close instruction
@@ -649,7 +720,7 @@ func (m *memory) runRecall(ctx context.Context, scope Scope, query Query, withTr
 
 	opts := m.fusionOpts
 	if opts.TotalCap == 0 {
-		opts.TotalCap = plan.TotalCap
+		opts.TotalCap = fusionCandidateCap(plan.TotalCap)
 	}
 	stageStarted = time.Now()
 	fused, fusionDrops, err := m.fuser.Fuse(ctx, results, opts)
@@ -666,8 +737,9 @@ func (m *memory) runRecall(ctx context.Context, scope Scope, query Query, withTr
 	if err != nil {
 		return nil, trace, fmt.Errorf("recall.Recall: materialize: %w", err)
 	}
-	trace.Materialized = len(items)
 	trace.Drops = append(trace.Drops, matDrops...)
+	items = rankContextItems(items, plan.Intent, plan.TotalCap)
+	trace.Materialized = len(items)
 
 	stageStarted = time.Now()
 	hits := hitsFromItems(items)
@@ -683,9 +755,34 @@ func (m *memory) runRecall(ctx context.Context, scope Scope, query Query, withTr
 func hitsFromItems(items []materialize.ContextItem) []Hit {
 	hits := make([]Hit, 0, len(items))
 	for _, it := range items {
-		hits = append(hits, Hit{Fact: it.Fact, Score: it.Candidate.Score})
+		hits = append(hits, Hit{
+			Fact:    it.Fact,
+			Score:   it.Candidate.Score,
+			Sources: hitSources(it.Candidate),
+		})
 	}
 	return hits
+}
+
+// hitSources returns the (deduped, primary-first) source provenance
+// for a candidate. Fusion stores the multi-source list under
+// Metadata["sources"]; the primary Candidate.Source captures the
+// last writer. We prefer the metadata list when present so callers
+// see every source that surfaced the fact, falling back to the
+// primary source when no metadata exists (single-source candidate
+// or legacy path).
+func hitSources(c model.Candidate) []string {
+	if c.Metadata != nil {
+		if existing, ok := c.Metadata["sources"].([]string); ok && len(existing) > 0 {
+			out := make([]string, len(existing))
+			copy(out, existing)
+			return out
+		}
+	}
+	if c.Source != "" {
+		return []string{c.Source}
+	}
+	return nil
 }
 
 // Forget removes a fact with strict transactional semantics:
@@ -706,6 +803,9 @@ func (m *memory) Forget(ctx context.Context, scope Scope, factID string) error {
 	if factID == "" {
 		return errdefs.Validationf("recall.Forget: fact id is required")
 	}
+
+	unlock := m.lockWriteScope(scope)
+	defer unlock()
 
 	snapshot, err := m.store.Get(ctx, scope, factID)
 	if err != nil {
@@ -790,6 +890,9 @@ func (m *memory) RebuildAll(ctx context.Context, scope Scope) error {
 	if scope.RuntimeID == "" {
 		return errdefs.Validationf("recall.RebuildAll: scope.runtime_id is required")
 	}
+	unlock := m.lockWriteScope(scope)
+	defer unlock()
+
 	facts, err := m.store.List(ctx, scope, temporalstore.ListQuery{IncludeSuperseded: true})
 	if err != nil {
 		return fmt.Errorf("recall.RebuildAll: list canonical facts: %w", err)
@@ -874,6 +977,9 @@ func (m *memory) RebuildProjection(ctx context.Context, scope Scope, name string
 	if name == "" {
 		return errdefs.Validationf("recall.RebuildProjection: projection name is required")
 	}
+	unlock := m.lockWriteScope(scope)
+	defer unlock()
+
 	var target projection.Projection
 	for _, p := range m.projections {
 		if p != nil && p.Name() == name {
@@ -914,6 +1020,9 @@ func (m *memory) RepairStale(ctx context.Context, scope Scope, factIDs []string)
 	if len(factIDs) == 0 {
 		return nil
 	}
+	unlock := m.lockWriteScope(scope)
+	defer unlock()
+
 	if err := m.fanout.ForgetRequired(ctx, scope, factIDs); err != nil {
 		return err
 	}

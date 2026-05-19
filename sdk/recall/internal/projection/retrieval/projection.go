@@ -242,26 +242,33 @@ func toDoc(f model.TemporalFact) retrieval.Doc {
 	}
 }
 
-// buildContent renders the searchable text for a fact. For relation /
-// state / preference facts we surface subject/predicate/object so BM25
-// matches a "X spouse Y" style query even when Content was left empty
-// by the caller.
+// buildContent renders the searchable text for a fact. The canonical
+// fact content remains primary, but evidence grounding is also indexed
+// so compressed LLM-extracted facts can still be found by source-level
+// details such as exact dates, places, and phrasing.
 func buildContent(f model.TemporalFact) string {
-	if f.Content != "" {
-		return f.Content
+	parts := make([]string, 0, 6+len(f.Entities)+len(f.Participants)+len(f.EvidenceRefs))
+	appendPart := func(s string) {
+		s = strings.TrimSpace(s)
+		if s != "" {
+			parts = append(parts, s)
+		}
 	}
-	parts := make([]string, 0, 3)
-	if f.Subject != "" {
-		parts = append(parts, f.Subject)
+
+	appendPart(f.Content)
+	appendPart(f.Subject)
+	appendPart(f.Predicate)
+	appendPart(f.Object)
+	for _, e := range f.Entities {
+		appendPart(e)
 	}
-	if f.Predicate != "" {
-		parts = append(parts, f.Predicate)
+	for _, p := range f.Participants {
+		appendPart(p)
 	}
-	if f.Object != "" {
-		parts = append(parts, f.Object)
-	}
-	if len(parts) == 0 {
-		return f.EvidenceText
+	appendPart(f.Location)
+	appendPart(f.EvidenceText)
+	for _, ref := range f.EvidenceRefs {
+		appendPart(ref.Text)
 	}
 	return strings.Join(parts, " ")
 }

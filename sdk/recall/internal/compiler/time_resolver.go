@@ -91,11 +91,21 @@ func parseRelativeFromMeta(meta map[string]any, key string, now time.Time) (time
 }
 
 // parseRelativeEnglish handles the small English relative-time
-// subset spelled out in SupportedRelativeTimes. Inputs are
-// trimmed + lower-cased; whitespace between tokens collapses to
-// single spaces; unrecognised strings return ok=false.
+// subset spelled out in SupportedRelativeTimes, plus a handful of
+// absolute formats that the LLM extractor is asked to emit when a
+// snippet states a calendar date or datetime. Inputs are
+// trimmed + lower-cased for the relative table; absolute formats
+// are parsed against the original (case-preserving) string so
+// "January" / "Jan" survive. Unrecognised strings return ok=false.
 func parseRelativeEnglish(in string, now time.Time) (time.Time, bool) {
-	token := strings.ToLower(strings.Join(strings.Fields(in), " "))
+	raw := strings.TrimSpace(in)
+	if raw == "" {
+		return time.Time{}, false
+	}
+	if t, ok := parseAbsoluteTime(raw); ok {
+		return t, true
+	}
+	token := strings.ToLower(strings.Join(strings.Fields(raw), " "))
 	switch token {
 	case "now":
 		return now, true
@@ -117,6 +127,36 @@ func parseRelativeEnglish(in string, now time.Time) (time.Time, bool) {
 		return startOfDay(now).AddDate(1, 0, 0), true
 	case "last year":
 		return startOfDay(now).AddDate(-1, 0, 0), true
+	}
+	return time.Time{}, false
+}
+
+// absoluteTimeLayouts are the calendar shapes the resolver accepts
+// alongside the relative token table. Order matters: more specific
+// layouts come first so an RFC3339 timestamp is not mis-parsed as a
+// bare date. The set is intentionally small — anything beyond this
+// belongs to a locale-aware time library, not the canonical resolver.
+var absoluteTimeLayouts = []string{
+	time.RFC3339Nano,
+	time.RFC3339,
+	"2006-01-02T15:04:05",
+	"2006-01-02 15:04:05",
+	"2006-01-02 15:04",
+	"2006-01-02",
+	"2006/01/02",
+	"January 2, 2006",
+	"Jan 2, 2006",
+	"2 January 2006",
+	"2 Jan 2006",
+}
+
+// parseAbsoluteTime returns the first absolute-format match against
+// the configured layouts. Returns ok=false when no layout parses.
+func parseAbsoluteTime(raw string) (time.Time, bool) {
+	for _, layout := range absoluteTimeLayouts {
+		if t, err := time.Parse(layout, raw); err == nil {
+			return t, true
+		}
 	}
 	return time.Time{}, false
 }

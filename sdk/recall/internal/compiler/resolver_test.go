@@ -99,6 +99,53 @@ func TestResolver_StateSupersedesOnChange(t *testing.T) {
 	}
 }
 
+func TestResolver_StateSupersedeChainsWithinBatch(t *testing.T) {
+	scope := model.Scope{RuntimeID: "rt"}
+	existing := model.TemporalFact{
+		ID: "old", Scope: scope, Kind: model.KindState,
+		Subject: "alice", Predicate: "city", Content: "Paris",
+		MergeKey:   "state|alice|city",
+		ObservedAt: time.Unix(1, 0),
+	}
+	view := &fakeView{facts: []model.TemporalFact{existing}}
+	r := &DefaultResolver{Clock: func() time.Time { return time.Unix(100, 0) }}
+	out, err := r.ResolveConflicts(context.Background(), view, []model.TemporalFact{
+		{
+			ID: "new1", Scope: scope, Kind: model.KindState,
+			Subject: "alice", Predicate: "city", Content: "Berlin",
+			MergeKey:   "state|alice|city",
+			ObservedAt: time.Unix(50, 0),
+		},
+		{
+			ID: "new2", Scope: scope, Kind: model.KindState,
+			Subject: "alice", Predicate: "city", Content: "Rome",
+			MergeKey:   "state|alice|city",
+			ObservedAt: time.Unix(51, 0),
+		},
+	})
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if len(out.Facts) != 2 {
+		t.Fatalf("want 2 facts, got %+v", out.Facts)
+	}
+	if got := out.Facts[0].Supersedes; len(got) != 1 || got[0] != "old" {
+		t.Fatalf("first supersedes = %v, want [old]", got)
+	}
+	if got := out.Facts[1].Supersedes; len(got) != 1 || got[0] != "new1" {
+		t.Fatalf("second supersedes = %v, want [new1]", got)
+	}
+	if len(out.Closes) != 2 {
+		t.Fatalf("want 2 closes, got %+v", out.Closes)
+	}
+	if out.Closes[0].FactID != "old" || out.Closes[0].CorrectedBy != "new1" {
+		t.Fatalf("first close = %+v", out.Closes[0])
+	}
+	if out.Closes[1].FactID != "new1" || out.Closes[1].CorrectedBy != "new2" {
+		t.Fatalf("second close = %+v", out.Closes[1])
+	}
+}
+
 func TestResolver_PreferenceSupersedesOnChange(t *testing.T) {
 	scope := model.Scope{RuntimeID: "rt"}
 	existing := model.TemporalFact{
