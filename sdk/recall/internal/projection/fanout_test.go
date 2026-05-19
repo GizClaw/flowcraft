@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/model"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/telemetry"
 )
 
 type stubProj struct {
@@ -35,12 +36,13 @@ func (s *stubProj) Rebuild(_ context.Context, _ model.Scope, facts []model.Tempo
 }
 
 type recordingHook struct {
-	events []ProjectionEvent
-	drifts []DriftEvent
+	events []telemetry.ProjectionEvent
+	drifts []telemetry.DriftEvent
 }
 
-func (r *recordingHook) OnProjection(e ProjectionEvent) { r.events = append(r.events, e) }
-func (r *recordingHook) OnDrift(e DriftEvent)           { r.drifts = append(r.drifts, e) }
+func (r *recordingHook) OnProjection(e telemetry.ProjectionEvent) { r.events = append(r.events, e) }
+func (r *recordingHook) OnDrift(e telemetry.DriftEvent)           { r.drifts = append(r.drifts, e) }
+func (r *recordingHook) OnPipeline(telemetry.PipelineEvent)       {}
 
 func TestFanout_RequiredFailureAborts(t *testing.T) {
 	failing := &stubProj{name: "retrieval", consistency: Required, projectErr: errors.New("boom")}
@@ -90,7 +92,7 @@ func TestFanout_OptionalFailureNotFatal(t *testing.T) {
 func TestFanout_ForgetPropagatesRequiredFailure(t *testing.T) {
 	failing := &stubProj{name: "retrieval", consistency: Required, forgetErr: errors.New("nope")}
 	opt := &stubProj{name: "profile", consistency: Optional}
-	f := New([]Projection{failing, opt}, NopTelemetry{})
+	f := New([]Projection{failing, opt}, telemetry.NopHook{})
 	if err := f.Forget(context.Background(), model.Scope{RuntimeID: "rt"}, []string{"x"}); err == nil {
 		t.Fatal("want error")
 	}

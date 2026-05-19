@@ -1,4 +1,4 @@
-package compiler
+package queryintent
 
 import (
 	"context"
@@ -6,8 +6,8 @@ import (
 	"testing"
 )
 
-func TestRuleBasedQueryCompiler_ExtractsCapitalizedEntities(t *testing.T) {
-	out, err := RuleBasedQueryCompiler{}.Compile(context.Background(), QueryInput{
+func TestRuleBased_ExtractsCapitalizedEntities(t *testing.T) {
+	out, err := RuleBased{}.Compile(context.Background(), Input{
 		Text: "Who did Alice meet in Paris?",
 	})
 	if err != nil {
@@ -19,8 +19,8 @@ func TestRuleBasedQueryCompiler_ExtractsCapitalizedEntities(t *testing.T) {
 	}
 }
 
-func TestRuleBasedQueryCompiler_MergesExplicitEntities(t *testing.T) {
-	out, err := RuleBasedQueryCompiler{}.Compile(context.Background(), QueryInput{
+func TestRuleBased_MergesExplicitEntities(t *testing.T) {
+	out, err := RuleBased{}.Compile(context.Background(), Input{
 		Text:     "When did they travel?",
 		Entities: []string{"Bob", "ALICE"},
 	})
@@ -32,8 +32,8 @@ func TestRuleBasedQueryCompiler_MergesExplicitEntities(t *testing.T) {
 	}
 }
 
-func TestRuleBasedQueryCompiler_PreservesStructuredHints(t *testing.T) {
-	out, err := RuleBasedQueryCompiler{}.Compile(context.Background(), QueryInput{
+func TestRuleBased_PreservesStructuredHints(t *testing.T) {
+	out, err := RuleBased{}.Compile(context.Background(), Input{
 		Text:      "hello",
 		Subject:   "alice",
 		Predicate: "city",

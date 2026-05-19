@@ -40,8 +40,14 @@ func (s *Source) Query(ctx context.Context, plan model.QueryPlan) model.SourceRe
 
 	tr := plan.Intent.TimeRange
 	started := time.Now()
-	ids := s.querier.Query(ctx, scope, tr.From, tr.To, plan.Intent.Kinds, budget)
+	ids := s.querier.Query(ctx, scope, tr.From, tr.To, plan.Intent.Kinds, budget+1)
 	latency := time.Since(started)
+
+	truncated := false
+	if len(ids) > budget {
+		ids = ids[:budget]
+		truncated = true
+	}
 
 	candidates := make([]model.Candidate, 0, len(ids))
 	for i, id := range ids {
@@ -56,7 +62,7 @@ func (s *Source) Query(ctx context.Context, plan model.QueryPlan) model.SourceRe
 	return model.SourceResult{
 		Source:     s.Name(),
 		Candidates: candidates,
-		Truncated:  len(ids) >= budget,
+		Truncated:  truncated,
 		Latency:    latency,
 	}
 }

@@ -20,11 +20,10 @@ import (
 //   - passthroughExtractor: returns caller-supplied Facts verbatim.
 //     This is the deterministic baseline used when Input.Text is
 //     empty or when callers explicitly construct structured facts.
-//   - LLMExtractor: routes Input.Text through a pluggable LLMClient
+//   - LLMExtractor: routes Input.Text through a pluggable LLM client
 //     that returns a JSON document matching ExtractedFactSchema.
-//     PR-4 only defines the interface + JSON schema + a fake client
-//     for tests; a real sdk/llm-backed implementation lands in
-//     PR-4b without changing the boundary.
+//     The implementation uses sdk/llm and tests exercise it with fake
+//     clients so no network calls are required.
 //   - StaticExtractor: returns a fixed list of facts, regardless of
 //     input. Useful in tests that need deterministic non-empty
 //     extraction without an LLM round trip.
@@ -143,8 +142,8 @@ type ExtractedEvidenceRef struct {
 }
 
 // LLMExtractorSystemPrompt is the canonical system framing. It is
-// intentionally short — quality engineering on prompts happens at
-// the LLM-client adapter level (PR-4b), not inside the compiler.
+// intentionally short — product-specific prompt tuning belongs at the
+// LLM-client adapter or caller option layer, not inside the compiler.
 const LLMExtractorSystemPrompt = `You extract structured memory facts from a conversation snippet.
 Return JSON matching the supplied schema. Only emit facts that are
 clearly present in the snippet; never fabricate facts to fill the

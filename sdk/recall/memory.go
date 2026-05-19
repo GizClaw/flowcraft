@@ -8,6 +8,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/compiler"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/evolution"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/fusion"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/materialize"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/model"
@@ -19,6 +20,7 @@ import (
 	relationproj "github.com/GizClaw/flowcraft/sdk/recall/internal/projection/relation"
 	retrievalproj "github.com/GizClaw/flowcraft/sdk/recall/internal/projection/retrieval"
 	timelineproj "github.com/GizClaw/flowcraft/sdk/recall/internal/projection/timeline"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/queryintent"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/source"
 	entitysource "github.com/GizClaw/flowcraft/sdk/recall/internal/source/entity"
 	graphsource "github.com/GizClaw/flowcraft/sdk/recall/internal/source/graph"
@@ -28,6 +30,7 @@ import (
 	timelinesource "github.com/GizClaw/flowcraft/sdk/recall/internal/source/timeline"
 	evidencestore "github.com/GizClaw/flowcraft/sdk/recall/internal/store/evidence"
 	temporalstore "github.com/GizClaw/flowcraft/sdk/recall/internal/store/temporal"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/telemetry"
 	"github.com/GizClaw/flowcraft/sdk/retrieval"
 	retrievalmem "github.com/GizClaw/flowcraft/sdk/retrieval/memory"
 )
@@ -47,20 +50,21 @@ type memory struct {
 	compiler       compiler.Compiler
 	resolver       compiler.ConflictResolver
 	fanout         *projection.Fanout
-	telemetry      projection.TelemetryHook
+	telemetry      telemetry.Hook
 
 	// projections retains the canonical projection set (in
 	// registration order) so RebuildProjection can resolve a
 	// projection by name without re-deriving it from fanout.
 	projections []projection.Projection
 
-	queryCompiler compiler.QueryCompiler
+	queryCompiler queryintent.Compiler
 	planner       planner.Planner
 	sources       []source.CandidateSource
 	fuser         fusion.Fuser
 	materializer  materialize.Materializer
 	fusionOpts    fusion.Options
 	graphEnabled  bool
+	evolution     evolution.Runner
 }
 
 // New constructs a v2 Memory. The defaults wire a fully in-memory
@@ -68,7 +72,7 @@ type memory struct {
 // dependencies; production callers swap pieces in via Options.
 func New(opts ...Option) (Memory, error) {
 	cfg := config{
-		telemetry: projection.NopTelemetry{},
+		telemetry: telemetry.NopHook{},
 	}
 	for _, opt := range opts {
 		if opt != nil {
@@ -91,6 +95,9 @@ func New(opts ...Option) (Memory, error) {
 				}
 			}
 			stages.Extractor = ex
+		}
+		if cfg.governance != nil {
+			stages.Governance = cfg.governance
 		}
 		cfg.compiler = compiler.New(stages)
 	}
@@ -123,7 +130,7 @@ func New(opts ...Option) (Memory, error) {
 	// entity source on the entity projection's read-only Lookup.
 	qc := cfg.queryCompiler
 	if qc == nil {
-		qc = compiler.DefaultQueryCompiler()
+		qc = queryintent.Default()
 	}
 	planr := cfg.planner
 	if planr == nil {
@@ -188,6 +195,7 @@ func New(opts ...Option) (Memory, error) {
 		materializer:   mat,
 		fusionOpts:     fusionOpts,
 		graphEnabled:   cfg.graphEnabled,
+		evolution:      cfg.evolution,
 	}, nil
 }
 
@@ -228,11 +236,13 @@ func (m *memory) Save(ctx context.Context, scope Scope, req SaveRequest) (SaveRe
 		return SaveResult{}, errdefs.Validationf("recall.Save: scope.runtime_id is required")
 	}
 
+	stageStarted := time.Now()
 	compiled, err := m.compiler.Compile(ctx, compiler.Input{
 		Scope: scope,
 		Facts: req.Facts,
 		Text:  req.Text,
 	})
+	m.emitPipeline(scope, "compiler", "compile", len(compiled.Facts), stageStarted, err)
 	if err != nil {
 		return SaveResult{}, err
 	}
@@ -248,7 +258,9 @@ func (m *memory) Save(ctx context.Context, scope Scope, req SaveRequest) (SaveRe
 			FindByMergeKeyFn: m.store.FindByMergeKey,
 			GetFn:            m.store.Get,
 		}
+		stageStarted = time.Now()
 		resolution, err = m.resolver.ResolveConflicts(ctx, view, compiled.Facts)
+		m.emitPipeline(scope, "conflict_resolve", "resolve", len(resolution.Facts), stageStarted, err)
 		if err != nil {
 			return SaveResult{}, fmt.Errorf("recall.Save: resolve conflicts: %w", err)
 		}
@@ -257,9 +269,12 @@ func (m *memory) Save(ctx context.Context, scope Scope, req SaveRequest) (SaveRe
 		return SaveResult{}, nil
 	}
 
+	stageStarted = time.Now()
 	if err := m.store.Append(ctx, resolution.Facts); err != nil {
+		m.emitPipeline(scope, "store", "append", len(resolution.Facts), stageStarted, err)
 		return SaveResult{}, fmt.Errorf("recall.Save: store append: %w", err)
 	}
+	m.emitPipeline(scope, "store", "append", len(resolution.Facts), stageStarted, nil)
 
 	ids := make([]string, len(resolution.Facts))
 	for i, f := range resolution.Facts {
@@ -274,29 +289,45 @@ func (m *memory) Save(ctx context.Context, scope Scope, req SaveRequest) (SaveRe
 	// new facts so callers see an atomic failure rather than a
 	// half-applied write. applied tracks the prefix that did
 	// commit, so rollback can reopen exactly those.
+	stageStarted = time.Now()
 	applied, err := m.applyValidityCloses(ctx, resolution.Closes)
+	m.emitPipeline(scope, "store", "validity_close", len(resolution.Closes), stageStarted, err)
 	if err != nil {
 		m.rollbackAppendedFacts(ctx, scope, ids, applied, err)
 		return SaveResult{}, fmt.Errorf("recall.Save: close superseded: %w", err)
 	}
 
-	// Mirror evidence into the secondary lookup store BEFORE the
-	// projection fanout: if mirroring fails we still hold the
-	// pre-projection state and can roll back without sweeping
-	// already-built projection entries. Treating evidence mirror
-	// as Required (per the F decision) keeps the adapter from
-	// going stale on day one.
+	// Mirror evidence into the secondary lookup store before the
+	// projection fanout. The adapter is a rebuildable derived view:
+	// embedded EvidenceRefs on the canonical fact remain authoritative,
+	// so adapter failures are telemetry-only and must not block Save.
+	stageStarted = time.Now()
 	if evErr := m.mirrorEvidence(ctx, scope, resolution.Facts); evErr != nil {
-		m.rollbackSave(ctx, scope, ids, resolution.Closes, evErr)
-		return SaveResult{}, fmt.Errorf("recall.Save: mirror evidence: %w", evErr)
+		m.emitPipeline(scope, "evidence", "mirror", len(resolution.Facts), stageStarted, evErr)
+		m.fanout.Telemetry().OnProjection(telemetry.ProjectionEvent{
+			Projection:  "evidence",
+			Op:          telemetry.OpProject,
+			Consistency: projection.Optional.String(),
+			FactCount:   len(resolution.Facts),
+			Err:         evErr,
+		})
+	} else {
+		m.emitPipeline(scope, "evidence", "mirror", len(resolution.Facts), stageStarted, nil)
 	}
 
+	stageStarted = time.Now()
 	if projErr := m.fanout.ProjectRequired(ctx, resolution.Facts); projErr != nil {
+		m.emitPipeline(scope, "projection", "project_required", len(resolution.Facts), stageStarted, projErr)
 		m.rollbackSave(ctx, scope, ids, resolution.Closes, projErr)
 		return SaveResult{}, projErr
 	}
+	m.emitPipeline(scope, "projection", "project_required", len(resolution.Facts), stageStarted, nil)
 
+	stageStarted = time.Now()
 	m.fanout.ProjectOptional(ctx, resolution.Facts)
+	m.emitPipeline(scope, "projection", "project_optional", len(resolution.Facts), stageStarted, nil)
+
+	m.runEvolutionAfterSave(ctx, scope, ids)
 
 	return SaveResult{FactIDs: ids}, nil
 }
@@ -321,6 +352,41 @@ func (m *memory) mirrorEvidence(ctx context.Context, scope Scope, facts []model.
 		}
 	}
 	return nil
+}
+
+func (m *memory) runEvolutionAfterSave(ctx context.Context, scope Scope, factIDs []string) {
+	if m.evolution == nil {
+		return
+	}
+	started := time.Now()
+	if err := m.evolution.AfterSave(ctx, scope, factIDs); err != nil {
+		m.emitPipeline(scope, "evolution", "after_save", len(factIDs), started, err)
+	}
+}
+
+func (m *memory) runEvolutionAfterRecall(ctx context.Context, scope Scope, trace RecallTrace) {
+	if m.evolution == nil {
+		return
+	}
+	started := time.Now()
+	if err := m.evolution.AfterRecall(ctx, scope, trace); err != nil {
+		m.emitPipeline(scope, "evolution", "after_recall", len(trace.Drops), started, err)
+	}
+}
+
+func (m *memory) emitPipeline(scope Scope, stage, op string, count int, started time.Time, err error) {
+	hook := m.telemetry
+	if hook == nil {
+		return
+	}
+	hook.OnPipeline(telemetry.PipelineEvent{
+		Scope:   scope,
+		Stage:   stage,
+		Op:      op,
+		Count:   count,
+		Latency: time.Since(started),
+		Err:     err,
+	})
 }
 
 // applyValidityCloses runs UpdateValidity for each close instruction
@@ -348,10 +414,10 @@ func (m *memory) rollbackAppendedFacts(ctx context.Context, scope Scope, factIDs
 	cleanupCtx := detachCancel(ctx)
 	hook := m.fanout.Telemetry()
 	if err := m.store.Delete(cleanupCtx, scope, factIDs); err != nil {
-		hook.OnProjection(projection.ProjectionEvent{
+		hook.OnProjection(telemetry.ProjectionEvent{
 			Projection:  "save_rollback.appended_facts",
-			Op:          projection.OpForget,
-			Consistency: projection.Required,
+			Op:          telemetry.OpForget,
+			Consistency: projection.Required.String(),
 			FactCount:   len(factIDs),
 			Err:         fmt.Errorf("rollback cleanup after %w: %v", cause, err),
 		})
@@ -376,10 +442,10 @@ func (m *memory) rollbackSave(ctx context.Context, scope Scope, factIDs []string
 	cleanupCtx := detachCancel(ctx)
 	hook := m.fanout.Telemetry()
 	if err := m.fanout.ForgetRequired(cleanupCtx, scope, factIDs); err != nil {
-		hook.OnProjection(projection.ProjectionEvent{
+		hook.OnProjection(telemetry.ProjectionEvent{
 			Projection:  "save_rollback.forget_required",
-			Op:          projection.OpForget,
-			Consistency: projection.Required,
+			Op:          telemetry.OpForget,
+			Consistency: projection.Required.String(),
 			FactCount:   len(factIDs),
 			Err:         fmt.Errorf("rollback cleanup after %w: %v", cause, err),
 		})
@@ -387,25 +453,26 @@ func (m *memory) rollbackSave(ctx context.Context, scope Scope, factIDs []string
 	m.fanout.ForgetOptional(cleanupCtx, scope, factIDs)
 	if m.evidenceStore != nil {
 		if err := m.evidenceStore.ForgetByFact(cleanupCtx, scope, factIDs); err != nil {
-			hook.OnProjection(projection.ProjectionEvent{
+			hook.OnProjection(telemetry.ProjectionEvent{
 				Projection:  "save_rollback.evidence_forget",
-				Op:          projection.OpForget,
-				Consistency: projection.Required,
+				Op:          telemetry.OpForget,
+				Consistency: projection.Required.String(),
 				FactCount:   len(factIDs),
 				Err:         fmt.Errorf("rollback cleanup after %w: %v", cause, err),
 			})
 		}
 	}
 	if err := m.store.Delete(cleanupCtx, scope, factIDs); err != nil {
-		hook.OnProjection(projection.ProjectionEvent{
+		hook.OnProjection(telemetry.ProjectionEvent{
 			Projection:  "save_rollback.store_delete",
-			Op:          projection.OpForget,
-			Consistency: projection.Required,
+			Op:          telemetry.OpForget,
+			Consistency: projection.Required.String(),
 			FactCount:   len(factIDs),
 			Err:         fmt.Errorf("rollback cleanup after %w: %v", cause, err),
 		})
 	}
 	m.reopenAfterRollback(cleanupCtx, closes, cause)
+	m.reprojectReopenedFacts(cleanupCtx, closes, cause)
 }
 
 // reopenAfterRollback walks every close this Save applied and tries
@@ -425,19 +492,54 @@ func (m *memory) reopenAfterRollback(ctx context.Context, closes []compiler.Vali
 		if err == nil || errors.Is(err, temporalstore.ErrNotFound) {
 			continue
 		}
-		hook.OnProjection(projection.ProjectionEvent{
+		hook.OnProjection(telemetry.ProjectionEvent{
 			Projection:  "save_rollback.reopen_validity",
-			Op:          projection.OpProject,
-			Consistency: projection.Required,
+			Op:          telemetry.OpProject,
+			Consistency: projection.Required.String(),
 			FactCount:   1,
 			Err:         fmt.Errorf("reopen %s after %w: %v", c.FactID, cause, err),
 		})
 	}
 }
 
+func (m *memory) reprojectReopenedFacts(ctx context.Context, closes []compiler.ValidityClose, cause error) {
+	if len(closes) == 0 {
+		return
+	}
+	hook := m.fanout.Telemetry()
+	for _, c := range closes {
+		fact, err := m.store.Get(ctx, c.Scope, c.FactID)
+		if err != nil {
+			if errors.Is(err, temporalstore.ErrNotFound) {
+				continue
+			}
+			hook.OnProjection(telemetry.ProjectionEvent{
+				Projection:  "save_rollback.reproject_prior.get",
+				Op:          telemetry.OpProject,
+				Consistency: projection.Required.String(),
+				FactCount:   1,
+				Err:         fmt.Errorf("get %s after %w: %v", c.FactID, cause, err),
+			})
+			continue
+		}
+		if fact.CorrectedBy != "" {
+			continue
+		}
+		if err := m.fanout.ProjectRequired(ctx, []model.TemporalFact{fact}); err != nil {
+			hook.OnProjection(telemetry.ProjectionEvent{
+				Projection:  "save_rollback.reproject_prior",
+				Op:          telemetry.OpProject,
+				Consistency: projection.Required.String(),
+				FactCount:   1,
+				Err:         fmt.Errorf("reproject %s after %w: %v", c.FactID, cause, err),
+			})
+		}
+	}
+}
+
 // Recall runs the v2 read pipeline:
 //
-//	planner -> sources -> fusion -> materialize -> Hit
+//	query intent -> planner -> sources -> fusion -> materialize -> Hit
 //
 // Stale candidates (retrieval doc pointing at a missing or
 // superseded canonical fact) are dropped at materialization without
@@ -465,7 +567,8 @@ func (m *memory) runRecall(ctx context.Context, scope Scope, query Query, withTr
 	}
 
 	overall := time.Now()
-	compiled, err := m.queryCompiler.Compile(ctx, compiler.QueryInput{
+	stageStarted := time.Now()
+	compiled, err := m.queryCompiler.Compile(ctx, queryintent.Input{
 		Text:      query.Text,
 		Entities:  query.Entities,
 		Subject:   query.Subject,
@@ -474,9 +577,11 @@ func (m *memory) runRecall(ctx context.Context, scope Scope, query Query, withTr
 		Kinds:     query.Kinds,
 		TimeRange: query.TimeRange,
 	})
+	m.emitPipeline(scope, "query_compile", "compile", len(compiled.Entities), stageStarted, err)
 	if err != nil {
 		return nil, trace, fmt.Errorf("recall.Recall: query compiler: %w", err)
 	}
+	stageStarted = time.Now()
 	plan, err := m.planner.Plan(ctx, planner.Input{
 		Scope:        scope,
 		Text:         compiled.Text,
@@ -490,12 +595,11 @@ func (m *memory) runRecall(ctx context.Context, scope Scope, query Query, withTr
 		GraphEnabled: m.graphEnabled,
 		GraphHops:    query.GraphHops,
 	})
+	m.emitPipeline(scope, "planner", "plan", len(plan.SourceOrder), stageStarted, err)
 	if err != nil {
 		return nil, trace, fmt.Errorf("recall.Recall: planner: %w", err)
 	}
-	if withTrace {
-		trace.Plan = plan
-	}
+	trace.Plan = plan
 
 	// Index sources by name so we honour planner.SourceOrder and
 	// silently skip sources the planner did not pick (e.g. entity
@@ -513,25 +617,25 @@ func (m *memory) runRecall(ctx context.Context, scope Scope, query Query, withTr
 		if !ok {
 			continue
 		}
+		stageStarted = time.Now()
 		res := s.Query(ctx, plan)
+		m.emitPipeline(scope, "source", name, len(res.Candidates), stageStarted, res.Err)
 		results = append(results, res)
 		if res.Err != nil {
 			sourceErrs = append(sourceErrs, fmt.Errorf("%s: %w", res.Source, res.Err))
 		}
 		totalCandidates += len(res.Candidates)
-		if withTrace {
-			st := SourceTrace{
-				Source:    res.Source,
-				Budget:    plan.SourceBudgets[res.Source],
-				Returned:  len(res.Candidates),
-				Truncated: res.Truncated,
-				Latency:   res.Latency,
-			}
-			if res.Err != nil {
-				st.Err = res.Err.Error()
-			}
-			trace.Sources = append(trace.Sources, st)
+		st := SourceTrace{
+			Source:    res.Source,
+			Budget:    plan.SourceBudgets[res.Source],
+			Returned:  len(res.Candidates),
+			Truncated: res.Truncated,
+			Latency:   res.Latency,
 		}
+		if res.Err != nil {
+			st.Err = res.Err.Error()
+		}
+		trace.Sources = append(trace.Sources, st)
 	}
 
 	// Total source failure (every selected source errored and
@@ -547,30 +651,41 @@ func (m *memory) runRecall(ctx context.Context, scope Scope, query Query, withTr
 	if opts.TotalCap == 0 {
 		opts.TotalCap = plan.TotalCap
 	}
+	stageStarted = time.Now()
 	fused, fusionDrops, err := m.fuser.Fuse(ctx, results, opts)
+	m.emitPipeline(scope, "fusion", "fuse", len(fused), stageStarted, err)
 	if err != nil {
 		return nil, trace, fmt.Errorf("recall.Recall: fusion: %w", err)
 	}
-	if withTrace {
-		trace.FusedCandidates = len(fused)
-		trace.Drops = append(trace.Drops, fusionDrops...)
-	}
+	trace.FusedCandidates = len(fused)
+	trace.Drops = append(trace.Drops, fusionDrops...)
 
+	stageStarted = time.Now()
 	items, matDrops, err := m.materializer.Materialize(ctx, fused)
+	m.emitPipeline(scope, "materialize", "materialize", len(items), stageStarted, err)
 	if err != nil {
 		return nil, trace, fmt.Errorf("recall.Recall: materialize: %w", err)
 	}
-	if withTrace {
-		trace.Materialized = len(items)
-		trace.Drops = append(trace.Drops, matDrops...)
-		trace.TotalLatency = time.Since(overall)
-	}
+	trace.Materialized = len(items)
+	trace.Drops = append(trace.Drops, matDrops...)
 
+	stageStarted = time.Now()
+	hits := hitsFromItems(items)
+	m.emitPipeline(scope, "build_hits", "build", len(hits), stageStarted, nil)
+	trace.TotalLatency = time.Since(overall)
+	m.runEvolutionAfterRecall(ctx, scope, trace)
+	if !withTrace {
+		return hits, RecallTrace{}, nil
+	}
+	return hits, trace, nil
+}
+
+func hitsFromItems(items []materialize.ContextItem) []Hit {
 	hits := make([]Hit, 0, len(items))
 	for _, it := range items {
 		hits = append(hits, Hit{Fact: it.Fact, Score: it.Candidate.Score})
 	}
-	return hits, trace, nil
+	return hits
 }
 
 // Forget removes a fact with strict transactional semantics:
@@ -622,10 +737,10 @@ func (m *memory) Forget(ctx context.Context, scope Scope, factID string) error {
 	// reconcile if needed.
 	if m.evidenceStore != nil {
 		if err := m.evidenceStore.ForgetByFact(ctx, scope, []string{factID}); err != nil {
-			m.fanout.Telemetry().OnProjection(projection.ProjectionEvent{
+			m.fanout.Telemetry().OnProjection(telemetry.ProjectionEvent{
 				Projection:  "forget.evidence",
-				Op:          projection.OpForget,
-				Consistency: projection.Optional,
+				Op:          telemetry.OpForget,
+				Consistency: projection.Optional.String(),
 				FactCount:   1,
 				Err:         fmt.Errorf("evidence forget %s: %w", factID, err),
 			})
@@ -644,10 +759,10 @@ func (m *memory) compensateForgetStoreFailure(ctx context.Context, scope Scope, 
 	cleanupCtx := detachCancel(ctx)
 	hook := m.fanout.Telemetry()
 	if err := m.fanout.ProjectRequired(cleanupCtx, []model.TemporalFact{snapshot}); err != nil {
-		hook.OnProjection(projection.ProjectionEvent{
+		hook.OnProjection(telemetry.ProjectionEvent{
 			Projection:  "forget_compensation.project_required",
-			Op:          projection.OpProject,
-			Consistency: projection.Required,
+			Op:          telemetry.OpProject,
+			Consistency: projection.Required.String(),
 			FactCount:   1,
 			Err:         fmt.Errorf("compensation after store delete failed %w: %v", cause, err),
 		})
@@ -685,10 +800,10 @@ func (m *memory) RebuildAll(ctx context.Context, scope Scope) error {
 	m.fanout.RebuildOptional(ctx, scope, facts)
 	if m.evidenceStore != nil {
 		if err := m.rebuildEvidence(ctx, scope, facts); err != nil {
-			m.fanout.Telemetry().OnProjection(projection.ProjectionEvent{
+			m.fanout.Telemetry().OnProjection(telemetry.ProjectionEvent{
 				Projection:  "rebuild.evidence",
-				Op:          projection.OpRebuild,
-				Consistency: projection.Optional,
+				Op:          telemetry.OpRebuild,
+				Consistency: projection.Optional.String(),
 				FactCount:   len(facts),
 				Err:         err,
 			})
@@ -825,6 +940,13 @@ func (m *memory) GetEvidence(ctx context.Context, scope Scope, factID string) ([
 	if factID == "" {
 		return nil, errdefs.Validationf("recall.GetEvidence: fact id is required")
 	}
+	fact, err := m.store.Get(ctx, scope, factID)
+	if err != nil {
+		if errors.Is(err, temporalstore.ErrNotFound) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("recall.GetEvidence: %w", err)
+	}
 	if m.evidenceStore != nil {
 		refs, err := m.evidenceStore.ListByFact(ctx, scope, factID)
 		if err != nil {
@@ -836,13 +958,6 @@ func (m *memory) GetEvidence(ctx context.Context, scope Scope, factID string) ([
 		// fall through to canonical store fallback below; the
 		// adapter may have been wiped or never warmed for this
 		// fact, but the embedded refs are authoritative.
-	}
-	fact, err := m.store.Get(ctx, scope, factID)
-	if err != nil {
-		if errors.Is(err, temporalstore.ErrNotFound) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("recall.GetEvidence: %w", err)
 	}
 	if len(fact.EvidenceRefs) == 0 {
 		return nil, nil

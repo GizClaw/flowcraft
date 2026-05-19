@@ -77,6 +77,9 @@ func (p *Projection) Project(_ context.Context, facts []model.TemporalFact) erro
 		// also covers the superseded-skip case below: a fact that was
 		// previously active but is now superseded gets evicted here.
 		removeFactLocked(sh, f.ID)
+		for _, priorID := range f.Supersedes {
+			removeFactLocked(sh, priorID)
+		}
 		if f.CorrectedBy != "" {
 			continue
 		}

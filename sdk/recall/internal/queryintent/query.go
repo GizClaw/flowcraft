@@ -1,4 +1,4 @@
-package compiler
+package queryintent
 
 import (
 	"context"
@@ -9,9 +9,9 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/model"
 )
 
-// QueryInput is the read-path query-compiler contract. Partitioning
+// Input is the read-path query interpretation contract. Partitioning
 // (Scope) is applied on the planner / materialize path, not here.
-type QueryInput struct {
+type Input struct {
 	Text      string
 	Entities  []string
 	Subject   string
@@ -21,9 +21,9 @@ type QueryInput struct {
 	TimeRange model.TimeRange
 }
 
-// QueryCompiled is the structured output fed into planner.Input.
-// Explicit caller hints win; rule extraction only fills gaps.
-type QueryCompiled struct {
+// Compiled is the structured output fed into planner.Input. Explicit
+// caller hints win; rule extraction only fills gaps.
+type Compiled struct {
 	Text      string
 	Entities  []string
 	Subject   string
@@ -33,21 +33,20 @@ type QueryCompiled struct {
 	TimeRange model.TimeRange
 }
 
-// QueryCompiler enriches a recall.Query before planning.
-type QueryCompiler interface {
-	Compile(ctx context.Context, input QueryInput) (QueryCompiled, error)
+// Compiler enriches a recall.Query before planning.
+type Compiler interface {
+	Compile(ctx context.Context, input Input) (Compiled, error)
 }
 
-// RuleBasedQueryCompiler is the default deterministic query compiler.
-type RuleBasedQueryCompiler struct{}
+// RuleBased is the default deterministic query intent compiler.
+type RuleBased struct{}
 
-// DefaultQueryCompiler returns the rule-based query compiler wired by
-// recall.New.
-func DefaultQueryCompiler() QueryCompiler { return RuleBasedQueryCompiler{} }
+// Default returns the rule-based compiler wired by recall.New.
+func Default() Compiler { return RuleBased{} }
 
 // Compile merges explicit entities with rule-based extraction from Text.
-func (RuleBasedQueryCompiler) Compile(_ context.Context, input QueryInput) (QueryCompiled, error) {
-	out := QueryCompiled{
+func (RuleBased) Compile(_ context.Context, input Input) (Compiled, error) {
+	out := Compiled{
 		Text:      input.Text,
 		Subject:   input.Subject,
 		Predicate: input.Predicate,
@@ -55,11 +54,11 @@ func (RuleBasedQueryCompiler) Compile(_ context.Context, input QueryInput) (Quer
 		Kinds:     append([]model.FactKind(nil), input.Kinds...),
 		TimeRange: input.TimeRange,
 	}
-	out.Entities = mergeQueryEntities(input.Entities, extractEntitiesFromText(input.Text))
+	out.Entities = mergeEntities(input.Entities, extractEntitiesFromText(input.Text))
 	return out, nil
 }
 
-func mergeQueryEntities(explicit, extracted []string) []string {
+func mergeEntities(explicit, extracted []string) []string {
 	seen := make(map[string]struct{}, len(explicit)+len(extracted))
 	add := func(s string) []string {
 		s = normalizeEntityMention(s)
@@ -103,7 +102,7 @@ func extractEntitiesFromText(text string) []string {
 	set := map[string]struct{}{}
 	add := func(s string) {
 		s = normalizeEntityMention(s)
-		if s == "" || isQueryStopword(s) {
+		if s == "" || isStopword(s) {
 			return
 		}
 		set[s] = struct{}{}
@@ -120,10 +119,10 @@ func extractEntitiesFromText(text string) []string {
 			continue
 		}
 		lower := strings.ToLower(w)
-		if i == 0 && isQueryStopword(lower) {
+		if i == 0 && isStopword(lower) {
 			continue
 		}
-		if unicode.IsUpper(runes[0]) && !isQueryStopword(lower) {
+		if unicode.IsUpper(runes[0]) && !isStopword(lower) {
 			add(w)
 		}
 		if hasCJKRunes(w) && len(runes) >= 2 {
@@ -174,7 +173,7 @@ func hasCJKRunes(s string) bool {
 	return false
 }
 
-func isQueryStopword(s string) bool {
+func isStopword(s string) bool {
 	switch s {
 	case "who", "whom", "whose", "what", "when", "where", "why", "how",
 		"which", "did", "does", "do", "done", "is", "are", "was", "were",

@@ -35,7 +35,7 @@ func (f *failingEvidence) Append(ctx context.Context, scope model.Scope, factID 
 
 func TestSave_MirrorsEvidenceWhenStoreConfigured(t *testing.T) {
 	ev := evidencestore.NewMemoryStore()
-	mem, err := New(withEvidenceStore(ev))
+	mem, err := New(WithEvidenceStore(ev))
 	if err != nil {
 		t.Fatalf("new: %v", err)
 	}
@@ -83,13 +83,13 @@ func TestSave_NoEvidenceStore_DoesNotPanic(t *testing.T) {
 	}
 }
 
-func TestSave_EvidenceFailureRollsBackCanonicalFact(t *testing.T) {
+func TestSave_EvidenceFailureDoesNotRollbackCanonicalFact(t *testing.T) {
 	store := temporalstore.NewMemoryStore()
 	ev := &failingEvidence{Store: evidencestore.NewMemoryStore(), failAppend: true}
 	idx := retrievalmem.New()
 	mem, err := New(
 		withTemporalStore(store),
-		withEvidenceStore(ev),
+		WithEvidenceStore(ev),
 		WithRetrievalIndex(idx),
 	)
 	if err != nil {
@@ -98,27 +98,25 @@ func TestSave_EvidenceFailureRollsBackCanonicalFact(t *testing.T) {
 	defer mem.Close()
 
 	scope := Scope{RuntimeID: "rt", UserID: "u1"}
-	_, err = mem.Save(context.Background(), scope, SaveRequest{
+	res, err := mem.Save(context.Background(), scope, SaveRequest{
 		Facts: []TemporalFact{{
 			Kind:         FactNote,
 			Content:      "x",
 			EvidenceRefs: []EvidenceRef{{ID: "ev1", Text: "raw"}},
 		}},
 	})
-	if err == nil {
-		t.Fatal("expected evidence-mirror failure")
-	}
-	// Canonical store must be empty — rollback deleted the fact.
-	facts, err := store.List(context.Background(), scope, temporalstore.ListQuery{IncludeSuperseded: true})
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("evidence adapter failure should not block canonical save: %v", err)
 	}
-	if len(facts) != 0 {
-		t.Errorf("canonical store not rolled back: %+v", facts)
+	fact, err := store.Get(context.Background(), scope, res.FactIDs[0])
+	if err != nil {
+		t.Fatalf("canonical fact should remain after adapter failure: %v", err)
 	}
-	// Retrieval projection must also be clean.
-	if _, ok, _ := idx.Get(context.Background(), retrievalproj.NamespaceFor(scope), "any"); ok {
-		t.Errorf("retrieval projection should be empty after rollback")
+	if len(fact.EvidenceRefs) != 1 || fact.EvidenceRefs[0].ID != "ev1" {
+		t.Fatalf("embedded evidence refs should remain authoritative: %+v", fact.EvidenceRefs)
+	}
+	if _, ok, err := idx.Get(context.Background(), retrievalproj.NamespaceFor(scope), res.FactIDs[0]); err != nil || !ok {
+		t.Fatalf("retrieval projection should still contain saved fact, ok=%v err=%v", ok, err)
 	}
 }
 
@@ -128,7 +126,7 @@ func TestSave_EvidenceFailureRollsBackCanonicalFact(t *testing.T) {
 
 func TestForget_SweepsEvidenceAdapter(t *testing.T) {
 	ev := evidencestore.NewMemoryStore()
-	mem, err := New(withEvidenceStore(ev))
+	mem, err := New(WithEvidenceStore(ev))
 	if err != nil {
 		t.Fatalf("new: %v", err)
 	}
@@ -159,7 +157,7 @@ func TestForget_SweepsEvidenceAdapter(t *testing.T) {
 
 func TestGetEvidence_PrefersAdapter(t *testing.T) {
 	ev := evidencestore.NewMemoryStore()
-	mem, err := New(withEvidenceStore(ev))
+	mem, err := New(WithEvidenceStore(ev))
 	if err != nil {
 		t.Fatalf("new: %v", err)
 	}
@@ -229,6 +227,37 @@ func TestGetEvidence_MissingFactReturnsNilNotError(t *testing.T) {
 	}
 }
 
+func TestGetEvidence_DoesNotReturnAdapterRefsForMissingCanonicalFact(t *testing.T) {
+	store := temporalstore.NewMemoryStore()
+	ev := evidencestore.NewMemoryStore()
+	mem, err := New(withTemporalStore(store), WithEvidenceStore(ev))
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	defer mem.Close()
+	scope := Scope{RuntimeID: "rt", UserID: "u1"}
+	res, err := mem.Save(context.Background(), scope, SaveRequest{
+		Facts: []TemporalFact{{
+			Kind:         FactNote,
+			Content:      "x",
+			EvidenceRefs: []EvidenceRef{{ID: "ev1", Text: "raw"}},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Delete(context.Background(), scope, res.FactIDs); err != nil {
+		t.Fatal(err)
+	}
+	got, err := mem.(EvidenceLookup).GetEvidence(context.Background(), scope, res.FactIDs[0])
+	if err != nil {
+		t.Fatalf("GetEvidence: %v", err)
+	}
+	if got != nil {
+		t.Fatalf("adapter-only stale evidence must not be returned, got %+v", got)
+	}
+}
+
 func TestGetEvidence_ValidationErrorsClassified(t *testing.T) {
 	mem, err := New()
 	if err != nil {
@@ -250,7 +279,7 @@ func TestGetEvidence_ValidationErrorsClassified(t *testing.T) {
 
 func TestRebuildAll_RehydratesEvidenceAdapter(t *testing.T) {
 	ev := evidencestore.NewMemoryStore()
-	mem, err := New(withEvidenceStore(ev))
+	mem, err := New(WithEvidenceStore(ev))
 	if err != nil {
 		t.Fatalf("new: %v", err)
 	}
@@ -280,7 +309,7 @@ func TestRebuildAll_RehydratesEvidenceAdapter(t *testing.T) {
 
 func TestRebuildAll_RemovesEvidenceForDeletedFacts(t *testing.T) {
 	ev := evidencestore.NewMemoryStore()
-	mem, err := New(withEvidenceStore(ev))
+	mem, err := New(WithEvidenceStore(ev))
 	if err != nil {
 		t.Fatalf("new: %v", err)
 	}

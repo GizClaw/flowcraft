@@ -1,15 +1,10 @@
 package recall
 
 import (
-	"errors"
 	"time"
 
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/model"
 )
-
-// ErrNotImplemented marks v2 surfaces whose architecture boundary
-// exists before their full implementation lands.
-var ErrNotImplemented = errors.New("recall: v2 implementation not yet wired")
 
 // Scope identifies the tenant/user partition for canonical memory. It
 // aliases the internal canonical model so the public facade does not
@@ -92,7 +87,7 @@ func TimeRangeFrom(from, to time.Time) TimeRange {
 }
 
 // Hit is a materialized recall result. Score semantics are owned by
-// the fusion layer in PR-3; for PR-2 Recall returns ErrNotImplemented.
+// the fusion layer.
 type Hit struct {
 	Fact  TemporalFact
 	Score float64

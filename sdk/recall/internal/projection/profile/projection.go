@@ -57,6 +57,9 @@ func (p *Projection) Project(_ context.Context, facts []model.TemporalFact) erro
 		}
 		sh := p.shardLocked(f.Scope)
 		removeFactLocked(sh, f.ID)
+		for _, priorID := range f.Supersedes {
+			removeFactLocked(sh, priorID)
+		}
 		if !projection.IsActive(f, now) {
 			continue
 		}

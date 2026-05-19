@@ -168,13 +168,22 @@ func TestSave_StateSecondWriteSupersedesPrior(t *testing.T) {
 	}
 
 	// Recall should surface only the successor.
-	hits, err := mem.Recall(context.Background(), scope, Query{Text: "city"})
+	hits, trace, err := mem.(RecallExplainer).RecallExplain(context.Background(), scope, Query{
+		Text:     "Paris",
+		Entities: []string{"alice"},
+		Limit:    10,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, h := range hits {
 		if h.Fact.ID == priorID {
 			t.Errorf("superseded fact must not appear in Recall, got %+v", hits)
+		}
+	}
+	for _, drop := range trace.Drops {
+		if drop.FactID == priorID && drop.Reason == DropSuperseded {
+			t.Fatalf("required projections should not emit superseded candidates after normal Save, drops=%+v", trace.Drops)
 		}
 	}
 }

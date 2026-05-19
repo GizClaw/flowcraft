@@ -3,13 +3,6 @@ package recall
 import (
 	"github.com/GizClaw/flowcraft/sdk/llm"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/compiler"
-	"github.com/GizClaw/flowcraft/sdk/recall/internal/fusion"
-	"github.com/GizClaw/flowcraft/sdk/recall/internal/materialize"
-	"github.com/GizClaw/flowcraft/sdk/recall/internal/planner"
-	"github.com/GizClaw/flowcraft/sdk/recall/internal/projection"
-	"github.com/GizClaw/flowcraft/sdk/recall/internal/source"
-	evidencestore "github.com/GizClaw/flowcraft/sdk/recall/internal/store/evidence"
-	temporalstore "github.com/GizClaw/flowcraft/sdk/recall/internal/store/temporal"
 	"github.com/GizClaw/flowcraft/sdk/retrieval"
 )
 
@@ -21,43 +14,11 @@ import (
 // until those contracts are ready to support external implementations.
 type Option func(*config)
 
-type config struct {
-	store          temporalstore.Store
-	evidenceStore  evidencestore.Store
-	retrievalIndex retrieval.Index
-	compiler       compiler.Compiler
-	llmExtractor   *llmExtractorConfig
-	resolver       compiler.ConflictResolver
-	resolverSet    bool
-	telemetry      projection.TelemetryHook
-
-	// extraProjections are appended to the canonical projection set.
-	// They are typically Optional and provide forward room for
-	// timeline / relation / profile to plug in later phases.
-	extraProjections []projection.Projection
-
-	// Read-path overrides. nil means "use the default wiring".
-	queryCompiler compiler.QueryCompiler
-	planner       planner.Planner
-	sources       []source.CandidateSource
-	fuser         fusion.Fuser
-	materializer  materialize.Materializer
-	fusionOpts    fusion.Options
-
-	// graphEnabled wires the optional EntityGraph projection and
-	// graph source (docs §17: default off).
-	graphEnabled bool
-}
-
-func withTemporalStore(s temporalstore.Store) Option {
-	return func(c *config) {
-		if s != nil {
-			c.store = s
-		}
-	}
-}
-
-func withEvidenceStore(s evidencestore.Store) Option {
+// WithEvidenceStore installs an optional secondary evidence lookup
+// adapter. Save keeps embedded EvidenceRefs authoritative; adapter
+// write failures are telemetry-only and RebuildAll can rehydrate the
+// adapter from canonical facts.
+func WithEvidenceStore(s EvidenceStore) Option {
 	return func(c *config) {
 		c.evidenceStore = s
 	}
@@ -71,22 +32,6 @@ func WithRetrievalIndex(idx retrieval.Index) Option {
 			c.retrievalIndex = idx
 		}
 	}
-}
-
-func withCompiler(cp compiler.Compiler) Option {
-	return func(c *config) {
-		if cp != nil {
-			c.compiler = cp
-		}
-	}
-}
-
-// llmExtractorConfig captures the args to compiler.NewLLMExtractor
-// so we can defer the wiring until New() decides whether to build
-// the default compiler.
-type llmExtractorConfig struct {
-	client llm.LLM
-	tune   []LLMExtractorOption
 }
 
 // LLMExtractorOption configures the LLM extractor wired by
@@ -148,76 +93,13 @@ func WithLLMExtractor(client llm.LLM, opts ...LLMExtractorOption) Option {
 	}
 }
 
-func withConflictResolver(r compiler.ConflictResolver) Option {
-	return func(c *config) {
-		c.resolver = r
-		c.resolverSet = true
-	}
-}
-
-// WithTelemetryHook installs a telemetry observer for projection
-// fanout. Defaults to a no-op hook.
+// WithTelemetryHook installs a telemetry observer for projection fanout,
+// drift detection, and high-level Save/Recall pipeline stages.
 func WithTelemetryHook(hook TelemetryHook) Option {
 	return func(c *config) {
 		if hook != nil {
 			c.telemetry = hook
 		}
-	}
-}
-
-func withExtraProjection(p projection.Projection) Option {
-	return func(c *config) {
-		if p != nil {
-			c.extraProjections = append(c.extraProjections, p)
-		}
-	}
-}
-
-func withQueryCompiler(qc compiler.QueryCompiler) Option {
-	return func(c *config) {
-		if qc != nil {
-			c.queryCompiler = qc
-		}
-	}
-}
-
-func withPlanner(p planner.Planner) Option {
-	return func(c *config) {
-		if p != nil {
-			c.planner = p
-		}
-	}
-}
-
-func withSources(sources ...source.CandidateSource) Option {
-	return func(c *config) {
-		for _, s := range sources {
-			if s != nil {
-				c.sources = append(c.sources, s)
-			}
-		}
-	}
-}
-
-func withFuser(f fusion.Fuser) Option {
-	return func(c *config) {
-		if f != nil {
-			c.fuser = f
-		}
-	}
-}
-
-func withMaterializer(m materialize.Materializer) Option {
-	return func(c *config) {
-		if m != nil {
-			c.materializer = m
-		}
-	}
-}
-
-func withFusionOptions(opts fusion.Options) Option {
-	return func(c *config) {
-		c.fusionOpts = opts
 	}
 }
 

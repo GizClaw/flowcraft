@@ -1,10 +1,6 @@
 package recall
 
-import (
-	"context"
-
-	"github.com/GizClaw/flowcraft/sdk/recall/internal/projection"
-)
+import "context"
 
 // ProjectionRebuilder is the opt-in extension that exposes
 // projection rebuild + targeted stale-id repair. Memory
@@ -39,35 +35,3 @@ type ProjectionRebuilder interface {
 	RebuildProjection(ctx context.Context, scope Scope, name string) error
 	RepairStale(ctx context.Context, scope Scope, factIDs []string) error
 }
-
-// EvidenceLookup is the opt-in extension that exposes evidence
-// retrieval by fact id. Implementations type-assert from Memory.
-//
-// The lookup prefers the secondary store when one is configured
-// internally; without a store it falls back to the embedded
-// TemporalFact.EvidenceRefs so callers always get a consistent view
-// regardless of deployment topology.
-type EvidenceLookup interface {
-	GetEvidence(ctx context.Context, scope Scope, factID string) ([]EvidenceRef, error)
-}
-
-// DriftReason classifies a single drift observation surfaced by
-// the read path. Aliases projection.DriftReason so the public
-// surface and telemetry hook agree on the wire shape.
-type DriftReason = projection.DriftReason
-
-const (
-	DriftStaleFact      = projection.DriftStaleFact
-	DriftSupersededFact = projection.DriftSupersededFact
-)
-
-// DriftEvent is the public alias for projection.DriftEvent.
-type DriftEvent = projection.DriftEvent
-
-// ProjectionEvent is the public alias for projection.ProjectionEvent.
-type ProjectionEvent = projection.ProjectionEvent
-
-// TelemetryHook is the public alias for projection.TelemetryHook.
-// External telemetry adapters implement OnProjection + OnDrift to
-// receive every fanout outcome plus every materialize drift drop.
-type TelemetryHook = projection.TelemetryHook

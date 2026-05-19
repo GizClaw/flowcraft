@@ -14,13 +14,13 @@ import (
 	"errors"
 
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/model"
-	"github.com/GizClaw/flowcraft/sdk/recall/internal/projection"
 	temporalstore "github.com/GizClaw/flowcraft/sdk/recall/internal/store/temporal"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/telemetry"
 )
 
 // ContextItem is a materialized recall result. The Candidate field
 // preserves the fusion provenance (score, source, rank) so explain
-// traces and reranking can use it.
+// traces and future ranking layers can use it.
 type ContextItem struct {
 	Candidate model.Candidate
 	Fact      model.TemporalFact
@@ -35,20 +35,20 @@ type Materializer interface {
 // FromStore materializes from a TemporalFactStore.
 type FromStore struct {
 	store     temporalstore.Store
-	telemetry projection.TelemetryHook
+	telemetry telemetry.Hook
 }
 
 // New constructs a FromStore with the supplied telemetry hook. A
-// nil hook is replaced with projection.NopTelemetry so the hot
+// nil hook is replaced with telemetry.NopHook so the hot
 // path never has to nil-check.
 //
 // The hook receives a DriftEvent for every stale-fact /
 // superseded-fact drop so an outer reconcile or governance worker
 // can repair projections without the read path doing it inline
 // (docs §10.1: no auto-repair from Recall).
-func New(store temporalstore.Store, hook projection.TelemetryHook) *FromStore {
+func New(store temporalstore.Store, hook telemetry.Hook) *FromStore {
 	if hook == nil {
-		hook = projection.NopTelemetry{}
+		hook = telemetry.NopHook{}
 	}
 	return &FromStore{store: store, telemetry: hook}
 }
@@ -85,10 +85,10 @@ func (m *FromStore) Materialize(ctx context.Context, candidates []model.Candidat
 					FactID: c.FactID,
 					Source: c.Source,
 				})
-				m.telemetry.OnDrift(projection.DriftEvent{
+				m.telemetry.OnDrift(telemetry.DriftEvent{
 					Scope:   c.Scope,
 					Source:  "materialize",
-					Reason:  projection.DriftStaleFact,
+					Reason:  telemetry.DriftStaleFact,
 					FactID:  c.FactID,
 					Details: c.Source,
 				})
@@ -110,10 +110,10 @@ func (m *FromStore) Materialize(ctx context.Context, candidates []model.Candidat
 				FactID: c.FactID,
 				Source: c.Source,
 			})
-			m.telemetry.OnDrift(projection.DriftEvent{
+			m.telemetry.OnDrift(telemetry.DriftEvent{
 				Scope:   c.Scope,
 				Source:  "materialize",
-				Reason:  projection.DriftSupersededFact,
+				Reason:  telemetry.DriftSupersededFact,
 				FactID:  c.FactID,
 				Details: c.Source,
 			})

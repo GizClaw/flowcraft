@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/governance"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/model"
 )
 
@@ -140,6 +141,41 @@ func TestCompile_PolicyRejectDrops(t *testing.T) {
 	}
 }
 
+func TestCompile_GovernanceMutationPrecedesDerivedFields(t *testing.T) {
+	cp := New(Stages{
+		IDGen: SequentialIDGenerator("f"),
+		Governance: &governance.Governance{
+			Write: mutateContentPolicy{content: "redacted content"},
+		},
+	})
+	res, err := cp.Compile(context.Background(), Input{
+		Scope: model.Scope{RuntimeID: "rt"},
+		Facts: []model.TemporalFact{{Kind: model.KindNote, Content: "secret content"}},
+	})
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	if len(res.Facts) != 1 {
+		t.Fatalf("want 1 fact, got %d", len(res.Facts))
+	}
+	got := res.Facts[0]
+	if got.Content != "redacted content" {
+		t.Fatalf("content = %q", got.Content)
+	}
+	if got.MergeKey != DefaultMergeKey(got) {
+		t.Fatalf("merge_key = %q, want derived from mutated fact %q", got.MergeKey, DefaultMergeKey(got))
+	}
+}
+
 type rejectAllPolicy struct{}
 
 func (rejectAllPolicy) Apply(f model.TemporalFact) (model.TemporalFact, bool) { return f, false }
+
+type mutateContentPolicy struct {
+	content string
+}
+
+func (p mutateContentPolicy) Apply(f model.TemporalFact) (model.TemporalFact, bool) {
+	f.Content = p.content
+	return f, true
+}

@@ -5,22 +5,45 @@ import (
 	"testing"
 
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
-	"github.com/GizClaw/flowcraft/sdk/recall/internal/projection"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/model"
 	retrievalproj "github.com/GizClaw/flowcraft/sdk/recall/internal/projection/retrieval"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/source"
 	temporalstore "github.com/GizClaw/flowcraft/sdk/recall/internal/store/temporal"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/telemetry"
 	retrievalmem "github.com/GizClaw/flowcraft/sdk/retrieval/memory"
 )
 
 // captureHook records every projection / drift event the fanout +
 // materialize emit so a single test can inspect both streams.
 type captureHook struct {
-	projection.NopTelemetry
-	drifts []projection.DriftEvent
-	events []projection.ProjectionEvent
+	telemetry.NopHook
+	drifts    []telemetry.DriftEvent
+	events    []telemetry.ProjectionEvent
+	pipelines []telemetry.PipelineEvent
 }
 
-func (h *captureHook) OnDrift(e projection.DriftEvent)           { h.drifts = append(h.drifts, e) }
-func (h *captureHook) OnProjection(e projection.ProjectionEvent) { h.events = append(h.events, e) }
+func (h *captureHook) OnDrift(e telemetry.DriftEvent)           { h.drifts = append(h.drifts, e) }
+func (h *captureHook) OnProjection(e telemetry.ProjectionEvent) { h.events = append(h.events, e) }
+func (h *captureHook) OnPipeline(e telemetry.PipelineEvent)     { h.pipelines = append(h.pipelines, e) }
+
+type staleCandidateSource struct {
+	id string
+}
+
+func (s staleCandidateSource) Name() string { return "retrieval" }
+
+func (s staleCandidateSource) Query(_ context.Context, plan model.QueryPlan) model.SourceResult {
+	return model.SourceResult{
+		Source: s.Name(),
+		Candidates: []model.Candidate{{
+			FactID: s.id,
+			Scope:  plan.Intent.Scope,
+			Source: s.Name(),
+			Rank:   1,
+			Score:  1,
+		}},
+	}
+}
 
 // ---------------------------------------------------------------
 // RebuildAll
@@ -290,13 +313,11 @@ func TestRecall_EmitsDriftForStaleFact(t *testing.T) {
 	}
 }
 
-func TestRecall_EmitsDriftForSupersededFact(t *testing.T) {
+func TestRecall_EmitsDriftForSupersededCandidate(t *testing.T) {
 	hook := &captureHook{}
-	idx := retrievalmem.New()
 	store := temporalstore.NewMemoryStore()
 	mem, err := New(
 		withTemporalStore(store),
-		WithRetrievalIndex(idx),
 		WithTelemetryHook(hook),
 	)
 	if err != nil {
@@ -304,16 +325,18 @@ func TestRecall_EmitsDriftForSupersededFact(t *testing.T) {
 	}
 	defer mem.Close()
 	scope := Scope{RuntimeID: "rt", UserID: "u1"}
-	if _, err = mem.Save(context.Background(), scope, SaveRequest{
+	first, err := mem.Save(context.Background(), scope, SaveRequest{
 		Facts: []TemporalFact{{
 			Kind:      FactState,
 			Subject:   "alice",
 			Predicate: "city",
 			Object:    "nyc",
 		}},
-	}); err != nil {
+	})
+	if err != nil {
 		t.Fatal(err)
 	}
+	mem.(*memory).sources = []source.CandidateSource{staleCandidateSource{id: first.FactIDs[0]}}
 	if _, err = mem.Save(context.Background(), scope, SaveRequest{
 		Facts: []TemporalFact{{
 			Kind:      FactState,
@@ -324,13 +347,12 @@ func TestRecall_EmitsDriftForSupersededFact(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	// The resolver closed the older fact and projected the new
-	// one. Recall by entity "alice" surfaces both candidates;
-	// the old one drops as superseded and emits drift.
+	// Faulty or third-party sources can still emit stale candidates.
+	// Materialize is the defense-in-depth chokepoint that drops them
+	// and emits drift telemetry.
 	if _, err := mem.Recall(context.Background(), scope, Query{
-		Text:     "alice city",
-		Entities: []string{"alice"},
-		Limit:    5,
+		Text:  "alice city",
+		Limit: 5,
 	}); err != nil {
 		t.Fatalf("recall: %v", err)
 	}
@@ -344,6 +366,42 @@ func TestRecall_EmitsDriftForSupersededFact(t *testing.T) {
 	if !found {
 		t.Errorf("expected DriftSupersededFact event, got %+v", hook.drifts)
 	}
+}
+
+func TestSaveRecall_EmitsPipelineTelemetry(t *testing.T) {
+	hook := &captureHook{}
+	mem, err := New(WithTelemetryHook(hook))
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	defer mem.Close()
+	scope := Scope{RuntimeID: "rt", UserID: "u1"}
+	if _, err := mem.Save(context.Background(), scope, SaveRequest{
+		Facts: []TemporalFact{{Kind: FactNote, Content: "alice likes tea", Entities: []string{"alice"}}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := mem.Recall(context.Background(), scope, Query{Text: "Alice tea", Limit: 5}); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, want := range []string{
+		"compiler", "conflict_resolve", "store", "evidence", "projection",
+		"query_compile", "planner", "source", "fusion", "materialize", "build_hits",
+	} {
+		if !hasPipelineStage(hook.pipelines, want) {
+			t.Fatalf("missing pipeline stage %q in %+v", want, hook.pipelines)
+		}
+	}
+}
+
+func hasPipelineStage(events []telemetry.PipelineEvent, stage string) bool {
+	for _, e := range events {
+		if e.Stage == stage {
+			return true
+		}
+	}
+	return false
 }
 
 // ---------------------------------------------------------------

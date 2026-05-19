@@ -60,12 +60,19 @@ func (p *Projection) Project(ctx context.Context, facts []model.TemporalFact) er
 	}
 	grouped := groupByNamespace(facts)
 	for ns, group := range grouped {
+		var superseded []string
 		docs := make([]retrieval.Doc, 0, len(group))
 		for _, f := range group {
+			superseded = append(superseded, f.Supersedes...)
 			if f.CorrectedBy != "" {
 				continue
 			}
 			docs = append(docs, toDoc(f))
+		}
+		if len(superseded) > 0 {
+			if err := p.index.Delete(ctx, ns, uniqueStrings(superseded)); err != nil {
+				return fmt.Errorf("retrieval projection delete superseded ns=%s: %w", ns, err)
+			}
 		}
 		if len(docs) == 0 {
 			continue
@@ -170,6 +177,25 @@ func groupByNamespace(facts []model.TemporalFact) map[string][]model.TemporalFac
 	for _, f := range facts {
 		ns := NamespaceFor(f.Scope)
 		out[ns] = append(out[ns], f)
+	}
+	return out
+}
+
+func uniqueStrings(in []string) []string {
+	if len(in) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(in))
+	out := make([]string, 0, len(in))
+	for _, s := range in {
+		if s == "" {
+			continue
+		}
+		if _, ok := seen[s]; ok {
+			continue
+		}
+		seen[s] = struct{}{}
+		out = append(out, s)
 	}
 	return out
 }

@@ -26,8 +26,7 @@ type View interface {
 }
 
 // emptyView is the View used when callers do not wire a store. It
-// makes every fact look brand new — equivalent to the PR-2 behaviour
-// where ConflictDetector was a no-op.
+// makes every fact look brand new.
 type emptyView struct{}
 
 func (emptyView) FindByMergeKey(context.Context, model.Scope, string) ([]model.TemporalFact, error) {

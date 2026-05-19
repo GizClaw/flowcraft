@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/governance"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/model"
 )
 
@@ -18,9 +19,8 @@ type Input struct {
 	// as authoritative content; the compiler still normalizes
 	// scope/id/time/merge_key and runs deterministic policy hooks.
 	Facts []model.TemporalFact
-	// Text is reserved for future LLM extractor input; PR-2 leaves
-	// it unused so callers can begin populating it without breaking
-	// when the extractor lands in Phase 4.
+	// Text is free-form extractor input. The default passthrough
+	// extractor ignores it; LLMExtractor consumes it when configured.
 	Text string
 	// Now is the wall clock used when filling missing ObservedAt /
 	// generating IDs. Tests inject deterministic clocks here.
@@ -30,9 +30,9 @@ type Input struct {
 // Result is what Memory.Save persists.
 type Result struct {
 	Facts []model.TemporalFact
-	// Dropped explains facts the compiler discarded (e.g. dedup
-	// noop). Reserved for telemetry; PR-2 only populates it when
-	// hooks fire.
+	// Dropped explains facts the compiler discarded before persistence.
+	// Store-backed dedupe/supersede decisions are reported by the
+	// conflict resolver in Memory.Save.
 	Dropped []DroppedFact
 }
 
@@ -61,11 +61,14 @@ type Stages struct {
 	EntityResolver    EntityResolver
 	AliasResolver     AliasResolver
 	TimeResolver      TimeResolver
-	ConflictDetector  ConflictDetector
 	SalienceScorer    SalienceScorer
 	Policy            Policy
-	IDGen             IDGenerator
-	Clock             func() time.Time
+	// Governance optionally replaces Policy with the full
+	// sensitivity/retention/write chain. When set it takes
+	// precedence over Policy for Apply decisions.
+	Governance *governance.Governance
+	IDGen      IDGenerator
+	Clock      func() time.Time
 }
 
 // Default returns a Compiler with deterministic Phase 1 stages wired
@@ -96,14 +99,11 @@ func New(s Stages) Compiler {
 	if s.TimeResolver == nil {
 		s.TimeResolver = passthroughTimeResolver{}
 	}
-	if s.ConflictDetector == nil {
-		s.ConflictDetector = noopConflictDetector{}
-	}
 	if s.SalienceScorer == nil {
 		s.SalienceScorer = defaultSalienceScorer{}
 	}
 	if s.Policy == nil {
-		s.Policy = noopPolicy{}
+		s.Policy = governance.NopWritePolicy{}
 	}
 	if s.IDGen == nil {
 		s.IDGen = newULIDGenerator()
@@ -148,17 +148,27 @@ func (c *compiler) Compile(ctx context.Context, input Input) (Result, error) {
 		f = c.stages.EntityResolver.Resolve(f)
 		f = c.stages.TimeResolver.Resolve(f, now)
 
-		if f.MergeKey == "" {
-			f.MergeKey = DefaultMergeKey(f)
+		var allow bool
+		if c.stages.Governance != nil {
+			f, allow = c.stages.Governance.ApplyWrite(ctx, input.Scope, f, now)
+			if !allow {
+				result.Dropped = append(result.Dropped, DroppedFact{Fact: f, Reason: "governance:reject"})
+				continue
+			}
+		} else {
+			f, allow = c.stages.Policy.Apply(f)
+			if !allow {
+				result.Dropped = append(result.Dropped, DroppedFact{Fact: f, Reason: "policy:reject"})
+				continue
+			}
+		}
+		f.Scope = input.Scope
+		if !f.Kind.IsValid() {
+			return Result{}, fmt.Errorf("recall compiler: fact %d has invalid kind %q after policy", i, f.Kind)
 		}
 
-		decision := c.stages.ConflictDetector.Detect(f)
-		switch decision.Action {
-		case ConflictNoop:
-			result.Dropped = append(result.Dropped, DroppedFact{Fact: f, Reason: decision.Reason})
-			continue
-		case ConflictSupersede:
-			f.Supersedes = mergeStrings(f.Supersedes, decision.SupersedeIDs)
+		if f.MergeKey == "" {
+			f.MergeKey = DefaultMergeKey(f)
 		}
 
 		if f.ID == "" {
@@ -166,11 +176,6 @@ func (c *compiler) Compile(ctx context.Context, input Input) (Result, error) {
 		}
 
 		f = c.stages.SalienceScorer.Score(f)
-		f, allow := c.stages.Policy.Apply(f)
-		if !allow {
-			result.Dropped = append(result.Dropped, DroppedFact{Fact: f, Reason: "policy:reject"})
-			continue
-		}
 
 		result.Facts = append(result.Facts, f)
 	}
