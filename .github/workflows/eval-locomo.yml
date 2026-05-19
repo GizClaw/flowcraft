@@ -444,10 +444,17 @@ jobs:
             --ingest-timeout "${{ inputs.ingest_timeout }}"
             --notify-name "$RUN_TAG"
             --notify-progress-pct "${{ inputs.notify_progress_pct }}"
-            --dump-facts "$FACTS_OUT"
             --dump-recall "$RECALL_OUT"
             --out "$REPORT_OUT"
           )
+          # --dump-facts is v1-only (the v1 runner emits its
+          # extractor-level fact ledger here). v2 has a different
+          # write-path shape — its equivalent forensic surface is
+          # --diagnostics (see below), so the CLI explicitly rejects
+          # --dump-facts under runner=flowcraft-v2.
+          if [ "${{ inputs.runner }}" = "flowcraft-v1" ]; then
+            ARGS+=( --dump-facts "$FACTS_OUT" )
+          fi
           if [ -n "${{ inputs.reranker_llm }}" ]; then
             ARGS+=( --reranker-llm "${{ inputs.reranker_llm }}" )
           fi
