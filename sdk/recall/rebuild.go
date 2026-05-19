@@ -43,10 +43,10 @@ type ProjectionRebuilder interface {
 // EvidenceLookup is the opt-in extension that exposes evidence
 // retrieval by fact id. Implementations type-assert from Memory.
 //
-// The lookup prefers the secondary store wired through
-// WithEvidenceStore; without a store it falls back to the embedded
-// TemporalFact.EvidenceRefs so callers always get a consistent
-// view regardless of deployment topology.
+// The lookup prefers the secondary store when one is configured
+// internally; without a store it falls back to the embedded
+// TemporalFact.EvidenceRefs so callers always get a consistent view
+// regardless of deployment topology.
 type EvidenceLookup interface {
 	GetEvidence(ctx context.Context, scope Scope, factID string) ([]EvidenceRef, error)
 }

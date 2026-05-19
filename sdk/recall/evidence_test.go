@@ -35,7 +35,7 @@ func (f *failingEvidence) Append(ctx context.Context, scope model.Scope, factID 
 
 func TestSave_MirrorsEvidenceWhenStoreConfigured(t *testing.T) {
 	ev := evidencestore.NewMemoryStore()
-	mem, err := New(WithEvidenceStore(ev))
+	mem, err := New(withEvidenceStore(ev))
 	if err != nil {
 		t.Fatalf("new: %v", err)
 	}
@@ -88,8 +88,8 @@ func TestSave_EvidenceFailureRollsBackCanonicalFact(t *testing.T) {
 	ev := &failingEvidence{Store: evidencestore.NewMemoryStore(), failAppend: true}
 	idx := retrievalmem.New()
 	mem, err := New(
-		WithTemporalStore(store),
-		WithEvidenceStore(ev),
+		withTemporalStore(store),
+		withEvidenceStore(ev),
 		WithRetrievalIndex(idx),
 	)
 	if err != nil {
@@ -128,7 +128,7 @@ func TestSave_EvidenceFailureRollsBackCanonicalFact(t *testing.T) {
 
 func TestForget_SweepsEvidenceAdapter(t *testing.T) {
 	ev := evidencestore.NewMemoryStore()
-	mem, err := New(WithEvidenceStore(ev))
+	mem, err := New(withEvidenceStore(ev))
 	if err != nil {
 		t.Fatalf("new: %v", err)
 	}
@@ -159,7 +159,7 @@ func TestForget_SweepsEvidenceAdapter(t *testing.T) {
 
 func TestGetEvidence_PrefersAdapter(t *testing.T) {
 	ev := evidencestore.NewMemoryStore()
-	mem, err := New(WithEvidenceStore(ev))
+	mem, err := New(withEvidenceStore(ev))
 	if err != nil {
 		t.Fatalf("new: %v", err)
 	}
@@ -250,7 +250,7 @@ func TestGetEvidence_ValidationErrorsClassified(t *testing.T) {
 
 func TestRebuildAll_RehydratesEvidenceAdapter(t *testing.T) {
 	ev := evidencestore.NewMemoryStore()
-	mem, err := New(WithEvidenceStore(ev))
+	mem, err := New(withEvidenceStore(ev))
 	if err != nil {
 		t.Fatalf("new: %v", err)
 	}
@@ -280,7 +280,7 @@ func TestRebuildAll_RehydratesEvidenceAdapter(t *testing.T) {
 
 func TestRebuildAll_RemovesEvidenceForDeletedFacts(t *testing.T) {
 	ev := evidencestore.NewMemoryStore()
-	mem, err := New(WithEvidenceStore(ev))
+	mem, err := New(withEvidenceStore(ev))
 	if err != nil {
 		t.Fatalf("new: %v", err)
 	}

@@ -21,7 +21,7 @@ func TestSave_AppendsAndProjects(t *testing.T) {
 	idx := retrievalmem.New()
 	store := temporalstore.NewMemoryStore()
 	mem, err := New(
-		WithTemporalStore(store),
+		withTemporalStore(store),
 		WithRetrievalIndex(idx),
 	)
 	if err != nil {
@@ -71,8 +71,8 @@ func TestSave_RequiresRuntimeID(t *testing.T) {
 func TestSave_RequiredProjectionFailureAborts(t *testing.T) {
 	store := temporalstore.NewMemoryStore()
 	mem, err := New(
-		WithTemporalStore(store),
-		WithExtraProjection(failingProjection{}),
+		withTemporalStore(store),
+		withExtraProjection(failingProjection{}),
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -95,7 +95,7 @@ func TestSave_RequiredProjectionFailureAborts(t *testing.T) {
 func TestForget_RemovesFromStoreAndProjections(t *testing.T) {
 	idx := retrievalmem.New()
 	store := temporalstore.NewMemoryStore()
-	mem, _ := New(WithTemporalStore(store), WithRetrievalIndex(idx))
+	mem, _ := New(withTemporalStore(store), WithRetrievalIndex(idx))
 	scope := Scope{RuntimeID: "rt", UserID: "u1"}
 	res, err := mem.Save(context.Background(), scope, SaveRequest{
 		Facts: []TemporalFact{{Kind: FactNote, Content: "burn after reading"}},
@@ -117,7 +117,7 @@ func TestForget_RemovesFromStoreAndProjections(t *testing.T) {
 
 func TestSave_StateSecondWriteSupersedesPrior(t *testing.T) {
 	store := temporalstore.NewMemoryStore()
-	mem, _ := New(WithTemporalStore(store))
+	mem, _ := New(withTemporalStore(store))
 	scope := Scope{RuntimeID: "rt", UserID: "u1"}
 
 	res1, err := mem.Save(context.Background(), scope, SaveRequest{
@@ -181,7 +181,7 @@ func TestSave_StateSecondWriteSupersedesPrior(t *testing.T) {
 
 func TestSave_StateSecondWriteIdenticalContentIsNoop(t *testing.T) {
 	store := temporalstore.NewMemoryStore()
-	mem, _ := New(WithTemporalStore(store))
+	mem, _ := New(withTemporalStore(store))
 	scope := Scope{RuntimeID: "rt", UserID: "u1"}
 
 	first, err := mem.Save(context.Background(), scope, SaveRequest{
@@ -217,7 +217,7 @@ func TestSave_StateSecondWriteIdenticalContentIsNoop(t *testing.T) {
 
 func TestSave_EventIsAlwaysAppendOnly(t *testing.T) {
 	store := temporalstore.NewMemoryStore()
-	mem, _ := New(WithTemporalStore(store))
+	mem, _ := New(withTemporalStore(store))
 	scope := Scope{RuntimeID: "rt"}
 
 	for i := 0; i < 2; i++ {
@@ -252,7 +252,7 @@ func TestSave_AliasResolverFoldsMentions(t *testing.T) {
 			scope: {"Bob": "robert"},
 		}),
 	})
-	mem, _ := New(WithTemporalStore(store), WithCompiler(cp))
+	mem, _ := New(withTemporalStore(store), withCompiler(cp))
 
 	_, err := mem.Save(context.Background(), scope, SaveRequest{
 		Facts: []TemporalFact{{
@@ -281,7 +281,7 @@ func TestSave_TimeResolverConsumesHint(t *testing.T) {
 	cp := compiler.New(compiler.Stages{
 		Clock: func() time.Time { return now },
 	})
-	mem, _ := New(WithTemporalStore(store), WithCompiler(cp))
+	mem, _ := New(withTemporalStore(store), withCompiler(cp))
 
 	_, err := mem.Save(context.Background(), scope, SaveRequest{
 		Facts: []TemporalFact{{
@@ -311,7 +311,7 @@ func TestSave_TimeResolverConsumesHint(t *testing.T) {
 func TestSave_ProjectionFailureAfterSupersedeRestoresPriorFact(t *testing.T) {
 	store := temporalstore.NewMemoryStore()
 	proj := &failOnProjectN{failOn: 2}
-	mem, err := New(WithTemporalStore(store), WithExtraProjection(proj))
+	mem, err := New(withTemporalStore(store), withExtraProjection(proj))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -356,7 +356,7 @@ func TestSave_ProjectionFailureAfterSupersedeRestoresPriorFact(t *testing.T) {
 
 func TestSave_CrossAgentSameMergeKeyDoesNotSupersedeOtherAgentFact(t *testing.T) {
 	store := temporalstore.NewMemoryStore()
-	mem, err := New(WithTemporalStore(store))
+	mem, err := New(withTemporalStore(store))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -399,7 +399,7 @@ func TestSaveRequest_ExposesTextForLLMExtraction(t *testing.T) {
 func TestForget_RequiredProjectionFailurePreservesCanonicalFact(t *testing.T) {
 	idx := &deleteFailIndex{Index: retrievalmem.New()}
 	store := temporalstore.NewMemoryStore()
-	mem, err := New(WithTemporalStore(store), WithRetrievalIndex(idx))
+	mem, err := New(withTemporalStore(store), WithRetrievalIndex(idx))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -604,7 +604,7 @@ func TestRecall_AgentIDSoftIsolation(t *testing.T) {
 
 func TestRecall_MaterializeEnforcesAgentIDSoftIsolationForAllSources(t *testing.T) {
 	src := &staticCandidateSource{name: "retrieval"}
-	mem, _ := New(WithSources(src))
+	mem, _ := New(withSources(src))
 	agentA := Scope{RuntimeID: "rt", UserID: "u1", AgentID: "agent-a"}
 	agentB := Scope{RuntimeID: "rt", UserID: "u1", AgentID: "agent-b"}
 
@@ -626,7 +626,7 @@ func TestRecall_MaterializeEnforcesAgentIDSoftIsolationForAllSources(t *testing.
 }
 
 func TestRecall_AllSourcesFailReturnsError(t *testing.T) {
-	mem, _ := New(WithSources(errorSource{name: "retrieval", err: errors.New("retrieval unavailable")}))
+	mem, _ := New(withSources(errorSource{name: "retrieval", err: errors.New("retrieval unavailable")}))
 	hits, err := mem.Recall(context.Background(), Scope{RuntimeID: "rt"}, Query{Text: "anything"})
 	if err == nil {
 		t.Fatalf("expected Recall to return an error when every selected source fails, hits=%+v", hits)
@@ -682,7 +682,7 @@ func TestWithLLMExtractor_WiresExtractorIntoSavePath(t *testing.T) {
 	client := &scriptedLLM{Response: `{"facts":[{"kind":"preference","subject":"alice","predicate":"city","content":"Paris"}]}`}
 
 	mem, err := New(
-		WithTemporalStore(store),
+		withTemporalStore(store),
 		WithLLMExtractor(
 			client,
 			WithLLMExtractorTemperature(0.2),
@@ -753,12 +753,12 @@ func TestWithLLMExtractor_WiresExtractorIntoSavePath(t *testing.T) {
 	}
 }
 
-func TestWithLLMExtractor_IgnoredWhenWithCompilerProvided(t *testing.T) {
+func TestWithLLMExtractor_IgnoredWhenCompilerProvided(t *testing.T) {
 	client := &scriptedLLM{}
 	customCompiler := compiler.Default()
 
 	mem, err := New(
-		WithCompiler(customCompiler),
+		withCompiler(customCompiler),
 		WithLLMExtractor(client),
 	)
 	if err != nil {
@@ -776,7 +776,7 @@ func TestWithLLMExtractor_IgnoredWhenWithCompilerProvided(t *testing.T) {
 		t.Fatalf("save: %v", err)
 	}
 	if len(client.Options) != 0 {
-		t.Errorf("LLM extractor must be ignored when WithCompiler is supplied, calls=%d", len(client.Options))
+		t.Errorf("LLM extractor must be ignored when a compiler is supplied, calls=%d", len(client.Options))
 	}
 }
 

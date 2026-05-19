@@ -85,8 +85,8 @@ func New(opts ...Option) (Memory, error) {
 		if cfg.llmExtractor != nil {
 			ex := compiler.NewLLMExtractor(cfg.llmExtractor.client)
 			for _, opt := range cfg.llmExtractor.tune {
-				if opt != nil {
-					opt(ex)
+				if opt.apply != nil {
+					opt.apply(ex)
 				}
 			}
 			stages.Extractor = ex
@@ -789,9 +789,9 @@ func (m *memory) RepairStale(ctx context.Context, scope Scope, factIDs []string)
 }
 
 // GetEvidence implements EvidenceLookup. It prefers the secondary
-// store wired through WithEvidenceStore; without one it falls back
-// to the embedded TemporalFact.EvidenceRefs so callers always get
-// a consistent view regardless of deployment topology.
+// store when one is configured internally; without one it falls back
+// to the embedded TemporalFact.EvidenceRefs so callers always get a
+// consistent view regardless of deployment topology.
 //
 // Validation rules match Save/Recall/Forget: an empty fact id and
 // missing scope.RuntimeID are Validation; a missing fact is not an
