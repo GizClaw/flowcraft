@@ -14,10 +14,16 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/planner"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/projection"
 	entityproj "github.com/GizClaw/flowcraft/sdk/recall/internal/projection/entity"
+	profileproj "github.com/GizClaw/flowcraft/sdk/recall/internal/projection/profile"
+	relationproj "github.com/GizClaw/flowcraft/sdk/recall/internal/projection/relation"
 	retrievalproj "github.com/GizClaw/flowcraft/sdk/recall/internal/projection/retrieval"
+	timelineproj "github.com/GizClaw/flowcraft/sdk/recall/internal/projection/timeline"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/source"
 	entitysource "github.com/GizClaw/flowcraft/sdk/recall/internal/source/entity"
+	profilesource "github.com/GizClaw/flowcraft/sdk/recall/internal/source/profile"
+	relationsource "github.com/GizClaw/flowcraft/sdk/recall/internal/source/relation"
 	retrievalsource "github.com/GizClaw/flowcraft/sdk/recall/internal/source/retrieval"
+	timelinesource "github.com/GizClaw/flowcraft/sdk/recall/internal/source/timeline"
 	evidencestore "github.com/GizClaw/flowcraft/sdk/recall/internal/store/evidence"
 	temporalstore "github.com/GizClaw/flowcraft/sdk/recall/internal/store/temporal"
 	"github.com/GizClaw/flowcraft/sdk/retrieval"
@@ -94,7 +100,13 @@ func New(opts ...Option) (Memory, error) {
 	}
 
 	entityProj := entityproj.New()
-	projections := []projection.Projection{retrievalProj, entityProj}
+	timelineProj := timelineproj.New()
+	relationProj := relationproj.New()
+	profileProj := profileproj.New()
+	projections := []projection.Projection{
+		retrievalProj, entityProj,
+		timelineProj, relationProj, profileProj,
+	}
 	projections = append(projections, cfg.extraProjections...)
 
 	// Default read-path wiring uses the same canonical backends that
@@ -109,6 +121,9 @@ func New(opts ...Option) (Memory, error) {
 		srcs = []source.CandidateSource{
 			retrievalsource.New(cfg.retrievalIndex),
 			entitysource.New(entityProj),
+			relationsource.New(relationProj),
+			profilesource.New(profileProj),
+			timelinesource.New(timelineProj),
 		}
 	}
 	fuser := cfg.fuser
@@ -122,8 +137,11 @@ func New(opts ...Option) (Memory, error) {
 	fusionOpts := cfg.fusionOpts
 	if fusionOpts.Weights == nil {
 		fusionOpts.Weights = map[string]float64{
-			planner.SourceRetrieval: fusion.DefaultRetrievalWeight,
-			planner.SourceEntity:    fusion.DefaultEntityWeight,
+			planner.SourceRetrieval: planner.WeightRetrieval,
+			planner.SourceEntity:    planner.WeightEntity,
+			planner.SourceRelation:  planner.WeightRelation,
+			planner.SourceProfile:   planner.WeightProfile,
+			planner.SourceTimeline:  planner.WeightTimeline,
 		}
 	}
 
@@ -419,10 +437,15 @@ func (m *memory) runRecall(ctx context.Context, scope Scope, query Query, withTr
 
 	overall := time.Now()
 	plan, err := m.planner.Plan(ctx, planner.Input{
-		Scope:    scope,
-		Text:     query.Text,
-		Entities: query.Entities,
-		Limit:    query.Limit,
+		Scope:     scope,
+		Text:      query.Text,
+		Entities:  query.Entities,
+		Limit:     query.Limit,
+		Subject:   query.Subject,
+		Predicate: query.Predicate,
+		Object:    query.Object,
+		Kinds:     query.Kinds,
+		TimeRange: query.TimeRange,
 	})
 	if err != nil {
 		return nil, trace, fmt.Errorf("recall.Recall: planner: %w", err)

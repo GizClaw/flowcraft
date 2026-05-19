@@ -2,6 +2,7 @@ package recall
 
 import (
 	"errors"
+	"time"
 
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/model"
 )
@@ -65,13 +66,26 @@ type SaveResult struct {
 	FactIDs []string
 }
 
-// Query is the v2 recall input shape. The fact-centric read path
-// (planner / sources / fusion / materialize) ships in PR-3; the
-// fields here are stable so callers can build queries today.
+// TimeRange bounds timeline recall. Aliases model.TimeRange.
+type TimeRange = model.TimeRange
+
+// Query is the v2 recall input shape. Structured hints activate
+// optional sources (timeline / relation / profile) via the planner;
+// omitting them preserves PR-3 retrieval+entity behaviour.
 type Query struct {
-	Text     string
-	Entities []string
-	Limit    int
+	Text      string
+	Entities  []string
+	Limit     int
+	Subject   string
+	Predicate string
+	Object    string
+	Kinds     []FactKind
+	TimeRange TimeRange
+}
+
+// TimeRangeFrom is a convenience for building a half-open range.
+func TimeRangeFrom(from, to time.Time) TimeRange {
+	return TimeRange{From: from, To: to}
 }
 
 // Hit is a materialized recall result. Score semantics are owned by

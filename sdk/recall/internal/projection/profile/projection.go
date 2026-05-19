@@ -1,0 +1,195 @@
+// Package profile implements the optional active-slot profile
+// projection for state, preference, and relation facts (docs §8.3).
+package profile
+
+import (
+	"context"
+	"sort"
+	"sync"
+	"time"
+
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/model"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/projection"
+)
+
+// Projection is an in-memory active-slot index keyed by subject.
+type Projection struct {
+	mu     sync.RWMutex
+	scopes map[scopeKey]*shard
+}
+
+type scopeKey struct {
+	runtimeID string
+	userID    string
+}
+
+type shard struct {
+	// bySubject maps subject -> slotKey -> factID
+	bySubject map[string]map[string]string
+	reverse   map[string]string // factID -> subject
+	slotOf    map[string]string // factID -> slotKey
+}
+
+// New returns an empty profile projection.
+func New() *Projection {
+	return &Projection{scopes: make(map[scopeKey]*shard)}
+}
+
+func (p *Projection) Name() string { return "profile" }
+
+func (p *Projection) Consistency() projection.Consistency { return projection.Optional }
+
+// Project upserts active state/preference/relation facts.
+func (p *Projection) Project(_ context.Context, facts []model.TemporalFact) error {
+	now := time.Now()
+	if len(facts) == 0 {
+		return nil
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for _, f := range facts {
+		if f.ID == "" {
+			continue
+		}
+		if !isProfileKind(f.Kind) {
+			continue
+		}
+		sh := p.shardLocked(f.Scope)
+		removeFactLocked(sh, f.ID)
+		if !projection.IsActive(f, now) {
+			continue
+		}
+		subject := f.Subject
+		if subject == "" {
+			continue
+		}
+		slot := slotKey(f)
+		if slot == "" {
+			continue
+		}
+		m, ok := sh.bySubject[subject]
+		if !ok {
+			m = make(map[string]string)
+			sh.bySubject[subject] = m
+		}
+		if prev, ok := m[slot]; ok && prev != f.ID {
+			delete(sh.reverse, prev)
+			delete(sh.slotOf, prev)
+		}
+		m[slot] = f.ID
+		sh.reverse[f.ID] = subject
+		sh.slotOf[f.ID] = slot
+	}
+	return nil
+}
+
+func (p *Projection) Forget(_ context.Context, scope model.Scope, factIDs []string) error {
+	if len(factIDs) == 0 {
+		return nil
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	sh, ok := p.scopes[keyOf(scope)]
+	if !ok {
+		return nil
+	}
+	for _, id := range factIDs {
+		removeFactLocked(sh, id)
+	}
+	return nil
+}
+
+// Rebuild exact-replaces the scope shard.
+func (p *Projection) Rebuild(ctx context.Context, scope model.Scope, facts []model.TemporalFact) error {
+	p.mu.Lock()
+	delete(p.scopes, keyOf(scope))
+	p.mu.Unlock()
+	return p.Project(ctx, facts)
+}
+
+// Lookup returns all active fact ids for the given subject.
+func (p *Projection) Lookup(_ context.Context, scope model.Scope, subject string) []string {
+	if subject == "" {
+		return nil
+	}
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	sh, ok := p.scopes[keyOf(scope)]
+	if !ok {
+		return nil
+	}
+	slots, ok := sh.bySubject[subject]
+	if !ok {
+		return nil
+	}
+	out := make([]string, 0, len(slots))
+	for _, id := range slots {
+		out = append(out, id)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func (p *Projection) shardLocked(scope model.Scope) *shard {
+	k := keyOf(scope)
+	sh, ok := p.scopes[k]
+	if !ok {
+		sh = &shard{
+			bySubject: make(map[string]map[string]string),
+			reverse:   make(map[string]string),
+			slotOf:    make(map[string]string),
+		}
+		p.scopes[k] = sh
+	}
+	return sh
+}
+
+func removeFactLocked(sh *shard, factID string) {
+	subject, ok := sh.reverse[factID]
+	if !ok {
+		return
+	}
+	slot := sh.slotOf[factID]
+	if m, ok := sh.bySubject[subject]; ok {
+		if m[slot] == factID {
+			delete(m, slot)
+			if len(m) == 0 {
+				delete(sh.bySubject, subject)
+			}
+		}
+	}
+	delete(sh.reverse, factID)
+	delete(sh.slotOf, factID)
+}
+
+func keyOf(s model.Scope) scopeKey {
+	return scopeKey{runtimeID: s.RuntimeID, userID: s.UserID}
+}
+
+func isProfileKind(k model.FactKind) bool {
+	switch k {
+	case model.KindState, model.KindPreference, model.KindRelation:
+		return true
+	}
+	return false
+}
+
+// slotKey encodes the active-slot identity for a profile fact.
+// AgentID is part of the slot so private agent facts do not overwrite
+// each other; empty AgentID is the shared slot namespace.
+func slotKey(f model.TemporalFact) string {
+	if f.Subject == "" {
+		return ""
+	}
+	agent := f.Scope.AgentID
+	switch f.Kind {
+	case model.KindState, model.KindPreference:
+		if f.Predicate == "" {
+			return f.Subject + "\x00" + agent
+		}
+		return f.Subject + "\x00" + f.Predicate + "\x00" + agent
+	case model.KindRelation:
+		return f.Subject + "\x00" + f.Predicate + "\x00" + f.Object + "\x00" + agent
+	}
+	return ""
+}

@@ -2,15 +2,32 @@ package model
 
 import "time"
 
+// TimeRange bounds timeline queries. Zero value means "no time
+// filter" — both From and To unset. When only one bound is set the
+// open end is unbounded on that side.
+type TimeRange struct {
+	From time.Time
+	To   time.Time
+}
+
+// IsZero reports whether no time bounds were supplied.
+func (tr TimeRange) IsZero() bool {
+	return tr.From.IsZero() && tr.To.IsZero()
+}
+
 // QueryIntent is the structured form of a caller Query after the
 // planner has interpreted it. PR-3 keeps this rule-based; an LLM
 // intent parser is opt-in in later phases.
 type QueryIntent struct {
-	Text     string
-	Entities []string
-	Kinds    []FactKind
-	Scope    Scope
-	Limit    int
+	Text      string
+	Entities  []string
+	Subject   string
+	Predicate string
+	Object    string
+	Kinds     []FactKind
+	TimeRange TimeRange
+	Scope     Scope
+	Limit     int
 }
 
 // QueryPlan describes how the read pipeline will visit candidate

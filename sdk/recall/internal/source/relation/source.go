@@ -1,0 +1,66 @@
+// Package relation implements the relation CandidateSource.
+package relation
+
+import (
+	"context"
+	"time"
+
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/model"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/planner"
+)
+
+// Lookup is the read contract from the relation projection.
+type Lookup interface {
+	Lookup(ctx context.Context, scope model.Scope, subject, predicate, object string) []string
+}
+
+// Source surfaces fact ids matching typed relation dimensions.
+type Source struct {
+	lookup    Lookup
+	BaseScore float64
+}
+
+// New constructs a Source.
+func New(lookup Lookup) *Source {
+	return &Source{lookup: lookup, BaseScore: 1.0}
+}
+
+func (s *Source) Name() string { return planner.SourceRelation }
+
+func (s *Source) Query(ctx context.Context, plan model.QueryPlan) model.SourceResult {
+	intent := plan.Intent
+	if !planner.ActivatesRelation(intent) {
+		return model.SourceResult{Source: s.Name()}
+	}
+	budget := plan.SourceBudgets[s.Name()]
+	if budget <= 0 {
+		return model.SourceResult{Source: s.Name()}
+	}
+
+	started := time.Now()
+	ids := s.lookup.Lookup(ctx, intent.Scope, intent.Subject, intent.Predicate, intent.Object)
+	latency := time.Since(started)
+
+	truncated := false
+	if len(ids) > budget {
+		ids = ids[:budget]
+		truncated = true
+	}
+
+	candidates := make([]model.Candidate, 0, len(ids))
+	for i, id := range ids {
+		candidates = append(candidates, model.Candidate{
+			FactID: id,
+			Scope:  intent.Scope,
+			Source: s.Name(),
+			Rank:   i + 1,
+			Score:  s.BaseScore,
+		})
+	}
+	return model.SourceResult{
+		Source:     s.Name(),
+		Candidates: candidates,
+		Truncated:  truncated,
+		Latency:    latency,
+	}
+}
