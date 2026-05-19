@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/GizClaw/flowcraft/sdk/recall"
+	"github.com/GizClaw/flowcraft/sdk/recall_v1"
 	"github.com/GizClaw/flowcraft/sdk/retrieval"
 	"github.com/GizClaw/flowcraft/sdk/retrieval/memory"
 )

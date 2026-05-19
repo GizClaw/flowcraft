@@ -3,7 +3,7 @@ package recall
 import (
 	"context"
 
-	recallpipe "github.com/GizClaw/flowcraft/sdk/recall/pipeline"
+	recallpipe "github.com/GizClaw/flowcraft/sdk/recall_v1/pipeline"
 )
 
 // internalEntityLinkResolver bridges an [EntityStore] (Scope-keyed)

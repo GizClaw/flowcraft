@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
-	"github.com/GizClaw/flowcraft/sdk/recall"
+	"github.com/GizClaw/flowcraft/sdk/recall_v1"
 
 	_ "modernc.org/sqlite"
 )

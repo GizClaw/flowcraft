@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/GizClaw/flowcraft/sdk/recall"
+	"github.com/GizClaw/flowcraft/sdk/recall_v1"
 	"github.com/GizClaw/flowcraft/sdk/retrieval/memory"
 )
 

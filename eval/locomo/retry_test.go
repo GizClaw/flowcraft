@@ -10,7 +10,7 @@ import (
 	"github.com/GizClaw/flowcraft/eval/locomo"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/llm"
-	"github.com/GizClaw/flowcraft/sdk/recall"
+	"github.com/GizClaw/flowcraft/sdk/recall_v1"
 )
 
 // retryRunner is a minimal locomo.Runner that fails Save calls a configurable

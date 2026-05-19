@@ -17,7 +17,7 @@ import (
 	"github.com/GizClaw/flowcraft/eval/locomo/runners/flowcraft"
 	"github.com/GizClaw/flowcraft/eval/metrics"
 	"github.com/GizClaw/flowcraft/sdk/llm"
-	"github.com/GizClaw/flowcraft/sdk/recall"
+	"github.com/GizClaw/flowcraft/sdk/recall_v1"
 
 	_ "github.com/GizClaw/flowcraft/sdkx/embedding/azure"
 	_ "github.com/GizClaw/flowcraft/sdkx/embedding/qwen"
