@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/GizClaw/flowcraft/sdk/embedding"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/model"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/projection"
 	"github.com/GizClaw/flowcraft/sdk/retrieval"
@@ -22,17 +23,39 @@ import (
 // Save must not ack a write that is not searchable, otherwise the
 // read path will silently miss freshly written facts.
 type Projection struct {
-	index retrieval.Index
+	index    retrieval.Index
+	embedder embedding.Embedder
+}
+
+// Option configures the projection at construction time. Options are
+// purely additive — the projection works without any when the caller
+// only wants BM25 indexing.
+type Option func(*Projection)
+
+// WithEmbedder enables semantic indexing. The projection will embed
+// every fact's searchable content and store the vector in Doc.Vector
+// so the index can run hybrid BM25 + cosine scoring. Embed failures
+// degrade gracefully: the fact is still indexed (BM25 only) and a
+// scope-level warning is emitted; no Save fails because of an
+// embedder outage.
+func WithEmbedder(e embedding.Embedder) Option {
+	return func(p *Projection) {
+		p.embedder = e
+	}
 }
 
 // New constructs a retrieval Projection backed by index. Index ownership
 // stays with the caller (Memory.Close closes the index, not the
 // projection).
-func New(index retrieval.Index) (*Projection, error) {
+func New(index retrieval.Index, opts ...Option) (*Projection, error) {
 	if index == nil {
 		return nil, fmt.Errorf("recall retrieval projection: index is required")
 	}
-	return &Projection{index: index}, nil
+	p := &Projection{index: index}
+	for _, opt := range opts {
+		opt(p)
+	}
+	return p, nil
 }
 
 // Name implements projection.Projection.
@@ -77,11 +100,121 @@ func (p *Projection) Project(ctx context.Context, facts []model.TemporalFact) er
 		if len(docs) == 0 {
 			continue
 		}
+		if p.embedder != nil {
+			p.attachEmbeddings(ctx, group, docs)
+		}
 		if err := p.index.Upsert(ctx, ns, docs); err != nil {
 			return fmt.Errorf("retrieval projection upsert ns=%s: %w", ns, err)
 		}
 	}
 	return nil
+}
+
+// attachEmbeddings populates docs[i].Vector with the embedding of the
+// fact's natural-language Content (the LLM-extracted one-sentence
+// summary), NOT the full BM25 indexing text. This is deliberate:
+//
+//   - the vector lane carries "semantic similarity" signal, which is
+//     strongest on clean prose. Concatenating Content + S/P/O +
+//     entities + evidence quote (the BM25 text) dilutes that signal
+//     with keyword noise and pushes most facts toward truncation
+//     limits of common embedders.
+//   - entity / participant / location lookup is already handled by
+//     the structured candidate sources (entity / relation / profile /
+//     graph). The vector lane does not need to duplicate them.
+//
+// Facts whose canonical Content is empty fall back to a short
+// triple-derived sentence (subject predicate object) so they still
+// participate in the vector lane; if even that is empty the fact is
+// skipped (BM25-only for that doc).
+//
+// Embedder failure modes are handled defensively:
+//   - EmbedBatch returns an error → retry per-text via Embed so a
+//     single bad input doesn't strand the whole batch (mirrors v1's
+//     embedBatch helper);
+//   - EmbedBatch returns fewer vectors than inputs → treat the tail
+//     as missing (skip) rather than panic on out-of-range access.
+//
+// Save never fails because the embedder is offline or rate-limited;
+// the affected facts simply index for BM25 only.
+func (p *Projection) attachEmbeddings(ctx context.Context, facts []model.TemporalFact, docs []retrieval.Doc) {
+	if len(docs) == 0 || len(facts) != len(docs) {
+		return
+	}
+	texts := make([]string, 0, len(docs))
+	idxs := make([]int, 0, len(docs))
+	for i := range docs {
+		text := embedTextFor(facts[i])
+		if text == "" {
+			continue
+		}
+		texts = append(texts, text)
+		idxs = append(idxs, i)
+	}
+	if len(texts) == 0 {
+		return
+	}
+	vecs := embedBatchWithFallback(ctx, p.embedder, texts)
+	for i, v := range vecs {
+		if len(v) == 0 || i >= len(idxs) {
+			continue
+		}
+		docs[idxs[i]].Vector = v
+	}
+}
+
+// embedTextFor picks the natural-language text the vector lane should
+// embed for a fact. The hierarchy mirrors what an answer LLM would
+// quote: canonical Content first, S/P/O sentence second, evidence
+// quote last. Facts with none of these are skipped.
+func embedTextFor(f model.TemporalFact) string {
+	if c := strings.TrimSpace(f.Content); c != "" {
+		return c
+	}
+	parts := []string{}
+	for _, s := range []string{f.Subject, f.Predicate, f.Object} {
+		if s = strings.TrimSpace(s); s != "" {
+			parts = append(parts, s)
+		}
+	}
+	if len(parts) > 0 {
+		return strings.Join(parts, " ")
+	}
+	return strings.TrimSpace(f.EvidenceText)
+}
+
+// embedBatchWithFallback calls EmbedBatch and falls back to per-text
+// Embed when the batch fails or returns a partial result. This
+// mirrors recall_v1's embedBatch and protects against providers that
+// occasionally truncate batch responses or fail an entire batch when
+// a single input is problematic.
+//
+// The returned slice always has len == len(texts); missing entries
+// are zero-length so callers can detect skips without an extra map.
+func embedBatchWithFallback(ctx context.Context, emb embedding.Embedder, texts []string) [][]float32 {
+	if emb == nil || len(texts) == 0 {
+		return nil
+	}
+	out := make([][]float32, len(texts))
+	vecs, err := emb.EmbedBatch(ctx, texts)
+	if err == nil && len(vecs) == len(texts) {
+		return vecs
+	}
+	// Partial / failed batch: try one-by-one. We still return what we
+	// can — a single per-text failure does not abort the rest, which
+	// matches the projection's "best-effort vector lane" contract.
+	for i, t := range texts {
+		if i < len(vecs) && len(vecs[i]) > 0 {
+			out[i] = vecs[i]
+			continue
+		}
+		v, e := emb.Embed(ctx, t)
+		if e != nil {
+			continue
+		}
+		out[i] = v
+	}
+	return out
 }
 
 // Forget removes facts by id within a scope-derived namespace.

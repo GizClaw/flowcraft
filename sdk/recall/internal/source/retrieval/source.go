@@ -8,24 +8,47 @@ package retrieval
 
 import (
 	"context"
+	"strings"
 	"time"
 
+	"github.com/GizClaw/flowcraft/sdk/embedding"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/model"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/planner"
 	retrievalproj "github.com/GizClaw/flowcraft/sdk/recall/internal/projection/retrieval"
 	"github.com/GizClaw/flowcraft/sdk/retrieval"
 )
 
-// Source is the BM25-only retrieval candidate source. PR-3 does not
-// wire embeddings; hybrid mode lands in later phases.
+// Source is the retrieval candidate source. By default it runs BM25
+// only; when an Embedder is supplied via WithEmbedder it embeds the
+// query and emits a hybrid SearchRequest so the index can fuse cosine
+// similarity with BM25.
 type Source struct {
-	index retrieval.Index
+	index    retrieval.Index
+	embedder embedding.Embedder
+}
+
+// Option configures the source at construction time. Options are
+// additive — Source works without any (BM25-only).
+type Option func(*Source)
+
+// WithEmbedder enables hybrid search by embedding the query text. The
+// embedder must be the same one used by the retrieval projection on
+// the write path; mixing dimensions makes the cosine lane a no-op
+// because the memory index requires len(QueryVector) == len(Doc.Vector).
+func WithEmbedder(e embedding.Embedder) Option {
+	return func(s *Source) {
+		s.embedder = e
+	}
 }
 
 // New constructs a Source. index ownership stays with the caller
 // (the Memory facade); the source never closes it.
-func New(index retrieval.Index) *Source {
-	return &Source{index: index}
+func New(index retrieval.Index, opts ...Option) *Source {
+	s := &Source{index: index}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
 }
 
 // Name implements source.CandidateSource.
@@ -52,6 +75,11 @@ func (s *Source) Query(ctx context.Context, plan model.QueryPlan) model.SourceRe
 		QueryText: plan.Intent.Text,
 		TopK:      budget,
 		Filter:    buildFilter(scope),
+	}
+	if s.embedder != nil {
+		if vec := s.embedQuery(ctx, plan.Intent.Text); len(vec) > 0 {
+			req.QueryVector = vec
+		}
 	}
 
 	started := time.Now()
@@ -98,6 +126,21 @@ func (s *Source) Query(ctx context.Context, plan model.QueryPlan) model.SourceRe
 		Truncated:  len(resp.Hits) >= budget,
 		Latency:    latency,
 	}
+}
+
+// embedQuery embeds the query text. Embedder errors degrade to BM25
+// (the cosine lane simply contributes nothing); we never abort recall
+// because the embedder is offline.
+func (s *Source) embedQuery(ctx context.Context, text string) []float32 {
+	t := strings.TrimSpace(text)
+	if t == "" {
+		return nil
+	}
+	vec, err := s.embedder.Embed(ctx, t)
+	if err != nil {
+		return nil
+	}
+	return vec
 }
 
 // buildFilter assembles the scope-isolation filter. RuntimeID and

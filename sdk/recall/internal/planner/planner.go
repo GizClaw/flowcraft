@@ -22,13 +22,28 @@ const (
 )
 
 // Default per-source RRF weights (docs §9.3 / PR-6).
+//
+// The hierarchy is calibrated against the diagnostics-aggregated
+// winners_by_source distribution: retrieval is the gold lane (it owns
+// almost all sole-source winners and provides the lexical anchor),
+// timeline is the second-strongest "rescue" lane (it is the only
+// source that can answer "when did X happen" queries when BM25 ranks
+// the date-bearing fact below the cap), graph and relation contribute
+// almost entirely as multi-source corroboration boosters, and entity
+// / profile are corroboration-only (they never solo-win because their
+// candidates are also surfaced by retrieval, but they reliably raise
+// the right fact under RRF when they agree). We keep retrieval at
+// 1.0, give timeline the highest non-retrieval weight because of its
+// rescue role, and pack the remaining structured sources in a narrow
+// 0.85 band so they all contribute meaningfully to corroboration
+// without any single one dominating.
 const (
 	WeightRetrieval = 1.0
+	WeightTimeline  = 0.9
 	WeightRelation  = 0.9
-	WeightProfile   = 0.9
-	WeightEntity    = 0.8
-	WeightTimeline  = 0.7
-	WeightGraph     = 0.75
+	WeightProfile   = 0.85
+	WeightGraph     = 0.85
+	WeightEntity    = 0.85
 )
 
 // DefaultLimit applies when a caller leaves Query.Limit == 0.

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/eval/locomo/runners"
+	"github.com/GizClaw/flowcraft/sdk/embedding"
 	"github.com/GizClaw/flowcraft/sdk/llm"
 	"github.com/GizClaw/flowcraft/sdk/model"
 	"github.com/GizClaw/flowcraft/sdk/recall"
@@ -24,6 +25,10 @@ import (
 type Options struct {
 	Name string
 	LLM  llm.LLM
+	// Embedder, when non-nil, enables hybrid (BM25 + cosine) retrieval
+	// on the recall memory: the retrieval projection embeds every
+	// indexed fact and the retrieval source embeds each query.
+	Embedder embedding.Embedder
 
 	IncludeAssistant bool
 	// OnFactsSaved is invoked after each successful Save with the scope and
@@ -66,6 +71,9 @@ func New(opts Options) (runners.Runner, error) {
 	}
 	if opts.LLM != nil {
 		memOpts = append(memOpts, recall.WithLLMExtractor(opts.LLM))
+	}
+	if opts.Embedder != nil {
+		memOpts = append(memOpts, recall.WithEmbedder(opts.Embedder))
 	}
 	mem, err := recall.New(memOpts...)
 	if err != nil {

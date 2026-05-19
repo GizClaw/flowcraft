@@ -187,17 +187,32 @@ Return JSON matching the supplied schema. Only emit facts that are
 clearly present in the snippet; never fabricate facts to fill the
 schema.
 
+Granularity: emit ONE atomic fact per item. If a snippet states
+multiple ideas joined by "and" / commas (e.g. "Alice owns a dog and
+lives in Paris"), split them into separate facts. A compound fact
+fragments retrieval signal — each idea then competes for ranking
+against unrelated facts and tends to lose. Smaller, focused facts
+score better and let the answer LLM cite the right one.
+
 For every fact you emit:
 - "kind" MUST be one of: event | state | preference | relation | plan | note.
 - "content" MUST be a single concise natural-language sentence that
-  states the fact in plain English so an answering LLM can cite it
+  states ONE fact in plain English so an answering LLM can cite it
   verbatim. Never leave content empty, even when subject/predicate/
-  object are also filled.
+  object are also filled. Do not pack multiple events / states /
+  preferences into the same content string.
 - Use "subject" / "predicate" / "object" for the structural triple
   whenever it applies. For preferences, the subject is the holder of
   the preference; the object is what they prefer.
 - "entities" lists every named person, place, organisation, product,
-  or concept mentioned in the fact (lowercased, no quotes).
+  or concept mentioned in the fact (lowercased, no quotes). Be
+  EXHAUSTIVE — include long-tail proper nouns the snippet introduces
+  (specific brands, product names / models, songs, books, movies,
+  restaurants, neighborhoods, landmarks, identifiers like phone
+  numbers / email addresses / urls). Long-tail entities are how
+  multi-hop questions reconnect distant facts: omitting them breaks
+  the entity-graph traversal even when content-level BM25 still
+  surfaces the source fact.
 - For event / state / plan facts, when the snippet states a time
   (absolute or relative), fill "valid_from_hint" with an ABSOLUTE
   date whenever you can resolve one. Conversation snippets often
@@ -221,7 +236,10 @@ For every fact you emit:
   same conventions. Leave both blank only when the snippet says
   nothing about timing.
 - When the input marks turns with ids, cite the supporting turn ids
-  in both "evidence_refs[].id" and "source_message_ids".
+  in both "evidence_refs[].id" and "source_message_ids". Each
+  supporting turn appears AT MOST ONCE in evidence_refs (do not
+  repeat the same turn under multiple variants — that bloats the
+  fact and dilutes downstream BM25 ranking).
 - "evidence_text" MUST quote a short span from the snippet that
   supports the fact (≤ 200 chars) AND retain the turn's "[…]"
   timestamp prefix when present, so downstream answer prompts can
@@ -372,11 +390,18 @@ func (e ExtractedFact) toTemporalFact() model.TemporalFact {
 	return f
 }
 
+// toEvidenceRefs converts the LLM-side evidence list into canonical
+// EvidenceRefs. Duplicate refs are collapsed: when the LLM cites the
+// same turn under multiple slight variations (same id but different
+// text quote, or same text quote across two ids), the duplicates
+// inflate the projection's BM25 document without adding signal. We
+// keep the first occurrence per (id || message_id || text) key.
 func (e ExtractedFact) toEvidenceRefs() []model.EvidenceRef {
 	if len(e.EvidenceRefs) == 0 {
 		return nil
 	}
 	out := make([]model.EvidenceRef, 0, len(e.EvidenceRefs))
+	seen := make(map[string]struct{}, len(e.EvidenceRefs))
 	for _, ref := range e.EvidenceRefs {
 		id := strings.TrimSpace(ref.ID)
 		messageID := strings.TrimSpace(ref.MessageID)
@@ -385,6 +410,11 @@ func (e ExtractedFact) toEvidenceRefs() []model.EvidenceRef {
 		if id == "" && messageID == "" && text == "" {
 			continue
 		}
+		key := evidenceRefDedupeKey(id, messageID, text)
+		if _, dup := seen[key]; dup {
+			continue
+		}
+		seen[key] = struct{}{}
 		out = append(out, model.EvidenceRef{
 			ID:        id,
 			MessageID: messageID,
@@ -394,6 +424,20 @@ func (e ExtractedFact) toEvidenceRefs() []model.EvidenceRef {
 		})
 	}
 	return out
+}
+
+// evidenceRefDedupeKey produces the canonical dedupe key for an
+// EvidenceRef. Prefer ID over MessageID over normalized text so two
+// refs that share an id but differ slightly on quoted text still
+// collapse to one canonical ref.
+func evidenceRefDedupeKey(id, messageID, text string) string {
+	if id != "" {
+		return "id:" + id
+	}
+	if messageID != "" {
+		return "msg:" + messageID
+	}
+	return "text:" + strings.ToLower(strings.Join(strings.Fields(text), " "))
 }
 
 func parseEvidenceTimestamp(raw string) time.Time {

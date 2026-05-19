@@ -10,6 +10,202 @@ import (
 	retrievalmem "github.com/GizClaw/flowcraft/sdk/retrieval/memory"
 )
 
+// stubEmbedder is a deterministic test embedder. It emits a fixed-size
+// vector where each dimension is the count of a sentinel character in
+// the input — enough to verify Project pipes Content through and that
+// EmbedBatch returns one vector per input.
+type stubEmbedder struct {
+	dim   int
+	calls int
+}
+
+func (s *stubEmbedder) Embed(_ context.Context, text string) ([]float32, error) {
+	s.calls++
+	vec := make([]float32, s.dim)
+	for i := 0; i < len(text) && i < s.dim; i++ {
+		vec[i] = float32(text[i])
+	}
+	return vec, nil
+}
+
+func (s *stubEmbedder) EmbedBatch(_ context.Context, texts []string) ([][]float32, error) {
+	s.calls++
+	out := make([][]float32, len(texts))
+	for i, t := range texts {
+		vec := make([]float32, s.dim)
+		for j := 0; j < len(t) && j < s.dim; j++ {
+			vec[j] = float32(t[j])
+		}
+		out[i] = vec
+	}
+	return out, nil
+}
+
+func TestProjection_WithEmbedder_PopulatesDocVector(t *testing.T) {
+	idx := retrievalmem.New()
+	emb := &stubEmbedder{dim: 8}
+	p, err := New(idx, WithEmbedder(emb))
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	scope := model.Scope{RuntimeID: "rt", UserID: "u1"}
+	now := time.Now()
+	f := model.TemporalFact{
+		ID:         "f1",
+		Scope:      scope,
+		Kind:       model.KindNote,
+		Content:    "Alice met Bob",
+		ObservedAt: now,
+	}
+	if err := p.Project(context.Background(), []model.TemporalFact{f}); err != nil {
+		t.Fatalf("project: %v", err)
+	}
+	got, ok, err := idx.Get(context.Background(), NamespaceFor(scope), "f1")
+	if err != nil || !ok {
+		t.Fatalf("get: ok=%v err=%v", ok, err)
+	}
+	if len(got.Vector) != emb.dim {
+		t.Fatalf("expected Vector len %d, got %d", emb.dim, len(got.Vector))
+	}
+	if emb.calls == 0 {
+		t.Fatal("expected embedder to be invoked")
+	}
+}
+
+// failEmbedder returns an error on every call; the projection MUST
+// degrade gracefully and still index the doc (BM25-only).
+type failEmbedder struct{}
+
+func (failEmbedder) Embed(context.Context, string) ([]float32, error) {
+	return nil, errStub{}
+}
+func (failEmbedder) EmbedBatch(context.Context, []string) ([][]float32, error) {
+	return nil, errStub{}
+}
+
+type errStub struct{}
+
+func (errStub) Error() string { return "stub embedder failure" }
+
+// partialBatchEmbedder fails the batch path but succeeds per-text.
+// Mirrors providers that occasionally drop batch requests under load
+// (rate limits, schema rejection on a single item) while still
+// serving per-text Embed.
+type partialBatchEmbedder struct{ dim int }
+
+func (p partialBatchEmbedder) Embed(_ context.Context, text string) ([]float32, error) {
+	vec := make([]float32, p.dim)
+	for i := 0; i < len(text) && i < p.dim; i++ {
+		vec[i] = float32(text[i])
+	}
+	return vec, nil
+}
+
+func (partialBatchEmbedder) EmbedBatch(context.Context, []string) ([][]float32, error) {
+	return nil, errStub{}
+}
+
+func TestProjection_WithEmbedder_FallsBackToPerTextOnBatchFailure(t *testing.T) {
+	idx := retrievalmem.New()
+	p, err := New(idx, WithEmbedder(partialBatchEmbedder{dim: 8}))
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	scope := model.Scope{RuntimeID: "rt", UserID: "u1"}
+	if err := p.Project(context.Background(), []model.TemporalFact{
+		{ID: "a", Scope: scope, Kind: model.KindNote, Content: "Alice met Bob"},
+		{ID: "b", Scope: scope, Kind: model.KindNote, Content: "Bob went to Paris"},
+	}); err != nil {
+		t.Fatalf("project: %v", err)
+	}
+	for _, id := range []string{"a", "b"} {
+		got, ok, err := idx.Get(context.Background(), NamespaceFor(scope), id)
+		if err != nil || !ok {
+			t.Fatalf("get %s: ok=%v err=%v", id, ok, err)
+		}
+		if len(got.Vector) != 8 {
+			t.Errorf("expected Vector len 8 from per-text fallback, got %d on %s", len(got.Vector), id)
+		}
+	}
+}
+
+func TestProjection_WithEmbedder_UsesContentNotSearchableText(t *testing.T) {
+	// The vector lane must embed clean prose (f.Content), not the
+	// concatenated BM25 buildContent output. We assert this by
+	// configuring an embedder that records every input text and
+	// checking that the recorded text equals Content verbatim — if
+	// the projection had passed Doc.Content (= buildContent) we'd
+	// see entities/evidence concatenated in.
+	rec := &recordingEmbedder{dim: 4}
+	p, err := New(retrievalmem.New(), WithEmbedder(rec))
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	scope := model.Scope{RuntimeID: "rt", UserID: "u1"}
+	if err := p.Project(context.Background(), []model.TemporalFact{{
+		ID: "a", Scope: scope, Kind: model.KindState,
+		Content:      "Alice lives in Paris",
+		Subject:      "alice",
+		Predicate:    "city",
+		Object:       "paris",
+		Entities:     []string{"alice", "paris"},
+		EvidenceText: "I'm in Paris these days",
+	}}); err != nil {
+		t.Fatalf("project: %v", err)
+	}
+	if len(rec.texts) != 1 {
+		t.Fatalf("expected 1 embed input, got %d", len(rec.texts))
+	}
+	if rec.texts[0] != "Alice lives in Paris" {
+		t.Errorf("expected vector lane to embed clean Content, got %q", rec.texts[0])
+	}
+}
+
+type recordingEmbedder struct {
+	dim   int
+	texts []string
+}
+
+func (r *recordingEmbedder) Embed(_ context.Context, text string) ([]float32, error) {
+	r.texts = append(r.texts, text)
+	return make([]float32, r.dim), nil
+}
+
+func (r *recordingEmbedder) EmbedBatch(_ context.Context, texts []string) ([][]float32, error) {
+	r.texts = append(r.texts, texts...)
+	out := make([][]float32, len(texts))
+	for i := range out {
+		out[i] = make([]float32, r.dim)
+	}
+	return out, nil
+}
+
+func TestProjection_WithEmbedder_DegradesOnFailure(t *testing.T) {
+	idx := retrievalmem.New()
+	p, err := New(idx, WithEmbedder(failEmbedder{}))
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	scope := model.Scope{RuntimeID: "rt", UserID: "u1"}
+	f := model.TemporalFact{
+		ID:         "f1",
+		Scope:      scope,
+		Kind:       model.KindNote,
+		Content:    "Alice met Bob",
+		ObservedAt: time.Now(),
+	}
+	if err := p.Project(context.Background(), []model.TemporalFact{f}); err != nil {
+		t.Fatalf("project must not propagate embedder failure: %v", err)
+	}
+	got, ok, err := idx.Get(context.Background(), NamespaceFor(scope), "f1")
+	if err != nil || !ok {
+		t.Fatalf("get: ok=%v err=%v", ok, err)
+	}
+	if len(got.Vector) != 0 {
+		t.Fatalf("expected no Vector on embedder failure, got len %d", len(got.Vector))
+	}
+}
+
 func TestProjection_UpsertsReservedMetadata(t *testing.T) {
 	idx := retrievalmem.New()
 	p, err := New(idx)

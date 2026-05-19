@@ -1,6 +1,7 @@
 package recall
 
 import (
+	"github.com/GizClaw/flowcraft/sdk/embedding"
 	"github.com/GizClaw/flowcraft/sdk/llm"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/compiler"
 	"github.com/GizClaw/flowcraft/sdk/retrieval"
@@ -31,6 +32,21 @@ func WithRetrievalIndex(idx retrieval.Index) Option {
 		if idx != nil {
 			c.retrievalIndex = idx
 		}
+	}
+}
+
+// WithEmbedder enables hybrid lexical+semantic retrieval. When set, the
+// retrieval projection embeds every indexed fact's searchable content
+// into Doc.Vector and the retrieval source embeds each query into
+// SearchRequest.QueryVector, so the in-memory index (and any
+// embedder-aware backend) can score documents by cosine similarity
+// alongside BM25. Defaults to nil (BM25-only). The embedder is
+// optional throughout; if Embed/EmbedBatch fails for a fact the
+// projection falls back to BM25 indexing for that fact rather than
+// failing the entire Save.
+func WithEmbedder(e embedding.Embedder) Option {
+	return func(c *config) {
+		c.embedder = e
 	}
 }
 

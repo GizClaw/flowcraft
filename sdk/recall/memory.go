@@ -119,7 +119,11 @@ func New(opts ...Option) (Memory, error) {
 		cfg.resolver = compiler.NewResolver()
 	}
 
-	retrievalProj, err := retrievalproj.New(cfg.retrievalIndex)
+	var retrievalProjOpts []retrievalproj.Option
+	if cfg.embedder != nil {
+		retrievalProjOpts = append(retrievalProjOpts, retrievalproj.WithEmbedder(cfg.embedder))
+	}
+	retrievalProj, err := retrievalproj.New(cfg.retrievalIndex, retrievalProjOpts...)
 	if err != nil {
 		return nil, fmt.Errorf("recall.New: %w", err)
 	}
@@ -160,8 +164,12 @@ func New(opts ...Option) (Memory, error) {
 	}
 	srcs := append([]source.CandidateSource(nil), cfg.sources...)
 	if len(srcs) == 0 {
+		var retrievalSrcOpts []retrievalsource.Option
+		if cfg.embedder != nil {
+			retrievalSrcOpts = append(retrievalSrcOpts, retrievalsource.WithEmbedder(cfg.embedder))
+		}
 		srcs = []source.CandidateSource{
-			retrievalsource.New(cfg.retrievalIndex),
+			retrievalsource.New(cfg.retrievalIndex, retrievalSrcOpts...),
 			entitysource.New(entityProj),
 			relationsource.New(relationProj),
 			profilesource.New(profileProj),

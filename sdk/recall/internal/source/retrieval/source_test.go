@@ -11,6 +11,59 @@ import (
 	retrievalmem "github.com/GizClaw/flowcraft/sdk/retrieval/memory"
 )
 
+// stubEmbedder echoes the input length into a fixed-size vector so we
+// can confirm Source.embedQuery is wired through Embed.
+type stubEmbedder struct {
+	dim   int
+	calls int
+}
+
+func (s *stubEmbedder) Embed(_ context.Context, text string) ([]float32, error) {
+	s.calls++
+	vec := make([]float32, s.dim)
+	for i := 0; i < len(text) && i < s.dim; i++ {
+		vec[i] = float32(text[i])
+	}
+	return vec, nil
+}
+
+func (s *stubEmbedder) EmbedBatch(_ context.Context, texts []string) ([][]float32, error) {
+	out := make([][]float32, len(texts))
+	for i, t := range texts {
+		v, _ := s.Embed(nil, t)
+		out[i] = v
+	}
+	return out, nil
+}
+
+func TestSource_WithEmbedder_InvokesEmbedOnQuery(t *testing.T) {
+	idx := retrievalmem.New()
+	emb := &stubEmbedder{dim: 8}
+	proj, _ := retrievalproj.New(idx, retrievalproj.WithEmbedder(emb))
+	scope := model.Scope{RuntimeID: "rt", UserID: "u1"}
+	if err := proj.Project(context.Background(), []model.TemporalFact{
+		{ID: "a", Scope: scope, Kind: model.KindNote, Content: "hello world"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	src := New(idx, WithEmbedder(emb))
+	plan := model.QueryPlan{
+		Intent:        model.QueryIntent{Text: "hello", Scope: scope, Limit: 10},
+		SourceOrder:   []string{planner.SourceRetrieval},
+		SourceBudgets: map[string]int{planner.SourceRetrieval: 10},
+		TotalCap:      10,
+	}
+	callsBefore := emb.calls
+	res := src.Query(context.Background(), plan)
+	if res.Err != nil {
+		t.Fatalf("query: %v", res.Err)
+	}
+	if emb.calls <= callsBefore {
+		t.Fatalf("expected embedder.Embed to be called on query, calls=%d", emb.calls)
+	}
+}
+
 func TestSource_AgentIDSoftIsolationFilter(t *testing.T) {
 	idx := retrievalmem.New()
 	proj, _ := retrievalproj.New(idx)

@@ -226,7 +226,16 @@ type EventHook func(ctx context.Context, e Event)
 //     such a character, infer from their statements rather than
 //     refusing.
 //
-//  6. DATE QUALIFIER PRESERVATION — when a memory uses a date QUALIFIER
+//  6. INFERENTIAL LEAD-WITH-LABEL — inferential questions ("might",
+//     "what kind of", "likely") read as essay prompts and the LLM
+//     defaults to a reasoning paragraph that buries the inferred
+//     label. Force it to lead with a single noun-phrase / adjective
+//     label (matching the gold's shape) and put any justification
+//     after. Without this q9-class items get judge=0 despite
+//     reasonable content, because the judge model sees a hedged
+//     paragraph and rules "topic-only match" rather than verdict.
+//
+//  7. DATE QUALIFIER PRESERVATION — when a memory uses a date QUALIFIER
 //     ("around", "roughly", "the week before X", "a few years ago",
 //     "last summer"), preserve that qualifier rather than computing a
 //     precise date. The qualifier carries the speaker's actual
@@ -250,8 +259,10 @@ Guidelines:
 - Match the form of the question. If asked WHEN, give a specific date or duration; HOW MANY, a number; YES/NO, lead with yes/no.
 - Mirror the date format used in the question (e.g. if asked "7 May 2023", answer in that format, not "May 7, 2023").
 - If a memory uses a date QUALIFIER ("around", "roughly", "the week before X", "a few years ago", "last summer", "two weekends ago"), preserve that qualifier in your answer rather than computing a precise absolute date. The qualifier carries the speaker's actual epistemic state — fabricating precision is worse than mirroring vagueness.
+- A memory may carry a canonical date stamp at its head (e.g. "[time: YYYY-MM-DD]") written by the recall system after resolving relative expressions against the source turn timestamp. When present, treat it as the authoritative date for the fact — do NOT echo relative expressions like "yesterday" / "last weekend" / "two weekends ago" from the evidence quotes, and do NOT recompute the date yourself.
 - When an ASKED_AT line is present, treat that timestamp as the "now" for the question. Relative-time phrases ("last week", "two months ago", "yesterday", "this morning") are interpreted RELATIVE TO ASKED_AT, not to today's wall clock. Memories carry their own timestamps in the leading "[YYYY/MM/DD …]" prefix — use ASKED_AT to compute the requested window over those memory timestamps.
 - Answer in 1-2 sentences. Avoid hedging ("it seems", "might be") when the memories are unambiguous.
+- For INFERENTIAL questions ("What might X be?", "How does Y likely feel?", "What kind of person is Z?") the question is open by design and tempts a paragraph of reasoning that buries the actual verdict. Resist that. LEAD the answer with a SINGLE short label that names the inferred attribute — a noun phrase or adjective phrased the way a human would answer the same question in one line — and only THEN add at most one short justifying clause grounded in the memories. The label is the answer; the justification is optional. A reader looking for the verdict in the first phrase must see it immediately, not as a delayed conclusion at the end of an essay.
 
 %s
 

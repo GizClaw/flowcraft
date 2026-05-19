@@ -119,6 +119,37 @@ func TestLLMExtractor_ParsesJSONIntoTemporalFacts(t *testing.T) {
 	}
 }
 
+func TestLLMExtractor_DedupesEvidenceRefs(t *testing.T) {
+	client := &fakeLLM{
+		Responses: []string{`{"facts":[{"kind":"event","content":"x",
+			"evidence_refs":[
+				{"id":"D1:3","text":"Same turn quoted once."},
+				{"id":"D1:3","text":"Same turn quoted again with a different excerpt."},
+				{"id":"D1:4","text":"A different turn."},
+				{"id":"","text":"Same turn quoted again with a different excerpt."},
+				{"id":"D1:4","text":"A different turn."}
+			]}]}`},
+	}
+	ex := NewLLMExtractor(client)
+	out, err := ex.Extract(context.Background(), Input{
+		Scope: model.Scope{RuntimeID: "rt"},
+		Text:  "anything",
+	})
+	if err != nil {
+		t.Fatalf("extract: %v", err)
+	}
+	if len(out) != 1 {
+		t.Fatalf("want 1 fact, got %d", len(out))
+	}
+	refs := out[0].EvidenceRefs
+	if len(refs) != 3 {
+		t.Fatalf("evidence refs should dedupe to 3 (D1:3 + D1:4 + textual variant), got %d: %+v", len(refs), refs)
+	}
+	if refs[0].ID != "D1:3" || refs[1].ID != "D1:4" {
+		t.Errorf("dedupe must preserve first-occurrence order, got %+v", refs)
+	}
+}
+
 func TestLLMExtractor_HandlesFencedJSON(t *testing.T) {
 	client := &fakeLLM{
 		Responses: []string{"Sure, here is the result:\n```json\n{\"facts\":[{\"kind\":\"note\",\"content\":\"hello\"}]}\n```\n"},

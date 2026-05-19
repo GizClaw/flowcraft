@@ -60,6 +60,7 @@ func buildLocomoRunner(canonical string, v1 v1RunnerConfig, v2OnSaved func(runne
 		opts := flowcraftv2.Options{
 			Name:             "flowcraft-v2",
 			LLM:              v1.LLM,
+			Embedder:         v1.Embedder,
 			IncludeAssistant: true,
 			OnFactsSaved:     v2OnSaved,
 		}

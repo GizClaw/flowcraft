@@ -1,6 +1,7 @@
 package recall
 
 import (
+	"github.com/GizClaw/flowcraft/sdk/embedding"
 	"github.com/GizClaw/flowcraft/sdk/llm"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/compiler"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/evolution"
@@ -21,6 +22,7 @@ type config struct {
 	store          temporalstore.Store
 	evidenceStore  evidencestore.Store
 	retrievalIndex retrieval.Index
+	embedder       embedding.Embedder
 	compiler       compiler.Compiler
 	llmExtractor   *llmExtractorConfig
 	resolver       compiler.ConflictResolver
