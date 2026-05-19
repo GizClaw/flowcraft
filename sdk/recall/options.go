@@ -42,6 +42,10 @@ type config struct {
 	fuser        fusion.Fuser
 	materializer materialize.Materializer
 	fusionOpts   fusion.Options
+
+	// graphEnabled wires the optional EntityGraph projection and
+	// graph source (docs §17: default off).
+	graphEnabled bool
 }
 
 // WithTemporalStore overrides the canonical TemporalFactStore. Use
@@ -256,5 +260,13 @@ func WithMaterializer(m materialize.Materializer) Option {
 func WithFusionOptions(opts fusion.Options) Option {
 	return func(c *config) {
 		c.fusionOpts = opts
+	}
+}
+
+// WithGraphEnabled opts into the EntityGraph projection and graph
+// source. Graph expansion is off by default (docs §17).
+func WithGraphEnabled(enabled bool) Option {
+	return func(c *config) {
+		c.graphEnabled = enabled
 	}
 }

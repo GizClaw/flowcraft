@@ -81,6 +81,9 @@ type Query struct {
 	Object    string
 	Kinds     []FactKind
 	TimeRange TimeRange
+	// GraphHops bounds graph expansion when graph is enabled via
+	// WithGraphEnabled. Zero uses the graph projection default.
+	GraphHops int
 }
 
 // TimeRangeFrom is a convenience for building a half-open range.

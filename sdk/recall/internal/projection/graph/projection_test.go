@@ -1,0 +1,138 @@
+package graph
+
+import (
+	"context"
+	"testing"
+	"time"
+
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/model"
+)
+
+func scope() model.Scope { return model.Scope{RuntimeID: "rt", UserID: "u1"} }
+
+func TestGraph_TypedRelationEdgeTraverse(t *testing.T) {
+	p := New()
+	ctx := context.Background()
+	if err := p.Project(ctx, []model.TemporalFact{
+		{ID: "r1", Scope: scope(), Kind: model.KindRelation,
+			Subject: "alice", Predicate: "friend", Object: "bob",
+			ObservedAt: time.Unix(1, 0)},
+		{ID: "r2", Scope: scope(), Kind: model.KindRelation,
+			Subject: "bob", Predicate: "friend", Object: "charlie",
+			ObservedAt: time.Unix(2, 0)},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	got := p.Traverse(ctx, scope(), []string{"alice"}, 2, 0)
+	if !hasID(got, "r1") || !hasID(got, "r2") {
+		t.Fatalf("2-hop traverse want r1+r2, got %+v", got)
+	}
+}
+
+func TestGraph_SkipsCommonNounEndpoints(t *testing.T) {
+	p := New()
+	ctx := context.Background()
+	if err := p.Project(ctx, []model.TemporalFact{
+		{ID: "r1", Scope: scope(), Kind: model.KindRelation,
+			Subject: "user", Predicate: "knows", Object: "alice",
+			ObservedAt: time.Unix(1, 0)},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got := p.Traverse(ctx, scope(), []string{"alice"}, 1, 0); len(got) != 0 {
+		t.Fatalf("common noun edge must not be indexed, got %+v", got)
+	}
+}
+
+func TestGraph_CooccurrenceBounded(t *testing.T) {
+	cfg := Config{MaxCooccurrenceParticipants: 2, MaxEdgesPerFact: 2}
+	p := New(cfg)
+	ctx := context.Background()
+	if err := p.Project(ctx, []model.TemporalFact{
+		{ID: "e1", Scope: scope(), Kind: model.KindEvent,
+			Entities:   []string{"a", "b", "c"},
+			ObservedAt: time.Unix(1, 0)},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// only a-b pair fits participant cap of 2
+	got := p.Traverse(ctx, scope(), []string{"a"}, 1, 0)
+	if len(got) != 1 || got[0] != "e1" {
+		t.Fatalf("bounded co-occurrence, got %+v", got)
+	}
+}
+
+func TestGraph_ForgetRemovesEdges(t *testing.T) {
+	p := New()
+	ctx := context.Background()
+	if err := p.Project(ctx, []model.TemporalFact{
+		{ID: "r1", Scope: scope(), Kind: model.KindRelation,
+			Subject: "alice", Predicate: "knows", Object: "bob",
+			ObservedAt: time.Unix(1, 0)},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Forget(ctx, scope(), []string{"r1"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := p.Traverse(ctx, scope(), []string{"alice"}, 1, 0); len(got) != 0 {
+		t.Fatalf("forget must drop edges, got %+v", got)
+	}
+}
+
+func TestGraph_RebuildExactReplace(t *testing.T) {
+	p := New()
+	ctx := context.Background()
+	if err := p.Project(ctx, []model.TemporalFact{
+		{ID: "stale", Scope: scope(), Kind: model.KindRelation,
+			Subject: "alice", Predicate: "knows", Object: "bob",
+			ObservedAt: time.Unix(1, 0)},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Rebuild(ctx, scope(), []model.TemporalFact{
+		{ID: "fresh", Scope: scope(), Kind: model.KindRelation,
+			Subject: "alice", Predicate: "knows", Object: "carol",
+			ObservedAt: time.Unix(2, 0)},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got := p.Traverse(ctx, scope(), []string{"alice"}, 1, 0)
+	if len(got) != 1 || got[0] != "fresh" {
+		t.Fatalf("rebuild exact replace failed: %+v", got)
+	}
+}
+
+func TestGraph_AgentSoftIsolationBlocksPrivateBridge(t *testing.T) {
+	p := New()
+	ctx := context.Background()
+	agentB := model.Scope{RuntimeID: "rt", UserID: "u1", AgentID: "agent-b"}
+	shared := scope()
+	agentA := model.Scope{RuntimeID: "rt", UserID: "u1", AgentID: "agent-a"}
+
+	if err := p.Project(ctx, []model.TemporalFact{
+		{ID: "bridge", Scope: agentB, Kind: model.KindRelation,
+			Subject: "alice", Predicate: "knows", Object: "bob",
+			ObservedAt: time.Unix(1, 0)},
+		{ID: "shared", Scope: shared, Kind: model.KindRelation,
+			Subject: "bob", Predicate: "knows", Object: "carol",
+			ObservedAt: time.Unix(2, 0)},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	got := p.Traverse(ctx, agentA, []string{"alice"}, 2, 0)
+	if hasID(got, "shared") {
+		t.Fatalf("agent-a must not reach shared facts via agent-b private bridge, got %+v", got)
+	}
+}
+
+func hasID(ids []string, want string) bool {
+	for _, id := range ids {
+		if id == want {
+			return true
+		}
+	}
+	return false
+}

@@ -18,6 +18,7 @@ const (
 	SourceTimeline  = "timeline"
 	SourceRelation  = "relation"
 	SourceProfile   = "profile"
+	SourceGraph     = "graph"
 )
 
 // Default per-source RRF weights (docs §9.3 / PR-6).
@@ -27,6 +28,7 @@ const (
 	WeightProfile   = 0.9
 	WeightEntity    = 0.8
 	WeightTimeline  = 0.7
+	WeightGraph     = 0.75
 )
 
 // DefaultLimit applies when a caller leaves Query.Limit == 0.
@@ -37,15 +39,17 @@ const MaxLimit = 100
 
 // Input is the planner contract.
 type Input struct {
-	Scope     model.Scope
-	Text      string
-	Entities  []string
-	Subject   string
-	Predicate string
-	Object    string
-	Kinds     []model.FactKind
-	TimeRange model.TimeRange
-	Limit     int
+	Scope        model.Scope
+	Text         string
+	Entities     []string
+	Subject      string
+	Predicate    string
+	Object       string
+	Kinds        []model.FactKind
+	TimeRange    model.TimeRange
+	Limit        int
+	GraphEnabled bool
+	GraphHops    int
 }
 
 // Planner produces a QueryPlan.
@@ -59,6 +63,8 @@ type RuleBased struct {
 	// active sources (PR-3 behaviour). When structured sources are
 	// also active budgets are weight-normalized instead.
 	RetrievalShare float64
+	// GraphEnabled opts into the graph source (docs §17 default off).
+	GraphEnabled bool
 }
 
 // New returns the default rule-based planner.
@@ -76,15 +82,17 @@ func (r *RuleBased) Plan(_ context.Context, input Input) (model.QueryPlan, error
 	}
 
 	intent := model.QueryIntent{
-		Text:      input.Text,
-		Entities:  input.Entities,
-		Subject:   input.Subject,
-		Predicate: input.Predicate,
-		Object:    input.Object,
-		Kinds:     append([]model.FactKind(nil), input.Kinds...),
-		TimeRange: input.TimeRange,
-		Scope:     input.Scope,
-		Limit:     limit,
+		Text:         input.Text,
+		Entities:     input.Entities,
+		Subject:      input.Subject,
+		Predicate:    input.Predicate,
+		Object:       input.Object,
+		Kinds:        append([]model.FactKind(nil), input.Kinds...),
+		TimeRange:    input.TimeRange,
+		Scope:        input.Scope,
+		Limit:        limit,
+		GraphEnabled: input.GraphEnabled && r.GraphEnabled,
+		GraphHops:    input.GraphHops,
 	}
 
 	order := buildSourceOrder(intent)
@@ -116,8 +124,13 @@ func ActivatesProfile(intent model.QueryIntent) bool {
 	return intent.Subject != ""
 }
 
+// ActivatesGraph reports whether bounded graph expansion should run.
+func ActivatesGraph(intent model.QueryIntent) bool {
+	return intent.GraphEnabled && len(intent.Entities) > 0
+}
+
 func (r *RuleBased) retrievalEntityOnly(intent model.QueryIntent) bool {
-	if ActivatesTimeline(intent) || ActivatesRelation(intent) || ActivatesProfile(intent) {
+	if ActivatesTimeline(intent) || ActivatesRelation(intent) || ActivatesProfile(intent) || ActivatesGraph(intent) {
 		return false
 	}
 	return true
@@ -127,6 +140,9 @@ func buildSourceOrder(intent model.QueryIntent) []string {
 	order := []string{SourceRetrieval}
 	if len(intent.Entities) > 0 {
 		order = append(order, SourceEntity)
+	}
+	if ActivatesGraph(intent) {
+		order = append(order, SourceGraph)
 	}
 	if ActivatesRelation(intent) {
 		order = append(order, SourceRelation)
@@ -229,6 +245,7 @@ func defaultWeights() map[string]float64 {
 		SourceRelation:  WeightRelation,
 		SourceProfile:   WeightProfile,
 		SourceTimeline:  WeightTimeline,
+		SourceGraph:     WeightGraph,
 	}
 }
 
@@ -238,7 +255,7 @@ func prioritizeStructuredForTinyLimit(order []string, limit int) []string {
 	var structured, rest []string
 	for _, src := range order {
 		switch src {
-		case SourceTimeline, SourceRelation, SourceProfile:
+		case SourceTimeline, SourceRelation, SourceProfile, SourceGraph:
 			structured = append(structured, src)
 		default:
 			rest = append(rest, src)

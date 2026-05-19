@@ -28,6 +28,12 @@ type QueryIntent struct {
 	TimeRange TimeRange
 	Scope     Scope
 	Limit     int
+
+	// GraphEnabled is set by the planner when graph expansion is
+	// wired and opted in at Memory construction (docs §17).
+	GraphEnabled bool
+	// GraphHops bounds BFS expansion; zero means the graph default.
+	GraphHops int
 }
 
 // QueryPlan describes how the read pipeline will visit candidate

@@ -14,12 +14,14 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/planner"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/projection"
 	entityproj "github.com/GizClaw/flowcraft/sdk/recall/internal/projection/entity"
+	graphproj "github.com/GizClaw/flowcraft/sdk/recall/internal/projection/graph"
 	profileproj "github.com/GizClaw/flowcraft/sdk/recall/internal/projection/profile"
 	relationproj "github.com/GizClaw/flowcraft/sdk/recall/internal/projection/relation"
 	retrievalproj "github.com/GizClaw/flowcraft/sdk/recall/internal/projection/retrieval"
 	timelineproj "github.com/GizClaw/flowcraft/sdk/recall/internal/projection/timeline"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/source"
 	entitysource "github.com/GizClaw/flowcraft/sdk/recall/internal/source/entity"
+	graphsource "github.com/GizClaw/flowcraft/sdk/recall/internal/source/graph"
 	profilesource "github.com/GizClaw/flowcraft/sdk/recall/internal/source/profile"
 	relationsource "github.com/GizClaw/flowcraft/sdk/recall/internal/source/relation"
 	retrievalsource "github.com/GizClaw/flowcraft/sdk/recall/internal/source/retrieval"
@@ -57,6 +59,7 @@ type memory struct {
 	fuser        fusion.Fuser
 	materializer materialize.Materializer
 	fusionOpts   fusion.Options
+	graphEnabled bool
 }
 
 // New constructs a v2 Memory. The defaults wire a fully in-memory
@@ -107,6 +110,11 @@ func New(opts ...Option) (Memory, error) {
 		retrievalProj, entityProj,
 		timelineProj, relationProj, profileProj,
 	}
+	var graphProj *graphproj.Projection
+	if cfg.graphEnabled {
+		graphProj = graphproj.New()
+		projections = append(projections, graphProj)
+	}
 	projections = append(projections, cfg.extraProjections...)
 
 	// Default read-path wiring uses the same canonical backends that
@@ -114,7 +122,15 @@ func New(opts ...Option) (Memory, error) {
 	// entity source on the entity projection's read-only Lookup.
 	planr := cfg.planner
 	if planr == nil {
-		planr = planner.New()
+		rb := planner.New()
+		if cfg.graphEnabled {
+			rb.GraphEnabled = true
+		}
+		planr = rb
+	} else if cfg.graphEnabled {
+		if rb, ok := planr.(*planner.RuleBased); ok {
+			rb.GraphEnabled = true
+		}
 	}
 	srcs := append([]source.CandidateSource(nil), cfg.sources...)
 	if len(srcs) == 0 {
@@ -124,6 +140,9 @@ func New(opts ...Option) (Memory, error) {
 			relationsource.New(relationProj),
 			profilesource.New(profileProj),
 			timelinesource.New(timelineProj),
+		}
+		if graphProj != nil {
+			srcs = append(srcs, graphsource.New(graphProj))
 		}
 	}
 	fuser := cfg.fuser
@@ -143,6 +162,9 @@ func New(opts ...Option) (Memory, error) {
 			planner.SourceProfile:   planner.WeightProfile,
 			planner.SourceTimeline:  planner.WeightTimeline,
 		}
+		if cfg.graphEnabled {
+			fusionOpts.Weights[planner.SourceGraph] = planner.WeightGraph
+		}
 	}
 
 	return &memory{
@@ -159,6 +181,7 @@ func New(opts ...Option) (Memory, error) {
 		fuser:          fuser,
 		materializer:   mat,
 		fusionOpts:     fusionOpts,
+		graphEnabled:   cfg.graphEnabled,
 	}, nil
 }
 
@@ -437,15 +460,17 @@ func (m *memory) runRecall(ctx context.Context, scope Scope, query Query, withTr
 
 	overall := time.Now()
 	plan, err := m.planner.Plan(ctx, planner.Input{
-		Scope:     scope,
-		Text:      query.Text,
-		Entities:  query.Entities,
-		Limit:     query.Limit,
-		Subject:   query.Subject,
-		Predicate: query.Predicate,
-		Object:    query.Object,
-		Kinds:     query.Kinds,
-		TimeRange: query.TimeRange,
+		Scope:        scope,
+		Text:         query.Text,
+		Entities:     query.Entities,
+		Limit:        query.Limit,
+		Subject:      query.Subject,
+		Predicate:    query.Predicate,
+		Object:       query.Object,
+		Kinds:        query.Kinds,
+		TimeRange:    query.TimeRange,
+		GraphEnabled: m.graphEnabled,
+		GraphHops:    query.GraphHops,
 	})
 	if err != nil {
 		return nil, trace, fmt.Errorf("recall.Recall: planner: %w", err)
