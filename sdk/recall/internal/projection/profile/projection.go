@@ -5,6 +5,7 @@ package profile
 import (
 	"context"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -59,7 +60,7 @@ func (p *Projection) Project(_ context.Context, facts []model.TemporalFact) erro
 		if !projection.IsActive(f, now) {
 			continue
 		}
-		subject := f.Subject
+		subject := canonicalKeyPart(f.Subject)
 		if subject == "" {
 			continue
 		}
@@ -109,6 +110,7 @@ func (p *Projection) Rebuild(ctx context.Context, scope model.Scope, facts []mod
 
 // Lookup returns all active fact ids for the given subject.
 func (p *Projection) Lookup(_ context.Context, scope model.Scope, subject string) []string {
+	subject = canonicalKeyPart(subject)
 	if subject == "" {
 		return nil
 	}
@@ -178,18 +180,24 @@ func isProfileKind(k model.FactKind) bool {
 // AgentID is part of the slot so private agent facts do not overwrite
 // each other; empty AgentID is the shared slot namespace.
 func slotKey(f model.TemporalFact) string {
-	if f.Subject == "" {
+	subject := canonicalKeyPart(f.Subject)
+	if subject == "" {
 		return ""
 	}
 	agent := f.Scope.AgentID
 	switch f.Kind {
 	case model.KindState, model.KindPreference:
-		if f.Predicate == "" {
-			return f.Subject + "\x00" + agent
+		predicate := canonicalKeyPart(f.Predicate)
+		if predicate == "" {
+			return subject + "\x00" + agent
 		}
-		return f.Subject + "\x00" + f.Predicate + "\x00" + agent
+		return subject + "\x00" + predicate + "\x00" + agent
 	case model.KindRelation:
-		return f.Subject + "\x00" + f.Predicate + "\x00" + f.Object + "\x00" + agent
+		return subject + "\x00" + canonicalKeyPart(f.Predicate) + "\x00" + canonicalKeyPart(f.Object) + "\x00" + agent
 	}
 	return ""
+}
+
+func canonicalKeyPart(s string) string {
+	return strings.ToLower(strings.Join(strings.Fields(s), " "))
 }

@@ -54,12 +54,13 @@ type memory struct {
 	// projection by name without re-deriving it from fanout.
 	projections []projection.Projection
 
-	planner      planner.Planner
-	sources      []source.CandidateSource
-	fuser        fusion.Fuser
-	materializer materialize.Materializer
-	fusionOpts   fusion.Options
-	graphEnabled bool
+	queryCompiler compiler.QueryCompiler
+	planner       planner.Planner
+	sources       []source.CandidateSource
+	fuser         fusion.Fuser
+	materializer  materialize.Materializer
+	fusionOpts    fusion.Options
+	graphEnabled  bool
 }
 
 // New constructs a v2 Memory. The defaults wire a fully in-memory
@@ -120,6 +121,10 @@ func New(opts ...Option) (Memory, error) {
 	// Default read-path wiring uses the same canonical backends that
 	// Save just wrote into: retrieval source on the retrieval index,
 	// entity source on the entity projection's read-only Lookup.
+	qc := cfg.queryCompiler
+	if qc == nil {
+		qc = compiler.DefaultQueryCompiler()
+	}
 	planr := cfg.planner
 	if planr == nil {
 		rb := planner.New()
@@ -176,6 +181,7 @@ func New(opts ...Option) (Memory, error) {
 		fanout:         projection.New(projections, cfg.telemetry),
 		telemetry:      cfg.telemetry,
 		projections:    projections,
+		queryCompiler:  qc,
 		planner:        planr,
 		sources:        srcs,
 		fuser:          fuser,
@@ -459,16 +465,28 @@ func (m *memory) runRecall(ctx context.Context, scope Scope, query Query, withTr
 	}
 
 	overall := time.Now()
+	compiled, err := m.queryCompiler.Compile(ctx, compiler.QueryInput{
+		Text:      query.Text,
+		Entities:  query.Entities,
+		Subject:   query.Subject,
+		Predicate: query.Predicate,
+		Object:    query.Object,
+		Kinds:     query.Kinds,
+		TimeRange: query.TimeRange,
+	})
+	if err != nil {
+		return nil, trace, fmt.Errorf("recall.Recall: query compiler: %w", err)
+	}
 	plan, err := m.planner.Plan(ctx, planner.Input{
 		Scope:        scope,
-		Text:         query.Text,
-		Entities:     query.Entities,
+		Text:         compiled.Text,
+		Entities:     compiled.Entities,
 		Limit:        query.Limit,
-		Subject:      query.Subject,
-		Predicate:    query.Predicate,
-		Object:       query.Object,
-		Kinds:        query.Kinds,
-		TimeRange:    query.TimeRange,
+		Subject:      compiled.Subject,
+		Predicate:    compiled.Predicate,
+		Object:       compiled.Object,
+		Kinds:        compiled.Kinds,
+		TimeRange:    compiled.TimeRange,
 		GraphEnabled: m.graphEnabled,
 		GraphHops:    query.GraphHops,
 	})

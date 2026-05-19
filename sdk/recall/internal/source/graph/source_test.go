@@ -9,15 +9,22 @@ import (
 )
 
 type overBudgetTraverse struct {
-	ids []string
+	ids       []string
+	lastLimit int
 }
 
-func (s overBudgetTraverse) Traverse(context.Context, model.Scope, []string, int, int) []string {
-	return append([]string(nil), s.ids...)
+func (s *overBudgetTraverse) Traverse(_ context.Context, _ model.Scope, _ []string, _, limit int) []string {
+	s.lastLimit = limit
+	ids := append([]string(nil), s.ids...)
+	if limit > 0 && len(ids) > limit {
+		return ids[:limit]
+	}
+	return ids
 }
 
 func TestSource_CapsAndMarksTruncated(t *testing.T) {
-	src := New(overBudgetTraverse{ids: []string{"a", "b", "c"}})
+	traverse := &overBudgetTraverse{ids: []string{"a", "b", "c"}}
+	src := New(traverse)
 	plan := model.QueryPlan{
 		Intent: model.QueryIntent{
 			Scope:        model.Scope{RuntimeID: "rt", UserID: "u1"},
@@ -35,5 +42,8 @@ func TestSource_CapsAndMarksTruncated(t *testing.T) {
 	}
 	if !got.Truncated {
 		t.Fatalf("graph source must mark truncated when traversal returns more than budget")
+	}
+	if traverse.lastLimit != 3 {
+		t.Fatalf("graph source should request budget+1 from traversal, got limit %d", traverse.lastLimit)
 	}
 }

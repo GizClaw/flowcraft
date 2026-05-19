@@ -39,6 +39,25 @@ func TestProfile_LookupBySubject(t *testing.T) {
 	}
 }
 
+func TestProfile_LookupCanonicalizesSubject(t *testing.T) {
+	p := New()
+	ctx := context.Background()
+	if err := p.Project(ctx, []model.TemporalFact{{
+		ID: "s1", Scope: scope(), Kind: model.KindState,
+		Subject: "Alice", Predicate: "City", Content: "Paris",
+		ObservedAt: time.Unix(1, 0),
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := p.Lookup(ctx, scope(), "alice"); len(got) != 1 || got[0] != "s1" {
+		t.Fatalf("lookup should be case-insensitive for subject, got %+v", got)
+	}
+	if got := p.Lookup(ctx, scope(), " ALICE "); len(got) != 1 || got[0] != "s1" {
+		t.Fatalf("lookup should trim and canonicalize subject, got %+v", got)
+	}
+}
+
 func TestProfile_DropsExpiredSlot(t *testing.T) {
 	p := New()
 	ctx := context.Background()

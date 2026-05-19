@@ -48,6 +48,49 @@ func TestRecall_StructuredQueryUsesRelationSource(t *testing.T) {
 	}
 }
 
+func TestRecall_StructuredQueryCanonicalizesSubjectAndObject(t *testing.T) {
+	mem, err := New()
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	defer mem.Close()
+	scope := Scope{RuntimeID: "rt", UserID: "u1"}
+
+	res, err := mem.Save(context.Background(), scope, SaveRequest{
+		Facts: []TemporalFact{{
+			Kind: FactRelation, Subject: "Alice", Predicate: "Spouse", Object: "Bob",
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	hits, trace, err := mem.(RecallExplainer).RecallExplain(context.Background(), scope, Query{
+		Subject:   "alice",
+		Predicate: "spouse",
+		Object:    "bob",
+		Limit:     5,
+	})
+	if err != nil {
+		t.Fatalf("recall: %v", err)
+	}
+	if len(hits) != 1 || hits[0].Fact.ID != res.FactIDs[0] {
+		t.Fatalf("structured recall should match canonicalized dimensions, got %+v", hits)
+	}
+	foundRelation, foundProfile := false, false
+	for _, st := range trace.Sources {
+		if st.Source == planner.SourceRelation && st.Returned > 0 {
+			foundRelation = true
+		}
+		if st.Source == planner.SourceProfile && st.Returned > 0 {
+			foundProfile = true
+		}
+	}
+	if !foundRelation || !foundProfile {
+		t.Fatalf("relation/profile should both see canonicalized subject, trace=%+v", trace.Sources)
+	}
+}
+
 func TestRecall_TimelineQueryByTimeRange(t *testing.T) {
 	mem, err := New()
 	if err != nil {

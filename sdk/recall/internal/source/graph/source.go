@@ -40,7 +40,7 @@ func (s *Source) Query(ctx context.Context, plan model.QueryPlan) model.SourceRe
 	hops := graphproj.CapGraphHops(plan.Intent.GraphHops)
 
 	started := time.Now()
-	ids := s.traverse.Traverse(ctx, plan.Intent.Scope, plan.Intent.Entities, hops, 0)
+	ids := s.traverse.Traverse(ctx, plan.Intent.Scope, plan.Intent.Entities, hops, budget+1)
 	latency := time.Since(started)
 
 	truncated := false

@@ -37,11 +37,12 @@ type config struct {
 	extraProjections []projection.Projection
 
 	// Read-path overrides. nil means "use the default wiring".
-	planner      planner.Planner
-	sources      []source.CandidateSource
-	fuser        fusion.Fuser
-	materializer materialize.Materializer
-	fusionOpts   fusion.Options
+	queryCompiler compiler.QueryCompiler
+	planner       planner.Planner
+	sources       []source.CandidateSource
+	fuser         fusion.Fuser
+	materializer  materialize.Materializer
+	fusionOpts    fusion.Options
 
 	// graphEnabled wires the optional EntityGraph projection and
 	// graph source (docs §17: default off).
@@ -168,6 +169,14 @@ func withExtraProjection(p projection.Projection) Option {
 	return func(c *config) {
 		if p != nil {
 			c.extraProjections = append(c.extraProjections, p)
+		}
+	}
+}
+
+func withQueryCompiler(qc compiler.QueryCompiler) Option {
+	return func(c *config) {
+		if qc != nil {
+			c.queryCompiler = qc
 		}
 	}
 }

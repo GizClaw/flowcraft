@@ -7,6 +7,7 @@ package relation
 import (
 	"context"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -98,6 +99,9 @@ func (p *Projection) Rebuild(ctx context.Context, scope model.Scope, facts []mod
 // subject/predicate/object means "don't filter on this dimension".
 // All dimensions empty returns nil so callers cannot scan the scope.
 func (p *Projection) Lookup(_ context.Context, scope model.Scope, subject, predicate, object string) []string {
+	subject = canonicalKeyPart(subject)
+	predicate = canonicalKeyPart(predicate)
+	object = canonicalKeyPart(object)
 	if subject == "" && predicate == "" && object == "" {
 		return nil
 	}
@@ -159,10 +163,17 @@ func keyOf(s model.Scope) scopeKey {
 }
 
 func tripleKey(subject, predicate, object, agentID string) string {
+	subject = canonicalKeyPart(subject)
+	predicate = canonicalKeyPart(predicate)
+	object = canonicalKeyPart(object)
 	if subject == "" && predicate == "" && object == "" {
 		return ""
 	}
 	return subject + "\x00" + predicate + "\x00" + object + "\x00" + agentID
+}
+
+func canonicalKeyPart(s string) string {
+	return strings.ToLower(strings.Join(strings.Fields(s), " "))
 }
 
 func parseTripleKey(key string) (subject, predicate, object string) {

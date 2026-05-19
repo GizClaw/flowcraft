@@ -38,6 +38,25 @@ func TestRelation_LookupByDimensions(t *testing.T) {
 	}
 }
 
+func TestRelation_LookupCanonicalizesDimensions(t *testing.T) {
+	p := New()
+	ctx := context.Background()
+	if err := p.Project(ctx, []model.TemporalFact{{
+		ID: "r1", Scope: scope(), Kind: model.KindRelation,
+		Subject: "Alice", Predicate: "Spouse", Object: "Bob",
+		ObservedAt: time.Unix(1, 0),
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := p.Lookup(ctx, scope(), "alice", "spouse", "bob"); len(got) != 1 || got[0] != "r1" {
+		t.Fatalf("lookup should be case-insensitive across structured dimensions, got %+v", got)
+	}
+	if got := p.Lookup(ctx, scope(), " ALICE ", "", ""); len(got) != 1 || got[0] != "r1" {
+		t.Fatalf("subject lookup should trim and canonicalize, got %+v", got)
+	}
+}
+
 func TestRelation_DropsInactiveValidTo(t *testing.T) {
 	p := New()
 	ctx := context.Background()

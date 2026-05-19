@@ -16,8 +16,8 @@ func (tr TimeRange) IsZero() bool {
 }
 
 // QueryIntent is the structured form of a caller Query after the
-// planner has interpreted it. PR-3 keeps this rule-based; an LLM
-// intent parser is opt-in in later phases.
+// query compiler and planner have interpreted it. The default query
+// compiler is rule-based; an LLM query compiler is opt-in.
 type QueryIntent struct {
 	Text      string
 	Entities  []string
