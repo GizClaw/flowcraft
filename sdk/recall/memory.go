@@ -18,6 +18,7 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/source"
 	entitysource "github.com/GizClaw/flowcraft/sdk/recall/internal/source/entity"
 	retrievalsource "github.com/GizClaw/flowcraft/sdk/recall/internal/source/retrieval"
+	evidencestore "github.com/GizClaw/flowcraft/sdk/recall/internal/store/evidence"
 	temporalstore "github.com/GizClaw/flowcraft/sdk/recall/internal/store/temporal"
 	"github.com/GizClaw/flowcraft/sdk/retrieval"
 	retrievalmem "github.com/GizClaw/flowcraft/sdk/retrieval/memory"
@@ -33,11 +34,17 @@ type Memory interface {
 
 type memory struct {
 	store          temporalstore.Store
+	evidenceStore  evidencestore.Store
 	retrievalIndex retrieval.Index
 	compiler       compiler.Compiler
 	resolver       compiler.ConflictResolver
 	fanout         *projection.Fanout
 	telemetry      projection.TelemetryHook
+
+	// projections retains the canonical projection set (in
+	// registration order) so RebuildProjection can resolve a
+	// projection by name without re-deriving it from fanout.
+	projections []projection.Projection
 
 	planner      planner.Planner
 	sources      []source.CandidateSource
@@ -110,7 +117,7 @@ func New(opts ...Option) (Memory, error) {
 	}
 	mat := cfg.materializer
 	if mat == nil {
-		mat = materialize.New(cfg.store)
+		mat = materialize.New(cfg.store, cfg.telemetry)
 	}
 	fusionOpts := cfg.fusionOpts
 	if fusionOpts.Weights == nil {
@@ -122,11 +129,13 @@ func New(opts ...Option) (Memory, error) {
 
 	return &memory{
 		store:          cfg.store,
+		evidenceStore:  cfg.evidenceStore,
 		retrievalIndex: cfg.retrievalIndex,
 		compiler:       cfg.compiler,
 		resolver:       cfg.resolver,
 		fanout:         projection.New(projections, cfg.telemetry),
 		telemetry:      cfg.telemetry,
+		projections:    projections,
 		planner:        planr,
 		sources:        srcs,
 		fuser:          fuser,
@@ -224,6 +233,17 @@ func (m *memory) Save(ctx context.Context, scope Scope, req SaveRequest) (SaveRe
 		return SaveResult{}, fmt.Errorf("recall.Save: close superseded: %w", err)
 	}
 
+	// Mirror evidence into the secondary lookup store BEFORE the
+	// projection fanout: if mirroring fails we still hold the
+	// pre-projection state and can roll back without sweeping
+	// already-built projection entries. Treating evidence mirror
+	// as Required (per the F decision) keeps the adapter from
+	// going stale on day one.
+	if evErr := m.mirrorEvidence(ctx, scope, resolution.Facts); evErr != nil {
+		m.rollbackSave(ctx, scope, ids, resolution.Closes, evErr)
+		return SaveResult{}, fmt.Errorf("recall.Save: mirror evidence: %w", evErr)
+	}
+
 	if projErr := m.fanout.ProjectRequired(ctx, resolution.Facts); projErr != nil {
 		m.rollbackSave(ctx, scope, ids, resolution.Closes, projErr)
 		return SaveResult{}, projErr
@@ -232,6 +252,28 @@ func (m *memory) Save(ctx context.Context, scope Scope, req SaveRequest) (SaveRe
 	m.fanout.ProjectOptional(ctx, resolution.Facts)
 
 	return SaveResult{FactIDs: ids}, nil
+}
+
+// mirrorEvidence appends EvidenceRefs into the secondary lookup
+// store, per fact. No-op when no EvidenceStore is configured or
+// when a fact carries no refs (embedded EvidenceText still lives
+// on the canonical fact and stays the source of truth).
+//
+// Append is idempotent on (scope, factID, refs[i].ID) so retries
+// and rebuilds replay without producing duplicate index entries.
+func (m *memory) mirrorEvidence(ctx context.Context, scope Scope, facts []model.TemporalFact) error {
+	if m.evidenceStore == nil {
+		return nil
+	}
+	for _, f := range facts {
+		if len(f.EvidenceRefs) == 0 {
+			continue
+		}
+		if err := m.evidenceStore.Append(ctx, scope, f.ID, f.EvidenceRefs); err != nil {
+			return fmt.Errorf("evidence append %s: %w", f.ID, err)
+		}
+	}
+	return nil
 }
 
 // applyValidityCloses runs UpdateValidity for each close instruction
@@ -296,6 +338,17 @@ func (m *memory) rollbackSave(ctx context.Context, scope Scope, factIDs []string
 		})
 	}
 	m.fanout.ForgetOptional(cleanupCtx, scope, factIDs)
+	if m.evidenceStore != nil {
+		if err := m.evidenceStore.ForgetByFact(cleanupCtx, scope, factIDs); err != nil {
+			hook.OnProjection(projection.ProjectionEvent{
+				Projection:  "save_rollback.evidence_forget",
+				Op:          projection.OpForget,
+				Consistency: projection.Required,
+				FactCount:   len(factIDs),
+				Err:         fmt.Errorf("rollback cleanup after %w: %v", cause, err),
+			})
+		}
+	}
 	if err := m.store.Delete(cleanupCtx, scope, factIDs); err != nil {
 		hook.OnProjection(projection.ProjectionEvent{
 			Projection:  "save_rollback.store_delete",
@@ -495,6 +548,23 @@ func (m *memory) Forget(ctx context.Context, scope Scope, factID string) error {
 	}
 
 	m.fanout.ForgetOptional(ctx, scope, []string{factID})
+
+	// Sweep the evidence adapter. Best-effort: by this point the
+	// canonical fact (and its authoritative EvidenceRefs) are
+	// already gone, so a stale lookup entry is a leak, not a
+	// safety problem. Telemetry surfaces it so an operator can
+	// reconcile if needed.
+	if m.evidenceStore != nil {
+		if err := m.evidenceStore.ForgetByFact(ctx, scope, []string{factID}); err != nil {
+			m.fanout.Telemetry().OnProjection(projection.ProjectionEvent{
+				Projection:  "forget.evidence",
+				Op:          projection.OpForget,
+				Consistency: projection.Optional,
+				FactCount:   1,
+				Err:         fmt.Errorf("evidence forget %s: %w", factID, err),
+			})
+		}
+	}
 	return nil
 }
 
@@ -518,13 +588,216 @@ func (m *memory) compensateForgetStoreFailure(ctx context.Context, scope Scope, 
 	}
 }
 
+// RebuildAll implements ProjectionRebuilder. It walks the canonical
+// store with IncludeSuperseded=true and re-projects every fact via
+// fanout.Rebuild{Required,Optional}. Memory deliberately does NOT
+// pre-filter superseded facts here — each projection decides how to
+// materialize them, matching the write-path semantics where the
+// canonical store is the single source of truth (docs §10.1).
+//
+// When an EvidenceStore is configured the rebuild also re-mirrors
+// every fact's EvidenceRefs so the lookup adapter stays consistent
+// without needing a separate reconcile path.
+//
+// Required-projection failures abort the rebuild and surface the
+// error; optional-projection / evidence failures only emit
+// telemetry. The canonical store is never modified.
+func (m *memory) RebuildAll(ctx context.Context, scope Scope) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if scope.RuntimeID == "" {
+		return errdefs.Validationf("recall.RebuildAll: scope.runtime_id is required")
+	}
+	facts, err := m.store.List(ctx, scope, temporalstore.ListQuery{IncludeSuperseded: true})
+	if err != nil {
+		return fmt.Errorf("recall.RebuildAll: list canonical facts: %w", err)
+	}
+	if err := m.fanout.RebuildRequired(ctx, scope, facts); err != nil {
+		return err
+	}
+	m.fanout.RebuildOptional(ctx, scope, facts)
+	if m.evidenceStore != nil {
+		if err := m.rebuildEvidence(ctx, scope, facts); err != nil {
+			m.fanout.Telemetry().OnProjection(projection.ProjectionEvent{
+				Projection:  "rebuild.evidence",
+				Op:          projection.OpRebuild,
+				Consistency: projection.Optional,
+				FactCount:   len(facts),
+				Err:         err,
+			})
+		}
+	}
+	return nil
+}
+
+// rebuildEvidence applies exact-replace semantics to the secondary
+// evidence adapter: every fact id the adapter currently knows about
+// is forgotten, then refs are re-appended from the canonical
+// snapshot. The union sweep is what removes orphan entries (adapter
+// has them, canonical no longer does) so the adapter stays a pure
+// derived view of the ledger — never a second truth layer.
+//
+// The store's Append is idempotent on (factID, ref ID) so a partial
+// failure can be retried by re-running RebuildAll.
+func (m *memory) rebuildEvidence(ctx context.Context, scope Scope, facts []model.TemporalFact) error {
+	adapterIDs, err := m.evidenceStore.ListFactIDs(ctx, scope)
+	if err != nil {
+		return fmt.Errorf("list evidence fact ids: %w", err)
+	}
+	ids := make(map[string]struct{}, len(adapterIDs)+len(facts))
+	for _, id := range adapterIDs {
+		ids[id] = struct{}{}
+	}
+	for _, f := range facts {
+		if f.ID != "" {
+			ids[f.ID] = struct{}{}
+		}
+	}
+	if len(ids) > 0 {
+		toForget := make([]string, 0, len(ids))
+		for id := range ids {
+			toForget = append(toForget, id)
+		}
+		if err := m.evidenceStore.ForgetByFact(ctx, scope, toForget); err != nil {
+			return fmt.Errorf("forget evidence: %w", err)
+		}
+	}
+	for _, f := range facts {
+		if len(f.EvidenceRefs) == 0 {
+			continue
+		}
+		if err := m.evidenceStore.Append(ctx, scope, f.ID, f.EvidenceRefs); err != nil {
+			return fmt.Errorf("append evidence %s: %w", f.ID, err)
+		}
+	}
+	return nil
+}
+
+// RebuildProjection implements ProjectionRebuilder. It rebuilds the
+// single projection registered under name. Useful for targeted
+// incident playbooks; ErrProjectionDisabled-style errors surface as
+// errdefs.NotFound so callers can distinguish "typo" from "actual
+// rebuild failure".
+//
+// Evidence is intentionally NOT considered part of the projection
+// namespace — use RebuildAll if the evidence adapter also needs to
+// be rebuilt.
+func (m *memory) RebuildProjection(ctx context.Context, scope Scope, name string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if scope.RuntimeID == "" {
+		return errdefs.Validationf("recall.RebuildProjection: scope.runtime_id is required")
+	}
+	if name == "" {
+		return errdefs.Validationf("recall.RebuildProjection: projection name is required")
+	}
+	var target projection.Projection
+	for _, p := range m.projections {
+		if p != nil && p.Name() == name {
+			target = p
+			break
+		}
+	}
+	if target == nil {
+		return errdefs.NotFoundf("recall.RebuildProjection: projection %q not registered", name)
+	}
+	facts, err := m.store.List(ctx, scope, temporalstore.ListQuery{IncludeSuperseded: true})
+	if err != nil {
+		return fmt.Errorf("recall.RebuildProjection: list canonical facts: %w", err)
+	}
+	if err := target.Rebuild(ctx, scope, facts); err != nil {
+		return fmt.Errorf("recall.RebuildProjection %q: %w", name, err)
+	}
+	return nil
+}
+
+// RepairStale implements ProjectionRebuilder. It forgets the listed
+// fact ids from required + optional projections WITHOUT touching the
+// canonical store and WITHOUT re-projecting. The intended workflow
+// is: a reconcile worker subscribes to DriftStaleFact events, batches
+// fact ids per scope, and calls RepairStale to evict the orphaned
+// projection entries.
+//
+// Required-projection failures abort with the original error;
+// optional-projection failures only emit telemetry, matching
+// fanout.ForgetOptional semantics.
+func (m *memory) RepairStale(ctx context.Context, scope Scope, factIDs []string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if scope.RuntimeID == "" {
+		return errdefs.Validationf("recall.RepairStale: scope.runtime_id is required")
+	}
+	if len(factIDs) == 0 {
+		return nil
+	}
+	if err := m.fanout.ForgetRequired(ctx, scope, factIDs); err != nil {
+		return err
+	}
+	m.fanout.ForgetOptional(ctx, scope, factIDs)
+	return nil
+}
+
+// GetEvidence implements EvidenceLookup. It prefers the secondary
+// store wired through WithEvidenceStore; without one it falls back
+// to the embedded TemporalFact.EvidenceRefs so callers always get
+// a consistent view regardless of deployment topology.
+//
+// Validation rules match Save/Recall/Forget: an empty fact id and
+// missing scope.RuntimeID are Validation; a missing fact is not an
+// error — the call returns nil so callers can distinguish "no
+// evidence" from "fact gone".
+func (m *memory) GetEvidence(ctx context.Context, scope Scope, factID string) ([]EvidenceRef, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if scope.RuntimeID == "" {
+		return nil, errdefs.Validationf("recall.GetEvidence: scope.runtime_id is required")
+	}
+	if factID == "" {
+		return nil, errdefs.Validationf("recall.GetEvidence: fact id is required")
+	}
+	if m.evidenceStore != nil {
+		refs, err := m.evidenceStore.ListByFact(ctx, scope, factID)
+		if err != nil {
+			return nil, fmt.Errorf("recall.GetEvidence: %w", err)
+		}
+		if len(refs) > 0 {
+			return refs, nil
+		}
+		// fall through to canonical store fallback below; the
+		// adapter may have been wiped or never warmed for this
+		// fact, but the embedded refs are authoritative.
+	}
+	fact, err := m.store.Get(ctx, scope, factID)
+	if err != nil {
+		if errors.Is(err, temporalstore.ErrNotFound) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("recall.GetEvidence: %w", err)
+	}
+	if len(fact.EvidenceRefs) == 0 {
+		return nil, nil
+	}
+	out := make([]EvidenceRef, len(fact.EvidenceRefs))
+	copy(out, fact.EvidenceRefs)
+	return out, nil
+}
+
 // Close releases backend resources. Memory takes ownership of the
-// store and retrieval index it was constructed with (whether default
-// or injected): callers wiring their own backend should not also
-// call Close on it.
+// store, evidence store, and retrieval index it was constructed
+// with (whether default or injected): callers wiring their own
+// backend should not also call Close on it.
 func (m *memory) Close() error {
 	if m.store != nil {
 		if err := m.store.Close(); err != nil {
+			return err
+		}
+	}
+	if m.evidenceStore != nil {
+		if err := m.evidenceStore.Close(); err != nil {
 			return err
 		}
 	}

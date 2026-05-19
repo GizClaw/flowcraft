@@ -8,6 +8,7 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/planner"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/projection"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/source"
+	evidencestore "github.com/GizClaw/flowcraft/sdk/recall/internal/store/evidence"
 	temporalstore "github.com/GizClaw/flowcraft/sdk/recall/internal/store/temporal"
 	"github.com/GizClaw/flowcraft/sdk/retrieval"
 )
@@ -22,6 +23,7 @@ type Option func(*config)
 
 type config struct {
 	store          temporalstore.Store
+	evidenceStore  evidencestore.Store
 	retrievalIndex retrieval.Index
 	compiler       compiler.Compiler
 	llmExtractor   *llmExtractorConfig
@@ -50,6 +52,32 @@ func WithTemporalStore(s temporalstore.Store) Option {
 		if s != nil {
 			c.store = s
 		}
+	}
+}
+
+// WithEvidenceStore wires a secondary lookup store for evidence
+// attached to canonical facts (docs §7.2). The store is OPTIONAL:
+// embedded TemporalFact.EvidenceRefs / EvidenceText /
+// SourceMessageIDs stay authoritative and rebuildable. When
+// configured:
+//
+//   - Save mirror-appends evidence after store.Append succeeds.
+//     A mirror-append failure is treated as Required and rolls
+//     back the canonical write so the store and the lookup
+//     adapter never diverge from each other.
+//   - Forget best-effort sweeps the evidence index after
+//     store.Delete succeeds; failures surface via telemetry only
+//     because the canonical evidence has already gone with the
+//     fact.
+//   - RebuildAll re-appends evidence from the canonical snapshot
+//     so the adapter can be rebuilt without consulting any
+//     external state.
+//
+// Passing nil disables the secondary store; Memory.GetEvidence
+// then falls back to TemporalFact.EvidenceRefs.
+func WithEvidenceStore(s evidencestore.Store) Option {
+	return func(c *config) {
+		c.evidenceStore = s
 	}
 }
 

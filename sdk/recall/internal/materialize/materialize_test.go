@@ -25,7 +25,7 @@ func TestMaterialize_AttachesFactAndDropsStale(t *testing.T) {
 	if err := store.Append(context.Background(), []model.TemporalFact{fact}); err != nil {
 		t.Fatal(err)
 	}
-	mat := New(store)
+	mat := New(store, nil)
 	items, drops, err := mat.Materialize(context.Background(), []model.Candidate{
 		{FactID: "real", Scope: scope, Source: "retrieval", Score: 0.9},
 		{FactID: "ghost", Scope: scope, Source: "retrieval", Score: 0.5},
@@ -61,7 +61,7 @@ func TestMaterialize_DropsSuperseded(t *testing.T) {
 	if err := store.UpdateValidity(context.Background(), scope, "old", time.Unix(2, 0), "new"); err != nil {
 		t.Fatal(err)
 	}
-	mat := New(store)
+	mat := New(store, nil)
 	items, drops, err := mat.Materialize(context.Background(), []model.Candidate{
 		{FactID: "old", Scope: scope, Source: "retrieval"},
 		{FactID: "new", Scope: scope, Source: "retrieval"},

@@ -20,10 +20,16 @@ const (
 )
 
 // TelemetryHook receives lifecycle and failure signals from the
-// fanout. PR-2 ships a NopTelemetry default — a real telemetry
-// package wires in during Phase 8.
+// fanout and from drift-aware components (notably materialize). PR-2
+// ships a NopTelemetry default — a real telemetry package wires in
+// during Phase 8.
+//
+// Both methods are required so the interface stays one-shot to
+// implement; NopTelemetry provides empty implementations that the
+// compiler can embed when a partial hook is needed.
 type TelemetryHook interface {
 	OnProjection(event ProjectionEvent)
+	OnDrift(event DriftEvent)
 }
 
 // ProjectionEvent carries enough context for a telemetry backend to
@@ -36,10 +42,54 @@ type ProjectionEvent struct {
 	Err         error
 }
 
+// DriftReason classifies a single projection-vs-canonical drift
+// observation. The set is intentionally narrow in PR-5; reverse
+// drift detection (projection has an id the store does not)
+// arrives with Phase 8 governance.
+type DriftReason string
+
+const (
+	// DriftStaleFact is emitted when a candidate references a
+	// fact id that the canonical store no longer knows about —
+	// typically a retrieval projection that still holds a doc
+	// after the underlying fact has been Forget()'d.
+	DriftStaleFact DriftReason = "stale_fact"
+
+	// DriftSupersededFact is emitted when materialize loads a
+	// fact whose CorrectedBy is non-empty. The candidate carries
+	// outdated state; the projection should be repaired (see
+	// Memory.RepairStale) once a write-path supersede ships the
+	// successor revision.
+	DriftSupersededFact DriftReason = "superseded_fact"
+)
+
+// DriftEvent describes a single drift observation. PR-5 fires these
+// from materialize (the single read-path chokepoint); rebuild /
+// reconcile-style emitters may join later.
+type DriftEvent struct {
+	// Scope of the query that surfaced the drift.
+	Scope model.Scope
+	// Source is the subsystem that detected the drift — e.g.
+	// "materialize". Free-form so reverse-drift detectors can
+	// label themselves without bumping the type.
+	Source string
+	// Reason classifies the drift; see DriftReason.
+	Reason DriftReason
+	// FactID identifies the offending canonical fact (the id the
+	// projection still believes is current).
+	FactID string
+	// Details is an optional human-readable hint (e.g. fusion
+	// source name, candidate score) — never load-bearing.
+	Details string
+}
+
 // NopTelemetry is the zero-cost telemetry hook used until Phase 8.
+// Embed it to satisfy TelemetryHook when a caller only cares about
+// one event type.
 type NopTelemetry struct{}
 
 func (NopTelemetry) OnProjection(ProjectionEvent) {}
+func (NopTelemetry) OnDrift(DriftEvent)           {}
 
 // Fanout drives required + optional projections.
 //

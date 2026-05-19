@@ -46,6 +46,14 @@ func (p *Projection) Consistency() projection.Consistency { return projection.Re
 // Project upserts canonical facts into the retrieval namespace. Facts
 // in mixed scopes are grouped per namespace so each Upsert is scope
 // local.
+//
+// The retrieval projection deliberately treats a superseded fact
+// (CorrectedBy != "") as "not part of the active view" and silently
+// skips it. Under normal Save flow this filter is a no-op (the
+// resolver/store close the prior fact's validity *after* the new
+// successor is projected), but rebuild and any future bulk-replay
+// path may feed superseded facts in and must not put them back into
+// the search index.
 func (p *Projection) Project(ctx context.Context, facts []model.TemporalFact) error {
 	if len(facts) == 0 {
 		return nil
@@ -54,7 +62,13 @@ func (p *Projection) Project(ctx context.Context, facts []model.TemporalFact) er
 	for ns, group := range grouped {
 		docs := make([]retrieval.Doc, 0, len(group))
 		for _, f := range group {
+			if f.CorrectedBy != "" {
+				continue
+			}
 			docs = append(docs, toDoc(f))
+		}
+		if len(docs) == 0 {
+			continue
 		}
 		if err := p.index.Upsert(ctx, ns, docs); err != nil {
 			return fmt.Errorf("retrieval projection upsert ns=%s: %w", ns, err)
@@ -75,22 +89,27 @@ func (p *Projection) Forget(ctx context.Context, scope model.Scope, factIDs []st
 	return nil
 }
 
-// Rebuild applies an exact-replace semantics within the supplied
-// scope: docs present in the index but missing from the snapshot are
-// deleted, then the snapshot is upserted. This is the canonical
-// recovery operation for projection drift (docs §8) and matches the
-// invariant that projections are rebuildable views of the ledger.
+// Rebuild applies exact-replace semantics within the supplied scope:
+// docs present in the index but missing from the *active* slice of
+// the snapshot are deleted, then the active subset is upserted. A
+// fact is "active" iff CorrectedBy == "" — the same rule Project
+// enforces. The caller passes the full IncludeSuperseded=true
+// snapshot (Memory layer does not pre-filter), and the projection
+// decides what belongs in its active view.
 //
 // Note: facts in the snapshot must all share scope. Multi-scope
 // snapshots should be split by the caller (Memory.Rebuild handles
 // this internally).
 func (p *Projection) Rebuild(ctx context.Context, scope model.Scope, facts []model.TemporalFact) error {
 	ns := NamespaceFor(scope)
-	snapshotIDs := make(map[string]struct{}, len(facts))
+	active := make([]model.TemporalFact, 0, len(facts))
+	activeIDs := make(map[string]struct{}, len(facts))
 	for _, f := range facts {
-		if f.ID != "" {
-			snapshotIDs[f.ID] = struct{}{}
+		if f.ID == "" || f.CorrectedBy != "" {
+			continue
 		}
+		active = append(active, f)
+		activeIDs[f.ID] = struct{}{}
 	}
 
 	existing, err := listAllDocIDs(ctx, p.index, ns)
@@ -99,7 +118,7 @@ func (p *Projection) Rebuild(ctx context.Context, scope model.Scope, facts []mod
 	}
 	var stale []string
 	for _, id := range existing {
-		if _, keep := snapshotIDs[id]; !keep {
+		if _, keep := activeIDs[id]; !keep {
 			stale = append(stale, id)
 		}
 	}
@@ -108,10 +127,10 @@ func (p *Projection) Rebuild(ctx context.Context, scope model.Scope, facts []mod
 			return fmt.Errorf("retrieval projection rebuild ns=%s delete stale: %w", ns, err)
 		}
 	}
-	if len(facts) == 0 {
+	if len(active) == 0 {
 		return nil
 	}
-	return p.Project(ctx, facts)
+	return p.Project(ctx, active)
 }
 
 // listAllDocIDs paginates retrieval.Index.List to enumerate every

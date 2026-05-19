@@ -14,6 +14,7 @@ import (
 	"errors"
 
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/model"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/projection"
 	temporalstore "github.com/GizClaw/flowcraft/sdk/recall/internal/store/temporal"
 )
 
@@ -33,12 +34,23 @@ type Materializer interface {
 
 // FromStore materializes from a TemporalFactStore.
 type FromStore struct {
-	store temporalstore.Store
+	store     temporalstore.Store
+	telemetry projection.TelemetryHook
 }
 
-// New constructs a FromStore.
-func New(store temporalstore.Store) *FromStore {
-	return &FromStore{store: store}
+// New constructs a FromStore with the supplied telemetry hook. A
+// nil hook is replaced with projection.NopTelemetry so the hot
+// path never has to nil-check.
+//
+// The hook receives a DriftEvent for every stale-fact /
+// superseded-fact drop so an outer reconcile or governance worker
+// can repair projections without the read path doing it inline
+// (docs §10.1: no auto-repair from Recall).
+func New(store temporalstore.Store, hook projection.TelemetryHook) *FromStore {
+	if hook == nil {
+		hook = projection.NopTelemetry{}
+	}
+	return &FromStore{store: store, telemetry: hook}
 }
 
 // Materialize loads each candidate's canonical fact. Drops fall in
@@ -73,6 +85,13 @@ func (m *FromStore) Materialize(ctx context.Context, candidates []model.Candidat
 					FactID: c.FactID,
 					Source: c.Source,
 				})
+				m.telemetry.OnDrift(projection.DriftEvent{
+					Scope:   c.Scope,
+					Source:  "materialize",
+					Reason:  projection.DriftStaleFact,
+					FactID:  c.FactID,
+					Details: c.Source,
+				})
 				continue
 			}
 			drops = append(drops, model.CandidateDrop{
@@ -90,6 +109,13 @@ func (m *FromStore) Materialize(ctx context.Context, candidates []model.Candidat
 				Reason: model.DropSuperseded,
 				FactID: c.FactID,
 				Source: c.Source,
+			})
+			m.telemetry.OnDrift(projection.DriftEvent{
+				Scope:   c.Scope,
+				Source:  "materialize",
+				Reason:  projection.DriftSupersededFact,
+				FactID:  c.FactID,
+				Details: c.Source,
 			})
 			continue
 		}

@@ -36,9 +36,11 @@ func (s *stubProj) Rebuild(_ context.Context, _ model.Scope, facts []model.Tempo
 
 type recordingHook struct {
 	events []ProjectionEvent
+	drifts []DriftEvent
 }
 
 func (r *recordingHook) OnProjection(e ProjectionEvent) { r.events = append(r.events, e) }
+func (r *recordingHook) OnDrift(e DriftEvent)           { r.drifts = append(r.drifts, e) }
 
 func TestFanout_RequiredFailureAborts(t *testing.T) {
 	failing := &stubProj{name: "retrieval", consistency: Required, projectErr: errors.New("boom")}

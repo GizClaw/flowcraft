@@ -55,6 +55,12 @@ func (p *Projection) Consistency() projection.Consistency { return projection.Re
 
 // Project upserts mentions for the supplied facts. Facts may belong
 // to multiple scopes; they are routed per scope shard.
+//
+// Mirrors the retrieval projection's active-view rule: a fact with
+// CorrectedBy != "" is silently dropped (and any existing mentions
+// for the same id are evicted). Under normal Save flow this is a
+// no-op; rebuild and any future bulk-replay path benefit from the
+// projection self-cleaning.
 func (p *Projection) Project(_ context.Context, facts []model.TemporalFact) error {
 	if len(facts) == 0 {
 		return nil
@@ -67,8 +73,13 @@ func (p *Projection) Project(_ context.Context, facts []model.TemporalFact) erro
 		}
 		sh := p.shardLocked(f.Scope)
 		// Replace any existing mentions for this fact id so re-projects
-		// (rebuild / supersede) do not leak old entities.
+		// (rebuild / supersede) do not leak old entities. The removal
+		// also covers the superseded-skip case below: a fact that was
+		// previously active but is now superseded gets evicted here.
 		removeFactLocked(sh, f.ID)
+		if f.CorrectedBy != "" {
+			continue
+		}
 		ents := collectEntities(f)
 		if len(ents) == 0 {
 			continue
