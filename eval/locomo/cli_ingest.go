@@ -11,7 +11,7 @@ import (
 	"github.com/GizClaw/flowcraft/eval/locomo/runners/flowcraft"
 	"github.com/GizClaw/flowcraft/sdk/llm"
 	"github.com/GizClaw/flowcraft/sdk/model"
-	"github.com/GizClaw/flowcraft/sdk/recall"
+	"github.com/GizClaw/flowcraft/sdk/recall_v1"
 )
 
 // addLocomoIngest wires `eval locomo ingest` — runs Runner.Save in a

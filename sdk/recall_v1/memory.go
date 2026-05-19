@@ -12,7 +12,7 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/history"
 	"github.com/GizClaw/flowcraft/sdk/internal/syncx"
 	"github.com/GizClaw/flowcraft/sdk/llm"
-	recallpipe "github.com/GizClaw/flowcraft/sdk/recall/pipeline"
+	recallpipe "github.com/GizClaw/flowcraft/sdk/recall_v1/pipeline"
 	"github.com/GizClaw/flowcraft/sdk/retrieval"
 	"github.com/GizClaw/flowcraft/sdk/retrieval/journal"
 	basepipe "github.com/GizClaw/flowcraft/sdk/retrieval/pipeline"
