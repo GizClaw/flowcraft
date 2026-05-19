@@ -2,7 +2,11 @@ package recall
 
 import (
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/compiler"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/fusion"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/materialize"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/planner"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/projection"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/source"
 	temporalstore "github.com/GizClaw/flowcraft/sdk/recall/internal/store/temporal"
 	"github.com/GizClaw/flowcraft/sdk/retrieval"
 )
@@ -25,6 +29,13 @@ type config struct {
 	// They are typically Optional and provide forward room for
 	// timeline / relation / profile to plug in later phases.
 	extraProjections []projection.Projection
+
+	// Read-path overrides. nil means "use the default wiring".
+	planner      planner.Planner
+	sources      []source.CandidateSource
+	fuser        fusion.Fuser
+	materializer materialize.Materializer
+	fusionOpts   fusion.Options
 }
 
 // WithTemporalStore overrides the canonical TemporalFactStore. Use
@@ -77,5 +88,57 @@ func WithExtraProjection(p projection.Projection) Option {
 		if p != nil {
 			c.extraProjections = append(c.extraProjections, p)
 		}
+	}
+}
+
+// WithPlanner overrides the read-path planner. The default is a
+// deterministic rule-based planner.
+func WithPlanner(p planner.Planner) Option {
+	return func(c *config) {
+		if p != nil {
+			c.planner = p
+		}
+	}
+}
+
+// WithSources overrides the candidate source set. When non-empty,
+// the default retrieval+entity sources are NOT registered; callers
+// are responsible for wiring whatever sources they need (including
+// re-adding the defaults).
+func WithSources(sources ...source.CandidateSource) Option {
+	return func(c *config) {
+		for _, s := range sources {
+			if s != nil {
+				c.sources = append(c.sources, s)
+			}
+		}
+	}
+}
+
+// WithFuser overrides the fusion algorithm. The default is
+// fusion.WeightedRRF.
+func WithFuser(f fusion.Fuser) Option {
+	return func(c *config) {
+		if f != nil {
+			c.fuser = f
+		}
+	}
+}
+
+// WithMaterializer overrides the materializer. The default uses
+// the configured TemporalFactStore.
+func WithMaterializer(m materialize.Materializer) Option {
+	return func(c *config) {
+		if m != nil {
+			c.materializer = m
+		}
+	}
+}
+
+// WithFusionOptions overrides default fusion options. Per-source
+// weights default to retrieval=1.0, entity=0.8 when left zero.
+func WithFusionOptions(opts fusion.Options) Option {
+	return func(c *config) {
+		c.fusionOpts = opts
 	}
 }

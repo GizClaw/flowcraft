@@ -1,17 +1,129 @@
+// Package materialize turns fused candidates back into grounded
+// ContextItems by looking up their canonical fact in the temporal
+// store and attaching embedded evidence (docs §9.4).
+//
+// Materialization is also the read-path's stale-fact filter: if a
+// candidate's fact id is missing from the store (drift between
+// retrieval doc and canonical ledger), the candidate is dropped and
+// recorded in the trace. PR-3 does not auto-repair the drift —
+// that's reconcile (Phase 5).
 package materialize
 
 import (
 	"context"
+	"errors"
 
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/model"
+	temporalstore "github.com/GizClaw/flowcraft/sdk/recall/internal/store/temporal"
 )
 
+// ContextItem is a materialized recall result. The Candidate field
+// preserves the fusion provenance (score, source, rank) so explain
+// traces and reranking can use it.
 type ContextItem struct {
 	Candidate model.Candidate
 	Fact      model.TemporalFact
 	Evidence  []model.EvidenceRef
 }
 
+// Materializer is the read-path materialization boundary.
 type Materializer interface {
-	Materialize(ctx context.Context, candidates []model.Candidate) ([]ContextItem, error)
+	Materialize(ctx context.Context, candidates []model.Candidate) ([]ContextItem, []model.CandidateDrop, error)
+}
+
+// FromStore materializes from a TemporalFactStore.
+type FromStore struct {
+	store temporalstore.Store
+}
+
+// New constructs a FromStore.
+func New(store temporalstore.Store) *FromStore {
+	return &FromStore{store: store}
+}
+
+// Materialize loads each candidate's canonical fact. Drops fall in
+// four buckets:
+//
+//   - DropStaleFact: store has no such id (retrieval doc drift).
+//   - DropMaterializeErr: store returned a non-ErrNotFound error.
+//   - DropSuperseded: fact.CorrectedBy != "" — revised state, do
+//     not surface.
+//   - DropScopeViolation: defense-in-depth scope check. The
+//     candidate's query scope must hard-partition match the loaded
+//     fact (runtime+user), and if the query scope carries an
+//     AgentID the fact must be either agent-shared or written by
+//     the same agent. A faulty / third-party CandidateSource that
+//     bypasses scope filters is caught here so the read path stays
+//     isolated per docs §16 invariants.
+//
+// Errors during materialization never abort the whole call: one
+// bad candidate must not poison the rest of the recall.
+func (m *FromStore) Materialize(ctx context.Context, candidates []model.Candidate) ([]ContextItem, []model.CandidateDrop, error) {
+	var (
+		items []ContextItem
+		drops []model.CandidateDrop
+	)
+	for _, c := range candidates {
+		fact, err := m.store.Get(ctx, c.Scope, c.FactID)
+		if err != nil {
+			if errors.Is(err, temporalstore.ErrNotFound) {
+				drops = append(drops, model.CandidateDrop{
+					Stage:  "materialize",
+					Reason: model.DropStaleFact,
+					FactID: c.FactID,
+					Source: c.Source,
+				})
+				continue
+			}
+			drops = append(drops, model.CandidateDrop{
+				Stage:   "materialize",
+				Reason:  model.DropMaterializeErr,
+				FactID:  c.FactID,
+				Source:  c.Source,
+				Details: err.Error(),
+			})
+			continue
+		}
+		if fact.CorrectedBy != "" {
+			drops = append(drops, model.CandidateDrop{
+				Stage:  "materialize",
+				Reason: model.DropSuperseded,
+				FactID: c.FactID,
+				Source: c.Source,
+			})
+			continue
+		}
+		if reason, ok := violatesScope(c.Scope, fact.Scope); ok {
+			drops = append(drops, model.CandidateDrop{
+				Stage:   "materialize",
+				Reason:  model.DropScopeViolation,
+				FactID:  c.FactID,
+				Source:  c.Source,
+				Details: reason,
+			})
+			continue
+		}
+		items = append(items, ContextItem{
+			Candidate: c,
+			Fact:      fact,
+			Evidence:  fact.EvidenceRefs,
+		})
+	}
+	return items, drops, nil
+}
+
+// violatesScope reports whether a loaded fact's canonical owner
+// scope is incompatible with the query scope under the v2 isolation
+// rules. Returns (reason, true) on violation, ("", false) on pass.
+func violatesScope(query, owner model.Scope) (string, bool) {
+	if owner.RuntimeID != query.RuntimeID {
+		return "runtime_id mismatch", true
+	}
+	if owner.UserID != query.UserID {
+		return "user_id mismatch", true
+	}
+	if query.AgentID != "" && owner.AgentID != "" && owner.AgentID != query.AgentID {
+		return "agent_id soft isolation", true
+	}
+	return "", false
 }
