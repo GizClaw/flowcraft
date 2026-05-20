@@ -87,8 +87,6 @@ func (a *legacyAdapter) synthesise(d diagnostic.StageDiagnostic) {
 		a.emit(d, "store", "append", len(a.state.Resolution.Facts))
 	case "validity_close":
 		a.emitValidityClose(d)
-	case "evidence_mirror":
-		a.emitEvidenceMirror(d)
 	case "project_required":
 		a.emit(d, "projection", "project_required", len(a.state.Resolution.Facts))
 	case "project_optional":
@@ -137,23 +135,6 @@ func (a *legacyAdapter) emitValidityClose(d diagnostic.StageDiagnostic) {
 		})
 	}
 	a.emit(d, "store", "validity_close", len(a.state.Resolution.Closes))
-}
-
-// emitEvidenceMirror reproduces the legacy two-flavour emit:
-// OnPipeline("evidence", "mirror") with Err nil on success and Err
-// set on failure — the failure mode is non-fatal so state.
-// EvidenceMirrorErr carries the cause separately from the framework's
-// own StageDiagnostic.Err (which stays empty because Run returned
-// nil to suppress compensation).
-func (a *legacyAdapter) emitEvidenceMirror(d diagnostic.StageDiagnostic) {
-	a.inner.OnPipeline(port.PipelineEvent{
-		Scope:   a.state.Scope,
-		Stage:   "evidence",
-		Op:      "mirror",
-		Count:   len(a.state.Resolution.Facts),
-		Latency: d.Duration,
-		Err:     a.state.EvidenceMirrorErr,
-	})
 }
 
 // emitEvolution honours legacy runEvolutionAfterSave which only

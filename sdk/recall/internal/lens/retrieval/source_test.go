@@ -1,24 +1,22 @@
-package retrieval
+package retrieval_test
 
 import (
 	"context"
 	"testing"
 
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain"
+	retlens "github.com/GizClaw/flowcraft/sdk/recall/internal/lens/retrieval"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/planner"
-	retrievalproj "github.com/GizClaw/flowcraft/sdk/recall/internal/projection/retrieval"
-	"github.com/GizClaw/flowcraft/sdk/retrieval"
+	sdkretrieval "github.com/GizClaw/flowcraft/sdk/retrieval"
 	retrievalmem "github.com/GizClaw/flowcraft/sdk/retrieval/memory"
 )
 
-// stubEmbedder echoes the input length into a fixed-size vector so we
-// can confirm Source.embedQuery is wired through Embed.
-type stubEmbedder struct {
+type sourceStubEmbedder struct {
 	dim   int
 	calls int
 }
 
-func (s *stubEmbedder) Embed(_ context.Context, text string) ([]float32, error) {
+func (s *sourceStubEmbedder) Embed(_ context.Context, text string) ([]float32, error) {
 	s.calls++
 	vec := make([]float32, s.dim)
 	for i := 0; i < len(text) && i < s.dim; i++ {
@@ -27,7 +25,7 @@ func (s *stubEmbedder) Embed(_ context.Context, text string) ([]float32, error) 
 	return vec, nil
 }
 
-func (s *stubEmbedder) EmbedBatch(_ context.Context, texts []string) ([][]float32, error) {
+func (s *sourceStubEmbedder) EmbedBatch(_ context.Context, texts []string) ([][]float32, error) {
 	out := make([][]float32, len(texts))
 	for i, t := range texts {
 		v, _ := s.Embed(nil, t)
@@ -38,8 +36,8 @@ func (s *stubEmbedder) EmbedBatch(_ context.Context, texts []string) ([][]float3
 
 func TestSource_WithEmbedder_InvokesEmbedOnQuery(t *testing.T) {
 	idx := retrievalmem.New()
-	emb := &stubEmbedder{dim: 8}
-	proj, _ := retrievalproj.New(idx, retrievalproj.WithEmbedder(emb))
+	emb := &sourceStubEmbedder{dim: 8}
+	proj, _ := retlens.New(idx, retlens.WithEmbedder(emb))
 	scope := domain.Scope{RuntimeID: "rt", UserID: "u1"}
 	if err := proj.Project(context.Background(), []domain.TemporalFact{
 		{ID: "a", Scope: scope, Kind: domain.KindNote, Content: "hello world"},
@@ -47,7 +45,7 @@ func TestSource_WithEmbedder_InvokesEmbedOnQuery(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	src := New(idx, WithEmbedder(emb))
+	src := retlens.NewSource(idx, retlens.WithSourceEmbedder(emb))
 	plan := domain.QueryPlan{
 		Intent:        domain.QueryIntent{Text: "hello", Scope: scope, Limit: 10},
 		SourceOrder:   []string{planner.SourceRetrieval},
@@ -66,7 +64,7 @@ func TestSource_WithEmbedder_InvokesEmbedOnQuery(t *testing.T) {
 
 func TestSource_AgentIDSoftIsolationFilter(t *testing.T) {
 	idx := retrievalmem.New()
-	proj, _ := retrievalproj.New(idx)
+	proj, _ := retlens.New(idx)
 	scope := domain.Scope{RuntimeID: "rt", UserID: "u1"}
 
 	mk := func(id, agent, body string) domain.TemporalFact {
@@ -87,7 +85,7 @@ func TestSource_AgentIDSoftIsolationFilter(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	source := New(idx)
+	source := retlens.NewSource(idx)
 
 	// agent-a query: must include own + shared, exclude agent-b.
 	plan := domain.QueryPlan{
@@ -127,14 +125,14 @@ func TestSource_AgentIDSoftIsolationFilter(t *testing.T) {
 
 func TestSource_PropagatesRetrievalScore(t *testing.T) {
 	idx := retrievalmem.New()
-	proj, _ := retrievalproj.New(idx)
+	proj, _ := retlens.New(idx)
 	scope := domain.Scope{RuntimeID: "rt"}
 	if err := proj.Project(context.Background(), []domain.TemporalFact{
 		{ID: "f1", Scope: scope, Kind: domain.KindNote, Content: "alpha beta"},
 	}); err != nil {
 		t.Fatal(err)
 	}
-	s := New(idx)
+	s := retlens.NewSource(idx)
 	res := s.Query(context.Background(), domain.QueryPlan{
 		Intent:        domain.QueryIntent{Text: "alpha", Scope: scope, Limit: 5},
 		SourceBudgets: map[string]int{planner.SourceRetrieval: 5},
@@ -149,4 +147,4 @@ func TestSource_PropagatesRetrievalScore(t *testing.T) {
 }
 
 // compile-time guard for the source contract shape.
-var _ retrieval.Index = (*retrievalmem.Index)(nil)
+var _ sdkretrieval.Index = retrievalmem.New()

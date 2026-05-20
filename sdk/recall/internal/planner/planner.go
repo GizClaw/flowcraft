@@ -63,6 +63,9 @@ const MaxSourceOverfetch = 50
 
 // RuleBased is the deterministic planner.
 type RuleBased struct {
+	// Specs is the lens registration table (name, weight, activate).
+	// When empty, Plan falls back to builtinSpecs().
+	Specs []LensSpec
 	// RetrievalShare applies only when retrieval+entity are the sole
 	// active sources (PR-3 behaviour). When structured sources are
 	// also active budgets are weight-normalized instead.
@@ -71,8 +74,28 @@ type RuleBased struct {
 	GraphEnabled bool
 }
 
-// New returns the default rule-based planner.
-func New() *RuleBased { return &RuleBased{RetrievalShare: 0.6} }
+// New returns the default rule-based planner with built-in lens
+// specs (tests and callers that do not use lens.Registry).
+func New() *RuleBased { return NewFromSpecs(builtinSpecs()) }
+
+// NewFromSpecs constructs a planner driven by the supplied lens
+// registration order and activation predicates.
+func NewFromSpecs(specs []LensSpec) *RuleBased {
+	return &RuleBased{Specs: specs, RetrievalShare: 0.6}
+}
+
+// builtinSpecs mirrors the default lens.Registry registration order
+// and activation rules used by memory.New.
+func builtinSpecs() []LensSpec {
+	return []LensSpec{
+		{Name: SourceRetrieval, Weight: WeightRetrieval, Activate: func(domain.QueryIntent) bool { return true }},
+		{Name: SourceEntity, Weight: WeightEntity, Activate: func(i domain.QueryIntent) bool { return len(i.Entities) > 0 }},
+		{Name: SourceGraph, Weight: WeightGraph, Activate: ActivatesGraph},
+		{Name: SourceRelation, Weight: WeightRelation, Activate: ActivatesRelation},
+		{Name: SourceProfile, Weight: WeightProfile, Activate: ActivatesProfile},
+		{Name: SourceTimeline, Weight: WeightTimeline, Activate: ActivatesTimeline},
+	}
+}
 
 var _ port.Planner = (*RuleBased)(nil)
 
@@ -101,7 +124,7 @@ func (r *RuleBased) Plan(_ context.Context, input port.PlannerInput) (domain.Que
 		GraphHops:    input.GraphHops,
 	}
 
-	order := buildSourceOrder(intent)
+	order := r.buildSourceOrder(intent)
 	budgets := allocateBudgets(order, limit)
 
 	return domain.QueryPlan{
@@ -142,24 +165,25 @@ func (r *RuleBased) retrievalEntityOnly(intent domain.QueryIntent) bool {
 	return true
 }
 
-func buildSourceOrder(intent domain.QueryIntent) []string {
-	order := []string{SourceRetrieval}
-	if len(intent.Entities) > 0 {
-		order = append(order, SourceEntity)
+func (r *RuleBased) buildSourceOrder(intent domain.QueryIntent) []string {
+	specs := r.Specs
+	if len(specs) == 0 {
+		specs = builtinSpecs()
 	}
-	if ActivatesGraph(intent) {
-		order = append(order, SourceGraph)
-	}
-	if ActivatesRelation(intent) {
-		order = append(order, SourceRelation)
-	}
-	if ActivatesProfile(intent) {
-		order = append(order, SourceProfile)
-	}
-	if ActivatesTimeline(intent) {
-		order = append(order, SourceTimeline)
+	var order []string
+	for _, spec := range specs {
+		if spec.Activate != nil && !spec.Activate(intent) {
+			continue
+		}
+		order = append(order, spec.Name)
 	}
 	return order
+}
+
+// buildSourceOrder is the legacy helper retained for planner tests
+// that assert activation predicates directly.
+func buildSourceOrder(intent domain.QueryIntent) []string {
+	return (&RuleBased{Specs: builtinSpecs()}).buildSourceOrder(intent)
 }
 
 func kindsIntersectTimeline(kinds []domain.FactKind) bool {

@@ -21,7 +21,7 @@ type Source struct {
 }
 
 // New constructs a Source.
-func New(lookup Lookup) *Source {
+func NewSource(lookup Lookup) *Source {
 	return &Source{lookup: lookup, BaseScore: 1.0}
 }
 

@@ -12,6 +12,7 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/fusion"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/ingest"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/intent"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/lens"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/materialize"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/pipeline"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/pipeline/read"
@@ -23,18 +24,6 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/planner"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/port"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/projection"
-	entityproj "github.com/GizClaw/flowcraft/sdk/recall/internal/projection/entity"
-	graphproj "github.com/GizClaw/flowcraft/sdk/recall/internal/projection/graph"
-	profileproj "github.com/GizClaw/flowcraft/sdk/recall/internal/projection/profile"
-	relationproj "github.com/GizClaw/flowcraft/sdk/recall/internal/projection/relation"
-	retrievalproj "github.com/GizClaw/flowcraft/sdk/recall/internal/projection/retrieval"
-	timelineproj "github.com/GizClaw/flowcraft/sdk/recall/internal/projection/timeline"
-	entitysource "github.com/GizClaw/flowcraft/sdk/recall/internal/source/entity"
-	graphsource "github.com/GizClaw/flowcraft/sdk/recall/internal/source/graph"
-	profilesource "github.com/GizClaw/flowcraft/sdk/recall/internal/source/profile"
-	relationsource "github.com/GizClaw/flowcraft/sdk/recall/internal/source/relation"
-	retrievalsource "github.com/GizClaw/flowcraft/sdk/recall/internal/source/retrieval"
-	timelinesource "github.com/GizClaw/flowcraft/sdk/recall/internal/source/timeline"
 	temporalstore "github.com/GizClaw/flowcraft/sdk/recall/internal/store/temporal"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/telemetry"
 	"github.com/GizClaw/flowcraft/sdk/retrieval"
@@ -81,6 +70,7 @@ type memory struct {
 	graphEnabled  bool
 	reranker      Reranker
 	evolution     port.EvolutionRunner
+	entitySnap    port.EntitySnapshotter
 
 	writeMu    sync.Mutex
 	writeLocks map[writeScopeKey]*writeLock
@@ -134,64 +124,41 @@ func New(opts ...Option) (Memory, error) {
 		cfg.resolver = ingest.NewResolver()
 	}
 
-	var retrievalProjOpts []retrievalproj.Option
-	if cfg.embedder != nil {
-		retrievalProjOpts = append(retrievalProjOpts, retrievalproj.WithEmbedder(cfg.embedder))
+	reg := lens.NewRegistry()
+	wireDefaultLenses(reg, cfg.graphEnabled, cfg.evidenceStore != nil)
+	lensDeps := lens.Deps{
+		Store:         cfg.store,
+		EvidenceStore: cfg.evidenceStore,
+		Index:         cfg.retrievalIndex,
+		Telemetry:     cfg.telemetry,
+		Embedder:      cfg.embedder,
+		GraphEnabled:  cfg.graphEnabled,
 	}
-	retrievalProj, err := retrievalproj.New(cfg.retrievalIndex, retrievalProjOpts...)
+	built, err := reg.BuildAll(lensDeps)
 	if err != nil {
 		return nil, fmt.Errorf("recall.New: %w", err)
 	}
-
-	entityProj := entityproj.New()
-	timelineProj := timelineproj.New()
-	relationProj := relationproj.New()
-	profileProj := profileproj.New()
-	projections := []port.Projection{
-		retrievalProj, entityProj,
-		timelineProj, relationProj, profileProj,
-	}
-	var graphProj *graphproj.Projection
-	if cfg.graphEnabled {
-		graphProj = graphproj.New()
-		projections = append(projections, graphProj)
-	}
+	projections := reg.Projections(built)
 	projections = append(projections, cfg.extraProjections...)
+	srcs := reg.Sources(built)
+	if len(cfg.sources) > 0 {
+		srcs = cfg.sources
+	}
+	entitySnap := reg.EntitySnapshotter(built)
 
-	// Default read-path wiring uses the same canonical backends that
-	// Save just wrote into: retrieval source on the retrieval index,
-	// entity source on the entity projection's read-only Lookup.
 	qc := cfg.queryCompiler
 	if qc == nil {
 		qc = intent.Default()
 	}
+	specs := reg.Specs()
 	planr := cfg.planner
 	if planr == nil {
-		rb := planner.New()
-		if cfg.graphEnabled {
-			rb.GraphEnabled = true
-		}
+		rb := planner.NewFromSpecs(specs)
+		rb.GraphEnabled = cfg.graphEnabled
 		planr = rb
 	} else if cfg.graphEnabled {
 		if rb, ok := planr.(*planner.RuleBased); ok {
 			rb.GraphEnabled = true
-		}
-	}
-	srcs := append([]port.Source(nil), cfg.sources...)
-	if len(srcs) == 0 {
-		var retrievalSrcOpts []retrievalsource.Option
-		if cfg.embedder != nil {
-			retrievalSrcOpts = append(retrievalSrcOpts, retrievalsource.WithEmbedder(cfg.embedder))
-		}
-		srcs = []port.Source{
-			retrievalsource.New(cfg.retrievalIndex, retrievalSrcOpts...),
-			entitysource.New(entityProj),
-			relationsource.New(relationProj),
-			profilesource.New(profileProj),
-			timelinesource.New(timelineProj),
-		}
-		if graphProj != nil {
-			srcs = append(srcs, graphsource.New(graphProj))
 		}
 	}
 	fuser := cfg.fuser
@@ -204,16 +171,7 @@ func New(opts ...Option) (Memory, error) {
 	}
 	fusionOpts := cfg.fusionOpts
 	if fusionOpts.Weights == nil {
-		fusionOpts.Weights = map[string]float64{
-			planner.SourceRetrieval: planner.WeightRetrieval,
-			planner.SourceEntity:    planner.WeightEntity,
-			planner.SourceRelation:  planner.WeightRelation,
-			planner.SourceProfile:   planner.WeightProfile,
-			planner.SourceTimeline:  planner.WeightTimeline,
-		}
-		if cfg.graphEnabled {
-			fusionOpts.Weights[planner.SourceGraph] = planner.WeightGraph
-		}
+		fusionOpts.Weights = weightsFromSpecs(specs)
 	}
 
 	fanout := projection.New(projections, cfg.telemetry)
@@ -235,19 +193,19 @@ func New(opts ...Option) (Memory, error) {
 		graphEnabled:   cfg.graphEnabled,
 		reranker:       cfg.reranker,
 		evolution:      cfg.evolution,
+		entitySnap:     entitySnap,
 		writeLocks:     make(map[writeScopeKey]*writeLock),
 	}
 	tel := cfg.telemetry
 	m.writePreRunner = write.NewRunner([]pipeline.Stage[*write.WriteState]{
 		writestages.NewValidate(),
-		writestages.NewIngest(cfg.compiler, m.snapshotKnownEntities),
+		writestages.NewIngest(cfg.compiler, m.entitySnapshots),
 	}, tel)
 	m.writePostRunner = write.NewRunner([]pipeline.Stage[*write.WriteState]{
 		writestages.NewResolve(cfg.resolver, cfg.store),
 		writestages.NewAppend(cfg.store, tel),
 		writestages.NewValidityClose(cfg.store, fanout, tel),
-		writestages.NewEvidenceMirror(cfg.evidenceStore, tel),
-		writestages.NewProjectRequired(fanout, cfg.evidenceStore, tel),
+		writestages.NewProjectRequired(fanout, tel),
 		writestages.NewProjectOptional(fanout),
 		writestages.NewEvolutionAfterSave(cfg.evolution),
 	}, tel)
@@ -404,40 +362,22 @@ func (a *recallHitReranker) Rerank(ctx context.Context, query string, hits []dom
 	return res, nil
 }
 
-// snapshotKnownEntities returns the canonical entities currently
-// indexed by the entity projection for this scope. The Structurizer
-// uses the snapshot as a soft hint to fold freshly-extracted
-// mentions into existing canonical forms.
-//
-// We deliberately ignore CandidateSources here: the entity projection
-// is the canonical source of truth for the write-side canonicalisation
-// hint, and it can answer in-process without a Recall round trip.
-//
-// Missing / disabled projection returns nil — the Structurizer
-// degrades to NER-only entity extraction, which is the same path the
-// very first Save in a scope already takes.
-func (m *memory) snapshotKnownEntities(scope Scope) []port.EntitySnapshot {
-	for _, p := range m.projections {
-		snap, ok := p.(interface {
-			Snapshot(scope domain.Scope) []entityproj.Snapshot
-		})
-		if !ok {
+func (m *memory) entitySnapshots(scope Scope) []port.EntitySnapshot {
+	if m.entitySnap == nil {
+		return nil
+	}
+	return m.entitySnap.Snapshot(scope)
+}
+
+func weightsFromSpecs(specs []planner.LensSpec) map[string]float64 {
+	weights := make(map[string]float64, len(specs))
+	for _, s := range specs {
+		if s.Name == "" || s.Weight == 0 {
 			continue
 		}
-		raw := snap.Snapshot(scope)
-		if len(raw) == 0 {
-			return nil
-		}
-		out := make([]port.EntitySnapshot, 0, len(raw))
-		for _, r := range raw {
-			out = append(out, port.EntitySnapshot{
-				Canonical: r.Canonical,
-				Aliases:   r.Aliases,
-			})
-		}
-		return out
+		weights[s.Name] = s.Weight
 	}
-	return nil
+	return weights
 }
 
 func (m *memory) lockWriteScope(scope Scope) func() {
@@ -586,23 +526,6 @@ func (m *memory) Forget(ctx context.Context, scope Scope, factID string) error {
 	}
 
 	m.fanout.ForgetOptional(ctx, scope, []string{factID})
-
-	// Sweep the evidence adapter. Best-effort: by this point the
-	// canonical fact (and its authoritative EvidenceRefs) are
-	// already gone, so a stale lookup entry is a leak, not a
-	// safety problem. Telemetry surfaces it so an operator can
-	// reconcile if needed.
-	if m.evidenceStore != nil {
-		if err := m.evidenceStore.ForgetByFact(ctx, scope, []string{factID}); err != nil {
-			m.fanout.Telemetry().OnProjection(port.ProjectionEvent{
-				Projection:  "forget.evidence",
-				Op:          port.OpForget,
-				Consistency: projection.Optional.String(),
-				FactCount:   1,
-				Err:         fmt.Errorf("evidence forget %s: %w", factID, err),
-			})
-		}
-	}
 	return nil
 }
 
@@ -649,58 +572,12 @@ func (m *memory) RebuildScope(ctx context.Context, scope Scope) error {
 	return m.runRebuild(ctx, scope, "")
 }
 
-// rebuildEvidence applies exact-replace semantics to the secondary
-// evidence adapter: every fact id the adapter currently knows about
-// is forgotten, then refs are re-appended from the canonical
-// snapshot. The union sweep is what removes orphan entries (adapter
-// has them, canonical no longer does) so the adapter stays a pure
-// derived view of the ledger — never a second truth layer.
-//
-// The store's Append is idempotent on (factID, ref ID) so a partial
-// failure can be retried by re-running RebuildAll.
-func (m *memory) rebuildEvidence(ctx context.Context, scope Scope, facts []domain.TemporalFact) error {
-	adapterIDs, err := m.evidenceStore.ListFactIDs(ctx, scope)
-	if err != nil {
-		return fmt.Errorf("list evidence fact ids: %w", err)
-	}
-	ids := make(map[string]struct{}, len(adapterIDs)+len(facts))
-	for _, id := range adapterIDs {
-		ids[id] = struct{}{}
-	}
-	for _, f := range facts {
-		if f.ID != "" {
-			ids[f.ID] = struct{}{}
-		}
-	}
-	if len(ids) > 0 {
-		toForget := make([]string, 0, len(ids))
-		for id := range ids {
-			toForget = append(toForget, id)
-		}
-		if err := m.evidenceStore.ForgetByFact(ctx, scope, toForget); err != nil {
-			return fmt.Errorf("forget evidence: %w", err)
-		}
-	}
-	for _, f := range facts {
-		if len(f.EvidenceRefs) == 0 {
-			continue
-		}
-		if err := m.evidenceStore.Append(ctx, scope, f.ID, f.EvidenceRefs); err != nil {
-			return fmt.Errorf("append evidence %s: %w", f.ID, err)
-		}
-	}
-	return nil
-}
-
 // RebuildProjection implements ProjectionRebuilder. It rebuilds the
-// single projection registered under name. Useful for targeted
-// incident playbooks; ErrProjectionDisabled-style errors surface as
+// single projection registered under name (including "evidence" when
+// an EvidenceStore is configured). Useful for targeted incident
+// playbooks; ErrProjectionDisabled-style errors surface as
 // errdefs.NotFound so callers can distinguish "typo" from "actual
 // rebuild failure".
-//
-// Evidence is intentionally NOT considered part of the projection
-// namespace — use RebuildAll if the evidence adapter also needs to
-// be rebuilt.
 func (m *memory) RebuildProjection(ctx context.Context, scope Scope, name string) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -733,20 +610,6 @@ func (m *memory) runRebuild(ctx context.Context, scope Scope, projectionFilter s
 			return fmt.Errorf("recall.RebuildAll: %w", err)
 		}
 		return err
-	}
-	if projectionFilter != "" {
-		return nil
-	}
-	if m.evidenceStore != nil {
-		if err := m.rebuildEvidence(ctx, scope, state.Facts); err != nil {
-			m.fanout.Telemetry().OnProjection(port.ProjectionEvent{
-				Projection:  "rebuild.evidence",
-				Op:          port.OpRebuild,
-				Consistency: projection.Optional.String(),
-				FactCount:   len(state.Facts),
-				Err:         err,
-			})
-		}
 	}
 	return nil
 }

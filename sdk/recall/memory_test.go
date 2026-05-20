@@ -12,9 +12,9 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/llm"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/ingest"
+	retrievallens "github.com/GizClaw/flowcraft/sdk/recall/internal/lens/retrieval"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/port"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/projection"
-	retrievalproj "github.com/GizClaw/flowcraft/sdk/recall/internal/projection/retrieval"
 	temporalstore "github.com/GizClaw/flowcraft/sdk/recall/internal/store/temporal"
 	retrievalmem "github.com/GizClaw/flowcraft/sdk/retrieval/memory"
 )
@@ -55,7 +55,7 @@ func TestSave_AppendsAndProjects(t *testing.T) {
 		t.Errorf("merge_key = %q", got.MergeKey)
 	}
 
-	if _, ok, err := idx.Get(context.Background(), retrievalproj.NamespaceFor(scope), id); err != nil || !ok {
+	if _, ok, err := idx.Get(context.Background(), retrievallens.NamespaceFor(scope), id); err != nil || !ok {
 		t.Errorf("retrieval projection missing fact: ok=%v err=%v", ok, err)
 	}
 }
@@ -112,7 +112,7 @@ func TestForget_RemovesFromStoreAndProjections(t *testing.T) {
 	if _, err := store.Get(context.Background(), scope, id); !errors.Is(err, temporalstore.ErrNotFound) {
 		t.Errorf("store should be empty after forget, got %v", err)
 	}
-	if _, ok, _ := idx.Get(context.Background(), retrievalproj.NamespaceFor(scope), id); ok {
+	if _, ok, _ := idx.Get(context.Background(), retrievallens.NamespaceFor(scope), id); ok {
 		t.Error("retrieval projection should be empty after forget")
 	}
 }

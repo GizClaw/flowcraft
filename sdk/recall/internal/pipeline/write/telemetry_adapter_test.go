@@ -129,25 +129,6 @@ func TestLegacyAdapter_ValidityCloseEmitsBenignThenMain(t *testing.T) {
 	}
 }
 
-func TestLegacyAdapter_EvidenceMirrorSurfacesStateErr(t *testing.T) {
-	hook := &captureHook{}
-	state := &WriteState{
-		Scope:             domain.Scope{RuntimeID: "rt"},
-		Resolution:        domain.Resolution{Facts: []domain.TemporalFact{{ID: "a"}}},
-		EvidenceMirrorErr: errors.New("mirror boom"),
-	}
-	a := newLegacyAdapter(hook, state)
-	a.OnStage(diagnostic.StageDiagnostic{
-		Stage:    "evidence_mirror",
-		Phase:    diagnostic.PhaseWrite,
-		Status:   diagnostic.StatusOK,
-		Duration: time.Millisecond,
-	})
-	if len(hook.pipelines) != 1 || hook.pipelines[0].Err == nil {
-		t.Errorf("evidence_mirror legacy event lost: %+v", hook.pipelines)
-	}
-}
-
 func TestLegacyAdapter_EvolutionOnlyEmitsOnErr(t *testing.T) {
 	hook := &captureHook{}
 	state := &WriteState{Scope: domain.Scope{RuntimeID: "rt"}, AppendedFactIDs: []string{"a"}}

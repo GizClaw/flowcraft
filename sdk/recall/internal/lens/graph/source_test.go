@@ -24,7 +24,7 @@ func (s *overBudgetTraverse) Traverse(_ context.Context, _ domain.Scope, _ []str
 
 func TestSource_CapsAndMarksTruncated(t *testing.T) {
 	traverse := &overBudgetTraverse{ids: []string{"a", "b", "c"}}
-	src := New(traverse)
+	src := NewSource(traverse)
 	plan := domain.QueryPlan{
 		Intent: domain.QueryIntent{
 			Scope:        domain.Scope{RuntimeID: "rt", UserID: "u1"},

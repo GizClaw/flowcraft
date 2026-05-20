@@ -14,7 +14,6 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/embedding"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/planner"
-	retrievalproj "github.com/GizClaw/flowcraft/sdk/recall/internal/projection/retrieval"
 	"github.com/GizClaw/flowcraft/sdk/retrieval"
 )
 
@@ -27,23 +26,18 @@ type Source struct {
 	embedder embedding.Embedder
 }
 
-// Option configures the source at construction time. Options are
-// additive — Source works without any (BM25-only).
-type Option func(*Source)
+// SourceOption configures the source at construction time.
+type SourceOption func(*Source)
 
-// WithEmbedder enables hybrid search by embedding the query text. The
-// embedder must be the same one used by the retrieval projection on
-// the write path; mixing dimensions makes the cosine lane a no-op
-// because the memory index requires len(QueryVector) == len(Doc.Vector).
-func WithEmbedder(e embedding.Embedder) Option {
+// WithSourceEmbedder enables hybrid search by embedding the query text.
+func WithSourceEmbedder(e embedding.Embedder) SourceOption {
 	return func(s *Source) {
 		s.embedder = e
 	}
 }
 
-// New constructs a Source. index ownership stays with the caller
-// (the Memory facade); the source never closes it.
-func New(index retrieval.Index, opts ...Option) *Source {
+// NewSource constructs a Source. index ownership stays with the caller.
+func NewSource(index retrieval.Index, opts ...SourceOption) *Source {
 	s := &Source{index: index}
 	for _, opt := range opts {
 		opt(s)
@@ -62,7 +56,7 @@ func (s *Source) Name() string { return planner.SourceRetrieval }
 // recall).
 func (s *Source) Query(ctx context.Context, plan domain.QueryPlan) domain.SourceResult {
 	scope := plan.Intent.Scope
-	ns := retrievalproj.NamespaceFor(scope)
+	ns := NamespaceFor(scope)
 	budget := plan.SourceBudgets[s.Name()]
 	if budget <= 0 {
 		budget = plan.TotalCap

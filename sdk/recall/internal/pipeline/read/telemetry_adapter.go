@@ -24,8 +24,8 @@ func newLegacyAdapter(inner port.TelemetryHook, state *ReadState) *legacyAdapter
 }
 
 func (a *legacyAdapter) OnProjection(ev port.ProjectionEvent) { a.inner.OnProjection(ev) }
-func (a *legacyAdapter) OnDrift(ev port.DriftEvent)             { a.inner.OnDrift(ev) }
-func (a *legacyAdapter) OnPipeline(ev port.PipelineEvent)       { a.inner.OnPipeline(ev) }
+func (a *legacyAdapter) OnDrift(ev port.DriftEvent)           { a.inner.OnDrift(ev) }
+func (a *legacyAdapter) OnPipeline(ev port.PipelineEvent)     { a.inner.OnPipeline(ev) }
 
 func (a *legacyAdapter) OnStage(d diagnostic.StageDiagnostic) {
 	a.inner.OnStage(d)

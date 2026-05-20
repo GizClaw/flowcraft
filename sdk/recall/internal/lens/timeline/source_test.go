@@ -25,7 +25,7 @@ func (q *fixedQuerier) Query(_ context.Context, _ domain.Scope, _, _ time.Time, 
 
 func TestSource_DoesNotMarkExactBudgetAsTruncated(t *testing.T) {
 	q := &fixedQuerier{ids: []string{"a", "b"}}
-	src := New(q)
+	src := NewSource(q)
 	plan := domain.QueryPlan{
 		Intent: domain.QueryIntent{
 			Scope:     domain.Scope{RuntimeID: "rt", UserID: "u1"},
@@ -50,7 +50,7 @@ func TestSource_DoesNotMarkExactBudgetAsTruncated(t *testing.T) {
 
 func TestSource_MarksOverBudgetAsTruncated(t *testing.T) {
 	q := &fixedQuerier{ids: []string{"a", "b", "c"}}
-	src := New(q)
+	src := NewSource(q)
 	plan := domain.QueryPlan{
 		Intent: domain.QueryIntent{
 			Scope:     domain.Scope{RuntimeID: "rt", UserID: "u1"},

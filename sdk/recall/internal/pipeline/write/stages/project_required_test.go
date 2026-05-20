@@ -36,7 +36,7 @@ func (s *stubProj) Rebuild(context.Context, domain.Scope, []domain.TemporalFact)
 func TestProjectRequired_HappyPath(t *testing.T) {
 	p := &stubProj{name: "required", consistency: port.Required}
 	fanout := projection.New([]port.Projection{p}, nil)
-	s := stages.NewProjectRequired(fanout, nil, nil)
+	s := stages.NewProjectRequired(fanout, nil)
 	state := &write.WriteState{
 		Scope:           domain.Scope{RuntimeID: "rt"},
 		Resolution:      domain.Resolution{Facts: []domain.TemporalFact{{ID: "a"}}},
@@ -54,7 +54,7 @@ func TestProjectRequired_FailureRunsSelfCleanup(t *testing.T) {
 	p := &stubProj{name: "required", consistency: port.Required, projectErr: errors.New("project boom")}
 	fanout := projection.New([]port.Projection{p}, nil)
 	hook := &recordHook{}
-	s := stages.NewProjectRequired(fanout, nil, hook)
+	s := stages.NewProjectRequired(fanout, hook)
 	state := &write.WriteState{
 		Scope:           domain.Scope{RuntimeID: "rt"},
 		Resolution:      domain.Resolution{Facts: []domain.TemporalFact{{ID: "a"}}},
@@ -76,7 +76,7 @@ func TestProjectRequired_FailureRunsSelfCleanup(t *testing.T) {
 func TestProjectRequired_CompensateForgets(t *testing.T) {
 	p := &stubProj{name: "required", consistency: port.Required}
 	fanout := projection.New([]port.Projection{p}, nil)
-	s := stages.NewProjectRequired(fanout, nil, nil)
+	s := stages.NewProjectRequired(fanout, nil)
 	state := &write.WriteState{
 		Scope:           domain.Scope{RuntimeID: "rt"},
 		AppendedFactIDs: []string{"a"},

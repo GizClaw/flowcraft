@@ -15,23 +15,21 @@ import (
 // ProjectRequired drives the Required-consistency projection fanout.
 // A required-projection failure must abort Save with strict
 // transactional semantics; the stage performs its own forget-required
-// + forget-optional + evidence-forget self-cleanup before returning
-// the error so the leaking partial-Project mid-stage cannot reach a
-// later RebuildAll.
+// + forget-optional self-cleanup before returning the error so the
+// leaking partial-Project mid-stage cannot reach a later RebuildAll.
 //
 // The Compensator handles cleanup when a stage AFTER project_required
 // fails — today the chain ends here (project_optional + evolution
 // never fail), but plan §6 calls the compensator out for future-
 // proofing and runner-level tests cover the unreachable-today branch.
 type ProjectRequired struct {
-	fanout        *projection.Fanout
-	evidenceStore port.EvidenceStore
-	hook          port.TelemetryHook
+	fanout *projection.Fanout
+	hook   port.TelemetryHook
 }
 
-// NewProjectRequired constructs the stage. evidenceStore may be nil.
-func NewProjectRequired(fanout *projection.Fanout, evidenceStore port.EvidenceStore, hook port.TelemetryHook) *ProjectRequired {
-	return &ProjectRequired{fanout: fanout, evidenceStore: evidenceStore, hook: hook}
+// NewProjectRequired constructs the stage.
+func NewProjectRequired(fanout *projection.Fanout, hook port.TelemetryHook) *ProjectRequired {
+	return &ProjectRequired{fanout: fanout, hook: hook}
 }
 
 // Name implements pipeline.Stage.
@@ -64,8 +62,8 @@ func (s *ProjectRequired) Compensate(ctx context.Context, state *write.WriteStat
 }
 
 // selfCleanup undoes the Project work this stage did (or might have
-// done partially) plus the upstream evidence mirror, matching legacy
-// rollbackSave's first three steps byte-for-byte.
+// done partially) via fanout forget paths (required + optional,
+// including the evidence lens when registered).
 func (s *ProjectRequired) selfCleanup(ctx context.Context, state *write.WriteState) {
 	if len(state.AppendedFactIDs) == 0 {
 		return
@@ -81,17 +79,6 @@ func (s *ProjectRequired) selfCleanup(ctx context.Context, state *write.WriteSta
 		})
 	}
 	s.fanout.ForgetOptional(cleanupCtx, state.Scope, state.AppendedFactIDs)
-	if s.evidenceStore != nil {
-		if err := s.evidenceStore.ForgetByFact(cleanupCtx, state.Scope, state.AppendedFactIDs); err != nil {
-			s.emit(port.ProjectionEvent{
-				Projection:  "save_rollback.evidence_forget",
-				Op:          port.OpForget,
-				Consistency: projection.Required.String(),
-				FactCount:   len(state.AppendedFactIDs),
-				Err:         fmt.Errorf("rollback cleanup: %w", err),
-			})
-		}
-	}
 }
 
 func (s *ProjectRequired) emit(ev port.ProjectionEvent) {

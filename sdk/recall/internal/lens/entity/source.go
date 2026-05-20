@@ -31,8 +31,8 @@ type Source struct {
 	BaseScore float64
 }
 
-// New constructs a Source backed by lookup.
-func New(lookup Lookup) *Source {
+// NewSource constructs a Source backed by lookup.
+func NewSource(lookup Lookup) *Source {
 	return &Source{lookup: lookup, BaseScore: 1.0}
 }
 

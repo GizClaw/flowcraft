@@ -6,8 +6,8 @@ import (
 
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain"
+	retrievallens "github.com/GizClaw/flowcraft/sdk/recall/internal/lens/retrieval"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/port"
-	retrievalproj "github.com/GizClaw/flowcraft/sdk/recall/internal/projection/retrieval"
 	temporalstore "github.com/GizClaw/flowcraft/sdk/recall/internal/store/temporal"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/telemetry"
 	retrievalmem "github.com/GizClaw/flowcraft/sdk/retrieval/memory"
@@ -70,10 +70,10 @@ func TestRebuildAll_RestoresRetrievalProjectionAfterDrift(t *testing.T) {
 	id := res.FactIDs[0]
 	// Simulate drift: nuke the doc from the retrieval index but
 	// leave the canonical fact intact.
-	if err := idx.Delete(context.Background(), retrievalproj.NamespaceFor(scope), []string{id}); err != nil {
+	if err := idx.Delete(context.Background(), retrievallens.NamespaceFor(scope), []string{id}); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok, _ := idx.Get(context.Background(), retrievalproj.NamespaceFor(scope), id); ok {
+	if _, ok, _ := idx.Get(context.Background(), retrievallens.NamespaceFor(scope), id); ok {
 		t.Fatal("setup: drift not seeded")
 	}
 	rb, ok := mem.(ProjectionRebuilder)
@@ -83,7 +83,7 @@ func TestRebuildAll_RestoresRetrievalProjectionAfterDrift(t *testing.T) {
 	if err := rb.RebuildAll(context.Background(), scope); err != nil {
 		t.Fatalf("rebuild: %v", err)
 	}
-	if _, ok, _ := idx.Get(context.Background(), retrievalproj.NamespaceFor(scope), id); !ok {
+	if _, ok, _ := idx.Get(context.Background(), retrievallens.NamespaceFor(scope), id); !ok {
 		t.Errorf("rebuild did not restore fact %s", id)
 	}
 }
@@ -133,17 +133,17 @@ func TestRebuildAll_DoesNotReprojectSupersededFactsToRetrieval(t *testing.T) {
 
 	// Start from a clean retrieval projection that does not contain
 	// the superseded doc. RebuildAll must not put it back.
-	if err := idx.Delete(context.Background(), retrievalproj.NamespaceFor(scope), []string{oldID}); err != nil {
+	if err := idx.Delete(context.Background(), retrievallens.NamespaceFor(scope), []string{oldID}); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok, _ := idx.Get(context.Background(), retrievalproj.NamespaceFor(scope), oldID); ok {
+	if _, ok, _ := idx.Get(context.Background(), retrievallens.NamespaceFor(scope), oldID); ok {
 		t.Fatal("setup failed: superseded doc still present before rebuild")
 	}
 
 	if err := mem.(ProjectionRebuilder).RebuildAll(context.Background(), scope); err != nil {
 		t.Fatalf("rebuild: %v", err)
 	}
-	if _, ok, _ := idx.Get(context.Background(), retrievalproj.NamespaceFor(scope), oldID); ok {
+	if _, ok, _ := idx.Get(context.Background(), retrievallens.NamespaceFor(scope), oldID); ok {
 		t.Fatalf("RebuildAll must not reproject superseded facts into retrieval")
 	}
 }
@@ -183,13 +183,13 @@ func TestRebuildProjection_TargetsSingleProjection(t *testing.T) {
 		t.Fatal(err)
 	}
 	id := res.FactIDs[0]
-	if err := idx.Delete(context.Background(), retrievalproj.NamespaceFor(scope), []string{id}); err != nil {
+	if err := idx.Delete(context.Background(), retrievallens.NamespaceFor(scope), []string{id}); err != nil {
 		t.Fatal(err)
 	}
 	if err := mem.(ProjectionRebuilder).RebuildProjection(context.Background(), scope, "retrieval"); err != nil {
 		t.Fatalf("rebuild projection: %v", err)
 	}
-	if _, ok, _ := idx.Get(context.Background(), retrievalproj.NamespaceFor(scope), id); !ok {
+	if _, ok, _ := idx.Get(context.Background(), retrievallens.NamespaceFor(scope), id); !ok {
 		t.Errorf("retrieval projection not rebuilt for %s", id)
 	}
 }
@@ -247,13 +247,13 @@ func TestRepairStale_ForgetsProjectionWithoutTouchingStore(t *testing.T) {
 	if _, err := store.Get(context.Background(), scope, id); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok, _ := idx.Get(context.Background(), retrievalproj.NamespaceFor(scope), id); !ok {
+	if _, ok, _ := idx.Get(context.Background(), retrievallens.NamespaceFor(scope), id); !ok {
 		t.Fatal("setup: projection empty")
 	}
 	if err := mem.(ProjectionRebuilder).RepairStale(context.Background(), scope, []string{id}); err != nil {
 		t.Fatalf("repair: %v", err)
 	}
-	if _, ok, _ := idx.Get(context.Background(), retrievalproj.NamespaceFor(scope), id); ok {
+	if _, ok, _ := idx.Get(context.Background(), retrievallens.NamespaceFor(scope), id); ok {
 		t.Errorf("RepairStale should have evicted projection entry")
 	}
 	if _, err := store.Get(context.Background(), scope, id); err != nil {
@@ -386,7 +386,7 @@ func TestSaveRecall_EmitsPipelineTelemetry(t *testing.T) {
 	}
 
 	for _, want := range []string{
-		"compiler", "conflict_resolve", "store", "evidence", "projection",
+		"compiler", "conflict_resolve", "store", "projection",
 		"query_compile", "planner", "source", "fusion", "materialize", "build_hits",
 	} {
 		if !hasPipelineStage(hook.pipelines, want) {

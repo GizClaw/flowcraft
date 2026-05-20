@@ -1,5 +1,5 @@
-// Package graph implements the graph CandidateSource (docs §8.4).
-package graph
+// Package relation implements the relation CandidateSource.
+package relation
 
 import (
 	"context"
@@ -7,29 +7,29 @@ import (
 
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/planner"
-	graphproj "github.com/GizClaw/flowcraft/sdk/recall/internal/projection/graph"
 )
 
-// Traverse is the read contract from the graph projection.
-type Traverse interface {
-	Traverse(ctx context.Context, scope domain.Scope, seeds []string, maxHops, limit int) []string
+// Lookup is the read contract from the relation projection.
+type Lookup interface {
+	Lookup(ctx context.Context, scope domain.Scope, subject, predicate, object string) []string
 }
 
-// Source surfaces fact ids reachable via bounded graph expansion.
+// Source surfaces fact ids matching typed relation dimensions.
 type Source struct {
-	traverse  Traverse
+	lookup    Lookup
 	BaseScore float64
 }
 
-// New constructs a Source backed by traverse.
-func New(traverse Traverse) *Source {
-	return &Source{traverse: traverse, BaseScore: 0.85}
+// New constructs a Source.
+func NewSource(lookup Lookup) *Source {
+	return &Source{lookup: lookup, BaseScore: 1.0}
 }
 
-func (s *Source) Name() string { return planner.SourceGraph }
+func (s *Source) Name() string { return planner.SourceRelation }
 
 func (s *Source) Query(ctx context.Context, plan domain.QueryPlan) domain.SourceResult {
-	if !planner.ActivatesGraph(plan.Intent) {
+	intent := plan.Intent
+	if !planner.ActivatesRelation(intent) {
 		return domain.SourceResult{Source: s.Name()}
 	}
 	budget := plan.SourceBudgets[s.Name()]
@@ -37,14 +37,12 @@ func (s *Source) Query(ctx context.Context, plan domain.QueryPlan) domain.Source
 		return domain.SourceResult{Source: s.Name()}
 	}
 
-	hops := graphproj.CapGraphHops(plan.Intent.GraphHops)
-
 	started := time.Now()
-	ids := s.traverse.Traverse(ctx, plan.Intent.Scope, plan.Intent.Entities, hops, budget+1)
+	ids := s.lookup.Lookup(ctx, intent.Scope, intent.Subject, intent.Predicate, intent.Object)
 	latency := time.Since(started)
 
 	truncated := false
-	if budget > 0 && len(ids) > budget {
+	if len(ids) > budget {
 		ids = ids[:budget]
 		truncated = true
 	}
@@ -53,7 +51,7 @@ func (s *Source) Query(ctx context.Context, plan domain.QueryPlan) domain.Source
 	for i, id := range ids {
 		candidates = append(candidates, domain.Candidate{
 			FactID: id,
-			Scope:  plan.Intent.Scope,
+			Scope:  intent.Scope,
 			Source: s.Name(),
 			Rank:   i + 1,
 			Score:  s.BaseScore,

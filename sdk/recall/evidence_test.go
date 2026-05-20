@@ -8,7 +8,6 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/port"
-	retrievalproj "github.com/GizClaw/flowcraft/sdk/recall/internal/projection/retrieval"
 	evidencestore "github.com/GizClaw/flowcraft/sdk/recall/internal/store/evidence"
 	temporalstore "github.com/GizClaw/flowcraft/sdk/recall/internal/store/temporal"
 	retrievalmem "github.com/GizClaw/flowcraft/sdk/retrieval/memory"
@@ -84,7 +83,7 @@ func TestSave_NoEvidenceStore_DoesNotPanic(t *testing.T) {
 	}
 }
 
-func TestSave_EvidenceFailureDoesNotRollbackCanonicalFact(t *testing.T) {
+func TestSave_EvidenceFailureBlocksSaveAndRollsBack(t *testing.T) {
 	store := temporalstore.NewMemoryStore()
 	ev := &failingEvidence{EvidenceStore: evidencestore.NewMemoryStore(), failAppend: true}
 	idx := retrievalmem.New()
@@ -99,25 +98,25 @@ func TestSave_EvidenceFailureDoesNotRollbackCanonicalFact(t *testing.T) {
 	defer mem.Close()
 
 	scope := Scope{RuntimeID: "rt", UserID: "u1"}
-	res, err := mem.Save(context.Background(), scope, SaveRequest{
+	_, err = mem.Save(context.Background(), scope, SaveRequest{
 		Facts: []TemporalFact{{
 			Kind:         FactNote,
 			Content:      "x",
 			EvidenceRefs: []EvidenceRef{{ID: "ev1", Text: "raw"}},
 		}},
 	})
+	if err == nil {
+		t.Fatal("evidence projection failure must abort Save (Required consistency)")
+	}
+	facts, err := store.List(context.Background(), scope, port.ListQuery{})
 	if err != nil {
-		t.Fatalf("evidence adapter failure should not block canonical save: %v", err)
+		t.Fatalf("list canonical: %v", err)
 	}
-	fact, err := store.Get(context.Background(), scope, res.FactIDs[0])
-	if err != nil {
-		t.Fatalf("canonical fact should remain after adapter failure: %v", err)
+	if len(facts) != 0 {
+		t.Fatalf("canonical store must be rolled back after project_required failure, got %+v", facts)
 	}
-	if len(fact.EvidenceRefs) != 1 || fact.EvidenceRefs[0].ID != "ev1" {
-		t.Fatalf("embedded evidence refs should remain authoritative: %+v", fact.EvidenceRefs)
-	}
-	if _, ok, err := idx.Get(context.Background(), retrievalproj.NamespaceFor(scope), res.FactIDs[0]); err != nil || !ok {
-		t.Fatalf("retrieval projection should still contain saved fact, ok=%v err=%v", ok, err)
+	if ev.appended != 0 {
+		t.Fatalf("evidence append should not succeed, appended=%d", ev.appended)
 	}
 }
 

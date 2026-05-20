@@ -21,8 +21,8 @@ type Source struct {
 	BaseScore float64
 }
 
-// New constructs a Source.
-func New(querier Querier) *Source {
+// NewSource constructs a Source.
+func NewSource(querier Querier) *Source {
 	return &Source{querier: querier, BaseScore: 1.0}
 }
 

@@ -17,7 +17,7 @@ func (s stubLookup) Lookup(_ context.Context, _ domain.Scope, _ []string) []stri
 }
 
 func TestSource_NoEntitiesShortCircuits(t *testing.T) {
-	src := New(stubLookup{want: []string{"a", "b"}})
+	src := NewSource(stubLookup{want: []string{"a", "b"}})
 	res := src.Query(context.Background(), domain.QueryPlan{
 		Intent: domain.QueryIntent{Scope: domain.Scope{RuntimeID: "rt"}},
 	})
@@ -27,7 +27,7 @@ func TestSource_NoEntitiesShortCircuits(t *testing.T) {
 }
 
 func TestSource_BudgetCapsCandidates(t *testing.T) {
-	src := New(stubLookup{want: []string{"a", "b", "c", "d"}})
+	src := NewSource(stubLookup{want: []string{"a", "b", "c", "d"}})
 	res := src.Query(context.Background(), domain.QueryPlan{
 		Intent: domain.QueryIntent{
 			Scope:    domain.Scope{RuntimeID: "rt"},
