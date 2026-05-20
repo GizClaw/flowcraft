@@ -22,6 +22,18 @@ func IsActive(f TemporalFact, now time.Time) bool {
 	return f.ValidTo.After(now)
 }
 
+// IsRetired reports whether a fact is hidden from default Recall:
+// soft-closed or past ExpiresAt.
+func IsRetired(f TemporalFact, now time.Time) bool {
+	if f.Closed {
+		return true
+	}
+	if f.ExpiresAt != nil && !f.ExpiresAt.IsZero() && !now.Before(*f.ExpiresAt) {
+		return true
+	}
+	return false
+}
+
 // EffectiveTimestamp picks the sort/range key for timeline facts:
 // ValidFrom when set, otherwise ObservedAt (docs §5.4).
 func EffectiveTimestamp(f TemporalFact) time.Time {

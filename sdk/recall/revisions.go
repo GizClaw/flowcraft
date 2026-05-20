@@ -76,10 +76,10 @@ func (m *memory) Contest(ctx context.Context, scope Scope, factID string, eviden
 }
 
 func assertSameScope(primary, factScope domain.Scope) error {
-	if primary.RuntimeID != factScope.RuntimeID || primary.UserID != factScope.UserID {
-		return ErrCrossScope
-	}
-	if primary.AgentID != "" && factScope.AgentID != "" && primary.AgentID != factScope.AgentID {
+	// Federation is read-path only; revision targets use primary keys.
+	p := domain.Scope{RuntimeID: primary.RuntimeID, UserID: primary.UserID, AgentID: primary.AgentID}
+	f := domain.Scope{RuntimeID: factScope.RuntimeID, UserID: factScope.UserID, AgentID: factScope.AgentID}
+	if p.CanonicalKey() != f.CanonicalKey() {
 		return ErrCrossScope
 	}
 	return nil

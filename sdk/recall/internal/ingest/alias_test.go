@@ -8,8 +8,8 @@ import (
 
 func TestStaticAliasResolver_LookupCaseInsensitive(t *testing.T) {
 	scope := domain.Scope{RuntimeID: "rt", UserID: "u1"}
-	r := NewStaticAliasResolver(map[domain.Scope]map[string]string{
-		scope: {"Bob": "robert", "alice": "Alice Liddell"},
+	r := NewStaticAliasResolver(ScopeAliasEntry{
+		Scope: scope, Aliases: map[string]string{"Bob": "robert", "alice": "Alice Liddell"},
 	})
 	if got := r.Canonical(scope, "bob"); got != "robert" {
 		t.Errorf("lowercase lookup = %q", got)
@@ -29,11 +29,11 @@ func TestStaticAliasResolver_ScopeFallback(t *testing.T) {
 	runtimeScope := domain.Scope{RuntimeID: "rt"}
 	userScope := domain.Scope{RuntimeID: "rt", UserID: "u1"}
 	agentScope := domain.Scope{RuntimeID: "rt", UserID: "u1", AgentID: "a1"}
-	r := NewStaticAliasResolver(map[domain.Scope]map[string]string{
-		runtimeScope: {"bob": "global-bob"},
-		userScope:    {"bob": "user-bob"},
-		agentScope:   {"bob": "agent-bob"},
-	})
+	r := NewStaticAliasResolver(
+		ScopeAliasEntry{Scope: runtimeScope, Aliases: map[string]string{"bob": "global-bob"}},
+		ScopeAliasEntry{Scope: userScope, Aliases: map[string]string{"bob": "user-bob"}},
+		ScopeAliasEntry{Scope: agentScope, Aliases: map[string]string{"bob": "agent-bob"}},
+	)
 
 	if got := r.Canonical(agentScope, "bob"); got != "agent-bob" {
 		t.Errorf("agent wins: got %q", got)
@@ -54,8 +54,8 @@ func TestStaticAliasResolver_ScopeFallback(t *testing.T) {
 
 func TestAliasEntityResolver_AppliesAliasAndDedupes(t *testing.T) {
 	scope := domain.Scope{RuntimeID: "rt"}
-	alias := NewStaticAliasResolver(map[domain.Scope]map[string]string{
-		scope: {"Bob": "robert"},
+	alias := NewStaticAliasResolver(ScopeAliasEntry{
+		Scope: scope, Aliases: map[string]string{"Bob": "robert"},
 	})
 	er := newAliasEntityResolver(alias)
 	out := er.Resolve(domain.TemporalFact{

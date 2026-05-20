@@ -456,8 +456,8 @@ func TestSave_AliasResolverFoldsMentions(t *testing.T) {
 	store := temporalstore.NewMemoryStore()
 	scope := Scope{RuntimeID: "rt", UserID: "u1"}
 	cp := ingest.New(ingest.Stages{
-		AliasResolver: ingest.NewStaticAliasResolver(map[domain.Scope]map[string]string{
-			scope: {"Bob": "robert"},
+		AliasResolver: ingest.NewStaticAliasResolver(ingest.ScopeAliasEntry{
+			Scope: scope, Aliases: map[string]string{"Bob": "robert"},
 		}),
 	})
 	mem, _ := New(withTemporalStore(store), withCompiler(cp))

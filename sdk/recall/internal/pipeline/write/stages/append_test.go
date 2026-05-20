@@ -68,6 +68,14 @@ func (s *fakeStore) UpdateFeedback(context.Context, domain.Scope, string, float6
 	return nil
 }
 
+func (s *fakeStore) MarkClosed(context.Context, domain.Scope, string, bool) error { return nil }
+
+func (s *fakeStore) ListByID(context.Context, domain.Scope, string) ([]domain.TemporalFact, error) {
+	return nil, nil
+}
+
+func (s *fakeStore) DeleteByScope(context.Context, domain.Scope) (int, error) { return 0, nil }
+
 func (s *fakeStore) Close() error { return nil }
 
 type recordHook struct {

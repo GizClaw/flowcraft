@@ -62,6 +62,8 @@ const (
 	// defense-in-depth check after Sources, so third-party /
 	// custom Sources cannot leak across tenants or agents.
 	DropScopeViolation DropReason = "scope_violation"
+	// DropRetired marks facts hidden by Closed or ExpiresAt (D.8).
+	DropRetired DropReason = "retired"
 )
 
 // CandidateDrop records a single discarded candidate with its

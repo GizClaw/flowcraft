@@ -62,10 +62,10 @@ func PlanFromDrifts(scope domain.Scope, drifts []port.DriftEvent) RepairPlan {
 }
 
 func driftMatchesScope(planScope, driftScope domain.Scope) bool {
-	if driftScope == (domain.Scope{}) {
+	if driftScope.RuntimeID == "" {
 		return true
 	}
-	return driftScope == planScope
+	return driftScope.CanonicalKey() == planScope.CanonicalKey()
 }
 
 // AttributionsFromTrace is a diagnostics convenience wrapper.

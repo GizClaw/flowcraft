@@ -25,6 +25,13 @@ type IngestInput struct {
 	// Tier is the SaveRequest importance intent label (Phase D.3).
 	// Empty means "general". Mapped to Confidence in salience scoring.
 	Tier string
+
+	// RecentMessages is caller-supplied prior-turn context for the LLM
+	// extractor (Phase D.7). Recall does not fetch history itself.
+	RecentMessages []domain.Message
+
+	// ExistingFactsAnchor is caller-supplied dedup anchors for extract.
+	ExistingFactsAnchor []domain.TemporalFact
 }
 
 // IngestResult is what the ingest pipeline returns.

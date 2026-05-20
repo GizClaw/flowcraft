@@ -34,7 +34,9 @@ import (
 type Memory interface {
 	Save(ctx context.Context, scope Scope, req SaveRequest) (SaveResult, error)
 	Recall(ctx context.Context, scope Scope, query Query) ([]Hit, error)
-	Forget(ctx context.Context, scope Scope, factID string) error
+	Forget(ctx context.Context, scope Scope, factID string, mode ...ForgetMode) error
+	ForgetAll(ctx context.Context, scope Scope, mode ForgetMode, confirmScopeKey string) (int, error)
+	History(ctx context.Context, scope Scope, factID string) ([]FactVersion, error)
 	// Fork appends a parallel revision without closing the source fact.
 	Fork(ctx context.Context, scope Scope, sourceFactID string, newFact TemporalFact) (SaveResult, error)
 	// Contest challenges a fact with evidence and applies a penalty.
@@ -220,13 +222,20 @@ func New(opts ...Option) (Memory, error) {
 	if cfg.reranker != nil {
 		rerank = &recallHitReranker{r: cfg.reranker}
 	}
-	// TODO(D.5): wrap source_fanout→materialize in federation_{fanout,merge}
 	m.readRunner = read.NewRunner([]pipeline.Stage[*read.ReadState]{
 		readstages.NewIntent(qc),
 		readstages.NewPlan(planr, cfg.graphEnabled),
-		readstages.NewSourceFanout(func() []port.Source { return m.sources }),
-		readstages.NewFuse(fuser, fusionOpts, fusionCandidateCap),
-		readstages.NewMaterialize(mat),
+		readstages.NewFederationFanout(
+			func() []port.Source { return m.sources },
+			planr,
+			cfg.graphEnabled,
+			fuser,
+			fusionOpts,
+			fusionCandidateCap,
+			mat,
+			m.entitySnapshots,
+		),
+		readstages.NewFederationMerge(),
 		readstages.NewTrustFilter(),
 		readstages.NewRank(rankContextItems, cfg.reranker != nil),
 		readstages.NewBuildHits(rerank),
@@ -290,7 +299,9 @@ func (m *memory) runSave(ctx context.Context, scope Scope, req SaveRequest, with
 		Facts:      req.Facts,
 		Turns:      req.Turns,
 		ObservedAt: req.ObservedAt,
-		Tier:       req.Tier,
+		Tier:                req.Tier,
+		RecentMessages:      req.RecentMessages,
+		ExistingFactsAnchor: req.ExistingFactsAnchor,
 		// Now left zero so the ingestor's Clock (or time.Now
 		// fallback inside ingest) anchors relative-time resolution,
 		// matching the legacy runSave path that did not pass Now on
@@ -444,21 +455,24 @@ func (m *memory) runRecall(ctx context.Context, scope Scope, query Query, withTr
 		return nil, RecallTrace{}, errdefs.Validationf("recall.Recall: scope.runtime_id is required")
 	}
 
+	now := time.Now()
 	state := &read.ReadState{
 		Scope: scope,
 		Query: domain.Query{
-			Text:      query.Text,
-			Entities:  query.Entities,
-			Limit:     query.Limit,
-			Subject:   query.Subject,
-			Predicate: query.Predicate,
-			Object:    query.Object,
-			Kinds:     query.Kinds,
-			TimeRange: query.TimeRange,
-			GraphHops: query.GraphHops,
-			Trust:     trustToDomain(query.Trust),
+			Text:           query.Text,
+			Entities:       query.Entities,
+			Limit:          query.Limit,
+			Subject:        query.Subject,
+			Predicate:      query.Predicate,
+			Object:         query.Object,
+			Kinds:          query.Kinds,
+			TimeRange:      query.TimeRange,
+			GraphHops:      query.GraphHops,
+			Trust:          trustToDomain(query.Trust),
+			IncludeRetired: query.IncludeRetired,
 		},
-		StartedAt: time.Now(),
+		Now:       now,
+		StartedAt: now,
 	}
 	// Always allocate trace so evolution / legacy fields populate even
 	// when the caller only invoked Recall (not RecallExplain).
@@ -504,53 +518,6 @@ func trustToDomain(t *TrustContext) *domain.TrustContext {
 		copy(out.Scopes, t.Scopes)
 	}
 	return out
-}
-
-// Forget removes a fact with strict transactional semantics:
-//
-//  1. Snapshot the canonical fact (used as compensation source).
-//  2. fanout.ForgetRequired — on failure the canonical fact is
-//     preserved so callers can retry without losing state.
-//  3. store.Delete — on failure best-effort re-projects the snapshot
-//     through fanout.RebuildRequired so projections do not drift
-//     away from the still-present canonical fact.
-//  4. fanout.ForgetOptional — best-effort, telemetry only.
-//
-// A missing fact id is a noop and never raises an error.
-func (m *memory) Forget(ctx context.Context, scope Scope, factID string) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	if factID == "" {
-		return errdefs.Validationf("recall.Forget: fact id is required")
-	}
-
-	unlock := m.lockWriteScope(scope)
-	defer unlock()
-
-	snapshot, err := m.store.Get(ctx, scope, factID)
-	if err != nil {
-		if errors.Is(err, temporalstore.ErrNotFound) {
-			// idempotent forget: also sweep projections in case
-			// they hold drift, but treat result as success.
-			_ = m.fanout.ForgetRequired(ctx, scope, []string{factID})
-			m.fanout.ForgetOptional(ctx, scope, []string{factID})
-			return nil
-		}
-		return fmt.Errorf("recall.Forget: store get: %w", err)
-	}
-
-	if err := m.fanout.ForgetRequired(ctx, scope, []string{factID}); err != nil {
-		return err
-	}
-
-	if err := m.store.Delete(ctx, scope, []string{factID}); err != nil {
-		m.compensateForgetStoreFailure(ctx, scope, snapshot, err)
-		return fmt.Errorf("recall.Forget: store delete: %w", err)
-	}
-
-	m.fanout.ForgetOptional(ctx, scope, []string{factID})
-	return nil
 }
 
 // compensateForgetStoreFailure runs after store.Delete fails between

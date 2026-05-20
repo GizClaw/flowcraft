@@ -14,7 +14,7 @@ import (
 //
 // Assembly order (memory.New):
 //
-//	intent → plan → source_fanout → fuse → materialize →
+//	intent → plan → federation_fanout → federation_merge →
 //	trust_filter → rank → build_hits → evolution_after_recall
 // TODO(D.5): wrap source_fanout→materialize in federation_{fanout,merge}
 type Runner struct {

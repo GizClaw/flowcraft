@@ -9,7 +9,9 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/port"
 )
 
-// Materialize grounds fused candidates via the temporal store.
+// Materialize is retained for tests that invoke it directly; the
+// production read runner uses federation_fanout (D.5) which embeds
+// materialization per sub-scope.
 type Materialize struct {
 	materializer port.Materializer
 }
@@ -26,12 +28,18 @@ func (Materialize) Name() string { return "materialize" }
 func (s *Materialize) Run(ctx context.Context, state *read.ReadState) (diagnostic.StageDetail, error) {
 	requested := 0
 	returned := 0
+	retired := 0
 	for i := range state.SubScopeStates {
 		sub := &state.SubScopeStates[i]
 		requested += len(sub.Fused)
 		items, drops, err := s.materializer.Materialize(ctx, sub.Fused)
 		if err != nil {
 			return diagnostic.MaterializeDetail{Requested: requested}, err
+		}
+		if !state.Query.IncludeRetired {
+			before := len(items)
+			items, drops = filterRetiredItems(items, drops, state.Now)
+			retired += before - len(items)
 		}
 		sub.Materialized = items
 		sub.MaterializeDrops = drops
@@ -42,8 +50,9 @@ func (s *Materialize) Run(ctx context.Context, state *read.ReadState) (diagnosti
 	}
 	read.PromoteMergedItems(state)
 	return diagnostic.MaterializeDetail{
-		Requested: requested,
-		Returned:  returned,
+		Requested:       requested,
+		Returned:        returned,
+		RetiredFiltered: retired,
 	}, nil
 }
 

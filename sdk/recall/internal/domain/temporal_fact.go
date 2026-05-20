@@ -58,6 +58,15 @@ type TemporalFact struct {
 	Supersedes  []string
 	CorrectedBy string
 
+	// Closed marks a soft-forgotten fact (Phase D.8). Soft Forget sets
+	// Closed=true without deleting the ledger row; default Recall hides
+	// closed facts unless Query.IncludeRetired is set.
+	Closed bool
+
+	// ExpiresAt is an optional TTL; facts past this instant are treated
+	// as retired on read unless IncludeRetired is set.
+	ExpiresAt *time.Time
+
 	Metadata map[string]any
 }
 
@@ -79,6 +88,10 @@ func (f TemporalFact) Clone() TemporalFact {
 	if f.ValidTo != nil {
 		v := *f.ValidTo
 		out.ValidTo = &v
+	}
+	if f.ExpiresAt != nil {
+		v := *f.ExpiresAt
+		out.ExpiresAt = &v
 	}
 	return out
 }

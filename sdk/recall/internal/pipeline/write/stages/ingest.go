@@ -58,7 +58,9 @@ func (s *Ingest) Run(ctx context.Context, state *write.WriteState) (diagnostic.S
 		ObservedAt:    state.ObservedAt,
 		KnownEntities: state.KnownEntities,
 		Now:           state.Now,
-		Tier:          state.Tier,
+		Tier:                state.Tier,
+		RecentMessages:      state.RecentMessages,
+		ExistingFactsAnchor: state.ExistingFactsAnchor,
 	})
 	latency := time.Since(started)
 	if err != nil {
@@ -84,7 +86,9 @@ func (s *Ingest) Run(ctx context.Context, state *write.WriteState) (diagnostic.S
 		DroppedByDedup:       countDroppedReason(res.Dropped, "dedup:reject"),
 		StructurizerCoverage: res.StructurizerCoverage,
 		ExtractorLatency:     latency,
-		TierApplied:          ingest.TierAppliedFor(state.Tier),
+		TierApplied:            ingest.TierAppliedFor(state.Tier),
+		RecentMessagesProvided: len(state.RecentMessages),
+		AnchorsProvided:        len(state.ExistingFactsAnchor),
 	}
 	if len(res.Facts) == 0 {
 		return detail, pipeline.ShortCircuitWith("empty_ingest")

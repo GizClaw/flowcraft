@@ -33,6 +33,7 @@ const (
 	DropSuperseded     = diagnostic.DropSuperseded
 	DropMaterializeErr = diagnostic.DropMaterializeErr
 	DropScopeViolation = diagnostic.DropScopeViolation
+	DropRetired        = diagnostic.DropRetired
 )
 
 // RecallExplainer is the opt-in extension that returns a

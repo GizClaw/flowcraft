@@ -40,6 +40,20 @@ type TemporalFact = domain.TemporalFact
 // TrustContext carries read-time visibility constraints (Phase D.2).
 type TrustContext = domain.TrustContext
 
+// Message is a caller-supplied conversational turn for extract context.
+type Message = domain.Message
+
+// ForgetMode selects soft vs hard deletion (Phase D.8).
+type ForgetMode = domain.ForgetMode
+
+const (
+	ForgetSoft = domain.ForgetSoft
+	ForgetHard = domain.ForgetHard
+)
+
+// FactVersion is one row in a fact's supersede history (Phase D.6).
+type FactVersion = domain.FactVersion
+
 // TurnContext is the typed per-turn channel adapters use to feed
 // the LLMExtractor. Each TurnContext carries an id, an optional
 // absolute timestamp, the canonical speaker name, the conversational
@@ -113,6 +127,15 @@ type SaveRequest struct {
 	// not stored on TemporalFact. For per-fact gradients set
 	// Confidence on each TemporalFact directly.
 	Tier string
+
+	// RecentMessages is optional prior-turn context for the LLM
+	// extractor. Recall does not call history.Store — callers
+	// compose this from history.GetRecentMessages(scope, k) etc.
+	RecentMessages []Message
+
+	// ExistingFactsAnchor is optional dedup context for extract.
+	// Callers may Recall first, then pass anchors here before Save.
+	ExistingFactsAnchor []TemporalFact
 }
 
 // SaveResult reports the canonical fact ids that were appended to the
@@ -144,6 +167,9 @@ type Query struct {
 	// Trust applies read-time visibility filtering. Nil disables the
 	// trust_filter stage.
 	Trust *TrustContext
+
+	// IncludeRetired surfaces soft-closed and expired facts (D.8).
+	IncludeRetired bool
 }
 
 // TimeRangeFrom is a convenience for building a half-open range.

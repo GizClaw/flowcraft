@@ -316,6 +316,87 @@ func clampNonNeg(v float64) float64 {
 	return v
 }
 
+// MarkClosed sets the soft-delete flag on a fact (Phase D.8).
+func (s *MemoryStore) MarkClosed(_ context.Context, scope domain.Scope, factID string, closed bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	sh, ok := s.byScope[keyOf(scope)]
+	if !ok {
+		return ErrNotFound
+	}
+	f, ok := sh.byID[factID]
+	if !ok {
+		return ErrNotFound
+	}
+	f.Closed = closed
+	return nil
+}
+
+// ListByID walks the supersede chain for factID within scope.
+func (s *MemoryStore) ListByID(ctx context.Context, scope domain.Scope, factID string) ([]domain.TemporalFact, error) {
+	seed, err := s.Get(ctx, scope, factID)
+	if err != nil {
+		return nil, err
+	}
+	seen := map[string]struct{}{seed.ID: {}}
+	out := []domain.TemporalFact{seed}
+	queue := []string{seed.ID}
+
+	for len(queue) > 0 {
+		id := queue[0]
+		queue = queue[1:]
+		f, err := s.Get(ctx, scope, id)
+		if err != nil {
+			continue
+		}
+		for _, prior := range f.Supersedes {
+			if prior == "" {
+				continue
+			}
+			if _, ok := seen[prior]; ok {
+				continue
+			}
+			seen[prior] = struct{}{}
+			pf, err := s.Get(ctx, scope, prior)
+			if err != nil {
+				continue
+			}
+			out = append(out, pf)
+			queue = append(queue, prior)
+		}
+		successors, err := s.FindSupersededBy(ctx, scope, id)
+		if err != nil {
+			continue
+		}
+		for _, succ := range successors {
+			if _, ok := seen[succ.ID]; ok {
+				continue
+			}
+			seen[succ.ID] = struct{}{}
+			out = append(out, succ)
+			queue = append(queue, succ.ID)
+		}
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		return out[i].ObservedAt.Before(out[j].ObservedAt)
+	})
+	return out, nil
+}
+
+// DeleteByScope removes every fact in the scope partition.
+func (s *MemoryStore) DeleteByScope(_ context.Context, scope domain.Scope) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	k := keyOf(scope)
+	sh, ok := s.byScope[k]
+	if !ok {
+		return 0, nil
+	}
+	n := len(sh.byID)
+	delete(s.byScope, k)
+	return n, nil
+}
+
 // Delete removes facts by id. Missing ids are ignored.
 func (s *MemoryStore) Delete(_ context.Context, scope domain.Scope, factIDs []string) error {
 	if len(factIDs) == 0 {

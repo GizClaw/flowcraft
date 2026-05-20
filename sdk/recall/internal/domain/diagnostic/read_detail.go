@@ -94,10 +94,11 @@ func (FuseDetail) isStageDetail() {}
 
 // MaterializeDetail —— read/materialize stage.
 type MaterializeDetail struct {
-	Requested    int
-	Returned     int
-	Dropped      []DroppedFact
-	StoreLatency time.Duration
+	Requested        int
+	Returned         int
+	Dropped          []DroppedFact
+	StoreLatency     time.Duration
+	RetiredFiltered  int
 }
 
 func (MaterializeDetail) isStageDetail() {}

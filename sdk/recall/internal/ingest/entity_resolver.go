@@ -28,20 +28,28 @@ type StaticAliasResolver struct {
 	// are encouraged to construct it via NewStaticAliasResolver
 	// instead of populating directly so lookups stay
 	// case-insensitive.
-	Aliases map[domain.Scope]map[string]string
+	// Aliases keys are Scope.CanonicalKey() strings (Scope is not
+	// comparable once Federation []Scope is present).
+	Aliases map[string]map[string]string
 }
 
-// NewStaticAliasResolver constructs a StaticAliasResolver from a
-// per-scope alias map. The map is copied so callers may continue to
-// mutate the source without affecting resolved entities.
-func NewStaticAliasResolver(in map[domain.Scope]map[string]string) *StaticAliasResolver {
-	out := make(map[domain.Scope]map[string]string, len(in))
-	for scope, m := range in {
-		lower := make(map[string]string, len(m))
-		for alias, canonical := range m {
+// ScopeAliasEntry binds aliases to a scope without using Scope as a
+// map key (Scope contains a slice and is not comparable).
+type ScopeAliasEntry struct {
+	Scope   domain.Scope
+	Aliases map[string]string
+}
+
+// NewStaticAliasResolver constructs a StaticAliasResolver from
+// per-scope alias entries.
+func NewStaticAliasResolver(entries ...ScopeAliasEntry) *StaticAliasResolver {
+	out := make(map[string]map[string]string, len(entries))
+	for _, e := range entries {
+		lower := make(map[string]string, len(e.Aliases))
+		for alias, canonical := range e.Aliases {
 			lower[strings.ToLower(strings.TrimSpace(alias))] = canonical
 		}
-		out[scope] = lower
+		out[e.Scope.CanonicalKey()] = lower
 	}
 	return &StaticAliasResolver{Aliases: out}
 }
@@ -60,7 +68,7 @@ func (r *StaticAliasResolver) Canonical(scope domain.Scope, mention string) stri
 		return ""
 	}
 	for _, s := range fallbackScopes(scope) {
-		if m, ok := r.Aliases[s]; ok {
+		if m, ok := r.Aliases[s.CanonicalKey()]; ok {
 			if v, ok := m[key]; ok {
 				return v
 			}

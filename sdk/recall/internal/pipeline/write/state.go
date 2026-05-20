@@ -63,6 +63,11 @@ type WriteState struct {
 	// Tier is the SaveRequest importance intent (Phase D.3).
 	Tier string
 
+	// RecentMessages / ExistingFactsAnchor are caller-composed LLM
+	// context (Phase D.7).
+	RecentMessages      []domain.Message
+	ExistingFactsAnchor []domain.TemporalFact
+
 	// Stage outputs — populated in order, each stage owns
 	// exactly one field group below.
 

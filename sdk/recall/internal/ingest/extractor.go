@@ -288,6 +288,9 @@ func (e *LLMExtractor) Extract(ctx context.Context, input port.IngestInput) ([]d
 	if !ok || e.Client == nil {
 		return out, nil
 	}
+	if prefix := formatExtractorContextPrefix(input); prefix != "" {
+		userMessage = prefix + userMessage
+	}
 
 	system := e.System
 	if system == "" {
@@ -387,6 +390,52 @@ func normaliseExtractedKind(raw string) domain.FactKind {
 // valid wire shape the model can cite. ok=false means "no usable
 // input — skip the LLM call" so the extractor degrades cleanly
 // when callers only supply structured Facts.
+func formatExtractorContextPrefix(input port.IngestInput) string {
+	var b strings.Builder
+	if len(input.RecentMessages) > 0 {
+		b.WriteString("Recent conversation context (for disambiguation only, do not extract duplicate memories from this block):\n")
+		for i, m := range input.RecentMessages {
+			line := struct {
+				Role    string `json:"role,omitempty"`
+				Speaker string `json:"speaker,omitempty"`
+				Text    string `json:"text"`
+			}{
+				Role:    strings.TrimSpace(m.Role),
+				Speaker: strings.TrimSpace(m.Speaker),
+				Text:    strings.TrimSpace(m.Text),
+			}
+			if !m.Time.IsZero() {
+				lineJSON, _ := json.Marshal(struct {
+					Role    string `json:"role,omitempty"`
+					Speaker string `json:"speaker,omitempty"`
+					Time    string `json:"time,omitempty"`
+					Text    string `json:"text"`
+				}{line.Role, line.Speaker, m.Time.UTC().Format(time.RFC3339), line.Text})
+				b.Write(lineJSON)
+			} else {
+				lineJSON, _ := json.Marshal(line)
+				b.Write(lineJSON)
+			}
+			b.WriteByte('\n')
+			_ = i
+		}
+		b.WriteString("\n")
+	}
+	if len(input.ExistingFactsAnchor) > 0 {
+		b.WriteString("Existing memory anchors (do not re-extract identical facts):\n")
+		for _, f := range input.ExistingFactsAnchor {
+			if strings.TrimSpace(f.Content) == "" {
+				continue
+			}
+			b.WriteString("- ")
+			b.WriteString(strings.TrimSpace(f.Content))
+			b.WriteByte('\n')
+		}
+		b.WriteString("\n")
+	}
+	return b.String()
+}
+
 func buildExtractorUserMessage(input port.IngestInput) (string, map[string]port.TurnContext, bool) {
 	if len(input.Turns) == 0 {
 		return "", nil, false

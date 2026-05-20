@@ -34,6 +34,10 @@ type Query struct {
 	// Trust applies read-time visibility filtering (Phase D.2). Nil
 	// disables the trust_filter stage.
 	Trust *TrustContext
+
+	// IncludeRetired includes soft-closed and expired facts in recall
+	// results (Phase D.8). Default false.
+	IncludeRetired bool
 }
 
 // TimeRangeFrom is a convenience for building a half-open range.

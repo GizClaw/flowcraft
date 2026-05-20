@@ -46,11 +46,6 @@ func (s *Plan) Run(ctx context.Context, state *read.ReadState) (diagnostic.Stage
 		return diagnostic.PlanDetail{}, err
 	}
 	state.Plan = &plan
-	state.SubScopeStates = []read.SubScopeState{{
-		Scope:    state.Scope,
-		Plan:     &plan,
-		FastPath: true,
-	}}
 	if state.Trace != nil {
 		state.Trace.Plan = plan
 	}

@@ -21,7 +21,7 @@ func (v *fakeView) FindByMergeKey(_ context.Context, scope domain.Scope, mergeKe
 	}
 	var out []domain.TemporalFact
 	for _, f := range v.facts {
-		if f.Scope == scope && f.MergeKey == mergeKey {
+		if domain.ScopesMatch(f.Scope, scope) && f.MergeKey == mergeKey {
 			out = append(out, f)
 		}
 	}
@@ -30,7 +30,7 @@ func (v *fakeView) FindByMergeKey(_ context.Context, scope domain.Scope, mergeKe
 
 func (v *fakeView) Get(_ context.Context, scope domain.Scope, factID string) (domain.TemporalFact, error) {
 	for _, f := range v.facts {
-		if f.Scope == scope && f.ID == factID {
+		if domain.ScopesMatch(f.Scope, scope) && f.ID == factID {
 			return f, nil
 		}
 	}

@@ -55,18 +55,16 @@ func (a *legacyAdapter) synthesise(d diagnostic.StageDiagnostic) {
 		}
 		a.emit(d, "planner", "plan", n)
 	case "source_fanout":
-		if det, ok := d.Detail.(diagnostic.SourceFanoutDetail); ok {
-			for _, r := range det.Results {
-				a.inner.OnPipeline(port.PipelineEvent{
-					Scope:   a.state.Scope,
-					Stage:   "source",
-					Op:      r.Lens,
-					Count:   r.Candidates,
-					Latency: r.Latency,
-					Err:     errFromString(r.Err),
-				})
-			}
+		a.synthesiseSourceFanout(d)
+	case "federation_fanout":
+		a.synthesiseSourceFanout(d)
+		a.synthesiseFusionMaterialize(d)
+		if det, ok := d.Detail.(diagnostic.FederationFanoutDetail); ok && det.FastPath {
+			a.emit(d, "federation_fanout", "fanout", len(det.SubScopes))
 		}
+	case "federation_merge":
+		n := len(a.state.MergedItems)
+		a.emit(d, "federation_merge", "merge", n)
 	case "fuse":
 		n := 0
 		if sub := a.state.PrimarySubScope(); sub != nil {
@@ -82,6 +80,44 @@ func (a *legacyAdapter) synthesise(d diagnostic.StageDiagnostic) {
 		a.emitRerank()
 	case "evolution_after_recall":
 		a.emitEvolution(d)
+	}
+}
+
+func (a *legacyAdapter) synthesiseFusionMaterialize(d diagnostic.StageDiagnostic) {
+	fused, materialized := 0, 0
+	for _, sub := range a.state.SubScopeStates {
+		fused += len(sub.Fused)
+		materialized += len(sub.Materialized)
+	}
+	a.emit(d, "fusion", "fuse", fused)
+	a.emit(d, "materialize", "materialize", materialized)
+}
+
+func (a *legacyAdapter) synthesiseSourceFanout(d diagnostic.StageDiagnostic) {
+	if det, ok := d.Detail.(diagnostic.SourceFanoutDetail); ok {
+		for _, r := range det.Results {
+			a.inner.OnPipeline(port.PipelineEvent{
+				Scope:   a.state.Scope,
+				Stage:   "source",
+				Op:      r.Lens,
+				Count:   r.Candidates,
+				Latency: r.Latency,
+				Err:     errFromString(r.Err),
+			})
+		}
+		return
+	}
+	for _, sub := range a.state.SubScopeStates {
+		for _, res := range sub.SourceResults {
+			a.inner.OnPipeline(port.PipelineEvent{
+				Scope:   a.state.Scope,
+				Stage:   "source",
+				Op:      res.Source,
+				Count:   len(res.Candidates),
+				Latency: res.Latency,
+				Err:     res.Err,
+			})
+		}
 	}
 }
 

@@ -69,6 +69,17 @@ type TemporalStore interface {
 	// fact (Phase D.4). Deltas are added then clamped to >= 0.
 	UpdateFeedback(ctx context.Context, scope domain.Scope, factID string, reinforcementDelta, penaltyDelta float64) error
 
+	// MarkClosed sets or clears the soft-delete flag (Phase D.8).
+	MarkClosed(ctx context.Context, scope domain.Scope, factID string, closed bool) error
+
+	// ListByID returns every fact in the scope's supersede chain for
+	// factID, ObservedAt ascending (Phase D.6 History view).
+	ListByID(ctx context.Context, scope domain.Scope, factID string) ([]domain.TemporalFact, error)
+
+	// DeleteByScope removes every fact in the scope partition (Phase
+	// D.8 ForgetAll Hard). Returns the number of facts removed.
+	DeleteByScope(ctx context.Context, scope domain.Scope) (int, error)
+
 	// Close releases backend resources.
 	Close() error
 }
