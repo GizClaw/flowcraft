@@ -10,8 +10,8 @@ import (
 
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/llm"
-	"github.com/GizClaw/flowcraft/sdk/recall/internal/ingest"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/ingest"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/port"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/projection"
 	retrievalproj "github.com/GizClaw/flowcraft/sdk/recall/internal/projection/retrieval"
@@ -845,7 +845,7 @@ func TestRecall_AllSourcesFailReturnsError(t *testing.T) {
 // fails. Used to verify Save aborts on required-projection failure.
 type failingProjection struct{}
 
-func (failingProjection) Name() string                        { return "broken" }
+func (failingProjection) Name() string                  { return "broken" }
 func (failingProjection) Consistency() port.Consistency { return projection.Required }
 func (failingProjection) Project(context.Context, []domain.TemporalFact) error {
 	return errors.New("synthetic")

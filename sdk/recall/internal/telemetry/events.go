@@ -13,7 +13,7 @@ type NopHook struct{}
 
 var _ port.TelemetryHook = NopHook{}
 
-func (NopHook) OnProjection(port.ProjectionEvent)     {}
-func (NopHook) OnDrift(port.DriftEvent)               {}
-func (NopHook) OnPipeline(port.PipelineEvent)         {}
-func (NopHook) OnStage(diagnostic.StageDiagnostic)    {}
+func (NopHook) OnProjection(port.ProjectionEvent)  {}
+func (NopHook) OnDrift(port.DriftEvent)            {}
+func (NopHook) OnPipeline(port.PipelineEvent)      {}
+func (NopHook) OnStage(diagnostic.StageDiagnostic) {}

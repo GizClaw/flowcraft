@@ -5,8 +5,8 @@ import (
 	"testing"
 
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain"
-	"github.com/GizClaw/flowcraft/sdk/recall/internal/port"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain/diagnostic"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/port"
 )
 
 func TestWeightedRRF_DedupesAndCombinesScores(t *testing.T) {

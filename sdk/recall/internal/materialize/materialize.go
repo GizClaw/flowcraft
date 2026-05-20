@@ -14,8 +14,8 @@ import (
 	"errors"
 
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain"
-	"github.com/GizClaw/flowcraft/sdk/recall/internal/port"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain/diagnostic"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/port"
 	temporalstore "github.com/GizClaw/flowcraft/sdk/recall/internal/store/temporal"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/telemetry"
 )

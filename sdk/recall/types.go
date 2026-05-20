@@ -3,8 +3,8 @@ package recall
 import (
 	"time"
 
-	"github.com/GizClaw/flowcraft/sdk/recall/internal/port"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/port"
 )
 
 // Scope identifies the tenant/user partition for canonical memory. It

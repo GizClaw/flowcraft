@@ -22,7 +22,7 @@ type stubProj struct {
 	rebuildN    int
 }
 
-func (s *stubProj) Name() string             { return s.name }
+func (s *stubProj) Name() string                  { return s.name }
 func (s *stubProj) Consistency() port.Consistency { return s.consistency }
 func (s *stubProj) Project(_ context.Context, facts []domain.TemporalFact) error {
 	s.projectN++
@@ -46,8 +46,8 @@ type recordingHook struct {
 
 func (r *recordingHook) OnProjection(e port.ProjectionEvent) { r.events = append(r.events, e) }
 func (r *recordingHook) OnDrift(e port.DriftEvent)           { r.drifts = append(r.drifts, e) }
-func (r *recordingHook) OnPipeline(port.PipelineEvent)            {}
-func (r *recordingHook) OnStage(diagnostic.StageDiagnostic)       {}
+func (r *recordingHook) OnPipeline(port.PipelineEvent)       {}
+func (r *recordingHook) OnStage(diagnostic.StageDiagnostic)  {}
 
 func TestFanout_RequiredFailureAborts(t *testing.T) {
 	failing := &stubProj{name: "retrieval", consistency: Required, projectErr: errors.New("boom")}

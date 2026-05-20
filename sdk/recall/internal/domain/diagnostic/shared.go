@@ -87,3 +87,20 @@ type DroppedFact struct {
 	Fact   any
 	Reason string
 }
+
+// CompensationFailedDetail is the Detail the pipeline framework
+// emits when a Stage's Compensator itself returns an error during
+// rollback. The diagnostic carries Status=failed and Stage suffixed
+// with ":compensate" so dashboards can distinguish a forward stage
+// failure from a rollback failure on the same slot.
+//
+// OriginalStage names the stage whose compensator failed. Cause is
+// the original Run error that triggered the rollback chain, so
+// operators see both halves of the story in one event without
+// cross-referencing trace.Stages.
+type CompensationFailedDetail struct {
+	OriginalStage string
+	Cause         string
+}
+
+func (CompensationFailedDetail) isStageDetail() {}

@@ -8,12 +8,13 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
-	"github.com/GizClaw/flowcraft/sdk/recall/internal/ingest"
-	"github.com/GizClaw/flowcraft/sdk/recall/internal/port"
-	"github.com/GizClaw/flowcraft/sdk/recall/internal/fusion"
-	"github.com/GizClaw/flowcraft/sdk/recall/internal/materialize"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/fusion"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/ingest"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/intent"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/materialize"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/planner"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/port"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/projection"
 	entityproj "github.com/GizClaw/flowcraft/sdk/recall/internal/projection/entity"
 	graphproj "github.com/GizClaw/flowcraft/sdk/recall/internal/projection/graph"
@@ -21,7 +22,6 @@ import (
 	relationproj "github.com/GizClaw/flowcraft/sdk/recall/internal/projection/relation"
 	retrievalproj "github.com/GizClaw/flowcraft/sdk/recall/internal/projection/retrieval"
 	timelineproj "github.com/GizClaw/flowcraft/sdk/recall/internal/projection/timeline"
-	"github.com/GizClaw/flowcraft/sdk/recall/internal/intent"
 	entitysource "github.com/GizClaw/flowcraft/sdk/recall/internal/source/entity"
 	graphsource "github.com/GizClaw/flowcraft/sdk/recall/internal/source/graph"
 	profilesource "github.com/GizClaw/flowcraft/sdk/recall/internal/source/profile"
@@ -300,7 +300,7 @@ func (m *memory) runSave(ctx context.Context, scope Scope, req SaveRequest, with
 			trace.Dropped = make([]DroppedFact, len(compiled.Dropped))
 			for i, d := range compiled.Dropped {
 				f, _ := d.Fact.(domain.TemporalFact)
-			trace.Dropped[i] = DroppedFact{Fact: f, Reason: d.Reason}
+				trace.Dropped[i] = DroppedFact{Fact: f, Reason: d.Reason}
 			}
 		}
 	}

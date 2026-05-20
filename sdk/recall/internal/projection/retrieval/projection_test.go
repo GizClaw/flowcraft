@@ -246,7 +246,7 @@ func TestProjection_UpsertsReservedMetadata(t *testing.T) {
 		domain.MetaMergeKey:  "state|alice|city",
 		domain.MetaScopeRT:   "rt",
 		domain.MetaScopeUser: "u1",
-		"user_key":          "user_val",
+		"user_key":           "user_val",
 	} {
 		if got.Metadata[key] != want {
 			t.Errorf("meta[%q] = %v, want %v", key, got.Metadata[key], want)
