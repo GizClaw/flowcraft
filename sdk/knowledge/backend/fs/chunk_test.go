@@ -9,14 +9,14 @@ import (
 	"testing"
 
 	"github.com/GizClaw/flowcraft/sdk/knowledge"
-	"github.com/GizClaw/flowcraft/sdk/textsearch"
+	"github.com/GizClaw/flowcraft/sdk/text/tokenize"
 	"github.com/GizClaw/flowcraft/sdk/workspace"
 )
 
 func newChunkRepo(t *testing.T) (*FSChunkRepo, *workspace.MemWorkspace) {
 	t.Helper()
 	ws := workspace.NewMemWorkspace()
-	return NewChunkRepo(ws, "kb", &textsearch.SimpleTokenizer{}), ws
+	return NewChunkRepo(ws, "kb", &tokenize.Simple{}), ws
 }
 
 func chunk(doc string, idx int, content string) knowledge.DerivedChunk {
@@ -87,7 +87,7 @@ func TestChunkRepo_PersistAndLoadRoundtrip(t *testing.T) {
 		t.Fatalf("file chunks = %+v", file.Chunks)
 	}
 
-	r2 := NewChunkRepo(ws, "kb", &textsearch.SimpleTokenizer{})
+	r2 := NewChunkRepo(ws, "kb", &tokenize.Simple{})
 	if err := r2.Load(ctx); err != nil {
 		t.Fatalf("load: %v", err)
 	}
@@ -491,7 +491,7 @@ func TestChunkRepo_SearchDocs_SurvivesPersistLoadRoundtrip(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("replace: %v", err)
 	}
-	r2 := NewChunkRepo(ws, "kb", &textsearch.SimpleTokenizer{})
+	r2 := NewChunkRepo(ws, "kb", &tokenize.Simple{})
 	if err := r2.Load(ctx); err != nil {
 		t.Fatalf("load: %v", err)
 	}

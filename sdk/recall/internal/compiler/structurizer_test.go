@@ -1,6 +1,7 @@
 package compiler
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -223,5 +224,23 @@ func TestNopStructurizer_LeavesFactsUnchanged(t *testing.T) {
 	out := NopStructurizer{}.Structurize(f, Input{})
 	if out.Kind != "" || len(out.Entities) != 0 || out.Subject != "" {
 		t.Errorf("Nop must not fill any field, got %+v", out)
+	}
+}
+
+// TestDefaultStructurizer_LiftsRelativeTimePhraseFromContent guards
+// the when-adapter integration: relative English phrases now
+// surface as MetaValidFromHint substrings (e.g. "yesterday")
+// without any caller having to plug in a custom parser. The hint
+// is consumed by TimeResolver's relative-token table, completing
+// the end-to-end path that pure regex parsing could not.
+func TestDefaultStructurizer_LiftsRelativeTimePhraseFromContent(t *testing.T) {
+	f := model.TemporalFact{Content: "Alice signed up for the gym yesterday."}
+	out := DefaultStructurizer{}.Structurize(f, Input{})
+	hint, _ := out.Metadata[MetaValidFromHint].(string)
+	if hint == "" {
+		t.Fatalf("expected NL hint for 'yesterday', got empty")
+	}
+	if !strings.Contains(strings.ToLower(hint), "yesterday") {
+		t.Errorf("hint should preserve relative phrase substring, got %q", hint)
 	}
 }

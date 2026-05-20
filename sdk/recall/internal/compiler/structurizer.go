@@ -1,13 +1,36 @@
 package compiler
 
 import (
-	"regexp"
 	"slices"
 	"strings"
+	"sync"
+	"time"
 	"unicode"
 
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/model"
+	"github.com/GizClaw/flowcraft/sdk/text/timex"
+	whenadp "github.com/GizClaw/flowcraft/sdk/text/timex/adapter/when"
 )
+
+// defaultTimeParser is the process-wide fallback used when a
+// DefaultStructurizer is constructed without an explicit
+// TimeParser. We prefer the olebedev/when adapter over the
+// zero-dep timex.RegexParser because when handles relative
+// phrases ("yesterday", "next Tuesday") in addition to absolute
+// dates — exactly the class of expressions an LLM-extracted fact
+// inherits verbatim from the conversational turn.
+//
+// Construction loads the English + common rule set; failure
+// (essentially impossible — when's rules are in-memory) degrades
+// to the regex baseline so the structurizer never blocks on
+// time parsing.
+var defaultTimeParser = sync.OnceValue(func() timex.Parser {
+	p, err := whenadp.New()
+	if err != nil {
+		return timex.RegexParser{}
+	}
+	return p
+})
 
 // Structurizer fills the structural fields the slim LLM extractor
 // does not own (entities, subject/predicate/object, valid_from
@@ -133,6 +156,16 @@ type DefaultStructurizer struct {
 	// entity disambiguation without touching the rest of the
 	// pipeline.
 	EntityExtractor EntityExtractor
+
+	// TimeParser turns natural-language time expressions inside
+	// fact.Content into the MetaValidFromHint string consumed by
+	// TimeResolver. Nil falls back to the olebedev/when adapter
+	// (see [defaultTimeParser]) which handles both ISO dates and
+	// English relative phrases. Callers needing CJK / multi-
+	// language parsing can plug in any timex.Parser
+	// implementation; the zero-dep timex.RegexParser is also a
+	// valid choice when relative phrases are unwanted.
+	TimeParser timex.Parser
 }
 
 // Structurize implements Structurizer.
@@ -184,7 +217,11 @@ func (s DefaultStructurizer) Structurize(f model.TemporalFact, input Input) mode
 	}
 
 	if _, hasHint := f.Metadata[MetaValidFromHint]; !hasHint && f.ValidFrom == nil {
-		if hint := inferValidFromHint(turn, f.Content); hint != "" {
+		parser := s.TimeParser
+		if parser == nil {
+			parser = defaultTimeParser()
+		}
+		if hint := inferValidFromHint(parser, turn, f.Content); hint != "" {
 			if f.Metadata == nil {
 				f.Metadata = map[string]any{}
 			}
@@ -370,31 +407,58 @@ func isStructurizerStopword(lower string) bool {
 	return ok
 }
 
-// absoluteDateRE matches the calendar-date shapes inferValidFromHint
-// can grep out of content. The list is short on purpose: anything
-// the LLM cannot ground from the supporting turn's typed Time must
-// be unambiguous enough that the TimeResolver can re-parse it.
-var absoluteDateRE = regexp.MustCompile(
-	`(?i)\b(` +
-		// YYYY-MM-DD or YYYY/MM/DD with optional time
-		`\d{4}[-/]\d{2}[-/]\d{2}(?:[T ]\d{2}:\d{2}(?::\d{2})?(?:Z|[+-]\d{2}:?\d{2})?)?` +
-		// "January 2, 2024" / "Jan 2, 2024"
-		`|(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{1,2},?\s+\d{4}` +
-		// "2 January 2024" / "2 Jan 2024"
-		`|\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{4}` +
-		`)\b`,
-)
-
 // inferValidFromHint prefers the typed Time on the supporting turn
-// (verbatim RFC3339 string) and falls back to scanning content for
-// an absolute calendar expression. Anything ambiguous is left for
-// the TimeResolver to handle via its small relative-token table.
-func inferValidFromHint(turn *TurnContext, content string) string {
+// (verbatim RFC3339 string) and falls back to scanning content
+// with a two-tier parser cascade:
+//
+//  1. timex.RegexParser — strict ISO 8601 / US slash dates only.
+//     This wins on any structured date because looser NL parsers
+//     ("05-07" → May 7th of current year, "2024-05-07" → just
+//     "05-07" because they index off MM-DD shorthand) regress on
+//     full ISO dates.
+//  2. The caller-supplied timex.Parser (default: olebedev/when)
+//     — handles relative phrases ("yesterday", "next Tuesday")
+//     and natural-language expressions the regex baseline does
+//     not recognise.
+//
+// The hint string is the raw substring the parser matched (e.g.
+// "2024-05-07", "yesterday") — TimeResolver re-parses it against
+// its own absolute-format + relative-token table which already
+// covers both shapes. Surfacing the substring instead of the
+// resolved time keeps Structurizer's contract simple: structurizer
+// finds time mentions, TimeResolver grounds them, and the two
+// stages stay independently testable.
+func inferValidFromHint(parser timex.Parser, turn *TurnContext, content string) string {
 	if turn != nil && !turn.Time.IsZero() {
 		return turn.Time.UTC().Format("2006-01-02T15:04:05Z07:00")
 	}
-	if m := absoluteDateRE.FindString(content); m != "" {
-		return m
+	if content == "" {
+		return ""
+	}
+	// Anchor relative phrases ("yesterday") to the turn's time
+	// when available so the resolved hint string still makes sense
+	// downstream. Falling back to time.Now() is acceptable: the
+	// TimeResolver re-parses the relative token against its own
+	// `now`, so the structurizer's anchor is only used by absolute
+	// parsers that need it for sanity.
+	anchor := time.Now()
+	if turn != nil && !turn.Time.IsZero() {
+		anchor = turn.Time
+	}
+	// Tier 1: strict ISO baseline. timex.RegexParser is stateless
+	// and pinned to ISO 8601 + US-slash shapes, so it never bites
+	// off shorter substrings the way looser NL parsers do.
+	if m, err := (timex.RegexParser{}).Parse(content, anchor); err == nil && m != nil {
+		return m.Text
+	}
+	// Tier 2: NL fallback. Only consulted when the strict baseline
+	// missed, so the wider net only fires on truly natural-language
+	// time expressions.
+	if parser == nil {
+		return ""
+	}
+	if m, err := parser.Parse(content, anchor); err == nil && m != nil {
+		return m.Text
 	}
 	return ""
 }

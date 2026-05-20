@@ -15,7 +15,7 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/knowledge/backend/fs"
 	knowledgeretrieval "github.com/GizClaw/flowcraft/sdk/knowledge/backend/retrieval"
 	"github.com/GizClaw/flowcraft/sdk/retrieval"
-	"github.com/GizClaw/flowcraft/sdk/textsearch"
+	"github.com/GizClaw/flowcraft/sdk/text/tokenize"
 	"github.com/GizClaw/flowcraft/sdk/workspace"
 )
 
@@ -30,7 +30,7 @@ type localConfig struct {
 	embedder knowledge.Embedder
 	embedSig string
 	prefix   string
-	tok      textsearch.Tokenizer
+	tok      tokenize.Tokenizer
 }
 
 // WithLocalChunker overrides the chunker used by the local service.
@@ -71,7 +71,7 @@ func WithLocalPrefix(prefix string) LocalOption {
 // CJKTokenizer; sdkx/retrieval/{sqlite,postgres} expose backend-native
 // analyzers). Configure tokenization at the Index constructor instead.
 // Slated for removal in v0.5.0.
-func WithLocalTokenizer(tok textsearch.Tokenizer) LocalOption {
+func WithLocalTokenizer(tok tokenize.Tokenizer) LocalOption {
 	return func(cfg *localConfig) { cfg.tok = tok }
 }
 
@@ -92,7 +92,7 @@ func WithLocalTokenizer(tok textsearch.Tokenizer) LocalOption {
 func NewLocal(ws workspace.Workspace, opts ...LocalOption) *knowledge.Service {
 	cfg := localConfig{
 		prefix: fs.DefaultPrefix,
-		tok:    &textsearch.CJKTokenizer{},
+		tok:    &tokenize.CJKBigram{},
 	}
 	for _, opt := range opts {
 		opt(&cfg)

@@ -1,6 +1,12 @@
-package textsearch
+package lemma_test
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/GizClaw/flowcraft/sdk/text/lemma"
+	"github.com/GizClaw/flowcraft/sdk/text/stem"
+	"github.com/GizClaw/flowcraft/sdk/text/tokenize"
+)
 
 // TestLemmatize_IrregularsCollapse asserts that the irregular-form
 // table actually collapses high-frequency inflections that Porter
@@ -58,10 +64,10 @@ func TestLemmatize_IrregularsCollapse(t *testing.T) {
 		{"geese", "goose"},
 	}
 	for _, c := range cases {
-		a := Stem(Lemmatize(c[0]))
-		b := Stem(Lemmatize(c[1]))
+		a := stem.Porter(lemma.Lemmatize(c[0]))
+		b := stem.Porter(lemma.Lemmatize(c[1]))
 		if a != b {
-			t.Errorf("Stem(Lemmatize(%q))=%q != Stem(Lemmatize(%q))=%q",
+			t.Errorf("stem.Porter(lemma.Lemmatize(%q))=%q != stem.Porter(lemma.Lemmatize(%q))=%q",
 				c[0], a, c[1], b)
 		}
 	}
@@ -78,8 +84,8 @@ func TestLemmatize_NoOpForUnknownWords(t *testing.T) {
 		"alice", "guangzhou", "matcha", "coffee", "tuesday",
 		"discussed", "love", "loved",
 	} {
-		if got := Lemmatize(w); got != w {
-			t.Errorf("Lemmatize(%q) = %q, want unchanged", w, got)
+		if got := lemma.Lemmatize(w); got != w {
+			t.Errorf("lemma.Lemmatize(%q) = %q, want unchanged", w, got)
 		}
 	}
 }
@@ -89,7 +95,7 @@ func TestLemmatize_NoOpForUnknownWords(t *testing.T) {
 // querying BM25 with "what did Alice buy last week" find a fact
 // stored as "Alice bought a matcha kit".
 func TestLemmatize_TokenizerIntegration(t *testing.T) {
-	tok := &SimpleTokenizer{}
+	tok := &tokenize.Simple{}
 	q := tok.Tokenize("what did Alice buy last week")
 	d := tok.Tokenize("Alice bought a matcha kit last week")
 	qSet := map[string]struct{}{}

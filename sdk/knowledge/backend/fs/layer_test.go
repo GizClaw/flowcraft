@@ -6,14 +6,14 @@ import (
 
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/knowledge"
-	"github.com/GizClaw/flowcraft/sdk/textsearch"
+	"github.com/GizClaw/flowcraft/sdk/text/tokenize"
 	"github.com/GizClaw/flowcraft/sdk/workspace"
 )
 
 func newLayerRepo(t *testing.T) (*FSLayerRepo, *workspace.MemWorkspace) {
 	t.Helper()
 	ws := workspace.NewMemWorkspace()
-	return NewLayerRepo(ws, "kb", &textsearch.SimpleTokenizer{}), ws
+	return NewLayerRepo(ws, "kb", &tokenize.Simple{}), ws
 }
 
 func TestLayerRepo_PutAndGetDocLayer(t *testing.T) {

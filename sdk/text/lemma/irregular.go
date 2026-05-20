@@ -1,31 +1,4 @@
-package textsearch
-
-// Lemmatize normalises a lowercased token to its dictionary base form
-// when it matches a known English irregular inflection (verb past /
-// past-participle, irregular noun plural). For tokens not in the table
-// it returns word unchanged. Regular morphology (-ing / -ed / -s /
-// -tion / ...) is intentionally NOT handled here — that is Porter's
-// job in Stem. The two are composed in the tokenizer:
-//
-//	tokenize → lowercase → Lemmatize → Stem
-//
-// so the BM25 vocabulary collapses both irregular ("went" ↔ "go") and
-// regular ("attending" ↔ "attend") variants onto a single stem key.
-//
-// Coverage is the ~150 highest-frequency English irregular verbs
-// (Random-House list, intersected with frequency >100 per million in
-// the COCA spoken sub-corpus) plus a short tail of irregular noun
-// plurals. This catches ~90% of irregular forms that appear in
-// conversational memory workloads. Adding
-// long-tail entries (begat / shewn / clad) is intentionally avoided —
-// the table is the hot path on every BM25 token and a smaller table
-// keeps cache behaviour predictable.
-func Lemmatize(word string) string {
-	if v, ok := irregularForms[word]; ok {
-		return v
-	}
-	return word
-}
+package lemma
 
 // irregularForms maps inflected form → base form. Keys must be
 // lowercase. The base form is whatever the same word's bare

@@ -110,9 +110,13 @@ func isEntitySplitRune(r rune) bool {
 	return false
 }
 
-// isCJKRune mirrors sdk/textsearch.IsCJK without forcing this package
-// to depend on textsearch — the entity-normalisation hot path runs on
-// every ingest and the indirection isn't worth it for one rune check.
+// isCJKRune mirrors sdk/text/tokenize.IsCJK locally so this
+// deprecated package keeps its zero-dependency surface intact —
+// recall_v1 is on a deprecation path and must not grow new
+// transitive imports for the sake of one rune check. Any
+// expansion of the CJK definition (e.g. new Unicode extension
+// blocks) must be applied here in parallel; the canonical
+// version is at sdk/text/tokenize.IsCJK.
 func isCJKRune(r rune) bool {
 	return unicode.Is(unicode.Han, r) ||
 		unicode.Is(unicode.Hangul, r) ||

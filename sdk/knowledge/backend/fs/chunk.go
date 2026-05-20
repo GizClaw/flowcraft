@@ -10,9 +10,32 @@ import (
 
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/knowledge"
-	"github.com/GizClaw/flowcraft/sdk/textsearch"
+	"github.com/GizClaw/flowcraft/sdk/text/bm25"
+	"github.com/GizClaw/flowcraft/sdk/text/tokenize"
+	gsetok "github.com/GizClaw/flowcraft/sdk/text/tokenize/adapter/gse"
 	"github.com/GizClaw/flowcraft/sdk/workspace"
 )
+
+// defaultTokenizer is the lazily-constructed fallback used when a
+// caller did not pass a tokenizer to NewChunkRepo. We prefer the
+// real-word gse segmenter over CJKBigram because gse's dictionary-
+// backed cuts produce dramatically higher precision on Chinese
+// queries (北京/天安门 instead of 北京/京天/天安/安门). Construction
+// loads a multi-megabyte embedded dictionary, so we cache via
+// sync.OnceValue: the first repo without an explicit tokenizer
+// pays ~100ms; subsequent ones reuse the segmenter free.
+//
+// If the embed dictionary fails to load (corrupted module download,
+// stripped binary), we degrade silently to CJKBigram so the repo
+// stays functional. This branch is essentially unreachable in
+// healthy deployments; logging is left to upstream observability.
+var defaultTokenizer = sync.OnceValue(func() tokenize.Tokenizer {
+	tok, err := gsetok.New()
+	if err != nil {
+		return &tokenize.CJKBigram{}
+	}
+	return tok
+})
 
 // chunksFileVersion tags the on-disk chunks.json schema. Bumped only on
 // breaking layout changes.
@@ -68,23 +91,23 @@ type docEntry struct {
 type datasetState struct {
 	// chunk-level
 	chunks   []knowledge.DerivedChunk
-	stats    *textsearch.CorpusStats
+	stats    *bm25.CorpusStats
 	inverted map[string][]chunkPosting
 
 	// doc-level (derived from chunks at install time)
 	docs        []docEntry
 	docByName   map[string]int
-	docStats    *textsearch.CorpusStats
+	docStats    *bm25.CorpusStats
 	docInverted map[string][]docPosting
 }
 
 // newDatasetState builds an empty state with corpus stats initialised.
 func newDatasetState() *datasetState {
 	return &datasetState{
-		stats:       textsearch.NewCorpusStats(),
+		stats:       bm25.NewCorpus(),
 		inverted:    make(map[string][]chunkPosting),
 		docByName:   make(map[string]int),
-		docStats:    textsearch.NewCorpusStats(),
+		docStats:    bm25.NewCorpus(),
 		docInverted: make(map[string][]docPosting),
 	}
 }
@@ -108,7 +131,7 @@ func newDatasetState() *datasetState {
 type FSChunkRepo struct {
 	ws        workspace.Workspace
 	paths     pathBuilder
-	tokenizer textsearch.Tokenizer
+	tokenizer tokenize.Tokenizer
 
 	mu     sync.RWMutex
 	states map[string]*datasetState // datasetID -> live state
@@ -120,7 +143,7 @@ type FSChunkRepo struct {
 // Deprecated: see FSChunkRepo. Use factory.NewRetrieval with a
 // sdk/retrieval/memory.Index (or any production retrieval.Index)
 // instead. Slated for removal in v0.5.0.
-func NewChunkRepo(ws workspace.Workspace, prefix string, tok textsearch.Tokenizer) *FSChunkRepo {
+func NewChunkRepo(ws workspace.Workspace, prefix string, tok tokenize.Tokenizer) *FSChunkRepo {
 	return &FSChunkRepo{
 		ws:        ws,
 		paths:     newPathBuilder(prefix),
@@ -129,12 +152,13 @@ func NewChunkRepo(ws workspace.Workspace, prefix string, tok textsearch.Tokenize
 	}
 }
 
-// resolveTokenizer returns the configured tokenizer or a CJK default.
-func (r *FSChunkRepo) resolveTokenizer() textsearch.Tokenizer {
+// resolveTokenizer returns the configured tokenizer or the
+// process-wide default (see [defaultTokenizer]).
+func (r *FSChunkRepo) resolveTokenizer() tokenize.Tokenizer {
 	if r.tokenizer != nil {
 		return r.tokenizer
 	}
-	return &textsearch.CJKTokenizer{}
+	return defaultTokenizer()
 }
 
 // Load rehydrates state for every dataset under the prefix. Idempotent;
@@ -436,7 +460,7 @@ func (r *FSChunkRepo) Search(ctx context.Context, q knowledge.ChunkQuery) ([]kno
 	tok := r.resolveTokenizer()
 	var keywords []string
 	if mode == knowledge.ModeBM25 || mode == knowledge.ModeHybrid {
-		keywords = textsearch.ExtractKeywords(q.Text, tok)
+		keywords = bm25.ExtractKeywords(q.Text, tok)
 	}
 
 	var out []knowledge.Candidate
@@ -564,7 +588,7 @@ func (r *FSChunkRepo) SearchDocs(ctx context.Context, q knowledge.ChunkQuery) ([
 	tok := r.resolveTokenizer()
 	var keywords []string
 	if mode == knowledge.ModeBM25 || mode == knowledge.ModeHybrid {
-		keywords = textsearch.ExtractKeywords(q.Text, tok)
+		keywords = bm25.ExtractKeywords(q.Text, tok)
 	}
 
 	var out []knowledge.Candidate

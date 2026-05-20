@@ -11,26 +11,27 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/retrieval"
 	"github.com/GizClaw/flowcraft/sdk/retrieval/scoring"
-	"github.com/GizClaw/flowcraft/sdk/textsearch"
+	"github.com/GizClaw/flowcraft/sdk/text/bm25"
+	"github.com/GizClaw/flowcraft/sdk/text/tokenize"
 )
 
 // Index is an in-process retrieval.Index with BM25 (textsearch) + cosine vector scoring.
 type Index struct {
 	mu         sync.RWMutex
-	tokenizer  textsearch.Tokenizer
+	tokenizer  tokenize.Tokenizer
 	namespaces map[string]*ns
 }
 
 type ns struct {
 	docs      map[string]retrieval.Doc
-	corpus    *textsearch.CorpusStats
+	corpus    *bm25.CorpusStats
 	docTokens map[string][]string
 }
 
 // New returns an empty in-memory Index using CJKTokenizer for BM25.
 func New() *Index {
 	return &Index{
-		tokenizer:  &textsearch.CJKTokenizer{},
+		tokenizer:  &tokenize.CJKBigram{},
 		namespaces: make(map[string]*ns),
 	}
 }
@@ -173,7 +174,7 @@ func (m *Index) Search(_ context.Context, namespace string, req retrieval.Search
 	if !hasText && !hasVec && !hasSparse {
 		return nil, retrieval.ErrNoQuery
 	}
-	keywords := textsearch.ExtractKeywords(req.QueryText, m.tokenizer)
+	keywords := bm25.ExtractKeywords(req.QueryText, m.tokenizer)
 	type scored struct {
 		d      retrieval.Doc
 		bm25   float64
@@ -194,7 +195,7 @@ func (m *Index) Search(_ context.Context, namespace string, req retrieval.Search
 		}
 		var bm float64
 		if hasText && corpus.DocCount > 0 && len(keywords) > 0 {
-			bm = textsearch.ScoreText(d.Content, keywords, corpus, m.tokenizer)
+			bm = bm25.ScoreText(d.Content, keywords, corpus, m.tokenizer)
 		}
 		var cos float64
 		if hasVec && len(d.Vector) > 0 && len(d.Vector) == len(req.QueryVector) {
@@ -401,7 +402,7 @@ func (m *Index) nsLocked(name string) *ns {
 	if !ok {
 		n = &ns{
 			docs:      make(map[string]retrieval.Doc),
-			corpus:    textsearch.NewCorpusStats(),
+			corpus:    bm25.NewCorpus(),
 			docTokens: make(map[string][]string),
 		}
 		m.namespaces[name] = n

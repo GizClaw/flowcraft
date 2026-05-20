@@ -12,7 +12,8 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
-	"github.com/GizClaw/flowcraft/sdk/textsearch"
+	"github.com/GizClaw/flowcraft/sdk/text/bm25"
+	"github.com/GizClaw/flowcraft/sdk/text/tokenize"
 	"github.com/GizClaw/flowcraft/sdk/workspace"
 	"github.com/rs/xid"
 )
@@ -374,13 +375,13 @@ func (s *FileSummaryStore) Search(ctx context.Context, convID, query string, top
 		return nil, nil
 	}
 
-	tokenizer := textsearch.DetectTokenizer(query)
-	keywords := textsearch.ExtractKeywords(query, tokenizer)
+	tokenizer := tokenize.Detect(query)
+	keywords := bm25.ExtractKeywords(query, tokenizer)
 	if len(keywords) == 0 {
 		return nil, nil
 	}
 
-	corpus := textsearch.NewCorpusStats()
+	corpus := bm25.NewCorpus()
 	var docs [][]string
 	for _, n := range active {
 		tokens := tokenizer.Tokenize(n.Content + " " + n.ExpandHint)
@@ -394,7 +395,7 @@ func (s *FileSummaryStore) Search(ctx context.Context, convID, query string, top
 	}
 	var results []scored
 	for i, n := range active {
-		sc := textsearch.BM25(docs[i], keywords, corpus)
+		sc := bm25.Score(docs[i], keywords, corpus)
 		if sc > 0 {
 			results = append(results, scored{node: n, score: sc})
 		}

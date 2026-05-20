@@ -9,7 +9,8 @@ import (
 
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/knowledge"
-	"github.com/GizClaw/flowcraft/sdk/textsearch"
+	"github.com/GizClaw/flowcraft/sdk/text/bm25"
+	"github.com/GizClaw/flowcraft/sdk/text/tokenize"
 	"github.com/GizClaw/flowcraft/sdk/workspace"
 )
 
@@ -62,7 +63,7 @@ type datasetLayersFileSchema struct {
 type FSLayerRepo struct {
 	ws        workspace.Workspace
 	paths     pathBuilder
-	tokenizer textsearch.Tokenizer
+	tokenizer tokenize.Tokenizer
 
 	mu sync.RWMutex
 }
@@ -71,7 +72,7 @@ type FSLayerRepo struct {
 //
 // Deprecated: see FSLayerRepo. Use factory.NewRetrieval instead;
 // slated for removal in v0.5.0.
-func NewLayerRepo(ws workspace.Workspace, prefix string, tok textsearch.Tokenizer) *FSLayerRepo {
+func NewLayerRepo(ws workspace.Workspace, prefix string, tok tokenize.Tokenizer) *FSLayerRepo {
 	return &FSLayerRepo{
 		ws:        ws,
 		paths:     newPathBuilder(prefix),
@@ -79,11 +80,13 @@ func NewLayerRepo(ws workspace.Workspace, prefix string, tok textsearch.Tokenize
 	}
 }
 
-func (r *FSLayerRepo) resolveTokenizer() textsearch.Tokenizer {
+// resolveTokenizer returns the configured tokenizer or the
+// process-wide default (gse segmenter; see chunk.go).
+func (r *FSLayerRepo) resolveTokenizer() tokenize.Tokenizer {
 	if r.tokenizer != nil {
 		return r.tokenizer
 	}
-	return &textsearch.CJKTokenizer{}
+	return defaultTokenizer()
 }
 
 // Put writes a layer text, refreshes its DerivedSig sidecar and
@@ -275,7 +278,7 @@ func (r *FSLayerRepo) Search(ctx context.Context, q knowledge.LayerQuery) ([]kno
 	tok := r.resolveTokenizer()
 	var keywords []string
 	if wantBM25 {
-		keywords = textsearch.ExtractKeywords(q.Text, tok)
+		keywords = bm25.ExtractKeywords(q.Text, tok)
 	}
 	if len(keywords) == 0 {
 		wantBM25 = false
@@ -312,14 +315,14 @@ func (r *FSLayerRepo) Search(ctx context.Context, q knowledge.LayerQuery) ([]kno
 		scored := make([]bool, len(layers))
 
 		if wantBM25 {
-			stats := textsearch.NewCorpusStats()
+			stats := bm25.NewCorpus()
 			toks := make([][]string, len(layers))
 			for i, l := range layers {
 				toks[i] = tok.Tokenize(l.Content)
 				stats.AddDocument(toks[i])
 			}
 			for i := range layers {
-				s := textsearch.BM25(toks[i], keywords, stats)
+				s := bm25.Score(toks[i], keywords, stats)
 				if s <= 0 {
 					continue
 				}

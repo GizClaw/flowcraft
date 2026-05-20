@@ -6,7 +6,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/GizClaw/flowcraft/sdk/textsearch"
+	"github.com/GizClaw/flowcraft/sdk/text/tokenize"
 )
 
 // BM25Boost rescores already-recalled hits with a BM25 signal computed
@@ -40,7 +40,7 @@ func (s BM25Boost) Run(_ context.Context, st *State) error {
 	if w <= 0 {
 		w = 0.3
 	}
-	tok := textsearch.DetectTokenizer(st.Request.QueryText)
+	tok := tokenize.Detect(st.Request.QueryText)
 	qTerms := tok.Tokenize(st.Request.QueryText)
 	if len(qTerms) == 0 {
 		return nil

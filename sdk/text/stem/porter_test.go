@@ -1,8 +1,8 @@
-package textsearch
+package stem
 
 import "testing"
 
-func TestStem_BasicCases(t *testing.T) {
+func TestPorter_BasicCases(t *testing.T) {
 	cases := []struct {
 		input, want string
 	}{
@@ -24,14 +24,14 @@ func TestStem_BasicCases(t *testing.T) {
 		{"go", "go"},
 	}
 	for _, tc := range cases {
-		got := Stem(tc.input)
+		got := Porter(tc.input)
 		if got != tc.want {
-			t.Errorf("Stem(%q) = %q, want %q", tc.input, got, tc.want)
+			t.Errorf("Porter(%q) = %q, want %q", tc.input, got, tc.want)
 		}
 	}
 }
 
-func TestStem_Step2(t *testing.T) {
+func TestPorter_Step2(t *testing.T) {
 	cases := []struct {
 		input, want string
 	}{
@@ -56,20 +56,20 @@ func TestStem_Step2(t *testing.T) {
 		{"formaliti", "formal"},
 	}
 	for _, tc := range cases {
-		got := Stem(tc.input)
+		got := Porter(tc.input)
 		if got != tc.want {
-			t.Errorf("Stem(%q) = %q, want %q", tc.input, got, tc.want)
+			t.Errorf("Porter(%q) = %q, want %q", tc.input, got, tc.want)
 		}
 	}
 }
 
-func TestStem_Idempotent(t *testing.T) {
+func TestPorter_Idempotent(t *testing.T) {
 	words := []string{"run", "program", "cat", "go", "test"}
 	for _, w := range words {
-		first := Stem(w)
-		second := Stem(first)
+		first := Porter(w)
+		second := Porter(first)
 		if first != second {
-			t.Errorf("Stem not idempotent for %q: Stem=%q, Stem(Stem)=%q", w, first, second)
+			t.Errorf("Porter not idempotent for %q: Porter=%q, Porter(Porter)=%q", w, first, second)
 		}
 	}
 }

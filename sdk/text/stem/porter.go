@@ -1,9 +1,34 @@
-package textsearch
+// Package stem houses morphological stemmers for the sdk/text family.
+//
+// Stemming reduces inflected English words (running → run, dogs →
+// dog) to a stable lookup key. Today the package ships [Porter]: a
+// faithful port of the original Porter 1980 algorithm — measure()
+// follows the paper's m-value definition exactly so cross-language
+// regression tests pass byte-for-byte.
+//
+// Adapter sub-packages (snowball / wordnet / ...) can implement
+// stronger stemmers without changing the public surface here:
+// every stemmer is a `func(string) string`, so callers stay
+// interchangeable.
+package stem
 
 import "strings"
 
-// Stem applies a simplified Porter stemmer to the given word.
-func Stem(word string) string {
+// Porter applies the original Porter (1980) stemmer to a lower-cased
+// English word, returning the stem. The input is returned unchanged
+// when it is shorter than 3 characters; callers are expected to
+// have already normalised case and stripped punctuation.
+//
+// Porter is intentionally conservative — it strips morphology by
+// suffix rules only and cannot collapse vowel-change pasts
+// ("went" / "ran") or suppletive forms ("ate"). Compose it with
+// [sdk/text/lemma.Lemmatize] when you need both irregular and
+// regular morphology folded onto a single key, e.g.:
+//
+//	stem.Porter(lemma.Lemmatize(word))
+//
+// The output is suitable as a BM25 vocabulary key.
+func Porter(word string) string {
 	if len(word) < 3 {
 		return word
 	}
