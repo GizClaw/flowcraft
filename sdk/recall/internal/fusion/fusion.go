@@ -14,6 +14,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain/diagnostic"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/evolution"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/port"
 )
 
@@ -110,6 +111,7 @@ func (WeightedRRF) Fuse(_ context.Context, results []domain.SourceResult, opts p
 				continue
 			}
 			contribution := w / float64(opts.RRFK+c.Rank)
+			contribution *= evolution.FeedbackBoostFromMeta(c.Metadata)
 			if mult := outlierMultiplier(c, refScore, opts); mult > 1 {
 				contribution *= mult
 			}

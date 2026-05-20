@@ -30,6 +30,10 @@ type Query struct {
 	// GraphHops bounds graph expansion when graph is enabled via
 	// WithGraphEnabled. Zero uses the graph projection default.
 	GraphHops int
+
+	// Trust applies read-time visibility filtering (Phase D.2). Nil
+	// disables the trust_filter stage.
+	Trust *TrustContext
 }
 
 // TimeRangeFrom is a convenience for building a half-open range.

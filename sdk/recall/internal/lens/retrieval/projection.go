@@ -350,6 +350,12 @@ func toDoc(f domain.TemporalFact) retrieval.Doc {
 	meta[domain.MetaScopeAgent] = f.Scope.AgentID
 	meta[domain.MetaMergeKey] = f.MergeKey
 	meta[domain.MetaConfidence] = f.Confidence
+	if f.Reinforcement > 0 {
+		meta[domain.MetaReinforcement] = f.Reinforcement
+	}
+	if f.Penalty > 0 {
+		meta[domain.MetaPenalty] = f.Penalty
+	}
 	meta[domain.MetaObservedAt] = f.ObservedAt.UnixMilli()
 	if f.ValidFrom != nil {
 		meta[domain.MetaValidFrom] = f.ValidFrom.UnixMilli()

@@ -292,6 +292,30 @@ func (s *MemoryStore) ReopenValidity(_ context.Context, scope domain.Scope, fact
 	return nil
 }
 
+// UpdateFeedback adds deltas to Reinforcement / Penalty (Phase D.4).
+func (s *MemoryStore) UpdateFeedback(_ context.Context, scope domain.Scope, factID string, reinforcementDelta, penaltyDelta float64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	sh, ok := s.byScope[keyOf(scope)]
+	if !ok {
+		return ErrNotFound
+	}
+	f, ok := sh.byID[factID]
+	if !ok {
+		return ErrNotFound
+	}
+	f.Reinforcement = clampNonNeg(f.Reinforcement + reinforcementDelta)
+	f.Penalty = clampNonNeg(f.Penalty + penaltyDelta)
+	return nil
+}
+
+func clampNonNeg(v float64) float64 {
+	if v < 0 {
+		return 0
+	}
+	return v
+}
+
 // Delete removes facts by id. Missing ids are ignored.
 func (s *MemoryStore) Delete(_ context.Context, scope domain.Scope, factIDs []string) error {
 	if len(factIDs) == 0 {

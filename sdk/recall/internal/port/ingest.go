@@ -21,6 +21,10 @@ type IngestInput struct {
 	ObservedAt    time.Time
 	KnownEntities []EntitySnapshot
 	Now           time.Time
+
+	// Tier is the SaveRequest importance intent label (Phase D.3).
+	// Empty means "general". Mapped to Confidence in salience scoring.
+	Tier string
 }
 
 // IngestResult is what the ingest pipeline returns.

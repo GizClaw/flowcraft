@@ -47,6 +47,12 @@ type TemporalFact struct {
 
 	Confidence float64
 
+	// Reinforcement and Penalty are caller feedback weights adjusted
+	// via Memory.Reinforce / Penalize (Phase D.4). They influence
+	// fusion and rank but are not part of merge-key identity.
+	Reinforcement float64
+	Penalty       float64
+
 	MergeKey    string
 	MergeHints  MergeHints
 	Supersedes  []string

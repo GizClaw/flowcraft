@@ -60,6 +60,9 @@ type WriteState struct {
 	// ValidTo windows even across slow stages).
 	Now time.Time
 
+	// Tier is the SaveRequest importance intent (Phase D.3).
+	Tier string
+
 	// Stage outputs — populated in order, each stage owns
 	// exactly one field group below.
 

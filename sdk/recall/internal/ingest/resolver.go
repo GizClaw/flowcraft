@@ -179,6 +179,7 @@ type resolverDecision struct {
 	action  resolverAction
 	reason  string
 	priorID string
+	kind    domain.RevisionKind
 }
 
 // classify applies the §6.2 idempotency rules to a single fact.
@@ -186,6 +187,22 @@ type resolverDecision struct {
 // the Save call cleanly instead of silently degrading to a fresh
 // append that could duplicate or wrongly supersede.
 func (r *DefaultResolver) classify(ctx context.Context, view port.View, f domain.TemporalFact) (resolverDecision, error) {
+	if rev, ok := domain.RevisionOf(f); ok {
+		switch rev.Kind {
+		case domain.RevisionFork, domain.RevisionContest:
+			return resolverDecision{action: actionAppend, reason: "revision:" + string(rev.Kind), kind: rev.Kind}, nil
+		}
+	}
+	if len(f.Supersedes) > 0 || len(f.MergeHints.Supersedes) > 0 {
+		decision, err := r.resolveExplicitSupersedes(ctx, view, f)
+		if err != nil {
+			return resolverDecision{}, err
+		}
+		if decision.action != actionAppend || decision.priorID != "" {
+			decision.kind = domain.RevisionSupersede
+			return decision, nil
+		}
+	}
 	switch f.Kind {
 	case domain.KindEvent, domain.KindPlan:
 		// Events / plans are append-only by design. Even with a
@@ -214,6 +231,33 @@ func (r *DefaultResolver) classify(ctx context.Context, view port.View, f domain
 		return r.dedupeOrSupersede(ctx, view, f, false)
 	}
 	return resolverDecision{action: actionAppend}, nil
+}
+
+// resolveExplicitSupersedes closes facts named in Supersedes /
+// MergeHints.Supersedes without requiring a merge_key collision.
+func (r *DefaultResolver) resolveExplicitSupersedes(ctx context.Context, view port.View, f domain.TemporalFact) (resolverDecision, error) {
+	clock := r.Clock
+	if clock == nil {
+		clock = time.Now
+	}
+	targets := mergeStrings(f.Supersedes, f.MergeHints.Supersedes)
+	if len(targets) == 0 {
+		return resolverDecision{action: actionAppend}, nil
+	}
+	priorID := targets[0]
+	if _, err := view.Get(ctx, f.Scope, priorID); err != nil {
+		return resolverDecision{}, fmt.Errorf("resolver explicit supersede: prior %q: %w", priorID, err)
+	}
+	closeTime := f.ObservedAt
+	if closeTime.IsZero() {
+		closeTime = clock()
+	}
+	return resolverDecision{
+		action:  actionSupersede,
+		reason:  "revision:merge",
+		priorID: priorID,
+		kind:    domain.RevisionSupersede,
+	}, nil
 }
 
 // dedupeOrSupersede looks the fact up by merge_key. If an
@@ -249,6 +293,7 @@ func (r *DefaultResolver) dedupeOrSupersede(ctx context.Context, view port.View,
 			action:  actionSupersede,
 			reason:  "conflict:supersede",
 			priorID: active.ID,
+			kind:    domain.RevisionSupersede,
 		}, nil
 	}
 	return resolverDecision{action: actionAppend}, nil

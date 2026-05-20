@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain/diagnostic"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/governance"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/port"
@@ -166,11 +167,22 @@ func (c *defaultIngestor) Compile(ctx context.Context, input port.IngestInput) (
 			f.ID = c.stages.IDGen.NewID(f, now)
 		}
 
-		f = c.stages.SalienceScorer.Score(f)
+		f = salienceScore(c.stages.SalienceScorer, f, input.Tier)
 
 		result.Facts = append(result.Facts, f)
 	}
 	return result, nil
+}
+
+func salienceScore(scorer port.SalienceScorer, f domain.TemporalFact, tier string) domain.TemporalFact {
+	if scorer == nil {
+		scorer = defaultSalienceScorer{}
+	}
+	if ds, ok := scorer.(defaultSalienceScorer); ok {
+		ds.tier = domain.NormalizeSaveTier(tier)
+		return ds.Score(f)
+	}
+	return scorer.Score(f)
 }
 
 func mergeStrings(a, b []string) []string {

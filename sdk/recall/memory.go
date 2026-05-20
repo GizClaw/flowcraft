@@ -35,6 +35,13 @@ type Memory interface {
 	Save(ctx context.Context, scope Scope, req SaveRequest) (SaveResult, error)
 	Recall(ctx context.Context, scope Scope, query Query) ([]Hit, error)
 	Forget(ctx context.Context, scope Scope, factID string) error
+	// Fork appends a parallel revision without closing the source fact.
+	Fork(ctx context.Context, scope Scope, sourceFactID string, newFact TemporalFact) (SaveResult, error)
+	// Contest challenges a fact with evidence and applies a penalty.
+	Contest(ctx context.Context, scope Scope, factID string, evidence []EvidenceRef) (SaveResult, error)
+	// Reinforce / Penalize adjust caller feedback weights on a fact.
+	Reinforce(ctx context.Context, scope Scope, factID string, delta float64) error
+	Penalize(ctx context.Context, scope Scope, factID string, delta float64) error
 	Close() error
 }
 
@@ -213,7 +220,6 @@ func New(opts ...Option) (Memory, error) {
 	if cfg.reranker != nil {
 		rerank = &recallHitReranker{r: cfg.reranker}
 	}
-	// TODO(D.3): insert trust_filter before rank
 	// TODO(D.5): wrap source_fanout→materialize in federation_{fanout,merge}
 	m.readRunner = read.NewRunner([]pipeline.Stage[*read.ReadState]{
 		readstages.NewIntent(qc),
@@ -221,6 +227,7 @@ func New(opts ...Option) (Memory, error) {
 		readstages.NewSourceFanout(func() []port.Source { return m.sources }),
 		readstages.NewFuse(fuser, fusionOpts, fusionCandidateCap),
 		readstages.NewMaterialize(mat),
+		readstages.NewTrustFilter(),
 		readstages.NewRank(rankContextItems, cfg.reranker != nil),
 		readstages.NewBuildHits(rerank),
 		readstages.NewEvolutionAfterRecall(cfg.evolution),
@@ -283,6 +290,7 @@ func (m *memory) runSave(ctx context.Context, scope Scope, req SaveRequest, with
 		Facts:      req.Facts,
 		Turns:      req.Turns,
 		ObservedAt: req.ObservedAt,
+		Tier:       req.Tier,
 		// Now left zero so the ingestor's Clock (or time.Now
 		// fallback inside ingest) anchors relative-time resolution,
 		// matching the legacy runSave path that did not pass Now on
@@ -448,6 +456,7 @@ func (m *memory) runRecall(ctx context.Context, scope Scope, query Query, withTr
 			Kinds:     query.Kinds,
 			TimeRange: query.TimeRange,
 			GraphHops: query.GraphHops,
+			Trust:     trustToDomain(query.Trust),
 		},
 		StartedAt: time.Now(),
 	}
@@ -478,6 +487,21 @@ func domainHitsToPublic(hits []domain.Hit) []Hit {
 			Score:   h.Score,
 			Sources: append([]string(nil), h.Sources...),
 		}
+	}
+	return out
+}
+
+func trustToDomain(t *TrustContext) *domain.TrustContext {
+	if t == nil {
+		return nil
+	}
+	out := &domain.TrustContext{
+		MaxSensitivity: t.MaxSensitivity,
+		ActorID:        t.ActorID,
+	}
+	if len(t.Scopes) > 0 {
+		out.Scopes = make([]domain.Scope, len(t.Scopes))
+		copy(out.Scopes, t.Scopes)
 	}
 	return out
 }

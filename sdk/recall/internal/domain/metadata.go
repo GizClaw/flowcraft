@@ -22,4 +22,18 @@ const (
 
 	MetaConfidence = "confidence"
 	MetaEntities   = "entities"
+
+	// MetaSensitivity is the write-path sensitivity label stamped by
+	// governance (public / internal / private / secret). trust_filter
+	// compares it against Query.Trust.MaxSensitivity.
+	MetaSensitivity = "sensitivity"
+
+	// Revision metadata (Phase D.1).
+	MetaRevisionKind = "revision_kind"
+	MetaForkOf       = "fork_of"
+	MetaContestOf    = "contest_of"
+
+	// Feedback fields mirrored into retrieval metadata (Phase D.4).
+	MetaReinforcement = "reinforcement"
+	MetaPenalty       = "penalty"
 )

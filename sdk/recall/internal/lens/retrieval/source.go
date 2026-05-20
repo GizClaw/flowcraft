@@ -107,10 +107,7 @@ func (s *Source) Query(ctx context.Context, plan domain.QueryPlan) domain.Source
 			Source: s.Name(),
 			Rank:   i + 1,
 			Score:  hit.Score,
-			Metadata: map[string]any{
-				"fact_kind": hit.Doc.Metadata[domain.MetaFactKind],
-				"merge_key": hit.Doc.Metadata[domain.MetaMergeKey],
-			},
+			Metadata: retrievalCandidateMeta(hit.Doc.Metadata),
 		})
 	}
 
@@ -125,6 +122,20 @@ func (s *Source) Query(ctx context.Context, plan domain.QueryPlan) domain.Source
 // embedQuery embeds the query text. Embedder errors degrade to BM25
 // (the cosine lane simply contributes nothing); we never abort recall
 // because the embedder is offline.
+func retrievalCandidateMeta(docMeta map[string]any) map[string]any {
+	meta := map[string]any{
+		"fact_kind": docMeta[domain.MetaFactKind],
+		"merge_key": docMeta[domain.MetaMergeKey],
+	}
+	if v, ok := docMeta[domain.MetaReinforcement]; ok {
+		meta[domain.MetaReinforcement] = v
+	}
+	if v, ok := docMeta[domain.MetaPenalty]; ok {
+		meta[domain.MetaPenalty] = v
+	}
+	return meta
+}
+
 func (s *Source) embedQuery(ctx context.Context, text string) []float32 {
 	t := strings.TrimSpace(text)
 	if t == "" {

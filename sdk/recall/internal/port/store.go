@@ -65,6 +65,10 @@ type TemporalStore interface {
 	// ignored so callers can issue idempotent forgets.
 	Delete(ctx context.Context, scope domain.Scope, factIDs []string) error
 
+	// UpdateFeedback adjusts reinforcement and penalty on an existing
+	// fact (Phase D.4). Deltas are added then clamped to >= 0.
+	UpdateFeedback(ctx context.Context, scope domain.Scope, factID string, reinforcementDelta, penaltyDelta float64) error
+
 	// Close releases backend resources.
 	Close() error
 }

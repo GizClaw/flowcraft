@@ -63,6 +63,11 @@ func (s *fakeStore) Delete(_ context.Context, _ domain.Scope, ids []string) erro
 	s.deleted = append(s.deleted, ids...)
 	return s.deleteErr
 }
+
+func (s *fakeStore) UpdateFeedback(context.Context, domain.Scope, string, float64, float64) error {
+	return nil
+}
+
 func (s *fakeStore) Close() error { return nil }
 
 type recordHook struct {

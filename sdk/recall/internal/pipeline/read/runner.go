@@ -14,10 +14,8 @@ import (
 //
 // Assembly order (memory.New):
 //
-//	intent → plan → source_fanout → fuse → materialize → rank →
-//	build_hits → evolution_after_recall
-//
-// TODO(D.3): insert trust_filter before rank
+//	intent → plan → source_fanout → fuse → materialize →
+//	trust_filter → rank → build_hits → evolution_after_recall
 // TODO(D.5): wrap source_fanout→materialize in federation_{fanout,merge}
 type Runner struct {
 	stages []pipeline.Stage[*ReadState]

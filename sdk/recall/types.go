@@ -37,6 +37,9 @@ type MergeHints = domain.MergeHints
 // owns the schema definition.
 type TemporalFact = domain.TemporalFact
 
+// TrustContext carries read-time visibility constraints (Phase D.2).
+type TrustContext = domain.TrustContext
+
 // TurnContext is the typed per-turn channel adapters use to feed
 // the LLMExtractor. Each TurnContext carries an id, an optional
 // absolute timestamp, the canonical speaker name, the conversational
@@ -103,6 +106,13 @@ type SaveRequest struct {
 	// MUST set ObservedAt to the conversation's real wall time or
 	// relative-time resolution silently drifts to "now".
 	ObservedAt time.Time
+
+	// Tier is an optional importance intent label applied to every
+	// fact in this save ("core", "general", "data", "storage"). Empty
+	// means "general". Tier adjusts Confidence at ingest time; it is
+	// not stored on TemporalFact. For per-fact gradients set
+	// Confidence on each TemporalFact directly.
+	Tier string
 }
 
 // SaveResult reports the canonical fact ids that were appended to the
@@ -130,6 +140,10 @@ type Query struct {
 	// GraphHops bounds graph expansion when graph is enabled via
 	// WithGraphEnabled. Zero uses the graph projection default.
 	GraphHops int
+
+	// Trust applies read-time visibility filtering. Nil disables the
+	// trust_filter stage.
+	Trust *TrustContext
 }
 
 // TimeRangeFrom is a convenience for building a half-open range.

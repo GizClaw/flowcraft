@@ -70,6 +70,19 @@ func (s *Resolve) Run(ctx context.Context, state *write.WriteState) (diagnostic.
 		Closed:     len(res.Closes),
 		Superseded: len(res.Closes),
 	}
+	for _, f := range state.Ingest.Facts {
+		if rev, ok := domain.RevisionOf(f); ok {
+			switch rev.Kind {
+			case domain.RevisionFork:
+				detail.Forked++
+			case domain.RevisionContest:
+				detail.Contested++
+			}
+		}
+		if len(f.Supersedes) > 0 || len(f.MergeHints.Supersedes) > 0 {
+			detail.Merged++
+		}
+	}
 	if len(res.Facts) == 0 && len(res.Closes) == 0 {
 		return detail, pipeline.ShortCircuitWith("empty_resolution")
 	}

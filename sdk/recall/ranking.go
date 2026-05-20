@@ -7,6 +7,7 @@ import (
 	"unicode"
 
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/evolution"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/planner"
 )
 
@@ -85,6 +86,7 @@ func factRankBoost(item domain.ContextItem, intent domain.QueryIntent, terms []s
 		}
 		boost += c * 0.004
 	}
+	boost += (evolution.FeedbackBoost(f.Reinforcement, f.Penalty) - 1) * 0.02
 	return boost
 }
 
