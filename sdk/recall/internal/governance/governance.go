@@ -5,14 +5,15 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/port"
 )
 
 // Governance bundles write-path policy hooks (docs §10.2). All
 // defaults are no-op so Save never blocks unless callers opt in.
 type Governance struct {
-	Write       WritePolicy
-	Retention   RetentionPolicy
-	Sensitivity SensitivityPolicy
+	Write       port.WritePolicy
+	Retention   port.RetentionPolicy
+	Sensitivity port.SensitivityPolicy
 }
 
 // Default returns audit-only no-op governance.

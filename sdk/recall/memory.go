@@ -13,6 +13,9 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/ingest"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/intent"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/materialize"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/pipeline"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/pipeline/write"
+	writestages "github.com/GizClaw/flowcraft/sdk/recall/internal/pipeline/write/stages"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/planner"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/port"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/projection"
@@ -28,7 +31,6 @@ import (
 	relationsource "github.com/GizClaw/flowcraft/sdk/recall/internal/source/relation"
 	retrievalsource "github.com/GizClaw/flowcraft/sdk/recall/internal/source/retrieval"
 	timelinesource "github.com/GizClaw/flowcraft/sdk/recall/internal/source/timeline"
-	evidencestore "github.com/GizClaw/flowcraft/sdk/recall/internal/store/evidence"
 	temporalstore "github.com/GizClaw/flowcraft/sdk/recall/internal/store/temporal"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/telemetry"
 	"github.com/GizClaw/flowcraft/sdk/retrieval"
@@ -44,13 +46,20 @@ type Memory interface {
 }
 
 type memory struct {
-	store          temporalstore.Store
-	evidenceStore  evidencestore.Store
+	store          port.TemporalStore
+	evidenceStore  port.EvidenceStore
 	retrievalIndex retrieval.Index
 	compiler       port.Ingestor
 	resolver       port.ConflictResolver
 	fanout         *projection.Fanout
 	telemetry      port.TelemetryHook
+
+	// writePreRunner runs validate + ingest without the per-scope
+	// write lock (legacy runSave compiled outside the lock).
+	// writePostRunner runs resolve through evolution_after_save
+	// under the lock. Both are wired at memory.New().
+	writePreRunner  *write.Runner
+	writePostRunner *write.Runner
 
 	// projections retains the canonical projection set (in
 	// registration order) so RebuildProjection can resolve a
@@ -201,13 +210,14 @@ func New(opts ...Option) (Memory, error) {
 		}
 	}
 
-	return &memory{
+	fanout := projection.New(projections, cfg.telemetry)
+	m := &memory{
 		store:          cfg.store,
 		evidenceStore:  cfg.evidenceStore,
 		retrievalIndex: cfg.retrievalIndex,
 		compiler:       cfg.compiler,
 		resolver:       cfg.resolver,
-		fanout:         projection.New(projections, cfg.telemetry),
+		fanout:         fanout,
 		telemetry:      cfg.telemetry,
 		projections:    projections,
 		queryCompiler:  qc,
@@ -220,7 +230,22 @@ func New(opts ...Option) (Memory, error) {
 		reranker:       cfg.reranker,
 		evolution:      cfg.evolution,
 		writeLocks:     make(map[writeScopeKey]*writeLock),
-	}, nil
+	}
+	tel := cfg.telemetry
+	m.writePreRunner = write.NewRunner([]pipeline.Stage[*write.WriteState]{
+		writestages.NewValidate(),
+		writestages.NewIngest(cfg.compiler, m.snapshotKnownEntities),
+	}, tel)
+	m.writePostRunner = write.NewRunner([]pipeline.Stage[*write.WriteState]{
+		writestages.NewResolve(cfg.resolver, cfg.store),
+		writestages.NewAppend(cfg.store, tel),
+		writestages.NewValidityClose(cfg.store, fanout, tel),
+		writestages.NewEvidenceMirror(cfg.evidenceStore, tel),
+		writestages.NewProjectRequired(fanout, cfg.evidenceStore, tel),
+		writestages.NewProjectOptional(fanout),
+		writestages.NewEvolutionAfterSave(cfg.evolution),
+	}, tel)
+	return m, nil
 }
 
 // Save runs the canonical write pipeline with strict transactional
@@ -265,167 +290,70 @@ func (m *memory) SaveExplain(ctx context.Context, scope Scope, req SaveRequest) 
 }
 
 func (m *memory) runSave(ctx context.Context, scope Scope, req SaveRequest, withTrace bool) (SaveResult, SaveTrace, error) {
-	var trace SaveTrace
 	if err := ctx.Err(); err != nil {
-		return SaveResult{}, trace, err
-	}
-	if scope.RuntimeID == "" {
-		return SaveResult{}, trace, errdefs.Validationf("recall.Save: scope.runtime_id is required")
+		return SaveResult{}, SaveTrace{}, err
 	}
 
-	stageStarted := time.Now()
-	knownEntities := m.snapshotKnownEntities(scope)
-	compiled, err := m.compiler.Compile(ctx, port.IngestInput{
-		Scope:         scope,
-		Facts:         req.Facts,
-		Turns:         req.Turns,
-		ObservedAt:    req.ObservedAt,
-		KnownEntities: knownEntities,
-	})
-	m.emitPipeline(scope, "compiler", "compile", len(compiled.Facts), stageStarted, err)
-	if err != nil {
-		return SaveResult{}, trace, err
+	state := &write.WriteState{
+		Scope:      scope,
+		Facts:      req.Facts,
+		Turns:      req.Turns,
+		ObservedAt: req.ObservedAt,
+		// Now left zero so the ingestor's Clock (or time.Now
+		// fallback inside ingest) anchors relative-time resolution,
+		// matching the legacy runSave path that did not pass Now on
+		// IngestInput.
 	}
 	if withTrace {
-		trace.CompiledFacts = append([]TemporalFact(nil), compiled.Facts...)
-		trace.KnownEntitiesSeen = len(knownEntities)
-		trace.StructurizerCoverage = StructurizerCoverage{
-			TotalFactsSeen:      compiled.StructurizerCoverage.TotalFactsSeen,
-			KindFilled:          compiled.StructurizerCoverage.KindFilled,
-			EntitiesFilled:      compiled.StructurizerCoverage.EntitiesFilled,
-			SubjectFilled:       compiled.StructurizerCoverage.SubjectFilled,
-			ValidFromHintFilled: compiled.StructurizerCoverage.ValidFromHintFilled,
-		}
-		if len(compiled.Dropped) > 0 {
-			trace.Dropped = make([]DroppedFact, len(compiled.Dropped))
-			for i, d := range compiled.Dropped {
-				f, _ := d.Fact.(domain.TemporalFact)
-				trace.Dropped[i] = DroppedFact{Fact: f, Reason: d.Reason}
-			}
-		}
+		state.EnsureTrace()
 	}
-	if len(compiled.Facts) == 0 {
-		return SaveResult{}, trace, nil
+
+	if err := m.writePreRunner.Run(ctx, state); err != nil {
+		return SaveResult{}, publicSaveTrace(state), err
+	}
+	if len(state.Ingest.Facts) == 0 {
+		return SaveResult{}, publicSaveTrace(state), nil
 	}
 
 	unlock := m.lockWriteScope(scope)
 	defer unlock()
 
-	// Conflict resolution short-circuits noop dedupes and queues
-	// supersede closes for after Append succeeds.
-	resolution := domain.Resolution{Facts: compiled.Facts}
-	if m.resolver != nil {
-		view := ingest.StoreView{
-			FindByMergeKeyFn: m.store.FindByMergeKey,
-			GetFn:            m.store.Get,
-		}
-		stageStarted = time.Now()
-		resolution, err = m.resolver.ResolveConflicts(ctx, view, compiled.Facts)
-		m.emitPipeline(scope, "conflict_resolve", "resolve", len(resolution.Facts), stageStarted, err)
-		if err != nil {
-			return SaveResult{}, trace, fmt.Errorf("recall.Save: resolve conflicts: %w", err)
-		}
+	if err := m.writePostRunner.Run(ctx, state); err != nil {
+		return SaveResult{}, publicSaveTrace(state), err
 	}
-	if len(resolution.Facts) == 0 {
-		return SaveResult{}, trace, nil
+	if len(state.AppendedFactIDs) == 0 {
+		return SaveResult{}, publicSaveTrace(state), nil
 	}
-
-	stageStarted = time.Now()
-	if err := m.store.Append(ctx, resolution.Facts); err != nil {
-		m.emitPipeline(scope, "store", "append", len(resolution.Facts), stageStarted, err)
-		return SaveResult{}, trace, fmt.Errorf("recall.Save: store append: %w", err)
-	}
-	m.emitPipeline(scope, "store", "append", len(resolution.Facts), stageStarted, nil)
-
-	ids := make([]string, len(resolution.Facts))
-	for i, f := range resolution.Facts {
-		ids[i] = f.ID
-	}
-	if withTrace {
-		trace.Appended = append([]TemporalFact(nil), resolution.Facts...)
-	}
-
-	// Close validity on superseded prior facts. We do this AFTER
-	// Append so a failed close never leaves a closed fact pointing
-	// at a missing successor. If close fails partway through, the
-	// resolver-issued Supersedes pointer still exists on the new
-	// fact (so reconcile can finish the job), but we roll back the
-	// new facts so callers see an atomic failure rather than a
-	// half-applied write. applied tracks the prefix that did
-	// commit, so rollback can reopen exactly those.
-	stageStarted = time.Now()
-	applied, err := m.applyValidityCloses(ctx, resolution.Closes)
-	m.emitPipeline(scope, "store", "validity_close", len(resolution.Closes), stageStarted, err)
-	if err != nil {
-		m.rollbackAppendedFacts(ctx, scope, ids, applied, err)
-		return SaveResult{}, trace, fmt.Errorf("recall.Save: close superseded: %w", err)
-	}
-
-	// Mirror evidence into the secondary lookup store before the
-	// projection fanout. The adapter is a rebuildable derived view:
-	// embedded EvidenceRefs on the canonical fact remain authoritative,
-	// so adapter failures are telemetry-only and must not block Save.
-	stageStarted = time.Now()
-	if evErr := m.mirrorEvidence(ctx, scope, resolution.Facts); evErr != nil {
-		m.emitPipeline(scope, "evidence", "mirror", len(resolution.Facts), stageStarted, evErr)
-		m.fanout.Telemetry().OnProjection(port.ProjectionEvent{
-			Projection:  "evidence",
-			Op:          port.OpProject,
-			Consistency: projection.Optional.String(),
-			FactCount:   len(resolution.Facts),
-			Err:         evErr,
-		})
-	} else {
-		m.emitPipeline(scope, "evidence", "mirror", len(resolution.Facts), stageStarted, nil)
-	}
-
-	stageStarted = time.Now()
-	if projErr := m.fanout.ProjectRequired(ctx, resolution.Facts); projErr != nil {
-		m.emitPipeline(scope, "projection", "project_required", len(resolution.Facts), stageStarted, projErr)
-		m.rollbackSave(ctx, scope, ids, resolution.Closes, projErr)
-		return SaveResult{}, trace, projErr
-	}
-	m.emitPipeline(scope, "projection", "project_required", len(resolution.Facts), stageStarted, nil)
-
-	stageStarted = time.Now()
-	m.fanout.ProjectOptional(ctx, resolution.Facts)
-	m.emitPipeline(scope, "projection", "project_optional", len(resolution.Facts), stageStarted, nil)
-
-	m.runEvolutionAfterSave(ctx, scope, ids)
-
-	return SaveResult{FactIDs: ids}, trace, nil
+	return SaveResult{FactIDs: append([]string(nil), state.AppendedFactIDs...)}, publicSaveTrace(state), nil
 }
 
-// mirrorEvidence appends EvidenceRefs into the secondary lookup
-// store, per fact. No-op when no EvidenceStore is configured or
-// when a fact carries no refs (embedded EvidenceText still lives
-// on the canonical fact and stays the source of truth).
-//
-// Append is idempotent on (scope, factID, refs[i].ID) so retries
-// and rebuilds replay without producing duplicate index entries.
-func (m *memory) mirrorEvidence(ctx context.Context, scope Scope, facts []domain.TemporalFact) error {
-	if m.evidenceStore == nil {
-		return nil
+// publicSaveTrace copies the in-flight domain.SaveTrace (when
+// explain was requested) into the public SaveTrace surface.
+func publicSaveTrace(state *write.WriteState) SaveTrace {
+	if state == nil || state.Trace == nil {
+		return SaveTrace{}
 	}
-	for _, f := range facts {
-		if len(f.EvidenceRefs) == 0 {
-			continue
+	d := state.Trace
+	out := SaveTrace{
+		CompiledFacts:     append([]TemporalFact(nil), d.CompiledFacts...),
+		Appended:          append([]TemporalFact(nil), d.Appended...),
+		KnownEntitiesSeen: d.KnownEntitiesSeen,
+		StructurizerCoverage: StructurizerCoverage{
+			TotalFactsSeen:      d.StructurizerCoverage.TotalFactsSeen,
+			KindFilled:          d.StructurizerCoverage.KindFilled,
+			EntitiesFilled:      d.StructurizerCoverage.EntitiesFilled,
+			SubjectFilled:       d.StructurizerCoverage.SubjectFilled,
+			ValidFromHintFilled: d.StructurizerCoverage.ValidFromHintFilled,
+		},
+	}
+	if len(d.Dropped) > 0 {
+		out.Dropped = make([]DroppedFact, len(d.Dropped))
+		for i, drop := range d.Dropped {
+			f, _ := drop.Fact.(domain.TemporalFact)
+			out.Dropped[i] = DroppedFact{Fact: f, Reason: drop.Reason}
 		}
-		if err := m.evidenceStore.Append(ctx, scope, f.ID, f.EvidenceRefs); err != nil {
-			return fmt.Errorf("evidence append %s: %w", f.ID, err)
-		}
 	}
-	return nil
-}
-
-func (m *memory) runEvolutionAfterSave(ctx context.Context, scope Scope, factIDs []string) {
-	if m.evolution == nil {
-		return
-	}
-	started := time.Now()
-	if err := m.evolution.AfterSave(ctx, scope, factIDs); err != nil {
-		m.emitPipeline(scope, "evolution", "after_save", len(factIDs), started, err)
-	}
+	return out
 }
 
 func (m *memory) runEvolutionAfterRecall(ctx context.Context, scope Scope, trace RecallTrace) {
@@ -514,171 +442,6 @@ func (m *memory) lockWriteScope(scope Scope) func() {
 			delete(m.writeLocks, key)
 		}
 		m.writeMu.Unlock()
-	}
-}
-
-// applyValidityCloses runs UpdateValidity for each close instruction
-// the resolver issued. First failure aborts and returns the prefix
-// of closes that already committed so the caller's rollback can
-// reopen exactly those — leaving any close that never landed alone.
-//
-// ErrValidityAlreadyClosed is intentionally NOT propagated: the
-// resolver decided the prior fact must be closed and another writer
-// has already achieved that post-state (with a different correctedBy
-// /validTo tuple). Failing the whole Save would roll back the new
-// fact we just appended, which is strictly worse than silently
-// accepting that the prior fact is closed by someone else — the new
-// fact still carries the Supersedes pointer the resolver added, so
-// the supersede chain stays reconstructable from the new fact alone.
-// The benign close is recorded via pipeline telemetry so operators
-// can still spot pathological rates.
-func (m *memory) applyValidityCloses(ctx context.Context, closes []domain.ValidityClose) ([]domain.ValidityClose, error) {
-	applied := make([]domain.ValidityClose, 0, len(closes))
-	for _, c := range closes {
-		err := m.store.UpdateValidity(ctx, c.Scope, c.FactID, c.ValidTo, c.CorrectedBy)
-		if err == nil {
-			applied = append(applied, c)
-			continue
-		}
-		if errors.Is(err, temporalstore.ErrValidityAlreadyClosed) {
-			m.emitPipeline(c.Scope, "store", "validity_close_already_closed", 1, time.Now(), err)
-			continue
-		}
-		return applied, fmt.Errorf("update validity %s: %w", c.FactID, err)
-	}
-	return applied, nil
-}
-
-// rollbackAppendedFacts removes just-appended facts after a failed
-// downstream step (validity close). It additionally reopens any
-// close that DID commit before the failure so the prior fact's
-// validity window is restored. Best-effort: cleanup failures only
-// surface through telemetry, the user-visible error stays
-// attributable to the original cause.
-func (m *memory) rollbackAppendedFacts(ctx context.Context, scope Scope, factIDs []string, applied []domain.ValidityClose, cause error) {
-	cleanupCtx := detachCancel(ctx)
-	hook := m.fanout.Telemetry()
-	if err := m.store.Delete(cleanupCtx, scope, factIDs); err != nil {
-		hook.OnProjection(port.ProjectionEvent{
-			Projection:  "save_rollback.appended_facts",
-			Op:          port.OpForget,
-			Consistency: projection.Required.String(),
-			FactCount:   len(factIDs),
-			Err:         fmt.Errorf("rollback cleanup after %w: %v", cause, err),
-		})
-	}
-	m.reopenAfterRollback(cleanupCtx, applied, cause)
-}
-
-// rollbackSave best-effort undoes the canonical effects of a
-// partially-completed Save. It:
-//
-//  1. runs required and optional projection forgets so an
-//     upstream Optional projection that happened to succeed before
-//     we returned does not leak;
-//  2. deletes the canonical facts that were appended; and
-//  3. reopens the validity of any prior facts the resolver closed
-//     during this Save so a downstream projection failure does not
-//     leave the ledger with a closed-but-no-successor revision.
-//
-// Any failure here is reported via telemetry but never overrides
-// the original projection error.
-func (m *memory) rollbackSave(ctx context.Context, scope Scope, factIDs []string, closes []domain.ValidityClose, cause error) {
-	cleanupCtx := detachCancel(ctx)
-	hook := m.fanout.Telemetry()
-	if err := m.fanout.ForgetRequired(cleanupCtx, scope, factIDs); err != nil {
-		hook.OnProjection(port.ProjectionEvent{
-			Projection:  "save_rollback.forget_required",
-			Op:          port.OpForget,
-			Consistency: projection.Required.String(),
-			FactCount:   len(factIDs),
-			Err:         fmt.Errorf("rollback cleanup after %w: %v", cause, err),
-		})
-	}
-	m.fanout.ForgetOptional(cleanupCtx, scope, factIDs)
-	if m.evidenceStore != nil {
-		if err := m.evidenceStore.ForgetByFact(cleanupCtx, scope, factIDs); err != nil {
-			hook.OnProjection(port.ProjectionEvent{
-				Projection:  "save_rollback.evidence_forget",
-				Op:          port.OpForget,
-				Consistency: projection.Required.String(),
-				FactCount:   len(factIDs),
-				Err:         fmt.Errorf("rollback cleanup after %w: %v", cause, err),
-			})
-		}
-	}
-	if err := m.store.Delete(cleanupCtx, scope, factIDs); err != nil {
-		hook.OnProjection(port.ProjectionEvent{
-			Projection:  "save_rollback.store_delete",
-			Op:          port.OpForget,
-			Consistency: projection.Required.String(),
-			FactCount:   len(factIDs),
-			Err:         fmt.Errorf("rollback cleanup after %w: %v", cause, err),
-		})
-	}
-	m.reopenAfterRollback(cleanupCtx, closes, cause)
-	m.reprojectReopenedFacts(cleanupCtx, closes, cause)
-}
-
-// reopenAfterRollback walks every close this Save applied and tries
-// to revert it via Store.ReopenValidity. The guard (expectedCorrectedBy)
-// ensures we only undo our own close — if another writer has since
-// re-closed the fact for a different reason we surface that as
-// telemetry and leave the fact alone. ErrNotFound is also tolerated
-// silently: the prior fact may already have been deleted by an
-// unrelated forget.
-func (m *memory) reopenAfterRollback(ctx context.Context, closes []domain.ValidityClose, cause error) {
-	if len(closes) == 0 {
-		return
-	}
-	hook := m.fanout.Telemetry()
-	for _, c := range closes {
-		err := m.store.ReopenValidity(ctx, c.Scope, c.FactID, c.CorrectedBy)
-		if err == nil || errors.Is(err, temporalstore.ErrNotFound) {
-			continue
-		}
-		hook.OnProjection(port.ProjectionEvent{
-			Projection:  "save_rollback.reopen_validity",
-			Op:          port.OpProject,
-			Consistency: projection.Required.String(),
-			FactCount:   1,
-			Err:         fmt.Errorf("reopen %s after %w: %v", c.FactID, cause, err),
-		})
-	}
-}
-
-func (m *memory) reprojectReopenedFacts(ctx context.Context, closes []domain.ValidityClose, cause error) {
-	if len(closes) == 0 {
-		return
-	}
-	hook := m.fanout.Telemetry()
-	for _, c := range closes {
-		fact, err := m.store.Get(ctx, c.Scope, c.FactID)
-		if err != nil {
-			if errors.Is(err, temporalstore.ErrNotFound) {
-				continue
-			}
-			hook.OnProjection(port.ProjectionEvent{
-				Projection:  "save_rollback.reproject_prior.get",
-				Op:          port.OpProject,
-				Consistency: projection.Required.String(),
-				FactCount:   1,
-				Err:         fmt.Errorf("get %s after %w: %v", c.FactID, cause, err),
-			})
-			continue
-		}
-		if fact.CorrectedBy != "" {
-			continue
-		}
-		if err := m.fanout.ProjectRequired(ctx, []domain.TemporalFact{fact}); err != nil {
-			hook.OnProjection(port.ProjectionEvent{
-				Projection:  "save_rollback.reproject_prior",
-				Op:          port.OpProject,
-				Consistency: projection.Required.String(),
-				FactCount:   1,
-				Err:         fmt.Errorf("reproject %s after %w: %v", c.FactID, cause, err),
-			})
-		}
 	}
 }
 
@@ -994,7 +757,7 @@ func (m *memory) RebuildAll(ctx context.Context, scope Scope) error {
 	unlock := m.lockWriteScope(scope)
 	defer unlock()
 
-	facts, err := m.store.List(ctx, scope, temporalstore.ListQuery{IncludeSuperseded: true})
+	facts, err := m.store.List(ctx, scope, port.ListQuery{IncludeSuperseded: true})
 	if err != nil {
 		return fmt.Errorf("recall.RebuildAll: list canonical facts: %w", err)
 	}
@@ -1091,7 +854,7 @@ func (m *memory) RebuildProjection(ctx context.Context, scope Scope, name string
 	if target == nil {
 		return errdefs.NotFoundf("recall.RebuildProjection: projection %q not registered", name)
 	}
-	facts, err := m.store.List(ctx, scope, temporalstore.ListQuery{IncludeSuperseded: true})
+	facts, err := m.store.List(ctx, scope, port.ListQuery{IncludeSuperseded: true})
 	if err != nil {
 		return fmt.Errorf("recall.RebuildProjection: list canonical facts: %w", err)
 	}

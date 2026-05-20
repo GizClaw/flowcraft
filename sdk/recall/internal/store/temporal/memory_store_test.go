@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/port"
 )
 
 func scope() domain.Scope { return domain.Scope{RuntimeID: "rt", UserID: "u1"} }
@@ -60,14 +61,14 @@ func TestList_HidesSupersededByDefault(t *testing.T) {
 	if err := s.UpdateValidity(ctx, scope(), "a", t2, "b"); err != nil {
 		t.Fatalf("update validity: %v", err)
 	}
-	res, err := s.List(ctx, scope(), ListQuery{})
+	res, err := s.List(ctx, scope(), port.ListQuery{})
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
 	if len(res) != 1 || res[0].ID != "b" {
 		t.Errorf("want only b, got %+v", res)
 	}
-	all, err := s.List(ctx, scope(), ListQuery{IncludeSuperseded: true})
+	all, err := s.List(ctx, scope(), port.ListQuery{IncludeSuperseded: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -85,7 +86,7 @@ func TestList_DoesNotHideClosedValidityWithoutCorrection(t *testing.T) {
 	if err := s.Append(ctx, []domain.TemporalFact{f}); err != nil {
 		t.Fatal(err)
 	}
-	got, err := s.List(ctx, scope(), ListQuery{})
+	got, err := s.List(ctx, scope(), port.ListQuery{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -102,7 +103,7 @@ func TestAppend_RejectsDuplicateIDsWithinBatch(t *testing.T) {
 	if err := s.Append(ctx, []domain.TemporalFact{a, b}); err == nil {
 		t.Fatal("want error on duplicate fact id within one append batch")
 	}
-	got, err := s.List(ctx, scope(), ListQuery{IncludeSuperseded: true})
+	got, err := s.List(ctx, scope(), port.ListQuery{IncludeSuperseded: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -122,7 +123,7 @@ func TestList_FilterKindAndEntities(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	states, err := s.List(ctx, scope(), ListQuery{Kinds: []domain.FactKind{domain.KindState}})
+	states, err := s.List(ctx, scope(), port.ListQuery{Kinds: []domain.FactKind{domain.KindState}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -130,7 +131,7 @@ func TestList_FilterKindAndEntities(t *testing.T) {
 		t.Errorf("want 2 state facts, got %d", len(states))
 	}
 
-	alice, err := s.List(ctx, scope(), ListQuery{Entities: []string{"alice"}})
+	alice, err := s.List(ctx, scope(), port.ListQuery{Entities: []string{"alice"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -138,7 +139,7 @@ func TestList_FilterKindAndEntities(t *testing.T) {
 		t.Errorf("want 2 facts mentioning alice, got %d", len(alice))
 	}
 
-	both, err := s.List(ctx, scope(), ListQuery{Entities: []string{"alice", "bob"}})
+	both, err := s.List(ctx, scope(), port.ListQuery{Entities: []string{"alice", "bob"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -237,14 +238,14 @@ func TestStore_IsolatesScopes(t *testing.T) {
 	if err := s.Append(ctx, []domain.TemporalFact{a, b}); err != nil {
 		t.Fatal(err)
 	}
-	gotA, err := s.List(ctx, scope(), ListQuery{})
+	gotA, err := s.List(ctx, scope(), port.ListQuery{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(gotA) != 1 {
 		t.Errorf("scope u1 should hold one fact, got %d", len(gotA))
 	}
-	gotB, err := s.List(ctx, other, ListQuery{})
+	gotB, err := s.List(ctx, other, port.ListQuery{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -264,7 +265,7 @@ func TestStore_DoesNotPartitionByAgentID(t *testing.T) {
 	if err := s.Append(ctx, []domain.TemporalFact{a, b}); err != nil {
 		t.Fatal(err)
 	}
-	got, err := s.List(ctx, domain.Scope{RuntimeID: base.RuntimeID, UserID: base.UserID, AgentID: "agent-a"}, ListQuery{})
+	got, err := s.List(ctx, domain.Scope{RuntimeID: base.RuntimeID, UserID: base.UserID, AgentID: "agent-a"}, port.ListQuery{})
 	if err != nil {
 		t.Fatal(err)
 	}

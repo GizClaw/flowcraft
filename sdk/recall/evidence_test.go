@@ -7,6 +7,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/port"
 	retrievalproj "github.com/GizClaw/flowcraft/sdk/recall/internal/projection/retrieval"
 	evidencestore "github.com/GizClaw/flowcraft/sdk/recall/internal/store/evidence"
 	temporalstore "github.com/GizClaw/flowcraft/sdk/recall/internal/store/temporal"
@@ -16,7 +17,7 @@ import (
 // failingEvidence wraps an evidence store and lets a test force
 // Append to fail so the Save rollback path can be exercised.
 type failingEvidence struct {
-	evidencestore.Store
+	port.EvidenceStore
 	failAppend bool
 	appended   int
 }
@@ -26,7 +27,7 @@ func (f *failingEvidence) Append(ctx context.Context, scope domain.Scope, factID
 		return errors.New("evidence backend down")
 	}
 	f.appended++
-	return f.Store.Append(ctx, scope, factID, refs)
+	return f.EvidenceStore.Append(ctx, scope, factID, refs)
 }
 
 // ---------------------------------------------------------------
@@ -85,7 +86,7 @@ func TestSave_NoEvidenceStore_DoesNotPanic(t *testing.T) {
 
 func TestSave_EvidenceFailureDoesNotRollbackCanonicalFact(t *testing.T) {
 	store := temporalstore.NewMemoryStore()
-	ev := &failingEvidence{Store: evidencestore.NewMemoryStore(), failAppend: true}
+	ev := &failingEvidence{EvidenceStore: evidencestore.NewMemoryStore(), failAppend: true}
 	idx := retrievalmem.New()
 	mem, err := New(
 		withTemporalStore(store),

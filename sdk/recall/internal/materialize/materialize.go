@@ -22,7 +22,7 @@ import (
 
 // FromStore materializes from a TemporalFactStore.
 type FromStore struct {
-	store     temporalstore.Store
+	store     port.TemporalStore
 	telemetry port.TelemetryHook
 }
 
@@ -36,7 +36,7 @@ var _ port.Materializer = (*FromStore)(nil)
 // superseded-fact drop so an outer reconcile or governance worker
 // can repair projections without the read path doing it inline
 // (docs §10.1: no auto-repair from Recall).
-func New(store temporalstore.Store, hook port.TelemetryHook) *FromStore {
+func New(store port.TemporalStore, hook port.TelemetryHook) *FromStore {
 	if hook == nil {
 		hook = telemetry.NopHook{}
 	}

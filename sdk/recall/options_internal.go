@@ -5,14 +5,12 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/llm"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/governance"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/port"
-	evidencestore "github.com/GizClaw/flowcraft/sdk/recall/internal/store/evidence"
-	temporalstore "github.com/GizClaw/flowcraft/sdk/recall/internal/store/temporal"
 	"github.com/GizClaw/flowcraft/sdk/retrieval"
 )
 
 type config struct {
-	store          temporalstore.Store
-	evidenceStore  evidencestore.Store
+	store          port.TemporalStore
+	evidenceStore  port.EvidenceStore
 	retrievalIndex retrieval.Index
 	embedder       embedding.Embedder
 	compiler       port.Ingestor
@@ -45,7 +43,7 @@ type llmExtractorConfig struct {
 	tune   []LLMExtractorOption
 }
 
-func withTemporalStore(s temporalstore.Store) Option {
+func withTemporalStore(s port.TemporalStore) Option {
 	return func(c *config) {
 		if s != nil {
 			c.store = s

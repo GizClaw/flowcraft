@@ -85,7 +85,7 @@ func TestSave_RequiredProjectionFailureAborts(t *testing.T) {
 	if err == nil {
 		t.Fatal("required projection failure must surface")
 	}
-	got, listErr := store.List(context.Background(), Scope{RuntimeID: "rt"}, temporalstore.ListQuery{})
+	got, listErr := store.List(context.Background(), Scope{RuntimeID: "rt"}, port.ListQuery{})
 	if listErr != nil {
 		t.Fatalf("store.List: %v", listErr)
 	}
@@ -268,7 +268,7 @@ func TestSave_ConcurrentStateUpdatesSerializeByScope(t *testing.T) {
 		}
 	}
 
-	facts, err := store.List(context.Background(), scope, temporalstore.ListQuery{IncludeSuperseded: true})
+	facts, err := store.List(context.Background(), scope, port.ListQuery{IncludeSuperseded: true})
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
@@ -438,7 +438,7 @@ func TestSave_EventIsAlwaysAppendOnly(t *testing.T) {
 			t.Fatalf("save %d: %v", i, err)
 		}
 	}
-	list, err := store.List(context.Background(), scope, temporalstore.ListQuery{IncludeSuperseded: true})
+	list, err := store.List(context.Background(), scope, port.ListQuery{IncludeSuperseded: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -470,7 +470,7 @@ func TestSave_AliasResolverFoldsMentions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	list, _ := store.List(context.Background(), scope, temporalstore.ListQuery{})
+	list, _ := store.List(context.Background(), scope, port.ListQuery{})
 	if len(list) != 1 {
 		t.Fatalf("want 1 fact, got %d", len(list))
 	}
@@ -503,7 +503,7 @@ func TestSave_TimeResolverConsumesHint(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	list, _ := store.List(context.Background(), scope, temporalstore.ListQuery{})
+	list, _ := store.List(context.Background(), scope, port.ListQuery{})
 	if len(list) != 1 {
 		t.Fatal("expected 1 plan")
 	}
@@ -553,7 +553,7 @@ func TestSave_ProjectionFailureAfterSupersedeRestoresPriorFact(t *testing.T) {
 	if prior.CorrectedBy != "" || prior.ValidTo != nil {
 		t.Fatalf("failed superseding save must leave prior fact active, got %+v", prior)
 	}
-	list, err := store.List(context.Background(), scope, temporalstore.ListQuery{IncludeSuperseded: true})
+	list, err := store.List(context.Background(), scope, port.ListQuery{IncludeSuperseded: true})
 	if err != nil {
 		t.Fatal(err)
 	}

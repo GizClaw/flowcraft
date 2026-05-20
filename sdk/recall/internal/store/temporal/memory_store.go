@@ -8,13 +8,14 @@ import (
 
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/port"
 )
 
 // MemoryStore is the reference in-memory TemporalFactStore.
 //
-// It is the only Store implementation shipped with PR-2; durable
-// backends (jsonl/sqlite) land in later phases without altering the
-// Store interface or its append-first semantics.
+// It is the reference port.TemporalStore implementation shipped with
+// PR-2; durable backends (jsonl/sqlite) land in later phases without
+// altering the port contract or its append-first semantics.
 type MemoryStore struct {
 	mu      sync.RWMutex
 	byScope map[scopeKey]*scopeShard
@@ -137,7 +138,7 @@ func (s *MemoryStore) Get(_ context.Context, scope domain.Scope, factID string) 
 
 // List returns ObservedAt-ascending facts filtered by the supplied
 // query. The default view hides superseded facts.
-func (s *MemoryStore) List(_ context.Context, scope domain.Scope, query ListQuery) ([]domain.TemporalFact, error) {
+func (s *MemoryStore) List(_ context.Context, scope domain.Scope, query port.ListQuery) ([]domain.TemporalFact, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	sh, ok := s.byScope[keyOf(scope)]
@@ -373,3 +374,5 @@ func removeID(ids []string, target string) []string {
 	}
 	return out
 }
+
+var _ port.TemporalStore = (*MemoryStore)(nil)

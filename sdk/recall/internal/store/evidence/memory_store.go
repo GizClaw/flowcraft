@@ -7,6 +7,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/port"
 )
 
 // MemoryStore is the reference in-memory EvidenceStore shipped with
@@ -174,3 +175,5 @@ func (s *MemoryStore) ForgetByFact(_ context.Context, scope domain.Scope, factID
 
 // Close releases backend resources.
 func (s *MemoryStore) Close() error { return nil }
+
+var _ port.EvidenceStore = (*MemoryStore)(nil)
