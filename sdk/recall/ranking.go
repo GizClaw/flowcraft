@@ -191,10 +191,11 @@ func factTermMatchCount(f model.TemporalFact, terms []string) int {
 }
 
 // termMatchBoost converts the weighted match count into a score
-// delta. The unit step is 0.006 — roughly one σ of the BM25 score
-// gap we observe on LoCoMo top-10 (≈ 0.005). That makes a single
-// content-field match the smallest signal that can move ranking,
-// while a multi-term content match (boost ≥ 0.024) is decisive.
+// delta. The unit step is 0.006 — slightly above one σ of the
+// typical BM25 score gap between adjacent top-10 candidates
+// (≈ 0.005), so a single content-field match is the smallest
+// signal that can move ranking, while a multi-term content match
+// (boost ≥ 0.024) is decisive.
 func termMatchBoost(matches int) float64 {
 	if matches <= 0 {
 		return 0

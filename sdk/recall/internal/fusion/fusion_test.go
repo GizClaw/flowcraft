@@ -68,9 +68,9 @@ func TestWeightedRRF_PerSourceCapEmitsDrops(t *testing.T) {
 }
 
 func TestWeightedRRF_OutlierBoost_RescuesRareTokenMatch(t *testing.T) {
-	// Reproduces the LoCoMo "Sweden" failure mode in miniature:
+	// Models a rare-token retrieval scenario:
 	//
-	// - retrieval lane returns one rare-token outlier ("sweden_fact")
+	// - retrieval lane returns one rare-token outlier ("rare_fact")
 	//   with a BM25 score ~7x the median of the rest of the lane
 	// - several mid-rank candidates appear in BOTH retrieval and
 	//   entity lanes (the multi-source corroboration that vanilla RRF
@@ -82,7 +82,7 @@ func TestWeightedRRF_OutlierBoost_RescuesRareTokenMatch(t *testing.T) {
 	// contribution is amplified just enough to overcome the
 	// dual-source rank-2 corroboration — the rare-token match wins.
 	retrievalCands := []model.Candidate{
-		{FactID: "sweden_fact", Source: "retrieval", Rank: 1, Score: 14.0},
+		{FactID: "rare_fact", Source: "retrieval", Rank: 1, Score: 14.0},
 		{FactID: "filler1", Source: "retrieval", Rank: 2, Score: 2.0},
 		{FactID: "filler2", Source: "retrieval", Rank: 3, Score: 2.0},
 		{FactID: "filler3", Source: "retrieval", Rank: 4, Score: 2.0},
@@ -111,8 +111,8 @@ func TestWeightedRRF_OutlierBoost_RescuesRareTokenMatch(t *testing.T) {
 		Weights: map[string]float64{"retrieval": 1.0, "entity": 1.0},
 		// rely on defaults (cap=2.0, threshold=2.0, max-rank=5)
 	})
-	if fused[0].FactID != "sweden_fact" {
-		t.Errorf("with boost: expected rare-token 'sweden_fact' to win, got rank order: %+v",
+	if fused[0].FactID != "rare_fact" {
+		t.Errorf("with boost: expected rare-token 'rare_fact' to win, got rank order: %+v",
 			func() []string {
 				out := []string{}
 				for _, c := range fused {

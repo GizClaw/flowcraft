@@ -332,8 +332,8 @@ func TestSave_StateUpdatesChainWithinSingleBatch(t *testing.T) {
 // claimed by a different (semantically equivalent) successor — the
 // race-loser's new fact still gets appended with its Supersedes
 // pointer, so the supersede chain stays reconstructable. This is
-// the safety net for the LoCoMo-style cross-instance race that
-// triggered "fact validity already closed" WARNs in long ingests.
+// the safety net for the cross-instance race that triggered
+// "fact validity already closed" WARNs in long concurrent ingests.
 func TestSave_TolerantOfRaceSupersedeClose(t *testing.T) {
 	store := temporalstore.NewMemoryStore()
 	scope := Scope{RuntimeID: "rt", UserID: "u1"}
@@ -350,7 +350,7 @@ func TestSave_TolerantOfRaceSupersedeClose(t *testing.T) {
 
 	// Second memory shares the same store but has its own write lock,
 	// so concurrent Saves emulate two replicas with no cross-process
-	// serialization (the LoCoMo failure mode).
+	// serialization.
 	memB, _ := New(withTemporalStore(store))
 
 	resA, err := memA.Save(context.Background(), scope, SaveRequest{
@@ -597,9 +597,9 @@ func TestSave_CrossAgentSameMergeKeyDoesNotSupersedeOtherAgentFact(t *testing.T)
 	}
 }
 
-func TestSaveRequest_ExposesTextForLLMExtraction(t *testing.T) {
-	if _, ok := reflect.TypeOf(SaveRequest{}).FieldByName("Text"); !ok {
-		t.Fatal("SaveRequest must expose Text so opt-in LLM extractors can be reached through Memory.Save")
+func TestSaveRequest_ExposesTurnsForLLMExtraction(t *testing.T) {
+	if _, ok := reflect.TypeOf(SaveRequest{}).FieldByName("Turns"); !ok {
+		t.Fatal("SaveRequest must expose Turns so opt-in LLM extractors can be reached through Memory.Save")
 	}
 }
 
@@ -909,7 +909,7 @@ func TestWithLLMExtractor_WiresExtractorIntoSavePath(t *testing.T) {
 
 	scope := Scope{RuntimeID: "rt", UserID: "u1"}
 	res, err := mem.Save(context.Background(), scope, SaveRequest{
-		Text: "TURN id=D1:3 role=user\nAlice said Paris is her city.",
+		Turns: []TurnContext{{ID: "D1:3", Role: "user", Text: "Alice said Paris is her city."}},
 	})
 	if err != nil {
 		t.Fatalf("save: %v", err)

@@ -120,5 +120,14 @@ type RecallTrace struct {
 	FusedCandidates int
 	Drops           []CandidateDrop
 	Materialized    int
-	TotalLatency    time.Duration
+	// Reranked is the number of hits that the optional Reranker
+	// stage actually reordered. Zero when no Reranker is wired or
+	// the candidate pool was empty; equal to len(input) when the
+	// reranker ran successfully on every candidate. The companion
+	// RerankErr captures soft failures so operators can attribute
+	// "rerank wired but didn't help" to a provider outage vs. a
+	// real signal mismatch.
+	Reranked     int
+	RerankErr    string
+	TotalLatency time.Duration
 }

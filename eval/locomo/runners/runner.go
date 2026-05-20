@@ -65,8 +65,8 @@ type RawIngestSaver interface {
 
 // SourceTurnSaver is an optional Runner extension for extractor-backed ingest
 // that needs source metadata (EvidenceID / SessionID) in addition to text. It
-// lets v2 render source turns into SaveRequest.Text so extracted facts can cite
-// the original evidence ids.
+// lets v2 pass typed RawTurns through SaveRequest.Turns so extracted facts
+// can cite the original evidence ids.
 type SourceTurnSaver interface {
 	SaveSourceTurns(ctx context.Context, scope Scope, turns []RawTurn) (saveCount int, saveLatency time.Duration, err error)
 }

@@ -65,6 +65,7 @@ type memory struct {
 	materializer  materialize.Materializer
 	fusionOpts    fusion.Options
 	graphEnabled  bool
+	reranker      Reranker
 	evolution     evolution.Runner
 
 	writeMu    sync.Mutex
@@ -217,6 +218,7 @@ func New(opts ...Option) (Memory, error) {
 		materializer:   mat,
 		fusionOpts:     fusionOpts,
 		graphEnabled:   cfg.graphEnabled,
+		reranker:       cfg.reranker,
 		evolution:      cfg.evolution,
 		writeLocks:     make(map[writeScopeKey]*writeLock),
 	}, nil
@@ -273,10 +275,13 @@ func (m *memory) runSave(ctx context.Context, scope Scope, req SaveRequest, with
 	}
 
 	stageStarted := time.Now()
+	knownEntities := m.snapshotKnownEntities(scope)
 	compiled, err := m.compiler.Compile(ctx, compiler.Input{
-		Scope: scope,
-		Facts: req.Facts,
-		Text:  req.Text,
+		Scope:         scope,
+		Facts:         req.Facts,
+		Turns:         req.Turns,
+		ObservedAt:    req.ObservedAt,
+		KnownEntities: knownEntities,
 	})
 	m.emitPipeline(scope, "compiler", "compile", len(compiled.Facts), stageStarted, err)
 	if err != nil {
@@ -284,6 +289,14 @@ func (m *memory) runSave(ctx context.Context, scope Scope, req SaveRequest, with
 	}
 	if withTrace {
 		trace.CompiledFacts = append([]TemporalFact(nil), compiled.Facts...)
+		trace.KnownEntitiesSeen = len(knownEntities)
+		trace.StructurizerCoverage = StructurizerCoverage{
+			TotalFactsSeen:      compiled.StructurizerCoverage.TotalFactsSeen,
+			KindFilled:          compiled.StructurizerCoverage.KindFilled,
+			EntitiesFilled:      compiled.StructurizerCoverage.EntitiesFilled,
+			SubjectFilled:       compiled.StructurizerCoverage.SubjectFilled,
+			ValidFromHintFilled: compiled.StructurizerCoverage.ValidFromHintFilled,
+		}
 		if len(compiled.Dropped) > 0 {
 			trace.Dropped = make([]DroppedFact, len(compiled.Dropped))
 			for i, d := range compiled.Dropped {
@@ -438,6 +451,42 @@ func (m *memory) emitPipeline(scope Scope, stage, op string, count int, started 
 		Latency: time.Since(started),
 		Err:     err,
 	})
+}
+
+// snapshotKnownEntities returns the canonical entities currently
+// indexed by the entity projection for this scope. The Structurizer
+// uses the snapshot as a soft hint to fold freshly-extracted
+// mentions into existing canonical forms.
+//
+// We deliberately ignore CandidateSources here: the entity projection
+// is the canonical source of truth for the write-side canonicalisation
+// hint, and it can answer in-process without a Recall round trip.
+//
+// Missing / disabled projection returns nil — the Structurizer
+// degrades to NER-only entity extraction, which is the same path the
+// very first Save in a scope already takes.
+func (m *memory) snapshotKnownEntities(scope Scope) []compiler.EntitySnapshot {
+	for _, p := range m.projections {
+		snap, ok := p.(interface {
+			Snapshot(scope model.Scope) []entityproj.Snapshot
+		})
+		if !ok {
+			continue
+		}
+		raw := snap.Snapshot(scope)
+		if len(raw) == 0 {
+			return nil
+		}
+		out := make([]compiler.EntitySnapshot, 0, len(raw))
+		for _, r := range raw {
+			out = append(out, compiler.EntitySnapshot{
+				Canonical: r.Canonical,
+				Aliases:   r.Aliases,
+			})
+		}
+		return out
+	}
+	return nil
 }
 
 func (m *memory) lockWriteScope(scope Scope) func() {
@@ -763,12 +812,39 @@ func (m *memory) runRecall(ctx context.Context, scope Scope, query Query, withTr
 		return nil, trace, fmt.Errorf("recall.Recall: materialize: %w", err)
 	}
 	trace.Drops = append(trace.Drops, matDrops...)
-	items = rankContextItems(items, plan.Intent, plan.TotalCap)
+	// When a reranker is wired we defer the TotalCap so it sees the
+	// widest fused pool (typically 2× topK). Without a reranker the
+	// pre-rerank cap stays in place so legacy callers see the
+	// historical pool size in trace.Materialized.
+	rankCap := plan.TotalCap
+	if m.reranker != nil {
+		rankCap = 0
+	}
+	items = rankContextItems(items, plan.Intent, rankCap)
 	trace.Materialized = len(items)
 
 	stageStarted = time.Now()
 	hits := hitsFromItems(items)
 	m.emitPipeline(scope, "build_hits", "build", len(hits), stageStarted, nil)
+
+	if m.reranker != nil && len(hits) > 0 {
+		stageStarted = time.Now()
+		reranked, rerr := m.reranker.Rerank(ctx, query.Text, hits)
+		m.emitPipeline(scope, "rerank", "rerank", len(reranked), stageStarted, rerr)
+		if rerr != nil {
+			// Graceful degradation: a rerank outage must never cost
+			// availability. We keep the fusion-rank order and
+			// surface the error through the trace so operators can
+			// attribute precision regressions to the right stage.
+			trace.RerankErr = rerr.Error()
+		} else {
+			hits = reranked
+			trace.Reranked = len(hits)
+		}
+		if plan.TotalCap > 0 && len(hits) > plan.TotalCap {
+			hits = hits[:plan.TotalCap]
+		}
+	}
 	trace.TotalLatency = time.Since(overall)
 	m.runEvolutionAfterRecall(ctx, scope, trace)
 	if !withTrace {

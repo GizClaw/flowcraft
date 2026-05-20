@@ -2,13 +2,52 @@ package compiler
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/llm"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/model"
 )
+
+// TestExtractedFactSchema_IsValidStrictJSONSchema pins the wire-shape
+// invariants OpenAI's strict structured-output mode enforces server-
+// side: every object must list every property in `required` and set
+// `additionalProperties: false`. A schema that fails this check
+// returns 400 from the provider on the FIRST Save call of a fresh
+// deployment — costly to diagnose in production. Catching the
+// regression at package-test time is cheap.
+func TestExtractedFactSchema_IsValidStrictJSONSchema(t *testing.T) {
+	var root map[string]any
+	if err := json.Unmarshal([]byte(ExtractedFactSchema), &root); err != nil {
+		t.Fatalf("ExtractedFactSchema is not valid JSON: %v", err)
+	}
+	var walk func(path string, node map[string]any)
+	walk = func(path string, node map[string]any) {
+		if kind, _ := node["type"].(string); kind == "object" {
+			props, _ := node["properties"].(map[string]any)
+			req, _ := node["required"].([]any)
+			if len(props) > 0 && len(req) != len(props) {
+				t.Errorf("%s: strict mode requires required==properties keys, got %d vs %d", path, len(req), len(props))
+			}
+			if v, ok := node["additionalProperties"]; !ok || v != false {
+				t.Errorf("%s: strict mode requires additionalProperties:false, got %v", path, v)
+			}
+			for name, raw := range props {
+				if child, ok := raw.(map[string]any); ok {
+					walk(path+"."+name, child)
+				}
+			}
+		}
+		if items, ok := node["items"].(map[string]any); ok {
+			walk(path+"[]", items)
+		}
+	}
+	walk("root", root)
+}
 
 // fakeLLM is a minimal llm.LLM satisfier for tests. It returns
 // Responses in order; once exhausted Err (when set) is surfaced.
@@ -28,7 +67,7 @@ func (f *fakeLLM) Generate(_ context.Context, msgs []llm.Message, opts ...llm.Ge
 		if f.Err != nil {
 			return llm.Message{}, llm.TokenUsage{}, f.Err
 		}
-		return llm.NewTextMessage(llm.RoleAssistant, `{"facts":[]}`), llm.TokenUsage{}, nil
+		return llm.NewTextMessage(llm.RoleAssistant, `{"memories":[]}`), llm.TokenUsage{}, nil
 	}
 	body := f.Responses[0]
 	f.Responses = f.Responses[1:]
@@ -39,7 +78,7 @@ func (f *fakeLLM) GenerateStream(context.Context, []llm.Message, ...llm.Generate
 	return nil, errors.New("fakeLLM: streaming not implemented")
 }
 
-func TestLLMExtractor_EmptyTextSkipsLLM(t *testing.T) {
+func TestLLMExtractor_EmptyInputSkipsLLM(t *testing.T) {
 	client := &fakeLLM{Err: errors.New("must not be called")}
 	ex := NewLLMExtractor(client)
 	out, err := ex.Extract(context.Background(), Input{
@@ -53,23 +92,46 @@ func TestLLMExtractor_EmptyTextSkipsLLM(t *testing.T) {
 		t.Errorf("structured facts must pass through, got %+v", out)
 	}
 	if len(client.Messages) != 0 {
-		t.Errorf("LLM should not be called when text is empty, calls=%d", len(client.Messages))
+		t.Errorf("LLM should not be called when Turns is empty, calls=%d", len(client.Messages))
 	}
 }
 
-func TestLLMExtractor_ParsesJSONIntoTemporalFacts(t *testing.T) {
+func TestLLMExtractor_ProseTurnSynthesizesID(t *testing.T) {
+	// Callers without per-turn metadata pass a single TurnContext
+	// with only Text populated; the extractor must still produce
+	// a valid JSONL line so the LLM has something to cite back.
 	client := &fakeLLM{
-		Responses: []string{`{"facts":[
-			{"kind":"preference","subject":"alice","predicate":"favorite_color","content":"blue","confidence":0.9,
-			 "source_message_ids":["D1:3"],
-			 "evidence_refs":[{"id":"D1:3","message_id":"m-3","role":"user","text":"Alice says blue is her favorite color.","timestamp":"2026-05-19T05:00:00Z"}]},
-			{"kind":"plan","content":"visit Paris","valid_from_hint":"tomorrow"}
-		]}`},
+		Responses: []string{`{"memories":[{"text":"Alice likes Paris.","evidence_refs":[{"id":"turn-1"}]}]}`},
 	}
 	ex := NewLLMExtractor(client)
 	out, err := ex.Extract(context.Background(), Input{
 		Scope: model.Scope{RuntimeID: "rt"},
-		Text:  "Alice says her favourite colour is blue and she's going to Paris tomorrow.",
+		Turns: []TurnContext{{Text: "Alice likes Paris."}},
+	})
+	if err != nil {
+		t.Fatalf("extract: %v", err)
+	}
+	if len(out) != 1 || out[0].Content != "Alice likes Paris." {
+		t.Errorf("prose-only turn not extracted: %+v", out)
+	}
+	if userMsg := client.Messages[0][1].Content(); !strings.Contains(userMsg, `"id":"turn-1"`) {
+		t.Errorf("synthetic turn id missing from wire shape: %q", userMsg)
+	}
+}
+
+func TestLLMExtractor_RendersTurnsAsJSONL(t *testing.T) {
+	client := &fakeLLM{
+		Responses: []string{`{"memories":[
+			{"text":"Alice prefers blue over red.","evidence_refs":[{"id":"D1:3"}]},
+			{"text":"Alice plans to visit Paris on 2024-05-07.","evidence_refs":[{"id":"D1:5","text":"[2024-05-07] Alice: I'm going to Paris."}]}
+		]}`},
+	}
+	ex := NewLLMExtractor(client)
+	turn1 := TurnContext{ID: "D1:3", EvidenceID: "D1:3", Role: "user", Speaker: "Alice", Time: time.Date(2024, 5, 1, 9, 0, 0, 0, time.UTC), Text: "Blue is my favorite color, not red."}
+	turn2 := TurnContext{ID: "D1:5", EvidenceID: "D1:5", Role: "user", Speaker: "Alice", Time: time.Date(2024, 5, 7, 9, 0, 0, 0, time.UTC), Text: "I'm going to Paris."}
+	out, err := ex.Extract(context.Background(), Input{
+		Scope: model.Scope{RuntimeID: "rt"},
+		Turns: []TurnContext{turn1, turn2},
 	})
 	if err != nil {
 		t.Fatalf("extract: %v", err)
@@ -77,51 +139,130 @@ func TestLLMExtractor_ParsesJSONIntoTemporalFacts(t *testing.T) {
 	if len(out) != 2 {
 		t.Fatalf("want 2 facts, got %d (%+v)", len(out), out)
 	}
-	if out[0].Kind != model.KindPreference || out[0].Subject != "alice" || out[0].Content != "blue" {
-		t.Errorf("first fact = %+v", out[0])
+	if out[0].Content != "Alice prefers blue over red." {
+		t.Errorf("content not preserved: %q", out[0].Content)
+	}
+	if len(out[0].EvidenceRefs) != 1 || out[0].EvidenceRefs[0].ID != "D1:3" {
+		t.Errorf("evidence_refs not preserved: %+v", out[0].EvidenceRefs)
+	}
+	// Typed turn metadata must be lifted into the EvidenceRef so
+	// downstream materializers see Role/Timestamp without parsing.
+	if out[0].EvidenceRefs[0].Role != "user" || out[0].EvidenceRefs[0].Timestamp.IsZero() {
+		t.Errorf("evidence ref should inherit typed turn metadata, got %+v", out[0].EvidenceRefs[0])
 	}
 	if len(out[0].SourceMessageIDs) != 1 || out[0].SourceMessageIDs[0] != "D1:3" {
-		t.Errorf("source ids not preserved: %+v", out[0].SourceMessageIDs)
-	}
-	if len(out[0].EvidenceRefs) != 1 {
-		t.Fatalf("evidence refs not preserved: %+v", out[0].EvidenceRefs)
-	}
-	if ref := out[0].EvidenceRefs[0]; ref.ID != "D1:3" || ref.MessageID != "m-3" || ref.Role != "user" || ref.Text == "" || ref.Timestamp.IsZero() {
-		t.Errorf("evidence ref = %+v", ref)
-	}
-	if out[1].Kind != model.KindPlan {
-		t.Errorf("second fact kind = %q", out[1].Kind)
-	}
-	if hint, _ := out[1].Metadata[MetaValidFromHint].(string); hint != "tomorrow" {
-		t.Errorf("valid_from_hint should land in metadata: %v", out[1].Metadata)
+		t.Errorf("source ids not derived from evidence: %+v", out[0].SourceMessageIDs)
 	}
 
-	// Assert prompt + schema wiring.
+	// Wire shape: user message must be JSONL with the typed turn
+	// fields, not the legacy free-form prose.
 	if len(client.Messages) != 1 {
-		t.Fatalf("client must be called once, got %d", len(client.Messages))
+		t.Fatalf("LLM must be called once, got %d", len(client.Messages))
 	}
-	msgs := client.Messages[0]
-	if len(msgs) != 2 || msgs[0].Role != llm.RoleSystem || msgs[1].Role != llm.RoleUser {
-		t.Errorf("messages = %+v", msgs)
+	userMsg := client.Messages[0][1].Content()
+	if !strings.Contains(userMsg, `"id":"D1:3"`) || !strings.Contains(userMsg, `"speaker":"Alice"`) || !strings.Contains(userMsg, `"time":"2024-05-01T09:00:00Z"`) {
+		t.Errorf("typed turn fields missing from JSONL user message: %q", userMsg)
 	}
-	if msgs[0].Content() != LLMExtractorSystemPrompt {
-		t.Errorf("system prompt mismatch: %q", msgs[0].Content())
+}
+
+func TestLLMExtractor_AcceptsLegacyFactsSchema(t *testing.T) {
+	// A deployment may still have the older prompt cached; make
+	// sure the parser tolerates the legacy "facts" envelope and
+	// projects content + kind + evidence_refs.id into the new shape.
+	client := &fakeLLM{
+		Responses: []string{`{"facts":[{
+			"kind":"plan","content":"Alice plans to visit Paris.",
+			"evidence_refs":[{"id":"D1:3","message_id":"D1:3","role":"user","text":"Alice says she's going to Paris."}]
+		}]}`},
 	}
-	gotOpts := llm.GenerateOptions{}
-	for _, opt := range client.Options[0] {
-		opt(&gotOpts)
+	ex := NewLLMExtractor(client)
+	out, err := ex.Extract(context.Background(), Input{
+		Scope: model.Scope{RuntimeID: "rt"},
+		Turns: []TurnContext{{ID: "D1:3", Role: "user", Text: "Alice says she's going to Paris."}},
+	})
+	if err != nil {
+		t.Fatalf("extract: %v", err)
 	}
-	if gotOpts.JSONSchema == nil || gotOpts.JSONSchema.Name != "recall_extracted_facts" || !gotOpts.JSONSchema.Strict {
-		t.Errorf("JSON schema option not wired: %+v", gotOpts.JSONSchema)
+	if len(out) != 1 {
+		t.Fatalf("want 1 fact, got %d", len(out))
 	}
-	if gotOpts.JSONMode == nil || !*gotOpts.JSONMode {
-		t.Errorf("JSON mode not enabled")
+	if out[0].Content != "Alice plans to visit Paris." {
+		t.Errorf("legacy content not lifted: %q", out[0].Content)
+	}
+	if out[0].Kind != model.KindPlan {
+		t.Errorf("legacy kind not lifted: got %q want %q", out[0].Kind, model.KindPlan)
+	}
+	if len(out[0].EvidenceRefs) != 1 || out[0].EvidenceRefs[0].ID != "D1:3" {
+		t.Errorf("legacy evidence not lifted: %+v", out[0].EvidenceRefs)
+	}
+}
+
+// TestLLMExtractor_PropagatesKindEnum verifies the new 3-field schema
+// path: when the LLM picks a kind from the closed enum, the extractor
+// surfaces it on the TemporalFact so the Structurizer's keyword
+// fallback never overwrites it. This is the load-bearing assertion
+// that "route 2" actually wires kind through the pipeline.
+func TestLLMExtractor_PropagatesKindEnum(t *testing.T) {
+	client := &fakeLLM{
+		Responses: []string{`{"memories":[
+			{"text":"Alice lives in Paris.","kind":"state","evidence_refs":[{"id":"t1"}]},
+			{"text":"Alice plans to visit Berlin in June.","kind":"plan","evidence_refs":[{"id":"t1"}]},
+			{"text":"Alice loves black coffee.","kind":"preference","evidence_refs":[{"id":"t1"}]},
+			{"text":"Alice is married to Bob.","kind":"relation","evidence_refs":[{"id":"t1"}]},
+			{"text":"Alice went to the cinema on 2024-05-07.","kind":"event","evidence_refs":[{"id":"t1"}]},
+			{"text":"Alice mentioned a new book.","kind":"note","evidence_refs":[{"id":"t1"}]}
+		]}`},
+	}
+	ex := NewLLMExtractor(client)
+	out, err := ex.Extract(context.Background(), Input{
+		Scope: model.Scope{RuntimeID: "rt"},
+		Turns: []TurnContext{{ID: "t1", Text: "irrelevant — schema is what we check here"}},
+	})
+	if err != nil {
+		t.Fatalf("extract: %v", err)
+	}
+	want := []model.FactKind{
+		model.KindState, model.KindPlan, model.KindPreference,
+		model.KindRelation, model.KindEvent, model.KindNote,
+	}
+	if len(out) != len(want) {
+		t.Fatalf("want %d facts, got %d", len(want), len(out))
+	}
+	for i, w := range want {
+		if out[i].Kind != w {
+			t.Errorf("fact[%d].Kind = %q, want %q (content=%q)", i, out[i].Kind, w, out[i].Content)
+		}
+	}
+}
+
+// TestLLMExtractor_UnknownKindFallsThrough confirms that an
+// unrecognised kind label (older deployment, prompt drift) leaves
+// Kind empty so the Structurizer's keyword fallback can still
+// classify the fact instead of silently shipping garbage to the
+// projections.
+func TestLLMExtractor_UnknownKindFallsThrough(t *testing.T) {
+	client := &fakeLLM{
+		Responses: []string{`{"memories":[{"text":"Alice lives in Paris.","kind":"ufo","evidence_refs":[{"id":"t1"}]}]}`},
+	}
+	ex := NewLLMExtractor(client)
+	out, err := ex.Extract(context.Background(), Input{
+		Scope: model.Scope{RuntimeID: "rt"},
+		Turns: []TurnContext{{ID: "t1", Text: "x"}},
+	})
+	if err != nil {
+		t.Fatalf("extract: %v", err)
+	}
+	if len(out) != 1 {
+		t.Fatalf("want 1 fact, got %d", len(out))
+	}
+	if out[0].Kind != "" {
+		t.Errorf("unknown kind should fall through to empty for Structurizer fallback, got %q", out[0].Kind)
 	}
 }
 
 func TestLLMExtractor_DedupesEvidenceRefs(t *testing.T) {
 	client := &fakeLLM{
-		Responses: []string{`{"facts":[{"kind":"event","content":"x",
+		Responses: []string{`{"memories":[{"text":"x",
 			"evidence_refs":[
 				{"id":"D1:3","text":"Same turn quoted once."},
 				{"id":"D1:3","text":"Same turn quoted again with a different excerpt."},
@@ -133,7 +274,7 @@ func TestLLMExtractor_DedupesEvidenceRefs(t *testing.T) {
 	ex := NewLLMExtractor(client)
 	out, err := ex.Extract(context.Background(), Input{
 		Scope: model.Scope{RuntimeID: "rt"},
-		Text:  "anything",
+		Turns: []TurnContext{{ID: "D1:3", Text: "anything"}},
 	})
 	if err != nil {
 		t.Fatalf("extract: %v", err)
@@ -152,12 +293,12 @@ func TestLLMExtractor_DedupesEvidenceRefs(t *testing.T) {
 
 func TestLLMExtractor_HandlesFencedJSON(t *testing.T) {
 	client := &fakeLLM{
-		Responses: []string{"Sure, here is the result:\n```json\n{\"facts\":[{\"kind\":\"note\",\"content\":\"hello\"}]}\n```\n"},
+		Responses: []string{"Sure, here is the result:\n```json\n{\"memories\":[{\"text\":\"hello\",\"evidence_refs\":[]}]}\n```\n"},
 	}
 	ex := NewLLMExtractor(client)
 	out, err := ex.Extract(context.Background(), Input{
 		Scope: model.Scope{RuntimeID: "rt"},
-		Text:  "anything",
+		Turns: []TurnContext{{ID: "t1", Text: "anything"}},
 	})
 	if err != nil {
 		t.Fatalf("extract: %v", err)
@@ -172,7 +313,7 @@ func TestLLMExtractor_PropagatesLLMError(t *testing.T) {
 	ex := NewLLMExtractor(client)
 	_, err := ex.Extract(context.Background(), Input{
 		Scope: model.Scope{RuntimeID: "rt"},
-		Text:  "anything",
+		Turns: []TurnContext{{ID: "t1", Text: "anything"}},
 	})
 	if err == nil {
 		t.Fatal("expected LLM error to surface")
@@ -184,7 +325,7 @@ func TestLLMExtractor_RejectsMalformedJSON(t *testing.T) {
 	ex := NewLLMExtractor(client)
 	_, err := ex.Extract(context.Background(), Input{
 		Scope: model.Scope{RuntimeID: "rt"},
-		Text:  "anything",
+		Turns: []TurnContext{{ID: "t1", Text: "anything"}},
 	})
 	if err == nil {
 		t.Fatal("expected JSON parse error")
@@ -205,7 +346,7 @@ func TestLLMExtractor_PreservesBackendClassification(t *testing.T) {
 	ex := NewLLMExtractor(client)
 	_, err := ex.Extract(context.Background(), Input{
 		Scope: model.Scope{RuntimeID: "rt"},
-		Text:  "anything",
+		Turns: []TurnContext{{ID: "t1", Text: "anything"}},
 	})
 	if err == nil {
 		t.Fatal("expected backend error to surface")

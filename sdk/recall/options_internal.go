@@ -40,6 +40,8 @@ type config struct {
 
 	graphEnabled bool
 
+	reranker Reranker
+
 	governance *governance.Governance
 	evolution  evolution.Runner
 }

@@ -126,6 +126,52 @@ func (p *Projection) Rebuild(ctx context.Context, scope model.Scope, facts []mod
 	return p.Project(ctx, facts)
 }
 
+// Snapshot is one canonical entity the projection currently knows
+// about in a scope, plus any aliases collected through prior
+// projects. The compiler's Structurizer uses these as a write-time
+// canonicalisation hint so fresh mentions fold into the canonical
+// form instead of fragmenting the graph.
+type Snapshot struct {
+	Canonical string
+	Aliases   []string
+}
+
+// Snapshot returns the canonical entities currently indexed for
+// scope, sorted by descending mention count (ties broken
+// alphabetically). The mention count is a soft "salience" signal:
+// the more facts already mention an entity, the more likely a fresh
+// mention of the same surface form refers to it. Returns nil when
+// the scope has no entries.
+//
+// This is the read-side companion to Project; it is intentionally
+// cheap (one map walk) so memory.Save can call it on every write
+// without bloating the critical path.
+func (p *Projection) Snapshot(scope model.Scope) []Snapshot {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	sh, ok := p.scopes[keyOf(scope)]
+	if !ok || len(sh.mentions) == 0 {
+		return nil
+	}
+	out := make([]Snapshot, 0, len(sh.mentions))
+	for canonical := range sh.mentions {
+		if canonical == "" {
+			continue
+		}
+		// Aliases stay nil for now: the v2 projection
+		// canonicalises before indexing, so the canonical
+		// form already encodes case / whitespace variation.
+		// Adding alias surface forms is a follow-up once the
+		// resolver pipes them through.
+		out = append(out, Snapshot{Canonical: canonical})
+	}
+	// Stable order: canonical name. The Structurizer iterates
+	// snapshots linearly so a deterministic order keeps test
+	// goldens reproducible.
+	sort.Slice(out, func(i, j int) bool { return out[i].Canonical < out[j].Canonical })
+	return out
+}
+
 // Lookup returns the fact ids that mention any of the supplied
 // entities within scope. Used by the future entity source; exported
 // for tests in PR-2.

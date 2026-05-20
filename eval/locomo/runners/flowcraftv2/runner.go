@@ -7,7 +7,6 @@ package flowcraftv2
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -29,6 +28,11 @@ type Options struct {
 	// on the recall memory: the retrieval projection embeds every
 	// indexed fact and the retrieval source embeds each query.
 	Embedder embedding.Embedder
+	// RerankerLLM, when non-nil, installs an LLM-backed Reranker on
+	// the recall memory. Reranking fires post-fusion and pre-cap so
+	// the model sees the full overfetched pool (typically 2× topK).
+	// nil keeps the default fusion-only ranking.
+	RerankerLLM llm.LLM
 
 	IncludeAssistant bool
 	// OnFactsSaved is invoked after each successful Save with the scope and
@@ -74,6 +78,9 @@ func New(opts Options) (runners.Runner, error) {
 	}
 	if opts.Embedder != nil {
 		memOpts = append(memOpts, recall.WithEmbedder(opts.Embedder))
+	}
+	if opts.RerankerLLM != nil {
+		memOpts = append(memOpts, recall.WithReranker(recall.NewLLMReranker(opts.RerankerLLM)))
 	}
 	mem, err := recall.New(memOpts...)
 	if err != nil {
@@ -154,18 +161,21 @@ func (r *Runner) SaveRawTurns(ctx context.Context, scope runners.Scope, turns []
 	return r.saveFacts(ctx, scope, facts)
 }
 
-// SaveSourceTurns implements runners.SourceTurnSaver. It renders source-turn
-// metadata into SaveRequest.Text so the v2 LLM extractor can cite LoCoMo
-// EvidenceID values in source_message_ids / evidence_refs.
+// SaveSourceTurns implements runners.SourceTurnSaver. It converts each
+// RawTurn into a typed recall.TurnContext (parsing the optional
+// "[<time>] <speaker>:" prefix LoCoMo bakes into raw content) and
+// passes the typed channel through SaveRequest.Turns. The SDK
+// extractor handles JSONL rendering; this adapter only owns the
+// RawTurn -> TurnContext shape conversion.
 func (r *Runner) SaveSourceTurns(ctx context.Context, scope runners.Scope, turns []runners.RawTurn) (int, time.Duration, error) {
 	if !r.hasLLM {
 		return 0, 0, ErrExtractorNotSupported
 	}
-	text, n := renderTurns(turns, r.includeAs)
-	if n == 0 {
+	ctxs, observedAt := buildTurnContexts(turns, r.includeAs)
+	if len(ctxs) == 0 {
 		return 0, 0, nil
 	}
-	return r.runSave(ctx, scope, recall.SaveRequest{Text: text})
+	return r.runSave(ctx, scope, recall.SaveRequest{Turns: ctxs, ObservedAt: observedAt})
 }
 
 func (r *Runner) saveFacts(ctx context.Context, scope runners.Scope, facts []recall.TemporalFact) (int, time.Duration, error) {
@@ -238,49 +248,121 @@ const Baseline = "bootstrap-raw"
 // without wiring an LLM into the v2 runner.
 var ErrExtractorNotSupported = fmt.Errorf("flowcraft-v2 extractor ingest requires an LLM")
 
-const renderTurnsHeader = `FLOWCRAFT_RECALL_TURNS_V1
-Each following line is one source turn as JSON. When extracting a fact, cite supporting turn_id values in source_message_ids and evidence_refs.id.
-`
-
-type renderedTurn struct {
-	TurnID     string `json:"turn_id"`
-	EvidenceID string `json:"evidence_id,omitempty"`
-	SessionID  string `json:"session_id,omitempty"`
-	Role       string `json:"role"`
-	Text       string `json:"text"`
-}
-
-func renderTurns(turns []runners.RawTurn, includeAssistant bool) (string, int) {
-	var b strings.Builder
-	b.WriteString(renderTurnsHeader)
-	n := 0
+// buildTurnContexts maps the LoCoMo-shaped RawTurns into typed
+// recall.TurnContexts. The LoCoMo dataset stuffs absolute
+// timestamps and canonical speaker names into the turn content as a
+// "[<time>] <speaker>:" prefix; this function strips that prefix
+// and lifts the components into typed Time / Speaker fields so the
+// SDK extractor never has to grep prose for them.
+//
+// ObservedAt is the earliest typed Time across the batch; the
+// compiler uses it as the wall-clock anchor for relative-time
+// resolution. Zero when no turn has a typed timestamp (synthetic
+// data, raw chat dumps) — the compiler then falls back to its
+// real-time clock.
+//
+// Assistant turns are filtered when includeAssistant=false; empty /
+// whitespace-only turns are always dropped.
+func buildTurnContexts(turns []runners.RawTurn, includeAssistant bool) ([]recall.TurnContext, time.Time) {
+	out := make([]recall.TurnContext, 0, len(turns))
+	var observedAt time.Time
 	for i, t := range turns {
 		role := strings.TrimSpace(t.Role)
-		text := strings.TrimSpace(t.Content)
-		if text == "" {
+		raw := strings.TrimSpace(t.Content)
+		if raw == "" {
 			continue
 		}
 		if !includeAssistant && model.Role(role) == model.RoleAssistant {
 			continue
 		}
-		line, err := json.Marshal(renderedTurn{
-			TurnID:     turnID(t, i),
+		ts, speaker, body := splitTurnPrefix(raw)
+		typedTime := parseLocomoTimestamp(ts)
+		if !typedTime.IsZero() && (observedAt.IsZero() || typedTime.Before(observedAt)) {
+			observedAt = typedTime
+		}
+		out = append(out, recall.TurnContext{
+			ID:         turnID(t, i),
 			EvidenceID: strings.TrimSpace(t.EvidenceID),
 			SessionID:  strings.TrimSpace(t.SessionID),
 			Role:       role,
-			Text:       text,
+			Speaker:    speaker,
+			Time:       typedTime,
+			Text:       body,
 		})
-		if err != nil {
-			continue
+	}
+	return out, observedAt
+}
+
+// splitTurnPrefix pulls the optional "[<time>] <speaker>: <body>"
+// prefix the LoCoMo convert step bakes into each turn's content.
+// Both the bracketed time and the trailing "speaker: " are stripped
+// from body so the text the LLM reads is clean prose; the same
+// information is reinjected via the typed Time / Speaker fields on
+// TurnContext. Returns ts="" and speaker="" when the prefix is
+// absent so the adapter degrades cleanly for raw chat dumps.
+func splitTurnPrefix(raw string) (ts, speaker, body string) {
+	body = raw
+	if strings.HasPrefix(body, "[") {
+		if end := strings.Index(body, "]"); end > 0 {
+			ts = strings.TrimSpace(body[1:end])
+			body = strings.TrimSpace(body[end+1:])
 		}
-		b.Write(line)
-		b.WriteByte('\n')
-		n++
 	}
-	if n == 0 {
-		return "", 0
+	if colon := strings.Index(body, ":"); colon > 0 {
+		head := strings.TrimSpace(body[:colon])
+		if speakerLooksClean(head) {
+			speaker = head
+			body = strings.TrimSpace(body[colon+1:])
+		}
 	}
-	return b.String(), n
+	return ts, speaker, body
+}
+
+// locomoTimeLayouts is the small set of date / datetime shapes the
+// LoCoMo convert step bakes into the "[…]" prefix. It is closed on
+// purpose: anything outside this set is left as a string in the
+// preserved Time field and the compiler degrades to relative-time
+// grounding.
+var locomoTimeLayouts = []string{
+	"3:04 pm on 2 January, 2006",
+	"3:04 pm on 2 Jan, 2006",
+	"15:04 on 2 January, 2006",
+	"15:04 on 2 Jan, 2006",
+	"3:04 pm on 2 January 2006",
+	"2 January, 2006",
+	"2 January 2006",
+	"2 Jan 2006",
+	"January 2, 2006",
+	"Jan 2, 2006",
+	"2006-01-02 15:04:05",
+	"2006-01-02 15:04",
+	"2006-01-02",
+	time.RFC3339,
+}
+
+func parseLocomoTimestamp(raw string) time.Time {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return time.Time{}
+	}
+	for _, layout := range locomoTimeLayouts {
+		if t, err := time.Parse(layout, raw); err == nil {
+			return t
+		}
+	}
+	return time.Time{}
+}
+
+func speakerLooksClean(s string) bool {
+	if s == "" || len(s) > 64 {
+		return false
+	}
+	for _, r := range s {
+		if r == '\n' || r == '\r' || r == '\t' {
+			return false
+		}
+	}
+	return true
 }
 
 func turnID(t runners.RawTurn, idx int) string {

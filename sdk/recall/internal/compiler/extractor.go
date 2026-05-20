@@ -18,12 +18,12 @@ import (
 // Three implementations ship in-tree:
 //
 //   - passthroughExtractor: returns caller-supplied Facts verbatim.
-//     This is the deterministic baseline used when Input.Text is
+//     This is the deterministic baseline used when Input.Turns is
 //     empty or when callers explicitly construct structured facts.
-//   - LLMExtractor: routes Input.Text through a pluggable LLM client
-//     that returns a JSON document matching ExtractedFactSchema.
-//     The implementation uses sdk/llm and tests exercise it with fake
-//     clients so no network calls are required.
+//   - LLMExtractor: routes Input.Turns through a pluggable LLM
+//     client that returns a JSON document matching
+//     ExtractedFactSchema. The implementation uses sdk/llm and tests
+//     exercise it with fake clients so no network calls are required.
 //   - StaticExtractor: returns a fixed list of facts, regardless of
 //     input. Useful in tests that need deterministic non-empty
 //     extraction without an LLM round trip.
@@ -38,7 +38,7 @@ type Extractor interface {
 type passthroughExtractor struct{}
 
 // Extract returns the caller-supplied facts unchanged. It
-// deliberately ignores Input.Text — text-driven extraction is opt
+// deliberately ignores Input.Turns — turn-driven extraction is opt
 // in via LLMExtractor.
 func (passthroughExtractor) Extract(_ context.Context, input Input) ([]model.TemporalFact, error) {
 	if len(input.Facts) == 0 {
@@ -52,69 +52,63 @@ func (passthroughExtractor) Extract(_ context.Context, input Input) ([]model.Tem
 }
 
 // ExtractedFactSchema is the JSON schema the LLMExtractor enforces
-// via llm.WithJSONSchema. It mirrors the v2 TemporalFact shape with
-// a closed Kind enum and explicit field types so structured-output
-// modes (OpenAI strict mode, Gemini schema, etc.) validate
-// server-side.
+// via llm.WithJSONSchema. It stays intentionally small — three
+// fields per memory — so the LLM can dedicate its capacity to
+// reading the snippet rather than filling a 14-field grid.
+//
+// The LLM emits:
+//   - text:          a self-contained natural-language sentence.
+//   - kind:          one of the six FactKind enum values, picked
+//     from the closed list ["event","state",
+//     "preference","relation","plan","note"]. This
+//     routes the fact through the right downstream
+//     projection (timeline / profile / relation /
+//     note-retrieval) without forcing the
+//     Structurizer to guess from English keywords.
+//   - evidence_refs: ids of the supporting turns.
+//
+// Everything else (Subject/Predicate/Object, Entities, ValidFrom,
+// …) is still derived deterministically by the Structurizer from
+// the typed per-turn metadata the adapter passes via Input.Turns
+// and from the entity-projection snapshot in Input.KnownEntities.
 //
 // OpenAI structured-output strict mode rejects any object whose
 // `properties` set does not equal its `required` set, and requires
 // `additionalProperties: false` on every object. We therefore mark
-// every listed property as required; the LLM is allowed to emit
-// empty strings / empty arrays for fields that do not apply (the
-// normalizer / resolver already treat empties as "not set"). The
-// closed enum on `kind` remains the only true constraint.
+// every listed property as required; "evidence_refs" stays a
+// closed two-property object so even strict providers accept it.
 const ExtractedFactSchema = `{
   "type": "object",
   "properties": {
-    "facts": {
+    "memories": {
       "type": "array",
       "items": {
         "type": "object",
         "properties": {
+          "text": {"type": "string"},
           "kind": {
             "type": "string",
             "enum": ["event", "state", "preference", "relation", "plan", "note"]
           },
-          "content": {"type": "string"},
-          "subject": {"type": "string"},
-          "predicate": {"type": "string"},
-          "object": {"type": "string"},
-          "entities": {"type": "array", "items": {"type": "string"}},
-          "participants": {"type": "array", "items": {"type": "string"}},
-          "location": {"type": "string"},
-          "valid_from_hint": {"type": "string"},
-          "valid_to_hint": {"type": "string"},
-          "confidence": {"type": "number"},
-          "evidence_text": {"type": "string"},
           "evidence_refs": {
             "type": "array",
             "items": {
               "type": "object",
               "properties": {
                 "id": {"type": "string"},
-                "message_id": {"type": "string"},
-                "role": {"type": "string"},
-                "text": {"type": "string"},
-                "timestamp": {"type": "string"}
+                "text": {"type": "string"}
               },
-              "required": ["id", "message_id", "role", "text", "timestamp"],
+              "required": ["id", "text"],
               "additionalProperties": false
             }
-          },
-          "source_message_ids": {"type": "array", "items": {"type": "string"}}
+          }
         },
-        "required": [
-          "kind", "content", "subject", "predicate", "object",
-          "entities", "participants", "location",
-          "valid_from_hint", "valid_to_hint", "confidence",
-          "evidence_text", "evidence_refs", "source_message_ids"
-        ],
+        "required": ["text", "kind", "evidence_refs"],
         "additionalProperties": false
       }
     }
   },
-  "required": ["facts"],
+  "required": ["memories"],
   "additionalProperties": false
 }`
 
@@ -122,131 +116,110 @@ const ExtractedFactSchema = `{
 // separate from model.TemporalFact so JSON tags do not leak into
 // the canonical model.
 type ExtractedFactList struct {
-	Facts []ExtractedFact `json:"facts"`
+	Memories []ExtractedMemory `json:"memories"`
 }
 
-// ExtractedFact mirrors model.TemporalFact's caller-relevant
-// fields. ValidFrom/ValidTo are passed as relative-time hints that
-// the TimeResolver later parses; IDs, MergeKey, Supersedes etc.
-// are owned by the compiler / store and never produced by the LLM.
-type ExtractedFact struct {
-	Kind             string                 `json:"kind"`
-	Content          string                 `json:"content,omitempty"`
-	Subject          string                 `json:"subject,omitempty"`
-	Predicate        string                 `json:"predicate,omitempty"`
-	Object           string                 `json:"object,omitempty"`
-	Entities         []string               `json:"entities,omitempty"`
-	Participants     []string               `json:"participants,omitempty"`
-	Location         string                 `json:"location,omitempty"`
-	ValidFromHint    string                 `json:"valid_from_hint,omitempty"`
-	ValidToHint      string                 `json:"valid_to_hint,omitempty"`
-	Confidence       float64                `json:"confidence,omitempty"`
-	EvidenceText     string                 `json:"evidence_text,omitempty"`
-	EvidenceRefs     []ExtractedEvidenceRef `json:"evidence_refs,omitempty"`
-	SourceMessageIDs []string               `json:"source_message_ids,omitempty"`
+// ExtractedMemory is the minimal wire shape the LLM emits. It owns
+// only three fields:
+//   - Text: a single self-contained natural-language sentence that
+//     states ONE memory, with absolute dates / speaker names already
+//     baked in so the answer LLM can quote it verbatim.
+//   - Kind: one of the FactKind enum values. The schema's enum
+//     constraint guarantees the model only emits a recognised value;
+//     the Structurizer's keyword fallback only runs when this is
+//     empty (legacy schema responses).
+//   - EvidenceRefs: ids of the supporting turns the adapter
+//     announced in Input.Turns.
+//
+// Everything else (S/P/O, Entities, ValidFrom, …) is filled by the
+// Structurizer from the typed per-turn channel.
+type ExtractedMemory struct {
+	Text         string                 `json:"text"`
+	Kind         string                 `json:"kind,omitempty"`
+	EvidenceRefs []ExtractedEvidenceRef `json:"evidence_refs,omitempty"`
 }
 
 // ExtractedEvidenceRef is the LLM wire shape for evidence pointers.
-// The timestamp is intentionally a string so eval adapters can pass
-// RFC3339 values when available while leaving benchmark-specific date
-// formats to the surrounding raw text.
+// Only ID is required; Text is an optional verbatim quote the LLM
+// can attach when the supporting turn span is short enough to embed
+// directly (matches the legacy contract so existing adapters keep
+// working).
 type ExtractedEvidenceRef struct {
-	ID        string `json:"id,omitempty"`
-	MessageID string `json:"message_id,omitempty"`
-	Role      string `json:"role,omitempty"`
-	Text      string `json:"text,omitempty"`
-	Timestamp string `json:"timestamp,omitempty"`
+	ID   string `json:"id"`
+	Text string `json:"text,omitempty"`
 }
 
-// LLMExtractorSystemPrompt is the canonical system framing. It is
-// intentionally short — product-specific prompt tuning belongs at the
-// LLM-client adapter or caller option layer, not inside the compiler.
+// LLMExtractorSystemPrompt is the canonical framing for the
+// extractor LLM.
 //
-// Two empirically critical demands are baked in:
+// The LLM writes a self-contained natural-language sentence per
+// memory, picks one Kind label from the closed enum, and cites the
+// supporting turn ids. Every other field — entities,
+// subject/predicate/object, valid_from — is filled by the
+// Structurizer stage from the typed per-turn channel the adapter
+// already provides (id, time, speaker, role, text). Keeping the
+// LLM contract this small keeps smaller models accurate while
+// still letting them own the one classification (Kind) that
+// keyword tables in the Structurizer cannot do reliably: the SDK
+// projections still see canonical TemporalFacts because Kind +
+// Structurizer + the typed channel produce them together.
 //
-//   - every fact MUST carry a one-sentence natural language `content`
-//     summary. The retrieval projection indexes Content + S/P/O +
-//     Evidence together; a fact with empty content gives the BM25
-//     lane no fuel and the answer LLM no grounding (the recall
-//     pipeline can still surface the fact via structured lanes, but
-//     downstream answer quality collapses when the snippet has no
-//     prose to cite).
-//   - whenever the snippet mentions an absolute or relative time for
-//     an event / state / plan, the LLM MUST fill `valid_from_hint`
-//     (and `valid_to_hint` when an end is stated). Use RFC3339 when a
-//     calendar date is present (e.g. "2024-05-07" or
-//     "2024-05-07T09:00:00Z"); otherwise use one of the relative
-//     tokens: now | today | tomorrow | yesterday | next week |
-//     last week | next month | last month | next year | last year.
-//     Time-resolver normalises both shapes into canonical
-//     ValidFrom / ValidTo; missing this signal makes the temporal
-//     subset of queries score near zero (`recall.k_hit` on temporal
-//     drops to 0 when ValidFrom is never set).
-const LLMExtractorSystemPrompt = `You extract structured memory facts from a conversation snippet.
-Return JSON matching the supplied schema. Only emit facts that are
-clearly present in the snippet; never fabricate facts to fill the
-schema.
+// The user message is JSONL — one
+// {"id","time","speaker","role","text"} object per line — and the
+// LLM must cite the supporting turn(s) by their "id". Callers that
+// only have unstructured prose pass a single TurnContext with just
+// the Text field populated; the SDK then synthesises an id and
+// degrades the evidence_refs.id requirement to "best-effort".
+const LLMExtractorSystemPrompt = `You extract memories from a conversation snippet.
 
-Granularity: emit ONE atomic fact per item. If a snippet states
-multiple ideas joined by "and" / commas (e.g. "Alice owns a dog and
-lives in Paris"), split them into separate facts. A compound fact
-fragments retrieval signal — each idea then competes for ranking
-against unrelated facts and tends to lose. Smaller, focused facts
-score better and let the answer LLM cite the right one.
+Output: a JSON object {"memories": [...]} matching the supplied schema.
+Each memory has a self-contained sentence, a kind label, and citations
+to the supporting turn ids.
 
-For every fact you emit:
-- "kind" MUST be one of: event | state | preference | relation | plan | note.
-- "content" MUST be a single concise natural-language sentence that
-  states ONE fact in plain English so an answering LLM can cite it
-  verbatim. Never leave content empty, even when subject/predicate/
-  object are also filled. Do not pack multiple events / states /
-  preferences into the same content string.
-- Use "subject" / "predicate" / "object" for the structural triple
-  whenever it applies. For preferences, the subject is the holder of
-  the preference; the object is what they prefer.
-- "entities" lists every named person, place, organisation, product,
-  or concept mentioned in the fact (lowercased, no quotes). Be
-  EXHAUSTIVE — include long-tail proper nouns the snippet introduces
-  (specific brands, product names / models, songs, books, movies,
-  restaurants, neighborhoods, landmarks, identifiers like phone
-  numbers / email addresses / urls). Long-tail entities are how
-  multi-hop questions reconnect distant facts: omitting them breaks
-  the entity-graph traversal even when content-level BM25 still
-  surfaces the source fact.
-- For event / state / plan facts, when the snippet states a time
-  (absolute or relative), fill "valid_from_hint" with an ABSOLUTE
-  date whenever you can resolve one. Conversation snippets often
-  carry their own timestamp — it may appear as an ISO datetime
-  ("2023-03-18T14:00:00Z"), a bracketed prefix on the turn ("[7:18
-  pm on 27 May, 2023] Speaker: …"), a chat-header line, message
-  metadata, or any other format. Look for the nearest such
-  timestamp; when the speaker uses a relative expression
-  ("yesterday", "last weekend", "two weeks ago", "next Friday",
-  "tomorrow"), resolve it AGAINST THAT TIMESTAMP and emit the
-  resulting YYYY-MM-DD (or RFC3339 when the time-of-day is also
-  stated). Examples:
-    • turn dated 2023-03-18, speaker says "I signed up yesterday."
-      → valid_from_hint = "2023-03-17"
-    • turn dated 2023-05-27, speaker says "Saw it last Friday."
-      → valid_from_hint = "2023-05-26"
-  Only fall back to one of the relative tokens (now | today |
-  tomorrow | yesterday | next week | last week | next month |
-  last month | next year | last year) when no turn timestamp is
-  available. If a span is stated, also fill "valid_to_hint" with the
-  same conventions. Leave both blank only when the snippet says
-  nothing about timing.
-- When the input marks turns with ids, cite the supporting turn ids
-  in both "evidence_refs[].id" and "source_message_ids". Each
-  supporting turn appears AT MOST ONCE in evidence_refs (do not
-  repeat the same turn under multiple variants — that bloats the
-  fact and dilutes downstream BM25 ranking).
-- "evidence_text" MUST quote a short span from the snippet that
-  supports the fact (≤ 200 chars) AND retain the turn's "[…]"
-  timestamp prefix when present, so downstream answer prompts can
-  see the absolute date the fact pertains to.
-- "confidence" is a number in [0,1] reflecting how directly the
-  snippet states the fact; 0.9+ for verbatim, 0.5-0.8 for paraphrase
-  or inference.`
+The user message contains source turns as JSON, one per line:
+{"id":"<turn-id>","time":"<RFC3339 timestamp or empty>","speaker":"<name>","role":"user|assistant","text":"<utterance>"}
+
+Rules:
+- One memory per distinct fact. If a turn states "Alice owns a dog
+  and lives in Paris", emit TWO memories. Atomic memories rank
+  well in retrieval; compound sentences fragment the ranking
+  signal.
+- "text" MUST be ONE concise English sentence that stands alone,
+  so it can be read in isolation by any downstream consumer:
+    * use the canonical speaker name when known (the turn's
+      "speaker" field, never "user" / "assistant");
+    * when the turn carries an absolute timestamp, keep that date
+      inline in the sentence so retrieval and rendering see it
+      without parsing structured fields (e.g. "On 2030-06-12,
+      Alice signed up for the photography class.");
+    * spell out the specific entities the turn mentions (people,
+      places, organisations, products, identifiers). Concrete
+      nouns are what later queries match on.
+- "kind" picks ONE label from this closed set:
+    * "event"      — something that happened at a specific time
+                     ("Alice went to the dentist on 2030-06-12.").
+    * "state"      — a durable attribute of a person / entity
+                     ("Alice lives in Paris.", "Bob is a chef.",
+                     "Carol is 32 years old.").
+    * "preference" — a like / dislike / favourite / habit
+                     ("Alice loves black coffee.").
+    * "relation"   — an interpersonal tie
+                     ("Alice is married to Bob.").
+    * "plan"       — a stated intention / scheduled future action
+                     ("Alice plans to visit Paris next month.").
+    * "note"       — anything that does not fit the five above.
+                     Default to "note" if uncertain; never invent
+                     a label outside the list.
+- "evidence_refs" lists the turn id(s) that support the memory.
+  Cite every supporting turn AT MOST ONCE. ID values must match
+  one of the "id"s in the input verbatim — never invent ids,
+  never paraphrase.
+- "evidence_refs[].text" (optional) is a short verbatim quote
+  from the supporting turn (≤ 200 chars). Keep the wording faithful
+  to the original turn; never paraphrase.
+- Only emit memories that are clearly present in the snippet; never
+  fabricate to fill the schema. Returning {"memories": []} is the
+  right answer when the snippet says nothing memorable.`
 
 // LLMExtractor calls a sdk/llm.LLM and converts its JSON reply
 // into model.TemporalFact values.
@@ -257,7 +230,7 @@ For every fact you emit:
 // and telemetry from the same plumbing every other subsystem uses.
 //
 // Behaviour:
-//   - Empty Input.Text or nil Client falls back to passthrough
+//   - Empty Input.Turns or nil Client falls back to passthrough
 //     (callers can prime extraction or skip it).
 //   - Input.Facts are returned verbatim alongside any LLM-extracted
 //     facts so callers can mix structured + free-form inputs.
@@ -295,12 +268,26 @@ func NewLLMExtractor(client llm.LLM) *LLMExtractor {
 }
 
 // Extract implements Extractor.
+//
+// Path:
+//  1. Caller-supplied Input.Facts pass through unchanged (clone).
+//  2. If Input.Turns is non-empty, render to JSONL and call the LLM
+//     with the 3-field memories schema (text + kind + evidence_refs).
+//     Each parsed memory becomes a TemporalFact with Content + Kind +
+//     EvidenceRefs populated; Structurizer fills the rest downstream
+//     (and only falls back to keyword-based Kind inference when the
+//     LLM left Kind empty, e.g. legacy schema responses).
+//  3. Empty Turns / nil client → no-op (passthrough only). For
+//     unstructured prose callers pass a single TurnContext with
+//     only Text populated — there is no separate Text channel.
 func (e *LLMExtractor) Extract(ctx context.Context, input Input) ([]model.TemporalFact, error) {
 	out := make([]model.TemporalFact, 0, len(input.Facts))
 	for _, f := range input.Facts {
 		out = append(out, f.Clone())
 	}
-	if strings.TrimSpace(input.Text) == "" || e.Client == nil {
+
+	userMessage, turnIndex, ok := buildExtractorUserMessage(input)
+	if !ok || e.Client == nil {
 		return out, nil
 	}
 
@@ -315,7 +302,7 @@ func (e *LLMExtractor) Extract(ctx context.Context, input Input) ([]model.Tempor
 
 	messages := []llm.Message{
 		llm.NewTextMessage(llm.RoleSystem, system),
-		llm.NewTextMessage(llm.RoleUser, input.Text),
+		llm.NewTextMessage(llm.RoleUser, userMessage),
 	}
 	opts := []llm.GenerateOption{
 		llm.WithJSONSchema(llm.JSONSchemaParam{
@@ -349,79 +336,230 @@ func (e *LLMExtractor) Extract(ctx context.Context, input Input) ([]model.Tempor
 		// keeps it distinguishable from a transient LLM outage.
 		return nil, errdefs.Validation(fmt.Errorf("recall extractor: extract llm json: %w", err))
 	}
-	var parsed ExtractedFactList
-	if err := json.Unmarshal(jsonBytes, &parsed); err != nil {
+	parsed, err := parseExtractorReply(jsonBytes)
+	if err != nil {
 		return nil, errdefs.Validation(fmt.Errorf("recall extractor: parse llm json: %w", err))
 	}
-	for _, ef := range parsed.Facts {
-		out = append(out, ef.toTemporalFact())
+	for _, m := range parsed.Memories {
+		text := strings.TrimSpace(m.Text)
+		if text == "" {
+			continue
+		}
+		fact := model.TemporalFact{
+			Content:      text,
+			EvidenceText: text,
+			Kind:         normaliseExtractedKind(m.Kind),
+			EvidenceRefs: extractedEvidenceRefs(m.EvidenceRefs, turnIndex),
+		}
+		fact.SourceMessageIDs = sourceIDsFromEvidence(fact.EvidenceRefs)
+		out = append(out, fact)
 	}
 	return out, nil
 }
 
-// toTemporalFact converts an ExtractedFact into the canonical
-// TemporalFact. ValidFrom/ValidTo hints land in Metadata so the
-// TimeResolver picks them up; IDs, merge keys, supersedes pointers
-// remain unset for the compiler core to fill.
-func (e ExtractedFact) toTemporalFact() model.TemporalFact {
-	f := model.TemporalFact{
-		Kind:             model.FactKind(e.Kind),
-		Content:          e.Content,
-		Subject:          e.Subject,
-		Predicate:        e.Predicate,
-		Object:           e.Object,
-		Entities:         append([]string(nil), e.Entities...),
-		Participants:     append([]string(nil), e.Participants...),
-		Location:         e.Location,
-		Confidence:       e.Confidence,
-		EvidenceText:     e.EvidenceText,
-		EvidenceRefs:     e.toEvidenceRefs(),
-		SourceMessageIDs: append([]string(nil), e.SourceMessageIDs...),
+// normaliseExtractedKind maps the LLM's "kind" field to a canonical
+// FactKind. Empty / unrecognised values fall through to KindNote-
+// equivalent (empty string) so the Structurizer's keyword fallback
+// stays in charge of classification when the model could not pick.
+// Lowercasing covers minor casing drift from less-strict providers.
+func normaliseExtractedKind(raw string) model.FactKind {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "event":
+		return model.KindEvent
+	case "state":
+		return model.KindState
+	case "preference":
+		return model.KindPreference
+	case "relation":
+		return model.KindRelation
+	case "plan":
+		return model.KindPlan
+	case "note":
+		return model.KindNote
 	}
-	if e.ValidFromHint != "" || e.ValidToHint != "" {
-		f.Metadata = map[string]any{}
-		if e.ValidFromHint != "" {
-			f.Metadata[MetaValidFromHint] = e.ValidFromHint
-		}
-		if e.ValidToHint != "" {
-			f.Metadata[MetaValidToHint] = e.ValidToHint
-		}
-	}
-	return f
+	return ""
 }
 
-// toEvidenceRefs converts the LLM-side evidence list into canonical
-// EvidenceRefs. Duplicate refs are collapsed: when the LLM cites the
-// same turn under multiple slight variations (same id but different
-// text quote, or same text quote across two ids), the duplicates
-// inflate the projection's BM25 document without adding signal. We
-// keep the first occurrence per (id || message_id || text) key.
-func (e ExtractedFact) toEvidenceRefs() []model.EvidenceRef {
-	if len(e.EvidenceRefs) == 0 {
-		return nil
+// buildExtractorUserMessage renders Input.Turns into the canonical
+// JSONL wire shape the LLM sees. turnIndex is a fast id-lookup the
+// response parser uses to enrich evidence refs with the typed
+// timestamp / role signals the LLM does not need to repeat in its
+// output. Turns with empty ID get a synthetic "turn-N" so prose-only
+// callers (a single TurnContext with just Text) still produce a
+// valid wire shape the model can cite. ok=false means "no usable
+// input — skip the LLM call" so the extractor degrades cleanly
+// when callers only supply structured Facts.
+func buildExtractorUserMessage(input Input) (string, map[string]TurnContext, bool) {
+	if len(input.Turns) == 0 {
+		return "", nil, false
 	}
-	out := make([]model.EvidenceRef, 0, len(e.EvidenceRefs))
-	seen := make(map[string]struct{}, len(e.EvidenceRefs))
-	for _, ref := range e.EvidenceRefs {
-		id := strings.TrimSpace(ref.ID)
-		messageID := strings.TrimSpace(ref.MessageID)
-		text := strings.TrimSpace(ref.Text)
-		role := strings.TrimSpace(ref.Role)
-		if id == "" && messageID == "" && text == "" {
+	index := make(map[string]TurnContext, len(input.Turns))
+	var b strings.Builder
+	written := 0
+	for i, t := range input.Turns {
+		if strings.TrimSpace(t.Text) == "" {
 			continue
 		}
-		key := evidenceRefDedupeKey(id, messageID, text)
+		id := turnLLMID(t)
+		if id == "" {
+			id = fmt.Sprintf("turn-%d", i+1)
+		}
+		wire := struct {
+			ID      string `json:"id"`
+			Time    string `json:"time,omitempty"`
+			Speaker string `json:"speaker,omitempty"`
+			Role    string `json:"role,omitempty"`
+			Text    string `json:"text"`
+		}{
+			ID:      id,
+			Speaker: strings.TrimSpace(t.Speaker),
+			Role:    strings.TrimSpace(t.Role),
+			Text:    strings.TrimSpace(t.Text),
+		}
+		if !t.Time.IsZero() {
+			wire.Time = t.Time.UTC().Format(time.RFC3339)
+		}
+		line, err := json.Marshal(wire)
+		if err != nil {
+			continue
+		}
+		b.Write(line)
+		b.WriteByte('\n')
+		written++
+		index[id] = t
+	}
+	if written == 0 {
+		return "", nil, false
+	}
+	return b.String(), index, true
+}
+
+// turnLLMID is the id the LLM sees and cites. We prefer the
+// adapter's EvidenceID (the adapter-meaningful handle that
+// downstream consumers like evaluation harnesses expect) over the
+// internal ID so evidence scoring can match without an extra alias
+// map.
+func turnLLMID(t TurnContext) string {
+	if id := strings.TrimSpace(t.EvidenceID); id != "" {
+		return id
+	}
+	return strings.TrimSpace(t.ID)
+}
+
+// parseExtractorReply accepts either the new {"memories": [...]} shape
+// or the legacy {"facts": [...]} shape so a deployment can roll the
+// prompt slim-down forward without flushing the LLM client cache. The
+// legacy parser only reads "content" + "evidence_refs.id" so all the
+// old structural fields are silently dropped — Structurizer fills
+// them downstream regardless of which schema the model returned.
+func parseExtractorReply(body []byte) (ExtractedFactList, error) {
+	var parsed ExtractedFactList
+	if err := json.Unmarshal(body, &parsed); err == nil && len(parsed.Memories) > 0 {
+		return parsed, nil
+	}
+	// Legacy fallback: {"facts":[{"content":"…","evidence_refs":[…]}]}
+	type legacyEvidence struct {
+		ID        string `json:"id"`
+		MessageID string `json:"message_id"`
+		Text      string `json:"text"`
+	}
+	type legacyFact struct {
+		Content      string           `json:"content"`
+		Text         string           `json:"text"`
+		Kind         string           `json:"kind"`
+		EvidenceRefs []legacyEvidence `json:"evidence_refs"`
+	}
+	var legacy struct {
+		Facts    []legacyFact `json:"facts"`
+		Memories []legacyFact `json:"memories"`
+	}
+	if err := json.Unmarshal(body, &legacy); err != nil {
+		return ExtractedFactList{}, err
+	}
+	merged := legacy.Facts
+	if len(merged) == 0 {
+		merged = legacy.Memories
+	}
+	for _, lf := range merged {
+		text := strings.TrimSpace(lf.Text)
+		if text == "" {
+			text = strings.TrimSpace(lf.Content)
+		}
+		mem := ExtractedMemory{Text: text, Kind: lf.Kind}
+		for _, ref := range lf.EvidenceRefs {
+			id := strings.TrimSpace(ref.ID)
+			if id == "" {
+				id = strings.TrimSpace(ref.MessageID)
+			}
+			if id == "" {
+				continue
+			}
+			mem.EvidenceRefs = append(mem.EvidenceRefs, ExtractedEvidenceRef{ID: id, Text: ref.Text})
+		}
+		parsed.Memories = append(parsed.Memories, mem)
+	}
+	return parsed, nil
+}
+
+// extractedEvidenceRefs converts the LLM-side evidence list into
+// canonical EvidenceRefs and enriches each ref with the typed
+// per-turn metadata (Role, Timestamp) from the request-time turn
+// index. Duplicate refs are collapsed: when the LLM cites the same
+// turn under multiple slight variations (same id but different text
+// quote), the duplicates inflate the projection's BM25 document
+// without adding signal. We keep the first occurrence per
+// (id || normalized text) key.
+func extractedEvidenceRefs(refs []ExtractedEvidenceRef, turnIndex map[string]TurnContext) []model.EvidenceRef {
+	if len(refs) == 0 {
+		return nil
+	}
+	out := make([]model.EvidenceRef, 0, len(refs))
+	seen := make(map[string]struct{}, len(refs))
+	for _, ref := range refs {
+		id := strings.TrimSpace(ref.ID)
+		text := strings.TrimSpace(ref.Text)
+		if id == "" && text == "" {
+			continue
+		}
+		key := evidenceRefDedupeKey(id, "", text)
 		if _, dup := seen[key]; dup {
 			continue
 		}
 		seen[key] = struct{}{}
-		out = append(out, model.EvidenceRef{
+
+		evidence := model.EvidenceRef{
 			ID:        id,
-			MessageID: messageID,
-			Role:      role,
+			MessageID: id,
 			Text:      text,
-			Timestamp: parseEvidenceTimestamp(ref.Timestamp),
-		})
+		}
+		if turn, ok := turnIndex[id]; ok {
+			evidence.Role = turn.Role
+			if !turn.Time.IsZero() {
+				evidence.Timestamp = turn.Time
+			}
+			if evidence.Text == "" {
+				evidence.Text = turn.Text
+			}
+		}
+		out = append(out, evidence)
+	}
+	return out
+}
+
+// sourceIDsFromEvidence projects evidence ids into the
+// SourceMessageIDs slice so legacy callers reading SourceMessageIDs
+// still see the same ids. Order matches evidence order; duplicates
+// are already deduped by extractedEvidenceRefs.
+func sourceIDsFromEvidence(refs []model.EvidenceRef) []string {
+	if len(refs) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(refs))
+	for _, r := range refs {
+		if r.ID == "" {
+			continue
+		}
+		out = append(out, r.ID)
 	}
 	return out
 }
@@ -438,20 +576,6 @@ func evidenceRefDedupeKey(id, messageID, text string) string {
 		return "msg:" + messageID
 	}
 	return "text:" + strings.ToLower(strings.Join(strings.Fields(text), " "))
-}
-
-func parseEvidenceTimestamp(raw string) time.Time {
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return time.Time{}
-	}
-	if t, err := time.Parse(time.RFC3339, raw); err == nil {
-		return t
-	}
-	if t, err := time.Parse("2006-01-02", raw); err == nil {
-		return t
-	}
-	return time.Time{}
 }
 
 // StaticExtractor returns a fixed list of facts on every call. It

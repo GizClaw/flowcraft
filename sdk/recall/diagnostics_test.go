@@ -3,6 +3,7 @@ package recall
 import (
 	"context"
 	"testing"
+	"time"
 )
 
 func TestAttributeRecallTrace_PublicWrapper(t *testing.T) {
@@ -122,7 +123,7 @@ func TestDiagnoseRecall_ReportsPerStageHealth(t *testing.T) {
 }
 
 func TestDiagnoseSave_SummarisesFactQuality(t *testing.T) {
-	req := SaveRequest{Facts: []TemporalFact{{Kind: FactNote}, {Kind: FactNote}}, Text: "hello"}
+	req := SaveRequest{Facts: []TemporalFact{{Kind: FactNote}, {Kind: FactNote}}, Turns: []TurnContext{{ID: "t1", Text: "hello"}}}
 	trace := SaveTrace{
 		CompiledFacts: []TemporalFact{
 			{ID: "f1", Kind: FactEvent, Content: "Caroline joined a support group", EvidenceText: "src", Confidence: 0.8},
@@ -139,6 +140,9 @@ func TestDiagnoseSave_SummarisesFactQuality(t *testing.T) {
 	diag := DiagnoseSave(req, trace)
 	if diag.Input != 3 {
 		t.Errorf("input = %d", diag.Input)
+	}
+	if diag.InputCoverage.Facts != 2 || diag.InputCoverage.Turns != 1 {
+		t.Errorf("input coverage facts/turns = %+v", diag.InputCoverage)
 	}
 	if diag.Compiled.Total != 3 || diag.Compiled.WithContent != 1 ||
 		diag.Compiled.StructuredOnly != 1 || diag.Compiled.EmptyRenderable != 1 {
@@ -158,6 +162,86 @@ func TestDiagnoseSave_SummarisesFactQuality(t *testing.T) {
 	}
 }
 
+func TestDiagnoseSave_SurfacesStructurizerCoverage(t *testing.T) {
+	// Structurizer coverage is the only attributable signal between
+	// the 4 sub-tasks (Kind / Entities / Subject / ValidFrom). The
+	// diagnostics layer must pass the compiler-side counters through
+	// verbatim so a single SaveTrace tells operators which stage of
+	// the Structurizer actually did work on this Save.
+	trace := SaveTrace{
+		StructurizerCoverage: StructurizerCoverage{
+			TotalFactsSeen:      4,
+			KindFilled:          2,
+			EntitiesFilled:      4,
+			SubjectFilled:       3,
+			ValidFromHintFilled: 1,
+		},
+	}
+	diag := DiagnoseSave(SaveRequest{}, trace)
+	got := diag.StructurizerCoverage
+	if got.TotalFactsSeen != 4 || got.KindFilled != 2 || got.EntitiesFilled != 4 ||
+		got.SubjectFilled != 3 || got.ValidFromHintFilled != 1 {
+		t.Errorf("structurizer coverage not surfaced verbatim, got %+v", got)
+	}
+}
+
+func TestPipelineHealth_AggregatesStructurizerCoverage(t *testing.T) {
+	// PipelineHealth must sum per-Save Structurizer coverage across
+	// the whole workload so the JSON report exposes fill-rate
+	// ratios over many Saves, not just one.
+	h := NewPipelineHealth()
+	h.RecordSave(SaveDiagnostics{StructurizerCoverage: StructurizerCoverage{
+		TotalFactsSeen: 3, KindFilled: 1, EntitiesFilled: 2, SubjectFilled: 2, ValidFromHintFilled: 0,
+	}})
+	h.RecordSave(SaveDiagnostics{StructurizerCoverage: StructurizerCoverage{
+		TotalFactsSeen: 2, KindFilled: 0, EntitiesFilled: 2, SubjectFilled: 1, ValidFromHintFilled: 1,
+	}})
+	got := h.StructurizerCoverage
+	if got.TotalFactsSeen != 5 || got.KindFilled != 1 || got.EntitiesFilled != 4 ||
+		got.SubjectFilled != 3 || got.ValidFromHintFilled != 1 {
+		t.Errorf("aggregate structurizer coverage = %+v", got)
+	}
+}
+
+func TestDiagnoseSave_InputCoverageReflectsTypedChannel(t *testing.T) {
+	// The typed channel is the whole architecture: when an adapter
+	// forgets to populate Time / Speaker / EvidenceID, the LLM
+	// falls back to grep-prose mode and quality silently drops.
+	// InputCoverage must surface the per-field coverage so that
+	// regression is attributable.
+	observed := time.Date(2024, 5, 7, 9, 0, 0, 0, time.UTC)
+	req := SaveRequest{
+		Turns: []TurnContext{
+			// Fully-typed: Time + Speaker + EvidenceID + SessionID.
+			{ID: "D1:3", EvidenceID: "D1:3", SessionID: "s1", Role: "user", Speaker: "Alice", Time: observed, Text: "I went to Paris."},
+			// Speaker-only: no Time / IDs (degraded adapter).
+			{ID: "raw-2", Role: "user", Speaker: "Bob", Text: "Me too."},
+			// Empty Text — must NOT be counted.
+			{ID: "raw-3", Text: ""},
+		},
+		ObservedAt: observed,
+	}
+	trace := SaveTrace{KnownEntitiesSeen: 4}
+	diag := DiagnoseSave(req, trace)
+
+	cov := diag.InputCoverage
+	if cov.Turns != 2 {
+		t.Errorf("Turns = %d, want 2 (empty Text turn must be skipped)", cov.Turns)
+	}
+	if cov.TurnsWithTypedTime != 1 || cov.TurnsWithSpeaker != 2 {
+		t.Errorf("typed time/speaker = %d/%d, want 1/2", cov.TurnsWithTypedTime, cov.TurnsWithSpeaker)
+	}
+	if cov.TurnsWithEvidenceID != 1 || cov.TurnsWithSessionID != 1 {
+		t.Errorf("evidence/session ids = %d/%d, want 1/1", cov.TurnsWithEvidenceID, cov.TurnsWithSessionID)
+	}
+	if cov.KnownEntities != 4 {
+		t.Errorf("KnownEntities = %d, want 4 (from SaveTrace)", cov.KnownEntities)
+	}
+	if !cov.HasObservedAt {
+		t.Errorf("HasObservedAt should reflect non-zero ObservedAt on the request")
+	}
+}
+
 func TestPipelineHealth_AggregatesSaveAndRecall(t *testing.T) {
 	health := NewPipelineHealth()
 
@@ -170,7 +254,7 @@ func TestPipelineHealth_AggregatesSaveAndRecall(t *testing.T) {
 			{Kind: FactEvent, Content: "alice met bob"},
 		},
 	}))
-	health.RecordSave(DiagnoseSave(SaveRequest{Text: "raw"}, SaveTrace{
+	health.RecordSave(DiagnoseSave(SaveRequest{Turns: []TurnContext{{ID: "t1", Text: "raw"}}}, SaveTrace{
 		CompiledFacts: []TemporalFact{{Kind: FactNote}},
 		Appended:      []TemporalFact{{Kind: FactNote}},
 	}))
@@ -196,6 +280,10 @@ func TestPipelineHealth_AggregatesSaveAndRecall(t *testing.T) {
 	}
 	if health.SourceActivation["retrieval"] != 1 || health.SourceReturned["retrieval"] != 4 {
 		t.Errorf("source activation = %+v / %+v", health.SourceActivation, health.SourceReturned)
+	}
+	// Two Save calls fed 1 fact + 1 turn = aggregate Facts=1, Turns=1.
+	if health.InputCoverage.Facts != 1 || health.InputCoverage.Turns != 1 {
+		t.Errorf("aggregate input coverage = %+v", health.InputCoverage)
 	}
 }
 

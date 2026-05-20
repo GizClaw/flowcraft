@@ -19,7 +19,7 @@ import (
 // errdefs.ClassifyProvider's regex misses arkruntime's
 // `"Error code: %d - ..."` format (no "http"/"status" keyword in the
 // message string), and every 4xx falls through to the NotAvailable
-// default — which the locomo retry-once would then quietly retry.
+// default — which a caller's retry-once would then quietly retry.
 func TestClassifyAPIError(t *testing.T) {
 	tests := []struct {
 		name     string

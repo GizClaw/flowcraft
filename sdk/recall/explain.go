@@ -59,6 +59,51 @@ type SaveTrace struct {
 	// Dropped lists facts the compiler discarded with a reason
 	// (policy/governance/validation).
 	Dropped []DroppedFact
+	// KnownEntitiesSeen is the number of canonical entity snapshots
+	// the SDK lifted from the entity projection before this Save's
+	// Compile call. It quantifies the cross-fact canonicalisation
+	// hint the Structurizer had to work with: 0 on the very first
+	// Save in a scope and monotonically growing thereafter. A
+	// suspiciously low value mid-workload is a tell that the
+	// entity projection has drifted (rebuild needed).
+	KnownEntitiesSeen int
+	// StructurizerCoverage breaks the compiler's Structurizer stage
+	// down by sub-task (Kind / Entities / Subject / ValidFrom),
+	// counting how many facts each one actually enriched on this
+	// Save call. The fields mirror the compiler-internal type so
+	// they roll up cleanly into PipelineHealth across many Saves.
+	StructurizerCoverage StructurizerCoverage
+}
+
+// StructurizerCoverage is the public surface of the compiler's per-
+// stage Structurizer counters. Each field counts the number of facts
+// that arrived with the corresponding field empty and left it non-
+// empty, so the ratio against TotalFactsSeen reads as "% of facts
+// that needed this sub-stage to work".
+type StructurizerCoverage struct {
+	// TotalFactsSeen is the number of facts the Structurizer was
+	// invoked on (i.e. the denominator for every other counter).
+	TotalFactsSeen int
+	// KindFilled is the count of facts whose Kind the Structurizer
+	// inferred from the content keyword table. High value =
+	// extractor is shipping Kind=="" (legacy schema) or the LLM is
+	// dropping the enum field; low value = LLM-supplied Kind owns
+	// classification.
+	KindFilled int
+	// EntitiesFilled is the count of facts that gained at least one
+	// entity via Title-Cased NER or KnownEntity substring match.
+	// Tracks how much the cross-fact canonicalisation hint is
+	// actually firing.
+	EntitiesFilled int
+	// SubjectFilled is the count of facts whose Subject was lifted
+	// from turn.Speaker / first entity. Tracks how load-bearing the
+	// typed Speaker channel is for SPO derivation.
+	SubjectFilled int
+	// ValidFromHintFilled is the count of facts that received an
+	// absolute-time hint from turn.Time or the content date regex.
+	// Tracks whether the timeline source is being seeded; zero
+	// means the temporal pipeline is silently dead.
+	ValidFromHintFilled int
 }
 
 // SaveExplainer is the opt-in extension that returns a SaveTrace

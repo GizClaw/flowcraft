@@ -97,7 +97,9 @@ func WithLLMExtractorExtraOptions(opts ...llm.GenerateOption) LLMExtractorOption
 
 // WithLLMExtractor enables LLM-driven fact extraction in the
 // default compiler pipeline. The supplied client is consulted on
-// Save calls whose SaveRequest carries a non-empty Input.Text path.
+// Save calls whose SaveRequest carries non-empty Turns; the
+// extractor renders Turns into a canonical JSONL wire shape and
+// asks the model to emit a minimal {text, evidence_refs} payload.
 //
 // nil client falls back to the deterministic passthrough extractor.
 func WithLLMExtractor(client llm.LLM, opts ...LLMExtractorOption) Option {

@@ -315,17 +315,81 @@ type FactQuality struct {
 	ByPolicyDecision map[string]int
 }
 
+// InputCoverage quantifies what the adapter actually fed the SDK
+// through SaveRequest. The typed channel (Turns with Time, Speaker,
+// EvidenceID set) is what unlocks deterministic Structurizer fills
+// downstream; an adapter that forgot to populate it silently
+// regresses the LLM to grep-prose mode without surfacing an error.
+// Operators read InputCoverage to answer the questions error logs
+// cannot: "did the adapter even attempt to ground time / speaker
+// for this call?", "is the entity-projection seeding the
+// canonicalisation hint?", "did the caller anchor a wall clock for
+// replay?".
+type InputCoverage struct {
+	// Facts is the count of caller-supplied structured facts. The
+	// passthrough channel; usually 0 for LLM-driven ingest and
+	// non-zero for migration / rule-based pipelines.
+	Facts int
+	// Turns is the count of TurnContexts whose Text is non-empty
+	// (= what the LLM extractor sees). Empty Turns means the
+	// extractor was skipped.
+	Turns int
+	// TurnsWithTypedTime counts turns where Time is non-zero. The
+	// Structurizer uses Time verbatim for ValidFrom hints; without
+	// it the extractor falls back to regex-grepping content for
+	// dates, which costs accuracy on temporal questions.
+	TurnsWithTypedTime int
+	// TurnsWithSpeaker counts turns where Speaker is non-empty.
+	// Used to lift fact Subject from a canonical name instead of
+	// the role token ("user" / "assistant"), so multi-speaker
+	// conversations don't collapse onto a single subject.
+	TurnsWithSpeaker int
+	// TurnsWithEvidenceID counts turns where the adapter supplied
+	// a benchmark-specific evidence id. recall.k_hit can only
+	// score citations when this is set.
+	TurnsWithEvidenceID int
+	// TurnsWithSessionID counts turns that carry a session bucket
+	// (e.g. "session_3"). Session-aware sources / batching only
+	// fire when this is populated.
+	TurnsWithSessionID int
+	// KnownEntities is the number of canonical entity snapshots
+	// the SDK lifted from the entity projection at Compile time.
+	// 0 on the very first Save in a scope; rising thereafter. A
+	// suspiciously flat value across many Saves indicates the
+	// projection isn't accumulating mentions.
+	KnownEntities int
+	// HasObservedAt reports whether the caller anchored a wall
+	// clock for relative-time resolution. False = the compiler
+	// falls back to time.Now(), which is incorrect for historical
+	// replay (evals, backfill).
+	HasObservedAt bool
+}
+
 // SaveDiagnostics is the per-stage health view of a single Save call.
 // It pairs compiler drops (already covered by AttributeSaveDrops) with
 // quality metrics on what survived. Both numbers matter for accuracy:
 // a high drop rate hides facts; a low drop rate but mostly empty
 // content hides the same facts in a different way.
 type SaveDiagnostics struct {
-	Input        int
-	Compiled     FactQuality
-	Appended     FactQuality
-	DropsByStage map[FailureStage]int
-	Attributions []FailureAttribution
+	// Input is the total number of input items (facts + non-empty
+	// turns). Headline count for quick "did anything reach the
+	// compiler" reads.
+	Input int
+	// InputCoverage breaks Input down by channel and by typed-
+	// field coverage so operators can attribute extractor
+	// regressions to a missing input signal vs. an LLM regression.
+	InputCoverage InputCoverage
+	// StructurizerCoverage breaks the compiler's Structurizer stage
+	// down by sub-task. Operators read this to attribute accuracy
+	// shifts to a specific responsibility (Kind / Entities /
+	// Subject / ValidFrom) before reaching for a refactor — e.g.
+	// if KindFilled stays at 0 across many runs, the keyword
+	// fallback is dead code and the LLM enum owns classification.
+	StructurizerCoverage StructurizerCoverage
+	Compiled             FactQuality
+	Appended             FactQuality
+	DropsByStage         map[FailureStage]int
+	Attributions         []FailureAttribution
 }
 
 // DiagnoseSave produces a per-stage health view of a Save call. It is
@@ -333,10 +397,13 @@ type SaveDiagnostics struct {
 // deduped everything) or trace.CompiledFacts is empty (the extractor
 // returned no facts). Both branches are first-class signals.
 func DiagnoseSave(req SaveRequest, trace SaveTrace) SaveDiagnostics {
+	cov := inputCoverage(req, trace)
 	out := SaveDiagnostics{
-		Input:    saveInputCount(req),
-		Compiled: factQuality(trace.CompiledFacts),
-		Appended: factQuality(trace.Appended),
+		Input:                cov.Facts + cov.Turns,
+		InputCoverage:        cov,
+		StructurizerCoverage: trace.StructurizerCoverage,
+		Compiled:             factQuality(trace.CompiledFacts),
+		Appended:             factQuality(trace.Appended),
 	}
 	if len(trace.Dropped) > 0 {
 		out.Attributions = AttributeSaveDrops(trace.Dropped)
@@ -348,12 +415,37 @@ func DiagnoseSave(req SaveRequest, trace SaveTrace) SaveDiagnostics {
 	return out
 }
 
-func saveInputCount(req SaveRequest) int {
-	n := len(req.Facts)
-	if strings.TrimSpace(req.Text) != "" {
-		n++
+// inputCoverage walks the SaveRequest once and counts what the
+// adapter actually populated. We count Turns once for "non-empty
+// Text" (the inclusion criterion for the extractor) and then sub-
+// count Time / Speaker / EvidenceID / SessionID against that base
+// so the ratios are meaningful (e.g. TurnsWithTypedTime / Turns =
+// temporal-grounding coverage).
+func inputCoverage(req SaveRequest, trace SaveTrace) InputCoverage {
+	cov := InputCoverage{
+		Facts:         len(req.Facts),
+		KnownEntities: trace.KnownEntitiesSeen,
+		HasObservedAt: !req.ObservedAt.IsZero(),
 	}
-	return n
+	for _, t := range req.Turns {
+		if strings.TrimSpace(t.Text) == "" {
+			continue
+		}
+		cov.Turns++
+		if !t.Time.IsZero() {
+			cov.TurnsWithTypedTime++
+		}
+		if strings.TrimSpace(t.Speaker) != "" {
+			cov.TurnsWithSpeaker++
+		}
+		if strings.TrimSpace(t.EvidenceID) != "" {
+			cov.TurnsWithEvidenceID++
+		}
+		if strings.TrimSpace(t.SessionID) != "" {
+			cov.TurnsWithSessionID++
+		}
+	}
+	return cov
 }
 
 func factQuality(facts []TemporalFact) FactQuality {
@@ -392,25 +484,38 @@ func factQuality(facts []TemporalFact) FactQuality {
 }
 
 // PipelineHealth aggregates per-stage health over many Save and Recall
-// calls. Use it to answer "across the whole LoCoMo benchmark, what
-// percentage of facts arrive at the answer stage empty" without
-// running a separate analytics pipeline.
+// calls. Use it to answer "across the whole workload, what percentage
+// of facts arrive at the answer stage empty" without running a
+// separate analytics pipeline.
 type PipelineHealth struct {
-	SaveSamples        int
-	RecallSamples      int
-	InputFacts         int
-	CompiledFacts      FactQuality
-	AppendedFacts      FactQuality
-	SaveDrops          map[FailureStage]int
-	HitRenderability   HitRenderability
-	RecallDrops        map[FailureStage]int
-	RecallLatency      time.Duration
-	SourceActivation   map[string]int
-	SourceReturned     map[string]int
-	WinnersBySource    map[string]int
-	SoleSourceWinners  map[string]int
-	MultiSourceWinners int
-	NoProvenanceHits   int
+	SaveSamples   int
+	RecallSamples int
+	InputFacts    int
+	// InputCoverage is the summed coverage across every Save call.
+	// Read ratios (e.g. TurnsWithTypedTime / Turns) to spot
+	// adapter regressions: if temporal-question accuracy dropped,
+	// check whether the adapter is still populating Time.
+	InputCoverage       InputCoverage
+	SavesWithObservedAt int
+	// StructurizerCoverage is the summed per-stage Structurizer
+	// coverage across every Save call. Read ratios (e.g.
+	// KindFilled / TotalFactsSeen) to see how much of the
+	// Structurizer's nominal 4-job bundle is actually firing in
+	// practice — a stage that ratios to 0 across many Saves is a
+	// candidate for deletion or replacement.
+	StructurizerCoverage StructurizerCoverage
+	CompiledFacts        FactQuality
+	AppendedFacts        FactQuality
+	SaveDrops            map[FailureStage]int
+	HitRenderability     HitRenderability
+	RecallDrops          map[FailureStage]int
+	RecallLatency        time.Duration
+	SourceActivation     map[string]int
+	SourceReturned       map[string]int
+	WinnersBySource      map[string]int
+	SoleSourceWinners    map[string]int
+	MultiSourceWinners   int
+	NoProvenanceHits     int
 }
 
 // NewPipelineHealth returns an empty aggregator with maps initialized.
@@ -431,11 +536,41 @@ func NewPipelineHealth() *PipelineHealth {
 func (p *PipelineHealth) RecordSave(diag SaveDiagnostics) {
 	p.SaveSamples++
 	p.InputFacts += diag.Input
+	mergeInputCoverage(&p.InputCoverage, diag.InputCoverage)
+	if diag.InputCoverage.HasObservedAt {
+		p.SavesWithObservedAt++
+	}
+	mergeStructurizerCoverage(&p.StructurizerCoverage, diag.StructurizerCoverage)
 	mergeFactQuality(&p.CompiledFacts, diag.Compiled)
 	mergeFactQuality(&p.AppendedFacts, diag.Appended)
 	for stage, n := range diag.DropsByStage {
 		p.SaveDrops[stage] += n
 	}
+}
+
+// mergeStructurizerCoverage sums per-Save Structurizer coverage
+// counters into the aggregate so PipelineHealth exposes total
+// fill-rates over the whole workload, not just a single call.
+func mergeStructurizerCoverage(dst *StructurizerCoverage, src StructurizerCoverage) {
+	dst.TotalFactsSeen += src.TotalFactsSeen
+	dst.KindFilled += src.KindFilled
+	dst.EntitiesFilled += src.EntitiesFilled
+	dst.SubjectFilled += src.SubjectFilled
+	dst.ValidFromHintFilled += src.ValidFromHintFilled
+}
+
+// mergeInputCoverage sums per-Save coverage counters into the
+// aggregate. HasObservedAt is a boolean per call — we track it on
+// PipelineHealth.SavesWithObservedAt instead, so on the aggregate
+// the field stays false (a sum-of-bools would be meaningless).
+func mergeInputCoverage(dst *InputCoverage, src InputCoverage) {
+	dst.Facts += src.Facts
+	dst.Turns += src.Turns
+	dst.TurnsWithTypedTime += src.TurnsWithTypedTime
+	dst.TurnsWithSpeaker += src.TurnsWithSpeaker
+	dst.TurnsWithEvidenceID += src.TurnsWithEvidenceID
+	dst.TurnsWithSessionID += src.TurnsWithSessionID
+	dst.KnownEntities += src.KnownEntities
 }
 
 // RecordRecall folds a Recall diagnostic into the aggregate.

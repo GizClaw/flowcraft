@@ -24,8 +24,8 @@ import (
 //     code and falls through to the ProviderTransient default. The result
 //     was that 400 / 404 / 422 errors got bucketed as NotAvailable
 //     (retryable) instead of Validation (do-not-retry), which became a
-//     real problem once the locomo runner started retrying NotAvailable
-//     on its own.
+//     real problem once callers started retrying NotAvailable on their
+//     own.
 //
 // Mapping (StatusCode → errdefs class):
 //
@@ -87,7 +87,7 @@ func classifyAPIErrorWithProvider(provider string, err error) error {
 		//     "Resource not found" with no `error.code` field) while
 		//     the deployment pod is cold-starting or scaling. These
 		//     ARE transient — the very next request usually works,
-		//     and the locomo runner's retry-once recovers them.
+		//     and a caller's retry-once recovers them.
 		//
 		//  2. DeploymentNotFound / wrong path / model retired — the
 		//     OpenAI service answers with a structured error body
