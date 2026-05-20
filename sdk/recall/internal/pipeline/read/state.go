@@ -113,6 +113,17 @@ type ReadState struct {
 	// facade hands back to the caller via Memory.Recall.
 	Hits []domain.Hit
 
+	// RerankErr captures a non-fatal reranker failure for the
+	// legacy telemetry bridge (build_hits stage).
+	RerankErr error
+
+	// Reranked is the hit count after a successful rerank pass.
+	Reranked int
+
+	// EvolutionErr captures a non-fatal AfterRecall failure for the
+	// legacy telemetry bridge.
+	EvolutionErr error
+
 	// Trace is the in-flight RecallTrace. Pipeline.AppendTrace
 	// pushes every emitted StageDiagnostic into Trace.Stages.
 	// nil is permitted (Recall vs RecallExplain): the runner

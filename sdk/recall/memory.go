@@ -14,6 +14,10 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/intent"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/materialize"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/pipeline"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/pipeline/read"
+	readstages "github.com/GizClaw/flowcraft/sdk/recall/internal/pipeline/read/stages"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/pipeline/rebuild"
+	rebuildstages "github.com/GizClaw/flowcraft/sdk/recall/internal/pipeline/rebuild/stages"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/pipeline/write"
 	writestages "github.com/GizClaw/flowcraft/sdk/recall/internal/pipeline/write/stages"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/planner"
@@ -60,6 +64,8 @@ type memory struct {
 	// under the lock. Both are wired at memory.New().
 	writePreRunner  *write.Runner
 	writePostRunner *write.Runner
+	readRunner      *read.Runner
+	rebuildRunner   *rebuild.Runner
 
 	// projections retains the canonical projection set (in
 	// registration order) so RebuildProjection can resolve a
@@ -245,6 +251,26 @@ func New(opts ...Option) (Memory, error) {
 		writestages.NewProjectOptional(fanout),
 		writestages.NewEvolutionAfterSave(cfg.evolution),
 	}, tel)
+	var rerank readstages.HitReranker
+	if cfg.reranker != nil {
+		rerank = &recallHitReranker{r: cfg.reranker}
+	}
+	// TODO(D.3): insert trust_filter before rank
+	// TODO(D.5): wrap source_fanout→materialize in federation_{fanout,merge}
+	m.readRunner = read.NewRunner([]pipeline.Stage[*read.ReadState]{
+		readstages.NewIntent(qc),
+		readstages.NewPlan(planr, cfg.graphEnabled),
+		readstages.NewSourceFanout(func() []port.Source { return m.sources }),
+		readstages.NewFuse(fuser, fusionOpts, fusionCandidateCap),
+		readstages.NewMaterialize(mat),
+		readstages.NewRank(rankContextItems, cfg.reranker != nil),
+		readstages.NewBuildHits(rerank),
+		readstages.NewEvolutionAfterRecall(cfg.evolution),
+	}, tel)
+	m.rebuildRunner = rebuild.NewRunner([]pipeline.Stage[*rebuild.RebuildState]{
+		rebuildstages.NewScan(cfg.store),
+		rebuildstages.NewProject(fanout, projections),
+	}, tel)
 	return m, nil
 }
 
@@ -356,29 +382,26 @@ func publicSaveTrace(state *write.WriteState) SaveTrace {
 	return out
 }
 
-func (m *memory) runEvolutionAfterRecall(ctx context.Context, scope Scope, trace RecallTrace) {
-	if m.evolution == nil {
-		return
-	}
-	started := time.Now()
-	if err := m.evolution.AfterRecall(ctx, scope, trace); err != nil {
-		m.emitPipeline(scope, "evolution", "after_recall", len(trace.Drops), started, err)
-	}
+// recallHitReranker adapts the public Reranker to domain.Hit for the
+// read pipeline build_hits stage.
+type recallHitReranker struct {
+	r Reranker
 }
 
-func (m *memory) emitPipeline(scope Scope, stage, op string, count int, started time.Time, err error) {
-	hook := m.telemetry
-	if hook == nil {
-		return
+func (a *recallHitReranker) Rerank(ctx context.Context, query string, hits []domain.Hit) ([]domain.Hit, error) {
+	in := make([]Hit, len(hits))
+	for i, h := range hits {
+		in[i] = Hit{Fact: h.Fact, Score: h.Score, Sources: append([]string(nil), h.Sources...)}
 	}
-	hook.OnPipeline(port.PipelineEvent{
-		Scope:   scope,
-		Stage:   stage,
-		Op:      op,
-		Count:   count,
-		Latency: time.Since(started),
-		Err:     err,
-	})
+	out, err := a.r.Rerank(ctx, query, in)
+	if err != nil {
+		return hits, err
+	}
+	res := make([]domain.Hit, len(out))
+	for i, h := range out {
+		res[i] = domain.Hit{Fact: h.Fact, Score: h.Score, Sources: h.Sources}
+	}
+	return res, nil
 }
 
 // snapshotKnownEntities returns the canonical entities currently
@@ -466,187 +489,57 @@ func (m *memory) RecallExplain(ctx context.Context, scope Scope, query Query) ([
 }
 
 func (m *memory) runRecall(ctx context.Context, scope Scope, query Query, withTrace bool) ([]Hit, RecallTrace, error) {
-	var trace RecallTrace
 	if err := ctx.Err(); err != nil {
-		return nil, trace, err
+		return nil, RecallTrace{}, err
 	}
 	if scope.RuntimeID == "" {
-		return nil, trace, errdefs.Validationf("recall.Recall: scope.runtime_id is required")
+		return nil, RecallTrace{}, errdefs.Validationf("recall.Recall: scope.runtime_id is required")
 	}
 
-	overall := time.Now()
-	stageStarted := time.Now()
-	compiled, err := m.queryCompiler.Compile(ctx, port.IntentInput{
-		Text:      query.Text,
-		Entities:  query.Entities,
-		Subject:   query.Subject,
-		Predicate: query.Predicate,
-		Object:    query.Object,
-		Kinds:     query.Kinds,
-		TimeRange: query.TimeRange,
-	})
-	m.emitPipeline(scope, "query_compile", "compile", len(compiled.Entities), stageStarted, err)
-	if err != nil {
-		return nil, trace, fmt.Errorf("recall.Recall: query compiler: %w", err)
+	state := &read.ReadState{
+		Scope: scope,
+		Query: domain.Query{
+			Text:      query.Text,
+			Entities:  query.Entities,
+			Limit:     query.Limit,
+			Subject:   query.Subject,
+			Predicate: query.Predicate,
+			Object:    query.Object,
+			Kinds:     query.Kinds,
+			TimeRange: query.TimeRange,
+			GraphHops: query.GraphHops,
+		},
+		StartedAt: time.Now(),
 	}
-	stageStarted = time.Now()
-	plan, err := m.planner.Plan(ctx, port.PlannerInput{
-		Scope:        scope,
-		Text:         compiled.Text,
-		Entities:     compiled.Entities,
-		Limit:        query.Limit,
-		Subject:      compiled.Subject,
-		Predicate:    compiled.Predicate,
-		Object:       compiled.Object,
-		Kinds:        compiled.Kinds,
-		TimeRange:    compiled.TimeRange,
-		GraphEnabled: m.graphEnabled,
-		GraphHops:    query.GraphHops,
-	})
-	m.emitPipeline(scope, "planner", "plan", len(plan.SourceOrder), stageStarted, err)
-	if err != nil {
-		return nil, trace, fmt.Errorf("recall.Recall: planner: %w", err)
-	}
-	trace.Plan = plan
+	// Always allocate trace so evolution / legacy fields populate even
+	// when the caller only invoked Recall (not RecallExplain).
+	state.EnsureTrace()
 
-	// Index sources by name so we honour planner.SourceOrder and
-	// silently skip sources the planner did not pick (e.g. entity
-	// when no entities were supplied).
-	byName := make(map[string]port.Source, len(m.sources))
-	for _, s := range m.sources {
-		byName[s.Name()] = s
+	if err := m.readRunner.Run(ctx, state); err != nil {
+		return nil, publicRecallTrace(state), err
 	}
-
-	results := make([]domain.SourceResult, 0, len(plan.SourceOrder))
-	var sourceErrs []error
-	totalCandidates := 0
-	for _, name := range plan.SourceOrder {
-		s, ok := byName[name]
-		if !ok {
-			continue
-		}
-		stageStarted = time.Now()
-		res := s.Query(ctx, plan)
-		m.emitPipeline(scope, "source", name, len(res.Candidates), stageStarted, res.Err)
-		results = append(results, res)
-		if res.Err != nil {
-			sourceErrs = append(sourceErrs, fmt.Errorf("%s: %w", res.Source, res.Err))
-		}
-		totalCandidates += len(res.Candidates)
-		st := SourceTrace{
-			Source:    res.Source,
-			Budget:    plan.SourceBudgets[res.Source],
-			Returned:  len(res.Candidates),
-			Truncated: res.Truncated,
-			Latency:   res.Latency,
-		}
-		if res.Err != nil {
-			st.Err = res.Err.Error()
-		}
-		trace.Sources = append(trace.Sources, st)
-	}
-
-	// Total source failure (every selected source errored and
-	// produced no candidates) bubbles up so callers can distinguish
-	// "found nothing" from "could not search at all". Partial
-	// failures degrade silently with the trace recording each
-	// source's err for attribution.
-	if len(sourceErrs) > 0 && len(sourceErrs) == len(results) && totalCandidates == 0 {
-		return nil, trace, fmt.Errorf("recall.Recall: all sources failed: %w", errors.Join(sourceErrs...))
-	}
-
-	opts := m.fusionOpts
-	if opts.TotalCap == 0 {
-		opts.TotalCap = fusionCandidateCap(plan.TotalCap)
-	}
-	stageStarted = time.Now()
-	fused, fusionDrops, err := m.fuser.Fuse(ctx, results, opts)
-	m.emitPipeline(scope, "fusion", "fuse", len(fused), stageStarted, err)
-	if err != nil {
-		return nil, trace, fmt.Errorf("recall.Recall: fusion: %w", err)
-	}
-	trace.FusedCandidates = len(fused)
-	trace.Drops = append(trace.Drops, fusionDrops...)
-
-	stageStarted = time.Now()
-	items, matDrops, err := m.materializer.Materialize(ctx, fused)
-	m.emitPipeline(scope, "materialize", "materialize", len(items), stageStarted, err)
-	if err != nil {
-		return nil, trace, fmt.Errorf("recall.Recall: materialize: %w", err)
-	}
-	trace.Drops = append(trace.Drops, matDrops...)
-	// When a reranker is wired we defer the TotalCap so it sees the
-	// widest fused pool (typically 2× topK). Without a reranker the
-	// pre-rerank cap stays in place so legacy callers see the
-	// historical pool size in trace.Materialized.
-	rankCap := plan.TotalCap
-	if m.reranker != nil {
-		rankCap = 0
-	}
-	items = rankContextItems(items, plan.Intent, rankCap)
-	trace.Materialized = len(items)
-
-	stageStarted = time.Now()
-	hits := hitsFromItems(items)
-	m.emitPipeline(scope, "build_hits", "build", len(hits), stageStarted, nil)
-
-	if m.reranker != nil && len(hits) > 0 {
-		stageStarted = time.Now()
-		reranked, rerr := m.reranker.Rerank(ctx, query.Text, hits)
-		m.emitPipeline(scope, "rerank", "rerank", len(reranked), stageStarted, rerr)
-		if rerr != nil {
-			// Graceful degradation: a rerank outage must never cost
-			// availability. We keep the fusion-rank order and
-			// surface the error through the trace so operators can
-			// attribute precision regressions to the right stage.
-			trace.RerankErr = rerr.Error()
-		} else {
-			hits = reranked
-			trace.Reranked = len(hits)
-		}
-		if plan.TotalCap > 0 && len(hits) > plan.TotalCap {
-			hits = hits[:plan.TotalCap]
-		}
-	}
-	trace.TotalLatency = time.Since(overall)
-	m.runEvolutionAfterRecall(ctx, scope, trace)
+	pubHits := domainHitsToPublic(state.Hits)
+	trace := publicRecallTrace(state)
 	if !withTrace {
-		return hits, RecallTrace{}, nil
+		return pubHits, RecallTrace{}, nil
 	}
-	return hits, trace, nil
+	return pubHits, trace, nil
 }
 
-func hitsFromItems(items []domain.ContextItem) []Hit {
-	hits := make([]Hit, 0, len(items))
-	for _, it := range items {
-		hits = append(hits, Hit{
-			Fact:    it.Fact,
-			Score:   it.Candidate.Score,
-			Sources: hitSources(it.Candidate),
-		})
-	}
-	return hits
+func publicRecallTrace(state *read.ReadState) RecallTrace {
+	return read.PublicRecallTrace(state)
 }
 
-// hitSources returns the (deduped, primary-first) source provenance
-// for a candidate. Fusion stores the multi-source list under
-// Metadata["sources"]; the primary Candidate.Source captures the
-// last writer. We prefer the metadata list when present so callers
-// see every source that surfaced the fact, falling back to the
-// primary source when no metadata exists (single-source candidate
-// or legacy path).
-func hitSources(c domain.Candidate) []string {
-	if c.Metadata != nil {
-		if existing, ok := c.Metadata["sources"].([]string); ok && len(existing) > 0 {
-			out := make([]string, len(existing))
-			copy(out, existing)
-			return out
+func domainHitsToPublic(hits []domain.Hit) []Hit {
+	out := make([]Hit, len(hits))
+	for i, h := range hits {
+		out[i] = Hit{
+			Fact:    TemporalFact(h.Fact),
+			Score:   h.Score,
+			Sources: append([]string(nil), h.Sources...),
 		}
 	}
-	if c.Source != "" {
-		return []string{c.Source}
-	}
-	return nil
+	return out
 }
 
 // Forget removes a fact with strict transactional semantics:
@@ -748,35 +641,12 @@ func (m *memory) compensateForgetStoreFailure(ctx context.Context, scope Scope, 
 // error; optional-projection / evidence failures only emit
 // telemetry. The canonical store is never modified.
 func (m *memory) RebuildAll(ctx context.Context, scope Scope) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	if scope.RuntimeID == "" {
-		return errdefs.Validationf("recall.RebuildAll: scope.runtime_id is required")
-	}
-	unlock := m.lockWriteScope(scope)
-	defer unlock()
+	return m.runRebuild(ctx, scope, "")
+}
 
-	facts, err := m.store.List(ctx, scope, port.ListQuery{IncludeSuperseded: true})
-	if err != nil {
-		return fmt.Errorf("recall.RebuildAll: list canonical facts: %w", err)
-	}
-	if err := m.fanout.RebuildRequired(ctx, scope, facts); err != nil {
-		return err
-	}
-	m.fanout.RebuildOptional(ctx, scope, facts)
-	if m.evidenceStore != nil {
-		if err := m.rebuildEvidence(ctx, scope, facts); err != nil {
-			m.fanout.Telemetry().OnProjection(port.ProjectionEvent{
-				Projection:  "rebuild.evidence",
-				Op:          port.OpRebuild,
-				Consistency: projection.Optional.String(),
-				FactCount:   len(facts),
-				Err:         err,
-			})
-		}
-	}
-	return nil
+// RebuildScope is equivalent to RebuildAll (v1 SyncSideStores parity).
+func (m *memory) RebuildScope(ctx context.Context, scope Scope) error {
+	return m.runRebuild(ctx, scope, "")
 }
 
 // rebuildEvidence applies exact-replace semantics to the secondary
@@ -841,25 +711,42 @@ func (m *memory) RebuildProjection(ctx context.Context, scope Scope, name string
 	if name == "" {
 		return errdefs.Validationf("recall.RebuildProjection: projection name is required")
 	}
+	return m.runRebuild(ctx, scope, name)
+}
+
+func (m *memory) runRebuild(ctx context.Context, scope Scope, projectionFilter string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if scope.RuntimeID == "" {
+		return errdefs.Validationf("recall: scope.runtime_id is required")
+	}
 	unlock := m.lockWriteScope(scope)
 	defer unlock()
 
-	var target port.Projection
-	for _, p := range m.projections {
-		if p != nil && p.Name() == name {
-			target = p
-			break
+	state := &rebuild.RebuildState{
+		Scope:            scope,
+		ProjectionFilter: projectionFilter,
+	}
+	if err := m.rebuildRunner.Run(ctx, state); err != nil {
+		if projectionFilter == "" {
+			return fmt.Errorf("recall.RebuildAll: %w", err)
 		}
+		return err
 	}
-	if target == nil {
-		return errdefs.NotFoundf("recall.RebuildProjection: projection %q not registered", name)
+	if projectionFilter != "" {
+		return nil
 	}
-	facts, err := m.store.List(ctx, scope, port.ListQuery{IncludeSuperseded: true})
-	if err != nil {
-		return fmt.Errorf("recall.RebuildProjection: list canonical facts: %w", err)
-	}
-	if err := target.Rebuild(ctx, scope, facts); err != nil {
-		return fmt.Errorf("recall.RebuildProjection %q: %w", name, err)
+	if m.evidenceStore != nil {
+		if err := m.rebuildEvidence(ctx, scope, state.Facts); err != nil {
+			m.fanout.Telemetry().OnProjection(port.ProjectionEvent{
+				Projection:  "rebuild.evidence",
+				Op:          port.OpRebuild,
+				Consistency: projection.Optional.String(),
+				FactCount:   len(state.Facts),
+				Err:         err,
+			})
+		}
 	}
 	return nil
 }

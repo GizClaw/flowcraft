@@ -1,0 +1,84 @@
+package stages
+
+import (
+	"context"
+
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain/diagnostic"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/pipeline"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/pipeline/read"
+)
+
+// HitReranker reorders hits after fusion rank (optional LLM path).
+type HitReranker interface {
+	Rerank(ctx context.Context, query string, hits []domain.Hit) ([]domain.Hit, error)
+}
+
+// BuildHits converts ranked ContextItems into Hits and optionally
+// runs the reranker (legacy runRecall order: build then rerank).
+type BuildHits struct {
+	reranker HitReranker
+}
+
+// NewBuildHits constructs a BuildHits stage. reranker may be nil.
+func NewBuildHits(reranker HitReranker) *BuildHits {
+	return &BuildHits{reranker: reranker}
+}
+
+// Name implements pipeline.Stage.
+func (BuildHits) Name() string { return "build_hits" }
+
+// Run implements pipeline.Stage.
+func (s *BuildHits) Run(ctx context.Context, state *read.ReadState) (diagnostic.StageDetail, error) {
+	hits := hitsFromItems(state.Ranked)
+	state.Hits = hits
+	if s.reranker != nil && len(hits) > 0 {
+		reranked, err := s.reranker.Rerank(ctx, state.Query.Text, hits)
+		if err != nil {
+			state.RerankErr = err
+		} else {
+			hits = reranked
+			state.Hits = hits
+			state.Reranked = len(hits)
+			if state.Trace != nil {
+				state.Trace.Reranked = len(hits)
+			}
+		}
+		if state.Plan != nil && state.Plan.TotalCap > 0 && len(hits) > state.Plan.TotalCap {
+			hits = hits[:state.Plan.TotalCap]
+			state.Hits = hits
+		}
+	}
+	if state.Trace != nil && state.RerankErr != nil {
+		state.Trace.RerankErr = state.RerankErr.Error()
+	}
+	return diagnostic.BuildHitsDetail{Count: len(hits)}, nil
+}
+
+func hitsFromItems(items []domain.ContextItem) []domain.Hit {
+	hits := make([]domain.Hit, 0, len(items))
+	for _, it := range items {
+		hits = append(hits, domain.Hit{
+			Fact:    it.Fact,
+			Score:   it.Candidate.Score,
+			Sources: hitSources(it.Candidate),
+		})
+	}
+	return hits
+}
+
+func hitSources(c domain.Candidate) []string {
+	if c.Metadata != nil {
+		if existing, ok := c.Metadata["sources"].([]string); ok && len(existing) > 0 {
+			out := make([]string, len(existing))
+			copy(out, existing)
+			return out
+		}
+	}
+	if c.Source != "" {
+		return []string{c.Source}
+	}
+	return nil
+}
+
+var _ pipeline.Stage[*read.ReadState] = (*BuildHits)(nil)

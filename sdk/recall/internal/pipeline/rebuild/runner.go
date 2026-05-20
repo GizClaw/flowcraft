@@ -8,24 +8,14 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/port"
 )
 
-// Runner is the rebuild-flow pipeline driver. It owns the stage
-// assembly and the StageDiagnostic emission contract; the facade
-// layer (sdk/recall.Memory.RebuildAll / RebuildProjection /
-// RebuildScope in Phase B.4 C4) calls Run instead of hand-rolling
-// stage orchestration.
-//
-// The zero Runner is valid and Run on it is a successful no-op —
-// the smoke test below relies on that property so a freshly
-// constructed Runner can be exercised before Phase B.4 wires
-// concrete stages.
+// Runner is the rebuild-flow pipeline driver. The facade layer
+// (Memory.RebuildAll / RebuildProjection / RebuildScope) calls Run.
 type Runner struct {
 	pipeline *pipeline.Pipeline[*RebuildState]
 }
 
-// NewRunner constructs a rebuild Runner with the supplied stages,
-// telemetry hook, and trace appender wired through the generic
-// pipeline framework. stages may be nil (smoke-test path) and
-// hook may be nil.
+// NewRunner constructs a rebuild Runner with the supplied stages
+// and telemetry hook.
 func NewRunner(stages []pipeline.Stage[*RebuildState], hook port.TelemetryHook) *Runner {
 	return &Runner{
 		pipeline: pipeline.NewPipeline(
@@ -37,9 +27,7 @@ func NewRunner(stages []pipeline.Stage[*RebuildState], hook port.TelemetryHook) 
 	}
 }
 
-// Run executes the rebuild pipeline against state. The error is
-// the underlying Stage failure with the framework wrapping
-// nothing. ShortCircuit is treated as success and returns nil.
+// Run executes the rebuild pipeline against state.
 func (r *Runner) Run(ctx context.Context, state *RebuildState) error {
 	if r == nil || r.pipeline == nil {
 		return nil
