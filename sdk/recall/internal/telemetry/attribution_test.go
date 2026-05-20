@@ -3,18 +3,19 @@ package telemetry
 import (
 	"testing"
 
-	"github.com/GizClaw/flowcraft/sdk/recall/internal/model"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain/diagnostic"
 )
 
 func TestAttributeRecallTrace_MapsSourceErrors(t *testing.T) {
-	trace := model.RecallTrace{
-		Sources: []model.SourceTrace{{
+	trace := domain.RecallTrace{
+		Sources: []domain.SourceTrace{{
 			Source: "retrieval",
 			Err:    "search failed",
 		}},
-		Drops: []model.CandidateDrop{{
+		Drops: []diagnostic.CandidateDrop{{
 			Stage:  "materialize",
-			Reason: model.DropStaleFact,
+			Reason: diagnostic.DropStaleFact,
 			FactID: "f1",
 			Source: "retrieval",
 		}},

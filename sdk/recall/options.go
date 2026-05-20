@@ -3,7 +3,7 @@ package recall
 import (
 	"github.com/GizClaw/flowcraft/sdk/embedding"
 	"github.com/GizClaw/flowcraft/sdk/llm"
-	"github.com/GizClaw/flowcraft/sdk/recall/internal/compiler"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/ingest"
 	"github.com/GizClaw/flowcraft/sdk/retrieval"
 )
 
@@ -54,16 +54,16 @@ func WithEmbedder(e embedding.Embedder) Option {
 // WithLLMExtractor. It is intentionally opaque so the public facade
 // does not expose internal compiler types.
 type LLMExtractorOption struct {
-	apply func(*compiler.LLMExtractor)
+	apply func(*ingest.LLMExtractor)
 }
 
-func newLLMExtractorOption(apply func(*compiler.LLMExtractor)) LLMExtractorOption {
+func newLLMExtractorOption(apply func(*ingest.LLMExtractor)) LLMExtractorOption {
 	return LLMExtractorOption{apply: apply}
 }
 
 // WithLLMExtractorSystemPrompt overrides the default system prompt.
 func WithLLMExtractorSystemPrompt(prompt string) LLMExtractorOption {
-	return newLLMExtractorOption(func(e *compiler.LLMExtractor) {
+	return newLLMExtractorOption(func(e *ingest.LLMExtractor) {
 		if prompt != "" {
 			e.System = prompt
 		}
@@ -73,13 +73,13 @@ func WithLLMExtractorSystemPrompt(prompt string) LLMExtractorOption {
 // WithLLMExtractorTemperature sets the sampling temperature. Zero
 // means "use provider default".
 func WithLLMExtractorTemperature(t float64) LLMExtractorOption {
-	return newLLMExtractorOption(func(e *compiler.LLMExtractor) { e.Temperature = t })
+	return newLLMExtractorOption(func(e *ingest.LLMExtractor) { e.Temperature = t })
 }
 
 // WithLLMExtractorSchemaName labels the JSON schema for structured
 // output (some providers display this in their dashboards / logs).
 func WithLLMExtractorSchemaName(name string) LLMExtractorOption {
-	return newLLMExtractorOption(func(e *compiler.LLMExtractor) {
+	return newLLMExtractorOption(func(e *ingest.LLMExtractor) {
 		if name != "" {
 			e.SchemaName = name
 		}
@@ -90,7 +90,7 @@ func WithLLMExtractorSchemaName(name string) LLMExtractorOption {
 // llm.GenerateOption values on every extraction call (e.g. provider
 // extra params, reasoning toggles).
 func WithLLMExtractorExtraOptions(opts ...llm.GenerateOption) LLMExtractorOption {
-	return newLLMExtractorOption(func(e *compiler.LLMExtractor) {
+	return newLLMExtractorOption(func(e *ingest.LLMExtractor) {
 		e.ExtraOptions = append(e.ExtraOptions, opts...)
 	})
 }

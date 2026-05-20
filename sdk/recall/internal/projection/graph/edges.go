@@ -4,8 +4,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/GizClaw/flowcraft/sdk/recall/internal/model"
-	"github.com/GizClaw/flowcraft/sdk/recall/internal/projection"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain"
 )
 
 // Defaults bound deterministic edge generation (docs §8.4).
@@ -54,27 +53,27 @@ type directedEdge struct {
 }
 
 // extractEdges builds the deterministic edge set for one fact.
-func extractEdges(f model.TemporalFact, cfg Config, now time.Time) []directedEdge {
-	if f.ID == "" || projection.IsSuperseded(f) {
+func extractEdges(f domain.TemporalFact, cfg Config, now time.Time) []directedEdge {
+	if f.ID == "" || domain.IsSuperseded(f) {
 		return nil
 	}
 	if f.Confidence < cfg.minConfidence() {
 		return nil
 	}
 	switch f.Kind {
-	case model.KindRelation:
-		if !projection.IsActive(f, now) {
+	case domain.KindRelation:
+		if !domain.IsActive(f, now) {
 			return nil
 		}
 		return extractRelationEdges(f)
-	case model.KindEvent, model.KindState, model.KindNote:
+	case domain.KindEvent, domain.KindState, domain.KindNote:
 		return extractCooccurrenceEdges(f, cfg)
 	default:
 		return nil
 	}
 }
 
-func extractRelationEdges(f model.TemporalFact) []directedEdge {
+func extractRelationEdges(f domain.TemporalFact) []directedEdge {
 	sub := canonicalNode(f.Subject)
 	obj := canonicalNode(f.Object)
 	if sub == "" || obj == "" || sub == obj {
@@ -89,7 +88,7 @@ func extractRelationEdges(f model.TemporalFact) []directedEdge {
 	}}
 }
 
-func extractCooccurrenceEdges(f model.TemporalFact, cfg Config) []directedEdge {
+func extractCooccurrenceEdges(f domain.TemporalFact, cfg Config) []directedEdge {
 	nodes := collectCooccurrenceNodes(f, cfg.maxCooccurrenceParticipants())
 	if len(nodes) < 2 {
 		return nil
@@ -110,7 +109,7 @@ func extractCooccurrenceEdges(f model.TemporalFact, cfg Config) []directedEdge {
 	return out
 }
 
-func collectCooccurrenceNodes(f model.TemporalFact, limit int) []string {
+func collectCooccurrenceNodes(f domain.TemporalFact, limit int) []string {
 	seen := make(map[string]struct{})
 	var out []string
 	add := func(s string) {

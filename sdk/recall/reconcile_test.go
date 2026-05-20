@@ -5,9 +5,9 @@ import (
 	"testing"
 
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
-	"github.com/GizClaw/flowcraft/sdk/recall/internal/model"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/port"
 	retrievalproj "github.com/GizClaw/flowcraft/sdk/recall/internal/projection/retrieval"
-	"github.com/GizClaw/flowcraft/sdk/recall/internal/source"
 	temporalstore "github.com/GizClaw/flowcraft/sdk/recall/internal/store/temporal"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/telemetry"
 	retrievalmem "github.com/GizClaw/flowcraft/sdk/retrieval/memory"
@@ -17,14 +17,14 @@ import (
 // materialize emit so a single test can inspect both streams.
 type captureHook struct {
 	telemetry.NopHook
-	drifts    []telemetry.DriftEvent
-	events    []telemetry.ProjectionEvent
-	pipelines []telemetry.PipelineEvent
+	drifts    []port.DriftEvent
+	events    []port.ProjectionEvent
+	pipelines []port.PipelineEvent
 }
 
-func (h *captureHook) OnDrift(e telemetry.DriftEvent)           { h.drifts = append(h.drifts, e) }
-func (h *captureHook) OnProjection(e telemetry.ProjectionEvent) { h.events = append(h.events, e) }
-func (h *captureHook) OnPipeline(e telemetry.PipelineEvent)     { h.pipelines = append(h.pipelines, e) }
+func (h *captureHook) OnDrift(e port.DriftEvent)           { h.drifts = append(h.drifts, e) }
+func (h *captureHook) OnProjection(e port.ProjectionEvent) { h.events = append(h.events, e) }
+func (h *captureHook) OnPipeline(e port.PipelineEvent)     { h.pipelines = append(h.pipelines, e) }
 
 type staleCandidateSource struct {
 	id string
@@ -32,10 +32,10 @@ type staleCandidateSource struct {
 
 func (s staleCandidateSource) Name() string { return "retrieval" }
 
-func (s staleCandidateSource) Query(_ context.Context, plan model.QueryPlan) model.SourceResult {
-	return model.SourceResult{
+func (s staleCandidateSource) Query(_ context.Context, plan domain.QueryPlan) domain.SourceResult {
+	return domain.SourceResult{
 		Source: s.Name(),
-		Candidates: []model.Candidate{{
+		Candidates: []domain.Candidate{{
 			FactID: s.id,
 			Scope:  plan.Intent.Scope,
 			Source: s.Name(),
@@ -336,7 +336,7 @@ func TestRecall_EmitsDriftForSupersededCandidate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	mem.(*memory).sources = []source.CandidateSource{staleCandidateSource{id: first.FactIDs[0]}}
+	mem.(*memory).sources = []port.Source{staleCandidateSource{id: first.FactIDs[0]}}
 	if _, err = mem.Save(context.Background(), scope, SaveRequest{
 		Facts: []TemporalFact{{
 			Kind:      FactState,
@@ -395,7 +395,7 @@ func TestSaveRecall_EmitsPipelineTelemetry(t *testing.T) {
 	}
 }
 
-func hasPipelineStage(events []telemetry.PipelineEvent, stage string) bool {
+func hasPipelineStage(events []port.PipelineEvent, stage string) bool {
 	for _, e := range events {
 		if e.Stage == stage {
 			return true

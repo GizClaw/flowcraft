@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/GizClaw/flowcraft/sdk/recall/internal/model"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/planner"
 )
 
@@ -12,14 +12,14 @@ type stubLookup struct {
 	want []string
 }
 
-func (s stubLookup) Lookup(_ context.Context, _ model.Scope, _ []string) []string {
+func (s stubLookup) Lookup(_ context.Context, _ domain.Scope, _ []string) []string {
 	return s.want
 }
 
 func TestSource_NoEntitiesShortCircuits(t *testing.T) {
 	src := New(stubLookup{want: []string{"a", "b"}})
-	res := src.Query(context.Background(), model.QueryPlan{
-		Intent: model.QueryIntent{Scope: model.Scope{RuntimeID: "rt"}},
+	res := src.Query(context.Background(), domain.QueryPlan{
+		Intent: domain.QueryIntent{Scope: domain.Scope{RuntimeID: "rt"}},
 	})
 	if len(res.Candidates) != 0 {
 		t.Errorf("entity source must noop without entity hints, got %+v", res.Candidates)
@@ -28,9 +28,9 @@ func TestSource_NoEntitiesShortCircuits(t *testing.T) {
 
 func TestSource_BudgetCapsCandidates(t *testing.T) {
 	src := New(stubLookup{want: []string{"a", "b", "c", "d"}})
-	res := src.Query(context.Background(), model.QueryPlan{
-		Intent: model.QueryIntent{
-			Scope:    model.Scope{RuntimeID: "rt"},
+	res := src.Query(context.Background(), domain.QueryPlan{
+		Intent: domain.QueryIntent{
+			Scope:    domain.Scope{RuntimeID: "rt"},
 			Entities: []string{"alice"},
 		},
 		SourceBudgets: map[string]int{planner.SourceEntity: 2},

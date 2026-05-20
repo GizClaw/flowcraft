@@ -1,10 +1,10 @@
 package telemetry
 
-import "github.com/GizClaw/flowcraft/sdk/recall/internal/model"
+import "github.com/GizClaw/flowcraft/sdk/recall/internal/domain"
 
 // AttributeRecallTrace converts a RecallTrace into diagnostics
 // attributions. It never mutates the trace.
-func AttributeRecallTrace(trace model.RecallTrace) []Attribution {
+func AttributeRecallTrace(trace domain.RecallTrace) []Attribution {
 	var out []Attribution
 	for _, st := range trace.Sources {
 		if st.Err == "" {
@@ -60,6 +60,6 @@ func AttributeDroppedFacts(drops []DroppedFact) []Attribution {
 
 // DroppedFact mirrors compiler.DroppedFact without importing compiler.
 type DroppedFact struct {
-	Fact   model.TemporalFact
+	Fact   domain.TemporalFact
 	Reason string
 }

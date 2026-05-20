@@ -10,8 +10,9 @@ import (
 
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/llm"
-	"github.com/GizClaw/flowcraft/sdk/recall/internal/compiler"
-	"github.com/GizClaw/flowcraft/sdk/recall/internal/model"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/ingest"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/port"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/projection"
 	retrievalproj "github.com/GizClaw/flowcraft/sdk/recall/internal/projection/retrieval"
 	temporalstore "github.com/GizClaw/flowcraft/sdk/recall/internal/store/temporal"
@@ -398,13 +399,13 @@ func TestSave_TolerantOfRaceSupersedeClose(t *testing.T) {
 func TestStore_ErrValidityAlreadyClosed_HasSentinelIdentity(t *testing.T) {
 	store := temporalstore.NewMemoryStore()
 	ctx := context.Background()
-	scope := model.Scope{RuntimeID: "rt"}
-	fact := model.TemporalFact{
-		ID: "a", Scope: scope, Kind: model.KindState,
+	scope := domain.Scope{RuntimeID: "rt"}
+	fact := domain.TemporalFact{
+		ID: "a", Scope: scope, Kind: domain.KindState,
 		Subject: "alice", Predicate: "city", Content: "Paris",
 		ObservedAt: time.Unix(1, 0),
 	}
-	if err := store.Append(ctx, []model.TemporalFact{fact}); err != nil {
+	if err := store.Append(ctx, []domain.TemporalFact{fact}); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.UpdateValidity(ctx, scope, "a", time.Unix(10, 0), "b"); err != nil {
@@ -454,8 +455,8 @@ func TestSave_EventIsAlwaysAppendOnly(t *testing.T) {
 func TestSave_AliasResolverFoldsMentions(t *testing.T) {
 	store := temporalstore.NewMemoryStore()
 	scope := Scope{RuntimeID: "rt", UserID: "u1"}
-	cp := compiler.New(compiler.Stages{
-		AliasResolver: compiler.NewStaticAliasResolver(map[model.Scope]map[string]string{
+	cp := ingest.New(ingest.Stages{
+		AliasResolver: ingest.NewStaticAliasResolver(map[domain.Scope]map[string]string{
 			scope: {"Bob": "robert"},
 		}),
 	})
@@ -485,7 +486,7 @@ func TestSave_TimeResolverConsumesHint(t *testing.T) {
 	store := temporalstore.NewMemoryStore()
 	scope := Scope{RuntimeID: "rt"}
 	now := time.Date(2026, 5, 19, 12, 0, 0, 0, time.UTC)
-	cp := compiler.New(compiler.Stages{
+	cp := ingest.New(ingest.Stages{
 		Clock: func() time.Time { return now },
 	})
 	mem, _ := New(withTemporalStore(store), withCompiler(cp))
@@ -495,7 +496,7 @@ func TestSave_TimeResolverConsumesHint(t *testing.T) {
 			Kind:    FactPlan,
 			Content: "visit Paris",
 			Metadata: map[string]any{
-				compiler.MetaValidFromHint: "tomorrow",
+				ingest.MetaValidFromHint: "tomorrow",
 			},
 		}},
 	})
@@ -510,7 +511,7 @@ func TestSave_TimeResolverConsumesHint(t *testing.T) {
 	if list[0].ValidFrom == nil || !list[0].ValidFrom.Equal(wantDate) {
 		t.Errorf("ValidFrom = %v, want %v", list[0].ValidFrom, wantDate)
 	}
-	if _, leftover := list[0].Metadata[compiler.MetaValidFromHint]; leftover {
+	if _, leftover := list[0].Metadata[ingest.MetaValidFromHint]; leftover {
 		t.Error("hint should have been consumed from metadata")
 	}
 }
@@ -845,12 +846,12 @@ func TestRecall_AllSourcesFailReturnsError(t *testing.T) {
 type failingProjection struct{}
 
 func (failingProjection) Name() string                        { return "broken" }
-func (failingProjection) Consistency() projection.Consistency { return projection.Required }
-func (failingProjection) Project(context.Context, []model.TemporalFact) error {
+func (failingProjection) Consistency() port.Consistency { return projection.Required }
+func (failingProjection) Project(context.Context, []domain.TemporalFact) error {
 	return errors.New("synthetic")
 }
-func (failingProjection) Forget(context.Context, model.Scope, []string) error { return nil }
-func (failingProjection) Rebuild(context.Context, model.Scope, []model.TemporalFact) error {
+func (failingProjection) Forget(context.Context, domain.Scope, []string) error { return nil }
+func (failingProjection) Rebuild(context.Context, domain.Scope, []domain.TemporalFact) error {
 	return nil
 }
 
@@ -948,7 +949,7 @@ func TestWithLLMExtractor_WiresExtractorIntoSavePath(t *testing.T) {
 
 func TestWithLLMExtractor_IgnoredWhenCompilerProvided(t *testing.T) {
 	client := &scriptedLLM{}
-	customCompiler := compiler.Default()
+	customCompiler := ingest.Default()
 
 	mem, err := New(
 		withCompiler(customCompiler),
@@ -1047,9 +1048,9 @@ type failOnProjectN struct {
 
 func (p *failOnProjectN) Name() string { return "fail_on_project_n" }
 
-func (p *failOnProjectN) Consistency() projection.Consistency { return projection.Required }
+func (p *failOnProjectN) Consistency() port.Consistency { return projection.Required }
 
-func (p *failOnProjectN) Project(context.Context, []model.TemporalFact) error {
+func (p *failOnProjectN) Project(context.Context, []domain.TemporalFact) error {
 	p.n++
 	if p.n == p.failOn {
 		return errors.New("synthetic project failure")
@@ -1057,9 +1058,9 @@ func (p *failOnProjectN) Project(context.Context, []model.TemporalFact) error {
 	return nil
 }
 
-func (p *failOnProjectN) Forget(context.Context, model.Scope, []string) error { return nil }
+func (p *failOnProjectN) Forget(context.Context, domain.Scope, []string) error { return nil }
 
-func (p *failOnProjectN) Rebuild(context.Context, model.Scope, []model.TemporalFact) error {
+func (p *failOnProjectN) Rebuild(context.Context, domain.Scope, []domain.TemporalFact) error {
 	return nil
 }
 
@@ -1070,10 +1071,10 @@ type staticCandidateSource struct {
 
 func (s *staticCandidateSource) Name() string { return s.name }
 
-func (s *staticCandidateSource) Query(_ context.Context, plan model.QueryPlan) model.SourceResult {
-	candidates := make([]model.Candidate, 0, len(s.factIDs))
+func (s *staticCandidateSource) Query(_ context.Context, plan domain.QueryPlan) domain.SourceResult {
+	candidates := make([]domain.Candidate, 0, len(s.factIDs))
 	for i, id := range s.factIDs {
-		candidates = append(candidates, model.Candidate{
+		candidates = append(candidates, domain.Candidate{
 			FactID: id,
 			Scope:  plan.Intent.Scope,
 			Source: s.name,
@@ -1081,7 +1082,7 @@ func (s *staticCandidateSource) Query(_ context.Context, plan model.QueryPlan) m
 			Score:  1,
 		})
 	}
-	return model.SourceResult{Source: s.name, Candidates: candidates}
+	return domain.SourceResult{Source: s.name, Candidates: candidates}
 }
 
 type errorSource struct {
@@ -1091,6 +1092,6 @@ type errorSource struct {
 
 func (s errorSource) Name() string { return s.name }
 
-func (s errorSource) Query(context.Context, model.QueryPlan) model.SourceResult {
-	return model.SourceResult{Source: s.name, Err: s.err}
+func (s errorSource) Query(context.Context, domain.QueryPlan) domain.SourceResult {
+	return domain.SourceResult{Source: s.name, Err: s.err}
 }

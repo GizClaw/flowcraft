@@ -5,19 +5,19 @@ import (
 	"testing"
 	"time"
 
-	"github.com/GizClaw/flowcraft/sdk/recall/internal/model"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain"
 )
 
-func scope() model.Scope { return model.Scope{RuntimeID: "rt", UserID: "u1"} }
+func scope() domain.Scope { return domain.Scope{RuntimeID: "rt", UserID: "u1"} }
 
 func TestGraph_TypedRelationEdgeTraverse(t *testing.T) {
 	p := New()
 	ctx := context.Background()
-	if err := p.Project(ctx, []model.TemporalFact{
-		{ID: "r1", Scope: scope(), Kind: model.KindRelation,
+	if err := p.Project(ctx, []domain.TemporalFact{
+		{ID: "r1", Scope: scope(), Kind: domain.KindRelation,
 			Subject: "alice", Predicate: "friend", Object: "bob",
 			ObservedAt: time.Unix(1, 0)},
-		{ID: "r2", Scope: scope(), Kind: model.KindRelation,
+		{ID: "r2", Scope: scope(), Kind: domain.KindRelation,
 			Subject: "bob", Predicate: "friend", Object: "charlie",
 			ObservedAt: time.Unix(2, 0)},
 	}); err != nil {
@@ -33,8 +33,8 @@ func TestGraph_TypedRelationEdgeTraverse(t *testing.T) {
 func TestGraph_SkipsCommonNounEndpoints(t *testing.T) {
 	p := New()
 	ctx := context.Background()
-	if err := p.Project(ctx, []model.TemporalFact{
-		{ID: "r1", Scope: scope(), Kind: model.KindRelation,
+	if err := p.Project(ctx, []domain.TemporalFact{
+		{ID: "r1", Scope: scope(), Kind: domain.KindRelation,
 			Subject: "user", Predicate: "knows", Object: "alice",
 			ObservedAt: time.Unix(1, 0)},
 	}); err != nil {
@@ -49,8 +49,8 @@ func TestGraph_CooccurrenceBounded(t *testing.T) {
 	cfg := Config{MaxCooccurrenceParticipants: 2, MaxEdgesPerFact: 2}
 	p := New(cfg)
 	ctx := context.Background()
-	if err := p.Project(ctx, []model.TemporalFact{
-		{ID: "e1", Scope: scope(), Kind: model.KindEvent,
+	if err := p.Project(ctx, []domain.TemporalFact{
+		{ID: "e1", Scope: scope(), Kind: domain.KindEvent,
 			Entities:   []string{"a", "b", "c"},
 			ObservedAt: time.Unix(1, 0)},
 	}); err != nil {
@@ -66,8 +66,8 @@ func TestGraph_CooccurrenceBounded(t *testing.T) {
 func TestGraph_ForgetRemovesEdges(t *testing.T) {
 	p := New()
 	ctx := context.Background()
-	if err := p.Project(ctx, []model.TemporalFact{
-		{ID: "r1", Scope: scope(), Kind: model.KindRelation,
+	if err := p.Project(ctx, []domain.TemporalFact{
+		{ID: "r1", Scope: scope(), Kind: domain.KindRelation,
 			Subject: "alice", Predicate: "knows", Object: "bob",
 			ObservedAt: time.Unix(1, 0)},
 	}); err != nil {
@@ -84,15 +84,15 @@ func TestGraph_ForgetRemovesEdges(t *testing.T) {
 func TestGraph_RebuildExactReplace(t *testing.T) {
 	p := New()
 	ctx := context.Background()
-	if err := p.Project(ctx, []model.TemporalFact{
-		{ID: "stale", Scope: scope(), Kind: model.KindRelation,
+	if err := p.Project(ctx, []domain.TemporalFact{
+		{ID: "stale", Scope: scope(), Kind: domain.KindRelation,
 			Subject: "alice", Predicate: "knows", Object: "bob",
 			ObservedAt: time.Unix(1, 0)},
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := p.Rebuild(ctx, scope(), []model.TemporalFact{
-		{ID: "fresh", Scope: scope(), Kind: model.KindRelation,
+	if err := p.Rebuild(ctx, scope(), []domain.TemporalFact{
+		{ID: "fresh", Scope: scope(), Kind: domain.KindRelation,
 			Subject: "alice", Predicate: "knows", Object: "carol",
 			ObservedAt: time.Unix(2, 0)},
 	}); err != nil {
@@ -107,15 +107,15 @@ func TestGraph_RebuildExactReplace(t *testing.T) {
 func TestGraph_AgentSoftIsolationBlocksPrivateBridge(t *testing.T) {
 	p := New()
 	ctx := context.Background()
-	agentB := model.Scope{RuntimeID: "rt", UserID: "u1", AgentID: "agent-b"}
+	agentB := domain.Scope{RuntimeID: "rt", UserID: "u1", AgentID: "agent-b"}
 	shared := scope()
-	agentA := model.Scope{RuntimeID: "rt", UserID: "u1", AgentID: "agent-a"}
+	agentA := domain.Scope{RuntimeID: "rt", UserID: "u1", AgentID: "agent-a"}
 
-	if err := p.Project(ctx, []model.TemporalFact{
-		{ID: "bridge", Scope: agentB, Kind: model.KindRelation,
+	if err := p.Project(ctx, []domain.TemporalFact{
+		{ID: "bridge", Scope: agentB, Kind: domain.KindRelation,
 			Subject: "alice", Predicate: "knows", Object: "bob",
 			ObservedAt: time.Unix(1, 0)},
-		{ID: "shared", Scope: shared, Kind: model.KindRelation,
+		{ID: "shared", Scope: shared, Kind: domain.KindRelation,
 			Subject: "bob", Predicate: "knows", Object: "carol",
 			ObservedAt: time.Unix(2, 0)},
 	}); err != nil {

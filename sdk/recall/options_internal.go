@@ -3,18 +3,10 @@ package recall
 import (
 	"github.com/GizClaw/flowcraft/sdk/embedding"
 	"github.com/GizClaw/flowcraft/sdk/llm"
-	"github.com/GizClaw/flowcraft/sdk/recall/internal/compiler"
-	"github.com/GizClaw/flowcraft/sdk/recall/internal/evolution"
-	"github.com/GizClaw/flowcraft/sdk/recall/internal/fusion"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/governance"
-	"github.com/GizClaw/flowcraft/sdk/recall/internal/materialize"
-	"github.com/GizClaw/flowcraft/sdk/recall/internal/planner"
-	"github.com/GizClaw/flowcraft/sdk/recall/internal/projection"
-	"github.com/GizClaw/flowcraft/sdk/recall/internal/queryintent"
-	"github.com/GizClaw/flowcraft/sdk/recall/internal/source"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/port"
 	evidencestore "github.com/GizClaw/flowcraft/sdk/recall/internal/store/evidence"
 	temporalstore "github.com/GizClaw/flowcraft/sdk/recall/internal/store/temporal"
-	"github.com/GizClaw/flowcraft/sdk/recall/internal/telemetry"
 	"github.com/GizClaw/flowcraft/sdk/retrieval"
 )
 
@@ -23,30 +15,30 @@ type config struct {
 	evidenceStore  evidencestore.Store
 	retrievalIndex retrieval.Index
 	embedder       embedding.Embedder
-	compiler       compiler.Compiler
+	compiler       port.Ingestor
 	llmExtractor   *llmExtractorConfig
-	resolver       compiler.ConflictResolver
+	resolver       port.ConflictResolver
 	resolverSet    bool
-	telemetry      telemetry.Hook
+	telemetry      port.TelemetryHook
 
-	extraProjections []projection.Projection
+	extraProjections []port.Projection
 
-	queryCompiler queryintent.Compiler
-	planner       planner.Planner
-	sources       []source.CandidateSource
-	fuser         fusion.Fuser
-	materializer  materialize.Materializer
-	fusionOpts    fusion.Options
+	queryCompiler port.IntentCompiler
+	planner       port.Planner
+	sources       []port.Source
+	fuser         port.Fuser
+	materializer  port.Materializer
+	fusionOpts    port.FusionOptions
 
 	graphEnabled bool
 
 	reranker Reranker
 
 	governance *governance.Governance
-	evolution  evolution.Runner
+	evolution  port.EvolutionRunner
 }
 
-// llmExtractorConfig captures the args to compiler.NewLLMExtractor so New can
+// llmExtractorConfig captures the args to ingest.NewLLMExtractor so New can
 // defer default compiler wiring until all options have been applied.
 type llmExtractorConfig struct {
 	client llm.LLM
@@ -61,7 +53,7 @@ func withTemporalStore(s temporalstore.Store) Option {
 	}
 }
 
-func withCompiler(cp compiler.Compiler) Option {
+func withCompiler(cp port.Ingestor) Option {
 	return func(c *config) {
 		if cp != nil {
 			c.compiler = cp
@@ -69,14 +61,14 @@ func withCompiler(cp compiler.Compiler) Option {
 	}
 }
 
-func withConflictResolver(r compiler.ConflictResolver) Option {
+func withConflictResolver(r port.ConflictResolver) Option {
 	return func(c *config) {
 		c.resolver = r
 		c.resolverSet = true
 	}
 }
 
-func withExtraProjection(p projection.Projection) Option {
+func withExtraProjection(p port.Projection) Option {
 	return func(c *config) {
 		if p != nil {
 			c.extraProjections = append(c.extraProjections, p)
@@ -84,7 +76,7 @@ func withExtraProjection(p projection.Projection) Option {
 	}
 }
 
-func withQueryCompiler(qc queryintent.Compiler) Option {
+func withQueryCompiler(qc port.IntentCompiler) Option {
 	return func(c *config) {
 		if qc != nil {
 			c.queryCompiler = qc
@@ -92,7 +84,7 @@ func withQueryCompiler(qc queryintent.Compiler) Option {
 	}
 }
 
-func withPlanner(p planner.Planner) Option {
+func withPlanner(p port.Planner) Option {
 	return func(c *config) {
 		if p != nil {
 			c.planner = p
@@ -100,7 +92,7 @@ func withPlanner(p planner.Planner) Option {
 	}
 }
 
-func withSources(sources ...source.CandidateSource) Option {
+func withSources(sources ...port.Source) Option {
 	return func(c *config) {
 		for _, s := range sources {
 			if s != nil {
@@ -110,7 +102,7 @@ func withSources(sources ...source.CandidateSource) Option {
 	}
 }
 
-func withFuser(f fusion.Fuser) Option {
+func withFuser(f port.Fuser) Option {
 	return func(c *config) {
 		if f != nil {
 			c.fuser = f
@@ -118,7 +110,7 @@ func withFuser(f fusion.Fuser) Option {
 	}
 }
 
-func withMaterializer(m materialize.Materializer) Option {
+func withMaterializer(m port.Materializer) Option {
 	return func(c *config) {
 		if m != nil {
 			c.materializer = m
@@ -126,7 +118,7 @@ func withMaterializer(m materialize.Materializer) Option {
 	}
 }
 
-func withFusionOptions(opts fusion.Options) Option {
+func withFusionOptions(opts port.FusionOptions) Option {
 	return func(c *config) {
 		c.fusionOpts = opts
 	}

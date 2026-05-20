@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/GizClaw/flowcraft/sdk/recall/internal/model"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain"
 	"github.com/GizClaw/flowcraft/sdk/retrieval"
 	retrievalmem "github.com/GizClaw/flowcraft/sdk/retrieval/memory"
 )
@@ -48,16 +48,16 @@ func TestProjection_WithEmbedder_PopulatesDocVector(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new: %v", err)
 	}
-	scope := model.Scope{RuntimeID: "rt", UserID: "u1"}
+	scope := domain.Scope{RuntimeID: "rt", UserID: "u1"}
 	now := time.Now()
-	f := model.TemporalFact{
+	f := domain.TemporalFact{
 		ID:         "f1",
 		Scope:      scope,
-		Kind:       model.KindNote,
+		Kind:       domain.KindNote,
 		Content:    "Alice met Bob",
 		ObservedAt: now,
 	}
-	if err := p.Project(context.Background(), []model.TemporalFact{f}); err != nil {
+	if err := p.Project(context.Background(), []domain.TemporalFact{f}); err != nil {
 		t.Fatalf("project: %v", err)
 	}
 	got, ok, err := idx.Get(context.Background(), NamespaceFor(scope), "f1")
@@ -111,10 +111,10 @@ func TestProjection_WithEmbedder_FallsBackToPerTextOnBatchFailure(t *testing.T) 
 	if err != nil {
 		t.Fatalf("new: %v", err)
 	}
-	scope := model.Scope{RuntimeID: "rt", UserID: "u1"}
-	if err := p.Project(context.Background(), []model.TemporalFact{
-		{ID: "a", Scope: scope, Kind: model.KindNote, Content: "Alice met Bob"},
-		{ID: "b", Scope: scope, Kind: model.KindNote, Content: "Bob went to Paris"},
+	scope := domain.Scope{RuntimeID: "rt", UserID: "u1"}
+	if err := p.Project(context.Background(), []domain.TemporalFact{
+		{ID: "a", Scope: scope, Kind: domain.KindNote, Content: "Alice met Bob"},
+		{ID: "b", Scope: scope, Kind: domain.KindNote, Content: "Bob went to Paris"},
 	}); err != nil {
 		t.Fatalf("project: %v", err)
 	}
@@ -141,9 +141,9 @@ func TestProjection_WithEmbedder_UsesContentNotSearchableText(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new: %v", err)
 	}
-	scope := model.Scope{RuntimeID: "rt", UserID: "u1"}
-	if err := p.Project(context.Background(), []model.TemporalFact{{
-		ID: "a", Scope: scope, Kind: model.KindState,
+	scope := domain.Scope{RuntimeID: "rt", UserID: "u1"}
+	if err := p.Project(context.Background(), []domain.TemporalFact{{
+		ID: "a", Scope: scope, Kind: domain.KindState,
 		Content:      "Alice lives in Paris",
 		Subject:      "alice",
 		Predicate:    "city",
@@ -186,15 +186,15 @@ func TestProjection_WithEmbedder_DegradesOnFailure(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new: %v", err)
 	}
-	scope := model.Scope{RuntimeID: "rt", UserID: "u1"}
-	f := model.TemporalFact{
+	scope := domain.Scope{RuntimeID: "rt", UserID: "u1"}
+	f := domain.TemporalFact{
 		ID:         "f1",
 		Scope:      scope,
-		Kind:       model.KindNote,
+		Kind:       domain.KindNote,
 		Content:    "Alice met Bob",
 		ObservedAt: time.Now(),
 	}
-	if err := p.Project(context.Background(), []model.TemporalFact{f}); err != nil {
+	if err := p.Project(context.Background(), []domain.TemporalFact{f}); err != nil {
 		t.Fatalf("project must not propagate embedder failure: %v", err)
 	}
 	got, ok, err := idx.Get(context.Background(), NamespaceFor(scope), "f1")
@@ -212,12 +212,12 @@ func TestProjection_UpsertsReservedMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new: %v", err)
 	}
-	scope := model.Scope{RuntimeID: "rt", UserID: "u1"}
+	scope := domain.Scope{RuntimeID: "rt", UserID: "u1"}
 	validFrom := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-	f := model.TemporalFact{
+	f := domain.TemporalFact{
 		ID:         "f1",
 		Scope:      scope,
-		Kind:       model.KindState,
+		Kind:       domain.KindState,
 		Content:    "Alice lives in Paris",
 		Subject:    "alice",
 		Predicate:  "city",
@@ -229,7 +229,7 @@ func TestProjection_UpsertsReservedMetadata(t *testing.T) {
 		ValidFrom:  &validFrom,
 		Metadata:   map[string]any{"user_key": "user_val"},
 	}
-	if err := p.Project(context.Background(), []model.TemporalFact{f}); err != nil {
+	if err := p.Project(context.Background(), []domain.TemporalFact{f}); err != nil {
 		t.Fatalf("project: %v", err)
 	}
 
@@ -241,19 +241,19 @@ func TestProjection_UpsertsReservedMetadata(t *testing.T) {
 		t.Errorf("content = %q", got.Content)
 	}
 	for key, want := range map[string]any{
-		model.MetaFactID:    "f1",
-		model.MetaFactKind:  string(model.KindState),
-		model.MetaMergeKey:  "state|alice|city",
-		model.MetaScopeRT:   "rt",
-		model.MetaScopeUser: "u1",
+		domain.MetaFactID:    "f1",
+		domain.MetaFactKind:  string(domain.KindState),
+		domain.MetaMergeKey:  "state|alice|city",
+		domain.MetaScopeRT:   "rt",
+		domain.MetaScopeUser: "u1",
 		"user_key":          "user_val",
 	} {
 		if got.Metadata[key] != want {
 			t.Errorf("meta[%q] = %v, want %v", key, got.Metadata[key], want)
 		}
 	}
-	if got.Metadata[model.MetaValidFrom].(int64) != validFrom.UnixMilli() {
-		t.Errorf("valid_from metadata not in unix-millis: %v", got.Metadata[model.MetaValidFrom])
+	if got.Metadata[domain.MetaValidFrom].(int64) != validFrom.UnixMilli() {
+		t.Errorf("valid_from metadata not in unix-millis: %v", got.Metadata[domain.MetaValidFrom])
 	}
 }
 
@@ -263,21 +263,21 @@ func TestProjection_SearchContentIncludesEvidenceGrounding(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new: %v", err)
 	}
-	scope := model.Scope{RuntimeID: "rt", UserID: "u1"}
-	f := model.TemporalFact{
+	scope := domain.Scope{RuntimeID: "rt", UserID: "u1"}
+	f := domain.TemporalFact{
 		ID:           "f1",
 		Scope:        scope,
-		Kind:         model.KindEvent,
+		Kind:         domain.KindEvent,
 		Content:      "Caroline joined a support group",
 		MergeKey:     "event|caroline|support",
 		ObservedAt:   time.Unix(1, 0),
 		EvidenceText: "[9:00 am on 7 May, 2024] Caroline went to the LGBTQ support group.",
-		EvidenceRefs: []model.EvidenceRef{{
+		EvidenceRefs: []domain.EvidenceRef{{
 			ID:   "D1:3",
 			Text: "Caroline said the group met downtown on 7 May.",
 		}},
 	}
-	if err := p.Project(context.Background(), []model.TemporalFact{f}); err != nil {
+	if err := p.Project(context.Background(), []domain.TemporalFact{f}); err != nil {
 		t.Fatalf("project: %v", err)
 	}
 
@@ -296,43 +296,43 @@ func TestProjection_SearchContentIncludesEvidenceGrounding(t *testing.T) {
 func TestProjection_UserMetaCannotOverrideReserved(t *testing.T) {
 	idx := retrievalmem.New()
 	p, _ := New(idx)
-	scope := model.Scope{RuntimeID: "rt"}
-	f := model.TemporalFact{
+	scope := domain.Scope{RuntimeID: "rt"}
+	f := domain.TemporalFact{
 		ID:         "f1",
 		Scope:      scope,
-		Kind:       model.KindNote,
+		Kind:       domain.KindNote,
 		Content:    "x",
 		MergeKey:   "k",
 		ObservedAt: time.Unix(1, 0),
 		Metadata: map[string]any{
-			model.MetaFactID:   "spoof",
-			model.MetaMergeKey: "spoof",
+			domain.MetaFactID:   "spoof",
+			domain.MetaMergeKey: "spoof",
 		},
 	}
-	if err := p.Project(context.Background(), []model.TemporalFact{f}); err != nil {
+	if err := p.Project(context.Background(), []domain.TemporalFact{f}); err != nil {
 		t.Fatalf("project: %v", err)
 	}
 	got, _, _ := idx.Get(context.Background(), NamespaceFor(scope), "f1")
-	if got.Metadata[model.MetaFactID] != "f1" {
-		t.Errorf("user metadata leaked into reserved fact_id: %v", got.Metadata[model.MetaFactID])
+	if got.Metadata[domain.MetaFactID] != "f1" {
+		t.Errorf("user metadata leaked into reserved fact_id: %v", got.Metadata[domain.MetaFactID])
 	}
-	if got.Metadata[model.MetaMergeKey] != "k" {
-		t.Errorf("user metadata leaked into reserved merge_key: %v", got.Metadata[model.MetaMergeKey])
+	if got.Metadata[domain.MetaMergeKey] != "k" {
+		t.Errorf("user metadata leaked into reserved merge_key: %v", got.Metadata[domain.MetaMergeKey])
 	}
 }
 
 func TestProjection_ForgetRemovesDoc(t *testing.T) {
 	idx := retrievalmem.New()
 	p, _ := New(idx)
-	scope := model.Scope{RuntimeID: "rt"}
-	f := model.TemporalFact{
+	scope := domain.Scope{RuntimeID: "rt"}
+	f := domain.TemporalFact{
 		ID:         "f1",
 		Scope:      scope,
-		Kind:       model.KindNote,
+		Kind:       domain.KindNote,
 		MergeKey:   "k",
 		ObservedAt: time.Unix(1, 0),
 	}
-	_ = p.Project(context.Background(), []model.TemporalFact{f})
+	_ = p.Project(context.Background(), []domain.TemporalFact{f})
 	if err := p.Forget(context.Background(), scope, []string{"f1"}); err != nil {
 		t.Fatalf("forget: %v", err)
 	}
@@ -345,12 +345,12 @@ func TestProjection_ForgetRemovesDoc(t *testing.T) {
 func TestProjection_GroupsByScopeNamespace(t *testing.T) {
 	idx := retrievalmem.New()
 	p, _ := New(idx)
-	scopeA := model.Scope{RuntimeID: "rt", UserID: "u1"}
-	scopeB := model.Scope{RuntimeID: "rt", UserID: "u2"}
-	mk := func(id string, s model.Scope) model.TemporalFact {
-		return model.TemporalFact{ID: id, Scope: s, Kind: model.KindNote, MergeKey: "k", ObservedAt: time.Unix(1, 0)}
+	scopeA := domain.Scope{RuntimeID: "rt", UserID: "u1"}
+	scopeB := domain.Scope{RuntimeID: "rt", UserID: "u2"}
+	mk := func(id string, s domain.Scope) domain.TemporalFact {
+		return domain.TemporalFact{ID: id, Scope: s, Kind: domain.KindNote, MergeKey: "k", ObservedAt: time.Unix(1, 0)}
 	}
-	err := p.Project(context.Background(), []model.TemporalFact{mk("a", scopeA), mk("b", scopeB)})
+	err := p.Project(context.Background(), []domain.TemporalFact{mk("a", scopeA), mk("b", scopeB)})
 	if err != nil {
 		t.Fatalf("project: %v", err)
 	}
@@ -368,27 +368,27 @@ func TestProjection_GroupsByScopeNamespace(t *testing.T) {
 func TestProjection_RebuildDropsStaleDocs(t *testing.T) {
 	idx := retrievalmem.New()
 	p, _ := New(idx)
-	scope := model.Scope{RuntimeID: "rt", UserID: "u1"}
-	fresh := model.TemporalFact{
+	scope := domain.Scope{RuntimeID: "rt", UserID: "u1"}
+	fresh := domain.TemporalFact{
 		ID:         "fresh",
 		Scope:      scope,
-		Kind:       model.KindNote,
+		Kind:       domain.KindNote,
 		Content:    "fresh",
 		MergeKey:   "note|fresh",
 		ObservedAt: time.Unix(1, 0),
 	}
-	stale := model.TemporalFact{
+	stale := domain.TemporalFact{
 		ID:         "stale",
 		Scope:      scope,
-		Kind:       model.KindNote,
+		Kind:       domain.KindNote,
 		Content:    "stale",
 		MergeKey:   "note|stale",
 		ObservedAt: time.Unix(1, 0),
 	}
-	if err := p.Project(context.Background(), []model.TemporalFact{fresh, stale}); err != nil {
+	if err := p.Project(context.Background(), []domain.TemporalFact{fresh, stale}); err != nil {
 		t.Fatalf("initial project: %v", err)
 	}
-	if err := p.Rebuild(context.Background(), scope, []model.TemporalFact{fresh}); err != nil {
+	if err := p.Rebuild(context.Background(), scope, []domain.TemporalFact{fresh}); err != nil {
 		t.Fatalf("rebuild: %v", err)
 	}
 	if _, ok, _ := idx.Get(context.Background(), NamespaceFor(scope), "fresh"); !ok {

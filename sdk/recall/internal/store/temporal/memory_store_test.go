@@ -6,13 +6,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/GizClaw/flowcraft/sdk/recall/internal/model"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain"
 )
 
-func scope() model.Scope { return model.Scope{RuntimeID: "rt", UserID: "u1"} }
+func scope() domain.Scope { return domain.Scope{RuntimeID: "rt", UserID: "u1"} }
 
-func sampleFact(id, mergeKey string, kind model.FactKind, ts time.Time, entities ...string) model.TemporalFact {
-	return model.TemporalFact{
+func sampleFact(id, mergeKey string, kind domain.FactKind, ts time.Time, entities ...string) domain.TemporalFact {
+	return domain.TemporalFact{
 		ID:         id,
 		Scope:      scope(),
 		Kind:       kind,
@@ -26,11 +26,11 @@ func sampleFact(id, mergeKey string, kind model.FactKind, ts time.Time, entities
 func TestAppend_RejectsDuplicateID(t *testing.T) {
 	s := NewMemoryStore()
 	ctx := context.Background()
-	f := sampleFact("a", "k", model.KindNote, time.Unix(1, 0))
-	if err := s.Append(ctx, []model.TemporalFact{f}); err != nil {
+	f := sampleFact("a", "k", domain.KindNote, time.Unix(1, 0))
+	if err := s.Append(ctx, []domain.TemporalFact{f}); err != nil {
 		t.Fatalf("first append: %v", err)
 	}
-	err := s.Append(ctx, []model.TemporalFact{f})
+	err := s.Append(ctx, []domain.TemporalFact{f})
 	if err == nil {
 		t.Fatal("want error on duplicate id")
 	}
@@ -39,10 +39,10 @@ func TestAppend_RejectsDuplicateID(t *testing.T) {
 func TestAppend_RejectsInvalidKindAndScope(t *testing.T) {
 	s := NewMemoryStore()
 	ctx := context.Background()
-	if err := s.Append(ctx, []model.TemporalFact{{ID: "x", Scope: scope(), Kind: "bogus"}}); err == nil {
+	if err := s.Append(ctx, []domain.TemporalFact{{ID: "x", Scope: scope(), Kind: "bogus"}}); err == nil {
 		t.Error("want error on invalid kind")
 	}
-	if err := s.Append(ctx, []model.TemporalFact{{ID: "x", Kind: model.KindNote}}); err == nil {
+	if err := s.Append(ctx, []domain.TemporalFact{{ID: "x", Kind: domain.KindNote}}); err == nil {
 		t.Error("want error on missing scope.runtime_id")
 	}
 }
@@ -52,9 +52,9 @@ func TestList_HidesSupersededByDefault(t *testing.T) {
 	ctx := context.Background()
 	t1 := time.Unix(10, 0)
 	t2 := time.Unix(20, 0)
-	a := sampleFact("a", "kx", model.KindState, t1)
-	b := sampleFact("b", "kx", model.KindState, t2)
-	if err := s.Append(ctx, []model.TemporalFact{a, b}); err != nil {
+	a := sampleFact("a", "kx", domain.KindState, t1)
+	b := sampleFact("b", "kx", domain.KindState, t2)
+	if err := s.Append(ctx, []domain.TemporalFact{a, b}); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.UpdateValidity(ctx, scope(), "a", t2, "b"); err != nil {
@@ -80,9 +80,9 @@ func TestList_DoesNotHideClosedValidityWithoutCorrection(t *testing.T) {
 	s := NewMemoryStore()
 	ctx := context.Background()
 	validTo := time.Unix(20, 0)
-	f := sampleFact("a", "event|a", model.KindEvent, time.Unix(10, 0))
+	f := sampleFact("a", "event|a", domain.KindEvent, time.Unix(10, 0))
 	f.ValidTo = &validTo
-	if err := s.Append(ctx, []model.TemporalFact{f}); err != nil {
+	if err := s.Append(ctx, []domain.TemporalFact{f}); err != nil {
 		t.Fatal(err)
 	}
 	got, err := s.List(ctx, scope(), ListQuery{})
@@ -97,9 +97,9 @@ func TestList_DoesNotHideClosedValidityWithoutCorrection(t *testing.T) {
 func TestAppend_RejectsDuplicateIDsWithinBatch(t *testing.T) {
 	s := NewMemoryStore()
 	ctx := context.Background()
-	a := sampleFact("dup", "k1", model.KindNote, time.Unix(1, 0))
-	b := sampleFact("dup", "k2", model.KindNote, time.Unix(2, 0))
-	if err := s.Append(ctx, []model.TemporalFact{a, b}); err == nil {
+	a := sampleFact("dup", "k1", domain.KindNote, time.Unix(1, 0))
+	b := sampleFact("dup", "k2", domain.KindNote, time.Unix(2, 0))
+	if err := s.Append(ctx, []domain.TemporalFact{a, b}); err == nil {
 		t.Fatal("want error on duplicate fact id within one append batch")
 	}
 	got, err := s.List(ctx, scope(), ListQuery{IncludeSuperseded: true})
@@ -115,14 +115,14 @@ func TestList_FilterKindAndEntities(t *testing.T) {
 	s := NewMemoryStore()
 	ctx := context.Background()
 	t1 := time.Unix(1, 0)
-	a := sampleFact("a", "k", model.KindState, t1, "alice")
-	b := sampleFact("b", "k2", model.KindNote, t1, "alice", "bob")
-	c := sampleFact("c", "k3", model.KindState, t1, "carol")
-	if err := s.Append(ctx, []model.TemporalFact{a, b, c}); err != nil {
+	a := sampleFact("a", "k", domain.KindState, t1, "alice")
+	b := sampleFact("b", "k2", domain.KindNote, t1, "alice", "bob")
+	c := sampleFact("c", "k3", domain.KindState, t1, "carol")
+	if err := s.Append(ctx, []domain.TemporalFact{a, b, c}); err != nil {
 		t.Fatal(err)
 	}
 
-	states, err := s.List(ctx, scope(), ListQuery{Kinds: []model.FactKind{model.KindState}})
+	states, err := s.List(ctx, scope(), ListQuery{Kinds: []domain.FactKind{domain.KindState}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -150,9 +150,9 @@ func TestList_FilterKindAndEntities(t *testing.T) {
 func TestFindByMergeKeyAndSupersededBy(t *testing.T) {
 	s := NewMemoryStore()
 	ctx := context.Background()
-	a := sampleFact("a", "k", model.KindState, time.Unix(1, 0))
-	b := sampleFact("b", "k", model.KindState, time.Unix(2, 0))
-	if err := s.Append(ctx, []model.TemporalFact{a, b}); err != nil {
+	a := sampleFact("a", "k", domain.KindState, time.Unix(1, 0))
+	b := sampleFact("b", "k", domain.KindState, time.Unix(2, 0))
+	if err := s.Append(ctx, []domain.TemporalFact{a, b}); err != nil {
 		t.Fatal(err)
 	}
 	got, err := s.FindByMergeKey(ctx, scope(), "k")
@@ -186,7 +186,7 @@ func TestFindByMergeKeyAndSupersededBy(t *testing.T) {
 func TestUpdateValidity_Idempotent(t *testing.T) {
 	s := NewMemoryStore()
 	ctx := context.Background()
-	if err := s.Append(ctx, []model.TemporalFact{sampleFact("a", "k", model.KindState, time.Unix(1, 0))}); err != nil {
+	if err := s.Append(ctx, []domain.TemporalFact{sampleFact("a", "k", domain.KindState, time.Unix(1, 0))}); err != nil {
 		t.Fatal(err)
 	}
 	vt := time.Unix(100, 0)
@@ -207,9 +207,9 @@ func TestUpdateValidity_Idempotent(t *testing.T) {
 func TestDelete_RemovesIndexEntries(t *testing.T) {
 	s := NewMemoryStore()
 	ctx := context.Background()
-	a := sampleFact("a", "k", model.KindState, time.Unix(1, 0))
-	b := sampleFact("b", "k", model.KindState, time.Unix(2, 0))
-	if err := s.Append(ctx, []model.TemporalFact{a, b}); err != nil {
+	a := sampleFact("a", "k", domain.KindState, time.Unix(1, 0))
+	b := sampleFact("b", "k", domain.KindState, time.Unix(2, 0))
+	if err := s.Append(ctx, []domain.TemporalFact{a, b}); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.Delete(ctx, scope(), []string{"a", "missing"}); err != nil {
@@ -230,11 +230,11 @@ func TestDelete_RemovesIndexEntries(t *testing.T) {
 func TestStore_IsolatesScopes(t *testing.T) {
 	s := NewMemoryStore()
 	ctx := context.Background()
-	a := sampleFact("a", "k", model.KindNote, time.Unix(1, 0))
-	other := model.Scope{RuntimeID: "rt", UserID: "u2"}
+	a := sampleFact("a", "k", domain.KindNote, time.Unix(1, 0))
+	other := domain.Scope{RuntimeID: "rt", UserID: "u2"}
 	b := a
 	b.Scope = other
-	if err := s.Append(ctx, []model.TemporalFact{a, b}); err != nil {
+	if err := s.Append(ctx, []domain.TemporalFact{a, b}); err != nil {
 		t.Fatal(err)
 	}
 	gotA, err := s.List(ctx, scope(), ListQuery{})
@@ -256,15 +256,15 @@ func TestStore_IsolatesScopes(t *testing.T) {
 func TestStore_DoesNotPartitionByAgentID(t *testing.T) {
 	s := NewMemoryStore()
 	ctx := context.Background()
-	base := model.Scope{RuntimeID: "rt", UserID: "u1"}
-	a := sampleFact("a", "ka", model.KindNote, time.Unix(1, 0))
-	a.Scope = model.Scope{RuntimeID: base.RuntimeID, UserID: base.UserID, AgentID: "agent-a"}
-	b := sampleFact("b", "kb", model.KindNote, time.Unix(2, 0))
-	b.Scope = model.Scope{RuntimeID: base.RuntimeID, UserID: base.UserID, AgentID: "agent-b"}
-	if err := s.Append(ctx, []model.TemporalFact{a, b}); err != nil {
+	base := domain.Scope{RuntimeID: "rt", UserID: "u1"}
+	a := sampleFact("a", "ka", domain.KindNote, time.Unix(1, 0))
+	a.Scope = domain.Scope{RuntimeID: base.RuntimeID, UserID: base.UserID, AgentID: "agent-a"}
+	b := sampleFact("b", "kb", domain.KindNote, time.Unix(2, 0))
+	b.Scope = domain.Scope{RuntimeID: base.RuntimeID, UserID: base.UserID, AgentID: "agent-b"}
+	if err := s.Append(ctx, []domain.TemporalFact{a, b}); err != nil {
 		t.Fatal(err)
 	}
-	got, err := s.List(ctx, model.Scope{RuntimeID: base.RuntimeID, UserID: base.UserID, AgentID: "agent-a"}, ListQuery{})
+	got, err := s.List(ctx, domain.Scope{RuntimeID: base.RuntimeID, UserID: base.UserID, AgentID: "agent-a"}, ListQuery{})
 	if err != nil {
 		t.Fatal(err)
 	}

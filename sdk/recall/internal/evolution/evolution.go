@@ -6,21 +6,16 @@ package evolution
 import (
 	"context"
 
-	"github.com/GizClaw/flowcraft/sdk/recall/internal/model"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/port"
 )
-
-// Runner observes completed Save/Recall calls. Errors are surfaced
-// via telemetry by the Memory facade; they must not fail the
-// caller's Save/Recall.
-type Runner interface {
-	AfterSave(ctx context.Context, scope model.Scope, factIDs []string) error
-	AfterRecall(ctx context.Context, scope model.Scope, trace model.RecallTrace) error
-}
 
 // NopRunner is the default evolution implementation.
 type NopRunner struct{}
 
-func (NopRunner) AfterSave(context.Context, model.Scope, []string) error { return nil }
-func (NopRunner) AfterRecall(context.Context, model.Scope, model.RecallTrace) error {
+var _ port.EvolutionRunner = NopRunner{}
+
+func (NopRunner) AfterSave(context.Context, domain.Scope, []string) error { return nil }
+func (NopRunner) AfterRecall(context.Context, domain.Scope, domain.RecallTrace) error {
 	return nil
 }

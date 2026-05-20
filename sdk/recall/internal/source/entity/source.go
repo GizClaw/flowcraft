@@ -9,7 +9,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/GizClaw/flowcraft/sdk/recall/internal/model"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/planner"
 )
 
@@ -18,7 +18,7 @@ import (
 // pure interface rather than the projection package, and gives
 // tests an easy mock.
 type Lookup interface {
-	Lookup(ctx context.Context, scope model.Scope, entities []string) []string
+	Lookup(ctx context.Context, scope domain.Scope, entities []string) []string
 }
 
 // Source surfaces fact ids that mention any of the requested
@@ -36,7 +36,7 @@ func New(lookup Lookup) *Source {
 	return &Source{lookup: lookup, BaseScore: 1.0}
 }
 
-// Name implements source.CandidateSource.
+// Name implements port.Source.
 func (s *Source) Name() string { return planner.SourceEntity }
 
 // Query returns at most plan.SourceBudgets[entity] candidates. When
@@ -44,10 +44,10 @@ func (s *Source) Name() string { return planner.SourceEntity }
 // short-circuits to an empty result so the source is safe to wire
 // unconditionally even though the planner only includes it
 // conditionally.
-func (s *Source) Query(ctx context.Context, plan model.QueryPlan) model.SourceResult {
+func (s *Source) Query(ctx context.Context, plan domain.QueryPlan) domain.SourceResult {
 	ents := plan.Intent.Entities
 	if len(ents) == 0 {
-		return model.SourceResult{Source: s.Name()}
+		return domain.SourceResult{Source: s.Name()}
 	}
 
 	scope := plan.Intent.Scope
@@ -69,9 +69,9 @@ func (s *Source) Query(ctx context.Context, plan model.QueryPlan) model.SourceRe
 		truncated = true
 	}
 
-	candidates := make([]model.Candidate, 0, len(ids))
+	candidates := make([]domain.Candidate, 0, len(ids))
 	for i, id := range ids {
-		candidates = append(candidates, model.Candidate{
+		candidates = append(candidates, domain.Candidate{
 			FactID: id,
 			Scope:  scope,
 			Source: s.Name(),
@@ -79,7 +79,7 @@ func (s *Source) Query(ctx context.Context, plan model.QueryPlan) model.SourceRe
 			Score:  s.BaseScore,
 		})
 	}
-	return model.SourceResult{
+	return domain.SourceResult{
 		Source:     s.Name(),
 		Candidates: candidates,
 		Truncated:  truncated,

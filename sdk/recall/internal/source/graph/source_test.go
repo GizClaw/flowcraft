@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/GizClaw/flowcraft/sdk/recall/internal/model"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/planner"
 )
 
@@ -13,7 +13,7 @@ type overBudgetTraverse struct {
 	lastLimit int
 }
 
-func (s *overBudgetTraverse) Traverse(_ context.Context, _ model.Scope, _ []string, _, limit int) []string {
+func (s *overBudgetTraverse) Traverse(_ context.Context, _ domain.Scope, _ []string, _, limit int) []string {
 	s.lastLimit = limit
 	ids := append([]string(nil), s.ids...)
 	if limit > 0 && len(ids) > limit {
@@ -25,9 +25,9 @@ func (s *overBudgetTraverse) Traverse(_ context.Context, _ model.Scope, _ []stri
 func TestSource_CapsAndMarksTruncated(t *testing.T) {
 	traverse := &overBudgetTraverse{ids: []string{"a", "b", "c"}}
 	src := New(traverse)
-	plan := model.QueryPlan{
-		Intent: model.QueryIntent{
-			Scope:        model.Scope{RuntimeID: "rt", UserID: "u1"},
+	plan := domain.QueryPlan{
+		Intent: domain.QueryIntent{
+			Scope:        domain.Scope{RuntimeID: "rt", UserID: "u1"},
 			Entities:     []string{"alice"},
 			GraphEnabled: true,
 			Limit:        2,

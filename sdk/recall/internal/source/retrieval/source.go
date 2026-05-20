@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/sdk/embedding"
-	"github.com/GizClaw/flowcraft/sdk/recall/internal/model"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/planner"
 	retrievalproj "github.com/GizClaw/flowcraft/sdk/recall/internal/projection/retrieval"
 	"github.com/GizClaw/flowcraft/sdk/retrieval"
@@ -51,7 +51,7 @@ func New(index retrieval.Index, opts ...Option) *Source {
 	return s
 }
 
-// Name implements source.CandidateSource.
+// Name implements port.Source.
 func (s *Source) Name() string { return planner.SourceRetrieval }
 
 // Query runs a text search restricted to the scope's namespace and
@@ -60,7 +60,7 @@ func (s *Source) Name() string { return planner.SourceRetrieval }
 // written by that agent OR shared facts (scope_agent_id == "");
 // when AgentID is empty, no agent filter is applied (cross-agent
 // recall).
-func (s *Source) Query(ctx context.Context, plan model.QueryPlan) model.SourceResult {
+func (s *Source) Query(ctx context.Context, plan domain.QueryPlan) domain.SourceResult {
 	scope := plan.Intent.Scope
 	ns := retrievalproj.NamespaceFor(scope)
 	budget := plan.SourceBudgets[s.Name()]
@@ -86,20 +86,20 @@ func (s *Source) Query(ctx context.Context, plan model.QueryPlan) model.SourceRe
 	resp, err := s.index.Search(ctx, ns, req)
 	latency := time.Since(started)
 	if err != nil {
-		return model.SourceResult{
+		return domain.SourceResult{
 			Source:  s.Name(),
 			Err:     err,
 			Latency: latency,
 		}
 	}
 	if resp == nil {
-		return model.SourceResult{Source: s.Name(), Latency: latency}
+		return domain.SourceResult{Source: s.Name(), Latency: latency}
 	}
 
-	candidates := make([]model.Candidate, 0, len(resp.Hits))
+	candidates := make([]domain.Candidate, 0, len(resp.Hits))
 	for i, hit := range resp.Hits {
 		factID := hit.Doc.ID
-		if v, ok := hit.Doc.Metadata[model.MetaFactID]; ok {
+		if v, ok := hit.Doc.Metadata[domain.MetaFactID]; ok {
 			if s, ok := v.(string); ok && s != "" {
 				factID = s
 			}
@@ -107,20 +107,20 @@ func (s *Source) Query(ctx context.Context, plan model.QueryPlan) model.SourceRe
 		if factID == "" {
 			continue
 		}
-		candidates = append(candidates, model.Candidate{
+		candidates = append(candidates, domain.Candidate{
 			FactID: factID,
 			Scope:  scope,
 			Source: s.Name(),
 			Rank:   i + 1,
 			Score:  hit.Score,
 			Metadata: map[string]any{
-				"fact_kind": hit.Doc.Metadata[model.MetaFactKind],
-				"merge_key": hit.Doc.Metadata[model.MetaMergeKey],
+				"fact_kind": hit.Doc.Metadata[domain.MetaFactKind],
+				"merge_key": hit.Doc.Metadata[domain.MetaMergeKey],
 			},
 		})
 	}
 
-	return model.SourceResult{
+	return domain.SourceResult{
 		Source:     s.Name(),
 		Candidates: candidates,
 		Truncated:  len(resp.Hits) >= budget,
@@ -147,12 +147,12 @@ func (s *Source) embedQuery(ctx context.Context, text string) []float32 {
 // UserID are hard partition keys (they participate in the namespace
 // as well, but Eq filters here defend against any backend that
 // shares the namespace); AgentID is soft.
-func buildFilter(scope model.Scope) retrieval.Filter {
+func buildFilter(scope domain.Scope) retrieval.Filter {
 	eq := map[string]any{
-		model.MetaScopeRT: scope.RuntimeID,
+		domain.MetaScopeRT: scope.RuntimeID,
 	}
 	if scope.UserID != "" {
-		eq[model.MetaScopeUser] = scope.UserID
+		eq[domain.MetaScopeUser] = scope.UserID
 	}
 	base := retrieval.Filter{Eq: eq}
 	if scope.AgentID == "" {
@@ -161,8 +161,8 @@ func buildFilter(scope model.Scope) retrieval.Filter {
 	// AgentID soft isolation: include facts written by this agent OR
 	// shared facts (scope_agent_id == ""). Mirrors v1 AgentRecallFilter.
 	agentFilter := retrieval.Filter{Or: []retrieval.Filter{
-		{Eq: map[string]any{model.MetaScopeAgent: scope.AgentID}},
-		{Eq: map[string]any{model.MetaScopeAgent: ""}},
+		{Eq: map[string]any{domain.MetaScopeAgent: scope.AgentID}},
+		{Eq: map[string]any{domain.MetaScopeAgent: ""}},
 	}}
 	return retrieval.Filter{And: []retrieval.Filter{base, agentFilter}}
 }

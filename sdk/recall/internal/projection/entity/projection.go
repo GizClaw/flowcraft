@@ -10,7 +10,8 @@ import (
 	"sort"
 	"sync"
 
-	"github.com/GizClaw/flowcraft/sdk/recall/internal/model"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/port"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/projection"
 )
 
@@ -45,13 +46,13 @@ func New() *Projection {
 	return &Projection{scopes: make(map[scopeKey]*shard)}
 }
 
-// Name implements projection.Projection.
+// Name implements port.Projection.
 func (p *Projection) Name() string { return "entity" }
 
 // Consistency reports Required: entity recall is part of the v2 read
 // path, so the projection must be visible immediately after Save
 // (docs §13 Phase 2).
-func (p *Projection) Consistency() projection.Consistency { return projection.Required }
+func (p *Projection) Consistency() port.Consistency { return projection.Required }
 
 // Project upserts mentions for the supplied facts. Facts may belong
 // to multiple scopes; they are routed per scope shard.
@@ -61,7 +62,7 @@ func (p *Projection) Consistency() projection.Consistency { return projection.Re
 // for the same id are evicted). Under normal Save flow this is a
 // no-op; rebuild and any future bulk-replay path benefit from the
 // projection self-cleaning.
-func (p *Projection) Project(_ context.Context, facts []model.TemporalFact) error {
+func (p *Projection) Project(_ context.Context, facts []domain.TemporalFact) error {
 	if len(facts) == 0 {
 		return nil
 	}
@@ -101,7 +102,7 @@ func (p *Projection) Project(_ context.Context, facts []model.TemporalFact) erro
 }
 
 // Forget removes the supplied fact ids from the scope shard.
-func (p *Projection) Forget(_ context.Context, scope model.Scope, factIDs []string) error {
+func (p *Projection) Forget(_ context.Context, scope domain.Scope, factIDs []string) error {
 	if len(factIDs) == 0 {
 		return nil
 	}
@@ -119,7 +120,7 @@ func (p *Projection) Forget(_ context.Context, scope model.Scope, factIDs []stri
 
 // Rebuild drops the scope shard and re-projects facts from scratch.
 // This is the canonical way to recover from drift (docs §8).
-func (p *Projection) Rebuild(ctx context.Context, scope model.Scope, facts []model.TemporalFact) error {
+func (p *Projection) Rebuild(ctx context.Context, scope domain.Scope, facts []domain.TemporalFact) error {
 	p.mu.Lock()
 	delete(p.scopes, keyOf(scope))
 	p.mu.Unlock()
@@ -146,7 +147,7 @@ type Snapshot struct {
 // This is the read-side companion to Project; it is intentionally
 // cheap (one map walk) so memory.Save can call it on every write
 // without bloating the critical path.
-func (p *Projection) Snapshot(scope model.Scope) []Snapshot {
+func (p *Projection) Snapshot(scope domain.Scope) []Snapshot {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	sh, ok := p.scopes[keyOf(scope)]
@@ -175,7 +176,7 @@ func (p *Projection) Snapshot(scope model.Scope) []Snapshot {
 // Lookup returns the fact ids that mention any of the supplied
 // entities within scope. Used by the future entity source; exported
 // for tests in PR-2.
-func (p *Projection) Lookup(_ context.Context, scope model.Scope, entities []string) []string {
+func (p *Projection) Lookup(_ context.Context, scope domain.Scope, entities []string) []string {
 	if len(entities) == 0 {
 		return nil
 	}
@@ -203,7 +204,7 @@ func (p *Projection) Lookup(_ context.Context, scope model.Scope, entities []str
 	return out
 }
 
-func (p *Projection) shardLocked(scope model.Scope) *shard {
+func (p *Projection) shardLocked(scope domain.Scope) *shard {
 	k := keyOf(scope)
 	sh, ok := p.scopes[k]
 	if !ok {
@@ -232,11 +233,11 @@ func removeFactLocked(sh *shard, factID string) {
 	delete(sh.reverse, factID)
 }
 
-func keyOf(s model.Scope) scopeKey {
+func keyOf(s domain.Scope) scopeKey {
 	return scopeKey{runtimeID: s.RuntimeID, userID: s.UserID}
 }
 
-func collectEntities(f model.TemporalFact) []string {
+func collectEntities(f domain.TemporalFact) []string {
 	seen := make(map[string]struct{})
 	var out []string
 	add := func(s string) {

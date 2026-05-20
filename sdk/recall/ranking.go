@@ -6,8 +6,7 @@ import (
 	"strings"
 	"unicode"
 
-	"github.com/GizClaw/flowcraft/sdk/recall/internal/materialize"
-	"github.com/GizClaw/flowcraft/sdk/recall/internal/model"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/planner"
 )
 
@@ -25,7 +24,7 @@ func fusionCandidateCap(finalCap int) int {
 	return cap
 }
 
-func rankContextItems(items []materialize.ContextItem, intent model.QueryIntent, finalCap int) []materialize.ContextItem {
+func rankContextItems(items []domain.ContextItem, intent domain.QueryIntent, finalCap int) []domain.ContextItem {
 	if len(items) == 0 {
 		return items
 	}
@@ -50,7 +49,7 @@ func rankContextItems(items []materialize.ContextItem, intent model.QueryIntent,
 	return items
 }
 
-func factRankBoost(item materialize.ContextItem, intent model.QueryIntent, terms []string) float64 {
+func factRankBoost(item domain.ContextItem, intent domain.QueryIntent, terms []string) float64 {
 	f := item.Fact
 	var boost float64
 	termMatches := factTermMatchCount(f, terms)
@@ -89,20 +88,20 @@ func factRankBoost(item materialize.ContextItem, intent model.QueryIntent, terms
 	return boost
 }
 
-func temporalIntent(intent model.QueryIntent) bool {
+func temporalIntent(intent domain.QueryIntent) bool {
 	if !intent.TimeRange.IsZero() {
 		return true
 	}
 	for _, k := range intent.Kinds {
 		switch k {
-		case model.KindEvent, model.KindState, model.KindPlan:
+		case domain.KindEvent, domain.KindState, domain.KindPlan:
 			return true
 		}
 	}
 	return false
 }
 
-func factKindMatches(kind model.FactKind, kinds []model.FactKind) bool {
+func factKindMatches(kind domain.FactKind, kinds []domain.FactKind) bool {
 	for _, k := range kinds {
 		if k == kind {
 			return true
@@ -111,7 +110,7 @@ func factKindMatches(kind model.FactKind, kinds []model.FactKind) bool {
 	return false
 }
 
-func factMatchesAnyEntity(f model.TemporalFact, entities []string) bool {
+func factMatchesAnyEntity(f domain.TemporalFact, entities []string) bool {
 	for _, e := range entities {
 		if factMatchesEntity(f, e) {
 			return true
@@ -120,7 +119,7 @@ func factMatchesAnyEntity(f model.TemporalFact, entities []string) bool {
 	return false
 }
 
-func factMatchesEntity(f model.TemporalFact, entity string) bool {
+func factMatchesEntity(f domain.TemporalFact, entity string) bool {
 	entity = normalizeRankText(entity)
 	if entity == "" {
 		return false
@@ -143,7 +142,7 @@ func factMatchesEntity(f model.TemporalFact, entity string) bool {
 	return false
 }
 
-func candidateHasSource(c model.Candidate, source string) bool {
+func candidateHasSource(c domain.Candidate, source string) bool {
 	if c.Source == source {
 		return true
 	}
@@ -162,7 +161,7 @@ func candidateHasSource(c model.Candidate, source string) bool {
 // happens to share a term with the query. Returning a weighted
 // count lets `termMatchBoost` push fact-content matches above
 // merely-coincidental evidence matches.
-func factTermMatchCount(f model.TemporalFact, terms []string) int {
+func factTermMatchCount(f domain.TemporalFact, terms []string) int {
 	if len(terms) == 0 {
 		return 0
 	}

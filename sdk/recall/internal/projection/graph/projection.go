@@ -10,7 +10,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/GizClaw/flowcraft/sdk/recall/internal/model"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/port"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/projection"
 )
 
@@ -49,10 +50,10 @@ func New(cfg ...Config) *Projection {
 
 func (p *Projection) Name() string { return "graph" }
 
-func (p *Projection) Consistency() projection.Consistency { return projection.Optional }
+func (p *Projection) Consistency() port.Consistency { return projection.Optional }
 
 // Project upserts edges derived from the supplied facts.
-func (p *Projection) Project(_ context.Context, facts []model.TemporalFact) error {
+func (p *Projection) Project(_ context.Context, facts []domain.TemporalFact) error {
 	if len(facts) == 0 {
 		return nil
 	}
@@ -74,7 +75,7 @@ func (p *Projection) Project(_ context.Context, facts []model.TemporalFact) erro
 	return nil
 }
 
-func (p *Projection) Forget(_ context.Context, scope model.Scope, factIDs []string) error {
+func (p *Projection) Forget(_ context.Context, scope domain.Scope, factIDs []string) error {
 	if len(factIDs) == 0 {
 		return nil
 	}
@@ -91,7 +92,7 @@ func (p *Projection) Forget(_ context.Context, scope model.Scope, factIDs []stri
 }
 
 // Rebuild exact-replaces the scope shard.
-func (p *Projection) Rebuild(ctx context.Context, scope model.Scope, facts []model.TemporalFact) error {
+func (p *Projection) Rebuild(ctx context.Context, scope domain.Scope, facts []domain.TemporalFact) error {
 	p.mu.Lock()
 	delete(p.scopes, keyOf(scope))
 	p.mu.Unlock()
@@ -100,7 +101,7 @@ func (p *Projection) Rebuild(ctx context.Context, scope model.Scope, facts []mod
 
 // Traverse performs bounded BFS from seed nodes and returns fact ids
 // discovered on edges, ordered by hop distance then fact id.
-func (p *Projection) Traverse(_ context.Context, scope model.Scope, seeds []string, maxHops, limit int) []string {
+func (p *Projection) Traverse(_ context.Context, scope domain.Scope, seeds []string, maxHops, limit int) []string {
 	if len(seeds) == 0 {
 		return nil
 	}
@@ -182,7 +183,7 @@ func (p *Projection) Traverse(_ context.Context, scope model.Scope, seeds []stri
 	return out
 }
 
-func (p *Projection) shardLocked(scope model.Scope) *shard {
+func (p *Projection) shardLocked(scope domain.Scope) *shard {
 	k := keyOf(scope)
 	sh, ok := p.scopes[k]
 	if !ok {
@@ -234,7 +235,7 @@ func removeFactLocked(sh *shard, factID string) {
 	delete(sh.reverse, factID)
 }
 
-func keyOf(s model.Scope) scopeKey {
+func keyOf(s domain.Scope) scopeKey {
 	return scopeKey{runtimeID: s.RuntimeID, userID: s.UserID}
 }
 
@@ -252,7 +253,7 @@ func CapGraphHops(hops int) int {
 
 // edgeVisible applies AgentID soft isolation during traversal,
 // matching materialize.violatesScope (docs §16).
-func edgeVisible(query model.Scope, edgeAgentID string) bool {
+func edgeVisible(query domain.Scope, edgeAgentID string) bool {
 	if query.AgentID == "" {
 		return true
 	}

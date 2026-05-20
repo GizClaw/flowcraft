@@ -5,12 +5,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/GizClaw/flowcraft/sdk/recall/internal/model"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain"
 )
 
-func scope() model.Scope { return model.Scope{RuntimeID: "rt", UserID: "u1"} }
+func scope() domain.Scope { return domain.Scope{RuntimeID: "rt", UserID: "u1"} }
 
-func agentScope(agentID string) model.Scope {
+func agentScope(agentID string) domain.Scope {
 	s := scope()
 	s.AgentID = agentID
 	return s
@@ -19,11 +19,11 @@ func agentScope(agentID string) model.Scope {
 func TestRelation_LookupByDimensions(t *testing.T) {
 	p := New()
 	ctx := context.Background()
-	facts := []model.TemporalFact{
-		{ID: "r1", Scope: scope(), Kind: model.KindRelation,
+	facts := []domain.TemporalFact{
+		{ID: "r1", Scope: scope(), Kind: domain.KindRelation,
 			Subject: "alice", Predicate: "spouse", Object: "bob",
 			ObservedAt: time.Unix(1, 0)},
-		{ID: "r2", Scope: scope(), Kind: model.KindRelation,
+		{ID: "r2", Scope: scope(), Kind: domain.KindRelation,
 			Subject: "alice", Predicate: "spouse", Object: "carol",
 			ObservedAt: time.Unix(2, 0)},
 	}
@@ -41,8 +41,8 @@ func TestRelation_LookupByDimensions(t *testing.T) {
 func TestRelation_LookupCanonicalizesDimensions(t *testing.T) {
 	p := New()
 	ctx := context.Background()
-	if err := p.Project(ctx, []model.TemporalFact{{
-		ID: "r1", Scope: scope(), Kind: model.KindRelation,
+	if err := p.Project(ctx, []domain.TemporalFact{{
+		ID: "r1", Scope: scope(), Kind: domain.KindRelation,
 		Subject: "Alice", Predicate: "Spouse", Object: "Bob",
 		ObservedAt: time.Unix(1, 0),
 	}}); err != nil {
@@ -61,12 +61,12 @@ func TestRelation_DropsInactiveValidTo(t *testing.T) {
 	p := New()
 	ctx := context.Background()
 	past := time.Unix(1, 0)
-	f := model.TemporalFact{
-		ID: "r1", Scope: scope(), Kind: model.KindRelation,
+	f := domain.TemporalFact{
+		ID: "r1", Scope: scope(), Kind: domain.KindRelation,
 		Subject: "alice", Predicate: "city", Object: "nyc",
 		ObservedAt: past, ValidTo: &past,
 	}
-	if err := p.Project(ctx, []model.TemporalFact{f}); err != nil {
+	if err := p.Project(ctx, []domain.TemporalFact{f}); err != nil {
 		t.Fatal(err)
 	}
 	if got := p.Lookup(ctx, scope(), "alice", "city", "nyc"); len(got) != 0 {
@@ -77,21 +77,21 @@ func TestRelation_DropsInactiveValidTo(t *testing.T) {
 func TestRelation_RebuildDropsSuperseded(t *testing.T) {
 	p := New()
 	ctx := context.Background()
-	if err := p.Project(ctx, []model.TemporalFact{
-		{ID: "old", Scope: scope(), Kind: model.KindRelation,
+	if err := p.Project(ctx, []domain.TemporalFact{
+		{ID: "old", Scope: scope(), Kind: domain.KindRelation,
 			Subject: "a", Predicate: "p", Object: "o",
 			ObservedAt: time.Unix(1, 0), CorrectedBy: "new"},
-		{ID: "new", Scope: scope(), Kind: model.KindRelation,
+		{ID: "new", Scope: scope(), Kind: domain.KindRelation,
 			Subject: "a", Predicate: "p", Object: "o2",
 			ObservedAt: time.Unix(2, 0)},
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := p.Rebuild(ctx, scope(), []model.TemporalFact{
-		{ID: "old", Scope: scope(), Kind: model.KindRelation,
+	if err := p.Rebuild(ctx, scope(), []domain.TemporalFact{
+		{ID: "old", Scope: scope(), Kind: domain.KindRelation,
 			Subject: "a", Predicate: "p", Object: "o",
 			ObservedAt: time.Unix(1, 0), CorrectedBy: "new"},
-		{ID: "new", Scope: scope(), Kind: model.KindRelation,
+		{ID: "new", Scope: scope(), Kind: domain.KindRelation,
 			Subject: "a", Predicate: "p", Object: "o2",
 			ObservedAt: time.Unix(2, 0)},
 	}); err != nil {
@@ -108,11 +108,11 @@ func TestRelation_RebuildDropsSuperseded(t *testing.T) {
 func TestRelation_PreservesAgentPrivateFactsForSameTriple(t *testing.T) {
 	p := New()
 	ctx := context.Background()
-	if err := p.Project(ctx, []model.TemporalFact{
-		{ID: "agent-a", Scope: agentScope("agent-a"), Kind: model.KindRelation,
+	if err := p.Project(ctx, []domain.TemporalFact{
+		{ID: "agent-a", Scope: agentScope("agent-a"), Kind: domain.KindRelation,
 			Subject: "alice", Predicate: "spouse", Object: "bob",
 			ObservedAt: time.Unix(1, 0)},
-		{ID: "agent-b", Scope: agentScope("agent-b"), Kind: model.KindRelation,
+		{ID: "agent-b", Scope: agentScope("agent-b"), Kind: domain.KindRelation,
 			Subject: "alice", Predicate: "spouse", Object: "bob",
 			ObservedAt: time.Unix(2, 0)},
 	}); err != nil {
@@ -128,15 +128,15 @@ func TestRelation_PreservesAgentPrivateFactsForSameTriple(t *testing.T) {
 func TestRelation_ForgetOldOverwrittenSlotKeepsCurrentFact(t *testing.T) {
 	p := New()
 	ctx := context.Background()
-	if err := p.Project(ctx, []model.TemporalFact{
-		{ID: "old", Scope: scope(), Kind: model.KindRelation,
+	if err := p.Project(ctx, []domain.TemporalFact{
+		{ID: "old", Scope: scope(), Kind: domain.KindRelation,
 			Subject: "alice", Predicate: "spouse", Object: "bob",
 			ObservedAt: time.Unix(1, 0)},
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := p.Project(ctx, []model.TemporalFact{
-		{ID: "new", Scope: scope(), Kind: model.KindRelation,
+	if err := p.Project(ctx, []domain.TemporalFact{
+		{ID: "new", Scope: scope(), Kind: domain.KindRelation,
 			Subject: "alice", Predicate: "spouse", Object: "bob",
 			ObservedAt: time.Unix(2, 0)},
 	}); err != nil {

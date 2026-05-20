@@ -11,7 +11,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/GizClaw/flowcraft/sdk/recall/internal/model"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/port"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/projection"
 )
 
@@ -39,10 +40,10 @@ func New() *Projection {
 
 func (p *Projection) Name() string { return "relation" }
 
-func (p *Projection) Consistency() projection.Consistency { return projection.Optional }
+func (p *Projection) Consistency() port.Consistency { return projection.Optional }
 
 // Project upserts active relation facts only.
-func (p *Projection) Project(_ context.Context, facts []model.TemporalFact) error {
+func (p *Projection) Project(_ context.Context, facts []domain.TemporalFact) error {
 	now := time.Now()
 	if len(facts) == 0 {
 		return nil
@@ -50,7 +51,7 @@ func (p *Projection) Project(_ context.Context, facts []model.TemporalFact) erro
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	for _, f := range facts {
-		if f.ID == "" || f.Kind != model.KindRelation {
+		if f.ID == "" || f.Kind != domain.KindRelation {
 			continue
 		}
 		sh := p.shardLocked(f.Scope)
@@ -58,7 +59,7 @@ func (p *Projection) Project(_ context.Context, facts []model.TemporalFact) erro
 		for _, priorID := range f.Supersedes {
 			removeFactLocked(sh, priorID)
 		}
-		if !projection.IsActive(f, now) {
+		if !domain.IsActive(f, now) {
 			continue
 		}
 		key := tripleKey(f.Subject, f.Predicate, f.Object, f.Scope.AgentID)
@@ -74,7 +75,7 @@ func (p *Projection) Project(_ context.Context, facts []model.TemporalFact) erro
 	return nil
 }
 
-func (p *Projection) Forget(_ context.Context, scope model.Scope, factIDs []string) error {
+func (p *Projection) Forget(_ context.Context, scope domain.Scope, factIDs []string) error {
 	if len(factIDs) == 0 {
 		return nil
 	}
@@ -91,7 +92,7 @@ func (p *Projection) Forget(_ context.Context, scope model.Scope, factIDs []stri
 }
 
 // Rebuild exact-replaces the scope shard.
-func (p *Projection) Rebuild(ctx context.Context, scope model.Scope, facts []model.TemporalFact) error {
+func (p *Projection) Rebuild(ctx context.Context, scope domain.Scope, facts []domain.TemporalFact) error {
 	p.mu.Lock()
 	delete(p.scopes, keyOf(scope))
 	p.mu.Unlock()
@@ -101,7 +102,7 @@ func (p *Projection) Rebuild(ctx context.Context, scope model.Scope, facts []mod
 // Lookup returns fact ids matching any supplied dimension. Empty
 // subject/predicate/object means "don't filter on this dimension".
 // All dimensions empty returns nil so callers cannot scan the scope.
-func (p *Projection) Lookup(_ context.Context, scope model.Scope, subject, predicate, object string) []string {
+func (p *Projection) Lookup(_ context.Context, scope domain.Scope, subject, predicate, object string) []string {
 	subject = canonicalKeyPart(subject)
 	predicate = canonicalKeyPart(predicate)
 	object = canonicalKeyPart(object)
@@ -137,7 +138,7 @@ func (p *Projection) Lookup(_ context.Context, scope model.Scope, subject, predi
 	return out
 }
 
-func (p *Projection) shardLocked(scope model.Scope) *shard {
+func (p *Projection) shardLocked(scope domain.Scope) *shard {
 	k := keyOf(scope)
 	sh, ok := p.scopes[k]
 	if !ok {
@@ -161,7 +162,7 @@ func removeFactLocked(sh *shard, factID string) {
 	delete(sh.reverse, factID)
 }
 
-func keyOf(s model.Scope) scopeKey {
+func keyOf(s domain.Scope) scopeKey {
 	return scopeKey{runtimeID: s.RuntimeID, userID: s.UserID}
 }
 

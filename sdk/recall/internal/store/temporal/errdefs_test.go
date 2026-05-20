@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
-	"github.com/GizClaw/flowcraft/sdk/recall/internal/model"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain"
 )
 
 // TestErrNotFound_IsClassifiedAndIdentifiable pins both halves of
@@ -33,11 +33,11 @@ func TestErrNotFound_IsClassifiedAndIdentifiable(t *testing.T) {
 func TestAppend_DuplicateID_IsConflict(t *testing.T) {
 	s := NewMemoryStore()
 	ctx := context.Background()
-	f := sampleFact("dup", "k", model.KindNote, time.Unix(1, 0))
-	if err := s.Append(ctx, []model.TemporalFact{f}); err != nil {
+	f := sampleFact("dup", "k", domain.KindNote, time.Unix(1, 0))
+	if err := s.Append(ctx, []domain.TemporalFact{f}); err != nil {
 		t.Fatal(err)
 	}
-	err := s.Append(ctx, []model.TemporalFact{f})
+	err := s.Append(ctx, []domain.TemporalFact{f})
 	if err == nil {
 		t.Fatal("want duplicate id error")
 	}
@@ -49,9 +49,9 @@ func TestAppend_DuplicateID_IsConflict(t *testing.T) {
 func TestAppend_DuplicateIDWithinBatch_IsConflict(t *testing.T) {
 	s := NewMemoryStore()
 	ctx := context.Background()
-	a := sampleFact("dup", "k1", model.KindNote, time.Unix(1, 0))
-	b := sampleFact("dup", "k2", model.KindNote, time.Unix(2, 0))
-	err := s.Append(ctx, []model.TemporalFact{a, b})
+	a := sampleFact("dup", "k1", domain.KindNote, time.Unix(1, 0))
+	b := sampleFact("dup", "k2", domain.KindNote, time.Unix(2, 0))
+	err := s.Append(ctx, []domain.TemporalFact{a, b})
 	if err == nil {
 		t.Fatal("want duplicate id error within batch")
 	}
@@ -63,7 +63,7 @@ func TestAppend_DuplicateIDWithinBatch_IsConflict(t *testing.T) {
 func TestAppend_InvalidKind_IsValidation(t *testing.T) {
 	s := NewMemoryStore()
 	ctx := context.Background()
-	err := s.Append(ctx, []model.TemporalFact{{ID: "x", Scope: scope(), Kind: "bogus"}})
+	err := s.Append(ctx, []domain.TemporalFact{{ID: "x", Scope: scope(), Kind: "bogus"}})
 	if err == nil {
 		t.Fatal("want invalid kind error")
 	}
@@ -75,7 +75,7 @@ func TestAppend_InvalidKind_IsValidation(t *testing.T) {
 func TestAppend_MissingRuntimeID_IsValidation(t *testing.T) {
 	s := NewMemoryStore()
 	ctx := context.Background()
-	err := s.Append(ctx, []model.TemporalFact{{ID: "x", Kind: model.KindNote}})
+	err := s.Append(ctx, []domain.TemporalFact{{ID: "x", Kind: domain.KindNote}})
 	if err == nil {
 		t.Fatal("want missing runtime_id error")
 	}
@@ -87,7 +87,7 @@ func TestAppend_MissingRuntimeID_IsValidation(t *testing.T) {
 func TestUpdateValidity_ReCloseMismatch_IsConflict(t *testing.T) {
 	s := NewMemoryStore()
 	ctx := context.Background()
-	if err := s.Append(ctx, []model.TemporalFact{sampleFact("a", "k", model.KindState, time.Unix(1, 0))}); err != nil {
+	if err := s.Append(ctx, []domain.TemporalFact{sampleFact("a", "k", domain.KindState, time.Unix(1, 0))}); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.UpdateValidity(ctx, scope(), "a", time.Unix(100, 0), "b"); err != nil {
@@ -105,7 +105,7 @@ func TestUpdateValidity_ReCloseMismatch_IsConflict(t *testing.T) {
 func TestReopenValidity_GuardMismatch_IsConflict(t *testing.T) {
 	s := NewMemoryStore()
 	ctx := context.Background()
-	if err := s.Append(ctx, []model.TemporalFact{sampleFact("a", "k", model.KindState, time.Unix(1, 0))}); err != nil {
+	if err := s.Append(ctx, []domain.TemporalFact{sampleFact("a", "k", domain.KindState, time.Unix(1, 0))}); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.UpdateValidity(ctx, scope(), "a", time.Unix(100, 0), "b"); err != nil {

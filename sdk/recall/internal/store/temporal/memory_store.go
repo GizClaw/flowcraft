@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
-	"github.com/GizClaw/flowcraft/sdk/recall/internal/model"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain"
 )
 
 // MemoryStore is the reference in-memory TemporalFactStore.
@@ -21,7 +21,7 @@ type MemoryStore struct {
 }
 
 type scopeShard struct {
-	byID         map[string]*model.TemporalFact
+	byID         map[string]*domain.TemporalFact
 	orderedIDs   []string
 	mergeKeyIdx  map[string][]string
 	correctedIdx map[string][]string
@@ -42,16 +42,16 @@ func NewMemoryStore() *MemoryStore {
 	return &MemoryStore{byScope: make(map[scopeKey]*scopeShard)}
 }
 
-func keyOf(s model.Scope) scopeKey {
+func keyOf(s domain.Scope) scopeKey {
 	return scopeKey{runtimeID: s.RuntimeID, userID: s.UserID}
 }
 
-func (s *MemoryStore) shardLocked(scope model.Scope) *scopeShard {
+func (s *MemoryStore) shardLocked(scope domain.Scope) *scopeShard {
 	k := keyOf(scope)
 	sh, ok := s.byScope[k]
 	if !ok {
 		sh = &scopeShard{
-			byID:         make(map[string]*model.TemporalFact),
+			byID:         make(map[string]*domain.TemporalFact),
 			mergeKeyIdx:  make(map[string][]string),
 			correctedIdx: make(map[string][]string),
 		}
@@ -65,14 +65,14 @@ func (s *MemoryStore) shardLocked(scope model.Scope) *scopeShard {
 // against both already-stored facts AND other facts within the same
 // batch, so a partial commit is not possible: either every fact in
 // the batch is appended, or none.
-func (s *MemoryStore) Append(_ context.Context, facts []model.TemporalFact) error {
+func (s *MemoryStore) Append(_ context.Context, facts []domain.TemporalFact) error {
 	if len(facts) == 0 {
 		return nil
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	staged := make([]model.TemporalFact, 0, len(facts))
+	staged := make([]domain.TemporalFact, 0, len(facts))
 	// batchSeen tracks ids reserved within this batch per scope, so
 	// the validation phase catches both (already-stored, batch-new)
 	// and (batch-new, batch-new) duplicate ids before we touch any
@@ -121,23 +121,23 @@ func (s *MemoryStore) Append(_ context.Context, facts []model.TemporalFact) erro
 }
 
 // Get returns a clone so callers cannot mutate stored facts.
-func (s *MemoryStore) Get(_ context.Context, scope model.Scope, factID string) (model.TemporalFact, error) {
+func (s *MemoryStore) Get(_ context.Context, scope domain.Scope, factID string) (domain.TemporalFact, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	sh, ok := s.byScope[keyOf(scope)]
 	if !ok {
-		return model.TemporalFact{}, ErrNotFound
+		return domain.TemporalFact{}, ErrNotFound
 	}
 	f, ok := sh.byID[factID]
 	if !ok {
-		return model.TemporalFact{}, ErrNotFound
+		return domain.TemporalFact{}, ErrNotFound
 	}
 	return f.Clone(), nil
 }
 
 // List returns ObservedAt-ascending facts filtered by the supplied
 // query. The default view hides superseded facts.
-func (s *MemoryStore) List(_ context.Context, scope model.Scope, query ListQuery) ([]model.TemporalFact, error) {
+func (s *MemoryStore) List(_ context.Context, scope domain.Scope, query ListQuery) ([]domain.TemporalFact, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	sh, ok := s.byScope[keyOf(scope)]
@@ -145,12 +145,12 @@ func (s *MemoryStore) List(_ context.Context, scope model.Scope, query ListQuery
 		return nil, nil
 	}
 
-	kindSet := make(map[model.FactKind]struct{}, len(query.Kinds))
+	kindSet := make(map[domain.FactKind]struct{}, len(query.Kinds))
 	for _, k := range query.Kinds {
 		kindSet[k] = struct{}{}
 	}
 
-	out := make([]model.TemporalFact, 0, len(sh.orderedIDs))
+	out := make([]domain.TemporalFact, 0, len(sh.orderedIDs))
 	for _, id := range sh.orderedIDs {
 		f := sh.byID[id]
 		if !query.IncludeSuperseded && isSuperseded(f) {
@@ -178,7 +178,7 @@ func (s *MemoryStore) List(_ context.Context, scope model.Scope, query ListQuery
 // FindByMergeKey returns facts in append order. Empty mergeKey yields
 // an empty result so callers cannot accidentally enumerate the whole
 // scope.
-func (s *MemoryStore) FindByMergeKey(_ context.Context, scope model.Scope, mergeKey string) ([]model.TemporalFact, error) {
+func (s *MemoryStore) FindByMergeKey(_ context.Context, scope domain.Scope, mergeKey string) ([]domain.TemporalFact, error) {
 	if mergeKey == "" {
 		return nil, nil
 	}
@@ -189,7 +189,7 @@ func (s *MemoryStore) FindByMergeKey(_ context.Context, scope model.Scope, merge
 		return nil, nil
 	}
 	ids := sh.mergeKeyIdx[mergeKey]
-	out := make([]model.TemporalFact, 0, len(ids))
+	out := make([]domain.TemporalFact, 0, len(ids))
 	for _, id := range ids {
 		if f, ok := sh.byID[id]; ok {
 			out = append(out, f.Clone())
@@ -201,7 +201,7 @@ func (s *MemoryStore) FindByMergeKey(_ context.Context, scope model.Scope, merge
 	return out, nil
 }
 
-func (s *MemoryStore) FindSupersededBy(_ context.Context, scope model.Scope, factID string) ([]model.TemporalFact, error) {
+func (s *MemoryStore) FindSupersededBy(_ context.Context, scope domain.Scope, factID string) ([]domain.TemporalFact, error) {
 	if factID == "" {
 		return nil, nil
 	}
@@ -212,7 +212,7 @@ func (s *MemoryStore) FindSupersededBy(_ context.Context, scope model.Scope, fac
 		return nil, nil
 	}
 	ids := sh.correctedIdx[factID]
-	out := make([]model.TemporalFact, 0, len(ids))
+	out := make([]domain.TemporalFact, 0, len(ids))
 	for _, id := range ids {
 		if f, ok := sh.byID[id]; ok {
 			out = append(out, f.Clone())
@@ -225,7 +225,7 @@ func (s *MemoryStore) FindSupersededBy(_ context.Context, scope model.Scope, fac
 // idempotent: a fact already closed with the supplied (validTo,
 // correctedBy) tuple returns nil. Any other re-close attempt returns
 // an error so callers do not silently overwrite history.
-func (s *MemoryStore) UpdateValidity(_ context.Context, scope model.Scope, factID string, validTo time.Time, correctedBy string) error {
+func (s *MemoryStore) UpdateValidity(_ context.Context, scope domain.Scope, factID string, validTo time.Time, correctedBy string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	sh, ok := s.byScope[keyOf(scope)]
@@ -261,7 +261,7 @@ func (s *MemoryStore) UpdateValidity(_ context.Context, scope model.Scope, factI
 // fact (different CorrectedBy). In that case ReopenValidity returns
 // ErrReopenConflict and the caller must surface it via telemetry
 // without touching the fact.
-func (s *MemoryStore) ReopenValidity(_ context.Context, scope model.Scope, factID string, expectedCorrectedBy string) error {
+func (s *MemoryStore) ReopenValidity(_ context.Context, scope domain.Scope, factID string, expectedCorrectedBy string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	sh, ok := s.byScope[keyOf(scope)]
@@ -292,7 +292,7 @@ func (s *MemoryStore) ReopenValidity(_ context.Context, scope model.Scope, factI
 }
 
 // Delete removes facts by id. Missing ids are ignored.
-func (s *MemoryStore) Delete(_ context.Context, scope model.Scope, factIDs []string) error {
+func (s *MemoryStore) Delete(_ context.Context, scope domain.Scope, factIDs []string) error {
 	if len(factIDs) == 0 {
 		return nil
 	}
@@ -343,11 +343,11 @@ func (s *MemoryStore) Close() error { return nil }
 // is a non-empty CorrectedBy — ValidTo on its own is intrinsic time
 // (e.g. an event's end timestamp) and must not hide the fact from
 // the default List view.
-func isSuperseded(f *model.TemporalFact) bool {
+func isSuperseded(f *domain.TemporalFact) bool {
 	return f.CorrectedBy != ""
 }
 
-func hasAllEntities(f *model.TemporalFact, required []string) bool {
+func hasAllEntities(f *domain.TemporalFact, required []string) bool {
 	if len(required) == 0 {
 		return true
 	}

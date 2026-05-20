@@ -5,17 +5,18 @@ import (
 	"testing"
 	"time"
 
-	"github.com/GizClaw/flowcraft/sdk/recall/internal/model"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/port"
 )
 
 func TestRuleBased_ActivatesStructuredSources(t *testing.T) {
 	p := New()
-	plan, err := p.Plan(context.Background(), Input{
-		Scope:     model.Scope{RuntimeID: "rt"},
+	plan, err := p.Plan(context.Background(), port.PlannerInput{
+		Scope:     domain.Scope{RuntimeID: "rt"},
 		Subject:   "alice",
 		Predicate: "spouse",
-		TimeRange: model.TimeRange{From: time.Unix(1, 0)},
-		Kinds:     []model.FactKind{model.KindEvent},
+		TimeRange: domain.TimeRange{From: time.Unix(1, 0)},
+		Kinds:     []domain.FactKind{domain.KindEvent},
 		Limit:     10,
 	})
 	if err != nil {
@@ -40,10 +41,10 @@ func TestRuleBased_ActivatesStructuredSources(t *testing.T) {
 func TestRuleBased_StructuredBudgetsOverfetchFinalLimit(t *testing.T) {
 	p := New()
 	limit := 10
-	plan, err := p.Plan(context.Background(), Input{
-		Scope:     model.Scope{RuntimeID: "rt"},
+	plan, err := p.Plan(context.Background(), port.PlannerInput{
+		Scope:     domain.Scope{RuntimeID: "rt"},
 		Subject:   "alice",
-		TimeRange: model.TimeRange{From: time.Unix(1, 0)},
+		TimeRange: domain.TimeRange{From: time.Unix(1, 0)},
 		Limit:     limit,
 	})
 	if err != nil {
@@ -61,10 +62,10 @@ func TestRuleBased_StructuredBudgetsOverfetchFinalLimit(t *testing.T) {
 
 func TestRuleBased_LimitLessThanSourcesStillOverfetchesEachSource(t *testing.T) {
 	p := New()
-	plan, err := p.Plan(context.Background(), Input{
-		Scope:     model.Scope{RuntimeID: "rt"},
+	plan, err := p.Plan(context.Background(), port.PlannerInput{
+		Scope:     domain.Scope{RuntimeID: "rt"},
 		Subject:   "alice",
-		TimeRange: model.TimeRange{From: time.Unix(1, 0)},
+		TimeRange: domain.TimeRange{From: time.Unix(1, 0)},
 		Limit:     2,
 	})
 	if err != nil {
@@ -82,8 +83,8 @@ func TestRuleBased_LimitLessThanSourcesStillOverfetchesEachSource(t *testing.T) 
 
 func TestRuleBased_TinyStructuredQueryDoesNotStarveStructuredSources(t *testing.T) {
 	p := New()
-	plan, err := p.Plan(context.Background(), Input{
-		Scope:   model.Scope{RuntimeID: "rt"},
+	plan, err := p.Plan(context.Background(), port.PlannerInput{
+		Scope:   domain.Scope{RuntimeID: "rt"},
 		Subject: "alice",
 		Limit:   1,
 	})

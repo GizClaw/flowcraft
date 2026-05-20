@@ -5,14 +5,14 @@ import (
 	"context"
 	"time"
 
-	"github.com/GizClaw/flowcraft/sdk/recall/internal/model"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/planner"
 	graphproj "github.com/GizClaw/flowcraft/sdk/recall/internal/projection/graph"
 )
 
 // Traverse is the read contract from the graph projection.
 type Traverse interface {
-	Traverse(ctx context.Context, scope model.Scope, seeds []string, maxHops, limit int) []string
+	Traverse(ctx context.Context, scope domain.Scope, seeds []string, maxHops, limit int) []string
 }
 
 // Source surfaces fact ids reachable via bounded graph expansion.
@@ -28,13 +28,13 @@ func New(traverse Traverse) *Source {
 
 func (s *Source) Name() string { return planner.SourceGraph }
 
-func (s *Source) Query(ctx context.Context, plan model.QueryPlan) model.SourceResult {
+func (s *Source) Query(ctx context.Context, plan domain.QueryPlan) domain.SourceResult {
 	if !planner.ActivatesGraph(plan.Intent) {
-		return model.SourceResult{Source: s.Name()}
+		return domain.SourceResult{Source: s.Name()}
 	}
 	budget := plan.SourceBudgets[s.Name()]
 	if budget <= 0 {
-		return model.SourceResult{Source: s.Name()}
+		return domain.SourceResult{Source: s.Name()}
 	}
 
 	hops := graphproj.CapGraphHops(plan.Intent.GraphHops)
@@ -49,9 +49,9 @@ func (s *Source) Query(ctx context.Context, plan model.QueryPlan) model.SourceRe
 		truncated = true
 	}
 
-	candidates := make([]model.Candidate, 0, len(ids))
+	candidates := make([]domain.Candidate, 0, len(ids))
 	for i, id := range ids {
-		candidates = append(candidates, model.Candidate{
+		candidates = append(candidates, domain.Candidate{
 			FactID: id,
 			Scope:  plan.Intent.Scope,
 			Source: s.Name(),
@@ -59,7 +59,7 @@ func (s *Source) Query(ctx context.Context, plan model.QueryPlan) model.SourceRe
 			Score:  s.BaseScore,
 		})
 	}
-	return model.SourceResult{
+	return domain.SourceResult{
 		Source:     s.Name(),
 		Candidates: candidates,
 		Truncated:  truncated,

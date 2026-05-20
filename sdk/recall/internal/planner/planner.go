@@ -7,7 +7,8 @@ package planner
 import (
 	"context"
 
-	"github.com/GizClaw/flowcraft/sdk/recall/internal/model"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/port"
 )
 
 // Source identifiers. Declare new sources here alongside their
@@ -60,26 +61,6 @@ const SourceOverfetchMultiplier = 2
 // multi-source reads bounded.
 const MaxSourceOverfetch = 50
 
-// Input is the planner contract.
-type Input struct {
-	Scope        model.Scope
-	Text         string
-	Entities     []string
-	Subject      string
-	Predicate    string
-	Object       string
-	Kinds        []model.FactKind
-	TimeRange    model.TimeRange
-	Limit        int
-	GraphEnabled bool
-	GraphHops    int
-}
-
-// Planner produces a QueryPlan.
-type Planner interface {
-	Plan(ctx context.Context, input Input) (model.QueryPlan, error)
-}
-
 // RuleBased is the deterministic planner.
 type RuleBased struct {
 	// RetrievalShare applies only when retrieval+entity are the sole
@@ -93,9 +74,11 @@ type RuleBased struct {
 // New returns the default rule-based planner.
 func New() *RuleBased { return &RuleBased{RetrievalShare: 0.6} }
 
+var _ port.Planner = (*RuleBased)(nil)
+
 // Plan returns the QueryPlan with normalized limits and per-source
 // budgets.
-func (r *RuleBased) Plan(_ context.Context, input Input) (model.QueryPlan, error) {
+func (r *RuleBased) Plan(_ context.Context, input port.PlannerInput) (domain.QueryPlan, error) {
 	limit := input.Limit
 	if limit <= 0 {
 		limit = DefaultLimit
@@ -104,13 +87,13 @@ func (r *RuleBased) Plan(_ context.Context, input Input) (model.QueryPlan, error
 		limit = MaxLimit
 	}
 
-	intent := model.QueryIntent{
+	intent := domain.QueryIntent{
 		Text:         input.Text,
 		Entities:     input.Entities,
 		Subject:      input.Subject,
 		Predicate:    input.Predicate,
 		Object:       input.Object,
-		Kinds:        append([]model.FactKind(nil), input.Kinds...),
+		Kinds:        append([]domain.FactKind(nil), input.Kinds...),
 		TimeRange:    input.TimeRange,
 		Scope:        input.Scope,
 		Limit:        limit,
@@ -121,7 +104,7 @@ func (r *RuleBased) Plan(_ context.Context, input Input) (model.QueryPlan, error
 	order := buildSourceOrder(intent)
 	budgets := allocateBudgets(order, limit)
 
-	return model.QueryPlan{
+	return domain.QueryPlan{
 		Intent:        intent,
 		SourceOrder:   order,
 		SourceBudgets: budgets,
@@ -130,7 +113,7 @@ func (r *RuleBased) Plan(_ context.Context, input Input) (model.QueryPlan, error
 }
 
 // ActivatesTimeline reports whether the timeline source should run.
-func ActivatesTimeline(intent model.QueryIntent) bool {
+func ActivatesTimeline(intent domain.QueryIntent) bool {
 	if !intent.TimeRange.IsZero() {
 		return true
 	}
@@ -138,28 +121,28 @@ func ActivatesTimeline(intent model.QueryIntent) bool {
 }
 
 // ActivatesRelation reports whether the relation source should run.
-func ActivatesRelation(intent model.QueryIntent) bool {
+func ActivatesRelation(intent domain.QueryIntent) bool {
 	return intent.Subject != "" || intent.Predicate != "" || intent.Object != ""
 }
 
 // ActivatesProfile reports whether the profile source should run.
-func ActivatesProfile(intent model.QueryIntent) bool {
+func ActivatesProfile(intent domain.QueryIntent) bool {
 	return intent.Subject != ""
 }
 
 // ActivatesGraph reports whether bounded graph expansion should run.
-func ActivatesGraph(intent model.QueryIntent) bool {
+func ActivatesGraph(intent domain.QueryIntent) bool {
 	return intent.GraphEnabled && len(intent.Entities) > 0
 }
 
-func (r *RuleBased) retrievalEntityOnly(intent model.QueryIntent) bool {
+func (r *RuleBased) retrievalEntityOnly(intent domain.QueryIntent) bool {
 	if ActivatesTimeline(intent) || ActivatesRelation(intent) || ActivatesProfile(intent) || ActivatesGraph(intent) {
 		return false
 	}
 	return true
 }
 
-func buildSourceOrder(intent model.QueryIntent) []string {
+func buildSourceOrder(intent domain.QueryIntent) []string {
 	order := []string{SourceRetrieval}
 	if len(intent.Entities) > 0 {
 		order = append(order, SourceEntity)
@@ -179,13 +162,13 @@ func buildSourceOrder(intent model.QueryIntent) []string {
 	return order
 }
 
-func kindsIntersectTimeline(kinds []model.FactKind) bool {
+func kindsIntersectTimeline(kinds []domain.FactKind) bool {
 	if len(kinds) == 0 {
 		return false
 	}
 	for _, k := range kinds {
 		switch k {
-		case model.KindEvent, model.KindPlan, model.KindState:
+		case domain.KindEvent, domain.KindPlan, domain.KindState:
 			return true
 		}
 	}

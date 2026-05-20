@@ -9,7 +9,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/GizClaw/flowcraft/sdk/recall/internal/model"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/port"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/projection"
 )
 
@@ -38,10 +39,10 @@ func New() *Projection {
 
 func (p *Projection) Name() string { return "profile" }
 
-func (p *Projection) Consistency() projection.Consistency { return projection.Optional }
+func (p *Projection) Consistency() port.Consistency { return projection.Optional }
 
 // Project upserts active state/preference/relation facts.
-func (p *Projection) Project(_ context.Context, facts []model.TemporalFact) error {
+func (p *Projection) Project(_ context.Context, facts []domain.TemporalFact) error {
 	now := time.Now()
 	if len(facts) == 0 {
 		return nil
@@ -60,7 +61,7 @@ func (p *Projection) Project(_ context.Context, facts []model.TemporalFact) erro
 		for _, priorID := range f.Supersedes {
 			removeFactLocked(sh, priorID)
 		}
-		if !projection.IsActive(f, now) {
+		if !domain.IsActive(f, now) {
 			continue
 		}
 		subject := canonicalKeyPart(f.Subject)
@@ -87,7 +88,7 @@ func (p *Projection) Project(_ context.Context, facts []model.TemporalFact) erro
 	return nil
 }
 
-func (p *Projection) Forget(_ context.Context, scope model.Scope, factIDs []string) error {
+func (p *Projection) Forget(_ context.Context, scope domain.Scope, factIDs []string) error {
 	if len(factIDs) == 0 {
 		return nil
 	}
@@ -104,7 +105,7 @@ func (p *Projection) Forget(_ context.Context, scope model.Scope, factIDs []stri
 }
 
 // Rebuild exact-replaces the scope shard.
-func (p *Projection) Rebuild(ctx context.Context, scope model.Scope, facts []model.TemporalFact) error {
+func (p *Projection) Rebuild(ctx context.Context, scope domain.Scope, facts []domain.TemporalFact) error {
 	p.mu.Lock()
 	delete(p.scopes, keyOf(scope))
 	p.mu.Unlock()
@@ -112,7 +113,7 @@ func (p *Projection) Rebuild(ctx context.Context, scope model.Scope, facts []mod
 }
 
 // Lookup returns all active fact ids for the given subject.
-func (p *Projection) Lookup(_ context.Context, scope model.Scope, subject string) []string {
+func (p *Projection) Lookup(_ context.Context, scope domain.Scope, subject string) []string {
 	subject = canonicalKeyPart(subject)
 	if subject == "" {
 		return nil
@@ -135,7 +136,7 @@ func (p *Projection) Lookup(_ context.Context, scope model.Scope, subject string
 	return out
 }
 
-func (p *Projection) shardLocked(scope model.Scope) *shard {
+func (p *Projection) shardLocked(scope domain.Scope) *shard {
 	k := keyOf(scope)
 	sh, ok := p.scopes[k]
 	if !ok {
@@ -167,13 +168,13 @@ func removeFactLocked(sh *shard, factID string) {
 	delete(sh.slotOf, factID)
 }
 
-func keyOf(s model.Scope) scopeKey {
+func keyOf(s domain.Scope) scopeKey {
 	return scopeKey{runtimeID: s.RuntimeID, userID: s.UserID}
 }
 
-func isProfileKind(k model.FactKind) bool {
+func isProfileKind(k domain.FactKind) bool {
 	switch k {
-	case model.KindState, model.KindPreference, model.KindRelation:
+	case domain.KindState, domain.KindPreference, domain.KindRelation:
 		return true
 	}
 	return false
@@ -182,20 +183,20 @@ func isProfileKind(k model.FactKind) bool {
 // slotKey encodes the active-slot identity for a profile fact.
 // AgentID is part of the slot so private agent facts do not overwrite
 // each other; empty AgentID is the shared slot namespace.
-func slotKey(f model.TemporalFact) string {
+func slotKey(f domain.TemporalFact) string {
 	subject := canonicalKeyPart(f.Subject)
 	if subject == "" {
 		return ""
 	}
 	agent := f.Scope.AgentID
 	switch f.Kind {
-	case model.KindState, model.KindPreference:
+	case domain.KindState, domain.KindPreference:
 		predicate := canonicalKeyPart(f.Predicate)
 		if predicate == "" {
 			return subject + "\x00" + agent
 		}
 		return subject + "\x00" + predicate + "\x00" + agent
-	case model.KindRelation:
+	case domain.KindRelation:
 		return subject + "\x00" + canonicalKeyPart(f.Predicate) + "\x00" + canonicalKeyPart(f.Object) + "\x00" + agent
 	}
 	return ""

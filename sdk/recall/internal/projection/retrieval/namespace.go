@@ -1,7 +1,7 @@
 package retrieval
 
 import (
-	"github.com/GizClaw/flowcraft/sdk/recall/internal/model"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain"
 	retrievalns "github.com/GizClaw/flowcraft/sdk/retrieval/namespace"
 )
 
@@ -14,7 +14,7 @@ var namespacePrefix = retrievalns.MustRegister("recall")
 // the v1 scheme (per-user when UserID is set, runtime-global
 // otherwise) so the namespace convention stays consistent across
 // the SDK.
-func NamespaceFor(s model.Scope) string {
+func NamespaceFor(s domain.Scope) string {
 	if s.UserID != "" {
 		return namespacePrefix.UserScope(s.RuntimeID, s.UserID)
 	}

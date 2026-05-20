@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/GizClaw/flowcraft/sdk/recall/internal/model"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/planner"
 	retrievalproj "github.com/GizClaw/flowcraft/sdk/recall/internal/projection/retrieval"
 	"github.com/GizClaw/flowcraft/sdk/retrieval"
@@ -40,16 +40,16 @@ func TestSource_WithEmbedder_InvokesEmbedOnQuery(t *testing.T) {
 	idx := retrievalmem.New()
 	emb := &stubEmbedder{dim: 8}
 	proj, _ := retrievalproj.New(idx, retrievalproj.WithEmbedder(emb))
-	scope := model.Scope{RuntimeID: "rt", UserID: "u1"}
-	if err := proj.Project(context.Background(), []model.TemporalFact{
-		{ID: "a", Scope: scope, Kind: model.KindNote, Content: "hello world"},
+	scope := domain.Scope{RuntimeID: "rt", UserID: "u1"}
+	if err := proj.Project(context.Background(), []domain.TemporalFact{
+		{ID: "a", Scope: scope, Kind: domain.KindNote, Content: "hello world"},
 	}); err != nil {
 		t.Fatal(err)
 	}
 
 	src := New(idx, WithEmbedder(emb))
-	plan := model.QueryPlan{
-		Intent:        model.QueryIntent{Text: "hello", Scope: scope, Limit: 10},
+	plan := domain.QueryPlan{
+		Intent:        domain.QueryIntent{Text: "hello", Scope: scope, Limit: 10},
 		SourceOrder:   []string{planner.SourceRetrieval},
 		SourceBudgets: map[string]int{planner.SourceRetrieval: 10},
 		TotalCap:      10,
@@ -67,19 +67,19 @@ func TestSource_WithEmbedder_InvokesEmbedOnQuery(t *testing.T) {
 func TestSource_AgentIDSoftIsolationFilter(t *testing.T) {
 	idx := retrievalmem.New()
 	proj, _ := retrievalproj.New(idx)
-	scope := model.Scope{RuntimeID: "rt", UserID: "u1"}
+	scope := domain.Scope{RuntimeID: "rt", UserID: "u1"}
 
-	mk := func(id, agent, body string) model.TemporalFact {
+	mk := func(id, agent, body string) domain.TemporalFact {
 		s := scope
 		s.AgentID = agent
-		return model.TemporalFact{
+		return domain.TemporalFact{
 			ID:      id,
 			Scope:   s,
-			Kind:    model.KindNote,
+			Kind:    domain.KindNote,
 			Content: body,
 		}
 	}
-	if err := proj.Project(context.Background(), []model.TemporalFact{
+	if err := proj.Project(context.Background(), []domain.TemporalFact{
 		mk("a", "agent-a", "alpha secret"),
 		mk("b", "agent-b", "alpha secret"),
 		mk("s", "", "alpha secret"),
@@ -90,8 +90,8 @@ func TestSource_AgentIDSoftIsolationFilter(t *testing.T) {
 	source := New(idx)
 
 	// agent-a query: must include own + shared, exclude agent-b.
-	plan := model.QueryPlan{
-		Intent:        model.QueryIntent{Text: "alpha", Scope: model.Scope{RuntimeID: "rt", UserID: "u1", AgentID: "agent-a"}, Limit: 10},
+	plan := domain.QueryPlan{
+		Intent:        domain.QueryIntent{Text: "alpha", Scope: domain.Scope{RuntimeID: "rt", UserID: "u1", AgentID: "agent-a"}, Limit: 10},
 		SourceOrder:   []string{planner.SourceRetrieval},
 		SourceBudgets: map[string]int{planner.SourceRetrieval: 10},
 		TotalCap:      10,
@@ -112,7 +112,7 @@ func TestSource_AgentIDSoftIsolationFilter(t *testing.T) {
 	}
 
 	// cross-agent query: AgentID empty -> all three visible.
-	plan.Intent.Scope = model.Scope{RuntimeID: "rt", UserID: "u1"}
+	plan.Intent.Scope = domain.Scope{RuntimeID: "rt", UserID: "u1"}
 	res = source.Query(context.Background(), plan)
 	seen = map[string]bool{}
 	for _, c := range res.Candidates {
@@ -128,15 +128,15 @@ func TestSource_AgentIDSoftIsolationFilter(t *testing.T) {
 func TestSource_PropagatesRetrievalScore(t *testing.T) {
 	idx := retrievalmem.New()
 	proj, _ := retrievalproj.New(idx)
-	scope := model.Scope{RuntimeID: "rt"}
-	if err := proj.Project(context.Background(), []model.TemporalFact{
-		{ID: "f1", Scope: scope, Kind: model.KindNote, Content: "alpha beta"},
+	scope := domain.Scope{RuntimeID: "rt"}
+	if err := proj.Project(context.Background(), []domain.TemporalFact{
+		{ID: "f1", Scope: scope, Kind: domain.KindNote, Content: "alpha beta"},
 	}); err != nil {
 		t.Fatal(err)
 	}
 	s := New(idx)
-	res := s.Query(context.Background(), model.QueryPlan{
-		Intent:        model.QueryIntent{Text: "alpha", Scope: scope, Limit: 5},
+	res := s.Query(context.Background(), domain.QueryPlan{
+		Intent:        domain.QueryIntent{Text: "alpha", Scope: scope, Limit: 5},
 		SourceBudgets: map[string]int{planner.SourceRetrieval: 5},
 		TotalCap:      5,
 	})

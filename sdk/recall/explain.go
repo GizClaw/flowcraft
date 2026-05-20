@@ -3,35 +3,36 @@ package recall
 import (
 	"context"
 
-	"github.com/GizClaw/flowcraft/sdk/recall/internal/model"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain/diagnostic"
 )
 
 // RecallTrace is the structured explanation of a single Recall call.
-// It mirrors internal/model.RecallTrace so the public surface stays
+// It mirrors internal/domain.RecallTrace so the public surface stays
 // in lockstep with the canonical model.
-type RecallTrace = model.RecallTrace
+type RecallTrace = domain.RecallTrace
 
 // QueryPlan is the planner output exposed on RecallTrace.Plan.
-type QueryPlan = model.QueryPlan
+type QueryPlan = domain.QueryPlan
 
 // SourceTrace describes one source's contribution to a Recall call.
-type SourceTrace = model.SourceTrace
+type SourceTrace = domain.SourceTrace
 
 // CandidateDrop records a candidate that did not survive the read
 // path along with the stage and reason.
-type CandidateDrop = model.CandidateDrop
+type CandidateDrop = diagnostic.CandidateDrop
 
 // DropReason categorises why a candidate was dropped.
-type DropReason = model.DropReason
+type DropReason = diagnostic.DropReason
 
 const (
-	DropStaleFact      = model.DropStaleFact
-	DropDuplicate      = model.DropDuplicate
-	DropTotalCap       = model.DropTotalCap
-	DropPerSourceCap   = model.DropPerSourceCap
-	DropSuperseded     = model.DropSuperseded
-	DropMaterializeErr = model.DropMaterializeErr
-	DropScopeViolation = model.DropScopeViolation
+	DropStaleFact      = diagnostic.DropStaleFact
+	DropDuplicate      = diagnostic.DropDuplicate
+	DropTotalCap       = diagnostic.DropTotalCap
+	DropPerSourceCap   = diagnostic.DropPerSourceCap
+	DropSuperseded     = diagnostic.DropSuperseded
+	DropMaterializeErr = diagnostic.DropMaterializeErr
+	DropScopeViolation = diagnostic.DropScopeViolation
 )
 
 // RecallExplainer is the opt-in extension that returns a

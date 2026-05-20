@@ -13,30 +13,20 @@ import (
 	"context"
 	"errors"
 
-	"github.com/GizClaw/flowcraft/sdk/recall/internal/model"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/port"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain/diagnostic"
 	temporalstore "github.com/GizClaw/flowcraft/sdk/recall/internal/store/temporal"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/telemetry"
 )
 
-// ContextItem is a materialized recall result. The Candidate field
-// preserves the fusion provenance (score, source, rank) so explain
-// traces and future ranking layers can use it.
-type ContextItem struct {
-	Candidate model.Candidate
-	Fact      model.TemporalFact
-	Evidence  []model.EvidenceRef
-}
-
-// Materializer is the read-path materialization boundary.
-type Materializer interface {
-	Materialize(ctx context.Context, candidates []model.Candidate) ([]ContextItem, []model.CandidateDrop, error)
-}
-
 // FromStore materializes from a TemporalFactStore.
 type FromStore struct {
 	store     temporalstore.Store
-	telemetry telemetry.Hook
+	telemetry port.TelemetryHook
 }
+
+var _ port.Materializer = (*FromStore)(nil)
 
 // New constructs a FromStore with the supplied telemetry hook. A
 // nil hook is replaced with telemetry.NopHook so the hot
@@ -46,7 +36,7 @@ type FromStore struct {
 // superseded-fact drop so an outer reconcile or governance worker
 // can repair projections without the read path doing it inline
 // (docs §10.1: no auto-repair from Recall).
-func New(store temporalstore.Store, hook telemetry.Hook) *FromStore {
+func New(store temporalstore.Store, hook port.TelemetryHook) *FromStore {
 	if hook == nil {
 		hook = telemetry.NopHook{}
 	}
@@ -70,33 +60,33 @@ func New(store temporalstore.Store, hook telemetry.Hook) *FromStore {
 //
 // Errors during materialization never abort the whole call: one
 // bad candidate must not poison the rest of the recall.
-func (m *FromStore) Materialize(ctx context.Context, candidates []model.Candidate) ([]ContextItem, []model.CandidateDrop, error) {
+func (m *FromStore) Materialize(ctx context.Context, candidates []domain.Candidate) ([]domain.ContextItem, []diagnostic.CandidateDrop, error) {
 	var (
-		items []ContextItem
-		drops []model.CandidateDrop
+		items []domain.ContextItem
+		drops []diagnostic.CandidateDrop
 	)
 	for _, c := range candidates {
 		fact, err := m.store.Get(ctx, c.Scope, c.FactID)
 		if err != nil {
 			if errors.Is(err, temporalstore.ErrNotFound) {
-				drops = append(drops, model.CandidateDrop{
+				drops = append(drops, diagnostic.CandidateDrop{
 					Stage:  "materialize",
-					Reason: model.DropStaleFact,
+					Reason: diagnostic.DropStaleFact,
 					FactID: c.FactID,
 					Source: c.Source,
 				})
-				m.telemetry.OnDrift(telemetry.DriftEvent{
+				m.telemetry.OnDrift(port.DriftEvent{
 					Scope:   c.Scope,
 					Source:  "materialize",
-					Reason:  telemetry.DriftStaleFact,
+					Reason:  port.DriftStaleFact,
 					FactID:  c.FactID,
 					Details: c.Source,
 				})
 				continue
 			}
-			drops = append(drops, model.CandidateDrop{
+			drops = append(drops, diagnostic.CandidateDrop{
 				Stage:   "materialize",
-				Reason:  model.DropMaterializeErr,
+				Reason:  diagnostic.DropMaterializeErr,
 				FactID:  c.FactID,
 				Source:  c.Source,
 				Details: err.Error(),
@@ -104,32 +94,32 @@ func (m *FromStore) Materialize(ctx context.Context, candidates []model.Candidat
 			continue
 		}
 		if fact.CorrectedBy != "" {
-			drops = append(drops, model.CandidateDrop{
+			drops = append(drops, diagnostic.CandidateDrop{
 				Stage:  "materialize",
-				Reason: model.DropSuperseded,
+				Reason: diagnostic.DropSuperseded,
 				FactID: c.FactID,
 				Source: c.Source,
 			})
-			m.telemetry.OnDrift(telemetry.DriftEvent{
+			m.telemetry.OnDrift(port.DriftEvent{
 				Scope:   c.Scope,
 				Source:  "materialize",
-				Reason:  telemetry.DriftSupersededFact,
+				Reason:  port.DriftSupersededFact,
 				FactID:  c.FactID,
 				Details: c.Source,
 			})
 			continue
 		}
 		if reason, ok := violatesScope(c.Scope, fact.Scope); ok {
-			drops = append(drops, model.CandidateDrop{
+			drops = append(drops, diagnostic.CandidateDrop{
 				Stage:   "materialize",
-				Reason:  model.DropScopeViolation,
+				Reason:  diagnostic.DropScopeViolation,
 				FactID:  c.FactID,
 				Source:  c.Source,
 				Details: reason,
 			})
 			continue
 		}
-		items = append(items, ContextItem{
+		items = append(items, domain.ContextItem{
 			Candidate: c,
 			Fact:      fact,
 			Evidence:  fact.EvidenceRefs,
@@ -141,7 +131,7 @@ func (m *FromStore) Materialize(ctx context.Context, candidates []model.Candidat
 // violatesScope reports whether a loaded fact's canonical owner
 // scope is incompatible with the query scope under the v2 isolation
 // rules. Returns (reason, true) on violation, ("", false) on pass.
-func violatesScope(query, owner model.Scope) (string, bool) {
+func violatesScope(query, owner domain.Scope) (string, bool) {
 	if owner.RuntimeID != query.RuntimeID {
 		return "runtime_id mismatch", true
 	}

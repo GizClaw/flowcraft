@@ -1,24 +1,33 @@
 package recall
 
-import "github.com/GizClaw/flowcraft/sdk/recall/internal/telemetry"
+import (
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain/diagnostic"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/port"
+)
+
+// StageDiagnostic is the structured per-stage observation emitted
+// by the v2 pipeline framework. TelemetryHook.OnStage receives one
+// per pipeline stage; TelemetryHook implementers should treat the
+// type as opaque except for forwarding it to their backend.
+type StageDiagnostic = diagnostic.StageDiagnostic
 
 // ProjectionEvent describes one projection fanout outcome.
-type ProjectionEvent = telemetry.ProjectionEvent
+type ProjectionEvent = port.ProjectionEvent
 
 // DriftReason classifies projection-vs-canonical drift observations.
-type DriftReason = telemetry.DriftReason
+type DriftReason = port.DriftReason
 
 const (
-	DriftStaleFact      = telemetry.DriftStaleFact
-	DriftSupersededFact = telemetry.DriftSupersededFact
+	DriftStaleFact      = port.DriftStaleFact
+	DriftSupersededFact = port.DriftSupersededFact
 )
 
 // DriftEvent describes one drift observation surfaced by the read path or
 // reconcile tooling.
-type DriftEvent = telemetry.DriftEvent
+type DriftEvent = port.DriftEvent
 
 // PipelineEvent records one high-level Save/Recall stage.
-type PipelineEvent = telemetry.PipelineEvent
+type PipelineEvent = port.PipelineEvent
 
 // TelemetryHook receives projection, drift, and pipeline events.
-type TelemetryHook = telemetry.Hook
+type TelemetryHook = port.TelemetryHook

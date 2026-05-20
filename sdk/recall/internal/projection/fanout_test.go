@@ -5,13 +5,15 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/GizClaw/flowcraft/sdk/recall/internal/model"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain/diagnostic"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/port"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/telemetry"
 )
 
 type stubProj struct {
 	name        string
-	consistency Consistency
+	consistency port.Consistency
 	projectErr  error
 	forgetErr   error
 	rebuildErr  error
@@ -21,37 +23,40 @@ type stubProj struct {
 }
 
 func (s *stubProj) Name() string             { return s.name }
-func (s *stubProj) Consistency() Consistency { return s.consistency }
-func (s *stubProj) Project(_ context.Context, facts []model.TemporalFact) error {
+func (s *stubProj) Consistency() port.Consistency { return s.consistency }
+func (s *stubProj) Project(_ context.Context, facts []domain.TemporalFact) error {
 	s.projectN++
 	return s.projectErr
 }
-func (s *stubProj) Forget(_ context.Context, _ model.Scope, ids []string) error {
+
+func (s *stubProj) Forget(_ context.Context, _ domain.Scope, ids []string) error {
 	s.forgetN++
 	return s.forgetErr
 }
-func (s *stubProj) Rebuild(_ context.Context, _ model.Scope, facts []model.TemporalFact) error {
+
+func (s *stubProj) Rebuild(_ context.Context, _ domain.Scope, facts []domain.TemporalFact) error {
 	s.rebuildN++
 	return s.rebuildErr
 }
 
 type recordingHook struct {
-	events []telemetry.ProjectionEvent
-	drifts []telemetry.DriftEvent
+	events []port.ProjectionEvent
+	drifts []port.DriftEvent
 }
 
-func (r *recordingHook) OnProjection(e telemetry.ProjectionEvent) { r.events = append(r.events, e) }
-func (r *recordingHook) OnDrift(e telemetry.DriftEvent)           { r.drifts = append(r.drifts, e) }
-func (r *recordingHook) OnPipeline(telemetry.PipelineEvent)       {}
+func (r *recordingHook) OnProjection(e port.ProjectionEvent) { r.events = append(r.events, e) }
+func (r *recordingHook) OnDrift(e port.DriftEvent)           { r.drifts = append(r.drifts, e) }
+func (r *recordingHook) OnPipeline(port.PipelineEvent)            {}
+func (r *recordingHook) OnStage(diagnostic.StageDiagnostic)       {}
 
 func TestFanout_RequiredFailureAborts(t *testing.T) {
 	failing := &stubProj{name: "retrieval", consistency: Required, projectErr: errors.New("boom")}
 	ok := &stubProj{name: "entity", consistency: Required}
 	opt := &stubProj{name: "profile", consistency: Optional}
 	hook := &recordingHook{}
-	f := New([]Projection{failing, ok, opt}, hook)
+	f := New([]port.Projection{failing, ok, opt}, hook)
 
-	err := f.Project(context.Background(), []model.TemporalFact{{ID: "x"}})
+	err := f.Project(context.Background(), []domain.TemporalFact{{ID: "x"}})
 	if err == nil {
 		t.Fatal("want error from required projection failure")
 	}
@@ -70,9 +75,9 @@ func TestFanout_OptionalFailureNotFatal(t *testing.T) {
 	req := &stubProj{name: "retrieval", consistency: Required}
 	opt := &stubProj{name: "profile", consistency: Optional, projectErr: errors.New("optional boom")}
 	hook := &recordingHook{}
-	f := New([]Projection{req, opt}, hook)
+	f := New([]port.Projection{req, opt}, hook)
 
-	if err := f.Project(context.Background(), []model.TemporalFact{{ID: "x"}}); err != nil {
+	if err := f.Project(context.Background(), []domain.TemporalFact{{ID: "x"}}); err != nil {
 		t.Fatalf("optional failure must not abort: %v", err)
 	}
 	if req.projectN != 1 || opt.projectN != 1 {
@@ -92,8 +97,8 @@ func TestFanout_OptionalFailureNotFatal(t *testing.T) {
 func TestFanout_ForgetPropagatesRequiredFailure(t *testing.T) {
 	failing := &stubProj{name: "retrieval", consistency: Required, forgetErr: errors.New("nope")}
 	opt := &stubProj{name: "profile", consistency: Optional}
-	f := New([]Projection{failing, opt}, telemetry.NopHook{})
-	if err := f.Forget(context.Background(), model.Scope{RuntimeID: "rt"}, []string{"x"}); err == nil {
+	f := New([]port.Projection{failing, opt}, telemetry.NopHook{})
+	if err := f.Forget(context.Background(), domain.Scope{RuntimeID: "rt"}, []string{"x"}); err == nil {
 		t.Fatal("want error")
 	}
 	if opt.forgetN != 0 {
@@ -103,7 +108,7 @@ func TestFanout_ForgetPropagatesRequiredFailure(t *testing.T) {
 
 func TestFanout_NilFactsNoOp(t *testing.T) {
 	p := &stubProj{name: "x", consistency: Required}
-	f := New([]Projection{p}, nil)
+	f := New([]port.Projection{p}, nil)
 	if err := f.Project(context.Background(), nil); err != nil {
 		t.Errorf("nil facts must be noop: %v", err)
 	}

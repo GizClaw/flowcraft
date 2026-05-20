@@ -13,15 +13,16 @@ import (
 	"sync"
 	"time"
 
-	"github.com/GizClaw/flowcraft/sdk/recall/internal/model"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/port"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/projection"
 )
 
 // timelineKinds are the fact kinds indexed by this projection.
-var timelineKinds = map[model.FactKind]struct{}{
-	model.KindEvent: {},
-	model.KindState: {},
-	model.KindPlan:  {},
+var timelineKinds = map[domain.FactKind]struct{}{
+	domain.KindEvent: {},
+	domain.KindState: {},
+	domain.KindPlan:  {},
 }
 
 // Projection stores scope-local facts sorted by effective time.
@@ -38,7 +39,7 @@ type scopeKey struct {
 type entry struct {
 	factID string
 	ts     time.Time
-	kind   model.FactKind
+	kind   domain.FactKind
 }
 
 type shard struct {
@@ -53,11 +54,11 @@ func New() *Projection {
 
 func (p *Projection) Name() string { return "timeline" }
 
-func (p *Projection) Consistency() projection.Consistency { return projection.Optional }
+func (p *Projection) Consistency() port.Consistency { return projection.Optional }
 
 // Project upserts timeline-eligible facts. Superseded facts are
 // evicted; ValidTo in the past does NOT hide an event/plan.
-func (p *Projection) Project(_ context.Context, facts []model.TemporalFact) error {
+func (p *Projection) Project(_ context.Context, facts []domain.TemporalFact) error {
 	if len(facts) == 0 {
 		return nil
 	}
@@ -69,11 +70,11 @@ func (p *Projection) Project(_ context.Context, facts []model.TemporalFact) erro
 		}
 		sh := p.shardLocked(f.Scope)
 		delete(sh.byID, f.ID)
-		if projection.IsSuperseded(f) {
+		if domain.IsSuperseded(f) {
 			p.rebuildOrderLocked(sh)
 			continue
 		}
-		e := entry{factID: f.ID, ts: projection.EffectiveTimestamp(f), kind: f.Kind}
+		e := entry{factID: f.ID, ts: domain.EffectiveTimestamp(f), kind: f.Kind}
 		sh.byID[f.ID] = e
 		for _, priorID := range f.Supersedes {
 			delete(sh.byID, priorID)
@@ -84,7 +85,7 @@ func (p *Projection) Project(_ context.Context, facts []model.TemporalFact) erro
 }
 
 // Forget removes fact ids from the scope shard.
-func (p *Projection) Forget(_ context.Context, scope model.Scope, factIDs []string) error {
+func (p *Projection) Forget(_ context.Context, scope domain.Scope, factIDs []string) error {
 	if len(factIDs) == 0 {
 		return nil
 	}
@@ -104,7 +105,7 @@ func (p *Projection) Forget(_ context.Context, scope model.Scope, factIDs []stri
 // Rebuild exact-replaces the scope shard from the supplied snapshot.
 // Memory passes IncludeSuperseded=true; this projection decides
 // which facts belong in the temporal view.
-func (p *Projection) Rebuild(ctx context.Context, scope model.Scope, facts []model.TemporalFact) error {
+func (p *Projection) Rebuild(ctx context.Context, scope domain.Scope, facts []domain.TemporalFact) error {
 	p.mu.Lock()
 	delete(p.scopes, keyOf(scope))
 	p.mu.Unlock()
@@ -113,7 +114,7 @@ func (p *Projection) Rebuild(ctx context.Context, scope model.Scope, facts []mod
 
 // Query returns fact ids in effective-time order matching the
 // optional range and kind filter. Zero range means no time bounds.
-func (p *Projection) Query(_ context.Context, scope model.Scope, from, to time.Time, kinds []model.FactKind, limit int) []string {
+func (p *Projection) Query(_ context.Context, scope domain.Scope, from, to time.Time, kinds []domain.FactKind, limit int) []string {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	sh, ok := p.scopes[keyOf(scope)]
@@ -146,7 +147,7 @@ func (p *Projection) Query(_ context.Context, scope model.Scope, from, to time.T
 	return out
 }
 
-func (p *Projection) shardLocked(scope model.Scope) *shard {
+func (p *Projection) shardLocked(scope domain.Scope) *shard {
 	k := keyOf(scope)
 	sh, ok := p.scopes[k]
 	if !ok {
@@ -169,20 +170,20 @@ func (p *Projection) rebuildOrderLocked(sh *shard) {
 	})
 }
 
-func keyOf(s model.Scope) scopeKey {
+func keyOf(s domain.Scope) scopeKey {
 	return scopeKey{runtimeID: s.RuntimeID, userID: s.UserID}
 }
 
-func isTimelineKind(k model.FactKind) bool {
+func isTimelineKind(k domain.FactKind) bool {
 	_, ok := timelineKinds[k]
 	return ok
 }
 
-func kindFilterSet(kinds []model.FactKind) map[model.FactKind]struct{} {
+func kindFilterSet(kinds []domain.FactKind) map[domain.FactKind]struct{} {
 	if len(kinds) == 0 {
 		return nil
 	}
-	out := make(map[model.FactKind]struct{}, len(kinds))
+	out := make(map[domain.FactKind]struct{}, len(kinds))
 	for _, k := range kinds {
 		out[k] = struct{}{}
 	}

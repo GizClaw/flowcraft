@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/GizClaw/flowcraft/sdk/recall/internal/model"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain"
 )
 
 // Governance bundles write-path policy hooks (docs §10.2). All
@@ -26,7 +26,7 @@ func Default() Governance {
 
 // ApplyWrite runs write-path governance in deterministic order:
 // sensitivity -> retention -> write policy.
-func (g Governance) ApplyWrite(ctx context.Context, scope model.Scope, f model.TemporalFact, now time.Time) (model.TemporalFact, bool) {
+func (g Governance) ApplyWrite(ctx context.Context, scope domain.Scope, f domain.TemporalFact, now time.Time) (domain.TemporalFact, bool) {
 	if g.Sensitivity == nil {
 		g.Sensitivity = NopSensitivity{}
 	}

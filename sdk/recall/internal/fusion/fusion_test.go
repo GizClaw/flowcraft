@@ -4,27 +4,29 @@ import (
 	"context"
 	"testing"
 
-	"github.com/GizClaw/flowcraft/sdk/recall/internal/model"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/port"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain/diagnostic"
 )
 
 func TestWeightedRRF_DedupesAndCombinesScores(t *testing.T) {
-	results := []model.SourceResult{
+	results := []domain.SourceResult{
 		{
 			Source: "retrieval",
-			Candidates: []model.Candidate{
+			Candidates: []domain.Candidate{
 				{FactID: "a", Source: "retrieval", Rank: 1},
 				{FactID: "b", Source: "retrieval", Rank: 2},
 			},
 		},
 		{
 			Source: "entity",
-			Candidates: []model.Candidate{
+			Candidates: []domain.Candidate{
 				{FactID: "a", Source: "entity", Rank: 1},
 				{FactID: "c", Source: "entity", Rank: 2},
 			},
 		},
 	}
-	fused, drops, err := WeightedRRF{}.Fuse(context.Background(), results, Options{
+	fused, drops, err := WeightedRRF{}.Fuse(context.Background(), results, port.FusionOptions{
 		Weights: map[string]float64{"retrieval": 1.0, "entity": 0.8},
 	})
 	if err != nil {
@@ -46,23 +48,23 @@ func TestWeightedRRF_DedupesAndCombinesScores(t *testing.T) {
 }
 
 func TestWeightedRRF_PerSourceCapEmitsDrops(t *testing.T) {
-	results := []model.SourceResult{
+	results := []domain.SourceResult{
 		{
 			Source: "retrieval",
-			Candidates: []model.Candidate{
+			Candidates: []domain.Candidate{
 				{FactID: "a", Source: "retrieval", Rank: 1},
 				{FactID: "b", Source: "retrieval", Rank: 2},
 				{FactID: "c", Source: "retrieval", Rank: 3},
 			},
 		},
 	}
-	fused, drops, _ := WeightedRRF{}.Fuse(context.Background(), results, Options{
+	fused, drops, _ := WeightedRRF{}.Fuse(context.Background(), results, port.FusionOptions{
 		PerSourceCap: 2,
 	})
 	if len(fused) != 2 {
 		t.Errorf("expected per-source cap to trim to 2, got %d", len(fused))
 	}
-	if len(drops) != 1 || drops[0].Reason != model.DropPerSourceCap {
+	if len(drops) != 1 || drops[0].Reason != diagnostic.DropPerSourceCap {
 		t.Errorf("drops = %+v", drops)
 	}
 }
@@ -81,24 +83,24 @@ func TestWeightedRRF_OutlierBoost_RescuesRareTokenMatch(t *testing.T) {
 	// magnitude. With the boost, the within-source rank-1 outlier's
 	// contribution is amplified just enough to overcome the
 	// dual-source rank-2 corroboration — the rare-token match wins.
-	retrievalCands := []model.Candidate{
+	retrievalCands := []domain.Candidate{
 		{FactID: "rare_fact", Source: "retrieval", Rank: 1, Score: 14.0},
 		{FactID: "filler1", Source: "retrieval", Rank: 2, Score: 2.0},
 		{FactID: "filler2", Source: "retrieval", Rank: 3, Score: 2.0},
 		{FactID: "filler3", Source: "retrieval", Rank: 4, Score: 2.0},
 		{FactID: "filler4", Source: "retrieval", Rank: 5, Score: 2.0},
 	}
-	entityCands := []model.Candidate{
+	entityCands := []domain.Candidate{
 		{FactID: "filler1", Source: "entity", Rank: 1, Score: 1.0},
 	}
-	results := []model.SourceResult{
+	results := []domain.SourceResult{
 		{Source: "retrieval", Candidates: retrievalCands},
 		{Source: "entity", Candidates: entityCands},
 	}
 
 	// Baseline (boost disabled): filler1 wins because it's
 	// multi-source corroborated.
-	fused, _, _ := WeightedRRF{}.Fuse(context.Background(), results, Options{
+	fused, _, _ := WeightedRRF{}.Fuse(context.Background(), results, port.FusionOptions{
 		Weights:         map[string]float64{"retrieval": 1.0, "entity": 1.0},
 		OutlierBoostCap: 1.0, // disable boost
 	})
@@ -107,7 +109,7 @@ func TestWeightedRRF_OutlierBoost_RescuesRareTokenMatch(t *testing.T) {
 	}
 
 	// With boost on: the rare-token outlier wins.
-	fused, _, _ = WeightedRRF{}.Fuse(context.Background(), results, Options{
+	fused, _, _ = WeightedRRF{}.Fuse(context.Background(), results, port.FusionOptions{
 		Weights: map[string]float64{"retrieval": 1.0, "entity": 1.0},
 		// rely on defaults (cap=2.0, threshold=2.0, max-rank=5)
 	})
@@ -129,17 +131,17 @@ func TestWeightedRRF_OutlierBoost_NoOpOnUniformScores(t *testing.T) {
 	// boosts — there's no magnitude signal to amplify. We verify the
 	// boost factor stays at 1 by checking that fused scores equal
 	// the plain RRF formula.
-	results := []model.SourceResult{
+	results := []domain.SourceResult{
 		{
 			Source: "entity",
-			Candidates: []model.Candidate{
+			Candidates: []domain.Candidate{
 				{FactID: "a", Source: "entity", Rank: 1, Score: 1.0},
 				{FactID: "b", Source: "entity", Rank: 2, Score: 1.0},
 				{FactID: "c", Source: "entity", Rank: 3, Score: 1.0},
 			},
 		},
 	}
-	fused, _, _ := WeightedRRF{}.Fuse(context.Background(), results, Options{
+	fused, _, _ := WeightedRRF{}.Fuse(context.Background(), results, port.FusionOptions{
 		Weights: map[string]float64{"entity": 1.0},
 	})
 	wantTop := 1.0 / float64(DefaultRRFK+1)
@@ -149,17 +151,17 @@ func TestWeightedRRF_OutlierBoost_NoOpOnUniformScores(t *testing.T) {
 }
 
 func TestWeightedRRF_TotalCapEmitsDrops(t *testing.T) {
-	results := []model.SourceResult{
+	results := []domain.SourceResult{
 		{
 			Source: "retrieval",
-			Candidates: []model.Candidate{
+			Candidates: []domain.Candidate{
 				{FactID: "a", Source: "retrieval", Rank: 1},
 				{FactID: "b", Source: "retrieval", Rank: 2},
 				{FactID: "c", Source: "retrieval", Rank: 3},
 			},
 		},
 	}
-	fused, drops, _ := WeightedRRF{}.Fuse(context.Background(), results, Options{
+	fused, drops, _ := WeightedRRF{}.Fuse(context.Background(), results, port.FusionOptions{
 		TotalCap: 1,
 	})
 	if len(fused) != 1 {

@@ -6,7 +6,7 @@ import (
 	"sync"
 
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
-	"github.com/GizClaw/flowcraft/sdk/recall/internal/model"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain"
 )
 
 // MemoryStore is the reference in-memory EvidenceStore shipped with
@@ -25,7 +25,7 @@ type scopeKey struct {
 }
 
 type scopeShard struct {
-	byID   map[string]model.EvidenceRef
+	byID   map[string]domain.EvidenceRef
 	byFact map[string][]string
 }
 
@@ -34,16 +34,16 @@ func NewMemoryStore() *MemoryStore {
 	return &MemoryStore{byScope: make(map[scopeKey]*scopeShard)}
 }
 
-func keyOf(s model.Scope) scopeKey {
+func keyOf(s domain.Scope) scopeKey {
 	return scopeKey{runtimeID: s.RuntimeID, userID: s.UserID}
 }
 
-func (s *MemoryStore) shardLocked(scope model.Scope) *scopeShard {
+func (s *MemoryStore) shardLocked(scope domain.Scope) *scopeShard {
 	k := keyOf(scope)
 	sh, ok := s.byScope[k]
 	if !ok {
 		sh = &scopeShard{
-			byID:   make(map[string]model.EvidenceRef),
+			byID:   make(map[string]domain.EvidenceRef),
 			byFact: make(map[string][]string),
 		}
 		s.byScope[k] = sh
@@ -55,7 +55,7 @@ func (s *MemoryStore) shardLocked(scope model.Scope) *scopeShard {
 // the same (scope, factID, refs) produces the same ids and does not
 // duplicate entries. Refs with empty ID get auto-assigned a stable
 // "<factID>#<index>" id so rebuild/rollback retries stay safe.
-func (s *MemoryStore) Append(_ context.Context, scope model.Scope, factID string, refs []model.EvidenceRef) error {
+func (s *MemoryStore) Append(_ context.Context, scope domain.Scope, factID string, refs []domain.EvidenceRef) error {
 	if scope.RuntimeID == "" {
 		return errdefs.Validationf("recall evidence store: scope.runtime_id is required")
 	}
@@ -90,16 +90,16 @@ func (s *MemoryStore) Append(_ context.Context, scope model.Scope, factID string
 }
 
 // Get returns one EvidenceRef. ErrNotFound when missing.
-func (s *MemoryStore) Get(_ context.Context, scope model.Scope, evidenceID string) (model.EvidenceRef, error) {
+func (s *MemoryStore) Get(_ context.Context, scope domain.Scope, evidenceID string) (domain.EvidenceRef, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	sh, ok := s.byScope[keyOf(scope)]
 	if !ok {
-		return model.EvidenceRef{}, ErrNotFound
+		return domain.EvidenceRef{}, ErrNotFound
 	}
 	r, ok := sh.byID[evidenceID]
 	if !ok {
-		return model.EvidenceRef{}, ErrNotFound
+		return domain.EvidenceRef{}, ErrNotFound
 	}
 	return r, nil
 }
@@ -107,7 +107,7 @@ func (s *MemoryStore) Get(_ context.Context, scope model.Scope, evidenceID strin
 // ListFactIDs enumerates every fact id with at least one ref in
 // this scope. Order is unspecified; callers treat the result as a
 // set. Returns nil when the scope has no shard yet.
-func (s *MemoryStore) ListFactIDs(_ context.Context, scope model.Scope) ([]string, error) {
+func (s *MemoryStore) ListFactIDs(_ context.Context, scope domain.Scope) ([]string, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	sh, ok := s.byScope[keyOf(scope)]
@@ -123,7 +123,7 @@ func (s *MemoryStore) ListFactIDs(_ context.Context, scope model.Scope) ([]strin
 
 // ListByFact returns refs in append order. Empty factID returns nil
 // so callers cannot accidentally enumerate the whole scope.
-func (s *MemoryStore) ListByFact(_ context.Context, scope model.Scope, factID string) ([]model.EvidenceRef, error) {
+func (s *MemoryStore) ListByFact(_ context.Context, scope domain.Scope, factID string) ([]domain.EvidenceRef, error) {
 	if factID == "" {
 		return nil, nil
 	}
@@ -137,7 +137,7 @@ func (s *MemoryStore) ListByFact(_ context.Context, scope model.Scope, factID st
 	if len(ids) == 0 {
 		return nil, nil
 	}
-	out := make([]model.EvidenceRef, 0, len(ids))
+	out := make([]domain.EvidenceRef, 0, len(ids))
 	for _, id := range ids {
 		if r, ok := sh.byID[id]; ok {
 			out = append(out, r)
@@ -149,7 +149,7 @@ func (s *MemoryStore) ListByFact(_ context.Context, scope model.Scope, factID st
 // ForgetByFact removes all evidence attached to the listed facts.
 // Missing fact ids are tolerated so partial-failure retries stay
 // idempotent.
-func (s *MemoryStore) ForgetByFact(_ context.Context, scope model.Scope, factIDs []string) error {
+func (s *MemoryStore) ForgetByFact(_ context.Context, scope domain.Scope, factIDs []string) error {
 	if len(factIDs) == 0 {
 		return nil
 	}

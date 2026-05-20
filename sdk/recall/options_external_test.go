@@ -13,6 +13,7 @@ type externalTelemetryHook struct{}
 func (externalTelemetryHook) OnProjection(recall.ProjectionEvent) {}
 func (externalTelemetryHook) OnDrift(recall.DriftEvent)           {}
 func (externalTelemetryHook) OnPipeline(recall.PipelineEvent)     {}
+func (externalTelemetryHook) OnStage(recall.StageDiagnostic)      {}
 
 type externalEvidenceStore struct{}
 

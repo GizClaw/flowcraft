@@ -5,13 +5,13 @@ import (
 	"context"
 	"time"
 
-	"github.com/GizClaw/flowcraft/sdk/recall/internal/model"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/planner"
 )
 
 // Querier is the read contract from the timeline projection.
 type Querier interface {
-	Query(ctx context.Context, scope model.Scope, from, to time.Time, kinds []model.FactKind, limit int) []string
+	Query(ctx context.Context, scope domain.Scope, from, to time.Time, kinds []domain.FactKind, limit int) []string
 }
 
 // Source surfaces fact ids from the timeline projection ordered by
@@ -28,14 +28,14 @@ func New(querier Querier) *Source {
 
 func (s *Source) Name() string { return planner.SourceTimeline }
 
-func (s *Source) Query(ctx context.Context, plan model.QueryPlan) model.SourceResult {
+func (s *Source) Query(ctx context.Context, plan domain.QueryPlan) domain.SourceResult {
 	if !planner.ActivatesTimeline(plan.Intent) {
-		return model.SourceResult{Source: s.Name()}
+		return domain.SourceResult{Source: s.Name()}
 	}
 	scope := plan.Intent.Scope
 	budget := plan.SourceBudgets[s.Name()]
 	if budget <= 0 {
-		return model.SourceResult{Source: s.Name()}
+		return domain.SourceResult{Source: s.Name()}
 	}
 
 	tr := plan.Intent.TimeRange
@@ -49,9 +49,9 @@ func (s *Source) Query(ctx context.Context, plan model.QueryPlan) model.SourceRe
 		truncated = true
 	}
 
-	candidates := make([]model.Candidate, 0, len(ids))
+	candidates := make([]domain.Candidate, 0, len(ids))
 	for i, id := range ids {
-		candidates = append(candidates, model.Candidate{
+		candidates = append(candidates, domain.Candidate{
 			FactID: id,
 			Scope:  scope,
 			Source: s.Name(),
@@ -59,7 +59,7 @@ func (s *Source) Query(ctx context.Context, plan model.QueryPlan) model.SourceRe
 			Score:  s.BaseScore,
 		})
 	}
-	return model.SourceResult{
+	return domain.SourceResult{
 		Source:     s.Name(),
 		Candidates: candidates,
 		Truncated:  truncated,

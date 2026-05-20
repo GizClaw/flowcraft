@@ -14,7 +14,7 @@ import (
 	"context"
 
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
-	"github.com/GizClaw/flowcraft/sdk/recall/internal/model"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain"
 )
 
 // ErrNotFound is returned by Get when the evidence id is missing
@@ -42,15 +42,15 @@ type Store interface {
 	// Refs whose ID is empty are auto-assigned by the store using
 	// "<factID>#<index>". Stable across replays so two Appends for
 	// the same fact produce the same ids.
-	Append(ctx context.Context, scope model.Scope, factID string, refs []model.EvidenceRef) error
+	Append(ctx context.Context, scope domain.Scope, factID string, refs []domain.EvidenceRef) error
 
 	// Get returns one EvidenceRef by id. Missing → ErrNotFound.
-	Get(ctx context.Context, scope model.Scope, evidenceID string) (model.EvidenceRef, error)
+	Get(ctx context.Context, scope domain.Scope, evidenceID string) (domain.EvidenceRef, error)
 
 	// ListByFact returns refs in append order. Empty factID
 	// returns an empty slice so callers cannot accidentally
 	// enumerate the whole scope.
-	ListByFact(ctx context.Context, scope model.Scope, factID string) ([]model.EvidenceRef, error)
+	ListByFact(ctx context.Context, scope domain.Scope, factID string) ([]domain.EvidenceRef, error)
 
 	// ListFactIDs enumerates every fact id that has at least one
 	// evidence ref recorded in this scope. Used by rebuild to
@@ -60,12 +60,12 @@ type Store interface {
 	//
 	// Order is unspecified — callers MUST treat the result as a
 	// set. Empty scope returns nil.
-	ListFactIDs(ctx context.Context, scope model.Scope) ([]string, error)
+	ListFactIDs(ctx context.Context, scope domain.Scope) ([]string, error)
 
 	// ForgetByFact removes all refs attached to the listed fact
 	// ids. Missing ids are tolerated so callers can issue
 	// idempotent forgets after partial failures.
-	ForgetByFact(ctx context.Context, scope model.Scope, factIDs []string) error
+	ForgetByFact(ctx context.Context, scope domain.Scope, factIDs []string) error
 
 	// Close releases backend resources.
 	Close() error

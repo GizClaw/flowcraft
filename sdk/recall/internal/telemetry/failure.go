@@ -2,7 +2,9 @@
 // recall traces and pipeline events (docs §10.3 / §10.4).
 package telemetry
 
-import "github.com/GizClaw/flowcraft/sdk/recall/internal/model"
+import (
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain/diagnostic"
+)
 
 // FailureStage is the diagnostics taxonomy (docs §10.4). Values are
 // stable wire identifiers for dashboards and repair playbooks.
@@ -33,13 +35,13 @@ type Attribution struct {
 }
 
 // StageFromDropReason maps read-path drop reasons to failure stages.
-func StageFromDropReason(reason model.DropReason) FailureStage {
+func StageFromDropReason(reason diagnostic.DropReason) FailureStage {
 	switch reason {
-	case model.DropStaleFact, model.DropSuperseded:
+	case diagnostic.DropStaleFact, diagnostic.DropSuperseded:
 		return StageProjection
-	case model.DropMaterializeErr, model.DropScopeViolation:
+	case diagnostic.DropMaterializeErr, diagnostic.DropScopeViolation:
 		return StageMaterialize
-	case model.DropDuplicate, model.DropTotalCap, model.DropPerSourceCap:
+	case diagnostic.DropDuplicate, diagnostic.DropTotalCap, diagnostic.DropPerSourceCap:
 		return StageFusion
 	default:
 		return StageMaterialize

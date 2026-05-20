@@ -7,15 +7,15 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
-	"github.com/GizClaw/flowcraft/sdk/recall/internal/model"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain"
 )
 
-func scope() model.Scope {
-	return model.Scope{RuntimeID: "rt", UserID: "u1"}
+func scope() domain.Scope {
+	return domain.Scope{RuntimeID: "rt", UserID: "u1"}
 }
 
-func ref(id, msg, text string, ts int64) model.EvidenceRef {
-	return model.EvidenceRef{
+func ref(id, msg, text string, ts int64) domain.EvidenceRef {
+	return domain.EvidenceRef{
 		ID:        id,
 		MessageID: msg,
 		Role:      "user",
@@ -27,7 +27,7 @@ func ref(id, msg, text string, ts int64) model.EvidenceRef {
 func TestAppend_PersistsAndReturnsInOrder(t *testing.T) {
 	s := NewMemoryStore()
 	ctx := context.Background()
-	if err := s.Append(ctx, scope(), "f1", []model.EvidenceRef{
+	if err := s.Append(ctx, scope(), "f1", []domain.EvidenceRef{
 		ref("e1", "m1", "hello", 10),
 		ref("e2", "m1", "world", 11),
 	}); err != nil {
@@ -45,7 +45,7 @@ func TestAppend_PersistsAndReturnsInOrder(t *testing.T) {
 func TestAppend_AssignsStableIDsForEmptyRefs(t *testing.T) {
 	s := NewMemoryStore()
 	ctx := context.Background()
-	refs := []model.EvidenceRef{
+	refs := []domain.EvidenceRef{
 		{Text: "first"},
 		{Text: "second"},
 	}
@@ -69,13 +69,13 @@ func TestAppend_AssignsStableIDsForEmptyRefs(t *testing.T) {
 func TestAppend_IdempotentOnSameIDs(t *testing.T) {
 	s := NewMemoryStore()
 	ctx := context.Background()
-	refs := []model.EvidenceRef{ref("e1", "m1", "v1", 1)}
+	refs := []domain.EvidenceRef{ref("e1", "m1", "v1", 1)}
 	if err := s.Append(ctx, scope(), "f1", refs); err != nil {
 		t.Fatal(err)
 	}
 	// second append with same id is a no-op on the index, but
 	// payload overwrite is allowed (rebuild replays canonical state).
-	if err := s.Append(ctx, scope(), "f1", []model.EvidenceRef{ref("e1", "m1", "v2", 2)}); err != nil {
+	if err := s.Append(ctx, scope(), "f1", []domain.EvidenceRef{ref("e1", "m1", "v2", 2)}); err != nil {
 		t.Fatal(err)
 	}
 	got, _ := s.ListByFact(ctx, scope(), "f1")
@@ -87,11 +87,11 @@ func TestAppend_IdempotentOnSameIDs(t *testing.T) {
 func TestAppend_ValidationErrorsClassified(t *testing.T) {
 	s := NewMemoryStore()
 	ctx := context.Background()
-	err := s.Append(ctx, model.Scope{}, "f1", []model.EvidenceRef{ref("e1", "", "", 0)})
+	err := s.Append(ctx, domain.Scope{}, "f1", []domain.EvidenceRef{ref("e1", "", "", 0)})
 	if !errdefs.IsValidation(err) {
 		t.Errorf("missing runtime_id must be Validation: %v", err)
 	}
-	err = s.Append(ctx, scope(), "", []model.EvidenceRef{ref("e1", "", "", 0)})
+	err = s.Append(ctx, scope(), "", []domain.EvidenceRef{ref("e1", "", "", 0)})
 	if !errdefs.IsValidation(err) {
 		t.Errorf("missing fact id must be Validation: %v", err)
 	}
@@ -112,7 +112,7 @@ func TestGet_NotFoundClassified(t *testing.T) {
 func TestListByFact_EmptyFactIDReturnsEmpty(t *testing.T) {
 	s := NewMemoryStore()
 	ctx := context.Background()
-	if err := s.Append(ctx, scope(), "f1", []model.EvidenceRef{ref("e1", "", "", 0)}); err != nil {
+	if err := s.Append(ctx, scope(), "f1", []domain.EvidenceRef{ref("e1", "", "", 0)}); err != nil {
 		t.Fatal(err)
 	}
 	got, err := s.ListByFact(ctx, scope(), "")
@@ -127,10 +127,10 @@ func TestListByFact_EmptyFactIDReturnsEmpty(t *testing.T) {
 func TestForgetByFact_RemovesIndexAndBlobs(t *testing.T) {
 	s := NewMemoryStore()
 	ctx := context.Background()
-	if err := s.Append(ctx, scope(), "f1", []model.EvidenceRef{ref("e1", "", "", 0), ref("e2", "", "", 1)}); err != nil {
+	if err := s.Append(ctx, scope(), "f1", []domain.EvidenceRef{ref("e1", "", "", 0), ref("e2", "", "", 1)}); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.Append(ctx, scope(), "f2", []model.EvidenceRef{ref("e3", "", "", 2)}); err != nil {
+	if err := s.Append(ctx, scope(), "f2", []domain.EvidenceRef{ref("e3", "", "", 2)}); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.ForgetByFact(ctx, scope(), []string{"f1", "missing"}); err != nil {
@@ -150,11 +150,11 @@ func TestForgetByFact_RemovesIndexAndBlobs(t *testing.T) {
 func TestStore_IsolatesByScope(t *testing.T) {
 	s := NewMemoryStore()
 	ctx := context.Background()
-	other := model.Scope{RuntimeID: "rt", UserID: "u2"}
-	if err := s.Append(ctx, scope(), "f1", []model.EvidenceRef{ref("e1", "", "", 0)}); err != nil {
+	other := domain.Scope{RuntimeID: "rt", UserID: "u2"}
+	if err := s.Append(ctx, scope(), "f1", []domain.EvidenceRef{ref("e1", "", "", 0)}); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.Append(ctx, other, "f1", []model.EvidenceRef{ref("e1", "", "", 1)}); err != nil {
+	if err := s.Append(ctx, other, "f1", []domain.EvidenceRef{ref("e1", "", "", 1)}); err != nil {
 		t.Fatal(err)
 	}
 	a, _ := s.ListByFact(ctx, scope(), "f1")

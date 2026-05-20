@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	"github.com/GizClaw/flowcraft/sdk/llm"
-	"github.com/GizClaw/flowcraft/sdk/recall/internal/model"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain"
 )
 
 // fakeRerankLLM is a minimal llm.LLM satisfier for reranker tests.
@@ -36,9 +36,9 @@ func (f *fakeRerankLLM) GenerateStream(context.Context, []llm.Message, ...llm.Ge
 
 func makeHits() []Hit {
 	return []Hit{
-		{Fact: model.TemporalFact{ID: "a", Content: "Paris is the capital of France."}, Score: 0.9},
-		{Fact: model.TemporalFact{ID: "b", Content: "Bananas grow on trees in tropical climates."}, Score: 0.8},
-		{Fact: model.TemporalFact{ID: "c", Content: "France borders Belgium and Germany."}, Score: 0.7},
+		{Fact: domain.TemporalFact{ID: "a", Content: "Paris is the capital of France."}, Score: 0.9},
+		{Fact: domain.TemporalFact{ID: "b", Content: "Bananas grow on trees in tropical climates."}, Score: 0.8},
+		{Fact: domain.TemporalFact{ID: "c", Content: "France borders Belgium and Germany."}, Score: 0.7},
 	}
 }
 
@@ -116,9 +116,9 @@ func TestLLMReranker_NilClientIsNoOp(t *testing.T) {
 // for downstream pagination without paying for an oversize prompt.
 func TestLLMReranker_PreservesTailBeyondMaxBatch(t *testing.T) {
 	hits := []Hit{
-		{Fact: model.TemporalFact{ID: "a", Content: "x"}, Score: 0.9},
-		{Fact: model.TemporalFact{ID: "b", Content: "y"}, Score: 0.5},
-		{Fact: model.TemporalFact{ID: "c", Content: "z"}, Score: 0.3},
+		{Fact: domain.TemporalFact{ID: "a", Content: "x"}, Score: 0.9},
+		{Fact: domain.TemporalFact{ID: "b", Content: "y"}, Score: 0.5},
+		{Fact: domain.TemporalFact{ID: "c", Content: "z"}, Score: 0.3},
 	}
 	client := &fakeRerankLLM{
 		Body: `{"ranking":[{"index":0,"score":0.1},{"index":1,"score":0.9}]}`,

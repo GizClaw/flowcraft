@@ -4,27 +4,26 @@ import (
 	"testing"
 	"time"
 
-	"github.com/GizClaw/flowcraft/sdk/recall/internal/materialize"
-	"github.com/GizClaw/flowcraft/sdk/recall/internal/model"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain"
 )
 
 func TestRankContextItems_UsesEvidenceAndIntentSignals(t *testing.T) {
 	now := time.Unix(1, 0)
-	items := []materialize.ContextItem{
+	items := []domain.ContextItem{
 		{
-			Candidate: model.Candidate{FactID: "generic", Score: 0.05},
-			Fact: model.TemporalFact{
+			Candidate: domain.Candidate{FactID: "generic", Score: 0.05},
+			Fact: domain.TemporalFact{
 				ID:         "generic",
-				Kind:       model.KindNote,
+				Kind:       domain.KindNote,
 				Content:    "Caroline joined a group",
 				Confidence: 0.5,
 			},
 		},
 		{
-			Candidate: model.Candidate{FactID: "grounded", Score: 0.01},
-			Fact: model.TemporalFact{
+			Candidate: domain.Candidate{FactID: "grounded", Score: 0.01},
+			Fact: domain.TemporalFact{
 				ID:           "grounded",
-				Kind:         model.KindEvent,
+				Kind:         domain.KindEvent,
 				Subject:      "caroline",
 				Entities:     []string{"caroline"},
 				Content:      "Caroline went to the support group",
@@ -35,11 +34,11 @@ func TestRankContextItems_UsesEvidenceAndIntentSignals(t *testing.T) {
 		},
 	}
 
-	got := rankContextItems(items, model.QueryIntent{
+	got := rankContextItems(items, domain.QueryIntent{
 		Text:     "When did Caroline go to the LGBTQ support group?",
 		Entities: []string{"caroline", "lgbtq"},
 		Subject:  "caroline",
-		Kinds:    []model.FactKind{model.KindEvent, model.KindState, model.KindPlan},
+		Kinds:    []domain.FactKind{domain.KindEvent, domain.KindState, domain.KindPlan},
 		Limit:    1,
 	}, 1)
 	if len(got) != 1 {

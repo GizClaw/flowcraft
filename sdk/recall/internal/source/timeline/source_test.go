@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/GizClaw/flowcraft/sdk/recall/internal/model"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/planner"
 )
 
@@ -14,7 +14,7 @@ type fixedQuerier struct {
 	lastLimit int
 }
 
-func (q *fixedQuerier) Query(_ context.Context, _ model.Scope, _, _ time.Time, _ []model.FactKind, limit int) []string {
+func (q *fixedQuerier) Query(_ context.Context, _ domain.Scope, _, _ time.Time, _ []domain.FactKind, limit int) []string {
 	q.lastLimit = limit
 	ids := append([]string(nil), q.ids...)
 	if limit > 0 && len(ids) > limit {
@@ -26,11 +26,11 @@ func (q *fixedQuerier) Query(_ context.Context, _ model.Scope, _, _ time.Time, _
 func TestSource_DoesNotMarkExactBudgetAsTruncated(t *testing.T) {
 	q := &fixedQuerier{ids: []string{"a", "b"}}
 	src := New(q)
-	plan := model.QueryPlan{
-		Intent: model.QueryIntent{
-			Scope:     model.Scope{RuntimeID: "rt", UserID: "u1"},
-			Kinds:     []model.FactKind{model.KindEvent},
-			TimeRange: model.TimeRange{From: time.Unix(1, 0), To: time.Unix(2, 0)},
+	plan := domain.QueryPlan{
+		Intent: domain.QueryIntent{
+			Scope:     domain.Scope{RuntimeID: "rt", UserID: "u1"},
+			Kinds:     []domain.FactKind{domain.KindEvent},
+			TimeRange: domain.TimeRange{From: time.Unix(1, 0), To: time.Unix(2, 0)},
 		},
 		SourceBudgets: map[string]int{planner.SourceTimeline: 2},
 		TotalCap:      2,
@@ -51,11 +51,11 @@ func TestSource_DoesNotMarkExactBudgetAsTruncated(t *testing.T) {
 func TestSource_MarksOverBudgetAsTruncated(t *testing.T) {
 	q := &fixedQuerier{ids: []string{"a", "b", "c"}}
 	src := New(q)
-	plan := model.QueryPlan{
-		Intent: model.QueryIntent{
-			Scope:     model.Scope{RuntimeID: "rt", UserID: "u1"},
-			Kinds:     []model.FactKind{model.KindEvent},
-			TimeRange: model.TimeRange{From: time.Unix(1, 0), To: time.Unix(2, 0)},
+	plan := domain.QueryPlan{
+		Intent: domain.QueryIntent{
+			Scope:     domain.Scope{RuntimeID: "rt", UserID: "u1"},
+			Kinds:     []domain.FactKind{domain.KindEvent},
+			TimeRange: domain.TimeRange{From: time.Unix(1, 0), To: time.Unix(2, 0)},
 		},
 		SourceBudgets: map[string]int{planner.SourceTimeline: 2},
 		TotalCap:      2,

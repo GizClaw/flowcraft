@@ -8,11 +8,11 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
-	"github.com/GizClaw/flowcraft/sdk/recall/internal/compiler"
-	"github.com/GizClaw/flowcraft/sdk/recall/internal/evolution"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/ingest"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/port"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/fusion"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/materialize"
-	"github.com/GizClaw/flowcraft/sdk/recall/internal/model"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/planner"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/projection"
 	entityproj "github.com/GizClaw/flowcraft/sdk/recall/internal/projection/entity"
@@ -21,8 +21,7 @@ import (
 	relationproj "github.com/GizClaw/flowcraft/sdk/recall/internal/projection/relation"
 	retrievalproj "github.com/GizClaw/flowcraft/sdk/recall/internal/projection/retrieval"
 	timelineproj "github.com/GizClaw/flowcraft/sdk/recall/internal/projection/timeline"
-	"github.com/GizClaw/flowcraft/sdk/recall/internal/queryintent"
-	"github.com/GizClaw/flowcraft/sdk/recall/internal/source"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/intent"
 	entitysource "github.com/GizClaw/flowcraft/sdk/recall/internal/source/entity"
 	graphsource "github.com/GizClaw/flowcraft/sdk/recall/internal/source/graph"
 	profilesource "github.com/GizClaw/flowcraft/sdk/recall/internal/source/profile"
@@ -48,25 +47,25 @@ type memory struct {
 	store          temporalstore.Store
 	evidenceStore  evidencestore.Store
 	retrievalIndex retrieval.Index
-	compiler       compiler.Compiler
-	resolver       compiler.ConflictResolver
+	compiler       port.Ingestor
+	resolver       port.ConflictResolver
 	fanout         *projection.Fanout
-	telemetry      telemetry.Hook
+	telemetry      port.TelemetryHook
 
 	// projections retains the canonical projection set (in
 	// registration order) so RebuildProjection can resolve a
 	// projection by name without re-deriving it from fanout.
-	projections []projection.Projection
+	projections []port.Projection
 
-	queryCompiler queryintent.Compiler
-	planner       planner.Planner
-	sources       []source.CandidateSource
-	fuser         fusion.Fuser
-	materializer  materialize.Materializer
-	fusionOpts    fusion.Options
+	queryCompiler port.IntentCompiler
+	planner       port.Planner
+	sources       []port.Source
+	fuser         port.Fuser
+	materializer  port.Materializer
+	fusionOpts    port.FusionOptions
 	graphEnabled  bool
 	reranker      Reranker
-	evolution     evolution.Runner
+	evolution     port.EvolutionRunner
 
 	writeMu    sync.Mutex
 	writeLocks map[writeScopeKey]*writeLock
@@ -101,9 +100,9 @@ func New(opts ...Option) (Memory, error) {
 		cfg.retrievalIndex = retrievalmem.New()
 	}
 	if cfg.compiler == nil {
-		stages := compiler.Stages{}
+		stages := ingest.Stages{}
 		if cfg.llmExtractor != nil {
-			ex := compiler.NewLLMExtractor(cfg.llmExtractor.client)
+			ex := ingest.NewLLMExtractor(cfg.llmExtractor.client)
 			for _, opt := range cfg.llmExtractor.tune {
 				if opt.apply != nil {
 					opt.apply(ex)
@@ -114,10 +113,10 @@ func New(opts ...Option) (Memory, error) {
 		if cfg.governance != nil {
 			stages.Governance = cfg.governance
 		}
-		cfg.compiler = compiler.New(stages)
+		cfg.compiler = ingest.New(stages)
 	}
 	if !cfg.resolverSet {
-		cfg.resolver = compiler.NewResolver()
+		cfg.resolver = ingest.NewResolver()
 	}
 
 	var retrievalProjOpts []retrievalproj.Option
@@ -133,7 +132,7 @@ func New(opts ...Option) (Memory, error) {
 	timelineProj := timelineproj.New()
 	relationProj := relationproj.New()
 	profileProj := profileproj.New()
-	projections := []projection.Projection{
+	projections := []port.Projection{
 		retrievalProj, entityProj,
 		timelineProj, relationProj, profileProj,
 	}
@@ -149,7 +148,7 @@ func New(opts ...Option) (Memory, error) {
 	// entity source on the entity projection's read-only Lookup.
 	qc := cfg.queryCompiler
 	if qc == nil {
-		qc = queryintent.Default()
+		qc = intent.Default()
 	}
 	planr := cfg.planner
 	if planr == nil {
@@ -163,13 +162,13 @@ func New(opts ...Option) (Memory, error) {
 			rb.GraphEnabled = true
 		}
 	}
-	srcs := append([]source.CandidateSource(nil), cfg.sources...)
+	srcs := append([]port.Source(nil), cfg.sources...)
 	if len(srcs) == 0 {
 		var retrievalSrcOpts []retrievalsource.Option
 		if cfg.embedder != nil {
 			retrievalSrcOpts = append(retrievalSrcOpts, retrievalsource.WithEmbedder(cfg.embedder))
 		}
-		srcs = []source.CandidateSource{
+		srcs = []port.Source{
 			retrievalsource.New(cfg.retrievalIndex, retrievalSrcOpts...),
 			entitysource.New(entityProj),
 			relationsource.New(relationProj),
@@ -276,7 +275,7 @@ func (m *memory) runSave(ctx context.Context, scope Scope, req SaveRequest, with
 
 	stageStarted := time.Now()
 	knownEntities := m.snapshotKnownEntities(scope)
-	compiled, err := m.compiler.Compile(ctx, compiler.Input{
+	compiled, err := m.compiler.Compile(ctx, port.IngestInput{
 		Scope:         scope,
 		Facts:         req.Facts,
 		Turns:         req.Turns,
@@ -300,7 +299,8 @@ func (m *memory) runSave(ctx context.Context, scope Scope, req SaveRequest, with
 		if len(compiled.Dropped) > 0 {
 			trace.Dropped = make([]DroppedFact, len(compiled.Dropped))
 			for i, d := range compiled.Dropped {
-				trace.Dropped[i] = DroppedFact{Fact: d.Fact, Reason: d.Reason}
+				f, _ := d.Fact.(domain.TemporalFact)
+			trace.Dropped[i] = DroppedFact{Fact: f, Reason: d.Reason}
 			}
 		}
 	}
@@ -313,9 +313,9 @@ func (m *memory) runSave(ctx context.Context, scope Scope, req SaveRequest, with
 
 	// Conflict resolution short-circuits noop dedupes and queues
 	// supersede closes for after Append succeeds.
-	resolution := compiler.Resolution{Facts: compiled.Facts}
+	resolution := domain.Resolution{Facts: compiled.Facts}
 	if m.resolver != nil {
-		view := compiler.StoreView{
+		view := ingest.StoreView{
 			FindByMergeKeyFn: m.store.FindByMergeKey,
 			GetFn:            m.store.Get,
 		}
@@ -368,9 +368,9 @@ func (m *memory) runSave(ctx context.Context, scope Scope, req SaveRequest, with
 	stageStarted = time.Now()
 	if evErr := m.mirrorEvidence(ctx, scope, resolution.Facts); evErr != nil {
 		m.emitPipeline(scope, "evidence", "mirror", len(resolution.Facts), stageStarted, evErr)
-		m.fanout.Telemetry().OnProjection(telemetry.ProjectionEvent{
+		m.fanout.Telemetry().OnProjection(port.ProjectionEvent{
 			Projection:  "evidence",
-			Op:          telemetry.OpProject,
+			Op:          port.OpProject,
 			Consistency: projection.Optional.String(),
 			FactCount:   len(resolution.Facts),
 			Err:         evErr,
@@ -403,7 +403,7 @@ func (m *memory) runSave(ctx context.Context, scope Scope, req SaveRequest, with
 //
 // Append is idempotent on (scope, factID, refs[i].ID) so retries
 // and rebuilds replay without producing duplicate index entries.
-func (m *memory) mirrorEvidence(ctx context.Context, scope Scope, facts []model.TemporalFact) error {
+func (m *memory) mirrorEvidence(ctx context.Context, scope Scope, facts []domain.TemporalFact) error {
 	if m.evidenceStore == nil {
 		return nil
 	}
@@ -443,7 +443,7 @@ func (m *memory) emitPipeline(scope Scope, stage, op string, count int, started 
 	if hook == nil {
 		return
 	}
-	hook.OnPipeline(telemetry.PipelineEvent{
+	hook.OnPipeline(port.PipelineEvent{
 		Scope:   scope,
 		Stage:   stage,
 		Op:      op,
@@ -465,10 +465,10 @@ func (m *memory) emitPipeline(scope Scope, stage, op string, count int, started 
 // Missing / disabled projection returns nil — the Structurizer
 // degrades to NER-only entity extraction, which is the same path the
 // very first Save in a scope already takes.
-func (m *memory) snapshotKnownEntities(scope Scope) []compiler.EntitySnapshot {
+func (m *memory) snapshotKnownEntities(scope Scope) []port.EntitySnapshot {
 	for _, p := range m.projections {
 		snap, ok := p.(interface {
-			Snapshot(scope model.Scope) []entityproj.Snapshot
+			Snapshot(scope domain.Scope) []entityproj.Snapshot
 		})
 		if !ok {
 			continue
@@ -477,9 +477,9 @@ func (m *memory) snapshotKnownEntities(scope Scope) []compiler.EntitySnapshot {
 		if len(raw) == 0 {
 			return nil
 		}
-		out := make([]compiler.EntitySnapshot, 0, len(raw))
+		out := make([]port.EntitySnapshot, 0, len(raw))
 		for _, r := range raw {
-			out = append(out, compiler.EntitySnapshot{
+			out = append(out, port.EntitySnapshot{
 				Canonical: r.Canonical,
 				Aliases:   r.Aliases,
 			})
@@ -532,8 +532,8 @@ func (m *memory) lockWriteScope(scope Scope) func() {
 // the supersede chain stays reconstructable from the new fact alone.
 // The benign close is recorded via pipeline telemetry so operators
 // can still spot pathological rates.
-func (m *memory) applyValidityCloses(ctx context.Context, closes []compiler.ValidityClose) ([]compiler.ValidityClose, error) {
-	applied := make([]compiler.ValidityClose, 0, len(closes))
+func (m *memory) applyValidityCloses(ctx context.Context, closes []domain.ValidityClose) ([]domain.ValidityClose, error) {
+	applied := make([]domain.ValidityClose, 0, len(closes))
 	for _, c := range closes {
 		err := m.store.UpdateValidity(ctx, c.Scope, c.FactID, c.ValidTo, c.CorrectedBy)
 		if err == nil {
@@ -555,13 +555,13 @@ func (m *memory) applyValidityCloses(ctx context.Context, closes []compiler.Vali
 // validity window is restored. Best-effort: cleanup failures only
 // surface through telemetry, the user-visible error stays
 // attributable to the original cause.
-func (m *memory) rollbackAppendedFacts(ctx context.Context, scope Scope, factIDs []string, applied []compiler.ValidityClose, cause error) {
+func (m *memory) rollbackAppendedFacts(ctx context.Context, scope Scope, factIDs []string, applied []domain.ValidityClose, cause error) {
 	cleanupCtx := detachCancel(ctx)
 	hook := m.fanout.Telemetry()
 	if err := m.store.Delete(cleanupCtx, scope, factIDs); err != nil {
-		hook.OnProjection(telemetry.ProjectionEvent{
+		hook.OnProjection(port.ProjectionEvent{
 			Projection:  "save_rollback.appended_facts",
-			Op:          telemetry.OpForget,
+			Op:          port.OpForget,
 			Consistency: projection.Required.String(),
 			FactCount:   len(factIDs),
 			Err:         fmt.Errorf("rollback cleanup after %w: %v", cause, err),
@@ -583,13 +583,13 @@ func (m *memory) rollbackAppendedFacts(ctx context.Context, scope Scope, factIDs
 //
 // Any failure here is reported via telemetry but never overrides
 // the original projection error.
-func (m *memory) rollbackSave(ctx context.Context, scope Scope, factIDs []string, closes []compiler.ValidityClose, cause error) {
+func (m *memory) rollbackSave(ctx context.Context, scope Scope, factIDs []string, closes []domain.ValidityClose, cause error) {
 	cleanupCtx := detachCancel(ctx)
 	hook := m.fanout.Telemetry()
 	if err := m.fanout.ForgetRequired(cleanupCtx, scope, factIDs); err != nil {
-		hook.OnProjection(telemetry.ProjectionEvent{
+		hook.OnProjection(port.ProjectionEvent{
 			Projection:  "save_rollback.forget_required",
-			Op:          telemetry.OpForget,
+			Op:          port.OpForget,
 			Consistency: projection.Required.String(),
 			FactCount:   len(factIDs),
 			Err:         fmt.Errorf("rollback cleanup after %w: %v", cause, err),
@@ -598,9 +598,9 @@ func (m *memory) rollbackSave(ctx context.Context, scope Scope, factIDs []string
 	m.fanout.ForgetOptional(cleanupCtx, scope, factIDs)
 	if m.evidenceStore != nil {
 		if err := m.evidenceStore.ForgetByFact(cleanupCtx, scope, factIDs); err != nil {
-			hook.OnProjection(telemetry.ProjectionEvent{
+			hook.OnProjection(port.ProjectionEvent{
 				Projection:  "save_rollback.evidence_forget",
-				Op:          telemetry.OpForget,
+				Op:          port.OpForget,
 				Consistency: projection.Required.String(),
 				FactCount:   len(factIDs),
 				Err:         fmt.Errorf("rollback cleanup after %w: %v", cause, err),
@@ -608,9 +608,9 @@ func (m *memory) rollbackSave(ctx context.Context, scope Scope, factIDs []string
 		}
 	}
 	if err := m.store.Delete(cleanupCtx, scope, factIDs); err != nil {
-		hook.OnProjection(telemetry.ProjectionEvent{
+		hook.OnProjection(port.ProjectionEvent{
 			Projection:  "save_rollback.store_delete",
-			Op:          telemetry.OpForget,
+			Op:          port.OpForget,
 			Consistency: projection.Required.String(),
 			FactCount:   len(factIDs),
 			Err:         fmt.Errorf("rollback cleanup after %w: %v", cause, err),
@@ -627,7 +627,7 @@ func (m *memory) rollbackSave(ctx context.Context, scope Scope, factIDs []string
 // telemetry and leave the fact alone. ErrNotFound is also tolerated
 // silently: the prior fact may already have been deleted by an
 // unrelated forget.
-func (m *memory) reopenAfterRollback(ctx context.Context, closes []compiler.ValidityClose, cause error) {
+func (m *memory) reopenAfterRollback(ctx context.Context, closes []domain.ValidityClose, cause error) {
 	if len(closes) == 0 {
 		return
 	}
@@ -637,9 +637,9 @@ func (m *memory) reopenAfterRollback(ctx context.Context, closes []compiler.Vali
 		if err == nil || errors.Is(err, temporalstore.ErrNotFound) {
 			continue
 		}
-		hook.OnProjection(telemetry.ProjectionEvent{
+		hook.OnProjection(port.ProjectionEvent{
 			Projection:  "save_rollback.reopen_validity",
-			Op:          telemetry.OpProject,
+			Op:          port.OpProject,
 			Consistency: projection.Required.String(),
 			FactCount:   1,
 			Err:         fmt.Errorf("reopen %s after %w: %v", c.FactID, cause, err),
@@ -647,7 +647,7 @@ func (m *memory) reopenAfterRollback(ctx context.Context, closes []compiler.Vali
 	}
 }
 
-func (m *memory) reprojectReopenedFacts(ctx context.Context, closes []compiler.ValidityClose, cause error) {
+func (m *memory) reprojectReopenedFacts(ctx context.Context, closes []domain.ValidityClose, cause error) {
 	if len(closes) == 0 {
 		return
 	}
@@ -658,9 +658,9 @@ func (m *memory) reprojectReopenedFacts(ctx context.Context, closes []compiler.V
 			if errors.Is(err, temporalstore.ErrNotFound) {
 				continue
 			}
-			hook.OnProjection(telemetry.ProjectionEvent{
+			hook.OnProjection(port.ProjectionEvent{
 				Projection:  "save_rollback.reproject_prior.get",
-				Op:          telemetry.OpProject,
+				Op:          port.OpProject,
 				Consistency: projection.Required.String(),
 				FactCount:   1,
 				Err:         fmt.Errorf("get %s after %w: %v", c.FactID, cause, err),
@@ -670,10 +670,10 @@ func (m *memory) reprojectReopenedFacts(ctx context.Context, closes []compiler.V
 		if fact.CorrectedBy != "" {
 			continue
 		}
-		if err := m.fanout.ProjectRequired(ctx, []model.TemporalFact{fact}); err != nil {
-			hook.OnProjection(telemetry.ProjectionEvent{
+		if err := m.fanout.ProjectRequired(ctx, []domain.TemporalFact{fact}); err != nil {
+			hook.OnProjection(port.ProjectionEvent{
 				Projection:  "save_rollback.reproject_prior",
-				Op:          telemetry.OpProject,
+				Op:          port.OpProject,
 				Consistency: projection.Required.String(),
 				FactCount:   1,
 				Err:         fmt.Errorf("reproject %s after %w: %v", c.FactID, cause, err),
@@ -713,7 +713,7 @@ func (m *memory) runRecall(ctx context.Context, scope Scope, query Query, withTr
 
 	overall := time.Now()
 	stageStarted := time.Now()
-	compiled, err := m.queryCompiler.Compile(ctx, queryintent.Input{
+	compiled, err := m.queryCompiler.Compile(ctx, port.IntentInput{
 		Text:      query.Text,
 		Entities:  query.Entities,
 		Subject:   query.Subject,
@@ -727,7 +727,7 @@ func (m *memory) runRecall(ctx context.Context, scope Scope, query Query, withTr
 		return nil, trace, fmt.Errorf("recall.Recall: query compiler: %w", err)
 	}
 	stageStarted = time.Now()
-	plan, err := m.planner.Plan(ctx, planner.Input{
+	plan, err := m.planner.Plan(ctx, port.PlannerInput{
 		Scope:        scope,
 		Text:         compiled.Text,
 		Entities:     compiled.Entities,
@@ -749,12 +749,12 @@ func (m *memory) runRecall(ctx context.Context, scope Scope, query Query, withTr
 	// Index sources by name so we honour planner.SourceOrder and
 	// silently skip sources the planner did not pick (e.g. entity
 	// when no entities were supplied).
-	byName := make(map[string]source.CandidateSource, len(m.sources))
+	byName := make(map[string]port.Source, len(m.sources))
 	for _, s := range m.sources {
 		byName[s.Name()] = s
 	}
 
-	results := make([]model.SourceResult, 0, len(plan.SourceOrder))
+	results := make([]domain.SourceResult, 0, len(plan.SourceOrder))
 	var sourceErrs []error
 	totalCandidates := 0
 	for _, name := range plan.SourceOrder {
@@ -853,7 +853,7 @@ func (m *memory) runRecall(ctx context.Context, scope Scope, query Query, withTr
 	return hits, trace, nil
 }
 
-func hitsFromItems(items []materialize.ContextItem) []Hit {
+func hitsFromItems(items []domain.ContextItem) []Hit {
 	hits := make([]Hit, 0, len(items))
 	for _, it := range items {
 		hits = append(hits, Hit{
@@ -872,7 +872,7 @@ func hitsFromItems(items []materialize.ContextItem) []Hit {
 // see every source that surfaced the fact, falling back to the
 // primary source when no metadata exists (single-source candidate
 // or legacy path).
-func hitSources(c model.Candidate) []string {
+func hitSources(c domain.Candidate) []string {
 	if c.Metadata != nil {
 		if existing, ok := c.Metadata["sources"].([]string); ok && len(existing) > 0 {
 			out := make([]string, len(existing))
@@ -938,9 +938,9 @@ func (m *memory) Forget(ctx context.Context, scope Scope, factID string) error {
 	// reconcile if needed.
 	if m.evidenceStore != nil {
 		if err := m.evidenceStore.ForgetByFact(ctx, scope, []string{factID}); err != nil {
-			m.fanout.Telemetry().OnProjection(telemetry.ProjectionEvent{
+			m.fanout.Telemetry().OnProjection(port.ProjectionEvent{
 				Projection:  "forget.evidence",
-				Op:          telemetry.OpForget,
+				Op:          port.OpForget,
 				Consistency: projection.Optional.String(),
 				FactCount:   1,
 				Err:         fmt.Errorf("evidence forget %s: %w", factID, err),
@@ -956,13 +956,13 @@ func (m *memory) Forget(ctx context.Context, scope Scope, factID string) error {
 // lives in the canonical store. The compensation is best-effort and
 // only reports telemetry on failure; the user already sees the
 // store-delete error returned from Forget.
-func (m *memory) compensateForgetStoreFailure(ctx context.Context, scope Scope, snapshot model.TemporalFact, cause error) {
+func (m *memory) compensateForgetStoreFailure(ctx context.Context, scope Scope, snapshot domain.TemporalFact, cause error) {
 	cleanupCtx := detachCancel(ctx)
 	hook := m.fanout.Telemetry()
-	if err := m.fanout.ProjectRequired(cleanupCtx, []model.TemporalFact{snapshot}); err != nil {
-		hook.OnProjection(telemetry.ProjectionEvent{
+	if err := m.fanout.ProjectRequired(cleanupCtx, []domain.TemporalFact{snapshot}); err != nil {
+		hook.OnProjection(port.ProjectionEvent{
 			Projection:  "forget_compensation.project_required",
-			Op:          telemetry.OpProject,
+			Op:          port.OpProject,
 			Consistency: projection.Required.String(),
 			FactCount:   1,
 			Err:         fmt.Errorf("compensation after store delete failed %w: %v", cause, err),
@@ -1004,9 +1004,9 @@ func (m *memory) RebuildAll(ctx context.Context, scope Scope) error {
 	m.fanout.RebuildOptional(ctx, scope, facts)
 	if m.evidenceStore != nil {
 		if err := m.rebuildEvidence(ctx, scope, facts); err != nil {
-			m.fanout.Telemetry().OnProjection(telemetry.ProjectionEvent{
+			m.fanout.Telemetry().OnProjection(port.ProjectionEvent{
 				Projection:  "rebuild.evidence",
-				Op:          telemetry.OpRebuild,
+				Op:          port.OpRebuild,
 				Consistency: projection.Optional.String(),
 				FactCount:   len(facts),
 				Err:         err,
@@ -1025,7 +1025,7 @@ func (m *memory) RebuildAll(ctx context.Context, scope Scope) error {
 //
 // The store's Append is idempotent on (factID, ref ID) so a partial
 // failure can be retried by re-running RebuildAll.
-func (m *memory) rebuildEvidence(ctx context.Context, scope Scope, facts []model.TemporalFact) error {
+func (m *memory) rebuildEvidence(ctx context.Context, scope Scope, facts []domain.TemporalFact) error {
 	adapterIDs, err := m.evidenceStore.ListFactIDs(ctx, scope)
 	if err != nil {
 		return fmt.Errorf("list evidence fact ids: %w", err)
@@ -1081,7 +1081,7 @@ func (m *memory) RebuildProjection(ctx context.Context, scope Scope, name string
 	unlock := m.lockWriteScope(scope)
 	defer unlock()
 
-	var target projection.Projection
+	var target port.Projection
 	for _, p := range m.projections {
 		if p != nil && p.Name() == name {
 			target = p

@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/GizClaw/flowcraft/sdk/recall/internal/model"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain"
 )
 
 type captureEvolution struct {
@@ -13,12 +13,12 @@ type captureEvolution struct {
 	trace   RecallTrace
 }
 
-func (c *captureEvolution) AfterSave(context.Context, model.Scope, []string) error {
+func (c *captureEvolution) AfterSave(context.Context, domain.Scope, []string) error {
 	c.saves++
 	return nil
 }
 
-func (c *captureEvolution) AfterRecall(_ context.Context, _ model.Scope, trace model.RecallTrace) error {
+func (c *captureEvolution) AfterRecall(_ context.Context, _ domain.Scope, trace domain.RecallTrace) error {
 	c.recalls++
 	c.trace = trace
 	return nil

@@ -14,7 +14,8 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/sdk/embedding"
-	"github.com/GizClaw/flowcraft/sdk/recall/internal/model"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/port"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/projection"
 	"github.com/GizClaw/flowcraft/sdk/retrieval"
 )
@@ -58,13 +59,13 @@ func New(index retrieval.Index, opts ...Option) (*Projection, error) {
 	return p, nil
 }
 
-// Name implements projection.Projection.
+// Name implements port.Projection.
 func (p *Projection) Name() string { return "retrieval" }
 
 // Consistency reports Required: a retrieval projection failure must
 // fail the canonical write so callers do not see an empty Recall on
 // a fact they just stored.
-func (p *Projection) Consistency() projection.Consistency { return projection.Required }
+func (p *Projection) Consistency() port.Consistency { return projection.Required }
 
 // Project upserts canonical facts into the retrieval namespace. Facts
 // in mixed scopes are grouped per namespace so each Upsert is scope
@@ -77,7 +78,7 @@ func (p *Projection) Consistency() projection.Consistency { return projection.Re
 // successor is projected), but rebuild and any future bulk-replay
 // path may feed superseded facts in and must not put them back into
 // the search index.
-func (p *Projection) Project(ctx context.Context, facts []model.TemporalFact) error {
+func (p *Projection) Project(ctx context.Context, facts []domain.TemporalFact) error {
 	if len(facts) == 0 {
 		return nil
 	}
@@ -137,7 +138,7 @@ func (p *Projection) Project(ctx context.Context, facts []model.TemporalFact) er
 //
 // Save never fails because the embedder is offline or rate-limited;
 // the affected facts simply index for BM25 only.
-func (p *Projection) attachEmbeddings(ctx context.Context, facts []model.TemporalFact, docs []retrieval.Doc) {
+func (p *Projection) attachEmbeddings(ctx context.Context, facts []domain.TemporalFact, docs []retrieval.Doc) {
 	if len(docs) == 0 || len(facts) != len(docs) {
 		return
 	}
@@ -167,7 +168,7 @@ func (p *Projection) attachEmbeddings(ctx context.Context, facts []model.Tempora
 // embed for a fact. The hierarchy mirrors what an answer LLM would
 // quote: canonical Content first, S/P/O sentence second, evidence
 // quote last. Facts with none of these are skipped.
-func embedTextFor(f model.TemporalFact) string {
+func embedTextFor(f domain.TemporalFact) string {
 	if c := strings.TrimSpace(f.Content); c != "" {
 		return c
 	}
@@ -218,7 +219,7 @@ func embedBatchWithFallback(ctx context.Context, emb embedding.Embedder, texts [
 }
 
 // Forget removes facts by id within a scope-derived namespace.
-func (p *Projection) Forget(ctx context.Context, scope model.Scope, factIDs []string) error {
+func (p *Projection) Forget(ctx context.Context, scope domain.Scope, factIDs []string) error {
 	if len(factIDs) == 0 {
 		return nil
 	}
@@ -240,9 +241,9 @@ func (p *Projection) Forget(ctx context.Context, scope model.Scope, factIDs []st
 // Note: facts in the snapshot must all share scope. Multi-scope
 // snapshots should be split by the caller (Memory.Rebuild handles
 // this internally).
-func (p *Projection) Rebuild(ctx context.Context, scope model.Scope, facts []model.TemporalFact) error {
+func (p *Projection) Rebuild(ctx context.Context, scope domain.Scope, facts []domain.TemporalFact) error {
 	ns := NamespaceFor(scope)
-	active := make([]model.TemporalFact, 0, len(facts))
+	active := make([]domain.TemporalFact, 0, len(facts))
 	activeIDs := make(map[string]struct{}, len(facts))
 	for _, f := range facts {
 		if f.ID == "" || f.CorrectedBy != "" {
@@ -305,8 +306,8 @@ func listAllDocIDs(ctx context.Context, idx retrieval.Index, namespace string) (
 	return out, nil
 }
 
-func groupByNamespace(facts []model.TemporalFact) map[string][]model.TemporalFact {
-	out := make(map[string][]model.TemporalFact)
+func groupByNamespace(facts []domain.TemporalFact) map[string][]domain.TemporalFact {
+	out := make(map[string][]domain.TemporalFact)
 	for _, f := range facts {
 		ns := NamespaceFor(f.Scope)
 		out[ns] = append(out[ns], f)
@@ -336,35 +337,35 @@ func uniqueStrings(in []string) []string {
 // toDoc flattens a fact into a retrieval Doc. Reserved metadata keys
 // are owned by the projection: user-supplied Metadata is copied first
 // so reserved keys always win when there is overlap.
-func toDoc(f model.TemporalFact) retrieval.Doc {
+func toDoc(f domain.TemporalFact) retrieval.Doc {
 	meta := make(map[string]any, len(f.Metadata)+12)
 	for k, v := range f.Metadata {
 		meta[k] = v
 	}
 
-	meta[model.MetaFactID] = f.ID
-	meta[model.MetaFactKind] = string(f.Kind)
-	meta[model.MetaScopeRT] = f.Scope.RuntimeID
-	meta[model.MetaScopeUser] = f.Scope.UserID
-	meta[model.MetaScopeAgent] = f.Scope.AgentID
-	meta[model.MetaMergeKey] = f.MergeKey
-	meta[model.MetaConfidence] = f.Confidence
-	meta[model.MetaObservedAt] = f.ObservedAt.UnixMilli()
+	meta[domain.MetaFactID] = f.ID
+	meta[domain.MetaFactKind] = string(f.Kind)
+	meta[domain.MetaScopeRT] = f.Scope.RuntimeID
+	meta[domain.MetaScopeUser] = f.Scope.UserID
+	meta[domain.MetaScopeAgent] = f.Scope.AgentID
+	meta[domain.MetaMergeKey] = f.MergeKey
+	meta[domain.MetaConfidence] = f.Confidence
+	meta[domain.MetaObservedAt] = f.ObservedAt.UnixMilli()
 	if f.ValidFrom != nil {
-		meta[model.MetaValidFrom] = f.ValidFrom.UnixMilli()
+		meta[domain.MetaValidFrom] = f.ValidFrom.UnixMilli()
 	}
 	if f.ValidTo != nil {
-		meta[model.MetaValidTo] = f.ValidTo.UnixMilli()
+		meta[domain.MetaValidTo] = f.ValidTo.UnixMilli()
 	}
 	if f.CorrectedBy != "" {
-		meta[model.MetaCorrectedBy] = f.CorrectedBy
+		meta[domain.MetaCorrectedBy] = f.CorrectedBy
 	}
 	if len(f.Entities) > 0 {
 		entities := make([]any, len(f.Entities))
 		for i, e := range f.Entities {
 			entities[i] = e
 		}
-		meta[model.MetaEntities] = entities
+		meta[domain.MetaEntities] = entities
 	}
 
 	return retrieval.Doc{
@@ -379,7 +380,7 @@ func toDoc(f model.TemporalFact) retrieval.Doc {
 // fact content remains primary, but evidence grounding is also indexed
 // so compressed LLM-extracted facts can still be found by source-level
 // details such as exact dates, places, and phrasing.
-func buildContent(f model.TemporalFact) string {
+func buildContent(f domain.TemporalFact) string {
 	parts := make([]string, 0, 6+len(f.Entities)+len(f.Participants)+len(f.EvidenceRefs))
 	appendPart := func(s string) {
 		s = strings.TrimSpace(s)
@@ -409,7 +410,7 @@ func buildContent(f model.TemporalFact) string {
 // pickTimestamp resolves Doc.Timestamp from valid_from -> observed_at.
 // Phase 1 keeps this deterministic; richer time semantics arrive when
 // the timeline projection lands in Phase 6.
-func pickTimestamp(f model.TemporalFact) time.Time {
+func pickTimestamp(f domain.TemporalFact) time.Time {
 	if f.ValidFrom != nil && !f.ValidFrom.IsZero() {
 		return *f.ValidFrom
 	}

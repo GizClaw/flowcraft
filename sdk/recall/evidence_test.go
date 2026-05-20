@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
-	"github.com/GizClaw/flowcraft/sdk/recall/internal/model"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain"
 	retrievalproj "github.com/GizClaw/flowcraft/sdk/recall/internal/projection/retrieval"
 	evidencestore "github.com/GizClaw/flowcraft/sdk/recall/internal/store/evidence"
 	temporalstore "github.com/GizClaw/flowcraft/sdk/recall/internal/store/temporal"
@@ -21,7 +21,7 @@ type failingEvidence struct {
 	appended   int
 }
 
-func (f *failingEvidence) Append(ctx context.Context, scope model.Scope, factID string, refs []model.EvidenceRef) error {
+func (f *failingEvidence) Append(ctx context.Context, scope domain.Scope, factID string, refs []domain.EvidenceRef) error {
 	if f.failAppend {
 		return errors.New("evidence backend down")
 	}

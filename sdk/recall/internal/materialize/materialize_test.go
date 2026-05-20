@@ -5,28 +5,29 @@ import (
 	"testing"
 	"time"
 
-	"github.com/GizClaw/flowcraft/sdk/recall/internal/model"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain/diagnostic"
 	temporalstore "github.com/GizClaw/flowcraft/sdk/recall/internal/store/temporal"
 )
 
 func TestMaterialize_AttachesFactAndDropsStale(t *testing.T) {
 	store := temporalstore.NewMemoryStore()
-	scope := model.Scope{RuntimeID: "rt"}
-	fact := model.TemporalFact{
+	scope := domain.Scope{RuntimeID: "rt"}
+	fact := domain.TemporalFact{
 		ID:         "real",
 		Scope:      scope,
-		Kind:       model.KindNote,
+		Kind:       domain.KindNote,
 		Content:    "hello",
 		ObservedAt: time.Unix(1, 0),
-		EvidenceRefs: []model.EvidenceRef{
+		EvidenceRefs: []domain.EvidenceRef{
 			{ID: "ev1", Text: "evidence"},
 		},
 	}
-	if err := store.Append(context.Background(), []model.TemporalFact{fact}); err != nil {
+	if err := store.Append(context.Background(), []domain.TemporalFact{fact}); err != nil {
 		t.Fatal(err)
 	}
 	mat := New(store, nil)
-	items, drops, err := mat.Materialize(context.Background(), []model.Candidate{
+	items, drops, err := mat.Materialize(context.Background(), []domain.Candidate{
 		{FactID: "real", Scope: scope, Source: "retrieval", Score: 0.9},
 		{FactID: "ghost", Scope: scope, Source: "retrieval", Score: 0.5},
 	})
@@ -39,30 +40,30 @@ func TestMaterialize_AttachesFactAndDropsStale(t *testing.T) {
 	if len(items[0].Evidence) != 1 {
 		t.Errorf("evidence not attached: %+v", items[0].Evidence)
 	}
-	if len(drops) != 1 || drops[0].Reason != model.DropStaleFact || drops[0].FactID != "ghost" {
+	if len(drops) != 1 || drops[0].Reason != diagnostic.DropStaleFact || drops[0].FactID != "ghost" {
 		t.Errorf("stale drop = %+v", drops)
 	}
 }
 
 func TestMaterialize_DropsSuperseded(t *testing.T) {
 	store := temporalstore.NewMemoryStore()
-	scope := model.Scope{RuntimeID: "rt"}
-	original := model.TemporalFact{
-		ID: "old", Scope: scope, Kind: model.KindState,
+	scope := domain.Scope{RuntimeID: "rt"}
+	original := domain.TemporalFact{
+		ID: "old", Scope: scope, Kind: domain.KindState,
 		Content: "old", ObservedAt: time.Unix(1, 0),
 	}
-	revision := model.TemporalFact{
-		ID: "new", Scope: scope, Kind: model.KindState,
+	revision := domain.TemporalFact{
+		ID: "new", Scope: scope, Kind: domain.KindState,
 		Content: "new", ObservedAt: time.Unix(2, 0),
 	}
-	if err := store.Append(context.Background(), []model.TemporalFact{original, revision}); err != nil {
+	if err := store.Append(context.Background(), []domain.TemporalFact{original, revision}); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.UpdateValidity(context.Background(), scope, "old", time.Unix(2, 0), "new"); err != nil {
 		t.Fatal(err)
 	}
 	mat := New(store, nil)
-	items, drops, err := mat.Materialize(context.Background(), []model.Candidate{
+	items, drops, err := mat.Materialize(context.Background(), []domain.Candidate{
 		{FactID: "old", Scope: scope, Source: "retrieval"},
 		{FactID: "new", Scope: scope, Source: "retrieval"},
 	})
@@ -72,7 +73,7 @@ func TestMaterialize_DropsSuperseded(t *testing.T) {
 	if len(items) != 1 || items[0].Fact.ID != "new" {
 		t.Errorf("expected only the active revision, got %+v", items)
 	}
-	if len(drops) != 1 || drops[0].Reason != model.DropSuperseded {
+	if len(drops) != 1 || drops[0].Reason != diagnostic.DropSuperseded {
 		t.Errorf("superseded drop = %+v", drops)
 	}
 }

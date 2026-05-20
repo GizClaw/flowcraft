@@ -4,13 +4,14 @@ import (
 	"context"
 	"testing"
 
-	"github.com/GizClaw/flowcraft/sdk/recall/internal/model"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/port"
 )
 
 func TestRuleBased_RetrievalOnlyWithoutEntities(t *testing.T) {
 	p := New()
-	plan, err := p.Plan(context.Background(), Input{
-		Scope: model.Scope{RuntimeID: "rt"},
+	plan, err := p.Plan(context.Background(), port.PlannerInput{
+		Scope: domain.Scope{RuntimeID: "rt"},
 		Text:  "hello",
 	})
 	if err != nil {
@@ -32,8 +33,8 @@ func TestRuleBased_RetrievalOnlyWithoutEntities(t *testing.T) {
 
 func TestRuleBased_EntityActivatedByHints(t *testing.T) {
 	p := New()
-	plan, err := p.Plan(context.Background(), Input{
-		Scope:    model.Scope{RuntimeID: "rt"},
+	plan, err := p.Plan(context.Background(), port.PlannerInput{
+		Scope:    domain.Scope{RuntimeID: "rt"},
 		Entities: []string{"alice"},
 	})
 	if err != nil {
@@ -52,8 +53,8 @@ func TestRuleBased_EntityActivatedByHints(t *testing.T) {
 
 func TestRuleBased_SourceBudgetsOverfetchFinalLimit(t *testing.T) {
 	p := New()
-	plan, err := p.Plan(context.Background(), Input{
-		Scope:    model.Scope{RuntimeID: "rt"},
+	plan, err := p.Plan(context.Background(), port.PlannerInput{
+		Scope:    domain.Scope{RuntimeID: "rt"},
 		Entities: []string{"alice"},
 		Limit:    10,
 	})
@@ -73,8 +74,8 @@ func TestRuleBased_SourceBudgetsOverfetchFinalLimit(t *testing.T) {
 
 func TestRuleBased_SourceBudgetCapsAtMaxOverfetch(t *testing.T) {
 	p := New()
-	plan, err := p.Plan(context.Background(), Input{
-		Scope: model.Scope{RuntimeID: "rt"},
+	plan, err := p.Plan(context.Background(), port.PlannerInput{
+		Scope: domain.Scope{RuntimeID: "rt"},
 		Limit: 30,
 	})
 	if err != nil {
@@ -90,8 +91,8 @@ func TestRuleBased_SourceBudgetCapsAtMaxOverfetch(t *testing.T) {
 
 func TestRuleBased_ClampsMaxLimit(t *testing.T) {
 	p := New()
-	plan, _ := p.Plan(context.Background(), Input{
-		Scope: model.Scope{RuntimeID: "rt"},
+	plan, _ := p.Plan(context.Background(), port.PlannerInput{
+		Scope: domain.Scope{RuntimeID: "rt"},
 		Limit: MaxLimit + 50,
 	})
 	if plan.Intent.Limit != MaxLimit {

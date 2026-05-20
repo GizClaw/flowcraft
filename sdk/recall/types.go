@@ -3,39 +3,39 @@ package recall
 import (
 	"time"
 
-	"github.com/GizClaw/flowcraft/sdk/recall/internal/compiler"
-	"github.com/GizClaw/flowcraft/sdk/recall/internal/model"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/port"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain"
 )
 
 // Scope identifies the tenant/user partition for canonical memory. It
 // aliases the internal canonical model so the public facade does not
 // duplicate schema.
-type Scope = model.Scope
+type Scope = domain.Scope
 
 // FactKind classifies a canonical memory fact.
-type FactKind = model.FactKind
+type FactKind = domain.FactKind
 
 const (
-	FactEvent      FactKind = model.KindEvent
-	FactState      FactKind = model.KindState
-	FactPreference FactKind = model.KindPreference
-	FactRelation   FactKind = model.KindRelation
-	FactPlan       FactKind = model.KindPlan
-	FactNote       FactKind = model.KindNote
+	FactEvent      FactKind = domain.KindEvent
+	FactState      FactKind = domain.KindState
+	FactPreference FactKind = domain.KindPreference
+	FactRelation   FactKind = domain.KindRelation
+	FactPlan       FactKind = domain.KindPlan
+	FactNote       FactKind = domain.KindNote
 )
 
 // EvidenceRef points back to source material used to produce a fact.
-type EvidenceRef = model.EvidenceRef
+type EvidenceRef = domain.EvidenceRef
 
 // MergeHints are LLM-supplied hints about merge behaviour. They are
 // schema-level metadata only and do not participate in canonical
 // merge decisions.
-type MergeHints = model.MergeHints
+type MergeHints = domain.MergeHints
 
 // TemporalFact is the public v2 memory unit. It aliases the internal
 // canonical model — sdk/recall owns the public name, internal/model
 // owns the schema definition.
-type TemporalFact = model.TemporalFact
+type TemporalFact = domain.TemporalFact
 
 // TurnContext is the typed per-turn channel adapters use to feed
 // the LLMExtractor. Each TurnContext carries an id, an optional
@@ -48,7 +48,7 @@ type TemporalFact = model.TemporalFact
 // lets the Structurizer use the typed Time/Speaker fields directly
 // for valid_from resolution and Subject inference — the LLM stops
 // doing regex archaeology on prose.
-type TurnContext = compiler.TurnContext
+type TurnContext = port.TurnContext
 
 // EntitySnapshot is a hint about an entity the canonical projection
 // has already seen in this scope. The compiler uses snapshots to
@@ -57,7 +57,7 @@ type TurnContext = compiler.TurnContext
 // high-confidence matches. Snapshots are a soft hint — missing /
 // outdated entries only mean less canonicalization, not extraction
 // failure.
-type EntitySnapshot = compiler.EntitySnapshot
+type EntitySnapshot = port.EntitySnapshot
 
 // SaveRequest is the v2 ingestion input. Higher-level integrations
 // build these from raw messages before calling Save.
@@ -112,8 +112,8 @@ type SaveResult struct {
 	FactIDs []string
 }
 
-// TimeRange bounds timeline recall. Aliases model.TimeRange.
-type TimeRange = model.TimeRange
+// TimeRange bounds timeline recall. Aliases domain.TimeRange.
+type TimeRange = domain.TimeRange
 
 // Query is the v2 recall input shape. Structured hints activate
 // optional sources (timeline / relation / profile) via the planner;

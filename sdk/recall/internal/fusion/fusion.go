@@ -12,7 +12,9 @@ import (
 	"math"
 	"sort"
 
-	"github.com/GizClaw/flowcraft/sdk/recall/internal/model"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain/diagnostic"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/port"
 )
 
 // Default tuning constants. Callers override per-call via Options.
@@ -44,53 +46,16 @@ const (
 	outlierMedianWindow = 10
 )
 
-// Options controls a single Fuse call. Zero values fall back to
-// PR-3 defaults so callers can pass Options{} when defaults are
-// fine.
-type Options struct {
-	// Weights maps source name -> RRF weight. Missing names default
-	// to 1.0.
-	Weights map[string]float64
-	// RRFK is the standard RRF denominator constant. Defaults to
-	// DefaultRRFK (60) which is the conventional value.
-	RRFK int
-	// PerSourceCap caps each source's contribution AFTER ranking.
-	// 0 = unlimited.
-	PerSourceCap int
-	// TotalCap is the upper bound on the returned candidate slice.
-	// 0 = unlimited.
-	TotalCap int
-
-	// OutlierBoostCap is the maximum multiplier applied to the RRF
-	// contribution of a within-source score outlier (see
-	// DefaultOutlierBoostCap for rationale). Values <= 1.0 disable the
-	// boost. Default DefaultOutlierBoostCap when zero.
-	OutlierBoostCap float64
-	// OutlierScoreThreshold is the minimum (score / source-median)
-	// ratio a candidate must hit to qualify as an outlier. Default
-	// DefaultOutlierScoreThreshold when zero.
-	OutlierScoreThreshold float64
-	// OutlierMaxRank caps how far down the source's ranking we will
-	// search for outliers (i.e., only the top N candidates of each
-	// source can qualify). Default DefaultOutlierMaxRank when zero.
-	OutlierMaxRank int
-}
-
-// Fuser combines multi-source candidate streams. PR-3 ships only
-// WeightedRRF; alternate fusers (linear combination, learned-rank)
-// can plug behind this interface in later phases.
-type Fuser interface {
-	Fuse(ctx context.Context, results []model.SourceResult, opts Options) ([]model.Candidate, []model.CandidateDrop, error)
-}
-
 // WeightedRRF implements reciprocal-rank-fusion with per-source
 // weights. Same fact id appearing in multiple sources accumulates
 // scores; the higher-ranked appearance wins for metadata.
 type WeightedRRF struct{}
 
+var _ port.Fuser = WeightedRRF{}
+
 // Fuse runs weighted RRF over results. Returns the fused candidate
 // list sorted by score descending, plus structured drops for trace.
-func (WeightedRRF) Fuse(_ context.Context, results []model.SourceResult, opts Options) ([]model.Candidate, []model.CandidateDrop, error) {
+func (WeightedRRF) Fuse(_ context.Context, results []domain.SourceResult, opts port.FusionOptions) ([]domain.Candidate, []diagnostic.CandidateDrop, error) {
 	if opts.RRFK <= 0 {
 		opts.RRFK = DefaultRRFK
 	}
@@ -108,8 +73,8 @@ func (WeightedRRF) Fuse(_ context.Context, results []model.SourceResult, opts Op
 		weights = map[string]float64{}
 	}
 
-	var drops []model.CandidateDrop
-	agg := make(map[string]*model.Candidate)
+	var drops []diagnostic.CandidateDrop
+	agg := make(map[string]*domain.Candidate)
 	order := make([]string, 0)
 
 	for _, res := range results {
@@ -119,9 +84,9 @@ func (WeightedRRF) Fuse(_ context.Context, results []model.SourceResult, opts Op
 		input := res.Candidates
 		if opts.PerSourceCap > 0 && len(input) > opts.PerSourceCap {
 			for _, c := range input[opts.PerSourceCap:] {
-				drops = append(drops, model.CandidateDrop{
+				drops = append(drops, diagnostic.CandidateDrop{
 					Stage:  "fusion",
-					Reason: model.DropPerSourceCap,
+					Reason: diagnostic.DropPerSourceCap,
 					FactID: c.FactID,
 					Source: res.Source,
 				})
@@ -164,7 +129,7 @@ func (WeightedRRF) Fuse(_ context.Context, results []model.SourceResult, opts Op
 		}
 	}
 
-	fused := make([]model.Candidate, 0, len(order))
+	fused := make([]domain.Candidate, 0, len(order))
 	for _, id := range order {
 		fused = append(fused, *agg[id])
 	}
@@ -174,9 +139,9 @@ func (WeightedRRF) Fuse(_ context.Context, results []model.SourceResult, opts Op
 
 	if opts.TotalCap > 0 && len(fused) > opts.TotalCap {
 		for _, c := range fused[opts.TotalCap:] {
-			drops = append(drops, model.CandidateDrop{
+			drops = append(drops, diagnostic.CandidateDrop{
 				Stage:  "fusion",
-				Reason: model.DropTotalCap,
+				Reason: diagnostic.DropTotalCap,
 				FactID: c.FactID,
 				Source: c.Source,
 			})
@@ -187,7 +152,7 @@ func (WeightedRRF) Fuse(_ context.Context, results []model.SourceResult, opts Op
 	return fused, drops, nil
 }
 
-func appendSourceMeta(c *model.Candidate, src string) {
+func appendSourceMeta(c *domain.Candidate, src string) {
 	if c.Metadata == nil {
 		c.Metadata = map[string]any{}
 	}
@@ -208,7 +173,7 @@ func appendSourceMeta(c *model.Candidate, src string) {
 // reference down and turn every candidate into an "outlier". Returns
 // 0 when no positive scores are available so the caller can skip the
 // boost entirely on sources that signal presence only.
-func sourceReferenceScore(in []model.Candidate) float64 {
+func sourceReferenceScore(in []domain.Candidate) float64 {
 	if len(in) == 0 {
 		return 0
 	}
@@ -243,7 +208,7 @@ func sourceReferenceScore(in []model.Candidate) float64 {
 // OutlierBoostCap to prevent any single source from completely
 // overriding multi-source corroboration. Returns 1 when no boost
 // applies — callers should multiply unconditionally.
-func outlierMultiplier(c model.Candidate, refScore float64, opts Options) float64 {
+func outlierMultiplier(c domain.Candidate, refScore float64, opts port.FusionOptions) float64 {
 	if refScore <= 0 || c.Score <= 0 || opts.OutlierBoostCap <= 1 {
 		return 1
 	}
