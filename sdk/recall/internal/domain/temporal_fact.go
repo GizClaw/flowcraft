@@ -150,10 +150,23 @@ func IsSuperseded(f TemporalFact) bool {
 	return f.CorrectedBy != ""
 }
 
-// IsActive reports whether a fact belongs in an "active slot" view
-// (profile / relation projections). Active means not superseded and
-// either open-ended (ValidTo == nil) or still valid at now.
-func IsActive(f TemporalFact, now time.Time) bool {
+// IsCanonicalActive reports whether a fact is canonically active in
+// the ledger: not superseded by a successor (CorrectedBy == "") and
+// either open-ended (ValidTo == nil) or still inside its validity
+// window. It deliberately does NOT consider Closed (soft forget) or
+// ExpiresAt (TTL) — those are read-time / projection concerns.
+//
+// This is the lowest of three layers used across recall (see also
+// IsProjectable and the read-time IsRecallable in filterRetiredItems):
+//
+//   - canonical (this function): pure ledger truth — does a successor
+//     exist? is the validity window still open? Used by store-level
+//     invariants and history reconstruction.
+//   - projectable (IsProjectable): the slice projections SHOULD index —
+//     canonical AND not retired (not soft-closed, not TTL-expired).
+//   - recallable (filterRetiredItems + trust): what default Recall
+//     returns to a caller — projectable plus actor trust filtering.
+func IsCanonicalActive(f TemporalFact, now time.Time) bool {
 	if IsSuperseded(f) {
 		return false
 	}
@@ -161,6 +174,28 @@ func IsActive(f TemporalFact, now time.Time) bool {
 		return true
 	}
 	return f.ValidTo.After(now)
+}
+
+// IsProjectable reports whether a fact belongs in projection indexes
+// (profile / relation / graph / retrieval / entity / timeline). It
+// is canonical-active AND not retired (Closed=false, ExpiresAt not
+// past). Projections MUST use this rather than IsCanonicalActive so
+// soft-forgotten or TTL-expired facts are dropped from their indexes
+// — otherwise the projection caches drift away from the canonical
+// truth until the next RebuildAll.
+//
+// See IsCanonicalActive for the three-layer model (canonical /
+// projectable / recallable).
+func IsProjectable(f TemporalFact, now time.Time) bool {
+	return IsCanonicalActive(f, now) && !IsRetired(f, now)
+}
+
+// IsActive is a backward-compatibility alias for IsCanonicalActive.
+//
+// Deprecated: use IsCanonicalActive or IsProjectable; IsActive
+// remains for v2 transition.
+func IsActive(f TemporalFact, now time.Time) bool {
+	return IsCanonicalActive(f, now)
 }
 
 // IsRetired reports whether a fact is hidden from default Recall:

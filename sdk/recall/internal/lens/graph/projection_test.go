@@ -81,6 +81,29 @@ func TestGraph_ForgetRemovesEdges(t *testing.T) {
 	}
 }
 
+// TestGraph_DropsClosed pins Cluster B: soft-forgotten (Closed)
+// facts must not contribute edges to the graph projection. Before
+// the predicate split, edges.go gated only on IsSuperseded for
+// cooccurrence kinds and on IsActive (canonical) for relations, so
+// Closed facts kept producing edges until RebuildAll.
+func TestGraph_DropsClosed(t *testing.T) {
+	p := New()
+	ctx := context.Background()
+	if err := p.Project(ctx, []domain.TemporalFact{
+		{ID: "r1", Scope: scope(), Kind: domain.KindRelation,
+			Subject: "alice", Predicate: "knows", Object: "bob",
+			ObservedAt: time.Now(), Closed: true},
+		{ID: "e1", Scope: scope(), Kind: domain.KindEvent,
+			Entities:   []string{"alice", "bob"},
+			ObservedAt: time.Now(), Closed: true},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got := p.Traverse(ctx, scope(), []string{"alice"}, 2, 0); len(got) != 0 {
+		t.Fatalf("Closed facts must not produce edges, got %+v", got)
+	}
+}
+
 func TestGraph_RebuildExactReplace(t *testing.T) {
 	p := New()
 	ctx := context.Background()

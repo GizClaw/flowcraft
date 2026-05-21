@@ -53,6 +53,24 @@ func TestProject_ReplacesPriorMentions(t *testing.T) {
 	}
 }
 
+// TestProject_DropsClosed pins Cluster B: a soft-forgotten
+// (Closed) fact must not be indexed by the entity projection. The
+// pre-cluster code only filtered on CorrectedBy, so Closed facts
+// kept appearing in entity Lookup results until RebuildAll.
+func TestProject_DropsClosed(t *testing.T) {
+	p := New()
+	scope := domain.Scope{RuntimeID: "rt"}
+	if err := p.Project(context.Background(), []domain.TemporalFact{
+		{ID: "f1", Scope: scope, Kind: domain.KindNote,
+			Entities: []string{"alice"}, Closed: true},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got := p.Lookup(context.Background(), scope, []string{"alice"}); len(got) != 0 {
+		t.Fatalf("Closed fact must not be indexed by entity projection, got %v", got)
+	}
+}
+
 func TestForget_RemovesPostings(t *testing.T) {
 	p := New()
 	scope := domain.Scope{RuntimeID: "rt"}

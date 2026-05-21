@@ -375,6 +375,31 @@ func TestProjection_UserMetaCannotOverrideReserved(t *testing.T) {
 	}
 }
 
+// TestProjection_DropsClosed pins Cluster B: a soft-forgotten
+// (Closed) fact must not be upserted into the retrieval index. The
+// pre-cluster code only filtered on CorrectedBy, so a freshly
+// projected Closed fact ended up indexed and would resurface from
+// the search backend until RebuildAll.
+func TestProjection_DropsClosed(t *testing.T) {
+	idx := retrievalmem.New()
+	p, err := New(idx)
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	scope := domain.Scope{RuntimeID: "rt", UserID: "u1"}
+	f := domain.TemporalFact{
+		ID: "f1", Scope: scope, Kind: domain.KindNote,
+		Content: "soft-forgotten", ObservedAt: time.Now(),
+		Closed: true,
+	}
+	if err := p.Project(context.Background(), []domain.TemporalFact{f}); err != nil {
+		t.Fatalf("project: %v", err)
+	}
+	if _, ok, _ := idx.Get(context.Background(), NamespaceFor(scope), "f1"); ok {
+		t.Fatal("Closed fact must not be upserted into the retrieval index")
+	}
+}
+
 func TestProjection_ForgetRemovesDoc(t *testing.T) {
 	idx := retrievalmem.New()
 	p, _ := New(idx)

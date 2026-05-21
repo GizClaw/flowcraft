@@ -1,10 +1,16 @@
 // Package timeline implements the optional timeline projection.
 //
 // It is a temporal view over event|state|plan facts, ordered by
-// effective timestamp (ValidFrom ?? ObservedAt). Unlike profile /
-// relation this is NOT an active-slot view: a past event remains
-// visible even when ValidTo is set — only CorrectedBy suppresses
-// indexing (docs §8.3 / PR-6).
+// effective timestamp (ValidFrom ?? ObservedAt). It indexes any
+// fact that is projectable in the canonical sense (see
+// domain.IsProjectable): not superseded, validity window still
+// open, not soft-forgotten, not TTL-expired. Soft-closed and
+// TTL-expired facts are deliberately dropped here so the timeline
+// stays consistent with the rest of the projection layer (cluster
+// B). Past events with explicit ValidTo windows that have already
+// closed are treated as no longer projectable — callers that want
+// the historic timeline must use the canonical store's
+// IncludeRetired path, not the timeline projection cache.
 package timeline
 
 import (
@@ -55,12 +61,14 @@ func (p *Projection) Name() string { return "timeline" }
 
 func (p *Projection) Consistency() port.Consistency { return port.Optional }
 
-// Project upserts timeline-eligible facts. Superseded facts are
-// evicted; ValidTo in the past does NOT hide an event/plan.
+// Project upserts timeline-eligible facts. Non-projectable facts
+// (superseded, soft-closed, TTL-expired, or past their validity
+// window) are evicted from the shard.
 func (p *Projection) Project(_ context.Context, facts []domain.TemporalFact) error {
 	if len(facts) == 0 {
 		return nil
 	}
+	now := time.Now()
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	for _, f := range facts {
@@ -69,15 +77,15 @@ func (p *Projection) Project(_ context.Context, facts []domain.TemporalFact) err
 		}
 		sh := p.shardLocked(f.Scope)
 		delete(sh.byID, f.ID)
-		if domain.IsSuperseded(f) {
+		for _, priorID := range f.Supersedes {
+			delete(sh.byID, priorID)
+		}
+		if !domain.IsProjectable(f, now) {
 			p.rebuildOrderLocked(sh)
 			continue
 		}
 		e := entry{factID: f.ID, ts: domain.EffectiveTimestamp(f), kind: f.Kind}
 		sh.byID[f.ID] = e
-		for _, priorID := range f.Supersedes {
-			delete(sh.byID, priorID)
-		}
 		p.rebuildOrderLocked(sh)
 	}
 	return nil

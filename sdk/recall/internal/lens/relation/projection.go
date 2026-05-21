@@ -58,7 +58,7 @@ func (p *Projection) Project(_ context.Context, facts []domain.TemporalFact) err
 		for _, priorID := range f.Supersedes {
 			removeFactLocked(sh, priorID)
 		}
-		if !domain.IsActive(f, now) {
+		if !domain.IsProjectable(f, now) {
 			continue
 		}
 		key := tripleKey(f.Subject, f.Predicate, f.Object, f.Scope.AgentID)

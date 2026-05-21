@@ -60,7 +60,7 @@ func (p *Projection) Project(_ context.Context, facts []domain.TemporalFact) err
 		for _, priorID := range f.Supersedes {
 			removeFactLocked(sh, priorID)
 		}
-		if !domain.IsActive(f, now) {
+		if !domain.IsProjectable(f, now) {
 			continue
 		}
 		subject := canonicalKeyPart(f.Subject)

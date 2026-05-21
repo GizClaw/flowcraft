@@ -83,6 +83,7 @@ func (p *Projection) Project(ctx context.Context, facts []domain.TemporalFact) e
 	if len(facts) == 0 {
 		return nil
 	}
+	now := time.Now()
 	grouped := groupByNamespace(facts)
 	for ns, group := range grouped {
 		var superseded []string
@@ -98,7 +99,7 @@ func (p *Projection) Project(ctx context.Context, facts []domain.TemporalFact) e
 		docs := make([]retrieval.Doc, 0, len(group))
 		for _, f := range group {
 			superseded = append(superseded, f.Supersedes...)
-			if f.CorrectedBy != "" {
+			if !domain.IsProjectable(f, now) {
 				continue
 			}
 			active = append(active, f)
@@ -150,6 +151,9 @@ func (p *Projection) Project(ctx context.Context, facts []domain.TemporalFact) e
 // Save never fails because the embedder is offline or rate-limited;
 // the affected facts simply index for BM25 only.
 func (p *Projection) attachEmbeddings(ctx context.Context, facts []domain.TemporalFact, docs []retrieval.Doc) {
+	// TODO(cluster-C): when Projection gains hook access, emit
+	// Status=Degraded here instead of silently falling back to
+	// BM25-only. See internal-docs/recall-v2-architecture-debts.md §3.
 	if len(docs) == 0 || len(facts) != len(docs) {
 		return
 	}

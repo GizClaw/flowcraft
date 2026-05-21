@@ -122,6 +122,61 @@ func TestIsActive(t *testing.T) {
 	}
 }
 
+// TestIsProjectable_ActiveFactPasses pins the happy path: an open-ended,
+// not-superseded, not-closed, not-expired fact must be projectable.
+func TestIsProjectable_ActiveFactPasses(t *testing.T) {
+	now := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+	if !IsProjectable(TemporalFact{ID: "f1"}, now) {
+		t.Error("plain open-ended fact must be projectable")
+	}
+}
+
+// TestIsProjectable_RespectsClosed pins the soft-forget invariant:
+// projections must NOT index facts whose Closed=true, even when they
+// remain canonical-active. This is the bug Cluster B fixes — before
+// the predicate split, profile/relation/graph would retain closed
+// facts until the next RebuildAll.
+func TestIsProjectable_RespectsClosed(t *testing.T) {
+	now := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+	f := TemporalFact{ID: "f1", Closed: true}
+	if !IsCanonicalActive(f, now) {
+		t.Fatal("guard: closed fact should still be canonical-active")
+	}
+	if IsProjectable(f, now) {
+		t.Error("Closed=true → must not be projectable")
+	}
+}
+
+// TestIsProjectable_RespectsExpiresAt pins the TTL invariant:
+// projections must drop facts past their ExpiresAt instant.
+func TestIsProjectable_RespectsExpiresAt(t *testing.T) {
+	now := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+	past := now.Add(-time.Hour)
+	future := now.Add(time.Hour)
+
+	expired := TemporalFact{ID: "f1", ExpiresAt: &past}
+	if !IsCanonicalActive(expired, now) {
+		t.Fatal("guard: expired-only fact should still be canonical-active")
+	}
+	if IsProjectable(expired, now) {
+		t.Error("ExpiresAt in past → must not be projectable")
+	}
+	live := TemporalFact{ID: "f2", ExpiresAt: &future}
+	if !IsProjectable(live, now) {
+		t.Error("ExpiresAt in future → still projectable")
+	}
+}
+
+// TestIsProjectable_RespectsSuperseded pins the canonical layer: a
+// fact with a successor (CorrectedBy != "") must not be projectable
+// regardless of Closed/ExpiresAt state.
+func TestIsProjectable_RespectsSuperseded(t *testing.T) {
+	now := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+	if IsProjectable(TemporalFact{ID: "f1", CorrectedBy: "f2"}, now) {
+		t.Error("superseded fact must not be projectable")
+	}
+}
+
 func TestIsRetired(t *testing.T) {
 	now := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
 	past := now.Add(-time.Hour)

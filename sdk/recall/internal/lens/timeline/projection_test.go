@@ -10,11 +10,16 @@ import (
 
 func scope() domain.Scope { return domain.Scope{RuntimeID: "rt", UserID: "u1"} }
 
-func TestTimeline_KeepsPastEventWithValidTo(t *testing.T) {
+func TestTimeline_KeepsPastEventWithOpenValidity(t *testing.T) {
 	p := New()
 	ctx := context.Background()
-	past := time.Unix(100, 0)
-	validTo := time.Unix(200, 0)
+	// Past observation, still-open validity window — the timeline
+	// projection must keep this event visible. After Cluster B
+	// (predicate split) the projection enforces IsProjectable, so
+	// we use a future ValidTo to demonstrate the still-projectable
+	// past event.
+	past := time.Now().Add(-time.Hour)
+	validTo := time.Now().Add(time.Hour)
 	f := domain.TemporalFact{
 		ID: "ev1", Scope: scope(), Kind: domain.KindEvent,
 		ObservedAt: past, ValidTo: &validTo,
@@ -24,7 +29,7 @@ func TestTimeline_KeepsPastEventWithValidTo(t *testing.T) {
 	}
 	got := p.Query(ctx, scope(), time.Time{}, time.Time{}, nil, 0)
 	if len(got) != 1 || got[0] != "ev1" {
-		t.Fatalf("past event with ValidTo must remain in temporal view, got %+v", got)
+		t.Fatalf("past event with open ValidTo must remain in temporal view, got %+v", got)
 	}
 }
 
@@ -58,6 +63,25 @@ func TestTimeline_RangeScan(t *testing.T) {
 	got := p.Query(ctx, scope(), time.Unix(9, 0), time.Unix(21, 0), nil, 0)
 	if len(got) != 2 || got[0] != "a" || got[1] != "b" {
 		t.Errorf("range scan = %+v, want [a b]", got)
+	}
+}
+
+// TestTimeline_DropsClosed pins Cluster B: a soft-forgotten (Closed)
+// fact must not survive in the timeline projection cache. Before the
+// predicate split, timeline inline-checked only CorrectedBy and
+// happily indexed Closed facts.
+func TestTimeline_DropsClosed(t *testing.T) {
+	p := New()
+	ctx := context.Background()
+	f := domain.TemporalFact{
+		ID: "ev1", Scope: scope(), Kind: domain.KindEvent,
+		ObservedAt: time.Now().Add(-time.Hour), Closed: true,
+	}
+	if err := p.Project(ctx, []domain.TemporalFact{f}); err != nil {
+		t.Fatal(err)
+	}
+	if got := p.Query(ctx, scope(), time.Time{}, time.Time{}, nil, 0); len(got) != 0 {
+		t.Fatalf("Closed fact must not be indexed by timeline, got %+v", got)
 	}
 }
 

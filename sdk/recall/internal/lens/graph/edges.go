@@ -54,7 +54,7 @@ type directedEdge struct {
 
 // extractEdges builds the deterministic edge set for one fact.
 func extractEdges(f domain.TemporalFact, cfg Config, now time.Time) []directedEdge {
-	if f.ID == "" || domain.IsSuperseded(f) {
+	if f.ID == "" || !domain.IsProjectable(f, now) {
 		return nil
 	}
 	if f.Confidence < cfg.minConfidence() {
@@ -62,9 +62,6 @@ func extractEdges(f domain.TemporalFact, cfg Config, now time.Time) []directedEd
 	}
 	switch f.Kind {
 	case domain.KindRelation:
-		if !domain.IsActive(f, now) {
-			return nil
-		}
 		return extractRelationEdges(f)
 	case domain.KindEvent, domain.KindState, domain.KindNote:
 		return extractCooccurrenceEdges(f, cfg)

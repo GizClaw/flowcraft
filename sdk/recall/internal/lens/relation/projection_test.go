@@ -74,6 +74,26 @@ func TestRelation_DropsInactiveValidTo(t *testing.T) {
 	}
 }
 
+// TestRelation_DropsClosed pins Cluster B: soft-forgotten (Closed)
+// relations must not survive in the projection cache. Before the
+// predicate split, the projection called IsActive (canonical only)
+// and re-upserted closed triples after a soft Forget.
+func TestRelation_DropsClosed(t *testing.T) {
+	p := New()
+	ctx := context.Background()
+	f := domain.TemporalFact{
+		ID: "r1", Scope: scope(), Kind: domain.KindRelation,
+		Subject: "alice", Predicate: "spouse", Object: "bob",
+		ObservedAt: time.Now(), Closed: true,
+	}
+	if err := p.Project(ctx, []domain.TemporalFact{f}); err != nil {
+		t.Fatal(err)
+	}
+	if got := p.Lookup(ctx, scope(), "alice", "spouse", "bob"); len(got) != 0 {
+		t.Fatalf("Closed relation must not appear in lookup, got %+v", got)
+	}
+}
+
 func TestRelation_RebuildDropsSuperseded(t *testing.T) {
 	p := New()
 	ctx := context.Background()

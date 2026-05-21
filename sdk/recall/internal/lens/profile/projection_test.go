@@ -75,6 +75,26 @@ func TestProfile_DropsExpiredSlot(t *testing.T) {
 	}
 }
 
+// TestProfile_DropsClosed pins Cluster B: a soft-forgotten (Closed)
+// fact must not survive in the profile projection cache. Before the
+// predicate split, the projection called IsActive (canonical only)
+// and would re-upsert a closed slot.
+func TestProfile_DropsClosed(t *testing.T) {
+	p := New()
+	ctx := context.Background()
+	f := domain.TemporalFact{
+		ID: "s1", Scope: scope(), Kind: domain.KindState,
+		Subject: "alice", Predicate: "city", Content: "nyc",
+		ObservedAt: time.Now(), Closed: true,
+	}
+	if err := p.Project(ctx, []domain.TemporalFact{f}); err != nil {
+		t.Fatal(err)
+	}
+	if got := p.Lookup(ctx, scope(), "alice"); len(got) != 0 {
+		t.Fatalf("Closed fact must not appear in profile lookup, got %+v", got)
+	}
+}
+
 func TestProfile_RebuildExactReplace(t *testing.T) {
 	p := New()
 	ctx := context.Background()
