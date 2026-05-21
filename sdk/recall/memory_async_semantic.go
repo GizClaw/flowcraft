@@ -144,10 +144,16 @@ func (m *memory) processOneAsyncSemanticJob(ctx context.Context, job port.AsyncS
 	start := time.Now()
 
 	if recovered, ids := m.recoverCompletedSemanticFacts(ctx, job, now); recovered {
-		_ = m.asyncSemanticQueue.Complete(ctx, job.RequestID, port.AsyncSemanticResult{
+		if err := m.completeAsyncJob(ctx, job.RequestID, port.AsyncSemanticResult{
 			SemanticFactIDs:           ids,
 			RecoveredFromPriorAttempt: true,
-		})
+		}); err != nil {
+			m.emitAsyncProcessStage(job, diagnostic.AsyncSemanticProcessDetail{
+				AsyncRequestID: job.RequestID,
+				Attempt:        job.Attempt,
+			}, diagnostic.StatusFailed, err.Error(), start)
+			return asyncJobFailed
+		}
 		m.emitAsyncProcessStage(job, diagnostic.AsyncSemanticProcessDetail{
 			AsyncRequestID:  job.RequestID,
 			Attempt:         job.Attempt,
@@ -158,27 +164,13 @@ func (m *memory) processOneAsyncSemanticJob(ctx context.Context, job port.AsyncS
 	}
 
 	if err := writestages.ValidateEpisodesForJob(ctx, m.store, job, now); err != nil {
-		_ = m.asyncSemanticQueue.Fail(ctx, job.RequestID, port.AsyncSemanticFailure{
-			ErrClass: diagnostic.ErrClassPermanent,
-			Err:      err.Error(),
-		})
-		m.emitAsyncProcessStage(job, diagnostic.AsyncSemanticProcessDetail{
-			AsyncRequestID: job.RequestID,
-			Attempt:        job.Attempt,
-		}, diagnostic.StatusFailed, err.Error(), start)
+		m.ackAsyncJobFail(ctx, job, start, err)
 		return asyncJobFailed
 	}
 
 	turns, err := writestages.ReconstructTurnsForJob(ctx, m.store, job)
 	if err != nil {
-		_ = m.asyncSemanticQueue.Fail(ctx, job.RequestID, port.AsyncSemanticFailure{
-			ErrClass: diagnostic.ErrClassPermanent,
-			Err:      err.Error(),
-		})
-		m.emitAsyncProcessStage(job, diagnostic.AsyncSemanticProcessDetail{
-			AsyncRequestID: job.RequestID,
-			Attempt:        job.Attempt,
-		}, diagnostic.StatusFailed, err.Error(), start)
+		m.ackAsyncJobFail(ctx, job, start, err)
 		return asyncJobFailed
 	}
 
@@ -202,11 +194,7 @@ func (m *memory) processOneAsyncSemanticJob(ctx context.Context, job port.AsyncS
 	// Ingest (possibly LLM-backed) runs outside the scope write lock,
 	// matching the sync Save path and avoiding blocking other writers.
 	if err := m.asyncSemanticWorkerPreRunner.Run(ctx, state); err != nil {
-		m.failAsyncJob(ctx, job.RequestID, err)
-		m.emitAsyncProcessStage(job, diagnostic.AsyncSemanticProcessDetail{
-			AsyncRequestID: job.RequestID,
-			Attempt:        job.Attempt,
-		}, diagnostic.StatusFailed, err.Error(), start)
+		m.ackAsyncJobFail(ctx, job, start, err)
 		return asyncJobFailed
 	}
 
@@ -216,11 +204,7 @@ func (m *memory) processOneAsyncSemanticJob(ctx context.Context, job port.AsyncS
 	// Re-validate under the lock so ForgetAll / ExpireRetired cannot
 	// delete episodes after the lock-free preflight.
 	if err := writestages.ValidateEpisodesForJob(ctx, m.store, job, now); err != nil {
-		m.failAsyncJob(ctx, job.RequestID, err)
-		m.emitAsyncProcessStage(job, diagnostic.AsyncSemanticProcessDetail{
-			AsyncRequestID: job.RequestID,
-			Attempt:        job.Attempt,
-		}, diagnostic.StatusFailed, err.Error(), start)
+		m.ackAsyncJobFail(ctx, job, start, err)
 		return asyncJobFailed
 	}
 
@@ -228,10 +212,16 @@ func (m *memory) processOneAsyncSemanticJob(ctx context.Context, job port.AsyncS
 	// semantic facts while this worker held an expired lease and ran
 	// ingest outside the lock.
 	if recovered, ids := m.recoverCompletedSemanticFacts(ctx, job, now); recovered {
-		_ = m.asyncSemanticQueue.Complete(ctx, job.RequestID, port.AsyncSemanticResult{
+		if err := m.completeAsyncJob(ctx, job.RequestID, port.AsyncSemanticResult{
 			SemanticFactIDs:           ids,
 			RecoveredFromPriorAttempt: true,
-		})
+		}); err != nil {
+			m.emitAsyncProcessStage(job, diagnostic.AsyncSemanticProcessDetail{
+				AsyncRequestID: job.RequestID,
+				Attempt:        job.Attempt,
+			}, diagnostic.StatusFailed, err.Error(), start)
+			return asyncJobFailed
+		}
 		m.emitAsyncProcessStage(job, diagnostic.AsyncSemanticProcessDetail{
 			AsyncRequestID:  job.RequestID,
 			Attempt:         job.Attempt,
@@ -242,7 +232,13 @@ func (m *memory) processOneAsyncSemanticJob(ctx context.Context, job port.AsyncS
 	}
 
 	if len(state.Ingest.Facts) == 0 {
-		_ = m.asyncSemanticQueue.Complete(ctx, job.RequestID, port.AsyncSemanticResult{})
+		if err := m.completeAsyncJob(ctx, job.RequestID, port.AsyncSemanticResult{}); err != nil {
+			m.emitAsyncProcessStage(job, diagnostic.AsyncSemanticProcessDetail{
+				AsyncRequestID: job.RequestID,
+				Attempt:        job.Attempt,
+			}, diagnostic.StatusFailed, err.Error(), start)
+			return asyncJobFailed
+		}
 		m.emitAsyncProcessStage(job, diagnostic.AsyncSemanticProcessDetail{
 			AsyncRequestID: job.RequestID,
 			Attempt:        job.Attempt,
@@ -250,17 +246,19 @@ func (m *memory) processOneAsyncSemanticJob(ctx context.Context, job port.AsyncS
 		return asyncJobCompleted
 	}
 	if err := m.asyncSemanticWorkerPostRunner.Run(ctx, state); err != nil {
-		m.failAsyncJob(ctx, job.RequestID, err)
+		m.ackAsyncJobFail(ctx, job, start, err)
+		return asyncJobFailed
+	}
+	ids := append([]string(nil), state.AppendedFactIDs...)
+	if err := m.completeAsyncJob(ctx, job.RequestID, port.AsyncSemanticResult{
+		SemanticFactIDs: ids,
+	}); err != nil {
 		m.emitAsyncProcessStage(job, diagnostic.AsyncSemanticProcessDetail{
 			AsyncRequestID: job.RequestID,
 			Attempt:        job.Attempt,
 		}, diagnostic.StatusFailed, err.Error(), start)
 		return asyncJobFailed
 	}
-	ids := append([]string(nil), state.AppendedFactIDs...)
-	_ = m.asyncSemanticQueue.Complete(ctx, job.RequestID, port.AsyncSemanticResult{
-		SemanticFactIDs: ids,
-	})
 	m.emitAsyncProcessStage(job, diagnostic.AsyncSemanticProcessDetail{
 		AsyncRequestID:  job.RequestID,
 		Attempt:         job.Attempt,
@@ -312,7 +310,11 @@ func (m *memory) recoverCompletedSemanticFacts(ctx context.Context, job port.Asy
 	return true, ids
 }
 
-func (m *memory) failAsyncJob(ctx context.Context, requestID string, err error) {
+func (m *memory) completeAsyncJob(ctx context.Context, requestID string, result port.AsyncSemanticResult) error {
+	return m.asyncSemanticQueue.Complete(ctx, requestID, result)
+}
+
+func (m *memory) failAsyncJob(ctx context.Context, requestID string, err error) error {
 	class := diagnostic.ErrClassTransient
 	if errdefs.IsValidation(err) {
 		class = diagnostic.ErrClassPermanent
@@ -321,11 +323,22 @@ func (m *memory) failAsyncJob(ctx context.Context, requestID string, err error) 
 	if class == diagnostic.ErrClassTransient {
 		retryAt = time.Now().Add(defaultAsyncSemanticRetryBackoff)
 	}
-	_ = m.asyncSemanticQueue.Fail(ctx, requestID, port.AsyncSemanticFailure{
+	return m.asyncSemanticQueue.Fail(ctx, requestID, port.AsyncSemanticFailure{
 		ErrClass: class,
 		Err:      err.Error(),
 		RetryAt:  retryAt,
 	})
+}
+
+func (m *memory) ackAsyncJobFail(ctx context.Context, job port.AsyncSemanticJob, start time.Time, cause error) {
+	errMsg := cause.Error()
+	if ackErr := m.failAsyncJob(ctx, job.RequestID, cause); ackErr != nil {
+		errMsg = fmt.Sprintf("%s; queue fail: %v", cause.Error(), ackErr)
+	}
+	m.emitAsyncProcessStage(job, diagnostic.AsyncSemanticProcessDetail{
+		AsyncRequestID: job.RequestID,
+		Attempt:        job.Attempt,
+	}, diagnostic.StatusFailed, errMsg, start)
 }
 
 const defaultAsyncSemanticRetryBackoff = 30 * time.Second
@@ -371,22 +384,53 @@ func (m *memory) patchForgetTraceAsyncCancel(state *forget.State, cancel asyncJo
 	}
 }
 
-func (m *memory) emitAsyncJobCancelTelemetry(scope Scope, cancel asyncJobCancelResult, stage string) {
-	if m.telemetry == nil || cancel.Err == nil {
+func (m *memory) emitAsyncJobCancelTelemetry(state *forget.State, cancel asyncJobCancelResult, stage string) {
+	if m.telemetry == nil {
 		return
 	}
+	if cancel.Cancelled == 0 && cancel.Err == nil {
+		return
+	}
+	if state == nil || state.Trace == nil || len(state.Trace.Stages) == 0 {
+		m.emitAsyncJobCancelTelemetryFallback(cancel, stage)
+		return
+	}
+	last := state.Trace.Stages[len(state.Trace.Stages)-1]
+	status := diagnostic.StatusOK
+	errMsg := ""
+	if cancel.Err != nil {
+		status = diagnostic.StatusFailed
+		errMsg = cancel.Err.Error()
+	}
+	m.telemetry.OnStage(diagnostic.StageDiagnostic{
+		Stage:    stage,
+		Phase:    diagnostic.PhaseWrite,
+		StartAt:  last.StartAt,
+		Duration: last.Duration,
+		Status:   status,
+		Err:      errMsg,
+		Detail:   last.Detail,
+	})
+}
+
+func (m *memory) emitAsyncJobCancelTelemetryFallback(cancel asyncJobCancelResult, stage string) {
 	now := time.Now()
+	status := diagnostic.StatusOK
+	errMsg := ""
+	if cancel.Err != nil {
+		status = diagnostic.StatusFailed
+		errMsg = cancel.Err.Error()
+	}
 	m.telemetry.OnStage(diagnostic.StageDiagnostic{
 		Stage:    stage + ":async_job_cancel",
 		Phase:    diagnostic.PhaseWrite,
 		StartAt:  now,
 		Duration: 0,
-		Status:   diagnostic.StatusFailed,
-		Err:      cancel.Err.Error(),
+		Status:   status,
+		Err:      errMsg,
 		Detail: diagnostic.CompensationFailedDetail{
 			OriginalStage: "async_job_cancel",
 			Cause:         fmt.Sprintf("cancelled=%d", cancel.Cancelled),
 		},
 	})
-	_ = scope
 }

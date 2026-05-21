@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain/diagnostic"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/ingest"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/pipeline/write"
 	writestages "github.com/GizClaw/flowcraft/sdk/recall/internal/pipeline/write/stages"
@@ -524,6 +525,97 @@ func TestExpireRetired_DoesNotCancelUnrelatedAsyncJobs(t *testing.T) {
 	}
 	if len(jobs) != 1 || jobs[0].RequestID != resB.AsyncRequestID {
 		t.Fatalf("remaining job = %+v, want only %q", jobs, resB.AsyncRequestID)
+	}
+}
+
+type completeFailQueue struct {
+	*asyncsemantic.Queue
+	err error
+}
+
+func (q *completeFailQueue) Complete(context.Context, string, port.AsyncSemanticResult) error {
+	return q.err
+}
+
+func TestProcessAsyncSemantic_CompleteAckFailureCountsFailed(t *testing.T) {
+	ackErr := errors.New("queue complete unavailable")
+	queue := &completeFailQueue{Queue: asyncsemantic.New(), err: ackErr}
+	mem, err := New(
+		withTemporalStore(temporalstore.NewMemoryStore()),
+		withCompiler(testSemanticIngestor()),
+		WithAsyncSemanticQueue(queue),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proc, ok := NewAsyncSemanticProcessor(mem)
+	if !ok {
+		t.Fatal("processor missing")
+	}
+	scope := asyncTestScope()
+	ctx := context.Background()
+	if _, err := mem.Save(ctx, scope, SaveRequest{
+		Mode:  WriteModeAsyncSemantic,
+		Turns: []TurnContext{{ID: "t1", Text: "ack fail"}},
+	}); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	out, err := proc.ProcessAsyncSemantic(ctx, AsyncSemanticProcessOptions{Limit: 1, Scope: scope})
+	if err != nil {
+		t.Fatalf("ProcessAsyncSemantic: %v", err)
+	}
+	if out.Failed != 1 {
+		t.Fatalf("result = %+v, want failed=1 when Complete ack fails", out)
+	}
+}
+
+func TestForgetAllHard_EmitsAsyncJobsCancelledTelemetry(t *testing.T) {
+	hook := &captureHook{}
+	store := temporalstore.NewMemoryStore()
+	queue := asyncsemantic.New()
+	mem, err := New(
+		withTemporalStore(store),
+		WithAsyncSemanticQueue(queue),
+		WithTelemetryHook(hook),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scope := asyncTestScope()
+	ctx := context.Background()
+	if _, err := mem.Save(ctx, scope, SaveRequest{
+		Mode:  WriteModeAsyncSemantic,
+		Turns: []TurnContext{{ID: "t1", Text: "cancel me"}},
+	}); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	hook.stages = nil
+	if _, err := mem.ForgetAll(ctx, scope, ForgetHard, scope.CanonicalKey()); err != nil {
+		t.Fatalf("ForgetAll: %v", err)
+	}
+	var forgetStage *diagnostic.StageDiagnostic
+	for i := range hook.stages {
+		if hook.stages[i].Stage != "forget_all" {
+			continue
+		}
+		d, ok := hook.stages[i].Detail.(diagnostic.ForgetAllDetail)
+		if !ok || d.AsyncJobsCancelled == 0 {
+			continue
+		}
+		forgetStage = &hook.stages[i]
+	}
+	if forgetStage == nil {
+		t.Fatalf("telemetry stages = %v, want forget_all with async cancel", stageNames(hook.stages))
+	}
+	if forgetStage.Status != diagnostic.StatusOK {
+		t.Fatalf("forget_all status = %s, want ok", forgetStage.Status)
+	}
+	d, ok := forgetStage.Detail.(diagnostic.ForgetAllDetail)
+	if !ok {
+		t.Fatalf("detail = %T, want ForgetAllDetail", forgetStage.Detail)
+	}
+	if d.AsyncJobsCancelled != 1 {
+		t.Fatalf("AsyncJobsCancelled = %d, want 1", d.AsyncJobsCancelled)
 	}
 }
 

@@ -10,8 +10,8 @@ import (
 )
 
 // ParseCanonicalTurns parses the "<speaker>: <text>" lines stored on
-// KindEpisode facts by build_episode. It is the preferred worker
-// reconstruction path over TurnsSnapshot.
+// KindEpisode facts by build_episode. Turn IDs are synthetic; prefer
+// enqueue-time TurnsSnapshot when present (see ReconstructTurnsForJob).
 func ParseCanonicalTurns(content string) []domain.TurnContext {
 	if content == "" {
 		return nil
@@ -43,9 +43,13 @@ func ParseCanonicalTurns(content string) []domain.TurnContext {
 	return out
 }
 
-// ReconstructTurnsForJob loads turns from canonical episode facts
-// when possible, otherwise falls back to the enqueue-time snapshot.
+// ReconstructTurnsForJob prefers the enqueue-time TurnsSnapshot so
+// worker extraction keeps stable turn IDs and full TurnContext fields.
+// When the snapshot is absent it loads canonical episode content.
 func ReconstructTurnsForJob(ctx context.Context, store port.TemporalStore, job port.AsyncSemanticJob) ([]domain.TurnContext, error) {
+	if len(job.TurnsSnapshot) > 0 {
+		return append([]domain.TurnContext(nil), job.TurnsSnapshot...), nil
+	}
 	if store != nil && len(job.EpisodeFactIDs) > 0 {
 		var turns []domain.TurnContext
 		for _, id := range job.EpisodeFactIDs {
@@ -63,8 +67,5 @@ func ReconstructTurnsForJob(ctx context.Context, store port.TemporalStore, job p
 			return turns, nil
 		}
 	}
-	if len(job.TurnsSnapshot) > 0 {
-		return append([]domain.TurnContext(nil), job.TurnsSnapshot...), nil
-	}
-	return nil, fmt.Errorf("recall async semantic: no turns from episodes or snapshot")
+	return nil, fmt.Errorf("recall async semantic: no turns from snapshot or episodes")
 }

@@ -683,12 +683,13 @@ func (m *memory) ForgetAll(ctx context.Context, scope Scope, mode ForgetMode, co
 		Mode:            mode,
 		ConfirmScopeKey: confirmScopeKey,
 	}
+	state.EnsureTrace()
 	if err := m.forgetRunner.Run(ctx, state); err != nil {
 		return 0, err
 	}
 	cancel := m.cancelAsyncJobsAfterForget(ctx, state)
 	m.patchForgetTraceAsyncCancel(state, cancel)
-	m.emitAsyncJobCancelTelemetry(scope, cancel, "forget_all")
+	m.emitAsyncJobCancelTelemetry(state, cancel, "forget_all")
 	if cancel.Err != nil {
 		return state.Deleted, fmt.Errorf("recall.ForgetAll: async job cancel: %w", cancel.Err)
 	}
@@ -723,6 +724,7 @@ func (m *memory) ExpireRetired(ctx context.Context, scope Scope, now time.Time) 
 		Filter: &forget.ForgetFilter{ExpiresBefore: &now},
 		Now:    now,
 	}
+	state.EnsureTrace()
 	if err := m.forgetRunner.Run(ctx, state); err != nil {
 		return 0, err
 	}
@@ -730,7 +732,7 @@ func (m *memory) ExpireRetired(ctx context.Context, scope Scope, now time.Time) 
 	if state.Deleted > 0 {
 		cancel = m.cancelAsyncJobsAfterForget(ctx, state)
 		m.patchForgetTraceAsyncCancel(state, cancel)
-		m.emitAsyncJobCancelTelemetry(scope, cancel, "expire_retired")
+		m.emitAsyncJobCancelTelemetry(state, cancel, "expire_retired")
 		if cancel.Err != nil {
 			return state.Deleted, fmt.Errorf("recall.ExpireRetired: async job cancel: %w", cancel.Err)
 		}
