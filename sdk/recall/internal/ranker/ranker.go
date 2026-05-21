@@ -63,9 +63,10 @@ func (d *Default) Rank(_ context.Context, in port.RankInput) port.RankOutput {
 		now = time.Now()
 	}
 	terms := significantQueryTerms(in.Intent.Text)
+	termDF := queryTermDocumentFrequency(items, terms)
 	var boosts, timeDecay, superseded int
 	for i := range items {
-		boost := factRankBoost(items[i], in.Intent, terms)
+		boost := factRankBoost(items[i], in.Intent, terms, termDF)
 		if boost != 0 {
 			boosts++
 			items[i].Candidate.Score += boost
@@ -96,6 +97,11 @@ func (d *Default) Rank(_ context.Context, in port.RankInput) port.RankOutput {
 	sort.SliceStable(items, func(i, j int) bool {
 		return items[i].Candidate.Score > items[j].Candidate.Score
 	})
+	diversityWindow := in.FinalCap
+	if diversityWindow == 0 || diversityWindow > 50 {
+		diversityWindow = 50
+	}
+	items = diversifyTopItems(items, diversityWindow)
 	if in.FinalCap > 0 && len(items) > in.FinalCap {
 		items = items[:in.FinalCap]
 	}
@@ -119,7 +125,7 @@ func (d *Default) timeDecayFactor(f domain.TemporalFact, now time.Time) float64 
 	return math.Exp(-math.Ln2 * age / d.halfLife.Seconds())
 }
 
-func factRankBoost(item domain.ContextItem, intent domain.QueryIntent, terms []string) float64 {
+func factRankBoost(item domain.ContextItem, intent domain.QueryIntent, terms []string, termDF map[string]int) float64 {
 	f := item.Fact
 	var boost float64
 	termMatches := factTermMatchCount(f, terms)
@@ -148,6 +154,7 @@ func factRankBoost(item domain.ContextItem, intent domain.QueryIntent, terms []s
 		boost += 0.01
 	}
 	boost += termMatchBoost(termMatches)
+	boost += queryCoverageBoost(f, terms, termDF)
 	if f.Confidence > 0 {
 		c := f.Confidence
 		if c > 1 {
@@ -157,6 +164,30 @@ func factRankBoost(item domain.ContextItem, intent domain.QueryIntent, terms []s
 	}
 	boost += (evolution.FeedbackBoost(f.Reinforcement, f.Penalty) - 1) * 0.02
 	return boost
+}
+
+func queryCoverageBoost(f domain.TemporalFact, terms []string, termDF map[string]int) float64 {
+	if len(terms) == 0 {
+		return 0
+	}
+	matched := factMatchedTerms(f, terms)
+	if len(matched) == 0 {
+		return 0
+	}
+	coverage := float64(len(matched)) / float64(len(terms))
+	var rarity float64
+	for _, term := range matched {
+		df := termDF[term]
+		if df <= 0 {
+			continue
+		}
+		rarity += 1 / float64(df)
+	}
+	rarity /= float64(len(terms))
+	// Coverage rewards facts that answer more of the query, while
+	// rarity keeps common subject-only matches from swamping specific
+	// evidence such as "degree", "Tampa", or "25 minutes".
+	return coverage*0.012 + rarity*0.018
 }
 
 func temporalIntent(intent domain.QueryIntent) bool {
@@ -247,11 +278,139 @@ func factTermMatchCount(f domain.TemporalFact, terms []string) int {
 	return matches
 }
 
+func queryTermDocumentFrequency(items []domain.ContextItem, terms []string) map[string]int {
+	out := make(map[string]int, len(terms))
+	if len(items) == 0 || len(terms) == 0 {
+		return out
+	}
+	for _, item := range items {
+		seen := map[string]struct{}{}
+		for _, term := range factMatchedTerms(item.Fact, terms) {
+			seen[term] = struct{}{}
+		}
+		for term := range seen {
+			out[term]++
+		}
+	}
+	return out
+}
+
+func factMatchedTerms(f domain.TemporalFact, terms []string) []string {
+	if len(terms) == 0 {
+		return nil
+	}
+	tokens := tokenizeRankBlob(f.Content + " " + f.Subject + " " + f.Predicate + " " + f.Object + " " + f.EvidenceText)
+	for _, ref := range f.EvidenceRefs {
+		tokens = append(tokens, tokenizeRankBlob(ref.Text)...)
+	}
+	tokenSet := make(map[string]struct{}, len(tokens))
+	for _, tok := range tokens {
+		tokenSet[tok] = struct{}{}
+	}
+	var out []string
+	for _, term := range terms {
+		if _, ok := tokenSet[term]; ok {
+			out = append(out, term)
+		}
+	}
+	return out
+}
+
 func termMatchBoost(matches int) float64 {
 	if matches <= 0 {
 		return 0
 	}
 	return float64(matches) * 0.006
+}
+
+func diversifyTopItems(items []domain.ContextItem, window int) []domain.ContextItem {
+	if len(items) < 2 || window <= 1 {
+		return items
+	}
+	if window > len(items) {
+		window = len(items)
+	}
+	selected := make([]domain.ContextItem, 0, window)
+	remaining := append([]domain.ContextItem(nil), items[:window]...)
+	seenEvidence := map[string]int{}
+	seenKind := map[domain.FactKind]int{}
+	seenPrimarySource := map[string]int{}
+	for len(remaining) > 0 {
+		best := 0
+		bestScore := diversityAdjustedScore(remaining[0], seenEvidence, seenKind, seenPrimarySource)
+		for i := 1; i < len(remaining); i++ {
+			score := diversityAdjustedScore(remaining[i], seenEvidence, seenKind, seenPrimarySource)
+			if score > bestScore {
+				best = i
+				bestScore = score
+			}
+		}
+		chosen := remaining[best]
+		selected = append(selected, chosen)
+		for _, id := range evidenceIDs(chosen.Fact) {
+			seenEvidence[id]++
+		}
+		if chosen.Fact.Kind != "" {
+			seenKind[chosen.Fact.Kind]++
+		}
+		if src := primarySource(chosen.Candidate); src != "" {
+			seenPrimarySource[src]++
+		}
+		remaining = append(remaining[:best], remaining[best+1:]...)
+	}
+	out := append([]domain.ContextItem(nil), selected...)
+	out = append(out, items[window:]...)
+	return out
+}
+
+func diversityAdjustedScore(item domain.ContextItem, seenEvidence map[string]int, seenKind map[domain.FactKind]int, seenPrimarySource map[string]int) float64 {
+	score := item.Candidate.Score
+	for _, id := range evidenceIDs(item.Fact) {
+		if seenEvidence[id] > 0 {
+			score -= 0.018
+			break
+		}
+	}
+	if item.Fact.Kind != "" && seenKind[item.Fact.Kind] >= 3 {
+		score -= 0.006 * float64(seenKind[item.Fact.Kind]-2)
+	}
+	if src := primarySource(item.Candidate); src != "" && seenPrimarySource[src] >= 5 {
+		score -= 0.003 * float64(seenPrimarySource[src]-4)
+	}
+	return score
+}
+
+func evidenceIDs(f domain.TemporalFact) []string {
+	if len(f.EvidenceRefs) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(f.EvidenceRefs))
+	seen := map[string]struct{}{}
+	for _, ref := range f.EvidenceRefs {
+		if ref.ID == "" {
+			continue
+		}
+		if _, ok := seen[ref.ID]; ok {
+			continue
+		}
+		seen[ref.ID] = struct{}{}
+		out = append(out, ref.ID)
+	}
+	return out
+}
+
+func primarySource(c domain.Candidate) string {
+	if c.Source != "" {
+		return c.Source
+	}
+	if c.Metadata == nil {
+		return ""
+	}
+	sources, _ := c.Metadata["sources"].([]string)
+	if len(sources) == 0 {
+		return ""
+	}
+	return sources[0]
 }
 
 // significantQueryTerms folds the query text into deduped BM25

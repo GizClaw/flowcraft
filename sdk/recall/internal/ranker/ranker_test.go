@@ -137,3 +137,86 @@ func TestDefault_Rank_TimeDecayPrefersRecent(t *testing.T) {
 		t.Fatal("expected time decay applications")
 	}
 }
+
+func TestDefault_Rank_QueryCoveragePrefersSpecificEvidence(t *testing.T) {
+	r := ranker.NewDefault()
+	items := []domain.ContextItem{
+		{
+			Candidate: domain.Candidate{FactID: "generic", Score: 0.01},
+			Fact: domain.TemporalFact{
+				ID:      "generic",
+				Kind:    domain.KindState,
+				Subject: "John",
+				Content: "John's mechanical engineering company failed.",
+			},
+		},
+		{
+			Candidate: domain.Candidate{FactID: "specific", Score: 0.01},
+			Fact: domain.TemporalFact{
+				ID:      "specific",
+				Kind:    domain.KindNote,
+				Subject: "John",
+				Content: "John is considering policymaking because of his degree and his interest in public infrastructure.",
+			},
+		},
+	}
+	out := r.Rank(context.Background(), port.RankInput{
+		Items: items,
+		Intent: domain.QueryIntent{
+			Text: "What might John's degree be in?",
+		},
+		FinalCap: 2,
+	})
+	if len(out.Items) != 2 {
+		t.Fatalf("ranked len = %d, want 2", len(out.Items))
+	}
+	if out.Items[0].Fact.ID != "specific" {
+		t.Fatalf("top ranked fact = %s, want specific", out.Items[0].Fact.ID)
+	}
+}
+
+func TestDefault_Rank_DiversifiesRepeatedEvidence(t *testing.T) {
+	r := ranker.NewDefault()
+	items := []domain.ContextItem{
+		{
+			Candidate: domain.Candidate{FactID: "a", Score: 1.00, Source: "retrieval"},
+			Fact: domain.TemporalFact{
+				ID:           "a",
+				Kind:         domain.KindState,
+				Content:      "Alice likes pottery.",
+				EvidenceRefs: []domain.EvidenceRef{{ID: "turn-1"}},
+			},
+		},
+		{
+			Candidate: domain.Candidate{FactID: "b", Score: 0.99, Source: "retrieval"},
+			Fact: domain.TemporalFact{
+				ID:           "b",
+				Kind:         domain.KindState,
+				Content:      "Alice enjoys pottery classes.",
+				EvidenceRefs: []domain.EvidenceRef{{ID: "turn-1"}},
+			},
+		},
+		{
+			Candidate: domain.Candidate{FactID: "c", Score: 0.98, Source: "entity"},
+			Fact: domain.TemporalFact{
+				ID:           "c",
+				Kind:         domain.KindEvent,
+				Content:      "Alice signed up for a pottery class yesterday.",
+				EvidenceRefs: []domain.EvidenceRef{{ID: "turn-2"}},
+			},
+		},
+	}
+	out := r.Rank(context.Background(), port.RankInput{
+		Items: items,
+		Intent: domain.QueryIntent{
+			Text: "What did Alice do for pottery?",
+		},
+		FinalCap: 3,
+	})
+	if len(out.Items) != 3 {
+		t.Fatalf("ranked len = %d, want 3", len(out.Items))
+	}
+	if out.Items[1].Fact.ID != "c" {
+		t.Fatalf("second ranked fact = %s, want diverse evidence c", out.Items[1].Fact.ID)
+	}
+}
