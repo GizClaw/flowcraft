@@ -131,48 +131,104 @@ type ExtractedEvidenceRef struct {
 // only have unstructured prose pass a single port.TurnContext with just
 // the Text field populated; the SDK then synthesises an id and
 // degrades the evidence_refs.id requirement to "best-effort".
-const LLMExtractorSystemPrompt = `Extract long-term memories from JSONL turns.
+const LLMExtractorSystemPrompt = `You extract memories from a conversation snippet.
 
-Return exactly: {"memories":[...]} matching the schema. Each memory is
-one standalone English sentence with one kind and supporting turn ids.
+Output: a JSON object {"memories": [...]} matching the supplied schema.
+Each memory has a self-contained sentence, a kind label, and citations
+to the supporting turn ids.
 
-Input rows:
-{"id":"<turn-id>","time":"<RFC3339 or empty>","speaker":"<name>","role":"user|assistant","text":"<utterance>"}
+The user message contains source turns as JSON, one per line:
+{"id":"<turn-id>","time":"<RFC3339 timestamp or empty>","speaker":"<name>","role":"user|assistant","text":"<utterance>"}
 
 Rules:
-- Emit one memory per distinct fact. Split lists: "Alice enjoys
-  pottery, camping, painting, and swimming" => four preference memories.
-  Never collapse lists into "various activities" / "several hobbies".
-- Keep concrete details even if mentioned once: actions, items, places,
-  people, organisations, titles, products, quantities, dates.
-- Prefer concrete dated events over summaries. "I just signed up for a
-  pottery class yesterday" => event "On <date>, Alice signed up for a
-  pottery class", not state/preference about pottery.
-- Use the speaker name, never "user" or "assistant". If the input has a
-  timestamp, include the absolute date in the sentence.
-- Preserve proper nouns and titles verbatim, e.g. "Charlotte's Web".
-  Do not paraphrase concrete nouns into "a book", "an item", or
-  "home country".
-- evidence_refs ids must match input ids exactly. evidence_refs[].text
-  is a short verbatim quote when useful.
-- Only emit facts clearly supported by the snippet. If none, return
-  {"memories":[]}.
-
-Kinds:
-- event: dated or one-off action ("Alice went to the dentist";
-  "Bob bought shoes"; "Carol signed up for pottery class"). Past tense
-  with a time anchor is event.
-- state: durable attribute stated as ongoing ("Alice lives in Paris";
-  "Bob is a chef").
-- preference: explicit like/dislike/favourite/habit ("Alice loves black
-  coffee"). One past activity is not a preference.
-- procedure: reusable instruction or workflow rule ("When comparing
-  options, use a markdown table"; "Before processing invoices, run OCR
-  then extract entities"). Simple likes are preference, not procedure.
-- relation: interpersonal tie ("Alice is married to Bob").
-- plan: stated intention or scheduled future action ("Alice plans to
-  visit Paris next month").
-- note: supported fact that fits none of the above.`
+- One memory per distinct fact. If a turn states "Alice owns a dog
+  and lives in Paris", emit TWO memories. Atomic memories rank
+  well in retrieval; compound sentences fragment the ranking
+  signal.
+- Split enumerations into separate memories. If a turn states
+  "Alice enjoys pottery, camping, painting, and swimming", emit
+  FOUR preference memories: Alice enjoys pottery; Alice enjoys
+  camping; Alice enjoys painting; Alice enjoys swimming. Do not
+  collapse lists into "various activities", "several hobbies", or
+  another umbrella summary; later queries often ask for one item
+  from the list.
+- Be exhaustive about concrete, retrievable details. Every specific
+  action, item, place, person, organisation, book / song / product
+  title, quantity, or date that the snippet mentions becomes its
+  own memory - even when it appears only once and seems incidental.
+  A future query may ask "Where did Alice's necklace come from?",
+  "What books has Bob read?" or "When did Carol sign up for the
+  class?"; if you skipped the one-off mention you will fail those
+  queries. When in doubt, emit the memory.
+- Prefer the concrete EVENT over an abstract summary. If a turn
+  says "I just signed up for a pottery class yesterday" emit
+  {kind:"event", text:"On <date>, Alice signed up for a pottery
+  class."} - NOT {kind:"state", text:"Alice uses pottery for self-
+  expression."}. Specific dated actions must be preserved as
+  events; only emit a state / preference memory when the snippet
+  itself frames it as a durable trait, not when you are
+  generalising from one action.
+- "text" MUST be ONE concise English sentence that stands alone,
+  so it can be read in isolation by any downstream consumer:
+    * use the canonical speaker name when known (the turn's
+      "speaker" field, never "user" / "assistant");
+    * when the turn carries an absolute timestamp, keep that date
+      inline in the sentence so retrieval and rendering see it
+      without parsing structured fields (e.g. "On 2030-06-12,
+      Alice signed up for the photography class.");
+    * spell out the specific entities the turn mentions (people,
+      places, organisations, products, identifiers, book / song /
+      film titles, quantities). Quote proper nouns verbatim
+      (preserve capitalisation and punctuation, including quoted
+      titles like "Charlotte's Web") so retrieval can match them.
+      Concrete nouns are what later queries match on; do not
+      paraphrase them into generic words ("a book", "an item",
+      "her home country").
+- "kind" picks ONE label from this closed set:
+    * "event"      - something that happened at a specific time
+                     ("Alice went to the dentist on 2030-06-12.",
+                     "Bob bought new running shoes yesterday.",
+                     "Carol signed up for pottery class on
+                     2030-07-03."). Default to "event" whenever
+                     the snippet uses past tense with any time
+                     anchor (yesterday, last week, on <date>,
+                     "I just <verb>ed"). Single-occurrence dated
+                     actions are events, not states.
+    * "state"      - a durable attribute of a person / entity
+                     that the snippet itself frames as ongoing
+                     ("Alice lives in Paris.", "Bob is a chef.",
+                     "Carol is 32 years old."). Do NOT promote a
+                     one-off dated action into a state; emit the
+                     event instead.
+    * "preference" - a like / dislike / favourite / habit the
+                     snippet states explicitly ("Alice loves
+                     black coffee.", "Bob hates mornings.").
+                     One past activity is not a preference.
+    * "procedure"  - a reusable instruction or way of doing work
+                     ("When comparing options, use a markdown
+                     table.", "Before processing invoices, run OCR
+                     and then extract entities."). Use this for
+                     workflow rules, tool-use policies, response
+                     formatting instructions, and "when X, do Y"
+                     guidance. Do NOT use it for simple likes
+                     ("Alice likes coffee") - that is preference.
+    * "relation"   - an interpersonal tie
+                     ("Alice is married to Bob.").
+    * "plan"       - a stated intention / scheduled future action
+                     ("Alice plans to visit Paris next month.").
+    * "note"       - anything that does not fit the labels above.
+                     Default to "note" if uncertain; never invent
+                     a label outside the list.
+- "evidence_refs" lists the turn id(s) that support the memory.
+  Cite every supporting turn AT MOST ONCE. ID values must match
+  one of the "id"s in the input verbatim - never invent ids,
+  never paraphrase.
+- "evidence_refs[].text" (optional) is a short verbatim quote
+  from the supporting turn (<= 200 chars). Keep the wording faithful
+  to the original turn; never paraphrase.
+- Only emit memories that are clearly present in the snippet; never
+  fabricate to fill the schema. Returning {"memories": []} is the
+  right answer when the snippet says nothing memorable.`
 
 // LLMExtractor calls a sdk/llm.LLM and converts its JSON reply
 // into domain.TemporalFact values.

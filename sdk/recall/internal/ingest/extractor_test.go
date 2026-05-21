@@ -382,14 +382,16 @@ func TestLLMExtractor_PreservesBackendClassification(t *testing.T) {
 // and forces the reviewer to acknowledge the trade-off.
 func TestLLMExtractorSystemPrompt_GuardsAntiAbstraction(t *testing.T) {
 	mustContain := []string{
-		"pottery class",
-		"not state/preference about pottery",
-		"Keep concrete details even if mentioned once",
-		"Split lists",
-		"swimming",
-		`procedure: reusable instruction or workflow rule`,
-		"When comparing\n  options, use a markdown table",
-		"Preserve proper nouns and titles verbatim",
+		"signed up for a pottery class",
+		`NOT {kind:"state"`,
+		"Single-occurrence dated\n                     actions are events, not states",
+		"Be exhaustive about concrete, retrievable details",
+		"Split enumerations into separate memories",
+		"Alice enjoys swimming",
+		"Do not\n  collapse lists into",
+		`"procedure"`,
+		"When comparing options, use a markdown\n                     table.",
+		"Quote proper nouns verbatim",
 		"Charlotte's Web",
 	}
 	for _, s := range mustContain {
