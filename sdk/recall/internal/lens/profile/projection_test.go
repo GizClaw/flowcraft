@@ -26,6 +26,9 @@ func TestProfile_LookupBySubject(t *testing.T) {
 		{ID: "p1", Scope: scope(), Kind: domain.KindPreference,
 			Subject: "alice", Predicate: "food", Content: "sushi",
 			ObservedAt: time.Unix(2, 0)},
+		{ID: "proc1", Scope: scope(), Kind: domain.KindProcedure,
+			Subject: "alice", Predicate: "comparison_format", Content: "Use markdown tables for comparisons.",
+			ObservedAt: time.Unix(2, 0)},
 		{ID: "r1", Scope: scope(), Kind: domain.KindRelation,
 			Subject: "alice", Predicate: "spouse", Object: "bob",
 			ObservedAt: time.Unix(3, 0)},
@@ -34,8 +37,8 @@ func TestProfile_LookupBySubject(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := p.Lookup(ctx, scope(), "alice")
-	if len(got) != 3 {
-		t.Fatalf("want 3 active slots for alice, got %+v", got)
+	if len(got) != 4 {
+		t.Fatalf("want 4 active slots for alice, got %+v", got)
 	}
 }
 

@@ -149,7 +149,7 @@ func DefaultMergeKey(f domain.TemporalFact) string {
 	switch f.Kind {
 	case domain.KindRelation:
 		return joinKey("relation", subject, predicate, object)
-	case domain.KindState, domain.KindPreference:
+	case domain.KindState, domain.KindPreference, domain.KindProcedure:
 		if subject != "" && predicate != "" {
 			return joinKey(string(f.Kind), subject, predicate)
 		}

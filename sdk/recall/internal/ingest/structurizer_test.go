@@ -11,14 +11,13 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/text/timex"
 )
 
-// TestDefaultStructurizer_KindFallbackIsNote pins the post-route-2
+// TestDefaultStructurizer_KindFallbackDefaultsToNote pins the post-route-2
 // contract: when neither the caller nor the LLM extractor populated
-// f.Kind, the Structurizer's fallback is a stable KindNote. The
-// earlier keyword table was deleted (Route-2 diagnostics show it
-// fires on 0% of LLM-extracted facts) — this test guards against
-// the next refactor accidentally inferring something more aggressive
-// that would behave unpredictably for callers using the slim schema.
-func TestDefaultStructurizer_KindFallbackIsNote(t *testing.T) {
+// f.Kind, the Structurizer's fallback is KindNote except for narrow
+// procedural-memory patterns. The LLM still owns normal
+// classification; this test guards against reintroducing broad
+// keyword inference for event/state/preference/relation/plan.
+func TestDefaultStructurizer_KindFallbackDefaultsToNote(t *testing.T) {
 	cases := []string{
 		"Alice loves black coffee in the morning.",
 		"Alice plans to visit Paris next month.",
@@ -35,6 +34,30 @@ func TestDefaultStructurizer_KindFallbackIsNote(t *testing.T) {
 				t.Errorf("kind = %q, want KindNote (fallback path)", out.Kind)
 			}
 		})
+	}
+}
+
+func TestDefaultStructurizer_KindFallbackDetectsProcedure(t *testing.T) {
+	cases := []string{
+		"When comparing options, use a markdown table.",
+		"Before processing invoices, run OCR and then extract entities.",
+		"Always use markdown tables for comparisons.",
+		"First run OCR, then extract invoice entities.",
+	}
+	for _, content := range cases {
+		t.Run(content, func(t *testing.T) {
+			f := domain.TemporalFact{Content: content}
+			out := DefaultStructurizer{}.Structurize(f, port.IngestInput{})
+			if out.Kind != domain.KindProcedure {
+				t.Errorf("kind = %q, want KindProcedure", out.Kind)
+			}
+		})
+	}
+
+	f := domain.TemporalFact{Content: "Alice prefers tea in the morning."}
+	out := DefaultStructurizer{}.Structurize(f, port.IngestInput{})
+	if out.Kind != domain.KindNote {
+		t.Errorf("simple preference text should stay Note fallback, got %q", out.Kind)
 	}
 }
 

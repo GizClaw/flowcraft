@@ -21,6 +21,13 @@ func fromRecallHit(h recall.Hit) runners.Hit {
 		ID:      h.Fact.ID,
 		Content: groundedHitContent(h.Fact),
 		Score:   h.Score,
+		Kind:    string(h.Fact.Kind),
+	}
+	if len(h.Sources) > 0 {
+		hit.Sources = append([]string(nil), h.Sources...)
+	}
+	if h.Fact.ValidFrom != nil && !h.Fact.ValidFrom.IsZero() {
+		hit.ValidFrom = h.Fact.ValidFrom.Format("2006-01-02")
 	}
 	for _, ref := range h.Fact.EvidenceRefs {
 		if ref.ID != "" {

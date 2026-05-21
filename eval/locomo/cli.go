@@ -296,18 +296,28 @@ Example (LLM extractor + LLM answer + LLM judge + Qwen embedder):
 					defer recallMu.Unlock()
 					type hitRec struct {
 						ID       string             `json:"id"`
+						Rank     int                `json:"rank"`
 						Score    float64            `json:"score"`
+						Kind     string             `json:"kind,omitempty"`
+						Sources  []string           `json:"sources,omitempty"`
 						Content  string             `json:"content"`
+						Evidence []string           `json:"evidence_ids,omitempty"`
+						ValidAt  string             `json:"valid_from,omitempty"`
 						Episodic bool               `json:"episodic,omitempty"`
 						Cats     []string           `json:"categories,omitempty"`
 						Scores   map[string]float64 `json:"scores,omitempty"`
 					}
 					recs := make([]hitRec, 0, len(hits))
-					for _, h := range hits {
+					for i, h := range hits {
 						rec := hitRec{
-							ID:      h.ID,
-							Score:   h.Score,
-							Content: h.Content,
+							ID:       h.ID,
+							Rank:     i + 1,
+							Score:    h.Score,
+							Kind:     h.Kind,
+							Sources:  append([]string(nil), h.Sources...),
+							Content:  h.Content,
+							Evidence: append([]string(nil), h.EvidenceIDs...),
+							ValidAt:  h.ValidFrom,
 						}
 						if h.Metadata != nil {
 							if cats, ok := h.Metadata["categories"].([]string); ok {

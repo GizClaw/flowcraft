@@ -27,7 +27,10 @@ type Hit struct {
 	ID          string
 	Content     string
 	Score       float64
+	Kind        string
+	Sources     []string
 	EvidenceIDs []string
+	ValidFrom   string
 	Metadata    map[string]any
 }
 

@@ -63,7 +63,7 @@ func extractEdges(f domain.TemporalFact, cfg Config, now time.Time) []directedEd
 	switch f.Kind {
 	case domain.KindRelation:
 		return extractRelationEdges(f)
-	case domain.KindEvent, domain.KindState, domain.KindNote:
+	case domain.KindEvent, domain.KindState, domain.KindProcedure, domain.KindNote:
 		return extractCooccurrenceEdges(f, cfg)
 	default:
 		return nil

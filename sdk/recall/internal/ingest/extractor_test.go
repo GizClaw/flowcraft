@@ -209,6 +209,7 @@ func TestLLMExtractor_PropagatesKindEnum(t *testing.T) {
 			{"text":"Alice lives in Paris.","kind":"state","evidence_refs":[{"id":"t1"}]},
 			{"text":"Alice plans to visit Berlin in June.","kind":"plan","evidence_refs":[{"id":"t1"}]},
 			{"text":"Alice loves black coffee.","kind":"preference","evidence_refs":[{"id":"t1"}]},
+			{"text":"When comparing options, Alice wants markdown tables.","kind":"procedure","evidence_refs":[{"id":"t1"}]},
 			{"text":"Alice is married to Bob.","kind":"relation","evidence_refs":[{"id":"t1"}]},
 			{"text":"Alice went to the cinema on 2024-05-07.","kind":"event","evidence_refs":[{"id":"t1"}]},
 			{"text":"Alice mentioned a new book.","kind":"note","evidence_refs":[{"id":"t1"}]}
@@ -224,7 +225,7 @@ func TestLLMExtractor_PropagatesKindEnum(t *testing.T) {
 	}
 	want := []domain.FactKind{
 		domain.KindState, domain.KindPlan, domain.KindPreference,
-		domain.KindRelation, domain.KindEvent, domain.KindNote,
+		domain.KindProcedure, domain.KindRelation, domain.KindEvent, domain.KindNote,
 	}
 	if len(out) != len(want) {
 		t.Fatalf("want %d facts, got %d", len(want), len(out))
@@ -381,14 +382,14 @@ func TestLLMExtractor_PreservesBackendClassification(t *testing.T) {
 // and forces the reviewer to acknowledge the trade-off.
 func TestLLMExtractorSystemPrompt_GuardsAntiAbstraction(t *testing.T) {
 	mustContain := []string{
-		"signed up for a pottery class",
-		"NOT {kind:\"state\"",
-		"Single-occurrence dated\n                     actions are events, not states",
-		"Be exhaustive about concrete, retrievable details",
-		"Split enumerations into separate memories",
-		"Alice enjoys swimming",
-		"Do not\n  collapse lists into",
-		"Quote proper nouns verbatim",
+		"pottery class",
+		"not state/preference about pottery",
+		"Keep concrete details even if mentioned once",
+		"Split lists",
+		"swimming",
+		`procedure: reusable instruction or workflow rule`,
+		"When comparing\n  options, use a markdown table",
+		"Preserve proper nouns and titles verbatim",
 		"Charlotte's Web",
 	}
 	for _, s := range mustContain {

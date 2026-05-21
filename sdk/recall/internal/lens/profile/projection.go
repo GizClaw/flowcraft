@@ -1,5 +1,6 @@
 // Package profile implements the optional active-slot profile
-// projection for state, preference, and relation facts (docs §8.3).
+// projection for state, preference, procedure, and relation facts
+// (docs §8.3).
 package profile
 
 import (
@@ -45,7 +46,7 @@ func (p *Projection) Consistency() port.Consistency { return port.Optional }
 // the canonical state / preference / relation views.
 func (p *Projection) AcceptsKind(k domain.FactKind) bool { return k != domain.KindEpisode }
 
-// Project upserts active state/preference/relation facts.
+// Project upserts active state/preference/procedure/relation facts.
 func (p *Projection) Project(_ context.Context, facts []domain.TemporalFact) error {
 	now := time.Now()
 	if len(facts) == 0 {
@@ -186,7 +187,7 @@ func keyOf(s domain.Scope) scopeKey {
 
 func isProfileKind(k domain.FactKind) bool {
 	switch k {
-	case domain.KindState, domain.KindPreference, domain.KindRelation:
+	case domain.KindState, domain.KindPreference, domain.KindProcedure, domain.KindRelation:
 		return true
 	}
 	return false
@@ -202,7 +203,7 @@ func slotKey(f domain.TemporalFact) string {
 	}
 	agent := f.Scope.AgentID
 	switch f.Kind {
-	case domain.KindState, domain.KindPreference:
+	case domain.KindState, domain.KindPreference, domain.KindProcedure:
 		predicate := canonicalKeyPart(f.Predicate)
 		if predicate == "" {
 			return subject + "\x00" + agent

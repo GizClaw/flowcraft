@@ -22,6 +22,7 @@ const (
 	FactEvent      FactKind = domain.KindEvent
 	FactState      FactKind = domain.KindState
 	FactPreference FactKind = domain.KindPreference
+	FactProcedure  FactKind = domain.KindProcedure
 	FactRelation   FactKind = domain.KindRelation
 	FactPlan       FactKind = domain.KindPlan
 	FactNote       FactKind = domain.KindNote

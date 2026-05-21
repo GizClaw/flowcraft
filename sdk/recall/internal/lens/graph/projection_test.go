@@ -63,6 +63,22 @@ func TestGraph_CooccurrenceBounded(t *testing.T) {
 	}
 }
 
+func TestGraph_IndexesProcedureCooccurrence(t *testing.T) {
+	p := New()
+	ctx := context.Background()
+	if err := p.Project(ctx, []domain.TemporalFact{
+		{ID: "proc1", Scope: scope(), Kind: domain.KindProcedure,
+			Entities:   []string{"invoice", "ocr"},
+			ObservedAt: time.Unix(1, 0)},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got := p.Traverse(ctx, scope(), []string{"invoice"}, 1, 0)
+	if len(got) != 1 || got[0] != "proc1" {
+		t.Fatalf("procedure co-occurrence edge not indexed, got %+v", got)
+	}
+}
+
 func TestGraph_ForgetRemovesEdges(t *testing.T) {
 	p := New()
 	ctx := context.Background()

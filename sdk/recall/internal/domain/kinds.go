@@ -8,6 +8,7 @@ const (
 	KindEvent      FactKind = "event"
 	KindState      FactKind = "state"
 	KindPreference FactKind = "preference"
+	KindProcedure  FactKind = "procedure"
 	KindRelation   FactKind = "relation"
 	KindPlan       FactKind = "plan"
 	KindNote       FactKind = "note"
@@ -22,7 +23,7 @@ const (
 // IsValid reports whether k is one of the canonical FactKinds.
 func (k FactKind) IsValid() bool {
 	switch k {
-	case KindEvent, KindState, KindPreference, KindRelation, KindPlan, KindNote, KindEpisode:
+	case KindEvent, KindState, KindPreference, KindProcedure, KindRelation, KindPlan, KindNote, KindEpisode:
 		return true
 	}
 	return false

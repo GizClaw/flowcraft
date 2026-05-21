@@ -136,7 +136,7 @@ func (s DefaultStructurizer) Structurize(f domain.TemporalFact, input port.Inges
 	// surface as an error from the compiler, not get silently
 	// rewritten by the heuristic.
 	if f.Kind == "" {
-		f.Kind = inferKind()
+		f.Kind = inferKind(f.Content)
 	}
 
 	if len(f.Entities) == 0 {
@@ -207,23 +207,47 @@ func resolveSupportingTurn(f domain.TemporalFact, turns []port.TurnContext) *por
 	return nil
 }
 
-// inferKind is the Kind-fallback used when neither the caller nor
-// the LLM extractor populated f.Kind. Per-run diagnostics on the
-// production extractor (Route 2 schema with the kind enum) show
-// this path fires on 0% of facts in practice — the LLM owns the
-// classification. The earlier keyword-rule table was therefore
-// removed: its only callers in real deployments would be legacy
-// callers running the slim text-only schema or providers whose
-// structured-output downgrade strips the kind field, and for those
-// cases a stable KindNote default is both correct and predictable.
-//
-// We keep the function (instead of inlining KindNote) so future
-// callers can swap in a smarter fallback without changing
-// Structurize's call site, and so the godoc above makes the
-// design intent legible to anyone wondering where the keyword
-// table went.
-func inferKind() domain.FactKind {
+// inferKind is the Kind fallback used when neither the caller nor the
+// LLM extractor populated f.Kind. The fallback stays deliberately
+// conservative: the LLM owns normal classification, while this path
+// only rescues procedural rules from legacy text-only callers whose
+// extractor could not emit the new procedure enum.
+func inferKind(content string) domain.FactKind {
+	if looksProcedural(content) {
+		return domain.KindProcedure
+	}
 	return domain.KindNote
+}
+
+func looksProcedural(content string) bool {
+	s := strings.ToLower(strings.Join(strings.Fields(content), " "))
+	if s == "" {
+		return false
+	}
+	if strings.HasPrefix(s, "when ") && strings.Contains(s, ", ") {
+		return true
+	}
+	if strings.HasPrefix(s, "before ") && strings.Contains(s, ", ") {
+		return true
+	}
+	if (strings.HasPrefix(s, "first ") || strings.Contains(s, " first ")) && strings.Contains(s, " then ") {
+		return true
+	}
+	if strings.Contains(s, "always ") {
+		for _, verb := range []string{"use ", "check ", "run ", "call ", "format ", "respond ", "return ", "ask ", "extract ", "parse "} {
+			if strings.Contains(s, "always "+verb) {
+				return true
+			}
+		}
+	}
+	if strings.Contains(s, "prefer") {
+		for _, token := range []string{"markdown", "table", "format", "output", "response", "answer"} {
+			if strings.Contains(s, token) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // extractEntities scans the content for capitalised tokens (likely

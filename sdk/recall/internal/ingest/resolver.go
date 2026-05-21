@@ -232,8 +232,8 @@ func (r *DefaultResolver) classify(ctx context.Context, view port.View, f domain
 		// content is still a noop dedupe.
 		return r.dedupeOrSupersede(ctx, view, f, false)
 
-	case domain.KindState, domain.KindPreference:
-		// Active state / preference with a changed value supersedes
+	case domain.KindState, domain.KindPreference, domain.KindProcedure:
+		// Active state / preference / procedure with a changed value supersedes
 		// the older revision.
 		return r.dedupeOrSupersede(ctx, view, f, true)
 
