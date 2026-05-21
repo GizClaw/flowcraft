@@ -55,7 +55,7 @@ func TestQueue_StatsCountsPendingLeasedAndCancelled(t *testing.T) {
 		t.Fatalf("other scope cancelled = %d, want 0 (no cross-scope leak)", statsOther.CancelledTotal)
 	}
 
-	_ = q.Fail(ctx, jobs[0].RequestID, port.AsyncSemanticFailure{
+	_ = q.Fail(ctx, jobs[0].RequestID, jobs[0].LeaseToken, port.AsyncSemanticFailure{
 		ErrClass: diagnostic.ErrClassPermanent,
 		Err:      "boom",
 	})

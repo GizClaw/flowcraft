@@ -145,6 +145,22 @@ Rules:
   and lives in Paris", emit TWO memories. Atomic memories rank
   well in retrieval; compound sentences fragment the ranking
   signal.
+- Be exhaustive about concrete, retrievable details. Every specific
+  action, item, place, person, organisation, book / song / product
+  title, quantity, or date that the snippet mentions becomes its
+  own memory — even when it appears only once and seems incidental.
+  A future query may ask "Where did Alice's necklace come from?",
+  "What books has Bob read?" or "When did Carol sign up for the
+  class?"; if you skipped the one-off mention you will fail those
+  queries. When in doubt, emit the memory.
+- Prefer the concrete EVENT over an abstract summary. If a turn
+  says "I just signed up for a pottery class yesterday" emit
+  {kind:"event", text:"On <date>, Alice signed up for a pottery
+  class."} — NOT {kind:"state", text:"Alice uses pottery for self-
+  expression."}. Specific dated actions must be preserved as
+  events; only emit a state / preference memory when the snippet
+  itself frames it as a durable trait, not when you are
+  generalising from one action.
 - "text" MUST be ONE concise English sentence that stands alone,
   so it can be read in isolation by any downstream consumer:
     * use the canonical speaker name when known (the turn's
@@ -154,16 +170,33 @@ Rules:
       without parsing structured fields (e.g. "On 2030-06-12,
       Alice signed up for the photography class.");
     * spell out the specific entities the turn mentions (people,
-      places, organisations, products, identifiers). Concrete
-      nouns are what later queries match on.
+      places, organisations, products, identifiers, book / song /
+      film titles, quantities). Quote proper nouns verbatim
+      (preserve capitalisation and punctuation, including quoted
+      titles like "Charlotte's Web") so retrieval can match them.
+      Concrete nouns are what later queries match on; do not
+      paraphrase them into generic words ("a book", "an item",
+      "her home country").
 - "kind" picks ONE label from this closed set:
     * "event"      — something that happened at a specific time
-                     ("Alice went to the dentist on 2030-06-12.").
+                     ("Alice went to the dentist on 2030-06-12.",
+                     "Bob bought new running shoes yesterday.",
+                     "Carol signed up for pottery class on
+                     2030-07-03."). Default to "event" whenever
+                     the snippet uses past tense with any time
+                     anchor (yesterday, last week, on <date>,
+                     "I just <verb>ed"). Single-occurrence dated
+                     actions are events, not states.
     * "state"      — a durable attribute of a person / entity
+                     that the snippet itself frames as ongoing
                      ("Alice lives in Paris.", "Bob is a chef.",
-                     "Carol is 32 years old.").
-    * "preference" — a like / dislike / favourite / habit
-                     ("Alice loves black coffee.").
+                     "Carol is 32 years old."). Do NOT promote a
+                     one-off dated action into a state; emit the
+                     event instead.
+    * "preference" — a like / dislike / favourite / habit the
+                     snippet states explicitly ("Alice loves
+                     black coffee.", "Bob hates mornings.").
+                     One past activity is not a preference.
     * "relation"   — an interpersonal tie
                      ("Alice is married to Bob.").
     * "plan"       — a stated intention / scheduled future action

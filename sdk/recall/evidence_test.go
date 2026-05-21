@@ -55,6 +55,7 @@ func TestSave_MirrorsEvidenceWhenStoreConfigured(t *testing.T) {
 	if err != nil {
 		t.Fatalf("save: %v", err)
 	}
+	drainSideEffectsForTest(t, mem, scope)
 	got, err := ev.ListByFact(context.Background(), scope, res.FactIDs[0])
 	if err != nil {
 		t.Fatal(err)
@@ -83,7 +84,7 @@ func TestSave_NoEvidenceStore_DoesNotPanic(t *testing.T) {
 	}
 }
 
-func TestSave_EvidenceFailureBlocksSaveAndRollsBack(t *testing.T) {
+func TestSave_EvidenceFailureRetriesWithoutCanonicalRollback(t *testing.T) {
 	store := temporalstore.NewMemoryStore()
 	ev := &failingEvidence{EvidenceStore: evidencestore.NewMemoryStore(), failAppend: true}
 	idx := retrievalmem.New()
@@ -105,15 +106,19 @@ func TestSave_EvidenceFailureBlocksSaveAndRollsBack(t *testing.T) {
 			EvidenceRefs: []EvidenceRef{{ID: "ev1", Text: "raw"}},
 		}},
 	})
-	if err == nil {
-		t.Fatal("evidence projection failure must abort Save (Required consistency)")
+	if err != nil {
+		t.Fatalf("Save should commit canonical fact before side-effect projection: %v", err)
+	}
+	out := drainSideEffectsForTest(t, mem, scope)
+	if out.Failed != 1 {
+		t.Fatalf("side-effect result = %+v, want failed=1", out)
 	}
 	facts, err := store.List(context.Background(), scope, port.ListQuery{})
 	if err != nil {
 		t.Fatalf("list canonical: %v", err)
 	}
-	if len(facts) != 0 {
-		t.Fatalf("canonical store must be rolled back after project_required failure, got %+v", facts)
+	if len(facts) != 1 {
+		t.Fatalf("canonical store must survive side-effect failure, got %+v", facts)
 	}
 	if ev.appended != 0 {
 		t.Fatalf("evidence append should not succeed, appended=%d", ev.appended)

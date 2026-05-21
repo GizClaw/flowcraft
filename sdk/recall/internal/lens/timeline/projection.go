@@ -2,15 +2,12 @@
 //
 // It is a temporal view over event|state|plan facts, ordered by
 // effective timestamp (ValidFrom ?? ObservedAt). It indexes any
-// fact that is projectable in the canonical sense (see
-// domain.IsProjectable): not superseded, validity window still
-// open, not soft-forgotten, not TTL-expired. Soft-closed and
-// TTL-expired facts are deliberately dropped here so the timeline
-// stays consistent with the rest of the projection layer (cluster
-// B). Past events with explicit ValidTo windows that have already
-// closed are treated as no longer projectable — callers that want
-// the historic timeline must use the canonical store's
-// IncludeRetired path, not the timeline projection cache.
+// fact that is historical in the canonical sense (see
+// domain.IsHistorical): not superseded by a successor and not
+// soft-forgotten / TTL-expired. Past-ValidTo events REMAIN visible
+// — a one-day event whose validity window has long closed must
+// still answer "When did X happen?" queries; the timeline is a
+// historical view, not an active-slot view.
 package timeline
 
 import (
@@ -85,7 +82,7 @@ func (p *Projection) Project(_ context.Context, facts []domain.TemporalFact) err
 		for _, priorID := range f.Supersedes {
 			delete(sh.byID, priorID)
 		}
-		if !domain.IsProjectable(f, now) {
+		if !domain.IsHistorical(f, now) {
 			p.rebuildOrderLocked(sh)
 			continue
 		}

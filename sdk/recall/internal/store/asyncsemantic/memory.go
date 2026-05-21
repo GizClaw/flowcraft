@@ -10,6 +10,8 @@ package asyncsemantic
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"sort"
 	"sync"
 	"time"
@@ -27,7 +29,7 @@ type Queue struct {
 	pending   []*entry
 	leased    map[string]*entry
 
-	cancelledByScope map[string]int
+	cancelledByPartition map[string]int
 }
 
 const (
@@ -53,6 +55,7 @@ type entry struct {
 	// leaseUntil is the worker lease while leased, or a retry/hold
 	// instant while pending (transient Fail or enqueue-time hint).
 	leaseUntil time.Time
+	leaseToken string
 	wasLeased  bool
 	result     port.AsyncSemanticResult
 	failure    port.AsyncSemanticFailure
@@ -61,9 +64,9 @@ type entry struct {
 // New returns an empty in-memory queue ready for Enqueue / Claim.
 func New() *Queue {
 	return &Queue{
-		byRequest:        make(map[string]*entry),
-		leased:           make(map[string]*entry),
-		cancelledByScope: make(map[string]int),
+		byRequest:            make(map[string]*entry),
+		leased:               make(map[string]*entry),
+		cancelledByPartition: make(map[string]int),
 	}
 }
 
@@ -103,7 +106,7 @@ func (q *Queue) Enqueue(_ context.Context, job port.AsyncSemanticJob) (port.Asyn
 // opts. Scope wins over RuntimeID when both are set.
 func jobMatchesClaimFilter(job port.AsyncSemanticJob, opts port.AsyncSemanticClaimOptions) bool {
 	if opts.Scope != nil {
-		return job.Scope.CanonicalKey() == opts.Scope.CanonicalKey()
+		return job.Scope.PartitionKey() == opts.Scope.PartitionKey()
 	}
 	if opts.RuntimeID != "" {
 		return job.Scope.RuntimeID == opts.RuntimeID
@@ -136,6 +139,7 @@ func (q *Queue) Claim(_ context.Context, opts port.AsyncSemanticClaimOptions) ([
 		if !e.leaseUntil.IsZero() && !now.Before(e.leaseUntil) {
 			e.status = statusPending
 			e.leaseUntil = time.Time{}
+			e.leaseToken = ""
 			delete(q.leased, e.job.RequestID)
 			q.pending = append(q.pending, e)
 		}
@@ -143,8 +147,8 @@ func (q *Queue) Claim(_ context.Context, opts port.AsyncSemanticClaimOptions) ([
 
 	sort.SliceStable(q.pending, func(i, j int) bool {
 		if q.pending[i].enqueuedAt.Equal(q.pending[j].enqueuedAt) {
-			si := q.pending[i].job.Scope.CanonicalKey()
-			sj := q.pending[j].job.Scope.CanonicalKey()
+			si := q.pending[i].job.Scope.PartitionKey()
+			sj := q.pending[j].job.Scope.PartitionKey()
 			if si == sj {
 				return q.pending[i].job.RequestID < q.pending[j].job.RequestID
 			}
@@ -177,16 +181,27 @@ func (q *Queue) Claim(_ context.Context, opts port.AsyncSemanticClaimOptions) ([
 			workerLease = now.Add(defaultLeaseTTL)
 		}
 		e.leaseUntil = workerLease
+		e.leaseToken = newLeaseToken()
 		e.wasLeased = true
 		e.job.Attempt++
 		e.job.LeaseUntil = workerLease
+		e.job.LeaseToken = e.leaseToken
 		q.leased[e.job.RequestID] = e
-		job := e.job
+		job := port.CloneAsyncSemanticJob(e.job)
+		job.LeaseToken = e.leaseToken
 		_ = opts.WorkerID
 		out = append(out, job)
 	}
 	q.pending = remaining
 	return out, nil
+}
+
+func newLeaseToken() string {
+	var b [8]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return hex.EncodeToString([]byte(time.Now().String()))
+	}
+	return hex.EncodeToString(b[:])
 }
 
 // CancelMatchingEpisodes removes non-complete jobs in scope whose
@@ -206,7 +221,7 @@ func (q *Queue) CancelMatchingEpisodes(_ context.Context, scope domain.Scope, de
 	}
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	key := scope.CanonicalKey()
+	key := scope.PartitionKey()
 	if key == "" {
 		return 0, nil
 	}
@@ -215,7 +230,7 @@ func (q *Queue) CancelMatchingEpisodes(_ context.Context, scope domain.Scope, de
 		if e.status == statusComplete {
 			continue
 		}
-		if e.job.Scope.CanonicalKey() != key {
+		if e.job.Scope.PartitionKey() != key {
 			continue
 		}
 		if jobReferencesDeletedEpisodes(e.job, targets) {
@@ -256,8 +271,8 @@ func (q *Queue) cancelLocked(requestID string) error {
 		}
 	}
 	q.pending = remaining
-	if key := e.job.Scope.CanonicalKey(); key != "" {
-		q.cancelledByScope[key]++
+	if key := e.job.Scope.PartitionKey(); key != "" {
+		q.cancelledByPartition[key]++
 	}
 	return nil
 }
@@ -269,17 +284,17 @@ func (q *Queue) Stats(_ context.Context, filter port.AsyncSemanticStatsFilter) (
 	if now.IsZero() {
 		now = time.Now()
 	}
-	scopeKey := filter.Scope.CanonicalKey()
+	partitionKey := filter.Scope.PartitionKey()
 
 	q.mu.Lock()
 	defer q.mu.Unlock()
 
 	var out port.AsyncSemanticStats
-	if scopeKey != "" {
-		out.CancelledTotal = q.cancelledByScope[scopeKey]
+	if partitionKey != "" {
+		out.CancelledTotal = q.cancelledByPartition[partitionKey]
 	}
 	for _, e := range q.byRequest {
-		if scopeKey != "" && e.job.Scope.CanonicalKey() != scopeKey {
+		if partitionKey != "" && e.job.Scope.PartitionKey() != partitionKey {
 			continue
 		}
 		switch e.status {
@@ -304,7 +319,7 @@ func (q *Queue) Stats(_ context.Context, filter port.AsyncSemanticStatsFilter) (
 
 // CancelScope removes every non-complete job in the scope partition.
 func (q *Queue) CancelScope(_ context.Context, scope domain.Scope) (int, error) {
-	key := scope.CanonicalKey()
+	key := scope.PartitionKey()
 	if key == "" {
 		return 0, nil
 	}
@@ -315,7 +330,7 @@ func (q *Queue) CancelScope(_ context.Context, scope domain.Scope) (int, error) 
 		if e.status == statusComplete {
 			continue
 		}
-		if e.job.Scope.CanonicalKey() != key {
+		if e.job.Scope.PartitionKey() != key {
 			continue
 		}
 		if err := q.cancelLocked(requestID); err != nil {
@@ -326,9 +341,57 @@ func (q *Queue) CancelScope(_ context.Context, scope domain.Scope) (int, error) 
 	return n, nil
 }
 
+// PurgeScope deletes every job in the partition, including completed
+// and dead-letter rows, so enqueue-time PII snapshots cannot survive
+// ForgetAll(Hard).
+func (q *Queue) PurgeScope(_ context.Context, scope domain.Scope) (int, error) {
+	key := scope.PartitionKey()
+	if key == "" {
+		return 0, nil
+	}
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	var remove []string
+	for requestID, e := range q.byRequest {
+		if e.job.Scope.PartitionKey() != key {
+			continue
+		}
+		remove = append(remove, requestID)
+	}
+	for _, requestID := range remove {
+		delete(q.byRequest, requestID)
+		delete(q.leased, requestID)
+	}
+	if len(remove) > 0 {
+		filtered := q.pending[:0]
+		for _, pe := range q.pending {
+			if pe.job.Scope.PartitionKey() != key {
+				filtered = append(filtered, pe)
+			}
+		}
+		q.pending = filtered
+	}
+	return len(remove), nil
+}
+
+// leaseAckAccepted reports whether Complete/Fail may mutate a job.
+// Only the current non-empty leased token is accepted; jobs that
+// returned to pending after lease expiry are not ackable with a
+// stale token.
+func leaseAckAccepted(e *entry, leaseToken string) bool {
+	if e == nil || e.status != statusLeased {
+		return false
+	}
+	if leaseToken == "" || e.leaseToken == "" {
+		return false
+	}
+	return leaseToken == e.leaseToken
+}
+
 // Complete marks the job complete. Idempotent: re-completing an
 // already-complete job is a no-op so workers can safely retry.
-func (q *Queue) Complete(_ context.Context, requestID string, result port.AsyncSemanticResult) error {
+// Stale or empty lease tokens are ignored.
+func (q *Queue) Complete(_ context.Context, requestID, leaseToken string, result port.AsyncSemanticResult) error {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	e, ok := q.byRequest[requestID]
@@ -338,8 +401,13 @@ func (q *Queue) Complete(_ context.Context, requestID string, result port.AsyncS
 	if e.status == statusComplete {
 		return nil
 	}
+	if !leaseAckAccepted(e, leaseToken) {
+		return nil
+	}
 	e.status = statusComplete
 	e.result = result
+	e.leaseToken = ""
+	port.ScrubAsyncSemanticJobPII(&e.job)
 	delete(q.leased, requestID)
 	return nil
 }
@@ -347,20 +415,25 @@ func (q *Queue) Complete(_ context.Context, requestID string, result port.AsyncS
 // Fail records failure metadata. Permanent failures become dead-letter
 // (statusFailed). Transient failures re-enter pending with RetryAt /
 // default backoff so Claim can pick them up after the retry window.
-func (q *Queue) Fail(_ context.Context, requestID string, failure port.AsyncSemanticFailure) error {
+func (q *Queue) Fail(_ context.Context, requestID, leaseToken string, failure port.AsyncSemanticFailure) error {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	e, ok := q.byRequest[requestID]
 	if !ok {
 		return nil
 	}
-	if e.status == statusComplete {
+	if e.status == statusComplete || e.status == statusFailed {
+		return nil
+	}
+	if !leaseAckAccepted(e, leaseToken) {
 		return nil
 	}
 	delete(q.leased, requestID)
+	e.leaseToken = ""
 	if failure.ErrClass == diagnostic.ErrClassPermanent {
 		e.status = statusFailed
 		e.failure = failure
+		port.ScrubAsyncSemanticJobPII(&e.job)
 		return nil
 	}
 	now := time.Now()

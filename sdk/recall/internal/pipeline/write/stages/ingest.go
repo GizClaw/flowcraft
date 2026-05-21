@@ -83,8 +83,9 @@ func (s *Ingest) Run(ctx context.Context, state *write.WriteState) (diagnostic.S
 		TierApplied:            ingest.TierAppliedFor(state.Tier),
 		RecentMessagesProvided: len(state.RecentMessages),
 		AnchorsProvided:        len(state.ExistingFactsAnchor),
-		Dropped:                append([]diagnostic.DroppedFact(nil), res.Dropped...),
+		Dropped:                droppedFactsForTelemetry(state, res.Dropped),
 		KnownEntitiesSeen:      len(state.KnownEntities),
+		FactStats:              computeFactStats(res.Facts),
 	}
 	if len(res.Facts) == 0 {
 		return detail, pipeline.ShortCircuitWith("empty_ingest")

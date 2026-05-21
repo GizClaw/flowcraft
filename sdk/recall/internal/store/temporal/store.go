@@ -2,17 +2,13 @@ package temporal
 
 import (
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/port"
 )
 
 // ErrNotFound is returned by Get / UpdateValidity / ReopenValidity
-// when the fact does not exist in the requested scope.
-//
-// Classified as errdefs.NotFound so the public boundary
-// (sdk/recall.Memory) and HTTP shims map it to 404 without each
-// caller re-checking message text. The sentinel identity is
-// preserved via the wrapped inner error so existing
-// errors.Is(err, ErrNotFound) checks keep working.
-var ErrNotFound = errdefs.NotFound(errdefs.New("recall temporal store: fact not found"))
+// when the fact does not exist in the requested scope. It aliases
+// port.ErrNotFound so callers depend on the port contract.
+var ErrNotFound = port.ErrNotFound
 
 // ErrReopenConflict is returned by ReopenValidity when the fact's
 // current CorrectedBy does not match the expected value supplied by

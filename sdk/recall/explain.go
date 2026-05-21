@@ -50,3 +50,10 @@ type RecallExplainer interface {
 type SaveExplainer interface {
 	SaveExplain(ctx context.Context, scope Scope, req SaveRequest) (SaveResult, SaveTrace, error)
 }
+
+// SaveDebugExplainer returns traces that may include raw fact payloads
+// in dropped-fact diagnostics. Output is not covered by ForgetAll
+// hard-delete lifecycle guarantees — use only for local debugging.
+type SaveDebugExplainer interface {
+	SaveExplainDebug(ctx context.Context, scope Scope, req SaveRequest) (SaveResult, SaveTrace, error)
+}

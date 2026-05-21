@@ -45,6 +45,7 @@ func (s *Resolve) Skip(_ context.Context, state *write.WriteState) (bool, diagno
 		return true, diagnostic.ResolveDetail{
 			Candidates: len(state.Ingest.Facts),
 			Appended:   len(state.Ingest.Facts),
+			FactStats:  computeFactStats(state.Ingest.Facts),
 		}
 	}
 	if asyncStructuredLegInactive(state) {
@@ -70,6 +71,7 @@ func (s *Resolve) Run(ctx context.Context, state *write.WriteState) (diagnostic.
 		Appended:   len(res.Facts),
 		Closed:     len(res.Closes),
 		Superseded: len(res.Closes),
+		FactStats:  computeFactStats(res.Facts),
 	}
 	for _, f := range state.Ingest.Facts {
 		if rev, ok := domain.RevisionOf(f); ok {

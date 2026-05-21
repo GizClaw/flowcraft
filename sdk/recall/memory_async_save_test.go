@@ -49,6 +49,7 @@ func (q *failingQueue) Enqueue(context.Context, port.AsyncSemanticJob) (port.Asy
 }
 func (q *failingQueue) Cancel(context.Context, string) error                   { return nil }
 func (q *failingQueue) CancelScope(context.Context, domain.Scope) (int, error) { return 0, nil }
+func (q *failingQueue) PurgeScope(context.Context, domain.Scope) (int, error)  { return 0, nil }
 func (q *failingQueue) CancelMatchingEpisodes(context.Context, domain.Scope, []string) (int, error) {
 	return 0, nil
 }
@@ -59,8 +60,12 @@ func (q *failingQueue) Claim(context.Context, port.AsyncSemanticClaimOptions) ([
 func claimBatch(ctx context.Context, q *asyncsemantic.Queue, workerID string, now time.Time, max int) ([]port.AsyncSemanticJob, error) {
 	return q.Claim(ctx, port.AsyncSemanticClaimOptions{WorkerID: workerID, Now: now, Max: max})
 }
-func (q *failingQueue) Complete(context.Context, string, port.AsyncSemanticResult) error { return nil }
-func (q *failingQueue) Fail(context.Context, string, port.AsyncSemanticFailure) error    { return nil }
+func (q *failingQueue) Complete(context.Context, string, string, port.AsyncSemanticResult) error {
+	return nil
+}
+func (q *failingQueue) Fail(context.Context, string, string, port.AsyncSemanticFailure) error {
+	return nil
+}
 func (q *failingQueue) Stats(context.Context, port.AsyncSemanticStatsFilter) (port.AsyncSemanticStats, error) {
 	return port.AsyncSemanticStats{}, nil
 }
@@ -542,10 +547,10 @@ func TestSave_StageDiagnostic_AsyncRequestIDCorrelation(t *testing.T) {
 		t.Fatal("AsyncRequestID empty in result")
 	}
 	required := map[string]bool{
-		"build_episode":            false,
-		"append_episode":           false,
-		"project_episode_evidence": false,
-		"write_semantic_outbox":    false,
+		"build_episode":         false,
+		"append_episode":        false,
+		"write_semantic_outbox": false,
+		"enqueue_side_effects":  false,
 	}
 	for _, ev := range hook.stages {
 		if _, ok := required[ev.Stage]; !ok {
@@ -594,8 +599,8 @@ func TestSave_AsyncResultIncludesEnqueuedRequestID(t *testing.T) {
 	for _, st := range trace.Stages {
 		if strings.HasPrefix(st.Stage, "build_episode") ||
 			strings.HasPrefix(st.Stage, "append_episode") ||
-			strings.HasPrefix(st.Stage, "project_episode_evidence") ||
-			strings.HasPrefix(st.Stage, "write_semantic_outbox") {
+			strings.HasPrefix(st.Stage, "write_semantic_outbox") ||
+			strings.HasPrefix(st.Stage, "enqueue_side_effects") {
 			if st.AsyncRequestID != res.AsyncRequestID {
 				t.Errorf("trace stage %q AsyncRequestID = %q",
 					st.Stage, st.AsyncRequestID)
@@ -604,6 +609,6 @@ func TestSave_AsyncResultIncludesEnqueuedRequestID(t *testing.T) {
 		}
 	}
 	if hits < 4 {
-		t.Errorf("expected at least 4 async lane stages in trace, got %d", hits)
+		t.Errorf("expected at least 4 async enqueue stages in trace, got %d", hits)
 	}
 }

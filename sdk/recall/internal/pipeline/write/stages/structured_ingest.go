@@ -80,8 +80,9 @@ func (s *StructuredIngest) Run(ctx context.Context, state *write.WriteState) (di
 		TierApplied:            ingest.TierAppliedFor(state.Tier),
 		RecentMessagesProvided: len(state.RecentMessages),
 		AnchorsProvided:        len(state.ExistingFactsAnchor),
-		Dropped:                append([]diagnostic.DroppedFact(nil), res.Dropped...),
+		Dropped:                droppedFactsForTelemetry(state, res.Dropped),
 		KnownEntitiesSeen:      len(state.KnownEntities),
+		FactStats:              computeFactStats(res.Facts),
 	}, nil
 }
 

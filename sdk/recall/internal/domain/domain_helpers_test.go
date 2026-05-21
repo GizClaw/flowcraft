@@ -66,6 +66,11 @@ func TestScopesMatch(t *testing.T) {
 	if ScopesMatch(a, c) {
 		t.Error("different UserID must not match")
 	}
+	agentA := Scope{RuntimeID: "rt", UserID: "alice", AgentID: "a1"}
+	agentB := Scope{RuntimeID: "rt", UserID: "alice", AgentID: "a2"}
+	if !ScopesMatch(agentA, agentB) {
+		t.Error("AgentID must not affect store partition match")
+	}
 }
 
 func TestNormalizeSaveTier(t *testing.T) {

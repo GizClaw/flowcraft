@@ -47,6 +47,7 @@ func TestSave_AppendsAndProjects(t *testing.T) {
 		t.Fatalf("unexpected save result: %+v", res)
 	}
 	id := res.FactIDs[0]
+	drainSideEffectsForTest(t, mem, scope)
 
 	got, err := store.Get(context.Background(), scope, id)
 	if err != nil {
@@ -71,7 +72,7 @@ func TestSave_RequiresRuntimeID(t *testing.T) {
 	}
 }
 
-func TestSave_RequiredProjectionFailureAborts(t *testing.T) {
+func TestSave_RequiredProjectionFailureRetriesSideEffect(t *testing.T) {
 	store := temporalstore.NewMemoryStore()
 	mem, err := New(
 		withTemporalStore(store),
@@ -80,18 +81,23 @@ func TestSave_RequiredProjectionFailureAborts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = mem.Save(context.Background(), Scope{RuntimeID: "rt"}, SaveRequest{
+	scope := Scope{RuntimeID: "rt", UserID: "u1"}
+	_, err = mem.Save(context.Background(), scope, SaveRequest{
 		Facts: []TemporalFact{{Kind: FactNote, Content: "x"}},
 	})
-	if err == nil {
-		t.Fatal("required projection failure must surface")
+	if err != nil {
+		t.Fatalf("Save should accept canonical write before side-effect processing: %v", err)
 	}
-	got, listErr := store.List(context.Background(), Scope{RuntimeID: "rt"}, port.ListQuery{})
+	out := drainSideEffectsForTest(t, mem, scope)
+	if out.Failed != 1 {
+		t.Fatalf("side-effect processor result = %+v, want failed=1", out)
+	}
+	got, listErr := store.List(context.Background(), scope, port.ListQuery{})
 	if listErr != nil {
 		t.Fatalf("store.List: %v", listErr)
 	}
-	if len(got) != 0 {
-		t.Fatalf("failed Save must not leave canonical facts behind: %+v", got)
+	if len(got) != 1 {
+		t.Fatalf("side-effect failure must not roll back canonical facts: %+v", got)
 	}
 }
 
@@ -107,6 +113,7 @@ func TestForget_RemovesFromStoreAndProjections(t *testing.T) {
 		t.Fatal(err)
 	}
 	id := res.FactIDs[0]
+	drainSideEffectsForTest(t, mem, scope)
 	if err := mem.Forget(context.Background(), scope, id); err != nil {
 		t.Fatalf("forget: %v", err)
 	}
@@ -171,6 +178,7 @@ func TestSave_StateSecondWriteSupersedesPrior(t *testing.T) {
 	}
 
 	// Recall should surface only the successor.
+	drainSideEffectsForTest(t, mem, scope)
 	hits, trace, err := mem.(RecallExplainer).RecallExplain(context.Background(), scope, Query{
 		Text:     "Paris",
 		Entities: []string{"alice"},
@@ -517,7 +525,7 @@ func TestSave_TimeResolverConsumesHint(t *testing.T) {
 	}
 }
 
-func TestSave_ProjectionFailureAfterSupersedeRestoresPriorFact(t *testing.T) {
+func TestSave_ProjectionFailureAfterSupersedeDoesNotRollbackCanonical(t *testing.T) {
 	store := temporalstore.NewMemoryStore()
 	proj := &failOnProjectN{failOn: 2}
 	mem, err := New(withTemporalStore(store), withExtraProjection(proj))
@@ -535,31 +543,36 @@ func TestSave_ProjectionFailureAfterSupersedeRestoresPriorFact(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first save: %v", err)
 	}
+	drainSideEffectsForTest(t, mem, scope)
 	priorID := first.FactIDs[0]
 
-	_, err = mem.Save(context.Background(), scope, SaveRequest{
+	second, err := mem.Save(context.Background(), scope, SaveRequest{
 		Facts: []TemporalFact{{
 			Kind: FactState, Subject: "alice", Predicate: "city",
 			Content: "Berlin",
 		}},
 	})
-	if err == nil {
-		t.Fatal("second save should fail at required projection")
+	if err != nil {
+		t.Fatalf("second save should commit canonical state before side effects: %v", err)
+	}
+	out := drainSideEffectsForTest(t, mem, scope)
+	if out.Failed != 1 {
+		t.Fatalf("side-effect result = %+v, want failed=1", out)
 	}
 
 	prior, err := store.Get(context.Background(), scope, priorID)
 	if err != nil {
 		t.Fatalf("prior fact should still exist: %v", err)
 	}
-	if prior.CorrectedBy != "" || prior.ValidTo != nil {
-		t.Fatalf("failed superseding save must leave prior fact active, got %+v", prior)
+	if prior.CorrectedBy != second.FactIDs[0] || prior.ValidTo == nil {
+		t.Fatalf("side-effect failure must not reopen prior canonical fact, got %+v", prior)
 	}
 	list, err := store.List(context.Background(), scope, port.ListQuery{IncludeSuperseded: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(list) != 1 || list[0].ID != priorID {
-		t.Fatalf("failed superseding save must roll back new fact only, got %+v", list)
+	if len(list) != 2 {
+		t.Fatalf("side-effect failure must not roll back new canonical fact, got %+v", list)
 	}
 }
 
@@ -641,6 +654,7 @@ func TestRecall_FindsFactByText(t *testing.T) {
 	if err != nil {
 		t.Fatalf("save: %v", err)
 	}
+	drainSideEffectsForTest(t, mem, scope)
 	hits, err := mem.Recall(context.Background(), scope, Query{Text: "Paris"})
 	if err != nil {
 		t.Fatalf("recall: %v", err)
@@ -672,6 +686,7 @@ func TestRecall_EntitySourceFiresOnlyWithHints(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	drainSideEffectsForTest(t, mem, scope)
 
 	// No entity hint -> only retrieval contributes; both unrelated
 	// strings can still match via BM25 zero-length match. Use a
@@ -705,6 +720,7 @@ func TestRecall_ForgottenFactDoesNotSurface(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	drainSideEffectsForTest(t, mem, scope)
 	if err := mem.Forget(context.Background(), scope, res.FactIDs[0]); err != nil {
 		t.Fatal(err)
 	}
@@ -737,6 +753,7 @@ func TestRecall_NoDiagnostics_TraceNil(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	drainSideEffectsForTest(t, mem, scope)
 
 	hits, err := mem.Recall(context.Background(), scope, Query{Text: "Paris", Limit: 3})
 	if err != nil {
@@ -774,6 +791,7 @@ func TestRecall_WithDiagnostics_TraceMatches(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	drainSideEffectsForTest(t, mem, scope)
 	explainer, ok := mem.(RecallExplainer)
 	if !ok {
 		t.Fatal("Memory must implement RecallExplainer")
@@ -804,6 +822,7 @@ func TestRecallExplain_PopulatesTrace(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	drainSideEffectsForTest(t, mem, scope)
 	explainer, ok := mem.(RecallExplainer)
 	if !ok {
 		t.Fatal("Memory should implement RecallExplainer")
@@ -855,6 +874,9 @@ func TestRecall_AgentIDSoftIsolation(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	drainSideEffectsForTest(t, mem, agentA)
+	drainSideEffectsForTest(t, mem, agentB)
+	drainSideEffectsForTest(t, mem, base)
 
 	// agent-a query: must see its own secret + shared, NOT agent-b
 	// secret.
@@ -1147,6 +1169,7 @@ func TestSave_TierCoreBoostsConfidence(t *testing.T) {
 	if len(resGeneral.FactIDs) != 1 || len(resCore.FactIDs) != 1 {
 		t.Fatalf("fact ids general=%d core=%d", len(resGeneral.FactIDs), len(resCore.FactIDs))
 	}
+	drainSideEffectsForTest(t, mem, scope)
 	confGeneral := factConfidence(mem, scope, resGeneral.FactIDs[0], "tier general")
 	confCore := factConfidence(mem, scope, resCore.FactIDs[0], "tier core")
 	if confCore <= confGeneral {
@@ -1196,6 +1219,7 @@ func TestFork_KeepsPriorActive(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	drainSideEffectsForTest(t, mem, scope)
 	hits, err := mem.Recall(context.Background(), scope, Query{Text: "alice location", Limit: 10})
 	if err != nil {
 		t.Fatal(err)

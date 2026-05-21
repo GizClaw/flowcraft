@@ -53,6 +53,8 @@ type Runner struct {
 	name          string
 	mem           recall.Memory
 	saveExplainer recall.SaveExplainer
+	saveDebug     recall.SaveDebugExplainer
+	sideEffects   recall.SideEffectProcessor
 	recallExplain recall.RecallExplainer
 	hasLLM        bool
 	includeAs     bool
@@ -97,6 +99,9 @@ func New(opts Options) (runners.Runner, error) {
 		onRecallDiag: opts.OnRecallDiagnostics,
 	}
 	if opts.OnSaveDiagnostics != nil {
+		if explainer, ok := mem.(recall.SaveDebugExplainer); ok {
+			r.saveDebug = explainer
+		}
 		if explainer, ok := mem.(recall.SaveExplainer); ok {
 			r.saveExplainer = explainer
 		}
@@ -105,6 +110,9 @@ func New(opts Options) (runners.Runner, error) {
 		if explainer, ok := mem.(recall.RecallExplainer); ok {
 			r.recallExplain = explainer
 		}
+	}
+	if proc, ok := recall.NewSideEffectProcessor(mem); ok {
+		r.sideEffects = proc
 	}
 	return r, nil
 }
@@ -193,7 +201,9 @@ func (r *Runner) runSave(ctx context.Context, scope runners.Scope, req recall.Sa
 		trace recall.SaveTrace
 		err   error
 	)
-	if r.saveExplainer != nil {
+	if r.saveDebug != nil {
+		res, trace, err = r.saveDebug.SaveExplainDebug(ctx, toRecallScope(scope), req)
+	} else if r.saveExplainer != nil {
 		res, trace, err = r.saveExplainer.SaveExplain(ctx, toRecallScope(scope), req)
 	} else {
 		res, err = r.mem.Save(ctx, toRecallScope(scope), req)
@@ -202,13 +212,39 @@ func (r *Runner) runSave(ctx context.Context, scope runners.Scope, req recall.Sa
 	if err != nil {
 		return 0, elapsed, err
 	}
+	if err := r.drainSideEffects(ctx, scope); err != nil {
+		return 0, elapsed, err
+	}
 	if r.onSaved != nil && len(res.FactIDs) > 0 {
 		r.onSaved(scope, res.FactIDs)
 	}
-	if r.onSaveDiag != nil && r.saveExplainer != nil {
+	if r.onSaveDiag != nil && (r.saveDebug != nil || r.saveExplainer != nil) {
 		r.onSaveDiag(scope, diagnostics.DiagnoseSave(req, trace))
 	}
 	return len(res.FactIDs), elapsed, nil
+}
+
+func (r *Runner) drainSideEffects(ctx context.Context, scope runners.Scope) error {
+	if r.sideEffects == nil {
+		return nil
+	}
+	recallScope := toRecallScope(scope)
+	for i := 0; i < 64; i++ {
+		out, err := r.sideEffects.ProcessSideEffects(ctx, recall.SideEffectProcessOptions{
+			Scope: recallScope,
+			Limit: 128,
+		})
+		if err != nil {
+			return err
+		}
+		if out.Failed > 0 {
+			return fmt.Errorf("flowcraftv2: side-effect processing failed: %+v", out)
+		}
+		if out.Claimed == 0 {
+			return nil
+		}
+	}
+	return fmt.Errorf("flowcraftv2: side-effect processor did not quiesce for scope %+v", scope)
 }
 
 // Recall implements runners.Runner.

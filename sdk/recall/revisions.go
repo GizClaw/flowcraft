@@ -20,10 +20,14 @@ func (m *memory) Contest(ctx context.Context, scope Scope, factID string, eviden
 }
 
 func (m *memory) runRevision(ctx context.Context, st *revision.State) (SaveResult, error) {
+	m.holdWriteTelemetry()
 	unlock := m.lockWriteScope(st.Scope)
-	defer unlock()
 	if err := m.revisionRunner.Run(ctx, st); err != nil {
+		unlock()
+		m.flushWriteTelemetry()
 		return SaveResult{}, err
 	}
+	unlock()
+	m.flushWriteTelemetry()
 	return SaveResult{FactIDs: []string{st.Created.ID}}, nil
 }

@@ -115,16 +115,18 @@ func TestQueue_CompleteIdempotent(t *testing.T) {
 	q := New()
 	ctx := context.Background()
 	_, _ = q.Enqueue(ctx, makeJob("req-1", "u1"))
-	if _, err := claimBatch(ctx, q, "w1", time.Now(), 1); err != nil {
+	jobs, err := claimBatch(ctx, q, "w1", time.Now(), 1)
+	if err != nil {
 		t.Fatalf("Claim: %v", err)
 	}
-	if err := q.Complete(ctx, "req-1", port.AsyncSemanticResult{SemanticFactIDs: []string{"sf-1"}}); err != nil {
+	token := jobs[0].LeaseToken
+	if err := q.Complete(ctx, "req-1", token, port.AsyncSemanticResult{SemanticFactIDs: []string{"sf-1"}}); err != nil {
 		t.Fatalf("Complete 1: %v", err)
 	}
-	if err := q.Complete(ctx, "req-1", port.AsyncSemanticResult{}); err != nil {
+	if err := q.Complete(ctx, "req-1", token, port.AsyncSemanticResult{}); err != nil {
 		t.Errorf("Complete 2 must be idempotent: %v", err)
 	}
-	if err := q.Complete(ctx, "req-missing", port.AsyncSemanticResult{}); err != nil {
+	if err := q.Complete(ctx, "req-missing", "", port.AsyncSemanticResult{}); err != nil {
 		t.Errorf("Complete on missing id must no-op: %v", err)
 	}
 }
@@ -136,14 +138,15 @@ func TestQueue_FailMovesToFailed(t *testing.T) {
 	q := New()
 	ctx := context.Background()
 	_, _ = q.Enqueue(ctx, makeJob("req-1", "u1"))
-	if _, err := claimBatch(ctx, q, "w1", time.Now(), 1); err != nil {
+	jobs, err := claimBatch(ctx, q, "w1", time.Now(), 1)
+	if err != nil {
 		t.Fatalf("Claim: %v", err)
 	}
 	failure := port.AsyncSemanticFailure{
 		ErrClass: diagnostic.ErrClassPermanent,
 		Err:      "schema rejected",
 	}
-	if err := q.Fail(ctx, "req-1", failure); err != nil {
+	if err := q.Fail(ctx, "req-1", jobs[0].LeaseToken, failure); err != nil {
 		t.Fatalf("Fail: %v", err)
 	}
 	e := q.byRequest["req-1"]
@@ -217,11 +220,12 @@ func TestQueue_TransientFailRequeuesAfterRetryAt(t *testing.T) {
 	q := New()
 	ctx := context.Background()
 	_, _ = q.Enqueue(ctx, makeJob("req-1", "u1"))
-	if _, err := claimBatch(ctx, q, "w1", time.Now(), 1); err != nil {
+	jobs, err := claimBatch(ctx, q, "w1", time.Now(), 1)
+	if err != nil {
 		t.Fatalf("Claim: %v", err)
 	}
 	retryAt := time.Now().Add(time.Hour)
-	if err := q.Fail(ctx, "req-1", port.AsyncSemanticFailure{
+	if err := q.Fail(ctx, "req-1", jobs[0].LeaseToken, port.AsyncSemanticFailure{
 		ErrClass: diagnostic.ErrClassTransient,
 		Err:      "llm timeout",
 		RetryAt:  retryAt,
@@ -275,6 +279,140 @@ func TestQueue_CancelMatchingEpisodesOnlyTouchesIntersectingJobs(t *testing.T) {
 	}
 	if len(jobs) != 1 || jobs[0].RequestID != "j-b" {
 		t.Fatalf("remaining jobs = %+v, want only j-b", jobs)
+	}
+}
+
+func TestQueue_PurgeScopeRemovesCompletedJobs(t *testing.T) {
+	q := New()
+	ctx := context.Background()
+	scopeA := domain.Scope{RuntimeID: "rt", UserID: "u1"}
+	_, _ = q.Enqueue(ctx, port.AsyncSemanticJob{
+		RequestID: "done", Scope: scopeA, TurnsSnapshot: []domain.TurnContext{{Text: "pii"}},
+	})
+	jobs, _ := claimBatch(ctx, q, "w", time.Now(), 1)
+	_ = q.Complete(ctx, jobs[0].RequestID, jobs[0].LeaseToken, port.AsyncSemanticResult{})
+	n, err := q.PurgeScope(ctx, scopeA)
+	if err != nil || n != 1 {
+		t.Fatalf("PurgeScope = %d, %v", n, err)
+	}
+	stats, _ := q.Stats(ctx, port.AsyncSemanticStatsFilter{Scope: scopeA})
+	if stats.Completed != 0 {
+		t.Fatalf("completed must be 0 after purge, got %+v", stats)
+	}
+}
+
+func TestQueue_CompleteScrubsEnqueuePII(t *testing.T) {
+	q := New()
+	ctx := context.Background()
+	_, _ = q.Enqueue(ctx, port.AsyncSemanticJob{
+		RequestID: "req-1", Scope: domain.Scope{RuntimeID: "rt", UserID: "u1"},
+		TurnsSnapshot: []domain.TurnContext{{Text: "secret"}},
+	})
+	jobs, _ := claimBatch(ctx, q, "w", time.Now(), 1)
+	_ = q.Complete(ctx, jobs[0].RequestID, jobs[0].LeaseToken, port.AsyncSemanticResult{})
+	e := q.byRequest["req-1"]
+	if len(e.job.TurnsSnapshot) != 0 {
+		t.Fatalf("completed job must scrub TurnsSnapshot, got %+v", e.job.TurnsSnapshot)
+	}
+}
+
+func TestQueue_PermanentFailScrubsEnqueuePII(t *testing.T) {
+	q := New()
+	ctx := context.Background()
+	_, _ = q.Enqueue(ctx, port.AsyncSemanticJob{
+		RequestID: "req-1", Scope: domain.Scope{RuntimeID: "rt", UserID: "u1"},
+		RecentMessages: []domain.Message{{Role: "user", Text: "pii"}},
+	})
+	jobs, _ := claimBatch(ctx, q, "w", time.Now(), 1)
+	_ = q.Fail(ctx, jobs[0].RequestID, jobs[0].LeaseToken, port.AsyncSemanticFailure{
+		ErrClass: diagnostic.ErrClassPermanent,
+		Err:      "bad",
+	})
+	e := q.byRequest["req-1"]
+	if len(e.job.RecentMessages) != 0 {
+		t.Fatalf("dead-letter job must scrub RecentMessages, got %+v", e.job.RecentMessages)
+	}
+}
+
+func TestQueue_DuplicateTransientFailDoesNotDuplicatePending(t *testing.T) {
+	q := New()
+	ctx := context.Background()
+	_, _ = q.Enqueue(ctx, makeJob("req-1", "u1"))
+	jobs, _ := claimBatch(ctx, q, "w", time.Now(), 1)
+	fail := port.AsyncSemanticFailure{ErrClass: diagnostic.ErrClassTransient, Err: "retry"}
+	_ = q.Fail(ctx, jobs[0].RequestID, jobs[0].LeaseToken, fail)
+	_ = q.Fail(ctx, jobs[0].RequestID, jobs[0].LeaseToken, fail)
+	claimed, _ := claimBatch(ctx, q, "w2", time.Now().Add(defaultTransientRetryBackoff+time.Second), 5)
+	var matches int
+	for _, j := range claimed {
+		if j.RequestID == "req-1" {
+			matches++
+		}
+	}
+	if matches != 1 {
+		t.Fatalf("duplicate Fail must not enqueue duplicate pending rows, got %d", matches)
+	}
+}
+
+func TestQueue_EmptyLeaseTokenCannotCompleteLeasedJob(t *testing.T) {
+	q := New()
+	ctx := context.Background()
+	_, _ = q.Enqueue(ctx, makeJob("req-1", "u1"))
+	jobs, _ := claimBatch(ctx, q, "w", time.Now(), 1)
+	if err := q.Complete(ctx, jobs[0].RequestID, "", port.AsyncSemanticResult{}); err != nil {
+		t.Fatal(err)
+	}
+	if e := q.byRequest["req-1"]; e.status == statusComplete {
+		t.Fatal("empty lease token must not complete leased job")
+	}
+}
+
+func TestQueue_StaleTokenCannotCompleteAfterLeaseReturnsToPending(t *testing.T) {
+	q := New()
+	ctx := context.Background()
+	_, _ = q.Enqueue(ctx, makeJob("req-1", "u1"))
+	first, _ := claimBatch(ctx, q, "w1", time.Now(), 1)
+	staleToken := first[0].LeaseToken
+	past := time.Now().Add(2 * defaultLeaseTTL)
+	_, _ = claimBatch(ctx, q, "w2", past, 1)
+	if err := q.Complete(ctx, "req-1", staleToken, port.AsyncSemanticResult{}); err != nil {
+		t.Fatal(err)
+	}
+	if e := q.byRequest["req-1"]; e.status == statusComplete {
+		t.Fatal("stale token must not complete job after lease returned to pending")
+	}
+}
+
+func TestQueue_ClaimReturnsDefensiveCopy(t *testing.T) {
+	q := New()
+	ctx := context.Background()
+	_, _ = q.Enqueue(ctx, port.AsyncSemanticJob{
+		RequestID: "req-1", Scope: domain.Scope{RuntimeID: "rt", UserID: "u1"},
+		EpisodeFactIDs: []string{"ep-1"},
+	})
+	jobs, _ := claimBatch(ctx, q, "w", time.Now(), 1)
+	jobs[0].EpisodeFactIDs[0] = "mutated"
+	e := q.byRequest["req-1"]
+	if e.job.EpisodeFactIDs[0] != "ep-1" {
+		t.Fatalf("Claim must not alias queue slices, got %+v", e.job.EpisodeFactIDs)
+	}
+}
+
+func TestQueue_StaleLeaseTokenCannotComplete(t *testing.T) {
+	q := New()
+	ctx := context.Background()
+	_, _ = q.Enqueue(ctx, makeJob("req-1", "u1"))
+	first, _ := claimBatch(ctx, q, "w1", time.Now(), 1)
+	staleToken := first[0].LeaseToken
+	// Expire lease and re-claim with a new token.
+	past := time.Now().Add(2 * defaultLeaseTTL)
+	_, _ = claimBatch(ctx, q, "w2", past, 1)
+	if err := q.Complete(ctx, "req-1", staleToken, port.AsyncSemanticResult{}); err != nil {
+		t.Fatal(err)
+	}
+	e := q.byRequest["req-1"]
+	if e.status == statusComplete {
+		t.Fatal("stale lease token must not complete a re-claimed job")
 	}
 }
 

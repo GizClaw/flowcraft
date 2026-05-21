@@ -160,7 +160,7 @@ func TestForgetAll_Hard_ClearsProjectionsAndStore(t *testing.T) {
 	state := &forget.State{
 		Scope:           scope,
 		Mode:            domain.ForgetHard,
-		ConfirmScopeKey: scope.CanonicalKey(),
+		ConfirmScopeKey: scope.PartitionKey(),
 	}
 	state.EnsureTrace()
 	if err := runner.Run(context.Background(), state); err != nil {
@@ -252,7 +252,7 @@ func TestForgetAll_EmptyScope_NoOps(t *testing.T) {
 	state := &forget.State{
 		Scope:           scope,
 		Mode:            domain.ForgetHard,
-		ConfirmScopeKey: scope.CanonicalKey(),
+		ConfirmScopeKey: scope.PartitionKey(),
 	}
 	if err := runner.Run(context.Background(), state); err != nil {
 		t.Fatalf("Run: %v", err)
@@ -275,7 +275,7 @@ func TestForgetAll_RequiredProjectionFailureAborts(t *testing.T) {
 	state := &forget.State{
 		Scope:           scope,
 		Mode:            domain.ForgetHard,
-		ConfirmScopeKey: scope.CanonicalKey(),
+		ConfirmScopeKey: scope.PartitionKey(),
 	}
 	err := runner.Run(context.Background(), state)
 	if err == nil {
@@ -409,7 +409,7 @@ func TestForgetAll_OptionalProjectionFailureTolerated(t *testing.T) {
 	state := &forget.State{
 		Scope:           scope,
 		Mode:            domain.ForgetHard,
-		ConfirmScopeKey: scope.CanonicalKey(),
+		ConfirmScopeKey: scope.PartitionKey(),
 	}
 	state.EnsureTrace()
 	if err := runner.Run(context.Background(), state); err != nil {

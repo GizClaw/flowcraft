@@ -8,6 +8,7 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/port"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/ranker"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/store/asyncsemantic"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/store/sideeffect"
 	"github.com/GizClaw/flowcraft/sdk/retrieval"
 )
 
@@ -52,6 +53,7 @@ type config struct {
 	evolution  port.EvolutionRunner
 
 	asyncSemanticQueue port.AsyncSemanticQueue
+	sideEffectOutbox   port.SideEffectOutbox
 }
 
 // llmExtractorConfig captures the args to ingest.NewLLMExtractor so New can
@@ -302,6 +304,23 @@ func WithAsyncSemanticQueue(q AsyncSemanticQueue) Option {
 // WithAsyncSemanticQueue.
 func NewInMemoryAsyncSemanticQueue() AsyncSemanticQueue {
 	return asyncsemantic.New()
+}
+
+// WithSideEffectOutbox installs the durable outbox for commit-after
+// projection / evolution / embedding work. When unset, New wires the
+// in-memory implementation automatically.
+func WithSideEffectOutbox(q port.SideEffectOutbox) Option {
+	return func(c *config) {
+		if q != nil {
+			c.sideEffectOutbox = q
+		}
+	}
+}
+
+// NewInMemorySideEffectOutbox returns the process-local outbox used
+// by tests and the default Memory stack.
+func NewInMemorySideEffectOutbox() port.SideEffectOutbox {
+	return sideeffect.New()
 }
 
 // NewLLMReranker returns a Reranker backed by an llm.LLM client.

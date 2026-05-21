@@ -13,11 +13,6 @@ func scope() domain.Scope { return domain.Scope{RuntimeID: "rt", UserID: "u1"} }
 func TestTimeline_KeepsPastEventWithOpenValidity(t *testing.T) {
 	p := New()
 	ctx := context.Background()
-	// Past observation, still-open validity window — the timeline
-	// projection must keep this event visible. After Cluster B
-	// (predicate split) the projection enforces IsProjectable, so
-	// we use a future ValidTo to demonstrate the still-projectable
-	// past event.
 	past := time.Now().Add(-time.Hour)
 	validTo := time.Now().Add(time.Hour)
 	f := domain.TemporalFact{
@@ -30,6 +25,31 @@ func TestTimeline_KeepsPastEventWithOpenValidity(t *testing.T) {
 	got := p.Query(ctx, scope(), time.Time{}, time.Time{}, nil, 0)
 	if len(got) != 1 || got[0] != "ev1" {
 		t.Fatalf("past event with open ValidTo must remain in temporal view, got %+v", got)
+	}
+}
+
+// TestTimeline_KeepsPastEventWithClosedValidity pins the historical-
+// view invariant restored alongside domain.IsHistorical: a fact whose
+// validity window has long closed (e.g. a one-day event in 2023 viewed
+// from 2026) must STILL be indexed by the timeline. Cluster B's
+// initial IsProjectable adoption silently broke this — "When did X
+// happen?" queries on the LoCoMo benchmark lost the underlying event
+// because IsCanonicalActive returns false once ValidTo < now.
+func TestTimeline_KeepsPastEventWithClosedValidity(t *testing.T) {
+	p := New()
+	ctx := context.Background()
+	past := time.Now().Add(-365 * 24 * time.Hour)
+	closed := time.Now().Add(-30 * 24 * time.Hour)
+	f := domain.TemporalFact{
+		ID: "ev1", Scope: scope(), Kind: domain.KindEvent,
+		ObservedAt: past, ValidTo: &closed,
+	}
+	if err := p.Project(ctx, []domain.TemporalFact{f}); err != nil {
+		t.Fatal(err)
+	}
+	got := p.Query(ctx, scope(), time.Time{}, time.Time{}, nil, 0)
+	if len(got) != 1 || got[0] != "ev1" {
+		t.Fatalf("past event with closed ValidTo must still appear in timeline (historical view), got %+v", got)
 	}
 }
 

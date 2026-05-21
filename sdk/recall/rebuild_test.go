@@ -10,6 +10,7 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain/diagnostic"
 	retrievallens "github.com/GizClaw/flowcraft/sdk/recall/internal/lens/retrieval"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/port"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/store/asyncsemantic"
 	temporalstore "github.com/GizClaw/flowcraft/sdk/recall/internal/store/temporal"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/telemetry"
 	retrievalmem "github.com/GizClaw/flowcraft/sdk/retrieval/memory"
@@ -147,6 +148,42 @@ func TestRebuildAll_DoesNotReprojectSupersededFactsToRetrieval(t *testing.T) {
 	}
 }
 
+func TestRebuildAll_DoesNotReprojectKindEpisodeToRetrieval(t *testing.T) {
+	idx := retrievalmem.New()
+	store := temporalstore.NewMemoryStore()
+	queue := asyncsemantic.New()
+	mem, err := New(
+		withTemporalStore(store),
+		WithRetrievalIndex(idx),
+		WithAsyncSemanticQueue(queue),
+	)
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	defer mem.Close()
+	scope := Scope{RuntimeID: "rt", UserID: "u1", AgentID: "agent-a"}
+	res, err := mem.Save(context.Background(), scope, SaveRequest{
+		Mode:  WriteModeAsyncSemantic,
+		Turns: []TurnContext{{Text: "hello from episode"}},
+	})
+	if err != nil {
+		t.Fatalf("async save: %v", err)
+	}
+	if len(res.EpisodeFactIDs) == 0 {
+		t.Fatal("expected episode fact ids")
+	}
+	epID := res.EpisodeFactIDs[0]
+	if _, ok, _ := idx.Get(context.Background(), retrievallens.NamespaceFor(scope), epID); ok {
+		t.Fatal("episode must not be indexed before rebuild")
+	}
+	if err := mem.(ProjectionRebuilder).RebuildAll(context.Background(), scope); err != nil {
+		t.Fatalf("rebuild: %v", err)
+	}
+	if _, ok, _ := idx.Get(context.Background(), retrievallens.NamespaceFor(scope), epID); ok {
+		t.Fatalf("RebuildAll must not index KindEpisode into retrieval")
+	}
+}
+
 func TestRebuildAll_ValidationClassifiedOnMissingRuntimeID(t *testing.T) {
 	mem, err := New()
 	if err != nil {
@@ -243,6 +280,7 @@ func TestRepairStale_ForgetsProjectionWithoutTouchingStore(t *testing.T) {
 		t.Fatal(err)
 	}
 	id := res.FactIDs[0]
+	drainSideEffectsForTest(t, mem, scope)
 	if _, err := store.Get(context.Background(), scope, id); err != nil {
 		t.Fatal(err)
 	}
@@ -296,6 +334,7 @@ func TestRecall_EmitsDriftForStaleFact(t *testing.T) {
 		t.Fatal(err)
 	}
 	id := res.FactIDs[0]
+	drainSideEffectsForTest(t, mem, scope)
 	// Drift: remove canonical fact but leave the retrieval doc.
 	if err := store.Delete(context.Background(), scope, []string{id}); err != nil {
 		t.Fatal(err)
@@ -354,6 +393,7 @@ func TestRecall_EmitsDriftForSupersededCandidate(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	drainSideEffectsForTest(t, mem, scope)
 	// Faulty or third-party sources can still emit stale candidates.
 	// Materialize is the defense-in-depth chokepoint that drops them
 	// and emits drift telemetry.
@@ -396,13 +436,14 @@ func TestSaveRecall_EmitsPipelineTelemetry(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	drainSideEffectsForTest(t, mem, scope)
 	if _, err := mem.Recall(context.Background(), scope, Query{Text: "Alice tea", Limit: 5}); err != nil {
 		t.Fatal(err)
 	}
 
 	for _, want := range []string{
 		"validate", "ingest", "resolve", "append", "validity_close",
-		"project_required", "project_optional",
+		"enqueue_side_effects", "project_required", "project_optional",
 		"intent", "plan", "federation_fanout", "trust_filter", "rank", "build_hits",
 	} {
 		if !hasStage(hook.stages, want) {

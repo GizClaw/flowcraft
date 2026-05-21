@@ -16,6 +16,35 @@ func agentScope(agentID string) domain.Scope {
 	return s
 }
 
+// TestRelation_IndexesEventFactWithTriple pins the LoCoMo regression
+// fix: structurized event / state / preference facts that carry a
+// meaningful (Subject, Predicate, Object) triple were dropped on the
+// floor by the old Kind=Relation gate, starving the relation source
+// and the multi-hop fanout it feeds. Indexing any projectable fact
+// with a non-empty triple key restores typed-relation recall for the
+// 97% of LoCoMo facts that are not KindRelation.
+func TestRelation_IndexesEventFactWithTriple(t *testing.T) {
+	p := New()
+	ctx := context.Background()
+	future := time.Now().Add(24 * time.Hour)
+	f := domain.TemporalFact{
+		ID: "ev1", Scope: scope(),
+		Kind:    domain.KindEvent, // not KindRelation
+		Subject: "Caroline", Predicate: "read", Object: "Charlotte's Web",
+		ObservedAt: time.Now(),
+		ValidTo:    &future, // keep projectable for the active-slot view
+	}
+	if err := p.Project(ctx, []domain.TemporalFact{f}); err != nil {
+		t.Fatal(err)
+	}
+	if got := p.Lookup(ctx, scope(), "caroline", "read", ""); len(got) != 1 || got[0] != "ev1" {
+		t.Fatalf("event-fact triple lookup = %+v, want [ev1]", got)
+	}
+	if got := p.Lookup(ctx, scope(), "caroline", "", ""); len(got) != 1 || got[0] != "ev1" {
+		t.Fatalf("subject-only lookup over event fact = %+v, want [ev1]", got)
+	}
+}
+
 func TestRelation_LookupByDimensions(t *testing.T) {
 	p := New()
 	ctx := context.Background()

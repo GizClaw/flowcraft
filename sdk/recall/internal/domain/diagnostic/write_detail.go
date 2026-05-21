@@ -32,6 +32,11 @@ type IngestDetail struct {
 	TierApplied            string
 	Dropped                []DroppedFact
 	KnownEntitiesSeen      int
+	// FactStats summarises per-fact shape (Content / Subject /
+	// Evidence / ValidFrom / Confidence / Kind) over res.Facts. The
+	// ingest stage owns the walk because diagnostic/ cannot import
+	// domain/; consumers use the tally without re-iterating facts.
+	FactStats FactStats
 }
 
 func (IngestDetail) isStageDetail() {}
@@ -47,6 +52,10 @@ type ResolveDetail struct {
 	Forked     int
 	Merged     int
 	Contested  int
+	// FactStats summarises per-fact shape over the resolved
+	// (appended) fact slice. Mirrors IngestDetail.FactStats; the
+	// stage owns the walk so diagnostic/ stays free of domain/.
+	FactStats FactStats
 }
 
 func (ResolveDetail) isStageDetail() {}
@@ -107,6 +116,15 @@ type EvolutionAfterSaveDetail struct {
 }
 
 func (EvolutionAfterSaveDetail) isStageDetail() {}
+
+// EnqueueSideEffectsDetail —— write/enqueue_side_effects stage.
+type EnqueueSideEffectsDetail struct {
+	SaveOutboxID string
+	Enqueued     int
+	Latency      time.Duration
+}
+
+func (EnqueueSideEffectsDetail) isStageDetail() {}
 
 // ForgetAllDetail —— forget_all stage (Phase D.8 C9; GDPR Art.17 /
 // CCPA 1798.105 compliant scope-level retirement).

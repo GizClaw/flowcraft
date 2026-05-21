@@ -1,7 +1,14 @@
 // Package relation implements the optional typed-relation projection.
 //
-// It indexes active relation facts (CorrectedBy empty, ValidTo open
-// or in the future) for subject/predicate/object lookup (docs §8.3).
+// It indexes any projectable fact that supplies at least one of
+// (Subject, Predicate, Object) for typed lookup (docs §8.3). The
+// original guard "Kind == KindRelation" was too narrow: structurized
+// event / state / preference facts frequently carry a meaningful
+// triple ("Caroline read Charlotte's Web" → Subject=Caroline,
+// Predicate=read, Object="Charlotte's Web") and were dropped on the
+// floor, starving the relation source and the multi-hop fanout it
+// feeds. The projection still uses domain.IsProjectable so it remains
+// an active-slot view — past-ValidTo / soft-forgotten facts roll off.
 package relation
 
 import (
@@ -55,7 +62,7 @@ func (p *Projection) Project(_ context.Context, facts []domain.TemporalFact) err
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	for _, f := range facts {
-		if f.ID == "" || f.Kind != domain.KindRelation {
+		if f.ID == "" {
 			continue
 		}
 		sh := p.shardLocked(f.Scope)
@@ -66,6 +73,11 @@ func (p *Projection) Project(_ context.Context, facts []domain.TemporalFact) err
 		if !domain.IsProjectable(f, now) {
 			continue
 		}
+		// Drop the Kind gate (was `Kind != KindRelation`) — see the
+		// package comment. Index any fact whose triple has at least
+		// one populated slot; tripleKey("","","") still returns "" so
+		// triple-less facts (rare event / note shapes) bypass the
+		// shard naturally.
 		key := tripleKey(f.Subject, f.Predicate, f.Object, f.Scope.AgentID)
 		if key == "" {
 			continue

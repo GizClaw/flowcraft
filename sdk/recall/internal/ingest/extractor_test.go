@@ -357,6 +357,42 @@ func TestLLMExtractor_PreservesBackendClassification(t *testing.T) {
 	}
 }
 
+// TestLLMExtractorSystemPrompt_GuardsAntiAbstraction pins the
+// anti-abstraction language that distinguishes one-off dated
+// actions ("events") from durable traits ("states"). LoCoMo
+// failure analysis (2026-05-21) traced ~half of recall misses to
+// the extractor over-summarising sentences like "I just signed up
+// for pottery yesterday" into "<speaker> uses pottery for self-
+// expression" — collapsing five dated events into two abstract
+// states. Future prompt edits must keep:
+//   - explicit instruction to default past-tense+date snippets to
+//     kind:"event" (not state/preference);
+//   - explicit instruction to preserve single-mention proper nouns
+//     verbatim (book titles, locations, items);
+//   - explicit exhaustiveness for one-off mentions;
+//
+// otherwise we silently regress recall on time-anchored memory.
+//
+// The test is intentionally substring-based (not whitespace-
+// sensitive) so re-wrapping the prompt is free, but removing a
+// guarded clause requires deleting the corresponding assertion
+// and forces the reviewer to acknowledge the trade-off.
+func TestLLMExtractorSystemPrompt_GuardsAntiAbstraction(t *testing.T) {
+	mustContain := []string{
+		"signed up for a pottery class",
+		"NOT {kind:\"state\"",
+		"Single-occurrence dated\n                     actions are events, not states",
+		"Be exhaustive about concrete, retrievable details",
+		"Quote proper nouns verbatim",
+		"Charlotte's Web",
+	}
+	for _, s := range mustContain {
+		if !strings.Contains(LLMExtractorSystemPrompt, s) {
+			t.Errorf("LLMExtractorSystemPrompt missing anti-abstraction guard: %q", s)
+		}
+	}
+}
+
 func TestStaticExtractor_ReturnsClones(t *testing.T) {
 	ex := StaticExtractor{Facts: []domain.TemporalFact{{
 		Kind:     domain.KindNote,

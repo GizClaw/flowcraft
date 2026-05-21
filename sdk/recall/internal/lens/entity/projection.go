@@ -87,7 +87,7 @@ func (p *Projection) Project(_ context.Context, facts []domain.TemporalFact) err
 		for _, priorID := range f.Supersedes {
 			removeFactLocked(sh, priorID)
 		}
-		if !domain.IsProjectable(f, now) {
+		if !domain.IsHistorical(f, now) {
 			continue
 		}
 		ents := collectEntities(f)

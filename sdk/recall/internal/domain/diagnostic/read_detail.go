@@ -4,7 +4,9 @@ import "time"
 
 // IntentDetail —— read/intent stage diagnostic.
 type IntentDetail struct {
-	RawQuery     string
+	// QueryLen is the compiled query length; raw text is omitted from
+	// diagnostics to avoid PII retention in telemetry after ForgetAll.
+	QueryLen     int
 	Entities     []string
 	Kinds        []string
 	Subject      string
@@ -171,7 +173,7 @@ func ExtractPlan(stages []StageDiagnostic) PlanView {
 		switch st.Stage {
 		case "intent":
 			if d, ok := st.Detail.(IntentDetail); ok {
-				out.IntentText = d.RawQuery
+				_ = d.QueryLen // IntentText omitted from diagnostics (PII)
 				out.IntentSubject = d.Subject
 				out.IntentEntities = append([]string(nil), d.Entities...)
 			}

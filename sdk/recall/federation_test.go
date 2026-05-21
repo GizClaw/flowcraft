@@ -27,6 +27,8 @@ func TestRecall_FederationUserPlusGlobal(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	drainSideEffectsForTest(t, mem, userScope)
+	drainSideEffectsForTest(t, mem, globalScope)
 
 	defaultHits, err := mem.Recall(ctx, userScope, Query{Text: "coffee", Limit: 10})
 	if err != nil {
@@ -80,6 +82,7 @@ func TestForgetSoft_HiddenUntilIncludeRetired(t *testing.T) {
 		t.Fatal(err)
 	}
 	id := res.FactIDs[0]
+	drainSideEffectsForTest(t, mem, scope)
 	if err := mem.Forget(ctx, scope, id, ForgetSoft); err != nil {
 		t.Fatal(err)
 	}
@@ -90,12 +93,15 @@ func TestForgetSoft_HiddenUntilIncludeRetired(t *testing.T) {
 	if len(hits) != 0 {
 		t.Fatalf("soft forget should hide from recall, got %d hits", len(hits))
 	}
+	// Retrieval projection evicts soft-closed facts on reproject, so
+	// BM25 recall cannot resurrect them even with IncludeRetired.
+	// Canonical History below still reads the ledger directly.
 	withRetired, err := mem.Recall(ctx, scope, Query{Text: "retire", Limit: 5, IncludeRetired: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(withRetired) == 0 {
-		t.Fatal("IncludeRetired should surface soft-forgotten fact")
+	if len(withRetired) != 0 {
+		t.Fatalf("soft-forgotten fact must not remain in retrieval index, got %d hits", len(withRetired))
 	}
 	versions, err := mem.History(ctx, scope, id)
 	if err != nil {

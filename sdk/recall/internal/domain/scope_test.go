@@ -38,4 +38,11 @@ func TestScope_CanonicalKey(t *testing.T) {
 	if got := (Scope{RuntimeID: "rt"}).CanonicalKey(); got != "rt/global" {
 		t.Fatalf("global key = %q", got)
 	}
+	agent := Scope{RuntimeID: "rt", UserID: "alice", AgentID: "bot-a"}
+	if got := agent.PartitionKey(); got != "rt/u:alice" {
+		t.Fatalf("partition key = %q", got)
+	}
+	if got := agent.CanonicalKey(); got != "rt/u:alice/a:bot-a" {
+		t.Fatalf("canonical key with agent = %q", got)
+	}
 }

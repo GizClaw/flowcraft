@@ -24,6 +24,7 @@ var (
 	_ diagnostic.StageDetail = diagnostic.EvidenceMirrorDetail{}
 	_ diagnostic.StageDetail = diagnostic.ProjectDetail{}
 	_ diagnostic.StageDetail = diagnostic.EvolutionAfterSaveDetail{}
+	_ diagnostic.StageDetail = diagnostic.EnqueueSideEffectsDetail{}
 	_ diagnostic.StageDetail = diagnostic.ForgetAllDetail{}
 	_ diagnostic.StageDetail = diagnostic.ExpireRetiredDetail{}
 	_ diagnostic.StageDetail = diagnostic.FeedbackDetail{}
@@ -156,7 +157,7 @@ func TestDetail_RoundTrip(t *testing.T) {
 		}, &diagnostic.EnqueueSemanticDetail{}},
 
 		{"intent", diagnostic.IntentDetail{
-			RawQuery:     "where did alice go?",
+			QueryLen:     22,
 			Entities:     []string{"alice"},
 			Kinds:        []string{"event", "state"},
 			Subject:      "alice",

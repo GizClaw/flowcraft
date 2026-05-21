@@ -26,10 +26,11 @@ type AsyncSemanticProcessOptions struct {
 	WorkerID string
 	Limit    int
 	Now      time.Time
-	// Scope, when non-zero, restricts Claim to that partition.
+	// Scope restricts Claim to that partition and is required.
 	Scope Scope
-	// RuntimeID restricts Claim to jobs for one runtime when Scope is
-	// zero. Ignored when Scope.RuntimeID is set.
+	// RuntimeID is retained for source compatibility but is not
+	// accepted by ProcessAsyncSemantic. Runtime-wide draining must go
+	// through an explicit privileged/admin entry point.
 	RuntimeID string
 }
 
@@ -67,7 +68,7 @@ func (m *memory) AsyncSemanticQueueStats(ctx context.Context, scope Scope) (Asyn
 		return AsyncSemanticQueueStats{}, errdefs.Validationf(
 			"recall.AsyncSemanticQueueStats: requires WithAsyncSemanticQueue")
 	}
-	if scope.CanonicalKey() == "" {
+	if scope.PartitionKey() == "" {
 		return AsyncSemanticQueueStats{}, errdefs.Validationf(
 			"recall.AsyncSemanticQueueStats: scope partition is required (RuntimeID and UserID)")
 	}
@@ -96,19 +97,20 @@ func (m *memory) ProcessAsyncSemantic(ctx context.Context, opts AsyncSemanticPro
 		workerID = "async-semantic-worker"
 	}
 
-	claimOpts := port.AsyncSemanticClaimOptions{
-		WorkerID:  workerID,
-		Now:       now,
-		Max:       limit,
-		RuntimeID: opts.RuntimeID,
-	}
-	if opts.Scope.RuntimeID != "" || opts.Scope.UserID != "" {
-		scope := opts.Scope
-		claimOpts.Scope = &scope
-	}
-	if claimOpts.Scope == nil && claimOpts.RuntimeID == "" {
+	if opts.Scope.PartitionKey() == "" {
 		return AsyncSemanticProcessResult{}, errdefs.Validationf(
-			"recall.ProcessAsyncSemantic: Scope or RuntimeID is required")
+			"recall.ProcessAsyncSemantic: scope partition is required (RuntimeID and UserID)")
+	}
+	if opts.RuntimeID != "" {
+		return AsyncSemanticProcessResult{}, errdefs.Validationf(
+			"recall.ProcessAsyncSemantic: RuntimeID-only drain is not supported; pass Scope")
+	}
+	scope := opts.Scope
+	claimOpts := port.AsyncSemanticClaimOptions{
+		WorkerID: workerID,
+		Now:      now,
+		Max:      limit,
+		Scope:    &scope,
 	}
 
 	jobs, err := m.asyncSemanticQueue.Claim(ctx, claimOpts)
@@ -144,7 +146,7 @@ func (m *memory) processOneAsyncSemanticJob(ctx context.Context, job port.AsyncS
 	start := time.Now()
 
 	if recovered, ids := m.recoverCompletedSemanticFacts(ctx, job, now); recovered {
-		if err := m.completeAsyncJob(ctx, job.RequestID, port.AsyncSemanticResult{
+		if err := m.completeAsyncJob(ctx, job, port.AsyncSemanticResult{
 			SemanticFactIDs:           ids,
 			RecoveredFromPriorAttempt: true,
 		}); err != nil {
@@ -191,6 +193,7 @@ func (m *memory) processOneAsyncSemanticJob(ctx context.Context, job port.AsyncS
 	}
 	state.EnsureTrace()
 
+	startGen := m.peekScopeGen(job.Scope)
 	// Ingest (possibly LLM-backed) runs outside the scope write lock,
 	// matching the sync Save path and avoiding blocking other writers.
 	if err := m.asyncSemanticWorkerPreRunner.Run(ctx, state); err != nil {
@@ -198,12 +201,20 @@ func (m *memory) processOneAsyncSemanticJob(ctx context.Context, job port.AsyncS
 		return asyncJobFailed
 	}
 
-	unlock := m.lockWriteScope(job.Scope)
-	defer unlock()
+	m.holdWriteTelemetry()
+	unlock, err := m.enterScopeWrite(job.Scope, startGen)
+	if err != nil {
+		m.flushWriteTelemetry()
+		m.ackAsyncJobFail(ctx, job, start, err)
+		return asyncJobFailed
+	}
+	allocateSaveOutboxID(state)
 
 	// Re-validate under the lock so ForgetAll / ExpireRetired cannot
 	// delete episodes after the lock-free preflight.
 	if err := writestages.ValidateEpisodesForJob(ctx, m.store, job, now); err != nil {
+		unlock()
+		m.flushWriteTelemetry()
 		m.ackAsyncJobFail(ctx, job, start, err)
 		return asyncJobFailed
 	}
@@ -212,7 +223,9 @@ func (m *memory) processOneAsyncSemanticJob(ctx context.Context, job port.AsyncS
 	// semantic facts while this worker held an expired lease and ran
 	// ingest outside the lock.
 	if recovered, ids := m.recoverCompletedSemanticFacts(ctx, job, now); recovered {
-		if err := m.completeAsyncJob(ctx, job.RequestID, port.AsyncSemanticResult{
+		unlock()
+		m.flushWriteTelemetry()
+		if err := m.completeAsyncJob(ctx, job, port.AsyncSemanticResult{
 			SemanticFactIDs:           ids,
 			RecoveredFromPriorAttempt: true,
 		}); err != nil {
@@ -232,7 +245,9 @@ func (m *memory) processOneAsyncSemanticJob(ctx context.Context, job port.AsyncS
 	}
 
 	if len(state.Ingest.Facts) == 0 {
-		if err := m.completeAsyncJob(ctx, job.RequestID, port.AsyncSemanticResult{}); err != nil {
+		unlock()
+		m.flushWriteTelemetry()
+		if err := m.completeAsyncJob(ctx, job, port.AsyncSemanticResult{}); err != nil {
 			m.emitAsyncProcessStage(job, diagnostic.AsyncSemanticProcessDetail{
 				AsyncRequestID: job.RequestID,
 				Attempt:        job.Attempt,
@@ -246,11 +261,21 @@ func (m *memory) processOneAsyncSemanticJob(ctx context.Context, job port.AsyncS
 		return asyncJobCompleted
 	}
 	if err := m.asyncSemanticWorkerPostRunner.Run(ctx, state); err != nil {
+		unlock()
+		m.flushWriteTelemetry()
 		m.ackAsyncJobFail(ctx, job, start, err)
 		return asyncJobFailed
 	}
+	if err := m.abortIfScopeGenChanged(job.Scope, startGen, state); err != nil {
+		unlock()
+		m.flushWriteTelemetry()
+		m.ackAsyncJobFail(ctx, job, start, err)
+		return asyncJobFailed
+	}
+	unlock()
+	m.flushWriteTelemetry()
 	ids := append([]string(nil), state.AppendedFactIDs...)
-	if err := m.completeAsyncJob(ctx, job.RequestID, port.AsyncSemanticResult{
+	if err := m.completeAsyncJob(ctx, job, port.AsyncSemanticResult{
 		SemanticFactIDs: ids,
 	}); err != nil {
 		m.emitAsyncProcessStage(job, diagnostic.AsyncSemanticProcessDetail{
@@ -310,11 +335,11 @@ func (m *memory) recoverCompletedSemanticFacts(ctx context.Context, job port.Asy
 	return true, ids
 }
 
-func (m *memory) completeAsyncJob(ctx context.Context, requestID string, result port.AsyncSemanticResult) error {
-	return m.asyncSemanticQueue.Complete(ctx, requestID, result)
+func (m *memory) completeAsyncJob(ctx context.Context, job port.AsyncSemanticJob, result port.AsyncSemanticResult) error {
+	return m.asyncSemanticQueue.Complete(ctx, job.RequestID, job.LeaseToken, result)
 }
 
-func (m *memory) failAsyncJob(ctx context.Context, requestID string, err error) error {
+func (m *memory) failAsyncJob(ctx context.Context, job port.AsyncSemanticJob, err error) error {
 	class := diagnostic.ErrClassTransient
 	if errdefs.IsValidation(err) {
 		class = diagnostic.ErrClassPermanent
@@ -323,7 +348,7 @@ func (m *memory) failAsyncJob(ctx context.Context, requestID string, err error) 
 	if class == diagnostic.ErrClassTransient {
 		retryAt = time.Now().Add(defaultAsyncSemanticRetryBackoff)
 	}
-	return m.asyncSemanticQueue.Fail(ctx, requestID, port.AsyncSemanticFailure{
+	return m.asyncSemanticQueue.Fail(ctx, job.RequestID, job.LeaseToken, port.AsyncSemanticFailure{
 		ErrClass: class,
 		Err:      err.Error(),
 		RetryAt:  retryAt,
@@ -332,7 +357,7 @@ func (m *memory) failAsyncJob(ctx context.Context, requestID string, err error) 
 
 func (m *memory) ackAsyncJobFail(ctx context.Context, job port.AsyncSemanticJob, start time.Time, cause error) {
 	errMsg := cause.Error()
-	if ackErr := m.failAsyncJob(ctx, job.RequestID, cause); ackErr != nil {
+	if ackErr := m.failAsyncJob(ctx, job, cause); ackErr != nil {
 		errMsg = fmt.Sprintf("%s; queue fail: %v", cause.Error(), ackErr)
 	}
 	m.emitAsyncProcessStage(job, diagnostic.AsyncSemanticProcessDetail{
@@ -354,7 +379,18 @@ func (m *memory) cancelAsyncJobsAfterForget(ctx context.Context, state *forget.S
 	}
 	if state.Filter == nil && domain.NormalizeForgetMode(state.Mode) == domain.ForgetHard {
 		n, err := m.asyncSemanticQueue.CancelScope(ctx, state.Scope)
-		return asyncJobCancelResult{Cancelled: n, Err: err}
+		if err != nil {
+			return asyncJobCancelResult{Cancelled: n, Err: err}
+		}
+		purged, purgeErr := m.asyncSemanticQueue.PurgeScope(ctx, state.Scope)
+		if purgeErr != nil {
+			return asyncJobCancelResult{Cancelled: n, Err: purgeErr}
+		}
+		sidePurged, sideErr := m.purgeSideEffectOutbox(ctx, state.Scope)
+		if sideErr != nil {
+			return asyncJobCancelResult{Cancelled: n + purged, Err: sideErr}
+		}
+		return asyncJobCancelResult{Cancelled: n + purged + sidePurged, Err: nil}
 	}
 	if len(state.DeletedFactIDs) == 0 {
 		return asyncJobCancelResult{}

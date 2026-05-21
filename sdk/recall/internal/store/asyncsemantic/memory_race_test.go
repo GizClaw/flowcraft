@@ -165,7 +165,7 @@ func TestQueue_ConcurrentEnqueueClaimComplete(t *testing.T) {
 					return
 				}
 				for _, j := range batch {
-					if err := q.Complete(ctx, j.RequestID, port.AsyncSemanticResult{SemanticFactIDs: []string{"sf"}}); err != nil {
+					if err := q.Complete(ctx, j.RequestID, j.LeaseToken, port.AsyncSemanticResult{SemanticFactIDs: []string{"sf"}}); err != nil {
 						t.Errorf("Complete: %v", err)
 						return
 					}
@@ -297,17 +297,17 @@ func TestQueue_ConcurrentFailCompleteRaces(t *testing.T) {
 	var wg sync.WaitGroup
 	for _, job := range jobs {
 		wg.Add(2)
-		go func(id string) {
+		go func(j port.AsyncSemanticJob) {
 			defer wg.Done()
-			_ = q.Complete(ctx, id, port.AsyncSemanticResult{SemanticFactIDs: []string{"ok"}})
-		}(job.RequestID)
-		go func(id string) {
+			_ = q.Complete(ctx, j.RequestID, j.LeaseToken, port.AsyncSemanticResult{SemanticFactIDs: []string{"ok"}})
+		}(job)
+		go func(j port.AsyncSemanticJob) {
 			defer wg.Done()
-			_ = q.Fail(ctx, id, port.AsyncSemanticFailure{
+			_ = q.Fail(ctx, j.RequestID, j.LeaseToken, port.AsyncSemanticFailure{
 				ErrClass: diagnostic.ErrClassTransient,
 				Err:      "boom",
 			})
-		}(job.RequestID)
+		}(job)
 	}
 	wg.Wait()
 }

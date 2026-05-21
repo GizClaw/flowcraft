@@ -47,6 +47,7 @@ func TestRecall_GraphExpansionMultiHop(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	drainSideEffectsForTest(t, mem, scope)
 
 	hits, trace, err := mem.(RecallExplainer).RecallExplain(context.Background(), scope, Query{
 		Entities:  []string{"alice"},
@@ -98,6 +99,8 @@ func TestRecall_GraphDoesNotTraverseOtherAgentPrivateEdges(t *testing.T) {
 	if err != nil {
 		t.Fatalf("save shared edge: %v", err)
 	}
+	drainSideEffectsForTest(t, mem, agentB)
+	drainSideEffectsForTest(t, mem, shared)
 
 	hits, _, err := mem.(RecallExplainer).RecallExplain(context.Background(), agentA, Query{
 		Entities:  []string{"alice"},
@@ -139,6 +142,7 @@ func TestRecall_GraphProjectionRemovesSupersededEdgesOnSave(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("second save: %v", err)
 	}
+	drainSideEffectsForTest(t, mem, scope)
 
 	_, trace, err := mem.(RecallExplainer).RecallExplain(context.Background(), scope, Query{
 		Entities:  []string{"paris"},
@@ -178,6 +182,7 @@ func TestRecall_GraphHopsIsCappedByDefaultBound(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	drainSideEffectsForTest(t, mem, scope)
 
 	hits, _, err := mem.(RecallExplainer).RecallExplain(context.Background(), scope, Query{
 		Entities:  []string{"alice"},
@@ -208,6 +213,7 @@ func TestRecall_QueryCompilerActivatesEntityAndGraphFromText(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	drainSideEffectsForTest(t, mem, scope)
 
 	_, trace, err := mem.(RecallExplainer).RecallExplain(context.Background(), scope, Query{
 		Text:  "Who did Alice meet in Paris?",

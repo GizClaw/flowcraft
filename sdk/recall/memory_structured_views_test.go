@@ -25,6 +25,7 @@ func TestRecall_StructuredQueryUsesRelationSource(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	drainSideEffectsForTest(t, mem, scope)
 
 	hits, trace, err := mem.(RecallExplainer).RecallExplain(context.Background(), scope, Query{
 		Subject:   "alice",
@@ -65,6 +66,7 @@ func TestRecall_StructuredQueryCanonicalizesSubjectAndObject(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	drainSideEffectsForTest(t, mem, scope)
 
 	hits, trace, err := mem.(RecallExplainer).RecallExplain(context.Background(), scope, Query{
 		Subject:   "alice",
@@ -109,6 +111,7 @@ func TestRecall_TimelineQueryByTimeRange(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	drainSideEffectsForTest(t, mem, scope)
 
 	hits, err := mem.Recall(context.Background(), scope, Query{
 		TimeRange: TimeRange{From: t0.Add(-time.Hour), To: t0.Add(time.Hour)},
@@ -148,6 +151,7 @@ func TestRecall_TimelineProjectionRemovesSupersededStateOnSave(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("second save: %v", err)
 	}
+	drainSideEffectsForTest(t, mem, scope)
 
 	hits, trace, err := mem.(RecallExplainer).RecallExplain(context.Background(), scope, Query{
 		TimeRange: TimeRange{From: t0.Add(-time.Second), To: t1.Add(time.Second)},
@@ -186,6 +190,7 @@ func TestRecall_PlainQueryDoesNotActivateStructuredSources(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	drainSideEffectsForTest(t, mem, scope)
 
 	_, trace, err := mem.(RecallExplainer).RecallExplain(context.Background(), scope, Query{
 		Text:  "alice spouse bob",
@@ -219,6 +224,7 @@ func TestRecall_ProfileBySubject(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	drainSideEffectsForTest(t, mem, scope)
 
 	hits, trace, err := mem.(RecallExplainer).RecallExplain(context.Background(), scope, Query{
 		Subject: "alice",

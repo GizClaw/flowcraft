@@ -69,6 +69,15 @@ func (p *Projection) Name() string { return "retrieval" }
 // and pollute search results with verbatim turn text.
 func (p *Projection) AcceptsKind(k domain.FactKind) bool { return k != domain.KindEpisode }
 
+// shouldIndexInRetrieval reports whether a fact belongs in the active
+// retrieval index (historical, not episode, not superseded).
+func shouldIndexInRetrieval(f domain.TemporalFact, now time.Time) bool {
+	if f.ID == "" || f.Kind == domain.KindEpisode || f.CorrectedBy != "" {
+		return false
+	}
+	return domain.IsHistorical(f, now)
+}
+
 // Consistency reports Required: a retrieval projection failure must
 // fail the canonical write so callers do not see an empty Recall on
 // a fact they just stored.
@@ -103,25 +112,29 @@ func (p *Projection) Project(ctx context.Context, facts []domain.TemporalFact) e
 		// the foot-gun entirely.
 		active := make([]domain.TemporalFact, 0, len(group))
 		docs := make([]retrieval.Doc, 0, len(group))
+		var evict []string
 		for _, f := range group {
 			superseded = append(superseded, f.Supersedes...)
-			if !domain.IsProjectable(f, now) {
+			if f.ID != "" && !shouldIndexInRetrieval(f, now) {
+				evict = append(evict, f.ID)
+			}
+			if !shouldIndexInRetrieval(f, now) {
 				continue
 			}
 			active = append(active, f)
 			docs = append(docs, toDoc(f))
 		}
-		if len(superseded) > 0 {
-			if err := p.index.Delete(ctx, ns, uniqueStrings(superseded)); err != nil {
-				return fmt.Errorf("retrieval projection delete superseded ns=%s: %w", ns, err)
+		toDelete := uniqueStrings(append(superseded, evict...))
+		if len(toDelete) > 0 {
+			if err := p.index.Delete(ctx, ns, toDelete); err != nil {
+				return fmt.Errorf("retrieval projection delete ns=%s: %w", ns, err)
 			}
 		}
 		if len(docs) == 0 {
 			continue
 		}
-		if p.embedder != nil {
-			p.attachEmbeddings(ctx, active, docs)
-		}
+		// Vector embedding runs via SideEffectEmbeddingBackfill outside
+		// the scope write lock; lexical docs land here only.
 		if err := p.index.Upsert(ctx, ns, docs); err != nil {
 			return fmt.Errorf("retrieval projection upsert ns=%s: %w", ns, err)
 		}
@@ -282,10 +295,11 @@ func (p *Projection) ClearScope(ctx context.Context, scope domain.Scope) error {
 // this internally).
 func (p *Projection) Rebuild(ctx context.Context, scope domain.Scope, facts []domain.TemporalFact) error {
 	ns := NamespaceFor(scope)
+	now := time.Now()
 	active := make([]domain.TemporalFact, 0, len(facts))
 	activeIDs := make(map[string]struct{}, len(facts))
 	for _, f := range facts {
-		if f.ID == "" || f.CorrectedBy != "" {
+		if !shouldIndexInRetrieval(f, now) {
 			continue
 		}
 		active = append(active, f)
@@ -311,6 +325,35 @@ func (p *Projection) Rebuild(ctx context.Context, scope domain.Scope, facts []do
 		return nil
 	}
 	return p.Project(ctx, active)
+}
+
+// BackfillEmbeddings populates Doc.Vector for facts already indexed
+// lexically. It is invoked from the side-effect outbox drain path.
+func (p *Projection) BackfillEmbeddings(ctx context.Context, facts []domain.TemporalFact) error {
+	if p == nil || p.embedder == nil || len(facts) == 0 {
+		return nil
+	}
+	now := time.Now()
+	grouped := groupByNamespace(facts)
+	for ns, group := range grouped {
+		active := make([]domain.TemporalFact, 0, len(group))
+		docs := make([]retrieval.Doc, 0, len(group))
+		for _, f := range group {
+			if !shouldIndexInRetrieval(f, now) {
+				continue
+			}
+			active = append(active, f)
+			docs = append(docs, toDoc(f))
+		}
+		if len(docs) == 0 {
+			continue
+		}
+		p.attachEmbeddings(ctx, active, docs)
+		if err := p.index.Upsert(ctx, ns, docs); err != nil {
+			return fmt.Errorf("retrieval embedding backfill ns=%s: %w", ns, err)
+		}
+	}
+	return nil
 }
 
 // listAllDocIDs paginates retrieval.Index.List to enumerate every

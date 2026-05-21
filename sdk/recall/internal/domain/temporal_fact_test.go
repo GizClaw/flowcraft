@@ -200,6 +200,40 @@ func TestIsProjectable_RespectsSuperseded(t *testing.T) {
 	}
 }
 
+// TestIsHistorical_KeepsPastValidTo pins the LoCoMo regression fix
+// (2026-05-21): historical projections (timeline / retrieval / entity
+// / graph) MUST keep events whose ValidTo has long since closed,
+// otherwise "When did X happen?" queries lose the underlying event.
+// IsProjectable conflates "currently-active state" with "indexable
+// historical fact"; IsHistorical separates the two so the active-slot
+// views (profile / relation) keep their semantics while the four
+// historical views index the full observed record.
+func TestIsHistorical_KeepsPastValidTo(t *testing.T) {
+	now := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+	past := now.Add(-365 * 24 * time.Hour)
+	f := TemporalFact{ID: "ev1", ObservedAt: past, ValidTo: &past}
+	if IsProjectable(f, now) {
+		t.Fatal("guard: past-ValidTo fact must not be projectable (active-slot view)")
+	}
+	if !IsHistorical(f, now) {
+		t.Error("past-ValidTo fact must remain historical for timeline/retrieval/entity/graph")
+	}
+}
+
+func TestIsHistorical_DropsSupersededAndRetired(t *testing.T) {
+	now := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+	if IsHistorical(TemporalFact{ID: "f1", CorrectedBy: "f2"}, now) {
+		t.Error("superseded fact must not be historical")
+	}
+	if IsHistorical(TemporalFact{ID: "f1", Closed: true}, now) {
+		t.Error("closed fact must not be historical")
+	}
+	past := now.Add(-time.Hour)
+	if IsHistorical(TemporalFact{ID: "f1", ExpiresAt: &past}, now) {
+		t.Error("TTL-expired fact must not be historical")
+	}
+}
+
 func TestIsRetired(t *testing.T) {
 	now := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
 	past := now.Add(-time.Hour)

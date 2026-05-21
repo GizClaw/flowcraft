@@ -80,6 +80,9 @@ func TestProjection_WithEmbedder_MixedBatchStillEmbedsActive(t *testing.T) {
 	if err := p.Project(context.Background(), batch); err != nil {
 		t.Fatalf("project: %v", err)
 	}
+	if err := p.BackfillEmbeddings(context.Background(), batch); err != nil {
+		t.Fatalf("backfill: %v", err)
+	}
 	got, ok, err := idx.Get(context.Background(), NamespaceFor(scope), "f-new")
 	if err != nil || !ok {
 		t.Fatalf("get: ok=%v err=%v", ok, err)
@@ -113,6 +116,9 @@ func TestProjection_WithEmbedder_PopulatesDocVector(t *testing.T) {
 	}
 	if err := p.Project(context.Background(), []domain.TemporalFact{f}); err != nil {
 		t.Fatalf("project: %v", err)
+	}
+	if err := p.BackfillEmbeddings(context.Background(), []domain.TemporalFact{f}); err != nil {
+		t.Fatalf("backfill: %v", err)
 	}
 	got, ok, err := idx.Get(context.Background(), NamespaceFor(scope), "f1")
 	if err != nil || !ok {
@@ -159,6 +165,35 @@ func (partialBatchEmbedder) EmbedBatch(context.Context, []string) ([][]float32, 
 	return nil, errStub{}
 }
 
+func TestProjection_ClosedFactEvictsExistingDoc(t *testing.T) {
+	idx := retrievalmem.New()
+	p, err := New(idx)
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	scope := domain.Scope{RuntimeID: "rt", UserID: "u1"}
+	now := time.Now()
+	open := domain.TemporalFact{
+		ID: "f1", Scope: scope, Kind: domain.KindState,
+		Subject: "alice", Predicate: "city", Content: "Paris",
+		ObservedAt: now,
+	}
+	if err := p.Project(context.Background(), []domain.TemporalFact{open}); err != nil {
+		t.Fatalf("project open: %v", err)
+	}
+	if _, ok, _ := idx.Get(context.Background(), NamespaceFor(scope), "f1"); !ok {
+		t.Fatal("open fact must be indexed")
+	}
+	closed := open
+	closed.Closed = true
+	if err := p.Project(context.Background(), []domain.TemporalFact{closed}); err != nil {
+		t.Fatalf("project closed: %v", err)
+	}
+	if _, ok, _ := idx.Get(context.Background(), NamespaceFor(scope), "f1"); ok {
+		t.Fatal("soft-closed fact must evict its retrieval doc on reproject")
+	}
+}
+
 func TestProjection_WithEmbedder_FallsBackToPerTextOnBatchFailure(t *testing.T) {
 	idx := retrievalmem.New()
 	p, err := New(idx, WithEmbedder(partialBatchEmbedder{dim: 8}))
@@ -166,11 +201,15 @@ func TestProjection_WithEmbedder_FallsBackToPerTextOnBatchFailure(t *testing.T) 
 		t.Fatalf("new: %v", err)
 	}
 	scope := domain.Scope{RuntimeID: "rt", UserID: "u1"}
-	if err := p.Project(context.Background(), []domain.TemporalFact{
+	facts := []domain.TemporalFact{
 		{ID: "a", Scope: scope, Kind: domain.KindNote, Content: "Alice met Bob"},
 		{ID: "b", Scope: scope, Kind: domain.KindNote, Content: "Bob went to Paris"},
-	}); err != nil {
+	}
+	if err := p.Project(context.Background(), facts); err != nil {
 		t.Fatalf("project: %v", err)
+	}
+	if err := p.BackfillEmbeddings(context.Background(), facts); err != nil {
+		t.Fatalf("backfill: %v", err)
 	}
 	for _, id := range []string{"a", "b"} {
 		got, ok, err := idx.Get(context.Background(), NamespaceFor(scope), id)
@@ -196,7 +235,7 @@ func TestProjection_WithEmbedder_UsesContentNotSearchableText(t *testing.T) {
 		t.Fatalf("new: %v", err)
 	}
 	scope := domain.Scope{RuntimeID: "rt", UserID: "u1"}
-	if err := p.Project(context.Background(), []domain.TemporalFact{{
+	f := domain.TemporalFact{
 		ID: "a", Scope: scope, Kind: domain.KindState,
 		Content:      "Alice lives in Paris",
 		Subject:      "alice",
@@ -204,8 +243,12 @@ func TestProjection_WithEmbedder_UsesContentNotSearchableText(t *testing.T) {
 		Object:       "paris",
 		Entities:     []string{"alice", "paris"},
 		EvidenceText: "I'm in Paris these days",
-	}}); err != nil {
+	}
+	if err := p.Project(context.Background(), []domain.TemporalFact{f}); err != nil {
 		t.Fatalf("project: %v", err)
+	}
+	if err := p.BackfillEmbeddings(context.Background(), []domain.TemporalFact{f}); err != nil {
+		t.Fatalf("backfill: %v", err)
 	}
 	if len(rec.texts) != 1 {
 		t.Fatalf("expected 1 embed input, got %d", len(rec.texts))

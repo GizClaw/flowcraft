@@ -19,7 +19,7 @@ import (
 )
 
 // ErrScopeKeyMismatch is returned when Mode == Hard and the caller-
-// supplied ConfirmScopeKey does not equal scope.CanonicalKey(). The
+// supplied ConfirmScopeKey does not equal scope.PartitionKey(). The
 // guard is the last line of defence against accidental cross-tenant
 // nuke: callers who copy the scope by value can still copy the key,
 // so we require the freshly-computed canonical key as confirmation.
@@ -76,7 +76,7 @@ func (ForgetAll) Name() string { return "forget_all" }
 //nolint:gocyclo // five branches map 1:1 to the mode + filter flow; splitting hides intent.
 func (s *ForgetAll) Run(ctx context.Context, state *forget.State) (diagnostic.StageDetail, error) {
 	started := time.Now()
-	scopeKey := state.Scope.CanonicalKey()
+	scopeKey := state.Scope.PartitionKey()
 	mode := domain.NormalizeForgetMode(state.Mode)
 
 	// ExpireRetired path (Cluster A / D5 2026-05-21): a non-nil

@@ -50,7 +50,7 @@ type State struct {
 	Mode domain.ForgetMode
 
 	// ConfirmScopeKey is the caller's defensive copy of
-	// scope.CanonicalKey(). The validate step compares it to the
+	// scope.PartitionKey(). The validate step compares it to the
 	// computed key and refuses to proceed on mismatch (Hard mode
 	// only; Soft is reversible so we skip the guard for ergonomics).
 	ConfirmScopeKey string

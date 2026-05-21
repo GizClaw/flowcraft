@@ -2,16 +2,30 @@ package domain
 
 import "strings"
 
-// CanonicalKey returns a stable scope qualifier for federation dedup
-// and ForgetAll confirmation ("rt-1/u:alice" / "rt-1/global").
-func (s Scope) CanonicalKey() string {
+// PartitionKey is the canonical store / projection / async-queue
+// partition ("rt-1/u:alice" / "rt-1/global"). AgentID is intentionally
+// excluded — per docs §5.1 it is soft isolation, not a hard shard.
+// ForgetAll(Hard) confirmScopeKey and queue CancelScope / PurgeScope
+// MUST use this key so an agent-scoped Scope cannot confirm a wipe
+// that deletes sibling agents' ledger rows in the same user partition.
+func (s Scope) PartitionKey() string {
 	if s.RuntimeID == "" {
 		return ""
 	}
 	if s.UserID == "" {
 		return s.RuntimeID + "/global"
 	}
-	key := s.RuntimeID + "/u:" + s.UserID
+	return s.RuntimeID + "/u:" + s.UserID
+}
+
+// CanonicalKey returns a stable scope qualifier for federation dedup
+// and sub-scope identity. It extends PartitionKey with /a:{agent}
+// when AgentID is set.
+func (s Scope) CanonicalKey() string {
+	key := s.PartitionKey()
+	if key == "" {
+		return ""
+	}
 	if a := strings.TrimSpace(s.AgentID); a != "" {
 		key += "/a:" + a
 	}
@@ -47,8 +61,9 @@ func (s Scope) EffectiveFederation() []Scope {
 	return out
 }
 
-// ScopesMatch reports whether two scopes share the same primary
-// partition keys (ignores Federation, which is recall-only).
+// ScopesMatch reports whether two scopes share the same canonical
+// store partition (runtime + user). Federation and AgentID are
+// recall-only dimensions and do not affect the match.
 func ScopesMatch(a, b Scope) bool {
-	return a.CanonicalKey() == b.CanonicalKey()
+	return a.PartitionKey() == b.PartitionKey()
 }

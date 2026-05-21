@@ -49,7 +49,7 @@ func readStages() []StageDiagnostic {
 		{
 			Stage: "intent",
 			Detail: IntentDetail{
-				RawQuery: "where did alice live",
+				QueryLen: 22,
 				Subject:  "alice",
 				Entities: []string{"alice"},
 			},
@@ -90,8 +90,8 @@ func readStages() []StageDiagnostic {
 
 func TestExtractPlan(t *testing.T) {
 	got := ExtractPlan(readStages())
-	if got.IntentText != "where did alice live" {
-		t.Errorf("IntentText = %q", got.IntentText)
+	if got.IntentText != "" {
+		t.Errorf("IntentText must be redacted from diagnostics, got %q", got.IntentText)
 	}
 	if got.IntentSubject != "alice" {
 		t.Errorf("IntentSubject = %q", got.IntentSubject)

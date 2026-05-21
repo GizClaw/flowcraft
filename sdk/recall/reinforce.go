@@ -22,7 +22,11 @@ func (m *memory) runFeedback(ctx context.Context, scope Scope, st *feedback.Stat
 	if scope.RuntimeID == "" {
 		return errdefs.Validationf("recall.Feedback: scope.runtime_id is required")
 	}
+	m.holdWriteTelemetry()
 	unlock := m.lockWriteScope(scope)
-	defer unlock()
+	defer func() {
+		unlock()
+		m.flushWriteTelemetry()
+	}()
 	return m.feedbackRunner.Run(ctx, st)
 }

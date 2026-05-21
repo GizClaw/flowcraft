@@ -269,8 +269,13 @@ func (r *DefaultResolver) resolveExplicitSupersedes(ctx context.Context, view po
 		if priorID == "" {
 			return resolverDecision{}, errdefs.Validationf("resolver explicit supersede: empty prior id")
 		}
-		if _, err := view.Get(ctx, f.Scope, priorID); err != nil {
+		prior, err := view.Get(ctx, f.Scope, priorID)
+		if err != nil {
 			return resolverDecision{}, errdefs.Validationf("resolver explicit supersede: prior %q: %v", priorID, err)
+		}
+		if !canSupersede(f.Scope.AgentID, prior.Scope.AgentID) {
+			return resolverDecision{}, errdefs.Validationf(
+				"resolver explicit supersede: prior %q not visible to agent %q", priorID, f.Scope.AgentID)
 		}
 	}
 	return resolverDecision{

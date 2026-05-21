@@ -115,6 +115,7 @@ func TestProcessAsyncSemantic_DerivesRecallableFacts(t *testing.T) {
 	if out.Claimed != 1 || out.Completed != 1 {
 		t.Fatalf("process result = %+v, want claimed=1 completed=1", out)
 	}
+	drainSideEffectsForTest(t, mem, scope)
 
 	hits, err := mem.Recall(ctx, scope, Query{Text: "paris", Limit: 5})
 	if err != nil {
@@ -312,7 +313,7 @@ func TestProcessAsyncSemantic_EpisodeDeletedDuringWorkerDoesNotDerive(t *testing
 	}
 }
 
-func TestProcessAsyncSemantic_RequiresScopeOrRuntime(t *testing.T) {
+func TestProcessAsyncSemantic_RequiresPartitionScope(t *testing.T) {
 	queue := asyncsemantic.New()
 	mem, err := New(
 		withCompiler(testSemanticIngestor()),
@@ -327,7 +328,11 @@ func TestProcessAsyncSemantic_RequiresScopeOrRuntime(t *testing.T) {
 	}
 	_, err = proc.ProcessAsyncSemantic(context.Background(), AsyncSemanticProcessOptions{Limit: 1})
 	if err == nil {
-		t.Fatal("ProcessAsyncSemantic without Scope/RuntimeID must fail")
+		t.Fatal("ProcessAsyncSemantic without Scope must fail")
+	}
+	_, err = proc.ProcessAsyncSemantic(context.Background(), AsyncSemanticProcessOptions{Limit: 1, RuntimeID: "rt"})
+	if err == nil {
+		t.Fatal("ProcessAsyncSemantic with RuntimeID-only drain must fail")
 	}
 }
 
@@ -533,7 +538,7 @@ type completeFailQueue struct {
 	err error
 }
 
-func (q *completeFailQueue) Complete(context.Context, string, port.AsyncSemanticResult) error {
+func (q *completeFailQueue) Complete(context.Context, string, string, port.AsyncSemanticResult) error {
 	return q.err
 }
 
@@ -590,7 +595,7 @@ func TestForgetAllHard_EmitsAsyncJobsCancelledTelemetry(t *testing.T) {
 		t.Fatalf("Save: %v", err)
 	}
 	hook.stages = nil
-	if _, err := mem.ForgetAll(ctx, scope, ForgetHard, scope.CanonicalKey()); err != nil {
+	if _, err := mem.ForgetAll(ctx, scope, ForgetHard, scope.PartitionKey()); err != nil {
 		t.Fatalf("ForgetAll: %v", err)
 	}
 	var forgetStage *diagnostic.StageDiagnostic
@@ -614,8 +619,8 @@ func TestForgetAllHard_EmitsAsyncJobsCancelledTelemetry(t *testing.T) {
 	if !ok {
 		t.Fatalf("detail = %T, want ForgetAllDetail", forgetStage.Detail)
 	}
-	if d.AsyncJobsCancelled != 1 {
-		t.Fatalf("AsyncJobsCancelled = %d, want 1", d.AsyncJobsCancelled)
+	if d.AsyncJobsCancelled != 2 {
+		t.Fatalf("AsyncJobsCancelled = %d, want 2 (semantic + side-effect outbox)", d.AsyncJobsCancelled)
 	}
 }
 
@@ -637,7 +642,7 @@ func TestForgetAllHard_CancelsPendingAsyncJobs(t *testing.T) {
 	if d := queueDepth(t, queue); d != 1 {
 		t.Fatalf("queue depth = %d, want 1 before ForgetAll", d)
 	}
-	if _, err := mem.ForgetAll(ctx, scope, ForgetHard, scope.CanonicalKey()); err != nil {
+	if _, err := mem.ForgetAll(ctx, scope, ForgetHard, scope.PartitionKey()); err != nil {
 		t.Fatalf("ForgetAll: %v", err)
 	}
 	if d := queueDepth(t, queue); d != 0 {
@@ -659,7 +664,7 @@ func TestForgetAllHard_CancelScopeFailureSurfaces(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
-	_, err = mem.ForgetAll(ctx, scope, ForgetHard, scope.CanonicalKey())
+	_, err = mem.ForgetAll(ctx, scope, ForgetHard, scope.PartitionKey())
 	if err == nil {
 		t.Fatal("ForgetAll(Hard) must surface async job cleanup failures")
 	}

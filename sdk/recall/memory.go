@@ -38,6 +38,7 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/planner"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/port"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/ranker"
+	sideeffectstore "github.com/GizClaw/flowcraft/sdk/recall/internal/store/sideeffect"
 	temporalstore "github.com/GizClaw/flowcraft/sdk/recall/internal/store/temporal"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/telemetry"
 	"github.com/GizClaw/flowcraft/sdk/retrieval"
@@ -45,11 +46,12 @@ import (
 )
 
 // ErrScopeKeyMismatch is returned when ForgetAll's confirmScopeKey
-// does not match scope.CanonicalKey(). The guard exists because
+// does not match scope.PartitionKey(). The guard exists because
 // ForgetAll(Hard) is irreversible: GDPR Art.17 / CCPA 1798.105 require
 // that callers cannot accidentally nuke a sibling tenant by reusing a
-// scope struct. Callers must pass scope.CanonicalKey() as the
-// confirmation; errors.Is(err, ErrScopeKeyMismatch) is sentinel-stable.
+// scope struct. AgentID is soft isolation and is NOT part of the wipe
+// key — callers must pass scope.PartitionKey() as confirmation;
+// errors.Is(err, ErrScopeKeyMismatch) is sentinel-stable.
 var ErrScopeKeyMismatch = forgetstages.ErrScopeKeyMismatch
 
 // Memory is the v2 fact-centric facade. See docs §11.1.
@@ -101,8 +103,9 @@ type memory struct {
 
 	// writePreRunner runs validate + ingest without the per-scope
 	// write lock (legacy runSave compiled outside the lock).
-	// writePostRunner runs resolve through evolution_after_save
-	// under the lock. Both are wired at memory.New().
+	// writePostRunner runs canonical stages under the lock
+	// (resolve/append/validity_close/enqueue_side_effects).
+	// Commit-after projection/evolution/embedding drain outside the lock.
 	writePreRunner  *write.Runner
 	writePostRunner *write.Runner
 	readRunner      *read.Runner
@@ -111,18 +114,17 @@ type memory struct {
 	feedbackRunner  *feedback.Runner
 	revisionRunner  *revision.Runner
 
-	// asyncEpisodeRunner drives the F.1a sync lane under scope write
-	// lock: episode stages, optional structured-facts leg, then
-	// write_semantic_outbox (after project_required) so jobs are not
-	// claimable until structured work succeeds. It is always compiled even when no
-	// queue is wired so the runner shape stays stable; runSaveAsync
-	// short-circuits to a validation error before invoking the
-	// runner when asyncSemanticQueue is nil.
-	asyncEpisodeRunner *write.Runner
+	// asyncEpisodePreRunner compiles/builds episodes and structured
+	// facts outside the scope write lock.
+	asyncEpisodePreRunner *write.Runner
+	// asyncEpisodeCanonicalRunner appends canonical rows and enqueues
+	// semantic + side-effect outbox jobs under the lock.
+	asyncEpisodeCanonicalRunner *write.Runner
 
 	// asyncSemanticQueue is the durable outbox WithAsyncSemanticQueue
 	// configures. nil disables WriteModeAsyncSemantic.
 	asyncSemanticQueue port.AsyncSemanticQueue
+	sideEffectOutbox   port.SideEffectOutbox
 
 	// asyncSemanticWorkerPreRunner / PostRunner drive
 	// ProcessAsyncSemantic (F.1b): LLM ingest + semantic write path
@@ -148,6 +150,14 @@ type memory struct {
 
 	writeMu    sync.Mutex
 	writeLocks map[writeScopeKey]*writeLock
+
+	// deferredTelemetry buffers stage events during scope-locked writes.
+	deferredTelemetry *telemetry.Deferred
+
+	// scopeGenMu / scopeGen guard against slow sync Save re-appending
+	// after ForgetAll(Hard) returns (pre-runner runs outside the lock).
+	scopeGenMu sync.Mutex
+	scopeGen   map[writeScopeKey]uint64
 }
 
 type writeScopeKey struct {
@@ -252,7 +262,15 @@ func New(opts ...Option) (Memory, error) {
 		rnk = ranker.NewDefault()
 	}
 
+	deferredTel := telemetry.NewDeferred(cfg.telemetry)
+	cfg.telemetry = deferredTel
+
+	if cfg.sideEffectOutbox == nil {
+		cfg.sideEffectOutbox = sideeffectstore.New()
+	}
+
 	fanout := pipeline.NewFanout(projections, cfg.telemetry)
+	needsEmbedding := cfg.embedder != nil
 	m := &memory{
 		store:              cfg.store,
 		evidenceStore:      cfg.evidenceStore,
@@ -273,9 +291,12 @@ func New(opts ...Option) (Memory, error) {
 		evolution:          cfg.evolution,
 		entitySnap:         entitySnap,
 		writeLocks:         make(map[writeScopeKey]*writeLock),
+		deferredTelemetry:  deferredTel,
 		asyncSemanticQueue: cfg.asyncSemanticQueue,
+		sideEffectOutbox:   cfg.sideEffectOutbox,
 	}
 	tel := cfg.telemetry
+	enqueueSide := writestages.NewEnqueueSideEffects(cfg.sideEffectOutbox, needsEmbedding, cfg.evolution)
 	m.writePreRunner = write.NewRunner([]pipeline.Stage[*write.WriteState]{
 		writestages.NewValidate(),
 		writestages.NewIngest(cfg.compiler, m.entitySnapshots),
@@ -284,23 +305,20 @@ func New(opts ...Option) (Memory, error) {
 		writestages.NewResolve(cfg.resolver, cfg.store),
 		writestages.NewAppend(cfg.store, tel),
 		writestages.NewValidityClose(cfg.store, fanout, tel),
-		writestages.NewProjectRequired(fanout, tel),
-		writestages.NewProjectOptional(fanout),
-		writestages.NewEvolutionAfterSave(cfg.evolution),
+		enqueueSide,
 	}, tel)
-	m.asyncEpisodeRunner = write.NewRunner([]pipeline.Stage[*write.WriteState]{
+	m.asyncEpisodePreRunner = write.NewRunner([]pipeline.Stage[*write.WriteState]{
 		writestages.NewValidate(),
 		writestages.NewBuildEpisode(),
-		writestages.NewAppendEpisode(cfg.store, tel),
-		writestages.NewProjectEpisodeEvidence(fanout, projections, tel),
 		writestages.NewStructuredIngest(cfg.compiler, m.entitySnapshots),
+	}, tel)
+	m.asyncEpisodeCanonicalRunner = write.NewRunner([]pipeline.Stage[*write.WriteState]{
+		writestages.NewAppendEpisode(cfg.store, tel),
 		writestages.NewResolve(cfg.resolver, cfg.store),
 		writestages.NewAppend(cfg.store, tel),
 		writestages.NewValidityClose(cfg.store, fanout, tel),
-		writestages.NewProjectRequired(fanout, tel),
+		enqueueSide,
 		writestages.NewWriteSemanticOutbox(m.asyncSemanticQueue, tel),
-		writestages.NewProjectOptional(fanout),
-		writestages.NewEvolutionAfterSave(cfg.evolution),
 	}, tel)
 	m.asyncSemanticWorkerPreRunner = write.NewRunner([]pipeline.Stage[*write.WriteState]{
 		writestages.NewValidate(),
@@ -311,9 +329,7 @@ func New(opts ...Option) (Memory, error) {
 		writestages.NewOriginStamp(),
 		writestages.NewAppend(cfg.store, tel),
 		writestages.NewValidityClose(cfg.store, fanout, tel),
-		writestages.NewProjectRequired(fanout, tel),
-		writestages.NewProjectOptional(fanout),
-		writestages.NewEvolutionAfterSave(cfg.evolution),
+		enqueueSide,
 	}, tel)
 	var rerank port.Reranker
 	if cfg.reranker != nil {
@@ -371,6 +387,7 @@ func (m *memory) saveRevisionFact(ctx context.Context, scope domain.Scope, fact 
 	if len(state.Ingest.Facts) == 0 {
 		return domain.TemporalFact{}, errdefs.Internalf("recall.Revision: ingest produced no facts")
 	}
+	allocateSaveOutboxID(state)
 	if err := m.writePostRunner.Run(ctx, state); err != nil {
 		return domain.TemporalFact{}, err
 	}
@@ -414,7 +431,7 @@ func (m *memory) saveRevisionFact(ctx context.Context, scope domain.Scope, fact 
 // Optional projections run after required ones; their failure does
 // not affect the Save outcome (telemetry only).
 func (m *memory) Save(ctx context.Context, scope Scope, req SaveRequest) (SaveResult, error) {
-	res, _, err := m.runSave(ctx, scope, req, false)
+	res, _, err := m.runSave(ctx, scope, req, false, false)
 	return res, err
 }
 
@@ -422,10 +439,16 @@ func (m *memory) Save(ctx context.Context, scope Scope, req SaveRequest) (SaveRe
 // returns the compiled facts and compiler drops so callers can run
 // diagnostics on the extractor / compiler / resolver stages.
 func (m *memory) SaveExplain(ctx context.Context, scope Scope, req SaveRequest) (SaveResult, SaveTrace, error) {
-	return m.runSave(ctx, scope, req, true)
+	return m.runSave(ctx, scope, req, true, false)
 }
 
-func (m *memory) runSave(ctx context.Context, scope Scope, req SaveRequest, withTrace bool) (SaveResult, SaveTrace, error) {
+// SaveExplainDebug is like SaveExplain but retains raw dropped-fact
+// payloads in the trace. Not safe for production telemetry export.
+func (m *memory) SaveExplainDebug(ctx context.Context, scope Scope, req SaveRequest) (SaveResult, SaveTrace, error) {
+	return m.runSave(ctx, scope, req, true, true)
+}
+
+func (m *memory) runSave(ctx context.Context, scope Scope, req SaveRequest, withTrace, includeRawDiagnostics bool) (SaveResult, SaveTrace, error) {
 	if err := ctx.Err(); err != nil {
 		return SaveResult{}, SaveTrace{}, err
 	}
@@ -438,29 +461,30 @@ func (m *memory) runSave(ctx context.Context, scope Scope, req SaveRequest, with
 		if len(req.Turns) == 0 {
 			factsOnly := req
 			factsOnly.Mode = domain.WriteModeSync
-			return m.runSaveSync(ctx, scope, factsOnly, withTrace)
+			return m.runSaveSync(ctx, scope, factsOnly, withTrace, includeRawDiagnostics)
 		}
 		if m.asyncSemanticQueue == nil {
 			return SaveResult{}, SaveTrace{}, errdefs.Validationf(
 				"recall.Save: WriteModeAsyncSemantic requires WithAsyncSemanticQueue option")
 		}
-		return m.runSaveAsync(ctx, scope, req, withTrace)
+		return m.runSaveAsync(ctx, scope, req, withTrace, includeRawDiagnostics)
 	}
-	return m.runSaveSync(ctx, scope, req, withTrace)
+	return m.runSaveSync(ctx, scope, req, withTrace, includeRawDiagnostics)
 }
 
 // runSaveSync is the canonical pre-F.1 Save body: pre-runner outside
 // the scope lock, post-runner inside. It serves both
 // WriteModeSync calls and the Facts-only leg of an async request.
-func (m *memory) runSaveSync(ctx context.Context, scope Scope, req SaveRequest, withTrace bool) (SaveResult, SaveTrace, error) {
+func (m *memory) runSaveSync(ctx context.Context, scope Scope, req SaveRequest, withTrace, includeRawDiagnostics bool) (SaveResult, SaveTrace, error) {
 	state := &write.WriteState{
-		Scope:               scope,
-		Facts:               req.Facts,
-		Turns:               req.Turns,
-		ObservedAt:          req.ObservedAt,
-		Tier:                req.Tier,
-		RecentMessages:      req.RecentMessages,
-		ExistingFactsAnchor: req.ExistingFactsAnchor,
+		Scope:                 scope,
+		Facts:                 req.Facts,
+		Turns:                 req.Turns,
+		ObservedAt:            req.ObservedAt,
+		Tier:                  req.Tier,
+		DiagnosticsIncludeRaw: includeRawDiagnostics,
+		RecentMessages:        req.RecentMessages,
+		ExistingFactsAnchor:   req.ExistingFactsAnchor,
 		// Now left zero so the ingestor's Clock (or time.Now
 		// fallback inside ingest) anchors relative-time resolution,
 		// matching the legacy runSave path that did not pass Now on
@@ -470,6 +494,7 @@ func (m *memory) runSaveSync(ctx context.Context, scope Scope, req SaveRequest, 
 		state.EnsureTrace()
 	}
 
+	startGen := m.peekScopeGen(scope)
 	if err := m.writePreRunner.Run(ctx, state); err != nil {
 		return SaveResult{}, publicSaveTrace(state), err
 	}
@@ -477,12 +502,26 @@ func (m *memory) runSaveSync(ctx context.Context, scope Scope, req SaveRequest, 
 		return SaveResult{}, publicSaveTrace(state), nil
 	}
 
-	unlock := m.lockWriteScope(scope)
-	defer unlock()
-
-	if err := m.writePostRunner.Run(ctx, state); err != nil {
+	m.holdWriteTelemetry()
+	unlock, err := m.enterScopeWrite(scope, startGen)
+	if err != nil {
+		m.flushWriteTelemetry()
 		return SaveResult{}, publicSaveTrace(state), err
 	}
+
+	allocateSaveOutboxID(state)
+	if err := m.writePostRunner.Run(ctx, state); err != nil {
+		unlock()
+		m.flushWriteTelemetry()
+		return SaveResult{}, publicSaveTrace(state), err
+	}
+	if err := m.abortIfScopeGenChanged(scope, startGen, state); err != nil {
+		unlock()
+		m.flushWriteTelemetry()
+		return SaveResult{}, publicSaveTrace(state), err
+	}
+	unlock()
+	m.flushWriteTelemetry()
 	if len(state.AppendedFactIDs) == 0 {
 		return SaveResult{}, publicSaveTrace(state), nil
 	}
@@ -490,17 +529,25 @@ func (m *memory) runSaveSync(ctx context.Context, scope Scope, req SaveRequest, 
 }
 
 // runSaveAsync is the F.1a async semantic facade. Episode lane and
-// structured Facts share one locked pipeline so any downstream failure
-// (including structured facts after a successful outbox Enqueue) rolls
-// back via framework compensation: outbox Cancel, evidence forget,
-// episode delete.
-func (m *memory) runSaveAsync(ctx context.Context, scope Scope, req SaveRequest, withTrace bool) (SaveResult, SaveTrace, error) {
-	state := newEpisodeState(scope, req, withTrace)
-	unlock := m.lockWriteScope(scope)
-	defer unlock()
-	if err := m.asyncEpisodeRunner.Run(ctx, state); err != nil {
+// structured Facts share one locked canonical pipeline: Save returns
+// after episode / structured facts and durable outbox jobs are
+// committed. Projection, embedding, and evolution converge later via
+// SideEffectProcessor.
+func (m *memory) runSaveAsync(ctx context.Context, scope Scope, req SaveRequest, withTrace, includeRawDiagnostics bool) (SaveResult, SaveTrace, error) {
+	state := newEpisodeState(scope, req, withTrace, includeRawDiagnostics)
+	if err := m.asyncEpisodePreRunner.Run(ctx, state); err != nil {
 		return SaveResult{}, publicSaveTrace(state), err
 	}
+	m.holdWriteTelemetry()
+	unlock := m.lockWriteScope(scope)
+	allocateSaveOutboxID(state)
+	if err := m.asyncEpisodeCanonicalRunner.Run(ctx, state); err != nil {
+		unlock()
+		m.flushWriteTelemetry()
+		return SaveResult{}, publicSaveTrace(state), err
+	}
+	unlock()
+	m.flushWriteTelemetry()
 	episodeIDs := episodeFactIDsFromState(state)
 	structuredIDs := append([]string(nil), state.AppendedFactIDs...)
 	return SaveResult{
@@ -528,16 +575,17 @@ func episodeFactIDsFromState(state *write.WriteState) []string {
 // consumes. Facts and Turns may both be present in mixed-mode saves;
 // Turns feed build_episode while Facts feed structured_ingest before
 // write_semantic_outbox.
-func newEpisodeState(scope Scope, req SaveRequest, withTrace bool) *write.WriteState {
+func newEpisodeState(scope Scope, req SaveRequest, withTrace, includeRawDiagnostics bool) *write.WriteState {
 	state := &write.WriteState{
-		Scope:               scope,
-		Facts:               req.Facts,
-		Turns:               req.Turns,
-		ObservedAt:          req.ObservedAt,
-		Tier:                req.Tier,
-		RecentMessages:      req.RecentMessages,
-		ExistingFactsAnchor: req.ExistingFactsAnchor,
-		Mode:                domain.WriteModeAsyncSemantic,
+		Scope:                 scope,
+		Facts:                 req.Facts,
+		Turns:                 req.Turns,
+		ObservedAt:            req.ObservedAt,
+		Tier:                  req.Tier,
+		DiagnosticsIncludeRaw: includeRawDiagnostics,
+		RecentMessages:        req.RecentMessages,
+		ExistingFactsAnchor:   req.ExistingFactsAnchor,
+		Mode:                  domain.WriteModeAsyncSemantic,
 	}
 	if withTrace {
 		state.EnsureTrace()
@@ -605,8 +653,12 @@ func (m *memory) Forget(ctx context.Context, scope Scope, factID string, mode ..
 		return errdefs.Validationf("recall.Forget: fact id is required")
 	}
 
+	m.holdWriteTelemetry()
 	unlock := m.lockWriteScope(scope)
-	defer unlock()
+	defer func() {
+		unlock()
+		m.flushWriteTelemetry()
+	}()
 
 	snapshot, err := m.store.Get(ctx, scope, factID)
 	if err != nil {
@@ -660,7 +712,7 @@ func (m *memory) Forget(ctx context.Context, scope Scope, factID string, mode ..
 //     This is the GDPR Art.17 / CCPA 1798.105 "delete me" path.
 //
 // confirmScopeKey is the GDPR guard: it MUST equal
-// scope.CanonicalKey() for Hard mode. Soft mode skips the check for
+// scope.PartitionKey() for Hard mode. Soft mode skips the check for
 // ergonomics — a Soft is reversible. errors.Is(err,
 // ErrScopeKeyMismatch) is sentinel-stable.
 //
@@ -675,8 +727,22 @@ func (m *memory) ForgetAll(ctx context.Context, scope Scope, mode ForgetMode, co
 		return 0, errdefs.Validationf("recall.ForgetAll: scope.runtime_id is required")
 	}
 
+	if domain.NormalizeForgetMode(mode) == domain.ForgetHard {
+		if confirmScopeKey != scope.PartitionKey() {
+			return 0, ErrScopeKeyMismatch
+		}
+	}
+
+	m.holdWriteTelemetry()
 	unlock := m.lockWriteScope(scope)
-	defer unlock()
+	defer func() {
+		unlock()
+		m.flushWriteTelemetry()
+	}()
+
+	if domain.NormalizeForgetMode(mode) == domain.ForgetHard {
+		m.bumpScopeGen(scope)
+	}
 
 	state := &forget.State{
 		Scope:           scope,
@@ -716,8 +782,12 @@ func (m *memory) ExpireRetired(ctx context.Context, scope Scope, now time.Time) 
 	if now.IsZero() {
 		now = time.Now()
 	}
+	m.holdWriteTelemetry()
 	unlock := m.lockWriteScope(scope)
-	defer unlock()
+	defer func() {
+		unlock()
+		m.flushWriteTelemetry()
+	}()
 	state := &forget.State{
 		Scope:  scope,
 		Mode:   domain.ForgetHard,
@@ -727,6 +797,9 @@ func (m *memory) ExpireRetired(ctx context.Context, scope Scope, now time.Time) 
 	state.EnsureTrace()
 	if err := m.forgetRunner.Run(ctx, state); err != nil {
 		return 0, err
+	}
+	if state.Deleted > 0 {
+		m.bumpScopeGen(scope)
 	}
 	var cancel asyncJobCancelResult
 	if state.Deleted > 0 {
@@ -1009,8 +1082,12 @@ func (m *memory) runRebuild(ctx context.Context, scope Scope, projectionFilter s
 	if scope.RuntimeID == "" {
 		return errdefs.Validationf("recall: scope.runtime_id is required")
 	}
+	m.holdWriteTelemetry()
 	unlock := m.lockWriteScope(scope)
-	defer unlock()
+	defer func() {
+		unlock()
+		m.flushWriteTelemetry()
+	}()
 
 	state := &rebuild.RebuildState{
 		Scope:            scope,
@@ -1045,8 +1122,12 @@ func (m *memory) RepairStale(ctx context.Context, scope Scope, factIDs []string)
 	if len(factIDs) == 0 {
 		return nil
 	}
+	m.holdWriteTelemetry()
 	unlock := m.lockWriteScope(scope)
-	defer unlock()
+	defer func() {
+		unlock()
+		m.flushWriteTelemetry()
+	}()
 
 	if err := m.fanout.ForgetRequired(ctx, scope, factIDs); err != nil {
 		return err

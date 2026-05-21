@@ -94,26 +94,69 @@ func inputCoverage(req domain.SaveRequest, stages []diagnostic.StageDiagnostic) 
 	return cov
 }
 
+// factQualityFromIngest reads the precomputed FactStats off the
+// ingest stage's Detail. Cluster E moved stage emission into the
+// pipeline framework, which dropped the per-fact walk this function
+// used to do; FactStats is now computed inside the Ingest stage
+// (which has the domain import diagnostic/ cannot take) and embedded
+// in IngestDetail so per-Save quality survives the refactor.
+//
+// The "structured_ingest" stage (async semantic write) emits the
+// same IngestDetail shape, so we accept either name and prefer the
+// one that actually carried facts (Total > 0).
 func factQualityFromIngest(stages []diagnostic.StageDiagnostic) FactQuality {
 	for _, st := range stages {
-		if st.Stage == "ingest" {
-			if d, ok := st.Detail.(diagnostic.IngestDetail); ok {
-				return FactQuality{Total: d.ExtractedFacts}
-			}
+		if st.Stage != "ingest" && st.Stage != "structured_ingest" {
+			continue
 		}
+		d, ok := st.Detail.(diagnostic.IngestDetail)
+		if !ok {
+			continue
+		}
+		q := factQualityFromStats(d.FactStats)
+		if q.Total == 0 {
+			q.Total = d.ExtractedFacts
+		}
+		return q
 	}
 	return FactQuality{}
 }
 
 func factQualityFromResolve(stages []diagnostic.StageDiagnostic) FactQuality {
 	for _, st := range stages {
-		if st.Stage == "resolve" {
-			if d, ok := st.Detail.(diagnostic.ResolveDetail); ok {
-				return FactQuality{Total: d.Appended}
-			}
+		if st.Stage != "resolve" {
+			continue
 		}
+		d, ok := st.Detail.(diagnostic.ResolveDetail)
+		if !ok {
+			continue
+		}
+		q := factQualityFromStats(d.FactStats)
+		if q.Total == 0 {
+			q.Total = d.Appended
+		}
+		return q
 	}
 	return FactQuality{}
+}
+
+func factQualityFromStats(s diagnostic.FactStats) FactQuality {
+	q := FactQuality{
+		Total:           s.Total,
+		WithContent:     s.WithContent,
+		StructuredOnly:  s.StructuredOnly,
+		EmptyRenderable: s.EmptyRenderable,
+		WithEvidence:    s.WithEvidence,
+		WithValidFrom:   s.WithValidFrom,
+		WithConfidence:  s.WithConfidence,
+	}
+	if len(s.ByKind) > 0 {
+		q.ByKind = make(map[string]int, len(s.ByKind))
+		for k, v := range s.ByKind {
+			q.ByKind[k] += v
+		}
+	}
+	return q
 }
 
 // SaveLatency aggregates per-stage Duration for the write trace.

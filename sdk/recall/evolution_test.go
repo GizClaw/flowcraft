@@ -12,12 +12,13 @@ type captureEvolution struct {
 	recalls int
 	scope   domain.Scope
 	trace   RecallTrace
+	saveErr error
 }
 
 func (c *captureEvolution) AfterSave(_ context.Context, scope domain.Scope, _ []string) error {
 	c.saves++
 	c.scope = scope
-	return nil
+	return c.saveErr
 }
 
 func (c *captureEvolution) AfterRecall(_ context.Context, scope domain.Scope, trace domain.RecallTrace) error {
@@ -50,6 +51,7 @@ func TestWithEvolution_HooksSaveAndRecall(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	drainSideEffectsForTest(t, mem, scope)
 	if _, err := mem.Recall(context.Background(), scope, Query{Entities: []string{"hello"}, Limit: 3}); err != nil {
 		t.Fatal(err)
 	}

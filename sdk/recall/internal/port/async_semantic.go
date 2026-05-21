@@ -28,16 +28,22 @@ type AsyncSemanticQueue interface {
 	// on unknown or already-completed request IDs.
 	Cancel(ctx context.Context, requestID string) error
 	// CancelScope removes every non-complete job for the supplied
-	// scope partition. It backs ForgetAll(Hard) so workers do not
-	// derive semantic facts after a full scope wipe.
+	// scope partition (PartitionKey). It backs ForgetAll(Hard) so
+	// workers do not derive semantic facts after a full scope wipe.
 	CancelScope(ctx context.Context, scope domain.Scope) (int, error)
+	// PurgeScope removes every job in the partition, including
+	// completed and dead-letter entries, and clears enqueue-time PII
+	// snapshots (TurnsSnapshot, RecentMessages, ExistingFactsAnchor).
+	// It backs ForgetAll(Hard) after CancelScope so durable outbox
+	// rows cannot leak post-wipe.
+	PurgeScope(ctx context.Context, scope domain.Scope) (int, error)
 	// CancelMatchingEpisodes removes non-complete jobs in scope whose
 	// EpisodeFactIDs intersect deletedEpisodeFactIDs. Idempotent when
 	// the slice is empty. Used by ExpireRetired and ForgetAll(Soft).
 	CancelMatchingEpisodes(ctx context.Context, scope domain.Scope, deletedEpisodeFactIDs []string) (int, error)
 	Claim(ctx context.Context, opts AsyncSemanticClaimOptions) ([]AsyncSemanticJob, error)
-	Complete(ctx context.Context, requestID string, result AsyncSemanticResult) error
-	Fail(ctx context.Context, requestID string, failure AsyncSemanticFailure) error
+	Complete(ctx context.Context, requestID, leaseToken string, result AsyncSemanticResult) error
+	Fail(ctx context.Context, requestID, leaseToken string, failure AsyncSemanticFailure) error
 	// Stats returns queue depth and terminal-state counts for operators.
 	// Implementations MUST require a non-zero Scope partition (RuntimeID
 	// and UserID); global cross-tenant stats are not supported.
@@ -65,10 +71,10 @@ type AsyncSemanticStats struct {
 
 // AsyncSemanticClaimOptions controls Claim batching and tenancy
 // filters. Zero Max defaults to no jobs; callers should set Max
-// explicitly. ProcessAsyncSemantic requires Scope or RuntimeID;
-// queue implementations should treat an empty filter as claiming
-// nothing when used without that guard. When both Scope and RuntimeID
-// are set, Scope wins (exact partition match).
+// explicitly. ProcessAsyncSemantic requires Scope so ordinary workers
+// claim exactly one partition; RuntimeID exists only for lower-level
+// queue implementations or future privileged/admin drains. When both
+// Scope and RuntimeID are set, Scope wins (exact partition match).
 type AsyncSemanticClaimOptions struct {
 	WorkerID  string
 	Now       time.Time
@@ -99,6 +105,9 @@ type AsyncSemanticJob struct {
 
 	Attempt    int
 	LeaseUntil time.Time
+	// LeaseToken is assigned by Claim; Complete / Fail must supply
+	// the same token so an expired worker cannot ack a re-claimed job.
+	LeaseToken string
 }
 
 // AsyncSemanticReceipt is the return value of Enqueue and the wire

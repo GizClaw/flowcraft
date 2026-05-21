@@ -39,7 +39,7 @@ func (s *Intent) Run(ctx context.Context, state *read.ReadState) (diagnostic.Sta
 	latency := time.Since(started)
 	if err != nil {
 		return diagnostic.IntentDetail{
-			RawQuery:   state.Query.Text,
+			QueryLen:   len(state.Query.Text),
 			NERLatency: latency,
 		}, err
 	}
@@ -64,7 +64,7 @@ func (s *Intent) Run(ctx context.Context, state *read.ReadState) (diagnostic.Sta
 		kinds[i] = string(k)
 	}
 	return diagnostic.IntentDetail{
-		RawQuery:     intent.Text,
+		QueryLen:     len(intent.Text),
 		Entities:     intent.Entities,
 		Kinds:        kinds,
 		Subject:      intent.Subject,

@@ -206,6 +206,26 @@ func IsActive(f TemporalFact, now time.Time) bool {
 	return IsCanonicalActive(f, now)
 }
 
+// IsHistorical reports whether a fact belongs in HISTORICAL
+// projection indexes (timeline / retrieval / entity / graph) — views
+// that index the whole observed record, not just currently-active
+// slots. It is intentionally LESS restrictive than IsProjectable:
+// past-ValidTo facts remain indexable so "When did X happen?" style
+// queries can still hit the underlying event. The predicate only
+// drops a fact when it has been superseded by a successor (canonical
+// truth lost) OR retired by soft-forget / TTL (operator opt-out).
+//
+// Cluster B (2026-05-21) initially routed every projection through
+// IsProjectable, which conflates "currently-active state" with
+// "indexable historical fact". The timeline docstring had always
+// promised "a past event remains visible even when ValidTo is set —
+// only CorrectedBy suppresses indexing"; this predicate restores
+// that invariant for the four historical views while leaving the
+// two active-slot views (profile / relation) on IsProjectable.
+func IsHistorical(f TemporalFact, now time.Time) bool {
+	return !IsSuperseded(f) && !IsRetired(f, now)
+}
+
 // IsRetired reports whether a fact is hidden from default Recall:
 // soft-closed or past ExpiresAt.
 func IsRetired(f TemporalFact, now time.Time) bool {

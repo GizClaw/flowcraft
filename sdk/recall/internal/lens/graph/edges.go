@@ -54,7 +54,7 @@ type directedEdge struct {
 
 // extractEdges builds the deterministic edge set for one fact.
 func extractEdges(f domain.TemporalFact, cfg Config, now time.Time) []directedEdge {
-	if f.ID == "" || !domain.IsProjectable(f, now) {
+	if f.ID == "" || !domain.IsHistorical(f, now) {
 		return nil
 	}
 	if f.Confidence < cfg.minConfidence() {

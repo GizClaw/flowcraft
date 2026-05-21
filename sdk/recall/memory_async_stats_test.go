@@ -85,7 +85,7 @@ func TestAsyncSemanticQueueStats_ReportsBacklogAndDeadLetter(t *testing.T) {
 	if err != nil || len(jobs) != 1 {
 		t.Fatalf("Claim: %v jobs=%d", err, len(jobs))
 	}
-	_ = queue.Fail(ctx, jobs[0].RequestID, port.AsyncSemanticFailure{
+	_ = queue.Fail(ctx, jobs[0].RequestID, jobs[0].LeaseToken, port.AsyncSemanticFailure{
 		ErrClass: diagnostic.ErrClassPermanent,
 		Err:      "episode missing",
 	})

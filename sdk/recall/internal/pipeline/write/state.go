@@ -70,6 +70,11 @@ type WriteState struct {
 	// Tier is the SaveRequest importance intent (Phase D.3).
 	Tier string
 
+	// DiagnosticsIncludeRaw opts into raw dropped-fact payloads in
+	// trace/telemetry (SaveExplainDebug). Default Save paths keep
+	// drops redacted.
+	DiagnosticsIncludeRaw bool
+
 	// RecentMessages / ExistingFactsAnchor are caller-composed LLM
 	// context (Phase D.7).
 	RecentMessages      []domain.Message
@@ -160,6 +165,13 @@ type WriteState struct {
 	// callers can distinguish "raw episode landed; semantic
 	// extraction will run later" from "fully synchronous Save".
 	SemanticPending bool
+
+	// SaveOutboxID groups commit-after side-effect jobs for one Save.
+	// Set before the canonical locked pipeline runs.
+	SaveOutboxID string
+
+	// SideEffectsEnqueued counts jobs written by enqueue_side_effects.
+	SideEffectsEnqueued int
 
 	// SemanticDerivationOrigin is stamped onto every appended fact by
 	// origin_stamp in the F.1b async worker lane. Zero in sync and

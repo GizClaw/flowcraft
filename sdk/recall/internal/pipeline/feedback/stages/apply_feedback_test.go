@@ -5,6 +5,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain/diagnostic"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/pipeline"
@@ -82,6 +83,27 @@ func TestApplyFeedback_HappyPath_UpdatesAndReprojects(t *testing.T) {
 	}
 	if d.FactID != "f-1" || d.ReinforcementDelta != 2 {
 		t.Errorf("detail mismatch: %+v", d)
+	}
+}
+
+func TestApplyFeedback_RejectsKindEpisode(t *testing.T) {
+	store := temporal.NewMemoryStore()
+	scope := domain.Scope{RuntimeID: "rt", UserID: "u1"}
+	ctx := context.Background()
+	ep := domain.TemporalFact{
+		ID: "ep-1", Kind: domain.KindEpisode, Scope: scope, Content: "turn text",
+	}
+	if err := store.Append(ctx, []domain.TemporalFact{ep}); err != nil {
+		t.Fatal(err)
+	}
+	runner := newRunner(t, store, nil)
+	state := &feedback.State{Scope: scope, FactID: "ep-1", ReinforcementDelta: 1}
+	runErr := runner.Run(ctx, state)
+	if runErr == nil {
+		t.Fatal("expected validation error for KindEpisode feedback")
+	}
+	if !errdefs.IsValidation(runErr) {
+		t.Fatalf("err = %v, want validation", runErr)
 	}
 }
 
