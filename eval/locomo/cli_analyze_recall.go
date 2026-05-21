@@ -11,6 +11,8 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+
+	"github.com/GizClaw/flowcraft/eval/dataset"
 )
 
 type recallDumpRecord struct {
@@ -32,22 +34,31 @@ type recallDumpHit struct {
 }
 
 type recallAnalysisRecord struct {
-	QID          string             `json:"qid"`
-	Query        string             `json:"query"`
-	Tags         []string           `json:"tags,omitempty"`
-	Judge        float64            `json:"judge"`
-	Flip         string             `json:"flip,omitempty"`
-	MissType     string             `json:"miss_type"`
-	Prediction   string             `json:"prediction,omitempty"`
-	GoldAnswers  []string           `json:"gold_answers,omitempty"`
-	GoldTerms    []string           `json:"gold_terms,omitempty"`
-	MissingTerms []string           `json:"missing_gold_terms,omitempty"`
-	TermCoverage float64            `json:"gold_term_coverage,omitempty"`
-	BestGoldRank int                `json:"best_gold_rank,omitempty"`
-	TermHits     []recallTermHit    `json:"term_hits,omitempty"`
-	TopKinds     map[string]int     `json:"top_kinds,omitempty"`
-	TopSources   map[string]int     `json:"top_sources,omitempty"`
-	TopHits      []recallTopHitView `json:"top_hits,omitempty"`
+	QID                  string             `json:"qid"`
+	Query                string             `json:"query"`
+	Tags                 []string           `json:"tags,omitempty"`
+	Judge                float64            `json:"judge"`
+	Flip                 string             `json:"flip,omitempty"`
+	MissType             string             `json:"miss_type"`
+	Prediction           string             `json:"prediction,omitempty"`
+	GoldAnswers          []string           `json:"gold_answers,omitempty"`
+	EvidenceIDs          []string           `json:"evidence_ids,omitempty"`
+	GoldTerms            []string           `json:"gold_terms,omitempty"`
+	MissingTerms         []string           `json:"missing_gold_terms,omitempty"`
+	TermCoverage         float64            `json:"gold_term_coverage,omitempty"`
+	EvidenceTerms        []string           `json:"evidence_terms,omitempty"`
+	MissingEvidenceTerms []string           `json:"missing_evidence_terms,omitempty"`
+	EvidenceTermCoverage float64            `json:"evidence_term_coverage,omitempty"`
+	BestGoldRank         int                `json:"best_gold_rank,omitempty"`
+	BestEvidenceRank     int                `json:"best_evidence_rank,omitempty"`
+	ExtractStatus        string             `json:"extract_status,omitempty"`
+	ExtractTermCoverage  float64            `json:"extract_term_coverage,omitempty"`
+	ExtractEvidenceIDHit bool               `json:"extract_evidence_id_hit,omitempty"`
+	ExtractFactIDs       []string           `json:"extract_fact_ids,omitempty"`
+	TermHits             []recallTermHit    `json:"term_hits,omitempty"`
+	TopKinds             map[string]int     `json:"top_kinds,omitempty"`
+	TopSources           map[string]int     `json:"top_sources,omitempty"`
+	TopHits              []recallTopHitView `json:"top_hits,omitempty"`
 }
 
 type recallTermHit struct {
@@ -70,6 +81,8 @@ type recallTopHitView struct {
 func addLocomoAnalyzeRecall(parent *cobra.Command) {
 	var (
 		baselinePath string
+		datasetPath  string
+		factsPath    string
 		category     string
 		onlyErrors   bool
 		onlyFlips    bool
@@ -97,11 +110,29 @@ func addLocomoAnalyzeRecall(parent *cobra.Command) {
 			if err != nil {
 				return err
 			}
+			var signals map[string]auditSignals
+			if datasetPath != "" {
+				ds, err := dataset.LoadJSONL(datasetPath)
+				if err != nil {
+					return err
+				}
+				signals = buildAuditSignals(ds)
+			}
+			var factsByConv map[string][]factDumpFact
+			if factsPath != "" {
+				factRecords, err := loadFactsDump(factsPath)
+				if err != nil {
+					return err
+				}
+				factsByConv = groupFactsByConversation(factRecords)
+			}
 			records := analyzeRecallDump(report, baseline, dumps, analyzeRecallOptions{
-				Category:   category,
-				OnlyErrors: onlyErrors,
-				OnlyFlips:  onlyFlips,
-				TopN:       topN,
+				Category:    category,
+				OnlyErrors:  onlyErrors,
+				OnlyFlips:   onlyFlips,
+				TopN:        topN,
+				Signals:     signals,
+				FactsByConv: factsByConv,
 			})
 			var w io.Writer = os.Stdout
 			if outPath != "" {
@@ -129,6 +160,8 @@ func addLocomoAnalyzeRecall(parent *cobra.Command) {
 		},
 	}
 	cmd.Flags().StringVar(&baselinePath, "baseline", "", "optional baseline report JSON; marks regressed/improved flips by qid")
+	cmd.Flags().StringVar(&datasetPath, "dataset", "", "optional dataset JSONL; enables evidence-term audit")
+	cmd.Flags().StringVar(&factsPath, "facts", "", "optional --dump-facts JSONL; enables extract-vs-recall classification")
 	cmd.Flags().StringVar(&category, "category", "", "optional category tag filter, e.g. multi-hop")
 	cmd.Flags().BoolVar(&onlyErrors, "only-errors", false, "only emit questions whose current judge score is 0")
 	cmd.Flags().BoolVar(&onlyFlips, "only-flips", false, "only emit questions that changed judge outcome vs --baseline")
@@ -139,10 +172,19 @@ func addLocomoAnalyzeRecall(parent *cobra.Command) {
 }
 
 type analyzeRecallOptions struct {
-	Category   string
-	OnlyErrors bool
-	OnlyFlips  bool
-	TopN       int
+	Category    string
+	OnlyErrors  bool
+	OnlyFlips   bool
+	TopN        int
+	Signals     map[string]auditSignals
+	FactsByConv map[string][]factDumpFact
+}
+
+type auditSignals struct {
+	ConversationID string
+	EvidenceIDs    []string
+	GoldTerms      []string
+	EvidenceTerms  []string
 }
 
 func loadRecallDump(path string) (map[string]recallDumpRecord, error) {
@@ -169,6 +211,82 @@ func loadRecallDump(path string) (map[string]recallDumpRecord, error) {
 	return out, sc.Err()
 }
 
+func loadFactsDump(path string) ([]factDumpRecord, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	var out []factDumpRecord
+	sc := bufio.NewScanner(f)
+	buf := make([]byte, 0, 1024*1024)
+	sc.Buffer(buf, 16*1024*1024)
+	for sc.Scan() {
+		line := strings.TrimSpace(sc.Text())
+		if line == "" {
+			continue
+		}
+		var rec factDumpRecord
+		if err := json.Unmarshal([]byte(line), &rec); err != nil {
+			return nil, err
+		}
+		out = append(out, rec)
+	}
+	return out, sc.Err()
+}
+
+func groupFactsByConversation(records []factDumpRecord) map[string][]factDumpFact {
+	out := map[string][]factDumpFact{}
+	for _, rec := range records {
+		convID := conversationIDFromScope(rec.Scope)
+		if convID == "" {
+			convID = rec.Scope.UserID
+		}
+		out[convID] = append(out[convID], rec.Facts...)
+	}
+	return out
+}
+
+func buildAuditSignals(ds *dataset.Dataset) map[string]auditSignals {
+	turnByConvEvidence := map[string]map[string]string{}
+	for _, conv := range ds.Conversations {
+		if turnByConvEvidence[conv.ID] == nil {
+			turnByConvEvidence[conv.ID] = map[string]string{}
+		}
+		for _, turn := range conv.Turns {
+			if turn.EvidenceID != "" {
+				turnByConvEvidence[conv.ID][turn.EvidenceID] = turn.Content
+			}
+		}
+	}
+	out := map[string]auditSignals{}
+	for _, q := range ds.Questions {
+		var evidenceTexts []string
+		seenEvidence := map[string]struct{}{}
+		for _, id := range q.EvidenceIDs {
+			if id == "" {
+				continue
+			}
+			seenEvidence[id] = struct{}{}
+			if text := turnByConvEvidence[q.ConversationID][id]; text != "" {
+				evidenceTexts = append(evidenceTexts, text)
+			}
+		}
+		evidenceIDs := make([]string, 0, len(seenEvidence))
+		for id := range seenEvidence {
+			evidenceIDs = append(evidenceIDs, id)
+		}
+		sort.Strings(evidenceIDs)
+		out[q.ID] = auditSignals{
+			ConversationID: q.ConversationID,
+			EvidenceIDs:    evidenceIDs,
+			GoldTerms:      termsFromTexts(q.GoldAnswers),
+			EvidenceTerms:  termsFromTexts(evidenceTexts),
+		}
+	}
+	return out
+}
+
 func analyzeRecallDump(report, baseline *Report, dumps map[string]recallDumpRecord, opts analyzeRecallOptions) []recallAnalysisRecord {
 	baseByID := map[string]QuestionScore{}
 	if baseline != nil {
@@ -189,23 +307,46 @@ func analyzeRecallDump(report, baseline *Report, dumps map[string]recallDumpReco
 			continue
 		}
 		dump := dumps[q.ID]
-		rec := classifyRecallQuestion(q, flip, dump, opts.TopN)
+		rec := classifyRecallQuestion(q, flip, dump, opts.TopN, opts.Signals[q.ID], opts.FactsByConv)
 		out = append(out, rec)
 	}
 	return out
 }
 
-func classifyRecallQuestion(q QuestionScore, flip string, dump recallDumpRecord, topN int) recallAnalysisRecord {
+func classifyRecallQuestion(q QuestionScore, flip string, dump recallDumpRecord, topN int, signals auditSignals, factsByConv map[string][]factDumpFact) recallAnalysisRecord {
 	gold := append([]string(nil), dump.Gold...)
 	if len(gold) == 0 {
 		gold = nil
 	}
 	terms := goldTerms(gold)
+	if len(signals.GoldTerms) > 0 {
+		terms = signals.GoldTerms
+	}
+	if signals.ConversationID == "" {
+		signals.ConversationID = conversationIDFromQID(q.ID)
+	}
+	if len(signals.GoldTerms) == 0 {
+		signals.GoldTerms = terms
+	}
+	evidenceTerms := append([]string(nil), signals.EvidenceTerms...)
+	analysisTerms := uniqueStrings(append(append([]string{}, terms...), evidenceTerms...))
 	termHits := findTermHits(terms, dump.Hits)
 	missing := missingGoldTerms(terms, termHits)
 	coverage := 0.0
 	if len(terms) > 0 {
 		coverage = float64(len(terms)-len(missing)) / float64(len(terms))
+	}
+	evidenceTermHits := findTermHits(evidenceTerms, dump.Hits)
+	missingEvidence := missingGoldTerms(evidenceTerms, evidenceTermHits)
+	evidenceCoverage := 0.0
+	if len(evidenceTerms) > 0 {
+		evidenceCoverage = float64(len(evidenceTerms)-len(missingEvidence)) / float64(len(evidenceTerms))
+	}
+	analysisHits := findTermHits(analysisTerms, dump.Hits)
+	analysisMissing := missingGoldTerms(analysisTerms, analysisHits)
+	analysisCoverage := 0.0
+	if len(analysisTerms) > 0 {
+		analysisCoverage = float64(len(analysisTerms)-len(analysisMissing)) / float64(len(analysisTerms))
 	}
 	bestRank := 0
 	for _, hit := range termHits {
@@ -213,23 +354,51 @@ func classifyRecallQuestion(q QuestionScore, flip string, dump recallDumpRecord,
 			bestRank = hit.Rank
 		}
 	}
+	bestEvidenceRank := 0
+	for _, hit := range evidenceTermHits {
+		if bestEvidenceRank == 0 || hit.Rank < bestEvidenceRank {
+			bestEvidenceRank = hit.Rank
+		}
+	}
+	bestAnalysisRank := 0
+	for _, hit := range analysisHits {
+		if bestAnalysisRank == 0 || hit.Rank < bestAnalysisRank {
+			bestAnalysisRank = hit.Rank
+		}
+	}
+	extract := extractAuditResult{}
+	if len(factsByConv) > 0 {
+		extract = auditExtract(signals, factsByConv[signals.ConversationID])
+	}
 	rec := recallAnalysisRecord{
-		QID:          q.ID,
-		Query:        q.Query,
-		Tags:         append([]string(nil), q.Tags...),
-		Judge:        q.Judge,
-		Flip:         flip,
-		MissType:     recallMissType(q, terms, coverage, bestRank, len(dump.Hits)),
-		Prediction:   q.Prediction,
-		GoldAnswers:  gold,
-		GoldTerms:    terms,
-		MissingTerms: missing,
-		TermCoverage: coverage,
-		BestGoldRank: bestRank,
-		TermHits:     termHits,
-		TopKinds:     countTopKinds(dump.Hits),
-		TopSources:   countTopSources(dump.Hits),
-		TopHits:      topHitViews(dump.Hits, topN),
+		QID:                  q.ID,
+		Query:                q.Query,
+		Tags:                 append([]string(nil), q.Tags...),
+		Judge:                q.Judge,
+		Flip:                 flip,
+		MissType:             recallMissType(q, terms, coverage, bestRank, len(dump.Hits)),
+		Prediction:           q.Prediction,
+		GoldAnswers:          gold,
+		EvidenceIDs:          append([]string(nil), signals.EvidenceIDs...),
+		GoldTerms:            terms,
+		MissingTerms:         missing,
+		TermCoverage:         coverage,
+		EvidenceTerms:        evidenceTerms,
+		MissingEvidenceTerms: missingEvidence,
+		EvidenceTermCoverage: evidenceCoverage,
+		BestGoldRank:         bestRank,
+		BestEvidenceRank:     bestEvidenceRank,
+		ExtractStatus:        extract.Status,
+		ExtractTermCoverage:  extract.TermCoverage,
+		ExtractEvidenceIDHit: extract.EvidenceIDHit,
+		ExtractFactIDs:       extract.FactIDs,
+		TermHits:             termHits,
+		TopKinds:             countTopKinds(dump.Hits),
+		TopSources:           countTopSources(dump.Hits),
+		TopHits:              topHitViews(dump.Hits, topN),
+	}
+	if len(factsByConv) > 0 {
+		rec.MissType = recallAuditMissType(q, extract, analysisTerms, analysisCoverage, bestAnalysisRank, len(dump.Hits))
 	}
 	return rec
 }
@@ -260,6 +429,72 @@ func recallMissType(q QuestionScore, terms []string, coverage float64, bestRank,
 		return "rank_miss_gold_terms_low"
 	}
 	return "answer_miss_gold_terms_present"
+}
+
+func recallAuditMissType(q QuestionScore, extract extractAuditResult, terms []string, coverage float64, bestRank, hitCount int) string {
+	if q.Judge >= 0.5 {
+		return "correct"
+	}
+	switch extract.Status {
+	case "extract_miss", "extract_partial", "extract_semantic_drift":
+		return extract.Status
+	}
+	if hitCount == 0 {
+		return "recall_miss"
+	}
+	if len(terms) == 0 {
+		if looksIDK(q.Prediction) {
+			return "answer_abstain_unclassified"
+		}
+		return "answer_miss_unclassified"
+	}
+	if bestRank == 0 {
+		return "recall_miss"
+	}
+	if coverage < 0.5 {
+		return "context_partial"
+	}
+	if bestRank > 10 {
+		return "rank_miss"
+	}
+	if looksIDK(q.Prediction) {
+		return "answer_abstain"
+	}
+	return "answer_miss"
+}
+
+type extractAuditResult struct {
+	Status        string
+	TermCoverage  float64
+	EvidenceIDHit bool
+	FactIDs       []string
+}
+
+func auditExtract(signals auditSignals, facts []factDumpFact) extractAuditResult {
+	terms := uniqueStrings(append(append([]string{}, signals.GoldTerms...), signals.EvidenceTerms...))
+	_, missing := matchTermsInFacts(terms, facts)
+	coverage := 0.0
+	if len(terms) > 0 {
+		coverage = float64(len(terms)-len(missing)) / float64(len(terms))
+	}
+	evidenceIDHit := factEvidenceIDHit(signals.EvidenceIDs, facts)
+	status := "extract_miss"
+	switch {
+	case evidenceIDHit && (len(terms) == 0 || coverage >= 0.5):
+		status = "extract_hit_evidence_id"
+	case evidenceIDHit:
+		status = "extract_semantic_drift"
+	case coverage >= 0.5:
+		status = "extract_hit_terms"
+	case coverage > 0:
+		status = "extract_partial"
+	}
+	return extractAuditResult{
+		Status:        status,
+		TermCoverage:  coverage,
+		EvidenceIDHit: evidenceIDHit,
+		FactIDs:       matchingFactIDs(terms, signals.EvidenceIDs, facts, 5),
+	}
 }
 
 func recallFlip(q QuestionScore, baseByID map[string]QuestionScore) string {
@@ -378,26 +613,95 @@ func topHitViews(hits []recallDumpHit, n int) []recallTopHitView {
 }
 
 func writeRecallAnalysisMarkdown(w io.Writer, records []recallAnalysisRecord) {
-	fmt.Fprintln(w, "| qid | judge | flip | miss_type | gold_coverage | best_gold_rank | missing_terms | top hit |")
-	fmt.Fprintln(w, "|---|---:|---|---|---:|---:|---|---|")
+	fmt.Fprintln(w, "## Summary")
+	fmt.Fprintln(w)
+	writeCountTable(w, "miss_type", countRecallField(records, func(rec recallAnalysisRecord) string { return rec.MissType }))
+	writeCountTable(w, "extract_status", countRecallField(records, func(rec recallAnalysisRecord) string { return rec.ExtractStatus }))
+	writeCountTable(w, "category", countRecallCategories(records))
+	writeCountTable(w, "top_kind", countNestedRecallFields(records, func(rec recallAnalysisRecord) map[string]int { return rec.TopKinds }))
+	writeCountTable(w, "top_source", countNestedRecallFields(records, func(rec recallAnalysisRecord) map[string]int { return rec.TopSources }))
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "## Questions")
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "| qid | judge | flip | miss_type | extract_status | gold_coverage | evidence_coverage | best_gold_rank | best_evidence_rank | missing_terms | top hit |")
+	fmt.Fprintln(w, "|---|---:|---|---|---|---:|---:|---:|---:|---|---|")
 	for _, rec := range records {
 		top := ""
 		if len(rec.TopHits) > 0 {
 			h := rec.TopHits[0]
 			top = fmt.Sprintf("#%d %s %s", h.Rank, h.Kind, strings.Join(h.Sources, "+"))
 		}
-		fmt.Fprintf(w, "| %s | %.0f | %s | %s | %.2f | %d | %s | %s |\n",
-			rec.QID, rec.Judge, rec.Flip, rec.MissType, rec.TermCoverage, rec.BestGoldRank, strings.Join(rec.MissingTerms, ","), top)
+		missing := append([]string{}, rec.MissingTerms...)
+		missing = append(missing, rec.MissingEvidenceTerms...)
+		fmt.Fprintf(w, "| %s | %.0f | %s | %s | %s | %.2f | %.2f | %d | %d | %s | %s |\n",
+			rec.QID, rec.Judge, rec.Flip, rec.MissType, rec.ExtractStatus, rec.TermCoverage, rec.EvidenceTermCoverage, rec.BestGoldRank, rec.BestEvidenceRank, strings.Join(uniqueStrings(missing), ","), top)
 	}
+}
+
+func writeCountTable(w io.Writer, name string, counts map[string]int) {
+	if len(counts) == 0 {
+		return
+	}
+	fmt.Fprintf(w, "### By %s\n\n", name)
+	fmt.Fprintf(w, "| %s | count |\n", name)
+	fmt.Fprintln(w, "|---|---:|")
+	keys := make([]string, 0, len(counts))
+	for k := range counts {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		fmt.Fprintf(w, "| %s | %d |\n", k, counts[k])
+	}
+	fmt.Fprintln(w)
+}
+
+func countRecallField(records []recallAnalysisRecord, pick func(recallAnalysisRecord) string) map[string]int {
+	out := map[string]int{}
+	for _, rec := range records {
+		key := pick(rec)
+		if key != "" {
+			out[key]++
+		}
+	}
+	return out
+}
+
+func countRecallCategories(records []recallAnalysisRecord) map[string]int {
+	out := map[string]int{}
+	for _, rec := range records {
+		for _, tag := range rec.Tags {
+			if tag != "" {
+				out[tag]++
+			}
+		}
+	}
+	return out
+}
+
+func countNestedRecallFields(records []recallAnalysisRecord, pick func(recallAnalysisRecord) map[string]int) map[string]int {
+	out := map[string]int{}
+	for _, rec := range records {
+		for key, count := range pick(rec) {
+			if key != "" {
+				out[key] += count
+			}
+		}
+	}
+	return out
 }
 
 var analysisWordRE = regexp.MustCompile(`[A-Za-z0-9][A-Za-z0-9'_-]*`)
 
 func goldTerms(answers []string) []string {
+	return termsFromTexts(answers)
+}
+
+func termsFromTexts(texts []string) []string {
 	seen := map[string]struct{}{}
 	var out []string
-	for _, answer := range answers {
-		for _, raw := range analysisWordRE.FindAllString(answer, -1) {
+	for _, text := range texts {
+		for _, raw := range analysisWordRE.FindAllString(text, -1) {
 			term := strings.ToLower(strings.Trim(raw, "'_-"))
 			if len(term) < 3 || analysisStopwords[term] {
 				continue
@@ -412,12 +716,144 @@ func goldTerms(answers []string) []string {
 	return out
 }
 
+func uniqueStrings(in []string) []string {
+	seen := map[string]struct{}{}
+	var out []string
+	for _, s := range in {
+		s = strings.ToLower(strings.TrimSpace(s))
+		if s == "" {
+			continue
+		}
+		if _, ok := seen[s]; ok {
+			continue
+		}
+		seen[s] = struct{}{}
+		out = append(out, s)
+	}
+	return out
+}
+
+func matchTermsInFacts(terms []string, facts []factDumpFact) ([]string, []string) {
+	var matched []string
+	var missing []string
+	for _, term := range terms {
+		needle := strings.ToLower(term)
+		found := false
+		for _, fact := range facts {
+			if strings.Contains(factSearchText(fact), needle) {
+				found = true
+				break
+			}
+		}
+		if found {
+			matched = append(matched, term)
+		} else {
+			missing = append(missing, term)
+		}
+	}
+	return matched, missing
+}
+
+func factEvidenceIDHit(evidenceIDs []string, facts []factDumpFact) bool {
+	if len(evidenceIDs) == 0 {
+		return false
+	}
+	want := map[string]struct{}{}
+	for _, id := range evidenceIDs {
+		want[id] = struct{}{}
+	}
+	for _, fact := range facts {
+		for _, id := range fact.EvidenceIDs {
+			if _, ok := want[id]; ok {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func matchingFactIDs(terms, evidenceIDs []string, facts []factDumpFact, limit int) []string {
+	if limit <= 0 {
+		return nil
+	}
+	wantEvidence := map[string]struct{}{}
+	for _, id := range evidenceIDs {
+		wantEvidence[id] = struct{}{}
+	}
+	var out []string
+	seen := map[string]struct{}{}
+	for _, fact := range facts {
+		if fact.ID == "" {
+			continue
+		}
+		matched := false
+		for _, id := range fact.EvidenceIDs {
+			if _, ok := wantEvidence[id]; ok {
+				matched = true
+				break
+			}
+		}
+		text := factSearchText(fact)
+		if !matched {
+			for _, term := range terms {
+				if strings.Contains(text, strings.ToLower(term)) {
+					matched = true
+					break
+				}
+			}
+		}
+		if !matched {
+			continue
+		}
+		if _, ok := seen[fact.ID]; ok {
+			continue
+		}
+		seen[fact.ID] = struct{}{}
+		out = append(out, fact.ID)
+		if len(out) >= limit {
+			break
+		}
+	}
+	return out
+}
+
+func factSearchText(f factDumpFact) string {
+	return strings.ToLower(strings.Join(append([]string{
+		f.Content,
+		f.Subject,
+		f.Predicate,
+		f.Object,
+		f.EvidenceText,
+		f.ValidFrom,
+	}, f.Entities...), " "))
+}
+
+func conversationIDFromScope(scope factDumpScope) string {
+	if scope.UserID == "" {
+		return ""
+	}
+	parts := strings.Split(scope.UserID, "::")
+	return parts[len(parts)-1]
+}
+
+func conversationIDFromQID(qid string) string {
+	idx := strings.LastIndex(qid, "-q")
+	if idx <= 0 {
+		return ""
+	}
+	return qid[:idx]
+}
+
 var analysisStopwords = map[string]bool{
+	"about": true, "after": true, "also": true, "before": true, "been": true,
 	"and": true, "are": true, "but": true, "for": true, "from": true,
-	"has": true, "have": true, "her": true, "him": true, "his": true,
-	"likely": true, "not": true, "she": true, "that": true, "the": true,
-	"their": true, "was": true, "were": true, "with": true, "yes": true,
-	"you": true,
+	"does": true, "had": true, "has": true, "have": true, "her": true,
+	"herself": true, "him": true, "his": true, "likely": true, "not": true,
+	"only": true, "part": true, "refer": true, "she": true, "since": true,
+	"that": true, "the": true, "their": true, "then": true, "this": true,
+	"though": true, "was": true, "were": true, "what": true, "when": true,
+	"where": true, "which": true, "with": true, "would": true, "yes": true,
+	"you": true, "your": true,
 }
 
 func looksIDK(pred string) bool {

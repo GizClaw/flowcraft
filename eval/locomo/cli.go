@@ -18,6 +18,7 @@ import (
 	"github.com/GizClaw/flowcraft/eval/locomo/runners/flowcraftv2"
 	"github.com/GizClaw/flowcraft/eval/metrics"
 	"github.com/GizClaw/flowcraft/sdk/llm"
+	"github.com/GizClaw/flowcraft/sdk/recall"
 	"github.com/GizClaw/flowcraft/sdk/recall/diagnostics"
 	recallv1 "github.com/GizClaw/flowcraft/sdk/recall_v1"
 
@@ -118,9 +119,6 @@ Example (LLM extractor + LLM answer + LLM judge + Qwen embedder):
 			if err != nil {
 				return err
 			}
-			if canonical == "flowcraft-v2" && dumpFactsPath != "" {
-				return fmt.Errorf("--dump-facts is not supported for flowcraft-v2 bootstrap")
-			}
 
 			var ds *dataset.Dataset
 			if datasetFlag == "synthetic" {
@@ -199,10 +197,11 @@ Example (LLM extractor + LLM answer + LLM judge + Qwen embedder):
 			// "extract miss vs recall miss" failures without
 			// rerunning the index.
 			var (
-				dumpMu  sync.Mutex
-				dumpW   *os.File
-				dumpEnc *json.Encoder
-				onFacts func(recallv1.Scope, []recallv1.ExtractedFact)
+				dumpMu    sync.Mutex
+				dumpW     *os.File
+				dumpEnc   *json.Encoder
+				onFacts   func(recallv1.Scope, []recallv1.ExtractedFact)
+				onV2Facts func(runners.Scope, []recall.TemporalFact)
 			)
 			if dumpFactsPath != "" {
 				dumpW, err = os.Create(dumpFactsPath)
@@ -214,11 +213,12 @@ Example (LLM extractor + LLM answer + LLM judge + Qwen embedder):
 				onFacts = func(scope recallv1.Scope, facts []recallv1.ExtractedFact) {
 					dumpMu.Lock()
 					defer dumpMu.Unlock()
-					_ = dumpEnc.Encode(struct {
-						TS    time.Time                `json:"ts"`
-						Scope recallv1.Scope           `json:"scope"`
-						Facts []recallv1.ExtractedFact `json:"facts"`
-					}{time.Now(), scope, facts})
+					_ = dumpEnc.Encode(newV1FactsDump(time.Now(), scope, facts))
+				}
+				onV2Facts = func(scope runners.Scope, facts []recall.TemporalFact) {
+					dumpMu.Lock()
+					defer dumpMu.Unlock()
+					_ = dumpEnc.Encode(newV2FactsDump(time.Now(), scope, facts))
 				}
 			}
 
@@ -266,7 +266,7 @@ Example (LLM extractor + LLM answer + LLM judge + Qwen embedder):
 				UpdateResolverLLM:         resolverLLM,
 				RecentTurnsK:              recentTurnsK,
 				OnFactsExtracted:          onFacts,
-			}, nil, v2Diag)
+			}, nil, onV2Facts, v2Diag)
 			if err != nil {
 				return fmt.Errorf("runner: %w", err)
 			}

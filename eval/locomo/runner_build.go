@@ -8,6 +8,7 @@ import (
 	"github.com/GizClaw/flowcraft/eval/locomo/runners/flowcraftv2"
 	"github.com/GizClaw/flowcraft/sdk/embedding"
 	"github.com/GizClaw/flowcraft/sdk/llm"
+	"github.com/GizClaw/flowcraft/sdk/recall"
 	"github.com/GizClaw/flowcraft/sdk/recall/diagnostics"
 	recallv1 "github.com/GizClaw/flowcraft/sdk/recall_v1"
 )
@@ -54,16 +55,17 @@ type v1RunnerConfig struct {
 	OnFactsExtracted          func(recallv1.Scope, []recallv1.ExtractedFact)
 }
 
-func buildLocomoRunner(canonical string, v1 v1RunnerConfig, v2OnSaved func(runners.Scope, []string), v2Diag *v2DiagnosticHooks) (runners.Runner, error) {
+func buildLocomoRunner(canonical string, v1 v1RunnerConfig, v2OnSaved func(runners.Scope, []string), v2OnFacts func(runners.Scope, []recall.TemporalFact), v2Diag *v2DiagnosticHooks) (runners.Runner, error) {
 	switch canonical {
 	case "flowcraft-v2":
 		opts := flowcraftv2.Options{
-			Name:             "flowcraft-v2",
-			LLM:              v1.LLM,
-			Embedder:         v1.Embedder,
-			RerankerLLM:      v1.RerankerLLM,
-			IncludeAssistant: true,
-			OnFactsSaved:     v2OnSaved,
+			Name:                 "flowcraft-v2",
+			LLM:                  v1.LLM,
+			Embedder:             v1.Embedder,
+			RerankerLLM:          v1.RerankerLLM,
+			IncludeAssistant:     true,
+			OnFactsSaved:         v2OnSaved,
+			OnFactsSavedDetailed: v2OnFacts,
 		}
 		if v2Diag != nil {
 			opts.OnSaveDiagnostics = v2Diag.OnSave

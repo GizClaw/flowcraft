@@ -41,7 +41,7 @@ func addLocomoIngest(parent *cobra.Command) {
 					return loadErr
 				}
 			}
-			r, err := buildLocomoRunner(canonical, v1RunnerConfig{}, nil, nil)
+			r, err := buildLocomoRunner(canonical, v1RunnerConfig{}, nil, nil, nil)
 			if err != nil {
 				return err
 			}

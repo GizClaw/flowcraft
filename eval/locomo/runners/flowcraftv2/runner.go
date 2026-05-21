@@ -39,6 +39,9 @@ type Options struct {
 	// OnFactsSaved is invoked after each successful Save with the scope and
 	// fact ids persisted. nil disables.
 	OnFactsSaved func(scope runners.Scope, factIDs []string)
+	// OnFactsSavedDetailed is invoked after each successful Save with
+	// the materialized facts persisted by that Save. nil disables.
+	OnFactsSavedDetailed func(scope runners.Scope, facts []recall.TemporalFact)
 	// OnSaveDiagnostics, when non-nil, switches the runner to the SaveExplain
 	// path and reports per-stage SaveDiagnostics for every successful Save.
 	OnSaveDiagnostics func(scope runners.Scope, diag diagnostics.SaveDiagnostics)
@@ -59,6 +62,7 @@ type Runner struct {
 	hasLLM        bool
 	includeAs     bool
 	onSaved       func(scope runners.Scope, factIDs []string)
+	onFacts       func(scope runners.Scope, facts []recall.TemporalFact)
 	onSaveDiag    func(runners.Scope, diagnostics.SaveDiagnostics)
 	onRecallDiag  func(runners.Scope, diagnostics.RecallDiagnostics)
 }
@@ -95,6 +99,7 @@ func New(opts Options) (runners.Runner, error) {
 		hasLLM:       opts.LLM != nil,
 		includeAs:    opts.IncludeAssistant,
 		onSaved:      opts.OnFactsSaved,
+		onFacts:      opts.OnFactsSavedDetailed,
 		onSaveDiag:   opts.OnSaveDiagnostics,
 		onRecallDiag: opts.OnRecallDiagnostics,
 	}
@@ -218,10 +223,32 @@ func (r *Runner) runSave(ctx context.Context, scope runners.Scope, req recall.Sa
 	if r.onSaved != nil && len(res.FactIDs) > 0 {
 		r.onSaved(scope, res.FactIDs)
 	}
+	if r.onFacts != nil && len(res.FactIDs) > 0 {
+		facts, err := r.savedFacts(ctx, toRecallScope(scope), res.FactIDs)
+		if err != nil {
+			return 0, elapsed, err
+		}
+		r.onFacts(scope, facts)
+	}
 	if r.onSaveDiag != nil && (r.saveDebug != nil || r.saveExplainer != nil) {
 		r.onSaveDiag(scope, diagnostics.DiagnoseSave(req, trace))
 	}
 	return len(res.FactIDs), elapsed, nil
+}
+
+func (r *Runner) savedFacts(ctx context.Context, scope recall.Scope, ids []string) ([]recall.TemporalFact, error) {
+	out := make([]recall.TemporalFact, 0, len(ids))
+	for _, id := range ids {
+		versions, err := r.mem.History(ctx, scope, id)
+		if err != nil {
+			return nil, fmt.Errorf("flowcraftv2: load saved fact %s: %w", id, err)
+		}
+		if len(versions) == 0 {
+			return nil, fmt.Errorf("flowcraftv2: load saved fact %s: not found", id)
+		}
+		out = append(out, versions[len(versions)-1].Fact)
+	}
+	return out, nil
 }
 
 func (r *Runner) drainSideEffects(ctx context.Context, scope runners.Scope) error {

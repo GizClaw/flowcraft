@@ -97,11 +97,6 @@ func (d *Default) Rank(_ context.Context, in port.RankInput) port.RankOutput {
 	sort.SliceStable(items, func(i, j int) bool {
 		return items[i].Candidate.Score > items[j].Candidate.Score
 	})
-	diversityWindow := in.FinalCap
-	if diversityWindow == 0 || diversityWindow > 50 {
-		diversityWindow = 50
-	}
-	items = diversifyTopItems(items, diversityWindow)
 	if in.FinalCap > 0 && len(items) > in.FinalCap {
 		items = items[:in.FinalCap]
 	}
@@ -321,96 +316,6 @@ func termMatchBoost(matches int) float64 {
 		return 0
 	}
 	return float64(matches) * 0.006
-}
-
-func diversifyTopItems(items []domain.ContextItem, window int) []domain.ContextItem {
-	if len(items) < 2 || window <= 1 {
-		return items
-	}
-	if window > len(items) {
-		window = len(items)
-	}
-	selected := make([]domain.ContextItem, 0, window)
-	remaining := append([]domain.ContextItem(nil), items[:window]...)
-	seenEvidence := map[string]int{}
-	seenKind := map[domain.FactKind]int{}
-	seenPrimarySource := map[string]int{}
-	for len(remaining) > 0 {
-		best := 0
-		bestScore := diversityAdjustedScore(remaining[0], seenEvidence, seenKind, seenPrimarySource)
-		for i := 1; i < len(remaining); i++ {
-			score := diversityAdjustedScore(remaining[i], seenEvidence, seenKind, seenPrimarySource)
-			if score > bestScore {
-				best = i
-				bestScore = score
-			}
-		}
-		chosen := remaining[best]
-		selected = append(selected, chosen)
-		for _, id := range evidenceIDs(chosen.Fact) {
-			seenEvidence[id]++
-		}
-		if chosen.Fact.Kind != "" {
-			seenKind[chosen.Fact.Kind]++
-		}
-		if src := primarySource(chosen.Candidate); src != "" {
-			seenPrimarySource[src]++
-		}
-		remaining = append(remaining[:best], remaining[best+1:]...)
-	}
-	out := append([]domain.ContextItem(nil), selected...)
-	out = append(out, items[window:]...)
-	return out
-}
-
-func diversityAdjustedScore(item domain.ContextItem, seenEvidence map[string]int, seenKind map[domain.FactKind]int, seenPrimarySource map[string]int) float64 {
-	score := item.Candidate.Score
-	for _, id := range evidenceIDs(item.Fact) {
-		if seenEvidence[id] > 0 {
-			score -= 0.018
-			break
-		}
-	}
-	if item.Fact.Kind != "" && seenKind[item.Fact.Kind] >= 3 {
-		score -= 0.006 * float64(seenKind[item.Fact.Kind]-2)
-	}
-	if src := primarySource(item.Candidate); src != "" && seenPrimarySource[src] >= 5 {
-		score -= 0.003 * float64(seenPrimarySource[src]-4)
-	}
-	return score
-}
-
-func evidenceIDs(f domain.TemporalFact) []string {
-	if len(f.EvidenceRefs) == 0 {
-		return nil
-	}
-	out := make([]string, 0, len(f.EvidenceRefs))
-	seen := map[string]struct{}{}
-	for _, ref := range f.EvidenceRefs {
-		if ref.ID == "" {
-			continue
-		}
-		if _, ok := seen[ref.ID]; ok {
-			continue
-		}
-		seen[ref.ID] = struct{}{}
-		out = append(out, ref.ID)
-	}
-	return out
-}
-
-func primarySource(c domain.Candidate) string {
-	if c.Source != "" {
-		return c.Source
-	}
-	if c.Metadata == nil {
-		return ""
-	}
-	sources, _ := c.Metadata["sources"].([]string)
-	if len(sources) == 0 {
-		return ""
-	}
-	return sources[0]
 }
 
 // significantQueryTerms folds the query text into deduped BM25
