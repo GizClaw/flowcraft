@@ -25,6 +25,9 @@ var (
 	_ diagnostic.StageDetail = diagnostic.ProjectDetail{}
 	_ diagnostic.StageDetail = diagnostic.EvolutionAfterSaveDetail{}
 	_ diagnostic.StageDetail = diagnostic.ForgetAllDetail{}
+	_ diagnostic.StageDetail = diagnostic.ExpireRetiredDetail{}
+	_ diagnostic.StageDetail = diagnostic.FeedbackDetail{}
+	_ diagnostic.StageDetail = diagnostic.RevisionDetail{}
 
 	_ diagnostic.StageDetail = diagnostic.IntentDetail{}
 	_ diagnostic.StageDetail = diagnostic.PlanDetail{}
@@ -110,6 +113,27 @@ func TestDetail_RoundTrip(t *testing.T) {
 			EvidenceCleared:    18,
 			Latency:            5 * time.Millisecond,
 		}, &diagnostic.ForgetAllDetail{}},
+		{"expire_retired", diagnostic.ExpireRetiredDetail{
+			ScopeKey:       "rt-1/u:alice",
+			ExpiresBefore:  time.Date(2026, 5, 21, 12, 0, 0, 0, time.UTC),
+			Scanned:        12,
+			Deleted:        3,
+			ProjectionsHit: 2,
+			Latency:        4 * time.Millisecond,
+		}, &diagnostic.ExpireRetiredDetail{}},
+		{"feedback", diagnostic.FeedbackDetail{
+			FactID:             "f-1",
+			ReinforcementDelta: 2,
+			PenaltyDelta:       0,
+			Latency:            1 * time.Millisecond,
+		}, &diagnostic.FeedbackDetail{}},
+		{"revision", diagnostic.RevisionDetail{
+			Kind:          "fork",
+			Stage:         "revision_save",
+			SourceFactID:  "src-1",
+			CreatedFactID: "new-1",
+			Latency:       2 * time.Millisecond,
+		}, &diagnostic.RevisionDetail{}},
 
 		{"intent", diagnostic.IntentDetail{
 			RawQuery:     "where did alice go?",

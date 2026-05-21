@@ -126,6 +126,58 @@ type ForgetAllDetail struct {
 
 func (ForgetAllDetail) isStageDetail() {}
 
+// ExpireRetiredDetail —— forget_all stage (TTL filter variant).
+//
+// Emitted by the forget_all stage when invoked through
+// Memory.ExpireRetired (D5 2026-05-21). The stage reuses the forget
+// pipeline runner with State.Filter set to ExpiresBefore; the
+// resulting telemetry carries the TTL boundary, the matched/deleted
+// counts, and per-projection forget counts so operators can audit a
+// scheduled retention sweep without inspecting the canonical store.
+type ExpireRetiredDetail struct {
+	ScopeKey       string
+	ExpiresBefore  time.Time
+	Scanned        int
+	Deleted        int
+	ProjectionsHit int
+	Latency        time.Duration
+}
+
+func (ExpireRetiredDetail) isStageDetail() {}
+
+// FeedbackDetail —— feedback/apply_feedback stage (Cluster A 2026-05-21).
+//
+// Reinforce / Penalize now route through the feedback pipeline so the
+// fact UpdateFeedback write + single-fact reproject (Cluster D) emit a
+// single observable record. Either delta MAY be zero (one-channel
+// updates are normal).
+type FeedbackDetail struct {
+	FactID             string
+	ReinforcementDelta float64
+	PenaltyDelta       float64
+	Latency            time.Duration
+}
+
+func (FeedbackDetail) isStageDetail() {}
+
+// RevisionDetail —— revision/{lookup_source,attach,save} stages
+// (Cluster A 2026-05-21).
+//
+// Fork / Contest run as a three-stage pipeline; each stage emits its
+// own RevisionDetail describing the action taken. Kind disambiguates
+// the revision flavour, Stage names the specific step, SourceFactID
+// is the prior fact the revision anchors on, and CreatedFactID is the
+// new fact id once the save stage commits.
+type RevisionDetail struct {
+	Kind          string
+	Stage         string
+	SourceFactID  string
+	CreatedFactID string
+	Latency       time.Duration
+}
+
+func (RevisionDetail) isStageDetail() {}
+
 // ExtractSaveDropped returns write-path compiler drops from ingest detail.
 func ExtractSaveDropped(stages []StageDiagnostic) []DroppedFact {
 	for _, st := range stages {
