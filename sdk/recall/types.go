@@ -139,6 +139,36 @@ func TimeRangeFrom(from, to time.Time) TimeRange {
 // share one schema (Phase E.2: "全部 = domain.X 别名").
 type Hit = domain.Hit
 
+// LineageRelation classifies a fact's relationship to the root in a
+// lineage DAG returned by Memory.Lineage. It aliases the internal
+// domain type so callers can switch on the same constants the
+// traversal emits without an extra public/internal mapping.
+type LineageRelation = domain.LineageRelation
+
+// Lineage relation constants surfaced by Memory.Lineage. The empty
+// string sentinel is reserved by the domain layer for "unknown"; the
+// traversal never emits it, so pattern-matching on these five values
+// is exhaustive.
+const (
+	LineageRelationRoot      = domain.LineageRelationRoot
+	LineageRelationSupersede = domain.LineageRelationSupersede
+	LineageRelationFork      = domain.LineageRelationFork
+	LineageRelationContest   = domain.LineageRelationContest
+	LineageRelationMerge     = domain.LineageRelationMerge
+)
+
+// FactLineageNode is one node in the fact lineage DAG returned by
+// Memory.Lineage. Depth is the BFS distance from the root fact
+// (root = 0); SourceFactID is the fact whose lookup discovered this
+// node (empty on the root). Nodes are sorted by (Depth asc, FactID
+// asc) so the traversal output is deterministic across stores.
+type FactLineageNode struct {
+	Fact         TemporalFact
+	Relation     LineageRelation
+	SourceFactID string
+	Depth        int
+}
+
 // Reranker is the optional post-build_hits stage that reorders a
 // Hit slice by a stronger relevance signal than the deterministic
 // in-pipeline ranker alone (typically an LLM call or
