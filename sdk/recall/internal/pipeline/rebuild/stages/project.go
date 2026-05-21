@@ -10,17 +10,16 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/pipeline"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/pipeline/rebuild"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/port"
-	"github.com/GizClaw/flowcraft/sdk/recall/internal/projection"
 )
 
 // Project rebuilds the selected projection(s) from state.Facts.
 type Project struct {
-	fanout      *projection.Fanout
+	fanout      *pipeline.Fanout
 	projections []port.Projection
 }
 
 // NewProject constructs a Project stage.
-func NewProject(fanout *projection.Fanout, projections []port.Projection) *Project {
+func NewProject(fanout *pipeline.Fanout, projections []port.Projection) *Project {
 	return &Project{fanout: fanout, projections: projections}
 }
 

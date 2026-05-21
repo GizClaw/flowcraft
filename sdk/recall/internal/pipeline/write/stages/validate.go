@@ -4,9 +4,9 @@
 //
 // Stages mutate the shared *write.WriteState; they do not call
 // telemetry hooks directly. The pipeline framework owns
-// StageDiagnostic emission; legacy OnProjection events fired during
-// compensation route through the user hook stored on the stage at
-// construction time (dual-rail B.2 C13; phase E.3 deletes it).
+// StageDiagnostic emission; Compensated events fired during
+// compensation route through the same OnStage rail (Phase E.3:
+// single-rail surface).
 package stages
 
 import (

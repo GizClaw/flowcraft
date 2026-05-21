@@ -11,7 +11,6 @@ import (
 
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/port"
-	"github.com/GizClaw/flowcraft/sdk/recall/internal/projection"
 )
 
 // Projection is an in-memory active-slot index keyed by subject.
@@ -39,7 +38,7 @@ func New() *Projection {
 
 func (p *Projection) Name() string { return "profile" }
 
-func (p *Projection) Consistency() port.Consistency { return projection.Optional }
+func (p *Projection) Consistency() port.Consistency { return port.Optional }
 
 // Project upserts active state/preference/relation facts.
 func (p *Projection) Project(_ context.Context, facts []domain.TemporalFact) error {

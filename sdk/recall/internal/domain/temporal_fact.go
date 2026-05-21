@@ -1,6 +1,10 @@
 package domain
 
-import "time"
+import (
+	"time"
+
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain/diagnostic"
+)
 
 // MergeHints are LLM-supplied hints about merge behaviour. They are
 // schema-level metadata only and MUST NOT participate in canonical
@@ -137,4 +141,73 @@ func cloneMetadata(in map[string]any) map[string]any {
 		out[k] = v
 	}
 	return out
+}
+
+// IsSuperseded reports whether a fact has been replaced by another
+// canonical write (CorrectedBy != ""). Per docs §5.4 ValidTo alone
+// is not a supersede signal for temporal views.
+func IsSuperseded(f TemporalFact) bool {
+	return f.CorrectedBy != ""
+}
+
+// IsActive reports whether a fact belongs in an "active slot" view
+// (profile / relation projections). Active means not superseded and
+// either open-ended (ValidTo == nil) or still valid at now.
+func IsActive(f TemporalFact, now time.Time) bool {
+	if IsSuperseded(f) {
+		return false
+	}
+	if f.ValidTo == nil {
+		return true
+	}
+	return f.ValidTo.After(now)
+}
+
+// IsRetired reports whether a fact is hidden from default Recall:
+// soft-closed or past ExpiresAt.
+func IsRetired(f TemporalFact, now time.Time) bool {
+	if f.Closed {
+		return true
+	}
+	if f.ExpiresAt != nil && !f.ExpiresAt.IsZero() && !now.Before(*f.ExpiresAt) {
+		return true
+	}
+	return false
+}
+
+// EffectiveTimestamp picks the sort/range key for timeline facts:
+// ValidFrom when set, otherwise ObservedAt (docs §5.4).
+func EffectiveTimestamp(f TemporalFact) time.Time {
+	if f.ValidFrom != nil && !f.ValidFrom.IsZero() {
+		return *f.ValidFrom
+	}
+	return f.ObservedAt
+}
+
+// Resolution is the output of the ConflictResolver. It separates two
+// disjoint outcomes so the write pipeline can execute them
+// transactionally:
+//
+//   - Facts: the facts that should be appended to the ledger verbatim.
+//     Already includes any Supersedes pointers populated by the
+//     resolver.
+//   - Closes: previously-stored facts whose validity must be closed
+//     after a successful Append. Each entry carries scope, fact id,
+//     the ValidTo timestamp to write, and the new fact id that
+//     supersedes it (becomes CorrectedBy).
+//   - Drops: facts the resolver discarded (noop / dedupe), with a
+//     structured reason for trace / telemetry.
+type Resolution struct {
+	Facts  []TemporalFact
+	Closes []ValidityClose
+	Drops  []diagnostic.DroppedFact
+}
+
+// ValidityClose instructs the write pipeline to close an existing
+// fact's validity after the new facts have been appended.
+type ValidityClose struct {
+	Scope       Scope
+	FactID      string
+	ValidTo     time.Time
+	CorrectedBy string
 }

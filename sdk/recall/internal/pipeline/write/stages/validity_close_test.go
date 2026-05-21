@@ -81,15 +81,13 @@ func TestValidityClose_CompensateReopens(t *testing.T) {
 	}
 }
 
-func TestValidityClose_CompensateEmitsOnReopenErr(t *testing.T) {
+func TestValidityClose_CompensateToleratesReopenErr(t *testing.T) {
 	store := &fakeStore{reopenErr: errors.New("conflict")}
-	hook := &recordHook{}
-	s := stages.NewValidityClose(store, nil, hook)
+	s := stages.NewValidityClose(store, nil, nil)
 	state := &write.WriteState{
 		AppliedCloses: []domain.ValidityClose{{FactID: "p1", CorrectedBy: "n1"}},
 	}
-	_ = s.Compensate(context.Background(), state)
-	if len(hook.projections) == 0 || hook.projections[0].Projection != "save_rollback.reopen_validity" {
-		t.Errorf("emit = %+v", hook.projections)
+	if err := s.Compensate(context.Background(), state); err != nil {
+		t.Fatalf("reopen err must not fail compensate: %v", err)
 	}
 }

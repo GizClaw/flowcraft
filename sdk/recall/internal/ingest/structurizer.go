@@ -10,8 +10,10 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain/diagnostic"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/port"
+	"github.com/GizClaw/flowcraft/sdk/text/stopword"
 	"github.com/GizClaw/flowcraft/sdk/text/timex"
 	whenadp "github.com/GizClaw/flowcraft/sdk/text/timex/adapter/when"
+	"github.com/GizClaw/flowcraft/sdk/text/tokenize"
 )
 
 // defaultTimeParser is the process-wide fallback used when a
@@ -270,45 +272,18 @@ func extractEntities(content string, known []port.EntitySnapshot) []string {
 	}
 
 	// Pass 2: Title-Cased tokens (heuristic NER).
-	for _, tok := range tokenizeForNER(content) {
-		if isStructurizerStopword(strings.ToLower(tok)) {
+	// tokenize.SplitProperNouns preserves apostrophes / hyphens
+	// inside tokens so compound names ("O'Brien", "Jean-Luc")
+	// survive as single tokens — plain tokenize.SplitWords would
+	// fragment them into useless capitalised letter fragments.
+	for _, tok := range tokenize.SplitProperNouns(content) {
+		if structurizerStopwords.Contains(strings.ToLower(tok)) {
 			continue
 		}
 		if isTitleCased(tok) {
 			add(tok)
 		}
 	}
-	return out
-}
-
-// tokenizeForNER splits content on whitespace + ASCII punctuation
-// but keeps internal apostrophes / hyphens so names like
-// "O'Brien" / "Jean-Luc" survive as single tokens.
-func tokenizeForNER(content string) []string {
-	if content == "" {
-		return nil
-	}
-	var out []string
-	var cur strings.Builder
-	flush := func() {
-		if cur.Len() == 0 {
-			return
-		}
-		tok := strings.Trim(cur.String(), "'-")
-		if tok != "" {
-			out = append(out, tok)
-		}
-		cur.Reset()
-	}
-	for _, r := range content {
-		switch {
-		case unicode.IsLetter(r) || unicode.IsDigit(r) || r == '\'' || r == '-':
-			cur.WriteRune(r)
-		default:
-			flush()
-		}
-	}
-	flush()
 	return out
 }
 
@@ -330,19 +305,18 @@ func isTitleCased(tok string) bool {
 
 // structurizerStopwords is the closed list of sentence-start
 // pronouns / openers we never want to treat as entities even when
-// they're capitalised. This is intentionally tiny: KnownEntities
-// catches everything else.
-var structurizerStopwords = map[string]struct{}{
-	"i": {}, "you": {}, "he": {}, "she": {}, "it": {}, "we": {}, "they": {},
-	"the": {}, "a": {}, "an": {}, "this": {}, "that": {}, "these": {}, "those": {},
-	"my": {}, "your": {}, "his": {}, "her": {}, "its": {}, "our": {}, "their": {},
-	"and": {}, "or": {}, "but": {}, "so": {}, "yes": {}, "no": {}, "ok": {}, "okay": {},
-}
-
-func isStructurizerStopword(lower string) bool {
-	_, ok := structurizerStopwords[lower]
-	return ok
-}
+// they're capitalised. The set is intentionally tiny — KnownEntities
+// catches everything else — and is deliberately NOT a superset of
+// stopword.EnglishSet: modal verbs ("Will", "Can") are valid proper-
+// noun homographs that the wider IR stopword table would drop, and
+// affirmation tokens ("yes", "ok", "okay") that the IR table omits
+// must be filtered here so they never enter the entity set.
+var structurizerStopwords = stopword.NewSet().Extend(
+	"i", "you", "he", "she", "it", "we", "they",
+	"the", "a", "an", "this", "that", "these", "those",
+	"my", "your", "his", "her", "its", "our", "their",
+	"and", "or", "but", "so", "yes", "no", "ok", "okay",
+)
 
 // inferValidFromHint prefers the typed Time on the supporting turn
 // (verbatim RFC3339 string) and falls back to scanning content

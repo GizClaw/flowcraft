@@ -6,10 +6,11 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/sdk/recall"
+	"github.com/GizClaw/flowcraft/sdk/recall/diagnostics"
 )
 
 // diagnosticsReport is the JSON shape written by --diagnostics. It is a
-// flattened view of recall.PipelineHealth with the few percentages we
+// flattened view of diagnostics.PipelineHealth with the few percentages we
 // actually care about precomputed, so the file is human-skimmable.
 type diagnosticsReport struct {
 	GeneratedAt   time.Time `json:"generated_at"`
@@ -106,7 +107,7 @@ type hitReport struct {
 	EmptyTop           int     `json:"empty_top"`
 }
 
-func writeDiagnosticsReport(path string, h *recall.PipelineHealth) error {
+func writeDiagnosticsReport(path string, h *diagnostics.PipelineHealth) error {
 	report := diagnosticsReport{
 		GeneratedAt:          time.Now(),
 		SaveSamples:          h.SaveSamples,
@@ -173,7 +174,7 @@ func toStructurizerCoverageReport(c recall.StructurizerCoverage) structurizerCov
 	return r
 }
 
-func toFactQualityReport(q recall.FactQuality) factQualityReport {
+func toFactQualityReport(q diagnostics.FactQuality) factQualityReport {
 	r := factQualityReport{
 		Total:           q.Total,
 		WithContent:     q.WithContent,
@@ -193,7 +194,7 @@ func toFactQualityReport(q recall.FactQuality) factQualityReport {
 	return r
 }
 
-func toHitReport(h recall.HitRenderability) hitReport {
+func toHitReport(h diagnostics.HitRenderability) hitReport {
 	r := hitReport{
 		Total:            h.Total,
 		EmptyRenderable:  h.EmptyRenderable,
@@ -214,7 +215,7 @@ func toHitReport(h recall.HitRenderability) hitReport {
 // dashboards / alerts can sort by ratio directly. KnownEntitiesAvg
 // is the per-Save average (integer, since fractional snapshots
 // don't mean anything).
-func toInputCoverageReport(h *recall.PipelineHealth) inputCoverageReport {
+func toInputCoverageReport(h *diagnostics.PipelineHealth) inputCoverageReport {
 	cov := h.InputCoverage
 	r := inputCoverageReport{
 		Facts:               cov.Facts,

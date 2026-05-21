@@ -107,21 +107,20 @@ func (s *FederationFanout) Run(ctx context.Context, state *read.ReadState) (diag
 			if res.Err != nil {
 				sourceErrs = append(sourceErrs, fmt.Errorf("%s: %w", res.Source, res.Err))
 			}
-			if state.Trace != nil {
-				st := domain.SourceTrace{
-					Source:    res.Source,
-					Budget:    plan.SourceBudgets[res.Source],
-					Returned:  len(res.Candidates),
-					Truncated: res.Truncated,
-					Latency:   res.Latency,
-				}
-				if res.Err != nil {
-					st.Err = res.Err.Error()
-				}
-				state.Trace.Sources = append(state.Trace.Sources, st)
-			}
 		}
 		sub.SourceResults = results
+		for _, res := range results {
+			errStr := ""
+			if res.Err != nil {
+				errStr = res.Err.Error()
+			}
+			detail.Sources = append(detail.Sources, diagnostic.SourceResult{
+				Lens:       res.Source,
+				Candidates: len(res.Candidates),
+				Latency:    res.Latency,
+				Err:        errStr,
+			})
+		}
 
 		opts := s.fusionOpts
 		if opts.TotalCap == 0 && s.capFunc != nil {
@@ -135,10 +134,8 @@ func (s *FederationFanout) Run(ctx context.Context, state *read.ReadState) (diag
 		}
 		sub.Fused = fused
 		sub.FusionDrops = drops
-		if state.Trace != nil {
-			state.Trace.FusedCandidates += len(fused)
-			state.Trace.Drops = append(state.Trace.Drops, drops...)
-		}
+		detail.FusedCandidates += len(fused)
+		detail.Drops = append(detail.Drops, drops...)
 
 		items, matDrops, err := s.materializer.Materialize(ctx, fused)
 		if err != nil {
@@ -151,9 +148,8 @@ func (s *FederationFanout) Run(ctx context.Context, state *read.ReadState) (diag
 		}
 		sub.Materialized = items
 		sub.MaterializeDrops = matDrops
-		if state.Trace != nil {
-			state.Trace.Drops = append(state.Trace.Drops, matDrops...)
-		}
+		detail.Materialized += len(items)
+		detail.Drops = append(detail.Drops, matDrops...)
 
 		_ = s.entitySnap // reserved for future planner entity hints
 		detail.SubScopes = append(detail.SubScopes, diagnostic.SubScopeRun{

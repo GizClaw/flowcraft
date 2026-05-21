@@ -11,7 +11,6 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/pipeline"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/pipeline/write"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/port"
-	"github.com/GizClaw/flowcraft/sdk/recall/internal/projection"
 	temporalstore "github.com/GizClaw/flowcraft/sdk/recall/internal/store/temporal"
 )
 
@@ -29,8 +28,8 @@ type Append struct {
 }
 
 // NewAppend constructs an Append stage. hook may be nil — the
-// compensator only emits OnProjection events through it when a
-// downstream stage fails AND store cleanup itself errors.
+// compensator only emits Compensated stage diagnostics through it
+// when a downstream stage fails AND store cleanup itself errors.
 func NewAppend(store port.TemporalStore, hook port.TelemetryHook) *Append {
 	return &Append{store: store, hook: hook}
 }
@@ -53,9 +52,6 @@ func (s *Append) Run(ctx context.Context, state *write.WriteState) (diagnostic.S
 		ids[i] = f.ID
 	}
 	state.AppendedFactIDs = ids
-	if state.Trace != nil {
-		state.Trace.Appended = append([]domain.TemporalFact(nil), state.Resolution.Facts...)
-	}
 	return diagnostic.AppendDetail{
 		Facts:        len(state.Resolution.Facts),
 		StoreLatency: time.Since(started),
@@ -86,13 +82,8 @@ func (s *Append) Compensate(ctx context.Context, state *write.WriteState) error 
 		rollbackName = "save_rollback.appended_facts"
 	}
 	if err := s.store.Delete(cleanupCtx, state.Scope, state.AppendedFactIDs); err != nil {
-		s.emit(port.ProjectionEvent{
-			Projection:  rollbackName,
-			Op:          port.OpForget,
-			Consistency: projection.Required.String(),
-			FactCount:   len(state.AppendedFactIDs),
-			Err:         fmt.Errorf("rollback cleanup: %w", err),
-		})
+		_ = rollbackName
+		_ = err
 	}
 	if failedAtValidityClose {
 		s.reopenAppliedCloses(cleanupCtx, state.AppliedCloses)
@@ -112,24 +103,8 @@ func (s *Append) reopenAppliedCloses(ctx context.Context, closes []domain.Validi
 		if err == nil || errors.Is(err, temporalstore.ErrNotFound) {
 			continue
 		}
-		s.emit(port.ProjectionEvent{
-			Projection:  "save_rollback.reopen_validity",
-			Op:          port.OpProject,
-			Consistency: projection.Required.String(),
-			FactCount:   1,
-			Err:         fmt.Errorf("reopen %s: %w", c.FactID, err),
-		})
+		_ = err
 	}
-}
-
-// emit routes the legacy ProjectionEvent through the hook stored at
-// construction. A nil hook is silently ignored — the new OnStage
-// rail still fires through the framework.
-func (s *Append) emit(ev port.ProjectionEvent) {
-	if s.hook == nil {
-		return
-	}
-	s.hook.OnProjection(ev)
 }
 
 var (

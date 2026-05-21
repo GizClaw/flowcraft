@@ -15,9 +15,7 @@ import (
 // runEvolutionAfterSave behaviour.
 //
 // The stage implements Conditional so a nil EvolutionRunner is
-// reported as Status=Skipped, which the legacy bridge correctly
-// translates to "no OnPipeline event" — legacy code emitted nothing
-// when evolution was unwired.
+// reported as Status=Skipped (no diagnostic Detail).
 type EvolutionAfterSave struct {
 	runner port.EvolutionRunner
 }
@@ -39,10 +37,8 @@ func (s *EvolutionAfterSave) Skip(_ context.Context, _ *write.WriteState) (bool,
 }
 
 // Run implements pipeline.Stage. AfterSave errors are swallowed so
-// Save outcome is unaffected; the err is left for the adapter to
-// surface via the legacy OnPipeline channel by inspecting the
-// returned StageDiagnostic.Err (set on the runner-level wrapper —
-// see runner.go).
+// Save outcome is unaffected; the err is surfaced through the
+// stage's StageDiagnostic.Err (Phase E.3: Stages-only).
 func (s *EvolutionAfterSave) Run(ctx context.Context, state *write.WriteState) (diagnostic.StageDetail, error) {
 	if err := s.runner.AfterSave(ctx, state.Scope, state.AppendedFactIDs); err != nil {
 		state.EvolutionErr = err

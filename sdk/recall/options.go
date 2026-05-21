@@ -3,7 +3,10 @@ package recall
 import (
 	"github.com/GizClaw/flowcraft/sdk/embedding"
 	"github.com/GizClaw/flowcraft/sdk/llm"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/governance"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/ingest"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/port"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/ranker"
 	"github.com/GizClaw/flowcraft/sdk/retrieval"
 )
 
@@ -14,6 +17,128 @@ import (
 // store/compiler/source/projection injection remains package-internal
 // until those contracts are ready to support external implementations.
 type Option func(*config)
+
+// config aggregates every option-supplied piece of the Memory stack.
+// Public With* helpers populate the canonical fields; internal with*
+// helpers (used by tests and adapter packages) inject lower-level
+// contracts that are not part of the stable public surface yet.
+type config struct {
+	store          port.TemporalStore
+	evidenceStore  port.EvidenceStore
+	retrievalIndex retrieval.Index
+	embedder       embedding.Embedder
+	compiler       port.Ingestor
+	llmExtractor   *llmExtractorConfig
+	resolver       port.ConflictResolver
+	resolverSet    bool
+	telemetry      port.TelemetryHook
+
+	extraProjections []port.Projection
+
+	queryCompiler port.IntentCompiler
+	planner       port.Planner
+	sources       []port.Source
+	fuser         port.Fuser
+	materializer  port.Materializer
+	fusionOpts    port.FusionOptions
+
+	graphEnabled bool
+
+	reranker      port.Reranker
+	contextRanker port.Ranker
+
+	governance *governance.Governance
+	evolution  port.EvolutionRunner
+}
+
+// llmExtractorConfig captures the args to ingest.NewLLMExtractor so New can
+// defer default compiler wiring until all options have been applied.
+type llmExtractorConfig struct {
+	client llm.LLM
+	tune   []LLMExtractorOption
+}
+
+// Internal injection helpers — used by package-internal tests and
+// adapter wiring. Not part of the public surface.
+
+func withTemporalStore(s port.TemporalStore) Option {
+	return func(c *config) {
+		if s != nil {
+			c.store = s
+		}
+	}
+}
+
+func withCompiler(cp port.Ingestor) Option {
+	return func(c *config) {
+		if cp != nil {
+			c.compiler = cp
+		}
+	}
+}
+
+func withConflictResolver(r port.ConflictResolver) Option {
+	return func(c *config) {
+		c.resolver = r
+		c.resolverSet = true
+	}
+}
+
+func withExtraProjection(p port.Projection) Option {
+	return func(c *config) {
+		if p != nil {
+			c.extraProjections = append(c.extraProjections, p)
+		}
+	}
+}
+
+func withQueryCompiler(qc port.IntentCompiler) Option {
+	return func(c *config) {
+		if qc != nil {
+			c.queryCompiler = qc
+		}
+	}
+}
+
+func withPlanner(p port.Planner) Option {
+	return func(c *config) {
+		if p != nil {
+			c.planner = p
+		}
+	}
+}
+
+func withSources(sources ...port.Source) Option {
+	return func(c *config) {
+		for _, s := range sources {
+			if s != nil {
+				c.sources = append(c.sources, s)
+			}
+		}
+	}
+}
+
+func withFuser(f port.Fuser) Option {
+	return func(c *config) {
+		if f != nil {
+			c.fuser = f
+		}
+	}
+}
+
+func withMaterializer(m port.Materializer) Option {
+	return func(c *config) {
+		if m != nil {
+			c.materializer = m
+		}
+	}
+}
+
+func withFusionOptions(opts port.FusionOptions) Option {
+	return func(c *config) {
+		c.fusionOpts = opts
+	}
+}
 
 // WithEvidenceStore installs an optional secondary evidence lookup
 // adapter. Save keeps embedded EvidenceRefs authoritative; adapter
@@ -127,4 +252,35 @@ func WithGraphEnabled(enabled bool) Option {
 	return func(c *config) {
 		c.graphEnabled = enabled
 	}
+}
+
+// WithReranker installs a Reranker into the Recall pipeline. The
+// reranker fires between rank-boost and the final TotalCap, so it
+// sees up to fusionCandidateCap(TotalCap) hits (default = 2 ×
+// requested topK).
+//
+// Set to nil to keep the default fusion-only ranking. The function
+// is a no-op for nil so callers can wire it conditionally from CLI
+// flags without an extra branch.
+func WithReranker(r Reranker) Option {
+	return func(c *config) {
+		if r == nil {
+			return
+		}
+		c.reranker = r
+	}
+}
+
+// NewLLMReranker returns a Reranker backed by an llm.LLM client.
+// The reranker uses the canonical recall-tuned prompt and JSON
+// schema; it degrades to a no-op when the supplied client is nil so
+// CLI flags can wire it conditionally without an extra branch.
+//
+// Tuning (MaxBatch / SnippetMax / Prompt / ExtraOptions) lives on
+// the internal/ranker.LLMReranker provider and is accessed via the
+// type-asserted return value; callers wanting custom tuning should
+// build the provider directly through internal/ranker (see
+// recall.WithReranker for the public install path).
+func NewLLMReranker(client llm.LLM) Reranker {
+	return ranker.NewLLM(client)
 }

@@ -8,7 +8,7 @@ import (
 	"github.com/GizClaw/flowcraft/eval/locomo/runners/flowcraftv2"
 	"github.com/GizClaw/flowcraft/sdk/embedding"
 	"github.com/GizClaw/flowcraft/sdk/llm"
-	"github.com/GizClaw/flowcraft/sdk/recall"
+	"github.com/GizClaw/flowcraft/sdk/recall/diagnostics"
 	recallv1 "github.com/GizClaw/flowcraft/sdk/recall_v1"
 )
 
@@ -17,8 +17,8 @@ import (
 // --diagnostics flag is set. Both fields are optional; the runner falls
 // back to the cheaper non-explain path when nil.
 type v2DiagnosticHooks struct {
-	OnSave   func(runners.Scope, recall.SaveDiagnostics)
-	OnRecall func(runners.Scope, recall.RecallDiagnostics)
+	OnSave   func(runners.Scope, diagnostics.SaveDiagnostics)
+	OnRecall func(runners.Scope, diagnostics.RecallDiagnostics)
 }
 
 // normalizeRunnerName maps legacy CLI aliases to canonical runner names.

@@ -7,21 +7,17 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain/diagnostic"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/pipeline"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/pipeline/read"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/port"
 )
-
-// HitReranker reorders hits after fusion rank (optional LLM path).
-type HitReranker interface {
-	Rerank(ctx context.Context, query string, hits []domain.Hit) ([]domain.Hit, error)
-}
 
 // BuildHits converts ranked ContextItems into Hits and optionally
 // runs the reranker (legacy runRecall order: build then rerank).
 type BuildHits struct {
-	reranker HitReranker
+	reranker port.Reranker
 }
 
 // NewBuildHits constructs a BuildHits stage. reranker may be nil.
-func NewBuildHits(reranker HitReranker) *BuildHits {
+func NewBuildHits(reranker port.Reranker) *BuildHits {
 	return &BuildHits{reranker: reranker}
 }
 
@@ -32,27 +28,23 @@ func (BuildHits) Name() string { return "build_hits" }
 func (s *BuildHits) Run(ctx context.Context, state *read.ReadState) (diagnostic.StageDetail, error) {
 	hits := hitsFromItems(state.Ranked)
 	state.Hits = hits
+	detail := diagnostic.BuildHitsDetail{Count: len(hits)}
 	if s.reranker != nil && len(hits) > 0 {
 		reranked, err := s.reranker.Rerank(ctx, state.Query.Text, hits)
 		if err != nil {
-			state.RerankErr = err
+			detail.RerankErr = err.Error()
 		} else {
 			hits = reranked
 			state.Hits = hits
-			state.Reranked = len(hits)
-			if state.Trace != nil {
-				state.Trace.Reranked = len(hits)
-			}
+			detail.Reranked = len(hits)
 		}
 		if state.Plan != nil && state.Plan.TotalCap > 0 && len(hits) > state.Plan.TotalCap {
 			hits = hits[:state.Plan.TotalCap]
 			state.Hits = hits
 		}
+		detail.Count = len(hits)
 	}
-	if state.Trace != nil && state.RerankErr != nil {
-		state.Trace.RerankErr = state.RerankErr.Error()
-	}
-	return diagnostic.BuildHitsDetail{Count: len(hits)}, nil
+	return detail, nil
 }
 
 func hitsFromItems(items []domain.ContextItem) []domain.Hit {

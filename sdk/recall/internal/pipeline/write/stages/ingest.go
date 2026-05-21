@@ -52,12 +52,12 @@ func (s *Ingest) Run(ctx context.Context, state *write.WriteState) (diagnostic.S
 	}
 	started := time.Now()
 	res, err := s.ingestor.Compile(ctx, port.IngestInput{
-		Scope:         state.Scope,
-		Facts:         state.Facts,
-		Turns:         state.Turns,
-		ObservedAt:    state.ObservedAt,
-		KnownEntities: state.KnownEntities,
-		Now:           state.Now,
+		Scope:               state.Scope,
+		Facts:               state.Facts,
+		Turns:               state.Turns,
+		ObservedAt:          state.ObservedAt,
+		KnownEntities:       state.KnownEntities,
+		Now:                 state.Now,
 		Tier:                state.Tier,
 		RecentMessages:      state.RecentMessages,
 		ExistingFactsAnchor: state.ExistingFactsAnchor,
@@ -72,23 +72,19 @@ func (s *Ingest) Run(ctx context.Context, state *write.WriteState) (diagnostic.S
 		}, err
 	}
 	state.Ingest = res
-	if state.Trace != nil {
-		state.Trace.CompiledFacts = append([]domain.TemporalFact(nil), res.Facts...)
-		state.Trace.Dropped = append([]diagnostic.DroppedFact(nil), res.Dropped...)
-		state.Trace.KnownEntitiesSeen = len(state.KnownEntities)
-		state.Trace.StructurizerCoverage = res.StructurizerCoverage
-	}
 	detail := diagnostic.IngestDetail{
-		InputTurns:           len(state.Turns),
-		ExtractedFacts:       len(res.Facts),
-		DroppedByPolicy:      countDroppedReason(res.Dropped, "policy:reject", "governance:reject"),
-		DroppedByValidation:  countDroppedReason(res.Dropped, "validation:reject"),
-		DroppedByDedup:       countDroppedReason(res.Dropped, "dedup:reject"),
-		StructurizerCoverage: res.StructurizerCoverage,
-		ExtractorLatency:     latency,
+		InputTurns:             len(state.Turns),
+		ExtractedFacts:         len(res.Facts),
+		DroppedByPolicy:        countDroppedReason(res.Dropped, "policy:reject", "governance:reject"),
+		DroppedByValidation:    countDroppedReason(res.Dropped, "validation:reject"),
+		DroppedByDedup:         countDroppedReason(res.Dropped, "dedup:reject"),
+		StructurizerCoverage:   res.StructurizerCoverage,
+		ExtractorLatency:       latency,
 		TierApplied:            ingest.TierAppliedFor(state.Tier),
 		RecentMessagesProvided: len(state.RecentMessages),
 		AnchorsProvided:        len(state.ExistingFactsAnchor),
+		Dropped:                append([]diagnostic.DroppedFact(nil), res.Dropped...),
+		KnownEntitiesSeen:      len(state.KnownEntities),
 	}
 	if len(res.Facts) == 0 {
 		return detail, pipeline.ShortCircuitWith("empty_ingest")

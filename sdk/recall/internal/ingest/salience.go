@@ -15,10 +15,10 @@ const DefaultConfidence = 0.5
 // confidence adjustments (Phase D.3). Caller-supplied Confidence on
 // a fact is preserved as the base before the tier delta is applied.
 var tierConfidenceDelta = map[string]float64{
-	domain.TierCore:     0.3,
-	domain.TierGeneral:  0,
-	domain.TierData:     -0.1,
-	domain.TierStorage:  -0.3,
+	domain.TierCore:    0.3,
+	domain.TierGeneral: 0,
+	domain.TierData:    -0.1,
+	domain.TierStorage: -0.3,
 }
 
 type defaultSalienceScorer struct {

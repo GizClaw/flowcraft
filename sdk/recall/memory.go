@@ -9,10 +9,18 @@ import (
 
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain/diagnostic"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/fusion"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/ingest"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/intent"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/lens"
+	entitylens "github.com/GizClaw/flowcraft/sdk/recall/internal/lens/entity"
+	evidencelens "github.com/GizClaw/flowcraft/sdk/recall/internal/lens/evidence"
+	graphlens "github.com/GizClaw/flowcraft/sdk/recall/internal/lens/graph"
+	profilelens "github.com/GizClaw/flowcraft/sdk/recall/internal/lens/profile"
+	relationlens "github.com/GizClaw/flowcraft/sdk/recall/internal/lens/relation"
+	retrievallens "github.com/GizClaw/flowcraft/sdk/recall/internal/lens/retrieval"
+	timelinelens "github.com/GizClaw/flowcraft/sdk/recall/internal/lens/timeline"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/materialize"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/pipeline"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/pipeline/read"
@@ -23,12 +31,16 @@ import (
 	writestages "github.com/GizClaw/flowcraft/sdk/recall/internal/pipeline/write/stages"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/planner"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/port"
-	"github.com/GizClaw/flowcraft/sdk/recall/internal/projection"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/ranker"
 	temporalstore "github.com/GizClaw/flowcraft/sdk/recall/internal/store/temporal"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/telemetry"
 	"github.com/GizClaw/flowcraft/sdk/retrieval"
 	retrievalmem "github.com/GizClaw/flowcraft/sdk/retrieval/memory"
 )
+
+// ErrScopeKeyMismatch is returned when ForgetAll's confirmScopeKey does
+// not match scope.CanonicalKey() (GDPR guard).
+var ErrScopeKeyMismatch = errdefs.Forbidden(errdefs.New("recall: scope key confirmation mismatch"))
 
 // Memory is the v2 fact-centric facade. See docs §11.1.
 type Memory interface {
@@ -53,7 +65,7 @@ type memory struct {
 	retrievalIndex retrieval.Index
 	compiler       port.Ingestor
 	resolver       port.ConflictResolver
-	fanout         *projection.Fanout
+	fanout         *pipeline.Fanout
 	telemetry      port.TelemetryHook
 
 	// writePreRunner runs validate + ingest without the per-scope
@@ -182,8 +194,12 @@ func New(opts ...Option) (Memory, error) {
 	if fusionOpts.Weights == nil {
 		fusionOpts.Weights = weightsFromSpecs(specs)
 	}
+	rnk := cfg.contextRanker
+	if rnk == nil {
+		rnk = ranker.NewDefault()
+	}
 
-	fanout := projection.New(projections, cfg.telemetry)
+	fanout := pipeline.NewFanout(projections, cfg.telemetry)
 	m := &memory{
 		store:          cfg.store,
 		evidenceStore:  cfg.evidenceStore,
@@ -218,9 +234,9 @@ func New(opts ...Option) (Memory, error) {
 		writestages.NewProjectOptional(fanout),
 		writestages.NewEvolutionAfterSave(cfg.evolution),
 	}, tel)
-	var rerank readstages.HitReranker
+	var rerank port.Reranker
 	if cfg.reranker != nil {
-		rerank = &recallHitReranker{r: cfg.reranker}
+		rerank = cfg.reranker
 	}
 	m.readRunner = read.NewRunner([]pipeline.Stage[*read.ReadState]{
 		readstages.NewIntent(qc),
@@ -231,13 +247,13 @@ func New(opts ...Option) (Memory, error) {
 			cfg.graphEnabled,
 			fuser,
 			fusionOpts,
-			fusionCandidateCap,
+			planner.FusionCandidateCap,
 			mat,
 			m.entitySnapshots,
 		),
 		readstages.NewFederationMerge(),
 		readstages.NewTrustFilter(),
-		readstages.NewRank(rankContextItems, cfg.reranker != nil),
+		readstages.NewRank(rnk, cfg.reranker != nil),
 		readstages.NewBuildHits(rerank),
 		readstages.NewEvolutionAfterRecall(cfg.evolution),
 	}, tel)
@@ -295,10 +311,10 @@ func (m *memory) runSave(ctx context.Context, scope Scope, req SaveRequest, with
 	}
 
 	state := &write.WriteState{
-		Scope:      scope,
-		Facts:      req.Facts,
-		Turns:      req.Turns,
-		ObservedAt: req.ObservedAt,
+		Scope:               scope,
+		Facts:               req.Facts,
+		Turns:               req.Turns,
+		ObservedAt:          req.ObservedAt,
 		Tier:                req.Tier,
 		RecentMessages:      req.RecentMessages,
 		ExistingFactsAnchor: req.ExistingFactsAnchor,
@@ -336,49 +352,141 @@ func publicSaveTrace(state *write.WriteState) SaveTrace {
 	if state == nil || state.Trace == nil {
 		return SaveTrace{}
 	}
-	d := state.Trace
-	out := SaveTrace{
-		CompiledFacts:     append([]TemporalFact(nil), d.CompiledFacts...),
-		Appended:          append([]TemporalFact(nil), d.Appended...),
-		KnownEntitiesSeen: d.KnownEntitiesSeen,
-		StructurizerCoverage: StructurizerCoverage{
-			TotalFactsSeen:      d.StructurizerCoverage.TotalFactsSeen,
-			KindFilled:          d.StructurizerCoverage.KindFilled,
-			EntitiesFilled:      d.StructurizerCoverage.EntitiesFilled,
-			SubjectFilled:       d.StructurizerCoverage.SubjectFilled,
-			ValidFromHintFilled: d.StructurizerCoverage.ValidFromHintFilled,
-		},
-	}
-	if len(d.Dropped) > 0 {
-		out.Dropped = make([]DroppedFact, len(d.Dropped))
-		for i, drop := range d.Dropped {
-			f, _ := drop.Fact.(domain.TemporalFact)
-			out.Dropped[i] = DroppedFact{Fact: f, Reason: drop.Reason}
-		}
-	}
-	return out
+	return SaveTrace{Stages: append([]diagnostic.StageDiagnostic(nil), state.Trace.Stages...)}
 }
 
-// recallHitReranker adapts the public Reranker to domain.Hit for the
-// read pipeline build_hits stage.
-type recallHitReranker struct {
-	r Reranker
+// wireDefaultLenses registers the standard v2 lens set in planner
+// source order. Graph is omitted when graphEnabled is false; evidence
+// is appended when withEvidence is true.
+func wireDefaultLenses(reg *lens.Registry, graphEnabled, withEvidence bool) {
+	if reg == nil {
+		return
+	}
+	reg.Register(retrievallens.Lens{})
+	reg.Register(entitylens.Lens{})
+	if graphEnabled {
+		reg.Register(graphlens.Lens{})
+	}
+	reg.Register(relationlens.Lens{})
+	reg.Register(profilelens.Lens{})
+	reg.Register(timelinelens.Lens{})
+	if withEvidence {
+		reg.Register(evidencelens.Lens{})
+	}
 }
 
-func (a *recallHitReranker) Rerank(ctx context.Context, query string, hits []domain.Hit) ([]domain.Hit, error) {
-	in := make([]Hit, len(hits))
-	for i, h := range hits {
-		in[i] = Hit{Fact: h.Fact, Score: h.Score, Sources: append([]string(nil), h.Sources...)}
+// Forget removes a fact. Optional mode defaults to ForgetHard for backward
+// compatibility. Use ForgetSoft to retract without deleting audit history
+// (equivalent to v1 Retract / D.1 guidance).
+func (m *memory) Forget(ctx context.Context, scope Scope, factID string, mode ...ForgetMode) error {
+	mmode := domain.ForgetHard
+	if len(mode) > 0 {
+		mmode = domain.NormalizeForgetMode(mode[0])
 	}
-	out, err := a.r.Rerank(ctx, query, in)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if factID == "" {
+		return errdefs.Validationf("recall.Forget: fact id is required")
+	}
+
+	unlock := m.lockWriteScope(scope)
+	defer unlock()
+
+	snapshot, err := m.store.Get(ctx, scope, factID)
 	if err != nil {
-		return hits, err
+		if errors.Is(err, temporalstore.ErrNotFound) {
+			if mmode == domain.ForgetHard {
+				_ = m.fanout.ForgetRequired(ctx, scope, []string{factID})
+				m.fanout.ForgetOptional(ctx, scope, []string{factID})
+			}
+			return nil
+		}
+		return fmt.Errorf("recall.Forget: store get: %w", err)
 	}
-	res := make([]domain.Hit, len(out))
-	for i, h := range out {
-		res[i] = domain.Hit{Fact: h.Fact, Score: h.Score, Sources: h.Sources}
+
+	switch mmode {
+	case domain.ForgetSoft:
+		if err := m.store.MarkClosed(ctx, scope, factID, true); err != nil {
+			return fmt.Errorf("recall.Forget: soft close: %w", err)
+		}
+		snapshot.Closed = true
+		if err := m.fanout.ProjectRequired(ctx, []domain.TemporalFact{snapshot}); err != nil {
+			return fmt.Errorf("recall.Forget: reproject closed fact: %w", err)
+		}
+		m.fanout.ProjectOptional(ctx, []domain.TemporalFact{snapshot})
+		return nil
+	default:
+		if err := m.fanout.ForgetRequired(ctx, scope, []string{factID}); err != nil {
+			return err
+		}
+		if err := m.store.Delete(ctx, scope, []string{factID}); err != nil {
+			m.compensateForgetStoreFailure(ctx, scope, snapshot, err)
+			return fmt.Errorf("recall.Forget: store delete: %w", err)
+		}
+		m.fanout.ForgetOptional(ctx, scope, []string{factID})
+		return nil
 	}
-	return res, nil
+}
+
+// ForgetAll applies Soft or Hard retirement to every fact in the primary
+// scope only (Federation sub-scopes are not affected). Hard mode is
+// irreversible; confirmScopeKey must equal scope.CanonicalKey().
+func (m *memory) ForgetAll(ctx context.Context, scope Scope, mode ForgetMode, confirmScopeKey string) (int, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	if scope.RuntimeID == "" {
+		return 0, errdefs.Validationf("recall.ForgetAll: scope.runtime_id is required")
+	}
+	mmode := domain.NormalizeForgetMode(mode)
+	if mmode == domain.ForgetHard && confirmScopeKey != scope.CanonicalKey() {
+		return 0, ErrScopeKeyMismatch
+	}
+
+	unlock := m.lockWriteScope(scope)
+	defer unlock()
+
+	facts, err := m.store.List(ctx, scope, port.ListQuery{IncludeSuperseded: true})
+	if err != nil {
+		return 0, fmt.Errorf("recall.ForgetAll: list: %w", err)
+	}
+	if len(facts) == 0 {
+		return 0, nil
+	}
+
+	switch mmode {
+	case domain.ForgetSoft:
+		for _, f := range facts {
+			if err := m.store.MarkClosed(ctx, scope, f.ID, true); err != nil {
+				return 0, err
+			}
+		}
+		closed := make([]domain.TemporalFact, len(facts))
+		for i, f := range facts {
+			f.Closed = true
+			closed[i] = f
+		}
+		if err := m.fanout.ProjectRequired(ctx, closed); err != nil {
+			return 0, err
+		}
+		m.fanout.ProjectOptional(ctx, closed)
+		return len(facts), nil
+	default:
+		ids := make([]string, 0, len(facts))
+		for _, f := range facts {
+			ids = append(ids, f.ID)
+		}
+		if err := m.fanout.ForgetRequired(ctx, scope, ids); err != nil {
+			return 0, err
+		}
+		n, err := m.store.DeleteByScope(ctx, scope)
+		if err != nil {
+			return 0, fmt.Errorf("recall.ForgetAll: store delete: %w", err)
+		}
+		m.fanout.ForgetOptional(ctx, scope, ids)
+		return n, nil
+	}
 }
 
 func (m *memory) entitySnapshots(scope Scope) []port.EntitySnapshot {
@@ -494,14 +602,11 @@ func publicRecallTrace(state *read.ReadState) RecallTrace {
 }
 
 func domainHitsToPublic(hits []domain.Hit) []Hit {
-	out := make([]Hit, len(hits))
-	for i, h := range hits {
-		out[i] = Hit{
-			Fact:    TemporalFact(h.Fact),
-			Score:   h.Score,
-			Sources: append([]string(nil), h.Sources...),
-		}
+	if len(hits) == 0 {
+		return nil
 	}
+	out := make([]Hit, len(hits))
+	copy(out, hits)
 	return out
 }
 
@@ -527,17 +632,9 @@ func trustToDomain(t *TrustContext) *domain.TrustContext {
 // only reports telemetry on failure; the user already sees the
 // store-delete error returned from Forget.
 func (m *memory) compensateForgetStoreFailure(ctx context.Context, scope Scope, snapshot domain.TemporalFact, cause error) {
-	cleanupCtx := detachCancel(ctx)
-	hook := m.fanout.Telemetry()
-	if err := m.fanout.ProjectRequired(cleanupCtx, []domain.TemporalFact{snapshot}); err != nil {
-		hook.OnProjection(port.ProjectionEvent{
-			Projection:  "forget_compensation.project_required",
-			Op:          port.OpProject,
-			Consistency: projection.Required.String(),
-			FactCount:   1,
-			Err:         fmt.Errorf("compensation after store delete failed %w: %v", cause, err),
-		})
-	}
+	cleanupCtx := pipeline.DetachCancel(ctx)
+	_ = m.fanout.ProjectRequired(cleanupCtx, []domain.TemporalFact{snapshot})
+	_ = cause
 }
 
 // RebuildAll implements ProjectionRebuilder. It walks the canonical
@@ -703,20 +800,3 @@ func (m *memory) Close() error {
 	}
 	return nil
 }
-
-// detachCancel returns a context that keeps the parent's values but
-// is not cancelled when the parent is. Compensation paths must run
-// to completion even if the inbound RPC was cancelled mid-flight,
-// otherwise rollback itself becomes the source of drift.
-func detachCancel(parent context.Context) context.Context {
-	return cleanupCtx{parent: parent}
-}
-
-type cleanupCtx struct {
-	parent context.Context
-}
-
-func (cleanupCtx) Deadline() (time.Time, bool) { return time.Time{}, false }
-func (cleanupCtx) Done() <-chan struct{}       { return nil }
-func (cleanupCtx) Err() error                  { return nil }
-func (c cleanupCtx) Value(key any) any         { return c.parent.Value(key) }

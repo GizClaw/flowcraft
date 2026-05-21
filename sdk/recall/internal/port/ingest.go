@@ -17,7 +17,7 @@ import (
 type IngestInput struct {
 	Scope         domain.Scope
 	Facts         []domain.TemporalFact
-	Turns         []TurnContext
+	Turns         []domain.TurnContext
 	ObservedAt    time.Time
 	KnownEntities []EntitySnapshot
 	Now           time.Time
@@ -47,19 +47,11 @@ type IngestResult struct {
 	StructurizerCoverage diagnostic.StructurizerCoverage
 }
 
-// TurnContext is the typed, adapter-owned shape of one source turn
-// the extractor consumes. Adapters translate their wire format into
-// TurnContext once; the SDK owns rendering it to the LLM and
-// resolving its fields downstream.
-type TurnContext struct {
-	ID         string
-	EvidenceID string
-	SessionID  string
-	Role       string
-	Speaker    string
-	Time       time.Time
-	Text       string
-}
+// TurnContext re-exports the canonical domain.TurnContext for
+// IngestInput.Turns consumers; the canonical type lives in
+// internal/domain/turn_context.go so the public recall facade can
+// alias it without referencing port.
+type TurnContext = domain.TurnContext
 
 // Ingestor owns the write-time ingest pipeline. Concrete
 // implementations live in internal/ingest/.

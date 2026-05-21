@@ -13,7 +13,6 @@ import (
 
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/port"
-	"github.com/GizClaw/flowcraft/sdk/recall/internal/projection"
 )
 
 // Projection is an in-memory typed-relation index.
@@ -40,7 +39,7 @@ func New() *Projection {
 
 func (p *Projection) Name() string { return "relation" }
 
-func (p *Projection) Consistency() port.Consistency { return projection.Optional }
+func (p *Projection) Consistency() port.Consistency { return port.Optional }
 
 // Project upserts active relation facts only.
 func (p *Projection) Project(_ context.Context, facts []domain.TemporalFact) error {

@@ -10,8 +10,8 @@ import (
 )
 
 // EvolutionAfterRecall runs the post-Recall best-effort evolution
-// pass. Errors are non-fatal and surfaced via state.EvolutionErr for
-// the legacy telemetry bridge.
+// pass. Errors are non-fatal and surfaced through the stage's
+// StageDiagnostic.Err (Phase E.3: Stages-only).
 type EvolutionAfterRecall struct {
 	runner port.EvolutionRunner
 }

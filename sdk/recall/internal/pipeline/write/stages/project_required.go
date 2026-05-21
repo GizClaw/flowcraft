@@ -2,14 +2,12 @@ package stages
 
 import (
 	"context"
-	"fmt"
 	"time"
 
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain/diagnostic"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/pipeline"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/pipeline/write"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/port"
-	"github.com/GizClaw/flowcraft/sdk/recall/internal/projection"
 )
 
 // ProjectRequired drives the Required-consistency projection fanout.
@@ -23,12 +21,12 @@ import (
 // never fail), but plan §6 calls the compensator out for future-
 // proofing and runner-level tests cover the unreachable-today branch.
 type ProjectRequired struct {
-	fanout *projection.Fanout
+	fanout *pipeline.Fanout
 	hook   port.TelemetryHook
 }
 
 // NewProjectRequired constructs the stage.
-func NewProjectRequired(fanout *projection.Fanout, hook port.TelemetryHook) *ProjectRequired {
+func NewProjectRequired(fanout *pipeline.Fanout, hook port.TelemetryHook) *ProjectRequired {
 	return &ProjectRequired{fanout: fanout, hook: hook}
 }
 
@@ -40,7 +38,7 @@ func (s *ProjectRequired) Run(ctx context.Context, state *write.WriteState) (dia
 	started := time.Now()
 	err := s.fanout.ProjectRequired(ctx, state.Resolution.Facts)
 	detail := diagnostic.ProjectDetail{
-		Consistency: projection.Required.String(),
+		Consistency: port.Required.String(),
 	}
 	if err != nil {
 		s.selfCleanup(ctx, state)
@@ -69,23 +67,8 @@ func (s *ProjectRequired) selfCleanup(ctx context.Context, state *write.WriteSta
 		return
 	}
 	cleanupCtx := pipeline.DetachCancel(ctx)
-	if err := s.fanout.ForgetRequired(cleanupCtx, state.Scope, state.AppendedFactIDs); err != nil {
-		s.emit(port.ProjectionEvent{
-			Projection:  "save_rollback.forget_required",
-			Op:          port.OpForget,
-			Consistency: projection.Required.String(),
-			FactCount:   len(state.AppendedFactIDs),
-			Err:         fmt.Errorf("rollback cleanup: %w", err),
-		})
-	}
+	_ = s.fanout.ForgetRequired(cleanupCtx, state.Scope, state.AppendedFactIDs)
 	s.fanout.ForgetOptional(cleanupCtx, state.Scope, state.AppendedFactIDs)
-}
-
-func (s *ProjectRequired) emit(ev port.ProjectionEvent) {
-	if s.hook == nil {
-		return
-	}
-	s.hook.OnProjection(ev)
 }
 
 var (

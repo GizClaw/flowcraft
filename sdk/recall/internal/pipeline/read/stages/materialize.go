@@ -44,9 +44,6 @@ func (s *Materialize) Run(ctx context.Context, state *read.ReadState) (diagnosti
 		sub.Materialized = items
 		sub.MaterializeDrops = drops
 		returned += len(items)
-		if state.Trace != nil {
-			state.Trace.Drops = append(state.Trace.Drops, drops...)
-		}
 	}
 	read.PromoteMergedItems(state)
 	return diagnostic.MaterializeDetail{

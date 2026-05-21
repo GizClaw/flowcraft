@@ -7,10 +7,10 @@ import (
 
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain/diagnostic"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/pipeline"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/pipeline/write"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/pipeline/write/stages"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/port"
-	"github.com/GizClaw/flowcraft/sdk/recall/internal/projection"
 )
 
 type stubProj struct {
@@ -35,7 +35,7 @@ func (s *stubProj) Rebuild(context.Context, domain.Scope, []domain.TemporalFact)
 
 func TestProjectRequired_HappyPath(t *testing.T) {
 	p := &stubProj{name: "required", consistency: port.Required}
-	fanout := projection.New([]port.Projection{p}, nil)
+	fanout := pipeline.NewFanout([]port.Projection{p}, nil)
 	s := stages.NewProjectRequired(fanout, nil)
 	state := &write.WriteState{
 		Scope:           domain.Scope{RuntimeID: "rt"},
@@ -52,7 +52,7 @@ func TestProjectRequired_HappyPath(t *testing.T) {
 
 func TestProjectRequired_FailureRunsSelfCleanup(t *testing.T) {
 	p := &stubProj{name: "required", consistency: port.Required, projectErr: errors.New("project boom")}
-	fanout := projection.New([]port.Projection{p}, nil)
+	fanout := pipeline.NewFanout([]port.Projection{p}, nil)
 	hook := &recordHook{}
 	s := stages.NewProjectRequired(fanout, hook)
 	state := &write.WriteState{
@@ -75,7 +75,7 @@ func TestProjectRequired_FailureRunsSelfCleanup(t *testing.T) {
 
 func TestProjectRequired_CompensateForgets(t *testing.T) {
 	p := &stubProj{name: "required", consistency: port.Required}
-	fanout := projection.New([]port.Projection{p}, nil)
+	fanout := pipeline.NewFanout([]port.Projection{p}, nil)
 	s := stages.NewProjectRequired(fanout, nil)
 	state := &write.WriteState{
 		Scope:           domain.Scope{RuntimeID: "rt"},

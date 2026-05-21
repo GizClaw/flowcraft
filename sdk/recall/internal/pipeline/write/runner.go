@@ -42,11 +42,10 @@ func (r *Runner) Run(ctx context.Context, state *WriteState) error {
 	if r == nil || state == nil {
 		return nil
 	}
-	adapter := newLegacyAdapter(r.hook, state)
 	p := pipeline.NewPipeline(
 		diagnostic.PhaseWrite,
 		r.stages,
-		port.TelemetryHook(adapter),
+		r.hook,
 		func(s *WriteState, d diagnostic.StageDiagnostic) { s.AppendStage(d) },
 	)
 	return p.Run(ctx, state)

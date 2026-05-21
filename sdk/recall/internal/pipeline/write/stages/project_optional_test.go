@@ -6,15 +6,15 @@ import (
 
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain/diagnostic"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/pipeline"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/pipeline/write"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/pipeline/write/stages"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/port"
-	"github.com/GizClaw/flowcraft/sdk/recall/internal/projection"
 )
 
 func TestProjectOptional_RunsBestEffort(t *testing.T) {
 	p := &stubProj{name: "optional", consistency: port.Optional}
-	fanout := projection.New([]port.Projection{p}, nil)
+	fanout := pipeline.NewFanout([]port.Projection{p}, nil)
 	s := stages.NewProjectOptional(fanout)
 	state := &write.WriteState{
 		Resolution: domain.Resolution{Facts: []domain.TemporalFact{{ID: "a"}}},
@@ -29,7 +29,7 @@ func TestProjectOptional_RunsBestEffort(t *testing.T) {
 }
 
 func TestProjectOptional_SkipsWhenNoWork(t *testing.T) {
-	fanout := projection.New(nil, nil)
+	fanout := pipeline.NewFanout(nil, nil)
 	s := stages.NewProjectOptional(fanout)
 	state := &write.WriteState{Resolution: domain.Resolution{}}
 	skip, det := s.Skip(context.Background(), state)

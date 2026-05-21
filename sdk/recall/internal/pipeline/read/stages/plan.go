@@ -46,9 +46,6 @@ func (s *Plan) Run(ctx context.Context, state *read.ReadState) (diagnostic.Stage
 		return diagnostic.PlanDetail{}, err
 	}
 	state.Plan = &plan
-	if state.Trace != nil {
-		state.Trace.Plan = plan
-	}
 	lenses := make([]diagnostic.ActivatedLens, 0, len(plan.SourceOrder))
 	for _, name := range plan.SourceOrder {
 		lenses = append(lenses, diagnostic.ActivatedLens{

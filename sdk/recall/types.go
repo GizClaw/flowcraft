@@ -7,6 +7,9 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/port"
 )
 
+// QueryPlan is the planner output (reconstruct via diagnostics.Plan).
+type QueryPlan = domain.QueryPlan
+
 // Scope identifies the tenant/user partition for canonical memory. It
 // aliases the internal canonical model so the public facade does not
 // duplicate schema.
@@ -65,7 +68,7 @@ type FactVersion = domain.FactVersion
 // lets the Structurizer use the typed Time/Speaker fields directly
 // for valid_from resolution and Subject inference — the LLM stops
 // doing regex archaeology on prose.
-type TurnContext = port.TurnContext
+type TurnContext = domain.TurnContext
 
 // EntitySnapshot is a hint about an entity the canonical projection
 // has already seen in this scope. The compiler uses snapshots to
@@ -76,67 +79,10 @@ type TurnContext = port.TurnContext
 // failure.
 type EntitySnapshot = port.EntitySnapshot
 
-// SaveRequest is the v2 ingestion input. Higher-level integrations
-// build these from raw messages before calling Save.
-//
-// Two input channels, by purpose (Memory.Save runs both):
-//
-//  1. Facts — fully-structured TemporalFacts (passthrough path).
-//     The default extractor returns them verbatim; the compiler
-//     still hardens id / merge_key / time / policy. Callers who
-//     already produce structured facts (rule-based pipelines,
-//     migration tooling, tests) use this channel exclusively.
-//  2. Turns — typed per-turn metadata (id, time, speaker, role,
-//     text). The LLMExtractor renders these into a canonical JSONL
-//     wire shape for the model and feeds the typed Time / Speaker
-//     fields into the Structurizer so the LLM never has to grep
-//     timestamps or speakers out of prose. Adapters with raw chat
-//     dumps just pass a single TurnContext per message; adapters
-//     without per-turn metadata pass a single TurnContext with
-//     only Text populated.
-//
-// There is intentionally no separate Text channel: a free-form
-// paragraph is just a single TurnContext with Text set. Carrying
-// both Text and Turns would be two paths for the same thing and
-// leave callers wondering which one wins.
-type SaveRequest struct {
-	// Facts are caller-supplied structured facts. The default
-	// passthrough extractor treats them as authoritative content
-	// and runs them through the compiler for deterministic field
-	// hardening (id, observed_at, merge_key, salience, policy).
-	Facts []TemporalFact
-
-	// Turns is the typed per-turn channel consumed by opt-in
-	// extractors (notably LLMExtractor wired via WithLLMExtractor).
-	// The default passthrough extractor ignores Turns — only
-	// extractors that opt in to text-driven extraction read them.
-	// For unstructured prose, pass a single TurnContext with Text
-	// populated; the SDK still owns the LLM-visible wire shape.
-	Turns []TurnContext
-
-	// ObservedAt anchors the wall-clock for relative-time
-	// resolution ("yesterday", "last weekend") inside Turns. When
-	// zero the compiler uses time.Now(); historical replay callers
-	// MUST set ObservedAt to the conversation's real wall time or
-	// relative-time resolution silently drifts to "now".
-	ObservedAt time.Time
-
-	// Tier is an optional importance intent label applied to every
-	// fact in this save ("core", "general", "data", "storage"). Empty
-	// means "general". Tier adjusts Confidence at ingest time; it is
-	// not stored on TemporalFact. For per-fact gradients set
-	// Confidence on each TemporalFact directly.
-	Tier string
-
-	// RecentMessages is optional prior-turn context for the LLM
-	// extractor. Recall does not call history.Store — callers
-	// compose this from history.GetRecentMessages(scope, k) etc.
-	RecentMessages []Message
-
-	// ExistingFactsAnchor is optional dedup context for extract.
-	// Callers may Recall first, then pass anchors here before Save.
-	ExistingFactsAnchor []TemporalFact
-}
+// SaveRequest is the v2 ingestion input. Aliases the canonical
+// domain type so the recall facade and internal pipelines share one
+// schema (Phase E.2: types.go is "全部 = domain.X 别名").
+type SaveRequest = domain.SaveRequest
 
 // SaveResult reports the canonical fact ids that were appended to the
 // ledger. Dedupe/policy drops are not listed here; telemetry surfaces
@@ -177,19 +123,23 @@ func TimeRangeFrom(from, to time.Time) TimeRange {
 	return TimeRange{From: from, To: to}
 }
 
-// Hit is a materialized recall result. Score semantics are owned by
-// the fusion layer.
-// Hit is one recall winner. Score is the fused score after the
-// post-materialize ranker has applied its boost. Sources lists every
-// CandidateSource that surfaced this fact, in the order fusion saw
-// them; consumers can read it to attribute winners to specific
-// sources (retrieval / entity / timeline / relation / profile /
-// graph) for diagnostics and explainability, or to weight downstream
-// rendering by source provenance. An empty Sources slice means the
-// candidate carried no provenance metadata (legacy / test-only
-// paths); it does not imply the hit is invalid.
-type Hit struct {
-	Fact    TemporalFact
-	Score   float64
-	Sources []string
-}
+// Hit is one materialized recall winner. Aliases the canonical
+// domain type so the facade, internal pipelines, and diagnostics
+// share one schema (Phase E.2: "全部 = domain.X 别名").
+type Hit = domain.Hit
+
+// Reranker is the optional post-build_hits stage that reorders a
+// Hit slice by a stronger relevance signal than the deterministic
+// in-pipeline ranker alone (typically an LLM call or
+// cross-encoder).
+//
+// It runs after materialize / rank-boost and before the final
+// TotalCap is applied so the reranker sees the widest fused pool
+// (typically 2× the requested topK). Errors are non-fatal: the
+// caller falls back to the input order when Rerank returns a
+// non-nil error.
+//
+// Reranking is intentionally NOT in the default pipeline: it costs
+// a per-Recall round-trip to a model the SDK does not own. Opt in
+// via WithReranker only when latency and cost budgets allow it.
+type Reranker = port.Reranker

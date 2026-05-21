@@ -69,3 +69,13 @@ const (
 type StageDetail interface {
 	isStageDetail()
 }
+
+// HasStage reports whether a stage name appears in the trace.
+func HasStage(stages []StageDiagnostic, name string) bool {
+	for _, st := range stages {
+		if st.Stage == name {
+			return true
+		}
+	}
+	return false
+}

@@ -30,6 +30,8 @@ type IngestDetail struct {
 	RecentMessagesProvided int
 	AnchorsProvided        int
 	TierApplied            string
+	Dropped                []DroppedFact
+	KnownEntitiesSeen      int
 }
 
 func (IngestDetail) isStageDetail() {}
@@ -105,3 +107,39 @@ type EvolutionAfterSaveDetail struct {
 }
 
 func (EvolutionAfterSaveDetail) isStageDetail() {}
+
+// ExtractSaveDropped returns write-path compiler drops from ingest detail.
+func ExtractSaveDropped(stages []StageDiagnostic) []DroppedFact {
+	for _, st := range stages {
+		if st.Stage == "ingest" {
+			if d, ok := st.Detail.(IngestDetail); ok {
+				return append([]DroppedFact(nil), d.Dropped...)
+			}
+		}
+	}
+	return nil
+}
+
+// ExtractStructurizerCoverage reads ingest stage coverage tallies.
+func ExtractStructurizerCoverage(stages []StageDiagnostic) StructurizerCoverage {
+	for _, st := range stages {
+		if st.Stage == "ingest" {
+			if d, ok := st.Detail.(IngestDetail); ok {
+				return d.StructurizerCoverage
+			}
+		}
+	}
+	return StructurizerCoverage{}
+}
+
+// ExtractKnownEntitiesSeen returns entity snapshot count from ingest.
+func ExtractKnownEntitiesSeen(stages []StageDiagnostic) int {
+	for _, st := range stages {
+		if st.Stage == "ingest" {
+			if d, ok := st.Detail.(IngestDetail); ok {
+				return d.KnownEntitiesSeen
+			}
+		}
+	}
+	return 0
+}

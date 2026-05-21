@@ -17,6 +17,7 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/llm"
 	"github.com/GizClaw/flowcraft/sdk/model"
 	"github.com/GizClaw/flowcraft/sdk/recall"
+	"github.com/GizClaw/flowcraft/sdk/recall/diagnostics"
 	retrievalmem "github.com/GizClaw/flowcraft/sdk/retrieval/memory"
 )
 
@@ -40,11 +41,11 @@ type Options struct {
 	OnFactsSaved func(scope runners.Scope, factIDs []string)
 	// OnSaveDiagnostics, when non-nil, switches the runner to the SaveExplain
 	// path and reports per-stage SaveDiagnostics for every successful Save.
-	OnSaveDiagnostics func(scope runners.Scope, diag recall.SaveDiagnostics)
+	OnSaveDiagnostics func(scope runners.Scope, diag diagnostics.SaveDiagnostics)
 	// OnRecallDiagnostics, when non-nil, switches the runner to the
 	// RecallExplain path and reports per-stage RecallDiagnostics for every
 	// Recall call.
-	OnRecallDiagnostics func(scope runners.Scope, diag recall.RecallDiagnostics)
+	OnRecallDiagnostics func(scope runners.Scope, diag diagnostics.RecallDiagnostics)
 }
 
 // Runner implements runners.Runner against sdk/recall v2.
@@ -56,8 +57,8 @@ type Runner struct {
 	hasLLM        bool
 	includeAs     bool
 	onSaved       func(scope runners.Scope, factIDs []string)
-	onSaveDiag    func(runners.Scope, recall.SaveDiagnostics)
-	onRecallDiag  func(runners.Scope, recall.RecallDiagnostics)
+	onSaveDiag    func(runners.Scope, diagnostics.SaveDiagnostics)
+	onRecallDiag  func(runners.Scope, diagnostics.RecallDiagnostics)
 }
 
 // New constructs a flowcraft-v2 bootstrap runner.
@@ -205,7 +206,7 @@ func (r *Runner) runSave(ctx context.Context, scope runners.Scope, req recall.Sa
 		r.onSaved(scope, res.FactIDs)
 	}
 	if r.onSaveDiag != nil && r.saveExplainer != nil {
-		r.onSaveDiag(scope, recall.DiagnoseSave(req, trace))
+		r.onSaveDiag(scope, diagnostics.DiagnoseSave(req, trace))
 	}
 	return len(res.FactIDs), elapsed, nil
 }
@@ -226,7 +227,7 @@ func (r *Runner) Recall(ctx context.Context, scope runners.Scope, query string, 
 	}
 	elapsed := time.Since(t0)
 	if r.onRecallDiag != nil && r.recallExplain != nil {
-		r.onRecallDiag(scope, recall.DiagnoseRecall(trace, hits))
+		r.onRecallDiag(scope, diagnostics.DiagnoseRecall(trace, hits))
 	}
 	return fromRecallHits(hits), elapsed, err
 }

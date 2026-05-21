@@ -11,7 +11,6 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/pipeline"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/pipeline/write"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/port"
-	"github.com/GizClaw/flowcraft/sdk/recall/internal/projection"
 	temporalstore "github.com/GizClaw/flowcraft/sdk/recall/internal/store/temporal"
 )
 
@@ -29,14 +28,14 @@ import (
 // reprojectReopenedFacts behaviour byte-for-byte.
 type ValidityClose struct {
 	store  port.TemporalStore
-	fanout *projection.Fanout
+	fanout *pipeline.Fanout
 	hook   port.TelemetryHook
 }
 
 // NewValidityClose constructs the stage. fanout / hook may be nil
-// — fanout is only consulted during compensation, hook is the
-// legacy OnProjection sink.
-func NewValidityClose(store port.TemporalStore, fanout *projection.Fanout, hook port.TelemetryHook) *ValidityClose {
+// — fanout is only consulted during compensation, hook receives
+// Compensated stage diagnostics through OnStage.
+func NewValidityClose(store port.TemporalStore, fanout *pipeline.Fanout, hook port.TelemetryHook) *ValidityClose {
 	return &ValidityClose{store: store, fanout: fanout, hook: hook}
 }
 
@@ -97,13 +96,7 @@ func (s *ValidityClose) reopen(ctx context.Context, closes []domain.ValidityClos
 		if err == nil || errors.Is(err, temporalstore.ErrNotFound) {
 			continue
 		}
-		s.emit(port.ProjectionEvent{
-			Projection:  "save_rollback.reopen_validity",
-			Op:          port.OpProject,
-			Consistency: projection.Required.String(),
-			FactCount:   1,
-			Err:         fmt.Errorf("reopen %s: %w", c.FactID, err),
-		})
+		_ = err
 	}
 }
 
@@ -121,35 +114,13 @@ func (s *ValidityClose) reproject(ctx context.Context, closes []domain.ValidityC
 			if errors.Is(err, temporalstore.ErrNotFound) {
 				continue
 			}
-			s.emit(port.ProjectionEvent{
-				Projection:  "save_rollback.reproject_prior.get",
-				Op:          port.OpProject,
-				Consistency: projection.Required.String(),
-				FactCount:   1,
-				Err:         fmt.Errorf("get %s: %w", c.FactID, err),
-			})
 			continue
 		}
 		if fact.CorrectedBy != "" {
 			continue
 		}
-		if err := s.fanout.ProjectRequired(ctx, []domain.TemporalFact{fact}); err != nil {
-			s.emit(port.ProjectionEvent{
-				Projection:  "save_rollback.reproject_prior",
-				Op:          port.OpProject,
-				Consistency: projection.Required.String(),
-				FactCount:   1,
-				Err:         fmt.Errorf("reproject %s: %w", c.FactID, err),
-			})
-		}
+		_ = s.fanout.ProjectRequired(ctx, []domain.TemporalFact{fact})
 	}
-}
-
-func (s *ValidityClose) emit(ev port.ProjectionEvent) {
-	if s.hook == nil {
-		return
-	}
-	s.hook.OnProjection(ev)
 }
 
 var (

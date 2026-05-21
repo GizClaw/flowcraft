@@ -68,19 +68,6 @@ func (s *SourceFanout) Run(ctx context.Context, state *read.ReadState) (diagnost
 			detail.Results = append(detail.Results, row)
 			totalCandidates += len(res.Candidates)
 
-			if state.Trace != nil {
-				st := domain.SourceTrace{
-					Source:    res.Source,
-					Budget:    plan.SourceBudgets[res.Source],
-					Returned:  len(res.Candidates),
-					Truncated: res.Truncated,
-					Latency:   res.Latency,
-				}
-				if res.Err != nil {
-					st.Err = res.Err.Error()
-				}
-				state.Trace.Sources = append(state.Trace.Sources, st)
-			}
 		}
 		sub.SourceResults = results
 	}

@@ -45,8 +45,8 @@ func TestIngest_PopulatesStateAndTrace(t *testing.T) {
 	if len(state.KnownEntities) != 1 || state.KnownEntities[0].Canonical != "alice" {
 		t.Errorf("KnownEntities = %+v", state.KnownEntities)
 	}
-	if state.Trace.KnownEntitiesSeen != 1 || len(state.Trace.CompiledFacts) != 1 {
-		t.Errorf("Trace not populated: %+v", state.Trace)
+	if got.KnownEntitiesSeen != 1 {
+		t.Errorf("KnownEntitiesSeen = %d", got.KnownEntitiesSeen)
 	}
 }
 

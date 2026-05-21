@@ -6,7 +6,7 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain/diagnostic"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/pipeline"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/pipeline/write"
-	"github.com/GizClaw/flowcraft/sdk/recall/internal/projection"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/port"
 )
 
 // ProjectOptional drives the Optional-consistency projection fanout.
@@ -21,11 +21,11 @@ import (
 // (HasWork==false) reports Status=Skipped, matching what legacy code
 // effectively did via the early-return short-circuit.
 type ProjectOptional struct {
-	fanout *projection.Fanout
+	fanout *pipeline.Fanout
 }
 
 // NewProjectOptional constructs the stage.
-func NewProjectOptional(fanout *projection.Fanout) *ProjectOptional {
+func NewProjectOptional(fanout *pipeline.Fanout) *ProjectOptional {
 	return &ProjectOptional{fanout: fanout}
 }
 
@@ -35,7 +35,7 @@ func (ProjectOptional) Name() string { return "project_optional" }
 // Skip implements pipeline.Conditional.
 func (s *ProjectOptional) Skip(_ context.Context, state *write.WriteState) (bool, diagnostic.StageDetail) {
 	if !state.HasWork() {
-		return true, diagnostic.ProjectDetail{Consistency: projection.Optional.String()}
+		return true, diagnostic.ProjectDetail{Consistency: port.Optional.String()}
 	}
 	return false, nil
 }
@@ -44,7 +44,7 @@ func (s *ProjectOptional) Skip(_ context.Context, state *write.WriteState) (bool
 func (s *ProjectOptional) Run(ctx context.Context, state *write.WriteState) (diagnostic.StageDetail, error) {
 	s.fanout.ProjectOptional(ctx, state.Resolution.Facts)
 	state.OptionalApplied = len(state.Resolution.Facts)
-	return diagnostic.ProjectDetail{Consistency: projection.Optional.String()}, nil
+	return diagnostic.ProjectDetail{Consistency: port.Optional.String()}, nil
 }
 
 var (

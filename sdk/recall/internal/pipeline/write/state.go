@@ -102,10 +102,8 @@ type WriteState struct {
 	EvidenceMirrored int
 
 	// EvidenceMirrorErr captures a non-fatal failure from the
-	// evidence_mirror stage. The legacy bridge reads it to
-	// reproduce the OnPipeline(stage="evidence", op="mirror")
-	// event that legacy runSave fired with Err set — the new
-	// rail's StageDiagnostic.Err is reserved for fatal failures
+	// evidence_mirror stage. The stage detail surfaces it via the
+	// trace; StageDiagnostic.Err is reserved for fatal failures
 	// (which evidence_mirror never raises).
 	EvidenceMirrorErr error
 
@@ -119,21 +117,16 @@ type WriteState struct {
 	// design Optional projections are best-effort.
 	OptionalApplied int
 
-	// EvolutionErr captures a non-fatal AfterSave failure. Same
-	// rationale as EvidenceMirrorErr: the legacy bridge needs to
-	// reproduce the OnPipeline(stage="evolution", op="after_save")
-	// event legacy runEvolutionAfterSave emitted only when err
-	// was non-nil.
+	// EvolutionErr captures a non-fatal AfterSave failure. The
+	// evolution_after_save stage detail surfaces it via the trace
+	// (Phase E.3: Stages-only).
 	EvolutionErr error
 
 	// FailedStage names the stage whose Run returned the error
 	// that triggered the pipeline's reverse-order compensation
-	// pass. Stages set it before returning an error so that
-	// upstream compensators (notably append) can pick the
-	// legacy-equivalent OnProjection event name during the dual-
-	// rail transition (B.2 C13 — distinguishes the "validity_close
-	// failed" leg from the "project_required failed" leg in the
-	// legacy telemetry stream).
+	// pass. Stages set it before returning an error so upstream
+	// compensators (notably append) can branch on the originating
+	// stage when emitting Compensated diagnostics.
 	FailedStage string
 
 	// Result is the value the facade hands back to the caller.

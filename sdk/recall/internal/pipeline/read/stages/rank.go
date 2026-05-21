@@ -4,26 +4,21 @@ import (
 	"context"
 	"time"
 
-	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain/diagnostic"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/pipeline"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/pipeline/read"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/port"
 )
 
-// RankItemsFunc is the rank-boost delegate (sdk/recall.rankContextItems).
-type RankItemsFunc func(items []domain.ContextItem, intent domain.QueryIntent, finalCap int) []domain.ContextItem
-
-// Rank applies the deterministic post-materialize ranker.
+// Rank applies the deterministic post-materialize ranker (Phase E.1).
 type Rank struct {
-	rank RankItemsFunc
-	// HasReranker mirrors memory.reranker != nil: defer TotalCap so
-	// the optional reranker sees the widest fused pool.
+	ranker      port.Ranker
 	hasReranker bool
 }
 
 // NewRank constructs a Rank stage.
-func NewRank(rank RankItemsFunc, hasReranker bool) *Rank {
-	return &Rank{rank: rank, hasReranker: hasReranker}
+func NewRank(ranker port.Ranker, hasReranker bool) *Rank {
+	return &Rank{ranker: ranker, hasReranker: hasReranker}
 }
 
 // Name implements pipeline.Stage.
@@ -31,13 +26,12 @@ func (Rank) Name() string { return "rank" }
 
 // Run implements pipeline.Stage.
 func (s *Rank) Run(ctx context.Context, state *read.ReadState) (diagnostic.StageDetail, error) {
-	_ = ctx
 	items := state.AfterTrust
 	if len(items) == 0 {
 		read.PromoteMergedItems(state)
 		items = state.MergedItems
 	}
-	if s.rank == nil || state.Plan == nil {
+	if s.ranker == nil || state.Plan == nil {
 		state.Ranked = items
 		return diagnostic.RankDetail{InputCount: len(items), OutputCount: len(items)}, nil
 	}
@@ -46,16 +40,25 @@ func (s *Rank) Run(ctx context.Context, state *read.ReadState) (diagnostic.Stage
 	if s.hasReranker {
 		rankCap = 0
 	}
-	ranked := s.rank(items, state.Plan.Intent, rankCap)
-	state.Ranked = ranked
-	if state.Trace != nil {
-		state.Trace.Materialized = len(ranked)
+	intent := state.Plan.Intent
+	if state.Intent != nil {
+		intent = *state.Intent
 	}
+	out := s.ranker.Rank(ctx, port.RankInput{
+		Items:    items,
+		Intent:   intent,
+		FinalCap: rankCap,
+		Now:      state.Now,
+	})
+	state.Ranked = out.Items
 	return diagnostic.RankDetail{
-		InputCount:  len(items),
-		OutputCount: len(ranked),
-		FinalCap:    state.Plan.TotalCap,
-		Latency:     time.Since(started),
+		InputCount:             len(items),
+		OutputCount:            len(out.Items),
+		FinalCap:               state.Plan.TotalCap,
+		BoostsApplied:          out.BoostsApplied,
+		TimeDecayApplied:       out.TimeDecayApplied,
+		SupersededDecayApplied: out.SupersededDecayApplied,
+		Latency:                time.Since(started),
 	}, nil
 }
 

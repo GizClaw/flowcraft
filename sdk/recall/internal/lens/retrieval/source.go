@@ -102,11 +102,11 @@ func (s *Source) Query(ctx context.Context, plan domain.QueryPlan) domain.Source
 			continue
 		}
 		candidates = append(candidates, domain.Candidate{
-			FactID: factID,
-			Scope:  scope,
-			Source: s.Name(),
-			Rank:   i + 1,
-			Score:  hit.Score,
+			FactID:   factID,
+			Scope:    scope,
+			Source:   s.Name(),
+			Rank:     i + 1,
+			Score:    hit.Score,
 			Metadata: retrievalCandidateMeta(hit.Doc.Metadata),
 		})
 	}

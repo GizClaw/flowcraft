@@ -18,7 +18,7 @@ import (
 	"github.com/GizClaw/flowcraft/eval/locomo/runners/flowcraftv2"
 	"github.com/GizClaw/flowcraft/eval/metrics"
 	"github.com/GizClaw/flowcraft/sdk/llm"
-	"github.com/GizClaw/flowcraft/sdk/recall"
+	"github.com/GizClaw/flowcraft/sdk/recall/diagnostics"
 	recallv1 "github.com/GizClaw/flowcraft/sdk/recall_v1"
 
 	_ "github.com/GizClaw/flowcraft/sdkx/embedding/azure"
@@ -225,7 +225,7 @@ Example (LLM extractor + LLM answer + LLM judge + Qwen embedder):
 			// the run so the operator can answer "where in the pipeline
 			// is accuracy lost" from a single JSON.
 			var (
-				diagHealth *recall.PipelineHealth
+				diagHealth *diagnostics.PipelineHealth
 				diagMu     sync.Mutex
 				v2Diag     *v2DiagnosticHooks
 			)
@@ -233,14 +233,14 @@ Example (LLM extractor + LLM answer + LLM judge + Qwen embedder):
 				if canonical != "flowcraft-v2" {
 					return fmt.Errorf("--diagnostics is only supported for flowcraft-v2 (got %s)", canonical)
 				}
-				diagHealth = recall.NewPipelineHealth()
+				diagHealth = diagnostics.NewPipelineHealth()
 				v2Diag = &v2DiagnosticHooks{
-					OnSave: func(_ runners.Scope, d recall.SaveDiagnostics) {
+					OnSave: func(_ runners.Scope, d diagnostics.SaveDiagnostics) {
 						diagMu.Lock()
 						defer diagMu.Unlock()
 						diagHealth.RecordSave(d)
 					},
-					OnRecall: func(_ runners.Scope, d recall.RecallDiagnostics) {
+					OnRecall: func(_ runners.Scope, d diagnostics.RecallDiagnostics) {
 						diagMu.Lock()
 						defer diagMu.Unlock()
 						diagHealth.RecordRecall(d)

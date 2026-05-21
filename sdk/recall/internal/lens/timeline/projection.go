@@ -15,7 +15,6 @@ import (
 
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/port"
-	"github.com/GizClaw/flowcraft/sdk/recall/internal/projection"
 )
 
 // timelineKinds are the fact kinds indexed by this projection.
@@ -54,7 +53,7 @@ func New() *Projection {
 
 func (p *Projection) Name() string { return "timeline" }
 
-func (p *Projection) Consistency() port.Consistency { return projection.Optional }
+func (p *Projection) Consistency() port.Consistency { return port.Optional }
 
 // Project upserts timeline-eligible facts. Superseded facts are
 // evicted; ValidTo in the past does NOT hide an event/plan.

@@ -6,28 +6,9 @@ import (
 )
 
 // StageDiagnostic is the structured per-stage observation emitted
-// by the v2 pipeline framework. TelemetryHook.OnStage receives one
-// per pipeline stage; TelemetryHook implementers should treat the
-// type as opaque except for forwarding it to their backend.
+// by the v2 pipeline framework.
 type StageDiagnostic = diagnostic.StageDiagnostic
 
-// ProjectionEvent describes one projection fanout outcome.
-type ProjectionEvent = port.ProjectionEvent
-
-// DriftReason classifies projection-vs-canonical drift observations.
-type DriftReason = port.DriftReason
-
-const (
-	DriftStaleFact      = port.DriftStaleFact
-	DriftSupersededFact = port.DriftSupersededFact
-)
-
-// DriftEvent describes one drift observation surfaced by the read path or
-// reconcile tooling.
-type DriftEvent = port.DriftEvent
-
-// PipelineEvent records one high-level Save/Recall stage.
-type PipelineEvent = port.PipelineEvent
-
-// TelemetryHook receives projection, drift, and pipeline events.
+// TelemetryHook receives structured pipeline stage diagnostics
+// (Phase E.3: single-rail surface).
 type TelemetryHook = port.TelemetryHook

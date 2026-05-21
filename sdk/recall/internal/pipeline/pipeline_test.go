@@ -108,18 +108,8 @@ func (h *captureHook) OnStage(d diagnostic.StageDiagnostic) {
 	h.events = append(h.events, d)
 }
 
-// nopBaseHook is embedded into captureHook so we only override
-// OnStage. The legacy methods are no-ops in v2 dual-track until
-// Phase E.3 strips them.
-type nopBaseHook struct{}
-
-func (nopBaseHook) OnProjection(port.ProjectionEvent)  {}
-func (nopBaseHook) OnDrift(port.DriftEvent)            {}
-func (nopBaseHook) OnPipeline(port.PipelineEvent)      {}
-func (nopBaseHook) OnStage(diagnostic.StageDiagnostic) {}
-
 func newCaptureHook() *captureHook {
-	return &captureHook{TelemetryHook: nopBaseHook{}}
+	return &captureHook{}
 }
 
 // appendTrace is the standard TraceAppender for tests: it pushes

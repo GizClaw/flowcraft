@@ -50,10 +50,6 @@ func (s *Fuse) Run(ctx context.Context, state *read.ReadState) (diagnostic.Stage
 		sub.Fused = fused
 		sub.FusionDrops = drops
 		dropCount += len(drops)
-		if state.Trace != nil {
-			state.Trace.FusedCandidates += len(fused)
-			state.Trace.Drops = append(state.Trace.Drops, drops...)
-		}
 	}
 	return diagnostic.FuseDetail{
 		InputCount:     inputCount,

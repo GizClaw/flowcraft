@@ -16,7 +16,7 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/embedding"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/port"
-	"github.com/GizClaw/flowcraft/sdk/recall/internal/projection"
+
 	"github.com/GizClaw/flowcraft/sdk/retrieval"
 )
 
@@ -65,7 +65,7 @@ func (p *Projection) Name() string { return "retrieval" }
 // Consistency reports Required: a retrieval projection failure must
 // fail the canonical write so callers do not see an empty Recall on
 // a fact they just stored.
-func (p *Projection) Consistency() port.Consistency { return projection.Required }
+func (p *Projection) Consistency() port.Consistency { return port.Required }
 
 // Project upserts canonical facts into the retrieval namespace. Facts
 // in mixed scopes are grouped per namespace so each Upsert is scope

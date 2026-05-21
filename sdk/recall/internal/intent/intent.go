@@ -8,6 +8,22 @@ import (
 
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/port"
+	"github.com/GizClaw/flowcraft/sdk/text/quotes"
+	"github.com/GizClaw/flowcraft/sdk/text/stopword"
+	"github.com/GizClaw/flowcraft/sdk/text/tokenize"
+)
+
+// intentStopwords extends the canonical English stopword set with
+// recall-specific question / framing verbs ("meet"/"told"/"said")
+// that are not entities even though they survive sdk/text's general
+// stopword filter. The set is computed once at package init.
+var intentStopwords = stopword.EnglishSet().Extend(
+	"whom", "whose", "why", "done",
+	"am", "having", "would", "could", "should", "might", "must",
+	"again", "also", "just", "very", "too", "so", "yes",
+	"mine", "yours", "hers", "ours", "theirs",
+	"meet", "met", "meeting",
+	"tell", "told", "say", "said", "know", "knew",
 )
 
 // RuleBased is the default deterministic query intent compiler.
@@ -74,7 +90,8 @@ func normalizeEntityMention(s string) string {
 
 // extractEntitiesFromText is a conservative rule baseline: quoted spans,
 // capitalized tokens, and CJK runs. Common question words are filtered
-// so "Who did Alice meet in Paris?" yields alice and paris, not who.
+// (via intentStopwords) so "Who did Alice meet in Paris?" yields alice
+// and paris, not who.
 func extractEntitiesFromText(text string) []string {
 	text = strings.TrimSpace(text)
 	if text == "" {
@@ -83,14 +100,18 @@ func extractEntitiesFromText(text string) []string {
 	set := map[string]struct{}{}
 	add := func(s string) {
 		s = normalizeEntityMention(s)
-		if s == "" || isStopword(s) {
+		if s == "" || intentStopwords.Contains(s) {
 			return
 		}
 		set[s] = struct{}{}
 	}
-	for _, q := range extractQuotedSpans(text) {
+	for _, q := range quotes.ExtractSpans(text) {
 		add(q)
 	}
+	// FieldsFunc keeps apostrophe / hyphen inside tokens so names
+	// like "O'Brien" and "Jean-Luc" survive as single mentions —
+	// tokenize.SplitWords splits on those, so we cannot use it
+	// directly here.
 	fields := strings.FieldsFunc(text, func(r rune) bool {
 		return unicode.IsSpace(r) || (unicode.IsPunct(r) && r != '\'' && r != '-')
 	})
@@ -100,10 +121,10 @@ func extractEntitiesFromText(text string) []string {
 			continue
 		}
 		lower := strings.ToLower(w)
-		if i == 0 && isStopword(lower) {
+		if i == 0 && intentStopwords.Contains(lower) {
 			continue
 		}
-		if unicode.IsUpper(runes[0]) && !isStopword(lower) {
+		if unicode.IsUpper(runes[0]) && !intentStopwords.Contains(lower) {
 			add(w)
 		}
 		if hasCJKRunes(w) && len(runes) >= 2 {
@@ -178,58 +199,11 @@ func hasAny(s string, needles ...string) bool {
 	return false
 }
 
-func extractQuotedSpans(s string) []string {
-	var out []string
-	var cur strings.Builder
-	in := false
-	for _, r := range s {
-		switch r {
-		case '"', '\u201c', '\u201d', '\u300c', '\u300d':
-			if in {
-				if cur.Len() > 0 {
-					out = append(out, cur.String())
-				}
-				cur.Reset()
-				in = false
-			} else {
-				in = true
-			}
-		default:
-			if in {
-				cur.WriteRune(r)
-			}
-		}
-	}
-	return out
-}
-
 func hasCJKRunes(s string) bool {
 	for _, r := range s {
-		if unicode.Is(unicode.Han, r) ||
-			(r >= 0x3040 && r <= 0x30FF) || // Hiragana/Katakana
-			(r >= 0xAC00 && r <= 0xD7AF) { // Hangul
+		if tokenize.IsCJK(r) {
 			return true
 		}
-	}
-	return false
-}
-
-func isStopword(s string) bool {
-	switch s {
-	case "who", "whom", "whose", "what", "when", "where", "why", "how",
-		"which", "did", "does", "do", "done", "is", "are", "was", "were",
-		"am", "be", "been", "being", "have", "has", "had", "having",
-		"the", "a", "an", "and", "or", "but", "if", "then", "than",
-		"in", "on", "at", "to", "for", "of", "with", "by", "from", "as",
-		"into", "about", "after", "before", "between", "during", "over",
-		"under", "again", "also", "just", "only", "very", "too", "so",
-		"not", "no", "yes", "can", "could", "would", "should", "will",
-		"shall", "may", "might", "must", "me", "my", "mine", "you", "your",
-		"yours", "he", "him", "his", "she", "her", "hers", "it", "its",
-		"we", "us", "our", "ours", "they", "them", "their", "theirs",
-		"this", "that", "these", "those", "there", "here",
-		"meet", "met", "meeting", "tell", "told", "say", "said", "know", "knew":
-		return true
 	}
 	return false
 }

@@ -12,7 +12,6 @@ import (
 
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/port"
-	"github.com/GizClaw/flowcraft/sdk/recall/internal/projection"
 )
 
 type edgeRef struct {
@@ -50,7 +49,7 @@ func New(cfg ...Config) *Projection {
 
 func (p *Projection) Name() string { return "graph" }
 
-func (p *Projection) Consistency() port.Consistency { return projection.Optional }
+func (p *Projection) Consistency() port.Consistency { return port.Optional }
 
 // Project upserts edges derived from the supplied facts.
 func (p *Projection) Project(_ context.Context, facts []domain.TemporalFact) error {

@@ -78,15 +78,9 @@ func (s *fakeStore) DeleteByScope(context.Context, domain.Scope) (int, error) { 
 
 func (s *fakeStore) Close() error { return nil }
 
-type recordHook struct {
-	port.TelemetryHook
-	projections []port.ProjectionEvent
-}
+type recordHook struct{}
 
-func (h *recordHook) OnProjection(ev port.ProjectionEvent) { h.projections = append(h.projections, ev) }
-func (h *recordHook) OnDrift(port.DriftEvent)              {}
-func (h *recordHook) OnPipeline(port.PipelineEvent)        {}
-func (h *recordHook) OnStage(diagnostic.StageDiagnostic)   {}
+func (h *recordHook) OnStage(diagnostic.StageDiagnostic) {}
 
 func TestAppend_HappyPathStoresIDs(t *testing.T) {
 	store := &fakeStore{}
@@ -104,9 +98,6 @@ func TestAppend_HappyPathStoresIDs(t *testing.T) {
 	}
 	if got := state.AppendedFactIDs; len(got) != 2 || got[0] != "a" || got[1] != "b" {
 		t.Errorf("ids = %v", got)
-	}
-	if len(state.Trace.Appended) != 2 {
-		t.Errorf("Trace.Appended not populated")
 	}
 }
 
@@ -139,27 +130,9 @@ func TestAppend_CompensateDeletesAppendedFacts(t *testing.T) {
 	}
 }
 
-func TestAppend_CompensateEmitsSaveRollbackStoreDeleteOnErr(t *testing.T) {
-	hook := &recordHook{}
-	s := stages.NewAppend(&fakeStore{deleteErr: errors.New("boom")}, hook)
-	state := &write.WriteState{
-		Scope:           domain.Scope{RuntimeID: "rt"},
-		AppendedFactIDs: []string{"a"},
-		FailedStage:     "project_required",
-	}
-	_ = s.Compensate(context.Background(), state)
-	if len(hook.projections) != 1 || hook.projections[0].Projection != "save_rollback.store_delete" {
-		t.Errorf("emit = %+v, want save_rollback.store_delete", hook.projections)
-	}
-}
-
-func TestAppend_CompensateEmitsAppendedFactsAndReopensWhenValidityCloseFailed(t *testing.T) {
-	hook := &recordHook{}
-	store := &fakeStore{
-		deleteErr: errors.New("delete boom"),
-		reopenErr: errors.New("reopen boom"),
-	}
-	s := stages.NewAppend(store, hook)
+func TestAppend_CompensateReopensWhenValidityCloseFailed(t *testing.T) {
+	store := &fakeStore{deleteErr: errors.New("delete boom")}
+	s := stages.NewAppend(store, nil)
 	state := &write.WriteState{
 		Scope:           domain.Scope{RuntimeID: "rt"},
 		AppendedFactIDs: []string{"a"},
@@ -167,13 +140,7 @@ func TestAppend_CompensateEmitsAppendedFactsAndReopensWhenValidityCloseFailed(t 
 		FailedStage:     "validity_close",
 	}
 	_ = s.Compensate(context.Background(), state)
-	if len(hook.projections) != 2 {
-		t.Fatalf("want 2 emits, got %d: %+v", len(hook.projections), hook.projections)
-	}
-	if hook.projections[0].Projection != "save_rollback.appended_facts" {
-		t.Errorf("emit[0] = %q", hook.projections[0].Projection)
-	}
-	if hook.projections[1].Projection != "save_rollback.reopen_validity" {
-		t.Errorf("emit[1] = %q", hook.projections[1].Projection)
+	if len(store.reopened) != 1 || store.reopened[0] != "prior" {
+		t.Errorf("reopened = %v", store.reopened)
 	}
 }

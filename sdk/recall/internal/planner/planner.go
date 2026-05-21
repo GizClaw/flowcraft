@@ -215,6 +215,12 @@ func allocateBudgets(order []string, limit int) map[string]int {
 	return budgets
 }
 
+// FusionCandidateCap computes the per-source fusion pool cap from the
+// plan's final hit cap (wired by memory.New into federation_fanout).
+func FusionCandidateCap(finalCap int) int {
+	return sourceBudget(finalCap)
+}
+
 func sourceBudget(limit int) int {
 	if limit <= 0 {
 		limit = DefaultLimit

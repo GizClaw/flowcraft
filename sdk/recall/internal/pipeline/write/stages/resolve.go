@@ -18,9 +18,7 @@ import (
 //
 // The stage implements Conditional so that a nil resolver (the
 // caller explicitly opted out via Options) is reported as a single
-// Skipped diagnostic — the legacy code emitted no telemetry in that
-// case, which the legacy-bridge synthesises by not converting a
-// Skipped diagnostic to an OnPipeline event.
+// Skipped diagnostic.
 //
 // An empty resolution (no facts to append and no closes) short-
 // circuits the pipeline so downstream stages do not run with an

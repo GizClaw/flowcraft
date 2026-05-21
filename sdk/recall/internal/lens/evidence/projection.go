@@ -6,7 +6,6 @@ import (
 
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/port"
-	"github.com/GizClaw/flowcraft/sdk/recall/internal/projection"
 )
 
 // Projection mirrors TemporalFact.EvidenceRefs into the secondary
@@ -25,7 +24,7 @@ func New(store port.EvidenceStore) *Projection {
 
 func (p *Projection) Name() string { return "evidence" }
 
-func (p *Projection) Consistency() port.Consistency { return projection.Required }
+func (p *Projection) Consistency() port.Consistency { return port.Required }
 
 func (p *Projection) Project(ctx context.Context, facts []domain.TemporalFact) error {
 	if p.store == nil || len(facts) == 0 {

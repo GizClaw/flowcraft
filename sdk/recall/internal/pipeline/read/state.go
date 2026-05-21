@@ -60,10 +60,9 @@ type ReadState struct {
 	// ValidTo filters across slow stages).
 	Now time.Time
 
-	// StartedAt is the wall clock at Pipeline.Run entry, used by
-	// the runner to fill RecallTrace.TotalLatency. Distinct from
-	// Now (which a future stage may overwrite for deterministic
-	// time-range queries).
+	// StartedAt is the wall clock at Pipeline.Run entry. Each
+	// stage's diagnostic carries its own Duration; total latency
+	// is the sum across trace.Stages (Phase E.3: Stages-only).
 	StartedAt time.Time
 
 	// Stage outputs — populated in order, each stage owns
@@ -113,15 +112,9 @@ type ReadState struct {
 	// facade hands back to the caller via Memory.Recall.
 	Hits []domain.Hit
 
-	// RerankErr captures a non-fatal reranker failure for the
-	// legacy telemetry bridge (build_hits stage).
-	RerankErr error
-
-	// Reranked is the hit count after a successful rerank pass.
-	Reranked int
-
-	// EvolutionErr captures a non-fatal AfterRecall failure for the
-	// legacy telemetry bridge.
+	// EvolutionErr captures a non-fatal AfterRecall failure surfaced
+	// by the evolution_after_recall stage detail (no separate
+	// telemetry channel post Phase E.3).
 	EvolutionErr error
 
 	// Trace is the in-flight RecallTrace. Pipeline.AppendTrace

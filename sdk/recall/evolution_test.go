@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/GizClaw/flowcraft/sdk/recall/diagnostics"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain"
 )
 
@@ -44,7 +45,7 @@ func TestWithEvolution_HooksSaveAndRecall(t *testing.T) {
 	if ev.saves != 1 || ev.recalls != 1 {
 		t.Fatalf("evolution hooks = saves %d recalls %d", ev.saves, ev.recalls)
 	}
-	if ev.trace.Materialized == 0 || ev.trace.FusedCandidates == 0 || len(ev.trace.Sources) == 0 {
+	if diagnostics.Materialized(ev.trace) == 0 || diagnostics.FusedCandidates(ev.trace) == 0 || len(diagnostics.Sources(ev.trace)) == 0 {
 		t.Fatalf("evolution recall trace was not populated: %+v", ev.trace)
 	}
 }

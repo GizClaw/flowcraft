@@ -5,12 +5,10 @@ import (
 	"encoding/hex"
 	"sort"
 	"strings"
-	"unicode"
-
-	"golang.org/x/text/unicode/norm"
 
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/port"
+	"github.com/GizClaw/flowcraft/sdk/text/normalize"
 )
 
 // NopPredicateSynonyms keeps predicates verbatim. Default for PR-4.
@@ -70,8 +68,7 @@ func (n *defaultNormalizer) Normalize(f domain.TemporalFact) domain.TemporalFact
 		// underscore-style normalization so "Favourite Colour" and
 		// "favorite_color" merge cleanly when fed through the
 		// synonym hook.
-		canonical := strings.ToLower(replacePunctuationWithSpace(pred))
-		canonical = canonicalSpace(canonical)
+		canonical := canonicalSpace(strings.ToLower(normalize.ReplaceNonAlnumWithSpace(pred)))
 		if alias := n.synonyms.Canonical(canonical); alias != "" {
 			canonical = alias
 		}
@@ -84,47 +81,13 @@ func (n *defaultNormalizer) Normalize(f domain.TemporalFact) domain.TemporalFact
 	return f
 }
 
-// canonicalSpace folds Unicode-NFC + collapses internal whitespace
-// to single ASCII space + trims edge whitespace. Output is suitable
-// for direct equality comparison and stable hashing.
+// canonicalSpace is the package-internal alias for
+// [normalize.CollapseSpaces]. Kept as a one-line wrapper so the
+// normalizer's call sites stay self-documenting (every fact column
+// it touches needs canonical-space form) without leaking the
+// sdk/text dependency into the public signature.
 func canonicalSpace(s string) string {
-	if s == "" {
-		return ""
-	}
-	s = nfc(s)
-	return strings.Join(strings.Fields(s), " ")
-}
-
-// nfc applies Unicode Normalization Form C. Same canonical form
-// across the codebase keeps merge keys stable when callers mix
-// pre-composed vs decomposed encodings (e.g. "é" vs "e\u0301").
-func nfc(s string) string {
-	if s == "" {
-		return ""
-	}
-	return norm.NFC.String(s)
-}
-
-// replacePunctuationWithSpace replaces ASCII punctuation runes
-// (anything that is unicode.IsPunct or in the ASCII symbol set)
-// with a single space, so the predicate column can absorb
-// "favorite-color", "favorite/color", "favorite.color" into the
-// same token after canonicalSpace.
-func replacePunctuationWithSpace(s string) string {
-	if s == "" {
-		return ""
-	}
-	var b strings.Builder
-	b.Grow(len(s))
-	for _, r := range s {
-		switch {
-		case unicode.IsLetter(r) || unicode.IsDigit(r):
-			b.WriteRune(r)
-		default:
-			b.WriteRune(' ')
-		}
-	}
-	return b.String()
+	return normalize.CollapseSpaces(s)
 }
 
 // canonicalSet trims, lower-cases, and de-duplicates entity-like

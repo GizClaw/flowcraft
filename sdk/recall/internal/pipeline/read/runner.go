@@ -16,6 +16,7 @@ import (
 //
 //	intent → plan → federation_fanout → federation_merge →
 //	trust_filter → rank → build_hits → evolution_after_recall
+//
 // TODO(D.5): wrap source_fanout→materialize in federation_{fanout,merge}
 type Runner struct {
 	stages []pipeline.Stage[*ReadState]
@@ -28,17 +29,15 @@ func NewRunner(stages []pipeline.Stage[*ReadState], hook port.TelemetryHook) *Ru
 	return &Runner{stages: stages, hook: hook}
 }
 
-// Run executes the read pipeline against state with the dual-rail
-// telemetry adapter (OnStage + legacy OnPipeline synthesis).
+// Run executes the read pipeline against state.
 func (r *Runner) Run(ctx context.Context, state *ReadState) error {
 	if r == nil || state == nil {
 		return nil
 	}
-	adapter := newLegacyAdapter(r.hook, state)
 	p := pipeline.NewPipeline(
 		diagnostic.PhaseRead,
 		r.stages,
-		port.TelemetryHook(adapter),
+		r.hook,
 		func(s *ReadState, d diagnostic.StageDiagnostic) { s.AppendStage(d) },
 	)
 	return p.Run(ctx, state)

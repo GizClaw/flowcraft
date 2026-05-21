@@ -10,11 +10,11 @@ import (
 
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/llm"
+	"github.com/GizClaw/flowcraft/sdk/recall/diagnostics"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/ingest"
 	retrievallens "github.com/GizClaw/flowcraft/sdk/recall/internal/lens/retrieval"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/port"
-	"github.com/GizClaw/flowcraft/sdk/recall/internal/projection"
 	temporalstore "github.com/GizClaw/flowcraft/sdk/recall/internal/store/temporal"
 	retrievalmem "github.com/GizClaw/flowcraft/sdk/retrieval/memory"
 )
@@ -183,9 +183,9 @@ func TestSave_StateSecondWriteSupersedesPrior(t *testing.T) {
 			t.Errorf("superseded fact must not appear in Recall, got %+v", hits)
 		}
 	}
-	for _, drop := range trace.Drops {
+	for _, drop := range diagnostics.Drops(trace) {
 		if drop.FactID == priorID && drop.Reason == DropSuperseded {
-			t.Fatalf("required projections should not emit superseded candidates after normal Save, drops=%+v", trace.Drops)
+			t.Fatalf("required projections should not emit superseded candidates after normal Save, drops=%+v", diagnostics.Drops(trace))
 		}
 	}
 }
@@ -738,20 +738,20 @@ func TestRecallExplain_PopulatesTrace(t *testing.T) {
 	if len(hits) == 0 {
 		t.Fatal("expected hits")
 	}
-	if len(trace.Sources) != 2 {
-		t.Fatalf("want 2 sources in trace, got %d (%+v)", len(trace.Sources), trace.Sources)
+	if len(diagnostics.Sources(trace)) != 2 {
+		t.Fatalf("want 2 sources in trace, got %d (%+v)", len(diagnostics.Sources(trace)), diagnostics.Sources(trace))
 	}
 	gotNames := map[string]bool{}
-	for _, s := range trace.Sources {
+	for _, s := range diagnostics.Sources(trace) {
 		gotNames[s.Source] = true
 	}
 	if !gotNames["retrieval"] || !gotNames["entity"] {
-		t.Errorf("trace must cover retrieval and entity, got %+v", trace.Sources)
+		t.Errorf("trace must cover retrieval and entity, got %+v", diagnostics.Sources(trace))
 	}
-	if trace.Materialized == 0 {
+	if diagnostics.Materialized(trace) == 0 {
 		t.Error("materialized count must be > 0")
 	}
-	if trace.Plan.TotalCap == 0 {
+	if diagnostics.Plan(trace).TotalCap == 0 {
 		t.Error("plan TotalCap must be populated")
 	}
 }
@@ -846,7 +846,7 @@ func TestRecall_AllSourcesFailReturnsError(t *testing.T) {
 type failingProjection struct{}
 
 func (failingProjection) Name() string                  { return "broken" }
-func (failingProjection) Consistency() port.Consistency { return projection.Required }
+func (failingProjection) Consistency() port.Consistency { return port.Required }
 func (failingProjection) Project(context.Context, []domain.TemporalFact) error {
 	return errors.New("synthetic")
 }
@@ -1041,6 +1041,175 @@ func TestForget_EmptyFactID_IsValidation(t *testing.T) {
 	}
 }
 
+func TestSave_TierCoreBoostsConfidence(t *testing.T) {
+	mem, err := New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mem.Close()
+	scope := Scope{RuntimeID: "rt", UserID: "u1"}
+
+	ex, ok := mem.(SaveExplainer)
+	if !ok {
+		t.Fatal("memory does not implement SaveExplainer")
+	}
+	resGeneral, _, err := ex.SaveExplain(context.Background(), scope, SaveRequest{
+		Facts: []TemporalFact{{Kind: FactNote, Content: "tier general"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resCore, _, err := ex.SaveExplain(context.Background(), scope, SaveRequest{
+		Tier:  domain.TierCore,
+		Facts: []TemporalFact{{Kind: FactNote, Content: "tier core"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resGeneral.FactIDs) != 1 || len(resCore.FactIDs) != 1 {
+		t.Fatalf("fact ids general=%d core=%d", len(resGeneral.FactIDs), len(resCore.FactIDs))
+	}
+	confGeneral := factConfidence(mem, scope, resGeneral.FactIDs[0], "tier general")
+	confCore := factConfidence(mem, scope, resCore.FactIDs[0], "tier core")
+	if confCore <= confGeneral {
+		t.Fatalf("core confidence %v want > general %v", confCore, confGeneral)
+	}
+}
+
+func factConfidence(mem Memory, scope Scope, id, text string) float64 {
+	hits, err := mem.Recall(context.Background(), scope, Query{Text: text, Limit: 5})
+	if err != nil {
+		panic(err)
+	}
+	for _, h := range hits {
+		if h.Fact.ID == id {
+			return h.Fact.Confidence
+		}
+	}
+	return 0
+}
+
+func TestFork_KeepsPriorActive(t *testing.T) {
+	mem, err := New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mem.Close()
+	scope := Scope{RuntimeID: "rt", UserID: "u1"}
+	first, err := mem.Save(context.Background(), scope, SaveRequest{
+		Facts: []TemporalFact{{
+			Kind:      FactState,
+			Subject:   "alice",
+			Predicate: "location",
+			Object:    "paris",
+			Content:   "alice in paris",
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	priorID := first.FactIDs[0]
+	if _, err = mem.Fork(context.Background(), scope, priorID, TemporalFact{
+		Kind:      FactState,
+		Subject:   "alice",
+		Predicate: "location",
+		Object:    "lyon",
+		Content:   "alice in lyon",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	hits, err := mem.Recall(context.Background(), scope, Query{Text: "alice location", Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var seenPrior, seenFork bool
+	for _, h := range hits {
+		if h.Fact.ID == priorID {
+			seenPrior = true
+		}
+		if h.Fact.Object == "lyon" {
+			seenFork = true
+		}
+	}
+	if !seenPrior || !seenFork {
+		t.Fatalf("fork recall: prior=%v fork=%v hits=%d", seenPrior, seenFork, len(hits))
+	}
+}
+
+func TestTrustFilter_RemovesSecretFacts(t *testing.T) {
+	mem, err := New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mem.Close()
+	scope := Scope{RuntimeID: "rt", UserID: "u1"}
+	if _, err := mem.Save(context.Background(), scope, SaveRequest{
+		Facts: []TemporalFact{{
+			Kind:     FactNote,
+			Content:  "secret plan",
+			Metadata: map[string]any{domain.MetaSensitivity: "secret"},
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := mem.Save(context.Background(), scope, SaveRequest{
+		Facts: []TemporalFact{{
+			Kind:     FactNote,
+			Content:  "public note",
+			Metadata: map[string]any{domain.MetaSensitivity: "public"},
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	hits, err := mem.Recall(context.Background(), scope, Query{
+		Text:  "plan note",
+		Limit: 10,
+		Trust: &TrustContext{MaxSensitivity: "internal"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, h := range hits {
+		if lab, _ := h.Fact.Metadata[domain.MetaSensitivity].(string); lab == "secret" {
+			t.Fatalf("secret fact leaked: %+v", h.Fact)
+		}
+	}
+}
+
+func TestReinforce_BoostsRank(t *testing.T) {
+	mem, err := New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mem.Close()
+	scope := Scope{RuntimeID: "rt", UserID: "u1"}
+	low, err := mem.Save(context.Background(), scope, SaveRequest{
+		Facts: []TemporalFact{{Kind: FactNote, Content: "alpha beta gamma", Confidence: 0.5}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := mem.Save(context.Background(), scope, SaveRequest{
+		Tier:  domain.TierCore,
+		Facts: []TemporalFact{{Kind: FactNote, Content: "alpha beta gamma other", Confidence: 0.5}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := mem.Reinforce(context.Background(), scope, low.FactIDs[0], 2.0); err != nil {
+		t.Fatal(err)
+	}
+	hits, err := mem.Recall(context.Background(), scope, Query{Text: "alpha beta gamma", Limit: 5})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hits) == 0 {
+		t.Fatal("no hits")
+	}
+	if hits[0].Fact.ID != low.FactIDs[0] {
+		t.Fatalf("top hit = %s want reinforced %s", hits[0].Fact.ID, low.FactIDs[0])
+	}
+}
+
 type failOnProjectN struct {
 	n      int
 	failOn int
@@ -1048,7 +1217,7 @@ type failOnProjectN struct {
 
 func (p *failOnProjectN) Name() string { return "fail_on_project_n" }
 
-func (p *failOnProjectN) Consistency() port.Consistency { return projection.Required }
+func (p *failOnProjectN) Consistency() port.Consistency { return port.Required }
 
 func (p *failOnProjectN) Project(context.Context, []domain.TemporalFact) error {
 	p.n++

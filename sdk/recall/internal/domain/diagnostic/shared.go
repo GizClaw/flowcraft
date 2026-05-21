@@ -106,3 +106,12 @@ type CompensationFailedDetail struct {
 }
 
 func (CompensationFailedDetail) isStageDetail() {}
+
+// ActivatedLens is one row in PlanDetail.ActivatedLenses. Lives in
+// shared.go (cross-detail vocabulary, per restructure §4).
+type ActivatedLens struct {
+	Lens        string
+	Weight      float64
+	Budget      int
+	ActivatedBy string
+}

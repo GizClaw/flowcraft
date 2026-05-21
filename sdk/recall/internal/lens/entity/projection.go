@@ -12,7 +12,6 @@ import (
 
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/port"
-	"github.com/GizClaw/flowcraft/sdk/recall/internal/projection"
 )
 
 // Projection is the in-memory entity mention projection. PR-2 ships
@@ -52,7 +51,7 @@ func (p *Projection) Name() string { return "entity" }
 // Consistency reports Required: entity recall is part of the v2 read
 // path, so the projection must be visible immediately after Save
 // (docs §13 Phase 2).
-func (p *Projection) Consistency() port.Consistency { return projection.Required }
+func (p *Projection) Consistency() port.Consistency { return port.Required }
 
 // Project upserts mentions for the supplied facts. Facts may belong
 // to multiple scopes; they are routed per scope shard.

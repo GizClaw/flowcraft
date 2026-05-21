@@ -9,6 +9,7 @@ import (
 	"github.com/GizClaw/flowcraft/eval/locomo/runners"
 	"github.com/GizClaw/flowcraft/sdk/llm"
 	"github.com/GizClaw/flowcraft/sdk/recall"
+	"github.com/GizClaw/flowcraft/sdk/recall/diagnostics"
 )
 
 type fakeLLM struct {
@@ -158,13 +159,13 @@ func TestGroundedHitContentSatisfiesAnswerContextDiagnostics(t *testing.T) {
 	}}
 
 	rendered := groundedHitContent(h.Fact)
-	if attrs := recall.AttributeAnswerContext([]recall.Hit{h}, []recall.AnswerContextItem{{
+	if attrs := diagnostics.AttributeAnswerContext([]recall.Hit{h}, []diagnostics.AnswerContextItem{{
 		FactID: h.Fact.ID,
 		Text:   h.Fact.Content,
 	}}); len(attrs) == 0 {
 		t.Fatal("diagnostics should flag content-only rendering")
 	}
-	if attrs := recall.AttributeAnswerContext([]recall.Hit{h}, []recall.AnswerContextItem{{
+	if attrs := diagnostics.AttributeAnswerContext([]recall.Hit{h}, []diagnostics.AnswerContextItem{{
 		FactID: h.Fact.ID,
 		Text:   rendered,
 	}}); len(attrs) != 0 {
