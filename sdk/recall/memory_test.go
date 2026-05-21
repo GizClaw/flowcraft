@@ -1343,3 +1343,226 @@ func (s errorSource) Name() string { return s.name }
 func (s errorSource) Query(context.Context, domain.QueryPlan) domain.SourceResult {
 	return domain.SourceResult{Source: s.name, Err: s.err}
 }
+
+// TestReinforce_RoutesToFeedbackPipeline pins the Cluster A
+// 2026-05-21 contract: Memory.Reinforce runs through the feedback
+// pipeline so the call emits a single apply_feedback StageDiagnostic
+// AND the canonical fact's reinforcement counter advances. The
+// retrieval projection sees the updated MetaReinforcement on the
+// follow-up reproject (Cluster D fix).
+func TestReinforce_RoutesToFeedbackPipeline(t *testing.T) {
+	hook := &captureHook{}
+	store := temporalstore.NewMemoryStore()
+	mem, err := New(withTemporalStore(store), WithTelemetryHook(hook))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mem.Close()
+	scope := Scope{RuntimeID: "rt", UserID: "u1"}
+	res, err := mem.Save(context.Background(), scope, SaveRequest{
+		Facts: []TemporalFact{{Kind: FactNote, Content: "alpha"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	hook.stages = nil
+
+	if err := mem.Reinforce(context.Background(), scope, res.FactIDs[0], 3); err != nil {
+		t.Fatalf("Reinforce: %v", err)
+	}
+	if !hasStage(hook.stages, "apply_feedback") {
+		t.Errorf("expected apply_feedback stage diagnostic; got %v", stageNames(hook.stages))
+	}
+	got, err := store.Get(context.Background(), scope, res.FactIDs[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Reinforcement != 3 {
+		t.Errorf("Reinforcement = %v, want 3", got.Reinforcement)
+	}
+}
+
+// TestPenalize_RoutesToFeedbackPipeline is the negative-channel
+// symmetric of the Reinforce route test.
+func TestPenalize_RoutesToFeedbackPipeline(t *testing.T) {
+	hook := &captureHook{}
+	store := temporalstore.NewMemoryStore()
+	mem, err := New(withTemporalStore(store), WithTelemetryHook(hook))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mem.Close()
+	scope := Scope{RuntimeID: "rt", UserID: "u1"}
+	res, err := mem.Save(context.Background(), scope, SaveRequest{
+		Facts: []TemporalFact{{Kind: FactNote, Content: "alpha"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	hook.stages = nil
+
+	if err := mem.Penalize(context.Background(), scope, res.FactIDs[0], 1.5); err != nil {
+		t.Fatalf("Penalize: %v", err)
+	}
+	if !hasStage(hook.stages, "apply_feedback") {
+		t.Errorf("expected apply_feedback stage; got %v", stageNames(hook.stages))
+	}
+	got, _ := store.Get(context.Background(), scope, res.FactIDs[0])
+	if got.Penalty != 1.5 {
+		t.Errorf("Penalty = %v, want 1.5", got.Penalty)
+	}
+}
+
+// TestFork_RoutesToRevisionPipeline pins that Memory.Fork emits the
+// three revision pipeline stages (lookup_source / attach / save) AND
+// produces a new canonical fact carrying the RevisionFork annotation
+// while leaving the source fact active.
+func TestFork_RoutesToRevisionPipeline(t *testing.T) {
+	hook := &captureHook{}
+	store := temporalstore.NewMemoryStore()
+	mem, err := New(withTemporalStore(store), WithTelemetryHook(hook))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mem.Close()
+	scope := Scope{RuntimeID: "rt", UserID: "u1"}
+	first, err := mem.Save(context.Background(), scope, SaveRequest{
+		Facts: []TemporalFact{{Kind: FactState, Subject: "alice", Predicate: "city", Content: "Paris"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	hook.stages = nil
+
+	res, err := mem.Fork(context.Background(), scope, first.FactIDs[0], TemporalFact{
+		Kind:      FactState,
+		Subject:   "alice",
+		Predicate: "city",
+		Content:   "Lyon",
+	})
+	if err != nil {
+		t.Fatalf("Fork: %v", err)
+	}
+	for _, name := range []string{"revision_lookup_source", "revision_attach", "revision_save"} {
+		if !hasStage(hook.stages, name) {
+			t.Errorf("expected stage %q; got %v", name, stageNames(hook.stages))
+		}
+	}
+	created, err := store.Get(context.Background(), scope, res.FactIDs[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	rev, ok := domain.RevisionOf(created)
+	if !ok || rev.Kind != domain.RevisionFork || rev.SourceFactID != first.FactIDs[0] {
+		t.Errorf("Revision = %+v ok=%v, want fork/%s", rev, ok, first.FactIDs[0])
+	}
+	prior, _ := store.Get(context.Background(), scope, first.FactIDs[0])
+	if prior.ValidTo != nil || prior.CorrectedBy != "" {
+		t.Errorf("Fork must NOT close source; got ValidTo=%v CorrectedBy=%q", prior.ValidTo, prior.CorrectedBy)
+	}
+}
+
+// TestContest_RoutesToRevisionPipeline pins that Memory.Contest
+// emits the three revision pipeline stages and creates a FactNote
+// carrying the RevisionContest annotation.
+func TestContest_RoutesToRevisionPipeline(t *testing.T) {
+	hook := &captureHook{}
+	store := temporalstore.NewMemoryStore()
+	mem, err := New(withTemporalStore(store), WithTelemetryHook(hook))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mem.Close()
+	scope := Scope{RuntimeID: "rt", UserID: "u1"}
+	first, err := mem.Save(context.Background(), scope, SaveRequest{
+		Facts: []TemporalFact{{Kind: FactState, Subject: "alice", Predicate: "city", Content: "Paris"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	hook.stages = nil
+
+	res, err := mem.Contest(context.Background(), scope, first.FactIDs[0], []EvidenceRef{{ID: "ev-1"}})
+	if err != nil {
+		t.Fatalf("Contest: %v", err)
+	}
+	for _, name := range []string{"revision_lookup_source", "revision_attach", "revision_save"} {
+		if !hasStage(hook.stages, name) {
+			t.Errorf("expected stage %q; got %v", name, stageNames(hook.stages))
+		}
+	}
+	created, err := store.Get(context.Background(), scope, res.FactIDs[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.Kind != FactNote {
+		t.Errorf("Contest fact kind = %v, want FactNote", created.Kind)
+	}
+	rev, ok := domain.RevisionOf(created)
+	if !ok || rev.Kind != domain.RevisionContest || rev.SourceFactID != first.FactIDs[0] {
+		t.Errorf("Revision = %+v ok=%v, want contest/%s", rev, ok, first.FactIDs[0])
+	}
+}
+
+// TestExpireRetired_HardDeletesExpiredFacts pins the D5 2026-05-21
+// API: ExpireRetired hard-deletes facts whose ExpiresAt is in the
+// past relative to the supplied cutoff and leaves the rest intact.
+func TestExpireRetired_HardDeletesExpiredFacts(t *testing.T) {
+	store := temporalstore.NewMemoryStore()
+	mem, err := New(withTemporalStore(store))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mem.Close()
+	scope := Scope{RuntimeID: "rt", UserID: "u1"}
+	now := time.Now()
+	past := now.Add(-time.Hour)
+	future := now.Add(time.Hour)
+
+	for i, exp := range []*time.Time{&past, &past, &past, &future, &future} {
+		fact := TemporalFact{
+			Kind:      FactNote,
+			Content:   "f" + string(rune('a'+i)),
+			ExpiresAt: exp,
+		}
+		if _, err := mem.Save(context.Background(), scope, SaveRequest{Facts: []TemporalFact{fact}}); err != nil {
+			t.Fatalf("seed save %d: %v", i, err)
+		}
+	}
+
+	deleted, err := mem.ExpireRetired(context.Background(), scope, now)
+	if err != nil {
+		t.Fatalf("ExpireRetired: %v", err)
+	}
+	if deleted != 3 {
+		t.Errorf("deleted = %d, want 3", deleted)
+	}
+	got, _ := store.List(context.Background(), scope, port.ListQuery{IncludeSuperseded: true})
+	if len(got) != 2 {
+		t.Errorf("surviving facts = %d, want 2", len(got))
+	}
+}
+
+// TestExpireRetired_NoExpiredFactsReturnsZero pins the empty-sweep
+// contract: a clean scope returns (0, nil) without touching the
+// store or projections.
+func TestExpireRetired_NoExpiredFactsReturnsZero(t *testing.T) {
+	mem, err := New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mem.Close()
+	scope := Scope{RuntimeID: "rt", UserID: "u1"}
+	if _, err := mem.Save(context.Background(), scope, SaveRequest{
+		Facts: []TemporalFact{{Kind: FactNote, Content: "alpha"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := mem.ExpireRetired(context.Background(), scope, time.Now())
+	if err != nil {
+		t.Fatalf("ExpireRetired: %v", err)
+	}
+	if got != 0 {
+		t.Errorf("got = %d, want 0", got)
+	}
+}

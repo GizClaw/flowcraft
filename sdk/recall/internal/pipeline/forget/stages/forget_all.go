@@ -73,11 +73,19 @@ func (ForgetAll) Name() string { return "forget_all" }
 
 // Run implements pipeline.Stage.
 //
-//nolint:gocyclo // five branches map 1:1 to the two-mode flow; splitting hides intent.
+//nolint:gocyclo // five branches map 1:1 to the mode + filter flow; splitting hides intent.
 func (s *ForgetAll) Run(ctx context.Context, state *forget.State) (diagnostic.StageDetail, error) {
 	started := time.Now()
 	scopeKey := state.Scope.CanonicalKey()
 	mode := domain.NormalizeForgetMode(state.Mode)
+
+	// ExpireRetired path (Cluster A / D5 2026-05-21): a non-nil
+	// Filter coerces the operation to Hard and waives the
+	// confirmScopeKey guard — TTL sweeps are intentional
+	// administrative deletes, not GDPR full-scope wipes.
+	if state.Filter != nil {
+		return s.runExpire(ctx, state, scopeKey, started)
+	}
 
 	if mode == domain.ForgetHard && state.ConfirmScopeKey != scopeKey {
 		return diagnostic.ForgetAllDetail{ScopeKey: scopeKey, Mode: string(mode)},
@@ -209,6 +217,113 @@ func (s *ForgetAll) runHard(
 		EvidenceCleared:    evidenceCount,
 		Latency:            time.Since(started),
 	}, nil
+}
+
+// runExpire is the ExpireRetired path (Cluster A / D5
+// 2026-05-21). It lists every fact in the scope, applies
+// state.Filter to compute the deletion subset, hard-deletes the
+// matches per-id (preserving non-matching facts and their projection
+// entries), and emits an ExpireRetiredDetail capturing the scan
+// + delete + projection counters.
+//
+// Per-fact Forget is the right primitive here (rather than
+// ClearScope) because a TTL sweep MUST leave non-expired facts'
+// projection entries intact — ClearScope would wipe the entire
+// scope partition.
+func (s *ForgetAll) runExpire(
+	ctx context.Context,
+	state *forget.State,
+	scopeKey string,
+	started time.Time,
+) (diagnostic.StageDetail, error) {
+	now := state.Now
+	if now.IsZero() {
+		now = time.Now()
+	}
+
+	facts, err := s.store.List(ctx, state.Scope, port.ListQuery{IncludeSuperseded: true})
+	if err != nil {
+		return diagnostic.ExpireRetiredDetail{
+			ScopeKey:      scopeKey,
+			ExpiresBefore: deref(state.Filter.ExpiresBefore),
+			Latency:       time.Since(started),
+		}, fmt.Errorf("recall.ExpireRetired: list: %w", err)
+	}
+
+	matched := filterByExpiresBefore(facts, state.Filter.ExpiresBefore)
+	if len(matched) == 0 {
+		return diagnostic.ExpireRetiredDetail{
+			ScopeKey:      scopeKey,
+			ExpiresBefore: deref(state.Filter.ExpiresBefore),
+			Scanned:       len(facts),
+			Latency:       time.Since(started),
+		}, nil
+	}
+
+	if err := s.fanout.ForgetRequired(ctx, state.Scope, matched); err != nil {
+		return diagnostic.ExpireRetiredDetail{
+			ScopeKey:      scopeKey,
+			ExpiresBefore: deref(state.Filter.ExpiresBefore),
+			Scanned:       len(facts),
+			Latency:       time.Since(started),
+		}, err
+	}
+	s.fanout.ForgetOptional(ctx, state.Scope, matched)
+
+	if err := s.store.Delete(ctx, state.Scope, matched); err != nil {
+		return diagnostic.ExpireRetiredDetail{
+			ScopeKey:      scopeKey,
+			ExpiresBefore: deref(state.Filter.ExpiresBefore),
+			Scanned:       len(facts),
+			Latency:       time.Since(started),
+		}, fmt.Errorf("recall.ExpireRetired: store delete: %w", err)
+	}
+
+	state.Deleted = len(matched)
+	return diagnostic.ExpireRetiredDetail{
+		ScopeKey:       scopeKey,
+		ExpiresBefore:  deref(state.Filter.ExpiresBefore),
+		Scanned:        len(facts),
+		Deleted:        len(matched),
+		ProjectionsHit: countProjections(s.projections),
+		Latency:        time.Since(started),
+	}, nil
+}
+
+// filterByExpiresBefore returns the IDs of facts whose ExpiresAt is
+// non-nil, non-zero, and not-after the supplied cutoff. nil cutoff
+// returns nil (no work).
+func filterByExpiresBefore(facts []domain.TemporalFact, cutoff *time.Time) []string {
+	if cutoff == nil || cutoff.IsZero() {
+		return nil
+	}
+	var out []string
+	for _, f := range facts {
+		if f.ExpiresAt == nil || f.ExpiresAt.IsZero() {
+			continue
+		}
+		if !cutoff.Before(*f.ExpiresAt) {
+			out = append(out, f.ID)
+		}
+	}
+	return out
+}
+
+func deref(t *time.Time) time.Time {
+	if t == nil {
+		return time.Time{}
+	}
+	return *t
+}
+
+func countProjections(projections []port.Projection) int {
+	n := 0
+	for _, p := range projections {
+		if p != nil {
+			n++
+		}
+	}
+	return n
 }
 
 // clearAllProjections invokes ClearScope on every registered

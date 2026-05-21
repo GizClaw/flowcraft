@@ -23,12 +23,16 @@ import (
 	timelinelens "github.com/GizClaw/flowcraft/sdk/recall/internal/lens/timeline"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/materialize"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/pipeline"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/pipeline/feedback"
+	feedbackstages "github.com/GizClaw/flowcraft/sdk/recall/internal/pipeline/feedback/stages"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/pipeline/forget"
 	forgetstages "github.com/GizClaw/flowcraft/sdk/recall/internal/pipeline/forget/stages"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/pipeline/read"
 	readstages "github.com/GizClaw/flowcraft/sdk/recall/internal/pipeline/read/stages"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/pipeline/rebuild"
 	rebuildstages "github.com/GizClaw/flowcraft/sdk/recall/internal/pipeline/rebuild/stages"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/pipeline/revision"
+	revisionstages "github.com/GizClaw/flowcraft/sdk/recall/internal/pipeline/revision/stages"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/pipeline/write"
 	writestages "github.com/GizClaw/flowcraft/sdk/recall/internal/pipeline/write/stages"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/planner"
@@ -54,6 +58,15 @@ type Memory interface {
 	Recall(ctx context.Context, scope Scope, query Query) ([]Hit, error)
 	Forget(ctx context.Context, scope Scope, factID string, mode ...ForgetMode) error
 	ForgetAll(ctx context.Context, scope Scope, mode ForgetMode, confirmScopeKey string) (int, error)
+	// ExpireRetired hard-deletes every scope-local fact whose
+	// ExpiresAt is non-nil and not after now (TTL sweep). It reuses
+	// the forget pipeline so projection fanout + telemetry follow
+	// the same contract as ForgetAll, but does NOT require the GDPR
+	// confirmScopeKey guard — TTL is an administrative cleanup, not
+	// an Art.17 wipe — and ONLY removes matching facts (non-expired
+	// rows survive). zero `now` defaults to time.Now(); returns the
+	// number of facts physically deleted (D5 2026-05-21).
+	ExpireRetired(ctx context.Context, scope Scope, now time.Time) (int, error)
 	History(ctx context.Context, scope Scope, factID string) ([]FactVersion, error)
 	// Fork appends a parallel revision without closing the source fact.
 	Fork(ctx context.Context, scope Scope, sourceFactID string, newFact TemporalFact) (SaveResult, error)
@@ -83,6 +96,8 @@ type memory struct {
 	readRunner      *read.Runner
 	rebuildRunner   *rebuild.Runner
 	forgetRunner    *forget.Runner
+	feedbackRunner  *feedback.Runner
+	revisionRunner  *revision.Runner
 
 	// projections retains the canonical projection set (in
 	// registration order) so RebuildProjection can resolve a
@@ -268,7 +283,46 @@ func New(opts ...Option) (Memory, error) {
 	m.forgetRunner = forget.NewRunner([]pipeline.Stage[*forget.State]{
 		forgetstages.NewForgetAll(cfg.store, fanout, projections, cfg.evidenceStore),
 	}, tel)
+	m.feedbackRunner = feedback.NewRunner([]pipeline.Stage[*feedback.State]{
+		feedbackstages.NewApplyFeedback(cfg.store, fanout),
+	}, tel)
+	m.revisionRunner = revision.NewRunner([]pipeline.Stage[*revision.State]{
+		revisionstages.NewLookupSource(cfg.store),
+		revisionstages.NewAttachRevision(),
+		revisionstages.NewSave(m.saveRevisionFact, cfg.store),
+	}, tel)
 	return m, nil
+}
+
+// saveRevisionFact drives the canonical write pipeline (pre + post
+// runners) under the assumption that the caller already holds the
+// per-scope write lock — Memory.Fork / Memory.Contest take the lock
+// before invoking revisionRunner.Run. Returning the freshly-stored
+// canonical fact lets the revision_save stage populate state.Created
+// without an extra store.Get round-trip from the facade.
+func (m *memory) saveRevisionFact(ctx context.Context, scope domain.Scope, fact domain.TemporalFact) (domain.TemporalFact, error) {
+	state := &write.WriteState{
+		Scope:      scope,
+		Facts:      []domain.TemporalFact{fact},
+		ObservedAt: fact.ObservedAt,
+	}
+	if err := m.writePreRunner.Run(ctx, state); err != nil {
+		return domain.TemporalFact{}, err
+	}
+	if len(state.Ingest.Facts) == 0 {
+		return domain.TemporalFact{}, errdefs.Internalf("recall.Revision: ingest produced no facts")
+	}
+	if err := m.writePostRunner.Run(ctx, state); err != nil {
+		return domain.TemporalFact{}, err
+	}
+	if len(state.AppendedFactIDs) == 0 {
+		return domain.TemporalFact{}, errdefs.Internalf("recall.Revision: no fact id returned")
+	}
+	created, err := m.store.Get(ctx, scope, state.AppendedFactIDs[0])
+	if err != nil {
+		return domain.TemporalFact{}, fmt.Errorf("recall.Revision: re-get: %w", err)
+	}
+	return created, nil
 }
 
 // Save runs the canonical write pipeline with strict transactional
@@ -474,6 +528,40 @@ func (m *memory) ForgetAll(ctx context.Context, scope Scope, mode ForgetMode, co
 		Scope:           scope,
 		Mode:            mode,
 		ConfirmScopeKey: confirmScopeKey,
+	}
+	if err := m.forgetRunner.Run(ctx, state); err != nil {
+		return 0, err
+	}
+	return state.Deleted, nil
+}
+
+// ExpireRetired hard-deletes every scope-local fact whose ExpiresAt
+// is non-nil and not after now. D5 2026-05-21 promoted this from an
+// internal evolution helper to a public Memory facade method.
+//
+// The call routes through the forget pipeline with State.Filter set,
+// which:
+//   - implicitly applies Hard mode semantics (TTL is destructive);
+//   - skips the GDPR confirmScopeKey guard (sweep is administrative);
+//   - leaves non-matching facts and their projection entries intact
+//     (per-id Delete rather than DeleteByScope).
+func (m *memory) ExpireRetired(ctx context.Context, scope Scope, now time.Time) (int, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	if scope.RuntimeID == "" {
+		return 0, errdefs.Validationf("recall.ExpireRetired: scope.runtime_id is required")
+	}
+	if now.IsZero() {
+		now = time.Now()
+	}
+	unlock := m.lockWriteScope(scope)
+	defer unlock()
+	state := &forget.State{
+		Scope:  scope,
+		Mode:   domain.ForgetHard,
+		Filter: &forget.ForgetFilter{ExpiresBefore: &now},
+		Now:    now,
 	}
 	if err := m.forgetRunner.Run(ctx, state); err != nil {
 		return 0, err

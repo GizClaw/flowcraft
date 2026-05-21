@@ -11,9 +11,28 @@
 package forget
 
 import (
+	"time"
+
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain/diagnostic"
 )
+
+// ForgetFilter narrows the set of facts the forget_all stage acts on
+// when populated. Without a filter the stage retires every fact in
+// the scope (the GDPR ForgetAll path); with one it acts on the
+// subset that matches — backing Memory.ExpireRetired (D5
+// 2026-05-21) as the TTL-style sweep variant.
+//
+// ExpiresBefore is the only filter axis today: facts with non-nil
+// ExpiresAt that is not after the cutoff time are included. Adding
+// more axes (e.g. ClosedBefore) is additive — populate a new field
+// and AND it into the filter predicate.
+type ForgetFilter struct {
+	// ExpiresBefore restricts the include-set to facts whose
+	// ExpiresAt is set and not after this cutoff. Zero time
+	// disables the axis.
+	ExpiresBefore *time.Time
+}
 
 // State is the per-call workspace for the forget pipeline. The
 // caller (Memory.ForgetAll) populates Scope / Mode / ConfirmScopeKey
@@ -35,6 +54,20 @@ type State struct {
 	// computed key and refuses to proceed on mismatch (Hard mode
 	// only; Soft is reversible so we skip the guard for ergonomics).
 	ConfirmScopeKey string
+
+	// Filter narrows the act-on set to a subset of scope facts.
+	// nil = retire everything (ForgetAll); non-nil = filtered
+	// sweep (ExpireRetired). When Filter is non-nil the stage
+	// implicitly treats Mode as Hard and skips the
+	// confirmScopeKey guard (TTL is a non-irreversible delete,
+	// not a GDPR full-scope wipe).
+	Filter *ForgetFilter
+
+	// Now is the wall-clock anchor stages use to evaluate the
+	// Filter predicate. Zero defers to time.Now() inside the
+	// stage; explicit callers (TTL sweep callers) populate it so
+	// the cutoff is testable.
+	Now time.Time
 
 	// Deleted is the stage output — number of facts the run
 	// retired. For Soft mode this is the count of Closed=true

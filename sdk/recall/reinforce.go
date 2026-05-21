@@ -4,33 +4,25 @@ import (
 	"context"
 
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
-	"github.com/GizClaw/flowcraft/sdk/recall/internal/evolution"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/pipeline/feedback"
 )
 
-// Reinforce records positive caller feedback on a fact. Subsequent
-// recall boosts the fact via fusion and rank using Reinforcement.
+// Reinforce records positive caller feedback on a fact via the
+// feedback pipeline (Cluster A 2026-05-21).
 func (m *memory) Reinforce(ctx context.Context, scope Scope, factID string, delta float64) error {
-	if scope.RuntimeID == "" {
-		return errdefs.Validationf("recall.Reinforce: scope.runtime_id is required")
-	}
-	return evolution.Reinforce(ctx, m.store, scope, factID, delta)
+	return m.runFeedback(ctx, scope, &feedback.State{Scope: scope, FactID: factID, ReinforcementDelta: delta})
 }
 
-// Penalize records negative caller feedback on a fact. Subsequent
-// recall down-weights the fact via fusion and rank using Penalty.
+// Penalize records negative caller feedback on a fact.
 func (m *memory) Penalize(ctx context.Context, scope Scope, factID string, delta float64) error {
-	if scope.RuntimeID == "" {
-		return errdefs.Validationf("recall.Penalize: scope.runtime_id is required")
-	}
-	return evolution.Penalize(ctx, m.store, scope, factID, delta)
+	return m.runFeedback(ctx, scope, &feedback.State{Scope: scope, FactID: factID, PenaltyDelta: delta})
 }
 
-func (m *memory) applyFeedback(ctx context.Context, scope Scope, factID string, reinforcementDelta, penaltyDelta float64) error {
-	if reinforcementDelta > 0 {
-		return evolution.Reinforce(ctx, m.store, scope, factID, reinforcementDelta)
+func (m *memory) runFeedback(ctx context.Context, scope Scope, st *feedback.State) error {
+	if scope.RuntimeID == "" {
+		return errdefs.Validationf("recall.Feedback: scope.runtime_id is required")
 	}
-	if penaltyDelta > 0 {
-		return evolution.Penalize(ctx, m.store, scope, factID, penaltyDelta)
-	}
-	return nil
+	unlock := m.lockWriteScope(scope)
+	defer unlock()
+	return m.feedbackRunner.Run(ctx, st)
 }

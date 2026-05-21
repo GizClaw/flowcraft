@@ -1,61 +1,17 @@
 package evolution
 
 import (
-	"context"
-
-	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain"
-	"github.com/GizClaw/flowcraft/sdk/recall/internal/port"
 )
-
-// Reinforce applies a positive feedback delta to a canonical fact.
-func Reinforce(ctx context.Context, store port.TemporalStore, scope domain.Scope, factID string, delta float64) error {
-	if store == nil {
-		return errdefs.Internalf("recall reinforce: store is required")
-	}
-	if factID == "" {
-		return errdefs.Validationf("recall reinforce: fact id is required")
-	}
-	if delta <= 0 {
-		return errdefs.Validationf("recall reinforce: delta must be positive")
-	}
-	if _, err := store.Get(ctx, scope, factID); err != nil {
-		if err := mapStoreErr(err); err != nil {
-			return err
-		}
-	}
-	return store.UpdateFeedback(ctx, scope, factID, delta, 0)
-}
-
-// Penalize applies a negative feedback delta to a canonical fact.
-func Penalize(ctx context.Context, store port.TemporalStore, scope domain.Scope, factID string, delta float64) error {
-	if store == nil {
-		return errdefs.Internalf("recall penalize: store is required")
-	}
-	if factID == "" {
-		return errdefs.Validationf("recall penalize: fact id is required")
-	}
-	if delta <= 0 {
-		return errdefs.Validationf("recall penalize: delta must be positive")
-	}
-	if _, err := store.Get(ctx, scope, factID); err != nil {
-		if err := mapStoreErr(err); err != nil {
-			return err
-		}
-	}
-	return store.UpdateFeedback(ctx, scope, factID, 0, delta)
-}
-
-func mapStoreErr(err error) error {
-	if err == nil {
-		return nil
-	}
-	// Preserve store classification for public boundary mapping.
-	return err
-}
 
 // FeedbackBoost returns the score multiplier derived from fact
 // feedback fields for fusion / rank (Phase D.4).
+//
+// Cluster A (2026-05-21) moved the Reinforce / Penalize write paths
+// into the feedback pipeline (Memory.Reinforce / Memory.Penalize →
+// internal/pipeline/feedback). The boost math stays here because
+// fusion and rank are read-side consumers of the canonical
+// reinforcement / penalty fields.
 func FeedbackBoost(reinforcement, penalty float64) float64 {
 	boost := 1 + reinforcement*0.05 - penalty*0.05
 	if boost < 0.1 {

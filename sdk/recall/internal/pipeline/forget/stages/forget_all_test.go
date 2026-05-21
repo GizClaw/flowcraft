@@ -26,6 +26,7 @@ type fakeStore struct {
 	deleteScopeCount  int
 	deleteScopeErr    error
 	deleteByScopeArgs []domain.Scope
+	deleteIDs         [][]string
 }
 
 func (s *fakeStore) Append(context.Context, []domain.TemporalFact) error { return nil }
@@ -54,7 +55,10 @@ func (s *fakeStore) UpdateValidity(context.Context, domain.Scope, string, time.T
 	return nil
 }
 func (s *fakeStore) ReopenValidity(context.Context, domain.Scope, string, string) error { return nil }
-func (s *fakeStore) Delete(context.Context, domain.Scope, []string) error               { return nil }
+func (s *fakeStore) Delete(_ context.Context, _ domain.Scope, ids []string) error {
+	s.deleteIDs = append(s.deleteIDs, append([]string(nil), ids...))
+	return nil
+}
 func (s *fakeStore) UpdateFeedback(context.Context, domain.Scope, string, float64, float64) error {
 	return nil
 }
@@ -276,6 +280,116 @@ func TestForgetAll_RequiredProjectionFailureAborts(t *testing.T) {
 	}
 	if len(store.deleteByScopeArgs) != 0 {
 		t.Errorf("store.DeleteByScope must NOT run after required failure")
+	}
+}
+
+// TestForgetAll_ExpireFilter_DeletesOnlyExpiredFacts pins the
+// ExpireRetired path (Cluster A / D5 2026-05-21). A non-nil Filter
+// switches the stage to per-id Hard delete, leaving non-matching
+// facts intact and emitting ExpireRetiredDetail with Scanned /
+// Deleted counters.
+func TestForgetAll_ExpireFilter_DeletesOnlyExpiredFacts(t *testing.T) {
+	scope := domain.Scope{RuntimeID: "rt", UserID: "alice"}
+	now := time.Date(2026, 5, 21, 12, 0, 0, 0, time.UTC)
+	past := now.Add(-time.Hour)
+	future := now.Add(time.Hour)
+	store := &fakeStore{
+		facts: []domain.TemporalFact{
+			{ID: "expired-1", Scope: scope, ExpiresAt: &past},
+			{ID: "expired-2", Scope: scope, ExpiresAt: &past},
+			{ID: "future", Scope: scope, ExpiresAt: &future},
+			{ID: "open", Scope: scope},
+		},
+	}
+	r := &fakeProjection{name: "retrieval", level: port.Required}
+	runner := newRunner(t, store, []port.Projection{r}, nil)
+
+	state := &forget.State{
+		Scope:  scope,
+		Filter: &forget.ForgetFilter{ExpiresBefore: &now},
+		Now:    now,
+	}
+	state.EnsureTrace()
+	if err := runner.Run(context.Background(), state); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if state.Deleted != 2 {
+		t.Errorf("Deleted = %d, want 2", state.Deleted)
+	}
+	if len(store.deleteIDs) != 1 || len(store.deleteIDs[0]) != 2 {
+		t.Errorf("delete ids = %+v, want one batch of 2", store.deleteIDs)
+	}
+	if len(store.deleteByScopeArgs) != 0 {
+		t.Errorf("expire filter must NOT invoke DeleteByScope (scope wipe)")
+	}
+	if r.clearN != 0 {
+		t.Errorf("expire filter must NOT invoke ClearScope; got %d", r.clearN)
+	}
+	d, ok := state.Trace.Stages[0].Detail.(diagnostic.ExpireRetiredDetail)
+	if !ok {
+		t.Fatalf("detail = %T, want ExpireRetiredDetail", state.Trace.Stages[0].Detail)
+	}
+	if d.Scanned != 4 || d.Deleted != 2 {
+		t.Errorf("detail mismatch: %+v", d)
+	}
+}
+
+// TestForgetAll_ExpireFilter_NoMatchesReturnsZero pins the empty
+// case: a sweep that finds nothing returns Deleted=0 with a non-
+// error detail (no DeleteByScope, no per-id Delete).
+func TestForgetAll_ExpireFilter_NoMatchesReturnsZero(t *testing.T) {
+	scope := domain.Scope{RuntimeID: "rt", UserID: "alice"}
+	now := time.Date(2026, 5, 21, 12, 0, 0, 0, time.UTC)
+	future := now.Add(time.Hour)
+	store := &fakeStore{
+		facts: []domain.TemporalFact{
+			{ID: "future", Scope: scope, ExpiresAt: &future},
+			{ID: "open", Scope: scope},
+		},
+	}
+	runner := newRunner(t, store, nil, nil)
+	state := &forget.State{
+		Scope:  scope,
+		Filter: &forget.ForgetFilter{ExpiresBefore: &now},
+		Now:    now,
+	}
+	state.EnsureTrace()
+	if err := runner.Run(context.Background(), state); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if state.Deleted != 0 {
+		t.Errorf("Deleted = %d, want 0", state.Deleted)
+	}
+	if len(store.deleteIDs) != 0 {
+		t.Errorf("no expired → no Delete call; got %v", store.deleteIDs)
+	}
+}
+
+// TestForgetAll_ExpireFilter_SkipsConfirmScopeKey pins the D5
+// 2026-05-21 carve-out: ExpireRetired waives the GDPR confirm-key
+// guard because a TTL sweep is a non-irreversible administrative
+// action, not an Art.17 wipe. The same call without Filter would
+// require ConfirmScopeKey under Hard mode.
+func TestForgetAll_ExpireFilter_SkipsConfirmScopeKey(t *testing.T) {
+	scope := domain.Scope{RuntimeID: "rt", UserID: "alice"}
+	now := time.Date(2026, 5, 21, 12, 0, 0, 0, time.UTC)
+	past := now.Add(-time.Hour)
+	store := &fakeStore{
+		facts: []domain.TemporalFact{{ID: "expired", Scope: scope, ExpiresAt: &past}},
+	}
+	runner := newRunner(t, store, nil, nil)
+	state := &forget.State{
+		Scope:           scope,
+		Mode:            domain.ForgetHard,
+		Filter:          &forget.ForgetFilter{ExpiresBefore: &now},
+		ConfirmScopeKey: "",
+		Now:             now,
+	}
+	if err := runner.Run(context.Background(), state); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if state.Deleted != 1 {
+		t.Errorf("Deleted = %d, want 1", state.Deleted)
 	}
 }
 
