@@ -370,6 +370,8 @@ func TestLLMExtractor_PreservesBackendClassification(t *testing.T) {
 //   - explicit instruction to preserve single-mention proper nouns
 //     verbatim (book titles, locations, items);
 //   - explicit exhaustiveness for one-off mentions;
+//   - explicit enumeration splitting, so comma-separated hobbies /
+//     activities do not collapse into an umbrella summary;
 //
 // otherwise we silently regress recall on time-anchored memory.
 //
@@ -383,6 +385,9 @@ func TestLLMExtractorSystemPrompt_GuardsAntiAbstraction(t *testing.T) {
 		"NOT {kind:\"state\"",
 		"Single-occurrence dated\n                     actions are events, not states",
 		"Be exhaustive about concrete, retrievable details",
+		"Split enumerations into separate memories",
+		"Alice enjoys swimming",
+		"Do not\n  collapse lists into",
 		"Quote proper nouns verbatim",
 		"Charlotte's Web",
 	}

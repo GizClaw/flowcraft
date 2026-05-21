@@ -8,6 +8,7 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain/diagnostic"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/port"
+	"github.com/GizClaw/flowcraft/sdk/text/timex"
 )
 
 // TestDefaultStructurizer_KindFallbackIsNote pins the post-route-2
@@ -57,6 +58,14 @@ type stubEntityExtractor struct{ out []string }
 
 func (s stubEntityExtractor) ExtractEntities(string, []port.EntitySnapshot) []string {
 	return append([]string(nil), s.out...)
+}
+
+type stubTimeParser struct {
+	match *timex.Match
+}
+
+func (s stubTimeParser) Parse(string, time.Time) (*timex.Match, error) {
+	return s.match, nil
 }
 
 // TestDiffStructurizerCoverage_OnlyCountsEmpty→NonEmpty pins the
@@ -167,6 +176,55 @@ func TestDefaultStructurizer_LiftsSpeakerFromSupportingTurn(t *testing.T) {
 	}
 	if hint, _ := out.Metadata[MetaValidFromHint].(string); hint == "" {
 		t.Errorf("valid_from_hint should be lifted from turn.Time, metadata=%v", out.Metadata)
+	}
+}
+
+func TestDefaultStructurizer_PrefersContentRelativeTimeOverTurnTime(t *testing.T) {
+	turn := port.TurnContext{
+		ID:      "D1:4",
+		Speaker: "Caroline",
+		Role:    "user",
+		Time:    time.Date(2023, 6, 27, 10, 37, 0, 0, time.UTC),
+		Text:    "I moved from Sweden 4 years ago.",
+	}
+	f := domain.TemporalFact{
+		Content:      "Caroline moved from Sweden 4 years ago.",
+		EvidenceRefs: []domain.EvidenceRef{{ID: "D1:4"}},
+	}
+	out := DefaultStructurizer{}.Structurize(f, port.IngestInput{Turns: []port.TurnContext{turn}})
+	hint, _ := out.Metadata[MetaValidFromHint].(string)
+	if hint == "" {
+		t.Fatalf("expected relative content hint, metadata=%v", out.Metadata)
+	}
+	at, _ := out.Metadata[MetaValidFromAt].(string)
+	parsed, ok := parseAbsoluteTime(at)
+	if !ok {
+		t.Fatalf("expected parsed valid_from_at, got hint=%q at=%q metadata=%v", hint, at, out.Metadata)
+	}
+	want := time.Date(2019, 6, 27, 10, 37, 0, 0, time.UTC)
+	if !parsed.Equal(want) {
+		t.Errorf("ValidFromAt = %v, want %v (hint=%q at=%q)", parsed, want, hint, at)
+	}
+}
+
+func TestDefaultStructurizer_CarriesParsedTimeFromCustomParser(t *testing.T) {
+	want := time.Date(2019, 6, 27, 0, 0, 0, 0, time.UTC)
+	s := DefaultStructurizer{TimeParser: stubTimeParser{
+		match: &timex.Match{Text: "四年前", Time: want, Index: 10},
+	}}
+	turn := port.TurnContext{ID: "D1:1", Time: time.Date(2023, 6, 27, 9, 0, 0, 0, time.UTC)}
+	f := domain.TemporalFact{
+		Content:      "Caroline 四年前从瑞典搬来。",
+		EvidenceRefs: []domain.EvidenceRef{{ID: "D1:1"}},
+	}
+	out := s.Structurize(f, port.IngestInput{Turns: []port.TurnContext{turn}})
+	if hint, _ := out.Metadata[MetaValidFromHint].(string); hint != "四年前" {
+		t.Fatalf("raw multilingual hint = %q, want 四年前", hint)
+	}
+	at, _ := out.Metadata[MetaValidFromAt].(string)
+	parsed, ok := parseAbsoluteTime(at)
+	if !ok || !parsed.Equal(want) {
+		t.Fatalf("parsed multilingual time = %v ok=%v, want %v (metadata=%v)", parsed, ok, want, out.Metadata)
 	}
 }
 

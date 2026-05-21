@@ -33,6 +33,9 @@ func TestTimeResolver_RelativeFromMeta(t *testing.T) {
 		{"last month", time.Date(2026, 4, 19, 0, 0, 0, 0, time.UTC)},
 		{"next year", time.Date(2027, 5, 19, 0, 0, 0, 0, time.UTC)},
 		{"last year", time.Date(2025, 5, 19, 0, 0, 0, 0, time.UTC)},
+		{"4 years ago.", time.Date(2022, 5, 19, 0, 0, 0, 0, time.UTC)},
+		{"six months ago", time.Date(2025, 11, 19, 0, 0, 0, 0, time.UTC)},
+		{"in 3 weeks", time.Date(2026, 6, 9, 0, 0, 0, 0, time.UTC)},
 	}
 	for _, c := range cases {
 		t.Run(c.hint, func(t *testing.T) {
@@ -88,6 +91,32 @@ func TestTimeResolver_AbsoluteHintsFromLLM(t *testing.T) {
 				t.Errorf("absolute hint must be consumed from metadata")
 			}
 		})
+	}
+}
+
+func TestTimeResolver_ParsedTimeMetadataWinsOverRawHint(t *testing.T) {
+	r := passthroughTimeResolver{}
+	now := time.Date(2026, 5, 19, 12, 0, 0, 0, time.UTC)
+	want := time.Date(2019, 6, 27, 10, 37, 0, 0, time.UTC)
+	f := domain.TemporalFact{
+		Kind: domain.KindEvent,
+		Metadata: map[string]any{
+			MetaValidFromHint: "四年前",
+			MetaValidFromAt:   want.Format(time.RFC3339Nano),
+		},
+	}
+	out := r.Resolve(f, now)
+	if out.ValidFrom == nil {
+		t.Fatal("expected ValidFrom from parsed metadata")
+	}
+	if !out.ValidFrom.Equal(want) {
+		t.Errorf("ValidFrom = %v, want %v", *out.ValidFrom, want)
+	}
+	if _, leftover := out.Metadata[MetaValidFromAt]; leftover {
+		t.Errorf("parsed metadata must be consumed")
+	}
+	if _, leftover := out.Metadata[MetaValidFromHint]; leftover {
+		t.Errorf("raw hint should be consumed with parsed metadata")
 	}
 }
 

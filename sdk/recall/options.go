@@ -10,6 +10,7 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/store/asyncsemantic"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/store/sideeffect"
 	"github.com/GizClaw/flowcraft/sdk/retrieval"
+	"github.com/GizClaw/flowcraft/sdk/text/timex"
 )
 
 // Option configures Memory at construction time.
@@ -20,20 +21,30 @@ import (
 // until those contracts are ready to support external implementations.
 type Option func(*config)
 
+// EntityExtractor mines entity mentions from a fact's natural-language
+// content during Save. The default implementation is deterministic and
+// English-centric; production callers can provide an LLM-, NER-, or
+// tokenizer-backed extractor for multilingual content.
+type EntityExtractor interface {
+	ExtractEntities(content string, known []EntitySnapshot) []string
+}
+
 // config aggregates every option-supplied piece of the Memory stack.
 // Public With* helpers populate the canonical fields; internal with*
 // helpers (used by tests and adapter packages) inject lower-level
 // contracts that are not part of the stable public surface yet.
 type config struct {
-	store          port.TemporalStore
-	evidenceStore  port.EvidenceStore
-	retrievalIndex retrieval.Index
-	embedder       embedding.Embedder
-	compiler       port.Ingestor
-	llmExtractor   *llmExtractorConfig
-	resolver       port.ConflictResolver
-	resolverSet    bool
-	telemetry      port.TelemetryHook
+	store           port.TemporalStore
+	evidenceStore   port.EvidenceStore
+	retrievalIndex  retrieval.Index
+	embedder        embedding.Embedder
+	compiler        port.Ingestor
+	llmExtractor    *llmExtractorConfig
+	timeParser      timex.Parser
+	entityExtractor port.EntityExtractor
+	resolver        port.ConflictResolver
+	resolverSet     bool
+	telemetry       port.TelemetryHook
 
 	extraProjections []port.Projection
 
@@ -238,6 +249,30 @@ func WithLLMExtractor(client llm.LLM, opts ...LLMExtractorOption) Option {
 			return
 		}
 		c.llmExtractor = &llmExtractorConfig{client: client, tune: opts}
+	}
+}
+
+// WithTimeParser installs the natural-language time parser used by the
+// default Structurizer during Save. Parsed timestamps are carried to the
+// TimeResolver as canonical metadata, so multilingual parsers can resolve
+// expressions such as "四年前" without teaching the resolver every language.
+//
+// Nil keeps the SDK default parser.
+func WithTimeParser(parser timex.Parser) Option {
+	return func(c *config) {
+		if parser != nil {
+			c.timeParser = parser
+		}
+	}
+}
+
+// WithEntityExtractor installs the entity extractor used by the default
+// Structurizer during Save. Nil keeps the deterministic rule-based default.
+func WithEntityExtractor(extractor EntityExtractor) Option {
+	return func(c *config) {
+		if extractor != nil {
+			c.entityExtractor = extractor
+		}
 	}
 }
 

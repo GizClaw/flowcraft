@@ -190,6 +190,12 @@ func New(opts ...Option) (Memory, error) {
 	}
 	if cfg.compiler == nil {
 		stages := ingest.Stages{}
+		if cfg.timeParser != nil || cfg.entityExtractor != nil {
+			stages.Structurizer = ingest.DefaultStructurizer{
+				EntityExtractor: cfg.entityExtractor,
+				TimeParser:      cfg.timeParser,
+			}
+		}
 		if cfg.llmExtractor != nil {
 			ex := ingest.NewLLMExtractor(cfg.llmExtractor.client)
 			for _, opt := range cfg.llmExtractor.tune {

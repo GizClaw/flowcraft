@@ -1,6 +1,8 @@
 package ingest
 
 import (
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -9,12 +11,15 @@ import (
 )
 
 // Metadata keys consulted by the default port.TimeResolver. Callers
-// (typically the LLM extractor) write structured relative-time
-// strings into these keys; the resolver reads-and-strips them so
-// the canonical fact stays clean.
+// (typically the Structurizer or LLM extractor) write either raw time
+// hints (*Hint) or already parsed absolute timestamps (*At) into
+// these keys; the resolver reads-and-strips them so the canonical fact
+// stays clean.
 const (
 	MetaValidFromHint = "valid_from_hint"
 	MetaValidToHint   = "valid_to_hint"
+	MetaValidFromAt   = "valid_from_at"
+	MetaValidToAt     = "valid_to_at"
 )
 
 // SupportedRelativeTimes lists the tokens the default
@@ -30,6 +35,14 @@ var SupportedRelativeTimes = []string{
 	"last month",
 	"next year",
 	"last year",
+	"<n> days ago",
+	"<n> weeks ago",
+	"<n> months ago",
+	"<n> years ago",
+	"in <n> days",
+	"in <n> weeks",
+	"in <n> months",
+	"in <n> years",
 }
 
 type passthroughTimeResolver struct{}
@@ -42,20 +55,52 @@ func (passthroughTimeResolver) Resolve(f domain.TemporalFact, now time.Time) dom
 		f.ObservedAt = now
 	}
 	if f.ValidFrom == nil {
-		if t, ok := parseRelativeFromMeta(f.Metadata, MetaValidFromHint, now); ok {
+		if t, ok := parseAbsoluteFromMeta(f.Metadata, MetaValidFromAt); ok {
+			tt := t
+			f.ValidFrom = &tt
+			delete(f.Metadata, MetaValidFromAt)
+			delete(f.Metadata, MetaValidFromHint)
+		} else if t, ok := parseRelativeFromMeta(f.Metadata, MetaValidFromHint, now); ok {
 			tt := t
 			f.ValidFrom = &tt
 			delete(f.Metadata, MetaValidFromHint)
 		}
 	}
 	if f.ValidTo == nil {
-		if t, ok := parseRelativeFromMeta(f.Metadata, MetaValidToHint, now); ok {
+		if t, ok := parseAbsoluteFromMeta(f.Metadata, MetaValidToAt); ok {
+			tt := t
+			f.ValidTo = &tt
+			delete(f.Metadata, MetaValidToAt)
+			delete(f.Metadata, MetaValidToHint)
+		} else if t, ok := parseRelativeFromMeta(f.Metadata, MetaValidToHint, now); ok {
 			tt := t
 			f.ValidTo = &tt
 			delete(f.Metadata, MetaValidToHint)
 		}
 	}
 	return f
+}
+
+func parseAbsoluteFromMeta(meta map[string]any, key string) (time.Time, bool) {
+	if len(meta) == 0 {
+		return time.Time{}, false
+	}
+	raw, ok := meta[key]
+	if !ok {
+		return time.Time{}, false
+	}
+	switch v := raw.(type) {
+	case time.Time:
+		if v.IsZero() {
+			return time.Time{}, false
+		}
+		return v, true
+	case string:
+		if t, ok := parseAbsoluteTime(strings.TrimSpace(v)); ok {
+			return t, true
+		}
+	}
+	return time.Time{}, false
 }
 
 // parseRelativeFromMeta extracts and parses a relative-time hint
@@ -85,7 +130,7 @@ func parseRelativeFromMeta(meta map[string]any, key string, now time.Time) (time
 // are parsed against the original (case-preserving) string so
 // "January" / "Jan" survive. Unrecognised strings return ok=false.
 func parseRelativeEnglish(in string, now time.Time) (time.Time, bool) {
-	raw := strings.TrimSpace(in)
+	raw := strings.Trim(strings.TrimSpace(in), `"'.,;:!?()[]{} `)
 	if raw == "" {
 		return time.Time{}, false
 	}
@@ -115,7 +160,75 @@ func parseRelativeEnglish(in string, now time.Time) (time.Time, bool) {
 	case "last year":
 		return startOfDay(now).AddDate(-1, 0, 0), true
 	}
+	if t, ok := parseRelativeQuantity(token, now); ok {
+		return t, true
+	}
 	return time.Time{}, false
+}
+
+var relativeQuantityRE = regexp.MustCompile(`^(?:(in) )?([a-z]+|\d+) (day|days|week|weeks|month|months|year|years)(?: (ago|from now))?$`)
+
+func parseRelativeQuantity(token string, now time.Time) (time.Time, bool) {
+	m := relativeQuantityRE.FindStringSubmatch(token)
+	if m == nil {
+		return time.Time{}, false
+	}
+	n, ok := parseSmallEnglishNumber(m[2])
+	if !ok || n == 0 {
+		return time.Time{}, false
+	}
+	direction := 1
+	if m[4] == "ago" {
+		direction = -1
+	}
+	unit := m[3]
+	base := startOfDay(now)
+	switch unit {
+	case "day", "days":
+		return base.AddDate(0, 0, direction*n), true
+	case "week", "weeks":
+		return base.AddDate(0, 0, direction*n*7), true
+	case "month", "months":
+		return base.AddDate(0, direction*n, 0), true
+	case "year", "years":
+		return base.AddDate(direction*n, 0, 0), true
+	default:
+		return time.Time{}, false
+	}
+}
+
+func parseSmallEnglishNumber(s string) (int, bool) {
+	if n, err := strconv.Atoi(s); err == nil {
+		return n, true
+	}
+	switch s {
+	case "a", "an", "one":
+		return 1, true
+	case "two":
+		return 2, true
+	case "three":
+		return 3, true
+	case "four":
+		return 4, true
+	case "five":
+		return 5, true
+	case "six":
+		return 6, true
+	case "seven":
+		return 7, true
+	case "eight":
+		return 8, true
+	case "nine":
+		return 9, true
+	case "ten":
+		return 10, true
+	case "eleven":
+		return 11, true
+	case "twelve":
+		return 12, true
+	default:
+		return 0, false
+	}
 }
 
 // absoluteTimeLayouts are the calendar shapes the resolver accepts

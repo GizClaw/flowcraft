@@ -95,7 +95,7 @@ type DefaultStructurizer struct {
 	EntityExtractor port.EntityExtractor
 
 	// TimeParser turns natural-language time expressions inside
-	// fact.Content into the MetaValidFromHint string consumed by
+	// fact.Content into raw + parsed time metadata consumed by
 	// TimeResolver. Nil falls back to the olebedev/when adapter
 	// (see [defaultTimeParser]) which handles both ISO dates and
 	// English relative phrases. Callers needing CJK / multi-
@@ -121,9 +121,9 @@ var _ port.Structurizer = DefaultStructurizer{}
 //  4. Fill Subject from the supporting turn's Speaker; fall back to
 //     the first entity. Object / Predicate stay empty unless the
 //     LLM provided them.
-//  5. Fill MetaValidFromHint from the supporting turn's typed Time
-//     when present; otherwise grep an absolute date out of content.
-//     TimeResolver later parses the hint into ValidFrom.
+//  5. Fill time metadata from content when it carries a time phrase,
+//     otherwise from the supporting turn's typed Time. TimeResolver
+//     later normalises the metadata into ValidFrom.
 //
 // Confidence is left to the SalienceScorer's DefaultConfidence so
 // we don't compete with that contract; the slim LLM schema does not
@@ -155,16 +155,23 @@ func (s DefaultStructurizer) Structurize(f domain.TemporalFact, input port.Inges
 		}
 	}
 
-	if _, hasHint := f.Metadata[MetaValidFromHint]; !hasHint && f.ValidFrom == nil {
+	_, hasHint := f.Metadata[MetaValidFromHint]
+	_, hasParsedTime := f.Metadata[MetaValidFromAt]
+	if !hasHint && !hasParsedTime && f.ValidFrom == nil {
 		parser := s.TimeParser
 		if parser == nil {
 			parser = defaultTimeParser()
 		}
-		if hint := inferValidFromHint(parser, turn, f.Content); hint != "" {
+		if hint := inferValidFromHint(parser, turn, f.Content); hint.Raw != "" || !hint.At.IsZero() {
 			if f.Metadata == nil {
 				f.Metadata = map[string]any{}
 			}
-			f.Metadata[MetaValidFromHint] = hint
+			if hint.Raw != "" {
+				f.Metadata[MetaValidFromHint] = hint.Raw
+			}
+			if !hint.At.IsZero() {
+				f.Metadata[MetaValidFromAt] = hint.At.UTC().Format(time.RFC3339Nano)
+			}
 		}
 	}
 
@@ -318,8 +325,8 @@ var structurizerStopwords = stopword.NewSet().Extend(
 	"and", "or", "but", "so", "yes", "no", "ok", "okay",
 )
 
-// inferValidFromHint prefers the typed Time on the supporting turn
-// (verbatim RFC3339 string) and falls back to scanning content
+// inferValidFromHint first scans content for explicit time phrases
+// and falls back to the typed Time on the supporting turn
 // with a two-tier parser cascade:
 //
 //  1. timex.RegexParser — strict ISO 8601 / US slash dates only.
@@ -332,20 +339,18 @@ var structurizerStopwords = stopword.NewSet().Extend(
 //     and natural-language expressions the regex baseline does
 //     not recognise.
 //
-// The hint string is the raw substring the parser matched (e.g.
-// "2024-05-07", "yesterday") — TimeResolver re-parses it against
-// its own absolute-format + relative-token table which already
-// covers both shapes. Surfacing the substring instead of the
-// resolved time keeps Structurizer's contract simple: structurizer
-// finds time mentions, TimeResolver grounds them, and the two
-// stages stay independently testable.
-func inferValidFromHint(parser timex.Parser, turn *port.TurnContext, content string) string {
-	if turn != nil && !turn.Time.IsZero() {
-		return turn.Time.UTC().Format("2006-01-02T15:04:05Z07:00")
-	}
-	if content == "" {
-		return ""
-	}
+// When the supporting turn has a timestamp, relative phrases in
+// content are resolved against that turn and surfaced as an absolute
+// timestamp. This keeps historical replay stable: "4 years ago" in a
+// 2023 conversation should not resolve against the wall clock of a
+// 2026 eval run. Without a turn timestamp, the raw substring is
+// preserved and TimeResolver resolves it against the ingest clock.
+type parsedTimeHint struct {
+	Raw string
+	At  time.Time
+}
+
+func inferValidFromHint(parser timex.Parser, turn *port.TurnContext, content string) parsedTimeHint {
 	// Anchor relative phrases ("yesterday") to the turn's time
 	// when available so the resolved hint string still makes sense
 	// downstream. Falling back to time.Now() is acceptable: the
@@ -356,20 +361,27 @@ func inferValidFromHint(parser timex.Parser, turn *port.TurnContext, content str
 	if turn != nil && !turn.Time.IsZero() {
 		anchor = turn.Time
 	}
-	// Tier 1: strict ISO baseline. timex.RegexParser is stateless
-	// and pinned to ISO 8601 + US-slash shapes, so it never bites
-	// off shorter substrings the way looser NL parsers do.
-	if m, err := (timex.RegexParser{}).Parse(content, anchor); err == nil && m != nil {
-		return m.Text
+	if content != "" {
+		// Tier 1: strict ISO baseline. timex.RegexParser is stateless
+		// and pinned to ISO 8601 + US-slash shapes, so it never bites
+		// off shorter substrings the way looser NL parsers do.
+		if m, err := (timex.RegexParser{}).Parse(content, anchor); err == nil && m != nil {
+			return parsedTimeHint{Raw: m.Text, At: m.Time}
+		}
+		// Tier 2: NL fallback. Only consulted when the strict baseline
+		// missed, so the wider net only fires on truly natural-language
+		// time expressions.
+		if parser != nil {
+			if m, err := parser.Parse(content, anchor); err == nil && m != nil {
+				if turn != nil && !turn.Time.IsZero() && !m.Time.IsZero() {
+					return parsedTimeHint{Raw: m.Text, At: m.Time}
+				}
+				return parsedTimeHint{Raw: m.Text}
+			}
+		}
 	}
-	// Tier 2: NL fallback. Only consulted when the strict baseline
-	// missed, so the wider net only fires on truly natural-language
-	// time expressions.
-	if parser == nil {
-		return ""
+	if turn != nil && !turn.Time.IsZero() {
+		return parsedTimeHint{Raw: turn.Time.UTC().Format(time.RFC3339Nano), At: turn.Time}
 	}
-	if m, err := parser.Parse(content, anchor); err == nil && m != nil {
-		return m.Text
-	}
-	return ""
+	return parsedTimeHint{}
 }

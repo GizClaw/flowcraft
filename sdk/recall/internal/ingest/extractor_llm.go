@@ -145,6 +145,13 @@ Rules:
   and lives in Paris", emit TWO memories. Atomic memories rank
   well in retrieval; compound sentences fragment the ranking
   signal.
+- Split enumerations into separate memories. If a turn states
+  "Alice enjoys pottery, camping, painting, and swimming", emit
+  FOUR preference memories: Alice enjoys pottery; Alice enjoys
+  camping; Alice enjoys painting; Alice enjoys swimming. Do not
+  collapse lists into "various activities", "several hobbies", or
+  another umbrella summary; later queries often ask for one item
+  from the list.
 - Be exhaustive about concrete, retrievable details. Every specific
   action, item, place, person, organisation, book / song / product
   title, quantity, or date that the snippet mentions becomes its

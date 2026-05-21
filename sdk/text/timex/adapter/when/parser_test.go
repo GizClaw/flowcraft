@@ -74,6 +74,40 @@ func TestParse_NoMatch(t *testing.T) {
 	}
 }
 
+func TestNewWithLanguages_ParsesChineseRelativeDate(t *testing.T) {
+	p, err := when.NewWithLanguages("zh")
+	if err != nil {
+		t.Fatalf("NewWithLanguages: %v", err)
+	}
+	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
+	cases := []struct {
+		text string
+		want time.Time
+	}{
+		{"我们明天见", time.Date(2026, 5, 21, 0, 0, 0, 0, time.UTC)},
+		{"我四年前搬到这里", time.Date(2022, 5, 20, 0, 0, 0, 0, time.UTC)},
+		{"三个月后再聊", time.Date(2026, 8, 20, 0, 0, 0, 0, time.UTC)},
+	}
+	for _, c := range cases {
+		m, err := p.Parse(c.text, now)
+		if err != nil {
+			t.Fatalf("Parse(%q): %v", c.text, err)
+		}
+		if m == nil {
+			t.Fatalf("expected match for %q", c.text)
+		}
+		if !m.Time.Equal(c.want) {
+			t.Errorf("Parse(%q) = %v, want %v", c.text, m.Time, c.want)
+		}
+	}
+}
+
+func TestNewWithLanguages_RejectsUnsupportedLanguage(t *testing.T) {
+	if _, err := when.NewWithLanguages("klingon"); err == nil {
+		t.Fatal("expected unsupported language error")
+	}
+}
+
 func TestParse_Empty(t *testing.T) {
 	p := newParser(t)
 	m, err := p.Parse("", time.Now())

@@ -3,14 +3,26 @@ package recall_test
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/GizClaw/flowcraft/sdk/recall"
 	retrievalmem "github.com/GizClaw/flowcraft/sdk/retrieval/memory"
+	"github.com/GizClaw/flowcraft/sdk/text/timex"
 )
 
 type externalTelemetryHook struct{}
 
 func (externalTelemetryHook) OnStage(recall.StageDiagnostic) {}
+
+type externalTimeParser struct{}
+
+func (externalTimeParser) Parse(string, time.Time) (*timex.Match, error) { return nil, nil }
+
+type externalEntityExtractor struct{}
+
+func (externalEntityExtractor) ExtractEntities(string, []recall.EntitySnapshot) []string {
+	return []string{"external"}
+}
 
 type externalEvidenceStore struct{}
 
@@ -37,6 +49,8 @@ func TestPublicOptionsDoNotRequireInternalImports(t *testing.T) {
 		recall.WithEvidenceStore(recall.NewMemoryEvidenceStore()),
 		recall.WithTelemetryHook(externalTelemetryHook{}),
 		recall.WithGraphEnabled(true),
+		recall.WithTimeParser(externalTimeParser{}),
+		recall.WithEntityExtractor(externalEntityExtractor{}),
 		recall.WithLLMExtractor(nil,
 			recall.WithLLMExtractorSystemPrompt("extract facts"),
 			recall.WithLLMExtractorSchemaName("recall_facts"),
