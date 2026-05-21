@@ -38,6 +38,17 @@ type MergeHints = domain.MergeHints
 // TemporalFact is the public v2 memory unit. It aliases the internal
 // canonical model — sdk/recall owns the public name, internal/model
 // owns the schema definition.
+//
+// Field documentation lives on domain.TemporalFact; the following
+// notes (mirrored here per the D1 godoc convention) document
+// behaviour callers must understand at the public surface:
+//
+//	// Supersedes lists canonical fact IDs this fact replaces. All listed
+//	// prior facts will be closed (ValidTo = ObservedAt, CorrectedBy =
+//	// new fact ID) atomically with the append. Multiple priors are
+//	// supported for N:1 merge use cases (e.g. consolidating fine-grained
+//	// facts into a summary). Empty IDs are rejected at validate.
+//	Supersedes []string
 type TemporalFact = domain.TemporalFact
 
 // TrustContext carries read-time visibility constraints (Phase D.2).

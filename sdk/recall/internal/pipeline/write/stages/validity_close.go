@@ -21,6 +21,15 @@ import (
 // Supersedes pointer on the freshly-appended fact still preserves
 // the supersede chain even when the close itself is a no-op.
 //
+// N:1 supersede support (D1, 2026-05-21): state.Resolution.Closes
+// already carries one ValidityClose per prior fact, so a single
+// successor fact that supersedes N priors lands as N entries here.
+// The loop below iterates and appends each successful close to
+// state.AppliedCloses; Append.Compensate / this stage's
+// Compensate then reopen all N on rollback. No special-casing is
+// needed — the slice-based interface generalises naturally from
+// 1:1 to 1:N.
+//
 // The compensator reopens exactly the closes that did land and
 // reprojects the prior facts so a downstream project_required
 // failure leaves the ledger and projections aligned. The two-step

@@ -3,9 +3,11 @@ package ingest
 import (
 	"context"
 	"errors"
+	"sort"
 	"testing"
 	"time"
 
+	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain"
 )
 
@@ -256,6 +258,132 @@ func TestResolver_PropagatesViewLookupError(t *testing.T) {
 	if err == nil {
 		t.Fatal("store lookup errors must abort conflict resolution, not degrade to append")
 	}
+}
+
+// TestResolveExplicit_NSupersede_AllClose covers the D1 (2026-05-21)
+// decision: when a fact lists N prior IDs in Supersedes, every one
+// of them must be queued for closure and the appended fact must
+// retain pointers to all of them.
+func TestResolveExplicit_NSupersede_AllClose(t *testing.T) {
+	scope := domain.Scope{RuntimeID: "rt"}
+	priors := []domain.TemporalFact{
+		{ID: "a", Scope: scope, Kind: domain.KindState, Subject: "x", Predicate: "p", Content: "1", MergeKey: "k1"},
+		{ID: "b", Scope: scope, Kind: domain.KindState, Subject: "x", Predicate: "p", Content: "2", MergeKey: "k2"},
+		{ID: "c", Scope: scope, Kind: domain.KindState, Subject: "x", Predicate: "p", Content: "3", MergeKey: "k3"},
+	}
+	view := &fakeView{facts: append([]domain.TemporalFact{}, priors...)}
+	r := &DefaultResolver{Clock: func() time.Time { return time.Unix(100, 0) }}
+	out, err := r.ResolveConflicts(context.Background(), view, []domain.TemporalFact{{
+		ID: "summary", Scope: scope, Kind: domain.KindState,
+		Subject: "x", Predicate: "p", Content: "summary",
+		Supersedes: []string{"a", "b", "c"},
+		ObservedAt: time.Unix(50, 0),
+	}})
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if len(out.Facts) != 1 {
+		t.Fatalf("want 1 fact, got %+v", out.Facts)
+	}
+	got := append([]string(nil), out.Facts[0].Supersedes...)
+	sort.Strings(got)
+	if want := []string{"a", "b", "c"}; !equalStrings(got, want) {
+		t.Errorf("appended Supersedes = %v, want %v", got, want)
+	}
+	if len(out.Closes) != 3 {
+		t.Fatalf("want 3 closes, got %d (%+v)", len(out.Closes), out.Closes)
+	}
+	closedIDs := make([]string, 0, 3)
+	for _, c := range out.Closes {
+		closedIDs = append(closedIDs, c.FactID)
+		if c.CorrectedBy != "summary" {
+			t.Errorf("close %+v wrong CorrectedBy", c)
+		}
+		if !c.ValidTo.Equal(time.Unix(50, 0)) {
+			t.Errorf("close %+v wrong ValidTo", c)
+		}
+	}
+	sort.Strings(closedIDs)
+	if want := []string{"a", "b", "c"}; !equalStrings(closedIDs, want) {
+		t.Errorf("closed ids = %v, want %v", closedIDs, want)
+	}
+}
+
+// TestResolveExplicit_NSupersede_OneMissingFails verifies the
+// "no partial commit" rule: if any listed prior cannot be resolved
+// in the view, the whole conflict-resolve call fails with a
+// Validation error and no Closes are produced.
+func TestResolveExplicit_NSupersede_OneMissingFails(t *testing.T) {
+	scope := domain.Scope{RuntimeID: "rt"}
+	view := &fakeView{facts: []domain.TemporalFact{
+		{ID: "a", Scope: scope, Kind: domain.KindState, Subject: "x", Predicate: "p", Content: "1"},
+		// "b" intentionally absent
+		{ID: "c", Scope: scope, Kind: domain.KindState, Subject: "x", Predicate: "p", Content: "3"},
+	}}
+	r := NewResolver()
+	out, err := r.ResolveConflicts(context.Background(), view, []domain.TemporalFact{{
+		ID: "summary", Scope: scope, Kind: domain.KindState,
+		Subject: "x", Predicate: "p", Content: "summary",
+		Supersedes: []string{"a", "b", "c"},
+	}})
+	if err == nil {
+		t.Fatalf("expected error when a prior is missing, got resolution %+v", out)
+	}
+	if !errdefs.IsValidation(err) {
+		t.Errorf("error class = %v, want Validation", err)
+	}
+	if len(out.Closes) != 0 {
+		t.Errorf("partial commit: expected zero closes, got %+v", out.Closes)
+	}
+	if len(out.Facts) != 0 {
+		t.Errorf("partial commit: expected zero facts, got %+v", out.Facts)
+	}
+}
+
+// TestResolveExplicit_NSupersede_Dedup verifies that duplicate
+// entries in Supersedes collapse into a single close per unique
+// prior fact ID (mergeStrings semantics surfaced as a contract).
+func TestResolveExplicit_NSupersede_Dedup(t *testing.T) {
+	scope := domain.Scope{RuntimeID: "rt"}
+	view := &fakeView{facts: []domain.TemporalFact{
+		{ID: "a", Scope: scope, Kind: domain.KindState, Subject: "x", Predicate: "p", Content: "1"},
+		{ID: "b", Scope: scope, Kind: domain.KindState, Subject: "x", Predicate: "p", Content: "2"},
+	}}
+	r := NewResolver()
+	out, err := r.ResolveConflicts(context.Background(), view, []domain.TemporalFact{{
+		ID: "summary", Scope: scope, Kind: domain.KindState,
+		Subject: "x", Predicate: "p", Content: "summary",
+		Supersedes: []string{"a", "a", "b"},
+	}})
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if len(out.Facts) != 1 {
+		t.Fatalf("want 1 fact, got %+v", out.Facts)
+	}
+	got := out.Facts[0].Supersedes
+	if want := []string{"a", "b"}; !equalStrings(got, want) {
+		t.Errorf("dedup failed: Supersedes = %v, want %v", got, want)
+	}
+	if len(out.Closes) != 2 {
+		t.Fatalf("want 2 closes after dedup, got %+v", out.Closes)
+	}
+	ids := []string{out.Closes[0].FactID, out.Closes[1].FactID}
+	if want := []string{"a", "b"}; !equalStrings(ids, want) {
+		t.Errorf("close ids = %v, want %v", ids, want)
+	}
+}
+
+func equalStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 type errView struct {

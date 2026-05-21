@@ -36,6 +36,14 @@ func (Validate) Name() string { return "validate" }
 // Run implements pipeline.Stage. The Detail mirrors the legacy
 // rejection summary so diagnostics consumers can attribute "input
 // turn count" and "permanent reject" counts without a second pass.
+//
+// Per-fact validation rules:
+//
+//   - Every element of TemporalFact.Supersedes must be a non-empty
+//     ID. len > 1 is allowed (D1, 2026-05-21: explicit 1:N
+//     supersede). The resolver later validates that each ID exists
+//     in the store; this stage only catches structural mistakes
+//     (caller passed an empty string) before any side effect runs.
 func (Validate) Run(_ context.Context, state *write.WriteState) (diagnostic.StageDetail, error) {
 	detail := diagnostic.ValidateDetail{InputTurns: len(state.Turns)}
 	if state.Scope.RuntimeID == "" {
@@ -43,6 +51,16 @@ func (Validate) Run(_ context.Context, state *write.WriteState) (diagnostic.Stag
 		detail.RejectReason = "scope.runtime_id is required"
 		state.FailedStage = "validate"
 		return detail, errdefs.Validationf("recall.Save: scope.runtime_id is required")
+	}
+	for i, f := range state.Facts {
+		for j, prior := range f.Supersedes {
+			if prior == "" {
+				detail.Rejected = 1
+				detail.RejectReason = "supersedes contains empty id"
+				state.FailedStage = "validate"
+				return detail, errdefs.Validationf("recall.Save: facts[%d].Supersedes[%d] is empty", i, j)
+			}
+		}
 	}
 	return detail, nil
 }

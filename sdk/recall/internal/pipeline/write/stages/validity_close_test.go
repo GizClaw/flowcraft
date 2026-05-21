@@ -81,6 +81,40 @@ func TestValidityClose_CompensateReopens(t *testing.T) {
 	}
 }
 
+// TestApply_NPriorsAllClosed covers the D1 (2026-05-21) N:1
+// supersede surface inside this stage: when state.Resolution.Closes
+// carries N entries from a single successor fact, every one of
+// them must be issued as an UpdateValidity call and every one must
+// land in state.AppliedCloses (so compensation can reopen them
+// later).
+func TestApply_NPriorsAllClosed(t *testing.T) {
+	store := &fakeStore{}
+	s := stages.NewValidityClose(store, nil, nil)
+	state := &write.WriteState{Resolution: domain.Resolution{Closes: []domain.ValidityClose{
+		{FactID: "a", CorrectedBy: "summary"},
+		{FactID: "b", CorrectedBy: "summary"},
+		{FactID: "c", CorrectedBy: "summary"},
+	}}}
+	d, err := s.Run(context.Background(), state)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got := d.(diagnostic.ValidityCloseDetail).ClosedFacts; got != 3 {
+		t.Errorf("ClosedFacts = %d, want 3", got)
+	}
+	if len(state.AppliedCloses) != 3 {
+		t.Fatalf("AppliedCloses = %+v, want 3", state.AppliedCloses)
+	}
+	for i, want := range []string{"a", "b", "c"} {
+		if state.AppliedCloses[i].FactID != want {
+			t.Errorf("AppliedCloses[%d].FactID = %q, want %q", i, state.AppliedCloses[i].FactID, want)
+		}
+		if state.AppliedCloses[i].CorrectedBy != "summary" {
+			t.Errorf("AppliedCloses[%d].CorrectedBy = %q, want summary", i, state.AppliedCloses[i].CorrectedBy)
+		}
+	}
+}
+
 func TestValidityClose_CompensateToleratesReopenErr(t *testing.T) {
 	store := &fakeStore{reopenErr: errors.New("conflict")}
 	s := stages.NewValidityClose(store, nil, nil)

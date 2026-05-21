@@ -32,10 +32,12 @@ import (
 //   - For events, relations, plans the resolver appends each fact
 //     directly; only state/preference participate in
 //     supersede-on-merge.
-//   - The resolver never closes more than one prior fact per new
-//     fact (the most-recent active one); explicit multi-fact
-//     supersede goes through the upstream-supplied Supersedes
-//     field which the resolver preserves.
+//   - Implicit (merge_key driven) supersede closes at most one
+//     prior fact — the most-recent active one — to keep the
+//     deterministic dedupe path 1:1. Explicit supersede via
+//     Supersedes / MergeHints.Supersedes supports 1:N: every
+//     listed prior fact is validated and closed atomically (D1
+//     decision, 2026-05-21).
 type DefaultResolver struct {
 	// Clock supplies the ValidTo timestamp written when a state /
 	// preference fact closes an older revision. Defaults to
@@ -77,25 +79,31 @@ func (r *DefaultResolver) ResolveConflicts(ctx context.Context, view port.View, 
 			res.Facts = append(res.Facts, f)
 			batch.trackAppend(f)
 		case actionSupersede:
-			// Append new fact carrying Supersedes pointer; queue a
-			// validity close on the prior fact. ValidTo uses the
-			// new fact's ObservedAt when set, otherwise the
-			// resolver clock — this matches §5.4 (state ValidTo =
-			// time it was replaced).
+			// Append new fact carrying Supersedes pointer(s); queue
+			// a validity close on every prior fact named in
+			// decision.priorIDs. ValidTo uses the new fact's
+			// ObservedAt when set, otherwise the resolver clock —
+			// this matches §5.4 (state ValidTo = time it was
+			// replaced). 1:N supersede (D1) emits N Closes from a
+			// single successor fact; partial commit is impossible
+			// because resolveExplicitSupersedes pre-validated every
+			// target before reaching this branch.
 			closeTime := f.ObservedAt
 			if closeTime.IsZero() {
 				closeTime = clock()
 			}
 			updated := f
-			updated.Supersedes = mergeStrings(updated.Supersedes, []string{decision.priorID})
+			updated.Supersedes = mergeStrings(updated.Supersedes, decision.priorIDs)
 			res.Facts = append(res.Facts, updated)
-			res.Closes = append(res.Closes, domain.ValidityClose{
-				Scope:       f.Scope,
-				FactID:      decision.priorID,
-				ValidTo:     closeTime,
-				CorrectedBy: updated.ID,
-			})
-			batch.trackClose(decision.priorID)
+			for _, priorID := range decision.priorIDs {
+				res.Closes = append(res.Closes, domain.ValidityClose{
+					Scope:       f.Scope,
+					FactID:      priorID,
+					ValidTo:     closeTime,
+					CorrectedBy: updated.ID,
+				})
+				batch.trackClose(priorID)
+			}
 			batch.trackAppend(updated)
 		}
 	}
@@ -177,10 +185,16 @@ const (
 )
 
 type resolverDecision struct {
-	action  resolverAction
-	reason  string
-	priorID string
-	kind    domain.RevisionKind
+	action resolverAction
+	reason string
+	// priorIDs lists the prior facts this decision closes. For
+	// actionAppend / actionNoop the slice is empty. For
+	// actionSupersede it carries at least one ID; explicit
+	// supersede (Supersedes / MergeHints.Supersedes) may carry N
+	// IDs (D1, 2026-05-21), while implicit merge_key supersede
+	// always carries exactly one.
+	priorIDs []string
+	kind     domain.RevisionKind
 }
 
 // classify applies the §6.2 idempotency rules to a single fact.
@@ -199,7 +213,7 @@ func (r *DefaultResolver) classify(ctx context.Context, view port.View, f domain
 		if err != nil {
 			return resolverDecision{}, err
 		}
-		if decision.action != actionAppend || decision.priorID != "" {
+		if decision.action != actionAppend || len(decision.priorIDs) > 0 {
 			decision.kind = domain.RevisionSupersede
 			return decision, nil
 		}
@@ -236,28 +250,34 @@ func (r *DefaultResolver) classify(ctx context.Context, view port.View, f domain
 
 // resolveExplicitSupersedes closes facts named in Supersedes /
 // MergeHints.Supersedes without requiring a merge_key collision.
+//
+// 1:N semantics (D1, 2026-05-21): every listed prior must resolve
+// via view.Get before the resolver returns actionSupersede. Any
+// missing prior aborts with an errdefs.Validation error so the
+// write pipeline refuses a partial commit. Targets are deduplicated
+// (mergeStrings already does this) and returned in iteration order.
 func (r *DefaultResolver) resolveExplicitSupersedes(ctx context.Context, view port.View, f domain.TemporalFact) (resolverDecision, error) {
-	clock := r.Clock
-	if clock == nil {
-		clock = time.Now
-	}
+	// mergeStrings dedupes across (a, b); pass both halves through
+	// it so even a single-slice input like Supersedes=[a, a, b]
+	// collapses to [a, b].
 	targets := mergeStrings(f.Supersedes, f.MergeHints.Supersedes)
+	targets = mergeStrings(nil, targets)
 	if len(targets) == 0 {
 		return resolverDecision{action: actionAppend}, nil
 	}
-	priorID := targets[0]
-	if _, err := view.Get(ctx, f.Scope, priorID); err != nil {
-		return resolverDecision{}, fmt.Errorf("resolver explicit supersede: prior %q: %w", priorID, err)
-	}
-	closeTime := f.ObservedAt
-	if closeTime.IsZero() {
-		closeTime = clock()
+	for _, priorID := range targets {
+		if priorID == "" {
+			return resolverDecision{}, errdefs.Validationf("resolver explicit supersede: empty prior id")
+		}
+		if _, err := view.Get(ctx, f.Scope, priorID); err != nil {
+			return resolverDecision{}, errdefs.Validationf("resolver explicit supersede: prior %q: %v", priorID, err)
+		}
 	}
 	return resolverDecision{
-		action:  actionSupersede,
-		reason:  "revision:merge",
-		priorID: priorID,
-		kind:    domain.RevisionSupersede,
+		action:   actionSupersede,
+		reason:   "revision:merge",
+		priorIDs: targets,
+		kind:     domain.RevisionSupersede,
 	}, nil
 }
 
@@ -291,10 +311,10 @@ func (r *DefaultResolver) dedupeOrSupersede(ctx context.Context, view port.View,
 	}
 	if supersedeOnChange {
 		return resolverDecision{
-			action:  actionSupersede,
-			reason:  "conflict:supersede",
-			priorID: active.ID,
-			kind:    domain.RevisionSupersede,
+			action:   actionSupersede,
+			reason:   "conflict:supersede",
+			priorIDs: []string{active.ID},
+			kind:     domain.RevisionSupersede,
 		}, nil
 	}
 	return resolverDecision{action: actionAppend}, nil
