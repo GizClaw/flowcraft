@@ -254,6 +254,87 @@ func TestStore_IsolatesScopes(t *testing.T) {
 	}
 }
 
+func TestFindByRevisionSource_ReturnsForkAndContest(t *testing.T) {
+	s := NewMemoryStore()
+	ctx := context.Background()
+	a := sampleFact("a", "ka", domain.KindNote, time.Unix(10, 0))
+	b := sampleFact("b", "kb", domain.KindNote, time.Unix(20, 0))
+	domain.AttachRevision(&b, domain.Revision{Kind: domain.RevisionFork, SourceFactID: "a"})
+	c := sampleFact("c", "kc", domain.KindNote, time.Unix(30, 0))
+	domain.AttachRevision(&c, domain.Revision{Kind: domain.RevisionContest, SourceFactID: "a"})
+
+	if err := s.Append(ctx, []domain.TemporalFact{a, b, c}); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+
+	got, err := s.FindByRevisionSource(ctx, scope(), "a")
+	if err != nil {
+		t.Fatalf("FindByRevisionSource: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("want 2 descendants of a, got %d (%+v)", len(got), got)
+	}
+	if got[0].ID != "b" || got[1].ID != "c" {
+		t.Errorf("want [b c] ordered by ObservedAt, got [%s %s]", got[0].ID, got[1].ID)
+	}
+}
+
+func TestFindByRevisionSource_Empty(t *testing.T) {
+	s := NewMemoryStore()
+	ctx := context.Background()
+	a := sampleFact("a", "ka", domain.KindNote, time.Unix(10, 0))
+	if err := s.Append(ctx, []domain.TemporalFact{a}); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	got, err := s.FindByRevisionSource(ctx, scope(), "a")
+	if err != nil {
+		t.Fatalf("FindByRevisionSource: %v", err)
+	}
+	if got != nil {
+		t.Errorf("no descendants → nil slice, got %+v", got)
+	}
+	empty, err := s.FindByRevisionSource(ctx, scope(), "")
+	if err != nil {
+		t.Fatalf("FindByRevisionSource(empty): %v", err)
+	}
+	if empty != nil {
+		t.Errorf("empty source id must not enumerate scope, got %+v", empty)
+	}
+}
+
+func TestFindByRevisionSource_ScopePartition(t *testing.T) {
+	s := NewMemoryStore()
+	ctx := context.Background()
+	other := domain.Scope{RuntimeID: "rt", UserID: "u2"}
+
+	b := sampleFact("b", "kb", domain.KindNote, time.Unix(20, 0))
+	domain.AttachRevision(&b, domain.Revision{Kind: domain.RevisionFork, SourceFactID: "a"})
+
+	c := sampleFact("c", "kc", domain.KindNote, time.Unix(30, 0))
+	c.Scope = other
+	domain.AttachRevision(&c, domain.Revision{Kind: domain.RevisionFork, SourceFactID: "a"})
+
+	if err := s.Append(ctx, []domain.TemporalFact{b, c}); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+
+	got, err := s.FindByRevisionSource(ctx, scope(), "a")
+	if err != nil {
+		t.Fatalf("FindByRevisionSource: %v", err)
+	}
+	if len(got) != 1 || got[0].ID != "b" {
+		t.Errorf("scope u1 must only return b, got %+v", got)
+	}
+
+	gotOther, err := s.FindByRevisionSource(ctx, other, "a")
+	if err != nil {
+		t.Fatalf("FindByRevisionSource(other): %v", err)
+	}
+	if len(gotOther) != 1 || gotOther[0].ID != "c" {
+		t.Errorf("scope u2 must only return c, got %+v", gotOther)
+	}
+}
+
 func TestStore_DoesNotPartitionByAgentID(t *testing.T) {
 	s := NewMemoryStore()
 	ctx := context.Background()

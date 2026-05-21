@@ -50,6 +50,13 @@ type TemporalStore interface {
 	// supplied factID. Used by reconcile and audit flows.
 	FindSupersededBy(ctx context.Context, scope domain.Scope, factID string) ([]domain.TemporalFact, error)
 
+	// FindByRevisionSource returns every fact whose Revision
+	// metadata (see domain.RevisionOf) points back at sourceFactID
+	// via SourceFactID — i.e. forks, contests, and (future) merges
+	// anchored on that root. Used by Memory.Lineage to walk the
+	// revision DAG outward from a query fact.
+	FindByRevisionSource(ctx context.Context, scope domain.Scope, sourceFactID string) ([]domain.TemporalFact, error)
+
 	// UpdateValidity closes a fact's validity window. Idempotent:
 	// supplying the same validTo+correctedBy on an already-closed
 	// fact is a no-op rather than an error.

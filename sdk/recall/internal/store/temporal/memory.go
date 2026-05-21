@@ -222,6 +222,44 @@ func (s *MemoryStore) FindSupersededBy(_ context.Context, scope domain.Scope, fa
 	return out, nil
 }
 
+// FindByRevisionSource scans the scope partition and returns facts
+// whose Revision metadata (forked / contested / merged from)
+// references sourceFactID. Empty sourceFactID yields nil so callers
+// cannot accidentally enumerate the whole scope. The scan is O(N)
+// per scope; lineage callers are expected to be infrequent (audit /
+// admin views) so we do not maintain a dedicated reverse index.
+// Results are ordered by ObservedAt ascending for determinism.
+func (s *MemoryStore) FindByRevisionSource(_ context.Context, scope domain.Scope, sourceFactID string) ([]domain.TemporalFact, error) {
+	if sourceFactID == "" {
+		return nil, nil
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	sh, ok := s.byScope[keyOf(scope)]
+	if !ok {
+		return nil, nil
+	}
+	var out []domain.TemporalFact
+	for _, id := range sh.orderedIDs {
+		f, ok := sh.byID[id]
+		if !ok {
+			continue
+		}
+		rev, has := domain.RevisionOf(*f)
+		if !has {
+			continue
+		}
+		if rev.SourceFactID != sourceFactID {
+			continue
+		}
+		out = append(out, f.Clone())
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		return out[i].ObservedAt.Before(out[j].ObservedAt)
+	})
+	return out, nil
+}
+
 // UpdateValidity closes a fact's validity window. The operation is
 // idempotent: a fact already closed with the supplied (validTo,
 // correctedBy) tuple returns nil. Any other re-close attempt returns
