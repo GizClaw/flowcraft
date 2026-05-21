@@ -68,6 +68,18 @@ type Memory interface {
 	// number of facts physically deleted (D5 2026-05-21).
 	ExpireRetired(ctx context.Context, scope Scope, now time.Time) (int, error)
 	History(ctx context.Context, scope Scope, factID string) ([]FactVersion, error)
+	// Lineage returns the full revision DAG rooted at factID — the set
+	// of facts reachable via Supersedes / CorrectedBy / Revision.SourceFactID
+	// edges, classified by relation (root / supersedes / fork_of /
+	// contest_of / merged_from). Output is BFS-sorted (depth asc,
+	// FactID asc) for determinism.
+	//
+	// History(factID) walks only the supersede chain (linear), so it
+	// remains the right tool for "what came before / after this exact
+	// belief?". Lineage(factID) is the right tool for "what is the
+	// family tree of this fact, including dissents (Contest) and
+	// alternate branches (Fork)?". See architecture debts §8.3.
+	Lineage(ctx context.Context, scope Scope, factID string) ([]FactLineageNode, error)
 	// Fork appends a parallel revision without closing the source fact.
 	Fork(ctx context.Context, scope Scope, sourceFactID string, newFact TemporalFact) (SaveResult, error)
 	// Contest challenges a fact with evidence and applies a penalty.
@@ -567,6 +579,56 @@ func (m *memory) ExpireRetired(ctx context.Context, scope Scope, now time.Time) 
 		return 0, err
 	}
 	return state.Deleted, nil
+}
+
+// Lineage walks the revision DAG rooted at factID via the temporal
+// store's supersede + revision-source lookups and projects the
+// internal domain nodes to the public surface. See the interface
+// godoc for the History-vs-Lineage contract.
+func (m *memory) Lineage(ctx context.Context, scope Scope, factID string) ([]FactLineageNode, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if scope.RuntimeID == "" {
+		return nil, errdefs.Validationf("recall.Lineage: scope.runtime_id is required")
+	}
+	if factID == "" {
+		return nil, errdefs.Validationf("recall.Lineage: factID is required")
+	}
+	root, err := m.store.Get(ctx, scope, factID)
+	if err != nil {
+		return nil, err
+	}
+	lookups := domain.LineageLookups{
+		Get:                  m.store.Get,
+		FindByRevisionSource: m.store.FindByRevisionSource,
+		FindSupersededBy:     m.store.FindSupersededBy,
+	}
+	nodes, err := domain.BuildLineage(ctx, root, lookups)
+	if err != nil {
+		return nil, err
+	}
+	return toPublicLineage(nodes), nil
+}
+
+// toPublicLineage copies the internal lineage nodes into the public
+// shape. The struct fields are isomorphic (LineageRelation and
+// TemporalFact are both aliases of their domain counterparts) so the
+// loop is a one-shot field-by-field copy.
+func toPublicLineage(nodes []domain.FactLineageNode) []FactLineageNode {
+	if len(nodes) == 0 {
+		return nil
+	}
+	out := make([]FactLineageNode, len(nodes))
+	for i, n := range nodes {
+		out[i] = FactLineageNode{
+			Fact:         n.Fact,
+			Relation:     n.Relation,
+			SourceFactID: n.SourceFactID,
+			Depth:        n.Depth,
+		}
+	}
+	return out
 }
 
 func (m *memory) entitySnapshots(scope Scope) []port.EntitySnapshot {
