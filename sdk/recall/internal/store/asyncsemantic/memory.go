@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain/diagnostic"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/port"
 )
 
@@ -25,6 +26,8 @@ type Queue struct {
 	byRequest map[string]*entry
 	pending   []*entry
 	leased    map[string]*entry
+
+	cancelledTotal int
 }
 
 const (
@@ -234,7 +237,46 @@ func (q *Queue) cancelLocked(requestID string) error {
 		}
 	}
 	q.pending = remaining
+	q.cancelledTotal++
 	return nil
+}
+
+// Stats returns queue health counters. When filter.Scope is non-zero,
+// only jobs in that partition are counted.
+func (q *Queue) Stats(_ context.Context, filter port.AsyncSemanticStatsFilter) (port.AsyncSemanticStats, error) {
+	now := filter.Now
+	if now.IsZero() {
+		now = time.Now()
+	}
+	scopeKey := filter.Scope.CanonicalKey()
+
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
+	var out port.AsyncSemanticStats
+	out.CancelledTotal = q.cancelledTotal
+	for _, e := range q.byRequest {
+		if scopeKey != "" && e.job.Scope.CanonicalKey() != scopeKey {
+			continue
+		}
+		switch e.status {
+		case statusPending:
+			out.Pending++
+		case statusLeased:
+			out.Leased++
+			if !e.leaseUntil.IsZero() && !now.Before(e.leaseUntil) {
+				out.ExpiredLeases++
+			}
+		case statusFailed:
+			out.Failed++
+			if e.failure.ErrClass == diagnostic.ErrClassPermanent {
+				out.DeadLetter++
+			}
+		case statusComplete:
+			out.Completed++
+		}
+	}
+	return out, nil
 }
 
 // CancelScope removes every non-complete job in the scope partition.

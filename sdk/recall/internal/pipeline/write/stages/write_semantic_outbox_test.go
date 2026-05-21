@@ -43,6 +43,9 @@ func (q *fakeQueue) Claim(context.Context, port.AsyncSemanticClaimOptions) ([]po
 }
 func (q *fakeQueue) Complete(context.Context, string, port.AsyncSemanticResult) error { return nil }
 func (q *fakeQueue) Fail(context.Context, string, port.AsyncSemanticFailure) error    { return nil }
+func (q *fakeQueue) Stats(context.Context, port.AsyncSemanticStatsFilter) (port.AsyncSemanticStats, error) {
+	return port.AsyncSemanticStats{}, nil
+}
 
 func TestWriteSemanticOutbox_HappyPathEnqueuesAndFlipsPending(t *testing.T) {
 	q := &fakeQueue{}

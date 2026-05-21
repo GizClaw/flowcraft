@@ -229,6 +229,18 @@ type OriginStampDetail struct {
 
 func (OriginStampDetail) isStageDetail() {}
 
+// AsyncSemanticProcessDetail —— async semantic worker completion
+// (Phase F.1c). Emitted once per processed job so operators can join
+// sync SaveTrace stages via AsyncRequestID.
+type AsyncSemanticProcessDetail struct {
+	AsyncRequestID  string
+	Attempt         int
+	SemanticFactIDs []string
+	Recovered       bool
+}
+
+func (AsyncSemanticProcessDetail) isStageDetail() {}
+
 // ExtractSaveDropped returns write-path compiler drops from ingest detail.
 func ExtractSaveDropped(stages []StageDiagnostic) []DroppedFact {
 	for _, st := range stages {

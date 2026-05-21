@@ -52,6 +52,24 @@ func NewAsyncSemanticProcessor(mem Memory) (AsyncSemanticProcessor, bool) {
 	return m, true
 }
 
+// AsyncSemanticQueueObserver exposes queue health when Memory is wired
+// with WithAsyncSemanticQueue and the backend implements Stats.
+type AsyncSemanticQueueObserver interface {
+	AsyncSemanticQueueStats(ctx context.Context, scope Scope) (AsyncSemanticQueueStats, error)
+}
+
+// AsyncSemanticQueueStats is the operator-facing queue snapshot (F.1c).
+type AsyncSemanticQueueStats = port.AsyncSemanticStats
+
+// AsyncSemanticQueueStats returns queue depth and terminal counts.
+func (m *memory) AsyncSemanticQueueStats(ctx context.Context, scope Scope) (AsyncSemanticQueueStats, error) {
+	if m.asyncSemanticQueue == nil {
+		return AsyncSemanticQueueStats{}, errdefs.Validationf(
+			"recall.AsyncSemanticQueueStats: requires WithAsyncSemanticQueue")
+	}
+	return m.asyncSemanticQueue.Stats(ctx, port.AsyncSemanticStatsFilter{Scope: scope})
+}
+
 // ProcessAsyncSemantic claims and processes up to opts.Limit jobs.
 func (m *memory) ProcessAsyncSemantic(ctx context.Context, opts AsyncSemanticProcessOptions) (AsyncSemanticProcessResult, error) {
 	if m.asyncSemanticQueue == nil {
@@ -115,11 +133,19 @@ const (
 )
 
 func (m *memory) processOneAsyncSemanticJob(ctx context.Context, job port.AsyncSemanticJob, now time.Time) asyncJobOutcome {
+	start := time.Now()
+
 	if recovered, ids := m.recoverCompletedSemanticFacts(ctx, job, now); recovered {
 		_ = m.asyncSemanticQueue.Complete(ctx, job.RequestID, port.AsyncSemanticResult{
 			SemanticFactIDs:           ids,
 			RecoveredFromPriorAttempt: true,
 		})
+		m.emitAsyncProcessStage(job, diagnostic.AsyncSemanticProcessDetail{
+			AsyncRequestID:  job.RequestID,
+			Attempt:         job.Attempt,
+			SemanticFactIDs: append([]string(nil), ids...),
+			Recovered:       true,
+		}, diagnostic.StatusOK, "", start)
 		return asyncJobRecovered
 	}
 
@@ -128,6 +154,10 @@ func (m *memory) processOneAsyncSemanticJob(ctx context.Context, job port.AsyncS
 			ErrClass: diagnostic.ErrClassPermanent,
 			Err:      err.Error(),
 		})
+		m.emitAsyncProcessStage(job, diagnostic.AsyncSemanticProcessDetail{
+			AsyncRequestID: job.RequestID,
+			Attempt:        job.Attempt,
+		}, diagnostic.StatusFailed, err.Error(), start)
 		return asyncJobFailed
 	}
 
@@ -137,6 +167,10 @@ func (m *memory) processOneAsyncSemanticJob(ctx context.Context, job port.AsyncS
 			ErrClass: diagnostic.ErrClassPermanent,
 			Err:      err.Error(),
 		})
+		m.emitAsyncProcessStage(job, diagnostic.AsyncSemanticProcessDetail{
+			AsyncRequestID: job.RequestID,
+			Attempt:        job.Attempt,
+		}, diagnostic.StatusFailed, err.Error(), start)
 		return asyncJobFailed
 	}
 
@@ -161,6 +195,10 @@ func (m *memory) processOneAsyncSemanticJob(ctx context.Context, job port.AsyncS
 	// matching the sync Save path and avoiding blocking other writers.
 	if err := m.asyncSemanticWorkerPreRunner.Run(ctx, state); err != nil {
 		m.failAsyncJob(ctx, job.RequestID, err)
+		m.emitAsyncProcessStage(job, diagnostic.AsyncSemanticProcessDetail{
+			AsyncRequestID: job.RequestID,
+			Attempt:        job.Attempt,
+		}, diagnostic.StatusFailed, err.Error(), start)
 		return asyncJobFailed
 	}
 
@@ -171,21 +209,61 @@ func (m *memory) processOneAsyncSemanticJob(ctx context.Context, job port.AsyncS
 	// delete episodes after the lock-free preflight.
 	if err := writestages.ValidateEpisodesForJob(ctx, m.store, job, now); err != nil {
 		m.failAsyncJob(ctx, job.RequestID, err)
+		m.emitAsyncProcessStage(job, diagnostic.AsyncSemanticProcessDetail{
+			AsyncRequestID: job.RequestID,
+			Attempt:        job.Attempt,
+		}, diagnostic.StatusFailed, err.Error(), start)
 		return asyncJobFailed
 	}
 
 	if len(state.Ingest.Facts) == 0 {
 		_ = m.asyncSemanticQueue.Complete(ctx, job.RequestID, port.AsyncSemanticResult{})
+		m.emitAsyncProcessStage(job, diagnostic.AsyncSemanticProcessDetail{
+			AsyncRequestID: job.RequestID,
+			Attempt:        job.Attempt,
+		}, diagnostic.StatusOK, "", start)
 		return asyncJobCompleted
 	}
 	if err := m.asyncSemanticWorkerPostRunner.Run(ctx, state); err != nil {
 		m.failAsyncJob(ctx, job.RequestID, err)
+		m.emitAsyncProcessStage(job, diagnostic.AsyncSemanticProcessDetail{
+			AsyncRequestID: job.RequestID,
+			Attempt:        job.Attempt,
+		}, diagnostic.StatusFailed, err.Error(), start)
 		return asyncJobFailed
 	}
+	ids := append([]string(nil), state.AppendedFactIDs...)
 	_ = m.asyncSemanticQueue.Complete(ctx, job.RequestID, port.AsyncSemanticResult{
-		SemanticFactIDs: append([]string(nil), state.AppendedFactIDs...),
+		SemanticFactIDs: ids,
 	})
+	m.emitAsyncProcessStage(job, diagnostic.AsyncSemanticProcessDetail{
+		AsyncRequestID:  job.RequestID,
+		Attempt:         job.Attempt,
+		SemanticFactIDs: ids,
+	}, diagnostic.StatusOK, "", start)
 	return asyncJobCompleted
+}
+
+func (m *memory) emitAsyncProcessStage(
+	job port.AsyncSemanticJob,
+	detail diagnostic.AsyncSemanticProcessDetail,
+	status diagnostic.Status,
+	errMsg string,
+	start time.Time,
+) {
+	if m.telemetry == nil {
+		return
+	}
+	m.telemetry.OnStage(diagnostic.StageDiagnostic{
+		Stage:          "process_async_semantic",
+		Phase:          diagnostic.PhaseWrite,
+		StartAt:        start,
+		Duration:       time.Since(start),
+		Status:         status,
+		Err:            errMsg,
+		AsyncRequestID: job.RequestID,
+		Detail:         detail,
+	})
 }
 
 func (m *memory) recoverCompletedSemanticFacts(ctx context.Context, job port.AsyncSemanticJob, now time.Time) (bool, []string) {

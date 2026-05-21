@@ -61,6 +61,9 @@ func claimBatch(ctx context.Context, q *asyncsemantic.Queue, workerID string, no
 }
 func (q *failingQueue) Complete(context.Context, string, port.AsyncSemanticResult) error { return nil }
 func (q *failingQueue) Fail(context.Context, string, port.AsyncSemanticFailure) error    { return nil }
+func (q *failingQueue) Stats(context.Context, port.AsyncSemanticStatsFilter) (port.AsyncSemanticStats, error) {
+	return port.AsyncSemanticStats{}, nil
+}
 
 // queueDepth peeks into the in-memory queue by claiming and then
 // silently dropping the claimed jobs. Tests that need to assert

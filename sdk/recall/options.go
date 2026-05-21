@@ -7,6 +7,7 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/ingest"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/port"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/ranker"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/store/asyncsemantic"
 	"github.com/GizClaw/flowcraft/sdk/retrieval"
 )
 
@@ -293,6 +294,14 @@ func WithAsyncSemanticQueue(q AsyncSemanticQueue) Option {
 			c.asyncSemanticQueue = q
 		}
 	}
+}
+
+// NewInMemoryAsyncSemanticQueue returns the process-local durable
+// outbox used by tests and local development. Jobs are lost on
+// process restart; production callers supply a remote backend via
+// WithAsyncSemanticQueue.
+func NewInMemoryAsyncSemanticQueue() AsyncSemanticQueue {
+	return asyncsemantic.New()
 }
 
 // NewLLMReranker returns a Reranker backed by an llm.LLM client.

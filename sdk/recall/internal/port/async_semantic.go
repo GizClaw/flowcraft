@@ -38,6 +38,29 @@ type AsyncSemanticQueue interface {
 	Claim(ctx context.Context, opts AsyncSemanticClaimOptions) ([]AsyncSemanticJob, error)
 	Complete(ctx context.Context, requestID string, result AsyncSemanticResult) error
 	Fail(ctx context.Context, requestID string, failure AsyncSemanticFailure) error
+	// Stats returns queue depth and terminal-state counts for operators.
+	// Scope, when non-zero, restricts counts to that partition.
+	Stats(ctx context.Context, filter AsyncSemanticStatsFilter) (AsyncSemanticStats, error)
+}
+
+// AsyncSemanticStatsFilter scopes Stats. Zero Scope reports global
+// totals across every partition in the backend.
+type AsyncSemanticStatsFilter struct {
+	Scope domain.Scope
+	Now   time.Time
+}
+
+// AsyncSemanticStats is the operator-facing queue health snapshot
+// (Phase F.1c). DeadLetter counts failed jobs whose ErrClass is
+// permanent; ExpiredLeases counts leased jobs past LeaseUntil at Now.
+type AsyncSemanticStats struct {
+	Pending        int
+	Leased         int
+	ExpiredLeases  int
+	Failed         int
+	DeadLetter     int
+	Completed      int
+	CancelledTotal int
 }
 
 // AsyncSemanticClaimOptions controls Claim batching and tenancy

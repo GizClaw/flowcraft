@@ -147,6 +147,12 @@ type AsyncSemanticFailure = port.AsyncSemanticFailure
 // filters for multi-tenant workers.
 type AsyncSemanticClaimOptions = port.AsyncSemanticClaimOptions
 
+// AsyncSemanticStatsFilter scopes AsyncSemanticQueueStats.
+type AsyncSemanticStatsFilter = port.AsyncSemanticStatsFilter
+
+// AsyncSemanticStats is the operator-facing queue health snapshot.
+type AsyncSemanticStats = port.AsyncSemanticStats
+
 // SaveResult reports the canonical fact ids that were appended to the
 // ledger by this Save call. Dedupe/policy drops are not listed here;
 // telemetry surfaces them via the stage diagnostic hook.
