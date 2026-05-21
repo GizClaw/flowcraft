@@ -31,6 +31,7 @@ var (
 	_ diagnostic.StageDetail = diagnostic.BuildEpisodeDetail{}
 	_ diagnostic.StageDetail = diagnostic.ProjectEpisodeEvidenceDetail{}
 	_ diagnostic.StageDetail = diagnostic.EnqueueSemanticDetail{}
+	_ diagnostic.StageDetail = diagnostic.OriginStampDetail{}
 
 	_ diagnostic.StageDetail = diagnostic.IntentDetail{}
 	_ diagnostic.StageDetail = diagnostic.PlanDetail{}

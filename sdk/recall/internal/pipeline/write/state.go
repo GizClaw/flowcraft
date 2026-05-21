@@ -161,6 +161,11 @@ type WriteState struct {
 	// extraction will run later" from "fully synchronous Save".
 	SemanticPending bool
 
+	// SemanticDerivationOrigin is stamped onto every appended fact by
+	// origin_stamp in the F.1b async worker lane. Zero in sync and
+	// F.1a episode paths.
+	SemanticDerivationOrigin domain.FactOrigin
+
 	// FailedStage names the stage whose Run returned the error
 	// that triggered the pipeline's reverse-order compensation
 	// pass. Stages set it before returning an error so upstream

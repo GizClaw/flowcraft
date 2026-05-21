@@ -148,6 +148,7 @@ func (s *ForgetAll) runSoft(
 	}
 	s.fanout.ProjectOptional(ctx, closed)
 	state.Deleted = len(facts)
+	state.DeletedFactIDs = episodeFactIDsFromFacts(facts)
 	return diagnostic.ForgetAllDetail{
 		ScopeKey: scopeKey,
 		Mode:     string(domain.ForgetSoft),
@@ -209,6 +210,7 @@ func (s *ForgetAll) runHard(
 		n = len(facts)
 	}
 	state.Deleted = n
+	state.DeletedFactIDs = factIDsFromFacts(facts)
 	return diagnostic.ForgetAllDetail{
 		ScopeKey:           scopeKey,
 		Mode:               string(domain.ForgetHard),
@@ -280,6 +282,7 @@ func (s *ForgetAll) runExpire(
 	}
 
 	state.Deleted = len(matched)
+	state.DeletedFactIDs = append([]string(nil), matched...)
 	return diagnostic.ExpireRetiredDetail{
 		ScopeKey:       scopeKey,
 		ExpiresBefore:  deref(state.Filter.ExpiresBefore),
@@ -303,6 +306,26 @@ func filterByExpiresBefore(facts []domain.TemporalFact, cutoff *time.Time) []str
 			continue
 		}
 		if !cutoff.Before(*f.ExpiresAt) {
+			out = append(out, f.ID)
+		}
+	}
+	return out
+}
+
+func factIDsFromFacts(facts []domain.TemporalFact) []string {
+	out := make([]string, 0, len(facts))
+	for _, f := range facts {
+		if f.ID != "" {
+			out = append(out, f.ID)
+		}
+	}
+	return out
+}
+
+func episodeFactIDsFromFacts(facts []domain.TemporalFact) []string {
+	var out []string
+	for _, f := range facts {
+		if f.Kind == domain.KindEpisode && f.ID != "" {
 			out = append(out, f.ID)
 		}
 	}

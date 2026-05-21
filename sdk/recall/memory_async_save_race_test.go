@@ -76,7 +76,7 @@ func TestSave_ConcurrentAsyncTurnsOnly(t *testing.T) {
 		t.Fatalf("episode facts in store = %d, want %d", episodes, workers)
 	}
 
-	jobs, err := queue.Claim(ctx, "drain", testingNow(), workers+10)
+	jobs, err := claimBatch(ctx, queue, "drain", testingNow(), workers+10)
 	if err != nil {
 		t.Fatalf("Claim: %v", err)
 	}

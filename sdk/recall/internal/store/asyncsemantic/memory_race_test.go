@@ -31,7 +31,7 @@ func TestQueue_ConcurrentEnqueueSameRequestID(t *testing.T) {
 	}
 	wg.Wait()
 
-	jobs, err := q.Claim(ctx, "w1", time.Now(), 64)
+	jobs, err := claimBatch(ctx, q, "w1", time.Now(), 64)
 	if err != nil {
 		t.Fatalf("Claim: %v", err)
 	}
@@ -64,7 +64,7 @@ func TestQueue_ConcurrentEnqueueDistinctIDs(t *testing.T) {
 	}
 	wg.Wait()
 
-	jobs, err := q.Claim(ctx, "w1", time.Now(), n+10)
+	jobs, err := claimBatch(ctx, q, "w1", time.Now(), n+10)
 	if err != nil {
 		t.Fatalf("Claim: %v", err)
 	}
@@ -104,7 +104,7 @@ func TestQueue_ConcurrentClaimWorkers(t *testing.T) {
 		wg.Add(1)
 		go func(worker int) {
 			defer wg.Done()
-			batch, err := q.Claim(ctx, fmt.Sprintf("w%d", worker), now, jobs)
+			batch, err := claimBatch(ctx, q, fmt.Sprintf("w%d", worker), now, jobs)
 			if err != nil {
 				t.Errorf("Claim: %v", err)
 				return
@@ -159,7 +159,7 @@ func TestQueue_ConcurrentEnqueueClaimComplete(t *testing.T) {
 			defer consWG.Done()
 			workerID := fmt.Sprintf("consumer-%d", worker)
 			for int(completed.Load()) < total {
-				batch, err := q.Claim(ctx, workerID, time.Now(), 8)
+				batch, err := claimBatch(ctx, q, workerID, time.Now(), 8)
 				if err != nil {
 					t.Errorf("Claim: %v", err)
 					return
@@ -212,7 +212,7 @@ func TestQueue_ConcurrentEnqueueCancelClaim(t *testing.T) {
 	}
 	wg.Wait()
 
-	jobs, err := q.Claim(ctx, "w1", time.Now(), rounds+10)
+	jobs, err := claimBatch(ctx, q, "w1", time.Now(), rounds+10)
 	if err != nil {
 		t.Fatalf("Claim: %v", err)
 	}
@@ -244,7 +244,7 @@ func TestQueue_ConcurrentClaimAfterLeaseExpiry(t *testing.T) {
 		wg1.Add(1)
 		go func() {
 			defer wg1.Done()
-			batch, err := q.Claim(ctx, "w-first", claim1, n)
+			batch, err := claimBatch(ctx, q, "w-first", claim1, n)
 			if err != nil {
 				t.Errorf("Claim 1: %v", err)
 				return
@@ -263,7 +263,7 @@ func TestQueue_ConcurrentClaimAfterLeaseExpiry(t *testing.T) {
 		wg2.Add(1)
 		go func() {
 			defer wg2.Done()
-			batch, err := q.Claim(ctx, "w-second", claim2, n)
+			batch, err := claimBatch(ctx, q, "w-second", claim2, n)
 			if err != nil {
 				t.Errorf("Claim 2: %v", err)
 				return
@@ -289,7 +289,7 @@ func TestQueue_ConcurrentFailCompleteRaces(t *testing.T) {
 	for i := 0; i < n; i++ {
 		_, _ = q.Enqueue(ctx, makeJob(fmt.Sprintf("req-term-%d", i), "u1"))
 	}
-	jobs, err := q.Claim(ctx, "w1", time.Now(), n)
+	jobs, err := claimBatch(ctx, q, "w1", time.Now(), n)
 	if err != nil {
 		t.Fatalf("Claim: %v", err)
 	}

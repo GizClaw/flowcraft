@@ -10,6 +10,14 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/port"
 )
 
+func claimBatch(ctx context.Context, q *Queue, workerID string, now time.Time, max int) ([]port.AsyncSemanticJob, error) {
+	return q.Claim(ctx, port.AsyncSemanticClaimOptions{
+		WorkerID: workerID,
+		Now:      now,
+		Max:      max,
+	})
+}
+
 func makeJob(requestID, user string, episodeIDs ...string) port.AsyncSemanticJob {
 	return port.AsyncSemanticJob{
 		RequestID:      requestID,
@@ -37,7 +45,7 @@ func TestQueue_EnqueueIdempotent(t *testing.T) {
 	if !r1.EnqueuedAt.Equal(r2.EnqueuedAt) {
 		t.Errorf("idempotent Enqueue must return same EnqueuedAt: r1=%v r2=%v", r1.EnqueuedAt, r2.EnqueuedAt)
 	}
-	jobs, err := q.Claim(ctx, "w1", time.Now(), 10)
+	jobs, err := claimBatch(ctx, q, "w1", time.Now(), 10)
 	if err != nil {
 		t.Fatalf("Claim: %v", err)
 	}
@@ -59,7 +67,7 @@ func TestQueue_ClaimRespectsFIFO(t *testing.T) {
 		// Force monotonic enqueuedAt separation.
 		time.Sleep(time.Millisecond)
 	}
-	jobs, err := q.Claim(ctx, "w1", time.Now(), 10)
+	jobs, err := claimBatch(ctx, q, "w1", time.Now(), 10)
 	if err != nil {
 		t.Fatalf("Claim: %v", err)
 	}
@@ -84,14 +92,14 @@ func TestQueue_ClaimRespectsMax(t *testing.T) {
 		_, _ = q.Enqueue(ctx, makeJob(id, "u1"))
 		time.Sleep(time.Millisecond)
 	}
-	first, err := q.Claim(ctx, "w1", time.Now(), 2)
+	first, err := claimBatch(ctx, q, "w1", time.Now(), 2)
 	if err != nil {
 		t.Fatalf("Claim 1: %v", err)
 	}
 	if len(first) != 2 {
 		t.Errorf("first claim returned %d, want 2", len(first))
 	}
-	second, err := q.Claim(ctx, "w1", time.Now(), 5)
+	second, err := claimBatch(ctx, q, "w1", time.Now(), 5)
 	if err != nil {
 		t.Fatalf("Claim 2: %v", err)
 	}
@@ -107,7 +115,7 @@ func TestQueue_CompleteIdempotent(t *testing.T) {
 	q := New()
 	ctx := context.Background()
 	_, _ = q.Enqueue(ctx, makeJob("req-1", "u1"))
-	if _, err := q.Claim(ctx, "w1", time.Now(), 1); err != nil {
+	if _, err := claimBatch(ctx, q, "w1", time.Now(), 1); err != nil {
 		t.Fatalf("Claim: %v", err)
 	}
 	if err := q.Complete(ctx, "req-1", port.AsyncSemanticResult{SemanticFactIDs: []string{"sf-1"}}); err != nil {
@@ -128,7 +136,7 @@ func TestQueue_FailMovesToFailed(t *testing.T) {
 	q := New()
 	ctx := context.Background()
 	_, _ = q.Enqueue(ctx, makeJob("req-1", "u1"))
-	if _, err := q.Claim(ctx, "w1", time.Now(), 1); err != nil {
+	if _, err := claimBatch(ctx, q, "w1", time.Now(), 1); err != nil {
 		t.Fatalf("Claim: %v", err)
 	}
 	failure := port.AsyncSemanticFailure{
@@ -162,14 +170,14 @@ func TestQueue_LeaseExpiry(t *testing.T) {
 	if _, err := q.Enqueue(ctx, job); err != nil {
 		t.Fatalf("Enqueue: %v", err)
 	}
-	first, err := q.Claim(ctx, "w1", time.Now(), 1)
+	first, err := claimBatch(ctx, q, "w1", time.Now(), 1)
 	if err != nil {
 		t.Fatalf("Claim 1: %v", err)
 	}
 	if len(first) != 1 {
 		t.Fatalf("Claim 1 len = %d, want 1", len(first))
 	}
-	second, err := q.Claim(ctx, "w2", time.Now(), 1)
+	second, err := claimBatch(ctx, q, "w2", time.Now(), 1)
 	if err != nil {
 		t.Fatalf("Claim 2: %v", err)
 	}
@@ -189,19 +197,66 @@ func TestQueue_DefaultLeaseExpires(t *testing.T) {
 	if _, err := q.Enqueue(ctx, job); err != nil {
 		t.Fatalf("Enqueue: %v", err)
 	}
-	first, err := q.Claim(ctx, "w1", time.Unix(100, 0), 1)
+	first, err := claimBatch(ctx, q, "w1", time.Unix(100, 0), 1)
 	if err != nil {
 		t.Fatalf("Claim 1: %v", err)
 	}
 	if len(first) != 1 {
 		t.Fatalf("Claim 1 len = %d, want 1", len(first))
 	}
-	second, err := q.Claim(ctx, "w2", time.Unix(100, 0).Add(24*time.Hour), 1)
+	second, err := claimBatch(ctx, q, "w2", time.Unix(100, 0).Add(24*time.Hour), 1)
 	if err != nil {
 		t.Fatalf("Claim 2: %v", err)
 	}
 	if len(second) != 1 || second[0].RequestID != job.RequestID {
 		t.Fatalf("job with default lease must be re-claimable after expiry window, got %+v", second)
+	}
+}
+
+func TestQueue_CancelMatchingEpisodesOnlyTouchesIntersectingJobs(t *testing.T) {
+	q := New()
+	ctx := context.Background()
+	scope := domain.Scope{RuntimeID: "rt", UserID: "u1"}
+	epA := "ep-a"
+	epB := "ep-b"
+	_, _ = q.Enqueue(ctx, port.AsyncSemanticJob{RequestID: "j-a", Scope: scope, EpisodeFactIDs: []string{epA}})
+	_, _ = q.Enqueue(ctx, port.AsyncSemanticJob{RequestID: "j-b", Scope: scope, EpisodeFactIDs: []string{epB}})
+	n, err := q.CancelMatchingEpisodes(ctx, scope, []string{epA})
+	if err != nil {
+		t.Fatalf("CancelMatchingEpisodes: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("cancelled = %d, want 1", n)
+	}
+	jobs, err := claimBatch(ctx, q, "w", time.Now(), 10)
+	if err != nil {
+		t.Fatalf("Claim: %v", err)
+	}
+	if len(jobs) != 1 || jobs[0].RequestID != "j-b" {
+		t.Fatalf("remaining jobs = %+v, want only j-b", jobs)
+	}
+}
+
+func TestQueue_CancelScopeRemovesPartitionJobs(t *testing.T) {
+	q := New()
+	ctx := context.Background()
+	scopeA := domain.Scope{RuntimeID: "rt-a", UserID: "u1"}
+	scopeB := domain.Scope{RuntimeID: "rt-b", UserID: "u1"}
+	_, _ = q.Enqueue(ctx, port.AsyncSemanticJob{RequestID: "a1", Scope: scopeA})
+	_, _ = q.Enqueue(ctx, port.AsyncSemanticJob{RequestID: "b1", Scope: scopeB})
+	n, err := q.CancelScope(ctx, scopeA)
+	if err != nil {
+		t.Fatalf("CancelScope: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("cancelled = %d, want 1", n)
+	}
+	jobs, err := claimBatch(ctx, q, "w", time.Now(), 10)
+	if err != nil {
+		t.Fatalf("Claim: %v", err)
+	}
+	if len(jobs) != 1 || jobs[0].RequestID != "b1" {
+		t.Fatalf("remaining jobs = %+v, want only b1", jobs)
 	}
 }
 
@@ -215,7 +270,7 @@ func TestQueue_CancelRemovesPendingJob(t *testing.T) {
 	if err := q.Cancel(ctx, job.RequestID); err != nil {
 		t.Fatalf("Cancel: %v", err)
 	}
-	jobs, err := q.Claim(ctx, "w1", time.Now(), 10)
+	jobs, err := claimBatch(ctx, q, "w1", time.Now(), 10)
 	if err != nil {
 		t.Fatalf("Claim: %v", err)
 	}

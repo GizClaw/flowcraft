@@ -121,6 +121,8 @@ type ForgetAllDetail struct {
 	Deleted            int
 	ProjectionsCleared int
 	EvidenceCleared    int
+	AsyncJobsCancelled int
+	AsyncJobCancelErr  string
 	Latency            time.Duration
 }
 
@@ -135,12 +137,14 @@ func (ForgetAllDetail) isStageDetail() {}
 // counts, and per-projection forget counts so operators can audit a
 // scheduled retention sweep without inspecting the canonical store.
 type ExpireRetiredDetail struct {
-	ScopeKey       string
-	ExpiresBefore  time.Time
-	Scanned        int
-	Deleted        int
-	ProjectionsHit int
-	Latency        time.Duration
+	ScopeKey           string
+	ExpiresBefore      time.Time
+	Scanned            int
+	Deleted            int
+	ProjectionsHit     int
+	AsyncJobsCancelled int
+	AsyncJobCancelErr  string
+	Latency            time.Duration
 }
 
 func (ExpireRetiredDetail) isStageDetail() {}
@@ -214,6 +218,16 @@ type EnqueueSemanticDetail struct {
 }
 
 func (EnqueueSemanticDetail) isStageDetail() {}
+
+// OriginStampDetail —— write/origin_stamp stage (Phase F.1b). Records
+// how many resolved facts received SemanticDerivation origin metadata
+// before append in the async worker lane.
+type OriginStampDetail struct {
+	AsyncRequestID string
+	Facts          int
+}
+
+func (OriginStampDetail) isStageDetail() {}
 
 // ExtractSaveDropped returns write-path compiler drops from ingest detail.
 func ExtractSaveDropped(stages []StageDiagnostic) []DroppedFact {

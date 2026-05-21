@@ -74,6 +74,12 @@ type State struct {
 	// writes; for Hard mode it is the store's reported delete count.
 	Deleted int
 
+	// DeletedFactIDs lists the canonical fact IDs removed or
+	// soft-closed in this run. Memory uses it to cancel async
+	// semantic jobs that reference those episodes (ExpireRetired /
+	// ForgetAll) without wiping unrelated pending jobs.
+	DeletedFactIDs []string
+
 	// Trace mirrors the rebuild pipeline trace shape. nil = caller
 	// did not request explain output (zero allocation).
 	Trace *Trace

@@ -47,9 +47,17 @@ type failingQueue struct {
 func (q *failingQueue) Enqueue(context.Context, port.AsyncSemanticJob) (port.AsyncSemanticReceipt, error) {
 	return port.AsyncSemanticReceipt{}, q.err
 }
-func (q *failingQueue) Cancel(context.Context, string) error { return nil }
-func (q *failingQueue) Claim(context.Context, string, time.Time, int) ([]port.AsyncSemanticJob, error) {
+func (q *failingQueue) Cancel(context.Context, string) error                   { return nil }
+func (q *failingQueue) CancelScope(context.Context, domain.Scope) (int, error) { return 0, nil }
+func (q *failingQueue) CancelMatchingEpisodes(context.Context, domain.Scope, []string) (int, error) {
+	return 0, nil
+}
+func (q *failingQueue) Claim(context.Context, port.AsyncSemanticClaimOptions) ([]port.AsyncSemanticJob, error) {
 	return nil, nil
+}
+
+func claimBatch(ctx context.Context, q *asyncsemantic.Queue, workerID string, now time.Time, max int) ([]port.AsyncSemanticJob, error) {
+	return q.Claim(ctx, port.AsyncSemanticClaimOptions{WorkerID: workerID, Now: now, Max: max})
 }
 func (q *failingQueue) Complete(context.Context, string, port.AsyncSemanticResult) error { return nil }
 func (q *failingQueue) Fail(context.Context, string, port.AsyncSemanticFailure) error    { return nil }
@@ -59,7 +67,7 @@ func (q *failingQueue) Fail(context.Context, string, port.AsyncSemanticFailure) 
 // "no enqueue happened" use this before discarding the queue.
 func queueDepth(t *testing.T, q *asyncsemantic.Queue) int {
 	t.Helper()
-	jobs, err := q.Claim(context.Background(), "test", time.Now(), 1024)
+	jobs, err := claimBatch(context.Background(), q, "test", time.Now(), 1024)
 	if err != nil {
 		t.Fatalf("Claim: %v", err)
 	}

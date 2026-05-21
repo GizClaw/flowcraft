@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/port"
 )
 
@@ -85,16 +86,32 @@ func (q *Queue) Enqueue(_ context.Context, job port.AsyncSemanticJob) (port.Asyn
 	}, nil
 }
 
-// Claim picks up to max pending jobs in (enqueuedAt asc, scope, requestID) order, marks them leased.
+// jobMatchesClaimFilter reports whether e is eligible for Claim under
+// opts. Scope wins over RuntimeID when both are set.
+func jobMatchesClaimFilter(job port.AsyncSemanticJob, opts port.AsyncSemanticClaimOptions) bool {
+	if opts.Scope != nil {
+		return job.Scope.CanonicalKey() == opts.Scope.CanonicalKey()
+	}
+	if opts.RuntimeID != "" {
+		return job.Scope.RuntimeID == opts.RuntimeID
+	}
+	return true
+}
+
+// Claim picks up to opts.Max pending jobs in (enqueuedAt asc, scope,
+// requestID) order, marks them leased, and applies optional scope /
+// runtime filters for multi-tenant workers.
 //
 // Entries currently leased whose LeaseUntil has expired (relative to
-// the supplied now) are re-eligible for claim, supporting the worker
-// crash / lease-loss scenario. Workers MUST supply their own
-// LeaseUntil via job-side bookkeeping; the queue records the time
-// supplied on Claim so subsequent Claim calls can decide expiry.
-func (q *Queue) Claim(_ context.Context, workerID string, now time.Time, max int) ([]port.AsyncSemanticJob, error) {
-	if max <= 0 {
+// opts.Now) are re-eligible for claim, supporting the worker crash /
+// lease-loss scenario.
+func (q *Queue) Claim(_ context.Context, opts port.AsyncSemanticClaimOptions) ([]port.AsyncSemanticJob, error) {
+	if opts.Max <= 0 {
 		return nil, nil
+	}
+	now := opts.Now
+	if now.IsZero() {
+		now = time.Now()
 	}
 	q.mu.Lock()
 	defer q.mu.Unlock()
@@ -122,17 +139,18 @@ func (q *Queue) Claim(_ context.Context, workerID string, now time.Time, max int
 		return q.pending[i].enqueuedAt.Before(q.pending[j].enqueuedAt)
 	})
 
-	out := make([]port.AsyncSemanticJob, 0, max)
+	out := make([]port.AsyncSemanticJob, 0, opts.Max)
 	remaining := q.pending[:0]
 	for _, e := range q.pending {
-		if len(out) >= max {
+		if len(out) >= opts.Max {
+			remaining = append(remaining, e)
+			continue
+		}
+		if !jobMatchesClaimFilter(e.job, opts) {
 			remaining = append(remaining, e)
 			continue
 		}
 		e.status = statusLeased
-		// Always assign a non-zero lease so crashed workers eventually
-		// release the job. Pre-populated LeaseUntil on the enqueued
-		// payload still wins (callers wanting a specific window).
 		if e.job.LeaseUntil.IsZero() {
 			e.leaseUntil = now.Add(defaultLeaseTTL)
 		} else {
@@ -142,11 +160,105 @@ func (q *Queue) Claim(_ context.Context, workerID string, now time.Time, max int
 		job := e.job
 		job.Attempt++
 		job.LeaseUntil = e.leaseUntil
-		_ = workerID
+		_ = opts.WorkerID
 		out = append(out, job)
 	}
 	q.pending = remaining
 	return out, nil
+}
+
+// CancelMatchingEpisodes removes non-complete jobs in scope whose
+// EpisodeFactIDs intersect deletedEpisodeFactIDs.
+func (q *Queue) CancelMatchingEpisodes(_ context.Context, scope domain.Scope, deletedEpisodeFactIDs []string) (int, error) {
+	if len(deletedEpisodeFactIDs) == 0 {
+		return 0, nil
+	}
+	targets := make(map[string]struct{}, len(deletedEpisodeFactIDs))
+	for _, id := range deletedEpisodeFactIDs {
+		if id != "" {
+			targets[id] = struct{}{}
+		}
+	}
+	if len(targets) == 0 {
+		return 0, nil
+	}
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	key := scope.CanonicalKey()
+	if key == "" {
+		return 0, nil
+	}
+	var toCancel []string
+	for requestID, e := range q.byRequest {
+		if e.status == statusComplete {
+			continue
+		}
+		if e.job.Scope.CanonicalKey() != key {
+			continue
+		}
+		if jobReferencesDeletedEpisodes(e.job, targets) {
+			toCancel = append(toCancel, requestID)
+		}
+	}
+	n := 0
+	for _, requestID := range toCancel {
+		if err := q.cancelLocked(requestID); err != nil {
+			return n, err
+		}
+		n++
+	}
+	return n, nil
+}
+
+func jobReferencesDeletedEpisodes(job port.AsyncSemanticJob, targets map[string]struct{}) bool {
+	for _, id := range job.EpisodeFactIDs {
+		if _, ok := targets[id]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+// cancelLocked removes one job. Caller must hold q.mu.
+func (q *Queue) cancelLocked(requestID string) error {
+	e, ok := q.byRequest[requestID]
+	if !ok || e.status == statusComplete {
+		return nil
+	}
+	delete(q.byRequest, requestID)
+	delete(q.leased, requestID)
+	remaining := q.pending[:0]
+	for _, pe := range q.pending {
+		if pe.job.RequestID != requestID {
+			remaining = append(remaining, pe)
+		}
+	}
+	q.pending = remaining
+	return nil
+}
+
+// CancelScope removes every non-complete job in the scope partition.
+func (q *Queue) CancelScope(_ context.Context, scope domain.Scope) (int, error) {
+	key := scope.CanonicalKey()
+	if key == "" {
+		return 0, nil
+	}
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	n := 0
+	for requestID, e := range q.byRequest {
+		if e.status == statusComplete {
+			continue
+		}
+		if e.job.Scope.CanonicalKey() != key {
+			continue
+		}
+		if err := q.cancelLocked(requestID); err != nil {
+			return n, err
+		}
+		n++
+	}
+	return n, nil
 }
 
 // Complete marks the job complete. Idempotent: re-completing an
@@ -191,20 +303,7 @@ func (q *Queue) Fail(_ context.Context, requestID string, failure port.AsyncSema
 func (q *Queue) Cancel(_ context.Context, requestID string) error {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	e, ok := q.byRequest[requestID]
-	if !ok || e.status == statusComplete {
-		return nil
-	}
-	delete(q.byRequest, requestID)
-	delete(q.leased, requestID)
-	remaining := q.pending[:0]
-	for _, pe := range q.pending {
-		if pe.job.RequestID != requestID {
-			remaining = append(remaining, pe)
-		}
-	}
-	q.pending = remaining
-	return nil
+	return q.cancelLocked(requestID)
 }
 
 func (q *Queue) pendingDepthLocked() int {

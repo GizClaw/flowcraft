@@ -27,9 +27,29 @@ type AsyncSemanticQueue interface {
 	// (structured facts) fails after a successful Enqueue. Idempotent
 	// on unknown or already-completed request IDs.
 	Cancel(ctx context.Context, requestID string) error
-	Claim(ctx context.Context, workerID string, now time.Time, max int) ([]AsyncSemanticJob, error)
+	// CancelScope removes every non-complete job for the supplied
+	// scope partition. It backs ForgetAll(Hard) so workers do not
+	// derive semantic facts after a full scope wipe.
+	CancelScope(ctx context.Context, scope domain.Scope) (int, error)
+	// CancelMatchingEpisodes removes non-complete jobs in scope whose
+	// EpisodeFactIDs intersect deletedEpisodeFactIDs. Idempotent when
+	// the slice is empty. Used by ExpireRetired and ForgetAll(Soft).
+	CancelMatchingEpisodes(ctx context.Context, scope domain.Scope, deletedEpisodeFactIDs []string) (int, error)
+	Claim(ctx context.Context, opts AsyncSemanticClaimOptions) ([]AsyncSemanticJob, error)
 	Complete(ctx context.Context, requestID string, result AsyncSemanticResult) error
 	Fail(ctx context.Context, requestID string, failure AsyncSemanticFailure) error
+}
+
+// AsyncSemanticClaimOptions controls Claim batching and tenancy
+// filters. Zero Max defaults to no jobs; callers should set Max
+// explicitly. Scope and RuntimeID are optional filters — when both
+// are set, Scope wins (exact partition match).
+type AsyncSemanticClaimOptions struct {
+	WorkerID  string
+	Now       time.Time
+	Max       int
+	Scope     *domain.Scope
+	RuntimeID string
 }
 
 // AsyncSemanticJob is one durable semantic extraction work item.

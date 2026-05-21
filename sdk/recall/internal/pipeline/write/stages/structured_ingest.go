@@ -13,9 +13,8 @@ import (
 )
 
 // StructuredIngest is the structured-facts leg of WriteModeAsyncSemantic.
-// It runs AFTER the episode lane (build → append → evidence → outbox)
-// so a failure here triggers framework compensation that cancels the
-// outbox job and rolls back the raw episode. Unlike the sync Ingest
+// It runs after the episode lane and before write_semantic_outbox so
+// a failure here rolls back without enqueueing a claimable job. Unlike the sync Ingest
 // stage, Turns are deliberately omitted — caller Turns were already
 // captured as KindEpisode facts upstream.
 type StructuredIngest struct {

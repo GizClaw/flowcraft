@@ -34,7 +34,11 @@ func (q *fakeQueue) Cancel(_ context.Context, requestID string) error {
 	}
 	return nil
 }
-func (q *fakeQueue) Claim(context.Context, string, time.Time, int) ([]port.AsyncSemanticJob, error) {
+func (q *fakeQueue) CancelScope(context.Context, domain.Scope) (int, error) { return 0, nil }
+func (q *fakeQueue) CancelMatchingEpisodes(context.Context, domain.Scope, []string) (int, error) {
+	return 0, nil
+}
+func (q *fakeQueue) Claim(context.Context, port.AsyncSemanticClaimOptions) ([]port.AsyncSemanticJob, error) {
 	return nil, nil
 }
 func (q *fakeQueue) Complete(context.Context, string, port.AsyncSemanticResult) error { return nil }

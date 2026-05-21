@@ -124,6 +124,12 @@ type memory struct {
 	// configures. nil disables WriteModeAsyncSemantic.
 	asyncSemanticQueue port.AsyncSemanticQueue
 
+	// asyncSemanticWorkerPreRunner / PostRunner drive
+	// ProcessAsyncSemantic (F.1b): LLM ingest + semantic write path
+	// with origin stamping, under the same scope lock as Save.
+	asyncSemanticWorkerPreRunner  *write.Runner
+	asyncSemanticWorkerPostRunner *write.Runner
+
 	// projections retains the canonical projection set (in
 	// registration order) so RebuildProjection can resolve a
 	// projection by name without re-deriving it from fanout.
@@ -293,6 +299,19 @@ func New(opts ...Option) (Memory, error) {
 		writestages.NewValidityClose(cfg.store, fanout, tel),
 		writestages.NewProjectRequired(fanout, tel),
 		writestages.NewWriteSemanticOutbox(m.asyncSemanticQueue, tel),
+		writestages.NewProjectOptional(fanout),
+		writestages.NewEvolutionAfterSave(cfg.evolution),
+	}, tel)
+	m.asyncSemanticWorkerPreRunner = write.NewRunner([]pipeline.Stage[*write.WriteState]{
+		writestages.NewValidate(),
+		writestages.NewIngest(cfg.compiler, m.entitySnapshots),
+	}, tel)
+	m.asyncSemanticWorkerPostRunner = write.NewRunner([]pipeline.Stage[*write.WriteState]{
+		writestages.NewResolve(cfg.resolver, cfg.store),
+		writestages.NewOriginStamp(),
+		writestages.NewAppend(cfg.store, tel),
+		writestages.NewValidityClose(cfg.store, fanout, tel),
+		writestages.NewProjectRequired(fanout, tel),
 		writestages.NewProjectOptional(fanout),
 		writestages.NewEvolutionAfterSave(cfg.evolution),
 	}, tel)
@@ -507,8 +526,8 @@ func episodeFactIDsFromState(state *write.WriteState) []string {
 
 // newEpisodeState builds the WriteState the asyncEpisodeRunner
 // consumes. Facts and Turns may both be present in mixed-mode saves;
-// Turns feed build_episode while Facts feed structured_ingest after
-// the outbox stage.
+// Turns feed build_episode while Facts feed structured_ingest before
+// write_semantic_outbox.
 func newEpisodeState(scope Scope, req SaveRequest, withTrace bool) *write.WriteState {
 	state := &write.WriteState{
 		Scope:               scope,
@@ -667,6 +686,12 @@ func (m *memory) ForgetAll(ctx context.Context, scope Scope, mode ForgetMode, co
 	if err := m.forgetRunner.Run(ctx, state); err != nil {
 		return 0, err
 	}
+	cancel := m.cancelAsyncJobsAfterForget(ctx, state)
+	m.patchForgetTraceAsyncCancel(state, cancel)
+	m.emitAsyncJobCancelTelemetry(scope, cancel, "forget_all")
+	if cancel.Err != nil {
+		return state.Deleted, fmt.Errorf("recall.ForgetAll: async job cancel: %w", cancel.Err)
+	}
 	return state.Deleted, nil
 }
 
@@ -700,6 +725,15 @@ func (m *memory) ExpireRetired(ctx context.Context, scope Scope, now time.Time) 
 	}
 	if err := m.forgetRunner.Run(ctx, state); err != nil {
 		return 0, err
+	}
+	var cancel asyncJobCancelResult
+	if state.Deleted > 0 {
+		cancel = m.cancelAsyncJobsAfterForget(ctx, state)
+		m.patchForgetTraceAsyncCancel(state, cancel)
+		m.emitAsyncJobCancelTelemetry(scope, cancel, "expire_retired")
+		if cancel.Err != nil {
+			return state.Deleted, fmt.Errorf("recall.ExpireRetired: async job cancel: %w", cancel.Err)
+		}
 	}
 	return state.Deleted, nil
 }

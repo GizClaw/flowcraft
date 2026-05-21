@@ -26,6 +26,7 @@ type scopeShard struct {
 	orderedIDs   []string
 	mergeKeyIdx  map[string][]string
 	correctedIdx map[string][]string
+	originIdx    map[string][]string
 }
 
 // scopeKey is the canonical partition key. AgentID is intentionally
@@ -55,6 +56,7 @@ func (s *MemoryStore) shardLocked(scope domain.Scope) *scopeShard {
 			byID:         make(map[string]*domain.TemporalFact),
 			mergeKeyIdx:  make(map[string][]string),
 			correctedIdx: make(map[string][]string),
+			originIdx:    make(map[string][]string),
 		}
 		s.byScope[k] = sh
 	}
@@ -117,6 +119,7 @@ func (s *MemoryStore) Append(_ context.Context, facts []domain.TemporalFact) err
 		if stored.CorrectedBy != "" {
 			sh.correctedIdx[stored.CorrectedBy] = append(sh.correctedIdx[stored.CorrectedBy], stored.ID)
 		}
+		indexOriginLocked(sh, stored.ID, stored.Origin.RequestID)
 	}
 	return nil
 }
@@ -260,13 +263,10 @@ func (s *MemoryStore) FindByRevisionSource(_ context.Context, scope domain.Scope
 	return out, nil
 }
 
-// FindByOriginRequestID scans the scope partition and returns every
-// fact whose Origin.RequestID equals the supplied key. Used by the
-// async semantic worker to detect "facts already written by a prior
-// attempt" (retry idempotency, see
-// recall-v2-async-semantic-write.md §3.3). Empty requestID yields nil
-// so callers cannot accidentally enumerate the whole scope. Results
-// are ordered by ObservedAt ascending for determinism.
+// FindByOriginRequestID returns every fact in scope whose
+// Origin.RequestID equals the supplied key. Uses originIdx for
+// O(k) lookup where k is the number of facts per work item. Empty
+// requestID yields nil.
 func (s *MemoryStore) FindByOriginRequestID(_ context.Context, scope domain.Scope, requestID string) ([]domain.TemporalFact, error) {
 	if requestID == "" {
 		return nil, nil
@@ -277,13 +277,14 @@ func (s *MemoryStore) FindByOriginRequestID(_ context.Context, scope domain.Scop
 	if !ok {
 		return nil, nil
 	}
-	var out []domain.TemporalFact
-	for _, id := range sh.orderedIDs {
+	ids := sh.originIdx[requestID]
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	out := make([]domain.TemporalFact, 0, len(ids))
+	for _, id := range ids {
 		f, ok := sh.byID[id]
 		if !ok {
-			continue
-		}
-		if f.Origin.RequestID != requestID {
 			continue
 		}
 		out = append(out, f.Clone())
@@ -292,6 +293,39 @@ func (s *MemoryStore) FindByOriginRequestID(_ context.Context, scope domain.Scop
 		return out[i].ObservedAt.Before(out[j].ObservedAt)
 	})
 	return out, nil
+}
+
+func indexOriginLocked(sh *scopeShard, factID, requestID string) {
+	if sh == nil || factID == "" || requestID == "" {
+		return
+	}
+	for _, existing := range sh.originIdx[requestID] {
+		if existing == factID {
+			return
+		}
+	}
+	sh.originIdx[requestID] = append(sh.originIdx[requestID], factID)
+}
+
+func unindexOriginLocked(sh *scopeShard, factID, requestID string) {
+	if sh == nil || requestID == "" {
+		return
+	}
+	ids := sh.originIdx[requestID]
+	if len(ids) == 0 {
+		return
+	}
+	filtered := ids[:0]
+	for _, id := range ids {
+		if id != factID {
+			filtered = append(filtered, id)
+		}
+	}
+	if len(filtered) == 0 {
+		delete(sh.originIdx, requestID)
+		return
+	}
+	sh.originIdx[requestID] = filtered
 }
 
 // UpdateValidity closes a fact's validity window. The operation is
@@ -488,6 +522,7 @@ func (s *MemoryStore) Delete(_ context.Context, scope domain.Scope, factIDs []st
 		}
 		delete(sh.byID, id)
 		removed[id] = struct{}{}
+		unindexOriginLocked(sh, id, f.Origin.RequestID)
 		if f.MergeKey != "" {
 			sh.mergeKeyIdx[f.MergeKey] = removeID(sh.mergeKeyIdx[f.MergeKey], id)
 			if len(sh.mergeKeyIdx[f.MergeKey]) == 0 {

@@ -143,6 +143,10 @@ type AsyncSemanticResult = port.AsyncSemanticResult
 // AsyncSemanticFailure is the worker's failure report.
 type AsyncSemanticFailure = port.AsyncSemanticFailure
 
+// AsyncSemanticClaimOptions controls queue Claim batching and scope
+// filters for multi-tenant workers.
+type AsyncSemanticClaimOptions = port.AsyncSemanticClaimOptions
+
 // SaveResult reports the canonical fact ids that were appended to the
 // ledger by this Save call. Dedupe/policy drops are not listed here;
 // telemetry surfaces them via the stage diagnostic hook.
