@@ -10,6 +10,8 @@ import (
 
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/ingest"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/pipeline/write"
+	writestages "github.com/GizClaw/flowcraft/sdk/recall/internal/pipeline/write/stages"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/port"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/store/asyncsemantic"
 	temporalstore "github.com/GizClaw/flowcraft/sdk/recall/internal/store/temporal"
@@ -306,6 +308,116 @@ func TestProcessAsyncSemantic_EpisodeDeletedDuringWorkerDoesNotDerive(t *testing
 		if f.Origin.Kind == domain.OriginKindSemanticDerivation {
 			t.Fatalf("must not derive semantic facts after concurrent episode delete, got %+v", f)
 		}
+	}
+}
+
+func TestProcessAsyncSemantic_RequiresScopeOrRuntime(t *testing.T) {
+	queue := asyncsemantic.New()
+	mem, err := New(
+		withCompiler(testSemanticIngestor()),
+		WithAsyncSemanticQueue(queue),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proc, ok := NewAsyncSemanticProcessor(mem)
+	if !ok {
+		t.Fatal("processor missing")
+	}
+	_, err = proc.ProcessAsyncSemantic(context.Background(), AsyncSemanticProcessOptions{Limit: 1})
+	if err == nil {
+		t.Fatal("ProcessAsyncSemantic without Scope/RuntimeID must fail")
+	}
+}
+
+func TestProcessAsyncSemantic_LeaseRecycleRecoversWithoutReappend(t *testing.T) {
+	store := temporalstore.NewMemoryStore()
+	queue := asyncsemantic.New()
+	mem, err := New(
+		withTemporalStore(store),
+		withCompiler(testSemanticIngestor()),
+		WithAsyncSemanticQueue(queue),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := mem.(*memory)
+	proc, ok := NewAsyncSemanticProcessor(mem)
+	if !ok {
+		t.Fatal("processor missing")
+	}
+	scope := asyncTestScope()
+	ctx := context.Background()
+
+	res, err := mem.Save(ctx, scope, SaveRequest{
+		Mode:  WriteModeAsyncSemantic,
+		Turns: []TurnContext{{ID: "t1", Text: "lease recycle"}},
+	})
+	if err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	jobs, err := queue.Claim(ctx, port.AsyncSemanticClaimOptions{
+		WorkerID: "w-a",
+		Now:      time.Now(),
+		Max:      1,
+		Scope:    &scope,
+	})
+	if err != nil || len(jobs) != 1 {
+		t.Fatalf("Claim: %v jobs=%d", err, len(jobs))
+	}
+	job := jobs[0]
+
+	// Worker A appends semantic facts but never calls Complete (simulates
+	// crash before ack). Lease expiry makes the job claimable again.
+	turns, err := writestages.ReconstructTurnsForJob(ctx, store, job)
+	if err != nil {
+		t.Fatalf("ReconstructTurns: %v", err)
+	}
+	state := &write.WriteState{
+		Scope:          scope,
+		Turns:          turns,
+		AsyncRequestID: job.RequestID,
+		SemanticDerivationOrigin: domain.FactOrigin{
+			RequestID:      job.RequestID,
+			Kind:           domain.OriginKindSemanticDerivation,
+			EpisodeFactIDs: append([]string(nil), job.EpisodeFactIDs...),
+		},
+	}
+	state.EnsureTrace()
+	if err := m.asyncSemanticWorkerPreRunner.Run(ctx, state); err != nil {
+		t.Fatalf("pre-runner: %v", err)
+	}
+	unlock := m.lockWriteScope(scope)
+	if err := m.asyncSemanticWorkerPostRunner.Run(ctx, state); err != nil {
+		unlock()
+		t.Fatalf("post-runner: %v", err)
+	}
+	unlock()
+
+	expiredNow := time.Now().Add(25 * time.Hour)
+	out, err := proc.ProcessAsyncSemantic(ctx, AsyncSemanticProcessOptions{
+		Limit: 1,
+		Scope: scope,
+		Now:   expiredNow,
+	})
+	if err != nil {
+		t.Fatalf("ProcessAsyncSemantic: %v", err)
+	}
+	if out.Recovered != 1 {
+		t.Fatalf("result = %+v, want recovered=1 after lease recycle", out)
+	}
+	facts, err := store.FindByOriginRequestID(ctx, scope, res.AsyncRequestID)
+	if err != nil {
+		t.Fatalf("FindByOriginRequestID: %v", err)
+	}
+	var semantic int
+	for _, f := range facts {
+		if f.Origin.Kind == domain.OriginKindSemanticDerivation {
+			semantic++
+		}
+	}
+	if semantic != 1 {
+		t.Fatalf("semantic_derivation facts = %d, want 1 (no duplicate append)", semantic)
 	}
 }
 

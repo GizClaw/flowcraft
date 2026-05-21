@@ -35,13 +35,24 @@ func TestQueue_StatsCountsPendingLeasedAndCancelled(t *testing.T) {
 		t.Fatalf("stats = %+v, want Pending=1 Leased=1", stats)
 	}
 
+	otherScope := domain.Scope{RuntimeID: "rt", UserID: "u2"}
+	_, _ = q.Enqueue(ctx, makeJob("j-other", "u2"))
+	_, _ = q.CancelMatchingEpisodes(ctx, otherScope, []string{"ep-x"})
+
 	_, _ = q.CancelMatchingEpisodes(ctx, scope, []string{"ep-2"})
-	stats, err = q.Stats(ctx, port.AsyncSemanticStatsFilter{Now: now})
+	stats, err = q.Stats(ctx, port.AsyncSemanticStatsFilter{Scope: scope, Now: now})
 	if err != nil {
 		t.Fatalf("Stats: %v", err)
 	}
 	if stats.CancelledTotal != 1 || stats.Pending != 0 || stats.Leased != 1 {
-		t.Fatalf("after cancel stats = %+v", stats)
+		t.Fatalf("after cancel stats = %+v, want scope-local cancelled=1", stats)
+	}
+	statsOther, err := q.Stats(ctx, port.AsyncSemanticStatsFilter{Scope: otherScope, Now: now})
+	if err != nil {
+		t.Fatalf("Stats other: %v", err)
+	}
+	if statsOther.CancelledTotal != 0 {
+		t.Fatalf("other scope cancelled = %d, want 0 (no cross-scope leak)", statsOther.CancelledTotal)
 	}
 
 	_ = q.Fail(ctx, jobs[0].RequestID, port.AsyncSemanticFailure{

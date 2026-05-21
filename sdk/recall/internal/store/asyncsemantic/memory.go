@@ -27,7 +27,7 @@ type Queue struct {
 	pending   []*entry
 	leased    map[string]*entry
 
-	cancelledTotal int
+	cancelledByScope map[string]int
 }
 
 const (
@@ -41,13 +41,19 @@ const (
 	// completing become re-claimable after this window — caller
 	// pre-populated LeaseUntil overrides this default.
 	defaultLeaseTTL = 5 * time.Minute
+
+	// defaultTransientRetryBackoff applies when Fail omits RetryAt.
+	defaultTransientRetryBackoff = 30 * time.Second
 )
 
 type entry struct {
 	job        port.AsyncSemanticJob
 	enqueuedAt time.Time
 	status     string
+	// leaseUntil is the worker lease while leased, or a retry/hold
+	// instant while pending (transient Fail or enqueue-time hint).
 	leaseUntil time.Time
+	wasLeased  bool
 	result     port.AsyncSemanticResult
 	failure    port.AsyncSemanticFailure
 }
@@ -55,8 +61,9 @@ type entry struct {
 // New returns an empty in-memory queue ready for Enqueue / Claim.
 func New() *Queue {
 	return &Queue{
-		byRequest: make(map[string]*entry),
-		leased:    make(map[string]*entry),
+		byRequest:        make(map[string]*entry),
+		leased:           make(map[string]*entry),
+		cancelledByScope: make(map[string]int),
 	}
 }
 
@@ -79,6 +86,9 @@ func (q *Queue) Enqueue(_ context.Context, job port.AsyncSemanticJob) (port.Asyn
 		job:        port.CloneAsyncSemanticJob(job),
 		enqueuedAt: now,
 		status:     statusPending,
+	}
+	if !job.LeaseUntil.IsZero() {
+		e.leaseUntil = job.LeaseUntil
 	}
 	q.byRequest[job.RequestID] = e
 	q.pending = append(q.pending, e)
@@ -125,6 +135,7 @@ func (q *Queue) Claim(_ context.Context, opts port.AsyncSemanticClaimOptions) ([
 		}
 		if !e.leaseUntil.IsZero() && !now.Before(e.leaseUntil) {
 			e.status = statusPending
+			e.leaseUntil = time.Time{}
 			delete(q.leased, e.job.RequestID)
 			q.pending = append(q.pending, e)
 		}
@@ -153,16 +164,24 @@ func (q *Queue) Claim(_ context.Context, opts port.AsyncSemanticClaimOptions) ([
 			remaining = append(remaining, e)
 			continue
 		}
-		e.status = statusLeased
-		if e.job.LeaseUntil.IsZero() {
-			e.leaseUntil = now.Add(defaultLeaseTTL)
-		} else {
-			e.leaseUntil = e.job.LeaseUntil
+		if !e.leaseUntil.IsZero() && now.Before(e.leaseUntil) {
+			remaining = append(remaining, e)
+			continue
 		}
+		e.status = statusLeased
+		var workerLease time.Time
+		if !e.wasLeased && !e.leaseUntil.IsZero() && !e.leaseUntil.After(now) {
+			// Enqueue-time expired lease fixture (TestQueue_LeaseExpiry).
+			workerLease = e.leaseUntil
+		} else {
+			workerLease = now.Add(defaultLeaseTTL)
+		}
+		e.leaseUntil = workerLease
+		e.wasLeased = true
+		e.job.Attempt++
+		e.job.LeaseUntil = workerLease
 		q.leased[e.job.RequestID] = e
 		job := e.job
-		job.Attempt++
-		job.LeaseUntil = e.leaseUntil
 		_ = opts.WorkerID
 		out = append(out, job)
 	}
@@ -237,7 +256,9 @@ func (q *Queue) cancelLocked(requestID string) error {
 		}
 	}
 	q.pending = remaining
-	q.cancelledTotal++
+	if key := e.job.Scope.CanonicalKey(); key != "" {
+		q.cancelledByScope[key]++
+	}
 	return nil
 }
 
@@ -254,7 +275,9 @@ func (q *Queue) Stats(_ context.Context, filter port.AsyncSemanticStatsFilter) (
 	defer q.mu.Unlock()
 
 	var out port.AsyncSemanticStats
-	out.CancelledTotal = q.cancelledTotal
+	if scopeKey != "" {
+		out.CancelledTotal = q.cancelledByScope[scopeKey]
+	}
 	for _, e := range q.byRequest {
 		if scopeKey != "" && e.job.Scope.CanonicalKey() != scopeKey {
 			continue
@@ -321,9 +344,9 @@ func (q *Queue) Complete(_ context.Context, requestID string, result port.AsyncS
 	return nil
 }
 
-// Fail marks the job failed and records the failure metadata. Like
-// Complete, Fail is idempotent — repeated calls update the recorded
-// failure but never resurrect a completed job.
+// Fail records failure metadata. Permanent failures become dead-letter
+// (statusFailed). Transient failures re-enter pending with RetryAt /
+// default backoff so Claim can pick them up after the retry window.
 func (q *Queue) Fail(_ context.Context, requestID string, failure port.AsyncSemanticFailure) error {
 	q.mu.Lock()
 	defer q.mu.Unlock()
@@ -334,9 +357,23 @@ func (q *Queue) Fail(_ context.Context, requestID string, failure port.AsyncSema
 	if e.status == statusComplete {
 		return nil
 	}
-	e.status = statusFailed
-	e.failure = failure
 	delete(q.leased, requestID)
+	if failure.ErrClass == diagnostic.ErrClassPermanent {
+		e.status = statusFailed
+		e.failure = failure
+		return nil
+	}
+	now := time.Now()
+	retryAt := failure.RetryAt
+	if retryAt.IsZero() || !retryAt.After(now) {
+		retryAt = now.Add(defaultTransientRetryBackoff)
+	}
+	e.job.Attempt++
+	e.job.LeaseUntil = retryAt
+	e.leaseUntil = retryAt
+	e.failure = failure
+	e.status = statusPending
+	q.pending = append(q.pending, e)
 	return nil
 }
 

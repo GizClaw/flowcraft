@@ -67,6 +67,10 @@ func (m *memory) AsyncSemanticQueueStats(ctx context.Context, scope Scope) (Asyn
 		return AsyncSemanticQueueStats{}, errdefs.Validationf(
 			"recall.AsyncSemanticQueueStats: requires WithAsyncSemanticQueue")
 	}
+	if scope.CanonicalKey() == "" {
+		return AsyncSemanticQueueStats{}, errdefs.Validationf(
+			"recall.AsyncSemanticQueueStats: scope partition is required (RuntimeID and UserID)")
+	}
 	return m.asyncSemanticQueue.Stats(ctx, port.AsyncSemanticStatsFilter{Scope: scope})
 }
 
@@ -101,6 +105,10 @@ func (m *memory) ProcessAsyncSemantic(ctx context.Context, opts AsyncSemanticPro
 	if opts.Scope.RuntimeID != "" || opts.Scope.UserID != "" {
 		scope := opts.Scope
 		claimOpts.Scope = &scope
+	}
+	if claimOpts.Scope == nil && claimOpts.RuntimeID == "" {
+		return AsyncSemanticProcessResult{}, errdefs.Validationf(
+			"recall.ProcessAsyncSemantic: Scope or RuntimeID is required")
 	}
 
 	jobs, err := m.asyncSemanticQueue.Claim(ctx, claimOpts)
@@ -216,6 +224,23 @@ func (m *memory) processOneAsyncSemanticJob(ctx context.Context, job port.AsyncS
 		return asyncJobFailed
 	}
 
+	// Re-check origin under the lock: another worker may have appended
+	// semantic facts while this worker held an expired lease and ran
+	// ingest outside the lock.
+	if recovered, ids := m.recoverCompletedSemanticFacts(ctx, job, now); recovered {
+		_ = m.asyncSemanticQueue.Complete(ctx, job.RequestID, port.AsyncSemanticResult{
+			SemanticFactIDs:           ids,
+			RecoveredFromPriorAttempt: true,
+		})
+		m.emitAsyncProcessStage(job, diagnostic.AsyncSemanticProcessDetail{
+			AsyncRequestID:  job.RequestID,
+			Attempt:         job.Attempt,
+			SemanticFactIDs: append([]string(nil), ids...),
+			Recovered:       true,
+		}, diagnostic.StatusOK, "", start)
+		return asyncJobRecovered
+	}
+
 	if len(state.Ingest.Facts) == 0 {
 		_ = m.asyncSemanticQueue.Complete(ctx, job.RequestID, port.AsyncSemanticResult{})
 		m.emitAsyncProcessStage(job, diagnostic.AsyncSemanticProcessDetail{
@@ -292,11 +317,18 @@ func (m *memory) failAsyncJob(ctx context.Context, requestID string, err error) 
 	if errdefs.IsValidation(err) {
 		class = diagnostic.ErrClassPermanent
 	}
+	var retryAt time.Time
+	if class == diagnostic.ErrClassTransient {
+		retryAt = time.Now().Add(defaultAsyncSemanticRetryBackoff)
+	}
 	_ = m.asyncSemanticQueue.Fail(ctx, requestID, port.AsyncSemanticFailure{
 		ErrClass: class,
 		Err:      err.Error(),
+		RetryAt:  retryAt,
 	})
 }
+
+const defaultAsyncSemanticRetryBackoff = 30 * time.Second
 
 type asyncJobCancelResult struct {
 	Cancelled int

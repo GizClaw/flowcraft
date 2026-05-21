@@ -39,12 +39,12 @@ type AsyncSemanticQueue interface {
 	Complete(ctx context.Context, requestID string, result AsyncSemanticResult) error
 	Fail(ctx context.Context, requestID string, failure AsyncSemanticFailure) error
 	// Stats returns queue depth and terminal-state counts for operators.
-	// Scope, when non-zero, restricts counts to that partition.
+	// Implementations MUST require a non-zero Scope partition (RuntimeID
+	// and UserID); global cross-tenant stats are not supported.
 	Stats(ctx context.Context, filter AsyncSemanticStatsFilter) (AsyncSemanticStats, error)
 }
 
-// AsyncSemanticStatsFilter scopes Stats. Zero Scope reports global
-// totals across every partition in the backend.
+// AsyncSemanticStatsFilter scopes Stats to one scope partition.
 type AsyncSemanticStatsFilter struct {
 	Scope domain.Scope
 	Now   time.Time
@@ -65,7 +65,9 @@ type AsyncSemanticStats struct {
 
 // AsyncSemanticClaimOptions controls Claim batching and tenancy
 // filters. Zero Max defaults to no jobs; callers should set Max
-// explicitly. Scope and RuntimeID are optional filters — when both
+// explicitly. ProcessAsyncSemantic requires Scope or RuntimeID;
+// queue implementations should treat an empty filter as claiming
+// nothing when used without that guard. When both Scope and RuntimeID
 // are set, Scope wins (exact partition match).
 type AsyncSemanticClaimOptions struct {
 	WorkerID  string

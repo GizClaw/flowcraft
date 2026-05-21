@@ -213,6 +213,47 @@ func TestQueue_DefaultLeaseExpires(t *testing.T) {
 	}
 }
 
+func TestQueue_TransientFailRequeuesAfterRetryAt(t *testing.T) {
+	q := New()
+	ctx := context.Background()
+	_, _ = q.Enqueue(ctx, makeJob("req-1", "u1"))
+	if _, err := claimBatch(ctx, q, "w1", time.Now(), 1); err != nil {
+		t.Fatalf("Claim: %v", err)
+	}
+	retryAt := time.Now().Add(time.Hour)
+	if err := q.Fail(ctx, "req-1", port.AsyncSemanticFailure{
+		ErrClass: diagnostic.ErrClassTransient,
+		Err:      "llm timeout",
+		RetryAt:  retryAt,
+	}); err != nil {
+		t.Fatalf("Fail: %v", err)
+	}
+	e := q.byRequest["req-1"]
+	if e.status != statusPending {
+		t.Fatalf("status = %q, want pending after transient fail", e.status)
+	}
+	if e.job.Attempt != 2 {
+		t.Fatalf("Attempt = %d, want 2 persisted on entry", e.job.Attempt)
+	}
+	if !e.leaseUntil.Equal(retryAt) {
+		t.Fatalf("leaseUntil = %v, want %v", e.leaseUntil, retryAt)
+	}
+	before, err := claimBatch(ctx, q, "w2", time.Now(), 1)
+	if err != nil {
+		t.Fatalf("Claim before retry: %v", err)
+	}
+	if len(before) != 0 {
+		t.Fatalf("Claim before RetryAt = %+v, want none", before)
+	}
+	after, err := claimBatch(ctx, q, "w3", retryAt.Add(time.Second), 1)
+	if err != nil {
+		t.Fatalf("Claim after retry: %v", err)
+	}
+	if len(after) != 1 || after[0].Attempt != 3 {
+		t.Fatalf("Claim after retry = %+v, want attempt=3", after)
+	}
+}
+
 func TestQueue_CancelMatchingEpisodesOnlyTouchesIntersectingJobs(t *testing.T) {
 	q := New()
 	ctx := context.Background()

@@ -10,6 +10,21 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/store/asyncsemantic"
 )
 
+func TestAsyncSemanticQueueStats_RequiresScope(t *testing.T) {
+	mem, err := New(WithAsyncSemanticQueue(asyncsemantic.New()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	obs, ok := mem.(AsyncSemanticQueueObserver)
+	if !ok {
+		t.Fatal("observer missing")
+	}
+	_, err = obs.AsyncSemanticQueueStats(context.Background(), Scope{})
+	if err == nil {
+		t.Fatal("zero scope must fail")
+	}
+}
+
 func TestAsyncSemanticQueueStats_ReportsBacklogAndDeadLetter(t *testing.T) {
 	queue := asyncsemantic.New()
 	ctx := context.Background()
