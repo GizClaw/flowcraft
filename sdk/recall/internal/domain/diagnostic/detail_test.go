@@ -24,6 +24,7 @@ var (
 	_ diagnostic.StageDetail = diagnostic.EvidenceMirrorDetail{}
 	_ diagnostic.StageDetail = diagnostic.ProjectDetail{}
 	_ diagnostic.StageDetail = diagnostic.EvolutionAfterSaveDetail{}
+	_ diagnostic.StageDetail = diagnostic.ForgetAllDetail{}
 
 	_ diagnostic.StageDetail = diagnostic.IntentDetail{}
 	_ diagnostic.StageDetail = diagnostic.PlanDetail{}
@@ -78,6 +79,14 @@ func TestDetail_RoundTrip(t *testing.T) {
 			},
 		}, &diagnostic.ProjectDetail{}},
 		{"evolution_after_save", diagnostic.EvolutionAfterSaveDetail{Repairs: 0, Decays: 0, Consolidations: 1, ReinforcedRefs: 3}, &diagnostic.EvolutionAfterSaveDetail{}},
+		{"forget_all", diagnostic.ForgetAllDetail{
+			ScopeKey:           "rt-1/u:alice",
+			Mode:               "hard",
+			Deleted:            42,
+			ProjectionsCleared: 6,
+			EvidenceCleared:    18,
+			Latency:            5 * time.Millisecond,
+		}, &diagnostic.ForgetAllDetail{}},
 
 		{"intent", diagnostic.IntentDetail{
 			RawQuery:     "where did alice go?",

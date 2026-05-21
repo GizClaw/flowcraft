@@ -108,6 +108,24 @@ type EvolutionAfterSaveDetail struct {
 
 func (EvolutionAfterSaveDetail) isStageDetail() {}
 
+// ForgetAllDetail —— forget_all stage (Phase D.8 C9; GDPR Art.17 /
+// CCPA 1798.105 compliant scope-level retirement).
+//
+// Mode is "soft" (Closed=true, store retained) or "hard" (physical
+// delete from canonical store + projections + evidence). For Soft
+// mode EvidenceCleared stays 0 — evidence is preserved for audit so
+// Memory.History can still rebuild the supersede chain.
+type ForgetAllDetail struct {
+	ScopeKey           string
+	Mode               string
+	Deleted            int
+	ProjectionsCleared int
+	EvidenceCleared    int
+	Latency            time.Duration
+}
+
+func (ForgetAllDetail) isStageDetail() {}
+
 // ExtractSaveDropped returns write-path compiler drops from ingest detail.
 func ExtractSaveDropped(stages []StageDiagnostic) []DroppedFact {
 	for _, st := range stages {

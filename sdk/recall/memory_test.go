@@ -854,6 +854,7 @@ func (failingProjection) Forget(context.Context, domain.Scope, []string) error {
 func (failingProjection) Rebuild(context.Context, domain.Scope, []domain.TemporalFact) error {
 	return nil
 }
+func (failingProjection) ClearScope(context.Context, domain.Scope) error { return nil }
 
 type deleteFailIndex struct {
 	*retrievalmem.Index
@@ -1228,6 +1229,8 @@ func (p *failOnProjectN) Project(context.Context, []domain.TemporalFact) error {
 }
 
 func (p *failOnProjectN) Forget(context.Context, domain.Scope, []string) error { return nil }
+
+func (p *failOnProjectN) ClearScope(context.Context, domain.Scope) error { return nil }
 
 func (p *failOnProjectN) Rebuild(context.Context, domain.Scope, []domain.TemporalFact) error {
 	return nil

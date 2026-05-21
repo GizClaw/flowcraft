@@ -5,6 +5,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain/diagnostic"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/port"
@@ -37,6 +38,8 @@ func (p *fakeProjection) Forget(_ context.Context, _ domain.Scope, _ []string) e
 	p.forgetCalls++
 	return p.forgetErr
 }
+
+func (p *fakeProjection) ClearScope(_ context.Context, _ domain.Scope) error { return nil }
 
 func (p *fakeProjection) Rebuild(_ context.Context, _ domain.Scope, _ []domain.TemporalFact) error {
 	p.rebuildCalls++
@@ -211,6 +214,9 @@ func TestErrProjectionDisabled_IsStableSentinel(t *testing.T) {
 	wrapped := errors.Join(ErrProjectionDisabled, errors.New("ctx"))
 	if !errors.Is(wrapped, ErrProjectionDisabled) {
 		t.Error("ErrProjectionDisabled must remain matchable via errors.Is after wrapping")
+	}
+	if !errdefs.IsNotFound(ErrProjectionDisabled) {
+		t.Error("ErrProjectionDisabled must map to NotFound")
 	}
 }
 

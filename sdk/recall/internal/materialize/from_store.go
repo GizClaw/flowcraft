@@ -28,14 +28,15 @@ type FromStore struct {
 
 var _ port.Materializer = (*FromStore)(nil)
 
-// New constructs a FromStore with the supplied telemetry hook. A
-// nil hook is replaced with telemetry.NopHook so the hot
-// path never has to nil-check.
-//
-// The hook receives a DriftEvent for every stale-fact /
-// superseded-fact drop so an outer reconcile or governance worker
-// can repair projections without the read path doing it inline
-// (docs §10.1: no auto-repair from Recall).
+// New constructs a FromStore. The telemetry hook is retained on the
+// struct for forward compatibility but is intentionally NOT invoked
+// here: Phase E.3 collapsed the legacy DriftEvent emit path; drift
+// signals (stale-fact / superseded-fact / scope-violation drops) now
+// flow through the read pipeline's MaterializeDetail diagnostic that
+// the stage emits to the same hook. Materializer therefore stays a
+// pure transform — emission is the stage's job (docs §10.1: no
+// auto-repair from Recall; reconcile workers subscribe to
+// MaterializeDetail.Drops via TelemetryHook.OnStage).
 func New(store port.TemporalStore, hook port.TelemetryHook) *FromStore {
 	if hook == nil {
 		hook = telemetry.NopHook{}

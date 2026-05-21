@@ -111,6 +111,14 @@ func (p *Projection) Rebuild(ctx context.Context, scope domain.Scope, facts []do
 	return p.Project(ctx, facts)
 }
 
+// ClearScope drops the entire scope shard. Backs Memory.ForgetAll (D.8 C9).
+func (p *Projection) ClearScope(_ context.Context, scope domain.Scope) error {
+	p.mu.Lock()
+	delete(p.scopes, keyOf(scope))
+	p.mu.Unlock()
+	return nil
+}
+
 // Lookup returns all active fact ids for the given subject.
 func (p *Projection) Lookup(_ context.Context, scope domain.Scope, subject string) []string {
 	subject = canonicalKeyPart(subject)

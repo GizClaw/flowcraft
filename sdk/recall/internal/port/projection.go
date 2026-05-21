@@ -41,4 +41,10 @@ type Projection interface {
 	Project(ctx context.Context, facts []domain.TemporalFact) error
 	Forget(ctx context.Context, scope domain.Scope, factIDs []string) error
 	Rebuild(ctx context.Context, scope domain.Scope, facts []domain.TemporalFact) error
+	// ClearScope removes every projection entry for a scope partition
+	// without enumerating fact IDs. It backs Memory.ForgetAll (D.8 C9)
+	// and is the only entry point with O(1)-per-projection semantics
+	// instead of O(N) Forget. Implementations MUST be idempotent —
+	// clearing an already-empty scope is a no-op.
+	ClearScope(ctx context.Context, scope domain.Scope) error
 }

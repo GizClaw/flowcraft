@@ -98,6 +98,14 @@ func (p *Projection) Rebuild(ctx context.Context, scope domain.Scope, facts []do
 	return p.Project(ctx, facts)
 }
 
+// ClearScope drops the entire scope shard. Backs Memory.ForgetAll (D.8 C9).
+func (p *Projection) ClearScope(_ context.Context, scope domain.Scope) error {
+	p.mu.Lock()
+	delete(p.scopes, keyOf(scope))
+	p.mu.Unlock()
+	return nil
+}
+
 // Lookup returns fact ids matching any supplied dimension. Empty
 // subject/predicate/object means "don't filter on this dimension".
 // All dimensions empty returns nil so callers cannot scan the scope.

@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/governance"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/port"
@@ -110,15 +111,21 @@ func TestCompile_RejectsInvalidKind(t *testing.T) {
 	if err == nil {
 		t.Fatal("want error for invalid kind")
 	}
+	if !errdefs.IsValidation(err) {
+		t.Errorf("invalid kind should map to Validation: %v", err)
+	}
 }
 
-func TestCompile_RequiresScope(t *testing.T) {
+func TestCompile_RequiresScope_IsValidation(t *testing.T) {
 	cp := Default()
 	_, err := cp.Compile(context.Background(), port.IngestInput{
 		Facts: []domain.TemporalFact{{Kind: domain.KindNote, Content: "x"}},
 	})
 	if err == nil {
 		t.Fatal("want error for missing scope")
+	}
+	if !errdefs.IsValidation(err) {
+		t.Errorf("missing scope should map to Validation: %v", err)
 	}
 }
 

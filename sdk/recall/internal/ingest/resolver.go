@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain/diagnostic"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/port"
@@ -154,7 +155,7 @@ func (v *batchView) FindByMergeKey(ctx context.Context, scope domain.Scope, merg
 
 func (v *batchView) Get(ctx context.Context, scope domain.Scope, factID string) (domain.TemporalFact, error) {
 	if _, closing := v.closing[factID]; closing {
-		return domain.TemporalFact{}, fmt.Errorf("recall compiler batch view: fact %q is pending close", factID)
+		return domain.TemporalFact{}, errdefs.Conflictf("recall compiler batch view: fact %q is pending close", factID)
 	}
 	for _, f := range v.pendingByMergeKey {
 		if f.ID == factID {
@@ -162,7 +163,7 @@ func (v *batchView) Get(ctx context.Context, scope domain.Scope, factID string) 
 		}
 	}
 	if v.base == nil {
-		return domain.TemporalFact{}, fmt.Errorf("recall compiler batch view: fact %q not found", factID)
+		return domain.TemporalFact{}, errdefs.NotFoundf("recall compiler batch view: fact %q not found", factID)
 	}
 	return v.base.Get(ctx, scope, factID)
 }
@@ -379,7 +380,7 @@ func (v StoreView) FindByMergeKey(ctx context.Context, scope domain.Scope, merge
 // Get implements port.View.
 func (v StoreView) Get(ctx context.Context, scope domain.Scope, factID string) (domain.TemporalFact, error) {
 	if v.GetFn == nil {
-		return domain.TemporalFact{}, fmt.Errorf("recall compiler StoreView: Get not wired")
+		return domain.TemporalFact{}, errdefs.Internalf("recall compiler StoreView: Get not wired")
 	}
 	return v.GetFn(ctx, scope, factID)
 }

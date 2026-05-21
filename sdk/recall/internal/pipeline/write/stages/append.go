@@ -81,12 +81,19 @@ func (s *Append) Compensate(ctx context.Context, state *write.WriteState) error 
 	if failedAtValidityClose {
 		rollbackName = "save_rollback.appended_facts"
 	}
+	// Best-effort cleanup: any failure here would leave the ledger
+	// in a half-rolled-back state. Before Phase F.C the err was
+	// silently dropped; now we emit CompensationFailedDetail via
+	// the stage's telemetry hook so operators have one entry per
+	// failed cleanup leg to act on. We deliberately do NOT return
+	// the error: the framework's own compensation_failed emit fires
+	// only when Compensate itself errs, and propagating would skip
+	// the reopenAppliedCloses leg below.
 	if err := s.store.Delete(cleanupCtx, state.Scope, state.AppendedFactIDs); err != nil {
-		_ = rollbackName
-		_ = err
+		s.emitCompensationFailure(rollbackName, state.FailedStage, err)
 	}
 	if failedAtValidityClose {
-		s.reopenAppliedCloses(cleanupCtx, state.AppliedCloses)
+		s.reopenAppliedCloses(cleanupCtx, state.AppliedCloses, state.FailedStage)
 	}
 	return nil
 }
@@ -94,17 +101,40 @@ func (s *Append) Compensate(ctx context.Context, state *write.WriteState) error 
 // reopenAppliedCloses mirrors the legacy reopenAfterRollback helper:
 // for every close that did land before validity_close failed, undo
 // it via Store.ReopenValidity. ErrNotFound is tolerated silently
-// (the prior fact may already have been forgotten). ErrReopenConflict
-// (and any other surface) reports via telemetry but never aborts the
-// remaining reopens.
-func (s *Append) reopenAppliedCloses(ctx context.Context, closes []domain.ValidityClose) {
+// (the prior fact may already have been forgotten). Any other
+// surface error emits a CompensationFailedDetail and the loop
+// continues so a single bad row does not strand the others.
+func (s *Append) reopenAppliedCloses(ctx context.Context, closes []domain.ValidityClose, failedStage string) {
 	for _, c := range closes {
 		err := s.store.ReopenValidity(ctx, c.Scope, c.FactID, c.CorrectedBy)
 		if err == nil || errors.Is(err, temporalstore.ErrNotFound) {
 			continue
 		}
-		_ = err
+		s.emitCompensationFailure("save_rollback.reopen_validity:"+c.FactID, failedStage, err)
 	}
+}
+
+// emitCompensationFailure pushes a CompensationFailedDetail through
+// the telemetry hook so operators can see which rollback leg leaked.
+// No-op when hook is nil (memory tests wire NopHook by default; the
+// nil case here covers unit tests that construct Append directly).
+func (s *Append) emitCompensationFailure(rollbackName, failedStage string, err error) {
+	if s.hook == nil {
+		return
+	}
+	now := time.Now()
+	s.hook.OnStage(diagnostic.StageDiagnostic{
+		Stage:    "append:compensate",
+		Phase:    diagnostic.PhaseWrite,
+		StartAt:  now,
+		Duration: 0,
+		Status:   diagnostic.StatusFailed,
+		Err:      err.Error(),
+		Detail: diagnostic.CompensationFailedDetail{
+			OriginalStage: rollbackName,
+			Cause:         failedStage,
+		},
+	})
 }
 
 var (

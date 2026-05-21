@@ -78,9 +78,11 @@ func (s *fakeStore) DeleteByScope(context.Context, domain.Scope) (int, error) { 
 
 func (s *fakeStore) Close() error { return nil }
 
-type recordHook struct{}
+type recordHook struct {
+	events []diagnostic.StageDiagnostic
+}
 
-func (h *recordHook) OnStage(diagnostic.StageDiagnostic) {}
+func (h *recordHook) OnStage(d diagnostic.StageDiagnostic) { h.events = append(h.events, d) }
 
 func TestAppend_HappyPathStoresIDs(t *testing.T) {
 	store := &fakeStore{}
@@ -142,5 +144,79 @@ func TestAppend_CompensateReopensWhenValidityCloseFailed(t *testing.T) {
 	_ = s.Compensate(context.Background(), state)
 	if len(store.reopened) != 1 || store.reopened[0] != "prior" {
 		t.Errorf("reopened = %v", store.reopened)
+	}
+}
+
+// TestAppend_CompensateEmitsTelemetryOnStoreDeleteFailure pins the
+// fix for the silent rollback bug. Before the patch, store.Delete
+// failures inside Compensate were `_ = err`'d — operators had no way
+// to learn that the ledger was now half-rolled-back. With telemetry
+// emit in place, every failed cleanup leg surfaces a
+// CompensationFailedDetail through the registered hook.
+func TestAppend_CompensateEmitsTelemetryOnStoreDeleteFailure(t *testing.T) {
+	boom := errors.New("store delete unavailable")
+	store := &fakeStore{deleteErr: boom}
+	hook := &recordHook{}
+	s := stages.NewAppend(store, hook)
+	state := &write.WriteState{
+		Scope:           domain.Scope{RuntimeID: "rt"},
+		AppendedFactIDs: []string{"a"},
+		FailedStage:     "project_required",
+	}
+	if err := s.Compensate(context.Background(), state); err != nil {
+		t.Fatalf("Compensate (best-effort) must not return err: %v", err)
+	}
+	if len(hook.events) != 1 {
+		t.Fatalf("hook events = %d, want 1", len(hook.events))
+	}
+	ev := hook.events[0]
+	if ev.Status != diagnostic.StatusFailed {
+		t.Errorf("Status = %q, want failed", ev.Status)
+	}
+	d, ok := ev.Detail.(diagnostic.CompensationFailedDetail)
+	if !ok {
+		t.Fatalf("Detail type = %T", ev.Detail)
+	}
+	if d.OriginalStage != "save_rollback.store_delete" {
+		t.Errorf("OriginalStage = %q", d.OriginalStage)
+	}
+	if d.Cause != "project_required" {
+		t.Errorf("Cause = %q", d.Cause)
+	}
+}
+
+func TestAppend_CompensateEmitsTelemetryOnReopenFailure(t *testing.T) {
+	store := &fakeStore{reopenErr: errors.New("reopen conflict")}
+	hook := &recordHook{}
+	s := stages.NewAppend(store, hook)
+	state := &write.WriteState{
+		Scope:           domain.Scope{RuntimeID: "rt"},
+		AppendedFactIDs: []string{"a"},
+		AppliedCloses: []domain.ValidityClose{
+			{FactID: "prior-1", CorrectedBy: "a"},
+			{FactID: "prior-2", CorrectedBy: "a"},
+		},
+		FailedStage: "validity_close",
+	}
+	if err := s.Compensate(context.Background(), state); err != nil {
+		t.Fatalf("Compensate: %v", err)
+	}
+	// Both reopen attempts ran (loop must not abort on first error)
+	// and each emitted a distinct CompensationFailedDetail.
+	if len(store.reopened) != 2 {
+		t.Errorf("reopen attempts = %d, want 2", len(store.reopened))
+	}
+	if len(hook.events) != 2 {
+		t.Fatalf("hook events = %d, want 2", len(hook.events))
+	}
+	for i, ev := range hook.events {
+		d, ok := ev.Detail.(diagnostic.CompensationFailedDetail)
+		if !ok {
+			t.Fatalf("event %d Detail = %T", i, ev.Detail)
+		}
+		wantPrefix := "save_rollback.reopen_validity:prior-"
+		if d.OriginalStage != wantPrefix+"1" && d.OriginalStage != wantPrefix+"2" {
+			t.Errorf("event %d OriginalStage = %q", i, d.OriginalStage)
+		}
 	}
 }

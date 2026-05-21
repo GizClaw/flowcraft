@@ -2,9 +2,9 @@ package pipeline
 
 import (
 	"context"
-	"errors"
 	"fmt"
 
+	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/port"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/telemetry"
@@ -206,4 +206,4 @@ func (f *Fanout) runOptional(ctx context.Context, call func(port.Projection) err
 
 // ErrProjectionDisabled is returned by helpers that resolve a
 // projection by name when the projection has not been registered.
-var ErrProjectionDisabled = errors.New("recall projection: not registered")
+var ErrProjectionDisabled = errdefs.NotFound(errdefs.New("recall projection: not registered"))

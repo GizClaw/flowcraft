@@ -23,6 +23,8 @@ import (
 	timelinelens "github.com/GizClaw/flowcraft/sdk/recall/internal/lens/timeline"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/materialize"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/pipeline"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/pipeline/forget"
+	forgetstages "github.com/GizClaw/flowcraft/sdk/recall/internal/pipeline/forget/stages"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/pipeline/read"
 	readstages "github.com/GizClaw/flowcraft/sdk/recall/internal/pipeline/read/stages"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/pipeline/rebuild"
@@ -38,9 +40,13 @@ import (
 	retrievalmem "github.com/GizClaw/flowcraft/sdk/retrieval/memory"
 )
 
-// ErrScopeKeyMismatch is returned when ForgetAll's confirmScopeKey does
-// not match scope.CanonicalKey() (GDPR guard).
-var ErrScopeKeyMismatch = errdefs.Forbidden(errdefs.New("recall: scope key confirmation mismatch"))
+// ErrScopeKeyMismatch is returned when ForgetAll's confirmScopeKey
+// does not match scope.CanonicalKey(). The guard exists because
+// ForgetAll(Hard) is irreversible: GDPR Art.17 / CCPA 1798.105 require
+// that callers cannot accidentally nuke a sibling tenant by reusing a
+// scope struct. Callers must pass scope.CanonicalKey() as the
+// confirmation; errors.Is(err, ErrScopeKeyMismatch) is sentinel-stable.
+var ErrScopeKeyMismatch = forgetstages.ErrScopeKeyMismatch
 
 // Memory is the v2 fact-centric facade. See docs §11.1.
 type Memory interface {
@@ -76,6 +82,7 @@ type memory struct {
 	writePostRunner *write.Runner
 	readRunner      *read.Runner
 	rebuildRunner   *rebuild.Runner
+	forgetRunner    *forget.Runner
 
 	// projections retains the canonical projection set (in
 	// registration order) so RebuildProjection can resolve a
@@ -89,7 +96,7 @@ type memory struct {
 	materializer  port.Materializer
 	fusionOpts    port.FusionOptions
 	graphEnabled  bool
-	reranker      Reranker
+	reranker      port.Reranker
 	evolution     port.EvolutionRunner
 	entitySnap    port.EntitySnapshotter
 
@@ -261,6 +268,9 @@ func New(opts ...Option) (Memory, error) {
 		rebuildstages.NewScan(cfg.store),
 		rebuildstages.NewProject(fanout, projections),
 	}, tel)
+	m.forgetRunner = forget.NewRunner([]pipeline.Stage[*forget.State]{
+		forgetstages.NewForgetAll(cfg.store, fanout, projections, cfg.evidenceStore),
+	}, tel)
 	return m, nil
 }
 
@@ -429,9 +439,29 @@ func (m *memory) Forget(ctx context.Context, scope Scope, factID string, mode ..
 	}
 }
 
-// ForgetAll applies Soft or Hard retirement to every fact in the primary
-// scope only (Federation sub-scopes are not affected). Hard mode is
-// irreversible; confirmScopeKey must equal scope.CanonicalKey().
+// ForgetAll retires every fact in the primary scope (Federation
+// sub-scopes are NOT recursed; D.5).
+//
+// Mode semantics:
+//
+//   - ForgetSoft marks every active fact Closed=true and re-projects
+//     them. The canonical store rows survive, evidence is preserved
+//     for audit, and Memory.History keeps working on the supersede
+//     chain. This path is reversible by lifting Closed via Save.
+//
+//   - ForgetHard is irreversible: it invokes Projection.ClearScope on
+//     every registered projection, then store.DeleteByScope. Evidence
+//     refs are wiped through the evidence projection's ClearScope.
+//     This is the GDPR Art.17 / CCPA 1798.105 "delete me" path.
+//
+// confirmScopeKey is the GDPR guard: it MUST equal
+// scope.CanonicalKey() for Hard mode. Soft mode skips the check for
+// ergonomics — a Soft is reversible. errors.Is(err,
+// ErrScopeKeyMismatch) is sentinel-stable.
+//
+// The operation goes through the forget pipeline (Phase D.8 C9) so
+// each call emits one ForgetAllDetail diagnostic via the registered
+// TelemetryHook. The returned int matches Detail.Deleted.
 func (m *memory) ForgetAll(ctx context.Context, scope Scope, mode ForgetMode, confirmScopeKey string) (int, error) {
 	if err := ctx.Err(); err != nil {
 		return 0, err
@@ -439,54 +469,19 @@ func (m *memory) ForgetAll(ctx context.Context, scope Scope, mode ForgetMode, co
 	if scope.RuntimeID == "" {
 		return 0, errdefs.Validationf("recall.ForgetAll: scope.runtime_id is required")
 	}
-	mmode := domain.NormalizeForgetMode(mode)
-	if mmode == domain.ForgetHard && confirmScopeKey != scope.CanonicalKey() {
-		return 0, ErrScopeKeyMismatch
-	}
 
 	unlock := m.lockWriteScope(scope)
 	defer unlock()
 
-	facts, err := m.store.List(ctx, scope, port.ListQuery{IncludeSuperseded: true})
-	if err != nil {
-		return 0, fmt.Errorf("recall.ForgetAll: list: %w", err)
+	state := &forget.State{
+		Scope:           scope,
+		Mode:            mode,
+		ConfirmScopeKey: confirmScopeKey,
 	}
-	if len(facts) == 0 {
-		return 0, nil
+	if err := m.forgetRunner.Run(ctx, state); err != nil {
+		return 0, err
 	}
-
-	switch mmode {
-	case domain.ForgetSoft:
-		for _, f := range facts {
-			if err := m.store.MarkClosed(ctx, scope, f.ID, true); err != nil {
-				return 0, err
-			}
-		}
-		closed := make([]domain.TemporalFact, len(facts))
-		for i, f := range facts {
-			f.Closed = true
-			closed[i] = f
-		}
-		if err := m.fanout.ProjectRequired(ctx, closed); err != nil {
-			return 0, err
-		}
-		m.fanout.ProjectOptional(ctx, closed)
-		return len(facts), nil
-	default:
-		ids := make([]string, 0, len(facts))
-		for _, f := range facts {
-			ids = append(ids, f.ID)
-		}
-		if err := m.fanout.ForgetRequired(ctx, scope, ids); err != nil {
-			return 0, err
-		}
-		n, err := m.store.DeleteByScope(ctx, scope)
-		if err != nil {
-			return 0, fmt.Errorf("recall.ForgetAll: store delete: %w", err)
-		}
-		m.fanout.ForgetOptional(ctx, scope, ids)
-		return n, nil
-	}
+	return state.Deleted, nil
 }
 
 func (m *memory) entitySnapshots(scope Scope) []port.EntitySnapshot {

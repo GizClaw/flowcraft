@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/llm"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/port"
@@ -103,7 +104,7 @@ func (r *LLMReranker) Rerank(ctx context.Context, query string, hits []domain.Hi
 	}
 	scores, err := parseRerankScores(resp.Content(), len(cands))
 	if err != nil {
-		return hits, fmt.Errorf("recall rerank: parse: %w", err)
+		return hits, errdefs.Validation(fmt.Errorf("recall rerank: parse: %w", err))
 	}
 	out := make([]domain.Hit, len(cands))
 	copy(out, cands)

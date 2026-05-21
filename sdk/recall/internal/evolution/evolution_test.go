@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/port"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/store/temporal"
@@ -69,15 +70,23 @@ func TestReinforce_ValidatesInput(t *testing.T) {
 
 	if err := Reinforce(ctx, nil, scope(), "f1", 1); err == nil {
 		t.Error("Reinforce(nil store) must error")
+	} else if !errdefs.IsInternal(err) {
+		t.Errorf("Reinforce(nil store) must be Internal: %v", err)
 	}
 	if err := Reinforce(ctx, store, scope(), "", 1); err == nil {
 		t.Error("Reinforce(empty factID) must error")
+	} else if !errdefs.IsValidation(err) {
+		t.Errorf("Reinforce(empty factID) must be Validation: %v", err)
 	}
 	if err := Reinforce(ctx, store, scope(), "f1", 0); err == nil {
 		t.Error("Reinforce(delta=0) must error (must be positive)")
+	} else if !errdefs.IsValidation(err) {
+		t.Errorf("Reinforce(delta=0) must be Validation: %v", err)
 	}
 	if err := Reinforce(ctx, store, scope(), "f1", -1); err == nil {
 		t.Error("Reinforce(delta<0) must error (must be positive)")
+	} else if !errdefs.IsValidation(err) {
+		t.Errorf("Reinforce(delta<0) must be Validation: %v", err)
 	}
 }
 
@@ -87,12 +96,18 @@ func TestPenalize_ValidatesInput(t *testing.T) {
 
 	if err := Penalize(ctx, nil, scope(), "f1", 1); err == nil {
 		t.Error("Penalize(nil store) must error")
+	} else if !errdefs.IsInternal(err) {
+		t.Errorf("Penalize(nil store) must be Internal: %v", err)
 	}
 	if err := Penalize(ctx, store, scope(), "", 1); err == nil {
 		t.Error("Penalize(empty factID) must error")
+	} else if !errdefs.IsValidation(err) {
+		t.Errorf("Penalize(empty factID) must be Validation: %v", err)
 	}
 	if err := Penalize(ctx, store, scope(), "f1", 0); err == nil {
 		t.Error("Penalize(delta=0) must error")
+	} else if !errdefs.IsValidation(err) {
+		t.Errorf("Penalize(delta=0) must be Validation: %v", err)
 	}
 }
 

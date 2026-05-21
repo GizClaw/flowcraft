@@ -126,6 +126,15 @@ func (p *Projection) Rebuild(ctx context.Context, scope domain.Scope, facts []do
 	return p.Project(ctx, facts)
 }
 
+// ClearScope drops the entire scope shard in O(1) — used by
+// Memory.ForgetAll (D.8 C9) without enumerating fact IDs.
+func (p *Projection) ClearScope(_ context.Context, scope domain.Scope) error {
+	p.mu.Lock()
+	delete(p.scopes, keyOf(scope))
+	p.mu.Unlock()
+	return nil
+}
+
 // Snapshot is one canonical entity the projection currently knows
 // about in a scope, plus any aliases collected through prior
 // projects. The compiler's Structurizer uses these as a write-time

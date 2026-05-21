@@ -2,7 +2,6 @@ package stages
 
 import (
 	"context"
-	"errors"
 	"fmt"
 
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain"
@@ -73,7 +72,7 @@ func (s *SourceFanout) Run(ctx context.Context, state *read.ReadState) (diagnost
 	}
 
 	if len(sourceErrs) > 0 && len(sourceErrs) == len(detail.Results) && totalCandidates == 0 {
-		return detail, fmt.Errorf("recall.Recall: all sources failed: %w", errors.Join(sourceErrs...))
+		return detail, read.AllSourcesFailed(sourceErrs)
 	}
 	return detail, nil
 }

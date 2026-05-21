@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain/diagnostic"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/governance"
@@ -94,7 +95,7 @@ var _ port.Ingestor = (*defaultIngestor)(nil)
 
 func (c *defaultIngestor) Compile(ctx context.Context, input port.IngestInput) (port.IngestResult, error) {
 	if input.Scope.RuntimeID == "" {
-		return port.IngestResult{}, fmt.Errorf("recall ingest: scope.runtime_id is required")
+		return port.IngestResult{}, errdefs.Validationf("recall ingest: scope.runtime_id is required")
 	}
 
 	now := input.Now
@@ -133,7 +134,7 @@ func (c *defaultIngestor) Compile(ctx context.Context, input port.IngestInput) (
 		result.StructurizerCoverage.Add(DiffStructurizerCoverage(before, f))
 
 		if !f.Kind.IsValid() {
-			return port.IngestResult{}, fmt.Errorf("recall ingest: fact %d has invalid kind %q", i, f.Kind)
+			return port.IngestResult{}, errdefs.Validationf("recall ingest: fact %d has invalid kind %q", i, f.Kind)
 		}
 
 		f = c.stages.Normalizer.Normalize(f)
@@ -156,7 +157,7 @@ func (c *defaultIngestor) Compile(ctx context.Context, input port.IngestInput) (
 		}
 		f.Scope = input.Scope
 		if !f.Kind.IsValid() {
-			return port.IngestResult{}, fmt.Errorf("recall ingest: fact %d has invalid kind %q after policy", i, f.Kind)
+			return port.IngestResult{}, errdefs.Validationf("recall ingest: fact %d has invalid kind %q after policy", i, f.Kind)
 		}
 
 		if f.MergeKey == "" {

@@ -87,4 +87,24 @@ func (p *Projection) Rebuild(ctx context.Context, scope domain.Scope, facts []do
 	return nil
 }
 
+// ClearScope removes every evidence ref in the scope by enumerating
+// fact ids from the store and issuing ForgetByFact. Backs
+// Memory.ForgetAll (D.8 C9, GDPR mode = Hard).
+func (p *Projection) ClearScope(ctx context.Context, scope domain.Scope) error {
+	if p.store == nil {
+		return nil
+	}
+	ids, err := p.store.ListFactIDs(ctx, scope)
+	if err != nil {
+		return fmt.Errorf("evidence clear list ids: %w", err)
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	if err := p.store.ForgetByFact(ctx, scope, ids); err != nil {
+		return fmt.Errorf("evidence clear forget: %w", err)
+	}
+	return nil
+}
+
 var _ port.Projection = (*Projection)(nil)

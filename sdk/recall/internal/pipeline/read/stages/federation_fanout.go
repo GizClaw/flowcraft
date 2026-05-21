@@ -2,7 +2,6 @@ package stages
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"time"
 
@@ -170,7 +169,7 @@ func (s *FederationFanout) Run(ctx context.Context, state *read.ReadState) (diag
 		}
 	}
 	if len(sourceErrs) > 0 && len(sourceErrs) == totalRows && totalCandidates == 0 {
-		return detail, fmt.Errorf("recall.Recall: all sources failed: %w", errors.Join(sourceErrs...))
+		return detail, read.AllSourcesFailed(sourceErrs)
 	}
 	return detail, nil
 }

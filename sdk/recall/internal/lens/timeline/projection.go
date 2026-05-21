@@ -111,6 +111,14 @@ func (p *Projection) Rebuild(ctx context.Context, scope domain.Scope, facts []do
 	return p.Project(ctx, facts)
 }
 
+// ClearScope drops the entire scope shard. Backs Memory.ForgetAll (D.8 C9).
+func (p *Projection) ClearScope(_ context.Context, scope domain.Scope) error {
+	p.mu.Lock()
+	delete(p.scopes, keyOf(scope))
+	p.mu.Unlock()
+	return nil
+}
+
 // Query returns fact ids in effective-time order matching the
 // optional range and kind filter. Zero range means no time bounds.
 func (p *Projection) Query(_ context.Context, scope domain.Scope, from, to time.Time, kinds []domain.FactKind, limit int) []string {

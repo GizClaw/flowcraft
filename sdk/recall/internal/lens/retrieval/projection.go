@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/sdk/embedding"
+	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/port"
 
@@ -50,7 +51,7 @@ func WithEmbedder(e embedding.Embedder) Option {
 // projection).
 func New(index retrieval.Index, opts ...Option) (*Projection, error) {
 	if index == nil {
-		return nil, fmt.Errorf("recall retrieval projection: index is required")
+		return nil, errdefs.Validationf("recall retrieval projection: index is required")
 	}
 	p := &Projection{index: index}
 	for _, opt := range opts {
@@ -85,12 +86,22 @@ func (p *Projection) Project(ctx context.Context, facts []domain.TemporalFact) e
 	grouped := groupByNamespace(facts)
 	for ns, group := range grouped {
 		var superseded []string
+		// active mirrors docs slot-for-slot. attachEmbeddings used
+		// to receive `group` (full list including superseded facts)
+		// which made len(facts) != len(docs) whenever a mixed batch
+		// landed (RebuildAll, multi-fact Save with revisions). The
+		// embedder then took the "len mismatch → silent skip" branch
+		// and the whole batch went BM25-only with zero telemetry.
+		// Keeping active and docs aligned by construction removes
+		// the foot-gun entirely.
+		active := make([]domain.TemporalFact, 0, len(group))
 		docs := make([]retrieval.Doc, 0, len(group))
 		for _, f := range group {
 			superseded = append(superseded, f.Supersedes...)
 			if f.CorrectedBy != "" {
 				continue
 			}
+			active = append(active, f)
 			docs = append(docs, toDoc(f))
 		}
 		if len(superseded) > 0 {
@@ -102,7 +113,7 @@ func (p *Projection) Project(ctx context.Context, facts []domain.TemporalFact) e
 			continue
 		}
 		if p.embedder != nil {
-			p.attachEmbeddings(ctx, group, docs)
+			p.attachEmbeddings(ctx, active, docs)
 		}
 		if err := p.index.Upsert(ctx, ns, docs); err != nil {
 			return fmt.Errorf("retrieval projection upsert ns=%s: %w", ns, err)
@@ -226,6 +237,24 @@ func (p *Projection) Forget(ctx context.Context, scope domain.Scope, factIDs []s
 	ns := NamespaceFor(scope)
 	if err := p.index.Delete(ctx, ns, factIDs); err != nil {
 		return fmt.Errorf("retrieval projection delete ns=%s: %w", ns, err)
+	}
+	return nil
+}
+
+// ClearScope deletes every doc in the scope namespace by paginating
+// the index list and issuing batched Deletes. Backs Memory.ForgetAll
+// (D.8 C9). Idempotent on an already-empty namespace.
+func (p *Projection) ClearScope(ctx context.Context, scope domain.Scope) error {
+	ns := NamespaceFor(scope)
+	ids, err := listAllDocIDs(ctx, p.index, ns)
+	if err != nil {
+		return fmt.Errorf("retrieval projection clear ns=%s list: %w", ns, err)
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	if err := p.index.Delete(ctx, ns, ids); err != nil {
+		return fmt.Errorf("retrieval projection clear ns=%s delete: %w", ns, err)
 	}
 	return nil
 }

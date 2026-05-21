@@ -32,6 +32,7 @@ func (s *stubProj) Forget(context.Context, domain.Scope, []string) error {
 func (s *stubProj) Rebuild(context.Context, domain.Scope, []domain.TemporalFact) error {
 	return nil
 }
+func (s *stubProj) ClearScope(context.Context, domain.Scope) error { return nil }
 
 func TestProjectRequired_HappyPath(t *testing.T) {
 	p := &stubProj{name: "required", consistency: port.Required}

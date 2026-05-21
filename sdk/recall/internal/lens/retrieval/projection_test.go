@@ -41,6 +41,60 @@ func (s *stubEmbedder) EmbedBatch(_ context.Context, texts []string) ([][]float3
 	return out, nil
 }
 
+// TestProjection_WithEmbedder_MixedBatchStillEmbedsActive pins the
+// fix for the silent-skip bug where a Project batch containing BOTH
+// active and superseded facts left every active fact BM25-only:
+// attachEmbeddings used to receive the full pre-filter slice and the
+// `len(facts) != len(docs)` guard fired, swallowing the entire batch.
+// The active+docs slot alignment now in Project keeps the vector lane
+// alive even when superseded entries share the batch (RebuildAll path).
+func TestProjection_WithEmbedder_MixedBatchStillEmbedsActive(t *testing.T) {
+	idx := retrievalmem.New()
+	emb := &stubEmbedder{dim: 8}
+	p, err := New(idx, WithEmbedder(emb))
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	scope := domain.Scope{RuntimeID: "rt", UserID: "u1"}
+	now := time.Now()
+	corrected := now.Add(-time.Hour)
+	batch := []domain.TemporalFact{
+		// Superseded — must be dropped from the upsert.
+		{
+			ID:          "f-old",
+			Scope:       scope,
+			Kind:        domain.KindNote,
+			Content:     "stale fact",
+			ObservedAt:  corrected,
+			CorrectedBy: "f-new",
+		},
+		// Active — must receive a non-empty Vector.
+		{
+			ID:         "f-new",
+			Scope:      scope,
+			Kind:       domain.KindNote,
+			Content:    "fresh fact",
+			ObservedAt: now,
+		},
+	}
+	if err := p.Project(context.Background(), batch); err != nil {
+		t.Fatalf("project: %v", err)
+	}
+	got, ok, err := idx.Get(context.Background(), NamespaceFor(scope), "f-new")
+	if err != nil || !ok {
+		t.Fatalf("get: ok=%v err=%v", ok, err)
+	}
+	if len(got.Vector) != emb.dim {
+		t.Fatalf("active fact must keep its vector, got len=%d", len(got.Vector))
+	}
+	// Confirm the superseded one did not bleed into the index even
+	// without an explicit Supersedes pointer (active+docs alignment
+	// guards against a follow-up regression).
+	if _, ok, _ := idx.Get(context.Background(), NamespaceFor(scope), "f-old"); ok {
+		t.Fatal("superseded fact must not be upserted")
+	}
+}
+
 func TestProjection_WithEmbedder_PopulatesDocVector(t *testing.T) {
 	idx := retrievalmem.New()
 	emb := &stubEmbedder{dim: 8}

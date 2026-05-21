@@ -98,6 +98,14 @@ func (p *Projection) Rebuild(ctx context.Context, scope domain.Scope, facts []do
 	return p.Project(ctx, facts)
 }
 
+// ClearScope drops the entire scope shard. Backs Memory.ForgetAll (D.8 C9).
+func (p *Projection) ClearScope(_ context.Context, scope domain.Scope) error {
+	p.mu.Lock()
+	delete(p.scopes, keyOf(scope))
+	p.mu.Unlock()
+	return nil
+}
+
 // Traverse performs bounded BFS from seed nodes and returns fact ids
 // discovered on edges, ordered by hop distance then fact id.
 func (p *Projection) Traverse(_ context.Context, scope domain.Scope, seeds []string, maxHops, limit int) []string {

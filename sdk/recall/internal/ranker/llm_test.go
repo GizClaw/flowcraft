@@ -5,6 +5,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/llm"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain"
 )
@@ -87,6 +88,18 @@ func TestLLMReranker_FailureReturnsInputOrder(t *testing.T) {
 		if out[i].Fact.ID != in[i].Fact.ID {
 			t.Errorf("rerank reordered slice on error at idx %d: %s vs %s", i, out[i].Fact.ID, in[i].Fact.ID)
 		}
+	}
+}
+
+func TestLLMReranker_MalformedJSON_IsValidation(t *testing.T) {
+	client := &fakeRerankLLM{Body: `{not json}`}
+	r := NewLLM(client)
+	_, err := r.Rerank(context.Background(), "query", makeHits())
+	if err == nil {
+		t.Fatal("expected parse error")
+	}
+	if !errdefs.IsValidation(err) {
+		t.Errorf("malformed rerank JSON should map to Validation: %v", err)
 	}
 }
 
