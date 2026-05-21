@@ -68,11 +68,22 @@ type QueryIntent struct {
 
 // QueryPlan describes how the read pipeline will visit candidate
 // sources for a single Recall call.
+//
+// LensWeights carries optional, planner-derived per-lens weight
+// hints (Cluster G, D2 2026-05-21). The rule-based planner populates
+// it when port.PlannerInput.KnownEntities intersects the query
+// (Text / Entities / Subject / Object): entity-aware lenses
+// (entity / relation / graph / profile) receive a small additive
+// boost so downstream stages and dashboards can attribute lens
+// activation back to the "query focus" entity hint. Empty map / nil
+// means no hint was applied; the read pipeline never errors on a
+// missing entry.
 type QueryPlan struct {
 	Intent        QueryIntent
 	SourceOrder   []string
 	SourceBudgets map[string]int
 	TotalCap      int
+	LensWeights   map[string]float64
 }
 
 // ContextItem is a materialized recall result. The Candidate field

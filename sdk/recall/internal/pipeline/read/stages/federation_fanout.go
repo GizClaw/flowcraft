@@ -12,42 +12,38 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/port"
 )
 
-// EntitySnapshotFunc lifts canonical entity hints per sub-scope plan.
-type EntitySnapshotFunc func(scope domain.Scope) []port.EntitySnapshot
-
 // FederationFanout expands EffectiveFederation() and runs source_fanout,
 // fuse, and materialize per sub-scope (Phase D.5).
+//
+// Cluster G, D2 (2026-05-21): plan is GLOBAL. This stage no longer
+// re-invokes planner.Plan per sub-scope; it consumes state.Plan
+// (populated by the upstream Plan stage with cross-scope entity
+// hints already merged). Federation is a data dimension — strategy
+// stays unified across sub-scopes so rank / fuse / build_hits and
+// source-fanout share the same plan pointer and avoid the split-brain
+// where the global plan and per-scope plans disagreed.
 type FederationFanout struct {
 	sources      SourceProvider
-	planner      port.Planner
-	graphEnabled bool
 	fuser        port.Fuser
 	fusionOpts   port.FusionOptions
 	capFunc      FusionCapFunc
 	materializer port.Materializer
-	entitySnap   EntitySnapshotFunc
 }
 
 // NewFederationFanout constructs a FederationFanout stage.
 func NewFederationFanout(
 	sources SourceProvider,
-	planner port.Planner,
-	graphEnabled bool,
 	fuser port.Fuser,
 	fusionOpts port.FusionOptions,
 	capFunc FusionCapFunc,
 	materializer port.Materializer,
-	entitySnap EntitySnapshotFunc,
 ) *FederationFanout {
 	return &FederationFanout{
 		sources:      sources,
-		planner:      planner,
-		graphEnabled: graphEnabled,
 		fuser:        fuser,
 		fusionOpts:   fusionOpts,
 		capFunc:      capFunc,
 		materializer: materializer,
-		entitySnap:   entitySnap,
 	}
 }
 
@@ -63,6 +59,13 @@ func (s *FederationFanout) Run(ctx context.Context, state *read.ReadState) (diag
 	fastPath := len(scopes) <= 1
 	detail := diagnostic.FederationFanoutDetail{FastPath: fastPath}
 
+	if state.Plan == nil {
+		// Plan stage produced no plan (e.g. nil Intent path already
+		// returned above; defensive guard). Emit an empty detail.
+		return detail, nil
+	}
+	plan := *state.Plan
+
 	srcs := s.sources()
 	byName := make(map[string]port.Source, len(srcs))
 	for _, src := range srcs {
@@ -75,33 +78,25 @@ func (s *FederationFanout) Run(ctx context.Context, state *read.ReadState) (diag
 	for _, sc := range scopes {
 		started := time.Now()
 		sub := read.SubScopeState{Scope: sc, FastPath: fastPath}
-		plan, err := s.planner.Plan(ctx, port.PlannerInput{
-			Scope:        sc,
-			Text:         state.Intent.Text,
-			Entities:     state.Intent.Entities,
-			Limit:        state.Intent.Limit,
-			Subject:      state.Intent.Subject,
-			Predicate:    state.Intent.Predicate,
-			Object:       state.Intent.Object,
-			Kinds:        state.Intent.Kinds,
-			TimeRange:    state.Intent.TimeRange,
-			GraphEnabled: s.graphEnabled,
-			GraphHops:    state.Query.GraphHops,
-		})
-		if err != nil {
-			run := diagnostic.SubScopeRun{Scope: sc.CanonicalKey(), Err: err.Error(), Latency: time.Since(started)}
-			detail.SubScopes = append(detail.SubScopes, run)
-			return detail, err
-		}
-		sub.Plan = &plan
+		// Cluster G, D2 (2026-05-21): plan strategy
+		// (SourceOrder / SourceBudgets / LensWeights / TotalCap)
+		// is global, but each source needs the sub-scope's Scope
+		// to build its scope-isolation filter / namespace. We
+		// shallow-copy the global plan and only override
+		// Intent.Scope so sources see the correct per-sub-scope
+		// partition while the planner-chosen strategy stays
+		// uniform.
+		subPlan := plan
+		subPlan.Intent.Scope = sc
+		sub.Plan = &subPlan
 
-		results := make([]domain.SourceResult, 0, len(plan.SourceOrder))
-		for _, name := range plan.SourceOrder {
+		results := make([]domain.SourceResult, 0, len(subPlan.SourceOrder))
+		for _, name := range subPlan.SourceOrder {
 			src, ok := byName[name]
 			if !ok {
 				continue
 			}
-			res := src.Query(ctx, plan)
+			res := src.Query(ctx, subPlan)
 			results = append(results, res)
 			if res.Err != nil {
 				sourceErrs = append(sourceErrs, fmt.Errorf("%s: %w", res.Source, res.Err))
@@ -123,7 +118,7 @@ func (s *FederationFanout) Run(ctx context.Context, state *read.ReadState) (diag
 
 		opts := s.fusionOpts
 		if opts.TotalCap == 0 && s.capFunc != nil {
-			opts.TotalCap = s.capFunc(plan.TotalCap)
+			opts.TotalCap = s.capFunc(subPlan.TotalCap)
 		}
 		fused, drops, err := s.fuser.Fuse(ctx, results, opts)
 		if err != nil {
@@ -150,7 +145,6 @@ func (s *FederationFanout) Run(ctx context.Context, state *read.ReadState) (diag
 		detail.Materialized += len(items)
 		detail.Drops = append(detail.Drops, matDrops...)
 
-		_ = s.entitySnap // reserved for future planner entity hints
 		detail.SubScopes = append(detail.SubScopes, diagnostic.SubScopeRun{
 			Scope:         sc.CanonicalKey(),
 			SourceResults: len(results),

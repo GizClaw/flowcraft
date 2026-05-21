@@ -247,16 +247,13 @@ func New(opts ...Option) (Memory, error) {
 	}
 	m.readRunner = read.NewRunner([]pipeline.Stage[*read.ReadState]{
 		readstages.NewIntent(qc),
-		readstages.NewPlan(planr, cfg.graphEnabled),
+		readstages.NewPlan(planr, cfg.graphEnabled, m.entitySnapshotsForScopes),
 		readstages.NewFederationFanout(
 			func() []port.Source { return m.sources },
-			planr,
-			cfg.graphEnabled,
 			fuser,
 			fusionOpts,
 			planner.FusionCandidateCap,
 			mat,
-			m.entitySnapshots,
 		),
 		readstages.NewFederationMerge(),
 		readstages.NewTrustFilter(),
@@ -489,6 +486,22 @@ func (m *memory) entitySnapshots(scope Scope) []port.EntitySnapshot {
 		return nil
 	}
 	return m.entitySnap.Snapshot(scope)
+}
+
+// entitySnapshotsForScopes is the read-path plan stage's wiring (D2
+// 2026-05-21, Cluster G). It returns the raw per-scope EntitySnapshot
+// concatenation so the Plan stage can run the dedup-and-max merge
+// across sub-scopes itself; memory does not perform the merge to keep
+// snapshotter ownership at the lens layer.
+func (m *memory) entitySnapshotsForScopes(scopes []domain.Scope) []port.EntitySnapshot {
+	if m.entitySnap == nil || len(scopes) == 0 {
+		return nil
+	}
+	var out []port.EntitySnapshot
+	for _, sc := range scopes {
+		out = append(out, m.entitySnap.Snapshot(sc)...)
+	}
+	return out
 }
 
 func weightsFromSpecs(specs []planner.LensSpec) map[string]float64 {

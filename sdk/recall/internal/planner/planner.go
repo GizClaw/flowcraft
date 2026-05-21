@@ -6,6 +6,7 @@ package planner
 
 import (
 	"context"
+	"strings"
 
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/port"
@@ -126,13 +127,128 @@ func (r *RuleBased) Plan(_ context.Context, input port.PlannerInput) (domain.Que
 
 	order := r.buildSourceOrder(intent)
 	budgets := allocateBudgets(order, limit)
+	weights := knownEntityLensWeights(order, intent, input.KnownEntities)
 
 	return domain.QueryPlan{
 		Intent:        intent,
 		SourceOrder:   order,
 		SourceBudgets: budgets,
 		TotalCap:      limit,
+		LensWeights:   weights,
 	}, nil
+}
+
+// EntityHintBoost is the additive lens-weight bump applied per matching
+// canonical / alias surface (Cluster G, D2 2026-05-21). Kept small and
+// deterministic: the goal is to make the entity-hint signal observable
+// downstream, not to overtake activation rules. The hint is also scaled
+// by EntitySnapshot.Weight (the merge helper sets that to the number
+// of sub-scopes the entity appeared in) so federation-wide focus
+// entities outweigh single-scope mentions.
+const EntityHintBoost = 0.05
+
+// entityHintLenses is the static set of lenses that benefit from
+// "query focus entity" hints. Retrieval and timeline are intentionally
+// excluded — retrieval is the lexical anchor and always at weight 1.0;
+// timeline activation is driven by TimeRange / Kinds rather than
+// entity overlap.
+var entityHintLenses = map[string]bool{
+	SourceEntity:   true,
+	SourceRelation: true,
+	SourceGraph:    true,
+	SourceProfile:  true,
+}
+
+// knownEntityLensWeights derives the optional lens-weight boost map
+// from the planner's KnownEntities input. Returns nil when no hint
+// could be applied so downstream consumers can cheaply detect "no
+// boost" without map lookups.
+func knownEntityLensWeights(order []string, intent domain.QueryIntent, known []port.EntitySnapshot) map[string]float64 {
+	if len(order) == 0 || len(known) == 0 {
+		return nil
+	}
+	terms := collectQueryTerms(intent)
+	if len(terms) == 0 {
+		return nil
+	}
+	var totalMatch float64
+	for _, snap := range known {
+		w := snap.Weight
+		if w <= 0 {
+			w = 1
+		}
+		if intersectsTerms(snap.Canonical, terms) {
+			totalMatch += w
+			continue
+		}
+		for _, alias := range snap.Aliases {
+			if intersectsTerms(alias, terms) {
+				totalMatch += w
+				break
+			}
+		}
+	}
+	if totalMatch == 0 {
+		return nil
+	}
+	weights := make(map[string]float64, len(order))
+	boost := EntityHintBoost * totalMatch
+	for _, name := range order {
+		if entityHintLenses[name] {
+			weights[name] = boost
+		}
+	}
+	if len(weights) == 0 {
+		return nil
+	}
+	return weights
+}
+
+func collectQueryTerms(intent domain.QueryIntent) map[string]struct{} {
+	terms := map[string]struct{}{}
+	add := func(s string) {
+		k := canonicalEntityKey(s)
+		if k != "" {
+			terms[k] = struct{}{}
+		}
+	}
+	add(intent.Subject)
+	add(intent.Object)
+	for _, e := range intent.Entities {
+		add(e)
+	}
+	if intent.Text != "" {
+		for _, tok := range strings.Fields(intent.Text) {
+			add(tok)
+		}
+	}
+	return terms
+}
+
+func intersectsTerms(s string, terms map[string]struct{}) bool {
+	k := canonicalEntityKey(s)
+	if k == "" {
+		return false
+	}
+	if _, ok := terms[k]; ok {
+		return true
+	}
+	for _, tok := range strings.Fields(k) {
+		if _, ok := terms[tok]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+// canonicalEntityKey trims surrounding whitespace and lowercases the
+// input. The ingest pipeline owns the authoritative canonical-form
+// helper (internal/ingest/normalizer.go: canonicalSpace) but it is
+// unexported; this is a deliberately conservative duplicate that
+// matches the case-insensitive trim semantics the planner needs for
+// known-entity hint comparison.
+func canonicalEntityKey(s string) string {
+	return strings.ToLower(strings.TrimSpace(s))
 }
 
 // ActivatesTimeline reports whether the timeline source should run.
