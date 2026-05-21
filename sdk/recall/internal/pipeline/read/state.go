@@ -112,15 +112,30 @@ type ReadState struct {
 	// facade hands back to the caller via Memory.Recall.
 	Hits []domain.Hit
 
+	// MaterializeDrops aggregates candidates the materialize step
+	// discarded across sub-scopes (stale fact / superseded / scope
+	// violation / retired). This is the authoritative inter-stage
+	// signal for downstream consumers (evolution_after_recall);
+	// stages MUST read from here rather than reaching into
+	// Trace.Stages so Trace can stay diagnostic-only and be elided
+	// when the caller does not request RecallExplain (Cluster F,
+	// 2026-05-21).
+	MaterializeDrops []diagnostic.CandidateDrop
+
 	// EvolutionErr captures a non-fatal AfterRecall failure surfaced
 	// by the evolution_after_recall stage detail (no separate
 	// telemetry channel post Phase E.3).
 	EvolutionErr error
 
-	// Trace is the in-flight RecallTrace. Pipeline.AppendTrace
-	// pushes every emitted StageDiagnostic into Trace.Stages.
-	// nil is permitted (Recall vs RecallExplain): the runner
-	// allocates one only when explain is requested.
+	// Trace is a DIAGNOSTIC artifact — it carries human-readable
+	// StageDiagnostic entries for explainability. Stages MUST NOT
+	// read information out of Trace; inter-stage signals belong on
+	// State directly (see MaterializeDrops, Plan, etc.). This
+	// separation lets Recall elide Trace allocation entirely when
+	// diagnostics are not requested (Cluster F, 2026-05-21):
+	// Memory.Recall leaves Trace nil; Memory.RecallExplain calls
+	// EnsureTrace so the framework writes per-stage diagnostics
+	// into Trace.Stages via AppendStage.
 	Trace *domain.RecallTrace
 }
 
@@ -178,13 +193,47 @@ type SubScopeState struct {
 	FastPath bool
 }
 
-// EnsureTrace allocates the RecallTrace if explain output was
-// requested but the caller did not pre-populate it.
+// EnsureTrace allocates the RecallTrace when explain output was
+// requested. Memory.Recall (no diagnostics) leaves Trace nil so
+// the hot path pays no per-stage allocation; Memory.RecallExplain
+// (and tests that want to inspect the trace) call this so the
+// framework's AppendStage hook has somewhere to write.
 func (s *ReadState) EnsureTrace() *domain.RecallTrace {
 	if s.Trace == nil {
 		s.Trace = &domain.RecallTrace{}
 	}
 	return s.Trace
+}
+
+// CollectMaterializeDrops returns the aggregated set of materialize
+// drops for the read pass. The top-level MaterializeDrops slot is
+// preferred (the standalone Materialize stage and direct test
+// fixtures populate it); when empty the helper falls back to
+// concatenating the per-sub-scope MaterializeDrops written by the
+// federation_fanout stage. Consumers (e.g. evolution_after_recall)
+// MUST use this helper instead of reaching into Trace.Stages so
+// Trace stays optional for callers that do not request diagnostics.
+func (s *ReadState) CollectMaterializeDrops() []diagnostic.CandidateDrop {
+	if s == nil {
+		return nil
+	}
+	if len(s.MaterializeDrops) > 0 {
+		out := make([]diagnostic.CandidateDrop, len(s.MaterializeDrops))
+		copy(out, s.MaterializeDrops)
+		return out
+	}
+	var total int
+	for i := range s.SubScopeStates {
+		total += len(s.SubScopeStates[i].MaterializeDrops)
+	}
+	if total == 0 {
+		return nil
+	}
+	out := make([]diagnostic.CandidateDrop, 0, total)
+	for i := range s.SubScopeStates {
+		out = append(out, s.SubScopeStates[i].MaterializeDrops...)
+	}
+	return out
 }
 
 // AppendStage is the TraceAppender the runner registers with the

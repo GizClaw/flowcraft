@@ -590,9 +590,15 @@ func (m *memory) runRecall(ctx context.Context, scope Scope, query Query, withTr
 		Now:       now,
 		StartedAt: now,
 	}
-	// Always allocate trace so evolution / legacy fields populate even
-	// when the caller only invoked Recall (not RecallExplain).
-	state.EnsureTrace()
+	// Cluster F (2026-05-21): Trace is a DIAGNOSTIC artifact. Stages
+	// route inter-stage data through ReadState (e.g.
+	// state.MaterializeDrops), so Recall (non-explain) can leave
+	// Trace nil and skip per-stage diagnostic allocations entirely.
+	// Only RecallExplain (withTrace=true) installs a Trace for the
+	// framework's AppendStage hook to populate.
+	if withTrace {
+		state.EnsureTrace()
+	}
 
 	if err := m.readRunner.Run(ctx, state); err != nil {
 		return nil, publicRecallTrace(state), err

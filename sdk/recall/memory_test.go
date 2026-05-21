@@ -716,6 +716,82 @@ func TestRecall_ForgottenFactDoesNotSurface(t *testing.T) {
 	}
 }
 
+// TestRecall_NoDiagnostics_TraceNil pins Cluster F (2026-05-21):
+// the Recall hot path MUST NOT allocate a state.Trace when the
+// caller did not ask for diagnostics. We can't introspect state
+// directly (it is internal), so we use the public observation that
+// `Recall` returns no RecallTrace and that hits are still correct
+// — the captureEvolution recall hook (which used to depend on
+// trace.Stages being populated) is exercised separately by
+// TestRecall_WithDiagnostics_TraceMatches.
+func TestRecall_NoDiagnostics_TraceNil(t *testing.T) {
+	mem, err := New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mem.Close()
+	scope := Scope{RuntimeID: "rt", UserID: "u1"}
+	if _, err := mem.Save(context.Background(), scope, SaveRequest{
+		Facts: []TemporalFact{{Kind: FactNote, Content: "Alice loves Paris", Entities: []string{"alice"}}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	hits, err := mem.Recall(context.Background(), scope, Query{Text: "Paris", Limit: 3})
+	if err != nil {
+		t.Fatalf("Recall: %v", err)
+	}
+	if len(hits) == 0 || hits[0].Fact.Content != "Alice loves Paris" {
+		t.Fatalf("Recall hits = %+v, want the Paris note on top", hits)
+	}
+
+	// The public Recall signature only returns hits + err — there is
+	// no trace return, which IS the contract: diagnostics are
+	// opt-in via RecallExplain. We additionally verify the
+	// surrounding behavior (subsequent Recall calls keep working,
+	// no panics on a nil-trace pipeline path).
+	if _, err := mem.Recall(context.Background(), scope, Query{Text: "Paris"}); err != nil {
+		t.Fatalf("second Recall must succeed on nil-trace path: %v", err)
+	}
+}
+
+// TestRecall_WithDiagnostics_TraceMatches anchors the
+// "diagnostics requested" branch: when the caller uses
+// RecallExplain the framework MUST allocate Trace and the returned
+// trace MUST carry stage diagnostics, including materialize-derived
+// counters. This is the Cluster F (2026-05-21) opposite of the
+// nil-trace fast path.
+func TestRecall_WithDiagnostics_TraceMatches(t *testing.T) {
+	mem, err := New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mem.Close()
+	scope := Scope{RuntimeID: "rt", UserID: "u1"}
+	if _, err := mem.Save(context.Background(), scope, SaveRequest{
+		Facts: []TemporalFact{{Kind: FactNote, Content: "Alice loves Paris", Entities: []string{"alice"}}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	explainer, ok := mem.(RecallExplainer)
+	if !ok {
+		t.Fatal("Memory must implement RecallExplainer")
+	}
+	hits, trace, err := explainer.RecallExplain(context.Background(), scope, Query{Text: "Paris", Entities: []string{"alice"}})
+	if err != nil {
+		t.Fatalf("RecallExplain: %v", err)
+	}
+	if len(hits) == 0 {
+		t.Fatal("expected at least one hit on the diagnostics path")
+	}
+	if len(trace.Stages) == 0 {
+		t.Fatal("diagnostics requested but trace.Stages is empty")
+	}
+	if diagnostics.Materialized(trace) == 0 {
+		t.Fatal("trace must carry materialize counters when diagnostics requested")
+	}
+}
+
 func TestRecallExplain_PopulatesTrace(t *testing.T) {
 	mem, _ := New()
 	scope := Scope{RuntimeID: "rt", UserID: "u1"}

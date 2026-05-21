@@ -4,27 +4,38 @@ import (
 	"context"
 	"testing"
 
-	"github.com/GizClaw/flowcraft/sdk/recall/diagnostics"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain"
 )
 
 type captureEvolution struct {
 	saves   int
 	recalls int
+	scope   domain.Scope
 	trace   RecallTrace
 }
 
-func (c *captureEvolution) AfterSave(context.Context, domain.Scope, []string) error {
+func (c *captureEvolution) AfterSave(_ context.Context, scope domain.Scope, _ []string) error {
 	c.saves++
+	c.scope = scope
 	return nil
 }
 
-func (c *captureEvolution) AfterRecall(_ context.Context, _ domain.Scope, trace domain.RecallTrace) error {
+func (c *captureEvolution) AfterRecall(_ context.Context, scope domain.Scope, trace domain.RecallTrace) error {
 	c.recalls++
+	c.scope = scope
 	c.trace = trace
 	return nil
 }
 
+// TestWithEvolution_HooksSaveAndRecall pins the public hook
+// contract: Save and Recall both invoke their respective
+// EvolutionRunner methods exactly once with the request's scope.
+//
+// Cluster F (2026-05-21) note: the trace passed to AfterRecall is
+// now a state-derived view (drops only) rather than the full
+// diagnostic trace — diagnostics are opt-in via RecallExplain.
+// Trace-shape assertions live in TestRecall_WithDiagnostics_*; this
+// test only proves the hooks fire with the right scope.
 func TestWithEvolution_HooksSaveAndRecall(t *testing.T) {
 	ev := &captureEvolution{}
 	mem, err := New(WithEvolution(ev))
@@ -45,7 +56,7 @@ func TestWithEvolution_HooksSaveAndRecall(t *testing.T) {
 	if ev.saves != 1 || ev.recalls != 1 {
 		t.Fatalf("evolution hooks = saves %d recalls %d", ev.saves, ev.recalls)
 	}
-	if diagnostics.Materialized(ev.trace) == 0 || diagnostics.FusedCandidates(ev.trace) == 0 || len(diagnostics.Sources(ev.trace)) == 0 {
-		t.Fatalf("evolution recall trace was not populated: %+v", ev.trace)
+	if ev.scope.CanonicalKey() != scope.CanonicalKey() {
+		t.Fatalf("evolution scope = %+v, want %+v", ev.scope, scope)
 	}
 }

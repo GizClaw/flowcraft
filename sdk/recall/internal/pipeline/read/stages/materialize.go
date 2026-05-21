@@ -29,11 +29,16 @@ func (s *Materialize) Run(ctx context.Context, state *read.ReadState) (diagnosti
 	requested := 0
 	returned := 0
 	retired := 0
+	var aggregated []diagnostic.CandidateDrop
 	for i := range state.SubScopeStates {
 		sub := &state.SubScopeStates[i]
 		requested += len(sub.Fused)
 		items, drops, err := s.materializer.Materialize(ctx, sub.Fused)
 		if err != nil {
+			// Cluster F (2026-05-21): publish whatever drops we
+			// gathered so far on state before returning; the
+			// diagnostic detail still mirrors Requested as before.
+			state.MaterializeDrops = aggregated
 			return diagnostic.MaterializeDetail{Requested: requested}, err
 		}
 		if !state.Query.IncludeRetired {
@@ -43,8 +48,16 @@ func (s *Materialize) Run(ctx context.Context, state *read.ReadState) (diagnosti
 		}
 		sub.Materialized = items
 		sub.MaterializeDrops = drops
+		aggregated = append(aggregated, drops...)
 		returned += len(items)
 	}
+	// Cluster F (2026-05-21): MaterializeDrops on ReadState is the
+	// authoritative inter-stage channel — write it BEFORE returning
+	// the diagnostic detail so downstream stages (notably
+	// evolution_after_recall) never have to reach into Trace.Stages.
+	// The diagnostic detail still carries the same counters so trace
+	// visibility is unchanged.
+	state.MaterializeDrops = aggregated
 	read.PromoteMergedItems(state)
 	return diagnostic.MaterializeDetail{
 		Requested:       requested,
