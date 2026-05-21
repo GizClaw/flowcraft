@@ -49,6 +49,8 @@ type config struct {
 
 	governance *governance.Governance
 	evolution  port.EvolutionRunner
+
+	asyncSemanticQueue port.AsyncSemanticQueue
 }
 
 // llmExtractorConfig captures the args to ingest.NewLLMExtractor so New can
@@ -268,6 +270,28 @@ func WithReranker(r Reranker) Option {
 			return
 		}
 		c.reranker = r
+	}
+}
+
+// WithAsyncSemanticQueue installs the durable outbox backend that
+// Save(WriteModeAsyncSemantic) writes to inside the scope write lock.
+//
+// When this option is unset, SaveRequest.Mode == WriteModeAsyncSemantic
+// returns errdefs.Validation before performing any side effect — the
+// SDK refuses to silently degrade to sync because callers configure
+// WriteModeAsyncSemantic precisely to decouple their latency budget
+// from LLM extraction.
+//
+// SLA: see internal-docs/recall-v2-async-semantic-write.md §4.2 —
+// Enqueue MUST complete < 10ms p99 for local backends; remote
+// backends MUST expose an outbox facade here and drain to the remote
+// service in a backend-internal worker, outside the scope write lock,
+// so scope throughput does not regress with queue backend latency.
+func WithAsyncSemanticQueue(q AsyncSemanticQueue) Option {
+	return func(c *config) {
+		if q != nil {
+			c.asyncSemanticQueue = q
+		}
 	}
 }
 

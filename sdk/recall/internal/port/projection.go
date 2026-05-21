@@ -48,3 +48,13 @@ type Projection interface {
 	// clearing an already-empty scope is a no-op.
 	ClearScope(ctx context.Context, scope domain.Scope) error
 }
+
+// KindFilteredProjection is implemented by projections that opt out of
+// (or opt into) specific FactKinds. The fanout uses this to route
+// FactKind-restricted writes (e.g. KindEpisode only goes to evidence).
+//
+// Projections that don't implement this interface are treated as
+// accepting every kind (current behaviour preserved).
+type KindFilteredProjection interface {
+	AcceptsKind(kind domain.FactKind) bool
+}

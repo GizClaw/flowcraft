@@ -33,6 +33,14 @@ func NewProjectRequired(fanout *pipeline.Fanout, hook port.TelemetryHook) *Proje
 // Name implements pipeline.Stage.
 func (ProjectRequired) Name() string { return "project_required" }
 
+// Skip implements pipeline.Conditional.
+func (ProjectRequired) Skip(_ context.Context, state *write.WriteState) (bool, diagnostic.StageDetail) {
+	if asyncStructuredLegInactive(state) {
+		return true, diagnostic.ProjectDetail{Consistency: port.Required.String()}
+	}
+	return false, nil
+}
+
 // Run implements pipeline.Stage.
 func (s *ProjectRequired) Run(ctx context.Context, state *write.WriteState) (diagnostic.StageDetail, error) {
 	started := time.Now()
@@ -74,4 +82,5 @@ func (s *ProjectRequired) selfCleanup(ctx context.Context, state *write.WriteSta
 var (
 	_ pipeline.Stage[*write.WriteState]       = (*ProjectRequired)(nil)
 	_ pipeline.Compensator[*write.WriteState] = (*ProjectRequired)(nil)
+	_ pipeline.Conditional[*write.WriteState] = (*ProjectRequired)(nil)
 )

@@ -26,6 +26,13 @@ func (p *Projection) Name() string { return "evidence" }
 
 func (p *Projection) Consistency() port.Consistency { return port.Required }
 
+// AcceptsKind reports whether the evidence projection consumes facts
+// of the supplied kind. The evidence projection mirrors raw episodes
+// AND semantic derivations — it's the only projection that accepts
+// KindEpisode (audit / citation chain), so this returns true
+// unconditionally for every FactKind.
+func (p *Projection) AcceptsKind(_ domain.FactKind) bool { return true }
+
 func (p *Projection) Project(ctx context.Context, facts []domain.TemporalFact) error {
 	if p.store == nil || len(facts) == 0 {
 		return nil

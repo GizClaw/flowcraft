@@ -51,6 +51,11 @@ func (p *Projection) Name() string { return "graph" }
 
 func (p *Projection) Consistency() port.Consistency { return port.Optional }
 
+// AcceptsKind rejects KindEpisode. Episode facts are raw conversation
+// captures; routing them through the graph projection would create
+// spurious nodes/edges from verbatim turn text.
+func (p *Projection) AcceptsKind(k domain.FactKind) bool { return k != domain.KindEpisode }
+
 // Project upserts edges derived from the supplied facts.
 func (p *Projection) Project(_ context.Context, facts []domain.TemporalFact) error {
 	if len(facts) == 0 {

@@ -37,6 +37,14 @@ func NewAppend(store port.TemporalStore, hook port.TelemetryHook) *Append {
 // Name implements pipeline.Stage.
 func (Append) Name() string { return "append" }
 
+// Skip implements pipeline.Conditional.
+func (Append) Skip(_ context.Context, state *write.WriteState) (bool, diagnostic.StageDetail) {
+	if asyncStructuredLegInactive(state) {
+		return true, diagnostic.AppendDetail{}
+	}
+	return false, nil
+}
+
 // Run implements pipeline.Stage.
 func (s *Append) Run(ctx context.Context, state *write.WriteState) (diagnostic.StageDetail, error) {
 	started := time.Now()
@@ -140,4 +148,5 @@ func (s *Append) emitCompensationFailure(rollbackName, failedStage string, err e
 var (
 	_ pipeline.Stage[*write.WriteState]       = (*Append)(nil)
 	_ pipeline.Compensator[*write.WriteState] = (*Append)(nil)
+	_ pipeline.Conditional[*write.WriteState] = (*Append)(nil)
 )

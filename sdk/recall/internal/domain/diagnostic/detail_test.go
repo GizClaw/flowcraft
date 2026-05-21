@@ -28,6 +28,9 @@ var (
 	_ diagnostic.StageDetail = diagnostic.ExpireRetiredDetail{}
 	_ diagnostic.StageDetail = diagnostic.FeedbackDetail{}
 	_ diagnostic.StageDetail = diagnostic.RevisionDetail{}
+	_ diagnostic.StageDetail = diagnostic.BuildEpisodeDetail{}
+	_ diagnostic.StageDetail = diagnostic.ProjectEpisodeEvidenceDetail{}
+	_ diagnostic.StageDetail = diagnostic.EnqueueSemanticDetail{}
 
 	_ diagnostic.StageDetail = diagnostic.IntentDetail{}
 	_ diagnostic.StageDetail = diagnostic.PlanDetail{}
@@ -134,6 +137,21 @@ func TestDetail_RoundTrip(t *testing.T) {
 			CreatedFactID: "new-1",
 			Latency:       2 * time.Millisecond,
 		}, &diagnostic.RevisionDetail{}},
+		{"build_episode", diagnostic.BuildEpisodeDetail{
+			Turns:          3,
+			EpisodeFacts:   1,
+			AsyncRequestID: "req-1",
+		}, &diagnostic.BuildEpisodeDetail{}},
+		{"project_episode_evidence", diagnostic.ProjectEpisodeEvidenceDetail{
+			AsyncRequestID: "req-1",
+			EpisodeFacts:   1,
+			Latency:        2 * time.Millisecond,
+		}, &diagnostic.ProjectEpisodeEvidenceDetail{}},
+		{"enqueue_semantic", diagnostic.EnqueueSemanticDetail{
+			AsyncRequestID: "req-1",
+			EpisodeFactIDs: []string{"e1", "e2"},
+			Latency:        1 * time.Millisecond,
+		}, &diagnostic.EnqueueSemanticDetail{}},
 
 		{"intent", diagnostic.IntentDetail{
 			RawQuery:     "where did alice go?",

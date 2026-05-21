@@ -80,6 +80,29 @@ func TestTemporalFact_Clone(t *testing.T) {
 	}
 }
 
+// TestClone_PreservesOrigin pins the F.1a deep-copy contract for
+// FactOrigin.EpisodeFactIDs — the clone must own an independent slice
+// so worker-side mutation of the snapshot cannot retroactively edit
+// the stored row.
+func TestClone_PreservesOrigin(t *testing.T) {
+	orig := TemporalFact{
+		ID: "f1",
+		Origin: FactOrigin{
+			RequestID:      "req-1",
+			Kind:           OriginKindSemanticDerivation,
+			EpisodeFactIDs: []string{"e1", "e2"},
+		},
+	}
+	cp := orig.Clone()
+	cp.Origin.EpisodeFactIDs[0] = "MUT"
+	if orig.Origin.EpisodeFactIDs[0] != "e1" {
+		t.Errorf("Origin.EpisodeFactIDs aliased: %v", orig.Origin.EpisodeFactIDs)
+	}
+	if cp.Origin.RequestID != "req-1" || cp.Origin.Kind != OriginKindSemanticDerivation {
+		t.Errorf("scalar Origin fields lost on clone: %+v", cp.Origin)
+	}
+}
+
 func TestTemporalFact_Clone_NilFieldsStayNil(t *testing.T) {
 	orig := TemporalFact{ID: "f1"}
 	cp := orig.Clone()

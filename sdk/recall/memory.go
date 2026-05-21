@@ -111,6 +111,19 @@ type memory struct {
 	feedbackRunner  *feedback.Runner
 	revisionRunner  *revision.Runner
 
+	// asyncEpisodeRunner drives the F.1a sync lane under scope write
+	// lock: episode stages, optional structured-facts leg, then
+	// write_semantic_outbox (after project_required) so jobs are not
+	// claimable until structured work succeeds. It is always compiled even when no
+	// queue is wired so the runner shape stays stable; runSaveAsync
+	// short-circuits to a validation error before invoking the
+	// runner when asyncSemanticQueue is nil.
+	asyncEpisodeRunner *write.Runner
+
+	// asyncSemanticQueue is the durable outbox WithAsyncSemanticQueue
+	// configures. nil disables WriteModeAsyncSemantic.
+	asyncSemanticQueue port.AsyncSemanticQueue
+
 	// projections retains the canonical projection set (in
 	// registration order) so RebuildProjection can resolve a
 	// projection by name without re-deriving it from fanout.
@@ -235,25 +248,26 @@ func New(opts ...Option) (Memory, error) {
 
 	fanout := pipeline.NewFanout(projections, cfg.telemetry)
 	m := &memory{
-		store:          cfg.store,
-		evidenceStore:  cfg.evidenceStore,
-		retrievalIndex: cfg.retrievalIndex,
-		compiler:       cfg.compiler,
-		resolver:       cfg.resolver,
-		fanout:         fanout,
-		telemetry:      cfg.telemetry,
-		projections:    projections,
-		queryCompiler:  qc,
-		planner:        planr,
-		sources:        srcs,
-		fuser:          fuser,
-		materializer:   mat,
-		fusionOpts:     fusionOpts,
-		graphEnabled:   cfg.graphEnabled,
-		reranker:       cfg.reranker,
-		evolution:      cfg.evolution,
-		entitySnap:     entitySnap,
-		writeLocks:     make(map[writeScopeKey]*writeLock),
+		store:              cfg.store,
+		evidenceStore:      cfg.evidenceStore,
+		retrievalIndex:     cfg.retrievalIndex,
+		compiler:           cfg.compiler,
+		resolver:           cfg.resolver,
+		fanout:             fanout,
+		telemetry:          cfg.telemetry,
+		projections:        projections,
+		queryCompiler:      qc,
+		planner:            planr,
+		sources:            srcs,
+		fuser:              fuser,
+		materializer:       mat,
+		fusionOpts:         fusionOpts,
+		graphEnabled:       cfg.graphEnabled,
+		reranker:           cfg.reranker,
+		evolution:          cfg.evolution,
+		entitySnap:         entitySnap,
+		writeLocks:         make(map[writeScopeKey]*writeLock),
+		asyncSemanticQueue: cfg.asyncSemanticQueue,
 	}
 	tel := cfg.telemetry
 	m.writePreRunner = write.NewRunner([]pipeline.Stage[*write.WriteState]{
@@ -265,6 +279,20 @@ func New(opts ...Option) (Memory, error) {
 		writestages.NewAppend(cfg.store, tel),
 		writestages.NewValidityClose(cfg.store, fanout, tel),
 		writestages.NewProjectRequired(fanout, tel),
+		writestages.NewProjectOptional(fanout),
+		writestages.NewEvolutionAfterSave(cfg.evolution),
+	}, tel)
+	m.asyncEpisodeRunner = write.NewRunner([]pipeline.Stage[*write.WriteState]{
+		writestages.NewValidate(),
+		writestages.NewBuildEpisode(),
+		writestages.NewAppendEpisode(cfg.store, tel),
+		writestages.NewProjectEpisodeEvidence(fanout, projections, tel),
+		writestages.NewStructuredIngest(cfg.compiler, m.entitySnapshots),
+		writestages.NewResolve(cfg.resolver, cfg.store),
+		writestages.NewAppend(cfg.store, tel),
+		writestages.NewValidityClose(cfg.store, fanout, tel),
+		writestages.NewProjectRequired(fanout, tel),
+		writestages.NewWriteSemanticOutbox(m.asyncSemanticQueue, tel),
 		writestages.NewProjectOptional(fanout),
 		writestages.NewEvolutionAfterSave(cfg.evolution),
 	}, tel)
@@ -382,7 +410,30 @@ func (m *memory) runSave(ctx context.Context, scope Scope, req SaveRequest, with
 	if err := ctx.Err(); err != nil {
 		return SaveResult{}, SaveTrace{}, err
 	}
+	// Phase F.1a branch: async semantic mode degrades cleanly when
+	// there are no Turns (no LLM work to defer) and rejects without
+	// side effects when no queue is wired. Anything else falls
+	// through to the legacy sync path so existing callers see
+	// byte-identical behaviour at WriteModeSync (the zero value).
+	if req.Mode == domain.WriteModeAsyncSemantic {
+		if len(req.Turns) == 0 {
+			factsOnly := req
+			factsOnly.Mode = domain.WriteModeSync
+			return m.runSaveSync(ctx, scope, factsOnly, withTrace)
+		}
+		if m.asyncSemanticQueue == nil {
+			return SaveResult{}, SaveTrace{}, errdefs.Validationf(
+				"recall.Save: WriteModeAsyncSemantic requires WithAsyncSemanticQueue option")
+		}
+		return m.runSaveAsync(ctx, scope, req, withTrace)
+	}
+	return m.runSaveSync(ctx, scope, req, withTrace)
+}
 
+// runSaveSync is the canonical pre-F.1 Save body: pre-runner outside
+// the scope lock, post-runner inside. It serves both
+// WriteModeSync calls and the Facts-only leg of an async request.
+func (m *memory) runSaveSync(ctx context.Context, scope Scope, req SaveRequest, withTrace bool) (SaveResult, SaveTrace, error) {
 	state := &write.WriteState{
 		Scope:               scope,
 		Facts:               req.Facts,
@@ -417,6 +468,78 @@ func (m *memory) runSave(ctx context.Context, scope Scope, req SaveRequest, with
 		return SaveResult{}, publicSaveTrace(state), nil
 	}
 	return SaveResult{FactIDs: append([]string(nil), state.AppendedFactIDs...)}, publicSaveTrace(state), nil
+}
+
+// runSaveAsync is the F.1a async semantic facade. Episode lane and
+// structured Facts share one locked pipeline so any downstream failure
+// (including structured facts after a successful outbox Enqueue) rolls
+// back via framework compensation: outbox Cancel, evidence forget,
+// episode delete.
+func (m *memory) runSaveAsync(ctx context.Context, scope Scope, req SaveRequest, withTrace bool) (SaveResult, SaveTrace, error) {
+	state := newEpisodeState(scope, req, withTrace)
+	unlock := m.lockWriteScope(scope)
+	defer unlock()
+	if err := m.asyncEpisodeRunner.Run(ctx, state); err != nil {
+		return SaveResult{}, publicSaveTrace(state), err
+	}
+	episodeIDs := episodeFactIDsFromState(state)
+	structuredIDs := append([]string(nil), state.AppendedFactIDs...)
+	return SaveResult{
+		AsyncRequestID:  state.AsyncRequestID,
+		EpisodeFactIDs:  episodeIDs,
+		SemanticPending: state.SemanticPending,
+		FactIDs:         append(structuredIDs, episodeIDs...),
+	}, publicSaveTrace(state), nil
+}
+
+func episodeFactIDsFromState(state *write.WriteState) []string {
+	if state == nil || len(state.EpisodeFacts) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(state.EpisodeFacts))
+	for _, f := range state.EpisodeFacts {
+		if f.ID != "" {
+			out = append(out, f.ID)
+		}
+	}
+	return out
+}
+
+// newEpisodeState builds the WriteState the asyncEpisodeRunner
+// consumes. Facts and Turns may both be present in mixed-mode saves;
+// Turns feed build_episode while Facts feed structured_ingest after
+// the outbox stage.
+func newEpisodeState(scope Scope, req SaveRequest, withTrace bool) *write.WriteState {
+	state := &write.WriteState{
+		Scope:               scope,
+		Facts:               req.Facts,
+		Turns:               req.Turns,
+		ObservedAt:          req.ObservedAt,
+		Tier:                req.Tier,
+		RecentMessages:      req.RecentMessages,
+		ExistingFactsAnchor: req.ExistingFactsAnchor,
+		Mode:                domain.WriteModeAsyncSemantic,
+	}
+	if withTrace {
+		state.EnsureTrace()
+	}
+	return state
+}
+
+// mergeSaveTrace concatenates the sync semantic lane's trace with the
+// async episode lane's trace so SaveExplain emits one ordered slice
+// across both runners.
+func mergeSaveTrace(a, b SaveTrace) SaveTrace {
+	if len(a.Stages) == 0 {
+		return b
+	}
+	if len(b.Stages) == 0 {
+		return a
+	}
+	out := SaveTrace{Stages: make([]diagnostic.StageDiagnostic, 0, len(a.Stages)+len(b.Stages))}
+	out.Stages = append(out.Stages, a.Stages...)
+	out.Stages = append(out.Stages, b.Stages...)
+	return out
 }
 
 // publicSaveTrace copies the in-flight domain.SaveTrace (when

@@ -41,6 +41,11 @@ func (p *Projection) Name() string { return "relation" }
 
 func (p *Projection) Consistency() port.Consistency { return port.Optional }
 
+// AcceptsKind rejects KindEpisode. Episode facts are raw conversation
+// captures; routing them through the relation projection would
+// pollute the structured (subject, predicate, object) edges.
+func (p *Projection) AcceptsKind(k domain.FactKind) bool { return k != domain.KindEpisode }
+
 // Project upserts active relation facts only.
 func (p *Projection) Project(_ context.Context, facts []domain.TemporalFact) error {
 	now := time.Now()

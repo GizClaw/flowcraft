@@ -25,6 +25,12 @@ const (
 	FactRelation   FactKind = domain.KindRelation
 	FactPlan       FactKind = domain.KindPlan
 	FactNote       FactKind = domain.KindNote
+	// FactEpisode is the raw-conversation FactKind written by the
+	// synchronous episode lane of WriteModeAsyncSemantic. Episode
+	// facts are excluded from default Recall and from every
+	// projection except evidence — they represent durable source
+	// turns, not semantic conclusions.
+	FactEpisode FactKind = domain.KindEpisode
 )
 
 // EvidenceRef points back to source material used to produce a fact.
@@ -95,11 +101,71 @@ type EntitySnapshot = port.EntitySnapshot
 // schema (Phase E.2: types.go is "全部 = domain.X 别名").
 type SaveRequest = domain.SaveRequest
 
+// WriteMode controls SaveRequest semantics. Zero value selects the
+// existing fully-synchronous Save path; WriteModeAsyncSemantic
+// stores raw episodes synchronously and queues semantic extraction
+// for caller-driven workers (see
+// internal-docs/recall-v2-async-semantic-write.md §3.1).
+type WriteMode = domain.WriteMode
+
+const (
+	WriteModeSync          = domain.WriteModeSync
+	WriteModeAsyncSemantic = domain.WriteModeAsyncSemantic
+)
+
+// FactOrigin / FactOriginKind expose the canonical idempotency
+// identifier stamped on facts that participate in durable workflows
+// (async semantic write). See §3.3.
+type FactOrigin = domain.FactOrigin
+
+// FactOriginKind classifies how a fact entered the ledger.
+type FactOriginKind = domain.FactOriginKind
+
+const (
+	OriginKindUnspecified        = domain.OriginKindUnspecified
+	OriginKindEpisode            = domain.OriginKindEpisode
+	OriginKindSemanticDerivation = domain.OriginKindSemanticDerivation
+)
+
+// AsyncSemanticQueue is the durable outbox callers wire via
+// WithAsyncSemanticQueue. See §4.2 for SLA and idempotency contract.
+type AsyncSemanticQueue = port.AsyncSemanticQueue
+
+// AsyncSemanticJob is one durable semantic extraction work item.
+type AsyncSemanticJob = port.AsyncSemanticJob
+
+// AsyncSemanticReceipt is the synchronous return value of Enqueue.
+type AsyncSemanticReceipt = port.AsyncSemanticReceipt
+
+// AsyncSemanticResult is the worker's success report.
+type AsyncSemanticResult = port.AsyncSemanticResult
+
+// AsyncSemanticFailure is the worker's failure report.
+type AsyncSemanticFailure = port.AsyncSemanticFailure
+
 // SaveResult reports the canonical fact ids that were appended to the
-// ledger. Dedupe/policy drops are not listed here; telemetry surfaces
-// them via the projection hook.
+// ledger by this Save call. Dedupe/policy drops are not listed here;
+// telemetry surfaces them via the stage diagnostic hook.
+//
+// WriteModeAsyncSemantic adds three correlation fields:
+//
+//   - AsyncRequestID is the durable work-item key shared by the
+//     synchronous episode lane and the eventual semantic worker run.
+//     Empty in the sync write path.
+//   - EpisodeFactIDs disambiguates raw episode IDs from synchronous
+//     semantic IDs; it is a (possibly empty) subset of FactIDs.
+//   - SemanticPending is true when semantic extraction was queued —
+//     Recall MAY NOT see semantic facts until the worker drains.
+//
+// FactIDs continues to list every id Save durably appended in this
+// call (sync semantic + raw episode in mixed mode), preserving the
+// pre-F.1 contract.
 type SaveResult struct {
 	FactIDs []string
+
+	AsyncRequestID  string
+	EpisodeFactIDs  []string
+	SemanticPending bool
 }
 
 // TimeRange bounds timeline recall. Aliases domain.TimeRange.

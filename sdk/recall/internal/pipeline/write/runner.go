@@ -38,15 +38,44 @@ func NewRunner(stages []pipeline.Stage[*WriteState], hook port.TelemetryHook) *R
 // state.Scope + fact counts that legacy emitPipeline read at emit
 // time. ShortCircuit is treated as success and returns nil; any
 // other error propagates verbatim.
+//
+// Phase F.1a wraps the configured telemetry hook with a per-call
+// shim that enriches every StageDiagnostic with state.AsyncRequestID
+// once the episode lane has stamped it. The wrapper is a no-op for
+// the sync path (state.AsyncRequestID stays empty), so existing
+// callers see byte-identical events.
 func (r *Runner) Run(ctx context.Context, state *WriteState) error {
 	if r == nil || state == nil {
 		return nil
 	}
+	hook := r.hook
+	if hook != nil {
+		hook = &asyncRequestIDHook{inner: hook, state: state}
+	}
 	p := pipeline.NewPipeline(
 		diagnostic.PhaseWrite,
 		r.stages,
-		r.hook,
+		hook,
 		func(s *WriteState, d diagnostic.StageDiagnostic) { s.AppendStage(d) },
 	)
 	return p.Run(ctx, state)
+}
+
+// asyncRequestIDHook decorates a TelemetryHook so every emitted
+// StageDiagnostic carries state.AsyncRequestID. The decorator is
+// stateful only in the read-only sense — it captures the in-flight
+// *WriteState by pointer so the AsyncRequestID stamped by build_episode
+// is visible to downstream stages' emissions on the same Run.
+type asyncRequestIDHook struct {
+	inner port.TelemetryHook
+	state *WriteState
+}
+
+func (h *asyncRequestIDHook) OnStage(d diagnostic.StageDiagnostic) {
+	if h.state != nil && d.AsyncRequestID == "" && h.state.AsyncRequestID != "" {
+		d.AsyncRequestID = h.state.AsyncRequestID
+	}
+	if h.inner != nil {
+		h.inner.OnStage(d)
+	}
 }

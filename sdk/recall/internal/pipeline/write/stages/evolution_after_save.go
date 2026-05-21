@@ -3,6 +3,7 @@ package stages
 import (
 	"context"
 
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain/diagnostic"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/pipeline"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/pipeline/write"
@@ -29,8 +30,14 @@ func NewEvolutionAfterSave(runner port.EvolutionRunner) *EvolutionAfterSave {
 func (EvolutionAfterSave) Name() string { return "evolution_after_save" }
 
 // Skip implements pipeline.Conditional.
-func (s *EvolutionAfterSave) Skip(_ context.Context, _ *write.WriteState) (bool, diagnostic.StageDetail) {
+func (s *EvolutionAfterSave) Skip(_ context.Context, state *write.WriteState) (bool, diagnostic.StageDetail) {
 	if s.runner == nil {
+		return true, diagnostic.EvolutionAfterSaveDetail{}
+	}
+	// Async sync lane: episode-only (or policy-dropped) saves append no
+	// structured semantic facts. Background worker runs AfterSave after
+	// semantic derivation (§5.3).
+	if state != nil && state.Mode == domain.WriteModeAsyncSemantic && len(state.AppendedFactIDs) == 0 {
 		return true, diagnostic.EvolutionAfterSaveDetail{}
 	}
 	return false, nil

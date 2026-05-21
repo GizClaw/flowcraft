@@ -178,6 +178,43 @@ type RevisionDetail struct {
 
 func (RevisionDetail) isStageDetail() {}
 
+// BuildEpisodeDetail —— write/build_episode stage (Phase F.1a). The
+// sync episode lane runs this stage to translate SaveRequest.Turns
+// into one or more KindEpisode facts before append. AsyncRequestID
+// is the durable work-item key shared across the sync lane and the
+// eventual async semantic worker (see
+// recall-v2-async-semantic-write.md §7.2).
+type BuildEpisodeDetail struct {
+	Turns          int
+	EpisodeFacts   int
+	AsyncRequestID string
+}
+
+func (BuildEpisodeDetail) isStageDetail() {}
+
+// ProjectEpisodeEvidenceDetail —— write/project_episode_evidence stage
+// (Phase F.1a). Records the kind-filtered fanout that mirrors raw
+// episode evidence into the evidence projection (the only required
+// projection that accepts KindEpisode).
+type ProjectEpisodeEvidenceDetail struct {
+	AsyncRequestID string
+	EpisodeFacts   int
+	Latency        time.Duration
+}
+
+func (ProjectEpisodeEvidenceDetail) isStageDetail() {}
+
+// EnqueueSemanticDetail —— write/write_semantic_outbox stage (Phase
+// F.1a). Captures the local-durable outbox boundary: the synchronous
+// Save returns only after this enqueue completes.
+type EnqueueSemanticDetail struct {
+	AsyncRequestID string
+	EpisodeFactIDs []string
+	Latency        time.Duration
+}
+
+func (EnqueueSemanticDetail) isStageDetail() {}
+
 // ExtractSaveDropped returns write-path compiler drops from ingest detail.
 func ExtractSaveDropped(stages []StageDiagnostic) []DroppedFact {
 	for _, st := range stages {

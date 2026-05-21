@@ -13,6 +13,7 @@ import (
 	"context"
 
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain/diagnostic"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/pipeline"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/pipeline/write"
@@ -53,6 +54,19 @@ func (Validate) Run(_ context.Context, state *write.WriteState) (diagnostic.Stag
 		return detail, errdefs.Validationf("recall.Save: scope.runtime_id is required")
 	}
 	for i, f := range state.Facts {
+		// KindEpisode is produced exclusively by the async episode lane
+		// (build_episode stage stamps Origin.Kind=episode). Accepting a
+		// caller-supplied episode fact in the sync path would route it
+		// through ProjectRequired, which doesn't honour
+		// KindFilteredProjection — episodes would land in retrieval /
+		// entity / profile and trigger embedder calls. Reject at the
+		// boundary instead.
+		if f.Kind == domain.KindEpisode {
+			detail.Rejected = 1
+			detail.RejectReason = "KindEpisode is reserved for the async episode lane"
+			state.FailedStage = "validate"
+			return detail, errdefs.Validationf("recall.Save: facts[%d].Kind=KindEpisode is reserved for WriteModeAsyncSemantic", i)
+		}
 		for j, prior := range f.Supersedes {
 			if prior == "" {
 				detail.Rejected = 1

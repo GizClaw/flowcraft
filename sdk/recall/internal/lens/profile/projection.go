@@ -40,6 +40,11 @@ func (p *Projection) Name() string { return "profile" }
 
 func (p *Projection) Consistency() port.Consistency { return port.Optional }
 
+// AcceptsKind rejects KindEpisode. Episode facts are raw conversation
+// captures; routing them through the profile projection would pollute
+// the canonical state / preference / relation views.
+func (p *Projection) AcceptsKind(k domain.FactKind) bool { return k != domain.KindEpisode }
+
 // Project upserts active state/preference/relation facts.
 func (p *Projection) Project(_ context.Context, facts []domain.TemporalFact) error {
 	now := time.Now()

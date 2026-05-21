@@ -72,3 +72,12 @@ func TestEvolutionAfterSave_NilRunnerSkips(t *testing.T) {
 		t.Fatal("nil runner must skip")
 	}
 }
+
+func TestEvolutionAfterSave_AsyncNoAppendedFactsSkips(t *testing.T) {
+	s := stages.NewEvolutionAfterSave(&stubEvolution{})
+	state := &write.WriteState{Mode: domain.WriteModeAsyncSemantic}
+	skip, _ := s.Skip(context.Background(), state)
+	if !skip {
+		t.Fatal("async save with no appended semantic facts must skip")
+	}
+}

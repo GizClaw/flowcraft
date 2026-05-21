@@ -51,6 +51,14 @@ func NewValidityClose(store port.TemporalStore, fanout *pipeline.Fanout, hook po
 // Name implements pipeline.Stage.
 func (ValidityClose) Name() string { return "validity_close" }
 
+// Skip implements pipeline.Conditional.
+func (ValidityClose) Skip(_ context.Context, state *write.WriteState) (bool, diagnostic.StageDetail) {
+	if asyncStructuredLegInactive(state) {
+		return true, diagnostic.ValidityCloseDetail{}
+	}
+	return false, nil
+}
+
 // Run implements pipeline.Stage.
 func (s *ValidityClose) Run(ctx context.Context, state *write.WriteState) (diagnostic.StageDetail, error) {
 	closes := state.Resolution.Closes
@@ -135,4 +143,5 @@ func (s *ValidityClose) reproject(ctx context.Context, closes []domain.ValidityC
 var (
 	_ pipeline.Stage[*write.WriteState]       = (*ValidityClose)(nil)
 	_ pipeline.Compensator[*write.WriteState] = (*ValidityClose)(nil)
+	_ pipeline.Conditional[*write.WriteState] = (*ValidityClose)(nil)
 )

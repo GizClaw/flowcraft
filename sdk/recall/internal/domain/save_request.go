@@ -30,6 +30,13 @@ type SaveRequest struct {
 
 	// ExistingFactsAnchor is optional dedup context for extract.
 	ExistingFactsAnchor []TemporalFact
+
+	// Mode controls write semantics. Zero value = synchronous
+	// (preserves current behaviour). WriteModeAsyncSemantic stores
+	// raw episodes synchronously and enqueues semantic extraction
+	// for caller-driven workers (see
+	// recall-v2-async-semantic-write.md §3.1).
+	Mode WriteMode
 }
 
 // TurnContext is the typed, adapter-owned shape of one source turn

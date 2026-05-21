@@ -54,6 +54,11 @@ func (p *Projection) Name() string { return "entity" }
 // (docs §13 Phase 2).
 func (p *Projection) Consistency() port.Consistency { return port.Required }
 
+// AcceptsKind rejects KindEpisode. Episode facts are raw conversation
+// captures; routing them through the entity projection would pollute
+// recall results with verbatim message text.
+func (p *Projection) AcceptsKind(k domain.FactKind) bool { return k != domain.KindEpisode }
+
 // Project upserts mentions for the supplied facts. Facts may belong
 // to multiple scopes; they are routed per scope shard.
 //

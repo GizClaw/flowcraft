@@ -63,6 +63,12 @@ func New(index retrieval.Index, opts ...Option) (*Projection, error) {
 // Name implements port.Projection.
 func (p *Projection) Name() string { return "retrieval" }
 
+// AcceptsKind rejects KindEpisode. Episode facts are raw conversation
+// captures; routing them through retrieval would trigger external
+// embedder calls on the sync write path (when WithEmbedder is set)
+// and pollute search results with verbatim turn text.
+func (p *Projection) AcceptsKind(k domain.FactKind) bool { return k != domain.KindEpisode }
+
 // Consistency reports Required: a retrieval projection failure must
 // fail the canonical write so callers do not see an empty Recall on
 // a fact they just stored.

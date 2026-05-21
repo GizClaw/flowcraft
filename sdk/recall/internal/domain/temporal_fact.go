@@ -71,6 +71,13 @@ type TemporalFact struct {
 	// as retired on read unless IncludeRetired is set.
 	ExpiresAt *time.Time
 
+	// Origin is the durable-work-item idempotency identifier (Phase
+	// F.1). Zero value for pre-Origin facts and synchronous direct
+	// writes. Set by the episode lane (OriginKindEpisode) and the
+	// async semantic worker (OriginKindSemanticDerivation); see
+	// recall-v2-async-semantic-write.md §3.3.
+	Origin FactOrigin
+
 	Metadata map[string]any
 }
 
@@ -84,6 +91,7 @@ func (f TemporalFact) Clone() TemporalFact {
 	out.SourceMessageIDs = cloneStrings(f.SourceMessageIDs)
 	out.Supersedes = cloneStrings(f.Supersedes)
 	out.MergeHints = cloneMergeHints(f.MergeHints)
+	out.Origin.EpisodeFactIDs = cloneStrings(f.Origin.EpisodeFactIDs)
 	out.Metadata = cloneMetadata(f.Metadata)
 	if f.ValidFrom != nil {
 		v := *f.ValidFrom

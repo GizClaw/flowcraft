@@ -47,6 +47,9 @@ func (s *Resolve) Skip(_ context.Context, state *write.WriteState) (bool, diagno
 			Appended:   len(state.Ingest.Facts),
 		}
 	}
+	if asyncStructuredLegInactive(state) {
+		return true, diagnostic.ResolveDetail{}
+	}
 	return false, nil
 }
 

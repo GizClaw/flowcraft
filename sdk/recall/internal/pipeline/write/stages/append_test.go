@@ -47,6 +47,10 @@ func (s *fakeStore) FindByRevisionSource(context.Context, domain.Scope, string) 
 	return nil, nil
 }
 
+func (s *fakeStore) FindByOriginRequestID(context.Context, domain.Scope, string) ([]domain.TemporalFact, error) {
+	return nil, nil
+}
+
 func (s *fakeStore) FindSupersededBy(context.Context, domain.Scope, string) ([]domain.TemporalFact, error) {
 	return nil, nil
 }

@@ -57,6 +57,12 @@ type TemporalStore interface {
 	// revision DAG outward from a query fact.
 	FindByRevisionSource(ctx context.Context, scope domain.Scope, sourceFactID string) ([]domain.TemporalFact, error)
 
+	// FindByOriginRequestID returns every fact in scope whose
+	// Origin.RequestID matches the given key. Used by the async
+	// semantic worker to detect "facts already written by a prior
+	// attempt" (retry idempotency).
+	FindByOriginRequestID(ctx context.Context, scope domain.Scope, requestID string) ([]domain.TemporalFact, error)
+
 	// UpdateValidity closes a fact's validity window. Idempotent:
 	// supplying the same validTo+correctedBy on an already-closed
 	// fact is a no-op rather than an error.

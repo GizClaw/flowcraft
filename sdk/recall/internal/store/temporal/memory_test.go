@@ -335,6 +335,89 @@ func TestFindByRevisionSource_ScopePartition(t *testing.T) {
 	}
 }
 
+// TestFindByOriginRequestID_ReturnsMatch pins the happy path: every
+// fact in the scope whose Origin.RequestID equals the lookup key is
+// returned in ObservedAt-ascending order. Facts written without an
+// origin must NOT leak into the result.
+func TestFindByOriginRequestID_ReturnsMatch(t *testing.T) {
+	s := NewMemoryStore()
+	ctx := context.Background()
+	a := sampleFact("a", "ka", domain.KindEpisode, time.Unix(10, 0))
+	a.Origin = domain.FactOrigin{RequestID: "req-1", Kind: domain.OriginKindEpisode}
+	b := sampleFact("b", "kb", domain.KindEpisode, time.Unix(20, 0))
+	b.Origin = domain.FactOrigin{RequestID: "req-1", Kind: domain.OriginKindEpisode}
+	c := sampleFact("c", "kc", domain.KindNote, time.Unix(30, 0))
+	if err := s.Append(ctx, []domain.TemporalFact{a, b, c}); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	got, err := s.FindByOriginRequestID(ctx, scope(), "req-1")
+	if err != nil {
+		t.Fatalf("FindByOriginRequestID: %v", err)
+	}
+	if len(got) != 2 || got[0].ID != "a" || got[1].ID != "b" {
+		t.Fatalf("want [a b], got %+v", got)
+	}
+}
+
+// TestFindByOriginRequestID_NoMatchReturnsEmpty pins both empty-input
+// and no-match cases: empty requestID yields nil (do not enumerate
+// the whole scope), and an unmatched requestID returns an empty
+// slice without error.
+func TestFindByOriginRequestID_NoMatchReturnsEmpty(t *testing.T) {
+	s := NewMemoryStore()
+	ctx := context.Background()
+	a := sampleFact("a", "ka", domain.KindEpisode, time.Unix(10, 0))
+	a.Origin = domain.FactOrigin{RequestID: "req-1", Kind: domain.OriginKindEpisode}
+	if err := s.Append(ctx, []domain.TemporalFact{a}); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	empty, err := s.FindByOriginRequestID(ctx, scope(), "")
+	if err != nil {
+		t.Fatalf("FindByOriginRequestID(empty): %v", err)
+	}
+	if empty != nil {
+		t.Errorf("empty requestID must not enumerate scope, got %+v", empty)
+	}
+	none, err := s.FindByOriginRequestID(ctx, scope(), "req-missing")
+	if err != nil {
+		t.Fatalf("FindByOriginRequestID(missing): %v", err)
+	}
+	if len(none) != 0 {
+		t.Errorf("no match → empty slice, got %+v", none)
+	}
+}
+
+// TestFindByOriginRequestID_RespectsScopePartition pins the scope
+// isolation contract: a request id matching in scope u1 must NOT
+// surface facts in scope u2 even though they share the same id.
+func TestFindByOriginRequestID_RespectsScopePartition(t *testing.T) {
+	s := NewMemoryStore()
+	ctx := context.Background()
+	other := domain.Scope{RuntimeID: "rt", UserID: "u2"}
+	a := sampleFact("a", "ka", domain.KindEpisode, time.Unix(10, 0))
+	a.Origin = domain.FactOrigin{RequestID: "req-1", Kind: domain.OriginKindEpisode}
+	b := sampleFact("b", "kb", domain.KindEpisode, time.Unix(20, 0))
+	b.Scope = other
+	b.Origin = domain.FactOrigin{RequestID: "req-1", Kind: domain.OriginKindEpisode}
+	if err := s.Append(ctx, []domain.TemporalFact{a, b}); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	got, err := s.FindByOriginRequestID(ctx, scope(), "req-1")
+	if err != nil {
+		t.Fatalf("FindByOriginRequestID: %v", err)
+	}
+	if len(got) != 1 || got[0].ID != "a" {
+		t.Errorf("scope u1 must only return a, got %+v", got)
+	}
+	gotOther, err := s.FindByOriginRequestID(ctx, other, "req-1")
+	if err != nil {
+		t.Fatalf("FindByOriginRequestID(other): %v", err)
+	}
+	if len(gotOther) != 1 || gotOther[0].ID != "b" {
+		t.Errorf("scope u2 must only return b, got %+v", gotOther)
+	}
+}
+
 func TestStore_DoesNotPartitionByAgentID(t *testing.T) {
 	s := NewMemoryStore()
 	ctx := context.Background()

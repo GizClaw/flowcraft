@@ -260,6 +260,40 @@ func (s *MemoryStore) FindByRevisionSource(_ context.Context, scope domain.Scope
 	return out, nil
 }
 
+// FindByOriginRequestID scans the scope partition and returns every
+// fact whose Origin.RequestID equals the supplied key. Used by the
+// async semantic worker to detect "facts already written by a prior
+// attempt" (retry idempotency, see
+// recall-v2-async-semantic-write.md §3.3). Empty requestID yields nil
+// so callers cannot accidentally enumerate the whole scope. Results
+// are ordered by ObservedAt ascending for determinism.
+func (s *MemoryStore) FindByOriginRequestID(_ context.Context, scope domain.Scope, requestID string) ([]domain.TemporalFact, error) {
+	if requestID == "" {
+		return nil, nil
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	sh, ok := s.byScope[keyOf(scope)]
+	if !ok {
+		return nil, nil
+	}
+	var out []domain.TemporalFact
+	for _, id := range sh.orderedIDs {
+		f, ok := sh.byID[id]
+		if !ok {
+			continue
+		}
+		if f.Origin.RequestID != requestID {
+			continue
+		}
+		out = append(out, f.Clone())
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		return out[i].ObservedAt.Before(out[j].ObservedAt)
+	})
+	return out, nil
+}
+
 // UpdateValidity closes a fact's validity window. The operation is
 // idempotent: a fact already closed with the supplied (validTo,
 // correctedBy) tuple returns nil. Any other re-close attempt returns
