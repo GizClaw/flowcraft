@@ -37,16 +37,30 @@ const (
 	PhaseRebuild Phase = "rebuild"
 )
 
-// Status captures a stage's terminal state. ShortCircuit is a
-// non-error early exit; Skipped marks stages a Conditional decided
-// not to run; Compensated marks stages whose Compensator ran after
-// a downstream failure.
+// Status captures a stage's terminal state. Values:
+//
+//   - StatusOK: stage Run succeeded; no further action.
+//   - StatusShortCircuit: stage requested an early non-error exit
+//     (pipeline.ShortCircuit sentinel). Later stages do not run and
+//     compensators do NOT fire.
+//   - StatusSkipped: stage's Conditional.Skip returned true. The
+//     framework records the supplied Detail so observers see why.
+//   - StatusDegraded: stage's primary work logically succeeded but a
+//     best-effort side effect failed. Emitted via the
+//     pipeline.BestEffortFailure wrapper — compensators do NOT fire
+//     and the pipeline continues with the next stage.
+//   - StatusFailed: stage returned a non-nil, non-sentinel error.
+//     Reverse-order compensators fire and the pipeline aborts.
+//   - StatusCompensated: stage previously emitted StatusOK and its
+//     Compensator subsequently ran (cleanly) after a downstream
+//     failure.
 type Status string
 
 const (
 	StatusOK           Status = "ok"
 	StatusShortCircuit Status = "short_circuit"
 	StatusSkipped      Status = "skipped"
+	StatusDegraded     Status = "degraded"
 	StatusFailed       Status = "failed"
 	StatusCompensated  Status = "compensated"
 )

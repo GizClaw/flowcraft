@@ -198,6 +198,15 @@ func (p *Pipeline[S]) Run(ctx context.Context, state S) error {
 			return nil
 		}
 
+		var bef BestEffortFailure
+		if errors.As(err, &bef) {
+			diag.Status = diagnostic.StatusDegraded
+			diag.Err = bef.Err.Error()
+			p.emit(state, diag)
+			executed = append(executed, i)
+			continue
+		}
+
 		if err != nil {
 			diag.Status = diagnostic.StatusFailed
 			diag.Err = err.Error()

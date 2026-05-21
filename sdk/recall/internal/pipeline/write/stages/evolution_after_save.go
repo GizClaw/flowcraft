@@ -36,14 +36,18 @@ func (s *EvolutionAfterSave) Skip(_ context.Context, _ *write.WriteState) (bool,
 	return false, nil
 }
 
-// Run implements pipeline.Stage. AfterSave errors are swallowed so
-// Save outcome is unaffected; the err is surfaced through the
-// stage's StageDiagnostic.Err (Phase E.3: Stages-only).
+// Run implements pipeline.Stage. AfterSave is best-effort: the Save
+// itself has already committed, so a runner failure must NOT abort
+// the pipeline or trigger compensation. The error is wrapped via
+// pipeline.BestEffort so the framework records the stage as
+// Status=Degraded (Cluster C); state.EvolutionErr is kept populated
+// for backward-compatible callers that read it directly.
 func (s *EvolutionAfterSave) Run(ctx context.Context, state *write.WriteState) (diagnostic.StageDetail, error) {
-	if err := s.runner.AfterSave(ctx, state.Scope, state.AppendedFactIDs); err != nil {
+	err := s.runner.AfterSave(ctx, state.Scope, state.AppendedFactIDs)
+	if err != nil {
 		state.EvolutionErr = err
 	}
-	return diagnostic.EvolutionAfterSaveDetail{}, nil
+	return diagnostic.EvolutionAfterSaveDetail{}, pipeline.BestEffort(err)
 }
 
 var (

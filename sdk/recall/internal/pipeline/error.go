@@ -43,6 +43,46 @@ func ShortCircuitWith(reason string) error {
 	return ShortCircuit{Reason: reason}
 }
 
+// BestEffortFailure marks an error as a non-fatal failure of a
+// side effect. A stage that wraps its error via BestEffort() tells
+// the framework: "the stage's primary work succeeded; the
+// included error is observability-only".
+//
+// Pipeline.Run treats a BestEffortFailure as Status=Degraded —
+// it emits the diagnostic with the wrapped error string, marks
+// the stage as executed, does NOT invoke any Compensator, and
+// continues with the next stage. Callers detect a BestEffortFailure
+// through errors.As (the framework uses the same path), so wrapping
+// it with fmt.Errorf("ctx: %w", err) is safe.
+type BestEffortFailure struct {
+	Err error
+}
+
+// Error implements the error interface by delegating to the wrapped
+// error. Unwrap() exposes it so errors.Is / errors.As targeting the
+// underlying error keep working.
+func (b BestEffortFailure) Error() string {
+	if b.Err == nil {
+		return "pipeline best-effort failure"
+	}
+	return b.Err.Error()
+}
+
+// Unwrap returns the wrapped error so errors.Is / errors.As can
+// continue traversal into the original cause.
+func (b BestEffortFailure) Unwrap() error { return b.Err }
+
+// BestEffort wraps err for return by a Stage.Run that wants to
+// emit a Degraded diagnostic. Returns nil when err is nil so callers
+// can write `return detail, pipeline.BestEffort(err)` unconditionally
+// without an extra branch.
+func BestEffort(err error) error {
+	if err == nil {
+		return nil
+	}
+	return BestEffortFailure{Err: err}
+}
+
 // IsShortCircuit reports whether err is or wraps a ShortCircuit
 // sentinel. It is the convenience alternative to errors.As for
 // callers that only need a yes/no answer.

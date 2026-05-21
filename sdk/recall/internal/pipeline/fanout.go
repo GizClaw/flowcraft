@@ -3,9 +3,11 @@ package pipeline
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain/diagnostic"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/port"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/telemetry"
 )
@@ -82,7 +84,7 @@ func (f *Fanout) ProjectOptional(ctx context.Context, facts []domain.TemporalFac
 	if f == nil || len(facts) == 0 || len(f.optional) == 0 {
 		return
 	}
-	f.runOptional(ctx, func(p port.Projection) error {
+	f.runOptional(ctx, opProject, func(p port.Projection) error {
 		return p.Project(ctx, facts)
 	})
 }
@@ -104,7 +106,7 @@ func (f *Fanout) ForgetOptional(ctx context.Context, scope domain.Scope, factIDs
 	if f == nil || len(factIDs) == 0 || len(f.optional) == 0 {
 		return
 	}
-	f.runOptional(ctx, func(p port.Projection) error {
+	f.runOptional(ctx, opForget, func(p port.Projection) error {
 		return p.Forget(ctx, scope, factIDs)
 	})
 }
@@ -125,7 +127,7 @@ func (f *Fanout) RebuildOptional(ctx context.Context, scope domain.Scope, facts 
 	if f == nil {
 		return
 	}
-	f.runOptional(ctx, func(p port.Projection) error {
+	f.runOptional(ctx, opRebuild, func(p port.Projection) error {
 		return p.Rebuild(ctx, scope, facts)
 	})
 }
@@ -195,12 +197,38 @@ func (f *Fanout) runRequired(ctx context.Context, op fanoutOp, call func(port.Pr
 	return nil
 }
 
-func (f *Fanout) runOptional(ctx context.Context, call func(port.Projection) error) {
+// runOptional invokes call on every optional projection. Failures
+// never escape the helper: each one is surfaced as a
+// Status=Degraded StageDiagnostic carrying the per-projection err so
+// observers see exactly which optional projection degraded (Cluster
+// C convention). Telemetry is the only emission channel —
+// projections do not abort each other.
+func (f *Fanout) runOptional(ctx context.Context, op fanoutOp, call func(port.Projection) error) {
 	for _, p := range f.optional {
 		if err := ctx.Err(); err != nil {
 			continue
 		}
-		_ = call(p)
+		started := time.Now()
+		err := call(p)
+		if err == nil {
+			continue
+		}
+		f.telemetry.OnStage(diagnostic.StageDiagnostic{
+			Stage:    fmt.Sprintf("fanout_optional:%s:%s", op, p.Name()),
+			Phase:    diagnostic.PhaseWrite,
+			StartAt:  started,
+			Duration: time.Since(started),
+			Status:   diagnostic.StatusDegraded,
+			Err:      err.Error(),
+			Detail: diagnostic.ProjectDetail{
+				Consistency: "optional",
+				Results: []diagnostic.ProjectionResult{{
+					Name:    p.Name(),
+					Latency: time.Since(started),
+					Err:     err.Error(),
+				}},
+			},
+		})
 	}
 }
 

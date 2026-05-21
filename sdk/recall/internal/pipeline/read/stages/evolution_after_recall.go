@@ -32,13 +32,19 @@ func (s *EvolutionAfterRecall) Skip(_ context.Context, _ *read.ReadState) (bool,
 	return false, nil
 }
 
-// Run implements pipeline.Stage.
+// Run implements pipeline.Stage. AfterRecall is best-effort: the
+// Recall result has already been materialised, so a runner failure
+// must NOT abort the pipeline or trigger compensation. The error is
+// wrapped via pipeline.BestEffort so the framework records the stage
+// as Status=Degraded (Cluster C); state.EvolutionErr is kept
+// populated for backward-compatible callers that read it directly.
 func (s *EvolutionAfterRecall) Run(ctx context.Context, state *read.ReadState) (diagnostic.StageDetail, error) {
 	trace := read.PublicRecallTrace(state)
-	if err := s.runner.AfterRecall(ctx, state.Scope, trace); err != nil {
+	err := s.runner.AfterRecall(ctx, state.Scope, trace)
+	if err != nil {
 		state.EvolutionErr = err
 	}
-	return diagnostic.EvolutionAfterRecallDetail{}, nil
+	return diagnostic.EvolutionAfterRecallDetail{}, pipeline.BestEffort(err)
 }
 
 var (

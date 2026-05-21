@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/pipeline"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/pipeline/write"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/pipeline/write/stages"
 )
@@ -38,16 +39,29 @@ func TestEvolutionAfterSave_HappyPath(t *testing.T) {
 	}
 }
 
-func TestEvolutionAfterSave_FailureIsNonFatal(t *testing.T) {
+// TestEvolutionAfterSave_FailureIsBestEffort pins the Cluster C
+// contract: AfterSave failures are surfaced via the BestEffort
+// wrapper so the framework emits Status=Degraded, but the legacy
+// state.EvolutionErr field is still populated so callers that read
+// it directly keep working.
+func TestEvolutionAfterSave_FailureIsBestEffort(t *testing.T) {
 	boom := errors.New("evo down")
 	ev := &stubEvolution{saveErr: boom}
 	s := stages.NewEvolutionAfterSave(ev)
 	state := &write.WriteState{AppendedFactIDs: []string{"a"}}
-	if _, err := s.Run(context.Background(), state); err != nil {
-		t.Fatalf("Run must swallow err: %v", err)
+	_, err := s.Run(context.Background(), state)
+	if err == nil {
+		t.Fatalf("Run must return a BestEffort-wrapped err, got nil")
+	}
+	var bef pipeline.BestEffortFailure
+	if !errors.As(err, &bef) {
+		t.Fatalf("err must be a pipeline.BestEffortFailure, got %T (%v)", err, err)
+	}
+	if !errors.Is(err, boom) {
+		t.Errorf("err must wrap the original cause via Unwrap, got %v", err)
 	}
 	if !errors.Is(state.EvolutionErr, boom) {
-		t.Errorf("EvolutionErr = %v, want %v", state.EvolutionErr, boom)
+		t.Errorf("EvolutionErr = %v, want %v (legacy field must still populate)", state.EvolutionErr, boom)
 	}
 }
 

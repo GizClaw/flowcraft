@@ -42,6 +42,29 @@ var (
 	_ diagnostic.StageDetail = diagnostic.RebuildProjectionDetail{}
 )
 
+// TestStatusDegraded_Value pins the wire-level string the framework
+// emits for Cluster C best-effort failures. Dashboards, telemetry
+// sinks, and external trace consumers key off the literal "degraded"
+// value, so a typo here would silently break every observer that
+// matches the constant by string rather than by Go identifier.
+func TestStatusDegraded_Value(t *testing.T) {
+	if got := string(diagnostic.StatusDegraded); got != "degraded" {
+		t.Fatalf("StatusDegraded = %q, want %q", got, "degraded")
+	}
+	// Sanity: the new value must not collide with any sibling status.
+	for _, other := range []diagnostic.Status{
+		diagnostic.StatusOK,
+		diagnostic.StatusShortCircuit,
+		diagnostic.StatusSkipped,
+		diagnostic.StatusFailed,
+		diagnostic.StatusCompensated,
+	} {
+		if other == diagnostic.StatusDegraded {
+			t.Errorf("StatusDegraded collides with %q", other)
+		}
+	}
+}
+
 // TestDetail_RoundTrip pins JSON byte-stability for every Detail
 // type. Each case constructs a representative non-zero value,
 // marshals it, unmarshals into a fresh value of the SAME concrete
