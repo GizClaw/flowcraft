@@ -32,9 +32,9 @@ func TestTimeline_KeepsPastEventWithOpenValidity(t *testing.T) {
 // view invariant restored alongside domain.IsHistorical: a fact whose
 // validity window has long closed (e.g. a one-day event in 2023 viewed
 // from 2026) must STILL be indexed by the timeline. Cluster B's
-// initial IsProjectable adoption silently broke this — "When did X
-// happen?" queries on the LoCoMo benchmark lost the underlying event
-// because IsCanonicalActive returns false once ValidTo < now.
+// initial IsProjectable adoption silently broke this — historical
+// "When did X happen?" queries lost the underlying event because
+// IsCanonicalActive returns false once ValidTo < now.
 func TestTimeline_KeepsPastEventWithClosedValidity(t *testing.T) {
 	p := New()
 	ctx := context.Background()

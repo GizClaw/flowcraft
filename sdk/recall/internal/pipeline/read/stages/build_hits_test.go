@@ -27,10 +27,12 @@ func TestBuildHitsSnapshotsInputRerankedAndFinal(t *testing.T) {
 			{
 				Candidate: domain.Candidate{FactID: "evidence", Source: "retrieval", Score: 0.9, EvidenceIDs: []string{"e1"}},
 				Fact:      domain.TemporalFact{ID: "evidence", EvidenceRefs: []domain.EvidenceRef{{ID: "e1"}}},
+				Evidence:  []domain.EvidenceRef{{ID: "e1", Text: "selected evidence"}},
 			},
 			{
 				Candidate: domain.Candidate{FactID: "distractor", Source: "entity", Score: 0.8, EvidenceIDs: []string{"e2"}},
 				Fact:      domain.TemporalFact{ID: "distractor", EvidenceRefs: []domain.EvidenceRef{{ID: "e2"}}},
+				Evidence:  []domain.EvidenceRef{{ID: "e2", Text: "selected distractor"}},
 			},
 		},
 	}
@@ -52,6 +54,9 @@ func TestBuildHitsSnapshotsInputRerankedAndFinal(t *testing.T) {
 	}
 	if len(state.Hits) != 1 || state.Hits[0].Fact.ID != "distractor" {
 		t.Fatalf("state hits = %+v", state.Hits)
+	}
+	if len(state.Hits[0].Evidence) != 1 || state.Hits[0].Evidence[0].Text != "selected distractor" {
+		t.Fatalf("hit evidence should survive build_hits/rerank: %+v", state.Hits[0].Evidence)
 	}
 }
 

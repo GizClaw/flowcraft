@@ -16,13 +16,12 @@ func agentScope(agentID string) domain.Scope {
 	return s
 }
 
-// TestRelation_IndexesEventFactWithTriple pins the LoCoMo regression
-// fix: structurized event / state / preference facts that carry a
-// meaningful (Subject, Predicate, Object) triple were dropped on the
-// floor by the old Kind=Relation gate, starving the relation source
-// and the multi-hop fanout it feeds. Indexing any projectable fact
-// with a non-empty triple key restores typed-relation recall for the
-// 97% of LoCoMo facts that are not KindRelation.
+// TestRelation_IndexesEventFactWithTriple pins the relation projection
+// invariant: structurized event / state / preference facts that carry a
+// meaningful (Subject, Predicate, Object) triple must be indexed even
+// when Kind is not Relation. Otherwise typed-relation recall loses
+// facts that are semantically relational but classified by lifecycle
+// kind.
 func TestRelation_IndexesEventFactWithTriple(t *testing.T) {
 	p := New()
 	ctx := context.Background()

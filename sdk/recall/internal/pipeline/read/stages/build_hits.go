@@ -65,9 +65,10 @@ func hitsFromItems(items []domain.ContextItem) []domain.Hit {
 	hits := make([]domain.Hit, 0, len(items))
 	for _, it := range items {
 		hits = append(hits, domain.Hit{
-			Fact:    it.Fact,
-			Score:   it.Candidate.Score,
-			Sources: hitSources(it.Candidate),
+			Fact:     it.Fact,
+			Evidence: append([]domain.EvidenceRef(nil), it.Evidence...),
+			Score:    it.Candidate.Score,
+			Sources:  hitSources(it.Candidate),
 		})
 	}
 	return hits

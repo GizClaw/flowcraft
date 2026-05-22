@@ -489,12 +489,12 @@ func TestLLMExtractor_PreservesBackendClassification(t *testing.T) {
 
 // TestLLMExtractorSystemPrompt_GuardsAntiAbstraction pins the
 // anti-abstraction language that distinguishes one-off dated
-// actions ("events") from durable traits ("states"). LoCoMo
-// failure analysis (2026-05-21) traced ~half of recall misses to
-// the extractor over-summarising sentences like "I just signed up
-// for pottery yesterday" into "<speaker> uses pottery for self-
-// expression" — collapsing five dated events into two abstract
-// states. Future prompt edits must keep:
+// actions ("events") from durable traits ("states"). Regression
+// analysis traced time-anchored recall misses to the extractor
+// over-summarising sentences like "I just signed up for pottery
+// yesterday" into "<speaker> uses pottery for self-expression" —
+// collapsing several dated events into abstract states. Future prompt
+// edits must keep:
 //   - explicit instruction to default past-tense+date snippets to
 //     kind:"event" (not state/preference);
 //   - explicit instruction to preserve single-mention proper nouns

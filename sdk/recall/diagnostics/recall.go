@@ -132,7 +132,7 @@ func diagnoseHits(hits []domain.Hit) HitRenderability {
 	for i, h := range hits {
 		content := strings.TrimSpace(h.Fact.Content)
 		structured := h.Fact.Subject != "" || h.Fact.Predicate != "" || h.Fact.Object != ""
-		evidence := strings.TrimSpace(h.Fact.EvidenceText) != "" || len(h.Fact.EvidenceRefs) > 0
+		evidence := strings.TrimSpace(h.Fact.EvidenceText) != "" || len(hitEvidenceRefs(h)) > 0
 		if evidence {
 			out.GroundedEvidence++
 		}
@@ -204,7 +204,7 @@ func AttributeAnswerContext(hits []domain.Hit, rendered []AnswerContextItem) []A
 			continue
 		}
 		grounded := false
-		for _, ref := range h.Fact.EvidenceRefs {
+		for _, ref := range hitEvidenceRefs(h) {
 			t := strings.TrimSpace(ref.Text)
 			if t == "" {
 				continue
@@ -225,4 +225,11 @@ func AttributeAnswerContext(hits []domain.Hit, rendered []AnswerContextItem) []A
 		})
 	}
 	return out
+}
+
+func hitEvidenceRefs(h domain.Hit) []domain.EvidenceRef {
+	if len(h.Evidence) > 0 {
+		return h.Evidence
+	}
+	return h.Fact.EvidenceRefs
 }

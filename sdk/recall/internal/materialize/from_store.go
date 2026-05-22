@@ -109,10 +109,51 @@ func (m *FromStore) Materialize(ctx context.Context, candidates []domain.Candida
 		items = append(items, domain.ContextItem{
 			Candidate: c,
 			Fact:      fact,
-			Evidence:  fact.EvidenceRefs,
+			Evidence:  selectCandidateEvidence(fact.EvidenceRefs, c.EvidenceIDs),
 		})
 	}
 	return items, drops, nil
+}
+
+func selectCandidateEvidence(refs []domain.EvidenceRef, ids []string) []domain.EvidenceRef {
+	if len(refs) == 0 {
+		return nil
+	}
+	if len(ids) == 0 {
+		return append([]domain.EvidenceRef(nil), refs...)
+	}
+	byID := make(map[string]domain.EvidenceRef, len(refs)*2)
+	for _, ref := range refs {
+		if ref.ID != "" {
+			byID[ref.ID] = ref
+		}
+		if ref.MessageID != "" {
+			byID[ref.MessageID] = ref
+		}
+	}
+	out := make([]domain.EvidenceRef, 0, len(ids))
+	seen := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		ref, ok := byID[id]
+		if !ok {
+			continue
+		}
+		key := ref.ID
+		if key == "" {
+			key = ref.MessageID
+		}
+		if key != "" {
+			if _, dup := seen[key]; dup {
+				continue
+			}
+			seen[key] = struct{}{}
+		}
+		out = append(out, ref)
+	}
+	if len(out) == 0 {
+		return append([]domain.EvidenceRef(nil), refs...)
+	}
+	return out
 }
 
 // violatesScope reports whether a loaded fact's canonical owner

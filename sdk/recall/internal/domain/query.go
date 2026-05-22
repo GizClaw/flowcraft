@@ -95,15 +95,18 @@ type ContextItem struct {
 	Evidence  []EvidenceRef
 }
 
-// Hit is one recall winner. Score is the fused score after the
-// post-materialize ranker has applied its boost. Sources lists every
-// CandidateSource that surfaced this fact, in the order fusion saw
-// them; consumers can read it to attribute winners to specific
-// sources (retrieval / entity / timeline / relation / profile /
-// graph) for diagnostics and explainability. An empty Sources slice
-// means the candidate carried no provenance metadata.
+// Hit is one recall winner. Evidence is the materialized evidence slice that
+// caused this hit; when a Candidate carried EvidenceIDs it is the selected
+// subset of Fact.EvidenceRefs rather than every source ref attached to the
+// fact. Score is the fused score after the post-materialize ranker has applied
+// its boost. Sources lists every CandidateSource that surfaced this fact, in
+// the order fusion saw them; consumers can read it to attribute winners to
+// specific sources (retrieval / entity / timeline / relation / profile /
+// graph) for diagnostics and explainability. An empty Sources slice means the
+// candidate carried no provenance metadata.
 type Hit struct {
-	Fact    TemporalFact
-	Score   float64
-	Sources []string
+	Fact     TemporalFact
+	Evidence []EvidenceRef
+	Score    float64
+	Sources  []string
 }

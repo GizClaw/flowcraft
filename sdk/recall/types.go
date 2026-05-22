@@ -235,6 +235,9 @@ func TimeRangeFrom(from, to time.Time) TimeRange {
 // Hit is one materialized recall winner. Aliases the canonical
 // domain type so the facade, internal pipelines, and diagnostics
 // share one schema (Phase E.2: "全部 = domain.X 别名").
+// Hit.Evidence carries the materialized evidence slice selected for
+// this hit when the candidate source can identify the evidence that
+// caused the match.
 type Hit = domain.Hit
 
 // LineageRelation classifies a fact's relationship to the root in a

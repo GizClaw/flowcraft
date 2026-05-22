@@ -185,7 +185,7 @@ func TestGroundedHitContentSatisfiesAnswerContextDiagnostics(t *testing.T) {
 		}},
 	}}
 
-	rendered := groundedHitContent(h.Fact)
+	rendered := groundedHitContent(h)
 	if attrs := diagnostics.AttributeAnswerContext([]recall.Hit{h}, []diagnostics.AnswerContextItem{{
 		FactID: h.Fact.ID,
 		Text:   h.Fact.Content,
@@ -197,5 +197,28 @@ func TestGroundedHitContentSatisfiesAnswerContextDiagnostics(t *testing.T) {
 		Text:   rendered,
 	}}); len(attrs) != 0 {
 		t.Fatalf("grounded rendering should satisfy diagnostics, got %+v", attrs)
+	}
+}
+
+func TestFromRecallHitUsesSelectedEvidence(t *testing.T) {
+	hit := fromRecallHit(recall.Hit{
+		Fact: recall.TemporalFact{
+			ID:      "f1",
+			Content: "Alice visited Paris.",
+			EvidenceRefs: []recall.EvidenceRef{
+				{ID: "D1:1", Text: "Alice mentioned Paris."},
+				{ID: "D1:2", Text: "Unrelated nearby turn."},
+			},
+		},
+		Evidence: []recall.EvidenceRef{{ID: "D1:1", Text: "Alice mentioned Paris."}},
+	})
+	if !strings.Contains(hit.Content, "Alice mentioned Paris.") {
+		t.Fatalf("selected evidence missing from rendered content: %+v", hit)
+	}
+	if strings.Contains(hit.Content, "Unrelated nearby turn") {
+		t.Fatalf("unselected evidence should not be rendered: %+v", hit)
+	}
+	if len(hit.EvidenceIDs) != 1 || hit.EvidenceIDs[0] != "D1:1" {
+		t.Fatalf("hit evidence ids should reflect selected evidence: %+v", hit)
 	}
 }

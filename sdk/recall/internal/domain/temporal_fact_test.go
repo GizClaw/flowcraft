@@ -200,10 +200,10 @@ func TestIsProjectable_RespectsSuperseded(t *testing.T) {
 	}
 }
 
-// TestIsHistorical_KeepsPastValidTo pins the LoCoMo regression fix
-// (2026-05-21): historical projections (timeline / retrieval / entity
-// / graph) MUST keep events whose ValidTo has long since closed,
-// otherwise "When did X happen?" queries lose the underlying event.
+// TestIsHistorical_KeepsPastValidTo pins the historical-projection
+// invariant: timeline / retrieval / entity / graph MUST keep events
+// whose ValidTo has long since closed, otherwise "When did X happen?"
+// queries lose the underlying event.
 // IsProjectable conflates "currently-active state" with "indexable
 // historical fact"; IsHistorical separates the two so the active-slot
 // views (profile / relation) keep their semantics while the four

@@ -45,6 +45,37 @@ func TestMaterialize_AttachesFactAndDropsStale(t *testing.T) {
 	}
 }
 
+func TestMaterialize_SelectsCandidateEvidence(t *testing.T) {
+	store := temporalstore.NewMemoryStore()
+	scope := domain.Scope{RuntimeID: "rt"}
+	fact := domain.TemporalFact{
+		ID:      "real",
+		Scope:   scope,
+		Kind:    domain.KindNote,
+		Content: "hello",
+		EvidenceRefs: []domain.EvidenceRef{
+			{ID: "ev1", Text: "first evidence"},
+			{ID: "ev2", MessageID: "msg-2", Text: "second evidence"},
+		},
+	}
+	if err := store.Append(context.Background(), []domain.TemporalFact{fact}); err != nil {
+		t.Fatal(err)
+	}
+	mat := New(store, nil)
+	items, _, err := mat.Materialize(context.Background(), []domain.Candidate{
+		{FactID: "real", Scope: scope, Source: "retrieval", EvidenceIDs: []string{"msg-2"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("materialized items = %+v", items)
+	}
+	if len(items[0].Evidence) != 1 || items[0].Evidence[0].ID != "ev2" {
+		t.Fatalf("selected evidence = %+v", items[0].Evidence)
+	}
+}
+
 func TestMaterialize_DropsSuperseded(t *testing.T) {
 	store := temporalstore.NewMemoryStore()
 	scope := domain.Scope{RuntimeID: "rt"}

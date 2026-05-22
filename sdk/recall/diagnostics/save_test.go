@@ -10,14 +10,12 @@ import (
 )
 
 // TestDiagnoseSave_PopulatesFactQualityFromStats guards against a
-// silent diagnostic regression that surfaced in the LoCoMo full run
-// (5/21): per-fact FactQuality counters (WithContent, WithEvidence,
-// WithValidFrom, WithConfidence, ByKind) were all zero because the
-// Cluster E refactor dropped the per-fact walk on the way through
-// the new stage-Detail surface. Stages now precompute FactStats
-// before emitting IngestDetail / ResolveDetail; this test pins that
-// the diagnostics layer reads those tallies back out instead of
-// flat-zeroing them.
+// silent diagnostic regression: per-fact FactQuality counters
+// (WithContent, WithEvidence, WithValidFrom, WithConfidence, ByKind)
+// were all zero because the stage-Detail refactor dropped the
+// per-fact walk. Stages now precompute FactStats before emitting
+// IngestDetail / ResolveDetail; this test pins that the diagnostics
+// layer reads those tallies back out instead of flat-zeroing them.
 func TestDiagnoseSave_PopulatesFactQualityFromStats(t *testing.T) {
 	vf := time.Date(2024, 5, 7, 0, 0, 0, 0, time.UTC)
 	trace := domain.SaveTrace{
