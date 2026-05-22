@@ -1,6 +1,9 @@
 // Package memory implements the Anthropic Memory Tool client-side
 // contract (memory_20250818) on top of a [workspace.Workspace].
 //
+// Deprecated: memory-domain tool adapters are moving to
+// github.com/GizClaw/flowcraft/memory. This package will be removed in v0.5.0.
+//
 // # What is the Memory Tool
 //
 // Anthropic's Memory Tool is a client-executed tool the model uses
