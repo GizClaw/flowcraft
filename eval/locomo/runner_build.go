@@ -22,15 +22,20 @@ type v2DiagnosticHooks struct {
 	OnRecall func(runners.Scope, diagnostics.RecallDiagnostics)
 }
 
+const (
+	runnerFlowcraftRecallV1 = "flowcraft-recall-v1"
+	runnerFlowcraftRecallV2 = "flowcraft-recall-v2"
+)
+
 // normalizeRunnerName maps legacy CLI aliases to canonical runner names.
 func normalizeRunnerName(name string) (string, error) {
 	switch name {
-	case "flowcraft":
-		return "flowcraft-v1", nil
-	case "flowcraft-v1", "flowcraft-v2":
-		return name, nil
+	case "flowcraft", "flowcraft-v1", runnerFlowcraftRecallV1:
+		return runnerFlowcraftRecallV1, nil
+	case "flowcraft-v2", runnerFlowcraftRecallV2:
+		return runnerFlowcraftRecallV2, nil
 	default:
-		return "", fmt.Errorf("unknown runner: %s (want flowcraft, flowcraft-v1, or flowcraft-v2)", name)
+		return "", fmt.Errorf("unknown runner: %s (want flowcraft-recall-v1 or flowcraft-recall-v2)", name)
 	}
 }
 
@@ -58,9 +63,9 @@ type v1RunnerConfig struct {
 
 func buildLocomoRunner(canonical string, v1 v1RunnerConfig, v2OnSaved func(runners.Scope, []string), v2OnFacts func(runners.Scope, []recall.TemporalFact), v2Diag *v2DiagnosticHooks) (runners.Runner, error) {
 	switch canonical {
-	case "flowcraft-v2":
+	case runnerFlowcraftRecallV2:
 		opts := flowcraftv2.Options{
-			Name:                 "flowcraft-v2",
+			Name:                 runnerFlowcraftRecallV2,
 			LLM:                  v1.LLM,
 			ExtractorMode:        v1.ExtractorMode,
 			Embedder:             v1.Embedder,
@@ -74,7 +79,7 @@ func buildLocomoRunner(canonical string, v1 v1RunnerConfig, v2OnSaved func(runne
 			opts.OnRecallDiagnostics = v2Diag.OnRecall
 		}
 		return flowcraftv2.New(opts)
-	case "flowcraft-v1":
+	case runnerFlowcraftRecallV1:
 		v1.Name = canonical
 		return flowcraft.New(flowcraft.Options{
 			Name:                      v1.Name,

@@ -70,10 +70,10 @@ type Runner struct {
 	onRecallDiag  func(runners.Scope, diagnostics.RecallDiagnostics)
 }
 
-// New constructs a flowcraft-v2 bootstrap runner.
+// New constructs a flowcraft-recall-v2 bootstrap runner.
 func New(opts Options) (runners.Runner, error) {
 	if opts.Name == "" {
-		opts.Name = "flowcraft-v2"
+		opts.Name = "flowcraft-recall-v2"
 	}
 	memOpts := []recall.Option{
 		recall.WithRetrievalIndex(retrievalmem.New()),
@@ -336,7 +336,7 @@ const Baseline = "bootstrap-raw"
 
 // ErrExtractorNotSupported is returned when callers request LLM extraction
 // without wiring an LLM into the v2 runner.
-var ErrExtractorNotSupported = fmt.Errorf("flowcraft-v2 extractor ingest requires an LLM")
+var ErrExtractorNotSupported = fmt.Errorf("flowcraft-recall-v2 extractor ingest requires an LLM")
 
 // buildTurnContexts maps the LoCoMo-shaped RawTurns into typed
 // recall.TurnContexts. The LoCoMo dataset stuffs absolute

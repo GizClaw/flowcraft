@@ -68,7 +68,7 @@ func addLocomoIngest(parent *cobra.Command) {
 		},
 	}
 
-	cmd.Flags().StringVar(&runnerName, "runner", "flowcraft-v1", "runner: flowcraft-v1 | flowcraft-v2")
+	cmd.Flags().StringVar(&runnerName, "runner", runnerFlowcraftRecallV1, "runner: flowcraft-recall-v1 | flowcraft-recall-v2")
 	cmd.Flags().StringVar(&datasetFlag, "dataset", "synthetic", "dataset (synthetic) or .jsonl path")
 
 	parent.AddCommand(cmd)

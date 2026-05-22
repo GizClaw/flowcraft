@@ -146,7 +146,7 @@ type Runner struct {
 // New returns a new bench runner. Caller must Close().
 func New(opts Options) (runners.Runner, error) {
 	if opts.Name == "" {
-		opts.Name = "flowcraft-v1"
+		opts.Name = "flowcraft-recall-v1"
 	}
 	maxFacts := opts.MaxFactsPerCall
 	if maxFacts == 0 {

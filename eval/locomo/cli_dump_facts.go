@@ -42,7 +42,7 @@ type factDumpFact struct {
 func newV1FactsDump(ts time.Time, scope recallv1.Scope, facts []recallv1.ExtractedFact) factDumpRecord {
 	out := factDumpRecord{
 		TS:     ts,
-		Runner: "flowcraft-v1",
+		Runner: runnerFlowcraftRecallV1,
 		Scope: factDumpScope{
 			RuntimeID: scope.RuntimeID,
 			UserID:    scope.UserID,
@@ -68,7 +68,7 @@ func newV1FactsDump(ts time.Time, scope recallv1.Scope, facts []recallv1.Extract
 func newV2FactsDump(ts time.Time, scope runners.Scope, facts []recall.TemporalFact) factDumpRecord {
 	out := factDumpRecord{
 		TS:     ts,
-		Runner: "flowcraft-v2",
+		Runner: runnerFlowcraftRecallV2,
 		Scope: factDumpScope{
 			RuntimeID: scope.RuntimeID,
 			UserID:    scope.UserID,

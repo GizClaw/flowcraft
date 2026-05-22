@@ -108,7 +108,7 @@ func TestBuildTurnContexts_DegradesForRawChat(t *testing.T) {
 
 func TestSaveSourceTurnsPersistsExtractorEvidenceRefs(t *testing.T) {
 	r, err := New(Options{
-		Name: "flowcraft-v2",
+		Name: "flowcraft-recall-v2",
 		LLM: fakeLLM{response: `{"memories":[{
 			"text":"Alice likes Paris.",
 			"evidence_refs":[{"id":"D1:3","text":"Alice likes Paris."}]

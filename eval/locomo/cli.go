@@ -191,7 +191,7 @@ Example (LLM extractor + LLM answer + LLM judge + Qwen embedder):
 			if useExtractor && extractor == nil {
 				extractor = answer
 			}
-			if canonical == "flowcraft-v2" && useExtractor && extractor == nil {
+			if canonical == runnerFlowcraftRecallV2 && useExtractor && extractor == nil {
 				return flowcraftv2.ErrExtractorNotSupported
 			}
 			var sdkExtractorMode recall.LLMExtractionMode
@@ -203,8 +203,8 @@ Example (LLM extractor + LLM answer + LLM judge + Qwen embedder):
 			default:
 				return fmt.Errorf("--extractor-mode: unknown value %q (want single_pass or two_pass)", extractorMode)
 			}
-			if canonical != "flowcraft-v2" && dumpStageAuditPath != "" {
-				return fmt.Errorf("--dump-stage-audit is only supported for flowcraft-v2 (got %s)", canonical)
+			if canonical != runnerFlowcraftRecallV2 && dumpStageAuditPath != "" {
+				return fmt.Errorf("--dump-stage-audit is only supported for flowcraft-recall-v2 (got %s)", canonical)
 			}
 
 			// --dump-facts diagnostic: stream every Save batch's
@@ -246,8 +246,8 @@ Example (LLM extractor + LLM answer + LLM judge + Qwen embedder):
 				v2Diag     *v2DiagnosticHooks
 			)
 			if diagnosticsPath != "" {
-				if canonical != "flowcraft-v2" {
-					return fmt.Errorf("--diagnostics is only supported for flowcraft-v2 (got %s)", canonical)
+				if canonical != runnerFlowcraftRecallV2 {
+					return fmt.Errorf("--diagnostics is only supported for flowcraft-recall-v2 (got %s)", canonical)
 				}
 				diagHealth = diagnostics.NewPipelineHealth()
 				v2Diag = &v2DiagnosticHooks{
@@ -461,12 +461,12 @@ Example (LLM extractor + LLM answer + LLM judge + Qwen embedder):
 	}
 
 	f := cmd.Flags()
-	f.StringVar(&runnerName, "runner", "flowcraft-v1", "runner: flowcraft-v1 (default) | flowcraft-v2 (v2 bootstrap)")
+	f.StringVar(&runnerName, "runner", runnerFlowcraftRecallV1, "runner: flowcraft-recall-v1 (default) | flowcraft-recall-v2")
 	f.StringVar(&datasetFlag, "dataset", "synthetic", "dataset (synthetic) or path to .jsonl")
 	f.IntVar(&topK, "topk", 10, "Recall top-k")
 	f.BoolVar(&useExtractor, "extractor", false, "use LLM extractor on Save (requires --extractor-llm or shared --answer-llm)")
 	f.StringVar(&extractorLLM, "extractor-llm", "", "LLM for fact extraction, format provider:model; falls back to --answer-llm")
-	f.StringVar(&extractorMode, "extractor-mode", string(recall.LLMExtractionTwoPass), "flowcraft-v2 LLM extraction strategy: single_pass | two_pass")
+	f.StringVar(&extractorMode, "extractor-mode", string(recall.LLMExtractionTwoPass), "flowcraft-recall-v2 LLM extraction strategy: single_pass | two_pass")
 	f.StringVar(&answerLLM, "answer-llm", "", "LLM that synthesizes the answer from top-k memories, format provider:model")
 	f.StringVar(&judgeLLM, "judge-llm", "", "LLM-as-Judge model, format provider:model; if empty uses EMJudge")
 	f.StringVar(&embedderFlag, "embedder", "", "embedder, format provider:model (e.g. qwen:text-embedding-v4); enables vector lane")
@@ -493,8 +493,8 @@ Example (LLM extractor + LLM answer + LLM judge + Qwen embedder):
 	f.IntVar(&recentTurnsK, "recent-turns", 0, "if >0, inject the previous K messages from prior Save batches into the extractor for cross-batch pronoun/entity reference resolution")
 	f.StringVar(&dumpFactsPath, "dump-facts", "", "diagnostic: write one JSONL record per Save batch with the extractor's facts to this path (audits extract-miss vs recall-miss)")
 	f.StringVar(&dumpRecallPath, "dump-recall", "", "diagnostic: write one JSONL record per question with the top-k recall hits to this path (audits recall-miss vs answer-miss)")
-	f.StringVar(&dumpStageAuditPath, "dump-stage-audit", "", "diagnostic (flowcraft-v2 only): write per-question read pipeline stage candidates to this JSONL path (audits source/fusion/rank/context drops)")
-	f.StringVar(&diagnosticsPath, "diagnostics", "", "diagnostic (flowcraft-v2 only): write per-stage Save+Recall health summary to this JSON path (uses SaveExplain/RecallExplain)")
+	f.StringVar(&dumpStageAuditPath, "dump-stage-audit", "", "diagnostic (flowcraft-recall-v2 only): write per-question read pipeline stage candidates to this JSONL path (audits source/fusion/rank/context drops)")
+	f.StringVar(&diagnosticsPath, "diagnostics", "", "diagnostic (flowcraft-recall-v2 only): write per-stage Save+Recall health summary to this JSON path (uses SaveExplain/RecallExplain)")
 
 	parent.AddCommand(cmd)
 }

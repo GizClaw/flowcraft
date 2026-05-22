@@ -323,7 +323,7 @@ func Run(ctx context.Context, r runners.Runner, ds *dataset.Dataset, opts Option
 		Latency:   map[string]metrics.LatencySummary{},
 	}
 	switch report.Runner {
-	case "flowcraft-v2":
+	case runnerFlowcraftRecallV2, "flowcraft-v2":
 		report.RecallVersion = "v2"
 		report.Baseline = "bootstrap-raw"
 	default:

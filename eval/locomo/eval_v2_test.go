@@ -11,7 +11,7 @@ import (
 
 func TestRunSyntheticDataset_flowcraftV2(t *testing.T) {
 	ctx := context.Background()
-	r, err := flowcraftv2.New(flowcraftv2.Options{Name: "flowcraft-v2"})
+	r, err := flowcraftv2.New(flowcraftv2.Options{Name: "flowcraft-recall-v2"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -28,7 +28,7 @@ func TestRunSyntheticDataset_flowcraftV2(t *testing.T) {
 	if report.Baseline != flowcraftv2.Baseline {
 		t.Fatalf("Baseline = %q, want %q", report.Baseline, flowcraftv2.Baseline)
 	}
-	if report.Runner != "flowcraft-v2" {
+	if report.Runner != "flowcraft-recall-v2" {
 		t.Fatalf("Runner = %q", report.Runner)
 	}
 	if report.N != len(ds.Questions) {

@@ -13,7 +13,7 @@ name: eval / locomo
 # as "the SDK default score". Use `profile=sdk-default` plus matching inputs
 # when the goal is measuring default SDK behaviour.
 #
-# Canonical CLI: `eval locomo run --runner <flowcraft-v1|flowcraft-v2>
+# Canonical CLI: `eval locomo run --runner <flowcraft-recall-v1|flowcraft-recall-v2>
 #                  --dataset <path> --topk N
 #                  --extractor --extractor-llm <alias>
 #                  --answer-llm <alias> --judge-llm <alias>
@@ -41,18 +41,18 @@ on:
         default: "/var/lib/flowcraft-eval/datasets/locomo10.jsonl"
       runner:
         # Selects the SDK pipeline under test:
-        #   - flowcraft-v1: production stack (recall_v1) with multi-lane
+        #   - flowcraft-recall-v1: production stack (recall_v1) with multi-lane
         #     retrieval, entity-store, update-resolver, soft-merge, etc.
         #     All of the "v1-only" tuning knobs below are honoured.
-        #   - flowcraft-v2: new fact-centric architecture (sdk/recall).
+        #   - flowcraft-recall-v2: new fact-centric architecture (memory/recall).
         #     The v2 pipeline self-configures (compiler stages, fusion
         #     weights, candidate sources) — none of the v1 ablation
         #     knobs apply; they are skipped automatically. v2 can also
         #     dump per-stage health (extractor / compiler / resolver /
         #     fusion / hit provenance) when stage_audit=true.
-        description: "Runner: flowcraft-v1 (default) | flowcraft-v2"
+        description: "Runner: flowcraft-recall-v1 | flowcraft-recall-v2 (default)"
         required: false
-        default: "flowcraft-v1"
+        default: "flowcraft-recall-v2"
       # NOTE: the previous `profile` input was removed when `runner`
       # was added, because workflow_dispatch caps inputs at 25 and
       # `profile` was a label-only knob (it never altered CLI args —
@@ -461,10 +461,10 @@ jobs:
           # resolver + soft-merge + recent-turn buffer). v2 has a
           # different pipeline shape (compiler stages + fact-centric
           # sources) and does not expose any of them, so we skip them
-          # entirely under runner=flowcraft-v2 to keep the v2 command
+          # entirely under runner=flowcraft-recall-v2 to keep the v2 command
           # line clean and to avoid silently-dead flags drifting into
           # the artifact's command record.
-          if [ "${{ inputs.runner }}" = "flowcraft-v1" ]; then
+          if [ "${{ inputs.runner }}" = "flowcraft-recall-v1" ] || [ "${{ inputs.runner }}" = "flowcraft-v1" ]; then
             ARGS+=(
               --soft-merge=${{ inputs.soft_merge }}
               --multi-recall=${{ inputs.multi_recall }}
@@ -485,12 +485,12 @@ jobs:
           # and produce large candidate snapshots, so they are
           # controlled by the stage_audit workflow input. Facts and
           # recall top-k dumps remain unconditional forensic outputs.
-          if [ "${{ inputs.runner }}" = "flowcraft-v2" ] && [ "${{ inputs.stage_audit }}" = "true" ]; then
+          if { [ "${{ inputs.runner }}" = "flowcraft-recall-v2" ] || [ "${{ inputs.runner }}" = "flowcraft-v2" ]; } && [ "${{ inputs.stage_audit }}" = "true" ]; then
             ARGS+=(
               --diagnostics "$DIAGNOSTICS_OUT"
               --dump-stage-audit "$STAGE_AUDIT_OUT"
             )
-          elif [ "${{ inputs.runner }}" = "flowcraft-v2" ]; then
+          elif [ "${{ inputs.runner }}" = "flowcraft-recall-v2" ] || [ "${{ inputs.runner }}" = "flowcraft-v2" ]; then
             echo "stage_audit=false: skipping v2 RecallExplain diagnostics and stage audit dump"
           fi
           /tmp/eval "${ARGS[@]}"

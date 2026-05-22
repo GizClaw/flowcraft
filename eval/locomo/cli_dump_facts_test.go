@@ -30,7 +30,7 @@ func TestNewV2FactsDump_IncludesAuditFields(t *testing.T) {
 			Text: "I booked a flight to Tampa.",
 		}},
 	}})
-	if rec.Runner != "flowcraft-v2" {
+	if rec.Runner != "flowcraft-recall-v2" {
 		t.Fatalf("runner = %q", rec.Runner)
 	}
 	if rec.Scope.UserID != "user::conv-1" {
