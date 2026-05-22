@@ -42,6 +42,7 @@ func TestDefaultAnswerPromptMentionsRankedEvidenceAndRelativeDates(t *testing.T)
 		"combine the supported items",
 		"Do not answer \"I don't know\"",
 		"preserve that relative wording",
+		"[source_time:",
 	} {
 		if !strings.Contains(DefaultAnswerPrompt, want) {
 			t.Fatalf("DefaultAnswerPrompt missing %q", want)

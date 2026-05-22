@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/GizClaw/flowcraft/eval/locomo/runners"
 	"github.com/GizClaw/flowcraft/memory/recall"
@@ -221,4 +222,29 @@ func TestFromRecallHitUsesSelectedEvidence(t *testing.T) {
 	if len(hit.EvidenceIDs) != 1 || hit.EvidenceIDs[0] != "D1:1" {
 		t.Fatalf("hit evidence ids should reflect selected evidence: %+v", hit)
 	}
+}
+
+func TestGroundedHitContentAnnotatesEvidenceSourceTime(t *testing.T) {
+	hit := groundedHitContent(recall.Hit{
+		Fact: recall.TemporalFact{
+			ID:        "f1",
+			Content:   "Alice plans to visit Tampa next month.",
+			ValidFrom: ptrTime(time.Date(2024, 6, 7, 0, 0, 0, 0, time.UTC)),
+		},
+		Evidence: []recall.EvidenceRef{{
+			ID:        "D1:7",
+			Text:      "I am visiting Tampa next month.",
+			Timestamp: time.Date(2024, 5, 7, 9, 30, 0, 0, time.UTC),
+		}},
+	})
+	if !strings.Contains(hit, "[time: 2024-06-07]") {
+		t.Fatalf("resolved fact time missing from rendered content: %s", hit)
+	}
+	if !strings.Contains(hit, "[source_time: 2024-05-07 09:30] I am visiting Tampa next month.") {
+		t.Fatalf("source time missing from rendered evidence: %s", hit)
+	}
+}
+
+func ptrTime(t time.Time) *time.Time {
+	return &t
 }

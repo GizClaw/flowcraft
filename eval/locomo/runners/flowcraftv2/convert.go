@@ -70,12 +70,31 @@ func groundedHitContent(h recall.Hit) string {
 	appendPart(f.Content)
 	appendPart(f.EvidenceText)
 	for _, ref := range evidence {
-		appendPart(ref.Text)
+		appendPart(renderEvidencePart(ref))
 	}
 	if len(parts) == 0 {
 		return ""
 	}
 	return strings.Join(dedupeRenderedParts(parts), " | evidence: ")
+}
+
+func renderEvidencePart(ref recall.EvidenceRef) string {
+	text := strings.TrimSpace(strings.ReplaceAll(ref.Text, "\n", " "))
+	if text == "" {
+		return ""
+	}
+	if ref.Timestamp.IsZero() {
+		return text
+	}
+	return fmt.Sprintf("[source_time: %s] %s", evidenceSourceTimeLabel(ref), text)
+}
+
+func evidenceSourceTimeLabel(ref recall.EvidenceRef) string {
+	ts := ref.Timestamp
+	if ts.Hour() == 0 && ts.Minute() == 0 && ts.Second() == 0 && ts.Nanosecond() == 0 {
+		return ts.Format("2006-01-02")
+	}
+	return ts.Format("2006-01-02 15:04")
 }
 
 func dedupeRenderedParts(parts []string) []string {
