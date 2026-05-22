@@ -40,6 +40,7 @@ type recallAnalysisRecord struct {
 	Judge                float64            `json:"judge"`
 	Flip                 string             `json:"flip,omitempty"`
 	MissType             string             `json:"miss_type"`
+	SecondaryMiss        string             `json:"secondary_miss,omitempty"`
 	Prediction           string             `json:"prediction,omitempty"`
 	GoldAnswers          []string           `json:"gold_answers,omitempty"`
 	EvidenceIDs          []string           `json:"evidence_ids,omitempty"`
@@ -485,6 +486,7 @@ func classifyRecallQuestion(q QuestionScore, flip string, dump recallDumpRecord,
 	if len(stageAudit.Stages) > 0 {
 		rec.MissType = recallStageAuditMissType(q, extract, stage)
 	}
+	rec.SecondaryMiss = secondaryMissCause(rec)
 	return rec
 }
 
@@ -594,6 +596,73 @@ func recallStageAuditMissType(q QuestionScore, extract extractAuditResult, stage
 		return "answer_abstain"
 	}
 	return "answer_miss"
+}
+
+func secondaryMissCause(rec recallAnalysisRecord) string {
+	if rec.Judge >= 0.5 {
+		return ""
+	}
+	switch {
+	case strings.HasPrefix(rec.MissType, "answer_miss"):
+		return answerSecondaryMissCause("answer_miss", rec)
+	case strings.HasPrefix(rec.MissType, "answer_abstain"):
+		return answerSecondaryMissCause("answer_abstain", rec)
+	case rec.MissType == "source_miss_evidence_id":
+		return sourceSecondaryMissCause(rec)
+	default:
+		return ""
+	}
+}
+
+func answerSecondaryMissCause(prefix string, rec recallAnalysisRecord) string {
+	if temporalOrNumericQuestion(rec.Query) {
+		return prefix + "_temporal_or_numeric_reasoning"
+	}
+	if rec.BestGoldRank > 0 && rec.BestGoldRank <= 5 && rec.TermCoverage >= 0.75 {
+		return prefix + "_ignored_strong_context"
+	}
+	if rec.TermCoverage < 0.5 && rec.EvidenceTermCoverage >= 0.5 {
+		return prefix + "_gold_surface_missing"
+	}
+	if rec.BestGoldRank > 10 {
+		return prefix + "_gold_terms_low_rank"
+	}
+	if rec.BestGoldRank == 0 {
+		return prefix + "_gold_terms_absent_or_paraphrased"
+	}
+	return prefix + "_context_distractor_or_reasoning"
+}
+
+func sourceSecondaryMissCause(rec recallAnalysisRecord) string {
+	if rec.BestEvidenceRank == 0 {
+		return "source_miss_no_semantic_hit"
+	}
+	if rec.ExtractEvidenceIDHit || rec.ExtractStatus == "extract_hit_evidence_id" {
+		return "source_miss_true_source_recall"
+	}
+	switch rec.ExtractStatus {
+	case "extract_hit_terms":
+		return "source_miss_extract_evidence_id_gap"
+	case "extract_partial":
+		return "source_miss_partial_extract_grounding"
+	default:
+		return "source_miss_gold_id_but_term_hit"
+	}
+}
+
+func temporalOrNumericQuestion(query string) bool {
+	q := strings.ToLower(strings.TrimSpace(query))
+	for _, prefix := range []string{
+		"when ", "when did ", "when was ", "when is ",
+		"how long ", "how many ", "how much ",
+		"what date ", "what year ", "what month ", "what day ",
+		"which year ", "which month ", "which day ",
+	} {
+		if strings.HasPrefix(q, prefix) {
+			return true
+		}
+	}
+	return strings.Contains(q, " how long ") || strings.Contains(q, " how many ")
 }
 
 func stageMissType(coverages map[string]float64) string {
@@ -870,6 +939,7 @@ func writeRecallAnalysisMarkdown(w io.Writer, records []recallAnalysisRecord) {
 	fmt.Fprintln(w, "## Summary")
 	fmt.Fprintln(w)
 	writeCountTable(w, "miss_type", countRecallField(records, func(rec recallAnalysisRecord) string { return rec.MissType }))
+	writeCountTable(w, "secondary_miss", countRecallField(records, func(rec recallAnalysisRecord) string { return rec.SecondaryMiss }))
 	writeCountTable(w, "extract_status", countRecallField(records, func(rec recallAnalysisRecord) string { return rec.ExtractStatus }))
 	writeCountTable(w, "stage_miss", countRecallField(records, func(rec recallAnalysisRecord) string { return rec.StageMiss }))
 	writeCountTable(w, "category", countRecallCategories(records))
@@ -878,8 +948,8 @@ func writeRecallAnalysisMarkdown(w io.Writer, records []recallAnalysisRecord) {
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "## Questions")
 	fmt.Fprintln(w)
-	fmt.Fprintln(w, "| qid | judge | flip | miss_type | extract_status | stage_miss | gold_coverage | evidence_coverage | best_gold_rank | best_evidence_rank | missing_terms | top hit |")
-	fmt.Fprintln(w, "|---|---:|---|---|---|---|---:|---:|---:|---:|---|---|")
+	fmt.Fprintln(w, "| qid | judge | flip | miss_type | secondary_miss | extract_status | stage_miss | gold_coverage | evidence_coverage | best_gold_rank | best_evidence_rank | missing_terms | top hit |")
+	fmt.Fprintln(w, "|---|---:|---|---|---|---|---|---:|---:|---:|---:|---|---|")
 	for _, rec := range records {
 		top := ""
 		if len(rec.TopHits) > 0 {
@@ -888,8 +958,8 @@ func writeRecallAnalysisMarkdown(w io.Writer, records []recallAnalysisRecord) {
 		}
 		missing := append([]string{}, rec.MissingTerms...)
 		missing = append(missing, rec.MissingEvidenceTerms...)
-		fmt.Fprintf(w, "| %s | %.0f | %s | %s | %s | %s | %.2f | %.2f | %d | %d | %s | %s |\n",
-			rec.QID, rec.Judge, rec.Flip, rec.MissType, rec.ExtractStatus, rec.StageMiss, rec.TermCoverage, rec.EvidenceTermCoverage, rec.BestGoldRank, rec.BestEvidenceRank, strings.Join(uniqueStrings(missing), ","), top)
+		fmt.Fprintf(w, "| %s | %.0f | %s | %s | %s | %s | %s | %.2f | %.2f | %d | %d | %s | %s |\n",
+			rec.QID, rec.Judge, rec.Flip, rec.MissType, rec.SecondaryMiss, rec.ExtractStatus, rec.StageMiss, rec.TermCoverage, rec.EvidenceTermCoverage, rec.BestGoldRank, rec.BestEvidenceRank, strings.Join(uniqueStrings(missing), ","), top)
 	}
 }
 

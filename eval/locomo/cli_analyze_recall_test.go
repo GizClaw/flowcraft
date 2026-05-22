@@ -252,6 +252,9 @@ func TestClassifyRecallQuestion_StageAuditEvidenceInFinalIsAnswerMiss(t *testing
 	if rec.StageMiss != "" {
 		t.Fatalf("stage_miss = %q", rec.StageMiss)
 	}
+	if rec.SecondaryMiss != "answer_miss_ignored_strong_context" {
+		t.Fatalf("secondary_miss = %q", rec.SecondaryMiss)
+	}
 }
 
 func TestClassifyRecallQuestion_StageAuditFindsRerankDrop(t *testing.T) {
@@ -313,6 +316,54 @@ func TestClassifyRecallQuestion_StageAuditFindsBuildHitsInconsistency(t *testing
 	rec := classifyRecallQuestion(q, "", dump, 1, signals, facts, factByID, stageAudit)
 	if rec.MissType != "audit_inconsistent_evidence_id" {
 		t.Fatalf("miss_type = %q", rec.MissType)
+	}
+}
+
+func TestClassifyRecallQuestion_SecondaryMissSourceEvidenceIDGap(t *testing.T) {
+	q := QuestionScore{ID: "q1", Query: "When did Alice read the book?", Prediction: "I don't know.", Judge: 0}
+	dump := recallDumpRecord{QID: "q1", Gold: []string{"2022"}, Hits: []recallDumpHit{{ID: "f2", Rank: 1, Content: "Alice read the book last summer."}}}
+	signals := auditSignals{
+		ConversationID: "conv-1",
+		EvidenceIDs:    []string{"e1"},
+		GoldTerms:      []string{"2022"},
+		EvidenceTerms:  []string{"alice", "read", "book"},
+	}
+	facts := map[string][]factDumpFact{"conv-1": {{ID: "f1", Content: "Alice read a book in 2022."}}}
+	stageAudit := stageAuditDumpRecord{QID: "q1", Stages: []stageAuditDumpStage{
+		{Stage: "source_fanout", Source: "retrieval", Candidates: []stageAuditDumpCandidate{{FactID: "f2"}}},
+		{Stage: "fusion", Candidates: []stageAuditDumpCandidate{{FactID: "f2"}}},
+		{Stage: "build_hits", Candidates: []stageAuditDumpCandidate{{FactID: "f2"}}},
+	}}
+
+	rec := classifyRecallQuestion(q, "", dump, 1, signals, facts, nil, stageAudit)
+	if rec.MissType != "source_miss_evidence_id" {
+		t.Fatalf("miss_type = %q", rec.MissType)
+	}
+	if rec.SecondaryMiss != "source_miss_extract_evidence_id_gap" {
+		t.Fatalf("secondary_miss = %q", rec.SecondaryMiss)
+	}
+}
+
+func TestClassifyRecallQuestion_SecondaryMissTemporalReasoning(t *testing.T) {
+	q := QuestionScore{ID: "q1", Query: "When did Alice go hiking?", Prediction: "Alice went hiking on 2023-07-06.", Judge: 0}
+	dump := recallDumpRecord{QID: "q1", Gold: []string{"The week before 6 July 2023"}, Hits: []recallDumpHit{{ID: "f1", Rank: 1, Content: "Alice went hiking the week before 6 July 2023."}}}
+	signals := auditSignals{ConversationID: "conv-1", EvidenceIDs: []string{"e1"}, GoldTerms: []string{"week", "before", "july", "2023"}}
+	facts := map[string][]factDumpFact{"conv-1": {{ID: "f1", Content: "Alice went hiking the week before 6 July 2023.", EvidenceIDs: []string{"e1"}}}}
+	factByID := map[string]factDumpFact{"f1": facts["conv-1"][0]}
+	stageAudit := stageAuditDumpRecord{QID: "q1", Stages: []stageAuditDumpStage{
+		{Stage: "source_fanout", Source: "retrieval", Candidates: []stageAuditDumpCandidate{{FactID: "f1"}}},
+		{Stage: "fusion", Candidates: []stageAuditDumpCandidate{{FactID: "f1"}}},
+		{Stage: "materialize", Candidates: []stageAuditDumpCandidate{{FactID: "f1"}}},
+		{Stage: "rank_output", Candidates: []stageAuditDumpCandidate{{FactID: "f1"}}},
+		{Stage: "build_hits", Candidates: []stageAuditDumpCandidate{{FactID: "f1"}}},
+	}}
+
+	rec := classifyRecallQuestion(q, "", dump, 1, signals, facts, factByID, stageAudit)
+	if rec.MissType != "answer_miss" {
+		t.Fatalf("miss_type = %q", rec.MissType)
+	}
+	if rec.SecondaryMiss != "answer_miss_temporal_or_numeric_reasoning" {
+		t.Fatalf("secondary_miss = %q", rec.SecondaryMiss)
 	}
 }
 

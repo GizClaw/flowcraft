@@ -271,9 +271,10 @@ Guidelines:
 - Ground the answer strictly in the memories. Do not invent facts that are not supported.
 - When the memories carry partial evidence that lets you reasonably infer the answer (e.g. a character's general traits, an indirectly implied date), do so and briefly note the inference. Characters whose names appear in the memories are NEVER "silent topics" — infer from their statements rather than refusing. Reply "I don't know" only when the memories are genuinely silent on the topic.
 - Match the form of the question. If asked WHEN, give a specific date or duration; HOW MANY, a number; YES/NO, lead with yes/no.
+- Memories are listed in retrieval/rerank order as [#1], [#2], etc. Prefer lower-numbered memories when evidence conflicts. If several top memories answer different parts of a list question ("what types", "what exercises", "what movies/books"), combine the supported items instead of choosing only the first item.
 - Mirror the date format used in the question (e.g. if asked "7 May 2023", answer in that format, not "May 7, 2023").
 - If a memory uses a date QUALIFIER ("around", "roughly", "the week before X", "a few years ago", "last summer", "two weekends ago"), preserve that qualifier in your answer rather than computing a precise absolute date. The qualifier carries the speaker's actual epistemic state — fabricating precision is worse than mirroring vagueness.
-- A memory may carry a canonical date stamp at its head (e.g. "[time: YYYY-MM-DD]") written by the recall system after resolving relative expressions against the source turn timestamp. This stamp is the AUTHORITATIVE date — the resolver has already converted any relative phrase in the source turn into an absolute date for you. Use the [time:] date verbatim; NEVER combine it with a relative expression from the same memory ("[time: 2023-09-28] talent show next month" → the show is in 2023-09, NOT October. The "next month" wording is the original turn text the resolver already accounted for; recomputing on top of [time:] double-counts and produces wrong dates).
+- A memory may carry a canonical date stamp at its head (e.g. "[time: YYYY-MM-DD]") written by the recall system after resolving relative expressions against the source turn timestamp. This stamp is the AUTHORITATIVE date — the resolver has already converted any relative phrase in the source turn into an absolute date for you. Use the [time:] date verbatim; NEVER combine it with a relative expression from the same memory ("[time: 2023-09-28] talent show next month" → the show is in 2023-09, NOT October. The "next month" wording is the original turn text the resolver already accounted for; recomputing on top of [time:] double-counts and produces wrong dates). If the question asks for a relative answer ("the week before 9 June 2023", "how long ago"), preserve that relative wording when the memory supports it instead of forcing an exact calendar date.
 - When an ASKED_AT line is present, treat that timestamp as the "now" for the question. Relative-time phrases ("last week", "two months ago", "yesterday", "this morning") are interpreted RELATIVE TO ASKED_AT, not to today's wall clock. Memories carry their own timestamps in the leading "[YYYY/MM/DD …]" prefix — use ASKED_AT to compute the requested window over those memory timestamps.
 - Answer in 1-2 sentences. Avoid hedging ("it seems", "might be") when the memories are unambiguous.
 - Before emitting "I don't know", do ONE final scan of the memories for a LITERAL span that fills the question's answer slot — a specific date, number, proper noun, or named phrase quoted verbatim inside a memory's content, [time:] tag, or evidence quote. If such a literal span exists, cite that span as the answer. "I don't know" is reserved for the case where no memory contains any literal candidate for the question's wh-slot (no date when asked "when", no name when asked "who/where", etc.). This rule is about USING what the retrieval already found, not about guessing; it never authorises filling silent evidence with fabricated answers.
@@ -484,8 +485,18 @@ func buildAnswerBody(q dataset.Question, hits []runners.Hit) string {
 		b.WriteString("(none)\n")
 		return b.String()
 	}
-	for _, h := range hits {
-		b.WriteString("- ")
+	for i, h := range hits {
+		fmt.Fprintf(&b, "- [#%d", i+1)
+		if h.Kind != "" {
+			fmt.Fprintf(&b, " kind=%s", h.Kind)
+		}
+		if len(h.Sources) > 0 {
+			fmt.Fprintf(&b, " sources=%s", strings.Join(h.Sources, "+"))
+		}
+		if len(h.EvidenceIDs) > 0 {
+			fmt.Fprintf(&b, " evidence=%s", strings.Join(h.EvidenceIDs, ","))
+		}
+		b.WriteString("] ")
 		b.WriteString(strings.ReplaceAll(h.Content, "\n", " "))
 		b.WriteString("\n")
 	}
