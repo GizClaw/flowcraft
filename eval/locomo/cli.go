@@ -58,6 +58,7 @@ in eval/locomo. Subcommands:
 	addLocomoConvert(group)
 	addLocomoCompare(group)
 	addLocomoAnalyzeRecall(group)
+	addLocomoAnalyzeExtract(group)
 	addLocomoFetch(group)
 	addLocomoIngest(group)
 

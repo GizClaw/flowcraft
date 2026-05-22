@@ -507,6 +507,8 @@ jobs:
           STAGE_AUDIT_OUT: ${{ env.REPORT_DIR }}/${{ github.run_id }}-stage-audit.jsonl
           AUDIT_JSONL_OUT: ${{ env.REPORT_DIR }}/${{ github.run_id }}-audit.jsonl
           AUDIT_MD_OUT: ${{ env.REPORT_DIR }}/${{ github.run_id }}-audit.md
+          EXTRACT_AUDIT_JSONL_OUT: ${{ env.REPORT_DIR }}/${{ github.run_id }}-extract-audit.jsonl
+          EXTRACT_AUDIT_MD_OUT: ${{ env.REPORT_DIR }}/${{ github.run_id }}-extract-audit.md
           DATASET_IN: ${{ inputs.dataset }}
         run: |
           set -eu
@@ -530,6 +532,12 @@ jobs:
           fi
           /tmp/eval "${ARGS[@]}" --format jsonl --out "$AUDIT_JSONL_OUT"
           /tmp/eval "${ARGS[@]}" --format markdown --out "$AUDIT_MD_OUT"
+          if [ "$DATASET_IN" != "synthetic" ] && [ -s "$DATASET_IN" ] && [ -s "$FACTS_OUT" ]; then
+            /tmp/eval locomo analyze-extract "$DATASET_IN" "$FACTS_OUT" --format jsonl --out "$EXTRACT_AUDIT_JSONL_OUT"
+            /tmp/eval locomo analyze-extract "$DATASET_IN" "$FACTS_OUT" --format markdown --out "$EXTRACT_AUDIT_MD_OUT"
+          else
+            echo "skip extract quality audit: dataset or facts dump is missing"
+          fi
 
       - name: Upload report artifact
         if: always()
@@ -558,5 +566,7 @@ jobs:
             ${{ env.REPORT_DIR }}/${{ github.run_id }}-diagnostics.json
             ${{ env.REPORT_DIR }}/${{ github.run_id }}-audit.jsonl
             ${{ env.REPORT_DIR }}/${{ github.run_id }}-audit.md
+            ${{ env.REPORT_DIR }}/${{ github.run_id }}-extract-audit.jsonl
+            ${{ env.REPORT_DIR }}/${{ github.run_id }}-extract-audit.md
           if-no-files-found: warn
           retention-days: 30
