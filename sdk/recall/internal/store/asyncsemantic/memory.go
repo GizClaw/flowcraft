@@ -12,6 +12,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"fmt"
 	"sort"
 	"sync"
 	"time"
@@ -277,14 +278,16 @@ func (q *Queue) cancelLocked(requestID string) error {
 	return nil
 }
 
-// Stats returns queue health counters. When filter.Scope is non-zero,
-// only jobs in that partition are counted.
+// Stats returns queue health counters for one scope partition.
 func (q *Queue) Stats(_ context.Context, filter port.AsyncSemanticStatsFilter) (port.AsyncSemanticStats, error) {
 	now := filter.Now
 	if now.IsZero() {
 		now = time.Now()
 	}
 	partitionKey := filter.Scope.PartitionKey()
+	if partitionKey == "" {
+		return port.AsyncSemanticStats{}, fmt.Errorf("asyncsemantic: scope partition is required")
+	}
 
 	q.mu.Lock()
 	defer q.mu.Unlock()

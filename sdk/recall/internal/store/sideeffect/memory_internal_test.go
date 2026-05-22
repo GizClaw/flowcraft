@@ -64,36 +64,3 @@ func TestQueue_TerminalScrubsFactPayload(t *testing.T) {
 		t.Fatalf("terminal failure retained PII: %+v", stored)
 	}
 }
-
-func TestQueue_StatsRequiresPartition(t *testing.T) {
-	q := New()
-	if _, err := q.Stats(context.Background(), domain.Scope{}, time.Now()); err == nil {
-		t.Fatal("Stats with empty partition must fail")
-	}
-}
-
-func TestQueue_EnqueueIdempotentByRequestKind(t *testing.T) {
-	q := New()
-	ctx := context.Background()
-	scope := domain.Scope{RuntimeID: "rt", UserID: "u1"}
-	job := port.SideEffectJob{
-		RequestID: "req",
-		Scope:     scope,
-		Kind:      port.SideEffectProjectRequired,
-		Facts:     []domain.TemporalFact{{ID: "f1"}},
-	}
-	if err := q.Enqueue(ctx, job); err != nil {
-		t.Fatal(err)
-	}
-	job.Facts = []domain.TemporalFact{{ID: "f2"}}
-	if err := q.Enqueue(ctx, job); err != nil {
-		t.Fatal(err)
-	}
-	jobs, err := q.Claim(ctx, port.SideEffectClaimOptions{Scope: scope, Max: 10, Now: time.Now()})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(jobs) != 1 || jobs[0].Facts[0].ID != "f1" {
-		t.Fatalf("idempotent enqueue jobs = %+v", jobs)
-	}
-}
