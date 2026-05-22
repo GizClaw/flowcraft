@@ -33,8 +33,13 @@ func (s *Rank) Run(ctx context.Context, state *read.ReadState) (diagnostic.Stage
 	}
 	if s.ranker == nil || state.Plan == nil {
 		state.Ranked = items
-		snaps := contextItemSnapshots(items)
-		return diagnostic.RankDetail{InputCount: len(items), OutputCount: len(items), Input: candidateSnapshotPtr(snaps), Output: candidateSnapshotPtr(snaps)}, nil
+		detail := diagnostic.RankDetail{InputCount: len(items), OutputCount: len(items)}
+		if snapshotsEnabled(state) {
+			snaps := contextItemSnapshots(items)
+			detail.Input = candidateSnapshotPtr(snaps)
+			detail.Output = candidateSnapshotPtr(snaps)
+		}
+		return detail, nil
 	}
 	started := time.Now()
 	rankCap := state.Plan.TotalCap
@@ -52,7 +57,7 @@ func (s *Rank) Run(ctx context.Context, state *read.ReadState) (diagnostic.Stage
 		Now:      state.Now,
 	})
 	state.Ranked = out.Items
-	return diagnostic.RankDetail{
+	detail := diagnostic.RankDetail{
 		InputCount:             len(items),
 		OutputCount:            len(out.Items),
 		FinalCap:               state.Plan.TotalCap,
@@ -60,9 +65,12 @@ func (s *Rank) Run(ctx context.Context, state *read.ReadState) (diagnostic.Stage
 		TimeDecayApplied:       out.TimeDecayApplied,
 		SupersededDecayApplied: out.SupersededDecayApplied,
 		Latency:                time.Since(started),
-		Input:                  candidateSnapshotPtr(contextItemSnapshots(items)),
-		Output:                 candidateSnapshotPtr(contextItemSnapshots(out.Items)),
-	}, nil
+	}
+	if snapshotsEnabled(state) {
+		detail.Input = candidateSnapshotPtr(contextItemSnapshots(items))
+		detail.Output = candidateSnapshotPtr(contextItemSnapshots(out.Items))
+	}
+	return detail, nil
 }
 
 var _ pipeline.Stage[*read.ReadState] = (*Rank)(nil)

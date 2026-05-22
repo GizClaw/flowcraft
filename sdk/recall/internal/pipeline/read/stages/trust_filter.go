@@ -33,7 +33,11 @@ func (s *TrustFilter) Skip(_ context.Context, state *read.ReadState) (bool, diag
 	if state == nil || state.Query.Trust == nil {
 		read.PromoteMergedItems(state)
 		state.AfterTrust = state.MergedItems
-		return true, diagnostic.TrustFilterDetail{Items: candidateSnapshotPtr(contextItemSnapshots(state.AfterTrust))}
+		detail := diagnostic.TrustFilterDetail{}
+		if snapshotsEnabled(state) {
+			detail.Items = candidateSnapshotPtr(contextItemSnapshots(state.AfterTrust))
+		}
+		return true, detail
 	}
 	return false, nil
 }
@@ -76,7 +80,9 @@ func (s *TrustFilter) Run(_ context.Context, state *read.ReadState) (diagnostic.
 		kept = append(kept, item)
 	}
 	state.AfterTrust = kept
-	detail.Items = candidateSnapshotPtr(contextItemSnapshots(kept))
+	if snapshotsEnabled(state) {
+		detail.Items = candidateSnapshotPtr(contextItemSnapshots(kept))
+	}
 	return detail, nil
 }
 

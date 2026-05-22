@@ -269,7 +269,8 @@ const DefaultAnswerPrompt = `You are answering a question using only the MEMORIE
 
 Guidelines:
 - Ground the answer strictly in the memories. Do not invent facts that are not supported.
-- When the memories carry partial evidence that lets you reasonably infer the answer (e.g. a character's general traits, an indirectly implied date), do so and briefly note the inference. Characters whose names appear in the memories are NEVER "silent topics" — infer from their statements rather than refusing. Reply "I don't know" only when the memories are genuinely silent on the topic.
+- When the memories carry partial evidence that lets you reasonably infer the answer (e.g. a character's general traits, an indirectly implied date), answer from that evidence and briefly note the inference. Characters whose names appear in the memories are NEVER "silent topics" — infer from their statements rather than refusing.
+- Do not answer "I don't know" when any memory contains a plausible answer candidate for the question type. If the evidence is incomplete or competing, choose the best-supported candidate from the highest-ranked relevant memories and keep the answer narrow.
 - Match the form of the question. If asked WHEN, give a specific date or duration; HOW MANY, a number; YES/NO, lead with yes/no.
 - Memories are listed in retrieval/rerank order as [#1], [#2], etc. Prefer lower-numbered memories when evidence conflicts. If several top memories answer different parts of a list question ("what types", "what exercises", "what movies/books"), combine the supported items instead of choosing only the first item.
 - Mirror the date format used in the question (e.g. if asked "7 May 2023", answer in that format, not "May 7, 2023").
@@ -486,17 +487,7 @@ func buildAnswerBody(q dataset.Question, hits []runners.Hit) string {
 		return b.String()
 	}
 	for i, h := range hits {
-		fmt.Fprintf(&b, "- [#%d", i+1)
-		if h.Kind != "" {
-			fmt.Fprintf(&b, " kind=%s", h.Kind)
-		}
-		if len(h.Sources) > 0 {
-			fmt.Fprintf(&b, " sources=%s", strings.Join(h.Sources, "+"))
-		}
-		if len(h.EvidenceIDs) > 0 {
-			fmt.Fprintf(&b, " evidence=%s", strings.Join(h.EvidenceIDs, ","))
-		}
-		b.WriteString("] ")
+		fmt.Fprintf(&b, "- [#%d] ", i+1)
 		b.WriteString(strings.ReplaceAll(h.Content, "\n", " "))
 		b.WriteString("\n")
 	}

@@ -74,6 +74,7 @@ func (s *FederationFanout) Run(ctx context.Context, state *read.ReadState) (diag
 
 	state.SubScopeStates = make([]read.SubScopeState, 0, len(scopes))
 	var sourceErrs []error
+	captureSnapshots := snapshotsEnabled(state)
 
 	for _, sc := range scopes {
 		started := time.Now()
@@ -108,13 +109,16 @@ func (s *FederationFanout) Run(ctx context.Context, state *read.ReadState) (diag
 			if res.Err != nil {
 				errStr = res.Err.Error()
 			}
-			detail.Sources = append(detail.Sources, diagnostic.SourceResult{
+			srcResult := diagnostic.SourceResult{
 				Lens:       res.Source,
 				Candidates: len(res.Candidates),
-				Snapshots:  candidateSnapshotPtr(candidateSnapshots(res.Candidates)),
 				Latency:    res.Latency,
 				Err:        errStr,
-			})
+			}
+			if captureSnapshots {
+				srcResult.Snapshots = candidateSnapshotPtr(candidateSnapshots(res.Candidates))
+			}
+			detail.Sources = append(detail.Sources, srcResult)
 		}
 
 		opts := s.fusionOpts
@@ -130,7 +134,9 @@ func (s *FederationFanout) Run(ctx context.Context, state *read.ReadState) (diag
 		sub.Fused = fused
 		sub.FusionDrops = drops
 		detail.FusedCandidates += len(fused)
-		detail.Fused = appendSnapshotPtr(detail.Fused, candidateSnapshots(fused))
+		if captureSnapshots {
+			detail.Fused = appendSnapshotPtr(detail.Fused, candidateSnapshots(fused))
+		}
 		detail.Drops = append(detail.Drops, drops...)
 
 		items, matDrops, err := s.materializer.Materialize(ctx, fused)
@@ -145,7 +151,9 @@ func (s *FederationFanout) Run(ctx context.Context, state *read.ReadState) (diag
 		sub.Materialized = items
 		sub.MaterializeDrops = matDrops
 		detail.Materialized += len(items)
-		detail.MaterializedItems = appendSnapshotPtr(detail.MaterializedItems, contextItemSnapshots(items))
+		if captureSnapshots {
+			detail.MaterializedItems = appendSnapshotPtr(detail.MaterializedItems, contextItemSnapshots(items))
+		}
 		detail.Drops = append(detail.Drops, matDrops...)
 
 		detail.SubScopes = append(detail.SubScopes, diagnostic.SubScopeRun{

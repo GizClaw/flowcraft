@@ -41,14 +41,17 @@ func (FederationMerge) Run(_ context.Context, state *read.ReadState) (diagnostic
 	}
 	merged, dropped := mergeFederationItems(pool, topKForMerge(state))
 	state.MergedItems = merged
-	return diagnostic.FederationMergeDetail{
+	detail := diagnostic.FederationMergeDetail{
 		InputCount:     inputCount,
 		AfterDedup:     len(merged),
 		AfterTopK:      len(merged),
 		DroppedByDedup: dropped,
 		Latency:        time.Since(started),
-		Items:          candidateSnapshotPtr(contextItemSnapshots(merged)),
-	}, nil
+	}
+	if snapshotsEnabled(state) {
+		detail.Items = candidateSnapshotPtr(contextItemSnapshots(merged))
+	}
+	return detail, nil
 }
 
 func topKForMerge(state *read.ReadState) int {

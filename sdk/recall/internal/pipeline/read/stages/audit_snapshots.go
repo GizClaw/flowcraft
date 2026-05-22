@@ -3,7 +3,12 @@ package stages
 import (
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain/diagnostic"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/pipeline/read"
 )
+
+func snapshotsEnabled(state *read.ReadState) bool {
+	return state != nil && state.Trace != nil
+}
 
 func candidateSnapshots(candidates []domain.Candidate) []diagnostic.CandidateSnapshot {
 	if len(candidates) == 0 {
