@@ -9,65 +9,84 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/port"
 )
 
-// formatExtractorContextPrefix renders RecentMessages /
-// ExistingFactsAnchor as a disambiguation preamble the LLM sees ahead
-// of the main JSONL turn block.
-func formatExtractorContextPrefix(input port.IngestInput) string {
+// buildExtractorInputEnvelope wraps the source JSONL in a small tagged
+// protocol. XML-like section tags give the LLM clear boundaries while the
+// actual turn records stay JSONL so ids/text remain machine-shaped.
+func buildExtractorInputEnvelope(input port.IngestInput, sourceTurnsJSONL string) string {
 	var b strings.Builder
+	b.WriteString("<extractor_input>\n")
 	if len(input.RecentMessages) > 0 {
-		b.WriteString("Recent conversation context (for disambiguation only, do not extract duplicate memories from this block):\n")
-		for i, m := range input.RecentMessages {
-			line := struct {
-				Role    string `json:"role,omitempty"`
-				Speaker string `json:"speaker,omitempty"`
-				Text    string `json:"text"`
-			}{
-				Role:    strings.TrimSpace(m.Role),
-				Speaker: strings.TrimSpace(m.Speaker),
-				Text:    strings.TrimSpace(m.Text),
-			}
+		b.WriteString("<recent_context extract=\"false\" format=\"jsonl\">\n")
+		for _, m := range input.RecentMessages {
 			if !m.Time.IsZero() {
 				lineJSON, _ := json.Marshal(struct {
 					Role    string `json:"role,omitempty"`
 					Speaker string `json:"speaker,omitempty"`
 					Time    string `json:"time,omitempty"`
 					Text    string `json:"text"`
-				}{line.Role, line.Speaker, m.Time.UTC().Format(time.RFC3339), line.Text})
+				}{
+					Role:    strings.TrimSpace(m.Role),
+					Speaker: strings.TrimSpace(m.Speaker),
+					Time:    m.Time.UTC().Format(time.RFC3339),
+					Text:    strings.TrimSpace(m.Text),
+				})
 				b.Write(lineJSON)
 			} else {
-				lineJSON, _ := json.Marshal(line)
+				lineJSON, _ := json.Marshal(struct {
+					Role    string `json:"role,omitempty"`
+					Speaker string `json:"speaker,omitempty"`
+					Text    string `json:"text"`
+				}{
+					Role:    strings.TrimSpace(m.Role),
+					Speaker: strings.TrimSpace(m.Speaker),
+					Text:    strings.TrimSpace(m.Text),
+				})
 				b.Write(lineJSON)
 			}
 			b.WriteByte('\n')
-			_ = i
 		}
-		b.WriteString("\n")
+		b.WriteString("</recent_context>\n")
 	}
 	if len(input.ExistingFactsAnchor) > 0 {
-		b.WriteString("Existing memory anchors (do not re-extract identical facts):\n")
+		b.WriteString("<existing_memory_anchors extract=\"false\" format=\"jsonl\">\n")
 		for _, f := range input.ExistingFactsAnchor {
 			if strings.TrimSpace(f.Content) == "" {
 				continue
 			}
-			b.WriteString("- ")
-			b.WriteString(strings.TrimSpace(f.Content))
+			lineJSON, _ := json.Marshal(struct {
+				Text string `json:"text"`
+			}{Text: strings.TrimSpace(f.Content)})
+			b.Write(lineJSON)
 			b.WriteByte('\n')
 		}
-		b.WriteString("\n")
+		b.WriteString("</existing_memory_anchors>\n")
 	}
+	b.WriteString("<source_turns format=\"jsonl\">\n")
+	b.WriteString(sourceTurnsJSONL)
+	if !strings.HasSuffix(sourceTurnsJSONL, "\n") {
+		b.WriteByte('\n')
+	}
+	b.WriteString("</source_turns>\n")
+	b.WriteString("</extractor_input>")
 	return b.String()
 }
 
-// buildExtractorUserMessage renders Input.Turns into the canonical
-// JSONL wire shape the LLM sees. turnIndex is a fast id-lookup the
-// response parser uses to enrich evidence refs with the typed
-// timestamp / role signals the LLM does not need to repeat. Turns
-// with empty ID get a synthetic "turn-N" so prose-only callers (a
-// single TurnContext with just Text) still produce a valid wire
-// shape the model can cite. ok=false means "no usable input — skip
-// the LLM call" so the extractor degrades cleanly when callers only
-// supply structured Facts.
+// buildExtractorUserMessage renders Input.Turns into the tagged user-message
+// protocol the LLM sees. turnIndex is a fast id-lookup the response parser
+// uses to enrich evidence refs with typed timestamp / role signals.
 func buildExtractorUserMessage(input port.IngestInput) (string, map[string]port.TurnContext, bool) {
+	sourceTurnsJSONL, index, ok := buildExtractorSourceTurnsJSONL(input)
+	if !ok {
+		return "", nil, false
+	}
+	return buildExtractorInputEnvelope(input, sourceTurnsJSONL), index, true
+}
+
+// buildExtractorSourceTurnsJSONL renders only the extractable source turns.
+// Turns with empty ID get a synthetic "turn-N" so prose-only callers (a
+// single TurnContext with just Text) still produce a valid shape the model can
+// cite. ok=false means "no usable input — skip the LLM call".
+func buildExtractorSourceTurnsJSONL(input port.IngestInput) (string, map[string]port.TurnContext, bool) {
 	if len(input.Turns) == 0 {
 		return "", nil, false
 	}

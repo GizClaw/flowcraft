@@ -22,9 +22,16 @@ import (
 // deployment — costly to diagnose in production. Catching the
 // regression at package-test time is cheap.
 func TestExtractedFactSchema_IsValidStrictJSONSchema(t *testing.T) {
+	assertStrictJSONSchema(t, "ExtractedFactSchema", ExtractedFactSchema)
+	assertStrictJSONSchema(t, "TwoPassMemoryExtractionSchema", TwoPassMemoryExtractionSchema)
+	assertStrictJSONSchema(t, "TwoPassEvidenceGroundingSchema", TwoPassEvidenceGroundingSchema)
+}
+
+func assertStrictJSONSchema(t *testing.T, name string, schema string) {
+	t.Helper()
 	var root map[string]any
-	if err := json.Unmarshal([]byte(ExtractedFactSchema), &root); err != nil {
-		t.Fatalf("ExtractedFactSchema is not valid JSON: %v", err)
+	if err := json.Unmarshal([]byte(schema), &root); err != nil {
+		t.Fatalf("%s is not valid JSON: %v", name, err)
 	}
 	var walk func(path string, node map[string]any)
 	walk = func(path string, node map[string]any) {
@@ -32,10 +39,10 @@ func TestExtractedFactSchema_IsValidStrictJSONSchema(t *testing.T) {
 			props, _ := node["properties"].(map[string]any)
 			req, _ := node["required"].([]any)
 			if len(props) > 0 && len(req) != len(props) {
-				t.Errorf("%s: strict mode requires required==properties keys, got %d vs %d", path, len(req), len(props))
+				t.Errorf("%s.%s: strict mode requires required==properties keys, got %d vs %d", name, path, len(req), len(props))
 			}
 			if v, ok := node["additionalProperties"]; !ok || v != false {
-				t.Errorf("%s: strict mode requires additionalProperties:false, got %v", path, v)
+				t.Errorf("%s.%s: strict mode requires additionalProperties:false, got %v", name, path, v)
 			}
 			for name, raw := range props {
 				if child, ok := raw.(map[string]any); ok {
@@ -100,7 +107,8 @@ func TestLLMExtractor_EmptyInputSkipsLLM(t *testing.T) {
 func TestLLMExtractor_ProseTurnSynthesizesID(t *testing.T) {
 	// Callers without per-turn metadata pass a single port.TurnContext
 	// with only Text populated; the extractor must still produce
-	// a valid JSONL line so the LLM has something to cite back.
+	// a valid tagged input with a JSONL turn so the LLM has something
+	// to cite back.
 	client := &fakeLLM{
 		Responses: []string{`{"memories":[{"text":"Alice likes Paris.","evidence_refs":[{"id":"turn-1"}]}]}`},
 	}
@@ -155,12 +163,15 @@ func TestLLMExtractor_RendersTurnsAsJSONL(t *testing.T) {
 		t.Errorf("source ids not derived from evidence: %+v", out[0].SourceMessageIDs)
 	}
 
-	// Wire shape: user message must be JSONL with the typed turn
-	// fields, not the legacy free-form prose.
+	// Wire shape: user message must be a tagged envelope with JSONL
+	// source turns, not the legacy free-form prose.
 	if len(client.Messages) != 1 {
 		t.Fatalf("LLM must be called once, got %d", len(client.Messages))
 	}
 	userMsg := client.Messages[0][1].Content()
+	if !strings.Contains(userMsg, "<extractor_input>") || !strings.Contains(userMsg, `<source_turns format="jsonl">`) || !strings.Contains(userMsg, "</source_turns>") {
+		t.Errorf("tagged source-turn envelope missing from user message: %q", userMsg)
+	}
 	if !strings.Contains(userMsg, `"id":"D1:3"`) || !strings.Contains(userMsg, `"speaker":"Alice"`) || !strings.Contains(userMsg, `"time":"2024-05-01T09:00:00Z"`) {
 		t.Errorf("typed turn fields missing from JSONL user message: %q", userMsg)
 	}
@@ -293,6 +304,124 @@ func TestLLMExtractor_DedupesEvidenceRefs(t *testing.T) {
 	}
 }
 
+func TestLLMExtractor_RepairsEvidenceIDFromVerbatimQuote(t *testing.T) {
+	client := &fakeLLM{
+		Responses: []string{`{"memories":[{
+			"text":"Alice adopted a golden retriever named Waffles.",
+			"kind":"event",
+			"evidence_refs":[{"id":"D1:1","text":"I adopted a golden retriever named Waffles."}]
+		}]}`},
+	}
+	ex := NewLLMExtractor(client)
+	out, err := ex.Extract(context.Background(), port.IngestInput{
+		Scope: domain.Scope{RuntimeID: "rt"},
+		Turns: []port.TurnContext{
+			{ID: "D1:1", Text: "That's wonderful news!"},
+			{ID: "D1:2", Role: "user", Text: "I adopted a golden retriever named Waffles."},
+		},
+	})
+	if err != nil {
+		t.Fatalf("extract: %v", err)
+	}
+	if len(out) != 1 {
+		t.Fatalf("want 1 fact, got %d", len(out))
+	}
+	if len(out[0].EvidenceRefs) != 1 || out[0].EvidenceRefs[0].ID != "D1:2" {
+		t.Fatalf("evidence id should repair to quoted turn, got %+v", out[0].EvidenceRefs)
+	}
+	if got := out[0].SourceMessageIDs; len(got) != 1 || got[0] != "D1:2" {
+		t.Fatalf("source ids should follow repaired evidence id, got %+v", got)
+	}
+}
+
+func TestLLMExtractor_SingleTurnEvidenceFallback(t *testing.T) {
+	client := &fakeLLM{
+		Responses: []string{`{"memories":[{
+			"text":"Alice likes Paris.",
+			"kind":"state",
+			"evidence_refs":[]
+		}]}`},
+	}
+	ex := NewLLMExtractor(client)
+	out, err := ex.Extract(context.Background(), port.IngestInput{
+		Scope: domain.Scope{RuntimeID: "rt"},
+		Turns: []port.TurnContext{{ID: "D1:3", Role: "user", Text: "Alice likes Paris."}},
+	})
+	if err != nil {
+		t.Fatalf("extract: %v", err)
+	}
+	if len(out) != 1 {
+		t.Fatalf("want 1 fact, got %d", len(out))
+	}
+	if len(out[0].EvidenceRefs) != 1 || out[0].EvidenceRefs[0].ID != "D1:3" {
+		t.Fatalf("single-turn fallback should attach evidence id, got %+v", out[0].EvidenceRefs)
+	}
+}
+
+func TestTwoPassLLMExtractor_ExtractsThenGroundsEvidence(t *testing.T) {
+	client := &fakeLLM{
+		Responses: []string{
+			`{"memories":[{"text":"Alice likes Paris.","kind":"preference"}]}`,
+			`{"links":[{"memory_index":0,"evidence_refs":[{"id":"D1:3","text":"Alice likes Paris."}]}]}`,
+		},
+	}
+	ex := NewTwoPassLLMExtractor(client)
+	out, err := ex.Extract(context.Background(), port.IngestInput{
+		Scope: domain.Scope{RuntimeID: "rt"},
+		Turns: []port.TurnContext{{ID: "D1:3", Role: "user", Text: "Alice likes Paris."}},
+	})
+	if err != nil {
+		t.Fatalf("extract: %v", err)
+	}
+	if len(client.Messages) != 2 {
+		t.Fatalf("two-pass extractor should call LLM twice, got %d", len(client.Messages))
+	}
+	if client.Messages[0][0].Content() != TwoPassMemoryExtractionPrompt {
+		t.Fatalf("default two-pass memory prompt should stay short")
+	}
+	if client.Messages[1][0].Content() != TwoPassEvidenceGroundingPrompt {
+		t.Fatalf("default two-pass evidence prompt should stay short")
+	}
+	if len(out) != 1 {
+		t.Fatalf("want 1 fact, got %d", len(out))
+	}
+	if out[0].Content != "Alice likes Paris." || out[0].Kind != domain.KindPreference {
+		t.Fatalf("fact content/kind = %q/%q", out[0].Content, out[0].Kind)
+	}
+	if len(out[0].EvidenceRefs) != 1 || out[0].EvidenceRefs[0].ID != "D1:3" {
+		t.Fatalf("evidence refs = %+v, want D1:3", out[0].EvidenceRefs)
+	}
+	if !strings.Contains(client.Messages[1][1].Content(), `"index":0`) {
+		t.Fatalf("grounding prompt should include indexed memories, got %q", client.Messages[1][1].Content())
+	}
+	if !strings.Contains(client.Messages[1][1].Content(), "<grounding_input>") || !strings.Contains(client.Messages[1][1].Content(), `<memories format="json">`) {
+		t.Fatalf("grounding prompt should use tagged input sections, got %q", client.Messages[1][1].Content())
+	}
+}
+
+func TestTwoPassLLMExtractor_SingleTurnFallbackWhenGroundingOmitsLink(t *testing.T) {
+	client := &fakeLLM{
+		Responses: []string{
+			`{"memories":[{"text":"Alice lives in Paris.","kind":"state"}]}`,
+			`{"links":[]}`,
+		},
+	}
+	ex := NewTwoPassLLMExtractor(client)
+	out, err := ex.Extract(context.Background(), port.IngestInput{
+		Scope: domain.Scope{RuntimeID: "rt"},
+		Turns: []port.TurnContext{{ID: "D1:3", Role: "user", Text: "Alice lives in Paris."}},
+	})
+	if err != nil {
+		t.Fatalf("extract: %v", err)
+	}
+	if len(out) != 1 {
+		t.Fatalf("want 1 fact, got %d", len(out))
+	}
+	if len(out[0].EvidenceRefs) != 1 || out[0].EvidenceRefs[0].ID != "D1:3" {
+		t.Fatalf("single-turn fallback should attach evidence id, got %+v", out[0].EvidenceRefs)
+	}
+}
+
 func TestLLMExtractor_HandlesFencedJSON(t *testing.T) {
 	client := &fakeLLM{
 		Responses: []string{"Sure, here is the result:\n```json\n{\"memories\":[{\"text\":\"hello\",\"evidence_refs\":[]}]}\n```\n"},
@@ -393,10 +522,57 @@ func TestLLMExtractorSystemPrompt_GuardsAntiAbstraction(t *testing.T) {
 		"When comparing options, use a markdown\n                     table.",
 		"Quote proper nouns verbatim",
 		"Charlotte's Web",
+		"<source_turns>",
+		"Ground each memory in the DIRECT source turn",
+		"Do not cite neighbouring turns",
+		"Do not create cross-turn summary memories",
+		"Use multiple evidence_refs only when one memory\n  truly requires both turns together",
+		"Prefer quoting the exact\n  words that make the memory true",
 	}
 	for _, s := range mustContain {
 		if !strings.Contains(LLMExtractorSystemPrompt, s) {
 			t.Errorf("LLMExtractorSystemPrompt missing anti-abstraction guard: %q", s)
+		}
+	}
+}
+
+func TestTwoPassPrompts_GuardCoverageAndGrounding(t *testing.T) {
+	memoryMustContain := []string{
+		"XML-tagged envelope",
+		"<source_turns>",
+		"Be exhaustive about concrete, retrievable details",
+		"even when it appears only once and seems incidental",
+		"signed up for a pottery class yesterday",
+		`NOT
+  {kind:"state"`,
+		"Do not create cross-turn summary memories",
+		`"procedure"`,
+		"Quote proper\n      nouns verbatim",
+		"Charlotte's Web",
+	}
+	for _, s := range memoryMustContain {
+		if !strings.Contains(TwoPassMemoryExtractionPrompt, s) {
+			t.Errorf("TwoPassMemoryExtractionPrompt missing coverage guard: %q", s)
+		}
+	}
+
+	groundingMustContain := []string{
+		"XML-tagged envelope with two sections",
+		`<source_turns format="jsonl">`,
+		`<memories format="json">`,
+		`"text":"<verbatim quote>"`,
+		"direct source turn",
+		"Prefer the turn with exact entity/date/item\n  surface forms",
+		"cite the\n  answer turn for answer details",
+		"Do not cite neighbouring acknowledgements",
+		"Use ids exactly as they appear",
+		"Prefer one direct evidence id for one atomic memory",
+		"evidence_refs[].text",
+		"exact words that make the memory true",
+	}
+	for _, s := range groundingMustContain {
+		if !strings.Contains(TwoPassEvidenceGroundingPrompt, s) {
+			t.Errorf("TwoPassEvidenceGroundingPrompt missing grounding guard: %q", s)
 		}
 	}
 }

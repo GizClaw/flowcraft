@@ -15,13 +15,20 @@ import (
 // Generate call and records the options it received so tests can
 // verify the extractor pipeline wired them correctly.
 type scriptedLLM struct {
-	Response string
-	Options  [][]llm.GenerateOption
+	Response  string
+	Responses []string
+	Options   [][]llm.GenerateOption
 }
 
 func (s *scriptedLLM) Generate(_ context.Context, _ []llm.Message, opts ...llm.GenerateOption) (llm.Message, llm.TokenUsage, error) {
 	s.Options = append(s.Options, opts)
-	body := s.Response
+	body := ""
+	if len(s.Responses) > 0 {
+		body = s.Responses[0]
+		s.Responses = s.Responses[1:]
+	} else {
+		body = s.Response
+	}
 	if body == "" {
 		body = `{"facts":[]}`
 	}
@@ -91,6 +98,67 @@ func TestWithLLMExtractor_WiresExtractorIntoSavePath(t *testing.T) {
 	}
 	if got.JSONMode == nil || !*got.JSONMode {
 		t.Errorf("JSON mode should be enabled")
+	}
+}
+
+func TestWithLLMExtractor_TwoPassModeWiresTwoStepExtractor(t *testing.T) {
+	store := temporalstore.NewMemoryStore()
+	client := &scriptedLLM{Responses: []string{
+		`{"memories":[{"text":"Alice likes Paris.","kind":"preference"}]}`,
+		`{"links":[{"memory_index":0,"evidence_refs":[{"id":"D1:3","text":"Alice likes Paris."}]}]}`,
+	}}
+	mem, err := New(
+		WithTemporalStore(store),
+		WithLLMExtractor(
+			client,
+			WithLLMExtractionMode(LLMExtractionTwoPass),
+			WithLLMExtractorTemperature(0.3),
+			WithLLMExtractorSchemaName("recall_memories_v2"),
+		),
+	)
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+
+	scope := Scope{RuntimeID: "rt", UserID: "u1"}
+	res, err := mem.Save(context.Background(), scope, SaveRequest{
+		Turns: []TurnContext{{ID: "D1:3", Role: "user", Text: "Alice likes Paris."}},
+	})
+	if err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	if len(client.Options) != 2 {
+		t.Fatalf("two-pass mode should call LLM twice, got %d", len(client.Options))
+	}
+	first := llm.GenerateOptions{}
+	for _, opt := range client.Options[0] {
+		opt(&first)
+	}
+	second := llm.GenerateOptions{}
+	for _, opt := range client.Options[1] {
+		opt(&second)
+	}
+	if first.Temperature == nil || *first.Temperature != 0.3 || second.Temperature == nil || *second.Temperature != 0.3 {
+		t.Fatalf("temperature should propagate to both passes, got %v/%v", first.Temperature, second.Temperature)
+	}
+	if first.JSONSchema == nil || first.JSONSchema.Name != "recall_memories_v2" {
+		t.Fatalf("memory schema name not propagated: %+v", first.JSONSchema)
+	}
+	if second.JSONSchema == nil || second.JSONSchema.Name != "recall_memories_v2_evidence" {
+		t.Fatalf("evidence schema name not derived: %+v", second.JSONSchema)
+	}
+	if len(res.FactIDs) != 1 {
+		t.Fatalf("save returned %d ids", len(res.FactIDs))
+	}
+	fact, err := store.Get(context.Background(), scope, res.FactIDs[0])
+	if err != nil {
+		t.Fatalf("get fact: %v", err)
+	}
+	if fact.Content != "Alice likes Paris." || fact.Kind != FactPreference {
+		t.Fatalf("persisted fact content/kind = %q/%q", fact.Content, fact.Kind)
+	}
+	if len(fact.EvidenceRefs) != 1 || fact.EvidenceRefs[0].ID != "D1:3" {
+		t.Fatalf("two-pass evidence refs not persisted: %+v", fact.EvidenceRefs)
 	}
 }
 

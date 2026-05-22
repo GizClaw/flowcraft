@@ -25,6 +25,9 @@ import (
 type Options struct {
 	Name string
 	LLM  llm.LLM
+	// ExtractorMode selects the SDK LLM extraction strategy. Empty uses the
+	// SDK default single-pass extractor.
+	ExtractorMode recall.LLMExtractionMode
 	// Embedder, when non-nil, enables hybrid (BM25 + cosine) retrieval
 	// on the recall memory: the retrieval projection embeds every
 	// indexed fact and the retrieval source embeds each query.
@@ -81,7 +84,11 @@ func New(opts Options) (runners.Runner, error) {
 		recall.WithGraphEnabled(true),
 	}
 	if opts.LLM != nil {
-		memOpts = append(memOpts, recall.WithLLMExtractor(opts.LLM))
+		extractorOpts := []recall.LLMExtractorOption{}
+		if opts.ExtractorMode != "" {
+			extractorOpts = append(extractorOpts, recall.WithLLMExtractionMode(opts.ExtractorMode))
+		}
+		memOpts = append(memOpts, recall.WithLLMExtractor(opts.LLM, extractorOpts...))
 	}
 	if opts.Embedder != nil {
 		memOpts = append(memOpts, recall.WithEmbedder(opts.Embedder))

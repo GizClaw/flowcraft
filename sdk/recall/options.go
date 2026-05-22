@@ -67,11 +67,44 @@ type config struct {
 	sideEffectOutbox   port.SideEffectOutbox
 }
 
-// llmExtractorConfig captures the args to ingest.NewLLMExtractor so New can
-// defer default compiler wiring until all options have been applied.
+// llmExtractorConfig captures public LLM extractor options so New can defer
+// concrete extractor selection until the default compiler is wired.
 type llmExtractorConfig struct {
-	client llm.LLM
-	tune   []LLMExtractorOption
+	client       llm.LLM
+	mode         LLMExtractionMode
+	systemPrompt string
+	schemaName   string
+	temperature  float64
+	extraOptions []llm.GenerateOption
+}
+
+func (c *llmExtractorConfig) build() port.Extractor {
+	if c == nil || c.client == nil {
+		return nil
+	}
+	if c.mode == LLMExtractionTwoPass {
+		ex := ingest.NewTwoPassLLMExtractor(c.client)
+		if c.systemPrompt != "" {
+			ex.MemorySystem = c.systemPrompt
+		}
+		if c.schemaName != "" {
+			ex.MemorySchemaName = c.schemaName
+			ex.EvidenceSchemaName = c.schemaName + "_evidence"
+		}
+		ex.Temperature = c.temperature
+		ex.ExtraOptions = append(ex.ExtraOptions, c.extraOptions...)
+		return ex
+	}
+	ex := ingest.NewLLMExtractor(c.client)
+	if c.systemPrompt != "" {
+		ex.System = c.systemPrompt
+	}
+	if c.schemaName != "" {
+		ex.SchemaName = c.schemaName
+	}
+	ex.Temperature = c.temperature
+	ex.ExtraOptions = append(ex.ExtraOptions, c.extraOptions...)
+	return ex
 }
 
 // Internal injection helpers — used by package-internal tests and
@@ -187,18 +220,41 @@ func WithEmbedder(e embedding.Embedder) Option {
 // WithLLMExtractor. It is intentionally opaque so the public facade
 // does not expose internal compiler types.
 type LLMExtractorOption struct {
-	apply func(*ingest.LLMExtractor)
+	apply func(*llmExtractorConfig)
 }
 
-func newLLMExtractorOption(apply func(*ingest.LLMExtractor)) LLMExtractorOption {
+func newLLMExtractorOption(apply func(*llmExtractorConfig)) LLMExtractorOption {
 	return LLMExtractorOption{apply: apply}
 }
 
-// WithLLMExtractorSystemPrompt overrides the default system prompt.
+// LLMExtractionMode selects the LLM extraction strategy used by
+// WithLLMExtractor.
+type LLMExtractionMode string
+
+const (
+	// LLMExtractionSinglePass uses the existing single prompt that emits
+	// text, kind, and evidence refs in one model call. This is the default.
+	LLMExtractionSinglePass LLMExtractionMode = "single_pass"
+	// LLMExtractionTwoPass first extracts text+kind, then runs a shorter
+	// grounding prompt to attach evidence turn ids.
+	LLMExtractionTwoPass LLMExtractionMode = "two_pass"
+)
+
+// WithLLMExtractionMode selects the extraction strategy. Unknown values
+// fall back to the single-pass extractor.
+func WithLLMExtractionMode(mode LLMExtractionMode) LLMExtractorOption {
+	return newLLMExtractorOption(func(c *llmExtractorConfig) {
+		c.mode = mode
+	})
+}
+
+// WithLLMExtractorSystemPrompt overrides the default memory extraction
+// system prompt. In two-pass mode, evidence grounding keeps its shorter
+// SDK-managed prompt.
 func WithLLMExtractorSystemPrompt(prompt string) LLMExtractorOption {
-	return newLLMExtractorOption(func(e *ingest.LLMExtractor) {
+	return newLLMExtractorOption(func(c *llmExtractorConfig) {
 		if prompt != "" {
-			e.System = prompt
+			c.systemPrompt = prompt
 		}
 	})
 }
@@ -206,15 +262,16 @@ func WithLLMExtractorSystemPrompt(prompt string) LLMExtractorOption {
 // WithLLMExtractorTemperature sets the sampling temperature. Zero
 // means "use provider default".
 func WithLLMExtractorTemperature(t float64) LLMExtractorOption {
-	return newLLMExtractorOption(func(e *ingest.LLMExtractor) { e.Temperature = t })
+	return newLLMExtractorOption(func(c *llmExtractorConfig) { c.temperature = t })
 }
 
 // WithLLMExtractorSchemaName labels the JSON schema for structured
-// output (some providers display this in their dashboards / logs).
+// output (some providers display this in their dashboards / logs). In
+// two-pass mode, the evidence schema name is derived with "_evidence".
 func WithLLMExtractorSchemaName(name string) LLMExtractorOption {
-	return newLLMExtractorOption(func(e *ingest.LLMExtractor) {
+	return newLLMExtractorOption(func(c *llmExtractorConfig) {
 		if name != "" {
-			e.SchemaName = name
+			c.schemaName = name
 		}
 	})
 }
@@ -223,8 +280,8 @@ func WithLLMExtractorSchemaName(name string) LLMExtractorOption {
 // llm.GenerateOption values on every extraction call (e.g. provider
 // extra params, reasoning toggles).
 func WithLLMExtractorExtraOptions(opts ...llm.GenerateOption) LLMExtractorOption {
-	return newLLMExtractorOption(func(e *ingest.LLMExtractor) {
-		e.ExtraOptions = append(e.ExtraOptions, opts...)
+	return newLLMExtractorOption(func(c *llmExtractorConfig) {
+		c.extraOptions = append(c.extraOptions, opts...)
 	})
 }
 
@@ -232,7 +289,7 @@ func WithLLMExtractorExtraOptions(opts ...llm.GenerateOption) LLMExtractorOption
 // default compiler pipeline. The supplied client is consulted on
 // Save calls whose SaveRequest carries non-empty Turns; the
 // extractor renders Turns into a canonical JSONL wire shape and
-// asks the model to emit a minimal {text, evidence_refs} payload.
+// asks the model to emit minimal memories and supporting evidence ids.
 //
 // nil client falls back to the deterministic passthrough extractor.
 func WithLLMExtractor(client llm.LLM, opts ...LLMExtractorOption) Option {
@@ -240,7 +297,13 @@ func WithLLMExtractor(client llm.LLM, opts ...LLMExtractorOption) Option {
 		if client == nil {
 			return
 		}
-		c.llmExtractor = &llmExtractorConfig{client: client, tune: opts}
+		cfg := &llmExtractorConfig{client: client}
+		for _, opt := range opts {
+			if opt.apply != nil {
+				opt.apply(cfg)
+			}
+		}
+		c.llmExtractor = cfg
 	}
 }
 

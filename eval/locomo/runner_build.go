@@ -38,6 +38,7 @@ func normalizeRunnerName(name string) (string, error) {
 type v1RunnerConfig struct {
 	Name                      string
 	LLM                       llm.LLM
+	ExtractorMode             recall.LLMExtractionMode
 	Embedder                  embedding.Embedder
 	MaxFactsPerCall           int
 	IncludeAssistant          bool
@@ -61,6 +62,7 @@ func buildLocomoRunner(canonical string, v1 v1RunnerConfig, v2OnSaved func(runne
 		opts := flowcraftv2.Options{
 			Name:                 "flowcraft-v2",
 			LLM:                  v1.LLM,
+			ExtractorMode:        v1.ExtractorMode,
 			Embedder:             v1.Embedder,
 			RerankerLLM:          v1.RerankerLLM,
 			IncludeAssistant:     true,

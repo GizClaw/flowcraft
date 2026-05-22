@@ -72,6 +72,7 @@ func addLocomoRun(parent *cobra.Command, g *cliflags.Global) {
 		topK               int
 		useExtractor       bool
 		extractorLLM       string
+		extractorMode      string
 		answerLLM          string
 		judgeLLM           string
 		embedderFlag       string
@@ -193,6 +194,15 @@ Example (LLM extractor + LLM answer + LLM judge + Qwen embedder):
 			if canonical == "flowcraft-v2" && useExtractor && extractor == nil {
 				return flowcraftv2.ErrExtractorNotSupported
 			}
+			var sdkExtractorMode recall.LLMExtractionMode
+			switch extractorMode {
+			case "", string(recall.LLMExtractionSinglePass):
+				sdkExtractorMode = recall.LLMExtractionSinglePass
+			case string(recall.LLMExtractionTwoPass):
+				sdkExtractorMode = recall.LLMExtractionTwoPass
+			default:
+				return fmt.Errorf("--extractor-mode: unknown value %q (want single_pass or two_pass)", extractorMode)
+			}
 			if canonical != "flowcraft-v2" && dumpStageAuditPath != "" {
 				return fmt.Errorf("--dump-stage-audit is only supported for flowcraft-v2 (got %s)", canonical)
 			}
@@ -256,6 +266,7 @@ Example (LLM extractor + LLM answer + LLM judge + Qwen embedder):
 
 			r, err := buildLocomoRunner(canonical, v1RunnerConfig{
 				LLM:                       extractor,
+				ExtractorMode:             sdkExtractorMode,
 				Embedder:                  embedder,
 				MaxFactsPerCall:           maxFacts,
 				IncludeAssistant:          true,
@@ -455,6 +466,7 @@ Example (LLM extractor + LLM answer + LLM judge + Qwen embedder):
 	f.IntVar(&topK, "topk", 10, "Recall top-k")
 	f.BoolVar(&useExtractor, "extractor", false, "use LLM extractor on Save (requires --extractor-llm or shared --answer-llm)")
 	f.StringVar(&extractorLLM, "extractor-llm", "", "LLM for fact extraction, format provider:model; falls back to --answer-llm")
+	f.StringVar(&extractorMode, "extractor-mode", string(recall.LLMExtractionTwoPass), "flowcraft-v2 LLM extraction strategy: single_pass | two_pass")
 	f.StringVar(&answerLLM, "answer-llm", "", "LLM that synthesizes the answer from top-k memories, format provider:model")
 	f.StringVar(&judgeLLM, "judge-llm", "", "LLM-as-Judge model, format provider:model; if empty uses EMJudge")
 	f.StringVar(&embedderFlag, "embedder", "", "embedder, format provider:model (e.g. qwen:text-embedding-v4); enables vector lane")

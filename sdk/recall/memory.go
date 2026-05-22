@@ -197,13 +197,7 @@ func New(opts ...Option) (Memory, error) {
 			}
 		}
 		if cfg.llmExtractor != nil {
-			ex := ingest.NewLLMExtractor(cfg.llmExtractor.client)
-			for _, opt := range cfg.llmExtractor.tune {
-				if opt.apply != nil {
-					opt.apply(ex)
-				}
-			}
-			stages.Extractor = ex
+			stages.Extractor = cfg.llmExtractor.build()
 		}
 		if cfg.governance != nil {
 			stages.Governance = cfg.governance
