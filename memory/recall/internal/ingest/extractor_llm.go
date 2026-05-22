@@ -320,7 +320,15 @@ func (e *LLMExtractor) Extract(ctx context.Context, input port.IngestInput) ([]d
 	if !ok || e.Client == nil {
 		return out, nil
 	}
+	facts, err := e.extractFromUserMessage(ctx, userMessage, turnIndex)
+	if err != nil {
+		return nil, err
+	}
+	out = append(out, facts...)
+	return e.repairCoverage(ctx, input, out)
+}
 
+func (e *LLMExtractor) extractFromUserMessage(ctx context.Context, userMessage string, turnIndex map[string]port.TurnContext) ([]domain.TemporalFact, error) {
 	system := e.System
 	if system == "" {
 		system = LLMExtractorSystemPrompt
@@ -353,7 +361,7 @@ func (e *LLMExtractor) Extract(ctx context.Context, input port.IngestInput) ([]d
 	}
 	body := reply.Content()
 	if body == "" {
-		return out, nil
+		return nil, nil
 	}
 	jsonBytes, _, err := llm.ExtractJSON(body)
 	if err != nil {
@@ -363,6 +371,7 @@ func (e *LLMExtractor) Extract(ctx context.Context, input port.IngestInput) ([]d
 	if err != nil {
 		return nil, errdefs.Validation(fmt.Errorf("recall extractor: parse llm json: %w", err))
 	}
+	var out []domain.TemporalFact
 	for _, m := range parsed.Memories {
 		text := strings.TrimSpace(m.Text)
 		if text == "" {
@@ -378,6 +387,22 @@ func (e *LLMExtractor) Extract(ctx context.Context, input port.IngestInput) ([]d
 		out = append(out, fact)
 	}
 	return out, nil
+}
+
+func (e *LLMExtractor) repairCoverage(ctx context.Context, input port.IngestInput, facts []domain.TemporalFact) ([]domain.TemporalFact, error) {
+	repairInput, ok := buildCoverageRepairInput(input, facts)
+	if !ok {
+		return facts, nil
+	}
+	userMessage, turnIndex, ok := buildExtractorUserMessage(repairInput)
+	if !ok {
+		return facts, nil
+	}
+	repaired, err := e.extractFromUserMessage(ctx, userMessage, turnIndex)
+	if err != nil {
+		return nil, err
+	}
+	return append(facts, repaired...), nil
 }
 
 // normaliseExtractedKind maps the LLM's "kind" field to a canonical

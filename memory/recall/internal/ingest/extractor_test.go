@@ -358,6 +358,44 @@ func TestLLMExtractor_SingleTurnEvidenceFallback(t *testing.T) {
 	}
 }
 
+func TestLLMExtractor_BackfillsHighSignalUncoveredTurns(t *testing.T) {
+	client := &fakeLLM{
+		Responses: []string{
+			`{"memories":[{"text":"Alice likes Paris.","kind":"preference","evidence_refs":[{"id":"D1:1"}]}]}`,
+			`{"memories":[{"text":"Alice bought 2 ceramic figurines yesterday for her family.","kind":"event","evidence_refs":[{"id":"D1:2","text":"I bought 2 ceramic figurines yesterday"}]}]}`,
+		},
+	}
+	ex := NewLLMExtractor(client)
+	out, err := ex.Extract(context.Background(), port.IngestInput{
+		Scope: domain.Scope{RuntimeID: "rt"},
+		Turns: []port.TurnContext{
+			{ID: "D1:1", Role: "user", Speaker: "Alice", Text: "Alice likes Paris."},
+			{ID: "D1:2", Role: "user", Speaker: "Alice", Text: "I bought 2 ceramic figurines yesterday for my family."},
+			{ID: "D1:3", Role: "assistant", Speaker: "Bob", Text: "Hey Alice, how are you doing?"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("extract: %v", err)
+	}
+	if len(out) != 2 {
+		t.Fatalf("want original memory plus one coverage repair fact, got %d: %+v", len(out), out)
+	}
+	got := out[1]
+	if got.Content != "Alice bought 2 ceramic figurines yesterday for her family." {
+		t.Fatalf("repair content = %q", got.Content)
+	}
+	if len(got.EvidenceRefs) != 1 || got.EvidenceRefs[0].ID != "D1:2" {
+		t.Fatalf("repair evidence refs = %+v, want D1:2", got.EvidenceRefs)
+	}
+	if len(client.Messages) != 2 {
+		t.Fatalf("single-pass repair should run one targeted extra extraction, got %d calls", len(client.Messages))
+	}
+	repairPrompt := client.Messages[1][1].Content()
+	if !strings.Contains(repairPrompt, `"id":"D1:2"`) || strings.Contains(repairPrompt, `"id":"D1:3"`) {
+		t.Fatalf("repair prompt should include only high-signal uncovered turns, got %q", repairPrompt)
+	}
+}
+
 func TestTwoPassLLMExtractor_ExtractsThenGroundsEvidence(t *testing.T) {
 	client := &fakeLLM{
 		Responses: []string{
@@ -419,6 +457,104 @@ func TestTwoPassLLMExtractor_SingleTurnFallbackWhenGroundingOmitsLink(t *testing
 	}
 	if len(out[0].EvidenceRefs) != 1 || out[0].EvidenceRefs[0].ID != "D1:3" {
 		t.Fatalf("single-turn fallback should attach evidence id, got %+v", out[0].EvidenceRefs)
+	}
+}
+
+func TestTwoPassLLMExtractor_BackfillsHighSignalUncoveredTurns(t *testing.T) {
+	client := &fakeLLM{
+		Responses: []string{
+			`{"memories":[{"text":"Alice likes Paris.","kind":"preference"}]}`,
+			`{"links":[{"memory_index":0,"evidence_refs":[{"id":"D1:1","text":"Alice likes Paris."}]}]}`,
+			`{"memories":[{"text":"Alice bought 2 ceramic figurines yesterday for her family.","kind":"event"}]}`,
+			`{"links":[{"memory_index":0,"evidence_refs":[{"id":"D1:2","text":"I bought 2 ceramic figurines yesterday"}]}]}`,
+		},
+	}
+	ex := NewTwoPassLLMExtractor(client)
+	out, err := ex.Extract(context.Background(), port.IngestInput{
+		Scope: domain.Scope{RuntimeID: "rt"},
+		Turns: []port.TurnContext{
+			{ID: "D1:1", Role: "user", Speaker: "Alice", Text: "Alice likes Paris."},
+			{ID: "D1:2", Role: "user", Speaker: "Alice", Text: "I bought 2 ceramic figurines yesterday for my family."},
+			{ID: "D1:3", Role: "assistant", Speaker: "Bob", Text: "Hey Alice, how are you doing?"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("extract: %v", err)
+	}
+	if len(out) != 2 {
+		t.Fatalf("want original memory plus one coverage repair fact, got %d: %+v", len(out), out)
+	}
+	got := out[1]
+	if got.Content != "Alice bought 2 ceramic figurines yesterday for her family." {
+		t.Fatalf("repair content = %q", got.Content)
+	}
+	if got.Kind != domain.KindEvent {
+		t.Fatalf("repair kind = %q, want event", got.Kind)
+	}
+	if len(got.EvidenceRefs) != 1 || got.EvidenceRefs[0].ID != "D1:2" {
+		t.Fatalf("repair evidence refs = %+v, want D1:2", got.EvidenceRefs)
+	}
+	if len(client.Messages) != 4 {
+		t.Fatalf("coverage repair should run a targeted extract+ground pass, got %d calls", len(client.Messages))
+	}
+	repairPrompt := client.Messages[2][1].Content()
+	if !strings.Contains(repairPrompt, `"id":"D1:2"`) || strings.Contains(repairPrompt, `"id":"D1:3"`) {
+		t.Fatalf("repair prompt should include only high-signal uncovered turns, got %q", repairPrompt)
+	}
+}
+
+func TestTwoPassLLMExtractor_BackfillsWhenMemoryPassReturnsEmpty(t *testing.T) {
+	client := &fakeLLM{
+		Responses: []string{
+			`{"memories":[]}`,
+			`{"memories":[{"text":"Alice visited the beach on 2023-05-07 with the kids.","kind":"event"}]}`,
+			`{"links":[{"memory_index":0,"evidence_refs":[{"id":"D1:7","text":"We visited the beach on 2023-05-07"}]}]}`,
+		},
+	}
+	ex := NewTwoPassLLMExtractor(client)
+	out, err := ex.Extract(context.Background(), port.IngestInput{
+		Scope: domain.Scope{RuntimeID: "rt"},
+		Turns: []port.TurnContext{{
+			ID: "D1:7", Role: "user", Speaker: "Alice", Text: "We visited the beach on 2023-05-07 and the kids had a blast.",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("extract: %v", err)
+	}
+	if len(client.Messages) != 3 {
+		t.Fatalf("empty memory pass should run targeted repair extract+ground calls, got %d calls", len(client.Messages))
+	}
+	if len(out) != 1 {
+		t.Fatalf("want one repair fact, got %d: %+v", len(out), out)
+	}
+	if len(out[0].EvidenceRefs) != 1 || out[0].EvidenceRefs[0].ID != "D1:7" {
+		t.Fatalf("repair evidence refs = %+v, want D1:7", out[0].EvidenceRefs)
+	}
+}
+
+func TestTwoPassLLMExtractor_CoverageRepairUsesMultilingualTextSignals(t *testing.T) {
+	client := &fakeLLM{
+		Responses: []string{
+			`{"memories":[]}`,
+			`{"memories":[{"text":"Alice 昨天买了三本书，其中一本是小王子。","kind":"event"}]}`,
+			`{"links":[{"memory_index":0,"evidence_refs":[{"id":"D1:8","text":"昨天买了三本书"}]}]}`,
+		},
+	}
+	ex := NewTwoPassLLMExtractor(client)
+	out, err := ex.Extract(context.Background(), port.IngestInput{
+		Scope: domain.Scope{RuntimeID: "rt"},
+		Turns: []port.TurnContext{{
+			ID: "D1:8", Role: "user", Speaker: "Alice", Text: "我昨天买了三本书，其中一本是「小王子」。",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("extract: %v", err)
+	}
+	if len(client.Messages) != 3 {
+		t.Fatalf("Chinese time/quote signals should trigger targeted repair, got %d calls", len(client.Messages))
+	}
+	if len(out) != 1 || len(out[0].EvidenceRefs) != 1 || out[0].EvidenceRefs[0].ID != "D1:8" {
+		t.Fatalf("repair output = %+v, want one fact grounded to D1:8", out)
 	}
 }
 

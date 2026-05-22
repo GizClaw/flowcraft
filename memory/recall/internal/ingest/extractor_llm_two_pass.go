@@ -5,9 +5,16 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
+	"time"
+	"unicode"
 
 	"github.com/GizClaw/flowcraft/memory/recall/internal/domain"
 	"github.com/GizClaw/flowcraft/memory/recall/internal/port"
+	"github.com/GizClaw/flowcraft/memory/text/quotes"
+	"github.com/GizClaw/flowcraft/memory/text/timex"
+	whenadp "github.com/GizClaw/flowcraft/memory/text/timex/adapter/when"
+	"github.com/GizClaw/flowcraft/memory/text/tokenize"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/llm"
 )
@@ -213,29 +220,14 @@ func (e *TwoPassLLMExtractor) Extract(ctx context.Context, input port.IngestInpu
 	if err != nil {
 		return nil, err
 	}
-	if len(memories) == 0 {
-		return out, nil
-	}
-	links, err := e.groundEvidence(ctx, sourceTurnsJSONL, memories)
-	if err != nil {
-		return nil, err
-	}
-
-	for i, m := range memories {
-		text := strings.TrimSpace(m.Text)
-		if text == "" {
-			continue
+	if len(memories) > 0 {
+		links, err := e.groundEvidence(ctx, sourceTurnsJSONL, memories)
+		if err != nil {
+			return nil, err
 		}
-		fact := domain.TemporalFact{
-			Content:      text,
-			EvidenceText: text,
-			Kind:         normaliseExtractedKind(m.Kind),
-			EvidenceRefs: extractedEvidenceRefs(links[i], turnIndex),
-		}
-		fact.SourceMessageIDs = sourceIDsFromEvidence(fact.EvidenceRefs)
-		out = append(out, fact)
+		out = appendExtractedMemories(out, memories, links, turnIndex)
 	}
-	return out, nil
+	return e.repairCoverage(ctx, input, out)
 }
 
 func (e *TwoPassLLMExtractor) extractMemories(ctx context.Context, userMessage string) ([]ExtractedMemory, error) {
@@ -370,4 +362,173 @@ func parseEvidenceGroundingReply(body []byte, memoryCount int) (map[int][]Extrac
 		out[link.MemoryIndex] = append(out[link.MemoryIndex], link.EvidenceRefs...)
 	}
 	return out, nil
+}
+
+func appendExtractedMemories(facts []domain.TemporalFact, memories []ExtractedMemory, links map[int][]ExtractedEvidenceRef, turnIndex map[string]port.TurnContext) []domain.TemporalFact {
+	for i, m := range memories {
+		text := strings.TrimSpace(m.Text)
+		if text == "" {
+			continue
+		}
+		fact := domain.TemporalFact{
+			Content:      text,
+			EvidenceText: text,
+			Kind:         normaliseExtractedKind(m.Kind),
+			EvidenceRefs: extractedEvidenceRefs(links[i], turnIndex),
+		}
+		fact.SourceMessageIDs = sourceIDsFromEvidence(fact.EvidenceRefs)
+		facts = append(facts, fact)
+	}
+	return facts
+}
+
+// repairCoverage gives pass1 a second, narrower chance on uncovered turns that
+// carry generic text signals. memory/text owns tokenisation, quote handling, and
+// multilingual time parsing; this layer only decides which source turns deserve
+// the extra extraction call.
+func (e *TwoPassLLMExtractor) repairCoverage(ctx context.Context, input port.IngestInput, facts []domain.TemporalFact) ([]domain.TemporalFact, error) {
+	repairInput, ok := buildCoverageRepairInput(input, facts)
+	if !ok {
+		return facts, nil
+	}
+	sourceTurnsJSONL, turnIndex, ok := buildExtractorSourceTurnsJSONL(repairInput)
+	if !ok {
+		return facts, nil
+	}
+	memories, err := e.extractMemories(ctx, buildExtractorInputEnvelope(repairInput, sourceTurnsJSONL))
+	if err != nil {
+		return nil, err
+	}
+	if len(memories) == 0 {
+		return facts, nil
+	}
+	links, err := e.groundEvidence(ctx, sourceTurnsJSONL, memories)
+	if err != nil {
+		return nil, err
+	}
+	return appendExtractedMemories(facts, memories, links, turnIndex), nil
+}
+
+func buildCoverageRepairInput(input port.IngestInput, facts []domain.TemporalFact) (port.IngestInput, bool) {
+	covered := make(map[string]struct{}, len(facts))
+	for _, f := range facts {
+		for _, ref := range f.EvidenceRefs {
+			if ref.ID != "" {
+				covered[ref.ID] = struct{}{}
+			}
+			if ref.MessageID != "" {
+				covered[ref.MessageID] = struct{}{}
+			}
+		}
+	}
+	repairInput := input
+	repairInput.Turns = nil
+	for i, turn := range input.Turns {
+		id := turnLLMID(turn)
+		if id == "" {
+			id = fmt.Sprintf("turn-%d", i+1)
+		}
+		if _, ok := covered[id]; ok {
+			continue
+		}
+		if !isHighSignalCoverageTurn(turn, coverageRepairAnchor(input)) {
+			continue
+		}
+		repairInput.Turns = append(repairInput.Turns, turn)
+	}
+	return repairInput, len(repairInput.Turns) > 0
+}
+
+func isHighSignalCoverageTurn(turn port.TurnContext, anchor time.Time) bool {
+	text := strings.TrimSpace(turn.Text)
+	tokens := tokenize.Detect(text).Tokenize(text)
+	if len(tokens) < 3 && len(tokenize.SplitWords(text)) < 5 {
+		return false
+	}
+	score := 0
+	if hasNumericSignal(text) {
+		score += 2
+	}
+	if hasTimeSignal(text, anchor) {
+		score += 2
+	}
+	if hasQuotedSignal(text) {
+		score++
+	}
+	if countProperNounSignals(text) > 0 {
+		score++
+	}
+	if len(tokens) >= 6 {
+		score++
+	}
+	if containsCJK(text) && len(tokens) >= 4 {
+		score++
+	}
+	return score >= 2
+}
+
+func coverageRepairAnchor(input port.IngestInput) time.Time {
+	if !input.ObservedAt.IsZero() {
+		return input.ObservedAt
+	}
+	if !input.Now.IsZero() {
+		return input.Now
+	}
+	return time.Now()
+}
+
+func hasTimeSignal(text string, anchor time.Time) bool {
+	if m, err := (timex.RegexParser{}).Parse(text, anchor); err == nil && m != nil {
+		return true
+	}
+	p, err := coverageTimeParser()
+	if err != nil || p == nil {
+		return false
+	}
+	m, err := p.Parse(text, anchor)
+	return err == nil && m != nil
+}
+
+var coverageTimeParser = sync.OnceValues(func() (timex.Parser, error) {
+	return whenadp.NewWithLanguages("en", "zh", "nl", "ru", "br")
+})
+
+func hasNumericSignal(text string) bool {
+	for _, r := range text {
+		if unicode.IsDigit(r) || unicode.IsNumber(r) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasQuotedSignal(text string) bool {
+	for _, span := range quotes.ExtractSpans(text) {
+		if len(tokenize.Detect(span).Tokenize(span)) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func countProperNounSignals(text string) int {
+	count := 0
+	for _, tok := range tokenize.SplitProperNouns(text) {
+		if structurizerStopwords.Contains(tok) {
+			continue
+		}
+		if isTitleCased(tok) {
+			count++
+		}
+	}
+	return count
+}
+
+func containsCJK(text string) bool {
+	for _, r := range text {
+		if tokenize.IsCJK(r) {
+			return true
+		}
+	}
+	return false
 }
