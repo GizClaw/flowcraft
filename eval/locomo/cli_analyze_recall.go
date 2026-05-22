@@ -563,10 +563,16 @@ func auditRecallStages(signals auditSignals, terms []string, audit stageAuditDum
 		}
 		stageCandidates[key] = append(stageCandidates[key], st.Candidates...)
 	}
-	order := []string{"source", "fusion", "materialize", "federation_merge", "trust_filter", "rank_input", "rank_output", "build_hits"}
+	order := []string{"source", "fusion", "materialize", "federation_merge", "trust_filter", "rank_input", "rank_output", "build_hits_input", "build_hits_reranked", "build_hits"}
 	for _, stage := range order {
 		if candidates, ok := stageCandidates[stage]; ok {
 			coverages[stage] = stageCandidateCoverage(terms, signals.EvidenceIDs, candidates, factByID)
+		}
+	}
+	if len(signals.EvidenceIDs) > 0 {
+		return stageAuditResult{
+			Miss:      strictEvidenceStageMiss(signals.EvidenceIDs, stageCandidates, factByID),
+			Coverages: coverages,
 		}
 	}
 	miss := stageMissType(coverages)
@@ -613,6 +619,82 @@ func stageMissType(coverages map[string]float64) string {
 		return "context_partial"
 	}
 	return ""
+}
+
+func strictEvidenceStageMiss(evidenceIDs []string, stageCandidates map[string][]stageAuditDumpCandidate, factByID map[string]factDumpFact) string {
+	if len(evidenceIDs) == 0 {
+		return ""
+	}
+	hasStage := func(stage string) bool {
+		_, ok := stageCandidates[stage]
+		return ok
+	}
+	present := func(stage string) bool {
+		for _, candidate := range stageCandidates[stage] {
+			if candidateMatchesEvidenceID(candidate, evidenceIDs, factByID) {
+				return true
+			}
+		}
+		return false
+	}
+	if !present("source") {
+		return "source_miss_evidence_id"
+	}
+	if !present("fusion") {
+		return "fusion_drop_evidence_id"
+	}
+	if !present("materialize") {
+		return "materialize_drop_evidence_id"
+	}
+	if !present("rank_output") {
+		return "rank_drop_evidence_id"
+	}
+	hasBuildHitsInput := hasStage("build_hits_input")
+	hasBuildHitsReranked := hasStage("build_hits_reranked")
+	if hasBuildHitsInput && !present("build_hits_input") {
+		return "audit_inconsistent_evidence_id"
+	}
+	if hasBuildHitsReranked {
+		if !present("build_hits_reranked") {
+			return "rerank_drop_evidence_id"
+		}
+		if !present("build_hits") {
+			return "final_limit_drop_evidence_id"
+		}
+		return ""
+	}
+	if !present("build_hits") {
+		if hasBuildHitsInput {
+			return "audit_inconsistent_evidence_id"
+		}
+		return "context_drop_evidence_id"
+	}
+	return ""
+}
+
+func candidateMatchesEvidenceID(candidate stageAuditDumpCandidate, evidenceIDs []string, factByID map[string]factDumpFact) bool {
+	if len(evidenceIDs) == 0 {
+		return false
+	}
+	want := map[string]struct{}{}
+	for _, id := range evidenceIDs {
+		if id != "" {
+			want[id] = struct{}{}
+		}
+	}
+	for _, id := range candidate.EvidenceIDs {
+		if _, ok := want[id]; ok {
+			return true
+		}
+	}
+	if fact, ok := factByID[candidate.FactID]; ok {
+		for _, id := range fact.EvidenceIDs {
+			if _, ok := want[id]; ok {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func stageCandidateCoverage(terms, evidenceIDs []string, candidates []stageAuditDumpCandidate, factByID map[string]factDumpFact) float64 {

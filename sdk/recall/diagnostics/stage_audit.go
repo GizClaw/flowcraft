@@ -52,6 +52,12 @@ func AuditRecallStages(trace domain.RecallTrace) RecallStageAudit {
 			appendStage("rank_input", "", status, snapshotValue(d.Input))
 			appendStage("rank_output", "", status, snapshotValue(d.Output))
 		case diagnostic.BuildHitsDetail:
+			if d.Input != nil {
+				appendStage("build_hits_input", "", status, snapshotValue(d.Input))
+			}
+			if d.RerankedHits != nil {
+				appendStage("build_hits_reranked", "", status, snapshotValue(d.RerankedHits))
+			}
 			appendStage("build_hits", "", status, snapshotValue(d.Hits))
 		}
 	}

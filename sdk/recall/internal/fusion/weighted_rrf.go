@@ -23,6 +23,7 @@ const (
 	DefaultRRFK            = 60
 	DefaultRetrievalWeight = 1.0
 	DefaultEntityWeight    = 0.8
+	DefaultRetrievalFloor  = 5
 
 	// Outlier-boost defaults. The boost re-introduces score magnitude
 	// into RRF for candidates that are clear outliers WITHIN their
@@ -73,10 +74,15 @@ func (WeightedRRF) Fuse(_ context.Context, results []domain.SourceResult, opts p
 	if weights == nil {
 		weights = map[string]float64{}
 	}
+	sourceFloors := opts.SourceFloors
+	if sourceFloors == nil {
+		sourceFloors = map[string]int{"retrieval": DefaultRetrievalFloor}
+	}
 
 	var drops []diagnostic.CandidateDrop
 	agg := make(map[string]*domain.Candidate)
 	order := make([]string, 0)
+	floorIDs := map[string]struct{}{}
 
 	for _, res := range results {
 		// Truncate each source's contribution to PerSourceCap before
@@ -93,6 +99,16 @@ func (WeightedRRF) Fuse(_ context.Context, results []domain.SourceResult, opts p
 				})
 			}
 			input = input[:opts.PerSourceCap]
+		}
+		if floor := sourceFloors[res.Source]; floor > 0 {
+			if floor > len(input) {
+				floor = len(input)
+			}
+			for _, c := range input[:floor] {
+				if c.FactID != "" {
+					floorIDs[c.FactID] = struct{}{}
+				}
+			}
 		}
 		w := weights[res.Source]
 		if w == 0 {
@@ -140,7 +156,8 @@ func (WeightedRRF) Fuse(_ context.Context, results []domain.SourceResult, opts p
 	})
 
 	if opts.TotalCap > 0 && len(fused) > opts.TotalCap {
-		for _, c := range fused[opts.TotalCap:] {
+		kept, dropped := capWithSourceFloors(fused, opts.TotalCap, floorIDs)
+		for _, c := range dropped {
 			drops = append(drops, diagnostic.CandidateDrop{
 				Stage:  "fusion",
 				Reason: diagnostic.DropTotalCap,
@@ -148,10 +165,48 @@ func (WeightedRRF) Fuse(_ context.Context, results []domain.SourceResult, opts p
 				Source: c.Source,
 			})
 		}
-		fused = fused[:opts.TotalCap]
+		fused = kept
 	}
 
 	return fused, drops, nil
+}
+
+func capWithSourceFloors(sorted []domain.Candidate, totalCap int, floorIDs map[string]struct{}) ([]domain.Candidate, []domain.Candidate) {
+	if totalCap <= 0 || len(sorted) <= totalCap {
+		return sorted, nil
+	}
+	if len(floorIDs) == 0 {
+		return sorted[:totalCap], sorted[totalCap:]
+	}
+	keep := make(map[string]struct{}, totalCap)
+	for _, c := range sorted {
+		if len(keep) >= totalCap {
+			break
+		}
+		if _, ok := floorIDs[c.FactID]; !ok {
+			continue
+		}
+		keep[c.FactID] = struct{}{}
+	}
+	for _, c := range sorted {
+		if len(keep) >= totalCap {
+			break
+		}
+		if _, ok := keep[c.FactID]; ok {
+			continue
+		}
+		keep[c.FactID] = struct{}{}
+	}
+	kept := make([]domain.Candidate, 0, totalCap)
+	dropped := make([]domain.Candidate, 0, len(sorted)-len(kept))
+	for _, c := range sorted {
+		if _, ok := keep[c.FactID]; ok {
+			kept = append(kept, c)
+		} else {
+			dropped = append(dropped, c)
+		}
+	}
+	return kept, dropped
 }
 
 func appendSourceMeta(c *domain.Candidate, src string) {

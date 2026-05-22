@@ -171,3 +171,44 @@ func TestWeightedRRF_TotalCapEmitsDrops(t *testing.T) {
 		t.Errorf("expected 2 total-cap drops, got %+v", drops)
 	}
 }
+
+func TestWeightedRRF_RetrievalFloorProtectsStrongSingleSourceEvidence(t *testing.T) {
+	results := []domain.SourceResult{
+		{
+			Source: "retrieval",
+			Candidates: []domain.Candidate{
+				{FactID: "retrieval-evidence", Source: "retrieval", Rank: 1},
+			},
+		},
+		{
+			Source: "entity",
+			Candidates: []domain.Candidate{
+				{FactID: "multi-source-distractor", Source: "entity", Rank: 1},
+			},
+		},
+		{
+			Source: "graph",
+			Candidates: []domain.Candidate{
+				{FactID: "multi-source-distractor", Source: "graph", Rank: 1},
+			},
+		},
+	}
+
+	withoutFloor, _, _ := WeightedRRF{}.Fuse(context.Background(), results, port.FusionOptions{
+		TotalCap:     1,
+		SourceFloors: map[string]int{}, // explicit opt-out
+	})
+	if withoutFloor[0].FactID != "multi-source-distractor" {
+		t.Fatalf("without floor expected multi-source distractor to win, got %+v", withoutFloor)
+	}
+
+	withFloor, drops, _ := WeightedRRF{}.Fuse(context.Background(), results, port.FusionOptions{
+		TotalCap: 1,
+	})
+	if withFloor[0].FactID != "retrieval-evidence" {
+		t.Fatalf("retrieval floor should keep top retrieval evidence, got %+v", withFloor)
+	}
+	if len(drops) != 1 || drops[0].FactID != "multi-source-distractor" {
+		t.Fatalf("drops = %+v, want distractor dropped by total cap", drops)
+	}
+}

@@ -21,6 +21,11 @@ type FusionOptions struct {
 	// TotalCap is the upper bound on the returned candidate slice.
 	// 0 = unlimited.
 	TotalCap int
+	// SourceFloors guarantees the top N candidates from a source remain
+	// eligible after total-cap truncation. It prevents high-confidence
+	// single-source evidence from being completely displaced by
+	// multi-source RRF corroboration. Missing names default to no floor.
+	SourceFloors map[string]int
 	// OutlierBoostCap caps the multiplier applied to within-source
 	// score outliers. Values <= 1.0 disable the boost.
 	OutlierBoostCap float64
