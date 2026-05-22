@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/evolution"
@@ -150,6 +151,8 @@ func factRankBoost(item domain.ContextItem, intent domain.QueryIntent, terms []s
 	}
 	boost += termMatchBoost(termMatches)
 	boost += queryCoverageBoost(f, terms, termDF)
+	boost += selectedEvidenceCoverageBoost(item, terms, termDF)
+	boost += numericRelevanceBoost(item, intent, terms, hasTextMatch)
 	if f.Confidence > 0 {
 		c := f.Confidence
 		if c > 1 {
@@ -158,6 +161,51 @@ func factRankBoost(item domain.ContextItem, intent domain.QueryIntent, terms []s
 		boost += c * 0.004
 	}
 	boost += (evolution.FeedbackBoost(f.Reinforcement, f.Penalty) - 1) * 0.02
+	return boost
+}
+
+func selectedEvidenceCoverageBoost(item domain.ContextItem, terms []string, termDF map[string]int) float64 {
+	if len(item.Evidence) == 0 || len(terms) == 0 {
+		return 0
+	}
+	matched := evidenceMatchedTerms(item.Evidence, terms)
+	if len(matched) == 0 {
+		return 0
+	}
+	coverage := float64(len(matched)) / float64(len(terms))
+	var rarity float64
+	for _, term := range matched {
+		df := termDF[term]
+		if df <= 0 {
+			continue
+		}
+		rarity += 1 / float64(df)
+	}
+	rarity /= float64(len(terms))
+	boost := coverage*0.006 + rarity*0.009
+	if boost > 0.015 {
+		return 0.015
+	}
+	return boost
+}
+
+func numericRelevanceBoost(item domain.ContextItem, intent domain.QueryIntent, terms []string, hasTextMatch bool) float64 {
+	var boost float64
+	matchedNumeric := 0
+	for _, term := range factMatchedTerms(item.Fact, numericTerms(terms)) {
+		if containsDigit(term) {
+			matchedNumeric++
+		}
+	}
+	if matchedNumeric > 0 {
+		if matchedNumeric > 3 {
+			matchedNumeric = 3
+		}
+		boost += float64(matchedNumeric) * 0.006
+	}
+	if numericIntent(intent.Text) && hasTextMatch && factHasNumericToken(item) {
+		boost += 0.006
+	}
 	return boost
 }
 
@@ -311,6 +359,27 @@ func factMatchedTerms(f domain.TemporalFact, terms []string) []string {
 	return out
 }
 
+func evidenceMatchedTerms(refs []domain.EvidenceRef, terms []string) []string {
+	if len(refs) == 0 || len(terms) == 0 {
+		return nil
+	}
+	var tokens []string
+	for _, ref := range refs {
+		tokens = append(tokens, tokenizeRankBlob(ref.Text)...)
+	}
+	tokenSet := make(map[string]struct{}, len(tokens))
+	for _, tok := range tokens {
+		tokenSet[tok] = struct{}{}
+	}
+	var out []string
+	for _, term := range terms {
+		if _, ok := tokenSet[term]; ok {
+			out = append(out, term)
+		}
+	}
+	return out
+}
+
 func termMatchBoost(matches int) float64 {
 	if matches <= 0 {
 		return 0
@@ -321,26 +390,29 @@ func termMatchBoost(matches int) float64 {
 // significantQueryTerms folds the query text into deduped BM25
 // vocabulary keys. tokenize.Simple owns lower-casing, stop-word
 // filtering (sdk/text/stopword), and the lemma+stem composition; we
-// post-filter to drop tokens shorter than 3 chars (Simple uses 2).
+// post-filter to drop short non-numeric tokens while preserving
+// numeric tokens such as "2" and "25" that are often the answer.
 func significantQueryTerms(text string) []string {
-	return uniqueLongTokens(rankTokenizer.Tokenize(text))
+	tokens := append(rankTokenizer.Tokenize(text), numericSurfaceTerms(text)...)
+	return uniqueRankTokens(tokens)
 }
 
 // tokenizeRankBlob shares the same pipeline as significantQueryTerms
 // — kept as a separate symbol so the caller-side intent (query vs
 // fact blob) reads cleanly at the call site.
 func tokenizeRankBlob(text string) []string {
-	return uniqueLongTokens(rankTokenizer.Tokenize(text))
+	tokens := append(rankTokenizer.Tokenize(text), numericSurfaceTerms(text)...)
+	return uniqueRankTokens(tokens)
 }
 
-func uniqueLongTokens(in []string) []string {
+func uniqueRankTokens(in []string) []string {
 	if len(in) == 0 {
 		return nil
 	}
 	seen := make(map[string]struct{}, len(in))
 	out := make([]string, 0, len(in))
 	for _, t := range in {
-		if len(t) < 3 {
+		if len(t) < 3 && !containsDigit(t) {
 			continue
 		}
 		if _, dup := seen[t]; dup {
@@ -350,6 +422,74 @@ func uniqueLongTokens(in []string) []string {
 		out = append(out, t)
 	}
 	return out
+}
+
+func numericTerms(terms []string) []string {
+	if len(terms) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(terms))
+	for _, term := range terms {
+		if containsDigit(term) {
+			out = append(out, term)
+		}
+	}
+	return out
+}
+
+func factHasNumericToken(item domain.ContextItem) bool {
+	if containsDigit(item.Fact.Content) ||
+		containsDigit(item.Fact.Subject) ||
+		containsDigit(item.Fact.Predicate) ||
+		containsDigit(item.Fact.Object) ||
+		containsDigit(item.Fact.EvidenceText) {
+		return true
+	}
+	evidence := item.Evidence
+	if len(evidence) == 0 {
+		evidence = item.Fact.EvidenceRefs
+	}
+	for _, ref := range evidence {
+		if containsDigit(ref.Text) {
+			return true
+		}
+	}
+	return false
+}
+
+func numericSurfaceTerms(text string) []string {
+	if text == "" || !containsDigit(text) {
+		return nil
+	}
+	var out []string
+	for _, tok := range tokenize.SplitWords(text) {
+		tok = strings.ToLower(strings.TrimSpace(tok))
+		if tok != "" && containsDigit(tok) {
+			out = append(out, tok)
+		}
+	}
+	return out
+}
+
+func numericIntent(text string) bool {
+	lower := strings.ToLower(text)
+	return strings.Contains(lower, "how many") ||
+		strings.Contains(lower, "how much") ||
+		strings.Contains(lower, "how long") ||
+		strings.Contains(lower, "number") ||
+		strings.Contains(lower, "count") ||
+		strings.Contains(lower, "total") ||
+		strings.Contains(lower, "duration") ||
+		strings.Contains(lower, "age")
+}
+
+func containsDigit(s string) bool {
+	for _, r := range s {
+		if unicode.IsDigit(r) {
+			return true
+		}
+	}
+	return false
 }
 
 func normalizeRankText(s string) string {

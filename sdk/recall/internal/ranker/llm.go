@@ -83,7 +83,7 @@ func (r *LLMReranker) Rerank(ctx context.Context, query string, hits []domain.Hi
 
 	var b strings.Builder
 	for i, h := range cands {
-		fmt.Fprintf(&b, "[%d] %s\n", i, snippetForRerank(h.Fact.Content, snip))
+		fmt.Fprintf(&b, "[%d] %s\n", i, snippetForRerank(rerankSnippetText(h), snip))
 	}
 	tmpl := r.Prompt
 	if tmpl == "" {
@@ -210,4 +210,44 @@ func snippetForRerank(s string, max int) string {
 		return s
 	}
 	return s[:max] + "…"
+}
+
+func rerankSnippetText(h domain.Hit) string {
+	parts := make([]string, 0, 2+len(h.Evidence))
+	appendPart := func(s string) {
+		s = strings.TrimSpace(s)
+		if s != "" {
+			parts = append(parts, s)
+		}
+	}
+	appendPart(h.Fact.Content)
+	appendPart(h.Fact.EvidenceText)
+	evidence := h.Evidence
+	if len(evidence) == 0 {
+		evidence = h.Fact.EvidenceRefs
+	}
+	for _, ref := range evidence {
+		appendPart(ref.Text)
+	}
+	return strings.Join(dedupeSnippetParts(parts), " | evidence: ")
+}
+
+func dedupeSnippetParts(parts []string) []string {
+	if len(parts) < 2 {
+		return parts
+	}
+	seen := make(map[string]struct{}, len(parts))
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		key := strings.ToLower(strings.Join(strings.Fields(part), " "))
+		if key == "" {
+			continue
+		}
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, part)
+	}
+	return out
 }

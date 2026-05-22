@@ -3,6 +3,7 @@ package ranker
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
@@ -146,5 +147,34 @@ func TestLLMReranker_PreservesTailBeyondMaxBatch(t *testing.T) {
 	}
 	if out[len(out)-1].Fact.ID != "c" {
 		t.Errorf("tail beyond MaxBatch must be appended verbatim, got tail=%s", out[len(out)-1].Fact.ID)
+	}
+}
+
+func TestLLMRerankerPromptIncludesSelectedEvidence(t *testing.T) {
+	client := &fakeRerankLLM{
+		Body: `{"ranking":[{"index":0,"score":0.9}]}`,
+	}
+	r := NewLLM(client)
+	hits := []domain.Hit{{
+		Fact: domain.TemporalFact{
+			ID:      "a",
+			Content: "Alice exercises regularly.",
+			EvidenceRefs: []domain.EvidenceRef{
+				{ID: "ev1", Text: "Alice said she runs for 25 minutes."},
+				{ID: "ev2", Text: "Unrelated nearby turn."},
+			},
+		},
+		Evidence: []domain.EvidenceRef{{ID: "ev1", Text: "Alice said she runs for 25 minutes."}},
+		Score:    0.9,
+	}}
+
+	if _, err := r.Rerank(context.Background(), "How long does Alice run?", hits); err != nil {
+		t.Fatalf("rerank: %v", err)
+	}
+	if !strings.Contains(client.Prompt, "25 minutes") {
+		t.Fatalf("selected evidence missing from rerank prompt:\n%s", client.Prompt)
+	}
+	if strings.Contains(client.Prompt, "Unrelated nearby turn") {
+		t.Fatalf("unselected evidence should not be in rerank prompt:\n%s", client.Prompt)
 	}
 }
