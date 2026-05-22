@@ -89,6 +89,9 @@ type Memory interface {
 	// Reinforce / Penalize adjust caller feedback weights on a fact.
 	Reinforce(ctx context.Context, scope Scope, factID string, delta float64) error
 	Penalize(ctx context.Context, scope Scope, factID string, delta float64) error
+	// Close releases the store/evidence/retrieval resources owned by this
+	// Memory. It does not drain or close async queues/outboxes; callers own
+	// worker shutdown for those contracts.
 	Close() error
 }
 

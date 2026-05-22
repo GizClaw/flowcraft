@@ -89,7 +89,8 @@ func findRetrievalProjection(projections []port.Projection) *retrievallens.Proje
 
 // SideEffectProcessor drains commit-after projection / embedding /
 // evolution jobs. Save only enqueues these jobs; callers run this
-// processor from their own worker loop.
+// processor from their own worker loop. The core does not start, stop,
+// drain, or close that loop.
 type SideEffectProcessor interface {
 	ProcessSideEffects(ctx context.Context, opts SideEffectProcessOptions) (SideEffectProcessResult, error)
 }

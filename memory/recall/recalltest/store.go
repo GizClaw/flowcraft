@@ -14,6 +14,10 @@ import (
 // TemporalStoreFactory returns a fresh, empty TemporalStore for one subtest.
 type TemporalStoreFactory func(t testing.TB) recall.TemporalStore
 
+// ScopeEnumeratorFactory returns a fresh store plus its optional scope
+// enumerator extension for one subtest.
+type ScopeEnumeratorFactory func(t testing.TB) (recall.TemporalStore, recall.ScopeEnumerator)
+
 // RunTemporalStoreSuite verifies the public TemporalStore adapter contract.
 func RunTemporalStoreSuite(t *testing.T, newStore TemporalStoreFactory) {
 	t.Helper()
@@ -277,6 +281,61 @@ func RunTemporalStoreSuite(t *testing.T, newStore TemporalStoreFactory) {
 		}
 		if gotIDs(got) != "a,b" {
 			t.Fatalf("agent id must not hard-partition store, got %s", gotIDs(got))
+		}
+	})
+}
+
+// RunScopeEnumeratorSuite verifies the optional scope-enumeration adapter
+// contract. It is separate from RunTemporalStoreSuite so adapters can adopt it
+// independently of the base ledger contract.
+func RunScopeEnumeratorSuite(t *testing.T, newStore ScopeEnumeratorFactory) {
+	t.Helper()
+
+	t.Run("lists runtime scopes in deterministic partition order", func(t *testing.T) {
+		store, enum := scopeEnumeratorForTest(t, newStore)
+		ctx := context.Background()
+		u2 := temporalFact("u2", "k-u2", recall.FactNote, time.Unix(2, 0))
+		u2.Scope = recall.Scope{RuntimeID: "rt", UserID: "u2"}
+		u1Agent := temporalFact("u1", "k-u1", recall.FactNote, time.Unix(1, 0))
+		u1Agent.Scope = recall.Scope{RuntimeID: "rt", UserID: "u1", AgentID: "agent-a"}
+		otherRuntime := temporalFact("other", "k-other", recall.FactNote, time.Unix(3, 0))
+		otherRuntime.Scope = recall.Scope{RuntimeID: "rt2"}
+		if err := store.Append(ctx, []recall.TemporalFact{u2, u1Agent, otherRuntime}); err != nil {
+			t.Fatal(err)
+		}
+
+		scopes, err := enum.ListScopes(ctx, recall.ScopeListQuery{RuntimeID: "rt"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if gotScopeKeys(scopes) != "rt/u:u1,rt/u:u2" {
+			t.Fatalf("scope keys = %s, want rt/u:u1,rt/u:u2", gotScopeKeys(scopes))
+		}
+		for _, scope := range scopes {
+			if scope.AgentID != "" || len(scope.Federation) != 0 {
+				t.Fatalf("enumerated scopes must be hard partitions only: %+v", scope)
+			}
+		}
+	})
+
+	t.Run("delete by scope prunes enumeration", func(t *testing.T) {
+		store, enum := scopeEnumeratorForTest(t, newStore)
+		ctx := context.Background()
+		a := temporalFact("a", "ka", recall.FactNote, time.Unix(1, 0))
+		b := temporalFact("b", "kb", recall.FactNote, time.Unix(2, 0))
+		b.Scope = recall.Scope{RuntimeID: "rt", UserID: "u2"}
+		if err := store.Append(ctx, []recall.TemporalFact{a, b}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.DeleteByScope(ctx, conformanceScope()); err != nil {
+			t.Fatal(err)
+		}
+		scopes, err := enum.ListScopes(ctx, recall.ScopeListQuery{RuntimeID: "rt"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if gotScopeKeys(scopes) != "rt/u:u2" {
+			t.Fatalf("scope keys after delete = %s, want rt/u:u2", gotScopeKeys(scopes))
 		}
 	})
 }

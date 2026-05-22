@@ -12,4 +12,8 @@ func TestMemoryStore_Conformance(t *testing.T) {
 	recalltest.RunTemporalStoreSuite(t, func(testing.TB) recall.TemporalStore {
 		return temporal.NewMemoryStore()
 	})
+	recalltest.RunScopeEnumeratorSuite(t, func(testing.TB) (recall.TemporalStore, recall.ScopeEnumerator) {
+		store := temporal.NewMemoryStore()
+		return store, store
+	})
 }

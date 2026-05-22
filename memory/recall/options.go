@@ -185,6 +185,8 @@ func withFusionOptions(opts port.FusionOptions) Option {
 // adapter. Save keeps embedded EvidenceRefs authoritative; adapter
 // write failures are telemetry-only and RebuildAll can rehydrate the
 // adapter from canonical facts.
+//
+// Memory.Close calls Close on the installed evidence store.
 func WithEvidenceStore(s EvidenceStore) Option {
 	return func(c *config) {
 		c.evidenceStore = s
@@ -192,7 +194,10 @@ func WithEvidenceStore(s EvidenceStore) Option {
 }
 
 // WithRetrievalIndex overrides the retrieval backend that powers the
-// retrieval projection. The default is sdk/retrieval/memory.New().
+// retrieval projection. The default is memory/retrieval/memory.New().
+//
+// Memory.Close calls Close on the installed index. Share an index across
+// Memory instances only when the caller owns the surrounding lifecycle.
 func WithRetrievalIndex(idx retrieval.Index) Option {
 	return func(c *config) {
 		if idx != nil {
@@ -380,6 +385,9 @@ func WithReranker(r Reranker) Option {
 // backends MUST expose an outbox facade here and drain to the remote
 // service in a backend-internal worker, outside the scope write lock,
 // so scope throughput does not regress with queue backend latency.
+//
+// Memory.Close does not drain or close this queue; the caller-owned worker or
+// adapter owns queue shutdown.
 func WithAsyncSemanticQueue(q AsyncSemanticQueue) Option {
 	return func(c *config) {
 		if q != nil {
@@ -399,6 +407,9 @@ func NewInMemoryAsyncSemanticQueue() AsyncSemanticQueue {
 // WithSideEffectOutbox installs the durable outbox for commit-after
 // projection / evolution / embedding work. When unset, New wires the
 // in-memory implementation automatically.
+//
+// Memory.Close does not drain or close this outbox; callers should stop
+// ProcessSideEffects workers and drain according to the adapter's own contract.
 func WithSideEffectOutbox(q SideEffectOutbox) Option {
 	return func(c *config) {
 		if q != nil {

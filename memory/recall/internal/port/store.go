@@ -21,6 +21,20 @@ type ListQuery struct {
 	Limit             int
 }
 
+// ScopeListQuery filters store partitions for privileged/operator flows.
+// Empty RuntimeID is implementation-defined; core helpers require RuntimeID
+// so ordinary callers cannot accidentally sweep every tenant.
+type ScopeListQuery struct {
+	RuntimeID string
+}
+
+// ScopeEnumerator is an optional extension for stores that can enumerate
+// canonical scope partitions. It is deliberately separate from TemporalStore
+// so durable adapters can adopt it without breaking the base store contract.
+type ScopeEnumerator interface {
+	ListScopes(ctx context.Context, query ScopeListQuery) ([]domain.Scope, error)
+}
+
 // TemporalStore is the canonical TemporalFact ledger boundary.
 //
 // It is deliberately NOT a retrieval index: vector / BM25 search and

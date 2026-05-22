@@ -2,6 +2,7 @@ package temporal
 
 import (
 	"context"
+	"slices"
 	"sort"
 	"sync"
 	"time"
@@ -299,10 +300,8 @@ func indexOriginLocked(sh *scopeShard, factID, requestID string) {
 	if sh == nil || factID == "" || requestID == "" {
 		return
 	}
-	for _, existing := range sh.originIdx[requestID] {
-		if existing == factID {
-			return
-		}
+	if slices.Contains(sh.originIdx[requestID], factID) {
+		return
 	}
 	sh.originIdx[requestID] = append(sh.originIdx[requestID], factID)
 }
@@ -503,6 +502,32 @@ func (s *MemoryStore) DeleteByScope(_ context.Context, scope domain.Scope) (int,
 	return n, nil
 }
 
+// ListScopes returns canonical scope partitions known to the store. AgentID
+// and Federation are intentionally omitted because they do not participate in
+// the hard partition key.
+func (s *MemoryStore) ListScopes(_ context.Context, query port.ScopeListQuery) ([]domain.Scope, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	scopes := make([]domain.Scope, 0, len(s.byScope))
+	for k := range s.byScope {
+		if query.RuntimeID != "" && k.runtimeID != query.RuntimeID {
+			continue
+		}
+		scopes = append(scopes, domain.Scope{
+			RuntimeID: k.runtimeID,
+			UserID:    k.userID,
+		})
+	}
+	sort.SliceStable(scopes, func(i, j int) bool {
+		if scopes[i].RuntimeID != scopes[j].RuntimeID {
+			return scopes[i].RuntimeID < scopes[j].RuntimeID
+		}
+		return scopes[i].UserID < scopes[j].UserID
+	})
+	return scopes, nil
+}
+
 // Delete removes facts by id. Missing ids are ignored.
 func (s *MemoryStore) Delete(_ context.Context, scope domain.Scope, factIDs []string) error {
 	if len(factIDs) == 0 {
@@ -587,4 +612,7 @@ func removeID(ids []string, target string) []string {
 	return out
 }
 
-var _ port.TemporalStore = (*MemoryStore)(nil)
+var (
+	_ port.TemporalStore   = (*MemoryStore)(nil)
+	_ port.ScopeEnumerator = (*MemoryStore)(nil)
+)

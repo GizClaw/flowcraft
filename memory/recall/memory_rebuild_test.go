@@ -488,4 +488,7 @@ func TestMemory_ImplementsOptInInterfaces(t *testing.T) {
 	if _, ok := mem.(RecallExplainer); !ok {
 		t.Errorf("Memory must satisfy RecallExplainer")
 	}
+	if _, ok := NewReconciler(mem); !ok {
+		t.Errorf("Memory must expose Reconciler")
+	}
 }

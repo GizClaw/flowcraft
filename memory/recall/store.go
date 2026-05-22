@@ -16,6 +16,14 @@ type ListQuery = port.ListQuery
 // treated as the canonical store.
 type TemporalStore = port.TemporalStore
 
+// ScopeListQuery filters scope enumeration for privileged/operator flows.
+type ScopeListQuery = port.ScopeListQuery
+
+// ScopeEnumerator is an optional extension for TemporalStore adapters that can
+// enumerate canonical scope partitions. It is not part of TemporalStore so
+// durable adapters can adopt it independently of the base ledger contract.
+type ScopeEnumerator = port.ScopeEnumerator
+
 // ErrStoreNotFound is the portable missing-row sentinel for recall stores.
 // TemporalStore and EvidenceStore adapters should return or wrap this value
 // so callers can use errors.Is.
@@ -33,6 +41,9 @@ var ErrTemporalValidityAlreadyClosed = temporalstore.ErrValidityAlreadyClosed
 //
 // The default is an in-memory store suitable for tests and local development.
 // Production deployments should provide a durable adapter.
+//
+// Memory.Close calls Close on the installed store. Callers that share a store
+// between Memory instances should coordinate ownership externally.
 func WithTemporalStore(s TemporalStore) Option {
 	return func(c *config) {
 		if s != nil {
