@@ -6,11 +6,11 @@ import (
 	"github.com/GizClaw/flowcraft/eval/locomo/runners"
 	"github.com/GizClaw/flowcraft/eval/locomo/runners/flowcraft"
 	"github.com/GizClaw/flowcraft/eval/locomo/runners/flowcraftv2"
+	"github.com/GizClaw/flowcraft/memory/recall"
+	"github.com/GizClaw/flowcraft/memory/recall/diagnostics"
 	"github.com/GizClaw/flowcraft/sdk/embedding"
 	"github.com/GizClaw/flowcraft/sdk/llm"
-	"github.com/GizClaw/flowcraft/sdk/recall"
-	"github.com/GizClaw/flowcraft/sdk/recall/diagnostics"
-	recallv1 "github.com/GizClaw/flowcraft/sdk/recall_v1"
+	recallv1 "github.com/GizClaw/flowcraft/sdk/recall"
 )
 
 // v2DiagnosticHooks bundles the v2 SaveDiagnostics / RecallDiagnostics

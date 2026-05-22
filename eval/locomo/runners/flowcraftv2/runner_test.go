@@ -7,9 +7,9 @@ import (
 	"testing"
 
 	"github.com/GizClaw/flowcraft/eval/locomo/runners"
+	"github.com/GizClaw/flowcraft/memory/recall"
+	"github.com/GizClaw/flowcraft/memory/recall/diagnostics"
 	"github.com/GizClaw/flowcraft/sdk/llm"
-	"github.com/GizClaw/flowcraft/sdk/recall"
-	"github.com/GizClaw/flowcraft/sdk/recall/diagnostics"
 )
 
 type fakeLLM struct {

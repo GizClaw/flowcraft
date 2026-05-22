@@ -5,7 +5,7 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/eval/locomo/runners"
-	"github.com/GizClaw/flowcraft/sdk/recall"
+	"github.com/GizClaw/flowcraft/memory/recall"
 )
 
 func TestNewV2FactsDump_IncludesAuditFields(t *testing.T) {

@@ -5,8 +5,8 @@ import (
 	"strings"
 
 	"github.com/GizClaw/flowcraft/eval/locomo/runners"
-	"github.com/GizClaw/flowcraft/sdk/recall"
-	"github.com/GizClaw/flowcraft/sdk/recall/diagnostics"
+	"github.com/GizClaw/flowcraft/memory/recall"
+	"github.com/GizClaw/flowcraft/memory/recall/diagnostics"
 )
 
 func toRecallScope(s runners.Scope) recall.Scope {

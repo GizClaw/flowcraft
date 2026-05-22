@@ -3,1204 +3,1096 @@ package recall
 import (
 	"context"
 	"errors"
-	"fmt"
+	"maps"
 	"sync"
 	"time"
 
+	"github.com/GizClaw/flowcraft/sdk/embedding"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
-	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain"
-	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain/diagnostic"
-	"github.com/GizClaw/flowcraft/sdk/recall/internal/fusion"
-	"github.com/GizClaw/flowcraft/sdk/recall/internal/ingest"
-	"github.com/GizClaw/flowcraft/sdk/recall/internal/intent"
-	"github.com/GizClaw/flowcraft/sdk/recall/internal/lens"
-	entitylens "github.com/GizClaw/flowcraft/sdk/recall/internal/lens/entity"
-	evidencelens "github.com/GizClaw/flowcraft/sdk/recall/internal/lens/evidence"
-	graphlens "github.com/GizClaw/flowcraft/sdk/recall/internal/lens/graph"
-	profilelens "github.com/GizClaw/flowcraft/sdk/recall/internal/lens/profile"
-	relationlens "github.com/GizClaw/flowcraft/sdk/recall/internal/lens/relation"
-	retrievallens "github.com/GizClaw/flowcraft/sdk/recall/internal/lens/retrieval"
-	timelinelens "github.com/GizClaw/flowcraft/sdk/recall/internal/lens/timeline"
-	"github.com/GizClaw/flowcraft/sdk/recall/internal/materialize"
-	"github.com/GizClaw/flowcraft/sdk/recall/internal/pipeline"
-	"github.com/GizClaw/flowcraft/sdk/recall/internal/pipeline/feedback"
-	feedbackstages "github.com/GizClaw/flowcraft/sdk/recall/internal/pipeline/feedback/stages"
-	"github.com/GizClaw/flowcraft/sdk/recall/internal/pipeline/forget"
-	forgetstages "github.com/GizClaw/flowcraft/sdk/recall/internal/pipeline/forget/stages"
-	"github.com/GizClaw/flowcraft/sdk/recall/internal/pipeline/read"
-	readstages "github.com/GizClaw/flowcraft/sdk/recall/internal/pipeline/read/stages"
-	"github.com/GizClaw/flowcraft/sdk/recall/internal/pipeline/rebuild"
-	rebuildstages "github.com/GizClaw/flowcraft/sdk/recall/internal/pipeline/rebuild/stages"
-	"github.com/GizClaw/flowcraft/sdk/recall/internal/pipeline/revision"
-	revisionstages "github.com/GizClaw/flowcraft/sdk/recall/internal/pipeline/revision/stages"
-	"github.com/GizClaw/flowcraft/sdk/recall/internal/pipeline/write"
-	writestages "github.com/GizClaw/flowcraft/sdk/recall/internal/pipeline/write/stages"
-	"github.com/GizClaw/flowcraft/sdk/recall/internal/planner"
-	"github.com/GizClaw/flowcraft/sdk/recall/internal/port"
-	"github.com/GizClaw/flowcraft/sdk/recall/internal/ranker"
-	sideeffectstore "github.com/GizClaw/flowcraft/sdk/recall/internal/store/sideeffect"
-	temporalstore "github.com/GizClaw/flowcraft/sdk/recall/internal/store/temporal"
-	"github.com/GizClaw/flowcraft/sdk/recall/internal/telemetry"
+	"github.com/GizClaw/flowcraft/sdk/history"
+	"github.com/GizClaw/flowcraft/sdk/internal/syncx"
+	"github.com/GizClaw/flowcraft/sdk/llm"
+	recallpipe "github.com/GizClaw/flowcraft/sdk/recall/pipeline"
 	"github.com/GizClaw/flowcraft/sdk/retrieval"
-	retrievalmem "github.com/GizClaw/flowcraft/sdk/retrieval/memory"
+	"github.com/GizClaw/flowcraft/sdk/retrieval/journal"
+	basepipe "github.com/GizClaw/flowcraft/sdk/retrieval/pipeline"
 )
 
-// ErrScopeKeyMismatch is returned when ForgetAll's confirmScopeKey
-// does not match scope.PartitionKey(). The guard exists because
-// ForgetAll(Hard) is irreversible: GDPR Art.17 / CCPA 1798.105 require
-// that callers cannot accidentally nuke a sibling tenant by reusing a
-// scope struct. AgentID is soft isolation and is NOT part of the wipe
-// key — callers must pass scope.PartitionKey() as confirmation;
-// errors.Is(err, ErrScopeKeyMismatch) is sentinel-stable.
-var ErrScopeKeyMismatch = forgetstages.ErrScopeKeyMismatch
-
-// Memory is the v2 fact-centric facade. See docs §11.1.
+// Memory is the long-term-memory facade — the read/write contract every
+// recall implementation must satisfy.
+//
+// All write paths are scope-validated; all read paths apply the
+// scope-derived namespace + agent/expiry filter. Implementations are
+// safe for concurrent use.
+//
+// Audit (History / Rollback) and async job control (JobStatus /
+// AwaitJob) are exposed through the optional [Auditable] and
+// [JobController] sub-interfaces, not here, so alternative Memory
+// implementations (e.g. an in-memory test double) do not have to
+// implement them. Callers that need those capabilities type-assert:
+//
+//	if jc, ok := mem.(recall.JobController); ok { … }
 type Memory interface {
-	Save(ctx context.Context, scope Scope, req SaveRequest) (SaveResult, error)
-	Recall(ctx context.Context, scope Scope, query Query) ([]Hit, error)
-	Forget(ctx context.Context, scope Scope, factID string, mode ...ForgetMode) error
-	ForgetAll(ctx context.Context, scope Scope, mode ForgetMode, confirmScopeKey string) (int, error)
-	// ExpireRetired hard-deletes every scope-local fact whose
-	// ExpiresAt is non-nil and not after now (TTL sweep). It reuses
-	// the forget pipeline so projection fanout + telemetry follow
-	// the same contract as ForgetAll, but does NOT require the GDPR
-	// confirmScopeKey guard — TTL is an administrative cleanup, not
-	// an Art.17 wipe — and ONLY removes matching facts (non-expired
-	// rows survive). zero `now` defaults to time.Now(); returns the
-	// number of facts physically deleted (D5 2026-05-21).
-	ExpireRetired(ctx context.Context, scope Scope, now time.Time) (int, error)
-	History(ctx context.Context, scope Scope, factID string) ([]FactVersion, error)
-	// Lineage returns the full revision DAG rooted at factID — the set
-	// of facts reachable via Supersedes / CorrectedBy / Revision.SourceFactID
-	// edges, classified by relation (root / supersedes / fork_of /
-	// contest_of / merged_from). Output is BFS-sorted (depth asc,
-	// FactID asc) for determinism.
+	// Save extracts facts from msgs and writes them synchronously.
+	Save(ctx context.Context, scope Scope, msgs []llm.Message) (SaveResult, error)
+
+	// SaveAsync enqueues extraction on the configured JobQueue and
+	// returns immediately.
+	SaveAsync(ctx context.Context, scope Scope, msgs []llm.Message) (JobID, error)
+
+	// Add inserts one pre-built Entry verbatim and returns the
+	// assigned entry ID.
 	//
-	// History(factID) walks only the supersede chain (linear), so it
-	// remains the right tool for "what came before / after this exact
-	// belief?". Lineage(factID) is the right tool for "what is the
-	// family tree of this fact, including dissents (Contest) and
-	// alternate branches (Fork)?". See architecture debts §8.3.
-	Lineage(ctx context.Context, scope Scope, factID string) ([]FactLineageNode, error)
-	// Fork appends a parallel revision without closing the source fact.
-	Fork(ctx context.Context, scope Scope, sourceFactID string, newFact TemporalFact) (SaveResult, error)
-	// Contest challenges a fact with evidence and applies a penalty.
-	Contest(ctx context.Context, scope Scope, factID string, evidence []EvidenceRef) (SaveResult, error)
-	// Reinforce / Penalize adjust caller feedback weights on a fact.
-	Reinforce(ctx context.Context, scope Scope, factID string, delta float64) error
-	Penalize(ctx context.Context, scope Scope, factID string, delta float64) error
+	// Two ingest modes:
+	//
+	//   - e.ID == "" (content-addressable): the ID is derived
+	//     deterministically from (scope, Content). Two Adds with
+	//     the same payload collide on ID; the second call is
+	//     short-circuited via the per-namespace content-hash
+	//     dedup probe (the same gate that [Memory.Save] uses for
+	//     fact upsert), making Add idempotent against retries.
+	//     Set [WithoutMD5Dedup] to skip the probe; repeat content
+	//     still collides on ID, so the Upsert overwrites in
+	//     place.
+	//   - e.ID != "" (caller-owned identity): the supplied ID is
+	//     honoured verbatim and the dedup probe is SKIPPED so
+	//     two writes with the same Content but different IDs
+	//     (e.g. timestamped event replays) stay as separate
+	//     rows.
+	//
+	// Fix landed in #155.
+	Add(ctx context.Context, scope Scope, e Entry) (string, error)
+
+	// Recall runs the configured retrieval pipeline against the
+	// scope-derived namespace.
+	Recall(ctx context.Context, scope Scope, req Request) ([]Hit, error)
+
+	// Forget hard-deletes one entry; journal (when configured)
+	// captures the reason.
+	Forget(ctx context.Context, scope Scope, entryID string, reason string) error
+
+	// Close stops async workers and the TTL sweeper; safe to call more
+	// than once.
 	Close() error
 }
 
-type memory struct {
-	store          port.TemporalStore
-	evidenceStore  port.EvidenceStore
-	retrievalIndex retrieval.Index
-	compiler       port.Ingestor
-	resolver       port.ConflictResolver
-	fanout         *pipeline.Fanout
-	telemetry      port.TelemetryHook
-
-	// writePreRunner runs validate + ingest without the per-scope
-	// write lock (legacy runSave compiled outside the lock).
-	// writePostRunner runs canonical stages under the lock
-	// (resolve/append/validity_close/enqueue_side_effects).
-	// Commit-after projection/evolution/embedding drain outside the lock.
-	writePreRunner  *write.Runner
-	writePostRunner *write.Runner
-	readRunner      *read.Runner
-	rebuildRunner   *rebuild.Runner
-	forgetRunner    *forget.Runner
-	feedbackRunner  *feedback.Runner
-	revisionRunner  *revision.Runner
-
-	// asyncEpisodePreRunner compiles/builds episodes and structured
-	// facts outside the scope write lock.
-	asyncEpisodePreRunner *write.Runner
-	// asyncEpisodeCanonicalRunner appends canonical rows and enqueues
-	// semantic + side-effect outbox jobs under the lock.
-	asyncEpisodeCanonicalRunner *write.Runner
-
-	// asyncSemanticQueue is the durable outbox WithAsyncSemanticQueue
-	// configures. nil disables WriteModeAsyncSemantic.
-	asyncSemanticQueue port.AsyncSemanticQueue
-	sideEffectOutbox   port.SideEffectOutbox
-
-	// asyncSemanticWorkerPreRunner / PostRunner drive
-	// ProcessAsyncSemantic (F.1b): LLM ingest + semantic write path
-	// with origin stamping, under the same scope lock as Save.
-	asyncSemanticWorkerPreRunner  *write.Runner
-	asyncSemanticWorkerPostRunner *write.Runner
-
-	// projections retains the canonical projection set (in
-	// registration order) so RebuildProjection can resolve a
-	// projection by name without re-deriving it from fanout.
-	projections []port.Projection
-
-	queryCompiler port.IntentCompiler
-	planner       port.Planner
-	sources       []port.Source
-	fuser         port.Fuser
-	materializer  port.Materializer
-	fusionOpts    port.FusionOptions
-	graphEnabled  bool
-	reranker      port.Reranker
-	evolution     port.EvolutionRunner
-	entitySnap    port.EntitySnapshotter
-
-	writeMu    sync.Mutex
-	writeLocks map[writeScopeKey]*writeLock
-
-	// deferredTelemetry buffers stage events during scope-locked writes.
-	deferredTelemetry *telemetry.Deferred
-
-	// scopeGenMu / scopeGen guard against slow sync Save re-appending
-	// after ForgetAll(Hard) returns (pre-runner runs outside the lock).
-	scopeGenMu sync.Mutex
-	scopeGen   map[writeScopeKey]uint64
+// Auditable is implemented by [Memory] flavours that persist a
+// [journal.Journal]. Callers must type-assert at construction time:
+//
+//	aud, ok := mem.(recall.Auditable)
+type Auditable interface {
+	History(ctx context.Context, scope Scope, entryID string) ([]journal.Event, error)
+	Rollback(ctx context.Context, scope Scope, entryID string, before time.Time) error
 }
 
-type writeScopeKey struct {
-	runtimeID string
-	userID    string
+// JobController is implemented by [Memory] flavours that back
+// SaveAsync with an inspectable [JobQueue]. Callers type-assert at
+// construction time.
+type JobController interface {
+	JobStatus(ctx context.Context, id JobID) (JobStatus, error)
+	AwaitJob(ctx context.Context, id JobID, timeout time.Duration) (JobStatus, error)
 }
 
-type writeLock struct {
-	mu   sync.Mutex
-	refs int
+// SideStoreSyncer is implemented by [Memory] flavours that register
+// one or more [Projection]s. Calling SyncSideStores runs one
+// synchronous reconcile pass for the given scope, bringing every
+// registered projection to the alive state of the primary index as
+// of now.
+//
+// Use this from tests and from callers that just performed a write
+// outside the eager hot path (Add, Auditable.Rollback, Memory.Forget,
+// TTL sweep, resolver OpDelete) and want 0-lag entity-lane recall
+// before the next background tick. Returns nil immediately when no
+// projection is registered.
+type SideStoreSyncer interface {
+	SyncSideStores(ctx context.Context, scope Scope) error
 }
 
-// New constructs a v2 Memory. The defaults wire a fully in-memory
-// stack so callers can exercise the write path without external
-// dependencies; production callers swap pieces in via Options.
-func New(opts ...Option) (Memory, error) {
+// RecallExplainer is implemented by [Memory] flavours whose underlying
+// retrieval pipeline can produce a structured [retrieval.SearchExecution]
+// (lanes, stages, …) alongside the ranked hits.
+//
+// RecallExplain has the same scope/validation contract as [Memory.Recall];
+// callers populate Request.Debug to opt in. The returned execution is nil
+// when Debug is the zero value or when no stage produced one.
+//
+// Type-assert to use it:
+//
+//	if rx, ok := mem.(recall.RecallExplainer); ok { … }
+type RecallExplainer interface {
+	RecallExplain(ctx context.Context, scope Scope, req Request) ([]Hit, *retrieval.SearchExecution, error)
+}
+
+// config is the resolved configuration of a Memory instance, populated
+// by the [Option] functions passed to [New]. It is package-private on
+// purpose: callers compose behaviour exclusively through Option, which
+// makes the surface backwards-compatible across additions.
+type config struct {
+	embedder embedding.Embedder
+	pipe     *basepipe.Pipeline
+
+	mode       ExtractMode
+	llm        llm.LLM
+	extractor  Extractor
+	includeAst bool
+	maxFacts   int
+	confMin    float64
+
+	saveWithCtx      bool
+	saveCtxTopK      int
+	saveCtxThreshold float64
+
+	// historyStore is the per-conversation message log consulted
+	// before extraction so the LLM can resolve pronoun / short-
+	// reference / chronology references established in PRIOR Save
+	// batches but absent from the current batch. See
+	// WithHistoryStore + WithRecentTurns. recentMsgsK is the number
+	// of messages the Save path injects into the extractor; 0
+	// disables the feature even if a store is configured.
+	historyStore history.Store
+	recentMsgsK  int
+
+	// entityStore is the inverted-index accelerator written
+	// alongside every entry upsert and consulted at recall time by
+	// the EntityLinkLookup pipeline stage. Nil disables the feature
+	// — Save then skips its Link call and Recall sees no
+	// candidate IDs from this lane. See [EntityStore] and
+	// [WithEntityStore] for the lifecycle contract.
+	//
+	// entityStoreLinkedCap mirrors IndexEntityStoreOptions.LinkedCap
+	// and is captured here only so the lt.upsertFacts path can pass
+	// the option through to the concrete IndexEntityStore at
+	// construction time; once a store is wired its own cap wins.
+	entityStore             EntityStore
+	entityStoreLinkedCap    int
+	entityStoreMaxLinkedCnt int
+	// entityStoreMaxLinkedCntExplicit tracks whether the caller
+	// passed [WithEntityStoreMaxLinkedCount] at all. Needed because
+	// the field's zero value coincides with "use safe default"
+	// AND with "caller wrote 0" — we only emit the construction-
+	// time warning when the caller EXPLICITLY chose the disabled
+	// path (n < 0), and we only override the safe default when the
+	// caller deliberately passed n > 0.
+	entityStoreMaxLinkedCntExplicit bool
+
+	// queryEntityLLM, when set, swaps the pipeline's rule-based
+	// query-side entity extraction for an LLM-backed extractor. The
+	// rule extractor pulls only capitalized single tokens + quoted
+	// runs, so multi-word noun phrases ("photography club") never
+	// land in QueryEntities — making them un-joinable against the
+	// LLM-extracted entity names persisted by EntityStore.Link at
+	// write time. The LLM extractor closes this asymmetry. See
+	// [WithQueryEntityExtractor].
+	queryEntityLLM llm.LLM
+
+	md5Dedup           bool
+	softMerge          bool
+	slotMerge          bool
+	softMergeCosineMin float64
+	softMergeTopK      int
+
+	updateResolver UpdateResolver
+	resolverTopK   int
+
+	predicateAliases map[string]string
+	subjectAliases   map[string]string
+
+	jobQueue       JobQueue
+	asyncWorkers   int
+	jobMaxAttempts int
+	jobBackoffBase time.Duration
+	jobBackoffMax  time.Duration
+	jobTimeout     time.Duration
+
+	requireUserID bool
+	allowGlobal   bool
+
+	ttlPolicy       TTLPolicy
+	sweeperEnabled  bool
+	sweeperInterval time.Duration
+	sweeperBatchMax int
+	nsRegistry      NamespaceRegistry
+
+	// reconcileInterval controls the cadence of the background
+	// [Reconciler] that brings side-store projections (currently
+	// the EntityStore) into eventual consistency with the primary
+	// index. Zero falls back to [defaultReconcileInterval] (5 min)
+	// whenever any projection is active; negative disables the
+	// background tick (synchronous [Memory.SyncSideStores] still
+	// works). See [WithReconcileInterval].
+	reconcileInterval time.Duration
+
+	now    func() time.Time
+	logger func(string, ...any)
+
+	journal journal.Journal
+
+	// ltmOpts are passed verbatim into [pipeline.LTM] when the
+	// auto-wired pipeline is constructed (i.e. when WithPipeline is
+	// NOT used). Single source of truth for LTM tuning so the
+	// auto-wire path can append its own options
+	// (entity-link lane et al.) without the caller having to
+	// remember to thread them too. See [WithLTMOption] for the
+	// design rationale.
+	ltmOpts       []recallpipe.LTMOption
+	legacyLTMOpts []basepipe.LTMOption
+}
+
+// Option mutates a Memory configuration. All knobs are optional; the
+// zero-value Memory ([New(idx)]) wires sensible defaults: in-memory job
+// queue, additive extractor, MD5 dedup ON, soft-merge ON, TTL sweeper
+// OFF.
+type Option func(*config)
+
+// WithEmbedder enables vector lanes for save (entry embedding) and
+// recall (query embedding). Without an embedder, the pipeline runs
+// BM25-only.
+func WithEmbedder(e embedding.Embedder) Option { return func(c *config) { c.embedder = e } }
+
+// WithPipeline overrides the default [pipeline.LTM]. Use this to
+// plug in a fully custom topology that is NOT LTM-shaped. When
+// supplied, [WithLTMOption] and feature flags that auto-wire LTM
+// (notably [WithEntityStore]) are SKIPPED — the caller has taken
+// full responsibility for the read path.
+//
+// Prefer [WithLTMOption] for the common case of "I want LTM with a
+// few knobs adjusted"; that path keeps feature auto-wiring intact.
+func WithPipeline(p *basepipe.Pipeline) Option { return func(c *config) { c.pipe = p } }
+
+// WithLTMOption appends [pipeline.LTMOption]s to the auto-wired
+// [pipeline.LTM] pipeline. Stack multiple calls — they accumulate
+// in declaration order, and feature flags ([WithEntityStore], …)
+// then append THEIR options on top so the final pipeline reflects
+// both the caller's tuning AND every wired feature.
+//
+// Design rationale: prior to this option, callers who wanted to
+// tune LTM had to build the pipeline themselves and pass it via
+// [WithPipeline] — which bypassed every feature flag's auto-wire
+// path. The net effect was that turning on, say,
+// [WithEntityStore] would silently activate the WRITE path (Link
+// on Save) while leaving the READ path (entity-link lane) absent
+// because the user's custom pipeline did not include it. Funneling
+// LTM tuning through this option restores a single source of
+// truth: features add to the recipe; users add to the recipe; the
+// pipeline gets built once at the end.
+//
+// Accepts sdk/recall/pipeline.LTMOption. Deprecated
+// sdk/retrieval/pipeline.LTMOption values are still accepted as a compatibility
+// bridge, but that path constructs the old retrieval-level LTM recipe and will
+// be removed in v0.5.0.
+//
+// No-op when [WithPipeline] is also set (the custom pipeline wins
+// and a warning is logged).
+func WithLTMOption(opts ...any) Option {
+	return func(c *config) {
+		for _, opt := range opts {
+			switch o := opt.(type) {
+			case nil:
+				continue
+			case basepipe.LTMOption:
+				c.legacyLTMOpts = append(c.legacyLTMOpts, o)
+			default:
+				c.ltmOpts = append(c.ltmOpts, o)
+			}
+		}
+	}
+}
+
+// WithLLM injects an LLM for the default additive extractor. When
+// omitted, the extractor falls back to a heuristic (assistant-included)
+// path that does not require model calls.
+func WithLLM(l llm.LLM) Option { return func(c *config) { c.llm = l } }
+
+// WithExtractor replaces the default extractor entirely.
+func WithExtractor(e Extractor) Option { return func(c *config) { c.extractor = e } }
+
+// WithExtractMode picks between additive and replace semantics.
+// Defaults to [ModeAdditive].
+func WithExtractMode(m ExtractMode) Option { return func(c *config) { c.mode = m } }
+
+// WithIncludeAssistant tells the heuristic extractor to mine assistant
+// turns alongside user turns. Has no effect when an LLM extractor is
+// configured.
+func WithIncludeAssistant(b bool) Option { return func(c *config) { c.includeAst = b } }
+
+// WithMaxFactsPerCall caps the number of facts produced per Save.
+func WithMaxFactsPerCall(n int) Option { return func(c *config) { c.maxFacts = n } }
+
+// WithConfidenceMin drops extracted facts whose confidence falls below
+// the threshold (range [0, 1]).
+func WithConfidenceMin(f float64) Option { return func(c *config) { c.confMin = f } }
+
+// WithSaveContext runs a top-K Recall before extraction and feeds
+// snippets to the extractor as ExistingFacts. Costs one extra Recall
+// per Save; turn on when extractor quality matters more than latency.
+// topK <= 0 falls back to 10; threshold filters by score (0 disables).
+func WithSaveContext(topK int, threshold float64) Option {
+	return func(c *config) {
+		c.saveWithCtx = true
+		c.saveCtxTopK = topK
+		c.saveCtxThreshold = threshold
+	}
+}
+
+// WithHistoryStore wires a [history.Store] into the recall pipeline
+// so every Save reads the previous K messages from the same
+// conversation BEFORE extraction (injected as
+// [ExtractOptions.RecentMessages]) and APPENDS the current Save's
+// messages AFTER persistence. This unlocks cross-batch pronoun /
+// anaphora / entity-reference resolution for ingest topologies that
+// hand the recall layer many small Save batches per conversation
+// (chat applications, streaming transcripts, per-turn ingestion).
+//
+// k <= 0 disables the injection even when store is non-nil. A nil
+// store also disables the feature.
+//
+// The conversation key fed to the store is derived from the Save's
+// Scope via [NamespaceFor]; one conversation per Scope is the
+// expected mapping. Callers needing finer-grained conversation
+// boundaries (e.g. several distinct chats per user) should layer
+// per-conversation scopes on top of this option instead of inventing
+// a parallel buffer.
+func WithHistoryStore(store history.Store, k int) Option {
+	return func(c *config) {
+		if store == nil || k <= 0 {
+			return
+		}
+		c.historyStore = store
+		c.recentMsgsK = k
+	}
+}
+
+// WithRecentTurns is a convenience shortcut that installs an
+// in-process [history.InMemoryStore] and sets the per-Save read
+// window to k. Use [WithHistoryStore] directly to plug in a
+// persistent backend (history.FileStore, a Redis-backed
+// implementation, etc.).
+//
+// k <= 0 disables the feature.
+func WithRecentTurns(k int) Option {
+	return func(c *config) {
+		if k <= 0 {
+			return
+		}
+		c.historyStore = history.NewInMemoryStore()
+		c.recentMsgsK = k
+	}
+}
+
+// WithEntityStore enables the entity-link inverted index. The store
+// is written synchronously on Save (best-effort: failure logs but
+// does not roll back the entry upsert) and consulted at Recall time
+// by the EntityLinkLookup pipeline stage when the configured
+// pipeline includes it (see [pipeline.WithEntityLink]).
+//
+// Pass linkedCap <= 0 to keep the default ([defaultEntityLinkedCap]).
+// The store is constructed lazily inside [New] so callers do not
+// have to thread the underlying retrieval.Index themselves: the same
+// index passed to New backs both the entry rows and the sibling
+// entity namespace. Backends that do not implement
+// [retrieval.DocGetter] cause the feature to silently degrade to
+// "not wired" — a log line is emitted at construction time and
+// Save/Recall behave exactly as if the option were absent.
+//
+// Default OFF. Phased rollout: opt in per-deployment, observe
+// retrieval-quality metrics, then promote to default once broad
+// conversational-memory workloads justify the extra write/read cost.
+//
+// Common-noun gate: enabling the entity store also activates the
+// pollution gate at [defaultEntityMaxLinkedCount] (100). Tune via
+// [WithEntityStoreMaxLinkedCount]. Disabling the gate (negative
+// value) is the documented audited opt-out. The gate exists because
+// saturated entity rows can otherwise flood RRF with low-information
+// candidates; "just turn the feature on" now lands on the safe path.
+func WithEntityStore(linkedCap int) Option {
+	return func(c *config) {
+		// We can't construct the IndexEntityStore here because the
+		// retrieval.Index isn't available until New(); record the
+		// caller's intent + cap and let New() finish the wire-up.
+		c.entityStore = entityStoreSentinel
+		c.entityStoreLinkedCap = linkedCap
+	}
+}
+
+// WithEntityStoreMaxLinkedCount tunes the common-noun pollution
+// gate documented on [IndexEntityStoreOptions.MaxLinkedCount]: any
+// entity row whose linked_ids count strictly exceeds n is silently
+// skipped at Lookup time so the entity-link lane does not vote that
+// row's (low-signal) entries past the vector / BM25 lanes' picks.
+//
+// Sentinel semantics:
+//
+//   - n > 0: that exact threshold.
+//   - n == 0: leave the default in place ([defaultEntityMaxLinkedCount]
+//     = 100, applied by [NewIndexEntityStore]). Use this when you
+//     just want the safe production default, no opinion.
+//   - n < 0: EXPLICITLY DISABLE the gate. Turning it off is
+//     intentional and audited — [Memory.New] logs a one-time
+//     warning at construction so the opt-out leaves a paper
+//     trail. Use only when --dump-recall histograms prove your
+//     corpus's MetaEntityCount distribution is gate-tolerant.
+//
+// Must be paired with [WithEntityStore]; sets the option on the
+// IndexEntityStore that auto-constructs in [New].
+func WithEntityStoreMaxLinkedCount(n int) Option {
+	return func(c *config) {
+		c.entityStoreMaxLinkedCnt = n
+		c.entityStoreMaxLinkedCntExplicit = true
+	}
+}
+
+// WithReconcileInterval sets the cadence of the background
+// [Reconciler] that keeps side-store [Projection]s eventually
+// consistent with the primary index.
+//
+//   - d > 0: the Reconciler ticks every d. Smaller d = fresher
+//     projections at the cost of more namespace scans.
+//   - d == 0: the recall package uses [defaultReconcileInterval]
+//     (5 min) whenever any projection is registered.
+//   - d  < 0: the background loop is disabled. Synchronous
+//     [Memory.SyncSideStores] still works — useful in tests and
+//     in deployments that drive reconciliation from their own
+//     scheduler.
+//
+// This option has no effect when no projection is configured
+// ([WithEntityStore] is the only projection source today; future
+// graph / analytics views will register through the same channel).
+func WithReconcileInterval(d time.Duration) Option {
+	return func(c *config) { c.reconcileInterval = d }
+}
+
+// WithQueryEntityExtractor installs an LLM-backed extractor for the
+// query-side `QueryEntities` slot in the retrieval pipeline state.
+//
+// Default (when this option is absent) is the rule-based extractor
+// (see [pipeline.EntityExtract] / pipeline.ruleEntities) — capitalized
+// single tokens + quoted runs only. That is sufficient for vector +
+// BM25 entity boost, but it is asymmetric with the LLM-extracted,
+// multi-word entity phrases the write-side extractor persists into
+// the EntityStore (e.g. "photography club"). The asymmetry
+// silently collapses entity-link recall to a tiny join surface in
+// entity-dense conversational workloads.
+//
+// Wiring this option causes the auto-wired LTM pipeline to swap its
+// rule-based [pipeline.EntityExtract] for an LLM-backed extractor
+// (built on top of `client`) so query-side entity strings share the
+// same vocabulary as the write-side EntityStore keys.
+//
+// Cost: one extra LLM call per recall, ~150-400 ms latency added.
+// Best-effort: on any LLM / parse error, the extractor returns an
+// empty slice and the recall still completes (no extra failure
+// surface).
+//
+// nil disables the feature (rule extractor remains).
+func WithQueryEntityExtractor(client llm.LLM) Option {
+	return func(c *config) {
+		c.queryEntityLLM = client
+	}
+}
+
+// entityStoreSentinel is an unexported singleton used as a "build
+// me later" marker — New() detects this exact pointer and replaces
+// it with a real IndexEntityStore once it has the backing index. We
+// reuse the EntityStore interface (rather than introducing a config
+// boolean) so a future caller that wants to inject a custom store
+// can set c.entityStore to their own implementation through a
+// future WithCustomEntityStore option without churning the field
+// list.
+var entityStoreSentinel EntityStore = sentinelEntityStore{}
+
+// sentinelEntityStore satisfies EntityStore so the field can hold
+// it before New() rewires; its methods are intentionally no-ops to
+// avoid masking a wire-up bug behind a partially functional store.
+type sentinelEntityStore struct{}
+
+func (sentinelEntityStore) Link(context.Context, Scope, map[string][]string) error {
+	return nil
+}
+func (sentinelEntityStore) Lookup(context.Context, Scope, []string, int) ([]string, error) {
+	return nil, nil
+}
+func (sentinelEntityStore) Forget(context.Context, Scope, string) error { return nil }
+
+// WithoutMD5Dedup disables the per-fact md5(scope.UserID|content) dedup
+// probe (default ON). Disable only if you actively want duplicate
+// upserts across re-extractions.
+func WithoutMD5Dedup() Option { return func(c *config) { c.md5Dedup = false } }
+
+// WithoutSoftMerge disables the VECTOR + entity-set supersede channel
+// (default ON). The vector channel marks near-duplicate older
+// neighbours with metadata `superseded_by=<new_id>` based on cosine
+// similarity and entity overlap; pair with [pipeline.SupersededDecay]
+// for retrieval-time damping.
+//
+// This option does NOT affect the deterministic SLOT supersede
+// channel — facts that carry both Subject and Predicate continue to
+// supersede same-slot neighbours regardless. Use [WithoutSlotChannel]
+// to disable the slot channel as well. The two channels are
+// orthogonal so callers can keep the deterministic path while
+// silencing the noisier vector path (e.g. when entity extraction is
+// unreliable on their corpus).
+func WithoutSoftMerge() Option { return func(c *config) { c.softMerge = false } }
+
+// WithoutSlotChannel disables the deterministic (subject, predicate)
+// supersede channel that runs whenever an extractor populates both
+// slot fields (default ON). Use this when you want to keep the
+// vector soft-merge path but disable the slot path — for example
+// when migrating an existing namespace whose historical entries were
+// written without slot metadata, and you want the read-side
+// SupersededDecay to depend exclusively on vector-channel decisions
+// for a controlled rollout window.
+func WithoutSlotChannel() Option { return func(c *config) { c.slotMerge = false } }
+
+// WithUpdateResolver installs an opt-in LLM-driven resolver that is
+// consulted on Save for facts the slot supersede channel cannot handle
+// (i.e. ExtractedFact.Subject or Predicate is empty). The resolver
+// receives the new fact plus its top-K nearest existing memories and
+// returns a list of [ResolveAction] (ADD / UPDATE / DELETE / NOOP).
+//
+// FlowCraft applies UPDATE and DELETE non-destructively: targeted
+// entries gain superseded_by metadata (DELETE additionally sets
+// tombstone=true), preserving Auditable.History and Rollback. ADD and
+// NOOP require no action since the new entry is always written.
+//
+// topK <= 0 falls back to 5. Passing a nil resolver disables the path
+// (the default).
+//
+// Ordering note: the resolver runs AFTER the slot and vector
+// supersede channels. Candidates whose older versions were already
+// tagged by those channels will appear with damped scores (or be
+// missing from the top-K entirely) thanks to SupersededDecay; this
+// is intentional — the resolver should not re-decide what the
+// deterministic channels already handled. Operators reading the
+// resolver_actions_total counter should expect candidate counts to
+// shrink when slot vocabulary coverage improves.
+func WithUpdateResolver(r UpdateResolver, topK int) Option {
+	return func(c *config) {
+		c.updateResolver = r
+		if topK > 0 {
+			c.resolverTopK = topK
+		} else {
+			c.resolverTopK = 5
+		}
+	}
+}
+
+// WithPredicateAlias merges additional predicate aliases on top of the
+// built-in [PredicateAliases] table. Use this to teach the slot
+// supersede channel about namespace-specific synonyms (e.g. medical
+// SaaS adding "primary_care_physician" → "doctor"). Keys MUST be
+// lowercase + trimmed; values SHOULD match a canonical predicate.
+//
+// Per-instance overrides win over the global table so callers can
+// remap a built-in entry if needed without forking the source.
+func WithPredicateAlias(aliases map[string]string) Option {
+	return func(c *config) {
+		if len(aliases) == 0 {
+			return
+		}
+		if c.predicateAliases == nil {
+			c.predicateAliases = make(map[string]string, len(aliases))
+		}
+		maps.Copy(c.predicateAliases, aliases)
+	}
+}
+
+// WithSubjectAlias mirrors [WithPredicateAlias] for ExtractedFact.Subject.
+// Composite subjects (those containing ':' or '.') are passed through
+// without aliasing so per-instance subjects like "pet:Lucky" remain
+// distinguishable.
+func WithSubjectAlias(aliases map[string]string) Option {
+	return func(c *config) {
+		if len(aliases) == 0 {
+			return
+		}
+		if c.subjectAliases == nil {
+			c.subjectAliases = make(map[string]string, len(aliases))
+		}
+		maps.Copy(c.subjectAliases, aliases)
+	}
+}
+
+// WithSoftMergeThreshold tunes the cosine threshold (default 0.92) and
+// neighbour-fanout (default 3) for soft-merge. Values <= 0 keep the
+// default.
+func WithSoftMergeThreshold(cosineMin float64, topK int) Option {
+	return func(c *config) {
+		if cosineMin > 0 {
+			c.softMergeCosineMin = cosineMin
+		}
+		if topK > 0 {
+			c.softMergeTopK = topK
+		}
+	}
+}
+
+// WithJobQueue plugs in a durable [JobQueue] for SaveAsync. Defaults to
+// an in-memory queue suitable for tests; production deployments should
+// supply a persistent adapter (e.g. a SQLite-backed queue) from an
+// external package.
+func WithJobQueue(q JobQueue) Option { return func(c *config) { c.jobQueue = q } }
+
+// WithAsyncWorkers sets the number of background workers draining the
+// JobQueue. Default 2.
+func WithAsyncWorkers(n int) Option { return func(c *config) { c.asyncWorkers = n } }
+
+// WithJobTimeout caps the per-job execution budget. A worker that
+// exceeds it sees its context canceled, the extractor / index call
+// returns ctx.Err(), and the job is rescheduled (or sent to dead via
+// the normal failOrRetry path). Defaults to 5 minutes; pass 0 to keep
+// the default.
+//
+// This bound also guarantees [Memory.Close] never blocks longer than
+// timeout + the time needed to drain currently-leased jobs, because
+// Close cancels the worker context which is propagated into Extract
+// and the index Upsert.
+func WithJobTimeout(d time.Duration) Option {
+	return func(c *config) {
+		if d > 0 {
+			c.jobTimeout = d
+		}
+	}
+}
+
+// WithJobRetry configures retry behaviour for async jobs. maxAttempts
+// <= 0 keeps default 5; either backoff <= 0 keeps the corresponding
+// default (1s base, 5m cap).
+func WithJobRetry(maxAttempts int, backoffBase, backoffMax time.Duration) Option {
+	return func(c *config) {
+		if maxAttempts > 0 {
+			c.jobMaxAttempts = maxAttempts
+		}
+		if backoffBase > 0 {
+			c.jobBackoffBase = backoffBase
+		}
+		if backoffMax > 0 {
+			c.jobBackoffMax = backoffMax
+		}
+	}
+}
+
+// WithRequireUserID rejects any write/recall whose scope is missing
+// UserID, unless paired with [WithAllowGlobal]. Use this to enforce
+// per-user isolation in multi-tenant deployments.
+func WithRequireUserID() Option { return func(c *config) { c.requireUserID = true } }
+
+// WithAllowGlobal lets RequireUserID-enabled instances still serve
+// runtime-global rows (UserID == ""). Has no effect without
+// [WithRequireUserID].
+func WithAllowGlobal() Option { return func(c *config) { c.allowGlobal = true } }
+
+// WithTTLPolicy enables expiry on entries. The policy returns a
+// duration per entry; when expired entries are recalled they are
+// filtered unless the caller passes Request.WithStale = true.
+func WithTTLPolicy(p TTLPolicy) Option { return func(c *config) { c.ttlPolicy = p } }
+
+// WithSweeper enables a background goroutine that hard-deletes expired
+// rows. interval <= 0 keeps default 1h; batchMax <= 0 keeps default 500.
+// Requires [WithTTLPolicy] to take effect.
+func WithSweeper(interval time.Duration, batchMax int) Option {
+	return func(c *config) {
+		c.sweeperEnabled = true
+		if interval > 0 {
+			c.sweeperInterval = interval
+		}
+		if batchMax > 0 {
+			c.sweeperBatchMax = batchMax
+		}
+	}
+}
+
+// WithNamespaceRegistry overrides the registry used to track namespaces for
+// background sweeps. Defaults to an in-memory implementation.
+func WithNamespaceRegistry(r NamespaceRegistry) Option {
+	return func(c *config) {
+		if r != nil {
+			c.nsRegistry = r
+		}
+	}
+}
+
+// WithClock injects a time source (mainly for tests).
+func WithClock(now func() time.Time) Option { return func(c *config) { c.now = now } }
+
+// WithLogger sets a structured-log sink for internal warnings (e.g.
+// background-job retries). nil disables logging (default).
+func WithLogger(fn func(string, ...any)) Option { return func(c *config) { c.logger = fn } }
+
+// WithJournal records every mutation for History/Rollback; required by
+// the audit-trail APIs on [Memory].
+func WithJournal(j journal.Journal) Option { return func(c *config) { c.journal = j } }
+
+// lt is the canonical Memory implementation. It satisfies the core
+// [Memory] contract plus the optional [Auditable] and [JobController]
+// sub-interfaces; callers that need the audit or job APIs obtain them
+// via type assertion on the Memory returned by [New].
+//
+// workerCtx / workerCancel propagate Close() into in-flight jobs: the
+// worker derives a per-job context from workerCtx with the configured
+// timeout, so cancelling workerCtx (Close) bounds Close()'s wait by the
+// extractor / index call's responsiveness to ctx cancellation.
+type lt struct {
+	cfg       config
+	idx       retrieval.Index
+	pipe      *basepipe.Pipeline
+	stopCh    chan struct{}
+	wgWorkers sync.WaitGroup
+
+	workerCtx    context.Context
+	workerCancel context.CancelFunc
+
+	// reconciler keeps registered side-store [Projection]s
+	// eventually consistent with idx. Nil when no projection was
+	// registered. Lifecycle is tied to (start in [New], stop in
+	// [Close]).
+	reconciler *Reconciler
+
+	// projections is the same slice the reconciler holds, exposed
+	// here so eager write paths (upsertFacts, Add) can fan out
+	// the just-upserted entries to every registered projection
+	// via [lt.projectEager] without going through the reconciler.
+	// Both the eager path and the reconciler call [Projection.
+	// Project] with the same additive semantics; the reconciler
+	// adds the diff+Forget step the eager path skips. Wiring
+	// landed via #179.1.
+	projections []Projection
+
+	// historyAppendMu serialises the read-modify-write fallback in
+	// [lt.appendHistory] on a per-namespace basis. Only the
+	// fallback path uses it; stores that implement
+	// [history.MessageAppender] are expected to provide their own
+	// atomicity. Fixes the silent-message-drop race in #154 for
+	// third-party stores that don't (yet) implement
+	// MessageAppender.
+	historyAppendMu syncx.KeyedMutex
+}
+
+var (
+	_ Memory          = (*lt)(nil)
+	_ Auditable       = (*lt)(nil)
+	_ JobController   = (*lt)(nil)
+	_ SideStoreSyncer = (*lt)(nil)
+)
+
+// SyncSideStores implements [SideStoreSyncer]. No-op when no
+// projection is registered (the EntityStore was not enabled).
+func (m *lt) SyncSideStores(ctx context.Context, scope Scope) error {
+	if m.reconciler == nil {
+		return nil
+	}
+	if err := m.validateScope(scope); err != nil {
+		return err
+	}
+	return m.reconciler.SyncScope(ctx, scope)
+}
+
+// New constructs a Memory backed by idx. Caller must Close() on
+// shutdown. idx is a positional parameter because it is the only
+// non-replaceable dependency of the package.
+func New(idx retrieval.Index, opts ...Option) (Memory, error) {
+	if idx == nil {
+		return nil, errors.New("recall: idx is required")
+	}
 	cfg := config{
-		telemetry: telemetry.NopHook{},
+		mode:               ModeAdditive,
+		md5Dedup:           true,
+		softMerge:          true,
+		slotMerge:          true,
+		softMergeCosineMin: 0.92,
+		softMergeTopK:      3,
+		saveCtxTopK:        10,
+		asyncWorkers:       2,
+		jobMaxAttempts:     5,
+		jobBackoffBase:     time.Second,
+		jobBackoffMax:      5 * time.Minute,
+		jobTimeout:         5 * time.Minute,
+		sweeperInterval:    time.Hour,
+		sweeperBatchMax:    500,
+		now:                time.Now,
 	}
 	for _, opt := range opts {
 		if opt != nil {
 			opt(&cfg)
 		}
 	}
-	if cfg.store == nil {
-		cfg.store = temporalstore.NewMemoryStore()
+	if len(cfg.ltmOpts) > 0 && len(cfg.legacyLTMOpts) > 0 {
+		return nil, errors.New("recall: cannot mix sdk/recall/pipeline and deprecated sdk/retrieval/pipeline LTM options")
 	}
-	if cfg.retrievalIndex == nil {
-		cfg.retrievalIndex = retrievalmem.New()
+	if cfg.extractor == nil {
+		cfg.extractor = &AdditiveExtractor{
+			LLM:              cfg.llm,
+			IncludeAssistant: cfg.includeAst || cfg.llm == nil,
+			MaxFacts:         cfg.maxFacts,
+			ConfidenceMin:    cfg.confMin,
+		}
 	}
-	if cfg.compiler == nil {
-		stages := ingest.Stages{}
-		if cfg.timeParser != nil || cfg.entityExtractor != nil {
-			stages.Structurizer = ingest.DefaultStructurizer{
-				EntityExtractor: cfg.entityExtractor,
-				TimeParser:      cfg.timeParser,
+	if cfg.jobQueue == nil {
+		cfg.jobQueue = NewMemoryJobQueue()
+	}
+	// Always initialise the in-memory namespace registry. It is
+	// cheap (a sync.Map plus a string slice) and removes the
+	// invariant "nsRegistry is nil unless WithSweeper or
+	// WithNamespaceRegistry is used" — that invariant was the
+	// trigger for #160 (SweepOnce nil-pointer panic when callers
+	// drove TTL passes from their own scheduler). Sweeper /
+	// projections / SweepOnce / rememberNamespace all now share
+	// one registry by default.
+	if cfg.nsRegistry == nil {
+		cfg.nsRegistry = NewMemoryNamespaceRegistry()
+	}
+	wrapped := idx
+	if cfg.journal != nil {
+		wrapped = journal.Wrap(idx, cfg.journal)
+	}
+	// Construct the entity store now that we have a concrete index.
+	// WithEntityStore stashed a sentinel marker; replace it with the
+	// IndexEntityStore (or with nil, keeping the feature disabled,
+	// when the index can't satisfy DocGetter — NewIndexEntityStore
+	// signals this by returning nil).
+	if _, isSentinel := cfg.entityStore.(sentinelEntityStore); isSentinel {
+		// Audit the explicit-disable opt-out at construction time
+		// (es-default). The store's NewIndexEntityStore normalises
+		// negative to 0 (gate off) without complaint; the warning
+		// only fires when the caller went out of their way to pass
+		// a negative — silent default → safe gate stays silent.
+		if cfg.entityStoreMaxLinkedCntExplicit && cfg.entityStoreMaxLinkedCnt < 0 && cfg.logger != nil {
+			cfg.logger("recall: WithEntityStoreMaxLinkedCount(%d) explicitly disables the common-noun pollution gate; "+
+				"this is only safe when --dump-recall histograms confirm your corpus's MetaEntityCount distribution "+
+				"is gate-tolerant", cfg.entityStoreMaxLinkedCnt)
+		}
+		es := NewIndexEntityStore(idx, IndexEntityStoreOptions{
+			LinkedCap:      cfg.entityStoreLinkedCap,
+			MaxLinkedCount: cfg.entityStoreMaxLinkedCnt,
+			Clock:          cfg.now,
+		})
+		// Assign as an explicit nil interface (not a typed-nil
+		// wrapper) when the index doesn't satisfy DocGetter so
+		// downstream `if cfg.entityStore == nil` checks behave.
+		if es == nil {
+			cfg.entityStore = nil
+		} else {
+			cfg.entityStore = es
+		}
+	}
+	pipe := cfg.pipe
+	if pipe == nil {
+		// Compose: user-supplied LTM tuning (cfg.ltmOpts) FIRST,
+		// auto-wired feature options LAST. Later options win in
+		// pipeline.LTM so this gives features the last word —
+		// callers who want to OVERRIDE a feature's auto-wire (e.g.
+		// turn off the entity-link lane while keeping the store
+		// for write-path Link telemetry) should reach for
+		// [WithPipeline] explicitly. Within "I want LTM" the
+		// recall package owns the final composition.
+		if len(cfg.legacyLTMOpts) > 0 {
+			legacyOpts := append([]basepipe.LTMOption(nil), cfg.legacyLTMOpts...)
+			if cfg.entityStore != nil {
+				legacyOpts = append(legacyOpts,
+					basepipe.WithMultiRecall(true),
+					basepipe.WithEntityLinkLane(true),
+					basepipe.WithEntityLinkResolver(newInternalEntityLinkResolver(cfg.entityStore)),
+				)
 			}
+			if cfg.queryEntityLLM != nil {
+				legacyOpts = append(legacyOpts,
+					basepipe.WithEntityExtractor(llmQueryEntityExtractor(cfg.queryEntityLLM)),
+				)
+			}
+			pipe = basepipe.LTM(cfg.embedder, legacyOpts...)
+		} else {
+			ltmOpts := append([]recallpipe.LTMOption(nil), cfg.ltmOpts...)
+			if cfg.entityStore != nil {
+				// The entity-link lane only participates under
+				// multi-recall (it's a 4th MultiRetrieve mode);
+				// enabling it without multi-recall would silently
+				// no-op. Force multi-recall on too so
+				// [WithEntityStore] has a single, predictable
+				// activation contract: opt in once and both the
+				// write path (Link) and the read path (lane + RRF
+				// fusion) light up together.
+				ltmOpts = append(ltmOpts,
+					recallpipe.WithMultiRecall(true),
+					recallpipe.WithEntityLinkLane(true),
+					recallpipe.WithEntityLinkResolver(newInternalEntityLinkResolver(cfg.entityStore)),
+				)
+			}
+			if cfg.queryEntityLLM != nil {
+				// Wire the LLM-backed query entity extractor LAST so
+				// it overrides any rule-based extractor a caller may
+				// have set via WithLTMOption. Cost: 1 LLM call per
+				// recall. Best-effort: errors fall back to "no
+				// entities" rather than failing the recall.
+				ltmOpts = append(ltmOpts,
+					recallpipe.WithEntityExtractor(llmQueryEntityExtractor(cfg.queryEntityLLM)),
+				)
+			}
+			pipe = recallpipe.LTM(cfg.embedder, ltmOpts...)
 		}
-		if cfg.llmExtractor != nil {
-			stages.Extractor = cfg.llmExtractor.build()
-		}
-		if cfg.governance != nil {
-			stages.Governance = cfg.governance
-		}
-		cfg.compiler = ingest.New(stages)
-	}
-	if !cfg.resolverSet {
-		cfg.resolver = ingest.NewResolver()
-	}
-
-	reg := lens.NewRegistry()
-	wireDefaultLenses(reg, cfg.graphEnabled, cfg.evidenceStore != nil)
-	lensDeps := lens.Deps{
-		Store:         cfg.store,
-		EvidenceStore: cfg.evidenceStore,
-		Index:         cfg.retrievalIndex,
-		Telemetry:     cfg.telemetry,
-		Embedder:      cfg.embedder,
-		GraphEnabled:  cfg.graphEnabled,
-	}
-	built, err := reg.BuildAll(lensDeps)
-	if err != nil {
-		return nil, fmt.Errorf("recall.New: %w", err)
-	}
-	projections := reg.Projections(built)
-	projections = append(projections, cfg.extraProjections...)
-	srcs := reg.Sources(built)
-	if len(cfg.sources) > 0 {
-		srcs = cfg.sources
-	}
-	entitySnap := reg.EntitySnapshotter(built)
-
-	qc := cfg.queryCompiler
-	if qc == nil {
-		qc = intent.Default()
-	}
-	specs := reg.Specs()
-	planr := cfg.planner
-	if planr == nil {
-		rb := planner.NewFromSpecs(specs)
-		rb.GraphEnabled = cfg.graphEnabled
-		planr = rb
-	} else if cfg.graphEnabled {
-		if rb, ok := planr.(*planner.RuleBased); ok {
-			rb.GraphEnabled = true
+	} else if len(cfg.ltmOpts) > 0 || len(cfg.legacyLTMOpts) > 0 {
+		// User passed both WithPipeline AND WithLTMOption — the
+		// latter is dead in this combination. Log so accidental
+		// double-wiring shows up in CI rather than silently
+		// degrades a feature.
+		if cfg.logger != nil {
+			cfg.logger("recall: WithLTMOption ignored because WithPipeline is set; pass tuning options via the pipeline construction instead")
 		}
 	}
-	fuser := cfg.fuser
-	if fuser == nil {
-		fuser = fusion.WeightedRRF{}
+	workerCtx, workerCancel := context.WithCancel(context.Background())
+	m := &lt{
+		cfg:          cfg,
+		idx:          wrapped,
+		pipe:         pipe,
+		stopCh:       make(chan struct{}),
+		workerCtx:    workerCtx,
+		workerCancel: workerCancel,
 	}
-	mat := cfg.materializer
-	if mat == nil {
-		mat = materialize.New(cfg.store, cfg.telemetry)
+	// Wire side-store projections. The EntityStore — when enabled
+	// via [WithEntityStore] — is the only projection today. New
+	// projections (GraphStore, SearchAnalytics, …) plug in by
+	// adding an [entityStoreProjection]-style adapter here. The
+	// [Reconciler] takes ownership of keeping them in sync with
+	// the primary index; write paths stay uninstrumented.
+	var projections []Projection
+	if cfg.entityStore != nil {
+		if pr := newEntityStoreProjection(cfg.entityStore, idx); pr != nil {
+			projections = append(projections, pr)
+		}
 	}
-	fusionOpts := cfg.fusionOpts
-	if fusionOpts.Weights == nil {
-		fusionOpts.Weights = weightsFromSpecs(specs)
+	// Reconciler needs the namespace registry to know which scopes
+	// to walk. Construct one on demand if no other component (TTL
+	// sweeper) already required it — the registry is cheap and
+	// projections without a registry would be unable to find
+	// scopes to reconcile. The default-init above already ensures
+	// nsRegistry is non-nil, but the guard is kept defensively in
+	// case a future refactor revisits the default.
+	if len(projections) > 0 && cfg.nsRegistry == nil {
+		cfg.nsRegistry = NewMemoryNamespaceRegistry()
 	}
-	rnk := cfg.contextRanker
-	if rnk == nil {
-		rnk = ranker.NewDefault()
+	m.projections = projections
+	if len(projections) > 0 {
+		// The reconciler is created whenever a projection exists so
+		// the synchronous [Memory.SyncSideStores] path works in all
+		// modes — including [WithReconcileInterval](-1), which only
+		// disables the BACKGROUND ticker (see reconciler.start()
+		// below).
+		m.reconciler = newReconciler(
+			wrapped,
+			projections,
+			cfg.nsRegistry,
+			cfg.reconcileInterval,
+			cfg.now,
+			cfg.logger,
+		)
 	}
-
-	deferredTel := telemetry.NewDeferred(cfg.telemetry)
-	cfg.telemetry = deferredTel
-
-	if cfg.sideEffectOutbox == nil {
-		cfg.sideEffectOutbox = sideeffectstore.New()
+	for i := 0; i < cfg.asyncWorkers; i++ {
+		m.wgWorkers.Add(1)
+		go m.worker()
 	}
-
-	fanout := pipeline.NewFanout(projections, cfg.telemetry)
-	needsEmbedding := cfg.embedder != nil
-	m := &memory{
-		store:              cfg.store,
-		evidenceStore:      cfg.evidenceStore,
-		retrievalIndex:     cfg.retrievalIndex,
-		compiler:           cfg.compiler,
-		resolver:           cfg.resolver,
-		fanout:             fanout,
-		telemetry:          cfg.telemetry,
-		projections:        projections,
-		queryCompiler:      qc,
-		planner:            planr,
-		sources:            srcs,
-		fuser:              fuser,
-		materializer:       mat,
-		fusionOpts:         fusionOpts,
-		graphEnabled:       cfg.graphEnabled,
-		reranker:           cfg.reranker,
-		evolution:          cfg.evolution,
-		entitySnap:         entitySnap,
-		writeLocks:         make(map[writeScopeKey]*writeLock),
-		deferredTelemetry:  deferredTel,
-		asyncSemanticQueue: cfg.asyncSemanticQueue,
-		sideEffectOutbox:   cfg.sideEffectOutbox,
+	if cfg.sweeperEnabled && cfg.ttlPolicy != nil {
+		m.wgWorkers.Add(1)
+		go m.sweeperLoop()
 	}
-	tel := cfg.telemetry
-	enqueueSide := writestages.NewEnqueueSideEffects(cfg.sideEffectOutbox, needsEmbedding, cfg.evolution)
-	m.writePreRunner = write.NewRunner([]pipeline.Stage[*write.WriteState]{
-		writestages.NewValidate(),
-		writestages.NewIngest(cfg.compiler, m.entitySnapshots),
-	}, tel)
-	m.writePostRunner = write.NewRunner([]pipeline.Stage[*write.WriteState]{
-		writestages.NewResolve(cfg.resolver, cfg.store),
-		writestages.NewAppend(cfg.store, tel),
-		writestages.NewValidityClose(cfg.store, fanout, tel),
-		enqueueSide,
-	}, tel)
-	m.asyncEpisodePreRunner = write.NewRunner([]pipeline.Stage[*write.WriteState]{
-		writestages.NewValidate(),
-		writestages.NewBuildEpisode(),
-		writestages.NewStructuredIngest(cfg.compiler, m.entitySnapshots),
-	}, tel)
-	m.asyncEpisodeCanonicalRunner = write.NewRunner([]pipeline.Stage[*write.WriteState]{
-		writestages.NewAppendEpisode(cfg.store, tel),
-		writestages.NewResolve(cfg.resolver, cfg.store),
-		writestages.NewAppend(cfg.store, tel),
-		writestages.NewValidityClose(cfg.store, fanout, tel),
-		enqueueSide,
-		writestages.NewWriteSemanticOutbox(m.asyncSemanticQueue, tel),
-	}, tel)
-	m.asyncSemanticWorkerPreRunner = write.NewRunner([]pipeline.Stage[*write.WriteState]{
-		writestages.NewValidate(),
-		writestages.NewIngest(cfg.compiler, m.entitySnapshots),
-	}, tel)
-	m.asyncSemanticWorkerPostRunner = write.NewRunner([]pipeline.Stage[*write.WriteState]{
-		writestages.NewResolve(cfg.resolver, cfg.store),
-		writestages.NewOriginStamp(),
-		writestages.NewAppend(cfg.store, tel),
-		writestages.NewValidityClose(cfg.store, fanout, tel),
-		enqueueSide,
-	}, tel)
-	var rerank port.Reranker
-	if cfg.reranker != nil {
-		rerank = cfg.reranker
+	if m.reconciler != nil && cfg.reconcileInterval >= 0 {
+		// Negative interval disables the background loop; the
+		// synchronous [Memory.SyncSideStores] entry point keeps
+		// working (e.g. for tests, deterministic schedulers).
+		m.reconciler.start()
 	}
-	m.readRunner = read.NewRunner([]pipeline.Stage[*read.ReadState]{
-		readstages.NewIntent(qc),
-		readstages.NewPlan(planr, cfg.graphEnabled, m.entitySnapshotsForScopes),
-		readstages.NewFederationFanout(
-			func() []port.Source { return m.sources },
-			fuser,
-			fusionOpts,
-			planner.FusionCandidateCap,
-			mat,
-		),
-		readstages.NewFederationMerge(),
-		readstages.NewTrustFilter(),
-		readstages.NewRank(rnk, cfg.reranker != nil),
-		readstages.NewBuildHits(rerank),
-		readstages.NewEvolutionAfterRecall(cfg.evolution),
-	}, tel)
-	m.rebuildRunner = rebuild.NewRunner([]pipeline.Stage[*rebuild.RebuildState]{
-		rebuildstages.NewScan(cfg.store),
-		rebuildstages.NewProject(fanout, projections),
-	}, tel)
-	m.forgetRunner = forget.NewRunner([]pipeline.Stage[*forget.State]{
-		forgetstages.NewForgetAll(cfg.store, fanout, projections, cfg.evidenceStore),
-	}, tel)
-	m.feedbackRunner = feedback.NewRunner([]pipeline.Stage[*feedback.State]{
-		feedbackstages.NewApplyFeedback(cfg.store, fanout),
-	}, tel)
-	m.revisionRunner = revision.NewRunner([]pipeline.Stage[*revision.State]{
-		revisionstages.NewLookupSource(cfg.store),
-		revisionstages.NewAttachRevision(),
-		revisionstages.NewSave(m.saveRevisionFact, cfg.store),
-	}, tel)
 	return m, nil
 }
 
-// saveRevisionFact drives the canonical write pipeline (pre + post
-// runners) under the assumption that the caller already holds the
-// per-scope write lock — Memory.Fork / Memory.Contest take the lock
-// before invoking revisionRunner.Run. Returning the freshly-stored
-// canonical fact lets the revision_save stage populate state.Created
-// without an extra store.Get round-trip from the facade.
-func (m *memory) saveRevisionFact(ctx context.Context, scope domain.Scope, fact domain.TemporalFact) (domain.TemporalFact, error) {
-	state := &write.WriteState{
-		Scope:      scope,
-		Facts:      []domain.TemporalFact{fact},
-		ObservedAt: fact.ObservedAt,
-	}
-	if err := m.writePreRunner.Run(ctx, state); err != nil {
-		return domain.TemporalFact{}, err
-	}
-	if len(state.Ingest.Facts) == 0 {
-		return domain.TemporalFact{}, errdefs.Internalf("recall.Revision: ingest produced no facts")
-	}
-	allocateSaveOutboxID(state)
-	if err := m.writePostRunner.Run(ctx, state); err != nil {
-		return domain.TemporalFact{}, err
-	}
-	if len(state.AppendedFactIDs) == 0 {
-		return domain.TemporalFact{}, errdefs.Internalf("recall.Revision: no fact id returned")
-	}
-	created, err := m.store.Get(ctx, scope, state.AppendedFactIDs[0])
+// JobStatus implements Memory.
+func (m *lt) JobStatus(ctx context.Context, id JobID) (JobStatus, error) {
+	rec, err := m.cfg.jobQueue.Get(ctx, id)
 	if err != nil {
-		return domain.TemporalFact{}, fmt.Errorf("recall.Revision: re-get: %w", err)
+		return JobStatus{}, err
 	}
-	return created, nil
+	return statusFromRecord(rec), nil
 }
 
-// Save runs the canonical write pipeline with strict transactional
-// semantics:
-//
-//	compile -> conflict resolve -> store.Append -> UpdateValidity
-//	         -> fanout.ProjectRequired -> fanout.ProjectOptional
-//
-// Conflict resolution runs against a read-only store view, so the
-// compiler stays free of write side-effects. Resolution emits two
-// disjoint outputs:
-//
-//   - Facts to append (already include Supersedes pointers for
-//     state/preference revisions).
-//   - Validity closes to apply to prior facts AFTER the new facts
-//     have been appended (so the ledger never carries a closed
-//     fact pointing at a not-yet-written successor).
-//
-// If validity close fails after Append succeeds, Save best-effort
-// deletes the just-appended facts and returns the original error so
-// the ledger does not end up with an orphan close.
-//
-// If a required projection fails the call rolls back: best-effort
-// fanout.ForgetRequired/Optional cleans up partially-projected
-// state, then store.Delete drops the canonical fact, and the
-// original projection error is returned. Cleanup failures are only
-// reported through the telemetry hook so the user-visible error
-// stays attributable to the original cause.
-//
-// Optional projections run after required ones; their failure does
-// not affect the Save outcome (telemetry only).
-func (m *memory) Save(ctx context.Context, scope Scope, req SaveRequest) (SaveResult, error) {
-	res, _, err := m.runSave(ctx, scope, req, false, false)
-	return res, err
-}
-
-// SaveExplain runs the canonical write pipeline like Save and also
-// returns the compiled facts and compiler drops so callers can run
-// diagnostics on the extractor / compiler / resolver stages.
-func (m *memory) SaveExplain(ctx context.Context, scope Scope, req SaveRequest) (SaveResult, SaveTrace, error) {
-	return m.runSave(ctx, scope, req, true, false)
-}
-
-// SaveExplainDebug is like SaveExplain but retains raw dropped-fact
-// payloads in the trace. Not safe for production telemetry export.
-func (m *memory) SaveExplainDebug(ctx context.Context, scope Scope, req SaveRequest) (SaveResult, SaveTrace, error) {
-	return m.runSave(ctx, scope, req, true, true)
-}
-
-func (m *memory) runSave(ctx context.Context, scope Scope, req SaveRequest, withTrace, includeRawDiagnostics bool) (SaveResult, SaveTrace, error) {
-	if err := ctx.Err(); err != nil {
-		return SaveResult{}, SaveTrace{}, err
-	}
-	// Phase F.1a branch: async semantic mode degrades cleanly when
-	// there are no Turns (no LLM work to defer) and rejects without
-	// side effects when no queue is wired. Anything else falls
-	// through to the legacy sync path so existing callers see
-	// byte-identical behaviour at WriteModeSync (the zero value).
-	if req.Mode == domain.WriteModeAsyncSemantic {
-		if len(req.Turns) == 0 {
-			factsOnly := req
-			factsOnly.Mode = domain.WriteModeSync
-			return m.runSaveSync(ctx, scope, factsOnly, withTrace, includeRawDiagnostics)
+// AwaitJob polls JobQueue until terminal state or timeout.
+func (m *lt) AwaitJob(ctx context.Context, id JobID, timeout time.Duration) (JobStatus, error) {
+	if timeout <= 0 {
+		s, err := m.JobStatus(ctx, id)
+		if err != nil {
+			return JobStatus{}, err
 		}
-		if m.asyncSemanticQueue == nil {
-			return SaveResult{}, SaveTrace{}, errdefs.Validationf(
-				"recall.Save: WriteModeAsyncSemantic requires WithAsyncSemanticQueue option")
+		return s, ErrAwaitTimeout
+	}
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	ticker := time.NewTicker(50 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		s, err := m.JobStatus(ctx, id)
+		if err != nil {
+			return JobStatus{}, err
 		}
-		return m.runSaveAsync(ctx, scope, req, withTrace, includeRawDiagnostics)
-	}
-	return m.runSaveSync(ctx, scope, req, withTrace, includeRawDiagnostics)
-}
-
-// runSaveSync is the canonical pre-F.1 Save body: pre-runner outside
-// the scope lock, post-runner inside. It serves both
-// WriteModeSync calls and the Facts-only leg of an async request.
-func (m *memory) runSaveSync(ctx context.Context, scope Scope, req SaveRequest, withTrace, includeRawDiagnostics bool) (SaveResult, SaveTrace, error) {
-	state := &write.WriteState{
-		Scope:                 scope,
-		Facts:                 req.Facts,
-		Turns:                 req.Turns,
-		ObservedAt:            req.ObservedAt,
-		Tier:                  req.Tier,
-		DiagnosticsIncludeRaw: includeRawDiagnostics,
-		RecentMessages:        req.RecentMessages,
-		ExistingFactsAnchor:   req.ExistingFactsAnchor,
-		// Now left zero so the ingestor's Clock (or time.Now
-		// fallback inside ingest) anchors relative-time resolution,
-		// matching the legacy runSave path that did not pass Now on
-		// IngestInput.
-	}
-	if withTrace {
-		state.EnsureTrace()
-	}
-
-	startGen := m.peekScopeGen(scope)
-	if err := m.writePreRunner.Run(ctx, state); err != nil {
-		return SaveResult{}, publicSaveTrace(state), err
-	}
-	if len(state.Ingest.Facts) == 0 {
-		return SaveResult{}, publicSaveTrace(state), nil
-	}
-
-	m.holdWriteTelemetry()
-	unlock, err := m.enterScopeWrite(scope, startGen)
-	if err != nil {
-		m.flushWriteTelemetry()
-		return SaveResult{}, publicSaveTrace(state), err
-	}
-
-	allocateSaveOutboxID(state)
-	if err := m.writePostRunner.Run(ctx, state); err != nil {
-		unlock()
-		m.flushWriteTelemetry()
-		return SaveResult{}, publicSaveTrace(state), err
-	}
-	if err := m.abortIfScopeGenChanged(scope, startGen, state); err != nil {
-		unlock()
-		m.flushWriteTelemetry()
-		return SaveResult{}, publicSaveTrace(state), err
-	}
-	unlock()
-	m.flushWriteTelemetry()
-	if len(state.AppendedFactIDs) == 0 {
-		return SaveResult{}, publicSaveTrace(state), nil
-	}
-	return SaveResult{FactIDs: append([]string(nil), state.AppendedFactIDs...)}, publicSaveTrace(state), nil
-}
-
-// runSaveAsync is the F.1a async semantic facade. Episode lane and
-// structured Facts share one locked canonical pipeline: Save returns
-// after episode / structured facts and durable outbox jobs are
-// committed. Projection, embedding, and evolution converge later via
-// SideEffectProcessor.
-func (m *memory) runSaveAsync(ctx context.Context, scope Scope, req SaveRequest, withTrace, includeRawDiagnostics bool) (SaveResult, SaveTrace, error) {
-	state := newEpisodeState(scope, req, withTrace, includeRawDiagnostics)
-	if err := m.asyncEpisodePreRunner.Run(ctx, state); err != nil {
-		return SaveResult{}, publicSaveTrace(state), err
-	}
-	m.holdWriteTelemetry()
-	unlock := m.lockWriteScope(scope)
-	allocateSaveOutboxID(state)
-	if err := m.asyncEpisodeCanonicalRunner.Run(ctx, state); err != nil {
-		unlock()
-		m.flushWriteTelemetry()
-		return SaveResult{}, publicSaveTrace(state), err
-	}
-	unlock()
-	m.flushWriteTelemetry()
-	episodeIDs := episodeFactIDsFromState(state)
-	structuredIDs := append([]string(nil), state.AppendedFactIDs...)
-	return SaveResult{
-		AsyncRequestID:  state.AsyncRequestID,
-		EpisodeFactIDs:  episodeIDs,
-		SemanticPending: state.SemanticPending,
-		FactIDs:         append(structuredIDs, episodeIDs...),
-	}, publicSaveTrace(state), nil
-}
-
-func episodeFactIDsFromState(state *write.WriteState) []string {
-	if state == nil || len(state.EpisodeFacts) == 0 {
-		return nil
-	}
-	out := make([]string, 0, len(state.EpisodeFacts))
-	for _, f := range state.EpisodeFacts {
-		if f.ID != "" {
-			out = append(out, f.ID)
+		switch s.State {
+		case JobSucceeded, JobFailed, JobDead:
+			return s, nil
+		}
+		select {
+		case <-ctx.Done():
+			return s, errdefs.FromContext(ctx.Err())
+		case <-timer.C:
+			return s, ErrAwaitTimeout
+		case <-ticker.C:
 		}
 	}
-	return out
 }
 
-// newEpisodeState builds the WriteState the asyncEpisodeRunner
-// consumes. Facts and Turns may both be present in mixed-mode saves;
-// Turns feed build_episode while Facts feed structured_ingest before
-// write_semantic_outbox.
-func newEpisodeState(scope Scope, req SaveRequest, withTrace, includeRawDiagnostics bool) *write.WriteState {
-	state := &write.WriteState{
-		Scope:                 scope,
-		Facts:                 req.Facts,
-		Turns:                 req.Turns,
-		ObservedAt:            req.ObservedAt,
-		Tier:                  req.Tier,
-		DiagnosticsIncludeRaw: includeRawDiagnostics,
-		RecentMessages:        req.RecentMessages,
-		ExistingFactsAnchor:   req.ExistingFactsAnchor,
-		Mode:                  domain.WriteModeAsyncSemantic,
+// Close stops workers and flushes the queue.
+//
+// Close is bounded: cancelling workerCtx propagates into the per-job
+// context derived in handleJob, so an extractor or index call that
+// honours ctx.Done() will return promptly. Close still Wait()s on the
+// worker goroutines themselves, so a non-responsive backend can still
+// delay shutdown by up to its own internal timeout — but it can no
+// longer block forever on a stuck LLM call (the worst case is bounded
+// by [WithJobTimeout], default 5 minutes).
+//
+// Idempotent: subsequent calls observe a closed stopCh and a drained
+// WaitGroup and return immediately. workerCancel is also idempotent
+// per the context.CancelFunc contract.
+func (m *lt) Close() error {
+	select {
+	case <-m.stopCh:
+		// already closed
+	default:
+		close(m.stopCh)
 	}
-	if withTrace {
-		state.EnsureTrace()
+	m.workerCancel()
+	// Stop the background reconciler before draining other workers
+	// so a long namespace scan does not extend Close beyond its
+	// expected budget. The reconciler's loop honours its own stop
+	// channel and the per-tick context derived from the loop body.
+	if m.reconciler != nil {
+		m.reconciler.stop()
 	}
-	return state
+	m.wgWorkers.Wait()
+	var nsErr error
+	if m.cfg.nsRegistry != nil {
+		nsErr = m.cfg.nsRegistry.Close()
+	}
+	return errors.Join(
+		nsErr,
+		m.cfg.jobQueue.Close(),
+		m.idx.Close(),
+	)
 }
 
-// mergeSaveTrace concatenates the sync semantic lane's trace with the
-// async episode lane's trace so SaveExplain emits one ordered slice
-// across both runners.
-func mergeSaveTrace(a, b SaveTrace) SaveTrace {
-	if len(a.Stages) == 0 {
-		return b
+func (m *lt) log(format string, args ...any) {
+	if m.cfg.logger != nil {
+		m.cfg.logger(format, args...)
 	}
-	if len(b.Stages) == 0 {
-		return a
-	}
-	out := SaveTrace{Stages: make([]diagnostic.StageDiagnostic, 0, len(a.Stages)+len(b.Stages))}
-	out.Stages = append(out.Stages, a.Stages...)
-	out.Stages = append(out.Stages, b.Stages...)
-	return out
 }
 
-// publicSaveTrace copies the in-flight domain.SaveTrace (when
-// explain was requested) into the public SaveTrace surface.
-func publicSaveTrace(state *write.WriteState) SaveTrace {
-	if state == nil || state.Trace == nil {
-		return SaveTrace{}
-	}
-	return SaveTrace{Stages: append([]diagnostic.StageDiagnostic(nil), state.Trace.Stages...)}
-}
-
-// wireDefaultLenses registers the standard v2 lens set in planner
-// source order. Graph is omitted when graphEnabled is false; evidence
-// is appended when withEvidence is true.
-func wireDefaultLenses(reg *lens.Registry, graphEnabled, withEvidence bool) {
-	if reg == nil {
+func (m *lt) rememberNamespace(ctx context.Context, ns string) {
+	if ns == "" || m.cfg.nsRegistry == nil {
 		return
 	}
-	reg.Register(retrievallens.Lens{})
-	reg.Register(entitylens.Lens{})
-	if graphEnabled {
-		reg.Register(graphlens.Lens{})
+	if err := m.cfg.nsRegistry.Remember(ctx, ns); err != nil && ctx.Err() == nil {
+		m.log("recall: remember namespace %q: %v", ns, err)
 	}
-	reg.Register(relationlens.Lens{})
-	reg.Register(profilelens.Lens{})
-	reg.Register(timelinelens.Lens{})
-	if withEvidence {
-		reg.Register(evidencelens.Lens{})
-	}
-}
-
-// Forget removes a fact. Optional mode defaults to ForgetHard for backward
-// compatibility. Use ForgetSoft to retract without deleting audit history
-// (equivalent to v1 Retract / D.1 guidance).
-func (m *memory) Forget(ctx context.Context, scope Scope, factID string, mode ...ForgetMode) error {
-	mmode := domain.ForgetHard
-	if len(mode) > 0 {
-		mmode = domain.NormalizeForgetMode(mode[0])
-	}
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	if factID == "" {
-		return errdefs.Validationf("recall.Forget: fact id is required")
-	}
-
-	m.holdWriteTelemetry()
-	unlock := m.lockWriteScope(scope)
-	defer func() {
-		unlock()
-		m.flushWriteTelemetry()
-	}()
-
-	snapshot, err := m.store.Get(ctx, scope, factID)
-	if err != nil {
-		if errors.Is(err, temporalstore.ErrNotFound) {
-			if mmode == domain.ForgetHard {
-				_ = m.fanout.ForgetRequired(ctx, scope, []string{factID})
-				m.fanout.ForgetOptional(ctx, scope, []string{factID})
-			}
-			return nil
-		}
-		return fmt.Errorf("recall.Forget: store get: %w", err)
-	}
-
-	switch mmode {
-	case domain.ForgetSoft:
-		if err := m.store.MarkClosed(ctx, scope, factID, true); err != nil {
-			return fmt.Errorf("recall.Forget: soft close: %w", err)
-		}
-		snapshot.Closed = true
-		if err := m.fanout.ProjectRequired(ctx, []domain.TemporalFact{snapshot}); err != nil {
-			return fmt.Errorf("recall.Forget: reproject closed fact: %w", err)
-		}
-		m.fanout.ProjectOptional(ctx, []domain.TemporalFact{snapshot})
-		return nil
-	default:
-		if err := m.fanout.ForgetRequired(ctx, scope, []string{factID}); err != nil {
-			return err
-		}
-		if err := m.store.Delete(ctx, scope, []string{factID}); err != nil {
-			m.compensateForgetStoreFailure(ctx, scope, snapshot, err)
-			return fmt.Errorf("recall.Forget: store delete: %w", err)
-		}
-		m.fanout.ForgetOptional(ctx, scope, []string{factID})
-		return nil
-	}
-}
-
-// ForgetAll retires every fact in the primary scope (Federation
-// sub-scopes are NOT recursed; D.5).
-//
-// Mode semantics:
-//
-//   - ForgetSoft marks every active fact Closed=true and re-projects
-//     them. The canonical store rows survive, evidence is preserved
-//     for audit, and Memory.History keeps working on the supersede
-//     chain. This path is reversible by lifting Closed via Save.
-//
-//   - ForgetHard is irreversible: it invokes Projection.ClearScope on
-//     every registered projection, then store.DeleteByScope. Evidence
-//     refs are wiped through the evidence projection's ClearScope.
-//     This is the GDPR Art.17 / CCPA 1798.105 "delete me" path.
-//
-// confirmScopeKey is the GDPR guard: it MUST equal
-// scope.PartitionKey() for Hard mode. Soft mode skips the check for
-// ergonomics — a Soft is reversible. errors.Is(err,
-// ErrScopeKeyMismatch) is sentinel-stable.
-//
-// The operation goes through the forget pipeline (Phase D.8 C9) so
-// each call emits one ForgetAllDetail diagnostic via the registered
-// TelemetryHook. The returned int matches Detail.Deleted.
-func (m *memory) ForgetAll(ctx context.Context, scope Scope, mode ForgetMode, confirmScopeKey string) (int, error) {
-	if err := ctx.Err(); err != nil {
-		return 0, err
-	}
-	if scope.RuntimeID == "" {
-		return 0, errdefs.Validationf("recall.ForgetAll: scope.runtime_id is required")
-	}
-
-	if domain.NormalizeForgetMode(mode) == domain.ForgetHard {
-		if confirmScopeKey != scope.PartitionKey() {
-			return 0, ErrScopeKeyMismatch
-		}
-	}
-
-	m.holdWriteTelemetry()
-	unlock := m.lockWriteScope(scope)
-	defer func() {
-		unlock()
-		m.flushWriteTelemetry()
-	}()
-
-	if domain.NormalizeForgetMode(mode) == domain.ForgetHard {
-		m.bumpScopeGen(scope)
-	}
-
-	state := &forget.State{
-		Scope:           scope,
-		Mode:            mode,
-		ConfirmScopeKey: confirmScopeKey,
-	}
-	state.EnsureTrace()
-	if err := m.forgetRunner.Run(ctx, state); err != nil {
-		return 0, err
-	}
-	cancel := m.cancelAsyncJobsAfterForget(ctx, state)
-	m.patchForgetTraceAsyncCancel(state, cancel)
-	m.emitAsyncJobCancelTelemetry(state, cancel, "forget_all")
-	if cancel.Err != nil {
-		return state.Deleted, fmt.Errorf("recall.ForgetAll: async job cancel: %w", cancel.Err)
-	}
-	return state.Deleted, nil
-}
-
-// ExpireRetired hard-deletes every scope-local fact whose ExpiresAt
-// is non-nil and not after now. D5 2026-05-21 promoted this from an
-// internal evolution helper to a public Memory facade method.
-//
-// The call routes through the forget pipeline with State.Filter set,
-// which:
-//   - implicitly applies Hard mode semantics (TTL is destructive);
-//   - skips the GDPR confirmScopeKey guard (sweep is administrative);
-//   - leaves non-matching facts and their projection entries intact
-//     (per-id Delete rather than DeleteByScope).
-func (m *memory) ExpireRetired(ctx context.Context, scope Scope, now time.Time) (int, error) {
-	if err := ctx.Err(); err != nil {
-		return 0, err
-	}
-	if scope.RuntimeID == "" {
-		return 0, errdefs.Validationf("recall.ExpireRetired: scope.runtime_id is required")
-	}
-	if now.IsZero() {
-		now = time.Now()
-	}
-	m.holdWriteTelemetry()
-	unlock := m.lockWriteScope(scope)
-	defer func() {
-		unlock()
-		m.flushWriteTelemetry()
-	}()
-	state := &forget.State{
-		Scope:  scope,
-		Mode:   domain.ForgetHard,
-		Filter: &forget.ForgetFilter{ExpiresBefore: &now},
-		Now:    now,
-	}
-	state.EnsureTrace()
-	if err := m.forgetRunner.Run(ctx, state); err != nil {
-		return 0, err
-	}
-	if state.Deleted > 0 {
-		m.bumpScopeGen(scope)
-	}
-	var cancel asyncJobCancelResult
-	if state.Deleted > 0 {
-		cancel = m.cancelAsyncJobsAfterForget(ctx, state)
-		m.patchForgetTraceAsyncCancel(state, cancel)
-		m.emitAsyncJobCancelTelemetry(state, cancel, "expire_retired")
-		if cancel.Err != nil {
-			return state.Deleted, fmt.Errorf("recall.ExpireRetired: async job cancel: %w", cancel.Err)
-		}
-	}
-	return state.Deleted, nil
-}
-
-// Lineage walks the revision DAG rooted at factID via the temporal
-// store's supersede + revision-source lookups and projects the
-// internal domain nodes to the public surface. See the interface
-// godoc for the History-vs-Lineage contract.
-func (m *memory) Lineage(ctx context.Context, scope Scope, factID string) ([]FactLineageNode, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	if scope.RuntimeID == "" {
-		return nil, errdefs.Validationf("recall.Lineage: scope.runtime_id is required")
-	}
-	if factID == "" {
-		return nil, errdefs.Validationf("recall.Lineage: factID is required")
-	}
-	root, err := m.store.Get(ctx, scope, factID)
-	if err != nil {
-		return nil, err
-	}
-	lookups := domain.LineageLookups{
-		Get:                  m.store.Get,
-		FindByRevisionSource: m.store.FindByRevisionSource,
-		FindSupersededBy:     m.store.FindSupersededBy,
-	}
-	nodes, err := domain.BuildLineage(ctx, root, lookups)
-	if err != nil {
-		return nil, err
-	}
-	return toPublicLineage(nodes), nil
-}
-
-// toPublicLineage copies the internal lineage nodes into the public
-// shape. The struct fields are isomorphic (LineageRelation and
-// TemporalFact are both aliases of their domain counterparts) so the
-// loop is a one-shot field-by-field copy.
-func toPublicLineage(nodes []domain.FactLineageNode) []FactLineageNode {
-	if len(nodes) == 0 {
-		return nil
-	}
-	out := make([]FactLineageNode, len(nodes))
-	for i, n := range nodes {
-		out[i] = FactLineageNode{
-			Fact:         n.Fact,
-			Relation:     n.Relation,
-			SourceFactID: n.SourceFactID,
-			Depth:        n.Depth,
-		}
-	}
-	return out
-}
-
-func (m *memory) entitySnapshots(scope Scope) []port.EntitySnapshot {
-	if m.entitySnap == nil {
-		return nil
-	}
-	return m.entitySnap.Snapshot(scope)
-}
-
-// entitySnapshotsForScopes is the read-path plan stage's wiring (D2
-// 2026-05-21, Cluster G). It returns the raw per-scope EntitySnapshot
-// concatenation so the Plan stage can run the dedup-and-max merge
-// across sub-scopes itself; memory does not perform the merge to keep
-// snapshotter ownership at the lens layer.
-func (m *memory) entitySnapshotsForScopes(scopes []domain.Scope) []port.EntitySnapshot {
-	if m.entitySnap == nil || len(scopes) == 0 {
-		return nil
-	}
-	var out []port.EntitySnapshot
-	for _, sc := range scopes {
-		out = append(out, m.entitySnap.Snapshot(sc)...)
-	}
-	return out
-}
-
-func weightsFromSpecs(specs []planner.LensSpec) map[string]float64 {
-	weights := make(map[string]float64, len(specs))
-	for _, s := range specs {
-		if s.Name == "" || s.Weight == 0 {
-			continue
-		}
-		weights[s.Name] = s.Weight
-	}
-	return weights
-}
-
-func (m *memory) lockWriteScope(scope Scope) func() {
-	key := writeScopeKey{runtimeID: scope.RuntimeID, userID: scope.UserID}
-
-	m.writeMu.Lock()
-	if m.writeLocks == nil {
-		m.writeLocks = make(map[writeScopeKey]*writeLock)
-	}
-	wl := m.writeLocks[key]
-	if wl == nil {
-		wl = &writeLock{}
-		m.writeLocks[key] = wl
-	}
-	wl.refs++
-	m.writeMu.Unlock()
-
-	wl.mu.Lock()
-	return func() {
-		wl.mu.Unlock()
-
-		m.writeMu.Lock()
-		wl.refs--
-		if wl.refs == 0 {
-			delete(m.writeLocks, key)
-		}
-		m.writeMu.Unlock()
-	}
-}
-
-// Recall runs the v2 read pipeline:
-//
-//	query intent -> planner -> sources -> fusion -> materialize -> Hit
-//
-// Stale candidates (retrieval doc pointing at a missing or
-// superseded canonical fact) are dropped at materialization without
-// auto-repair — drift attribution flows through the explain trace
-// (RecallExplain) and reconcile in a later phase repairs it.
-func (m *memory) Recall(ctx context.Context, scope Scope, query Query) ([]Hit, error) {
-	hits, _, err := m.runRecall(ctx, scope, query, false)
-	return hits, err
-}
-
-// RecallExplain returns hits and a structured trace describing how
-// the read pipeline produced them. Implements the optional
-// RecallExplainer interface so callers can type-assert.
-func (m *memory) RecallExplain(ctx context.Context, scope Scope, query Query) ([]Hit, RecallTrace, error) {
-	return m.runRecall(ctx, scope, query, true)
-}
-
-func (m *memory) runRecall(ctx context.Context, scope Scope, query Query, withTrace bool) ([]Hit, RecallTrace, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, RecallTrace{}, err
-	}
-	if scope.RuntimeID == "" {
-		return nil, RecallTrace{}, errdefs.Validationf("recall.Recall: scope.runtime_id is required")
-	}
-
-	now := time.Now()
-	state := &read.ReadState{
-		Scope: scope,
-		Query: domain.Query{
-			Text:           query.Text,
-			Entities:       query.Entities,
-			Limit:          query.Limit,
-			Subject:        query.Subject,
-			Predicate:      query.Predicate,
-			Object:         query.Object,
-			Kinds:          query.Kinds,
-			TimeRange:      query.TimeRange,
-			GraphHops:      query.GraphHops,
-			Trust:          trustToDomain(query.Trust),
-			IncludeRetired: query.IncludeRetired,
-		},
-		Now:       now,
-		StartedAt: now,
-	}
-	// Cluster F (2026-05-21): Trace is a DIAGNOSTIC artifact. Stages
-	// route inter-stage data through ReadState (e.g.
-	// state.MaterializeDrops), so Recall (non-explain) can leave
-	// Trace nil and skip per-stage diagnostic allocations entirely.
-	// Only RecallExplain (withTrace=true) installs a Trace for the
-	// framework's AppendStage hook to populate.
-	if withTrace {
-		state.EnsureTrace()
-	}
-
-	if err := m.readRunner.Run(ctx, state); err != nil {
-		return nil, publicRecallTrace(state), err
-	}
-	pubHits := domainHitsToPublic(state.Hits)
-	trace := publicRecallTrace(state)
-	if !withTrace {
-		return pubHits, RecallTrace{}, nil
-	}
-	return pubHits, trace, nil
-}
-
-func publicRecallTrace(state *read.ReadState) RecallTrace {
-	return read.PublicRecallTrace(state)
-}
-
-func domainHitsToPublic(hits []domain.Hit) []Hit {
-	if len(hits) == 0 {
-		return nil
-	}
-	out := make([]Hit, len(hits))
-	copy(out, hits)
-	return out
-}
-
-func trustToDomain(t *TrustContext) *domain.TrustContext {
-	if t == nil {
-		return nil
-	}
-	out := &domain.TrustContext{
-		MaxSensitivity: t.MaxSensitivity,
-		ActorID:        t.ActorID,
-	}
-	if len(t.Scopes) > 0 {
-		out.Scopes = make([]domain.Scope, len(t.Scopes))
-		copy(out.Scopes, t.Scopes)
-	}
-	return out
-}
-
-// compensateForgetStoreFailure runs after store.Delete fails between
-// the projection forget and store delete steps. It tries to re-Project
-// the snapshot so required projections recover the fact that still
-// lives in the canonical store. The compensation is best-effort and
-// only reports telemetry on failure; the user already sees the
-// store-delete error returned from Forget.
-func (m *memory) compensateForgetStoreFailure(ctx context.Context, scope Scope, snapshot domain.TemporalFact, cause error) {
-	cleanupCtx := pipeline.DetachCancel(ctx)
-	_ = m.fanout.ProjectRequired(cleanupCtx, []domain.TemporalFact{snapshot})
-	_ = cause
-}
-
-// RebuildAll implements ProjectionRebuilder. It walks the canonical
-// store with IncludeSuperseded=true and re-projects every fact via
-// fanout.Rebuild{Required,Optional}. Memory deliberately does NOT
-// pre-filter superseded facts here — each projection decides how to
-// materialize them, matching the write-path semantics where the
-// canonical store is the single source of truth (docs §10.1).
-//
-// When an EvidenceStore is configured the rebuild also re-mirrors
-// every fact's EvidenceRefs so the lookup adapter stays consistent
-// without needing a separate reconcile path.
-//
-// Required-projection failures abort the rebuild and surface the
-// error; optional-projection / evidence failures only emit
-// telemetry. The canonical store is never modified.
-func (m *memory) RebuildAll(ctx context.Context, scope Scope) error {
-	return m.runRebuild(ctx, scope, "")
-}
-
-// RebuildScope is equivalent to RebuildAll (v1 SyncSideStores parity).
-func (m *memory) RebuildScope(ctx context.Context, scope Scope) error {
-	return m.runRebuild(ctx, scope, "")
-}
-
-// RebuildProjection implements ProjectionRebuilder. It rebuilds the
-// single projection registered under name (including "evidence" when
-// an EvidenceStore is configured). Useful for targeted incident
-// playbooks; ErrProjectionDisabled-style errors surface as
-// errdefs.NotFound so callers can distinguish "typo" from "actual
-// rebuild failure".
-func (m *memory) RebuildProjection(ctx context.Context, scope Scope, name string) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	if scope.RuntimeID == "" {
-		return errdefs.Validationf("recall.RebuildProjection: scope.runtime_id is required")
-	}
-	if name == "" {
-		return errdefs.Validationf("recall.RebuildProjection: projection name is required")
-	}
-	return m.runRebuild(ctx, scope, name)
-}
-
-func (m *memory) runRebuild(ctx context.Context, scope Scope, projectionFilter string) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	if scope.RuntimeID == "" {
-		return errdefs.Validationf("recall: scope.runtime_id is required")
-	}
-	m.holdWriteTelemetry()
-	unlock := m.lockWriteScope(scope)
-	defer func() {
-		unlock()
-		m.flushWriteTelemetry()
-	}()
-
-	state := &rebuild.RebuildState{
-		Scope:            scope,
-		ProjectionFilter: projectionFilter,
-	}
-	if err := m.rebuildRunner.Run(ctx, state); err != nil {
-		if projectionFilter == "" {
-			return fmt.Errorf("recall.RebuildAll: %w", err)
-		}
-		return err
-	}
-	return nil
-}
-
-// RepairStale implements ProjectionRebuilder. It forgets the listed
-// fact ids from required + optional projections WITHOUT touching the
-// canonical store and WITHOUT re-projecting. The intended workflow
-// is: a reconcile worker subscribes to DriftStaleFact events, batches
-// fact ids per scope, and calls RepairStale to evict the orphaned
-// projection entries.
-//
-// Required-projection failures abort with the original error;
-// optional-projection failures only emit telemetry, matching
-// fanout.ForgetOptional semantics.
-func (m *memory) RepairStale(ctx context.Context, scope Scope, factIDs []string) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	if scope.RuntimeID == "" {
-		return errdefs.Validationf("recall.RepairStale: scope.runtime_id is required")
-	}
-	if len(factIDs) == 0 {
-		return nil
-	}
-	m.holdWriteTelemetry()
-	unlock := m.lockWriteScope(scope)
-	defer func() {
-		unlock()
-		m.flushWriteTelemetry()
-	}()
-
-	if err := m.fanout.ForgetRequired(ctx, scope, factIDs); err != nil {
-		return err
-	}
-	m.fanout.ForgetOptional(ctx, scope, factIDs)
-	return nil
-}
-
-// GetEvidence implements EvidenceLookup. It prefers the secondary
-// store when one is configured internally; without one it falls back
-// to the embedded TemporalFact.EvidenceRefs so callers always get a
-// consistent view regardless of deployment topology.
-//
-// Validation rules match Save/Recall/Forget: an empty fact id and
-// missing scope.RuntimeID are Validation; a missing fact is not an
-// error — the call returns nil so callers can distinguish "no
-// evidence" from "fact gone".
-func (m *memory) GetEvidence(ctx context.Context, scope Scope, factID string) ([]EvidenceRef, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	if scope.RuntimeID == "" {
-		return nil, errdefs.Validationf("recall.GetEvidence: scope.runtime_id is required")
-	}
-	if factID == "" {
-		return nil, errdefs.Validationf("recall.GetEvidence: fact id is required")
-	}
-	fact, err := m.store.Get(ctx, scope, factID)
-	if err != nil {
-		if errors.Is(err, temporalstore.ErrNotFound) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("recall.GetEvidence: %w", err)
-	}
-	if m.evidenceStore != nil {
-		refs, err := m.evidenceStore.ListByFact(ctx, scope, factID)
-		if err != nil {
-			return nil, fmt.Errorf("recall.GetEvidence: %w", err)
-		}
-		if len(refs) > 0 {
-			return refs, nil
-		}
-		// fall through to canonical store fallback below; the
-		// adapter may have been wiped or never warmed for this
-		// fact, but the embedded refs are authoritative.
-	}
-	if len(fact.EvidenceRefs) == 0 {
-		return nil, nil
-	}
-	out := make([]EvidenceRef, len(fact.EvidenceRefs))
-	copy(out, fact.EvidenceRefs)
-	return out, nil
-}
-
-// Close releases backend resources. Memory takes ownership of the
-// store, evidence store, and retrieval index it was constructed
-// with (whether default or injected): callers wiring their own
-// backend should not also call Close on it.
-func (m *memory) Close() error {
-	if m.store != nil {
-		if err := m.store.Close(); err != nil {
-			return err
-		}
-	}
-	if m.evidenceStore != nil {
-		if err := m.evidenceStore.Close(); err != nil {
-			return err
-		}
-	}
-	if m.retrievalIndex != nil {
-		if err := m.retrievalIndex.Close(); err != nil {
-			return err
-		}
-	}
-	return nil
 }

@@ -12,8 +12,8 @@ import (
 	"github.com/GizClaw/flowcraft/eval/locomo/runners"
 	"github.com/GizClaw/flowcraft/sdk/embedding"
 	"github.com/GizClaw/flowcraft/sdk/llm"
-	recallv1 "github.com/GizClaw/flowcraft/sdk/recall_v1"
-	"github.com/GizClaw/flowcraft/sdk/recall_v1/pipeline"
+	recallv1 "github.com/GizClaw/flowcraft/sdk/recall"
+	"github.com/GizClaw/flowcraft/sdk/recall/pipeline"
 	memidx "github.com/GizClaw/flowcraft/sdk/retrieval/memory"
 )
 

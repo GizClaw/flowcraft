@@ -5,7 +5,7 @@ import (
 	"testing"
 
 	"github.com/GizClaw/flowcraft/eval/beir"
-	"github.com/GizClaw/flowcraft/sdk/knowledge"
+	"github.com/GizClaw/flowcraft/memory/knowledge"
 )
 
 // syntheticDataset hand-builds a tiny BEIR-shaped dataset whose
@@ -82,7 +82,7 @@ func TestRun_BM25_SyntheticSanity(t *testing.T) {
 	// vocabulary is fully disjoint from the irrelevant docs) BM25
 	// always returns the grade=2 doc within the top hits, but the
 	// exact MRR depends on default score thresholds inside
-	// sdk/knowledge so we avoid pinning it.
+	// memory/knowledge so we avoid pinning it.
 	if r.MRR < 0.5 {
 		t.Errorf("MRR below sanity floor 0.5: got %.6f", r.MRR)
 	}

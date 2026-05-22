@@ -13,12 +13,12 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/eval/locomo/runners"
+	"github.com/GizClaw/flowcraft/memory/recall"
+	"github.com/GizClaw/flowcraft/memory/recall/diagnostics"
+	retrievalmem "github.com/GizClaw/flowcraft/memory/retrieval/memory"
 	"github.com/GizClaw/flowcraft/sdk/embedding"
 	"github.com/GizClaw/flowcraft/sdk/llm"
 	"github.com/GizClaw/flowcraft/sdk/model"
-	"github.com/GizClaw/flowcraft/sdk/recall"
-	"github.com/GizClaw/flowcraft/sdk/recall/diagnostics"
-	retrievalmem "github.com/GizClaw/flowcraft/sdk/retrieval/memory"
 )
 
 // Options configures the v2 bootstrap runner.

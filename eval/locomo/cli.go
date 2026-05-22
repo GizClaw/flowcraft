@@ -17,10 +17,10 @@ import (
 	"github.com/GizClaw/flowcraft/eval/locomo/runners"
 	"github.com/GizClaw/flowcraft/eval/locomo/runners/flowcraftv2"
 	"github.com/GizClaw/flowcraft/eval/metrics"
+	"github.com/GizClaw/flowcraft/memory/recall"
+	"github.com/GizClaw/flowcraft/memory/recall/diagnostics"
 	"github.com/GizClaw/flowcraft/sdk/llm"
-	"github.com/GizClaw/flowcraft/sdk/recall"
-	"github.com/GizClaw/flowcraft/sdk/recall/diagnostics"
-	recallv1 "github.com/GizClaw/flowcraft/sdk/recall_v1"
+	recallv1 "github.com/GizClaw/flowcraft/sdk/recall"
 
 	_ "github.com/GizClaw/flowcraft/sdkx/embedding/azure"
 	_ "github.com/GizClaw/flowcraft/sdkx/embedding/qwen"

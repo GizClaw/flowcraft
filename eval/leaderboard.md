@@ -133,7 +133,7 @@ clears every reproducible peer in the table.
 ### Limit-stage bug fix (May 2026)
 
 Pre-`db16b7f2`, `Memory.Recall(req{TopK: N})` silently capped at
-**10 hits regardless of N**: `sdk/retrieval/pipeline/factory.go`'s
+**10 hits regardless of N**: `memory/retrieval/pipeline/factory.go`'s
 LTM pipeline hard-coded `Limit{TopK: 10}` as the final stage, and
 `Limit.Run` truncated to its own stage TopK without consulting
 `st.Request.TopK`. Recall lanes already honoured `Request.TopK`
@@ -161,7 +161,7 @@ isolate the fix:
 | **25912693189** | **topk=30 (real 30)**       | **76.59** | post-fix with the budget the flag advertises ⇒ +0.89 pp net    |
 
 Test: `TestLimitHonoursRequestTopK` in
-`sdk/retrieval/pipeline/pipeline_test.go` pins the three cases
+`memory/retrieval/pipeline/pipeline_test.go` pins the three cases
 (request > stage / request < stage / request unset).
 
 ### Extractor-swap ablation (May 2026)
@@ -552,8 +552,8 @@ to gpt-4o's tendency to overwrite memory entries it deems
 **Reading the FlowCraft row**: 0.6725 nDCG@10 / 0.9076 Recall@100
 matches Anserini's Lucene BM25 baseline (0.665) within noise —
 both score against doc-level BM25 stats (DocCount = 5,183
-logical docs). We get there via `sdk/knowledge/backend/retrieval`
-backed by `sdk/retrieval/memory`, which since
+logical docs). We get there via `memory/knowledge/backend/retrieval`
+backed by `memory/retrieval/memory`, which since
 [#143](https://github.com/GizClaw/flowcraft/pull/143) maintains a
 dedicated `__docs` namespace alongside the per-chunk namespace
 inside the same `retrieval.Index`. MRR was 0.6352, errors = 0,
@@ -786,7 +786,7 @@ publishes nDCG@10 / Recall@100 per dataset for many systems.
 - **E5** — Microsoft, public BEIR numbers.
 - **Cohere / OpenAI embed** — paid; cite their blogs.
 
-Our in-process BM25 (`sdk/retrieval/memory`) is a Go
+Our in-process BM25 (`memory/retrieval/memory`) is a Go
 reimplementation; a `bm25` cell that beats Anserini is
 suspicious. The current row at 0.6725 matches within noise.
 
@@ -887,7 +887,7 @@ work-ticket:
    contribution: +10~15 pp on multi-hop / open-domain — upper
    bound, since mem0's number includes the LLM-update-resolver
    which we disabled for LoCoMo.
-2. **Lemmatized BM25** — `sdk/textsearch`'s tokenizer/stemmer
+2. **Lemmatized BM25** — `memory/text`'s tokenizer/stemmer
    needs a verb-form normalization pass so "attending a meeting"
    and "what meetings did I attend" share a key. mem0 v3 blog
    calls this out as "measurable impact"; expected +2~5 pp.

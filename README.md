@@ -161,8 +161,9 @@ Layered bottom-up. Each layer only depends on layers below it; siblings on the s
 
 | Module                                     | What it gives you                                                                                          | Stable        |
 | ------------------------------------------ | ---------------------------------------------------------------------------------------------------------- | ------------- |
-| [`sdk`](sdk/)                              | Core primitives — agent, graph DAG, recall, history, knowledge, kanban                                     | yes           |
-| [`sdkx`](sdkx/)                            | Provider implementations (OpenAI, Anthropic, DeepSeek, MiniMax, Volcengine) + retrieval/embedding adapters | yes           |
+| [`sdk`](sdk/)                              | Core primitives — agent, graph DAG, kanban, model, llm, telemetry                                          | yes           |
+| [`memory`](memory/)                        | Memory domain — recall v2, history, knowledge, retrieval, text, and memory adapters                        | yes           |
+| [`sdkx`](sdkx/)                            | Provider implementations (OpenAI, Anthropic, DeepSeek, MiniMax, Volcengine) + non-memory extensions        | yes           |
 | [`vessel`](vessel/)                        | In-process agent runtime — Captain, restart, probes, sidecars                                              | `v0.1.0-rc.2` |
 | [`cmd/vesseld`](cmd/vesseld/)              | Standalone daemon binary — declarative YAML, HTTP/SSE control plane                                        | `v0.1.0-rc.1` |
 | [`voice`](voice/)                          | Real-time voice pipeline (VAD / STT / LLM / TTS / WebRTC)                                                  | yes           |
@@ -175,11 +176,11 @@ Layered bottom-up. Each layer only depends on layers below it; siblings on the s
 
 ## Highlights
 
-### Hybrid memory that actually recalls (`sdk/recall`)
+### Hybrid memory that actually recalls (`memory/recall`)
 
 - Three-lane retrieval (BM25 + vector + entity), fused via **Reciprocal Rank Fusion** (K=60), then re-weighted by entity-overlap boost, supersede decay, and time decay.
 - Predicate alias normalisation so "favourite color" and "favorite colour" hit the same memory.
-- Pluggable `retrieval.Index` backend — `sdk/retrieval/memory` (in-memory), `sdkx/retrieval/sqlite` (SQLite), and `sdkx/retrieval/postgres` (Postgres + pgvector) ship in-tree; bring your own by implementing `retrieval.Index`.
+- Pluggable `retrieval.Index` backend — `memory/retrieval/memory` (in-memory), `memory/retrieval/sqlite` (SQLite), and `memory/retrieval/postgres` (Postgres + pgvector) ship in-tree; bring your own by implementing `retrieval.Index`.
 
 ### Streaming, durable, resumable (`sdk/engine`)
 

@@ -2,7 +2,7 @@ package flowcraft
 
 import (
 	"github.com/GizClaw/flowcraft/eval/locomo/runners"
-	recallv1 "github.com/GizClaw/flowcraft/sdk/recall_v1"
+	recallv1 "github.com/GizClaw/flowcraft/sdk/recall"
 )
 
 func toRecallV1Scope(s runners.Scope) recallv1.Scope {

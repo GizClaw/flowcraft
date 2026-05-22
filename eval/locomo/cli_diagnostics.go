@@ -5,8 +5,8 @@ import (
 	"os"
 	"time"
 
-	"github.com/GizClaw/flowcraft/sdk/recall"
-	"github.com/GizClaw/flowcraft/sdk/recall/diagnostics"
+	"github.com/GizClaw/flowcraft/memory/recall"
+	"github.com/GizClaw/flowcraft/memory/recall/diagnostics"
 )
 
 // diagnosticsReport is the JSON shape written by --diagnostics. It is a

@@ -3,10 +3,9 @@ module github.com/GizClaw/flowcraft/eval
 go 1.25.0
 
 // `eval` is a workspace member (see ../go.work) — `github.com/GizClaw/
-// flowcraft/sdk` and `.../sdkx` resolve to ../sdk and ../sdkx at the
-// monorepo HEAD, not to the v0.3.x require pins below. The pins exist
-// only to satisfy `GOWORK=off` / `go mod tidy` runs; in CI and local
-// development the workspace overlay is authoritative.
+// flowcraft/sdk`, `.../memory`, and `.../sdkx` resolve to the monorepo HEAD.
+// Keep eval tests in workspace mode until the memory module is published and
+// can be pinned by version like sdk/sdkx.
 
 require (
 	github.com/GizClaw/flowcraft/sdk v0.3.17

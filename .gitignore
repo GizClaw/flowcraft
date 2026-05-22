@@ -18,12 +18,14 @@
 !go.mod
 !go.sum
 !go.work
-!eval/
-!eval/**
 !cmd/
 !cmd/**
+!eval/
+!eval/**
 !examples/
 !examples/**
+!memory/
+!memory/**
 !sdk/
 !sdk/**
 !sdkx/

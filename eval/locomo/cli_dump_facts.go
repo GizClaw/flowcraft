@@ -4,8 +4,8 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/eval/locomo/runners"
-	"github.com/GizClaw/flowcraft/sdk/recall"
-	recallv1 "github.com/GizClaw/flowcraft/sdk/recall_v1"
+	"github.com/GizClaw/flowcraft/memory/recall"
+	recallv1 "github.com/GizClaw/flowcraft/sdk/recall"
 )
 
 type factDumpRecord struct {

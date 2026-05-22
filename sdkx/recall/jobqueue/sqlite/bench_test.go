@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/sdk/llm"
-	"github.com/GizClaw/flowcraft/sdk/recall_v1"
+	"github.com/GizClaw/flowcraft/sdk/recall"
 	memidx "github.com/GizClaw/flowcraft/sdk/retrieval/memory"
 	"github.com/GizClaw/flowcraft/sdkx/recall/jobqueue/sqlite"
 )
