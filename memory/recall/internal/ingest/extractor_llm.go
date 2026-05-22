@@ -402,7 +402,7 @@ func (e *LLMExtractor) repairCoverage(ctx context.Context, input port.IngestInpu
 	if err != nil {
 		return nil, err
 	}
-	return append(facts, repaired...), nil
+	return appendCoverageRepairFacts(facts, repaired), nil
 }
 
 // normaliseExtractedKind maps the LLM's "kind" field to a canonical

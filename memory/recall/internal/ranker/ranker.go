@@ -157,8 +157,26 @@ func factRankBoost(item domain.ContextItem, intent domain.QueryIntent, terms []s
 		}
 		boost += c * 0.004
 	}
+	if coverageRepairFact(f) {
+		boost -= 0.003
+	}
 	boost += (evolution.FeedbackBoost(f.Reinforcement, f.Penalty) - 1) * 0.02
 	return boost
+}
+
+func coverageRepairFact(f domain.TemporalFact) bool {
+	if len(f.Metadata) == 0 {
+		return false
+	}
+	v, ok := f.Metadata[domain.MetaCoverageRepair]
+	if !ok {
+		return false
+	}
+	if b, ok := v.(bool); ok {
+		return b
+	}
+	s, _ := v.(string)
+	return strings.EqualFold(strings.TrimSpace(s), "true")
 }
 
 func queryCoverageBoost(f domain.TemporalFact, terms []string, termDF map[string]int) float64 {

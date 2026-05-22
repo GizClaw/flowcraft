@@ -558,6 +558,54 @@ func TestTwoPassLLMExtractor_CoverageRepairUsesMultilingualTextSignals(t *testin
 	}
 }
 
+func TestCoverageRepairInput_BudgetsHighSignalTurns(t *testing.T) {
+	input := port.IngestInput{Turns: make([]port.TurnContext, 0, 10)}
+	for i := 0; i < 10; i++ {
+		input.Turns = append(input.Turns, port.TurnContext{
+			ID:         "turn-id-" + string(rune('a'+i)),
+			EvidenceID: "D1:" + string(rune('0'+i)),
+			Text:       "Alice bought 2 ceramic figurines yesterday for her family.",
+		})
+	}
+	repairInput, ok := buildCoverageRepairInput(input, nil)
+	if !ok {
+		t.Fatal("expected high-signal repair input")
+	}
+	if len(repairInput.Turns) != maxCoverageRepairTurnsPerBatch {
+		t.Fatalf("repair turn budget = %d, want %d", len(repairInput.Turns), maxCoverageRepairTurnsPerBatch)
+	}
+}
+
+func TestCoverageRepairFacts_AreGroundedTaggedAndDedupeLocally(t *testing.T) {
+	base := []domain.TemporalFact{{
+		Content:      "Alice likes Paris.",
+		EvidenceRefs: []domain.EvidenceRef{{ID: "D1:1", Text: "Alice likes Paris."}},
+	}}
+	repaired := []domain.TemporalFact{
+		{
+			Content:      "Alice bought 2 ceramic figurines yesterday for her family.",
+			EvidenceRefs: []domain.EvidenceRef{{ID: "D1:2", Text: "I bought 2 ceramic figurines yesterday."}},
+		},
+		{
+			Content:      "Alice bought 2 ceramic figurines yesterday for the family.",
+			EvidenceRefs: []domain.EvidenceRef{{ID: "D1:2", Text: "I bought 2 ceramic figurines yesterday."}},
+		},
+		{
+			Content: "ungrounded repair noise",
+		},
+	}
+	out := appendCoverageRepairFacts(base, repaired)
+	if len(out) != 2 {
+		t.Fatalf("expected base plus one deduped repair fact, got %d: %+v", len(out), out)
+	}
+	if got, _ := out[1].Metadata[domain.MetaCoverageRepair].(bool); !got {
+		t.Fatalf("repair fact should be tagged, metadata=%v", out[1].Metadata)
+	}
+	if len(out[1].EvidenceRefs) != 1 || out[1].EvidenceRefs[0].ID != "D1:2" {
+		t.Fatalf("repair evidence should be preserved and deduped, got %+v", out[1].EvidenceRefs)
+	}
+}
+
 func TestLLMExtractor_HandlesFencedJSON(t *testing.T) {
 	client := &fakeLLM{
 		Responses: []string{"Sure, here is the result:\n```json\n{\"memories\":[{\"text\":\"hello\",\"evidence_refs\":[]}]}\n```\n"},

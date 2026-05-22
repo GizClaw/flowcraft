@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -18,6 +19,8 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/llm"
 )
+
+const maxCoverageRepairTurnsPerBatch = 6
 
 const TwoPassMemoryExtractionSchema = `{
   "type": "object",
@@ -406,7 +409,8 @@ func (e *TwoPassLLMExtractor) repairCoverage(ctx context.Context, input port.Ing
 	if err != nil {
 		return nil, err
 	}
-	return appendExtractedMemories(facts, memories, links, turnIndex), nil
+	repaired := appendExtractedMemories(nil, memories, links, turnIndex)
+	return appendCoverageRepairFacts(facts, repaired), nil
 }
 
 func buildCoverageRepairInput(input port.IngestInput, facts []domain.TemporalFact) (port.IngestInput, bool) {
@@ -421,8 +425,12 @@ func buildCoverageRepairInput(input port.IngestInput, facts []domain.TemporalFac
 			}
 		}
 	}
-	repairInput := input
-	repairInput.Turns = nil
+	type candidate struct {
+		turn  port.TurnContext
+		score int
+		index int
+	}
+	candidates := make([]candidate, 0, len(input.Turns))
 	for i, turn := range input.Turns {
 		id := turnLLMID(turn)
 		if id == "" {
@@ -431,40 +439,72 @@ func buildCoverageRepairInput(input port.IngestInput, facts []domain.TemporalFac
 		if _, ok := covered[id]; ok {
 			continue
 		}
-		if !isHighSignalCoverageTurn(turn, coverageRepairAnchor(input)) {
+		score, ok := coverageRepairSignalScore(turn, coverageRepairAnchor(input))
+		if !ok {
 			continue
 		}
-		repairInput.Turns = append(repairInput.Turns, turn)
+		candidates = append(candidates, candidate{turn: turn, score: score, index: i})
+	}
+	if len(candidates) == 0 {
+		return port.IngestInput{}, false
+	}
+	sort.SliceStable(candidates, func(i, j int) bool {
+		if candidates[i].score != candidates[j].score {
+			return candidates[i].score > candidates[j].score
+		}
+		return candidates[i].index < candidates[j].index
+	})
+	if len(candidates) > maxCoverageRepairTurnsPerBatch {
+		candidates = candidates[:maxCoverageRepairTurnsPerBatch]
+	}
+	sort.SliceStable(candidates, func(i, j int) bool {
+		return candidates[i].index < candidates[j].index
+	})
+	repairInput := input
+	repairInput.Turns = nil
+	for _, c := range candidates {
+		repairInput.Turns = append(repairInput.Turns, c.turn)
 	}
 	return repairInput, len(repairInput.Turns) > 0
 }
 
 func isHighSignalCoverageTurn(turn port.TurnContext, anchor time.Time) bool {
+	_, ok := coverageRepairSignalScore(turn, anchor)
+	return ok
+}
+
+func coverageRepairSignalScore(turn port.TurnContext, anchor time.Time) (int, bool) {
 	text := strings.TrimSpace(turn.Text)
 	tokens := tokenize.Detect(text).Tokenize(text)
 	if len(tokens) < 3 && len(tokenize.SplitWords(text)) < 5 {
-		return false
+		return 0, false
 	}
 	score := 0
+	hasAnchor := false
 	if hasNumericSignal(text) {
 		score += 2
+		hasAnchor = true
 	}
 	if hasTimeSignal(text, anchor) {
 		score += 2
+		hasAnchor = true
 	}
 	if hasQuotedSignal(text) {
 		score++
+		hasAnchor = true
 	}
 	if countProperNounSignals(text) > 0 {
 		score++
+		hasAnchor = true
 	}
 	if len(tokens) >= 6 {
 		score++
 	}
 	if containsCJK(text) && len(tokens) >= 4 {
 		score++
+		hasAnchor = true
 	}
-	return score >= 2
+	return score, hasAnchor && score >= 2
 }
 
 func coverageRepairAnchor(input port.IngestInput) time.Time {
@@ -531,4 +571,190 @@ func containsCJK(text string) bool {
 		}
 	}
 	return false
+}
+
+func appendCoverageRepairFacts(base []domain.TemporalFact, repaired []domain.TemporalFact) []domain.TemporalFact {
+	if len(repaired) == 0 {
+		return base
+	}
+	out := append([]domain.TemporalFact(nil), base...)
+	for _, fact := range repaired {
+		if len(fact.EvidenceRefs) == 0 && len(fact.SourceMessageIDs) == 0 {
+			// A repair fact without source grounding adds noise but cannot help
+			// recall diagnostics or answer provenance.
+			continue
+		}
+		if fact.Metadata == nil {
+			fact.Metadata = map[string]any{}
+		}
+		fact.Metadata[domain.MetaCoverageRepair] = true
+		out = mergeOrAppendCoverageRepairFact(out, fact)
+	}
+	return out
+}
+
+func mergeOrAppendCoverageRepairFact(facts []domain.TemporalFact, repaired domain.TemporalFact) []domain.TemporalFact {
+	for i := range facts {
+		if !coverageRepairFactsOverlap(facts[i], repaired) {
+			continue
+		}
+		facts[i].EvidenceRefs = mergeEvidenceRefs(facts[i].EvidenceRefs, repaired.EvidenceRefs)
+		facts[i].SourceMessageIDs = mergeCoverageStrings(facts[i].SourceMessageIDs, repaired.SourceMessageIDs)
+		if strings.TrimSpace(facts[i].EvidenceText) == "" {
+			facts[i].EvidenceText = repaired.EvidenceText
+		}
+		if facts[i].Metadata == nil {
+			facts[i].Metadata = map[string]any{}
+		}
+		if repaired.Metadata != nil {
+			for k, v := range repaired.Metadata {
+				if k == domain.MetaCoverageRepair {
+					if _, exists := facts[i].Metadata[k]; !exists {
+						continue
+					}
+				}
+				if _, exists := facts[i].Metadata[k]; !exists {
+					facts[i].Metadata[k] = v
+				}
+			}
+		}
+		return facts
+	}
+	return append(facts, repaired)
+}
+
+func coverageRepairFactsOverlap(a, b domain.TemporalFact) bool {
+	aText := normalizeEvidenceQuote(a.Content)
+	bText := normalizeEvidenceQuote(b.Content)
+	if aText == "" || bText == "" {
+		return false
+	}
+	if aText == bText {
+		return true
+	}
+	sharedEvidence := evidenceRefsOverlap(a.EvidenceRefs, b.EvidenceRefs) ||
+		stringSetsOverlap(a.SourceMessageIDs, b.SourceMessageIDs)
+	threshold := 0.92
+	if sharedEvidence {
+		threshold = 0.8
+	}
+	return factTextJaccard(a.Content, b.Content) >= threshold
+}
+
+func evidenceRefsOverlap(a, b []domain.EvidenceRef) bool {
+	if len(a) == 0 || len(b) == 0 {
+		return false
+	}
+	seen := make(map[string]struct{}, len(a))
+	for _, ref := range a {
+		if key := evidenceRefDedupeKey(ref.ID, ref.MessageID, ref.Text); key != "" {
+			seen[key] = struct{}{}
+		}
+	}
+	for _, ref := range b {
+		if key := evidenceRefDedupeKey(ref.ID, ref.MessageID, ref.Text); key != "" {
+			if _, ok := seen[key]; ok {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func stringSetsOverlap(a, b []string) bool {
+	if len(a) == 0 || len(b) == 0 {
+		return false
+	}
+	seen := make(map[string]struct{}, len(a))
+	for _, s := range a {
+		if s = strings.TrimSpace(s); s != "" {
+			seen[s] = struct{}{}
+		}
+	}
+	for _, s := range b {
+		if _, ok := seen[strings.TrimSpace(s)]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func factTextJaccard(a, b string) float64 {
+	as := coverageTokenSet(a)
+	bs := coverageTokenSet(b)
+	if len(as) == 0 || len(bs) == 0 {
+		return 0
+	}
+	inter := 0
+	for tok := range as {
+		if _, ok := bs[tok]; ok {
+			inter++
+		}
+	}
+	union := len(as) + len(bs) - inter
+	if union == 0 {
+		return 0
+	}
+	return float64(inter) / float64(union)
+}
+
+func coverageTokenSet(text string) map[string]struct{} {
+	out := map[string]struct{}{}
+	for _, tok := range tokenize.Detect(text).Tokenize(text) {
+		tok = strings.ToLower(strings.TrimSpace(tok))
+		if tok != "" {
+			out[tok] = struct{}{}
+		}
+	}
+	return out
+}
+
+func mergeEvidenceRefs(a, b []domain.EvidenceRef) []domain.EvidenceRef {
+	if len(b) == 0 {
+		return a
+	}
+	out := append([]domain.EvidenceRef(nil), a...)
+	seen := make(map[string]struct{}, len(out)+len(b))
+	for _, ref := range out {
+		if key := evidenceRefDedupeKey(ref.ID, ref.MessageID, ref.Text); key != "" {
+			seen[key] = struct{}{}
+		}
+	}
+	for _, ref := range b {
+		key := evidenceRefDedupeKey(ref.ID, ref.MessageID, ref.Text)
+		if key == "" {
+			continue
+		}
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, ref)
+	}
+	return out
+}
+
+func mergeCoverageStrings(a, b []string) []string {
+	if len(b) == 0 {
+		return a
+	}
+	out := append([]string(nil), a...)
+	seen := make(map[string]struct{}, len(out)+len(b))
+	for _, s := range out {
+		if s = strings.TrimSpace(s); s != "" {
+			seen[s] = struct{}{}
+		}
+	}
+	for _, s := range b {
+		s = strings.TrimSpace(s)
+		if s == "" {
+			continue
+		}
+		if _, ok := seen[s]; ok {
+			continue
+		}
+		seen[s] = struct{}{}
+		out = append(out, s)
+	}
+	return out
 }

@@ -174,3 +174,41 @@ func TestDefault_Rank_QueryCoveragePrefersSpecificEvidence(t *testing.T) {
 		t.Fatalf("top ranked fact = %s, want specific", out.Items[0].Fact.ID)
 	}
 }
+
+func TestDefault_Rank_AppliesMildCoverageRepairPenalty(t *testing.T) {
+	now := time.Unix(1, 0)
+	r := ranker.NewDefault()
+	items := []domain.ContextItem{
+		{
+			Candidate: domain.Candidate{FactID: "repair", Score: 0.5},
+			Fact: domain.TemporalFact{
+				ID:         "repair",
+				Content:    "Alice bought 2 tickets.",
+				ObservedAt: now,
+				Metadata:   map[string]any{domain.MetaCoverageRepair: true},
+			},
+		},
+		{
+			Candidate: domain.Candidate{FactID: "normal", Score: 0.5},
+			Fact: domain.TemporalFact{
+				ID:         "normal",
+				Content:    "Alice bought 2 tickets.",
+				ObservedAt: now,
+			},
+		},
+	}
+	out := r.Rank(context.Background(), port.RankInput{
+		Items: items,
+		Intent: domain.QueryIntent{
+			Text:  "How many tickets did Alice buy?",
+			Limit: 2,
+		},
+		FinalCap: 2,
+	})
+	if len(out.Items) != 2 {
+		t.Fatalf("ranked len = %d, want 2", len(out.Items))
+	}
+	if out.Items[0].Fact.ID != "normal" {
+		t.Fatalf("top ranked fact = %s, want normal", out.Items[0].Fact.ID)
+	}
+}

@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"regexp"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -36,6 +37,12 @@ const ingestRetryDelay = 2 * time.Second
 // provider transients. We deliberately use the same 2 s constant as
 // ingest so future operators see one retry budget, not two.
 const qaRetryDelay = 2 * time.Second
+
+const (
+	maxAnswerEvidenceChars = 420
+	maxAnswerSummaryChars  = 320
+	maxAnswerMemoryChars   = 1200
+)
 
 // retryOnNotAvailable runs attempt once; if it returns a NotAvailable
 // error (5xx, network flake, Azure MaaS capacity 404 — see errdefs.go's
@@ -273,6 +280,7 @@ Guidelines:
 - Do not answer "I don't know" when any memory contains a plausible answer candidate for the question type. If the evidence is incomplete or competing, choose the best-supported candidate from the highest-ranked relevant memories and keep the answer narrow.
 - Match the form of the question. If asked WHEN, give a specific date or duration; HOW MANY, a number; YES/NO, lead with yes/no.
 - Memories are listed in retrieval/rerank order as [#1], [#2], etc. Prefer lower-numbered memories when evidence conflicts. If several top memories answer different parts of a list question ("what types", "what exercises", "what movies/books"), combine the supported items instead of choosing only the first item.
+- A READING_HINTS_FROM_MEMORIES section, when present, only summarizes dates and numbers already visible in the retrieved memories. Use it as an index into the memories, not as extra evidence.
 - Mirror the date format used in the question (e.g. if asked "7 May 2023", answer in that format, not "May 7, 2023").
 - If a memory uses a date QUALIFIER ("around", "roughly", "the week before X", "a few years ago", "last summer", "two weekends ago"), preserve that qualifier in your answer rather than computing a precise absolute date. The qualifier carries the speaker's actual epistemic state — fabricating precision is worse than mirroring vagueness.
 - A memory may carry a canonical date stamp at its head (e.g. "[time: YYYY-MM-DD]") written by the recall system after resolving relative expressions against the source turn timestamp. This stamp is the AUTHORITATIVE date — the resolver has already converted any relative phrase in the source turn into an absolute date for you. Use the [time:] date verbatim; NEVER combine it with a relative expression from the same memory ("[time: 2023-09-28] talent show next month" → the show is in 2023-09, NOT October. The "next month" wording is the original turn text the resolver already accounted for; recomputing on top of [time:] double-counts and produces wrong dates). If the question asks for a relative answer ("the week before 9 June 2023", "how long ago"), preserve that relative wording when the memory supports it instead of forcing an exact calendar date.
@@ -482,17 +490,250 @@ func buildAnswerBody(q dataset.Question, hits []runners.Hit) string {
 	}
 	b.WriteString("QUESTION: ")
 	b.WriteString(q.Query)
+	hints := buildAnswerHints(q.Query, hits)
+	if hints != "" {
+		b.WriteString("\n\nREADING_HINTS_FROM_MEMORIES:\n")
+		b.WriteString(hints)
+	}
 	b.WriteString("\n\nMEMORIES:\n")
 	if len(hits) == 0 {
 		b.WriteString("(none)\n")
 		return b.String()
 	}
-	for i, h := range hits {
-		fmt.Fprintf(&b, "- [#%d] ", i+1)
-		b.WriteString(strings.ReplaceAll(h.Content, "\n", " "))
+	for _, group := range clusterAnswerHits(hits) {
+		fmt.Fprintf(&b, "- [#%d] ", group.rank)
+		b.WriteString(renderAnswerHitGroup(group.hits))
 		b.WriteString("\n")
 	}
 	return b.String()
+}
+
+type answerHitGroup struct {
+	rank int
+	key  string
+	hits []runners.Hit
+}
+
+type answerHitParts struct {
+	timeTags []string
+	summary  string
+	evidence []string
+}
+
+var (
+	answerTimeTagRE       = regexp.MustCompile(`\[time:\s*([^\]]+)\]`)
+	answerSourceTimeTagRE = regexp.MustCompile(`\[source_time:\s*([^\]]+)\]`)
+	answerNumberRE        = regexp.MustCompile(`[-+]?\d+(?:[.,]\d+)?`)
+)
+
+func clusterAnswerHits(hits []runners.Hit) []answerHitGroup {
+	groups := make([]answerHitGroup, 0, len(hits))
+	byKey := map[string]int{}
+	for i, h := range hits {
+		key := answerHitGroupKey(h, i)
+		if idx, ok := byKey[key]; ok {
+			groups[idx].hits = append(groups[idx].hits, h)
+			continue
+		}
+		byKey[key] = len(groups)
+		groups = append(groups, answerHitGroup{rank: len(groups) + 1, key: key, hits: []runners.Hit{h}})
+	}
+	return groups
+}
+
+func answerHitGroupKey(h runners.Hit, idx int) string {
+	for _, id := range h.EvidenceIDs {
+		if id = strings.TrimSpace(id); id != "" {
+			return "evidence:" + id
+		}
+	}
+	if id := strings.TrimSpace(h.ID); id != "" {
+		return "fact:" + id
+	}
+	return fmt.Sprintf("idx:%d", idx)
+}
+
+func renderAnswerHitGroup(hits []runners.Hit) string {
+	if len(hits) == 0 {
+		return ""
+	}
+	parts := make([]answerHitParts, 0, len(hits))
+	for _, h := range hits {
+		parts = append(parts, parseAnswerHitContent(h.Content))
+	}
+	var rendered []string
+	for _, ev := range dedupeAnswerStrings(groupEvidence(parts)) {
+		if ev != "" {
+			rendered = append(rendered, truncateAnswerText(ev, maxAnswerEvidenceChars))
+		}
+	}
+	if len(rendered) == 0 {
+		rendered = append(rendered, strings.TrimSpace(strings.ReplaceAll(hits[0].Content, "\n", " ")))
+	}
+	var summaries []string
+	var timeTags []string
+	for _, p := range parts {
+		summaries = append(summaries, p.summary)
+		timeTags = append(timeTags, p.timeTags...)
+	}
+	timeTags = dedupeAnswerStrings(timeTags)
+	if len(timeTags) > 0 {
+		rendered = append(rendered, strings.Join(timeTags, " "))
+	}
+	summaries = dedupeAnswerStrings(summaries)
+	if len(summaries) > 0 {
+		rendered = append(rendered, "memory: "+truncateAnswerText(strings.Join(summaries, " ; "), maxAnswerSummaryChars))
+	}
+	return truncateAnswerText(strings.Join(dedupeAnswerStrings(rendered), " | "), maxAnswerMemoryChars)
+}
+
+func parseAnswerHitContent(content string) answerHitParts {
+	content = strings.TrimSpace(strings.ReplaceAll(content, "\n", " "))
+	if content == "" {
+		return answerHitParts{}
+	}
+	parts := strings.Split(content, " | evidence: ")
+	summary := strings.TrimSpace(parts[0])
+	timeTags := answerTimeTagRE.FindAllString(summary, -1)
+	summary = strings.TrimSpace(answerTimeTagRE.ReplaceAllString(summary, ""))
+	out := answerHitParts{timeTags: timeTags, summary: summary}
+	for _, ev := range parts[1:] {
+		if ev = strings.TrimSpace(ev); ev != "" {
+			out.evidence = append(out.evidence, ev)
+		}
+	}
+	return out
+}
+
+func groupEvidence(parts []answerHitParts) []string {
+	var evidence []string
+	for _, p := range parts {
+		evidence = append(evidence, p.evidence...)
+	}
+	return evidence
+}
+
+func buildAnswerHints(query string, hits []runners.Hit) string {
+	type hint struct {
+		rank int
+		text string
+	}
+	var temporal, numeric []hint
+	for _, group := range clusterAnswerHits(hits) {
+		content, validFroms := answerHintGroupContent(group.hits)
+		var times []string
+		for _, valid := range validFroms {
+			if valid = strings.TrimSpace(valid); valid != "" {
+				times = append(times, "time="+valid)
+			}
+		}
+		for _, m := range answerTimeTagRE.FindAllStringSubmatch(content, -1) {
+			if len(m) > 1 {
+				times = append(times, "time="+strings.TrimSpace(m[1]))
+			}
+		}
+		for _, m := range answerSourceTimeTagRE.FindAllStringSubmatch(content, -1) {
+			if len(m) > 1 {
+				times = append(times, "source_time="+strings.TrimSpace(m[1]))
+			}
+		}
+		times = dedupeAnswerStrings(times)
+		if len(times) > 0 {
+			temporal = append(temporal, hint{rank: group.rank, text: strings.Join(times, ", ")})
+		}
+		if queryHasNumericAnswerIntent(query) {
+			numericContent := answerTimeTagRE.ReplaceAllString(content, "")
+			numericContent = answerSourceTimeTagRE.ReplaceAllString(numericContent, "")
+			nums := dedupeAnswerStrings(answerNumberRE.FindAllString(numericContent, -1))
+			if len(nums) > 0 {
+				numeric = append(numeric, hint{rank: group.rank, text: strings.Join(nums, ", ")})
+			}
+		}
+	}
+	var b strings.Builder
+	if len(temporal) > 0 {
+		b.WriteString("- temporal: ")
+		for i, h := range temporal {
+			if i > 0 {
+				b.WriteString("; ")
+			}
+			fmt.Fprintf(&b, "[#%d] %s", h.rank, h.text)
+		}
+		b.WriteString("\n")
+	}
+	if len(numeric) > 0 {
+		b.WriteString("- numeric: ")
+		for i, h := range numeric {
+			if i > 0 {
+				b.WriteString("; ")
+			}
+			fmt.Fprintf(&b, "[#%d] %s", h.rank, h.text)
+		}
+		b.WriteString("\n")
+	}
+	return b.String()
+}
+
+func answerHintGroupContent(hits []runners.Hit) (string, []string) {
+	var texts []string
+	var validFroms []string
+	for _, h := range hits {
+		texts = append(texts, strings.ReplaceAll(h.Content, "\n", " "))
+		if h.ValidFrom != "" {
+			validFroms = append(validFroms, h.ValidFrom)
+		}
+	}
+	return strings.Join(texts, " "), validFroms
+}
+
+func queryHasNumericAnswerIntent(query string) bool {
+	q := strings.ToLower(query)
+	for _, cue := range []string{"how many", "number", "count", "amount", "total", "age", "几", "多少", "几个", "多大"} {
+		if strings.Contains(q, cue) {
+			return true
+		}
+	}
+	return false
+}
+
+func dedupeAnswerStrings(in []string) []string {
+	if len(in) < 2 {
+		return in
+	}
+	seen := make(map[string]struct{}, len(in))
+	out := make([]string, 0, len(in))
+	for _, s := range in {
+		s = strings.TrimSpace(s)
+		key := strings.ToLower(strings.Join(strings.Fields(s), " "))
+		if key == "" {
+			continue
+		}
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, s)
+	}
+	return out
+}
+
+func truncateAnswerText(s string, limit int) string {
+	s = strings.TrimSpace(s)
+	if limit <= 0 {
+		return s
+	}
+	runes := []rune(s)
+	if len(runes) <= limit {
+		return s
+	}
+	cut := limit
+	for cut > 0 && (runes[cut-1] == ' ' || runes[cut-1] == '\t') {
+		cut--
+	}
+	if cut <= 3 {
+		return string(runes[:limit])
+	}
+	return strings.TrimSpace(string(runes[:cut])) + "..."
 }
 
 // composePrediction concatenates the top-3 hit contents — the "answer" we feed

@@ -36,4 +36,11 @@ const (
 	// Feedback fields mirrored into retrieval metadata (Phase D.4).
 	MetaReinforcement = "reinforcement"
 	MetaPenalty       = "penalty"
+
+	// MetaCoverageRepair marks facts emitted by extractor coverage
+	// repair. These facts are grounded in source turns but were
+	// produced by a narrower second-pass extraction, so downstream
+	// rankers can treat them as useful but lower-confidence evidence
+	// when they compete with normal first-pass memories.
+	MetaCoverageRepair = "coverage_repair"
 )

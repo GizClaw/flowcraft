@@ -94,7 +94,7 @@ on:
       reranker_llm:
         description: "Reranker LLM alias ('' to disable)"
         required: false
-        default: "azure_4o_mini"
+        default: ""
       embedder:
         description: "Embedder alias (e.g. qwen:text-embedding-v4)"
         required: false
