@@ -28,7 +28,7 @@ func (BuildHits) Name() string { return "build_hits" }
 func (s *BuildHits) Run(ctx context.Context, state *read.ReadState) (diagnostic.StageDetail, error) {
 	hits := hitsFromItems(state.Ranked)
 	state.Hits = hits
-	detail := diagnostic.BuildHitsDetail{Count: len(hits)}
+	detail := diagnostic.BuildHitsDetail{Count: len(hits), Hits: candidateSnapshotPtr(hitSnapshots(hits))}
 	if s.reranker != nil && len(hits) > 0 {
 		reranked, err := s.reranker.Rerank(ctx, state.Query.Text, hits)
 		if err != nil {
@@ -43,6 +43,7 @@ func (s *BuildHits) Run(ctx context.Context, state *read.ReadState) (diagnostic.
 			state.Hits = hits
 		}
 		detail.Count = len(hits)
+		detail.Hits = candidateSnapshotPtr(hitSnapshots(hits))
 	}
 	return detail, nil
 }

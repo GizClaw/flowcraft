@@ -32,12 +32,14 @@ func (PlanDetail) isStageDetail() {}
 // v1 Partition generalisation). FastPath records the single-scope
 // shortcut so dashboards can tell apart simple from federated reads.
 type FederationFanoutDetail struct {
-	SubScopes       []SubScopeRun
-	FastPath        bool
-	Sources         []SourceResult
-	Drops           []CandidateDrop
-	FusedCandidates int
-	Materialized    int
+	SubScopes         []SubScopeRun
+	FastPath          bool
+	Sources           []SourceResult
+	Drops             []CandidateDrop
+	Fused             *[]CandidateSnapshot
+	MaterializedItems *[]CandidateSnapshot
+	FusedCandidates   int
+	Materialized      int
 }
 
 // SubScopeRun is one row in FederationFanoutDetail.SubScopes.
@@ -58,6 +60,7 @@ type FederationMergeDetail struct {
 	AfterTopK      int
 	DroppedByDedup int
 	Latency        time.Duration
+	Items          *[]CandidateSnapshot
 }
 
 func (FederationMergeDetail) isStageDetail() {}
@@ -72,6 +75,7 @@ type SourceFanoutDetail struct {
 type SourceResult struct {
 	Lens       string
 	Candidates int
+	Snapshots  *[]CandidateSnapshot
 	Drops      []CandidateDrop
 	Latency    time.Duration
 	Err        string
@@ -108,6 +112,7 @@ type TrustFilterDetail struct {
 	ActorID        string
 	Removed        int
 	Redacted       int
+	Items          *[]CandidateSnapshot
 }
 
 func (TrustFilterDetail) isStageDetail() {}
@@ -122,6 +127,8 @@ type RankDetail struct {
 	TimeDecayApplied       int
 	SupersededDecayApplied int
 	Latency                time.Duration
+	Input                  *[]CandidateSnapshot
+	Output                 *[]CandidateSnapshot
 }
 
 func (RankDetail) isStageDetail() {}
@@ -131,6 +138,7 @@ type BuildHitsDetail struct {
 	Count     int
 	Reranked  int
 	RerankErr string
+	Hits      *[]CandidateSnapshot
 }
 
 func (BuildHitsDetail) isStageDetail() {}

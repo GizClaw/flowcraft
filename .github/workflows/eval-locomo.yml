@@ -20,6 +20,7 @@ name: eval / locomo
 #                  --reranker-llm <alias> --embedder <alias>
 #                  --concurrency N --ingest-concurrency N
 #                  --dump-facts <facts.jsonl> --dump-recall <recall.jsonl>
+#                  --dump-stage-audit <stage-audit.jsonl>
 #                  [v1-only: --multi-recall=true --save-with-context=true
 #                            --update-resolver=<alias> --recent-turns N
 #                            --soft-merge=true --entity-store=true
@@ -413,6 +414,7 @@ jobs:
           # we have dumps for every historical run.
           FACTS_OUT: ${{ env.REPORT_DIR }}/${{ github.run_id }}-facts.jsonl
           RECALL_OUT: ${{ env.REPORT_DIR }}/${{ github.run_id }}-recall.jsonl
+          STAGE_AUDIT_OUT: ${{ env.REPORT_DIR }}/${{ github.run_id }}-stage-audit.jsonl
           # v2-only diagnostics dump (per-stage pipeline health). v1
           # ignores --diagnostics so we always declare the path; the
           # condition below decides whether to add the flag.
@@ -489,7 +491,10 @@ jobs:
           # facts / recall dumps. v1 has no equivalent — its existing
           # dumps already cover that surface.
           if [ "${{ inputs.runner }}" = "flowcraft-v2" ]; then
-            ARGS+=( --diagnostics "$DIAGNOSTICS_OUT" )
+            ARGS+=(
+              --diagnostics "$DIAGNOSTICS_OUT"
+              --dump-stage-audit "$STAGE_AUDIT_OUT"
+            )
           fi
           /tmp/eval "${ARGS[@]}"
 
@@ -499,6 +504,7 @@ jobs:
           REPORT_OUT: ${{ env.REPORT_DIR }}/${{ github.run_id }}.json
           FACTS_OUT: ${{ env.REPORT_DIR }}/${{ github.run_id }}-facts.jsonl
           RECALL_OUT: ${{ env.REPORT_DIR }}/${{ github.run_id }}-recall.jsonl
+          STAGE_AUDIT_OUT: ${{ env.REPORT_DIR }}/${{ github.run_id }}-stage-audit.jsonl
           AUDIT_JSONL_OUT: ${{ env.REPORT_DIR }}/${{ github.run_id }}-audit.jsonl
           AUDIT_MD_OUT: ${{ env.REPORT_DIR }}/${{ github.run_id }}-audit.md
           DATASET_IN: ${{ inputs.dataset }}
@@ -515,6 +521,9 @@ jobs:
           )
           if [ -s "$FACTS_OUT" ]; then
             ARGS+=( --facts "$FACTS_OUT" )
+          fi
+          if [ -s "$STAGE_AUDIT_OUT" ]; then
+            ARGS+=( --stage-audit "$STAGE_AUDIT_OUT" )
           fi
           if [ "$DATASET_IN" != "synthetic" ] && [ -s "$DATASET_IN" ]; then
             ARGS+=( --dataset "$DATASET_IN" )
@@ -545,6 +554,7 @@ jobs:
           path: |
             ${{ env.REPORT_DIR }}/${{ github.run_id }}-facts.jsonl
             ${{ env.REPORT_DIR }}/${{ github.run_id }}-recall.jsonl
+            ${{ env.REPORT_DIR }}/${{ github.run_id }}-stage-audit.jsonl
             ${{ env.REPORT_DIR }}/${{ github.run_id }}-diagnostics.json
             ${{ env.REPORT_DIR }}/${{ github.run_id }}-audit.jsonl
             ${{ env.REPORT_DIR }}/${{ github.run_id }}-audit.md

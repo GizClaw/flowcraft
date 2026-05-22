@@ -6,6 +6,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/eval/locomo/runners"
 	"github.com/GizClaw/flowcraft/sdk/recall"
+	"github.com/GizClaw/flowcraft/sdk/recall/diagnostics"
 )
 
 func toRecallScope(s runners.Scope) recall.Scope {
@@ -77,6 +78,37 @@ func fromRecallHits(hits []recall.Hit) []runners.Hit {
 	out := make([]runners.Hit, len(hits))
 	for i, h := range hits {
 		out[i] = fromRecallHit(h)
+	}
+	return out
+}
+
+func fromRecallStageAudit(a diagnostics.RecallStageAudit) runners.RecallStageAudit {
+	out := runners.RecallStageAudit{Stages: make([]runners.RecallStageSnapshot, 0, len(a.Stages))}
+	for _, st := range a.Stages {
+		out.Stages = append(out.Stages, runners.RecallStageSnapshot{
+			Stage:      st.Stage,
+			Source:     st.Source,
+			Status:     st.Status,
+			Candidates: fromRecallAuditCandidates(st.Candidates),
+		})
+	}
+	return out
+}
+
+func fromRecallAuditCandidates(in []diagnostics.RecallCandidateSnapshot) []runners.RecallCandidateSnapshot {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]runners.RecallCandidateSnapshot, 0, len(in))
+	for _, c := range in {
+		out = append(out, runners.RecallCandidateSnapshot{
+			FactID:      c.FactID,
+			Source:      c.Source,
+			Rank:        c.Rank,
+			Score:       c.Score,
+			EvidenceIDs: append([]string(nil), c.EvidenceIDs...),
+			Sources:     append([]string(nil), c.Sources...),
+		})
 	}
 	return out
 }

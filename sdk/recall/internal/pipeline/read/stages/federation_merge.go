@@ -47,6 +47,7 @@ func (FederationMerge) Run(_ context.Context, state *read.ReadState) (diagnostic
 		AfterTopK:      len(merged),
 		DroppedByDedup: dropped,
 		Latency:        time.Since(started),
+		Items:          candidateSnapshotPtr(contextItemSnapshots(merged)),
 	}, nil
 }
 

@@ -34,6 +34,26 @@ type Hit struct {
 	Metadata    map[string]any
 }
 
+type RecallStageAudit struct {
+	Stages []RecallStageSnapshot `json:"stages,omitempty"`
+}
+
+type RecallStageSnapshot struct {
+	Stage      string                    `json:"stage"`
+	Source     string                    `json:"source,omitempty"`
+	Status     string                    `json:"status,omitempty"`
+	Candidates []RecallCandidateSnapshot `json:"candidates,omitempty"`
+}
+
+type RecallCandidateSnapshot struct {
+	FactID      string   `json:"fact_id,omitempty"`
+	Source      string   `json:"source,omitempty"`
+	Rank        int      `json:"rank,omitempty"`
+	Score       float64  `json:"score,omitempty"`
+	EvidenceIDs []string `json:"evidence_ids,omitempty"`
+	Sources     []string `json:"sources,omitempty"`
+}
+
 // Runner abstracts a Memory implementation under evaluation.
 //
 // Save's saveCount is the number of memory entries actually persisted by
@@ -46,6 +66,12 @@ type Runner interface {
 	Save(ctx context.Context, scope Scope, msgs []llm.Message) (saveCount int, saveLatency time.Duration, err error)
 	Recall(ctx context.Context, scope Scope, query string, topK int) (hits []Hit, recallLatency time.Duration, err error)
 	Close() error
+}
+
+// RecallStageAuditor is an optional Runner extension that returns the
+// read pipeline's per-stage candidate snapshots for diagnostics.
+type RecallStageAuditor interface {
+	RecallWithStageAudit(ctx context.Context, scope Scope, query string, topK int) (hits []Hit, audit RecallStageAudit, recallLatency time.Duration, err error)
 }
 
 // RawTurn carries a single conversation turn together with its upstream

@@ -111,6 +111,7 @@ func (s *FederationFanout) Run(ctx context.Context, state *read.ReadState) (diag
 			detail.Sources = append(detail.Sources, diagnostic.SourceResult{
 				Lens:       res.Source,
 				Candidates: len(res.Candidates),
+				Snapshots:  candidateSnapshotPtr(candidateSnapshots(res.Candidates)),
 				Latency:    res.Latency,
 				Err:        errStr,
 			})
@@ -129,6 +130,7 @@ func (s *FederationFanout) Run(ctx context.Context, state *read.ReadState) (diag
 		sub.Fused = fused
 		sub.FusionDrops = drops
 		detail.FusedCandidates += len(fused)
+		detail.Fused = appendSnapshotPtr(detail.Fused, candidateSnapshots(fused))
 		detail.Drops = append(detail.Drops, drops...)
 
 		items, matDrops, err := s.materializer.Materialize(ctx, fused)
@@ -143,6 +145,7 @@ func (s *FederationFanout) Run(ctx context.Context, state *read.ReadState) (diag
 		sub.Materialized = items
 		sub.MaterializeDrops = matDrops
 		detail.Materialized += len(items)
+		detail.MaterializedItems = appendSnapshotPtr(detail.MaterializedItems, contextItemSnapshots(items))
 		detail.Drops = append(detail.Drops, matDrops...)
 
 		detail.SubScopes = append(detail.SubScopes, diagnostic.SubScopeRun{

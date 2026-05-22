@@ -55,6 +55,8 @@ type recallAnalysisRecord struct {
 	ExtractTermCoverage  float64            `json:"extract_term_coverage,omitempty"`
 	ExtractEvidenceIDHit bool               `json:"extract_evidence_id_hit,omitempty"`
 	ExtractFactIDs       []string           `json:"extract_fact_ids,omitempty"`
+	StageMiss            string             `json:"stage_miss,omitempty"`
+	StageCoverages       map[string]float64 `json:"stage_coverages,omitempty"`
 	TermHits             []recallTermHit    `json:"term_hits,omitempty"`
 	TopKinds             map[string]int     `json:"top_kinds,omitempty"`
 	TopSources           map[string]int     `json:"top_sources,omitempty"`
@@ -78,17 +80,41 @@ type recallTopHitView struct {
 	Snippet  string   `json:"snippet"`
 }
 
+type stageAuditDumpRecord struct {
+	QID    string                `json:"qid"`
+	Query  string                `json:"query"`
+	Gold   []string              `json:"gold_answers,omitempty"`
+	Stages []stageAuditDumpStage `json:"stages,omitempty"`
+}
+
+type stageAuditDumpStage struct {
+	Stage      string                    `json:"stage"`
+	Source     string                    `json:"source,omitempty"`
+	Status     string                    `json:"status,omitempty"`
+	Candidates []stageAuditDumpCandidate `json:"candidates,omitempty"`
+}
+
+type stageAuditDumpCandidate struct {
+	FactID      string   `json:"fact_id,omitempty"`
+	Source      string   `json:"source,omitempty"`
+	Rank        int      `json:"rank,omitempty"`
+	Score       float64  `json:"score,omitempty"`
+	EvidenceIDs []string `json:"evidence_ids,omitempty"`
+	Sources     []string `json:"sources,omitempty"`
+}
+
 func addLocomoAnalyzeRecall(parent *cobra.Command) {
 	var (
-		baselinePath string
-		datasetPath  string
-		factsPath    string
-		category     string
-		onlyErrors   bool
-		onlyFlips    bool
-		format       string
-		outPath      string
-		topN         int
+		baselinePath   string
+		datasetPath    string
+		factsPath      string
+		stageAuditPath string
+		category       string
+		onlyErrors     bool
+		onlyFlips      bool
+		format         string
+		outPath        string
+		topN           int
 	)
 	cmd := &cobra.Command{
 		Use:   "analyze-recall <report.json> <recall.jsonl>",
@@ -119,12 +145,21 @@ func addLocomoAnalyzeRecall(parent *cobra.Command) {
 				signals = buildAuditSignals(ds)
 			}
 			var factsByConv map[string][]factDumpFact
+			var factByID map[string]factDumpFact
 			if factsPath != "" {
 				factRecords, err := loadFactsDump(factsPath)
 				if err != nil {
 					return err
 				}
 				factsByConv = groupFactsByConversation(factRecords)
+				factByID = indexFactsByID(factRecords)
+			}
+			var stageAudits map[string]stageAuditDumpRecord
+			if stageAuditPath != "" {
+				stageAudits, err = loadStageAuditDump(stageAuditPath)
+				if err != nil {
+					return err
+				}
 			}
 			records := analyzeRecallDump(report, baseline, dumps, analyzeRecallOptions{
 				Category:    category,
@@ -133,6 +168,8 @@ func addLocomoAnalyzeRecall(parent *cobra.Command) {
 				TopN:        topN,
 				Signals:     signals,
 				FactsByConv: factsByConv,
+				FactByID:    factByID,
+				StageAudits: stageAudits,
 			})
 			var w io.Writer = os.Stdout
 			if outPath != "" {
@@ -162,6 +199,7 @@ func addLocomoAnalyzeRecall(parent *cobra.Command) {
 	cmd.Flags().StringVar(&baselinePath, "baseline", "", "optional baseline report JSON; marks regressed/improved flips by qid")
 	cmd.Flags().StringVar(&datasetPath, "dataset", "", "optional dataset JSONL; enables evidence-term audit")
 	cmd.Flags().StringVar(&factsPath, "facts", "", "optional --dump-facts JSONL; enables extract-vs-recall classification")
+	cmd.Flags().StringVar(&stageAuditPath, "stage-audit", "", "optional --dump-stage-audit JSONL; enables source/fusion/rank attribution")
 	cmd.Flags().StringVar(&category, "category", "", "optional category tag filter, e.g. multi-hop")
 	cmd.Flags().BoolVar(&onlyErrors, "only-errors", false, "only emit questions whose current judge score is 0")
 	cmd.Flags().BoolVar(&onlyFlips, "only-flips", false, "only emit questions that changed judge outcome vs --baseline")
@@ -178,6 +216,8 @@ type analyzeRecallOptions struct {
 	TopN        int
 	Signals     map[string]auditSignals
 	FactsByConv map[string][]factDumpFact
+	FactByID    map[string]factDumpFact
+	StageAudits map[string]stageAuditDumpRecord
 }
 
 type auditSignals struct {
@@ -247,6 +287,42 @@ func groupFactsByConversation(records []factDumpRecord) map[string][]factDumpFac
 	return out
 }
 
+func indexFactsByID(records []factDumpRecord) map[string]factDumpFact {
+	out := map[string]factDumpFact{}
+	for _, rec := range records {
+		for _, fact := range rec.Facts {
+			if fact.ID != "" {
+				out[fact.ID] = fact
+			}
+		}
+	}
+	return out
+}
+
+func loadStageAuditDump(path string) (map[string]stageAuditDumpRecord, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	out := map[string]stageAuditDumpRecord{}
+	sc := bufio.NewScanner(f)
+	buf := make([]byte, 0, 1024*1024)
+	sc.Buffer(buf, 64*1024*1024)
+	for sc.Scan() {
+		line := strings.TrimSpace(sc.Text())
+		if line == "" {
+			continue
+		}
+		var rec stageAuditDumpRecord
+		if err := json.Unmarshal([]byte(line), &rec); err != nil {
+			return nil, err
+		}
+		out[rec.QID] = rec
+	}
+	return out, sc.Err()
+}
+
 func buildAuditSignals(ds *dataset.Dataset) map[string]auditSignals {
 	turnByConvEvidence := map[string]map[string]string{}
 	for _, conv := range ds.Conversations {
@@ -307,13 +383,13 @@ func analyzeRecallDump(report, baseline *Report, dumps map[string]recallDumpReco
 			continue
 		}
 		dump := dumps[q.ID]
-		rec := classifyRecallQuestion(q, flip, dump, opts.TopN, opts.Signals[q.ID], opts.FactsByConv)
+		rec := classifyRecallQuestion(q, flip, dump, opts.TopN, opts.Signals[q.ID], opts.FactsByConv, opts.FactByID, opts.StageAudits[q.ID])
 		out = append(out, rec)
 	}
 	return out
 }
 
-func classifyRecallQuestion(q QuestionScore, flip string, dump recallDumpRecord, topN int, signals auditSignals, factsByConv map[string][]factDumpFact) recallAnalysisRecord {
+func classifyRecallQuestion(q QuestionScore, flip string, dump recallDumpRecord, topN int, signals auditSignals, factsByConv map[string][]factDumpFact, factByID map[string]factDumpFact, stageAudit stageAuditDumpRecord) recallAnalysisRecord {
 	gold := append([]string(nil), dump.Gold...)
 	if len(gold) == 0 {
 		gold = nil
@@ -370,6 +446,10 @@ func classifyRecallQuestion(q QuestionScore, flip string, dump recallDumpRecord,
 	if len(factsByConv) > 0 {
 		extract = auditExtract(signals, factsByConv[signals.ConversationID])
 	}
+	stage := stageAuditResult{}
+	if len(stageAudit.Stages) > 0 {
+		stage = auditRecallStages(signals, analysisTerms, stageAudit, factByID)
+	}
 	rec := recallAnalysisRecord{
 		QID:                  q.ID,
 		Query:                q.Query,
@@ -392,6 +472,8 @@ func classifyRecallQuestion(q QuestionScore, flip string, dump recallDumpRecord,
 		ExtractTermCoverage:  extract.TermCoverage,
 		ExtractEvidenceIDHit: extract.EvidenceIDHit,
 		ExtractFactIDs:       extract.FactIDs,
+		StageMiss:            stage.Miss,
+		StageCoverages:       stage.Coverages,
 		TermHits:             termHits,
 		TopKinds:             countTopKinds(dump.Hits),
 		TopSources:           countTopSources(dump.Hits),
@@ -399,6 +481,9 @@ func classifyRecallQuestion(q QuestionScore, flip string, dump recallDumpRecord,
 	}
 	if len(factsByConv) > 0 {
 		rec.MissType = recallAuditMissType(q, extract, analysisTerms, analysisCoverage, bestAnalysisRank, len(dump.Hits))
+	}
+	if len(stageAudit.Stages) > 0 {
+		rec.MissType = recallStageAuditMissType(q, extract, stage)
 	}
 	return rec
 }
@@ -461,6 +546,93 @@ func recallAuditMissType(q QuestionScore, extract extractAuditResult, terms []st
 		return "answer_abstain"
 	}
 	return "answer_miss"
+}
+
+type stageAuditResult struct {
+	Miss      string
+	Coverages map[string]float64
+}
+
+func auditRecallStages(signals auditSignals, terms []string, audit stageAuditDumpRecord, factByID map[string]factDumpFact) stageAuditResult {
+	coverages := map[string]float64{}
+	stageCandidates := map[string][]stageAuditDumpCandidate{}
+	for _, st := range audit.Stages {
+		key := st.Stage
+		if st.Stage == "source_fanout" {
+			key = "source"
+		}
+		stageCandidates[key] = append(stageCandidates[key], st.Candidates...)
+	}
+	order := []string{"source", "fusion", "materialize", "federation_merge", "trust_filter", "rank_input", "rank_output", "build_hits"}
+	for _, stage := range order {
+		if candidates, ok := stageCandidates[stage]; ok {
+			coverages[stage] = stageCandidateCoverage(terms, signals.EvidenceIDs, candidates, factByID)
+		}
+	}
+	miss := stageMissType(coverages)
+	return stageAuditResult{Miss: miss, Coverages: coverages}
+}
+
+func recallStageAuditMissType(q QuestionScore, extract extractAuditResult, stage stageAuditResult) string {
+	if q.Judge >= 0.5 {
+		return "correct"
+	}
+	switch extract.Status {
+	case "extract_miss", "extract_partial", "extract_semantic_drift":
+		return extract.Status
+	}
+	if stage.Miss != "" {
+		return stage.Miss
+	}
+	if looksIDK(q.Prediction) {
+		return "answer_abstain"
+	}
+	return "answer_miss"
+}
+
+func stageMissType(coverages map[string]float64) string {
+	source := coverages["source"]
+	fusion := coverages["fusion"]
+	materialize := coverages["materialize"]
+	rankInput := coverages["rank_input"]
+	rankOutput := coverages["rank_output"]
+	final := coverages["build_hits"]
+	if source == 0 {
+		return "source_miss"
+	}
+	if fusion+0.0001 < source {
+		return "fusion_drop"
+	}
+	if materialize+0.0001 < fusion {
+		return "materialize_drop"
+	}
+	if rankInput > 0 && rankOutput+0.0001 < rankInput {
+		return "rank_drop"
+	}
+	if final > 0 && final < 0.5 {
+		return "context_partial"
+	}
+	return ""
+}
+
+func stageCandidateCoverage(terms, evidenceIDs []string, candidates []stageAuditDumpCandidate, factByID map[string]factDumpFact) float64 {
+	signals := uniqueStrings(append(append([]string{}, terms...), evidenceIDs...))
+	if len(signals) == 0 {
+		return 0
+	}
+	matched := map[string]bool{}
+	for _, candidate := range candidates {
+		text := strings.ToLower(candidate.FactID + " " + strings.Join(candidate.EvidenceIDs, " "))
+		if fact, ok := factByID[candidate.FactID]; ok {
+			text += " " + factSearchText(fact)
+		}
+		for _, signal := range signals {
+			if strings.Contains(text, strings.ToLower(signal)) {
+				matched[signal] = true
+			}
+		}
+	}
+	return float64(len(matched)) / float64(len(signals))
 }
 
 type extractAuditResult struct {
@@ -617,14 +789,15 @@ func writeRecallAnalysisMarkdown(w io.Writer, records []recallAnalysisRecord) {
 	fmt.Fprintln(w)
 	writeCountTable(w, "miss_type", countRecallField(records, func(rec recallAnalysisRecord) string { return rec.MissType }))
 	writeCountTable(w, "extract_status", countRecallField(records, func(rec recallAnalysisRecord) string { return rec.ExtractStatus }))
+	writeCountTable(w, "stage_miss", countRecallField(records, func(rec recallAnalysisRecord) string { return rec.StageMiss }))
 	writeCountTable(w, "category", countRecallCategories(records))
 	writeCountTable(w, "top_kind", countNestedRecallFields(records, func(rec recallAnalysisRecord) map[string]int { return rec.TopKinds }))
 	writeCountTable(w, "top_source", countNestedRecallFields(records, func(rec recallAnalysisRecord) map[string]int { return rec.TopSources }))
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "## Questions")
 	fmt.Fprintln(w)
-	fmt.Fprintln(w, "| qid | judge | flip | miss_type | extract_status | gold_coverage | evidence_coverage | best_gold_rank | best_evidence_rank | missing_terms | top hit |")
-	fmt.Fprintln(w, "|---|---:|---|---|---|---:|---:|---:|---:|---|---|")
+	fmt.Fprintln(w, "| qid | judge | flip | miss_type | extract_status | stage_miss | gold_coverage | evidence_coverage | best_gold_rank | best_evidence_rank | missing_terms | top hit |")
+	fmt.Fprintln(w, "|---|---:|---|---|---|---|---:|---:|---:|---:|---|---|")
 	for _, rec := range records {
 		top := ""
 		if len(rec.TopHits) > 0 {
@@ -633,8 +806,8 @@ func writeRecallAnalysisMarkdown(w io.Writer, records []recallAnalysisRecord) {
 		}
 		missing := append([]string{}, rec.MissingTerms...)
 		missing = append(missing, rec.MissingEvidenceTerms...)
-		fmt.Fprintf(w, "| %s | %.0f | %s | %s | %s | %.2f | %.2f | %d | %d | %s | %s |\n",
-			rec.QID, rec.Judge, rec.Flip, rec.MissType, rec.ExtractStatus, rec.TermCoverage, rec.EvidenceTermCoverage, rec.BestGoldRank, rec.BestEvidenceRank, strings.Join(uniqueStrings(missing), ","), top)
+		fmt.Fprintf(w, "| %s | %.0f | %s | %s | %s | %s | %.2f | %.2f | %d | %d | %s | %s |\n",
+			rec.QID, rec.Judge, rec.Flip, rec.MissType, rec.ExtractStatus, rec.StageMiss, rec.TermCoverage, rec.EvidenceTermCoverage, rec.BestGoldRank, rec.BestEvidenceRank, strings.Join(uniqueStrings(missing), ","), top)
 	}
 }
 

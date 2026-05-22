@@ -146,6 +146,33 @@ func TestSaveSourceTurnsPersistsExtractorEvidenceRefs(t *testing.T) {
 	if !strings.Contains(hits[0].Content, "Alice likes Paris.") {
 		t.Fatalf("grounded hit content should include evidence text: %+v", hits[0])
 	}
+
+	auditor, ok := r.(runners.RecallStageAuditor)
+	if !ok {
+		t.Fatal("flowcraftv2 runner must support recall stage audits")
+	}
+	_, audit, _, err := auditor.RecallWithStageAudit(context.Background(), scope, "Paris", 5)
+	if err != nil {
+		t.Fatalf("recall audit: %v", err)
+	}
+	if len(audit.Stages) == 0 {
+		t.Fatal("expected stage audit snapshots")
+	}
+	var sawSource, sawRank, sawHits bool
+	for _, st := range audit.Stages {
+		if st.Stage == "source_fanout" && len(st.Candidates) > 0 {
+			sawSource = true
+		}
+		if st.Stage == "rank_output" && len(st.Candidates) > 0 {
+			sawRank = true
+		}
+		if st.Stage == "build_hits" && len(st.Candidates) > 0 {
+			sawHits = true
+		}
+	}
+	if !sawSource || !sawRank || !sawHits {
+		t.Fatalf("missing expected source/rank/hits snapshots: %+v", audit.Stages)
+	}
 }
 
 func TestGroundedHitContentSatisfiesAnswerContextDiagnostics(t *testing.T) {

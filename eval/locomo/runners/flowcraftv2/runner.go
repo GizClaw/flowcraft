@@ -276,6 +276,17 @@ func (r *Runner) drainSideEffects(ctx context.Context, scope runners.Scope) erro
 
 // Recall implements runners.Runner.
 func (r *Runner) Recall(ctx context.Context, scope runners.Scope, query string, topK int) ([]runners.Hit, time.Duration, error) {
+	hits, _, elapsed, err := r.recall(ctx, scope, query, topK, r.recallExplain != nil)
+	return hits, elapsed, err
+}
+
+// RecallWithStageAudit implements runners.RecallStageAuditor.
+func (r *Runner) RecallWithStageAudit(ctx context.Context, scope runners.Scope, query string, topK int) ([]runners.Hit, runners.RecallStageAudit, time.Duration, error) {
+	hits, audit, elapsed, err := r.recall(ctx, scope, query, topK, true)
+	return hits, audit, elapsed, err
+}
+
+func (r *Runner) recall(ctx context.Context, scope runners.Scope, query string, topK int, explain bool) ([]runners.Hit, runners.RecallStageAudit, time.Duration, error) {
 	t0 := time.Now()
 	q := recall.Query{Text: query, Limit: topK}
 	var (
@@ -283,16 +294,24 @@ func (r *Runner) Recall(ctx context.Context, scope runners.Scope, query string, 
 		trace recall.RecallTrace
 		err   error
 	)
-	if r.recallExplain != nil {
-		hits, trace, err = r.recallExplain.RecallExplain(ctx, toRecallScope(scope), q)
+	if explain {
+		explainer := r.recallExplain
+		if explainer == nil {
+			explainer, _ = r.mem.(recall.RecallExplainer)
+		}
+		if explainer != nil {
+			hits, trace, err = explainer.RecallExplain(ctx, toRecallScope(scope), q)
+		} else {
+			hits, err = r.mem.Recall(ctx, toRecallScope(scope), q)
+		}
 	} else {
 		hits, err = r.mem.Recall(ctx, toRecallScope(scope), q)
 	}
 	elapsed := time.Since(t0)
-	if r.onRecallDiag != nil && r.recallExplain != nil {
+	if r.onRecallDiag != nil && len(trace.Stages) > 0 {
 		r.onRecallDiag(scope, diagnostics.DiagnoseRecall(trace, hits))
 	}
-	return fromRecallHits(hits), elapsed, err
+	return fromRecallHits(hits), fromRecallStageAudit(diagnostics.AuditRecallStages(trace)), elapsed, err
 }
 
 // Close implements runners.Runner.

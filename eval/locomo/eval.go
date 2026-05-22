@@ -175,6 +175,9 @@ type Options struct {
 	// Callback runs in the QA worker goroutine, so it MUST be
 	// goroutine-safe when Concurrency > 1.
 	OnQuestionRecall func(q dataset.Question, hits []runners.Hit)
+	// OnQuestionRecallStageAudit receives per-stage read-pipeline
+	// candidate snapshots when the runner supports them.
+	OnQuestionRecallStageAudit func(q dataset.Question, audit runners.RecallStageAudit)
 }
 
 // Event describes one lifecycle checkpoint. See [EventHook].
@@ -906,9 +909,16 @@ func evalQuestions(ctx context.Context, r runners.Runner, scopeOf func(string) r
 				// through a generic helper. Same single-shot policy as
 				// the ingest path.
 				var hits []runners.Hit
+				var audit runners.RecallStageAudit
 				var d time.Duration
 				err := retryOnNotAvailable(qctx, "recall", q.ID, func() error {
 					var rerr error
+					if opts.OnQuestionRecallStageAudit != nil {
+						if auditor, ok := r.(runners.RecallStageAuditor); ok {
+							hits, audit, d, rerr = auditor.RecallWithStageAudit(qctx, scopeOf(q.ConversationID), q.Query, opts.TopK)
+							return rerr
+						}
+					}
 					hits, d, rerr = r.Recall(qctx, scopeOf(q.ConversationID), q.Query, opts.TopK)
 					return rerr
 				})
@@ -921,6 +931,9 @@ func evalQuestions(ctx context.Context, r runners.Runner, scopeOf func(string) r
 				latencies[j.idx] = d
 				if opts.OnQuestionRecall != nil {
 					opts.OnQuestionRecall(q, hits)
+				}
+				if opts.OnQuestionRecallStageAudit != nil {
+					opts.OnQuestionRecallStageAudit(q, audit)
 				}
 				var pred string
 				err = retryOnNotAvailable(qctx, "answer", q.ID, func() error {

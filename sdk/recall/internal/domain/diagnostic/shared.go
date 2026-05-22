@@ -100,6 +100,19 @@ type CandidateDrop struct {
 	Details string
 }
 
+// CandidateSnapshot is the non-PII candidate identity used by
+// RecallExplain stage audits. It intentionally carries ids, scores,
+// ranks, and provenance but not fact content; callers can join against
+// an explicit facts dump when they need term-level analysis.
+type CandidateSnapshot struct {
+	FactID      string   `json:"fact_id,omitempty"`
+	Source      string   `json:"source,omitempty"`
+	Rank        int      `json:"rank,omitempty"`
+	Score       float64  `json:"score,omitempty"`
+	EvidenceIDs []string `json:"evidence_ids,omitempty"`
+	Sources     []string `json:"sources,omitempty"`
+}
+
 // DroppedFact carries a structured reason for why a candidate fact
 // did not enter the canonical ledger.
 //

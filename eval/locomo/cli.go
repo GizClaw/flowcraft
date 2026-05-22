@@ -66,38 +66,39 @@ in eval/locomo. Subcommands:
 
 func addLocomoRun(parent *cobra.Command, g *cliflags.Global) {
 	var (
-		runnerName        string
-		datasetFlag       string
-		topK              int
-		useExtractor      bool
-		extractorLLM      string
-		answerLLM         string
-		judgeLLM          string
-		embedderFlag      string
-		limitConvs        int
-		limitQs           int
-		concurrency       int
-		ingestConcurrency int
-		progressEvery     int
-		ingestTimeout     time.Duration
-		qaTimeout         time.Duration
-		maxFacts          int
-		rerankerLLM       string
-		judgeStyle        string
-		judgeTemp         float64
-		scoreThreshold    float64
-		saveWithContext   bool
-		softMerge         bool
-		multiRecall       bool
-		entityStore       bool
-		entityStoreMaxLnk int
-		entityLinkBoost   float64
-		queryEntityLLM    bool
-		updateResolver    string
-		recentTurnsK      int
-		dumpFactsPath     string
-		dumpRecallPath    string
-		diagnosticsPath   string
+		runnerName         string
+		datasetFlag        string
+		topK               int
+		useExtractor       bool
+		extractorLLM       string
+		answerLLM          string
+		judgeLLM           string
+		embedderFlag       string
+		limitConvs         int
+		limitQs            int
+		concurrency        int
+		ingestConcurrency  int
+		progressEvery      int
+		ingestTimeout      time.Duration
+		qaTimeout          time.Duration
+		maxFacts           int
+		rerankerLLM        string
+		judgeStyle         string
+		judgeTemp          float64
+		scoreThreshold     float64
+		saveWithContext    bool
+		softMerge          bool
+		multiRecall        bool
+		entityStore        bool
+		entityStoreMaxLnk  int
+		entityLinkBoost    float64
+		queryEntityLLM     bool
+		updateResolver     string
+		recentTurnsK       int
+		dumpFactsPath      string
+		dumpRecallPath     string
+		dumpStageAuditPath string
+		diagnosticsPath    string
 	)
 
 	cmd := &cobra.Command{
@@ -190,6 +191,9 @@ Example (LLM extractor + LLM answer + LLM judge + Qwen embedder):
 			}
 			if canonical == "flowcraft-v2" && useExtractor && extractor == nil {
 				return flowcraftv2.ErrExtractorNotSupported
+			}
+			if canonical != "flowcraft-v2" && dumpStageAuditPath != "" {
+				return fmt.Errorf("--dump-stage-audit is only supported for flowcraft-v2 (got %s)", canonical)
 			}
 
 			// --dump-facts diagnostic: stream every Save batch's
@@ -340,17 +344,43 @@ Example (LLM extractor + LLM answer + LLM judge + Qwen embedder):
 				}
 			}
 
+			var (
+				stageAuditMu  sync.Mutex
+				stageAuditEnc *json.Encoder
+				onStageAudit  func(q dataset.Question, audit runners.RecallStageAudit)
+			)
+			if dumpStageAuditPath != "" {
+				sw, serr := os.Create(dumpStageAuditPath)
+				if serr != nil {
+					return fmt.Errorf("--dump-stage-audit: %w", serr)
+				}
+				defer sw.Close()
+				stageAuditEnc = json.NewEncoder(sw)
+				onStageAudit = func(q dataset.Question, audit runners.RecallStageAudit) {
+					stageAuditMu.Lock()
+					defer stageAuditMu.Unlock()
+					_ = stageAuditEnc.Encode(struct {
+						TS     time.Time                     `json:"ts"`
+						QID    string                        `json:"qid"`
+						Query  string                        `json:"query"`
+						Gold   []string                      `json:"gold_answers,omitempty"`
+						Stages []runners.RecallStageSnapshot `json:"stages,omitempty"`
+					}{time.Now(), q.ID, q.Query, q.GoldAnswers, audit.Stages})
+				}
+			}
+
 			opts := Options{
-				TopK:              topK,
-				UseExtractor:      useExtractor,
-				AnswerLLM:         answer,
-				Concurrency:       concurrency,
-				IngestConcurrency: ingestConcurrency,
-				ProgressEvery:     progressEvery,
-				IngestTimeout:     ingestTimeout,
-				QATimeout:         qaTimeout,
-				ProgressPct:       g.Notify.ProgressPct,
-				OnQuestionRecall:  onRecall,
+				TopK:                       topK,
+				UseExtractor:               useExtractor,
+				AnswerLLM:                  answer,
+				Concurrency:                concurrency,
+				IngestConcurrency:          ingestConcurrency,
+				ProgressEvery:              progressEvery,
+				IngestTimeout:              ingestTimeout,
+				QATimeout:                  qaTimeout,
+				ProgressPct:                g.Notify.ProgressPct,
+				OnQuestionRecall:           onRecall,
+				OnQuestionRecallStageAudit: onStageAudit,
 				Hook: func(ctx context.Context, e Event) {
 					notify.Forward(ctx, notifier, notify.Event{
 						Kind: e.Kind, Time: e.Time, Title: e.Title, Body: e.Body, Fields: e.Fields,
@@ -450,6 +480,7 @@ Example (LLM extractor + LLM answer + LLM judge + Qwen embedder):
 	f.IntVar(&recentTurnsK, "recent-turns", 0, "if >0, inject the previous K messages from prior Save batches into the extractor for cross-batch pronoun/entity reference resolution")
 	f.StringVar(&dumpFactsPath, "dump-facts", "", "diagnostic: write one JSONL record per Save batch with the extractor's facts to this path (audits extract-miss vs recall-miss)")
 	f.StringVar(&dumpRecallPath, "dump-recall", "", "diagnostic: write one JSONL record per question with the top-k recall hits to this path (audits recall-miss vs answer-miss)")
+	f.StringVar(&dumpStageAuditPath, "dump-stage-audit", "", "diagnostic (flowcraft-v2 only): write per-question read pipeline stage candidates to this JSONL path (audits source/fusion/rank/context drops)")
 	f.StringVar(&diagnosticsPath, "diagnostics", "", "diagnostic (flowcraft-v2 only): write per-stage Save+Recall health summary to this JSON path (uses SaveExplain/RecallExplain)")
 
 	parent.AddCommand(cmd)
