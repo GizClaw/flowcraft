@@ -49,16 +49,30 @@ func (s *BuildHits) Run(ctx context.Context, state *read.ReadState) (diagnostic.
 				detail.RerankedHits = candidateSnapshotPtr(hitSnapshots(hits))
 			}
 		}
-		if state.Plan != nil && state.Plan.TotalCap > 0 && len(hits) > state.Plan.TotalCap {
-			hits = hits[:state.Plan.TotalCap]
-			state.Hits = hits
-		}
-		detail.Count = len(hits)
-		if captureSnapshots {
-			detail.Hits = candidateSnapshotPtr(hitSnapshots(hits))
-		}
+	}
+	if state.Plan != nil && state.Plan.TotalCap > 0 {
+		hits = selectFinalEvidenceAwareHits(state.Query.Text, hits, hitsFromItems(finalSelectionPool(state)), state.Plan.TotalCap)
+		state.Hits = hits
+	}
+	detail.Count = len(hits)
+	if captureSnapshots {
+		detail.Hits = candidateSnapshotPtr(hitSnapshots(hits))
 	}
 	return detail, nil
+}
+
+func finalSelectionPool(state *read.ReadState) []domain.ContextItem {
+	if state == nil {
+		return nil
+	}
+	if len(state.AfterTrust) > 0 {
+		return state.AfterTrust
+	}
+	if len(state.MergedItems) > 0 {
+		return state.MergedItems
+	}
+	read.PromoteMergedItems(state)
+	return state.MergedItems
 }
 
 func hitsFromItems(items []domain.ContextItem) []domain.Hit {
