@@ -53,7 +53,7 @@ func TestRebuildAll_RestoresRetrievalProjectionAfterDrift(t *testing.T) {
 	idx := retrievalmem.New()
 	store := temporalstore.NewMemoryStore()
 	mem, err := New(
-		withTemporalStore(store),
+		WithTemporalStore(store),
 		WithRetrievalIndex(idx),
 	)
 	if err != nil {
@@ -92,7 +92,7 @@ func TestRebuildAll_DoesNotReprojectSupersededFactsToRetrieval(t *testing.T) {
 	idx := retrievalmem.New()
 	store := temporalstore.NewMemoryStore()
 	mem, err := New(
-		withTemporalStore(store),
+		WithTemporalStore(store),
 		WithRetrievalIndex(idx),
 	)
 	if err != nil {
@@ -153,7 +153,7 @@ func TestRebuildAll_DoesNotReprojectKindEpisodeToRetrieval(t *testing.T) {
 	store := temporalstore.NewMemoryStore()
 	queue := asyncsemantic.New()
 	mem, err := New(
-		withTemporalStore(store),
+		WithTemporalStore(store),
 		WithRetrievalIndex(idx),
 		WithAsyncSemanticQueue(queue),
 	)
@@ -204,7 +204,7 @@ func TestRebuildProjection_TargetsSingleProjection(t *testing.T) {
 	idx := retrievalmem.New()
 	store := temporalstore.NewMemoryStore()
 	mem, err := New(
-		withTemporalStore(store),
+		WithTemporalStore(store),
 		WithRetrievalIndex(idx),
 	)
 	if err != nil {
@@ -265,7 +265,7 @@ func TestRepairStale_ForgetsProjectionWithoutTouchingStore(t *testing.T) {
 	idx := retrievalmem.New()
 	store := temporalstore.NewMemoryStore()
 	mem, err := New(
-		withTemporalStore(store),
+		WithTemporalStore(store),
 		WithRetrievalIndex(idx),
 	)
 	if err != nil {
@@ -318,7 +318,7 @@ func TestRecall_EmitsDriftForStaleFact(t *testing.T) {
 	idx := retrievalmem.New()
 	store := temporalstore.NewMemoryStore()
 	mem, err := New(
-		withTemporalStore(store),
+		WithTemporalStore(store),
 		WithRetrievalIndex(idx),
 		WithTelemetryHook(hook),
 	)
@@ -363,7 +363,7 @@ func TestRecall_EmitsDriftForSupersededCandidate(t *testing.T) {
 	hook := &captureHook{}
 	store := temporalstore.NewMemoryStore()
 	mem, err := New(
-		withTemporalStore(store),
+		WithTemporalStore(store),
 		WithTelemetryHook(hook),
 	)
 	if err != nil {

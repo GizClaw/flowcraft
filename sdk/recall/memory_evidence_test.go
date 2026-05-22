@@ -89,7 +89,7 @@ func TestSave_EvidenceFailureRetriesWithoutCanonicalRollback(t *testing.T) {
 	ev := &failingEvidence{EvidenceStore: evidencestore.NewMemoryStore(), failAppend: true}
 	idx := retrievalmem.New()
 	mem, err := New(
-		withTemporalStore(store),
+		WithTemporalStore(store),
 		WithEvidenceStore(ev),
 		WithRetrievalIndex(idx),
 	)
@@ -235,7 +235,7 @@ func TestGetEvidence_MissingFactReturnsNilNotError(t *testing.T) {
 func TestGetEvidence_DoesNotReturnAdapterRefsForMissingCanonicalFact(t *testing.T) {
 	store := temporalstore.NewMemoryStore()
 	ev := evidencestore.NewMemoryStore()
-	mem, err := New(withTemporalStore(store), WithEvidenceStore(ev))
+	mem, err := New(WithTemporalStore(store), WithEvidenceStore(ev))
 	if err != nil {
 		t.Fatalf("new: %v", err)
 	}

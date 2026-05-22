@@ -48,7 +48,7 @@ func TestSave_SideEffectsDrainAfterUnlock(t *testing.T) {
 	hook := &hookUnderLockDetector{}
 	store := temporalstore.NewMemoryStore()
 	mem, err := New(
-		withTemporalStore(store),
+		WithTemporalStore(store),
 		WithAsyncSemanticQueue(asyncsemantic.New()),
 		WithTelemetryHook(hook),
 	)
@@ -76,7 +76,7 @@ func TestSave_SideEffectsDrainAfterUnlock(t *testing.T) {
 func TestProcessSideEffects_DeadLettersAfterMaxAttempts(t *testing.T) {
 	store := temporalstore.NewMemoryStore()
 	mem, err := New(
-		withTemporalStore(store),
+		WithTemporalStore(store),
 		withExtraProjection(failingProjection{}),
 	)
 	if err != nil {

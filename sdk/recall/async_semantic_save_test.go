@@ -90,7 +90,7 @@ func TestSave_DefaultSyncMode_Unchanged(t *testing.T) {
 	store := temporalstore.NewMemoryStore()
 	queue := asyncsemantic.New()
 	mem, err := New(
-		withTemporalStore(store),
+		WithTemporalStore(store),
 		WithAsyncSemanticQueue(queue),
 	)
 	if err != nil {
@@ -119,7 +119,7 @@ func TestSave_DefaultSyncMode_Unchanged(t *testing.T) {
 // (which would defeat the latency contract callers chose the mode for).
 func TestSave_AsyncWithoutQueue_ReturnsValidationError(t *testing.T) {
 	store := temporalstore.NewMemoryStore()
-	mem, err := New(withTemporalStore(store))
+	mem, err := New(WithTemporalStore(store))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -146,7 +146,7 @@ func TestSave_AsyncEmptyTurns_DegradesToSync(t *testing.T) {
 	store := temporalstore.NewMemoryStore()
 	queue := asyncsemantic.New()
 	mem, err := New(
-		withTemporalStore(store),
+		WithTemporalStore(store),
 		WithAsyncSemanticQueue(queue),
 	)
 	if err != nil {
@@ -184,7 +184,7 @@ func TestSave_AsyncTurnsOnly_WritesEpisodeAndEnqueues(t *testing.T) {
 	queue := asyncsemantic.New()
 	llmClient := &stubLLM{}
 	mem, err := New(
-		withTemporalStore(store),
+		WithTemporalStore(store),
 		WithAsyncSemanticQueue(queue),
 		WithLLMExtractor(llmClient),
 	)
@@ -251,7 +251,7 @@ func (*countEvolution) AfterRecall(_ context.Context, _ domain.Scope, _ domain.R
 func TestSave_AsyncTurnsOnly_SkipsEvolutionAfterSave(t *testing.T) {
 	ev := &countEvolution{}
 	mem, err := New(
-		withTemporalStore(temporalstore.NewMemoryStore()),
+		WithTemporalStore(temporalstore.NewMemoryStore()),
 		WithAsyncSemanticQueue(asyncsemantic.New()),
 		WithEvolution(ev),
 	)
@@ -277,7 +277,7 @@ func TestSave_AsyncMixedFactsAndTurns_BothPaths(t *testing.T) {
 	store := temporalstore.NewMemoryStore()
 	queue := asyncsemantic.New()
 	mem, err := New(
-		withTemporalStore(store),
+		WithTemporalStore(store),
 		WithAsyncSemanticQueue(queue),
 	)
 	if err != nil {
@@ -327,7 +327,7 @@ func TestSave_AsyncMixedFactsAndTurns_BothPaths(t *testing.T) {
 func TestSave_AsyncOutboxFailure_CompensatesEpisode(t *testing.T) {
 	store := temporalstore.NewMemoryStore()
 	mem, err := New(
-		withTemporalStore(store),
+		WithTemporalStore(store),
 		WithAsyncSemanticQueue(&failingQueue{err: errors.New("outbox down")}),
 	)
 	if err != nil {
@@ -355,7 +355,7 @@ func TestSave_AsyncOutboxFailure_CompensatesEpisode(t *testing.T) {
 func TestSave_AsyncMixedOutboxFailure_DoesNotHidePartialCommit(t *testing.T) {
 	store := temporalstore.NewMemoryStore()
 	mem, err := New(
-		withTemporalStore(store),
+		WithTemporalStore(store),
 		WithAsyncSemanticQueue(&failingQueue{err: errors.New("outbox down")}),
 	)
 	if err != nil {
@@ -401,7 +401,7 @@ func TestSave_AsyncMixedFactsLegFailure_CompensatesEpisodeAndOutbox(t *testing.T
 	store := &structuredAppendFailStore{MemoryStore: temporalstore.NewMemoryStore()}
 	queue := asyncsemantic.New()
 	mem, err := New(
-		withTemporalStore(store),
+		WithTemporalStore(store),
 		WithAsyncSemanticQueue(queue),
 	)
 	if err != nil {
@@ -433,7 +433,7 @@ func TestSave_AsyncMixedFactsLegFailure_CompensatesEpisodeAndOutbox(t *testing.T
 // where they would hit retrieval/entity projections via ProjectRequired.
 func TestSave_DirectEpisodeFactRejected(t *testing.T) {
 	store := temporalstore.NewMemoryStore()
-	mem, err := New(withTemporalStore(store))
+	mem, err := New(WithTemporalStore(store))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -494,7 +494,7 @@ func TestSave_AsyncKindEpisodeNotInRetrievalProjection(t *testing.T) {
 	store := temporalstore.NewMemoryStore()
 	queue := asyncsemantic.New()
 	mem, err := New(
-		withTemporalStore(store),
+		WithTemporalStore(store),
 		WithAsyncSemanticQueue(queue),
 	)
 	if err != nil {
@@ -529,7 +529,7 @@ func TestSave_StageDiagnostic_AsyncRequestIDCorrelation(t *testing.T) {
 	queue := asyncsemantic.New()
 	hook := &captureHook{}
 	mem, err := New(
-		withTemporalStore(store),
+		WithTemporalStore(store),
 		WithAsyncSemanticQueue(queue),
 		WithTelemetryHook(hook),
 	)
@@ -576,7 +576,7 @@ func TestSave_AsyncResultIncludesEnqueuedRequestID(t *testing.T) {
 	store := temporalstore.NewMemoryStore()
 	queue := asyncsemantic.New()
 	mem, err := New(
-		withTemporalStore(store),
+		WithTemporalStore(store),
 		WithAsyncSemanticQueue(queue),
 	)
 	if err != nil {

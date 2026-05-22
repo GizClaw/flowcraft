@@ -21,7 +21,7 @@ func TestSave_ConcurrentAsyncTurnsOnly(t *testing.T) {
 	queue := asyncsemantic.New()
 	llm := &stubLLM{}
 	mem, err := New(
-		withTemporalStore(store),
+		WithTemporalStore(store),
 		WithAsyncSemanticQueue(queue),
 		WithLLMExtractor(llm),
 	)
@@ -92,7 +92,7 @@ func TestSave_ConcurrentAsyncMixedFacts(t *testing.T) {
 	store := temporalstore.NewMemoryStore()
 	queue := asyncsemantic.New()
 	mem, err := New(
-		withTemporalStore(store),
+		WithTemporalStore(store),
 		WithAsyncSemanticQueue(queue),
 	)
 	if err != nil {

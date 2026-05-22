@@ -18,7 +18,7 @@ import (
 
 func TestForgetAll_HardWrongConfirmDoesNotBumpScopeGen(t *testing.T) {
 	store := temporalstore.NewMemoryStore()
-	mem, err := New(withTemporalStore(store))
+	mem, err := New(WithTemporalStore(store))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -45,7 +45,7 @@ func TestForgetAll_HardWrongConfirmDoesNotBumpScopeGen(t *testing.T) {
 
 func TestForgetAll_HardRequiresPartitionKeyNotAgentCanonical(t *testing.T) {
 	store := temporalstore.NewMemoryStore()
-	mem, err := New(withTemporalStore(store))
+	mem, err := New(WithTemporalStore(store))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,7 +72,7 @@ func TestForgetAll_HardRequiresPartitionKeyNotAgentCanonical(t *testing.T) {
 func TestForgetAll_HardPurgeScopeRemovesCompletedOutboxPII(t *testing.T) {
 	queue := asyncsemantic.New()
 	store := temporalstore.NewMemoryStore()
-	mem, err := New(withTemporalStore(store), WithAsyncSemanticQueue(queue))
+	mem, err := New(WithTemporalStore(store), WithAsyncSemanticQueue(queue))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -110,7 +110,7 @@ func TestSave_AbortsWhenForgetAllHardDuringIngest(t *testing.T) {
 	store := temporalstore.NewMemoryStore()
 	ingestStarted := make(chan struct{})
 	releaseIngest := make(chan struct{})
-	mem, err := New(withTemporalStore(store), withCompiler(&barrierIngestor{
+	mem, err := New(WithTemporalStore(store), withCompiler(&barrierIngestor{
 		onStart: func() { close(ingestStarted) },
 		wait:    func() { <-releaseIngest },
 	}))

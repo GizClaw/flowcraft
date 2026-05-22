@@ -77,14 +77,6 @@ type llmExtractorConfig struct {
 // Internal injection helpers — used by package-internal tests and
 // adapter wiring. Not part of the public surface.
 
-func withTemporalStore(s port.TemporalStore) Option {
-	return func(c *config) {
-		if s != nil {
-			c.store = s
-		}
-	}
-}
-
 func withCompiler(cp port.Ingestor) Option {
 	return func(c *config) {
 		if cp != nil {
@@ -344,7 +336,7 @@ func NewInMemoryAsyncSemanticQueue() AsyncSemanticQueue {
 // WithSideEffectOutbox installs the durable outbox for commit-after
 // projection / evolution / embedding work. When unset, New wires the
 // in-memory implementation automatically.
-func WithSideEffectOutbox(q port.SideEffectOutbox) Option {
+func WithSideEffectOutbox(q SideEffectOutbox) Option {
 	return func(c *config) {
 		if q != nil {
 			c.sideEffectOutbox = q
@@ -354,7 +346,7 @@ func WithSideEffectOutbox(q port.SideEffectOutbox) Option {
 
 // NewInMemorySideEffectOutbox returns the process-local outbox used
 // by tests and the default Memory stack.
-func NewInMemorySideEffectOutbox() port.SideEffectOutbox {
+func NewInMemorySideEffectOutbox() SideEffectOutbox {
 	return sideeffect.New()
 }
 

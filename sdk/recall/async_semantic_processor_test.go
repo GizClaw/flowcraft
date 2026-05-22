@@ -79,7 +79,7 @@ func TestProcessAsyncSemantic_DerivesRecallableFacts(t *testing.T) {
 	store := temporalstore.NewMemoryStore()
 	queue := asyncsemantic.New()
 	mem, err := New(
-		withTemporalStore(store),
+		WithTemporalStore(store),
 		withCompiler(testSemanticIngestor()),
 		WithAsyncSemanticQueue(queue),
 	)
@@ -138,7 +138,7 @@ func TestProcessAsyncSemantic_IdempotentRecovery(t *testing.T) {
 	store := temporalstore.NewMemoryStore()
 	queue := asyncsemantic.New()
 	mem, err := New(
-		withTemporalStore(store),
+		WithTemporalStore(store),
 		withCompiler(testSemanticIngestor()),
 		WithAsyncSemanticQueue(queue),
 	)
@@ -232,7 +232,7 @@ func TestProcessAsyncSemantic_DeletedEpisodePermanentFail(t *testing.T) {
 	store := temporalstore.NewMemoryStore()
 	queue := asyncsemantic.New()
 	mem, err := New(
-		withTemporalStore(store),
+		WithTemporalStore(store),
 		withCompiler(testSemanticIngestor()),
 		WithAsyncSemanticQueue(queue),
 	)
@@ -277,7 +277,7 @@ func TestProcessAsyncSemantic_EpisodeDeletedDuringWorkerDoesNotDerive(t *testing
 	queue := asyncsemantic.New()
 	scope := asyncTestScope()
 	mem, err := New(
-		withTemporalStore(store),
+		WithTemporalStore(store),
 		withCompiler(ingest.New(ingest.Stages{Extractor: deletingEpisodeExtractor{store: store, scope: scope}})),
 		WithAsyncSemanticQueue(queue),
 	)
@@ -340,7 +340,7 @@ func TestProcessAsyncSemantic_LeaseRecycleRecoversWithoutReappend(t *testing.T) 
 	store := temporalstore.NewMemoryStore()
 	queue := asyncsemantic.New()
 	mem, err := New(
-		withTemporalStore(store),
+		WithTemporalStore(store),
 		withCompiler(testSemanticIngestor()),
 		WithAsyncSemanticQueue(queue),
 	)
@@ -431,7 +431,7 @@ func TestProcessAsyncSemantic_ConcurrentDrainSingleCompletion(t *testing.T) {
 	store := temporalstore.NewMemoryStore()
 	queue := asyncsemantic.New()
 	mem, err := New(
-		withTemporalStore(store),
+		WithTemporalStore(store),
 		withCompiler(testSemanticIngestor()),
 		WithAsyncSemanticQueue(queue),
 	)
@@ -478,7 +478,7 @@ func TestProcessAsyncSemantic_ConcurrentDrainSingleCompletion(t *testing.T) {
 func TestExpireRetired_DoesNotCancelUnrelatedAsyncJobs(t *testing.T) {
 	store := temporalstore.NewMemoryStore()
 	queue := asyncsemantic.New()
-	mem, err := New(withTemporalStore(store), WithAsyncSemanticQueue(queue))
+	mem, err := New(WithTemporalStore(store), WithAsyncSemanticQueue(queue))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -546,7 +546,7 @@ func TestProcessAsyncSemantic_CompleteAckFailureCountsFailed(t *testing.T) {
 	ackErr := errors.New("queue complete unavailable")
 	queue := &completeFailQueue{Queue: asyncsemantic.New(), err: ackErr}
 	mem, err := New(
-		withTemporalStore(temporalstore.NewMemoryStore()),
+		WithTemporalStore(temporalstore.NewMemoryStore()),
 		withCompiler(testSemanticIngestor()),
 		WithAsyncSemanticQueue(queue),
 	)
@@ -579,7 +579,7 @@ func TestForgetAllHard_EmitsAsyncJobsCancelledTelemetry(t *testing.T) {
 	store := temporalstore.NewMemoryStore()
 	queue := asyncsemantic.New()
 	mem, err := New(
-		withTemporalStore(store),
+		WithTemporalStore(store),
 		WithAsyncSemanticQueue(queue),
 		WithTelemetryHook(hook),
 	)
@@ -627,7 +627,7 @@ func TestForgetAllHard_EmitsAsyncJobsCancelledTelemetry(t *testing.T) {
 func TestForgetAllHard_CancelsPendingAsyncJobs(t *testing.T) {
 	store := temporalstore.NewMemoryStore()
 	queue := asyncsemantic.New()
-	mem, err := New(withTemporalStore(store), WithAsyncSemanticQueue(queue))
+	mem, err := New(WithTemporalStore(store), WithAsyncSemanticQueue(queue))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -652,7 +652,7 @@ func TestForgetAllHard_CancelsPendingAsyncJobs(t *testing.T) {
 
 func TestForgetAllHard_CancelScopeFailureSurfaces(t *testing.T) {
 	queue := &cancelScopeFailQueue{Queue: asyncsemantic.New(), err: errors.New("queue unavailable")}
-	mem, err := New(withTemporalStore(temporalstore.NewMemoryStore()), WithAsyncSemanticQueue(queue))
+	mem, err := New(WithTemporalStore(temporalstore.NewMemoryStore()), WithAsyncSemanticQueue(queue))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -676,7 +676,7 @@ func TestForgetAllHard_CancelScopeFailureSurfaces(t *testing.T) {
 func TestExpireRetiredNoMatch_DoesNotCancelAsyncJobs(t *testing.T) {
 	store := temporalstore.NewMemoryStore()
 	queue := asyncsemantic.New()
-	mem, err := New(withTemporalStore(store), WithAsyncSemanticQueue(queue))
+	mem, err := New(WithTemporalStore(store), WithAsyncSemanticQueue(queue))
 	if err != nil {
 		t.Fatal(err)
 	}

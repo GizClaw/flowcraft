@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain"
+	"github.com/GizClaw/flowcraft/sdk/recall/internal/domain/diagnostic"
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/port"
 )
 
@@ -153,6 +154,26 @@ type AsyncSemanticStatsFilter = port.AsyncSemanticStatsFilter
 
 // AsyncSemanticStats is the operator-facing queue health snapshot.
 type AsyncSemanticStats = port.AsyncSemanticStats
+
+// ErrClass classifies async worker failures for retry orchestration.
+type ErrClass = diagnostic.ErrClass
+
+const (
+	ErrClassUnknown   ErrClass = diagnostic.ErrClassUnknown
+	ErrClassPermanent ErrClass = diagnostic.ErrClassPermanent
+	ErrClassTransient ErrClass = diagnostic.ErrClassTransient
+)
+
+// CloneAsyncSemanticJob returns a defensive copy suitable for durable enqueue.
+func CloneAsyncSemanticJob(job AsyncSemanticJob) AsyncSemanticJob {
+	return port.CloneAsyncSemanticJob(job)
+}
+
+// ScrubAsyncSemanticJobPII clears enqueue-time PII snapshots from terminal
+// async semantic jobs.
+func ScrubAsyncSemanticJobPII(job *AsyncSemanticJob) {
+	port.ScrubAsyncSemanticJobPII(job)
+}
 
 // SaveResult reports the canonical fact ids that were appended to the
 // ledger by this Save call. Dedupe/policy drops are not listed here;

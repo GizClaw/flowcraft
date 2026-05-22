@@ -13,6 +13,50 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/recall/internal/port"
 )
 
+// SideEffectJobKind names commit-after work enqueued during Save.
+type SideEffectJobKind = port.SideEffectJobKind
+
+const (
+	SideEffectProjectRequired        SideEffectJobKind = port.SideEffectProjectRequired
+	SideEffectProjectOptional        SideEffectJobKind = port.SideEffectProjectOptional
+	SideEffectProjectEpisodeEvidence SideEffectJobKind = port.SideEffectProjectEpisodeEvidence
+	SideEffectEmbeddingBackfill      SideEffectJobKind = port.SideEffectEmbeddingBackfill
+	SideEffectEvolutionAfterSave     SideEffectJobKind = port.SideEffectEvolutionAfterSave
+)
+
+// SideEffectJob is one durable commit-after unit.
+type SideEffectJob = port.SideEffectJob
+
+// SideEffectClaimOptions controls commit-after worker leasing.
+type SideEffectClaimOptions = port.SideEffectClaimOptions
+
+// SideEffectResult records successful side-effect job completion metadata.
+type SideEffectResult = port.SideEffectResult
+
+// SideEffectFailure records failed side-effect job metadata.
+type SideEffectFailure = port.SideEffectFailure
+
+// SideEffectOutbox is the durable outbox for projection / evolution /
+// embedding work enqueued during Save.
+type SideEffectOutbox = port.SideEffectOutbox
+
+// ScrubSideEffectJobPayload removes raw fact payload from a terminal
+// side-effect job while retaining non-PII routing identity.
+func ScrubSideEffectJobPayload(job *SideEffectJob) {
+	if job == nil || len(job.Facts) == 0 {
+		return
+	}
+	out := make([]TemporalFact, 0, len(job.Facts))
+	for _, f := range job.Facts {
+		out = append(out, TemporalFact{
+			ID:    f.ID,
+			Scope: f.Scope,
+			Kind:  f.Kind,
+		})
+	}
+	job.Facts = out
+}
+
 func allocateSaveOutboxID(state *write.WriteState) {
 	if state == nil || state.SaveOutboxID != "" {
 		return
