@@ -2,6 +2,7 @@ package stages
 
 import (
 	"context"
+	"time"
 
 	"github.com/GizClaw/flowcraft/memory/recall/internal/domain"
 	"github.com/GizClaw/flowcraft/memory/recall/internal/domain/diagnostic"
@@ -26,6 +27,7 @@ func (BuildHits) Name() string { return "build_hits" }
 
 // Run implements pipeline.Stage.
 func (s *BuildHits) Run(ctx context.Context, state *read.ReadState) (diagnostic.StageDetail, error) {
+	started := time.Now()
 	hits := hitsFromItems(state.Ranked)
 	state.Hits = hits
 	detail := diagnostic.BuildHitsDetail{
@@ -38,7 +40,9 @@ func (s *BuildHits) Run(ctx context.Context, state *read.ReadState) (diagnostic.
 		detail.Hits = candidateSnapshotPtr(hitSnapshots(hits))
 	}
 	if s.reranker != nil && len(hits) > 0 {
+		rerankStarted := time.Now()
 		reranked, err := s.reranker.Rerank(ctx, state.Query.Text, hits)
+		detail.RerankLatency = time.Since(rerankStarted)
 		if err != nil {
 			detail.RerankErr = err.Error()
 		} else {
@@ -51,13 +55,16 @@ func (s *BuildHits) Run(ctx context.Context, state *read.ReadState) (diagnostic.
 		}
 	}
 	if state.Plan != nil && state.Plan.TotalCap > 0 {
+		finalSelectionStarted := time.Now()
 		hits = selectFinalEvidenceAwareHits(state.Query.Text, hits, hitsFromItems(finalSelectionPool(state)), state.Plan.TotalCap)
+		detail.FinalSelectionLatency = time.Since(finalSelectionStarted)
 		state.Hits = hits
 	}
 	detail.Count = len(hits)
 	if captureSnapshots {
 		detail.Hits = candidateSnapshotPtr(hitSnapshots(hits))
 	}
+	detail.Latency = time.Since(started)
 	return detail, nil
 }
 

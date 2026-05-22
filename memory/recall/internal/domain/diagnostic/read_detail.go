@@ -135,13 +135,16 @@ func (RankDetail) isStageDetail() {}
 
 // BuildHitsDetail —— read/build_hits stage.
 type BuildHitsDetail struct {
-	Count        int
-	InputCount   int
-	Reranked     int
-	RerankErr    string
-	Input        *[]CandidateSnapshot
-	RerankedHits *[]CandidateSnapshot
-	Hits         *[]CandidateSnapshot
+	Count                 int
+	InputCount            int
+	Reranked              int
+	RerankErr             string
+	Latency               time.Duration
+	RerankLatency         time.Duration
+	FinalSelectionLatency time.Duration
+	Input                 *[]CandidateSnapshot
+	RerankedHits          *[]CandidateSnapshot
+	Hits                  *[]CandidateSnapshot
 }
 
 func (BuildHitsDetail) isStageDetail() {}
