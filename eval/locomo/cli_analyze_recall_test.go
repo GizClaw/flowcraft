@@ -299,6 +299,26 @@ func TestClassifyRecallQuestion_StageAuditFindsFinalLimitDrop(t *testing.T) {
 	}
 }
 
+func TestClassifyRecallQuestion_StageAuditFindsFinalSelectionDrop(t *testing.T) {
+	q := QuestionScore{ID: "q1", Query: "Where did Alice go?", Prediction: "Paris.", Judge: 0}
+	dump := recallDumpRecord{QID: "q1", Gold: []string{"Tampa"}, Hits: []recallDumpHit{{ID: "f2", Content: "Alice went to Paris."}}}
+	signals := auditSignals{ConversationID: "conv-1", EvidenceIDs: []string{"e1"}, GoldTerms: []string{"tampa"}}
+	facts := map[string][]factDumpFact{"conv-1": {{ID: "f1", Content: "Alice went to Tampa.", EvidenceIDs: []string{"e1"}}}}
+	factByID := map[string]factDumpFact{"f1": facts["conv-1"][0]}
+	stageAudit := stageAuditDumpRecord{QID: "q1", Stages: []stageAuditDumpStage{
+		{Stage: "source_fanout", Source: "retrieval", Candidates: []stageAuditDumpCandidate{{FactID: "f1"}}},
+		{Stage: "fusion", Candidates: []stageAuditDumpCandidate{{FactID: "f1"}}},
+		{Stage: "materialize", Candidates: []stageAuditDumpCandidate{{FactID: "f1"}}},
+		{Stage: "rank_output", Candidates: []stageAuditDumpCandidate{{FactID: "f1"}}},
+		{Stage: "build_hits_input", Candidates: []stageAuditDumpCandidate{{FactID: "f1"}}},
+		{Stage: "build_hits", Candidates: []stageAuditDumpCandidate{{FactID: "f2"}}},
+	}}
+	rec := classifyRecallQuestion(q, "", dump, 1, signals, facts, factByID, stageAudit)
+	if rec.MissType != "final_selection_drop_evidence_id" {
+		t.Fatalf("miss_type = %q", rec.MissType)
+	}
+}
+
 func TestClassifyRecallQuestion_StageAuditFindsBuildHitsInconsistency(t *testing.T) {
 	q := QuestionScore{ID: "q1", Query: "Where did Alice go?", Prediction: "Paris.", Judge: 0}
 	dump := recallDumpRecord{QID: "q1", Gold: []string{"Tampa"}, Hits: []recallDumpHit{{ID: "f2", Content: "Alice went to Paris."}}}

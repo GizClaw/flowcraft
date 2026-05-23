@@ -4,6 +4,7 @@ import (
 	"context"
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/GizClaw/flowcraft/memory/recall/internal/domain"
 	"github.com/GizClaw/flowcraft/memory/recall/internal/port"
@@ -63,6 +64,51 @@ func TestRuleBased_InferTemporalIntent(t *testing.T) {
 	wantKinds := []domain.FactKind{domain.KindEvent, domain.KindState, domain.KindPlan}
 	if !slices.Equal(out.Kinds, wantKinds) {
 		t.Fatalf("kinds = %v, want %v", out.Kinds, wantKinds)
+	}
+}
+
+func TestRuleBased_InferDayTimeRangeFromMonthDayYear(t *testing.T) {
+	out, err := RuleBased{}.Compile(context.Background(), port.IntentInput{
+		Text: "What painting did Melanie show to Caroline on October 13, 2023?",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantFrom := time.Date(2023, time.October, 13, 0, 0, 0, 0, time.UTC)
+	wantTo := time.Date(2023, time.October, 14, 0, 0, 0, 0, time.UTC)
+	if !out.TimeRange.From.Equal(wantFrom) || !out.TimeRange.To.Equal(wantTo) {
+		t.Fatalf("time range = %s..%s, want %s..%s", out.TimeRange.From, out.TimeRange.To, wantFrom, wantTo)
+	}
+}
+
+func TestRuleBased_InferMonthTimeRangeFromMonthYear(t *testing.T) {
+	out, err := RuleBased{}.Compile(context.Background(), port.IntentInput{
+		Text: "Where did Joanna travel to in July 2022?",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantFrom := time.Date(2022, time.July, 1, 0, 0, 0, 0, time.UTC)
+	wantTo := time.Date(2022, time.August, 1, 0, 0, 0, 0, time.UTC)
+	if !out.TimeRange.From.Equal(wantFrom) || !out.TimeRange.To.Equal(wantTo) {
+		t.Fatalf("time range = %s..%s, want %s..%s", out.TimeRange.From, out.TimeRange.To, wantFrom, wantTo)
+	}
+}
+
+func TestRuleBased_PreservesExplicitTimeRange(t *testing.T) {
+	explicit := domain.TimeRange{
+		From: time.Date(2024, time.May, 1, 0, 0, 0, 0, time.UTC),
+		To:   time.Date(2024, time.May, 2, 0, 0, 0, 0, time.UTC),
+	}
+	out, err := RuleBased{}.Compile(context.Background(), port.IntentInput{
+		Text:      "What happened on October 13, 2023?",
+		TimeRange: explicit,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !out.TimeRange.From.Equal(explicit.From) || !out.TimeRange.To.Equal(explicit.To) {
+		t.Fatalf("time range = %+v, want explicit %+v", out.TimeRange, explicit)
 	}
 }
 

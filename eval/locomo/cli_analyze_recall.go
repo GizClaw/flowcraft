@@ -734,7 +734,7 @@ func strictEvidenceStageMiss(evidenceIDs []string, stageCandidates map[string][]
 	}
 	if !present("build_hits") {
 		if hasBuildHitsInput {
-			return "audit_inconsistent_evidence_id"
+			return "final_selection_drop_evidence_id"
 		}
 		return "context_drop_evidence_id"
 	}
