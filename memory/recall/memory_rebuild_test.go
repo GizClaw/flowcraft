@@ -491,4 +491,7 @@ func TestMemory_ImplementsOptInInterfaces(t *testing.T) {
 	if _, ok := NewReconciler(mem); !ok {
 		t.Errorf("Memory must expose Reconciler")
 	}
+	if _, ok := mem.(ReadinessObserver); !ok {
+		t.Errorf("Memory must satisfy ReadinessObserver")
+	}
 }

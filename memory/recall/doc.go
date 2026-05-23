@@ -28,4 +28,7 @@
 //     to the caller-owned worker loop or durable adapter.
 //   - Reconciler is an explicit operator API, not a scheduler. It rebuilds or
 //     audits derived work from canonical facts only when callers invoke it.
+//   - ReadinessObserver returns a point-in-time operator checklist. It reads
+//     queues and optional reconcile/audit state, but never starts workers or
+//     mutates outboxes.
 package recall
