@@ -558,7 +558,7 @@ func TestTwoPassLLMExtractor_CoverageRepairUsesMultilingualTextSignals(t *testin
 	}
 }
 
-func TestCoverageRepairInput_BudgetsHighSignalTurns(t *testing.T) {
+func TestCoverageRepairInput_DoesNotBudgetHighSignalTurns(t *testing.T) {
 	input := port.IngestInput{Turns: make([]port.TurnContext, 0, 10)}
 	for i := 0; i < 10; i++ {
 		input.Turns = append(input.Turns, port.TurnContext{
@@ -571,8 +571,8 @@ func TestCoverageRepairInput_BudgetsHighSignalTurns(t *testing.T) {
 	if !ok {
 		t.Fatal("expected high-signal repair input")
 	}
-	if len(repairInput.Turns) != maxCoverageRepairTurnsPerBatch {
-		t.Fatalf("repair turn budget = %d, want %d", len(repairInput.Turns), maxCoverageRepairTurnsPerBatch)
+	if len(repairInput.Turns) != len(input.Turns) {
+		t.Fatalf("repair turns = %d, want all %d high-signal turns", len(repairInput.Turns), len(input.Turns))
 	}
 }
 

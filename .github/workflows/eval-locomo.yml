@@ -410,6 +410,7 @@ jobs:
           # we have dumps for every historical run.
           FACTS_OUT: ${{ env.REPORT_DIR }}/${{ github.run_id }}-facts.jsonl
           RECALL_OUT: ${{ env.REPORT_DIR }}/${{ github.run_id }}-recall.jsonl
+          ANSWER_REPLAY_OUT: ${{ env.REPORT_DIR }}/${{ github.run_id }}-answer-replay.jsonl
           STAGE_AUDIT_OUT: ${{ env.REPORT_DIR }}/${{ github.run_id }}-stage-audit.jsonl
           # v2-only diagnostics dump (per-stage pipeline health). v1
           # ignores --diagnostics so we always declare the path; the
@@ -445,6 +446,7 @@ jobs:
             --notify-progress-pct "${{ inputs.notify_progress_pct }}"
             --dump-facts "$FACTS_OUT"
             --dump-recall "$RECALL_OUT"
+            --dump-answer-replay "$ANSWER_REPLAY_OUT"
             --out "$REPORT_OUT"
           )
           if [ -n "${{ inputs.reranker_llm }}" ]; then
@@ -559,6 +561,7 @@ jobs:
           path: |
             ${{ env.REPORT_DIR }}/${{ github.run_id }}-facts.jsonl
             ${{ env.REPORT_DIR }}/${{ github.run_id }}-recall.jsonl
+            ${{ env.REPORT_DIR }}/${{ github.run_id }}-answer-replay.jsonl
             ${{ env.REPORT_DIR }}/${{ github.run_id }}-stage-audit.jsonl
             ${{ env.REPORT_DIR }}/${{ github.run_id }}-diagnostics.json
             ${{ env.REPORT_DIR }}/${{ github.run_id }}-audit.jsonl

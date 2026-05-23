@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -19,8 +18,6 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/llm"
 )
-
-const maxCoverageRepairTurnsPerBatch = 6
 
 const TwoPassMemoryExtractionSchema = `{
   "type": "object",
@@ -425,12 +422,8 @@ func buildCoverageRepairInput(input port.IngestInput, facts []domain.TemporalFac
 			}
 		}
 	}
-	type candidate struct {
-		turn  port.TurnContext
-		score int
-		index int
-	}
-	candidates := make([]candidate, 0, len(input.Turns))
+	repairInput := input
+	repairInput.Turns = nil
 	for i, turn := range input.Turns {
 		id := turnLLMID(turn)
 		if id == "" {
@@ -439,72 +432,40 @@ func buildCoverageRepairInput(input port.IngestInput, facts []domain.TemporalFac
 		if _, ok := covered[id]; ok {
 			continue
 		}
-		score, ok := coverageRepairSignalScore(turn, coverageRepairAnchor(input))
-		if !ok {
+		if !isHighSignalCoverageTurn(turn, coverageRepairAnchor(input)) {
 			continue
 		}
-		candidates = append(candidates, candidate{turn: turn, score: score, index: i})
-	}
-	if len(candidates) == 0 {
-		return port.IngestInput{}, false
-	}
-	sort.SliceStable(candidates, func(i, j int) bool {
-		if candidates[i].score != candidates[j].score {
-			return candidates[i].score > candidates[j].score
-		}
-		return candidates[i].index < candidates[j].index
-	})
-	if len(candidates) > maxCoverageRepairTurnsPerBatch {
-		candidates = candidates[:maxCoverageRepairTurnsPerBatch]
-	}
-	sort.SliceStable(candidates, func(i, j int) bool {
-		return candidates[i].index < candidates[j].index
-	})
-	repairInput := input
-	repairInput.Turns = nil
-	for _, c := range candidates {
-		repairInput.Turns = append(repairInput.Turns, c.turn)
+		repairInput.Turns = append(repairInput.Turns, turn)
 	}
 	return repairInput, len(repairInput.Turns) > 0
 }
 
 func isHighSignalCoverageTurn(turn port.TurnContext, anchor time.Time) bool {
-	_, ok := coverageRepairSignalScore(turn, anchor)
-	return ok
-}
-
-func coverageRepairSignalScore(turn port.TurnContext, anchor time.Time) (int, bool) {
 	text := strings.TrimSpace(turn.Text)
 	tokens := tokenize.Detect(text).Tokenize(text)
 	if len(tokens) < 3 && len(tokenize.SplitWords(text)) < 5 {
-		return 0, false
+		return false
 	}
 	score := 0
-	hasAnchor := false
 	if hasNumericSignal(text) {
 		score += 2
-		hasAnchor = true
 	}
 	if hasTimeSignal(text, anchor) {
 		score += 2
-		hasAnchor = true
 	}
 	if hasQuotedSignal(text) {
 		score++
-		hasAnchor = true
 	}
 	if countProperNounSignals(text) > 0 {
 		score++
-		hasAnchor = true
 	}
 	if len(tokens) >= 6 {
 		score++
 	}
 	if containsCJK(text) && len(tokens) >= 4 {
 		score++
-		hasAnchor = true
 	}
-	return score, hasAnchor && score >= 2
+	return score >= 2
 }
 
 func coverageRepairAnchor(input port.IngestInput) time.Time {

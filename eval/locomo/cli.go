@@ -59,6 +59,7 @@ in eval/locomo. Subcommands:
 	addLocomoCompare(group)
 	addLocomoAnalyzeRecall(group)
 	addLocomoAnalyzeExtract(group)
+	addLocomoVerifyAnswer(group)
 	addLocomoFetch(group)
 	addLocomoIngest(group)
 
@@ -99,6 +100,7 @@ func addLocomoRun(parent *cobra.Command, g *cliflags.Global) {
 		recentTurnsK       int
 		dumpFactsPath      string
 		dumpRecallPath     string
+		dumpAnswerReplay   string
 		dumpStageAuditPath string
 		diagnosticsPath    string
 	)
@@ -357,6 +359,25 @@ Example (LLM extractor + LLM answer + LLM judge + Qwen embedder):
 			}
 
 			var (
+				answerReplayMu  sync.Mutex
+				answerReplayEnc *json.Encoder
+				onAnswerReplay  func(AnswerReplayRecord)
+			)
+			if dumpAnswerReplay != "" {
+				aw, aerr := os.Create(dumpAnswerReplay)
+				if aerr != nil {
+					return fmt.Errorf("--dump-answer-replay: %w", aerr)
+				}
+				defer aw.Close()
+				answerReplayEnc = json.NewEncoder(aw)
+				onAnswerReplay = func(rec AnswerReplayRecord) {
+					answerReplayMu.Lock()
+					defer answerReplayMu.Unlock()
+					_ = answerReplayEnc.Encode(rec)
+				}
+			}
+
+			var (
 				stageAuditMu  sync.Mutex
 				stageAuditEnc *json.Encoder
 				onStageAudit  func(q dataset.Question, audit runners.RecallStageAudit)
@@ -393,6 +414,7 @@ Example (LLM extractor + LLM answer + LLM judge + Qwen embedder):
 				ProgressPct:                g.Notify.ProgressPct,
 				OnQuestionRecall:           onRecall,
 				OnQuestionRecallStageAudit: onStageAudit,
+				OnQuestionAnswer:           onAnswerReplay,
 				Hook: func(ctx context.Context, e Event) {
 					notify.Forward(ctx, notifier, notify.Event{
 						Kind: e.Kind, Time: e.Time, Title: e.Title, Body: e.Body, Fields: e.Fields,
@@ -493,6 +515,7 @@ Example (LLM extractor + LLM answer + LLM judge + Qwen embedder):
 	f.IntVar(&recentTurnsK, "recent-turns", 0, "if >0, inject the previous K messages from prior Save batches into the extractor for cross-batch pronoun/entity reference resolution")
 	f.StringVar(&dumpFactsPath, "dump-facts", "", "diagnostic: write one JSONL record per Save batch with the extractor's facts to this path (audits extract-miss vs recall-miss)")
 	f.StringVar(&dumpRecallPath, "dump-recall", "", "diagnostic: write one JSONL record per question with the top-k recall hits to this path (audits recall-miss vs answer-miss)")
+	f.StringVar(&dumpAnswerReplay, "dump-answer-replay", "", "diagnostic: write one JSONL record per answered question with full answer prompt/body, hits, prediction, and scores")
 	f.StringVar(&dumpStageAuditPath, "dump-stage-audit", "", "diagnostic (flowcraft-recall-v2 only): write per-question read pipeline stage candidates to this JSONL path (audits source/fusion/rank/context drops)")
 	f.StringVar(&diagnosticsPath, "diagnostics", "", "diagnostic (flowcraft-recall-v2 only): write per-stage Save+Recall health summary to this JSON path (uses SaveExplain/RecallExplain)")
 
