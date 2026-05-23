@@ -1,6 +1,8 @@
 package locomo
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"time"
 
 	"github.com/GizClaw/flowcraft/eval/dataset"
@@ -12,19 +14,19 @@ import (
 // output so verifier/audit commands can replay answer_miss cases without
 // rerunning ingest or recall.
 type AnswerReplayRecord struct {
-	TS           time.Time           `json:"ts"`
-	QID          string              `json:"qid"`
-	Conversation string              `json:"conversation_id,omitempty"`
-	Query        string              `json:"query"`
-	AskedAt      string              `json:"asked_at,omitempty"`
-	GoldAnswers  []string            `json:"gold_answers,omitempty"`
-	EvidenceIDs  []string            `json:"evidence_ids,omitempty"`
-	Tags         []string            `json:"tags,omitempty"`
-	AnswerPrompt string              `json:"answer_prompt,omitempty"`
-	AnswerBody   string              `json:"answer_body,omitempty"`
-	FullPrompt   string              `json:"full_prompt,omitempty"`
-	Hits         []AnswerReplayHit   `json:"hits,omitempty"`
-	Outcome      AnswerReplayOutcome `json:"outcome"`
+	TS                 time.Time           `json:"ts"`
+	QID                string              `json:"qid"`
+	Conversation       string              `json:"conversation_id,omitempty"`
+	Query              string              `json:"query"`
+	AskedAt            string              `json:"asked_at,omitempty"`
+	GoldAnswers        []string            `json:"gold_answers,omitempty"`
+	EvidenceIDs        []string            `json:"evidence_ids,omitempty"`
+	Tags               []string            `json:"tags,omitempty"`
+	AnswerPrompt       string              `json:"answer_prompt,omitempty"`
+	AnswerPromptSHA256 string              `json:"answer_prompt_sha256,omitempty"`
+	AnswerBody         string              `json:"answer_body,omitempty"`
+	Hits               []AnswerReplayHit   `json:"hits,omitempty"`
+	Outcome            AnswerReplayOutcome `json:"outcome"`
 }
 
 type AnswerReplayHit struct {
@@ -47,20 +49,20 @@ type AnswerReplayOutcome struct {
 	KHit       *float64 `json:"k_hit,omitempty"`
 }
 
-func NewAnswerReplayRecord(ts time.Time, q dataset.Question, hits []runners.Hit, outcome AnswerReplayOutcome, promptTemplate, body, fullPrompt string) AnswerReplayRecord {
+func NewAnswerReplayRecord(ts time.Time, q dataset.Question, hits []runners.Hit, outcome AnswerReplayOutcome, promptTemplate, body string) AnswerReplayRecord {
 	rec := AnswerReplayRecord{
-		TS:           ts,
-		QID:          q.ID,
-		Conversation: q.ConversationID,
-		Query:        q.Query,
-		AskedAt:      q.AskedAt,
-		GoldAnswers:  append([]string(nil), q.GoldAnswers...),
-		EvidenceIDs:  append([]string(nil), q.EvidenceIDs...),
-		Tags:         append([]string(nil), q.Tags...),
-		AnswerPrompt: promptTemplate,
-		AnswerBody:   body,
-		FullPrompt:   fullPrompt,
-		Outcome:      outcome,
+		TS:                 ts,
+		QID:                q.ID,
+		Conversation:       q.ConversationID,
+		Query:              q.Query,
+		AskedAt:            q.AskedAt,
+		GoldAnswers:        append([]string(nil), q.GoldAnswers...),
+		EvidenceIDs:        append([]string(nil), q.EvidenceIDs...),
+		Tags:               append([]string(nil), q.Tags...),
+		AnswerPrompt:       promptTemplate,
+		AnswerPromptSHA256: sha256Hex(promptTemplate),
+		AnswerBody:         body,
+		Outcome:            outcome,
 	}
 	rec.Hits = make([]AnswerReplayHit, 0, len(hits))
 	for i, h := range hits {
@@ -77,6 +79,14 @@ func NewAnswerReplayRecord(ts time.Time, q dataset.Question, hits []runners.Hit,
 		})
 	}
 	return rec
+}
+
+func sha256Hex(s string) string {
+	if s == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(s))
+	return hex.EncodeToString(sum[:])
 }
 
 func cloneReplayMetadata(in map[string]any) map[string]any {

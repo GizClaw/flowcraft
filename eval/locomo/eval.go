@@ -449,7 +449,6 @@ func Run(ctx context.Context, r runners.Runner, ds *dataset.Dataset, opts Option
 type answerPromptRecord struct {
 	Template string
 	Body     string
-	Prompt   string
 }
 
 func buildPrediction(ctx context.Context, opts Options, q dataset.Question, hits []runners.Hit) (string, answerPromptRecord, error) {
@@ -466,9 +465,9 @@ func buildPrediction(ctx context.Context, opts Options, q dataset.Question, hits
 		{Role: model.RoleUser, Parts: []model.Part{{Type: model.PartText, Text: fullPrompt}}},
 	})
 	if err != nil {
-		return "", answerPromptRecord{Template: prompt, Body: body, Prompt: fullPrompt}, err
+		return "", answerPromptRecord{Template: prompt, Body: body}, err
 	}
-	return strings.TrimSpace(resp.Content()), answerPromptRecord{Template: prompt, Body: body, Prompt: fullPrompt}, nil
+	return strings.TrimSpace(resp.Content()), answerPromptRecord{Template: prompt, Body: body}, nil
 }
 
 // buildAnswerBody renders the "ASKED_AT? + Q + MEMORIES" block fed into
@@ -998,7 +997,7 @@ func evalQuestions(ctx context.Context, r runners.Runner, scopeOf func(string) r
 						F1:         f1,
 						Judge:      judge,
 						KHit:       khitPtr,
-					}, answerPrompt.Template, answerPrompt.Body, answerPrompt.Prompt))
+					}, answerPrompt.Template, answerPrompt.Body))
 				}
 				cur := done.Add(1)
 				if opts.ProgressEvery > 0 && cur%int64(opts.ProgressEvery) == 0 {
