@@ -16,9 +16,9 @@ import (
 )
 
 const (
-	maxEvidenceRescues      = 3
-	minEvidenceRescueScore  = 0.45
-	evidenceReplaceMargin   = 0.10
+	maxEvidenceRescues      = 6
+	minEvidenceRescueScore  = 0.30
+	evidenceReplaceMargin   = 0.04
 	duplicateJaccardCutoff  = 0.86
 	contextDedupeQueryFloor = 0.20
 )

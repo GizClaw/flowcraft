@@ -127,6 +127,42 @@ func TestBuildHitsEvidenceAwareRescueReplacesWeakFinalHit(t *testing.T) {
 	}
 }
 
+func TestBuildHitsEvidenceAwareRescueCanReplaceSeveralWeakHits(t *testing.T) {
+	stage := NewBuildHits(nil)
+	query := "What books and instruments does Alice like?"
+	weak := []domain.ContextItem{
+		weakContextItem("weak-1", "e1", "Bob visited Paris."),
+		weakContextItem("weak-2", "e2", "Carol likes hiking."),
+		weakContextItem("weak-3", "e3", "Dylan cooked soup."),
+		weakContextItem("weak-4", "e4", "Eve bought pottery."),
+	}
+	strong := []domain.ContextItem{
+		strongContextItem("book", "e5", "Alice likes reading Charlotte's Web."),
+		strongContextItem("violin", "e6", "Alice likes playing the violin."),
+		strongContextItem("clarinet", "e7", "Alice likes playing the clarinet."),
+		strongContextItem("guitar", "e8", "Alice likes playing the guitar."),
+	}
+	state := &read.ReadState{
+		Plan:       &domain.QueryPlan{TotalCap: 4},
+		Query:      domain.Query{Text: query},
+		Ranked:     append([]domain.ContextItem(nil), weak...),
+		AfterTrust: append(append([]domain.ContextItem(nil), weak...), strong...),
+	}
+
+	if _, err := stage.Run(context.Background(), state); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	got := map[string]bool{}
+	for _, hit := range state.Hits {
+		got[hit.Fact.ID] = true
+	}
+	for _, want := range []string{"book", "violin", "clarinet", "guitar"} {
+		if !got[want] {
+			t.Fatalf("expected rescued hit %q in final hits, got %+v", want, state.Hits)
+		}
+	}
+}
+
 func TestBuildHitsFinalSelectionDedupesSameEvidence(t *testing.T) {
 	stage := NewBuildHits(nil)
 	state := &read.ReadState{
@@ -159,5 +195,21 @@ func TestBuildHitsFinalSelectionDedupesSameEvidence(t *testing.T) {
 	}
 	if state.Hits[0].Fact.ID != "a" || state.Hits[1].Fact.ID != "c" {
 		t.Fatalf("same evidence id should be deduped while preserving cap, got %+v", state.Hits)
+	}
+}
+
+func weakContextItem(id, evidenceID, text string) domain.ContextItem {
+	return domain.ContextItem{
+		Candidate: domain.Candidate{FactID: id, Source: "retrieval", Score: 0.9, EvidenceIDs: []string{evidenceID}},
+		Fact:      domain.TemporalFact{ID: id, Kind: domain.KindState, Content: text},
+		Evidence:  []domain.EvidenceRef{{ID: evidenceID, Text: text}},
+	}
+}
+
+func strongContextItem(id, evidenceID, text string) domain.ContextItem {
+	return domain.ContextItem{
+		Candidate: domain.Candidate{FactID: id, Source: "retrieval", Score: 0.2, EvidenceIDs: []string{evidenceID}},
+		Fact:      domain.TemporalFact{ID: id, Kind: domain.KindState, Content: text},
+		Evidence:  []domain.EvidenceRef{{ID: evidenceID, Text: text}},
 	}
 }

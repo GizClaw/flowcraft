@@ -89,6 +89,15 @@ func TestRuleBased_SourceBudgetCapsAtMaxOverfetch(t *testing.T) {
 	}
 }
 
+func TestFusionCandidateCapKeepsWiderCrossSourcePool(t *testing.T) {
+	if got := FusionCandidateCap(30); got != 90 {
+		t.Fatalf("fusion candidate cap = %d, want 90", got)
+	}
+	if got := FusionCandidateCap(50); got != MaxFusionCandidateCap {
+		t.Fatalf("fusion candidate cap = %d, want max %d", got, MaxFusionCandidateCap)
+	}
+}
+
 // TestPlanner_KnownEntitiesInfluenceLensWeights pins the Cluster G
 // D2 wiring (2026-05-21): when the cross-sub-scope KnownEntities
 // merge surfaces an entity that also appears in the query (Entities /

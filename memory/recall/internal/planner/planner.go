@@ -62,6 +62,15 @@ const SourceOverfetchMultiplier = 2
 // multi-source reads bounded.
 const MaxSourceOverfetch = 50
 
+// FusionPoolMultiplier controls the cross-source pool size before the
+// deterministic ranker and final selection trim to QueryPlan.TotalCap.
+const FusionPoolMultiplier = 3
+
+// MaxFusionCandidateCap caps the fused candidate pool. It is intentionally
+// larger than MaxSourceOverfetch: each source remains bounded independently,
+// while fusion can preserve more cross-source diversity for final selection.
+const MaxFusionCandidateCap = 100
+
 // RuleBased is the deterministic planner.
 type RuleBased struct {
 	// Specs is the lens registration table (name, weight, activate).
@@ -334,7 +343,20 @@ func allocateBudgets(order []string, limit int) map[string]int {
 // FusionCandidateCap computes the per-source fusion pool cap from the
 // plan's final hit cap (wired by memory.New into federation_fanout).
 func FusionCandidateCap(finalCap int) int {
-	return sourceBudget(finalCap)
+	if finalCap <= 0 {
+		finalCap = DefaultLimit
+	}
+	cap := finalCap * FusionPoolMultiplier
+	if cap > MaxFusionCandidateCap {
+		cap = MaxFusionCandidateCap
+	}
+	if cap < finalCap {
+		cap = finalCap
+	}
+	if cap < 1 {
+		cap = 1
+	}
+	return cap
 }
 
 func sourceBudget(limit int) int {
