@@ -95,7 +95,7 @@ func TestDefault_Rank_WentGoStemLemmaRegression(t *testing.T) {
 	}
 }
 
-func TestDefault_Rank_TimeDecayPrefersRecent(t *testing.T) {
+func TestDefault_Rank_DoesNotApplyTimeDecayByDefault(t *testing.T) {
 	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
 	old := now.Add(-400 * 24 * time.Hour)
 	recent := now.Add(-2 * 24 * time.Hour)
@@ -122,6 +122,49 @@ func TestDefault_Rank_TimeDecayPrefersRecent(t *testing.T) {
 		Items: items,
 		Intent: domain.QueryIntent{
 			Text:  "deploy alpha",
+			Limit: 2,
+		},
+		FinalCap: 2,
+		Now:      now,
+	})
+	if len(out.Items) < 2 {
+		t.Fatal(out.Items)
+	}
+	if out.Items[0].Fact.ID != "old" {
+		t.Fatalf("top = %s, want old when time decay is disabled", out.Items[0].Fact.ID)
+	}
+	if out.TimeDecayApplied != 0 {
+		t.Fatalf("time decay applications = %d, want 0", out.TimeDecayApplied)
+	}
+}
+
+func TestDefault_Rank_TimeDecayPrefersRecentWhenOptedIn(t *testing.T) {
+	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
+	old := now.Add(-400 * 24 * time.Hour)
+	recent := now.Add(-2 * 24 * time.Hour)
+	r := ranker.NewDefault(ranker.WithTimeDecay(30 * 24 * time.Hour))
+	items := []domain.ContextItem{
+		{
+			Candidate: domain.Candidate{FactID: "old", Score: 0.9},
+			Fact: domain.TemporalFact{
+				ID:         "old",
+				Content:    "deployed service alpha to production",
+				ObservedAt: old,
+			},
+		},
+		{
+			Candidate: domain.Candidate{FactID: "new", Score: 0.9},
+			Fact: domain.TemporalFact{
+				ID:         "new",
+				Content:    "deployed service alpha to production",
+				ObservedAt: recent,
+			},
+		},
+	}
+	out := r.Rank(context.Background(), port.RankInput{
+		Items: items,
+		Intent: domain.QueryIntent{
+			Text:  "latest alpha deployment",
 			Limit: 2,
 		},
 		FinalCap: 2,

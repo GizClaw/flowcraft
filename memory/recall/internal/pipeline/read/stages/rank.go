@@ -10,6 +10,8 @@ import (
 	"github.com/GizClaw/flowcraft/memory/recall/internal/port"
 )
 
+const deterministicRankPoolMultiplier = 3
+
 // Rank applies the deterministic post-materialize ranker (Phase E.1).
 type Rank struct {
 	ranker      port.Ranker
@@ -42,10 +44,7 @@ func (s *Rank) Run(ctx context.Context, state *read.ReadState) (diagnostic.Stage
 		return detail, nil
 	}
 	started := time.Now()
-	rankCap := state.Plan.TotalCap
-	if s.hasReranker {
-		rankCap = 0
-	}
+	rankCap := deterministicRankCap(state.Plan.TotalCap, s.hasReranker)
 	intent := state.Plan.Intent
 	if state.Intent != nil {
 		intent = *state.Intent
@@ -74,3 +73,10 @@ func (s *Rank) Run(ctx context.Context, state *read.ReadState) (diagnostic.Stage
 }
 
 var _ pipeline.Stage[*read.ReadState] = (*Rank)(nil)
+
+func deterministicRankCap(finalCap int, hasReranker bool) int {
+	if finalCap <= 0 || hasReranker {
+		return 0
+	}
+	return finalCap * deterministicRankPoolMultiplier
+}

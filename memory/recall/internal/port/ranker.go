@@ -23,7 +23,7 @@ type RankOutput struct {
 	SupersededDecayApplied int
 }
 
-// Ranker applies deterministic boosts, time decay, and supersede
+// Ranker applies deterministic boosts, optional time decay, and supersede
 // penalties after materialize / federation merge (Phase E.1).
 type Ranker interface {
 	Rank(ctx context.Context, in RankInput) RankOutput

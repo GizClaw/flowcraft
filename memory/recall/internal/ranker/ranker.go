@@ -24,7 +24,7 @@ import (
 var rankTokenizer = &tokenize.Simple{Stemmer: stem.Porter}
 
 const (
-	defaultHalfLife         = 30 * 24 * time.Hour
+	defaultHalfLife         = 0
 	defaultSupersededFactor = 0.5
 
 	sourceTimeline = "timeline"
@@ -367,7 +367,9 @@ func intentActivatesProfile(intent domain.QueryIntent) bool {
 // Option configures a Default ranker.
 type Option func(*Default)
 
-// WithTimeDecay sets the half-life for recency decay (default 30d).
+// WithTimeDecay sets the half-life for opt-in recency decay. The default
+// disables wall-clock decay because long-term recall should not penalize
+// historically correct evidence unless the caller explicitly asks for recency.
 func WithTimeDecay(halfLife time.Duration) Option {
 	return func(d *Default) { d.halfLife = halfLife }
 }
