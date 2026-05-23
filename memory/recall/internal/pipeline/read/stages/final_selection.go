@@ -29,10 +29,24 @@ type evidenceCandidate struct {
 	queryRank int
 }
 
-func selectFinalEvidenceAwareHits(query string, ordered []domain.Hit, pool []domain.Hit, cap int) []domain.Hit {
+type finalSelectionCandidate struct {
+	hit       domain.Hit
+	score     float64
+	baseScore float64
+	queryRank int
+}
+
+func selectFinalEvidenceAwareHits(query string, ordered []domain.Hit, pool []domain.Hit, cap int, hybridRerank bool) []domain.Hit {
 	if cap <= 0 || len(ordered) == 0 {
 		return ordered
 	}
+	if hybridRerank {
+		return selectFinalHybridRerankHits(query, ordered, pool, cap)
+	}
+	return selectFinalEvidenceRescueHits(query, ordered, pool, cap)
+}
+
+func selectFinalEvidenceRescueHits(query string, ordered []domain.Hit, pool []domain.Hit, cap int) []domain.Hit {
 	primary := dedupeHitsByEvidence(query, ordered)
 	if len(primary) > cap {
 		primary = primary[:cap]
@@ -66,6 +80,137 @@ func selectFinalEvidenceAwareHits(query string, ordered []domain.Hit, pool []dom
 		rescues++
 	}
 	return selected
+}
+
+func selectFinalHybridRerankHits(query string, ordered []domain.Hit, pool []domain.Hit, cap int) []domain.Hit {
+	candidatePool := mergeFinalSelectionPool(ordered, pool)
+	candidatePool = dedupeHitsByEvidence(query, candidatePool)
+	if len(candidatePool) <= cap {
+		return candidatePool
+	}
+	candidates := finalSelectionCandidates(query, candidatePool)
+	selected := make([]domain.Hit, 0, cap)
+	used := make([]bool, len(candidates))
+	for len(selected) < cap {
+		best := -1
+		bestScore := math.Inf(-1)
+		for i, cand := range candidates {
+			if used[i] {
+				continue
+			}
+			adjusted := cand.score - finalSelectionDiversityPenalty(query, cand.hit, selected)
+			if best < 0 || adjusted > bestScore || (math.Abs(adjusted-bestScore) <= 1e-9 && betterFinalSelectionTieBreak(cand, candidates[best])) {
+				best = i
+				bestScore = adjusted
+			}
+		}
+		if best < 0 {
+			break
+		}
+		used[best] = true
+		if hitDuplicateInSelection(query, candidates[best].hit, selected) {
+			continue
+		}
+		selected = append(selected, candidates[best].hit)
+	}
+	if len(selected) < cap {
+		for _, hit := range ordered {
+			if hitDuplicateInSelection(query, hit, selected) {
+				continue
+			}
+			selected = append(selected, hit)
+			if len(selected) >= cap {
+				break
+			}
+		}
+	}
+	return selected
+}
+
+func mergeFinalSelectionPool(ordered []domain.Hit, pool []domain.Hit) []domain.Hit {
+	if len(pool) == 0 {
+		out := make([]domain.Hit, len(ordered))
+		copy(out, ordered)
+		return out
+	}
+	out := make([]domain.Hit, 0, len(ordered)+len(pool))
+	out = append(out, ordered...)
+	out = append(out, pool...)
+	return out
+}
+
+func finalSelectionCandidates(query string, hits []domain.Hit) []finalSelectionCandidate {
+	maxScore := 0.0
+	for _, hit := range hits {
+		if hit.Score > maxScore {
+			maxScore = hit.Score
+		}
+	}
+	out := make([]finalSelectionCandidate, 0, len(hits))
+	for i, hit := range hits {
+		out = append(out, finalSelectionCandidate{
+			hit:       hit,
+			score:     finalSelectionScore(query, hit, i, maxScore),
+			baseScore: hit.Score,
+			queryRank: i,
+		})
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if math.Abs(out[i].score-out[j].score) > 1e-9 {
+			return out[i].score > out[j].score
+		}
+		return betterFinalSelectionTieBreak(out[i], out[j])
+	})
+	return out
+}
+
+func finalSelectionScore(query string, hit domain.Hit, queryRank int, maxHitScore float64) float64 {
+	base := 0.0
+	if maxHitScore > 0 && hit.Score > 0 {
+		base = hit.Score / maxHitScore
+		if base > 1 {
+			base = 1
+		}
+	}
+	rankPrior := 1 / (1 + float64(queryRank)/30)
+	evidenceScore := queryEvidenceScore(query, hit)
+	factScore := queryFactScore(query, hit)
+	score := 0.42*evidenceScore + 0.35*factScore + 0.18*base + 0.05*rankPrior
+	if queryHasTimeSignal(query) && hitHasTimeSignal(hit, hitEvidenceText(hit)) {
+		score += 0.04
+	}
+	if queryHasNumericIntent(query) && hasNumericEvidence(finalSelectionHitText(hit)) {
+		score += 0.04
+	}
+	return score
+}
+
+func betterFinalSelectionTieBreak(a, b finalSelectionCandidate) bool {
+	if a.baseScore != b.baseScore {
+		return a.baseScore > b.baseScore
+	}
+	return a.queryRank < b.queryRank
+}
+
+func finalSelectionDiversityPenalty(query string, hit domain.Hit, selected []domain.Hit) float64 {
+	maxSimilarity := 0.0
+	for _, existing := range selected {
+		similarity := evidenceTextJaccard(hit, existing)
+		if sameStructuredMemory(hit.Fact, existing.Fact) {
+			similarity += 0.15
+		}
+		if similarity > maxSimilarity {
+			maxSimilarity = similarity
+		}
+	}
+	if maxSimilarity <= 0.35 {
+		return 0
+	}
+	penalty := 0.22 * maxSimilarity
+	if queryEvidenceScore(query, hit) >= 0.55 {
+		penalty *= 0.5
+	}
+	return penalty
 }
 
 func evidenceCandidates(query string, hits []domain.Hit, selected map[string]struct{}) []evidenceCandidate {
@@ -172,42 +317,106 @@ func selectedFactIDs(hits []domain.Hit) map[string]struct{} {
 }
 
 func queryEvidenceScore(query string, hit domain.Hit) float64 {
+	return queryTextScore(query, hitEvidenceText(hit), hit)
+}
+
+func queryFactScore(query string, hit domain.Hit) float64 {
+	return queryTextScore(query, finalSelectionFactText(hit), hit)
+}
+
+func queryTextScore(query string, text string, hit domain.Hit) float64 {
 	queryTokens := tokenSet(tokenize.Detect(query).Tokenize(query))
 	if len(queryTokens) == 0 {
 		return 0
 	}
-	evidence := hitEvidenceText(hit)
-	evidenceTokens := tokenSet(tokenize.Detect(evidence).Tokenize(evidence))
-	if len(evidenceTokens) == 0 {
+	textTokens := tokenSet(tokenize.Detect(text).Tokenize(text))
+	if len(textTokens) == 0 {
 		return 0
 	}
 	matched := 0
 	for tok := range queryTokens {
-		if _, ok := evidenceTokens[tok]; ok {
+		if _, ok := textTokens[tok]; ok {
 			matched++
 		}
 	}
 	coverage := float64(matched) / float64(len(queryTokens))
 	score := coverage
-	if numericOverlap(query, evidence) {
+	if numericOverlap(query, text) {
 		score += 0.25
 	}
-	if queryHasNumericIntent(query) && hasNumericEvidence(evidence) {
+	if queryHasNumericIntent(query) && hasNumericEvidence(text) {
 		score += 0.15
 	}
-	if queryHasTimeSignal(query) && hitHasTimeSignal(hit, evidence) {
+	if queryHasTimeSignal(query) && hitHasTimeSignal(hit, text) {
 		score += 0.20
 	}
-	if quotedOverlap(query, evidence) {
+	if quotedOverlap(query, text) {
 		score += 0.15
 	}
-	if properNounOverlap(query, evidence) {
+	if properNounOverlap(query, text) {
 		score += 0.10
 	}
 	if score > 1 {
 		return 1
 	}
 	return score
+}
+
+func finalSelectionFactText(hit domain.Hit) string {
+	var b strings.Builder
+	for _, part := range []string{
+		hit.Fact.Content,
+		hit.Fact.Subject,
+		hit.Fact.Predicate,
+		hit.Fact.Object,
+		string(hit.Fact.Kind),
+		hit.Fact.Location,
+	} {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		if b.Len() > 0 {
+			b.WriteByte(' ')
+		}
+		b.WriteString(part)
+	}
+	for _, entity := range hit.Fact.Entities {
+		entity = strings.TrimSpace(entity)
+		if entity == "" {
+			continue
+		}
+		if b.Len() > 0 {
+			b.WriteByte(' ')
+		}
+		b.WriteString(entity)
+	}
+	for _, participant := range hit.Fact.Participants {
+		participant = strings.TrimSpace(participant)
+		if participant == "" {
+			continue
+		}
+		if b.Len() > 0 {
+			b.WriteByte(' ')
+		}
+		b.WriteString(participant)
+	}
+	if b.Len() == 0 {
+		return hitEvidenceText(hit)
+	}
+	return b.String()
+}
+
+func finalSelectionHitText(hit domain.Hit) string {
+	fact := finalSelectionFactText(hit)
+	evidence := hitEvidenceText(hit)
+	if fact == "" {
+		return evidence
+	}
+	if evidence == "" {
+		return fact
+	}
+	return fact + " " + evidence
 }
 
 func hitEvidenceText(hit domain.Hit) string {

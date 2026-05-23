@@ -56,7 +56,7 @@ func (s *BuildHits) Run(ctx context.Context, state *read.ReadState) (diagnostic.
 	}
 	if state.Plan != nil && state.Plan.TotalCap > 0 {
 		finalSelectionStarted := time.Now()
-		hits = selectFinalEvidenceAwareHits(state.Query.Text, hits, hitsFromItems(finalSelectionPool(state)), state.Plan.TotalCap)
+		hits = selectFinalEvidenceAwareHits(state.Query.Text, hits, hitsFromItems(finalSelectionPool(state)), state.Plan.TotalCap, s.reranker == nil)
 		detail.FinalSelectionLatency = time.Since(finalSelectionStarted)
 		state.Hits = hits
 	}

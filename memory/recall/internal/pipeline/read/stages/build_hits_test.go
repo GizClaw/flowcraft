@@ -163,6 +163,71 @@ func TestBuildHitsEvidenceAwareRescueCanReplaceSeveralWeakHits(t *testing.T) {
 	}
 }
 
+func TestBuildHitsFinalSelectionHybridReranksFullPool(t *testing.T) {
+	stage := NewBuildHits(nil)
+	state := &read.ReadState{
+		Plan:  &domain.QueryPlan{TotalCap: 2},
+		Query: domain.Query{Text: "When did Alice buy 2 ceramic figurines?"},
+		Ranked: []domain.ContextItem{
+			weakContextItem("weak-1", "e1", "Bob visited Paris."),
+			weakContextItem("weak-2", "e2", "Carol likes hiking."),
+		},
+		AfterTrust: []domain.ContextItem{
+			weakContextItem("weak-1", "e1", "Bob visited Paris."),
+			weakContextItem("weak-2", "e2", "Carol likes hiking."),
+			{
+				Candidate: domain.Candidate{FactID: "specific", Source: "retrieval", Score: 0.15, EvidenceIDs: []string{"e3"}},
+				Fact:      domain.TemporalFact{ID: "specific", Kind: domain.KindEvent, Content: "Alice bought 2 ceramic figurines."},
+				Evidence:  []domain.EvidenceRef{{ID: "e3", Text: "On 2023-05-07 Alice bought 2 ceramic figurines."}},
+			},
+		},
+	}
+
+	if _, err := stage.Run(context.Background(), state); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	got := map[string]bool{}
+	for _, hit := range state.Hits {
+		got[hit.Fact.ID] = true
+	}
+	if !got["specific"] {
+		t.Fatalf("hybrid final selection should rerank strong evidence from the wider pool, got %+v", state.Hits)
+	}
+}
+
+func TestBuildHitsFinalSelectionUsesFactContentWhenEvidenceIsThin(t *testing.T) {
+	stage := NewBuildHits(nil)
+	state := &read.ReadState{
+		Plan:  &domain.QueryPlan{TotalCap: 1},
+		Query: domain.Query{Text: "What instrument does Alice play?"},
+		Ranked: []domain.ContextItem{
+			weakContextItem("weak", "e1", "Bob visited Paris."),
+		},
+		AfterTrust: []domain.ContextItem{
+			weakContextItem("weak", "e1", "Bob visited Paris."),
+			{
+				Candidate: domain.Candidate{FactID: "instrument", Source: "graph", Score: 0.1, EvidenceIDs: []string{"e2"}},
+				Fact: domain.TemporalFact{
+					ID:        "instrument",
+					Kind:      domain.KindPreference,
+					Content:   "Alice plays the violin.",
+					Subject:   "Alice",
+					Predicate: "plays",
+					Object:    "violin",
+				},
+				Evidence: []domain.EvidenceRef{{ID: "e2", Text: "She mentioned it."}},
+			},
+		},
+	}
+
+	if _, err := stage.Run(context.Background(), state); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if len(state.Hits) != 1 || state.Hits[0].Fact.ID != "instrument" {
+		t.Fatalf("hybrid final selection should score fact content as well as evidence text, got %+v", state.Hits)
+	}
+}
+
 func TestBuildHitsFinalSelectionDedupesSameEvidence(t *testing.T) {
 	stage := NewBuildHits(nil)
 	state := &read.ReadState{
