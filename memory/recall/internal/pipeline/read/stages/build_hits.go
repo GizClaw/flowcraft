@@ -102,10 +102,11 @@ func hitsFromItems(items []domain.ContextItem) []domain.Hit {
 const maxHitEvidenceRefs = 3
 
 type groundingQueryFeatures struct {
-	tokens        map[string]struct{}
-	numeric       map[string]struct{}
-	proper        map[string]struct{}
-	hasTimeSignal bool
+	tokens           map[string]struct{}
+	numeric          map[string]struct{}
+	proper           map[string]struct{}
+	hasTimeSignal    bool
+	hasNumericIntent bool
 }
 
 func groundHitsWithSupportingEvidence(query string, hits []domain.Hit) []domain.Hit {
@@ -161,7 +162,7 @@ func selectGroundingEvidence(query string, selected []domain.EvidenceRef, refs [
 				continue
 			}
 		}
-		score, eligible := groundingEvidenceScore(queryFeatures, ref.Text)
+		score, eligible := groundingEvidenceScore(queryFeatures, ref)
 		if !eligible {
 			continue
 		}
@@ -181,14 +182,16 @@ func selectGroundingEvidence(query string, selected []domain.EvidenceRef, refs [
 
 func newGroundingQueryFeatures(query string) groundingQueryFeatures {
 	return groundingQueryFeatures{
-		tokens:        groundingTokenSet(query),
-		numeric:       numericTokens(query),
-		proper:        properNounSet(query),
-		hasTimeSignal: queryHasTimeSignal(query),
+		tokens:           groundingTokenSet(query),
+		numeric:          numericTokens(query),
+		proper:           properNounSet(query),
+		hasTimeSignal:    queryHasTimeSignal(query),
+		hasNumericIntent: queryHasNumericIntent(query),
 	}
 }
 
-func groundingEvidenceScore(query groundingQueryFeatures, text string) (float64, bool) {
+func groundingEvidenceScore(query groundingQueryFeatures, ref domain.EvidenceRef) (float64, bool) {
+	text := ref.Text
 	tokens := groundingTokenSet(text)
 	matched := 0
 	for tok := range query.tokens {
@@ -201,9 +204,9 @@ func groundingEvidenceScore(query groundingQueryFeatures, text string) (float64,
 		coverage = float64(matched) / float64(len(query.tokens))
 	}
 	numericMatch := intersects(query.numeric, numericTokens(text))
-	timeMatch := query.hasTimeSignal && hasTimex(text, time.Now())
+	timeMatch := query.hasTimeSignal && (!ref.Timestamp.IsZero() || hasTimex(text, time.Now()))
 	properMatch := intersects(query.proper, properNounSet(text))
-	if len(query.tokens) == 0 && (numericMatch || timeMatch || properMatch) {
+	if len(query.tokens) == 0 && (numericMatch || timeMatch || (properMatch && !query.hasTimeSignal && !query.hasNumericIntent)) {
 		score := 0.40
 		if numericMatch {
 			score += 0.25
@@ -219,13 +222,14 @@ func groundingEvidenceScore(query groundingQueryFeatures, text string) (float64,
 		}
 		return score, true
 	}
-	strong := numericMatch || timeMatch
-	eligible := matched >= 2 || (matched >= 1 && strong)
+	eligible := matched >= 2 ||
+		(matched >= 1 && query.hasTimeSignal && timeMatch) ||
+		(matched >= 1 && query.hasNumericIntent && numericMatch)
 	if !eligible {
 		return 0, false
 	}
 	score := coverage
-	if strong {
+	if numericMatch || timeMatch {
 		score += 0.20
 	}
 	if properMatch {

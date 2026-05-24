@@ -4,6 +4,7 @@ import (
 	"context"
 	"strconv"
 	"testing"
+	"time"
 
 	"github.com/GizClaw/flowcraft/memory/recall/internal/domain"
 	"github.com/GizClaw/flowcraft/memory/recall/internal/domain/diagnostic"
@@ -323,6 +324,19 @@ func TestBuildHitsGroundingSkipsWeakStopwordOrEntityOnlyRefs(t *testing.T) {
 	got := selectGroundingEvidence("What pets does Melanie have?", []domain.EvidenceRef{refs[0]}, refs)
 	if ids := evidenceIDs(got); len(ids) != 1 || ids[0] != "e1" {
 		t.Fatalf("weak entity-only refs should not be added, got %+v", ids)
+	}
+}
+
+func TestBuildHitsGroundingKeepsTimestampedTemporalSupport(t *testing.T) {
+	refs := []domain.EvidenceRef{
+		{ID: "e1", Text: "Melanie painted a lake sunrise last year."},
+		{ID: "e2", Text: "Melanie shared the sunrise painting with Caroline.", Timestamp: time.Date(2023, 5, 8, 13, 56, 0, 0, time.UTC)},
+		{ID: "e3", Text: "Caroline discussed adoption paperwork."},
+	}
+	got := selectGroundingEvidence("When did Melanie paint a sunrise?", []domain.EvidenceRef{refs[0]}, refs)
+	ids := evidenceIDs(got)
+	if len(ids) != 2 || ids[0] != "e1" || ids[1] != "e2" {
+		t.Fatalf("timestamped temporal support should be added, got %+v", ids)
 	}
 }
 
