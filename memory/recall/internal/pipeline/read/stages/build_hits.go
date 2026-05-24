@@ -31,7 +31,7 @@ func (BuildHits) Name() string { return "build_hits" }
 // Run implements pipeline.Stage.
 func (s *BuildHits) Run(ctx context.Context, state *read.ReadState) (diagnostic.StageDetail, error) {
 	started := time.Now()
-	hits := groundHitsWithSupportingEvidence(state.Query.Text, hitsFromItems(state.Ranked))
+	hits := hitsFromItems(state.Ranked)
 	state.Hits = hits
 	detail := diagnostic.BuildHitsDetail{
 		Count:      len(hits),
@@ -59,11 +59,13 @@ func (s *BuildHits) Run(ctx context.Context, state *read.ReadState) (diagnostic.
 	}
 	if state.Plan != nil && state.Plan.TotalCap > 0 {
 		finalSelectionStarted := time.Now()
-		poolHits := groundHitsWithSupportingEvidence(state.Query.Text, hitsFromItems(finalSelectionPool(state)))
+		poolHits := hitsFromItems(finalSelectionPool(state))
 		hits = selectFinalEvidenceAwareHits(state.Query.Text, hits, poolHits, state.Plan.TotalCap, s.reranker == nil)
 		detail.FinalSelectionLatency = time.Since(finalSelectionStarted)
 		state.Hits = hits
 	}
+	hits = groundHitsWithSupportingEvidence(state.Query.Text, hits)
+	state.Hits = hits
 	detail.Count = len(hits)
 	if captureSnapshots {
 		detail.Hits = candidateSnapshotPtr(hitSnapshots(hits))

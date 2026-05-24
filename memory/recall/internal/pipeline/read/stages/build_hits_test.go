@@ -20,6 +20,18 @@ func (reorderReranker) Rerank(_ context.Context, _ string, hits []domain.Hit) ([
 	return []domain.Hit{hits[1], hits[0]}, nil
 }
 
+type inspectEvidenceReranker struct {
+	counts []int
+}
+
+func (r *inspectEvidenceReranker) Rerank(_ context.Context, _ string, hits []domain.Hit) ([]domain.Hit, error) {
+	r.counts = r.counts[:0]
+	for _, hit := range hits {
+		r.counts = append(r.counts, len(hit.Evidence))
+	}
+	return hits, nil
+}
+
 func TestBuildHitsSnapshotsInputRerankedAndFinal(t *testing.T) {
 	stage := NewBuildHits(reorderReranker{})
 	state := &read.ReadState{
@@ -59,6 +71,38 @@ func TestBuildHitsSnapshotsInputRerankedAndFinal(t *testing.T) {
 	}
 	if len(state.Hits[0].Evidence) != 1 || state.Hits[0].Evidence[0].Text != "selected distractor" {
 		t.Fatalf("hit evidence should survive build_hits/rerank: %+v", state.Hits[0].Evidence)
+	}
+}
+
+func TestBuildHitsGroundingDoesNotAffectRerankerInput(t *testing.T) {
+	reranker := &inspectEvidenceReranker{}
+	stage := NewBuildHits(reranker)
+	state := &read.ReadState{
+		Plan:  &domain.QueryPlan{TotalCap: 1},
+		Query: domain.Query{Text: "Where did Caroline move from?"},
+		Ranked: []domain.ContextItem{{
+			Candidate: domain.Candidate{FactID: "move", Source: "retrieval", Score: 0.9, EvidenceIDs: []string{"e1"}},
+			Fact: domain.TemporalFact{
+				ID:      "move",
+				Kind:    domain.KindState,
+				Content: "Caroline moved from her home country.",
+				EvidenceRefs: []domain.EvidenceRef{
+					{ID: "e1", Text: "Caroline moved from her home country four years ago."},
+					{ID: "e2", Text: "Caroline said Sweden is where she moved from."},
+				},
+			},
+			Evidence: []domain.EvidenceRef{{ID: "e1", Text: "Caroline moved from her home country four years ago."}},
+		}},
+	}
+
+	if _, err := stage.Run(context.Background(), state); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if len(reranker.counts) != 1 || reranker.counts[0] != 1 {
+		t.Fatalf("reranker should receive only candidate evidence, got counts %+v", reranker.counts)
+	}
+	if ids := evidenceIDs(state.Hits[0].Evidence); len(ids) != 2 || ids[0] != "e1" || ids[1] != "e2" {
+		t.Fatalf("final output should still include supporting evidence, got %+v", ids)
 	}
 }
 
