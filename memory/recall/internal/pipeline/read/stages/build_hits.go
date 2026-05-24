@@ -101,6 +101,13 @@ func hitsFromItems(items []domain.ContextItem) []domain.Hit {
 
 const maxHitEvidenceRefs = 3
 
+type groundingQueryFeatures struct {
+	tokens        map[string]struct{}
+	numeric       map[string]struct{}
+	proper        map[string]struct{}
+	hasTimeSignal bool
+}
+
 func groundHitsWithSupportingEvidence(query string, hits []domain.Hit) []domain.Hit {
 	if len(hits) == 0 {
 		return hits
@@ -135,11 +142,8 @@ func selectGroundingEvidence(query string, selected []domain.EvidenceRef, refs [
 	if len(out) >= maxHitEvidenceRefs || len(refs) == 0 {
 		return out
 	}
-	queryTokens := tokenSet(tokenize.Detect(query).Tokenize(query))
-	if len(queryTokens) == 0 {
-		for _, ref := range refs {
-			appendRef(ref)
-		}
+	queryFeatures := newGroundingQueryFeatures(query)
+	if len(queryFeatures.tokens) == 0 && len(queryFeatures.numeric) == 0 && len(queryFeatures.proper) == 0 && !queryFeatures.hasTimeSignal {
 		return out
 	}
 	type scoredRef struct {
@@ -157,8 +161,8 @@ func selectGroundingEvidence(query string, selected []domain.EvidenceRef, refs [
 				continue
 			}
 		}
-		score := groundingEvidenceScore(queryTokens, ref.Text)
-		if score <= 0 {
+		score, eligible := groundingEvidenceScore(queryFeatures, ref.Text)
+		if !eligible {
 			continue
 		}
 		candidates = append(candidates, scoredRef{ref: ref, score: score, rank: i})
@@ -175,18 +179,66 @@ func selectGroundingEvidence(query string, selected []domain.EvidenceRef, refs [
 	return out
 }
 
-func groundingEvidenceScore(queryTokens map[string]struct{}, text string) float64 {
-	tokens := tokenSet(tokenize.Detect(text).Tokenize(text))
-	if len(tokens) == 0 {
-		return 0
+func newGroundingQueryFeatures(query string) groundingQueryFeatures {
+	return groundingQueryFeatures{
+		tokens:        groundingTokenSet(query),
+		numeric:       numericTokens(query),
+		proper:        properNounSet(query),
+		hasTimeSignal: queryHasTimeSignal(query),
 	}
+}
+
+func groundingEvidenceScore(query groundingQueryFeatures, text string) (float64, bool) {
+	tokens := groundingTokenSet(text)
 	matched := 0
-	for tok := range queryTokens {
+	for tok := range query.tokens {
 		if _, ok := tokens[tok]; ok {
 			matched++
 		}
 	}
-	return float64(matched) / float64(len(queryTokens))
+	coverage := 0.0
+	if len(query.tokens) > 0 {
+		coverage = float64(matched) / float64(len(query.tokens))
+	}
+	numericMatch := intersects(query.numeric, numericTokens(text))
+	timeMatch := query.hasTimeSignal && hasTimex(text, time.Now())
+	properMatch := intersects(query.proper, properNounSet(text))
+	if len(query.tokens) == 0 && (numericMatch || timeMatch || properMatch) {
+		score := 0.40
+		if numericMatch {
+			score += 0.25
+		}
+		if timeMatch {
+			score += 0.20
+		}
+		if properMatch {
+			score += 0.10
+		}
+		if score > 1 {
+			score = 1
+		}
+		return score, true
+	}
+	strong := numericMatch || timeMatch
+	eligible := matched >= 2 || (matched >= 1 && strong)
+	if !eligible {
+		return 0, false
+	}
+	score := coverage
+	if strong {
+		score += 0.20
+	}
+	if properMatch {
+		score += 0.05
+	}
+	if score > 1 {
+		score = 1
+	}
+	return score, true
+}
+
+func groundingTokenSet(text string) map[string]struct{} {
+	return tokenSet(tokenize.Detect(text).Tokenize(text))
 }
 
 func evidenceRefKey(ref domain.EvidenceRef) string {

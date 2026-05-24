@@ -314,6 +314,18 @@ func TestBuildHitsGroundingEvidenceIsCapped(t *testing.T) {
 	}
 }
 
+func TestBuildHitsGroundingSkipsWeakStopwordOrEntityOnlyRefs(t *testing.T) {
+	refs := []domain.EvidenceRef{
+		{ID: "e1", Text: "Melanie has two cats named Oscar and Luna."},
+		{ID: "e2", Text: "Melanie went hiking with her family."},
+		{ID: "e3", Text: "The pottery class was relaxing."},
+	}
+	got := selectGroundingEvidence("What pets does Melanie have?", []domain.EvidenceRef{refs[0]}, refs)
+	if ids := evidenceIDs(got); len(ids) != 1 || ids[0] != "e1" {
+		t.Fatalf("weak entity-only refs should not be added, got %+v", ids)
+	}
+}
+
 func BenchmarkSelectFinalHybridRerankHits(b *testing.B) {
 	query := "When did Alice buy 2 ceramic figurines and which instrument does she play?"
 	ordered := make([]domain.Hit, 0, 30)
