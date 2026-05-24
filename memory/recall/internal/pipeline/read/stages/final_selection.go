@@ -29,11 +29,27 @@ type evidenceCandidate struct {
 	queryRank int
 }
 
+type finalSelectionQueryFeatures struct {
+	tokens           map[string]struct{}
+	numeric          map[string]struct{}
+	quoted           map[string]struct{}
+	proper           map[string]struct{}
+	hasTimeSignal    bool
+	hasNumericIntent bool
+}
+
 type finalSelectionCandidate struct {
-	hit       domain.Hit
-	score     float64
-	baseScore float64
-	queryRank int
+	hit            domain.Hit
+	score          float64
+	baseScore      float64
+	evidenceScore  float64
+	factScore      float64
+	queryRank      int
+	evidenceKey    string
+	evidenceTokens map[string]struct{}
+	factTokens     map[string]struct{}
+	hasTimeSignal  bool
+	hasNumeric     bool
 }
 
 func selectFinalEvidenceAwareHits(query string, ordered []domain.Hit, pool []domain.Hit, cap int, hybridRerank bool) []domain.Hit {
@@ -84,12 +100,12 @@ func selectFinalEvidenceRescueHits(query string, ordered []domain.Hit, pool []do
 
 func selectFinalHybridRerankHits(query string, ordered []domain.Hit, pool []domain.Hit, cap int) []domain.Hit {
 	candidatePool := mergeFinalSelectionPool(ordered, pool)
-	candidatePool = dedupeHitsByEvidence(query, candidatePool)
-	if len(candidatePool) <= cap {
-		return candidatePool
-	}
 	candidates := finalSelectionCandidates(query, candidatePool)
+	if len(candidates) <= cap {
+		return finalSelectionHits(candidates)
+	}
 	selected := make([]domain.Hit, 0, cap)
+	selectedCandidates := make([]finalSelectionCandidate, 0, cap)
 	used := make([]bool, len(candidates))
 	for len(selected) < cap {
 		best := -1
@@ -98,7 +114,7 @@ func selectFinalHybridRerankHits(query string, ordered []domain.Hit, pool []doma
 			if used[i] {
 				continue
 			}
-			adjusted := cand.score - finalSelectionDiversityPenalty(query, cand.hit, selected)
+			adjusted := cand.score - finalSelectionDiversityPenalty(cand, selectedCandidates)
 			if best < 0 || adjusted > bestScore || (math.Abs(adjusted-bestScore) <= 1e-9 && betterFinalSelectionTieBreak(cand, candidates[best])) {
 				best = i
 				bestScore = adjusted
@@ -108,17 +124,19 @@ func selectFinalHybridRerankHits(query string, ordered []domain.Hit, pool []doma
 			break
 		}
 		used[best] = true
-		if hitDuplicateInSelection(query, candidates[best].hit, selected) {
+		if finalSelectionCandidateDuplicate(candidates[best], selectedCandidates) {
 			continue
 		}
 		selected = append(selected, candidates[best].hit)
+		selectedCandidates = append(selectedCandidates, candidates[best])
 	}
 	if len(selected) < cap {
-		for _, hit := range ordered {
-			if hitDuplicateInSelection(query, hit, selected) {
+		for _, cand := range candidates {
+			if finalSelectionCandidateDuplicate(cand, selectedCandidates) {
 				continue
 			}
-			selected = append(selected, hit)
+			selected = append(selected, cand.hit)
+			selectedCandidates = append(selectedCandidates, cand)
 			if len(selected) >= cap {
 				break
 			}
@@ -140,6 +158,7 @@ func mergeFinalSelectionPool(ordered []domain.Hit, pool []domain.Hit) []domain.H
 }
 
 func finalSelectionCandidates(query string, hits []domain.Hit) []finalSelectionCandidate {
+	queryFeatures := newFinalSelectionQueryFeatures(query)
 	maxScore := 0.0
 	for _, hit := range hits {
 		if hit.Score > maxScore {
@@ -147,13 +166,23 @@ func finalSelectionCandidates(query string, hits []domain.Hit) []finalSelectionC
 		}
 	}
 	out := make([]finalSelectionCandidate, 0, len(hits))
+	seenFacts := map[string]struct{}{}
+	seenEvidence := map[string]struct{}{}
 	for i, hit := range hits {
-		out = append(out, finalSelectionCandidate{
-			hit:       hit,
-			score:     finalSelectionScore(query, hit, i, maxScore),
-			baseScore: hit.Score,
-			queryRank: i,
-		})
+		if hit.Fact.ID != "" {
+			if _, ok := seenFacts[hit.Fact.ID]; ok {
+				continue
+			}
+			seenFacts[hit.Fact.ID] = struct{}{}
+		}
+		evidenceKey := primaryEvidenceKey(hit)
+		if evidenceKey != "" {
+			if _, ok := seenEvidence[evidenceKey]; ok {
+				continue
+			}
+			seenEvidence[evidenceKey] = struct{}{}
+		}
+		out = append(out, newFinalSelectionCandidate(queryFeatures, hit, i, maxScore, evidenceKey))
 	}
 	sort.SliceStable(out, func(i, j int) bool {
 		if math.Abs(out[i].score-out[j].score) > 1e-9 {
@@ -164,22 +193,105 @@ func finalSelectionCandidates(query string, hits []domain.Hit) []finalSelectionC
 	return out
 }
 
-func finalSelectionScore(query string, hit domain.Hit, queryRank int, maxHitScore float64) float64 {
+func newFinalSelectionQueryFeatures(query string) finalSelectionQueryFeatures {
+	anchor := time.Now()
+	return finalSelectionQueryFeatures{
+		tokens:           tokenSet(tokenize.Detect(query).Tokenize(query)),
+		numeric:          numericTokens(query),
+		quoted:           quotedTokenSet(query),
+		proper:           properNounSet(query),
+		hasTimeSignal:    hasTemporalQuestionCue(query) || hasTimex(query, anchor),
+		hasNumericIntent: queryHasNumericIntent(query),
+	}
+}
+
+func newFinalSelectionCandidate(queryFeatures finalSelectionQueryFeatures, hit domain.Hit, queryRank int, maxHitScore float64, evidenceKey string) finalSelectionCandidate {
+	evidenceText := hitEvidenceText(hit)
+	factText := finalSelectionFactText(hit)
+	combinedText := factText
+	if evidenceText != "" {
+		if combinedText != "" {
+			combinedText += " "
+		}
+		combinedText += evidenceText
+	}
+	evidenceTokens := tokenSet(tokenize.Detect(evidenceText).Tokenize(evidenceText))
+	factTokens := tokenSet(tokenize.Detect(factText).Tokenize(factText))
+	evidenceNumeric := numericTokens(evidenceText)
+	factNumeric := numericTokens(factText)
+	evidenceQuoted := quotedTokenSet(evidenceText)
+	factQuoted := quotedTokenSet(factText)
+	evidenceProper := properNounSet(evidenceText)
+	factProper := properNounSet(factText)
+	hasNumeric := len(evidenceNumeric) > 0 || len(factNumeric) > 0
+	hasTime := false
+	if queryFeatures.hasTimeSignal {
+		hasTime = hitHasTimeSignal(hit, combinedText)
+	}
+	evidenceScore := finalSelectionTextScore(queryFeatures, evidenceTokens, evidenceNumeric, evidenceQuoted, evidenceProper, hasTime, len(evidenceNumeric) > 0)
+	factScore := finalSelectionTextScore(queryFeatures, factTokens, factNumeric, factQuoted, factProper, hasTime, len(factNumeric) > 0)
+	candidate := finalSelectionCandidate{
+		hit:            hit,
+		baseScore:      hit.Score,
+		evidenceScore:  evidenceScore,
+		factScore:      factScore,
+		queryRank:      queryRank,
+		evidenceKey:    evidenceKey,
+		evidenceTokens: evidenceTokens,
+		factTokens:     factTokens,
+		hasTimeSignal:  hasTime,
+		hasNumeric:     hasNumeric,
+	}
+	candidate.score = finalSelectionScore(queryFeatures, candidate, maxHitScore)
+	return candidate
+}
+
+func finalSelectionTextScore(query finalSelectionQueryFeatures, textTokens, textNumeric, textQuoted, textProper map[string]struct{}, hasTimeSignal, hasNumeric bool) float64 {
+	if len(query.tokens) == 0 || len(textTokens) == 0 {
+		return 0
+	}
+	matched := 0
+	for tok := range query.tokens {
+		if _, ok := textTokens[tok]; ok {
+			matched++
+		}
+	}
+	score := float64(matched) / float64(len(query.tokens))
+	if intersects(query.numeric, textNumeric) {
+		score += 0.25
+	}
+	if query.hasNumericIntent && hasNumeric {
+		score += 0.15
+	}
+	if query.hasTimeSignal && hasTimeSignal {
+		score += 0.20
+	}
+	if len(query.quoted) > 0 && (intersects(query.quoted, textQuoted) || intersects(query.quoted, textTokens)) {
+		score += 0.15
+	}
+	if intersects(query.proper, textProper) {
+		score += 0.10
+	}
+	if score > 1 {
+		return 1
+	}
+	return score
+}
+
+func finalSelectionScore(query finalSelectionQueryFeatures, candidate finalSelectionCandidate, maxHitScore float64) float64 {
 	base := 0.0
-	if maxHitScore > 0 && hit.Score > 0 {
-		base = hit.Score / maxHitScore
+	if maxHitScore > 0 && candidate.baseScore > 0 {
+		base = candidate.baseScore / maxHitScore
 		if base > 1 {
 			base = 1
 		}
 	}
-	rankPrior := 1 / (1 + float64(queryRank)/30)
-	evidenceScore := queryEvidenceScore(query, hit)
-	factScore := queryFactScore(query, hit)
-	score := 0.42*evidenceScore + 0.35*factScore + 0.18*base + 0.05*rankPrior
-	if queryHasTimeSignal(query) && hitHasTimeSignal(hit, hitEvidenceText(hit)) {
+	rankPrior := 1 / (1 + float64(candidate.queryRank)/30)
+	score := 0.42*candidate.evidenceScore + 0.35*candidate.factScore + 0.18*base + 0.05*rankPrior
+	if query.hasTimeSignal && candidate.hasTimeSignal {
 		score += 0.04
 	}
-	if queryHasNumericIntent(query) && hasNumericEvidence(finalSelectionHitText(hit)) {
+	if query.hasNumericIntent && candidate.hasNumeric {
 		score += 0.04
 	}
 	return score
@@ -192,11 +304,11 @@ func betterFinalSelectionTieBreak(a, b finalSelectionCandidate) bool {
 	return a.queryRank < b.queryRank
 }
 
-func finalSelectionDiversityPenalty(query string, hit domain.Hit, selected []domain.Hit) float64 {
+func finalSelectionDiversityPenalty(candidate finalSelectionCandidate, selected []finalSelectionCandidate) float64 {
 	maxSimilarity := 0.0
 	for _, existing := range selected {
-		similarity := evidenceTextJaccard(hit, existing)
-		if sameStructuredMemory(hit.Fact, existing.Fact) {
+		similarity := tokenSetJaccard(candidate.evidenceTokens, existing.evidenceTokens)
+		if sameStructuredMemory(candidate.hit.Fact, existing.hit.Fact) {
 			similarity += 0.15
 		}
 		if similarity > maxSimilarity {
@@ -207,10 +319,35 @@ func finalSelectionDiversityPenalty(query string, hit domain.Hit, selected []dom
 		return 0
 	}
 	penalty := 0.22 * maxSimilarity
-	if queryEvidenceScore(query, hit) >= 0.55 {
+	if candidate.evidenceScore >= 0.55 {
 		penalty *= 0.5
 	}
 	return penalty
+}
+
+func finalSelectionCandidateDuplicate(candidate finalSelectionCandidate, selected []finalSelectionCandidate) bool {
+	for _, existing := range selected {
+		if candidate.hit.Fact.ID != "" && candidate.hit.Fact.ID == existing.hit.Fact.ID {
+			return true
+		}
+		if candidate.evidenceKey != "" && candidate.evidenceKey == existing.evidenceKey {
+			return true
+		}
+		if sameStructuredMemory(candidate.hit.Fact, existing.hit.Fact) && tokenSetJaccard(candidate.evidenceTokens, existing.evidenceTokens) >= duplicateJaccardCutoff {
+			if candidate.evidenceScore < contextDedupeQueryFloor {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func finalSelectionHits(candidates []finalSelectionCandidate) []domain.Hit {
+	out := make([]domain.Hit, 0, len(candidates))
+	for _, candidate := range candidates {
+		out = append(out, candidate.hit)
+	}
+	return out
 }
 
 func evidenceCandidates(query string, hits []domain.Hit, selected map[string]struct{}) []evidenceCandidate {
@@ -467,22 +604,47 @@ func sameStructuredMemory(a, b domain.TemporalFact) bool {
 }
 
 func evidenceTextJaccard(a, b domain.Hit) float64 {
-	at := tokenSet(tokenize.Detect(hitEvidenceText(a)).Tokenize(hitEvidenceText(a)))
-	bt := tokenSet(tokenize.Detect(hitEvidenceText(b)).Tokenize(hitEvidenceText(b)))
-	if len(at) == 0 || len(bt) == 0 {
+	aText := hitEvidenceText(a)
+	bText := hitEvidenceText(b)
+	return tokenSetJaccard(
+		tokenSet(tokenize.Detect(aText).Tokenize(aText)),
+		tokenSet(tokenize.Detect(bText).Tokenize(bText)),
+	)
+}
+
+func tokenSetJaccard(a, b map[string]struct{}) float64 {
+	if len(a) == 0 || len(b) == 0 {
 		return 0
 	}
+	if len(a) > len(b) {
+		a, b = b, a
+	}
 	intersect := 0
-	for tok := range at {
-		if _, ok := bt[tok]; ok {
+	for tok := range a {
+		if _, ok := b[tok]; ok {
 			intersect++
 		}
 	}
-	union := len(at) + len(bt) - intersect
+	union := len(a) + len(b) - intersect
 	if union == 0 {
 		return 0
 	}
 	return float64(intersect) / float64(union)
+}
+
+func intersects(a, b map[string]struct{}) bool {
+	if len(a) == 0 || len(b) == 0 {
+		return false
+	}
+	if len(a) > len(b) {
+		a, b = b, a
+	}
+	for tok := range a {
+		if _, ok := b[tok]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 func tokenSet(tokens []string) map[string]struct{} {

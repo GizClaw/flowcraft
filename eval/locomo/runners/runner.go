@@ -22,7 +22,9 @@ type Scope struct {
 	AgentID   string
 }
 
-// Hit is one recall result in runner-neutral form.
+// Hit is one recall result in runner-neutral form. EvidenceIDs are the raw
+// evidence refs exposed in Content for answer grounding, not necessarily only
+// the source candidate's original matching ids.
 type Hit struct {
 	ID          string
 	Content     string

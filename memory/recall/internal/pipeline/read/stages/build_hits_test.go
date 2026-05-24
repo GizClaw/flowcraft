@@ -2,6 +2,7 @@ package stages
 
 import (
 	"context"
+	"strconv"
 	"testing"
 
 	"github.com/GizClaw/flowcraft/memory/recall/internal/domain"
@@ -261,6 +262,106 @@ func TestBuildHitsFinalSelectionDedupesSameEvidence(t *testing.T) {
 	if state.Hits[0].Fact.ID != "a" || state.Hits[1].Fact.ID != "c" {
 		t.Fatalf("same evidence id should be deduped while preserving cap, got %+v", state.Hits)
 	}
+}
+
+func TestBuildHitsGroundsSelectedEvidenceWithRelevantFactRefs(t *testing.T) {
+	stage := NewBuildHits(nil)
+	state := &read.ReadState{
+		Plan:  &domain.QueryPlan{TotalCap: 1},
+		Query: domain.Query{Text: "Where did Caroline move from?"},
+		Ranked: []domain.ContextItem{{
+			Candidate: domain.Candidate{FactID: "move", Source: "retrieval", Score: 0.9, EvidenceIDs: []string{"e1"}},
+			Fact: domain.TemporalFact{
+				ID:      "move",
+				Kind:    domain.KindState,
+				Content: "Caroline moved from her home country.",
+				EvidenceRefs: []domain.EvidenceRef{
+					{ID: "e1", Text: "Caroline moved from her home country four years ago."},
+					{ID: "e2", Text: "Caroline said Sweden is where she moved from."},
+					{ID: "e3", Text: "Melanie likes pottery classes."},
+				},
+			},
+			Evidence: []domain.EvidenceRef{{ID: "e1", Text: "Caroline moved from her home country four years ago."}},
+		}},
+	}
+
+	if _, err := stage.Run(context.Background(), state); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if len(state.Hits) != 1 {
+		t.Fatalf("hits = %+v", state.Hits)
+	}
+	got := evidenceIDs(state.Hits[0].Evidence)
+	want := []string{"e1", "e2"}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("grounding evidence ids = %+v, want %+v", got, want)
+	}
+}
+
+func TestBuildHitsGroundingEvidenceIsCapped(t *testing.T) {
+	refs := []domain.EvidenceRef{
+		{ID: "e1", Text: "Alice bought pottery."},
+		{ID: "e2", Text: "Alice bought ceramic figurines."},
+		{ID: "e3", Text: "Alice bought a violin."},
+		{ID: "e4", Text: "Alice bought a book."},
+	}
+	got := selectGroundingEvidence("What did Alice buy?", []domain.EvidenceRef{refs[0]}, refs)
+	if len(got) != maxHitEvidenceRefs {
+		t.Fatalf("grounding evidence count = %d, want %d: %+v", len(got), maxHitEvidenceRefs, got)
+	}
+	if got[0].ID != "e1" {
+		t.Fatalf("selected evidence should stay first, got %+v", evidenceIDs(got))
+	}
+}
+
+func BenchmarkSelectFinalHybridRerankHits(b *testing.B) {
+	query := "When did Alice buy 2 ceramic figurines and which instrument does she play?"
+	ordered := make([]domain.Hit, 0, 30)
+	pool := make([]domain.Hit, 0, 120)
+	for i := 0; i < 120; i++ {
+		id := "hit-" + strconv.Itoa(i)
+		evidenceID := "e-" + strconv.Itoa(i)
+		marker := "marker" + strconv.Itoa(i)
+		text := "Bob visited Paris and Carol likes hiking near " + marker + "."
+		content := text
+		score := 1.0 - float64(i)*0.005
+		if i%17 == 0 {
+			text = "On 2023-05-07 Alice bought 2 ceramic figurines and later played the violin."
+			content = "Alice bought 2 ceramic figurines and plays the violin."
+			score = 0.15
+		}
+		hit := domain.Hit{
+			Fact: domain.TemporalFact{
+				ID:      id,
+				Kind:    domain.KindEvent,
+				Content: content,
+				Subject: "Alice",
+			},
+			Evidence: []domain.EvidenceRef{{ID: evidenceID, Text: text}},
+			Score:    score,
+			Sources:  []string{"retrieval"},
+		}
+		pool = append(pool, hit)
+		if i < 30 {
+			ordered = append(ordered, hit)
+		}
+	}
+
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		hits := selectFinalHybridRerankHits(query, ordered, pool, 30)
+		if len(hits) != 30 {
+			b.Fatalf("len(hits) = %d, want 30", len(hits))
+		}
+	}
+}
+
+func evidenceIDs(refs []domain.EvidenceRef) []string {
+	out := make([]string, 0, len(refs))
+	for _, ref := range refs {
+		out = append(out, ref.ID)
+	}
+	return out
 }
 
 func weakContextItem(id, evidenceID, text string) domain.ContextItem {

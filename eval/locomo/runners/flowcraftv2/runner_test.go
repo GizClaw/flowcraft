@@ -224,6 +224,36 @@ func TestFromRecallHitUsesSelectedEvidence(t *testing.T) {
 	}
 }
 
+func TestFromRecallHitUsesSupportingEvidenceRefs(t *testing.T) {
+	hit := fromRecallHit(recall.Hit{
+		Fact: recall.TemporalFact{
+			ID:      "f1",
+			Content: "Caroline moved from her home country.",
+			EvidenceRefs: []recall.EvidenceRef{
+				{ID: "D1:1", Text: "Caroline moved from her home country four years ago."},
+				{ID: "D1:2", Text: "Caroline said Sweden is where she moved from."},
+				{ID: "D1:3", Text: "Unselected unrelated turn."},
+			},
+		},
+		Evidence: []recall.EvidenceRef{
+			{ID: "D1:1", Text: "Caroline moved from her home country four years ago."},
+			{ID: "D1:2", Text: "Caroline said Sweden is where she moved from."},
+		},
+	})
+	if !strings.Contains(hit.Content, "Caroline moved from her home country four years ago.") {
+		t.Fatalf("selected evidence missing from rendered content: %+v", hit)
+	}
+	if !strings.Contains(hit.Content, "Caroline said Sweden is where she moved from.") {
+		t.Fatalf("supporting evidence missing from rendered content: %+v", hit)
+	}
+	if strings.Contains(hit.Content, "Unselected unrelated turn") {
+		t.Fatalf("unselected evidence should not be rendered: %+v", hit)
+	}
+	if got, want := strings.Join(hit.EvidenceIDs, ","), "D1:1,D1:2"; got != want {
+		t.Fatalf("hit evidence ids = %s, want %s", got, want)
+	}
+}
+
 func TestGroundedHitContentAnnotatesEvidenceSourceTime(t *testing.T) {
 	hit := groundedHitContent(recall.Hit{
 		Fact: recall.TemporalFact{
