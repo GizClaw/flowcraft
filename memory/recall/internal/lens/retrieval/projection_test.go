@@ -385,8 +385,55 @@ func TestProjection_SearchContentIncludesEvidenceGrounding(t *testing.T) {
 	if err != nil {
 		t.Fatalf("search: %v", err)
 	}
-	if len(resp.Hits) != 1 || resp.Hits[0].Doc.ID != "f1" {
-		t.Fatalf("evidence grounding should be searchable, hits=%+v", resp.Hits)
+	seen := map[string]bool{}
+	for _, hit := range resp.Hits {
+		seen[hit.Doc.ID] = true
+	}
+	if !seen["f1"] || !seen["f1#D1:3"] {
+		t.Fatalf("fact and evidence grounding should be searchable, hits=%+v", resp.Hits)
+	}
+}
+
+func TestProjection_ReplacesStaleEvidenceDocs(t *testing.T) {
+	idx := retrievalmem.New()
+	p, err := New(idx)
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	scope := domain.Scope{RuntimeID: "rt", UserID: "u1"}
+	f := domain.TemporalFact{
+		ID:         "f1",
+		Scope:      scope,
+		Kind:       domain.KindEvent,
+		Content:    "Alice bought souvenirs.",
+		ObservedAt: time.Unix(1, 0),
+		EvidenceRefs: []domain.EvidenceRef{{
+			ID:   "old",
+			Text: "Alice bought a red kite.",
+		}},
+	}
+	if err := p.Project(context.Background(), []domain.TemporalFact{f}); err != nil {
+		t.Fatalf("project old: %v", err)
+	}
+	f.EvidenceRefs = []domain.EvidenceRef{{
+		ID:   "new",
+		Text: "Alice bought ceramic figurines.",
+	}}
+	if err := p.Project(context.Background(), []domain.TemporalFact{f}); err != nil {
+		t.Fatalf("project new: %v", err)
+	}
+
+	resp, err := idx.Search(context.Background(), NamespaceFor(scope), retrieval.SearchRequest{
+		QueryText: "red kite",
+		TopK:      5,
+	})
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	for _, hit := range resp.Hits {
+		if hit.Doc.ID == "f1#old" {
+			t.Fatalf("stale evidence doc survived: %+v", resp.Hits)
+		}
 	}
 }
 

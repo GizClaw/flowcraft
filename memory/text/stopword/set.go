@@ -70,3 +70,15 @@ func (s Set) Union(other Set) Set {
 
 // Len reports the number of entries in the set.
 func (s Set) Len() int { return len(s) }
+
+func normalizeLookup(word string) string {
+	return strings.ToLower(word)
+}
+
+func newWordTable(words ...string) map[string]bool {
+	out := make(map[string]bool, len(words))
+	for _, word := range words {
+		out[normalizeLookup(word)] = true
+	}
+	return out
+}

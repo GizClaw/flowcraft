@@ -47,6 +47,26 @@ func TestWeightedRRF_DedupesAndCombinesScores(t *testing.T) {
 	}
 }
 
+func TestWeightedRRF_MergesEvidenceIDsForSameFact(t *testing.T) {
+	results := []domain.SourceResult{{
+		Source: "retrieval",
+		Candidates: []domain.Candidate{
+			{FactID: "a", Source: "retrieval", Rank: 1, EvidenceIDs: []string{"e1"}},
+			{FactID: "a", Source: "retrieval", Rank: 2, EvidenceIDs: []string{"e2"}},
+		},
+	}}
+	fused, _, err := WeightedRRF{}.Fuse(context.Background(), results, port.FusionOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(fused) != 1 {
+		t.Fatalf("expected one fused candidate, got %+v", fused)
+	}
+	if got := fused[0].EvidenceIDs; len(got) != 2 || got[0] != "e1" || got[1] != "e2" {
+		t.Fatalf("evidence ids = %+v, want [e1 e2]", got)
+	}
+}
+
 func TestWeightedRRF_PerSourceCapEmitsDrops(t *testing.T) {
 	results := []domain.SourceResult{
 		{

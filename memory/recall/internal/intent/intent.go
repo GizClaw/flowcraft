@@ -2,23 +2,16 @@ package intent
 
 import (
 	"context"
-	"regexp"
 	"sort"
-	"strconv"
 	"strings"
-	"time"
 	"unicode"
 
 	"github.com/GizClaw/flowcraft/memory/recall/internal/domain"
 	"github.com/GizClaw/flowcraft/memory/recall/internal/port"
 	"github.com/GizClaw/flowcraft/memory/recall/internal/words"
 	"github.com/GizClaw/flowcraft/memory/text/quotes"
-	"github.com/GizClaw/flowcraft/memory/text/timex"
-	whenadp "github.com/GizClaw/flowcraft/memory/text/timex/adapter/when"
 	"github.com/GizClaw/flowcraft/memory/text/tokenize"
 )
-
-var queryTimeParser = newQueryTimeParser()
 
 // RuleBased is the default deterministic query intent compiler.
 type RuleBased struct{}
@@ -30,6 +23,7 @@ func Default() port.IntentCompiler { return RuleBased{} }
 
 // Compile merges explicit entities with rule-based extraction from Text.
 func (RuleBased) Compile(_ context.Context, input port.IntentInput) (port.IntentResult, error) {
+	features := ExtractFeatures(input.Text)
 	entities := mergeEntities(input.Entities, extractEntitiesFromText(input.Text))
 	out := port.IntentResult{
 		Text:      input.Text,
@@ -39,25 +33,18 @@ func (RuleBased) Compile(_ context.Context, input port.IntentInput) (port.Intent
 		Kinds:     append([]domain.FactKind(nil), input.Kinds...),
 		TimeRange: input.TimeRange,
 		Entities:  entities,
+		Features:  features,
 	}
 	if out.TimeRange.IsZero() {
-		out.TimeRange = inferTimeRange(input.Text)
+		out.TimeRange = features.Temporal.TimeRange
 	}
 	if len(out.Kinds) == 0 {
-		out.Kinds = inferKinds(input.Text)
+		out.Kinds = inferKinds(features)
 	}
-	if out.Subject == "" && shouldInferSubject(input.Text) {
+	if out.Subject == "" && shouldInferSubject(input.Text, features) {
 		out.Subject = inferSubject(input.Text, entities)
 	}
 	return out, nil
-}
-
-func newQueryTimeParser() timex.Parser {
-	p, err := whenadp.New()
-	if err == nil && p != nil {
-		return p
-	}
-	return timex.RegexParser{}
 }
 
 func mergeEntities(explicit, extracted []string) []string {
@@ -144,9 +131,8 @@ func extractEntitiesFromText(text string) []string {
 	return out
 }
 
-func inferKinds(text string) []domain.FactKind {
-	lower := strings.ToLower(text)
-	if words.HasIntentTemporalQuestionCue(lower) {
+func inferKinds(features domain.QueryFeatures) []domain.FactKind {
+	if features.Temporal.HasIntent {
 		return []domain.FactKind{domain.KindEvent, domain.KindState, domain.KindPlan}
 	}
 	return nil
@@ -176,180 +162,11 @@ func inferSubject(text string, entities []string) string {
 	return entities[0]
 }
 
-func shouldInferSubject(text string) bool {
-	lower := strings.TrimSpace(strings.ToLower(text))
-	if words.HasIntentTemporalQuestionCue(lower) {
+func shouldInferSubject(text string, features domain.QueryFeatures) bool {
+	if features.Temporal.HasIntent {
 		return false
 	}
-	return strings.HasSuffix(lower, "?") ||
-		strings.HasPrefix(lower, "who ") ||
-		strings.HasPrefix(lower, "what ") ||
-		strings.HasPrefix(lower, "when ") ||
-		strings.HasPrefix(lower, "where ") ||
-		strings.HasPrefix(lower, "which ") ||
-		strings.HasPrefix(lower, "how ") ||
-		strings.Contains(lower, "'s ")
-}
-
-func inferTimeRange(text string) domain.TimeRange {
-	text = strings.TrimSpace(text)
-	if text == "" {
-		return domain.TimeRange{}
-	}
-	if tr := inferRegexTimeRange(text); !tr.IsZero() {
-		return tr
-	}
-	if queryTimeParser != nil {
-		// Use a stable reference for absolute dates. Relative matches are
-		// accepted only when their matched text also contains an explicit
-		// calendar anchor, so wall-clock time cannot change default recall.
-		m, err := queryTimeParser.Parse(text, time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC))
-		if err == nil && m != nil && hasExplicitCalendarAnchor(m.Text) {
-			return rangeFromParsedTime(m.Time, calendarPrecision(m.Text))
-		}
-	}
-	return domain.TimeRange{}
-}
-
-func inferRegexTimeRange(text string) domain.TimeRange {
-	if m, err := (timex.RegexParser{}).Parse(text, time.Time{}); err == nil && m != nil {
-		return dayRange(m.Time)
-	}
-	lower := strings.ToLower(text)
-	if loc := monthDayYearRE.FindStringSubmatchIndex(lower); loc != nil {
-		month := monthNumber(lower[loc[2]:loc[3]])
-		day, _ := strconv.Atoi(lower[loc[4]:loc[5]])
-		year, _ := strconv.Atoi(lower[loc[6]:loc[7]])
-		if t, ok := validDate(year, month, day); ok {
-			return dayRange(t)
-		}
-	}
-	if loc := dayMonthYearRE.FindStringSubmatchIndex(lower); loc != nil {
-		day, _ := strconv.Atoi(lower[loc[2]:loc[3]])
-		month := monthNumber(lower[loc[4]:loc[5]])
-		year, _ := strconv.Atoi(lower[loc[6]:loc[7]])
-		if t, ok := validDate(year, month, day); ok {
-			return dayRange(t)
-		}
-	}
-	if loc := monthYearRE.FindStringSubmatchIndex(lower); loc != nil {
-		month := monthNumber(lower[loc[2]:loc[3]])
-		year, _ := strconv.Atoi(lower[loc[4]:loc[5]])
-		if month >= time.January && month <= time.December {
-			return monthRange(year, month)
-		}
-	}
-	if loc := anchoredYearRE.FindStringSubmatchIndex(lower); loc != nil {
-		year, _ := strconv.Atoi(lower[loc[2]:loc[3]])
-		if year >= 1900 && year <= 2100 {
-			return yearRange(year)
-		}
-	}
-	return domain.TimeRange{}
-}
-
-func rangeFromParsedTime(t time.Time, precision calendarPrecisionKind) domain.TimeRange {
-	t = t.UTC()
-	switch precision {
-	case calendarPrecisionYear:
-		return yearRange(t.Year())
-	case calendarPrecisionMonth:
-		return monthRange(t.Year(), t.Month())
-	default:
-		return dayRange(t)
-	}
-}
-
-func dayRange(t time.Time) domain.TimeRange {
-	from := time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, time.UTC)
-	return domain.TimeRange{From: from, To: from.AddDate(0, 0, 1)}
-}
-
-func monthRange(year int, month time.Month) domain.TimeRange {
-	from := time.Date(year, month, 1, 0, 0, 0, 0, time.UTC)
-	return domain.TimeRange{From: from, To: from.AddDate(0, 1, 0)}
-}
-
-func yearRange(year int) domain.TimeRange {
-	from := time.Date(year, time.January, 1, 0, 0, 0, 0, time.UTC)
-	return domain.TimeRange{From: from, To: from.AddDate(1, 0, 0)}
-}
-
-func validDate(year int, month time.Month, day int) (time.Time, bool) {
-	if year < 1900 || year > 2100 || month < time.January || month > time.December || day < 1 || day > 31 {
-		return time.Time{}, false
-	}
-	t := time.Date(year, month, day, 0, 0, 0, 0, time.UTC)
-	if t.Year() != year || t.Month() != month || t.Day() != day {
-		return time.Time{}, false
-	}
-	return t, true
-}
-
-type calendarPrecisionKind int
-
-const (
-	calendarPrecisionDay calendarPrecisionKind = iota
-	calendarPrecisionMonth
-	calendarPrecisionYear
-)
-
-func calendarPrecision(raw string) calendarPrecisionKind {
-	lower := strings.ToLower(strings.TrimSpace(raw))
-	if lower == "" {
-		return calendarPrecisionDay
-	}
-	if monthDayYearRE.MatchString(lower) || dayMonthYearRE.MatchString(lower) || isoDateLikeRE.MatchString(lower) || usSlashLikeRE.MatchString(lower) {
-		return calendarPrecisionDay
-	}
-	if monthYearRE.MatchString(lower) {
-		return calendarPrecisionMonth
-	}
-	if anchoredYearRE.MatchString("in "+lower) || yearOnlyRE.MatchString(lower) {
-		return calendarPrecisionYear
-	}
-	return calendarPrecisionDay
-}
-
-func hasExplicitCalendarAnchor(raw string) bool {
-	lower := strings.ToLower(strings.TrimSpace(raw))
-	return monthDayYearRE.MatchString(lower) ||
-		dayMonthYearRE.MatchString(lower) ||
-		monthYearRE.MatchString(lower) ||
-		isoDateLikeRE.MatchString(lower) ||
-		usSlashLikeRE.MatchString(lower) ||
-		yearOnlyRE.MatchString(lower)
-}
-
-func monthNumber(raw string) time.Month {
-	switch strings.TrimSuffix(strings.ToLower(strings.TrimSpace(raw)), ".") {
-	case "jan", "january":
-		return time.January
-	case "feb", "february":
-		return time.February
-	case "mar", "march":
-		return time.March
-	case "apr", "april":
-		return time.April
-	case "may":
-		return time.May
-	case "jun", "june":
-		return time.June
-	case "jul", "july":
-		return time.July
-	case "aug", "august":
-		return time.August
-	case "sep", "sept", "september":
-		return time.September
-	case "oct", "october":
-		return time.October
-	case "nov", "november":
-		return time.November
-	case "dec", "december":
-		return time.December
-	default:
-		return 0
-	}
+	return words.HasSubjectInferenceCue(text)
 }
 
 func hasCJKRunes(s string) bool {
@@ -360,18 +177,3 @@ func hasCJKRunes(s string) bool {
 	}
 	return false
 }
-
-const (
-	monthPattern = `(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t|tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)`
-	ordPattern   = `(?:st|nd|rd|th)?`
-)
-
-var (
-	monthDayYearRE = regexp.MustCompile(`\b(` + monthPattern + `)\s+(\d{1,2})` + ordPattern + `,?\s+(\d{4})\b`)
-	dayMonthYearRE = regexp.MustCompile(`\b(\d{1,2})` + ordPattern + `\s+(` + monthPattern + `),?\s+(\d{4})\b`)
-	monthYearRE    = regexp.MustCompile(`\b(` + monthPattern + `)\s+(\d{4})\b`)
-	anchoredYearRE = regexp.MustCompile(`\b(?:in|during|throughout|around|by|before|after|since|from)\s+(\d{4})\b`)
-	yearOnlyRE     = regexp.MustCompile(`^\d{4}$`)
-	isoDateLikeRE  = regexp.MustCompile(`\b\d{4}-\d{2}-\d{2}\b`)
-	usSlashLikeRE  = regexp.MustCompile(`\b\d{1,2}/\d{1,2}/\d{4}\b`)
-)

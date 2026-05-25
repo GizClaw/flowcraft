@@ -21,6 +21,13 @@ import (
 	"github.com/GizClaw/flowcraft/memory/retrieval"
 )
 
+const (
+	DocKindMetadataKey    = "retrieval_doc_kind"
+	DocKindFact           = "fact"
+	DocKindEvidence       = "evidence"
+	EvidenceIDMetadataKey = "evidence_id"
+)
+
 // Projection is the canonical retrieval projection. It is Required:
 // Save must not ack a write that is not searchable, otherwise the
 // read path will silently miss freshly written facts.
@@ -104,15 +111,27 @@ func (p *Projection) Project(ctx context.Context, facts []domain.TemporalFact) e
 		var superseded []string
 		docs := make([]retrieval.Doc, 0, len(group))
 		var evict []string
+		var refreshFactIDs []any
 		for _, f := range group {
 			superseded = append(superseded, f.Supersedes...)
 			if f.ID != "" && !shouldIndexInRetrieval(f, now) {
 				evict = append(evict, f.ID)
+				evict = append(evict, evidenceDocIDs(f)...)
 			}
 			if !shouldIndexInRetrieval(f, now) {
 				continue
 			}
-			docs = append(docs, toDoc(f))
+			if f.ID != "" {
+				refreshFactIDs = append(refreshFactIDs, f.ID)
+			}
+			docs = append(docs, toDocs(f)...)
+		}
+		if len(refreshFactIDs) > 0 {
+			staleEvidence, err := listEvidenceDocIDs(ctx, p.index, ns, refreshFactIDs)
+			if err != nil {
+				return fmt.Errorf("retrieval projection list evidence docs ns=%s: %w", ns, err)
+			}
+			evict = append(evict, staleEvidence...)
 		}
 		toDelete := uniqueStrings(append(superseded, evict...))
 		if len(toDelete) > 0 {
@@ -130,6 +149,46 @@ func (p *Projection) Project(ctx context.Context, facts []domain.TemporalFact) e
 		}
 	}
 	return nil
+}
+
+func listEvidenceDocIDs(ctx context.Context, idx retrieval.Index, namespace string, factIDs []any) ([]string, error) {
+	const pageSize = 256
+	filter := retrieval.Filter{
+		Eq: map[string]any{
+			DocKindMetadataKey: DocKindEvidence,
+		},
+		In: map[string][]any{
+			domain.MetaFactID: factIDs,
+		},
+	}
+	var (
+		out  []string
+		page string
+	)
+	for {
+		resp, err := idx.List(ctx, namespace, retrieval.ListRequest{
+			Filter:    filter,
+			PageSize:  pageSize,
+			PageToken: page,
+			OrderBy:   retrieval.OrderByIDAsc,
+		})
+		if err != nil {
+			return nil, err
+		}
+		if resp == nil {
+			break
+		}
+		for _, doc := range resp.Items {
+			if doc.ID != "" {
+				out = append(out, doc.ID)
+			}
+		}
+		if resp.NextPageToken == "" {
+			break
+		}
+		page = resp.NextPageToken
+	}
+	return out, nil
 }
 
 // attachEmbeddings populates docs[i].Vector with the embedding of the
@@ -294,6 +353,9 @@ func (p *Projection) Rebuild(ctx context.Context, scope domain.Scope, facts []do
 		}
 		active = append(active, f)
 		activeIDs[f.ID] = struct{}{}
+		for _, id := range evidenceDocIDs(f) {
+			activeIDs[id] = struct{}{}
+		}
 	}
 
 	existing, err := listAllDocIDs(ctx, p.index, ns)
@@ -416,6 +478,7 @@ func toDoc(f domain.TemporalFact) retrieval.Doc {
 	}
 
 	meta[domain.MetaFactID] = f.ID
+	meta[DocKindMetadataKey] = DocKindFact
 	meta[domain.MetaFactKind] = string(f.Kind)
 	meta[domain.MetaScopeRT] = f.Scope.RuntimeID
 	meta[domain.MetaScopeUser] = f.Scope.UserID
@@ -452,6 +515,72 @@ func toDoc(f domain.TemporalFact) retrieval.Doc {
 		Metadata:  meta,
 		Timestamp: pickTimestamp(f),
 	}
+}
+
+func toDocs(f domain.TemporalFact) []retrieval.Doc {
+	factDoc := toDoc(f)
+	docs := []retrieval.Doc{factDoc}
+	for _, ref := range f.EvidenceRefs {
+		id := evidenceID(ref)
+		text := strings.TrimSpace(ref.Text)
+		if id == "" || text == "" {
+			continue
+		}
+		meta := make(map[string]any, len(factDoc.Metadata)+2)
+		for k, v := range factDoc.Metadata {
+			meta[k] = v
+		}
+		meta[DocKindMetadataKey] = DocKindEvidence
+		meta[EvidenceIDMetadataKey] = id
+		ts := ref.Timestamp
+		if ts.IsZero() {
+			ts = factDoc.Timestamp
+		}
+		docs = append(docs, retrieval.Doc{
+			ID:        evidenceDocID(f.ID, id),
+			Content:   evidenceDocContent(f, ref),
+			Metadata:  meta,
+			Timestamp: ts,
+		})
+	}
+	return docs
+}
+
+func evidenceDocContent(f domain.TemporalFact, ref domain.EvidenceRef) string {
+	parts := []string{ref.Text, f.Content, f.Subject, f.Predicate, f.Object, f.Location}
+	return strings.Join(nonEmptyStrings(parts...), " ")
+}
+
+func nonEmptyStrings(values ...string) []string {
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			out = append(out, value)
+		}
+	}
+	return out
+}
+
+func evidenceDocIDs(f domain.TemporalFact) []string {
+	out := make([]string, 0, len(f.EvidenceRefs))
+	for _, ref := range f.EvidenceRefs {
+		if id := evidenceID(ref); id != "" && f.ID != "" {
+			out = append(out, evidenceDocID(f.ID, id))
+		}
+	}
+	return out
+}
+
+func evidenceID(ref domain.EvidenceRef) string {
+	if strings.TrimSpace(ref.ID) != "" {
+		return strings.TrimSpace(ref.ID)
+	}
+	return strings.TrimSpace(ref.MessageID)
+}
+
+func evidenceDocID(factID, evidenceID string) string {
+	return factID + "#" + evidenceID
 }
 
 // buildContent renders the searchable text for a fact. The canonical

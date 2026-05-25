@@ -146,5 +146,38 @@ func TestSource_PropagatesRetrievalScore(t *testing.T) {
 	}
 }
 
+func TestSource_EvidenceDocCarriesEvidenceID(t *testing.T) {
+	idx := retrievalmem.New()
+	proj, _ := retlens.New(idx)
+	scope := domain.Scope{RuntimeID: "rt"}
+	if err := proj.Project(context.Background(), []domain.TemporalFact{{
+		ID:      "f1",
+		Scope:   scope,
+		Kind:    domain.KindEvent,
+		Content: "Alice bought souvenirs.",
+		EvidenceRefs: []domain.EvidenceRef{{
+			ID:   "e1",
+			Text: "Alice bought 3 ceramic figurines in Kyoto.",
+		}},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	s := retlens.NewSource(idx)
+	res := s.Query(context.Background(), domain.QueryPlan{
+		Intent:        domain.QueryIntent{Text: "3 ceramic figurines Kyoto", Scope: scope, Limit: 5},
+		SourceBudgets: map[string]int{planner.SourceRetrieval: 5},
+		TotalCap:      5,
+	})
+	if res.Err != nil {
+		t.Fatalf("source error: %v", res.Err)
+	}
+	for _, c := range res.Candidates {
+		if c.FactID == "f1" && len(c.EvidenceIDs) == 1 && c.EvidenceIDs[0] == "e1" {
+			return
+		}
+	}
+	t.Fatalf("expected evidence-level candidate for f1/e1, got %+v", res.Candidates)
+}
+
 // compile-time guard for the source contract shape.
 var _ sdkretrieval.Index = retrievalmem.New()

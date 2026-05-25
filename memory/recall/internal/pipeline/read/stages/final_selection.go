@@ -4,16 +4,10 @@ import (
 	"math"
 	"sort"
 	"strings"
-	"sync"
 	"time"
-	"unicode"
 
 	"github.com/GizClaw/flowcraft/memory/recall/internal/domain"
-	"github.com/GizClaw/flowcraft/memory/recall/internal/words"
-	"github.com/GizClaw/flowcraft/memory/text/quotes"
-	"github.com/GizClaw/flowcraft/memory/text/timex"
-	whenadp "github.com/GizClaw/flowcraft/memory/text/timex/adapter/when"
-	"github.com/GizClaw/flowcraft/memory/text/tokenize"
+	recallintent "github.com/GizClaw/flowcraft/memory/recall/internal/intent"
 )
 
 const (
@@ -28,6 +22,8 @@ type finalSelectionQueryFeatures struct {
 	proper           map[string]struct{}
 	hasTimeSignal    bool
 	hasNumericIntent bool
+	temporalKinds    []domain.QueryTemporalIntentKind
+	numericKinds     []domain.QueryNumericIntentKind
 }
 
 type finalSelectionCandidate struct {
@@ -42,18 +38,23 @@ type finalSelectionCandidate struct {
 	factTokens     map[string]struct{}
 	hasTimeSignal  bool
 	hasNumeric     bool
+	slotScore      float64
 }
 
-func selectFinalEvidenceAwareHits(query string, ordered []domain.Hit, pool []domain.Hit, cap int) []domain.Hit {
+func selectFinalEvidenceAwareHitsWithFeatures(features domain.QueryFeatures, ordered []domain.Hit, pool []domain.Hit, cap int) []domain.Hit {
 	if cap <= 0 || len(ordered) == 0 {
 		return ordered
 	}
-	return selectFinalHybridRerankHits(query, ordered, pool, cap)
+	return selectFinalHybridRerankHitsWithFeatures(features, ordered, pool, cap)
 }
 
 func selectFinalHybridRerankHits(query string, ordered []domain.Hit, pool []domain.Hit, cap int) []domain.Hit {
+	return selectFinalHybridRerankHitsWithFeatures(recallintent.ExtractFeatures(query), ordered, pool, cap)
+}
+
+func selectFinalHybridRerankHitsWithFeatures(features domain.QueryFeatures, ordered []domain.Hit, pool []domain.Hit, cap int) []domain.Hit {
 	candidatePool := mergeFinalSelectionPool(ordered, pool)
-	candidates := finalSelectionCandidates(query, candidatePool)
+	candidates := finalSelectionCandidates(features, candidatePool)
 	if len(candidates) <= cap {
 		return finalSelectionHits(candidates)
 	}
@@ -95,6 +96,7 @@ func selectFinalHybridRerankHits(query string, ordered []domain.Hit, pool []doma
 			}
 		}
 	}
+	selected = finalSelectionRescueAnswerSlot(candidates, selected, selectedCandidates, cap)
 	return selected
 }
 
@@ -110,8 +112,8 @@ func mergeFinalSelectionPool(ordered []domain.Hit, pool []domain.Hit) []domain.H
 	return out
 }
 
-func finalSelectionCandidates(query string, hits []domain.Hit) []finalSelectionCandidate {
-	queryFeatures := newFinalSelectionQueryFeatures(query)
+func finalSelectionCandidates(features domain.QueryFeatures, hits []domain.Hit) []finalSelectionCandidate {
+	queryFeatures := newFinalSelectionQueryFeatures(features)
 	maxScore := 0.0
 	for _, hit := range hits {
 		if hit.Score > maxScore {
@@ -146,15 +148,16 @@ func finalSelectionCandidates(query string, hits []domain.Hit) []finalSelectionC
 	return out
 }
 
-func newFinalSelectionQueryFeatures(query string) finalSelectionQueryFeatures {
-	anchor := time.Now()
+func newFinalSelectionQueryFeatures(features domain.QueryFeatures) finalSelectionQueryFeatures {
 	return finalSelectionQueryFeatures{
-		tokens:           tokenSet(tokenize.Detect(query).Tokenize(query)),
-		numeric:          numericTokens(query),
-		quoted:           quotedTokenSet(query),
-		proper:           properNounSet(query),
-		hasTimeSignal:    words.HasTemporalQuestionCue(query) || hasTimex(query, anchor),
-		hasNumericIntent: words.HasNumericIntentCue(query),
+		tokens:           features.Tokens,
+		numeric:          features.Numeric,
+		quoted:           features.Quoted,
+		proper:           features.Proper,
+		hasTimeSignal:    features.HasTimeSignal(),
+		hasNumericIntent: features.NumericIntent,
+		temporalKinds:    append([]domain.QueryTemporalIntentKind(nil), features.Temporal.IntentKind...),
+		numericKinds:     append([]domain.QueryNumericIntentKind(nil), features.NumericIntentKind...),
 	}
 }
 
@@ -168,14 +171,14 @@ func newFinalSelectionCandidate(queryFeatures finalSelectionQueryFeatures, hit d
 		}
 		combinedText += evidenceText
 	}
-	evidenceTokens := tokenSet(tokenize.Detect(evidenceText).Tokenize(evidenceText))
-	factTokens := tokenSet(tokenize.Detect(factText).Tokenize(factText))
-	evidenceNumeric := numericTokens(evidenceText)
-	factNumeric := numericTokens(factText)
-	evidenceQuoted := quotedTokenSet(evidenceText)
-	factQuoted := quotedTokenSet(factText)
-	evidenceProper := properNounSet(evidenceText)
-	factProper := properNounSet(factText)
+	evidenceTokens := recallintent.TextTokenSet(evidenceText)
+	factTokens := recallintent.TextTokenSet(factText)
+	evidenceNumeric := recallintent.NumericTokens(evidenceText)
+	factNumeric := recallintent.NumericTokens(factText)
+	evidenceQuoted := recallintent.QuotedTokenSet(evidenceText)
+	factQuoted := recallintent.QuotedTokenSet(factText)
+	evidenceProper := recallintent.ProperNounSet(evidenceText)
+	factProper := recallintent.ProperNounSet(factText)
 	hasNumeric := len(evidenceNumeric) > 0 || len(factNumeric) > 0
 	hasTime := false
 	if queryFeatures.hasTimeSignal {
@@ -183,6 +186,7 @@ func newFinalSelectionCandidate(queryFeatures finalSelectionQueryFeatures, hit d
 	}
 	evidenceScore := finalSelectionTextScore(queryFeatures, evidenceTokens, evidenceNumeric, evidenceQuoted, evidenceProper, hasTime, len(evidenceNumeric) > 0)
 	factScore := finalSelectionTextScore(queryFeatures, factTokens, factNumeric, factQuoted, factProper, hasTime, len(factNumeric) > 0)
+	slotScore := finalSelectionAnswerSlotScore(queryFeatures, hit, combinedText, hasTime, hasNumeric)
 	candidate := finalSelectionCandidate{
 		hit:            hit,
 		baseScore:      hit.Score,
@@ -194,6 +198,7 @@ func newFinalSelectionCandidate(queryFeatures finalSelectionQueryFeatures, hit d
 		factTokens:     factTokens,
 		hasTimeSignal:  hasTime,
 		hasNumeric:     hasNumeric,
+		slotScore:      slotScore,
 	}
 	candidate.score = finalSelectionScore(queryFeatures, candidate, maxHitScore)
 	return candidate
@@ -241,6 +246,9 @@ func finalSelectionScore(query finalSelectionQueryFeatures, candidate finalSelec
 	}
 	rankPrior := 1 / (1 + float64(candidate.queryRank)/30)
 	score := 0.42*candidate.evidenceScore + 0.35*candidate.factScore + 0.18*base + 0.05*rankPrior
+	if candidate.slotScore > 0 {
+		score += 0.08 * candidate.slotScore
+	}
 	if query.hasTimeSignal && candidate.hasTimeSignal {
 		score += 0.04
 	}
@@ -248,6 +256,117 @@ func finalSelectionScore(query finalSelectionQueryFeatures, candidate finalSelec
 		score += 0.04
 	}
 	return score
+}
+
+func finalSelectionAnswerSlotScore(query finalSelectionQueryFeatures, hit domain.Hit, text string, hasTime, hasNumeric bool) float64 {
+	score := 0.0
+	if query.hasTimeSignal {
+		if hasTime {
+			score += 0.45
+		}
+		if len(query.temporalKinds) > 0 && hasTime {
+			score += 0.05
+		}
+		if hit.Fact.ValidFrom != nil || hit.Fact.ValidTo != nil {
+			score += 0.25
+		}
+		if recallintent.HasTimex(text, time.Now()) {
+			score += 0.15
+		}
+		if hitHasSource(hit, "timeline") {
+			score += 0.10
+		}
+	}
+	if query.hasNumericIntent {
+		if hasNumeric {
+			score += 0.40
+		}
+		score += numericKindSlotScore(query.numericKinds, text)
+	}
+	if score > 1 {
+		return 1
+	}
+	return score
+}
+
+func numericKindSlotScore(kinds []domain.QueryNumericIntentKind, text string) float64 {
+	if len(kinds) == 0 {
+		return 0
+	}
+	lower := strings.ToLower(text)
+	score := 0.0
+	for _, kind := range kinds {
+		switch kind {
+		case domain.QueryNumericIntentPrice:
+			if strings.ContainsAny(lower, "$€£") || strings.Contains(lower, "price") || strings.Contains(lower, "cost") {
+				score += 0.18
+			}
+		case domain.QueryNumericIntentPercent:
+			if strings.Contains(lower, "%") || strings.Contains(lower, "percent") || strings.Contains(lower, "percentage") {
+				score += 0.18
+			}
+		case domain.QueryNumericIntentFrequency:
+			if strings.Contains(lower, "times") || strings.Contains(lower, "often") || strings.Contains(lower, "frequency") {
+				score += 0.15
+			}
+		case domain.QueryNumericIntentDuration:
+			if strings.Contains(lower, "day") || strings.Contains(lower, "week") || strings.Contains(lower, "month") || strings.Contains(lower, "year") || strings.Contains(lower, "hour") || strings.Contains(lower, "minute") {
+				score += 0.15
+			}
+		case domain.QueryNumericIntentAge:
+			if strings.Contains(lower, "old") || strings.Contains(lower, "age") || strings.Contains(lower, "years") {
+				score += 0.12
+			}
+		default:
+			score += 0.08
+		}
+	}
+	if score > 0.35 {
+		return 0.35
+	}
+	return score
+}
+
+func hitHasSource(hit domain.Hit, source string) bool {
+	for _, s := range hit.Sources {
+		if s == source {
+			return true
+		}
+	}
+	return false
+}
+
+func finalSelectionRescueAnswerSlot(candidates []finalSelectionCandidate, selected []domain.Hit, selectedCandidates []finalSelectionCandidate, cap int) []domain.Hit {
+	if cap <= 0 || len(selected) == 0 || len(selected) < cap {
+		return selected
+	}
+	best := -1
+	for i, cand := range candidates {
+		if cand.slotScore < 0.55 || finalSelectionCandidateDuplicate(cand, selectedCandidates) {
+			continue
+		}
+		if best < 0 || cand.slotScore > candidates[best].slotScore || (cand.slotScore == candidates[best].slotScore && cand.score > candidates[best].score) {
+			best = i
+		}
+	}
+	if best < 0 {
+		return selected
+	}
+	replace := -1
+	for i, cand := range selectedCandidates {
+		if cand.slotScore >= candidates[best].slotScore-0.15 || cand.evidenceScore >= 0.55 {
+			continue
+		}
+		if replace < 0 || cand.score < selectedCandidates[replace].score {
+			replace = i
+		}
+	}
+	if replace < 0 {
+		return selected
+	}
+	out := append([]domain.Hit(nil), selected...)
+	out[replace] = candidates[best].hit
+	return out
 }
 
 func betterFinalSelectionTieBreak(a, b finalSelectionCandidate) bool {
@@ -430,39 +549,6 @@ func intersects(a, b map[string]struct{}) bool {
 	return false
 }
 
-func tokenSet(tokens []string) map[string]struct{} {
-	out := make(map[string]struct{}, len(tokens))
-	for _, tok := range tokens {
-		tok = strings.TrimSpace(tok)
-		if tok == "" {
-			continue
-		}
-		out[tok] = struct{}{}
-	}
-	return out
-}
-
-func numericTokens(text string) map[string]struct{} {
-	out := map[string]struct{}{}
-	var cur strings.Builder
-	flush := func() {
-		if cur.Len() == 0 {
-			return
-		}
-		out[cur.String()] = struct{}{}
-		cur.Reset()
-	}
-	for _, r := range text {
-		if unicode.IsDigit(r) || unicode.IsNumber(r) {
-			cur.WriteRune(r)
-			continue
-		}
-		flush()
-	}
-	flush()
-	return out
-}
-
 func hitHasTimeSignal(hit domain.Hit, evidence string) bool {
 	if hit.Fact.ValidFrom != nil || hit.Fact.ValidTo != nil {
 		return true
@@ -477,58 +563,5 @@ func hitHasTimeSignal(hit domain.Hit, evidence string) bool {
 			return true
 		}
 	}
-	return hasTimex(evidence, time.Now())
-}
-
-func hasTimex(text string, anchor time.Time) bool {
-	if m, err := (timex.RegexParser{}).Parse(text, anchor); err == nil && m != nil {
-		return true
-	}
-	p, err := finalSelectionTimeParser()
-	if err != nil || p == nil {
-		return false
-	}
-	m, err := p.Parse(text, anchor)
-	return err == nil && m != nil
-}
-
-var finalSelectionTimeParser = sync.OnceValues(func() (timex.Parser, error) {
-	return whenadp.NewWithLanguages("en", "zh", "nl", "ru", "br")
-})
-
-func quotedTokenSet(text string) map[string]struct{} {
-	out := map[string]struct{}{}
-	for _, span := range quotes.ExtractSpans(text) {
-		for tok := range tokenSet(tokenize.Detect(span).Tokenize(span)) {
-			out[tok] = struct{}{}
-		}
-	}
-	return out
-}
-
-func properNounSet(text string) map[string]struct{} {
-	out := map[string]struct{}{}
-	for _, tok := range tokenize.SplitProperNouns(text) {
-		if !isTitleCased(tok) {
-			continue
-		}
-		out[strings.ToLower(tok)] = struct{}{}
-	}
-	return out
-}
-
-func isTitleCased(tok string) bool {
-	if len(tok) < 2 {
-		return false
-	}
-	runes := []rune(tok)
-	if !unicode.IsUpper(runes[0]) {
-		return false
-	}
-	for _, r := range runes[1:] {
-		if unicode.IsLower(r) {
-			return true
-		}
-	}
-	return false
+	return recallintent.HasTimex(evidence, time.Now())
 }

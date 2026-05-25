@@ -223,7 +223,7 @@ func TestDefaultStructurizer_PrefersContentRelativeTimeOverTurnTime(t *testing.T
 		t.Fatalf("expected relative content hint, metadata=%v", out.Metadata)
 	}
 	at, _ := out.Metadata[MetaValidFromAt].(string)
-	parsed, ok := parseAbsoluteTime(at)
+	parsed, ok := parseTimeHint(at, time.Time{}, false)
 	if !ok {
 		t.Fatalf("expected parsed valid_from_at, got hint=%q at=%q metadata=%v", hint, at, out.Metadata)
 	}
@@ -251,7 +251,7 @@ func TestDefaultStructurizer_CarriesParsedTimeFromCustomParser(t *testing.T) {
 		t.Fatalf("raw multilingual hint = %q, want 四年前", hint)
 	}
 	at, _ := out.Metadata[MetaValidFromAt].(string)
-	parsed, ok := parseAbsoluteTime(at)
+	parsed, ok := parseTimeHint(at, time.Time{}, false)
 	if !ok || !parsed.Equal(want) {
 		t.Fatalf("parsed multilingual time = %v ok=%v, want %v (metadata=%v)", parsed, ok, want, out.Metadata)
 	}

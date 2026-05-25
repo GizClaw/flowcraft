@@ -1,13 +1,14 @@
 package ingest
 
 import (
-	"regexp"
-	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/GizClaw/flowcraft/memory/recall/internal/domain"
 	"github.com/GizClaw/flowcraft/memory/recall/internal/port"
+	"github.com/GizClaw/flowcraft/memory/text/timex"
+	whenadp "github.com/GizClaw/flowcraft/memory/text/timex/adapter/when"
 )
 
 // Metadata keys consulted by the default port.TimeResolver. Callers
@@ -30,29 +31,6 @@ const (
 	ValidFromSourceContentRelative = "content_relative"
 	ValidFromSourceTimeFallback    = "source_time_fallback"
 )
-
-// SupportedRelativeTimes lists the tokens the default
-// TimeResolver understands. Useful for tests / extractor schemas.
-var SupportedRelativeTimes = []string{
-	"now",
-	"today",
-	"tomorrow",
-	"yesterday",
-	"next week",
-	"last week",
-	"next month",
-	"last month",
-	"next year",
-	"last year",
-	"<n> days ago",
-	"<n> weeks ago",
-	"<n> months ago",
-	"<n> years ago",
-	"in <n> days",
-	"in <n> weeks",
-	"in <n> months",
-	"in <n> years",
-}
 
 type passthroughTimeResolver struct{}
 
@@ -119,7 +97,7 @@ func parseAbsoluteFromMeta(meta map[string]any, key string) (time.Time, bool) {
 		}
 		return v, true
 	case string:
-		if t, ok := parseAbsoluteTime(strings.TrimSpace(v)); ok {
+		if t, ok := parseTimeHint(strings.TrimSpace(v), time.Time{}, false); ok {
 			return t, true
 		}
 	}
@@ -142,149 +120,64 @@ func parseRelativeFromMeta(meta map[string]any, key string, now time.Time) (time
 	if !ok {
 		return time.Time{}, false
 	}
-	return parseRelativeEnglish(s, now)
+	return parseTimeHint(s, now, true)
 }
 
-// parseRelativeEnglish handles the small English relative-time
-// subset spelled out in SupportedRelativeTimes, plus a handful of
-// absolute formats that the LLM extractor is asked to emit when a
-// snippet states a calendar date or datetime. Inputs are
-// trimmed + lower-cased for the relative table; absolute formats
-// are parsed against the original (case-preserving) string so
-// "January" / "Jan" survive. Unrecognised strings return ok=false.
-func parseRelativeEnglish(in string, now time.Time) (time.Time, bool) {
+func parseTimeHint(in string, now time.Time, allowRelative bool) (time.Time, bool) {
 	raw := strings.Trim(strings.TrimSpace(in), `"'.,;:!?()[]{} `)
 	if raw == "" {
 		return time.Time{}, false
 	}
-	if t, ok := parseAbsoluteTime(raw); ok {
-		return t, true
+	if cal := timex.ParseCalendar(raw); cal != nil {
+		return cal.Time.UTC(), true
 	}
-	token := strings.ToLower(strings.Join(strings.Fields(raw), " "))
-	switch token {
-	case "now":
-		return now, true
-	case "today":
-		return startOfDay(now), true
-	case "tomorrow":
-		return startOfDay(now).AddDate(0, 0, 1), true
-	case "yesterday":
-		return startOfDay(now).AddDate(0, 0, -1), true
-	case "next week":
-		return startOfDay(now).AddDate(0, 0, 7), true
-	case "last week":
-		return startOfDay(now).AddDate(0, 0, -7), true
-	case "next month":
-		return startOfDay(now).AddDate(0, 1, 0), true
-	case "last month":
-		return startOfDay(now).AddDate(0, -1, 0), true
-	case "next year":
-		return startOfDay(now).AddDate(1, 0, 0), true
-	case "last year":
-		return startOfDay(now).AddDate(-1, 0, 0), true
+	parsers := timeHintParsers()
+	if !allowRelative {
+		parsers = nil
 	}
-	if t, ok := parseRelativeQuantity(token, now); ok {
-		return t, true
-	}
-	return time.Time{}, false
-}
-
-var relativeQuantityRE = regexp.MustCompile(`^(?:(in) )?([a-z]+|\d+) (day|days|week|weeks|month|months|year|years)(?: (ago|from now))?$`)
-
-func parseRelativeQuantity(token string, now time.Time) (time.Time, bool) {
-	m := relativeQuantityRE.FindStringSubmatch(token)
-	if m == nil {
+	expr, err := timex.Extract(raw, now, parsers...)
+	if err != nil || expr == nil || expr.Time.IsZero() {
 		return time.Time{}, false
 	}
-	n, ok := parseSmallEnglishNumber(m[2])
-	if !ok || n == 0 {
-		return time.Time{}, false
-	}
-	direction := 1
-	if m[4] == "ago" {
-		direction = -1
-	}
-	unit := m[3]
-	base := startOfDay(now)
-	switch unit {
-	case "day", "days":
-		return base.AddDate(0, 0, direction*n), true
-	case "week", "weeks":
-		return base.AddDate(0, 0, direction*n*7), true
-	case "month", "months":
-		return base.AddDate(0, direction*n, 0), true
-	case "year", "years":
-		return base.AddDate(direction*n, 0, 0), true
-	default:
-		return time.Time{}, false
-	}
-}
-
-func parseSmallEnglishNumber(s string) (int, bool) {
-	if n, err := strconv.Atoi(s); err == nil {
-		return n, true
-	}
-	switch s {
-	case "a", "an", "one":
-		return 1, true
-	case "two":
-		return 2, true
-	case "three":
-		return 3, true
-	case "four":
-		return 4, true
-	case "five":
-		return 5, true
-	case "six":
-		return 6, true
-	case "seven":
-		return 7, true
-	case "eight":
-		return 8, true
-	case "nine":
-		return 9, true
-	case "ten":
-		return 10, true
-	case "eleven":
-		return 11, true
-	case "twelve":
-		return 12, true
-	default:
-		return 0, false
-	}
-}
-
-// absoluteTimeLayouts are the calendar shapes the resolver accepts
-// alongside the relative token table. Order matters: more specific
-// layouts come first so an RFC3339 timestamp is not mis-parsed as a
-// bare date. The set is intentionally small — anything beyond this
-// belongs to a locale-aware time library, not the canonical resolver.
-var absoluteTimeLayouts = []string{
-	time.RFC3339Nano,
-	time.RFC3339,
-	"2006-01-02T15:04:05",
-	"2006-01-02 15:04:05",
-	"2006-01-02 15:04",
-	"2006-01-02",
-	"2006/01/02",
-	"January 2, 2006",
-	"Jan 2, 2006",
-	"2 January 2006",
-	"2 Jan 2006",
-}
-
-// parseAbsoluteTime returns the first absolute-format match against
-// the configured layouts. Returns ok=false when no layout parses.
-func parseAbsoluteTime(raw string) (time.Time, bool) {
-	for _, layout := range absoluteTimeLayouts {
-		if t, err := time.Parse(layout, raw); err == nil {
-			return t, true
+	if expr.Relative {
+		if !allowRelative {
+			return time.Time{}, false
 		}
+		if strings.EqualFold(strings.TrimSpace(expr.Text), "now") {
+			return expr.Time, true
+		}
+		return startOfDay(expr.Time), true
 	}
-	return time.Time{}, false
+	return expr.Time.UTC(), true
 }
+
+func timeHintParsers() []timex.Parser {
+	parsers, err := timeHintParserSet()
+	if err != nil {
+		return nil
+	}
+	return parsers
+}
+
+var timeHintParserSet = sync.OnceValues(func() ([]timex.Parser, error) {
+	var out []timex.Parser
+	if p, err := whenadp.New(); err == nil {
+		out = append(out, p)
+	} else {
+		return nil, err
+	}
+	if p, err := whenadp.NewWithLanguages("zh"); err == nil {
+		out = append(out, p)
+	} else {
+		return nil, err
+	}
+	return out, nil
+})
 
 func startOfDay(t time.Time) time.Time {
+	if t.IsZero() {
+		return t
+	}
 	y, m, d := t.Date()
 	return time.Date(y, m, d, 0, 0, 0, 0, t.Location())
 }

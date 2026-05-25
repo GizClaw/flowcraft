@@ -24,6 +24,7 @@ type PlannerInput struct {
 	Object        string
 	Kinds         []domain.FactKind
 	TimeRange     domain.TimeRange
+	Features      domain.QueryFeatures
 	Limit         int
 	GraphEnabled  bool
 	GraphHops     int

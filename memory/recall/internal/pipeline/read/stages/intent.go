@@ -55,6 +55,7 @@ func (s *Intent) Run(ctx context.Context, state *read.ReadState) (diagnostic.Sta
 		Object:    compiled.Object,
 		Kinds:     append([]domain.FactKind(nil), compiled.Kinds...),
 		TimeRange: compiled.TimeRange,
+		Features:  compiled.Features,
 		Scope:     state.Scope,
 		Limit:     limit,
 	}

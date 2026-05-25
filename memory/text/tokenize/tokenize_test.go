@@ -113,6 +113,30 @@ func TestSimple_ExpandedStopWords(t *testing.T) {
 	}
 }
 
+func TestSimpleMultilingualStopwordsAndStemming(t *testing.T) {
+	tok := tokenize.NewMultilingual()
+	tokens := tok.Tokenize("les opciones running кошки went")
+	if contains(tokens, "les") {
+		t.Fatalf("expected French stopword to be filtered, got %v", tokens)
+	}
+	for _, want := range []string{"opcion", "run", "кошк", "go"} {
+		if !contains(tokens, want) {
+			t.Fatalf("expected %q in multilingual tokens, got %v", want, tokens)
+		}
+	}
+}
+
+func TestSimpleLanguageSpecificLemmaDoesNotLeakEnglish(t *testing.T) {
+	tok := &tokenize.Simple{
+		Stopwords:     stopword.NewSet(),
+		StemLanguages: []string{"spanish"},
+	}
+	tokens := tok.Tokenize("went")
+	if !contains(tokens, "went") || contains(tokens, "go") {
+		t.Fatalf("Spanish-only tokenization should not apply English irregular lemma, got %v", tokens)
+	}
+}
+
 // TestSplitWords covers the §2.3 helper: raw word boundaries with
 // case preserved, no stop-word filtering, no morphology folding.
 // This is the primitive callers reach for when they need NER-grade
@@ -151,4 +175,13 @@ func sliceEqual(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+func contains(tokens []string, want string) bool {
+	for _, token := range tokens {
+		if token == want {
+			return true
+		}
+	}
+	return false
 }

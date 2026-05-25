@@ -8,11 +8,10 @@ import (
 
 	"github.com/GizClaw/flowcraft/memory/recall/internal/domain"
 	"github.com/GizClaw/flowcraft/memory/recall/internal/domain/diagnostic"
+	recallintent "github.com/GizClaw/flowcraft/memory/recall/internal/intent"
 	"github.com/GizClaw/flowcraft/memory/recall/internal/pipeline"
 	"github.com/GizClaw/flowcraft/memory/recall/internal/pipeline/read"
 	"github.com/GizClaw/flowcraft/memory/recall/internal/port"
-	"github.com/GizClaw/flowcraft/memory/recall/internal/words"
-	"github.com/GizClaw/flowcraft/memory/text/tokenize"
 )
 
 // BuildHits converts ranked ContextItems into Hits and optionally
@@ -61,11 +60,11 @@ func (s *BuildHits) Run(ctx context.Context, state *read.ReadState) (diagnostic.
 	if state.Plan != nil && state.Plan.TotalCap > 0 {
 		finalSelectionStarted := time.Now()
 		poolHits := hitsFromItems(finalSelectionPool(state))
-		hits = selectFinalEvidenceAwareHits(state.Query.Text, hits, poolHits, state.Plan.TotalCap)
+		hits = selectFinalEvidenceAwareHitsWithFeatures(queryFeaturesFromState(state), hits, poolHits, state.Plan.TotalCap)
 		detail.FinalSelectionLatency = time.Since(finalSelectionStarted)
 		state.Hits = hits
 	}
-	hits = groundHitsWithSupportingEvidence(state.Query.Text, hits)
+	hits = groundHitsWithSupportingEvidence(queryFeaturesFromState(state), hits)
 	state.Hits = hits
 	detail.Count = len(hits)
 	if captureSnapshots {
@@ -112,23 +111,41 @@ type groundingQueryFeatures struct {
 	hasNumericIntent bool
 }
 
-func groundHitsWithSupportingEvidence(query string, hits []domain.Hit) []domain.Hit {
+func queryFeaturesFromState(state *read.ReadState) domain.QueryFeatures {
+	if state != nil && state.Intent != nil && !state.Intent.Features.IsZero() {
+		return state.Intent.Features
+	}
+	if state != nil && state.Plan != nil && !state.Plan.Intent.Features.IsZero() {
+		return state.Plan.Intent.Features
+	}
+	if state != nil {
+		return recallintent.ExtractFeatures(state.Query.Text)
+	}
+	return domain.QueryFeatures{}
+}
+
+func groundHitsWithSupportingEvidence(features domain.QueryFeatures, hits []domain.Hit) []domain.Hit {
 	if len(hits) == 0 {
 		return hits
 	}
 	out := make([]domain.Hit, len(hits))
 	for i, hit := range hits {
-		hit.Evidence = selectGroundingEvidence(query, hit.Evidence, hit.Fact.EvidenceRefs)
+		hit.Evidence = selectGroundingEvidenceWithFeatures(features, hit.Evidence, hit.Fact.EvidenceRefs)
 		out[i] = hit
 	}
 	return out
 }
 
 func selectGroundingEvidence(query string, selected []domain.EvidenceRef, refs []domain.EvidenceRef) []domain.EvidenceRef {
-	out := make([]domain.EvidenceRef, 0, maxHitEvidenceRefs)
+	return selectGroundingEvidenceWithFeatures(recallintent.ExtractFeatures(query), selected, refs)
+}
+
+func selectGroundingEvidenceWithFeatures(features domain.QueryFeatures, selected []domain.EvidenceRef, refs []domain.EvidenceRef) []domain.EvidenceRef {
+	limit := maxGroundingEvidenceRefs(features)
+	out := make([]domain.EvidenceRef, 0, limit)
 	seen := map[string]struct{}{}
 	appendRef := func(ref domain.EvidenceRef) {
-		if len(out) >= maxHitEvidenceRefs || strings.TrimSpace(ref.Text) == "" {
+		if len(out) >= limit || strings.TrimSpace(ref.Text) == "" {
 			return
 		}
 		key := evidenceRefKey(ref)
@@ -143,10 +160,10 @@ func selectGroundingEvidence(query string, selected []domain.EvidenceRef, refs [
 	for _, ref := range selected {
 		appendRef(ref)
 	}
-	if len(out) >= maxHitEvidenceRefs || len(refs) == 0 {
+	if len(out) >= limit || len(refs) == 0 {
 		return out
 	}
-	queryFeatures := newGroundingQueryFeatures(query)
+	queryFeatures := newGroundingQueryFeatures(features)
 	if len(queryFeatures.tokens) == 0 && len(queryFeatures.numeric) == 0 && len(queryFeatures.proper) == 0 && !queryFeatures.hasTimeSignal {
 		return out
 	}
@@ -183,13 +200,20 @@ func selectGroundingEvidence(query string, selected []domain.EvidenceRef, refs [
 	return out
 }
 
-func newGroundingQueryFeatures(query string) groundingQueryFeatures {
+func maxGroundingEvidenceRefs(features domain.QueryFeatures) int {
+	if features.HasTimeSignal() || features.NumericIntent {
+		return maxHitEvidenceRefs + 1
+	}
+	return maxHitEvidenceRefs
+}
+
+func newGroundingQueryFeatures(features domain.QueryFeatures) groundingQueryFeatures {
 	return groundingQueryFeatures{
-		tokens:           groundingTokenSet(query),
-		numeric:          numericTokens(query),
-		proper:           properNounSet(query),
-		hasTimeSignal:    words.HasTemporalQuestionCue(query) || hasTimex(query, time.Now()),
-		hasNumericIntent: words.HasNumericIntentCue(query),
+		tokens:           features.Tokens,
+		numeric:          features.Numeric,
+		proper:           features.Proper,
+		hasTimeSignal:    features.HasTimeSignal(),
+		hasNumericIntent: features.NumericIntent,
 	}
 }
 
@@ -206,9 +230,9 @@ func groundingEvidenceScore(query groundingQueryFeatures, ref domain.EvidenceRef
 	if len(query.tokens) > 0 {
 		coverage = float64(matched) / float64(len(query.tokens))
 	}
-	numericMatch := intersects(query.numeric, numericTokens(text))
-	timeMatch := query.hasTimeSignal && (!ref.Timestamp.IsZero() || hasTimex(text, time.Now()))
-	properMatch := intersects(query.proper, properNounSet(text))
+	numericMatch := intersects(query.numeric, recallintent.NumericTokens(text))
+	timeMatch := query.hasTimeSignal && (!ref.Timestamp.IsZero() || recallintent.HasTimex(text, time.Now()))
+	properMatch := intersects(query.proper, recallintent.ProperNounSet(text))
 	if len(query.tokens) == 0 && (numericMatch || timeMatch || (properMatch && !query.hasTimeSignal && !query.hasNumericIntent)) {
 		score := 0.40
 		if numericMatch {
@@ -245,7 +269,7 @@ func groundingEvidenceScore(query groundingQueryFeatures, ref domain.EvidenceRef
 }
 
 func groundingTokenSet(text string) map[string]struct{} {
-	return tokenSet(tokenize.Detect(text).Tokenize(text))
+	return recallintent.TextTokenSet(text)
 }
 
 func evidenceRefKey(ref domain.EvidenceRef) string {

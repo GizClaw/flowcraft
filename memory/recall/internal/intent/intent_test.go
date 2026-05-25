@@ -65,6 +65,9 @@ func TestRuleBased_InferTemporalIntent(t *testing.T) {
 	if !slices.Equal(out.Kinds, wantKinds) {
 		t.Fatalf("kinds = %v, want %v", out.Kinds, wantKinds)
 	}
+	if !out.Features.Temporal.HasIntent || !out.Features.HasTimeSignal() {
+		t.Fatalf("features should carry temporal intent: %+v", out.Features.Temporal)
+	}
 }
 
 func TestRuleBased_InferDayTimeRangeFromMonthDayYear(t *testing.T) {
@@ -78,6 +81,9 @@ func TestRuleBased_InferDayTimeRangeFromMonthDayYear(t *testing.T) {
 	wantTo := time.Date(2023, time.October, 14, 0, 0, 0, 0, time.UTC)
 	if !out.TimeRange.From.Equal(wantFrom) || !out.TimeRange.To.Equal(wantTo) {
 		t.Fatalf("time range = %s..%s, want %s..%s", out.TimeRange.From, out.TimeRange.To, wantFrom, wantTo)
+	}
+	if !out.Features.Temporal.HasExplicitDate {
+		t.Fatalf("features should carry explicit date: %+v", out.Features.Temporal)
 	}
 }
 
@@ -109,6 +115,9 @@ func TestRuleBased_PreservesExplicitTimeRange(t *testing.T) {
 	}
 	if !out.TimeRange.From.Equal(explicit.From) || !out.TimeRange.To.Equal(explicit.To) {
 		t.Fatalf("time range = %+v, want explicit %+v", out.TimeRange, explicit)
+	}
+	if out.Features.Temporal.TimeRange.IsZero() {
+		t.Fatal("features should still describe query calendar expression")
 	}
 }
 

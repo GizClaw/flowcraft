@@ -13,6 +13,8 @@ import (
 //
 //   - ISO 8601 date: 2026-05-20
 //   - ISO 8601 timestamp: 2026-05-20T14:30:00Z (Z or ±HH:MM)
+//   - Local timestamp: 2026-05-20 14:30:00 or 2026-05-20T14:30
+//   - Slash ISO date: 2026/05/20
 //   - US slash date: 5/20/2026 or 05/20/2026
 //
 // Relative phrases ("yesterday", "next Tuesday") are NOT handled
@@ -43,7 +45,17 @@ func (RegexParser) Parse(text string, _ time.Time) (*Match, error) {
 	} else if m != nil {
 		return m, nil
 	}
+	if m, err := matchLocalTimestamp(text); err != nil {
+		return nil, err
+	} else if m != nil {
+		return m, nil
+	}
 	if m, err := matchISO8601Date(text); err != nil {
+		return nil, err
+	} else if m != nil {
+		return m, nil
+	}
+	if m, err := matchSlashISODate(text); err != nil {
 		return nil, err
 	} else if m != nil {
 		return m, nil
@@ -58,7 +70,9 @@ func (RegexParser) Parse(text string, _ time.Time) (*Match, error) {
 
 var (
 	iso8601TimestampRE = regexp.MustCompile(`\b(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2}))\b`)
+	localTimestampRE   = regexp.MustCompile(`\b(\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}(?::\d{2})?)\b`)
 	iso8601DateRE      = regexp.MustCompile(`\b(\d{4}-\d{2}-\d{2})\b`)
+	slashISODateRE     = regexp.MustCompile(`\b(\d{4})/(\d{1,2})/(\d{1,2})\b`)
 	usSlashDateRE      = regexp.MustCompile(`\b(\d{1,2})/(\d{1,2})/(\d{4})\b`)
 )
 
@@ -75,6 +89,20 @@ func matchISO8601Timestamp(text string) (*Match, error) {
 	return &Match{Time: t.UTC(), Text: raw, Index: loc[2]}, nil
 }
 
+func matchLocalTimestamp(text string) (*Match, error) {
+	loc := localTimestampRE.FindStringSubmatchIndex(text)
+	if loc == nil {
+		return nil, nil
+	}
+	raw := text[loc[2]:loc[3]]
+	for _, layout := range []string{"2006-01-02 15:04:05", "2006-01-02 15:04", "2006-01-02T15:04:05", "2006-01-02T15:04"} {
+		if t, err := time.ParseInLocation(layout, raw, time.UTC); err == nil {
+			return &Match{Time: t.UTC(), Text: raw, Index: loc[2]}, nil
+		}
+	}
+	return nil, fmt.Errorf("timex: parse local timestamp %q", raw)
+}
+
 func matchISO8601Date(text string) (*Match, error) {
 	loc := iso8601DateRE.FindStringSubmatchIndex(text)
 	if loc == nil {
@@ -86,6 +114,25 @@ func matchISO8601Date(text string) (*Match, error) {
 		return nil, fmt.Errorf("timex: parse ISO date %q: %w", raw, err)
 	}
 	return &Match{Time: t, Text: raw, Index: loc[2]}, nil
+}
+
+func matchSlashISODate(text string) (*Match, error) {
+	loc := slashISODateRE.FindStringSubmatchIndex(text)
+	if loc == nil {
+		return nil, nil
+	}
+	raw := text[loc[0]:loc[1]]
+	year, _ := strconv.Atoi(text[loc[2]:loc[3]])
+	month, _ := strconv.Atoi(text[loc[4]:loc[5]])
+	day, _ := strconv.Atoi(text[loc[6]:loc[7]])
+	if month < 1 || month > 12 || day < 1 || day > 31 {
+		return nil, fmt.Errorf("timex: invalid slash ISO date %q", raw)
+	}
+	return &Match{
+		Time:  time.Date(year, time.Month(month), day, 0, 0, 0, 0, time.UTC),
+		Text:  raw,
+		Index: loc[0],
+	}, nil
 }
 
 func matchUSSlashDate(text string) (*Match, error) {

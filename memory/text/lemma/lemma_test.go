@@ -90,6 +90,18 @@ func TestLemmatize_NoOpForUnknownWords(t *testing.T) {
 	}
 }
 
+func TestLemmatizeLangScopesEnglishIrregulars(t *testing.T) {
+	if got := lemma.LemmatizeLang("went", "english"); got != "go" {
+		t.Fatalf("English LemmatizeLang = %q, want go", got)
+	}
+	if got := lemma.LemmatizeLang("went", "spanish"); got != "went" {
+		t.Fatalf("Spanish LemmatizeLang should not apply English irregulars, got %q", got)
+	}
+	if got := lemma.LemmatizeEnglish("children"); got != "child" {
+		t.Fatalf("LemmatizeEnglish = %q, want child", got)
+	}
+}
+
 // TestLemmatize_TokenizerIntegration verifies that the SimpleTokenizer
 // path emits the lemmatized + stemmed token, end to end, so callers
 // querying BM25 with "what did Alice buy last week" find a fact

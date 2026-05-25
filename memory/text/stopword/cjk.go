@@ -34,3 +34,14 @@ var cjkStopChars = map[rune]bool{
 func IsCJKChar(r rune) bool {
 	return cjkStopChars[r]
 }
+
+// CJKSet returns a writable [Set] seeded with the package's CJK
+// stop-character baseline. Each rune is stored as a one-rune string so callers
+// can compose it with word-level stop-word sets.
+func CJKSet() Set {
+	s := make(Set, len(cjkStopChars))
+	for r := range cjkStopChars {
+		s[string(r)] = struct{}{}
+	}
+	return s
+}

@@ -51,6 +51,29 @@ func TestIsCJKChar_Misses(t *testing.T) {
 	}
 }
 
+func TestMultilingualStopwords(t *testing.T) {
+	for _, w := range []string{"cuándo", "où", "wann", "quando", "wanneer", "когда"} {
+		if !stopword.IsMultilingual(w) {
+			t.Errorf("%q should be in multilingual stop-word set", w)
+		}
+	}
+	if stopword.IsMultilingual("alice") {
+		t.Error("specific entity should not be multilingual stop-word")
+	}
+	if !stopword.MultilingualSet().Contains("the") || !stopword.MultilingualSet().Contains("когда") {
+		t.Error("MultilingualSet should include English and multilingual entries")
+	}
+	if !stopword.CJKSet().Contains("的") || stopword.CJKSet().Contains("the") {
+		t.Error("CJKSet should contain CJK stop characters, not English words")
+	}
+	if stopword.MultilingualOnlySet().Contains("the") || stopword.MultilingualOnlySet().Contains("will") {
+		t.Error("MultilingualOnlySet should not include English baseline entries")
+	}
+	if !stopword.MultilingualOnlySet().Contains("的") || !stopword.MultilingualOnlySet().Contains("когда") {
+		t.Error("MultilingualOnlySet should include CJK and non-English entries")
+	}
+}
+
 // TestEnglishSet_IsCopy guarantees that successive EnglishSet
 // calls return independent Sets — mutating one must not affect
 // the package-level baseline or other consumers.

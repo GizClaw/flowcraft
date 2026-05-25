@@ -493,6 +493,10 @@ func buildAnswerBody(q dataset.Question, hits []runners.Hit) string {
 	}
 	b.WriteString("QUESTION: ")
 	b.WriteString(q.Query)
+	if hints := buildAnswerHints(q.Query, hits); hints != "" {
+		b.WriteString("\n\n")
+		b.WriteString(hints)
+	}
 	b.WriteString("\n\nMEMORIES:\n")
 	if len(hits) == 0 {
 		b.WriteString("(none)\n")

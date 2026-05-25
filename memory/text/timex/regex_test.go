@@ -41,6 +41,34 @@ func TestRegexParser_ISO8601Timestamp(t *testing.T) {
 	}
 }
 
+func TestRegexParser_LocalTimestamp(t *testing.T) {
+	m, err := timex.RegexParser{}.Parse("event at 2026-05-20 14:30:00 details", time.Now())
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if m == nil {
+		t.Fatal("expected match")
+	}
+	want := time.Date(2026, 5, 20, 14, 30, 0, 0, time.UTC)
+	if !m.Time.Equal(want) {
+		t.Errorf("Time = %v, want %v", m.Time, want)
+	}
+}
+
+func TestRegexParser_SlashISODate(t *testing.T) {
+	m, err := timex.RegexParser{}.Parse("2026/05/20 meeting", time.Now())
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if m == nil {
+		t.Fatal("expected match")
+	}
+	want := time.Date(2026, 5, 20, 0, 0, 0, 0, time.UTC)
+	if !m.Time.Equal(want) {
+		t.Errorf("Time = %v, want %v", m.Time, want)
+	}
+}
+
 func TestRegexParser_USSlash(t *testing.T) {
 	m, err := timex.RegexParser{}.Parse("5/20/2026 meeting", time.Now())
 	if err != nil {

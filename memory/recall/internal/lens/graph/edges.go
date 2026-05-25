@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/memory/recall/internal/domain"
+	"github.com/GizClaw/flowcraft/memory/recall/internal/words"
 )
 
 // Defaults bound deterministic edge generation (docs §8.4).
@@ -167,17 +168,5 @@ func canonicalNode(s string) string {
 }
 
 func isCommonNoun(node string) bool {
-	_, ok := commonNouns[node]
-	return ok
-}
-
-var commonNouns = map[string]struct{}{
-	"user": {}, "users": {}, "person": {}, "people": {},
-	"someone": {}, "somebody": {}, "anyone": {}, "everyone": {},
-	"thing": {}, "things": {}, "something": {}, "anything": {},
-	"place": {}, "places": {}, "somewhere": {}, "anywhere": {},
-	"time": {}, "day": {}, "week": {}, "month": {}, "year": {},
-	"today": {}, "tomorrow": {}, "yesterday": {},
-	"they": {}, "them": {}, "their": {}, "it": {}, "its": {},
-	"he": {}, "she": {}, "we": {}, "i": {}, "you": {},
+	return words.IsCommonGraphNoun(node)
 }

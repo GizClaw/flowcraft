@@ -102,12 +102,13 @@ func (s *Source) Query(ctx context.Context, plan domain.QueryPlan) domain.Source
 			continue
 		}
 		candidates = append(candidates, domain.Candidate{
-			FactID:   factID,
-			Scope:    scope,
-			Source:   s.Name(),
-			Rank:     i + 1,
-			Score:    hit.Score,
-			Metadata: retrievalCandidateMeta(hit.Doc.Metadata),
+			FactID:      factID,
+			Scope:       scope,
+			Source:      s.Name(),
+			Rank:        i + 1,
+			Score:       hit.Score,
+			EvidenceIDs: retrievalCandidateEvidenceIDs(hit.Doc.Metadata),
+			Metadata:    retrievalCandidateMeta(hit.Doc.Metadata),
 		})
 	}
 
@@ -124,8 +125,12 @@ func (s *Source) Query(ctx context.Context, plan domain.QueryPlan) domain.Source
 // because the embedder is offline.
 func retrievalCandidateMeta(docMeta map[string]any) map[string]any {
 	meta := map[string]any{
-		"fact_kind": docMeta[domain.MetaFactKind],
-		"merge_key": docMeta[domain.MetaMergeKey],
+		"fact_kind":        docMeta[domain.MetaFactKind],
+		"merge_key":        docMeta[domain.MetaMergeKey],
+		DocKindMetadataKey: docMeta[DocKindMetadataKey],
+	}
+	if v, ok := docMeta[EvidenceIDMetadataKey]; ok {
+		meta[EvidenceIDMetadataKey] = v
 	}
 	if v, ok := docMeta[domain.MetaReinforcement]; ok {
 		meta[domain.MetaReinforcement] = v
@@ -134,6 +139,15 @@ func retrievalCandidateMeta(docMeta map[string]any) map[string]any {
 		meta[domain.MetaPenalty] = v
 	}
 	return meta
+}
+
+func retrievalCandidateEvidenceIDs(docMeta map[string]any) []string {
+	if raw, ok := docMeta[EvidenceIDMetadataKey]; ok {
+		if id, ok := raw.(string); ok && strings.TrimSpace(id) != "" {
+			return []string{strings.TrimSpace(id)}
+		}
+	}
+	return nil
 }
 
 func (s *Source) embedQuery(ctx context.Context, text string) []float32 {

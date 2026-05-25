@@ -133,6 +133,7 @@ func (WeightedRRF) Fuse(_ context.Context, results []domain.SourceResult, opts p
 			}
 			if existing, ok := agg[c.FactID]; ok {
 				existing.Score += contribution
+				existing.EvidenceIDs = mergeEvidenceIDs(existing.EvidenceIDs, c.EvidenceIDs)
 				// Track multi-source membership in metadata so the
 				// trace can surface why a fact ranked highly.
 				appendSourceMeta(existing, res.Source)
@@ -169,6 +170,30 @@ func (WeightedRRF) Fuse(_ context.Context, results []domain.SourceResult, opts p
 	}
 
 	return fused, drops, nil
+}
+
+func mergeEvidenceIDs(existing, incoming []string) []string {
+	if len(incoming) == 0 {
+		return existing
+	}
+	out := append([]string(nil), existing...)
+	seen := make(map[string]struct{}, len(out)+len(incoming))
+	for _, id := range out {
+		if id != "" {
+			seen[id] = struct{}{}
+		}
+	}
+	for _, id := range incoming {
+		if id == "" {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		out = append(out, id)
+	}
+	return out
 }
 
 func capWithSourceFloors(sorted []domain.Candidate, totalCap int, floorIDs map[string]struct{}) ([]domain.Candidate, []domain.Candidate) {

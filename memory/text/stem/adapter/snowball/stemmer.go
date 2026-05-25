@@ -24,6 +24,8 @@
 package snowball
 
 import (
+	"strings"
+
 	"github.com/kljensen/snowball"
 )
 
@@ -63,5 +65,53 @@ func Stem(word string) string {
 // stem stop words (the default in most search stacks), false to
 // preserve them as-is.
 func StemLang(word, lang string, stemStopWords bool) (string, error) {
-	return snowball.Stem(word, lang, stemStopWords)
+	return snowball.Stem(word, normalizeLanguage(lang), stemStopWords)
+}
+
+// StemFirst returns the shortest successful stem from langs that changes word.
+// Unsupported languages are skipped so callers can pass a broad preference list
+// without making tokenisation fail at runtime. If no language changes word, the
+// original input is returned.
+func StemFirst(word string, langs ...string) string {
+	word = strings.ToLower(word)
+	if word == "" {
+		return ""
+	}
+	best := ""
+	for _, lang := range langs {
+		stemmed, err := snowball.Stem(word, normalizeLanguage(lang), false)
+		if err != nil || stemmed == "" {
+			continue
+		}
+		if stemmed != word {
+			if best == "" || len([]rune(stemmed)) < len([]rune(best)) {
+				best = stemmed
+			}
+		}
+	}
+	if best != "" {
+		return best
+	}
+	return word
+}
+
+func normalizeLanguage(lang string) string {
+	switch strings.ToLower(strings.TrimSpace(lang)) {
+	case "en", "english":
+		return "english"
+	case "es", "spanish":
+		return "spanish"
+	case "fr", "french":
+		return "french"
+	case "ru", "russian":
+		return "russian"
+	case "sv", "swedish":
+		return "swedish"
+	case "no", "norwegian":
+		return "norwegian"
+	case "hu", "hungarian":
+		return "hungarian"
+	default:
+		return lang
+	}
 }

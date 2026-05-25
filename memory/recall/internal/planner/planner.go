@@ -128,6 +128,7 @@ func (r *RuleBased) Plan(_ context.Context, input port.PlannerInput) (domain.Que
 		Object:       input.Object,
 		Kinds:        append([]domain.FactKind(nil), input.Kinds...),
 		TimeRange:    input.TimeRange,
+		Features:     input.Features,
 		Scope:        input.Scope,
 		Limit:        limit,
 		GraphEnabled: input.GraphEnabled && r.GraphEnabled,

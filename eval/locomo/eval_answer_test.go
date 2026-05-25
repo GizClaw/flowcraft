@@ -22,6 +22,9 @@ func TestBuildAnswerBodyAnnotatesMemoryRank(t *testing.T) {
 	for _, want := range []string{
 		"ASKED_AT: 2023-07-06",
 		"QUESTION: When did Alice go hiking?",
+		"ANSWER_HINTS:",
+		"likely_when=#1:2023-07-03",
+		"relative_candidates=#1:the week before 6 July 2023",
 		"[#1] [time: 2023-07-03] Alice went hiking the week before 6 July 2023.",
 		"[time: 2023-07-03] Alice went hiking the week before 6 July 2023.",
 	} {
@@ -32,6 +35,22 @@ func TestBuildAnswerBodyAnnotatesMemoryRank(t *testing.T) {
 	for _, unwanted := range []string{"kind=event", "sources=retrieval", "evidence=conv-1:D1:3"} {
 		if strings.Contains(body, unwanted) {
 			t.Fatalf("body should not include provenance label %q:\n%s", unwanted, body)
+		}
+	}
+}
+
+func TestBuildAnswerBodyNumericHints(t *testing.T) {
+	body := buildAnswerBody(dataset.Question{
+		Query: "How many times did Alice go to the beach?",
+	}, []runners.Hit{{
+		Content: "Alice went to the beach 3 times in 2023.",
+	}})
+	for _, want := range []string{
+		"ANSWER_HINTS:",
+		"numeric_candidates=#1:3 times",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("body missing %q:\n%s", want, body)
 		}
 	}
 }

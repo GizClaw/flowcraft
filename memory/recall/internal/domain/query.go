@@ -56,6 +56,7 @@ type QueryIntent struct {
 	Object    string
 	Kinds     []FactKind
 	TimeRange TimeRange
+	Features  QueryFeatures
 	Scope     Scope
 	Limit     int
 
@@ -64,6 +65,73 @@ type QueryIntent struct {
 	GraphEnabled bool
 	// GraphHops bounds BFS expansion; zero means the graph default.
 	GraphHops int
+}
+
+// QueryFeatures is the shared query-understanding result produced by
+// IntentCompiler. Planner, rank, final selection, and grounding consume this
+// instead of re-parsing the raw query independently.
+type QueryFeatures struct {
+	Tokens  map[string]struct{}
+	Numeric map[string]struct{}
+	Quoted  map[string]struct{}
+	Proper  map[string]struct{}
+
+	Temporal          QueryTemporalFeatures
+	NumericIntent     bool
+	NumericIntentKind []QueryNumericIntentKind
+}
+
+// HasTimeSignal reports whether the query asks for or contains a time signal.
+func (f QueryFeatures) HasTimeSignal() bool {
+	return f.Temporal.HasIntent ||
+		f.Temporal.HasExplicitDate ||
+		f.Temporal.HasRelativeExpression ||
+		f.Temporal.HasDurationIntent ||
+		!f.Temporal.TimeRange.IsZero()
+}
+
+// IsZero reports whether no query features were populated.
+func (f QueryFeatures) IsZero() bool {
+	return len(f.Tokens) == 0 &&
+		len(f.Numeric) == 0 &&
+		len(f.Quoted) == 0 &&
+		len(f.Proper) == 0 &&
+		!f.NumericIntent &&
+		len(f.NumericIntentKind) == 0 &&
+		!f.HasTimeSignal()
+}
+
+type QueryTemporalIntentKind string
+
+const (
+	QueryTemporalIntentDate     QueryTemporalIntentKind = "date"
+	QueryTemporalIntentDuration QueryTemporalIntentKind = "duration"
+	QueryTemporalIntentRange    QueryTemporalIntentKind = "range"
+	QueryTemporalIntentOrder    QueryTemporalIntentKind = "order"
+)
+
+type QueryNumericIntentKind string
+
+const (
+	QueryNumericIntentCount     QueryNumericIntentKind = "count"
+	QueryNumericIntentAmount    QueryNumericIntentKind = "amount"
+	QueryNumericIntentAge       QueryNumericIntentKind = "age"
+	QueryNumericIntentFrequency QueryNumericIntentKind = "frequency"
+	QueryNumericIntentOrdinal   QueryNumericIntentKind = "ordinal"
+	QueryNumericIntentPrice     QueryNumericIntentKind = "price"
+	QueryNumericIntentPercent   QueryNumericIntentKind = "percent"
+	QueryNumericIntentDuration  QueryNumericIntentKind = "duration"
+)
+
+// QueryTemporalFeatures captures temporal query-understanding signals.
+type QueryTemporalFeatures struct {
+	HasIntent             bool
+	HasExplicitDate       bool
+	HasRelativeExpression bool
+	HasDurationIntent     bool
+	IntentKind            []QueryTemporalIntentKind
+	MatchedText           string
+	TimeRange             TimeRange
 }
 
 // QueryPlan describes how the read pipeline will visit candidate

@@ -14,7 +14,16 @@
 // applied to a lower-cased token after stop-word filtering.
 package lemma
 
-// Lemmatize normalises a lowercased token to its dictionary base form
+import "strings"
+
+// Lemmatize is the historical English irregular lemmatiser. New multilingual
+// callers should prefer LemmatizeLang so the English irregular table is applied
+// only on English paths.
+func Lemmatize(word string) string {
+	return LemmatizeEnglish(word)
+}
+
+// LemmatizeEnglish normalises a lowercased token to its dictionary base form
 // when it matches a known English irregular inflection (verb past /
 // past-participle, irregular noun plural). For tokens not in the table
 // it returns word unchanged. Regular morphology (-ing / -ed / -s /
@@ -35,9 +44,29 @@ package lemma
 // long-tail entries (begat / shewn / clad) is intentionally avoided —
 // the table is the hot path on every BM25 token and a smaller table
 // keeps cache behaviour predictable.
-func Lemmatize(word string) string {
+func LemmatizeEnglish(word string) string {
 	if v, ok := irregularForms[word]; ok {
 		return v
 	}
 	return word
+}
+
+// LemmatizeLang applies the language-specific irregular lemmatisation available
+// in this package. Today that means English only; unsupported languages are a
+// deliberate no-op so callers can compose this with language-specific stemmers
+// without accidentally applying English irregulars to every token.
+func LemmatizeLang(word, lang string) string {
+	if isEnglish(lang) {
+		return LemmatizeEnglish(word)
+	}
+	return word
+}
+
+func isEnglish(lang string) bool {
+	switch strings.ToLower(strings.TrimSpace(lang)) {
+	case "", "en", "eng", "english":
+		return true
+	default:
+		return false
+	}
 }
