@@ -37,6 +37,7 @@ type finalSelectionCandidate struct {
 	evidenceTokens map[string]struct{}
 	factTokens     map[string]struct{}
 	hasTimeSignal  bool
+	hasTextTimex   bool
 	hasNumeric     bool
 	slotScore      float64
 }
@@ -54,7 +55,8 @@ func selectFinalHybridRerankHits(query string, ordered []domain.Hit, pool []doma
 
 func selectFinalHybridRerankHitsWithFeatures(features domain.QueryFeatures, ordered []domain.Hit, pool []domain.Hit, cap int) []domain.Hit {
 	candidatePool := mergeFinalSelectionPool(ordered, pool)
-	candidates := finalSelectionCandidates(features, candidatePool)
+	queryFeatures := newFinalSelectionQueryFeatures(features)
+	candidates := finalSelectionCandidatesWithQueryFeatures(queryFeatures, candidatePool)
 	if len(candidates) <= cap {
 		return finalSelectionHits(candidates)
 	}
@@ -96,7 +98,7 @@ func selectFinalHybridRerankHitsWithFeatures(features domain.QueryFeatures, orde
 			}
 		}
 	}
-	selected, selectedCandidates = finalSelectionRescueCoverage(newFinalSelectionQueryFeatures(features), candidates, selected, selectedCandidates, cap)
+	selected, selectedCandidates = finalSelectionRescueCoverage(queryFeatures, candidates, selected, selectedCandidates, cap)
 	selected = finalSelectionRescueAnswerSlot(candidates, selected, selectedCandidates, cap)
 	return selected
 }
@@ -114,7 +116,10 @@ func mergeFinalSelectionPool(ordered []domain.Hit, pool []domain.Hit) []domain.H
 }
 
 func finalSelectionCandidates(features domain.QueryFeatures, hits []domain.Hit) []finalSelectionCandidate {
-	queryFeatures := newFinalSelectionQueryFeatures(features)
+	return finalSelectionCandidatesWithQueryFeatures(newFinalSelectionQueryFeatures(features), hits)
+}
+
+func finalSelectionCandidatesWithQueryFeatures(queryFeatures finalSelectionQueryFeatures, hits []domain.Hit) []finalSelectionCandidate {
 	maxScore := 0.0
 	for _, hit := range hits {
 		if hit.Score > maxScore {
@@ -186,12 +191,13 @@ func newFinalSelectionCandidate(queryFeatures finalSelectionQueryFeatures, hit d
 	factProper := recallintent.ProperNounSet(factText)
 	hasNumeric := len(evidenceNumeric) > 0 || len(factNumeric) > 0
 	hasTime := false
+	hasTextTimex := false
 	if queryFeatures.hasTimeSignal {
-		hasTime = hitHasTimeSignal(hit, combinedText)
+		hasTime, hasTextTimex = hitTimeSignals(hit, combinedText)
 	}
 	evidenceScore := finalSelectionTextScore(queryFeatures, evidenceTokens, evidenceNumeric, evidenceQuoted, evidenceProper, hasTime, len(evidenceNumeric) > 0)
 	factScore := finalSelectionTextScore(queryFeatures, factTokens, factNumeric, factQuoted, factProper, hasTime, len(factNumeric) > 0)
-	slotScore := finalSelectionAnswerSlotScore(queryFeatures, hit, combinedText, hasTime, hasNumeric)
+	slotScore := finalSelectionAnswerSlotScore(queryFeatures, hit, combinedText, hasTime, hasTextTimex, hasNumeric)
 	candidate := finalSelectionCandidate{
 		hit:            hit,
 		baseScore:      hit.Score,
@@ -202,6 +208,7 @@ func newFinalSelectionCandidate(queryFeatures finalSelectionQueryFeatures, hit d
 		evidenceTokens: evidenceTokens,
 		factTokens:     factTokens,
 		hasTimeSignal:  hasTime,
+		hasTextTimex:   hasTextTimex,
 		hasNumeric:     hasNumeric,
 		slotScore:      slotScore,
 	}
@@ -263,7 +270,7 @@ func finalSelectionScore(query finalSelectionQueryFeatures, candidate finalSelec
 	return score
 }
 
-func finalSelectionAnswerSlotScore(query finalSelectionQueryFeatures, hit domain.Hit, text string, hasTime, hasNumeric bool) float64 {
+func finalSelectionAnswerSlotScore(query finalSelectionQueryFeatures, hit domain.Hit, text string, hasTime, hasTextTimex, hasNumeric bool) float64 {
 	score := 0.0
 	if query.hasTimeSignal {
 		if hasTime {
@@ -275,7 +282,7 @@ func finalSelectionAnswerSlotScore(query finalSelectionQueryFeatures, hit domain
 		if hit.Fact.ValidFrom != nil || hit.Fact.ValidTo != nil {
 			score += 0.25
 		}
-		if recallintent.HasTimex(text, time.Now()) {
+		if hasTextTimex {
 			score += 0.15
 		}
 		if hitHasSource(hit, "timeline") {
@@ -378,6 +385,9 @@ func finalSelectionRescueCoverage(query finalSelectionQueryFeatures, candidates 
 	if cap <= 0 || len(selected) == 0 || len(selected) < cap || len(query.tokens) == 0 {
 		return selected, selectedCandidates
 	}
+	if !finalSelectionNeedsCoverageRescue(query, selectedCandidates) {
+		return selected, selectedCandidates
+	}
 	maxRescues := cap / 10
 	if maxRescues < 1 {
 		maxRescues = 1
@@ -415,6 +425,27 @@ func finalSelectionRescueCoverage(query finalSelectionQueryFeatures, candidates 
 		outCandidates[replace] = candidates[best]
 	}
 	return out, outCandidates
+}
+
+func finalSelectionNeedsCoverageRescue(query finalSelectionQueryFeatures, selected []finalSelectionCandidate) bool {
+	covered := finalSelectionCoveredQueryTokens(query, selected)
+	coverage := float64(len(covered)) / float64(len(query.tokens))
+	if coverage < 0.55 {
+		return true
+	}
+	if query.hasNumericIntent && !finalSelectionAnySelectedNumeric(selected) {
+		return true
+	}
+	if query.hasTimeSignal && !finalSelectionAnySelectedTime(selected) {
+		return true
+	}
+	if len(query.quoted) > 0 && !finalSelectionAnySelectedIntersects(selected, query.quoted) {
+		return true
+	}
+	if len(query.proper) > 0 && !finalSelectionAnySelectedIntersects(selected, query.proper) {
+		return true
+	}
+	return false
 }
 
 func finalSelectionCoveredQueryTokens(query finalSelectionQueryFeatures, selected []finalSelectionCandidate) map[string]struct{} {
@@ -514,6 +545,15 @@ func finalSelectionAnySelectedNumeric(selected []finalSelectionCandidate) bool {
 func finalSelectionAnySelectedTime(selected []finalSelectionCandidate) bool {
 	for _, cand := range selected {
 		if cand.hasTimeSignal {
+			return true
+		}
+	}
+	return false
+}
+
+func finalSelectionAnySelectedIntersects(selected []finalSelectionCandidate, tokens map[string]struct{}) bool {
+	for _, cand := range selected {
+		if intersects(tokens, cand.evidenceTokens) || intersects(tokens, cand.factTokens) {
 			return true
 		}
 	}
@@ -729,19 +769,44 @@ func finalSelectionKindPriority(kind domain.FactKind) int {
 	}
 }
 
-func hitHasTimeSignal(hit domain.Hit, evidence string) bool {
+func hitTimeSignals(hit domain.Hit, evidence string) (bool, bool) {
+	hasTimestamp := false
 	if hit.Fact.ValidFrom != nil || hit.Fact.ValidTo != nil {
-		return true
+		hasTimestamp = true
 	}
 	for _, ref := range hit.Evidence {
 		if !ref.Timestamp.IsZero() {
+			hasTimestamp = true
+			break
+		}
+	}
+	if !hasTimestamp {
+		for _, ref := range hit.Fact.EvidenceRefs {
+			if !ref.Timestamp.IsZero() {
+				hasTimestamp = true
+				break
+			}
+		}
+	}
+	hasTextTimex := finalSelectionMaybeHasTimex(evidence) && recallintent.HasTimex(evidence, time.Now())
+	return hasTimestamp || hasTextTimex, hasTextTimex
+}
+
+func finalSelectionMaybeHasTimex(text string) bool {
+	if strings.ContainsAny(text, "0123456789") {
+		return true
+	}
+	lower := strings.ToLower(text)
+	for _, marker := range []string{
+		"today", "yesterday", "tomorrow",
+		"last ", "next ", "this ",
+		" ago", "before", "after", "during", "since", "until",
+		"day", "week", "month", "year", "summer", "winter", "spring", "fall", "autumn",
+		"january", "february", "march", "april", "may ", "june", "july", "august", "september", "october", "november", "december",
+	} {
+		if strings.Contains(lower, marker) {
 			return true
 		}
 	}
-	for _, ref := range hit.Fact.EvidenceRefs {
-		if !ref.Timestamp.IsZero() {
-			return true
-		}
-	}
-	return recallintent.HasTimex(evidence, time.Now())
+	return false
 }
