@@ -11,24 +11,11 @@ import (
 
 	"github.com/GizClaw/flowcraft/memory/recall/internal/domain"
 	"github.com/GizClaw/flowcraft/memory/recall/internal/port"
+	"github.com/GizClaw/flowcraft/memory/recall/internal/words"
 	"github.com/GizClaw/flowcraft/memory/text/quotes"
-	"github.com/GizClaw/flowcraft/memory/text/stopword"
 	"github.com/GizClaw/flowcraft/memory/text/timex"
 	whenadp "github.com/GizClaw/flowcraft/memory/text/timex/adapter/when"
 	"github.com/GizClaw/flowcraft/memory/text/tokenize"
-)
-
-// intentStopwords extends the canonical English stopword set with
-// recall-specific question / framing verbs ("meet"/"told"/"said")
-// that are not entities even though they survive sdk/text's general
-// stopword filter. The set is computed once at package init.
-var intentStopwords = stopword.EnglishSet().Extend(
-	"whom", "whose", "why", "done",
-	"am", "having", "would", "could", "should", "might", "must",
-	"again", "also", "just", "very", "too", "so", "yes",
-	"mine", "yours", "hers", "ours", "theirs",
-	"meet", "met", "meeting",
-	"tell", "told", "say", "said", "know", "knew",
 )
 
 var queryTimeParser = newQueryTimeParser()
@@ -108,7 +95,7 @@ func normalizeEntityMention(s string) string {
 
 // extractEntitiesFromText is a conservative rule baseline: quoted spans,
 // capitalized tokens, and CJK runs. Common question words are filtered
-// (via intentStopwords) so "Who did Alice meet in Paris?" yields alice
+// (via recall/internal/words) so "Who did Alice meet in Paris?" yields alice
 // and paris, not who.
 func extractEntitiesFromText(text string) []string {
 	text = strings.TrimSpace(text)
@@ -118,7 +105,7 @@ func extractEntitiesFromText(text string) []string {
 	set := map[string]struct{}{}
 	add := func(s string) {
 		s = normalizeEntityMention(s)
-		if s == "" || intentStopwords.Contains(s) {
+		if s == "" || words.IsIntentEntityStopword(s) {
 			return
 		}
 		set[s] = struct{}{}
@@ -139,10 +126,10 @@ func extractEntitiesFromText(text string) []string {
 			continue
 		}
 		lower := strings.ToLower(w)
-		if i == 0 && intentStopwords.Contains(lower) {
+		if i == 0 && words.IsIntentEntityStopword(lower) {
 			continue
 		}
-		if unicode.IsUpper(runes[0]) && !intentStopwords.Contains(lower) {
+		if unicode.IsUpper(runes[0]) && !words.IsIntentEntityStopword(lower) {
 			add(w)
 		}
 		if hasCJKRunes(w) && len(runes) >= 2 {
@@ -159,7 +146,7 @@ func extractEntitiesFromText(text string) []string {
 
 func inferKinds(text string) []domain.FactKind {
 	lower := strings.ToLower(text)
-	if isTemporalQuestion(lower) {
+	if words.HasIntentTemporalQuestionCue(lower) {
 		return []domain.FactKind{domain.KindEvent, domain.KindState, domain.KindPlan}
 	}
 	return nil
@@ -191,7 +178,7 @@ func inferSubject(text string, entities []string) string {
 
 func shouldInferSubject(text string) bool {
 	lower := strings.TrimSpace(strings.ToLower(text))
-	if isTemporalQuestion(lower) {
+	if words.HasIntentTemporalQuestionCue(lower) {
 		return false
 	}
 	return strings.HasSuffix(lower, "?") ||
@@ -202,10 +189,6 @@ func shouldInferSubject(text string) bool {
 		strings.HasPrefix(lower, "which ") ||
 		strings.HasPrefix(lower, "how ") ||
 		strings.Contains(lower, "'s ")
-}
-
-func isTemporalQuestion(lower string) bool {
-	return hasAny(lower, "when", "what date", "which date", "how long", "how many days", "how many months", "how many years")
 }
 
 func inferTimeRange(text string) domain.TimeRange {
@@ -367,15 +350,6 @@ func monthNumber(raw string) time.Month {
 	default:
 		return 0
 	}
-}
-
-func hasAny(s string, needles ...string) bool {
-	for _, n := range needles {
-		if strings.Contains(s, n) {
-			return true
-		}
-	}
-	return false
 }
 
 func hasCJKRunes(s string) bool {

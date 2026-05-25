@@ -11,6 +11,7 @@ import (
 	"github.com/GizClaw/flowcraft/memory/recall/internal/pipeline"
 	"github.com/GizClaw/flowcraft/memory/recall/internal/pipeline/read"
 	"github.com/GizClaw/flowcraft/memory/recall/internal/port"
+	"github.com/GizClaw/flowcraft/memory/recall/internal/words"
 	"github.com/GizClaw/flowcraft/memory/text/tokenize"
 )
 
@@ -187,8 +188,8 @@ func newGroundingQueryFeatures(query string) groundingQueryFeatures {
 		tokens:           groundingTokenSet(query),
 		numeric:          numericTokens(query),
 		proper:           properNounSet(query),
-		hasTimeSignal:    queryHasTimeSignal(query),
-		hasNumericIntent: queryHasNumericIntent(query),
+		hasTimeSignal:    words.HasTemporalQuestionCue(query) || hasTimex(query, time.Now()),
+		hasNumericIntent: words.HasNumericIntentCue(query),
 	}
 }
 

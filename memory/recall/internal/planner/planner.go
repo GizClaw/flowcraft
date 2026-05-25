@@ -283,13 +283,6 @@ func ActivatesGraph(intent domain.QueryIntent) bool {
 	return intent.GraphEnabled && len(intent.Entities) > 0
 }
 
-func (r *RuleBased) retrievalEntityOnly(intent domain.QueryIntent) bool {
-	if ActivatesTimeline(intent) || ActivatesRelation(intent) || ActivatesProfile(intent) || ActivatesGraph(intent) {
-		return false
-	}
-	return true
-}
-
 func (r *RuleBased) buildSourceOrder(intent domain.QueryIntent) []string {
 	specs := r.Specs
 	if len(specs) == 0 {
@@ -303,12 +296,6 @@ func (r *RuleBased) buildSourceOrder(intent domain.QueryIntent) []string {
 		order = append(order, spec.Name)
 	}
 	return order
-}
-
-// buildSourceOrder is the legacy helper retained for planner tests
-// that assert activation predicates directly.
-func buildSourceOrder(intent domain.QueryIntent) []string {
-	return (&RuleBased{Specs: builtinSpecs()}).buildSourceOrder(intent)
 }
 
 func kindsIntersectTimeline(kinds []domain.FactKind) bool {
@@ -374,41 +361,4 @@ func sourceBudget(limit int) int {
 		overfetch = 1
 	}
 	return overfetch
-}
-
-func defaultWeights() map[string]float64 {
-	return map[string]float64{
-		SourceRetrieval: WeightRetrieval,
-		SourceEntity:    WeightEntity,
-		SourceRelation:  WeightRelation,
-		SourceProfile:   WeightProfile,
-		SourceTimeline:  WeightTimeline,
-		SourceGraph:     WeightGraph,
-	}
-}
-
-// prioritizeStructuredForTinyLimit ensures explicit subject/time/kind
-// hints reach structured sources when limit cannot cover every source.
-func prioritizeStructuredForTinyLimit(order []string, limit int) []string {
-	var structured, rest []string
-	for _, src := range order {
-		switch src {
-		case SourceTimeline, SourceRelation, SourceProfile, SourceGraph:
-			structured = append(structured, src)
-		default:
-			rest = append(rest, src)
-		}
-	}
-	merged := append(structured, rest...)
-	if len(merged) > limit {
-		merged = merged[:limit]
-	}
-	return merged
-}
-
-func maxInt(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
 }

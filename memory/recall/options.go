@@ -118,33 +118,10 @@ func withCompiler(cp port.Ingestor) Option {
 	}
 }
 
-func withConflictResolver(r port.ConflictResolver) Option {
-	return func(c *config) {
-		c.resolver = r
-		c.resolverSet = true
-	}
-}
-
 func withExtraProjection(p port.Projection) Option {
 	return func(c *config) {
 		if p != nil {
 			c.extraProjections = append(c.extraProjections, p)
-		}
-	}
-}
-
-func withQueryCompiler(qc port.IntentCompiler) Option {
-	return func(c *config) {
-		if qc != nil {
-			c.queryCompiler = qc
-		}
-	}
-}
-
-func withPlanner(p port.Planner) Option {
-	return func(c *config) {
-		if p != nil {
-			c.planner = p
 		}
 	}
 }
@@ -156,28 +133,6 @@ func withSources(sources ...port.Source) Option {
 				c.sources = append(c.sources, s)
 			}
 		}
-	}
-}
-
-func withFuser(f port.Fuser) Option {
-	return func(c *config) {
-		if f != nil {
-			c.fuser = f
-		}
-	}
-}
-
-func withMaterializer(m port.Materializer) Option {
-	return func(c *config) {
-		if m != nil {
-			c.materializer = m
-		}
-	}
-}
-
-func withFusionOptions(opts port.FusionOptions) Option {
-	return func(c *config) {
-		c.fusionOpts = opts
 	}
 }
 

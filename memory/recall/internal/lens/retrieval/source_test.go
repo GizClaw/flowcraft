@@ -28,7 +28,7 @@ func (s *sourceStubEmbedder) Embed(_ context.Context, text string) ([]float32, e
 func (s *sourceStubEmbedder) EmbedBatch(_ context.Context, texts []string) ([][]float32, error) {
 	out := make([][]float32, len(texts))
 	for i, t := range texts {
-		v, _ := s.Embed(nil, t)
+		v, _ := s.Embed(context.Background(), t)
 		out[i] = v
 	}
 	return out, nil

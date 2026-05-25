@@ -279,9 +279,9 @@ Guidelines:
 - Memories are listed in retrieval/rerank order as [#1], [#2], etc. Prefer lower-numbered memories when evidence conflicts. If several top memories answer different parts of a list question ("what types", "what exercises", "what movies/books"), combine the supported items instead of choosing only the first item.
 - Mirror the date format used in the question (e.g. if asked "7 May 2023", answer in that format, not "May 7, 2023").
 - If a memory uses a date QUALIFIER ("around", "roughly", "the week before X", "a few years ago", "last summer", "two weekends ago"), preserve that qualifier in your answer rather than computing a precise absolute date. The qualifier carries the speaker's actual epistemic state — fabricating precision is worse than mirroring vagueness.
-- A memory may carry a canonical date stamp at its head (e.g. "[time: YYYY-MM-DD]") written by the recall system after resolving relative expressions against the source turn timestamp. This stamp is the AUTHORITATIVE date — the resolver has already converted any relative phrase in the source turn into an absolute date for you. Use the [time:] date verbatim; NEVER combine it with a relative expression from the same memory ("[time: 2023-09-28] talent show next month" → the show is in 2023-09, NOT October. The "next month" wording is the original turn text the resolver already accounted for; recomputing on top of [time:] double-counts and produces wrong dates). If the question asks for a relative answer ("the week before 9 June 2023", "how long ago"), preserve that relative wording when the memory supports it instead of forcing an exact calendar date.
-- Evidence quotes may carry a source timestamp prefix (e.g. "[source_time: YYYY-MM-DD HH:MM]"). This is the original turn timestamp. Use source_time as the anchor for relative wording inside that evidence quote when no [time:] stamp is present; if [time:] is present, [time:] remains authoritative for the fact date.
-- When an ASKED_AT line is present, treat that timestamp as the "now" for the question. Relative-time phrases ("last week", "two months ago", "yesterday", "this morning") are interpreted RELATIVE TO ASKED_AT, not to today's wall clock. Memories carry their own timestamps in [source_time:] prefixes — use ASKED_AT to compute the requested window over those memory timestamps.
+- A memory may carry a canonical event date stamp at its head (e.g. "[time: YYYY-MM-DD]") written by the recall system after resolving a time expression stated in the memory content. This stamp is the AUTHORITATIVE event date. Use the [time:] date verbatim; NEVER combine it with a relative expression from the same memory ("[time: 2023-09-28] talent show next month" → the show is in 2023-09, NOT October. The "next month" wording is the original turn text the resolver already accounted for; recomputing on top of [time:] double-counts and produces wrong dates). If the question asks for a relative answer ("the week before 9 June 2023", "how long ago"), preserve that relative wording when the memory supports it instead of forcing an exact calendar date.
+- Evidence quotes may carry a source timestamp prefix (e.g. "[source_time: YYYY-MM-DD HH:MM]"). This is only the original turn timestamp, not the event date by itself. Use source_time only as the anchor for relative wording explicitly present inside that same evidence quote; never answer a WHEN question from source_time alone.
+- When an ASKED_AT line is present, treat that timestamp as the "now" for the question. Relative-time phrases ("last week", "two months ago", "yesterday", "this morning") are interpreted RELATIVE TO ASKED_AT, not to today's wall clock. Memories carry their own timestamps in [source_time:] prefixes; use ASKED_AT with source_time only to locate relevant turns or to resolve relative wording in the quoted evidence, not to turn source_time into an event date.
 - Answer in 1-2 sentences. Avoid hedging ("it seems", "might be") when the memories are unambiguous.
 - Before emitting "I don't know", do ONE final scan of the memories for a LITERAL span that fills the question's answer slot — a specific date, number, proper noun, or named phrase quoted verbatim inside a memory's content, [time:] tag, or evidence quote. If such a literal span exists, cite that span as the answer. "I don't know" is reserved for the case where no memory contains any literal candidate for the question's wh-slot (no date when asked "when", no name when asked "who/where", etc.). This rule is about USING what the retrieval already found, not about guessing; it never authorises filling silent evidence with fabricated answers.
 - For INFERENTIAL questions ("What might X be?", "How does Y likely feel?", "What kind of person is Z?") the question is open by design and tempts a paragraph of reasoning that buries the actual verdict. Resist that. LEAD the answer with a SINGLE short label that names the inferred attribute — a noun phrase or adjective phrased the way a human would answer the same question in one line — and only THEN add at most one short justifying clause grounded in the memories. The label is the answer; the justification is optional. A reader looking for the verdict in the first phrase must see it immediately, not as a delayed conclusion at the end of an essay.
@@ -607,15 +607,6 @@ func boolFloat(b bool) float64 {
 		return 1
 	}
 	return 0
-}
-
-func convoToMessages(c dataset.Conversation) []llm.Message {
-	out := make([]llm.Message, 0, len(c.Turns))
-	for _, t := range c.Turns {
-		role := model.Role(t.Role)
-		out = append(out, llm.Message{Role: role, Parts: []model.Part{{Type: model.PartText, Text: t.Content}}})
-	}
-	return out
 }
 
 // evalQuestions runs the QA loop with bounded concurrency. Recall, answer
@@ -1017,21 +1008,6 @@ func evalQuestions(ctx context.Context, r runners.Runner, scopeOf func(string) r
 		log.Printf("[locomo] %d/%d questions failed (scored 0); see WARN logs above", f, n)
 	}
 	return scores, latencies, nil
-}
-
-// convoToRawTurns mirrors convoToMessages but preserves each turn's
-// upstream EvidenceID for runners that support it.
-func convoToRawTurns(c dataset.Conversation) []runners.RawTurn {
-	out := make([]runners.RawTurn, 0, len(c.Turns))
-	for _, t := range c.Turns {
-		out = append(out, runners.RawTurn{
-			Role:       t.Role,
-			Content:    t.Content,
-			EvidenceID: t.EvidenceID,
-			SessionID:  t.SessionID,
-		})
-	}
-	return out
 }
 
 // turnBatch groups a contiguous slice of one conversation's turns by their

@@ -82,6 +82,4 @@ func (b *Backend) AsyncSemanticQueue() recall.AsyncSemanticQueue {
 	return &asyncSemanticQueue{b: b}
 }
 
-func ph(int) string { return "?" }
-
 func phs(start, n int) string { return sqlstmt.Placeholders(start, n, false) }

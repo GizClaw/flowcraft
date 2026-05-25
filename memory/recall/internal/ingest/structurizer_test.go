@@ -200,6 +200,9 @@ func TestDefaultStructurizer_LiftsSpeakerFromSupportingTurn(t *testing.T) {
 	if hint, _ := out.Metadata[MetaValidFromHint].(string); hint == "" {
 		t.Errorf("valid_from_hint should be lifted from turn.Time, metadata=%v", out.Metadata)
 	}
+	if source, _ := out.Metadata[MetaValidFromSource].(string); source != ValidFromSourceTimeFallback {
+		t.Errorf("turn time fallback source = %q, want %q", source, ValidFromSourceTimeFallback)
+	}
 }
 
 func TestDefaultStructurizer_PrefersContentRelativeTimeOverTurnTime(t *testing.T) {
@@ -228,6 +231,9 @@ func TestDefaultStructurizer_PrefersContentRelativeTimeOverTurnTime(t *testing.T
 	if !parsed.Equal(want) {
 		t.Errorf("ValidFromAt = %v, want %v (hint=%q at=%q)", parsed, want, hint, at)
 	}
+	if source, _ := out.Metadata[MetaValidFromSource].(string); source != ValidFromSourceContentRelative {
+		t.Errorf("relative content source = %q, want %q", source, ValidFromSourceContentRelative)
+	}
 }
 
 func TestDefaultStructurizer_CarriesParsedTimeFromCustomParser(t *testing.T) {
@@ -248,6 +254,9 @@ func TestDefaultStructurizer_CarriesParsedTimeFromCustomParser(t *testing.T) {
 	parsed, ok := parseAbsoluteTime(at)
 	if !ok || !parsed.Equal(want) {
 		t.Fatalf("parsed multilingual time = %v ok=%v, want %v (metadata=%v)", parsed, ok, want, out.Metadata)
+	}
+	if source, _ := out.Metadata[MetaValidFromSource].(string); source != ValidFromSourceContentRelative {
+		t.Fatalf("multilingual relative source = %q, want %q", source, ValidFromSourceContentRelative)
 	}
 }
 
@@ -299,6 +308,9 @@ func TestDefaultStructurizer_GrepsAbsoluteDateFromContent(t *testing.T) {
 	hint, _ := out.Metadata[MetaValidFromHint].(string)
 	if hint != "2024-05-07" {
 		t.Errorf("absolute date should be lifted as hint, got %q", hint)
+	}
+	if source, _ := out.Metadata[MetaValidFromSource].(string); source != ValidFromSourceContentExplicit {
+		t.Errorf("absolute date source = %q, want %q", source, ValidFromSourceContentExplicit)
 	}
 }
 

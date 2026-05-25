@@ -101,8 +101,9 @@ func TestTimeResolver_ParsedTimeMetadataWinsOverRawHint(t *testing.T) {
 	f := domain.TemporalFact{
 		Kind: domain.KindEvent,
 		Metadata: map[string]any{
-			MetaValidFromHint: "四年前",
-			MetaValidFromAt:   want.Format(time.RFC3339Nano),
+			MetaValidFromHint:   "四年前",
+			MetaValidFromAt:     want.Format(time.RFC3339Nano),
+			MetaValidFromSource: ValidFromSourceContentRelative,
 		},
 	}
 	out := r.Resolve(f, now)
@@ -117,6 +118,12 @@ func TestTimeResolver_ParsedTimeMetadataWinsOverRawHint(t *testing.T) {
 	}
 	if _, leftover := out.Metadata[MetaValidFromHint]; leftover {
 		t.Errorf("raw hint should be consumed with parsed metadata")
+	}
+	if source, _ := out.Metadata[MetaValidFromSource].(string); source != ValidFromSourceContentRelative {
+		t.Errorf("valid_from_source = %q, want %q", source, ValidFromSourceContentRelative)
+	}
+	if text, _ := out.Metadata[MetaValidFromText].(string); text != "四年前" {
+		t.Errorf("valid_from_text = %q, want 四年前", text)
 	}
 }
 

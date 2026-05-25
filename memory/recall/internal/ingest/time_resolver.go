@@ -20,6 +20,15 @@ const (
 	MetaValidToHint   = "valid_to_hint"
 	MetaValidFromAt   = "valid_from_at"
 	MetaValidToAt     = "valid_to_at"
+
+	MetaValidFromSource = "valid_from_source"
+	MetaValidFromText   = "valid_from_text"
+)
+
+const (
+	ValidFromSourceContentExplicit = "content_explicit"
+	ValidFromSourceContentRelative = "content_relative"
+	ValidFromSourceTimeFallback    = "source_time_fallback"
 )
 
 // SupportedRelativeTimes lists the tokens the default
@@ -58,11 +67,13 @@ func (passthroughTimeResolver) Resolve(f domain.TemporalFact, now time.Time) dom
 		if t, ok := parseAbsoluteFromMeta(f.Metadata, MetaValidFromAt); ok {
 			tt := t
 			f.ValidFrom = &tt
+			preserveValidFromText(f.Metadata)
 			delete(f.Metadata, MetaValidFromAt)
 			delete(f.Metadata, MetaValidFromHint)
 		} else if t, ok := parseRelativeFromMeta(f.Metadata, MetaValidFromHint, now); ok {
 			tt := t
 			f.ValidFrom = &tt
+			preserveValidFromText(f.Metadata)
 			delete(f.Metadata, MetaValidFromHint)
 		}
 	}
@@ -79,6 +90,18 @@ func (passthroughTimeResolver) Resolve(f domain.TemporalFact, now time.Time) dom
 		}
 	}
 	return f
+}
+
+func preserveValidFromText(meta map[string]any) {
+	if len(meta) == 0 {
+		return
+	}
+	if _, ok := meta[MetaValidFromText]; ok {
+		return
+	}
+	if raw, ok := meta[MetaValidFromHint]; ok {
+		meta[MetaValidFromText] = raw
+	}
 }
 
 func parseAbsoluteFromMeta(meta map[string]any, key string) (time.Time, bool) {

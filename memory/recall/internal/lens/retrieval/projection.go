@@ -102,15 +102,6 @@ func (p *Projection) Project(ctx context.Context, facts []domain.TemporalFact) e
 	grouped := groupByNamespace(facts)
 	for ns, group := range grouped {
 		var superseded []string
-		// active mirrors docs slot-for-slot. attachEmbeddings used
-		// to receive `group` (full list including superseded facts)
-		// which made len(facts) != len(docs) whenever a mixed batch
-		// landed (RebuildAll, multi-fact Save with revisions). The
-		// embedder then took the "len mismatch → silent skip" branch
-		// and the whole batch went BM25-only with zero telemetry.
-		// Keeping active and docs aligned by construction removes
-		// the foot-gun entirely.
-		active := make([]domain.TemporalFact, 0, len(group))
 		docs := make([]retrieval.Doc, 0, len(group))
 		var evict []string
 		for _, f := range group {
@@ -121,7 +112,6 @@ func (p *Projection) Project(ctx context.Context, facts []domain.TemporalFact) e
 			if !shouldIndexInRetrieval(f, now) {
 				continue
 			}
-			active = append(active, f)
 			docs = append(docs, toDoc(f))
 		}
 		toDelete := uniqueStrings(append(superseded, evict...))

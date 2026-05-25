@@ -11,6 +11,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/memory/recall/internal/domain"
 	"github.com/GizClaw/flowcraft/memory/recall/internal/port"
+	"github.com/GizClaw/flowcraft/memory/recall/internal/words"
 	"github.com/GizClaw/flowcraft/memory/text/quotes"
 	"github.com/GizClaw/flowcraft/memory/text/timex"
 	whenadp "github.com/GizClaw/flowcraft/memory/text/timex/adapter/when"
@@ -515,7 +516,7 @@ func hasQuotedSignal(text string) bool {
 func countProperNounSignals(text string) int {
 	count := 0
 	for _, tok := range tokenize.SplitProperNouns(text) {
-		if structurizerStopwords.Contains(tok) {
+		if words.IsStructurizerEntityStopword(tok) {
 			continue
 		}
 		if isTitleCased(tok) {

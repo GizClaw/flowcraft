@@ -275,6 +275,35 @@ func TestGroundedHitContentAnnotatesEvidenceSourceTime(t *testing.T) {
 	}
 }
 
+func TestGroundedHitContentDoesNotRenderSourceTimeFallbackAsEventTime(t *testing.T) {
+	validFrom := time.Date(2024, 5, 7, 9, 30, 0, 0, time.UTC)
+	h := recall.Hit{
+		Fact: recall.TemporalFact{
+			ID:        "f1",
+			Content:   "Alice mentioned Tampa.",
+			ValidFrom: &validFrom,
+			Metadata: map[string]any{
+				"valid_from_source": "source_time_fallback",
+			},
+		},
+		Evidence: []recall.EvidenceRef{{
+			ID:        "D1:7",
+			Text:      "I mentioned Tampa.",
+			Timestamp: validFrom,
+		}},
+	}
+	content := groundedHitContent(h)
+	if strings.Contains(content, "[time: 2024-05-07]") {
+		t.Fatalf("source-time fallback must not render as event time: %s", content)
+	}
+	if !strings.Contains(content, "[source_time: 2024-05-07 09:30] I mentioned Tampa.") {
+		t.Fatalf("source time evidence should remain visible: %s", content)
+	}
+	if got := fromRecallHit(h).ValidFrom; got != "" {
+		t.Fatalf("runner ValidFrom should be empty for source-time fallback, got %q", got)
+	}
+}
+
 func ptrTime(t time.Time) *time.Time {
 	return &t
 }

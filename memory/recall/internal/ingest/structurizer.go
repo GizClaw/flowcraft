@@ -10,7 +10,7 @@ import (
 	"github.com/GizClaw/flowcraft/memory/recall/internal/domain"
 	"github.com/GizClaw/flowcraft/memory/recall/internal/domain/diagnostic"
 	"github.com/GizClaw/flowcraft/memory/recall/internal/port"
-	"github.com/GizClaw/flowcraft/memory/text/stopword"
+	"github.com/GizClaw/flowcraft/memory/recall/internal/words"
 	"github.com/GizClaw/flowcraft/memory/text/timex"
 	whenadp "github.com/GizClaw/flowcraft/memory/text/timex/adapter/when"
 	"github.com/GizClaw/flowcraft/memory/text/tokenize"
@@ -136,7 +136,11 @@ func (s DefaultStructurizer) Structurize(f domain.TemporalFact, input port.Inges
 	// surface as an error from the compiler, not get silently
 	// rewritten by the heuristic.
 	if f.Kind == "" {
-		f.Kind = inferKind(f.Content)
+		if words.LooksProcedural(f.Content) {
+			f.Kind = domain.KindProcedure
+		} else {
+			f.Kind = domain.KindNote
+		}
 	}
 
 	if len(f.Entities) == 0 {
@@ -168,9 +172,13 @@ func (s DefaultStructurizer) Structurize(f domain.TemporalFact, input port.Inges
 			}
 			if hint.Raw != "" {
 				f.Metadata[MetaValidFromHint] = hint.Raw
+				f.Metadata[MetaValidFromText] = hint.Raw
 			}
 			if !hint.At.IsZero() {
 				f.Metadata[MetaValidFromAt] = hint.At.UTC().Format(time.RFC3339Nano)
+			}
+			if hint.Source != "" {
+				f.Metadata[MetaValidFromSource] = hint.Source
 			}
 		}
 	}
@@ -205,49 +213,6 @@ func resolveSupportingTurn(f domain.TemporalFact, turns []port.TurnContext) *por
 		}
 	}
 	return nil
-}
-
-// inferKind is the Kind fallback used when neither the caller nor the
-// LLM extractor populated f.Kind. The fallback stays deliberately
-// conservative: the LLM owns normal classification, while this path
-// only rescues procedural rules from legacy text-only callers whose
-// extractor could not emit the new procedure enum.
-func inferKind(content string) domain.FactKind {
-	if looksProcedural(content) {
-		return domain.KindProcedure
-	}
-	return domain.KindNote
-}
-
-func looksProcedural(content string) bool {
-	s := strings.ToLower(strings.Join(strings.Fields(content), " "))
-	if s == "" {
-		return false
-	}
-	if strings.HasPrefix(s, "when ") && strings.Contains(s, ", ") {
-		return true
-	}
-	if strings.HasPrefix(s, "before ") && strings.Contains(s, ", ") {
-		return true
-	}
-	if (strings.HasPrefix(s, "first ") || strings.Contains(s, " first ")) && strings.Contains(s, " then ") {
-		return true
-	}
-	if strings.Contains(s, "always ") {
-		for _, verb := range []string{"use ", "check ", "run ", "call ", "format ", "respond ", "return ", "ask ", "extract ", "parse "} {
-			if strings.Contains(s, "always "+verb) {
-				return true
-			}
-		}
-	}
-	if strings.Contains(s, "prefer") {
-		for _, token := range []string{"markdown", "table", "format", "output", "response", "answer"} {
-			if strings.Contains(s, token) {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 // extractEntities scans the content for capitalised tokens (likely
@@ -308,7 +273,7 @@ func extractEntities(content string, known []port.EntitySnapshot) []string {
 	// survive as single tokens — plain tokenize.SplitWords would
 	// fragment them into useless capitalised letter fragments.
 	for _, tok := range tokenize.SplitProperNouns(content) {
-		if structurizerStopwords.Contains(strings.ToLower(tok)) {
+		if words.IsStructurizerEntityStopword(tok) {
 			continue
 		}
 		if isTitleCased(tok) {
@@ -334,21 +299,6 @@ func isTitleCased(tok string) bool {
 	return !allUpper
 }
 
-// structurizerStopwords is the closed list of sentence-start
-// pronouns / openers we never want to treat as entities even when
-// they're capitalised. The set is intentionally tiny — KnownEntities
-// catches everything else — and is deliberately NOT a superset of
-// stopword.EnglishSet: modal verbs ("Will", "Can") are valid proper-
-// noun homographs that the wider IR stopword table would drop, and
-// affirmation tokens ("yes", "ok", "okay") that the IR table omits
-// must be filtered here so they never enter the entity set.
-var structurizerStopwords = stopword.NewSet().Extend(
-	"i", "you", "he", "she", "it", "we", "they",
-	"the", "a", "an", "this", "that", "these", "those",
-	"my", "your", "his", "her", "its", "our", "their",
-	"and", "or", "but", "so", "yes", "no", "ok", "okay",
-)
-
 // inferValidFromHint first scans content for explicit time phrases
 // and falls back to the typed Time on the supporting turn
 // with a two-tier parser cascade:
@@ -370,8 +320,9 @@ var structurizerStopwords = stopword.NewSet().Extend(
 // 2026 eval run. Without a turn timestamp, the raw substring is
 // preserved and TimeResolver resolves it against the ingest clock.
 type parsedTimeHint struct {
-	Raw string
-	At  time.Time
+	Raw    string
+	At     time.Time
+	Source string
 }
 
 func inferValidFromHint(parser timex.Parser, turn *port.TurnContext, content string) parsedTimeHint {
@@ -390,22 +341,34 @@ func inferValidFromHint(parser timex.Parser, turn *port.TurnContext, content str
 		// and pinned to ISO 8601 + US-slash shapes, so it never bites
 		// off shorter substrings the way looser NL parsers do.
 		if m, err := (timex.RegexParser{}).Parse(content, anchor); err == nil && m != nil {
-			return parsedTimeHint{Raw: m.Text, At: m.Time}
+			return parsedTimeHint{Raw: m.Text, At: m.Time, Source: ValidFromSourceContentExplicit}
 		}
 		// Tier 2: NL fallback. Only consulted when the strict baseline
 		// missed, so the wider net only fires on truly natural-language
 		// time expressions.
 		if parser != nil {
 			if m, err := parser.Parse(content, anchor); err == nil && m != nil {
+				source := validFromSourceForContentHint(m.Text)
 				if turn != nil && !turn.Time.IsZero() && !m.Time.IsZero() {
-					return parsedTimeHint{Raw: m.Text, At: m.Time}
+					return parsedTimeHint{Raw: m.Text, At: m.Time, Source: source}
 				}
-				return parsedTimeHint{Raw: m.Text}
+				return parsedTimeHint{Raw: m.Text, Source: source}
 			}
 		}
 	}
 	if turn != nil && !turn.Time.IsZero() {
-		return parsedTimeHint{Raw: turn.Time.UTC().Format(time.RFC3339Nano), At: turn.Time}
+		return parsedTimeHint{
+			Raw:    turn.Time.UTC().Format(time.RFC3339Nano),
+			At:     turn.Time,
+			Source: ValidFromSourceTimeFallback,
+		}
 	}
 	return parsedTimeHint{}
+}
+
+func validFromSourceForContentHint(raw string) string {
+	if timex.IsRelativePhrase(raw) {
+		return ValidFromSourceContentRelative
+	}
+	return ValidFromSourceContentExplicit
 }

@@ -9,6 +9,13 @@ import (
 	"github.com/GizClaw/flowcraft/memory/recall/diagnostics"
 )
 
+const (
+	validFromSourceMetadataKey          = "valid_from_source"
+	validFromSourceContentExplicitValue = "content_explicit"
+	validFromSourceContentRelativeValue = "content_relative"
+	validFromSourceTimeFallbackValue    = "source_time_fallback"
+)
+
 func toRecallScope(s runners.Scope) recall.Scope {
 	return recall.Scope{
 		RuntimeID: s.RuntimeID,
@@ -27,7 +34,7 @@ func fromRecallHit(h recall.Hit) runners.Hit {
 	if len(h.Sources) > 0 {
 		hit.Sources = append([]string(nil), h.Sources...)
 	}
-	if h.Fact.ValidFrom != nil && !h.Fact.ValidFrom.IsZero() {
+	if h.Fact.ValidFrom != nil && !h.Fact.ValidFrom.IsZero() && rendersEventTime(h.Fact.Metadata) {
 		hit.ValidFrom = h.Fact.ValidFrom.Format("2006-01-02")
 	}
 	evidence := h.Evidence
@@ -64,7 +71,7 @@ func groundedHitContent(h recall.Hit) string {
 	// This is LoCoMo answer-context shaping, not an SDK contract: the
 	// benchmark answer prompt expects temporal facts to expose the resolved
 	// date inline so the answer LLM does not recompute relative expressions.
-	if f.ValidFrom != nil && !f.ValidFrom.IsZero() {
+	if f.ValidFrom != nil && !f.ValidFrom.IsZero() && rendersEventTime(f.Metadata) {
 		parts = append(parts, fmt.Sprintf("[time: %s]", f.ValidFrom.Format("2006-01-02")))
 	}
 	appendPart(f.Content)
@@ -76,6 +83,25 @@ func groundedHitContent(h recall.Hit) string {
 		return ""
 	}
 	return strings.Join(dedupeRenderedParts(parts), " | evidence: ")
+}
+
+func rendersEventTime(meta map[string]any) bool {
+	raw, ok := meta[validFromSourceMetadataKey]
+	if !ok {
+		return true
+	}
+	source, ok := raw.(string)
+	if !ok {
+		return true
+	}
+	switch strings.TrimSpace(source) {
+	case validFromSourceContentExplicitValue, validFromSourceContentRelativeValue:
+		return true
+	case validFromSourceTimeFallbackValue:
+		return false
+	default:
+		return true
+	}
 }
 
 func renderEvidencePart(ref recall.EvidenceRef) string {

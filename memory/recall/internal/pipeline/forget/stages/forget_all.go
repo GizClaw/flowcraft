@@ -238,11 +238,6 @@ func (s *ForgetAll) runExpire(
 	scopeKey string,
 	started time.Time,
 ) (diagnostic.StageDetail, error) {
-	now := state.Now
-	if now.IsZero() {
-		now = time.Now()
-	}
-
 	facts, err := s.store.List(ctx, state.Scope, port.ListQuery{IncludeSuperseded: true})
 	if err != nil {
 		return diagnostic.ExpireRetiredDetail{

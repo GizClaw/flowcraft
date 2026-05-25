@@ -596,22 +596,6 @@ func newEpisodeState(scope Scope, req SaveRequest, withTrace, includeRawDiagnost
 	return state
 }
 
-// mergeSaveTrace concatenates the sync semantic lane's trace with the
-// async episode lane's trace so SaveExplain emits one ordered slice
-// across both runners.
-func mergeSaveTrace(a, b SaveTrace) SaveTrace {
-	if len(a.Stages) == 0 {
-		return b
-	}
-	if len(b.Stages) == 0 {
-		return a
-	}
-	out := SaveTrace{Stages: make([]diagnostic.StageDiagnostic, 0, len(a.Stages)+len(b.Stages))}
-	out.Stages = append(out.Stages, a.Stages...)
-	out.Stages = append(out.Stages, b.Stages...)
-	return out
-}
-
 // publicSaveTrace copies the in-flight domain.SaveTrace (when
 // explain was requested) into the public SaveTrace surface.
 func publicSaveTrace(state *write.WriteState) SaveTrace {

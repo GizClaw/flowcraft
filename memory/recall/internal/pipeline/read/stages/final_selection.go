@@ -9,6 +9,7 @@ import (
 	"unicode"
 
 	"github.com/GizClaw/flowcraft/memory/recall/internal/domain"
+	"github.com/GizClaw/flowcraft/memory/recall/internal/words"
 	"github.com/GizClaw/flowcraft/memory/text/quotes"
 	"github.com/GizClaw/flowcraft/memory/text/timex"
 	whenadp "github.com/GizClaw/flowcraft/memory/text/timex/adapter/when"
@@ -152,8 +153,8 @@ func newFinalSelectionQueryFeatures(query string) finalSelectionQueryFeatures {
 		numeric:          numericTokens(query),
 		quoted:           quotedTokenSet(query),
 		proper:           properNounSet(query),
-		hasTimeSignal:    hasTemporalQuestionCue(query) || hasTimex(query, anchor),
-		hasNumericIntent: queryHasNumericIntent(query),
+		hasTimeSignal:    words.HasTemporalQuestionCue(query) || hasTimex(query, anchor),
+		hasNumericIntent: words.HasNumericIntentCue(query),
 	}
 }
 
@@ -462,13 +463,6 @@ func numericTokens(text string) map[string]struct{} {
 	return out
 }
 
-func queryHasTimeSignal(query string) bool {
-	if hasTemporalQuestionCue(query) {
-		return true
-	}
-	return hasTimex(query, time.Now())
-}
-
 func hitHasTimeSignal(hit domain.Hit, evidence string) bool {
 	if hit.Fact.ValidFrom != nil || hit.Fact.ValidTo != nil {
 		return true
@@ -501,30 +495,6 @@ func hasTimex(text string, anchor time.Time) bool {
 var finalSelectionTimeParser = sync.OnceValues(func() (timex.Parser, error) {
 	return whenadp.NewWithLanguages("en", "zh", "nl", "ru", "br")
 })
-
-func hasTemporalQuestionCue(query string) bool {
-	q := strings.ToLower(query)
-	for _, cue := range []string{
-		"when", "what date", "which day", "how long", "how old",
-		"earliest", "latest", "before", "after", "during",
-		"什么时候", "哪天", "多久", "多长时间", "最早", "最晚",
-	} {
-		if strings.Contains(q, cue) {
-			return true
-		}
-	}
-	return false
-}
-
-func queryHasNumericIntent(query string) bool {
-	q := strings.ToLower(query)
-	for _, cue := range []string{"how many", "how much", "number", "count", "total", "多少", "几个", "几次"} {
-		if strings.Contains(q, cue) {
-			return true
-		}
-	}
-	return false
-}
 
 func quotedTokenSet(text string) map[string]struct{} {
 	out := map[string]struct{}{}
