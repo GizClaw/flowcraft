@@ -105,10 +105,30 @@ func TestBuildAnswerBodyLimitsWhenHintsToTopRankedMemories(t *testing.T) {
 	}
 }
 
+func TestBuildAnswerBodyHidesWeakAnchorsWhenStrongEventTimeExists(t *testing.T) {
+	body := buildAnswerBody(dataset.Question{
+		Query: "When did Gina get her tattoo?",
+	}, []runners.Hit{{
+		Content: "[time: 2020-02-08] Gina got a tattoo a few years ago. | evidence: [source_time: 2023-02-08 09:32] Got the tattoo a few years ago.",
+	}})
+
+	if !strings.Contains(body, "likely_when=#1:2020-02-08") {
+		t.Fatalf("body should include strong event time:\n%s", body)
+	}
+	for _, unwanted := range []string{"weak_observed_at=", "source_time_anchors="} {
+		if strings.Contains(body, unwanted) {
+			t.Fatalf("body should hide weak anchors when strong event time exists:\n%s", body)
+		}
+	}
+}
+
 func TestDefaultAnswerPromptMentionsRankedEvidenceAndRelativeDates(t *testing.T) {
 	for _, want := range []string{
 		"Prefer lower-numbered memories",
 		"combine the supported items",
+		"comma-separated list",
+		"bridge questions",
+		"exact spans from evidence quotes",
 		"Do not answer \"I don't know\"",
 		"preserve that relative wording",
 		"[observed_at:",

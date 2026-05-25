@@ -302,6 +302,42 @@ func TestBuildHitsFinalSelectionUsesFactContentWhenEvidenceIsThin(t *testing.T) 
 	}
 }
 
+func TestFinalSelectionCoverageRescueReplacesWeakDuplicateContext(t *testing.T) {
+	features := domain.QueryFeatures{
+		Tokens: map[string]struct{}{
+			"alice":       {},
+			"books":       {},
+			"instruments": {},
+		},
+	}
+	queryFeatures := newFinalSelectionQueryFeatures(features)
+	selectedCandidates := []finalSelectionCandidate{
+		coverageCandidate("generic-1", 6, 0.20, map[string]struct{}{"alice": {}}),
+		coverageCandidate("generic-2", 7, 0.18, map[string]struct{}{"alice": {}}),
+	}
+	selected := finalSelectionHits(selectedCandidates)
+	rescue := coverageCandidate("rescue", 15, 0.55, map[string]struct{}{
+		"alice":       {},
+		"books":       {},
+		"instruments": {},
+		"violin":      {},
+	})
+
+	got, gotCandidates := finalSelectionRescueCoverage(queryFeatures, append(selectedCandidates, rescue), selected, selectedCandidates, 2)
+	if len(got) != 2 || len(gotCandidates) != 2 {
+		t.Fatalf("coverage rescue lengths = hits:%d candidates:%d", len(got), len(gotCandidates))
+	}
+	found := false
+	for _, hit := range got {
+		if hit.Fact.ID == "rescue" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("coverage rescue should add the candidate covering missing query slots, got %+v", got)
+	}
+}
+
 func TestBuildHitsRerankerPathUsesHybridFinalSelection(t *testing.T) {
 	stage := NewBuildHits(reorderReranker{})
 	state := &read.ReadState{
@@ -508,5 +544,20 @@ func strongContextItem(id, evidenceID, text string) domain.ContextItem {
 		Candidate: domain.Candidate{FactID: id, Source: "retrieval", Score: 0.2, EvidenceIDs: []string{evidenceID}},
 		Fact:      domain.TemporalFact{ID: id, Kind: domain.KindState, Content: text},
 		Evidence:  []domain.EvidenceRef{{ID: evidenceID, Text: text}},
+	}
+}
+
+func coverageCandidate(id string, rank int, score float64, tokens map[string]struct{}) finalSelectionCandidate {
+	return finalSelectionCandidate{
+		hit: domain.Hit{
+			Fact: domain.TemporalFact{ID: id, Kind: domain.KindState, Content: id},
+		},
+		score:          score,
+		baseScore:      score,
+		evidenceScore:  score,
+		factScore:      score,
+		queryRank:      rank,
+		evidenceTokens: tokens,
+		factTokens:     tokens,
 	}
 }

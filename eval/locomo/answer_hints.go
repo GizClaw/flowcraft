@@ -20,8 +20,9 @@ var (
 
 const (
 	answerHintStrongRankLimit = 8
-	answerHintWeakRankLimit   = 8
+	answerHintWeakRankLimit   = 3
 	answerHintMaxValues       = 8
+	answerHintMaxWeakValues   = 3
 )
 
 func buildAnswerHints(query string, hits []runners.Hit) string {
@@ -74,8 +75,8 @@ func buildWhenAnswerHints(hits []runners.Hit) string {
 			}
 		}
 		if rank < answerHintWeakRankLimit {
-			observed = appendUniqueHintLimited(observed, rankedHint(rank, firstSubmatch(answerHintObservedAtRE, content)), answerHintMaxValues)
-			sourceTimes = appendUniqueHintLimited(sourceTimes, rankedHint(rank, firstSubmatch(answerHintSourceTimeRE, content)), answerHintMaxValues)
+			observed = appendUniqueHintLimited(observed, rankedHint(rank, firstSubmatch(answerHintObservedAtRE, content)), answerHintMaxWeakValues)
+			sourceTimes = appendUniqueHintLimited(sourceTimes, rankedHint(rank, firstSubmatch(answerHintSourceTimeRE, content)), answerHintMaxWeakValues)
 		}
 	}
 	if len(eventTimes) == 0 && len(relative) == 0 && len(observed) == 0 && len(sourceTimes) == 0 {
@@ -88,10 +89,10 @@ func buildWhenAnswerHints(hits []runners.Hit) string {
 	if len(relative) > 0 {
 		parts = append(parts, "relative_candidates="+strings.Join(relative, "; "))
 	}
-	if len(observed) > 0 {
+	if len(eventTimes) == 0 && len(observed) > 0 {
 		parts = append(parts, "weak_observed_at="+strings.Join(observed, "; "))
 	}
-	if len(sourceTimes) > 0 {
+	if len(eventTimes) == 0 && len(sourceTimes) > 0 {
 		parts = append(parts, "source_time_anchors="+strings.Join(sourceTimes, "; "))
 	}
 	parts = append(parts, "rule=prefer top-ranked [time:] and explicit relative wording; do not recompute a relative phrase on top of [time:]; ignore weak observed/source timestamps unless the memory text says the event happened at that turn")

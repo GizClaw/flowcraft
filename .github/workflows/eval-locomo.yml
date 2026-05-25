@@ -82,7 +82,7 @@ on:
       answer_llm:
         description: "Answer-synthesis model alias"
         required: false
-        default: "azure_4o_mini"
+        default: "azure_gpt54"
       judge_llm:
         description: "Judge model alias"
         required: false

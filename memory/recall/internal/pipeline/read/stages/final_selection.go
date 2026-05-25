@@ -96,6 +96,7 @@ func selectFinalHybridRerankHitsWithFeatures(features domain.QueryFeatures, orde
 			}
 		}
 	}
+	selected, selectedCandidates = finalSelectionRescueCoverage(newFinalSelectionQueryFeatures(features), candidates, selected, selectedCandidates, cap)
 	selected = finalSelectionRescueAnswerSlot(candidates, selected, selectedCandidates, cap)
 	return selected
 }
@@ -371,6 +372,152 @@ func finalSelectionRescueAnswerSlot(candidates []finalSelectionCandidate, select
 	out := append([]domain.Hit(nil), selected...)
 	out[replace] = candidates[best].hit
 	return out
+}
+
+func finalSelectionRescueCoverage(query finalSelectionQueryFeatures, candidates []finalSelectionCandidate, selected []domain.Hit, selectedCandidates []finalSelectionCandidate, cap int) ([]domain.Hit, []finalSelectionCandidate) {
+	if cap <= 0 || len(selected) == 0 || len(selected) < cap || len(query.tokens) == 0 {
+		return selected, selectedCandidates
+	}
+	maxRescues := cap / 10
+	if maxRescues < 1 {
+		maxRescues = 1
+	}
+	if maxRescues > 3 {
+		maxRescues = 3
+	}
+	out := append([]domain.Hit(nil), selected...)
+	outCandidates := append([]finalSelectionCandidate(nil), selectedCandidates...)
+	for rescue := 0; rescue < maxRescues; rescue++ {
+		covered := finalSelectionCoveredQueryTokens(query, outCandidates)
+		best := -1
+		bestGain := 0.0
+		for i, cand := range candidates {
+			if finalSelectionCandidateDuplicate(cand, outCandidates) {
+				continue
+			}
+			gain := finalSelectionCoverageGain(query, cand, covered, outCandidates)
+			if gain < 0.12 {
+				continue
+			}
+			if best < 0 || gain > bestGain || (math.Abs(gain-bestGain) <= 1e-9 && cand.score > candidates[best].score) {
+				best = i
+				bestGain = gain
+			}
+		}
+		if best < 0 {
+			break
+		}
+		replace := finalSelectionCoverageReplacement(outCandidates, candidates[best])
+		if replace < 0 {
+			break
+		}
+		out[replace] = candidates[best].hit
+		outCandidates[replace] = candidates[best]
+	}
+	return out, outCandidates
+}
+
+func finalSelectionCoveredQueryTokens(query finalSelectionQueryFeatures, selected []finalSelectionCandidate) map[string]struct{} {
+	covered := map[string]struct{}{}
+	for _, cand := range selected {
+		for tok := range query.tokens {
+			if _, ok := cand.evidenceTokens[tok]; ok {
+				covered[tok] = struct{}{}
+				continue
+			}
+			if _, ok := cand.factTokens[tok]; ok {
+				covered[tok] = struct{}{}
+			}
+		}
+	}
+	return covered
+}
+
+func finalSelectionCoverageGain(query finalSelectionQueryFeatures, cand finalSelectionCandidate, covered map[string]struct{}, selected []finalSelectionCandidate) float64 {
+	if finalSelectionMaxSimilarity(cand, selected) >= 0.88 {
+		return 0
+	}
+	newMatches := 0
+	for tok := range query.tokens {
+		if _, ok := covered[tok]; ok {
+			continue
+		}
+		if _, ok := cand.evidenceTokens[tok]; ok {
+			newMatches++
+			continue
+		}
+		if _, ok := cand.factTokens[tok]; ok {
+			newMatches++
+		}
+	}
+	gain := float64(newMatches) / float64(len(query.tokens))
+	if query.hasNumericIntent && cand.hasNumeric && !finalSelectionAnySelectedNumeric(selected) {
+		gain += 0.18
+	}
+	if query.hasTimeSignal && cand.hasTimeSignal && !finalSelectionAnySelectedTime(selected) {
+		gain += 0.18
+	}
+	if len(query.quoted) > 0 && (intersects(query.quoted, cand.evidenceTokens) || intersects(query.quoted, cand.factTokens)) {
+		gain += 0.12
+	}
+	if len(query.proper) > 0 && (intersects(query.proper, cand.evidenceTokens) || intersects(query.proper, cand.factTokens)) {
+		gain += 0.08
+	}
+	if cand.evidenceScore >= 0.45 {
+		gain += 0.05
+	}
+	return gain
+}
+
+func finalSelectionCoverageReplacement(selected []finalSelectionCandidate, incoming finalSelectionCandidate) int {
+	replace := -1
+	incomingUtility := finalSelectionCoverageUtility(incoming)
+	for i, cand := range selected {
+		utility := finalSelectionCoverageUtility(cand)
+		if cand.queryRank < 5 && utility >= 0.35 {
+			continue
+		}
+		if utility+0.03 >= incomingUtility && cand.evidenceScore >= 0.45 {
+			continue
+		}
+		if replace < 0 || utility < finalSelectionCoverageUtility(selected[replace]) {
+			replace = i
+		}
+	}
+	return replace
+}
+
+func finalSelectionCoverageUtility(cand finalSelectionCandidate) float64 {
+	return 0.45*cand.evidenceScore + 0.30*cand.factScore + 0.15*cand.slotScore + 0.10*cand.score
+}
+
+func finalSelectionMaxSimilarity(candidate finalSelectionCandidate, selected []finalSelectionCandidate) float64 {
+	maxSimilarity := 0.0
+	for _, existing := range selected {
+		similarity := tokenSetJaccard(candidate.evidenceTokens, existing.evidenceTokens)
+		if similarity > maxSimilarity {
+			maxSimilarity = similarity
+		}
+	}
+	return maxSimilarity
+}
+
+func finalSelectionAnySelectedNumeric(selected []finalSelectionCandidate) bool {
+	for _, cand := range selected {
+		if cand.hasNumeric {
+			return true
+		}
+	}
+	return false
+}
+
+func finalSelectionAnySelectedTime(selected []finalSelectionCandidate) bool {
+	for _, cand := range selected {
+		if cand.hasTimeSignal {
+			return true
+		}
+	}
+	return false
 }
 
 func betterFinalSelectionTieBreak(a, b finalSelectionCandidate) bool {
