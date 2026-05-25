@@ -51,6 +51,44 @@ func TestRuleBased_EntityActivatedByHints(t *testing.T) {
 	}
 }
 
+func TestActivatesTimelineForDirectDateIntent(t *testing.T) {
+	intent := domain.QueryIntent{
+		Kinds: []domain.FactKind{domain.KindEvent, domain.KindState, domain.KindPlan},
+		Features: domain.QueryFeatures{Temporal: domain.QueryTemporalFeatures{
+			HasIntent:  true,
+			IntentKind: []domain.QueryTemporalIntentKind{domain.QueryTemporalIntentDate},
+		}},
+	}
+
+	if !ActivatesTimeline(intent) {
+		t.Fatalf("timeline should activate for direct date/when intent")
+	}
+}
+
+func TestActivatesTimelineSkipsBroadTemporalIntentWithoutRange(t *testing.T) {
+	intent := domain.QueryIntent{
+		Kinds: []domain.FactKind{domain.KindEvent, domain.KindState, domain.KindPlan},
+		Features: domain.QueryFeatures{Temporal: domain.QueryTemporalFeatures{
+			HasIntent:  true,
+			IntentKind: []domain.QueryTemporalIntentKind{domain.QueryTemporalIntentDate, domain.QueryTemporalIntentRange},
+		}},
+	}
+
+	if ActivatesTimeline(intent) {
+		t.Fatalf("timeline should not activate for broad range intent without explicit time bounds")
+	}
+}
+
+func TestActivatesTimelinePreservesExplicitStructuredKinds(t *testing.T) {
+	intent := domain.QueryIntent{
+		Kinds: []domain.FactKind{domain.KindEvent},
+	}
+
+	if !ActivatesTimeline(intent) {
+		t.Fatalf("timeline should still activate for explicit structured temporal kinds")
+	}
+}
+
 func TestRuleBased_SourceBudgetsOverfetchFinalLimit(t *testing.T) {
 	p := New()
 	plan, err := p.Plan(context.Background(), port.PlannerInput{

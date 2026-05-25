@@ -76,6 +76,35 @@ func TestBuildAnswerBodyDoesNotPromoteObservationTimeToLikelyWhen(t *testing.T) 
 	}
 }
 
+func TestBuildAnswerBodyLimitsWhenHintsToTopRankedMemories(t *testing.T) {
+	hits := []runners.Hit{
+		{Content: "[observed_at: 2023-05-01] unrelated memory 1."},
+		{Content: "[observed_at: 2023-05-02] unrelated memory 2."},
+		{Content: "[observed_at: 2023-05-03] unrelated memory 3."},
+		{Content: "[observed_at: 2023-05-04] unrelated memory 4."},
+		{Content: "[observed_at: 2023-05-05] unrelated memory 5."},
+		{Content: "[observed_at: 2023-05-06] unrelated memory 6."},
+		{Content: "[observed_at: 2023-05-07] unrelated memory 7."},
+		{Content: "Melanie painted a sunrise last year."},
+		{Content: "[time: 2023-05-09] Low-ranked distractor date."},
+	}
+	body := buildAnswerBody(dataset.Question{
+		Query: "When did Melanie paint a sunrise?",
+	}, hits)
+
+	if !strings.Contains(body, "relative_candidates=#8:last year") {
+		t.Fatalf("body should keep top-ranked relative hint:\n%s", body)
+	}
+	for _, unwanted := range []string{
+		"likely_when=#9:2023-05-09",
+		"weak_observed_at=#9:",
+	} {
+		if strings.Contains(body, unwanted) {
+			t.Fatalf("body should trim low-ranked when hint %q:\n%s", unwanted, body)
+		}
+	}
+}
+
 func TestDefaultAnswerPromptMentionsRankedEvidenceAndRelativeDates(t *testing.T) {
 	for _, want := range []string{
 		"Prefer lower-numbered memories",

@@ -3,6 +3,7 @@ package stages
 import (
 	"context"
 
+	"github.com/GizClaw/flowcraft/memory/recall/internal/domain"
 	"github.com/GizClaw/flowcraft/memory/recall/internal/domain/diagnostic"
 	"github.com/GizClaw/flowcraft/memory/recall/internal/pipeline"
 	"github.com/GizClaw/flowcraft/memory/recall/internal/pipeline/read"
@@ -35,11 +36,8 @@ func (s *Fuse) Run(ctx context.Context, state *read.ReadState) (diagnostic.Stage
 	if opts.TotalCap == 0 && state.Plan != nil && s.capFunc != nil {
 		opts.TotalCap = s.capFunc(state.Plan.TotalCap)
 	}
-	if state.Plan != nil && (state.Plan.Intent.Features.HasTimeSignal() || state.Plan.Intent.Features.NumericIntent) {
-		opts.SourceFloors = mergeSourceFloors(opts.SourceFloors, map[string]int{
-			planner.SourceRetrieval: 5,
-			planner.SourceTimeline:  3,
-		})
+	if state.Plan != nil {
+		opts.SourceFloors = mergeSourceFloors(opts.SourceFloors, fusionSourceFloors(state.Plan.Intent.Features))
 	}
 	var (
 		inputCount int
@@ -76,6 +74,20 @@ func mergeSourceFloors(base, extra map[string]int) map[string]int {
 		}
 	}
 	return out
+}
+
+func fusionSourceFloors(features domain.QueryFeatures) map[string]int {
+	floors := map[string]int{}
+	if features.HasTimeSignal() || features.NumericIntent {
+		floors[planner.SourceRetrieval] = 5
+	}
+	if planner.DirectTimelineDateIntent(features) {
+		floors[planner.SourceTimeline] = 3
+	}
+	if len(floors) == 0 {
+		return nil
+	}
+	return floors
 }
 
 var _ pipeline.Stage[*read.ReadState] = (*Fuse)(nil)

@@ -18,6 +18,12 @@ var (
 	answerHintQuestionSpace = regexp.MustCompile(`\s+`)
 )
 
+const (
+	answerHintStrongRankLimit = 8
+	answerHintWeakRankLimit   = 8
+	answerHintMaxValues       = 8
+)
+
 func buildAnswerHints(query string, hits []runners.Hit) string {
 	kind := answerHintKind(query)
 	if kind == "" || len(hits) == 0 {
@@ -59,14 +65,18 @@ func buildWhenAnswerHints(hits []runners.Hit) string {
 	var eventTimes, relative, observed, sourceTimes []string
 	for rank, hit := range hits {
 		content := hit.Content
-		dateSearchText := answerHintDateSearchText(content)
-		eventTimes = appendUniqueHint(eventTimes, rankedHint(rank, firstSubmatch(answerHintTimeTagRE, content)))
-		relative = appendUniqueHint(relative, rankedHint(rank, firstMatch(answerHintRelativeRE, content)))
-		if len(eventTimes) == 0 {
-			eventTimes = appendUniqueHint(eventTimes, rankedHint(rank, firstMatch(answerHintDateRE, dateSearchText)))
+		if rank < answerHintStrongRankLimit {
+			dateSearchText := answerHintDateSearchText(content)
+			eventTimes = appendUniqueHintLimited(eventTimes, rankedHint(rank, firstSubmatch(answerHintTimeTagRE, content)), answerHintMaxValues)
+			relative = appendUniqueHintLimited(relative, rankedHint(rank, firstMatch(answerHintRelativeRE, content)), answerHintMaxValues)
+			if len(eventTimes) == 0 {
+				eventTimes = appendUniqueHintLimited(eventTimes, rankedHint(rank, firstMatch(answerHintDateRE, dateSearchText)), answerHintMaxValues)
+			}
 		}
-		observed = appendUniqueHint(observed, rankedHint(rank, firstSubmatch(answerHintObservedAtRE, content)))
-		sourceTimes = appendUniqueHint(sourceTimes, rankedHint(rank, firstSubmatch(answerHintSourceTimeRE, content)))
+		if rank < answerHintWeakRankLimit {
+			observed = appendUniqueHintLimited(observed, rankedHint(rank, firstSubmatch(answerHintObservedAtRE, content)), answerHintMaxValues)
+			sourceTimes = appendUniqueHintLimited(sourceTimes, rankedHint(rank, firstSubmatch(answerHintSourceTimeRE, content)), answerHintMaxValues)
+		}
 	}
 	if len(eventTimes) == 0 && len(relative) == 0 && len(observed) == 0 && len(sourceTimes) == 0 {
 		return ""
@@ -84,7 +94,7 @@ func buildWhenAnswerHints(hits []runners.Hit) string {
 	if len(sourceTimes) > 0 {
 		parts = append(parts, "source_time_anchors="+strings.Join(sourceTimes, "; "))
 	}
-	parts = append(parts, "rule=prefer [time:] and explicit relative wording; do not recompute a relative phrase on top of [time:]")
+	parts = append(parts, "rule=prefer top-ranked [time:] and explicit relative wording; do not recompute a relative phrase on top of [time:]; ignore weak observed/source timestamps unless the memory text says the event happened at that turn")
 	return "ANSWER_HINTS: " + strings.Join(parts, " | ")
 }
 
@@ -134,6 +144,13 @@ func rankedHint(rank int, text string) string {
 }
 
 func appendUniqueHint(values []string, value string) []string {
+	return appendUniqueHintLimited(values, value, 0)
+}
+
+func appendUniqueHintLimited(values []string, value string, limit int) []string {
+	if limit > 0 && len(values) >= limit {
+		return values
+	}
 	value = strings.TrimSpace(value)
 	if value == "" {
 		return values

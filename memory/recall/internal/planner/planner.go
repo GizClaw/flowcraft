@@ -266,6 +266,12 @@ func ActivatesTimeline(intent domain.QueryIntent) bool {
 	if !intent.TimeRange.IsZero() {
 		return true
 	}
+	if DirectTimelineDateIntent(intent.Features) {
+		return true
+	}
+	if intent.Features.Temporal.HasIntent {
+		return false
+	}
 	return kindsIntersectTimeline(intent.Kinds)
 }
 
@@ -306,6 +312,31 @@ func kindsIntersectTimeline(kinds []domain.FactKind) bool {
 	for _, k := range kinds {
 		switch k {
 		case domain.KindEvent, domain.KindPlan, domain.KindState:
+			return true
+		}
+	}
+	return false
+}
+
+// DirectTimelineDateIntent reports whether query understanding indicates a
+// direct "when/date" ask rather than a broad range/order/duration cue.
+func DirectTimelineDateIntent(features domain.QueryFeatures) bool {
+	temporal := features.Temporal
+	if temporal.HasExplicitDate || !temporal.TimeRange.IsZero() {
+		return true
+	}
+	if !hasTemporalIntentKind(temporal.IntentKind, domain.QueryTemporalIntentDate) {
+		return false
+	}
+	return !temporal.HasDurationIntent &&
+		!hasTemporalIntentKind(temporal.IntentKind, domain.QueryTemporalIntentDuration) &&
+		!hasTemporalIntentKind(temporal.IntentKind, domain.QueryTemporalIntentRange) &&
+		!hasTemporalIntentKind(temporal.IntentKind, domain.QueryTemporalIntentOrder)
+}
+
+func hasTemporalIntentKind(kinds []domain.QueryTemporalIntentKind, want domain.QueryTemporalIntentKind) bool {
+	for _, kind := range kinds {
+		if kind == want {
 			return true
 		}
 	}
