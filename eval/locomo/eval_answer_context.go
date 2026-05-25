@@ -14,6 +14,9 @@ const (
 	directEvidenceSection     = "DIRECT EVIDENCE (answer from these first):"
 	supportingEvidenceSection = "SUPPORTING EVIDENCE (use to complete lists or resolve ambiguity):"
 	lowerPrioritySection      = "LOWER-PRIORITY CONTEXT (possible distractors; use only if needed):"
+
+	maxDirectAnswerHits     = 5
+	maxSupportingAnswerHits = 12
 )
 
 type answerQueryFeatures struct {
@@ -25,9 +28,12 @@ type answerQueryFeatures struct {
 }
 
 type organizedAnswerHit struct {
-	rank  int
-	hit   runners.Hit
-	score float64
+	rank           int
+	hit            runners.Hit
+	score          float64
+	matched        int
+	timeSignal     bool
+	numericOverlap bool
 }
 
 type organizedAnswerContext struct {
@@ -65,18 +71,18 @@ func organizeAnswerContext(query string, hits []runners.Hit) organizedAnswerCont
 	out := organizedAnswerContext{}
 	for i, hit := range hits {
 		item := organizedAnswerHit{rank: i + 1, hit: hit}
-		item.score = answerHitRelevance(features, hit.Content)
+		item = scoreAnswerHit(features, item)
 		switch {
-		case answerHitIsDirect(features, item):
+		case len(out.direct) < maxDirectAnswerHits && answerHitIsDirect(features, item):
 			out.direct = append(out.direct, item)
-		case answerHitIsSupporting(features, item):
+		case len(out.supporting) < maxSupportingAnswerHits && answerHitIsSupporting(features, item):
 			out.supporting = append(out.supporting, item)
 		default:
 			out.lower = append(out.lower, item)
 		}
 	}
 	if len(out.direct) == 0 {
-		promote := 3
+		promote := 2
 		if promote > len(out.lower) {
 			promote = len(out.lower)
 		}
@@ -100,13 +106,10 @@ func answerHitIsDirect(query answerQueryFeatures, item organizedAnswerHit) bool 
 	if item.rank <= 2 {
 		return true
 	}
-	if item.score >= 0.34 {
+	if item.rank <= 5 && item.score >= 0.55 && item.matched >= 2 {
 		return true
 	}
-	if query.temporal && item.rank <= 8 && answerHasTimeSignal(item.hit.Content) && item.score >= 0.12 {
-		return true
-	}
-	if query.numericIntent && item.rank <= 8 && answerNumericOverlap(query.numeric, item.hit.Content) {
+	if query.numericIntent && item.rank <= 5 && item.numericOverlap {
 		return true
 	}
 	return false
@@ -116,28 +119,35 @@ func answerHitIsSupporting(query answerQueryFeatures, item organizedAnswerHit) b
 	if item.rank <= 5 {
 		return true
 	}
-	if item.score >= 0.18 {
+	if item.score >= 0.18 && item.matched >= 2 {
 		return true
 	}
-	if query.listIntent && item.rank <= 15 && item.score > 0 {
+	if query.listIntent && item.rank <= 12 && item.matched >= 2 {
 		return true
 	}
-	if query.temporal && item.rank <= 15 && answerHasTimeSignal(item.hit.Content) && item.score > 0 {
+	if query.temporal && item.rank <= 12 && item.timeSignal && item.matched >= 2 {
 		return true
 	}
-	if query.numericIntent && item.rank <= 15 && answerNumericOverlap(query.numeric, item.hit.Content) {
+	if query.numericIntent && item.rank <= 12 && item.numericOverlap {
 		return true
 	}
 	return false
 }
 
-func answerHitRelevance(query answerQueryFeatures, text string) float64 {
+func scoreAnswerHit(query answerQueryFeatures, item organizedAnswerHit) organizedAnswerHit {
+	item.timeSignal = answerHasTimeSignal(item.hit.Content)
+	item.numericOverlap = answerNumericOverlap(query.numeric, item.hit.Content)
+	item.matched, item.score = answerHitRelevance(query, item.hit.Content)
+	return item
+}
+
+func answerHitRelevance(query answerQueryFeatures, text string) (int, float64) {
 	if len(query.tokens) == 0 {
-		return 0
+		return 0, 0
 	}
 	tokens := answerTokenSet(text)
 	if len(tokens) == 0 {
-		return 0
+		return 0, 0
 	}
 	matched := 0
 	for tok := range query.tokens {
@@ -146,16 +156,13 @@ func answerHitRelevance(query answerQueryFeatures, text string) float64 {
 		}
 	}
 	score := float64(matched) / float64(len(query.tokens))
-	if query.temporal && answerHasTimeSignal(text) {
-		score += 0.10
-	}
 	if query.numericIntent && answerNumericOverlap(query.numeric, text) {
 		score += 0.10
 	}
 	if score > 1 {
-		return 1
+		return matched, 1
 	}
-	return score
+	return matched, score
 }
 
 func answerTokenSet(text string) map[string]struct{} {
