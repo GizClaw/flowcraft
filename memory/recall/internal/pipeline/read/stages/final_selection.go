@@ -122,7 +122,7 @@ func finalSelectionCandidates(features domain.QueryFeatures, hits []domain.Hit) 
 	}
 	out := make([]finalSelectionCandidate, 0, len(hits))
 	seenFacts := map[string]struct{}{}
-	seenEvidence := map[string]struct{}{}
+	seenEvidence := map[string]int{}
 	for i, hit := range hits {
 		if hit.Fact.ID != "" {
 			if _, ok := seenFacts[hit.Fact.ID]; ok {
@@ -131,13 +131,17 @@ func finalSelectionCandidates(features domain.QueryFeatures, hits []domain.Hit) 
 			seenFacts[hit.Fact.ID] = struct{}{}
 		}
 		evidenceKey := primaryEvidenceKey(hit)
+		candidate := newFinalSelectionCandidate(queryFeatures, hit, i, maxScore, evidenceKey)
 		if evidenceKey != "" {
-			if _, ok := seenEvidence[evidenceKey]; ok {
+			if existing, ok := seenEvidence[evidenceKey]; ok {
+				if betterFinalSelectionEvidenceRepresentative(candidate, out[existing]) {
+					out[existing] = candidate
+				}
 				continue
 			}
-			seenEvidence[evidenceKey] = struct{}{}
+			seenEvidence[evidenceKey] = len(out)
 		}
-		out = append(out, newFinalSelectionCandidate(queryFeatures, hit, i, maxScore, evidenceKey))
+		out = append(out, candidate)
 	}
 	sort.SliceStable(out, func(i, j int) bool {
 		if math.Abs(out[i].score-out[j].score) > 1e-9 {
@@ -547,6 +551,35 @@ func intersects(a, b map[string]struct{}) bool {
 		}
 	}
 	return false
+}
+
+func betterFinalSelectionEvidenceRepresentative(a, b finalSelectionCandidate) bool {
+	aAnswerScore := a.slotScore + 0.55*a.evidenceScore + 0.45*a.factScore
+	bAnswerScore := b.slotScore + 0.55*b.evidenceScore + 0.45*b.factScore
+	if math.Abs(aAnswerScore-bAnswerScore) > 1e-9 {
+		return aAnswerScore > bAnswerScore
+	}
+	if ak, bk := finalSelectionKindPriority(a.hit.Fact.Kind), finalSelectionKindPriority(b.hit.Fact.Kind); ak != bk {
+		return ak > bk
+	}
+	return betterFinalSelectionTieBreak(a, b)
+}
+
+func finalSelectionKindPriority(kind domain.FactKind) int {
+	switch kind {
+	case domain.KindEvent:
+		return 5
+	case domain.KindState:
+		return 4
+	case domain.KindPlan:
+		return 3
+	case domain.KindPreference, domain.KindProcedure, domain.KindRelation:
+		return 2
+	case domain.KindNote:
+		return 1
+	default:
+		return 0
+	}
 }
 
 func hitHasTimeSignal(hit domain.Hit, evidence string) bool {

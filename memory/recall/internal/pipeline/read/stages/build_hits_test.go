@@ -173,6 +173,34 @@ func TestBuildHitsFinalSelectionHybridReplacesWeakFinalHit(t *testing.T) {
 	}
 }
 
+func TestBuildHitsFinalSelectionKeepsBestFactForSharedEvidence(t *testing.T) {
+	stage := NewBuildHits(nil)
+	shared := domain.EvidenceRef{ID: "e1", Text: "I painted that lake sunrise last year!"}
+	state := &read.ReadState{
+		Plan:  &domain.QueryPlan{TotalCap: 1},
+		Query: domain.Query{Text: "When did Melanie paint a sunrise?"},
+		Ranked: []domain.ContextItem{
+			{
+				Candidate: domain.Candidate{FactID: "state", Source: "graph", Score: 0.9, EvidenceIDs: []string{"e1"}},
+				Fact:      domain.TemporalFact{ID: "state", Kind: domain.KindState, Content: "Melanie's painting of the lake sunrise is special to her.", EvidenceRefs: []domain.EvidenceRef{shared}},
+				Evidence:  []domain.EvidenceRef{shared},
+			},
+			{
+				Candidate: domain.Candidate{FactID: "event", Source: "retrieval", Score: 0.8, EvidenceIDs: []string{"e1"}},
+				Fact:      domain.TemporalFact{ID: "event", Kind: domain.KindEvent, Content: "Melanie painted a lake sunrise last year.", EvidenceRefs: []domain.EvidenceRef{shared}},
+				Evidence:  []domain.EvidenceRef{shared},
+			},
+		},
+	}
+
+	if _, err := stage.Run(context.Background(), state); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if len(state.Hits) != 1 || state.Hits[0].Fact.ID != "event" {
+		t.Fatalf("shared evidence representative should keep answer-bearing event, got %+v", state.Hits)
+	}
+}
+
 func TestBuildHitsFinalSelectionHybridCanReplaceSeveralWeakHits(t *testing.T) {
 	stage := NewBuildHits(nil)
 	query := "What books and instruments does Alice like?"

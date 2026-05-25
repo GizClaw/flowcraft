@@ -13,7 +13,7 @@ var (
 	answerHintObservedAtRE  = regexp.MustCompile(`\[observed_at:\s*([0-9]{4}-[0-9]{2}-[0-9]{2})\]`)
 	answerHintSourceTimeRE  = regexp.MustCompile(`\[source_time:\s*([0-9]{4}-[0-9]{2}-[0-9]{2})(?:\s+[0-9]{2}:[0-9]{2})?\]`)
 	answerHintDateRE        = regexp.MustCompile(`\b(?:[0-9]{4}-[0-9]{2}-[0-9]{2}|[0-9]{1,2}\s+[A-Za-z]+\s+[0-9]{4}|[A-Za-z]+\s+[0-9]{1,2},?\s+[0-9]{4})\b`)
-	answerHintRelativeRE    = regexp.MustCompile(`(?i)\b(?:the\s+)?(?:day|week|weekend|month|year|summer|winter|spring|fall|autumn)\s+(?:before|after)\s+[^.|;,\]]+`)
+	answerHintRelativeRE    = regexp.MustCompile(`(?i)\b(?:(?:the\s+)?(?:day|week|weekend|month|year|summer|winter|spring|fall|autumn)\s+(?:before|after)\s+[^.|;,\]]+|(?:last|next|this)\s+(?:day|week|weekend|month|year|summer|winter|spring|fall|autumn)|(?:a|an|one|two|three|four|five|six|seven|eight|nine|ten|\d+)\s+(?:days?|weeks?|months?|years?)\s+ago)\b`)
 	answerHintNumericRE     = regexp.MustCompile(`(?i)(?:[$€£]\s*\d+(?:[.,]\d+)?|\d+(?:[.,]\d+)?\s*(?:%|percent|percentage|minutes?|hours?|days?|weeks?|months?|years?|times?|x)\b|\b\d+(?:[.,]\d+)?\b)`)
 	answerHintQuestionSpace = regexp.MustCompile(`\s+`)
 )
@@ -59,10 +59,11 @@ func buildWhenAnswerHints(hits []runners.Hit) string {
 	var eventTimes, relative, observed, sourceTimes []string
 	for rank, hit := range hits {
 		content := hit.Content
+		dateSearchText := answerHintDateSearchText(content)
 		eventTimes = appendUniqueHint(eventTimes, rankedHint(rank, firstSubmatch(answerHintTimeTagRE, content)))
 		relative = appendUniqueHint(relative, rankedHint(rank, firstMatch(answerHintRelativeRE, content)))
 		if len(eventTimes) == 0 {
-			eventTimes = appendUniqueHint(eventTimes, rankedHint(rank, firstMatch(answerHintDateRE, content)))
+			eventTimes = appendUniqueHint(eventTimes, rankedHint(rank, firstMatch(answerHintDateRE, dateSearchText)))
 		}
 		observed = appendUniqueHint(observed, rankedHint(rank, firstSubmatch(answerHintObservedAtRE, content)))
 		sourceTimes = appendUniqueHint(sourceTimes, rankedHint(rank, firstSubmatch(answerHintSourceTimeRE, content)))
@@ -104,6 +105,12 @@ func buildNumericAnswerHints(hits []runners.Hit) string {
 		return ""
 	}
 	return "ANSWER_HINTS: numeric_candidates=" + strings.Join(candidates, "; ") + " | rule=choose the candidate that matches the question's numeric slot and top-ranked supporting memory"
+}
+
+func answerHintDateSearchText(text string) string {
+	text = answerHintObservedAtRE.ReplaceAllString(text, " ")
+	text = answerHintSourceTimeRE.ReplaceAllString(text, " ")
+	return text
 }
 
 func firstSubmatch(re *regexp.Regexp, text string) string {

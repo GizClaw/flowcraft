@@ -179,5 +179,49 @@ func TestSource_EvidenceDocCarriesEvidenceID(t *testing.T) {
 	t.Fatalf("expected evidence-level candidate for f1/e1, got %+v", res.Candidates)
 }
 
+func TestSource_DeduplicatesFactAndEvidenceDocs(t *testing.T) {
+	idx := retrievalmem.New()
+	proj, _ := retlens.New(idx)
+	scope := domain.Scope{RuntimeID: "rt"}
+	if err := proj.Project(context.Background(), []domain.TemporalFact{{
+		ID:      "f1",
+		Scope:   scope,
+		Kind:    domain.KindEvent,
+		Content: "Alice bought ceramic figurines.",
+		EvidenceRefs: []domain.EvidenceRef{{
+			ID:   "e1",
+			Text: "Alice bought 3 ceramic figurines in Kyoto.",
+		}},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	s := retlens.NewSource(idx)
+	res := s.Query(context.Background(), domain.QueryPlan{
+		Intent:        domain.QueryIntent{Text: "Alice bought ceramic figurines", Scope: scope, Limit: 10},
+		SourceBudgets: map[string]int{planner.SourceRetrieval: 10},
+		TotalCap:      10,
+	})
+	if res.Err != nil {
+		t.Fatalf("source error: %v", res.Err)
+	}
+	count := 0
+	var got domain.Candidate
+	for _, c := range res.Candidates {
+		if c.FactID == "f1" {
+			count++
+			got = c
+		}
+	}
+	if count != 1 {
+		t.Fatalf("expected one deduped candidate for f1, got %d in %+v", count, res.Candidates)
+	}
+	if got.Rank != 1 {
+		t.Fatalf("deduped candidate rank = %d, want 1", got.Rank)
+	}
+	if len(got.EvidenceIDs) != 1 || got.EvidenceIDs[0] != "e1" {
+		t.Fatalf("deduped candidate should preserve evidence id, got %+v", got.EvidenceIDs)
+	}
+}
+
 // compile-time guard for the source contract shape.
 var _ sdkretrieval.Index = retrievalmem.New()

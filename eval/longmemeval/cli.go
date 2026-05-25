@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -120,21 +121,16 @@ func addLMEConvert(parent *cobra.Command) {
 				// EvidenceID into MemoryEntry.ID, so turn-level
 				// recall.k_hit is the only granularity that
 				// matches what `mem.Recall` actually returns. We
-				// fall back to session-level `answer_session_ids`
-				// only when no turn-level evidence exists so the
-				// metric stays meaningful for legacy datasets that
-				// pre-date the `has_answer` flag.
+				// fall back by expanding `answer_session_ids` to all
+				// turn-level IDs in those sessions only when no
+				// turn-level evidence exists so the metric stays
+				// meaningful for legacy / abstention rows that pre-date
+				// the `has_answer` flag.
 				var ev []string
 				if len(hasAnswerEvIDs) > 0 {
 					ev = hasAnswerEvIDs
 				} else {
-					ev = make([]string, 0, len(inst.AnswerSessionIDs))
-					for _, s := range inst.AnswerSessionIDs {
-						if s == "" {
-							continue
-						}
-						ev = append(ev, convID+":"+s)
-					}
+					ev = lmeFallbackEvidenceIDs(inst, convID)
 				}
 
 				gold := []string{lmeAnswerToString(inst.Answer)}
@@ -243,7 +239,8 @@ func lmeFlattenSessions(inst lmeRawInstance, convID string) ([]lmeOutTurn, []str
 		out            []lmeOutTurn
 		hasAnswerEvIDs []string
 	)
-	for i, sess := range inst.HaystackSessions {
+	for _, i := range lmeSessionOrder(inst) {
+		sess := inst.HaystackSessions[i]
 		sessID := ""
 		if i < len(inst.HaystackSessionIDs) {
 			sessID = inst.HaystackSessionIDs[i]
@@ -287,4 +284,70 @@ func lmeFlattenSessions(inst lmeRawInstance, convID string) ([]lmeOutTurn, []str
 		}
 	}
 	return out, hasAnswerEvIDs
+}
+
+func lmeFallbackEvidenceIDs(inst lmeRawInstance, convID string) []string {
+	answerSessions := make(map[string]struct{}, len(inst.AnswerSessionIDs))
+	for _, sid := range inst.AnswerSessionIDs {
+		sid = strings.TrimSpace(sid)
+		if sid != "" {
+			answerSessions[sid] = struct{}{}
+		}
+	}
+	if len(answerSessions) == 0 {
+		return nil
+	}
+
+	var out []string
+	seen := make(map[string]struct{})
+	for _, i := range lmeSessionOrder(inst) {
+		if i >= len(inst.HaystackSessionIDs) {
+			continue
+		}
+		sessID := strings.TrimSpace(inst.HaystackSessionIDs[i])
+		if _, ok := answerSessions[sessID]; !ok {
+			continue
+		}
+		for ti, turn := range inst.HaystackSessions[i] {
+			if strings.TrimSpace(turn.Content) == "" {
+				continue
+			}
+			evID := fmt.Sprintf("%s:%s:t%d", convID, sessID, ti)
+			if _, ok := seen[evID]; ok {
+				continue
+			}
+			seen[evID] = struct{}{}
+			out = append(out, evID)
+		}
+	}
+	if len(out) > 0 {
+		return out
+	}
+
+	for _, sid := range inst.AnswerSessionIDs {
+		sid = strings.TrimSpace(sid)
+		if sid != "" {
+			out = append(out, convID+":"+sid)
+		}
+	}
+	return out
+}
+
+func lmeSessionOrder(inst lmeRawInstance) []int {
+	order := make([]int, len(inst.HaystackSessions))
+	for i := range order {
+		order[i] = i
+	}
+	if len(inst.HaystackDates) < len(inst.HaystackSessions) {
+		return order
+	}
+	for i := range inst.HaystackSessions {
+		if strings.TrimSpace(inst.HaystackDates[i]) == "" {
+			return order
+		}
+	}
+	sort.SliceStable(order, func(a, b int) bool {
+		return strings.TrimSpace(inst.HaystackDates[order[a]]) < strings.TrimSpace(inst.HaystackDates[order[b]])
+	})
+	return order
 }

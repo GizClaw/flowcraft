@@ -91,7 +91,8 @@ func (s *Source) Query(ctx context.Context, plan domain.QueryPlan) domain.Source
 	}
 
 	candidates := make([]domain.Candidate, 0, len(resp.Hits))
-	for i, hit := range resp.Hits {
+	byFactID := make(map[string]int, len(resp.Hits))
+	for _, hit := range resp.Hits {
 		factID := hit.Doc.ID
 		if v, ok := hit.Doc.Metadata[domain.MetaFactID]; ok {
 			if s, ok := v.(string); ok && s != "" {
@@ -101,15 +102,24 @@ func (s *Source) Query(ctx context.Context, plan domain.QueryPlan) domain.Source
 		if factID == "" {
 			continue
 		}
+		evidenceIDs := retrievalCandidateEvidenceIDs(hit.Doc.Metadata)
+		if existing, ok := byFactID[factID]; ok {
+			candidates[existing].EvidenceIDs = mergeRetrievalEvidenceIDs(candidates[existing].EvidenceIDs, evidenceIDs)
+			if hit.Score > candidates[existing].Score {
+				candidates[existing].Score = hit.Score
+			}
+			continue
+		}
 		candidates = append(candidates, domain.Candidate{
 			FactID:      factID,
 			Scope:       scope,
 			Source:      s.Name(),
-			Rank:        i + 1,
+			Rank:        len(candidates) + 1,
 			Score:       hit.Score,
-			EvidenceIDs: retrievalCandidateEvidenceIDs(hit.Doc.Metadata),
+			EvidenceIDs: evidenceIDs,
 			Metadata:    retrievalCandidateMeta(hit.Doc.Metadata),
 		})
+		byFactID[factID] = len(candidates) - 1
 	}
 
 	return domain.SourceResult{
@@ -148,6 +158,31 @@ func retrievalCandidateEvidenceIDs(docMeta map[string]any) []string {
 		}
 	}
 	return nil
+}
+
+func mergeRetrievalEvidenceIDs(existing, incoming []string) []string {
+	if len(incoming) == 0 {
+		return existing
+	}
+	out := append([]string(nil), existing...)
+	seen := make(map[string]struct{}, len(out)+len(incoming))
+	for _, id := range out {
+		if id != "" {
+			seen[id] = struct{}{}
+		}
+	}
+	for _, id := range incoming {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		out = append(out, id)
+	}
+	return out
 }
 
 func (s *Source) embedQuery(ctx context.Context, text string) []float32 {

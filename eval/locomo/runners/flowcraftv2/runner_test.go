@@ -82,6 +82,29 @@ func TestBuildTurnContexts_LiftsTimestampAndSpeaker(t *testing.T) {
 	}
 }
 
+func TestBuildTurnContexts_ParsesLongMemEvalTimestamp(t *testing.T) {
+	ctxs, observedAt := buildTurnContexts([]runners.RawTurn{{
+		Role:       "user",
+		Content:    "[2023/04/10 (Mon) 17:50] user: I just got my car serviced.",
+		EvidenceID: "q1:s1:t0",
+		SessionID:  "q1:s1",
+	}}, false)
+	if len(ctxs) != 1 {
+		t.Fatalf("expected 1 typed turn, got %d", len(ctxs))
+	}
+	got := ctxs[0]
+	if got.Text != "I just got my car serviced." {
+		t.Fatalf("text should be stripped of LongMemEval prefix, got %q", got.Text)
+	}
+	want := time.Date(2023, 4, 10, 17, 50, 0, 0, time.UTC)
+	if !got.Time.Equal(want) {
+		t.Fatalf("typed Time = %v, want %v", got.Time, want)
+	}
+	if !observedAt.Equal(want) {
+		t.Fatalf("observedAt = %v, want %v", observedAt, want)
+	}
+}
+
 // TestBuildTurnContexts_DegradesForRawChat covers adapters that
 // don't bake a [<time>] <speaker>: prefix into content (synthetic
 // data, raw chat dumps): Time stays zero and Speaker empty so the

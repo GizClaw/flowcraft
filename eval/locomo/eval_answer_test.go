@@ -55,6 +55,27 @@ func TestBuildAnswerBodyNumericHints(t *testing.T) {
 	}
 }
 
+func TestBuildAnswerBodyDoesNotPromoteObservationTimeToLikelyWhen(t *testing.T) {
+	body := buildAnswerBody(dataset.Question{
+		Query: "When did Melanie paint a sunrise?",
+	}, []runners.Hit{{
+		Content: "[observed_at: 2023-05-08] | evidence: Melanie painted a lake sunrise last year. | evidence: [source_time: 2023-05-08 13:56] I painted that lake sunrise last year!",
+	}})
+
+	for _, want := range []string{
+		"relative_candidates=#1:last year",
+		"weak_observed_at=#1:2023-05-08",
+		"source_time_anchors=#1:2023-05-08",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("body missing %q:\n%s", want, body)
+		}
+	}
+	if strings.Contains(body, "likely_when=#1:2023-05-08") {
+		t.Fatalf("observed/source time must not be promoted to likely_when:\n%s", body)
+	}
+}
+
 func TestDefaultAnswerPromptMentionsRankedEvidenceAndRelativeDates(t *testing.T) {
 	for _, want := range []string{
 		"Prefer lower-numbered memories",
