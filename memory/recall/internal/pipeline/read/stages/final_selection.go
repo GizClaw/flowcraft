@@ -16,18 +16,9 @@ import (
 )
 
 const (
-	maxEvidenceRescues      = 6
-	minEvidenceRescueScore  = 0.30
-	evidenceReplaceMargin   = 0.04
 	duplicateJaccardCutoff  = 0.86
 	contextDedupeQueryFloor = 0.20
 )
-
-type evidenceCandidate struct {
-	hit       domain.Hit
-	score     float64
-	queryRank int
-}
 
 type finalSelectionQueryFeatures struct {
 	tokens           map[string]struct{}
@@ -57,42 +48,6 @@ func selectFinalEvidenceAwareHits(query string, ordered []domain.Hit, pool []dom
 		return ordered
 	}
 	return selectFinalHybridRerankHits(query, ordered, pool, cap)
-}
-
-func selectFinalEvidenceRescueHits(query string, ordered []domain.Hit, pool []domain.Hit, cap int) []domain.Hit {
-	primary := dedupeHitsByEvidence(query, ordered)
-	if len(primary) > cap {
-		primary = primary[:cap]
-	}
-	selected := make([]domain.Hit, 0, cap)
-	selected = append(selected, primary...)
-
-	selectedIDs := selectedFactIDs(selected)
-	candidates := evidenceCandidates(query, pool, selectedIDs)
-	rescues := 0
-	for _, cand := range candidates {
-		if cand.score < minEvidenceRescueScore || rescues >= maxEvidenceRescues {
-			break
-		}
-		if hitDuplicateInSelection(query, cand.hit, selected) {
-			continue
-		}
-		if len(selected) < cap {
-			selected = append(selected, cand.hit)
-			selectedIDs[cand.hit.Fact.ID] = struct{}{}
-			rescues++
-			continue
-		}
-		idx, minScore := weakestEvidenceHit(query, selected)
-		if idx < 0 || cand.score < minScore+evidenceReplaceMargin {
-			continue
-		}
-		delete(selectedIDs, selected[idx].Fact.ID)
-		selected[idx] = cand.hit
-		selectedIDs[cand.hit.Fact.ID] = struct{}{}
-		rescues++
-	}
-	return selected
 }
 
 func selectFinalHybridRerankHits(query string, ordered []domain.Hit, pool []domain.Hit, cap int) []domain.Hit {
@@ -347,155 +302,6 @@ func finalSelectionHits(candidates []finalSelectionCandidate) []domain.Hit {
 	return out
 }
 
-func evidenceCandidates(query string, hits []domain.Hit, selected map[string]struct{}) []evidenceCandidate {
-	out := make([]evidenceCandidate, 0, len(hits))
-	for i, hit := range hits {
-		if hit.Fact.ID != "" {
-			if _, ok := selected[hit.Fact.ID]; ok {
-				continue
-			}
-		}
-		score := queryEvidenceScore(query, hit)
-		if score <= 0 {
-			continue
-		}
-		out = append(out, evidenceCandidate{hit: hit, score: score, queryRank: i})
-	}
-	sort.SliceStable(out, func(i, j int) bool {
-		if math.Abs(out[i].score-out[j].score) > 1e-9 {
-			return out[i].score > out[j].score
-		}
-		if out[i].hit.Score != out[j].hit.Score {
-			return out[i].hit.Score > out[j].hit.Score
-		}
-		return out[i].queryRank < out[j].queryRank
-	})
-	return out
-}
-
-func dedupeHitsByEvidence(query string, hits []domain.Hit) []domain.Hit {
-	if len(hits) == 0 {
-		return nil
-	}
-	out := make([]domain.Hit, 0, len(hits))
-	seenFacts := map[string]struct{}{}
-	seenEvidence := map[string]struct{}{}
-	for _, hit := range hits {
-		if hit.Fact.ID != "" {
-			if _, ok := seenFacts[hit.Fact.ID]; ok {
-				continue
-			}
-		}
-		if key := primaryEvidenceKey(hit); key != "" {
-			if _, ok := seenEvidence[key]; ok {
-				continue
-			}
-			seenEvidence[key] = struct{}{}
-		}
-		if hitDuplicateInSelection(query, hit, out) {
-			continue
-		}
-		if hit.Fact.ID != "" {
-			seenFacts[hit.Fact.ID] = struct{}{}
-		}
-		out = append(out, hit)
-	}
-	return out
-}
-
-func hitDuplicateInSelection(query string, hit domain.Hit, selected []domain.Hit) bool {
-	key := primaryEvidenceKey(hit)
-	for _, existing := range selected {
-		if hit.Fact.ID != "" && hit.Fact.ID == existing.Fact.ID {
-			return true
-		}
-		if key != "" && key == primaryEvidenceKey(existing) {
-			return true
-		}
-		if sameStructuredMemory(hit.Fact, existing.Fact) && evidenceTextJaccard(hit, existing) >= duplicateJaccardCutoff {
-			// Only collapse near-duplicates when the replacement evidence is
-			// not strongly query-specific; exact evidence/query matches still
-			// deserve a chance to surface.
-			if queryEvidenceScore(query, hit) < contextDedupeQueryFloor {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-func weakestEvidenceHit(query string, hits []domain.Hit) (int, float64) {
-	if len(hits) == 0 {
-		return -1, 0
-	}
-	idx := 0
-	minScore := queryEvidenceScore(query, hits[0])
-	for i := 1; i < len(hits); i++ {
-		score := queryEvidenceScore(query, hits[i])
-		if score < minScore || (score == minScore && hits[i].Score < hits[idx].Score) {
-			idx = i
-			minScore = score
-		}
-	}
-	return idx, minScore
-}
-
-func selectedFactIDs(hits []domain.Hit) map[string]struct{} {
-	out := make(map[string]struct{}, len(hits))
-	for _, hit := range hits {
-		if hit.Fact.ID != "" {
-			out[hit.Fact.ID] = struct{}{}
-		}
-	}
-	return out
-}
-
-func queryEvidenceScore(query string, hit domain.Hit) float64 {
-	return queryTextScore(query, hitEvidenceText(hit), hit)
-}
-
-func queryFactScore(query string, hit domain.Hit) float64 {
-	return queryTextScore(query, finalSelectionFactText(hit), hit)
-}
-
-func queryTextScore(query string, text string, hit domain.Hit) float64 {
-	queryTokens := tokenSet(tokenize.Detect(query).Tokenize(query))
-	if len(queryTokens) == 0 {
-		return 0
-	}
-	textTokens := tokenSet(tokenize.Detect(text).Tokenize(text))
-	if len(textTokens) == 0 {
-		return 0
-	}
-	matched := 0
-	for tok := range queryTokens {
-		if _, ok := textTokens[tok]; ok {
-			matched++
-		}
-	}
-	coverage := float64(matched) / float64(len(queryTokens))
-	score := coverage
-	if numericOverlap(query, text) {
-		score += 0.25
-	}
-	if queryHasNumericIntent(query) && hasNumericEvidence(text) {
-		score += 0.15
-	}
-	if queryHasTimeSignal(query) && hitHasTimeSignal(hit, text) {
-		score += 0.20
-	}
-	if quotedOverlap(query, text) {
-		score += 0.15
-	}
-	if properNounOverlap(query, text) {
-		score += 0.10
-	}
-	if score > 1 {
-		return 1
-	}
-	return score
-}
-
 func finalSelectionFactText(hit domain.Hit) string {
 	var b strings.Builder
 	for _, part := range []string{
@@ -539,18 +345,6 @@ func finalSelectionFactText(hit domain.Hit) string {
 		return hitEvidenceText(hit)
 	}
 	return b.String()
-}
-
-func finalSelectionHitText(hit domain.Hit) string {
-	fact := finalSelectionFactText(hit)
-	evidence := hitEvidenceText(hit)
-	if fact == "" {
-		return evidence
-	}
-	if evidence == "" {
-		return fact
-	}
-	return fact + " " + evidence
 }
 
 func hitEvidenceText(hit domain.Hit) string {
@@ -600,15 +394,6 @@ func sameStructuredMemory(a, b domain.TemporalFact) bool {
 	return a.Kind == b.Kind
 }
 
-func evidenceTextJaccard(a, b domain.Hit) float64 {
-	aText := hitEvidenceText(a)
-	bText := hitEvidenceText(b)
-	return tokenSetJaccard(
-		tokenSet(tokenize.Detect(aText).Tokenize(aText)),
-		tokenSet(tokenize.Detect(bText).Tokenize(bText)),
-	)
-}
-
 func tokenSetJaccard(a, b map[string]struct{}) float64 {
 	if len(a) == 0 || len(b) == 0 {
 		return 0
@@ -654,19 +439,6 @@ func tokenSet(tokens []string) map[string]struct{} {
 		out[tok] = struct{}{}
 	}
 	return out
-}
-
-func numericOverlap(a, b string) bool {
-	an := numericTokens(a)
-	if len(an) == 0 {
-		return false
-	}
-	for n := range numericTokens(b) {
-		if _, ok := an[n]; ok {
-			return true
-		}
-	}
-	return false
 }
 
 func numericTokens(text string) map[string]struct{} {
@@ -754,32 +526,6 @@ func queryHasNumericIntent(query string) bool {
 	return false
 }
 
-func hasNumericEvidence(text string) bool {
-	for _, r := range text {
-		if unicode.IsDigit(r) || unicode.IsNumber(r) {
-			return true
-		}
-	}
-	return false
-}
-
-func quotedOverlap(a, b string) bool {
-	qa := quotedTokenSet(a)
-	if len(qa) == 0 {
-		return false
-	}
-	qb := quotedTokenSet(b)
-	if len(qb) == 0 {
-		qb = tokenSet(tokenize.Detect(b).Tokenize(b))
-	}
-	for tok := range qa {
-		if _, ok := qb[tok]; ok {
-			return true
-		}
-	}
-	return false
-}
-
 func quotedTokenSet(text string) map[string]struct{} {
 	out := map[string]struct{}{}
 	for _, span := range quotes.ExtractSpans(text) {
@@ -788,20 +534,6 @@ func quotedTokenSet(text string) map[string]struct{} {
 		}
 	}
 	return out
-}
-
-func properNounOverlap(a, b string) bool {
-	pa := properNounSet(a)
-	if len(pa) == 0 {
-		return false
-	}
-	pb := properNounSet(b)
-	for tok := range pa {
-		if _, ok := pb[tok]; ok {
-			return true
-		}
-	}
-	return false
 }
 
 func properNounSet(text string) map[string]struct{} {

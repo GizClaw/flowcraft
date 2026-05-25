@@ -139,7 +139,7 @@ func TestBuildHitsSkipsSnapshotsWithoutTrace(t *testing.T) {
 	}
 }
 
-func TestBuildHitsEvidenceAwareRescueReplacesWeakFinalHit(t *testing.T) {
+func TestBuildHitsFinalSelectionHybridReplacesWeakFinalHit(t *testing.T) {
 	stage := NewBuildHits(nil)
 	state := &read.ReadState{
 		Plan:  &domain.QueryPlan{TotalCap: 1},
@@ -169,11 +169,11 @@ func TestBuildHitsEvidenceAwareRescueReplacesWeakFinalHit(t *testing.T) {
 		t.Fatalf("Run returned error: %v", err)
 	}
 	if len(state.Hits) != 1 || state.Hits[0].Fact.ID != "specific" {
-		t.Fatalf("evidence-aware rescue should keep the specific evidence hit, got %+v", state.Hits)
+		t.Fatalf("hybrid final selection should keep the specific evidence hit, got %+v", state.Hits)
 	}
 }
 
-func TestBuildHitsEvidenceAwareRescueCanReplaceSeveralWeakHits(t *testing.T) {
+func TestBuildHitsFinalSelectionHybridCanReplaceSeveralWeakHits(t *testing.T) {
 	stage := NewBuildHits(nil)
 	query := "What books and instruments does Alice like?"
 	weak := []domain.ContextItem{
@@ -204,7 +204,7 @@ func TestBuildHitsEvidenceAwareRescueCanReplaceSeveralWeakHits(t *testing.T) {
 	}
 	for _, want := range []string{"book", "violin", "clarinet", "guitar"} {
 		if !got[want] {
-			t.Fatalf("expected rescued hit %q in final hits, got %+v", want, state.Hits)
+			t.Fatalf("expected hybrid-selected hit %q in final hits, got %+v", want, state.Hits)
 		}
 	}
 }
