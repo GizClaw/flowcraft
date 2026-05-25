@@ -42,6 +42,8 @@ func TestDefaultAnswerPromptMentionsRankedEvidenceAndRelativeDates(t *testing.T)
 		"combine the supported items",
 		"Do not answer \"I don't know\"",
 		"preserve that relative wording",
+		"[observed_at:",
+		"weak observation stamp",
 		"[source_time:",
 		"never answer a WHEN question from source_time alone",
 	} {

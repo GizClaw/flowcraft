@@ -71,8 +71,13 @@ func groundedHitContent(h recall.Hit) string {
 	// This is LoCoMo answer-context shaping, not an SDK contract: the
 	// benchmark answer prompt expects temporal facts to expose the resolved
 	// date inline so the answer LLM does not recompute relative expressions.
-	if f.ValidFrom != nil && !f.ValidFrom.IsZero() && rendersEventTime(f.Metadata) {
-		parts = append(parts, fmt.Sprintf("[time: %s]", f.ValidFrom.Format("2006-01-02")))
+	if f.ValidFrom != nil && !f.ValidFrom.IsZero() {
+		switch validFromRenderKind(f.Metadata) {
+		case validFromRenderEventTime:
+			parts = append(parts, fmt.Sprintf("[time: %s]", f.ValidFrom.Format("2006-01-02")))
+		case validFromRenderObservedAt:
+			parts = append(parts, fmt.Sprintf("[observed_at: %s]", f.ValidFrom.Format("2006-01-02")))
+		}
 	}
 	appendPart(f.Content)
 	appendPart(f.EvidenceText)
@@ -86,21 +91,32 @@ func groundedHitContent(h recall.Hit) string {
 }
 
 func rendersEventTime(meta map[string]any) bool {
+	return validFromRenderKind(meta) == validFromRenderEventTime
+}
+
+type validFromRenderMode int
+
+const (
+	validFromRenderEventTime validFromRenderMode = iota
+	validFromRenderObservedAt
+)
+
+func validFromRenderKind(meta map[string]any) validFromRenderMode {
 	raw, ok := meta[validFromSourceMetadataKey]
 	if !ok {
-		return true
+		return validFromRenderEventTime
 	}
 	source, ok := raw.(string)
 	if !ok {
-		return true
+		return validFromRenderEventTime
 	}
 	switch strings.TrimSpace(source) {
 	case validFromSourceContentExplicitValue, validFromSourceContentRelativeValue:
-		return true
+		return validFromRenderEventTime
 	case validFromSourceTimeFallbackValue:
-		return false
+		return validFromRenderObservedAt
 	default:
-		return true
+		return validFromRenderEventTime
 	}
 }
 

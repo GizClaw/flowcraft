@@ -275,7 +275,7 @@ func TestGroundedHitContentAnnotatesEvidenceSourceTime(t *testing.T) {
 	}
 }
 
-func TestGroundedHitContentDoesNotRenderSourceTimeFallbackAsEventTime(t *testing.T) {
+func TestGroundedHitContentRendersSourceTimeFallbackAsObservedAt(t *testing.T) {
 	validFrom := time.Date(2024, 5, 7, 9, 30, 0, 0, time.UTC)
 	h := recall.Hit{
 		Fact: recall.TemporalFact{
@@ -295,6 +295,9 @@ func TestGroundedHitContentDoesNotRenderSourceTimeFallbackAsEventTime(t *testing
 	content := groundedHitContent(h)
 	if strings.Contains(content, "[time: 2024-05-07]") {
 		t.Fatalf("source-time fallback must not render as event time: %s", content)
+	}
+	if !strings.Contains(content, "[observed_at: 2024-05-07]") {
+		t.Fatalf("source-time fallback should render as weak observed_at anchor: %s", content)
 	}
 	if !strings.Contains(content, "[source_time: 2024-05-07 09:30] I mentioned Tampa.") {
 		t.Fatalf("source time evidence should remain visible: %s", content)
