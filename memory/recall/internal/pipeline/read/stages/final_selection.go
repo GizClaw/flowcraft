@@ -2,9 +2,7 @@ package stages
 
 import (
 	"math"
-	"regexp"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -18,12 +16,11 @@ import (
 )
 
 const (
-	maxEvidenceRescues       = 6
-	minEvidenceRescueScore   = 0.30
-	evidenceReplaceMargin    = 0.04
-	duplicateJaccardCutoff   = 0.86
-	contextDedupeQueryFloor  = 0.20
-	maxFinalSelectionRescues = 3
+	maxEvidenceRescues      = 6
+	minEvidenceRescueScore  = 0.30
+	evidenceReplaceMargin   = 0.04
+	duplicateJaccardCutoff  = 0.86
+	contextDedupeQueryFloor = 0.20
 )
 
 type evidenceCandidate struct {
@@ -37,25 +34,22 @@ type finalSelectionQueryFeatures struct {
 	numeric          map[string]struct{}
 	quoted           map[string]struct{}
 	proper           map[string]struct{}
-	temporalAnchors  map[string]struct{}
 	hasTimeSignal    bool
 	hasNumericIntent bool
 }
 
 type finalSelectionCandidate struct {
-	hit                 domain.Hit
-	score               float64
-	baseScore           float64
-	evidenceScore       float64
-	factScore           float64
-	queryRank           int
-	evidenceKey         string
-	evidenceTokens      map[string]struct{}
-	factTokens          map[string]struct{}
-	hasTimeSignal       bool
-	hasNumeric          bool
-	temporalAnchorScore float64
-	numericAnchorScore  float64
+	hit            domain.Hit
+	score          float64
+	baseScore      float64
+	evidenceScore  float64
+	factScore      float64
+	queryRank      int
+	evidenceKey    string
+	evidenceTokens map[string]struct{}
+	factTokens     map[string]struct{}
+	hasTimeSignal  bool
+	hasNumeric     bool
 }
 
 func selectFinalEvidenceAwareHits(query string, ordered []domain.Hit, pool []domain.Hit, cap int) []domain.Hit {
@@ -145,7 +139,6 @@ func selectFinalHybridRerankHits(query string, ordered []domain.Hit, pool []doma
 			}
 		}
 	}
-	selected, _ = rescueStrongFinalSelectionCandidates(query, candidates, selectedCandidates, cap)
 	return selected
 }
 
@@ -204,7 +197,6 @@ func newFinalSelectionQueryFeatures(query string) finalSelectionQueryFeatures {
 		numeric:          numericTokens(query),
 		quoted:           quotedTokenSet(query),
 		proper:           properNounSet(query),
-		temporalAnchors:  temporalAnchorTokens(query),
 		hasTimeSignal:    hasTemporalQuestionCue(query) || hasTimex(query, anchor),
 		hasNumericIntent: queryHasNumericIntent(query),
 	}
@@ -229,9 +221,6 @@ func newFinalSelectionCandidate(queryFeatures finalSelectionQueryFeatures, hit d
 	evidenceProper := properNounSet(evidenceText)
 	factProper := properNounSet(factText)
 	hasNumeric := len(evidenceNumeric) > 0 || len(factNumeric) > 0
-	combinedNumeric := cloneStringSet(evidenceNumeric)
-	addStringSet(combinedNumeric, factNumeric)
-	temporalAnchors := hitTemporalAnchorTokens(hit, combinedText)
 	hasTime := false
 	if queryFeatures.hasTimeSignal {
 		hasTime = hitHasTimeSignal(hit, combinedText)
@@ -239,18 +228,16 @@ func newFinalSelectionCandidate(queryFeatures finalSelectionQueryFeatures, hit d
 	evidenceScore := finalSelectionTextScore(queryFeatures, evidenceTokens, evidenceNumeric, evidenceQuoted, evidenceProper, hasTime, len(evidenceNumeric) > 0)
 	factScore := finalSelectionTextScore(queryFeatures, factTokens, factNumeric, factQuoted, factProper, hasTime, len(factNumeric) > 0)
 	candidate := finalSelectionCandidate{
-		hit:                 hit,
-		baseScore:           hit.Score,
-		evidenceScore:       evidenceScore,
-		factScore:           factScore,
-		queryRank:           queryRank,
-		evidenceKey:         evidenceKey,
-		evidenceTokens:      evidenceTokens,
-		factTokens:          factTokens,
-		hasTimeSignal:       hasTime,
-		hasNumeric:          hasNumeric,
-		temporalAnchorScore: setCoverage(queryFeatures.temporalAnchors, temporalAnchors),
-		numericAnchorScore:  setCoverage(queryFeatures.numeric, combinedNumeric),
+		hit:            hit,
+		baseScore:      hit.Score,
+		evidenceScore:  evidenceScore,
+		factScore:      factScore,
+		queryRank:      queryRank,
+		evidenceKey:    evidenceKey,
+		evidenceTokens: evidenceTokens,
+		factTokens:     factTokens,
+		hasTimeSignal:  hasTime,
+		hasNumeric:     hasNumeric,
 	}
 	candidate.score = finalSelectionScore(queryFeatures, candidate, maxHitScore)
 	return candidate
@@ -271,14 +258,10 @@ func finalSelectionTextScore(query finalSelectionQueryFeatures, textTokens, text
 		score += 0.25
 	}
 	if query.hasNumericIntent && hasNumeric {
-		score += 0.08
+		score += 0.15
 	}
 	if query.hasTimeSignal && hasTimeSignal {
-		if len(query.temporalAnchors) > 0 {
-			score += 0.08
-		} else {
-			score += 0.16
-		}
+		score += 0.20
 	}
 	if len(query.quoted) > 0 && (intersects(query.quoted, textQuoted) || intersects(query.quoted, textTokens)) {
 		score += 0.15
@@ -302,18 +285,11 @@ func finalSelectionScore(query finalSelectionQueryFeatures, candidate finalSelec
 	}
 	rankPrior := 1 / (1 + float64(candidate.queryRank)/30)
 	score := 0.42*candidate.evidenceScore + 0.35*candidate.factScore + 0.18*base + 0.05*rankPrior
-	if len(query.temporalAnchors) > 0 {
-		score += 0.24 * candidate.temporalAnchorScore
-		if candidate.temporalAnchorScore >= 1 {
-			score += 0.10
-		}
-	} else if query.hasTimeSignal && candidate.hasTimeSignal {
-		score += 0.025
+	if query.hasTimeSignal && candidate.hasTimeSignal {
+		score += 0.04
 	}
-	if len(query.numeric) > 0 {
-		score += 0.08 * candidate.numericAnchorScore
-	} else if query.hasNumericIntent && candidate.hasNumeric {
-		score += 0.02
+	if query.hasNumericIntent && candidate.hasNumeric {
+		score += 0.04
 	}
 	return score
 }
@@ -361,88 +337,6 @@ func finalSelectionCandidateDuplicate(candidate finalSelectionCandidate, selecte
 		}
 	}
 	return false
-}
-
-func rescueStrongFinalSelectionCandidates(query string, candidates, selected []finalSelectionCandidate, cap int) ([]domain.Hit, []finalSelectionCandidate) {
-	if cap <= 0 || len(selected) == 0 || len(candidates) <= len(selected) {
-		return finalSelectionHits(selected), selected
-	}
-	queryFeatures := newFinalSelectionQueryFeatures(query)
-	rescues := 0
-	for _, cand := range candidates {
-		if rescues >= maxFinalSelectionRescues {
-			break
-		}
-		if finalSelectionCandidateDuplicate(cand, selected) {
-			continue
-		}
-		if !finalSelectionRescueEligible(queryFeatures, cand, cap) {
-			continue
-		}
-		replace := weakestFinalSelectionRescueSlot(queryFeatures, selected)
-		if replace < 0 {
-			continue
-		}
-		if !finalSelectionRescueCanReplace(queryFeatures, cand, selected[replace]) {
-			continue
-		}
-		selected[replace] = cand
-		rescues++
-	}
-	return finalSelectionHits(selected), selected
-}
-
-func finalSelectionRescueEligible(query finalSelectionQueryFeatures, candidate finalSelectionCandidate, cap int) bool {
-	quality := math.Max(candidate.evidenceScore, candidate.factScore)
-	if len(query.temporalAnchors) > 0 && candidate.temporalAnchorScore >= 1 && quality >= 0.10 {
-		return true
-	}
-	if len(query.numeric) > 0 && candidate.numericAnchorScore >= 1 && quality >= 0.35 {
-		return true
-	}
-	return candidate.queryRank < cap*3 && quality >= 0.68
-}
-
-func weakestFinalSelectionRescueSlot(query finalSelectionQueryFeatures, selected []finalSelectionCandidate) int {
-	if len(selected) == 0 {
-		return -1
-	}
-	weakest := 0
-	weakestPriority := finalSelectionRescuePriority(query, selected[0])
-	for i := 1; i < len(selected); i++ {
-		priority := finalSelectionRescuePriority(query, selected[i])
-		if priority < weakestPriority || (math.Abs(priority-weakestPriority) <= 1e-9 && selected[i].baseScore < selected[weakest].baseScore) {
-			weakest = i
-			weakestPriority = priority
-		}
-	}
-	return weakest
-}
-
-func finalSelectionRescueCanReplace(query finalSelectionQueryFeatures, candidate, weakest finalSelectionCandidate) bool {
-	candidatePriority := finalSelectionRescuePriority(query, candidate)
-	weakestPriority := finalSelectionRescuePriority(query, weakest)
-	if candidatePriority >= weakestPriority+0.02 {
-		return true
-	}
-	if len(query.temporalAnchors) > 0 && candidate.temporalAnchorScore >= 1 && weakest.temporalAnchorScore < 1 {
-		return candidatePriority+0.35 >= weakestPriority
-	}
-	if len(query.numeric) > 0 && candidate.numericAnchorScore >= 1 && weakest.numericAnchorScore < 1 {
-		return candidatePriority+0.05 >= weakestPriority
-	}
-	return false
-}
-
-func finalSelectionRescuePriority(query finalSelectionQueryFeatures, candidate finalSelectionCandidate) float64 {
-	priority := candidate.score + 0.04*math.Max(candidate.evidenceScore, candidate.factScore)
-	if len(query.temporalAnchors) > 0 {
-		priority += 0.24 * candidate.temporalAnchorScore
-	}
-	if len(query.numeric) > 0 {
-		priority += 0.08 * candidate.numericAnchorScore
-	}
-	return priority
 }
 
 func finalSelectionHits(candidates []finalSelectionCandidate) []domain.Hit {
@@ -762,31 +656,6 @@ func tokenSet(tokens []string) map[string]struct{} {
 	return out
 }
 
-func cloneStringSet(in map[string]struct{}) map[string]struct{} {
-	out := make(map[string]struct{}, len(in))
-	addStringSet(out, in)
-	return out
-}
-
-func addStringSet(dst, src map[string]struct{}) {
-	for tok := range src {
-		dst[tok] = struct{}{}
-	}
-}
-
-func setCoverage(want, got map[string]struct{}) float64 {
-	if len(want) == 0 || len(got) == 0 {
-		return 0
-	}
-	matched := 0
-	for tok := range want {
-		if _, ok := got[tok]; ok {
-			matched++
-		}
-	}
-	return float64(matched) / float64(len(want))
-}
-
 func numericOverlap(a, b string) bool {
 	an := numericTokens(a)
 	if len(an) == 0 {
@@ -819,142 +688,6 @@ func numericTokens(text string) map[string]struct{} {
 	}
 	flush()
 	return out
-}
-
-var (
-	finalSelectionISODateRe      = regexp.MustCompile(`\b(19\d{2}|20\d{2})[-/](0?[1-9]|1[0-2])[-/](0?[1-9]|[12]\d|3[01])\b`)
-	finalSelectionDayMonthYearRe = regexp.MustCompile(`(?i)\b(0?[1-9]|[12]\d|3[01])\s+(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t)?(?:ember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?),?\s+(19\d{2}|20\d{2})\b`)
-	finalSelectionMonthDayYearRe = regexp.MustCompile(`(?i)\b(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t)?(?:ember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+(0?[1-9]|[12]\d|3[01]),?\s+(19\d{2}|20\d{2})\b`)
-)
-
-func hitTemporalAnchorTokens(hit domain.Hit, text string) map[string]struct{} {
-	out := temporalAnchorTokens(text)
-	addTemporalAnchorsFromTime(out, hit.Fact.ValidFrom)
-	addTemporalAnchorsFromTime(out, hit.Fact.ValidTo)
-	for _, ref := range hit.Evidence {
-		addTemporalAnchorsFromTimestamp(out, ref.Timestamp)
-	}
-	for _, ref := range hit.Fact.EvidenceRefs {
-		addTemporalAnchorsFromTimestamp(out, ref.Timestamp)
-	}
-	return out
-}
-
-func temporalAnchorTokens(text string) map[string]struct{} {
-	out := map[string]struct{}{}
-	text = strings.TrimSpace(text)
-	if text == "" {
-		return out
-	}
-	for _, match := range finalSelectionISODateRe.FindAllStringSubmatch(text, -1) {
-		if len(match) != 4 {
-			continue
-		}
-		addTemporalAnchorString(out, "year", match[1])
-		addTemporalAnchorString(out, "month", match[2])
-		addTemporalAnchorString(out, "day", match[3])
-	}
-	for _, match := range finalSelectionDayMonthYearRe.FindAllStringSubmatch(text, -1) {
-		if len(match) != 4 {
-			continue
-		}
-		if month, ok := finalSelectionMonthNumber(match[2]); ok {
-			addTemporalAnchorString(out, "day", match[1])
-			addTemporalAnchorInt(out, "month", month)
-			addTemporalAnchorString(out, "year", match[3])
-		}
-	}
-	for _, match := range finalSelectionMonthDayYearRe.FindAllStringSubmatch(text, -1) {
-		if len(match) != 4 {
-			continue
-		}
-		if month, ok := finalSelectionMonthNumber(match[1]); ok {
-			addTemporalAnchorInt(out, "month", month)
-			addTemporalAnchorString(out, "day", match[2])
-			addTemporalAnchorString(out, "year", match[3])
-		}
-	}
-	tokens := tokenSet(tokenize.Detect(text).Tokenize(text))
-	hasMonth := false
-	for tok := range tokens {
-		if month, ok := finalSelectionMonthNumber(tok); ok {
-			addTemporalAnchorInt(out, "month", month)
-			hasMonth = true
-		}
-	}
-	for raw := range numericTokens(text) {
-		n, err := strconv.Atoi(raw)
-		if err != nil {
-			continue
-		}
-		switch {
-		case n >= 1900 && n <= 2100:
-			addTemporalAnchorInt(out, "year", n)
-		case hasMonth && n >= 1 && n <= 31:
-			addTemporalAnchorInt(out, "day", n)
-		}
-	}
-	return out
-}
-
-func addTemporalAnchorsFromTime(out map[string]struct{}, t *time.Time) {
-	if t == nil {
-		return
-	}
-	addTemporalAnchorsFromTimestamp(out, *t)
-}
-
-func addTemporalAnchorsFromTimestamp(out map[string]struct{}, t time.Time) {
-	if t.IsZero() {
-		return
-	}
-	addTemporalAnchorInt(out, "year", t.Year())
-	addTemporalAnchorInt(out, "month", int(t.Month()))
-	addTemporalAnchorInt(out, "day", t.Day())
-}
-
-func addTemporalAnchorString(out map[string]struct{}, kind, raw string) {
-	n, err := strconv.Atoi(strings.TrimLeft(raw, "0"))
-	if err != nil {
-		return
-	}
-	addTemporalAnchorInt(out, kind, n)
-}
-
-func addTemporalAnchorInt(out map[string]struct{}, kind string, value int) {
-	out[kind+":"+strconv.Itoa(value)] = struct{}{}
-}
-
-func finalSelectionMonthNumber(tok string) (int, bool) {
-	tok = strings.Trim(strings.ToLower(tok), ".,")
-	switch tok {
-	case "jan", "january":
-		return 1, true
-	case "feb", "february":
-		return 2, true
-	case "mar", "march":
-		return 3, true
-	case "apr", "april":
-		return 4, true
-	case "may":
-		return 5, true
-	case "jun", "june":
-		return 6, true
-	case "jul", "july":
-		return 7, true
-	case "aug", "august":
-		return 8, true
-	case "sep", "sept", "september":
-		return 9, true
-	case "oct", "october":
-		return 10, true
-	case "nov", "november":
-		return 11, true
-	case "dec", "december":
-		return 12, true
-	default:
-		return 0, false
-	}
 }
 
 func queryHasTimeSignal(query string) bool {

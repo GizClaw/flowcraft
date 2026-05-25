@@ -241,61 +241,6 @@ func TestBuildHitsFinalSelectionHybridReranksFullPool(t *testing.T) {
 	}
 }
 
-func TestBuildHitsFinalSelectionPrefersExactTemporalAnchorFromFactTime(t *testing.T) {
-	stage := NewBuildHits(nil)
-	nov9 := time.Date(2022, 11, 9, 12, 0, 0, 0, time.UTC)
-	nov10 := time.Date(2022, 11, 10, 12, 0, 0, 0, time.UTC)
-	feb25 := time.Date(2022, 2, 25, 12, 0, 0, 0, time.UTC)
-	state := &read.ReadState{
-		Plan:  &domain.QueryPlan{TotalCap: 2},
-		Query: domain.Query{Text: "What dish did Nate make on 9 November, 2022?"},
-		Ranked: []domain.ContextItem{
-			timedContextItem("near-date", "e1", 0.95, "On November 10, 2022, Nate took his turtles to the beach.", nov10),
-			timedContextItem("old-dessert", "e2", 0.94, "On February 25, 2022, Nate made ice cream for a friend.", feb25),
-		},
-		AfterTrust: []domain.ContextItem{
-			timedContextItem("near-date", "e1", 0.95, "On November 10, 2022, Nate took his turtles to the beach.", nov10),
-			timedContextItem("old-dessert", "e2", 0.94, "On February 25, 2022, Nate made ice cream for a friend.", feb25),
-			timedContextItem("exact-dish", "e3", 0.25, "Nate made homemade coconut ice cream.", nov9),
-		},
-	}
-
-	if _, err := stage.Run(context.Background(), state); err != nil {
-		t.Fatalf("Run returned error: %v", err)
-	}
-	got := map[string]bool{}
-	for _, hit := range state.Hits {
-		got[hit.Fact.ID] = true
-	}
-	if !got["exact-dish"] {
-		t.Fatalf("exact date anchor should rescue the answer-bearing fact, got %+v", state.Hits)
-	}
-}
-
-func TestBuildHitsFinalSelectionDoesNotRescuePartialTemporalOnlyMatch(t *testing.T) {
-	stage := NewBuildHits(nil)
-	july := time.Date(2023, 7, 12, 12, 0, 0, 0, time.UTC)
-	december := time.Date(2023, 12, 3, 12, 0, 0, 0, time.UTC)
-	state := &read.ReadState{
-		Plan:  &domain.QueryPlan{TotalCap: 1},
-		Query: domain.Query{Text: "How many pets will Andrew have, as of December 2023?"},
-		Ranked: []domain.ContextItem{
-			timedContextItem("december-context", "e1", 0.95, "In December 2023, Andrew discussed plans for pets.", december),
-		},
-		AfterTrust: []domain.ContextItem{
-			timedContextItem("december-context", "e1", 0.95, "In December 2023, Andrew discussed plans for pets.", december),
-			timedContextItem("partial-pet", "e2", 0.2, "Andrew has a puppy named Toby.", july),
-		},
-	}
-
-	if _, err := stage.Run(context.Background(), state); err != nil {
-		t.Fatalf("Run returned error: %v", err)
-	}
-	if len(state.Hits) != 1 || state.Hits[0].Fact.ID == "partial-pet" {
-		t.Fatalf("partial temporal overlap alone should not rescue weak count evidence, got %+v", state.Hits)
-	}
-}
-
 func TestBuildHitsFinalSelectionUsesFactContentWhenEvidenceIsThin(t *testing.T) {
 	stage := NewBuildHits(nil)
 	state := &read.ReadState{
@@ -535,13 +480,5 @@ func strongContextItem(id, evidenceID, text string) domain.ContextItem {
 		Candidate: domain.Candidate{FactID: id, Source: "retrieval", Score: 0.2, EvidenceIDs: []string{evidenceID}},
 		Fact:      domain.TemporalFact{ID: id, Kind: domain.KindState, Content: text},
 		Evidence:  []domain.EvidenceRef{{ID: evidenceID, Text: text}},
-	}
-}
-
-func timedContextItem(id, evidenceID string, score float64, text string, validFrom time.Time) domain.ContextItem {
-	return domain.ContextItem{
-		Candidate: domain.Candidate{FactID: id, Source: "retrieval", Score: score, EvidenceIDs: []string{evidenceID}},
-		Fact:      domain.TemporalFact{ID: id, Kind: domain.KindEvent, Content: text, ValidFrom: &validFrom},
-		Evidence:  []domain.EvidenceRef{{ID: evidenceID, Text: text, Timestamp: validFrom}},
 	}
 }
