@@ -63,6 +63,11 @@ func (b *Backend) AsyncSemanticQueue() recall.AsyncSemanticQueue {
 	return &asyncSemanticQueue{b: b}
 }
 
+// EvidenceStore returns the secondary evidence lookup adapter.
+func (b *Backend) EvidenceStore() recall.EvidenceStore {
+	return &evidenceStore{b: b}
+}
+
 func ph(n int) string { return sqlstmt.Placeholders(n, 1, true) }
 
 func phs(start, n int) string { return sqlstmt.Placeholders(start, n, true) }

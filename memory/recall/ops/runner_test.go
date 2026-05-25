@@ -83,6 +83,60 @@ func TestRunnerRunDrainsUntilCanceled(t *testing.T) {
 	}
 }
 
+func TestEventSnapshotAndPresets(t *testing.T) {
+	local := LocalReadinessOptions()
+	if local.MaxSideEffectBacklog == 0 || local.MaxAsyncSemanticBacklog == 0 {
+		t.Fatalf("local readiness preset too strict: %+v", local)
+	}
+	prod := ProductionReadinessOptions()
+	if !prod.RequireAsyncSemantic || prod.MaxDeadLetters != 0 {
+		t.Fatalf("production readiness preset = %+v, want strict async/dead-letter handling", prod)
+	}
+	scope := recall.Scope{RuntimeID: "rt", UserID: "u1"}
+	event := Event{
+		Time:  time.Unix(1, 0),
+		Kind:  EventDrain,
+		Scope: scope,
+		Drain: &ScopeDrainResult{
+			Scope: scope,
+			SideEffects: recall.SideEffectProcessResult{
+				Claimed:   2,
+				Completed: 2,
+			},
+			AsyncSemantic: recall.AsyncSemanticProcessResult{
+				Claimed:   1,
+				Completed: 1,
+				Recovered: 1,
+			},
+		},
+	}
+	snap := event.Snapshot()
+	if snap.Drain == nil || snap.Drain.Claimed != 3 || snap.Drain.Recovered != 1 {
+		t.Fatalf("snapshot = %+v, want combined drain counters", snap)
+	}
+}
+
+func TestSupervisorStartAndStop(t *testing.T) {
+	ctx := context.Background()
+	mem, err := recall.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mem.Close()
+	scope := recall.Scope{RuntimeID: "rt", UserID: "u1"}
+	runner, err := NewRunner(mem, WithIntervals(time.Millisecond, time.Millisecond))
+	if err != nil {
+		t.Fatal(err)
+	}
+	supervisor, err := Start(ctx, runner, Target{Scopes: []recall.Scope{scope}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := supervisor.Stop(); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+}
+
 func TestRunnerReadinessRuntimeUsesEnumerator(t *testing.T) {
 	ctx := context.Background()
 	mem, err := recall.New()

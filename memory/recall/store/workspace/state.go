@@ -18,6 +18,7 @@ const stateVersion = 1
 type state struct {
 	Version     int                    `json:"version"`
 	Facts       []domain.TemporalFact  `json:"facts,omitempty"`
+	Evidence    []evidenceRecord       `json:"evidence,omitempty"`
 	SideEffects []sideEffectRecord     `json:"side_effects,omitempty"`
 	Async       []asyncSemanticRecord  `json:"async_semantic,omitempty"`
 	Counters    map[string]counterPair `json:"counters,omitempty"`
@@ -26,6 +27,14 @@ type state struct {
 type counterPair struct {
 	SideEffect    int `json:"side_effect,omitempty"`
 	AsyncSemantic int `json:"async_semantic,omitempty"`
+}
+
+type evidenceRecord struct {
+	Scope      domain.Scope       `json:"scope"`
+	FactID     string             `json:"fact_id"`
+	EvidenceID string             `json:"evidence_id"`
+	Ordinal    int                `json:"ordinal"`
+	Ref        domain.EvidenceRef `json:"ref"`
 }
 
 type sideEffectRecord struct {

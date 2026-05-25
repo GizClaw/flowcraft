@@ -30,6 +30,12 @@ func TestAsyncSemanticQueueConformance(t *testing.T) {
 	})
 }
 
+func TestEvidenceStoreConformance(t *testing.T) {
+	recalltest.RunEvidenceStoreSuite(t, func(t testing.TB) recall.EvidenceStore {
+		return newTestBackend(t).EvidenceStore()
+	})
+}
+
 func TestBackendPersistsAcrossReopen(t *testing.T) {
 	ctx := t.Context()
 	dir := filepath.Join(t.TempDir(), "recall")

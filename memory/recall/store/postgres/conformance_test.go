@@ -35,6 +35,13 @@ func TestAsyncSemanticQueueConformance(t *testing.T) {
 	})
 }
 
+func TestEvidenceStoreConformance(t *testing.T) {
+	requirePostgres(t)
+	recalltest.RunEvidenceStoreSuite(t, func(t testing.TB) recall.EvidenceStore {
+		return newTestBackend(t).EvidenceStore()
+	})
+}
+
 func newTestBackend(t testing.TB) *Backend {
 	t.Helper()
 	b, err := Open(context.Background(), os.Getenv("FC_PG_DSN"))
@@ -67,6 +74,7 @@ func resetTables(ctx context.Context, dsn string) error {
 		`DELETE FROM recall_async_semantic_jobs`,
 		`DELETE FROM recall_side_effect_jobs`,
 		`DELETE FROM recall_queue_counters`,
+		`DELETE FROM recall_evidence_refs`,
 		`DELETE FROM recall_fact_entities`,
 		`DELETE FROM recall_facts`,
 	} {

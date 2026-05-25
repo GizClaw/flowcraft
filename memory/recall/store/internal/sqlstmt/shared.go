@@ -53,6 +53,16 @@ var Schema = []string{
 		PRIMARY KEY (runtime_id, user_id, fact_id, entity)
 	)`,
 	`CREATE INDEX IF NOT EXISTS recall_fact_entities_scope_idx ON recall_fact_entities(runtime_id, user_id, entity, fact_id)`,
+	`CREATE TABLE IF NOT EXISTS recall_evidence_refs (
+		runtime_id text NOT NULL,
+		user_id text NOT NULL,
+		fact_id text NOT NULL,
+		evidence_id text NOT NULL,
+		ordinal integer NOT NULL,
+		payload_json text NOT NULL,
+		PRIMARY KEY (runtime_id, user_id, evidence_id)
+	)`,
+	`CREATE INDEX IF NOT EXISTS recall_evidence_fact_idx ON recall_evidence_refs(runtime_id, user_id, fact_id, ordinal, evidence_id)`,
 	`CREATE TABLE IF NOT EXISTS recall_queue_counters (
 		kind text NOT NULL,
 		runtime_id text NOT NULL,
