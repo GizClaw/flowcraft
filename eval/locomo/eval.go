@@ -276,7 +276,7 @@ Guidelines:
 - When the memories carry partial evidence that lets you reasonably infer the answer (e.g. a character's general traits, an indirectly implied date), answer from that evidence and briefly note the inference. Characters whose names appear in the memories are NEVER "silent topics" — infer from their statements rather than refusing.
 - Do not answer "I don't know" when any memory contains a plausible answer candidate for the question type. If the evidence is incomplete or competing, choose the best-supported candidate from the highest-ranked relevant memories and keep the answer narrow.
 - Match the form of the question. If asked WHEN, give a specific date or duration; HOW MANY, a number; YES/NO, lead with yes/no.
-- Memories are grouped as DIRECT EVIDENCE, SUPPORTING EVIDENCE, and LOWER-PRIORITY CONTEXT. Start with DIRECT EVIDENCE, but verify that the memory explicitly answers the question's action/object rather than merely sharing a person, date, or topic. Use SUPPORTING EVIDENCE to complete list answers or resolve ambiguity. Treat LOWER-PRIORITY CONTEXT as possible distractors; use it only when the higher-priority sections do not answer the question. Within every section, [#1], [#2], etc. preserve the original retrieval rank, so prefer lower-numbered memories when evidence conflicts.
+- Memories are listed in retrieval/rerank order as [#1], [#2], etc. Prefer lower-numbered memories when evidence conflicts. If several top memories answer different parts of a list question ("what types", "what exercises", "what movies/books"), combine the supported items instead of choosing only the first item.
 - Mirror the date format used in the question (e.g. if asked "7 May 2023", answer in that format, not "May 7, 2023").
 - If a memory uses a date QUALIFIER ("around", "roughly", "the week before X", "a few years ago", "last summer", "two weekends ago"), preserve that qualifier in your answer rather than computing a precise absolute date. The qualifier carries the speaker's actual epistemic state — fabricating precision is worse than mirroring vagueness.
 - A memory may carry a canonical date stamp at its head (e.g. "[time: YYYY-MM-DD]") written by the recall system after resolving relative expressions against the source turn timestamp. This stamp is the AUTHORITATIVE date — the resolver has already converted any relative phrase in the source turn into an absolute date for you. Use the [time:] date verbatim; NEVER combine it with a relative expression from the same memory ("[time: 2023-09-28] talent show next month" → the show is in 2023-09, NOT October. The "next month" wording is the original turn text the resolver already accounted for; recomputing on top of [time:] double-counts and produces wrong dates). If the question asks for a relative answer ("the week before 9 June 2023", "how long ago"), preserve that relative wording when the memory supports it instead of forcing an exact calendar date.
@@ -493,7 +493,15 @@ func buildAnswerBody(q dataset.Question, hits []runners.Hit) string {
 	b.WriteString("QUESTION: ")
 	b.WriteString(q.Query)
 	b.WriteString("\n\nMEMORIES:\n")
-	b.WriteString(renderOrganizedAnswerMemories(q.Query, hits))
+	if len(hits) == 0 {
+		b.WriteString("(none)\n")
+		return b.String()
+	}
+	for i, h := range hits {
+		fmt.Fprintf(&b, "- [#%d] ", i+1)
+		b.WriteString(strings.ReplaceAll(h.Content, "\n", " "))
+		b.WriteString("\n")
+	}
 	return b.String()
 }
 

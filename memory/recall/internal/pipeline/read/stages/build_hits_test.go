@@ -63,13 +63,13 @@ func TestBuildHitsSnapshotsInputRerankedAndFinal(t *testing.T) {
 	if got.RerankedHits == nil || len(*got.RerankedHits) != 2 || (*got.RerankedHits)[0].FactID != "distractor" {
 		t.Fatalf("reranked snapshots = %+v", got.RerankedHits)
 	}
-	if got.Hits == nil || len(*got.Hits) != 1 || (*got.Hits)[0].FactID != "distractor" {
+	if got.Hits == nil || len(*got.Hits) != 1 || (*got.Hits)[0].FactID != "evidence" {
 		t.Fatalf("final snapshots = %+v", got.Hits)
 	}
-	if len(state.Hits) != 1 || state.Hits[0].Fact.ID != "distractor" {
+	if len(state.Hits) != 1 || state.Hits[0].Fact.ID != "evidence" {
 		t.Fatalf("state hits = %+v", state.Hits)
 	}
-	if len(state.Hits[0].Evidence) != 1 || state.Hits[0].Evidence[0].Text != "selected distractor" {
+	if len(state.Hits[0].Evidence) != 1 || state.Hits[0].Evidence[0].Text != "selected evidence" {
 		t.Fatalf("hit evidence should survive build_hits/rerank: %+v", state.Hits[0].Evidence)
 	}
 }
@@ -134,7 +134,7 @@ func TestBuildHitsSkipsSnapshotsWithoutTrace(t *testing.T) {
 	if got.InputCount != 2 || got.Reranked != 2 || got.Count != 1 {
 		t.Fatalf("counts should still be populated: %+v", got)
 	}
-	if len(state.Hits) != 1 || state.Hits[0].Fact.ID != "distractor" {
+	if len(state.Hits) != 1 || state.Hits[0].Fact.ID != "evidence" {
 		t.Fatalf("state hits = %+v", state.Hits)
 	}
 }
@@ -241,6 +241,61 @@ func TestBuildHitsFinalSelectionHybridReranksFullPool(t *testing.T) {
 	}
 }
 
+func TestBuildHitsFinalSelectionPrefersExactTemporalAnchorFromFactTime(t *testing.T) {
+	stage := NewBuildHits(nil)
+	nov9 := time.Date(2022, 11, 9, 12, 0, 0, 0, time.UTC)
+	nov10 := time.Date(2022, 11, 10, 12, 0, 0, 0, time.UTC)
+	feb25 := time.Date(2022, 2, 25, 12, 0, 0, 0, time.UTC)
+	state := &read.ReadState{
+		Plan:  &domain.QueryPlan{TotalCap: 2},
+		Query: domain.Query{Text: "What dish did Nate make on 9 November, 2022?"},
+		Ranked: []domain.ContextItem{
+			timedContextItem("near-date", "e1", 0.95, "On November 10, 2022, Nate took his turtles to the beach.", nov10),
+			timedContextItem("old-dessert", "e2", 0.94, "On February 25, 2022, Nate made ice cream for a friend.", feb25),
+		},
+		AfterTrust: []domain.ContextItem{
+			timedContextItem("near-date", "e1", 0.95, "On November 10, 2022, Nate took his turtles to the beach.", nov10),
+			timedContextItem("old-dessert", "e2", 0.94, "On February 25, 2022, Nate made ice cream for a friend.", feb25),
+			timedContextItem("exact-dish", "e3", 0.25, "Nate made homemade coconut ice cream.", nov9),
+		},
+	}
+
+	if _, err := stage.Run(context.Background(), state); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	got := map[string]bool{}
+	for _, hit := range state.Hits {
+		got[hit.Fact.ID] = true
+	}
+	if !got["exact-dish"] {
+		t.Fatalf("exact date anchor should rescue the answer-bearing fact, got %+v", state.Hits)
+	}
+}
+
+func TestBuildHitsFinalSelectionDoesNotRescuePartialTemporalOnlyMatch(t *testing.T) {
+	stage := NewBuildHits(nil)
+	july := time.Date(2023, 7, 12, 12, 0, 0, 0, time.UTC)
+	december := time.Date(2023, 12, 3, 12, 0, 0, 0, time.UTC)
+	state := &read.ReadState{
+		Plan:  &domain.QueryPlan{TotalCap: 1},
+		Query: domain.Query{Text: "How many pets will Andrew have, as of December 2023?"},
+		Ranked: []domain.ContextItem{
+			timedContextItem("december-context", "e1", 0.95, "In December 2023, Andrew discussed plans for pets.", december),
+		},
+		AfterTrust: []domain.ContextItem{
+			timedContextItem("december-context", "e1", 0.95, "In December 2023, Andrew discussed plans for pets.", december),
+			timedContextItem("partial-pet", "e2", 0.2, "Andrew has a puppy named Toby.", july),
+		},
+	}
+
+	if _, err := stage.Run(context.Background(), state); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if len(state.Hits) != 1 || state.Hits[0].Fact.ID == "partial-pet" {
+		t.Fatalf("partial temporal overlap alone should not rescue weak count evidence, got %+v", state.Hits)
+	}
+}
+
 func TestBuildHitsFinalSelectionUsesFactContentWhenEvidenceIsThin(t *testing.T) {
 	stage := NewBuildHits(nil)
 	state := &read.ReadState{
@@ -271,6 +326,39 @@ func TestBuildHitsFinalSelectionUsesFactContentWhenEvidenceIsThin(t *testing.T) 
 	}
 	if len(state.Hits) != 1 || state.Hits[0].Fact.ID != "instrument" {
 		t.Fatalf("hybrid final selection should score fact content as well as evidence text, got %+v", state.Hits)
+	}
+}
+
+func TestBuildHitsRerankerPathUsesHybridFinalSelection(t *testing.T) {
+	stage := NewBuildHits(reorderReranker{})
+	state := &read.ReadState{
+		Plan:  &domain.QueryPlan{TotalCap: 1},
+		Query: domain.Query{Text: "What instrument does Alice play?"},
+		Ranked: []domain.ContextItem{
+			weakContextItem("weak", "e1", "Bob visited Paris."),
+		},
+		AfterTrust: []domain.ContextItem{
+			weakContextItem("weak", "e1", "Bob visited Paris."),
+			{
+				Candidate: domain.Candidate{FactID: "instrument", Source: "graph", Score: 0.1, EvidenceIDs: []string{"e2"}},
+				Fact: domain.TemporalFact{
+					ID:        "instrument",
+					Kind:      domain.KindPreference,
+					Content:   "Alice plays the violin.",
+					Subject:   "Alice",
+					Predicate: "plays",
+					Object:    "violin",
+				},
+				Evidence: []domain.EvidenceRef{{ID: "e2", Text: "She mentioned it."}},
+			},
+		},
+	}
+
+	if _, err := stage.Run(context.Background(), state); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if len(state.Hits) != 1 || state.Hits[0].Fact.ID != "instrument" {
+		t.Fatalf("reranker path should use hybrid final selection, got %+v", state.Hits)
 	}
 }
 
@@ -447,5 +535,13 @@ func strongContextItem(id, evidenceID, text string) domain.ContextItem {
 		Candidate: domain.Candidate{FactID: id, Source: "retrieval", Score: 0.2, EvidenceIDs: []string{evidenceID}},
 		Fact:      domain.TemporalFact{ID: id, Kind: domain.KindState, Content: text},
 		Evidence:  []domain.EvidenceRef{{ID: evidenceID, Text: text}},
+	}
+}
+
+func timedContextItem(id, evidenceID string, score float64, text string, validFrom time.Time) domain.ContextItem {
+	return domain.ContextItem{
+		Candidate: domain.Candidate{FactID: id, Source: "retrieval", Score: score, EvidenceIDs: []string{evidenceID}},
+		Fact:      domain.TemporalFact{ID: id, Kind: domain.KindEvent, Content: text, ValidFrom: &validFrom},
+		Evidence:  []domain.EvidenceRef{{ID: evidenceID, Text: text, Timestamp: validFrom}},
 	}
 }
