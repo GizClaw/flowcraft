@@ -41,7 +41,7 @@ func TestVerifyOneAnswer_ClassifiesIgnoredEvidence(t *testing.T) {
 			Prediction: "Alice bought 3 tickets.",
 			Judge:      0,
 		},
-		Hits: []AnswerReplayHit{{
+		RecallArtifacts: []AnswerReplayArtifact{{
 			Rank:    1,
 			Content: "Alice bought 2 tickets.",
 		}},

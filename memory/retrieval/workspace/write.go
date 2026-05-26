@@ -27,7 +27,7 @@ func (idx *Index) Upsert(ctx context.Context, namespace string, docs []retrieval
 	}
 	for i, d := range docs {
 		if d.ID == "" {
-			return fmt.Errorf("Upsert[%d]: doc.ID must not be empty", i)
+			return fmt.Errorf("upsert[%d]: doc.ID must not be empty", i)
 		}
 	}
 

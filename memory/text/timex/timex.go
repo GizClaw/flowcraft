@@ -1,19 +1,14 @@
-// Package timex parses natural-language and absolute time expressions
-// embedded inside free text.
+// Package timex parses natural-language and absolute time expressions embedded
+// inside free text.
 //
-// The package ships a zero-dependency baseline regex parser
-// ([RegexParser]) that recognises common absolute date shapes
-// (ISO 8601, US slash dates, ISO timestamps). Richer NL parsing —
-// relative phrases like "next Wednesday" or "in three weeks" —
-// belongs in adapter sub-packages (timex/adapter/when) so the
-// baseline stays small and predictable.
+// The package ships a zero-dependency parser for common calendar shapes,
+// lexical relative phrases, durations, and recurring sets. Callers can also
+// supply [Parser] implementations to [Extract] when they need broader
+// natural-language coverage without making the core package depend on heavier
+// parsers.
 //
-// All implementations satisfy the [Parser] interface; callers can
-// swap them at runtime by holding a [Parser] reference instead of
-// reaching for a concrete struct. The [Match] result is the same
-// shape regardless of which parser produced it, so downstream code
-// (fact compilers, query intent extractors) need only depend on
-// timex without knowing which engine fired.
+// [Extract] normalizes matches into an [Expression], including the semantic
+// kind, precision, range, and TIMEX-like value when available.
 package timex
 
 import "time"

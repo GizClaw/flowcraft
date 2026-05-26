@@ -3,7 +3,6 @@ package ingest
 import (
 	"slices"
 	"strings"
-	"sync"
 	"time"
 	"unicode"
 
@@ -12,29 +11,8 @@ import (
 	"github.com/GizClaw/flowcraft/memory/recall/internal/port"
 	"github.com/GizClaw/flowcraft/memory/recall/internal/words"
 	"github.com/GizClaw/flowcraft/memory/text/timex"
-	whenadp "github.com/GizClaw/flowcraft/memory/text/timex/adapter/when"
 	"github.com/GizClaw/flowcraft/memory/text/tokenize"
 )
-
-// defaultTimeParser is the process-wide fallback used when a
-// DefaultStructurizer is constructed without an explicit
-// TimeParser. We prefer the olebedev/when adapter over the
-// zero-dep timex.RegexParser because when handles relative
-// phrases ("yesterday", "next Tuesday") in addition to absolute
-// dates — exactly the class of expressions an LLM-extracted fact
-// inherits verbatim from the conversational turn.
-//
-// Construction loads the English + common rule set; failure
-// (essentially impossible — when's rules are in-memory) degrades
-// to the regex baseline so the structurizer never blocks on
-// time parsing.
-var defaultTimeParser = sync.OnceValue(func() timex.Parser {
-	p, err := whenadp.New()
-	if err != nil {
-		return timex.RegexParser{}
-	}
-	return p
-})
 
 // NopStructurizer leaves facts unchanged. Default for ingest test
 // paths that supply fully-formed facts directly.
@@ -96,12 +74,9 @@ type DefaultStructurizer struct {
 
 	// TimeParser turns natural-language time expressions inside
 	// fact.Content into raw + parsed time metadata consumed by
-	// TimeResolver. Nil falls back to the olebedev/when adapter
-	// (see [defaultTimeParser]) which handles both ISO dates and
-	// English relative phrases. Callers needing CJK / multi-
-	// language parsing can plug in any timex.Parser
-	// implementation; the zero-dep timex.RegexParser is also a
-	// valid choice when relative phrases are unwanted.
+	// TimeResolver. Nil uses the core timex.Extract grammar.
+	// Callers can still plug in a timex.Parser implementation for
+	// broader natural-language coverage.
 	TimeParser timex.Parser
 }
 
@@ -162,11 +137,7 @@ func (s DefaultStructurizer) Structurize(f domain.TemporalFact, input port.Inges
 	_, hasHint := f.Metadata[MetaValidFromHint]
 	_, hasParsedTime := f.Metadata[MetaValidFromAt]
 	if !hasHint && !hasParsedTime && f.ValidFrom == nil {
-		parser := s.TimeParser
-		if parser == nil {
-			parser = defaultTimeParser()
-		}
-		if hint := inferValidFromHint(parser, turn, f.Content); hint.Raw != "" || !hint.At.IsZero() {
+		if hint := inferValidFromHint(s.TimeParser, turn, f.Content); hint.Raw != "" || !hint.At.IsZero() || hint.Expr != nil {
 			if f.Metadata == nil {
 				f.Metadata = map[string]any{}
 			}
@@ -176,6 +147,9 @@ func (s DefaultStructurizer) Structurize(f domain.TemporalFact, input port.Inges
 			}
 			if !hint.At.IsZero() {
 				f.Metadata[MetaValidFromAt] = hint.At.UTC().Format(time.RFC3339Nano)
+			}
+			if hint.Expr != nil {
+				writeValidFromExpressionMetadata(f.Metadata, hint.Expr)
 			}
 			if hint.Source != "" {
 				f.Metadata[MetaValidFromSource] = hint.Source
@@ -308,10 +282,9 @@ func isTitleCased(tok string) bool {
 //     ("05-07" → May 7th of current year, "2024-05-07" → just
 //     "05-07" because they index off MM-DD shorthand) regress on
 //     full ISO dates.
-//  2. The caller-supplied timex.Parser (default: olebedev/when)
-//     — handles relative phrases ("yesterday", "next Tuesday")
-//     and natural-language expressions the regex baseline does
-//     not recognise.
+//  2. timex.Extract with the optional caller-supplied timex.Parser
+//     — handles relative phrases ("yesterday", "next Tuesday") and
+//     natural-language expressions the regex baseline does not recognise.
 //
 // When the supporting turn has a timestamp, relative phrases in
 // content are resolved against that turn and surfaced as an absolute
@@ -323,6 +296,7 @@ type parsedTimeHint struct {
 	Raw    string
 	At     time.Time
 	Source string
+	Expr   *timex.Expression
 }
 
 func inferValidFromHint(parser timex.Parser, turn *port.TurnContext, content string) parsedTimeHint {
@@ -341,29 +315,62 @@ func inferValidFromHint(parser timex.Parser, turn *port.TurnContext, content str
 		// and pinned to ISO 8601 + US-slash shapes, so it never bites
 		// off shorter substrings the way looser NL parsers do.
 		if m, err := (timex.RegexParser{}).Parse(content, anchor); err == nil && m != nil {
-			return parsedTimeHint{Raw: m.Text, At: m.Time, Source: ValidFromSourceContentExplicit}
-		}
-		// Tier 2: NL fallback. Only consulted when the strict baseline
-		// missed, so the wider net only fires on truly natural-language
-		// time expressions.
-		if parser != nil {
-			if m, err := parser.Parse(content, anchor); err == nil && m != nil {
-				source := validFromSourceForContentHint(m.Text)
-				if turn != nil && !turn.Time.IsZero() && !m.Time.IsZero() {
-					return parsedTimeHint{Raw: m.Text, At: m.Time, Source: source}
-				}
-				return parsedTimeHint{Raw: m.Text, Source: source}
+			expr, _ := timex.Extract(m.Text, anchor)
+			if isExactTimestampText(m.Text) {
+				expr = expressionFromTime(m.Time)
 			}
+			return parsedTimeHint{Raw: m.Text, At: m.Time, Source: ValidFromSourceContentExplicit, Expr: expr}
+		}
+		// Tier 2: NL + lexical fallback. Only consulted when the strict
+		// baseline missed, so the wider net only fires on truly natural
+		// language time expressions. Use timex.Extract instead of calling
+		// parser.Parse directly so short lexical phrases such as "last year",
+		// "last month", and "next month" are still lifted when the NL parser
+		// declines them.
+		var parsers []timex.Parser
+		if parser != nil {
+			parsers = append(parsers, parser)
+		}
+		if expr, err := timex.Extract(content, anchor, parsers...); err == nil && isValidFromExpression(expr) {
+			source := validFromSourceForContentHint(expr.Text)
+			if turn != nil && !turn.Time.IsZero() && !expr.Time.IsZero() {
+				return parsedTimeHint{Raw: expr.Text, At: expressionValidFrom(expr), Source: source, Expr: expr}
+			}
+			return parsedTimeHint{Raw: expr.Text, Source: source, Expr: expr}
 		}
 	}
 	if turn != nil && !turn.Time.IsZero() {
+		expr := expressionFromTime(turn.Time)
 		return parsedTimeHint{
 			Raw:    turn.Time.UTC().Format(time.RFC3339Nano),
 			At:     turn.Time,
 			Source: ValidFromSourceTimeFallback,
+			Expr:   expr,
 		}
 	}
 	return parsedTimeHint{}
+}
+
+func writeValidFromExpressionMetadata(meta map[string]any, expr *timex.Expression) {
+	if meta == nil || expr == nil {
+		return
+	}
+	if expr.Timex != "" {
+		meta[MetaValidFromTimex] = expr.Timex
+	}
+	if expr.Kind != "" {
+		meta[MetaValidFromKind] = string(expr.Kind)
+	}
+	if expr.HasPrecision {
+		meta[MetaValidFromPrec] = calendarPrecisionString(expr.Precision)
+	}
+	if expr.HasRange && !expr.End.IsZero() {
+		meta[MetaValidToAt] = expr.End.UTC().Format(time.RFC3339Nano)
+	}
+}
+
+func isExactTimestampText(raw string) bool {
+	return strings.Contains(raw, ":")
 }
 
 func validFromSourceForContentHint(raw string) string {

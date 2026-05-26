@@ -52,6 +52,18 @@ func TestExtractFeaturesUsesNaturalTimexParser(t *testing.T) {
 	}
 }
 
+func TestExtractFeaturesTimeRangeFromRelativeExpression(t *testing.T) {
+	features := ExtractFeaturesAt("What did Alice mention last year?", time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC))
+	wantFrom := time.Date(2025, time.January, 1, 0, 0, 0, 0, time.UTC)
+	wantTo := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
+	if !features.Temporal.HasRelativeExpression {
+		t.Fatalf("expected relative timex: %+v", features.Temporal)
+	}
+	if !features.Temporal.TimeRange.From.Equal(wantFrom) || !features.Temporal.TimeRange.To.Equal(wantTo) {
+		t.Fatalf("range = %s..%s, want %s..%s", features.Temporal.TimeRange.From, features.Temporal.TimeRange.To, wantFrom, wantTo)
+	}
+}
+
 func TestExtractFeaturesNumericIntentUsesTokenBoundaries(t *testing.T) {
 	features := ExtractFeatures("How many pets does Alice have?")
 	if !features.NumericIntent {

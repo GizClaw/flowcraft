@@ -35,7 +35,7 @@ func (r *retryRunner) Save(_ context.Context, _ runners.Scope, _ []llm.Message) 
 	return 1, time.Millisecond, nil
 }
 
-func (r *retryRunner) Recall(_ context.Context, _ runners.Scope, _ string, _ int) ([]runners.Hit, time.Duration, error) {
+func (r *retryRunner) Recall(_ context.Context, _ runners.Scope, _ string, _ int) ([]runners.RecallArtifact, time.Duration, error) {
 	return nil, time.Millisecond, nil
 }
 

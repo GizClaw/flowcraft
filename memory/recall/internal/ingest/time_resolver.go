@@ -2,13 +2,11 @@ package ingest
 
 import (
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/GizClaw/flowcraft/memory/recall/internal/domain"
 	"github.com/GizClaw/flowcraft/memory/recall/internal/port"
 	"github.com/GizClaw/flowcraft/memory/text/timex"
-	whenadp "github.com/GizClaw/flowcraft/memory/text/timex/adapter/when"
 )
 
 // Metadata keys consulted by the default port.TimeResolver. Callers
@@ -24,6 +22,9 @@ const (
 
 	MetaValidFromSource = "valid_from_source"
 	MetaValidFromText   = "valid_from_text"
+	MetaValidFromTimex  = "valid_from_timex"
+	MetaValidFromKind   = "valid_from_kind"
+	MetaValidFromPrec   = "valid_from_precision"
 )
 
 const (
@@ -42,32 +43,53 @@ func (passthroughTimeResolver) Resolve(f domain.TemporalFact, now time.Time) dom
 		f.ObservedAt = now
 	}
 	if f.ValidFrom == nil {
-		if t, ok := parseAbsoluteFromMeta(f.Metadata, MetaValidFromAt); ok {
-			tt := t
+		if expr, ok := parseExpressionFromMeta(f.Metadata, MetaValidFromAt, time.Time{}, false); ok {
+			tt := expressionValidFrom(expr)
 			f.ValidFrom = &tt
+			setValidToFromExpressionRange(&f, expr)
+			preserveValidFromExpression(f.Metadata, expr)
 			preserveValidFromText(f.Metadata)
 			delete(f.Metadata, MetaValidFromAt)
 			delete(f.Metadata, MetaValidFromHint)
-		} else if t, ok := parseRelativeFromMeta(f.Metadata, MetaValidFromHint, now); ok {
-			tt := t
+		} else if expr, ok := parseExpressionFromMeta(f.Metadata, MetaValidFromHint, now, true); ok {
+			tt := expressionValidFrom(expr)
 			f.ValidFrom = &tt
+			setValidToFromExpressionRange(&f, expr)
+			preserveValidFromExpression(f.Metadata, expr)
 			preserveValidFromText(f.Metadata)
 			delete(f.Metadata, MetaValidFromHint)
 		}
 	}
 	if f.ValidTo == nil {
-		if t, ok := parseAbsoluteFromMeta(f.Metadata, MetaValidToAt); ok {
-			tt := t
+		if expr, ok := parseExpressionFromMeta(f.Metadata, MetaValidToAt, time.Time{}, false); ok {
+			tt := expressionValidFrom(expr)
 			f.ValidTo = &tt
 			delete(f.Metadata, MetaValidToAt)
 			delete(f.Metadata, MetaValidToHint)
-		} else if t, ok := parseRelativeFromMeta(f.Metadata, MetaValidToHint, now); ok {
-			tt := t
+		} else if expr, ok := parseExpressionFromMeta(f.Metadata, MetaValidToHint, now, true); ok {
+			tt := expressionValidFrom(expr)
 			f.ValidTo = &tt
 			delete(f.Metadata, MetaValidToHint)
 		}
 	}
 	return f
+}
+
+func setValidToFromExpressionRange(f *domain.TemporalFact, expr *timex.Expression) {
+	if f == nil || expr == nil || !expr.HasRange || expr.End.IsZero() || hasValidToMeta(f.Metadata) || f.ValidTo != nil {
+		return
+	}
+	tt := expr.End.UTC()
+	f.ValidTo = &tt
+}
+
+func hasValidToMeta(meta map[string]any) bool {
+	if len(meta) == 0 {
+		return false
+	}
+	_, hasAt := meta[MetaValidToAt]
+	_, hasHint := meta[MetaValidToHint]
+	return hasAt || hasHint
 }
 
 func preserveValidFromText(meta map[string]any) {
@@ -82,102 +104,132 @@ func preserveValidFromText(meta map[string]any) {
 	}
 }
 
-func parseAbsoluteFromMeta(meta map[string]any, key string) (time.Time, bool) {
+func preserveValidFromExpression(meta map[string]any, expr *timex.Expression) {
+	if meta == nil || expr == nil {
+		return
+	}
+	if expr.Timex != "" {
+		meta[MetaValidFromTimex] = expr.Timex
+	}
+	if expr.Kind != "" {
+		meta[MetaValidFromKind] = string(expr.Kind)
+	}
+	if expr.HasPrecision {
+		meta[MetaValidFromPrec] = calendarPrecisionString(expr.Precision)
+	}
+}
+
+func parseExpressionFromMeta(meta map[string]any, key string, now time.Time, allowRelative bool) (*timex.Expression, bool) {
 	if len(meta) == 0 {
-		return time.Time{}, false
+		return nil, false
 	}
 	raw, ok := meta[key]
 	if !ok {
-		return time.Time{}, false
+		return nil, false
 	}
 	switch v := raw.(type) {
 	case time.Time:
 		if v.IsZero() {
-			return time.Time{}, false
+			return nil, false
 		}
-		return v, true
+		return expressionFromTime(v), true
 	case string:
-		if t, ok := parseTimeHint(strings.TrimSpace(v), time.Time{}, false); ok {
-			return t, true
+		return parseTimeExpression(strings.TrimSpace(v), now, allowRelative)
+	}
+	return nil, false
+}
+
+func parseTimeExpression(in string, now time.Time, allowRelative bool) (*timex.Expression, bool) {
+	raw := strings.Trim(strings.TrimSpace(in), `"'.,;:!?()[]{} `)
+	if raw == "" {
+		return nil, false
+	}
+	if t, ok := parseExactTimestamp(raw); ok {
+		return expressionFromTime(t), true
+	}
+	expr, err := timex.Extract(raw, now)
+	if err != nil || expr == nil || expr.Time.IsZero() {
+		return nil, false
+	}
+	if !isValidFromExpression(expr) {
+		return nil, false
+	}
+	if expr.Relative && !allowRelative {
+		return nil, false
+	}
+	return expr, true
+}
+
+func isValidFromExpression(expr *timex.Expression) bool {
+	if expr == nil {
+		return false
+	}
+	switch expr.Kind {
+	case timex.ExpressionKindDate, timex.ExpressionKindDateRange:
+		return true
+	case timex.ExpressionKindDuration, timex.ExpressionKindSet:
+		return false
+	default:
+		return !expr.Time.IsZero()
+	}
+}
+
+func parseExactTimestamp(raw string) (time.Time, bool) {
+	for _, layout := range []string{
+		time.RFC3339Nano,
+		"2006-01-02 15:04:05",
+		"2006-01-02 15:04",
+		"2006-01-02T15:04:05",
+		"2006-01-02T15:04",
+	} {
+		if t, err := time.ParseInLocation(layout, raw, time.UTC); err == nil {
+			return t.UTC(), true
 		}
 	}
 	return time.Time{}, false
 }
 
-// parseRelativeFromMeta extracts and parses a relative-time hint
-// from Metadata. Non-string or unrecognised values return ok=false
-// so the canonical field stays nil. Recognised hints have their
-// metadata entry consumed by the caller.
-func parseRelativeFromMeta(meta map[string]any, key string, now time.Time) (time.Time, bool) {
-	if len(meta) == 0 {
-		return time.Time{}, false
+func expressionFromTime(t time.Time) *timex.Expression {
+	t = t.UTC()
+	return &timex.Expression{
+		Match:  timex.Match{Time: t},
+		Source: timex.MatchSourceCalendar,
+		Kind:   timex.ExpressionKindDate,
+		Timex:  t.Format(time.RFC3339Nano),
 	}
-	raw, ok := meta[key]
-	if !ok {
-		return time.Time{}, false
+}
+
+func expressionValidFrom(expr *timex.Expression) time.Time {
+	if expr == nil {
+		return time.Time{}
 	}
-	s, ok := raw.(string)
-	if !ok {
-		return time.Time{}, false
+	if expr.HasRange && !expr.Start.IsZero() {
+		return expr.Start.UTC()
 	}
-	return parseTimeHint(s, now, true)
+	return expr.Time.UTC()
 }
 
 func parseTimeHint(in string, now time.Time, allowRelative bool) (time.Time, bool) {
-	raw := strings.Trim(strings.TrimSpace(in), `"'.,;:!?()[]{} `)
-	if raw == "" {
+	expr, ok := parseTimeExpression(in, now, allowRelative)
+	if !ok {
 		return time.Time{}, false
 	}
-	if cal := timex.ParseCalendar(raw); cal != nil {
-		return cal.Time.UTC(), true
-	}
-	parsers := timeHintParsers()
-	if !allowRelative {
-		parsers = nil
-	}
-	expr, err := timex.Extract(raw, now, parsers...)
-	if err != nil || expr == nil || expr.Time.IsZero() {
-		return time.Time{}, false
-	}
-	if expr.Relative {
-		if !allowRelative {
-			return time.Time{}, false
-		}
-		if strings.EqualFold(strings.TrimSpace(expr.Text), "now") {
-			return expr.Time, true
-		}
-		return startOfDay(expr.Time), true
-	}
-	return expr.Time.UTC(), true
+	return expressionValidFrom(expr), true
 }
 
-func timeHintParsers() []timex.Parser {
-	parsers, err := timeHintParserSet()
-	if err != nil {
-		return nil
+func calendarPrecisionString(p timex.CalendarPrecision) string {
+	switch p {
+	case timex.CalendarPrecisionDay:
+		return "day"
+	case timex.CalendarPrecisionWeek:
+		return "week"
+	case timex.CalendarPrecisionWeekend:
+		return "weekend"
+	case timex.CalendarPrecisionMonth:
+		return "month"
+	case timex.CalendarPrecisionYear:
+		return "year"
+	default:
+		return ""
 	}
-	return parsers
-}
-
-var timeHintParserSet = sync.OnceValues(func() ([]timex.Parser, error) {
-	var out []timex.Parser
-	if p, err := whenadp.New(); err == nil {
-		out = append(out, p)
-	} else {
-		return nil, err
-	}
-	if p, err := whenadp.NewWithLanguages("zh"); err == nil {
-		out = append(out, p)
-	} else {
-		return nil, err
-	}
-	return out, nil
-})
-
-func startOfDay(t time.Time) time.Time {
-	if t.IsZero() {
-		return t
-	}
-	y, m, d := t.Date()
-	return time.Date(y, m, d, 0, 0, 0, 0, t.Location())
 }

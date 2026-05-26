@@ -1194,7 +1194,6 @@ func (d *SummaryDAG) Assemble(ctx context.Context, convID string, tokenBudget in
 	if len(recentMsgs) == 0 && len(nonSystemMsgs) > 0 {
 		recentMsgs = nonSystemMsgs[len(nonSystemMsgs)-1:]
 		recentCutoff = len(nonSystemMsgs) - 1
-		recentTokens = d.countMsg(recentMsgs[0])
 	}
 
 	// Get summaries for earlier messages.

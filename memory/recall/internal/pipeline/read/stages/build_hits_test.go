@@ -32,6 +32,12 @@ func (r *inspectEvidenceReranker) Rerank(_ context.Context, _ string, hits []dom
 	return hits, nil
 }
 
+type emptyReranker struct{}
+
+func (emptyReranker) Rerank(_ context.Context, _ string, _ []domain.Hit) ([]domain.Hit, error) {
+	return nil, nil
+}
+
 func TestBuildHitsSnapshotsInputRerankedAndFinal(t *testing.T) {
 	stage := NewBuildHits(reorderReranker{})
 	state := &read.ReadState{
@@ -139,7 +145,7 @@ func TestBuildHitsSkipsSnapshotsWithoutTrace(t *testing.T) {
 	}
 }
 
-func TestBuildHitsFinalSelectionHybridReplacesWeakFinalHit(t *testing.T) {
+func TestBuildHitsContextPackerKeepsQueryRelevantContext(t *testing.T) {
 	stage := NewBuildHits(nil)
 	state := &read.ReadState{
 		Plan:  &domain.QueryPlan{TotalCap: 1},
@@ -169,11 +175,11 @@ func TestBuildHitsFinalSelectionHybridReplacesWeakFinalHit(t *testing.T) {
 		t.Fatalf("Run returned error: %v", err)
 	}
 	if len(state.Hits) != 1 || state.Hits[0].Fact.ID != "specific" {
-		t.Fatalf("hybrid final selection should keep the specific evidence hit, got %+v", state.Hits)
+		t.Fatalf("context packer should keep query-relevant evidence, got %+v", state.Hits)
 	}
 }
 
-func TestBuildHitsFinalSelectionKeepsBestFactForSharedEvidence(t *testing.T) {
+func TestBuildHitsContextPackerKeepsBestContextForSharedEvidence(t *testing.T) {
 	stage := NewBuildHits(nil)
 	shared := domain.EvidenceRef{ID: "e1", Text: "I painted that lake sunrise last year!"}
 	state := &read.ReadState{
@@ -197,11 +203,11 @@ func TestBuildHitsFinalSelectionKeepsBestFactForSharedEvidence(t *testing.T) {
 		t.Fatalf("Run returned error: %v", err)
 	}
 	if len(state.Hits) != 1 || state.Hits[0].Fact.ID != "event" {
-		t.Fatalf("shared evidence representative should keep answer-bearing event, got %+v", state.Hits)
+		t.Fatalf("shared evidence representative should keep the more query-relevant context, got %+v", state.Hits)
 	}
 }
 
-func TestBuildHitsFinalSelectionHybridCanReplaceSeveralWeakHits(t *testing.T) {
+func TestBuildHitsContextPackerCoversQueryAnchors(t *testing.T) {
 	stage := NewBuildHits(nil)
 	query := "What books and instruments does Alice like?"
 	weak := []domain.ContextItem{
@@ -211,10 +217,10 @@ func TestBuildHitsFinalSelectionHybridCanReplaceSeveralWeakHits(t *testing.T) {
 		weakContextItem("weak-4", "e4", "Eve bought pottery."),
 	}
 	strong := []domain.ContextItem{
-		strongContextItem("book", "e5", "Alice likes reading Charlotte's Web."),
-		strongContextItem("violin", "e6", "Alice likes playing the violin."),
-		strongContextItem("clarinet", "e7", "Alice likes playing the clarinet."),
-		strongContextItem("guitar", "e8", "Alice likes playing the guitar."),
+		strongContextItem("book", "e5", "Alice likes books such as Charlotte's Web."),
+		strongContextItem("violin", "e6", "Alice likes instruments such as the violin."),
+		strongContextItem("clarinet", "e7", "Alice likes instruments such as the clarinet."),
+		strongContextItem("guitar", "e8", "Alice likes instruments such as the guitar."),
 	}
 	state := &read.ReadState{
 		Plan:       &domain.QueryPlan{TotalCap: 4},
@@ -230,14 +236,21 @@ func TestBuildHitsFinalSelectionHybridCanReplaceSeveralWeakHits(t *testing.T) {
 	for _, hit := range state.Hits {
 		got[hit.Fact.ID] = true
 	}
-	for _, want := range []string{"book", "violin", "clarinet", "guitar"} {
-		if !got[want] {
-			t.Fatalf("expected hybrid-selected hit %q in final hits, got %+v", want, state.Hits)
+	if !got["book"] {
+		t.Fatalf("expected context covering the books anchor, got %+v", state.Hits)
+	}
+	instrumentContexts := 0
+	for _, id := range []string{"violin", "clarinet", "guitar"} {
+		if got[id] {
+			instrumentContexts++
 		}
+	}
+	if instrumentContexts < 2 {
+		t.Fatalf("expected diverse context covering instruments, got %+v", state.Hits)
 	}
 }
 
-func TestBuildHitsFinalSelectionHybridReranksFullPool(t *testing.T) {
+func TestBuildHitsContextPackerUsesWiderPoolForCoverage(t *testing.T) {
 	stage := NewBuildHits(nil)
 	state := &read.ReadState{
 		Plan:  &domain.QueryPlan{TotalCap: 2},
@@ -265,11 +278,11 @@ func TestBuildHitsFinalSelectionHybridReranksFullPool(t *testing.T) {
 		got[hit.Fact.ID] = true
 	}
 	if !got["specific"] {
-		t.Fatalf("hybrid final selection should rerank strong evidence from the wider pool, got %+v", state.Hits)
+		t.Fatalf("context packer should keep relevant evidence from the wider pool, got %+v", state.Hits)
 	}
 }
 
-func TestBuildHitsFinalSelectionUsesFactContentWhenEvidenceIsThin(t *testing.T) {
+func TestBuildHitsContextPackerUsesFactContentWhenEvidenceIsThin(t *testing.T) {
 	stage := NewBuildHits(nil)
 	state := &read.ReadState{
 		Plan:  &domain.QueryPlan{TotalCap: 1},
@@ -298,11 +311,11 @@ func TestBuildHitsFinalSelectionUsesFactContentWhenEvidenceIsThin(t *testing.T) 
 		t.Fatalf("Run returned error: %v", err)
 	}
 	if len(state.Hits) != 1 || state.Hits[0].Fact.ID != "instrument" {
-		t.Fatalf("hybrid final selection should score fact content as well as evidence text, got %+v", state.Hits)
+		t.Fatalf("context packer should score fact content as well as evidence text, got %+v", state.Hits)
 	}
 }
 
-func TestFinalSelectionCoverageRescueReplacesWeakDuplicateContext(t *testing.T) {
+func TestContextPackerSignalCoverageReplacesWeakDuplicateContext(t *testing.T) {
 	features := domain.QueryFeatures{
 		Tokens: map[string]struct{}{
 			"alice":       {},
@@ -310,12 +323,12 @@ func TestFinalSelectionCoverageRescueReplacesWeakDuplicateContext(t *testing.T) 
 			"instruments": {},
 		},
 	}
-	queryFeatures := newFinalSelectionQueryFeatures(features)
-	selectedCandidates := []finalSelectionCandidate{
+	queryFeatures := newContextPackQueryFeatures(features)
+	selectedCandidates := []contextPackCandidate{
 		coverageCandidate("generic-1", 6, 0.20, map[string]struct{}{"alice": {}}),
 		coverageCandidate("generic-2", 7, 0.18, map[string]struct{}{"alice": {}}),
 	}
-	selected := finalSelectionHits(selectedCandidates)
+	selected := contextPackHits(selectedCandidates)
 	rescue := coverageCandidate("rescue", 15, 0.55, map[string]struct{}{
 		"alice":       {},
 		"books":       {},
@@ -323,9 +336,9 @@ func TestFinalSelectionCoverageRescueReplacesWeakDuplicateContext(t *testing.T) 
 		"violin":      {},
 	})
 
-	got, gotCandidates := finalSelectionRescueCoverage(queryFeatures, append(selectedCandidates, rescue), selected, selectedCandidates, 2)
+	got, gotCandidates := contextPackEnsureSignalCoverage(queryFeatures, append(selectedCandidates, rescue), selected, selectedCandidates)
 	if len(got) != 2 || len(gotCandidates) != 2 {
-		t.Fatalf("coverage rescue lengths = hits:%d candidates:%d", len(got), len(gotCandidates))
+		t.Fatalf("context coverage lengths = hits:%d candidates:%d", len(got), len(gotCandidates))
 	}
 	found := false
 	for _, hit := range got {
@@ -334,11 +347,11 @@ func TestFinalSelectionCoverageRescueReplacesWeakDuplicateContext(t *testing.T) 
 		}
 	}
 	if !found {
-		t.Fatalf("coverage rescue should add the candidate covering missing query slots, got %+v", got)
+		t.Fatalf("context packer should add the candidate covering missing query anchors, got %+v", got)
 	}
 }
 
-func TestBuildHitsRerankerPathUsesHybridFinalSelection(t *testing.T) {
+func TestBuildHitsRerankerPathUsesContextPacker(t *testing.T) {
 	stage := NewBuildHits(reorderReranker{})
 	state := &read.ReadState{
 		Plan:  &domain.QueryPlan{TotalCap: 1},
@@ -367,11 +380,44 @@ func TestBuildHitsRerankerPathUsesHybridFinalSelection(t *testing.T) {
 		t.Fatalf("Run returned error: %v", err)
 	}
 	if len(state.Hits) != 1 || state.Hits[0].Fact.ID != "instrument" {
-		t.Fatalf("reranker path should use hybrid final selection, got %+v", state.Hits)
+		t.Fatalf("reranker path should use context packer, got %+v", state.Hits)
 	}
 }
 
-func TestBuildHitsFinalSelectionDedupesSameEvidence(t *testing.T) {
+func TestBuildHitsContextPackerFallsBackToPoolWhenRerankerReturnsEmpty(t *testing.T) {
+	stage := NewBuildHits(emptyReranker{})
+	state := &read.ReadState{
+		Plan:  &domain.QueryPlan{TotalCap: 1},
+		Query: domain.Query{Text: "What instrument does Alice play?"},
+		Ranked: []domain.ContextItem{
+			weakContextItem("weak", "e1", "Bob visited Paris."),
+		},
+		AfterTrust: []domain.ContextItem{
+			weakContextItem("weak", "e1", "Bob visited Paris."),
+			{
+				Candidate: domain.Candidate{FactID: "instrument", Source: "graph", Score: 0.1, EvidenceIDs: []string{"e2"}},
+				Fact: domain.TemporalFact{
+					ID:        "instrument",
+					Kind:      domain.KindPreference,
+					Content:   "Alice plays the violin.",
+					Subject:   "Alice",
+					Predicate: "plays",
+					Object:    "violin",
+				},
+				Evidence: []domain.EvidenceRef{{ID: "e2", Text: "She mentioned it."}},
+			},
+		},
+	}
+
+	if _, err := stage.Run(context.Background(), state); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if len(state.Hits) != 1 || state.Hits[0].Fact.ID != "instrument" {
+		t.Fatalf("context packer should fall back to the wider pool when reranker returns empty, got %+v", state.Hits)
+	}
+}
+
+func TestBuildHitsContextPackerDedupesSameEvidence(t *testing.T) {
 	stage := NewBuildHits(nil)
 	state := &read.ReadState{
 		Plan:  &domain.QueryPlan{TotalCap: 2},
@@ -403,6 +449,40 @@ func TestBuildHitsFinalSelectionDedupesSameEvidence(t *testing.T) {
 	}
 	if state.Hits[0].Fact.ID != "a" || state.Hits[1].Fact.ID != "c" {
 		t.Fatalf("same evidence id should be deduped while preserving cap, got %+v", state.Hits)
+	}
+}
+
+func TestBuildHitsContextPackerKeepsSourceDiversity(t *testing.T) {
+	stage := NewBuildHits(nil)
+	state := &read.ReadState{
+		Plan:  &domain.QueryPlan{TotalCap: 3},
+		Query: domain.Query{Text: "What did Alice say about pottery class?"},
+		Ranked: []domain.ContextItem{
+			contextItemWithSource("retrieval-1", "e1", "retrieval", 0.90, "Alice discussed pottery class logistics."),
+			contextItemWithSource("retrieval-2", "e2", "retrieval", 0.88, "Alice discussed pottery class timing."),
+			contextItemWithSource("retrieval-3", "e3", "retrieval", 0.86, "Alice discussed pottery class supplies."),
+		},
+		AfterTrust: []domain.ContextItem{
+			contextItemWithSource("retrieval-1", "e1", "retrieval", 0.90, "Alice discussed pottery class logistics."),
+			contextItemWithSource("retrieval-2", "e2", "retrieval", 0.88, "Alice discussed pottery class timing."),
+			contextItemWithSource("retrieval-3", "e3", "retrieval", 0.86, "Alice discussed pottery class supplies."),
+			contextItemWithSource("graph-1", "e4", "graph", 0.84, "Alice discussed pottery class project details."),
+		},
+	}
+
+	if _, err := stage.Run(context.Background(), state); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	gotGraph := false
+	for _, hit := range state.Hits {
+		for _, source := range hit.Sources {
+			if source == "graph" {
+				gotGraph = true
+			}
+		}
+	}
+	if !gotGraph {
+		t.Fatalf("context packer should keep a similarly relevant alternate source, got %+v", state.Hits)
 	}
 }
 
@@ -481,7 +561,7 @@ func TestBuildHitsGroundingKeepsTimestampedTemporalSupport(t *testing.T) {
 	}
 }
 
-func BenchmarkSelectFinalHybridRerankHits(b *testing.B) {
+func BenchmarkPackRecallContext(b *testing.B) {
 	query := "When did Alice buy 2 ceramic figurines and which instrument does she play?"
 	ordered := make([]domain.Hit, 0, 30)
 	pool := make([]domain.Hit, 0, 120)
@@ -516,7 +596,7 @@ func BenchmarkSelectFinalHybridRerankHits(b *testing.B) {
 
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
-		hits := selectFinalHybridRerankHits(query, ordered, pool, 30)
+		hits := packRecallContext(query, ordered, pool, 30)
 		if len(hits) != 30 {
 			b.Fatalf("len(hits) = %d, want 30", len(hits))
 		}
@@ -547,15 +627,22 @@ func strongContextItem(id, evidenceID, text string) domain.ContextItem {
 	}
 }
 
-func coverageCandidate(id string, rank int, score float64, tokens map[string]struct{}) finalSelectionCandidate {
-	return finalSelectionCandidate{
+func contextItemWithSource(id, evidenceID, source string, score float64, text string) domain.ContextItem {
+	return domain.ContextItem{
+		Candidate: domain.Candidate{FactID: id, Source: source, Score: score, EvidenceIDs: []string{evidenceID}},
+		Fact:      domain.TemporalFact{ID: id, Kind: domain.KindState, Content: text},
+		Evidence:  []domain.EvidenceRef{{ID: evidenceID, Text: text}},
+	}
+}
+
+func coverageCandidate(id string, rank int, score float64, tokens map[string]struct{}) contextPackCandidate {
+	return contextPackCandidate{
 		hit: domain.Hit{
 			Fact: domain.TemporalFact{ID: id, Kind: domain.KindState, Content: id},
 		},
 		score:          score,
 		baseScore:      score,
-		evidenceScore:  score,
-		factScore:      score,
+		textScore:      score,
 		queryRank:      rank,
 		evidenceTokens: tokens,
 		factTokens:     tokens,

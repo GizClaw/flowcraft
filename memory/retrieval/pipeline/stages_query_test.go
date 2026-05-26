@@ -83,7 +83,7 @@ func TestEmbedQueryCacheDisabled(t *testing.T) {
 	if got := emb.calls.Load(); got != 3 {
 		t.Fatalf("expected 3 embed calls (cache off), got %d", got)
 	}
-	if st.cache != nil && len(st.cache) > 0 {
+	if len(st.cache) > 0 {
 		t.Fatalf("cache should be empty when disabled, got %+v", st.cache)
 	}
 }

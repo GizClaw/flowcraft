@@ -178,6 +178,10 @@ func loadAnswerReplayDump(path string) (map[string]AnswerReplayRecord, error) {
 		if err := json.Unmarshal([]byte(line), &rec); err != nil {
 			return nil, err
 		}
+		if len(rec.RecallArtifacts) == 0 && len(rec.LegacyArtifacts) > 0 {
+			rec.RecallArtifacts = rec.LegacyArtifacts
+		}
+		rec.LegacyArtifacts = nil
 		out[rec.QID] = rec
 	}
 	return out, sc.Err()
@@ -315,18 +319,18 @@ func buildAnswerVerifierUserMessage(rec AnswerReplayRecord) string {
 	fmt.Fprintf(&b, "PREDICTION: %s\n", rec.Outcome.Prediction)
 	fmt.Fprintf(&b, "JUDGE: %.3f\n", rec.Outcome.Judge)
 	b.WriteString("\nTOP MEMORIES:\n")
-	for _, h := range rec.Hits {
-		fmt.Fprintf(&b, "[#%d]", h.Rank)
-		if h.Kind != "" {
-			fmt.Fprintf(&b, " kind=%s", h.Kind)
+	for _, artifact := range rec.RecallArtifacts {
+		fmt.Fprintf(&b, "[#%d]", artifact.Rank)
+		if artifact.Kind != "" {
+			fmt.Fprintf(&b, " kind=%s", artifact.Kind)
 		}
-		if h.ValidFrom != "" {
-			fmt.Fprintf(&b, " valid_from=%s", h.ValidFrom)
+		if artifact.ValidFrom != "" {
+			fmt.Fprintf(&b, " valid_from=%s", artifact.ValidFrom)
 		}
-		if len(h.EvidenceIDs) > 0 {
-			fmt.Fprintf(&b, " evidence_ids=%s", strings.Join(h.EvidenceIDs, ","))
+		if len(artifact.EvidenceIDs) > 0 {
+			fmt.Fprintf(&b, " evidence_ids=%s", strings.Join(artifact.EvidenceIDs, ","))
 		}
-		fmt.Fprintf(&b, "\n%s\n", h.Content)
+		fmt.Fprintf(&b, "\n%s\n", artifact.Content)
 	}
 	return b.String()
 }

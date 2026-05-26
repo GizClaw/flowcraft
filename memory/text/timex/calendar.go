@@ -13,6 +13,8 @@ type CalendarPrecision int
 
 const (
 	CalendarPrecisionDay CalendarPrecision = iota
+	CalendarPrecisionWeek
+	CalendarPrecisionWeekend
 	CalendarPrecisionMonth
 	CalendarPrecisionYear
 )

@@ -141,7 +141,7 @@ type BuildHitsDetail struct {
 	RerankErr             string
 	Latency               time.Duration
 	RerankLatency         time.Duration
-	FinalSelectionLatency time.Duration
+	ContextPackingLatency time.Duration
 	Input                 *[]CandidateSnapshot
 	RerankedHits          *[]CandidateSnapshot
 	Hits                  *[]CandidateSnapshot

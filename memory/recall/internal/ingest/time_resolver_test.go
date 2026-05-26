@@ -20,22 +20,24 @@ func TestTimeResolver_RelativeFromMeta(t *testing.T) {
 	r := passthroughTimeResolver{}
 	now := time.Date(2026, 5, 19, 12, 0, 0, 0, time.UTC)
 	cases := []struct {
-		hint string
-		want time.Time
+		hint   string
+		want   time.Time
+		wantTo *time.Time
 	}{
-		{"now", now},
-		{"today", time.Date(2026, 5, 19, 0, 0, 0, 0, time.UTC)},
-		{"tomorrow", time.Date(2026, 5, 20, 0, 0, 0, 0, time.UTC)},
-		{"yesterday", time.Date(2026, 5, 18, 0, 0, 0, 0, time.UTC)},
-		{"next week", time.Date(2026, 5, 26, 0, 0, 0, 0, time.UTC)},
-		{"last week", time.Date(2026, 5, 12, 0, 0, 0, 0, time.UTC)},
-		{"next month", time.Date(2026, 6, 19, 0, 0, 0, 0, time.UTC)},
-		{"last month", time.Date(2026, 4, 19, 0, 0, 0, 0, time.UTC)},
-		{"next year", time.Date(2027, 5, 19, 0, 0, 0, 0, time.UTC)},
-		{"last year", time.Date(2025, 5, 19, 0, 0, 0, 0, time.UTC)},
-		{"4 years ago.", time.Date(2022, 5, 19, 0, 0, 0, 0, time.UTC)},
-		{"six months ago", time.Date(2025, 11, 19, 0, 0, 0, 0, time.UTC)},
-		{"in 3 weeks", time.Date(2026, 6, 9, 0, 0, 0, 0, time.UTC)},
+		{"now", now, nil},
+		{"today", time.Date(2026, 5, 19, 0, 0, 0, 0, time.UTC), timePtr(time.Date(2026, 5, 20, 0, 0, 0, 0, time.UTC))},
+		{"tomorrow", time.Date(2026, 5, 20, 0, 0, 0, 0, time.UTC), timePtr(time.Date(2026, 5, 21, 0, 0, 0, 0, time.UTC))},
+		{"yesterday", time.Date(2026, 5, 18, 0, 0, 0, 0, time.UTC), timePtr(time.Date(2026, 5, 19, 0, 0, 0, 0, time.UTC))},
+		{"next week", time.Date(2026, 5, 25, 0, 0, 0, 0, time.UTC), timePtr(time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC))},
+		{"last week", time.Date(2026, 5, 11, 0, 0, 0, 0, time.UTC), timePtr(time.Date(2026, 5, 18, 0, 0, 0, 0, time.UTC))},
+		{"next month", time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC), timePtr(time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC))},
+		{"last month", time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC), timePtr(time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC))},
+		{"next year", time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC), timePtr(time.Date(2028, 1, 1, 0, 0, 0, 0, time.UTC))},
+		{"last year", time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC), timePtr(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))},
+		{"4 years ago.", time.Date(2022, 1, 1, 0, 0, 0, 0, time.UTC), timePtr(time.Date(2023, 1, 1, 0, 0, 0, 0, time.UTC))},
+		{"two weekends ago", time.Date(2026, 5, 9, 0, 0, 0, 0, time.UTC), timePtr(time.Date(2026, 5, 11, 0, 0, 0, 0, time.UTC))},
+		{"six months ago", time.Date(2025, 11, 1, 0, 0, 0, 0, time.UTC), timePtr(time.Date(2025, 12, 1, 0, 0, 0, 0, time.UTC))},
+		{"in 3 weeks", time.Date(2026, 6, 8, 0, 0, 0, 0, time.UTC), timePtr(time.Date(2026, 6, 15, 0, 0, 0, 0, time.UTC))},
 	}
 	for _, c := range cases {
 		t.Run(c.hint, func(t *testing.T) {
@@ -50,11 +52,20 @@ func TestTimeResolver_RelativeFromMeta(t *testing.T) {
 			if !out.ValidFrom.Equal(c.want) {
 				t.Errorf("ValidFrom = %v, want %v", *out.ValidFrom, c.want)
 			}
+			if c.wantTo != nil {
+				if out.ValidTo == nil || !out.ValidTo.Equal(*c.wantTo) {
+					t.Errorf("ValidTo = %v, want %v", out.ValidTo, *c.wantTo)
+				}
+			}
 			if _, leftover := out.Metadata[MetaValidFromHint]; leftover {
 				t.Errorf("hint must be consumed from metadata")
 			}
 		})
 	}
+}
+
+func timePtr(t time.Time) *time.Time {
+	return &t
 }
 
 func TestTimeResolver_AbsoluteHintsFromLLM(t *testing.T) {
@@ -141,6 +152,32 @@ func TestTimeResolver_UnknownHintLeavesNil(t *testing.T) {
 	// Hint is preserved when not consumed so callers can debug.
 	if _, ok := out.Metadata[MetaValidToHint]; !ok {
 		t.Error("unparseable hint should remain in metadata for debugging")
+	}
+}
+
+func TestTimeResolver_DoesNotUseDurationOrSetAsValidFrom(t *testing.T) {
+	r := passthroughTimeResolver{}
+	now := time.Date(2026, 5, 19, 12, 0, 0, 0, time.UTC)
+	cases := []string{
+		"for the past three years",
+		"over two months",
+		"twice a year",
+		"every other Monday",
+	}
+	for _, hint := range cases {
+		t.Run(hint, func(t *testing.T) {
+			f := domain.TemporalFact{
+				Kind:     domain.KindState,
+				Metadata: map[string]any{MetaValidFromHint: hint},
+			}
+			out := r.Resolve(f, now)
+			if out.ValidFrom != nil {
+				t.Fatalf("duration/set hint %q must not become ValidFrom, got %v", hint, *out.ValidFrom)
+			}
+			if _, ok := out.Metadata[MetaValidFromHint]; !ok {
+				t.Fatalf("non-date hint should remain debuggable in metadata: %v", out.Metadata)
+			}
+		})
 	}
 }
 

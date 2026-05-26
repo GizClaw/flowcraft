@@ -282,18 +282,41 @@ func (r *Runner) drainSideEffects(ctx context.Context, scope runners.Scope) erro
 }
 
 // Recall implements runners.Runner.
-func (r *Runner) Recall(ctx context.Context, scope runners.Scope, query string, topK int) ([]runners.Hit, time.Duration, error) {
+func (r *Runner) Recall(ctx context.Context, scope runners.Scope, query string, topK int) ([]runners.RecallArtifact, time.Duration, error) {
 	hits, _, elapsed, err := r.recall(ctx, scope, query, topK, r.recallExplain != nil)
 	return hits, elapsed, err
 }
 
 // RecallWithStageAudit implements runners.RecallStageAuditor.
-func (r *Runner) RecallWithStageAudit(ctx context.Context, scope runners.Scope, query string, topK int) ([]runners.Hit, runners.RecallStageAudit, time.Duration, error) {
+func (r *Runner) RecallWithStageAudit(ctx context.Context, scope runners.Scope, query string, topK int) ([]runners.RecallArtifact, runners.RecallStageAudit, time.Duration, error) {
 	hits, audit, elapsed, err := r.recall(ctx, scope, query, topK, true)
 	return hits, audit, elapsed, err
 }
 
-func (r *Runner) recall(ctx context.Context, scope runners.Scope, query string, topK int, explain bool) ([]runners.Hit, runners.RecallStageAudit, time.Duration, error) {
+func (r *Runner) recall(ctx context.Context, scope runners.Scope, query string, topK int, explain bool) ([]runners.RecallArtifact, runners.RecallStageAudit, time.Duration, error) {
+	hits, audit, elapsed, err := r.recallRaw(ctx, scope, query, topK, explain)
+	return fromRecallArtifacts(hits), audit, elapsed, err
+}
+
+// RecallAnswerContext implements runners.AnswerContextRecaller.
+func (r *Runner) RecallAnswerContext(ctx context.Context, scope runners.Scope, question runners.AnswerQuestion, topK int) ([]runners.RecallArtifact, runners.AnswerContext, time.Duration, error) {
+	hits, _, elapsed, err := r.recallRaw(ctx, scope, question.Query, topK, r.recallExplain != nil)
+	if err != nil {
+		return nil, runners.AnswerContext{}, elapsed, err
+	}
+	return fromRecallArtifacts(hits), structuredAnswerContext(question, hits), elapsed, nil
+}
+
+// RecallAnswerContextWithStageAudit implements runners.AnswerContextStageAuditor.
+func (r *Runner) RecallAnswerContextWithStageAudit(ctx context.Context, scope runners.Scope, question runners.AnswerQuestion, topK int) ([]runners.RecallArtifact, runners.AnswerContext, runners.RecallStageAudit, time.Duration, error) {
+	hits, audit, elapsed, err := r.recallRaw(ctx, scope, question.Query, topK, true)
+	if err != nil {
+		return nil, runners.AnswerContext{}, audit, elapsed, err
+	}
+	return fromRecallArtifacts(hits), structuredAnswerContext(question, hits), audit, elapsed, nil
+}
+
+func (r *Runner) recallRaw(ctx context.Context, scope runners.Scope, query string, topK int, explain bool) ([]recall.Hit, runners.RecallStageAudit, time.Duration, error) {
 	t0 := time.Now()
 	q := recall.Query{Text: query, Limit: topK}
 	var (
@@ -318,7 +341,7 @@ func (r *Runner) recall(ctx context.Context, scope runners.Scope, query string, 
 	if r.onRecallDiag != nil && len(trace.Stages) > 0 {
 		r.onRecallDiag(scope, diagnostics.DiagnoseRecall(trace, hits))
 	}
-	return fromRecallHits(hits), fromRecallStageAudit(diagnostics.AuditRecallStages(trace)), elapsed, err
+	return hits, fromRecallStageAudit(diagnostics.AuditRecallStages(trace)), elapsed, err
 }
 
 // Close implements runners.Runner.

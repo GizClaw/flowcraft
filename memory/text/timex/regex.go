@@ -17,10 +17,9 @@ import (
 //   - Slash ISO date: 2026/05/20
 //   - US slash date: 5/20/2026 or 05/20/2026
 //
-// Relative phrases ("yesterday", "next Tuesday") are NOT handled
-// — adapter sub-packages (timex/adapter/when) cover those.
-// Keeping the baseline narrow makes its behaviour easy to reason
-// about and impossible to regress.
+// Relative phrases ("yesterday", "next Tuesday") are NOT handled here. Use
+// [Extract] when you want RegexParser combined with calendar words, lexical
+// relative phrases, durations, recurring sets, and optional adapter parsers.
 //
 // RegexParser is safe for concurrent use; it holds no state
 // beyond the compiled patterns, which are package-level globals

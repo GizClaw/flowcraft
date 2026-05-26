@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
-	"sync"
 	"time"
 	"unicode"
 
@@ -14,7 +13,6 @@ import (
 	"github.com/GizClaw/flowcraft/memory/recall/internal/words"
 	"github.com/GizClaw/flowcraft/memory/text/quotes"
 	"github.com/GizClaw/flowcraft/memory/text/timex"
-	whenadp "github.com/GizClaw/flowcraft/memory/text/timex/adapter/when"
 	"github.com/GizClaw/flowcraft/memory/text/tokenize"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/llm"
@@ -483,17 +481,9 @@ func hasTimeSignal(text string, anchor time.Time) bool {
 	if m, err := (timex.RegexParser{}).Parse(text, anchor); err == nil && m != nil {
 		return true
 	}
-	p, err := coverageTimeParser()
-	if err != nil || p == nil {
-		return false
-	}
-	m, err := p.Parse(text, anchor)
-	return err == nil && m != nil
+	expr, err := timex.Extract(text, anchor)
+	return err == nil && expr != nil
 }
-
-var coverageTimeParser = sync.OnceValues(func() (timex.Parser, error) {
-	return whenadp.NewWithLanguages("en", "zh", "nl", "ru", "br")
-})
 
 func hasNumericSignal(text string) bool {
 	for _, r := range text {

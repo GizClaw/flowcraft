@@ -1,7 +1,6 @@
 package timex
 
 import (
-	"slices"
 	"strings"
 	"time"
 
@@ -14,48 +13,13 @@ type RelativeMatch struct {
 	Index int
 }
 
-type lexicalRelativePhrase struct {
-	text   string
-	days   int
-	months int
-	years  int
-	now    bool
-}
-
-var lexicalRelativePhrases = []lexicalRelativePhrase{
-	{text: "now", now: true},
-	{text: "today"}, {text: "tomorrow", days: 1}, {text: "yesterday", days: -1},
-	{text: "next week", days: 7}, {text: "last week", days: -7}, {text: "this week"},
-	{text: "next month", months: 1}, {text: "last month", months: -1}, {text: "this month"},
-	{text: "next year", years: 1}, {text: "last year", years: -1}, {text: "this year"},
-	{text: "hoy"}, {text: "mañana", days: 1}, {text: "manana", days: 1}, {text: "ayer", days: -1},
-	{text: "la próxima semana", days: 7}, {text: "la proxima semana", days: 7}, {text: "la semana pasada", days: -7},
-	{text: "el próximo mes", months: 1}, {text: "el proximo mes", months: 1}, {text: "el mes pasado", months: -1},
-	{text: "el próximo año", years: 1}, {text: "el proximo año", years: 1}, {text: "el año pasado", years: -1},
-	{text: "aujourd hui"}, {text: "demain", days: 1}, {text: "hier", days: -1},
-	{text: "la semaine prochaine", days: 7}, {text: "la semaine dernière", days: -7}, {text: "la semaine derniere", days: -7},
-	{text: "le mois prochain", months: 1}, {text: "le mois dernier", months: -1},
-	{text: "l année prochaine", years: 1}, {text: "l annee prochaine", years: 1}, {text: "l année dernière", years: -1}, {text: "l annee derniere", years: -1},
-	{text: "heute"}, {text: "morgen", days: 1}, {text: "gestern", days: -1},
-	{text: "nächste woche", days: 7}, {text: "nachste woche", days: 7}, {text: "letzte woche", days: -7},
-	{text: "nächster monat", months: 1}, {text: "nachster monat", months: 1}, {text: "letzter monat", months: -1},
-	{text: "nächstes jahr", years: 1}, {text: "nachstes jahr", years: 1}, {text: "letztes jahr", years: -1},
-	{text: "hoje"}, {text: "amanhã", days: 1}, {text: "amanha", days: 1}, {text: "ontem", days: -1},
-	{text: "próxima semana", days: 7}, {text: "proxima semana", days: 7}, {text: "semana passada", days: -7},
-	{text: "próximo mês", months: 1}, {text: "proximo mes", months: 1}, {text: "mês passado", months: -1}, {text: "mes passado", months: -1},
-	{text: "próximo ano", years: 1}, {text: "proximo ano", years: 1}, {text: "ano passado", years: -1},
-	{text: "vandaag"}, {text: "morgen", days: 1}, {text: "gisteren", days: -1},
-	{text: "volgende week", days: 7}, {text: "vorige week", days: -7},
-	{text: "volgende maand", months: 1}, {text: "vorige maand", months: -1},
-	{text: "volgend jaar", years: 1}, {text: "vorig jaar", years: -1},
-	{text: "сегодня"}, {text: "завтра", days: 1}, {text: "вчера", days: -1},
-	{text: "на следующей неделе", days: 7}, {text: "на прошлой неделе", days: -7},
-	{text: "в следующем месяце", months: 1}, {text: "в прошлом месяце", months: -1},
-	{text: "в следующем году", years: 1}, {text: "в прошлом году", years: -1},
-	{text: "今天"}, {text: "明天", days: 1}, {text: "昨天", days: -1}, {text: "后天", days: 2}, {text: "前天", days: -2},
-	{text: "下周", days: 7}, {text: "上周", days: -7},
-	{text: "下个月", months: 1}, {text: "上个月", months: -1},
-	{text: "明年", years: 1}, {text: "去年", years: -1},
+type relativeResolution struct {
+	Time         time.Time
+	Precision    CalendarPrecision
+	HasPrecision bool
+	Start        time.Time
+	End          time.Time
+	HasRange     bool
 }
 
 // IsRelativePhrase reports whether raw looks like a relative time expression
@@ -66,10 +30,13 @@ func IsRelativePhrase(raw string) bool {
 }
 
 // FindRelativePhrase returns a lightweight lexical match for common relative
-// time expressions. It complements natural-language parsers: callers that need
-// a resolved timestamp should still run a Parser such as adapter/when.
+// time expressions. Use Extract when callers need the phrase resolved against
+// an anchor timestamp.
 func FindRelativePhrase(text string) *RelativeMatch {
 	m := phrase.New(text)
+	if rel := findDirectionalRelativePhrase(text); rel != nil {
+		return rel
+	}
 	for _, rel := range lexicalRelativePhrases {
 		parts := strings.Fields(rel.text)
 		if len(parts) > 0 && m.ContainsPhrase(parts...) {
@@ -87,7 +54,7 @@ func FindRelativePhrase(text string) *RelativeMatch {
 			return relativeMatch(m, raw)
 		}
 	}
-	for _, unit := range []string{"day", "week", "month", "year"} {
+	for _, unit := range []string{"day", "week", "weekend", "month", "year"} {
 		if m.ContainsPhrase("next", unit) {
 			return relativeMatch(m, "next "+unit)
 		}
@@ -105,13 +72,11 @@ func FindRelativePhrase(text string) *RelativeMatch {
 			}
 		}
 	}
+	if rel := findCountedRelativePhrase(text); rel != nil {
+		return rel
+	}
 	if m.Contains("ago") {
 		return relativeMatch(m, "ago")
-	}
-	if m.StartsWithPhrase("in") {
-		if slices.ContainsFunc([]string{"day", "week", "month", "year"}, m.Contains) {
-			return relativeMatch(m, "in")
-		}
 	}
 	for _, raw := range []string{"前", "后"} {
 		if m.ContainsLiteral(raw) {
@@ -125,22 +90,311 @@ func relativeMatch(m phrase.Matcher, raw string) *RelativeMatch {
 	return &RelativeMatch{Text: raw, Index: m.IndexLiteral(raw)}
 }
 
-func resolveLexicalRelative(raw string, anchor time.Time) (time.Time, bool) {
+func matchCountedRelative(text string) (countedRelativeMatch, bool) {
+	lower := strings.ToLower(text)
+	for _, rule := range countedRelativeRules {
+		loc := rule.pattern.FindStringSubmatchIndex(lower)
+		if loc == nil {
+			continue
+		}
+		count, unit, ok := countedRuleValues(lower, loc, rule)
+		if !ok {
+			continue
+		}
+		direction := rule.direction
+		if rule.directionGroup > 0 {
+			rawDirection, ok := submatchText(lower, loc, rule.directionGroup)
+			if !ok {
+				continue
+			}
+			direction = -1
+			if rawDirection == "后" {
+				direction = 1
+			}
+		}
+		return countedRelativeMatch{
+			text:      lower[loc[0]:loc[1]],
+			index:     loc[0],
+			count:     count,
+			unit:      unit,
+			direction: direction,
+		}, true
+	}
+	return countedRelativeMatch{}, false
+}
+
+func countedRuleValues(text string, loc []int, rule countedRelativeRule) (string, string, bool) {
+	for i, countGroup := range rule.countGroups {
+		if i >= len(rule.unitGroups) {
+			break
+		}
+		count, ok := submatchText(text, loc, countGroup)
+		if !ok || count == "" {
+			continue
+		}
+		unit, ok := submatchText(text, loc, rule.unitGroups[i])
+		if !ok || unit == "" {
+			continue
+		}
+		return count, unit, true
+	}
+	return "", "", false
+}
+
+func matchDirectionalRelative(text string) (directionalRelativeMatch, bool) {
+	lower := strings.ToLower(text)
+	loc := relativeDirectionalRule.pattern.FindStringSubmatchIndex(lower)
+	if loc == nil {
+		return directionalRelativeMatch{}, false
+	}
+	direction, ok := submatchText(lower, loc, relativeDirectionalRule.directionGroup)
+	if !ok {
+		return directionalRelativeMatch{}, false
+	}
+	unit, ok := submatchText(lower, loc, relativeDirectionalRule.unitGroup)
+	if !ok {
+		return directionalRelativeMatch{}, false
+	}
+	return directionalRelativeMatch{
+		text:      lower[loc[0]:loc[1]],
+		index:     loc[0],
+		direction: direction,
+		unit:      unit,
+	}, true
+}
+
+func submatchText(text string, loc []int, group int) (string, bool) {
+	i := group * 2
+	if i+1 >= len(loc) || loc[i] < 0 || loc[i+1] < 0 {
+		return "", false
+	}
+	return text[loc[i]:loc[i+1]], true
+}
+
+func findDirectionalRelativePhrase(text string) *RelativeMatch {
+	match, ok := matchDirectionalRelative(text)
+	if !ok {
+		return nil
+	}
+	return &RelativeMatch{Text: match.text, Index: match.index}
+}
+
+func findCountedRelativePhrase(text string) *RelativeMatch {
+	match, ok := matchCountedRelative(text)
+	if !ok {
+		return nil
+	}
+	return &RelativeMatch{Text: match.text, Index: match.index}
+}
+
+func resolveLexicalRelative(raw string, anchor time.Time) (relativeResolution, bool) {
 	if anchor.IsZero() {
 		anchor = time.Now().UTC()
 	}
 	base := startOfDay(anchor)
+	if res, ok := resolveCountedRelative(raw, base); ok {
+		return res, true
+	}
+	if res, ok := resolveDirectionalRelative(raw, base); ok {
+		return res, true
+	}
 	needle := normalizeRelativeText(raw)
 	for _, rel := range lexicalRelativePhrases {
 		if normalizeRelativeText(rel.text) != needle {
 			continue
 		}
 		if rel.now {
-			return anchor, true
+			return relativeResolution{Time: anchor}, true
 		}
-		return base.AddDate(rel.years, rel.months, rel.days), true
+		t := base.AddDate(rel.years, rel.months, rel.days)
+		return resolutionWithPrecision(t, precisionForRelativeText(rel.text)), true
 	}
-	return time.Time{}, false
+	return relativeResolution{}, false
+}
+
+func resolveCountedRelative(raw string, base time.Time) (relativeResolution, bool) {
+	match, ok := matchCountedRelative(raw)
+	if !ok {
+		return relativeResolution{}, false
+	}
+	return resolveCountedParts(base, match.count, match.unit, match.direction)
+}
+
+func resolveCountedParts(base time.Time, count, unit string, direction int) (relativeResolution, bool) {
+	n, ok := parseRelativeCount(strings.ToLower(count))
+	if !ok || n <= 0 {
+		return relativeResolution{}, false
+	}
+	normalizedUnit, ok := normalizeRelativeUnit(unit)
+	if !ok {
+		return relativeResolution{}, false
+	}
+	return countedResolution(base, n, normalizedUnit, direction)
+}
+
+func resolveDirectionalRelative(raw string, base time.Time) (relativeResolution, bool) {
+	match, ok := matchDirectionalRelative(raw)
+	if !ok {
+		return relativeResolution{}, false
+	}
+	dir, unit := match.direction, match.unit
+	switch unit {
+	case "day":
+		return resolutionWithPrecision(base.AddDate(0, 0, directionalOffset(dir)), CalendarPrecisionDay), true
+	case "week":
+		return resolutionWithPrecision(base.AddDate(0, 0, 7*directionalOffset(dir)), CalendarPrecisionWeek), true
+	case "weekend":
+		return resolutionWithPrecision(directionalWeekendStart(base, dir), CalendarPrecisionWeekend), true
+	case "month":
+		return resolutionWithPrecision(base.AddDate(0, directionalOffset(dir), 0), CalendarPrecisionMonth), true
+	case "year":
+		return resolutionWithPrecision(base.AddDate(directionalOffset(dir), 0, 0), CalendarPrecisionYear), true
+	default:
+		if wd, ok := parseWeekday(unit); ok {
+			return resolutionWithPrecision(directionalWeekday(base, dir, wd), CalendarPrecisionDay), true
+		}
+		return relativeResolution{}, false
+	}
+}
+
+func directionalOffset(dir string) int {
+	switch dir {
+	case "next":
+		return 1
+	case "last":
+		return -1
+	default:
+		return 0
+	}
+}
+
+func countedResolution(base time.Time, n int, unit string, direction int) (relativeResolution, bool) {
+	switch unit {
+	case "day":
+		return resolutionWithPrecision(base.AddDate(0, 0, direction*n), CalendarPrecisionDay), true
+	case "week":
+		return resolutionWithPrecision(base.AddDate(0, 0, direction*7*n), CalendarPrecisionWeek), true
+	case "weekend":
+		if direction < 0 {
+			return resolutionWithPrecision(weekendStartAgo(base, n), CalendarPrecisionWeekend), true
+		}
+		return resolutionWithPrecision(weekendStartFromNow(base, n), CalendarPrecisionWeekend), true
+	case "month":
+		return resolutionWithPrecision(base.AddDate(0, direction*n, 0), CalendarPrecisionMonth), true
+	case "year":
+		return resolutionWithPrecision(base.AddDate(direction*n, 0, 0), CalendarPrecisionYear), true
+	default:
+		return relativeResolution{}, false
+	}
+}
+
+func weekendStartAgo(base time.Time, n int) time.Time {
+	daysSinceSaturday := (int(base.Weekday()) - int(time.Saturday) + 7) % 7
+	start := base.AddDate(0, 0, -daysSinceSaturday)
+	if base.Weekday() == time.Saturday || base.Weekday() == time.Sunday {
+		start = start.AddDate(0, 0, -7)
+	}
+	return start.AddDate(0, 0, -7*(n-1))
+}
+
+func weekendStartFromNow(base time.Time, n int) time.Time {
+	start := weekendStartThisWeek(base)
+	if !base.Before(start) {
+		start = start.AddDate(0, 0, 7)
+	}
+	return start.AddDate(0, 0, 7*(n-1))
+}
+
+func directionalWeekendStart(base time.Time, dir string) time.Time {
+	this := weekendStartThisWeek(base)
+	switch dir {
+	case "next":
+		if base.Before(this) {
+			return this
+		}
+		return this.AddDate(0, 0, 7)
+	case "last":
+		if base.Weekday() == time.Saturday || base.Weekday() == time.Sunday {
+			return this.AddDate(0, 0, -7)
+		}
+		return this.AddDate(0, 0, -7)
+	default:
+		return this
+	}
+}
+
+func weekendStartThisWeek(base time.Time) time.Time {
+	daysUntilSaturday := (int(time.Saturday) - int(base.Weekday()) + 7) % 7
+	if base.Weekday() == time.Sunday {
+		daysUntilSaturday = -1
+	}
+	return base.AddDate(0, 0, daysUntilSaturday)
+}
+
+func directionalWeekday(base time.Time, dir string, target time.Weekday) time.Time {
+	delta := (int(target) - int(base.Weekday()) + 7) % 7
+	switch dir {
+	case "next":
+		if delta == 0 {
+			delta = 7
+		}
+	case "last":
+		if delta == 0 {
+			delta = -7
+		} else {
+			delta -= 7
+		}
+	}
+	return base.AddDate(0, 0, delta)
+}
+
+func parseWeekday(raw string) (time.Weekday, bool) {
+	switch raw {
+	case "sunday":
+		return time.Sunday, true
+	case "monday":
+		return time.Monday, true
+	case "tuesday":
+		return time.Tuesday, true
+	case "wednesday":
+		return time.Wednesday, true
+	case "thursday":
+		return time.Thursday, true
+	case "friday":
+		return time.Friday, true
+	case "saturday":
+		return time.Saturday, true
+	default:
+		return time.Sunday, false
+	}
+}
+
+func precisionForRelativeText(raw string) CalendarPrecision {
+	lower := strings.ToLower(raw)
+	switch {
+	case strings.Contains(lower, "year") || strings.Contains(lower, "año") || strings.Contains(lower, "année") || strings.Contains(lower, "jahr") || strings.Contains(lower, "ano") || strings.Contains(lower, "год") || strings.Contains(lower, "年"):
+		return CalendarPrecisionYear
+	case strings.Contains(lower, "month") || strings.Contains(lower, "mes") || strings.Contains(lower, "mois") || strings.Contains(lower, "monat") || strings.Contains(lower, "mês") || strings.Contains(lower, "месяц") || strings.Contains(lower, "月"):
+		return CalendarPrecisionMonth
+	case strings.Contains(lower, "weekend"):
+		return CalendarPrecisionWeekend
+	case strings.Contains(lower, "week") || strings.Contains(lower, "semana") || strings.Contains(lower, "semaine") || strings.Contains(lower, "woche") || strings.Contains(lower, "недел") || strings.Contains(lower, "周"):
+		return CalendarPrecisionWeek
+	default:
+		return CalendarPrecisionDay
+	}
+}
+
+func resolutionWithPrecision(t time.Time, precision CalendarPrecision) relativeResolution {
+	start, end, hasRange := rangeForPrecision(t, precision)
+	return relativeResolution{
+		Time:         t,
+		Precision:    precision,
+		HasPrecision: true,
+		Start:        start,
+		End:          end,
+		HasRange:     hasRange,
+	}
 }
 
 func normalizeRelativeText(raw string) string {
@@ -150,4 +404,10 @@ func normalizeRelativeText(raw string) string {
 func startOfDay(t time.Time) time.Time {
 	y, m, d := t.Date()
 	return time.Date(y, m, d, 0, 0, 0, 0, t.Location())
+}
+
+func startOfWeek(t time.Time) time.Time {
+	base := startOfDay(t)
+	daysSinceMonday := (int(base.Weekday()) - int(time.Monday) + 7) % 7
+	return base.AddDate(0, 0, -daysSinceMonday)
 }

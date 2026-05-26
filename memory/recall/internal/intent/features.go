@@ -3,7 +3,6 @@ package intent
 import (
 	"slices"
 	"strings"
-	"sync"
 	"time"
 	"unicode"
 
@@ -11,7 +10,6 @@ import (
 	"github.com/GizClaw/flowcraft/memory/recall/internal/words"
 	"github.com/GizClaw/flowcraft/memory/text/quotes"
 	"github.com/GizClaw/flowcraft/memory/text/timex"
-	whenadp "github.com/GizClaw/flowcraft/memory/text/timex/adapter/when"
 	"github.com/GizClaw/flowcraft/memory/text/tokenize"
 )
 
@@ -58,7 +56,7 @@ func extractTemporal(text string, anchor time.Time) domain.QueryTemporalFeatures
 	}
 	out.MatchedText = expr.Text
 	out.HasRelativeExpression = expr.Relative
-	if expr.HasCalendarPrecision {
+	if expr.HasRange {
 		out.HasExplicitDate = true
 		out.TimeRange = rangeFromTimexExpression(expr)
 		if !slices.Contains(out.IntentKind, domain.QueryTemporalIntentDate) {
@@ -69,21 +67,10 @@ func extractTemporal(text string, anchor time.Time) domain.QueryTemporalFeatures
 }
 
 func rangeFromTimexExpression(expr *timex.Expression) domain.TimeRange {
-	if expr == nil || !expr.HasCalendarPrecision {
+	if expr == nil || !expr.HasRange {
 		return domain.TimeRange{}
 	}
-	t := expr.Time.UTC()
-	switch expr.Precision {
-	case timex.CalendarPrecisionYear:
-		from := time.Date(t.Year(), time.January, 1, 0, 0, 0, 0, time.UTC)
-		return domain.TimeRange{From: from, To: from.AddDate(1, 0, 0)}
-	case timex.CalendarPrecisionMonth:
-		from := time.Date(t.Year(), t.Month(), 1, 0, 0, 0, 0, time.UTC)
-		return domain.TimeRange{From: from, To: from.AddDate(0, 1, 0)}
-	default:
-		from := time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, time.UTC)
-		return domain.TimeRange{From: from, To: from.AddDate(0, 0, 1)}
-	}
+	return domain.TimeRange{From: expr.Start.UTC(), To: expr.End.UTC()}
 }
 
 // HasTimex reports whether text contains a parseable absolute or natural time
@@ -94,16 +81,8 @@ func HasTimex(text string, anchor time.Time) bool {
 }
 
 func extractTimex(text string, anchor time.Time) (*timex.Expression, error) {
-	p, err := richTimeParser()
-	if err != nil || p == nil {
-		return timex.Extract(text, anchor)
-	}
-	return timex.Extract(text, anchor, p)
+	return timex.Extract(text, anchor)
 }
-
-var richTimeParser = sync.OnceValues(func() (timex.Parser, error) {
-	return whenadp.NewWithLanguages("en", "zh", "nl", "ru", "br")
-})
 
 func hasTemporalIntent(text string) bool {
 	return words.HasTemporalQuestionCue(text)

@@ -6,7 +6,6 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -167,14 +166,14 @@ type Options struct {
 
 	// OnQuestionRecall is invoked synchronously after every successful
 	// Recall in the QA loop, before the answer LLM is called. It
-	// enables the --dump-recall diagnostic to capture which facts the
+	// enables the --dump-recall diagnostic to capture which artifacts the
 	// retrieval pipeline actually surfaces for each question — the
 	// recall-miss vs answer-miss probe complement to the extractor's
 	// OnFactsExtracted hook on the ingest side. nil disables.
 	//
 	// Callback runs in the QA worker goroutine, so it MUST be
 	// goroutine-safe when Concurrency > 1.
-	OnQuestionRecall func(q dataset.Question, hits []runners.Hit)
+	OnQuestionRecall func(q dataset.Question, artifacts []runners.RecallArtifact)
 	// OnQuestionRecallStageAudit receives per-stage read-pipeline
 	// candidate snapshots when the runner supports them.
 	OnQuestionRecallStageAudit func(q dataset.Question, audit runners.RecallStageAudit)
@@ -201,98 +200,6 @@ type Event struct {
 // goroutine and SHOULD not block: a slow hook will stall the eval. Errors
 // from hooks are swallowed (the hook itself decides whether to log).
 type EventHook func(ctx context.Context, e Event)
-
-// DefaultAnswerPrompt is the closed-book QA prompt fed to the answer
-// LLM after Recall returns the top-K memories for a question.
-//
-// Five rules, each grounded in a real failure pattern from the
-// LoCoMo10 run 25871166419 diagnostic (458/1542 failures sampled),
-// not in benchmark-tuning intuition:
-//
-//  1. STRICT GROUNDING — answer from the listed memories only; do not
-//     invent facts. Universal closed-book QA contract.
-//
-//  2. RESTRAINED PARTIAL-INFO INFERENCE — when memories carry partial
-//     evidence (a character's general traits, an indirectly implied
-//     date), infer the most likely answer and briefly note the
-//     inference. This is NOT the same as mem0's "never say I don't
-//     know" rule (which fabricates answers when memories are silent).
-//     We deliberately allow "I don't know" when memories truly have
-//     nothing — see [eval/README.md] anti-cheating discipline.
-//
-//  3. MIRROR QUESTION FORM — if the question is WHEN, give a date or
-//     duration; HOW MANY, a number; YES/NO, lead with yes/no. Mirror
-//     the date format used in the question (e.g. "7 May 2023" vs
-//     "May 7, 2023"). A real product behaviour, not a judge trick.
-//
-//  4. CONCISENESS — 1-2 sentences. Hedging language ("it seems",
-//     "might be") dilutes accuracy when memories are unambiguous.
-//
-//  5. CANONICAL NAME RECOGNITION — characters named anywhere in the
-//     memory list are NOT "silent topics". If a question asks about
-//     such a character, infer from their statements rather than
-//     refusing.
-//
-//  6. LITERAL-SPAN FALLBACK BEFORE IDK — diagnostics on the
-//     2026-05-19 full LoCoMo run flagged 252 of 501 failures as
-//     "downstream" (the answer LLM refused or recomputed away from
-//     a hit whose Content / [time:] / evidence quote already
-//     contained the gold answer verbatim). Force one final
-//     literal-span scan before "I don't know" so the LLM cites
-//     what retrieval already surfaced rather than refusing on
-//     uncertainty grounds. This is strictly USING the retrieved
-//     spans — not gap-filling silent evidence — and stays inside
-//     the anti-cheating discipline.
-//
-//  7. INFERENTIAL LEAD-WITH-LABEL — inferential questions ("might",
-//     "what kind of", "likely") read as essay prompts and the LLM
-//     defaults to a reasoning paragraph that buries the inferred
-//     label. Force it to lead with a single noun-phrase / adjective
-//     label (matching the gold's shape) and put any justification
-//     after. Without this q9-class items get judge=0 despite
-//     reasonable content, because the judge model sees a hedged
-//     paragraph and rules "topic-only match" rather than verdict.
-//
-//  8. DATE QUALIFIER PRESERVATION — when a memory uses a date QUALIFIER
-//     ("around", "roughly", "the week before X", "a few years ago",
-//     "last summer"), preserve that qualifier rather than computing a
-//     precise date. The qualifier carries the speaker's actual
-//     epistemic state; converting "a few years ago" to "27 June 2020"
-//     fabricates precision and can turn a vague but correct memory into
-//     a wrong absolute-date answer.
-//
-// Note on prior art: mem0's MEMORY_ANSWER_PROMPT (Apache 2.0,
-// mem0/configs/prompts.py) is shorter and includes a stricter
-// "never say no information is found, provide a general response"
-// rule. We deliberately do NOT adopt that rule because it shifts
-// bench numbers without reflecting real memory quality (per
-// eval/README.md anti-cheating discipline §). Rules 3-4 above borrow
-// mem0's "clear, concise" intent; rule 2 is our restrained version of
-// their anti-IDK behaviour.
-const DefaultAnswerPrompt = `You are answering a question using only the MEMORIES below.
-
-Guidelines:
-- Ground the answer strictly in the memories. Do not invent facts that are not supported.
-- When the memories carry partial evidence that lets you reasonably infer the answer (e.g. a character's general traits, an indirectly implied date), answer from that evidence and briefly note the inference. Characters whose names appear in the memories are NEVER "silent topics" — infer from their statements rather than refusing.
-- Do not answer "I don't know" when any memory contains a plausible answer candidate for the question type. If the evidence is incomplete or competing, choose the best-supported candidate from the highest-ranked relevant memories and keep the answer narrow.
-- Match the form of the question. If asked WHEN, give a specific date or duration; HOW MANY, a number; YES/NO, lead with yes/no.
-- Memories are listed in retrieval/rerank order as [#1], [#2], etc. Prefer lower-numbered memories when evidence conflicts. If several top memories answer different parts of a list question ("what types", "what exercises", "what movies/books"), combine the supported items instead of choosing only the first item.
-- For list or set questions ("what pets/items/books/movies/sports/foods/exercises/people/names", "what types/kinds", "which Xs"), extract the literal named items from ALL relevant memories and return a compact comma-separated list. Do not replace named items with a broad category such as "healthy meals", "fantasy movies", or "various people" when the memories contain the actual names.
-- For bridge questions, combine memories before answering. If a high-ranked memory says "home country", "the book you recommended", "my other dog", "that workshop", "the accident", or another placeholder, scan the rest of the memories for the specific referent and answer with that literal referent. Do not stop at the generic placeholder when a later memory names it.
-- Prefer exact spans from evidence quotes over paraphrases. If the evidence quote contains a specific noun phrase, number, person, place, title, or item list that fills the answer slot, copy that phrase instead of summarizing it.
-- Mirror the date format used in the question (e.g. if asked "7 May 2023", answer in that format, not "May 7, 2023").
-- If a memory uses a date QUALIFIER ("around", "roughly", "the week before X", "a few years ago", "last summer", "two weekends ago"), preserve that qualifier in your answer rather than computing a precise absolute date. The qualifier carries the speaker's actual epistemic state — fabricating precision is worse than mirroring vagueness.
-- A memory may carry a canonical event date stamp at its head (e.g. "[time: YYYY-MM-DD]") written by the recall system after resolving a time expression stated in the memory content. This stamp is the AUTHORITATIVE event date. Use the [time:] date verbatim; NEVER combine it with a relative expression from the same memory ("[time: 2023-09-28] talent show next month" → the show is in 2023-09, NOT October. The "next month" wording is the original turn text the resolver already accounted for; recomputing on top of [time:] double-counts and produces wrong dates). If the question asks for a relative answer ("the week before 9 June 2023", "how long ago"), preserve that relative wording when the memory supports it instead of forcing an exact calendar date.
-- A memory may instead carry a weak observation stamp (e.g. "[observed_at: YYYY-MM-DD]"). This is the source turn date, not an authoritative event date. Use observed_at only when the memory content describes something happening at that turn ("I just joined...", "today...", "I am currently...") and no [time:] or explicit relative wording gives a better event date.
-- Evidence quotes may carry a source timestamp prefix (e.g. "[source_time: YYYY-MM-DD HH:MM]"). This is only the original turn timestamp, not the event date by itself. Use source_time only as the anchor for relative wording explicitly present inside that same evidence quote; never answer a WHEN question from source_time alone.
-- When an ASKED_AT line is present, treat that timestamp as the "now" for the question. Relative-time phrases ("last week", "two months ago", "yesterday", "this morning") are interpreted RELATIVE TO ASKED_AT, not to today's wall clock. Memories carry their own timestamps in [source_time:] prefixes; use ASKED_AT with source_time only to locate relevant turns or to resolve relative wording in the quoted evidence, not to turn source_time into an event date.
-- Answer in 1-2 sentences. Avoid hedging ("it seems", "might be") when the memories are unambiguous.
-- Before emitting "I don't know", do ONE final scan of the memories for a LITERAL span that fills the question's answer slot — a specific date, number, proper noun, or named phrase quoted verbatim inside a memory's content, [time:] tag, or evidence quote. If such a literal span exists, cite that span as the answer. "I don't know" is reserved for the case where no memory contains any literal candidate for the question's wh-slot (no date when asked "when", no name when asked "who/where", etc.). This rule is about USING what the retrieval already found, not about guessing; it never authorises filling silent evidence with fabricated answers.
-- For INFERENTIAL questions ("What might X be?", "How does Y likely feel?", "What kind of person is Z?") the question is open by design and tempts a paragraph of reasoning that buries the actual verdict. Resist that. LEAD the answer with a SINGLE short label that names the inferred attribute — a noun phrase or adjective phrased the way a human would answer the same question in one line — and only THEN add at most one short justifying clause grounded in the memories. The label is the answer; the justification is optional. A reader looking for the verdict in the first phrase must see it immediately, not as a delayed conclusion at the end of an essay.
-
-%s
-
-Answer:`
 
 // Run runs ingest + question loop and returns a report.
 func Run(ctx context.Context, r runners.Runner, ds *dataset.Dataset, opts Options) (*Report, error) {
@@ -443,178 +350,6 @@ func Run(ctx context.Context, r runners.Runner, ds *dataset.Dataset, opts Option
 	})
 
 	return report, nil
-}
-
-// buildPrediction picks between two answer strategies:
-//   - opts.AnswerLLM != nil → ask the LLM to answer the question grounded in
-//     the recalled memories (closed-book QA over LTM).
-//   - otherwise              → cheap fallback: concatenate top-3 hits, so
-//     EM/F1 still surface a "did retrieval find the right text" signal.
-type answerPromptRecord struct {
-	Template string
-	Body     string
-}
-
-func buildPrediction(ctx context.Context, opts Options, q dataset.Question, hits []runners.Hit) (string, answerPromptRecord, error) {
-	body := buildAnswerBody(q, hits)
-	if opts.AnswerLLM == nil {
-		return composePrediction(hits), answerPromptRecord{Body: body}, nil
-	}
-	prompt := opts.AnswerPrompt
-	if prompt == "" {
-		prompt = DefaultAnswerPrompt
-	}
-	fullPrompt := fmt.Sprintf(prompt, body)
-	resp, _, err := opts.AnswerLLM.Generate(ctx, []llm.Message{
-		{Role: model.RoleUser, Parts: []model.Part{{Type: model.PartText, Text: fullPrompt}}},
-	})
-	if err != nil {
-		return "", answerPromptRecord{Template: prompt, Body: body}, err
-	}
-	return strings.TrimSpace(resp.Content()), answerPromptRecord{Template: prompt, Body: body}, nil
-}
-
-// buildAnswerBody renders the "ASKED_AT? + Q + MEMORIES" block fed into
-// the QA prompt. Top-k memories are listed as bullets in RecallHit
-// ranking order.
-//
-// The optional ASKED_AT line ([dataset.Question.AskedAt], populated by
-// the LongMemEval converter from `question_date`) is emitted only when
-// the source dataset records when the question was asked. Without it
-// the answer LLM has no anchor for "last week" / "two months ago"
-// relative-time phrases that dominate temporal-reasoning questions —
-// pre-fix LongMemEval temporal-reasoning was effectively unanswerable.
-// Synthetic / LoCoMo datasets that omit the field keep the legacy
-// QUESTION-then-MEMORIES layout so the prompt stays stable for those
-// benchmarks.
-func buildAnswerBody(q dataset.Question, hits []runners.Hit) string {
-	var b strings.Builder
-	if asked := strings.TrimSpace(q.AskedAt); asked != "" {
-		b.WriteString("ASKED_AT: ")
-		b.WriteString(asked)
-		b.WriteString("\n\n")
-	}
-	b.WriteString("QUESTION: ")
-	b.WriteString(q.Query)
-	if hints := buildAnswerHints(q.Query, hits); hints != "" {
-		b.WriteString("\n\n")
-		b.WriteString(hints)
-	}
-	b.WriteString("\n\nMEMORIES:\n")
-	if len(hits) == 0 {
-		b.WriteString("(none)\n")
-		return b.String()
-	}
-	for i, h := range hits {
-		fmt.Fprintf(&b, "- [#%d] ", i+1)
-		b.WriteString(strings.ReplaceAll(h.Content, "\n", " "))
-		b.WriteString("\n")
-	}
-	return b.String()
-}
-
-// composePrediction concatenates the top-3 hit contents — the "answer" we feed
-// to EM/F1/Judge when no AnswerLLM is configured. Cheap, deterministic, and
-// good enough to surface "did retrieval find the right text" without an API key.
-func composePrediction(hits []runners.Hit) string {
-	if len(hits) == 0 {
-		return ""
-	}
-	max := 3
-	if max > len(hits) {
-		max = len(hits)
-	}
-	var b strings.Builder
-	for i := 0; i < max; i++ {
-		if i > 0 {
-			b.WriteString(" || ")
-		}
-		b.WriteString(hits[i].Content)
-	}
-	return b.String()
-}
-
-// aggregateByCategory groups per-question scores by their canonical
-// category tag and returns the mean of each headline metric per group.
-// Only canonical labels (see convCategoryName in cli_convert.go) are
-// emitted as keys — the raw `catN` tags are filtered out so the report
-// surface stays stable even if the upstream JSON renumbers categories.
-// Questions without a canonical tag are skipped silently rather than
-// bucketed into a synthetic "unknown" group: a missing breakdown is
-// less misleading than a wrong one.
-func aggregateByCategory(scores []QuestionScore) map[string]CategoryScore {
-	canonical := map[string]bool{
-		"single-hop":  true,
-		"temporal":    true,
-		"multi-hop":   true,
-		"open-domain": true,
-		"adversarial": true,
-	}
-	type acc struct {
-		n                  int
-		sumEM, sumF1, sumJ float64
-	}
-	groups := map[string]*acc{}
-	for _, s := range scores {
-		for _, tag := range s.Tags {
-			if !canonical[tag] {
-				continue
-			}
-			g, ok := groups[tag]
-			if !ok {
-				g = &acc{}
-				groups[tag] = g
-			}
-			g.n++
-			g.sumEM += s.EM
-			g.sumF1 += s.F1
-			g.sumJ += s.Judge
-		}
-	}
-	if len(groups) == 0 {
-		return nil
-	}
-	out := make(map[string]CategoryScore, len(groups))
-	for tag, g := range groups {
-		if g.n == 0 {
-			continue
-		}
-		out[tag] = CategoryScore{
-			Count: g.n,
-			EM:    g.sumEM / float64(g.n),
-			F1:    g.sumF1 / float64(g.n),
-			Judge: g.sumJ / float64(g.n),
-		}
-	}
-	return out
-}
-
-func evidenceKHit(hits []runners.Hit, want []string) float64 {
-	if len(want) == 0 {
-		return 0
-	}
-	got := map[string]struct{}{}
-	for _, h := range hits {
-		if h.ID != "" {
-			got[h.ID] = struct{}{}
-		}
-		for _, eid := range h.EvidenceIDs {
-			got[eid] = struct{}{}
-		}
-	}
-	for _, w := range want {
-		if _, ok := got[w]; ok {
-			return 1
-		}
-	}
-	return 0
-}
-
-func boolFloat(b bool) float64 {
-	if b {
-		return 1
-	}
-	return 0
 }
 
 // evalQuestions runs the QA loop with bounded concurrency. Recall, answer
@@ -920,18 +655,28 @@ func evalQuestions(ctx context.Context, r runners.Runner, scopeOf func(string) r
 				// provider blip without us threading the return values
 				// through a generic helper. Same single-shot policy as
 				// the ingest path.
-				var hits []runners.Hit
+				var artifacts []runners.RecallArtifact
+				var answerContext runners.AnswerContext
 				var audit runners.RecallStageAudit
 				var d time.Duration
 				err := retryOnNotAvailable(qctx, "recall", q.ID, func() error {
 					var rerr error
+					answerQuestion := runners.AnswerQuestion{Query: q.Query, AskedAt: q.AskedAt}
 					if opts.OnQuestionRecallStageAudit != nil {
+						if auditor, ok := r.(runners.AnswerContextStageAuditor); ok {
+							artifacts, answerContext, audit, d, rerr = auditor.RecallAnswerContextWithStageAudit(qctx, scopeOf(q.ConversationID), answerQuestion, opts.TopK)
+							return rerr
+						}
 						if auditor, ok := r.(runners.RecallStageAuditor); ok {
-							hits, audit, d, rerr = auditor.RecallWithStageAudit(qctx, scopeOf(q.ConversationID), q.Query, opts.TopK)
+							artifacts, audit, d, rerr = auditor.RecallWithStageAudit(qctx, scopeOf(q.ConversationID), q.Query, opts.TopK)
 							return rerr
 						}
 					}
-					hits, d, rerr = r.Recall(qctx, scopeOf(q.ConversationID), q.Query, opts.TopK)
+					if answerer, ok := r.(runners.AnswerContextRecaller); ok {
+						artifacts, answerContext, d, rerr = answerer.RecallAnswerContext(qctx, scopeOf(q.ConversationID), answerQuestion, opts.TopK)
+						return rerr
+					}
+					artifacts, d, rerr = r.Recall(qctx, scopeOf(q.ConversationID), q.Query, opts.TopK)
 					return rerr
 				})
 				if err != nil {
@@ -942,7 +687,7 @@ func evalQuestions(ctx context.Context, r runners.Runner, scopeOf func(string) r
 				}
 				latencies[j.idx] = d
 				if opts.OnQuestionRecall != nil {
-					opts.OnQuestionRecall(q, hits)
+					opts.OnQuestionRecall(q, artifacts)
 				}
 				if opts.OnQuestionRecallStageAudit != nil {
 					opts.OnQuestionRecallStageAudit(q, audit)
@@ -951,7 +696,7 @@ func evalQuestions(ctx context.Context, r runners.Runner, scopeOf func(string) r
 				var answerPrompt answerPromptRecord
 				err = retryOnNotAvailable(qctx, "answer", q.ID, func() error {
 					var aerr error
-					pred, answerPrompt, aerr = buildPrediction(qctx, opts, q, hits)
+					pred, answerPrompt, aerr = buildPrediction(qctx, opts, q, artifacts, answerContext)
 					return aerr
 				})
 				if err != nil {
@@ -981,7 +726,7 @@ func evalQuestions(ctx context.Context, r runners.Runner, scopeOf func(string) r
 				// aggregate reports N/A instead of a misleading 0.000.
 				var khitPtr *float64
 				if !opts.UseExtractor {
-					khit := evidenceKHit(hits, q.EvidenceIDs)
+					khit := evidenceKHit(artifacts, q.EvidenceIDs)
 					khitPtr = &khit
 				}
 				scores[j.idx] = QuestionScore{
@@ -990,13 +735,13 @@ func evalQuestions(ctx context.Context, r runners.Runner, scopeOf func(string) r
 					Tags: q.Tags,
 				}
 				if opts.OnQuestionAnswer != nil {
-					opts.OnQuestionAnswer(NewAnswerReplayRecord(time.Now(), q, hits, AnswerReplayOutcome{
+					opts.OnQuestionAnswer(NewAnswerReplayRecord(time.Now(), q, artifacts, AnswerReplayOutcome{
 						Prediction: pred,
 						EM:         em,
 						F1:         f1,
 						Judge:      judge,
 						KHit:       khitPtr,
-					}, answerPrompt.Template, answerPrompt.Body))
+					}, answerPrompt.Template, answerPrompt.Body, answerPrompt.ContextFormat))
 				}
 				cur := done.Add(1)
 				if opts.ProgressEvery > 0 && cur%int64(opts.ProgressEvery) == 0 {

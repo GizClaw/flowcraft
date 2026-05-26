@@ -70,14 +70,3 @@ func layersNamespace(datasetID string) string {
 func docsNamespace(datasetID string) string {
 	return knowledgeNamespace.DatasetScope(datasetID, docsSuffix)
 }
-
-// sanitiseDatasetID mirrors recall.saneNS so the namespaces produced
-// here are accepted by every retrieval backend (Postgres / SQLite
-// validation rejects non [A-Za-z0-9_] characters).
-//
-// Deprecated: use retrieval/namespace.Sanitize. This compatibility shim will
-// be removed in v0.5.0 after knowledge namespace construction is fully
-// centralised in sdk/retrieval/namespace.
-func sanitiseDatasetID(s string) string {
-	return retrievalns.Sanitize(s)
-}

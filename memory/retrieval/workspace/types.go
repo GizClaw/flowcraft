@@ -210,19 +210,6 @@ const (
 	walOpDelete walOp = 2
 )
 
-// walHeader is written once at the head of every WAL log file.
-// Records follow as length-prefixed JSON-encoded walRecord values.
-type walHeader struct {
-	// Magic is the 4-byte ASCII "FCWL" so a file mis-routed into
-	// segments/ can be detected before parsing.
-	Magic [4]byte
-	// Version pins the framing format.
-	Version uint8
-	// Reserved bytes for future flags (e.g. compression). Must be
-	// zero on disk; non-zero indicates an unsupported file.
-	Reserved [3]byte
-}
-
 // walRecord is one logical entry: an Upsert (Doc carried inline) or
 // a Delete (DocID only, Doc nil). The on-disk shape is JSON; binary
 // length-prefixing is applied by the framing layer.

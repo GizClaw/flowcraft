@@ -227,19 +227,118 @@ func TestDefaultStructurizer_PrefersContentRelativeTimeOverTurnTime(t *testing.T
 	if !ok {
 		t.Fatalf("expected parsed valid_from_at, got hint=%q at=%q metadata=%v", hint, at, out.Metadata)
 	}
-	want := time.Date(2019, 6, 27, 10, 37, 0, 0, time.UTC)
+	want := time.Date(2019, 1, 1, 0, 0, 0, 0, time.UTC)
 	if !parsed.Equal(want) {
 		t.Errorf("ValidFromAt = %v, want %v (hint=%q at=%q)", parsed, want, hint, at)
+	}
+	if timexValue, _ := out.Metadata[MetaValidFromTimex].(string); timexValue != "2019" {
+		t.Errorf("valid_from_timex = %q, want 2019", timexValue)
+	}
+	if precision, _ := out.Metadata[MetaValidFromPrec].(string); precision != "year" {
+		t.Errorf("valid_from_precision = %q, want year", precision)
+	}
+	if to, _ := out.Metadata[MetaValidToAt].(string); to == "" {
+		t.Errorf("expected valid_to_at from relative year range, metadata=%v", out.Metadata)
 	}
 	if source, _ := out.Metadata[MetaValidFromSource].(string); source != ValidFromSourceContentRelative {
 		t.Errorf("relative content source = %q, want %q", source, ValidFromSourceContentRelative)
 	}
 }
 
+func TestDefaultStructurizer_LiftsLexicalRelativeTimeOverTurnTime(t *testing.T) {
+	cases := []struct {
+		name    string
+		content string
+		turnAt  time.Time
+		wantAt  time.Time
+		wantRaw string
+	}{
+		{
+			name:    "last year",
+			content: "Melanie painted a lake sunrise last year.",
+			turnAt:  time.Date(2023, 5, 8, 13, 56, 0, 0, time.UTC),
+			wantAt:  time.Date(2022, 1, 1, 0, 0, 0, 0, time.UTC),
+			wantRaw: "last year",
+		},
+		{
+			name:    "next month",
+			content: "Jon is hosting a dance competition next month.",
+			turnAt:  time.Date(2023, 4, 3, 13, 26, 0, 0, time.UTC),
+			wantAt:  time.Date(2023, 5, 1, 0, 0, 0, 0, time.UTC),
+			wantRaw: "next month",
+		},
+		{
+			name:    "last month",
+			content: "John and his colleagues attended a convention last month.",
+			turnAt:  time.Date(2023, 4, 18, 19, 34, 0, 0, time.UTC),
+			wantAt:  time.Date(2023, 3, 1, 0, 0, 0, 0, time.UTC),
+			wantRaw: "last month",
+		},
+		{
+			name:    "two weekends ago",
+			content: "Melanie went camping with her family two weekends ago.",
+			turnAt:  time.Date(2023, 7, 17, 14, 31, 0, 0, time.UTC),
+			wantAt:  time.Date(2023, 7, 8, 0, 0, 0, 0, time.UTC),
+			wantRaw: "two weekends ago",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			turn := port.TurnContext{ID: "D1:1", Time: tc.turnAt}
+			f := domain.TemporalFact{
+				Content:      tc.content,
+				EvidenceRefs: []domain.EvidenceRef{{ID: "D1:1"}},
+			}
+			out := DefaultStructurizer{}.Structurize(f, port.IngestInput{Turns: []port.TurnContext{turn}})
+			hint, _ := out.Metadata[MetaValidFromHint].(string)
+			if hint != tc.wantRaw {
+				t.Fatalf("hint = %q, want %q (metadata=%v)", hint, tc.wantRaw, out.Metadata)
+			}
+			at, _ := out.Metadata[MetaValidFromAt].(string)
+			parsed, ok := parseTimeHint(at, time.Time{}, false)
+			if !ok || !parsed.Equal(tc.wantAt) {
+				t.Fatalf("ValidFromAt = %v ok=%v, want %v (hint=%q at=%q metadata=%v)", parsed, ok, tc.wantAt, hint, at, out.Metadata)
+			}
+			if source, _ := out.Metadata[MetaValidFromSource].(string); source != ValidFromSourceContentRelative {
+				t.Fatalf("relative content source = %q, want %q", source, ValidFromSourceContentRelative)
+			}
+		})
+	}
+}
+
+func TestDefaultStructurizer_DoesNotPromoteDurationOrSetToEventTime(t *testing.T) {
+	turn := port.TurnContext{
+		ID:   "D1:1",
+		Time: time.Date(2023, 7, 20, 20, 56, 0, 0, time.UTC),
+	}
+	cases := []string{
+		"Melanie's family usually goes to the beach once or twice a year.",
+		"Melanie has been creating art for seven years.",
+	}
+	for _, content := range cases {
+		t.Run(content, func(t *testing.T) {
+			f := domain.TemporalFact{
+				Content:      content,
+				EvidenceRefs: []domain.EvidenceRef{{ID: "D1:1"}},
+			}
+			out := DefaultStructurizer{}.Structurize(f, port.IngestInput{Turns: []port.TurnContext{turn}})
+			if source, _ := out.Metadata[MetaValidFromSource].(string); source != ValidFromSourceTimeFallback {
+				t.Fatalf("valid_from_source = %q, want fallback; metadata=%v", source, out.Metadata)
+			}
+			if hint, _ := out.Metadata[MetaValidFromHint].(string); hint != turn.Time.UTC().Format(time.RFC3339Nano) {
+				t.Fatalf("valid_from_hint = %q, want turn time fallback; metadata=%v", hint, out.Metadata)
+			}
+			if kind, _ := out.Metadata[MetaValidFromKind].(string); kind != "date" {
+				t.Fatalf("valid_from_kind = %q, want fallback date; metadata=%v", kind, out.Metadata)
+			}
+		})
+	}
+}
+
 func TestDefaultStructurizer_CarriesParsedTimeFromCustomParser(t *testing.T) {
-	want := time.Date(2019, 6, 27, 0, 0, 0, 0, time.UTC)
+	want := time.Date(2019, 1, 1, 0, 0, 0, 0, time.UTC)
 	s := DefaultStructurizer{TimeParser: stubTimeParser{
-		match: &timex.Match{Text: "四年前", Time: want, Index: 10},
+		match: &timex.Match{Text: "四年前", Time: time.Date(2019, 6, 27, 0, 0, 0, 0, time.UTC), Index: 10},
 	}}
 	turn := port.TurnContext{ID: "D1:1", Time: time.Date(2023, 6, 27, 9, 0, 0, 0, time.UTC)}
 	f := domain.TemporalFact{

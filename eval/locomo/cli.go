@@ -295,13 +295,13 @@ Example (LLM extractor + LLM answer + LLM judge + Qwen embedder):
 				return fmt.Errorf("notify: %w", err)
 			}
 			// --dump-recall diagnostic: capture per-question recall
-			// hits (id, score, content) to JSONL so we can audit
+			// artifacts (id, score, content) to JSONL so we can audit
 			// "recall miss vs answer miss" — does the retrieval
 			// pipeline surface the gold-evidence fact at all?
 			var (
 				recallMu  sync.Mutex
 				recallEnc *json.Encoder
-				onRecall  func(q dataset.Question, hits []runners.Hit)
+				onRecall  func(q dataset.Question, artifacts []runners.RecallArtifact)
 			)
 			if dumpRecallPath != "" {
 				rw, rerr := os.Create(dumpRecallPath)
@@ -310,10 +310,10 @@ Example (LLM extractor + LLM answer + LLM judge + Qwen embedder):
 				}
 				defer rw.Close()
 				recallEnc = json.NewEncoder(rw)
-				onRecall = func(q dataset.Question, hits []runners.Hit) {
+				onRecall = func(q dataset.Question, artifacts []runners.RecallArtifact) {
 					recallMu.Lock()
 					defer recallMu.Unlock()
-					type hitRec struct {
+					type artifactRec struct {
 						ID       string             `json:"id"`
 						Rank     int                `json:"rank"`
 						Score    float64            `json:"score"`
@@ -326,34 +326,34 @@ Example (LLM extractor + LLM answer + LLM judge + Qwen embedder):
 						Cats     []string           `json:"categories,omitempty"`
 						Scores   map[string]float64 `json:"scores,omitempty"`
 					}
-					recs := make([]hitRec, 0, len(hits))
-					for i, h := range hits {
-						rec := hitRec{
-							ID:       h.ID,
+					recs := make([]artifactRec, 0, len(artifacts))
+					for i, artifact := range artifacts {
+						rec := artifactRec{
+							ID:       artifact.ID,
 							Rank:     i + 1,
-							Score:    h.Score,
-							Kind:     h.Kind,
-							Sources:  append([]string(nil), h.Sources...),
-							Content:  h.Content,
-							Evidence: append([]string(nil), h.EvidenceIDs...),
-							ValidAt:  h.ValidFrom,
+							Score:    artifact.Score,
+							Kind:     artifact.Kind,
+							Sources:  append([]string(nil), artifact.Sources...),
+							Content:  artifact.Content,
+							Evidence: append([]string(nil), artifact.EvidenceIDs...),
+							ValidAt:  artifact.ValidFrom,
 						}
-						if h.Metadata != nil {
-							if cats, ok := h.Metadata["categories"].([]string); ok {
+						if artifact.Metadata != nil {
+							if cats, ok := artifact.Metadata["categories"].([]string); ok {
 								rec.Cats = cats
 							}
-							if scores, ok := h.Metadata["scores"].(map[string]float64); ok {
+							if scores, ok := artifact.Metadata["scores"].(map[string]float64); ok {
 								rec.Scores = scores
 							}
 						}
 						recs = append(recs, rec)
 					}
 					_ = recallEnc.Encode(struct {
-						TS    time.Time `json:"ts"`
-						QID   string    `json:"qid"`
-						Query string    `json:"query"`
-						Gold  []string  `json:"gold_answers,omitempty"`
-						Hits  []hitRec  `json:"hits"`
+						TS              time.Time     `json:"ts"`
+						QID             string        `json:"qid"`
+						Query           string        `json:"query"`
+						Gold            []string      `json:"gold_answers,omitempty"`
+						RecallArtifacts []artifactRec `json:"recall_artifacts"`
 					}{time.Now(), q.ID, q.Query, q.GoldAnswers, recs})
 				}
 			}
@@ -515,7 +515,7 @@ Example (LLM extractor + LLM answer + LLM judge + Qwen embedder):
 	f.IntVar(&recentTurnsK, "recent-turns", 0, "if >0, inject the previous K messages from prior Save batches into the extractor for cross-batch pronoun/entity reference resolution")
 	f.StringVar(&dumpFactsPath, "dump-facts", "", "diagnostic: write one JSONL record per Save batch with the extractor's facts to this path (audits extract-miss vs recall-miss)")
 	f.StringVar(&dumpRecallPath, "dump-recall", "", "diagnostic: write one JSONL record per question with the top-k recall hits to this path (audits recall-miss vs answer-miss)")
-	f.StringVar(&dumpAnswerReplay, "dump-answer-replay", "", "diagnostic: write one JSONL record per answered question with full answer prompt/body, hits, prediction, and scores")
+	f.StringVar(&dumpAnswerReplay, "dump-answer-replay", "", "diagnostic: write one JSONL record per answered question with full answer prompt/body, recall artifacts, prediction, and scores")
 	f.StringVar(&dumpStageAuditPath, "dump-stage-audit", "", "diagnostic (flowcraft-recall-v2 only): write per-question read pipeline stage candidates to this JSONL path (audits source/fusion/rank/context drops)")
 	f.StringVar(&diagnosticsPath, "diagnostics", "", "diagnostic (flowcraft-recall-v2 only): write per-stage Save+Recall health summary to this JSON path (uses SaveExplain/RecallExplain)")
 

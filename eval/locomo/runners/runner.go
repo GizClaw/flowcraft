@@ -22,10 +22,15 @@ type Scope struct {
 	AgentID   string
 }
 
-// Hit is one recall result in runner-neutral form. EvidenceIDs are the raw
-// evidence refs exposed in Content for answer grounding, not necessarily only
-// the source candidate's original matching ids.
-type Hit struct {
+// RecallArtifact is the runner-neutral diagnostic projection of a backend's
+// native recall result. It is used by reports, replay artifacts, and
+// recall.k_hit, not as the answer model. Backends should render answers from
+// their native shape via AnswerContext.
+//
+// EvidenceIDs are the raw evidence refs that can be matched against benchmark
+// gold evidence ids, not necessarily only the source candidate's original
+// matching ids.
+type RecallArtifact struct {
 	ID          string
 	Content     string
 	Score       float64
@@ -34,6 +39,23 @@ type Hit struct {
 	EvidenceIDs []string
 	ValidFrom   string
 	Metadata    map[string]any
+}
+
+// AnswerQuestion is the small part of a benchmark question a backend needs
+// to render its own answer context. It deliberately avoids depending on the
+// eval/dataset package so runner implementations can stay backend-owned.
+type AnswerQuestion struct {
+	Query   string
+	AskedAt string
+}
+
+// AnswerContext is an answer-ready prompt body produced by a backend from its
+// native recall results. Backends with structured memory should prefer this
+// over flattening their hits into the runner-neutral Hit.Content field.
+type AnswerContext struct {
+	Body           string
+	Format         string
+	PromptTemplate string
 }
 
 type RecallStageAudit struct {
@@ -66,14 +88,27 @@ type RecallCandidateSnapshot struct {
 type Runner interface {
 	Name() string
 	Save(ctx context.Context, scope Scope, msgs []llm.Message) (saveCount int, saveLatency time.Duration, err error)
-	Recall(ctx context.Context, scope Scope, query string, topK int) (hits []Hit, recallLatency time.Duration, err error)
+	Recall(ctx context.Context, scope Scope, query string, topK int) (artifacts []RecallArtifact, recallLatency time.Duration, err error)
 	Close() error
 }
 
 // RecallStageAuditor is an optional Runner extension that returns the
 // read pipeline's per-stage candidate snapshots for diagnostics.
 type RecallStageAuditor interface {
-	RecallWithStageAudit(ctx context.Context, scope Scope, query string, topK int) (hits []Hit, audit RecallStageAudit, recallLatency time.Duration, err error)
+	RecallWithStageAudit(ctx context.Context, scope Scope, query string, topK int) (artifacts []RecallArtifact, audit RecallStageAudit, recallLatency time.Duration, err error)
+}
+
+// AnswerContextRecaller lets a backend keep its native recall result shape for
+// answer rendering. The returned artifacts are for diagnostics and report dumps;
+// answer prompting should use AnswerContext.
+type AnswerContextRecaller interface {
+	RecallAnswerContext(ctx context.Context, scope Scope, question AnswerQuestion, topK int) (artifacts []RecallArtifact, answer AnswerContext, recallLatency time.Duration, err error)
+}
+
+// AnswerContextStageAuditor combines structured answer rendering with recall
+// stage diagnostics.
+type AnswerContextStageAuditor interface {
+	RecallAnswerContextWithStageAudit(ctx context.Context, scope Scope, question AnswerQuestion, topK int) (artifacts []RecallArtifact, answer AnswerContext, audit RecallStageAudit, recallLatency time.Duration, err error)
 }
 
 // RawTurn carries a single conversation turn together with its upstream

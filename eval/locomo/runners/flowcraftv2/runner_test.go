@@ -13,6 +13,11 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/llm"
 )
 
+var (
+	_ runners.AnswerContextRecaller     = (*Runner)(nil)
+	_ runners.AnswerContextStageAuditor = (*Runner)(nil)
+)
+
 type fakeLLM struct {
 	response string
 }
@@ -224,8 +229,8 @@ func TestGroundedHitContentSatisfiesAnswerContextDiagnostics(t *testing.T) {
 	}
 }
 
-func TestFromRecallHitUsesSelectedEvidence(t *testing.T) {
-	hit := fromRecallHit(recall.Hit{
+func TestFromRecallArtifactUsesSelectedEvidence(t *testing.T) {
+	artifact := fromRecallArtifact(recall.Hit{
 		Fact: recall.TemporalFact{
 			ID:      "f1",
 			Content: "Alice visited Paris.",
@@ -236,19 +241,19 @@ func TestFromRecallHitUsesSelectedEvidence(t *testing.T) {
 		},
 		Evidence: []recall.EvidenceRef{{ID: "D1:1", Text: "Alice mentioned Paris."}},
 	})
-	if !strings.Contains(hit.Content, "Alice mentioned Paris.") {
-		t.Fatalf("selected evidence missing from rendered content: %+v", hit)
+	if !strings.Contains(artifact.Content, "Alice mentioned Paris.") {
+		t.Fatalf("selected evidence missing from rendered content: %+v", artifact)
 	}
-	if strings.Contains(hit.Content, "Unrelated nearby turn") {
-		t.Fatalf("unselected evidence should not be rendered: %+v", hit)
+	if strings.Contains(artifact.Content, "Unrelated nearby turn") {
+		t.Fatalf("unselected evidence should not be rendered: %+v", artifact)
 	}
-	if len(hit.EvidenceIDs) != 1 || hit.EvidenceIDs[0] != "D1:1" {
-		t.Fatalf("hit evidence ids should reflect selected evidence: %+v", hit)
+	if len(artifact.EvidenceIDs) != 1 || artifact.EvidenceIDs[0] != "D1:1" {
+		t.Fatalf("artifact evidence ids should reflect selected evidence: %+v", artifact)
 	}
 }
 
-func TestFromRecallHitUsesSupportingEvidenceRefs(t *testing.T) {
-	hit := fromRecallHit(recall.Hit{
+func TestFromRecallArtifactUsesSupportingEvidenceRefs(t *testing.T) {
+	artifact := fromRecallArtifact(recall.Hit{
 		Fact: recall.TemporalFact{
 			ID:      "f1",
 			Content: "Caroline moved from her home country.",
@@ -263,17 +268,17 @@ func TestFromRecallHitUsesSupportingEvidenceRefs(t *testing.T) {
 			{ID: "D1:2", Text: "Caroline said Sweden is where she moved from."},
 		},
 	})
-	if !strings.Contains(hit.Content, "Caroline moved from her home country four years ago.") {
-		t.Fatalf("selected evidence missing from rendered content: %+v", hit)
+	if !strings.Contains(artifact.Content, "Caroline moved from her home country four years ago.") {
+		t.Fatalf("selected evidence missing from rendered content: %+v", artifact)
 	}
-	if !strings.Contains(hit.Content, "Caroline said Sweden is where she moved from.") {
-		t.Fatalf("supporting evidence missing from rendered content: %+v", hit)
+	if !strings.Contains(artifact.Content, "Caroline said Sweden is where she moved from.") {
+		t.Fatalf("supporting evidence missing from rendered content: %+v", artifact)
 	}
-	if strings.Contains(hit.Content, "Unselected unrelated turn") {
-		t.Fatalf("unselected evidence should not be rendered: %+v", hit)
+	if strings.Contains(artifact.Content, "Unselected unrelated turn") {
+		t.Fatalf("unselected evidence should not be rendered: %+v", artifact)
 	}
-	if got, want := strings.Join(hit.EvidenceIDs, ","), "D1:1,D1:2"; got != want {
-		t.Fatalf("hit evidence ids = %s, want %s", got, want)
+	if got, want := strings.Join(artifact.EvidenceIDs, ","), "D1:1,D1:2"; got != want {
+		t.Fatalf("artifact evidence ids = %s, want %s", got, want)
 	}
 }
 
@@ -325,8 +330,124 @@ func TestGroundedHitContentRendersSourceTimeFallbackAsObservedAt(t *testing.T) {
 	if !strings.Contains(content, "[source_time: 2024-05-07 09:30] I mentioned Tampa.") {
 		t.Fatalf("source time evidence should remain visible: %s", content)
 	}
-	if got := fromRecallHit(h).ValidFrom; got != "" {
+	if got := fromRecallArtifact(h).ValidFrom; got != "" {
 		t.Fatalf("runner ValidFrom should be empty for source-time fallback, got %q", got)
+	}
+}
+
+func TestStructuredAnswerBodyKeepsRecallHitStructure(t *testing.T) {
+	eventTime := time.Date(2023, 7, 14, 0, 0, 0, 0, time.UTC)
+	observedAt := time.Date(2023, 7, 15, 13, 51, 0, 0, time.UTC)
+	body := renderStructuredAnswerBody(runners.AnswerQuestion{
+		Query:   "When did Melanie go to the pottery workshop?",
+		AskedAt: "2023-10-01",
+	}, []recall.Hit{{
+		Fact: recall.TemporalFact{
+			ID:         "f1",
+			Kind:       recall.FactEvent,
+			Content:    "Last Friday, Melanie took her kids to a pottery workshop.",
+			Subject:    "Melanie",
+			Predicate:  "went_to",
+			Object:     "pottery workshop",
+			ObservedAt: observedAt,
+			ValidFrom:  &eventTime,
+			Metadata: map[string]any{
+				"valid_from_source": "content_relative",
+				"valid_from_text":   "Last Friday",
+			},
+		},
+		Score:   0.42,
+		Sources: []string{"retrieval", "timeline"},
+		Evidence: []recall.EvidenceRef{{
+			ID:        "conv-26:D8:2",
+			Role:      "user",
+			Text:      "Last Fri I finally took the kids to a pottery workshop.",
+			Timestamp: observedAt,
+		}},
+	}})
+
+	for _, want := range []string{
+		"ASKED_AT: 2023-10-01",
+		"QUESTION: When did Melanie go to the pottery workshop?",
+		"MEMORIES (STRUCTURED_FACTS):",
+		`fact_id: "f1"`,
+		`kind: "event"`,
+		`content: "Last Friday, Melanie took her kids to a pottery workshop."`,
+		`event_time: "2023-07-14"`,
+		`event_time_source: "content_relative"`,
+		`event_time_text: "Last Friday"`,
+		`observed_at: "2023-07-15 13:51"`,
+		`source_time: "2023-07-15 13:51"`,
+		`quote: "Last Fri I finally took the kids to a pottery workshop."`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("structured answer body missing %q:\n%s", want, body)
+		}
+	}
+	if strings.Contains(body, "| evidence:") {
+		t.Fatalf("structured answer body should not use flattened evidence rendering:\n%s", body)
+	}
+}
+
+func TestStructuredAnswerBodyDoesNotPromoteSourceTimeFallbackToEventTime(t *testing.T) {
+	validFrom := time.Date(2024, 5, 7, 9, 30, 0, 0, time.UTC)
+	body := renderStructuredAnswerBody(runners.AnswerQuestion{
+		Query: "When did Alice mention Tampa?",
+	}, []recall.Hit{{
+		Fact: recall.TemporalFact{
+			ID:         "f1",
+			Kind:       recall.FactState,
+			Content:    "Alice mentioned Tampa.",
+			ObservedAt: validFrom,
+			ValidFrom:  &validFrom,
+			Metadata: map[string]any{
+				"valid_from_source": "source_time_fallback",
+				"valid_from_text":   "2024-05-07T09:30:00Z",
+			},
+		},
+		Evidence: []recall.EvidenceRef{{
+			ID:        "D1:7",
+			Text:      "I mentioned Tampa.",
+			Timestamp: validFrom,
+		}},
+	}})
+
+	for _, unwanted := range []string{
+		`event_time: "2024-05-07"`,
+		`event_time_source: "source_time_fallback"`,
+		`event_time_text: "2024-05-07T09:30:00Z"`,
+	} {
+		if strings.Contains(body, unwanted) {
+			t.Fatalf("source-time fallback must not render %q:\n%s", unwanted, body)
+		}
+	}
+	for _, want := range []string{
+		`observed_at: "2024-05-07 09:30"`,
+		`source_time: "2024-05-07 09:30"`,
+		`quote: "I mentioned Tampa."`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("structured answer body missing %q:\n%s", want, body)
+		}
+	}
+}
+
+func TestStructuredAnswerContextCarriesBackendPrompt(t *testing.T) {
+	ctx := structuredAnswerContext(runners.AnswerQuestion{Query: "What happened?"}, nil)
+	if ctx.Format != "flowcraftv2_structured_facts" {
+		t.Fatalf("unexpected format: %q", ctx.Format)
+	}
+	for _, want := range []string{
+		"structured memory facts",
+		"event_time as the event date",
+		"observed_at and evidence source_time",
+		"content as the canonical extracted fact",
+		"best-supported yes/no inference",
+		"%s",
+	} {
+		if !strings.Contains(ctx.PromptTemplate, want) {
+			t.Fatalf("structured prompt missing %q:\n%s", want, ctx.PromptTemplate)
+		}
 	}
 }
 

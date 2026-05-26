@@ -21,8 +21,8 @@ import (
 // applied to the memtable.
 var walMagic = [4]byte{'F', 'C', 'W', 'L'}
 
-// walHeaderSize is the on-disk size of [walHeader] in bytes:
-// 4 magic + 1 version + 3 reserved.
+// walHeaderSize is the on-disk header size: 4 magic bytes, 1 version byte,
+// and 3 reserved bytes.
 const walHeaderSize = 8
 
 // walRecordLengthSize is the size of the uint32 length prefix that

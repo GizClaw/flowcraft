@@ -16,10 +16,11 @@ import (
 )
 
 type recallDumpRecord struct {
-	QID   string          `json:"qid"`
-	Query string          `json:"query"`
-	Gold  []string        `json:"gold_answers,omitempty"`
-	Hits  []recallDumpHit `json:"hits"`
+	QID             string          `json:"qid"`
+	Query           string          `json:"query"`
+	Gold            []string        `json:"gold_answers,omitempty"`
+	Hits            []recallDumpHit `json:"hits,omitempty"` // legacy dump field
+	RecallArtifacts []recallDumpHit `json:"recall_artifacts,omitempty"`
 }
 
 type recallDumpHit struct {
@@ -246,6 +247,9 @@ func loadRecallDump(path string) (map[string]recallDumpRecord, error) {
 		var rec recallDumpRecord
 		if err := json.Unmarshal([]byte(line), &rec); err != nil {
 			return nil, err
+		}
+		if len(rec.RecallArtifacts) > 0 {
+			rec.Hits = rec.RecallArtifacts
 		}
 		out[rec.QID] = rec
 	}

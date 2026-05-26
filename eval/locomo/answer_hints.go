@@ -25,16 +25,16 @@ const (
 	answerHintMaxWeakValues   = 3
 )
 
-func buildAnswerHints(query string, hits []runners.Hit) string {
+func buildAnswerHints(query string, artifacts []runners.RecallArtifact) string {
 	kind := answerHintKind(query)
-	if kind == "" || len(hits) == 0 {
+	if kind == "" || len(artifacts) == 0 {
 		return ""
 	}
 	switch kind {
 	case "when":
-		return buildWhenAnswerHints(hits)
+		return buildWhenAnswerHints(artifacts)
 	case "numeric":
-		return buildNumericAnswerHints(hits)
+		return buildNumericAnswerHints(artifacts)
 	default:
 		return ""
 	}
@@ -62,10 +62,10 @@ func answerHintKind(query string) string {
 	}
 }
 
-func buildWhenAnswerHints(hits []runners.Hit) string {
+func buildWhenAnswerHints(artifacts []runners.RecallArtifact) string {
 	var eventTimes, relative, observed, sourceTimes []string
-	for rank, hit := range hits {
-		content := hit.Content
+	for rank, artifact := range artifacts {
+		content := artifact.Content
 		if rank < answerHintStrongRankLimit {
 			dateSearchText := answerHintDateSearchText(content)
 			eventTimes = appendUniqueHintLimited(eventTimes, rankedHint(rank, firstSubmatch(answerHintTimeTagRE, content)), answerHintMaxValues)
@@ -99,10 +99,10 @@ func buildWhenAnswerHints(hits []runners.Hit) string {
 	return "ANSWER_HINTS: " + strings.Join(parts, " | ")
 }
 
-func buildNumericAnswerHints(hits []runners.Hit) string {
+func buildNumericAnswerHints(artifacts []runners.RecallArtifact) string {
 	var candidates []string
-	for rank, hit := range hits {
-		for _, raw := range answerHintNumericRE.FindAllString(hit.Content, 6) {
+	for rank, artifact := range artifacts {
+		for _, raw := range answerHintNumericRE.FindAllString(artifact.Content, 6) {
 			candidates = appendUniqueHint(candidates, rankedHint(rank, raw))
 			if len(candidates) >= 8 {
 				break

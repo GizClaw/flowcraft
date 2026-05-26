@@ -13,35 +13,35 @@ func toRecallV1Scope(s runners.Scope) recallv1.Scope {
 	}
 }
 
-func fromRecallV1Hit(h recallv1.Hit) runners.Hit {
-	hit := runners.Hit{
+func fromRecallV1Artifact(h recallv1.Hit) runners.RecallArtifact {
+	artifact := runners.RecallArtifact{
 		ID:      h.Entry.ID,
 		Content: h.Entry.Content,
 		Score:   h.Score,
 	}
 	if len(h.Entry.Categories) > 0 || len(h.Scores) > 0 {
-		hit.Metadata = make(map[string]any, 2)
+		artifact.Metadata = make(map[string]any, 2)
 		if len(h.Entry.Categories) > 0 {
-			hit.Metadata["categories"] = append([]string(nil), h.Entry.Categories...)
+			artifact.Metadata["categories"] = append([]string(nil), h.Entry.Categories...)
 		}
 		if len(h.Scores) > 0 {
 			scores := make(map[string]float64, len(h.Scores))
 			for k, v := range h.Scores {
 				scores[k] = v
 			}
-			hit.Metadata["scores"] = scores
+			artifact.Metadata["scores"] = scores
 		}
 	}
-	return hit
+	return artifact
 }
 
-func fromRecallV1Hits(hits []recallv1.Hit) []runners.Hit {
+func fromRecallV1Artifacts(hits []recallv1.Hit) []runners.RecallArtifact {
 	if len(hits) == 0 {
 		return nil
 	}
-	out := make([]runners.Hit, len(hits))
+	out := make([]runners.RecallArtifact, len(hits))
 	for i, h := range hits {
-		out[i] = fromRecallV1Hit(h)
+		out[i] = fromRecallV1Artifact(h)
 	}
 	return out
 }

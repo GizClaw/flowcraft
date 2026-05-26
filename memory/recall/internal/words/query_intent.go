@@ -1,6 +1,8 @@
 package words
 
 import (
+	"slices"
+
 	"github.com/GizClaw/flowcraft/memory/recall/internal/domain"
 	"github.com/GizClaw/flowcraft/memory/text/phrase"
 )
@@ -36,18 +38,65 @@ var temporalIntentTokens = []string{
 }
 
 var temporalIntentPhrases = [][]string{
-	{"what", "date"}, {"which", "date"}, {"what", "day"}, {"which", "day"},
-	{"what", "month"}, {"which", "month"}, {"what", "year"}, {"which", "year"},
-	{"at", "what", "time"}, {"by", "when"}, {"since", "when"}, {"until", "when"},
-	{"how", "long"}, {"how", "old"}, {"chronological", "order"},
-	{"qué", "fecha"}, {"que", "fecha"}, {"qué", "día"}, {"que", "dia"}, {"qué", "año"}, {"que", "ano"},
-	{"desde", "cuándo"}, {"desde", "cuando"}, {"hasta", "cuándo"}, {"hasta", "cuando"}, {"cuánto", "tiempo"}, {"cuanto", "tiempo"},
-	{"quelle", "date"}, {"quel", "jour"}, {"quelle", "année"}, {"quelle", "annee"},
-	{"depuis", "quand"}, {"jusqu", "à", "quand"}, {"combien", "de", "temps"},
-	{"welches", "datum"}, {"welcher", "tag"}, {"welches", "jahr"}, {"seit", "wann"}, {"bis", "wann"}, {"wie", "lange"},
-	{"que", "data"}, {"que", "dia"}, {"que", "ano"}, {"desde", "quando"}, {"até", "quando"}, {"ate", "quando"}, {"quanto", "tempo"},
-	{"welke", "datum"}, {"welke", "dag"}, {"welk", "jaar"}, {"sinds", "wanneer"}, {"tot", "wanneer"}, {"hoe", "lang"},
-	{"какая", "дата"}, {"какой", "день"}, {"какой", "год"}, {"с", "какого", "времени"}, {"до", "какого", "времени"}, {"как", "долго"},
+	{"what", "date"},
+	{"which", "date"},
+	{"what", "day"},
+	{"which", "day"},
+	{"what", "month"},
+	{"which", "month"},
+	{"what", "year"},
+	{"which", "year"},
+	{"at", "what", "time"},
+	{"by", "when"},
+	{"since", "when"},
+	{"until", "when"},
+	{"how", "long"},
+	{"how", "old"},
+	{"chronological", "order"},
+	{"qué", "fecha"},
+	{"que", "fecha"},
+	{"qué", "día"},
+	{"que", "dia"},
+	{"qué", "año"},
+	{"que", "ano"},
+	{"desde", "cuándo"},
+	{"desde", "cuando"},
+	{"hasta", "cuándo"},
+	{"hasta", "cuando"},
+	{"cuánto", "tiempo"},
+	{"cuanto", "tiempo"},
+	{"quelle", "date"},
+	{"quel", "jour"},
+	{"quelle", "année"},
+	{"quelle", "annee"},
+	{"depuis", "quand"},
+	{"jusqu", "à", "quand"},
+	{"combien", "de", "temps"},
+	{"welches", "datum"},
+	{"welcher", "tag"},
+	{"welches", "jahr"},
+	{"seit", "wann"},
+	{"bis", "wann"},
+	{"wie", "lange"},
+	{"que", "data"},
+	{"que", "dia"},
+	{"que", "ano"},
+	{"desde", "quando"},
+	{"até", "quando"},
+	{"ate", "quando"},
+	{"quanto", "tempo"},
+	{"welke", "datum"},
+	{"welke", "dag"},
+	{"welk", "jaar"},
+	{"sinds", "wanneer"},
+	{"tot", "wanneer"},
+	{"hoe", "lang"},
+	{"какая", "дата"},
+	{"какой", "день"},
+	{"какой", "год"},
+	{"с", "какого", "времени"},
+	{"до", "какого", "времени"},
+	{"как", "долго"},
 }
 
 var temporalIntentLiterals = []string{
@@ -56,14 +105,43 @@ var temporalIntentLiterals = []string{
 }
 
 var durationIntentPhrases = [][]string{
-	{"how", "long"}, {"how", "many", "days"}, {"how", "many", "weeks"}, {"how", "many", "months"}, {"how", "many", "years"},
-	{"how", "old"}, {"since", "when"}, {"for", "how", "long"},
-	{"cuánto", "tiempo"}, {"cuanto", "tiempo"}, {"cuántos", "días"}, {"cuantos", "dias"}, {"cuántos", "meses"}, {"cuantos", "meses"}, {"cuántos", "años"}, {"cuantos", "anos"},
-	{"combien", "de", "temps"}, {"combien", "de", "jours"}, {"combien", "de", "mois"}, {"combien", "d", "années"}, {"combien", "d", "annees"},
-	{"wie", "lange"}, {"wie", "viele", "tage"}, {"wie", "viele", "monate"}, {"wie", "viele", "jahre"},
-	{"quanto", "tempo"}, {"quantos", "dias"}, {"quantos", "meses"}, {"quantos", "anos"},
-	{"hoe", "lang"}, {"hoeveel", "dagen"}, {"hoeveel", "maanden"}, {"hoeveel", "jaren"},
-	{"как", "долго"}, {"сколько", "дней"}, {"сколько", "месяцев"}, {"сколько", "лет"},
+	{"how", "long"},
+	{"how", "many", "days"},
+	{"how", "many", "weeks"},
+	{"how", "many", "months"},
+	{"how", "many", "years"},
+	{"how", "old"},
+	{"since", "when"},
+	{"for", "how", "long"},
+	{"cuánto", "tiempo"},
+	{"cuanto", "tiempo"},
+	{"cuántos", "días"},
+	{"cuantos", "dias"},
+	{"cuántos", "meses"},
+	{"cuantos", "meses"},
+	{"cuántos", "años"},
+	{"cuantos", "anos"},
+	{"combien", "de", "temps"},
+	{"combien", "de", "jours"},
+	{"combien", "de", "mois"},
+	{"combien", "d", "années"},
+	{"combien", "d", "annees"},
+	{"wie", "lange"},
+	{"wie", "viele", "tage"},
+	{"wie", "viele", "monate"},
+	{"wie", "viele", "jahre"},
+	{"quanto", "tempo"},
+	{"quantos", "dias"},
+	{"quantos", "meses"},
+	{"quantos", "anos"},
+	{"hoe", "lang"},
+	{"hoeveel", "dagen"},
+	{"hoeveel", "maanden"},
+	{"hoeveel", "jaren"},
+	{"как", "долго"},
+	{"сколько", "дней"},
+	{"сколько", "месяцев"},
+	{"сколько", "лет"},
 }
 
 var durationIntentLiterals = []string{
@@ -81,15 +159,54 @@ var numericIntentTokens = []string{
 }
 
 var numericIntentPhrases = [][]string{
-	{"how", "many"}, {"how", "much"}, {"how", "often"}, {"how", "old"}, {"how", "long"},
-	{"what", "number"}, {"which", "number"}, {"how", "many", "times"},
-	{"cuántos"}, {"cuantas"}, {"cuántas"}, {"cuantos"}, {"cuánto"}, {"cuanto"},
-	{"qué", "número"}, {"que", "numero"}, {"cuántas", "veces"}, {"cuantas", "veces"}, {"con", "qué", "frecuencia"}, {"con", "que", "frecuencia"},
-	{"combien"}, {"quel", "nombre"}, {"quel", "numéro"}, {"quel", "numero"}, {"combien", "de", "fois"}, {"à", "quelle", "fréquence"}, {"a", "quelle", "frequence"},
-	{"wie", "viele"}, {"wie", "viel"}, {"welche", "nummer"}, {"wie", "oft"},
-	{"quantos"}, {"quantas"}, {"quanto"}, {"quanta"}, {"que", "número"}, {"que", "numero"}, {"quantas", "vezes"}, {"com", "que", "frequência"}, {"com", "que", "frequencia"},
-	{"hoeveel"}, {"hoe", "vaak"}, {"welk", "nummer"}, {"welke", "nummer"},
-	{"сколько"}, {"как", "часто"}, {"какой", "номер"}, {"сколько", "раз"},
+	{"how", "many"},
+	{"how", "much"},
+	{"how", "often"},
+	{"how", "old"},
+	{"how", "long"},
+	{"what", "number"},
+	{"which", "number"},
+	{"how", "many", "times"},
+	{"cuántos"},
+	{"cuantas"},
+	{"cuántas"},
+	{"cuantos"},
+	{"cuánto"},
+	{"cuanto"},
+	{"qué", "número"},
+	{"que", "numero"},
+	{"cuántas", "veces"},
+	{"cuantas", "veces"},
+	{"con", "qué", "frecuencia"},
+	{"con", "que", "frecuencia"},
+	{"combien"},
+	{"quel", "nombre"},
+	{"quel", "numéro"},
+	{"quel", "numero"},
+	{"combien", "de", "fois"},
+	{"à", "quelle", "fréquence"},
+	{"a", "quelle", "frequence"},
+	{"wie", "viele"},
+	{"wie", "viel"},
+	{"welche", "nummer"},
+	{"wie", "oft"},
+	{"quantos"},
+	{"quantas"},
+	{"quanto"},
+	{"quanta"},
+	{"que", "número"},
+	{"que", "numero"},
+	{"quantas", "vezes"},
+	{"com", "que", "frequência"},
+	{"com", "que", "frequencia"},
+	{"hoeveel"},
+	{"hoe", "vaak"},
+	{"welk", "nummer"},
+	{"welke", "nummer"},
+	{"сколько"},
+	{"как", "часто"},
+	{"какой", "номер"},
+	{"сколько", "раз"},
 }
 
 var numericIntentLiterals = []string{
@@ -226,12 +343,7 @@ func HasSubjectInferenceCue(text string) bool {
 }
 
 func containsAnyToken(phrases phrase.Matcher, tokens []string) bool {
-	for _, token := range tokens {
-		if phrases.Contains(token) {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(tokens, phrases.Contains)
 }
 
 func containsAnyPhrase(phrases phrase.Matcher, phraseList [][]string) bool {
@@ -244,19 +356,9 @@ func containsAnyPhrase(phrases phrase.Matcher, phraseList [][]string) bool {
 }
 
 func hasTemporalKind(kinds []domain.QueryTemporalIntentKind, want domain.QueryTemporalIntentKind) bool {
-	for _, kind := range kinds {
-		if kind == want {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(kinds, want)
 }
 
 func hasNumericKind(kinds []domain.QueryNumericIntentKind, want domain.QueryNumericIntentKind) bool {
-	for _, kind := range kinds {
-		if kind == want {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(kinds, want)
 }

@@ -31,40 +31,21 @@ func (BuildHits) Name() string { return "build_hits" }
 // Run implements pipeline.Stage.
 func (s *BuildHits) Run(ctx context.Context, state *read.ReadState) (diagnostic.StageDetail, error) {
 	started := time.Now()
-	hits := hitsFromItems(state.Ranked)
+	features := queryFeaturesFromState(state)
+	now := buildHitsNow(state)
+	hits := buildInitialHits(state)
 	state.Hits = hits
-	detail := diagnostic.BuildHitsDetail{
-		Count:      len(hits),
-		InputCount: len(hits),
-	}
+	detail := newBuildHitsDetail(hits)
 	captureSnapshots := snapshotsEnabled(state)
 	if captureSnapshots {
 		detail.Input = candidateSnapshotPtr(hitSnapshots(hits))
 		detail.Hits = candidateSnapshotPtr(hitSnapshots(hits))
 	}
-	if s.reranker != nil && len(hits) > 0 {
-		rerankStarted := time.Now()
-		reranked, err := s.reranker.Rerank(ctx, state.Query.Text, hits)
-		detail.RerankLatency = time.Since(rerankStarted)
-		if err != nil {
-			detail.RerankErr = err.Error()
-		} else {
-			hits = reranked
-			state.Hits = hits
-			detail.Reranked = len(hits)
-			if captureSnapshots {
-				detail.RerankedHits = candidateSnapshotPtr(hitSnapshots(hits))
-			}
-		}
-	}
-	if state.Plan != nil && state.Plan.TotalCap > 0 {
-		finalSelectionStarted := time.Now()
-		poolHits := hitsFromItems(finalSelectionPool(state))
-		hits = selectFinalEvidenceAwareHitsWithFeatures(queryFeaturesFromState(state), hits, poolHits, state.Plan.TotalCap)
-		detail.FinalSelectionLatency = time.Since(finalSelectionStarted)
-		state.Hits = hits
-	}
-	hits = groundHitsWithSupportingEvidence(queryFeaturesFromState(state), hits)
+	hits = s.rerankHits(ctx, state.Query.Text, hits, &detail, captureSnapshots)
+	state.Hits = hits
+	hits = packBuildHitsContext(state, features, now, hits, &detail)
+	state.Hits = hits
+	hits = groundHitsWithSupportingEvidence(features, now, hits)
 	state.Hits = hits
 	detail.Count = len(hits)
 	if captureSnapshots {
@@ -74,7 +55,57 @@ func (s *BuildHits) Run(ctx context.Context, state *read.ReadState) (diagnostic.
 	return detail, nil
 }
 
-func finalSelectionPool(state *read.ReadState) []domain.ContextItem {
+func newBuildHitsDetail(hits []domain.Hit) diagnostic.BuildHitsDetail {
+	return diagnostic.BuildHitsDetail{
+		Count:      len(hits),
+		InputCount: len(hits),
+	}
+}
+
+func buildInitialHits(state *read.ReadState) []domain.Hit {
+	if state == nil {
+		return nil
+	}
+	return hitsFromItems(state.Ranked)
+}
+
+func (s *BuildHits) rerankHits(ctx context.Context, query string, hits []domain.Hit, detail *diagnostic.BuildHitsDetail, captureSnapshots bool) []domain.Hit {
+	if s.reranker == nil || len(hits) == 0 {
+		return hits
+	}
+	rerankStarted := time.Now()
+	reranked, err := s.reranker.Rerank(ctx, query, hits)
+	detail.RerankLatency = time.Since(rerankStarted)
+	if err != nil {
+		detail.RerankErr = err.Error()
+		return hits
+	}
+	detail.Reranked = len(reranked)
+	if captureSnapshots {
+		detail.RerankedHits = candidateSnapshotPtr(hitSnapshots(reranked))
+	}
+	return reranked
+}
+
+func packBuildHitsContext(state *read.ReadState, features domain.QueryFeatures, now time.Time, hits []domain.Hit, detail *diagnostic.BuildHitsDetail) []domain.Hit {
+	if state == nil || state.Plan == nil || state.Plan.TotalCap <= 0 {
+		return hits
+	}
+	contextPackingStarted := time.Now()
+	poolHits := hitsFromItems(contextPackingPool(state))
+	out := packRecallContextWithFeatures(features, now, hits, poolHits, state.Plan.TotalCap)
+	detail.ContextPackingLatency = time.Since(contextPackingStarted)
+	return out
+}
+
+func buildHitsNow(state *read.ReadState) time.Time {
+	if state != nil && !state.Now.IsZero() {
+		return state.Now
+	}
+	return time.Now()
+}
+
+func contextPackingPool(state *read.ReadState) []domain.ContextItem {
 	if state == nil {
 		return nil
 	}
@@ -124,23 +155,26 @@ func queryFeaturesFromState(state *read.ReadState) domain.QueryFeatures {
 	return domain.QueryFeatures{}
 }
 
-func groundHitsWithSupportingEvidence(features domain.QueryFeatures, hits []domain.Hit) []domain.Hit {
+func groundHitsWithSupportingEvidence(features domain.QueryFeatures, now time.Time, hits []domain.Hit) []domain.Hit {
 	if len(hits) == 0 {
 		return hits
 	}
 	out := make([]domain.Hit, len(hits))
 	for i, hit := range hits {
-		hit.Evidence = selectGroundingEvidenceWithFeatures(features, hit.Evidence, hit.Fact.EvidenceRefs)
+		hit.Evidence = selectGroundingEvidenceWithFeatures(features, now, hit.Evidence, hit.Fact.EvidenceRefs)
 		out[i] = hit
 	}
 	return out
 }
 
 func selectGroundingEvidence(query string, selected []domain.EvidenceRef, refs []domain.EvidenceRef) []domain.EvidenceRef {
-	return selectGroundingEvidenceWithFeatures(recallintent.ExtractFeatures(query), selected, refs)
+	return selectGroundingEvidenceWithFeatures(recallintent.ExtractFeatures(query), time.Now(), selected, refs)
 }
 
-func selectGroundingEvidenceWithFeatures(features domain.QueryFeatures, selected []domain.EvidenceRef, refs []domain.EvidenceRef) []domain.EvidenceRef {
+func selectGroundingEvidenceWithFeatures(features domain.QueryFeatures, now time.Time, selected []domain.EvidenceRef, refs []domain.EvidenceRef) []domain.EvidenceRef {
+	if now.IsZero() {
+		now = time.Now()
+	}
 	limit := maxGroundingEvidenceRefs(features)
 	out := make([]domain.EvidenceRef, 0, limit)
 	seen := map[string]struct{}{}
@@ -182,7 +216,7 @@ func selectGroundingEvidenceWithFeatures(features domain.QueryFeatures, selected
 				continue
 			}
 		}
-		score, eligible := groundingEvidenceScore(queryFeatures, ref)
+		score, eligible := groundingEvidenceScore(queryFeatures, now, ref)
 		if !eligible {
 			continue
 		}
@@ -217,7 +251,7 @@ func newGroundingQueryFeatures(features domain.QueryFeatures) groundingQueryFeat
 	}
 }
 
-func groundingEvidenceScore(query groundingQueryFeatures, ref domain.EvidenceRef) (float64, bool) {
+func groundingEvidenceScore(query groundingQueryFeatures, now time.Time, ref domain.EvidenceRef) (float64, bool) {
 	text := ref.Text
 	tokens := groundingTokenSet(text)
 	matched := 0
@@ -231,7 +265,7 @@ func groundingEvidenceScore(query groundingQueryFeatures, ref domain.EvidenceRef
 		coverage = float64(matched) / float64(len(query.tokens))
 	}
 	numericMatch := intersects(query.numeric, recallintent.NumericTokens(text))
-	timeMatch := query.hasTimeSignal && (!ref.Timestamp.IsZero() || recallintent.HasTimex(text, time.Now()))
+	timeMatch := query.hasTimeSignal && (!ref.Timestamp.IsZero() || recallintent.HasTimex(text, now))
 	properMatch := intersects(query.proper, recallintent.ProperNounSet(text))
 	if len(query.tokens) == 0 && (numericMatch || timeMatch || (properMatch && !query.hasTimeSignal && !query.hasNumericIntent)) {
 		score := 0.40

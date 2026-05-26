@@ -76,17 +76,6 @@ func (p pathHelper) segmentTombstonesPath(id uint64) string {
 	return path.Join(p.segmentDir(id), "tombstones.bin")
 }
 
-// File paths for the BM25 and vector sidecars are reserved here so
-// every layout decision lives in one place. The segment writer in
-// the current commit does not yet emit them; Stage C fills them in.
-func (p pathHelper) segmentBM25Path(id uint64) string {
-	return path.Join(p.segmentDir(id), "bm25.bin")
-}
-
-func (p pathHelper) segmentVectorPath(id uint64) string {
-	return path.Join(p.segmentDir(id), "vector.bin")
-}
-
 // lockPath is the per-namespace lockfile honoured by the
 // cross-process advisory protocol. lockTmpPath is the staging path
 // used by the temp-write + Rename publication step.

@@ -301,10 +301,21 @@ func (r *Runner) SaveRawTurns(ctx context.Context, scope runners.Scope, turns []
 }
 
 // Recall implements runners.Runner.
-func (r *Runner) Recall(ctx context.Context, scope runners.Scope, query string, topK int) ([]runners.Hit, time.Duration, error) {
+func (r *Runner) Recall(ctx context.Context, scope runners.Scope, query string, topK int) ([]runners.RecallArtifact, time.Duration, error) {
 	t0 := time.Now()
 	hits, err := r.mem.Recall(ctx, toRecallV1Scope(scope), recallv1.Request{Query: query, TopK: topK})
-	return fromRecallV1Hits(hits), time.Since(t0), err
+	return fromRecallV1Artifacts(hits), time.Since(t0), err
+}
+
+// RecallAnswerContext implements runners.AnswerContextRecaller.
+func (r *Runner) RecallAnswerContext(ctx context.Context, scope runners.Scope, question runners.AnswerQuestion, topK int) ([]runners.RecallArtifact, runners.AnswerContext, time.Duration, error) {
+	t0 := time.Now()
+	hits, err := r.mem.Recall(ctx, toRecallV1Scope(scope), recallv1.Request{Query: question.Query, TopK: topK})
+	elapsed := time.Since(t0)
+	if err != nil {
+		return nil, runners.AnswerContext{}, elapsed, err
+	}
+	return fromRecallV1Artifacts(hits), structuredAnswerContext(question, hits), elapsed, nil
 }
 
 // Close implements runners.Runner.

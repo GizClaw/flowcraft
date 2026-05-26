@@ -24,18 +24,18 @@ func toRecallScope(s runners.Scope) recall.Scope {
 	}
 }
 
-func fromRecallHit(h recall.Hit) runners.Hit {
-	hit := runners.Hit{
+func fromRecallArtifact(h recall.Hit) runners.RecallArtifact {
+	artifact := runners.RecallArtifact{
 		ID:      h.Fact.ID,
 		Content: groundedHitContent(h),
 		Score:   h.Score,
 		Kind:    string(h.Fact.Kind),
 	}
 	if len(h.Sources) > 0 {
-		hit.Sources = append([]string(nil), h.Sources...)
+		artifact.Sources = append([]string(nil), h.Sources...)
 	}
 	if h.Fact.ValidFrom != nil && !h.Fact.ValidFrom.IsZero() && rendersEventTime(h.Fact.Metadata) {
-		hit.ValidFrom = h.Fact.ValidFrom.Format("2006-01-02")
+		artifact.ValidFrom = h.Fact.ValidFrom.Format("2006-01-02")
 	}
 	evidence := h.Evidence
 	if len(evidence) == 0 {
@@ -43,16 +43,16 @@ func fromRecallHit(h recall.Hit) runners.Hit {
 	}
 	for _, ref := range evidence {
 		if ref.ID != "" {
-			hit.EvidenceIDs = append(hit.EvidenceIDs, ref.ID)
+			artifact.EvidenceIDs = append(artifact.EvidenceIDs, ref.ID)
 		}
 	}
 	if len(h.Fact.Metadata) > 0 {
-		hit.Metadata = make(map[string]any, len(h.Fact.Metadata))
+		artifact.Metadata = make(map[string]any, len(h.Fact.Metadata))
 		for k, v := range h.Fact.Metadata {
-			hit.Metadata[k] = v
+			artifact.Metadata[k] = v
 		}
 	}
-	return hit
+	return artifact
 }
 
 func groundedHitContent(h recall.Hit) string {
@@ -159,13 +159,13 @@ func dedupeRenderedParts(parts []string) []string {
 	return out
 }
 
-func fromRecallHits(hits []recall.Hit) []runners.Hit {
+func fromRecallArtifacts(hits []recall.Hit) []runners.RecallArtifact {
 	if len(hits) == 0 {
 		return nil
 	}
-	out := make([]runners.Hit, len(hits))
+	out := make([]runners.RecallArtifact, len(hits))
 	for i, h := range hits {
-		out[i] = fromRecallHit(h)
+		out[i] = fromRecallArtifact(h)
 	}
 	return out
 }

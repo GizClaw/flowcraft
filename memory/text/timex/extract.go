@@ -9,6 +9,18 @@ const (
 	MatchSourceCalendar MatchSource = "calendar"
 	MatchSourceNatural  MatchSource = "natural"
 	MatchSourceRelative MatchSource = "relative"
+	MatchSourceDuration MatchSource = "duration"
+	MatchSourceSet      MatchSource = "set"
+)
+
+// ExpressionKind describes the normalized semantic shape of a time expression.
+type ExpressionKind string
+
+const (
+	ExpressionKindDate      ExpressionKind = "date"
+	ExpressionKindDateRange ExpressionKind = "daterange"
+	ExpressionKindDuration  ExpressionKind = "duration"
+	ExpressionKindSet       ExpressionKind = "set"
 )
 
 // Expression is the unified result of deterministic calendar parsing, optional
@@ -16,14 +28,20 @@ const (
 type Expression struct {
 	Match
 	Source               MatchSource
+	Kind                 ExpressionKind
+	Timex                string
 	Precision            CalendarPrecision
 	HasCalendarPrecision bool
+	HasPrecision         bool
 	Relative             bool
+	Start                time.Time
+	End                  time.Time
+	HasRange             bool
 }
 
-// Extract returns the first time expression found in text. Locale-independent
-// numeric dates run first, then supplied natural-language parsers, then the
-// built-in word-calendar parser, and finally lexical relative-time fallback.
+// Extract returns the first time expression found in text. Multiple grammar
+// families are allowed to produce candidates; the earliest span wins, and ties
+// prefer the more specific normalization path.
 func Extract(text string, anchor time.Time, parsers ...Parser) (*Expression, error) {
 	if text == "" {
 		return nil, nil
@@ -31,61 +49,19 @@ func Extract(text string, anchor time.Time, parsers ...Parser) (*Expression, err
 	if anchor.IsZero() {
 		anchor = time.Now().UTC()
 	}
-	if cal := ParseNumericCalendar(text); cal != nil {
-		return &Expression{
-			Match:                Match{Time: cal.Time, Text: cal.Text, Index: cal.Index},
-			Source:               MatchSourceCalendar,
-			Precision:            cal.Precision,
-			HasCalendarPrecision: true,
-			Relative:             false,
-		}, nil
+	candidates, err := runRecognizers(
+		text,
+		anchor,
+		numericCalendarRecognizer{},
+		durationRecognizer{},
+		setRecognizer{},
+		parserRecognizer{parsers: parsers},
+		calendarRangeRecognizer{},
+		calendarWordsRecognizer{},
+		relativeRecognizer{},
+	)
+	if selected, ok := selectFirstCandidate(candidates); ok {
+		return expressionFromCandidate(selected), nil
 	}
-	var firstErr error
-	for _, parser := range parsers {
-		if parser == nil {
-			continue
-		}
-		m, err := parser.Parse(text, anchor)
-		if err != nil {
-			if firstErr == nil {
-				firstErr = err
-			}
-			continue
-		}
-		if m == nil {
-			continue
-		}
-		expr := &Expression{
-			Match:    *m,
-			Source:   MatchSourceNatural,
-			Relative: IsRelativePhrase(m.Text),
-		}
-		if cal := ParseCalendar(m.Text); cal != nil {
-			expr.Precision = cal.Precision
-			expr.HasCalendarPrecision = true
-			expr.Relative = false
-		}
-		return expr, nil
-	}
-	if cal := parseCalendarWords(text); cal != nil {
-		return &Expression{
-			Match:                Match{Time: cal.Time, Text: cal.Text, Index: cal.Index},
-			Source:               MatchSourceCalendar,
-			Precision:            cal.Precision,
-			HasCalendarPrecision: true,
-			Relative:             false,
-		}, nil
-	}
-	if rel := FindRelativePhrase(text); rel != nil {
-		t, ok := resolveLexicalRelative(rel.Text, anchor)
-		if !ok {
-			t = time.Time{}
-		}
-		return &Expression{
-			Match:    Match{Time: t, Text: rel.Text, Index: rel.Index},
-			Source:   MatchSourceRelative,
-			Relative: true,
-		}, nil
-	}
-	return nil, firstErr
+	return nil, err
 }
