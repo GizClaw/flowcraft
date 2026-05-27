@@ -30,7 +30,7 @@ func TestStructurizerCoverage_Add(t *testing.T) {
 }
 
 func TestHasStage(t *testing.T) {
-	stages := []StageDiagnostic{{Stage: "intent"}, {Stage: "plan"}}
+	stages := []StageDiagnostic{{Stage: "query_understand"}, {Stage: "plan"}}
 	if !HasStage(stages, "plan") {
 		t.Error("HasStage(plan) → true")
 	}
@@ -47,8 +47,8 @@ func TestHasStage(t *testing.T) {
 func readStages() []StageDiagnostic {
 	return []StageDiagnostic{
 		{
-			Stage: "intent",
-			Detail: IntentDetail{
+			Stage: "query_understand",
+			Detail: QueryUnderstandDetail{
 				QueryLen: 22,
 				Subject:  "alice",
 				Entities: []string{"alice"},
@@ -65,21 +65,22 @@ func readStages() []StageDiagnostic {
 			},
 		},
 		{
-			Stage: "federation_fanout",
-			Detail: FederationFanoutDetail{
+			Stage: "candidate_fanout",
+			Detail: CandidateFanoutDetail{
 				Sources: []SourceResult{
 					{Lens: "retrieval", Candidates: 3, Latency: 5 * time.Millisecond},
 				},
-				Drops: []CandidateDrop{
-					{Stage: "fusion", Reason: DropTotalCap, FactID: "f-drop"},
-				},
-				FusedCandidates: 4,
-				Materialized:    2,
 			},
 		},
 		{
-			Stage:  "materialize",
-			Detail: MaterializeDetail{Requested: 3, Returned: 2},
+			Stage: "candidate_merge_and_materialize",
+			Detail: CandidateMergeAndMaterializeDetail{
+				Drops: []CandidateDrop{
+					{Stage: "candidate_merge", Reason: DropTotalCap, FactID: "f-drop"},
+				},
+				CandidateCount:    4,
+				MaterializedCount: 2,
+			},
 		},
 		{
 			Stage:  "rank",
@@ -140,31 +141,23 @@ func TestExtractDrops(t *testing.T) {
 	}
 }
 
-func TestExtractFusedCandidates(t *testing.T) {
-	if n := ExtractFusedCandidates(readStages()); n != 4 {
-		t.Errorf("federation_fanout fused = %d, want 4", n)
+func TestExtractCandidateCount(t *testing.T) {
+	if n := ExtractCandidateCount(readStages()); n != 4 {
+		t.Errorf("candidate_merge_and_materialize fused = %d, want 4", n)
 	}
-	// fuse stage falls through when federation_fanout is absent
-	stages := []StageDiagnostic{
-		{Stage: "fuse", Detail: FuseDetail{AfterTopK: 9}},
-	}
-	if n := ExtractFusedCandidates(stages); n != 9 {
-		t.Errorf("fuse fallback = %d, want 9", n)
-	}
-	if n := ExtractFusedCandidates(nil); n != 0 {
+	if n := ExtractCandidateCount(nil); n != 0 {
 		t.Errorf("empty trace = %d, want 0", n)
 	}
 }
 
 func TestExtractMaterialized(t *testing.T) {
-	if n := ExtractMaterialized(readStages()); n != 4 {
-		// federation_fanout (2) + materialize (2) → 4; rank == 2 < 4 so does not override.
-		t.Errorf("want 4 (sum across federation+materialize), got %d", n)
+	if n := ExtractMaterialized(readStages()); n != 2 {
+		t.Errorf("want 2 materialized, got %d", n)
 	}
 	// When rank.OutputCount exceeds the running total, it wins
 	// (the rank stage describes a richer post-fusion pool).
 	stages := []StageDiagnostic{
-		{Stage: "materialize", Detail: MaterializeDetail{Returned: 1}},
+		{Stage: "candidate_merge_and_materialize", Detail: CandidateMergeAndMaterializeDetail{MaterializedCount: 1}},
 		{Stage: "rank", Detail: RankDetail{OutputCount: 7}},
 	}
 	if n := ExtractMaterialized(stages); n != 7 {

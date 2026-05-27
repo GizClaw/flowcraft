@@ -1,8 +1,7 @@
-// Package diagnostics is the only public diagnostics surface for
-// sdk/recall (Phase E.2 / E.3). Every function is a pure consumer of
-// trace.Stages — the package never reaches into ranker / fusion /
-// materialize implementations, and only depends on internal/domain
-// (Stages-only) and internal/domain/diagnostic (per-stage details).
+// Package diagnostics is the only public diagnostics surface for sdk/recall.
+// Every function is a pure consumer of trace.Stages; the package never reaches
+// into ranker / fusion / materialize implementations, and only depends on
+// internal/domain and internal/domain/diagnostic.
 package diagnostics
 
 import (
@@ -43,16 +42,16 @@ type HitProvenance struct {
 
 // RecallDiagnostics summarises per-stage health of one Recall call.
 type RecallDiagnostics struct {
-	Plan             diagnostic.PlanView
-	Sources          []SourceDiagnostic
-	Drops            []diagnostic.CandidateDrop
-	FusedCandidates  int
-	Materialized     int
-	DropsByStage     map[FailureStage]int
-	HitRenderability HitRenderability
-	HitProvenance    HitProvenance
-	TotalLatency     time.Duration
-	Attributions     []Attribution
+	Plan              diagnostic.PlanView
+	Sources           []SourceDiagnostic
+	Drops             []diagnostic.CandidateDrop
+	CandidateCount    int
+	MaterializedCount int
+	DropsByStage      map[FailureStage]int
+	HitRenderability  HitRenderability
+	HitProvenance     HitProvenance
+	TotalLatency      time.Duration
+	Attributions      []Attribution
 }
 
 // DiagnoseRecall produces a per-stage health view from trace.Stages.
@@ -61,13 +60,13 @@ type RecallDiagnostics struct {
 func DiagnoseRecall(trace domain.RecallTrace, hits []domain.Hit) RecallDiagnostics {
 	stages := trace.Stages
 	out := RecallDiagnostics{
-		Plan:            diagnostic.ExtractPlan(stages),
-		Sources:         Sources(trace),
-		Drops:           Drops(trace),
-		FusedCandidates: diagnostic.ExtractFusedCandidates(stages),
-		Materialized:    diagnostic.ExtractMaterialized(stages),
-		TotalLatency:    totalLatency(stages),
-		Attributions:    AttributeRecallTrace(trace),
+		Plan:              diagnostic.ExtractPlan(stages),
+		Sources:           Sources(trace),
+		Drops:             Drops(trace),
+		CandidateCount:    diagnostic.ExtractCandidateCount(stages),
+		MaterializedCount: diagnostic.ExtractMaterialized(stages),
+		TotalLatency:      totalLatency(stages),
+		Attributions:      AttributeRecallTrace(trace),
 	}
 	if len(out.Drops) > 0 {
 		out.DropsByStage = make(map[FailureStage]int, len(out.Drops))
@@ -108,14 +107,14 @@ func Drops(trace domain.RecallTrace) []diagnostic.CandidateDrop {
 	return append([]diagnostic.CandidateDrop(nil), diagnostic.ExtractDrops(trace.Stages)...)
 }
 
-// Materialized returns the materialized count from trace.Stages.
-func Materialized(trace domain.RecallTrace) int {
+// MaterializedCount returns the materialized count from trace.Stages.
+func MaterializedCount(trace domain.RecallTrace) int {
 	return diagnostic.ExtractMaterialized(trace.Stages)
 }
 
-// FusedCandidates returns the fused pool size from trace.Stages.
-func FusedCandidates(trace domain.RecallTrace) int {
-	return diagnostic.ExtractFusedCandidates(trace.Stages)
+// CandidateCount returns the merged candidate pool size from trace.Stages.
+func CandidateCount(trace domain.RecallTrace) int {
+	return diagnostic.ExtractCandidateCount(trace.Stages)
 }
 
 func totalLatency(stages []diagnostic.StageDiagnostic) time.Duration {

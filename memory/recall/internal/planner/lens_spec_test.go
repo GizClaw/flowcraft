@@ -17,8 +17,8 @@ import (
 	"github.com/GizClaw/flowcraft/memory/recall/internal/port"
 )
 
-// TestLensRegistryOrderMatchesLegacy verifies Phase C lens registration
-// produces the same SourceOrder as the pre-C builtin planner.
+// TestLensRegistryOrderMatchesLegacy verifies lens registration produces the
+// same SourceOrder as the earlier builtin planner.
 func TestLensRegistryOrderMatchesLegacy(t *testing.T) {
 	reg := lens.NewRegistry()
 	// mirror memory.New registration order (graph on, no evidence)

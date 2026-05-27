@@ -39,11 +39,11 @@ func NewRunner(stages []pipeline.Stage[*WriteState], hook port.TelemetryHook) *R
 // time. ShortCircuit is treated as success and returns nil; any
 // other error propagates verbatim.
 //
-// Phase F.1a wraps the configured telemetry hook with a per-call
-// shim that enriches every StageDiagnostic with state.AsyncRequestID
-// once the episode lane has stamped it. The wrapper is a no-op for
-// the sync path (state.AsyncRequestID stays empty), so existing
-// callers see byte-identical events.
+// The configured telemetry hook is wrapped with a per-call shim that
+// enriches every StageDiagnostic with state.AsyncRequestID once the
+// episode lane has stamped it. The wrapper is a no-op for the sync
+// path (state.AsyncRequestID stays empty), so existing callers see
+// byte-identical events.
 func (r *Runner) Run(ctx context.Context, state *WriteState) error {
 	if r == nil || state == nil {
 		return nil

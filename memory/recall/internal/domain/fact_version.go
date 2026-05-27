@@ -2,7 +2,7 @@ package domain
 
 import "time"
 
-// FactVersion is one row in a fact's supersede history (Phase D.6).
+// FactVersion is one row in a fact's supersede history.
 // History walks the TemporalStore append-only chain; no journal store.
 type FactVersion struct {
 	Fact TemporalFact

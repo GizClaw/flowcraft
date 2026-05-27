@@ -10,10 +10,9 @@ package diagnostic
 // imports diagnostic to embed StageDiagnostic on RecallTrace /
 // SaveTrace). DroppedFact therefore carries the dropped fact as
 // `any`; subsystem code that constructs it passes the concrete
-// domain.TemporalFact value and read sites type-assert. Once Phase
-// E.3 deletes the deprecated parallel observation channels we can
-// revisit whether to introduce a forward-declared minimal Fact
-// interface here.
+// domain.TemporalFact value and read sites type-assert. If the
+// deprecated parallel observation channels are removed, we can revisit
+// whether to introduce a forward-declared minimal Fact interface here.
 
 // StructurizerCoverage tallies how many times each sub-task of the
 // Structurizer actually filled a previously-empty field on its way
@@ -89,9 +88,8 @@ const (
 	DropRetired DropReason = "retired"
 )
 
-// CandidateDrop records a single discarded candidate with its
-// reason. Stage names ("fusion" / "materialize") let dashboards
-// split drift sources.
+// CandidateDrop records a single discarded candidate with its reason. Stage
+// names let dashboards split drift sources.
 type CandidateDrop struct {
 	Stage   string
 	Reason  DropReason

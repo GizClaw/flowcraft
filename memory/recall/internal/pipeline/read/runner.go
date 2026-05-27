@@ -14,10 +14,10 @@ import (
 //
 // Assembly order (memory.New):
 //
-//	intent → plan → federation_fanout → federation_merge →
-//	trust_filter → rank → build_hits → evolution_after_recall
-//
-// TODO(D.5): wrap source_fanout→materialize in federation_{fanout,merge}
+//	query_understand → plan → candidate_fanout →
+//	candidate_merge_and_materialize → candidate_expansion →
+//	policy_filter → rank → context_pack → build_grounded_hits →
+//	evolution_after_recall
 type Runner struct {
 	stages []pipeline.Stage[*ReadState]
 	hook   port.TelemetryHook

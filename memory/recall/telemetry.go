@@ -9,6 +9,5 @@ import (
 // by the v2 pipeline framework.
 type StageDiagnostic = diagnostic.StageDiagnostic
 
-// TelemetryHook receives structured pipeline stage diagnostics
-// (Phase E.3: single-rail surface).
+// TelemetryHook receives structured pipeline stage diagnostics.
 type TelemetryHook = port.TelemetryHook

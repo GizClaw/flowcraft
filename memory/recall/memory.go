@@ -67,7 +67,7 @@ type Memory interface {
 	// confirmScopeKey guard — TTL is an administrative cleanup, not
 	// an Art.17 wipe — and ONLY removes matching facts (non-expired
 	// rows survive). zero `now` defaults to time.Now(); returns the
-	// number of facts physically deleted (D5 2026-05-21).
+	// number of facts physically deleted.
 	ExpireRetired(ctx context.Context, scope Scope, now time.Time) (int, error)
 	History(ctx context.Context, scope Scope, factID string) ([]FactVersion, error)
 	// Lineage returns the full revision DAG rooted at factID — the set
@@ -130,8 +130,8 @@ type memory struct {
 	sideEffectOutbox   port.SideEffectOutbox
 
 	// asyncSemanticWorkerPreRunner / PostRunner drive
-	// ProcessAsyncSemantic (F.1b): LLM ingest + semantic write path
-	// with origin stamping, under the same scope lock as Save.
+	// ProcessAsyncSemantic: LLM ingest + semantic write path with
+	// origin stamping, under the same scope lock as Save.
 	asyncSemanticWorkerPreRunner  *write.Runner
 	asyncSemanticWorkerPostRunner *write.Runner
 
@@ -339,19 +339,22 @@ func New(opts ...Option) (Memory, error) {
 		rerank = cfg.reranker
 	}
 	m.readRunner = read.NewRunner([]pipeline.Stage[*read.ReadState]{
-		readstages.NewIntent(qc),
+		readstages.NewQueryUnderstand(qc),
 		readstages.NewPlan(planr, cfg.graphEnabled, m.entitySnapshotsForScopes),
-		readstages.NewFederationFanout(
+		readstages.NewCandidateFanout(
 			func() []port.Source { return m.sources },
+		),
+		readstages.NewCandidateMergeAndMaterialize(
 			fuser,
 			fusionOpts,
 			planner.FusionCandidateCap,
 			mat,
 		),
-		readstages.NewFederationMerge(),
-		readstages.NewTrustFilter(),
+		readstages.NewCandidateExpansion(cfg.store),
+		readstages.NewPolicyFilter(),
 		readstages.NewRank(rnk, cfg.reranker != nil),
-		readstages.NewBuildHits(rerank),
+		readstages.NewContextPack(rerank),
+		readstages.NewBuildGroundedHits(),
 		readstages.NewEvolutionAfterRecall(cfg.evolution),
 	}, tel)
 	m.rebuildRunner = rebuild.NewRunner([]pipeline.Stage[*rebuild.RebuildState]{
@@ -455,10 +458,9 @@ func (m *memory) runSave(ctx context.Context, scope Scope, req SaveRequest, with
 	if err := ctx.Err(); err != nil {
 		return SaveResult{}, SaveTrace{}, err
 	}
-	// Phase F.1a branch: async semantic mode degrades cleanly when
-	// there are no Turns (no LLM work to defer) and rejects without
-	// side effects when no queue is wired. Anything else falls
-	// through to the legacy sync path so existing callers see
+	// Async semantic mode degrades cleanly when there are no Turns (no LLM work
+	// to defer) and rejects without side effects when no queue is wired.
+	// Anything else falls through to the sync path so existing callers see
 	// byte-identical behaviour at WriteModeSync (the zero value).
 	if req.Mode == domain.WriteModeAsyncSemantic {
 		if len(req.Turns) == 0 {
@@ -475,8 +477,8 @@ func (m *memory) runSave(ctx context.Context, scope Scope, req SaveRequest, with
 	return m.runSaveSync(ctx, scope, req, withTrace, includeRawDiagnostics)
 }
 
-// runSaveSync is the canonical pre-F.1 Save body: pre-runner outside
-// the scope lock, post-runner inside. It serves both
+// runSaveSync is the canonical synchronous Save body: pre-runner
+// outside the scope lock, post-runner inside. It serves both
 // WriteModeSync calls and the Facts-only leg of an async request.
 func (m *memory) runSaveSync(ctx context.Context, scope Scope, req SaveRequest, withTrace, includeRawDiagnostics bool) (SaveResult, SaveTrace, error) {
 	state := &write.WriteState{
@@ -531,7 +533,7 @@ func (m *memory) runSaveSync(ctx context.Context, scope Scope, req SaveRequest, 
 	return SaveResult{FactIDs: append([]string(nil), state.AppendedFactIDs...)}, publicSaveTrace(state), nil
 }
 
-// runSaveAsync is the F.1a async semantic facade. Episode lane and
+// runSaveAsync is the async semantic facade. Episode lane and
 // structured Facts share one locked canonical pipeline: Save returns
 // after episode / structured facts and durable outbox jobs are
 // committed. Projection, embedding, and evolution converge later via
@@ -683,8 +685,8 @@ func (m *memory) Forget(ctx context.Context, scope Scope, factID string, mode ..
 	}
 }
 
-// ForgetAll retires every fact in the primary scope (Federation
-// sub-scopes are NOT recursed; D.5).
+// ForgetAll retires every fact in the primary scope. Federation sub-scopes are
+// not recursed.
 //
 // Mode semantics:
 //
@@ -703,9 +705,9 @@ func (m *memory) Forget(ctx context.Context, scope Scope, factID string, mode ..
 // ergonomics — a Soft is reversible. errors.Is(err,
 // ErrScopeKeyMismatch) is sentinel-stable.
 //
-// The operation goes through the forget pipeline (Phase D.8 C9) so
-// each call emits one ForgetAllDetail diagnostic via the registered
-// TelemetryHook. The returned int matches Detail.Deleted.
+// The operation goes through the forget pipeline so each call emits one
+// ForgetAllDetail diagnostic via the registered TelemetryHook. The returned int
+// matches Detail.Deleted.
 func (m *memory) ForgetAll(ctx context.Context, scope Scope, mode ForgetMode, confirmScopeKey string) (int, error) {
 	if err := ctx.Err(); err != nil {
 		return 0, err
@@ -750,8 +752,7 @@ func (m *memory) ForgetAll(ctx context.Context, scope Scope, mode ForgetMode, co
 }
 
 // ExpireRetired hard-deletes every scope-local fact whose ExpiresAt
-// is non-nil and not after now. D5 2026-05-21 promoted this from an
-// internal evolution helper to a public Memory facade method.
+// is non-nil and not after now.
 //
 // The call routes through the forget pipeline with State.Filter set,
 // which:
@@ -857,11 +858,10 @@ func (m *memory) entitySnapshots(scope Scope) []port.EntitySnapshot {
 	return m.entitySnap.Snapshot(scope)
 }
 
-// entitySnapshotsForScopes is the read-path plan stage's wiring (D2
-// 2026-05-21, Cluster G). It returns the raw per-scope EntitySnapshot
-// concatenation so the Plan stage can run the dedup-and-max merge
-// across sub-scopes itself; memory does not perform the merge to keep
-// snapshotter ownership at the lens layer.
+// entitySnapshotsForScopes is the read-path plan stage's wiring. It returns
+// the raw per-scope EntitySnapshot concatenation so the Plan stage can run the
+// dedup-and-max merge across sub-scopes itself; memory does not perform the
+// merge to keep snapshotter ownership at the lens layer.
 func (m *memory) entitySnapshotsForScopes(scopes []domain.Scope) []port.EntitySnapshot {
 	if m.entitySnap == nil || len(scopes) == 0 {
 		return nil
@@ -959,9 +959,8 @@ func (m *memory) runRecall(ctx context.Context, scope Scope, query Query, withTr
 		Now:       now,
 		StartedAt: now,
 	}
-	// Cluster F (2026-05-21): Trace is a DIAGNOSTIC artifact. Stages
-	// route inter-stage data through ReadState (e.g.
-	// state.MaterializeDrops), so Recall (non-explain) can leave
+	// Trace is a diagnostic artifact. Stages route inter-stage data through
+	// ReadState (e.g. state.MaterializeDrops), so Recall (non-explain) can leave
 	// Trace nil and skip per-stage diagnostic allocations entirely.
 	// Only RecallExplain (withTrace=true) installs a Trace for the
 	// framework's AppendStage hook to populate.

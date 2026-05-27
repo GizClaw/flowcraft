@@ -39,11 +39,11 @@ func TestEvolutionAfterSave_HappyPath(t *testing.T) {
 	}
 }
 
-// TestEvolutionAfterSave_FailureIsBestEffort pins the Cluster C
-// contract: AfterSave failures are surfaced via the BestEffort
-// wrapper so the framework emits Status=Degraded, but the legacy
-// state.EvolutionErr field is still populated so callers that read
-// it directly keep working.
+// TestEvolutionAfterSave_FailureIsBestEffort pins the AfterSave
+// failure contract: failures are surfaced via the BestEffort wrapper
+// so the framework emits Status=Degraded, but the legacy
+// state.EvolutionErr field is still populated so callers that read it
+// directly keep working.
 func TestEvolutionAfterSave_FailureIsBestEffort(t *testing.T) {
 	boom := errors.New("evo down")
 	ev := &stubEvolution{saveErr: boom}

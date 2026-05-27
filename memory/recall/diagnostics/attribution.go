@@ -9,17 +9,17 @@ import (
 type FailureStage string
 
 const (
-	FailureExtract     FailureStage = "extract"
-	FailureNormalize   FailureStage = "normalize"
-	FailureEntity      FailureStage = "entity"
-	FailureTime        FailureStage = "time"
-	FailureMerge       FailureStage = "merge"
-	FailureProjection  FailureStage = "projection"
-	FailureSource      FailureStage = "source"
-	FailureFusion      FailureStage = "fusion"
-	FailureMaterialize FailureStage = "materialize"
-	FailureRerank      FailureStage = "rerank"
-	FailureAnswer      FailureStage = "answer"
+	FailureExtract              FailureStage = "extract"
+	FailureNormalize            FailureStage = "normalize"
+	FailureEntity               FailureStage = "entity"
+	FailureTime                 FailureStage = "time"
+	FailureMerge                FailureStage = "merge"
+	FailureProjection           FailureStage = "projection"
+	FailureSource               FailureStage = "source"
+	FailureCandidateMerge       FailureStage = "candidate_merge"
+	FailureCandidateMaterialize FailureStage = "candidate_materialize"
+	FailureRerank               FailureStage = "rerank"
+	FailureAnswer               FailureStage = "answer"
 )
 
 // Attribution records one pipeline failure observation.
@@ -36,7 +36,7 @@ func StageFromPipeline(stage string) FailureStage {
 	switch stage {
 	case "compiler", "ingest":
 		return FailureExtract
-	case "query_compile", "intent":
+	case "query_compile", "query_understand", "intent":
 		return FailureNormalize
 	case "conflict_resolve", "resolve":
 		return FailureMerge
@@ -46,15 +46,15 @@ func StageFromPipeline(stage string) FailureStage {
 		return FailureProjection
 	case "planner", "plan":
 		return FailureNormalize
-	case "source", "federation_fanout", "source_fanout":
+	case "source", "candidate_fanout":
 		return FailureSource
-	case "fusion", "fuse":
-		return FailureFusion
-	case "materialize":
-		return FailureMaterialize
+	case "candidate_merge", "candidate_merge_and_materialize":
+		return FailureCandidateMerge
+	case "candidate_materialize":
+		return FailureCandidateMaterialize
 	case "rerank":
 		return FailureRerank
-	case "build_hits":
+	case "context_pack", "build_grounded_hits":
 		return FailureAnswer
 	default:
 		return FailureNormalize
@@ -67,11 +67,11 @@ func StageFromDropReason(reason diagnostic.DropReason) FailureStage {
 	case diagnostic.DropStaleFact, diagnostic.DropSuperseded:
 		return FailureProjection
 	case diagnostic.DropMaterializeErr, diagnostic.DropScopeViolation, diagnostic.DropRetired:
-		return FailureMaterialize
+		return FailureCandidateMaterialize
 	case diagnostic.DropDuplicate, diagnostic.DropTotalCap, diagnostic.DropPerSourceCap:
-		return FailureFusion
+		return FailureCandidateMerge
 	default:
-		return FailureMaterialize
+		return FailureCandidateMaterialize
 	}
 }
 
@@ -99,10 +99,10 @@ func AttributeRecallTrace(trace domain.RecallTrace) []Attribution {
 			Details: d.Details,
 		})
 	}
-	fused := diagnostic.ExtractFusedCandidates(stages)
+	candidates := diagnostic.ExtractCandidateCount(stages)
 	mat := diagnostic.ExtractMaterialized(stages)
-	if fused > 0 && mat == 0 && len(diagnostic.ExtractDrops(stages)) == 0 {
-		out = append(out, Attribution{Stage: FailureMaterialize, Reason: "zero_materialized"})
+	if candidates > 0 && mat == 0 && len(diagnostic.ExtractDrops(stages)) == 0 {
+		out = append(out, Attribution{Stage: FailureCandidateMaterialize, Reason: "zero_materialized"})
 	}
 	return out
 }

@@ -19,9 +19,9 @@ import (
 // the fact on state.EpisodeFacts for the subsequent append /
 // project / outbox stages.
 //
-// F.1a deliberately collapses every turn in one Save into one
-// episode fact (canonical join of "<speaker>: <text>" lines). Per-
-// turn or per-session splitting is left as a later refinement;
+// The async save lane deliberately collapses every turn in one Save
+// into one episode fact (canonical join of "<speaker>: <text>" lines).
+// Per-turn or per-session splitting is left as a later refinement;
 // keeping the lane single-fact today minimises the projection /
 // resolver surface the episode kind has to defend against.
 type BuildEpisode struct{}

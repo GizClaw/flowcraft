@@ -1,6 +1,5 @@
-// Package evolution hosts background memory maintenance hooks
-// (docs §10.1). Phase 8 ships no-op defaults that never block
-// Save or Recall.
+// Package evolution hosts background memory maintenance hooks. Defaults are
+// no-ops that never block Save or Recall.
 package evolution
 
 import (

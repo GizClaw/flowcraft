@@ -8,10 +8,8 @@ import (
 	"github.com/GizClaw/flowcraft/memory/recall/internal/pipeline/rebuild"
 )
 
-// TestRunner_EmptyIsNoOp pins the Phase B.1 contract that an empty
-// rebuild pipeline accepts a fresh RebuildState and returns nil
-// without mutating anything. Phase B.4 replaces this assertion
-// with stage-by-stage coverage.
+// TestRunner_EmptyIsNoOp pins that an empty rebuild pipeline accepts a fresh
+// RebuildState and returns nil without mutating anything.
 func TestRunner_EmptyIsNoOp(t *testing.T) {
 	r := rebuild.NewRunner(nil, nil)
 	state := &rebuild.RebuildState{

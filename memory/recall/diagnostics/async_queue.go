@@ -5,7 +5,7 @@ import (
 )
 
 // AsyncSemanticQueueHealth is the operator-facing queue snapshot used
-// by health dashboards (Phase F.1c).
+// by health dashboards.
 type AsyncSemanticQueueHealth struct {
 	Pending        int
 	Leased         int

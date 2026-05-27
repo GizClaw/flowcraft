@@ -92,7 +92,7 @@ func (WeightedRRF) Fuse(_ context.Context, results []domain.SourceResult, opts p
 		if opts.PerSourceCap > 0 && len(input) > opts.PerSourceCap {
 			for _, c := range input[opts.PerSourceCap:] {
 				drops = append(drops, diagnostic.CandidateDrop{
-					Stage:  "fusion",
+					Stage:  "candidate_merge",
 					Reason: diagnostic.DropPerSourceCap,
 					FactID: c.FactID,
 					Source: res.Source,
@@ -160,7 +160,7 @@ func (WeightedRRF) Fuse(_ context.Context, results []domain.SourceResult, opts p
 		kept, dropped := capWithSourceFloors(fused, opts.TotalCap, floorIDs)
 		for _, c := range dropped {
 			drops = append(drops, diagnostic.CandidateDrop{
-				Stage:  "fusion",
+				Stage:  "candidate_merge",
 				Reason: diagnostic.DropTotalCap,
 				FactID: c.FactID,
 				Source: c.Source,

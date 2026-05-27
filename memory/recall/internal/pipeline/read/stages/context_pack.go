@@ -14,28 +14,25 @@ import (
 	"github.com/GizClaw/flowcraft/memory/recall/internal/port"
 )
 
-// BuildHits converts ranked ContextItems into Hits and optionally
-// runs the reranker (legacy runRecall order: build then rerank).
-type BuildHits struct {
+// ContextPack converts ranked ContextItems into Hits, applies the optional
+// reranker, and fits the result into the final context budget.
+type ContextPack struct {
 	reranker port.Reranker
 }
 
-// NewBuildHits constructs a BuildHits stage. reranker may be nil.
-func NewBuildHits(reranker port.Reranker) *BuildHits {
-	return &BuildHits{reranker: reranker}
+func NewContextPack(reranker port.Reranker) *ContextPack {
+	return &ContextPack{reranker: reranker}
 }
 
-// Name implements pipeline.Stage.
-func (BuildHits) Name() string { return "build_hits" }
+func (ContextPack) Name() string { return "context_pack" }
 
-// Run implements pipeline.Stage.
-func (s *BuildHits) Run(ctx context.Context, state *read.ReadState) (diagnostic.StageDetail, error) {
+func (s *ContextPack) Run(ctx context.Context, state *read.ReadState) (diagnostic.StageDetail, error) {
 	started := time.Now()
 	features := queryFeaturesFromState(state)
-	now := buildHitsNow(state)
-	hits := buildInitialHits(state)
+	now := contextPackNow(state)
+	hits := contextPackInitialHits(state)
 	state.Hits = hits
-	detail := newBuildHitsDetail(hits)
+	detail := diagnostic.ContextPackDetail{Count: len(hits), InputCount: len(hits)}
 	captureSnapshots := snapshotsEnabled(state)
 	if captureSnapshots {
 		detail.Input = candidateSnapshotPtr(hitSnapshots(hits))
@@ -43,9 +40,7 @@ func (s *BuildHits) Run(ctx context.Context, state *read.ReadState) (diagnostic.
 	}
 	hits = s.rerankHits(ctx, state.Query.Text, hits, &detail, captureSnapshots)
 	state.Hits = hits
-	hits = packBuildHitsContext(state, features, now, hits, &detail)
-	state.Hits = hits
-	hits = groundHitsWithSupportingEvidence(features, now, hits)
+	hits = packContextPackSelection(state, features, now, hits, &detail)
 	state.Hits = hits
 	detail.Count = len(hits)
 	if captureSnapshots {
@@ -55,21 +50,7 @@ func (s *BuildHits) Run(ctx context.Context, state *read.ReadState) (diagnostic.
 	return detail, nil
 }
 
-func newBuildHitsDetail(hits []domain.Hit) diagnostic.BuildHitsDetail {
-	return diagnostic.BuildHitsDetail{
-		Count:      len(hits),
-		InputCount: len(hits),
-	}
-}
-
-func buildInitialHits(state *read.ReadState) []domain.Hit {
-	if state == nil {
-		return nil
-	}
-	return hitsFromItems(state.Ranked)
-}
-
-func (s *BuildHits) rerankHits(ctx context.Context, query string, hits []domain.Hit, detail *diagnostic.BuildHitsDetail, captureSnapshots bool) []domain.Hit {
+func (s *ContextPack) rerankHits(ctx context.Context, query string, hits []domain.Hit, detail *diagnostic.ContextPackDetail, captureSnapshots bool) []domain.Hit {
 	if s.reranker == nil || len(hits) == 0 {
 		return hits
 	}
@@ -87,18 +68,52 @@ func (s *BuildHits) rerankHits(ctx context.Context, query string, hits []domain.
 	return reranked
 }
 
-func packBuildHitsContext(state *read.ReadState, features domain.QueryFeatures, now time.Time, hits []domain.Hit, detail *diagnostic.BuildHitsDetail) []domain.Hit {
+// BuildGroundedHits finalizes recall output by adding query-relevant
+// supporting refs to each already-packed hit.
+type BuildGroundedHits struct{}
+
+func NewBuildGroundedHits() *BuildGroundedHits { return &BuildGroundedHits{} }
+
+func (BuildGroundedHits) Name() string { return "build_grounded_hits" }
+
+func (BuildGroundedHits) Run(_ context.Context, state *read.ReadState) (diagnostic.StageDetail, error) {
+	started := time.Now()
+	features := queryFeaturesFromState(state)
+	now := contextPackNow(state)
+	hits := state.Hits
+	detail := diagnostic.BuildGroundedHitsDetail{InputCount: len(hits)}
+	if snapshotsEnabled(state) {
+		detail.Input = candidateSnapshotPtr(hitSnapshots(hits))
+	}
+	hits = groundHitsWithSupportingEvidence(features, now, hits)
+	state.Hits = hits
+	detail.Count = len(hits)
+	detail.Latency = time.Since(started)
+	if snapshotsEnabled(state) {
+		detail.Hits = candidateSnapshotPtr(hitSnapshots(hits))
+	}
+	return detail, nil
+}
+
+func contextPackInitialHits(state *read.ReadState) []domain.Hit {
+	if state == nil {
+		return nil
+	}
+	return hitsFromItems(state.Ranked)
+}
+
+func packContextPackSelection(state *read.ReadState, features domain.QueryFeatures, now time.Time, hits []domain.Hit, detail *diagnostic.ContextPackDetail) []domain.Hit {
 	if state == nil || state.Plan == nil || state.Plan.TotalCap <= 0 {
 		return hits
 	}
 	contextPackingStarted := time.Now()
 	poolHits := hitsFromItems(contextPackingPool(state))
-	out := packRecallContextWithFeatures(features, now, hits, poolHits, state.Plan.TotalCap)
+	out := packRecallContextWithFeatures(state.Query.Text, features, now, hits, poolHits, state.Plan.TotalCap)
 	detail.ContextPackingLatency = time.Since(contextPackingStarted)
 	return out
 }
 
-func buildHitsNow(state *read.ReadState) time.Time {
+func contextPackNow(state *read.ReadState) time.Time {
 	if state != nil && !state.Now.IsZero() {
 		return state.Now
 	}
@@ -334,4 +349,7 @@ func hitSources(c domain.Candidate) []string {
 	return nil
 }
 
-var _ pipeline.Stage[*read.ReadState] = (*BuildHits)(nil)
+var (
+	_ pipeline.Stage[*read.ReadState] = (*ContextPack)(nil)
+	_ pipeline.Stage[*read.ReadState] = (*BuildGroundedHits)(nil)
+)

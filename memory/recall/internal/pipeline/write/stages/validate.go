@@ -1,12 +1,11 @@
 // Package stages assembles the write-flow pipeline's ordered Stage
-// list. One stage per file mirrors plan §3.B.2 C1-C9 so reviewers
-// can map each commit to a single concrete responsibility.
+// list. One stage per file keeps each concrete responsibility easy to
+// review.
 //
 // Stages mutate the shared *write.WriteState; they do not call
 // telemetry hooks directly. The pipeline framework owns
 // StageDiagnostic emission; Compensated events fired during
-// compensation route through the same OnStage rail (Phase E.3:
-// single-rail surface).
+// compensation route through the same OnStage rail.
 package stages
 
 import (
@@ -41,10 +40,10 @@ func (Validate) Name() string { return "validate" }
 // Per-fact validation rules:
 //
 //   - Every element of TemporalFact.Supersedes must be a non-empty
-//     ID. len > 1 is allowed (D1, 2026-05-21: explicit 1:N
-//     supersede). The resolver later validates that each ID exists
-//     in the store; this stage only catches structural mistakes
-//     (caller passed an empty string) before any side effect runs.
+//     ID. len > 1 is allowed for explicit 1:N supersede. The resolver
+//     later validates that each ID exists in the store; this stage
+//     only catches structural mistakes (caller passed an empty string)
+//     before any side effect runs.
 func (Validate) Run(_ context.Context, state *write.WriteState) (diagnostic.StageDetail, error) {
 	detail := diagnostic.ValidateDetail{InputTurns: len(state.Turns)}
 	if state.Scope.RuntimeID == "" {

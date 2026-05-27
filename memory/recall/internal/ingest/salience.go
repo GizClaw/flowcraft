@@ -11,9 +11,9 @@ import (
 // arrive without an explicit score.
 const DefaultConfidence = 0.5
 
-// tierConfidenceDelta maps SaveRequest.Tier intent labels to
-// confidence adjustments (Phase D.3). Caller-supplied Confidence on
-// a fact is preserved as the base before the tier delta is applied.
+// tierConfidenceDelta maps SaveRequest.Tier intent labels to confidence
+// adjustments. Caller-supplied Confidence on a fact is preserved as the base
+// before the tier delta is applied.
 var tierConfidenceDelta = map[string]float64{
 	domain.TierCore:    0.3,
 	domain.TierGeneral: 0,

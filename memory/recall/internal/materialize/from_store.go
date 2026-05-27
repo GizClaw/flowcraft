@@ -5,8 +5,8 @@
 // Materialization is also the read-path's stale-fact filter: if a
 // candidate's fact id is missing from the store (drift between
 // retrieval doc and canonical ledger), the candidate is dropped and
-// recorded in the trace. PR-3 does not auto-repair the drift —
-// that's reconcile (Phase 5).
+// recorded in the trace. Recall does not auto-repair the drift; reconcile
+// workers consume the diagnostic signal.
 package materialize
 
 import (
@@ -30,13 +30,10 @@ var _ port.Materializer = (*FromStore)(nil)
 
 // New constructs a FromStore. The telemetry hook is retained on the
 // struct for forward compatibility but is intentionally NOT invoked
-// here: Phase E.3 collapsed the legacy DriftEvent emit path; drift
-// signals (stale-fact / superseded-fact / scope-violation drops) now
-// flow through the read pipeline's MaterializeDetail diagnostic that
-// the stage emits to the same hook. Materializer therefore stays a
-// pure transform — emission is the stage's job (docs §10.1: no
-// auto-repair from Recall; reconcile workers subscribe to
-// MaterializeDetail.Drops via TelemetryHook.OnStage).
+// here: drift signals (stale-fact / superseded-fact / scope-violation drops)
+// flow through the read pipeline's CandidateMergeAndMaterializeDetail
+// diagnostic that the stage emits to the same hook. Materializer stays a pure transform;
+// emission is the stage's job.
 func New(store port.TemporalStore, hook port.TelemetryHook) *FromStore {
 	if hook == nil {
 		hook = telemetry.NopHook{}
@@ -71,7 +68,7 @@ func (m *FromStore) Materialize(ctx context.Context, candidates []domain.Candida
 		if err != nil {
 			if errors.Is(err, temporalstore.ErrNotFound) {
 				drops = append(drops, diagnostic.CandidateDrop{
-					Stage:  "materialize",
+					Stage:  "candidate_materialize",
 					Reason: diagnostic.DropStaleFact,
 					FactID: c.FactID,
 					Source: c.Source,
@@ -79,7 +76,7 @@ func (m *FromStore) Materialize(ctx context.Context, candidates []domain.Candida
 				continue
 			}
 			drops = append(drops, diagnostic.CandidateDrop{
-				Stage:   "materialize",
+				Stage:   "candidate_materialize",
 				Reason:  diagnostic.DropMaterializeErr,
 				FactID:  c.FactID,
 				Source:  c.Source,
@@ -89,7 +86,7 @@ func (m *FromStore) Materialize(ctx context.Context, candidates []domain.Candida
 		}
 		if fact.CorrectedBy != "" {
 			drops = append(drops, diagnostic.CandidateDrop{
-				Stage:  "materialize",
+				Stage:  "candidate_materialize",
 				Reason: diagnostic.DropSuperseded,
 				FactID: c.FactID,
 				Source: c.Source,
@@ -98,7 +95,7 @@ func (m *FromStore) Materialize(ctx context.Context, candidates []domain.Candida
 		}
 		if reason, ok := violatesScope(c.Scope, fact.Scope); ok {
 			drops = append(drops, diagnostic.CandidateDrop{
-				Stage:   "materialize",
+				Stage:   "candidate_materialize",
 				Reason:  diagnostic.DropScopeViolation,
 				FactID:  c.FactID,
 				Source:  c.Source,

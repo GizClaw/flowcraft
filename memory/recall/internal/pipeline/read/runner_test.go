@@ -8,10 +8,8 @@ import (
 	"github.com/GizClaw/flowcraft/memory/recall/internal/pipeline/read"
 )
 
-// TestRunner_EmptyIsNoOp pins the Phase B.1 contract that an empty
-// read pipeline accepts a fresh ReadState and returns nil without
-// mutating anything. Phase B.3 replaces this assertion with
-// stage-by-stage coverage.
+// TestRunner_EmptyIsNoOp pins that an empty read pipeline accepts a fresh
+// ReadState and returns nil without mutating anything.
 func TestRunner_EmptyIsNoOp(t *testing.T) {
 	r := read.NewRunner(nil, nil)
 	state := &read.ReadState{
@@ -39,11 +37,8 @@ func TestRunner_NilSafe(t *testing.T) {
 	}
 }
 
-// TestReadState_FederationReady locks the per-sub-scope field
-// layout in place — this is the structural property that lets D.5
-// skip an invasive ReadState refactor. The Phase B.1 commit must
-// preserve it; if a future change collapses SubScopeStates this
-// test fails loudly.
+// TestReadState_FederationReady locks the per-sub-scope field layout in
+// place. If a future change collapses SubScopeStates this test fails loudly.
 func TestReadState_FederationReady(t *testing.T) {
 	state := &read.ReadState{
 		Scope: domain.Scope{RuntimeID: "rt-1", UserID: "alice"},

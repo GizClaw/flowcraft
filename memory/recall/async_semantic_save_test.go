@@ -16,7 +16,7 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/llm"
 )
 
-// asyncTestScope is the shared canonical scope used by the F.1a
+// asyncTestScope is the shared canonical scope used by the async
 // memory facade tests. Tests rely on a stable scope so the
 // in-memory queue's FIFO is observable across cases.
 func asyncTestScope() Scope { return Scope{RuntimeID: "rt", UserID: "u1"} }
@@ -82,10 +82,10 @@ func queueDepth(t *testing.T, q *asyncsemantic.Queue) int {
 	return len(jobs)
 }
 
-// TestSave_DefaultSyncMode_Unchanged pins the F.1a invariant: a
-// zero-Mode SaveRequest with structured Facts behaves exactly like
-// pre-F.1 Save — one canonical fact, no async metadata, no episode
-// row, no queue activity even when the queue option is wired.
+// TestSave_DefaultSyncMode_Unchanged pins that a zero-Mode SaveRequest
+// with structured Facts behaves exactly like synchronous Save: one
+// canonical fact, no async metadata, no episode row, no queue activity
+// even when the queue option is wired.
 func TestSave_DefaultSyncMode_Unchanged(t *testing.T) {
 	store := temporalstore.NewMemoryStore()
 	queue := asyncsemantic.New()

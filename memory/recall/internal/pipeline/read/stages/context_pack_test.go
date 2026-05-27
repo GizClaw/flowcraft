@@ -38,8 +38,8 @@ func (emptyReranker) Rerank(_ context.Context, _ string, _ []domain.Hit) ([]doma
 	return nil, nil
 }
 
-func TestBuildHitsSnapshotsInputRerankedAndFinal(t *testing.T) {
-	stage := NewBuildHits(reorderReranker{})
+func TestContextPackSnapshotsInputRerankedAndFinal(t *testing.T) {
+	stage := NewContextPack(reorderReranker{})
 	state := &read.ReadState{
 		Plan:  &domain.QueryPlan{TotalCap: 1},
 		Query: domain.Query{Text: "where did alice go"},
@@ -62,7 +62,7 @@ func TestBuildHitsSnapshotsInputRerankedAndFinal(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run returned error: %v", err)
 	}
-	got := detail.(diagnostic.BuildHitsDetail)
+	got := detail.(diagnostic.ContextPackDetail)
 	if got.Input == nil || len(*got.Input) != 2 || (*got.Input)[0].FactID != "evidence" {
 		t.Fatalf("input snapshots = %+v", got.Input)
 	}
@@ -76,13 +76,13 @@ func TestBuildHitsSnapshotsInputRerankedAndFinal(t *testing.T) {
 		t.Fatalf("state hits = %+v", state.Hits)
 	}
 	if len(state.Hits[0].Evidence) != 1 || state.Hits[0].Evidence[0].Text != "selected evidence" {
-		t.Fatalf("hit evidence should survive build_hits/rerank: %+v", state.Hits[0].Evidence)
+		t.Fatalf("hit evidence should survive context_pack/rerank: %+v", state.Hits[0].Evidence)
 	}
 }
 
-func TestBuildHitsGroundingDoesNotAffectRerankerInput(t *testing.T) {
+func TestBuildGroundedHitsDoesNotAffectRerankerInput(t *testing.T) {
 	reranker := &inspectEvidenceReranker{}
-	stage := NewBuildHits(reranker)
+	stage := NewContextPack(reranker)
 	state := &read.ReadState{
 		Plan:  &domain.QueryPlan{TotalCap: 1},
 		Query: domain.Query{Text: "Where did Caroline move from?"},
@@ -107,13 +107,16 @@ func TestBuildHitsGroundingDoesNotAffectRerankerInput(t *testing.T) {
 	if len(reranker.counts) != 1 || reranker.counts[0] != 1 {
 		t.Fatalf("reranker should receive only candidate evidence, got counts %+v", reranker.counts)
 	}
+	if _, err := NewBuildGroundedHits().Run(context.Background(), state); err != nil {
+		t.Fatalf("grounding Run returned error: %v", err)
+	}
 	if ids := evidenceIDs(state.Hits[0].Evidence); len(ids) != 2 || ids[0] != "e1" || ids[1] != "e2" {
 		t.Fatalf("final output should still include supporting evidence, got %+v", ids)
 	}
 }
 
-func TestBuildHitsSkipsSnapshotsWithoutTrace(t *testing.T) {
-	stage := NewBuildHits(reorderReranker{})
+func TestContextPackSkipsSnapshotsWithoutTrace(t *testing.T) {
+	stage := NewContextPack(reorderReranker{})
 	state := &read.ReadState{
 		Plan:  &domain.QueryPlan{TotalCap: 1},
 		Query: domain.Query{Text: "where did alice go"},
@@ -133,7 +136,7 @@ func TestBuildHitsSkipsSnapshotsWithoutTrace(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run returned error: %v", err)
 	}
-	got := detail.(diagnostic.BuildHitsDetail)
+	got := detail.(diagnostic.ContextPackDetail)
 	if got.Input != nil || got.RerankedHits != nil || got.Hits != nil {
 		t.Fatalf("snapshots should be nil on nil-trace path: %+v", got)
 	}
@@ -145,8 +148,8 @@ func TestBuildHitsSkipsSnapshotsWithoutTrace(t *testing.T) {
 	}
 }
 
-func TestBuildHitsContextPackerKeepsQueryRelevantContext(t *testing.T) {
-	stage := NewBuildHits(nil)
+func TestContextPackKeepsQueryRelevantContext(t *testing.T) {
+	stage := NewContextPack(nil)
 	state := &read.ReadState{
 		Plan:  &domain.QueryPlan{TotalCap: 1},
 		Query: domain.Query{Text: "When did Alice buy 2 ceramic figurines?"},
@@ -179,8 +182,8 @@ func TestBuildHitsContextPackerKeepsQueryRelevantContext(t *testing.T) {
 	}
 }
 
-func TestBuildHitsContextPackerKeepsBestContextForSharedEvidence(t *testing.T) {
-	stage := NewBuildHits(nil)
+func TestContextPackKeepsBestContextForSharedEvidence(t *testing.T) {
+	stage := NewContextPack(nil)
 	shared := domain.EvidenceRef{ID: "e1", Text: "I painted that lake sunrise last year!"}
 	state := &read.ReadState{
 		Plan:  &domain.QueryPlan{TotalCap: 1},
@@ -207,8 +210,8 @@ func TestBuildHitsContextPackerKeepsBestContextForSharedEvidence(t *testing.T) {
 	}
 }
 
-func TestBuildHitsContextPackerCoversQueryAnchors(t *testing.T) {
-	stage := NewBuildHits(nil)
+func TestContextPackCoversQueryAnchors(t *testing.T) {
+	stage := NewContextPack(nil)
 	query := "What books and instruments does Alice like?"
 	weak := []domain.ContextItem{
 		weakContextItem("weak-1", "e1", "Bob visited Paris."),
@@ -250,8 +253,8 @@ func TestBuildHitsContextPackerCoversQueryAnchors(t *testing.T) {
 	}
 }
 
-func TestBuildHitsContextPackerUsesWiderPoolForCoverage(t *testing.T) {
-	stage := NewBuildHits(nil)
+func TestContextPackUsesWiderPoolForCoverage(t *testing.T) {
+	stage := NewContextPack(nil)
 	state := &read.ReadState{
 		Plan:  &domain.QueryPlan{TotalCap: 2},
 		Query: domain.Query{Text: "When did Alice buy 2 ceramic figurines?"},
@@ -282,8 +285,8 @@ func TestBuildHitsContextPackerUsesWiderPoolForCoverage(t *testing.T) {
 	}
 }
 
-func TestBuildHitsContextPackerUsesFactContentWhenEvidenceIsThin(t *testing.T) {
-	stage := NewBuildHits(nil)
+func TestContextPackUsesFactContentWhenEvidenceIsThin(t *testing.T) {
+	stage := NewContextPack(nil)
 	state := &read.ReadState{
 		Plan:  &domain.QueryPlan{TotalCap: 1},
 		Query: domain.Query{Text: "What instrument does Alice play?"},
@@ -315,6 +318,95 @@ func TestBuildHitsContextPackerUsesFactContentWhenEvidenceIsThin(t *testing.T) {
 	}
 }
 
+func TestContextPackKeepsCollectionSiblings(t *testing.T) {
+	stage := NewContextPack(nil)
+	state := &read.ReadState{
+		Plan:  &domain.QueryPlan{TotalCap: 2},
+		Query: domain.Query{Text: "What items has Alice bought?"},
+		Ranked: []domain.ContextItem{
+			contextItemWithSource("figurines", "e1", "retrieval", 0.90, "Alice bought ceramic figurines."),
+			contextItemWithSource("paris", "e2", "entity", 0.88, "Alice likes Paris."),
+		},
+		AfterTrust: []domain.ContextItem{
+			contextItemWithSource("figurines", "e1", "retrieval", 0.90, "Alice bought ceramic figurines."),
+			contextItemWithSource("paris", "e2", "entity", 0.88, "Alice likes Paris."),
+			contextItemWithSource("shoes", "e3", "retrieval", 0.20, "Alice bought red shoes."),
+		},
+	}
+
+	if _, err := stage.Run(context.Background(), state); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	got := map[string]bool{}
+	for _, hit := range state.Hits {
+		got[hit.Fact.ID] = true
+	}
+	if !got["figurines"] || !got["shoes"] {
+		t.Fatalf("collection packing should keep sibling purchased items, got %+v", state.Hits)
+	}
+}
+
+func TestContextPackPreservesLowScoreSetSiblings(t *testing.T) {
+	stage := NewContextPack(nil)
+	state := &read.ReadState{
+		Plan:  &domain.QueryPlan{TotalCap: 3},
+		Query: domain.Query{Text: "What pets does Melanie have?"},
+		Ranked: []domain.ContextItem{
+			contextItemWithStructuredFact("bailey", "e1", "retrieval", 0.90, "Melanie has a cat named Bailey.", "Melanie", "has_pet", "Bailey"),
+			contextItemWithStructuredFact("hiking", "e2", "graph", 0.88, "Melanie went hiking with her family.", "Melanie", "went", "hiking"),
+			contextItemWithStructuredFact("pottery", "e3", "entity", 0.86, "Melanie enjoys pottery class.", "Melanie", "enjoys", "pottery"),
+		},
+		AfterTrust: []domain.ContextItem{
+			contextItemWithStructuredFact("bailey", "e1", "retrieval", 0.90, "Melanie has a cat named Bailey.", "Melanie", "has_pet", "Bailey"),
+			contextItemWithStructuredFact("hiking", "e2", "graph", 0.88, "Melanie went hiking with her family.", "Melanie", "went", "hiking"),
+			contextItemWithStructuredFact("pottery", "e3", "entity", 0.86, "Melanie enjoys pottery class.", "Melanie", "enjoys", "pottery"),
+			contextItemWithStructuredFact("oliver", "e4", "retrieval", 0.12, "Melanie has a pet dog named Oliver.", "Melanie", "has_pet", "Oliver"),
+			contextItemWithStructuredFact("luna", "e5", "retrieval", 0.10, "Melanie has a pet dog named Luna.", "Melanie", "has_pet", "Luna"),
+		},
+	}
+
+	if _, err := stage.Run(context.Background(), state); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	got := map[string]bool{}
+	for _, hit := range state.Hits {
+		got[hit.Fact.ID] = true
+	}
+	for _, id := range []string{"bailey", "oliver", "luna"} {
+		if !got[id] {
+			t.Fatalf("set-completion packing should preserve low-score sibling %q, got %+v", id, state.Hits)
+		}
+	}
+}
+
+func TestContextPackKeepsBridgeAssociatedEvidence(t *testing.T) {
+	stage := NewContextPack(nil)
+	state := &read.ReadState{
+		Plan:  &domain.QueryPlan{TotalCap: 2},
+		Query: domain.Query{Text: "Where did Alice buy the necklace that she wore?"},
+		Ranked: []domain.ContextItem{
+			contextItemWithSource("wore-necklace", "D1:1", "retrieval", 0.90, "Alice wore the necklace to dinner."),
+			contextItemWithSource("dog", "D2:1", "entity", 0.88, "Alice walked her dog."),
+		},
+		AfterTrust: []domain.ContextItem{
+			contextItemWithSource("wore-necklace", "D1:1", "retrieval", 0.90, "Alice wore the necklace to dinner."),
+			contextItemWithSource("dog", "D2:1", "entity", 0.88, "Alice walked her dog."),
+			contextItemWithSource("bought-necklace", "D1:2", "retrieval", 0.20, "Alice bought the necklace in Paris."),
+		},
+	}
+
+	if _, err := stage.Run(context.Background(), state); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	got := map[string]bool{}
+	for _, hit := range state.Hits {
+		got[hit.Fact.ID] = true
+	}
+	if !got["wore-necklace"] || !got["bought-necklace"] {
+		t.Fatalf("bridge packing should keep associated evidence from the same group, got %+v", state.Hits)
+	}
+}
+
 func TestContextPackerSignalCoverageReplacesWeakDuplicateContext(t *testing.T) {
 	features := domain.QueryFeatures{
 		Tokens: map[string]struct{}{
@@ -323,7 +415,7 @@ func TestContextPackerSignalCoverageReplacesWeakDuplicateContext(t *testing.T) {
 			"instruments": {},
 		},
 	}
-	queryFeatures := newContextPackQueryFeatures(features)
+	queryFeatures := newContextPackQueryFeatures("", features)
 	selectedCandidates := []contextPackCandidate{
 		coverageCandidate("generic-1", 6, 0.20, map[string]struct{}{"alice": {}}),
 		coverageCandidate("generic-2", 7, 0.18, map[string]struct{}{"alice": {}}),
@@ -351,8 +443,8 @@ func TestContextPackerSignalCoverageReplacesWeakDuplicateContext(t *testing.T) {
 	}
 }
 
-func TestBuildHitsRerankerPathUsesContextPacker(t *testing.T) {
-	stage := NewBuildHits(reorderReranker{})
+func TestContextPackRerankerPathUsesContextPacker(t *testing.T) {
+	stage := NewContextPack(reorderReranker{})
 	state := &read.ReadState{
 		Plan:  &domain.QueryPlan{TotalCap: 1},
 		Query: domain.Query{Text: "What instrument does Alice play?"},
@@ -384,8 +476,8 @@ func TestBuildHitsRerankerPathUsesContextPacker(t *testing.T) {
 	}
 }
 
-func TestBuildHitsContextPackerFallsBackToPoolWhenRerankerReturnsEmpty(t *testing.T) {
-	stage := NewBuildHits(emptyReranker{})
+func TestContextPackFallsBackToPoolWhenRerankerReturnsEmpty(t *testing.T) {
+	stage := NewContextPack(emptyReranker{})
 	state := &read.ReadState{
 		Plan:  &domain.QueryPlan{TotalCap: 1},
 		Query: domain.Query{Text: "What instrument does Alice play?"},
@@ -417,8 +509,8 @@ func TestBuildHitsContextPackerFallsBackToPoolWhenRerankerReturnsEmpty(t *testin
 	}
 }
 
-func TestBuildHitsContextPackerDedupesSameEvidence(t *testing.T) {
-	stage := NewBuildHits(nil)
+func TestContextPackDedupesSameEvidence(t *testing.T) {
+	stage := NewContextPack(nil)
 	state := &read.ReadState{
 		Plan:  &domain.QueryPlan{TotalCap: 2},
 		Query: domain.Query{Text: "What did Alice buy?"},
@@ -452,8 +544,8 @@ func TestBuildHitsContextPackerDedupesSameEvidence(t *testing.T) {
 	}
 }
 
-func TestBuildHitsContextPackerKeepsSourceDiversity(t *testing.T) {
-	stage := NewBuildHits(nil)
+func TestContextPackKeepsSourceDiversity(t *testing.T) {
+	stage := NewContextPack(nil)
 	state := &read.ReadState{
 		Plan:  &domain.QueryPlan{TotalCap: 3},
 		Query: domain.Query{Text: "What did Alice say about pottery class?"},
@@ -486,8 +578,8 @@ func TestBuildHitsContextPackerKeepsSourceDiversity(t *testing.T) {
 	}
 }
 
-func TestBuildHitsGroundsSelectedEvidenceWithRelevantFactRefs(t *testing.T) {
-	stage := NewBuildHits(nil)
+func TestBuildGroundedHitsGroundsSelectedEvidenceWithRelevantFactRefs(t *testing.T) {
+	stage := NewContextPack(nil)
 	state := &read.ReadState{
 		Plan:  &domain.QueryPlan{TotalCap: 1},
 		Query: domain.Query{Text: "Where did Caroline move from?"},
@@ -510,6 +602,9 @@ func TestBuildHitsGroundsSelectedEvidenceWithRelevantFactRefs(t *testing.T) {
 	if _, err := stage.Run(context.Background(), state); err != nil {
 		t.Fatalf("Run returned error: %v", err)
 	}
+	if _, err := NewBuildGroundedHits().Run(context.Background(), state); err != nil {
+		t.Fatalf("grounding Run returned error: %v", err)
+	}
 	if len(state.Hits) != 1 {
 		t.Fatalf("hits = %+v", state.Hits)
 	}
@@ -520,7 +615,7 @@ func TestBuildHitsGroundsSelectedEvidenceWithRelevantFactRefs(t *testing.T) {
 	}
 }
 
-func TestBuildHitsGroundingEvidenceIsCapped(t *testing.T) {
+func TestBuildGroundedHitsEvidenceIsCapped(t *testing.T) {
 	refs := []domain.EvidenceRef{
 		{ID: "e1", Text: "Alice bought pottery."},
 		{ID: "e2", Text: "Alice bought ceramic figurines."},
@@ -536,7 +631,7 @@ func TestBuildHitsGroundingEvidenceIsCapped(t *testing.T) {
 	}
 }
 
-func TestBuildHitsGroundingSkipsWeakStopwordOrEntityOnlyRefs(t *testing.T) {
+func TestBuildGroundedHitsSkipsWeakStopwordOrEntityOnlyRefs(t *testing.T) {
 	refs := []domain.EvidenceRef{
 		{ID: "e1", Text: "Melanie has two cats named Oscar and Luna."},
 		{ID: "e2", Text: "Melanie went hiking with her family."},
@@ -548,7 +643,7 @@ func TestBuildHitsGroundingSkipsWeakStopwordOrEntityOnlyRefs(t *testing.T) {
 	}
 }
 
-func TestBuildHitsGroundingKeepsTimestampedTemporalSupport(t *testing.T) {
+func TestBuildGroundedHitsKeepsTimestampedTemporalSupport(t *testing.T) {
 	refs := []domain.EvidenceRef{
 		{ID: "e1", Text: "Melanie painted a lake sunrise last year."},
 		{ID: "e2", Text: "Melanie shared the sunrise painting with Caroline.", Timestamp: time.Date(2023, 5, 8, 13, 56, 0, 0, time.UTC)},
@@ -632,6 +727,21 @@ func contextItemWithSource(id, evidenceID, source string, score float64, text st
 		Candidate: domain.Candidate{FactID: id, Source: source, Score: score, EvidenceIDs: []string{evidenceID}},
 		Fact:      domain.TemporalFact{ID: id, Kind: domain.KindState, Content: text},
 		Evidence:  []domain.EvidenceRef{{ID: evidenceID, Text: text}},
+	}
+}
+
+func contextItemWithStructuredFact(id, evidenceID, source string, score float64, text, subject, predicate, object string) domain.ContextItem {
+	return domain.ContextItem{
+		Candidate: domain.Candidate{FactID: id, Source: source, Score: score, EvidenceIDs: []string{evidenceID}},
+		Fact: domain.TemporalFact{
+			ID:        id,
+			Kind:      domain.KindState,
+			Content:   text,
+			Subject:   subject,
+			Predicate: predicate,
+			Object:    object,
+		},
+		Evidence: []domain.EvidenceRef{{ID: evidenceID, Text: text}},
 	}
 }
 

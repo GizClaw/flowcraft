@@ -1,4 +1,4 @@
-// Example: caller-side composition of history + recall + save (Phase D.7).
+// Example: caller-side composition of history + recall + save.
 //
 // Recall does not hold a history.Store reference. The caller fetches
 // recent messages and optional recall anchors, then passes them on

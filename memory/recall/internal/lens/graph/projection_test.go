@@ -97,8 +97,8 @@ func TestGraph_ForgetRemovesEdges(t *testing.T) {
 	}
 }
 
-// TestGraph_DropsClosed pins Cluster B: soft-forgotten (Closed)
-// facts must not contribute edges to the graph projection. Before
+// TestGraph_DropsClosed pins that soft-forgotten (Closed) facts must
+// not contribute edges to the graph projection. Before
 // the predicate split, edges.go gated only on IsSuperseded for
 // cooccurrence kinds and on IsActive (canonical) for relations, so
 // Closed facts kept producing edges until RebuildAll.

@@ -157,6 +157,13 @@ Rules:
   collapse lists into "various activities", "several hobbies", or
   another umbrella summary; later queries often ask for one item
   from the list.
+- Preserve literal answer-bearing spans. If a source turn names a
+  person, place, organisation, product, book / song / film title,
+  object, quantity, date, or code-like identifier, copy that surface
+  form into the memory sentence. If nearby source turns resolve a
+  generic phrase like "that book", "the item", or "the trip" to a
+  specific title or object, include that specific literal instead of
+  leaving only the generic phrase.
 - Be exhaustive about concrete, retrievable details. Every specific
   action, item, place, person, organisation, book / song / product
   title, quantity, or date that the snippet mentions becomes its

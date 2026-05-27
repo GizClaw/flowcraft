@@ -51,6 +51,70 @@ func TestRuleBased_EntityActivatedByHints(t *testing.T) {
 	}
 }
 
+func TestRuleBased_InfersTaskIntents(t *testing.T) {
+	p := New()
+	cases := []struct {
+		name string
+		in   port.PlannerInput
+		want domain.QueryTaskIntent
+	}{
+		{
+			name: "count query asks for set completion",
+			in: port.PlannerInput{
+				Text: "How many books does Alice like?",
+				Features: domain.QueryFeatures{
+					Tokens:            map[string]struct{}{"alice": {}, "books": {}, "like": {}},
+					NumericIntent:     true,
+					NumericIntentKind: []domain.QueryNumericIntentKind{domain.QueryNumericIntentCount},
+				},
+			},
+			want: domain.QueryTaskSetCompletion,
+		},
+		{
+			name: "relative clause asks for bridge resolution",
+			in: port.PlannerInput{
+				Text:     "Where did Alice buy the necklace that she wore?",
+				Features: domain.QueryFeatures{Tokens: map[string]struct{}{"alice": {}, "buy": {}, "necklace": {}, "wore": {}}},
+			},
+			want: domain.QueryTaskBridgeResolution,
+		},
+		{
+			name: "temporal query asks for temporal reasoning",
+			in: port.PlannerInput{
+				Text: "When did Alice move?",
+				Features: domain.QueryFeatures{Temporal: domain.QueryTemporalFeatures{
+					HasIntent: true,
+					IntentKind: []domain.QueryTemporalIntentKind{
+						domain.QueryTemporalIntentDate,
+					},
+				}},
+			},
+			want: domain.QueryTaskTemporalReasoning,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.in.Scope = domain.Scope{RuntimeID: "rt"}
+			plan, err := p.Plan(context.Background(), tc.in)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !containsTask(plan.TaskIntents, tc.want) {
+				t.Fatalf("TaskIntents = %+v, want %s", plan.TaskIntents, tc.want)
+			}
+		})
+	}
+}
+
+func containsTask(tasks []domain.QueryTaskIntent, want domain.QueryTaskIntent) bool {
+	for _, task := range tasks {
+		if task == want {
+			return true
+		}
+	}
+	return false
+}
+
 func TestActivatesTimelineForDirectDateIntent(t *testing.T) {
 	intent := domain.QueryIntent{
 		Kinds: []domain.FactKind{domain.KindEvent, domain.KindState, domain.KindPlan},
@@ -136,9 +200,9 @@ func TestFusionCandidateCapKeepsWiderCrossSourcePool(t *testing.T) {
 	}
 }
 
-// TestPlanner_KnownEntitiesInfluenceLensWeights pins the Cluster G
-// D2 wiring (2026-05-21): when the cross-sub-scope KnownEntities
-// merge surfaces an entity that also appears in the query (Entities /
+// TestPlanner_KnownEntitiesInfluenceLensWeights pins planner behavior:
+// when the cross-sub-scope KnownEntities merge surfaces an entity
+// that also appears in the query (Entities /
 // Text / Subject / Object), the rule-based planner emits a small,
 // deterministic per-lens weight boost for entity-aware lenses. The
 // boost is observable through QueryPlan.LensWeights so the read-path

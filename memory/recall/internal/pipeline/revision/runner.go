@@ -16,10 +16,9 @@ type Runner struct {
 	pipeline *pipeline.Pipeline[*State]
 }
 
-// NewRunner constructs a revision Runner with the supplied stages
-// and telemetry hook. Cluster A wires three stages; the slice shape
-// keeps room for future pre/post additions (e.g. quota / audit emit)
-// without reshaping the runner.
+// NewRunner constructs a revision Runner with the supplied stages and telemetry
+// hook. The slice shape keeps room for future pre/post additions (e.g. quota /
+// audit emit) without reshaping the runner.
 func NewRunner(stages []pipeline.Stage[*State], hook port.TelemetryHook) *Runner {
 	return &Runner{
 		pipeline: pipeline.NewPipeline(

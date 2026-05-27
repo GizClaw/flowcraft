@@ -14,18 +14,11 @@ import (
 
 // EntitySnapshotsFunc returns per-sub-scope EntitySnapshot slices for
 // the supplied scope list. The Plan stage merges the results across
-// sub-scopes (Cluster G, D2 2026-05-21: plan is global; entity hints
-// are pre-merged before the single planner.Plan call) and forwards
-// the merged view to the planner as KnownEntities so federation_fanout
-// no longer needs to re-invoke planner.Plan per sub-scope.
+// sub-scopes and forwards the merged view to the planner as KnownEntities.
 type EntitySnapshotsFunc func(scopes []domain.Scope) []port.EntitySnapshot
 
-// Plan runs the planner ONCE per Recall, globally. Federation is a
-// data dimension (per the 2026-05-21 D2 decision recorded in
-// recall-v2-architecture-debts.md §7.3): the read pipeline uses a
-// single QueryPlan for source budgeting, rank, and fuse — sub-scope
-// fan-out happens downstream in federation_fanout, but the plan it
-// consumes is this one.
+// Plan runs the planner once per Recall. CandidateFanout copies the resulting
+// strategy per sub-scope and only changes Intent.Scope.
 type Plan struct {
 	planner        port.Planner
 	graphEnabled   bool
@@ -79,7 +72,19 @@ func (s *Plan) Run(ctx context.Context, state *read.ReadState) (diagnostic.Stage
 	return diagnostic.PlanDetail{
 		ActivatedLenses: lenses,
 		TotalBudget:     plan.TotalCap,
+		TaskIntents:     taskIntentStrings(plan.TaskIntents),
 	}, nil
+}
+
+func taskIntentStrings(tasks []domain.QueryTaskIntent) []string {
+	if len(tasks) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(tasks))
+	for _, task := range tasks {
+		out = append(out, string(task))
+	}
+	return out
 }
 
 // collectKnownEntities pulls the per-sub-scope EntitySnapshot lists
@@ -113,8 +118,8 @@ func (s *Plan) collectKnownEntities(state *read.ReadState) []port.EntitySnapshot
 // case-insensitive canonical key. Weight reflects the "query focus"
 // signal: each distinct sub-scope an entity appears in contributes
 // at most 1 to the appearance count, then the merged Weight is the
-// max of (a) that appearance count and (b) any pre-set Weight value
-// the upstream snapshotter supplied (Cluster G, D2 2026-05-21).
+// max of (a) that appearance count and (b) any pre-set Weight value the
+// upstream snapshotter supplied.
 // Aliases are unioned and sorted for stable output so the planner
 // KnownEntities order is deterministic across runs. Empty /
 // whitespace canonicals are dropped so the merge never emits a

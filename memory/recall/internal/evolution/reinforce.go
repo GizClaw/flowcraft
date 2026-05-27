@@ -4,14 +4,9 @@ import (
 	"github.com/GizClaw/flowcraft/memory/recall/internal/domain"
 )
 
-// FeedbackBoost returns the score multiplier derived from fact
-// feedback fields for fusion / rank (Phase D.4).
-//
-// Cluster A (2026-05-21) moved the Reinforce / Penalize write paths
-// into the feedback pipeline (Memory.Reinforce / Memory.Penalize →
-// internal/pipeline/feedback). The boost math stays here because
-// fusion and rank are read-side consumers of the canonical
-// reinforcement / penalty fields.
+// FeedbackBoost returns the score multiplier derived from fact feedback fields
+// for fusion / rank. The boost math stays here because fusion and rank are
+// read-side consumers of the canonical reinforcement / penalty fields.
 func FeedbackBoost(reinforcement, penalty float64) float64 {
 	boost := 1 + reinforcement*0.05 - penalty*0.05
 	if boost < 0.1 {

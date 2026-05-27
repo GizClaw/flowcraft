@@ -1,13 +1,11 @@
 // Package feedback owns the pipeline that applies caller feedback
 // (Reinforce / Penalize) to a canonical fact.
 //
-// Cluster A (2026-05-21) promoted Reinforce / Penalize into the
-// pipeline framework so the per-fact UpdateFeedback write and the
-// follow-up single-fact reproject (Cluster D — keeps retrieval Doc
-// metadata fresh) emit one observable record per call. Memory.
-// Reinforce and Memory.Penalize construct State and invoke
-// Runner.Run; they hold the scope write-lock around the call so
-// concurrent feedback writes serialise per scope.
+// Reinforce and Penalize use this pipeline so the per-fact UpdateFeedback write
+// and the follow-up single-fact reproject emit one observable record per call.
+// Memory.Reinforce and Memory.Penalize construct State and invoke Runner.Run;
+// they hold the scope write-lock around the call so concurrent feedback writes
+// serialise per scope.
 package feedback
 
 import (

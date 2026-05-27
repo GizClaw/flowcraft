@@ -24,12 +24,12 @@ type RankOutput struct {
 }
 
 // Ranker applies deterministic boosts, optional time decay, and supersede
-// penalties after materialize / federation merge (Phase E.1).
+// penalties after materialization.
 type Ranker interface {
 	Rank(ctx context.Context, in RankInput) RankOutput
 }
 
-// Reranker is the optional post-build_hits stage that reorders a
+// Reranker is the optional context_pack step that reorders a
 // candidate Hit slice by a stronger relevance signal than the
 // deterministic Ranker alone (typically an LLM call or
 // cross-encoder).

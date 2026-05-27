@@ -12,11 +12,11 @@ import "time"
 // TelemetryHook.OnStage with the same value, so all downstream
 // observers see one consistent record per stage.
 //
-// AsyncRequestID (Phase F.1) correlates the sync episode lane (one
-// SaveTrace) with the eventual async semantic worker run (a separate
-// SaveTrace) so observers can join "raw episode persisted" against
-// "semantic facts derived later". Zero value means the stage is not
-// part of an async semantic write flow.
+// AsyncRequestID correlates the sync episode lane (one SaveTrace)
+// with the eventual async semantic worker run (a separate SaveTrace)
+// so observers can join "raw episode persisted" against "semantic
+// facts derived later". Zero value means the stage is not part of an
+// async semantic write flow.
 type StageDiagnostic struct {
 	Stage    string
 	Phase    Phase

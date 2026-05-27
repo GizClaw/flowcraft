@@ -12,7 +12,7 @@ import (
 
 const deterministicRankPoolMultiplier = 3
 
-// Rank applies the deterministic post-materialize ranker (Phase E.1).
+// Rank applies the deterministic post-materialize ranker.
 type Rank struct {
 	ranker      port.Ranker
 	hasReranker bool

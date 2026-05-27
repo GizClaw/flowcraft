@@ -12,10 +12,9 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 )
 
-// fanoutOp labels a projection operation for fanout's internal error
-// wrapping. Phase E.3 removed the legacy OnProjection telemetry
-// channel, so the op label is now an internal pipeline detail; it is
-// no longer emitted across the TelemetryHook boundary.
+// fanoutOp labels a projection operation for fanout's internal error wrapping.
+// The op label is an internal pipeline detail; it is not emitted across the
+// TelemetryHook boundary.
 type fanoutOp string
 
 const (
@@ -86,9 +85,8 @@ func (f *Fanout) ProjectRequired(ctx context.Context, facts []domain.TemporalFac
 // that do NOT implement the optional interface are always included,
 // preserving backward compatibility with the unfiltered required tier.
 //
-// The Phase F.1 sync episode lane uses ProjectRequiredForKindsStrict
-// instead so extra required projections must opt in via
-// KindFilteredProjection.
+// The sync episode lane uses ProjectRequiredForKindsStrict instead so extra
+// required projections must opt in via KindFilteredProjection.
 func (f *Fanout) ProjectRequiredForKinds(ctx context.Context, facts []domain.TemporalFact, kinds ...domain.FactKind) error {
 	if f == nil || len(facts) == 0 || len(f.required) == 0 {
 		return nil
@@ -110,8 +108,8 @@ func (f *Fanout) ProjectRequiredForKinds(ctx context.Context, facts []domain.Tem
 // ProjectRequiredForKindsStrict runs required projections that
 // implement port.KindFilteredProjection and explicitly accept at
 // least one of the allowed kinds. Projections without the interface
-// are skipped — used by the F.1 episode lane so custom required
-// projections cannot pull remote IO into the scope write lock.
+// are skipped so the episode lane cannot pull remote IO into the
+// scope write lock through custom required projections.
 func (f *Fanout) ProjectRequiredForKindsStrict(ctx context.Context, facts []domain.TemporalFact, kinds ...domain.FactKind) error {
 	if f == nil || len(facts) == 0 || len(f.required) == 0 || len(kinds) == 0 {
 		return nil
@@ -295,10 +293,9 @@ func (f *Fanout) runRequired(ctx context.Context, op fanoutOp, call func(port.Pr
 
 // runOptional invokes call on every optional projection. Failures
 // never escape the helper: each one is surfaced as a
-// Status=Degraded StageDiagnostic carrying the per-projection err so
-// observers see exactly which optional projection degraded (Cluster
-// C convention). Telemetry is the only emission channel —
-// projections do not abort each other.
+// Status=Degraded StageDiagnostic carrying the per-projection err so observers
+// see exactly which optional projection degraded. Telemetry is the only
+// emission channel; projections do not abort each other.
 func (f *Fanout) runOptional(ctx context.Context, op fanoutOp, call func(port.Projection) error) {
 	for _, p := range f.optional {
 		if err := ctx.Err(); err != nil {

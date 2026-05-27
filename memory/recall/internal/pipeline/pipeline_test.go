@@ -275,7 +275,7 @@ func TestPipeline_FailureTriggersReverseCompensateWithDetachedCtx(t *testing.T) 
 func TestPipeline_ConditionalSkipPropagatesDetail(t *testing.T) {
 	hook := newCaptureHook()
 	st := &testState{}
-	skipDetail := diagnostic.FederationMergeDetail{InputCount: 1}
+	skipDetail := diagnostic.RankDetail{InputCount: 1}
 	p := newPipeline([]pipeline.Stage[*testState]{
 		fakeStage{name: "s1"},
 		conditionalSkipStage{name: "s2", detail: skipDetail},
@@ -304,7 +304,7 @@ func TestPipeline_ConditionalSkipPropagatesDetail(t *testing.T) {
 	if st.stages[1].Stage != "s2" {
 		t.Errorf("stage[1] Stage = %q, want s2", st.stages[1].Stage)
 	}
-	gotDetail, ok := st.stages[1].Detail.(diagnostic.FederationMergeDetail)
+	gotDetail, ok := st.stages[1].Detail.(diagnostic.RankDetail)
 	if !ok || gotDetail != skipDetail {
 		t.Errorf("stage[1] Detail = %#v, want %#v", st.stages[1].Detail, skipDetail)
 	}
@@ -321,7 +321,7 @@ func TestPipeline_OnStageMatchesTrace(t *testing.T) {
 	st := &testState{}
 	p := newPipeline([]pipeline.Stage[*testState]{
 		fakeStage{name: "s1"},
-		conditionalSkipStage{name: "s2", detail: diagnostic.IntentDetail{QueryLen: 7}},
+		conditionalSkipStage{name: "s2", detail: diagnostic.QueryUnderstandDetail{QueryLen: 7}},
 		fakeStage{name: "s3"},
 	}, hook)
 
@@ -388,10 +388,11 @@ func (s bestEffortCompensatingStage) Compensate(_ context.Context, st *testState
 	return nil
 }
 
-// TestPipeline_BestEffortFailure_StatusDegraded covers the Cluster C
-// happy path: a stage wraps its error via pipeline.BestEffort, the
-// framework emits one Status=Degraded diagnostic with the wrapped
-// err string, the pipeline keeps running, and Run returns nil.
+// TestPipeline_BestEffortFailure_StatusDegraded covers the
+// best-effort failure path: a stage wraps its error via
+// pipeline.BestEffort, the framework emits one Status=Degraded
+// diagnostic with the wrapped err string, the pipeline keeps running,
+// and Run returns nil.
 func TestPipeline_BestEffortFailure_StatusDegraded(t *testing.T) {
 	hook := newCaptureHook()
 	st := &testState{}

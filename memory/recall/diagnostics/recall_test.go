@@ -12,8 +12,8 @@ import (
 func TestAttributeRecallTrace_MapsDrops(t *testing.T) {
 	attrs := diagnostics.AttributeRecallTrace(domain.RecallTrace{
 		Stages: []diagnostic.StageDiagnostic{{
-			Stage: "federation_fanout",
-			Detail: diagnostic.FederationFanoutDetail{
+			Stage: "candidate_merge_and_materialize",
+			Detail: diagnostic.CandidateMergeAndMaterializeDetail{
 				Drops: []diagnostic.CandidateDrop{{
 					Reason: diagnostic.DropStaleFact,
 					FactID: "f1",
@@ -80,16 +80,18 @@ func TestDiagnoseRecall_ReportsPerStageHealth(t *testing.T) {
 					{Lens: "relation", Budget: 20},
 				},
 			}},
-			{Stage: "federation_fanout", Detail: diagnostic.FederationFanoutDetail{
+			{Stage: "candidate_fanout", Detail: diagnostic.CandidateFanoutDetail{
 				Sources: []diagnostic.SourceResult{
 					{Lens: "retrieval", Candidates: 10},
 					{Lens: "entity", Candidates: 0},
 				},
-				FusedCandidates: 8,
-				Materialized:    6,
+			}},
+			{Stage: "candidate_merge_and_materialize", Detail: diagnostic.CandidateMergeAndMaterializeDetail{
+				CandidateCount:    8,
+				MaterializedCount: 6,
 				Drops: []diagnostic.CandidateDrop{
-					{Stage: "materialize", Reason: diagnostic.DropStaleFact, FactID: "x"},
-					{Stage: "fusion", Reason: diagnostic.DropTotalCap, FactID: "y"},
+					{Stage: "candidate_materialize", Reason: diagnostic.DropStaleFact, FactID: "x"},
+					{Stage: "candidate_merge", Reason: diagnostic.DropTotalCap, FactID: "y"},
 				},
 			}},
 		},
@@ -104,7 +106,7 @@ func TestDiagnoseRecall_ReportsPerStageHealth(t *testing.T) {
 	if len(diag.Sources) != 3 {
 		t.Fatalf("sources = %+v", diag.Sources)
 	}
-	if diag.DropsByStage[diagnostics.FailureProjection] != 1 || diag.DropsByStage[diagnostics.FailureFusion] != 1 {
+	if diag.DropsByStage[diagnostics.FailureProjection] != 1 || diag.DropsByStage[diagnostics.FailureCandidateMerge] != 1 {
 		t.Errorf("drops by stage = %+v", diag.DropsByStage)
 	}
 	if diag.HitRenderability.Total != 3 || diag.HitRenderability.EmptyRenderable != 1 {
@@ -116,8 +118,8 @@ func TestDiagnoseRecall_ReportsPerStageHealth(t *testing.T) {
 	if diag.HitRenderability.EmptyTop != 1 {
 		t.Errorf("empty-top count = %+v", diag.HitRenderability)
 	}
-	if diag.FusedCandidates != 8 || diag.Materialized != 6 {
-		t.Errorf("fused/materialized = %d/%d", diag.FusedCandidates, diag.Materialized)
+	if diag.CandidateCount != 8 || diag.MaterializedCount != 6 {
+		t.Errorf("candidates/materialized = %d/%d", diag.CandidateCount, diag.MaterializedCount)
 	}
 	if len(diag.Drops) != 2 {
 		t.Errorf("drops = %+v", diag.Drops)
@@ -254,7 +256,7 @@ func TestPipelineHealth_AggregatesSaveAndRecall(t *testing.T) {
 			{Stage: "plan", Detail: diagnostic.PlanDetail{
 				ActivatedLenses: []diagnostic.ActivatedLens{{Lens: "retrieval", Budget: 10}},
 			}},
-			{Stage: "federation_fanout", Detail: diagnostic.FederationFanoutDetail{
+			{Stage: "candidate_fanout", Detail: diagnostic.CandidateFanoutDetail{
 				Sources: []diagnostic.SourceResult{{Lens: "retrieval", Candidates: 4}},
 			}},
 		},

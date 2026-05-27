@@ -219,7 +219,7 @@ func listEvidenceDocIDs(ctx context.Context, idx retrieval.Index, namespace stri
 // Save never fails because the embedder is offline or rate-limited;
 // the affected facts simply index for BM25 only.
 func (p *Projection) attachEmbeddings(ctx context.Context, facts []domain.TemporalFact, docs []retrieval.Doc) {
-	// TODO(cluster-C): when Projection gains hook access, emit
+	// TODO: when Projection gains hook access, emit
 	// Status=Degraded here instead of silently falling back to
 	// BM25-only. See internal-docs/recall-v2-architecture-debts.md §3.
 	if len(docs) == 0 || len(facts) != len(docs) {
@@ -315,7 +315,7 @@ func (p *Projection) Forget(ctx context.Context, scope domain.Scope, factIDs []s
 
 // ClearScope deletes every doc in the scope namespace by paginating
 // the index list and issuing batched Deletes. Backs Memory.ForgetAll
-// (D.8 C9). Idempotent on an already-empty namespace.
+// and is idempotent on an already-empty namespace.
 func (p *Projection) ClearScope(ctx context.Context, scope domain.Scope) error {
 	ns := NamespaceFor(scope)
 	ids, err := listAllDocIDs(ctx, p.index, ns)
@@ -548,6 +548,8 @@ func toDocs(f domain.TemporalFact) []retrieval.Doc {
 
 func evidenceDocContent(f domain.TemporalFact, ref domain.EvidenceRef) string {
 	parts := []string{ref.Text, f.Content, f.Subject, f.Predicate, f.Object, f.Location}
+	parts = append(parts, f.Entities...)
+	parts = append(parts, f.Participants...)
 	return strings.Join(nonEmptyStrings(parts...), " ")
 }
 
@@ -615,8 +617,6 @@ func buildContent(f domain.TemporalFact) string {
 }
 
 // pickTimestamp resolves Doc.Timestamp from valid_from -> observed_at.
-// Phase 1 keeps this deterministic; richer time semantics arrive when
-// the timeline projection lands in Phase 6.
 func pickTimestamp(f domain.TemporalFact) time.Time {
 	if f.ValidFrom != nil && !f.ValidFrom.IsZero() {
 		return *f.ValidFrom

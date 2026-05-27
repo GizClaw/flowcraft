@@ -10,10 +10,16 @@ type RecallStageAudit struct {
 }
 
 type RecallStageSnapshot struct {
-	Stage      string                    `json:"stage"`
-	Source     string                    `json:"source,omitempty"`
-	Status     string                    `json:"status,omitempty"`
-	Candidates []RecallCandidateSnapshot `json:"candidates,omitempty"`
+	Stage            string                    `json:"stage"`
+	Source           string                    `json:"source,omitempty"`
+	Status           string                    `json:"status,omitempty"`
+	TaskIntents      []string                  `json:"task_intents,omitempty"`
+	Suggested        int                       `json:"suggested,omitempty"`
+	SuggestedByTask  map[string]int            `json:"suggested_by_task,omitempty"`
+	SuggestedFactIDs []string                  `json:"suggested_fact_ids,omitempty"`
+	Added            int                       `json:"added,omitempty"`
+	AddedFactIDs     []string                  `json:"added_fact_ids,omitempty"`
+	Candidates       []RecallCandidateSnapshot `json:"candidates,omitempty"`
 }
 
 type RecallCandidateSnapshot struct {
@@ -38,28 +44,53 @@ func AuditRecallStages(trace domain.RecallTrace) RecallStageAudit {
 	for _, st := range trace.Stages {
 		status := string(st.Status)
 		switch d := st.Detail.(type) {
-		case diagnostic.FederationFanoutDetail:
+		case diagnostic.CandidateFanoutDetail:
 			for _, src := range d.Sources {
-				appendStage("source_fanout", src.Lens, status, snapshotValue(src.Snapshots))
+				appendStage("candidate_fanout", src.Lens, status, snapshotValue(src.Snapshots))
 			}
-			appendStage("fusion", "", status, snapshotValue(d.Fused))
-			appendStage("materialize", "", status, snapshotValue(d.MaterializedItems))
-		case diagnostic.FederationMergeDetail:
-			appendStage("federation_merge", "", status, snapshotValue(d.Items))
-		case diagnostic.TrustFilterDetail:
-			appendStage("trust_filter", "", status, snapshotValue(d.Items))
+		case diagnostic.CandidateMergeAndMaterializeDetail:
+			appendStage("candidate_merge", "", status, snapshotValue(d.CandidateSnapshots))
+			appendStage("candidate_materialize", "", status, snapshotValue(d.MaterializedSnapshots))
+			appendStage("candidate_merge_and_materialize", "", status, snapshotValue(d.Output))
+		case diagnostic.CandidateExpansionDetail:
+			out.Stages = append(out.Stages, RecallStageSnapshot{
+				Stage:            "candidate_expansion",
+				Status:           status,
+				TaskIntents:      append([]string(nil), d.TaskIntents...),
+				Added:            d.Added,
+				AddedFactIDs:     append([]string(nil), d.AddedFactIDs...),
+				Suggested:        d.Suggested,
+				SuggestedByTask:  cloneIntMap(d.SuggestedByTask),
+				SuggestedFactIDs: append([]string(nil), d.SuggestedFactIDs...),
+				Candidates:       publicCandidateSnapshots(snapshotValue(d.Items)),
+			})
+		case diagnostic.PolicyFilterDetail:
+			appendStage("policy_filter", "", status, snapshotValue(d.Items))
 		case diagnostic.RankDetail:
 			appendStage("rank_input", "", status, snapshotValue(d.Input))
 			appendStage("rank_output", "", status, snapshotValue(d.Output))
-		case diagnostic.BuildHitsDetail:
+		case diagnostic.ContextPackDetail:
 			if d.Input != nil {
-				appendStage("build_hits_input", "", status, snapshotValue(d.Input))
+				appendStage("context_pack_input", "", status, snapshotValue(d.Input))
 			}
 			if d.RerankedHits != nil {
-				appendStage("build_hits_reranked", "", status, snapshotValue(d.RerankedHits))
+				appendStage("context_pack_reranked", "", status, snapshotValue(d.RerankedHits))
 			}
-			appendStage("build_hits", "", status, snapshotValue(d.Hits))
+			appendStage("context_pack", "", status, snapshotValue(d.Hits))
+		case diagnostic.BuildGroundedHitsDetail:
+			appendStage("build_grounded_hits", "", status, snapshotValue(d.Hits))
 		}
+	}
+	return out
+}
+
+func cloneIntMap(in map[string]int) map[string]int {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]int, len(in))
+	for k, v := range in {
+		out[k] = v
 	}
 	return out
 }

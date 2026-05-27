@@ -100,14 +100,13 @@ func TestRecall_ForgottenFactDoesNotSurface(t *testing.T) {
 	}
 }
 
-// TestRecall_NoDiagnostics_TraceNil pins Cluster F (2026-05-21):
-// the Recall hot path MUST NOT allocate a state.Trace when the
-// caller did not ask for diagnostics. We can't introspect state
-// directly (it is internal), so we use the public observation that
-// `Recall` returns no RecallTrace and that hits are still correct
-// — the captureEvolution recall hook (which used to depend on
-// trace.Stages being populated) is exercised separately by
-// TestRecall_WithDiagnostics_TraceMatches.
+// TestRecall_NoDiagnostics_TraceNil pins that the Recall hot path
+// MUST NOT allocate a state.Trace when the caller did not ask for
+// diagnostics. We can't introspect state directly (it is internal), so
+// we use the public observation that `Recall` returns no RecallTrace
+// and that hits are still correct — the captureEvolution recall hook
+// (which used to depend on trace.Stages being populated) is exercised
+// separately by TestRecall_WithDiagnostics_TraceMatches.
 func TestRecall_NoDiagnostics_TraceNil(t *testing.T) {
 	mem, err := New()
 	if err != nil {
@@ -144,8 +143,7 @@ func TestRecall_NoDiagnostics_TraceNil(t *testing.T) {
 // "diagnostics requested" branch: when the caller uses
 // RecallExplain the framework MUST allocate Trace and the returned
 // trace MUST carry stage diagnostics, including materialize-derived
-// counters. This is the Cluster F (2026-05-21) opposite of the
-// nil-trace fast path.
+// counters. This is the opposite of the nil-trace fast path.
 func TestRecall_WithDiagnostics_TraceMatches(t *testing.T) {
 	mem, err := New()
 	if err != nil {
@@ -173,7 +171,7 @@ func TestRecall_WithDiagnostics_TraceMatches(t *testing.T) {
 	if len(trace.Stages) == 0 {
 		t.Fatal("diagnostics requested but trace.Stages is empty")
 	}
-	if diagnostics.Materialized(trace) == 0 {
+	if diagnostics.MaterializedCount(trace) == 0 {
 		t.Fatal("trace must carry materialize counters when diagnostics requested")
 	}
 }
@@ -211,7 +209,7 @@ func TestRecallExplain_PopulatesTrace(t *testing.T) {
 	if !gotNames["retrieval"] || !gotNames["entity"] {
 		t.Errorf("trace must cover retrieval and entity, got %+v", diagnostics.Sources(trace))
 	}
-	if diagnostics.Materialized(trace) == 0 {
+	if diagnostics.MaterializedCount(trace) == 0 {
 		t.Error("materialized count must be > 0")
 	}
 	if diagnostics.Plan(trace).TotalCap == 0 {
@@ -307,7 +305,7 @@ func TestRecall_AllSourcesFailReturnsError(t *testing.T) {
 	}
 }
 
-func TestTrustFilter_RemovesSecretFacts(t *testing.T) {
+func TestPolicyFilter_RemovesSecretFacts(t *testing.T) {
 	mem, err := New()
 	if err != nil {
 		t.Fatal(err)

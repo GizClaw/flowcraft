@@ -31,8 +31,8 @@ func TestTimeline_KeepsPastEventWithOpenValidity(t *testing.T) {
 // TestTimeline_KeepsPastEventWithClosedValidity pins the historical-
 // view invariant restored alongside domain.IsHistorical: a fact whose
 // validity window has long closed (e.g. a one-day event in 2023 viewed
-// from 2026) must STILL be indexed by the timeline. Cluster B's
-// initial IsProjectable adoption silently broke this — historical
+// from 2026) must STILL be indexed by the timeline. An earlier
+// IsProjectable adoption silently broke this — historical
 // "When did X happen?" queries lost the underlying event because
 // IsCanonicalActive returns false once ValidTo < now.
 func TestTimeline_KeepsPastEventWithClosedValidity(t *testing.T) {
@@ -86,8 +86,8 @@ func TestTimeline_RangeScan(t *testing.T) {
 	}
 }
 
-// TestTimeline_DropsClosed pins Cluster B: a soft-forgotten (Closed)
-// fact must not survive in the timeline projection cache. Before the
+// TestTimeline_DropsClosed pins that a soft-forgotten (Closed) fact
+// must not survive in the timeline projection cache. Before the
 // predicate split, timeline inline-checked only CorrectedBy and
 // happily indexed Closed facts.
 func TestTimeline_DropsClosed(t *testing.T) {

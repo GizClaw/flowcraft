@@ -49,10 +49,8 @@ func newPlanTestState(scope domain.Scope) *read.ReadState {
 	return state
 }
 
-// TestPlan_SingleScope_RunsPlannerOnce locks the Cluster G D2 invariant:
-// a single-scope Recall makes exactly one planner.Plan call. Pre-D2
-// the federation_fanout stage repeated the call per sub-scope, burning
-// LLM tokens even on the fast path.
+// TestPlan_SingleScope_RunsPlannerOnce locks that a single-scope Recall makes
+// exactly one planner.Plan call.
 func TestPlan_SingleScope_RunsPlannerOnce(t *testing.T) {
 	scope := domain.Scope{RuntimeID: "rt", UserID: "u1"}
 	state := newPlanTestState(scope)
@@ -77,7 +75,7 @@ func TestPlan_SingleScope_RunsPlannerOnce(t *testing.T) {
 
 // TestPlan_MultiSubScope_RunsPlannerOnce locks the federation case:
 // even when the read scope has N sub-scopes the planner is still
-// invoked exactly once globally (D2 2026-05-21).
+// invoked exactly once globally.
 func TestPlan_MultiSubScope_RunsPlannerOnce(t *testing.T) {
 	scope := domain.Scope{RuntimeID: "rt", UserID: "u1"}
 	scope.Federation = []domain.Scope{{RuntimeID: "rt"}}
@@ -100,8 +98,7 @@ func TestPlan_MultiSubScope_RunsPlannerOnce(t *testing.T) {
 
 // TestPlan_MergesEntitiesAcrossScopes verifies the cross-sub-scope
 // EntitySnapshot merge: overlapping canonicals collapse into one entry
-// whose Weight reflects the appearance count (D2 "max across
-// appearances" semantics).
+// whose Weight reflects the appearance count.
 func TestPlan_MergesEntitiesAcrossScopes(t *testing.T) {
 	primary := domain.Scope{RuntimeID: "rt", UserID: "u1"}
 	sibling := domain.Scope{RuntimeID: "rt"}

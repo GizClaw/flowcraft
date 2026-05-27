@@ -11,9 +11,9 @@ import (
 	"github.com/GizClaw/flowcraft/memory/recall/internal/port"
 )
 
-// WriteSemanticOutbox is the durable boundary of the F.1a sync lane.
-// It runs after the structured-facts leg and project_required so a
-// job is not claimable until episode + optional structured work succeed.
+// WriteSemanticOutbox is the durable boundary of the async save lane.
+// It runs after the structured-facts leg and project_required so a job
+// is not claimable until episode + optional structured work succeed.
 // On Enqueue failure the framework reverse-walks upstream stages
 // (including append / project_episode_evidence) via Compensator.
 type WriteSemanticOutbox struct {

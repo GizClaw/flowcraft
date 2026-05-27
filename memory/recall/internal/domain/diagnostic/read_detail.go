@@ -2,8 +2,8 @@ package diagnostic
 
 import "time"
 
-// IntentDetail —— read/intent stage diagnostic.
-type IntentDetail struct {
+// QueryUnderstandDetail —— read/query_understand stage diagnostic.
+type QueryUnderstandDetail struct {
 	// QueryLen is the compiled query length; raw text is omitted from
 	// diagnostics to avoid PII retention in telemetry after ForgetAll.
 	QueryLen     int
@@ -16,7 +16,7 @@ type IntentDetail struct {
 	LLMUsed      bool
 }
 
-func (IntentDetail) isStageDetail() {}
+func (QueryUnderstandDetail) isStageDetail() {}
 
 // PlanDetail —— read/plan stage diagnostic. ActivatedLenses captures
 // which lenses the planner enabled and why. ActivatedLens itself lives
@@ -24,25 +24,39 @@ func (IntentDetail) isStageDetail() {}
 type PlanDetail struct {
 	ActivatedLenses []ActivatedLens
 	TotalBudget     int
+	TaskIntents     []string
 }
 
 func (PlanDetail) isStageDetail() {}
 
-// FederationFanoutDetail —— read/federation_fanout stage (Phase D.5,
-// v1 Partition generalisation). FastPath records the single-scope
-// shortcut so dashboards can tell apart simple from federated reads.
-type FederationFanoutDetail struct {
-	SubScopes         []SubScopeRun
-	FastPath          bool
-	Sources           []SourceResult
-	Drops             []CandidateDrop
-	Fused             *[]CandidateSnapshot
-	MaterializedItems *[]CandidateSnapshot
-	FusedCandidates   int
-	Materialized      int
+// CandidateFanoutDetail records source fanout across all effective scopes.
+type CandidateFanoutDetail struct {
+	SubScopes []SubScopeRun
+	Sources   []SourceResult
 }
 
-// SubScopeRun is one row in FederationFanoutDetail.SubScopes.
+func (CandidateFanoutDetail) isStageDetail() {}
+
+// CandidateMergeAndMaterializeDetail records source-result merging,
+// materialization, and cross-scope dedupe as one candidate pool construction
+// step.
+type CandidateMergeAndMaterializeDetail struct {
+	SubScopes             []SubScopeRun
+	InputCount            int
+	CandidateCount        int
+	MaterializedCount     int
+	OutputCount           int
+	DroppedByDedup        int
+	Drops                 []CandidateDrop
+	CandidateSnapshots    *[]CandidateSnapshot
+	MaterializedSnapshots *[]CandidateSnapshot
+	Output                *[]CandidateSnapshot
+	Latency               time.Duration
+}
+
+func (CandidateMergeAndMaterializeDetail) isStageDetail() {}
+
+// SubScopeRun is one per-scope row in fanout/merge diagnostics.
 type SubScopeRun struct {
 	Scope         string
 	SourceResults int
@@ -51,63 +65,38 @@ type SubScopeRun struct {
 	Err           string
 }
 
-func (FederationFanoutDetail) isStageDetail() {}
-
-// FederationMergeDetail —— read/federation_merge stage (Phase D.5).
-type FederationMergeDetail struct {
-	InputCount     int
-	AfterDedup     int
-	AfterTopK      int
-	DroppedByDedup int
-	Latency        time.Duration
-	Items          *[]CandidateSnapshot
-}
-
-func (FederationMergeDetail) isStageDetail() {}
-
-// SourceFanoutDetail —— read/source_fanout stage (per-sub-scope when
-// Federation is in use). Results captures each lens's contribution.
-type SourceFanoutDetail struct {
-	Results []SourceResult
-}
-
-// SourceResult is one row in SourceFanoutDetail.Results.
+// SourceResult is one row in CandidateFanoutDetail.Sources.
 type SourceResult struct {
-	Lens       string
-	Candidates int
-	Snapshots  *[]CandidateSnapshot
-	Drops      []CandidateDrop
-	Latency    time.Duration
-	Err        string
+	Lens          string
+	Candidates    int
+	QueryVariants int
+	Snapshots     *[]CandidateSnapshot
+	Drops         []CandidateDrop
+	Latency       time.Duration
+	Err           string
 }
 
-func (SourceFanoutDetail) isStageDetail() {}
-
-// FuseDetail —— read/fuse stage.
-type FuseDetail struct {
-	InputCount     int
-	AfterDedup     int
-	AfterTopK      int
-	OutlierBoosted int
-	DroppedByDedup int
-	Latency        time.Duration
+// CandidateExpansionDetail captures bounded structural candidate additions
+// before policy/rank. Added candidates are score-neutral inputs; rank and
+// context packing still decide whether they surface.
+type CandidateExpansionDetail struct {
+	InputCount       int
+	OutputCount      int
+	Scanned          int
+	Added            int
+	TaskIntents      []string
+	AddedFactIDs     []string
+	Suggested        int
+	SuggestedByTask  map[string]int
+	SuggestedFactIDs []string
+	Items            *[]CandidateSnapshot
+	Err              string
 }
 
-func (FuseDetail) isStageDetail() {}
+func (CandidateExpansionDetail) isStageDetail() {}
 
-// MaterializeDetail —— read/materialize stage.
-type MaterializeDetail struct {
-	Requested       int
-	Returned        int
-	Dropped         []DroppedFact
-	StoreLatency    time.Duration
-	RetiredFiltered int
-}
-
-func (MaterializeDetail) isStageDetail() {}
-
-// TrustFilterDetail —— read/trust_filter stage (Phase D.2).
-type TrustFilterDetail struct {
+// PolicyFilterDetail —— read/policy_filter stage.
+type PolicyFilterDetail struct {
 	MaxSensitivity string
 	ActorID        string
 	Removed        int
@@ -115,7 +104,7 @@ type TrustFilterDetail struct {
 	Items          *[]CandidateSnapshot
 }
 
-func (TrustFilterDetail) isStageDetail() {}
+func (PolicyFilterDetail) isStageDetail() {}
 
 // RankDetail —— read/rank stage. Captures the post-fusion / pre-hits
 // ranker's effect on the candidate pool.
@@ -133,8 +122,8 @@ type RankDetail struct {
 
 func (RankDetail) isStageDetail() {}
 
-// BuildHitsDetail —— read/build_hits stage.
-type BuildHitsDetail struct {
+// ContextPackDetail —— read/context_pack stage.
+type ContextPackDetail struct {
 	Count                 int
 	InputCount            int
 	Reranked              int
@@ -147,7 +136,18 @@ type BuildHitsDetail struct {
 	Hits                  *[]CandidateSnapshot
 }
 
-func (BuildHitsDetail) isStageDetail() {}
+func (ContextPackDetail) isStageDetail() {}
+
+// BuildGroundedHitsDetail —— read/build_grounded_hits stage.
+type BuildGroundedHitsDetail struct {
+	Count      int
+	InputCount int
+	Latency    time.Duration
+	Input      *[]CandidateSnapshot
+	Hits       *[]CandidateSnapshot
+}
+
+func (BuildGroundedHitsDetail) isStageDetail() {}
 
 // EvolutionAfterRecallDetail —— read/evolution_after_recall stage.
 type EvolutionAfterRecallDetail struct {
@@ -156,8 +156,7 @@ type EvolutionAfterRecallDetail struct {
 
 func (EvolutionAfterRecallDetail) isStageDetail() {}
 
-// PlanView is the planner output reconstructed from trace.Stages
-// (intent + plan stage details).
+// PlanView is the planner output reconstructed from trace.Stages.
 type PlanView struct {
 	SourceOrder    []string
 	SourceBudgets  map[string]int
@@ -167,8 +166,8 @@ type PlanView struct {
 	IntentEntities []string
 }
 
-// SourceView is one source lens contribution reconstructed from
-// read-path stages (federation_fanout / source_fanout / plan).
+// SourceView is one source lens contribution reconstructed from read-path
+// stages.
 type SourceView struct {
 	Source    string
 	Activated bool
@@ -179,14 +178,15 @@ type SourceView struct {
 	Err       string
 }
 
-// ExtractPlan rebuilds planner output from intent + plan stage details.
+// ExtractPlan rebuilds planner output from query-understanding + plan stage
+// details.
 func ExtractPlan(stages []StageDiagnostic) PlanView {
 	var out PlanView
 	out.SourceBudgets = map[string]int{}
 	for _, st := range stages {
 		switch st.Stage {
-		case "intent":
-			if d, ok := st.Detail.(IntentDetail); ok {
+		case "query_understand":
+			if d, ok := st.Detail.(QueryUnderstandDetail); ok {
 				_ = d.QueryLen // IntentText omitted from diagnostics (PII)
 				out.IntentSubject = d.Subject
 				out.IntentEntities = append([]string(nil), d.Entities...)
@@ -204,9 +204,8 @@ func ExtractPlan(stages []StageDiagnostic) PlanView {
 	return out
 }
 
-// ExtractSources lists source fan-out rows from federation_fanout or
-// source_fanout, padded with non-activated lenses from the plan so
-// dashboards see one row per registered lens.
+// ExtractSources lists source fanout rows, padded with non-activated lenses
+// from the plan so dashboards see one row per registered lens.
 func ExtractSources(stages []StageDiagnostic) []SourceView {
 	plan := ExtractPlan(stages)
 	var out []SourceView
@@ -226,13 +225,9 @@ func ExtractSources(stages []StageDiagnostic) []SourceView {
 	}
 	for _, st := range stages {
 		switch st.Stage {
-		case "federation_fanout":
-			if d, ok := st.Detail.(FederationFanoutDetail); ok {
+		case "candidate_fanout":
+			if d, ok := st.Detail.(CandidateFanoutDetail); ok {
 				appendSources(d.Sources)
-			}
-		case "source_fanout":
-			if d, ok := st.Detail.(SourceFanoutDetail); ok {
-				appendSources(d.Results)
 			}
 		}
 	}
@@ -249,8 +244,9 @@ func ExtractSources(stages []StageDiagnostic) []SourceView {
 func ExtractDrops(stages []StageDiagnostic) []CandidateDrop {
 	var out []CandidateDrop
 	for _, st := range stages {
-		if st.Stage == "federation_fanout" {
-			if d, ok := st.Detail.(FederationFanoutDetail); ok {
+		switch st.Stage {
+		case "candidate_merge_and_materialize":
+			if d, ok := st.Detail.(CandidateMergeAndMaterializeDetail); ok {
 				out = append(out, d.Drops...)
 			}
 		}
@@ -258,17 +254,14 @@ func ExtractDrops(stages []StageDiagnostic) []CandidateDrop {
 	return out
 }
 
-// ExtractFusedCandidates returns the fused pool size from stage details.
-func ExtractFusedCandidates(stages []StageDiagnostic) int {
+// ExtractCandidateCount returns the merged candidate pool size from stage
+// details.
+func ExtractCandidateCount(stages []StageDiagnostic) int {
 	for _, st := range stages {
 		switch st.Stage {
-		case "federation_fanout":
-			if d, ok := st.Detail.(FederationFanoutDetail); ok {
-				return d.FusedCandidates
-			}
-		case "fuse":
-			if d, ok := st.Detail.(FuseDetail); ok {
-				return d.AfterTopK
+		case "candidate_merge_and_materialize":
+			if d, ok := st.Detail.(CandidateMergeAndMaterializeDetail); ok {
+				return d.CandidateCount
 			}
 		}
 	}
@@ -280,13 +273,9 @@ func ExtractMaterialized(stages []StageDiagnostic) int {
 	n := 0
 	for _, st := range stages {
 		switch st.Stage {
-		case "federation_fanout":
-			if d, ok := st.Detail.(FederationFanoutDetail); ok {
-				n += d.Materialized
-			}
-		case "materialize":
-			if d, ok := st.Detail.(MaterializeDetail); ok {
-				n += d.Returned
+		case "candidate_merge_and_materialize":
+			if d, ok := st.Detail.(CandidateMergeAndMaterializeDetail); ok {
+				n += d.MaterializedCount
 			}
 		case "rank":
 			if d, ok := st.Detail.(RankDetail); ok && d.OutputCount > n {

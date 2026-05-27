@@ -11,10 +11,7 @@ import (
 )
 
 // Compile-time assertions: every documented stage Detail satisfies
-// StageDetail. Listed in pipeline-diagnostics.md §2.2 order — 8
-// write + 11 read + 2 rebuild = 21 distinct Detail types (the doc
-// mentions "20+" because the read/source_fanout nest carries the
-// per-lens SourceResult tally without needing its own StageDetail).
+// StageDetail.
 var (
 	_ diagnostic.StageDetail = diagnostic.ValidateDetail{}
 	_ diagnostic.StageDetail = diagnostic.IngestDetail{}
@@ -35,27 +32,25 @@ var (
 	_ diagnostic.StageDetail = diagnostic.OriginStampDetail{}
 	_ diagnostic.StageDetail = diagnostic.AsyncSemanticProcessDetail{}
 
-	_ diagnostic.StageDetail = diagnostic.IntentDetail{}
+	_ diagnostic.StageDetail = diagnostic.QueryUnderstandDetail{}
 	_ diagnostic.StageDetail = diagnostic.PlanDetail{}
-	_ diagnostic.StageDetail = diagnostic.FederationFanoutDetail{}
-	_ diagnostic.StageDetail = diagnostic.FederationMergeDetail{}
-	_ diagnostic.StageDetail = diagnostic.SourceFanoutDetail{}
-	_ diagnostic.StageDetail = diagnostic.FuseDetail{}
-	_ diagnostic.StageDetail = diagnostic.MaterializeDetail{}
-	_ diagnostic.StageDetail = diagnostic.TrustFilterDetail{}
+	_ diagnostic.StageDetail = diagnostic.CandidateFanoutDetail{}
+	_ diagnostic.StageDetail = diagnostic.CandidateMergeAndMaterializeDetail{}
+	_ diagnostic.StageDetail = diagnostic.PolicyFilterDetail{}
 	_ diagnostic.StageDetail = diagnostic.RankDetail{}
-	_ diagnostic.StageDetail = diagnostic.BuildHitsDetail{}
+	_ diagnostic.StageDetail = diagnostic.ContextPackDetail{}
+	_ diagnostic.StageDetail = diagnostic.BuildGroundedHitsDetail{}
 	_ diagnostic.StageDetail = diagnostic.EvolutionAfterRecallDetail{}
 
 	_ diagnostic.StageDetail = diagnostic.ScanDetail{}
 	_ diagnostic.StageDetail = diagnostic.RebuildProjectionDetail{}
 )
 
-// TestStatusDegraded_Value pins the wire-level string the framework
-// emits for Cluster C best-effort failures. Dashboards, telemetry
-// sinks, and external trace consumers key off the literal "degraded"
-// value, so a typo here would silently break every observer that
-// matches the constant by string rather than by Go identifier.
+// TestStatusDegraded_Value pins the wire-level string the framework emits for
+// best-effort failures. Dashboards, telemetry sinks, and external trace
+// consumers key off the literal "degraded" value, so a typo here would
+// silently break every observer that matches the constant by string rather than
+// by Go identifier.
 func TestStatusDegraded_Value(t *testing.T) {
 	if got := string(diagnostic.StatusDegraded); got != "degraded" {
 		t.Fatalf("StatusDegraded = %q, want %q", got, "degraded")
@@ -78,9 +73,9 @@ func TestStatusDegraded_Value(t *testing.T) {
 // type. Each case constructs a representative non-zero value,
 // marshals it, unmarshals into a fresh value of the SAME concrete
 // type, then re-marshals and asserts bytes match. Polymorphic
-// unmarshal (StageDetail interface) is intentionally NOT tested
-// here — the pipeline framework owns that in Phase B; this test
-// only locks the per-Detail JSON contract in place.
+// unmarshal (StageDetail interface) is intentionally NOT tested here; the
+// pipeline framework owns that. This test only locks the per-Detail JSON
+// contract in place.
 func TestDetail_RoundTrip(t *testing.T) {
 	cases := []struct {
 		name string
@@ -156,7 +151,7 @@ func TestDetail_RoundTrip(t *testing.T) {
 			Latency:        1 * time.Millisecond,
 		}, &diagnostic.EnqueueSemanticDetail{}},
 
-		{"intent", diagnostic.IntentDetail{
+		{"query_understand", diagnostic.QueryUnderstandDetail{
 			QueryLen:     22,
 			Entities:     []string{"alice"},
 			Kinds:        []string{"event", "state"},
@@ -165,24 +160,21 @@ func TestDetail_RoundTrip(t *testing.T) {
 			GraphEnabled: false,
 			NERLatency:   1 * time.Millisecond,
 			LLMUsed:      false,
-		}, &diagnostic.IntentDetail{}},
+		}, &diagnostic.QueryUnderstandDetail{}},
 		{"plan", diagnostic.PlanDetail{
 			ActivatedLenses: []diagnostic.ActivatedLens{{Lens: "retrieval", Weight: 1.0, Budget: 20, ActivatedBy: "default"}},
 			TotalBudget:     20,
 		}, &diagnostic.PlanDetail{}},
-		{"federation_fanout", diagnostic.FederationFanoutDetail{
+		{"candidate_fanout", diagnostic.CandidateFanoutDetail{
 			SubScopes: []diagnostic.SubScopeRun{{Scope: "rt:u1", SourceResults: 6, Materialized: 5, Latency: 7 * time.Millisecond}},
-			FastPath:  true,
-		}, &diagnostic.FederationFanoutDetail{}},
-		{"federation_merge", diagnostic.FederationMergeDetail{InputCount: 12, AfterDedup: 10, AfterTopK: 5, DroppedByDedup: 2, Latency: 2 * time.Millisecond}, &diagnostic.FederationMergeDetail{}},
-		{"source_fanout", diagnostic.SourceFanoutDetail{
-			Results: []diagnostic.SourceResult{{Lens: "retrieval", Candidates: 8, Latency: 3 * time.Millisecond}},
-		}, &diagnostic.SourceFanoutDetail{}},
-		{"fuse", diagnostic.FuseDetail{InputCount: 30, AfterDedup: 25, AfterTopK: 10, OutlierBoosted: 1, DroppedByDedup: 5, Latency: 2 * time.Millisecond}, &diagnostic.FuseDetail{}},
-		{"materialize", diagnostic.MaterializeDetail{Requested: 10, Returned: 9, StoreLatency: 4 * time.Millisecond}, &diagnostic.MaterializeDetail{}},
-		{"trust_filter", diagnostic.TrustFilterDetail{MaxSensitivity: "private", ActorID: "agent-a", Removed: 2, Redacted: 1}, &diagnostic.TrustFilterDetail{}},
+			Sources:   []diagnostic.SourceResult{{Lens: "retrieval", Candidates: 8, Latency: 3 * time.Millisecond}},
+		}, &diagnostic.CandidateFanoutDetail{}},
+		{"candidate_merge_and_materialize", diagnostic.CandidateMergeAndMaterializeDetail{InputCount: 30, CandidateCount: 25, MaterializedCount: 9, OutputCount: 5, DroppedByDedup: 2, Latency: 2 * time.Millisecond}, &diagnostic.CandidateMergeAndMaterializeDetail{}},
+		{"candidate_expansion", diagnostic.CandidateExpansionDetail{InputCount: 10, OutputCount: 10, Suggested: 2, TaskIntents: []string{"set_completion"}, SuggestedFactIDs: []string{"f1", "f2"}}, &diagnostic.CandidateExpansionDetail{}},
+		{"policy_filter", diagnostic.PolicyFilterDetail{MaxSensitivity: "private", ActorID: "agent-a", Removed: 2, Redacted: 1}, &diagnostic.PolicyFilterDetail{}},
 		{"rank", diagnostic.RankDetail{InputCount: 9, OutputCount: 9, FinalCap: 10, BoostsApplied: 2, Latency: 1 * time.Millisecond}, &diagnostic.RankDetail{}},
-		{"build_hits", diagnostic.BuildHitsDetail{Count: 9}, &diagnostic.BuildHitsDetail{}},
+		{"context_pack", diagnostic.ContextPackDetail{Count: 9}, &diagnostic.ContextPackDetail{}},
+		{"build_grounded_hits", diagnostic.BuildGroundedHitsDetail{Count: 9}, &diagnostic.BuildGroundedHitsDetail{}},
 		{"evolution_after_recall", diagnostic.EvolutionAfterRecallDetail{Repairs: 1}, &diagnostic.EvolutionAfterRecallDetail{}},
 
 		{"scan", diagnostic.ScanDetail{ScopeKey: "rt:u1", Total: 200, AfterValidity: 180, Latency: 30 * time.Millisecond}, &diagnostic.ScanDetail{}},

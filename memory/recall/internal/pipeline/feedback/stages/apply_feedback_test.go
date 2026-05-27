@@ -51,8 +51,7 @@ func newRunner(t *testing.T, store port.TemporalStore, projs []port.Projection) 
 // canonical path: the stage writes the delta into the canonical
 // store, refreshes the snapshot, and pushes the updated fact through
 // fanout.ProjectRequired so retrieval Doc metadata
-// (MetaReinforcement / MetaPenalty) stays in sync — the Cluster D
-// fix.
+// (MetaReinforcement / MetaPenalty) stays in sync.
 func TestApplyFeedback_HappyPath_UpdatesAndReprojects(t *testing.T) {
 	scope := domain.Scope{RuntimeID: "rt", UserID: "u"}
 	store := temporal.NewMemoryStore()

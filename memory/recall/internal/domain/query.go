@@ -36,12 +36,12 @@ type Query struct {
 	// WithGraphEnabled. Zero uses the graph projection default.
 	GraphHops int
 
-	// Trust applies read-time visibility filtering (Phase D.2). Nil
-	// disables the trust_filter stage.
+	// Trust applies read-time visibility filtering. Nil disables the
+	// policy_filter stage.
 	Trust *TrustContext
 
-	// IncludeRetired includes soft-closed and expired facts in recall
-	// results (Phase D.8). Default false.
+	// IncludeRetired includes soft-closed and expired facts in recall results.
+	// Default false.
 	IncludeRetired bool
 }
 
@@ -134,16 +134,25 @@ type QueryTemporalFeatures struct {
 	TimeRange             TimeRange
 }
 
+type QueryTaskIntent string
+
+const (
+	QueryTaskDirectLookup      QueryTaskIntent = "direct_lookup"
+	QueryTaskSetCompletion     QueryTaskIntent = "set_completion"
+	QueryTaskBridgeResolution  QueryTaskIntent = "bridge_resolution"
+	QueryTaskTemporalReasoning QueryTaskIntent = "temporal_reasoning"
+	QueryTaskDisambiguation    QueryTaskIntent = "disambiguation"
+)
+
 // QueryPlan describes how the read pipeline will visit candidate
 // sources for a single Recall call.
 //
-// LensWeights carries optional, planner-derived per-lens weight
-// hints (Cluster G, D2 2026-05-21). The rule-based planner populates
-// it when port.PlannerInput.KnownEntities intersects the query
-// (Text / Entities / Subject / Object): entity-aware lenses
-// (entity / relation / graph / profile) receive a small additive
-// boost so downstream stages and dashboards can attribute lens
-// activation back to the "query focus" entity hint. Empty map / nil
+// LensWeights carries optional, planner-derived per-lens weight hints. The
+// rule-based planner populates it when port.PlannerInput.KnownEntities
+// intersects the query (Text / Entities / Subject / Object): entity-aware
+// lenses (entity / relation / graph / profile) receive a small additive boost
+// so downstream stages and dashboards can attribute lens activation back to the
+// "query focus" entity hint. Empty map / nil
 // means no hint was applied; the read pipeline never errors on a
 // missing entry.
 type QueryPlan struct {
@@ -152,6 +161,7 @@ type QueryPlan struct {
 	SourceBudgets map[string]int
 	TotalCap      int
 	LensWeights   map[string]float64
+	TaskIntents   []QueryTaskIntent
 }
 
 // ContextItem is a materialized recall result. The Candidate field

@@ -1,8 +1,6 @@
-// Package stages owns the apply_feedback stage that powers
-// Memory.Reinforce / Memory.Penalize (Cluster A 2026-05-21). The
-// stage performs the canonical UpdateFeedback write and the
-// single-fact reproject (Cluster D — keeps retrieval Doc metadata
-// fresh) so a single StageDiagnostic captures both effects.
+// Package stages owns the apply_feedback stage that powers Memory.Reinforce /
+// Memory.Penalize. The stage performs the canonical UpdateFeedback write and
+// the single-fact reproject so a single StageDiagnostic captures both effects.
 package stages
 
 import (
@@ -26,10 +24,8 @@ import (
 //  2. store.UpdateFeedback applies the deltas (clamped non-negative).
 //  3. store.Get refreshes the canonical snapshot so the projection
 //     sees the post-clamp Reinforcement / Penalty.
-//  4. fanout.ProjectRequired reprojects the single fact — this is
-//     the Cluster D fix: retrieval Doc metadata (MetaReinforcement /
-//     MetaPenalty) tracks the canonical fact instead of drifting
-//     until the next full Save.
+//  4. fanout.ProjectRequired reprojects the single fact so retrieval Doc
+//     metadata (MetaReinforcement / MetaPenalty) tracks the canonical fact.
 //
 // fanout.ProjectOptional runs best-effort right after; optional
 // projection failures only emit telemetry (matching the write

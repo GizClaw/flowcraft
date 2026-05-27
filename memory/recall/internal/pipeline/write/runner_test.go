@@ -8,10 +8,9 @@ import (
 	"github.com/GizClaw/flowcraft/memory/recall/internal/pipeline/write"
 )
 
-// TestRunner_EmptyIsNoOp pins the Phase B.1 contract that an empty
-// write pipeline (no stages registered yet) accepts a fresh
-// WriteState and returns nil without mutating anything. Phase B.2
-// replaces this assertion with stage-by-stage coverage.
+// TestRunner_EmptyIsNoOp pins the contract that an empty write
+// pipeline accepts a fresh WriteState and returns nil without
+// mutating anything.
 func TestRunner_EmptyIsNoOp(t *testing.T) {
 	r := write.NewRunner(nil, nil)
 	state := &write.WriteState{

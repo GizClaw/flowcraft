@@ -80,8 +80,8 @@ func TestTemporalFact_Clone(t *testing.T) {
 	}
 }
 
-// TestClone_PreservesOrigin pins the F.1a deep-copy contract for
-// FactOrigin.EpisodeFactIDs — the clone must own an independent slice
+// TestClone_PreservesOrigin pins the deep-copy contract for
+// FactOrigin.EpisodeFactIDs: the clone must own an independent slice
 // so worker-side mutation of the snapshot cannot retroactively edit
 // the stored row.
 func TestClone_PreservesOrigin(t *testing.T) {
@@ -156,9 +156,9 @@ func TestIsProjectable_ActiveFactPasses(t *testing.T) {
 
 // TestIsProjectable_RespectsClosed pins the soft-forget invariant:
 // projections must NOT index facts whose Closed=true, even when they
-// remain canonical-active. This is the bug Cluster B fixes — before
-// the predicate split, profile/relation/graph would retain closed
-// facts until the next RebuildAll.
+// remain canonical-active. Before the predicate split,
+// profile/relation/graph would retain closed facts until the next
+// RebuildAll.
 func TestIsProjectable_RespectsClosed(t *testing.T) {
 	now := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
 	f := TemporalFact{ID: "f1", Closed: true}

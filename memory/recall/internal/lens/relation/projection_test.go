@@ -102,7 +102,7 @@ func TestRelation_DropsInactiveValidTo(t *testing.T) {
 	}
 }
 
-// TestRelation_DropsClosed pins Cluster B: soft-forgotten (Closed)
+// TestRelation_DropsClosed pins that soft-forgotten (Closed)
 // relations must not survive in the projection cache. Before the
 // predicate split, the projection called IsActive (canonical only)
 // and re-upserted closed triples after a soft Forget.

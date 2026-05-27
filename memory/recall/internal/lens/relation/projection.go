@@ -115,7 +115,7 @@ func (p *Projection) Rebuild(ctx context.Context, scope domain.Scope, facts []do
 	return p.Project(ctx, facts)
 }
 
-// ClearScope drops the entire scope shard. Backs Memory.ForgetAll (D.8 C9).
+// ClearScope drops the entire scope shard for Memory.ForgetAll.
 func (p *Projection) ClearScope(_ context.Context, scope domain.Scope) error {
 	p.mu.Lock()
 	delete(p.scopes, keyOf(scope))

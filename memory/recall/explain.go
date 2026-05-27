@@ -7,13 +7,12 @@ import (
 	"github.com/GizClaw/flowcraft/memory/recall/internal/domain/diagnostic"
 )
 
-// RecallTrace is the read-path explain surface. Phase E.3 made it
-// Stages-only: every observable signal (plan, sources, drops, fused
-// pool size, materialized count, latency) is reconstructable from
-// trace.Stages via sdk/recall/diagnostics.
+// RecallTrace is the read-path explain surface. Every observable signal (plan,
+// sources, drops, fused pool size, materialized count, latency) is
+// reconstructable from trace.Stages via sdk/recall/diagnostics.
 type RecallTrace = domain.RecallTrace
 
-// SaveTrace is the write-path explain surface (Phase E.3: Stages-only).
+// SaveTrace is the write-path explain surface.
 type SaveTrace = domain.SaveTrace
 
 // CandidateDrop records a candidate that did not survive the read

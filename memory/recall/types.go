@@ -48,8 +48,8 @@ type MergeHints = domain.MergeHints
 // owns the schema definition.
 //
 // Field documentation lives on domain.TemporalFact; the following
-// notes (mirrored here per the D1 godoc convention) document
-// behaviour callers must understand at the public surface:
+// notes document behaviour callers must understand at the public
+// surface:
 //
 //	// Supersedes lists canonical fact IDs this fact replaces. All listed
 //	// prior facts will be closed (ValidTo = ObservedAt, CorrectedBy =
@@ -59,13 +59,13 @@ type MergeHints = domain.MergeHints
 //	Supersedes []string
 type TemporalFact = domain.TemporalFact
 
-// TrustContext carries read-time visibility constraints (Phase D.2).
+// TrustContext carries read-time visibility constraints.
 type TrustContext = domain.TrustContext
 
 // Message is a caller-supplied conversational turn for extract context.
 type Message = domain.Message
 
-// ForgetMode selects soft vs hard deletion (Phase D.8).
+// ForgetMode selects soft vs hard deletion.
 type ForgetMode = domain.ForgetMode
 
 const (
@@ -73,7 +73,7 @@ const (
 	ForgetHard = domain.ForgetHard
 )
 
-// FactVersion is one row in a fact's supersede history (Phase D.6).
+// FactVersion is one row in a fact's supersede history.
 type FactVersion = domain.FactVersion
 
 // TurnContext is the typed per-turn channel adapters use to feed
@@ -98,9 +98,8 @@ type TurnContext = domain.TurnContext
 // failure.
 type EntitySnapshot = port.EntitySnapshot
 
-// SaveRequest is the v2 ingestion input. Aliases the canonical
-// domain type so the recall facade and internal pipelines share one
-// schema (Phase E.2: types.go is "全部 = domain.X 别名").
+// SaveRequest is the v2 ingestion input. Aliases the canonical domain type so
+// the recall facade and internal pipelines share one schema.
 type SaveRequest = domain.SaveRequest
 
 // WriteMode controls SaveRequest semantics. Zero value selects the
@@ -191,7 +190,7 @@ func ScrubAsyncSemanticJobPII(job *AsyncSemanticJob) {
 //
 // FactIDs continues to list every id Save durably appended in this
 // call (sync semantic + raw episode in mixed mode), preserving the
-// pre-F.1 contract.
+// existing contract.
 type SaveResult struct {
 	FactIDs []string
 
@@ -220,7 +219,7 @@ type Query struct {
 	GraphHops int
 
 	// Trust applies read-time visibility filtering. Nil disables the
-	// trust_filter stage.
+	// policy_filter stage.
 	Trust *TrustContext
 
 	// IncludeRetired surfaces soft-closed and expired facts (D.8).
@@ -232,9 +231,8 @@ func TimeRangeFrom(from, to time.Time) TimeRange {
 	return TimeRange{From: from, To: to}
 }
 
-// Hit is one materialized recall winner. Aliases the canonical
-// domain type so the facade, internal pipelines, and diagnostics
-// share one schema (Phase E.2: "全部 = domain.X 别名").
+// Hit is one materialized recall winner. Aliases the canonical domain type so
+// the facade, internal pipelines, and diagnostics share one schema.
 // Hit.Evidence carries the materialized evidence slice selected for
 // this hit when the candidate source can identify the evidence that
 // caused the match.
@@ -270,7 +268,7 @@ type FactLineageNode struct {
 	Depth        int
 }
 
-// Reranker is the optional post-build_hits stage that reorders a
+// Reranker is the optional context_pack step that reorders a
 // Hit slice by a stronger relevance signal than the deterministic
 // in-pipeline ranker alone (typically an LLM call or
 // cross-encoder).

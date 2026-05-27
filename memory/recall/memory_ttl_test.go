@@ -9,9 +9,9 @@ import (
 	temporalstore "github.com/GizClaw/flowcraft/memory/recall/internal/store/temporal"
 )
 
-// TestExpireRetired_HardDeletesExpiredFacts pins the D5 2026-05-21
-// API: ExpireRetired hard-deletes facts whose ExpiresAt is in the
-// past relative to the supplied cutoff and leaves the rest intact.
+// TestExpireRetired_HardDeletesExpiredFacts pins that ExpireRetired
+// hard-deletes facts whose ExpiresAt is in the past relative to the
+// supplied cutoff and leaves the rest intact.
 func TestExpireRetired_HardDeletesExpiredFacts(t *testing.T) {
 	store := temporalstore.NewMemoryStore()
 	mem, err := New(WithTemporalStore(store))

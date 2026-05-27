@@ -15,11 +15,9 @@ type Runner struct {
 	pipeline *pipeline.Pipeline[*State]
 }
 
-// NewRunner constructs a feedback Runner with the supplied stages and
-// telemetry hook. The Cluster A wiring registers a single stage
-// (apply_feedback); the slice shape preserves drop-in room for
-// future pre/post stages (e.g. quota check, audit emit) without
-// reshaping the runner.
+// NewRunner constructs a feedback Runner with the supplied stages and telemetry
+// hook. The slice shape preserves drop-in room for future pre/post stages (e.g.
+// quota check, audit emit) without reshaping the runner.
 func NewRunner(stages []pipeline.Stage[*State], hook port.TelemetryHook) *Runner {
 	return &Runner{
 		pipeline: pipeline.NewPipeline(

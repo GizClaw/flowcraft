@@ -52,8 +52,8 @@ type TemporalFact struct {
 	Confidence float64
 
 	// Reinforcement and Penalty are caller feedback weights adjusted
-	// via Memory.Reinforce / Penalize (Phase D.4). They influence
-	// fusion and rank but are not part of merge-key identity.
+	// via Memory.Reinforce / Penalize. They influence fusion and rank
+	// but are not part of merge-key identity.
 	Reinforcement float64
 	Penalty       float64
 
@@ -62,7 +62,7 @@ type TemporalFact struct {
 	Supersedes  []string
 	CorrectedBy string
 
-	// Closed marks a soft-forgotten fact (Phase D.8). Soft Forget sets
+	// Closed marks a soft-forgotten fact. Soft Forget sets
 	// Closed=true without deleting the ledger row; default Recall hides
 	// closed facts unless Query.IncludeRetired is set.
 	Closed bool
@@ -71,11 +71,10 @@ type TemporalFact struct {
 	// as retired on read unless IncludeRetired is set.
 	ExpiresAt *time.Time
 
-	// Origin is the durable-work-item idempotency identifier (Phase
-	// F.1). Zero value for pre-Origin facts and synchronous direct
-	// writes. Set by the episode lane (OriginKindEpisode) and the
-	// async semantic worker (OriginKindSemanticDerivation); see
-	// recall-v2-async-semantic-write.md §3.3.
+	// Origin is the durable-work-item idempotency identifier. Zero value
+	// for pre-Origin facts and synchronous direct writes. Set by the
+	// episode lane (OriginKindEpisode) and the async semantic worker
+	// (OriginKindSemanticDerivation).
 	Origin FactOrigin
 
 	Metadata map[string]any
@@ -215,13 +214,9 @@ func IsActive(f TemporalFact, now time.Time) bool {
 // drops a fact when it has been superseded by a successor (canonical
 // truth lost) OR retired by soft-forget / TTL (operator opt-out).
 //
-// Cluster B (2026-05-21) initially routed every projection through
-// IsProjectable, which conflates "currently-active state" with
-// "indexable historical fact". The timeline docstring had always
-// promised "a past event remains visible even when ValidTo is set —
-// only CorrectedBy suppresses indexing"; this predicate restores
-// that invariant for the four historical views while leaving the
-// two active-slot views (profile / relation) on IsProjectable.
+// IsProjectable conflates "currently-active state" with "indexable historical
+// fact". IsHistorical restores the invariant for historical views while
+// leaving active-slot views (profile / relation) on IsProjectable.
 func IsHistorical(f TemporalFact, now time.Time) bool {
 	return !IsSuperseded(f) && !IsRetired(f, now)
 }

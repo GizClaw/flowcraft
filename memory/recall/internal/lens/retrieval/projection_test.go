@@ -2,6 +2,7 @@ package retrieval
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -129,6 +130,37 @@ func TestProjection_WithEmbedder_PopulatesDocVector(t *testing.T) {
 	}
 	if emb.calls == 0 {
 		t.Fatal("expected embedder to be invoked")
+	}
+}
+
+func TestProjection_EvidenceDocIndexesEntitiesAndParticipants(t *testing.T) {
+	idx := retrievalmem.New()
+	p, err := New(idx)
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	scope := domain.Scope{RuntimeID: "rt", UserID: "u1"}
+	f := domain.TemporalFact{
+		ID:           "f1",
+		Scope:        scope,
+		Kind:         domain.KindEvent,
+		Content:      "Alice discussed a recommendation.",
+		Entities:     []string{"Becoming Nicole"},
+		Participants: []string{"Alice", "Bob"},
+		EvidenceRefs: []domain.EvidenceRef{{ID: "D1:1", Text: "I finished the recommendation."}},
+		ObservedAt:   time.Now(),
+	}
+	if err := p.Project(context.Background(), []domain.TemporalFact{f}); err != nil {
+		t.Fatalf("project: %v", err)
+	}
+	got, ok, err := idx.Get(context.Background(), NamespaceFor(scope), "f1#D1:1")
+	if err != nil || !ok {
+		t.Fatalf("get evidence doc: ok=%v err=%v", ok, err)
+	}
+	for _, want := range []string{"Becoming Nicole", "Alice", "Bob"} {
+		if !strings.Contains(got.Content, want) {
+			t.Fatalf("evidence doc content should include %q, got %q", want, got.Content)
+		}
 	}
 }
 
@@ -465,9 +497,9 @@ func TestProjection_UserMetaCannotOverrideReserved(t *testing.T) {
 	}
 }
 
-// TestProjection_DropsClosed pins Cluster B: a soft-forgotten
-// (Closed) fact must not be upserted into the retrieval index. The
-// pre-cluster code only filtered on CorrectedBy, so a freshly
+// TestProjection_DropsClosed pins that a soft-forgotten (Closed) fact
+// must not be upserted into the retrieval index. The previous code
+// only filtered on CorrectedBy, so a freshly
 // projected Closed fact ended up indexed and would resurface from
 // the search backend until RebuildAll.
 func TestProjection_DropsClosed(t *testing.T) {

@@ -194,15 +194,15 @@ func TestClassifyRecallQuestion_StageAuditFindsFusionDrop(t *testing.T) {
 	facts := map[string][]factDumpFact{"conv-1": {{ID: "f1", Content: "Alice went to Tampa.", EvidenceIDs: []string{"e1"}}}}
 	factByID := map[string]factDumpFact{"f1": facts["conv-1"][0]}
 	stageAudit := stageAuditDumpRecord{QID: "q1", Stages: []stageAuditDumpStage{
-		{Stage: "source_fanout", Source: "retrieval", Candidates: []stageAuditDumpCandidate{{FactID: "f1", EvidenceIDs: []string{"e1"}}}},
-		{Stage: "fusion", Candidates: []stageAuditDumpCandidate{{FactID: "f2"}}},
-		{Stage: "build_hits", Candidates: []stageAuditDumpCandidate{{FactID: "f2"}}},
+		{Stage: "candidate_fanout", Source: "retrieval", Candidates: []stageAuditDumpCandidate{{FactID: "f1", EvidenceIDs: []string{"e1"}}}},
+		{Stage: "candidate_merge", Candidates: []stageAuditDumpCandidate{{FactID: "f2"}}},
+		{Stage: "build_grounded_hits", Candidates: []stageAuditDumpCandidate{{FactID: "f2"}}},
 	}}
 	rec := classifyRecallQuestion(q, "", dump, 1, signals, facts, factByID, stageAudit)
-	if rec.MissType != "fusion_drop_evidence_id" {
+	if rec.MissType != "candidate_merge_drop_evidence_id" {
 		t.Fatalf("miss_type = %q", rec.MissType)
 	}
-	if rec.StageMiss != "fusion_drop_evidence_id" {
+	if rec.StageMiss != "candidate_merge_drop_evidence_id" {
 		t.Fatalf("stage_miss = %q", rec.StageMiss)
 	}
 }
@@ -218,9 +218,9 @@ func TestClassifyRecallQuestion_StageAuditFindsSourceMiss(t *testing.T) {
 	facts := map[string][]factDumpFact{"conv-1": {{ID: "f1", Content: "Alice went to Tampa.", EvidenceIDs: []string{"e1"}}}}
 	factByID := map[string]factDumpFact{"f1": facts["conv-1"][0]}
 	stageAudit := stageAuditDumpRecord{QID: "q1", Stages: []stageAuditDumpStage{
-		{Stage: "source_fanout", Source: "retrieval", Candidates: []stageAuditDumpCandidate{{FactID: "f2"}}},
-		{Stage: "fusion", Candidates: []stageAuditDumpCandidate{{FactID: "f2"}}},
-		{Stage: "build_hits", Candidates: []stageAuditDumpCandidate{{FactID: "f2"}}},
+		{Stage: "candidate_fanout", Source: "retrieval", Candidates: []stageAuditDumpCandidate{{FactID: "f2"}}},
+		{Stage: "candidate_merge", Candidates: []stageAuditDumpCandidate{{FactID: "f2"}}},
+		{Stage: "build_grounded_hits", Candidates: []stageAuditDumpCandidate{{FactID: "f2"}}},
 	}}
 	rec := classifyRecallQuestion(q, "", dump, 1, signals, facts, factByID, stageAudit)
 	if rec.MissType != "source_miss_evidence_id" {
@@ -239,11 +239,11 @@ func TestClassifyRecallQuestion_StageAuditEvidenceInFinalIsAnswerMiss(t *testing
 	facts := map[string][]factDumpFact{"conv-1": {{ID: "f1", Content: "Alice went to Tampa.", EvidenceIDs: []string{"e1"}}}}
 	factByID := map[string]factDumpFact{"f1": facts["conv-1"][0]}
 	stageAudit := stageAuditDumpRecord{QID: "q1", Stages: []stageAuditDumpStage{
-		{Stage: "source_fanout", Source: "retrieval", Candidates: []stageAuditDumpCandidate{{FactID: "f1"}}},
-		{Stage: "fusion", Candidates: []stageAuditDumpCandidate{{FactID: "f1"}}},
-		{Stage: "materialize", Candidates: []stageAuditDumpCandidate{{FactID: "f1"}}},
+		{Stage: "candidate_fanout", Source: "retrieval", Candidates: []stageAuditDumpCandidate{{FactID: "f1"}}},
+		{Stage: "candidate_merge", Candidates: []stageAuditDumpCandidate{{FactID: "f1"}}},
+		{Stage: "candidate_materialize", Candidates: []stageAuditDumpCandidate{{FactID: "f1"}}},
 		{Stage: "rank_output", Candidates: []stageAuditDumpCandidate{{FactID: "f1"}}},
-		{Stage: "build_hits", Candidates: []stageAuditDumpCandidate{{FactID: "f1"}}},
+		{Stage: "build_grounded_hits", Candidates: []stageAuditDumpCandidate{{FactID: "f1"}}},
 	}}
 	rec := classifyRecallQuestion(q, "", dump, 1, signals, facts, factByID, stageAudit)
 	if rec.MissType != "answer_miss" {
@@ -264,13 +264,13 @@ func TestClassifyRecallQuestion_StageAuditFindsRerankDrop(t *testing.T) {
 	facts := map[string][]factDumpFact{"conv-1": {{ID: "f1", Content: "Alice went to Tampa.", EvidenceIDs: []string{"e1"}}}}
 	factByID := map[string]factDumpFact{"f1": facts["conv-1"][0]}
 	stageAudit := stageAuditDumpRecord{QID: "q1", Stages: []stageAuditDumpStage{
-		{Stage: "source_fanout", Source: "retrieval", Candidates: []stageAuditDumpCandidate{{FactID: "f1"}}},
-		{Stage: "fusion", Candidates: []stageAuditDumpCandidate{{FactID: "f1"}}},
-		{Stage: "materialize", Candidates: []stageAuditDumpCandidate{{FactID: "f1"}}},
+		{Stage: "candidate_fanout", Source: "retrieval", Candidates: []stageAuditDumpCandidate{{FactID: "f1"}}},
+		{Stage: "candidate_merge", Candidates: []stageAuditDumpCandidate{{FactID: "f1"}}},
+		{Stage: "candidate_materialize", Candidates: []stageAuditDumpCandidate{{FactID: "f1"}}},
 		{Stage: "rank_output", Candidates: []stageAuditDumpCandidate{{FactID: "f1"}}},
-		{Stage: "build_hits_input", Candidates: []stageAuditDumpCandidate{{FactID: "f1"}}},
-		{Stage: "build_hits_reranked", Candidates: []stageAuditDumpCandidate{{FactID: "f2"}}},
-		{Stage: "build_hits", Candidates: []stageAuditDumpCandidate{{FactID: "f2"}}},
+		{Stage: "context_pack_input", Candidates: []stageAuditDumpCandidate{{FactID: "f1"}}},
+		{Stage: "context_pack_reranked", Candidates: []stageAuditDumpCandidate{{FactID: "f2"}}},
+		{Stage: "build_grounded_hits", Candidates: []stageAuditDumpCandidate{{FactID: "f2"}}},
 	}}
 	rec := classifyRecallQuestion(q, "", dump, 1, signals, facts, factByID, stageAudit)
 	if rec.MissType != "rerank_drop_evidence_id" {
@@ -285,13 +285,13 @@ func TestClassifyRecallQuestion_StageAuditFindsFinalLimitDrop(t *testing.T) {
 	facts := map[string][]factDumpFact{"conv-1": {{ID: "f1", Content: "Alice went to Tampa.", EvidenceIDs: []string{"e1"}}}}
 	factByID := map[string]factDumpFact{"f1": facts["conv-1"][0]}
 	stageAudit := stageAuditDumpRecord{QID: "q1", Stages: []stageAuditDumpStage{
-		{Stage: "source_fanout", Source: "retrieval", Candidates: []stageAuditDumpCandidate{{FactID: "f1"}}},
-		{Stage: "fusion", Candidates: []stageAuditDumpCandidate{{FactID: "f1"}}},
-		{Stage: "materialize", Candidates: []stageAuditDumpCandidate{{FactID: "f1"}}},
+		{Stage: "candidate_fanout", Source: "retrieval", Candidates: []stageAuditDumpCandidate{{FactID: "f1"}}},
+		{Stage: "candidate_merge", Candidates: []stageAuditDumpCandidate{{FactID: "f1"}}},
+		{Stage: "candidate_materialize", Candidates: []stageAuditDumpCandidate{{FactID: "f1"}}},
 		{Stage: "rank_output", Candidates: []stageAuditDumpCandidate{{FactID: "f1"}}},
-		{Stage: "build_hits_input", Candidates: []stageAuditDumpCandidate{{FactID: "f1"}}},
-		{Stage: "build_hits_reranked", Candidates: []stageAuditDumpCandidate{{FactID: "f1"}}},
-		{Stage: "build_hits", Candidates: []stageAuditDumpCandidate{{FactID: "f2"}}},
+		{Stage: "context_pack_input", Candidates: []stageAuditDumpCandidate{{FactID: "f1"}}},
+		{Stage: "context_pack_reranked", Candidates: []stageAuditDumpCandidate{{FactID: "f1"}}},
+		{Stage: "build_grounded_hits", Candidates: []stageAuditDumpCandidate{{FactID: "f2"}}},
 	}}
 	rec := classifyRecallQuestion(q, "", dump, 1, signals, facts, factByID, stageAudit)
 	if rec.MissType != "final_limit_drop_evidence_id" {
@@ -306,12 +306,12 @@ func TestClassifyRecallQuestion_StageAuditFindsFinalSelectionDrop(t *testing.T) 
 	facts := map[string][]factDumpFact{"conv-1": {{ID: "f1", Content: "Alice went to Tampa.", EvidenceIDs: []string{"e1"}}}}
 	factByID := map[string]factDumpFact{"f1": facts["conv-1"][0]}
 	stageAudit := stageAuditDumpRecord{QID: "q1", Stages: []stageAuditDumpStage{
-		{Stage: "source_fanout", Source: "retrieval", Candidates: []stageAuditDumpCandidate{{FactID: "f1"}}},
-		{Stage: "fusion", Candidates: []stageAuditDumpCandidate{{FactID: "f1"}}},
-		{Stage: "materialize", Candidates: []stageAuditDumpCandidate{{FactID: "f1"}}},
+		{Stage: "candidate_fanout", Source: "retrieval", Candidates: []stageAuditDumpCandidate{{FactID: "f1"}}},
+		{Stage: "candidate_merge", Candidates: []stageAuditDumpCandidate{{FactID: "f1"}}},
+		{Stage: "candidate_materialize", Candidates: []stageAuditDumpCandidate{{FactID: "f1"}}},
 		{Stage: "rank_output", Candidates: []stageAuditDumpCandidate{{FactID: "f1"}}},
-		{Stage: "build_hits_input", Candidates: []stageAuditDumpCandidate{{FactID: "f1"}}},
-		{Stage: "build_hits", Candidates: []stageAuditDumpCandidate{{FactID: "f2"}}},
+		{Stage: "context_pack_input", Candidates: []stageAuditDumpCandidate{{FactID: "f1"}}},
+		{Stage: "build_grounded_hits", Candidates: []stageAuditDumpCandidate{{FactID: "f2"}}},
 	}}
 	rec := classifyRecallQuestion(q, "", dump, 1, signals, facts, factByID, stageAudit)
 	if rec.MissType != "final_selection_drop_evidence_id" {
@@ -319,19 +319,19 @@ func TestClassifyRecallQuestion_StageAuditFindsFinalSelectionDrop(t *testing.T) 
 	}
 }
 
-func TestClassifyRecallQuestion_StageAuditFindsBuildHitsInconsistency(t *testing.T) {
+func TestClassifyRecallQuestion_StageAuditFindsGroundedHitsInconsistency(t *testing.T) {
 	q := QuestionScore{ID: "q1", Query: "Where did Alice go?", Prediction: "Paris.", Judge: 0}
 	dump := recallDumpRecord{QID: "q1", Gold: []string{"Tampa"}, Hits: []recallDumpHit{{ID: "f2", Content: "Alice went to Paris."}}}
 	signals := auditSignals{ConversationID: "conv-1", EvidenceIDs: []string{"e1"}, GoldTerms: []string{"tampa"}}
 	facts := map[string][]factDumpFact{"conv-1": {{ID: "f1", Content: "Alice went to Tampa.", EvidenceIDs: []string{"e1"}}}}
 	factByID := map[string]factDumpFact{"f1": facts["conv-1"][0]}
 	stageAudit := stageAuditDumpRecord{QID: "q1", Stages: []stageAuditDumpStage{
-		{Stage: "source_fanout", Source: "retrieval", Candidates: []stageAuditDumpCandidate{{FactID: "f1"}}},
-		{Stage: "fusion", Candidates: []stageAuditDumpCandidate{{FactID: "f1"}}},
-		{Stage: "materialize", Candidates: []stageAuditDumpCandidate{{FactID: "f1"}}},
+		{Stage: "candidate_fanout", Source: "retrieval", Candidates: []stageAuditDumpCandidate{{FactID: "f1"}}},
+		{Stage: "candidate_merge", Candidates: []stageAuditDumpCandidate{{FactID: "f1"}}},
+		{Stage: "candidate_materialize", Candidates: []stageAuditDumpCandidate{{FactID: "f1"}}},
 		{Stage: "rank_output", Candidates: []stageAuditDumpCandidate{{FactID: "f1"}}},
-		{Stage: "build_hits_input", Candidates: []stageAuditDumpCandidate{{FactID: "f2"}}},
-		{Stage: "build_hits", Candidates: []stageAuditDumpCandidate{{FactID: "f2"}}},
+		{Stage: "context_pack_input", Candidates: []stageAuditDumpCandidate{{FactID: "f2"}}},
+		{Stage: "build_grounded_hits", Candidates: []stageAuditDumpCandidate{{FactID: "f2"}}},
 	}}
 	rec := classifyRecallQuestion(q, "", dump, 1, signals, facts, factByID, stageAudit)
 	if rec.MissType != "audit_inconsistent_evidence_id" {
@@ -350,9 +350,9 @@ func TestClassifyRecallQuestion_SecondaryMissSourceEvidenceIDGap(t *testing.T) {
 	}
 	facts := map[string][]factDumpFact{"conv-1": {{ID: "f1", Content: "Alice read a book in 2022."}}}
 	stageAudit := stageAuditDumpRecord{QID: "q1", Stages: []stageAuditDumpStage{
-		{Stage: "source_fanout", Source: "retrieval", Candidates: []stageAuditDumpCandidate{{FactID: "f2"}}},
-		{Stage: "fusion", Candidates: []stageAuditDumpCandidate{{FactID: "f2"}}},
-		{Stage: "build_hits", Candidates: []stageAuditDumpCandidate{{FactID: "f2"}}},
+		{Stage: "candidate_fanout", Source: "retrieval", Candidates: []stageAuditDumpCandidate{{FactID: "f2"}}},
+		{Stage: "candidate_merge", Candidates: []stageAuditDumpCandidate{{FactID: "f2"}}},
+		{Stage: "build_grounded_hits", Candidates: []stageAuditDumpCandidate{{FactID: "f2"}}},
 	}}
 
 	rec := classifyRecallQuestion(q, "", dump, 1, signals, facts, nil, stageAudit)
@@ -371,11 +371,11 @@ func TestClassifyRecallQuestion_SecondaryMissTemporalReasoning(t *testing.T) {
 	facts := map[string][]factDumpFact{"conv-1": {{ID: "f1", Content: "Alice went hiking the week before 6 July 2023.", EvidenceIDs: []string{"e1"}}}}
 	factByID := map[string]factDumpFact{"f1": facts["conv-1"][0]}
 	stageAudit := stageAuditDumpRecord{QID: "q1", Stages: []stageAuditDumpStage{
-		{Stage: "source_fanout", Source: "retrieval", Candidates: []stageAuditDumpCandidate{{FactID: "f1"}}},
-		{Stage: "fusion", Candidates: []stageAuditDumpCandidate{{FactID: "f1"}}},
-		{Stage: "materialize", Candidates: []stageAuditDumpCandidate{{FactID: "f1"}}},
+		{Stage: "candidate_fanout", Source: "retrieval", Candidates: []stageAuditDumpCandidate{{FactID: "f1"}}},
+		{Stage: "candidate_merge", Candidates: []stageAuditDumpCandidate{{FactID: "f1"}}},
+		{Stage: "candidate_materialize", Candidates: []stageAuditDumpCandidate{{FactID: "f1"}}},
 		{Stage: "rank_output", Candidates: []stageAuditDumpCandidate{{FactID: "f1"}}},
-		{Stage: "build_hits", Candidates: []stageAuditDumpCandidate{{FactID: "f1"}}},
+		{Stage: "build_grounded_hits", Candidates: []stageAuditDumpCandidate{{FactID: "f1"}}},
 	}}
 
 	rec := classifyRecallQuestion(q, "", dump, 1, signals, facts, factByID, stageAudit)

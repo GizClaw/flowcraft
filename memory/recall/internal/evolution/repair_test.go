@@ -10,8 +10,8 @@ import (
 func TestPlanFromStages_StaleAndSuperseded(t *testing.T) {
 	scope := domain.Scope{RuntimeID: "rt", UserID: "u1"}
 	plan := PlanFromStages(scope, []diagnostic.StageDiagnostic{{
-		Stage: "federation_fanout",
-		Detail: diagnostic.FederationFanoutDetail{
+		Stage: "candidate_merge_and_materialize",
+		Detail: diagnostic.CandidateMergeAndMaterializeDetail{
 			Drops: []diagnostic.CandidateDrop{
 				{Reason: diagnostic.DropStaleFact, FactID: "a"},
 				{Reason: diagnostic.DropSuperseded, FactID: "b"},
@@ -27,8 +27,8 @@ func TestPlanFromStages_StaleAndSuperseded(t *testing.T) {
 func TestPlanFromStages_DedupesAcrossStages(t *testing.T) {
 	scope := domain.Scope{RuntimeID: "rt", UserID: "u1"}
 	plan := PlanFromStages(scope, []diagnostic.StageDiagnostic{{
-		Stage: "federation_fanout",
-		Detail: diagnostic.FederationFanoutDetail{
+		Stage: "candidate_merge_and_materialize",
+		Detail: diagnostic.CandidateMergeAndMaterializeDetail{
 			Drops: []diagnostic.CandidateDrop{
 				{Reason: diagnostic.DropStaleFact, FactID: "x"},
 				{Reason: diagnostic.DropStaleFact, FactID: "x"},

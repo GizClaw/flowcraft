@@ -1,9 +1,7 @@
-// Package ingest owns the write-time ingestion pipeline. The Phase
-// A.1 rename from "compiler" reflects the package's actual job:
-// turning raw conversational turns / caller-supplied facts into
-// canonical TemporalFact ledger entries via a fixed stage chain
-// (extract → structurize → normalize → resolve entities → resolve
-// time → policy → merge_key → id → score).
+// Package ingest owns the write-time ingestion pipeline. It turns raw
+// conversational turns / caller-supplied facts into canonical TemporalFact
+// ledger entries via a fixed stage chain (extract -> structurize -> normalize
+// -> resolve entities -> resolve time -> policy -> merge_key -> id -> score).
 package ingest
 
 import (
@@ -18,10 +16,9 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 )
 
-// Stages assembles the canonical write-time pipeline. Each stage is
-// pluggable so later phases can swap in LLM-backed extractors /
-// resolvers without churning the facade. The zero value of each
-// interface is the deterministic Phase 1 implementation.
+// Stages assembles the canonical write-time pipeline. Each stage is pluggable
+// so callers can swap in LLM-backed extractors / resolvers without churning the
+// facade. The zero value of each interface is the deterministic implementation.
 type Stages struct {
 	Extractor         port.Extractor
 	Structurizer      port.Structurizer
@@ -40,14 +37,13 @@ type Stages struct {
 	Clock      func() time.Time
 }
 
-// Default returns an Ingestor with deterministic Phase 1 stages
-// wired up.
+// Default returns an Ingestor with deterministic stages wired up.
 func Default() port.Ingestor {
 	return New(Stages{})
 }
 
-// New constructs an Ingestor from explicit stages. Nil fields fall
-// back to the Phase 1 deterministic implementation.
+// New constructs an Ingestor from explicit stages. Nil fields fall back to the
+// deterministic implementation.
 func New(s Stages) port.Ingestor {
 	if s.Extractor == nil {
 		s.Extractor = passthroughExtractor{}

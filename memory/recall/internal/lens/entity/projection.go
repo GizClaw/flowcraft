@@ -49,9 +49,8 @@ func New() *Projection {
 // Name implements port.Projection.
 func (p *Projection) Name() string { return "entity" }
 
-// Consistency reports Required: entity recall is part of the v2 read
-// path, so the projection must be visible immediately after Save
-// (docs §13 Phase 2).
+// Consistency reports Required: entity recall is part of the v2 read path, so
+// the projection must be visible immediately after Save.
 func (p *Projection) Consistency() port.Consistency { return port.Required }
 
 // AcceptsKind rejects KindEpisode. Episode facts are raw conversation
@@ -133,8 +132,8 @@ func (p *Projection) Rebuild(ctx context.Context, scope domain.Scope, facts []do
 	return p.Project(ctx, facts)
 }
 
-// ClearScope drops the entire scope shard in O(1) — used by
-// Memory.ForgetAll (D.8 C9) without enumerating fact IDs.
+// ClearScope drops the entire scope shard in O(1) for Memory.ForgetAll
+// without enumerating fact IDs.
 func (p *Projection) ClearScope(_ context.Context, scope domain.Scope) error {
 	p.mu.Lock()
 	delete(p.scopes, keyOf(scope))

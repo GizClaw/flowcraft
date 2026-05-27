@@ -53,9 +53,9 @@ func TestProject_ReplacesPriorMentions(t *testing.T) {
 	}
 }
 
-// TestProject_DropsClosed pins Cluster B: a soft-forgotten
-// (Closed) fact must not be indexed by the entity projection. The
-// pre-cluster code only filtered on CorrectedBy, so Closed facts
+// TestProject_DropsClosed pins that a soft-forgotten (Closed) fact
+// must not be indexed by the entity projection. The previous code
+// only filtered on CorrectedBy, so Closed facts
 // kept appearing in entity Lookup results until RebuildAll.
 func TestProject_DropsClosed(t *testing.T) {
 	p := New()

@@ -6,8 +6,8 @@ import (
 )
 
 // PublicRecallTrace materialises domain.RecallTrace from ReadState.
-// Phase E.3 made the surface Stages-only; callers reconstruct any
-// derived view via sdk/recall/diagnostics.
+// The public surface is Stages-only; callers reconstruct any derived
+// view via sdk/recall/diagnostics.
 func PublicRecallTrace(state *ReadState) domain.RecallTrace {
 	if state == nil || state.Trace == nil {
 		return domain.RecallTrace{}

@@ -1,8 +1,7 @@
 // Package stages owns the single forget_all stage that powers
-// Memory.ForgetAll (Phase D.8 C9). It lives here rather than inline
-// in the facade so the operation honours framework principle #2
-// "Stages over Procedural" and #6 "Stage is the one source of
-// diagnostics".
+// Memory.ForgetAll. It lives here rather than inline in the facade so the
+// operation honours framework principle #2 "Stages over Procedural" and #6
+// "Stage is the one source of diagnostics".
 package stages
 
 import (
@@ -79,10 +78,9 @@ func (s *ForgetAll) Run(ctx context.Context, state *forget.State) (diagnostic.St
 	scopeKey := state.Scope.PartitionKey()
 	mode := domain.NormalizeForgetMode(state.Mode)
 
-	// ExpireRetired path (Cluster A / D5 2026-05-21): a non-nil
-	// Filter coerces the operation to Hard and waives the
-	// confirmScopeKey guard — TTL sweeps are intentional
-	// administrative deletes, not GDPR full-scope wipes.
+	// A non-nil Filter coerces the operation to Hard and waives the
+	// confirmScopeKey guard; TTL sweeps are intentional administrative deletes,
+	// not GDPR full-scope wipes.
 	if state.Filter != nil {
 		return s.runExpire(ctx, state, scopeKey, started)
 	}
@@ -221,12 +219,10 @@ func (s *ForgetAll) runHard(
 	}, nil
 }
 
-// runExpire is the ExpireRetired path (Cluster A / D5
-// 2026-05-21). It lists every fact in the scope, applies
-// state.Filter to compute the deletion subset, hard-deletes the
-// matches per-id (preserving non-matching facts and their projection
-// entries), and emits an ExpireRetiredDetail capturing the scan
-// + delete + projection counters.
+// runExpire lists every fact in the scope, applies state.Filter to compute the
+// deletion subset, hard-deletes the matches per-id (preserving non-matching
+// facts and their projection entries), and emits an ExpireRetiredDetail
+// capturing the scan + delete + projection counters.
 //
 // Per-fact Forget is the right primitive here (rather than
 // ClearScope) because a TTL sweep MUST leave non-expired facts'

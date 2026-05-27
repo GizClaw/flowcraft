@@ -189,13 +189,13 @@ func TestSaveSourceTurnsPersistsExtractorEvidenceRefs(t *testing.T) {
 	}
 	var sawSource, sawRank, sawHits bool
 	for _, st := range audit.Stages {
-		if st.Stage == "source_fanout" && len(st.Candidates) > 0 {
+		if st.Stage == "candidate_fanout" && len(st.Candidates) > 0 {
 			sawSource = true
 		}
 		if st.Stage == "rank_output" && len(st.Candidates) > 0 {
 			sawRank = true
 		}
-		if st.Stage == "build_hits" && len(st.Candidates) > 0 {
+		if st.Stage == "build_grounded_hits" && len(st.Candidates) > 0 {
 			sawHits = true
 		}
 	}
@@ -369,6 +369,8 @@ func TestStructuredAnswerBodyKeepsRecallHitStructure(t *testing.T) {
 	for _, want := range []string{
 		"ASKED_AT: 2023-10-01",
 		"QUESTION: When did Melanie go to the pottery workshop?",
+		"EVIDENCE_PACKAGE:",
+		`types: "direct", "temporal_anchor"`,
 		"MEMORIES (STRUCTURED_FACTS):",
 		`fact_id: "f1"`,
 		`kind: "event"`,
@@ -386,6 +388,51 @@ func TestStructuredAnswerBodyKeepsRecallHitStructure(t *testing.T) {
 	}
 	if strings.Contains(body, "| evidence:") {
 		t.Fatalf("structured answer body should not use flattened evidence rendering:\n%s", body)
+	}
+}
+
+func TestStructuredAnswerBodyDoesNotExposeNeighborCandidateSourceAsEvidencePackage(t *testing.T) {
+	body := renderStructuredAnswerBody(runners.AnswerQuestion{
+		Query: "Where did Alice buy the necklace that she wore?",
+	}, []recall.Hit{{
+		Fact:    recall.TemporalFact{ID: "f1", Kind: recall.FactState, Content: "Alice bought the necklace in Paris."},
+		Sources: []string{"retrieval", "neighbor_candidate"},
+	}})
+	for _, want := range []string{
+		"EVIDENCE_PACKAGE:",
+		`"bridge_chain"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("structured answer body missing %q:\n%s", want, body)
+		}
+	}
+	if strings.Contains(body, "expanded_related_evidence") {
+		t.Fatalf("expansion diagnostics must not affect answer package:\n%s", body)
+	}
+	if strings.Contains(body, "neighbor_candidate") {
+		t.Fatalf("diagnostic-only expansion source must not render in answer body:\n%s", body)
+	}
+}
+
+func TestStructuredAnswerBodyPackagesSupportingEvidenceRanks(t *testing.T) {
+	body := renderStructuredAnswerBody(runners.AnswerQuestion{
+		Query: "Where did Alice buy the necklace that she wore?",
+	}, []recall.Hit{
+		{Fact: recall.TemporalFact{ID: "wore", Kind: recall.FactState, Content: "Alice wore the necklace."}, Evidence: []recall.EvidenceRef{{ID: "D1:1", Text: "Alice wore the necklace."}}},
+		{Fact: recall.TemporalFact{ID: "dog", Kind: recall.FactState, Content: "Alice walked her dog."}, Evidence: []recall.EvidenceRef{{ID: "D2:1", Text: "Alice walked her dog."}}},
+		{Fact: recall.TemporalFact{ID: "tea", Kind: recall.FactState, Content: "Alice drank tea."}, Evidence: []recall.EvidenceRef{{ID: "D3:1", Text: "Alice drank tea."}}},
+		{Fact: recall.TemporalFact{ID: "music", Kind: recall.FactState, Content: "Alice likes music."}, Evidence: []recall.EvidenceRef{{ID: "D4:1", Text: "Alice likes music."}}},
+		{Fact: recall.TemporalFact{ID: "book", Kind: recall.FactState, Content: "Alice read a book."}, Evidence: []recall.EvidenceRef{{ID: "D5:1", Text: "Alice read a book."}}},
+		{Fact: recall.TemporalFact{ID: "bought", Kind: recall.FactState, Content: "Alice bought the necklace in Paris."}, Evidence: []recall.EvidenceRef{{ID: "D1:2", Text: "Alice bought the necklace in Paris."}}},
+	})
+	for _, want := range []string{
+		`types: "direct", "bridge_chain"`,
+		`primary_ranks: "#1", "#2", "#3", "#4", "#5"`,
+		`supporting_ranks: "#6"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("structured answer body missing %q:\n%s", want, body)
+		}
 	}
 }
 

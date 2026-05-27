@@ -3,6 +3,6 @@
 // Deprecated: use github.com/GizClaw/flowcraft/memory/retrieval instead. This
 // package will be removed in v0.5.0.
 //
-// Phase 1 ships core types, an in-memory Index implementation, and optional
-// journaling via subpackage retrieval/journal.
+// The package includes core types, an in-memory Index implementation,
+// and optional journaling via subpackage retrieval/journal.
 package retrieval

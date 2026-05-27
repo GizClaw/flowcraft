@@ -15,8 +15,8 @@ import (
 )
 
 // AsyncSemanticProcessor is the caller-driven drain entry for queued
-// semantic extraction (F.1b). It is intentionally separate from Memory
-// so the main facade does not own goroutine lifecycles. The core does not
+// semantic extraction. It is intentionally separate from Memory so the
+// main facade does not own goroutine lifecycles. The core does not
 // start, stop, drain, or close async semantic workers.
 type AsyncSemanticProcessor interface {
 	ProcessAsyncSemantic(ctx context.Context, opts AsyncSemanticProcessOptions) (AsyncSemanticProcessResult, error)
@@ -60,7 +60,7 @@ type AsyncSemanticQueueObserver interface {
 	AsyncSemanticQueueStats(ctx context.Context, scope Scope) (AsyncSemanticQueueStats, error)
 }
 
-// AsyncSemanticQueueStats is the operator-facing queue snapshot (F.1c).
+// AsyncSemanticQueueStats is the operator-facing queue snapshot.
 type AsyncSemanticQueueStats = port.AsyncSemanticStats
 
 // AsyncSemanticQueueStats returns queue depth and terminal counts.

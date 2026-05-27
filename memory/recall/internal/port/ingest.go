@@ -22,12 +22,12 @@ type IngestInput struct {
 	KnownEntities []EntitySnapshot
 	Now           time.Time
 
-	// Tier is the SaveRequest importance intent label (Phase D.3).
+	// Tier is the SaveRequest importance intent label.
 	// Empty means "general". Mapped to Confidence in salience scoring.
 	Tier string
 
 	// RecentMessages is caller-supplied prior-turn context for the LLM
-	// extractor (Phase D.7). Recall does not fetch history itself.
+	// extractor. Recall does not fetch history itself.
 	RecentMessages []domain.Message
 
 	// ExistingFactsAnchor is caller-supplied dedup anchors for extract.

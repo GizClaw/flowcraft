@@ -1,6 +1,6 @@
 // Package rebuild owns the rebuild-flow pipeline State and Runner.
-// Stages (scan / project) land in Phase B.4 under rebuild/stages/;
-// this package owns the State schema so RebuildAll /
+// The scan / project stages live under rebuild/stages/; this package
+// owns the State schema so RebuildAll /
 // RebuildProjection / RebuildScope all share one pipeline.
 package rebuild
 
@@ -15,7 +15,7 @@ import (
 // Stage of the rebuild pipeline. Each stage reads inputs from
 // previous fields and populates its own output slot.
 //
-// Field ownership by Phase B.4 stage:
+// Field ownership by stage:
 //
 //	scan    → Facts (scan TemporalStore, includeSuperseded=true)
 //	project → PerProjection (apply each selected projection,
@@ -44,15 +44,15 @@ type RebuildState struct {
 
 	// BatchSize hints how many facts the scan stage should
 	// hand to project at once. Zero means "no batching, project
-	// everything in one shot" — the only path Phase B.4
-	// implements. Non-zero is the seam future incremental
-	// rebuilds will use without re-shaping State.
+	// everything in one shot", which is the current implementation.
+	// Non-zero is the seam future incremental rebuilds will use
+	// without re-shaping State.
 	BatchSize int
 
 	// Cursor is the scan stage's resume token for paginated
 	// rebuilds. Zero is "start at the beginning"; non-zero is
-	// the opaque token a previous scan returned. The Phase B.4
-	// scan stage always returns "" (single-shot), but the slot
+	// the opaque token a previous scan returned. The current scan
+	// stage always returns "" (single-shot), but the slot
 	// exists so future stage implementations stay drop-in.
 	Cursor string
 
@@ -98,9 +98,9 @@ type ProjectionRebuildResult struct {
 
 // RebuildTrace is the rebuild-flow trace surface — the parallel of
 // domain.RecallTrace / domain.SaveTrace, but local to this package
-// because no public API currently returns it. When Phase B.4 wires
-// the public RebuildExplain (if ever) this type is the natural
-// candidate to lift into domain/trace.go alongside the other two
+// because no public API currently returns it. If a public
+// RebuildExplain is added, this type is the natural candidate to lift
+// into domain/trace.go alongside the other two
 // traces (single line, mechanical move — no behavioural change).
 type RebuildTrace struct {
 	Stages []diagnostic.StageDiagnostic

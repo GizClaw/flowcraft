@@ -109,7 +109,7 @@ func assertAsyncSaveP95BeatsSync(
 	}
 }
 
-// TestAsyncWrite_SaveP95BeatsSync pins F.1c: user-facing Save on the
+// TestAsyncWrite_SaveP95BeatsSync pins that user-facing Save on the
 // async lane must not wait on slow ingest; processor drain handles LLM.
 func TestAsyncWrite_SaveP95BeatsSync(t *testing.T) {
 	const (
@@ -141,9 +141,10 @@ func TestAsyncWrite_SaveP95BeatsSync(t *testing.T) {
 		&ingestCalls, func() { ingestCalls.Store(0) })
 }
 
-// TestAsyncWrite_SaveP95BeatsSync_SlowLLM repeats the F.1c contract on
-// the public WithLLMExtractor path (2s mock provider). Skipped under
-// -short so CI stays fast; run without -short before release.
+// TestAsyncWrite_SaveP95BeatsSync_SlowLLM repeats the async latency
+// contract on the public WithLLMExtractor path (2s mock provider).
+// Skipped under -short so CI stays fast; run without -short before
+// release.
 func TestAsyncWrite_SaveP95BeatsSync_SlowLLM(t *testing.T) {
 	if testing.Short() {
 		t.Skip("slow LLM latency bench")

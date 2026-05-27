@@ -397,7 +397,7 @@ func (s *MemoryStore) ReopenValidity(_ context.Context, scope domain.Scope, fact
 	return nil
 }
 
-// UpdateFeedback adds deltas to Reinforcement / Penalty (Phase D.4).
+// UpdateFeedback adds deltas to Reinforcement / Penalty.
 func (s *MemoryStore) UpdateFeedback(_ context.Context, scope domain.Scope, factID string, reinforcementDelta, penaltyDelta float64) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -421,7 +421,7 @@ func clampNonNeg(v float64) float64 {
 	return v
 }
 
-// MarkClosed sets the soft-delete flag on a fact (Phase D.8).
+// MarkClosed sets the soft-delete flag on a fact.
 func (s *MemoryStore) MarkClosed(_ context.Context, scope domain.Scope, factID string, closed bool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

@@ -91,12 +91,11 @@ func TestReinforce_BoostsRank(t *testing.T) {
 	}
 }
 
-// TestReinforce_RoutesToFeedbackPipeline pins the Cluster A
-// 2026-05-21 contract: Memory.Reinforce runs through the feedback
-// pipeline so the call emits a single apply_feedback StageDiagnostic
-// AND the canonical fact's reinforcement counter advances. The
-// retrieval projection sees the updated MetaReinforcement on the
-// follow-up reproject (Cluster D fix).
+// TestReinforce_RoutesToFeedbackPipeline verifies Memory.Reinforce runs through
+// the feedback pipeline so the call emits a single apply_feedback
+// StageDiagnostic and the canonical fact's reinforcement counter advances. The
+// retrieval projection sees the updated MetaReinforcement on the follow-up
+// reproject.
 func TestReinforce_RoutesToFeedbackPipeline(t *testing.T) {
 	hook := &captureHook{}
 	store := temporalstore.NewMemoryStore()

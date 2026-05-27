@@ -8,13 +8,12 @@ import (
 
 // PlannerInput is the planner contract input.
 //
-// KnownEntities is the cross-sub-scope merged EntitySnapshot list the
-// read-path plan stage assembled from every sub-scope in
-// state.Scope.EffectiveFederation() (Cluster G, D2 2026-05-21). The
-// planner uses it as a soft "query focus" hint to boost entity-aware
-// lenses (entity / relation / graph / profile) when query terms
-// intersect the canonical / alias surface. Leaving it empty preserves
-// the pre-D2 unweighted plan.
+// KnownEntities is the cross-sub-scope merged EntitySnapshot list the read-path
+// plan stage assembled from every sub-scope in
+// state.Scope.EffectiveFederation(). The planner uses it as a soft "query
+// focus" hint to boost entity-aware lenses (entity / relation / graph /
+// profile) when query terms intersect the canonical / alias surface. Leaving it
+// empty preserves the unweighted plan.
 type PlannerInput struct {
 	Scope         domain.Scope
 	Text          string

@@ -15,7 +15,7 @@ type Runner struct {
 }
 
 // NewRunner constructs a forget Runner with the supplied stages and
-// telemetry hook. The Phase D.8 C9 wiring registers a single stage
+// telemetry hook. The default wiring registers a single stage
 // (forget_all); the slice shape preserves drop-in room for future
 // pre/post stages (audit log emit, billing) without re-shaping the
 // runner.

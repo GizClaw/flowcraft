@@ -702,6 +702,8 @@ func TestLLMExtractorSystemPrompt_GuardsAntiAbstraction(t *testing.T) {
 		"Split enumerations into separate memories",
 		"Alice enjoys swimming",
 		"Do not\n  collapse lists into",
+		"Preserve literal answer-bearing spans",
+		"that book",
 		`"procedure"`,
 		"When comparing options, use a markdown\n                     table.",
 		"Quote proper nouns verbatim",
@@ -725,6 +727,8 @@ func TestTwoPassPrompts_GuardCoverageAndGrounding(t *testing.T) {
 		"XML-tagged envelope",
 		"<source_turns>",
 		"Be exhaustive about concrete, retrievable details",
+		"Preserve literal answer-bearing spans",
+		"that book",
 		"even when it appears only once and seems incidental",
 		"signed up for a pottery class yesterday",
 		`NOT

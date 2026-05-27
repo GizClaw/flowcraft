@@ -24,8 +24,7 @@ type SaveRequest struct {
 	// adjusts Confidence at ingest; it is not stored on the Fact.
 	Tier string
 
-	// RecentMessages is optional prior-turn context for the LLM
-	// extractor (Phase D.7).
+	// RecentMessages is optional prior-turn context for the LLM extractor.
 	RecentMessages []Message
 
 	// ExistingFactsAnchor is optional dedup context for extract.
@@ -53,9 +52,9 @@ type TurnContext struct {
 	Text       string
 }
 
-// Message is one caller-supplied conversational turn for LLM extract
-// prompt context (Phase D.7). Recall does not fetch history itself —
-// callers compose RecentMessages from their own history store.
+// Message is one caller-supplied conversational turn for LLM extract prompt
+// context. Recall does not fetch history itself; callers compose
+// RecentMessages from their own history store.
 type Message struct {
 	Role    string
 	Speaker string
@@ -63,9 +62,9 @@ type Message struct {
 	Time    time.Time
 }
 
-// Save-tier intent labels (Phase D.3). These are caller-supplied
-// importance hints on SaveRequest only — they are not persisted on
-// TemporalFact. Map to Confidence adjustments in ingest/salience.go.
+// Save-tier intent labels. These are caller-supplied importance hints on
+// SaveRequest only; they are not persisted on TemporalFact. Map to Confidence
+// adjustments in ingest/salience.go.
 const (
 	TierCore    = "core"
 	TierGeneral = "general"

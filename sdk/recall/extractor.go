@@ -19,7 +19,7 @@ const (
 	// ModeAdditive is the default: one LLM call, ADD-only, no merge/delete.
 	ModeAdditive ExtractMode = "additive"
 	// ModeReconciling is reserved for the legacy two-pass merge/delete behavior.
-	// As of Phase 3, no implementation ships in tree.
+	// No implementation currently ships in tree.
 	ModeReconciling ExtractMode = "reconciling"
 )
 

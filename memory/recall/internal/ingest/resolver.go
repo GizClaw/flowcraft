@@ -191,8 +191,8 @@ type resolverDecision struct {
 	// actionAppend / actionNoop the slice is empty. For
 	// actionSupersede it carries at least one ID; explicit
 	// supersede (Supersedes / MergeHints.Supersedes) may carry N
-	// IDs (D1, 2026-05-21), while implicit merge_key supersede
-	// always carries exactly one.
+	// IDs, while implicit merge_key supersede always carries exactly
+	// one.
 	priorIDs []string
 	kind     domain.RevisionKind
 }
@@ -251,11 +251,11 @@ func (r *DefaultResolver) classify(ctx context.Context, view port.View, f domain
 // resolveExplicitSupersedes closes facts named in Supersedes /
 // MergeHints.Supersedes without requiring a merge_key collision.
 //
-// 1:N semantics (D1, 2026-05-21): every listed prior must resolve
-// via view.Get before the resolver returns actionSupersede. Any
-// missing prior aborts with an errdefs.Validation error so the
-// write pipeline refuses a partial commit. Targets are deduplicated
-// (mergeStrings already does this) and returned in iteration order.
+// 1:N semantics: every listed prior must resolve via view.Get before
+// the resolver returns actionSupersede. Any missing prior aborts with
+// an errdefs.Validation error so the write pipeline refuses a partial
+// commit. Targets are deduplicated (mergeStrings already does this)
+// and returned in iteration order.
 func (r *DefaultResolver) resolveExplicitSupersedes(ctx context.Context, view port.View, f domain.TemporalFact) (resolverDecision, error) {
 	// mergeStrings dedupes across (a, b); pass both halves through
 	// it so even a single-slice input like Supersedes=[a, a, b]

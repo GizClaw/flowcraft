@@ -1,6 +1,6 @@
 // Package stages owns the three revision pipeline stages
 // (lookup_source / attach_revision / revision_save). Together they
-// implement Memory.Fork and Memory.Contest (Cluster A 2026-05-21).
+// implement Memory.Fork and Memory.Contest.
 package stages
 
 import (

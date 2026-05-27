@@ -11,21 +11,21 @@ import (
 	"github.com/GizClaw/flowcraft/memory/recall/internal/port"
 )
 
-// Intent runs the query compiler and populates state.Intent.
-type Intent struct {
+// QueryUnderstand runs the query compiler and populates state.Intent.
+type QueryUnderstand struct {
 	compiler port.IntentCompiler
 }
 
-// NewIntent constructs an Intent stage.
-func NewIntent(compiler port.IntentCompiler) *Intent {
-	return &Intent{compiler: compiler}
+// NewQueryUnderstand constructs a QueryUnderstand stage.
+func NewQueryUnderstand(compiler port.IntentCompiler) *QueryUnderstand {
+	return &QueryUnderstand{compiler: compiler}
 }
 
 // Name implements pipeline.Stage.
-func (Intent) Name() string { return "intent" }
+func (QueryUnderstand) Name() string { return "query_understand" }
 
 // Run implements pipeline.Stage.
-func (s *Intent) Run(ctx context.Context, state *read.ReadState) (diagnostic.StageDetail, error) {
+func (s *QueryUnderstand) Run(ctx context.Context, state *read.ReadState) (diagnostic.StageDetail, error) {
 	started := time.Now()
 	compiled, err := s.compiler.Compile(ctx, port.IntentInput{
 		Text:      state.Query.Text,
@@ -38,7 +38,7 @@ func (s *Intent) Run(ctx context.Context, state *read.ReadState) (diagnostic.Sta
 	})
 	latency := time.Since(started)
 	if err != nil {
-		return diagnostic.IntentDetail{
+		return diagnostic.QueryUnderstandDetail{
 			QueryLen:   len(state.Query.Text),
 			NERLatency: latency,
 		}, err
@@ -64,7 +64,7 @@ func (s *Intent) Run(ctx context.Context, state *read.ReadState) (diagnostic.Sta
 	for i, k := range intent.Kinds {
 		kinds[i] = string(k)
 	}
-	return diagnostic.IntentDetail{
+	return diagnostic.QueryUnderstandDetail{
 		QueryLen:     len(intent.Text),
 		Entities:     intent.Entities,
 		Kinds:        kinds,
@@ -74,4 +74,4 @@ func (s *Intent) Run(ctx context.Context, state *read.ReadState) (diagnostic.Sta
 	}, nil
 }
 
-var _ pipeline.Stage[*read.ReadState] = (*Intent)(nil)
+var _ pipeline.Stage[*read.ReadState] = (*QueryUnderstand)(nil)

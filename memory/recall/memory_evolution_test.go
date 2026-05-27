@@ -32,9 +32,9 @@ func (c *captureEvolution) AfterRecall(_ context.Context, scope domain.Scope, tr
 // contract: Save and Recall both invoke their respective
 // EvolutionRunner methods exactly once with the request's scope.
 //
-// Cluster F (2026-05-21) note: the trace passed to AfterRecall is
-// now a state-derived view (drops only) rather than the full
-// diagnostic trace — diagnostics are opt-in via RecallExplain.
+// The trace passed to AfterRecall is a state-derived view (drops only)
+// rather than the full diagnostic trace; diagnostics are opt-in via
+// RecallExplain.
 // Trace-shape assertions live in TestRecall_WithDiagnostics_*; this
 // test only proves the hooks fire with the right scope.
 func TestWithEvolution_HooksSaveAndRecall(t *testing.T) {

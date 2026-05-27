@@ -92,19 +92,19 @@ type TemporalStore interface {
 	// ignored so callers can issue idempotent forgets.
 	Delete(ctx context.Context, scope domain.Scope, factIDs []string) error
 
-	// UpdateFeedback adjusts reinforcement and penalty on an existing
-	// fact (Phase D.4). Deltas are added then clamped to >= 0.
+	// UpdateFeedback adjusts reinforcement and penalty on an existing fact.
+	// Deltas are added then clamped to >= 0.
 	UpdateFeedback(ctx context.Context, scope domain.Scope, factID string, reinforcementDelta, penaltyDelta float64) error
 
-	// MarkClosed sets or clears the soft-delete flag (Phase D.8).
+	// MarkClosed sets or clears the soft-delete flag.
 	MarkClosed(ctx context.Context, scope domain.Scope, factID string, closed bool) error
 
-	// ListByID returns every fact in the scope's supersede chain for
-	// factID, ObservedAt ascending (Phase D.6 History view).
+	// ListByID returns every fact in the scope's supersede chain for factID,
+	// ObservedAt ascending.
 	ListByID(ctx context.Context, scope domain.Scope, factID string) ([]domain.TemporalFact, error)
 
-	// DeleteByScope removes every fact in the scope partition (Phase
-	// D.8 ForgetAll Hard). Returns the number of facts removed.
+	// DeleteByScope removes every fact in the scope partition. Returns the
+	// number of facts removed.
 	DeleteByScope(ctx context.Context, scope domain.Scope) (int, error)
 
 	// Close releases backend resources.

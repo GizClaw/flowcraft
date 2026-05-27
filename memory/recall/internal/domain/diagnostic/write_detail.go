@@ -24,9 +24,8 @@ type IngestDetail struct {
 	StructurizerCoverage StructurizerCoverage
 	ExtractorLatency     time.Duration
 	StructurizerLatency  time.Duration
-	// RecentMessagesProvided / AnchorsProvided / TierApplied are
-	// Phase D.7 / D.3 fields wired through SaveRequest. Zero values
-	// here today.
+	// RecentMessagesProvided / AnchorsProvided / TierApplied are fields wired
+	// through SaveRequest. Zero values here today.
 	RecentMessagesProvided int
 	AnchorsProvided        int
 	TierApplied            string
@@ -111,7 +110,7 @@ type EvolutionAfterSaveDetail struct {
 	Repairs        int
 	Decays         int
 	Consolidations int
-	// ReinforcedRefs is wired in Phase D.4.
+	// ReinforcedRefs records reinforced evidence references.
 	ReinforcedRefs int
 }
 
@@ -126,8 +125,8 @@ type EnqueueSideEffectsDetail struct {
 
 func (EnqueueSideEffectsDetail) isStageDetail() {}
 
-// ForgetAllDetail —— forget_all stage (Phase D.8 C9; GDPR Art.17 /
-// CCPA 1798.105 compliant scope-level retirement).
+// ForgetAllDetail —— forget_all stage for GDPR Art.17 / CCPA 1798.105
+// compliant scope-level retirement.
 //
 // Mode is "soft" (Closed=true, store retained) or "hard" (physical
 // delete from canonical store + projections + evidence). For Soft
@@ -148,12 +147,11 @@ func (ForgetAllDetail) isStageDetail() {}
 
 // ExpireRetiredDetail —— forget_all stage (TTL filter variant).
 //
-// Emitted by the forget_all stage when invoked through
-// Memory.ExpireRetired (D5 2026-05-21). The stage reuses the forget
-// pipeline runner with State.Filter set to ExpiresBefore; the
-// resulting telemetry carries the TTL boundary, the matched/deleted
-// counts, and per-projection forget counts so operators can audit a
-// scheduled retention sweep without inspecting the canonical store.
+// Emitted by the forget_all stage when invoked through Memory.ExpireRetired.
+// The stage reuses the forget pipeline runner with State.Filter set to
+// ExpiresBefore; the resulting telemetry carries the TTL boundary, the
+// matched/deleted counts, and per-projection forget counts so operators can
+// audit a scheduled retention sweep without inspecting the canonical store.
 type ExpireRetiredDetail struct {
 	ScopeKey           string
 	ExpiresBefore      time.Time
@@ -167,12 +165,11 @@ type ExpireRetiredDetail struct {
 
 func (ExpireRetiredDetail) isStageDetail() {}
 
-// FeedbackDetail —— feedback/apply_feedback stage (Cluster A 2026-05-21).
+// FeedbackDetail —— feedback/apply_feedback stage.
 //
-// Reinforce / Penalize now route through the feedback pipeline so the
-// fact UpdateFeedback write + single-fact reproject (Cluster D) emit a
-// single observable record. Either delta MAY be zero (one-channel
-// updates are normal).
+// Reinforce / Penalize route through the feedback pipeline so the fact
+// UpdateFeedback write + single-fact reproject emit a single observable record.
+// Either delta MAY be zero (one-channel updates are normal).
 type FeedbackDetail struct {
 	FactID             string
 	ReinforcementDelta float64
@@ -182,8 +179,7 @@ type FeedbackDetail struct {
 
 func (FeedbackDetail) isStageDetail() {}
 
-// RevisionDetail —— revision/{lookup_source,attach,save} stages
-// (Cluster A 2026-05-21).
+// RevisionDetail —— revision/{lookup_source,attach,save} stages.
 //
 // Fork / Contest run as a three-stage pipeline; each stage emits its
 // own RevisionDetail describing the action taken. Kind disambiguates
@@ -200,12 +196,10 @@ type RevisionDetail struct {
 
 func (RevisionDetail) isStageDetail() {}
 
-// BuildEpisodeDetail —— write/build_episode stage (Phase F.1a). The
-// sync episode lane runs this stage to translate SaveRequest.Turns
-// into one or more KindEpisode facts before append. AsyncRequestID
-// is the durable work-item key shared across the sync lane and the
-// eventual async semantic worker (see
-// recall-v2-async-semantic-write.md §7.2).
+// BuildEpisodeDetail —— write/build_episode stage. The sync episode lane runs
+// this stage to translate SaveRequest.Turns into one or more KindEpisode facts
+// before append. AsyncRequestID is the durable work-item key shared across the
+// sync lane and the eventual async semantic worker.
 type BuildEpisodeDetail struct {
 	Turns          int
 	EpisodeFacts   int
@@ -214,10 +208,9 @@ type BuildEpisodeDetail struct {
 
 func (BuildEpisodeDetail) isStageDetail() {}
 
-// ProjectEpisodeEvidenceDetail —— write/project_episode_evidence stage
-// (Phase F.1a). Records the kind-filtered fanout that mirrors raw
-// episode evidence into the evidence projection (the only required
-// projection that accepts KindEpisode).
+// ProjectEpisodeEvidenceDetail —— write/project_episode_evidence stage. Records
+// the kind-filtered fanout that mirrors raw episode evidence into the evidence
+// projection (the only required projection that accepts KindEpisode).
 type ProjectEpisodeEvidenceDetail struct {
 	AsyncRequestID string
 	EpisodeFacts   int
@@ -226,9 +219,9 @@ type ProjectEpisodeEvidenceDetail struct {
 
 func (ProjectEpisodeEvidenceDetail) isStageDetail() {}
 
-// EnqueueSemanticDetail —— write/write_semantic_outbox stage (Phase
-// F.1a). Captures the local-durable outbox boundary: the synchronous
-// Save returns only after this enqueue completes.
+// EnqueueSemanticDetail —— write/write_semantic_outbox stage. Captures the
+// local-durable outbox boundary: the synchronous Save returns only after this
+// enqueue completes.
 type EnqueueSemanticDetail struct {
 	AsyncRequestID string
 	EpisodeFactIDs []string
@@ -237,9 +230,9 @@ type EnqueueSemanticDetail struct {
 
 func (EnqueueSemanticDetail) isStageDetail() {}
 
-// OriginStampDetail —— write/origin_stamp stage (Phase F.1b). Records
-// how many resolved facts received SemanticDerivation origin metadata
-// before append in the async worker lane.
+// OriginStampDetail —— write/origin_stamp stage. Records how many resolved
+// facts received SemanticDerivation origin metadata before append in the async
+// worker lane.
 type OriginStampDetail struct {
 	AsyncRequestID string
 	Facts          int
@@ -247,9 +240,9 @@ type OriginStampDetail struct {
 
 func (OriginStampDetail) isStageDetail() {}
 
-// AsyncSemanticProcessDetail —— async semantic worker completion
-// (Phase F.1c). Emitted once per processed job so operators can join
-// sync SaveTrace stages via AsyncRequestID.
+// AsyncSemanticProcessDetail —— async semantic worker completion. Emitted once
+// per processed job so operators can join sync SaveTrace stages via
+// AsyncRequestID.
 type AsyncSemanticProcessDetail struct {
 	AsyncRequestID  string
 	Attempt         int

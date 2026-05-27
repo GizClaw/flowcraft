@@ -5,8 +5,8 @@ import (
 	"github.com/GizClaw/flowcraft/memory/recall/internal/domain/diagnostic"
 )
 
-// RepairPlan lists fact ids operators may pass to ProjectionRebuilder
-// repair APIs. Phase 8 never applies the plan automatically.
+// RepairPlan lists fact ids operators may pass to ProjectionRebuilder repair
+// APIs. The plan is never applied automatically.
 type RepairPlan struct {
 	Scope   domain.Scope
 	FactIDs []string
@@ -14,8 +14,6 @@ type RepairPlan struct {
 }
 
 // PlanFromStages derives a repair plan from read-path stage drops.
-// Phase E.3 collapsed the legacy DriftEvent channel: drift signals
-// now live in trace.Stages exclusively.
 func PlanFromStages(scope domain.Scope, stages []diagnostic.StageDiagnostic) RepairPlan {
 	seen := make(map[string]struct{})
 	var ids []string

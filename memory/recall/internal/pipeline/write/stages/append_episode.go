@@ -12,11 +12,11 @@ import (
 )
 
 // AppendEpisode writes the raw KindEpisode facts produced by
-// build_episode to the canonical store. It is the F.1a sibling of
-// Append: separate stage so the runner / trace clearly distinguishes
-// "raw episode lane" from the sync semantic append, and so the
-// compensator can target the EpisodeFacts slice alone instead of
-// state.Resolution.Facts (which the async lane never populates).
+// build_episode to the canonical store. It is separate from Append so
+// the runner / trace clearly distinguishes "raw episode lane" from the
+// sync semantic append, and so the compensator can target the
+// EpisodeFacts slice alone instead of state.Resolution.Facts (which
+// the async lane never populates).
 type AppendEpisode struct {
 	store port.TemporalStore
 	hook  port.TelemetryHook

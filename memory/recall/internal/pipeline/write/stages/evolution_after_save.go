@@ -47,8 +47,8 @@ func (s *EvolutionAfterSave) Skip(_ context.Context, state *write.WriteState) (b
 // itself has already committed, so a runner failure must NOT abort
 // the pipeline or trigger compensation. The error is wrapped via
 // pipeline.BestEffort so the framework records the stage as
-// Status=Degraded (Cluster C); state.EvolutionErr is kept populated
-// for backward-compatible callers that read it directly.
+// Status=Degraded; state.EvolutionErr is kept populated for
+// backward-compatible callers that read it directly.
 func (s *EvolutionAfterSave) Run(ctx context.Context, state *write.WriteState) (diagnostic.StageDetail, error) {
 	err := s.runner.AfterSave(ctx, state.Scope, state.AppendedFactIDs)
 	if err != nil {

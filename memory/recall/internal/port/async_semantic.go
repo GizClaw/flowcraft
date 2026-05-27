@@ -56,9 +56,9 @@ type AsyncSemanticStatsFilter struct {
 	Now   time.Time
 }
 
-// AsyncSemanticStats is the operator-facing queue health snapshot
-// (Phase F.1c). DeadLetter counts failed jobs whose ErrClass is
-// permanent; ExpiredLeases counts leased jobs past LeaseUntil at Now.
+// AsyncSemanticStats is the operator-facing queue health snapshot.
+// DeadLetter counts failed jobs whose ErrClass is permanent;
+// ExpiredLeases counts leased jobs past LeaseUntil at Now.
 type AsyncSemanticStats struct {
 	Pending        int
 	Leased         int
@@ -119,8 +119,8 @@ type AsyncSemanticReceipt struct {
 }
 
 // AsyncSemanticResult is the worker's success report. Trace is owned
-// by the processor in F.1b and intentionally absent here so F.1a does
-// not depend on the processor surface.
+// by the processor and intentionally absent here so the async save
+// facade does not depend on the processor surface.
 type AsyncSemanticResult struct {
 	SemanticFactIDs []string
 	// RecoveredFromPriorAttempt is true when the worker discovered the

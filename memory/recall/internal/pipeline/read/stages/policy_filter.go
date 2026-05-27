@@ -18,22 +18,22 @@ var sensitivityRank = map[string]int{
 	"secret":   3,
 }
 
-// TrustFilter enforces Query.Trust at read time (Phase D.2). It runs
-// after materialize / federation merge and before rank.
-type TrustFilter struct{}
+// PolicyFilter enforces Query.Trust at read time. It runs after
+// candidate_merge_and_materialize and before rank.
+type PolicyFilter struct{}
 
-// NewTrustFilter constructs a TrustFilter stage.
-func NewTrustFilter() *TrustFilter { return &TrustFilter{} }
+// NewPolicyFilter constructs a PolicyFilter stage.
+func NewPolicyFilter() *PolicyFilter { return &PolicyFilter{} }
 
 // Name implements pipeline.Stage.
-func (TrustFilter) Name() string { return "trust_filter" }
+func (PolicyFilter) Name() string { return "policy_filter" }
 
 // Skip implements pipeline.Conditional.
-func (s *TrustFilter) Skip(_ context.Context, state *read.ReadState) (bool, diagnostic.StageDetail) {
+func (s *PolicyFilter) Skip(_ context.Context, state *read.ReadState) (bool, diagnostic.StageDetail) {
 	if state == nil || state.Query.Trust == nil {
 		read.PromoteMergedItems(state)
 		state.AfterTrust = state.MergedItems
-		detail := diagnostic.TrustFilterDetail{}
+		detail := diagnostic.PolicyFilterDetail{}
 		if snapshotsEnabled(state) {
 			detail.Items = candidateSnapshotPtr(contextItemSnapshots(state.AfterTrust))
 		}
@@ -43,7 +43,7 @@ func (s *TrustFilter) Skip(_ context.Context, state *read.ReadState) (bool, diag
 }
 
 // Run implements pipeline.Stage.
-func (s *TrustFilter) Run(_ context.Context, state *read.ReadState) (diagnostic.StageDetail, error) {
+func (s *PolicyFilter) Run(_ context.Context, state *read.ReadState) (diagnostic.StageDetail, error) {
 	_ = s
 	read.PromoteMergedItems(state)
 	trust := state.Query.Trust
@@ -51,7 +51,7 @@ func (s *TrustFilter) Run(_ context.Context, state *read.ReadState) (diagnostic.
 	allowedScopes := trustScopes(trust)
 
 	var kept []domain.ContextItem
-	detail := diagnostic.TrustFilterDetail{
+	detail := diagnostic.PolicyFilterDetail{
 		MaxSensitivity: trust.MaxSensitivity,
 		ActorID:        trust.ActorID,
 	}
@@ -121,6 +121,6 @@ func scopeAllowed(factScope domain.Scope, allowed []domain.Scope) bool {
 }
 
 var (
-	_ pipeline.Stage[*read.ReadState]       = (*TrustFilter)(nil)
-	_ pipeline.Conditional[*read.ReadState] = (*TrustFilter)(nil)
+	_ pipeline.Stage[*read.ReadState]       = (*PolicyFilter)(nil)
+	_ pipeline.Conditional[*read.ReadState] = (*PolicyFilter)(nil)
 )

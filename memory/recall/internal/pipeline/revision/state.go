@@ -1,5 +1,5 @@
 // Package revision owns the pipeline that drives Memory.Fork and
-// Memory.Contest (Cluster A 2026-05-21).
+// Memory.Contest.
 //
 // Both APIs share the same three-stage shape — lookup the source
 // fact, attach a Revision annotation to the new fact, then run it

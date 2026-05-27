@@ -6,6 +6,7 @@ package planner
 
 import (
 	"context"
+	"slices"
 	"strings"
 
 	"github.com/GizClaw/flowcraft/memory/recall/internal/domain"
@@ -145,16 +146,97 @@ func (r *RuleBased) Plan(_ context.Context, input port.PlannerInput) (domain.Que
 		SourceBudgets: budgets,
 		TotalCap:      limit,
 		LensWeights:   weights,
+		TaskIntents:   inferTaskIntents(intent),
 	}, nil
 }
 
+func inferTaskIntents(intent domain.QueryIntent) []domain.QueryTaskIntent {
+	var out []domain.QueryTaskIntent
+	add := func(task domain.QueryTaskIntent) {
+		if !slices.Contains(out, task) {
+			out = append(out, task)
+		}
+	}
+	if intent.Features.HasTimeSignal() {
+		add(domain.QueryTaskTemporalReasoning)
+	}
+	if hasNumericIntentKind(intent.Features.NumericIntentKind, domain.QueryNumericIntentCount) ||
+		hasNumericIntentKind(intent.Features.NumericIntentKind, domain.QueryNumericIntentFrequency) ||
+		hasSetCompletionSurface(intent) {
+		add(domain.QueryTaskSetCompletion)
+	}
+	if hasBridgeSurface(intent) {
+		add(domain.QueryTaskBridgeResolution)
+	}
+	if hasDisambiguationSurface(intent) {
+		add(domain.QueryTaskDisambiguation)
+	}
+	if len(out) == 0 {
+		add(domain.QueryTaskDirectLookup)
+	}
+	return out
+}
+
+func hasNumericIntentKind(kinds []domain.QueryNumericIntentKind, want domain.QueryNumericIntentKind) bool {
+	return slices.Contains(kinds, want)
+}
+
+func hasSetCompletionSurface(intent domain.QueryIntent) bool {
+	text := strings.ToLower(intent.Text)
+	if strings.Contains(text, "how many") || strings.Contains(text, "how much") {
+		return true
+	}
+	if !(strings.Contains(text, "what ") || strings.Contains(text, "which ")) {
+		return false
+	}
+	if tokenSetHasAny(intent.Features.Tokens,
+		"item", "thing", "event", "activ", "activity", "kind", "type", "style",
+		"name", "person", "people", "place", "medium", "media", "artist",
+		"band", "book", "movie", "song", "sport", "country", "food", "breed", "pet") {
+		return true
+	}
+	return strings.Contains(text, " has ") || strings.Contains(text, " have ")
+}
+
+func hasBridgeSurface(intent domain.QueryIntent) bool {
+	if len(intent.Features.Proper) >= 2 {
+		return true
+	}
+	text := strings.ToLower(intent.Text)
+	return strings.Contains(text, " that ") ||
+		strings.Contains(text, " which ") ||
+		strings.Contains(text, " who ") ||
+		strings.Contains(text, " after ") ||
+		strings.Contains(text, " before ") ||
+		strings.Contains(text, " because ") ||
+		strings.Contains(text, " her ") ||
+		strings.Contains(text, " his ") ||
+		strings.Contains(text, " their ")
+}
+
+func hasDisambiguationSurface(intent domain.QueryIntent) bool {
+	text := strings.ToLower(intent.Text)
+	return strings.Contains(text, " or ") ||
+		strings.Contains(text, " instead ") ||
+		strings.Contains(text, " rather than ") ||
+		strings.Contains(text, " which one")
+}
+
+func tokenSetHasAny(tokens map[string]struct{}, values ...string) bool {
+	for _, value := range values {
+		if _, ok := tokens[value]; ok {
+			return true
+		}
+	}
+	return false
+}
+
 // EntityHintBoost is the additive lens-weight bump applied per matching
-// canonical / alias surface (Cluster G, D2 2026-05-21). Kept small and
-// deterministic: the goal is to make the entity-hint signal observable
-// downstream, not to overtake activation rules. The hint is also scaled
-// by EntitySnapshot.Weight (the merge helper sets that to the number
-// of sub-scopes the entity appeared in) so federation-wide focus
-// entities outweigh single-scope mentions.
+// canonical / alias surface. Kept small and deterministic: the goal is to make
+// the entity-hint signal observable downstream, not to overtake activation
+// rules. The hint is also scaled by EntitySnapshot.Weight (the merge helper
+// sets that to the number of sub-scopes the entity appeared in) so
+// federation-wide focus entities outweigh single-scope mentions.
 const EntityHintBoost = 0.05
 
 // entityHintLenses is the static set of lenses that benefit from
@@ -359,8 +441,8 @@ func allocateBudgets(order []string, limit int) map[string]int {
 	return budgets
 }
 
-// FusionCandidateCap computes the per-source fusion pool cap from the
-// plan's final hit cap (wired by memory.New into federation_fanout).
+// FusionCandidateCap computes the per-source fusion pool cap from the plan's
+// final hit cap.
 func FusionCandidateCap(finalCap int) int {
 	if finalCap <= 0 {
 		finalCap = DefaultLimit

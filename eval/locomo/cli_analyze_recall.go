@@ -201,7 +201,7 @@ func addLocomoAnalyzeRecall(parent *cobra.Command) {
 	cmd.Flags().StringVar(&baselinePath, "baseline", "", "optional baseline report JSON; marks regressed/improved flips by qid")
 	cmd.Flags().StringVar(&datasetPath, "dataset", "", "optional dataset JSONL; enables evidence-term audit")
 	cmd.Flags().StringVar(&factsPath, "facts", "", "optional --dump-facts JSONL; enables extract-vs-recall classification")
-	cmd.Flags().StringVar(&stageAuditPath, "stage-audit", "", "optional --dump-stage-audit JSONL; enables source/fusion/rank attribution")
+	cmd.Flags().StringVar(&stageAuditPath, "stage-audit", "", "optional --dump-stage-audit JSONL; enables source/candidate/rank attribution")
 	cmd.Flags().StringVar(&category, "category", "", "optional category tag filter, e.g. multi-hop")
 	cmd.Flags().BoolVar(&onlyErrors, "only-errors", false, "only emit questions whose current judge score is 0")
 	cmd.Flags().BoolVar(&onlyFlips, "only-flips", false, "only emit questions that changed judge outcome vs --baseline")
@@ -564,12 +564,21 @@ func auditRecallStages(signals auditSignals, terms []string, audit stageAuditDum
 	stageCandidates := map[string][]stageAuditDumpCandidate{}
 	for _, st := range audit.Stages {
 		key := st.Stage
-		if st.Stage == "source_fanout" {
+		switch st.Stage {
+		case "candidate_fanout":
 			key = "source"
+		case "context_pack_input":
+			key = "context_input"
+		case "context_pack_reranked":
+			key = "context_reranked"
+		case "build_grounded_hits":
+			key = "final"
+		case "context_pack":
+			key = "final"
 		}
 		stageCandidates[key] = append(stageCandidates[key], st.Candidates...)
 	}
-	order := []string{"source", "fusion", "materialize", "federation_merge", "trust_filter", "rank_input", "rank_output", "build_hits_input", "build_hits_reranked", "build_hits"}
+	order := []string{"source", "candidate_merge", "candidate_materialize", "candidate_merge_and_materialize", "policy_filter", "rank_input", "rank_output", "context_input", "context_reranked", "final"}
 	for _, stage := range order {
 		if candidates, ok := stageCandidates[stage]; ok {
 			coverages[stage] = stageCandidateCoverage(terms, signals.EvidenceIDs, candidates, factByID)
@@ -671,19 +680,19 @@ func temporalOrNumericQuestion(query string) bool {
 
 func stageMissType(coverages map[string]float64) string {
 	source := coverages["source"]
-	fusion := coverages["fusion"]
-	materialize := coverages["materialize"]
+	candidateMerge := coverages["candidate_merge"]
+	candidateMaterialize := coverages["candidate_materialize"]
 	rankInput := coverages["rank_input"]
 	rankOutput := coverages["rank_output"]
-	final := coverages["build_hits"]
+	final := coverages["final"]
 	if source == 0 {
 		return "source_miss"
 	}
-	if fusion+0.0001 < source {
-		return "fusion_drop"
+	if candidateMerge+0.0001 < source {
+		return "candidate_merge_drop"
 	}
-	if materialize+0.0001 < fusion {
-		return "materialize_drop"
+	if candidateMaterialize+0.0001 < candidateMerge {
+		return "candidate_materialize_drop"
 	}
 	if rankInput > 0 && rankOutput+0.0001 < rankInput {
 		return "rank_drop"
@@ -713,31 +722,31 @@ func strictEvidenceStageMiss(evidenceIDs []string, stageCandidates map[string][]
 	if !present("source") {
 		return "source_miss_evidence_id"
 	}
-	if !present("fusion") {
-		return "fusion_drop_evidence_id"
+	if !present("candidate_merge") {
+		return "candidate_merge_drop_evidence_id"
 	}
-	if !present("materialize") {
-		return "materialize_drop_evidence_id"
+	if !present("candidate_materialize") {
+		return "candidate_materialize_drop_evidence_id"
 	}
 	if !present("rank_output") {
 		return "rank_drop_evidence_id"
 	}
-	hasBuildHitsInput := hasStage("build_hits_input")
-	hasBuildHitsReranked := hasStage("build_hits_reranked")
-	if hasBuildHitsInput && !present("build_hits_input") {
+	hasContextInput := hasStage("context_input")
+	hasContextReranked := hasStage("context_reranked")
+	if hasContextInput && !present("context_input") {
 		return "audit_inconsistent_evidence_id"
 	}
-	if hasBuildHitsReranked {
-		if !present("build_hits_reranked") {
+	if hasContextReranked {
+		if !present("context_reranked") {
 			return "rerank_drop_evidence_id"
 		}
-		if !present("build_hits") {
+		if !present("final") {
 			return "final_limit_drop_evidence_id"
 		}
 		return ""
 	}
-	if !present("build_hits") {
-		if hasBuildHitsInput {
+	if !present("final") {
+		if hasContextInput {
 			return "final_selection_drop_evidence_id"
 		}
 		return "context_drop_evidence_id"

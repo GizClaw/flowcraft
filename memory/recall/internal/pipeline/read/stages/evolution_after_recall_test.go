@@ -30,17 +30,15 @@ func (c *captureRunner) AfterRecall(_ context.Context, scope domain.Scope, trace
 	return c.err
 }
 
-// TestEvolutionAfterRecall_ReadsDropsFromState pins Cluster F
-// (2026-05-21): the stage MUST source materialize drops from
-// state.MaterializeDrops, NOT state.Trace.Stages. We pre-populate
-// drops on State, leave Trace nil, and assert the runner still sees
-// those drops (and via the federation_fanout-shaped synthetic stage
-// that evolution.PlanFromStages already understands).
+// TestEvolutionAfterRecall_ReadsDropsFromState verifies the stage sources
+// materialize drops from state.MaterializeDrops, not state.Trace.Stages. We
+// pre-populate drops on State, leave Trace nil, and assert the runner still
+// sees those drops.
 func TestEvolutionAfterRecall_ReadsDropsFromState(t *testing.T) {
 	scope := domain.Scope{RuntimeID: "rt", UserID: "u1"}
 	stateDrops := []diagnostic.CandidateDrop{
-		{Stage: "materialize", Reason: diagnostic.DropStaleFact, FactID: "f-stale"},
-		{Stage: "materialize", Reason: diagnostic.DropSuperseded, FactID: "f-old"},
+		{Stage: "candidate_materialize", Reason: diagnostic.DropStaleFact, FactID: "f-stale"},
+		{Stage: "candidate_materialize", Reason: diagnostic.DropSuperseded, FactID: "f-old"},
 	}
 
 	state := &read.ReadState{
@@ -86,11 +84,9 @@ func TestEvolutionAfterRecall_ReadsDropsFromState(t *testing.T) {
 	}
 }
 
-// TestEvolutionAfterRecall_AggregatesFromSubScopes covers the
-// production path where federation_fanout — not the standalone
-// Materialize stage — owns drop emission per sub-scope. The stage
-// must still surface those drops to the runner without anyone
-// touching state.Trace.
+// TestEvolutionAfterRecall_AggregatesFromSubScopes covers drop emission per
+// sub-scope. The stage must still surface those drops to the runner without
+// anyone touching state.Trace.
 func TestEvolutionAfterRecall_AggregatesFromSubScopes(t *testing.T) {
 	scope := domain.Scope{RuntimeID: "rt", UserID: "u1"}
 	state := &read.ReadState{
@@ -99,13 +95,13 @@ func TestEvolutionAfterRecall_AggregatesFromSubScopes(t *testing.T) {
 			{
 				Scope: scope,
 				MaterializeDrops: []diagnostic.CandidateDrop{{
-					Stage: "materialize", Reason: diagnostic.DropStaleFact, FactID: "f-a",
+					Stage: "candidate_materialize", Reason: diagnostic.DropStaleFact, FactID: "f-a",
 				}},
 			},
 			{
 				Scope: scope,
 				MaterializeDrops: []diagnostic.CandidateDrop{{
-					Stage: "materialize", Reason: diagnostic.DropSuperseded, FactID: "f-b",
+					Stage: "candidate_materialize", Reason: diagnostic.DropSuperseded, FactID: "f-b",
 				}},
 			},
 		},
@@ -122,14 +118,14 @@ func TestEvolutionAfterRecall_AggregatesFromSubScopes(t *testing.T) {
 }
 
 // TestEvolutionAfterRecall_RunnerErrorIsBestEffort confirms that a
-// runner failure surfaces as a BestEffort-wrapped error (Cluster C)
-// and ALSO populates state.EvolutionErr for back-compat consumers.
+// runner failure surfaces as a BestEffort-wrapped error and ALSO
+// populates state.EvolutionErr for back-compat consumers.
 func TestEvolutionAfterRecall_RunnerErrorIsBestEffort(t *testing.T) {
 	scope := domain.Scope{RuntimeID: "rt", UserID: "u1"}
 	state := &read.ReadState{
 		Scope: scope,
 		MaterializeDrops: []diagnostic.CandidateDrop{{
-			Stage: "materialize", Reason: diagnostic.DropStaleFact, FactID: "f",
+			Stage: "candidate_materialize", Reason: diagnostic.DropStaleFact, FactID: "f",
 		}},
 	}
 	boom := errors.New("runner offline")

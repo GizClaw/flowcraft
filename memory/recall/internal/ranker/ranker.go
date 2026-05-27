@@ -32,7 +32,7 @@ const (
 	sourceProfile  = "profile"
 )
 
-// Default is the deterministic post-materialize ranker (Phase E.1).
+// Default is the deterministic post-materialize ranker.
 type Default struct {
 	halfLife         time.Duration
 	supersededFactor float64

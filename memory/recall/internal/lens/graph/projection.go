@@ -103,7 +103,7 @@ func (p *Projection) Rebuild(ctx context.Context, scope domain.Scope, facts []do
 	return p.Project(ctx, facts)
 }
 
-// ClearScope drops the entire scope shard. Backs Memory.ForgetAll (D.8 C9).
+// ClearScope drops the entire scope shard for Memory.ForgetAll.
 func (p *Projection) ClearScope(_ context.Context, scope domain.Scope) error {
 	p.mu.Lock()
 	delete(p.scopes, keyOf(scope))
@@ -251,8 +251,8 @@ func keyOf(s domain.Scope) scopeKey {
 	return scopeKey{runtimeID: s.RuntimeID, userID: s.UserID}
 }
 
-// CapGraphHops clamps caller-supplied expansion depth to the default
-// bounded expansion (docs §8.4 Phase 7).
+// CapGraphHops clamps caller-supplied expansion depth to the default bounded
+// expansion.
 func CapGraphHops(hops int) int {
 	if hops <= 0 {
 		return DefaultMaxHops

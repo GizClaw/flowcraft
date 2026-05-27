@@ -1,6 +1,6 @@
-// Package forget owns the scope-wide retirement pipeline (Phase D.8 C9 —
-// GDPR Art.17 / CCPA 1798.105 compliance). It mirrors the rebuild
-// pipeline shape: one State, one Runner, one stage (forget_all).
+// Package forget owns the scope-wide retirement pipeline for GDPR Art.17 /
+// CCPA 1798.105 compliance. It mirrors the rebuild pipeline shape: one State,
+// one Runner, one stage (forget_all).
 //
 // ForgetAll is a single-stage pipeline by design — the operation is
 // inherently atomic from the caller's point of view (one scope, one
@@ -20,8 +20,8 @@ import (
 // ForgetFilter narrows the set of facts the forget_all stage acts on
 // when populated. Without a filter the stage retires every fact in
 // the scope (the GDPR ForgetAll path); with one it acts on the
-// subset that matches — backing Memory.ExpireRetired (D5
-// 2026-05-21) as the TTL-style sweep variant.
+// subset that matches, backing Memory.ExpireRetired as the TTL-style
+// sweep variant.
 //
 // ExpiresBefore is the only filter axis today: facts with non-nil
 // ExpiresAt that is not after the cutoff time are included. Adding
@@ -40,9 +40,8 @@ type ForgetFilter struct {
 // return it to the caller.
 type State struct {
 	// Scope is the primary scope whose facts must be retired.
-	// Federation sub-scopes on this Scope are intentionally IGNORED
-	// by the forget_all stage — ForgetAll is non-recursive (D.5
-	// "Federation 中仅作用于参数 scope").
+	// Federation sub-scopes on this Scope are intentionally ignored by the
+	// forget_all stage; ForgetAll is non-recursive.
 	Scope domain.Scope
 
 	// Mode selects soft (Closed=true, store retained) vs hard

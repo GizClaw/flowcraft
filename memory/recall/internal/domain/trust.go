@@ -1,8 +1,8 @@
 package domain
 
-// TrustContext carries read-time visibility constraints (Phase D.2).
+// TrustContext carries read-time visibility constraints.
 // Write-path governance (SensitivityPolicy) may stamp facts with
-// MetaSensitivity; trust_filter enforces the caller's ceiling at
+// MetaSensitivity; policy_filter enforces the caller's ceiling at
 // recall time.
 type TrustContext struct {
 	// MaxSensitivity is the highest sensitivity label the caller may

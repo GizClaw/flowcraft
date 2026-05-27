@@ -287,8 +287,8 @@ func TestForgetAll_RequiredProjectionFailureAborts(t *testing.T) {
 }
 
 // TestForgetAll_ExpireFilter_DeletesOnlyExpiredFacts pins the
-// ExpireRetired path (Cluster A / D5 2026-05-21). A non-nil Filter
-// switches the stage to per-id Hard delete, leaving non-matching
+// ExpireRetired path. A non-nil Filter switches the stage to per-id
+// Hard delete, leaving non-matching
 // facts intact and emitting ExpireRetiredDetail with Scanned /
 // Deleted counters.
 func TestForgetAll_ExpireFilter_DeletesOnlyExpiredFacts(t *testing.T) {
@@ -368,11 +368,11 @@ func TestForgetAll_ExpireFilter_NoMatchesReturnsZero(t *testing.T) {
 	}
 }
 
-// TestForgetAll_ExpireFilter_SkipsConfirmScopeKey pins the D5
-// 2026-05-21 carve-out: ExpireRetired waives the GDPR confirm-key
-// guard because a TTL sweep is a non-irreversible administrative
-// action, not an Art.17 wipe. The same call without Filter would
-// require ConfirmScopeKey under Hard mode.
+// TestForgetAll_ExpireFilter_SkipsConfirmScopeKey pins the
+// ExpireRetired carve-out: it waives the GDPR confirm-key guard
+// because a TTL sweep is a non-irreversible administrative action,
+// not an Art.17 wipe. The same call without Filter would require
+// ConfirmScopeKey under Hard mode.
 func TestForgetAll_ExpireFilter_SkipsConfirmScopeKey(t *testing.T) {
 	scope := domain.Scope{RuntimeID: "rt", UserID: "alice"}
 	now := time.Date(2026, 5, 21, 12, 0, 0, 0, time.UTC)

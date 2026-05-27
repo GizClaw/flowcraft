@@ -95,9 +95,9 @@ func inputCoverage(req domain.SaveRequest, stages []diagnostic.StageDiagnostic) 
 }
 
 // factQualityFromIngest reads the precomputed FactStats off the
-// ingest stage's Detail. Cluster E moved stage emission into the
-// pipeline framework, which dropped the per-fact walk this function
-// used to do; FactStats is now computed inside the Ingest stage
+// ingest stage's Detail. Stage emission now lives in the pipeline
+// framework, which avoids the per-fact walk this function used to do;
+// FactStats is now computed inside the Ingest stage
 // (which has the domain import diagnostic/ cannot take) and embedded
 // in IngestDetail so per-Save quality survives the refactor.
 //

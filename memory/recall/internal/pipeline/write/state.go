@@ -1,9 +1,9 @@
 // Package write owns the write-flow pipeline State and Runner.
 // Stages (validate / ingest / resolve / append / validity_close /
 // evidence_mirror / project_required / project_optional /
-// evolution_after_save) land in Phase B.2 under write/stages/ and
-// mutate WriteState; this package owns the State schema so each
-// stage stays narrow.
+// evolution_after_save) live under write/stages/ and mutate
+// WriteState; this package owns the State schema so each stage stays
+// narrow.
 package write
 
 import (
@@ -19,8 +19,8 @@ import (
 // fields and populates its own output slot; no Stage is allowed to
 // route data through context.Value.
 //
-// Field ownership by Phase B.2 stage (one slot per stage so
-// compensators can address exactly what they wrote):
+// Field ownership by stage (one slot per stage so compensators can
+// address exactly what they wrote):
 //
 //	validate         → Rejected (only on permanent reject)
 //	ingest           → KnownEntities, Ingest
@@ -35,9 +35,9 @@ import (
 //	                   by definition)
 //	evolution_after_save → no state mutation; best-effort
 //
-// Phase F.1a — async semantic write lane fields (Mode,
-// AsyncRequestID, EpisodeFacts, EvidenceAppliedEpisode,
-// SemanticPending) are populated by the four episode-lane stages
+// Async semantic write lane fields (Mode, AsyncRequestID,
+// EpisodeFacts, EvidenceAppliedEpisode, SemanticPending) are populated
+// by the four episode-lane stages
 // (build_episode → append_episode → project_episode_evidence →
 // write_semantic_outbox) when Save runs in WriteModeAsyncSemantic.
 // In the synchronous path they remain zero.
@@ -67,7 +67,7 @@ type WriteState struct {
 	// ValidTo windows even across slow stages).
 	Now time.Time
 
-	// Tier is the SaveRequest importance intent (Phase D.3).
+	// Tier is the SaveRequest importance intent.
 	Tier string
 
 	// DiagnosticsIncludeRaw opts into raw dropped-fact payloads in
@@ -76,7 +76,7 @@ type WriteState struct {
 	DiagnosticsIncludeRaw bool
 
 	// RecentMessages / ExistingFactsAnchor are caller-composed LLM
-	// context (Phase D.7).
+	// context.
 	RecentMessages      []domain.Message
 	ExistingFactsAnchor []domain.TemporalFact
 
@@ -130,13 +130,13 @@ type WriteState struct {
 	OptionalApplied int
 
 	// EvolutionErr captures a non-fatal AfterSave failure. The
-	// evolution_after_save stage detail surfaces it via the trace
-	// (Phase E.3: Stages-only).
+	// evolution_after_save stage detail surfaces it via the
+	// Stages-only trace.
 	EvolutionErr error
 
-	// Async lane (Phase F.1a). These fields stay zero in the
-	// synchronous path; they are populated only when the facade
-	// dispatches to the async episode runner.
+	// Async lane. These fields stay zero in the synchronous path; they
+	// are populated only when the facade dispatches to the async
+	// episode runner.
 
 	// Mode mirrors SaveRequest.Mode so episode-lane stages can
 	// disambiguate from the synchronous semantic path when sharing
@@ -174,8 +174,8 @@ type WriteState struct {
 	SideEffectsEnqueued int
 
 	// SemanticDerivationOrigin is stamped onto every appended fact by
-	// origin_stamp in the F.1b async worker lane. Zero in sync and
-	// F.1a episode paths.
+	// origin_stamp in the async worker lane. Zero in sync and episode
+	// paths.
 	SemanticDerivationOrigin domain.FactOrigin
 
 	// FailedStage names the stage whose Run returned the error
@@ -233,11 +233,11 @@ func (s *WriteState) EnsureTrace() *domain.SaveTrace {
 // pipeline framework. It is a no-op when Trace is nil so callers
 // requesting only the SaveResult (no explain) pay zero allocation.
 //
-// Phase F.1a: when the async lane has stamped state.AsyncRequestID
-// (build_episode runs first in the episode pipeline), enrich every
-// downstream stage's StageDiagnostic so observers can join sync +
-// async traces on a single key. Stages that already populated the
-// field via their Detail are not overwritten.
+// When the async lane has stamped state.AsyncRequestID (build_episode
+// runs first in the episode pipeline), enrich every downstream stage's
+// StageDiagnostic so observers can join sync + async traces on a
+// single key. Stages that already populated the field via their Detail
+// are not overwritten.
 func (s *WriteState) AppendStage(d diagnostic.StageDiagnostic) {
 	if s.Trace == nil {
 		return

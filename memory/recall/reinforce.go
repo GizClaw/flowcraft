@@ -7,8 +7,8 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 )
 
-// Reinforce records positive caller feedback on a fact via the
-// feedback pipeline (Cluster A 2026-05-21).
+// Reinforce records positive caller feedback on a fact via the feedback
+// pipeline.
 func (m *memory) Reinforce(ctx context.Context, scope Scope, factID string, delta float64) error {
 	return m.runFeedback(ctx, scope, &feedback.State{Scope: scope, FactID: factID, ReinforcementDelta: delta})
 }

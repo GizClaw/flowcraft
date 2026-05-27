@@ -90,13 +90,12 @@ func (s *Append) Compensate(ctx context.Context, state *write.WriteState) error 
 		rollbackName = "save_rollback.appended_facts"
 	}
 	// Best-effort cleanup: any failure here would leave the ledger
-	// in a half-rolled-back state. Before Phase F.C the err was
-	// silently dropped; now we emit CompensationFailedDetail via
+	// in a half-rolled-back state. Emit CompensationFailedDetail via
 	// the stage's telemetry hook so operators have one entry per
-	// failed cleanup leg to act on. We deliberately do NOT return
-	// the error: the framework's own compensation_failed emit fires
-	// only when Compensate itself errs, and propagating would skip
-	// the reopenAppliedCloses leg below.
+	// failed cleanup leg to act on. We deliberately do NOT return the
+	// error: the framework's own compensation_failed emit fires only
+	// when Compensate itself errs, and propagating would skip the
+	// reopenAppliedCloses leg below.
 	if err := s.store.Delete(cleanupCtx, state.Scope, state.AppendedFactIDs); err != nil {
 		s.emitCompensationFailure(rollbackName, state.FailedStage, err)
 	}
