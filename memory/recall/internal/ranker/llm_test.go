@@ -93,14 +93,32 @@ func TestLLMReranker_FailureReturnsInputOrder(t *testing.T) {
 }
 
 func TestLLMReranker_MalformedJSON_IsValidation(t *testing.T) {
-	client := &fakeRerankLLM{Body: `{not json}`}
-	r := NewLLM(client)
-	_, err := r.Rerank(context.Background(), "query", makeHits())
-	if err == nil {
-		t.Fatal("expected parse error")
+	tests := []struct {
+		name string
+		body string
+	}{
+		{name: "bad json", body: `{not json}`},
+		{name: "empty", body: ``},
+		{name: "missing ranking", body: `{}`},
+		{name: "missing score", body: `{"ranking":[{"index":0},{"index":1,"score":0.5},{"index":2,"score":0.5}]}`},
+		{name: "missing index", body: `{"ranking":[{"score":0.5},{"index":1,"score":0.5},{"index":2,"score":0.5}]}`},
+		{name: "duplicate index", body: `{"ranking":[{"index":0,"score":0.5},{"index":0,"score":0.5},{"index":2,"score":0.5}]}`},
+		{name: "out of range index", body: `{"ranking":[{"index":0,"score":0.5},{"index":1,"score":0.5},{"index":9,"score":0.5}]}`},
+		{name: "too few scores", body: `{"ranking":[{"index":0,"score":0.5},{"index":1,"score":0.5}]}`},
+		{name: "too many scores", body: `{"ranking":[{"index":0,"score":0.5},{"index":1,"score":0.5},{"index":2,"score":0.5},{"index":3,"score":0.5}]}`},
 	}
-	if !errdefs.IsValidation(err) {
-		t.Errorf("malformed rerank JSON should map to Validation: %v", err)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client := &fakeRerankLLM{Body: tt.body}
+			r := NewLLM(client)
+			_, err := r.Rerank(context.Background(), "query", makeHits())
+			if err == nil {
+				t.Fatal("expected parse error")
+			}
+			if !errdefs.IsValidation(err) {
+				t.Errorf("malformed rerank JSON should map to Validation: %v", err)
+			}
+		})
 	}
 }
 
@@ -124,11 +142,10 @@ func TestLLMReranker_NilClientIsNoOp(t *testing.T) {
 	}
 }
 
-// TestLLMReranker_PreservesTailBeyondMaxBatch pins the batch-cap
-// contract: the reranker reorders the top MaxBatch hits and appends
-// the un-reranked tail verbatim, so callers retain the full pool
-// for downstream pagination without paying for an oversize prompt.
-func TestLLMReranker_PreservesTailBeyondMaxBatch(t *testing.T) {
+// TestLLMReranker_GlobalSortsTailBeyondMaxBatch pins the batch-cap contract:
+// only the prefix is scored by the model, but the un-reranked tail still
+// participates in final score ordering after the prefix's scores are adjusted.
+func TestLLMReranker_GlobalSortsTailBeyondMaxBatch(t *testing.T) {
 	hits := []domain.Hit{
 		{Fact: domain.TemporalFact{ID: "a", Content: "x"}, Score: 0.9},
 		{Fact: domain.TemporalFact{ID: "b", Content: "y"}, Score: 0.5},
@@ -145,8 +162,8 @@ func TestLLMReranker_PreservesTailBeyondMaxBatch(t *testing.T) {
 	if len(out) != 3 {
 		t.Fatalf("rerank must preserve cardinality, got %d", len(out))
 	}
-	if out[len(out)-1].Fact.ID != "c" {
-		t.Errorf("tail beyond MaxBatch must be appended verbatim, got tail=%s", out[len(out)-1].Fact.ID)
+	if out[0].Fact.ID != "b" || out[1].Fact.ID != "c" || out[2].Fact.ID != "a" {
+		t.Errorf("tail should be globally sorted with adjusted prefix, got %s,%s,%s", out[0].Fact.ID, out[1].Fact.ID, out[2].Fact.ID)
 	}
 }
 

@@ -8,6 +8,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/memory/recall/internal/domain"
 	"github.com/GizClaw/flowcraft/memory/recall/internal/port"
+	"github.com/GizClaw/flowcraft/memory/text/quotes"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/llm"
 )
@@ -164,6 +165,11 @@ Rules:
   generic phrase like "that book", "the item", or "the trip" to a
   specific title or object, include that specific literal instead of
   leaving only the generic phrase.
+- Never replace an answer-bearing span with only a category word. If
+  the source says "my cat Mochi", "Charlotte's Web", "Stardew Valley",
+  "the blue ceramic mug", or "A-17", the memory must include that
+  exact name/title/item/code, not only "a pet", "a book", "a game",
+  "an item", or "a code".
 - Be exhaustive about concrete, retrievable details. Every specific
   action, item, place, person, organisation, book / song / product
   title, quantity, or date that the snippet mentions becomes its
@@ -390,6 +396,7 @@ func (e *LLMExtractor) extractFromUserMessage(ctx context.Context, userMessage s
 			Kind:         normaliseExtractedKind(m.Kind),
 			EvidenceRefs: extractedEvidenceRefs(m.EvidenceRefs, turnIndex),
 		}
+		fact = enrichExtractedFactWithEvidenceSurfaces(fact)
 		fact.SourceMessageIDs = sourceIDsFromEvidence(fact.EvidenceRefs)
 		out = append(out, fact)
 	}
@@ -435,6 +442,71 @@ func normaliseExtractedKind(raw string) domain.FactKind {
 		return domain.KindNote
 	}
 	return ""
+}
+
+func enrichExtractedFactWithEvidenceSurfaces(f domain.TemporalFact) domain.TemporalFact {
+	surfaces := missingQuotedEvidenceSurfaces(f.Content, f.EvidenceRefs)
+	if len(surfaces) == 0 {
+		return f
+	}
+	f.Content = appendExactSourcePhrases(f.Content, surfaces)
+	return f
+}
+
+func missingQuotedEvidenceSurfaces(content string, evidence []domain.EvidenceRef) []string {
+	contentNorm := normalizeEvidenceQuote(content)
+	seen := make(map[string]struct{})
+	var out []string
+	for _, ref := range evidence {
+		for _, span := range quotes.ExtractSpans(ref.Text) {
+			span = strings.TrimSpace(span)
+			if span == "" {
+				continue
+			}
+			key := normalizeEvidenceQuote(span)
+			if key == "" {
+				continue
+			}
+			if strings.Contains(contentNorm, key) {
+				continue
+			}
+			if _, dup := seen[key]; dup {
+				continue
+			}
+			seen[key] = struct{}{}
+			out = append(out, span)
+			if len(out) >= 3 {
+				return out
+			}
+		}
+	}
+	return out
+}
+
+func appendExactSourcePhrases(content string, surfaces []string) string {
+	content = strings.TrimSpace(content)
+	if len(surfaces) == 0 {
+		return content
+	}
+	var b strings.Builder
+	b.WriteString(content)
+	if content != "" && !strings.HasSuffix(content, ".") && !strings.HasSuffix(content, "!") && !strings.HasSuffix(content, "?") {
+		b.WriteString(".")
+	}
+	b.WriteString(" Exact source ")
+	if len(surfaces) == 1 {
+		b.WriteString("phrase: ")
+	} else {
+		b.WriteString("phrases: ")
+	}
+	for i, surface := range surfaces {
+		if i > 0 {
+			b.WriteString("; ")
+		}
+		b.WriteString(fmt.Sprintf("%q", surface))
+	}
+	b.WriteString(".")
+	return b.String()
 }
 
 // parseExtractorReply accepts either the new {"memories": [...]} shape

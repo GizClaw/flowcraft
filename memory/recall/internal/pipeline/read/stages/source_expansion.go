@@ -4,10 +4,12 @@ import (
 	"context"
 	"errors"
 	"strings"
-	"unicode"
+	"sync"
 
 	"github.com/GizClaw/flowcraft/memory/recall/internal/domain"
+	"github.com/GizClaw/flowcraft/memory/recall/internal/planner"
 	"github.com/GizClaw/flowcraft/memory/recall/internal/port"
+	"github.com/GizClaw/flowcraft/memory/recall/internal/words"
 )
 
 const (
@@ -21,10 +23,24 @@ func querySourceWithPlanVariants(ctx context.Context, src port.Source, plan doma
 	if len(variants) == 1 {
 		return src.Query(ctx, plan)
 	}
-	results := make([]domain.SourceResult, 0, len(variants))
-	for _, variant := range variants {
-		results = append(results, src.Query(ctx, variant))
+	if src.Name() != planner.SourceRetrieval {
+		results := make([]domain.SourceResult, 0, len(variants))
+		for _, variant := range variants {
+			results = append(results, src.Query(ctx, variant))
+		}
+		return mergeVariantSourceResults(src.Name(), plan, results)
 	}
+	results := make([]domain.SourceResult, len(variants))
+	var wg sync.WaitGroup
+	wg.Add(len(variants))
+	for i, variant := range variants {
+		i, variant := i, variant
+		go func() {
+			defer wg.Done()
+			results[i] = src.Query(ctx, variant)
+		}()
+	}
+	wg.Wait()
 	return mergeVariantSourceResults(src.Name(), plan, results)
 }
 
@@ -66,17 +82,17 @@ func sourceExpansionQueryTexts(plan domain.QueryPlan) []string {
 		out = append(out, s)
 	}
 	add(text)
-	add(significantQueryText(text))
+	add(words.SignificantQueryText(text))
 	if hasTask(plan.TaskIntents, domain.QueryTaskBridgeResolution) {
-		for _, clause := range bridgeClauses(text) {
-			add(significantQueryText(clause))
+		for _, clause := range words.BridgeClauses(text) {
+			add(words.SignificantQueryText(clause))
 		}
 	}
 	if hasTask(plan.TaskIntents, domain.QueryTaskSetCompletion) {
-		add(anchorQueryText(text, collectionAnchorWords(text)))
+		add(anchorQueryText(text, words.CollectionAnchorWords(text)))
 	}
 	if hasTask(plan.TaskIntents, domain.QueryTaskTemporalReasoning) {
-		add(significantQueryText(stripTemporalQuestionWords(text)))
+		add(words.SignificantQueryText(words.StripTemporalQuestionWords(text)))
 	}
 	if len(out) > sourceExpansionMaxVariants {
 		out = out[:sourceExpansionMaxVariants]
@@ -226,57 +242,8 @@ func cloneSourceBudgets(in map[string]int) map[string]int {
 	return out
 }
 
-func significantQueryText(text string) string {
-	terms := significantQueryTerms(text)
-	if len(terms) == 0 {
-		return text
-	}
-	return strings.Join(terms, " ")
-}
-
-func significantQueryTerms(text string) []string {
-	words := queryWords(text)
-	out := make([]string, 0, len(words))
-	for _, word := range words {
-		lower := strings.ToLower(word)
-		if sourceExpansionStopword(lower) {
-			continue
-		}
-		out = append(out, word)
-	}
-	return out
-}
-
-func bridgeClauses(text string) []string {
-	lower := strings.ToLower(text)
-	connectors := []string{" that ", " which ", " who ", " because ", " before ", " after "}
-	var out []string
-	for _, connector := range connectors {
-		idx := strings.Index(lower, connector)
-		if idx < 0 {
-			continue
-		}
-		out = append(out, text[:idx], text[idx+len(connector):])
-	}
-	return out
-}
-
-func stripTemporalQuestionWords(text string) string {
-	words := queryWords(text)
-	out := make([]string, 0, len(words))
-	for _, word := range words {
-		switch strings.ToLower(word) {
-		case "when", "date", "time", "did", "does", "was", "were", "is", "are":
-			continue
-		default:
-			out = append(out, word)
-		}
-	}
-	return strings.Join(out, " ")
-}
-
 func anchorQueryText(text string, anchors []string) string {
-	terms := significantQueryTerms(text)
+	terms := words.SignificantQueryTerms(text)
 	if len(anchors) == 0 {
 		return strings.Join(terms, " ")
 	}
@@ -294,47 +261,4 @@ func anchorQueryText(text string, anchors []string) string {
 		out = append(out, term)
 	}
 	return strings.Join(out, " ")
-}
-
-func collectionAnchorWords(text string) []string {
-	words := queryWords(text)
-	var out []string
-	for _, word := range words {
-		if len(word) == 0 {
-			continue
-		}
-		if sourceExpansionStopword(strings.ToLower(word)) {
-			continue
-		}
-		r := firstRune(word)
-		if unicode.IsUpper(r) {
-			out = append(out, word)
-		}
-	}
-	return out
-}
-
-func queryWords(text string) []string {
-	return strings.FieldsFunc(text, func(r rune) bool {
-		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
-	})
-}
-
-func sourceExpansionStopword(word string) bool {
-	switch word {
-	case "a", "an", "and", "are", "as", "at", "be", "been", "being", "by", "did", "do", "does",
-		"for", "from", "had", "has", "have", "he", "her", "hers", "him", "his", "how", "i",
-		"in", "into", "is", "it", "its", "of", "on", "or", "our", "she", "that", "the", "their",
-		"them", "they", "this", "to", "was", "we", "were", "what", "when", "where", "which",
-		"who", "why", "with", "would", "you", "your":
-		return true
-	}
-	return len(word) <= 1
-}
-
-func firstRune(s string) rune {
-	for _, r := range s {
-		return r
-	}
-	return 0
 }

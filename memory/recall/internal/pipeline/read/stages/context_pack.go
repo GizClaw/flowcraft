@@ -38,7 +38,11 @@ func (s *ContextPack) Run(ctx context.Context, state *read.ReadState) (diagnosti
 		detail.Input = candidateSnapshotPtr(hitSnapshots(hits))
 		detail.Hits = candidateSnapshotPtr(hitSnapshots(hits))
 	}
-	hits = s.rerankHits(ctx, state.Query.Text, hits, &detail, captureSnapshots)
+	hits, err := s.rerankHits(ctx, state.Query.Text, hits, &detail, captureSnapshots)
+	if err != nil {
+		detail.Latency = time.Since(started)
+		return detail, err
+	}
 	state.Hits = hits
 	hits = packContextPackSelection(state, features, now, hits, &detail)
 	state.Hits = hits
@@ -50,22 +54,25 @@ func (s *ContextPack) Run(ctx context.Context, state *read.ReadState) (diagnosti
 	return detail, nil
 }
 
-func (s *ContextPack) rerankHits(ctx context.Context, query string, hits []domain.Hit, detail *diagnostic.ContextPackDetail, captureSnapshots bool) []domain.Hit {
+func (s *ContextPack) rerankHits(ctx context.Context, query string, hits []domain.Hit, detail *diagnostic.ContextPackDetail, captureSnapshots bool) ([]domain.Hit, error) {
 	if s.reranker == nil || len(hits) == 0 {
-		return hits
+		return hits, nil
 	}
 	rerankStarted := time.Now()
 	reranked, err := s.reranker.Rerank(ctx, query, hits)
 	detail.RerankLatency = time.Since(rerankStarted)
 	if err != nil {
 		detail.RerankErr = err.Error()
-		return hits
+		if isContextError(err) {
+			return hits, err
+		}
+		return hits, nil
 	}
 	detail.Reranked = len(reranked)
 	if captureSnapshots {
 		detail.RerankedHits = candidateSnapshotPtr(hitSnapshots(reranked))
 	}
-	return reranked
+	return reranked, nil
 }
 
 // BuildGroundedHits finalizes recall output by adding query-relevant

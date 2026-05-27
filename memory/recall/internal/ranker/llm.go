@@ -119,10 +119,8 @@ func (r *LLMReranker) Rerank(ctx context.Context, query string, hits []domain.Hi
 	}
 	sort.SliceStable(out, func(i, j int) bool { return out[i].Score > out[j].Score })
 	if len(hits) > len(cands) {
-		// Tail beyond MaxBatch is appended verbatim. The
-		// reranker's reordered prefix is guaranteed to outrank
-		// the un-reranked tail because we never inflate scores.
 		out = append(out, hits[len(cands):]...)
+		sort.SliceStable(out, func(i, j int) bool { return out[i].Score > out[j].Score })
 	}
 	return out, nil
 }
@@ -173,7 +171,7 @@ func parseRerankScores(raw string, n int) ([]float64, error) {
 		scores[i] = 0.5 // neutral default for missing entries
 	}
 	if strings.TrimSpace(raw) == "" {
-		return scores, nil
+		return scores, fmt.Errorf("empty rerank response")
 	}
 	payload, _, err := llm.ExtractJSON(raw)
 	if err != nil {
@@ -181,35 +179,51 @@ func parseRerankScores(raw string, n int) ([]float64, error) {
 	}
 	var env struct {
 		Ranking []struct {
-			Index int     `json:"index"`
-			Score float64 `json:"score"`
+			Index *int     `json:"index"`
+			Score *float64 `json:"score"`
 		} `json:"ranking"`
 	}
 	if err := json.Unmarshal(payload, &env); err != nil {
 		return scores, err
 	}
-	for _, r := range env.Ranking {
-		if r.Index < 0 || r.Index >= n {
-			continue
+	if len(env.Ranking) != n {
+		return scores, fmt.Errorf("rerank response has %d scores, want %d", len(env.Ranking), n)
+	}
+	seen := make([]bool, n)
+	for pos, r := range env.Ranking {
+		if r.Index == nil {
+			return scores, fmt.Errorf("rerank response entry %d missing index", pos)
 		}
-		s := r.Score
+		if r.Score == nil {
+			return scores, fmt.Errorf("rerank response entry %d missing score", pos)
+		}
+		idx := *r.Index
+		if idx < 0 || idx >= n {
+			return scores, fmt.Errorf("rerank response index %d out of range", idx)
+		}
+		if seen[idx] {
+			return scores, fmt.Errorf("rerank response duplicates index %d", idx)
+		}
+		seen[idx] = true
+		s := *r.Score
 		if s < 0 {
 			s = 0
 		}
 		if s > 1 {
 			s = 1
 		}
-		scores[r.Index] = s
+		scores[idx] = s
 	}
 	return scores, nil
 }
 
 func snippetForRerank(s string, max int) string {
 	s = strings.ReplaceAll(strings.TrimSpace(s), "\n", " ")
-	if len(s) <= max {
+	runes := []rune(s)
+	if max <= 0 || len(runes) <= max {
 		return s
 	}
-	return s[:max] + "…"
+	return string(runes[:max]) + "…"
 }
 
 func rerankSnippetText(h domain.Hit) string {

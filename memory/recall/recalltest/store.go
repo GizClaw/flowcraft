@@ -97,6 +97,14 @@ func RunTemporalStoreSuite(t *testing.T, newStore TemporalStoreFactory) {
 		if gotIDs(limited) != "a,b" {
 			t.Fatalf("limited ordered ids = %s, want a,b", gotIDs(limited))
 		}
+
+		first, err := store.List(ctx, conformanceScope(), recall.ListQuery{IncludeSuperseded: true, Limit: 1})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if gotIDs(first) != "a" {
+			t.Fatalf("limit must apply after ObservedAt ordering, got %s, want a", gotIDs(first))
+		}
 	})
 
 	t.Run("validity close hide and reopen", func(t *testing.T) {

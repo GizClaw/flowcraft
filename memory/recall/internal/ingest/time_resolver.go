@@ -144,8 +144,8 @@ func parseTimeExpression(in string, now time.Time, allowRelative bool) (*timex.E
 	if raw == "" {
 		return nil, false
 	}
-	if t, ok := parseExactTimestamp(raw); ok {
-		return expressionFromTime(t), true
+	if expr, ok := parseExactTimestampExpression(raw); ok {
+		return expr, true
 	}
 	expr, err := timex.Extract(raw, now)
 	if err != nil || expr == nil || expr.Time.IsZero() {
@@ -174,19 +174,15 @@ func isValidFromExpression(expr *timex.Expression) bool {
 	}
 }
 
-func parseExactTimestamp(raw string) (time.Time, bool) {
-	for _, layout := range []string{
-		time.RFC3339Nano,
-		"2006-01-02 15:04:05",
-		"2006-01-02 15:04",
-		"2006-01-02T15:04:05",
-		"2006-01-02T15:04",
-	} {
-		if t, err := time.ParseInLocation(layout, raw, time.UTC); err == nil {
-			return t.UTC(), true
-		}
+func parseExactTimestampExpression(raw string) (*timex.Expression, bool) {
+	match, err := (timex.RegexParser{}).Parse(raw, time.Time{})
+	if err != nil || match == nil {
+		return nil, false
 	}
-	return time.Time{}, false
+	if strings.TrimSpace(match.Text) != raw || !strings.Contains(match.Text, ":") {
+		return nil, false
+	}
+	return expressionFromTime(match.Time), true
 }
 
 func expressionFromTime(t time.Time) *timex.Expression {

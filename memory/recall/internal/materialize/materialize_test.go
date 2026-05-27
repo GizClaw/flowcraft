@@ -2,6 +2,7 @@ package materialize
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -106,5 +107,17 @@ func TestMaterialize_DropsSuperseded(t *testing.T) {
 	}
 	if len(drops) != 1 || drops[0].Reason != diagnostic.DropSuperseded {
 		t.Errorf("superseded drop = %+v", drops)
+	}
+}
+
+func TestMaterialize_PropagatesContextCancellation(t *testing.T) {
+	store := temporalstore.NewMemoryStore()
+	mat := New(store, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, _, err := mat.Materialize(ctx, []domain.Candidate{{FactID: "real", Scope: domain.Scope{RuntimeID: "rt"}}})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("context cancellation must propagate, got %v", err)
 	}
 }

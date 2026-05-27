@@ -11,6 +11,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/memory/recall/internal/domain"
 	"github.com/GizClaw/flowcraft/memory/recall/internal/port"
+	"github.com/GizClaw/flowcraft/memory/recall/internal/words"
 )
 
 // Source identifiers. Declare new sources here alongside their
@@ -182,53 +183,15 @@ func hasNumericIntentKind(kinds []domain.QueryNumericIntentKind, want domain.Que
 }
 
 func hasSetCompletionSurface(intent domain.QueryIntent) bool {
-	text := strings.ToLower(intent.Text)
-	if strings.Contains(text, "how many") || strings.Contains(text, "how much") {
-		return true
-	}
-	if !(strings.Contains(text, "what ") || strings.Contains(text, "which ")) {
-		return false
-	}
-	if tokenSetHasAny(intent.Features.Tokens,
-		"item", "thing", "event", "activ", "activity", "kind", "type", "style",
-		"name", "person", "people", "place", "medium", "media", "artist",
-		"band", "book", "movie", "song", "sport", "country", "food", "breed", "pet") {
-		return true
-	}
-	return strings.Contains(text, " has ") || strings.Contains(text, " have ")
+	return words.HasCollectionSurfaceCue(intent.Text, intent.Features.Tokens, intent.Features.NumericIntentKind)
 }
 
 func hasBridgeSurface(intent domain.QueryIntent) bool {
-	if len(intent.Features.Proper) >= 2 {
-		return true
-	}
-	text := strings.ToLower(intent.Text)
-	return strings.Contains(text, " that ") ||
-		strings.Contains(text, " which ") ||
-		strings.Contains(text, " who ") ||
-		strings.Contains(text, " after ") ||
-		strings.Contains(text, " before ") ||
-		strings.Contains(text, " because ") ||
-		strings.Contains(text, " her ") ||
-		strings.Contains(text, " his ") ||
-		strings.Contains(text, " their ")
+	return words.HasBridgeSurfaceCue(intent.Text, intent.Features.Proper)
 }
 
 func hasDisambiguationSurface(intent domain.QueryIntent) bool {
-	text := strings.ToLower(intent.Text)
-	return strings.Contains(text, " or ") ||
-		strings.Contains(text, " instead ") ||
-		strings.Contains(text, " rather than ") ||
-		strings.Contains(text, " which one")
-}
-
-func tokenSetHasAny(tokens map[string]struct{}, values ...string) bool {
-	for _, value := range values {
-		if _, ok := tokens[value]; ok {
-			return true
-		}
-	}
-	return false
+	return words.HasDisambiguationSurfaceCue(intent.Text)
 }
 
 // EntityHintBoost is the additive lens-weight bump applied per matching

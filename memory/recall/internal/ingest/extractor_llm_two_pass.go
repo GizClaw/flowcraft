@@ -104,6 +104,11 @@ Rules:
   like "that book", "the item", or "the trip" to a specific title or
   object in nearby source turns, include the specific literal in the
   emitted memory instead of leaving only the generic phrase.
+- Never replace an answer-bearing span with only a category word. If
+  the source says "my cat Mochi", "Charlotte's Web", "Stardew Valley",
+  "the blue ceramic mug", or "A-17", the memory must include that
+  exact name/title/item/code, not only "a pet", "a book", "a game",
+  "an item", or "a code".
 - Be exhaustive about concrete, retrievable details. Every specific
   action, item, place, person, organisation, book / song / product
   title, quantity, or date that the snippet mentions becomes its own
@@ -382,6 +387,7 @@ func appendExtractedMemories(facts []domain.TemporalFact, memories []ExtractedMe
 			Kind:         normaliseExtractedKind(m.Kind),
 			EvidenceRefs: extractedEvidenceRefs(links[i], turnIndex),
 		}
+		fact = enrichExtractedFactWithEvidenceSurfaces(fact)
 		fact.SourceMessageIDs = sourceIDsFromEvidence(fact.EvidenceRefs)
 		facts = append(facts, fact)
 	}

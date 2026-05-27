@@ -10,6 +10,9 @@ import (
 
 	"github.com/GizClaw/flowcraft/memory/recall/internal/domain"
 	recallintent "github.com/GizClaw/flowcraft/memory/recall/internal/intent"
+	"github.com/GizClaw/flowcraft/memory/recall/internal/words"
+	"github.com/GizClaw/flowcraft/memory/text/normalize"
+	"github.com/GizClaw/flowcraft/memory/text/quotes"
 )
 
 const (
@@ -44,6 +47,7 @@ const (
 	contextPackRankedHeadTextFloor   = 0.18
 	contextPackSiblingTextFloor      = 0.16
 	contextPackCompletenessTextFloor = 0.08
+	contextPackAnswerabilityFloor    = 0.50
 )
 
 type contextPackInput struct {
@@ -78,9 +82,8 @@ type contextPackCandidate struct {
 }
 
 // packRecallContextWithFeatures fits the read pipeline's ranked evidence into
-// the final context budget. It deliberately stays answer-agnostic: it keeps
-// diverse, grounded, query-relevant memories visible, while the QA/eval layer
-// decides which evidence answers a specific question.
+// the final context budget. It first locks answerability-critical evidence for
+// the query shape, then uses MMR-style filling for the remaining slots.
 func packRecallContextWithFeatures(query string, features domain.QueryFeatures, now time.Time, ordered []domain.Hit, pool []domain.Hit, cap int) []domain.Hit {
 	input := newContextPackInput(query, features, now, cap)
 	if input.cap <= 0 {
@@ -94,22 +97,49 @@ func packRecallContextWithFeatures(query string, features domain.QueryFeatures, 
 	if len(candidates) <= input.cap {
 		return contextPackHits(candidates)
 	}
-	selected := make([]domain.Hit, 0, input.cap)
-	selectedCandidates := make([]contextPackCandidate, 0, input.cap)
+	selectedCandidates := contextPackSelectCoreEvidence(input.features, candidates, input.cap)
+	selectedCandidates = contextPackFillWithMMR(input.features, candidates, selectedCandidates, input.cap)
+	return contextPackHits(selectedCandidates)
+}
+
+func contextPackSelectCoreEvidence(query contextPackQueryFeatures, candidates []contextPackCandidate, cap int) []contextPackCandidate {
+	if cap <= 0 || len(candidates) == 0 {
+		return nil
+	}
+	selected := make([]contextPackCandidate, 0, min(cap, 8))
+	selected = contextPackSelectSignalCore(query, candidates, selected, cap)
+	selected = contextPackSelectEvidenceAnchorCore(query, candidates, selected, cap)
+	selected = contextPackSelectAnswerabilityCore(query, candidates, selected, cap)
+	selected = contextPackSelectCollectionCore(query, candidates, selected, cap)
+	selected = contextPackSelectBridgeCore(query, candidates, selected, cap)
+	selected = contextPackSelectCompletenessCore(query, candidates, selected, cap)
+	return selected
+}
+
+func contextPackFillWithMMR(query contextPackQueryFeatures, candidates, selected []contextPackCandidate, cap int) []contextPackCandidate {
+	if cap <= 0 || len(selected) >= cap {
+		return selected[:min(len(selected), cap)]
+	}
+	out := append([]contextPackCandidate(nil), selected...)
 	used := make([]bool, len(candidates))
-	for len(selected) < input.cap {
+	for i, cand := range candidates {
+		if contextPackCandidateDuplicate(cand, out) {
+			used[i] = true
+		}
+	}
+	for len(out) < cap {
 		best := -1
 		bestScore := math.Inf(-1)
 		for i, cand := range candidates {
-			if used[i] || contextPackCandidateDuplicate(cand, selectedCandidates) {
+			if used[i] || contextPackCandidateDuplicate(cand, out) {
 				continue
 			}
 			sourcePenalty := 0.0
-			if !input.features.collectionIntent {
-				sourcePenalty = contextPackSourceConcentrationPenalty(cand, selectedCandidates)
+			if !query.collectionIntent {
+				sourcePenalty = contextPackSourceConcentrationPenalty(cand, out)
 			}
 			adjusted := cand.score -
-				contextPackDiversityPenalty(cand, selectedCandidates) -
+				contextPackDiversityPenalty(cand, out) -
 				sourcePenalty
 			if best < 0 || adjusted > bestScore || (math.Abs(adjusted-bestScore) <= 1e-9 && betterContextPackTieBreak(cand, candidates[best])) {
 				best = i
@@ -120,28 +150,377 @@ func packRecallContextWithFeatures(query string, features domain.QueryFeatures, 
 			break
 		}
 		used[best] = true
-		selected = append(selected, candidates[best].hit)
-		selectedCandidates = append(selectedCandidates, candidates[best])
+		out = append(out, candidates[best])
 	}
-	if len(selected) < input.cap {
+	if len(out) < cap {
 		for _, cand := range candidates {
-			if contextPackCandidateDuplicate(cand, selectedCandidates) {
+			if contextPackCandidateDuplicate(cand, out) {
 				continue
 			}
-			selected = append(selected, cand.hit)
-			selectedCandidates = append(selectedCandidates, cand)
-			if len(selected) >= input.cap {
+			out = append(out, cand)
+			if len(out) >= cap {
 				break
 			}
 		}
 	}
-	selected, selectedCandidates = contextPackEnsureSignalCoverage(input.features, candidates, selected, selectedCandidates)
-	selected, selectedCandidates = contextPackEnsureCollectionCoverage(input.features, candidates, selected, selectedCandidates, input.cap)
-	selected, selectedCandidates = contextPackEnsureBridgeCoverage(input.features, candidates, selected, selectedCandidates, input.cap)
-	selected, selectedCandidates = contextPackEnsureGroupCompleteness(input.features, candidates, selected, selectedCandidates, input.cap)
-	selected, selectedCandidates = contextPackEnsureRankedHeadCoverage(candidates, selected, selectedCandidates, input.cap)
-	_ = selectedCandidates
+	return out
+}
+
+func contextPackSelectSignalCore(query contextPackQueryFeatures, candidates, selected []contextPackCandidate, cap int) []contextPackCandidate {
+	if cap <= 0 || len(selected) >= cap || len(candidates) == 0 {
+		return selected
+	}
+	if query.hasTimeSignal && !contextPackAnySelected(selected, func(c contextPackCandidate) bool { return c.hasTimeSignal }) {
+		selected = contextPackSelectSingleCore(candidates, selected, cap, func(c contextPackCandidate) bool {
+			return c.hasTimeSignal && c.textScore >= contextPackRankedHeadTextFloor
+		}, func(c contextPackCandidate) float64 {
+			return c.score + 0.35*c.textScore
+		})
+	}
+	if query.hasNumericIntent && !contextPackAnySelected(selected, func(c contextPackCandidate) bool { return c.hasNumeric }) {
+		selected = contextPackSelectSingleCore(candidates, selected, cap, func(c contextPackCandidate) bool {
+			return c.hasNumeric && c.textScore >= contextPackRankedHeadTextFloor
+		}, func(c contextPackCandidate) float64 {
+			return c.score + 0.30*c.textScore
+		})
+	}
+	if len(query.quoted) > 0 && !contextPackAnySelected(selected, func(c contextPackCandidate) bool {
+		return intersects(query.quoted, c.evidenceTokens) || intersects(query.quoted, c.factTokens)
+	}) {
+		selected = contextPackSelectSingleCore(candidates, selected, cap, func(c contextPackCandidate) bool {
+			return intersects(query.quoted, c.evidenceTokens) || intersects(query.quoted, c.factTokens)
+		}, func(c contextPackCandidate) float64 {
+			return c.score + 0.30*c.textScore
+		})
+	}
+	if len(query.proper) > 0 && !contextPackAnySelected(selected, func(c contextPackCandidate) bool {
+		return intersects(query.proper, c.evidenceTokens) || intersects(query.proper, c.factTokens)
+	}) {
+		selected = contextPackSelectSingleCore(candidates, selected, cap, func(c contextPackCandidate) bool {
+			return intersects(query.proper, c.evidenceTokens) || intersects(query.proper, c.factTokens)
+		}, func(c contextPackCandidate) float64 {
+			return c.score + 0.30*c.textScore
+		})
+	}
+	targetAdds := min(cap-len(selected), min(4, max(1, cap/5)))
+	added := 0
+	for len(query.tokens) > 0 && contextPackQueryCoverage(query, selected) < 0.55 && added < targetAdds {
+		covered := contextPackCoveredQueryTokens(query, selected)
+		best := contextPackBestCoreCandidate(candidates, selected, func(c contextPackCandidate) bool {
+			gain := contextPackCoverageGain(query, c, covered)
+			return gain >= 0.18 || (len(selected) == 0 && gain > 0)
+		}, func(c contextPackCandidate) float64 {
+			return c.score + 0.55*contextPackCoverageGain(query, c, covered)
+		})
+		if best < 0 {
+			break
+		}
+		var ok bool
+		selected, ok = contextPackAppendCoreCandidate(selected, candidates[best], cap)
+		if !ok {
+			break
+		}
+		added++
+	}
 	return selected
+}
+
+func contextPackSelectAnswerabilityCore(query contextPackQueryFeatures, candidates, selected []contextPackCandidate, cap int) []contextPackCandidate {
+	if cap <= 0 || len(selected) >= cap || len(candidates) == 0 {
+		return selected
+	}
+	targetAdds := min(cap-len(selected), min(4, max(1, cap/5)))
+	covered := contextPackAnswerabilityCoveredSlots(query, selected)
+	for added := 0; added < targetAdds && len(selected) < cap; {
+		best := contextPackBestCoreCandidate(candidates, selected, func(c contextPackCandidate) bool {
+			score, slots := contextPackAnswerabilityScore(query, c, selected)
+			return score >= contextPackAnswerabilityFloor && contextPackAddsAnswerabilitySlot(slots, covered)
+		}, func(c contextPackCandidate) float64 {
+			score, _ := contextPackAnswerabilityScore(query, c, selected)
+			return score + 0.25*c.score
+		})
+		if best < 0 {
+			break
+		}
+		var ok bool
+		selected, ok = contextPackAppendCoreCandidate(selected, candidates[best], cap)
+		if !ok {
+			break
+		}
+		_, slots := contextPackAnswerabilityScore(query, candidates[best], selected)
+		for _, slot := range slots {
+			covered[slot] = struct{}{}
+		}
+		added++
+	}
+	return selected
+}
+
+func contextPackSelectCollectionCore(query contextPackQueryFeatures, candidates, selected []contextPackCandidate, cap int) []contextPackCandidate {
+	if !query.collectionIntent || cap <= 1 || len(selected) >= cap || len(candidates) == 0 {
+		return selected
+	}
+	targetAdds := min(cap-len(selected), min(6, max(2, cap/5)))
+	for added := 0; added < targetAdds && len(selected) < cap; {
+		best := contextPackBestCoreCandidate(candidates, selected, func(c contextPackCandidate) bool {
+			if c.textScore < contextPackCompletenessTextFloor {
+				return false
+			}
+			if len(selected) == 0 {
+				return c.textScore >= contextPackQueryFloor || contextPackHasShortAnswerField(c.hit.Fact)
+			}
+			return contextPackCollectionCandidateUseful(query, c, selected)
+		}, func(c contextPackCandidate) float64 {
+			score := c.score + 0.35*c.textScore
+			if contextPackHasSiblingFact(c, selected) {
+				score += 0.25
+			}
+			return score
+		})
+		if best < 0 {
+			break
+		}
+		var ok bool
+		selected, ok = contextPackAppendCoreCandidate(selected, candidates[best], cap)
+		if !ok {
+			break
+		}
+		added++
+	}
+	return selected
+}
+
+func contextPackSelectBridgeCore(query contextPackQueryFeatures, candidates, selected []contextPackCandidate, cap int) []contextPackCandidate {
+	if !query.bridgeIntent || cap <= 1 || len(selected) >= cap || len(candidates) == 0 {
+		return selected
+	}
+	targetAdds := min(cap-len(selected), min(3, max(2, cap/6)))
+	for added := 0; added < targetAdds && len(selected) < cap; {
+		covered := contextPackCoveredQueryTokens(query, selected)
+		best := contextPackBestCoreCandidate(candidates, selected, func(c contextPackCandidate) bool {
+			if c.textScore < contextPackCompletenessTextFloor {
+				return false
+			}
+			if len(selected) == 0 {
+				return c.textScore >= contextPackQueryFloor || c.evidenceGroup != ""
+			}
+			return contextPackAssociatedCandidate(c, selected) &&
+				(contextPackCoverageGain(query, c, covered) > 0 || contextPackEvidenceGroupCount(selected, c.evidenceGroup) > 0)
+		}, func(c contextPackCandidate) float64 {
+			score := c.score + 0.35*c.textScore
+			if contextPackAssociatedCandidate(c, selected) {
+				score += 0.35
+			}
+			return score
+		})
+		if best < 0 {
+			break
+		}
+		var ok bool
+		selected, ok = contextPackAppendCoreCandidate(selected, candidates[best], cap)
+		if !ok {
+			break
+		}
+		added++
+	}
+	return selected
+}
+
+func contextPackSelectCompletenessCore(query contextPackQueryFeatures, candidates, selected []contextPackCandidate, cap int) []contextPackCandidate {
+	if !contextPackCompletenessIntent(query) || cap <= 1 || len(selected) >= cap || len(candidates) == 0 {
+		return selected
+	}
+	targetAdds := min(cap-len(selected), min(4, max(1, cap/8)))
+	if query.collectionIntent {
+		targetAdds = min(cap-len(selected), min(6, max(targetAdds, max(2, cap/6))))
+	}
+	for added := 0; added < targetAdds && len(selected) < cap; {
+		best := contextPackBestCoreCandidate(candidates, selected, func(c contextPackCandidate) bool {
+			return c.textScore >= contextPackCompletenessTextFloor && contextPackCompletenessCandidateUseful(query, c, selected)
+		}, func(c contextPackCandidate) float64 {
+			score := c.score + 0.30*c.textScore
+			for _, existing := range selected {
+				if contextPackStrongSibling(query, c, existing) {
+					score += 0.25
+					break
+				}
+			}
+			return score
+		})
+		if best < 0 {
+			break
+		}
+		var ok bool
+		selected, ok = contextPackAppendCoreCandidate(selected, candidates[best], cap)
+		if !ok {
+			break
+		}
+		added++
+	}
+	return selected
+}
+
+func contextPackSelectEvidenceAnchorCore(query contextPackQueryFeatures, candidates, selected []contextPackCandidate, cap int) []contextPackCandidate {
+	if cap <= 1 || len(selected) >= cap || len(candidates) == 0 {
+		return selected
+	}
+	targetAdds := min(cap-len(selected), min(2, max(1, cap/12)))
+	if contextPackCompletenessIntent(query) {
+		targetAdds = min(cap-len(selected), min(3, max(targetAdds, cap/10)))
+	}
+	groupCounts := contextPackEvidenceGroupCounts(candidates)
+	for added := 0; added < targetAdds && len(selected) < cap; {
+		covered := contextPackCoveredQueryTokens(query, selected)
+		best := contextPackBestCoreCandidate(candidates, selected, func(c contextPackCandidate) bool {
+			score := contextPackEvidenceAnchorScore(query, c, selected, covered, groupCounts)
+			return score >= contextPackEvidenceAnchorFloor(query, c)
+		}, func(c contextPackCandidate) float64 {
+			return contextPackEvidenceAnchorScore(query, c, selected, covered, groupCounts)
+		})
+		if best < 0 {
+			break
+		}
+		var ok bool
+		selected, ok = contextPackAppendCoreCandidate(selected, candidates[best], cap)
+		if !ok {
+			break
+		}
+		added++
+	}
+	return selected
+}
+
+func contextPackEvidenceAnchorFloor(query contextPackQueryFeatures, cand contextPackCandidate) float64 {
+	if contextPackExactSourcePhraseCandidate(cand) {
+		return 0.42
+	}
+	if contextPackCompletenessIntent(query) {
+		return 0.46
+	}
+	return 0.50
+}
+
+func contextPackEvidenceAnchorScore(query contextPackQueryFeatures, cand contextPackCandidate, selected []contextPackCandidate, covered map[string]struct{}, groupCounts map[string]int) float64 {
+	if cand.evidenceKey == "" && cand.evidenceGroup == "" {
+		return 0
+	}
+	coverageGain := contextPackCoverageGain(query, cand, covered)
+	groupAnchored := cand.evidenceGroup != "" && groupCounts[cand.evidenceGroup] >= 2 &&
+		contextPackEvidenceGroupHasQueryAnchor(query, cand.evidenceGroup, selected)
+	answerSignal := contextPackEvidenceAnswerSignal(query, cand)
+	anchorSignal := cand.textScore >= contextPackCompletenessTextFloor ||
+		coverageGain > 0 ||
+		groupAnchored ||
+		contextPackExactSourcePhraseCandidate(cand)
+	if !answerSignal || !anchorSignal {
+		return 0
+	}
+	score := 0.30*cand.score + 0.30*cand.textScore + 0.35*coverageGain
+	if contextPackHasShortAnswerField(cand.hit.Fact) {
+		score += 0.18
+	}
+	if query.hasTimeSignal && cand.hasTimeSignal {
+		score += 0.22
+	}
+	if query.hasNumericIntent && cand.hasNumeric {
+		score += 0.18
+	}
+	if contextPackQuotedSurfaceCandidate(cand) {
+		score += 0.16
+	}
+	if contextPackExactSourcePhraseCandidate(cand) {
+		score += 0.20
+	}
+	if groupAnchored {
+		score += 0.12
+	}
+	if contextPackHasSiblingFact(cand, selected) || contextPackEvidenceGroupCount(selected, cand.evidenceGroup) > 0 {
+		score += 0.10
+	}
+	return score
+}
+
+func contextPackEvidenceAnswerSignal(query contextPackQueryFeatures, cand contextPackCandidate) bool {
+	if query.hasTimeSignal && cand.hasTimeSignal {
+		return true
+	}
+	if query.hasNumericIntent && cand.hasNumeric {
+		return true
+	}
+	if query.collectionIntent && contextPackHasShortAnswerField(cand.hit.Fact) {
+		return true
+	}
+	if contextPackExactSourcePhraseCandidate(cand) || contextPackQuotedSurfaceCandidate(cand) {
+		return true
+	}
+	return contextPackHasShortAnswerField(cand.hit.Fact) && cand.textScore >= contextPackCompletenessTextFloor
+}
+
+func contextPackEvidenceGroupHasQueryAnchor(query contextPackQueryFeatures, group string, candidates []contextPackCandidate) bool {
+	if group == "" {
+		return false
+	}
+	for _, cand := range candidates {
+		if cand.evidenceGroup != group {
+			continue
+		}
+		if cand.textScore >= contextPackCompletenessTextFloor ||
+			intersects(query.proper, cand.evidenceTokens) ||
+			intersects(query.proper, cand.factTokens) ||
+			intersects(query.quoted, cand.evidenceTokens) ||
+			intersects(query.quoted, cand.factTokens) {
+			return true
+		}
+	}
+	return false
+}
+
+func contextPackQuotedSurfaceCandidate(cand contextPackCandidate) bool {
+	for _, text := range []string{cand.hit.Fact.Content, hitEvidenceText(cand.hit)} {
+		for _, span := range quotes.ExtractSpans(text) {
+			if len(recallintent.TextTokenSet(span)) > 0 {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func contextPackExactSourcePhraseCandidate(cand contextPackCandidate) bool {
+	return strings.Contains(cand.hit.Fact.Content, "Exact source phrase:") ||
+		strings.Contains(cand.hit.Fact.Content, "Exact source phrases:")
+}
+
+func contextPackSelectSingleCore(candidates, selected []contextPackCandidate, cap int, pred func(contextPackCandidate) bool, score func(contextPackCandidate) float64) []contextPackCandidate {
+	best := contextPackBestCoreCandidate(candidates, selected, pred, score)
+	if best < 0 {
+		return selected
+	}
+	out, _ := contextPackAppendCoreCandidate(selected, candidates[best], cap)
+	return out
+}
+
+func contextPackBestCoreCandidate(candidates, selected []contextPackCandidate, pred func(contextPackCandidate) bool, score func(contextPackCandidate) float64) int {
+	best := -1
+	bestScore := math.Inf(-1)
+	for i, cand := range candidates {
+		if contextPackCandidateDuplicate(cand, selected) || !pred(cand) {
+			continue
+		}
+		adjusted := score(cand)
+		if best < 0 || adjusted > bestScore || (math.Abs(adjusted-bestScore) <= 1e-9 && betterContextPackTieBreak(cand, candidates[best])) {
+			best = i
+			bestScore = adjusted
+		}
+	}
+	return best
+}
+
+func contextPackAppendCoreCandidate(selected []contextPackCandidate, cand contextPackCandidate, cap int) ([]contextPackCandidate, bool) {
+	if cap <= 0 || len(selected) >= cap || contextPackCandidateDuplicate(cand, selected) {
+		return selected, false
+	}
+	return append(selected, cand), true
 }
 
 func packRecallContext(query string, ordered []domain.Hit, pool []domain.Hit, cap int) []domain.Hit {
@@ -171,21 +550,29 @@ func contextPackCandidates(input contextPackInput, hits []domain.Hit) []contextP
 	seenFacts := map[string]struct{}{}
 	seenEvidence := map[string]int{}
 	for i, hit := range hits {
+		evidenceKey := primaryEvidenceKey(hit)
+		candidate := newContextPackCandidate(input, hit, i, maxScore, evidenceKey)
+		if evidenceKey != "" {
+			if existing, ok := seenEvidence[evidenceKey]; ok {
+				if betterContextPackRepresentative(candidate, out[existing]) {
+					if oldFactID := out[existing].hit.Fact.ID; oldFactID != "" && oldFactID != candidate.hit.Fact.ID {
+						delete(seenFacts, oldFactID)
+					}
+					out[existing] = candidate
+					if candidate.hit.Fact.ID != "" {
+						seenFacts[candidate.hit.Fact.ID] = struct{}{}
+					}
+				}
+				continue
+			}
+		}
 		if hit.Fact.ID != "" {
 			if _, ok := seenFacts[hit.Fact.ID]; ok {
 				continue
 			}
 			seenFacts[hit.Fact.ID] = struct{}{}
 		}
-		evidenceKey := primaryEvidenceKey(hit)
-		candidate := newContextPackCandidate(input, hit, i, maxScore, evidenceKey)
 		if evidenceKey != "" {
-			if existing, ok := seenEvidence[evidenceKey]; ok {
-				if betterContextPackRepresentative(candidate, out[existing]) {
-					out[existing] = candidate
-				}
-				continue
-			}
 			seenEvidence[evidenceKey] = len(out)
 		}
 		out = append(out, candidate)
@@ -224,44 +611,11 @@ func newContextPackQueryFeatures(query string, features domain.QueryFeatures) co
 }
 
 func contextPackCollectionIntent(query string, features domain.QueryFeatures) bool {
-	if hasNumericIntentKind(features.NumericIntentKind, domain.QueryNumericIntentCount) ||
-		hasNumericIntentKind(features.NumericIntentKind, domain.QueryNumericIntentFrequency) {
-		return true
-	}
-	text := strings.ToLower(query)
-	if strings.Contains(text, "how many") || strings.Contains(text, "how much") {
-		return true
-	}
-	if strings.Contains(text, "what ") || strings.Contains(text, "which ") {
-		if tokenSetHasAny(features.Tokens,
-			"item", "thing", "event", "activ", "activity", "kind", "type", "style",
-			"name", "person", "people", "place", "medium", "media", "artist",
-			"band", "book", "movie", "song", "sport", "country", "food", "breed", "pet") {
-			return true
-		}
-		return strings.Contains(text, " has ") || strings.Contains(text, " have ")
-	}
-	return false
+	return words.HasCollectionSurfaceCue(query, features.Tokens, features.NumericIntentKind)
 }
 
 func contextPackBridgeIntent(query string, features domain.QueryFeatures) bool {
-	if len(features.Proper) >= 2 {
-		return true
-	}
-	text := strings.ToLower(query)
-	return strings.Contains(text, " that ") ||
-		strings.Contains(text, " which ") ||
-		strings.Contains(text, " who ") ||
-		strings.Contains(text, " after ") ||
-		strings.Contains(text, " before ") ||
-		strings.Contains(text, " because ") ||
-		strings.Contains(text, " her ") ||
-		strings.Contains(text, " his ") ||
-		strings.Contains(text, " their ")
-}
-
-func hasNumericIntentKind(kinds []domain.QueryNumericIntentKind, want domain.QueryNumericIntentKind) bool {
-	return slices.Contains(kinds, want)
+	return words.HasBridgeSurfaceCue(query, features.Proper)
 }
 
 func newContextPackCandidate(input contextPackInput, hit domain.Hit, queryRank int, maxHitScore float64, evidenceKey string) contextPackCandidate {
@@ -676,6 +1030,153 @@ func contextPackEnsureRankedHeadCoverage(candidates []contextPackCandidate, sele
 	return out, outCandidates
 }
 
+func contextPackEnsureAnswerabilityCoverage(query contextPackQueryFeatures, candidates []contextPackCandidate, selected []domain.Hit, selectedCandidates []contextPackCandidate, cap int) ([]domain.Hit, []contextPackCandidate) {
+	if cap <= 1 || len(selected) == 0 || len(candidates) == 0 {
+		return selected, selectedCandidates
+	}
+	out := append([]domain.Hit(nil), selected...)
+	outCandidates := append([]contextPackCandidate(nil), selectedCandidates...)
+	covered := contextPackAnswerabilityCoveredSlots(query, outCandidates)
+	targetAdds := min(3, max(1, cap/8))
+	added := 0
+	for _, cand := range candidates {
+		if added >= targetAdds || contextPackCandidateDuplicate(cand, outCandidates) {
+			continue
+		}
+		score, slots := contextPackAnswerabilityScore(query, cand, outCandidates)
+		if score < contextPackAnswerabilityFloor || !contextPackAddsAnswerabilitySlot(slots, covered) {
+			continue
+		}
+		replace := contextPackAnswerabilityReplacement(query, outCandidates, cand, score)
+		if replace < 0 {
+			continue
+		}
+		out[replace] = cand.hit
+		outCandidates[replace] = cand
+		for _, slot := range slots {
+			covered[slot] = struct{}{}
+		}
+		added++
+	}
+	return out, outCandidates
+}
+
+func contextPackAnswerabilityCoveredSlots(query contextPackQueryFeatures, selected []contextPackCandidate) map[string]struct{} {
+	out := map[string]struct{}{}
+	groupCounts := contextPackEvidenceGroupCounts(selected)
+	for _, cand := range selected {
+		_, slots := contextPackAnswerabilityScore(query, cand, selected)
+		for _, slot := range slots {
+			out[slot] = struct{}{}
+		}
+		if cand.evidenceGroup != "" && groupCounts[cand.evidenceGroup] >= 2 {
+			out["bridge_group:"+cand.evidenceGroup] = struct{}{}
+		}
+	}
+	return out
+}
+
+func contextPackAnswerabilityScore(query contextPackQueryFeatures, cand contextPackCandidate, selected []contextPackCandidate) (float64, []string) {
+	score := 0.35*cand.textScore + 0.20*cand.score
+	var slots []string
+	if query.hasTimeSignal && cand.hasTimeSignal {
+		score += 0.35
+		slots = append(slots, "temporal")
+	}
+	if query.collectionIntent && strings.TrimSpace(cand.hit.Fact.Object) != "" {
+		score += 0.30
+		slots = append(slots, "list_item:"+strings.ToLower(normalize.CollapseSpaces(cand.hit.Fact.Object)))
+		if contextPackHasSiblingFact(cand, selected) {
+			score += 0.20
+		}
+	}
+	if !query.collectionIntent && !query.hasTimeSignal {
+		if contextPackHasShortAnswerField(cand.hit.Fact) && cand.textScore >= contextPackCompletenessTextFloor {
+			score += 0.35
+			slots = append(slots, "short_answer")
+		}
+	}
+	if query.bridgeIntent && cand.evidenceGroup != "" {
+		count := contextPackEvidenceGroupCount(selected, cand.evidenceGroup)
+		if count > 0 && count < 2 {
+			score += 0.35
+			slots = append(slots, "bridge_group:"+cand.evidenceGroup)
+		}
+	}
+	if score > 1 {
+		score = 1
+	}
+	return score, slots
+}
+
+func contextPackHasShortAnswerField(f domain.TemporalFact) bool {
+	return strings.TrimSpace(f.Object) != "" ||
+		strings.TrimSpace(f.Location) != "" ||
+		len(f.Participants) > 0 ||
+		len(f.Entities) > 0
+}
+
+func contextPackHasSiblingFact(cand contextPackCandidate, selected []contextPackCandidate) bool {
+	for _, existing := range selected {
+		if collectionSiblingFacts(cand.hit.Fact, existing.hit.Fact) {
+			return true
+		}
+	}
+	return false
+}
+
+func contextPackEvidenceGroupCounts(candidates []contextPackCandidate) map[string]int {
+	out := map[string]int{}
+	for _, cand := range candidates {
+		if cand.evidenceGroup != "" {
+			out[cand.evidenceGroup]++
+		}
+	}
+	return out
+}
+
+func contextPackEvidenceGroupCount(candidates []contextPackCandidate, group string) int {
+	if group == "" {
+		return 0
+	}
+	count := 0
+	for _, cand := range candidates {
+		if cand.evidenceGroup == group {
+			count++
+		}
+	}
+	return count
+}
+
+func contextPackAddsAnswerabilitySlot(slots []string, covered map[string]struct{}) bool {
+	for _, slot := range slots {
+		if _, ok := covered[slot]; !ok {
+			return true
+		}
+	}
+	return false
+}
+
+func contextPackAnswerabilityReplacement(query contextPackQueryFeatures, selected []contextPackCandidate, incoming contextPackCandidate, incomingAnswerability float64) int {
+	replace := -1
+	bestUtility := math.Inf(1)
+	for i, cand := range selected {
+		if cand.queryRank < 5 && cand.textScore >= contextPackHighTextScoreFloor {
+			continue
+		}
+		score, _ := contextPackAnswerabilityScore(query, cand, selectedWithoutIndex(selected, i))
+		if score >= incomingAnswerability && contextPackUtility(cand) >= contextPackUtility(incoming) {
+			continue
+		}
+		utility := contextPackUtility(cand) + 0.15*score
+		if utility < bestUtility {
+			bestUtility = utility
+			replace = i
+		}
+	}
+	return replace
+}
+
 func contextPackQueryCoverage(query contextPackQueryFeatures, selected []contextPackCandidate) float64 {
 	if len(query.tokens) == 0 {
 		return 1
@@ -975,15 +1476,6 @@ func collectionSiblingFacts(a, b domain.TemporalFact) bool {
 	}
 	if a.Predicate != "" && b.Predicate != "" && strings.EqualFold(a.Predicate, b.Predicate) {
 		return a.Kind == b.Kind
-	}
-	return false
-}
-
-func tokenSetHasAny(tokens map[string]struct{}, values ...string) bool {
-	for _, value := range values {
-		if _, ok := tokens[value]; ok {
-			return true
-		}
 	}
 	return false
 }

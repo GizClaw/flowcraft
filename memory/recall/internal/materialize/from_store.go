@@ -64,8 +64,14 @@ func (m *FromStore) Materialize(ctx context.Context, candidates []domain.Candida
 		drops []diagnostic.CandidateDrop
 	)
 	for _, c := range candidates {
+		if err := ctx.Err(); err != nil {
+			return items, drops, err
+		}
 		fact, err := m.store.Get(ctx, c.Scope, c.FactID)
 		if err != nil {
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				return items, drops, err
+			}
 			if errors.Is(err, temporalstore.ErrNotFound) {
 				drops = append(drops, diagnostic.CandidateDrop{
 					Stage:  "candidate_materialize",

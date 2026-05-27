@@ -133,8 +133,9 @@ func generate(ctx context.Context, l llm.LLM, prompt string) (string, error) {
 }
 
 func truncateForPrompt(s string, maxChars int) string {
-	if maxChars <= 0 || len(s) <= maxChars {
+	runes := []rune(s)
+	if maxChars <= 0 || len(runes) <= maxChars {
 		return s
 	}
-	return s[:maxChars] + "\n...(truncated)"
+	return string(runes[:maxChars]) + "\n...(truncated)"
 }

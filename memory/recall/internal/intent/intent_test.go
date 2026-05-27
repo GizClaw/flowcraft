@@ -133,6 +133,19 @@ func TestRuleBased_InferProfileRelationSubject(t *testing.T) {
 	}
 }
 
+func TestRuleBased_InferSubjectRespectsTokenBoundaries(t *testing.T) {
+	out, err := RuleBased{}.Compile(context.Background(), port.IntentInput{
+		Text:     "What did Joanna tell Ann about her trip?",
+		Entities: []string{"Ann", "Joanna"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Subject != "joanna" {
+		t.Fatalf("subject = %q, want joanna", out.Subject)
+	}
+}
+
 func TestExtractEntitiesFromText_SkipsStopwords(t *testing.T) {
 	got := extractEntitiesFromText("What is the capital of France?")
 	if slices.Contains(got, "what") || slices.Contains(got, "the") {

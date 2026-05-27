@@ -170,13 +170,13 @@ func (s *MemoryStore) List(_ context.Context, scope domain.Scope, query port.Lis
 			continue
 		}
 		out = append(out, f.Clone())
-		if query.Limit > 0 && len(out) >= query.Limit {
-			break
-		}
 	}
 	sort.SliceStable(out, func(i, j int) bool {
 		return out[i].ObservedAt.Before(out[j].ObservedAt)
 	})
+	if query.Limit > 0 && len(out) > query.Limit {
+		out = out[:query.Limit]
+	}
 	return out, nil
 }
 

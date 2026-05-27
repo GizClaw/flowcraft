@@ -3,6 +3,7 @@ package flowcraftv2
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -436,6 +437,277 @@ func TestStructuredAnswerBodyPackagesSupportingEvidenceRanks(t *testing.T) {
 	}
 }
 
+func TestStructuredAnswerBodyPackagesDirectAnswerCues(t *testing.T) {
+	body := renderStructuredAnswerBody(runners.AnswerQuestion{
+		Query: "What workshop did Caroline attend recently?",
+	}, []recall.Hit{{
+		Fact: recall.TemporalFact{
+			ID:        "f1",
+			Kind:      recall.FactEvent,
+			Content:   "Caroline attended an LGBTQ+ counseling workshop.",
+			Subject:   "Caroline",
+			Predicate: "attended",
+			Object:    "LGBTQ+ counseling workshop",
+		},
+		Evidence: []recall.EvidenceRef{{
+			ID:   "D4:13",
+			Text: "Last Friday, I went to an LGBTQ+ counseling workshop.",
+		}},
+	}})
+	for _, want := range []string{
+		"EVIDENCE_PACKAGE:",
+		`types: "direct"`,
+		"answer_cues:",
+		`rank: "#1"`,
+		`content: "Caroline attended an LGBTQ+ counseling workshop."`,
+		`object: "LGBTQ+ counseling workshop"`,
+		`quote: "Last Friday, I went to an LGBTQ+ counseling workshop."`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("structured answer body missing %q:\n%s", want, body)
+		}
+	}
+	if strings.Contains(body, "candidate_answers:") || strings.Contains(body, `type: "direct_answer"`) {
+		t.Fatalf("direct questions should not promote candidate_answers:\n%s", body)
+	}
+}
+
+func TestStructuredAnswerBodyKeepsSurfaceSpansInCuesOnly(t *testing.T) {
+	body := renderStructuredAnswerBody(runners.AnswerQuestion{
+		Query: "What was Melanie's favorite book from childhood?",
+	}, []recall.Hit{{
+		Fact: recall.TemporalFact{
+			ID:      "f1",
+			Kind:    recall.FactState,
+			Content: "Melanie loved reading \"Charlotte's Web\" as a kid.",
+			Subject: "Melanie",
+		},
+		Evidence: []recall.EvidenceRef{{
+			ID:   "D6:10",
+			Text: "I loved reading \"Charlotte's Web\" as a kid.",
+		}},
+	}})
+	for _, want := range []string{
+		`content: "Melanie loved reading \"Charlotte's Web\" as a kid."`,
+		`quote: "I loved reading \"Charlotte's Web\" as a kid."`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("structured answer body missing %q:\n%s", want, body)
+		}
+	}
+	for _, unwanted := range []string{
+		"candidate_answers:",
+		`type: "surface_span"`,
+		`source: "content_quote_span"`,
+	} {
+		if strings.Contains(body, unwanted) {
+			t.Fatalf("surface spans should remain cues, not candidate_answers %q:\n%s", unwanted, body)
+		}
+	}
+}
+
+func TestStructuredAnswerBodyDoesNotPromoteWhereCandidateAnswers(t *testing.T) {
+	body := renderStructuredAnswerBody(runners.AnswerQuestion{
+		Query: "Where did Alice buy the necklace?",
+	}, []recall.Hit{{
+		Fact: recall.TemporalFact{
+			ID:       "f1",
+			Kind:     recall.FactEvent,
+			Content:  "Alice bought the necklace in Paris.",
+			Subject:  "Alice",
+			Object:   "necklace",
+			Location: "Paris",
+		},
+		Evidence: []recall.EvidenceRef{{
+			ID:   "D1:9",
+			Text: "I bought the necklace in Paris.",
+		}},
+	}})
+	for _, want := range []string{
+		`location: "Paris"`,
+		`object: "necklace"`,
+		`quote: "I bought the necklace in Paris."`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("structured answer body missing %q:\n%s", want, body)
+		}
+	}
+	if strings.Contains(body, "candidate_answers:") || strings.Contains(body, `type: "location"`) {
+		t.Fatalf("where direct questions should rely on answer_cues, not candidate_answers:\n%s", body)
+	}
+}
+
+func TestStructuredAnswerBodyAddsRelativeTimeAnswerCue(t *testing.T) {
+	sourceTime := time.Date(2023, 7, 15, 13, 51, 0, 0, time.UTC)
+	eventTime := time.Date(2023, 7, 15, 0, 0, 0, 0, time.UTC)
+	body := renderStructuredAnswerBody(runners.AnswerQuestion{
+		Query: "When did Caroline go to the adoption meeting?",
+	}, []recall.Hit{{
+		Fact: recall.TemporalFact{
+			ID:         "f1",
+			Kind:       recall.FactEvent,
+			Content:    "On 2023-07-15, Caroline attended a council meeting for adoption.",
+			Subject:    "Caroline",
+			Predicate:  "attended",
+			Object:     "council meeting for adoption",
+			ObservedAt: sourceTime,
+			ValidFrom:  &eventTime,
+			Metadata: map[string]any{
+				"valid_from_source": "content_explicit",
+				"valid_from_text":   "2023-07-15",
+			},
+		},
+		Evidence: []recall.EvidenceRef{{
+			ID:        "D8:9",
+			Text:      "Last Friday I went to a council meeting for adoption.",
+			Timestamp: sourceTime,
+		}},
+	}})
+	for _, want := range []string{
+		`types: "direct", "temporal_anchor"`,
+		`event_time: "2023-07-15"`,
+		`event_time_text: "2023-07-15"`,
+		`relative_time_answer: "2023-07-14 (the Friday before 2023-07-15)"`,
+		`type: "temporal"`,
+		`value: "2023-07-14 (the Friday before 2023-07-15)"`,
+		`source: "relative_time"`,
+		`source_time: "2023-07-15 13:51"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("structured answer body missing %q:\n%s", want, body)
+		}
+	}
+}
+
+func TestStructuredAnswerBodyAddsExactYesterdayCandidateAnswer(t *testing.T) {
+	sourceTime := time.Date(2023, 7, 15, 13, 51, 0, 0, time.UTC)
+	eventTime := time.Date(2023, 7, 15, 0, 0, 0, 0, time.UTC)
+	body := renderStructuredAnswerBody(runners.AnswerQuestion{
+		Query: "When did Alice sign up for the pottery class?",
+	}, []recall.Hit{{
+		Fact: recall.TemporalFact{
+			ID:         "f1",
+			Kind:       recall.FactEvent,
+			Content:    "On 2023-07-15, Alice signed up for the pottery class yesterday.",
+			Subject:    "Alice",
+			Predicate:  "signed_up",
+			Object:     "pottery class",
+			ObservedAt: sourceTime,
+			ValidFrom:  &eventTime,
+			Metadata: map[string]any{
+				"valid_from_source": "content_relative",
+				"valid_from_text":   "2023-07-15",
+			},
+		},
+		Evidence: []recall.EvidenceRef{{
+			ID:        "D8:9",
+			Text:      "I signed up for the pottery class yesterday.",
+			Timestamp: sourceTime,
+		}},
+	}})
+	for _, want := range []string{
+		`relative_time_answer: "2023-07-14 (the day before 2023-07-15)"`,
+		`value: "2023-07-14 (the day before 2023-07-15)"`,
+		`source: "relative_time"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("structured answer body missing %q:\n%s", want, body)
+		}
+	}
+}
+
+func TestStructuredAnswerBodyAddsListAndCountCandidateAnswers(t *testing.T) {
+	body := renderStructuredAnswerBody(runners.AnswerQuestion{
+		Query: "How many pets does Melanie have?",
+	}, []recall.Hit{
+		{Fact: recall.TemporalFact{ID: "f1", Kind: recall.FactState, Content: "Melanie has a cat named Bailey.", Subject: "Melanie", Predicate: "has_pet", Object: "Bailey"}, Evidence: []recall.EvidenceRef{{ID: "D1:1", Text: "Melanie has a cat named Bailey."}}},
+		{Fact: recall.TemporalFact{ID: "f2", Kind: recall.FactState, Content: "Melanie has a dog named Oliver.", Subject: "Melanie", Predicate: "has_pet", Object: "Oliver"}, Evidence: []recall.EvidenceRef{{ID: "D1:2", Text: "Melanie has a dog named Oliver."}}},
+	})
+	for _, want := range []string{
+		`type: "list_item"`,
+		`value: "Bailey"`,
+		`value: "Oliver"`,
+		`type: "count"`,
+		`value: "2"`,
+		`support: "unique list_item candidate count"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("structured answer body missing %q:\n%s", want, body)
+		}
+	}
+}
+
+func TestStructuredAnswerBodyCountIgnoresWeakListObjects(t *testing.T) {
+	body := renderStructuredAnswerBody(runners.AnswerQuestion{
+		Query: "How many pets does Melanie have?",
+	}, []recall.Hit{
+		{Fact: recall.TemporalFact{ID: "f1", Kind: recall.FactState, Content: "Melanie has a cat named Bailey.", Subject: "Melanie", Predicate: "has_pet", Object: "Bailey"}, Evidence: []recall.EvidenceRef{{ID: "D1:1", Text: "Melanie has a cat named Bailey."}}},
+		{Fact: recall.TemporalFact{ID: "f2", Kind: recall.FactState, Content: "Melanie visited Paris.", Subject: "Melanie", Predicate: "visited", Object: "Paris"}, Evidence: []recall.EvidenceRef{{ID: "D1:2", Text: "Melanie visited Paris."}}},
+	})
+	for _, unwanted := range []string{
+		`value: "Paris"`,
+		`value: "2"`,
+	} {
+		if strings.Contains(body, unwanted) {
+			t.Fatalf("weak list object must not be counted/rendered %q:\n%s", unwanted, body)
+		}
+	}
+	for _, want := range []string{
+		`value: "Bailey"`,
+		`type: "count"`,
+		`value: "1"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("structured answer body missing %q:\n%s", want, body)
+		}
+	}
+}
+
+func TestCompactAnswerCueTruncatesByRune(t *testing.T) {
+	in := strings.Repeat("猫", 300)
+	got := compactAnswerCue(in)
+	if !strings.HasSuffix(got, "...") {
+		t.Fatalf("truncated cue should end with ellipsis: %q", got)
+	}
+	if !strings.Contains(got, "猫") {
+		t.Fatalf("truncated cue should preserve valid UTF-8 runes: %q", got)
+	}
+	if len([]rune(strings.TrimSuffix(got, "..."))) != 257 {
+		t.Fatalf("truncated rune count = %d, want 257", len([]rune(strings.TrimSuffix(got, "..."))))
+	}
+}
+
+func TestStructuredAnswerBodyLimitsFullMemoriesButKeepsCueRanks(t *testing.T) {
+	hits := make([]recall.Hit, 0, maxStructuredAnswerMemories+2)
+	for i := 0; i < maxStructuredAnswerMemories+2; i++ {
+		hits = append(hits, recall.Hit{
+			Fact: recall.TemporalFact{
+				ID:      fmt.Sprintf("f%d", i+1),
+				Kind:    recall.FactState,
+				Content: fmt.Sprintf("Alice keeps item %d.", i+1),
+				Subject: "Alice",
+			},
+			Evidence: []recall.EvidenceRef{{ID: fmt.Sprintf("D%d:1", i+1), Text: fmt.Sprintf("Alice keeps item %d.", i+1)}},
+		})
+	}
+	body := renderStructuredAnswerBody(runners.AnswerQuestion{
+		Query: "What items has Alice kept?",
+	}, hits)
+
+	if strings.Contains(body, `- [#13]`) {
+		t.Fatalf("full memories should stop at configured cap:\n%s", body)
+	}
+	for _, want := range []string{
+		`rank: "#13"`,
+		`rank: "#14"`,
+		"additional recalled memories omitted",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("structured answer body missing %q:\n%s", want, body)
+		}
+	}
+}
+
 func TestStructuredAnswerBodyDoesNotPromoteSourceTimeFallbackToEventTime(t *testing.T) {
 	validFrom := time.Date(2024, 5, 7, 9, 30, 0, 0, time.UTC)
 	body := renderStructuredAnswerBody(runners.AnswerQuestion{
@@ -488,6 +760,8 @@ func TestStructuredAnswerContextCarriesBackendPrompt(t *testing.T) {
 		"structured memory facts",
 		"event_time as the event date",
 		"observed_at and evidence source_time",
+		"relative_time_answer",
+		"ISO date",
 		"content as the canonical extracted fact",
 		"best-supported yes/no inference",
 		"%s",

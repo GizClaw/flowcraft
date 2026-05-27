@@ -17,9 +17,13 @@ type PipelineHealth struct {
 	CompiledFacts        FactQuality
 	AppendedFacts        FactQuality
 	SaveDrops            map[FailureStage]int
+	SaveLatency          time.Duration
+	SaveStageLatency     map[string]LatencyStats
 	HitRenderability     HitRenderability
 	RecallDrops          map[FailureStage]int
 	RecallLatency        time.Duration
+	RecallStageLatency   map[string]LatencyStats
+	RecallSourceLatency  map[string]LatencyStats
 	SourceActivation     map[string]int
 	SourceReturned       map[string]int
 	WinnersBySource      map[string]int
@@ -31,20 +35,24 @@ type PipelineHealth struct {
 // NewPipelineHealth returns an empty aggregator with maps initialized.
 func NewPipelineHealth() *PipelineHealth {
 	return &PipelineHealth{
-		CompiledFacts:     FactQuality{ByKind: map[string]int{}, ByPolicyDecision: map[string]int{}},
-		AppendedFacts:     FactQuality{ByKind: map[string]int{}, ByPolicyDecision: map[string]int{}},
-		SaveDrops:         map[FailureStage]int{},
-		RecallDrops:       map[FailureStage]int{},
-		SourceActivation:  map[string]int{},
-		SourceReturned:    map[string]int{},
-		WinnersBySource:   map[string]int{},
-		SoleSourceWinners: map[string]int{},
+		CompiledFacts:       FactQuality{ByKind: map[string]int{}, ByPolicyDecision: map[string]int{}},
+		AppendedFacts:       FactQuality{ByKind: map[string]int{}, ByPolicyDecision: map[string]int{}},
+		SaveDrops:           map[FailureStage]int{},
+		SaveStageLatency:    map[string]LatencyStats{},
+		RecallDrops:         map[FailureStage]int{},
+		RecallStageLatency:  map[string]LatencyStats{},
+		RecallSourceLatency: map[string]LatencyStats{},
+		SourceActivation:    map[string]int{},
+		SourceReturned:      map[string]int{},
+		WinnersBySource:     map[string]int{},
+		SoleSourceWinners:   map[string]int{},
 	}
 }
 
 // RecordSave folds a Save diagnostic into the aggregate.
 func (p *PipelineHealth) RecordSave(diag SaveDiagnostics) {
 	p.SaveSamples++
+	p.SaveLatency += diag.TotalLatency
 	p.InputFacts += diag.Input
 	mergeInputCoverage(&p.InputCoverage, diag.InputCoverage)
 	if diag.InputCoverage.HasObservedAt {
@@ -56,12 +64,21 @@ func (p *PipelineHealth) RecordSave(diag SaveDiagnostics) {
 	for stage, n := range diag.DropsByStage {
 		p.SaveDrops[stage] += n
 	}
+	for stage, d := range diag.StageLatency {
+		mergeLatencySample(p.SaveStageLatency, stage, d)
+	}
 }
 
 // RecordRecall folds a Recall diagnostic into the aggregate.
 func (p *PipelineHealth) RecordRecall(diag RecallDiagnostics) {
 	p.RecallSamples++
 	p.RecallLatency += diag.TotalLatency
+	for stage, d := range diag.StageLatency {
+		mergeLatencySample(p.RecallStageLatency, stage, d)
+	}
+	for source, d := range diag.SourceLatency {
+		mergeLatencySample(p.RecallSourceLatency, source, d)
+	}
 	p.HitRenderability.Total += diag.HitRenderability.Total
 	p.HitRenderability.EmptyRenderable += diag.HitRenderability.EmptyRenderable
 	p.HitRenderability.StructuredOnly += diag.HitRenderability.StructuredOnly

@@ -1200,10 +1200,11 @@ func looksIDK(pred string) bool {
 
 func compactSnippet(s string, max int) string {
 	s = strings.Join(strings.Fields(s), " ")
-	if max <= 0 || len(s) <= max {
+	runes := []rune(s)
+	if max <= 0 || len(runes) <= max {
 		return s
 	}
-	return s[:max] + "..."
+	return string(runes[:max]) + "..."
 }
 
 func hasTag(tags []string, tag string) bool {

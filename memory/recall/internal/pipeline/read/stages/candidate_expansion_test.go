@@ -2,6 +2,7 @@ package stages
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/GizClaw/flowcraft/memory/recall/internal/domain"
@@ -57,6 +58,33 @@ func TestCandidateExpansionAddsCappedSubjectPredicateSiblings(t *testing.T) {
 	}
 	if got["hiking"] {
 		t.Fatalf("unrelated same-entity fact should not be added as a sibling: %+v", state.MergedItems)
+	}
+}
+
+func TestCandidateExpansionPropagatesCanceledContext(t *testing.T) {
+	scope := domain.Scope{RuntimeID: "rt", UserID: "u"}
+	store := temporalstore.NewMemoryStore()
+	query := "What pets does Melanie have?"
+	stage := NewCandidateExpansion(store)
+	state := &read.ReadState{
+		Scope: scope,
+		Query: domain.Query{Text: query},
+		Plan: &domain.QueryPlan{
+			Intent: domain.QueryIntent{
+				Text:     query,
+				Entities: []string{"Melanie"},
+				Features: recallintent.ExtractFeatures(query),
+			},
+			TotalCap:    12,
+			TaskIntents: []domain.QueryTaskIntent{domain.QueryTaskSetCompletion},
+		},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := stage.Run(ctx, state)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("candidate expansion should propagate canceled context, got %v", err)
 	}
 }
 

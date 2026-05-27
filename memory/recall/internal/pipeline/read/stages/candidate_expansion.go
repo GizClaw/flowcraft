@@ -62,8 +62,14 @@ func (s *CandidateExpansion) Run(ctx context.Context, state *read.ReadState) (di
 	maxAdds := neighborCandidateMaxAdds(state.Plan.TotalCap)
 	scored := make([]neighborScoredItem, 0, maxAdds)
 	for _, scope := range state.Scope.EffectiveFederation() {
+		if err := ctx.Err(); err != nil {
+			return detail, err
+		}
 		facts, err := neighborCandidateListFacts(ctx, s.store, scope, anchors, neighborCandidateScanLimit(state.Plan.TotalCap))
 		if err != nil {
+			if isContextError(err) {
+				return detail, err
+			}
 			detail.Err = err.Error()
 			continue
 		}

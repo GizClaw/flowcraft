@@ -617,10 +617,12 @@ func parseFactsJSON(raw string) ([]ExtractedFact, error) {
 }
 
 func truncate(b []byte, n int) string {
-	if len(b) <= n {
-		return string(b)
+	s := string(b)
+	runes := []rune(s)
+	if n <= 0 || len(runes) <= n {
+		return s
 	}
-	return string(b[:n]) + "…"
+	return string(runes[:n]) + "…"
 }
 
 func normalizeFacts(in []ExtractedFact) []ExtractedFact {

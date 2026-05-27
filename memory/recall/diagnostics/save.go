@@ -41,6 +41,8 @@ type SaveDiagnostics struct {
 	Compiled             FactQuality
 	Appended             FactQuality
 	DropsByStage         map[FailureStage]int
+	TotalLatency         time.Duration
+	StageLatency         map[string]time.Duration
 	Attributions         []Attribution
 }
 
@@ -56,6 +58,8 @@ func DiagnoseSave(req domain.SaveRequest, trace domain.SaveTrace) SaveDiagnostic
 		StructurizerCoverage: diagnostic.ExtractStructurizerCoverage(stages),
 		Compiled:             factQualityFromIngest(stages),
 		Appended:             factQualityFromResolve(stages),
+		TotalLatency:         SaveLatency(trace),
+		StageLatency:         stageLatencies(stages),
 		Attributions:         AttributeSaveTrace(trace),
 	}
 	if len(out.Attributions) > 0 {

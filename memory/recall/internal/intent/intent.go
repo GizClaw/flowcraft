@@ -2,14 +2,13 @@ package intent
 
 import (
 	"context"
-	"sort"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/GizClaw/flowcraft/memory/recall/internal/domain"
 	"github.com/GizClaw/flowcraft/memory/recall/internal/port"
 	"github.com/GizClaw/flowcraft/memory/recall/internal/words"
-	"github.com/GizClaw/flowcraft/memory/text/quotes"
 	"github.com/GizClaw/flowcraft/memory/text/tokenize"
 )
 
@@ -50,7 +49,7 @@ func (RuleBased) Compile(_ context.Context, input port.IntentInput) (port.Intent
 func mergeEntities(explicit, extracted []string) []string {
 	seen := make(map[string]struct{}, len(explicit)+len(extracted))
 	add := func(s string) []string {
-		s = normalizeEntityMention(s)
+		s = words.NormalizeIntentEntityMention(s)
 		if s == "" {
 			return nil
 		}
@@ -70,65 +69,12 @@ func mergeEntities(explicit, extracted []string) []string {
 	return out
 }
 
-func normalizeEntityMention(s string) string {
-	s = strings.TrimFunc(s, func(r rune) bool {
-		return unicode.IsPunct(r) || unicode.IsSpace(r)
-	})
-	if len(s) < 2 {
-		return ""
-	}
-	return strings.ToLower(s)
-}
-
 // extractEntitiesFromText is a conservative rule baseline: quoted spans,
 // capitalized tokens, and CJK runs. Common question words are filtered
 // (via recall/internal/words) so "Who did Alice meet in Paris?" yields alice
 // and paris, not who.
 func extractEntitiesFromText(text string) []string {
-	text = strings.TrimSpace(text)
-	if text == "" {
-		return nil
-	}
-	set := map[string]struct{}{}
-	add := func(s string) {
-		s = normalizeEntityMention(s)
-		if s == "" || words.IsIntentEntityStopword(s) {
-			return
-		}
-		set[s] = struct{}{}
-	}
-	for _, q := range quotes.ExtractSpans(text) {
-		add(q)
-	}
-	// FieldsFunc keeps apostrophe / hyphen inside tokens so names
-	// like "O'Brien" and "Jean-Luc" survive as single mentions —
-	// tokenize.SplitWords splits on those, so we cannot use it
-	// directly here.
-	fields := strings.FieldsFunc(text, func(r rune) bool {
-		return unicode.IsSpace(r) || (unicode.IsPunct(r) && r != '\'' && r != '-')
-	})
-	for i, w := range fields {
-		runes := []rune(w)
-		if len(runes) < 2 {
-			continue
-		}
-		lower := strings.ToLower(w)
-		if i == 0 && words.IsIntentEntityStopword(lower) {
-			continue
-		}
-		if unicode.IsUpper(runes[0]) && !words.IsIntentEntityStopword(lower) {
-			add(w)
-		}
-		if hasCJKRunes(w) && len(runes) >= 2 {
-			add(w)
-		}
-	}
-	out := make([]string, 0, len(set))
-	for k := range set {
-		out = append(out, k)
-	}
-	sort.Strings(out)
-	return out
+	return words.ExtractIntentEntityMentions(text)
 }
 
 func inferKinds(features domain.QueryFeatures) []domain.FactKind {
@@ -146,11 +92,11 @@ func inferSubject(text string, entities []string) string {
 	best := ""
 	bestIdx := len(lower) + 1
 	for _, e := range entities {
-		e = normalizeEntityMention(e)
+		e = words.NormalizeIntentEntityMention(e)
 		if e == "" {
 			continue
 		}
-		idx := strings.Index(lower, e)
+		idx := indexEntityMention(lower, e)
 		if idx >= 0 && idx < bestIdx {
 			best = e
 			bestIdx = idx
@@ -160,6 +106,43 @@ func inferSubject(text string, entities []string) string {
 		return best
 	}
 	return entities[0]
+}
+
+func indexEntityMention(lowerText, entity string) int {
+	start := 0
+	for {
+		idx := strings.Index(lowerText[start:], entity)
+		if idx < 0 {
+			return -1
+		}
+		idx += start
+		if hasEntityBoundary(lowerText, idx, len(entity)) {
+			return idx
+		}
+		start = idx + len(entity)
+		if start >= len(lowerText) {
+			return -1
+		}
+	}
+}
+
+func hasEntityBoundary(text string, start, length int) bool {
+	beforeOK := start == 0
+	if !beforeOK {
+		r, _ := utf8.DecodeLastRuneInString(text[:start])
+		beforeOK = !isEntityBoundaryRune(r)
+	}
+	end := start + length
+	afterOK := end >= len(text)
+	if !afterOK {
+		r, _ := utf8.DecodeRuneInString(text[end:])
+		afterOK = !isEntityBoundaryRune(r)
+	}
+	return beforeOK && afterOK
+}
+
+func isEntityBoundaryRune(r rune) bool {
+	return unicode.IsLetter(r) || unicode.IsDigit(r)
 }
 
 func shouldInferSubject(text string, features domain.QueryFeatures) bool {

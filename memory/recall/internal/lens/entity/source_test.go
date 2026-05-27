@@ -45,3 +45,21 @@ func TestSource_BudgetCapsCandidates(t *testing.T) {
 		t.Errorf("rank/order wrong: %+v", res.Candidates)
 	}
 }
+
+func TestSource_AgentScopedQueryDefersBudgetUntilMaterialize(t *testing.T) {
+	src := NewSource(stubLookup{want: []string{"private-a", "private-b", "visible"}})
+	res := src.Query(context.Background(), domain.QueryPlan{
+		Intent: domain.QueryIntent{
+			Scope:    domain.Scope{RuntimeID: "rt", UserID: "u1", AgentID: "agent-b"},
+			Entities: []string{"alice"},
+		},
+		SourceBudgets: map[string]int{planner.SourceEntity: 1},
+	})
+
+	if len(res.Candidates) != 3 {
+		t.Fatalf("agent-scoped source must not let invisible facts consume budget, got %+v", res.Candidates)
+	}
+	if res.Truncated {
+		t.Fatal("agent-scoped source should defer truncation to post-materialize stages")
+	}
+}

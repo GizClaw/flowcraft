@@ -22,8 +22,9 @@ func BuildCallbackQuery(card *Card, result *ResultPayload) string {
 	} else {
 		b.WriteString("Status: completed\n")
 		output := result.Output
-		if len(output) > 200 {
-			output = output[:200] + "..."
+		runes := []rune(output)
+		if len(runes) > 200 {
+			output = string(runes[:200]) + "..."
 		}
 		fmt.Fprintf(&b, "Summary: %s\n", output)
 	}

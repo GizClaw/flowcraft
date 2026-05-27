@@ -79,6 +79,22 @@ func TestRuleBased_InfersTaskIntents(t *testing.T) {
 			want: domain.QueryTaskBridgeResolution,
 		},
 		{
+			name: "multilingual collection surface asks for set completion",
+			in: port.PlannerInput{
+				Text:     "¿Qué mascotas tiene Melanie?",
+				Features: domain.QueryFeatures{Tokens: map[string]struct{}{"mascota": {}, "melanie": {}}},
+			},
+			want: domain.QueryTaskSetCompletion,
+		},
+		{
+			name: "multilingual bridge surface asks for bridge resolution",
+			in: port.PlannerInput{
+				Text:     "Où Alice a-t-elle acheté le collier qu'elle portait?",
+				Features: domain.QueryFeatures{Tokens: map[string]struct{}{"alice": {}, "collier": {}, "portait": {}}},
+			},
+			want: domain.QueryTaskBridgeResolution,
+		},
+		{
 			name: "temporal query asks for temporal reasoning",
 			in: port.PlannerInput{
 				Text: "When did Alice move?",
@@ -103,6 +119,21 @@ func TestRuleBased_InfersTaskIntents(t *testing.T) {
 				t.Fatalf("TaskIntents = %+v, want %s", plan.TaskIntents, tc.want)
 			}
 		})
+	}
+}
+
+func TestRuleBased_SurfaceIntentHelpersRespectTokenBoundaries(t *testing.T) {
+	p := New()
+	plan, err := p.Plan(context.Background(), port.PlannerInput{
+		Scope:    domain.Scope{RuntimeID: "rt"},
+		Text:     "The theater was busy.",
+		Features: domain.QueryFeatures{Tokens: map[string]struct{}{"theater": {}, "busy": {}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if containsTask(plan.TaskIntents, domain.QueryTaskBridgeResolution) {
+		t.Fatalf("TaskIntents = %+v, theater must not trigger her bridge cue", plan.TaskIntents)
 	}
 }
 

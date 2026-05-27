@@ -39,12 +39,16 @@ func (s *Source) Query(ctx context.Context, plan domain.QueryPlan) domain.Source
 	}
 
 	tr := plan.Intent.TimeRange
+	queryLimit := budget + 1
+	if agentSoftIsolationQuery(scope) {
+		queryLimit = 0
+	}
 	started := time.Now()
-	ids := s.querier.Query(ctx, scope, tr.From, tr.To, plan.Intent.Kinds, budget+1)
+	ids := s.querier.Query(ctx, scope, tr.From, tr.To, plan.Intent.Kinds, queryLimit)
 	latency := time.Since(started)
 
 	truncated := false
-	if len(ids) > budget {
+	if !agentSoftIsolationQuery(scope) && len(ids) > budget {
 		ids = ids[:budget]
 		truncated = true
 	}
@@ -65,4 +69,8 @@ func (s *Source) Query(ctx context.Context, plan domain.QueryPlan) domain.Source
 		Truncated:  truncated,
 		Latency:    latency,
 	}
+}
+
+func agentSoftIsolationQuery(scope domain.Scope) bool {
+	return scope.AgentID != ""
 }

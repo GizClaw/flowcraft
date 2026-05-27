@@ -32,6 +32,22 @@ func TestProject_Lookup(t *testing.T) {
 	}
 }
 
+func TestProject_LookupUnicodeCaseFold(t *testing.T) {
+	p := New()
+	scope := domain.Scope{RuntimeID: "rt"}
+	if err := p.Project(context.Background(), []domain.TemporalFact{
+		{ID: "f1", Scope: scope, Kind: domain.KindNote, Entities: []string{"Élodie"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got := p.Lookup(context.Background(), scope, []string{"élodie"}); !equalStrings(got, []string{"f1"}) {
+		t.Fatalf("unicode case-folded lookup = %v, want f1", got)
+	}
+	if got := p.Lookup(context.Background(), scope, []string{"e\u0301lodie"}); !equalStrings(got, []string{"f1"}) {
+		t.Fatalf("unicode NFC lookup = %v, want f1", got)
+	}
+}
+
 func TestProject_ReplacesPriorMentions(t *testing.T) {
 	p := New()
 	scope := domain.Scope{RuntimeID: "rt"}

@@ -8,11 +8,13 @@ package entity
 import (
 	"context"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/GizClaw/flowcraft/memory/recall/internal/domain"
 	"github.com/GizClaw/flowcraft/memory/recall/internal/port"
+	"github.com/GizClaw/flowcraft/memory/text/normalize"
 )
 
 // Projection is the in-memory entity mention projection. PR-2 ships
@@ -281,31 +283,5 @@ func collectEntities(f domain.TemporalFact) []string {
 // Lookup works for ad-hoc callers (tests, future planners) that
 // pass raw user input.
 func canonicalEntity(s string) string {
-	// reuse small ASCII path; non-ASCII letters pass through to the
-	// lower-casing form. Entities are typically ASCII tokens after
-	// the normalizer; non-ASCII is supported via strings.ToLower at
-	// the canonicalizer boundary in the compiler.
-	lower := make([]byte, 0, len(s))
-	prevSpace := true
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		switch {
-		case c == ' ' || c == '\t' || c == '\n' || c == '\r':
-			if !prevSpace {
-				lower = append(lower, ' ')
-				prevSpace = true
-			}
-		case c >= 'A' && c <= 'Z':
-			lower = append(lower, c+('a'-'A'))
-			prevSpace = false
-		default:
-			lower = append(lower, c)
-			prevSpace = false
-		}
-	}
-	// trim trailing space
-	for len(lower) > 0 && lower[len(lower)-1] == ' ' {
-		lower = lower[:len(lower)-1]
-	}
-	return string(lower)
+	return strings.ToLower(normalize.CollapseSpaces(s))
 }

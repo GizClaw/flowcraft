@@ -6,6 +6,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/memory/recall/internal/domain"
 	"github.com/GizClaw/flowcraft/memory/recall/internal/words"
+	"github.com/GizClaw/flowcraft/memory/text/normalize"
 )
 
 // Defaults bound deterministic edge generation (docs §8.4).
@@ -143,28 +144,7 @@ func collectCooccurrenceNodes(f domain.TemporalFact, limit int) []string {
 
 // canonicalNode matches entity projection mention normalization.
 func canonicalNode(s string) string {
-	lower := make([]byte, 0, len(s))
-	prevSpace := true
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		switch {
-		case c == ' ' || c == '\t' || c == '\n' || c == '\r':
-			if !prevSpace {
-				lower = append(lower, ' ')
-				prevSpace = true
-			}
-		case c >= 'A' && c <= 'Z':
-			lower = append(lower, c+('a'-'A'))
-			prevSpace = false
-		default:
-			lower = append(lower, c)
-			prevSpace = false
-		}
-	}
-	for len(lower) > 0 && lower[len(lower)-1] == ' ' {
-		lower = lower[:len(lower)-1]
-	}
-	return string(lower)
+	return strings.ToLower(normalize.CollapseSpaces(s))
 }
 
 func isCommonNoun(node string) bool {

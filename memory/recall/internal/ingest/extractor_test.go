@@ -177,6 +177,80 @@ func TestLLMExtractor_RendersTurnsAsJSONL(t *testing.T) {
 	}
 }
 
+func TestExtractorPromptsForbidGenericSurfaceCollapse(t *testing.T) {
+	for name, prompt := range map[string]string{
+		"single_pass": LLMExtractorSystemPrompt,
+		"two_pass":    TwoPassMemoryExtractionPrompt,
+	} {
+		for _, want := range []string{
+			"Never replace an answer-bearing span with only a category word",
+			`Charlotte's Web`,
+			`Stardew Valley`,
+			`a pet`,
+			`an item`,
+		} {
+			if !strings.Contains(prompt, want) {
+				t.Fatalf("%s prompt missing %q:\n%s", name, want, prompt)
+			}
+		}
+	}
+}
+
+func TestLLMExtractorReattachesMissingQuotedEvidenceSurface(t *testing.T) {
+	client := &fakeLLM{
+		Responses: []string{`{"memories":[{
+			"text":"Alice finished reading a book yesterday.",
+			"kind":"event",
+			"evidence_refs":[{"id":"D1:1","text":"I finished \"Charlotte's Web\" yesterday."}]
+		}]}`},
+	}
+	ex := NewLLMExtractor(client)
+	out, err := ex.Extract(context.Background(), port.IngestInput{
+		Scope: domain.Scope{RuntimeID: "rt"},
+		Turns: []port.TurnContext{{
+			ID:      "D1:1",
+			Speaker: "Alice",
+			Text:    `I finished "Charlotte's Web" yesterday.`,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("extract: %v", err)
+	}
+	if len(out) != 1 {
+		t.Fatalf("want 1 fact, got %d (%+v)", len(out), out)
+	}
+	if !strings.Contains(out[0].Content, `Exact source phrase: "Charlotte's Web".`) {
+		t.Fatalf("missing quoted evidence surface in content: %q", out[0].Content)
+	}
+}
+
+func TestTwoPassLLMExtractorReattachesMissingQuotedEvidenceSurface(t *testing.T) {
+	client := &fakeLLM{
+		Responses: []string{
+			`{"memories":[{"text":"Alice finished reading a book yesterday.","kind":"event"}]}`,
+			`{"links":[{"memory_index":0,"evidence_refs":[{"id":"D1:1","text":"I finished \"Charlotte's Web\" yesterday."}]}]}`,
+		},
+	}
+	ex := NewTwoPassLLMExtractor(client)
+	out, err := ex.Extract(context.Background(), port.IngestInput{
+		Scope: domain.Scope{RuntimeID: "rt"},
+		Turns: []port.TurnContext{{
+			ID:      "D1:1",
+			Speaker: "Alice",
+			Text:    `I finished "Charlotte's Web" yesterday.`,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("extract: %v", err)
+	}
+	if len(out) != 1 {
+		t.Fatalf("want 1 fact, got %d (%+v)", len(out), out)
+	}
+	if !strings.Contains(out[0].Content, `Exact source phrase: "Charlotte's Web".`) {
+		t.Fatalf("missing quoted evidence surface in content: %q", out[0].Content)
+	}
+}
+
 func TestLLMExtractor_AcceptsLegacyFactsSchema(t *testing.T) {
 	// A deployment may still have the older prompt cached; make
 	// sure the parser tolerates the legacy "facts" envelope and

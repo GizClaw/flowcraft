@@ -35,7 +35,11 @@ type diagnosticsReport struct {
 	SaveDrops            map[string]int             `json:"save_drops,omitempty"`
 	HitRenderability     hitReport                  `json:"hit_renderability"`
 	RecallDrops          map[string]int             `json:"recall_drops,omitempty"`
+	SaveLatencyAvg       string                     `json:"save_latency_avg,omitempty"`
 	RecallLatencyAvg     string                     `json:"recall_latency_avg,omitempty"`
+	SaveStageLatency     map[string]latencyReport   `json:"save_stage_latency,omitempty"`
+	RecallStageLatency   map[string]latencyReport   `json:"recall_stage_latency,omitempty"`
+	RecallSourceLatency  map[string]latencyReport   `json:"recall_source_latency,omitempty"`
 	SourceActivation     map[string]int             `json:"source_activation,omitempty"`
 	SourceReturnedAv     map[string]int             `json:"source_returned_avg,omitempty"`
 	// Provenance: which sources actually surfaced final winners. The
@@ -107,6 +111,14 @@ type hitReport struct {
 	EmptyTop           int     `json:"empty_top"`
 }
 
+type latencyReport struct {
+	Count int    `json:"count"`
+	Avg   string `json:"avg"`
+	P50   string `json:"p50"`
+	P95   string `json:"p95"`
+	Max   string `json:"max"`
+}
+
 func writeDiagnosticsReport(path string, h *diagnostics.PipelineHealth) error {
 	report := diagnosticsReport{
 		GeneratedAt:          time.Now(),
@@ -136,9 +148,16 @@ func writeDiagnosticsReport(path string, h *diagnostics.PipelineHealth) error {
 			report.RecallDrops[string(stage)] = n
 		}
 	}
+	if h.SaveSamples > 0 {
+		avg := h.SaveLatency / time.Duration(h.SaveSamples)
+		report.SaveLatencyAvg = avg.String()
+		report.SaveStageLatency = toLatencyReports(h.SaveStageLatency)
+	}
 	if h.RecallSamples > 0 {
 		avg := h.RecallLatency / time.Duration(h.RecallSamples)
 		report.RecallLatencyAvg = avg.String()
+		report.RecallStageLatency = toLatencyReports(h.RecallStageLatency)
+		report.RecallSourceLatency = toLatencyReports(h.RecallSourceLatency)
 		if len(h.SourceReturned) > 0 {
 			report.SourceReturnedAv = make(map[string]int, len(h.SourceReturned))
 			for src, sum := range h.SourceReturned {
@@ -155,6 +174,30 @@ func writeDiagnosticsReport(path string, h *diagnostics.PipelineHealth) error {
 		return err
 	}
 	return os.WriteFile(path, b, 0o644)
+}
+
+func toLatencyReports(stats map[string]diagnostics.LatencyStats) map[string]latencyReport {
+	if len(stats) == 0 {
+		return nil
+	}
+	out := make(map[string]latencyReport, len(stats))
+	for key, stat := range stats {
+		summary := stat.Summary()
+		if summary.Count == 0 {
+			continue
+		}
+		out[key] = latencyReport{
+			Count: summary.Count,
+			Avg:   summary.Avg.String(),
+			P50:   summary.P50.String(),
+			P95:   summary.P95.String(),
+			Max:   summary.Max.String(),
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 func toStructurizerCoverageReport(c recall.StructurizerCoverage) structurizerCoverageReport {

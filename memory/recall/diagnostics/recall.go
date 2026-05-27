@@ -51,6 +51,8 @@ type RecallDiagnostics struct {
 	HitRenderability  HitRenderability
 	HitProvenance     HitProvenance
 	TotalLatency      time.Duration
+	StageLatency      map[string]time.Duration
+	SourceLatency     map[string]time.Duration
 	Attributions      []Attribution
 }
 
@@ -66,6 +68,8 @@ func DiagnoseRecall(trace domain.RecallTrace, hits []domain.Hit) RecallDiagnosti
 		CandidateCount:    diagnostic.ExtractCandidateCount(stages),
 		MaterializedCount: diagnostic.ExtractMaterialized(stages),
 		TotalLatency:      totalLatency(stages),
+		StageLatency:      stageLatencies(stages),
+		SourceLatency:     sourceLatencies(Sources(trace)),
 		Attributions:      AttributeRecallTrace(trace),
 	}
 	if len(out.Drops) > 0 {
@@ -76,6 +80,20 @@ func DiagnoseRecall(trace domain.RecallTrace, hits []domain.Hit) RecallDiagnosti
 	}
 	out.HitRenderability = diagnoseHits(hits)
 	out.HitProvenance = diagnoseHitProvenance(hits)
+	return out
+}
+
+func sourceLatencies(sources []SourceDiagnostic) map[string]time.Duration {
+	out := map[string]time.Duration{}
+	for _, src := range sources {
+		if src.Source == "" || !src.Activated {
+			continue
+		}
+		out[src.Source] += src.Latency
+	}
+	if len(out) == 0 {
+		return nil
+	}
 	return out
 }
 

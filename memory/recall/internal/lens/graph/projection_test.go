@@ -30,6 +30,27 @@ func TestGraph_TypedRelationEdgeTraverse(t *testing.T) {
 	}
 }
 
+func TestGraph_TraverseUnicodeCaseFold(t *testing.T) {
+	p := New()
+	ctx := context.Background()
+	if err := p.Project(ctx, []domain.TemporalFact{
+		{ID: "r1", Scope: scope(), Kind: domain.KindRelation,
+			Subject: "Élodie", Predicate: "knows", Object: "Bob",
+			ObservedAt: time.Unix(1, 0)},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	got := p.Traverse(ctx, scope(), []string{"élodie"}, 1, 0)
+	if !hasID(got, "r1") {
+		t.Fatalf("unicode case-folded graph traversal should find r1, got %+v", got)
+	}
+	got = p.Traverse(ctx, scope(), []string{"e\u0301lodie"}, 1, 0)
+	if !hasID(got, "r1") {
+		t.Fatalf("unicode NFC graph traversal should find r1, got %+v", got)
+	}
+}
+
 func TestGraph_SkipsCommonNounEndpoints(t *testing.T) {
 	p := New()
 	ctx := context.Background()

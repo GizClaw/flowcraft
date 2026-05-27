@@ -206,22 +206,32 @@ func (m *lt) gatherExistingFacts(ctx context.Context, scope Scope, msgs []llm.Me
 }
 
 func joinMessageText(msgs []llm.Message, max int) string {
-	var b []byte
+	if max <= 0 {
+		return ""
+	}
+	out := make([]rune, 0, max)
 	for _, m := range msgs {
 		c := m.Content()
 		if c == "" {
 			continue
 		}
-		if len(b) > 0 {
-			b = append(b, '\n')
+		if len(out) > 0 {
+			if len(out) >= max {
+				break
+			}
+			out = append(out, '\n')
 		}
-		b = append(b, c...)
-		if len(b) >= max {
-			b = b[:max]
+		for _, r := range c {
+			if len(out) >= max {
+				break
+			}
+			out = append(out, r)
+		}
+		if len(out) >= max {
 			break
 		}
 	}
-	return string(b)
+	return string(out)
 }
 
 func snippetSingleLine(s string, max int) string {

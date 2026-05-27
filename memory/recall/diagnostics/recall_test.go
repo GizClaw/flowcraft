@@ -80,13 +80,13 @@ func TestDiagnoseRecall_ReportsPerStageHealth(t *testing.T) {
 					{Lens: "relation", Budget: 20},
 				},
 			}},
-			{Stage: "candidate_fanout", Detail: diagnostic.CandidateFanoutDetail{
+			{Stage: "candidate_fanout", Duration: 10 * time.Millisecond, Detail: diagnostic.CandidateFanoutDetail{
 				Sources: []diagnostic.SourceResult{
-					{Lens: "retrieval", Candidates: 10},
-					{Lens: "entity", Candidates: 0},
+					{Lens: "retrieval", Candidates: 10, Latency: 7 * time.Millisecond},
+					{Lens: "entity", Candidates: 0, Latency: 2 * time.Millisecond},
 				},
 			}},
-			{Stage: "candidate_merge_and_materialize", Detail: diagnostic.CandidateMergeAndMaterializeDetail{
+			{Stage: "candidate_merge_and_materialize", Duration: 20 * time.Millisecond, Detail: diagnostic.CandidateMergeAndMaterializeDetail{
 				CandidateCount:    8,
 				MaterializedCount: 6,
 				Drops: []diagnostic.CandidateDrop{
@@ -124,6 +124,13 @@ func TestDiagnoseRecall_ReportsPerStageHealth(t *testing.T) {
 	if len(diag.Drops) != 2 {
 		t.Errorf("drops = %+v", diag.Drops)
 	}
+	if diag.StageLatency["candidate_fanout"] != 10*time.Millisecond ||
+		diag.StageLatency["candidate_merge_and_materialize"] != 20*time.Millisecond {
+		t.Errorf("stage latency = %+v", diag.StageLatency)
+	}
+	if diag.SourceLatency["retrieval"] != 7*time.Millisecond || diag.SourceLatency["entity"] != 2*time.Millisecond {
+		t.Errorf("source latency = %+v", diag.SourceLatency)
+	}
 }
 
 func TestDiagnoseSave_SummarisesFactQuality(t *testing.T) {
@@ -133,13 +140,13 @@ func TestDiagnoseSave_SummarisesFactQuality(t *testing.T) {
 	}
 	trace := domain.SaveTrace{
 		Stages: []diagnostic.StageDiagnostic{
-			{Stage: "ingest", Detail: diagnostic.IngestDetail{
+			{Stage: "ingest", Duration: 3 * time.Millisecond, Detail: diagnostic.IngestDetail{
 				ExtractedFacts: 3,
 				Dropped: []diagnostic.DroppedFact{{
 					Reason: "policy:reject",
 				}},
 			}},
-			{Stage: "resolve", Detail: diagnostic.ResolveDetail{Appended: 2}},
+			{Stage: "resolve", Duration: 5 * time.Millisecond, Detail: diagnostic.ResolveDetail{Appended: 2}},
 		},
 	}
 
@@ -158,6 +165,9 @@ func TestDiagnoseSave_SummarisesFactQuality(t *testing.T) {
 	}
 	if len(diag.Attributions) != 1 || diag.DropsByStage[diag.Attributions[0].Stage] != 1 {
 		t.Errorf("drops attribution = %+v %+v", diag.Attributions, diag.DropsByStage)
+	}
+	if diag.TotalLatency != 8*time.Millisecond || diag.StageLatency["ingest"] != 3*time.Millisecond || diag.StageLatency["resolve"] != 5*time.Millisecond {
+		t.Errorf("save latency = total %s stages %+v", diag.TotalLatency, diag.StageLatency)
 	}
 }
 
@@ -279,6 +289,40 @@ func TestPipelineHealth_AggregatesSaveAndRecall(t *testing.T) {
 	}
 	if health.InputCoverage.Facts != 1 || health.InputCoverage.Turns != 1 {
 		t.Errorf("aggregate input coverage = %+v", health.InputCoverage)
+	}
+}
+
+func TestPipelineHealth_AggregatesLatencySummaries(t *testing.T) {
+	health := diagnostics.NewPipelineHealth()
+	for _, d := range []time.Duration{10 * time.Millisecond, 20 * time.Millisecond, 30 * time.Millisecond} {
+		health.RecordSave(diagnostics.SaveDiagnostics{
+			TotalLatency: d,
+			StageLatency: map[string]time.Duration{
+				"ingest": d,
+			},
+		})
+		health.RecordRecall(diagnostics.RecallDiagnostics{
+			TotalLatency: d,
+			StageLatency: map[string]time.Duration{
+				"context_pack": d,
+			},
+			SourceLatency: map[string]time.Duration{
+				"retrieval": d / 2,
+			},
+		})
+	}
+
+	save := health.SaveStageLatency["ingest"].Summary()
+	if save.Count != 3 || save.Avg != 20*time.Millisecond || save.P50 != 20*time.Millisecond || save.P95 != 30*time.Millisecond || save.Max != 30*time.Millisecond {
+		t.Fatalf("save latency summary = %+v", save)
+	}
+	recall := health.RecallStageLatency["context_pack"].Summary()
+	if recall.Count != 3 || recall.Avg != 20*time.Millisecond || recall.P95 != 30*time.Millisecond {
+		t.Fatalf("recall latency summary = %+v", recall)
+	}
+	source := health.RecallSourceLatency["retrieval"].Summary()
+	if source.Count != 3 || source.Avg != 10*time.Millisecond || source.P95 != 15*time.Millisecond {
+		t.Fatalf("source latency summary = %+v", source)
 	}
 }
 
