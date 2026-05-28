@@ -5,12 +5,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
-	"time"
 	"unicode"
 
 	"github.com/GizClaw/flowcraft/memory/recall/internal/domain"
 	"github.com/GizClaw/flowcraft/memory/recall/internal/port"
 	"github.com/GizClaw/flowcraft/memory/recall/internal/words"
+	"github.com/GizClaw/flowcraft/memory/text/normalize"
 	"github.com/GizClaw/flowcraft/memory/text/quotes"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/llm"
@@ -32,14 +32,16 @@ import (
 //     Structurizer to guess from English keywords.
 //   - subject:       the entity the memory is about, not necessarily
 //     the speaker of the supporting turn.
+//   - predicate:     a stable relation/action label when the memory
+//     naturally links subject to object; otherwise "".
+//   - object:        the concrete target/complement of predicate when
+//     directly supported; otherwise "".
 //   - entities:      concrete non-temporal entity anchors present in
 //     the memory.
 //   - evidence_refs: ids of the supporting turns.
 //
-// Everything else (Predicate/Object, ValidFrom, …) is still derived
-// deterministically by the Structurizer from
-// the typed per-turn metadata the adapter passes via Input.Turns
-// and from the entity-projection snapshot in Input.KnownEntities.
+// ValidFrom and other temporal fields are still derived deterministically
+// from typed per-turn metadata and content.
 //
 // OpenAI structured-output strict mode rejects any object whose
 // `properties` set does not equal its `required` set, and requires
@@ -60,6 +62,8 @@ const ExtractedFactSchema = `{
             "enum": ["event", "state", "preference", "procedure", "relation", "plan", "note"]
           },
           "subject": {"type": "string"},
+          "predicate": {"type": "string"},
+          "object": {"type": "string"},
           "entities": {
             "type": "array",
             "items": {"type": "string"}
@@ -77,7 +81,7 @@ const ExtractedFactSchema = `{
             }
           }
         },
-        "required": ["text", "kind", "subject", "entities", "evidence_refs"],
+        "required": ["text", "kind", "subject", "predicate", "object", "entities", "evidence_refs"],
         "additionalProperties": false
       }
     }
@@ -105,16 +109,19 @@ type ExtractedFactList struct {
 //   - Subject / Entities: lightweight structure that preserves the
 //     memory's semantic subject instead of forcing the Structurizer
 //     to assume the evidence speaker is the subject.
+//   - Predicate / Object: optional relation structure read directly
+//     from the sentence. Empty strings mean "not relation-shaped".
 //   - EvidenceRefs: ids of the supporting turns the adapter
 //     announced in Input.Turns.
-//
-// Everything else (Predicate/Object, ValidFrom, …) is filled by the
-// Structurizer from the typed per-turn channel.
 type ExtractedMemory struct {
 	Text         string                 `json:"text"`
 	Kind         string                 `json:"kind,omitempty"`
 	Subject      string                 `json:"subject,omitempty"`
+	Predicate    string                 `json:"predicate,omitempty"`
+	Object       string                 `json:"object,omitempty"`
 	Entities     []string               `json:"entities,omitempty"`
+	SourceIDs    []string               `json:"source_ids,omitempty"`
+	Quote        string                 `json:"quote,omitempty"`
 	EvidenceRefs []ExtractedEvidenceRef `json:"evidence_refs,omitempty"`
 }
 
@@ -134,9 +141,8 @@ type ExtractedEvidenceRef struct {
 // The LLM writes a self-contained natural-language sentence per
 // memory, picks one Kind label from the closed enum, supplies the
 // factual subject / entity anchors, and cites the supporting turn ids.
-// Predicate/object and valid_from are still filled by the Structurizer
-// stage from the typed per-turn channel the adapter already provides
-// (id, time, speaker, role, text).
+// Relation-shaped memories also carry predicate/object when the source
+// directly supports a concrete subject -> predicate -> object link.
 //
 // The user message is an XML-tagged envelope whose <source_turns> section is
 // JSONL — one {"id","time","speaker","role","text"} object per line — and
@@ -232,6 +238,26 @@ Rules:
   speaker name only when the memory is about that speaker's own action,
   state, preference, plan, or relationship. Use "" only when no subject
   is recoverable.
+- "predicate" and "object" MUST be filled as a pair or left BOTH ""
+  as a pair. Never emit an object without a predicate; never emit a
+  predicate without an object. They capture a direct, source-supported
+  subject -> predicate -> object relation when the memory naturally has
+  one. Use a short stable snake_case predicate such as "owns_pet",
+  "lives_in", "works_at", "attended", "visited", "made", "read",
+  "recommended", "played", "married_to", or "parent_of"; set "object"
+  to the concrete target/complement such as "Pixel", "Lisbon", "dance
+  studio", "acoustic guitar", or "The Glass Compass".
+    * GOOD: Mira owns a dog named Pixel. => subject:"Mira",
+      predicate:"owns_pet", object:"Pixel"
+    * GOOD: Mira attended a robotics workshop. => subject:"Mira",
+      predicate:"attended", object:"robotics workshop"
+    * GOOD: Mira made a stained glass window. => subject:"Mira",
+      predicate:"made", object:"stained glass window"
+    * BAD: subject:"Mira", predicate:"", object:"stained glass window"
+    * BAD: subject:"Mira", predicate:"made", object:""
+  Leave BOTH as "" when the memory is only an attribute, mood, broad
+  note, or has no concrete object. Do not invent an object just to fill
+  the fields.
 - Be careful with second-person comments. If Noah says "Your empathy
   will help clients" or "You did great at the charity race", do not emit
   "Noah has empathy" or "Noah participated in the charity race"; the
@@ -242,9 +268,15 @@ Rules:
   titles, pets, activities, and salient artifacts. Do NOT include
   function words, pronouns, pure dates, months, weekdays, relative-time
   words ("today", "next", "last"), or possessive fragments like
-  "Mira's" when "Mira" is the entity. Prefer stable surfaces such as
-  "Mira", "QuickCart", "The Glass Compass", "hatchback", "ceramics",
-  "Pixel".
+  "Mira's" when "Mira" is the entity. Do not include clause-head
+  gerunds such as "being", "taking", or "finding" unless they are part
+  of a named title. Do not include whole verb phrases or answer clauses
+  as entities, such as "planning to repair a bicycle" or "enough to
+  finish the fundraiser"; keep only concrete anchors like "bicycle",
+  "community garden", or "The Glass Compass". The relation "object"
+  may be a short noun phrase, but entities should remain stable index
+  anchors. Prefer stable surfaces such as "Mira", "QuickCart", "The
+  Glass Compass", "hatchback", "ceramics", "Pixel".
 - "kind" picks ONE label from this closed set:
     * "event"      - something that happened at a specific time
                      ("Mira went to the dentist on 2030-06-12.",
@@ -346,11 +378,12 @@ func NewLLMExtractor(client llm.LLM) *LLMExtractor {
 // Path:
 //  1. Caller-supplied Input.Facts pass through unchanged (clone).
 //  2. If Input.Turns is non-empty, render to JSONL and call the LLM
-//     with the 3-field memories schema (text + kind + evidence_refs).
-//     Each parsed memory becomes a TemporalFact with Content + Kind +
-//     EvidenceRefs populated; Structurizer fills the rest downstream
-//     (and only falls back to keyword-based Kind inference when the
-//     LLM left Kind empty, e.g. legacy schema responses).
+//     with the memory schema (text + kind + subject/entities +
+//     optional predicate/object + evidence_refs). Each parsed memory
+//     becomes a TemporalFact with the LLM-owned structure populated;
+//     Structurizer fills remaining temporal fields downstream (and
+//     only falls back to keyword-based Kind inference when the LLM left
+//     Kind empty, e.g. legacy schema responses).
 //  3. Empty Turns / nil client → no-op (passthrough only). For
 //     unstructured prose callers pass a single port.TurnContext with
 //     only Text populated — there is no separate Text channel.
@@ -554,7 +587,11 @@ func parseExtractorReply(body []byte) (ExtractedFactList, error) {
 		Text         string           `json:"text"`
 		Kind         string           `json:"kind"`
 		Subject      string           `json:"subject"`
+		Predicate    string           `json:"predicate"`
+		Object       string           `json:"object"`
 		Entities     []string         `json:"entities"`
+		SourceIDs    []string         `json:"source_ids"`
+		Quote        string           `json:"quote"`
 		EvidenceRefs []legacyEvidence `json:"evidence_refs"`
 	}
 	var legacy struct {
@@ -573,7 +610,7 @@ func parseExtractorReply(body []byte) (ExtractedFactList, error) {
 		if text == "" {
 			text = strings.TrimSpace(lf.Content)
 		}
-		mem := ExtractedMemory{Text: text, Kind: lf.Kind, Subject: lf.Subject, Entities: lf.Entities}
+		mem := ExtractedMemory{Text: text, Kind: lf.Kind, Subject: lf.Subject, Predicate: lf.Predicate, Object: lf.Object, Entities: lf.Entities, SourceIDs: lf.SourceIDs, Quote: lf.Quote}
 		for _, ref := range lf.EvidenceRefs {
 			id := strings.TrimSpace(ref.ID)
 			if id == "" {
@@ -590,24 +627,36 @@ func parseExtractorReply(body []byte) (ExtractedFactList, error) {
 }
 
 func buildExtractedFact(m ExtractedMemory, refs []domain.EvidenceRef, turnIndex map[string]port.TurnContext) (domain.TemporalFact, bool) {
+	fact, ok, _ := buildExtractedFactWithReason(m, refs, turnIndex)
+	return fact, ok
+}
+
+func buildExtractedFactWithReason(m ExtractedMemory, refs []domain.EvidenceRef, turnIndex map[string]port.TurnContext) (domain.TemporalFact, bool, string) {
 	text := strings.TrimSpace(m.Text)
-	if text == "" || !hasEvidenceID(refs) {
-		return domain.TemporalFact{}, false
+	if text == "" {
+		return domain.TemporalFact{}, false, "empty_text"
 	}
+	if !hasEvidenceID(refs) {
+		return domain.TemporalFact{}, false, "no_evidence"
+	}
+	predicate, object := normalizeExtractedRelation(m.Predicate, m.Object)
+	subject := cleanExtractedSubject(m.Subject, refs, turnIndex)
 	fact := domain.TemporalFact{
 		Content:      text,
 		EvidenceText: evidenceTextFromRefs(refs, turnIndex),
 		Kind:         normaliseExtractedKind(m.Kind),
-		Subject:      strings.TrimSpace(m.Subject),
+		Subject:      subject,
+		Predicate:    predicate,
+		Object:       object,
 		Entities:     normalizeExtractedEntities(m.Entities),
 		EvidenceRefs: refs,
 	}
 	if !isExtractedFactSupportedByEvidence(fact, m.Entities, turnIndex) {
-		return domain.TemporalFact{}, false
+		return domain.TemporalFact{}, false, "unsupported"
 	}
 	fact = enrichExtractedFactWithEvidenceSurfaces(fact)
 	fact.SourceMessageIDs = sourceIDsFromEvidence(fact.EvidenceRefs)
-	return fact, true
+	return fact, true, ""
 }
 
 func evidenceTextFromRefs(refs []domain.EvidenceRef, turnIndex map[string]port.TurnContext) string {
@@ -662,7 +711,7 @@ func isExtractedFactSupportedByEvidence(f domain.TemporalFact, rawEntities []str
 	if evidenceText == "" {
 		return false
 	}
-	for _, anchor := range strictEvidenceAnchors(f.Subject, rawEntities, f.Content) {
+	for _, anchor := range strictEvidenceAnchors(f.Subject, f.Object, rawEntities, f.Content) {
 		if !strings.Contains(evidenceText, normalizeEvidenceAnchor(anchor)) {
 			return false
 		}
@@ -693,7 +742,7 @@ func normalizedEvidenceSupportText(refs []domain.EvidenceRef, turnIndex map[stri
 	return normalizeEvidenceAnchor(b.String())
 }
 
-func strictEvidenceAnchors(subject string, rawEntities []string, content string) []string {
+func strictEvidenceAnchors(subject string, object string, rawEntities []string, content string) []string {
 	subjectKey := normalizeEvidenceAnchor(cleanExtractedEntity(subject))
 	seen := map[string]struct{}{}
 	var out []string
@@ -715,6 +764,7 @@ func strictEvidenceAnchors(subject string, rawEntities []string, content string)
 	for _, raw := range rawEntities {
 		add(raw, false)
 	}
+	add(object, true)
 	for _, raw := range titleCaseContentAnchors(content) {
 		add(raw, true)
 	}
@@ -826,8 +876,9 @@ func normalizeExtractedEntities(in []string) []string {
 }
 
 func cleanExtractedEntity(s string) string {
-	s = strings.TrimSpace(s)
+	s = normalize.CollapseSpaces(s)
 	s = strings.Trim(s, `"'“”‘’[](){}.,;:`)
+	s = normalize.CollapseSpaces(s)
 	lower := strings.ToLower(s)
 	if !strings.Contains(s, " ") {
 		switch {
@@ -840,12 +891,101 @@ func cleanExtractedEntity(s string) string {
 	return s
 }
 
+func cleanExtractedSubject(subject string, refs []domain.EvidenceRef, turnIndex map[string]port.TurnContext) string {
+	subject = cleanExtractedEntity(subject)
+	if subject == "" {
+		return subject
+	}
+	if !isWeakExtractedEntity(subject) {
+		return subject
+	}
+	if isFirstPersonSingularExtractedSubject(subject) {
+		return soleEvidenceSpeaker(refs, turnIndex)
+	}
+	return ""
+}
+
+func chooseExtractedSubject(base, update string) string {
+	base = cleanExtractedEntity(base)
+	update = cleanExtractedEntity(update)
+	if base == "" {
+		return update
+	}
+	if update == "" {
+		return base
+	}
+	baseWeak := isWeakExtractedEntity(base)
+	updateWeak := isWeakExtractedEntity(update)
+	switch {
+	case baseWeak && !updateWeak:
+		return update
+	case !baseWeak && updateWeak:
+		return base
+	case baseWeak && updateWeak:
+		return base
+	}
+	if !hasUppercase(base) && hasUppercase(update) {
+		return update
+	}
+	return base
+}
+
+func isFirstPersonSingularExtractedSubject(subject string) bool {
+	tokens := strings.Fields(normalize.CollapseSpaces(normalize.ReplaceNonAlnumWithSpace(strings.ToLower(subject))))
+	return words.IsFirstPersonSingularExtractorSubject(tokens)
+}
+
+func soleEvidenceSpeaker(refs []domain.EvidenceRef, turnIndex map[string]port.TurnContext) string {
+	var speaker string
+	for _, ref := range refs {
+		turn, ok := lookupEvidenceTurn(ref, turnIndex)
+		if !ok {
+			continue
+		}
+		current := strings.TrimSpace(turn.Speaker)
+		if current == "" {
+			continue
+		}
+		if speaker != "" && !strings.EqualFold(speaker, current) {
+			return ""
+		}
+		speaker = current
+	}
+	return speaker
+}
+
+func cleanExtractedPredicate(s string) string {
+	s = normalize.CollapseSpaces(strings.Trim(s, `"'“”‘’[](){}.,;:`))
+	if s == "" {
+		return ""
+	}
+	canonical := normalize.CollapseSpaces(strings.ToLower(normalize.ReplaceNonAlnumWithSpace(s)))
+	return strings.Join(strings.Fields(canonical), "_")
+}
+
+func cleanExtractedObject(s string) string {
+	return cleanExtractedEntity(s)
+}
+
+func normalizeExtractedRelation(predicate, object string) (string, string) {
+	predicate = cleanExtractedPredicate(predicate)
+	object = cleanExtractedObject(object)
+	if predicate == "" || object == "" {
+		return "", ""
+	}
+	return predicate, object
+}
+
 func isWeakExtractedEntity(s string) bool {
 	lower := strings.ToLower(strings.TrimSpace(s))
 	if lower == "" {
 		return true
 	}
-	if words.IsStructurizerEntityStopword(lower) || isExtractorFunctionWord(lower) || isRelativeTimeEntityToken(lower) || isCalendarEntityToken(lower) {
+	if words.IsStructurizerEntityStopword(lower) ||
+		words.IsExtractorEntityFunctionWord(lower) ||
+		words.IsExtractorAbstractGerundEntityToken(lower) ||
+		words.IsRelativeTimeEntityToken(lower) ||
+		words.IsCalendarEntityToken(lower) {
 		return true
 	}
 	allDigits := true
@@ -855,42 +995,15 @@ func isWeakExtractedEntity(s string) bool {
 			break
 		}
 	}
+	if isWeakExtractedEntityPhrase(lower) {
+		return true
+	}
 	return allDigits
 }
 
-func isExtractorFunctionWord(s string) bool {
-	switch strings.ToLower(strings.TrimSpace(s)) {
-	case "of", "on", "in", "at", "by", "to", "from", "for", "with":
-		return true
-	default:
-		return false
-	}
-}
-
-func isRelativeTimeEntityToken(s string) bool {
-	switch strings.ToLower(strings.TrimSpace(s)) {
-	case "today", "tomorrow", "yesterday", "next", "last", "ago":
-		return true
-	default:
-		return false
-	}
-}
-
-func isCalendarEntityToken(s string) bool {
-	if len([]rune(s)) < 3 {
-		return false
-	}
-	for month := time.January; month <= time.December; month++ {
-		if strings.EqualFold(s, month.String()) {
-			return true
-		}
-	}
-	for weekday := time.Sunday; weekday <= time.Saturday; weekday++ {
-		if strings.EqualFold(s, weekday.String()) {
-			return true
-		}
-	}
-	return false
+func isWeakExtractedEntityPhrase(lower string) bool {
+	tokens := strings.Fields(normalize.CollapseSpaces(normalize.ReplaceNonAlnumWithSpace(lower)))
+	return words.IsWeakExtractorEntityPhrase(tokens)
 }
 
 // extractedEvidenceRefs converts the LLM-side evidence list into

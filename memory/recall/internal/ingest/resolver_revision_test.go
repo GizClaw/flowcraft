@@ -14,14 +14,14 @@ func TestResolver_ForkDoesNotClosePrior(t *testing.T) {
 		ID:       "old",
 		Scope:    domain.Scope{RuntimeID: "rt"},
 		Kind:     domain.KindState,
-		MergeKey: "state:alice:location",
-		Content:  "paris",
+		MergeKey: "state:avery:location",
+		Content:  "riverton",
 	}
 	fork := domain.TemporalFact{
 		ID:       "new",
 		Scope:    prior.Scope,
 		Kind:     domain.KindState,
-		MergeKey: "state:alice:location:fork",
+		MergeKey: "state:avery:location:fork",
 		Content:  "lyon",
 	}
 	domain.AttachRevision(&fork, domain.Revision{Kind: domain.RevisionFork, SourceFactID: "old"})

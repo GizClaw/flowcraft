@@ -211,7 +211,11 @@ func extractEntities(content string, known []port.EntitySnapshot) []string {
 	var out []string
 
 	add := func(s string) {
-		c := strings.ToLower(strings.TrimSpace(s))
+		cleaned := cleanExtractedEntity(s)
+		if isWeakExtractedEntity(cleaned) {
+			return
+		}
+		c := strings.ToLower(strings.TrimSpace(cleaned))
 		if c == "" {
 			return
 		}

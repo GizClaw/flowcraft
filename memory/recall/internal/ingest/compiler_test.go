@@ -20,9 +20,9 @@ func TestCompile_FillsDeterministicFields(t *testing.T) {
 		Scope: domain.Scope{RuntimeID: "rt", UserID: "u1"},
 		Facts: []domain.TemporalFact{{
 			Kind:      domain.KindRelation,
-			Subject:   "Alice",
+			Subject:   "Avery",
 			Predicate: "spouse",
-			Object:    "Bob",
+			Object:    "Rowan",
 		}},
 	})
 	if err != nil {
@@ -41,14 +41,14 @@ func TestCompile_FillsDeterministicFields(t *testing.T) {
 	if got.ObservedAt.IsZero() {
 		t.Error("observed_at not filled")
 	}
-	if got.MergeKey != "relation|alice|spouse|bob" {
-		t.Errorf("merge_key = %q, want relation|alice|spouse|bob", got.MergeKey)
+	if got.MergeKey != "relation|avery|spouse|rowan" {
+		t.Errorf("merge_key = %q, want relation|avery|spouse|rowan", got.MergeKey)
 	}
 	if got.Confidence != DefaultConfidence {
 		t.Errorf("confidence = %v, want %v", got.Confidence, DefaultConfidence)
 	}
-	// EntityResolver should have added alice/bob to entities.
-	want := map[string]bool{"alice": true, "bob": true}
+	// EntityResolver should have added avery/rowan to entities.
+	want := map[string]bool{"avery": true, "rowan": true}
 	for _, e := range got.Entities {
 		delete(want, e)
 	}
@@ -64,7 +64,7 @@ func TestCompile_RelationMergeKeyDifferentiatesObjects(t *testing.T) {
 			Scope: domain.Scope{RuntimeID: "rt"},
 			Facts: []domain.TemporalFact{{
 				Kind:      domain.KindRelation,
-				Subject:   "Alice",
+				Subject:   "Avery",
 				Predicate: "spouse",
 				Object:    object,
 			}},
@@ -74,8 +74,8 @@ func TestCompile_RelationMergeKeyDifferentiatesObjects(t *testing.T) {
 		}
 		return res.Facts[0].MergeKey
 	}
-	a := mk("Bob")
-	b := mk("Carol")
+	a := mk("Rowan")
+	b := mk("Morgan")
 	if a == b {
 		t.Fatalf("relation merge keys must differ by object; got %q for both", a)
 	}
@@ -86,8 +86,8 @@ func TestCompile_StateMergeKeyDedupes(t *testing.T) {
 	res, err := cp.Compile(context.Background(), port.IngestInput{
 		Scope: domain.Scope{RuntimeID: "rt"},
 		Facts: []domain.TemporalFact{
-			{Kind: domain.KindState, Subject: "Alice", Predicate: "city", Content: "Paris"},
-			{Kind: domain.KindState, Subject: "alice", Predicate: "CITY", Content: "Berlin"},
+			{Kind: domain.KindState, Subject: "Avery", Predicate: "city", Content: "Riverton"},
+			{Kind: domain.KindState, Subject: "avery", Predicate: "CITY", Content: "Berlin"},
 		},
 	})
 	if err != nil {

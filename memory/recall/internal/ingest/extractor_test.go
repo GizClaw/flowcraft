@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -23,7 +24,10 @@ import (
 // regression at package-test time is cheap.
 func TestExtractedFactSchema_IsValidStrictJSONSchema(t *testing.T) {
 	assertStrictJSONSchema(t, "ExtractedFactSchema", ExtractedFactSchema)
-	assertStrictJSONSchema(t, "TwoPassMemoryExtractionSchema", TwoPassMemoryExtractionSchema)
+	assertStrictJSONSchema(t, "TwoPassFactExtractionSchema", TwoPassFactExtractionSchema)
+	assertStrictJSONSchema(t, "TwoPassKindExtractionSchema", TwoPassKindExtractionSchema)
+	assertStrictJSONSchema(t, "TwoPassRelationExtractionSchema", TwoPassRelationExtractionSchema)
+	assertStrictJSONSchema(t, "TwoPassEntityExtractionSchema", TwoPassEntityExtractionSchema)
 	assertStrictJSONSchema(t, "TwoPassEvidenceGroundingSchema", TwoPassEvidenceGroundingSchema)
 }
 
@@ -62,15 +66,27 @@ func assertStrictJSONSchema(t *testing.T, name string, schema string) {
 // Each Generate call records the messages and options received so
 // tests can assert prompt + schema wiring.
 type fakeLLM struct {
-	Responses []string
-	Err       error
-	Messages  [][]llm.Message
-	Options   [][]llm.GenerateOption
+	mu                sync.Mutex
+	Responses         []string
+	ResponsesBySystem map[string][]string
+	Err               error
+	Messages          [][]llm.Message
+	Options           [][]llm.GenerateOption
 }
 
 func (f *fakeLLM) Generate(_ context.Context, msgs []llm.Message, opts ...llm.GenerateOption) (llm.Message, llm.TokenUsage, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.Messages = append(f.Messages, msgs)
 	f.Options = append(f.Options, opts)
+	if len(msgs) > 0 && f.ResponsesBySystem != nil {
+		system := msgs[0].Content()
+		if responses := f.ResponsesBySystem[system]; len(responses) > 0 {
+			body := responses[0]
+			f.ResponsesBySystem[system] = responses[1:]
+			return llm.NewTextMessage(llm.RoleAssistant, body), llm.TokenUsage{}, nil
+		}
+	}
 	if len(f.Responses) == 0 {
 		if f.Err != nil {
 			return llm.Message{}, llm.TokenUsage{}, f.Err
@@ -84,6 +100,16 @@ func (f *fakeLLM) Generate(_ context.Context, msgs []llm.Message, opts ...llm.Ge
 
 func (f *fakeLLM) GenerateStream(context.Context, []llm.Message, ...llm.GenerateOption) (llm.StreamMessage, error) {
 	return nil, errors.New("fakeLLM: streaming not implemented")
+}
+
+func fakeTwoPassLLM(content, kind, relation, entity, evidence []string) *fakeLLM {
+	return &fakeLLM{ResponsesBySystem: map[string][]string{
+		TwoPassFactExtractionPrompt:     content,
+		TwoPassKindExtractionPrompt:     kind,
+		TwoPassRelationExtractionPrompt: relation,
+		TwoPassEntityExtractionPrompt:   entity,
+		TwoPassEvidenceGroundingPrompt:  evidence,
+	}}
 }
 
 func TestLLMExtractor_EmptyInputSkipsLLM(t *testing.T) {
@@ -110,17 +136,17 @@ func TestLLMExtractor_ProseTurnSynthesizesID(t *testing.T) {
 	// a valid tagged input with a JSONL turn so the LLM has something
 	// to cite back.
 	client := &fakeLLM{
-		Responses: []string{`{"memories":[{"text":"Alice likes Paris.","evidence_refs":[{"id":"turn-1"}]}]}`},
+		Responses: []string{`{"memories":[{"text":"Avery likes Riverton.","evidence_refs":[{"id":"turn-1"}]}]}`},
 	}
 	ex := NewLLMExtractor(client)
 	out, err := ex.Extract(context.Background(), port.IngestInput{
 		Scope: domain.Scope{RuntimeID: "rt"},
-		Turns: []port.TurnContext{{Text: "Alice likes Paris."}},
+		Turns: []port.TurnContext{{Text: "Avery likes Riverton."}},
 	})
 	if err != nil {
 		t.Fatalf("extract: %v", err)
 	}
-	if len(out) != 1 || out[0].Content != "Alice likes Paris." {
+	if len(out) != 1 || out[0].Content != "Avery likes Riverton." {
 		t.Errorf("prose-only turn not extracted: %+v", out)
 	}
 	if userMsg := client.Messages[0][1].Content(); !strings.Contains(userMsg, `"id":"turn-1"`) {
@@ -131,13 +157,13 @@ func TestLLMExtractor_ProseTurnSynthesizesID(t *testing.T) {
 func TestLLMExtractor_RendersTurnsAsJSONL(t *testing.T) {
 	client := &fakeLLM{
 		Responses: []string{`{"memories":[
-			{"text":"Alice prefers blue over red.","evidence_refs":[{"id":"D1:3"}]},
-			{"text":"Alice plans to visit Paris on 2024-05-07.","evidence_refs":[{"id":"D1:5","text":"[2024-05-07] Alice: I'm going to Paris."}]}
+			{"text":"Avery prefers blue over red.","evidence_refs":[{"id":"D1:3"}]},
+			{"text":"Avery plans to visit Riverton on 2024-05-07.","evidence_refs":[{"id":"D1:5","text":"[2024-05-07] Avery: I'm going to Riverton."}]}
 		]}`},
 	}
 	ex := NewLLMExtractor(client)
-	turn1 := port.TurnContext{ID: "D1:3", EvidenceID: "D1:3", Role: "user", Speaker: "Alice", Time: time.Date(2024, 5, 1, 9, 0, 0, 0, time.UTC), Text: "Blue is my favorite color, not red."}
-	turn2 := port.TurnContext{ID: "D1:5", EvidenceID: "D1:5", Role: "user", Speaker: "Alice", Time: time.Date(2024, 5, 7, 9, 0, 0, 0, time.UTC), Text: "I'm going to Paris."}
+	turn1 := port.TurnContext{ID: "D1:3", EvidenceID: "D1:3", Role: "user", Speaker: "Avery", Time: time.Date(2024, 5, 1, 9, 0, 0, 0, time.UTC), Text: "Blue is my favorite color, not red."}
+	turn2 := port.TurnContext{ID: "D1:5", EvidenceID: "D1:5", Role: "user", Speaker: "Avery", Time: time.Date(2024, 5, 7, 9, 0, 0, 0, time.UTC), Text: "I'm going to Riverton."}
 	out, err := ex.Extract(context.Background(), port.IngestInput{
 		Scope: domain.Scope{RuntimeID: "rt"},
 		Turns: []port.TurnContext{turn1, turn2},
@@ -148,7 +174,7 @@ func TestLLMExtractor_RendersTurnsAsJSONL(t *testing.T) {
 	if len(out) != 2 {
 		t.Fatalf("want 2 facts, got %d (%+v)", len(out), out)
 	}
-	if out[0].Content != "Alice prefers blue over red." {
+	if out[0].Content != "Avery prefers blue over red." {
 		t.Errorf("content not preserved: %q", out[0].Content)
 	}
 	if len(out[0].EvidenceRefs) != 1 || out[0].EvidenceRefs[0].ID != "D1:3" {
@@ -178,7 +204,7 @@ func TestLLMExtractor_RendersTurnsAsJSONL(t *testing.T) {
 	if !strings.Contains(userMsg, "<extractor_input>") || !strings.Contains(userMsg, `<source_turns format="jsonl">`) || !strings.Contains(userMsg, "</source_turns>") {
 		t.Errorf("tagged source-turn envelope missing from user message: %q", userMsg)
 	}
-	if !strings.Contains(userMsg, `"id":"D1:3"`) || !strings.Contains(userMsg, `"speaker":"Alice"`) || !strings.Contains(userMsg, `"time":"2024-05-01T09:00:00Z"`) {
+	if !strings.Contains(userMsg, `"id":"D1:3"`) || !strings.Contains(userMsg, `"speaker":"Avery"`) || !strings.Contains(userMsg, `"time":"2024-05-01T09:00:00Z"`) {
 		t.Errorf("typed turn fields missing from JSONL user message: %q", userMsg)
 	}
 }
@@ -186,7 +212,7 @@ func TestLLMExtractor_RendersTurnsAsJSONL(t *testing.T) {
 func TestExtractorPromptsForbidGenericSurfaceCollapse(t *testing.T) {
 	for name, prompt := range map[string]string{
 		"single_pass": LLMExtractorSystemPrompt,
-		"two_pass":    TwoPassMemoryExtractionPrompt,
+		"two_pass":    TwoPassFactExtractionPrompt,
 	} {
 		for _, want := range []string{
 			"Never replace an answer-bearing span with only a category word",
@@ -206,7 +232,7 @@ func TestExtractorPromptsForbidGenericSurfaceCollapse(t *testing.T) {
 func TestLLMExtractorReattachesMissingQuotedEvidenceSurface(t *testing.T) {
 	client := &fakeLLM{
 		Responses: []string{`{"memories":[{
-			"text":"Alice finished reading a book yesterday.",
+			"text":"Avery finished reading a book yesterday.",
 			"kind":"event",
 			"evidence_refs":[{"id":"D1:1","text":"I finished \"Charlotte's Web\" yesterday."}]
 		}]}`},
@@ -216,7 +242,7 @@ func TestLLMExtractorReattachesMissingQuotedEvidenceSurface(t *testing.T) {
 		Scope: domain.Scope{RuntimeID: "rt"},
 		Turns: []port.TurnContext{{
 			ID:      "D1:1",
-			Speaker: "Alice",
+			Speaker: "Avery",
 			Text:    `I finished "Charlotte's Web" yesterday.`,
 		}},
 	})
@@ -232,18 +258,19 @@ func TestLLMExtractorReattachesMissingQuotedEvidenceSurface(t *testing.T) {
 }
 
 func TestTwoPassLLMExtractorReattachesMissingQuotedEvidenceSurface(t *testing.T) {
-	client := &fakeLLM{
-		Responses: []string{
-			`{"memories":[{"text":"Alice finished reading a book yesterday.","kind":"event"}]}`,
-			`{"links":[{"memory_index":0,"evidence_refs":[{"id":"D1:1","text":"I finished \"Charlotte's Web\" yesterday."}]}]}`,
-		},
-	}
+	client := fakeTwoPassLLM(
+		[]string{`{"facts":[{"text":"Avery finished reading a book yesterday.","subject":"Avery","source_ids":["D1:1"],"quote":"I finished \"Charlotte's Web\" yesterday."}]}`},
+		[]string{`{"facts":[{"text":"Avery finished reading a book yesterday.","kind":"event","subject":"Avery","source_ids":["D1:1"],"quote":"I finished \"Charlotte's Web\" yesterday."}]}`},
+		[]string{`{"facts":[]}`},
+		[]string{`{"facts":[{"text":"Avery finished reading a book yesterday.","subject":"Avery","entities":["Avery","Charlotte's Web"],"source_ids":["D1:1"],"quote":"I finished \"Charlotte's Web\" yesterday."}]}`},
+		[]string{`{"links":[{"fact_index":0,"evidence_refs":[{"id":"D1:1","text":"I finished \"Charlotte's Web\" yesterday."}]}]}`},
+	)
 	ex := NewTwoPassLLMExtractor(client)
 	out, err := ex.Extract(context.Background(), port.IngestInput{
 		Scope: domain.Scope{RuntimeID: "rt"},
 		Turns: []port.TurnContext{{
 			ID:      "D1:1",
-			Speaker: "Alice",
+			Speaker: "Avery",
 			Text:    `I finished "Charlotte's Web" yesterday.`,
 		}},
 	})
@@ -264,14 +291,14 @@ func TestLLMExtractor_AcceptsLegacyFactsSchema(t *testing.T) {
 	// projects content + kind + evidence_refs.id into the new shape.
 	client := &fakeLLM{
 		Responses: []string{`{"facts":[{
-			"kind":"plan","content":"Alice plans to visit Paris.",
-			"evidence_refs":[{"id":"D1:3","message_id":"D1:3","role":"user","text":"Alice says she's going to Paris."}]
+			"kind":"plan","content":"Avery plans to visit Riverton.",
+			"evidence_refs":[{"id":"D1:3","message_id":"D1:3","role":"user","text":"Avery says she's going to Riverton."}]
 		}]}`},
 	}
 	ex := NewLLMExtractor(client)
 	out, err := ex.Extract(context.Background(), port.IngestInput{
 		Scope: domain.Scope{RuntimeID: "rt"},
-		Turns: []port.TurnContext{{ID: "D1:3", Role: "user", Text: "Alice says she's going to Paris."}},
+		Turns: []port.TurnContext{{ID: "D1:3", Role: "user", Text: "Avery says she's going to Riverton."}},
 	})
 	if err != nil {
 		t.Fatalf("extract: %v", err)
@@ -279,7 +306,7 @@ func TestLLMExtractor_AcceptsLegacyFactsSchema(t *testing.T) {
 	if len(out) != 1 {
 		t.Fatalf("want 1 fact, got %d", len(out))
 	}
-	if out[0].Content != "Alice plans to visit Paris." {
+	if out[0].Content != "Avery plans to visit Riverton." {
 		t.Errorf("legacy content not lifted: %q", out[0].Content)
 	}
 	if out[0].Kind != domain.KindPlan {
@@ -298,13 +325,13 @@ func TestLLMExtractor_AcceptsLegacyFactsSchema(t *testing.T) {
 func TestLLMExtractor_PropagatesKindEnum(t *testing.T) {
 	client := &fakeLLM{
 		Responses: []string{`{"memories":[
-			{"text":"Alice lives in Paris.","kind":"state","evidence_refs":[{"id":"t1"}]},
-			{"text":"Alice plans to visit Berlin in June.","kind":"plan","evidence_refs":[{"id":"t1"}]},
-			{"text":"Alice loves black coffee.","kind":"preference","evidence_refs":[{"id":"t1"}]},
-			{"text":"When comparing options, Alice wants markdown tables.","kind":"procedure","evidence_refs":[{"id":"t1"}]},
-			{"text":"Alice is married to Bob.","kind":"relation","evidence_refs":[{"id":"t1"}]},
-			{"text":"Alice went to the cinema on 2024-05-07.","kind":"event","evidence_refs":[{"id":"t1"}]},
-			{"text":"Alice mentioned a new book.","kind":"note","evidence_refs":[{"id":"t1"}]}
+			{"text":"Avery lives in Riverton.","kind":"state","evidence_refs":[{"id":"t1"}]},
+			{"text":"Avery plans to visit Harborview in June.","kind":"plan","evidence_refs":[{"id":"t1"}]},
+			{"text":"Avery loves black coffee.","kind":"preference","evidence_refs":[{"id":"t1"}]},
+			{"text":"When comparing options, Avery wants markdown tables.","kind":"procedure","evidence_refs":[{"id":"t1"}]},
+			{"text":"Avery is married to Rowan.","kind":"relation","evidence_refs":[{"id":"t1"}]},
+			{"text":"Avery went to the cinema on 2024-05-07.","kind":"event","evidence_refs":[{"id":"t1"}]},
+			{"text":"Avery mentioned a new book.","kind":"note","evidence_refs":[{"id":"t1"}]}
 		]}`},
 	}
 	ex := NewLLMExtractor(client)
@@ -332,11 +359,13 @@ func TestLLMExtractor_PropagatesKindEnum(t *testing.T) {
 func TestLLMExtractor_PropagatesSubjectAndCleansEntities(t *testing.T) {
 	client := &fakeLLM{
 		Responses: []string{`{"memories":[{
-			"text":"Melanie made a bowl in her pottery class.",
+			"text":"Juno made a bowl in her pottery class.",
 			"kind":"event",
-			"subject":"Melanie",
-			"entities":["Melanie's","pottery","July","on","bowl","2023"],
-			"evidence_refs":[{"id":"D1:7","text":"That bowl is gorgeous! Did Melanie make it?"}]
+			"subject":"Juno",
+			"predicate":"made",
+			"object":"bowl",
+			"entities":["Juno's","pottery","July","on","bowl","2023","being","taking","finding"],
+			"evidence_refs":[{"id":"D1:7","text":"That bowl is gorgeous! Did Juno make it?"}]
 		}]}`},
 	}
 	ex := NewLLMExtractor(client)
@@ -345,8 +374,8 @@ func TestLLMExtractor_PropagatesSubjectAndCleansEntities(t *testing.T) {
 		Turns: []port.TurnContext{{
 			ID:      "D1:7",
 			Role:    "assistant",
-			Speaker: "Caroline",
-			Text:    "That bowl is gorgeous! Did Melanie make it?",
+			Speaker: "Rhea",
+			Text:    "That bowl is gorgeous! Did Juno make it?",
 		}},
 	})
 	if err != nil {
@@ -355,12 +384,130 @@ func TestLLMExtractor_PropagatesSubjectAndCleansEntities(t *testing.T) {
 	if len(out) != 1 {
 		t.Fatalf("want 1 fact, got %d", len(out))
 	}
-	if out[0].Subject != "Melanie" {
+	if out[0].Subject != "Juno" {
 		t.Fatalf("subject should come from extractor, not evidence speaker: %+v", out[0])
 	}
-	wantEntities := []string{"Melanie", "pottery", "bowl"}
+	if out[0].Predicate != "made" || out[0].Object != "bowl" {
+		t.Fatalf("predicate/object = %q/%q, want made/bowl", out[0].Predicate, out[0].Object)
+	}
+	wantEntities := []string{"Juno", "pottery", "bowl"}
 	if strings.Join(out[0].Entities, ",") != strings.Join(wantEntities, ",") {
 		t.Fatalf("entities = %+v, want %+v", out[0].Entities, wantEntities)
+	}
+}
+
+func TestLLMExtractor_ReplacesWeakSubjectAndDropsWeakContractionEntities(t *testing.T) {
+	client := &fakeLLM{
+		Responses: []string{`{"memories":[{
+			"text":"Orin listens to jazz while working on puzzles.",
+			"kind":"note",
+			"subject":"I",
+			"predicate":"listens to",
+			"object":"jazz",
+			"entities":["I'm","I'll","Orin","working on puzzles","writing","jazz"],
+			"evidence_refs":[{"id":"D1:1","text":"I'm doing my puzzle sketches, I listen to jazz to relax."}]
+		}]}`},
+	}
+	ex := NewLLMExtractor(client)
+	out, err := ex.Extract(context.Background(), port.IngestInput{
+		Scope: domain.Scope{RuntimeID: "rt"},
+		Turns: []port.TurnContext{{
+			ID:      "D1:1",
+			Role:    "assistant",
+			Speaker: "Orin",
+			Text:    "I'm doing my puzzle sketches, I listen to jazz to relax.",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("extract: %v", err)
+	}
+	if len(out) != 1 {
+		t.Fatalf("want 1 fact, got %d", len(out))
+	}
+	if out[0].Subject != "Orin" {
+		t.Fatalf("weak subject should fall back to evidence speaker: %+v", out[0])
+	}
+	wantEntities := []string{"Orin", "jazz"}
+	if strings.Join(out[0].Entities, ",") != strings.Join(wantEntities, ",") {
+		t.Fatalf("entities = %+v, want %+v", out[0].Entities, wantEntities)
+	}
+}
+
+func TestLLMExtractor_DropsUnresolvedPronounSubject(t *testing.T) {
+	client := &fakeLLM{
+		Responses: []string{`{"memories":[{
+			"text":"Avery likes Riverton.",
+			"kind":"preference",
+			"subject":"they",
+			"entities":["Avery","Riverton"],
+			"evidence_refs":[{"id":"D1:1","text":"Avery likes Riverton."}]
+		}]}`},
+	}
+	ex := NewLLMExtractor(client)
+	out, err := ex.Extract(context.Background(), port.IngestInput{
+		Scope: domain.Scope{RuntimeID: "rt"},
+		Turns: []port.TurnContext{{
+			ID:      "D1:1",
+			Role:    "assistant",
+			Speaker: "Rowan",
+			Text:    "Avery likes Riverton.",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("extract: %v", err)
+	}
+	if len(out) != 1 {
+		t.Fatalf("want 1 fact, got %d", len(out))
+	}
+	if out[0].Subject != "" {
+		t.Fatalf("unresolved pronoun subject should be dropped, got %+v", out[0])
+	}
+}
+
+func TestLLMExtractor_ClearsIncompleteRelationAndDropsActionPhraseEntities(t *testing.T) {
+	client := &fakeLLM{
+		Responses: []string{`{"memories":[
+			{
+				"text":"John and his family are planning to repair a bicycle.",
+				"kind":"plan",
+				"subject":"John",
+				"predicate":"",
+				"object":"planning to repair a bicycle",
+				"entities":["John","planning to repair a bicycle","bicycle"],
+				"evidence_refs":[{"id":"D1:1","text":"We're planning to repair a bicycle."}]
+			},
+			{
+				"text":"John values family support.",
+				"kind":"state",
+				"subject":"John",
+				"predicate":"values_family_support",
+				"object":"",
+				"entities":["John","family support"],
+				"evidence_refs":[{"id":"D1:2","text":"John values family support."}]
+			}
+		]}`},
+	}
+	ex := NewLLMExtractor(client)
+	out, err := ex.Extract(context.Background(), port.IngestInput{
+		Scope: domain.Scope{RuntimeID: "rt"},
+		Turns: []port.TurnContext{
+			{ID: "D1:1", Role: "user", Speaker: "John", Text: "We're planning to repair a bicycle."},
+			{ID: "D1:2", Role: "user", Speaker: "John", Text: "John values family support."},
+		},
+	})
+	if err != nil {
+		t.Fatalf("extract: %v", err)
+	}
+	if len(out) != 2 {
+		t.Fatalf("want 2 facts, got %d: %+v", len(out), out)
+	}
+	for i, fact := range out {
+		if fact.Predicate != "" || fact.Object != "" {
+			t.Fatalf("fact[%d] incomplete relation should be cleared, got %q/%q", i, fact.Predicate, fact.Object)
+		}
+	}
+	if got := strings.Join(out[0].Entities, ","); got != "John,bicycle" {
+		t.Fatalf("action phrase entity should be dropped, got %q", got)
 	}
 }
 
@@ -371,7 +518,7 @@ func TestLLMExtractor_PropagatesSubjectAndCleansEntities(t *testing.T) {
 // projections.
 func TestLLMExtractor_UnknownKindFallsThrough(t *testing.T) {
 	client := &fakeLLM{
-		Responses: []string{`{"memories":[{"text":"Alice lives in Paris.","kind":"ufo","evidence_refs":[{"id":"t1"}]}]}`},
+		Responses: []string{`{"memories":[{"text":"Avery lives in Riverton.","kind":"ufo","evidence_refs":[{"id":"t1"}]}]}`},
 	}
 	ex := NewLLMExtractor(client)
 	out, err := ex.Extract(context.Background(), port.IngestInput{
@@ -423,7 +570,7 @@ func TestLLMExtractor_DedupesEvidenceRefs(t *testing.T) {
 func TestLLMExtractor_RepairsEvidenceIDFromVerbatimQuote(t *testing.T) {
 	client := &fakeLLM{
 		Responses: []string{`{"memories":[{
-			"text":"Alice adopted a golden retriever named Waffles.",
+			"text":"Avery adopted a golden retriever named Waffles.",
 			"kind":"event",
 			"evidence_refs":[{"id":"D1:1","text":"I adopted a golden retriever named Waffles."}]
 		}]}`},
@@ -453,7 +600,7 @@ func TestLLMExtractor_RepairsEvidenceIDFromVerbatimQuote(t *testing.T) {
 func TestLLMExtractor_SingleTurnEvidenceFallback(t *testing.T) {
 	client := &fakeLLM{
 		Responses: []string{`{"memories":[{
-			"text":"Alice likes Paris.",
+			"text":"Avery likes Riverton.",
 			"kind":"state",
 			"evidence_refs":[]
 		}]}`},
@@ -461,7 +608,7 @@ func TestLLMExtractor_SingleTurnEvidenceFallback(t *testing.T) {
 	ex := NewLLMExtractor(client)
 	out, err := ex.Extract(context.Background(), port.IngestInput{
 		Scope: domain.Scope{RuntimeID: "rt"},
-		Turns: []port.TurnContext{{ID: "D1:3", Role: "user", Text: "Alice likes Paris."}},
+		Turns: []port.TurnContext{{ID: "D1:3", Role: "user", Text: "Avery likes Riverton."}},
 	})
 	if err != nil {
 		t.Fatalf("extract: %v", err)
@@ -477,10 +624,10 @@ func TestLLMExtractor_SingleTurnEvidenceFallback(t *testing.T) {
 func TestLLMExtractor_DropsUngroundedMultiTurnMemory(t *testing.T) {
 	client := &fakeLLM{
 		Responses: []string{`{"memories":[{
-			"text":"Alice likes Paris.",
+			"text":"Avery likes Riverton.",
 			"kind":"state",
-			"subject":"Alice",
-			"entities":["Alice","Paris"],
+			"subject":"Avery",
+			"entities":["Avery","Riverton"],
 			"evidence_refs":[]
 		}]}`},
 	}
@@ -488,7 +635,7 @@ func TestLLMExtractor_DropsUngroundedMultiTurnMemory(t *testing.T) {
 	out, err := ex.Extract(context.Background(), port.IngestInput{
 		Scope: domain.Scope{RuntimeID: "rt"},
 		Turns: []port.TurnContext{
-			{ID: "D1:1", Role: "user", Text: "Alice likes Paris."},
+			{ID: "D1:1", Role: "user", Text: "Avery likes Riverton."},
 			{ID: "D1:2", Role: "assistant", Text: "Nice."},
 		},
 	})
@@ -503,10 +650,10 @@ func TestLLMExtractor_DropsUngroundedMultiTurnMemory(t *testing.T) {
 func TestLLMExtractor_DropsNamedEntityUnsupportedByEvidence(t *testing.T) {
 	client := &fakeLLM{
 		Responses: []string{`{"memories":[{
-			"text":"Jon visited Paris yesterday.",
+			"text":"Eli visited Riverton yesterday.",
 			"kind":"event",
-			"subject":"Jon",
-			"entities":["jon","paris"],
+			"subject":"Eli",
+			"entities":["jon","riverton"],
 			"evidence_refs":[{"id":"D1:1","text":"I'm on the hunt for the ideal spot for my dance studio."}]
 		}]}`},
 	}
@@ -515,7 +662,7 @@ func TestLLMExtractor_DropsNamedEntityUnsupportedByEvidence(t *testing.T) {
 		Scope: domain.Scope{RuntimeID: "rt"},
 		Turns: []port.TurnContext{{
 			ID:      "D1:1",
-			Speaker: "Jon",
+			Speaker: "Eli",
 			Text:    "I'm on the hunt for the ideal spot for my dance studio.",
 		}},
 	})
@@ -530,17 +677,17 @@ func TestLLMExtractor_DropsNamedEntityUnsupportedByEvidence(t *testing.T) {
 func TestLLMExtractor_BackfillsHighSignalUncoveredTurns(t *testing.T) {
 	client := &fakeLLM{
 		Responses: []string{
-			`{"memories":[{"text":"Alice likes Paris.","kind":"preference","evidence_refs":[{"id":"D1:1"}]}]}`,
-			`{"memories":[{"text":"Alice bought 2 ceramic figurines yesterday for her family.","kind":"event","evidence_refs":[{"id":"D1:2","text":"I bought 2 ceramic figurines yesterday"}]}]}`,
+			`{"memories":[{"text":"Avery likes Riverton.","kind":"preference","evidence_refs":[{"id":"D1:1"}]}]}`,
+			`{"memories":[{"text":"Avery bought 2 ceramic figurines yesterday for her family.","kind":"event","evidence_refs":[{"id":"D1:2","text":"I bought 2 ceramic figurines yesterday"}]}]}`,
 		},
 	}
 	ex := NewLLMExtractor(client)
 	out, err := ex.Extract(context.Background(), port.IngestInput{
 		Scope: domain.Scope{RuntimeID: "rt"},
 		Turns: []port.TurnContext{
-			{ID: "D1:1", Role: "user", Speaker: "Alice", Text: "Alice likes Paris."},
-			{ID: "D1:2", Role: "user", Speaker: "Alice", Text: "I bought 2 ceramic figurines yesterday for my family."},
-			{ID: "D1:3", Role: "assistant", Speaker: "Bob", Text: "Hey Alice, how are you doing?"},
+			{ID: "D1:1", Role: "user", Speaker: "Avery", Text: "Avery likes Riverton."},
+			{ID: "D1:2", Role: "user", Speaker: "Avery", Text: "I bought 2 ceramic figurines yesterday for my family."},
+			{ID: "D1:3", Role: "assistant", Speaker: "Rowan", Text: "Hey Avery, how are you doing?"},
 		},
 	})
 	if err != nil {
@@ -550,7 +697,7 @@ func TestLLMExtractor_BackfillsHighSignalUncoveredTurns(t *testing.T) {
 		t.Fatalf("want original memory plus one coverage repair fact, got %d: %+v", len(out), out)
 	}
 	got := out[1]
-	if got.Content != "Alice bought 2 ceramic figurines yesterday for her family." {
+	if got.Content != "Avery bought 2 ceramic figurines yesterday for her family." {
 		t.Fatalf("repair content = %q", got.Content)
 	}
 	if len(got.EvidenceRefs) != 1 || got.EvidenceRefs[0].ID != "D1:2" {
@@ -566,60 +713,104 @@ func TestLLMExtractor_BackfillsHighSignalUncoveredTurns(t *testing.T) {
 }
 
 func TestTwoPassLLMExtractor_ExtractsThenGroundsEvidence(t *testing.T) {
-	client := &fakeLLM{
-		Responses: []string{
-			`{"memories":[{"text":"Alice likes Paris.","kind":"preference","subject":"Alice","entities":["Alice","Paris"]}]}`,
-			`{"links":[{"memory_index":0,"evidence_refs":[{"id":"D1:3","text":"Alice likes Paris."}]}]}`,
-		},
-	}
+	client := fakeTwoPassLLM(
+		[]string{`{"facts":[{"text":"Avery likes Riverton.","subject":"Avery","source_ids":["D1:3"],"quote":"Avery likes Riverton."}]}`},
+		[]string{`{"facts":[{"text":"Avery likes Riverton.","kind":"preference","subject":"Avery","source_ids":["D1:3"],"quote":"Avery likes Riverton."}]}`},
+		[]string{`{"facts":[{"text":"Avery likes Riverton.","subject":"Avery","predicate":"likes","object":"Riverton","source_ids":["D1:3"],"quote":"Avery likes Riverton."}]}`},
+		[]string{`{"facts":[{"text":"Avery likes Riverton.","subject":"Avery","entities":["Avery","Riverton"],"source_ids":["D1:3"],"quote":"Avery likes Riverton."}]}`},
+		[]string{`{"links":[{"fact_index":0,"evidence_refs":[{"id":"D1:3","text":"Avery likes Riverton."}]}]}`},
+	)
 	ex := NewTwoPassLLMExtractor(client)
 	out, err := ex.Extract(context.Background(), port.IngestInput{
 		Scope: domain.Scope{RuntimeID: "rt"},
-		Turns: []port.TurnContext{{ID: "D1:3", Role: "user", Text: "Alice likes Paris."}},
+		Turns: []port.TurnContext{
+			{ID: "D1:3", Role: "user", Speaker: "Avery", Text: "Avery likes Riverton."},
+			{ID: "D1:4", Role: "assistant", Speaker: "Noah", Text: "That sounds memorable."},
+		},
 	})
 	if err != nil {
 		t.Fatalf("extract: %v", err)
 	}
-	if len(client.Messages) != 2 {
-		t.Fatalf("two-pass extractor should call LLM twice, got %d", len(client.Messages))
+	if len(client.Messages) != 5 {
+		t.Fatalf("two-pass extractor should call four raw field extractors plus grounding; got %d", len(client.Messages))
 	}
-	if client.Messages[0][0].Content() != TwoPassMemoryExtractionPrompt {
-		t.Fatalf("default two-pass memory prompt should stay short")
+	seenSystems := map[string]bool{}
+	var groundingPrompt string
+	for _, msgs := range client.Messages {
+		if len(msgs) > 0 {
+			seenSystems[msgs[0].Content()] = true
+		}
+		if len(msgs) >= 2 && msgs[0].Content() == TwoPassEvidenceGroundingPrompt {
+			groundingPrompt = msgs[1].Content()
+		}
 	}
-	if client.Messages[1][0].Content() != TwoPassEvidenceGroundingPrompt {
-		t.Fatalf("default two-pass evidence prompt should stay short")
+	for _, system := range []string{TwoPassFactExtractionPrompt, TwoPassKindExtractionPrompt, TwoPassRelationExtractionPrompt, TwoPassEntityExtractionPrompt} {
+		if !seenSystems[system] {
+			t.Fatalf("raw field extractor system prompt was not used")
+		}
+	}
+	if groundingPrompt == "" {
+		t.Fatalf("default two-pass evidence prompt should run after candidate extraction")
 	}
 	if len(out) != 1 {
 		t.Fatalf("want 1 fact, got %d", len(out))
 	}
-	if out[0].Content != "Alice likes Paris." || out[0].Kind != domain.KindPreference {
+	if out[0].Content != "Avery likes Riverton." || out[0].Kind != domain.KindPreference {
 		t.Fatalf("fact content/kind = %q/%q", out[0].Content, out[0].Kind)
 	}
-	if out[0].Subject != "Alice" || strings.Join(out[0].Entities, ",") != "Alice,Paris" {
+	if out[0].Subject != "Avery" || strings.Join(out[0].Entities, ",") != "Avery,Riverton" {
 		t.Fatalf("subject/entities = %q/%+v", out[0].Subject, out[0].Entities)
+	}
+	if out[0].Predicate != "likes" || out[0].Object != "Riverton" {
+		t.Fatalf("predicate/object = %q/%q, want likes/Riverton", out[0].Predicate, out[0].Object)
 	}
 	if len(out[0].EvidenceRefs) != 1 || out[0].EvidenceRefs[0].ID != "D1:3" {
 		t.Fatalf("evidence refs = %+v, want D1:3", out[0].EvidenceRefs)
 	}
-	if !strings.Contains(client.Messages[1][1].Content(), `"index":0`) {
-		t.Fatalf("grounding prompt should include indexed memories, got %q", client.Messages[1][1].Content())
+	if !strings.Contains(groundingPrompt, `"index":0`) || !strings.Contains(groundingPrompt, `"kind":"preference"`) {
+		t.Fatalf("grounding prompt should include merged indexed facts, got %q", groundingPrompt)
 	}
-	if !strings.Contains(client.Messages[1][1].Content(), "<grounding_input>") || !strings.Contains(client.Messages[1][1].Content(), `<memories format="json">`) {
-		t.Fatalf("grounding prompt should use tagged input sections, got %q", client.Messages[1][1].Content())
+	if !strings.Contains(groundingPrompt, "<grounding_input>") || !strings.Contains(groundingPrompt, `<facts format="json">`) {
+		t.Fatalf("grounding prompt should use tagged input sections, got %q", groundingPrompt)
+	}
+}
+
+func TestTwoPassLLMExtractor_MergePrefersStrongSubject(t *testing.T) {
+	client := fakeTwoPassLLM(
+		[]string{`{"facts":[{"text":"Avery likes Riverton.","subject":"they","source_ids":["D1:3"],"quote":"Avery likes Riverton."}]}`},
+		[]string{`{"facts":[{"text":"Avery likes Riverton.","kind":"preference","subject":"Avery","source_ids":["D1:3"],"quote":"Avery likes Riverton."}]}`},
+		[]string{`{"facts":[]}`},
+		[]string{`{"facts":[{"text":"Avery likes Riverton.","subject":"Avery","entities":["Avery","Riverton"],"source_ids":["D1:3"],"quote":"Avery likes Riverton."}]}`},
+		[]string{`{"links":[{"fact_index":0,"evidence_refs":[{"id":"D1:3","text":"Avery likes Riverton."}]}]}`},
+	)
+	ex := NewTwoPassLLMExtractor(client)
+	out, err := ex.Extract(context.Background(), port.IngestInput{
+		Scope: domain.Scope{RuntimeID: "rt"},
+		Turns: []port.TurnContext{{ID: "D1:3", Role: "assistant", Speaker: "Rowan", Text: "Avery likes Riverton."}},
+	})
+	if err != nil {
+		t.Fatalf("extract: %v", err)
+	}
+	if len(out) != 1 {
+		t.Fatalf("want 1 fact, got %d", len(out))
+	}
+	if out[0].Subject != "Avery" {
+		t.Fatalf("merged fact should prefer strong subject from other passes, got %+v", out[0])
 	}
 }
 
 func TestTwoPassLLMExtractor_SingleTurnFallbackWhenGroundingOmitsLink(t *testing.T) {
-	client := &fakeLLM{
-		Responses: []string{
-			`{"memories":[{"text":"Alice lives in Paris.","kind":"state"}]}`,
-			`{"links":[]}`,
-		},
-	}
+	client := fakeTwoPassLLM(
+		[]string{`{"facts":[{"text":"Avery lives in Riverton.","subject":"Avery","source_ids":["D1:3"],"quote":"Avery lives in Riverton."}]}`},
+		[]string{`{"facts":[{"text":"Avery lives in Riverton.","kind":"state","subject":"Avery","source_ids":["D1:3"],"quote":"Avery lives in Riverton."}]}`},
+		[]string{`{"facts":[{"text":"Avery lives in Riverton.","subject":"Avery","predicate":"lives_in","object":"Riverton","source_ids":["D1:3"],"quote":"Avery lives in Riverton."}]}`},
+		[]string{`{"facts":[{"text":"Avery lives in Riverton.","subject":"Avery","entities":["Avery","Riverton"],"source_ids":["D1:3"],"quote":"Avery lives in Riverton."}]}`},
+		[]string{`{"links":[]}`},
+	)
 	ex := NewTwoPassLLMExtractor(client)
 	out, err := ex.Extract(context.Background(), port.IngestInput{
 		Scope: domain.Scope{RuntimeID: "rt"},
-		Turns: []port.TurnContext{{ID: "D1:3", Role: "user", Text: "Alice lives in Paris."}},
+		Turns: []port.TurnContext{{ID: "D1:3", Role: "user", Text: "Avery lives in Riverton."}},
 	})
 	if err != nil {
 		t.Fatalf("extract: %v", err)
@@ -633,17 +824,18 @@ func TestTwoPassLLMExtractor_SingleTurnFallbackWhenGroundingOmitsLink(t *testing
 }
 
 func TestTwoPassLLMExtractor_DropsUngroundedMultiTurnMemory(t *testing.T) {
-	client := &fakeLLM{
-		Responses: []string{
-			`{"memories":[{"text":"Alice lives in Paris.","kind":"state","subject":"Alice","entities":["Alice","Paris"]}]}`,
-			`{"links":[]}`,
-		},
-	}
+	client := fakeTwoPassLLM(
+		[]string{`{"facts":[{"text":"Avery lives in Riverton.","subject":"Avery","source_ids":["D1:1"],"quote":"Avery is in Riverton."}]}`},
+		[]string{`{"facts":[{"text":"Avery lives in Riverton.","kind":"state","subject":"Avery","source_ids":["D1:1"],"quote":"Avery is in Riverton."}]}`},
+		[]string{`{"facts":[{"text":"Avery lives in Riverton.","subject":"Avery","predicate":"lives_in","object":"Riverton","source_ids":["D1:1"],"quote":"Avery is in Riverton."}]}`},
+		[]string{`{"facts":[{"text":"Avery lives in Riverton.","subject":"Avery","entities":["Avery","Riverton"],"source_ids":["D1:1"],"quote":"Avery is in Riverton."}]}`},
+		[]string{`{"links":[]}`},
+	)
 	ex := NewTwoPassLLMExtractor(client)
 	out, err := ex.Extract(context.Background(), port.IngestInput{
 		Scope: domain.Scope{RuntimeID: "rt"},
 		Turns: []port.TurnContext{
-			{ID: "D1:1", Role: "user", Text: "Alice lives in Paris."},
+			{ID: "D1:1", Role: "user", Text: "Avery lives in Riverton."},
 			{ID: "D1:2", Role: "assistant", Text: "Nice."},
 		},
 	})
@@ -655,22 +847,64 @@ func TestTwoPassLLMExtractor_DropsUngroundedMultiTurnMemory(t *testing.T) {
 	}
 }
 
-func TestTwoPassLLMExtractor_BackfillsHighSignalUncoveredTurns(t *testing.T) {
-	client := &fakeLLM{
-		Responses: []string{
-			`{"memories":[{"text":"Alice likes Paris.","kind":"preference"}]}`,
-			`{"links":[{"memory_index":0,"evidence_refs":[{"id":"D1:1","text":"Alice likes Paris."}]}]}`,
-			`{"memories":[{"text":"Alice bought 2 ceramic figurines yesterday for her family.","kind":"event"}]}`,
-			`{"links":[{"memory_index":0,"evidence_refs":[{"id":"D1:2","text":"I bought 2 ceramic figurines yesterday"}]}]}`,
-		},
-	}
+func TestTwoPassLLMExtractor_DeterministicallyGroundsVerifiedSourceHint(t *testing.T) {
+	client := fakeTwoPassLLM(
+		[]string{`{"facts":[{"text":"Avery named the project Luma Lantern.","subject":"Avery","source_ids":["D1:1"],"quote":"It is called Luma Lantern."}]}`},
+		[]string{`{"facts":[{"text":"Avery named the project Luma Lantern.","kind":"event","subject":"Avery","source_ids":["D1:1"],"quote":"It is called Luma Lantern."}]}`},
+		[]string{`{"facts":[{"text":"Avery named the project Luma Lantern.","subject":"Avery","predicate":"named","object":"Luma Lantern","source_ids":["D1:1"],"quote":"It is called Luma Lantern."}]}`},
+		[]string{`{"facts":[{"text":"Avery named the project Luma Lantern.","subject":"Avery","entities":["Avery","Luma Lantern"],"source_ids":["D1:1"],"quote":"It is called Luma Lantern."}]}`},
+		nil,
+	)
+	client.Err = errors.New("content filter")
 	ex := NewTwoPassLLMExtractor(client)
 	out, err := ex.Extract(context.Background(), port.IngestInput{
 		Scope: domain.Scope{RuntimeID: "rt"},
 		Turns: []port.TurnContext{
-			{ID: "D1:1", Role: "user", Speaker: "Alice", Text: "Alice likes Paris."},
-			{ID: "D1:2", Role: "user", Speaker: "Alice", Text: "I bought 2 ceramic figurines yesterday for my family."},
-			{ID: "D1:3", Role: "assistant", Speaker: "Bob", Text: "Hey Alice, how are you doing?"},
+			{ID: "D1:1", Role: "user", Speaker: "Avery", Text: "It is called Luma Lantern."},
+			{ID: "D1:2", Role: "assistant", Speaker: "Rowan", Text: "That name is easy to remember."},
+		},
+	})
+	if err != nil {
+		t.Fatalf("extract: %v", err)
+	}
+	if len(out) != 1 {
+		t.Fatalf("want deterministic grounding fact, got %d: %+v", len(out), out)
+	}
+	if len(out[0].EvidenceRefs) != 1 || out[0].EvidenceRefs[0].ID != "D1:1" || out[0].EvidenceRefs[0].Text != "It is called Luma Lantern." {
+		t.Fatalf("deterministic evidence refs = %+v, want D1:1 quote", out[0].EvidenceRefs)
+	}
+}
+
+func TestTwoPassLLMExtractor_BackfillsHighSignalUncoveredTurns(t *testing.T) {
+	client := fakeTwoPassLLM(
+		[]string{
+			`{"facts":[{"text":"Avery likes Riverton.","subject":"Avery","source_ids":["D1:1"],"quote":"Avery likes Riverton."}]}`,
+			`{"facts":[{"text":"Avery bought 2 ceramic figurines yesterday for her family.","subject":"Avery","source_ids":["D1:2"],"quote":"I bought 2 ceramic figurines yesterday"}]}`,
+		},
+		[]string{
+			`{"facts":[{"text":"Avery likes Riverton.","kind":"preference","subject":"Avery","source_ids":["D1:1"],"quote":"Avery likes Riverton."}]}`,
+			`{"facts":[{"text":"Avery bought 2 ceramic figurines yesterday for her family.","kind":"event","subject":"Avery","source_ids":["D1:2"],"quote":"I bought 2 ceramic figurines yesterday"}]}`,
+		},
+		[]string{
+			`{"facts":[{"text":"Avery likes Riverton.","subject":"Avery","predicate":"likes","object":"Riverton","source_ids":["D1:1"],"quote":"Avery likes Riverton."}]}`,
+			`{"facts":[{"text":"Avery bought 2 ceramic figurines yesterday for her family.","subject":"Avery","predicate":"bought","object":"2 ceramic figurines","source_ids":["D1:2"],"quote":"I bought 2 ceramic figurines yesterday"}]}`,
+		},
+		[]string{
+			`{"facts":[{"text":"Avery likes Riverton.","subject":"Avery","entities":["Avery","Riverton"],"source_ids":["D1:1"],"quote":"Avery likes Riverton."}]}`,
+			`{"facts":[{"text":"Avery bought 2 ceramic figurines yesterday for her family.","subject":"Avery","entities":["Avery","2 ceramic figurines","family"],"source_ids":["D1:2"],"quote":"I bought 2 ceramic figurines yesterday"}]}`,
+		},
+		[]string{
+			`{"links":[{"fact_index":0,"evidence_refs":[{"id":"D1:1","text":"Avery likes Riverton."}]}]}`,
+			`{"links":[{"fact_index":0,"evidence_refs":[{"id":"D1:2","text":"I bought 2 ceramic figurines yesterday"}]}]}`,
+		},
+	)
+	ex := NewTwoPassLLMExtractor(client)
+	out, err := ex.Extract(context.Background(), port.IngestInput{
+		Scope: domain.Scope{RuntimeID: "rt"},
+		Turns: []port.TurnContext{
+			{ID: "D1:1", Role: "user", Speaker: "Avery", Text: "Avery likes Riverton."},
+			{ID: "D1:2", Role: "user", Speaker: "Avery", Text: "I bought 2 ceramic figurines yesterday for my family."},
+			{ID: "D1:3", Role: "assistant", Speaker: "Rowan", Text: "Hey Avery, how are you doing?"},
 		},
 	})
 	if err != nil {
@@ -680,7 +914,7 @@ func TestTwoPassLLMExtractor_BackfillsHighSignalUncoveredTurns(t *testing.T) {
 		t.Fatalf("want original memory plus one coverage repair fact, got %d: %+v", len(out), out)
 	}
 	got := out[1]
-	if got.Content != "Alice bought 2 ceramic figurines yesterday for her family." {
+	if got.Content != "Avery bought 2 ceramic figurines yesterday for her family." {
 		t.Fatalf("repair content = %q", got.Content)
 	}
 	if got.Kind != domain.KindEvent {
@@ -689,35 +923,58 @@ func TestTwoPassLLMExtractor_BackfillsHighSignalUncoveredTurns(t *testing.T) {
 	if len(got.EvidenceRefs) != 1 || got.EvidenceRefs[0].ID != "D1:2" {
 		t.Fatalf("repair evidence refs = %+v, want D1:2", got.EvidenceRefs)
 	}
-	if len(client.Messages) != 4 {
-		t.Fatalf("coverage repair should run a targeted extract+ground pass, got %d calls", len(client.Messages))
+	if len(client.Messages) != 10 {
+		t.Fatalf("coverage repair should run four field extractors plus grounding twice, got %d calls", len(client.Messages))
 	}
-	repairPrompt := client.Messages[2][1].Content()
+	var repairPrompt string
+	for _, msgs := range client.Messages {
+		if len(msgs) < 2 || msgs[0].Content() != TwoPassFactExtractionPrompt {
+			continue
+		}
+		if strings.Contains(msgs[1].Content(), `"id":"D1:2"`) &&
+			!strings.Contains(msgs[1].Content(), `"id":"D1:1"`) &&
+			!strings.Contains(msgs[1].Content(), `"id":"D1:3"`) {
+			repairPrompt = msgs[1].Content()
+			break
+		}
+	}
 	if !strings.Contains(repairPrompt, `"id":"D1:2"`) || strings.Contains(repairPrompt, `"id":"D1:3"`) {
 		t.Fatalf("repair prompt should include only high-signal uncovered turns, got %q", repairPrompt)
 	}
 }
 
 func TestTwoPassLLMExtractor_BackfillsWhenMemoryPassReturnsEmpty(t *testing.T) {
-	client := &fakeLLM{
-		Responses: []string{
-			`{"memories":[]}`,
-			`{"memories":[{"text":"Alice visited the beach on 2023-05-07 with the kids.","kind":"event"}]}`,
-			`{"links":[{"memory_index":0,"evidence_refs":[{"id":"D1:7","text":"We visited the beach on 2023-05-07"}]}]}`,
+	client := fakeTwoPassLLM(
+		[]string{
+			`{"facts":[]}`,
+			`{"facts":[{"text":"Avery visited the beach on 2023-05-07 with the kids.","subject":"Avery","source_ids":["D1:7"],"quote":"We visited the beach on 2023-05-07"}]}`,
 		},
-	}
+		[]string{
+			`{"facts":[]}`,
+			`{"facts":[{"text":"Avery visited the beach on 2023-05-07 with the kids.","kind":"event","subject":"Avery","source_ids":["D1:7"],"quote":"We visited the beach on 2023-05-07"}]}`,
+		},
+		[]string{
+			`{"facts":[]}`,
+			`{"facts":[{"text":"Avery visited the beach on 2023-05-07 with the kids.","subject":"Avery","predicate":"visited","object":"beach","source_ids":["D1:7"],"quote":"We visited the beach on 2023-05-07"}]}`,
+		},
+		[]string{
+			`{"facts":[]}`,
+			`{"facts":[{"text":"Avery visited the beach on 2023-05-07 with the kids.","subject":"Avery","entities":["Avery","beach","kids"],"source_ids":["D1:7"],"quote":"We visited the beach on 2023-05-07"}]}`,
+		},
+		[]string{`{"links":[{"fact_index":0,"evidence_refs":[{"id":"D1:7","text":"We visited the beach on 2023-05-07"}]}]}`},
+	)
 	ex := NewTwoPassLLMExtractor(client)
 	out, err := ex.Extract(context.Background(), port.IngestInput{
 		Scope: domain.Scope{RuntimeID: "rt"},
 		Turns: []port.TurnContext{{
-			ID: "D1:7", Role: "user", Speaker: "Alice", Text: "We visited the beach on 2023-05-07 and the kids had a blast.",
+			ID: "D1:7", Role: "user", Speaker: "Avery", Text: "We visited the beach on 2023-05-07 and the kids had a blast.",
 		}},
 	})
 	if err != nil {
 		t.Fatalf("extract: %v", err)
 	}
-	if len(client.Messages) != 3 {
-		t.Fatalf("empty memory pass should run targeted repair extract+ground calls, got %d calls", len(client.Messages))
+	if len(client.Messages) != 9 {
+		t.Fatalf("empty initial pass should run initial field extractors plus targeted field extractors and grounding, got %d calls", len(client.Messages))
 	}
 	if len(out) != 1 {
 		t.Fatalf("want one repair fact, got %d: %+v", len(out), out)
@@ -728,24 +985,36 @@ func TestTwoPassLLMExtractor_BackfillsWhenMemoryPassReturnsEmpty(t *testing.T) {
 }
 
 func TestTwoPassLLMExtractor_CoverageRepairUsesMultilingualTextSignals(t *testing.T) {
-	client := &fakeLLM{
-		Responses: []string{
-			`{"memories":[]}`,
-			`{"memories":[{"text":"Alice 昨天买了三本书，其中一本是小王子。","kind":"event"}]}`,
-			`{"links":[{"memory_index":0,"evidence_refs":[{"id":"D1:8","text":"昨天买了三本书"}]}]}`,
+	client := fakeTwoPassLLM(
+		[]string{
+			`{"facts":[]}`,
+			`{"facts":[{"text":"Avery bought 3 books yesterday, including 小王子.","subject":"Avery","source_ids":["D1:8"],"quote":"bought 3 books yesterday"}]}`,
 		},
-	}
+		[]string{
+			`{"facts":[]}`,
+			`{"facts":[{"text":"Avery bought 3 books yesterday, including 小王子.","kind":"event","subject":"Avery","source_ids":["D1:8"],"quote":"bought 3 books yesterday"}]}`,
+		},
+		[]string{
+			`{"facts":[]}`,
+			`{"facts":[]}`,
+		},
+		[]string{
+			`{"facts":[]}`,
+			`{"facts":[{"text":"Avery bought 3 books yesterday, including 小王子.","subject":"Avery","entities":["Avery","小王子"],"source_ids":["D1:8"],"quote":"bought 3 books yesterday"}]}`,
+		},
+		[]string{`{"links":[{"fact_index":0,"evidence_refs":[{"id":"D1:8","text":"bought 3 books yesterday"}]}]}`},
+	)
 	ex := NewTwoPassLLMExtractor(client)
 	out, err := ex.Extract(context.Background(), port.IngestInput{
 		Scope: domain.Scope{RuntimeID: "rt"},
 		Turns: []port.TurnContext{{
-			ID: "D1:8", Role: "user", Speaker: "Alice", Text: "我昨天买了三本书，其中一本是「小王子」。",
+			ID: "D1:8", Role: "user", Speaker: "Avery", Text: "I bought 3 books yesterday, including 「小王子」。",
 		}},
 	})
 	if err != nil {
 		t.Fatalf("extract: %v", err)
 	}
-	if len(client.Messages) != 3 {
+	if len(client.Messages) != 9 {
 		t.Fatalf("Chinese time/quote signals should trigger targeted repair, got %d calls", len(client.Messages))
 	}
 	if len(out) != 1 || len(out[0].EvidenceRefs) != 1 || out[0].EvidenceRefs[0].ID != "D1:8" {
@@ -759,7 +1028,7 @@ func TestCoverageRepairInput_DoesNotBudgetHighSignalTurns(t *testing.T) {
 		input.Turns = append(input.Turns, port.TurnContext{
 			ID:         "turn-id-" + string(rune('a'+i)),
 			EvidenceID: "D1:" + string(rune('0'+i)),
-			Text:       "Alice bought 2 ceramic figurines yesterday for her family.",
+			Text:       "Avery bought 2 ceramic figurines yesterday for her family.",
 		})
 	}
 	repairInput, ok := buildCoverageRepairInput(input, nil)
@@ -773,16 +1042,16 @@ func TestCoverageRepairInput_DoesNotBudgetHighSignalTurns(t *testing.T) {
 
 func TestCoverageRepairFacts_AreGroundedTaggedAndDedupeLocally(t *testing.T) {
 	base := []domain.TemporalFact{{
-		Content:      "Alice likes Paris.",
-		EvidenceRefs: []domain.EvidenceRef{{ID: "D1:1", Text: "Alice likes Paris."}},
+		Content:      "Avery likes Riverton.",
+		EvidenceRefs: []domain.EvidenceRef{{ID: "D1:1", Text: "Avery likes Riverton."}},
 	}}
 	repaired := []domain.TemporalFact{
 		{
-			Content:      "Alice bought 2 ceramic figurines yesterday for her family.",
+			Content:      "Avery bought 2 ceramic figurines yesterday for her family.",
 			EvidenceRefs: []domain.EvidenceRef{{ID: "D1:2", Text: "I bought 2 ceramic figurines yesterday."}},
 		},
 		{
-			Content:      "Alice bought 2 ceramic figurines yesterday for the family.",
+			Content:      "Avery bought 2 ceramic figurines yesterday for the family.",
 			EvidenceRefs: []domain.EvidenceRef{{ID: "D1:2", Text: "I bought 2 ceramic figurines yesterday."}},
 		},
 		{
@@ -901,6 +1170,11 @@ func TestLLMExtractorSystemPrompt_GuardsAntiAbstraction(t *testing.T) {
 		"that book",
 		"Be careful with second-person comments",
 		"second-person detail is about the addressee",
+		"subject -> predicate -> object",
+		"MUST be filled as a pair",
+		"Never emit an object without a predicate",
+		"Do not invent an object",
+		"planning to repair a bicycle",
 		`"procedure"`,
 		"When comparing options, use a markdown\n                     table.",
 		"Quote proper nouns verbatim",
@@ -920,44 +1194,78 @@ func TestLLMExtractorSystemPrompt_GuardsAntiAbstraction(t *testing.T) {
 }
 
 func TestTwoPassPrompts_GuardCoverageAndGrounding(t *testing.T) {
-	memoryMustContain := []string{
+	contentMustContain := []string{
 		"XML-tagged envelope",
 		"<source_turns>",
+		"objective facts",
+		"directly supported by source turns",
+		`Output only {"facts"`,
 		"Be exhaustive about concrete, retrievable details",
 		"Preserve literal answer-bearing spans",
 		"that book",
 		"Be careful with second-person comments",
 		"second-person detail is about the addressee",
-		"even when it appears only once and seems incidental",
+		"Never output pronouns as \"subject\"",
 		"signed up for a ceramics class yesterday",
-		`NOT
-  {kind:"state"`,
-		"Do not create cross-turn summary memories",
-		`"procedure"`,
-		"Quote proper\n      nouns verbatim",
-		"The Glass Compass",
+		"NOT \"Mira uses ceramics for self-expression.\"",
+		"Do not create cross-turn summary facts",
 	}
-	for _, s := range memoryMustContain {
-		if !strings.Contains(TwoPassMemoryExtractionPrompt, s) {
-			t.Errorf("TwoPassMemoryExtractionPrompt missing coverage guard: %q", s)
+	for _, s := range contentMustContain {
+		if !strings.Contains(TwoPassFactExtractionPrompt, s) {
+			t.Errorf("TwoPassFactExtractionPrompt missing coverage guard: %q", s)
+		}
+	}
+	kindMustContain := []string{
+		"objective facts",
+		"directly supported by source",
+		"event, state, preference, procedure, relation, plan, note",
+		"Do NOT turn a one-off dated action into state",
+		"Never use pronouns as \"subject\"",
+	}
+	for _, s := range kindMustContain {
+		if !strings.Contains(TwoPassKindExtractionPrompt, s) {
+			t.Errorf("TwoPassKindExtractionPrompt missing guard: %q", s)
+		}
+	}
+	relationMustContain := []string{
+		"objective claim",
+		"Fill predicate/object as a pair",
+		"Never use pronouns",
+		"Be conservative",
+		"Do not invent an object",
+	}
+	for _, s := range relationMustContain {
+		if !strings.Contains(TwoPassRelationExtractionPrompt, s) {
+			t.Errorf("TwoPassRelationExtractionPrompt missing guard: %q", s)
+		}
+	}
+	entityMustContain := []string{
+		"objective claim",
+		"subject\" must follow the same stable-anchor rule",
+		"planning to repair a bicycle",
+		"shortest stable noun phrase",
+	}
+	for _, s := range entityMustContain {
+		if !strings.Contains(TwoPassEntityExtractionPrompt, s) {
+			t.Errorf("TwoPassEntityExtractionPrompt missing guard: %q", s)
 		}
 	}
 
 	groundingMustContain := []string{
 		"XML-tagged envelope with two sections",
 		`<source_turns format="jsonl">`,
-		`<memories format="json">`,
-		"candidate memories from pass 1",
-		"The memories are not evidence",
+		`<facts format="json">`,
+		"candidate facts",
+		"The facts list is not evidence",
 		`"text":"<verbatim quote>"`,
 		"direct source turn",
 		"Prefer the turn with exact entity/date/item\n  surface forms",
 		"cite the\n  answer turn for answer details",
 		"Do not cite neighbouring acknowledgements",
 		"Use ids exactly as they appear",
-		"Prefer one direct evidence id for one atomic memory",
+		"Prefer one direct evidence id for one atomic fact",
 		"evidence_refs[].text",
-		"exact words that make the memory true",
+		"exact words that make the fact true",
 	}
 	for _, s := range groundingMustContain {
 		if !strings.Contains(TwoPassEvidenceGroundingPrompt, s) {

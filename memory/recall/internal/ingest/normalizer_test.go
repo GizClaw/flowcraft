@@ -51,7 +51,7 @@ func TestNormalizer_IsIdempotent(t *testing.T) {
 	n := newDefaultNormalizer(nil)
 	fact := domain.TemporalFact{
 		Kind:      domain.KindState,
-		Subject:   "  Alice  ",
+		Subject:   "  Avery  ",
 		Predicate: "Favourite.Colour",
 		Content:   "  cafe\u0301 ",
 	}

@@ -43,15 +43,15 @@ func TestResolver_SameMergeKeyIdenticalContentIsNoop(t *testing.T) {
 	scope := domain.Scope{RuntimeID: "rt"}
 	existing := domain.TemporalFact{
 		ID: "old", Scope: scope, Kind: domain.KindState,
-		Subject: "alice", Predicate: "city", Content: "Paris",
-		MergeKey: "state|alice|city",
+		Subject: "avery", Predicate: "city", Content: "Riverton",
+		MergeKey: "state|avery|city",
 	}
 	view := &fakeView{facts: []domain.TemporalFact{existing}}
 	r := NewResolver()
 	out, err := r.ResolveConflicts(context.Background(), view, []domain.TemporalFact{{
 		ID: "new", Scope: scope, Kind: domain.KindState,
-		Subject: "alice", Predicate: "city", Content: "Paris",
-		MergeKey: "state|alice|city",
+		Subject: "avery", Predicate: "city", Content: "Riverton",
+		MergeKey: "state|avery|city",
 	}})
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
@@ -71,16 +71,16 @@ func TestResolver_StateSupersedesOnChange(t *testing.T) {
 	scope := domain.Scope{RuntimeID: "rt"}
 	existing := domain.TemporalFact{
 		ID: "old", Scope: scope, Kind: domain.KindState,
-		Subject: "alice", Predicate: "city", Content: "Paris",
-		MergeKey:   "state|alice|city",
+		Subject: "avery", Predicate: "city", Content: "Riverton",
+		MergeKey:   "state|avery|city",
 		ObservedAt: time.Unix(1, 0),
 	}
 	view := &fakeView{facts: []domain.TemporalFact{existing}}
 	r := &DefaultResolver{Clock: func() time.Time { return time.Unix(100, 0) }}
 	out, err := r.ResolveConflicts(context.Background(), view, []domain.TemporalFact{{
 		ID: "new", Scope: scope, Kind: domain.KindState,
-		Subject: "alice", Predicate: "city", Content: "Berlin",
-		MergeKey:   "state|alice|city",
+		Subject: "avery", Predicate: "city", Content: "Berlin",
+		MergeKey:   "state|avery|city",
 		ObservedAt: time.Unix(50, 0),
 	}})
 	if err != nil {
@@ -105,8 +105,8 @@ func TestResolver_StateSupersedeChainsWithinBatch(t *testing.T) {
 	scope := domain.Scope{RuntimeID: "rt"}
 	existing := domain.TemporalFact{
 		ID: "old", Scope: scope, Kind: domain.KindState,
-		Subject: "alice", Predicate: "city", Content: "Paris",
-		MergeKey:   "state|alice|city",
+		Subject: "avery", Predicate: "city", Content: "Riverton",
+		MergeKey:   "state|avery|city",
 		ObservedAt: time.Unix(1, 0),
 	}
 	view := &fakeView{facts: []domain.TemporalFact{existing}}
@@ -114,14 +114,14 @@ func TestResolver_StateSupersedeChainsWithinBatch(t *testing.T) {
 	out, err := r.ResolveConflicts(context.Background(), view, []domain.TemporalFact{
 		{
 			ID: "new1", Scope: scope, Kind: domain.KindState,
-			Subject: "alice", Predicate: "city", Content: "Berlin",
-			MergeKey:   "state|alice|city",
+			Subject: "avery", Predicate: "city", Content: "Berlin",
+			MergeKey:   "state|avery|city",
 			ObservedAt: time.Unix(50, 0),
 		},
 		{
 			ID: "new2", Scope: scope, Kind: domain.KindState,
-			Subject: "alice", Predicate: "city", Content: "Rome",
-			MergeKey:   "state|alice|city",
+			Subject: "avery", Predicate: "city", Content: "Rome",
+			MergeKey:   "state|avery|city",
 			ObservedAt: time.Unix(51, 0),
 		},
 	})
@@ -152,15 +152,15 @@ func TestResolver_PreferenceSupersedesOnChange(t *testing.T) {
 	scope := domain.Scope{RuntimeID: "rt"}
 	existing := domain.TemporalFact{
 		ID: "p1", Scope: scope, Kind: domain.KindPreference,
-		Subject: "alice", Predicate: "favourite_color", Content: "blue",
-		MergeKey: "preference|alice|favourite_color",
+		Subject: "avery", Predicate: "favourite_color", Content: "blue",
+		MergeKey: "preference|avery|favourite_color",
 	}
 	view := &fakeView{facts: []domain.TemporalFact{existing}}
 	r := NewResolver()
 	out, _ := r.ResolveConflicts(context.Background(), view, []domain.TemporalFact{{
 		ID: "p2", Scope: scope, Kind: domain.KindPreference,
-		Subject: "alice", Predicate: "favourite_color", Content: "green",
-		MergeKey: "preference|alice|favourite_color",
+		Subject: "avery", Predicate: "favourite_color", Content: "green",
+		MergeKey: "preference|avery|favourite_color",
 	}})
 	if len(out.Facts) != 1 || len(out.Closes) != 1 {
 		t.Fatalf("preference supersede failed: %+v / %+v", out.Facts, out.Closes)
@@ -194,15 +194,15 @@ func TestResolver_RelationDifferentObjectAppends(t *testing.T) {
 	scope := domain.Scope{RuntimeID: "rt"}
 	existing := domain.TemporalFact{
 		ID: "r1", Scope: scope, Kind: domain.KindRelation,
-		Subject: "alice", Predicate: "spouse", Object: "bob",
-		MergeKey: "relation|alice|spouse|bob",
+		Subject: "avery", Predicate: "spouse", Object: "rowan",
+		MergeKey: "relation|avery|spouse|rowan",
 	}
 	view := &fakeView{facts: []domain.TemporalFact{existing}}
 	r := NewResolver()
 	out, _ := r.ResolveConflicts(context.Background(), view, []domain.TemporalFact{{
 		ID: "r2", Scope: scope, Kind: domain.KindRelation,
-		Subject: "alice", Predicate: "spouse", Object: "carol",
-		MergeKey: "relation|alice|spouse|carol",
+		Subject: "avery", Predicate: "spouse", Object: "carol",
+		MergeKey: "relation|avery|spouse|carol",
 	}})
 	if len(out.Facts) != 1 || out.Facts[0].ID != "r2" {
 		t.Errorf("different relation object must append: %+v", out.Facts)
@@ -250,10 +250,10 @@ func TestResolver_PropagatesViewLookupError(t *testing.T) {
 		ID:        "new",
 		Scope:     domain.Scope{RuntimeID: "rt"},
 		Kind:      domain.KindState,
-		Subject:   "alice",
+		Subject:   "avery",
 		Predicate: "city",
-		Content:   "Paris",
-		MergeKey:  "state|alice|city",
+		Content:   "Riverton",
+		MergeKey:  "state|avery|city",
 	}})
 	if err == nil {
 		t.Fatal("store lookup errors must abort conflict resolution, not degrade to append")

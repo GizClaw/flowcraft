@@ -19,11 +19,11 @@ import (
 // keyword inference for event/state/preference/relation/plan.
 func TestDefaultStructurizer_KindFallbackDefaultsToNote(t *testing.T) {
 	cases := []string{
-		"Alice loves black coffee in the morning.",
-		"Alice plans to visit Paris next month.",
-		"Alice is married to Bob.",
-		"Alice lives in San Francisco.",
-		"Alice went to the cinema yesterday.",
+		"Avery loves black coffee in the morning.",
+		"Avery plans to visit Riverton next month.",
+		"Avery is married to Rowan.",
+		"Avery lives in San Francisco.",
+		"Avery went to the cinema yesterday.",
 		"Some unmarked observation.",
 	}
 	for _, content := range cases {
@@ -41,7 +41,7 @@ func TestDefaultStructurizer_KindFallbackDetectsProcedure(t *testing.T) {
 	cases := []string{
 		"When comparing options, use a markdown table.",
 		"Before processing invoices, run OCR and then extract entities.",
-		"Always use markdown tables for comparisons.",
+		"Always use markdown tables for comrivertonons.",
 		"First run OCR, then extract invoice entities.",
 	}
 	for _, content := range cases {
@@ -54,7 +54,7 @@ func TestDefaultStructurizer_KindFallbackDetectsProcedure(t *testing.T) {
 		})
 	}
 
-	f := domain.TemporalFact{Content: "Alice prefers tea in the morning."}
+	f := domain.TemporalFact{Content: "Avery prefers tea in the morning."}
 	out := DefaultStructurizer{}.Structurize(f, port.IngestInput{})
 	if out.Kind != domain.KindNote {
 		t.Errorf("simple preference text should stay Note fallback, got %q", out.Kind)
@@ -70,7 +70,7 @@ func TestDefaultStructurizer_KindFallbackDetectsProcedure(t *testing.T) {
 func TestDefaultStructurizer_HonoursCustomEntityExtractor(t *testing.T) {
 	custom := stubEntityExtractor{out: []string{"plugged-in"}}
 	s := DefaultStructurizer{EntityExtractor: custom}
-	f := domain.TemporalFact{Content: "Alice met Bob at Paris."}
+	f := domain.TemporalFact{Content: "Avery met Rowan at Riverton."}
 	out := s.Structurize(f, port.IngestInput{})
 	if len(out.Entities) != 1 || out.Entities[0] != "plugged-in" {
 		t.Errorf("custom extractor not honoured, got %v", out.Entities)
@@ -108,7 +108,7 @@ func TestDiffStructurizerCoverage_OnlyCountsEmptyToNonEmpty(t *testing.T) {
 			name:   "all_fields_filled_by_stage",
 			before: domain.TemporalFact{},
 			after: domain.TemporalFact{
-				Kind: domain.KindState, Subject: "alice", Entities: []string{"alice"},
+				Kind: domain.KindState, Subject: "avery", Entities: []string{"avery"},
 				Metadata: map[string]any{MetaValidFromHint: "2024-05-07"},
 			},
 			want: diagnostic.StructurizerCoverage{TotalFactsSeen: 1, KindFilled: 1, EntitiesFilled: 1, SubjectFilled: 1, ValidFromHintFilled: 1},
@@ -116,11 +116,11 @@ func TestDiffStructurizerCoverage_OnlyCountsEmptyToNonEmpty(t *testing.T) {
 		{
 			name: "caller_supplied_kind_not_counted",
 			before: domain.TemporalFact{
-				Kind: domain.KindRelation, Subject: "bob", Entities: []string{"bob"},
+				Kind: domain.KindRelation, Subject: "rowan", Entities: []string{"rowan"},
 				Metadata: map[string]any{MetaValidFromHint: "2024-01-01"},
 			},
 			after: domain.TemporalFact{
-				Kind: domain.KindRelation, Subject: "bob", Entities: []string{"bob"},
+				Kind: domain.KindRelation, Subject: "rowan", Entities: []string{"rowan"},
 				Metadata: map[string]any{MetaValidFromHint: "2024-01-01"},
 			},
 			want: diagnostic.StructurizerCoverage{TotalFactsSeen: 1},
@@ -128,7 +128,7 @@ func TestDiffStructurizerCoverage_OnlyCountsEmptyToNonEmpty(t *testing.T) {
 		{
 			name:   "partial_fill_subject_only",
 			before: domain.TemporalFact{Kind: domain.KindNote, Entities: []string{"x"}},
-			after:  domain.TemporalFact{Kind: domain.KindNote, Subject: "alice", Entities: []string{"x"}},
+			after:  domain.TemporalFact{Kind: domain.KindNote, Subject: "avery", Entities: []string{"x"}},
 			want:   diagnostic.StructurizerCoverage{TotalFactsSeen: 1, SubjectFilled: 1},
 		},
 	}
@@ -153,7 +153,7 @@ func TestDefaultStructurizer_TrustsLLMSuppliedKind(t *testing.T) {
 	// LLM tagged the fact as state — Structurizer must respect that.
 	f := domain.TemporalFact{
 		Kind:    domain.KindState,
-		Content: "Alice went to live in Paris.",
+		Content: "Avery went to live in Riverton.",
 	}
 	out := DefaultStructurizer{}.Structurize(f, port.IngestInput{})
 	if out.Kind != domain.KindState {
@@ -166,17 +166,17 @@ func TestDefaultStructurizer_KeepsCallerSuppliedFields(t *testing.T) {
 	// Structurizer must not overwrite any populated field.
 	pre := domain.TemporalFact{
 		Kind:      domain.KindRelation,
-		Subject:   "Bob",
+		Subject:   "Rowan",
 		Predicate: "spouse",
-		Object:    "Carol",
-		Entities:  []string{"bob", "carol"},
-		Content:   "Bob is married to Carol.",
+		Object:    "Morgan",
+		Entities:  []string{"rowan", "carol"},
+		Content:   "Rowan is married to Morgan.",
 	}
 	out := DefaultStructurizer{}.Structurize(pre, port.IngestInput{})
-	if out.Kind != domain.KindRelation || out.Subject != "Bob" || out.Predicate != "spouse" || out.Object != "Carol" {
+	if out.Kind != domain.KindRelation || out.Subject != "Rowan" || out.Predicate != "spouse" || out.Object != "Morgan" {
 		t.Errorf("structurizer must not mutate populated fields, got %+v", out)
 	}
-	if len(out.Entities) != 2 || out.Entities[0] != "bob" || out.Entities[1] != "carol" {
+	if len(out.Entities) != 2 || out.Entities[0] != "rowan" || out.Entities[1] != "carol" {
 		t.Errorf("entities must not be mutated, got %v", out.Entities)
 	}
 }
@@ -184,17 +184,17 @@ func TestDefaultStructurizer_KeepsCallerSuppliedFields(t *testing.T) {
 func TestDefaultStructurizer_LiftsSpeakerFromSupportingTurn(t *testing.T) {
 	turn := port.TurnContext{
 		ID:      "D1:3",
-		Speaker: "Caroline",
+		Speaker: "Rhea",
 		Role:    "user",
 		Time:    time.Date(2024, 5, 7, 9, 0, 0, 0, time.UTC),
-		Text:    "I went to the LGBTQ support group.",
+		Text:    "I went to the neighborhood art workshop.",
 	}
 	f := domain.TemporalFact{
-		Content:      "Caroline went to the LGBTQ support group.",
+		Content:      "Rhea went to the neighborhood art workshop.",
 		EvidenceRefs: []domain.EvidenceRef{{ID: "D1:3"}},
 	}
 	out := DefaultStructurizer{}.Structurize(f, port.IngestInput{Turns: []port.TurnContext{turn}})
-	if out.Subject != "Caroline" {
+	if out.Subject != "Rhea" {
 		t.Errorf("subject should be lifted from turn.Speaker, got %q", out.Subject)
 	}
 	if hint, _ := out.Metadata[MetaValidFromHint].(string); hint == "" {
@@ -208,13 +208,13 @@ func TestDefaultStructurizer_LiftsSpeakerFromSupportingTurn(t *testing.T) {
 func TestDefaultStructurizer_PrefersContentRelativeTimeOverTurnTime(t *testing.T) {
 	turn := port.TurnContext{
 		ID:      "D1:4",
-		Speaker: "Caroline",
+		Speaker: "Rhea",
 		Role:    "user",
 		Time:    time.Date(2023, 6, 27, 10, 37, 0, 0, time.UTC),
-		Text:    "I moved from Sweden 4 years ago.",
+		Text:    "I moved from Norland 4 years ago.",
 	}
 	f := domain.TemporalFact{
-		Content:      "Caroline moved from Sweden 4 years ago.",
+		Content:      "Rhea moved from Norland 4 years ago.",
 		EvidenceRefs: []domain.EvidenceRef{{ID: "D1:4"}},
 	}
 	out := DefaultStructurizer{}.Structurize(f, port.IngestInput{Turns: []port.TurnContext{turn}})
@@ -255,14 +255,14 @@ func TestDefaultStructurizer_LiftsLexicalRelativeTimeOverTurnTime(t *testing.T) 
 	}{
 		{
 			name:    "last year",
-			content: "Melanie painted a lake sunrise last year.",
+			content: "Juno painted a lake sunrise last year.",
 			turnAt:  time.Date(2023, 5, 8, 13, 56, 0, 0, time.UTC),
 			wantAt:  time.Date(2022, 1, 1, 0, 0, 0, 0, time.UTC),
 			wantRaw: "last year",
 		},
 		{
 			name:    "next month",
-			content: "Jon is hosting a dance competition next month.",
+			content: "Eli is hosting a dance competition next month.",
 			turnAt:  time.Date(2023, 4, 3, 13, 26, 0, 0, time.UTC),
 			wantAt:  time.Date(2023, 5, 1, 0, 0, 0, 0, time.UTC),
 			wantRaw: "next month",
@@ -276,7 +276,7 @@ func TestDefaultStructurizer_LiftsLexicalRelativeTimeOverTurnTime(t *testing.T) 
 		},
 		{
 			name:    "two weekends ago",
-			content: "Melanie went camping with her family two weekends ago.",
+			content: "Juno went camping with her family two weekends ago.",
 			turnAt:  time.Date(2023, 7, 17, 14, 31, 0, 0, time.UTC),
 			wantAt:  time.Date(2023, 7, 8, 0, 0, 0, 0, time.UTC),
 			wantRaw: "two weekends ago",
@@ -312,8 +312,8 @@ func TestDefaultStructurizer_DoesNotPromoteDurationOrSetToEventTime(t *testing.T
 		Time: time.Date(2023, 7, 20, 20, 56, 0, 0, time.UTC),
 	}
 	cases := []string{
-		"Melanie's family usually goes to the beach once or twice a year.",
-		"Melanie has been creating art for seven years.",
+		"Juno's family usually goes to the beach once or twice a year.",
+		"Juno has been creating art for seven years.",
 	}
 	for _, content := range cases {
 		t.Run(content, func(t *testing.T) {
@@ -342,7 +342,7 @@ func TestDefaultStructurizer_CarriesParsedTimeFromCustomParser(t *testing.T) {
 	}}
 	turn := port.TurnContext{ID: "D1:1", Time: time.Date(2023, 6, 27, 9, 0, 0, 0, time.UTC)}
 	f := domain.TemporalFact{
-		Content:      "Caroline 四年前从瑞典搬来。",
+		Content:      "Rhea 四年前从诺兰搬来。",
 		EvidenceRefs: []domain.EvidenceRef{{ID: "D1:1"}},
 	}
 	out := s.Structurize(f, port.IngestInput{Turns: []port.TurnContext{turn}})
@@ -360,10 +360,10 @@ func TestDefaultStructurizer_CarriesParsedTimeFromCustomParser(t *testing.T) {
 }
 
 func TestDefaultStructurizer_ExtractsEntitiesFromContent(t *testing.T) {
-	f := domain.TemporalFact{Content: "Alice met Bob at the Eiffel Tower in Paris."}
+	f := domain.TemporalFact{Content: "Avery met Rowan at the Old Clocktower in Riverton."}
 	out := DefaultStructurizer{}.Structurize(f, port.IngestInput{})
 
-	want := []string{"alice", "bob", "eiffel", "tower", "paris"}
+	want := []string{"avery", "rowan", "old", "clocktower", "riverton"}
 	got := map[string]bool{}
 	for _, e := range out.Entities {
 		got[e] = true
@@ -379,11 +379,24 @@ func TestDefaultStructurizer_ExtractsEntitiesFromContent(t *testing.T) {
 	}
 }
 
+func TestDefaultStructurizer_DropsWeakSentenceOpenersFromEntities(t *testing.T) {
+	f := domain.TemporalFact{Content: "On 2024-05-07, Avery signed up for pottery. Taking time for herself helps Avery."}
+	out := DefaultStructurizer{}.Structurize(f, port.IngestInput{})
+
+	for _, weak := range []string{"on", "taking"} {
+		for _, entity := range out.Entities {
+			if entity == weak {
+				t.Fatalf("weak entity %q should be dropped, got %v", weak, out.Entities)
+			}
+		}
+	}
+}
+
 func TestDefaultStructurizer_FoldsKnownEntityAliases(t *testing.T) {
 	// "tom" is the canonical, the snippet writes "Tom" — the
 	// snapshot makes the canonical join survive lowercasing /
 	// surface variation.
-	f := domain.TemporalFact{Content: "Tom recommended a great espresso machine to Alice."}
+	f := domain.TemporalFact{Content: "Tom recommended a great espresso machine to Avery."}
 	out := DefaultStructurizer{}.Structurize(f, port.IngestInput{
 		KnownEntities: []port.EntitySnapshot{
 			{Canonical: "tom smith", Aliases: []string{"Tom"}},
@@ -402,7 +415,7 @@ func TestDefaultStructurizer_FoldsKnownEntityAliases(t *testing.T) {
 }
 
 func TestDefaultStructurizer_GrepsAbsoluteDateFromContent(t *testing.T) {
-	f := domain.TemporalFact{Content: "On 2024-05-07, Alice signed up for the gym."}
+	f := domain.TemporalFact{Content: "On 2024-05-07, Avery signed up for the gym."}
 	out := DefaultStructurizer{}.Structurize(f, port.IngestInput{})
 	hint, _ := out.Metadata[MetaValidFromHint].(string)
 	if hint != "2024-05-07" {
@@ -414,7 +427,7 @@ func TestDefaultStructurizer_GrepsAbsoluteDateFromContent(t *testing.T) {
 }
 
 func TestNopStructurizer_LeavesFactsUnchanged(t *testing.T) {
-	f := domain.TemporalFact{Content: "Alice loves Paris."}
+	f := domain.TemporalFact{Content: "Avery loves Riverton."}
 	out := NopStructurizer{}.Structurize(f, port.IngestInput{})
 	if out.Kind != "" || len(out.Entities) != 0 || out.Subject != "" {
 		t.Errorf("Nop must not fill any field, got %+v", out)
@@ -428,7 +441,7 @@ func TestNopStructurizer_LeavesFactsUnchanged(t *testing.T) {
 // is consumed by TimeResolver's relative-token table, completing
 // the end-to-end path that pure regex parsing could not.
 func TestDefaultStructurizer_LiftsRelativeTimePhraseFromContent(t *testing.T) {
-	f := domain.TemporalFact{Content: "Alice signed up for the gym yesterday."}
+	f := domain.TemporalFact{Content: "Avery signed up for the gym yesterday."}
 	out := DefaultStructurizer{}.Structurize(f, port.IngestInput{})
 	hint, _ := out.Metadata[MetaValidFromHint].(string)
 	if hint == "" {
