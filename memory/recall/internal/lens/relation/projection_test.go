@@ -44,6 +44,27 @@ func TestRelation_IndexesEventFactWithTriple(t *testing.T) {
 	}
 }
 
+func TestRelation_DropsIncompleteTriples(t *testing.T) {
+	p := New()
+	ctx := context.Background()
+	future := time.Now().Add(24 * time.Hour)
+	facts := []domain.TemporalFact{
+		{ID: "subject-only", Scope: scope(), Kind: domain.KindState, Subject: "Caroline", ObservedAt: time.Now(), ValidTo: &future},
+		{ID: "predicate-only", Scope: scope(), Kind: domain.KindState, Predicate: "read", ObservedAt: time.Now(), ValidTo: &future},
+		{ID: "object-only", Scope: scope(), Kind: domain.KindState, Object: "The Glass Compass", ObservedAt: time.Now(), ValidTo: &future},
+		{ID: "complete", Scope: scope(), Kind: domain.KindState, Subject: "Caroline", Predicate: "read", Object: "The Glass Compass", ObservedAt: time.Now(), ValidTo: &future},
+	}
+	if err := p.Project(ctx, facts); err != nil {
+		t.Fatal(err)
+	}
+	if got := p.Lookup(ctx, scope(), "caroline", "", ""); len(got) != 1 || got[0] != "complete" {
+		t.Fatalf("relation projection should index only complete triples, got %+v", got)
+	}
+	if got := p.Lookup(ctx, scope(), "", "read", ""); len(got) != 1 || got[0] != "complete" {
+		t.Fatalf("predicate lookup should only see complete triple, got %+v", got)
+	}
+}
+
 func TestRelation_LookupByDimensions(t *testing.T) {
 	p := New()
 	ctx := context.Background()

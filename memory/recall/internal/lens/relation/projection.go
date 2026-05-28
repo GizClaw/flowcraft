@@ -1,14 +1,16 @@
 // Package relation implements the optional typed-relation projection.
 //
-// It indexes any projectable fact that supplies at least one of
-// (Subject, Predicate, Object) for typed lookup (docs §8.3). The
+// It indexes projectable facts that supply a complete
+// (Subject, Predicate, Object) triple for typed lookup (docs §8.3). The
 // original guard "Kind == KindRelation" was too narrow: structurized
 // event / state / preference facts frequently carry a meaningful
 // triple ("Caroline read Charlotte's Web" → Subject=Caroline,
 // Predicate=read, Object="Charlotte's Web") and were dropped on the
 // floor, starving the relation source and the multi-hop fanout it
-// feeds. The projection still uses domain.IsProjectable so it remains
-// an active-slot view — past-ValidTo / soft-forgotten facts roll off.
+// feeds. Incomplete subject-only rows belong to profile/entity/retrieval,
+// not the typed-relation index. The projection still uses domain.IsProjectable
+// so it remains an active-slot view — past-ValidTo / soft-forgotten facts
+// roll off.
 package relation
 
 import (
@@ -74,10 +76,8 @@ func (p *Projection) Project(_ context.Context, facts []domain.TemporalFact) err
 			continue
 		}
 		// Drop the Kind gate (was `Kind != KindRelation`) — see the
-		// package comment. Index any fact whose triple has at least
-		// one populated slot; tripleKey("","","") still returns "" so
-		// triple-less facts (rare event / note shapes) bypass the
-		// shard naturally.
+		// package comment. Still require a complete triple so broad
+		// subject-only facts do not pollute the typed relation source.
 		key := tripleKey(f.Subject, f.Predicate, f.Object, f.Scope.AgentID)
 		if key == "" {
 			continue
@@ -194,7 +194,7 @@ func tripleKey(subject, predicate, object, agentID string) string {
 	subject = canonicalKeyPart(subject)
 	predicate = canonicalKeyPart(predicate)
 	object = canonicalKeyPart(object)
-	if subject == "" && predicate == "" && object == "" {
+	if subject == "" || predicate == "" || object == "" {
 		return ""
 	}
 	return subject + "\x00" + predicate + "\x00" + object + "\x00" + agentID

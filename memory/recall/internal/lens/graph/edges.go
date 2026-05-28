@@ -62,26 +62,27 @@ func extractEdges(f domain.TemporalFact, cfg Config, now time.Time) []directedEd
 	if f.Confidence < cfg.minConfidence() {
 		return nil
 	}
+	typed := extractRelationEdges(f)
 	switch f.Kind {
 	case domain.KindRelation:
-		return extractRelationEdges(f)
+		return typed
 	case domain.KindEvent, domain.KindState, domain.KindProcedure, domain.KindNote:
-		return extractCooccurrenceEdges(f, cfg)
+		return append(typed, extractCooccurrenceEdges(f, cfg)...)
 	default:
-		return nil
+		return typed
 	}
 }
 
 func extractRelationEdges(f domain.TemporalFact) []directedEdge {
 	sub := canonicalNode(f.Subject)
+	pred := strings.TrimSpace(f.Predicate)
 	obj := canonicalNode(f.Object)
-	if sub == "" || obj == "" || sub == obj {
+	if sub == "" || pred == "" || obj == "" || sub == obj {
 		return nil
 	}
 	if isCommonNoun(sub) || isCommonNoun(obj) {
 		return nil
 	}
-	pred := strings.TrimSpace(f.Predicate)
 	return []directedEdge{{
 		from: sub, to: obj, predicate: pred, factID: f.ID, agentID: f.Scope.AgentID,
 	}}

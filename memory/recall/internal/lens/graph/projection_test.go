@@ -30,6 +30,37 @@ func TestGraph_TypedRelationEdgeTraverse(t *testing.T) {
 	}
 }
 
+func TestGraph_IndexesTypedEdgeFromNonRelationFact(t *testing.T) {
+	p := New()
+	ctx := context.Background()
+	if err := p.Project(ctx, []domain.TemporalFact{
+		{ID: "plan1", Scope: scope(), Kind: domain.KindPlan,
+			Subject: "Avery", Predicate: "visit", Object: "Riverton",
+			ObservedAt: time.Unix(1, 0)},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	got := p.Traverse(ctx, scope(), []string{"avery"}, 1, 0)
+	if len(got) != 1 || got[0] != "plan1" {
+		t.Fatalf("non-relation fact with complete triple should produce typed graph edge, got %+v", got)
+	}
+}
+
+func TestGraph_DropsIncompleteTypedEdges(t *testing.T) {
+	p := New()
+	ctx := context.Background()
+	if err := p.Project(ctx, []domain.TemporalFact{
+		{ID: "missing-predicate", Scope: scope(), Kind: domain.KindRelation,
+			Subject: "Avery", Object: "Riverton", ObservedAt: time.Unix(1, 0)},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got := p.Traverse(ctx, scope(), []string{"avery"}, 1, 0); len(got) != 0 {
+		t.Fatalf("incomplete typed triple should not produce graph edge, got %+v", got)
+	}
+}
+
 func TestGraph_TraverseUnicodeCaseFold(t *testing.T) {
 	p := New()
 	ctx := context.Background()

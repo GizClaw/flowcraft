@@ -89,6 +89,9 @@ func (c *llmExtractorConfig) build() port.Extractor {
 		}
 		if c.schemaName != "" {
 			ex.MemorySchemaName = c.schemaName
+			ex.KindSchemaName = c.schemaName + "_kinds"
+			ex.RelationSchemaName = c.schemaName + "_relations"
+			ex.EntitySchemaName = c.schemaName + "_entities"
 			ex.EvidenceSchemaName = c.schemaName + "_evidence"
 		}
 		ex.Temperature = c.temperature
