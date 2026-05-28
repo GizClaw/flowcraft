@@ -159,6 +159,12 @@ func TestLLMExtractor_RendersTurnsAsJSONL(t *testing.T) {
 	if out[0].EvidenceRefs[0].Role != "user" || out[0].EvidenceRefs[0].Timestamp.IsZero() {
 		t.Errorf("evidence ref should inherit typed turn metadata, got %+v", out[0].EvidenceRefs[0])
 	}
+	if out[0].EvidenceText != turn1.Text || out[0].EvidenceRefs[0].Text != turn1.Text {
+		t.Errorf("evidence text should use source turn text, got fact=%q ref=%q", out[0].EvidenceText, out[0].EvidenceRefs[0].Text)
+	}
+	if out[1].EvidenceText != turn2.Text || out[1].EvidenceRefs[0].Text != turn2.Text {
+		t.Errorf("non-verbatim evidence quote should fall back to source turn text, got fact=%q ref=%q", out[1].EvidenceText, out[1].EvidenceRefs[0].Text)
+	}
 	if len(out[0].SourceMessageIDs) != 1 || out[0].SourceMessageIDs[0] != "D1:3" {
 		t.Errorf("source ids not derived from evidence: %+v", out[0].SourceMessageIDs)
 	}
@@ -184,8 +190,9 @@ func TestExtractorPromptsForbidGenericSurfaceCollapse(t *testing.T) {
 	} {
 		for _, want := range []string{
 			"Never replace an answer-bearing span with only a category word",
-			`Charlotte's Web`,
-			`Stardew Valley`,
+			`The Glass Compass`,
+			`Moon Orchard`,
+			`my dog Pixel`,
 			`a pet`,
 			`an item`,
 		} {
@@ -322,6 +329,41 @@ func TestLLMExtractor_PropagatesKindEnum(t *testing.T) {
 	}
 }
 
+func TestLLMExtractor_PropagatesSubjectAndCleansEntities(t *testing.T) {
+	client := &fakeLLM{
+		Responses: []string{`{"memories":[{
+			"text":"Melanie made a bowl in her pottery class.",
+			"kind":"event",
+			"subject":"Melanie",
+			"entities":["Melanie's","pottery","July","on","bowl","2023"],
+			"evidence_refs":[{"id":"D1:7","text":"That bowl is gorgeous! Did Melanie make it?"}]
+		}]}`},
+	}
+	ex := NewLLMExtractor(client)
+	out, err := ex.Extract(context.Background(), port.IngestInput{
+		Scope: domain.Scope{RuntimeID: "rt"},
+		Turns: []port.TurnContext{{
+			ID:      "D1:7",
+			Role:    "assistant",
+			Speaker: "Caroline",
+			Text:    "That bowl is gorgeous! Did Melanie make it?",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("extract: %v", err)
+	}
+	if len(out) != 1 {
+		t.Fatalf("want 1 fact, got %d", len(out))
+	}
+	if out[0].Subject != "Melanie" {
+		t.Fatalf("subject should come from extractor, not evidence speaker: %+v", out[0])
+	}
+	wantEntities := []string{"Melanie", "pottery", "bowl"}
+	if strings.Join(out[0].Entities, ",") != strings.Join(wantEntities, ",") {
+		t.Fatalf("entities = %+v, want %+v", out[0].Entities, wantEntities)
+	}
+}
+
 // TestLLMExtractor_UnknownKindFallsThrough confirms that an
 // unrecognised kind label (older deployment, prompt drift) leaves
 // Kind empty so the Structurizer's keyword fallback can still
@@ -432,6 +474,59 @@ func TestLLMExtractor_SingleTurnEvidenceFallback(t *testing.T) {
 	}
 }
 
+func TestLLMExtractor_DropsUngroundedMultiTurnMemory(t *testing.T) {
+	client := &fakeLLM{
+		Responses: []string{`{"memories":[{
+			"text":"Alice likes Paris.",
+			"kind":"state",
+			"subject":"Alice",
+			"entities":["Alice","Paris"],
+			"evidence_refs":[]
+		}]}`},
+	}
+	ex := NewLLMExtractor(client)
+	out, err := ex.Extract(context.Background(), port.IngestInput{
+		Scope: domain.Scope{RuntimeID: "rt"},
+		Turns: []port.TurnContext{
+			{ID: "D1:1", Role: "user", Text: "Alice likes Paris."},
+			{ID: "D1:2", Role: "assistant", Text: "Nice."},
+		},
+	})
+	if err != nil {
+		t.Fatalf("extract: %v", err)
+	}
+	if len(out) != 0 {
+		t.Fatalf("ungrounded multi-turn memory should be dropped, got %+v", out)
+	}
+}
+
+func TestLLMExtractor_DropsNamedEntityUnsupportedByEvidence(t *testing.T) {
+	client := &fakeLLM{
+		Responses: []string{`{"memories":[{
+			"text":"Jon visited Paris yesterday.",
+			"kind":"event",
+			"subject":"Jon",
+			"entities":["jon","paris"],
+			"evidence_refs":[{"id":"D1:1","text":"I'm on the hunt for the ideal spot for my dance studio."}]
+		}]}`},
+	}
+	ex := NewLLMExtractor(client)
+	out, err := ex.Extract(context.Background(), port.IngestInput{
+		Scope: domain.Scope{RuntimeID: "rt"},
+		Turns: []port.TurnContext{{
+			ID:      "D1:1",
+			Speaker: "Jon",
+			Text:    "I'm on the hunt for the ideal spot for my dance studio.",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("extract: %v", err)
+	}
+	if len(out) != 0 {
+		t.Fatalf("named entity absent from evidence should drop fact, got %+v", out)
+	}
+}
+
 func TestLLMExtractor_BackfillsHighSignalUncoveredTurns(t *testing.T) {
 	client := &fakeLLM{
 		Responses: []string{
@@ -473,7 +568,7 @@ func TestLLMExtractor_BackfillsHighSignalUncoveredTurns(t *testing.T) {
 func TestTwoPassLLMExtractor_ExtractsThenGroundsEvidence(t *testing.T) {
 	client := &fakeLLM{
 		Responses: []string{
-			`{"memories":[{"text":"Alice likes Paris.","kind":"preference"}]}`,
+			`{"memories":[{"text":"Alice likes Paris.","kind":"preference","subject":"Alice","entities":["Alice","Paris"]}]}`,
 			`{"links":[{"memory_index":0,"evidence_refs":[{"id":"D1:3","text":"Alice likes Paris."}]}]}`,
 		},
 	}
@@ -499,6 +594,9 @@ func TestTwoPassLLMExtractor_ExtractsThenGroundsEvidence(t *testing.T) {
 	}
 	if out[0].Content != "Alice likes Paris." || out[0].Kind != domain.KindPreference {
 		t.Fatalf("fact content/kind = %q/%q", out[0].Content, out[0].Kind)
+	}
+	if out[0].Subject != "Alice" || strings.Join(out[0].Entities, ",") != "Alice,Paris" {
+		t.Fatalf("subject/entities = %q/%+v", out[0].Subject, out[0].Entities)
 	}
 	if len(out[0].EvidenceRefs) != 1 || out[0].EvidenceRefs[0].ID != "D1:3" {
 		t.Fatalf("evidence refs = %+v, want D1:3", out[0].EvidenceRefs)
@@ -531,6 +629,29 @@ func TestTwoPassLLMExtractor_SingleTurnFallbackWhenGroundingOmitsLink(t *testing
 	}
 	if len(out[0].EvidenceRefs) != 1 || out[0].EvidenceRefs[0].ID != "D1:3" {
 		t.Fatalf("single-turn fallback should attach evidence id, got %+v", out[0].EvidenceRefs)
+	}
+}
+
+func TestTwoPassLLMExtractor_DropsUngroundedMultiTurnMemory(t *testing.T) {
+	client := &fakeLLM{
+		Responses: []string{
+			`{"memories":[{"text":"Alice lives in Paris.","kind":"state","subject":"Alice","entities":["Alice","Paris"]}]}`,
+			`{"links":[]}`,
+		},
+	}
+	ex := NewTwoPassLLMExtractor(client)
+	out, err := ex.Extract(context.Background(), port.IngestInput{
+		Scope: domain.Scope{RuntimeID: "rt"},
+		Turns: []port.TurnContext{
+			{ID: "D1:1", Role: "user", Text: "Alice lives in Paris."},
+			{ID: "D1:2", Role: "assistant", Text: "Nice."},
+		},
+	})
+	if err != nil {
+		t.Fatalf("extract: %v", err)
+	}
+	if len(out) != 0 {
+		t.Fatalf("ungrounded multi-turn memory should be dropped, got %+v", out)
 	}
 }
 
@@ -749,8 +870,8 @@ func TestLLMExtractor_PreservesBackendClassification(t *testing.T) {
 // anti-abstraction language that distinguishes one-off dated
 // actions ("events") from durable traits ("states"). Regression
 // analysis traced time-anchored recall misses to the extractor
-// over-summarising sentences like "I just signed up for pottery
-// yesterday" into "<speaker> uses pottery for self-expression" —
+// over-summarising sentences like "I just signed up for a class
+// yesterday" into "<speaker> uses classes for self-expression" —
 // collapsing several dated events into abstract states. Future prompt
 // edits must keep:
 //   - explicit instruction to default past-tense+date snippets to
@@ -769,19 +890,21 @@ func TestLLMExtractor_PreservesBackendClassification(t *testing.T) {
 // and forces the reviewer to acknowledge the trade-off.
 func TestLLMExtractorSystemPrompt_GuardsAntiAbstraction(t *testing.T) {
 	mustContain := []string{
-		"signed up for a pottery class",
+		"signed up for a ceramics class",
 		`NOT {kind:"state"`,
 		"Single-occurrence dated\n                     actions are events, not states",
 		"Be exhaustive about concrete, retrievable details",
 		"Split enumerations into separate memories",
-		"Alice enjoys swimming",
+		"Mira enjoys salsa dancing",
 		"Do not\n  collapse lists into",
 		"Preserve literal answer-bearing spans",
 		"that book",
+		"Be careful with second-person comments",
+		"second-person detail is about the addressee",
 		`"procedure"`,
 		"When comparing options, use a markdown\n                     table.",
 		"Quote proper nouns verbatim",
-		"Charlotte's Web",
+		"The Glass Compass",
 		"<source_turns>",
 		"Ground each memory in the DIRECT source turn",
 		"Do not cite neighbouring turns",
@@ -803,14 +926,16 @@ func TestTwoPassPrompts_GuardCoverageAndGrounding(t *testing.T) {
 		"Be exhaustive about concrete, retrievable details",
 		"Preserve literal answer-bearing spans",
 		"that book",
+		"Be careful with second-person comments",
+		"second-person detail is about the addressee",
 		"even when it appears only once and seems incidental",
-		"signed up for a pottery class yesterday",
+		"signed up for a ceramics class yesterday",
 		`NOT
   {kind:"state"`,
 		"Do not create cross-turn summary memories",
 		`"procedure"`,
 		"Quote proper\n      nouns verbatim",
-		"Charlotte's Web",
+		"The Glass Compass",
 	}
 	for _, s := range memoryMustContain {
 		if !strings.Contains(TwoPassMemoryExtractionPrompt, s) {
@@ -822,6 +947,8 @@ func TestTwoPassPrompts_GuardCoverageAndGrounding(t *testing.T) {
 		"XML-tagged envelope with two sections",
 		`<source_turns format="jsonl">`,
 		`<memories format="json">`,
+		"candidate memories from pass 1",
+		"The memories are not evidence",
 		`"text":"<verbatim quote>"`,
 		"direct source turn",
 		"Prefer the turn with exact entity/date/item\n  surface forms",
