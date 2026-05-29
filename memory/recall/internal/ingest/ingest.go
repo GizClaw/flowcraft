@@ -108,12 +108,14 @@ func (c *defaultIngestor) Compile(ctx context.Context, input port.IngestInput) (
 		observedNow = now
 	}
 
-	extracted, err := c.stages.Extractor.Extract(ctx, input)
+	usageAcc := newExtractorUsageAccumulator()
+	extracted, err := c.stages.Extractor.Extract(withExtractorUsageAccumulator(ctx, usageAcc), input)
 	if err != nil {
 		return port.IngestResult{}, fmt.Errorf("recall ingest: extract: %w", err)
 	}
 
 	var result port.IngestResult
+	result.ExtractorTokenUsage = usageAcc.snapshot()
 	for i := range extracted {
 		f := extracted[i]
 		f.Scope = input.Scope
@@ -136,6 +138,7 @@ func (c *defaultIngestor) Compile(ctx context.Context, input port.IngestInput) (
 		f = c.stages.Normalizer.Normalize(f)
 		f = c.stages.EntityResolver.Resolve(f)
 		f = c.stages.TimeResolver.Resolve(f, observedNow)
+		f = domain.NormalizeSemantic(f)
 
 		var allow bool
 		if c.stages.Governance != nil {

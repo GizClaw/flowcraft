@@ -66,9 +66,10 @@ func (s *Ingest) Run(ctx context.Context, state *write.WriteState) (diagnostic.S
 	if err != nil {
 		state.FailedStage = "ingest"
 		return diagnostic.IngestDetail{
-			InputTurns:       len(state.Turns),
-			ExtractedFacts:   len(res.Facts),
-			ExtractorLatency: latency,
+			InputTurns:          len(state.Turns),
+			ExtractedFacts:      len(res.Facts),
+			ExtractorLatency:    latency,
+			ExtractorTokenUsage: res.ExtractorTokenUsage,
 		}, err
 	}
 	state.Ingest = res
@@ -80,6 +81,7 @@ func (s *Ingest) Run(ctx context.Context, state *write.WriteState) (diagnostic.S
 		DroppedByDedup:         countDroppedReason(res.Dropped, "dedup:reject"),
 		StructurizerCoverage:   res.StructurizerCoverage,
 		ExtractorLatency:       latency,
+		ExtractorTokenUsage:    res.ExtractorTokenUsage,
 		TierApplied:            ingest.TierAppliedFor(state.Tier),
 		RecentMessagesProvided: len(state.RecentMessages),
 		AnchorsProvided:        len(state.ExistingFactsAnchor),

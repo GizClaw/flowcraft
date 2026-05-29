@@ -43,6 +43,31 @@ type EvidenceRef = domain.EvidenceRef
 // merge decisions.
 type MergeHints = domain.MergeHints
 
+type Polarity = domain.Polarity
+type Modality = domain.Modality
+type Certainty = domain.Certainty
+type EvidenceRow = domain.EvidenceRow
+type ReasoningResult = domain.ReasoningResult
+
+const (
+	PolarityAffirmed = domain.PolarityAffirmed
+	PolarityNegated  = domain.PolarityNegated
+	PolarityUnknown  = domain.PolarityUnknown
+
+	ModalityActual         = domain.ModalityActual
+	ModalityPlanned        = domain.ModalityPlanned
+	ModalityHypothetical   = domain.ModalityHypothetical
+	ModalityCounterfactual = domain.ModalityCounterfactual
+	ModalityCanceled       = domain.ModalityCanceled
+	ModalityDesired        = domain.ModalityDesired
+	ModalitySuggested      = domain.ModalitySuggested
+
+	CertaintyExplicit  = domain.CertaintyExplicit
+	CertaintyInferred  = domain.CertaintyInferred
+	CertaintyLikely    = domain.CertaintyLikely
+	CertaintyUncertain = domain.CertaintyUncertain
+)
+
 // TemporalFact is the public v2 memory unit. It aliases the internal
 // canonical model — sdk/recall owns the public name, internal/model
 // owns the schema definition.
@@ -58,6 +83,14 @@ type MergeHints = domain.MergeHints
 //	// facts into a summary). Empty IDs are rejected at validate.
 //	Supersedes []string
 type TemporalFact = domain.TemporalFact
+
+func BuildEvidenceTable(hits []Hit) []EvidenceRow {
+	return domain.BuildEvidenceTable(hits)
+}
+
+func ReasonEvidence(plan QueryPlan, rows []EvidenceRow) ReasoningResult {
+	return domain.ReasonEvidence(plan.TaskIntents, rows)
+}
 
 // TrustContext carries read-time visibility constraints.
 type TrustContext = domain.TrustContext

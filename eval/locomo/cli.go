@@ -217,8 +217,9 @@ Example (LLM extractor + LLM answer + LLM judge + Qwen embedder):
 				dumpMu    sync.Mutex
 				dumpW     *os.File
 				dumpEnc   *json.Encoder
+				dumpStats factDumpTokenStats
 				onFacts   func(recallv1.Scope, []recallv1.ExtractedFact)
-				onV2Facts func(runners.Scope, []recall.TemporalFact)
+				onV2Facts func(runners.Scope, []recall.TemporalFact, *diagnostics.SaveDiagnostics)
 			)
 			if dumpFactsPath != "" {
 				dumpW, err = os.Create(dumpFactsPath)
@@ -227,15 +228,25 @@ Example (LLM extractor + LLM answer + LLM judge + Qwen embedder):
 				}
 				defer dumpW.Close()
 				dumpEnc = json.NewEncoder(dumpW)
+				defer func() {
+					dumpMu.Lock()
+					defer dumpMu.Unlock()
+					if dumpStats.Extracts > 0 {
+						_ = dumpEnc.Encode(newV2FactsDumpSummary(time.Now(), dumpStats))
+					}
+				}()
 				onFacts = func(scope recallv1.Scope, facts []recallv1.ExtractedFact) {
 					dumpMu.Lock()
 					defer dumpMu.Unlock()
 					_ = dumpEnc.Encode(newV1FactsDump(time.Now(), scope, facts))
 				}
-				onV2Facts = func(scope runners.Scope, facts []recall.TemporalFact) {
+				onV2Facts = func(scope runners.Scope, facts []recall.TemporalFact, diag *diagnostics.SaveDiagnostics) {
 					dumpMu.Lock()
 					defer dumpMu.Unlock()
-					_ = dumpEnc.Encode(newV2FactsDump(time.Now(), scope, facts))
+					_ = dumpEnc.Encode(newV2FactsDump(time.Now(), scope, facts, diag))
+					if diag != nil {
+						dumpStats.Add(diag.ExtractorTokenUsage)
+					}
 				}
 			}
 

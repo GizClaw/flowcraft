@@ -12,6 +12,7 @@ import (
 	profilelens "github.com/GizClaw/flowcraft/memory/recall/internal/lens/profile"
 	relationlens "github.com/GizClaw/flowcraft/memory/recall/internal/lens/relation"
 	retrievallens "github.com/GizClaw/flowcraft/memory/recall/internal/lens/retrieval"
+	semanticlens "github.com/GizClaw/flowcraft/memory/recall/internal/lens/semantic"
 	timelinelens "github.com/GizClaw/flowcraft/memory/recall/internal/lens/timeline"
 	"github.com/GizClaw/flowcraft/memory/recall/internal/planner"
 	"github.com/GizClaw/flowcraft/memory/recall/internal/port"
@@ -26,6 +27,7 @@ func TestLensRegistryOrderMatchesLegacy(t *testing.T) {
 	reg.Register(entitylens.Lens{})
 	reg.Register(graphlens.Lens{})
 	reg.Register(relationlens.Lens{})
+	reg.Register(semanticlens.AssertionLens())
 	reg.Register(profilelens.Lens{})
 	reg.Register(timelinelens.Lens{})
 	specs := reg.Specs()

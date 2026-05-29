@@ -26,10 +26,40 @@ import (
 func TestExtractedFactSchema_IsValidStrictJSONSchema(t *testing.T) {
 	assertStrictJSONSchema(t, "ExtractedFactSchema", ExtractedFactSchema)
 	assertStrictJSONSchema(t, "TwoPassFactExtractionSchema", TwoPassFactExtractionSchema)
+	assertStrictJSONSchema(t, "TwoPassAssertionExtractionSchema", TwoPassAssertionExtractionSchema)
 	assertStrictJSONSchema(t, "TwoPassKindExtractionSchema", TwoPassKindExtractionSchema)
 	assertStrictJSONSchema(t, "TwoPassRelationExtractionSchema", TwoPassRelationExtractionSchema)
 	assertStrictJSONSchema(t, "TwoPassEntityExtractionSchema", TwoPassEntityExtractionSchema)
 	assertStrictJSONSchema(t, "TwoPassEvidenceGroundingSchema", TwoPassEvidenceGroundingSchema)
+	assertStrictJSONSchema(t, "CoverageRepairTriageSchema", CoverageRepairTriageSchema)
+}
+
+func TestExtractorSchemas_RequireLLMSemanticAssertionFields(t *testing.T) {
+	for name, schema := range map[string]string{
+		"ExtractedFactSchema":              ExtractedFactSchema,
+		"TwoPassAssertionExtractionSchema": TwoPassAssertionExtractionSchema,
+	} {
+		for _, field := range []string{"polarity", "modality", "certainty"} {
+			if !strings.Contains(schema, `"`+field+`"`) {
+				t.Fatalf("%s should expose semantic field %q in the strict LLM contract", name, field)
+			}
+		}
+		for _, field := range []string{"frame_type", "preferred", "alternative", "dimension", "amount", "unit"} {
+			if strings.Contains(schema, `"`+field+`"`) {
+				t.Fatalf("%s should not expose frame field %q in the strict LLM contract", name, field)
+			}
+		}
+	}
+	for _, field := range []string{"polarity", "modality", "certainty"} {
+		if strings.Contains(TwoPassFactExtractionSchema, `"`+field+`"`) {
+			t.Fatalf("TwoPassFactExtractionSchema should leave assertion field %q to the assertion annotation pass", field)
+		}
+	}
+	for _, field := range []string{"text", "subject", "source_ids", "quote"} {
+		if strings.Contains(TwoPassAssertionExtractionSchema, `"`+field+`"`) {
+			t.Fatalf("TwoPassAssertionExtractionSchema should annotate by fact_index, not repeat field %q", field)
+		}
+	}
 }
 
 func assertStrictJSONSchema(t *testing.T, name string, schema string) {
@@ -70,6 +100,8 @@ type fakeLLM struct {
 	mu                sync.Mutex
 	Responses         []string
 	ResponsesBySystem map[string][]string
+	Usages            []llm.TokenUsage
+	UsagesBySystem    map[string][]llm.TokenUsage
 	Err               error
 	Messages          [][]llm.Message
 	Options           [][]llm.GenerateOption
@@ -85,7 +117,7 @@ func (f *fakeLLM) Generate(_ context.Context, msgs []llm.Message, opts ...llm.Ge
 		if responses := f.ResponsesBySystem[system]; len(responses) > 0 {
 			body := responses[0]
 			f.ResponsesBySystem[system] = responses[1:]
-			return llm.NewTextMessage(llm.RoleAssistant, body), llm.TokenUsage{}, nil
+			return llm.NewTextMessage(llm.RoleAssistant, body), f.nextUsageForSystem(system), nil
 		}
 	}
 	if len(f.Responses) == 0 {
@@ -96,7 +128,27 @@ func (f *fakeLLM) Generate(_ context.Context, msgs []llm.Message, opts ...llm.Ge
 	}
 	body := f.Responses[0]
 	f.Responses = f.Responses[1:]
-	return llm.NewTextMessage(llm.RoleAssistant, body), llm.TokenUsage{}, nil
+	return llm.NewTextMessage(llm.RoleAssistant, body), f.nextUsage(), nil
+}
+
+func (f *fakeLLM) nextUsageForSystem(system string) llm.TokenUsage {
+	if f.UsagesBySystem != nil {
+		if usages := f.UsagesBySystem[system]; len(usages) > 0 {
+			usage := usages[0]
+			f.UsagesBySystem[system] = usages[1:]
+			return usage
+		}
+	}
+	return f.nextUsage()
+}
+
+func (f *fakeLLM) nextUsage() llm.TokenUsage {
+	if len(f.Usages) == 0 {
+		return llm.TokenUsage{}
+	}
+	usage := f.Usages[0]
+	f.Usages = f.Usages[1:]
+	return usage
 }
 
 func (f *fakeLLM) GenerateStream(context.Context, []llm.Message, ...llm.GenerateOption) (llm.StreamMessage, error) {
@@ -217,9 +269,9 @@ func TestExtractorPromptsForbidGenericSurfaceCollapse(t *testing.T) {
 	} {
 		for _, want := range []string{
 			"Never replace an answer-bearing span with only a category word",
-			`The Glass Compass`,
-			`Moon Orchard`,
-			`my dog Pixel`,
+			`The Brass Atlas`,
+			`North Window`,
+			`my dog Comet`,
 			`a pet`,
 			`an item`,
 		} {
@@ -367,6 +419,81 @@ func TestLLMExtractor_PropagatesKindEnum(t *testing.T) {
 	}
 }
 
+func TestLLMExtractor_DowngradesUnsupportedAssertionFields(t *testing.T) {
+	client := &fakeLLM{
+		Responses: []string{`{"facts":[{
+			"text":"Avery adopted a cat.",
+			"kind":"event",
+			"subject":"Avery",
+			"predicate":"adopted",
+			"object":"cat",
+			"entities":["Avery","cat"],
+			"polarity":"negated",
+			"modality":"counterfactual",
+			"certainty":"uncertain",
+			"evidence_refs":[{"id":"t1","text":"Avery adopted a cat."}]
+		}]}`},
+	}
+	ex := NewLLMExtractor(client)
+	out, err := ex.Extract(context.Background(), port.IngestInput{
+		Scope: domain.Scope{RuntimeID: "rt"},
+		Turns: []port.TurnContext{{ID: "t1", Speaker: "Avery", Text: "Avery adopted a cat."}},
+	})
+	if err != nil {
+		t.Fatalf("extract: %v", err)
+	}
+	if len(out) != 1 {
+		t.Fatalf("facts = %+v", out)
+	}
+	if out[0].Polarity != domain.PolarityAffirmed || out[0].Modality != domain.ModalityActual || out[0].Certainty != domain.CertaintyExplicit {
+		t.Fatalf("unsupported assertion fields were not downgraded: %+v", out[0])
+	}
+}
+
+func TestLLMExtractor_KeepsSupportedAssertionFields(t *testing.T) {
+	client := &fakeLLM{
+		Responses: []string{`{"facts":[{
+			"text":"Avery did not adopt a cat.",
+			"kind":"event",
+			"subject":"Avery",
+			"predicate":"adopted",
+			"object":"cat",
+			"entities":["Avery","cat"],
+			"polarity":"negated",
+			"modality":"actual",
+			"certainty":"explicit",
+			"evidence_refs":[{"id":"t1","text":"Avery did not adopt a cat."}]
+		}]}`},
+	}
+	ex := NewLLMExtractor(client)
+	out, err := ex.Extract(context.Background(), port.IngestInput{
+		Scope: domain.Scope{RuntimeID: "rt"},
+		Turns: []port.TurnContext{{ID: "t1", Speaker: "Avery", Text: "Avery did not adopt a cat."}},
+	})
+	if err != nil {
+		t.Fatalf("extract: %v", err)
+	}
+	if len(out) != 1 {
+		t.Fatalf("facts = %+v", out)
+	}
+	if out[0].Polarity != domain.PolarityNegated {
+		t.Fatalf("supported negation was downgraded: %+v", out[0])
+	}
+}
+
+func TestSelfContainedExtractedContent_ReducesRepeatedSubjectMentions(t *testing.T) {
+	got, ok := selfContainedExtractedContent("My art is about expressing my experience. It's my way of showing my story.", "Riley")
+	if !ok {
+		t.Fatal("expected self-contained rewrite")
+	}
+	if strings.Count(got, "Riley") > 1 {
+		t.Fatalf("subject repeated too often: %q", got)
+	}
+	if !strings.Contains(got, "their experience") || !strings.Contains(got, "their way") {
+		t.Fatalf("possessive repeats were not reduced naturally: %q", got)
+	}
+}
+
 func TestLLMExtractor_PropagatesSubjectAndCleansEntities(t *testing.T) {
 	client := &fakeLLM{
 		Responses: []string{`{"facts":[{
@@ -398,8 +525,8 @@ func TestLLMExtractor_PropagatesSubjectAndCleansEntities(t *testing.T) {
 	if out[0].Subject != "Juno" {
 		t.Fatalf("subject should come from extractor, not evidence speaker: %+v", out[0])
 	}
-	if out[0].Predicate != "made" || out[0].Object != "model bridge" {
-		t.Fatalf("predicate/object = %q/%q, want made/model bridge", out[0].Predicate, out[0].Object)
+	if out[0].Predicate != "" || out[0].Object != "" {
+		t.Fatalf("predicate/object should be cleared when the predicate token is not directly supported, got %q/%q", out[0].Predicate, out[0].Object)
 	}
 	wantEntities := []string{"Juno", "workshop", "model bridge"}
 	if strings.Join(out[0].Entities, ",") != strings.Join(wantEntities, ",") {
@@ -774,8 +901,8 @@ func TestLLMExtractor_AllowsResolvedRelativeDateNotLiteralInEvidence(t *testing.
 	if len(out) != 1 {
 		t.Fatalf("resolved relative date should not be treated as unsupported numeric hallucination, got %+v", out)
 	}
-	if out[0].Predicate != "attended" || out[0].Object != "woodworking meetup" {
-		t.Fatalf("relation = %q/%q, want attended/woodworking meetup", out[0].Predicate, out[0].Object)
+	if out[0].Predicate != "" || out[0].Object != "" {
+		t.Fatalf("relation should be cleared without predicate-token support, got %q/%q", out[0].Predicate, out[0].Object)
 	}
 }
 
@@ -1014,10 +1141,11 @@ func TestLLMExtractor_DuplicateSourceTurnIDFailsValidation(t *testing.T) {
 	}
 }
 
-func TestLLMExtractor_BackfillsHighSignalUncoveredTurns(t *testing.T) {
+func TestLLMExtractor_BackfillsTriageSelectedUncoveredTurns(t *testing.T) {
 	client := &fakeLLM{
 		Responses: []string{
 			`{"facts":[{"text":"Avery likes Riverton.","kind":"preference","evidence_refs":[{"id":"D1:1"}]}]}`,
+			`{"turns":[{"id":"D1:2","should_repair":true,"reason":"direct purchase detail"},{"id":"D1:3","should_repair":false,"reason":"greeting"}]}`,
 			`{"facts":[{"text":"Avery bought 2 wooden figurines yesterday for her family.","kind":"event","evidence_refs":[{"id":"D1:2","text":"I bought 2 wooden figurines yesterday"}]}]}`,
 		},
 	}
@@ -1043,12 +1171,16 @@ func TestLLMExtractor_BackfillsHighSignalUncoveredTurns(t *testing.T) {
 	if len(got.EvidenceRefs) != 1 || got.EvidenceRefs[0].ID != "D1:2" {
 		t.Fatalf("repair evidence refs = %+v, want D1:2", got.EvidenceRefs)
 	}
-	if len(client.Messages) != 2 {
-		t.Fatalf("single-pass repair should run one targeted extra extraction, got %d calls", len(client.Messages))
+	if len(client.Messages) != 3 {
+		t.Fatalf("single-pass repair should run triage plus one targeted extra extraction, got %d calls", len(client.Messages))
 	}
-	repairPrompt := client.Messages[1][1].Content()
+	triagePrompt := client.Messages[1][1].Content()
+	if !strings.Contains(triagePrompt, `"id":"D1:2"`) || !strings.Contains(triagePrompt, `"id":"D1:3"`) {
+		t.Fatalf("triage prompt should include all uncovered turns, got %q", triagePrompt)
+	}
+	repairPrompt := client.Messages[2][1].Content()
 	if !strings.Contains(repairPrompt, `"id":"D1:2"`) || strings.Contains(repairPrompt, `"id":"D1:3"`) {
-		t.Fatalf("repair prompt should include only high-signal uncovered turns, got %q", repairPrompt)
+		t.Fatalf("repair prompt should include only triage-selected uncovered turns, got %q", repairPrompt)
 	}
 }
 
@@ -1094,11 +1226,12 @@ func TestTwoPassLLMExtractor_ExtractsThenGroundsEvidence(t *testing.T) {
 	if err != nil {
 		t.Fatalf("extract: %v", err)
 	}
-	if len(client.Messages) != 5 {
-		t.Fatalf("two-pass extractor should call four raw field extractors plus grounding; got %d", len(client.Messages))
+	if len(client.Messages) != 7 {
+		t.Fatalf("two-pass extractor should call four raw field extractors plus grounding, assertion annotation, and repair triage; got %d", len(client.Messages))
 	}
 	seenSystems := map[string]bool{}
 	var groundingPrompt string
+	var assertionPrompt string
 	for _, msgs := range client.Messages {
 		if len(msgs) > 0 {
 			seenSystems[msgs[0].Content()] = true
@@ -1106,10 +1239,13 @@ func TestTwoPassLLMExtractor_ExtractsThenGroundsEvidence(t *testing.T) {
 		if len(msgs) >= 2 && msgs[0].Content() == TwoPassEvidenceGroundingPrompt {
 			groundingPrompt = msgs[1].Content()
 		}
+		if len(msgs) >= 2 && msgs[0].Content() == TwoPassAssertionExtractionPrompt {
+			assertionPrompt = msgs[1].Content()
+		}
 	}
-	for _, system := range []string{TwoPassFactExtractionPrompt, TwoPassKindExtractionPrompt, TwoPassRelationExtractionPrompt, TwoPassEntityExtractionPrompt} {
+	for _, system := range []string{TwoPassFactExtractionPrompt, TwoPassKindExtractionPrompt, TwoPassRelationExtractionPrompt, TwoPassEntityExtractionPrompt, TwoPassEvidenceGroundingPrompt, TwoPassAssertionExtractionPrompt} {
 		if !seenSystems[system] {
-			t.Fatalf("raw field extractor system prompt was not used")
+			t.Fatalf("expected system prompt was not used")
 		}
 	}
 	if groundingPrompt == "" {
@@ -1136,6 +1272,12 @@ func TestTwoPassLLMExtractor_ExtractsThenGroundsEvidence(t *testing.T) {
 	if !strings.Contains(groundingPrompt, "<grounding_input>") || !strings.Contains(groundingPrompt, `<facts format="json">`) {
 		t.Fatalf("grounding prompt should use tagged input sections, got %q", groundingPrompt)
 	}
+	if !strings.Contains(assertionPrompt, "<assertion_input>") || !strings.Contains(assertionPrompt, `"evidence_refs"`) {
+		t.Fatalf("assertion prompt should annotate grounded facts, got %q", assertionPrompt)
+	}
+	if strings.Contains(assertionPrompt, "<source_turns") {
+		t.Fatalf("assertion prompt should not re-read raw source turns, got %q", assertionPrompt)
+	}
 }
 
 func TestTwoPassLLMExtractor_ClearsRelationWhenPredicateUnsupported(t *testing.T) {
@@ -1159,6 +1301,43 @@ func TestTwoPassLLMExtractor_ClearsRelationWhenPredicateUnsupported(t *testing.T
 	}
 	if out[0].Predicate != "" || out[0].Object != "" {
 		t.Fatalf("unsupported predicate should clear relation, got %q/%q", out[0].Predicate, out[0].Object)
+	}
+}
+
+func TestTwoPassLLMExtractor_AnnotatesAssertionsAfterGrounding(t *testing.T) {
+	client := &fakeLLM{ResponsesBySystem: map[string][]string{
+		TwoPassFactExtractionPrompt: {
+			`{"facts":[{"text":"Avery did not attend the meetup.","subject":"Avery","source_ids":["D1:3"],"quote":"Avery did not attend the meetup."}]}`,
+		},
+		TwoPassKindExtractionPrompt: {
+			`{"facts":[{"text":"Avery did not attend the meetup.","kind":"event","subject":"Avery","source_ids":["D1:3"],"quote":"Avery did not attend the meetup."}]}`,
+		},
+		TwoPassRelationExtractionPrompt: {
+			`{"facts":[]}`,
+		},
+		TwoPassEntityExtractionPrompt: {
+			`{"facts":[{"text":"Avery did not attend the meetup.","subject":"Avery","entities":["Avery","meetup"],"source_ids":["D1:3"],"quote":"Avery did not attend the meetup."}]}`,
+		},
+		TwoPassEvidenceGroundingPrompt: {
+			`{"links":[{"fact_index":0,"evidence_refs":[{"id":"D1:3","text":"Avery did not attend the meetup."}]}]}`,
+		},
+		TwoPassAssertionExtractionPrompt: {
+			`{"assertions":[{"fact_index":0,"polarity":"negated","modality":"actual","certainty":"explicit"}]}`,
+		},
+	}}
+	ex := NewTwoPassLLMExtractor(client)
+	out, err := ex.Extract(context.Background(), port.IngestInput{
+		Scope: domain.Scope{RuntimeID: "rt"},
+		Turns: []port.TurnContext{{ID: "D1:3", Role: "user", Speaker: "Avery", Text: "Avery did not attend the meetup."}},
+	})
+	if err != nil {
+		t.Fatalf("extract: %v", err)
+	}
+	if len(out) != 1 {
+		t.Fatalf("want 1 fact, got %+v", out)
+	}
+	if out[0].Polarity != domain.PolarityNegated || out[0].Modality != domain.ModalityActual || out[0].Certainty != domain.CertaintyExplicit {
+		t.Fatalf("assertion annotation not applied: %+v", out[0])
 	}
 }
 
@@ -1344,7 +1523,7 @@ func TestTwoPassLLMExtractor_DeterministicallyGroundsVerifiedSourceHint(t *testi
 	}
 }
 
-func TestTwoPassLLMExtractor_BackfillsHighSignalUncoveredTurns(t *testing.T) {
+func TestTwoPassLLMExtractor_BackfillsTriageSelectedUncoveredTurns(t *testing.T) {
 	client := fakeTwoPassLLM(
 		[]string{
 			`{"facts":[{"text":"Avery likes Riverton.","subject":"Avery","source_ids":["D1:1"],"quote":"Avery likes Riverton."}]}`,
@@ -1367,6 +1546,9 @@ func TestTwoPassLLMExtractor_BackfillsHighSignalUncoveredTurns(t *testing.T) {
 			`{"links":[{"fact_index":0,"evidence_refs":[{"id":"D1:2","text":"I bought 2 wooden figurines yesterday"}]}]}`,
 		},
 	)
+	client.ResponsesBySystem[CoverageRepairTriagePrompt] = []string{
+		`{"turns":[{"id":"D1:2","should_repair":true,"reason":"direct purchase detail"},{"id":"D1:3","should_repair":false,"reason":"greeting"}]}`,
+	}
 	ex := NewTwoPassLLMExtractor(client)
 	out, err := ex.Extract(context.Background(), port.IngestInput{
 		Scope: domain.Scope{RuntimeID: "rt"},
@@ -1392,8 +1574,8 @@ func TestTwoPassLLMExtractor_BackfillsHighSignalUncoveredTurns(t *testing.T) {
 	if len(got.EvidenceRefs) != 1 || got.EvidenceRefs[0].ID != "D1:2" {
 		t.Fatalf("repair evidence refs = %+v, want D1:2", got.EvidenceRefs)
 	}
-	if len(client.Messages) != 10 {
-		t.Fatalf("coverage repair should run four field extractors plus grounding twice, got %d calls", len(client.Messages))
+	if len(client.Messages) != 13 {
+		t.Fatalf("coverage repair should run triage plus field extractors, grounding, and assertion twice, got %d calls", len(client.Messages))
 	}
 	var repairPrompt string
 	for _, msgs := range client.Messages {
@@ -1408,7 +1590,11 @@ func TestTwoPassLLMExtractor_BackfillsHighSignalUncoveredTurns(t *testing.T) {
 		}
 	}
 	if !strings.Contains(repairPrompt, `"id":"D1:2"`) || strings.Contains(repairPrompt, `"id":"D1:3"`) {
-		t.Fatalf("repair prompt should include only high-signal uncovered turns, got %q", repairPrompt)
+		t.Fatalf("repair prompt should include only triage-selected uncovered turns, got %q", repairPrompt)
+	}
+	stats := ex.LastStats()
+	if stats.RepairTriageSelected != 1 {
+		t.Fatalf("repair triage selected = %d, want 1", stats.RepairTriageSelected)
 	}
 }
 
@@ -1423,6 +1609,9 @@ func TestTwoPassLLMExtractor_CoverageRepairFailureKeepsPrimaryFacts(t *testing.T
 		nil,
 		[]string{`{"links":[{"fact_index":0,"evidence_refs":[{"id":"D1:1","text":"Avery likes Riverton."}]}]}`},
 	)
+	client.ResponsesBySystem[CoverageRepairTriagePrompt] = []string{
+		`{"turns":[{"id":"D1:2","should_repair":true,"reason":"direct purchase detail"}]}`,
+	}
 	ex := NewTwoPassLLMExtractor(client)
 	out, err := ex.Extract(context.Background(), port.IngestInput{
 		Scope: domain.Scope{RuntimeID: "rt"},
@@ -1462,6 +1651,9 @@ func TestTwoPassLLMExtractor_BackfillsWhenMemoryPassReturnsEmpty(t *testing.T) {
 		},
 		[]string{`{"links":[{"fact_index":0,"evidence_refs":[{"id":"D1:7","text":"We visited the beach on 2023-05-07"}]}]}`},
 	)
+	client.ResponsesBySystem[CoverageRepairTriagePrompt] = []string{
+		`{"turns":[{"id":"D1:7","should_repair":true,"reason":"dated visit detail"}]}`,
+	}
 	ex := NewTwoPassLLMExtractor(client)
 	out, err := ex.Extract(context.Background(), port.IngestInput{
 		Scope: domain.Scope{RuntimeID: "rt"},
@@ -1472,8 +1664,8 @@ func TestTwoPassLLMExtractor_BackfillsWhenMemoryPassReturnsEmpty(t *testing.T) {
 	if err != nil {
 		t.Fatalf("extract: %v", err)
 	}
-	if len(client.Messages) != 9 {
-		t.Fatalf("empty initial pass should run initial field extractors plus targeted field extractors and grounding, got %d calls", len(client.Messages))
+	if len(client.Messages) != 11 {
+		t.Fatalf("empty initial pass should run initial fields, triage, targeted fields, grounding, and assertion, got %d calls", len(client.Messages))
 	}
 	if len(out) != 1 {
 		t.Fatalf("want one repair fact, got %d: %+v", len(out), out)
@@ -1503,6 +1695,9 @@ func TestTwoPassLLMExtractor_CoverageRepairUsesMultilingualTextSignals(t *testin
 		},
 		[]string{`{"links":[{"fact_index":0,"evidence_refs":[{"id":"D1:8","text":"bought 3 books yesterday"}]}]}`},
 	)
+	client.ResponsesBySystem[CoverageRepairTriagePrompt] = []string{
+		`{"turns":[{"id":"D1:8","should_repair":true,"reason":"literal list item"}]}`,
+	}
 	ex := NewTwoPassLLMExtractor(client)
 	out, err := ex.Extract(context.Background(), port.IngestInput{
 		Scope: domain.Scope{RuntimeID: "rt"},
@@ -1513,37 +1708,75 @@ func TestTwoPassLLMExtractor_CoverageRepairUsesMultilingualTextSignals(t *testin
 	if err != nil {
 		t.Fatalf("extract: %v", err)
 	}
-	if len(client.Messages) != 9 {
-		t.Fatalf("Chinese time/quote signals should trigger targeted repair, got %d calls", len(client.Messages))
+	if len(client.Messages) != 11 {
+		t.Fatalf("triage-selected literal detail should trigger targeted repair, got %d calls", len(client.Messages))
 	}
 	if len(out) != 1 || len(out[0].EvidenceRefs) != 1 || out[0].EvidenceRefs[0].ID != "D1:8" {
 		t.Fatalf("repair output = %+v, want one fact grounded to D1:8", out)
 	}
 }
 
-func TestCoverageRepairInput_BudgetsHighSignalTurns(t *testing.T) {
+func TestCoverageRepairInput_BudgetsUncoveredTurnsInOrder(t *testing.T) {
 	input := port.IngestInput{Turns: make([]port.TurnContext, 0, coverageRepairTurnSoftCap+4)}
 	for i := 0; i < coverageRepairTurnSoftCap+4; i++ {
 		input.Turns = append(input.Turns, port.TurnContext{
 			ID:         fmt.Sprintf("turn-id-%02d", i),
 			EvidenceID: fmt.Sprintf("D1:%02d", i),
-			Text:       "Avery bought 2 wooden figurines yesterday for her family.",
+			Text:       fmt.Sprintf("turn %02d text", i),
 		})
 	}
-	repairInput, ok, skipped := buildCoverageRepairInput(input, nil)
+	facts := []domain.TemporalFact{{
+		Content:      "already covered",
+		EvidenceRefs: []domain.EvidenceRef{{ID: "D1:00"}},
+	}}
+	repairInput, ok, skipped := buildCoverageRepairInput(input, facts)
 	if !ok {
-		t.Fatal("expected high-signal repair input")
+		t.Fatal("expected uncovered repair input")
 	}
 	if len(repairInput.Turns) != coverageRepairTurnSoftCap {
 		t.Fatalf("repair turns = %d, want cap %d", len(repairInput.Turns), coverageRepairTurnSoftCap)
 	}
-	if skipped != 4 {
-		t.Fatalf("skipped budget = %d, want 4", skipped)
+	if skipped != 3 {
+		t.Fatalf("skipped budget = %d, want 3", skipped)
 	}
 	for i, turn := range repairInput.Turns {
-		if turn.EvidenceID != fmt.Sprintf("D1:%02d", i) {
-			t.Fatalf("budget should preserve original order among selected turns, got turn[%d]=%q", i, turn.EvidenceID)
+		want := fmt.Sprintf("D1:%02d", i+1)
+		if turn.EvidenceID != want {
+			t.Fatalf("budget should preserve original order among uncovered turns, got turn[%d]=%q want %q", i, turn.EvidenceID, want)
 		}
+	}
+}
+
+func TestCoverageRepairTriageFiltersSelectedTurns(t *testing.T) {
+	client := &fakeLLM{
+		Responses: []string{
+			`{"turns":[{"id":"D1:2","should_repair":true,"reason":"direct memory"},{"id":"D1:3","should_repair":false,"reason":"dialogue act"}]}`,
+		},
+		Usages: []llm.TokenUsage{{InputTokens: 7, OutputTokens: 3, TotalTokens: 10}},
+	}
+	input := port.IngestInput{Turns: []port.TurnContext{
+		{ID: "D1:2", Role: "user", Speaker: "Avery", Text: "The label on the shared image says \"North Window\"."},
+		{ID: "D1:3", Role: "assistant", Speaker: "Rowan", Text: "Thanks for sharing that."},
+	}}
+	acc := newExtractorUsageAccumulator()
+	ctx := withExtractorUsageAccumulator(context.Background(), acc)
+	filtered, ok, err := triageCoverageRepairInput(ctx, client, CoverageRepairTriagePrompt, "triage", 0, nil, input, nil)
+	if err != nil {
+		t.Fatalf("triage: %v", err)
+	}
+	if !ok || len(filtered.Turns) != 1 || filtered.Turns[0].ID != "D1:2" {
+		t.Fatalf("filtered turns = %+v, want only D1:2", filtered.Turns)
+	}
+	if len(client.Messages) != 1 {
+		t.Fatalf("triage calls = %d, want 1", len(client.Messages))
+	}
+	prompt := client.Messages[0][1].Content()
+	if !strings.Contains(prompt, `North Window`) || !strings.Contains(prompt, `<existing_facts format="json">`) {
+		t.Fatalf("triage prompt missing literal span or existing facts section: %q", prompt)
+	}
+	usage := acc.snapshot()
+	if len(usage.Stages) != 1 || usage.Stages[0].Stage != "repair_triage" || usage.Stages[0].Calls != 1 {
+		t.Fatalf("usage stages = %+v, want one repair_triage call", usage.Stages)
 	}
 }
 
@@ -1666,23 +1899,24 @@ func TestLLMExtractor_PreservesBackendClassification(t *testing.T) {
 // and forces the reviewer to acknowledge the trade-off.
 func TestLLMExtractorSystemPrompt_GuardsAntiAbstraction(t *testing.T) {
 	mustContain := []string{
-		"signed up for a woodworking class",
+		"signed up for a pottery class",
 		"1. Candidate policy",
 		"2. Preserve answer-bearing detail",
 		"3. Avoid abstraction and over-merge",
 		"4. Evidence grounding",
 		"5. Text and subject fields",
 		"6. Relation fields",
-		"7. Second-person comments",
-		"8. Entity anchors",
-		"9. Kind taxonomy",
-		"10. Evidence refs",
-		"11. Empty result",
+		"7. Semantic assertion fields",
+		"8. Second-person comments",
+		"9. Entity anchors",
+		"10. Kind taxonomy",
+		"11. Evidence refs",
+		"12. Empty result",
 		`NOT {kind:"state"`,
 		"Single-occurrence dated\n                     actions are events, not states",
 		"Be exhaustive about concrete, retrievable details",
 		"Split enumerations into separate facts",
-		"Mira enjoys salsa dancing",
+		"PersonA enjoys birdwatching",
 		"Do not\n  collapse lists into",
 		"Preserve literal answer-bearing spans",
 		"that book",
@@ -1700,14 +1934,16 @@ func TestLLMExtractorSystemPrompt_GuardsAntiAbstraction(t *testing.T) {
 		"owns_pet is only for a named animal/pet",
 		"recommended requires an explicit recommendation",
 		"likes / enjoys / prefers require",
+		"semantic annotations, not keyword labels",
+		`"unknown" only when`,
 		"appointments, businesses, relationships",
 		"restaurants, parks, hikes",
 		"Do not invent an object",
-		"planning to repair a bicycle",
+		"planning to fix a garden cart",
 		`"procedure"`,
 		"When comparing options, use a markdown\n                     table.",
 		"Quote proper nouns verbatim",
-		"The Glass Compass",
+		"The Brass Atlas",
 		"<source_turns>",
 		"Ground each fact in the DIRECT source turn",
 		"Do not cite neighbouring turns",
@@ -1744,13 +1980,43 @@ func TestTwoPassPrompts_GuardCoverageAndGrounding(t *testing.T) {
 		"must not leave first-person or group pronouns anywhere",
 		"Do not emit dialogue-act facts",
 		"let me know",
-		"signed up for a woodworking class yesterday",
-		"NOT \"Mira uses woodworking for self-expression.\"",
+		"signed up for a pottery class yesterday",
+		"NOT \"PersonA uses pottery for self-expression.\"",
 		"Do not create cross-turn summary facts",
 	}
 	for _, s := range contentMustContain {
 		if !strings.Contains(TwoPassFactExtractionPrompt, s) {
 			t.Errorf("TwoPassFactExtractionPrompt missing coverage guard: %q", s)
+		}
+	}
+	assertionMustContain := []string{
+		"assertion metadata",
+		"already grounded atomic facts",
+		`"assertions":[{"fact_index":0`,
+		`"polarity":"affirmed"`,
+		"1. Candidate boundary",
+		"not a fact extraction pass",
+		"2. Alignment fields",
+		"3. Assertion fields",
+		"4. Decision examples",
+		"5. Empty result",
+		"Do not output \"text\"",
+		"Fill \"polarity\", \"modality\", and \"certainty\" from the direct evidence",
+		"missing evidence is not unknown",
+		"Negation must apply to the provided fact's proposition",
+		"Use \"planned\" for committed or scheduled future actions/events",
+		"Use \"desired\" for wants, hopes, dreams, or wishes",
+		"Use \"suggested\" for advice or recommendations",
+		"PersonA is submitting a permit tomorrow",
+		"PersonB wants to learn pottery",
+		"PersonC attended a maker meetup",
+		"PersonD is allergic to sesame",
+		"counterfactual",
+		"otherwise use \"explicit\"",
+	}
+	for _, s := range assertionMustContain {
+		if !strings.Contains(TwoPassAssertionExtractionPrompt, s) {
+			t.Errorf("TwoPassAssertionExtractionPrompt missing guard: %q", s)
 		}
 	}
 	kindMustContain := []string{
@@ -1816,7 +2082,7 @@ func TestTwoPassPrompts_GuardCoverageAndGrounding(t *testing.T) {
 		"4. Exclusions",
 		"Propose a missed fact only when it has\nstrong concrete entities",
 		"subject\" must follow the same stable-anchor rule",
-		"planning to repair a bicycle",
+		"planning to fix a garden cart",
 		"shortest stable noun phrase",
 	}
 	for _, s := range entityMustContain {

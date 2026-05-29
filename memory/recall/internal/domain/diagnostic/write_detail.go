@@ -23,6 +23,7 @@ type IngestDetail struct {
 	DroppedByDedup       int
 	StructurizerCoverage StructurizerCoverage
 	ExtractorLatency     time.Duration
+	ExtractorTokenUsage  ExtractorTokenUsage
 	StructurizerLatency  time.Duration
 	// RecentMessagesProvided / AnchorsProvided / TierApplied are fields wired
 	// through SaveRequest. Zero values here today.

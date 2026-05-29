@@ -83,3 +83,29 @@ func TestReplaceNonAlnum_ThenCollapse(t *testing.T) {
 		t.Errorf("compose got %q, want %q", got, "favorite color")
 	}
 }
+
+func TestNumericHelpers(t *testing.T) {
+	if !normalize.IsDigitString("007") {
+		t.Fatal("expected digit string")
+	}
+	if normalize.IsDigitString("7a") || normalize.IsDigitString("") {
+		t.Fatal("expected non-digit strings to be rejected")
+	}
+	if got := normalize.TrimLeadingASCIIZeros("00042"); got != "42" {
+		t.Fatalf("TrimLeadingASCIIZeros = %q", got)
+	}
+	if got := normalize.TrimLeadingASCIIZeros("000"); got != "0" {
+		t.Fatalf("all-zero normalization = %q", got)
+	}
+}
+
+func TestReplaceStandaloneFold(t *testing.T) {
+	got := normalize.ReplaceStandaloneFold("Avery said I have a bike; mine is blue.", "I have", "Avery has")
+	if got != "Avery said Avery has a bike; mine is blue." {
+		t.Fatalf("ReplaceStandaloneFold phrase = %q", got)
+	}
+	got = normalize.ReplaceStandaloneFold("This timing is minefield-safe.", "mine", "Avery's")
+	if got != "This timing is minefield-safe." {
+		t.Fatalf("ReplaceStandaloneFold should respect token boundaries, got %q", got)
+	}
+}

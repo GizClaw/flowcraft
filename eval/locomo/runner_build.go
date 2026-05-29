@@ -61,7 +61,7 @@ type v1RunnerConfig struct {
 	OnFactsExtracted          func(recallv1.Scope, []recallv1.ExtractedFact)
 }
 
-func buildLocomoRunner(canonical string, v1 v1RunnerConfig, v2OnSaved func(runners.Scope, []string), v2OnFacts func(runners.Scope, []recall.TemporalFact), v2Diag *v2DiagnosticHooks) (runners.Runner, error) {
+func buildLocomoRunner(canonical string, v1 v1RunnerConfig, v2OnSaved func(runners.Scope, []string), v2OnFacts func(runners.Scope, []recall.TemporalFact, *diagnostics.SaveDiagnostics), v2Diag *v2DiagnosticHooks) (runners.Runner, error) {
 	switch canonical {
 	case runnerFlowcraftRecallV2:
 		opts := flowcraftv2.Options{

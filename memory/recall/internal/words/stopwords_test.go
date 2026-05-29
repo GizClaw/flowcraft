@@ -97,3 +97,26 @@ func TestExtractorEntityWeakTokens(t *testing.T) {
 		t.Fatal("embedded first-person residue tokens should be treated as unsupported")
 	}
 }
+
+func TestExtractorSurfaceHelpers(t *testing.T) {
+	prefix := FirstPersonSingularExtractorContentPrefixRewrites("Avery")
+	if len(prefix) == 0 || prefix[0].Prefix == "" || prefix[0].Replacement == "" {
+		t.Fatalf("missing first-person prefix rewrites: %+v", prefix)
+	}
+	embedded := EmbeddedFirstPersonSingularExtractorContentRewrites("Avery")
+	if len(embedded) == 0 || embedded[len(embedded)-1].Token != "my" {
+		t.Fatalf("missing embedded rewrites: %+v", embedded)
+	}
+	if !IsFirstPersonSingularExtractorSubjectText("I’m") {
+		t.Fatal("subject text helper should use canonical tokenization")
+	}
+	if !IsWeakExtractorEntityText("planning to repair") {
+		t.Fatal("weak entity text helper should use canonical tokenization")
+	}
+	if !HasExtractorUppercase("Avery") || !IsExtractorAllCapsAnchor("NASA") {
+		t.Fatal("case helpers should preserve extractor anchor semantics")
+	}
+	if got := NormalizeExtractorEvidenceAnchor("Favorite-color: Blue!"); got != "favorite color blue" {
+		t.Fatalf("normalized extractor evidence anchor = %q", got)
+	}
+}

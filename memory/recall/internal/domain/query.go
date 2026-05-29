@@ -142,6 +142,9 @@ const (
 	QueryTaskBridgeResolution  QueryTaskIntent = "bridge_resolution"
 	QueryTaskTemporalReasoning QueryTaskIntent = "temporal_reasoning"
 	QueryTaskDisambiguation    QueryTaskIntent = "disambiguation"
+	QueryTaskYesNoVerification QueryTaskIntent = "yes_no_verification"
+	QueryTaskAbsenceCheck      QueryTaskIntent = "absence_check"
+	QueryTaskCounterfactual    QueryTaskIntent = "counterfactual_check"
 )
 
 // QueryPlan describes how the read pipeline will visit candidate
@@ -183,8 +186,9 @@ type ContextItem struct {
 // diagnostics and explainability. An empty Sources slice means the candidate
 // carried no provenance metadata.
 type Hit struct {
-	Fact     TemporalFact
-	Evidence []EvidenceRef
-	Score    float64
-	Sources  []string
+	Fact           TemporalFact
+	Evidence       []EvidenceRef
+	Score          float64
+	Sources        []string
+	AnswerEvidence []EvidenceRow
 }

@@ -93,6 +93,9 @@ func (BuildGroundedHits) Run(_ context.Context, state *read.ReadState) (diagnost
 		detail.Input = candidateSnapshotPtr(hitSnapshots(hits))
 	}
 	hits = groundHitsWithSupportingEvidence(features, now, hits)
+	for i := range hits {
+		hits[i].AnswerEvidence = domain.BuildEvidenceTable([]domain.Hit{hits[i]})
+	}
 	state.Hits = hits
 	detail.Count = len(hits)
 	detail.Latency = time.Since(started)
@@ -116,8 +119,86 @@ func packContextPackSelection(state *read.ReadState, features domain.QueryFeatur
 	contextPackingStarted := time.Now()
 	poolHits := hitsFromItems(contextPackingPool(state))
 	out := packRecallContextWithFeatures(state.Query.Text, features, now, hits, poolHits, state.Plan.TotalCap)
+	out = packTaskAwareEvidenceClusters(state.Plan.TaskIntents, out, poolHits, state.Plan.TotalCap)
 	detail.ContextPackingLatency = time.Since(contextPackingStarted)
 	return out
+}
+
+func packTaskAwareEvidenceClusters(tasks []domain.QueryTaskIntent, selected, pool []domain.Hit, cap int) []domain.Hit {
+	if cap <= 0 || len(tasks) == 0 || len(pool) == 0 {
+		return selected
+	}
+	out := append([]domain.Hit(nil), selected...)
+	for _, task := range tasks {
+		switch task {
+		case domain.QueryTaskYesNoVerification, domain.QueryTaskAbsenceCheck:
+			out = ensureTaskEvidence(out, pool, cap, func(h domain.Hit) bool {
+				f := domain.NormalizeSemantic(h.Fact)
+				return f.Polarity == domain.PolarityNegated ||
+					f.Modality == domain.ModalityCanceled ||
+					f.Modality == domain.ModalityPlanned ||
+					f.Modality == domain.ModalityCounterfactual
+			})
+		}
+	}
+	return out
+}
+
+func ensureTaskEvidence(selected, pool []domain.Hit, cap int, match func(domain.Hit) bool) []domain.Hit {
+	if match == nil || taskEvidenceCovered(selected, match) {
+		return selected
+	}
+	for _, hit := range pool {
+		if hitAlreadySelected(selected, hit) || !match(hit) {
+			continue
+		}
+		if len(selected) < cap {
+			return append(selected, hit)
+		}
+		replace := taskEvidenceReplacementIndex(selected)
+		if replace >= 0 {
+			out := append([]domain.Hit(nil), selected...)
+			out[replace] = hit
+			sort.SliceStable(out, func(i, j int) bool { return out[i].Score > out[j].Score })
+			return out
+		}
+	}
+	return selected
+}
+
+func taskEvidenceCovered(hits []domain.Hit, match func(domain.Hit) bool) bool {
+	for _, hit := range hits {
+		if match(hit) {
+			return true
+		}
+	}
+	return false
+}
+
+func hitAlreadySelected(hits []domain.Hit, candidate domain.Hit) bool {
+	for _, hit := range hits {
+		if hit.Fact.ID != "" && hit.Fact.ID == candidate.Fact.ID {
+			return true
+		}
+	}
+	return false
+}
+
+func taskEvidenceReplacementIndex(hits []domain.Hit) int {
+	idx := -1
+	var score float64
+	for i, hit := range hits {
+		f := domain.NormalizeSemantic(hit.Fact)
+		if f.Polarity == domain.PolarityNegated ||
+			f.Modality != domain.ModalityActual {
+			continue
+		}
+		if idx < 0 || hit.Score < score {
+			idx = i
+			score = hit.Score
+		}
+	}
+	return idx
 }
 
 func contextPackNow(state *read.ReadState) time.Time {

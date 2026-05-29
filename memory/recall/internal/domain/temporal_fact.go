@@ -36,6 +36,10 @@ type TemporalFact struct {
 	Predicate string
 	Object    string
 
+	Polarity  Polarity
+	Modality  Modality
+	Certainty Certainty
+
 	Entities     []string
 	Participants []string
 

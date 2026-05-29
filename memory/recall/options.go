@@ -89,6 +89,7 @@ func (c *llmExtractorConfig) build() port.Extractor {
 		}
 		if c.schemaName != "" {
 			ex.FactSchemaName = c.schemaName
+			ex.AssertionSchemaName = c.schemaName + "_assertions"
 			ex.KindSchemaName = c.schemaName + "_kinds"
 			ex.RelationSchemaName = c.schemaName + "_relations"
 			ex.EntitySchemaName = c.schemaName + "_entities"

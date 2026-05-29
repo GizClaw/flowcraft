@@ -602,6 +602,7 @@ func buildContent(f domain.TemporalFact) string {
 	appendPart(f.Subject)
 	appendPart(f.Predicate)
 	appendPart(f.Object)
+	appendPart(domain.SemanticTextBlob(f))
 	for _, e := range f.Entities {
 		appendPart(e)
 	}

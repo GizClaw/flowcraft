@@ -119,11 +119,12 @@ func TestWithLLMExtractor_WiresExtractorIntoSavePath(t *testing.T) {
 func TestWithLLMExtractor_TwoPassModeWiresTwoStepExtractor(t *testing.T) {
 	store := temporalstore.NewMemoryStore()
 	client := &scriptedLLM{ResponsesBySchemaName: map[string]string{
-		"recall_facts_v2":           `{"facts":[{"text":"Alice likes Paris.","subject":"Alice","source_ids":["D1:3"],"quote":"Alice likes Paris."}]}`,
-		"recall_facts_v2_kinds":     `{"facts":[{"text":"Alice likes Paris.","kind":"preference","subject":"Alice","source_ids":["D1:3"],"quote":"Alice likes Paris."}]}`,
-		"recall_facts_v2_relations": `{"facts":[{"text":"Alice likes Paris.","subject":"Alice","predicate":"likes","object":"Paris","source_ids":["D1:3"],"quote":"Alice likes Paris."}]}`,
-		"recall_facts_v2_entities":  `{"facts":[{"text":"Alice likes Paris.","subject":"Alice","entities":["Alice","Paris"],"source_ids":["D1:3"],"quote":"Alice likes Paris."}]}`,
-		"recall_facts_v2_evidence":  `{"links":[{"fact_index":0,"evidence_refs":[{"id":"D1:3","text":"Alice likes Paris."}]}]}`,
+		"recall_facts_v2":            `{"facts":[{"text":"Alice likes Paris.","subject":"Alice","source_ids":["D1:3"],"quote":"Alice likes Paris."}]}`,
+		"recall_facts_v2_assertions": `{"facts":[{"text":"Alice likes Paris.","subject":"Alice","polarity":"affirmed","modality":"actual","certainty":"explicit","source_ids":["D1:3"],"quote":"Alice likes Paris."}]}`,
+		"recall_facts_v2_kinds":      `{"facts":[{"text":"Alice likes Paris.","kind":"preference","subject":"Alice","source_ids":["D1:3"],"quote":"Alice likes Paris."}]}`,
+		"recall_facts_v2_relations":  `{"facts":[{"text":"Alice likes Paris.","subject":"Alice","predicate":"likes","object":"Paris","source_ids":["D1:3"],"quote":"Alice likes Paris."}]}`,
+		"recall_facts_v2_entities":   `{"facts":[{"text":"Alice likes Paris.","subject":"Alice","entities":["Alice","Paris"],"source_ids":["D1:3"],"quote":"Alice likes Paris."}]}`,
+		"recall_facts_v2_evidence":   `{"links":[{"fact_index":0,"evidence_refs":[{"id":"D1:3","text":"Alice likes Paris."}]}]}`,
 	}}
 	mem, err := New(
 		WithTemporalStore(store),
@@ -145,8 +146,8 @@ func TestWithLLMExtractor_TwoPassModeWiresTwoStepExtractor(t *testing.T) {
 	if err != nil {
 		t.Fatalf("save: %v", err)
 	}
-	if len(client.Options) != 5 {
-		t.Fatalf("two-pass mode should call four raw field extractors and grounding; got %d", len(client.Options))
+	if len(client.Options) != 6 {
+		t.Fatalf("two-pass mode should call five raw field extractors and grounding; got %d", len(client.Options))
 	}
 	seenSchemas := map[string]bool{}
 	for _, opts := range client.Options {
@@ -164,6 +165,7 @@ func TestWithLLMExtractor_TwoPassModeWiresTwoStepExtractor(t *testing.T) {
 	}
 	for _, name := range []string{
 		"recall_facts_v2",
+		"recall_facts_v2_assertions",
 		"recall_facts_v2_kinds",
 		"recall_facts_v2_relations",
 		"recall_facts_v2_entities",

@@ -43,8 +43,9 @@ type Options struct {
 	// fact ids persisted. nil disables.
 	OnFactsSaved func(scope runners.Scope, factIDs []string)
 	// OnFactsSavedDetailed is invoked after each successful Save with
-	// the materialized facts persisted by that Save. nil disables.
-	OnFactsSavedDetailed func(scope runners.Scope, facts []recall.TemporalFact)
+	// the materialized facts persisted by that Save and, when available,
+	// per-save diagnostics. nil disables.
+	OnFactsSavedDetailed func(scope runners.Scope, facts []recall.TemporalFact, diag *diagnostics.SaveDiagnostics)
 	// OnSaveDiagnostics, when non-nil, switches the runner to the SaveExplain
 	// path and reports per-stage SaveDiagnostics for every successful Save.
 	OnSaveDiagnostics func(scope runners.Scope, diag diagnostics.SaveDiagnostics)
@@ -65,7 +66,7 @@ type Runner struct {
 	hasLLM        bool
 	includeAs     bool
 	onSaved       func(scope runners.Scope, factIDs []string)
-	onFacts       func(scope runners.Scope, facts []recall.TemporalFact)
+	onFacts       func(scope runners.Scope, facts []recall.TemporalFact, diag *diagnostics.SaveDiagnostics)
 	onSaveDiag    func(runners.Scope, diagnostics.SaveDiagnostics)
 	onRecallDiag  func(runners.Scope, diagnostics.RecallDiagnostics)
 }
@@ -110,7 +111,7 @@ func New(opts Options) (runners.Runner, error) {
 		onSaveDiag:   opts.OnSaveDiagnostics,
 		onRecallDiag: opts.OnRecallDiagnostics,
 	}
-	if opts.OnSaveDiagnostics != nil {
+	if opts.OnSaveDiagnostics != nil || opts.OnFactsSavedDetailed != nil {
 		if explainer, ok := mem.(recall.SaveDebugExplainer); ok {
 			r.saveDebug = explainer
 		}
@@ -227,18 +228,26 @@ func (r *Runner) runSave(ctx context.Context, scope runners.Scope, req recall.Sa
 	if err := r.drainSideEffects(ctx, scope); err != nil {
 		return 0, elapsed, err
 	}
+	var saveDiag *diagnostics.SaveDiagnostics
+	if len(trace.Stages) > 0 {
+		d := diagnostics.DiagnoseSave(req, trace)
+		saveDiag = &d
+	}
 	if r.onSaved != nil && len(res.FactIDs) > 0 {
 		r.onSaved(scope, res.FactIDs)
 	}
-	if r.onFacts != nil && len(res.FactIDs) > 0 {
-		facts, err := r.savedFacts(ctx, toRecallScope(scope), res.FactIDs)
-		if err != nil {
-			return 0, elapsed, err
+	if r.onFacts != nil {
+		var facts []recall.TemporalFact
+		if len(res.FactIDs) > 0 {
+			facts, err = r.savedFacts(ctx, toRecallScope(scope), res.FactIDs)
+			if err != nil {
+				return 0, elapsed, err
+			}
 		}
-		r.onFacts(scope, facts)
+		r.onFacts(scope, facts, saveDiag)
 	}
-	if r.onSaveDiag != nil && (r.saveDebug != nil || r.saveExplainer != nil) {
-		r.onSaveDiag(scope, diagnostics.DiagnoseSave(req, trace))
+	if r.onSaveDiag != nil && saveDiag != nil {
+		r.onSaveDiag(scope, *saveDiag)
 	}
 	return len(res.FactIDs), elapsed, nil
 }

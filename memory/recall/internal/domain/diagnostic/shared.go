@@ -66,6 +66,39 @@ type FactStats struct {
 	ByKind          map[string]int
 }
 
+// TokenUsage is the provider-reported token usage for LLM-backed stages.
+// It mirrors sdk/llm.TokenUsage without importing the LLM package into the
+// diagnostic vocabulary.
+type TokenUsage struct {
+	InputTokens       int64  `json:"input_tokens,omitempty"`
+	CachedInputTokens int64  `json:"cached_input_tokens,omitempty"`
+	OutputTokens      int64  `json:"output_tokens,omitempty"`
+	TotalTokens       int64  `json:"total_tokens,omitempty"`
+	Model             string `json:"model,omitempty"`
+	CostMicros        int64  `json:"cost_micros,omitempty"`
+}
+
+// ExtractorStageTokenUsage records usage for one extractor LLM stage, e.g.
+// content/assertion/kind/relation/entity/evidence.
+type ExtractorStageTokenUsage struct {
+	Stage string `json:"stage"`
+	Calls int    `json:"calls"`
+	TokenUsage
+	AvgInputTokensPerCall  float64 `json:"avg_input_tokens_per_call,omitempty"`
+	AvgOutputTokensPerCall float64 `json:"avg_output_tokens_per_call,omitempty"`
+	AvgTotalTokensPerCall  float64 `json:"avg_total_tokens_per_call,omitempty"`
+}
+
+// ExtractorTokenUsage records aggregate LLM usage for one Extract call.
+type ExtractorTokenUsage struct {
+	Calls int `json:"calls"`
+	TokenUsage
+	AvgInputTokensPerCall  float64                    `json:"avg_input_tokens_per_call,omitempty"`
+	AvgOutputTokensPerCall float64                    `json:"avg_output_tokens_per_call,omitempty"`
+	AvgTotalTokensPerCall  float64                    `json:"avg_total_tokens_per_call,omitempty"`
+	Stages                 []ExtractorStageTokenUsage `json:"stages,omitempty"`
+}
+
 // DropReason categorises why a candidate did not survive read-path
 // processing. Used by RecallTrace for failure attribution
 // (docs §10.4).

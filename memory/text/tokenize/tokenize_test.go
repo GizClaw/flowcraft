@@ -165,6 +165,17 @@ func TestSplitWords(t *testing.T) {
 	}
 }
 
+func TestSplitNumbers(t *testing.T) {
+	got := tokenize.SplitNumbers("Avery bought 003 books on 2024-05-07.")
+	want := []string{"003", "2024", "05", "07"}
+	if !sliceEqual(got, want) {
+		t.Fatalf("SplitNumbers = %v, want %v", got, want)
+	}
+	if got := tokenize.SplitNumbers("no digits"); got != nil {
+		t.Fatalf("expected nil for text without digits, got %v", got)
+	}
+}
+
 func sliceEqual(a, b []string) bool {
 	if len(a) != len(b) {
 		return false

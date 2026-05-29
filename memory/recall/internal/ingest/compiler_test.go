@@ -9,6 +9,7 @@ import (
 	"github.com/GizClaw/flowcraft/memory/recall/internal/governance"
 	"github.com/GizClaw/flowcraft/memory/recall/internal/port"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
+	"github.com/GizClaw/flowcraft/sdk/llm"
 )
 
 func TestCompile_FillsDeterministicFields(t *testing.T) {
@@ -54,6 +55,48 @@ func TestCompile_FillsDeterministicFields(t *testing.T) {
 	}
 	if len(want) != 0 {
 		t.Errorf("entities missing: %v (have %v)", want, got.Entities)
+	}
+}
+
+func TestCompile_RecordsExtractorTokenUsage(t *testing.T) {
+	client := &fakeLLM{
+		Responses: []string{`{"facts":[{
+			"text":"Avery adopted a cat.",
+			"kind":"event",
+			"subject":"Avery",
+			"predicate":"adopted",
+			"object":"cat",
+			"entities":["Avery","cat"],
+			"polarity":"affirmed",
+			"modality":"actual",
+			"certainty":"explicit",
+			"evidence_refs":[{"id":"t1","text":"Avery adopted a cat."}]
+		}]}`},
+		Usages: []llm.TokenUsage{{InputTokens: 100, OutputTokens: 40, TotalTokens: 140}},
+	}
+	cp := New(Stages{
+		Extractor: NewLLMExtractor(client),
+		IDGen:     SequentialIDGenerator("fct_"),
+	})
+	res, err := cp.Compile(context.Background(), port.IngestInput{
+		Scope: domain.Scope{RuntimeID: "rt"},
+		Turns: []port.TurnContext{{ID: "t1", Speaker: "Avery", Text: "Avery adopted a cat."}},
+	})
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	if len(res.Facts) != 1 {
+		t.Fatalf("facts = %+v", res.Facts)
+	}
+	usage := res.ExtractorTokenUsage
+	if usage.Calls != 1 || usage.InputTokens != 100 || usage.OutputTokens != 40 || usage.TotalTokens != 140 {
+		t.Fatalf("extractor token usage = %+v", usage)
+	}
+	if usage.AvgTotalTokensPerCall != 140 {
+		t.Fatalf("avg total tokens = %v", usage.AvgTotalTokensPerCall)
+	}
+	if len(usage.Stages) != 1 || usage.Stages[0].Stage != "content" {
+		t.Fatalf("stage usage = %+v", usage.Stages)
 	}
 }
 

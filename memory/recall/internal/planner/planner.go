@@ -23,6 +23,7 @@ const (
 	SourceRelation  = "relation"
 	SourceProfile   = "profile"
 	SourceGraph     = "graph"
+	SourceAssertion = "assertion"
 )
 
 // Default per-source RRF weights (docs §9.3 / PR-6).
@@ -46,6 +47,7 @@ const (
 	WeightProfile   = 0.85
 	WeightGraph     = 0.85
 	WeightEntity    = 0.85
+	WeightAssertion = 0.95
 )
 
 // DefaultLimit applies when a caller leaves Query.Limit == 0.
@@ -104,6 +106,7 @@ func builtinSpecs() []LensSpec {
 		{Name: SourceEntity, Weight: WeightEntity, Activate: func(i domain.QueryIntent) bool { return len(i.Entities) > 0 }},
 		{Name: SourceGraph, Weight: WeightGraph, Activate: ActivatesGraph},
 		{Name: SourceRelation, Weight: WeightRelation, Activate: ActivatesRelation},
+		{Name: SourceAssertion, Weight: WeightAssertion, Activate: ActivatesAssertion},
 		{Name: SourceProfile, Weight: WeightProfile, Activate: ActivatesProfile},
 		{Name: SourceTimeline, Weight: WeightTimeline, Activate: ActivatesTimeline},
 	}
@@ -160,6 +163,15 @@ func inferTaskIntents(intent domain.QueryIntent) []domain.QueryTaskIntent {
 	}
 	if intent.Features.HasTimeSignal() {
 		add(domain.QueryTaskTemporalReasoning)
+	}
+	if hasYesNoSurface(intent.Text) {
+		add(domain.QueryTaskYesNoVerification)
+	}
+	if hasNegationSurface(intent.Text) || strings.Contains(strings.ToLower(intent.Text), "no evidence") {
+		add(domain.QueryTaskAbsenceCheck)
+	}
+	if hasCounterfactualSurface(intent.Text) {
+		add(domain.QueryTaskCounterfactual)
 	}
 	if hasNumericIntentKind(intent.Features.NumericIntentKind, domain.QueryNumericIntentCount) ||
 		hasNumericIntentKind(intent.Features.NumericIntentKind, domain.QueryNumericIntentFrequency) ||
@@ -325,6 +337,14 @@ func ActivatesRelation(intent domain.QueryIntent) bool {
 	return intent.Subject != "" || intent.Predicate != "" || intent.Object != ""
 }
 
+func ActivatesAssertion(intent domain.QueryIntent) bool {
+	return (intent.Subject != "" && intent.Predicate != "" && intent.Object != "") ||
+		words.HasYesNoVerificationCue(intent.Text) ||
+		words.HasNegationCue(intent.Text) ||
+		words.HasCancellationCue(intent.Text) ||
+		words.HasCounterfactualCue(intent.Text)
+}
+
 // ActivatesProfile reports whether the profile source should run.
 func ActivatesProfile(intent domain.QueryIntent) bool {
 	return intent.Subject != ""
@@ -386,6 +406,18 @@ func hasTemporalIntentKind(kinds []domain.QueryTemporalIntentKind, want domain.Q
 		}
 	}
 	return false
+}
+
+func hasYesNoSurface(text string) bool {
+	return words.HasYesNoVerificationCue(text)
+}
+
+func hasNegationSurface(text string) bool {
+	return words.HasNegationCue(text) || words.HasCancellationCue(text)
+}
+
+func hasCounterfactualSurface(text string) bool {
+	return words.HasCounterfactualCue(text)
 }
 
 // allocateBudgets splits limit across active sources. When only
