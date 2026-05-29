@@ -53,7 +53,7 @@ func TestRuleBased_PreservesStructuredHints(t *testing.T) {
 
 func TestRuleBased_InferTemporalIntent(t *testing.T) {
 	out, err := RuleBased{}.Compile(context.Background(), port.IntentInput{
-		Text: "When did Caroline go to the LGBTQ support group?",
+		Text: "When did Avery go to the community meetup?",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -72,7 +72,7 @@ func TestRuleBased_InferTemporalIntent(t *testing.T) {
 
 func TestRuleBased_InferDayTimeRangeFromMonthDayYear(t *testing.T) {
 	out, err := RuleBased{}.Compile(context.Background(), port.IntentInput{
-		Text: "What painting did Melanie show to Caroline on October 13, 2023?",
+		Text: "What painting did Jordan show to Avery on October 13, 2023?",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -123,13 +123,13 @@ func TestRuleBased_PreservesExplicitTimeRange(t *testing.T) {
 
 func TestRuleBased_InferProfileRelationSubject(t *testing.T) {
 	out, err := RuleBased{}.Compile(context.Background(), port.IntentInput{
-		Text: "What fields would Caroline be likely to pursue in her education?",
+		Text: "What fields would Avery be likely to pursue in her education?",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if out.Subject != "caroline" {
-		t.Fatalf("subject = %q, want caroline", out.Subject)
+	if out.Subject != "avery" {
+		t.Fatalf("subject = %q, want avery", out.Subject)
 	}
 }
 

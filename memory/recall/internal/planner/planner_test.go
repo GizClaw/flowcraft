@@ -81,8 +81,8 @@ func TestRuleBased_InfersTaskIntents(t *testing.T) {
 		{
 			name: "multilingual collection surface asks for set completion",
 			in: port.PlannerInput{
-				Text:     "¿Qué mascotas tiene Melanie?",
-				Features: domain.QueryFeatures{Tokens: map[string]struct{}{"mascota": {}, "melanie": {}}},
+				Text:     "¿Qué mascotas tiene Jordan?",
+				Features: domain.QueryFeatures{Tokens: map[string]struct{}{"mascota": {}, "jordan": {}}},
 			},
 			want: domain.QueryTaskSetCompletion,
 		},

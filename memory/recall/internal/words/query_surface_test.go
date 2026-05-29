@@ -8,7 +8,7 @@ import (
 )
 
 func TestSignificantQueryTextDropsQuestionStopwords(t *testing.T) {
-	if got := SignificantQueryText("What pets does Melanie have?"); got != "pets Melanie" {
+	if got := SignificantQueryText("What pets does Jordan have?"); got != "pets Jordan" {
 		t.Fatalf("SignificantQueryText = %q", got)
 	}
 }
@@ -22,16 +22,16 @@ func TestBridgeClausesSplitsSurfaceConnectors(t *testing.T) {
 }
 
 func TestCollectionAnchorWordsKeepsTitleCaseNonStopwords(t *testing.T) {
-	got := CollectionAnchorWords("What pets does Melanie have?")
-	want := []string{"Melanie"}
+	got := CollectionAnchorWords("What pets does Jordan have?")
+	want := []string{"Jordan"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("CollectionAnchorWords = %#v, want %#v", got, want)
 	}
 }
 
 func TestSurfaceCueHelpers(t *testing.T) {
-	tokens := map[string]struct{}{"pet": {}, "melanie": {}}
-	if !HasCollectionSurfaceCue("What pets does Melanie have?", tokens, nil) {
+	tokens := map[string]struct{}{"pet": {}, "jordan": {}}
+	if !HasCollectionSurfaceCue("What pets does Jordan have?", tokens, nil) {
 		t.Fatal("expected collection cue")
 	}
 	if !HasCollectionSurfaceCue("How many times did Alice visit?", nil, []domain.QueryNumericIntentKind{domain.QueryNumericIntentFrequency}) {
@@ -57,11 +57,11 @@ func TestSurfaceCueHelpersSupportMultilingualCollection(t *testing.T) {
 		query  string
 		tokens map[string]struct{}
 	}{
-		{name: "spanish possession", query: "¿Qué mascotas tiene Melanie?", tokens: map[string]struct{}{"mascota": {}, "melanie": {}}},
+		{name: "spanish possession", query: "¿Qué mascotas tiene Jordan?", tokens: map[string]struct{}{"mascota": {}, "jordan": {}}},
 		{name: "french count", query: "Combien de livres Alice a-t-elle?", tokens: map[string]struct{}{"livre": {}, "alice": {}}},
 		{name: "german which", query: "Welche Bücher hat Alice?", tokens: map[string]struct{}{"buch": {}, "alice": {}}},
-		{name: "chinese plural literal", query: "Melanie 有哪些宠物?", tokens: map[string]struct{}{"melanie": {}}},
-		{name: "chinese what with collection cue", query: "Melanie 有什么宠物?", tokens: map[string]struct{}{"melanie": {}}},
+		{name: "chinese plural literal", query: "Jordan 有哪些宠物?", tokens: map[string]struct{}{"jordan": {}}},
+		{name: "chinese what with collection cue", query: "Jordan 有什么宠物?", tokens: map[string]struct{}{"jordan": {}}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

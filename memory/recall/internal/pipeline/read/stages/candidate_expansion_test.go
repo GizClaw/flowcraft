@@ -15,15 +15,15 @@ func TestCandidateExpansionAddsCappedSubjectPredicateSiblings(t *testing.T) {
 	scope := domain.Scope{RuntimeID: "rt", UserID: "u"}
 	store := temporalstore.NewMemoryStore()
 	facts := []domain.TemporalFact{
-		neighborFact(scope, "bailey", "Melanie has a cat named Bailey.", "Melanie", "has_pet", "Bailey"),
-		neighborFact(scope, "oliver", "Melanie has a pet dog named Oliver.", "Melanie", "has_pet", "Oliver"),
-		neighborFact(scope, "luna", "Melanie has a pet dog named Luna.", "Melanie", "has_pet", "Luna"),
-		neighborFact(scope, "hiking", "Melanie went hiking.", "Melanie", "went", "hiking"),
+		neighborFact(scope, "bailey", "Jordan has a cat named Bailey.", "Jordan", "has_pet", "Bailey"),
+		neighborFact(scope, "oliver", "Jordan has a pet dog named Oliver.", "Jordan", "has_pet", "Oliver"),
+		neighborFact(scope, "luna", "Jordan has a pet dog named Luna.", "Jordan", "has_pet", "Luna"),
+		neighborFact(scope, "hiking", "Jordan went hiking.", "Jordan", "went", "hiking"),
 	}
 	if err := store.Append(context.Background(), facts); err != nil {
 		t.Fatalf("append facts: %v", err)
 	}
-	query := "What pets does Melanie have?"
+	query := "What pets does Jordan have?"
 	stage := NewCandidateExpansion(store)
 	state := &read.ReadState{
 		Scope: scope,
@@ -31,7 +31,7 @@ func TestCandidateExpansionAddsCappedSubjectPredicateSiblings(t *testing.T) {
 		Plan: &domain.QueryPlan{
 			Intent: domain.QueryIntent{
 				Text:     query,
-				Entities: []string{"Melanie"},
+				Entities: []string{"Jordan"},
 				Features: recallintent.ExtractFeatures(query),
 			},
 			TotalCap:    12,
@@ -64,7 +64,7 @@ func TestCandidateExpansionAddsCappedSubjectPredicateSiblings(t *testing.T) {
 func TestCandidateExpansionPropagatesCanceledContext(t *testing.T) {
 	scope := domain.Scope{RuntimeID: "rt", UserID: "u"}
 	store := temporalstore.NewMemoryStore()
-	query := "What pets does Melanie have?"
+	query := "What pets does Jordan have?"
 	stage := NewCandidateExpansion(store)
 	state := &read.ReadState{
 		Scope: scope,
@@ -72,7 +72,7 @@ func TestCandidateExpansionPropagatesCanceledContext(t *testing.T) {
 		Plan: &domain.QueryPlan{
 			Intent: domain.QueryIntent{
 				Text:     query,
-				Entities: []string{"Melanie"},
+				Entities: []string{"Jordan"},
 				Features: recallintent.ExtractFeatures(query),
 			},
 			TotalCap:    12,
@@ -97,7 +97,7 @@ func neighborFact(scope domain.Scope, id, content, subject, predicate, object st
 		Subject:   subject,
 		Predicate: predicate,
 		Object:    object,
-		Entities:  []string{"Melanie", "melanie"},
+		Entities:  []string{"Jordan", "jordan"},
 		EvidenceRefs: []domain.EvidenceRef{{
 			ID:   "ev-" + id,
 			Text: content,

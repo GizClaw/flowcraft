@@ -8,7 +8,7 @@ import (
 )
 
 func TestExtractFeaturesTemporal(t *testing.T) {
-	features := ExtractFeatures("When did Caroline go to the LGBTQ support group?")
+	features := ExtractFeatures("When did Avery go to the community meetup?")
 	if !features.Temporal.HasIntent || !features.HasTimeSignal() {
 		t.Fatalf("expected temporal intent, got %+v", features.Temporal)
 	}
@@ -25,7 +25,7 @@ func TestExtractFeaturesAvoidsProceduralBeforeAsTemporalIntent(t *testing.T) {
 }
 
 func TestExtractFeaturesTimeRangeFromCalendar(t *testing.T) {
-	features := ExtractFeatures("What painting did Melanie show on October 13, 2023?")
+	features := ExtractFeatures("What painting did Jordan show on October 13, 2023?")
 	wantFrom := time.Date(2023, time.October, 13, 0, 0, 0, 0, time.UTC)
 	wantTo := time.Date(2023, time.October, 14, 0, 0, 0, 0, time.UTC)
 	if !features.Temporal.HasExplicitDate {

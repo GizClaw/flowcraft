@@ -4,7 +4,7 @@
 // (Subject, Predicate, Object) triple for typed lookup (docs §8.3). The
 // original guard "Kind == KindRelation" was too narrow: structurized
 // event / state / preference facts frequently carry a meaningful
-// triple ("Caroline read Charlotte's Web" → Subject=Caroline,
+// triple ("Avery read Charlotte's Web" → Subject=Avery,
 // Predicate=read, Object="Charlotte's Web") and were dropped on the
 // floor, starving the relation source and the multi-hop fanout it
 // feeds. Incomplete subject-only rows belong to profile/entity/retrieval,

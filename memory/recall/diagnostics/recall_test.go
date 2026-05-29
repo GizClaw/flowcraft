@@ -31,18 +31,18 @@ func TestAttributeAnswerContext_FindsDroppedEvidenceGrounding(t *testing.T) {
 	hits := []domain.Hit{{
 		Fact: domain.TemporalFact{
 			ID:           "f1",
-			Content:      "Caroline joined a support group",
-			EvidenceText: "[9:00 am on 7 May, 2024] Caroline went to the LGBTQ support group.",
+			Content:      "Avery joined a community meetup",
+			EvidenceText: "[9:00 am on 7 May, 2024] Avery went to the community meetup.",
 			EvidenceRefs: []domain.EvidenceRef{{
 				ID:   "D1:3",
-				Text: "Caroline said the group met downtown on 7 May.",
+				Text: "Avery said the group met downtown on 7 May.",
 			}},
 		},
 	}}
 
 	attrs := diagnostics.AttributeAnswerContext(hits, []diagnostics.AnswerContextItem{{
 		FactID: "f1",
-		Text:   "Caroline joined a support group",
+		Text:   "Avery joined a community meetup",
 	}})
 	if len(attrs) != 1 {
 		t.Fatalf("attrs = %+v", attrs)
@@ -56,14 +56,14 @@ func TestAttributeAnswerContext_AllowsGroundedRendering(t *testing.T) {
 	hits := []domain.Hit{{
 		Fact: domain.TemporalFact{
 			ID:           "f1",
-			Content:      "Caroline joined a support group",
-			EvidenceText: "[9:00 am on 7 May, 2024] Caroline went to the LGBTQ support group.",
+			Content:      "Avery joined a community meetup",
+			EvidenceText: "[9:00 am on 7 May, 2024] Avery went to the community meetup.",
 		},
 	}}
 
 	attrs := diagnostics.AttributeAnswerContext(hits, []diagnostics.AnswerContextItem{{
 		FactID: "f1",
-		Text:   "Caroline joined a support group [9:00 am on 7 May, 2024] Caroline went to the LGBTQ support group.",
+		Text:   "Avery joined a community meetup [9:00 am on 7 May, 2024] Avery went to the community meetup.",
 	}})
 	if len(attrs) != 0 {
 		t.Fatalf("grounded context should not be attributed, got %+v", attrs)

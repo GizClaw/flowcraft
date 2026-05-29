@@ -19,7 +19,7 @@ func TestDefault_Rank_UsesEvidenceAndIntentSignals(t *testing.T) {
 			Fact: domain.TemporalFact{
 				ID:         "generic",
 				Kind:       domain.KindNote,
-				Content:    "Caroline joined a group",
+				Content:    "Avery joined a group",
 				Confidence: 0.5,
 			},
 		},
@@ -28,21 +28,21 @@ func TestDefault_Rank_UsesEvidenceAndIntentSignals(t *testing.T) {
 			Fact: domain.TemporalFact{
 				ID:           "grounded",
 				Kind:         domain.KindEvent,
-				Subject:      "caroline",
-				Entities:     []string{"caroline"},
-				Content:      "Caroline went to the support group",
+				Subject:      "avery",
+				Entities:     []string{"avery"},
+				Content:      "Avery went to the community meetup",
 				ObservedAt:   now,
 				Confidence:   0.8,
-				EvidenceText: "[9:00 am on 7 May, 2024] Caroline went to the LGBTQ support group downtown.",
+				EvidenceText: "[9:00 am on 7 May, 2024] Avery went to the community meetup downtown.",
 			},
 		},
 	}
 	out := r.Rank(context.Background(), port.RankInput{
 		Items: items,
 		Intent: domain.QueryIntent{
-			Text:     "When did Caroline go to the LGBTQ support group?",
-			Entities: []string{"caroline", "lgbtq"},
-			Subject:  "caroline",
+			Text:     "When did Avery go to the community meetup?",
+			Entities: []string{"avery", "lgbtq"},
+			Subject:  "avery",
 			Kinds:    []domain.FactKind{domain.KindEvent, domain.KindState, domain.KindPlan},
 			Limit:    1,
 		},

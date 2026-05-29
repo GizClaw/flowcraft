@@ -7,7 +7,7 @@ func TestQueryIntentLexiconTemporalMultilingual(t *testing.T) {
 		"By when did Alice finish the workshop?",
 		"What year did Bob move?",
 		"¿Desde cuándo vive Alice allí?",
-		"Quelle date Melanie a-t-elle montrée?",
+		"Quelle date Jordan a-t-elle montrée?",
 		"Seit wann arbeitet Alice dort?",
 		"Quando Alice viajou?",
 		"Sinds wanneer werkt Alice daar?",

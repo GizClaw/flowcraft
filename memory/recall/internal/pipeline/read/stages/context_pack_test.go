@@ -92,19 +92,19 @@ func TestBuildGroundedHitsDoesNotAffectRerankerInput(t *testing.T) {
 	stage := NewContextPack(reranker)
 	state := &read.ReadState{
 		Plan:  &domain.QueryPlan{TotalCap: 1},
-		Query: domain.Query{Text: "Where did Caroline move from?"},
+		Query: domain.Query{Text: "Where did Avery move from?"},
 		Ranked: []domain.ContextItem{{
 			Candidate: domain.Candidate{FactID: "move", Source: "retrieval", Score: 0.9, EvidenceIDs: []string{"e1"}},
 			Fact: domain.TemporalFact{
 				ID:      "move",
 				Kind:    domain.KindState,
-				Content: "Caroline moved from her home country.",
+				Content: "Avery moved from her home country.",
 				EvidenceRefs: []domain.EvidenceRef{
-					{ID: "e1", Text: "Caroline moved from her home country four years ago."},
-					{ID: "e2", Text: "Caroline said Sweden is where she moved from."},
+					{ID: "e1", Text: "Avery moved from her home country four years ago."},
+					{ID: "e2", Text: "Avery said Sweden is where she moved from."},
 				},
 			},
-			Evidence: []domain.EvidenceRef{{ID: "e1", Text: "Caroline moved from her home country four years ago."}},
+			Evidence: []domain.EvidenceRef{{ID: "e1", Text: "Avery moved from her home country four years ago."}},
 		}},
 	}
 
@@ -194,16 +194,16 @@ func TestContextPackKeepsBestContextForSharedEvidence(t *testing.T) {
 	shared := domain.EvidenceRef{ID: "e1", Text: "I painted that lake sunrise last year!"}
 	state := &read.ReadState{
 		Plan:  &domain.QueryPlan{TotalCap: 1},
-		Query: domain.Query{Text: "When did Melanie paint a sunrise?"},
+		Query: domain.Query{Text: "When did Jordan paint a sunrise?"},
 		Ranked: []domain.ContextItem{
 			{
 				Candidate: domain.Candidate{FactID: "state", Source: "graph", Score: 0.9, EvidenceIDs: []string{"e1"}},
-				Fact:      domain.TemporalFact{ID: "state", Kind: domain.KindState, Content: "Melanie's painting of the lake sunrise is special to her.", EvidenceRefs: []domain.EvidenceRef{shared}},
+				Fact:      domain.TemporalFact{ID: "state", Kind: domain.KindState, Content: "Jordan's painting of the lake sunrise is special to her.", EvidenceRefs: []domain.EvidenceRef{shared}},
 				Evidence:  []domain.EvidenceRef{shared},
 			},
 			{
 				Candidate: domain.Candidate{FactID: "event", Source: "retrieval", Score: 0.8, EvidenceIDs: []string{"e1"}},
-				Fact:      domain.TemporalFact{ID: "event", Kind: domain.KindEvent, Content: "Melanie painted a lake sunrise last year.", EvidenceRefs: []domain.EvidenceRef{shared}},
+				Fact:      domain.TemporalFact{ID: "event", Kind: domain.KindEvent, Content: "Jordan painted a lake sunrise last year.", EvidenceRefs: []domain.EvidenceRef{shared}},
 				Evidence:  []domain.EvidenceRef{shared},
 			},
 		},
@@ -224,7 +224,7 @@ func TestContextPackCoversQueryAnchors(t *testing.T) {
 		weakContextItem("weak-1", "e1", "Bob visited Paris."),
 		weakContextItem("weak-2", "e2", "Carol likes hiking."),
 		weakContextItem("weak-3", "e3", "Dylan cooked soup."),
-		weakContextItem("weak-4", "e4", "Eve bought pottery."),
+		weakContextItem("weak-4", "e4", "Eve bought woodworking."),
 	}
 	strong := []domain.ContextItem{
 		strongContextItem("book", "e5", "Alice likes books such as Charlotte's Web."),
@@ -299,11 +299,11 @@ func TestContextPackLocksTemporalCoreBeforeMMRFill(t *testing.T) {
 		Query: domain.Query{Text: "When did Alice buy ceramic figurines?"},
 		Ranked: []domain.ContextItem{
 			contextItemWithSource("purchase-no-time", "e1", "retrieval", 0.95, "Alice bought ceramic figurines."),
-			contextItemWithSource("distractor", "e2", "entity", 0.90, "Alice likes pottery class."),
+			contextItemWithSource("distractor", "e2", "entity", 0.90, "Alice likes woodworking class."),
 		},
 		AfterTrust: []domain.ContextItem{
 			contextItemWithSource("purchase-no-time", "e1", "retrieval", 0.95, "Alice bought ceramic figurines."),
-			contextItemWithSource("distractor", "e2", "entity", 0.90, "Alice likes pottery class."),
+			contextItemWithSource("distractor", "e2", "entity", 0.90, "Alice likes woodworking class."),
 			contextItemWithSource("purchase-time", "e3", "retrieval", 0.20, "On 2023-05-07 Alice bought ceramic figurines."),
 		},
 	}
@@ -322,26 +322,26 @@ func TestContextPackLocksTemporalCoreBeforeMMRFill(t *testing.T) {
 func TestContextPackRescuesExactSourcePhraseAnswerCandidate(t *testing.T) {
 	stage := NewContextPack(nil)
 	ranked := []domain.ContextItem{
-		contextItemWithStructuredFact("book-club", "e1", "retrieval", 0.95, "Melanie's favorite childhood club was a reading group.", "Melanie", "favorite", "reading group"),
-		contextItemWithStructuredFact("library", "e2", "entity", 0.93, "Melanie talked about childhood library visits.", "Melanie", "talked_about", "library visits"),
-		contextItemWithStructuredFact("school", "e3", "graph", 0.91, "Melanie discussed books she read at school.", "Melanie", "discussed", "school books"),
-		contextItemWithStructuredFact("painting", "e4", "retrieval", 0.89, "Melanie liked painting as a child.", "Melanie", "liked", "painting"),
-		contextItemWithStructuredFact("pottery", "e5", "entity", 0.87, "Melanie's favorite creative hobby was pottery.", "Melanie", "favorite", "pottery"),
+		contextItemWithStructuredFact("book-club", "e1", "retrieval", 0.95, "Jordan's favorite childhood club was a reading group.", "Jordan", "favorite", "reading group"),
+		contextItemWithStructuredFact("library", "e2", "entity", 0.93, "Jordan talked about childhood library visits.", "Jordan", "talked_about", "library visits"),
+		contextItemWithStructuredFact("school", "e3", "graph", 0.91, "Jordan discussed books she read at school.", "Jordan", "discussed", "school books"),
+		contextItemWithStructuredFact("painting", "e4", "retrieval", 0.89, "Jordan liked painting as a child.", "Jordan", "liked", "painting"),
+		contextItemWithStructuredFact("woodworking", "e5", "entity", 0.87, "Jordan's favorite creative hobby was woodworking.", "Jordan", "favorite", "woodworking"),
 	}
 	answer := contextItemWithStructuredFact(
 		"charlottes-web",
 		"e6",
 		"retrieval",
 		0.05,
-		"Melanie mentioned childhood reading. Exact source phrase: \"Charlotte's Web\".",
-		"Melanie",
+		"Jordan mentioned childhood reading. Exact source phrase: \"Charlotte's Web\".",
+		"Jordan",
 		"favorite_book",
 		"Charlotte's Web",
 	)
 	answer.Evidence = []domain.EvidenceRef{{ID: "e6", Text: "As a kid, I loved reading \"Charlotte's Web\"."}}
 	state := &read.ReadState{
 		Plan:       &domain.QueryPlan{TotalCap: 5},
-		Query:      domain.Query{Text: "What was Melanie's favorite book from childhood?"},
+		Query:      domain.Query{Text: "What was Jordan's favorite book from childhood?"},
 		Ranked:     ranked,
 		AfterTrust: append(append([]domain.ContextItem(nil), ranked...), answer),
 	}
@@ -423,18 +423,18 @@ func TestContextPackPreservesLowScoreSetSiblings(t *testing.T) {
 	stage := NewContextPack(nil)
 	state := &read.ReadState{
 		Plan:  &domain.QueryPlan{TotalCap: 3},
-		Query: domain.Query{Text: "What pets does Melanie have?"},
+		Query: domain.Query{Text: "What pets does Jordan have?"},
 		Ranked: []domain.ContextItem{
-			contextItemWithStructuredFact("bailey", "e1", "retrieval", 0.90, "Melanie has a cat named Bailey.", "Melanie", "has_pet", "Bailey"),
-			contextItemWithStructuredFact("hiking", "e2", "graph", 0.88, "Melanie went hiking with her family.", "Melanie", "went", "hiking"),
-			contextItemWithStructuredFact("pottery", "e3", "entity", 0.86, "Melanie enjoys pottery class.", "Melanie", "enjoys", "pottery"),
+			contextItemWithStructuredFact("bailey", "e1", "retrieval", 0.90, "Jordan has a cat named Bailey.", "Jordan", "has_pet", "Bailey"),
+			contextItemWithStructuredFact("hiking", "e2", "graph", 0.88, "Jordan went hiking with her family.", "Jordan", "went", "hiking"),
+			contextItemWithStructuredFact("woodworking", "e3", "entity", 0.86, "Jordan enjoys woodworking class.", "Jordan", "enjoys", "woodworking"),
 		},
 		AfterTrust: []domain.ContextItem{
-			contextItemWithStructuredFact("bailey", "e1", "retrieval", 0.90, "Melanie has a cat named Bailey.", "Melanie", "has_pet", "Bailey"),
-			contextItemWithStructuredFact("hiking", "e2", "graph", 0.88, "Melanie went hiking with her family.", "Melanie", "went", "hiking"),
-			contextItemWithStructuredFact("pottery", "e3", "entity", 0.86, "Melanie enjoys pottery class.", "Melanie", "enjoys", "pottery"),
-			contextItemWithStructuredFact("oliver", "e4", "retrieval", 0.12, "Melanie has a pet dog named Oliver.", "Melanie", "has_pet", "Oliver"),
-			contextItemWithStructuredFact("luna", "e5", "retrieval", 0.10, "Melanie has a pet dog named Luna.", "Melanie", "has_pet", "Luna"),
+			contextItemWithStructuredFact("bailey", "e1", "retrieval", 0.90, "Jordan has a cat named Bailey.", "Jordan", "has_pet", "Bailey"),
+			contextItemWithStructuredFact("hiking", "e2", "graph", 0.88, "Jordan went hiking with her family.", "Jordan", "went", "hiking"),
+			contextItemWithStructuredFact("woodworking", "e3", "entity", 0.86, "Jordan enjoys woodworking class.", "Jordan", "enjoys", "woodworking"),
+			contextItemWithStructuredFact("oliver", "e4", "retrieval", 0.12, "Jordan has a pet dog named Oliver.", "Jordan", "has_pet", "Oliver"),
+			contextItemWithStructuredFact("luna", "e5", "retrieval", 0.10, "Jordan has a pet dog named Luna.", "Jordan", "has_pet", "Luna"),
 		},
 	}
 
@@ -517,21 +517,21 @@ func TestContextPackerSignalCoverageReplacesWeakDuplicateContext(t *testing.T) {
 }
 
 func TestContextPackAnswerabilityCoverageAddsShortAnswerCandidate(t *testing.T) {
-	query := newContextPackQueryFeatures("What workshop did Caroline attend?", domain.QueryFeatures{
-		Tokens: map[string]struct{}{"workshop": {}, "caroline": {}, "attend": {}},
+	query := newContextPackQueryFeatures("What workshop did Avery attend?", domain.QueryFeatures{
+		Tokens: map[string]struct{}{"workshop": {}, "avery": {}, "attend": {}},
 	})
 	selectedCandidates := []contextPackCandidate{
-		answerabilityCandidate("generic-1", 8, 0.24, 0.30, domain.TemporalFact{ID: "generic-1", Kind: domain.KindState, Content: "Caroline attended an event."}, ""),
-		answerabilityCandidate("generic-2", 9, 0.20, 0.28, domain.TemporalFact{ID: "generic-2", Kind: domain.KindState, Content: "Caroline likes painting."}, ""),
+		answerabilityCandidate("generic-1", 8, 0.24, 0.30, domain.TemporalFact{ID: "generic-1", Kind: domain.KindState, Content: "Avery attended an event."}, ""),
+		answerabilityCandidate("generic-2", 9, 0.20, 0.28, domain.TemporalFact{ID: "generic-2", Kind: domain.KindState, Content: "Avery likes painting."}, ""),
 	}
 	selected := contextPackHits(selectedCandidates)
 	rescue := answerabilityCandidate("workshop", 15, 0.30, 0.30, domain.TemporalFact{
 		ID:        "workshop",
 		Kind:      domain.KindEvent,
-		Content:   "Caroline attended an LGBTQ+ counseling workshop.",
-		Subject:   "Caroline",
+		Content:   "Avery attended an community counseling workshop.",
+		Subject:   "Avery",
 		Predicate: "attended",
-		Object:    "LGBTQ+ counseling workshop",
+		Object:    "community counseling workshop",
 	}, "")
 
 	got, _ := contextPackEnsureAnswerabilityCoverage(query, append(selectedCandidates, rescue), selected, selectedCandidates, 2)
@@ -669,8 +669,8 @@ func TestContextPackPropagatesRerankerContextCancellation(t *testing.T) {
 		Query: domain.Query{Text: "What did Alice buy?"},
 		Ranked: []domain.ContextItem{{
 			Candidate: domain.Candidate{FactID: "a", Source: "retrieval", Score: 0.9, EvidenceIDs: []string{"e1"}},
-			Fact:      domain.TemporalFact{ID: "a", Kind: domain.KindEvent, Content: "Alice bought pottery."},
-			Evidence:  []domain.EvidenceRef{{ID: "e1", Text: "Alice bought pottery."}},
+			Fact:      domain.TemporalFact{ID: "a", Kind: domain.KindEvent, Content: "Alice bought woodworking."},
+			Evidence:  []domain.EvidenceRef{{ID: "e1", Text: "Alice bought woodworking."}},
 		}},
 	}
 
@@ -688,13 +688,13 @@ func TestContextPackDedupesSameEvidence(t *testing.T) {
 		Ranked: []domain.ContextItem{
 			{
 				Candidate: domain.Candidate{FactID: "a", Source: "retrieval", Score: 0.9, EvidenceIDs: []string{"e1"}},
-				Fact:      domain.TemporalFact{ID: "a", Kind: domain.KindEvent, Content: "Alice bought pottery."},
-				Evidence:  []domain.EvidenceRef{{ID: "e1", Text: "Alice bought pottery."}},
+				Fact:      domain.TemporalFact{ID: "a", Kind: domain.KindEvent, Content: "Alice bought woodworking."},
+				Evidence:  []domain.EvidenceRef{{ID: "e1", Text: "Alice bought woodworking."}},
 			},
 			{
 				Candidate: domain.Candidate{FactID: "b", Source: "graph", Score: 0.8, EvidenceIDs: []string{"e1"}},
-				Fact:      domain.TemporalFact{ID: "b", Kind: domain.KindEvent, Content: "Alice purchased pottery."},
-				Evidence:  []domain.EvidenceRef{{ID: "e1", Text: "Alice bought pottery."}},
+				Fact:      domain.TemporalFact{ID: "b", Kind: domain.KindEvent, Content: "Alice purchased woodworking."},
+				Evidence:  []domain.EvidenceRef{{ID: "e1", Text: "Alice bought woodworking."}},
 			},
 			{
 				Candidate: domain.Candidate{FactID: "c", Source: "retrieval", Score: 0.7, EvidenceIDs: []string{"e2"}},
@@ -726,8 +726,8 @@ func TestContextPackRepresentativeReplacementDoesNotPoisonSeenFacts(t *testing.T
 			Score:    0.9,
 		},
 		{
-			Fact:     domain.TemporalFact{ID: "new", Kind: domain.KindEvent, Content: "Alice bought pottery."},
-			Evidence: []domain.EvidenceRef{{ID: "e1", Text: "Alice bought pottery."}},
+			Fact:     domain.TemporalFact{ID: "new", Kind: domain.KindEvent, Content: "Alice bought woodworking."},
+			Evidence: []domain.EvidenceRef{{ID: "e1", Text: "Alice bought woodworking."}},
 			Score:    0.8,
 		},
 		{
@@ -751,17 +751,17 @@ func TestContextPackKeepsSourceDiversity(t *testing.T) {
 	stage := NewContextPack(nil)
 	state := &read.ReadState{
 		Plan:  &domain.QueryPlan{TotalCap: 3},
-		Query: domain.Query{Text: "What did Alice say about pottery class?"},
+		Query: domain.Query{Text: "What did Alice say about woodworking class?"},
 		Ranked: []domain.ContextItem{
-			contextItemWithSource("retrieval-1", "e1", "retrieval", 0.90, "Alice discussed pottery class logistics."),
-			contextItemWithSource("retrieval-2", "e2", "retrieval", 0.88, "Alice discussed pottery class timing."),
-			contextItemWithSource("retrieval-3", "e3", "retrieval", 0.86, "Alice discussed pottery class supplies."),
+			contextItemWithSource("retrieval-1", "e1", "retrieval", 0.90, "Alice discussed woodworking class logistics."),
+			contextItemWithSource("retrieval-2", "e2", "retrieval", 0.88, "Alice discussed woodworking class timing."),
+			contextItemWithSource("retrieval-3", "e3", "retrieval", 0.86, "Alice discussed woodworking class supplies."),
 		},
 		AfterTrust: []domain.ContextItem{
-			contextItemWithSource("retrieval-1", "e1", "retrieval", 0.90, "Alice discussed pottery class logistics."),
-			contextItemWithSource("retrieval-2", "e2", "retrieval", 0.88, "Alice discussed pottery class timing."),
-			contextItemWithSource("retrieval-3", "e3", "retrieval", 0.86, "Alice discussed pottery class supplies."),
-			contextItemWithSource("graph-1", "e4", "graph", 0.84, "Alice discussed pottery class project details."),
+			contextItemWithSource("retrieval-1", "e1", "retrieval", 0.90, "Alice discussed woodworking class logistics."),
+			contextItemWithSource("retrieval-2", "e2", "retrieval", 0.88, "Alice discussed woodworking class timing."),
+			contextItemWithSource("retrieval-3", "e3", "retrieval", 0.86, "Alice discussed woodworking class supplies."),
+			contextItemWithSource("graph-1", "e4", "graph", 0.84, "Alice discussed woodworking class project details."),
 		},
 	}
 
@@ -785,20 +785,20 @@ func TestBuildGroundedHitsGroundsSelectedEvidenceWithRelevantFactRefs(t *testing
 	stage := NewContextPack(nil)
 	state := &read.ReadState{
 		Plan:  &domain.QueryPlan{TotalCap: 1},
-		Query: domain.Query{Text: "Where did Caroline move from?"},
+		Query: domain.Query{Text: "Where did Avery move from?"},
 		Ranked: []domain.ContextItem{{
 			Candidate: domain.Candidate{FactID: "move", Source: "retrieval", Score: 0.9, EvidenceIDs: []string{"e1"}},
 			Fact: domain.TemporalFact{
 				ID:      "move",
 				Kind:    domain.KindState,
-				Content: "Caroline moved from her home country.",
+				Content: "Avery moved from her home country.",
 				EvidenceRefs: []domain.EvidenceRef{
-					{ID: "e1", Text: "Caroline moved from her home country four years ago."},
-					{ID: "e2", Text: "Caroline said Sweden is where she moved from."},
-					{ID: "e3", Text: "Melanie likes pottery classes."},
+					{ID: "e1", Text: "Avery moved from her home country four years ago."},
+					{ID: "e2", Text: "Avery said Sweden is where she moved from."},
+					{ID: "e3", Text: "Jordan likes woodworking classes."},
 				},
 			},
-			Evidence: []domain.EvidenceRef{{ID: "e1", Text: "Caroline moved from her home country four years ago."}},
+			Evidence: []domain.EvidenceRef{{ID: "e1", Text: "Avery moved from her home country four years ago."}},
 		}},
 	}
 
@@ -820,7 +820,7 @@ func TestBuildGroundedHitsGroundsSelectedEvidenceWithRelevantFactRefs(t *testing
 
 func TestBuildGroundedHitsEvidenceIsCapped(t *testing.T) {
 	refs := []domain.EvidenceRef{
-		{ID: "e1", Text: "Alice bought pottery."},
+		{ID: "e1", Text: "Alice bought woodworking."},
 		{ID: "e2", Text: "Alice bought ceramic figurines."},
 		{ID: "e3", Text: "Alice bought a violin."},
 		{ID: "e4", Text: "Alice bought a book."},
@@ -836,11 +836,11 @@ func TestBuildGroundedHitsEvidenceIsCapped(t *testing.T) {
 
 func TestBuildGroundedHitsSkipsWeakStopwordOrEntityOnlyRefs(t *testing.T) {
 	refs := []domain.EvidenceRef{
-		{ID: "e1", Text: "Melanie has two cats named Oscar and Luna."},
-		{ID: "e2", Text: "Melanie went hiking with her family."},
-		{ID: "e3", Text: "The pottery class was relaxing."},
+		{ID: "e1", Text: "Jordan has two cats named Oscar and Luna."},
+		{ID: "e2", Text: "Jordan went hiking with her family."},
+		{ID: "e3", Text: "The woodworking class was relaxing."},
 	}
-	got := selectGroundingEvidence("What pets does Melanie have?", []domain.EvidenceRef{refs[0]}, refs)
+	got := selectGroundingEvidence("What pets does Jordan have?", []domain.EvidenceRef{refs[0]}, refs)
 	if ids := evidenceIDs(got); len(ids) != 1 || ids[0] != "e1" {
 		t.Fatalf("weak entity-only refs should not be added, got %+v", ids)
 	}
@@ -848,11 +848,11 @@ func TestBuildGroundedHitsSkipsWeakStopwordOrEntityOnlyRefs(t *testing.T) {
 
 func TestBuildGroundedHitsKeepsTimestampedTemporalSupport(t *testing.T) {
 	refs := []domain.EvidenceRef{
-		{ID: "e1", Text: "Melanie painted a lake sunrise last year."},
-		{ID: "e2", Text: "Melanie shared the sunrise painting with Caroline.", Timestamp: time.Date(2023, 5, 8, 13, 56, 0, 0, time.UTC)},
-		{ID: "e3", Text: "Caroline discussed adoption paperwork."},
+		{ID: "e1", Text: "Jordan painted a lake sunrise last year."},
+		{ID: "e2", Text: "Jordan shared the sunrise painting with Avery.", Timestamp: time.Date(2023, 5, 8, 13, 56, 0, 0, time.UTC)},
+		{ID: "e3", Text: "Avery discussed adoption paperwork."},
 	}
-	got := selectGroundingEvidence("When did Melanie paint a sunrise?", []domain.EvidenceRef{refs[0]}, refs)
+	got := selectGroundingEvidence("When did Jordan paint a sunrise?", []domain.EvidenceRef{refs[0]}, refs)
 	ids := evidenceIDs(got)
 	if len(ids) != 2 || ids[0] != "e1" || ids[1] != "e2" {
 		t.Fatalf("timestamped temporal support should be added, got %+v", ids)

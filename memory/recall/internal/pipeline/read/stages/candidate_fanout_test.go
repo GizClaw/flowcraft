@@ -26,7 +26,7 @@ func (s *variantRecordingSource) Query(_ context.Context, plan domain.QueryPlan)
 	s.texts = append(s.texts, plan.Intent.Text)
 	s.mu.Unlock()
 	switch plan.Intent.Text {
-	case "What pets does Melanie have?":
+	case "What pets does Jordan have?":
 		return domain.SourceResult{
 			Source: s.name,
 			Candidates: []domain.Candidate{
@@ -34,7 +34,7 @@ func (s *variantRecordingSource) Query(_ context.Context, plan domain.QueryPlan)
 				{FactID: "shared", Source: s.name, Rank: 2, Score: 0.30, EvidenceIDs: []string{"e2"}},
 			},
 		}
-	case "pets Melanie":
+	case "pets Jordan":
 		return domain.SourceResult{
 			Source: s.name,
 			Candidates: []domain.Candidate{
@@ -95,7 +95,7 @@ func (s slowFanoutSource) Query(ctx context.Context, plan domain.QueryPlan) doma
 func TestCandidateFanoutUsesPlanDrivenQueryVariantsWithoutDuplicateBoost(t *testing.T) {
 	src := &variantRecordingSource{name: "retrieval"}
 	stage := NewCandidateFanout(func() []port.Source { return []port.Source{src} })
-	intent := domain.QueryIntent{Text: "What pets does Melanie have?"}
+	intent := domain.QueryIntent{Text: "What pets does Jordan have?"}
 	plan := domain.QueryPlan{
 		Intent:        intent,
 		SourceOrder:   []string{"retrieval"},
@@ -207,7 +207,7 @@ func TestCandidateFanoutKeepsStructuredSourcesSerial(t *testing.T) {
 func TestQuerySourceWithPlanVariantsRunsVariantsConcurrently(t *testing.T) {
 	src := slowFanoutSource{name: "retrieval", delay: 80 * time.Millisecond}
 	plan := domain.QueryPlan{
-		Intent:        domain.QueryIntent{Text: "What pets does Melanie have?"},
+		Intent:        domain.QueryIntent{Text: "What pets does Jordan have?"},
 		SourceBudgets: map[string]int{"retrieval": 9},
 		TotalCap:      9,
 		TaskIntents:   []domain.QueryTaskIntent{domain.QueryTaskSetCompletion},
@@ -227,7 +227,7 @@ func TestQuerySourceWithPlanVariantsRunsVariantsConcurrently(t *testing.T) {
 func TestQuerySourceWithPlanVariantsKeepsStructuredVariantsSerial(t *testing.T) {
 	src := slowFanoutSource{name: "entity", delay: 40 * time.Millisecond}
 	plan := domain.QueryPlan{
-		Intent:        domain.QueryIntent{Text: "What pets does Melanie have?"},
+		Intent:        domain.QueryIntent{Text: "What pets does Jordan have?"},
 		SourceBudgets: map[string]int{"entity": 9},
 		TotalCap:      9,
 		TaskIntents:   []domain.QueryTaskIntent{domain.QueryTaskSetCompletion},
