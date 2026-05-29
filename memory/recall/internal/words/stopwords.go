@@ -130,18 +130,6 @@ var extractorWeakEntityPhrasePrefixes = [][]string{
 	{"能够"},
 }
 
-var extractorWeakRelationObjectStartTokens = stopword.NewSet().Extend(
-	"to", "being", "taking", "making", "going", "trying", "planning", "considering", "helping",
-	"ser", "estar", "tomar", "ir", "intentar", "planear", "planificar", "considerar", "ayudar",
-	"siendo", "tomando", "yendo", "intentando", "planeando", "planificando", "considerando", "ayudando",
-	"être", "etre", "étant", "etant", "aller", "allant", "essayer", "planifier", "considérer", "considerer", "aider",
-	"sein", "gehen", "versuchen", "planen", "überlegen", "ueberlegen", "helfen",
-	"ir", "tentar", "planejar", "ajudar", "indo", "tentando", "planejando", "ajudando",
-	"zijn", "gaan", "proberen", "plannen", "overwegen", "helpen",
-	"быть", "идти", "пытаться", "планировать", "рассматривать", "помогать",
-	"做", "进行", "去", "尝试", "计划", "考虑", "帮助",
-)
-
 var relativeTimeEntityTokens = stopword.NewSet().Extend(
 	"today", "tomorrow", "yesterday", "next", "last", "ago",
 	"hoy", "mañana", "manana", "ayer", "próximo", "proximo", "siguiente", "pasado", "hace",
@@ -152,28 +140,6 @@ var relativeTimeEntityTokens = stopword.NewSet().Extend(
 	"сегодня", "завтра", "вчера", "следующий", "прошлый", "назад",
 	"今天", "明天", "昨天", "下次", "上次", "之前",
 )
-
-var lowValueExtractorNotePrefixes = []string{
-	"thanks", "thank you", "wow", "awesome", "nice", "cool", "glad", "congrats", "congratulations",
-	"love that", "that sounds", "sounds like", "it sounds", "it's great", "it is great", "good to see",
-	"happy for", "they must have felt", "i bet", "you are so", "you're so",
-	"gracias", "felicidades", "suena", "me alegra",
-	"merci", "felicitations", "félicitations", "ça sonne", "ca sonne", "je suis content",
-	"danke", "glückwunsch", "glueckwunsch", "klingt",
-	"obrigado", "obrigada", "parabéns", "parabens", "parece",
-	"bedankt", "gefeliciteerd", "klinkt",
-	"спасибо", "поздравляю", "звучит",
-	"谢谢", "恭喜", "听起来",
-}
-
-var lowValueExtractorNoteFragments = []string{
-	" sounds awesome", " sounds great",
-	" suena genial", " suena muy bien",
-	" sounds nice",
-	" klingt toll", " klingt gut",
-	" звучит здорово", " звучит хорошо",
-	"听起来很棒", "听起来不错",
-}
 
 var safeFirstPersonExtractorContentVerbs = stopword.NewSet().Extend(
 	"applied", "attended", "bought", "built", "came", "created", "crafted", "designed",
@@ -206,24 +172,8 @@ var thirdPersonPresentExtractorContentVerbs = map[string]string{
 }
 
 var unsupportedFirstPersonExtractorContentStarts = stopword.NewSet().Extend(
-	"i", "my", "we", "our",
+	"i", "me", "mine", "my", "myself", "we", "our", "ours", "ourselves", "us",
 )
-
-var abstractMadeRelationObjectTokens = stopword.NewSet().Extend(
-	"call", "change", "connection", "connections", "decision", "difference",
-	"donation", "donations", "energy", "friend", "friends", "happiness",
-	"happy", "impact", "medal", "memories", "memory", "plan", "plans",
-	"presentation", "progress", "purpose", "support", "view", "views",
-)
-
-var abstractMadeRelationObjectPhrases = [][]string{
-	{"check", "up"},
-	{"community", "work"},
-	{"own", "family"},
-	{"focused", "business"},
-	{"efficient", "business"},
-	{"toy", "drive"},
-}
 
 func IsIntentEntityStopword(token string) bool {
 	return intentEntityStopwords.Contains(token)
@@ -276,28 +226,7 @@ func IsWeakExtractorRelationObjectPhrase(tokens []string) bool {
 	if len(tokens) > 8 {
 		return true
 	}
-	if extractorWeakRelationObjectStartTokens.Contains(tokens[0]) {
-		return true
-	}
 	return IsWeakExtractorEntityPhrase(tokens)
-}
-
-func IsLowValueExtractorNoteText(text string) bool {
-	text = strings.ToLower(strings.TrimSpace(text))
-	if text == "" {
-		return true
-	}
-	for _, prefix := range lowValueExtractorNotePrefixes {
-		if strings.HasPrefix(text, prefix) {
-			return true
-		}
-	}
-	for _, fragment := range lowValueExtractorNoteFragments {
-		if strings.Contains(text, fragment) {
-			return true
-		}
-	}
-	return false
 }
 
 func IsSafeFirstPersonExtractorContentVerb(token string) bool {
@@ -316,23 +245,6 @@ func IsUnsupportedFirstPersonExtractorContentStart(tokens []string) bool {
 	return unsupportedFirstPersonExtractorContentStarts.Contains(strings.ToLower(tokens[0]))
 }
 
-func IsAbstractMadeRelationObjectPhrase(tokens []string) bool {
-	if len(tokens) == 0 {
-		return true
-	}
-	for _, token := range tokens {
-		if abstractMadeRelationObjectTokens.Contains(strings.ToLower(token)) {
-			return true
-		}
-	}
-	for _, phrase := range abstractMadeRelationObjectPhrases {
-		if hasTokenSequence(tokens, phrase) {
-			return true
-		}
-	}
-	return false
-}
-
 func allWeakExtractorEntityPhraseTokens(tokens []string) bool {
 	for _, token := range tokens {
 		if token == "" {
@@ -346,25 +258,6 @@ func allWeakExtractorEntityPhraseTokens(tokens []string) bool {
 		return false
 	}
 	return true
-}
-
-func hasTokenSequence(tokens []string, phrase []string) bool {
-	if len(phrase) == 0 || len(tokens) < len(phrase) {
-		return false
-	}
-	for i := 0; i <= len(tokens)-len(phrase); i++ {
-		matched := true
-		for j, part := range phrase {
-			if strings.ToLower(tokens[i+j]) != part {
-				matched = false
-				break
-			}
-		}
-		if matched {
-			return true
-		}
-	}
-	return false
 }
 
 func hasTokenPrefix(tokens []string, prefix []string) bool {

@@ -837,6 +837,55 @@ func TestLLMExtractor_RewritesLowercasePossessiveContentWhenSubjectResolved(t *t
 	}
 }
 
+func TestLLMExtractor_RewritesEmbeddedFirstPersonContentWhenSubjectResolved(t *testing.T) {
+	client := &fakeLLM{
+		Responses: []string{`{"facts":[{
+			"text":"Woodworking helps me express my emotions.",
+			"kind":"state",
+			"subject":"Mira",
+			"entities":["Mira","woodworking"],
+			"evidence_refs":[{"id":"D1:3","text":"Woodworking helps me express my emotions."}]
+		}]}`},
+	}
+	ex := NewLLMExtractor(client)
+	out, err := ex.Extract(context.Background(), port.IngestInput{
+		Scope: domain.Scope{RuntimeID: "rt"},
+		Turns: []port.TurnContext{{ID: "D1:3", Speaker: "Mira", Text: "Woodworking helps me express my emotions."}},
+	})
+	if err != nil {
+		t.Fatalf("extract: %v", err)
+	}
+	if len(out) != 1 {
+		t.Fatalf("want rewritten fact, got %+v", out)
+	}
+	if out[0].Content != "Woodworking helps Mira express Mira's emotions." {
+		t.Fatalf("content = %q", out[0].Content)
+	}
+}
+
+func TestLLMExtractor_DropsUnresolvedEmbeddedPluralContent(t *testing.T) {
+	client := &fakeLLM{
+		Responses: []string{`{"facts":[{
+			"text":"Taking care of ourselves is important.",
+			"kind":"state",
+			"subject":"Mira",
+			"entities":["Mira"],
+			"evidence_refs":[{"id":"D1:3","text":"Taking care of ourselves is important."}]
+		}]}`},
+	}
+	ex := NewLLMExtractor(client)
+	out, err := ex.Extract(context.Background(), port.IngestInput{
+		Scope: domain.Scope{RuntimeID: "rt"},
+		Turns: []port.TurnContext{{ID: "D1:3", Speaker: "Mira", Text: "Taking care of ourselves is important."}},
+	})
+	if err != nil {
+		t.Fatalf("extract: %v", err)
+	}
+	if len(out) != 0 {
+		t.Fatalf("plural first-person residue should drop, got %+v", out)
+	}
+}
+
 func TestLLMExtractor_DropsNonSelfContainedPluralContent(t *testing.T) {
 	client := &fakeLLM{
 		Responses: []string{`{"facts":[{
@@ -880,62 +929,6 @@ func TestLLMExtractor_DropsTrivialEllipsisContent(t *testing.T) {
 	}
 	if len(out) != 0 {
 		t.Fatalf("trivial ellipsis content should drop, got %+v", out)
-	}
-}
-
-func TestLLMExtractor_ClearsAbstractMadeRelation(t *testing.T) {
-	client := &fakeLLM{
-		Responses: []string{`{"facts":[{
-			"text":"Avery made a difference at the shelter.",
-			"kind":"event",
-			"subject":"Avery",
-			"predicate":"made",
-			"object":"difference",
-			"entities":["Avery","shelter"],
-			"evidence_refs":[{"id":"D1:3","text":"Avery made a difference at the shelter."}]
-		}]}`},
-	}
-	ex := NewLLMExtractor(client)
-	out, err := ex.Extract(context.Background(), port.IngestInput{
-		Scope: domain.Scope{RuntimeID: "rt"},
-		Turns: []port.TurnContext{{ID: "D1:3", Speaker: "Avery", Text: "Avery made a difference at the shelter."}},
-	})
-	if err != nil {
-		t.Fatalf("extract: %v", err)
-	}
-	if len(out) != 1 {
-		t.Fatalf("want supported fact with relation cleared, got %+v", out)
-	}
-	if out[0].Predicate != "" || out[0].Object != "" {
-		t.Fatalf("abstract made relation should clear, got %q/%q", out[0].Predicate, out[0].Object)
-	}
-}
-
-func TestLLMExtractor_ClearsBroadMadeRelationObjects(t *testing.T) {
-	client := &fakeLLM{
-		Responses: []string{`{"facts":[{
-			"text":"John's group organized a toy drive for kids in need.",
-			"kind":"event",
-			"subject":"John",
-			"predicate":"made",
-			"object":"a toy drive for kids in need",
-			"entities":["John","toy drive"],
-			"evidence_refs":[{"id":"D1:3","text":"We also organized a toy drive for kids in need."}]
-		}]}`},
-	}
-	ex := NewLLMExtractor(client)
-	out, err := ex.Extract(context.Background(), port.IngestInput{
-		Scope: domain.Scope{RuntimeID: "rt"},
-		Turns: []port.TurnContext{{ID: "D1:3", Speaker: "John", Text: "We also organized a toy drive for kids in need."}},
-	})
-	if err != nil {
-		t.Fatalf("extract: %v", err)
-	}
-	if len(out) != 1 {
-		t.Fatalf("want supported fact with relation cleared, got %+v", out)
-	}
-	if out[0].Predicate != "" || out[0].Object != "" {
-		t.Fatalf("broad made relation should clear, got %q/%q", out[0].Predicate, out[0].Object)
 	}
 }
 
@@ -1232,47 +1225,6 @@ func TestTwoPassLLMExtractor_MergePrefersStrongSubject(t *testing.T) {
 	}
 	if out[0].Subject != "Avery" {
 		t.Fatalf("merged fact should prefer strong subject from other passes, got %+v", out[0])
-	}
-}
-
-func TestTwoPassLLMExtractor_FieldMergeGatesAnnotationOnlyNoise(t *testing.T) {
-	memories := mergeFieldFacts(
-		[]ExtractedFact{{
-			Text:      "Avery bought a brass compass.",
-			Subject:   "Avery",
-			SourceIDs: []string{"D1:1"},
-			Quote:     "I bought a brass compass.",
-		}},
-		[]ExtractedFact{{
-			Text:      "That sounds awesome.",
-			Kind:      "note",
-			Subject:   "Avery",
-			Predicate: "recommended",
-			Object:    "awesome",
-			SourceIDs: []string{"D1:2"},
-			Quote:     "That sounds awesome.",
-		}},
-		[]ExtractedFact{{
-			Text:      "Avery bought a brass compass.",
-			Subject:   "Avery",
-			Predicate: "bought",
-			Object:    "brass compass",
-			SourceIDs: []string{"D1:1"},
-			Quote:     "I bought a brass compass.",
-		}},
-		[]ExtractedFact{{
-			Text:      "That sounds awesome.",
-			Subject:   "Avery",
-			Entities:  []string{"Avery"},
-			SourceIDs: []string{"D1:2"},
-			Quote:     "That sounds awesome.",
-		}},
-	)
-	if len(memories) != 1 {
-		t.Fatalf("annotation-only low-value notes should not become facts, got %+v", memories)
-	}
-	if memories[0].Predicate != "bought" || memories[0].Object != "brass compass" {
-		t.Fatalf("relation pass should enrich matching content fact, got %q/%q", memories[0].Predicate, memories[0].Object)
 	}
 }
 
@@ -1736,6 +1688,9 @@ func TestLLMExtractorSystemPrompt_GuardsAntiAbstraction(t *testing.T) {
 		"that book",
 		"Be careful with second-person comments",
 		"second-person detail is about the addressee",
+		"do not leave first-person or group pronouns anywhere",
+		"dialogue act instead of memory\n  content",
+		"questions, requests for updates",
 		"subject -> predicate -> object",
 		"MUST be filled as a pair",
 		"Never emit an object without a predicate",
@@ -1744,6 +1699,9 @@ func TestLLMExtractorSystemPrompt_GuardsAntiAbstraction(t *testing.T) {
 		"Do not map an unsupported relation to the nearest canonical predicate",
 		"owns_pet is only for a named animal/pet",
 		"recommended requires an explicit recommendation",
+		"likes / enjoys / prefers require",
+		"appointments, businesses, relationships",
+		"restaurants, parks, hikes",
 		"Do not invent an object",
 		"planning to repair a bicycle",
 		`"procedure"`,
@@ -1783,6 +1741,9 @@ func TestTwoPassPrompts_GuardCoverageAndGrounding(t *testing.T) {
 		"Be careful with second-person comments",
 		"second-person detail is about the addressee",
 		"Never output pronouns as \"subject\"",
+		"must not leave first-person or group pronouns anywhere",
+		"Do not emit dialogue-act facts",
+		"let me know",
 		"signed up for a woodworking class yesterday",
 		"NOT \"Mira uses woodworking for self-expression.\"",
 		"Do not create cross-turn summary facts",
@@ -1832,6 +1793,10 @@ func TestTwoPassPrompts_GuardCoverageAndGrounding(t *testing.T) {
 		"Never use for future\n    plans",
 		"made: the subject actually created",
 		"Never use for support networks, feelings, plans",
+		"appointments, businesses, relationships",
+		"restaurants, parks, hikes",
+		"likes / enjoys / prefers require",
+		"made -> \"support circle\"/\"career ideas\"/\"appointment\"",
 		"recommended: the subject explicitly recommended",
 		"Never use for encouragement, praise, compliments",
 		"That prototype\n  is impressive",

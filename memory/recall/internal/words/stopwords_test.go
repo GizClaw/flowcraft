@@ -42,13 +42,8 @@ func TestExtractorEntityWeakTokens(t *testing.T) {
 			t.Fatalf("%q should be a weak extractor entity phrase", phrase)
 		}
 	}
-	if IsWeakExtractorEntityPhrase([]string{"pottery", "class", "yesterday"}) {
+	if IsWeakExtractorEntityPhrase([]string{"woodworking", "class", "yesterday"}) {
 		t.Fatal("concrete entity phrases should not be weak extractor entity phrases")
-	}
-	for _, phrase := range [][]string{{"to", "help", "others"}, {"being", "accepted"}, {"planning", "a", "trip"}, {"taking", "care", "of", "family"}, {"ayudando", "otros"}, {"aider", "les", "autres"}, {"helfen", "anderen"}, {"ajudando", "outros"}, {"помогать", "другим"}, {"帮助", "别人"}} {
-		if !IsWeakExtractorRelationObjectPhrase(phrase) {
-			t.Fatalf("%q should be a weak relation object phrase", phrase)
-		}
 	}
 	if IsWeakExtractorRelationObjectPhrase([]string{"ceramic", "bowl"}) {
 		t.Fatal("concrete relation objects should not be weak relation object phrases")
@@ -59,7 +54,7 @@ func TestExtractorEntityWeakTokens(t *testing.T) {
 	if IsWeakExtractorRelationObjectPhrase([]string{"su", "perro"}) {
 		t.Fatal("relation object checks should preserve concrete multilingual objects after determiners")
 	}
-	if IsWeakExtractorEntityPhrase([]string{"the", "pottery", "class"}) {
+	if IsWeakExtractorEntityPhrase([]string{"the", "woodworking", "class"}) {
 		t.Fatal("entity phrase checks should not treat all English stopwords as abstract gerunds")
 	}
 	for _, subject := range [][]string{{"i"}, {"me"}, {"my"}, {"i", "m"}, {"i", "ll"}, {"yo"}, {"je"}, {"ich"}, {"eu"}, {"ik"}, {"я"}, {"我"}} {
@@ -87,14 +82,6 @@ func TestExtractorEntityWeakTokens(t *testing.T) {
 			t.Fatalf("%q should be a calendar entity token", tok)
 		}
 	}
-	for _, text := range []string{"That sounds awesome.", "Congrats on the race!", "Gracias por compartir", "Merci, c'est gentil", "Klingt toll", "Спасибо за это", "听起来很棒"} {
-		if !IsLowValueExtractorNoteText(text) {
-			t.Fatalf("%q should be low-value extractor note language", text)
-		}
-	}
-	if IsLowValueExtractorNoteText("Avery bought a ceramic bowl.") {
-		t.Fatal("concrete fact text should not be low-value extractor note language")
-	}
 	for _, tok := range []string{"went", "bought", "visited", "could"} {
 		if !IsSafeFirstPersonExtractorContentVerb(tok) {
 			t.Fatalf("%q should be safe for first-person content rewrite", tok)
@@ -106,12 +93,7 @@ func TestExtractorEntityWeakTokens(t *testing.T) {
 	if !IsUnsupportedFirstPersonExtractorContentStart([]string{"my", "apartment"}) {
 		t.Fatal("lowercase possessive content starts should be treated as first-person")
 	}
-	for _, phrase := range [][]string{{"difference"}, {"community", "work"}, {"check", "up"}, {"medal"}, {"donations"}, {"plans"}, {"toy", "drive"}, {"own", "family"}, {"focused", "business"}} {
-		if !IsAbstractMadeRelationObjectPhrase(phrase) {
-			t.Fatalf("%q should be abstract for made relation objects", phrase)
-		}
-	}
-	if IsAbstractMadeRelationObjectPhrase([]string{"model", "bridge"}) {
-		t.Fatal("concrete made relation object should not be abstract")
+	if !IsUnsupportedFirstPersonExtractorContentStart([]string{"me"}) || !IsUnsupportedFirstPersonExtractorContentStart([]string{"ourselves"}) {
+		t.Fatal("embedded first-person residue tokens should be treated as unsupported")
 	}
 }
