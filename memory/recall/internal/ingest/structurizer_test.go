@@ -205,6 +205,24 @@ func TestDefaultStructurizer_LiftsSpeakerFromSupportingTurn(t *testing.T) {
 	}
 }
 
+func TestDefaultStructurizer_DoesNotFillSuppressedSubjectFromSpeaker(t *testing.T) {
+	turn := port.TurnContext{
+		ID:      "D1:3",
+		Speaker: "Rowan",
+		Role:    "assistant",
+		Text:    "Avery likes Riverton.",
+	}
+	f := domain.TemporalFact{
+		Content:      "Avery likes Riverton.",
+		EvidenceRefs: []domain.EvidenceRef{{ID: "D1:3"}},
+		Metadata:     map[string]any{domain.MetaSubjectSuppressed: true},
+	}
+	out := DefaultStructurizer{}.Structurize(f, port.IngestInput{Turns: []port.TurnContext{turn}})
+	if out.Subject != "" {
+		t.Fatalf("suppressed subject should not be filled from speaker, got %q", out.Subject)
+	}
+}
+
 func TestDefaultStructurizer_PrefersContentRelativeTimeOverTurnTime(t *testing.T) {
 	turn := port.TurnContext{
 		ID:      "D1:4",
@@ -380,7 +398,7 @@ func TestDefaultStructurizer_ExtractsEntitiesFromContent(t *testing.T) {
 }
 
 func TestDefaultStructurizer_DropsWeakSentenceOpenersFromEntities(t *testing.T) {
-	f := domain.TemporalFact{Content: "On 2024-05-07, Avery signed up for pottery. Taking time for herself helps Avery."}
+	f := domain.TemporalFact{Content: "On 2024-05-07, Avery signed up for woodworking. Taking time for herself helps Avery."}
 	out := DefaultStructurizer{}.Structurize(f, port.IngestInput{})
 
 	for _, weak := range []string{"on", "taking"} {

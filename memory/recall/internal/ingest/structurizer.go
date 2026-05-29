@@ -126,7 +126,8 @@ func (s DefaultStructurizer) Structurize(f domain.TemporalFact, input port.Inges
 		f.Entities = extractor.ExtractEntities(f.Content, input.KnownEntities)
 	}
 
-	if f.Subject == "" {
+	subjectSuppressed, _ := f.Metadata[domain.MetaSubjectSuppressed].(bool)
+	if f.Subject == "" && !subjectSuppressed {
 		if turn != nil && turn.Speaker != "" {
 			f.Subject = turn.Speaker
 		} else if len(f.Entities) > 0 {

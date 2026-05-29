@@ -43,4 +43,16 @@ const (
 	// rankers can treat them as useful but lower-confidence evidence
 	// when they compete with normal first-pass memories.
 	MetaCoverageRepair = "coverage_repair"
+
+	// MetaSubjectSuppressed marks facts whose extractor deliberately
+	// rejected the emitted subject as unresolved. Structurizers must not
+	// treat an empty subject on these facts as permission to fill it from
+	// the supporting turn speaker.
+	MetaSubjectSuppressed = "subject_suppressed"
+
+	// MetaExactSourcePhrases preserves answer-bearing quoted phrases that
+	// were present in evidence but omitted from canonical Content. Keeping
+	// them in metadata avoids polluting merge keys and display text while
+	// still leaving retrieval/debug paths access to the exact source span.
+	MetaExactSourcePhrases = "exact_source_phrases"
 )

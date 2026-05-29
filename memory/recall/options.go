@@ -85,10 +85,10 @@ func (c *llmExtractorConfig) build() port.Extractor {
 	if c.mode == LLMExtractionTwoPass {
 		ex := ingest.NewTwoPassLLMExtractor(c.client)
 		if c.systemPrompt != "" {
-			ex.MemorySystem = c.systemPrompt
+			ex.FactSystem = c.systemPrompt
 		}
 		if c.schemaName != "" {
-			ex.MemorySchemaName = c.schemaName
+			ex.FactSchemaName = c.schemaName
 			ex.KindSchemaName = c.schemaName + "_kinds"
 			ex.RelationSchemaName = c.schemaName + "_relations"
 			ex.EntitySchemaName = c.schemaName + "_entities"
@@ -211,7 +211,7 @@ func WithLLMExtractionMode(mode LLMExtractionMode) LLMExtractorOption {
 	})
 }
 
-// WithLLMExtractorSystemPrompt overrides the default memory extraction
+// WithLLMExtractorSystemPrompt overrides the default fact extraction
 // system prompt. In two-pass mode, evidence grounding keeps its shorter
 // SDK-managed prompt.
 func WithLLMExtractorSystemPrompt(prompt string) LLMExtractorOption {

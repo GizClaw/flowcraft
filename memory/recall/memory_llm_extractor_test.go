@@ -3,6 +3,7 @@ package recall
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 
 	"github.com/GizClaw/flowcraft/memory/recall/internal/ingest"
@@ -15,18 +16,31 @@ import (
 // Generate call and records the options it received so tests can
 // verify the extractor pipeline wired them correctly.
 type scriptedLLM struct {
-	Response  string
-	Responses []string
-	Options   [][]llm.GenerateOption
+	mu                    sync.Mutex
+	Response              string
+	Responses             []string
+	ResponsesBySchemaName map[string]string
+	Options               [][]llm.GenerateOption
 }
 
 func (s *scriptedLLM) Generate(_ context.Context, _ []llm.Message, opts ...llm.GenerateOption) (llm.Message, llm.TokenUsage, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.Options = append(s.Options, opts)
 	body := ""
+	if s.ResponsesBySchemaName != nil {
+		got := llm.GenerateOptions{}
+		for _, opt := range opts {
+			opt(&got)
+		}
+		if got.JSONSchema != nil {
+			body = s.ResponsesBySchemaName[got.JSONSchema.Name]
+		}
+	}
 	if len(s.Responses) > 0 {
 		body = s.Responses[0]
 		s.Responses = s.Responses[1:]
-	} else {
+	} else if body == "" {
 		body = s.Response
 	}
 	if body == "" {
@@ -42,12 +56,13 @@ func (s *scriptedLLM) GenerateStream(context.Context, []llm.Message, ...llm.Gene
 func TestWithLLMExtractor_WiresExtractorIntoSavePath(t *testing.T) {
 	store := temporalstore.NewMemoryStore()
 	client := &scriptedLLM{Response: `{"facts":[{
-		"kind":"preference",
-		"subject":"alice",
-		"predicate":"city",
-		"content":"Paris",
-		"source_message_ids":["D1:3"],
-		"evidence_refs":[{"id":"D1:3","message_id":"m-3","role":"user","text":"Alice said Paris is her city.","timestamp":"2026-05-19T05:00:00Z"}]
+		"text":"Alice said Paris is her city.",
+		"kind":"state",
+		"subject":"Alice",
+		"predicate":"",
+		"object":"",
+		"entities":["Alice","Paris"],
+		"evidence_refs":[{"id":"D1:3","text":"Alice said Paris is her city."}]
 	}]}`}
 
 	mem, err := New(
@@ -103,9 +118,12 @@ func TestWithLLMExtractor_WiresExtractorIntoSavePath(t *testing.T) {
 
 func TestWithLLMExtractor_TwoPassModeWiresTwoStepExtractor(t *testing.T) {
 	store := temporalstore.NewMemoryStore()
-	client := &scriptedLLM{Responses: []string{
-		`{"memories":[{"text":"Alice likes Paris.","kind":"preference"}]}`,
-		`{"links":[{"memory_index":0,"evidence_refs":[{"id":"D1:3","text":"Alice likes Paris."}]}]}`,
+	client := &scriptedLLM{ResponsesBySchemaName: map[string]string{
+		"recall_facts_v2":           `{"facts":[{"text":"Alice likes Paris.","subject":"Alice","source_ids":["D1:3"],"quote":"Alice likes Paris."}]}`,
+		"recall_facts_v2_kinds":     `{"facts":[{"text":"Alice likes Paris.","kind":"preference","subject":"Alice","source_ids":["D1:3"],"quote":"Alice likes Paris."}]}`,
+		"recall_facts_v2_relations": `{"facts":[{"text":"Alice likes Paris.","subject":"Alice","predicate":"likes","object":"Paris","source_ids":["D1:3"],"quote":"Alice likes Paris."}]}`,
+		"recall_facts_v2_entities":  `{"facts":[{"text":"Alice likes Paris.","subject":"Alice","entities":["Alice","Paris"],"source_ids":["D1:3"],"quote":"Alice likes Paris."}]}`,
+		"recall_facts_v2_evidence":  `{"links":[{"fact_index":0,"evidence_refs":[{"id":"D1:3","text":"Alice likes Paris."}]}]}`,
 	}}
 	mem, err := New(
 		WithTemporalStore(store),
@@ -113,7 +131,7 @@ func TestWithLLMExtractor_TwoPassModeWiresTwoStepExtractor(t *testing.T) {
 			client,
 			WithLLMExtractionMode(LLMExtractionTwoPass),
 			WithLLMExtractorTemperature(0.3),
-			WithLLMExtractorSchemaName("recall_memories_v2"),
+			WithLLMExtractorSchemaName("recall_facts_v2"),
 		),
 	)
 	if err != nil {
@@ -127,25 +145,33 @@ func TestWithLLMExtractor_TwoPassModeWiresTwoStepExtractor(t *testing.T) {
 	if err != nil {
 		t.Fatalf("save: %v", err)
 	}
-	if len(client.Options) != 2 {
-		t.Fatalf("two-pass mode should call LLM twice, got %d", len(client.Options))
+	if len(client.Options) != 5 {
+		t.Fatalf("two-pass mode should call four raw field extractors and grounding; got %d", len(client.Options))
 	}
-	first := llm.GenerateOptions{}
-	for _, opt := range client.Options[0] {
-		opt(&first)
+	seenSchemas := map[string]bool{}
+	for _, opts := range client.Options {
+		got := llm.GenerateOptions{}
+		for _, opt := range opts {
+			opt(&got)
+		}
+		if got.Temperature == nil || *got.Temperature != 0.3 {
+			t.Fatalf("temperature should propagate to every two-pass call, got %v", got.Temperature)
+		}
+		if got.JSONSchema == nil {
+			t.Fatalf("schema missing from two-pass call")
+		}
+		seenSchemas[got.JSONSchema.Name] = true
 	}
-	second := llm.GenerateOptions{}
-	for _, opt := range client.Options[1] {
-		opt(&second)
-	}
-	if first.Temperature == nil || *first.Temperature != 0.3 || second.Temperature == nil || *second.Temperature != 0.3 {
-		t.Fatalf("temperature should propagate to both passes, got %v/%v", first.Temperature, second.Temperature)
-	}
-	if first.JSONSchema == nil || first.JSONSchema.Name != "recall_memories_v2" {
-		t.Fatalf("memory schema name not propagated: %+v", first.JSONSchema)
-	}
-	if second.JSONSchema == nil || second.JSONSchema.Name != "recall_memories_v2_evidence" {
-		t.Fatalf("evidence schema name not derived: %+v", second.JSONSchema)
+	for _, name := range []string{
+		"recall_facts_v2",
+		"recall_facts_v2_kinds",
+		"recall_facts_v2_relations",
+		"recall_facts_v2_entities",
+		"recall_facts_v2_evidence",
+	} {
+		if !seenSchemas[name] {
+			t.Fatalf("schema %q not used, saw %+v", name, seenSchemas)
+		}
 	}
 	if len(res.FactIDs) != 1 {
 		t.Fatalf("save returned %d ids", len(res.FactIDs))

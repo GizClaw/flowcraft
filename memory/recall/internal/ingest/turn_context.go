@@ -74,21 +74,21 @@ func buildExtractorInputEnvelope(input port.IngestInput, sourceTurnsJSONL string
 // buildExtractorUserMessage renders Input.Turns into the tagged user-message
 // protocol the LLM sees. turnIndex is a fast id-lookup the response parser
 // uses to enrich evidence refs with typed timestamp / role signals.
-func buildExtractorUserMessage(input port.IngestInput) (string, map[string]port.TurnContext, bool) {
-	sourceTurnsJSONL, index, ok := buildExtractorSourceTurnsJSONL(input)
-	if !ok {
-		return "", nil, false
+func buildExtractorUserMessage(input port.IngestInput) (string, map[string]port.TurnContext, bool, error) {
+	sourceTurnsJSONL, index, ok, err := buildExtractorSourceTurnsJSONL(input)
+	if !ok || err != nil {
+		return "", nil, false, err
 	}
-	return buildExtractorInputEnvelope(input, sourceTurnsJSONL), index, true
+	return buildExtractorInputEnvelope(input, sourceTurnsJSONL), index, true, nil
 }
 
 // buildExtractorSourceTurnsJSONL renders only the extractable source turns.
 // Turns with empty ID get a synthetic "turn-N" so prose-only callers (a
 // single TurnContext with just Text) still produce a valid shape the model can
 // cite. ok=false means "no usable input — skip the LLM call".
-func buildExtractorSourceTurnsJSONL(input port.IngestInput) (string, map[string]port.TurnContext, bool) {
+func buildExtractorSourceTurnsJSONL(input port.IngestInput) (string, map[string]port.TurnContext, bool, error) {
 	if len(input.Turns) == 0 {
-		return "", nil, false
+		return "", nil, false, nil
 	}
 	index := make(map[string]port.TurnContext, len(input.Turns))
 	var b strings.Builder
@@ -100,6 +100,9 @@ func buildExtractorSourceTurnsJSONL(input port.IngestInput) (string, map[string]
 		id := turnLLMID(t)
 		if id == "" {
 			id = fmt.Sprintf("turn-%d", i+1)
+		}
+		if _, dup := index[id]; dup {
+			return "", nil, false, fmt.Errorf("duplicate source turn id %q", id)
 		}
 		wire := struct {
 			ID      string `json:"id"`
@@ -126,9 +129,9 @@ func buildExtractorSourceTurnsJSONL(input port.IngestInput) (string, map[string]
 		index[id] = t
 	}
 	if written == 0 {
-		return "", nil, false
+		return "", nil, false, nil
 	}
-	return b.String(), index, true
+	return b.String(), index, true, nil
 }
 
 // turnLLMID is the id the LLM sees and cites. We prefer the

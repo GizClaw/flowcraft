@@ -188,7 +188,7 @@ type slowLLM struct {
 func (s *slowLLM) Generate(_ context.Context, _ []llm.Message, _ ...llm.GenerateOption) (llm.Message, llm.TokenUsage, error) {
 	s.calls.Add(1)
 	time.Sleep(s.delay)
-	return llm.NewTextMessage(model.RoleAssistant, `{"memories":[{"text":"bench","kind":"note"}]}`), llm.TokenUsage{}, nil
+	return llm.NewTextMessage(model.RoleAssistant, `{"facts":[{"text":"bench","kind":"note"}]}`), llm.TokenUsage{}, nil
 }
 
 func (s *slowLLM) GenerateStream(context.Context, []llm.Message, ...llm.GenerateOption) (llm.StreamMessage, error) {
