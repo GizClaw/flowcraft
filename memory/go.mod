@@ -3,7 +3,7 @@ module github.com/GizClaw/flowcraft/memory
 go 1.25.0
 
 require (
-	github.com/GizClaw/flowcraft/sdk v0.3.12
+	github.com/GizClaw/flowcraft/sdk v0.4.0
 	github.com/go-ego/gse v1.0.2
 	github.com/jackc/pgx/v5 v5.9.2
 	github.com/kljensen/snowball v0.10.0
