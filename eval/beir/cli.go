@@ -13,7 +13,7 @@ import (
 	"github.com/GizClaw/flowcraft/eval/internal/cliflags"
 	"github.com/GizClaw/flowcraft/eval/internal/env"
 	"github.com/GizClaw/flowcraft/eval/internal/notify"
-	"github.com/GizClaw/flowcraft/sdk/knowledge"
+	"github.com/GizClaw/flowcraft/memory/knowledge"
 
 	_ "github.com/GizClaw/flowcraft/sdkx/embedding/azure"
 	_ "github.com/GizClaw/flowcraft/sdkx/embedding/bytedance"
@@ -39,7 +39,7 @@ func RegisterCobra(parent *cobra.Command, g *cliflags.Global) {
 	cmd := &cobra.Command{
 		Use:   "beir",
 		Short: "BEIR-format public retrieval benchmark (nDCG@k / Recall@k / MRR)",
-		Long: `Run a BEIR-format retrieval evaluation against sdk/knowledge.
+		Long: `Run a BEIR-format retrieval evaluation against memory/knowledge.
 
 The BEIR three-file layout (corpus.jsonl + queries.jsonl + qrels/test.tsv)
 loads as-is — no converter required. Scoring uses graded nDCG@k,

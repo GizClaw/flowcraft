@@ -361,8 +361,9 @@ func mapAPIError(b baseResp) error {
 // --- helpers ---------------------------------------------------------
 
 func truncate(s string, n int) string {
-	if len(s) <= n {
+	runes := []rune(s)
+	if n <= 0 || len(runes) <= n {
 		return s
 	}
-	return s[:n] + "…"
+	return string(runes[:n]) + "…"
 }

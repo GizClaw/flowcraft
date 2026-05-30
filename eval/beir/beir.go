@@ -1,5 +1,5 @@
 // Package beir runs BEIR-style retrieval evaluations against
-// sdk/knowledge. The original BEIR paper (https://arxiv.org/abs/2104.08663)
+// memory/knowledge. The original BEIR paper (https://arxiv.org/abs/2104.08663)
 // and its 18-task leaderboard are the de-facto standard for measuring
 // dense / sparse / hybrid retrievers on a common axis. We support the
 // shape of any BEIR-format dataset (corpus.jsonl + queries.jsonl +
@@ -20,7 +20,7 @@
 //     judgments (qrels). Metrics are nDCG@k, Recall@k, MRR. Acts as a
 //     comparable-to-leaderboard baseline.
 //
-// Both packages drive the same sdk/knowledge.Service; only the
+// Both packages drive the same memory/knowledge.Service; only the
 // scoring layer differs.
 package beir
 
@@ -38,10 +38,10 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/GizClaw/flowcraft/sdk/knowledge"
-	"github.com/GizClaw/flowcraft/sdk/knowledge/backend/fs"
-	"github.com/GizClaw/flowcraft/sdk/knowledge/factory"
-	"github.com/GizClaw/flowcraft/sdk/retrieval/memory"
+	"github.com/GizClaw/flowcraft/memory/knowledge"
+	"github.com/GizClaw/flowcraft/memory/knowledge/backend/fs"
+	"github.com/GizClaw/flowcraft/memory/knowledge/factory"
+	"github.com/GizClaw/flowcraft/memory/retrieval/memory"
 	"github.com/GizClaw/flowcraft/sdk/workspace"
 )
 
@@ -52,7 +52,7 @@ type Lane = knowledge.SearchMode
 // Document is a single BEIR corpus entry. title and text are kept
 // separate so we can mirror the original "title: \n text" formatting
 // some BEIR baselines use; in practice we concatenate them when
-// inserting into knowledge.Service because sdk/knowledge does not
+// inserting into knowledge.Service because memory/knowledge does not
 // model titles distinctly today.
 type Document struct {
 	ID    string `json:"_id"`
@@ -231,7 +231,7 @@ type Options struct {
 	// remain far below the Lucene/Anserini doc-level BM25 baseline
 	// (0.679) because the underlying retrieval path is chunk-level
 	// by design; closing that gap requires a doc-level Search API
-	// in sdk/knowledge (tracked in #126), not adapter-side tweaks.
+	// in memory/knowledge (tracked in #126), not adapter-side tweaks.
 	//
 	//   - CollapseMax (default): keep highest-scoring chunk per
 	//     docID. Most stable on length-skewed corpora.
@@ -367,7 +367,7 @@ func Run(ctx context.Context, ds *Dataset, opts Options) (*Report, error) {
 			"n_queries":          len(queries),
 			// Chunk→doc collapse settings are stable per-run audit
 			// trail for leaderboard.md (BEIR protocol requires
-			// doc-level ranking; sdk/knowledge returns chunk-level).
+			// doc-level ranking; memory/knowledge returns chunk-level).
 			"collapse_to_doc":   true,
 			"collapse_strategy": string(opts.CollapseStrategy),
 			"overfetch_factor":  opts.OverfetchFactor,

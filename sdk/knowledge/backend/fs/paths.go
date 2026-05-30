@@ -20,6 +20,9 @@
 // Atomic writes go through workspace.Rename(tmp, final); the workspace
 // contract requires Rename to be POSIX-atomic when the medium supports
 // it, so partial writes are never observable.
+//
+// Deprecated: use github.com/GizClaw/flowcraft/memory/knowledge/backend/fs
+// instead. This package will be removed in v0.5.0.
 package fs
 
 import (

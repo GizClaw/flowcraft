@@ -9,4 +9,7 @@
 // of the form "<prefix>_<runtime>__u_<user>" are intentionally non-injective
 // when the sane'd runtime or user contains the delimiter; use
 // Prefix.LegacyUserScopeV1 only from migration tooling.
+//
+// Deprecated: use github.com/GizClaw/flowcraft/memory/retrieval/namespace instead.
+// This package will be removed in v0.5.0.
 package namespace

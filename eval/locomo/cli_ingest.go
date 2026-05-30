@@ -8,10 +8,9 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/GizClaw/flowcraft/eval/dataset"
-	"github.com/GizClaw/flowcraft/eval/locomo/runners/flowcraft"
+	"github.com/GizClaw/flowcraft/eval/locomo/runners"
 	"github.com/GizClaw/flowcraft/sdk/llm"
 	"github.com/GizClaw/flowcraft/sdk/model"
-	"github.com/GizClaw/flowcraft/sdk/recall_v1"
 )
 
 // addLocomoIngest wires `eval locomo ingest` — runs Runner.Save in a
@@ -28,30 +27,31 @@ func addLocomoIngest(parent *cobra.Command) {
 		Use:   "ingest",
 		Short: "Pipe a dataset through Runner.Save (no QA) and report latencies",
 		RunE: func(c *cobra.Command, _ []string) error {
-			if runnerName != "flowcraft" {
-				return fmt.Errorf("unknown runner: %s", runnerName)
+			canonical, err := normalizeRunnerName(runnerName)
+			if err != nil {
+				return err
 			}
 			var ds *dataset.Dataset
-			var err error
 			if datasetFlag == "synthetic" {
 				ds = dataset.Synthetic()
 			} else {
-				ds, err = dataset.LoadJSONL(datasetFlag)
-				if err != nil {
-					return err
+				var loadErr error
+				ds, loadErr = dataset.LoadJSONL(datasetFlag)
+				if loadErr != nil {
+					return loadErr
 				}
 			}
-			r, err := flowcraft.New(flowcraft.Options{Name: runnerName})
+			r, err := buildLocomoRunner(canonical, v1RunnerConfig{}, nil, nil, nil)
 			if err != nil {
 				return err
 			}
 			defer r.Close()
 
-			scope := recall.Scope{RuntimeID: "ingest", UserID: "u-bench", AgentID: "agent-bench"}
+			scope := runners.Scope{RuntimeID: "ingest", UserID: "u-bench", AgentID: "agent-bench"}
 			// SaveRaw is an optional interface the runner may expose
 			// to skip the extractor and bench the raw-storage path.
 			type rawSaver interface {
-				SaveRaw(ctx context.Context, scope recall.Scope, msgs []llm.Message) (int, time.Duration, error)
+				SaveRaw(ctx context.Context, scope runners.Scope, msgs []llm.Message) (int, time.Duration, error)
 			}
 			for _, conv := range ds.Conversations {
 				t0 := time.Now()
@@ -68,7 +68,7 @@ func addLocomoIngest(parent *cobra.Command) {
 		},
 	}
 
-	cmd.Flags().StringVar(&runnerName, "runner", "flowcraft", "runner name")
+	cmd.Flags().StringVar(&runnerName, "runner", runnerFlowcraftRecallV1, "runner: flowcraft-recall-v1 | flowcraft-recall-v2")
 	cmd.Flags().StringVar(&datasetFlag, "dataset", "synthetic", "dataset (synthetic) or .jsonl path")
 
 	parent.AddCommand(cmd)

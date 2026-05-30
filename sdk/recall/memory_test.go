@@ -1,0 +1,577 @@
+package recall_test
+
+import (
+	"context"
+	"errors"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/GizClaw/flowcraft/sdk/llm"
+	"github.com/GizClaw/flowcraft/sdk/model"
+	"github.com/GizClaw/flowcraft/sdk/recall"
+	"github.com/GizClaw/flowcraft/sdk/retrieval"
+	"github.com/GizClaw/flowcraft/sdk/retrieval/journal"
+	memidx "github.com/GizClaw/flowcraft/sdk/retrieval/memory"
+)
+
+type stubLLM struct {
+	resp string
+	err  error
+}
+
+func (s *stubLLM) Generate(_ context.Context, _ []llm.Message, _ ...llm.GenerateOption) (llm.Message, llm.TokenUsage, error) {
+	if s.err != nil {
+		return llm.Message{}, llm.TokenUsage{}, s.err
+	}
+	return llm.Message{
+		Role:  model.RoleAssistant,
+		Parts: []model.Part{{Type: model.PartText, Text: s.resp}},
+	}, llm.TokenUsage{}, nil
+}
+
+func (s *stubLLM) GenerateStream(_ context.Context, _ []llm.Message, _ ...llm.GenerateOption) (llm.StreamMessage, error) {
+	return nil, errors.New("not used")
+}
+
+func newScope() recall.Scope {
+	return recall.Scope{RuntimeID: "rt1", AgentID: "bot", UserID: "u1"}
+}
+
+func TestSaveExtractsAdditiveFacts(t *testing.T) {
+	ctx := context.Background()
+	idx := memidx.New()
+	resp := `[{"content":"用户喜欢黑咖啡","categories":["preference"],"entities":["黑咖啡"],"source":"user","confidence":0.95}]`
+	m, err := recall.New(idx,
+		recall.WithLLM(&stubLLM{resp: resp}),
+		recall.WithRequireUserID(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer m.Close()
+
+	res, err := m.Save(ctx, newScope(), []llm.Message{
+		{Role: model.RoleUser, Parts: []model.Part{{Type: model.PartText, Text: "我每天早上喝黑咖啡"}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.EntryIDs) != 1 {
+		t.Fatalf("entry_ids=%v", res.EntryIDs)
+	}
+	hits, err := m.Recall(ctx, newScope(), recall.Request{Query: "咖啡", TopK: 5})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hits) != 1 || !strings.Contains(hits[0].Entry.Content, "黑咖啡") {
+		t.Fatalf("hits=%+v", hits)
+	}
+	if hits[0].Entry.Categories[0] != "preference" {
+		t.Fatalf("categories=%+v", hits[0].Entry.Categories)
+	}
+	if len(hits[0].Entry.Entities) == 0 {
+		t.Fatalf("entities lost: %+v", hits[0].Entry)
+	}
+}
+
+func TestSaveIdempotentByDocID(t *testing.T) {
+	ctx := context.Background()
+	idx := memidx.New()
+	resp := `[{"content":"User likes coffee","entities":["coffee"]}]`
+	m, _ := recall.New(idx, recall.WithLLM(&stubLLM{resp: resp}), recall.WithRequireUserID())
+	defer m.Close()
+	scope := newScope()
+	msgs := []llm.Message{{Role: model.RoleUser, Parts: []model.Part{{Type: model.PartText, Text: "I love coffee"}}}}
+	r1, err := m.Save(ctx, scope, msgs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r2, err := m.Save(ctx, scope, msgs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r1.EntryIDs[0] != r2.EntryIDs[0] {
+		t.Fatalf("ids drift: %s vs %s", r1.EntryIDs[0], r2.EntryIDs[0])
+	}
+	hits, _ := m.Recall(ctx, scope, recall.Request{Query: "coffee", TopK: 5})
+	if len(hits) != 1 {
+		t.Fatalf("expected dedup via idempotent upsert, got %d", len(hits))
+	}
+}
+
+func TestRequireUserIDValidation(t *testing.T) {
+	idx := memidx.New()
+	m, _ := recall.New(idx, recall.WithLLM(&stubLLM{resp: "[]"}), recall.WithRequireUserID())
+	defer m.Close()
+	_, err := m.Save(context.Background(), recall.Scope{RuntimeID: "rt1"}, []llm.Message{
+		{Role: model.RoleUser, Parts: []model.Part{{Type: model.PartText, Text: "hi"}}},
+	})
+	if !errors.Is(err, recall.ErrMissingUserID) {
+		t.Fatalf("expected ErrMissingUserID, got %v", err)
+	}
+}
+
+func TestAddRawAndAgentFilter(t *testing.T) {
+	ctx := context.Background()
+	idx := memidx.New()
+	m, _ := recall.New(idx, recall.WithRequireUserID())
+	defer m.Close()
+	scope := newScope()
+	if _, err := m.Add(ctx, scope, recall.Entry{Content: "raw fact for bot1", Categories: []string{"profile"}}); err != nil {
+		t.Fatal(err)
+	}
+	other := scope
+	other.AgentID = "other-bot"
+	if _, err := m.Add(ctx, other, recall.Entry{Content: "raw fact for other bot", Categories: []string{"profile"}}); err != nil {
+		t.Fatal(err)
+	}
+	hits, err := m.Recall(ctx, scope, recall.Request{Query: "raw fact", TopK: 5})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hits) != 1 || !strings.Contains(hits[0].Entry.Content, "bot1") {
+		t.Fatalf("agent filter leaked: %+v", hits)
+	}
+}
+
+func TestTTLSoftFilter(t *testing.T) {
+	ctx := context.Background()
+	idx := memidx.New()
+	now := time.Now()
+	m, _ := recall.New(idx,
+		recall.WithRequireUserID(),
+		recall.WithClock(func() time.Time { return now }),
+	)
+	defer m.Close()
+	scope := newScope()
+	past := now.Add(-time.Second)
+	if _, err := m.Add(ctx, scope, recall.Entry{
+		Content: "expired memory", Categories: []string{"episodic"}, ExpiresAt: &past,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	future := now.Add(24 * time.Hour)
+	if _, err := m.Add(ctx, scope, recall.Entry{
+		Content: "active memory", Categories: []string{"episodic"}, ExpiresAt: &future,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	hits, err := m.Recall(ctx, scope, recall.Request{Query: "memory", TopK: 5})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hits) != 1 || !strings.Contains(hits[0].Entry.Content, "active") {
+		t.Fatalf("expected only active memory, got %+v", hits)
+	}
+	hitsAll, _ := m.Recall(ctx, scope, recall.Request{Query: "memory", TopK: 5, WithStale: true})
+	if len(hitsAll) != 2 {
+		t.Fatalf("WithStale expected 2, got %d", len(hitsAll))
+	}
+}
+
+func TestSweeperPhysicalDelete(t *testing.T) {
+	ctx := context.Background()
+	idx := memidx.New()
+	now := time.Now()
+	m, _ := recall.New(idx,
+		recall.WithRequireUserID(),
+		recall.WithTTLPolicy(recall.CategoryTTLPolicy{recall.CategoryEpisodic: time.Hour}),
+		recall.WithClock(func() time.Time { return now }),
+	)
+	defer m.Close()
+	scope := newScope()
+	past := now.Add(-time.Second)
+	id, err := m.Add(ctx, scope, recall.Entry{Content: "old", Categories: []string{"episodic"}, ExpiresAt: &past})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sweeper, ok := m.(interface {
+		SweepNamespace(ctx context.Context, ns string) error
+	})
+	if !ok {
+		t.Fatal("Memory does not expose SweepNamespace")
+	}
+	if err := sweeper.SweepNamespace(ctx, recall.NamespaceFor(scope)); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, _ := idx.Get(ctx, recall.NamespaceFor(scope), id); ok {
+		t.Fatalf("sweeper failed to delete %s", id)
+	}
+}
+
+func TestBackgroundSweeperDeletesExpiredEntries(t *testing.T) {
+	ctx := context.Background()
+	idx := memidx.New()
+	m, err := recall.New(idx,
+		recall.WithRequireUserID(),
+		recall.WithTTLPolicy(recall.CategoryTTLPolicy{recall.CategoryEpisodic: time.Hour}),
+		recall.WithSweeper(10*time.Millisecond, 100),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer m.Close()
+
+	scope := newScope()
+	past := time.Now().Add(-time.Second)
+	id, err := m.Add(ctx, scope, recall.Entry{
+		Content:    "expired in background",
+		Categories: []string{"episodic"},
+		ExpiresAt:  &past,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, ok, _ := idx.Get(ctx, recall.NamespaceFor(scope), id); !ok {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("background sweeper failed to delete %s", id)
+}
+
+func TestAsyncSaveAndAwait(t *testing.T) {
+	ctx := context.Background()
+	idx := memidx.New()
+	resp := `[{"content":"async fact"}]`
+	m, _ := recall.New(idx,
+		recall.WithLLM(&stubLLM{resp: resp}),
+		recall.WithRequireUserID(),
+		recall.WithAsyncWorkers(1),
+	)
+	defer m.Close()
+	scope := newScope()
+	id, err := m.SaveAsync(ctx, scope, []llm.Message{
+		{Role: model.RoleUser, Parts: []model.Part{{Type: model.PartText, Text: "remember the async fact"}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	jc, ok := m.(recall.JobController)
+	if !ok {
+		t.Fatalf("recall.Memory does not implement JobController")
+	}
+	st, err := jc.AwaitJob(ctx, id, 5*time.Second)
+	if err != nil {
+		t.Fatalf("await: %v", err)
+	}
+	if st.State != recall.JobSucceeded {
+		t.Fatalf("state=%s err=%s", st.State, st.LastError)
+	}
+	if len(st.EntryIDs) != 1 {
+		t.Fatalf("expected 1 entry, got %v", st.EntryIDs)
+	}
+}
+
+func TestHistoryAndRollback(t *testing.T) {
+	ctx := context.Background()
+	idx := memidx.New()
+	j := journal.NewMemoryJournal()
+	m, _ := recall.New(idx, recall.WithRequireUserID(), recall.WithJournal(j))
+	defer m.Close()
+	scope := newScope()
+	t1 := time.Now()
+	id, _ := m.Add(ctx, scope, recall.Entry{Content: "v1", Categories: []string{"profile"}, CreatedAt: t1, UpdatedAt: t1})
+	time.Sleep(10 * time.Millisecond)
+	t2 := time.Now()
+	_, _ = m.Add(ctx, scope, recall.Entry{ID: id, Content: "v2", Categories: []string{"profile"}, CreatedAt: t2, UpdatedAt: t2})
+
+	aud, ok := m.(recall.Auditable)
+	if !ok {
+		t.Fatalf("recall.Memory does not implement Auditable")
+	}
+	events, err := aud.History(ctx, scope, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 2 {
+		t.Fatalf("history len=%d", len(events))
+	}
+
+	if err := aud.Rollback(ctx, scope, id, t1.Add(5*time.Millisecond)); err != nil {
+		t.Fatal(err)
+	}
+	hits, _ := m.Recall(ctx, scope, recall.Request{Query: "v1", TopK: 5})
+	if len(hits) != 1 || hits[0].Entry.Content != "v1" {
+		t.Fatalf("rollback failed: %+v", hits)
+	}
+}
+
+// TestAddSlotMetadataAndSupersede pins the contract that Add, given a
+// slot-eligible (Subject, Predicate) tuple, writes slot metadata and
+// participates in the slot supersede channel identically to Save's
+// upsertFacts path. Regression test for issue #100: per-fact scope
+// routing callers (which must drive Add instead of Save) were
+// previously locked out of slot dedup even with WithSlotMerge on and
+// SlotCollapse wired on the read side.
+func TestAddSlotMetadataAndSupersede(t *testing.T) {
+	ctx := context.Background()
+	idx := memidx.New()
+	m, err := recall.New(idx, recall.WithRequireUserID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer m.Close()
+	scope := newScope()
+	ns := recall.NamespaceFor(scope)
+
+	id1, err := m.Add(ctx, scope, recall.Entry{
+		Content:    "user lives in Tokyo",
+		Categories: []string{"profile"},
+		Subject:    "user",
+		Predicate:  "lives_in",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc1, ok, _ := idx.Get(ctx, ns, id1)
+	if !ok {
+		t.Fatalf("doc1 missing in index")
+	}
+	if got, _ := doc1.Metadata[recall.MetaSlotKey].(string); got != "user|lives_in" {
+		t.Fatalf("slot_key not written by Add: metadata=%+v", doc1.Metadata)
+	}
+	if got, _ := doc1.Metadata[recall.MetaSubject].(string); got != "user" {
+		t.Fatalf("MetaSubject missing/wrong: %v", doc1.Metadata[recall.MetaSubject])
+	}
+	if got, _ := doc1.Metadata[recall.MetaPredicate].(string); got != "lives_in" {
+		t.Fatalf("MetaPredicate missing/wrong: %v", doc1.Metadata[recall.MetaPredicate])
+	}
+
+	id2, err := m.Add(ctx, scope, recall.Entry{
+		Content:    "user lives in Osaka",
+		Categories: []string{"profile"},
+		Subject:    "user",
+		Predicate:  "lives_in",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id2 == id1 {
+		t.Fatalf("expected distinct IDs, got %q twice", id1)
+	}
+	doc1After, _, _ := idx.Get(ctx, ns, id1)
+	sup, _ := doc1After.Metadata[recall.MetaSupersededBy].(string)
+	if sup != id2 {
+		t.Fatalf("expected doc1.superseded_by=%q, got %q (metadata=%+v)",
+			id2, sup, doc1After.Metadata)
+	}
+}
+
+// TestAddSlotIneligibleSilentlyDegrades pins the contract from
+// upsertFacts: subjects or predicates containing the slot delimiter
+// '|' produce ambiguous slot_keys and are silently dropped from the
+// slot channel. The entry still persists, just without slot metadata.
+func TestAddSlotIneligibleSilentlyDegrades(t *testing.T) {
+	ctx := context.Background()
+	idx := memidx.New()
+	m, _ := recall.New(idx, recall.WithRequireUserID())
+	defer m.Close()
+	scope := newScope()
+	ns := recall.NamespaceFor(scope)
+
+	cases := []struct {
+		name               string
+		subject, predicate string
+	}{
+		{"empty subject", "", "lives_in"},
+		{"empty predicate", "user", ""},
+		{"delimiter in subject", "user|alt", "lives_in"},
+		{"delimiter in predicate", "user", "alt|lives_in"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			id, err := m.Add(ctx, scope, recall.Entry{
+				Content:    "fact " + tc.name,
+				Categories: []string{"profile"},
+				Subject:    tc.subject,
+				Predicate:  tc.predicate,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			doc, ok, _ := idx.Get(ctx, ns, id)
+			if !ok {
+				t.Fatalf("doc missing")
+			}
+			if _, has := doc.Metadata[recall.MetaSlotKey]; has {
+				t.Fatalf("ineligible tuple wrote slot_key: %+v", doc.Metadata)
+			}
+		})
+	}
+}
+
+// TestAddWithoutSlotChannelSkipsSupersede confirms that opting out of
+// the slot channel via WithoutSlotChannel disables Add-side supersede
+// even when the entry is slot-eligible. Parity with how Save honours
+// the same option.
+func TestAddWithoutSlotChannelSkipsSupersede(t *testing.T) {
+	ctx := context.Background()
+	idx := memidx.New()
+	m, _ := recall.New(idx,
+		recall.WithRequireUserID(),
+		recall.WithoutSlotChannel(),
+	)
+	defer m.Close()
+	scope := newScope()
+	ns := recall.NamespaceFor(scope)
+
+	id1, _ := m.Add(ctx, scope, recall.Entry{
+		Content: "a", Categories: []string{"profile"},
+		Subject: "user", Predicate: "lives_in",
+	})
+	_, _ = m.Add(ctx, scope, recall.Entry{
+		Content: "b", Categories: []string{"profile"},
+		Subject: "user", Predicate: "lives_in",
+	})
+	doc1, _, _ := idx.Get(ctx, ns, id1)
+	if _, has := doc1.Metadata[recall.MetaSupersededBy]; has {
+		t.Fatalf("WithoutSlotChannel should suppress supersede; doc1 metadata=%+v", doc1.Metadata)
+	}
+	// Slot metadata is still written so future opt-ins can collapse
+	// historical rows.
+	if got, _ := doc1.Metadata[recall.MetaSlotKey].(string); got != "user|lives_in" {
+		t.Fatalf("slot_key should still be written even with slot-merge off: %+v", doc1.Metadata)
+	}
+}
+
+// TestAddEmptyContentFailsFast pins the contract that recall.Add
+// validates Content before doing any derived work (ID hash, timestamps,
+// embedding). Regression test for the previous order which generated a
+// throwaway ID for an entry that was about to be rejected.
+func TestAddEmptyContentFailsFast(t *testing.T) {
+	idx := memidx.New()
+	m, _ := recall.New(idx, recall.WithRequireUserID())
+	defer m.Close()
+	_, err := m.Add(context.Background(), newScope(), recall.Entry{Content: ""})
+	if err == nil || !strings.Contains(err.Error(), "content is required") {
+		t.Fatalf("expected content-required error, got %v", err)
+	}
+}
+
+// blockingLLM blocks Generate until ctx is canceled; used to exercise
+// the per-job timeout / Close cancellation path.
+type blockingLLM struct{}
+
+func (blockingLLM) Generate(ctx context.Context, _ []llm.Message, _ ...llm.GenerateOption) (llm.Message, llm.TokenUsage, error) {
+	<-ctx.Done()
+	return llm.Message{}, llm.TokenUsage{}, ctx.Err()
+}
+func (blockingLLM) GenerateStream(_ context.Context, _ []llm.Message, _ ...llm.GenerateOption) (llm.StreamMessage, error) {
+	return nil, errors.New("not used")
+}
+
+// TestCloseCancelsStuckJob asserts Memory.Close cancels in-flight
+// async jobs instead of blocking on the worker WaitGroup forever.
+// Without workerCancel a stuck LLM (Extractor that never returns)
+// would pin Close until WithJobTimeout elapses (default 5min);
+// with cancellation Close returns within milliseconds.
+func TestCloseCancelsStuckJob(t *testing.T) {
+	idx := memidx.New()
+	m, err := recall.New(idx,
+		recall.WithLLM(blockingLLM{}),
+		recall.WithRequireUserID(),
+		recall.WithAsyncWorkers(1),
+		recall.WithJobTimeout(2*time.Minute), // long enough that Close, not timeout, is what unblocks us
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.SaveAsync(context.Background(), newScope(), []llm.Message{
+		{Role: model.RoleUser, Parts: []model.Part{{Type: model.PartText, Text: "hi"}}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// Give the worker a moment to lease the job and enter the
+	// blocking Generate call before we cancel.
+	time.Sleep(100 * time.Millisecond)
+
+	done := make(chan struct{})
+	go func() {
+		_ = m.Close()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Close did not return within 5s; workerCancel is not propagating into the per-job context")
+	}
+}
+
+func TestForget(t *testing.T) {
+	ctx := context.Background()
+	idx := memidx.New()
+	m, _ := recall.New(idx, recall.WithRequireUserID())
+	defer m.Close()
+	scope := newScope()
+	id, _ := m.Add(ctx, scope, recall.Entry{Content: "forget me", Categories: []string{"episodic"}})
+	if err := m.Forget(ctx, scope, id, "user_request"); err != nil {
+		t.Fatal(err)
+	}
+	hits, _ := m.Recall(ctx, scope, recall.Request{Query: "forget", TopK: 5})
+	if len(hits) != 0 {
+		t.Fatalf("expected forgotten, got %+v", hits)
+	}
+}
+
+// TestTombstoneFilter_HidesByDefault_OptInReveals exercises Recall's
+// public contract for tombstoned entries (the B3 escape hatch):
+//   - With default Request, an entry whose metadata carries
+//     `tombstone=true` MUST NOT appear among the hits.
+//   - With Request.WithTombstoned=true, the same entry MUST be
+//     returned so callers can debug the resolver / stage an
+//     Auditable.Rollback.
+func TestTombstoneFilter_HidesByDefault_OptInReveals(t *testing.T) {
+	ctx := context.Background()
+	idx := memidx.New()
+	m, err := recall.New(idx, recall.WithRequireUserID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer m.Close()
+	scope := newScope()
+	// Add the entry through the public API so all the scope-derived
+	// metadata (user_id, agent_id, runtime_id) is populated correctly,
+	// then re-Upsert with MetaTombstone toggled on. This mirrors what
+	// the LLM update resolver's OpDelete branch does internally.
+	id, err := m.Add(ctx, scope, recall.Entry{Content: "user said something then deleted it"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ns := recall.NamespaceFor(scope)
+	doc, _, _ := idx.Get(ctx, ns, id)
+	if doc.Metadata == nil {
+		doc.Metadata = map[string]any{}
+	}
+	doc.Metadata[recall.MetaTombstone] = true
+	if err := idx.Upsert(ctx, ns, []retrieval.Doc{doc}); err != nil {
+		t.Fatal(err)
+	}
+	hits, err := m.Recall(ctx, scope, recall.Request{Query: "deleted", TopK: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, h := range hits {
+		if h.Entry.ID == id {
+			t.Fatalf("default Recall must hide tombstoned entry %q", id)
+		}
+	}
+	hits, err = m.Recall(ctx, scope, recall.Request{Query: "deleted", TopK: 10, WithTombstoned: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found bool
+	for _, h := range hits {
+		if h.Entry.ID == id {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("WithTombstoned=true must surface tombstoned entry %q (hits=%+v)", id, hits)
+	}
+}

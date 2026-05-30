@@ -36,6 +36,9 @@
 //	chunker_sig  string  (DerivedSig.ChunkerSig; chunks only)
 //	prompt_sig   string  (DerivedSig.PromptSig;  layers only)
 //	embed_sig    string  (DerivedSig.EmbedSig)
+//
+// Deprecated: use github.com/GizClaw/flowcraft/memory/knowledge/backend/retrieval
+// instead. This package will be removed in v0.5.0.
 package retrieval
 
 import retrievalns "github.com/GizClaw/flowcraft/sdk/retrieval/namespace"

@@ -3,6 +3,9 @@
 // compact older turns into hierarchical summaries to keep that window
 // finite. Long-term fact recall lives in [sdk/recall].
 //
+// Deprecated: use github.com/GizClaw/flowcraft/memory/history instead. This
+// package will be removed in v0.5.0.
+//
 // # Layering
 //
 //   - [History] is the strategy interface returned by [NewBuffer] and

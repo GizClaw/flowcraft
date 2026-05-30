@@ -275,17 +275,17 @@ func (f *FeishuApp) replyLifecycle(ctx context.Context, e Event) error {
 	// card; replies are just notification bait.
 	if e.Body != "" {
 		body := firstLine(e.Body)
-		if len(text)+len(body)+1 > 300 {
-			cut := 300 - len(text) - 4
+		if runeLen(text)+runeLen(body)+1 > 300 {
+			cut := 300 - runeLen(text) - 4
 			if cut < 0 {
 				cut = 0
 			}
-			body = body[:cut] + "…"
+			body = truncateRunes(body, cut, "…")
 		}
 		text = text + "\n" + body
 	}
-	if len(text) > 300 {
-		text = text[:297] + "…"
+	if runeLen(text) > 300 {
+		text = truncateRunes(text, 297, "…")
 	}
 
 	contentJSON, _ := json.Marshal(map[string]string{"text": text})
@@ -511,6 +511,21 @@ func firstLine(s string) string {
 		return strings.TrimRight(s[:i], " \t\r")
 	}
 	return s
+}
+
+func truncateRunes(s string, max int, suffix string) string {
+	runes := []rune(s)
+	if max <= 0 {
+		return suffix
+	}
+	if len(runes) <= max {
+		return s
+	}
+	return string(runes[:max]) + suffix
+}
+
+func runeLen(s string) int {
+	return len([]rune(s))
 }
 
 // doJSON is the single HTTP helper shared by all CardKit + IM endpoints.

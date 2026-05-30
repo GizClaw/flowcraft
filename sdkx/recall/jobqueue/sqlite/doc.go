@@ -1,6 +1,9 @@
 // Package sqlite provides a crash-recoverable [recall.JobQueue]
 // implementation backed by SQLite.
 //
+// Deprecated: this adapter targets the legacy github.com/GizClaw/flowcraft/sdk/recall
+// queue contract. It will be removed in v0.5.0.
+//
 // Schema:
 //
 //	CREATE TABLE recall_jobs (
