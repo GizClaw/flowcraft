@@ -1,0 +1,542 @@
+package pipeline
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"testing"
+	"time"
+
+	"github.com/GizClaw/flowcraft/memory/retrieval"
+	"github.com/GizClaw/flowcraft/memory/retrieval/memory"
+)
+
+func TestPipelineBM25Only(t *testing.T) {
+	ctx := context.Background()
+	idx := memory.New()
+	ns := "ns"
+	now := time.Now()
+	_ = idx.Upsert(ctx, ns, []retrieval.Doc{
+		{ID: "a", Content: "alpha bravo", Timestamp: now},
+		{ID: "b", Content: "charlie delta", Timestamp: now},
+	})
+	pipe := New(
+		Retrieve{Lane: "bm25", Spec: RetrieveSpec{Mode: ModeBM25, TopK: 10}},
+		RRFFusion{K: 60},
+		Limit{TopK: 5},
+	)
+	resp, err := pipe.Run(ctx, idx, ns, retrieval.SearchRequest{QueryText: "alpha", TopK: 5})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Hits) != 1 || resp.Hits[0].Doc.ID != "a" {
+		t.Fatalf("hits=%+v", resp.Hits)
+	}
+}
+
+type errStage struct{}
+
+func (errStage) Name() string { return "ErrStage" }
+func (errStage) Run(context.Context, *State) error {
+	return errors.New("boom")
+}
+
+func TestPipelineDebugErrorReturnsPartialExecution(t *testing.T) {
+	pipe := New(errStage{})
+	resp, err := pipe.Run(context.Background(), memory.New(), "ns", retrieval.SearchRequest{
+		QueryText: "alpha",
+		Debug:     retrieval.SearchDebug{IncludeStages: true},
+	})
+	if err == nil {
+		t.Fatal("expected stage error")
+	}
+	if resp == nil || resp.Execution == nil {
+		t.Fatalf("expected partial execution with error, got resp=%+v", resp)
+	}
+	if len(resp.Execution.Stages) != 1 || resp.Execution.Stages[0].Err == "" {
+		t.Fatalf("stage error missing from execution: %+v", resp.Execution.Stages)
+	}
+}
+
+// TestLimitHonoursRequestTopK pins the contract that the caller's
+// SearchRequest.TopK overrides Limit's own stage TopK. The factory
+// hard-codes Limit{TopK: 10} as a fallback default; without this
+// override, every Recall(req{TopK: 30}) silently returned at most 10
+// hits and the framework's --topk knob was effectively a no-op.
+// See sdk/retrieval/pipeline/stages_post.go Limit.Run.
+func TestLimitHonoursRequestTopK(t *testing.T) {
+	ctx := context.Background()
+	idx := memory.New()
+	ns := "ns"
+	now := time.Now()
+	docs := make([]retrieval.Doc, 25)
+	for i := range docs {
+		docs[i] = retrieval.Doc{
+			ID:        fmt.Sprintf("d%02d", i),
+			Content:   fmt.Sprintf("alpha bravo doc number %d here", i),
+			Timestamp: now,
+		}
+	}
+	if err := idx.Upsert(ctx, ns, docs); err != nil {
+		t.Fatal(err)
+	}
+	pipe := New(
+		Retrieve{Lane: "bm25", Spec: RetrieveSpec{Mode: ModeBM25, TopK: 50}},
+		RRFFusion{K: 60}, // lift Recalls → Fused so Limit has something to truncate
+		Limit{TopK: 10},  // fallback default that must be overridable
+	)
+	// Request 20: caller wants more than stage's default cap of 10.
+	// Pre-fix: returned 10. Post-fix: returns 20.
+	resp, err := pipe.Run(ctx, idx, ns, retrieval.SearchRequest{QueryText: "alpha", TopK: 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := len(resp.Hits); got != 20 {
+		t.Fatalf("Request.TopK=20 with Limit{TopK:10}: got %d hits, want 20 (caller's request must win)", got)
+	}
+	// Request 5: caller wants fewer than stage default. Limit must
+	// truncate to 5, not 10.
+	resp, err = pipe.Run(ctx, idx, ns, retrieval.SearchRequest{QueryText: "alpha", TopK: 5})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := len(resp.Hits); got != 5 {
+		t.Fatalf("Request.TopK=5 with Limit{TopK:10}: got %d hits, want 5", got)
+	}
+	// Request 0 (unset): falls back to stage TopK (10).
+	resp, err = pipe.Run(ctx, idx, ns, retrieval.SearchRequest{QueryText: "alpha", TopK: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := len(resp.Hits); got != 10 {
+		t.Fatalf("Request.TopK=0 with Limit{TopK:10}: got %d hits, want 10 (stage fallback)", got)
+	}
+}
+
+func TestPipelineMultiRetrieveAndRRF(t *testing.T) {
+	ctx := context.Background()
+	idx := memory.New()
+	ns := "ns"
+	_ = idx.Upsert(ctx, ns, []retrieval.Doc{
+		{ID: "1", Content: "coffee tea", Vector: []float32{1, 0, 0}, Timestamp: time.Now()},
+		{ID: "2", Content: "unrelated", Vector: []float32{0, 1, 0}, Timestamp: time.Now()},
+	})
+	pipe := New(
+		MultiRetrieve{
+			"bm25":   {Mode: ModeBM25, TopK: 10},
+			"vector": {Mode: ModeVector, TopK: 10},
+		},
+		RRFFusion{K: 60},
+		Limit{TopK: 5},
+	)
+	resp, err := pipe.Run(ctx, idx, ns, retrieval.SearchRequest{
+		QueryText: "coffee", QueryVector: []float32{1, 0, 0}, TopK: 5,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Hits) < 1 || resp.Hits[0].Doc.ID != "1" {
+		t.Fatalf("hits=%+v", resp.Hits)
+	}
+}
+
+func TestPipelineDebugIncludeStagesRecordsTrace(t *testing.T) {
+	ctx := context.Background()
+	idx := memory.New()
+	ns := "ns"
+	_ = idx.Upsert(ctx, ns, []retrieval.Doc{
+		{ID: "1", Content: "coffee tea", Timestamp: time.Now()},
+	})
+	pipe := New(
+		Retrieve{Lane: "bm25", Spec: RetrieveSpec{Mode: ModeBM25, TopK: 10}},
+		RRFFusion{K: 60},
+		Limit{TopK: 5},
+	)
+	resp, err := pipe.Run(ctx, idx, ns, retrieval.SearchRequest{
+		QueryText: "coffee",
+		TopK:      5,
+		Debug:     retrieval.SearchDebug{IncludeStages: true},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Execution == nil {
+		t.Fatal("expected Execution when Debug.IncludeStages=true")
+	}
+	if len(resp.Execution.Stages) != 3 {
+		t.Fatalf("expected 3 stages, got %+v", resp.Execution.Stages)
+	}
+	if resp.Execution.Stages[0].Name == "" || resp.Execution.Stages[0].Took <= 0 {
+		t.Fatalf("first stage missing name/duration: %+v", resp.Execution.Stages[0])
+	}
+	if len(resp.Execution.Lanes) != 0 {
+		t.Fatalf("expected no lanes when IncludeLanes=false, got %+v", resp.Execution.Lanes)
+	}
+}
+
+func TestPipelineDebugIncludeLanesWithoutLegacyProjection(t *testing.T) {
+	ctx := context.Background()
+	idx := memory.New()
+	ns := "ns"
+	_ = idx.Upsert(ctx, ns, []retrieval.Doc{
+		{ID: "1", Content: "coffee tea", Timestamp: time.Now()},
+	})
+	pipe := New(
+		Retrieve{Lane: "bm25", Spec: RetrieveSpec{Mode: ModeBM25, TopK: 10}},
+		RRFFusion{K: 60},
+		Limit{TopK: 5},
+	)
+	resp, err := pipe.Run(ctx, idx, ns, retrieval.SearchRequest{
+		QueryText: "coffee",
+		TopK:      5,
+		Debug:     retrieval.SearchDebug{IncludeLanes: true},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Execution == nil || len(resp.Execution.Lanes) != 1 {
+		t.Fatalf("expected one lane in Execution, got %+v", resp.Execution)
+	}
+}
+
+func TestEntityBoost(t *testing.T) {
+	ctx := context.Background()
+	idx := memory.New()
+	ns := "ns"
+	_ = idx.Upsert(ctx, ns, []retrieval.Doc{
+		{ID: "a", Content: "alice loves coffee", Metadata: map[string]any{"entities": []string{"alice"}}, Timestamp: time.Now()},
+		{ID: "b", Content: "bob loves coffee", Metadata: map[string]any{"entities": []string{"bob"}}, Timestamp: time.Now()},
+	})
+	pipe := New(
+		EntityExtract{LLMExtractor: func(_ context.Context, _ string) ([]string, error) {
+			return []string{"alice"}, nil
+		}},
+		MultiRetrieve{"bm25": {Mode: ModeBM25, TopK: 10}},
+		RRFFusion{K: 60},
+		EntityBoost{Boost: 0.5},
+		Limit{TopK: 5},
+	)
+	resp, err := pipe.Run(ctx, idx, ns, retrieval.SearchRequest{QueryText: "loves coffee", TopK: 5})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Hits) < 2 || resp.Hits[0].Doc.ID != "a" {
+		t.Fatalf("expected a first, got %+v", resp.Hits)
+	}
+}
+
+func TestTimeDecayBringsNewerToTop(t *testing.T) {
+	ctx := context.Background()
+	idx := memory.New()
+	ns := "ns"
+	now := time.Now()
+	_ = idx.Upsert(ctx, ns, []retrieval.Doc{
+		{ID: "old", Content: "user likes coffee", Timestamp: now.AddDate(0, -6, 0)},
+		{ID: "new", Content: "user likes coffee", Timestamp: now.AddDate(0, 0, -1)},
+	})
+	pipe := New(
+		Retrieve{Lane: "bm25", Spec: RetrieveSpec{Mode: ModeBM25, TopK: 10}},
+		RRFFusion{K: 60},
+		TimeDecay{HalfLife: 30 * 24 * time.Hour, Now: func() time.Time { return now }},
+		Limit{TopK: 5},
+	)
+	resp, err := pipe.Run(ctx, idx, ns, retrieval.SearchRequest{QueryText: "coffee", TopK: 5})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Hits) < 2 || resp.Hits[0].Doc.ID != "new" {
+		t.Fatalf("expected new on top, got %+v", resp.Hits)
+	}
+}
+
+func TestPipelineLaneResultCarriesTook(t *testing.T) {
+	ctx := context.Background()
+	idx := memory.New()
+	ns := "ns"
+	_ = idx.Upsert(ctx, ns, []retrieval.Doc{
+		{ID: "1", Content: "coffee tea", Vector: []float32{1, 0, 0}, Timestamp: time.Now()},
+		{ID: "2", Content: "unrelated", Vector: []float32{0, 1, 0}, Timestamp: time.Now()},
+	})
+	pipe := New(
+		MultiRetrieve{
+			string(retrieval.LaneBM25):   {Mode: ModeBM25, TopK: 10},
+			string(retrieval.LaneVector): {Mode: ModeVector, TopK: 10},
+		},
+		RRFFusion{K: 60},
+		Limit{TopK: 5},
+	)
+	resp, err := pipe.Run(ctx, idx, ns, retrieval.SearchRequest{
+		QueryText:   "coffee",
+		QueryVector: []float32{1, 0, 0},
+		TopK:        5,
+		Debug:       retrieval.SearchDebug{IncludeLanes: true},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Execution == nil || len(resp.Execution.Lanes) != 2 {
+		t.Fatalf("expected 2 lanes in Execution, got %+v", resp.Execution)
+	}
+	for _, lane := range resp.Execution.Lanes {
+		if lane.Took <= 0 {
+			t.Fatalf("lane %q Took=%s, want > 0", lane.Key, lane.Took)
+		}
+	}
+}
+
+func TestPipelineLaneResultTookKeyedByLaneKey(t *testing.T) {
+	ctx := context.Background()
+	idx := memory.New()
+	ns := "ns"
+	_ = idx.Upsert(ctx, ns, []retrieval.Doc{{ID: "1", Content: "coffee", Timestamp: time.Now()}})
+	pipe := New(
+		Retrieve{Lane: string(retrieval.LaneBM25), Spec: RetrieveSpec{Mode: ModeBM25, TopK: 10}},
+		Limit{TopK: 5},
+	)
+	resp, err := pipe.Run(ctx, idx, ns, retrieval.SearchRequest{
+		QueryText: "coffee", TopK: 5,
+		Debug: retrieval.SearchDebug{IncludeLanes: true},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Execution == nil || len(resp.Execution.Lanes) != 1 {
+		t.Fatalf("expected one lane, got %+v", resp.Execution)
+	}
+	lane := resp.Execution.Lanes[0]
+	if lane.Key != retrieval.LaneBM25 {
+		t.Fatalf("expected lane key %q, got %q", retrieval.LaneBM25, lane.Key)
+	}
+	if lane.Took <= 0 {
+		t.Fatalf("expected Took > 0, got %s", lane.Took)
+	}
+}
+
+func TestPipelineLaneOrderStable(t *testing.T) {
+	ctx := context.Background()
+	idx := memory.New()
+	ns := "ns"
+	_ = idx.Upsert(ctx, ns, []retrieval.Doc{
+		{ID: "1", Content: "coffee tea", Vector: []float32{1, 0, 0}, Timestamp: time.Now()},
+	})
+	pipe := New(
+		MultiRetrieve{
+			"zeta-custom":              {Mode: ModeBM25, TopK: 5},
+			string(retrieval.LaneBM25): {Mode: ModeBM25, TopK: 5},
+			"alpha-custom":             {Mode: ModeBM25, TopK: 5},
+			string(retrieval.LaneVector): {
+				Mode: ModeVector, TopK: 5,
+			},
+		},
+		Limit{TopK: 10},
+	)
+	expect := []retrieval.LaneKey{
+		retrieval.LaneBM25,
+		retrieval.LaneVector,
+		"alpha-custom",
+		"zeta-custom",
+	}
+	for i := 0; i < 4; i++ {
+		resp, err := pipe.Run(ctx, idx, ns, retrieval.SearchRequest{
+			QueryText:   "coffee",
+			QueryVector: []float32{1, 0, 0},
+			TopK:        5,
+			Debug:       retrieval.SearchDebug{IncludeLanes: true},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if resp.Execution == nil || len(resp.Execution.Lanes) != len(expect) {
+			t.Fatalf("run %d: expected %d lanes, got %+v", i, len(expect), resp.Execution)
+		}
+		for j, lane := range resp.Execution.Lanes {
+			if lane.Key != expect[j] {
+				t.Fatalf("run %d: lane %d = %q, want %q", i, j, lane.Key, expect[j])
+			}
+		}
+	}
+}
+
+type fakeHybridIndex struct {
+	retrieval.Index
+	gotDebug retrieval.SearchDebug
+	resp     *retrieval.SearchResponse
+}
+
+func (f *fakeHybridIndex) Capabilities() retrieval.Capabilities {
+	c := retrieval.DefaultMemoryCapabilities()
+	c.Hybrid = true
+	c.Debug = true
+	return c
+}
+
+func (f *fakeHybridIndex) SearchHybrid(_ context.Context, _ string, req retrieval.HybridRequest) (*retrieval.SearchResponse, error) {
+	f.gotDebug = req.Debug
+	return f.resp, nil
+}
+
+func TestPipelineHybridShortCircuitForwardsDebug(t *testing.T) {
+	hits := []retrieval.Hit{{Doc: retrieval.Doc{ID: "x"}, Score: 1.0}}
+	exec := &retrieval.SearchExecution{
+		Lanes: []retrieval.LaneResult{{Key: retrieval.LaneHybrid, Hits: hits, Took: time.Millisecond}},
+		Stages: []retrieval.StageResult{
+			{Name: "native.hybrid", HitsIn: 0, HitsOut: 1, Took: time.Millisecond},
+		},
+	}
+	hybrid := &fakeHybridIndex{
+		Index: memory.New(),
+		resp:  &retrieval.SearchResponse{Hits: hits, Execution: exec},
+	}
+	pipe := New(HybridShortCircuit{}, Limit{TopK: 5})
+	resp, err := pipe.Run(context.Background(), hybrid, "ns", retrieval.SearchRequest{
+		QueryText: "q",
+		TopK:      5,
+		Debug:     retrieval.SearchDebug{IncludeLanes: true, IncludeStages: true},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hybrid.gotDebug.IncludeLanes || !hybrid.gotDebug.IncludeStages {
+		t.Fatalf("backend did not receive Debug, got %+v", hybrid.gotDebug)
+	}
+	if resp.Execution == nil {
+		t.Fatal("expected Execution to be merged from short-circuit response")
+	}
+	if len(resp.Execution.Lanes) != 1 || resp.Execution.Lanes[0].Key != retrieval.LaneHybrid {
+		t.Fatalf("expected hybrid lane in Execution, got %+v", resp.Execution.Lanes)
+	}
+	foundNative := false
+	for _, st := range resp.Execution.Stages {
+		if st.Name == "native.hybrid" {
+			foundNative = true
+		}
+	}
+	if !foundNative {
+		t.Fatalf("expected native stage in Execution.Stages, got %+v", resp.Execution.Stages)
+	}
+}
+
+func TestPickFinalishDoesNotMutateRerankedOrFused(t *testing.T) {
+	ctx := context.Background()
+	idx := memory.New()
+	ns := "ns"
+	now := time.Now()
+	_ = idx.Upsert(ctx, ns, []retrieval.Doc{
+		{ID: "newer", Content: "user likes coffee", Timestamp: now},
+		{ID: "older", Content: "user likes coffee", Timestamp: now.Add(-365 * 24 * time.Hour)},
+	})
+	st := &State{
+		Index:     idx,
+		Namespace: ns,
+		Request:   &retrieval.SearchRequest{QueryText: "coffee", TopK: 5},
+		Recalls:   map[string][]retrieval.Hit{},
+	}
+	if err := (Retrieve{Lane: "bm25", Spec: RetrieveSpec{Mode: ModeBM25, TopK: 10}}).Run(ctx, st); err != nil {
+		t.Fatal(err)
+	}
+	if err := (RRFFusion{}).Run(ctx, st); err != nil {
+		t.Fatal(err)
+	}
+	if len(st.Fused) == 0 {
+		t.Fatalf("expected fused hits, got %+v", st.Fused)
+	}
+	beforeFusedScores := make([]float64, len(st.Fused))
+	for i, h := range st.Fused {
+		beforeFusedScores[i] = h.Score
+	}
+	if err := (TimeDecay{HalfLife: time.Hour, Now: func() time.Time { return now }}).Run(ctx, st); err != nil {
+		t.Fatal(err)
+	}
+	for i, h := range st.Fused {
+		if h.Score != beforeFusedScores[i] {
+			t.Fatalf("fused score mutated at %d: was %f now %f", i, beforeFusedScores[i], h.Score)
+		}
+	}
+}
+
+func TestDedupAndPostFilter(t *testing.T) {
+	ctx := context.Background()
+	idx := memory.New()
+	ns := "ns"
+	now := time.Now()
+	_ = idx.Upsert(ctx, ns, []retrieval.Doc{
+		{ID: "k", Content: "foo bar", Metadata: map[string]any{"keep": true}, Timestamp: now},
+		{ID: "d", Content: "foo bar", Metadata: map[string]any{"keep": false}, Timestamp: now},
+	})
+	pipe := New(
+		MultiRetrieve{
+			"a": {Mode: ModeBM25, TopK: 10},
+			"b": {Mode: ModeBM25, TopK: 10},
+		},
+		RRFFusion{K: 60},
+		Dedup{},
+		PostFilter{},
+		Limit{TopK: 5},
+	)
+	resp, err := pipe.Run(ctx, idx, ns, retrieval.SearchRequest{
+		QueryText: "foo",
+		Filter:    retrieval.Filter{Eq: map[string]any{"keep": true}},
+		TopK:      5,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Hits) != 1 || resp.Hits[0].Doc.ID != "k" {
+		t.Fatalf("hits=%+v", resp.Hits)
+	}
+}
+
+// TestSlotCollapse_KeepsNewest verifies that SlotCollapse drops the
+// older entry sharing the same slot_key while leaving entries without a
+// slot_key alone (legacy / episodic data must pass through).
+func TestSlotCollapse_KeepsNewest(t *testing.T) {
+	st := &State{Final: []retrieval.Hit{
+		{
+			Doc: retrieval.Doc{
+				ID: "old", Timestamp: time.Now().Add(-time.Hour),
+				Metadata: map[string]any{"slot_key": "user|lives_in"},
+			},
+			Score: 0.9,
+		},
+		{
+			Doc: retrieval.Doc{
+				ID: "new", Timestamp: time.Now(),
+				Metadata: map[string]any{"slot_key": "user|lives_in"},
+			},
+			Score: 0.5, // lower score, but newer — must win.
+		},
+		{
+			Doc:   retrieval.Doc{ID: "episodic", Timestamp: time.Now()},
+			Score: 0.7,
+		},
+	}}
+	if err := (SlotCollapse{}).Run(context.Background(), st); err != nil {
+		t.Fatal(err)
+	}
+	if len(st.Final) != 2 {
+		t.Fatalf("expected 2 hits, got %d: %+v", len(st.Final), st.Final)
+	}
+	ids := map[string]bool{}
+	for _, h := range st.Final {
+		ids[h.Doc.ID] = true
+	}
+	if !ids["new"] || !ids["episodic"] || ids["old"] {
+		t.Fatalf("expected {new, episodic}, got %v", ids)
+	}
+}
+
+// TestSlotCollapse_NoSlotPassThrough is the no-op fast path: when no
+// hit carries a slot_key the stage must not allocate or mutate Final.
+func TestSlotCollapse_NoSlotPassThrough(t *testing.T) {
+	hits := []retrieval.Hit{
+		{Doc: retrieval.Doc{ID: "a"}, Score: 1},
+		{Doc: retrieval.Doc{ID: "b"}, Score: 2},
+	}
+	st := &State{Final: hits}
+	if err := (SlotCollapse{}).Run(context.Background(), st); err != nil {
+		t.Fatal(err)
+	}
+	if len(st.Final) != 2 || st.Final[0].Doc.ID != "a" || st.Final[1].Doc.ID != "b" {
+		t.Fatalf("pass-through expected, got %+v", st.Final)
+	}
+}

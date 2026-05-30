@@ -57,6 +57,43 @@ func TestFileStore_SaveMessages_RewritesOnEqualLength(t *testing.T) {
 	}
 }
 
+func TestFileStore_SaveMessages_RewritesWhenExistingIsNotPrefix(t *testing.T) {
+	ws := workspace.NewMemWorkspace()
+	store := history.NewFileStore(ws, "memory")
+	ctx := context.Background()
+	conv := "conv-stale-prefix"
+
+	orig := []model.Message{
+		{Role: model.RoleUser, Parts: []model.Part{{Type: model.PartText, Text: "stale-A"}}},
+		{Role: model.RoleAssistant, Parts: []model.Part{{Type: model.PartText, Text: "stale-B"}}},
+	}
+	if err := store.SaveMessages(ctx, conv, orig); err != nil {
+		t.Fatalf("initial SaveMessages: %v", err)
+	}
+
+	replacement := []model.Message{
+		{Role: model.RoleUser, Parts: []model.Part{{Type: model.PartText, Text: "fresh-A"}}},
+		{Role: model.RoleAssistant, Parts: []model.Part{{Type: model.PartText, Text: "fresh-B"}}},
+		{Role: model.RoleUser, Parts: []model.Part{{Type: model.PartText, Text: "fresh-C"}}},
+	}
+	if err := store.SaveMessages(ctx, conv, replacement); err != nil {
+		t.Fatalf("replacement SaveMessages: %v", err)
+	}
+
+	got, err := store.GetMessages(ctx, conv)
+	if err != nil {
+		t.Fatalf("GetMessages: %v", err)
+	}
+	if len(got) != len(replacement) {
+		t.Fatalf("len = %d, want %d", len(got), len(replacement))
+	}
+	for i := range replacement {
+		if got[i].Parts[0].Text != replacement[i].Parts[0].Text {
+			t.Fatalf("msg[%d] = %q, want %q", i, got[i].Parts[0].Text, replacement[i].Parts[0].Text)
+		}
+	}
+}
+
 // Use llm package once to avoid unused-import warning in alternate
 // build configurations. The history.Store contract uses model.Message
 // directly; the llm symbol below is only retained as a sanity probe.

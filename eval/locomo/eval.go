@@ -6,7 +6,6 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -17,7 +16,6 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/llm"
 	"github.com/GizClaw/flowcraft/sdk/model"
-	"github.com/GizClaw/flowcraft/sdk/recall"
 )
 
 // ingestRetryDelay is the cool-off before the single NotAvailable retry.
@@ -66,19 +64,21 @@ func retryOnNotAvailable(ctx context.Context, stage, qid string, attempt func() 
 // (the default Flowcraft runner exposes SaveRaw to bypass an LLM extractor for
 // CI-friendly runs without API keys).
 type IngestSaver interface {
-	SaveRaw(ctx context.Context, scope recall.Scope, msgs []llm.Message) (saveCount int, saveLatency time.Duration, err error)
+	SaveRaw(ctx context.Context, scope runners.Scope, msgs []llm.Message) (saveCount int, saveLatency time.Duration, err error)
 }
 
 // Report aggregates one full evaluation run.
 type Report struct {
-	Runner      string                            `json:"runner"`
-	Dataset     string                            `json:"dataset"`
-	N           int                               `json:"n"`
-	Aggregate   ScoreAggregate                    `json:"aggregate"`
-	PerQuestion []QuestionScore                   `json:"per_question"`
-	Latency     map[string]metrics.LatencySummary `json:"latency"`
-	StartedAt   time.Time                         `json:"started_at"`
-	FinishedAt  time.Time                         `json:"finished_at"`
+	Runner        string                            `json:"runner"`
+	RecallVersion string                            `json:"recall_version,omitempty"`
+	Baseline      string                            `json:"baseline,omitempty"`
+	Dataset       string                            `json:"dataset"`
+	N             int                               `json:"n"`
+	Aggregate     ScoreAggregate                    `json:"aggregate"`
+	PerQuestion   []QuestionScore                   `json:"per_question"`
+	Latency       map[string]metrics.LatencySummary `json:"latency"`
+	StartedAt     time.Time                         `json:"started_at"`
+	FinishedAt    time.Time                         `json:"finished_at"`
 }
 
 // ScoreAggregate is the headline numbers (qa.em, qa.f1, qa.judge, recall.k_hit).
@@ -166,14 +166,21 @@ type Options struct {
 
 	// OnQuestionRecall is invoked synchronously after every successful
 	// Recall in the QA loop, before the answer LLM is called. It
-	// enables the --dump-recall diagnostic to capture which facts the
+	// enables the --dump-recall diagnostic to capture which artifacts the
 	// retrieval pipeline actually surfaces for each question — the
 	// recall-miss vs answer-miss probe complement to the extractor's
 	// OnFactsExtracted hook on the ingest side. nil disables.
 	//
 	// Callback runs in the QA worker goroutine, so it MUST be
 	// goroutine-safe when Concurrency > 1.
-	OnQuestionRecall func(q dataset.Question, hits []recall.Hit)
+	OnQuestionRecall func(q dataset.Question, artifacts []runners.RecallArtifact)
+	// OnQuestionRecallStageAudit receives per-stage read-pipeline
+	// candidate snapshots when the runner supports them.
+	OnQuestionRecallStageAudit func(q dataset.Question, audit runners.RecallStageAudit)
+	// OnQuestionAnswer receives the exact answer prompt/body and scored
+	// outcome after a successful answer+judge pair. It is diagnostic-only:
+	// callbacks must not mutate hits or scores.
+	OnQuestionAnswer func(AnswerReplayRecord)
 }
 
 // Event describes one lifecycle checkpoint. See [EventHook].
@@ -193,70 +200,6 @@ type Event struct {
 // goroutine and SHOULD not block: a slow hook will stall the eval. Errors
 // from hooks are swallowed (the hook itself decides whether to log).
 type EventHook func(ctx context.Context, e Event)
-
-// DefaultAnswerPrompt is the closed-book QA prompt fed to the answer
-// LLM after Recall returns the top-K memories for a question.
-//
-// Five rules, each grounded in a real failure pattern from the
-// LoCoMo10 run 25871166419 diagnostic (458/1542 failures sampled),
-// not in benchmark-tuning intuition:
-//
-//  1. STRICT GROUNDING — answer from the listed memories only; do not
-//     invent facts. Universal closed-book QA contract.
-//
-//  2. RESTRAINED PARTIAL-INFO INFERENCE — when memories carry partial
-//     evidence (a character's general traits, an indirectly implied
-//     date), infer the most likely answer and briefly note the
-//     inference. This is NOT the same as mem0's "never say I don't
-//     know" rule (which fabricates answers when memories are silent).
-//     We deliberately allow "I don't know" when memories truly have
-//     nothing — see [eval/README.md] anti-cheating discipline.
-//
-//  3. MIRROR QUESTION FORM — if the question is WHEN, give a date or
-//     duration; HOW MANY, a number; YES/NO, lead with yes/no. Mirror
-//     the date format used in the question (e.g. "7 May 2023" vs
-//     "May 7, 2023"). A real product behaviour, not a judge trick.
-//
-//  4. CONCISENESS — 1-2 sentences. Hedging language ("it seems",
-//     "might be") dilutes accuracy when memories are unambiguous.
-//
-//  5. CANONICAL NAME RECOGNITION — characters named anywhere in the
-//     memory list are NOT "silent topics". If a question asks about
-//     such a character, infer from their statements rather than
-//     refusing.
-//
-//  6. DATE QUALIFIER PRESERVATION — when a memory uses a date QUALIFIER
-//     ("around", "roughly", "the week before X", "a few years ago",
-//     "last summer"), preserve that qualifier rather than computing a
-//     precise date. The qualifier carries the speaker's actual
-//     epistemic state; converting "a few years ago" to "27 June 2020"
-//     fabricates precision. Driven by the 25872581106 cat2 diagnostic
-//     where ~30% of temporal failures came from converting relative
-//     framings ("the week before 6 July 2023") into wrong absolute
-//     dates.
-//
-// Note on prior art: mem0's MEMORY_ANSWER_PROMPT (Apache 2.0,
-// mem0/configs/prompts.py) is shorter and includes a stricter
-// "never say no information is found, provide a general response"
-// rule. We deliberately do NOT adopt that rule because it shifts
-// bench numbers without reflecting real memory quality (per
-// eval/README.md anti-cheating discipline §). Rules 3-4 above borrow
-// mem0's "clear, concise" intent; rule 2 is our restrained version of
-// their anti-IDK behaviour.
-const DefaultAnswerPrompt = `You are answering a question using only the MEMORIES below.
-
-Guidelines:
-- Ground the answer strictly in the memories. Do not invent facts that are not supported.
-- When the memories carry partial evidence that lets you reasonably infer the answer (e.g. a character's general traits, an indirectly implied date), do so and briefly note the inference. Characters whose names appear in the memories are NEVER "silent topics" — infer from their statements rather than refusing. Reply "I don't know" only when the memories are genuinely silent on the topic.
-- Match the form of the question. If asked WHEN, give a specific date or duration; HOW MANY, a number; YES/NO, lead with yes/no.
-- Mirror the date format used in the question (e.g. if asked "7 May 2023", answer in that format, not "May 7, 2023").
-- If a memory uses a date QUALIFIER ("around", "roughly", "the week before X", "a few years ago", "last summer", "two weekends ago"), preserve that qualifier in your answer rather than computing a precise absolute date. The qualifier carries the speaker's actual epistemic state — fabricating precision is worse than mirroring vagueness.
-- When an ASKED_AT line is present, treat that timestamp as the "now" for the question. Relative-time phrases ("last week", "two months ago", "yesterday", "this morning") are interpreted RELATIVE TO ASKED_AT, not to today's wall clock. Memories carry their own timestamps in the leading "[YYYY/MM/DD …]" prefix — use ASKED_AT to compute the requested window over those memory timestamps.
-- Answer in 1-2 sentences. Avoid hedging ("it seems", "might be") when the memories are unambiguous.
-
-%s
-
-Answer:`
 
 // Run runs ingest + question loop and returns a report.
 func Run(ctx context.Context, r runners.Runner, ds *dataset.Dataset, opts Options) (*Report, error) {
@@ -280,12 +223,12 @@ func Run(ctx context.Context, r runners.Runner, ds *dataset.Dataset, opts Option
 	// top-k from a pool of all 10 convs combined and relevant facts get
 	// drowned out by other conversations (observed: judge=0.67 on a single
 	// conv but 0.17 across 10).
-	scopeOf := func(convID string) recall.Scope {
+	scopeOf := func(convID string) runners.Scope {
 		uid := opts.UserID
 		if convID != "" {
 			uid = opts.UserID + "::" + convID
 		}
-		return recall.Scope{RuntimeID: opts.RuntimeID, UserID: uid, AgentID: opts.AgentID}
+		return runners.Scope{RuntimeID: opts.RuntimeID, UserID: uid, AgentID: opts.AgentID}
 	}
 
 	report := &Report{
@@ -293,6 +236,13 @@ func Run(ctx context.Context, r runners.Runner, ds *dataset.Dataset, opts Option
 		Dataset:   ds.Name,
 		StartedAt: time.Now(),
 		Latency:   map[string]metrics.LatencySummary{},
+	}
+	switch report.Runner {
+	case runnerFlowcraftRecallV2, "flowcraft-v2":
+		report.RecallVersion = "v2"
+		report.Baseline = "bootstrap-raw"
+	default:
+		report.RecallVersion = "v1"
 	}
 
 	emit := func(e Event) {
@@ -402,172 +352,6 @@ func Run(ctx context.Context, r runners.Runner, ds *dataset.Dataset, opts Option
 	return report, nil
 }
 
-// buildPrediction picks between two answer strategies:
-//   - opts.AnswerLLM != nil → ask the LLM to answer the question grounded in
-//     the recalled memories (closed-book QA over LTM).
-//   - otherwise              → cheap fallback: concatenate top-3 hits, so
-//     EM/F1 still surface a "did retrieval find the right text" signal.
-func buildPrediction(ctx context.Context, opts Options, q dataset.Question, hits []recall.Hit) (string, error) {
-	if opts.AnswerLLM == nil {
-		return composePrediction(hits), nil
-	}
-	prompt := opts.AnswerPrompt
-	if prompt == "" {
-		prompt = DefaultAnswerPrompt
-	}
-	body := buildAnswerBody(q, hits)
-	resp, _, err := opts.AnswerLLM.Generate(ctx, []llm.Message{
-		{Role: model.RoleUser, Parts: []model.Part{{Type: model.PartText, Text: fmt.Sprintf(prompt, body)}}},
-	})
-	if err != nil {
-		return "", err
-	}
-	return strings.TrimSpace(resp.Content()), nil
-}
-
-// buildAnswerBody renders the "ASKED_AT? + Q + MEMORIES" block fed into
-// the QA prompt. Top-k memories are listed as bullets in RecallHit
-// ranking order.
-//
-// The optional ASKED_AT line ([dataset.Question.AskedAt], populated by
-// the LongMemEval converter from `question_date`) is emitted only when
-// the source dataset records when the question was asked. Without it
-// the answer LLM has no anchor for "last week" / "two months ago"
-// relative-time phrases that dominate temporal-reasoning questions —
-// pre-fix LongMemEval temporal-reasoning was effectively unanswerable.
-// Synthetic / LoCoMo datasets that omit the field keep the legacy
-// QUESTION-then-MEMORIES layout so the prompt stays stable for those
-// benchmarks.
-func buildAnswerBody(q dataset.Question, hits []recall.Hit) string {
-	var b strings.Builder
-	if asked := strings.TrimSpace(q.AskedAt); asked != "" {
-		b.WriteString("ASKED_AT: ")
-		b.WriteString(asked)
-		b.WriteString("\n\n")
-	}
-	b.WriteString("QUESTION: ")
-	b.WriteString(q.Query)
-	b.WriteString("\n\nMEMORIES:\n")
-	if len(hits) == 0 {
-		b.WriteString("(none)\n")
-		return b.String()
-	}
-	for _, h := range hits {
-		b.WriteString("- ")
-		b.WriteString(strings.ReplaceAll(h.Entry.Content, "\n", " "))
-		b.WriteString("\n")
-	}
-	return b.String()
-}
-
-// composePrediction concatenates the top-3 hit contents — the "answer" we feed
-// to EM/F1/Judge when no AnswerLLM is configured. Cheap, deterministic, and
-// good enough to surface "did retrieval find the right text" without an API key.
-func composePrediction(hits []recall.Hit) string {
-	if len(hits) == 0 {
-		return ""
-	}
-	max := 3
-	if max > len(hits) {
-		max = len(hits)
-	}
-	var b strings.Builder
-	for i := 0; i < max; i++ {
-		if i > 0 {
-			b.WriteString(" || ")
-		}
-		b.WriteString(hits[i].Entry.Content)
-	}
-	return b.String()
-}
-
-// aggregateByCategory groups per-question scores by their canonical
-// category tag and returns the mean of each headline metric per group.
-// Only canonical labels (see convCategoryName in cli_convert.go) are
-// emitted as keys — the raw `catN` tags are filtered out so the report
-// surface stays stable even if the upstream JSON renumbers categories.
-// Questions without a canonical tag are skipped silently rather than
-// bucketed into a synthetic "unknown" group: a missing breakdown is
-// less misleading than a wrong one.
-func aggregateByCategory(scores []QuestionScore) map[string]CategoryScore {
-	canonical := map[string]bool{
-		"single-hop":  true,
-		"temporal":    true,
-		"multi-hop":   true,
-		"open-domain": true,
-		"adversarial": true,
-	}
-	type acc struct {
-		n                  int
-		sumEM, sumF1, sumJ float64
-	}
-	groups := map[string]*acc{}
-	for _, s := range scores {
-		for _, tag := range s.Tags {
-			if !canonical[tag] {
-				continue
-			}
-			g, ok := groups[tag]
-			if !ok {
-				g = &acc{}
-				groups[tag] = g
-			}
-			g.n++
-			g.sumEM += s.EM
-			g.sumF1 += s.F1
-			g.sumJ += s.Judge
-		}
-	}
-	if len(groups) == 0 {
-		return nil
-	}
-	out := make(map[string]CategoryScore, len(groups))
-	for tag, g := range groups {
-		if g.n == 0 {
-			continue
-		}
-		out[tag] = CategoryScore{
-			Count: g.n,
-			EM:    g.sumEM / float64(g.n),
-			F1:    g.sumF1 / float64(g.n),
-			Judge: g.sumJ / float64(g.n),
-		}
-	}
-	return out
-}
-
-func evidenceKHit(hits []recall.Hit, want []string) float64 {
-	if len(want) == 0 {
-		return 0
-	}
-	got := map[string]struct{}{}
-	for _, h := range hits {
-		got[h.Entry.ID] = struct{}{}
-	}
-	for _, w := range want {
-		if _, ok := got[w]; ok {
-			return 1
-		}
-	}
-	return 0
-}
-
-func boolFloat(b bool) float64 {
-	if b {
-		return 1
-	}
-	return 0
-}
-
-func convoToMessages(c dataset.Conversation) []llm.Message {
-	out := make([]llm.Message, 0, len(c.Turns))
-	for _, t := range c.Turns {
-		role := model.Role(t.Role)
-		out = append(out, llm.Message{Role: role, Parts: []model.Part{{Type: model.PartText, Text: t.Content}}})
-	}
-	return out
-}
-
 // evalQuestions runs the QA loop with bounded concurrency. Recall, answer
 // synthesis and judge are all per-question pure functions (modulo LLM calls),
 // so we fan them out across N workers; results are collected back in dataset
@@ -589,7 +373,7 @@ func perQuestionCtx(parent context.Context, timeout time.Duration) (context.Cont
 // conversation has fewer sessions than another.
 type ingestJob struct {
 	convID    string
-	scope     recall.Scope
+	scope     runners.Scope
 	batch     turnBatch
 	batchIdx  int // 0-based position within its conversation, for WARN logs
 	convTotal int // total batches for the owning conversation, for WARN logs
@@ -613,7 +397,7 @@ type ingestJob struct {
 // emit is a checkpoint callback that fires at coarse-grained progress
 // boundaries (controlled by opts.ProgressPct). Passing a no-op closure
 // disables notifications without touching the inner loop.
-func ingestFlat(ctx context.Context, r runners.Runner, scopeOf func(string) recall.Scope, convs []dataset.Conversation, opts Options, emit func(Event)) []time.Duration {
+func ingestFlat(ctx context.Context, r runners.Runner, scopeOf func(string) runners.Scope, convs []dataset.Conversation, opts Options, emit func(Event)) []time.Duration {
 	// Precompute conversation-level counters + expand every conv into its
 	// batches. Keeping convStart out of the worker path means no
 	// synchronization is needed for timing.
@@ -688,6 +472,9 @@ func ingestFlat(ctx context.Context, r runners.Runner, scopeOf func(string) reca
 						case IngestSaver:
 							return rs.SaveRaw(ingestCtx, job.scope, job.batch.msgs)
 						}
+					}
+					if ts, ok := r.(runners.SourceTurnSaver); ok {
+						return ts.SaveSourceTurns(ingestCtx, job.scope, job.batch.rawTurns)
 					}
 					return r.Save(ingestCtx, job.scope, job.batch.msgs)
 				}
@@ -771,7 +558,7 @@ func ingestFlat(ctx context.Context, r runners.Runner, scopeOf func(string) reca
 	return latencies
 }
 
-func evalQuestions(ctx context.Context, r runners.Runner, scopeOf func(string) recall.Scope, qs []dataset.Question, opts Options, emit func(Event)) ([]QuestionScore, []time.Duration, error) {
+func evalQuestions(ctx context.Context, r runners.Runner, scopeOf func(string) runners.Scope, qs []dataset.Question, opts Options, emit func(Event)) ([]QuestionScore, []time.Duration, error) {
 	n := len(qs)
 	scores := make([]QuestionScore, n)
 	latencies := make([]time.Duration, n)
@@ -868,11 +655,28 @@ func evalQuestions(ctx context.Context, r runners.Runner, scopeOf func(string) r
 				// provider blip without us threading the return values
 				// through a generic helper. Same single-shot policy as
 				// the ingest path.
-				var hits []recall.Hit
+				var artifacts []runners.RecallArtifact
+				var answerContext runners.AnswerContext
+				var audit runners.RecallStageAudit
 				var d time.Duration
 				err := retryOnNotAvailable(qctx, "recall", q.ID, func() error {
 					var rerr error
-					hits, d, rerr = r.Recall(qctx, scopeOf(q.ConversationID), q.Query, opts.TopK)
+					answerQuestion := runners.AnswerQuestion{Query: q.Query, AskedAt: q.AskedAt}
+					if opts.OnQuestionRecallStageAudit != nil {
+						if auditor, ok := r.(runners.AnswerContextStageAuditor); ok {
+							artifacts, answerContext, audit, d, rerr = auditor.RecallAnswerContextWithStageAudit(qctx, scopeOf(q.ConversationID), answerQuestion, opts.TopK)
+							return rerr
+						}
+						if auditor, ok := r.(runners.RecallStageAuditor); ok {
+							artifacts, audit, d, rerr = auditor.RecallWithStageAudit(qctx, scopeOf(q.ConversationID), q.Query, opts.TopK)
+							return rerr
+						}
+					}
+					if answerer, ok := r.(runners.AnswerContextRecaller); ok {
+						artifacts, answerContext, d, rerr = answerer.RecallAnswerContext(qctx, scopeOf(q.ConversationID), answerQuestion, opts.TopK)
+						return rerr
+					}
+					artifacts, d, rerr = r.Recall(qctx, scopeOf(q.ConversationID), q.Query, opts.TopK)
 					return rerr
 				})
 				if err != nil {
@@ -883,12 +687,16 @@ func evalQuestions(ctx context.Context, r runners.Runner, scopeOf func(string) r
 				}
 				latencies[j.idx] = d
 				if opts.OnQuestionRecall != nil {
-					opts.OnQuestionRecall(q, hits)
+					opts.OnQuestionRecall(q, artifacts)
+				}
+				if opts.OnQuestionRecallStageAudit != nil {
+					opts.OnQuestionRecallStageAudit(q, audit)
 				}
 				var pred string
+				var answerPrompt answerPromptRecord
 				err = retryOnNotAvailable(qctx, "answer", q.ID, func() error {
 					var aerr error
-					pred, aerr = buildPrediction(qctx, opts, q, hits)
+					pred, answerPrompt, aerr = buildPrediction(qctx, opts, q, artifacts, answerContext)
 					return aerr
 				})
 				if err != nil {
@@ -918,13 +726,22 @@ func evalQuestions(ctx context.Context, r runners.Runner, scopeOf func(string) r
 				// aggregate reports N/A instead of a misleading 0.000.
 				var khitPtr *float64
 				if !opts.UseExtractor {
-					khit := evidenceKHit(hits, q.EvidenceIDs)
+					khit := evidenceKHit(artifacts, q.EvidenceIDs)
 					khitPtr = &khit
 				}
 				scores[j.idx] = QuestionScore{
 					ID: q.ID, Query: q.Query, Prediction: pred,
 					EM: em, F1: f1, Judge: judge, KHit: khitPtr,
 					Tags: q.Tags,
+				}
+				if opts.OnQuestionAnswer != nil {
+					opts.OnQuestionAnswer(NewAnswerReplayRecord(time.Now(), q, artifacts, AnswerReplayOutcome{
+						Prediction: pred,
+						EM:         em,
+						F1:         f1,
+						Judge:      judge,
+						KHit:       khitPtr,
+					}, answerPrompt.Template, answerPrompt.Body, answerPrompt.ContextFormat))
 				}
 				cur := done.Add(1)
 				if opts.ProgressEvery > 0 && cur%int64(opts.ProgressEvery) == 0 {
@@ -944,20 +761,6 @@ func evalQuestions(ctx context.Context, r runners.Runner, scopeOf func(string) r
 		log.Printf("[locomo] %d/%d questions failed (scored 0); see WARN logs above", f, n)
 	}
 	return scores, latencies, nil
-}
-
-// convoToRawTurns mirrors convoToMessages but preserves each turn's
-// upstream EvidenceID for runners that support it.
-func convoToRawTurns(c dataset.Conversation) []runners.RawTurn {
-	out := make([]runners.RawTurn, 0, len(c.Turns))
-	for _, t := range c.Turns {
-		out = append(out, runners.RawTurn{
-			Role:       t.Role,
-			Content:    t.Content,
-			EvidenceID: t.EvidenceID,
-		})
-	}
-	return out
 }
 
 // turnBatch groups a contiguous slice of one conversation's turns by their
@@ -992,6 +795,7 @@ func batchTurnsBySession(c dataset.Conversation) []turnBatch {
 			Role:       t.Role,
 			Content:    t.Content,
 			EvidenceID: t.EvidenceID,
+			SessionID:  t.SessionID,
 		})
 	}
 	batches = append(batches, cur)

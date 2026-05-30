@@ -25,11 +25,7 @@ func (s HybridShortCircuit) Run(ctx context.Context, st *State) error {
 	if st.Index == nil || st.Request == nil {
 		return nil
 	}
-	caps := st.Index.Capabilities()
-	if !caps.Hybrid {
-		return nil
-	}
-	h, ok := st.Index.(retrieval.Hybridable)
+	h, ok := retrieval.AsHybrid(st.Index)
 	if !ok {
 		return nil
 	}

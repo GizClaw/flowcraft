@@ -123,8 +123,8 @@ func TestLTMMultiRecall_RunsEndToEnd(t *testing.T) {
 		WithScoreThreshold(0), // disable threshold so the test is not at the mercy of tiny fused scores
 		// Disable the entity-lane selectivity gate: this synthetic
 		// corpus only has 3 docs, so "alice" can't be ">10% rare"
-		// against itself. Real LoCoMo namespaces have hundreds of
-		// docs and the gate's default 0.1 ratio is meaningful;
+		// against itself. Real conversation namespaces can have
+		// hundreds of docs and the gate's default 0.1 ratio is meaningful;
 		// here we just want the lane to fire so we can verify
 		// fusion picks up the entity hit.
 		WithEntityLaneMinSelectivity(-1),
@@ -209,7 +209,7 @@ func containsNamePrefix(names []string, prefix string) bool {
 }
 
 // TestEntityRecall_IDFPrefersRareAtoms is the regression test for the
-// LoCoMo 25865344372 collapse: when the entity lane fired naively,
+// high-frequency-atom collapse: when the entity lane fired naively,
 // every doc containing a high-frequency calendar atom ("tuesday")
 // got the same overlap=1 score, drowning the few docs that also
 // matched a rare proper noun ("lgbtq"). IDF weighting must rank the
@@ -277,7 +277,7 @@ func TestEntityRecall_IDFPrefersRareAtoms(t *testing.T) {
 }
 
 // TestEntityRecall_MinSelectivityGate is the regression test for the
-// 25866478422 → query-routing fix: when every query atom is
+// query-routing fix: when every query atom is
 // "universal" (appears in >= MinSelectivity * N docs), the lane
 // short-circuits to zero hits regardless of how many candidates the
 // filter matched. This is the precision-protection mechanism that

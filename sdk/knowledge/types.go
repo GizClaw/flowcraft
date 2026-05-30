@@ -2,6 +2,9 @@
 // storage, chunking, tokenization, and BM25 / vector / hybrid retrieval
 // over three context layers (L0 abstract, L1 overview, L2 chunk detail).
 //
+// Deprecated: use github.com/GizClaw/flowcraft/memory/knowledge instead. This
+// package will be removed in v0.5.0.
+//
 // Architecture
 //
 //   - Service       (this package): orchestrates DocumentRepo / ChunkRepo /

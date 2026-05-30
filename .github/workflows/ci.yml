@@ -13,6 +13,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       sdk: ${{ steps.filter.outputs.sdk }}
+      memory: ${{ steps.filter.outputs.memory }}
       sdkx: ${{ steps.filter.outputs.sdkx }}
       voice: ${{ steps.filter.outputs.voice }}
       vessel: ${{ steps.filter.outputs.vessel }}
@@ -30,6 +31,8 @@ jobs:
           filters: |
             sdk:
               - 'sdk/**'
+            memory:
+              - 'memory/**'
             sdkx:
               - 'sdkx/**'
             voice:
@@ -53,7 +56,7 @@ jobs:
   lint:
     name: Lint
     needs: detect
-    if: needs.detect.outputs.sdk == 'true' || needs.detect.outputs.sdkx == 'true' || needs.detect.outputs.voice == 'true' || needs.detect.outputs.vessel == 'true' || needs.detect.outputs.vesseld == 'true' || needs.detect.outputs.ci == 'true'
+    if: needs.detect.outputs.sdk == 'true' || needs.detect.outputs.memory == 'true' || needs.detect.outputs.sdkx == 'true' || needs.detect.outputs.voice == 'true' || needs.detect.outputs.vessel == 'true' || needs.detect.outputs.vesseld == 'true' || needs.detect.outputs.ci == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -64,7 +67,7 @@ jobs:
         run: |
           # Workspace members (go.work) — vetted with the workspace
           # overlay so cross-module symbols at monorepo HEAD resolve.
-          for m in sdk sdkx voice vessel cmd/vesseld eval; do
+          for m in sdk memory sdkx voice vessel cmd/vesseld eval; do
             echo "==> vet $m"
             (cd "$m" && go vet ./...)
           done
@@ -82,7 +85,7 @@ jobs:
           done
       - name: gofmt check
         run: |
-          diff=$(gofmt -l sdk sdkx voice vessel cmd/vesseld eval tests/quality/vessel tests/e2e/vesseld tests/e2e/retrieval)
+          diff=$(gofmt -l sdk memory sdkx voice vessel cmd/vesseld eval tests/quality/vessel tests/e2e/vesseld tests/e2e/retrieval)
           if [ -n "$diff" ]; then
             echo "Files not formatted:"
             echo "$diff"
@@ -92,7 +95,7 @@ jobs:
   test-sdk:
     name: Test sdk (Go ${{ matrix.go-version }})
     needs: detect
-    if: needs.detect.outputs.sdk == 'true' || needs.detect.outputs.ci == 'true'
+    if: needs.detect.outputs.sdk == 'true' || needs.detect.outputs.memory == 'true' || needs.detect.outputs.ci == 'true'
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -106,11 +109,28 @@ jobs:
         run: go test -count=1 -race ./...
         working-directory: sdk
 
+  test-memory:
+    name: Test memory (Go ${{ matrix.go-version }})
+    needs: detect
+    if: needs.detect.outputs.sdk == 'true' || needs.detect.outputs.memory == 'true' || needs.detect.outputs.ci == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        go-version: ["1.25", "1.26"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v6
+        with:
+          go-version: ${{ matrix.go-version }}
+      - name: Test
+        run: go test -count=1 -race ./...
+        working-directory: memory
+
   test-sdkx:
     name: Test sdkx (Go ${{ matrix.go-version }})
     needs: detect
-    # sdkx depends on sdk, so run when either changes
-    if: needs.detect.outputs.sdk == 'true' || needs.detect.outputs.sdkx == 'true' || needs.detect.outputs.ci == 'true'
+    # sdkx depends on sdk and memory adapters, so run when any changes
+    if: needs.detect.outputs.sdk == 'true' || needs.detect.outputs.memory == 'true' || needs.detect.outputs.sdkx == 'true' || needs.detect.outputs.ci == 'true'
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -132,7 +152,7 @@ jobs:
     # The job installs the nsjail binary and runs the
     # integration_nsjail-tagged tests, which never run in the default
     # test-sdkx lane (the build tag keeps them out).
-    if: needs.detect.outputs.sdk == 'true' || needs.detect.outputs.sdkx == 'true' || needs.detect.outputs.ci == 'true'
+    if: needs.detect.outputs.sdk == 'true' || needs.detect.outputs.memory == 'true' || needs.detect.outputs.sdkx == 'true' || needs.detect.outputs.ci == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -170,7 +190,7 @@ jobs:
     name: Test voice (Go ${{ matrix.go-version }})
     needs: detect
     # voice depends on sdk, so run when either changes
-    if: needs.detect.outputs.sdk == 'true' || needs.detect.outputs.voice == 'true' || needs.detect.outputs.ci == 'true'
+    if: needs.detect.outputs.sdk == 'true' || needs.detect.outputs.memory == 'true' || needs.detect.outputs.voice == 'true' || needs.detect.outputs.ci == 'true'
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -187,8 +207,8 @@ jobs:
   test-vessel:
     name: Test vessel (Go ${{ matrix.go-version }})
     needs: detect
-    # vessel depends on sdk; rerun when either changes.
-    if: needs.detect.outputs.sdk == 'true' || needs.detect.outputs.vessel == 'true' || needs.detect.outputs.ci == 'true'
+    # vessel depends on sdk; sdk memory shims also depend on memory.
+    if: needs.detect.outputs.sdk == 'true' || needs.detect.outputs.memory == 'true' || needs.detect.outputs.vessel == 'true' || needs.detect.outputs.ci == 'true'
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -205,8 +225,8 @@ jobs:
   test-vesseld:
     name: Test vesseld (Go ${{ matrix.go-version }})
     needs: detect
-    # vesseld depends on sdk + sdkx + vessel; rerun when any changes.
-    if: needs.detect.outputs.sdk == 'true' || needs.detect.outputs.sdkx == 'true' || needs.detect.outputs.vessel == 'true' || needs.detect.outputs.vesseld == 'true' || needs.detect.outputs.ci == 'true'
+    # vesseld depends on sdk + memory + sdkx + vessel; rerun when any changes.
+    if: needs.detect.outputs.sdk == 'true' || needs.detect.outputs.memory == 'true' || needs.detect.outputs.sdkx == 'true' || needs.detect.outputs.vessel == 'true' || needs.detect.outputs.vesseld == 'true' || needs.detect.outputs.ci == 'true'
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -225,7 +245,7 @@ jobs:
     needs: detect
     # In-process quality suite for the vessel runtime; reruns on
     # sdk/vessel changes plus when the suite itself moves.
-    if: needs.detect.outputs.sdk == 'true' || needs.detect.outputs.vessel == 'true' || needs.detect.outputs.vessel_quality == 'true' || needs.detect.outputs.ci == 'true'
+    if: needs.detect.outputs.sdk == 'true' || needs.detect.outputs.memory == 'true' || needs.detect.outputs.vessel == 'true' || needs.detect.outputs.vessel_quality == 'true' || needs.detect.outputs.ci == 'true'
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -244,7 +264,7 @@ jobs:
     needs: detect
     # Black-box subprocess suite for the vesseld binary; reruns
     # when the daemon, vessel, sdk, or the suite itself moves.
-    if: needs.detect.outputs.sdk == 'true' || needs.detect.outputs.sdkx == 'true' || needs.detect.outputs.vessel == 'true' || needs.detect.outputs.vesseld == 'true' || needs.detect.outputs.vesseld_e2e == 'true' || needs.detect.outputs.ci == 'true'
+    if: needs.detect.outputs.sdk == 'true' || needs.detect.outputs.memory == 'true' || needs.detect.outputs.sdkx == 'true' || needs.detect.outputs.vessel == 'true' || needs.detect.outputs.vesseld == 'true' || needs.detect.outputs.vesseld_e2e == 'true' || needs.detect.outputs.ci == 'true'
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -268,8 +288,8 @@ jobs:
     name: E2E retrieval (Go ${{ matrix.go-version }})
     needs: detect
     # On-disk LocalWorkspace conformance suite for sdkx/retrieval/workspace.
-    # Reruns when sdk/sdkx changes or the suite itself moves.
-    if: needs.detect.outputs.sdk == 'true' || needs.detect.outputs.sdkx == 'true' || needs.detect.outputs.retrieval_e2e == 'true' || needs.detect.outputs.ci == 'true'
+    # Reruns when sdk/memory/sdkx changes or the suite itself moves.
+    if: needs.detect.outputs.sdk == 'true' || needs.detect.outputs.memory == 'true' || needs.detect.outputs.sdkx == 'true' || needs.detect.outputs.retrieval_e2e == 'true' || needs.detect.outputs.ci == 'true'
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -292,8 +312,8 @@ jobs:
     needs: detect
     # eval is a workspace member (see go.work) — sdk/sdkx resolve to
     # monorepo HEAD via the workspace overlay, so rerun whenever sdk,
-    # sdkx, or eval source changes.
-    if: needs.detect.outputs.sdk == 'true' || needs.detect.outputs.sdkx == 'true' || needs.detect.outputs.eval == 'true' || needs.detect.outputs.ci == 'true'
+    # memory, sdkx, or eval source changes.
+    if: needs.detect.outputs.sdk == 'true' || needs.detect.outputs.memory == 'true' || needs.detect.outputs.sdkx == 'true' || needs.detect.outputs.eval == 'true' || needs.detect.outputs.ci == 'true'
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -312,7 +332,7 @@ jobs:
   ci-pass:
     name: CI
     if: always()
-    needs: [lint, test-sdk, test-sdkx, test-sdkx-nsjail-integration, test-voice, test-vessel, test-vesseld, test-vessel-quality, test-vesseld-e2e, test-retrieval-e2e, test-eval]
+    needs: [lint, test-sdk, test-memory, test-sdkx, test-sdkx-nsjail-integration, test-voice, test-vessel, test-vesseld, test-vessel-quality, test-vesseld-e2e, test-retrieval-e2e, test-eval]
     runs-on: ubuntu-latest
     steps:
       - name: Check results
@@ -320,6 +340,7 @@ jobs:
           results=( \
             "${{ needs.lint.result }}" \
             "${{ needs.test-sdk.result }}" \
+            "${{ needs.test-memory.result }}" \
             "${{ needs.test-sdkx.result }}" \
             "${{ needs.test-sdkx-nsjail-integration.result }}" \
             "${{ needs.test-voice.result }}" \

@@ -1,6 +1,9 @@
 // Package pipeline composes pluggable retrieval Stages over a retrieval.Index
 // .
 //
+// Deprecated: use github.com/GizClaw/flowcraft/memory/retrieval/pipeline instead.
+// This package will be removed in v0.5.0.
+//
 // A Pipeline is a linear list of Stages run sequentially over a shared State.
 // Empty inputs propagate as no-ops: fusion stages skip when State.Recalls
 // is empty, boost / decay / threshold / post-filter / limit stages skip

@@ -16,7 +16,7 @@ package textsearch
 // (Random-House list, intersected with frequency >100 per million in
 // the COCA spoken sub-corpus) plus a short tail of irregular noun
 // plurals. This catches ~90% of irregular forms that appear in
-// conversational memory benchmarks (LoCoMo, LongMemEval). Adding
+// conversational memory workloads. Adding
 // long-tail entries (begat / shewn / clad) is intentionally avoided —
 // the table is the hot path on every BM25 token and a smaller table
 // keeps cache behaviour predictable.

@@ -3,6 +3,9 @@
 // and [RegisterTools], which currently live in sdk/history with
 // // Deprecated: markers pointing here.
 //
+// Deprecated: memory-domain tool adapters are moving to
+// github.com/GizClaw/flowcraft/memory. This package will be removed in v0.5.0.
+//
 // # Why sdkx
 //
 // sdk defines interfaces and primitives; sdkx ships concrete adapters

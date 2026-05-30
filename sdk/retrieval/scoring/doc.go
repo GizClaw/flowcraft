@@ -4,6 +4,9 @@
 // into a backend's package-private guts or constructing a pipeline
 // stage just to invoke the algorithm.
 //
+// Deprecated: use github.com/GizClaw/flowcraft/memory/retrieval/scoring instead.
+// This package will be removed in v0.5.0.
+//
 // All functions in this package are deterministic, allocation-aware,
 // and have no dependency on workspace, embeddings, or persistence;
 // they only know about retrieval.Hit and basic math.

@@ -20,8 +20,8 @@ func TestNormalizeEntities_AtomizesPhrasalEntities(t *testing.T) {
 	}{
 		{
 			name: "english phrasal entity",
-			in:   []string{"Caroline's LGBTQ support group"},
-			want: []string{"caroline", "caroline's lgbtq support group", "lgbtq"},
+			in:   []string{"Mira's photography club"},
+			want: []string{"mira", "mira's photography club"},
 		},
 		{
 			name: "multi-word proper noun",
@@ -96,7 +96,7 @@ func TestNormalizeEntities_EmptyAndStopwordOnly(t *testing.T) {
 func TestNormalizeEntities_BridgesIngestAndQuery(t *testing.T) {
 	// Stored entities as they arrive from the LLM extractor.
 	stored := NormalizeEntities([]string{
-		"Caroline's LGBTQ support group",
+		"Mira's photography club",
 		"Tuesday",
 	})
 	storedSet := map[string]struct{}{}
@@ -106,7 +106,7 @@ func TestNormalizeEntities_BridgesIngestAndQuery(t *testing.T) {
 	// Atoms a query-side extractor would emit for the matching
 	// question (mirroring ruleEntities's output: lowercased,
 	// capitalised-token-only).
-	queryAtoms := []string{"caroline", "lgbtq", "tuesday"}
+	queryAtoms := []string{"mira", "tuesday"}
 	for _, q := range queryAtoms {
 		if _, ok := storedSet[q]; !ok {
 			t.Errorf("query atom %q missing from stored entities %v", q, stored)

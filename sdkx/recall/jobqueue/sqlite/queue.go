@@ -82,11 +82,11 @@ func (q *SQLiteJobQueue) migrate() error {
 	return nil
 }
 
-// recoverRunning resets stranded running jobs to pending.
+// recoverRunning resets stranded leased/running jobs to pending.
 func (q *SQLiteJobQueue) recoverRunning() error {
 	now := time.Now().UnixMilli()
 	_, err := q.db.Exec(
-		`UPDATE recall_jobs SET state='pending', next_run_at=?, updated_at=? WHERE state='running'`,
+		`UPDATE recall_jobs SET state='pending', next_run_at=?, updated_at=? WHERE state IN ('leased','running')`,
 		now, now,
 	)
 	return err
@@ -134,7 +134,7 @@ func (q *SQLiteJobQueue) Lease(ctx context.Context, now time.Time) (*recall.JobR
 		return nil, false, err
 	}
 	if _, err := tx.ExecContext(ctx,
-		`UPDATE recall_jobs SET state='running', attempts=attempts+1, updated_at=? WHERE id=?`,
+		`UPDATE recall_jobs SET state='leased', updated_at=? WHERE id=?`,
 		now.UnixMilli(), string(rec.ID),
 	); err != nil {
 		return nil, false, err
@@ -142,10 +142,30 @@ func (q *SQLiteJobQueue) Lease(ctx context.Context, now time.Time) (*recall.JobR
 	if err := tx.Commit(); err != nil {
 		return nil, false, err
 	}
-	rec.State = recall.JobRunning
-	rec.Attempts++
+	rec.State = recall.JobLeased
 	rec.UpdatedAt = now
 	return rec, true, nil
+}
+
+// Start marks a leased job as running and consumes one attempt.
+func (q *SQLiteJobQueue) Start(ctx context.Context, id recall.JobID, now time.Time) (*recall.JobRecord, error) {
+	res, err := q.db.ExecContext(ctx,
+		`UPDATE recall_jobs
+		    SET state='running', attempts=attempts+1, updated_at=?
+		  WHERE id=? AND state IN ('leased','running')`,
+		now.UnixMilli(), string(id),
+	)
+	if err != nil {
+		return nil, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return nil, err
+	}
+	if n == 0 {
+		return nil, recall.ErrJobNotFound
+	}
+	return q.Get(ctx, id)
 }
 
 // Reschedule implements recall.JobQueue.

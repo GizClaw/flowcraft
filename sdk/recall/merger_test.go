@@ -9,9 +9,9 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/llm"
 	"github.com/GizClaw/flowcraft/sdk/model"
 	"github.com/GizClaw/flowcraft/sdk/recall"
+	"github.com/GizClaw/flowcraft/sdk/recall/pipeline"
 	"github.com/GizClaw/flowcraft/sdk/retrieval"
 	memidx "github.com/GizClaw/flowcraft/sdk/retrieval/memory"
-	"github.com/GizClaw/flowcraft/sdk/retrieval/pipeline"
 )
 
 func TestSaveDedupsSameFactAcrossDifferentMessages(t *testing.T) {
@@ -127,8 +127,8 @@ func TestSaveSoftMergeMarksSupersededNeighbour(t *testing.T) {
 // onto each other: the extractor prompt contract declares episodic
 // events as append-only timeline data, and the vector supersede
 // channel must honour that contract regardless of how similar the
-// vectors look (real LoCoMo case: "Caroline went to the support
-// group on 7 May" vs "on 8 May" — same actors, same place, the
+// vectors look ("Theo went to the photography club on 7 May" vs
+// "on 8 May" — same actors, same place, the
 // date lives in the body, NOT in entities). Without this guard, the
 // older event would be damped at recall time and the temporal /
 // single-hop questions about it would fail.
@@ -139,12 +139,12 @@ func TestSaveSoftMergeSkipsEpisodicFacts(t *testing.T) {
 	setNow := func(t time.Time) { clockHolder.Store(&t) }
 	getNow := func() time.Time { return *clockHolder.Load() }
 	setNow(time.Now())
-	oldFact := "On 7 May 2023, Caroline went to the LGBTQ support group at the Greenwich Community Center."
-	newFact := "On 8 May 2023, Caroline went to the LGBTQ support group at the Greenwich Community Center."
+	oldFact := "On 7 May 2023, Theo went to the photography club at the Helios community arts hall."
+	newFact := "On 8 May 2023, Theo went to the photography club at the Helios community arts hall."
 	ex := &scriptedExtractor{
 		facts: [][]recall.ExtractedFact{
-			{{Content: oldFact, Entities: []string{"Caroline", "Greenwich Community Center"}, Episodic: true}},
-			{{Content: newFact, Entities: []string{"Caroline", "Greenwich Community Center"}, Episodic: true}},
+			{{Content: oldFact, Entities: []string{"Theo", "Helios community arts hall"}, Episodic: true}},
+			{{Content: newFact, Entities: []string{"Theo", "Helios community arts hall"}, Episodic: true}},
 		},
 	}
 	emb := &mapEmbedder{
@@ -166,14 +166,14 @@ func TestSaveSoftMergeSkipsEpisodicFacts(t *testing.T) {
 
 	scope := newScope()
 	first, err := m.Save(ctx, scope, []llm.Message{
-		{Role: model.RoleUser, Parts: []model.Part{{Type: model.PartText, Text: "Caroline went to the support group on May 7."}}},
+		{Role: model.RoleUser, Parts: []model.Part{{Type: model.PartText, Text: "Theo went to the photography club on May 7."}}},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	setNow(getNow().Add(24 * time.Hour))
 	_, err = m.Save(ctx, scope, []llm.Message{
-		{Role: model.RoleUser, Parts: []model.Part{{Type: model.PartText, Text: "Caroline went again on May 8."}}},
+		{Role: model.RoleUser, Parts: []model.Part{{Type: model.PartText, Text: "Theo went again on May 8."}}},
 	})
 	if err != nil {
 		t.Fatal(err)

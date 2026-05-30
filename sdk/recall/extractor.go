@@ -19,7 +19,7 @@ const (
 	// ModeAdditive is the default: one LLM call, ADD-only, no merge/delete.
 	ModeAdditive ExtractMode = "additive"
 	// ModeReconciling is reserved for the legacy two-pass merge/delete behavior.
-	// As of Phase 3, no implementation ships in tree.
+	// No implementation currently ships in tree.
 	ModeReconciling ExtractMode = "reconciling"
 )
 
@@ -242,7 +242,7 @@ Skip:
 
 1. USE CANONICAL NAMES. Replace "she" / "he" / "my mom" / "my friend" with the full name the dialog establishes elsewhere. If only a role is known, render it canonically ("user's mother", not "my mom").
 
-2. CARRY FORWARD third-party names introduced earlier in the conversation. If an earlier turn establishes Maya as the user's sister, a later "Maya came too" must be emitted as "user's sister Maya".
+2. CARRY FORWARD third-party names introduced earlier in the conversation. If an earlier turn establishes Ren as the user's sister, a later "Ren came too" must be emitted as "user's sister Ren".
 
 # COMPOSITE FACTS — keep causal chains in ONE fact
 
@@ -258,7 +258,7 @@ The bad version makes a future multi-hop question ("What did the user make for t
 
 For preference / personality / belief facts, embed the EVIDENCE in the fact body so inferential questions ground in the same retrieved fact:
 
-GOOD: "The user has expressed strong interest in feminist literature after attending a Judith Butler lecture, suggesting Gender Studies as a likely academic focus."
+GOOD: "The user has expressed strong interest in computing history after attending an Ada Lovelace lecture, suggesting Computer Science as a likely academic focus."
 
 BAD : "The user is interested in gender studies." (no evidence; cannot ground inferential questions)
 
@@ -278,7 +278,7 @@ EXCLUDE — anything that is not a discriminative proper noun:
   date; entities must be rare enough to discriminate the right fact
   from thousands of others.
 
-GOOD entities: ["Sarah", "Maya", "San Francisco", "Toyota Prius"]
+GOOD entities: ["Mira", "Ren", "Lyon", "Tesla Model 3"]
 BAD  entities: ["8 May 2023", "meeting", "morning", "she", "climbing"]
 
 # OUTPUT FORMAT — strict JSON, no prose, no code fences
@@ -286,9 +286,9 @@ BAD  entities: ["8 May 2023", "meeting", "morning", "she", "climbing"]
 {
   "facts": [
     {
-      "content": "On 8 May 2023, the user mentioned they joined an LGBTQ support group at the Greenwich Community Center.",
+      "content": "On 8 May 2023, the user mentioned they joined a photography club at the Helios community arts hall.",
       "categories": ["episodic", "events"],
-      "entities": ["Greenwich Community Center"],
+      "entities": ["Helios community arts hall"],
       "episodic": true,
       "source": "user",
       "confidence": 0.95
@@ -304,13 +304,13 @@ If no facts can be extracted, return {"facts": []}.
 
 # EPISODIC FLAG — first-class architectural signal
 
-Set "episodic": true when the fact records a dated event, trip, meeting, encounter, or any one-off interaction with a specific timestamp. Two different events sharing the same actors / places but different dates ("Caroline went to the support group on 7 May" vs "on 8 May") MUST both be marked episodic so the downstream merger keeps them as parallel timeline entries rather than collapsing one into the other.
+Set "episodic": true when the fact records a dated event, trip, meeting, encounter, or any one-off interaction with a specific timestamp. Two different events sharing the same actors / places but different dates ("Theo went to the photography club on 7 May" vs "on 8 May") MUST both be marked episodic so the downstream merger keeps them as parallel timeline entries rather than collapsing one into the other.
 
 Set "episodic": false (or omit) for stable attributes that describe an ongoing state (preferences, profile traits, opinions, relationships, plans). These can be replaced over time when contradicted.
 
 # SLOT FIELDS — optional, for STABLE attributes that may change over time
 
-When a fact is a stable profile / preference / relationship attribute that may need to be replaced later (e.g. "user lives in Shanghai" should overwrite a prior "user lives in Beijing"), set:
+When a fact is a stable profile / preference / relationship attribute that may need to be replaced later (e.g. "user lives in Lyon" should overwrite a prior "user lives in Paris"), set:
 
   "subject":   what the fact is about ("user", "user.spouse", "pet:<name>")
   "predicate": snake_case key from the controlled list:
@@ -326,7 +326,7 @@ Episodic facts (episodic=true) MUST leave subject and predicate empty — they a
 If a RECENT TURNS block is provided below (above CONVERSATION), it carries raw messages from PRIOR Save batches on the same conversation. Use it ONLY to resolve references that appear in the CURRENT CONVERSATION but were established earlier:
 
 - pronouns ("she", "he", "they") whose antecedent was named in a prior turn
-- short references ("the gym", "the trip", "Maya") whose introduction happened earlier
+- short references ("the gym", "the trip", "Ren") whose introduction happened earlier
 - chronology hints ("the day after we spoke about it") that anchor relative time
 
 CRITICAL: do NOT extract facts directly from RECENT TURNS — those messages were already processed by an earlier Save and their facts (if any) are stored. Your extractions must come exclusively from the CURRENT CONVERSATION block. RECENT TURNS is a reference dictionary, not an extraction source.
@@ -348,90 +348,90 @@ Two facts are duplicates only when the SPECIFIC EVENT / CLAIM is the same, not w
 ## Example 1 — multi-speaker turn with named speakers + temporal anchor + relationship
 
 Conversation:
-user: [2024-03-14 10:30] Alice: Hey Bob, finally went to the climbing gym this morning — my first lead climb in 6 months. Felt amazing.
-assistant: [2024-03-14 10:35] Bob: Whoa, proud of you. Did Eve come?
-user: [2024-03-14 10:40] Alice: Yeah, my sister Eve belayed me. We hit the coffee shop on the corner right after to celebrate.
+user: [2024-03-14 10:30] Mira: Hey Theo, finally went to the climbing gym this morning — my first lead climb in 6 months. Felt amazing.
+assistant: [2024-03-14 10:35] Theo: Whoa, proud of you. Did Kai come?
+user: [2024-03-14 10:40] Mira: Yeah, my sister Kai belayed me. We hit the coffee shop on the corner right after to celebrate.
 
 Facts:
 {
   "facts": [
-    {"content": "On 14 March 2024, Alice did her first lead climb in six months at a climbing gym, and described it as feeling amazing.",
+    {"content": "On 14 March 2024, Mira did her first lead climb in six months at a climbing gym, and described it as feeling amazing.",
      "categories": ["episodic", "events"],
-     "entities": ["Alice"], "episodic": true, "source": "user", "confidence": 0.95},
-    {"content": "Alice's sister Eve belayed her during her first lead climb at the climbing gym on 14 March 2024.",
+     "entities": ["Mira"], "episodic": true, "source": "user", "confidence": 0.95},
+    {"content": "Mira's sister Kai belayed her during her first lead climb at the climbing gym on 14 March 2024.",
      "categories": ["episodic", "relationships"],
-     "entities": ["Alice", "Eve"], "episodic": true, "source": "user", "confidence": 0.9},
-    {"content": "On 14 March 2024, Alice and her sister Eve went to a coffee shop on the corner right after climbing to celebrate Alice's first lead climb in six months.",
+     "entities": ["Mira", "Kai"], "episodic": true, "source": "user", "confidence": 0.9},
+    {"content": "On 14 March 2024, Mira and her sister Kai went to a coffee shop on the corner right after climbing to celebrate Mira's first lead climb in six months.",
      "categories": ["episodic", "events"],
-     "entities": ["Alice", "Eve"], "episodic": true, "source": "user", "confidence": 0.9}
+     "entities": ["Mira", "Kai"], "episodic": true, "source": "user", "confidence": 0.9}
   ]
 }
 
-Notice: the speaker prefix names Alice and Bob — facts are attributed to Alice by name, NOT to "the user". The "[2024-03-14 10:30]" prefix grounds "this morning" to 14 March 2024. "My sister" is canonicalised to "Alice's sister Eve". Entities are atomic proper nouns only (no "climbing", no "coffee shop" since it has no proper name).
+Notice: the speaker prefix names Mira and Theo — facts are attributed to Mira by name, NOT to "the user". The "[2024-03-14 10:30]" prefix grounds "this morning" to 14 March 2024. "My sister" is canonicalised to "Mira's sister Kai". Entities are atomic proper nouns only (no "climbing", no "coffee shop" since it has no proper name).
 
 ## Example 2 — facts uttered by the SECOND speaker (real person, not AI)
 
 Conversation:
-user: [2024-03-15 19:15] Alice: How did the marathon go yesterday?
-assistant: [2024-03-15 19:20] Bob: Finished my first half-marathon — 2h 14m. My knee is killing me but I'm proud.
-user: [2024-03-15 19:22] Alice: Amazing!! Did Carol run with you?
-assistant: [2024-03-15 19:25] Bob: No, she was at her mom's place visiting. She cheered from the finish line though.
+user: [2024-03-15 19:15] Mira: How did the marathon go yesterday?
+assistant: [2024-03-15 19:20] Theo: Finished my first half-marathon — 2h 14m. My knee is killing me but I'm proud.
+user: [2024-03-15 19:22] Mira: Amazing!! Did Nile run with you?
+assistant: [2024-03-15 19:25] Theo: No, she was at her mom's place visiting. She cheered from the finish line though.
 
 Facts:
 {
   "facts": [
-    {"content": "On 14 March 2024, Bob ran and finished his first half-marathon with a time of 2h 14m, and was sore in the knee afterwards.",
+    {"content": "On 14 March 2024, Theo ran and finished his first half-marathon with a time of 2h 14m, and was sore in the knee afterwards.",
      "categories": ["episodic", "events"],
-     "entities": ["Bob"], "episodic": true, "source": "assistant", "confidence": 0.95},
-    {"content": "On 14 March 2024, Bob's partner Carol was at her mother's place during Bob's half-marathon but came to the finish line to cheer him on.",
+     "entities": ["Theo"], "episodic": true, "source": "assistant", "confidence": 0.95},
+    {"content": "On 14 March 2024, Theo's partner Nile was at her mother's place during Theo's half-marathon but came to the finish line to cheer him on.",
      "categories": ["episodic", "relationships"],
-     "entities": ["Bob", "Carol"], "episodic": true, "source": "assistant", "confidence": 0.85}
+     "entities": ["Theo", "Nile"], "episodic": true, "source": "assistant", "confidence": 0.85}
   ]
 }
 
-Notice how facts uttered by the assistant role about Bob's own life are extracted with the SAME rigour as Alice's facts — Bob is a real person here, not an AI. "Yesterday" in the prefix-anchored turn of 15 March 2024 is grounded to 14 March 2024.
+Notice how facts uttered by the assistant role about Theo's own life are extracted with the SAME rigour as Mira's facts — Theo is a real person here, not an AI. "Yesterday" in the prefix-anchored turn of 15 March 2024 is grounded to 14 March 2024.
 
 ## Example 3 — preference with inference evidence
 
 Conversation:
-user: I've been devouring Judith Butler's essays this month. Went to her lecture at Columbia last Thursday too — kept thinking I might shift my major from Psychology to Gender Studies.
+user: I've been devouring Ada Lovelace's essays this month. Went to her lecture at Cambridge last Thursday too — kept thinking I might shift my major from English to Computer Science.
 
 Facts:
 {
   "facts": [
-    {"content": "The user has been reading Judith Butler's essays.",
+    {"content": "The user has been reading Ada Lovelace's essays.",
      "categories": ["preferences"],
-     "entities": ["Judith Butler"], "episodic": false, "source": "user", "confidence": 0.85},
-    {"content": "The user attended a Judith Butler lecture at Columbia University.",
+     "entities": ["Ada Lovelace"], "episodic": false, "source": "user", "confidence": 0.85},
+    {"content": "The user attended an Ada Lovelace lecture at Cambridge University.",
      "categories": ["episodic", "events"],
-     "entities": ["Judith Butler", "Columbia University"], "episodic": true, "source": "user", "confidence": 0.9},
-    {"content": "After reading Judith Butler and attending her Columbia lecture, the user considered switching their major from Psychology to Gender Studies — suggesting Gender Studies as a likely academic focus.",
+     "entities": ["Ada Lovelace", "Cambridge University"], "episodic": true, "source": "user", "confidence": 0.9},
+    {"content": "After reading Ada Lovelace and attending her Cambridge lecture, the user considered switching their major from English to Computer Science — suggesting Computer Science as a likely academic focus.",
      "categories": ["plans", "opinions"],
-     "entities": ["Judith Butler", "Columbia University"], "episodic": false, "source": "user", "confidence": 0.85}
+     "entities": ["Ada Lovelace", "Cambridge University"], "episodic": false, "source": "user", "confidence": 0.85}
   ]
 }
 
 ## Example 4 — slot-eligible stable attribute
 
 Conversation:
-user: Just moved to Shanghai from Beijing for a new job at ByteDance.
+user: Just moved to Lyon from Paris for a new job at Acme Robotics.
 
 Facts:
 {
   "facts": [
-    {"content": "The user lives in Shanghai.",
+    {"content": "The user lives in Lyon.",
      "categories": ["profile"],
-     "entities": ["Shanghai"],
+     "entities": ["Lyon"],
      "subject": "user", "predicate": "lives_in",
      "episodic": false, "source": "user", "confidence": 0.95},
-    {"content": "The user works at ByteDance.",
+    {"content": "The user works at Acme Robotics.",
      "categories": ["profile"],
-     "entities": ["ByteDance"],
+     "entities": ["Acme Robotics"],
      "subject": "user", "predicate": "works_at",
      "episodic": false, "source": "user", "confidence": 0.95},
-    {"content": "The user moved to Shanghai from Beijing for a new job at ByteDance.",
+    {"content": "The user moved to Lyon from Paris for a new job at Acme Robotics.",
      "categories": ["episodic", "events"],
-     "entities": ["Shanghai", "Beijing", "ByteDance"],
+     "entities": ["Lyon", "Paris", "Acme Robotics"],
      "episodic": true, "source": "user", "confidence": 0.95}
   ]
 }
@@ -617,10 +617,12 @@ func parseFactsJSON(raw string) ([]ExtractedFact, error) {
 }
 
 func truncate(b []byte, n int) string {
-	if len(b) <= n {
-		return string(b)
+	s := string(b)
+	runes := []rune(s)
+	if n <= 0 || len(runes) <= n {
+		return s
 	}
-	return string(b[:n]) + "…"
+	return string(runes[:n]) + "…"
 }
 
 func normalizeFacts(in []ExtractedFact) []ExtractedFact {

@@ -84,6 +84,9 @@ func (s TimeDecay) Run(_ context.Context, st *State) error {
 // Score scaling: hit.Score is multiplied by (1 + Boost) when Doc.ID
 // is in CandidateEntityIDs (capped at 2× to preserve relative gaps).
 // Boost defaults to 0.3 when zero or negative.
+//
+// Deprecated: use sdk/recall/pipeline.EntityLinkBoost. The retrieval-level
+// entity-link boost stage will be removed in v0.5.0.
 type EntityLinkBoost struct {
 	Boost float64
 }
@@ -131,6 +134,9 @@ func (s EntityLinkBoost) Run(_ context.Context, st *State) error {
 // . Reads: Fused or Final, QueryEntities. Writes: same slice.
 //
 // Boost is added per overlapping entity, capped at 1× score.
+//
+// Deprecated: use sdk/recall/pipeline.EntityBoost. The retrieval-level entity
+// boost stage will be removed in v0.5.0.
 type EntityBoost struct {
 	Boost float64
 }
@@ -276,6 +282,9 @@ func (s Dedup) Run(_ context.Context, st *State) error {
 // was never tagged.
 //
 // Reads/Writes: Final.
+//
+// Deprecated: use sdk/recall/pipeline.SlotCollapse. The retrieval-level slot
+// collapse stage will be removed in v0.5.0.
 type SlotCollapse struct{}
 
 // Name implements Stage.
@@ -402,7 +411,5 @@ func pickFinalish(st *State) []retrieval.Hit {
 }
 
 func cloneHits(in []retrieval.Hit) []retrieval.Hit {
-	out := make([]retrieval.Hit, len(in))
-	copy(out, in)
-	return out
+	return retrieval.CloneHits(in)
 }

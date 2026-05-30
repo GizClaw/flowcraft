@@ -113,16 +113,14 @@ func (m *lt) sweepNamespace(ctx context.Context, ns string, filter retrieval.Fil
 	if ns == "" {
 		return nil
 	}
-	if d, ok := m.idx.(retrieval.DeletableByFilter); ok && m.idx.Capabilities().NativeDeleteByFilter {
+	if d, ok := retrieval.AsDeletableByFilter(m.idx); ok && retrieval.Supports(m.idx, retrieval.CapabilityNativeDeleteByFilter) {
 		_, err := d.DeleteByFilter(ctx, ns, filter)
 		return err
 	}
-	tok := ""
 	for {
 		page, err := m.idx.List(ctx, ns, retrieval.ListRequest{
-			Filter:    filter,
-			PageSize:  m.cfg.sweeperBatchMax,
-			PageToken: tok,
+			Filter:   filter,
+			PageSize: m.cfg.sweeperBatchMax,
 		})
 		if err != nil {
 			return err
@@ -137,9 +135,8 @@ func (m *lt) sweepNamespace(ctx context.Context, ns string, filter retrieval.Fil
 		if err := m.idx.Delete(ctx, ns, ids); err != nil {
 			return err
 		}
-		if page.NextPageToken == "" {
-			return nil
-		}
-		tok = page.NextPageToken
+		// The delete mutates the ordered result set behind offset-style
+		// page tokens. Restart from the first page so backends do not
+		// skip rows that shifted into an already-consumed offset.
 	}
 }

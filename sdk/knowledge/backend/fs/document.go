@@ -69,11 +69,12 @@ type metaSidecar struct {
 }
 
 // Put atomically increments SourceDocument.Version, writes the raw
-// content, and updates the .meta.json sidecar. Doc.Version supplied by
-// the caller is ignored; the repo is the source of truth for versions.
-func (r *FSDocumentRepo) Put(ctx context.Context, doc knowledge.SourceDocument) error {
+// content, updates the .meta.json sidecar, and returns the authoritative
+// stored SourceDocument. Doc.Version / UpdatedAt supplied by the caller
+// are ignored; the repo is the source of truth for both fields.
+func (r *FSDocumentRepo) Put(ctx context.Context, doc knowledge.SourceDocument) (*knowledge.SourceDocument, error) {
 	if doc.DatasetID == "" || doc.Name == "" {
-		return errdefs.Validationf("knowledge/fs: dataset_id and name are required")
+		return nil, errdefs.Validationf("knowledge/fs: dataset_id and name are required")
 	}
 	mu := r.lockFor(doc.DatasetID, doc.Name)
 	mu.Lock()
@@ -88,7 +89,7 @@ func (r *FSDocumentRepo) Put(ctx context.Context, doc knowledge.SourceDocument) 
 	now := r.now().UTC()
 
 	if err := atomicWrite(ctx, r.ws, r.paths.documentPath(doc.DatasetID, doc.Name), []byte(doc.Content)); err != nil {
-		return err
+		return nil, err
 	}
 
 	side := metaSidecar{
@@ -98,12 +99,19 @@ func (r *FSDocumentRepo) Put(ctx context.Context, doc knowledge.SourceDocument) 
 	}
 	payload, err := json.Marshal(side)
 	if err != nil {
-		return fmt.Errorf("knowledge/fs: marshal meta: %w", err)
+		return nil, fmt.Errorf("knowledge/fs: marshal meta: %w", err)
 	}
 	if err := atomicWrite(ctx, r.ws, r.paths.metaPath(doc.DatasetID, doc.Name), payload); err != nil {
-		return err
+		return nil, err
 	}
-	return nil
+	return &knowledge.SourceDocument{
+		DatasetID: doc.DatasetID,
+		Name:      doc.Name,
+		Content:   doc.Content,
+		Metadata:  copyMetadata(doc.Metadata),
+		Version:   nextVersion,
+		UpdatedAt: now,
+	}, nil
 }
 
 // Get returns the SourceDocument with Content losslessly preserved.

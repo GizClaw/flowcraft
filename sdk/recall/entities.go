@@ -13,16 +13,15 @@ import (
 // them.
 //
 // Background: extractor LLMs return entities as they appear in the
-// dialog — "Caroline's LGBTQ support group", "Tuesday morning
+// dialog — "Mira's photography club", "Tuesday morning
 // meeting", "my sister Alice", etc. The query side rule-based
 // extractor on the other hand walks the question and emits
 // individual capitalised + CJK atoms — for the same conversation
-// it would emit ["caroline", "lgbtq", "tuesday", "alice"]. Without
+// it would emit ["mira", "photography", "tuesday", "alice"]. Without
 // reconciliation the stored list and the query list don't share a
 // string, so the entity retrieval lane's ContainsAny filter never
-// fires and the lane silently degrades to zero recall — which is
-// exactly the failure mode we saw in the LoCoMo 25862745052
-// ablation.
+// fires and the lane silently degrades to zero recall in entity-dense
+// conversational workloads.
 //
 // NormalizeEntities folds both representations onto the same key
 // space. For each LLM-supplied entity it:
@@ -75,8 +74,8 @@ func NormalizeEntities(in []string) []string {
 				continue
 			}
 			low := strings.ToLower(tok)
-			// Drop English possessive "'s" so "Caroline's" and
-			// "Caroline" share an atom — common in dialog extractor
+			// Drop English possessive "'s" so "Mira's" and
+			// "Mira" share an atom — common in dialog extractor
 			// output where the LLM preserves the apostrophe form.
 			low = strings.TrimSuffix(low, "'s")
 			low = strings.TrimSuffix(low, "\u2019s") // typographic apostrophe
@@ -101,7 +100,7 @@ func isTrimmableRune(r rune) bool {
 func isEntitySplitRune(r rune) bool {
 	// Split on whitespace and most punctuation. Keep apostrophes and
 	// hyphens inside the token so "O'Brien" / "vice-president" stay
-	// joined (the apostrophe will be re-stripped above for "Caroline's").
+	// joined (the apostrophe will be re-stripped above for "Mira's").
 	if unicode.IsSpace(r) {
 		return true
 	}
@@ -111,9 +110,13 @@ func isEntitySplitRune(r rune) bool {
 	return false
 }
 
-// isCJKRune mirrors sdk/textsearch.IsCJK without forcing this package
-// to depend on textsearch — the entity-normalisation hot path runs on
-// every ingest and the indirection isn't worth it for one rune check.
+// isCJKRune mirrors sdk/text/tokenize.IsCJK locally so this
+// deprecated package keeps its zero-dependency surface intact —
+// recall_v1 is on a deprecation path and must not grow new
+// transitive imports for the sake of one rune check. Any
+// expansion of the CJK definition (e.g. new Unicode extension
+// blocks) must be applied here in parallel; the canonical
+// version is at sdk/text/tokenize.IsCJK.
 func isCJKRune(r rune) bool {
 	return unicode.Is(unicode.Han, r) ||
 		unicode.Is(unicode.Hangul, r) ||

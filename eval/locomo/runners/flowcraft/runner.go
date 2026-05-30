@@ -12,9 +12,9 @@ import (
 	"github.com/GizClaw/flowcraft/eval/locomo/runners"
 	"github.com/GizClaw/flowcraft/sdk/embedding"
 	"github.com/GizClaw/flowcraft/sdk/llm"
-	"github.com/GizClaw/flowcraft/sdk/recall"
+	recallv1 "github.com/GizClaw/flowcraft/sdk/recall"
+	"github.com/GizClaw/flowcraft/sdk/recall/pipeline"
 	memidx "github.com/GizClaw/flowcraft/sdk/retrieval/memory"
-	"github.com/GizClaw/flowcraft/sdk/retrieval/pipeline"
 )
 
 // Options configures the Flowcraft default runner.
@@ -133,54 +133,54 @@ type Options struct {
 	// The callback runs in the caller's goroutine, so it MUST be
 	// goroutine-safe when the eval's ingest_concurrency > 1.
 	// nil disables the callback.
-	OnFactsExtracted func(scope recall.Scope, facts []recall.ExtractedFact)
+	OnFactsExtracted func(scope recallv1.Scope, facts []recallv1.ExtractedFact)
 }
 
 // Runner is the default bench Runner.
 type Runner struct {
 	name      string
-	mem       recall.Memory
-	onExtract func(scope recall.Scope, facts []recall.ExtractedFact)
+	mem       recallv1.Memory
+	onExtract func(scope recallv1.Scope, facts []recallv1.ExtractedFact)
 }
 
 // New returns a new bench runner. Caller must Close().
 func New(opts Options) (runners.Runner, error) {
 	if opts.Name == "" {
-		opts.Name = "flowcraft-default"
+		opts.Name = "flowcraft-recall-v1"
 	}
 	maxFacts := opts.MaxFactsPerCall
 	if maxFacts == 0 {
 		maxFacts = 200 // LoCoMo conversations span hundreds of turns
 	}
 	idx := memidx.New()
-	memOpts := []recall.Option{
-		recall.WithLLM(opts.LLM),
-		recall.WithEmbedder(opts.Embedder),
-		recall.WithRequireUserID(),
-		recall.WithMaxFactsPerCall(maxFacts),
-		recall.WithIncludeAssistant(opts.IncludeAssistant),
+	memOpts := []recallv1.Option{
+		recallv1.WithLLM(opts.LLM),
+		recallv1.WithEmbedder(opts.Embedder),
+		recallv1.WithRequireUserID(),
+		recallv1.WithMaxFactsPerCall(maxFacts),
+		recallv1.WithIncludeAssistant(opts.IncludeAssistant),
 	}
 	if opts.SaveWithContext {
-		memOpts = append(memOpts, recall.WithSaveContext(0, 0))
+		memOpts = append(memOpts, recallv1.WithSaveContext(0, 0))
 	}
 	if opts.SoftMerge != nil && !*opts.SoftMerge {
-		memOpts = append(memOpts, recall.WithoutSoftMerge())
+		memOpts = append(memOpts, recallv1.WithoutSoftMerge())
 	}
 	if opts.RecentTurnsK > 0 {
-		memOpts = append(memOpts, recall.WithRecentTurns(opts.RecentTurnsK))
+		memOpts = append(memOpts, recallv1.WithRecentTurns(opts.RecentTurnsK))
 	}
 	if opts.UpdateResolverLLM != nil {
 		topK := opts.UpdateResolverTopK
 		if topK <= 0 {
 			topK = 20
 		}
-		memOpts = append(memOpts, recall.WithUpdateResolver(
-			&recall.LLMUpdateResolver{LLM: opts.UpdateResolverLLM},
+		memOpts = append(memOpts, recallv1.WithUpdateResolver(
+			&recallv1.LLMUpdateResolver{LLM: opts.UpdateResolverLLM},
 			topK,
 		))
 	}
 	if opts.ExtractPrompt != "" || opts.LLM != nil {
-		memOpts = append(memOpts, recall.WithExtractor(&recall.AdditiveExtractor{
+		memOpts = append(memOpts, recallv1.WithExtractor(&recallv1.AdditiveExtractor{
 			LLM:              opts.LLM,
 			IncludeAssistant: opts.IncludeAssistant,
 			MaxFacts:         maxFacts,
@@ -205,12 +205,12 @@ func New(opts Options) (runners.Runner, error) {
 		pipeOpts = append(pipeOpts, pipeline.WithEntityLinkBoost(opts.EntityLinkBoost))
 	}
 	if len(pipeOpts) > 0 {
-		memOpts = append(memOpts, recall.WithLTMOption(pipeOpts...))
+		memOpts = append(memOpts, recallv1.WithLTMOption(pipeOpts...))
 	}
 	if opts.EntityStore {
 		// recall auto-wires the lookup stage + lane + resolver on
 		// top of pipeOpts; no need to thread them here.
-		memOpts = append(memOpts, recall.WithEntityStore(0))
+		memOpts = append(memOpts, recallv1.WithEntityStore(0))
 		// Forward both positive (exact threshold) and negative
 		// (explicit gate-off opt-out) values verbatim; only "0"
 		// means "no opinion, let the SDK pick the safe default" —
@@ -219,14 +219,14 @@ func New(opts Options) (runners.Runner, error) {
 		// default applies. Aligns with the es-default semantics on
 		// the SDK side.
 		if opts.EntityStoreMaxLinkedCount != 0 {
-			memOpts = append(memOpts, recall.WithEntityStoreMaxLinkedCount(opts.EntityStoreMaxLinkedCount))
+			memOpts = append(memOpts, recallv1.WithEntityStoreMaxLinkedCount(opts.EntityStoreMaxLinkedCount))
 		}
 		if opts.QueryEntityLLM != nil {
-			memOpts = append(memOpts, recall.WithQueryEntityExtractor(opts.QueryEntityLLM))
+			memOpts = append(memOpts, recallv1.WithQueryEntityExtractor(opts.QueryEntityLLM))
 		}
 	}
 
-	mem, err := recall.New(idx, memOpts...)
+	mem, err := recallv1.New(idx, memOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -237,14 +237,14 @@ func New(opts Options) (runners.Runner, error) {
 func (r *Runner) Name() string { return r.name }
 
 // Save implements runners.Runner.
-func (r *Runner) Save(ctx context.Context, scope recall.Scope, msgs []llm.Message) (int, time.Duration, error) {
+func (r *Runner) Save(ctx context.Context, scope runners.Scope, msgs []llm.Message) (int, time.Duration, error) {
 	t0 := time.Now()
-	res, err := r.mem.Save(ctx, scope, msgs)
+	res, err := r.mem.Save(ctx, toRecallV1Scope(scope), msgs)
 	if err != nil {
 		return 0, time.Since(t0), err
 	}
 	if r.onExtract != nil && len(res.Facts) > 0 {
-		r.onExtract(scope, res.Facts)
+		r.onExtract(toRecallV1Scope(scope), res.Facts)
 	}
 	return len(res.EntryIDs), time.Since(t0), nil
 }
@@ -253,7 +253,8 @@ func (r *Runner) Save(ctx context.Context, scope recall.Scope, msgs []llm.Messag
 // is created per non-empty user/assistant turn. Each entry's ID is
 // auto-generated, so recall.k_hit cannot be evaluated through this path —
 // callers that need evidence scoring should use SaveRawTurns instead.
-func (r *Runner) SaveRaw(ctx context.Context, scope recall.Scope, msgs []llm.Message) (int, time.Duration, error) {
+func (r *Runner) SaveRaw(ctx context.Context, scope runners.Scope, msgs []llm.Message) (int, time.Duration, error) {
+	v1Scope := toRecallV1Scope(scope)
 	t0 := time.Now()
 	saved := 0
 	for i, m := range msgs {
@@ -261,12 +262,12 @@ func (r *Runner) SaveRaw(ctx context.Context, scope recall.Scope, msgs []llm.Mes
 		if txt == "" {
 			continue
 		}
-		entry := recall.Entry{
+		entry := recallv1.Entry{
 			Content:    txt,
 			Categories: []string{"raw"},
-			Source:     recall.Source{RuntimeID: scope.RuntimeID},
+			Source:     recallv1.Source{RuntimeID: scope.RuntimeID},
 		}
-		if _, err := r.mem.Add(ctx, scope, entry); err != nil {
+		if _, err := r.mem.Add(ctx, v1Scope, entry); err != nil {
 			return saved, time.Since(t0), fmt.Errorf("add_raw turn %d: %w", i, err)
 		}
 		saved++
@@ -277,20 +278,21 @@ func (r *Runner) SaveRaw(ctx context.Context, scope recall.Scope, msgs []llm.Mes
 // SaveRawTurns implements runners.RawIngestSaver: it preserves each turn's
 // EvidenceID as the MemoryEntry primary key so recall.k_hit becomes
 // meaningful. Empty IDs fall back to the auto-generated ULID.
-func (r *Runner) SaveRawTurns(ctx context.Context, scope recall.Scope, turns []runners.RawTurn) (int, time.Duration, error) {
+func (r *Runner) SaveRawTurns(ctx context.Context, scope runners.Scope, turns []runners.RawTurn) (int, time.Duration, error) {
+	v1Scope := toRecallV1Scope(scope)
 	t0 := time.Now()
 	saved := 0
 	for i, t := range turns {
 		if t.Content == "" {
 			continue
 		}
-		entry := recall.Entry{
+		entry := recallv1.Entry{
 			ID:         t.EvidenceID,
 			Content:    t.Content,
 			Categories: []string{"raw"},
-			Source:     recall.Source{RuntimeID: scope.RuntimeID},
+			Source:     recallv1.Source{RuntimeID: scope.RuntimeID},
 		}
-		if _, err := r.mem.Add(ctx, scope, entry); err != nil {
+		if _, err := r.mem.Add(ctx, v1Scope, entry); err != nil {
 			return saved, time.Since(t0), fmt.Errorf("add_raw turn %d (%s): %w", i, t.EvidenceID, err)
 		}
 		saved++
@@ -299,10 +301,21 @@ func (r *Runner) SaveRawTurns(ctx context.Context, scope recall.Scope, turns []r
 }
 
 // Recall implements runners.Runner.
-func (r *Runner) Recall(ctx context.Context, scope recall.Scope, query string, topK int) ([]recall.Hit, time.Duration, error) {
+func (r *Runner) Recall(ctx context.Context, scope runners.Scope, query string, topK int) ([]runners.RecallArtifact, time.Duration, error) {
 	t0 := time.Now()
-	hits, err := r.mem.Recall(ctx, scope, recall.Request{Query: query, TopK: topK})
-	return hits, time.Since(t0), err
+	hits, err := r.mem.Recall(ctx, toRecallV1Scope(scope), recallv1.Request{Query: query, TopK: topK})
+	return fromRecallV1Artifacts(hits), time.Since(t0), err
+}
+
+// RecallAnswerContext implements runners.AnswerContextRecaller.
+func (r *Runner) RecallAnswerContext(ctx context.Context, scope runners.Scope, question runners.AnswerQuestion, topK int) ([]runners.RecallArtifact, runners.AnswerContext, time.Duration, error) {
+	t0 := time.Now()
+	hits, err := r.mem.Recall(ctx, toRecallV1Scope(scope), recallv1.Request{Query: question.Query, TopK: topK})
+	elapsed := time.Since(t0)
+	if err != nil {
+		return nil, runners.AnswerContext{}, elapsed, err
+	}
+	return fromRecallV1Artifacts(hits), structuredAnswerContext(question, hits), elapsed, nil
 }
 
 // Close implements runners.Runner.

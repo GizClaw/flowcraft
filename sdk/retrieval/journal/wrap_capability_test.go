@@ -8,6 +8,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/sdk/retrieval"
 	"github.com/GizClaw/flowcraft/sdk/retrieval/journal"
+	memidx "github.com/GizClaw/flowcraft/sdk/retrieval/memory"
 )
 
 // hybridClaimingIndex is a minimal retrieval.Index that advertises
@@ -66,5 +67,58 @@ func TestWrap_DoesNotFalselyAdvertiseHybridable(t *testing.T) {
 	}
 	if _, ok := wrapped.(retrieval.Vectorizable); ok {
 		t.Fatalf("#157 regression: journal.Wrap of a non-Vectorizable inner must NOT satisfy retrieval.Vectorizable")
+	}
+	if retrieval.Supports(wrapped, retrieval.CapabilityHybrid) {
+		t.Fatalf("#157 regression: Supports must project Hybrid through the wrapper method set")
+	}
+	if got := retrieval.CapabilitiesOf(wrapped); got.Hybrid || got.Extensions.HybridSearch {
+		t.Fatalf("#157 regression: CapabilitiesOf(wrapped) = %+v", got)
+	}
+	if _, ok := wrapped.(retrieval.DocGetter); ok {
+		t.Fatalf("#157 regression: non-DocGetter inner must not satisfy DocGetter")
+	}
+	if _, ok := wrapped.(retrieval.Filterable); ok {
+		t.Fatalf("#157 regression: non-Filterable inner must not satisfy Filterable")
+	}
+	if _, ok := wrapped.(retrieval.DeletableByFilter); ok {
+		t.Fatalf("#157 regression: non-DeletableByFilter inner must not satisfy DeletableByFilter")
+	}
+	if _, ok := wrapped.(retrieval.Droppable); ok {
+		t.Fatalf("#157 regression: non-Droppable inner must not satisfy Droppable")
+	}
+	if _, ok := wrapped.(retrieval.Iterable); ok {
+		t.Fatalf("#157 regression: non-Iterable inner must not satisfy Iterable")
+	}
+	if _, ok := wrapped.(retrieval.Countable); ok {
+		t.Fatalf("#157 regression: non-Countable inner must not satisfy Countable")
+	}
+}
+
+func TestWrap_ProjectsImplementedOptionalInterfaces(t *testing.T) {
+	wrapped := journal.Wrap(memidx.New(), nullJournal{})
+	if _, ok := wrapped.(retrieval.DocGetter); !ok {
+		t.Fatal("wrapped memory index should expose DocGetter")
+	}
+	if _, ok := wrapped.(retrieval.DeletableByFilter); !ok {
+		t.Fatal("wrapped memory index should expose DeletableByFilter")
+	}
+	if _, ok := wrapped.(retrieval.Droppable); !ok {
+		t.Fatal("wrapped memory index should expose Droppable")
+	}
+	if _, ok := wrapped.(retrieval.Iterable); !ok {
+		t.Fatal("wrapped memory index should expose Iterable")
+	}
+	if _, ok := wrapped.(retrieval.Countable); !ok {
+		t.Fatal("wrapped memory index should expose Countable")
+	}
+	if _, ok := wrapped.(retrieval.Filterable); ok {
+		t.Fatal("wrapped memory index should not expose Filterable")
+	}
+	caps := retrieval.CapabilitiesOf(wrapped)
+	if !caps.Extensions.DocGetter || !caps.Extensions.DeleteByFilter || !caps.Extensions.DropNamespace || !caps.Extensions.Iterable || !caps.Extensions.Count {
+		t.Fatalf("CapabilitiesOf did not project memory extensions: %+v", caps.Extensions)
+	}
+	if caps.Extensions.Filterable {
+		t.Fatalf("CapabilitiesOf falsely projected Filterable: %+v", caps.Extensions)
 	}
 }

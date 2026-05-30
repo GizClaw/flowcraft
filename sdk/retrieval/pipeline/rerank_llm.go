@@ -167,8 +167,9 @@ func parseRerankResponse(raw string, n int) ([]float64, error) {
 
 func snippet(s string, max int) string {
 	s = strings.ReplaceAll(strings.TrimSpace(s), "\n", " ")
-	if len(s) <= max {
+	runes := []rune(s)
+	if max <= 0 || len(runes) <= max {
 		return s
 	}
-	return s[:max] + "…"
+	return string(runes[:max]) + "…"
 }

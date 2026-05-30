@@ -17,8 +17,8 @@ import (
 // formats as `<METHOD> "<URL>": <code> <status> <body>`, the URL prefix
 // contains "https" which traps the `\b(?:http|status)\s*(\d{3})\b` regex,
 // the keyword scan misses generic 400 / 404 bodies, and everything falls
-// through to ProviderTransient → NotAvailable. With the locomo runner's
-// new retry-once-on-NotAvailable that misclassification turned a real
+// through to ProviderTransient → NotAvailable. With callers that
+// retry-once on NotAvailable that misclassification turned a real
 // 400 misconfig into "silently retry then drop"; this routes the codes
 // through their proper buckets.
 //

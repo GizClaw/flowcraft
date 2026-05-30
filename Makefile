@@ -5,21 +5,14 @@ SHELL := /bin/bash
 .DEFAULT_GOAL := help
 
 # Modules listed in go.work — `go vet ./...` and friends work as-is.
-# sdk + sdkx + voice are the tightly-coupled core that needs atomic
-# in-tree edits (sdkx imports sdk packages that may not yet exist in
-# any released sdk version; voice depends on the same sdk source).
-MODULES_WORK := sdk sdkx vessel voice cmd/vesseld
+# sdk + memory + sdkx + voice are the tightly-coupled core that needs atomic
+# in-tree edits (memory depends on sdk, sdk compatibility shims point at
+# memory, sdkx imports both, and voice depends on the same sdk source).
+MODULES_WORK := sdk memory sdkx vessel voice cmd/vesseld eval
 
 # Modules intentionally outside go.work — they pin sdk/sdkx via go.mod
 # require directives and run with GOWORK=off so the pin is honoured.
 #
-#  - eval: AI-quality evaluation suites (LoCoMo, history compactor,
-#    knowledge retrieval). Pins sdk/sdkx via go.mod so quality drifts
-#    are evaluated against the released bytes consumers run, and the
-#    heavy LoCoMo / corpora / report artifacts stay out of every sdk
-#    patch tag. The default lane is hermetic (synthetic dataset, no
-#    credentials); the LLM-judge lanes self-skip when credentials are
-#    absent, so `make test` exercises the compile path here too.
 #  - examples/voice-pipeline: pinned to sdk v0.1.12 + sdkx v0.1.14 so
 #    external consumers see a real reproducible example
 #  - tests/conformance: manual provider conformance suites; pinned to
@@ -31,7 +24,7 @@ MODULES_WORK := sdk sdkx vessel voice cmd/vesseld
 #    binary. Tagged with `//go:build e2e` so `make test`'s default
 #    sweep is just a compile check; the credentialed / build-tagged
 #    lane runs via `make test-e2e`.
-MODULES_OFFWORK := eval examples/voice-pipeline tests/conformance tests/quality/vessel tests/e2e/vesseld tests/e2e/retrieval
+MODULES_OFFWORK := examples/voice-pipeline tests/conformance tests/quality/vessel tests/e2e/vesseld tests/e2e/retrieval
 
 ALL_MODULES := $(MODULES_WORK) $(MODULES_OFFWORK)
 
@@ -46,7 +39,7 @@ GO_FOREACH = set -e; for m in $(1); do echo "==> $(2) $$m"; ( cd $$m && $(3) ); 
 help:
 	@echo "FlowCraft"
 	@echo ""
-	@echo "  make vet         Run go vet on all modules (incl. eval via GOWORK=off)"
+	@echo "  make vet         Run go vet on all modules"
 	@echo "  make test        Run tests on all modules (excl. Go benchmarks)"
 	@echo "  make fmt         Run gofmt on all modules"
 	@echo "  make tidy        Run go mod tidy on all modules"
@@ -131,7 +124,7 @@ test-conformance:
 # integration lanes self-skip without credentials.
 .PHONY: eval
 eval:
-	@cd eval && GOWORK=off go test ./... -count=1
+	@cd eval && go test ./... -count=1
 
 # eval-smoke is the end-to-end "does the unified CLI still link?"
 # check. It runs `eval locomo run` against the bundled synthetic
@@ -139,7 +132,7 @@ eval:
 # part of CI / pre-push.
 .PHONY: eval-smoke
 eval-smoke:
-	@cd eval && GOWORK=off go run ./cmd/eval locomo run --dataset synthetic --out /tmp/eval-locomo-synthetic.json
+	@cd eval && go run ./cmd/eval locomo run --dataset synthetic --out /tmp/eval-locomo-synthetic.json
 	@echo "wrote /tmp/eval-locomo-synthetic.json"
 
 # Backwards-compat alias for the pre-eval/ migration entry point. The old

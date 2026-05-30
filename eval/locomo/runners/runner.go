@@ -12,8 +12,71 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/sdk/llm"
-	"github.com/GizClaw/flowcraft/sdk/recall"
 )
+
+// Scope identifies a memory partition for ingest and recall. Eval-owned so
+// drivers are not locked to sdk/recall_v1 or sdk/recall types.
+type Scope struct {
+	RuntimeID string
+	UserID    string
+	AgentID   string
+}
+
+// RecallArtifact is the runner-neutral diagnostic projection of a backend's
+// native recall result. It is used by reports, replay artifacts, and
+// recall.k_hit, not as the answer model. Backends should render answers from
+// their native shape via AnswerContext.
+//
+// EvidenceIDs are the raw evidence refs that can be matched against benchmark
+// gold evidence ids, not necessarily only the source candidate's original
+// matching ids.
+type RecallArtifact struct {
+	ID          string
+	Content     string
+	Score       float64
+	Kind        string
+	Sources     []string
+	EvidenceIDs []string
+	ValidFrom   string
+	Metadata    map[string]any
+}
+
+// AnswerQuestion is the small part of a benchmark question a backend needs
+// to render its own answer context. It deliberately avoids depending on the
+// eval/dataset package so runner implementations can stay backend-owned.
+type AnswerQuestion struct {
+	Query   string
+	AskedAt string
+}
+
+// AnswerContext is an answer-ready prompt body produced by a backend from its
+// native recall results. Backends with structured memory should prefer this
+// over flattening their hits into the runner-neutral Hit.Content field.
+type AnswerContext struct {
+	Body           string
+	Format         string
+	PromptTemplate string
+}
+
+type RecallStageAudit struct {
+	Stages []RecallStageSnapshot `json:"stages,omitempty"`
+}
+
+type RecallStageSnapshot struct {
+	Stage      string                    `json:"stage"`
+	Source     string                    `json:"source,omitempty"`
+	Status     string                    `json:"status,omitempty"`
+	Candidates []RecallCandidateSnapshot `json:"candidates,omitempty"`
+}
+
+type RecallCandidateSnapshot struct {
+	FactID      string   `json:"fact_id,omitempty"`
+	Source      string   `json:"source,omitempty"`
+	Rank        int      `json:"rank,omitempty"`
+	Score       float64  `json:"score,omitempty"`
+	EvidenceIDs []string `json:"evidence_ids,omitempty"`
+	Sources     []string `json:"sources,omitempty"`
+}
 
 // Runner abstracts a Memory implementation under evaluation.
 //
@@ -24,9 +87,28 @@ import (
 // "extractor returned 0 facts on conv-X" without an interactive debugger.
 type Runner interface {
 	Name() string
-	Save(ctx context.Context, scope recall.Scope, msgs []llm.Message) (saveCount int, saveLatency time.Duration, err error)
-	Recall(ctx context.Context, scope recall.Scope, query string, topK int) (hits []recall.Hit, recallLatency time.Duration, err error)
+	Save(ctx context.Context, scope Scope, msgs []llm.Message) (saveCount int, saveLatency time.Duration, err error)
+	Recall(ctx context.Context, scope Scope, query string, topK int) (artifacts []RecallArtifact, recallLatency time.Duration, err error)
 	Close() error
+}
+
+// RecallStageAuditor is an optional Runner extension that returns the
+// read pipeline's per-stage candidate snapshots for diagnostics.
+type RecallStageAuditor interface {
+	RecallWithStageAudit(ctx context.Context, scope Scope, query string, topK int) (artifacts []RecallArtifact, audit RecallStageAudit, recallLatency time.Duration, err error)
+}
+
+// AnswerContextRecaller lets a backend keep its native recall result shape for
+// answer rendering. The returned artifacts are for diagnostics and report dumps;
+// answer prompting should use AnswerContext.
+type AnswerContextRecaller interface {
+	RecallAnswerContext(ctx context.Context, scope Scope, question AnswerQuestion, topK int) (artifacts []RecallArtifact, answer AnswerContext, recallLatency time.Duration, err error)
+}
+
+// AnswerContextStageAuditor combines structured answer rendering with recall
+// stage diagnostics.
+type AnswerContextStageAuditor interface {
+	RecallAnswerContextWithStageAudit(ctx context.Context, scope Scope, question AnswerQuestion, topK int) (artifacts []RecallArtifact, answer AnswerContext, audit RecallStageAudit, recallLatency time.Duration, err error)
 }
 
 // RawTurn carries a single conversation turn together with its upstream
@@ -37,11 +119,20 @@ type RawTurn struct {
 	Role       string
 	Content    string
 	EvidenceID string
+	SessionID  string
 }
 
 // RawIngestSaver is an optional Runner extension that ingests verbatim turns
 // while preserving each turn's EvidenceID. Only used when the eval driver
 // runs without an LLM extractor.
 type RawIngestSaver interface {
-	SaveRawTurns(ctx context.Context, scope recall.Scope, turns []RawTurn) (saveCount int, saveLatency time.Duration, err error)
+	SaveRawTurns(ctx context.Context, scope Scope, turns []RawTurn) (saveCount int, saveLatency time.Duration, err error)
+}
+
+// SourceTurnSaver is an optional Runner extension for extractor-backed ingest
+// that needs source metadata (EvidenceID / SessionID) in addition to text. It
+// lets v2 pass typed RawTurns through SaveRequest.Turns so extracted facts
+// can cite the original evidence ids.
+type SourceTurnSaver interface {
+	SaveSourceTurns(ctx context.Context, scope Scope, turns []RawTurn) (saveCount int, saveLatency time.Duration, err error)
 }

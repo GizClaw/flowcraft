@@ -4,6 +4,9 @@
 // backend/retrieval (both of which depend on knowledge for the repo
 // interfaces).
 //
+// Deprecated: use github.com/GizClaw/flowcraft/memory/knowledge/factory instead.
+// This package will be removed in v0.5.0.
+//
 // Use NewLocal for a fully filesystem-backed Service; NewRetrieval
 // when chunks/layers should live inside an existing retrieval.Index.
 package factory

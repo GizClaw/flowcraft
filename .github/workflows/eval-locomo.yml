@@ -6,15 +6,26 @@ name: eval / locomo
 # /etc/flowcraft-eval/.env, /var/lib/flowcraft-eval/reports) is
 # tracked out-of-band by the eval owners.
 #
-# Canonical CLI: `eval locomo run --dataset <path> --topk N
+# This workflow defaults to the `locomo-leaderboard` profile: a
+# benchmark-oriented configuration for reproducing public LoCoMo-style
+# comparisons. It is intentionally allowed to differ from SDK defaults.
+# Report and leaderboard consumers must treat this as a named profile, not
+# as "the SDK default score". Use `profile=sdk-default` plus matching inputs
+# when the goal is measuring default SDK behaviour.
+#
+# Canonical CLI: `eval locomo run --runner <flowcraft-recall-v1|flowcraft-recall-v2>
+#                  --dataset <path> --topk N
 #                  --extractor --extractor-llm <alias>
 #                  --answer-llm <alias> --judge-llm <alias>
 #                  --reranker-llm <alias> --embedder <alias>
 #                  --concurrency N --ingest-concurrency N
-#                  [--multi-recall=true]
-#                  [--save-with-context=true]
-#                  [--update-resolver=<alias>]
-#                  [--recent-turns N]
+#                  --dump-facts <facts.jsonl> --dump-recall <recall.jsonl>
+#                  [v2 diagnostics: --dump-stage-audit <stage-audit.jsonl>]
+#                  [v1-only: --multi-recall=true --save-with-context=true
+#                            --update-resolver=<alias> --recent-turns N
+#                            --soft-merge=true --entity-store=true
+#                            --entity-link-boost N --query-entity-extractor=true]
+#                  [v2 diagnostics: --diagnostics <path.json>]
 #                  --out <report.json>`
 # ---------------------------------------------------------------------
 
@@ -28,8 +39,30 @@ on:
         # /var/lib/flowcraft-eval/datasets). Override when smoke-testing
         # locally with 'synthetic' or with a repo-relative path.
         default: "/var/lib/flowcraft-eval/datasets/locomo10.jsonl"
+      runner:
+        # Selects the SDK pipeline under test:
+        #   - flowcraft-recall-v1: production stack (recall_v1) with multi-lane
+        #     retrieval, entity-store, update-resolver, soft-merge, etc.
+        #     All of the "v1-only" tuning knobs below are honoured.
+        #   - flowcraft-recall-v2: new fact-centric architecture (memory/recall).
+        #     The v2 pipeline self-configures (compiler stages, fusion
+        #     weights, candidate sources) — none of the v1 ablation
+        #     knobs apply; they are skipped automatically. v2 can also
+        #     dump per-stage health (extractor / compiler / resolver /
+        #     fusion / hit provenance) when stage_audit=true.
+        description: "Runner: flowcraft-recall-v1 | flowcraft-recall-v2 (default)"
+        required: false
+        default: "flowcraft-recall-v2"
+      # NOTE: the previous `profile` input was removed when `runner`
+      # was added, because workflow_dispatch caps inputs at 25 and
+      # `profile` was a label-only knob (it never altered CLI args —
+      # only RUN_TAG). The default profile remains "locomo-leaderboard"
+      # and the RUN_TAG now embeds `runner` instead so the artifact /
+      # CardKit naming still identifies the configuration in use.
+      # The previous `locomo_ref` input was later removed to keep room
+      # for `stage_audit`; the dataset refresh step pins LOCOMO_REF.
       topk:
-        description: "Recall top-k"
+        description: "Recall top-k (profile default: locomo-leaderboard uses 30; sdk-default should use 10)"
         required: false
         default: "30"
       # Alias conventions in this repo (see eval/internal/env/provider.go):
@@ -39,40 +72,39 @@ on:
       #                            JSON's "model" field. With no :model
       #                            suffix the profile's own model is used.
       #
-      # Defaults below mirror the **validated 0.7575 qa.judge baseline**
-      # established by run [25896493084] (May 15, 2026, n=1542 on
-      # LoCoMo10). A blank dispatch must reproduce that result; future
-      # bumps go through a fresh paired-run on the runner. The aliases
-      # all resolve to gpt-4o-mini Azure deployments (seeded in
-      # /etc/flowcraft-eval/.env as FLOWCRAFT_TEST_AZURE_4O_MINI),
-      # mirroring the mem0 / Zep / memobase published methodology so
-      # cross-leaderboard comparisons stay apples-to-apples.
+      # Defaults below are the locomo-leaderboard profile's model aliases.
+      # They are benchmark-runner inputs, not SDK defaults. Publish the
+      # selected profile and all non-default knobs with every report.
       extractor_llm:
-        description: "Extractor model alias (validated baseline: azure_4o_mini)"
+        description: "Extractor model alias"
         required: false
         default: "azure_4o_mini"
       answer_llm:
-        description: "Answer-synthesis model alias (validated baseline: azure_4o_mini)"
+        description: "Answer-synthesis model alias"
         required: false
         default: "azure_4o_mini"
       judge_llm:
-        description: "Judge model alias (validated baseline: azure_4o_mini, aligned with mem0/Zep/memobase)"
+        description: "Judge model alias"
         required: false
         default: "azure_4o_mini"
+      judge_style:
+        description: "Judge prompt style: default (answer-inclusion) or locomo (leaderboard reproducer)"
+        required: false
+        default: "locomo"
       reranker_llm:
-        description: "Reranker LLM alias ('' to disable) (validated baseline: azure_4o_mini)"
+        description: "Reranker LLM alias ('' to disable)"
         required: false
-        default: "azure_4o_mini"
+        default: ""
       embedder:
         description: "Embedder alias (e.g. qwen:text-embedding-v4)"
         required: false
         default: "qwen:text-embedding-v4"
       concurrency:
-        description: "QA-loop parallelism (validated baseline: 16)"
+        description: "QA-loop parallelism"
         required: false
         default: "16"
       ingest_concurrency:
-        description: "Per-conversation extractor parallelism (validated baseline: 16)"
+        description: "Per-conversation extractor parallelism"
         required: false
         default: "16"
       notify_progress_pct:
@@ -83,6 +115,11 @@ on:
         description: "Debug: cap to first N questions (0 = full set)"
         required: false
         default: "0"
+      stage_audit:
+        description: "Enable v2 per-stage recall diagnostics and stage-audit dumps"
+        required: false
+        type: boolean
+        default: true
       # ---- Tuning knobs that historically diverged from sdk defaults ----
       soft_merge:
         # CLI / SDK default: true. From May 15, 2026 the SDK skips
@@ -92,23 +129,22 @@ on:
         # the previously-required `--soft-merge=false` workaround is
         # gone. Only stable-attribute facts whose extractor did not
         # set Subject+Predicate are eligible for the vector supersede
-        # path. The validated 0.7575 baseline runs with true.
+        # path.
         description: "Mark near-duplicate stable-attribute facts as superseded_by (sdk default true)"
         required: false
         type: boolean
         default: true
       multi_recall:
-        # CLI default: false (keeps legacy single-lane vector recall + BM25/entity
-        # boost behaviour). The validated 0.7575 baseline runs with true,
-        # which switches LTM to 3-lane recall (vector + bm25 + entity)
-        # + RRFFusion. See sdk/retrieval/pipeline/factory.go
+        # CLI / SDK default: false. The locomo-leaderboard profile runs
+        # with true, switching LTM to 3-lane recall (vector + bm25 +
+        # entity) + RRFFusion. See sdk/retrieval/pipeline/factory.go
         # WithMultiRecall for the exact stage topology.
-        description: "Use 3-lane recall (vector+bm25+entity) + RRFFusion (validated baseline: true)"
+        description: "Use 3-lane recall (vector+bm25+entity) + RRFFusion"
         required: false
         type: boolean
         default: true
       update_resolver:
-        # Enables mem0 v3-style ADD/UPDATE/DELETE/NOOP memory linker.
+        # Enables LLM-backed ADD/UPDATE/DELETE/NOOP memory linking.
         # See sdk/recall/resolver_llm.go LLMUpdateResolver. Each Save
         # batch issues one extra LLM call (resolver decision) plus
         # N×Recall (one per new fact, top-K=20). Cost is non-trivial
@@ -133,13 +169,12 @@ on:
       save_with_context:
         # Before extraction, recall existing facts for the current scope
         # and inject them into the extractor prompt as EXISTING MEMORIES.
-        # This is mem0 v3's actual "memory linking" path: a single LLM
-        # call sees prior facts and self-dedups / skips semantic
-        # duplicates, without a destructive UPDATE/DELETE second call.
-        # Far cheaper than --update-resolver and architecturally suited
-        # to episodic-heavy datasets (LoCoMo) where old facts must
-        # never be tombstoned.
-        description: "Inject existing facts into extractor prompt (mem0 v3-style inline dedup)"
+        # A single LLM call sees prior facts and self-dedups / skips
+        # semantic duplicates, without a destructive UPDATE/DELETE second
+        # call. Far cheaper than --update-resolver and architecturally
+        # suited to episodic-heavy datasets where old facts must never be
+        # tombstoned.
+        description: "Inject existing facts into extractor prompt for inline dedup"
         required: false
         type: boolean
         default: false
@@ -158,9 +193,8 @@ on:
         # Common-noun pollution gate (row-8 hardening). Entity rows
         # whose linked_ids count exceeds this threshold are skipped at
         # Lookup time, preventing RRF rank-vote flooding by saturated
-        # entities (the failure mode that took entity-filter lane down
-        # 17pp on run 25866478422). No-op when entity_store=false.
-        description: "Skip entity rows with > N linked entries at Lookup (0 disables; 60-80 recommended for LoCoMo)"
+        # entities. No-op when entity_store=false.
+        description: "Skip entity rows with > N linked entries at Lookup (0 disables; tune per corpus)"
         required: false
         default: "0"
       entity_link_boost:
@@ -202,16 +236,6 @@ on:
         description: "Per-conversation ingest deadline (Go duration)"
         required: false
         default: "10m"
-      locomo_ref:
-        # Upstream snap-research/locomo git ref used to materialise the
-        # raw JSON. Pin to a commit SHA for byte-stable reproducibility
-        # (also doubles as the host-side cache key — same SHA = no
-        # re-download). 'main' keeps the previous always-fresh behaviour
-        # but loses cache hits across runs.
-        description: "Upstream snap-research/locomo git ref (commit SHA or branch)"
-        required: false
-        default: "main"
-
 # Per-kind serialisation: at most one locomo run at a time. Other eval
 # kinds (longmemeval / beir / …) have their own concurrency.group and
 # run independently.
@@ -222,7 +246,7 @@ concurrency:
 env:
   RUN_ID: ${{ github.run_id }}
   REPORT_DIR: /var/lib/flowcraft-eval/reports
-  RUN_TAG: locomo-${{ github.run_id }}
+  RUN_TAG: locomo-${{ inputs.runner }}-${{ github.run_id }}
 
 jobs:
   run:
@@ -326,9 +350,9 @@ jobs:
         # Fetch strategy (CN-friendly, May 15 2026):
         #   1. Cache by upstream git ref under the host-persistent
         #      /var/lib/flowcraft-eval/datasets/cache/. Same ref =>
-        #      zero network. Pinning `locomo_ref` to a commit SHA
-        #      gives byte-stable runs across the lifetime of the host
-        #      cache directory (it's never auto-pruned).
+        #      zero network. The workflow pins the default upstream
+        #      ref below; change LOCOMO_REF in this step when an
+        #      immutable upstream snapshot is needed.
         #   2. Primary fetch is jsDelivr's GitHub mirror — has CN
         #      edge nodes and is typically 20-50x faster than
         #      raw.githubusercontent.com on this runner.
@@ -338,7 +362,7 @@ jobs:
         env:
           DATASET_IN: ${{ inputs.dataset }}
           DEFAULT_DATASET: /var/lib/flowcraft-eval/datasets/locomo10.jsonl
-          LOCOMO_REF: ${{ inputs.locomo_ref }}
+          LOCOMO_REF: main
         run: |
           set -eu
           if [ "$DATASET_IN" = "synthetic" ] || [ "$DATASET_IN" != "$DEFAULT_DATASET" ]; then
@@ -386,6 +410,12 @@ jobs:
           # we have dumps for every historical run.
           FACTS_OUT: ${{ env.REPORT_DIR }}/${{ github.run_id }}-facts.jsonl
           RECALL_OUT: ${{ env.REPORT_DIR }}/${{ github.run_id }}-recall.jsonl
+          ANSWER_REPLAY_OUT: ${{ env.REPORT_DIR }}/${{ github.run_id }}-answer-replay.jsonl
+          STAGE_AUDIT_OUT: ${{ env.REPORT_DIR }}/${{ github.run_id }}-stage-audit.jsonl
+          # v2-only diagnostics dump (per-stage pipeline health). v1
+          # ignores --diagnostics so we always declare the path; the
+          # condition below decides whether to add the flag.
+          DIAGNOSTICS_OUT: ${{ env.REPORT_DIR }}/${{ github.run_id }}-diagnostics.json
         # CardKit live-update flags:
         #   --notify-name      identifies this run in the card header
         #   --notify-progress-pct  milestone resolution
@@ -397,29 +427,26 @@ jobs:
           # --soft-merge takes its boolean via `=true|=false` so the
           # workflow's `type: boolean` input maps cleanly. The other
           # timeouts are Go duration strings (e.g. "3m", "30s").
+          # Universal flags — every runner consumes these.
           ARGS=(
             locomo run
+            --runner "${{ inputs.runner }}"
             --dataset "${{ inputs.dataset }}"
             --topk "${{ inputs.topk }}"
             --extractor
             --extractor-llm "${{ inputs.extractor_llm }}"
             --answer-llm "${{ inputs.answer_llm }}"
             --judge-llm "${{ inputs.judge_llm }}"
+            --judge-style "${{ inputs.judge_style }}"
             --concurrency "${{ inputs.concurrency }}"
             --ingest-concurrency "${{ inputs.ingest_concurrency }}"
-            --soft-merge=${{ inputs.soft_merge }}
-            --multi-recall=${{ inputs.multi_recall }}
-            --save-with-context=${{ inputs.save_with_context }}
-            --entity-store=${{ inputs.entity_store }}
-            --entity-store-max-linked=${{ inputs.entity_store_max_linked }}
-            --entity-link-boost=${{ inputs.entity_link_boost }}
-            --query-entity-extractor=${{ inputs.query_entity_extractor }}
             --qa-timeout "${{ inputs.qa_timeout }}"
             --ingest-timeout "${{ inputs.ingest_timeout }}"
             --notify-name "$RUN_TAG"
             --notify-progress-pct "${{ inputs.notify_progress_pct }}"
             --dump-facts "$FACTS_OUT"
             --dump-recall "$RECALL_OUT"
+            --dump-answer-replay "$ANSWER_REPLAY_OUT"
             --out "$REPORT_OUT"
           )
           if [ -n "${{ inputs.reranker_llm }}" ]; then
@@ -428,16 +455,88 @@ jobs:
           if [ -n "${{ inputs.embedder }}" ]; then
             ARGS+=( --embedder "${{ inputs.embedder }}" )
           fi
-          if [ -n "${{ inputs.update_resolver }}" ]; then
-            ARGS+=( --update-resolver "${{ inputs.update_resolver }}" )
-          fi
           if [ "${{ inputs.limit_questions }}" != "0" ]; then
             ARGS+=( --limit-questions "${{ inputs.limit_questions }}" )
           fi
-          if [ "${{ inputs.recent_turns }}" != "0" ]; then
-            ARGS+=( --recent-turns "${{ inputs.recent_turns }}" )
+          # v1-only ablation knobs. These flags describe the recall_v1
+          # pipeline (multi-lane RRF + entity store + LLM update
+          # resolver + soft-merge + recent-turn buffer). v2 has a
+          # different pipeline shape (compiler stages + fact-centric
+          # sources) and does not expose any of them, so we skip them
+          # entirely under runner=flowcraft-recall-v2 to keep the v2 command
+          # line clean and to avoid silently-dead flags drifting into
+          # the artifact's command record.
+          if [ "${{ inputs.runner }}" = "flowcraft-recall-v1" ] || [ "${{ inputs.runner }}" = "flowcraft-v1" ]; then
+            ARGS+=(
+              --soft-merge=${{ inputs.soft_merge }}
+              --multi-recall=${{ inputs.multi_recall }}
+              --save-with-context=${{ inputs.save_with_context }}
+              --entity-store=${{ inputs.entity_store }}
+              --entity-store-max-linked=${{ inputs.entity_store_max_linked }}
+              --entity-link-boost=${{ inputs.entity_link_boost }}
+              --query-entity-extractor=${{ inputs.query_entity_extractor }}
+            )
+            if [ -n "${{ inputs.update_resolver }}" ]; then
+              ARGS+=( --update-resolver "${{ inputs.update_resolver }}" )
+            fi
+            if [ "${{ inputs.recent_turns }}" != "0" ]; then
+              ARGS+=( --recent-turns "${{ inputs.recent_turns }}" )
+            fi
+          fi
+          # v2-only per-stage diagnostics. These force RecallExplain
+          # and produce large candidate snapshots, so they are
+          # controlled by the stage_audit workflow input. Facts and
+          # recall top-k dumps remain unconditional forensic outputs.
+          if { [ "${{ inputs.runner }}" = "flowcraft-recall-v2" ] || [ "${{ inputs.runner }}" = "flowcraft-v2" ]; } && [ "${{ inputs.stage_audit }}" = "true" ]; then
+            ARGS+=(
+              --diagnostics "$DIAGNOSTICS_OUT"
+              --dump-stage-audit "$STAGE_AUDIT_OUT"
+            )
+          elif [ "${{ inputs.runner }}" = "flowcraft-recall-v2" ] || [ "${{ inputs.runner }}" = "flowcraft-v2" ]; then
+            echo "stage_audit=false: skipping v2 RecallExplain diagnostics and stage audit dump"
           fi
           /tmp/eval "${ARGS[@]}"
+
+      - name: Analyze recall/facts audit
+        if: always()
+        env:
+          REPORT_OUT: ${{ env.REPORT_DIR }}/${{ github.run_id }}.json
+          FACTS_OUT: ${{ env.REPORT_DIR }}/${{ github.run_id }}-facts.jsonl
+          RECALL_OUT: ${{ env.REPORT_DIR }}/${{ github.run_id }}-recall.jsonl
+          STAGE_AUDIT_OUT: ${{ env.REPORT_DIR }}/${{ github.run_id }}-stage-audit.jsonl
+          AUDIT_JSONL_OUT: ${{ env.REPORT_DIR }}/${{ github.run_id }}-audit.jsonl
+          AUDIT_MD_OUT: ${{ env.REPORT_DIR }}/${{ github.run_id }}-audit.md
+          EXTRACT_AUDIT_JSONL_OUT: ${{ env.REPORT_DIR }}/${{ github.run_id }}-extract-audit.jsonl
+          EXTRACT_AUDIT_MD_OUT: ${{ env.REPORT_DIR }}/${{ github.run_id }}-extract-audit.md
+          DATASET_IN: ${{ inputs.dataset }}
+        run: |
+          set -eu
+          if [ ! -s "$REPORT_OUT" ] || [ ! -s "$RECALL_OUT" ]; then
+            echo "skip audit: report or recall dump is missing"
+            exit 0
+          fi
+          ARGS=(
+            locomo analyze-recall
+            "$REPORT_OUT"
+            "$RECALL_OUT"
+          )
+          if [ -s "$FACTS_OUT" ]; then
+            ARGS+=( --facts "$FACTS_OUT" )
+          fi
+          if [ "${{ inputs.stage_audit }}" = "true" ] && [ -s "$STAGE_AUDIT_OUT" ]; then
+            ARGS+=( --stage-audit "$STAGE_AUDIT_OUT" )
+          fi
+          if [ "$DATASET_IN" != "synthetic" ] && [ -s "$DATASET_IN" ]; then
+            ARGS+=( --dataset "$DATASET_IN" )
+          fi
+          /tmp/eval "${ARGS[@]}" --format jsonl --out "$AUDIT_JSONL_OUT"
+          /tmp/eval "${ARGS[@]}" --format markdown --out "$AUDIT_MD_OUT"
+          if [ "$DATASET_IN" != "synthetic" ] && [ -s "$DATASET_IN" ] && [ -s "$FACTS_OUT" ]; then
+            /tmp/eval locomo analyze-extract "$DATASET_IN" "$FACTS_OUT" --format jsonl --out "$EXTRACT_AUDIT_JSONL_OUT"
+            /tmp/eval locomo analyze-extract "$DATASET_IN" "$FACTS_OUT" --format markdown --out "$EXTRACT_AUDIT_MD_OUT"
+          else
+            echo "skip extract quality audit: dataset or facts dump is missing"
+          fi
 
       - name: Upload report artifact
         if: always()
@@ -462,5 +561,12 @@ jobs:
           path: |
             ${{ env.REPORT_DIR }}/${{ github.run_id }}-facts.jsonl
             ${{ env.REPORT_DIR }}/${{ github.run_id }}-recall.jsonl
+            ${{ env.REPORT_DIR }}/${{ github.run_id }}-answer-replay.jsonl
+            ${{ env.REPORT_DIR }}/${{ github.run_id }}-stage-audit.jsonl
+            ${{ env.REPORT_DIR }}/${{ github.run_id }}-diagnostics.json
+            ${{ env.REPORT_DIR }}/${{ github.run_id }}-audit.jsonl
+            ${{ env.REPORT_DIR }}/${{ github.run_id }}-audit.md
+            ${{ env.REPORT_DIR }}/${{ github.run_id }}-extract-audit.jsonl
+            ${{ env.REPORT_DIR }}/${{ github.run_id }}-extract-audit.md
           if-no-files-found: warn
           retention-days: 30

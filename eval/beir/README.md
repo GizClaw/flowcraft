@@ -1,6 +1,6 @@
 # eval/beir
 
-Public-dataset retrieval evaluation suite. Drives `sdk/knowledge` against
+Public-dataset retrieval evaluation suite. Drives `memory/knowledge` against
 [BEIR](https://arxiv.org/abs/2104.08663) tasks and produces the same
 graded metrics every BEIR leaderboard publishes:
 
@@ -15,7 +15,7 @@ graded metrics every BEIR leaderboard publishes:
 | `eval/knowledge` | hand-curated 100-doc Chinese | single-doc Recall@5 + keyword cover | deterministic PR gate |
 | `eval/beir` | public BEIR tasks (SciFact, NFCorpus, …) | per-query *graded* qrels → nDCG@10 | comparable to public baselines |
 
-Same `sdk/knowledge.Service` underneath; different scoring layer.
+Same `memory/knowledge.Service` underneath; different scoring layer.
 
 ## Quick start
 
@@ -31,10 +31,10 @@ unzip -q /tmp/scifact.zip -d /tmp
 
 # 2. BM25 lane only (no credentials)
 cd eval
-GOWORK=off go run ./cmd/eval beir --root /tmp/scifact --lanes bm25
+go run ./cmd/eval beir --root /tmp/scifact --lanes bm25
 
 # 3. Full lane comparison (FLOWCRAFT_QWEN must be set)
-GOWORK=off go run ./cmd/eval beir \
+go run ./cmd/eval beir \
     --root      /tmp/scifact \
     --embedder  qwen:text-embedding-v4 \
     --lanes     bm25,vector,hybrid \

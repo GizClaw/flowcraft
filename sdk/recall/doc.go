@@ -1,8 +1,14 @@
-// Package recall implements long-term agent memory on top of the
+// Package recall implements the legacy long-term agent memory stack on top of the
 // unified retrieval layer. It owns extraction (turning conversation
 // turns into structured facts), persistence (Entry rows in a retrieval
 // Index, scoped per runtime/agent/user), and retrieval (BM25 + vector
 // hybrid search with entity boost and TTL filtering).
+//
+// Deprecated: this package is the v1 Entry/retrieval-index centric
+// implementation kept for migration only. It will be removed in
+// v0.5.0. New development should target github.com/GizClaw/flowcraft/memory/recall,
+// which is being rebuilt around TemporalFact, canonical stores, projections,
+// planner, fusion, and evidence materialization.
 //
 // Capabilities:
 //

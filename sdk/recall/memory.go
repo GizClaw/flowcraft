@@ -12,9 +12,10 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/history"
 	"github.com/GizClaw/flowcraft/sdk/internal/syncx"
 	"github.com/GizClaw/flowcraft/sdk/llm"
+	recallpipe "github.com/GizClaw/flowcraft/sdk/recall/pipeline"
 	"github.com/GizClaw/flowcraft/sdk/retrieval"
 	"github.com/GizClaw/flowcraft/sdk/retrieval/journal"
-	"github.com/GizClaw/flowcraft/sdk/retrieval/pipeline"
+	basepipe "github.com/GizClaw/flowcraft/sdk/retrieval/pipeline"
 )
 
 // Memory is the long-term-memory facade — the read/write contract every
@@ -128,7 +129,7 @@ type RecallExplainer interface {
 // makes the surface backwards-compatible across additions.
 type config struct {
 	embedder embedding.Embedder
-	pipe     *pipeline.Pipeline
+	pipe     *basepipe.Pipeline
 
 	mode       ExtractMode
 	llm        llm.LLM
@@ -177,7 +178,7 @@ type config struct {
 	// queryEntityLLM, when set, swaps the pipeline's rule-based
 	// query-side entity extraction for an LLM-backed extractor. The
 	// rule extractor pulls only capitalized single tokens + quoted
-	// runs, so multi-word noun phrases ("LGBTQ support group") never
+	// runs, so multi-word noun phrases ("photography club") never
 	// land in QueryEntities — making them un-joinable against the
 	// LLM-extracted entity names persisted by EntityStore.Link at
 	// write time. The LLM extractor closes this asymmetry. See
@@ -233,7 +234,8 @@ type config struct {
 	// (entity-link lane et al.) without the caller having to
 	// remember to thread them too. See [WithLTMOption] for the
 	// design rationale.
-	ltmOpts []pipeline.LTMOption
+	ltmOpts       []recallpipe.LTMOption
+	legacyLTMOpts []basepipe.LTMOption
 }
 
 // Option mutates a Memory configuration. All knobs are optional; the
@@ -255,7 +257,7 @@ func WithEmbedder(e embedding.Embedder) Option { return func(c *config) { c.embe
 //
 // Prefer [WithLTMOption] for the common case of "I want LTM with a
 // few knobs adjusted"; that path keeps feature auto-wiring intact.
-func WithPipeline(p *pipeline.Pipeline) Option { return func(c *config) { c.pipe = p } }
+func WithPipeline(p *basepipe.Pipeline) Option { return func(c *config) { c.pipe = p } }
 
 // WithLTMOption appends [pipeline.LTMOption]s to the auto-wired
 // [pipeline.LTM] pipeline. Stack multiple calls — they accumulate
@@ -274,11 +276,25 @@ func WithPipeline(p *pipeline.Pipeline) Option { return func(c *config) { c.pipe
 // truth: features add to the recipe; users add to the recipe; the
 // pipeline gets built once at the end.
 //
+// Accepts sdk/recall/pipeline.LTMOption. Deprecated
+// sdk/retrieval/pipeline.LTMOption values are still accepted as a compatibility
+// bridge, but that path constructs the old retrieval-level LTM recipe and will
+// be removed in v0.5.0.
+//
 // No-op when [WithPipeline] is also set (the custom pipeline wins
 // and a warning is logged).
-func WithLTMOption(opts ...pipeline.LTMOption) Option {
+func WithLTMOption(opts ...any) Option {
 	return func(c *config) {
-		c.ltmOpts = append(c.ltmOpts, opts...)
+		for _, opt := range opts {
+			switch o := opt.(type) {
+			case nil:
+				continue
+			case basepipe.LTMOption:
+				c.legacyLTMOpts = append(c.legacyLTMOpts, o)
+			default:
+				c.ltmOpts = append(c.ltmOpts, o)
+			}
+		}
 	}
 }
 
@@ -379,17 +395,15 @@ func WithRecentTurns(k int) Option {
 // Save/Recall behave exactly as if the option were absent.
 //
 // Default OFF. Phased rollout: opt in per-deployment, observe
-// retrieval-quality metrics, then promote to default once the
-// LoCoMo ablation closes the architectural gap to entity-graph
-// systems (mem0 v3 et al).
+// retrieval-quality metrics, then promote to default once broad
+// conversational-memory workloads justify the extra write/read cost.
 //
 // Common-noun gate: enabling the entity store also activates the
 // pollution gate at [defaultEntityMaxLinkedCount] (100). Tune via
 // [WithEntityStoreMaxLinkedCount]. Disabling the gate (negative
-// value) is the documented audited opt-out — pre-#179.4 the gate
-// was off by default and silently cratered LoCoMo scores by 31pp
-// on run 25980251192; "just turn the feature on" now lands on the
-// safe path.
+// value) is the documented audited opt-out. The gate exists because
+// saturated entity rows can otherwise flood RRF with low-information
+// candidates; "just turn the feature on" now lands on the safe path.
 func WithEntityStore(linkedCap int) Option {
 	return func(c *config) {
 		// We can't construct the IndexEntityStore here because the
@@ -412,9 +426,7 @@ func WithEntityStore(linkedCap int) Option {
 //   - n == 0: leave the default in place ([defaultEntityMaxLinkedCount]
 //     = 100, applied by [NewIndexEntityStore]). Use this when you
 //     just want the safe production default, no opinion.
-//   - n < 0: EXPLICITLY DISABLE the gate. Pre-#179.4 / es-default
-//     the gate was off by default and silently cratered LoCoMo
-//     scores by 31pp on run 25980251192; turning it off now is
+//   - n < 0: EXPLICITLY DISABLE the gate. Turning it off is
 //     intentional and audited — [Memory.New] logs a one-time
 //     warning at construction so the opt-out leaves a paper
 //     trail. Use only when --dump-recall histograms prove your
@@ -457,9 +469,9 @@ func WithReconcileInterval(d time.Duration) Option {
 // single tokens + quoted runs only. That is sufficient for vector +
 // BM25 entity boost, but it is asymmetric with the LLM-extracted,
 // multi-word entity phrases the write-side extractor persists into
-// the EntityStore (e.g. "LGBTQ support group"). The asymmetry
-// silently collapses entity-link recall to a tiny join surface —
-// see [LoCoMo run 25908012719 / 25909308192 ablation results].
+// the EntityStore (e.g. "photography club"). The asymmetry
+// silently collapses entity-link recall to a tiny join surface in
+// entity-dense conversational workloads.
 //
 // Wiring this option causes the auto-wired LTM pipeline to swap its
 // rule-based [pipeline.EntityExtract] for an LLM-backed extractor
@@ -722,7 +734,7 @@ func WithJournal(j journal.Journal) Option { return func(c *config) { c.journal 
 type lt struct {
 	cfg       config
 	idx       retrieval.Index
-	pipe      *pipeline.Pipeline
+	pipe      *basepipe.Pipeline
 	stopCh    chan struct{}
 	wgWorkers sync.WaitGroup
 
@@ -803,6 +815,9 @@ func New(idx retrieval.Index, opts ...Option) (Memory, error) {
 			opt(&cfg)
 		}
 	}
+	if len(cfg.ltmOpts) > 0 && len(cfg.legacyLTMOpts) > 0 {
+		return nil, errors.New("recall: cannot mix sdk/recall/pipeline and deprecated sdk/retrieval/pipeline LTM options")
+	}
 	if cfg.extractor == nil {
 		cfg.extractor = &AdditiveExtractor{
 			LLM:              cfg.llm,
@@ -842,8 +857,8 @@ func New(idx retrieval.Index, opts ...Option) (Memory, error) {
 		// a negative — silent default → safe gate stays silent.
 		if cfg.entityStoreMaxLinkedCntExplicit && cfg.entityStoreMaxLinkedCnt < 0 && cfg.logger != nil {
 			cfg.logger("recall: WithEntityStoreMaxLinkedCount(%d) explicitly disables the common-noun pollution gate; "+
-				"this regressed LoCoMo qa.judge by 31pp on run 25980251192 and is only safe when --dump-recall "+
-				"histograms confirm your corpus's MetaEntityCount distribution is gate-tolerant", cfg.entityStoreMaxLinkedCnt)
+				"this is only safe when --dump-recall histograms confirm your corpus's MetaEntityCount distribution "+
+				"is gate-tolerant", cfg.entityStoreMaxLinkedCnt)
 		}
 		es := NewIndexEntityStore(idx, IndexEntityStoreOptions{
 			LinkedCap:      cfg.entityStoreLinkedCap,
@@ -869,34 +884,51 @@ func New(idx retrieval.Index, opts ...Option) (Memory, error) {
 		// for write-path Link telemetry) should reach for
 		// [WithPipeline] explicitly. Within "I want LTM" the
 		// recall package owns the final composition.
-		ltmOpts := append([]pipeline.LTMOption(nil), cfg.ltmOpts...)
-		if cfg.entityStore != nil {
-			// The entity-link lane only participates under
-			// multi-recall (it's a 4th MultiRetrieve mode);
-			// enabling it without multi-recall would silently
-			// no-op. Force multi-recall on too so
-			// [WithEntityStore] has a single, predictable
-			// activation contract: opt in once and both the
-			// write path (Link) and the read path (lane + RRF
-			// fusion) light up together.
-			ltmOpts = append(ltmOpts,
-				pipeline.WithMultiRecall(true),
-				pipeline.WithEntityLinkLane(true),
-				pipeline.WithEntityLinkResolver(newInternalEntityLinkResolver(cfg.entityStore)),
-			)
+		if len(cfg.legacyLTMOpts) > 0 {
+			legacyOpts := append([]basepipe.LTMOption(nil), cfg.legacyLTMOpts...)
+			if cfg.entityStore != nil {
+				legacyOpts = append(legacyOpts,
+					basepipe.WithMultiRecall(true),
+					basepipe.WithEntityLinkLane(true),
+					basepipe.WithEntityLinkResolver(newInternalEntityLinkResolver(cfg.entityStore)),
+				)
+			}
+			if cfg.queryEntityLLM != nil {
+				legacyOpts = append(legacyOpts,
+					basepipe.WithEntityExtractor(llmQueryEntityExtractor(cfg.queryEntityLLM)),
+				)
+			}
+			pipe = basepipe.LTM(cfg.embedder, legacyOpts...)
+		} else {
+			ltmOpts := append([]recallpipe.LTMOption(nil), cfg.ltmOpts...)
+			if cfg.entityStore != nil {
+				// The entity-link lane only participates under
+				// multi-recall (it's a 4th MultiRetrieve mode);
+				// enabling it without multi-recall would silently
+				// no-op. Force multi-recall on too so
+				// [WithEntityStore] has a single, predictable
+				// activation contract: opt in once and both the
+				// write path (Link) and the read path (lane + RRF
+				// fusion) light up together.
+				ltmOpts = append(ltmOpts,
+					recallpipe.WithMultiRecall(true),
+					recallpipe.WithEntityLinkLane(true),
+					recallpipe.WithEntityLinkResolver(newInternalEntityLinkResolver(cfg.entityStore)),
+				)
+			}
+			if cfg.queryEntityLLM != nil {
+				// Wire the LLM-backed query entity extractor LAST so
+				// it overrides any rule-based extractor a caller may
+				// have set via WithLTMOption. Cost: 1 LLM call per
+				// recall. Best-effort: errors fall back to "no
+				// entities" rather than failing the recall.
+				ltmOpts = append(ltmOpts,
+					recallpipe.WithEntityExtractor(llmQueryEntityExtractor(cfg.queryEntityLLM)),
+				)
+			}
+			pipe = recallpipe.LTM(cfg.embedder, ltmOpts...)
 		}
-		if cfg.queryEntityLLM != nil {
-			// Wire the LLM-backed query entity extractor LAST so
-			// it overrides any rule-based extractor a caller may
-			// have set via WithLTMOption. Cost: 1 LLM call per
-			// recall. Best-effort: errors fall back to "no
-			// entities" rather than failing the recall.
-			ltmOpts = append(ltmOpts,
-				pipeline.WithEntityExtractor(llmQueryEntityExtractor(cfg.queryEntityLLM)),
-			)
-		}
-		pipe = pipeline.LTM(cfg.embedder, ltmOpts...)
-	} else if len(cfg.ltmOpts) > 0 {
+	} else if len(cfg.ltmOpts) > 0 || len(cfg.legacyLTMOpts) > 0 {
 		// User passed both WithPipeline AND WithLTMOption — the
 		// latter is dead in this combination. Log so accidental
 		// double-wiring shows up in CI rather than silently
@@ -980,7 +1012,17 @@ func (m *lt) JobStatus(ctx context.Context, id JobID) (JobStatus, error) {
 
 // AwaitJob polls JobQueue until terminal state or timeout.
 func (m *lt) AwaitJob(ctx context.Context, id JobID, timeout time.Duration) (JobStatus, error) {
-	deadline := m.cfg.now().Add(timeout)
+	if timeout <= 0 {
+		s, err := m.JobStatus(ctx, id)
+		if err != nil {
+			return JobStatus{}, err
+		}
+		return s, ErrAwaitTimeout
+	}
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	ticker := time.NewTicker(50 * time.Millisecond)
+	defer ticker.Stop()
 	for {
 		s, err := m.JobStatus(ctx, id)
 		if err != nil {
@@ -990,13 +1032,12 @@ func (m *lt) AwaitJob(ctx context.Context, id JobID, timeout time.Duration) (Job
 		case JobSucceeded, JobFailed, JobDead:
 			return s, nil
 		}
-		if !m.cfg.now().Before(deadline) {
-			return s, ErrAwaitTimeout
-		}
 		select {
 		case <-ctx.Done():
 			return s, errdefs.FromContext(ctx.Err())
-		case <-time.After(50 * time.Millisecond):
+		case <-timer.C:
+			return s, ErrAwaitTimeout
+		case <-ticker.C:
 		}
 	}
 }

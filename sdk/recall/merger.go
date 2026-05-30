@@ -100,8 +100,8 @@ func (m *lt) dedupHashes(ctx context.Context, scope Scope, hashes []string) (map
 // predicate empty — they are append-only timeline data, not slot
 // replacements", and the merger must honour the same contract. Without
 // this guard, two events sharing the same actors / places but
-// different dates (e.g. "Caroline went to the support group on
-// 7 May 2023" vs "Caroline went to the support group on 8 May 2023")
+// different dates (e.g. "Theo went to the photography club on
+// 7 May 2023" vs "Theo went to the photography club on 8 May 2023")
 // would collide on entity-set equality and cos ≥ SoftMergeCosineMin
 // because the architecture-friendly extractor prompt deliberately
 // keeps dates OUT of the entities field (they live in the fact body).

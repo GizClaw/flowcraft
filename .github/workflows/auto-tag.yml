@@ -6,6 +6,7 @@ on:
     paths:
       - "sdk/**"
       - "sdkx/**"
+      - "memory/**"
       - "voice/**"
       - "vessel/**"
 
@@ -77,7 +78,7 @@ jobs:
           # and surface them as MODULE_SKIP_<MOD>=1 env vars consumed by
           # tag_module. Case-insensitive on the keyword, exact match on
           # the module token.
-          for mod in sdk sdkx voice vessel; do
+          for mod in sdk sdkx memory voice vessel; do
             if echo "$msg" | grep -qiE "\[skip[-_]tag:${mod}\]"; then
               key="MODULE_SKIP_$(echo "$mod" | tr '[:lower:]' '[:upper:]')"
               echo "${key}=1" >> "$GITHUB_ENV"
@@ -107,7 +108,7 @@ jobs:
           zeros="0000000000000000000000000000000000000000"
           if [ -z "${BEFORE_SHA}" ] || [ "${BEFORE_SHA}" = "${zeros}" ]; then
             echo "no usable BEFORE_SHA, treating every module as touched"
-            for mod in sdk sdkx voice; do
+            for mod in sdk sdkx memory voice vessel; do
               key="MODULE_TOUCHED_$(echo "$mod" | tr '[:lower:]' '[:upper:]')"
               echo "${key}=1" >> "$GITHUB_ENV"
             done
@@ -117,7 +118,7 @@ jobs:
           # with fetch-depth: 0 already pulls full history, but a defensive
           # fetch keeps the workflow robust against shallow-clone tweaks.
           git fetch --no-tags origin "${BEFORE_SHA}" >/dev/null 2>&1 || true
-          for mod in sdk sdkx voice; do
+          for mod in sdk sdkx memory voice vessel; do
             if [ -n "$(git diff --name-only "${BEFORE_SHA}".."${AFTER_SHA}" -- "$mod/")" ]; then
               key="MODULE_TOUCHED_$(echo "$mod" | tr '[:lower:]' '[:upper:]')"
               echo "${key}=1" >> "$GITHUB_ENV"
@@ -203,6 +204,7 @@ jobs:
 
           tag_module "sdk"
           tag_module "sdkx"
+          tag_module "memory"
           tag_module "voice"
           # vessel is auto-patched the same way once a seed tag exists
           # (e.g. vessel/v0.1.0). The first-ever tag must be created

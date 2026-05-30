@@ -18,12 +18,15 @@ import (
 //   - Project rebuilds the (entity → entry-id list) edge set from
 //     entry.Entities for the supplied entries and pushes it via
 //     [EntityStore.Link]. Link is idempotent on (entity, id), so
-//     this can be replayed safely (the Reconciler does so every
-//     tick).
+//     this can be replayed safely.
+//   - Replace first prunes every supplied entry ID from all entity
+//     rows, then Projects the entries' current entity set. That
+//     expresses "this entry's projection equals Entry.Entities" and
+//     removes stale edges when an alive entry changes entities.
 //   - Forget loops [EntityStore.Forget] over the stale ids. Most
 //     backends scan the entity namespace per call; for typical
-//     LoCoMo-shaped scopes (tens of stale ids per reconcile after a
-//     TTL sweep or rollback) the cost is negligible. Optimise via a
+//     medium conversation scopes (tens of stale ids per reconcile after
+//     a TTL sweep or rollback) the cost is negligible. Optimise via a
 //     batch interface if production telemetry shows the loop is
 //     hot.
 //   - AllEntryIDs scans the entity namespace via the wrapped index
@@ -74,6 +77,32 @@ func (p *entityStoreProjection) Project(ctx context.Context, scope Scope, entrie
 		return nil
 	}
 	return p.store.Link(ctx, scope, edges)
+}
+
+// Replace implements ProjectionReplacer.
+func (p *entityStoreProjection) Replace(ctx context.Context, scope Scope, entries []Entry) error {
+	if p == nil || p.store == nil || len(entries) == 0 {
+		return nil
+	}
+	ids := make([]string, 0, len(entries))
+	seen := make(map[string]struct{}, len(entries))
+	for _, e := range entries {
+		id := strings.TrimSpace(e.ID)
+		if id == "" {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		ids = append(ids, id)
+	}
+	if len(ids) > 0 {
+		if err := p.Forget(ctx, scope, ids); err != nil {
+			return err
+		}
+	}
+	return p.Project(ctx, scope, entries)
 }
 
 // Forget implements Projection. EntityStore.Forget is per-id, so
@@ -138,5 +167,6 @@ func (p *entityStoreProjection) AllEntryIDs(ctx context.Context, scope Scope) ([
 // Compile-time interface checks.
 var (
 	_ Projection          = (*entityStoreProjection)(nil)
+	_ ProjectionReplacer  = (*entityStoreProjection)(nil)
 	_ ProjectionInspector = (*entityStoreProjection)(nil)
 )

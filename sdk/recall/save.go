@@ -206,22 +206,32 @@ func (m *lt) gatherExistingFacts(ctx context.Context, scope Scope, msgs []llm.Me
 }
 
 func joinMessageText(msgs []llm.Message, max int) string {
-	var b []byte
+	if max <= 0 {
+		return ""
+	}
+	out := make([]rune, 0, max)
 	for _, m := range msgs {
 		c := m.Content()
 		if c == "" {
 			continue
 		}
-		if len(b) > 0 {
-			b = append(b, '\n')
+		if len(out) > 0 {
+			if len(out) >= max {
+				break
+			}
+			out = append(out, '\n')
 		}
-		b = append(b, c...)
-		if len(b) >= max {
-			b = b[:max]
+		for _, r := range c {
+			if len(out) >= max {
+				break
+			}
+			out = append(out, r)
+		}
+		if len(out) >= max {
 			break
 		}
 	}
-	return string(b)
+	return string(out)
 }
 
 func snippetSingleLine(s string, max int) string {
@@ -323,6 +333,7 @@ func (m *lt) Add(ctx context.Context, scope Scope, e Entry) (string, error) {
 		if derr == nil {
 			if existingID, ok := existing[hash]; ok {
 				m.rememberNamespace(ctx, ns)
+				m.repairProjectionForIDs(ctx, scope, []string{existingID})
 				addTotal.Add(ctx, 1, metric.WithAttributes(attribute.String("outcome", "success"), attribute.String("reason", "dedup_hit")))
 				return existingID, nil
 			}
@@ -435,10 +446,12 @@ func (m *lt) upsertFacts(
 	// returnedIDs tracks the ID we report back per fact, including those
 	// short-circuited by MD5 dedup so callers see idempotent behaviour.
 	returnedIDs := make([]string, 0, len(facts))
+	var dedupIDs []string
 	for i, f := range facts {
 		if existing != nil {
 			if existingID, ok := existing[hashes[i]]; ok {
 				returnedIDs = append(returnedIDs, existingID)
+				dedupIDs = append(dedupIDs, existingID)
 				continue
 			}
 		}
@@ -448,7 +461,7 @@ func (m *lt) upsertFacts(
 			Content:    f.Content,
 			Categories: f.Categories,
 			// NormalizeEntities folds the LLM-supplied phrasal entities
-			// (e.g. "Caroline's LGBTQ support group") into the same
+			// (e.g. "Mira's photography club") into the same
 			// lower-cased, per-token-atom key space that the
 			// retrieval pipeline's rule-based query extractor uses
 			// — without it the entity recall lane silently degrades
@@ -490,6 +503,10 @@ func (m *lt) upsertFacts(
 		}
 		plans = append(plans, plan{entry: entry, doc: d, fact: f})
 		returnedIDs = append(returnedIDs, entry.ID)
+	}
+
+	if len(dedupIDs) > 0 {
+		m.repairProjectionForIDs(ctx, scope, dedupIDs)
 	}
 
 	if len(plans) == 0 {
@@ -594,12 +611,12 @@ func (m *lt) upsertFacts(
 // drift from each other again: the moment we add a new eager
 // write path, it just needs to call [lt.projectEager] after Upsert.
 //
-// Semantics match [Projection.Project]'s additive contract:
-// projections incorporate the supplied entries' edges idempotently.
-// The Reconciler's full-replay + Forget cleanup is a separate path
-// and is NOT triggered from here. Errors are logged but do not
-// fail the Upsert — Projections are derived views; the primary
-// index is already durable.
+// Semantics prefer [ProjectionReplacer] when the projection supports
+// it, so an entry's derived edges are replaced with exactly the
+// current Entry state. Legacy projections fall back to additive
+// [Projection.Project]. Errors are logged but do not fail the Upsert
+// — Projections are derived views; the primary index is already
+// durable.
 //
 // No-op when len(entries) == 0 or no projection is registered.
 // Replaces the pre-#179.1 [lt.linkEntities] helper that talked
@@ -610,8 +627,51 @@ func (m *lt) projectEager(ctx context.Context, scope Scope, entries []Entry) {
 		return
 	}
 	for _, p := range m.projections {
-		if err := p.Project(ctx, scope, entries); err != nil {
-			m.log("ltm: projection %s Project (eager): %v", p.Name(), err)
+		if err := projectReplaceOrAdd(ctx, p, scope, entries); err != nil {
+			m.log("ltm: projection %s sync (eager): %v", p.Name(), err)
+		}
+	}
+}
+
+func (m *lt) repairProjectionForIDs(ctx context.Context, scope Scope, ids []string) {
+	if len(ids) == 0 || len(m.projections) == 0 {
+		return
+	}
+	getter, ok := retrieval.AsDocGetter(m.idx)
+	if !ok {
+		return
+	}
+	ns := NamespaceFor(scope)
+	seen := make(map[string]struct{}, len(ids))
+	entries := make([]Entry, 0, len(ids))
+	for _, id := range ids {
+		if id == "" {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		doc, ok, err := getter.Get(ctx, ns, id)
+		if err != nil {
+			m.log("ltm: projection dedup repair Get %q: %v", id, err)
+			continue
+		}
+		if !ok {
+			continue
+		}
+		entries = append(entries, DocToEntry(doc))
+	}
+	m.projectEager(ctx, scope, entries)
+}
+
+func (m *lt) forgetProjections(ctx context.Context, scope Scope, ids []string) {
+	if len(ids) == 0 || len(m.projections) == 0 {
+		return
+	}
+	for _, p := range m.projections {
+		if err := p.Forget(ctx, scope, ids); err != nil {
+			m.log("ltm: projection %s Forget: %v", p.Name(), err)
 		}
 	}
 }
