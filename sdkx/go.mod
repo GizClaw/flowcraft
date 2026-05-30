@@ -2,9 +2,10 @@ module github.com/GizClaw/flowcraft/sdkx
 
 go 1.25.0
 
-require github.com/GizClaw/flowcraft/sdk v0.3.12
+require github.com/GizClaw/flowcraft/sdk v0.4.0
 
 require (
+	github.com/GizClaw/flowcraft/memory v0.1.0
 	github.com/PuerkitoBio/goquery v1.11.0
 	github.com/anthropics/anthropic-sdk-go v1.26.0
 	github.com/go-shiori/go-readability v0.0.0-20251205110129-5db1dc9836f0
@@ -19,7 +20,7 @@ require (
 	go.opentelemetry.io/otel/trace v1.40.0
 	golang.org/x/net v0.52.0
 	gopkg.in/natefinch/lumberjack.v2 v2.2.1
-	modernc.org/sqlite v1.49.1
+	modernc.org/sqlite v1.50.1
 )
 
 require (
@@ -43,6 +44,7 @@ require (
 	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
 	github.com/jackc/puddle/v2 v2.2.2 // indirect
 	github.com/jmespath/go-jmespath v0.4.0 // indirect
+	github.com/kljensen/snowball v0.10.0 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/ncruces/go-strftime v1.0.0 // indirect
 	github.com/oklog/ulid/v2 v2.1.1 // indirect
@@ -72,7 +74,7 @@ require (
 	google.golang.org/grpc v1.80.0 // indirect
 	google.golang.org/protobuf v1.36.11 // indirect
 	gopkg.in/yaml.v2 v2.4.0 // indirect
-	modernc.org/libc v1.72.0 // indirect
+	modernc.org/libc v1.72.3 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect
 )
