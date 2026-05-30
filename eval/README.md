@@ -76,7 +76,7 @@ not directly comparable.
 ### C. Extractor prompt is the SDK default (no LoCoMo overlay)
 
 The LoCoMo runner intentionally does NOT override
-`sdk/recall.DefaultExtractPrompt`. The SDK default already encodes
+`memory/recall.DefaultExtractPrompt`. The memory default already encodes
 every architectural rule a long-term memory extractor needs
 (self-containedness, atomic entities, composite-fact rule for
 multi-hop, inference-evidence rule for preferences, canonical

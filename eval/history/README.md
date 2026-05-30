@@ -1,13 +1,13 @@
 # eval/history
 
-Quality + token-cost evaluation of `sdk/history` compactor strategies.
+Quality + token-cost evaluation of `memory/history` compactor strategies.
 
 Where `eval/locomo` answers _"did recall surface the right fact?"_, this
 suite answers _"given a long transcript and no recall layer, can the model
 still answer correctly with a compressed history?"_. The two questions
 stress orthogonal subsystems — locomo evaluates the long-term-memory
-pipeline (`sdk/recall`), this one evaluates the short-term-memory
-compactor (`sdk/history`) in isolation.
+pipeline (`memory/recall`), this one evaluates the short-term-memory
+compactor (`memory/history`) in isolation.
 
 ## Strategies
 

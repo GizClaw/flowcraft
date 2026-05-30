@@ -8,9 +8,10 @@ Security fixes are issued against the latest release of each module.
 | Module     | Supported tag stream |
 | ---------- | -------------------- |
 | `sdk`      | latest `sdk/v0.x`    |
+| `memory`   | latest `memory/v0.x` |
 | `sdkx`     | latest `sdkx/v0.x`   |
-| `vessel`   | latest `vessel/v0.1.0-rc.x` |
-| `vesseld`  | latest `vesseld/v0.1.0-rc.x` |
+| `vessel`   | latest `vessel/v0.x` |
+| `vesseld`  | latest `vesseld/v0.x` |
 | `voice`    | latest `voice/v0.x`  |
 
 Older minor versions are not patched; please upgrade before reporting issues
@@ -29,7 +30,7 @@ Use one of the following private channels:
 
 Please include:
 
-- Affected module(s) and version/tag (e.g. `vesseld/v0.1.0-rc.1`).
+- Affected module(s) and version/tag (e.g. `vessel/v0.3.0`).
 - A minimal reproduction (config, command, request, or code snippet).
 - Impact assessment (what a malicious actor could do).
 - Any suggested mitigation, if you have one.
@@ -47,8 +48,8 @@ Please include:
 
 In scope:
 
-- Code in this repository (`sdk/`, `sdkx/`, `vessel/`, `cmd/vesseld/`,
-  `voice/`, `examples/`, `tests/`).
+- Code in this repository (`sdk/`, `memory/`, `sdkx/`, `vessel/`,
+  `cmd/vesseld/`, `voice/`, `examples/`, `tests/`).
 - Default configurations shipped with `vesseld` and the example deployments.
 
 Out of scope:
