@@ -16,9 +16,10 @@
 
 FlowCraft is a layered, **batteries-included** toolkit for shipping LLM applications in Go. Pick the layer you need:
 
-- **`sdk`** — Composable primitives: agents, DAG executor, conversation history, hybrid retrieval, knowledge bases, kanban-style multi-agent delegation.
-- **`sdkx`** — Drop-in providers: OpenAI, Anthropic, DeepSeek, MiniMax, ByteDance / Volcengine, plus embedding + reranker backends.
-- **`vessel`** — In-process runtime that hosts your agents with proper lifecycle (Submit / Drain / Stop), restart policies, probes, sidecars, and shared history.
+- **`sdk`** — Composable primitives: agents, DAG executor, LLM contracts, tools, telemetry, workspaces, and kanban-style multi-agent delegation.
+- **`memory`** — Long-term recall, conversation history, knowledge retrieval, text processing, and memory-backed stores.
+- **`sdkx`** — Drop-in providers: OpenAI, Anthropic, DeepSeek, MiniMax, ByteDance / Volcengine, plus embedding, reranker, sandbox, and compatibility adapters.
+- **`vessel`** — In-process runtime that hosts your agents with lifecycle management, restart policies, probes, sidecars, per-run workspaces, and assembly helpers.
 - **`vesseld`** — A standalone daemon that runs `vessel` instances from declarative YAML, exposes an HTTP + SSE control plane, and shares LLM clients & rate limits across many vessels.
 - **`voice`** — Real-time STT → LLM → TTS pipeline with VAD, barge-in, and WebRTC.
 
@@ -31,7 +32,7 @@ Everything ships as Go modules with semantic versioning — depend on what you n
 | You want…                                                    | FlowCraft gives you…                                                                                                      |
 | ------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------- |
 | Strict separation between **engine** and **agent**           | `sdk/engine` is a leaf package; `sdk/agent` orchestrates above it. No "framework is the runtime" coupling.                |
-| **Long-term memory** that actually retrieves what's relevant | `sdk/recall` ships hybrid BM25 + vector retrieval with predicate-alias normalisation, not just embedding similarity.      |
+| **Long-term memory** that actually retrieves what's relevant | `memory/recall` ships hybrid BM25 + vector retrieval with predicate-alias normalisation, not just embedding similarity.   |
 | **Multi-agent collaboration** without a graph DSL            | `sdk/kanban` exposes any agent as a tool to any other agent — composition is just function calls.                         |
 | **A daemon you can deploy**                                  | `vesseld` is a single static binary: `vesseld run --config ./config -R`. No runtime, no Python, no Docker required.       |
 | **Voice agents** that don't reinvent VAD                     | `voice/` ships VAD, endpointing, barge-in, WebRTC — wire it to any STT/TTS provider in `sdkx`.                            |
@@ -87,13 +88,13 @@ curl -H "Authorization: Bearer $TOKEN" http://localhost:8443/v1/vessels/support/
   -d '{"agent":"support-agent","query":"hello"}'
 ```
 
-mTLS support is on the `v0.2` track; until then keep the listener behind a TLS-terminating proxy or restrict it to a trusted network.
+mTLS support is available through the daemon TLS config; bearer-token TCP auth remains the lightest remote-access path for simple deployments.
 
 See [`examples/vesseld-multi-vessel/`](examples/vesseld-multi-vessel/) for the multi-agent + Kanban delegation walkthrough, and [`examples/vesseld-with-history/`](examples/vesseld-with-history/) for an agent that remembers earlier turns of the same conversation.
 
 ### Library — programmatic SDK usage
 
-For embedding agents directly into a Go service (no daemon), use `sdk` + `sdkx` directly. The minimum viable wiring is a graph DAG (`graph.GraphDefinition` + `node.Factory` with `llmnode.Register`) driven by `agent.Run`. See:
+For embedding agents directly into a Go service (no daemon), use `sdk` directly and add `memory` / `sdkx` when you need recall, history, knowledge, or provider adapters. The minimum viable wiring is a graph DAG (`graph.GraphDefinition` + `node.Factory` with `llmnode.Register`) driven by `agent.Run`. See:
 
 - [`sdk/agent/run_test.go`](sdk/agent/run_test.go) — minimal `agent.Run` patterns
 - [`tests/quality/vessel/`](tests/quality/vessel/) — full integration examples (history, sidecars, kanban)
@@ -118,7 +119,7 @@ End-to-end: [`examples/voice-pipeline/`](examples/voice-pipeline/) — a runnabl
 
 ## Architecture
 
-Layered bottom-up. Each layer only depends on layers below it; siblings on the same row are independent of each other.
+Layered bottom-up. `sdk` is the foundation; `memory` builds on it, and upper layers compose the published `sdk` + `memory` surfaces.
 
 ```
    ┌──────────────────────────────────────────────────────────────┐
@@ -133,27 +134,26 @@ Layered bottom-up. Each layer only depends on layers below it; siblings on the s
    ┌────────────┼─────────────────┐          ┌──────▼─────┐
    │     ┌──────▼───────┐  ┌──────▼──────┐   │   voice/   │  WebRTC
    │     │   vessel/    │  │    sdkx/    │   │ (pipeline) │
-   │     │  (runtime)   │  │ (providers) │   └─────┬──────┘
-   │     │ Captain ▸    │  │ openai ·    │         │
-   │     │ Probe · Re-  │  │ anthropic · │         │
-   │     │ start ·      │  │ deepseek ·  │         │
-   │     │ Sidecar ·    │  │ minimax ·   │         │
-   │     │ Kanban       │  │ volcengine  │         │
+   │     │ runtime +    │  │ providers + │   └─────┬──────┘
+   │     │ assembly     │  │ sandbox     │         │
    │     └──────┬───────┘  └──────┬──────┘         │
    │            │                 │                │
-   │            └─────────┬───────┴────────────────┘
-   │                      │ all sit on sdk
-   │             ┌────────▼───────────────────────┐
-   └────────────►│             sdk/               │
-                 │ agent · engine · graph         │
-                 │ recall · history · knowledge   │
-                 │ kanban · tool · model · llm    │
-                 │ event · telemetry · workspace  │
-                 └────────────────────────────────┘
-                  Foundation — depends on no other in-tree module.
+   │            ├─────────┬───────┴────────────────┘
+   │            │         │
+   │     ┌──────▼──────┐  │        ┌────────────────┐
+   │     │   memory/   │  └───────►│      sdk/      │
+   │     │ recall ·    │           │ agent · engine │
+   │     │ history ·   │           │ graph · llm ·  │
+   │     │ knowledge · │           │ tool · event · │
+   │     │ retrieval   │           │ telemetry      │
+   │     └──────┬──────┘           └────────────────┘
+   │            │                         ▲
+   └────────────┴─────────────────────────┘
+        sdk is the foundation. memory depends on sdk; sdkx and vessel
+        consume the published sdk + memory surfaces.
 ```
 
-**Layering rule**: `sdk/engine` is a leaf inside `sdk/` — it does NOT import `agent`, `graph`, `history`, `recall`, `llm`, `tool`, or `workflow`. New execution engines plug in by implementing `engine.Engine` against the `Host` capability interface, which keeps the runtime contract narrow.
+**Layering rule**: `sdk/engine` is a leaf inside `sdk/` — it does NOT import `agent`, `graph`, `llm`, `tool`, or `workflow`. New execution engines plug in by implementing `engine.Engine` against the `Host` capability interface, which keeps the runtime contract narrow. Memory services live in the separate `memory` module and depend on the SDK contracts rather than the other way around.
 
 ---
 
@@ -164,8 +164,8 @@ Layered bottom-up. Each layer only depends on layers below it; siblings on the s
 | [`sdk`](sdk/)                              | Core primitives — agent, graph DAG, kanban, model, llm, telemetry                                          | yes           |
 | [`memory`](memory/)                        | Memory domain — recall v2, history, knowledge, retrieval, text, and memory adapters                        | yes           |
 | [`sdkx`](sdkx/)                            | Provider implementations (OpenAI, Anthropic, DeepSeek, MiniMax, Volcengine) + non-memory extensions        | yes           |
-| [`vessel`](vessel/)                        | In-process agent runtime — Captain, restart, probes, sidecars                                              | `v0.1.0-rc.2` |
-| [`cmd/vesseld`](cmd/vesseld/)              | Standalone daemon binary — declarative YAML, HTTP/SSE control plane                                        | `v0.1.0-rc.1` |
+| [`vessel`](vessel/)                        | In-process agent runtime — Captain, restart, probes, sidecars, per-run workspaces, assembly helpers        | yes           |
+| [`cmd/vesseld`](cmd/vesseld/)              | Standalone daemon binary — declarative YAML, HTTP/SSE control plane                                        | yes           |
 | [`voice`](voice/)                          | Real-time voice pipeline (VAD / STT / LLM / TTS / WebRTC)                                                  | yes           |
 | [`examples/`](examples/)                   | Worked end-to-end examples (voice pipeline, multi-vessel daemon, …)                                        | —             |
 | [`tests/quality/`](tests/quality/)         | Quality / regression suites (knowledge retrieval, vessel runtime)                                          | —             |
@@ -207,7 +207,8 @@ Layered bottom-up. Each layer only depends on layers below it; siblings on the s
 
 The canonical reference is the per-package `doc.go` files, browsable on pkg.go.dev:
 
-- [pkg.go.dev/github.com/GizClaw/flowcraft/sdk](https://pkg.go.dev/github.com/GizClaw/flowcraft/sdk) — core primitives (agent, engine, recall, history, knowledge, …)
+- [pkg.go.dev/github.com/GizClaw/flowcraft/sdk](https://pkg.go.dev/github.com/GizClaw/flowcraft/sdk) — core primitives (agent, engine, graph, llm, tool, telemetry, …)
+- [pkg.go.dev/github.com/GizClaw/flowcraft/memory](https://pkg.go.dev/github.com/GizClaw/flowcraft/memory) — recall, history, knowledge, retrieval, and text packages
 - [pkg.go.dev/github.com/GizClaw/flowcraft/sdkx](https://pkg.go.dev/github.com/GizClaw/flowcraft/sdkx) — provider implementations
 - [pkg.go.dev/github.com/GizClaw/flowcraft/vessel](https://pkg.go.dev/github.com/GizClaw/flowcraft/vessel) — runtime layer
 - [pkg.go.dev/github.com/GizClaw/flowcraft/voice](https://pkg.go.dev/github.com/GizClaw/flowcraft/voice) — voice pipeline
@@ -220,9 +221,9 @@ For the daemon specifically, run `vesseld --help` for CLI sub-commands and suppo
 
 ## Status
 
-`sdk` and `sdkx` are stable and released continuously. `vessel` and `cmd/vesseld` have shipped `v0.1.0` and are production-ready for single-node deployments. Durable execution (Postgres + SQLite checkpoint stores), OTel exporters, Prometheus `/metrics`, the seven-suite `eval/` harness, and end-to-end `tests/e2e/vesseld` conformance are all in place.
+`sdk` and `sdkx` are stable and released continuously. `memory` is published as its own module for recall, history, knowledge, retrieval, and text. `vessel` has shipped `v0.3.0` with per-run session workspaces and assembly helpers, and `cmd/vesseld` is production-ready for single-node deployments. Durable execution (Postgres + SQLite checkpoint stores), OTel exporters, Prometheus `/metrics`, the seven-suite `eval/` harness, and end-to-end `tests/e2e/vesseld` conformance are all in place.
 
-The next milestone (`v0.2`) hardens vesseld for "comfortable to operate": per-run session storage, mTLS, a `SecretProvider` interface, and a `vesseld migrate` subcommand. `v0.3` brings the protocol trio — MCP, Agent Skills (SKILL.md), and A2A — plus agent-writable memory Slots.
+The next milestone is the assertion-graph memory model: first-class observations, assertions, and links with provenance, so recall can retrieve linked evidence packets instead of isolated facts.
 
 API surface is governed by SemVer per module. Breaking changes ship as minor bumps until each module reaches `v1.0.0`.
 
@@ -239,7 +240,7 @@ make ci            # vet + test for all in-tree modules
 make test-e2e      # black-box vesseld suite (no API key required)
 ```
 
-This repo is a Go workspace (`go.work`). The in-tree modules are `sdk`, `sdkx`, `vessel`, `voice`, `cmd/vesseld`, and `tests/quality/vessel`. The off-workspace modules (`bench`, `examples/voice-pipeline`, `tests/conformance`, `tests/quality/knowledge`, `tests/e2e/vesseld`) pin released versions and run with `GOWORK=off`.
+This repo is a Go workspace (`go.work`). The in-tree modules are `sdk`, `memory`, `sdkx`, `vessel`, `voice`, `cmd/vesseld`, and `eval`. Off-workspace examples and test harnesses pin released versions and run with `GOWORK=off`.
 
 ---
 

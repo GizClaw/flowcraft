@@ -1,6 +1,6 @@
 # eval/locomo
 
-Evaluation scaffold for `sdk/memory/ltm` against the LoCoMo / LongMemEval benchmarks.
+Evaluation scaffold for `memory/recall` against the LoCoMo / LongMemEval benchmarks.
 
 ## Quick start
 

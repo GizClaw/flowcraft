@@ -67,7 +67,7 @@ the dataset.
 
 The current eval treats the model as a closed-book oracle: just the
 question goes in, an answer comes out. Future variants will plug
-`sdk/knowledge` (RAG over a corpus) or `sdk/agent` + search tools in
+`memory/knowledge` (RAG over a corpus) or `sdk/agent` + search tools in
 front of the answer LLM. The same `Run` function is reused; only the
 prompt-building lambda changes. Numbers from the closed-book run
 provide the "no augmentation" baseline against which the augmented

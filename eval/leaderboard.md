@@ -881,7 +881,7 @@ work-ticket:
 1. **Entity-index retrieval layer** — auto-extract entities
    (proper nouns, quoted strings, compound noun phrases) into a
    dedicated index alongside chunk/dense; have `pipeline.LTM`
-   query all three with rank-fusion. Today `sdk/recall` carries
+   query all three with rank-fusion. Today `memory/recall` carries
    an `entities` field on every fact but does **not** maintain a
    separate retrieval channel keyed by them. Expected
    contribution: +10~15 pp on multi-hop / open-domain — upper
