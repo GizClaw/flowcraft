@@ -92,9 +92,10 @@ func TestFeishuApp_FirstEventCreatesAndSendsCard(t *testing.T) {
 	}
 
 	err := app.Notify(context.Background(), Event{
-		Kind:  "start",
-		Title: "eval start: runner=flowcraft dataset=synthetic",
-		Body:  "conversations=2 questions=3",
+		Kind:   "start",
+		Title:  "eval start: runner=flowcraft dataset=synthetic",
+		Body:   "conversations=2 questions=3",
+		Fields: map[string]string{"host": "host-test"},
 	})
 	if err != nil {
 		t.Fatalf("first Notify: %v", err)
@@ -120,6 +121,9 @@ func TestFeishuApp_FirstEventCreatesAndSendsCard(t *testing.T) {
 	}
 	if !strings.Contains(cardJSON, "eval start") {
 		t.Errorf("card data should contain event title: %s", cardJSON)
+	}
+	if !strings.Contains(cardJSON, "host-test") {
+		t.Errorf("card data should contain host: %s", cardJSON)
 	}
 	// Verify chat targeting.
 	if mock.lastSendBody["receive_id"] != "oc_test" {

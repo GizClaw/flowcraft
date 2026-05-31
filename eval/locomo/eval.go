@@ -6,6 +6,11 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"os"
+	"os/exec"
+	"runtime/debug"
+	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -155,6 +160,10 @@ type Options struct {
 	// executed against different retrieval indexes (for example v1+memory vs
 	// v1+bbh) without changing the report's runner identity.
 	RetrievalBackend string
+	// RunName is a display/debug identifier for lifecycle notifications. The
+	// CLI wires this from --notify-name so Feishu card bodies can be traced
+	// back to the exact workflow run or ad-hoc command that created them.
+	RunName string
 
 	// Hook is invoked at lifecycle checkpoints (start, ingest_done,
 	// qa_progress milestones, done, error). The hook is a synchronous
@@ -205,6 +214,99 @@ type Event struct {
 // goroutine and SHOULD not block: a slow hook will stall the eval. Errors
 // from hooks are swallowed (the hook itself decides whether to log).
 type EventHook func(ctx context.Context, e Event)
+
+func startDebugFields(runName string) map[string]string {
+	fields := map[string]string{
+		"pid": strconv.Itoa(os.Getpid()),
+	}
+	if runName != "" {
+		fields["run"] = runName
+	}
+	if host, err := os.Hostname(); err == nil && host != "" {
+		fields["host"] = host
+	}
+	if cwd, err := os.Getwd(); err == nil && cwd != "" {
+		fields["cwd"] = cwd
+	}
+	if git := buildRevision(); git != "" {
+		fields["git"] = git
+	}
+	return fields
+}
+
+func buildRevision() string {
+	if sha := os.Getenv("GITHUB_SHA"); sha != "" {
+		return shortRevision(sha)
+	}
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return gitCommandRevision()
+	}
+	var revision, modified string
+	for _, setting := range info.Settings {
+		switch setting.Key {
+		case "vcs.revision":
+			revision = shortRevision(setting.Value)
+		case "vcs.modified":
+			modified = setting.Value
+		}
+	}
+	if revision == "" {
+		return gitCommandRevision()
+	}
+	if modified == "true" {
+		return revision + "-dirty"
+	}
+	return revision
+}
+
+func gitCommandRevision() string {
+	out, err := exec.Command("git", "rev-parse", "--short=12", "HEAD").Output()
+	if err != nil {
+		return ""
+	}
+	revision := strings.TrimSpace(string(out))
+	if revision == "" {
+		return ""
+	}
+	if err := exec.Command("git", "diff-index", "--quiet", "HEAD", "--").Run(); err != nil {
+		return revision + "-dirty"
+	}
+	return revision
+}
+
+func shortRevision(sha string) string {
+	if len(sha) > 12 {
+		return sha[:12]
+	}
+	return sha
+}
+
+func formatStartDebug(fields map[string]string) string {
+	ordered := []string{"run", "host", "pid", "cwd", "git"}
+	parts := make([]string, 0, len(fields))
+	for _, key := range ordered {
+		if fields[key] != "" {
+			parts = append(parts, key+"="+fields[key])
+		}
+	}
+	for key, value := range fields {
+		if value == "" {
+			continue
+		}
+		found := false
+		for _, orderedKey := range ordered {
+			if key == orderedKey {
+				found = true
+				break
+			}
+		}
+		if !found {
+			parts = append(parts, key+"="+value)
+		}
+	}
+	return "source " + strings.Join(parts, "  ")
+}
 
 // Run runs ingest + question loop and returns a report.
 func Run(ctx context.Context, r runners.Runner, ds *dataset.Dataset, opts Options) (*Report, error) {
@@ -264,18 +366,30 @@ func Run(ctx context.Context, r runners.Runner, ds *dataset.Dataset, opts Option
 		"runner":  report.Runner,
 		"dataset": report.Dataset,
 	}
+	startDebug := startDebugFields(opts.RunName)
+	for k, v := range startDebug {
+		startFields[k] = v
+	}
 	startTitle := fmt.Sprintf("eval start: runner=%s dataset=%s", report.Runner, report.Dataset)
 	if opts.RetrievalBackend != "" {
 		startFields["retrieval_backend"] = opts.RetrievalBackend
 		startTitle = fmt.Sprintf("eval start: runner=%s retrieval=%s dataset=%s", report.Runner, opts.RetrievalBackend, report.Dataset)
 	}
+	if opts.RunName != "" {
+		if opts.RetrievalBackend != "" {
+			startTitle = fmt.Sprintf("eval start: run=%s runner=%s retrieval=%s dataset=%s", opts.RunName, report.Runner, opts.RetrievalBackend, report.Dataset)
+		} else {
+			startTitle = fmt.Sprintf("eval start: run=%s runner=%s dataset=%s", opts.RunName, report.Runner, report.Dataset)
+		}
+	}
 	emit(Event{
 		Kind:  "start",
 		Title: startTitle,
 		Body: fmt.Sprintf(
-			"conversations=%d  questions=%d  topk=%d  extractor=%v  qa_concurrency=%d  ingest_concurrency=%d",
+			"conversations=%d  questions=%d  topk=%d  extractor=%v  qa_concurrency=%d  ingest_concurrency=%d\n%s",
 			len(ds.Conversations), len(ds.Questions),
 			opts.TopK, opts.UseExtractor, opts.Concurrency, opts.IngestConcurrency,
+			formatStartDebug(startDebug),
 		),
 		Fields: startFields,
 	})

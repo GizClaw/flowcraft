@@ -54,6 +54,7 @@ func TestStartEventIncludesRetrievalBackend(t *testing.T) {
 		UseExtractor:     false,
 		Concurrency:      1,
 		RetrievalBackend: "bbh",
+		RunName:          "locomo-v1-bbh-test",
 		Hook: func(_ context.Context, e locomo.Event) {
 			if e.Kind == "start" {
 				start = e
@@ -66,8 +67,23 @@ func TestStartEventIncludesRetrievalBackend(t *testing.T) {
 	if !strings.Contains(start.Title, "runner=flowcraft-recall-v1 retrieval=bbh") {
 		t.Fatalf("start title = %q", start.Title)
 	}
+	if !strings.Contains(start.Title, "run=locomo-v1-bbh-test") {
+		t.Fatalf("start title = %q", start.Title)
+	}
+	if !strings.Contains(start.Body, "source run=locomo-v1-bbh-test") {
+		t.Fatalf("start body = %q", start.Body)
+	}
 	if got := start.Fields["retrieval_backend"]; got != "bbh" {
 		t.Fatalf("retrieval_backend field = %q, want bbh", got)
+	}
+	if got := start.Fields["run"]; got != "locomo-v1-bbh-test" {
+		t.Fatalf("run field = %q, want locomo-v1-bbh-test", got)
+	}
+	if start.Fields["pid"] == "" {
+		t.Fatalf("pid field is empty: %+v", start.Fields)
+	}
+	if start.Fields["cwd"] == "" {
+		t.Fatalf("cwd field is empty: %+v", start.Fields)
 	}
 }
 

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -438,10 +439,16 @@ func (f *FeishuApp) renderMarkdown() string {
 	first := f.events[0]
 	icon := iconFor(last.Kind)
 	elapsed := last.At.Sub(first.At).Truncate(time.Second)
+	host := eventHost(first)
 
 	var b strings.Builder
-	fmt.Fprintf(&b, "%s started `%s` · elapsed `%s` · phase `%s`\n",
-		icon, first.At.Format("2006-01-02 15:04:05"), elapsed, last.Kind)
+	if host != "" {
+		fmt.Fprintf(&b, "%s host `%s` · started `%s` · elapsed `%s` · phase `%s`\n",
+			icon, host, first.At.Format("2006-01-02 15:04:05"), elapsed, last.Kind)
+	} else {
+		fmt.Fprintf(&b, "%s started `%s` · elapsed `%s` · phase `%s`\n",
+			icon, first.At.Format("2006-01-02 15:04:05"), elapsed, last.Kind)
+	}
 
 	b.WriteString("\n**Latest**\n")
 	if last.Title != "" {
@@ -501,6 +508,19 @@ func iconFor(kind string) string {
 	default:
 		return "🟦"
 	}
+}
+
+func eventHost(e renderedEvent) string {
+	if e.Fields != nil {
+		if host := strings.TrimSpace(e.Fields["host"]); host != "" {
+			return host
+		}
+	}
+	host, err := os.Hostname()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(host)
 }
 
 // firstLine returns the first line of s, stripped of trailing whitespace.
