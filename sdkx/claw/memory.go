@@ -14,7 +14,15 @@ import (
 
 // MemoryConfig controls Claw's recall integration.
 type MemoryConfig struct {
-	Enabled          bool       `json:"enabled,omitempty" yaml:"enabled,omitempty"`
+	Enabled   bool                  `json:"enabled,omitempty" yaml:"enabled,omitempty"`
+	Scope     MemoryScopeConfig     `json:"scope,omitempty" yaml:"scope,omitempty"`
+	Write     MemoryWriteConfig     `json:"write,omitempty" yaml:"write,omitempty"`
+	Extract   MemoryExtractConfig   `json:"extract,omitempty" yaml:"extract,omitempty"`
+	Recall    MemoryRecallConfig    `json:"recall,omitempty" yaml:"recall,omitempty"`
+	Retrieval MemoryRetrievalConfig `json:"retrieval,omitempty" yaml:"retrieval,omitempty"`
+	Embedding MemoryEmbeddingConfig `json:"embedding,omitempty" yaml:"embedding,omitempty"`
+
+	// Deprecated flat fields kept for old local configs.
 	Backend          string     `json:"backend,omitempty" yaml:"backend,omitempty"`
 	RuntimeID        string     `json:"runtime_id,omitempty" yaml:"runtime_id,omitempty"`
 	UserID           string     `json:"user_id,omitempty" yaml:"user_id,omitempty"`
@@ -25,12 +33,49 @@ type MemoryConfig struct {
 	BBH              bbh.Config `json:"bbh,omitempty" yaml:"bbh,omitempty"`
 }
 
+type MemoryScopeConfig struct {
+	RuntimeID string `json:"runtime_id,omitempty" yaml:"runtime_id,omitempty"`
+	UserID    string `json:"user_id,omitempty" yaml:"user_id,omitempty"`
+	AgentID   string `json:"agent_id,omitempty" yaml:"agent_id,omitempty"`
+}
+
+type MemoryWriteConfig struct {
+	SaveConversation bool   `json:"save_conversation,omitempty" yaml:"save_conversation,omitempty"`
+	Mode             string `json:"mode,omitempty" yaml:"mode,omitempty"`
+	Tier             string `json:"tier,omitempty" yaml:"tier,omitempty"`
+}
+
+type MemoryExtractConfig struct {
+	Enabled      bool                     `json:"enabled,omitempty" yaml:"enabled,omitempty"`
+	Model        string                   `json:"model,omitempty" yaml:"model,omitempty"`
+	Mode         recall.LLMExtractionMode `json:"mode,omitempty" yaml:"mode,omitempty"`
+	SystemPrompt string                   `json:"system_prompt,omitempty" yaml:"system_prompt,omitempty"`
+	Temperature  *float64                 `json:"temperature,omitempty" yaml:"temperature,omitempty"`
+	SchemaName   string                   `json:"schema_name,omitempty" yaml:"schema_name,omitempty"`
+}
+
+type MemoryRecallConfig struct {
+	Enabled        bool `json:"enabled,omitempty" yaml:"enabled,omitempty"`
+	TopK           int  `json:"top_k,omitempty" yaml:"top_k,omitempty"`
+	GraphEnabled   bool `json:"graph_enabled,omitempty" yaml:"graph_enabled,omitempty"`
+	IncludeRetired bool `json:"include_retired,omitempty" yaml:"include_retired,omitempty"`
+}
+
+type MemoryRetrievalConfig struct {
+	Backend string     `json:"backend,omitempty" yaml:"backend,omitempty"`
+	BBH     bbh.Config `json:"bbh,omitempty" yaml:"bbh,omitempty"`
+}
+
+type MemoryEmbeddingConfig struct {
+	Enabled bool   `json:"enabled,omitempty" yaml:"enabled,omitempty"`
+	Model   string `json:"model,omitempty" yaml:"model,omitempty"`
+}
+
 type memoryRuntime struct {
 	mem     recall.Memory
 	backend *recallworkspace.Backend
 	scope   recall.Scope
-	topK    int
-	save    bool
+	cfg     MemoryConfig
 }
 
 func (c *Claw) buildMemory(ctx context.Context) (*memoryRuntime, error) {
@@ -38,7 +83,8 @@ func (c *Claw) buildMemory(ctx context.Context) (*memoryRuntime, error) {
 		return nil, nil
 	}
 
-	opts := []recall.Option{recall.WithGraphEnabled(c.cfg.Memory.Graph)}
+	memCfg := c.cfg.Memory.normalized(c.cfg.Agent.ID)
+	opts := []recall.Option{recall.WithGraphEnabled(memCfg.Recall.GraphEnabled)}
 	backend, err := recallworkspace.New(c.ws, recallworkspace.WithRoot(c.cfg.Workspace.RecallRoot))
 	if err != nil {
 		return nil, err
@@ -50,30 +96,47 @@ func (c *Claw) buildMemory(ctx context.Context) (*memoryRuntime, error) {
 		recall.WithAsyncSemanticQueue(backend.AsyncSemanticQueue()),
 	)
 
-	switch strings.TrimSpace(c.cfg.Memory.Backend) {
+	switch strings.TrimSpace(memCfg.Retrieval.Backend) {
 	case "", "memory":
 	case "bbh":
 		retrievalWS, err := localSubWorkspace(c.ws, c.cfg.Workspace.RetrievalRoot)
 		if err != nil {
 			return nil, err
 		}
-		index, err := bbh.New(retrievalWS, bbh.WithConfig(c.cfg.Memory.BBH))
+		index, err := bbh.New(retrievalWS, bbh.WithConfig(memCfg.Retrieval.BBH))
 		if err != nil {
 			return nil, err
 		}
 		opts = append(opts, recall.WithRetrievalIndex(index))
 	default:
-		return nil, fmt.Errorf("claw: unsupported memory backend %q", c.cfg.Memory.Backend)
+		return nil, fmt.Errorf("claw: unsupported memory backend %q", memCfg.Retrieval.Backend)
 	}
 
-	if extractor, ok, err := c.extractorModel(ctx); err != nil {
-		return nil, err
-	} else if ok {
-		opts = append(opts, recall.WithLLMExtractor(extractor))
+	if memCfg.Extract.Enabled && memCfg.Extract.Model != "" {
+		extractor, err := c.model(ctx, memCfg.Extract.Model)
+		if err != nil {
+			return nil, err
+		}
+		extractOpts := []recall.LLMExtractorOption{}
+		if memCfg.Extract.Mode != "" {
+			extractOpts = append(extractOpts, recall.WithLLMExtractionMode(memCfg.Extract.Mode))
+		}
+		if memCfg.Extract.SystemPrompt != "" {
+			extractOpts = append(extractOpts, recall.WithLLMExtractorSystemPrompt(memCfg.Extract.SystemPrompt))
+		}
+		if memCfg.Extract.Temperature != nil {
+			extractOpts = append(extractOpts, recall.WithLLMExtractorTemperature(*memCfg.Extract.Temperature))
+		}
+		if memCfg.Extract.SchemaName != "" {
+			extractOpts = append(extractOpts, recall.WithLLMExtractorSchemaName(memCfg.Extract.SchemaName))
+		}
+		opts = append(opts, recall.WithLLMExtractor(extractor, extractOpts...))
 	}
-	if emb, ok, err := c.embedder(ctx); err != nil {
-		return nil, err
-	} else if ok {
+	if memCfg.Embedding.Enabled && memCfg.Embedding.Model != "" {
+		emb, err := c.embedderByName(ctx, memCfg.Embedding.Model)
+		if err != nil {
+			return nil, err
+		}
 		opts = append(opts, recall.WithEmbedder(emb))
 	}
 
@@ -82,19 +145,15 @@ func (c *Claw) buildMemory(ctx context.Context) (*memoryRuntime, error) {
 		return nil, err
 	}
 	scope := recall.Scope{
-		RuntimeID: c.cfg.Memory.RuntimeID,
-		UserID:    c.cfg.Memory.UserID,
-		AgentID:   c.cfg.Memory.AgentID,
-	}
-	if scope.AgentID == "" {
-		scope.AgentID = c.cfg.Agent.ID
+		RuntimeID: memCfg.Scope.RuntimeID,
+		UserID:    memCfg.Scope.UserID,
+		AgentID:   memCfg.Scope.AgentID,
 	}
 	return &memoryRuntime{
 		mem:     mem,
 		backend: backend,
 		scope:   scope,
-		topK:    c.cfg.Memory.TopK,
-		save:    c.cfg.Memory.SaveConversation,
+		cfg:     memCfg,
 	}, nil
 }
 
@@ -102,7 +161,14 @@ func (m *memoryRuntime) recallContext(ctx context.Context, query string) (string
 	if m == nil || m.mem == nil || strings.TrimSpace(query) == "" {
 		return "", nil
 	}
-	hits, err := m.mem.Recall(ctx, m.scope, recall.Query{Text: query, Limit: m.topK})
+	if !m.cfg.Recall.Enabled {
+		return "", nil
+	}
+	hits, err := m.mem.Recall(ctx, m.scope, recall.Query{
+		Text:           query,
+		Limit:          m.cfg.Recall.TopK,
+		IncludeRetired: m.cfg.Recall.IncludeRetired,
+	})
 	if err != nil {
 		return "", err
 	}
@@ -112,7 +178,7 @@ func (m *memoryRuntime) recallContext(ctx context.Context, query string) (string
 	var b strings.Builder
 	b.WriteString("Relevant memory:\n")
 	for i, hit := range hits {
-		if i >= m.topK {
+		if i >= m.cfg.Recall.TopK {
 			break
 		}
 		content := strings.TrimSpace(hit.Fact.Content)
@@ -125,7 +191,7 @@ func (m *memoryRuntime) recallContext(ctx context.Context, query string) (string
 }
 
 func (m *memoryRuntime) saveTurn(ctx context.Context, contextID, userText string, assistant model.Message) error {
-	if m == nil || m.mem == nil || !m.save {
+	if m == nil || m.mem == nil || !m.cfg.Write.SaveConversation {
 		return nil
 	}
 	now := time.Now()
@@ -150,6 +216,8 @@ func (m *memoryRuntime) saveTurn(ctx context.Context, contextID, userText string
 	_, err := m.mem.Save(ctx, m.scope, recall.SaveRequest{
 		Turns:      turns,
 		ObservedAt: now,
+		Tier:       m.cfg.Write.Tier,
+		Mode:       parseWriteMode(m.cfg.Write.Mode),
 	})
 	return err
 }
@@ -162,4 +230,58 @@ func (m *memoryRuntime) close() error {
 		return m.mem.Close()
 	}
 	return nil
+}
+
+func (m MemoryConfig) normalized(agentID string) MemoryConfig {
+	out := m
+	if out.Scope.RuntimeID == "" {
+		out.Scope.RuntimeID = firstNonEmpty(out.RuntimeID, "claw")
+	}
+	if out.Scope.UserID == "" {
+		out.Scope.UserID = firstNonEmpty(out.UserID, "local")
+	}
+	if out.Scope.AgentID == "" {
+		out.Scope.AgentID = firstNonEmpty(out.AgentID, agentID)
+	}
+	if out.Retrieval.Backend == "" {
+		out.Retrieval.Backend = firstNonEmpty(out.Backend, "bbh")
+	}
+	if out.Retrieval.BBH == (bbh.Config{}) {
+		out.Retrieval.BBH = out.BBH
+	}
+	if out.Recall.TopK <= 0 {
+		if out.TopK > 0 {
+			out.Recall.TopK = out.TopK
+		} else {
+			out.Recall.TopK = 5
+		}
+	}
+	if out.Graph {
+		out.Recall.GraphEnabled = true
+	}
+	if out.Recall.Enabled == false {
+		out.Recall.Enabled = true
+	}
+	if out.SaveConversation {
+		out.Write.SaveConversation = true
+	}
+	return out
+}
+
+func parseWriteMode(mode string) recall.WriteMode {
+	switch strings.TrimSpace(mode) {
+	case "async_semantic":
+		return recall.WriteModeAsyncSemantic
+	default:
+		return recall.WriteModeSync
+	}
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, v := range values {
+		if strings.TrimSpace(v) != "" {
+			return strings.TrimSpace(v)
+		}
+	}
+	return ""
 }

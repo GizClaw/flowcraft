@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 
 	sdkworkspace "github.com/GizClaw/flowcraft/sdk/workspace"
@@ -48,19 +50,37 @@ func defaultConfig() Config {
 			},
 		},
 		Memory: MemoryConfig{
-			Enabled:          false,
-			Backend:          "memory",
-			RuntimeID:        "claw",
-			UserID:           "local",
-			TopK:             5,
-			SaveConversation: true,
+			Enabled: false,
+			Scope: MemoryScopeConfig{
+				RuntimeID: "claw",
+				UserID:    "local",
+			},
+			Write: MemoryWriteConfig{
+				SaveConversation: true,
+				Mode:             "sync",
+				Tier:             "general",
+			},
+			Recall: MemoryRecallConfig{
+				Enabled: true,
+				TopK:    5,
+			},
+			Retrieval: MemoryRetrievalConfig{
+				Backend: "bbh",
+			},
 		},
 		Agent: AgentConfig{
 			ID:            "claw",
 			Name:          "Claw",
-			MaxIterations: 1,
+			MaxIterations: 8,
 		},
 	}
+}
+
+// LoadConfig reads Claw configuration from the workspace without expanding
+// environment variables. Call Config.ExpandEnv explicitly at process edges
+// such as CLIs that want ${VAR} substitution.
+func LoadConfig(ctx context.Context, ws sdkworkspace.Workspace) (Config, error) {
+	return loadConfig(ctx, ws)
 }
 
 func loadConfig(ctx context.Context, ws sdkworkspace.Workspace) (Config, error) {
@@ -129,6 +149,14 @@ func loadConfig(ctx context.Context, ws sdkworkspace.Workspace) (Config, error) 
 	return cfg, nil
 }
 
+// ExpandEnv expands ${VAR} and $VAR in every string field in Config.
+func (c *Config) ExpandEnv() {
+	if c == nil {
+		return
+	}
+	expandEnvValue(reflect.ValueOf(c).Elem())
+}
+
 func mergeConfigFile(ctx context.Context, ws sdkworkspace.Workspace, path string, out any) (bool, error) {
 	raw, err := ws.Read(ctx, path)
 	if err != nil {
@@ -167,16 +195,35 @@ func (c *Config) applyDefaults() {
 		c.Models.LLM[def.Models.Chat] = def.Models.LLM[def.Models.Chat]
 	}
 	if strings.TrimSpace(c.Memory.Backend) == "" {
-		c.Memory.Backend = def.Memory.Backend
+		c.Memory.Backend = def.Memory.Retrieval.Backend
 	}
-	if strings.TrimSpace(c.Memory.RuntimeID) == "" {
-		c.Memory.RuntimeID = def.Memory.RuntimeID
+	if strings.TrimSpace(c.Memory.Scope.RuntimeID) == "" {
+		c.Memory.Scope.RuntimeID = firstNonEmpty(c.Memory.RuntimeID, def.Memory.Scope.RuntimeID)
 	}
-	if strings.TrimSpace(c.Memory.UserID) == "" {
-		c.Memory.UserID = def.Memory.UserID
+	if strings.TrimSpace(c.Memory.Scope.UserID) == "" {
+		c.Memory.Scope.UserID = firstNonEmpty(c.Memory.UserID, def.Memory.Scope.UserID)
 	}
-	if c.Memory.TopK <= 0 {
-		c.Memory.TopK = def.Memory.TopK
+	if strings.TrimSpace(c.Memory.Scope.AgentID) == "" {
+		c.Memory.Scope.AgentID = firstNonEmpty(c.Memory.AgentID, c.Agent.ID)
+	}
+	if strings.TrimSpace(c.Memory.Retrieval.Backend) == "" {
+		c.Memory.Retrieval.Backend = firstNonEmpty(c.Memory.Backend, def.Memory.Retrieval.Backend)
+	}
+	if c.Memory.Recall.TopK <= 0 {
+		if c.Memory.TopK > 0 {
+			c.Memory.Recall.TopK = c.Memory.TopK
+		} else {
+			c.Memory.Recall.TopK = def.Memory.Recall.TopK
+		}
+	}
+	if c.Memory.SaveConversation {
+		c.Memory.Write.SaveConversation = true
+	}
+	if c.Memory.Write.Mode == "" {
+		c.Memory.Write.Mode = def.Memory.Write.Mode
+	}
+	if c.Memory.Write.Tier == "" {
+		c.Memory.Write.Tier = def.Memory.Write.Tier
 	}
 	if strings.TrimSpace(c.Agent.ID) == "" {
 		c.Agent.ID = def.Agent.ID
@@ -187,6 +234,7 @@ func (c *Config) applyDefaults() {
 	if c.Agent.MaxIterations <= 0 {
 		c.Agent.MaxIterations = def.Agent.MaxIterations
 	}
+	c.ensureAgentGraph()
 }
 
 func localSubWorkspace(ws sdkworkspace.Workspace, rel string) (sdkworkspace.Workspace, error) {
@@ -199,4 +247,98 @@ func localSubWorkspace(ws sdkworkspace.Workspace, rel string) (sdkworkspace.Work
 		return nil, fmt.Errorf("claw: workspace subtree %q requires a local workspace", rel)
 	}
 	return sdkworkspace.NewLocalWorkspace(filepath.Join(rooted.Root(), filepath.FromSlash(rel)))
+}
+
+func expandEnvValue(v reflect.Value) {
+	if !v.IsValid() {
+		return
+	}
+	if v.Kind() == reflect.Pointer {
+		if v.IsNil() {
+			return
+		}
+		expandEnvValue(v.Elem())
+		return
+	}
+	if !v.CanSet() && v.Kind() != reflect.Map && v.Kind() != reflect.Slice && v.Kind() != reflect.Struct && v.Kind() != reflect.Interface {
+		return
+	}
+	switch v.Kind() {
+	case reflect.String:
+		if v.CanSet() {
+			v.SetString(os.ExpandEnv(v.String()))
+		}
+	case reflect.Struct:
+		for i := 0; i < v.NumField(); i++ {
+			field := v.Field(i)
+			if field.CanSet() || field.Kind() == reflect.Map || field.Kind() == reflect.Slice || field.Kind() == reflect.Struct || field.Kind() == reflect.Pointer || field.Kind() == reflect.Interface {
+				expandEnvValue(field)
+			}
+		}
+	case reflect.Slice:
+		for i := 0; i < v.Len(); i++ {
+			expandEnvValue(v.Index(i))
+		}
+	case reflect.Map:
+		if v.Type().Key().Kind() != reflect.String {
+			return
+		}
+		for _, key := range v.MapKeys() {
+			value := expandEnvMapValue(v.MapIndex(key))
+			v.SetMapIndex(key, value)
+		}
+	case reflect.Interface:
+		if v.IsNil() {
+			return
+		}
+		expanded := expandEnvInterface(v.Interface())
+		if v.CanSet() {
+			v.Set(reflect.ValueOf(expanded))
+		}
+	}
+}
+
+func expandEnvMapValue(v reflect.Value) reflect.Value {
+	if !v.IsValid() {
+		return v
+	}
+	if v.Kind() == reflect.Struct || v.Kind() == reflect.Map || v.Kind() == reflect.Slice || v.Kind() == reflect.Pointer || v.Kind() == reflect.Interface {
+		cp := reflect.New(v.Type()).Elem()
+		cp.Set(v)
+		expandEnvValue(cp)
+		return cp
+	}
+	expanded := expandEnvInterface(v.Interface())
+	if expanded == nil {
+		return reflect.Zero(v.Type())
+	}
+	ev := reflect.ValueOf(expanded)
+	if ev.Type().AssignableTo(v.Type()) {
+		return ev
+	}
+	if ev.Type().ConvertibleTo(v.Type()) {
+		return ev.Convert(v.Type())
+	}
+	return v
+}
+
+func expandEnvInterface(v any) any {
+	switch x := v.(type) {
+	case string:
+		return os.ExpandEnv(x)
+	case []any:
+		out := make([]any, len(x))
+		for i, item := range x {
+			out[i] = expandEnvInterface(item)
+		}
+		return out
+	case map[string]any:
+		out := make(map[string]any, len(x))
+		for k, item := range x {
+			out[k] = expandEnvInterface(item)
+		}
+		return out
+	default:
+		return v
+	}
 }

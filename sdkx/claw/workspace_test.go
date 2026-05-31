@@ -48,6 +48,37 @@ system_prompt: stay concise
 	}
 }
 
+func TestConfigExpandEnv(t *testing.T) {
+	t.Setenv("CLAW_TEST_MODEL", "mock-fast")
+	t.Setenv("CLAW_TEST_KEY", "secret")
+	cfg := Config{
+		Models: ModelsConfig{
+			Chat: "chat",
+			LLM: map[string]ModelConfig{
+				"chat": {
+					Provider: "mock",
+					Model:    "${CLAW_TEST_MODEL}",
+					APIKey:   "$CLAW_TEST_KEY",
+					Config: map[string]any{
+						"nested": []any{"${CLAW_TEST_MODEL}"},
+					},
+				},
+			},
+		},
+	}
+	cfg.ExpandEnv()
+	if got := cfg.Models.LLM["chat"].Model; got != "mock-fast" {
+		t.Fatalf("Model = %q, want mock-fast", got)
+	}
+	if got := cfg.Models.LLM["chat"].APIKey; got != "secret" {
+		t.Fatalf("APIKey = %q, want secret", got)
+	}
+	nested := cfg.Models.LLM["chat"].Config["nested"].([]any)
+	if got := nested[0]; got != "mock-fast" {
+		t.Fatalf("nested env = %q, want mock-fast", got)
+	}
+}
+
 func TestLocalSubWorkspaceRequiresLocalRoot(t *testing.T) {
 	if _, err := localSubWorkspace(fakeWorkspace{}, "x"); err == nil {
 		t.Fatal("localSubWorkspace succeeded for non-local workspace")
