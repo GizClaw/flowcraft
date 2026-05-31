@@ -137,7 +137,14 @@ jobs:
               locomo|longmemeval)
                 METRICS=$(jq -r '
                   def ns2ms(x): if x == null then "n/a" else ((x/1000000)|tostring) + "ms" end;
-                  "n=" + (.n|tostring)
+                  "runner=" + ((.runner // "n/a")|tostring)
+                  + (if .retrieval_backend != null and .retrieval_backend != ""
+                       then " retrieval=" + (.retrieval_backend|tostring)
+                       else "" end)
+                  + " host=" + ((.source.host // "n/a")|tostring)
+                  + " dataset=" + ((.dataset // "n/a")|tostring)
+                  + "\n"
+                  + "n=" + (.n|tostring)
                   + " qa.judge=" + (.aggregate."qa.judge"|tostring)
                   + " qa.f1=" + (.aggregate."qa.f1"|tostring)
                   + " qa.em=" + (.aggregate."qa.em"|tostring)

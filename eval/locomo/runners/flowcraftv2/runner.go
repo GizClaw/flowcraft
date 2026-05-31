@@ -15,7 +15,7 @@ import (
 	"github.com/GizClaw/flowcraft/eval/locomo/runners"
 	"github.com/GizClaw/flowcraft/memory/recall"
 	"github.com/GizClaw/flowcraft/memory/recall/diagnostics"
-	retrievalmem "github.com/GizClaw/flowcraft/memory/retrieval/memory"
+	"github.com/GizClaw/flowcraft/memory/retrieval"
 	"github.com/GizClaw/flowcraft/sdk/embedding"
 	"github.com/GizClaw/flowcraft/sdk/llm"
 	"github.com/GizClaw/flowcraft/sdk/model"
@@ -25,6 +25,8 @@ import (
 type Options struct {
 	Name string
 	LLM  llm.LLM
+	// RetrievalIndex is required and must be selected by the caller.
+	RetrievalIndex retrieval.Index
 	// ExtractorMode selects the SDK LLM extraction strategy. Empty uses the
 	// SDK default single-pass extractor.
 	ExtractorMode recall.LLMExtractionMode
@@ -76,8 +78,11 @@ func New(opts Options) (runners.Runner, error) {
 	if opts.Name == "" {
 		opts.Name = "flowcraft-recall-v2"
 	}
+	if opts.RetrievalIndex == nil {
+		return nil, ErrRetrievalIndexRequired
+	}
 	memOpts := []recall.Option{
-		recall.WithRetrievalIndex(retrievalmem.New()),
+		recall.WithRetrievalIndex(opts.RetrievalIndex),
 		// Enable the EntityGraph projection + graph source. Multi-hop
 		// LoCoMo questions ("how is A connected to B?") rely on
 		// n-hop entity traversal that the other four structured
@@ -369,6 +374,10 @@ const Baseline = "bootstrap-raw"
 // ErrExtractorNotSupported is returned when callers request LLM extraction
 // without wiring an LLM into the v2 runner.
 var ErrExtractorNotSupported = fmt.Errorf("flowcraft-recall-v2 extractor ingest requires an LLM")
+
+// ErrRetrievalIndexRequired is returned when callers construct the v2 runner
+// without explicitly selecting a retrieval backend.
+var ErrRetrievalIndexRequired = fmt.Errorf("flowcraft-recall-v2 requires a retrieval index")
 
 // buildTurnContexts maps the LoCoMo-shaped RawTurns into typed
 // recall.TurnContexts. The LoCoMo dataset stuffs absolute

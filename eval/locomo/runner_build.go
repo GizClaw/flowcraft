@@ -8,9 +8,11 @@ import (
 	"github.com/GizClaw/flowcraft/eval/locomo/runners/flowcraftv2"
 	"github.com/GizClaw/flowcraft/memory/recall"
 	"github.com/GizClaw/flowcraft/memory/recall/diagnostics"
+	memoryretrieval "github.com/GizClaw/flowcraft/memory/retrieval"
 	"github.com/GizClaw/flowcraft/sdk/embedding"
 	"github.com/GizClaw/flowcraft/sdk/llm"
 	recallv1 "github.com/GizClaw/flowcraft/sdk/recall"
+	sdkretrieval "github.com/GizClaw/flowcraft/sdk/retrieval"
 )
 
 // v2DiagnosticHooks bundles the v2 SaveDiagnostics / RecallDiagnostics
@@ -43,6 +45,8 @@ func normalizeRunnerName(name string) (string, error) {
 type v1RunnerConfig struct {
 	Name                      string
 	LLM                       llm.LLM
+	RetrievalIndex            sdkretrieval.Index
+	V2RetrievalIndex          memoryretrieval.Index
 	ExtractorMode             recall.LLMExtractionMode
 	Embedder                  embedding.Embedder
 	MaxFactsPerCall           int
@@ -67,6 +71,7 @@ func buildLocomoRunner(canonical string, v1 v1RunnerConfig, v2OnSaved func(runne
 		opts := flowcraftv2.Options{
 			Name:                 runnerFlowcraftRecallV2,
 			LLM:                  v1.LLM,
+			RetrievalIndex:       v1.V2RetrievalIndex,
 			ExtractorMode:        v1.ExtractorMode,
 			Embedder:             v1.Embedder,
 			RerankerLLM:          v1.RerankerLLM,
@@ -84,6 +89,7 @@ func buildLocomoRunner(canonical string, v1 v1RunnerConfig, v2OnSaved func(runne
 		return flowcraft.New(flowcraft.Options{
 			Name:                      v1.Name,
 			LLM:                       v1.LLM,
+			RetrievalIndex:            v1.RetrievalIndex,
 			Embedder:                  v1.Embedder,
 			MaxFactsPerCall:           v1.MaxFactsPerCall,
 			IncludeAssistant:          v1.IncludeAssistant,

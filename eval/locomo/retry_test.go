@@ -2,6 +2,7 @@ package locomo_test
 
 import (
 	"context"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -40,6 +41,51 @@ func (r *retryRunner) Recall(_ context.Context, _ runners.Scope, _ string, _ int
 }
 
 func (r *retryRunner) Close() error { return nil }
+
+func TestStartEventIncludesRetrievalBackend(t *testing.T) {
+	r := &retryRunner{name: "flowcraft-recall-v1"}
+	ds := dataset.Synthetic()
+	ds.Conversations = ds.Conversations[:1]
+	ds.Questions = ds.Questions[:1]
+
+	var start locomo.Event
+	_, err := locomo.Run(context.Background(), r, ds, locomo.Options{
+		TopK:             5,
+		UseExtractor:     false,
+		Concurrency:      1,
+		RetrievalBackend: "bbh",
+		RunName:          "locomo-v1-bbh-test",
+		Hook: func(_ context.Context, e locomo.Event) {
+			if e.Kind == "start" {
+				start = e
+			}
+		},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !strings.Contains(start.Title, "runner=flowcraft-recall-v1 retrieval=bbh") {
+		t.Fatalf("start title = %q", start.Title)
+	}
+	if !strings.Contains(start.Title, "run=locomo-v1-bbh-test") {
+		t.Fatalf("start title = %q", start.Title)
+	}
+	if !strings.Contains(start.Body, "source run=locomo-v1-bbh-test") {
+		t.Fatalf("start body = %q", start.Body)
+	}
+	if got := start.Fields["retrieval_backend"]; got != "bbh" {
+		t.Fatalf("retrieval_backend field = %q, want bbh", got)
+	}
+	if got := start.Fields["run"]; got != "locomo-v1-bbh-test" {
+		t.Fatalf("run field = %q, want locomo-v1-bbh-test", got)
+	}
+	if start.Fields["pid"] == "" {
+		t.Fatalf("pid field is empty: %+v", start.Fields)
+	}
+	if start.Fields["cwd"] == "" {
+		t.Fatalf("cwd field is empty: %+v", start.Fields)
+	}
+}
 
 // TestIngestRetriesNotAvailable verifies that a NotAvailable error on the
 // first Save call triggers exactly one retry, and the second (successful)

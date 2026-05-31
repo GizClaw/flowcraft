@@ -7,11 +7,15 @@ import (
 	"github.com/GizClaw/flowcraft/eval/dataset"
 	"github.com/GizClaw/flowcraft/eval/locomo"
 	"github.com/GizClaw/flowcraft/eval/locomo/runners/flowcraftv2"
+	retrievalmem "github.com/GizClaw/flowcraft/memory/retrieval/memory"
 )
 
 func TestRunSyntheticDataset_flowcraftV2(t *testing.T) {
 	ctx := context.Background()
-	r, err := flowcraftv2.New(flowcraftv2.Options{Name: "flowcraft-recall-v2"})
+	r, err := flowcraftv2.New(flowcraftv2.Options{
+		Name:           "flowcraft-recall-v2",
+		RetrievalIndex: retrievalmem.New(),
+	})
 	if err != nil {
 		t.Fatal(err)
 	}

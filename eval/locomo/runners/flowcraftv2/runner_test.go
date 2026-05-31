@@ -11,6 +11,7 @@ import (
 	"github.com/GizClaw/flowcraft/eval/locomo/runners"
 	"github.com/GizClaw/flowcraft/memory/recall"
 	"github.com/GizClaw/flowcraft/memory/recall/diagnostics"
+	retrievalmem "github.com/GizClaw/flowcraft/memory/retrieval/memory"
 	"github.com/GizClaw/flowcraft/sdk/llm"
 )
 
@@ -18,6 +19,13 @@ var (
 	_ runners.AnswerContextRecaller     = (*Runner)(nil)
 	_ runners.AnswerContextStageAuditor = (*Runner)(nil)
 )
+
+func TestNewRequiresRetrievalIndex(t *testing.T) {
+	_, err := New(Options{Name: "flowcraft-recall-v2"})
+	if !errors.Is(err, ErrRetrievalIndexRequired) {
+		t.Fatalf("New error = %v, want %v", err, ErrRetrievalIndexRequired)
+	}
+}
 
 type fakeLLM struct {
 	response string
@@ -137,7 +145,8 @@ func TestBuildTurnContexts_DegradesForRawChat(t *testing.T) {
 
 func TestSaveSourceTurnsPersistsExtractorEvidenceRefs(t *testing.T) {
 	r, err := New(Options{
-		Name: "flowcraft-recall-v2",
+		Name:           "flowcraft-recall-v2",
+		RetrievalIndex: retrievalmem.New(),
 		LLM: fakeLLM{response: `{"facts":[{
 			"text":"Alice likes Paris.",
 			"evidence_refs":[{"id":"D1:3","text":"Alice likes Paris."}]

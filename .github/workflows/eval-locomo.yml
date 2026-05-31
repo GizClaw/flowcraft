@@ -26,6 +26,7 @@ name: eval / locomo
 #                            --soft-merge=true --entity-store=true
 #                            --entity-link-boost N --query-entity-extractor=true]
 #                  [v2 diagnostics: --diagnostics <path.json>]
+#                  [retrieval: --retrieval-backend <memory|bbh> --retrieval-dir <dir>]
 #                  --out <report.json>`
 # ---------------------------------------------------------------------
 
@@ -50,7 +51,7 @@ on:
         #     knobs apply; they are skipped automatically. v2 can also
         #     dump per-stage health (extractor / compiler / resolver /
         #     fusion / hit provenance) when stage_audit=true.
-        description: "Runner: flowcraft-recall-v1 | flowcraft-recall-v2 (default)"
+        description: "Runner: flowcraft-recall-v1 | flowcraft-recall-v1-bbh | flowcraft-recall-v2 (default) | flowcraft-recall-v2-bbh"
         required: false
         default: "flowcraft-recall-v2"
       # NOTE: the previous `profile` input was removed when `runner`
@@ -424,13 +425,27 @@ jobs:
         # the same workflow.
         run: |
           set -eu
+          RUNNER_INPUT="${{ inputs.runner }}"
+          RUNNER_CANONICAL="$RUNNER_INPUT"
+          RETRIEVAL_BACKEND="memory"
+          RETRIEVAL_DIR="$REPORT_DIR/${RUN_ID}-retrieval"
+          case "$RUNNER_INPUT" in
+            flowcraft-recall-v1-bbh|flowcraft-v1-bbh)
+              RUNNER_CANONICAL="flowcraft-recall-v1"
+              RETRIEVAL_BACKEND="bbh"
+              ;;
+            flowcraft-recall-v2-bbh|flowcraft-v2-bbh)
+              RUNNER_CANONICAL="flowcraft-recall-v2"
+              RETRIEVAL_BACKEND="bbh"
+              ;;
+          esac
           # --soft-merge takes its boolean via `=true|=false` so the
           # workflow's `type: boolean` input maps cleanly. The other
           # timeouts are Go duration strings (e.g. "3m", "30s").
           # Universal flags — every runner consumes these.
           ARGS=(
             locomo run
-            --runner "${{ inputs.runner }}"
+            --runner "$RUNNER_CANONICAL"
             --dataset "${{ inputs.dataset }}"
             --topk "${{ inputs.topk }}"
             --extractor
@@ -466,7 +481,7 @@ jobs:
           # entirely under runner=flowcraft-recall-v2 to keep the v2 command
           # line clean and to avoid silently-dead flags drifting into
           # the artifact's command record.
-          if [ "${{ inputs.runner }}" = "flowcraft-recall-v1" ] || [ "${{ inputs.runner }}" = "flowcraft-v1" ]; then
+          if [ "$RUNNER_CANONICAL" = "flowcraft-recall-v1" ] || [ "$RUNNER_CANONICAL" = "flowcraft-v1" ]; then
             ARGS+=(
               --soft-merge=${{ inputs.soft_merge }}
               --multi-recall=${{ inputs.multi_recall }}
@@ -483,16 +498,27 @@ jobs:
               ARGS+=( --recent-turns "${{ inputs.recent_turns }}" )
             fi
           fi
+          # Retrieval backend selection is shared by v1 and v2. The
+          # v1/v2 CLI wires different retrieval.Index interfaces behind
+          # the same flags.
+          if [ "$RETRIEVAL_BACKEND" = "bbh" ]; then
+            rm -rf "$RETRIEVAL_DIR"
+            mkdir -p "$RETRIEVAL_DIR"
+          fi
+          ARGS+=( --retrieval-backend "$RETRIEVAL_BACKEND" )
+          if [ "$RETRIEVAL_BACKEND" = "bbh" ]; then
+            ARGS+=( --retrieval-dir "$RETRIEVAL_DIR" )
+          fi
           # v2-only per-stage diagnostics. These force RecallExplain
           # and produce large candidate snapshots, so they are
           # controlled by the stage_audit workflow input. Facts and
           # recall top-k dumps remain unconditional forensic outputs.
-          if { [ "${{ inputs.runner }}" = "flowcraft-recall-v2" ] || [ "${{ inputs.runner }}" = "flowcraft-v2" ]; } && [ "${{ inputs.stage_audit }}" = "true" ]; then
+          if { [ "$RUNNER_CANONICAL" = "flowcraft-recall-v2" ] || [ "$RUNNER_CANONICAL" = "flowcraft-v2" ]; } && [ "${{ inputs.stage_audit }}" = "true" ]; then
             ARGS+=(
               --diagnostics "$DIAGNOSTICS_OUT"
               --dump-stage-audit "$STAGE_AUDIT_OUT"
             )
-          elif [ "${{ inputs.runner }}" = "flowcraft-recall-v2" ] || [ "${{ inputs.runner }}" = "flowcraft-v2" ]; then
+          elif [ "$RUNNER_CANONICAL" = "flowcraft-recall-v2" ] || [ "$RUNNER_CANONICAL" = "flowcraft-v2" ]; then
             echo "stage_audit=false: skipping v2 RecallExplain diagnostics and stage audit dump"
           fi
           /tmp/eval "${ARGS[@]}"
