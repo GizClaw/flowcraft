@@ -661,6 +661,18 @@ func TestSearchModesAndErrors(t *testing.T) {
 	if len(hybrid.Hits) == 0 {
 		t.Fatal("hybrid should return hits")
 	}
+	hybridWithMinScore, err := idx.Search(ctx, "ns", retrieval.SearchRequest{
+		QueryText:   "coffee",
+		QueryVector: []float32{1, 0},
+		TopK:        2,
+		MinScore:    1e9,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hybridWithMinScore.Hits) == 0 {
+		t.Fatal("hybrid search should not apply MinScore inside text/vector lanes")
+	}
 	if _, err := idx.Search(ctx, "ns", retrieval.SearchRequest{QueryVector: []float32{1, 0, 0}}); err == nil {
 		t.Fatal("dimension mismatch should fail")
 	}
@@ -670,6 +682,59 @@ func TestSearchModesAndErrors(t *testing.T) {
 	}
 	if len(none.Hits) != 0 {
 		t.Fatalf("minscore hits = %+v", none.Hits)
+	}
+}
+
+func TestSearchSelectiveFiltersExpandCandidateWindow(t *testing.T) {
+	ctx := context.Background()
+	idx := openInternalIndex(t, t.TempDir(), WithConfig(Config{SearchOverfetch: 1}))
+	docs := make([]retrieval.Doc, 0, defaultMinSearchWindow+20)
+	for i := 0; i < defaultMinSearchWindow+10; i++ {
+		docs = append(docs, retrieval.Doc{
+			ID:       fmt.Sprintf("drop-%03d", i),
+			Content:  "needle needle needle",
+			Vector:   []float32{1, float32(i) / 1000},
+			Metadata: map[string]any{"kind": "drop"},
+		})
+	}
+	docs = append(docs, retrieval.Doc{
+		ID:       "keep-text",
+		Content:  "needle",
+		Vector:   []float32{0, 1},
+		Metadata: map[string]any{"kind": "keep_text"},
+	})
+	docs = append(docs, retrieval.Doc{
+		ID:       "keep-vector",
+		Content:  "other",
+		Vector:   []float32{0, 1},
+		Metadata: map[string]any{"kind": "keep_vector"},
+	})
+	if err := idx.Upsert(ctx, "ns", docs); err != nil {
+		t.Fatal(err)
+	}
+
+	text, err := idx.Search(ctx, "ns", retrieval.SearchRequest{
+		QueryText: "needle",
+		TopK:      1,
+		Filter:    retrieval.Filter{Eq: map[string]any{"kind": "keep_text"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(text.Hits) != 1 || text.Hits[0].Doc.ID != "keep-text" {
+		t.Fatalf("selective text filter hits = %+v", text.Hits)
+	}
+
+	vec, err := idx.Search(ctx, "ns", retrieval.SearchRequest{
+		QueryVector: []float32{1, 0},
+		TopK:        1,
+		Filter:      retrieval.Filter{Eq: map[string]any{"kind": "keep_vector"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(vec.Hits) != 1 || vec.Hits[0].Doc.ID != "keep-vector" {
+		t.Fatalf("selective vector filter hits = %+v", vec.Hits)
 	}
 }
 

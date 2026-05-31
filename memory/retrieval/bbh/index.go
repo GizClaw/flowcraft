@@ -574,11 +574,13 @@ func (idx *Index) Search(ctx context.Context, namespace string, req retrieval.Se
 	var hits []retrieval.Hit
 	switch {
 	case hasText && hasVec:
-		textHits, err := idx.searchTextLocked(ctx, sh, req)
+		laneReq := req
+		laneReq.MinScore = 0
+		textHits, err := idx.searchTextLocked(ctx, sh, laneReq)
 		if err != nil {
 			return nil, err
 		}
-		vectorHits, err := idx.searchVectorLocked(sh, req)
+		vectorHits, err := idx.searchVectorLocked(sh, laneReq)
 		if err != nil {
 			return nil, err
 		}
@@ -604,31 +606,42 @@ func (idx *Index) searchTextLocked(ctx context.Context, sh *shard, req retrieval
 	q := bleve.NewMatchQuery(req.QueryText)
 	q.SetField(bleveContentField)
 	size := idx.searchWindow(req.TopK, 0)
-	sr := bleve.NewSearchRequestOptions(q, size, 0, false)
-	res, err := sh.text.SearchInContext(ctx, sr)
-	if err != nil {
-		return nil, fmt.Errorf("retrieval/bbh: bleve search: %w", err)
-	}
-	out := make([]retrieval.Hit, 0, len(res.Hits))
-	for _, h := range res.Hits {
-		d, ok, err := idx.getDoc(sh.namespace, h.ID)
-		if err != nil {
+	out := make([]retrieval.Hit, 0, req.TopK)
+	for offset := 0; ; offset += size {
+		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		if !ok || !retrieval.DocMatchesFilter(d, req.Filter) {
-			continue
+		sr := bleve.NewSearchRequestOptions(q, size, offset, false)
+		res, err := sh.text.SearchInContext(ctx, sr)
+		if err != nil {
+			return nil, fmt.Errorf("retrieval/bbh: bleve search: %w", err)
 		}
-		if h.Score < req.MinScore {
-			continue
+		if len(res.Hits) == 0 {
+			break
 		}
-		out = append(out, retrieval.Hit{
-			Doc:   projectDoc(d, nil, true),
-			Score: h.Score,
-			Scores: map[string]float64{
-				"bm25": h.Score,
-			},
-		})
-		if len(out) >= req.TopK && req.TopK > 0 {
+		for _, h := range res.Hits {
+			d, ok, err := idx.getDoc(sh.namespace, h.ID)
+			if err != nil {
+				return nil, err
+			}
+			if !ok || !retrieval.DocMatchesFilter(d, req.Filter) {
+				continue
+			}
+			if h.Score < req.MinScore {
+				return out, nil
+			}
+			out = append(out, retrieval.Hit{
+				Doc:   projectDoc(d, nil, true),
+				Score: h.Score,
+				Scores: map[string]float64{
+					"bm25": h.Score,
+				},
+			})
+			if len(out) >= req.TopK && req.TopK > 0 {
+				return out, nil
+			}
+		}
+		if len(res.Hits) < size || filterIsZero(req.Filter) {
 			break
 		}
 	}
@@ -639,15 +652,19 @@ func (idx *Index) searchVectorLocked(sh *shard, req retrieval.SearchRequest) ([]
 	if dims := sh.graph.Dims(); dims > 0 && dims != len(req.QueryVector) {
 		return nil, errdefs.Validationf("retrieval/bbh: query vector dimension mismatch: graph=%d query=%d", dims, len(req.QueryVector))
 	}
-	size := idx.searchWindow(req.TopK, sh.graph.Len())
+	if !filterIsZero(req.Filter) {
+		return idx.searchVectorFilteredScan(sh.namespace, req)
+	}
+	graphLen := sh.graph.Len()
+	size := idx.searchWindow(req.TopK, graphLen)
+	out := make([]retrieval.Hit, 0, req.TopK)
 	nodes := sh.graph.Search(req.QueryVector, size)
-	out := make([]retrieval.Hit, 0, len(nodes))
 	for _, n := range nodes {
 		d, ok, err := idx.getDoc(sh.namespace, n.Key)
 		if err != nil {
 			return nil, err
 		}
-		if !ok || !retrieval.DocMatchesFilter(d, req.Filter) {
+		if !ok {
 			continue
 		}
 		cos := scoring.CosineSim(req.QueryVector, n.Value)
@@ -667,6 +684,59 @@ func (idx *Index) searchVectorLocked(sh *shard, req retrieval.SearchRequest) ([]
 		}
 	}
 	return out, nil
+}
+
+func (idx *Index) searchVectorFilteredScan(namespace string, req retrieval.SearchRequest) ([]retrieval.Hit, error) {
+	docs, err := idx.listDocs(namespace, req.Filter)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]retrieval.Hit, 0, len(docs))
+	for _, d := range docs {
+		if len(d.Vector) != len(req.QueryVector) {
+			continue
+		}
+		cos := scoring.CosineSim(req.QueryVector, d.Vector)
+		if cos < req.MinScore {
+			continue
+		}
+		out = append(out, retrieval.Hit{
+			Doc:      projectDoc(d, nil, true),
+			Score:    cos,
+			Distance: 1 - cos,
+			Scores: map[string]float64{
+				"cos": cos,
+			},
+		})
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].Score == out[j].Score {
+			return out[i].Doc.ID < out[j].Doc.ID
+		}
+		return out[i].Score > out[j].Score
+	})
+	if len(out) > req.TopK {
+		out = out[:req.TopK]
+	}
+	return out, nil
+}
+
+func filterIsZero(f retrieval.Filter) bool {
+	return len(f.And) == 0 &&
+		len(f.Or) == 0 &&
+		f.Not == nil &&
+		len(f.Eq) == 0 &&
+		len(f.Neq) == 0 &&
+		len(f.In) == 0 &&
+		len(f.NotIn) == 0 &&
+		len(f.Range) == 0 &&
+		len(f.Exists) == 0 &&
+		len(f.Missing) == 0 &&
+		len(f.Match) == 0 &&
+		len(f.Contains) == 0 &&
+		len(f.IContains) == 0 &&
+		len(f.ContainsAny) == 0 &&
+		len(f.ContainsAll) == 0
 }
 
 func (idx *Index) searchWindow(topK int, max int) int {
