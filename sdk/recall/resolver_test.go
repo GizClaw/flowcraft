@@ -5,10 +5,10 @@ import (
 	"errors"
 	"testing"
 
+	memidx "github.com/GizClaw/flowcraft/memory/retrieval/memory"
 	"github.com/GizClaw/flowcraft/sdk/llm"
 	"github.com/GizClaw/flowcraft/sdk/model"
 	"github.com/GizClaw/flowcraft/sdk/recall"
-	memidx "github.com/GizClaw/flowcraft/sdk/retrieval/memory"
 )
 
 // fakeResolver is a deterministic [recall.UpdateResolver] used to test

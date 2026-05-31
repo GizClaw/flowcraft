@@ -13,11 +13,10 @@
 //   - They run only when the e2e build tag is set, so the default
 //     `go test ./...` from the repo root skips them.
 //
-//   - Like the vesseld e2e module, this module pins published
-//     sdk / sdkx versions and uses replace directives only for
-//     in-flight library work. While the workspace backend is being
-//     stabilised, sdk and sdkx are both replaced to the local tree
-//     so a single `make e2e` runs against the same source tree the
+//   - The module runs with GOWORK=off so its replace directives, not
+//     the workspace overlay, decide which sdk/memory/sdkx sources are
+//     tested. The current suite replaces those core modules to the
+//     local tree so `make e2e` runs against the same source tree the
 //     unit tests just exercised.
 //
 // Run:

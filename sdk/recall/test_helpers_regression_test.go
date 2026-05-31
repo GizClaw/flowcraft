@@ -3,10 +3,10 @@ package recall_test
 import (
 	"context"
 
+	"github.com/GizClaw/flowcraft/memory/retrieval/pipeline"
 	"github.com/GizClaw/flowcraft/sdk/embedding"
 	"github.com/GizClaw/flowcraft/sdk/llm"
 	"github.com/GizClaw/flowcraft/sdk/recall"
-	"github.com/GizClaw/flowcraft/sdk/retrieval/pipeline"
 )
 
 type scriptedExtractor struct {

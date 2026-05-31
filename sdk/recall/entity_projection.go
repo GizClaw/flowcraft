@@ -5,7 +5,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/GizClaw/flowcraft/sdk/retrieval"
+	"github.com/GizClaw/flowcraft/memory/retrieval"
 )
 
 // entityStoreProjection wraps an [EntityStore] so the [Reconciler]

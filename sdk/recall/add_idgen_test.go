@@ -5,9 +5,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/GizClaw/flowcraft/memory/retrieval"
+	"github.com/GizClaw/flowcraft/memory/retrieval/memory"
 	"github.com/GizClaw/flowcraft/sdk/recall"
-	"github.com/GizClaw/flowcraft/sdk/retrieval"
-	"github.com/GizClaw/flowcraft/sdk/retrieval/memory"
 )
 
 // TestAdd_ContentAddressableUnderRetry pins the contract for

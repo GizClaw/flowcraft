@@ -27,10 +27,10 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/GizClaw/flowcraft/memory/retrieval/memory"
 	"github.com/GizClaw/flowcraft/sdk/knowledge"
 	"github.com/GizClaw/flowcraft/sdk/knowledge/backend/fs"
 	"github.com/GizClaw/flowcraft/sdk/knowledge/factory"
-	"github.com/GizClaw/flowcraft/sdk/retrieval/memory"
 	"github.com/GizClaw/flowcraft/sdk/workspace"
 )
 
@@ -362,7 +362,7 @@ func Run(ctx context.Context, ds *Dataset, opts Options) (*Report, error) {
 }
 
 // buildService spins up a fresh in-memory workspace + Service backed
-// by the retrieval backend (chunks/layers in sdk/retrieval/memory,
+// by the retrieval backend (chunks/layers in memory/retrieval/memory,
 // documents in FSDocumentRepo on a workspace.MemWorkspace). The
 // embedder is wired only when non-nil — a nil embedder produces a
 // BM25-only Service that still answers ModeBM25 queries correctly but

@@ -4,10 +4,10 @@ import (
 	"context"
 	"testing"
 
+	rt "github.com/GizClaw/flowcraft/memory/retrieval"
+	"github.com/GizClaw/flowcraft/memory/retrieval/memory"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/knowledge"
-	rt "github.com/GizClaw/flowcraft/sdk/retrieval"
-	"github.com/GizClaw/flowcraft/sdk/retrieval/memory"
 )
 
 func newChunkRepo(t *testing.T) *RetrievalChunkRepo {

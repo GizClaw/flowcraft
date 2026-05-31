@@ -6,12 +6,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/GizClaw/flowcraft/memory/retrieval"
+	"github.com/GizClaw/flowcraft/memory/retrieval/journal"
+	memidx "github.com/GizClaw/flowcraft/memory/retrieval/memory"
 	"github.com/GizClaw/flowcraft/sdk/llm"
 	"github.com/GizClaw/flowcraft/sdk/model"
 	"github.com/GizClaw/flowcraft/sdk/recall"
-	"github.com/GizClaw/flowcraft/sdk/retrieval"
-	"github.com/GizClaw/flowcraft/sdk/retrieval/journal"
-	memidx "github.com/GizClaw/flowcraft/sdk/retrieval/memory"
 )
 
 // TestReconciler_AddEagerlyLinksEntityStore pins the post-#179.1

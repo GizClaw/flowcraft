@@ -9,7 +9,7 @@ import (
 // NormalizeEntities expands phrasal entity mentions returned by the
 // extractor into individual proper-noun atoms so query-time entity
 // lookup (which works at token granularity, see
-// sdk/retrieval/pipeline/stages_query.go ruleEntities) can match
+// memory/retrieval/pipeline/stages_query.go ruleEntities) can match
 // them.
 //
 // Background: extractor LLMs return entities as they appear in the

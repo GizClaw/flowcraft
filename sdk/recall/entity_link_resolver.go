@@ -8,7 +8,7 @@ import (
 
 // internalEntityLinkResolver bridges an [EntityStore] (Scope-keyed)
 // to a [pipeline.EntityLinkResolver] (namespace-keyed). It is the
-// glue that lets `sdk/retrieval/pipeline` consult an entity index
+// glue that lets `memory/retrieval/pipeline` consult an entity index
 // living in `sdk/recall` WITHOUT creating an import cycle:
 //
 //	pipeline (cannot import recall) ── needs EntityLinkResolver

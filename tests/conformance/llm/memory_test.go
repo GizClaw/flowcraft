@@ -8,10 +8,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/GizClaw/flowcraft/memory/retrieval"
+	retmem "github.com/GizClaw/flowcraft/memory/retrieval/memory"
 	"github.com/GizClaw/flowcraft/sdk/llm"
 	"github.com/GizClaw/flowcraft/sdk/recall"
-	"github.com/GizClaw/flowcraft/sdk/retrieval"
-	retmem "github.com/GizClaw/flowcraft/sdk/retrieval/memory"
 )
 
 // ---------------------------------------------------------------------------

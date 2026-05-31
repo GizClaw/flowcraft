@@ -4,8 +4,8 @@ import (
 	"context"
 	"time"
 
+	"github.com/GizClaw/flowcraft/memory/retrieval"
 	"github.com/GizClaw/flowcraft/sdk/internal/background"
-	"github.com/GizClaw/flowcraft/sdk/retrieval"
 )
 
 // Projection is a derived view of the primary recall index.

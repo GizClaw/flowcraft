@@ -5,8 +5,8 @@ import (
 	"sort"
 	"time"
 
-	"github.com/GizClaw/flowcraft/sdk/retrieval"
-	"github.com/GizClaw/flowcraft/sdk/retrieval/journal"
+	"github.com/GizClaw/flowcraft/memory/retrieval"
+	"github.com/GizClaw/flowcraft/memory/retrieval/journal"
 	"github.com/GizClaw/flowcraft/sdk/telemetry"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"

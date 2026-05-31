@@ -5,9 +5,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/GizClaw/flowcraft/sdk/retrieval"
-	memidx "github.com/GizClaw/flowcraft/sdk/retrieval/memory"
-	"github.com/GizClaw/flowcraft/sdk/retrieval/pipeline"
+	"github.com/GizClaw/flowcraft/memory/retrieval"
+	memidx "github.com/GizClaw/flowcraft/memory/retrieval/memory"
+	"github.com/GizClaw/flowcraft/memory/retrieval/pipeline"
 )
 
 // TestRecallExplainer asserts that any Memory built by recall.New also

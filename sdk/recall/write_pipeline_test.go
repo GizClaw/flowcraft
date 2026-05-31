@@ -5,10 +5,10 @@ import (
 	"testing"
 	"time"
 
+	memidx "github.com/GizClaw/flowcraft/memory/retrieval/memory"
 	"github.com/GizClaw/flowcraft/sdk/llm"
 	"github.com/GizClaw/flowcraft/sdk/model"
 	"github.com/GizClaw/flowcraft/sdk/recall"
-	memidx "github.com/GizClaw/flowcraft/sdk/retrieval/memory"
 )
 
 // TestSaveAsync_HandleJobRevalidatesScope pins issue #165: a payload

@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/GizClaw/flowcraft/sdk/retrieval"
-	memidx "github.com/GizClaw/flowcraft/sdk/retrieval/memory"
+	"github.com/GizClaw/flowcraft/memory/retrieval"
+	memidx "github.com/GizClaw/flowcraft/memory/retrieval/memory"
 )
 
 func TestReconcilerStopCancelsInFlightTick(t *testing.T) {

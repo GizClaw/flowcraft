@@ -531,7 +531,7 @@ func (r *RetrievalChunkRepo) SearchDocs(ctx context.Context, q knowledge.ChunkQu
 		}
 		for _, h := range resp.Hits {
 			// Zero-score hits leak through on some backends
-			// (notably sdk/retrieval/memory returns every
+			// (notably memory/retrieval/memory returns every
 			// filter-matched doc with Score=0 when no query
 			// term hit); dropping them keeps doc-level
 			// rankings honest. Mirrors what FSChunkRepo's

@@ -3,8 +3,8 @@ package knowledge
 import (
 	"sort"
 
-	"github.com/GizClaw/flowcraft/sdk/retrieval"
-	"github.com/GizClaw/flowcraft/sdk/retrieval/scoring"
+	"github.com/GizClaw/flowcraft/memory/retrieval"
+	"github.com/GizClaw/flowcraft/memory/retrieval/scoring"
 )
 
 // DefaultRRFK is the conventional fusion constant for reciprocal-rank fusion.

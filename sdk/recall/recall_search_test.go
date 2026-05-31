@@ -5,13 +5,13 @@ import (
 	"testing"
 	"time"
 
-	memidx "github.com/GizClaw/flowcraft/sdk/retrieval/memory"
+	memidx "github.com/GizClaw/flowcraft/memory/retrieval/memory"
 )
 
 // These tests assert the quality surface of Memory.Recall: keyword
 // match, per-category time-decay ranking, and category filtering via
 // req.Filter. Per-category time-decay itself is unit-tested in
-// sdk/retrieval/pipeline; here we only confirm it reaches callers
+// memory/retrieval/pipeline; here we only confirm it reaches callers
 // through the Memory facade.
 
 type recallCase struct {

@@ -1,6 +1,6 @@
 package recall
 
-import "github.com/GizClaw/flowcraft/sdk/retrieval"
+import "github.com/GizClaw/flowcraft/memory/retrieval"
 
 // Reserved metadata keys written by the recall package and read by
 // both the recall package itself and the retrieval pipeline stages

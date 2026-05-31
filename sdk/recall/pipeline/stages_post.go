@@ -6,8 +6,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/GizClaw/flowcraft/sdk/retrieval"
-	base "github.com/GizClaw/flowcraft/sdk/retrieval/pipeline"
+	"github.com/GizClaw/flowcraft/memory/retrieval"
+	base "github.com/GizClaw/flowcraft/memory/retrieval/pipeline"
 )
 
 // EntityLinkBoost upweights hits materialised by EntityLinkLookup.

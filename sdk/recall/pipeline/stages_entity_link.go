@@ -3,7 +3,7 @@ package pipeline
 import (
 	"context"
 
-	base "github.com/GizClaw/flowcraft/sdk/retrieval/pipeline"
+	base "github.com/GizClaw/flowcraft/memory/retrieval/pipeline"
 )
 
 const entityLinkLookupDefaultCap = 50

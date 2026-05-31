@@ -66,7 +66,7 @@
 // listed in the manifest. Per-segment BM25 and vector lanes produce
 // independent ranked lists; results are merged with tombstones
 // filtered out and the final ranking is performed by
-// [scoring.RRF] (the default fusion shipped with sdk/retrieval).
+// [scoring.RRF] (the default fusion shipped with memory/retrieval).
 //
 // Compaction: a background goroutine selects size-tiered groups of
 // small segments, reads them, drops tombstoned IDs, and writes a

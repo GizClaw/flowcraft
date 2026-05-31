@@ -102,7 +102,7 @@ func newDatasetState() *datasetState {
 // scratch, all under a single write lock — making per-doc ingest O(N)
 // and total ingest O(N^2) in the dataset (see #134). For any
 // non-trivial dataset use factory.NewRetrieval with an in-process
-// sdk/retrieval/memory.Index or a production retrieval.Index from
+// memory/retrieval/memory.Index or a production retrieval.Index from
 // sdkx/retrieval/{sqlite,postgres,workspace}. Slated for removal in
 // v0.5.0; see docs/migrations/v0.5.0.md.
 type FSChunkRepo struct {
@@ -118,7 +118,7 @@ type FSChunkRepo struct {
 // the first content seen when nil; explicit override wins.
 //
 // Deprecated: see FSChunkRepo. Use factory.NewRetrieval with a
-// sdk/retrieval/memory.Index (or any production retrieval.Index)
+// memory/retrieval/memory.Index (or any production retrieval.Index)
 // instead. Slated for removal in v0.5.0.
 func NewChunkRepo(ws workspace.Workspace, prefix string, tok textsearch.Tokenizer) *FSChunkRepo {
 	return &FSChunkRepo{

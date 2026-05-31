@@ -6,9 +6,9 @@ import (
 	"sort"
 	"strings"
 
+	rt "github.com/GizClaw/flowcraft/memory/retrieval"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/knowledge"
-	rt "github.com/GizClaw/flowcraft/sdk/retrieval"
 )
 
 // metadata keys used by the chunk schema; centralised so callers building
@@ -531,7 +531,7 @@ func (r *RetrievalChunkRepo) SearchDocs(ctx context.Context, q knowledge.ChunkQu
 		}
 		for _, h := range resp.Hits {
 			// Zero-score hits leak through on some backends
-			// (notably sdk/retrieval/memory returns every
+			// (notably memory/retrieval/memory returns every
 			// filter-matched doc with Score=0 when no query
 			// term hit); dropping them keeps doc-level
 			// rankings honest. Mirrors what FSChunkRepo's

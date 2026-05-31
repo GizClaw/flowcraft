@@ -4,13 +4,13 @@ import (
 	"context"
 	"testing"
 
+	"github.com/GizClaw/flowcraft/memory/retrieval/memory"
 	"github.com/GizClaw/flowcraft/sdk/graph"
 	"github.com/GizClaw/flowcraft/sdk/graph/node"
 	"github.com/GizClaw/flowcraft/sdk/graph/node/knowledgenode"
 	"github.com/GizClaw/flowcraft/sdk/knowledge"
 	"github.com/GizClaw/flowcraft/sdk/knowledge/backend/fs"
 	"github.com/GizClaw/flowcraft/sdk/knowledge/factory"
-	"github.com/GizClaw/flowcraft/sdk/retrieval/memory"
 	"github.com/GizClaw/flowcraft/sdk/workspace"
 )
 

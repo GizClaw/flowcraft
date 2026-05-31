@@ -7,15 +7,15 @@ import (
 	"sync"
 	"time"
 
+	"github.com/GizClaw/flowcraft/memory/retrieval"
+	"github.com/GizClaw/flowcraft/memory/retrieval/journal"
+	basepipe "github.com/GizClaw/flowcraft/memory/retrieval/pipeline"
 	"github.com/GizClaw/flowcraft/sdk/embedding"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/history"
 	"github.com/GizClaw/flowcraft/sdk/internal/syncx"
 	"github.com/GizClaw/flowcraft/sdk/llm"
 	recallpipe "github.com/GizClaw/flowcraft/sdk/recall/pipeline"
-	"github.com/GizClaw/flowcraft/sdk/retrieval"
-	"github.com/GizClaw/flowcraft/sdk/retrieval/journal"
-	basepipe "github.com/GizClaw/flowcraft/sdk/retrieval/pipeline"
 )
 
 // Memory is the long-term-memory facade — the read/write contract every
@@ -277,7 +277,7 @@ func WithPipeline(p *basepipe.Pipeline) Option { return func(c *config) { c.pipe
 // pipeline gets built once at the end.
 //
 // Accepts sdk/recall/pipeline.LTMOption. Deprecated
-// sdk/retrieval/pipeline.LTMOption values are still accepted as a compatibility
+// memory/retrieval/pipeline.LTMOption values are still accepted as a compatibility
 // bridge, but that path constructs the old retrieval-level LTM recipe and will
 // be removed in v0.5.0.
 //
@@ -816,7 +816,7 @@ func New(idx retrieval.Index, opts ...Option) (Memory, error) {
 		}
 	}
 	if len(cfg.ltmOpts) > 0 && len(cfg.legacyLTMOpts) > 0 {
-		return nil, errors.New("recall: cannot mix sdk/recall/pipeline and deprecated sdk/retrieval/pipeline LTM options")
+		return nil, errors.New("recall: cannot mix sdk/recall/pipeline and deprecated memory/retrieval/pipeline LTM options")
 	}
 	if cfg.extractor == nil {
 		cfg.extractor = &AdditiveExtractor{

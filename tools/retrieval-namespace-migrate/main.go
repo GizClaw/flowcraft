@@ -7,8 +7,8 @@ import (
 	"os"
 	"time"
 
-	"github.com/GizClaw/flowcraft/sdk/retrieval"
-	retrievalns "github.com/GizClaw/flowcraft/sdk/retrieval/namespace"
+	"github.com/GizClaw/flowcraft/memory/retrieval"
+	retrievalns "github.com/GizClaw/flowcraft/memory/retrieval/namespace"
 	sdkworkspace "github.com/GizClaw/flowcraft/sdk/workspace"
 	"github.com/GizClaw/flowcraft/sdkx/retrieval/postgres"
 	"github.com/GizClaw/flowcraft/sdkx/retrieval/sqlite"

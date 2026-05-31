@@ -5,8 +5,8 @@ import (
 	"sort"
 	"testing"
 
+	"github.com/GizClaw/flowcraft/memory/retrieval/memory"
 	"github.com/GizClaw/flowcraft/sdk/recall"
-	"github.com/GizClaw/flowcraft/sdk/retrieval/memory"
 )
 
 // TestRecall_MultiPartitionFansOutAcrossNamespaces pins issue #150:

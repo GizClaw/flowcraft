@@ -8,7 +8,8 @@ go 1.25.0
 // can be pinned by version like sdk/sdkx.
 
 require (
-	github.com/GizClaw/flowcraft/sdk v0.3.17
+	github.com/GizClaw/flowcraft/memory v0.1.0
+	github.com/GizClaw/flowcraft/sdk v0.4.0
 	github.com/GizClaw/flowcraft/sdkx v0.3.9
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/pflag v1.0.9
@@ -21,12 +22,14 @@ require (
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/dlclark/regexp2 v1.11.4 // indirect
+	github.com/go-ego/gse v1.0.2 // indirect
 	github.com/go-logr/logr v1.4.3 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.27.7 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/jmespath/go-jmespath v0.4.0 // indirect
+	github.com/kljensen/snowball v0.10.0 // indirect
 	github.com/oklog/ulid/v2 v2.1.1 // indirect
 	github.com/openai/openai-go v1.12.0 // indirect
 	github.com/pkoukk/tiktoken-go v0.1.8 // indirect
@@ -35,6 +38,7 @@ require (
 	github.com/tidwall/match v1.1.1 // indirect
 	github.com/tidwall/pretty v1.2.1 // indirect
 	github.com/tidwall/sjson v1.2.5 // indirect
+	github.com/vcaesar/cedar v0.30.0 // indirect
 	github.com/volcengine/volc-sdk-golang v1.0.23 // indirect
 	github.com/volcengine/volcengine-go-sdk v1.2.14 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect

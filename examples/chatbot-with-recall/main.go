@@ -7,11 +7,11 @@ import (
 	"fmt"
 	"time"
 
+	memidx "github.com/GizClaw/flowcraft/memory/retrieval/memory"
 	"github.com/GizClaw/flowcraft/sdk/history"
 	"github.com/GizClaw/flowcraft/sdk/llm"
 	"github.com/GizClaw/flowcraft/sdk/model"
 	"github.com/GizClaw/flowcraft/sdk/recall"
-	memidx "github.com/GizClaw/flowcraft/sdk/retrieval/memory"
 )
 
 func main() {
@@ -77,4 +77,3 @@ func chat(ctx context.Context, hist history.History, mem recall.Memory, chatLLM 
 	_, _ = mem.Save(ctx, scope, []llm.Message{userMsg, resp})
 	return resp.Content(), nil
 }
-

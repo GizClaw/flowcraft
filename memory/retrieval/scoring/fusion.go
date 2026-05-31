@@ -9,7 +9,7 @@ import (
 
 // DefaultRRFK is the default damping constant for [RRF]. The value
 // 60 is the commonly cited choice from Cormack et al. (2009) and is
-// the same default used by sdk/retrieval/pipeline.RRFFusion.
+// the same default used by memory/retrieval/pipeline.RRFFusion.
 const DefaultRRFK = 60.0
 
 // RRF (Reciprocal Rank Fusion) merges several ranked hit lists into a

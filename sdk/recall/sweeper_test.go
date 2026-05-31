@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
+	memidx "github.com/GizClaw/flowcraft/memory/retrieval/memory"
 	"github.com/GizClaw/flowcraft/sdk/recall"
-	memidx "github.com/GizClaw/flowcraft/sdk/retrieval/memory"
 )
 
 func TestSweepOnceDeletesAcrossRememberedNamespaces(t *testing.T) {

@@ -12,7 +12,7 @@ import (
 
 // TestContract runs the generic [contract.Run] suite against the
 // workspace-backed Index. This is the same contract that
-// sdk/retrieval/memory and sdk/retrieval/postgres satisfy, so a
+// memory/retrieval/memory and memory/retrieval/postgres satisfy, so a
 // passing run here means the workspace backend is plug-compatible
 // with every retrieval consumer in the codebase (recall, history,
 // knowledge, pipelines).

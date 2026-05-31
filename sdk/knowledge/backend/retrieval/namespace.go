@@ -41,7 +41,7 @@
 // instead. This package will be removed in v0.5.0.
 package retrieval
 
-import retrievalns "github.com/GizClaw/flowcraft/sdk/retrieval/namespace"
+import retrievalns "github.com/GizClaw/flowcraft/memory/retrieval/namespace"
 
 var knowledgeNamespace = retrievalns.MustRegister("kb")
 
@@ -80,7 +80,7 @@ func docsNamespace(datasetID string) string {
 //
 // Deprecated: use retrieval/namespace.Sanitize. This compatibility shim will
 // be removed in v0.5.0 after knowledge namespace construction is fully
-// centralised in sdk/retrieval/namespace.
+// centralised in memory/retrieval/namespace.
 func sanitiseDatasetID(s string) string {
 	return retrievalns.Sanitize(s)
 }

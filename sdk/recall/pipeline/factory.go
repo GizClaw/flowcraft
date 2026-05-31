@@ -4,9 +4,9 @@ import (
 	"context"
 	"time"
 
+	"github.com/GizClaw/flowcraft/memory/retrieval"
+	base "github.com/GizClaw/flowcraft/memory/retrieval/pipeline"
 	"github.com/GizClaw/flowcraft/sdk/embedding"
-	"github.com/GizClaw/flowcraft/sdk/retrieval"
-	base "github.com/GizClaw/flowcraft/sdk/retrieval/pipeline"
 )
 
 type (

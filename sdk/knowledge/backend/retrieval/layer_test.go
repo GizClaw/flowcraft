@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
+	"github.com/GizClaw/flowcraft/memory/retrieval/memory"
 	"github.com/GizClaw/flowcraft/sdk/knowledge"
-	"github.com/GizClaw/flowcraft/sdk/retrieval/memory"
 )
 
 func newLayerRepo(t *testing.T) *RetrievalLayerRepo {

@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/GizClaw/flowcraft/sdk/retrieval"
+	"github.com/GizClaw/flowcraft/memory/retrieval"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 )

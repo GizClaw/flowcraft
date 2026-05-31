@@ -10,11 +10,11 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/eval/locomo/runners"
+	memidx "github.com/GizClaw/flowcraft/memory/retrieval/memory"
 	"github.com/GizClaw/flowcraft/sdk/embedding"
 	"github.com/GizClaw/flowcraft/sdk/llm"
 	recallv1 "github.com/GizClaw/flowcraft/sdk/recall"
 	"github.com/GizClaw/flowcraft/sdk/recall/pipeline"
-	memidx "github.com/GizClaw/flowcraft/sdk/retrieval/memory"
 )
 
 // Options configures the Flowcraft default runner.

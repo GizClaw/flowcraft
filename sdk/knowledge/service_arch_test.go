@@ -7,12 +7,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/GizClaw/flowcraft/memory/retrieval/memory"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/knowledge"
 	"github.com/GizClaw/flowcraft/sdk/knowledge/backend/fs"
 	kretrieval "github.com/GizClaw/flowcraft/sdk/knowledge/backend/retrieval"
 	"github.com/GizClaw/flowcraft/sdk/knowledge/factory"
-	"github.com/GizClaw/flowcraft/sdk/retrieval/memory"
 	"github.com/GizClaw/flowcraft/sdk/workspace"
 )
 

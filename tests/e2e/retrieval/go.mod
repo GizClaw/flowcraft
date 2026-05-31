@@ -3,7 +3,8 @@ module github.com/GizClaw/flowcraft/tests/e2e/retrieval
 go 1.25.0
 
 require (
-	github.com/GizClaw/flowcraft/sdk v0.3.4
+	github.com/GizClaw/flowcraft/memory v0.1.0
+	github.com/GizClaw/flowcraft/sdk v0.4.0
 	github.com/GizClaw/flowcraft/sdkx v0.3.1
 )
 
@@ -14,6 +15,7 @@ require (
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.27.7 // indirect
+	github.com/kljensen/snowball v0.10.0 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/otel v1.40.0 // indirect
 	go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploghttp v0.16.0 // indirect
@@ -35,3 +37,9 @@ require (
 	google.golang.org/grpc v1.80.0 // indirect
 	google.golang.org/protobuf v1.36.11 // indirect
 )
+
+replace github.com/GizClaw/flowcraft/memory => ../../../memory
+
+replace github.com/GizClaw/flowcraft/sdk => ../../../sdk
+
+replace github.com/GizClaw/flowcraft/sdkx => ../../../sdkx

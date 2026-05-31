@@ -4,11 +4,11 @@ import (
 	"context"
 	"testing"
 
+	"github.com/GizClaw/flowcraft/memory/retrieval"
+	memidx "github.com/GizClaw/flowcraft/memory/retrieval/memory"
 	"github.com/GizClaw/flowcraft/sdk/llm"
 	"github.com/GizClaw/flowcraft/sdk/model"
 	"github.com/GizClaw/flowcraft/sdk/recall"
-	"github.com/GizClaw/flowcraft/sdk/retrieval"
-	memidx "github.com/GizClaw/flowcraft/sdk/retrieval/memory"
 )
 
 // TestAdd_StampsContentHash_AvoidsDuplicateAfterSave pins the fix

@@ -154,7 +154,7 @@ func applyExtractOptions(opts []ExtractOption) ExtractOptions {
 //
 //   - Atomic-only `entities` field (no dates, months, generic nouns) —
 //     consumed by the IDF-weighted, selectivity-gated entity recall
-//     lane in [sdk/retrieval/pipeline]. Non-atomic phrases are folded
+//     lane in [memory/retrieval/pipeline]. Non-atomic phrases are folded
 //     by [NormalizeEntities] at ingest, but only proper-noun atoms
 //     have high enough IDF to discriminate; date atoms either trip the
 //     selectivity gate or pollute the lane.

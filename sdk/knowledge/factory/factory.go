@@ -14,10 +14,10 @@ package factory
 import (
 	"context"
 
+	"github.com/GizClaw/flowcraft/memory/retrieval"
 	"github.com/GizClaw/flowcraft/sdk/knowledge"
 	"github.com/GizClaw/flowcraft/sdk/knowledge/backend/fs"
 	knowledgeretrieval "github.com/GizClaw/flowcraft/sdk/knowledge/backend/retrieval"
-	"github.com/GizClaw/flowcraft/sdk/retrieval"
 	"github.com/GizClaw/flowcraft/sdk/textsearch"
 	"github.com/GizClaw/flowcraft/sdk/workspace"
 )
@@ -70,7 +70,7 @@ func WithLocalPrefix(prefix string) LocalOption {
 // WithLocalTokenizer overrides the BM25 tokenizer (default CJKTokenizer).
 //
 // Deprecated: the tokenizer used by NewRetrieval is owned by the
-// configured retrieval.Index (e.g. sdk/retrieval/memory.Index uses
+// configured retrieval.Index (e.g. memory/retrieval/memory.Index uses
 // CJKTokenizer; sdkx/retrieval/{sqlite,postgres} expose backend-native
 // analyzers). Configure tokenization at the Index constructor instead.
 // Slated for removal in v0.5.0.
@@ -86,7 +86,7 @@ func WithLocalTokenizer(tok textsearch.Tokenizer) LocalOption {
 // Deprecated: NewLocal wires FSChunkRepo + FSLayerRepo, both
 // demo-grade backends whose O(N) per-doc ingest does not scale beyond
 // unit-test / small-fixture sizes (see #134). Use NewRetrieval with
-// an in-process sdk/retrieval/memory.Index for tests and a production
+// an in-process memory/retrieval/memory.Index for tests and a production
 // retrieval.Index (sdkx/retrieval/{sqlite,postgres,workspace}) for
 // real workloads. FSDocumentRepo is NOT deprecated and remains the
 // canonical document store for both factories. Slated for removal in

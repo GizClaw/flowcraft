@@ -3,8 +3,8 @@ package recall
 import (
 	"time"
 
-	"github.com/GizClaw/flowcraft/sdk/retrieval"
-	retrievalns "github.com/GizClaw/flowcraft/sdk/retrieval/namespace"
+	"github.com/GizClaw/flowcraft/memory/retrieval"
+	retrievalns "github.com/GizClaw/flowcraft/memory/retrieval/namespace"
 )
 
 var recallNamespace = retrievalns.MustRegister("ltm")
@@ -28,7 +28,7 @@ func NamespaceFor(s Scope) string {
 //
 // Deprecated: use retrieval/namespace.Sanitize. This compatibility shim will
 // be removed in v0.5.0 after recall namespace construction is fully centralised
-// in sdk/retrieval/namespace.
+// in memory/retrieval/namespace.
 func saneNS(s string) string {
 	return retrievalns.Sanitize(s)
 }

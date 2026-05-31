@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/GizClaw/flowcraft/sdk/retrieval"
+	"github.com/GizClaw/flowcraft/memory/retrieval"
 )
 
 // TTLPolicy decides default ExpiresAt for facts during extraction.

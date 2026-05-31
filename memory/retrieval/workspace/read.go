@@ -94,7 +94,7 @@ func (idx *Index) Search(
 	// Phase 1: walk the snapshot newest-first, collecting one
 	// liveDoc per surviving ID. Filter is NOT applied here — the
 	// global BM25 corpus must reflect every live doc in the
-	// namespace (Lucene/`sdk/retrieval/memory.Index` behaviour);
+	// namespace (Lucene/`memory/retrieval/memory.Index` behaviour);
 	// applying the filter pre-scoring would bake the filtered
 	// subset into IDF and break ranking when the same query is
 	// run with different filters.

@@ -6,10 +6,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/GizClaw/flowcraft/memory/retrieval/memory"
 	sdkknowledge "github.com/GizClaw/flowcraft/sdk/knowledge"
 	"github.com/GizClaw/flowcraft/sdk/knowledge/backend/fs"
 	"github.com/GizClaw/flowcraft/sdk/knowledge/factory"
-	"github.com/GizClaw/flowcraft/sdk/retrieval/memory"
 	"github.com/GizClaw/flowcraft/sdk/workspace"
 	tool "github.com/GizClaw/flowcraft/sdkx/tool/knowledge"
 )

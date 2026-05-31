@@ -4,7 +4,7 @@ import (
 	"context"
 	"sort"
 
-	base "github.com/GizClaw/flowcraft/sdk/retrieval/pipeline"
+	base "github.com/GizClaw/flowcraft/memory/retrieval/pipeline"
 )
 
 // SupersededDecay penalizes hits whose metadata.superseded_by is set.

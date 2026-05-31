@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/GizClaw/flowcraft/sdk/retrieval"
-	retrievalns "github.com/GizClaw/flowcraft/sdk/retrieval/namespace"
+	"github.com/GizClaw/flowcraft/memory/retrieval"
+	retrievalns "github.com/GizClaw/flowcraft/memory/retrieval/namespace"
 )
 
 // EntityStore is a per-scope inverted index keyed by normalized entity
@@ -71,7 +71,7 @@ type EntityStore interface {
 
 // EntityNamespaceFor returns the retrieval namespace for the entity
 // store sibling table of a given scope. The encoding mirrors [NamespaceFor]
-// through sdk/retrieval/namespace and appends the subsystem-owned "entities"
+// through memory/retrieval/namespace and appends the subsystem-owned "entities"
 // suffix.
 //
 //	entries:   "ltm_default__u7_conv_26"

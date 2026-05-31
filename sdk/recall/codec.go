@@ -4,7 +4,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/GizClaw/flowcraft/sdk/retrieval"
+	"github.com/GizClaw/flowcraft/memory/retrieval"
 )
 
 // EntryToDoc serializes a [Entry] into a [retrieval.Doc].

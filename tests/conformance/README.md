@@ -6,7 +6,8 @@ real HTTP endpoints. They live outside `sdk/` and `sdkx/` because:
 - They require live API keys, so they cannot run in CI by default.
 - They are developer tools, not part of the SDK's public surface.
 - Keeping them in a separate module isolates their dependency graph
-  from sdk/sdkx releases.
+  from the main workspace; the module's explicit replace directives
+  select the in-tree sdk/memory/sdkx APIs under test.
 
 ## Running
 

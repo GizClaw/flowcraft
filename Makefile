@@ -15,11 +15,12 @@ MODULES_WORK := sdk memory sdkx vessel voice cmd/vesseld eval
 #
 #  - examples/voice-pipeline: pinned to sdk v0.1.12 + sdkx v0.1.14 so
 #    external consumers see a real reproducible example
-#  - tests/conformance: manual provider conformance suites; pinned to
-#    released sdk/sdkx so we test the exact bytes consumers can pull.
-#    Tests self-skip without credentials so `make test` runs them as a
-#    compile check; `make conformance` is the documented entry point
-#    when a .env is in place.
+#  - tests/conformance: manual provider conformance suites. The module
+#    runs outside go.work so its go.mod replace directives explicitly
+#    select the in-tree sdk/memory/sdkx APIs under test. Tests self-skip
+#    without credentials so `make test` runs them as a compile check;
+#    `make conformance` is the documented entry point when a .env is
+#    in place.
 #  - tests/e2e/vesseld: black-box subprocess tests for the vesseld
 #    binary. Tagged with `//go:build e2e` so `make test`'s default
 #    sweep is just a compile check; the credentialed / build-tagged
@@ -111,10 +112,10 @@ test-e2e:
 .PHONY: ci-e2e
 ci-e2e: ci test-e2e
 
-# Provider conformance: runs every suite under tests/conformance against
-# the pinned sdk/sdkx release. Without credentials the individual tests
-# Skip cleanly, so this also doubles as a "do the suites still compile
-# against the released API?" check.
+# Provider conformance: runs every suite under tests/conformance with
+# GOWORK=off so the module's explicit replace directives define which
+# in-tree sdk/memory/sdkx APIs are under test. Without credentials the
+# individual tests Skip cleanly, so this also doubles as a compile check.
 .PHONY: test-conformance
 test-conformance:
 	@cd tests/conformance && GOWORK=off go test -count=1 ./...

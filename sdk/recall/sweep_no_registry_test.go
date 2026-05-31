@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
+	"github.com/GizClaw/flowcraft/memory/retrieval/memory"
 	"github.com/GizClaw/flowcraft/sdk/recall"
-	"github.com/GizClaw/flowcraft/sdk/retrieval/memory"
 )
 
 // TestSweepOnce_NoSweeperOptionDoesNotPanic pins issue #160.

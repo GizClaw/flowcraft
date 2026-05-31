@@ -6,7 +6,7 @@ import (
 	"strings"
 	"unicode"
 
-	base "github.com/GizClaw/flowcraft/sdk/retrieval/pipeline"
+	base "github.com/GizClaw/flowcraft/memory/retrieval/pipeline"
 )
 
 // EntityExtract extracts proper nouns, quoted strings and CJK compounds from

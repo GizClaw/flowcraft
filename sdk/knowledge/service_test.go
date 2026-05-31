@@ -6,10 +6,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/GizClaw/flowcraft/memory/retrieval/memory"
 	"github.com/GizClaw/flowcraft/sdk/knowledge"
 	"github.com/GizClaw/flowcraft/sdk/knowledge/backend/fs"
 	"github.com/GizClaw/flowcraft/sdk/knowledge/factory"
-	"github.com/GizClaw/flowcraft/sdk/retrieval/memory"
 	"github.com/GizClaw/flowcraft/sdk/workspace"
 )
 
@@ -41,7 +41,7 @@ func (e *stubEmbedder) EmbedBatch(ctx context.Context, texts []string) ([][]floa
 }
 
 // newService spins up a Service backed by the retrieval backend
-// (RetrievalChunkRepo/LayerRepo on sdk/retrieval/memory; documents in
+// (RetrievalChunkRepo/LayerRepo on memory/retrieval/memory; documents in
 // FSDocumentRepo on a workspace.MemWorkspace). factory.NewLocal is
 // deprecated as of v0.4 (#134) — new tests should reach for this
 // helper.

@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"sort"
 
+	rt "github.com/GizClaw/flowcraft/memory/retrieval"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/knowledge"
-	rt "github.com/GizClaw/flowcraft/sdk/retrieval"
 )
 
 // RetrievalLayerRepo persists DerivedLayers in retrieval.Index. Layers

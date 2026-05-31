@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/GizClaw/flowcraft/memory/retrieval"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
-	"github.com/GizClaw/flowcraft/sdk/retrieval"
 	sdkworkspace "github.com/GizClaw/flowcraft/sdk/workspace"
 	wsindex "github.com/GizClaw/flowcraft/sdkx/retrieval/workspace"
 )

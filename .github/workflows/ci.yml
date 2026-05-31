@@ -295,8 +295,9 @@ jobs:
       matrix:
         go-version: ["1.25", "1.26"]
     env:
-      # Pinned to released sdk/sdkx tags via go.mod; keep go.work
-      # out of the resolution path so the pin is honoured.
+      # Keep go.work out of the resolution path so the module's
+      # explicit replace directives select the in-tree sdk/memory/sdkx
+      # sources under test.
       GOWORK: "off"
     steps:
       - uses: actions/checkout@v4
