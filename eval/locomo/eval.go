@@ -150,6 +150,11 @@ type Options struct {
 	RuntimeID         string
 	UserID            string
 	AgentID           string
+	// RetrievalBackend is a display label for lifecycle notifications. It
+	// keeps Feishu cards distinguishable when the same canonical runner is
+	// executed against different retrieval indexes (for example v1+memory vs
+	// v1+bbh) without changing the report's runner identity.
+	RetrievalBackend string
 
 	// Hook is invoked at lifecycle checkpoints (start, ingest_done,
 	// qa_progress milestones, done, error). The hook is a synchronous
@@ -255,18 +260,24 @@ func Run(ctx context.Context, r runners.Runner, ds *dataset.Dataset, opts Option
 		opts.Hook(ctx, e)
 	}
 
+	startFields := map[string]string{
+		"runner":  report.Runner,
+		"dataset": report.Dataset,
+	}
+	startTitle := fmt.Sprintf("eval start: runner=%s dataset=%s", report.Runner, report.Dataset)
+	if opts.RetrievalBackend != "" {
+		startFields["retrieval_backend"] = opts.RetrievalBackend
+		startTitle = fmt.Sprintf("eval start: runner=%s retrieval=%s dataset=%s", report.Runner, opts.RetrievalBackend, report.Dataset)
+	}
 	emit(Event{
 		Kind:  "start",
-		Title: fmt.Sprintf("eval start: runner=%s dataset=%s", report.Runner, report.Dataset),
+		Title: startTitle,
 		Body: fmt.Sprintf(
 			"conversations=%d  questions=%d  topk=%d  extractor=%v  qa_concurrency=%d  ingest_concurrency=%d",
 			len(ds.Conversations), len(ds.Questions),
 			opts.TopK, opts.UseExtractor, opts.Concurrency, opts.IngestConcurrency,
 		),
-		Fields: map[string]string{
-			"runner":  report.Runner,
-			"dataset": report.Dataset,
-		},
+		Fields: startFields,
 	})
 
 	// LoCoMo conversations are 13k-28k tokens each (40+ sessions); feeding

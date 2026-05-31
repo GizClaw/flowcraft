@@ -442,6 +442,7 @@ Example (LLM extractor + LLM answer + LLM judge + Qwen embedder):
 				IngestTimeout:              ingestTimeout,
 				QATimeout:                  qaTimeout,
 				ProgressPct:                g.Notify.ProgressPct,
+				RetrievalBackend:           retrievalBackend,
 				OnQuestionRecall:           onRecall,
 				OnQuestionRecallStageAudit: onStageAudit,
 				OnQuestionAnswer:           onAnswerReplay,
