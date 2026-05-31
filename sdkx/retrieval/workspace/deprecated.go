@@ -21,7 +21,6 @@ const (
 	DefaultCompactionMinSegments = target.DefaultCompactionMinSegments
 	DefaultMemtableMaxBytes      = target.DefaultMemtableMaxBytes
 	DefaultMemtableMaxDocs       = target.DefaultMemtableMaxDocs
-	DefaultRoot                  = target.DefaultRoot
 	DefaultWALMaxBytes           = target.DefaultWALMaxBytes
 )
 
@@ -41,7 +40,6 @@ var (
 	WithLockHeartbeat                       = target.WithLockHeartbeat
 	WithMemtableMaxBytes                    = target.WithMemtableMaxBytes
 	WithMemtableMaxDocs                     = target.WithMemtableMaxDocs
-	WithRoot                                = target.WithRoot
 	WithTokenizer                           = target.WithTokenizer
 	WithWALMaxBytes                         = target.WithWALMaxBytes
 )
