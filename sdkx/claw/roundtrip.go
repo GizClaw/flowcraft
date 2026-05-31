@@ -7,9 +7,11 @@ import (
 
 	"github.com/GizClaw/flowcraft/sdk/agent"
 	"github.com/GizClaw/flowcraft/sdk/engine"
+	"github.com/GizClaw/flowcraft/sdk/engine/depname"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/event"
 	"github.com/GizClaw/flowcraft/sdk/model"
+	"github.com/GizClaw/flowcraft/sdk/telemetry"
 )
 
 // EventType is a public Claw stream event discriminator.
@@ -122,7 +124,11 @@ func (c *Claw) runRoundTrip(ctx context.Context, id string, req Request, events 
 		ContextID: id,
 		Message:   model.NewTextMessage(model.RoleUser, req.Text),
 		Inputs:    req.Inputs,
-	}, agent.WithEngineHost(host))
+	},
+		agent.WithEngineHost(host),
+		agent.WithBoardSeed(c.boardSeeder()),
+		agent.WithDependencies(c.dependencies()),
+	)
 	if err != nil {
 		events <- Event{Type: EventError, Err: err.Error(), IsError: true}
 		return
@@ -131,7 +137,48 @@ func (c *Claw) runRoundTrip(ctx context.Context, id string, req Request, events 
 		events <- Event{Type: EventError, Err: result.Err.Error(), IsError: true, Result: result}
 		return
 	}
+	if c.memory != nil {
+		if err := c.memory.saveTurn(ctx, id, req.Text, latestAssistant(result.Messages)); err != nil {
+			events <- Event{Type: EventError, Err: err.Error(), IsError: true, Result: result}
+			return
+		}
+	}
 	events <- Event{Type: EventResult, Result: result}
+}
+
+func (c *Claw) boardSeeder() agent.BoardSeeder {
+	return agent.BoardSeederFunc(func(ctx context.Context, _ agent.RunInfo, req *agent.Request) (*engine.Board, error) {
+		board := engine.NewBoard()
+		if c.memory != nil {
+			memText, err := c.memory.recallContext(ctx, req.Message.Content())
+			if err != nil {
+				return nil, fmt.Errorf("claw: recall memory: %w", err)
+			}
+			if memText != "" {
+				board.AppendChannelMessage(engine.MainChannel, model.NewTextMessage(model.RoleSystem, memText))
+			}
+		}
+		board.AppendChannelMessage(engine.MainChannel, req.Message)
+		for k, v := range req.Inputs {
+			board.SetVar(k, v)
+		}
+		return board, nil
+	})
+}
+
+func (c *Claw) dependencies() *engine.Dependencies {
+	deps := engine.NewDependencies()
+	deps.Set(depname.LLMResolver, c.resolver)
+	return deps
+}
+
+func latestAssistant(msgs []model.Message) model.Message {
+	for i := len(msgs) - 1; i >= 0; i-- {
+		if msgs[i].Role == model.RoleAssistant {
+			return msgs[i]
+		}
+	}
+	return model.Message{}
 }
 
 func eventFromEnvelope(env event.Envelope) (Event, bool, error) {
@@ -160,4 +207,8 @@ func eventFromEnvelope(env event.Envelope) (Event, bool, error) {
 		ev.Type = EventToolResult
 	}
 	return ev, true, nil
+}
+
+func contextIDFromAttrs(attrs map[string]string) string {
+	return attrs[telemetry.AttrConversationID]
 }

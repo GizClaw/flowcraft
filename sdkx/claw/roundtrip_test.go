@@ -43,6 +43,8 @@ func TestRoundTripStreamsTokensAndResult(t *testing.T) {
 			tokens.WriteString(ev.Content)
 		case EventResult:
 			sawResult = ev.Result != nil
+		case EventError:
+			t.Fatalf("unexpected error event: %s", ev.Err)
 		}
 	}
 	if got := tokens.String(); got != "hello there" {
