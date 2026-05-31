@@ -74,16 +74,18 @@ type IngestSaver interface {
 
 // Report aggregates one full evaluation run.
 type Report struct {
-	Runner        string                            `json:"runner"`
-	RecallVersion string                            `json:"recall_version,omitempty"`
-	Baseline      string                            `json:"baseline,omitempty"`
-	Dataset       string                            `json:"dataset"`
-	N             int                               `json:"n"`
-	Aggregate     ScoreAggregate                    `json:"aggregate"`
-	PerQuestion   []QuestionScore                   `json:"per_question"`
-	Latency       map[string]metrics.LatencySummary `json:"latency"`
-	StartedAt     time.Time                         `json:"started_at"`
-	FinishedAt    time.Time                         `json:"finished_at"`
+	Runner           string                            `json:"runner"`
+	RecallVersion    string                            `json:"recall_version,omitempty"`
+	Baseline         string                            `json:"baseline,omitempty"`
+	RetrievalBackend string                            `json:"retrieval_backend,omitempty"`
+	Dataset          string                            `json:"dataset"`
+	Source           map[string]string                 `json:"source,omitempty"`
+	N                int                               `json:"n"`
+	Aggregate        ScoreAggregate                    `json:"aggregate"`
+	PerQuestion      []QuestionScore                   `json:"per_question"`
+	Latency          map[string]metrics.LatencySummary `json:"latency"`
+	StartedAt        time.Time                         `json:"started_at"`
+	FinishedAt       time.Time                         `json:"finished_at"`
 }
 
 // ScoreAggregate is the headline numbers (qa.em, qa.f1, qa.judge, recall.k_hit).
@@ -338,11 +340,14 @@ func Run(ctx context.Context, r runners.Runner, ds *dataset.Dataset, opts Option
 		return runners.Scope{RuntimeID: opts.RuntimeID, UserID: uid, AgentID: opts.AgentID}
 	}
 
+	startDebug := startDebugFields(opts.RunName)
 	report := &Report{
-		Runner:    r.Name(),
-		Dataset:   ds.Name,
-		StartedAt: time.Now(),
-		Latency:   map[string]metrics.LatencySummary{},
+		Runner:           r.Name(),
+		RetrievalBackend: opts.RetrievalBackend,
+		Dataset:          ds.Name,
+		Source:           startDebug,
+		StartedAt:        time.Now(),
+		Latency:          map[string]metrics.LatencySummary{},
 	}
 	switch report.Runner {
 	case runnerFlowcraftRecallV2, "flowcraft-v2":
@@ -366,7 +371,6 @@ func Run(ctx context.Context, r runners.Runner, ds *dataset.Dataset, opts Option
 		"runner":  report.Runner,
 		"dataset": report.Dataset,
 	}
-	startDebug := startDebugFields(opts.RunName)
 	for k, v := range startDebug {
 		startFields[k] = v
 	}
