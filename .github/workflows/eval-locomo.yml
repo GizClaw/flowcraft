@@ -26,7 +26,7 @@ name: eval / locomo
 #                            --soft-merge=true --entity-store=true
 #                            --entity-link-boost N --query-entity-extractor=true]
 #                  [v2 diagnostics: --diagnostics <path.json>]
-#                  [v2 retrieval: --retrieval-backend <memory|bbh> --retrieval-dir <dir>]
+#                  [retrieval: --retrieval-backend <memory|bbh> --retrieval-dir <dir>]
 #                  --out <report.json>`
 # ---------------------------------------------------------------------
 
@@ -51,7 +51,7 @@ on:
         #     knobs apply; they are skipped automatically. v2 can also
         #     dump per-stage health (extractor / compiler / resolver /
         #     fusion / hit provenance) when stage_audit=true.
-        description: "Runner: flowcraft-recall-v1 | flowcraft-recall-v2 (default) | flowcraft-recall-v2-bbh"
+        description: "Runner: flowcraft-recall-v1 | flowcraft-recall-v1-bbh | flowcraft-recall-v2 (default) | flowcraft-recall-v2-bbh"
         required: false
         default: "flowcraft-recall-v2"
       # NOTE: the previous `profile` input was removed when `runner`
@@ -430,6 +430,10 @@ jobs:
           RETRIEVAL_BACKEND="memory"
           RETRIEVAL_DIR="$REPORT_DIR/${RUN_ID}-retrieval"
           case "$RUNNER_INPUT" in
+            flowcraft-recall-v1-bbh|flowcraft-v1-bbh)
+              RUNNER_CANONICAL="flowcraft-recall-v1"
+              RETRIEVAL_BACKEND="bbh"
+              ;;
             flowcraft-recall-v2-bbh|flowcraft-v2-bbh)
               RUNNER_CANONICAL="flowcraft-recall-v2"
               RETRIEVAL_BACKEND="bbh"
@@ -494,18 +498,21 @@ jobs:
               ARGS+=( --recent-turns "${{ inputs.recent_turns }}" )
             fi
           fi
+          # Retrieval backend selection is shared by v1 and v2. The
+          # v1/v2 CLI wires different retrieval.Index interfaces behind
+          # the same flags.
+          if [ "$RETRIEVAL_BACKEND" = "bbh" ]; then
+            rm -rf "$RETRIEVAL_DIR"
+            mkdir -p "$RETRIEVAL_DIR"
+          fi
+          ARGS+=( --retrieval-backend "$RETRIEVAL_BACKEND" )
+          if [ "$RETRIEVAL_BACKEND" = "bbh" ]; then
+            ARGS+=( --retrieval-dir "$RETRIEVAL_DIR" )
+          fi
           # v2-only per-stage diagnostics. These force RecallExplain
           # and produce large candidate snapshots, so they are
           # controlled by the stage_audit workflow input. Facts and
           # recall top-k dumps remain unconditional forensic outputs.
-          if [ "$RUNNER_CANONICAL" = "flowcraft-recall-v2" ] || [ "$RUNNER_CANONICAL" = "flowcraft-v2" ]; then
-            ARGS+=( --retrieval-backend "$RETRIEVAL_BACKEND" )
-            if [ "$RETRIEVAL_BACKEND" = "bbh" ]; then
-              rm -rf "$RETRIEVAL_DIR"
-              mkdir -p "$RETRIEVAL_DIR"
-              ARGS+=( --retrieval-dir "$RETRIEVAL_DIR" )
-            fi
-          fi
           if { [ "$RUNNER_CANONICAL" = "flowcraft-recall-v2" ] || [ "$RUNNER_CANONICAL" = "flowcraft-v2" ]; } && [ "${{ inputs.stage_audit }}" = "true" ]; then
             ARGS+=(
               --diagnostics "$DIAGNOSTICS_OUT"

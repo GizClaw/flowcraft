@@ -41,7 +41,17 @@ func addLocomoIngest(parent *cobra.Command) {
 					return loadErr
 				}
 			}
-			r, err := buildLocomoRunner(canonical, v1RunnerConfig{}, nil, nil, nil)
+			v1RetrievalIndex, v2RetrievalIndex, retrievalCleanup, err := buildRetrievalIndex(canonical, "memory", "")
+			if err != nil {
+				return err
+			}
+			if retrievalCleanup != nil {
+				defer retrievalCleanup()
+			}
+			r, err := buildLocomoRunner(canonical, v1RunnerConfig{
+				RetrievalIndex:   v1RetrievalIndex,
+				V2RetrievalIndex: v2RetrievalIndex,
+			}, nil, nil, nil)
 			if err != nil {
 				return err
 			}

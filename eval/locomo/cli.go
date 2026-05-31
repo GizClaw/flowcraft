@@ -19,11 +19,14 @@ import (
 	"github.com/GizClaw/flowcraft/eval/metrics"
 	"github.com/GizClaw/flowcraft/memory/recall"
 	"github.com/GizClaw/flowcraft/memory/recall/diagnostics"
-	"github.com/GizClaw/flowcraft/memory/retrieval"
-	"github.com/GizClaw/flowcraft/memory/retrieval/bbh"
+	memoryretrieval "github.com/GizClaw/flowcraft/memory/retrieval"
+	memorybbh "github.com/GizClaw/flowcraft/memory/retrieval/bbh"
 	retrievalmem "github.com/GizClaw/flowcraft/memory/retrieval/memory"
 	"github.com/GizClaw/flowcraft/sdk/llm"
 	recallv1 "github.com/GizClaw/flowcraft/sdk/recall"
+	sdkretrieval "github.com/GizClaw/flowcraft/sdk/retrieval"
+	sdkbbh "github.com/GizClaw/flowcraft/sdk/retrieval/bbh"
+	sdkretrievalmem "github.com/GizClaw/flowcraft/sdk/retrieval/memory"
 	sdkworkspace "github.com/GizClaw/flowcraft/sdk/workspace"
 
 	_ "github.com/GizClaw/flowcraft/sdkx/embedding/azure"
@@ -215,7 +218,7 @@ Example (LLM extractor + LLM answer + LLM judge + Qwen embedder):
 			if canonical != runnerFlowcraftRecallV2 && dumpStageAuditPath != "" {
 				return fmt.Errorf("--dump-stage-audit is only supported for flowcraft-recall-v2 (got %s)", canonical)
 			}
-			retrievalIndex, retrievalCleanup, err := buildRetrievalIndex(canonical, retrievalBackend, retrievalDir)
+			v1RetrievalIndex, v2RetrievalIndex, retrievalCleanup, err := buildRetrievalIndex(canonical, retrievalBackend, retrievalDir)
 			if err != nil {
 				return err
 			}
@@ -293,7 +296,8 @@ Example (LLM extractor + LLM answer + LLM judge + Qwen embedder):
 
 			r, err := buildLocomoRunner(canonical, v1RunnerConfig{
 				LLM:                       extractor,
-				RetrievalIndex:            retrievalIndex,
+				RetrievalIndex:            v1RetrievalIndex,
+				V2RetrievalIndex:          v2RetrievalIndex,
 				ExtractorMode:             sdkExtractorMode,
 				Embedder:                  embedder,
 				MaxFactsPerCall:           maxFacts,
@@ -544,28 +548,25 @@ Example (LLM extractor + LLM answer + LLM judge + Qwen embedder):
 	f.StringVar(&dumpAnswerReplay, "dump-answer-replay", "", "diagnostic: write one JSONL record per answered question with full answer prompt/body, recall artifacts, prediction, and scores")
 	f.StringVar(&dumpStageAuditPath, "dump-stage-audit", "", "diagnostic (flowcraft-recall-v2 only): write per-question read pipeline stage candidates to this JSONL path (audits source/fusion/rank/context drops)")
 	f.StringVar(&diagnosticsPath, "diagnostics", "", "diagnostic (flowcraft-recall-v2 only): write per-stage Save+Recall health summary to this JSON path (uses SaveExplain/RecallExplain)")
-	f.StringVar(&retrievalBackend, "retrieval-backend", "memory", "flowcraft-recall-v2 retrieval backend: memory | bbh")
+	f.StringVar(&retrievalBackend, "retrieval-backend", "memory", "retrieval backend: memory | bbh")
 	f.StringVar(&retrievalDir, "retrieval-dir", "", "directory for --retrieval-backend=bbh; empty uses a temp dir")
 
 	parent.AddCommand(cmd)
 }
 
-func buildRetrievalIndex(canonical, backend, dir string) (retrieval.Index, func(), error) {
-	if canonical != runnerFlowcraftRecallV2 {
-		if backend != "" && backend != "memory" {
-			return nil, nil, fmt.Errorf("--retrieval-backend is only supported for flowcraft-recall-v2")
-		}
-		return nil, nil, nil
-	}
+func buildRetrievalIndex(canonical, backend, dir string) (sdkretrieval.Index, memoryretrieval.Index, func(), error) {
 	switch backend {
 	case "", "memory":
-		return retrievalmem.New(), nil, nil
+		if canonical == runnerFlowcraftRecallV2 {
+			return nil, retrievalmem.New(), nil, nil
+		}
+		return sdkretrievalmem.New(), nil, nil, nil
 	case "bbh":
 		cleanup := func() {}
 		if dir == "" {
 			tmp, err := os.MkdirTemp("", "flowcraft-bbh-*")
 			if err != nil {
-				return nil, nil, fmt.Errorf("--retrieval-backend=bbh temp dir: %w", err)
+				return nil, nil, nil, fmt.Errorf("--retrieval-backend=bbh temp dir: %w", err)
 			}
 			dir = tmp
 			cleanup = func() { _ = os.RemoveAll(tmp) }
@@ -573,16 +574,24 @@ func buildRetrievalIndex(canonical, backend, dir string) (retrieval.Index, func(
 		ws, err := sdkworkspace.NewLocalWorkspace(dir)
 		if err != nil {
 			cleanup()
-			return nil, nil, fmt.Errorf("--retrieval-dir: %w", err)
+			return nil, nil, nil, fmt.Errorf("--retrieval-dir: %w", err)
 		}
-		idx, err := bbh.New(ws)
+		if canonical == runnerFlowcraftRecallV2 {
+			idx, err := memorybbh.New(ws)
+			if err != nil {
+				cleanup()
+				return nil, nil, nil, fmt.Errorf("--retrieval-backend=bbh: %w", err)
+			}
+			return nil, idx, cleanup, nil
+		}
+		idx, err := sdkbbh.New(ws)
 		if err != nil {
 			cleanup()
-			return nil, nil, fmt.Errorf("--retrieval-backend=bbh: %w", err)
+			return nil, nil, nil, fmt.Errorf("--retrieval-backend=bbh: %w", err)
 		}
-		return idx, cleanup, nil
+		return idx, nil, cleanup, nil
 	default:
-		return nil, nil, fmt.Errorf("--retrieval-backend: unknown %q (want memory or bbh)", backend)
+		return nil, nil, nil, fmt.Errorf("--retrieval-backend: unknown %q (want memory or bbh)", backend)
 	}
 }
 

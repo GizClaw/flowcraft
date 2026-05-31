@@ -1,6 +1,5 @@
-// Package flowcraft is the default bench Runner: in-memory retrieval Index,
-// pipeline.LTM, and the AdditiveExtractor — i.e. exactly what an out-of-the-box
-// `recall.New(Config{Index: memidx.New(), LLM: …})` produces.
+// Package flowcraft is the recall_v1 bench Runner: a caller-selected retrieval
+// Index, pipeline.LTM, and the AdditiveExtractor.
 package flowcraft
 
 import (
@@ -14,7 +13,7 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/llm"
 	recallv1 "github.com/GizClaw/flowcraft/sdk/recall"
 	"github.com/GizClaw/flowcraft/sdk/recall/pipeline"
-	memidx "github.com/GizClaw/flowcraft/sdk/retrieval/memory"
+	"github.com/GizClaw/flowcraft/sdk/retrieval"
 )
 
 // Options configures the Flowcraft default runner.
@@ -26,6 +25,8 @@ type Options struct {
 	Name     string
 	LLM      llm.LLM            // required iff Save uses the LLM extractor path
 	Embedder embedding.Embedder // optional; enables vector lane
+	// RetrievalIndex is required and must be selected by the caller.
+	RetrievalIndex retrieval.Index
 
 	MaxFactsPerCall  int
 	IncludeAssistant bool
@@ -152,7 +153,9 @@ func New(opts Options) (runners.Runner, error) {
 	if maxFacts == 0 {
 		maxFacts = 200 // LoCoMo conversations span hundreds of turns
 	}
-	idx := memidx.New()
+	if opts.RetrievalIndex == nil {
+		return nil, ErrRetrievalIndexRequired
+	}
 	memOpts := []recallv1.Option{
 		recallv1.WithLLM(opts.LLM),
 		recallv1.WithEmbedder(opts.Embedder),
@@ -226,12 +229,16 @@ func New(opts Options) (runners.Runner, error) {
 		}
 	}
 
-	mem, err := recallv1.New(idx, memOpts...)
+	mem, err := recallv1.New(opts.RetrievalIndex, memOpts...)
 	if err != nil {
 		return nil, err
 	}
 	return &Runner{name: opts.Name, mem: mem, onExtract: opts.OnFactsExtracted}, nil
 }
+
+// ErrRetrievalIndexRequired is returned when callers construct the v1 runner
+// without explicitly selecting a retrieval backend.
+var ErrRetrievalIndexRequired = errors.New("flowcraft-recall-v1 requires a retrieval index")
 
 // Name implements runners.Runner.
 func (r *Runner) Name() string { return r.name }
