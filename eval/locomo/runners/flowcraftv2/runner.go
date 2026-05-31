@@ -15,6 +15,7 @@ import (
 	"github.com/GizClaw/flowcraft/eval/locomo/runners"
 	"github.com/GizClaw/flowcraft/memory/recall"
 	"github.com/GizClaw/flowcraft/memory/recall/diagnostics"
+	"github.com/GizClaw/flowcraft/memory/retrieval"
 	retrievalmem "github.com/GizClaw/flowcraft/memory/retrieval/memory"
 	"github.com/GizClaw/flowcraft/sdk/embedding"
 	"github.com/GizClaw/flowcraft/sdk/llm"
@@ -25,6 +26,9 @@ import (
 type Options struct {
 	Name string
 	LLM  llm.LLM
+	// RetrievalIndex overrides the retrieval backend. Nil uses the in-process
+	// memory backend.
+	RetrievalIndex retrieval.Index
 	// ExtractorMode selects the SDK LLM extraction strategy. Empty uses the
 	// SDK default single-pass extractor.
 	ExtractorMode recall.LLMExtractionMode
@@ -76,8 +80,12 @@ func New(opts Options) (runners.Runner, error) {
 	if opts.Name == "" {
 		opts.Name = "flowcraft-recall-v2"
 	}
+	idx := opts.RetrievalIndex
+	if idx == nil {
+		idx = retrievalmem.New()
+	}
 	memOpts := []recall.Option{
-		recall.WithRetrievalIndex(retrievalmem.New()),
+		recall.WithRetrievalIndex(idx),
 		// Enable the EntityGraph projection + graph source. Multi-hop
 		// LoCoMo questions ("how is A connected to B?") rely on
 		// n-hop entity traversal that the other four structured

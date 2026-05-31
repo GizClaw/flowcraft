@@ -19,10 +19,14 @@ import (
 	"github.com/GizClaw/flowcraft/eval/metrics"
 	"github.com/GizClaw/flowcraft/memory/recall"
 	"github.com/GizClaw/flowcraft/memory/recall/diagnostics"
+	"github.com/GizClaw/flowcraft/memory/retrieval"
+	"github.com/GizClaw/flowcraft/memory/retrieval/bbh"
 	"github.com/GizClaw/flowcraft/sdk/llm"
 	recallv1 "github.com/GizClaw/flowcraft/sdk/recall"
+	sdkworkspace "github.com/GizClaw/flowcraft/sdk/workspace"
 
 	_ "github.com/GizClaw/flowcraft/sdkx/embedding/azure"
+	_ "github.com/GizClaw/flowcraft/sdkx/embedding/openai"
 	_ "github.com/GizClaw/flowcraft/sdkx/embedding/qwen"
 	_ "github.com/GizClaw/flowcraft/sdkx/llm/azure"
 	_ "github.com/GizClaw/flowcraft/sdkx/llm/deepseek"
@@ -103,6 +107,8 @@ func addLocomoRun(parent *cobra.Command, g *cliflags.Global) {
 		dumpAnswerReplay   string
 		dumpStageAuditPath string
 		diagnosticsPath    string
+		retrievalBackend   string
+		retrievalDir       string
 	)
 
 	cmd := &cobra.Command{
@@ -208,6 +214,13 @@ Example (LLM extractor + LLM answer + LLM judge + Qwen embedder):
 			if canonical != runnerFlowcraftRecallV2 && dumpStageAuditPath != "" {
 				return fmt.Errorf("--dump-stage-audit is only supported for flowcraft-recall-v2 (got %s)", canonical)
 			}
+			retrievalIndex, retrievalCleanup, err := buildRetrievalIndex(canonical, retrievalBackend, retrievalDir)
+			if err != nil {
+				return err
+			}
+			if retrievalCleanup != nil {
+				defer retrievalCleanup()
+			}
 
 			// --dump-facts diagnostic: stream every Save batch's
 			// extracted facts to a JSONL sidecar so we can audit
@@ -279,6 +292,7 @@ Example (LLM extractor + LLM answer + LLM judge + Qwen embedder):
 
 			r, err := buildLocomoRunner(canonical, v1RunnerConfig{
 				LLM:                       extractor,
+				RetrievalIndex:            retrievalIndex,
 				ExtractorMode:             sdkExtractorMode,
 				Embedder:                  embedder,
 				MaxFactsPerCall:           maxFacts,
@@ -529,8 +543,46 @@ Example (LLM extractor + LLM answer + LLM judge + Qwen embedder):
 	f.StringVar(&dumpAnswerReplay, "dump-answer-replay", "", "diagnostic: write one JSONL record per answered question with full answer prompt/body, recall artifacts, prediction, and scores")
 	f.StringVar(&dumpStageAuditPath, "dump-stage-audit", "", "diagnostic (flowcraft-recall-v2 only): write per-question read pipeline stage candidates to this JSONL path (audits source/fusion/rank/context drops)")
 	f.StringVar(&diagnosticsPath, "diagnostics", "", "diagnostic (flowcraft-recall-v2 only): write per-stage Save+Recall health summary to this JSON path (uses SaveExplain/RecallExplain)")
+	f.StringVar(&retrievalBackend, "retrieval-backend", "memory", "flowcraft-recall-v2 retrieval backend: memory | bbh")
+	f.StringVar(&retrievalDir, "retrieval-dir", "", "directory for --retrieval-backend=bbh; empty uses a temp dir")
 
 	parent.AddCommand(cmd)
+}
+
+func buildRetrievalIndex(canonical, backend, dir string) (retrieval.Index, func(), error) {
+	if canonical != runnerFlowcraftRecallV2 {
+		if backend != "" && backend != "memory" {
+			return nil, nil, fmt.Errorf("--retrieval-backend is only supported for flowcraft-recall-v2")
+		}
+		return nil, nil, nil
+	}
+	switch backend {
+	case "", "memory":
+		return nil, nil, nil
+	case "bbh":
+		cleanup := func() {}
+		if dir == "" {
+			tmp, err := os.MkdirTemp("", "flowcraft-bbh-*")
+			if err != nil {
+				return nil, nil, fmt.Errorf("--retrieval-backend=bbh temp dir: %w", err)
+			}
+			dir = tmp
+			cleanup = func() { _ = os.RemoveAll(tmp) }
+		}
+		ws, err := sdkworkspace.NewLocalWorkspace(dir)
+		if err != nil {
+			cleanup()
+			return nil, nil, fmt.Errorf("--retrieval-dir: %w", err)
+		}
+		idx, err := bbh.New(ws)
+		if err != nil {
+			cleanup()
+			return nil, nil, fmt.Errorf("--retrieval-backend=bbh: %w", err)
+		}
+		return idx, cleanup, nil
+	default:
+		return nil, nil, fmt.Errorf("--retrieval-backend: unknown %q (want memory or bbh)", backend)
+	}
 }
 
 func addLocomoFetch(parent *cobra.Command) {

@@ -10,6 +10,8 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -834,6 +836,85 @@ func BenchmarkSearchVector(b *testing.B) {
 			b.Fatal("expected at least one hit")
 		}
 	}
+}
+
+func BenchmarkSearchManyNamespacesParallel(b *testing.B) {
+	namespaces := envInt("BBH_BENCH_NAMESPACES", 1000)
+	docsPerNS := envInt("BBH_BENCH_DOCS_PER_NS", 100)
+	idx, nsNames := manyNamespaceBenchFixture(b, namespaces, docsPerNS)
+	ctx := context.Background()
+
+	b.ReportAllocs()
+	b.ReportMetric(float64(namespaces), "namespaces")
+	b.ReportMetric(float64(docsPerNS), "docs/ns")
+	var counter atomic.Uint64
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			n := int(counter.Add(1)-1) % len(nsNames)
+			resp, err := idx.Search(ctx, nsNames[n], retrieval.SearchRequest{
+				QueryText:   "invoice latency profile",
+				QueryVector: benchVector(n),
+				TopK:        10,
+			})
+			if err != nil {
+				b.Fatal(err)
+			}
+			if len(resp.Hits) == 0 {
+				b.Fatal("expected at least one hit")
+			}
+		}
+	})
+}
+
+var manyNSBench struct {
+	mu        sync.Mutex
+	key       string
+	dir       string
+	idx       *Index
+	namespace []string
+}
+
+func manyNamespaceBenchFixture(b *testing.B, namespaces, docsPerNS int) (*Index, []string) {
+	b.Helper()
+	key := fmt.Sprintf("%d/%d", namespaces, docsPerNS)
+	manyNSBench.mu.Lock()
+	defer manyNSBench.mu.Unlock()
+	if manyNSBench.idx != nil && manyNSBench.key == key {
+		return manyNSBench.idx, manyNSBench.namespace
+	}
+	if manyNSBench.idx != nil {
+		if err := manyNSBench.idx.Close(); err != nil {
+			b.Fatal(err)
+		}
+		_ = os.RemoveAll(manyNSBench.dir)
+		manyNSBench.idx = nil
+		manyNSBench.dir = ""
+		manyNSBench.namespace = nil
+	}
+	dir, err := os.MkdirTemp("", "bbh-many-ns-*")
+	if err != nil {
+		b.Fatal(err)
+	}
+	idx := newBenchIndex(b, dir)
+	ctx := context.Background()
+	nsNames := make([]string, namespaces)
+	for ns := 0; ns < namespaces; ns++ {
+		name := fmt.Sprintf("runtime-a/user-%06d/agent-a", ns)
+		nsNames[ns] = name
+		batch := make([]retrieval.Doc, 0, docsPerNS)
+		for d := 0; d < docsPerNS; d++ {
+			batch = append(batch, benchDoc(fmt.Sprintf("doc-%06d", d), ns*docsPerNS+d))
+		}
+		if err := idx.Upsert(ctx, name, batch); err != nil {
+			b.Fatal(err)
+		}
+	}
+	manyNSBench.key = key
+	manyNSBench.dir = dir
+	manyNSBench.idx = idx
+	manyNSBench.namespace = nsNames
+	return idx, nsNames
 }
 
 func seededBenchIndex(b *testing.B, docs int, vectors bool) (*Index, string) {
