@@ -23,7 +23,12 @@ func main() {
 	if err != nil {
 		exitf("open workspace: %v", err)
 	}
-	app, err := claw.New(ws)
+	cfg, err := claw.LoadConfig(context.Background(), ws)
+	if err != nil {
+		exitf("load config: %v", err)
+	}
+	cfg.ExpandEnv()
+	app, err := claw.New(ws, claw.WithConfig(cfg))
 	if err != nil {
 		exitf("create claw: %v", err)
 	}

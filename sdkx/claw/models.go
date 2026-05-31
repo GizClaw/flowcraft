@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/GizClaw/flowcraft/sdk/embedding"
+	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/llm"
 
 	_ "github.com/GizClaw/flowcraft/sdkx/embedding/azure"
@@ -68,17 +69,20 @@ func (c *Claw) embedder(ctx context.Context) (embedding.Embedder, bool, error) {
 	if name == "" {
 		return nil, false, nil
 	}
-	cfg, ok := c.embeddingConfigs()[name]
-	if !ok {
-		return nil, false, fmt.Errorf("claw: embedding model %q is not configured", name)
-	}
-	cfg.applyCredentialEnv()
-	emb, err := embedding.NewFromConfig(cfg.Provider, cfg.Model, cfg.providerConfig())
+	emb, err := c.embedderByName(ctx, name)
 	if err != nil {
 		return nil, false, err
 	}
-	_ = ctx
 	return emb, true, nil
+}
+
+func (c *Claw) embedderByName(_ context.Context, name string) (embedding.Embedder, error) {
+	cfg, ok := c.embeddingConfigs()[strings.TrimSpace(name)]
+	if !ok {
+		return nil, fmt.Errorf("claw: embedding model %q is not configured", name)
+	}
+	cfg.applyCredentialEnv()
+	return embedding.NewFromConfig(cfg.Provider, cfg.Model, cfg.providerConfig())
 }
 
 func (c *Claw) embeddingConfigs() map[string]ModelConfig {
@@ -98,8 +102,11 @@ func (c *Claw) embeddingConfigs() map[string]ModelConfig {
 	return out
 }
 
-func (c *Claw) model(_ context.Context, name string) (llm.LLM, error) {
+func (c *Claw) model(ctx context.Context, name string) (llm.LLM, error) {
 	name = strings.TrimSpace(name)
+	if strings.Contains(name, "/") && c.resolver != nil {
+		return c.resolver.Resolve(ctx, name)
+	}
 	if name == "" {
 		return nil, fmt.Errorf("claw: model name is empty")
 	}
@@ -109,6 +116,21 @@ func (c *Claw) model(_ context.Context, name string) (llm.LLM, error) {
 	}
 	cfg.applyCredentialEnv()
 	return llm.NewFromConfig(cfg.Provider, cfg.Model, cfg.providerConfig())
+}
+
+func (c *Claw) buildResolver() llm.LLMResolver {
+	if c.chat != nil {
+		return fixedResolver{client: c.chat}
+	}
+	return llm.DefaultResolver(modelStore{models: c.cfg.Models}, llm.WithFallbackModel(c.cfg.modelRef(c.cfg.Models.Chat)))
+}
+
+func (c Config) modelRef(name string) string {
+	cfg, ok := c.Models.LLM[strings.TrimSpace(name)]
+	if !ok || cfg.Provider == "" || cfg.Model == "" {
+		return name
+	}
+	return cfg.Provider + "/" + cfg.Model
 }
 
 func (m *ModelConfig) applyCredentialEnv() {
@@ -135,4 +157,49 @@ func (m ModelConfig) providerConfig() map[string]any {
 		out["region"] = m.Region
 	}
 	return out
+}
+
+type fixedResolver struct {
+	client llm.LLM
+}
+
+func (r fixedResolver) Resolve(context.Context, string) (llm.LLM, error) {
+	if r.client == nil {
+		return nil, errdefs.NotFoundf("claw: fixed llm resolver has no client")
+	}
+	return r.client, nil
+}
+
+func (r fixedResolver) InvalidateCache(...llm.InvalidateOption) {}
+
+type modelStore struct {
+	models ModelsConfig
+}
+
+func (s modelStore) GetProviderConfig(_ context.Context, provider, _ string) (*llm.ProviderConfig, error) {
+	for _, cfg := range s.models.LLM {
+		if cfg.Provider != provider {
+			continue
+		}
+		cfg.applyCredentialEnv()
+		return &llm.ProviderConfig{
+			Provider: provider,
+			Config:   cfg.providerConfig(),
+		}, nil
+	}
+	return nil, errdefs.NotFoundf("claw: provider %q is not configured", provider)
+}
+
+func (s modelStore) GetModelConfig(_ context.Context, provider, modelName string) (*llm.ModelConfig, error) {
+	for _, cfg := range s.models.LLM {
+		if cfg.Provider == provider && cfg.Model == modelName {
+			cfg.applyCredentialEnv()
+			return &llm.ModelConfig{
+				Provider: provider,
+				Model:    modelName,
+				Extra:    cfg.providerConfig(),
+			}, nil
+		}
+	}
+	return nil, errdefs.NotFoundf("claw: model %s/%s is not configured", provider, modelName)
 }

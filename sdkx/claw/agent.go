@@ -1,23 +1,31 @@
 package claw
 
 import (
-	"context"
 	"fmt"
 
 	"github.com/GizClaw/flowcraft/sdk/agent"
 	"github.com/GizClaw/flowcraft/sdk/engine"
-	"github.com/GizClaw/flowcraft/sdk/event"
-	"github.com/GizClaw/flowcraft/sdk/llm"
-	"github.com/GizClaw/flowcraft/sdk/model"
+	"github.com/GizClaw/flowcraft/sdk/graph"
+	"github.com/GizClaw/flowcraft/sdk/graph/node"
+	"github.com/GizClaw/flowcraft/sdk/graph/node/knowledgenode"
+	"github.com/GizClaw/flowcraft/sdk/graph/node/llmnode"
+	"github.com/GizClaw/flowcraft/sdk/graph/node/scriptnode"
+	"github.com/GizClaw/flowcraft/sdk/graph/runner"
+	"github.com/GizClaw/flowcraft/sdk/script/jsrt"
+	"github.com/GizClaw/flowcraft/sdk/tool"
 )
 
 // AgentConfig configures the single agent owned by a Claw.
 type AgentConfig struct {
-	ID            string   `json:"id,omitempty" yaml:"id,omitempty"`
-	Name          string   `json:"name,omitempty" yaml:"name,omitempty"`
-	Description   string   `json:"description,omitempty" yaml:"description,omitempty"`
+	ID          string                `json:"id,omitempty" yaml:"id,omitempty"`
+	Name        string                `json:"name,omitempty" yaml:"name,omitempty"`
+	Description string                `json:"description,omitempty" yaml:"description,omitempty"`
+	Tools       []string              `json:"tools,omitempty" yaml:"tools,omitempty"`
+	Graph       graph.GraphDefinition `json:"graph,omitempty" yaml:"graph,omitempty"`
+
+	// Fallback fields used only when Graph is omitted.
 	SystemPrompt  string   `json:"system_prompt,omitempty" yaml:"system_prompt,omitempty"`
-	Tools         []string `json:"tools,omitempty" yaml:"tools,omitempty"`
+	Model         string   `json:"model,omitempty" yaml:"model,omitempty"`
 	MaxIterations int      `json:"max_iterations,omitempty" yaml:"max_iterations,omitempty"`
 	Temperature   *float64 `json:"temperature,omitempty" yaml:"temperature,omitempty"`
 }
@@ -30,126 +38,60 @@ func (c *Claw) buildAgent() agent.Agent {
 			Name:        c.cfg.Agent.Name,
 			Description: c.cfg.Agent.Description,
 			Capabilities: agent.AgentCapabilities{
-				Streaming: true,
+				Streaming:              true,
+				StateTransitionHistory: true,
 			},
 		},
 	}
 }
 
-func (c *Claw) buildEngine(client llm.LLM) engine.Engine {
-	return engine.EngineFunc(func(ctx context.Context, run engine.Run, host engine.Host, board *engine.Board) (*engine.Board, error) {
-		agentID := c.cfg.Agent.ID
-		step := agentID + ".iter0"
-		publishLifecycle(ctx, host, engine.SubjectRunStart(run.ID), run.ID, agentID, map[string]any{"agent_id": agentID})
-		var runErr error
-		defer func() {
-			payload := map[string]any{"status": "success"}
-			if runErr != nil {
-				payload["status"] = "error"
-				payload["error"] = runErr.Error()
-			}
-			publishLifecycle(ctx, host, engine.SubjectRunEnd(run.ID), run.ID, agentID, payload)
-		}()
-
-		msgs := append([]model.Message(nil), board.Channel(engine.MainChannel)...)
-		userText := latestUserText(msgs)
-		if c.memory != nil {
-			memText, err := c.memory.recallContext(ctx, userText)
-			if err != nil {
-				runErr = fmt.Errorf("claw: recall memory: %w", err)
-				return board, runErr
-			}
-			if memText != "" {
-				msgs = append([]model.Message{model.NewTextMessage(model.RoleSystem, memText)}, msgs...)
-			}
-		}
-		if c.cfg.Agent.SystemPrompt != "" {
-			msgs = append([]model.Message{model.NewTextMessage(model.RoleSystem, c.cfg.Agent.SystemPrompt)}, msgs...)
-		}
-
-		opts := []llm.GenerateOption{}
-		if c.cfg.Agent.Temperature != nil {
-			opts = append(opts, llm.WithTemperature(*c.cfg.Agent.Temperature))
-		}
-		reply, err := streamLLMRound(ctx, host, run.ID, step, client, msgs, opts)
-		if err != nil {
-			runErr = fmt.Errorf("claw: generate: %w", err)
-			return board, runErr
-		}
-		board.AppendChannelMessage(engine.MainChannel, reply)
-		if c.memory != nil {
-			if err := c.memory.saveTurn(ctx, run.Attributes["context_id"], userText, reply); err != nil {
-				runErr = fmt.Errorf("claw: save memory: %w", err)
-				return board, runErr
-			}
-		}
-		return board, nil
+func (c *Claw) buildEngine() (engine.Engine, error) {
+	factory := node.NewFactory()
+	tools := tool.NewRegistry()
+	llmnode.Register(factory, c.resolver, tools)
+	knowledgenode.Register(factory, nil)
+	scriptnode.Register(factory, scriptnode.Deps{
+		ScriptRuntime: jsrt.New(),
+		Workspace:     c.ws,
 	})
-}
 
-func latestUserText(msgs []model.Message) string {
-	for i := len(msgs) - 1; i >= 0; i-- {
-		if msgs[i].Role == model.RoleUser {
-			return msgs[i].Content()
-		}
+	opts := []runner.Option{}
+	if c.cfg.Agent.MaxIterations > 0 {
+		opts = append(opts, runner.WithMaxIterations(c.cfg.Agent.MaxIterations))
 	}
-	return ""
-}
-
-func publishLifecycle(ctx context.Context, pub engine.Publisher, subject event.Subject, runID, agentID string, payload any) {
-	if pub == nil {
-		return
-	}
-	env, err := event.NewEnvelope(ctx, subject, payload)
+	r, err := runner.New(&c.cfg.Agent.Graph, factory, opts...)
 	if err != nil {
-		return
+		return nil, fmt.Errorf("claw: build agent graph: %w", err)
 	}
-	if runID != "" {
-		env.SetRunID(runID)
-	}
-	if agentID != "" {
-		env.SetAgentID(agentID)
-	}
-	_ = pub.Publish(ctx, env)
+	return r, nil
 }
 
-func streamLLMRound(
-	ctx context.Context,
-	host engine.Host,
-	runID, stepActor string,
-	client llm.LLM,
-	msgs []model.Message,
-	opts []llm.GenerateOption,
-) (model.Message, error) {
-	stream, err := client.GenerateStream(ctx, msgs, opts...)
-	if err != nil || stream == nil {
-		reply, _, gerr := client.Generate(ctx, msgs, opts...)
-		if gerr != nil {
-			return reply, gerr
-		}
-		_ = engine.EmitStreamToken(ctx, host, runID, stepActor, reply.Content())
-		return reply, nil
+func (c *Config) ensureAgentGraph() {
+	if c.Agent.Graph.Name != "" {
+		return
 	}
-	defer func() { _ = stream.Close() }()
-
-	for stream.Next() {
-		chunk := stream.Current()
-		if chunk.Content != "" {
-			_ = engine.EmitStreamToken(ctx, host, runID, stepActor, chunk.Content)
-		}
-		for _, tc := range chunk.ToolCalls {
-			_ = engine.EmitStreamToolCall(ctx, host, runID, stepActor, tc.ID, tc.Name, tc.Arguments)
-		}
+	model := c.Agent.Model
+	if model == "" {
+		model = c.modelRef(c.Models.Chat)
 	}
-	if serr := stream.Err(); serr != nil {
-		return stream.Message(), serr
+	nodeCfg := map[string]any{
+		"model":         model,
+		"system_prompt": c.Agent.SystemPrompt,
 	}
-	usage := stream.Usage()
-	_ = host.ReportUsage(ctx, model.TokenUsage{
-		InputTokens:       usage.InputTokens,
-		CachedInputTokens: usage.CachedInputTokens,
-		OutputTokens:      usage.OutputTokens,
-		TotalTokens:       usage.InputTokens + usage.OutputTokens,
-	})
-	return stream.Message(), nil
+	if c.Agent.Temperature != nil {
+		nodeCfg["temperature"] = *c.Agent.Temperature
+	}
+	c.Agent.Graph = graph.GraphDefinition{
+		Name:  c.Agent.ID,
+		Entry: "answer",
+		Nodes: []graph.NodeDefinition{{
+			ID:     "answer",
+			Type:   "llm",
+			Config: nodeCfg,
+		}},
+		Edges: []graph.EdgeDefinition{{
+			From: "answer",
+			To:   graph.END,
+		}},
+	}
 }

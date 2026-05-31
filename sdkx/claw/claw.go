@@ -39,6 +39,7 @@ type Claw struct {
 	agent     agent.Agent
 	engine    engine.Engine
 	chat      llm.LLM
+	resolver  llm.LLMResolver
 	memory    *memoryRuntime
 
 	mu     sync.Mutex
@@ -64,20 +65,19 @@ func New(ws sdkworkspace.Workspace, opts ...Option) (*Claw, error) {
 		}
 		c.cfg = cfg
 	}
-	if c.chat == nil {
-		client, err := c.chatModel(ctx)
-		if err != nil {
-			return nil, err
-		}
-		c.chat = client
-	}
+	c.cfg.ensureAgentGraph()
+	c.resolver = c.buildResolver()
 	mem, err := c.buildMemory(ctx)
 	if err != nil {
 		return nil, err
 	}
 	c.memory = mem
 	c.agent = c.buildAgent()
-	c.engine = c.buildEngine(c.chat)
+	eng, err := c.buildEngine()
+	if err != nil {
+		return nil, err
+	}
+	c.engine = eng
 	return c, nil
 }
 
