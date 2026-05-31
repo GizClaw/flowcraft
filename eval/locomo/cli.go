@@ -21,6 +21,7 @@ import (
 	"github.com/GizClaw/flowcraft/memory/recall/diagnostics"
 	"github.com/GizClaw/flowcraft/memory/retrieval"
 	"github.com/GizClaw/flowcraft/memory/retrieval/bbh"
+	retrievalmem "github.com/GizClaw/flowcraft/memory/retrieval/memory"
 	"github.com/GizClaw/flowcraft/sdk/llm"
 	recallv1 "github.com/GizClaw/flowcraft/sdk/recall"
 	sdkworkspace "github.com/GizClaw/flowcraft/sdk/workspace"
@@ -558,7 +559,7 @@ func buildRetrievalIndex(canonical, backend, dir string) (retrieval.Index, func(
 	}
 	switch backend {
 	case "", "memory":
-		return nil, nil, nil
+		return retrievalmem.New(), nil, nil
 	case "bbh":
 		cleanup := func() {}
 		if dir == "" {
