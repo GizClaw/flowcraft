@@ -2,6 +2,30 @@ package namespace
 
 import "testing"
 
+func TestRegisterDuplicateFails(t *testing.T) {
+	first, err := Register("duptest")
+	if err != nil {
+		t.Fatalf("Register first = %v", err)
+	}
+	if first.String() != "duptest" {
+		t.Fatalf("Register first prefix = %q", first.String())
+	}
+	if _, err := Register("duptest"); err == nil {
+		t.Fatal("Register duplicate succeeded, want error")
+	}
+}
+
+func TestMustRegisterAliasReusesRegisteredPrefix(t *testing.T) {
+	first, err := Register("aliastest")
+	if err != nil {
+		t.Fatalf("Register first = %v", err)
+	}
+	alias := MustRegisterAlias("aliastest")
+	if first.String() != alias.String() {
+		t.Fatalf("alias prefix = %q, want %q", alias.String(), first.String())
+	}
+}
+
 func TestUserScopeV2RoundTripDelimiterSafe(t *testing.T) {
 	p := &Prefix{name: "ltm"}
 	ns := p.UserScope("default", "bob__u_alice")

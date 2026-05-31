@@ -38,6 +38,21 @@ func MustRegister(name string) *Prefix {
 	return p
 }
 
+// MustRegisterAlias is MustRegister for deprecated compatibility packages that
+// intentionally share the same namespace owner as their canonical replacement.
+//
+// New subsystems should use MustRegister so accidental prefix collisions remain
+// visible at init time.
+func MustRegisterAlias(name string) *Prefix {
+	if !IsValidPrefix(name) {
+		panic(fmt.Errorf("retrieval/namespace: invalid prefix %q", name))
+	}
+	registryMu.Lock()
+	defer registryMu.Unlock()
+	registry[name] = struct{}{}
+	return &Prefix{name: name}
+}
+
 // String returns the raw prefix name.
 func (p *Prefix) String() string {
 	if p == nil {

@@ -43,7 +43,7 @@ package retrieval
 
 import retrievalns "github.com/GizClaw/flowcraft/memory/retrieval/namespace"
 
-var knowledgeNamespace = retrievalns.MustRegister("kb")
+var knowledgeNamespace = retrievalns.MustRegisterAlias("kb")
 
 // chunksSuffix is appended to dataset namespaces holding DerivedChunks.
 const chunksSuffix = "chunks"
