@@ -7,6 +7,7 @@ import (
 	"github.com/GizClaw/flowcraft/memory/recall"
 	"github.com/GizClaw/flowcraft/memory/recall/ops"
 	recallworkspace "github.com/GizClaw/flowcraft/memory/recall/store/workspace"
+	sdkworkspace "github.com/GizClaw/flowcraft/sdk/workspace"
 )
 
 type recallBundle struct {
@@ -61,7 +62,7 @@ func (workspaceRecallBackend) BuildRecall(_ context.Context, spec RecallSpec, de
 	if deps.Workspace == nil {
 		return RecallResource{}, fmt.Errorf("vessel assembly: recall workspace backend requires workspace")
 	}
-	b, err := recallworkspace.New(deps.Workspace, recallworkspace.WithRoot(defaultString(spec.Prefix, "recall")))
+	b, err := recallworkspace.New(sdkworkspace.Sub(deps.Workspace, defaultString(spec.Prefix, "recall")))
 	if err != nil {
 		return RecallResource{}, err
 	}

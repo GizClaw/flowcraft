@@ -6,29 +6,21 @@ import (
 )
 
 // pathHelper centralises the on-disk layout for one namespace.
-// Keeping all path math in a single struct lets the writer, reader,
-// flush, and compaction code stay agnostic of the workspace root or
-// namespace name they happen to be operating on, and makes it easy
-// to validate the layout in tests.
+// Keeping all path math behind one small type lets the writer, reader,
+// flush, and compaction code stay agnostic of the concrete workspace layout.
 type pathHelper struct {
-	root string // Index-level root within the workspace
-	ns   string // namespace name as supplied by the caller
+	ns string
 }
 
-// newPathHelper composes the per-namespace base path. An empty
-// Index root collapses to ns/...; a non-empty root nests as
-// root/ns/... so a single Workspace can host the index next to
-// recall/, knowledge/, history/, memories/ subtrees.
-func newPathHelper(root, ns string) pathHelper {
-	return pathHelper{root: root, ns: ns}
+// newPathHelper composes the per-namespace base path. Workspace-level
+// nesting is handled by sdk/workspace.Sub before the index is constructed.
+func newPathHelper(ns string) pathHelper {
+	return pathHelper{ns: ns}
 }
 
 // nsDir returns the namespace base directory.
 func (p pathHelper) nsDir() string {
-	if p.root == "" {
-		return p.ns
-	}
-	return path.Join(p.root, p.ns)
+	return p.ns
 }
 
 // manifestPath / manifestTmpPath are the canonical and staging

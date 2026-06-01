@@ -59,7 +59,7 @@ func (idx *Index) ensureNamespace(ctx context.Context, name string) (*namespaceS
 // memtable, (5) wire up the WAL writer, (6) start the heartbeat
 // goroutine that keeps our lock alive.
 func (idx *Index) openNamespaceLocked(ctx context.Context, st *namespaceState) error {
-	st.paths = newPathHelper(idx.cfg.root, st.name)
+	st.paths = newPathHelper(st.name)
 
 	lock, err := acquireLock(ctx, idx.ws, st.paths, idx.cfg.lockHeartbeat, idx.cfg.now())
 	if err != nil {

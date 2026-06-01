@@ -3,7 +3,6 @@ package workspace
 import (
 	"context"
 	"errors"
-	"path"
 	"sync"
 
 	"github.com/GizClaw/flowcraft/memory/recall"
@@ -14,9 +13,8 @@ import (
 )
 
 const (
-	defaultRoot = "recall"
-	stateFile   = "state.json"
-	stateTmp    = "state.json.tmp"
+	stateFile = "state.json"
+	stateTmp  = "state.json.tmp"
 )
 
 // Store is the durable canonical ledger plus its optional scope enumerator.
@@ -27,22 +25,12 @@ type Store interface {
 
 // Backend owns the workspace subtree shared by recall's durable adapters.
 type Backend struct {
-	mu   sync.Mutex
-	ws   sdkworkspace.Workspace
-	root string
+	mu sync.Mutex
+	ws sdkworkspace.Workspace
 }
 
 // Option configures a workspace backend.
 type Option func(*Backend)
-
-// WithRoot nests recall state under root inside the workspace.
-func WithRoot(root string) Option {
-	return func(b *Backend) {
-		if root != "" {
-			b.root = root
-		}
-	}
-}
 
 // Open creates a LocalWorkspace-backed recall durable backend at dir.
 func Open(dir string, opts ...Option) (*Backend, error) {
@@ -58,7 +46,7 @@ func New(ws sdkworkspace.Workspace, opts ...Option) (*Backend, error) {
 	if ws == nil {
 		return nil, errdefs.Validationf("recall workspace: nil workspace")
 	}
-	b := &Backend{ws: ws, root: defaultRoot}
+	b := &Backend{ws: ws}
 	for _, opt := range opts {
 		opt(b)
 	}
@@ -82,22 +70,8 @@ func (b *Backend) AsyncSemanticQueue() recall.AsyncSemanticQueue {
 // EvidenceStore returns the secondary evidence lookup adapter.
 func (b *Backend) EvidenceStore() recall.EvidenceStore { return &evidenceStore{b: b} }
 
-func (b *Backend) statePath() string {
-	if b.root == "" {
-		return stateFile
-	}
-	return path.Join(b.root, stateFile)
-}
-
-func (b *Backend) stateTmpPath() string {
-	if b.root == "" {
-		return stateTmp
-	}
-	return path.Join(b.root, stateTmp)
-}
-
 func (b *Backend) load(ctx context.Context) (state, error) {
-	raw, err := b.ws.Read(ctx, b.statePath())
+	raw, err := b.ws.Read(ctx, stateFile)
 	if err != nil {
 		if errors.Is(err, sdkworkspace.ErrNotFound) {
 			return newState(), nil
@@ -112,10 +86,10 @@ func (b *Backend) save(ctx context.Context, st state) error {
 	if err != nil {
 		return err
 	}
-	if err := b.ws.Write(ctx, b.stateTmpPath(), raw); err != nil {
+	if err := b.ws.Write(ctx, stateTmp, raw); err != nil {
 		return err
 	}
-	return b.ws.Rename(ctx, b.stateTmpPath(), b.statePath())
+	return b.ws.Rename(ctx, stateTmp, stateFile)
 }
 
 func samePartition(a, b domain.Scope) bool {
