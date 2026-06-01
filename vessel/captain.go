@@ -96,10 +96,10 @@ type Captain struct {
 	// this WaitGroup so a Drain waits for the bus subscription to
 	// fully close.
 	inflight sync.WaitGroup
-	// submitMu serializes foreground admission against Drain/Stop's
-	// transition to a non-accepting phase. That keeps inflight.Add
-	// from racing with inflight.Wait without making callback paths
-	// contend with the broader lifecycle lock.
+	// submitMu serializes foreground admission against transitions out
+	// of PhaseRunning. For Drain/Stop this keeps inflight.Add from
+	// racing with inflight.Wait; for failure transitions it keeps the
+	// root context snapshot coherent with the accepted phase.
 	submitMu sync.Mutex
 
 	// mu guards phase transitions to keep them monotonic per the
@@ -679,9 +679,11 @@ func (c *Captain) Stop(ctx context.Context) error {
 // and closing owned resources — instead of leaving a zombie
 // PhaseFailed Captain that the operator might miss.
 func (c *Captain) transitionToFailed(reason string) {
+	c.submitMu.Lock()
 	c.mu.Lock()
 	if c.Phase() != PhaseRunning {
 		c.mu.Unlock()
+		c.submitMu.Unlock()
 		return
 	}
 	c.transitionPhaseLocked(PhaseFailed, reason)
@@ -707,6 +709,7 @@ func (c *Captain) transitionToFailed(reason string) {
 		maxRestarts > 0 &&
 		c.restartAttempts >= maxRestarts
 	c.mu.Unlock()
+	c.submitMu.Unlock()
 
 	if exhausted {
 		c.finalize("restart attempts exhausted: " + reason)
