@@ -96,6 +96,11 @@ type Captain struct {
 	// this WaitGroup so a Drain waits for the bus subscription to
 	// fully close.
 	inflight sync.WaitGroup
+	// submitMu serializes foreground admission against Drain/Stop's
+	// transition to a non-accepting phase. That keeps inflight.Add
+	// from racing with inflight.Wait without making callback paths
+	// contend with the broader lifecycle lock.
+	submitMu sync.Mutex
 
 	// mu guards phase transitions to keep them monotonic per the
 	// state diagram in [Phase]. Reads happen via Phase() which
@@ -428,24 +433,24 @@ func (c *Captain) Resume(ctx context.Context, runID string) (*Handle, error) {
 // extraOpts lets Resume inject agent.WithResumeFrom without
 // duplicating the admission / handle / goroutine plumbing.
 func (c *Captain) submit(ctx context.Context, agentName string, req agent.Request, extraOpts []agent.RunOption) (*Handle, error) {
-	c.mu.Lock()
+	c.submitMu.Lock()
 	phase := c.Phase()
 	if !phase.AcceptsRequests() {
-		c.mu.Unlock()
+		c.submitMu.Unlock()
 		return nil, errdefs.NotAvailablef("vessel: not accepting requests in phase %q", phase)
 	}
 	entry, ok := c.entries[agentName]
 	if !ok {
-		c.mu.Unlock()
+		c.submitMu.Unlock()
 		return nil, errdefs.NotFoundf("vessel: no agent named %q", agentName)
 	}
 	if entry.spec.Sidecar {
-		c.mu.Unlock()
+		c.submitMu.Unlock()
 		return nil, errdefs.Conflictf("vessel: agent %q is a sidecar; trigger via bus, not Submit", agentName)
 	}
 
 	if c.budget.hourExhausted() {
-		c.mu.Unlock()
+		c.submitMu.Unlock()
 		return nil, errdefs.RateLimitf("vessel: hourly token budget exhausted")
 	}
 
@@ -454,11 +459,11 @@ func (c *Captain) submit(ctx context.Context, agentName string, req agent.Reques
 	}
 	h := newHandle(req.RunID, agentName)
 	rootCtx := c.rootCtx
-	// Keep Add under the lifecycle lock. Drain/Stop transition out of
-	// PhaseRunning while holding the same lock and only call Wait after
+	// Keep Add in the admission critical section. Drain/Stop transition
+	// out of PhaseRunning while holding submitMu and only call Wait after
 	// releasing it, so no new Submit can race Add against Wait.
 	c.inflight.Add(1)
-	c.mu.Unlock()
+	c.submitMu.Unlock()
 
 	// runCtx merges caller ctx with the Captain's root so Stop
 	// cancels in-flight runs even when the caller never cancels
@@ -550,12 +555,14 @@ func (c *Captain) Call(ctx context.Context, agentName string, req agent.Request)
 // After Drain returns successfully the phase advances to
 // PhaseStopped and the bus (if owned) is closed.
 func (c *Captain) Drain(ctx context.Context) error {
+	c.submitMu.Lock()
 	c.mu.Lock()
 	switch c.Phase() {
 	case PhasePending:
 		c.transitionPhaseLocked(PhaseStopped, "drain on pending")
 		c.closeOwnedBus()
 		c.mu.Unlock()
+		c.submitMu.Unlock()
 		return nil
 	case PhaseRunning:
 		c.transitionPhaseLocked(PhaseDraining, "")
@@ -563,9 +570,11 @@ func (c *Captain) Drain(ctx context.Context) error {
 		// Already in teardown.
 	case PhaseStopped, PhaseFailed:
 		c.mu.Unlock()
+		c.submitMu.Unlock()
 		return nil
 	default:
 		c.mu.Unlock()
+		c.submitMu.Unlock()
 		return errdefs.Conflictf("vessel: cannot Drain from phase %q", c.Phase())
 	}
 	// Sidecars stop accepting new envelopes by closing their
@@ -573,6 +582,7 @@ func (c *Captain) Drain(ctx context.Context) error {
 	// by the inflight WG below.
 	c.stopSidecars()
 	c.mu.Unlock()
+	c.submitMu.Unlock()
 
 	done := make(chan struct{})
 	go func() {
@@ -603,18 +613,21 @@ func (c *Captain) Drain(ctx context.Context) error {
 // will exit shortly after on their own (assuming the agent honours
 // ctx, which the engine.Engine contract requires).
 func (c *Captain) Stop(ctx context.Context) error {
+	c.submitMu.Lock()
 	c.mu.Lock()
 	switch c.Phase() {
 	case PhasePending:
 		c.transitionPhaseLocked(PhaseStopped, "stop on pending")
 		c.closeOwnedBus()
 		c.mu.Unlock()
+		c.submitMu.Unlock()
 		return nil
 	case PhaseRunning, PhaseDraining, PhaseFailed:
 		c.transitionPhaseLocked(PhaseStopping, "")
 	case PhaseStopping:
 	case PhaseStopped:
 		c.mu.Unlock()
+		c.submitMu.Unlock()
 		return nil
 	}
 	if c.rootCancel != nil {
@@ -624,6 +637,7 @@ func (c *Captain) Stop(ctx context.Context) error {
 	c.probes.stop()
 	c.stopSidecars()
 	c.mu.Unlock()
+	c.submitMu.Unlock()
 
 	done := make(chan struct{})
 	go func() {
