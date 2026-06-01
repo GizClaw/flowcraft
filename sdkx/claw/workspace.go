@@ -5,40 +5,45 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
-	"reflect"
 	"strings"
 
 	sdkworkspace "github.com/GizClaw/flowcraft/sdk/workspace"
-	"gopkg.in/yaml.v3"
 )
 
-const configDir = "config"
+const defaultConfigRoot = "config"
 
 // Config describes a self-contained local Claw runtime.
 type Config struct {
-	Workspace WorkspaceConfig `json:"workspace,omitempty" yaml:"workspace,omitempty"`
-	Models    ModelsConfig    `json:"models,omitempty" yaml:"models,omitempty"`
-	Memory    MemoryConfig    `json:"memory,omitempty" yaml:"memory,omitempty"`
-	Agent     AgentConfig     `json:"agent,omitempty" yaml:"agent,omitempty"`
+	Workspace WorkspaceConfig `json:"workspace,omitempty"`
+	Models    ModelsConfig    `json:"models,omitempty"`
+	Memory    MemoryConfig    `json:"memory,omitempty"`
+	Agent     AgentConfig     `json:"agent,omitempty"`
 }
 
 // WorkspaceConfig names the workspace subtrees Claw owns.
 type WorkspaceConfig struct {
-	RecallRoot    string `json:"recall_root,omitempty" yaml:"recall_root,omitempty"`
-	RetrievalRoot string `json:"retrieval_root,omitempty" yaml:"retrieval_root,omitempty"`
+	MemoryRoot string `json:"memory_root,omitempty"`
+	StateRoot  string `json:"state_root,omitempty"`
 }
 
-type localRoot interface {
-	Root() string
+type configOverrides struct {
+	workspace *WorkspaceConfig
+	models    *ModelsConfig
+	memory    *MemoryConfig
+	agent     *AgentConfig
+}
+
+// DefaultConfig returns Claw's in-process defaults without reading
+// workspace configuration files.
+func DefaultConfig() Config {
+	return defaultConfig()
 }
 
 func defaultConfig() Config {
 	return Config{
 		Workspace: WorkspaceConfig{
-			RecallRoot:    "memory/recall",
-			RetrievalRoot: "memory/retrieval/bbh",
+			MemoryRoot: "memory",
+			StateRoot:  "state",
 		},
 		Models: ModelsConfig{
 			Chat: "default",
@@ -76,88 +81,30 @@ func defaultConfig() Config {
 	}
 }
 
-// LoadConfig reads Claw configuration from the workspace without expanding
-// environment variables. Call Config.ExpandEnv explicitly at process edges
-// such as CLIs that want ${VAR} substitution.
-func LoadConfig(ctx context.Context, ws sdkworkspace.Workspace) (Config, error) {
-	return loadConfig(ctx, ws)
-}
-
-func loadConfig(ctx context.Context, ws sdkworkspace.Workspace) (Config, error) {
+func loadConfig(ctx context.Context, ws sdkworkspace.Workspace, root string) (Config, error) {
 	cfg := defaultConfig()
 	if ws == nil {
-		return cfg, nil
-	}
-
-	if ok, err := mergeConfigFile(ctx, ws, "config/claw.yaml", &cfg); err != nil {
-		return Config{}, err
-	} else if ok {
 		cfg.applyDefaults()
 		return cfg, nil
 	}
-	if ok, err := mergeConfigFile(ctx, ws, "config/claw.yml", &cfg); err != nil {
-		return Config{}, err
-	} else if ok {
-		cfg.applyDefaults()
-		return cfg, nil
-	}
-	if ok, err := mergeConfigFile(ctx, ws, "config/claw.json", &cfg); err != nil {
-		return Config{}, err
-	} else if ok {
-		cfg.applyDefaults()
-		return cfg, nil
-	}
-
-	if _, err := mergeConfigFile(ctx, ws, "config/workspace.yaml", &cfg.Workspace); err != nil {
+	root = cleanConfigRoot(root)
+	if _, err := mergeJSONConfigFile(ctx, ws, joinConfigPath(root, "workspace.json"), &cfg.Workspace); err != nil {
 		return Config{}, err
 	}
-	if _, err := mergeConfigFile(ctx, ws, "config/workspace.yml", &cfg.Workspace); err != nil {
+	if _, err := mergeJSONConfigFile(ctx, ws, joinConfigPath(root, "models.json"), &cfg.Models); err != nil {
 		return Config{}, err
 	}
-	if _, err := mergeConfigFile(ctx, ws, "config/workspace.json", &cfg.Workspace); err != nil {
+	if _, err := mergeJSONConfigFile(ctx, ws, joinConfigPath(root, "memory.json"), &cfg.Memory); err != nil {
 		return Config{}, err
 	}
-	if _, err := mergeConfigFile(ctx, ws, "config/models.yaml", &cfg.Models); err != nil {
+	if _, err := mergeJSONConfigFile(ctx, ws, joinConfigPath(root, "agent.json"), &cfg.Agent); err != nil {
 		return Config{}, err
 	}
-	if _, err := mergeConfigFile(ctx, ws, "config/models.yml", &cfg.Models); err != nil {
-		return Config{}, err
-	}
-	if _, err := mergeConfigFile(ctx, ws, "config/models.json", &cfg.Models); err != nil {
-		return Config{}, err
-	}
-	if _, err := mergeConfigFile(ctx, ws, "config/memory.yaml", &cfg.Memory); err != nil {
-		return Config{}, err
-	}
-	if _, err := mergeConfigFile(ctx, ws, "config/memory.yml", &cfg.Memory); err != nil {
-		return Config{}, err
-	}
-	if _, err := mergeConfigFile(ctx, ws, "config/memory.json", &cfg.Memory); err != nil {
-		return Config{}, err
-	}
-	if _, err := mergeConfigFile(ctx, ws, "config/agent.yaml", &cfg.Agent); err != nil {
-		return Config{}, err
-	}
-	if _, err := mergeConfigFile(ctx, ws, "config/agent.yml", &cfg.Agent); err != nil {
-		return Config{}, err
-	}
-	if _, err := mergeConfigFile(ctx, ws, "config/agent.json", &cfg.Agent); err != nil {
-		return Config{}, err
-	}
-
 	cfg.applyDefaults()
 	return cfg, nil
 }
 
-// ExpandEnv expands ${VAR} and $VAR in every string field in Config.
-func (c *Config) ExpandEnv() {
-	if c == nil {
-		return
-	}
-	expandEnvValue(reflect.ValueOf(c).Elem())
-}
-
-func mergeConfigFile(ctx context.Context, ws sdkworkspace.Workspace, path string, out any) (bool, error) {
+func mergeJSONConfigFile(ctx context.Context, ws sdkworkspace.Workspace, path string, out any) (bool, error) {
 	raw, err := ws.Read(ctx, path)
 	if err != nil {
 		if errors.Is(err, sdkworkspace.ErrNotFound) {
@@ -165,25 +112,52 @@ func mergeConfigFile(ctx context.Context, ws sdkworkspace.Workspace, path string
 		}
 		return false, err
 	}
-	if strings.HasSuffix(path, ".json") {
-		if err := json.Unmarshal(raw, out); err != nil {
-			return false, fmt.Errorf("claw: decode %s: %w", path, err)
-		}
-		return true, nil
-	}
-	if err := yaml.Unmarshal(raw, out); err != nil {
+	if err := json.Unmarshal(raw, out); err != nil {
 		return false, fmt.Errorf("claw: decode %s: %w", path, err)
 	}
 	return true, nil
 }
 
+func cleanConfigRoot(root string) string {
+	root = strings.Trim(strings.TrimSpace(root), "/")
+	if root == "" {
+		return defaultConfigRoot
+	}
+	if root == "." {
+		return "."
+	}
+	return root
+}
+
+func joinConfigPath(root, name string) string {
+	if root == "" || root == "." {
+		return name
+	}
+	return root + "/" + name
+}
+
+func (c *Config) applyOverrides(overrides configOverrides) {
+	if overrides.workspace != nil {
+		c.Workspace = *overrides.workspace
+	}
+	if overrides.models != nil {
+		c.Models = *overrides.models
+	}
+	if overrides.memory != nil {
+		c.Memory = *overrides.memory
+	}
+	if overrides.agent != nil {
+		c.Agent = *overrides.agent
+	}
+}
+
 func (c *Config) applyDefaults() {
 	def := defaultConfig()
-	if strings.TrimSpace(c.Workspace.RecallRoot) == "" {
-		c.Workspace.RecallRoot = def.Workspace.RecallRoot
+	if strings.TrimSpace(c.Workspace.MemoryRoot) == "" {
+		c.Workspace.MemoryRoot = def.Workspace.MemoryRoot
 	}
-	if strings.TrimSpace(c.Workspace.RetrievalRoot) == "" {
-		c.Workspace.RetrievalRoot = def.Workspace.RetrievalRoot
+	if strings.TrimSpace(c.Workspace.StateRoot) == "" {
+		c.Workspace.StateRoot = def.Workspace.StateRoot
 	}
 	if strings.TrimSpace(c.Models.Chat) == "" {
 		c.Models.Chat = def.Models.Chat
@@ -235,110 +209,4 @@ func (c *Config) applyDefaults() {
 		c.Agent.MaxIterations = def.Agent.MaxIterations
 	}
 	c.ensureAgentGraph()
-}
-
-func localSubWorkspace(ws sdkworkspace.Workspace, rel string) (sdkworkspace.Workspace, error) {
-	rel = strings.TrimSpace(rel)
-	if rel == "" || rel == "." {
-		return ws, nil
-	}
-	rooted, ok := ws.(localRoot)
-	if !ok {
-		return nil, fmt.Errorf("claw: workspace subtree %q requires a local workspace", rel)
-	}
-	return sdkworkspace.NewLocalWorkspace(filepath.Join(rooted.Root(), filepath.FromSlash(rel)))
-}
-
-func expandEnvValue(v reflect.Value) {
-	if !v.IsValid() {
-		return
-	}
-	if v.Kind() == reflect.Pointer {
-		if v.IsNil() {
-			return
-		}
-		expandEnvValue(v.Elem())
-		return
-	}
-	if !v.CanSet() && v.Kind() != reflect.Map && v.Kind() != reflect.Slice && v.Kind() != reflect.Struct && v.Kind() != reflect.Interface {
-		return
-	}
-	switch v.Kind() {
-	case reflect.String:
-		if v.CanSet() {
-			v.SetString(os.ExpandEnv(v.String()))
-		}
-	case reflect.Struct:
-		for i := 0; i < v.NumField(); i++ {
-			field := v.Field(i)
-			if field.CanSet() || field.Kind() == reflect.Map || field.Kind() == reflect.Slice || field.Kind() == reflect.Struct || field.Kind() == reflect.Pointer || field.Kind() == reflect.Interface {
-				expandEnvValue(field)
-			}
-		}
-	case reflect.Slice:
-		for i := 0; i < v.Len(); i++ {
-			expandEnvValue(v.Index(i))
-		}
-	case reflect.Map:
-		if v.Type().Key().Kind() != reflect.String {
-			return
-		}
-		for _, key := range v.MapKeys() {
-			value := expandEnvMapValue(v.MapIndex(key))
-			v.SetMapIndex(key, value)
-		}
-	case reflect.Interface:
-		if v.IsNil() {
-			return
-		}
-		expanded := expandEnvInterface(v.Interface())
-		if v.CanSet() {
-			v.Set(reflect.ValueOf(expanded))
-		}
-	}
-}
-
-func expandEnvMapValue(v reflect.Value) reflect.Value {
-	if !v.IsValid() {
-		return v
-	}
-	if v.Kind() == reflect.Struct || v.Kind() == reflect.Map || v.Kind() == reflect.Slice || v.Kind() == reflect.Pointer || v.Kind() == reflect.Interface {
-		cp := reflect.New(v.Type()).Elem()
-		cp.Set(v)
-		expandEnvValue(cp)
-		return cp
-	}
-	expanded := expandEnvInterface(v.Interface())
-	if expanded == nil {
-		return reflect.Zero(v.Type())
-	}
-	ev := reflect.ValueOf(expanded)
-	if ev.Type().AssignableTo(v.Type()) {
-		return ev
-	}
-	if ev.Type().ConvertibleTo(v.Type()) {
-		return ev.Convert(v.Type())
-	}
-	return v
-}
-
-func expandEnvInterface(v any) any {
-	switch x := v.(type) {
-	case string:
-		return os.ExpandEnv(x)
-	case []any:
-		out := make([]any, len(x))
-		for i, item := range x {
-			out[i] = expandEnvInterface(item)
-		}
-		return out
-	case map[string]any:
-		out := make(map[string]any, len(x))
-		for k, item := range x {
-			out[k] = expandEnvInterface(item)
-		}
-		return out
-	default:
-		return v
-	}
 }

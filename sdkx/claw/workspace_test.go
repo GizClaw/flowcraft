@@ -7,30 +7,45 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/workspace"
 )
 
-func TestLoadConfigUsesDomainFiles(t *testing.T) {
+func TestDefaultConfigReturnsUsableDefaults(t *testing.T) {
+	cfg := DefaultConfig()
+	if cfg.Workspace.MemoryRoot == "" || cfg.Workspace.StateRoot == "" {
+		t.Fatalf("workspace defaults were not applied: %+v", cfg.Workspace)
+	}
+	if cfg.Models.Chat == "" {
+		t.Fatal("Models.Chat is empty")
+	}
+	if cfg.Agent.ID == "" {
+		t.Fatal("Agent.ID is empty")
+	}
+}
+
+func TestLoadConfigUsesWorkspaceJSONFiles(t *testing.T) {
 	ws, err := workspace.NewLocalWorkspace(t.TempDir())
 	if err != nil {
 		t.Fatalf("NewLocalWorkspace: %v", err)
 	}
 	ctx := context.Background()
-	if err := ws.Write(ctx, "config/models.yaml", []byte(`
-chat: fast
-llm:
-  fast:
-    provider: mock
-    model: mock-fast
-`)); err != nil {
+	if err := ws.Write(ctx, "config/models.json", []byte(`{
+  "chat": "fast",
+  "llm": {
+    "fast": {
+      "provider": "mock",
+      "model": "mock-fast"
+    }
+  }
+}`)); err != nil {
 		t.Fatalf("Write models: %v", err)
 	}
-	if err := ws.Write(ctx, "config/agent.yaml", []byte(`
-id: local-agent
-name: Local Agent
-system_prompt: stay concise
-`)); err != nil {
+	if err := ws.Write(ctx, "config/agent.json", []byte(`{
+  "id": "local-agent",
+  "name": "Local Agent",
+  "system_prompt": "stay concise"
+}`)); err != nil {
 		t.Fatalf("Write agent: %v", err)
 	}
 
-	cfg, err := loadConfig(ctx, ws)
+	cfg, err := loadConfig(ctx, ws, "config")
 	if err != nil {
 		t.Fatalf("loadConfig: %v", err)
 	}
@@ -43,48 +58,43 @@ system_prompt: stay concise
 	if cfg.Agent.ID != "local-agent" {
 		t.Fatalf("Agent.ID = %q, want local-agent", cfg.Agent.ID)
 	}
-	if cfg.Workspace.RecallRoot == "" || cfg.Workspace.RetrievalRoot == "" {
+	if cfg.Workspace.MemoryRoot == "" || cfg.Workspace.StateRoot == "" {
 		t.Fatalf("workspace defaults were not applied: %+v", cfg.Workspace)
 	}
 }
 
-func TestConfigExpandEnv(t *testing.T) {
-	t.Setenv("CLAW_TEST_MODEL", "mock-fast")
-	t.Setenv("CLAW_TEST_KEY", "secret")
-	cfg := Config{
-		Models: ModelsConfig{
-			Chat: "chat",
-			LLM: map[string]ModelConfig{
-				"chat": {
-					Provider: "mock",
-					Model:    "${CLAW_TEST_MODEL}",
-					APIKey:   "$CLAW_TEST_KEY",
-					Config: map[string]any{
-						"nested": []any{"${CLAW_TEST_MODEL}"},
-					},
-				},
-			},
+func TestConfigOptionsOverrideWorkspaceJSON(t *testing.T) {
+	ws, err := workspace.NewLocalWorkspace(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewLocalWorkspace: %v", err)
+	}
+	if err := ws.Write(context.Background(), "config/models.json", []byte(`{
+  "chat": "from-file",
+  "llm": {
+    "from-file": {
+      "provider": "mock",
+      "model": "mock-file"
+    }
+  }
+}`)); err != nil {
+		t.Fatalf("Write models: %v", err)
+	}
+
+	app, err := New(ws, WithModels(ModelsConfig{
+		Chat: "override",
+		LLM: map[string]ModelConfig{
+			"override": {Provider: "mock", Model: "mock-override"},
 		},
+	}))
+	if err != nil {
+		t.Fatalf("New: %v", err)
 	}
-	cfg.ExpandEnv()
-	if got := cfg.Models.LLM["chat"].Model; got != "mock-fast" {
-		t.Fatalf("Model = %q, want mock-fast", got)
+	defer app.Close()
+	cfg := app.Config()
+	if cfg.Models.Chat != "override" {
+		t.Fatalf("Models.Chat = %q, want override", cfg.Models.Chat)
 	}
-	if got := cfg.Models.LLM["chat"].APIKey; got != "secret" {
-		t.Fatalf("APIKey = %q, want secret", got)
+	if cfg.Models.LLM["override"].Model != "mock-override" {
+		t.Fatalf("override model = %q, want mock-override", cfg.Models.LLM["override"].Model)
 	}
-	nested := cfg.Models.LLM["chat"].Config["nested"].([]any)
-	if got := nested[0]; got != "mock-fast" {
-		t.Fatalf("nested env = %q, want mock-fast", got)
-	}
-}
-
-func TestLocalSubWorkspaceRequiresLocalRoot(t *testing.T) {
-	if _, err := localSubWorkspace(fakeWorkspace{}, "x"); err == nil {
-		t.Fatal("localSubWorkspace succeeded for non-local workspace")
-	}
-}
-
-type fakeWorkspace struct {
-	workspace.Workspace
 }

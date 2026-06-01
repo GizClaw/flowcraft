@@ -17,17 +17,17 @@ import (
 
 // AgentConfig configures the single agent owned by a Claw.
 type AgentConfig struct {
-	ID          string                `json:"id,omitempty" yaml:"id,omitempty"`
-	Name        string                `json:"name,omitempty" yaml:"name,omitempty"`
-	Description string                `json:"description,omitempty" yaml:"description,omitempty"`
-	Tools       []string              `json:"tools,omitempty" yaml:"tools,omitempty"`
-	Graph       graph.GraphDefinition `json:"graph,omitempty" yaml:"graph,omitempty"`
+	ID          string                `json:"id,omitempty"`
+	Name        string                `json:"name,omitempty"`
+	Description string                `json:"description,omitempty"`
+	Tools       []string              `json:"tools,omitempty"`
+	Graph       graph.GraphDefinition `json:"graph,omitempty"`
 
 	// Fallback fields used only when Graph is omitted.
-	SystemPrompt  string   `json:"system_prompt,omitempty" yaml:"system_prompt,omitempty"`
-	Model         string   `json:"model,omitempty" yaml:"model,omitempty"`
-	MaxIterations int      `json:"max_iterations,omitempty" yaml:"max_iterations,omitempty"`
-	Temperature   *float64 `json:"temperature,omitempty" yaml:"temperature,omitempty"`
+	SystemPrompt  string   `json:"system_prompt,omitempty"`
+	Model         string   `json:"model,omitempty"`
+	MaxIterations int      `json:"max_iterations,omitempty"`
+	Temperature   *float64 `json:"temperature,omitempty"`
 }
 
 func (c *Claw) buildAgent() agent.Agent {

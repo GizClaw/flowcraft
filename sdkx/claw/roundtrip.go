@@ -143,12 +143,26 @@ func (c *Claw) runRoundTrip(ctx context.Context, id string, req Request, events 
 			return
 		}
 	}
+	if err := c.saveContextState(ctx, id, result); err != nil {
+		events <- Event{Type: EventError, Err: err.Error(), IsError: true, Result: result}
+		return
+	}
 	events <- Event{Type: EventResult, Result: result}
 }
 
 func (c *Claw) boardSeeder() agent.BoardSeeder {
 	return agent.BoardSeederFunc(func(ctx context.Context, _ agent.RunInfo, req *agent.Request) (*engine.Board, error) {
 		board := engine.NewBoard()
+		st, err := c.loadContextState(ctx, req.ContextID)
+		if err != nil {
+			return nil, fmt.Errorf("claw: load context state: %w", err)
+		}
+		for k, v := range st.Vars {
+			board.SetVar(k, v)
+		}
+		if len(st.Vars) > 0 {
+			board.SetVar(workspaceStateVar, st.Vars)
+		}
 		if c.memory != nil {
 			memText, err := c.memory.recallContext(ctx, req.Message.Content())
 			if err != nil {
