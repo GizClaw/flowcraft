@@ -10,69 +10,71 @@ import (
 	recallworkspace "github.com/GizClaw/flowcraft/memory/recall/store/workspace"
 	"github.com/GizClaw/flowcraft/memory/retrieval/bbh"
 	"github.com/GizClaw/flowcraft/sdk/model"
+	sdkworkspace "github.com/GizClaw/flowcraft/sdk/workspace"
 )
 
 // MemoryConfig controls Claw's recall integration.
 type MemoryConfig struct {
-	Enabled   bool                  `json:"enabled,omitempty" yaml:"enabled,omitempty"`
-	Scope     MemoryScopeConfig     `json:"scope,omitempty" yaml:"scope,omitempty"`
-	Write     MemoryWriteConfig     `json:"write,omitempty" yaml:"write,omitempty"`
-	Extract   MemoryExtractConfig   `json:"extract,omitempty" yaml:"extract,omitempty"`
-	Recall    MemoryRecallConfig    `json:"recall,omitempty" yaml:"recall,omitempty"`
-	Retrieval MemoryRetrievalConfig `json:"retrieval,omitempty" yaml:"retrieval,omitempty"`
-	Embedding MemoryEmbeddingConfig `json:"embedding,omitempty" yaml:"embedding,omitempty"`
+	Enabled   bool                  `json:"enabled,omitempty"`
+	Scope     MemoryScopeConfig     `json:"scope,omitempty"`
+	Write     MemoryWriteConfig     `json:"write,omitempty"`
+	Extract   MemoryExtractConfig   `json:"extract,omitempty"`
+	Recall    MemoryRecallConfig    `json:"recall,omitempty"`
+	Retrieval MemoryRetrievalConfig `json:"retrieval,omitempty"`
+	Embedding MemoryEmbeddingConfig `json:"embedding,omitempty"`
 
 	// Deprecated flat fields kept for old local configs.
-	Backend          string     `json:"backend,omitempty" yaml:"backend,omitempty"`
-	RuntimeID        string     `json:"runtime_id,omitempty" yaml:"runtime_id,omitempty"`
-	UserID           string     `json:"user_id,omitempty" yaml:"user_id,omitempty"`
-	AgentID          string     `json:"agent_id,omitempty" yaml:"agent_id,omitempty"`
-	TopK             int        `json:"top_k,omitempty" yaml:"top_k,omitempty"`
-	Graph            bool       `json:"graph,omitempty" yaml:"graph,omitempty"`
-	SaveConversation bool       `json:"save_conversation,omitempty" yaml:"save_conversation,omitempty"`
-	BBH              bbh.Config `json:"bbh,omitempty" yaml:"bbh,omitempty"`
+	Backend          string     `json:"backend,omitempty"`
+	RuntimeID        string     `json:"runtime_id,omitempty"`
+	UserID           string     `json:"user_id,omitempty"`
+	AgentID          string     `json:"agent_id,omitempty"`
+	TopK             int        `json:"top_k,omitempty"`
+	Graph            bool       `json:"graph,omitempty"`
+	SaveConversation bool       `json:"save_conversation,omitempty"`
+	BBH              bbh.Config `json:"bbh,omitempty"`
 }
 
 type MemoryScopeConfig struct {
-	RuntimeID string `json:"runtime_id,omitempty" yaml:"runtime_id,omitempty"`
-	UserID    string `json:"user_id,omitempty" yaml:"user_id,omitempty"`
-	AgentID   string `json:"agent_id,omitempty" yaml:"agent_id,omitempty"`
+	RuntimeID string `json:"runtime_id,omitempty"`
+	UserID    string `json:"user_id,omitempty"`
+	AgentID   string `json:"agent_id,omitempty"`
 }
 
 type MemoryWriteConfig struct {
-	SaveConversation bool   `json:"save_conversation,omitempty" yaml:"save_conversation,omitempty"`
-	Mode             string `json:"mode,omitempty" yaml:"mode,omitempty"`
-	Tier             string `json:"tier,omitempty" yaml:"tier,omitempty"`
+	SaveConversation bool   `json:"save_conversation,omitempty"`
+	Mode             string `json:"mode,omitempty"`
+	Tier             string `json:"tier,omitempty"`
 }
 
 type MemoryExtractConfig struct {
-	Enabled      bool                     `json:"enabled,omitempty" yaml:"enabled,omitempty"`
-	Model        string                   `json:"model,omitempty" yaml:"model,omitempty"`
-	Mode         recall.LLMExtractionMode `json:"mode,omitempty" yaml:"mode,omitempty"`
-	SystemPrompt string                   `json:"system_prompt,omitempty" yaml:"system_prompt,omitempty"`
-	Temperature  *float64                 `json:"temperature,omitempty" yaml:"temperature,omitempty"`
-	SchemaName   string                   `json:"schema_name,omitempty" yaml:"schema_name,omitempty"`
+	Enabled      bool                     `json:"enabled,omitempty"`
+	Model        string                   `json:"model,omitempty"`
+	Mode         recall.LLMExtractionMode `json:"mode,omitempty"`
+	SystemPrompt string                   `json:"system_prompt,omitempty"`
+	Temperature  *float64                 `json:"temperature,omitempty"`
+	SchemaName   string                   `json:"schema_name,omitempty"`
 }
 
 type MemoryRecallConfig struct {
-	Enabled        bool `json:"enabled,omitempty" yaml:"enabled,omitempty"`
-	TopK           int  `json:"top_k,omitempty" yaml:"top_k,omitempty"`
-	GraphEnabled   bool `json:"graph_enabled,omitempty" yaml:"graph_enabled,omitempty"`
-	IncludeRetired bool `json:"include_retired,omitempty" yaml:"include_retired,omitempty"`
+	Enabled        bool `json:"enabled,omitempty"`
+	TopK           int  `json:"top_k,omitempty"`
+	GraphEnabled   bool `json:"graph_enabled,omitempty"`
+	IncludeRetired bool `json:"include_retired,omitempty"`
 }
 
 type MemoryRetrievalConfig struct {
-	Backend string     `json:"backend,omitempty" yaml:"backend,omitempty"`
-	BBH     bbh.Config `json:"bbh,omitempty" yaml:"bbh,omitempty"`
+	Backend string     `json:"backend,omitempty"`
+	BBH     bbh.Config `json:"bbh,omitempty"`
 }
 
 type MemoryEmbeddingConfig struct {
-	Enabled bool   `json:"enabled,omitempty" yaml:"enabled,omitempty"`
-	Model   string `json:"model,omitempty" yaml:"model,omitempty"`
+	Enabled bool   `json:"enabled,omitempty"`
+	Model   string `json:"model,omitempty"`
 }
 
 type memoryRuntime struct {
 	mem     recall.Memory
+	side    recall.SideEffectProcessor
 	backend *recallworkspace.Backend
 	scope   recall.Scope
 	cfg     MemoryConfig
@@ -85,7 +87,8 @@ func (c *Claw) buildMemory(ctx context.Context) (*memoryRuntime, error) {
 
 	memCfg := c.cfg.Memory.normalized(c.cfg.Agent.ID)
 	opts := []recall.Option{recall.WithGraphEnabled(memCfg.Recall.GraphEnabled)}
-	backend, err := recallworkspace.New(c.ws, recallworkspace.WithRoot(c.cfg.Workspace.RecallRoot))
+	memoryWS := sdkworkspace.Sub(c.ws, c.cfg.Workspace.MemoryRoot)
+	backend, err := recallworkspace.New(memoryWS)
 	if err != nil {
 		return nil, err
 	}
@@ -99,11 +102,7 @@ func (c *Claw) buildMemory(ctx context.Context) (*memoryRuntime, error) {
 	switch strings.TrimSpace(memCfg.Retrieval.Backend) {
 	case "", "memory":
 	case "bbh":
-		retrievalWS, err := localSubWorkspace(c.ws, c.cfg.Workspace.RetrievalRoot)
-		if err != nil {
-			return nil, err
-		}
-		index, err := bbh.New(retrievalWS, bbh.WithConfig(memCfg.Retrieval.BBH))
+		index, err := bbh.New(memoryWS, bbh.WithConfig(memCfg.Retrieval.BBH))
 		if err != nil {
 			return nil, err
 		}
@@ -144,6 +143,7 @@ func (c *Claw) buildMemory(ctx context.Context) (*memoryRuntime, error) {
 	if err != nil {
 		return nil, err
 	}
+	side, _ := recall.NewSideEffectProcessor(mem)
 	scope := recall.Scope{
 		RuntimeID: memCfg.Scope.RuntimeID,
 		UserID:    memCfg.Scope.UserID,
@@ -151,6 +151,7 @@ func (c *Claw) buildMemory(ctx context.Context) (*memoryRuntime, error) {
 	}
 	return &memoryRuntime{
 		mem:     mem,
+		side:    side,
 		backend: backend,
 		scope:   scope,
 		cfg:     memCfg,
@@ -218,6 +219,21 @@ func (m *memoryRuntime) saveTurn(ctx context.Context, contextID, userText string
 		ObservedAt: now,
 		Tier:       m.cfg.Write.Tier,
 		Mode:       parseWriteMode(m.cfg.Write.Mode),
+	})
+	if err != nil {
+		return err
+	}
+	return m.drainSideEffects(ctx)
+}
+
+func (m *memoryRuntime) drainSideEffects(ctx context.Context) error {
+	if m == nil || m.side == nil {
+		return nil
+	}
+	_, err := m.side.ProcessSideEffects(ctx, recall.SideEffectProcessOptions{
+		WorkerID: "claw",
+		Scope:    m.scope,
+		Limit:    100,
 	})
 	return err
 }

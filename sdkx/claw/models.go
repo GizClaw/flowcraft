@@ -27,25 +27,25 @@ import (
 
 // ModelsConfig defines named LLM and embedding clients.
 type ModelsConfig struct {
-	Chat      string                 `json:"chat,omitempty" yaml:"chat,omitempty"`
-	Extractor string                 `json:"extractor,omitempty" yaml:"extractor,omitempty"`
-	Embedder  string                 `json:"embedder,omitempty" yaml:"embedder,omitempty"`
-	LLM       map[string]ModelConfig `json:"llm,omitempty" yaml:"llm,omitempty"`
-	Embedding map[string]ModelConfig `json:"embedding,omitempty" yaml:"embedding,omitempty"`
+	Chat      string                 `json:"chat,omitempty"`
+	Extractor string                 `json:"extractor,omitempty"`
+	Embedder  string                 `json:"embedder,omitempty"`
+	LLM       map[string]ModelConfig `json:"llm,omitempty"`
+	Embedding map[string]ModelConfig `json:"embedding,omitempty"`
 	// Embeddings is accepted as a plural spelling for config readability.
-	Embeddings map[string]ModelConfig `json:"embeddings,omitempty" yaml:"embeddings,omitempty"`
+	Embeddings map[string]ModelConfig `json:"embeddings,omitempty"`
 }
 
 // ModelConfig is forwarded to provider registries after credential expansion.
 type ModelConfig struct {
-	Provider   string         `json:"provider,omitempty" yaml:"provider,omitempty"`
-	Model      string         `json:"model,omitempty" yaml:"model,omitempty"`
-	APIKey     string         `json:"api_key,omitempty" yaml:"api_key,omitempty"`
-	APIKeyEnv  string         `json:"api_key_env,omitempty" yaml:"api_key_env,omitempty"`
-	BaseURL    string         `json:"base_url,omitempty" yaml:"base_url,omitempty"`
-	APIVersion string         `json:"api_version,omitempty" yaml:"api_version,omitempty"`
-	Region     string         `json:"region,omitempty" yaml:"region,omitempty"`
-	Config     map[string]any `json:"config,omitempty" yaml:"config,omitempty"`
+	Provider   string         `json:"provider,omitempty"`
+	Model      string         `json:"model,omitempty"`
+	APIKey     string         `json:"api_key,omitempty"`
+	APIKeyEnv  string         `json:"api_key_env,omitempty"`
+	BaseURL    string         `json:"base_url,omitempty"`
+	APIVersion string         `json:"api_version,omitempty"`
+	Region     string         `json:"region,omitempty"`
+	Config     map[string]any `json:"config,omitempty"`
 }
 
 func (c *Claw) chatModel(ctx context.Context) (llm.LLM, error) {
@@ -122,7 +122,10 @@ func (c *Claw) buildResolver() llm.LLMResolver {
 	if c.chat != nil {
 		return fixedResolver{client: c.chat}
 	}
-	return llm.DefaultResolver(modelStore{models: c.cfg.Models}, llm.WithFallbackModel(c.cfg.modelRef(c.cfg.Models.Chat)))
+	return modelAliasResolver{
+		models: c.cfg.Models,
+		inner:  llm.DefaultResolver(modelStore{models: c.cfg.Models}, llm.WithFallbackModel(c.cfg.modelRef(c.cfg.Models.Chat))),
+	}
 }
 
 func (c Config) modelRef(name string) string {
@@ -171,6 +174,38 @@ func (r fixedResolver) Resolve(context.Context, string) (llm.LLM, error) {
 }
 
 func (r fixedResolver) InvalidateCache(...llm.InvalidateOption) {}
+
+type modelAliasResolver struct {
+	models ModelsConfig
+	inner  llm.LLMResolver
+}
+
+func (r modelAliasResolver) Resolve(ctx context.Context, model string) (llm.LLM, error) {
+	if r.inner == nil {
+		return nil, errdefs.NotFoundf("claw: model resolver is not configured")
+	}
+	return r.inner.Resolve(ctx, r.modelRef(model))
+}
+
+func (r modelAliasResolver) InvalidateCache(opts ...llm.InvalidateOption) {
+	if invalidator, ok := r.inner.(interface {
+		InvalidateCache(...llm.InvalidateOption)
+	}); ok {
+		invalidator.InvalidateCache(opts...)
+	}
+}
+
+func (r modelAliasResolver) modelRef(name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" || strings.Contains(name, "/") {
+		return name
+	}
+	cfg, ok := r.models.LLM[name]
+	if !ok || cfg.Provider == "" || cfg.Model == "" {
+		return name
+	}
+	return cfg.Provider + "/" + cfg.Model
+}
 
 type modelStore struct {
 	models ModelsConfig

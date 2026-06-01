@@ -1,0 +1,193 @@
+apiVersion: claw.flowcraft.io/v1alpha1
+kind: WorkspaceConfig
+metadata:
+  name: journey
+spec:
+  memory_root: memory
+  state_root: state
+---
+apiVersion: claw.flowcraft.io/v1alpha1
+kind: ModelsConfig
+metadata:
+  name: journey
+spec:
+  chat: story-model
+  extractor: story-model
+  llm:
+    story-model:
+      provider: azure
+      model: gpt-4o-mini
+      api_key: ${FLOWCRAFT_AZURE_OPENAI_API_KEY}
+      base_url: ${FLOWCRAFT_AZURE_OPENAI_BASE_URL}
+  embedding:
+    openai-small:
+      provider: openai
+      model: text-embedding-3-small
+      api_key: ${OPENAI_API_KEY}
+---
+apiVersion: claw.flowcraft.io/v1alpha1
+kind: MemoryConfig
+metadata:
+  name: journey
+spec:
+  enabled: true
+  scope:
+    runtime_id: journey
+    user_id: local
+    agent_id: journey-storyteller
+  write:
+    save_conversation: true
+    mode: sync
+    tier: general
+  extract:
+    enabled: true
+    model: story-model
+    mode: two_pass
+    temperature: 0
+    schema_name: journey_story_memory
+    system_prompt: |
+      Extract durable memory facts for an interactive Journey to the West storytelling agent.
+
+      Produce separate facts for these two groups:
+      1. story_progress: where the narration currently is, including chapter range, last completed arc, unresolved plot hooks, important character state, and any pacing or style constraints the user asked for.
+      2. user_mentions: people, characters, places, events, preferences, questions, corrections, or personal associations the user mentions while listening.
+
+      Keep facts concise, durable, and queryable. Do not save temporary wording, repeated narration, or generic plot details unless they mark progress or reflect the user's interest.
+  recall:
+    enabled: true
+    top_k: 8
+    graph_enabled: true
+    include_retired: false
+  retrieval:
+    backend: bbh
+    bbh:
+      search_overfetch: 80
+      bleve:
+        analyzer: gojieba
+      hnsw:
+        flush_interval: 60s
+  embedding:
+    enabled: false
+    model: openai-small
+---
+apiVersion: claw.flowcraft.io/v1alpha1
+kind: AgentConfig
+metadata:
+  name: journey
+spec:
+  id: journey-storyteller
+  name: Journey Storyteller
+  description: A multi-node storyteller for Journey to the West.
+  max_iterations: 12
+  graph:
+    name: journey-story
+    entry: route_story_state
+    nodes:
+      - id: route_story_state
+        type: llm
+        config:
+          model: story-model
+          max_tokens: 220
+          json_mode: true
+          output_key: story_state
+          system_prompt: |
+            Decide which Journey to the West story node should answer this turn.
+            Use recalled memory, the persisted workspace_state board variable, and the user's latest request.
+            Return only JSON with this shape:
+            {"current_arc":"arc_01_origin|arc_02_heaven|arc_03_pilgrimage|arc_04_trials|arc_05_kingdoms|arc_06_arrival","reason":"short reason"}
+            Prefer the earliest unfinished arc. If there is no prior progress, choose arc_01_origin.
+      - id: arc_01_origin
+        type: llm
+        config:
+          model: story-model
+          max_tokens: 700
+          track_steps: true
+          system_prompt: |
+            You are node arc_01_origin, responsible for Journey to the West chapters 1-7.
+            Tell the opening arc: the stone monkey's birth, learning the Way, receiving the name Sun Wukong, returning to Flower-Fruit Mountain, and obtaining the Ruyi Jingu Bang.
+            Use recalled memory to avoid repeating completed progress. If this arc is already complete, only give a one-sentence bridge to the next arc.
+            End by saying which arc should come next so workspace state and memory can track progress.
+      - id: arc_02_heaven
+        type: llm
+        config:
+          model: story-model
+          max_tokens: 700
+          track_steps: true
+          system_prompt: |
+            You are node arc_02_heaven, responsible for chapters 8-14.
+            Tell the heavenly rebellion arc: Wukong's official posts, the Peach Banquet, the havoc in Heaven, the Buddha's palm, and the setup for pilgrimage redemption.
+            Keep the user's earlier questions or favorite characters in view. If this arc is already complete, only bridge forward.
+            End by saying which arc should come next so workspace state and memory can track progress.
+      - id: arc_03_pilgrimage
+        type: llm
+        config:
+          model: story-model
+          max_tokens: 700
+          track_steps: true
+          system_prompt: |
+            You are node arc_03_pilgrimage, responsible for chapters 15-27.
+            Tell the formation of the pilgrimage: Tang Sanzang sets out, Wukong is released, Zhu Bajie and Sha Wujing join, and the team learns its first hard lessons.
+            Highlight how each companion's weakness becomes part of the group dynamic. If this arc is already complete, only bridge forward.
+            End by saying which arc should come next so workspace state and memory can track progress.
+      - id: arc_04_trials
+        type: llm
+        config:
+          model: story-model
+          max_tokens: 700
+          track_steps: true
+          system_prompt: |
+            You are node arc_04_trials, responsible for chapters 28-49.
+            Tell the middle trials: demon kingdoms, mistaken trust, Wukong's banishment and return, and the repeated test of whether the travelers can recognize illusion.
+            Preserve continuity with recalled story_progress facts. If this arc is already complete, only bridge forward.
+            End by saying which arc should come next so workspace state and memory can track progress.
+      - id: arc_05_kingdoms
+        type: llm
+        config:
+          model: story-model
+          max_tokens: 700
+          track_steps: true
+          system_prompt: |
+            You are node arc_05_kingdoms, responsible for chapters 50-74.
+            Tell the kingdom and temptation arc: strange rulers, the Women's Kingdom, false appearances, powerful monsters, and the growing maturity of the pilgrims.
+            Use any user_mentions facts to emphasize characters or themes the user cares about. If this arc is already complete, only bridge forward.
+            End by saying which arc should come next so workspace state and memory can track progress.
+      - id: arc_06_arrival
+        type: llm
+        config:
+          model: story-model
+          max_tokens: 700
+          track_steps: true
+          system_prompt: |
+            You are node arc_06_arrival, responsible for chapters 75-100.
+            Tell the final arc: the last great obstacles, Flame Mountain, the approach to Spirit Mountain, receiving scriptures, the missing page trial, and the pilgrims' final recognition.
+            End with a short note of the current story_progress so memory extraction can store where the tale stopped.
+    edges:
+      - from: route_story_state
+        to: arc_02_heaven
+        condition: story_state.current_arc == "arc_02_heaven"
+      - from: route_story_state
+        to: arc_03_pilgrimage
+        condition: story_state.current_arc == "arc_03_pilgrimage"
+      - from: route_story_state
+        to: arc_04_trials
+        condition: story_state.current_arc == "arc_04_trials"
+      - from: route_story_state
+        to: arc_05_kingdoms
+        condition: story_state.current_arc == "arc_05_kingdoms"
+      - from: route_story_state
+        to: arc_06_arrival
+        condition: story_state.current_arc == "arc_06_arrival"
+      - from: route_story_state
+        to: arc_01_origin
+      - from: arc_01_origin
+        to: __end__
+      - from: arc_02_heaven
+        to: __end__
+      - from: arc_03_pilgrimage
+        to: __end__
+      - from: arc_04_trials
+        to: __end__
+      - from: arc_05_kingdoms
+        to: __end__
+      - from: arc_06_arrival
+        to: __end__
