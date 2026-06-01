@@ -3,14 +3,15 @@ module github.com/GizClaw/flowcraft/cmd/claw
 go 1.25.0
 
 require (
-	github.com/GizClaw/flowcraft/sdk v0.4.0
+	github.com/GizClaw/flowcraft/sdk v0.4.2
 	github.com/GizClaw/flowcraft/sdkx v0.4.0
+	gopkg.in/yaml.v3 v3.0.1
 )
 
 require (
 	github.com/Azure/azure-sdk-for-go/sdk/azcore v1.17.0 // indirect
 	github.com/Azure/azure-sdk-for-go/sdk/internal v1.10.0 // indirect
-	github.com/GizClaw/flowcraft/memory v0.1.1 // indirect
+	github.com/GizClaw/flowcraft/memory v0.1.2 // indirect
 	github.com/RoaringBitmap/roaring/v2 v2.14.5 // indirect
 	github.com/anthropics/anthropic-sdk-go v1.26.0 // indirect
 	github.com/bits-and-blooms/bitset v1.24.2 // indirect
@@ -92,7 +93,6 @@ require (
 	google.golang.org/grpc v1.80.0 // indirect
 	google.golang.org/protobuf v1.36.11 // indirect
 	gopkg.in/yaml.v2 v2.4.0 // indirect
-	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
 
 replace github.com/GizClaw/flowcraft/sdk => ../../sdk

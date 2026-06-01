@@ -8,8 +8,8 @@ github.com/Azure/azure-sdk-for-go/sdk/internal v1.10.0/go.mod h1:iZDifYGJTIgIIkY
 github.com/AzureAD/microsoft-authentication-library-for-go v1.2.2 h1:XHOnouVk1mxXfQidrMEnLlPk9UMeRtyBTnEFtxkV0kU=
 github.com/AzureAD/microsoft-authentication-library-for-go v1.2.2/go.mod h1:wP83P5OoQ5p6ip3ScPr0BAq0BvuPAvacpEuSzyouqAI=
 github.com/BurntSushi/toml v0.3.1/go.mod h1:xHWCNGjB5oqiDr8zfno3MHue2Ht5sIBksp03qcyfWMU=
-github.com/GizClaw/flowcraft/memory v0.1.1 h1:aqr3nK5KHMWImSuvHYNCShwmH8IoGkbqTqXDB74mcfw=
-github.com/GizClaw/flowcraft/memory v0.1.1/go.mod h1:ociNUlvIVT4GEe9EwzcSgkiDNOFo93sz2gh6HHf3XIY=
+github.com/GizClaw/flowcraft/memory v0.1.2 h1:0Dxj1uZVvf1J+aKzh8wuX8iwbDhu/eg9NL7QlaO0pIQ=
+github.com/GizClaw/flowcraft/memory v0.1.2/go.mod h1:FKrzqusZECJVKhsHVRBZZbZbbtwQ/DVKq0AnL+wUmuM=
 github.com/Masterminds/semver/v3 v3.2.1 h1:RN9w6+7QoMeJVGyfmbcgs28Br8cvmnucEXnY0rYXWg0=
 github.com/Masterminds/semver/v3 v3.2.1/go.mod h1:qvl/7zhW3nngYb5+80sSMF+FG2BjYrf8m9wsX0PNOMQ=
 github.com/RoaringBitmap/roaring/v2 v2.14.5 h1:ckd0o545JqDPeVJDgeFoaM21eBixUnlWfYgjE5VnyWw=

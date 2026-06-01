@@ -90,6 +90,41 @@ func TestRoundTripRejectsConcurrentSameContext(t *testing.T) {
 	}
 }
 
+func TestRoundTripPersistsContextState(t *testing.T) {
+	ws, err := workspace.NewLocalWorkspace(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewLocalWorkspace: %v", err)
+	}
+	app, err := New(ws, WithConfig(defaultConfig()), WithChatModel(staticLLM{reply: "ok"}))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer app.Close()
+
+	resp, err := app.RoundTrip("story", Request{
+		Text:   "continue",
+		Inputs: map[string]any{"current_arc": "arc_02_heaven"},
+	})
+	if err != nil {
+		t.Fatalf("RoundTrip: %v", err)
+	}
+	for {
+		if _, err := resp.Next(); errors.Is(err, io.EOF) {
+			break
+		} else if err != nil {
+			t.Fatalf("Next: %v", err)
+		}
+	}
+
+	st, err := app.loadContextState(context.Background(), "story")
+	if err != nil {
+		t.Fatalf("loadContextState: %v", err)
+	}
+	if st.Vars["current_arc"] != "arc_02_heaven" {
+		t.Fatalf("current_arc = %v, want arc_02_heaven", st.Vars["current_arc"])
+	}
+}
+
 type staticLLM struct {
 	reply string
 }
