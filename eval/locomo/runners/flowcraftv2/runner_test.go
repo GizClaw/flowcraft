@@ -632,6 +632,62 @@ func TestStructuredAnswerBodyAddsExactYesterdayCandidateAnswer(t *testing.T) {
 	}
 }
 
+func TestStructuredAnswerBodyPrefersDirectTemporalCandidates(t *testing.T) {
+	sourceTime := time.Date(2023, 8, 25, 13, 51, 0, 0, time.UTC)
+	unrelatedTime := time.Date(2023, 7, 3, 0, 0, 0, 0, time.UTC)
+	directTime := time.Date(2023, 8, 24, 0, 0, 0, 0, time.UTC)
+	body := renderStructuredAnswerBody(runners.AnswerQuestion{
+		Query: "When did Melanie make a plate in pottery class?",
+	}, []recall.Hit{
+		{
+			Fact: recall.TemporalFact{
+				ID:        "unrelated",
+				Kind:      recall.FactEvent,
+				Content:   "On 2023-07-03, Melanie made a bowl.",
+				Subject:   "Melanie",
+				ValidFrom: &unrelatedTime,
+				Metadata: map[string]any{
+					"valid_from_source": "content_explicit",
+					"valid_from_text":   "2023-07-03",
+				},
+			},
+			Evidence: []recall.EvidenceRef{{Text: "I made a bowl.", Timestamp: unrelatedTime}},
+		},
+		{
+			Fact: recall.TemporalFact{
+				ID:        "direct",
+				Kind:      recall.FactEvent,
+				Content:   "Melanie made a plate in pottery class yesterday.",
+				Subject:   "Melanie",
+				Object:    "plate",
+				ValidFrom: &directTime,
+				Metadata: map[string]any{
+					"valid_from_source": "content_relative",
+					"valid_from_text":   "yesterday",
+				},
+			},
+			Evidence: []recall.EvidenceRef{{
+				Text:      "I made a plate in pottery class yesterday.",
+				Timestamp: sourceTime,
+			}},
+		},
+	})
+
+	for _, want := range []string{
+		`query_terms: "melanie", "make", "plate", "pottery", "class"`,
+		`direct_ranks: "#2"`,
+		`value: "2023-08-24 (the day before 2023-08-25)"`,
+		`direct: "true"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("structured answer body missing %q:\n%s", want, body)
+		}
+	}
+	if strings.Contains(body, `value: "2023-07-03"`) {
+		t.Fatalf("non-direct temporal candidate should not be promoted:\n%s", body)
+	}
+}
+
 func TestStructuredAnswerBodyAddsListAndCountCandidateAnswers(t *testing.T) {
 	body := renderStructuredAnswerBody(runners.AnswerQuestion{
 		Query: "How many pets does Melanie have?",

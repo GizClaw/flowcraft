@@ -42,21 +42,18 @@ func (passthroughTimeResolver) Resolve(f domain.TemporalFact, now time.Time) dom
 	if f.ObservedAt.IsZero() {
 		f.ObservedAt = now
 	}
-	if f.ValidFrom == nil {
-		if expr, ok := parseExpressionFromMeta(f.Metadata, MetaValidFromAt, time.Time{}, false); ok {
-			tt := expressionValidFrom(expr)
+	if expr, ok, structured := parseValidFromExpressionFromMeta(f.Metadata, now); ok {
+		tt := expressionValidFrom(expr)
+		applied := f.ValidFrom == nil || (structured && !sameUTCDate(*f.ValidFrom, tt))
+		consistent := f.ValidFrom != nil && sameUTCDate(*f.ValidFrom, tt)
+		if applied {
 			f.ValidFrom = &tt
+		}
+		if applied || consistent {
 			setValidToFromExpressionRange(&f, expr)
 			preserveValidFromExpression(f.Metadata, expr)
 			preserveValidFromText(f.Metadata)
 			delete(f.Metadata, MetaValidFromAt)
-			delete(f.Metadata, MetaValidFromHint)
-		} else if expr, ok := parseExpressionFromMeta(f.Metadata, MetaValidFromHint, now, true); ok {
-			tt := expressionValidFrom(expr)
-			f.ValidFrom = &tt
-			setValidToFromExpressionRange(&f, expr)
-			preserveValidFromExpression(f.Metadata, expr)
-			preserveValidFromText(f.Metadata)
 			delete(f.Metadata, MetaValidFromHint)
 		}
 	}
@@ -73,6 +70,34 @@ func (passthroughTimeResolver) Resolve(f domain.TemporalFact, now time.Time) dom
 		}
 	}
 	return f
+}
+
+func parseValidFromExpressionFromMeta(meta map[string]any, now time.Time) (*timex.Expression, bool, bool) {
+	if expr, ok := parseExpressionFromMeta(meta, MetaValidFromAt, time.Time{}, false); ok {
+		return expr, true, true
+	}
+	expr, ok := parseExpressionFromMeta(meta, MetaValidFromHint, now, true)
+	return expr, ok, hasStructuredValidFromSource(meta)
+}
+
+func hasStructuredValidFromSource(meta map[string]any) bool {
+	if len(meta) == 0 {
+		return false
+	}
+	if _, ok := meta[MetaValidFromAt]; ok {
+		return true
+	}
+	source, _ := meta[MetaValidFromSource].(string)
+	return strings.TrimSpace(source) != ""
+}
+
+func sameUTCDate(a, b time.Time) bool {
+	if a.IsZero() || b.IsZero() {
+		return false
+	}
+	ay, am, ad := a.UTC().Date()
+	by, bm, bd := b.UTC().Date()
+	return ay == by && am == bm && ad == bd
 }
 
 func setValidToFromExpressionRange(f *domain.TemporalFact, expr *timex.Expression) {

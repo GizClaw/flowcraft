@@ -195,3 +195,50 @@ func TestTimeResolver_DoesNotClobberCanonicalTimes(t *testing.T) {
 		t.Errorf("explicit ValidFrom must win over hint, got %v", *out.ValidFrom)
 	}
 }
+
+func TestTimeResolver_ReconcilesStructuredValidFromSource(t *testing.T) {
+	r := passthroughTimeResolver{}
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	preset := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+	structured := time.Date(2026, 5, 21, 9, 30, 0, 0, time.UTC)
+	f := domain.TemporalFact{
+		Kind:      domain.KindEvent,
+		ValidFrom: &preset,
+		Metadata: map[string]any{
+			MetaValidFromAt:     structured.Format(time.RFC3339Nano),
+			MetaValidFromHint:   "yesterday",
+			MetaValidFromSource: ValidFromSourceContentRelative,
+		},
+	}
+	out := r.Resolve(f, now)
+	if out.ValidFrom == nil || !out.ValidFrom.Equal(structured) {
+		t.Fatalf("ValidFrom = %v, want structured source %v", out.ValidFrom, structured)
+	}
+	if _, leftover := out.Metadata[MetaValidFromAt]; leftover {
+		t.Fatalf("structured valid_from_at should be consumed: %v", out.Metadata)
+	}
+	if _, leftover := out.Metadata[MetaValidFromHint]; leftover {
+		t.Fatalf("raw hint paired with structured source should be consumed: %v", out.Metadata)
+	}
+}
+
+func TestTimeResolver_ConsumesSameDayStructuredValidFrom(t *testing.T) {
+	r := passthroughTimeResolver{}
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	preset := time.Date(2026, 5, 21, 0, 0, 0, 0, time.UTC)
+	structured := time.Date(2026, 5, 21, 9, 30, 0, 0, time.UTC)
+	f := domain.TemporalFact{
+		Kind:      domain.KindEvent,
+		ValidFrom: &preset,
+		Metadata: map[string]any{
+			MetaValidFromAt: structured.Format(time.RFC3339Nano),
+		},
+	}
+	out := r.Resolve(f, now)
+	if out.ValidFrom == nil || !out.ValidFrom.Equal(preset) {
+		t.Fatalf("same-day ValidFrom should keep caller precision, got %v", out.ValidFrom)
+	}
+	if _, leftover := out.Metadata[MetaValidFromAt]; leftover {
+		t.Fatalf("same-day structured source should be consumed: %v", out.Metadata)
+	}
+}

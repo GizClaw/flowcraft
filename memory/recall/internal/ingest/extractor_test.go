@@ -1204,6 +1204,21 @@ func TestLLMExtractor_DropsEvidenceRefWithUnknownID(t *testing.T) {
 	}
 }
 
+func TestEvidenceRefWithinSourceTurnsRejectsMixedIDs(t *testing.T) {
+	turnIndex := map[string]port.TurnContext{
+		"D1:1":  {ID: "msg-1", EvidenceID: "D1:1", Text: "first"},
+		"msg-1": {ID: "msg-1", EvidenceID: "D1:1", Text: "first"},
+		"D1:2":  {ID: "msg-2", EvidenceID: "D1:2", Text: "second"},
+		"msg-2": {ID: "msg-2", EvidenceID: "D1:2", Text: "second"},
+	}
+	if !evidenceRefWithinSourceTurns(domain.EvidenceRef{ID: "D1:1", MessageID: "msg-1"}, turnIndex) {
+		t.Fatal("same source aliases should be accepted")
+	}
+	if evidenceRefWithinSourceTurns(domain.EvidenceRef{ID: "D1:1", MessageID: "msg-2"}, turnIndex) {
+		t.Fatal("mixed source aliases should be rejected")
+	}
+}
+
 func TestLLMExtractor_SuppressedWeakSubjectSurvivesStructurizer(t *testing.T) {
 	client := &fakeLLM{
 		Responses: []string{`{"facts":[{
@@ -1351,7 +1366,7 @@ func TestLLMExtractor_PreservesBackendClassification(t *testing.T) {
 // anti-abstraction language that distinguishes one-off dated
 // actions ("events") from durable traits ("states"). Regression
 // analysis traced time-anchored recall misses to the extractor
-// over-summarising sentences like "I just signed up for a class
+// over-summarising sentences like "I just signed up for a workshop
 // yesterday" into "<speaker> uses classes for self-expression" —
 // collapsing several dated events into abstract states. Future prompt
 // edits must keep:
@@ -1360,8 +1375,8 @@ func TestLLMExtractor_PreservesBackendClassification(t *testing.T) {
 //   - explicit instruction to preserve single-mention proper nouns
 //     verbatim (book titles, locations, items);
 //   - explicit exhaustiveness for one-off mentions;
-//   - explicit enumeration splitting, so comma-separated hobbies /
-//     activities do not collapse into an umbrella summary;
+//   - explicit splitting for answer-bearing entity lists, while keeping
+//     related explanatory note fragments together;
 //
 // otherwise we silently regress recall on time-anchored memory.
 //
@@ -1371,7 +1386,7 @@ func TestLLMExtractor_PreservesBackendClassification(t *testing.T) {
 // and forces the reviewer to acknowledge the trade-off.
 func TestLLMExtractorSystemPrompt_GuardsAntiAbstraction(t *testing.T) {
 	mustContain := []string{
-		"signed up for a pottery class",
+		"signed up for a mapmaking workshop",
 		"1. Extraction strategy",
 		"2. Candidate policy",
 		"3. Preserve answer-bearing detail",
@@ -1393,9 +1408,13 @@ func TestLLMExtractorSystemPrompt_GuardsAntiAbstraction(t *testing.T) {
 		"Do not stop after the first event in a turn",
 		`Treat "note" as a first-class memory kind`,
 		"Be exhaustive about concrete, retrievable details",
-		"Split enumerations into separate facts",
+		"Split answer-bearing entity lists into separate facts",
 		"PersonA enjoys birdwatching",
 		"Do not\n  collapse lists into",
+		"Do NOT mechanically split every explanatory note",
+		"same semantic slot",
+		"archive's lab\n  partners",
+		"do not split this into one note per group",
 		"Preserve literal answer-bearing spans",
 		"that book",
 		"Be careful with second-person comments",
@@ -1437,7 +1456,7 @@ func TestLLMExtractorSystemPrompt_GuardsAntiAbstraction(t *testing.T) {
 		"Use note for named group details",
 		"Morning Lanterns",
 		"Lake Merrow",
-		"A typical memorable turn\n  may produce 2-6 facts",
+		"A typical memorable turn may produce 1-5 facts",
 		"Resolve relative dates against the source turn's timestamp",
 		`For kind "plan", do not use "actual"`,
 		`Do not leave relative-time words as the main time anchor`,

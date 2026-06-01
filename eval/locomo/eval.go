@@ -147,6 +147,7 @@ type Options struct {
 	TopK              int
 	Judge             metrics.Judge // nil → EMJudge fallback
 	UseExtractor      bool          // true → Save (LLM extractor); false → SaveRaw fallback
+	SkipIngest        bool          // true → assume the runner was preloaded and run QA only
 	AnswerLLM         llm.LLM       // optional; when set, prediction = LLM(query | top-k hits) instead of raw concat
 	AnswerPrompt      string        // optional template; %s receives "Q: …\nMEMORIES:\n- …" — default below
 	Concurrency       int           // QA-loop parallelism; defaults to 1 (sequential). Recall/Index is goroutine-safe.
@@ -414,15 +415,24 @@ func Run(ctx context.Context, r runners.Runner, ds *dataset.Dataset, opts Option
 	// closely: prior sessions in the same conversation are committed before
 	// later sessions are extracted, while independent conversations can still
 	// ingest in parallel.
-	ingestStart := time.Now()
-	saveLatencies := ingestConversations(ctx, r, scopeOf, ds.Conversations, opts, emit)
-	ingestSummary := metrics.Summarize(saveLatencies)
-	emit(Event{
-		Kind: "ingest_done",
-		Title: fmt.Sprintf("ingest done in %s (%d Save calls)",
-			time.Since(ingestStart).Truncate(time.Second), len(saveLatencies)),
-		Body: fmt.Sprintf("save.p50=%s save.p95=%s", ingestSummary.P50, ingestSummary.P95),
-	})
+	var saveLatencies []time.Duration
+	if opts.SkipIngest {
+		emit(Event{
+			Kind:  "ingest_done",
+			Title: "ingest skipped: runner preloaded",
+			Body:  "save.p50=0s save.p95=0s",
+		})
+	} else {
+		ingestStart := time.Now()
+		saveLatencies = ingestConversations(ctx, r, scopeOf, ds.Conversations, opts, emit)
+		ingestSummary := metrics.Summarize(saveLatencies)
+		emit(Event{
+			Kind: "ingest_done",
+			Title: fmt.Sprintf("ingest done in %s (%d Save calls)",
+				time.Since(ingestStart).Truncate(time.Second), len(saveLatencies)),
+			Body: fmt.Sprintf("save.p50=%s save.p95=%s", ingestSummary.P50, ingestSummary.P95),
+		})
+	}
 
 	scores, recallLatencies, err := evalQuestions(ctx, r, scopeOf, ds.Questions, opts, emit)
 	if err != nil {

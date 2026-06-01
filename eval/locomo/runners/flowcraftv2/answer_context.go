@@ -27,7 +27,8 @@ const structuredFactsAnswerPrompt = `You are answering a question using only the
 Guidelines:
 - Ground the answer strictly in the structured facts and evidence quotes. Do not invent facts that are not supported.
 - Use EVIDENCE_PACKAGE answer_cues first, then verify against MEMORIES. The cues are extracted from the same ranked memories and are meant to reduce distraction.
-- When candidate_answers are present, treat them as temporal/list/count reasoning scaffolds only; verify them against answer_cues/MEMORIES before answering.
+- When direct_ranks are present, answer from those ranks first. Use non-direct supporting ranks only to complete missing list/set, bridge, or temporal details.
+- When candidate_answers are present, treat them as temporal/list/count reasoning scaffolds only; prefer direct candidate_answers and verify them against answer_cues/MEMORIES before answering.
 - Each memory is listed in retrieval/rerank order as [#1], [#2], etc. Prefer lower-numbered memories when evidence conflicts, but combine compatible facts for list and bridge questions. Some lower-ranked supporting facts may appear only in EVIDENCE_PACKAGE answer_cues to keep the prompt focused.
 - Treat event_time as the event date. event_time_source and event_time_text explain how that date was derived.
 - Treat observed_at and evidence source_time as evidence timestamps, not event dates by themselves. Use source_time only as the anchor for relative wording in the same quote.
@@ -81,8 +82,10 @@ func renderEvidencePackage(b *strings.Builder, question runners.AnswerQuestion, 
 	}
 	b.WriteString("EVIDENCE_PACKAGE:\n")
 	writeOrderedListKV(b, 1, "types", pkg.types)
+	writeOrderedListKV(b, 1, "query_terms", pkg.queryTerms)
 	writeOrderedListKV(b, 1, "primary_ranks", pkg.primaryRanks)
 	writeOrderedListKV(b, 1, "supporting_ranks", pkg.supportingRanks)
+	writeOrderedListKV(b, 1, "direct_ranks", pkg.directRanks)
 	renderAnswerCues(b, pkg.answerCues)
 	renderCandidateAnswers(b, pkg.candidateAnswers)
 	b.WriteString("\n")
@@ -90,8 +93,10 @@ func renderEvidencePackage(b *strings.Builder, question runners.AnswerQuestion, 
 
 type evidencePackage struct {
 	types            []string
+	queryTerms       []string
 	primaryRanks     []string
 	supportingRanks  []string
+	directRanks      []string
 	answerCues       []answerCue
 	candidateAnswers []candidateAnswer
 }
@@ -120,6 +125,7 @@ type candidateAnswer struct {
 	Value      string
 	Source     string
 	Rank       string
+	Direct     bool
 	Support    string
 	EventTime  string
 	SourceTime string
@@ -131,7 +137,10 @@ func buildEvidencePackage(query string, hits []recall.Hit) evidencePackage {
 		return evidencePackage{}
 	}
 	primaryCount := min(5, len(hits))
-	pkg := evidencePackage{types: types}
+	pkg := evidencePackage{
+		types:      types,
+		queryTerms: packageQueryTerms(query),
+	}
 	for i := 0; i < primaryCount; i++ {
 		pkg.primaryRanks = append(pkg.primaryRanks, rankLabel(i))
 	}
@@ -142,6 +151,7 @@ func buildEvidencePackage(query string, hits []recall.Hit) evidencePackage {
 	for _, rank := range packageCueRanks(primaryCount, supporting) {
 		pkg.answerCues = append(pkg.answerCues, answerCueFromHit(rank, hits[rank]))
 	}
+	pkg.directRanks = directAnswerCueRanks(pkg.queryTerms, pkg.answerCues)
 	pkg.candidateAnswers = candidateAnswersForQuery(query, pkg.types, pkg.answerCues)
 	return pkg
 }
@@ -267,15 +277,29 @@ func packageDirectCueCandidate(query string, hit recall.Hit, primary []recall.Hi
 }
 
 func packageQueryTokens(query string) map[string]struct{} {
+	terms := packageQueryTerms(query)
+	out := make(map[string]struct{}, len(terms))
+	for _, term := range terms {
+		out[term] = struct{}{}
+	}
+	return out
+}
+
+func packageQueryTerms(query string) []string {
 	raw := strings.FieldsFunc(strings.ToLower(query), func(r rune) bool {
 		return (r < 'a' || r > 'z') && (r < '0' || r > '9')
 	})
-	out := map[string]struct{}{}
+	out := make([]string, 0, len(raw))
+	seen := map[string]struct{}{}
 	for _, token := range raw {
 		if len(token) < 3 || packageQueryStopword(token) {
 			continue
 		}
-		out[token] = struct{}{}
+		if _, ok := seen[token]; ok {
+			continue
+		}
+		seen[token] = struct{}{}
+		out = append(out, token)
 	}
 	return out
 }
@@ -419,11 +443,22 @@ func candidateAnswersForQuery(query string, types []string, cues []answerCue) []
 	out := make([]candidateAnswer, 0, len(cues))
 	seen := map[string]struct{}{}
 	listValues := map[string]string{}
+	queryTerms := packageQueryTerms(query)
+	hasDirectTemporalCue := false
+	if profile.temporal {
+		for _, cue := range cues {
+			if answerCueMatchesQuery(cue, queryTerms) {
+				hasDirectTemporalCue = true
+				break
+			}
+		}
+	}
 	add := func(kind, source, value string, cue answerCue) {
 		value = strings.TrimSpace(value)
 		if value == "" {
 			return
 		}
+		direct := answerCueMatchesQuery(cue, queryTerms)
 		key := strings.ToLower(kind + "\x00" + source + "\x00" + value)
 		if _, ok := seen[key]; ok {
 			return
@@ -434,6 +469,7 @@ func candidateAnswersForQuery(query string, types []string, cues []answerCue) []
 			Value:      value,
 			Source:     source,
 			Rank:       cue.Rank,
+			Direct:     direct,
 			Support:    compactAnswerCue(candidateAnswerSupport(cue)),
 			EventTime:  cue.EventTime,
 			SourceTime: cue.SourceTime,
@@ -441,6 +477,9 @@ func candidateAnswersForQuery(query string, types []string, cues []answerCue) []
 	}
 	for _, cue := range cues {
 		if profile.temporal {
+			if hasDirectTemporalCue && !answerCueMatchesQuery(cue, queryTerms) {
+				continue
+			}
 			if cue.RelativeTimeAnswer != "" {
 				add("temporal", "relative_time", cue.RelativeTimeAnswer, cue)
 			} else if cue.EventTimeText != "" {
@@ -528,6 +567,50 @@ func candidateAnswerSupport(cue answerCue) string {
 		return cue.Content
 	}
 	return cue.Quote
+}
+
+func directAnswerCueRanks(queryTerms []string, cues []answerCue) []string {
+	if len(queryTerms) == 0 || len(cues) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(cues))
+	for _, cue := range cues {
+		if answerCueMatchesQuery(cue, queryTerms) {
+			out = append(out, cue.Rank)
+		}
+	}
+	return out
+}
+
+func answerCueMatchesQuery(cue answerCue, queryTerms []string) bool {
+	if len(queryTerms) == 0 {
+		return false
+	}
+	text := answerCueSearchText(cue)
+	if text == "" {
+		return false
+	}
+	matches := 0
+	for _, term := range queryTerms {
+		if strings.Contains(text, term) {
+			matches++
+		}
+	}
+	return matches >= 2 || (matches >= 1 && len(queryTerms) <= 2)
+}
+
+func answerCueSearchText(cue answerCue) string {
+	return strings.ToLower(strings.Join([]string{
+		cue.Content,
+		cue.Subject,
+		cue.Predicate,
+		cue.Object,
+		cue.Location,
+		strings.Join(cue.Entities, " "),
+		strings.Join(cue.Participants, " "),
+		cue.EventTimeText,
+		cue.Quote,
+	}, " "))
 }
 
 func firstAnswerCueEvidence(hit recall.Hit) recall.EvidenceRef {
@@ -730,10 +813,18 @@ func renderCandidateAnswers(b *strings.Builder, answers []candidateAnswer) {
 		writeKV(b, 3, "value", answer.Value)
 		writeKV(b, 3, "source", answer.Source)
 		writeKV(b, 3, "rank", answer.Rank)
+		writeKV(b, 3, "direct", boolAnswerValue(answer.Direct))
 		writeKV(b, 3, "event_time", answer.EventTime)
 		writeKV(b, 3, "source_time", answer.SourceTime)
 		writeKV(b, 3, "support", answer.Support)
 	}
+}
+
+func boolAnswerValue(value bool) string {
+	if value {
+		return "true"
+	}
+	return ""
 }
 
 func answerVisibleSources(sources []string) []string {

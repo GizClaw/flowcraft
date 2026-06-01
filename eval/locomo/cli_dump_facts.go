@@ -43,18 +43,29 @@ type factDumpScope struct {
 }
 
 type factDumpBatch struct {
-	ConversationID   string   `json:"conversation_id,omitempty"`
-	SessionID        string   `json:"session_id,omitempty"`
-	SessionIDs       []string `json:"session_ids,omitempty"`
-	BatchNumber      int      `json:"batch_number,omitempty"`
-	BatchTotal       int      `json:"batch_total,omitempty"`
-	TurnCount        int      `json:"turn_count,omitempty"`
-	TurnsWithText    int      `json:"turns_with_text,omitempty"`
-	RecentMessages   int      `json:"recent_messages,omitempty"`
-	Anchors          int      `json:"anchors,omitempty"`
-	EvidenceIDs      []string `json:"evidence_ids,omitempty"`
-	SourceMessageIDs []string `json:"source_message_ids,omitempty"`
-	InputTextChars   int      `json:"input_text_chars,omitempty"`
+	ConversationID   string         `json:"conversation_id,omitempty"`
+	SessionID        string         `json:"session_id,omitempty"`
+	SessionIDs       []string       `json:"session_ids,omitempty"`
+	BatchNumber      int            `json:"batch_number,omitempty"`
+	BatchTotal       int            `json:"batch_total,omitempty"`
+	TurnCount        int            `json:"turn_count,omitempty"`
+	TurnsWithText    int            `json:"turns_with_text,omitempty"`
+	RecentMessages   int            `json:"recent_messages,omitempty"`
+	Anchors          int            `json:"anchors,omitempty"`
+	EvidenceIDs      []string       `json:"evidence_ids,omitempty"`
+	SourceMessageIDs []string       `json:"source_message_ids,omitempty"`
+	InputTextChars   int            `json:"input_text_chars,omitempty"`
+	Turns            []factDumpTurn `json:"turns,omitempty"`
+}
+
+type factDumpTurn struct {
+	ID         string `json:"id,omitempty"`
+	EvidenceID string `json:"evidence_id,omitempty"`
+	SessionID  string `json:"session_id,omitempty"`
+	Role       string `json:"role,omitempty"`
+	Speaker    string `json:"speaker,omitempty"`
+	Text       string `json:"text,omitempty"`
+	Timestamp  string `json:"timestamp,omitempty"`
 }
 
 func (s *factDumpTokenStats) Add(usage diagnostics.ExtractorTokenUsage) {
@@ -99,24 +110,37 @@ func newV2FactsDumpSummary(ts time.Time, stats factDumpTokenStats) factDumpRecor
 }
 
 type factDumpFact struct {
-	ID               string   `json:"id,omitempty"`
-	Content          string   `json:"content"`
-	Kind             string   `json:"kind,omitempty"`
-	Subject          string   `json:"subject,omitempty"`
-	Predicate        string   `json:"predicate,omitempty"`
-	Object           string   `json:"object,omitempty"`
-	Polarity         string   `json:"polarity,omitempty"`
-	Modality         string   `json:"modality,omitempty"`
-	Certainty        string   `json:"certainty,omitempty"`
-	Entities         []string `json:"entities,omitempty"`
-	EvidenceIDs      []string `json:"evidence_ids,omitempty"`
-	SourceMessageIDs []string `json:"source_message_ids,omitempty"`
-	EvidenceText     string   `json:"evidence_text,omitempty"`
-	ValidFrom        string   `json:"valid_from,omitempty"`
-	Categories       []string `json:"categories,omitempty"`
-	Source           string   `json:"source,omitempty"`
-	Confidence       float64  `json:"confidence,omitempty"`
-	Episodic         bool     `json:"episodic,omitempty"`
+	ID               string                `json:"id,omitempty"`
+	Content          string                `json:"content"`
+	Kind             string                `json:"kind,omitempty"`
+	Subject          string                `json:"subject,omitempty"`
+	Predicate        string                `json:"predicate,omitempty"`
+	Object           string                `json:"object,omitempty"`
+	Location         string                `json:"location,omitempty"`
+	Polarity         string                `json:"polarity,omitempty"`
+	Modality         string                `json:"modality,omitempty"`
+	Certainty        string                `json:"certainty,omitempty"`
+	Entities         []string              `json:"entities,omitempty"`
+	Participants     []string              `json:"participants,omitempty"`
+	EvidenceIDs      []string              `json:"evidence_ids,omitempty"`
+	SourceMessageIDs []string              `json:"source_message_ids,omitempty"`
+	EvidenceText     string                `json:"evidence_text,omitempty"`
+	EvidenceRefs     []factDumpEvidenceRef `json:"evidence_refs,omitempty"`
+	ValidFrom        string                `json:"valid_from,omitempty"`
+	ObservedAt       string                `json:"observed_at,omitempty"`
+	Categories       []string              `json:"categories,omitempty"`
+	Source           string                `json:"source,omitempty"`
+	Confidence       float64               `json:"confidence,omitempty"`
+	Episodic         bool                  `json:"episodic,omitempty"`
+}
+
+type factDumpEvidenceRef struct {
+	ID            string `json:"id,omitempty"`
+	MessageID     string `json:"message_id,omitempty"`
+	ObservationID string `json:"observation_id,omitempty"`
+	Role          string `json:"role,omitempty"`
+	Text          string `json:"text,omitempty"`
+	Timestamp     string `json:"timestamp,omitempty"`
 }
 
 func newV1FactsDump(ts time.Time, scope recallv1.Scope, facts []recallv1.ExtractedFact) factDumpRecord {
@@ -169,13 +193,18 @@ func newV2FactsDump(ts time.Time, scope runners.Scope, req recall.SaveRequest, f
 			Subject:          f.Subject,
 			Predicate:        f.Predicate,
 			Object:           f.Object,
+			Location:         f.Location,
 			Polarity:         string(f.Polarity),
 			Modality:         string(f.Modality),
 			Certainty:        string(f.Certainty),
 			Entities:         append([]string(nil), f.Entities...),
+			Participants:     append([]string(nil), f.Participants...),
 			SourceMessageIDs: append([]string(nil), f.SourceMessageIDs...),
 			EvidenceText:     f.EvidenceText,
 			Confidence:       f.Confidence,
+		}
+		if !f.ObservedAt.IsZero() {
+			rec.ObservedAt = f.ObservedAt.UTC().Format(time.RFC3339Nano)
 		}
 		if f.ValidFrom != nil && !f.ValidFrom.IsZero() {
 			rec.ValidFrom = f.ValidFrom.Format("2006-01-02")
@@ -184,10 +213,25 @@ func newV2FactsDump(ts time.Time, scope runners.Scope, req recall.SaveRequest, f
 			if ref.ID != "" {
 				rec.EvidenceIDs = append(rec.EvidenceIDs, ref.ID)
 			}
+			rec.EvidenceRefs = append(rec.EvidenceRefs, factDumpEvidenceRef{
+				ID:            ref.ID,
+				MessageID:     ref.MessageID,
+				ObservationID: ref.ObservationID,
+				Role:          ref.Role,
+				Text:          ref.Text,
+				Timestamp:     factDumpTime(ref.Timestamp),
+			})
 		}
 		out.Facts = append(out.Facts, rec)
 	}
 	return out
+}
+
+func factDumpTime(t time.Time) string {
+	if t.IsZero() {
+		return ""
+	}
+	return t.UTC().Format(time.RFC3339Nano)
 }
 
 func newV2IngestErrorDump(ts time.Time, scope runners.Scope, convID string, batch turnBatch, batchNumber, batchTotal int, err error) factDumpRecord {
@@ -245,6 +289,17 @@ func batchFromSaveRequest(scope runners.Scope, req recall.SaveRequest) *factDump
 				b.SourceMessageIDs = append(b.SourceMessageIDs, id)
 			}
 		}
+		if text := strings.TrimSpace(turn.Text); text != "" {
+			b.Turns = append(b.Turns, factDumpTurn{
+				ID:         strings.TrimSpace(turn.ID),
+				EvidenceID: strings.TrimSpace(turn.EvidenceID),
+				SessionID:  strings.TrimSpace(turn.SessionID),
+				Role:       strings.TrimSpace(turn.Role),
+				Speaker:    strings.TrimSpace(turn.Speaker),
+				Text:       text,
+				Timestamp:  factDumpTime(turn.Time),
+			})
+		}
 	}
 	if len(b.SessionIDs) == 1 {
 		b.SessionID = b.SessionIDs[0]
@@ -282,6 +337,15 @@ func batchFromRawTurns(scope runners.Scope, convID string, turns []runners.RawTu
 				evidenceSeen[id] = struct{}{}
 				b.EvidenceIDs = append(b.EvidenceIDs, id)
 			}
+		}
+		if text := strings.TrimSpace(turn.Content); text != "" {
+			b.Turns = append(b.Turns, factDumpTurn{
+				ID:         strings.TrimSpace(turn.EvidenceID),
+				EvidenceID: strings.TrimSpace(turn.EvidenceID),
+				SessionID:  strings.TrimSpace(turn.SessionID),
+				Role:       strings.TrimSpace(turn.Role),
+				Text:       text,
+			})
 		}
 	}
 	if len(b.SessionIDs) == 1 {

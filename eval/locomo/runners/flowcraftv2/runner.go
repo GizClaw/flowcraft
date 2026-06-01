@@ -233,6 +233,46 @@ func (r *Runner) saveFacts(ctx context.Context, scope runners.Scope, facts []rec
 	return r.runSave(ctx, scope, recall.SaveRequest{Facts: facts})
 }
 
+// SaveFacts persists already-extracted v2 facts. It is used by eval replay
+// paths that load facts.jsonl and rerun QA without paying extraction again.
+func (r *Runner) SaveFacts(ctx context.Context, scope runners.Scope, facts []recall.TemporalFact) (int, time.Duration, error) {
+	return r.saveFacts(ctx, scope, facts)
+}
+
+// SaveFactsWithTurns persists already-extracted facts while also replaying the
+// typed source turns that produced them. The turns rebuild the raw Observation
+// ledger for facts.jsonl QA replay; extraction must be disabled on this path so
+// replay does not mint new assertions from the same turns.
+func (r *Runner) SaveFactsWithTurns(ctx context.Context, scope runners.Scope, facts []recall.TemporalFact, turns []recall.TurnContext, observedAt time.Time) (int, time.Duration, error) {
+	if len(facts) == 0 && len(turns) == 0 {
+		return 0, 0, nil
+	}
+	if r.hasLLM && len(turns) > 0 {
+		return 0, 0, fmt.Errorf("flowcraftv2: SaveFactsWithTurns requires extractor-disabled replay")
+	}
+	if observedAt.IsZero() {
+		observedAt = observedAtFromTurns(turns)
+	}
+	return r.runSave(ctx, scope, recall.SaveRequest{
+		Facts:      facts,
+		Turns:      turns,
+		ObservedAt: observedAt,
+	})
+}
+
+func observedAtFromTurns(turns []recall.TurnContext) time.Time {
+	var out time.Time
+	for _, turn := range turns {
+		if turn.Time.IsZero() {
+			continue
+		}
+		if out.IsZero() || turn.Time.Before(out) {
+			out = turn.Time
+		}
+	}
+	return out
+}
+
 func (r *Runner) runSave(ctx context.Context, scope runners.Scope, req recall.SaveRequest) (int, time.Duration, error) {
 	t0 := time.Now()
 	var (
