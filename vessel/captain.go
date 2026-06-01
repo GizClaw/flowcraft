@@ -428,18 +428,24 @@ func (c *Captain) Resume(ctx context.Context, runID string) (*Handle, error) {
 // extraOpts lets Resume inject agent.WithResumeFrom without
 // duplicating the admission / handle / goroutine plumbing.
 func (c *Captain) submit(ctx context.Context, agentName string, req agent.Request, extraOpts []agent.RunOption) (*Handle, error) {
-	if !c.Phase().AcceptsRequests() {
-		return nil, errdefs.NotAvailablef("vessel: not accepting requests in phase %q", c.Phase())
+	c.mu.Lock()
+	phase := c.Phase()
+	if !phase.AcceptsRequests() {
+		c.mu.Unlock()
+		return nil, errdefs.NotAvailablef("vessel: not accepting requests in phase %q", phase)
 	}
 	entry, ok := c.entries[agentName]
 	if !ok {
+		c.mu.Unlock()
 		return nil, errdefs.NotFoundf("vessel: no agent named %q", agentName)
 	}
 	if entry.spec.Sidecar {
+		c.mu.Unlock()
 		return nil, errdefs.Conflictf("vessel: agent %q is a sidecar; trigger via bus, not Submit", agentName)
 	}
 
 	if c.budget.hourExhausted() {
+		c.mu.Unlock()
 		return nil, errdefs.RateLimitf("vessel: hourly token budget exhausted")
 	}
 
@@ -447,13 +453,18 @@ func (c *Captain) submit(ctx context.Context, agentName string, req agent.Reques
 		req.RunID = mintRunID()
 	}
 	h := newHandle(req.RunID, agentName)
+	rootCtx := c.rootCtx
+	// Keep Add under the lifecycle lock. Drain/Stop transition out of
+	// PhaseRunning while holding the same lock and only call Wait after
+	// releasing it, so no new Submit can race Add against Wait.
+	c.inflight.Add(1)
+	c.mu.Unlock()
 
 	// runCtx merges caller ctx with the Captain's root so Stop
 	// cancels in-flight runs even when the caller never cancels
 	// its own ctx.
-	parent, cancelParent := mergeContexts(ctx, c.rootCtx)
+	parent, cancelParent := mergeContexts(ctx, rootCtx)
 
-	c.inflight.Add(1)
 	go func() {
 		defer c.inflight.Done()
 		defer cancelParent()
