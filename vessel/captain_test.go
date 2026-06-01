@@ -136,6 +136,57 @@ func TestCaptain_Submit_HandleWaitDelivers(t *testing.T) {
 	}
 }
 
+func TestCaptain_SubmitRejectedWhileStopWaiting(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var startedOnce sync.Once
+	blocking := engine.EngineFunc(func(_ context.Context, _ engine.Run, _ engine.Host, b *engine.Board) (*engine.Board, error) {
+		startedOnce.Do(func() { close(started) })
+		<-release
+		return b, nil
+	})
+	c, err := New(basicSpec("primary"), WithEngine(blocking))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := c.Launch(context.Background()); err != nil {
+		t.Fatalf("Launch: %v", err)
+	}
+
+	h, err := c.Submit(context.Background(), "primary", agent.Request{
+		Message: model.NewTextMessage(model.RoleUser, "block"),
+	})
+	if err != nil {
+		t.Fatalf("Submit first: %v", err)
+	}
+	<-started
+
+	stopCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	stopped := make(chan error, 1)
+	go func() { stopped <- c.Stop(stopCtx) }()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for c.Phase() != PhaseStopping {
+		if time.Now().After(deadline) {
+			t.Fatalf("phase = %s, want %s", c.Phase(), PhaseStopping)
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if _, err := c.Submit(context.Background(), "primary", agent.Request{
+		Message: model.NewTextMessage(model.RoleUser, "late"),
+	}); !errdefs.IsNotAvailable(err) {
+		t.Fatalf("late Submit err = %v, want NotAvailable", err)
+	}
+	close(release)
+	if err := <-stopped; err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if _, err := h.Wait(context.Background()); err != nil {
+		t.Fatalf("first run Wait: %v", err)
+	}
+}
+
 func TestCaptain_Submit_UnknownAgentReturnsNotFound(t *testing.T) {
 	t.Parallel()
 	c := newTestCaptain(t)
