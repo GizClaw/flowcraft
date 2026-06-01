@@ -34,17 +34,19 @@ type EntityExtractor interface {
 // helpers (used by tests and adapter packages) inject lower-level
 // contracts that are not part of the stable public surface yet.
 type config struct {
-	store           port.TemporalStore
-	evidenceStore   port.EvidenceStore
-	retrievalIndex  retrieval.Index
-	embedder        embedding.Embedder
-	compiler        port.Ingestor
-	llmExtractor    *llmExtractorConfig
-	timeParser      timex.Parser
-	entityExtractor port.EntityExtractor
-	resolver        port.ConflictResolver
-	resolverSet     bool
-	telemetry       port.TelemetryHook
+	store            port.TemporalStore
+	evidenceStore    port.EvidenceStore
+	observationStore port.ObservationStore
+	linkStore        port.LinkStore
+	retrievalIndex   retrieval.Index
+	embedder         embedding.Embedder
+	compiler         port.Ingestor
+	llmExtractor     *llmExtractorConfig
+	timeParser       timex.Parser
+	entityExtractor  port.EntityExtractor
+	resolver         port.ConflictResolver
+	resolverSet      bool
+	telemetry        port.TelemetryHook
 
 	extraProjections []port.Projection
 
@@ -55,8 +57,7 @@ type config struct {
 	materializer  port.Materializer
 	fusionOpts    port.FusionOptions
 
-	graphEnabled bool
-
+	graphEnabled  bool
 	reranker      port.Reranker
 	contextRanker port.Ranker
 
@@ -71,7 +72,6 @@ type config struct {
 // concrete extractor selection until the default compiler is wired.
 type llmExtractorConfig struct {
 	client       llm.LLM
-	mode         LLMExtractionMode
 	systemPrompt string
 	schemaName   string
 	temperature  float64
@@ -81,23 +81,6 @@ type llmExtractorConfig struct {
 func (c *llmExtractorConfig) build() port.Extractor {
 	if c == nil || c.client == nil {
 		return nil
-	}
-	if c.mode == LLMExtractionTwoPass {
-		ex := ingest.NewTwoPassLLMExtractor(c.client)
-		if c.systemPrompt != "" {
-			ex.FactSystem = c.systemPrompt
-		}
-		if c.schemaName != "" {
-			ex.FactSchemaName = c.schemaName
-			ex.AssertionSchemaName = c.schemaName + "_assertions"
-			ex.KindSchemaName = c.schemaName + "_kinds"
-			ex.RelationSchemaName = c.schemaName + "_relations"
-			ex.EntitySchemaName = c.schemaName + "_entities"
-			ex.EvidenceSchemaName = c.schemaName + "_evidence"
-		}
-		ex.Temperature = c.temperature
-		ex.ExtraOptions = append(ex.ExtraOptions, c.extraOptions...)
-		return ex
 	}
 	ex := ingest.NewLLMExtractor(c.client)
 	if c.systemPrompt != "" {
@@ -191,30 +174,8 @@ func newLLMExtractorOption(apply func(*llmExtractorConfig)) LLMExtractorOption {
 	return LLMExtractorOption{apply: apply}
 }
 
-// LLMExtractionMode selects the LLM extraction strategy used by
-// WithLLMExtractor.
-type LLMExtractionMode string
-
-const (
-	// LLMExtractionSinglePass uses the existing single prompt that emits
-	// text, kind, and evidence refs in one model call. This is the default.
-	LLMExtractionSinglePass LLMExtractionMode = "single_pass"
-	// LLMExtractionTwoPass first extracts text+kind, then runs a shorter
-	// grounding prompt to attach evidence turn ids.
-	LLMExtractionTwoPass LLMExtractionMode = "two_pass"
-)
-
-// WithLLMExtractionMode selects the extraction strategy. Unknown values
-// fall back to the single-pass extractor.
-func WithLLMExtractionMode(mode LLMExtractionMode) LLMExtractorOption {
-	return newLLMExtractorOption(func(c *llmExtractorConfig) {
-		c.mode = mode
-	})
-}
-
 // WithLLMExtractorSystemPrompt overrides the default fact extraction
-// system prompt. In two-pass mode, evidence grounding keeps its shorter
-// SDK-managed prompt.
+// system prompt.
 func WithLLMExtractorSystemPrompt(prompt string) LLMExtractorOption {
 	return newLLMExtractorOption(func(c *llmExtractorConfig) {
 		if prompt != "" {
@@ -230,8 +191,7 @@ func WithLLMExtractorTemperature(t float64) LLMExtractorOption {
 }
 
 // WithLLMExtractorSchemaName labels the JSON schema for structured
-// output (some providers display this in their dashboards / logs). In
-// two-pass mode, the evidence schema name is derived with "_evidence".
+// output (some providers display this in their dashboards / logs).
 func WithLLMExtractorSchemaName(name string) LLMExtractorOption {
 	return newLLMExtractorOption(func(c *llmExtractorConfig) {
 		if name != "" {

@@ -11,6 +11,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/memory/recall/internal/domain"
 	"github.com/GizClaw/flowcraft/memory/recall/internal/domain/diagnostic"
+	"github.com/GizClaw/flowcraft/memory/recall/internal/graphledger"
 	"github.com/GizClaw/flowcraft/memory/recall/internal/pipeline"
 	"github.com/GizClaw/flowcraft/memory/recall/internal/pipeline/forget"
 	"github.com/GizClaw/flowcraft/memory/recall/internal/port"
@@ -41,10 +42,13 @@ var ErrScopeKeyMismatch = errdefs.Forbidden(errdefs.New("recall.ForgetAll: confi
 //     caller asked for under Hard mode, just with fewer rows than
 //     they hoped).
 type ForgetAll struct {
-	store          port.TemporalStore
-	fanout         *pipeline.Fanout
-	projections    []port.Projection
-	evidenceLookup port.EvidenceStore
+	store                 port.TemporalStore
+	fanout                *pipeline.Fanout
+	projections           []port.Projection
+	evidenceLookup        port.EvidenceStore
+	observations          port.ObservationStore
+	links                 port.LinkStore
+	observationProjection port.ObservationProjection
 }
 
 // NewForgetAll constructs a forget_all stage. fanout drives the
@@ -58,12 +62,18 @@ func NewForgetAll(
 	fanout *pipeline.Fanout,
 	projections []port.Projection,
 	evidenceLookup port.EvidenceStore,
+	observations port.ObservationStore,
+	links port.LinkStore,
+	observationProjection port.ObservationProjection,
 ) *ForgetAll {
 	return &ForgetAll{
-		store:          store,
-		fanout:         fanout,
-		projections:    projections,
-		evidenceLookup: evidenceLookup,
+		store:                 store,
+		fanout:                fanout,
+		projections:           projections,
+		evidenceLookup:        evidenceLookup,
+		observations:          observations,
+		links:                 links,
+		observationProjection: observationProjection,
 	}
 }
 
@@ -207,15 +217,28 @@ func (s *ForgetAll) runHard(
 		// when work was actually done.
 		n = len(facts)
 	}
+	graphLinks, graphObservations, err := s.clearGraphScope(ctx, state.Scope)
+	if err != nil {
+		return diagnostic.ForgetAllDetail{
+			ScopeKey:           scopeKey,
+			Mode:               string(domain.ForgetHard),
+			Deleted:            n,
+			ProjectionsCleared: cleared,
+			EvidenceCleared:    evidenceCount,
+			Latency:            time.Since(started),
+		}, err
+	}
 	state.Deleted = n
 	state.DeletedFactIDs = factIDsFromFacts(facts)
 	return diagnostic.ForgetAllDetail{
-		ScopeKey:           scopeKey,
-		Mode:               string(domain.ForgetHard),
-		Deleted:            n,
-		ProjectionsCleared: cleared,
-		EvidenceCleared:    evidenceCount,
-		Latency:            time.Since(started),
+		ScopeKey:                 scopeKey,
+		Mode:                     string(domain.ForgetHard),
+		Deleted:                  n,
+		ProjectionsCleared:       cleared,
+		EvidenceCleared:          evidenceCount,
+		GraphLinksCleared:        graphLinks,
+		GraphObservationsCleared: graphObservations,
+		Latency:                  time.Since(started),
 	}, nil
 }
 
@@ -272,15 +295,28 @@ func (s *ForgetAll) runExpire(
 		}, fmt.Errorf("recall.ExpireRetired: store delete: %w", err)
 	}
 
+	graphLinks, graphObservations, err := s.clearGraphAssertions(ctx, state.Scope, matched)
+	if err != nil {
+		return diagnostic.ExpireRetiredDetail{
+			ScopeKey:      scopeKey,
+			ExpiresBefore: deref(state.Filter.ExpiresBefore),
+			Scanned:       len(facts),
+			Deleted:       len(matched),
+			Latency:       time.Since(started),
+		}, err
+	}
+
 	state.Deleted = len(matched)
 	state.DeletedFactIDs = append([]string(nil), matched...)
 	return diagnostic.ExpireRetiredDetail{
-		ScopeKey:       scopeKey,
-		ExpiresBefore:  deref(state.Filter.ExpiresBefore),
-		Scanned:        len(facts),
-		Deleted:        len(matched),
-		ProjectionsHit: countProjections(s.projections),
-		Latency:        time.Since(started),
+		ScopeKey:                 scopeKey,
+		ExpiresBefore:            deref(state.Filter.ExpiresBefore),
+		Scanned:                  len(facts),
+		Deleted:                  len(matched),
+		ProjectionsHit:           countProjections(s.projections),
+		GraphLinksCleared:        graphLinks,
+		GraphObservationsCleared: graphObservations,
+		Latency:                  time.Since(started),
 	}, nil
 }
 
@@ -338,6 +374,46 @@ func countProjections(projections []port.Projection) int {
 		}
 	}
 	return n
+}
+
+func (s *ForgetAll) clearGraphScope(ctx context.Context, scope domain.Scope) (int, int, error) {
+	var linkCount, observationCount int
+	if s.observationProjection != nil {
+		if err := s.observationProjection.ClearObservationScope(ctx, scope); err != nil {
+			return linkCount, observationCount, fmt.Errorf("recall.ForgetAll: observation projection clear: %w", err)
+		}
+	}
+	if s.links != nil {
+		n, err := s.links.DeleteByScope(ctx, scope)
+		if err != nil {
+			return linkCount, observationCount, fmt.Errorf("recall.ForgetAll: graph links clear: %w", err)
+		}
+		linkCount = n
+	}
+	if s.observations != nil {
+		n, err := s.observations.DeleteByScope(ctx, scope)
+		if err != nil {
+			return linkCount, observationCount, fmt.Errorf("recall.ForgetAll: graph observations clear: %w", err)
+		}
+		observationCount = n
+	}
+	return linkCount, observationCount, nil
+}
+
+func (s *ForgetAll) clearGraphAssertions(ctx context.Context, scope domain.Scope, factIDs []string) (int, int, error) {
+	var linkCount, observationCount int
+	for _, factID := range factIDs {
+		if factID == "" {
+			continue
+		}
+		links, observations, err := graphledger.ClearAssertion(ctx, scope, factID, s.observations, s.links)
+		if err != nil {
+			return linkCount, observationCount, err
+		}
+		linkCount += links
+		observationCount += observations
+	}
+	return linkCount, observationCount, nil
 }
 
 // clearAllProjections invokes ClearScope on every registered

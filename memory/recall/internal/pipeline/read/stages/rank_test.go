@@ -66,7 +66,7 @@ func makeContextItems(n int) []domain.ContextItem {
 	for i := 0; i < n; i++ {
 		id := fmt.Sprintf("fact-%02d", i)
 		items = append(items, domain.ContextItem{
-			Candidate: domain.Candidate{FactID: id},
+			Candidate: domain.Candidate{Kind: domain.GraphNodeAssertion, ID: id},
 			Fact:      domain.TemporalFact{ID: id},
 		})
 	}

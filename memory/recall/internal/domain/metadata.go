@@ -37,13 +37,6 @@ const (
 	MetaReinforcement = "reinforcement"
 	MetaPenalty       = "penalty"
 
-	// MetaCoverageRepair marks facts emitted by extractor coverage
-	// repair. These facts are grounded in source turns but were
-	// produced by a narrower second-pass extraction, so downstream
-	// rankers can treat them as useful but lower-confidence evidence
-	// when they compete with normal first-pass memories.
-	MetaCoverageRepair = "coverage_repair"
-
 	// MetaSubjectSuppressed marks facts whose extractor deliberately
 	// rejected the emitted subject as unresolved. Structurizers must not
 	// treat an empty subject on these facts as permission to fill it from

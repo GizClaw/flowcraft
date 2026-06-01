@@ -22,8 +22,10 @@ import (
 
 // FromStore materializes from a TemporalFactStore.
 type FromStore struct {
-	store     port.TemporalStore
-	telemetry port.TelemetryHook
+	store        port.TemporalStore
+	observations port.ObservationStore
+	links        port.LinkStore
+	telemetry    port.TelemetryHook
 }
 
 var _ port.Materializer = (*FromStore)(nil)
@@ -34,11 +36,11 @@ var _ port.Materializer = (*FromStore)(nil)
 // flow through the read pipeline's CandidateMergeAndMaterializeDetail
 // diagnostic that the stage emits to the same hook. Materializer stays a pure transform;
 // emission is the stage's job.
-func New(store port.TemporalStore, hook port.TelemetryHook) *FromStore {
+func New(store port.TemporalStore, observations port.ObservationStore, links port.LinkStore, hook port.TelemetryHook) *FromStore {
 	if hook == nil {
 		hook = telemetry.NopHook{}
 	}
-	return &FromStore{store: store, telemetry: hook}
+	return &FromStore{store: store, observations: observations, links: links, telemetry: hook}
 }
 
 // Materialize loads each candidate's canonical fact. Drops fall in
@@ -67,55 +69,195 @@ func (m *FromStore) Materialize(ctx context.Context, candidates []domain.Candida
 		if err := ctx.Err(); err != nil {
 			return items, drops, err
 		}
-		fact, err := m.store.Get(ctx, c.Scope, c.FactID)
-		if err != nil {
-			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		switch c.Kind {
+		case domain.GraphNodeAssertion:
+			item, drop, ok, err := m.materializeAssertion(ctx, c)
+			if err != nil {
 				return items, drops, err
 			}
-			if errors.Is(err, temporalstore.ErrNotFound) {
-				drops = append(drops, diagnostic.CandidateDrop{
-					Stage:  "candidate_materialize",
-					Reason: diagnostic.DropStaleFact,
-					FactID: c.FactID,
-					Source: c.Source,
-				})
+			if !ok {
+				drops = append(drops, drop)
 				continue
 			}
+			items = append(items, item)
+		case domain.GraphNodeObservation:
+			item, drop, ok, err := m.materializeObservation(ctx, c)
+			if err != nil {
+				return items, drops, err
+			}
+			if !ok {
+				drops = append(drops, drop)
+				continue
+			}
+			items = append(items, item)
+		case domain.GraphNodeLink:
+			item, drop, ok, err := m.materializeLink(ctx, c)
+			if err != nil {
+				return items, drops, err
+			}
+			if !ok {
+				drops = append(drops, drop)
+				continue
+			}
+			items = append(items, item)
+		default:
 			drops = append(drops, diagnostic.CandidateDrop{
 				Stage:   "candidate_materialize",
 				Reason:  diagnostic.DropMaterializeErr,
-				FactID:  c.FactID,
+				FactID:  c.ID,
 				Source:  c.Source,
-				Details: err.Error(),
+				Details: "candidate kind is required",
 			})
-			continue
 		}
-		if fact.CorrectedBy != "" {
-			drops = append(drops, diagnostic.CandidateDrop{
-				Stage:  "candidate_materialize",
-				Reason: diagnostic.DropSuperseded,
-				FactID: c.FactID,
-				Source: c.Source,
-			})
-			continue
-		}
-		if reason, ok := violatesScope(c.Scope, fact.Scope); ok {
-			drops = append(drops, diagnostic.CandidateDrop{
-				Stage:   "candidate_materialize",
-				Reason:  diagnostic.DropScopeViolation,
-				FactID:  c.FactID,
-				Source:  c.Source,
-				Details: reason,
-			})
-			continue
-		}
-		items = append(items, domain.ContextItem{
-			Candidate: c,
-			Fact:      fact,
-			Evidence:  selectCandidateEvidence(fact.EvidenceRefs, c.EvidenceIDs),
-		})
 	}
 	return items, drops, nil
+}
+
+func (m *FromStore) materializeAssertion(ctx context.Context, c domain.Candidate) (domain.ContextItem, diagnostic.CandidateDrop, bool, error) {
+	fact, err := m.store.Get(ctx, c.Scope, c.ID)
+	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return domain.ContextItem{}, diagnostic.CandidateDrop{}, false, err
+		}
+		if errors.Is(err, temporalstore.ErrNotFound) {
+			return domain.ContextItem{}, diagnostic.CandidateDrop{
+				Stage:  "candidate_materialize",
+				Reason: diagnostic.DropStaleFact,
+				FactID: c.ID,
+				Source: c.Source,
+			}, false, nil
+		}
+		return domain.ContextItem{}, diagnostic.CandidateDrop{
+			Stage:   "candidate_materialize",
+			Reason:  diagnostic.DropMaterializeErr,
+			FactID:  c.ID,
+			Source:  c.Source,
+			Details: err.Error(),
+		}, false, nil
+	}
+	if fact.CorrectedBy != "" {
+		return domain.ContextItem{}, diagnostic.CandidateDrop{
+			Stage:  "candidate_materialize",
+			Reason: diagnostic.DropSuperseded,
+			FactID: c.ID,
+			Source: c.Source,
+		}, false, nil
+	}
+	if reason, ok := violatesScope(c.Scope, fact.Scope); ok {
+		return domain.ContextItem{}, diagnostic.CandidateDrop{
+			Stage:   "candidate_materialize",
+			Reason:  diagnostic.DropScopeViolation,
+			FactID:  c.ID,
+			Source:  c.Source,
+			Details: reason,
+		}, false, nil
+	}
+	return domain.ContextItem{
+		Candidate: c,
+		Ref:       c,
+		Fact:      fact,
+		Evidence:  selectCandidateEvidence(fact.EvidenceRefs, c.EvidenceIDs),
+	}, diagnostic.CandidateDrop{}, true, nil
+}
+
+func (m *FromStore) materializeObservation(ctx context.Context, c domain.Candidate) (domain.ContextItem, diagnostic.CandidateDrop, bool, error) {
+	if m.observations == nil {
+		return domain.ContextItem{}, diagnostic.CandidateDrop{
+			Stage:   "candidate_materialize",
+			Reason:  diagnostic.DropMaterializeErr,
+			FactID:  c.ID,
+			Source:  c.Source,
+			Details: "observation store is not configured",
+		}, false, nil
+	}
+	obs, err := m.observations.Get(ctx, c.Scope, c.ID)
+	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return domain.ContextItem{}, diagnostic.CandidateDrop{}, false, err
+		}
+		if errors.Is(err, port.ErrNotFound) {
+			return domain.ContextItem{}, diagnostic.CandidateDrop{
+				Stage:  "candidate_materialize",
+				Reason: diagnostic.DropStaleFact,
+				FactID: c.ID,
+				Source: c.Source,
+			}, false, nil
+		}
+		return domain.ContextItem{}, diagnostic.CandidateDrop{
+			Stage:   "candidate_materialize",
+			Reason:  diagnostic.DropMaterializeErr,
+			FactID:  c.ID,
+			Source:  c.Source,
+			Details: err.Error(),
+		}, false, nil
+	}
+	return domain.ContextItem{
+		Candidate:   c,
+		Ref:         c,
+		Observation: obs,
+		Evidence:    []domain.EvidenceRef{evidenceRefFromObservation(obs)},
+	}, diagnostic.CandidateDrop{}, true, nil
+}
+
+func (m *FromStore) materializeLink(ctx context.Context, c domain.Candidate) (domain.ContextItem, diagnostic.CandidateDrop, bool, error) {
+	if m.links == nil {
+		return domain.ContextItem{}, diagnostic.CandidateDrop{
+			Stage:   "candidate_materialize",
+			Reason:  diagnostic.DropMaterializeErr,
+			FactID:  c.ID,
+			Source:  c.Source,
+			Details: "link store is not configured",
+		}, false, nil
+	}
+	link, err := m.links.Get(ctx, c.Scope, c.ID)
+	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return domain.ContextItem{}, diagnostic.CandidateDrop{}, false, err
+		}
+		if errors.Is(err, port.ErrNotFound) {
+			return domain.ContextItem{}, diagnostic.CandidateDrop{
+				Stage:  "candidate_materialize",
+				Reason: diagnostic.DropStaleFact,
+				FactID: c.ID,
+				Source: c.Source,
+			}, false, nil
+		}
+		return domain.ContextItem{}, diagnostic.CandidateDrop{
+			Stage:   "candidate_materialize",
+			Reason:  diagnostic.DropMaterializeErr,
+			FactID:  c.ID,
+			Source:  c.Source,
+			Details: err.Error(),
+		}, false, nil
+	}
+	return domain.ContextItem{
+		Candidate: c,
+		Ref:       c,
+		Link:      link,
+		Evidence:  append([]domain.EvidenceRef(nil), link.EvidenceRefs...),
+	}, diagnostic.CandidateDrop{}, true, nil
+}
+
+func evidenceRefFromObservation(obs domain.Observation) domain.EvidenceRef {
+	ts := obs.ObservedAt
+	if ts.IsZero() {
+		ts = obs.ReceivedAt
+	}
+	ref := domain.EvidenceRef{
+		ID:            obs.ID,
+		ObservationID: obs.ID,
+		MessageID:     obs.MessageID,
+		Role:          obs.Role,
+		Text:          obs.Text,
+		Timestamp:     ts,
+	}
+	if len(obs.Spans) > 0 {
+		ref.SpanID = obs.Spans[0].ID
+		if obs.Spans[0].Text != "" {
+			ref.Text = obs.Spans[0].Text
+		}
+	}
+	return ref
 }
 
 func selectCandidateEvidence(refs []domain.EvidenceRef, ids []string) []domain.EvidenceRef {
@@ -133,6 +275,12 @@ func selectCandidateEvidence(refs []domain.EvidenceRef, ids []string) []domain.E
 		if ref.MessageID != "" {
 			byID[ref.MessageID] = ref
 		}
+		if ref.ObservationID != "" {
+			byID[ref.ObservationID] = ref
+		}
+		if ref.SpanID != "" {
+			byID[ref.SpanID] = ref
+		}
 	}
 	out := make([]domain.EvidenceRef, 0, len(ids))
 	seen := make(map[string]struct{}, len(ids))
@@ -144,6 +292,12 @@ func selectCandidateEvidence(refs []domain.EvidenceRef, ids []string) []domain.E
 		key := ref.ID
 		if key == "" {
 			key = ref.MessageID
+		}
+		if key == "" {
+			key = ref.SpanID
+		}
+		if key == "" {
+			key = ref.ObservationID
 		}
 		if key != "" {
 			if _, dup := seen[key]; dup {

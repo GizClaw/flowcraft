@@ -25,6 +25,23 @@ func toRecallScope(s runners.Scope) recall.Scope {
 }
 
 func fromRecallArtifact(h recall.Hit) runners.RecallArtifact {
+	if h.Fact.ID == "" && h.Observation.ID != "" {
+		artifact := runners.RecallArtifact{
+			ID:      h.Observation.ID,
+			Content: groundedObservationContent(h),
+			Score:   h.Score,
+			Kind:    "observation",
+		}
+		if len(h.Sources) > 0 {
+			artifact.Sources = append([]string(nil), h.Sources...)
+		}
+		for _, ref := range h.Evidence {
+			if ref.ID != "" {
+				artifact.EvidenceIDs = append(artifact.EvidenceIDs, ref.ID)
+			}
+		}
+		return artifact
+	}
 	artifact := runners.RecallArtifact{
 		ID:      h.Fact.ID,
 		Content: groundedHitContent(h),
@@ -53,6 +70,22 @@ func fromRecallArtifact(h recall.Hit) runners.RecallArtifact {
 		}
 	}
 	return artifact
+}
+
+func groundedObservationContent(h recall.Hit) string {
+	evidence := h.Evidence
+	parts := make([]string, 0, 1+len(evidence))
+	appendPart := func(s string) {
+		s = strings.TrimSpace(strings.ReplaceAll(s, "\n", " "))
+		if s != "" {
+			parts = append(parts, s)
+		}
+	}
+	appendPart(h.Observation.Text)
+	for _, ref := range evidence {
+		appendPart(renderEvidencePart(ref))
+	}
+	return strings.Join(parts, " | ")
 }
 
 func groundedHitContent(h recall.Hit) string {
@@ -174,10 +207,15 @@ func fromRecallStageAudit(a diagnostics.RecallStageAudit) runners.RecallStageAud
 	out := runners.RecallStageAudit{Stages: make([]runners.RecallStageSnapshot, 0, len(a.Stages))}
 	for _, st := range a.Stages {
 		out.Stages = append(out.Stages, runners.RecallStageSnapshot{
-			Stage:      st.Stage,
-			Source:     st.Source,
-			Status:     st.Status,
-			Candidates: fromRecallAuditCandidates(st.Candidates),
+			Stage:             st.Stage,
+			Source:            st.Source,
+			Status:            st.Status,
+			Added:             st.Added,
+			AddedFactIDs:      append([]string(nil), st.AddedFactIDs...),
+			ScannedLinks:      st.ScannedLinks,
+			AddedFacts:        st.AddedFacts,
+			AddedEvidenceRefs: st.AddedEvidenceRefs,
+			Candidates:        fromRecallAuditCandidates(st.Candidates),
 		})
 	}
 	return out

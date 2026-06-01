@@ -138,7 +138,11 @@ func (s DefaultStructurizer) Structurize(f domain.TemporalFact, input port.Inges
 	_, hasHint := f.Metadata[MetaValidFromHint]
 	_, hasParsedTime := f.Metadata[MetaValidFromAt]
 	if !hasHint && !hasParsedTime && f.ValidFrom == nil {
-		if hint := inferValidFromHint(s.TimeParser, turn, f.Content); hint.Raw != "" || !hint.At.IsZero() || hint.Expr != nil {
+		hint := inferEvidenceRelativeValidFromHint(turn, f)
+		if hint.Raw == "" && hint.At.IsZero() && hint.Expr == nil {
+			hint = inferValidFromHint(s.TimeParser, turn, f.Content)
+		}
+		if hint.Raw != "" || !hint.At.IsZero() || hint.Expr != nil {
 			if f.Metadata == nil {
 				f.Metadata = map[string]any{}
 			}
@@ -159,6 +163,62 @@ func (s DefaultStructurizer) Structurize(f domain.TemporalFact, input port.Inges
 	}
 
 	return f
+}
+
+func inferEvidenceRelativeValidFromHint(turn *port.TurnContext, f domain.TemporalFact) parsedTimeHint {
+	if turn == nil || turn.Time.IsZero() {
+		return parsedTimeHint{}
+	}
+	switch f.Kind {
+	case domain.KindEvent, domain.KindPlan:
+	default:
+		return parsedTimeHint{}
+	}
+	for _, text := range evidenceTimeTexts(f) {
+		if hint := parseRelativeEvidenceTime(text, turn.Time); hint.Raw != "" || !hint.At.IsZero() || hint.Expr != nil {
+			return hint
+		}
+	}
+	return parsedTimeHint{}
+}
+
+func evidenceTimeTexts(f domain.TemporalFact) []string {
+	seen := map[string]struct{}{}
+	out := make([]string, 0, 1+len(f.EvidenceRefs))
+	add := func(text string) {
+		text = strings.TrimSpace(text)
+		if text == "" {
+			return
+		}
+		key := strings.ToLower(strings.Join(strings.Fields(text), " "))
+		if _, dup := seen[key]; dup {
+			return
+		}
+		seen[key] = struct{}{}
+		out = append(out, text)
+	}
+	for _, ref := range f.EvidenceRefs {
+		add(ref.Text)
+	}
+	add(f.EvidenceText)
+	return out
+}
+
+func parseRelativeEvidenceTime(text string, anchor time.Time) parsedTimeHint {
+	rel := timex.FindRelativePhrase(text)
+	if rel == nil {
+		return parsedTimeHint{}
+	}
+	expr, err := timex.Extract(rel.Text, anchor)
+	if err != nil || expr == nil || !expr.Relative || !isValidFromExpression(expr) {
+		return parsedTimeHint{}
+	}
+	return parsedTimeHint{
+		Raw:    rel.Text,
+		At:     expressionValidFrom(expr),
+		Source: ValidFromSourceContentRelative,
+		Expr:   expr,
+	}
 }
 
 // resolveSupportingTurn picks the first port.TurnContext referenced by

@@ -358,6 +358,24 @@ func rankLabel(idx int) string {
 }
 
 func answerCueFromHit(idx int, hit recall.Hit) answerCue {
+	if hit.Fact.ID == "" && hit.Observation.ID != "" {
+		ref := firstAnswerCueEvidence(hit)
+		cue := answerCue{
+			Rank:    rankLabel(idx),
+			Kind:    "observation",
+			Content: compactAnswerCue(hit.Observation.Text),
+			Subject: hit.Observation.Speaker,
+			Quote:   compactAnswerCue(firstNonEmpty(ref.Text, hit.Observation.Text)),
+		}
+		if !hit.Observation.ObservedAt.IsZero() {
+			cue.ObservedAt = hit.Observation.ObservedAt.Format("2006-01-02 15:04")
+		}
+		if !ref.Timestamp.IsZero() {
+			cue.SourceTime = evidenceSourceTimeLabel(ref)
+		}
+		cue.RelativeTimeAnswer = relativeTimeAnswerCue(cue.Quote, "", cue.Content, ref.Timestamp)
+		return cue
+	}
 	f := hit.Fact
 	ref := firstAnswerCueEvidence(hit)
 	cue := answerCue{
@@ -512,106 +530,6 @@ func candidateAnswerSupport(cue answerCue) string {
 	return cue.Quote
 }
 
-type surfaceAnswerSpan struct {
-	source string
-	value  string
-}
-
-func surfaceAnswerSpans(cue answerCue) []surfaceAnswerSpan {
-	var out []surfaceAnswerSpan
-	add := func(source, value string) {
-		value = strings.TrimSpace(value)
-		if len([]rune(value)) < 2 || containsSurfaceAnswerSpan(out, value) {
-			return
-		}
-		out = append(out, surfaceAnswerSpan{source: source, value: value})
-	}
-	for _, span := range quotedAnswerSpans(cue.Content) {
-		add("content_quote_span", span)
-	}
-	for _, span := range quotedAnswerSpans(cue.Quote) {
-		add("quote_span", span)
-	}
-	for _, span := range sharedImageAnswerSpans(cue.Content) {
-		add("content_image_span", span)
-	}
-	for _, span := range sharedImageAnswerSpans(cue.Quote) {
-		add("quote_image_span", span)
-	}
-	return out
-}
-
-func quotedAnswerSpans(text string) []string {
-	var spans []string
-	runes := []rune(text)
-	for i := 0; i < len(runes); i++ {
-		quote := runes[i]
-		if quote != '"' && quote != '\'' && quote != '“' && quote != '”' && quote != '‘' && quote != '’' {
-			continue
-		}
-		for j := i + 1; j < len(runes); j++ {
-			if !matchingQuote(quote, runes[j]) {
-				continue
-			}
-			span := strings.TrimSpace(string(runes[i+1 : j]))
-			if span != "" {
-				spans = append(spans, span)
-			}
-			i = j
-			break
-		}
-	}
-	return spans
-}
-
-func matchingQuote(open, close rune) bool {
-	switch open {
-	case '"', '“', '”':
-		return close == '"' || close == '”'
-	case '\'', '‘', '’':
-		return close == '\'' || close == '’'
-	default:
-		return false
-	}
-}
-
-func sharedImageAnswerSpans(text string) []string {
-	lower := strings.ToLower(text)
-	var spans []string
-	const marker = "[shared image:"
-	start := strings.Index(lower, marker)
-	for start >= 0 {
-		bodyStart := start + len(marker)
-		end := strings.Index(text[bodyStart:], "]")
-		if end < 0 {
-			break
-		}
-		span := strings.TrimSpace(text[bodyStart : bodyStart+end])
-		if span != "" {
-			spans = append(spans, span)
-		}
-		nextStart := bodyStart + end + 1
-		if nextStart >= len(text) {
-			break
-		}
-		next := strings.Index(strings.ToLower(text[nextStart:]), marker)
-		if next < 0 {
-			break
-		}
-		start = nextStart + next
-	}
-	return spans
-}
-
-func containsSurfaceAnswerSpan(spans []surfaceAnswerSpan, want string) bool {
-	for _, span := range spans {
-		if strings.EqualFold(span.value, want) {
-			return true
-		}
-	}
-	return false
-}
-
 func firstAnswerCueEvidence(hit recall.Hit) recall.EvidenceRef {
 	evidence := hit.Evidence
 	if len(evidence) == 0 {
@@ -697,6 +615,10 @@ func containsStringFold(values []string, want string) bool {
 }
 
 func renderStructuredHit(b *strings.Builder, rank int, hit recall.Hit) {
+	if hit.Fact.ID == "" && hit.Observation.ID != "" {
+		renderStructuredObservationHit(b, rank, hit)
+		return
+	}
 	f := hit.Fact
 	fmt.Fprintf(b, "- [#%d]\n", rank)
 	writeKV(b, 1, "fact_id", f.ID)
@@ -724,6 +646,38 @@ func renderStructuredHit(b *strings.Builder, rank int, hit recall.Hit) {
 	evidence := hit.Evidence
 	if len(evidence) == 0 {
 		evidence = f.EvidenceRefs
+	}
+	writeListKV(b, 1, "evidence_ids", evidenceIDs(evidence))
+	if len(evidence) > 0 {
+		writeIndent(b, 1)
+		b.WriteString("evidence:\n")
+		for _, ref := range evidence {
+			renderStructuredEvidence(b, ref)
+		}
+	}
+}
+
+func renderStructuredObservationHit(b *strings.Builder, rank int, hit recall.Hit) {
+	obs := hit.Observation
+	fmt.Fprintf(b, "- [#%d]\n", rank)
+	writeKV(b, 1, "observation_id", obs.ID)
+	writeKV(b, 1, "kind", "observation")
+	writeKV(b, 1, "score", fmt.Sprintf("%.6f", hit.Score))
+	writeListKV(b, 1, "sources", answerVisibleSources(hit.Sources))
+	writeKV(b, 1, "content", obs.Text)
+	writeKV(b, 1, "subject", obs.Speaker)
+	writeKV(b, 1, "role", obs.Role)
+	if !obs.ObservedAt.IsZero() {
+		writeKV(b, 1, "observed_at", obs.ObservedAt.Format("2006-01-02 15:04"))
+	}
+	evidence := hit.Evidence
+	if len(evidence) == 0 && obs.ID != "" {
+		evidence = []recall.EvidenceRef{{
+			ID:            obs.ID,
+			ObservationID: obs.ID,
+			Text:          obs.Text,
+			Timestamp:     obs.ObservedAt,
+		}}
 	}
 	writeListKV(b, 1, "evidence_ids", evidenceIDs(evidence))
 	if len(evidence) > 0 {
@@ -898,6 +852,15 @@ func nonEmptyStrings(values []string) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func nonEmptyStringsPreserveOrder(values []string) []string {

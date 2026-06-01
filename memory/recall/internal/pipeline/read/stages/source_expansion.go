@@ -156,18 +156,18 @@ func mergeVariantSourceResults(sourceName string, plan domain.QueryPlan, results
 			errs = append(errs, res.Err)
 		}
 		for _, candidate := range res.Candidates {
-			if candidate.FactID == "" {
+			if candidate.ID == "" {
 				continue
 			}
 			candidate.Source = merged.Source
 			if resultIdx > 0 {
 				candidate.Score = 0
 			}
-			if existing, ok := byFactID[candidate.FactID]; ok {
+			if existing, ok := byFactID[candidate.ID]; ok {
 				merged.Candidates[existing] = mergeVariantCandidate(merged.Candidates[existing], candidate)
 				continue
 			}
-			byFactID[candidate.FactID] = len(merged.Candidates)
+			byFactID[candidate.ID] = len(merged.Candidates)
 			merged.Candidates = append(merged.Candidates, candidate)
 		}
 	}

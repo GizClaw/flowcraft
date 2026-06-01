@@ -10,16 +10,19 @@ type RecallStageAudit struct {
 }
 
 type RecallStageSnapshot struct {
-	Stage            string                    `json:"stage"`
-	Source           string                    `json:"source,omitempty"`
-	Status           string                    `json:"status,omitempty"`
-	TaskIntents      []string                  `json:"task_intents,omitempty"`
-	Suggested        int                       `json:"suggested,omitempty"`
-	SuggestedByTask  map[string]int            `json:"suggested_by_task,omitempty"`
-	SuggestedFactIDs []string                  `json:"suggested_fact_ids,omitempty"`
-	Added            int                       `json:"added,omitempty"`
-	AddedFactIDs     []string                  `json:"added_fact_ids,omitempty"`
-	Candidates       []RecallCandidateSnapshot `json:"candidates,omitempty"`
+	Stage             string                    `json:"stage"`
+	Source            string                    `json:"source,omitempty"`
+	Status            string                    `json:"status,omitempty"`
+	TaskIntents       []string                  `json:"task_intents,omitempty"`
+	Suggested         int                       `json:"suggested,omitempty"`
+	SuggestedByTask   map[string]int            `json:"suggested_by_task,omitempty"`
+	SuggestedFactIDs  []string                  `json:"suggested_fact_ids,omitempty"`
+	Added             int                       `json:"added,omitempty"`
+	AddedFactIDs      []string                  `json:"added_fact_ids,omitempty"`
+	ScannedLinks      int                       `json:"scanned_links,omitempty"`
+	AddedFacts        int                       `json:"added_facts,omitempty"`
+	AddedEvidenceRefs int                       `json:"added_evidence_refs,omitempty"`
+	Candidates        []RecallCandidateSnapshot `json:"candidates,omitempty"`
 }
 
 type RecallCandidateSnapshot struct {
@@ -63,6 +66,25 @@ func AuditRecallStages(trace domain.RecallTrace) RecallStageAudit {
 				SuggestedByTask:  cloneIntMap(d.SuggestedByTask),
 				SuggestedFactIDs: append([]string(nil), d.SuggestedFactIDs...),
 				Candidates:       publicCandidateSnapshots(snapshotValue(d.Items)),
+			})
+		case diagnostic.ObservationRecallDetail:
+			out.Stages = append(out.Stages, RecallStageSnapshot{
+				Stage:        "observation_recall",
+				Status:       status,
+				Added:        d.AddedObservations,
+				AddedFactIDs: append([]string(nil), d.AddedObservationIDs...),
+				Candidates:   publicCandidateSnapshots(snapshotValue(d.Items)),
+			})
+		case diagnostic.LinkExpansionDetail:
+			out.Stages = append(out.Stages, RecallStageSnapshot{
+				Stage:             "link_expansion",
+				Status:            status,
+				Added:             d.AddedFacts,
+				AddedFactIDs:      append([]string(nil), d.AddedFactIDs...),
+				ScannedLinks:      d.ScannedLinks,
+				AddedFacts:        d.AddedFacts,
+				AddedEvidenceRefs: d.AddedEvidenceRefs,
+				Candidates:        publicCandidateSnapshots(snapshotValue(d.Items)),
 			})
 		case diagnostic.PolicyFilterDetail:
 			appendStage("policy_filter", "", status, snapshotValue(d.Items))

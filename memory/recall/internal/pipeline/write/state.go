@@ -173,6 +173,20 @@ type WriteState struct {
 	// SideEffectsEnqueued counts jobs written by enqueue_side_effects.
 	SideEffectsEnqueued int
 
+	// GraphDelta is the experimental Observation/Assertion/Link commit unit
+	// derived from the resolved write. commit_graph owns this field.
+	GraphDelta domain.MemoryGraphDelta
+
+	// RawObservationIDs are turn observations committed before assertion
+	// extraction. They intentionally survive extractor failures so raw evidence
+	// can be recalled or re-extracted later.
+	RawObservationIDs []string
+
+	// GraphObservationIDs / GraphLinkIDs are the rows commit_graph wrote. Its
+	// compensator deletes exactly these ids if a downstream stage fails.
+	GraphObservationIDs []string
+	GraphLinkIDs        []string
+
 	// SemanticDerivationOrigin is stamped onto every appended fact by
 	// origin_stamp in the async worker lane. Zero in sync and episode
 	// paths.

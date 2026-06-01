@@ -15,7 +15,7 @@ func TestDefault_Rank_UsesEvidenceAndIntentSignals(t *testing.T) {
 	r := ranker.NewDefault()
 	items := []domain.ContextItem{
 		{
-			Candidate: domain.Candidate{FactID: "generic", Score: 0.05},
+			Candidate: domain.Candidate{Kind: domain.GraphNodeAssertion, ID: "generic", Score: 0.05},
 			Fact: domain.TemporalFact{
 				ID:         "generic",
 				Kind:       domain.KindNote,
@@ -24,7 +24,7 @@ func TestDefault_Rank_UsesEvidenceAndIntentSignals(t *testing.T) {
 			},
 		},
 		{
-			Candidate: domain.Candidate{FactID: "grounded", Score: 0.01},
+			Candidate: domain.Candidate{Kind: domain.GraphNodeAssertion, ID: "grounded", Score: 0.01},
 			Fact: domain.TemporalFact{
 				ID:           "grounded",
 				Kind:         domain.KindEvent,
@@ -62,7 +62,7 @@ func TestDefault_Rank_WentGoStemLemmaRegression(t *testing.T) {
 	r := ranker.NewDefault()
 	items := []domain.ContextItem{
 		{
-			Candidate: domain.Candidate{FactID: "walk", Score: 0.5},
+			Candidate: domain.Candidate{Kind: domain.GraphNodeAssertion, ID: "walk", Score: 0.5},
 			Fact: domain.TemporalFact{
 				ID:         "walk",
 				Content:    "Alice walked to the store yesterday",
@@ -70,7 +70,7 @@ func TestDefault_Rank_WentGoStemLemmaRegression(t *testing.T) {
 			},
 		},
 		{
-			Candidate: domain.Candidate{FactID: "go", Score: 0.5},
+			Candidate: domain.Candidate{Kind: domain.GraphNodeAssertion, ID: "go", Score: 0.5},
 			Fact: domain.TemporalFact{
 				ID:         "go",
 				Content:    "Alice went to the store last week",
@@ -102,7 +102,7 @@ func TestDefault_Rank_DoesNotApplyTimeDecayByDefault(t *testing.T) {
 	r := ranker.NewDefault()
 	items := []domain.ContextItem{
 		{
-			Candidate: domain.Candidate{FactID: "old", Score: 0.9},
+			Candidate: domain.Candidate{Kind: domain.GraphNodeAssertion, ID: "old", Score: 0.9},
 			Fact: domain.TemporalFact{
 				ID:         "old",
 				Content:    "deployed service alpha to production",
@@ -110,7 +110,7 @@ func TestDefault_Rank_DoesNotApplyTimeDecayByDefault(t *testing.T) {
 			},
 		},
 		{
-			Candidate: domain.Candidate{FactID: "new", Score: 0.9},
+			Candidate: domain.Candidate{Kind: domain.GraphNodeAssertion, ID: "new", Score: 0.9},
 			Fact: domain.TemporalFact{
 				ID:         "new",
 				Content:    "deployed service alpha to production",
@@ -145,7 +145,7 @@ func TestDefault_Rank_TimeDecayPrefersRecentWhenOptedIn(t *testing.T) {
 	r := ranker.NewDefault(ranker.WithTimeDecay(30 * 24 * time.Hour))
 	items := []domain.ContextItem{
 		{
-			Candidate: domain.Candidate{FactID: "old", Score: 0.9},
+			Candidate: domain.Candidate{Kind: domain.GraphNodeAssertion, ID: "old", Score: 0.9},
 			Fact: domain.TemporalFact{
 				ID:         "old",
 				Content:    "deployed service alpha to production",
@@ -153,7 +153,7 @@ func TestDefault_Rank_TimeDecayPrefersRecentWhenOptedIn(t *testing.T) {
 			},
 		},
 		{
-			Candidate: domain.Candidate{FactID: "new", Score: 0.9},
+			Candidate: domain.Candidate{Kind: domain.GraphNodeAssertion, ID: "new", Score: 0.9},
 			Fact: domain.TemporalFact{
 				ID:         "new",
 				Content:    "deployed service alpha to production",
@@ -185,7 +185,7 @@ func TestDefault_Rank_QueryCoveragePrefersSpecificEvidence(t *testing.T) {
 	r := ranker.NewDefault()
 	items := []domain.ContextItem{
 		{
-			Candidate: domain.Candidate{FactID: "generic", Score: 0.01},
+			Candidate: domain.Candidate{Kind: domain.GraphNodeAssertion, ID: "generic", Score: 0.01},
 			Fact: domain.TemporalFact{
 				ID:      "generic",
 				Kind:    domain.KindState,
@@ -194,7 +194,7 @@ func TestDefault_Rank_QueryCoveragePrefersSpecificEvidence(t *testing.T) {
 			},
 		},
 		{
-			Candidate: domain.Candidate{FactID: "specific", Score: 0.01},
+			Candidate: domain.Candidate{Kind: domain.GraphNodeAssertion, ID: "specific", Score: 0.01},
 			Fact: domain.TemporalFact{
 				ID:      "specific",
 				Kind:    domain.KindNote,

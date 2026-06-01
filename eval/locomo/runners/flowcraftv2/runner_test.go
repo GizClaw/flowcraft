@@ -176,14 +176,21 @@ func TestSaveSourceTurnsPersistsExtractorEvidenceRefs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("recall: %v", err)
 	}
-	if len(hits) != 1 {
+	if len(hits) == 0 {
 		t.Fatalf("hits = %+v", hits)
 	}
-	if len(hits[0].EvidenceIDs) != 1 || hits[0].EvidenceIDs[0] != "D1:3" {
-		t.Fatalf("evidence ids not preserved in hit: %+v", hits[0])
+	hit := hits[0]
+	for _, candidate := range hits {
+		if candidate.Kind != "observation" {
+			hit = candidate
+			break
+		}
 	}
-	if !strings.Contains(hits[0].Content, "Alice likes Paris.") {
-		t.Fatalf("grounded hit content should include evidence text: %+v", hits[0])
+	if !containsString(hit.EvidenceIDs, "D1:3") {
+		t.Fatalf("evidence ids not preserved in hit: %+v", hit)
+	}
+	if !strings.Contains(hit.Content, "Alice likes Paris.") {
+		t.Fatalf("grounded hit content should include evidence text: %+v", hit)
 	}
 
 	auditor, ok := r.(runners.RecallStageAuditor)

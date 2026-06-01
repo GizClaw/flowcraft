@@ -171,9 +171,12 @@ type QueryPlan struct {
 // preserves the fusion provenance (score, source, rank) so explain
 // traces and future ranking layers can use it.
 type ContextItem struct {
-	Candidate Candidate
-	Fact      TemporalFact
-	Evidence  []EvidenceRef
+	Candidate   Candidate
+	Ref         CandidateRef
+	Fact        TemporalFact
+	Observation Observation
+	Link        FactLink
+	Evidence    []EvidenceRef
 }
 
 // Hit is one recall winner. Evidence is the grounded evidence slice exposed to
@@ -186,8 +189,12 @@ type ContextItem struct {
 // diagnostics and explainability. An empty Sources slice means the candidate
 // carried no provenance metadata.
 type Hit struct {
+	Ref            CandidateRef
 	Fact           TemporalFact
+	Observation    Observation
+	Link           FactLink
 	Evidence       []EvidenceRef
+	EvidencePacket EvidencePacket
 	Score          float64
 	Sources        []string
 	AnswerEvidence []EvidenceRow

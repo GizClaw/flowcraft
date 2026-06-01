@@ -37,6 +37,15 @@ func TestEvidenceStoreConformance(t *testing.T) {
 	})
 }
 
+func TestGraphStoreConformance(t *testing.T) {
+	recalltest.RunObservationStoreSuite(t, func(t testing.TB) recall.ObservationStore {
+		return newTestBackend(t).ObservationStore()
+	})
+	recalltest.RunLinkStoreSuite(t, func(t testing.TB) recall.LinkStore {
+		return newTestBackend(t).LinkStore()
+	})
+}
+
 func newTestBackend(t testing.TB) *Backend {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "recall.db")

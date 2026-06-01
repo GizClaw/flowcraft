@@ -1,6 +1,7 @@
 package locomo
 
 import (
+	"strings"
 	"time"
 
 	"github.com/GizClaw/flowcraft/eval/locomo/runners"
@@ -17,6 +18,8 @@ type factDumpRecord struct {
 	ExtractCount     int                              `json:"extract_count,omitempty"`
 	ExtractTokens    *diagnostics.ExtractorTokenUsage `json:"extract_tokens,omitempty"`
 	AvgExtractTokens *factDumpAvgTokens               `json:"avg_extract_tokens,omitempty"`
+	Batch            *factDumpBatch                   `json:"batch,omitempty"`
+	Error            string                           `json:"error,omitempty"`
 	Facts            []factDumpFact                   `json:"facts"`
 }
 
@@ -37,6 +40,21 @@ type factDumpScope struct {
 	RuntimeID string `json:"runtime_id,omitempty"`
 	UserID    string `json:"user_id,omitempty"`
 	AgentID   string `json:"agent_id,omitempty"`
+}
+
+type factDumpBatch struct {
+	ConversationID   string   `json:"conversation_id,omitempty"`
+	SessionID        string   `json:"session_id,omitempty"`
+	SessionIDs       []string `json:"session_ids,omitempty"`
+	BatchNumber      int      `json:"batch_number,omitempty"`
+	BatchTotal       int      `json:"batch_total,omitempty"`
+	TurnCount        int      `json:"turn_count,omitempty"`
+	TurnsWithText    int      `json:"turns_with_text,omitempty"`
+	RecentMessages   int      `json:"recent_messages,omitempty"`
+	Anchors          int      `json:"anchors,omitempty"`
+	EvidenceIDs      []string `json:"evidence_ids,omitempty"`
+	SourceMessageIDs []string `json:"source_message_ids,omitempty"`
+	InputTextChars   int      `json:"input_text_chars,omitempty"`
 }
 
 func (s *factDumpTokenStats) Add(usage diagnostics.ExtractorTokenUsage) {
@@ -127,7 +145,7 @@ func newV1FactsDump(ts time.Time, scope recallv1.Scope, facts []recallv1.Extract
 	return out
 }
 
-func newV2FactsDump(ts time.Time, scope runners.Scope, facts []recall.TemporalFact, diag *diagnostics.SaveDiagnostics) factDumpRecord {
+func newV2FactsDump(ts time.Time, scope runners.Scope, req recall.SaveRequest, facts []recall.TemporalFact, diag *diagnostics.SaveDiagnostics) factDumpRecord {
 	out := factDumpRecord{
 		TS:     ts,
 		Runner: runnerFlowcraftRecallV2,
@@ -136,6 +154,7 @@ func newV2FactsDump(ts time.Time, scope runners.Scope, facts []recall.TemporalFa
 			UserID:    scope.UserID,
 			AgentID:   scope.AgentID,
 		},
+		Batch: batchFromSaveRequest(scope, req),
 		Facts: make([]factDumpFact, 0, len(facts)),
 	}
 	if diag != nil && diag.ExtractorTokenUsage.Calls > 0 {
@@ -169,4 +188,112 @@ func newV2FactsDump(ts time.Time, scope runners.Scope, facts []recall.TemporalFa
 		out.Facts = append(out.Facts, rec)
 	}
 	return out
+}
+
+func newV2IngestErrorDump(ts time.Time, scope runners.Scope, convID string, batch turnBatch, batchNumber, batchTotal int, err error) factDumpRecord {
+	out := factDumpRecord{
+		TS:     ts,
+		Type:   "ingest_error",
+		Runner: runnerFlowcraftRecallV2,
+		Scope: factDumpScope{
+			RuntimeID: scope.RuntimeID,
+			UserID:    scope.UserID,
+			AgentID:   scope.AgentID,
+		},
+		Batch: batchFromRawTurns(scope, convID, batch.rawTurns, len(batch.recentRawTurns), batchNumber, batchTotal),
+		Facts: []factDumpFact{},
+	}
+	if err != nil {
+		out.Error = err.Error()
+	}
+	return out
+}
+
+func batchFromSaveRequest(scope runners.Scope, req recall.SaveRequest) *factDumpBatch {
+	if len(req.Turns) == 0 {
+		return nil
+	}
+	b := &factDumpBatch{
+		ConversationID: conversationIDFromRunnerScope(scope),
+		RecentMessages: len(req.RecentMessages),
+		Anchors:        len(req.ExistingFactsAnchor),
+	}
+	sessionSeen := map[string]struct{}{}
+	evidenceSeen := map[string]struct{}{}
+	sourceSeen := map[string]struct{}{}
+	for _, turn := range req.Turns {
+		b.TurnCount++
+		if strings.TrimSpace(turn.Text) != "" {
+			b.TurnsWithText++
+			b.InputTextChars += len(turn.Text)
+		}
+		if session := strings.TrimSpace(turn.SessionID); session != "" {
+			if _, ok := sessionSeen[session]; !ok {
+				sessionSeen[session] = struct{}{}
+				b.SessionIDs = append(b.SessionIDs, session)
+			}
+		}
+		if id := strings.TrimSpace(turn.EvidenceID); id != "" {
+			if _, ok := evidenceSeen[id]; !ok {
+				evidenceSeen[id] = struct{}{}
+				b.EvidenceIDs = append(b.EvidenceIDs, id)
+			}
+		}
+		if id := strings.TrimSpace(turn.ID); id != "" {
+			if _, ok := sourceSeen[id]; !ok {
+				sourceSeen[id] = struct{}{}
+				b.SourceMessageIDs = append(b.SourceMessageIDs, id)
+			}
+		}
+	}
+	if len(b.SessionIDs) == 1 {
+		b.SessionID = b.SessionIDs[0]
+		b.SessionIDs = nil
+	}
+	return b
+}
+
+func batchFromRawTurns(scope runners.Scope, convID string, turns []runners.RawTurn, recentCount, batchNumber, batchTotal int) *factDumpBatch {
+	b := &factDumpBatch{
+		ConversationID: convID,
+		BatchNumber:    batchNumber,
+		BatchTotal:     batchTotal,
+		RecentMessages: recentCount,
+	}
+	if b.ConversationID == "" {
+		b.ConversationID = conversationIDFromRunnerScope(scope)
+	}
+	sessionSeen := map[string]struct{}{}
+	evidenceSeen := map[string]struct{}{}
+	for _, turn := range turns {
+		b.TurnCount++
+		if strings.TrimSpace(turn.Content) != "" {
+			b.TurnsWithText++
+			b.InputTextChars += len(turn.Content)
+		}
+		if session := strings.TrimSpace(turn.SessionID); session != "" {
+			if _, ok := sessionSeen[session]; !ok {
+				sessionSeen[session] = struct{}{}
+				b.SessionIDs = append(b.SessionIDs, session)
+			}
+		}
+		if id := strings.TrimSpace(turn.EvidenceID); id != "" {
+			if _, ok := evidenceSeen[id]; !ok {
+				evidenceSeen[id] = struct{}{}
+				b.EvidenceIDs = append(b.EvidenceIDs, id)
+			}
+		}
+	}
+	if len(b.SessionIDs) == 1 {
+		b.SessionID = b.SessionIDs[0]
+		b.SessionIDs = nil
+	}
+	return b
+}
+
+func conversationIDFromRunnerScope(scope runners.Scope) string {
+	if idx := strings.LastIndex(scope.UserID, "::"); idx >= 0 {
+		return scope.UserID[idx+2:]
+	}
+	return scope.UserID
 }

@@ -38,7 +38,7 @@ func TestCandidateExpansionAddsCappedSubjectPredicateSiblings(t *testing.T) {
 			TaskIntents: []domain.QueryTaskIntent{domain.QueryTaskSetCompletion},
 		},
 		MergedItems: []domain.ContextItem{{
-			Candidate: domain.Candidate{FactID: "bailey", Scope: scope, Source: "retrieval", Score: 0.9},
+			Candidate: domain.Candidate{Kind: domain.GraphNodeAssertion, ID: "bailey", Scope: scope, Source: "retrieval", Score: 0.9},
 			Fact:      facts[0],
 			Evidence:  facts[0].EvidenceRefs,
 		}},

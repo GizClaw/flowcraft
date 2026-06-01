@@ -63,10 +63,15 @@ type RecallStageAudit struct {
 }
 
 type RecallStageSnapshot struct {
-	Stage      string                    `json:"stage"`
-	Source     string                    `json:"source,omitempty"`
-	Status     string                    `json:"status,omitempty"`
-	Candidates []RecallCandidateSnapshot `json:"candidates,omitempty"`
+	Stage             string                    `json:"stage"`
+	Source            string                    `json:"source,omitempty"`
+	Status            string                    `json:"status,omitempty"`
+	Added             int                       `json:"added,omitempty"`
+	AddedFactIDs      []string                  `json:"added_fact_ids,omitempty"`
+	ScannedLinks      int                       `json:"scanned_links,omitempty"`
+	AddedFacts        int                       `json:"added_facts,omitempty"`
+	AddedEvidenceRefs int                       `json:"added_evidence_refs,omitempty"`
+	Candidates        []RecallCandidateSnapshot `json:"candidates,omitempty"`
 }
 
 type RecallCandidateSnapshot struct {
@@ -135,4 +140,12 @@ type RawIngestSaver interface {
 // can cite the original evidence ids.
 type SourceTurnSaver interface {
 	SaveSourceTurns(ctx context.Context, scope Scope, turns []RawTurn) (saveCount int, saveLatency time.Duration, err error)
+}
+
+// ContextualSourceTurnSaver is an optional online-ingest extension. The eval
+// driver passes the current save point as turns and prior turns from the same
+// dataset session as recentTurns; implementations may inject recentTurns as
+// extract=false context and recall existing memories before saving turns.
+type ContextualSourceTurnSaver interface {
+	SaveSourceTurnsWithContext(ctx context.Context, scope Scope, turns []RawTurn, recentTurns []RawTurn) (saveCount int, saveLatency time.Duration, err error)
 }

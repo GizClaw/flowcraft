@@ -140,3 +140,57 @@ type EvidenceStore interface {
 	// Close releases backend resources.
 	Close() error
 }
+
+// ObservationListQuery filters scope-local ObservationStore.List results.
+// Empty fields mean "match anything".
+type ObservationListQuery struct {
+	Kinds    []domain.ObservationKind
+	SourceID string
+	Limit    int
+}
+
+// ObservationStore is the canonical raw-evidence ledger boundary.
+type ObservationStore interface {
+	// Append writes observations in order. Implementations should be
+	// idempotent for an already-present observation ID with identical content.
+	Append(ctx context.Context, observations []domain.Observation) error
+
+	Get(ctx context.Context, scope domain.Scope, observationID string) (domain.Observation, error)
+	List(ctx context.Context, scope domain.Scope, query ObservationListQuery) ([]domain.Observation, error)
+
+	// Delete removes observations by ID within a scope. Missing IDs are ignored
+	// so write compensators can be idempotent.
+	Delete(ctx context.Context, scope domain.Scope, observationIDs []string) error
+	DeleteByScope(ctx context.Context, scope domain.Scope) (int, error)
+
+	Close() error
+}
+
+// LinkListQuery filters scope-local LinkStore.List results. Empty fields mean
+// "match anything".
+type LinkListQuery struct {
+	Types []domain.FactLinkType
+	From  domain.GraphNodeRef
+	To    domain.GraphNodeRef
+	Limit int
+}
+
+// LinkStore is the canonical typed-edge ledger boundary.
+type LinkStore interface {
+	// Append writes links in order. MergeKey is the idempotency key: appending a
+	// link with an already-seen MergeKey is a no-op.
+	Append(ctx context.Context, links []domain.FactLink) error
+
+	Get(ctx context.Context, scope domain.Scope, linkID string) (domain.FactLink, error)
+	List(ctx context.Context, scope domain.Scope, query LinkListQuery) ([]domain.FactLink, error)
+	FindByNode(ctx context.Context, scope domain.Scope, node domain.GraphNodeRef) ([]domain.FactLink, error)
+	FindByMergeKey(ctx context.Context, scope domain.Scope, mergeKey string) ([]domain.FactLink, error)
+
+	// Delete removes links by ID within a scope. Missing IDs are ignored so write
+	// compensators can be idempotent.
+	Delete(ctx context.Context, scope domain.Scope, linkIDs []string) error
+	DeleteByNode(ctx context.Context, scope domain.Scope, node domain.GraphNodeRef) (int, error)
+	DeleteByScope(ctx context.Context, scope domain.Scope) (int, error)
+
+	Close() error
+}

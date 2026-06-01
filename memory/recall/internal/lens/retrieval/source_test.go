@@ -100,7 +100,7 @@ func TestSource_AgentIDSoftIsolationFilter(t *testing.T) {
 	}
 	seen := map[string]bool{}
 	for _, c := range res.Candidates {
-		seen[c.FactID] = true
+		seen[c.ID] = true
 	}
 	if !seen["a"] || !seen["s"] {
 		t.Errorf("agent-a query missing own/shared: %+v", seen)
@@ -114,7 +114,7 @@ func TestSource_AgentIDSoftIsolationFilter(t *testing.T) {
 	res = source.Query(context.Background(), plan)
 	seen = map[string]bool{}
 	for _, c := range res.Candidates {
-		seen[c.FactID] = true
+		seen[c.ID] = true
 	}
 	for _, want := range []string{"a", "b", "s"} {
 		if !seen[want] {
@@ -141,8 +141,8 @@ func TestSource_PropagatesRetrievalScore(t *testing.T) {
 	if len(res.Candidates) == 0 {
 		t.Fatalf("expected at least one candidate, got %+v", res)
 	}
-	if res.Candidates[0].FactID != "f1" {
-		t.Errorf("fact id = %q", res.Candidates[0].FactID)
+	if res.Candidates[0].ID != "f1" {
+		t.Errorf("fact id = %q", res.Candidates[0].ID)
 	}
 }
 
@@ -172,7 +172,7 @@ func TestSource_EvidenceDocCarriesEvidenceID(t *testing.T) {
 		t.Fatalf("source error: %v", res.Err)
 	}
 	for _, c := range res.Candidates {
-		if c.FactID == "f1" && len(c.EvidenceIDs) == 1 && c.EvidenceIDs[0] == "e1" {
+		if c.ID == "f1" && len(c.EvidenceIDs) == 1 && c.EvidenceIDs[0] == "e1" {
 			return
 		}
 	}
@@ -207,7 +207,7 @@ func TestSource_DeduplicatesFactAndEvidenceDocs(t *testing.T) {
 	count := 0
 	var got domain.Candidate
 	for _, c := range res.Candidates {
-		if c.FactID == "f1" {
+		if c.ID == "f1" {
 			count++
 			got = c
 		}

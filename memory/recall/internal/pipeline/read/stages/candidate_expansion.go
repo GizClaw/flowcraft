@@ -264,7 +264,8 @@ func neighborCandidateItem(fact domain.TemporalFact, _ domain.Scope) domain.Cont
 	}
 	return domain.ContextItem{
 		Candidate: domain.Candidate{
-			FactID:      fact.ID,
+			Kind:        domain.GraphNodeAssertion,
+			ID:          fact.ID,
 			Scope:       fact.Scope,
 			Source:      neighborCandidateSource,
 			Score:       0,

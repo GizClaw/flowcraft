@@ -126,6 +126,25 @@ type EnqueueSideEffectsDetail struct {
 
 func (EnqueueSideEffectsDetail) isStageDetail() {}
 
+// ObservationCommitDetail —— write/commit_observations stage. Records raw
+// evidence rows committed before assertion extraction runs.
+type ObservationCommitDetail struct {
+	Observations int
+	Latency      time.Duration
+}
+
+func (ObservationCommitDetail) isStageDetail() {}
+
+// GraphCommitDetail —— write/commit_graph stage. Records the canonical graph
+// ledger rows derived from one Save resolution.
+type GraphCommitDetail struct {
+	Observations int
+	Links        int
+	Latency      time.Duration
+}
+
+func (GraphCommitDetail) isStageDetail() {}
+
 // ForgetAllDetail —— forget_all stage for GDPR Art.17 / CCPA 1798.105
 // compliant scope-level retirement.
 //
@@ -134,14 +153,16 @@ func (EnqueueSideEffectsDetail) isStageDetail() {}
 // mode EvidenceCleared stays 0 — evidence is preserved for audit so
 // Memory.History can still rebuild the supersede chain.
 type ForgetAllDetail struct {
-	ScopeKey           string
-	Mode               string
-	Deleted            int
-	ProjectionsCleared int
-	EvidenceCleared    int
-	AsyncJobsCancelled int
-	AsyncJobCancelErr  string
-	Latency            time.Duration
+	ScopeKey                 string
+	Mode                     string
+	Deleted                  int
+	ProjectionsCleared       int
+	EvidenceCleared          int
+	GraphLinksCleared        int
+	GraphObservationsCleared int
+	AsyncJobsCancelled       int
+	AsyncJobCancelErr        string
+	Latency                  time.Duration
 }
 
 func (ForgetAllDetail) isStageDetail() {}
@@ -154,14 +175,16 @@ func (ForgetAllDetail) isStageDetail() {}
 // matched/deleted counts, and per-projection forget counts so operators can
 // audit a scheduled retention sweep without inspecting the canonical store.
 type ExpireRetiredDetail struct {
-	ScopeKey           string
-	ExpiresBefore      time.Time
-	Scanned            int
-	Deleted            int
-	ProjectionsHit     int
-	AsyncJobsCancelled int
-	AsyncJobCancelErr  string
-	Latency            time.Duration
+	ScopeKey                 string
+	ExpiresBefore            time.Time
+	Scanned                  int
+	Deleted                  int
+	ProjectionsHit           int
+	GraphLinksCleared        int
+	GraphObservationsCleared int
+	AsyncJobsCancelled       int
+	AsyncJobCancelErr        string
+	Latency                  time.Duration
 }
 
 func (ExpireRetiredDetail) isStageDetail() {}

@@ -15,7 +15,12 @@ func TestNewV2FactsDump_IncludesAuditFields(t *testing.T) {
 		RuntimeID: "locomo",
 		UserID:    "user::conv-1",
 		AgentID:   "agent",
-	}, []recall.TemporalFact{{
+	}, recall.SaveRequest{Turns: []recall.TurnContext{{
+		ID:         "e1",
+		EvidenceID: "e1",
+		SessionID:  "session_1",
+		Text:       "I booked a flight to Tampa.",
+	}}}, []recall.TemporalFact{{
 		ID:               "f1",
 		Kind:             recall.FactEvent,
 		Content:          "Alice booked a flight to Tampa.",
@@ -62,6 +67,12 @@ func TestNewV2FactsDump_IncludesAuditFields(t *testing.T) {
 	}
 	if rec.ExtractTokens == nil || rec.ExtractTokens.TotalTokens != 140 || rec.ExtractTokens.AvgTotalTokensPerCall != 70 {
 		t.Fatalf("extract token usage = %+v", rec.ExtractTokens)
+	}
+	if rec.Batch == nil || rec.Batch.ConversationID != "conv-1" || rec.Batch.SessionID != "session_1" || rec.Batch.TurnCount != 1 {
+		t.Fatalf("batch metadata = %+v", rec.Batch)
+	}
+	if len(rec.Batch.EvidenceIDs) != 1 || rec.Batch.EvidenceIDs[0] != "e1" {
+		t.Fatalf("batch evidence ids = %+v", rec.Batch.EvidenceIDs)
 	}
 }
 

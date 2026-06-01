@@ -82,6 +82,12 @@ func (b *Backend) AsyncSemanticQueue() recall.AsyncSemanticQueue {
 // EvidenceStore returns the secondary evidence lookup adapter.
 func (b *Backend) EvidenceStore() recall.EvidenceStore { return &evidenceStore{b: b} }
 
+// ObservationStore returns the canonical raw-evidence graph adapter.
+func (b *Backend) ObservationStore() recall.ObservationStore { return &observationStore{b: b} }
+
+// LinkStore returns the canonical graph link adapter.
+func (b *Backend) LinkStore() recall.LinkStore { return &linkStore{b: b} }
+
 func (b *Backend) statePath() string {
 	if b.root == "" {
 		return stateFile
@@ -140,5 +146,7 @@ func ensurePartition(scope domain.Scope, op string) error {
 var _ port.TemporalStore = (*temporalStore)(nil)
 var _ port.ScopeEnumerator = (*temporalStore)(nil)
 var _ port.EvidenceStore = (*evidenceStore)(nil)
+var _ port.ObservationStore = (*observationStore)(nil)
+var _ port.LinkStore = (*linkStore)(nil)
 var _ port.SideEffectOutbox = (*sideEffectOutbox)(nil)
 var _ port.AsyncSemanticQueue = (*asyncSemanticQueue)(nil)

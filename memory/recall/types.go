@@ -37,6 +37,33 @@ const (
 
 // EvidenceRef points back to source material used to produce a fact.
 type EvidenceRef = domain.EvidenceRef
+type Observation = domain.Observation
+type ObservationKind = domain.ObservationKind
+type ObservationSpan = domain.ObservationSpan
+type ObservationSpanKind = domain.ObservationSpanKind
+type GraphNodeKind = domain.GraphNodeKind
+type GraphNodeRef = domain.GraphNodeRef
+type FactLink = domain.FactLink
+type FactLinkType = domain.FactLinkType
+type MemoryGraphDelta = domain.MemoryGraphDelta
+
+const (
+	ObservationKindTurn     = domain.ObservationKindTurn
+	ObservationKindEvidence = domain.ObservationKindEvidence
+	ObservationKindDocument = domain.ObservationKindDocument
+
+	ObservationSpanKindText  = domain.ObservationSpanKindText
+	ObservationSpanKindQuote = domain.ObservationSpanKindQuote
+
+	GraphNodeObservation     = domain.GraphNodeObservation
+	GraphNodeObservationSpan = domain.GraphNodeObservationSpan
+	GraphNodeAssertion       = domain.GraphNodeAssertion
+	GraphNodeLink            = domain.GraphNodeLink
+
+	LinkDerivedFrom = domain.LinkDerivedFrom
+	LinkSupports    = domain.LinkSupports
+	LinkSupersedes  = domain.LinkSupersedes
+)
 
 // MergeHints are LLM-supplied hints about merge behaviour. They are
 // schema-level metadata only and do not participate in canonical
@@ -47,6 +74,7 @@ type Polarity = domain.Polarity
 type Modality = domain.Modality
 type Certainty = domain.Certainty
 type EvidenceRow = domain.EvidenceRow
+type EvidencePacket = domain.EvidencePacket
 type ReasoningResult = domain.ReasoningResult
 
 const (

@@ -17,13 +17,14 @@ import (
 // Source identifiers. Declare new sources here alongside their
 // implementation so budgets and fusion weights stay aligned.
 const (
-	SourceRetrieval = "retrieval"
-	SourceEntity    = "entity"
-	SourceTimeline  = "timeline"
-	SourceRelation  = "relation"
-	SourceProfile   = "profile"
-	SourceGraph     = "graph"
-	SourceAssertion = "assertion"
+	SourceRetrieval   = "retrieval"
+	SourceEntity      = "entity"
+	SourceTimeline    = "timeline"
+	SourceRelation    = "relation"
+	SourceProfile     = "profile"
+	SourceGraph       = "graph"
+	SourceAssertion   = "assertion"
+	SourceObservation = "observation"
 )
 
 // Default per-source RRF weights (docs §9.3 / PR-6).
@@ -41,13 +42,14 @@ const (
 // contribute meaningfully to corroboration without any single one
 // dominating.
 const (
-	WeightRetrieval = 1.0
-	WeightTimeline  = 0.9
-	WeightRelation  = 0.9
-	WeightProfile   = 0.85
-	WeightGraph     = 0.85
-	WeightEntity    = 0.85
-	WeightAssertion = 0.95
+	WeightRetrieval   = 1.0
+	WeightTimeline    = 0.9
+	WeightRelation    = 0.9
+	WeightProfile     = 0.85
+	WeightGraph       = 0.85
+	WeightEntity      = 0.85
+	WeightAssertion   = 0.95
+	WeightObservation = 0.65
 )
 
 // DefaultLimit applies when a caller leaves Query.Limit == 0.

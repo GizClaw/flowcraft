@@ -30,16 +30,16 @@ func (s *variantRecordingSource) Query(_ context.Context, plan domain.QueryPlan)
 		return domain.SourceResult{
 			Source: s.name,
 			Candidates: []domain.Candidate{
-				{FactID: "bailey", Source: s.name, Rank: 1, Score: 0.90, EvidenceIDs: []string{"e1"}},
-				{FactID: "shared", Source: s.name, Rank: 2, Score: 0.30, EvidenceIDs: []string{"e2"}},
+				{Kind: domain.GraphNodeAssertion, ID: "bailey", Source: s.name, Rank: 1, Score: 0.90, EvidenceIDs: []string{"e1"}},
+				{Kind: domain.GraphNodeAssertion, ID: "shared", Source: s.name, Rank: 2, Score: 0.30, EvidenceIDs: []string{"e2"}},
 			},
 		}
 	case "pets Jordan":
 		return domain.SourceResult{
 			Source: s.name,
 			Candidates: []domain.Candidate{
-				{FactID: "oliver", Source: s.name, Rank: 1, Score: 0.60, EvidenceIDs: []string{"e3"}},
-				{FactID: "shared", Source: s.name, Rank: 2, Score: 0.70, EvidenceIDs: []string{"e4"}},
+				{Kind: domain.GraphNodeAssertion, ID: "oliver", Source: s.name, Rank: 1, Score: 0.60, EvidenceIDs: []string{"e3"}},
+				{Kind: domain.GraphNodeAssertion, ID: "shared", Source: s.name, Rank: 2, Score: 0.70, EvidenceIDs: []string{"e4"}},
 			},
 		}
 	default:
@@ -61,7 +61,7 @@ func (cancelingSource) Query(context.Context, domain.QueryPlan) domain.SourceRes
 	return domain.SourceResult{
 		Source: "retrieval",
 		Candidates: []domain.Candidate{
-			{FactID: "partial", Source: "retrieval", Rank: 1, Score: 0.9},
+			{Kind: domain.GraphNodeAssertion, ID: "partial", Source: "retrieval", Rank: 1, Score: 0.9},
 		},
 		Err: context.DeadlineExceeded,
 	}
@@ -83,7 +83,8 @@ func (s slowFanoutSource) Query(ctx context.Context, plan domain.QueryPlan) doma
 	return domain.SourceResult{
 		Source: s.name,
 		Candidates: []domain.Candidate{{
-			FactID: s.name + "-" + plan.Intent.Text,
+			Kind:   domain.GraphNodeAssertion,
+			ID:     s.name + "-" + plan.Intent.Text,
 			Source: s.name,
 			Rank:   1,
 			Score:  1,
@@ -122,7 +123,7 @@ func TestCandidateFanoutUsesPlanDrivenQueryVariantsWithoutDuplicateBoost(t *test
 	}
 	seen := map[string]int{}
 	for _, candidate := range results[0].Candidates {
-		seen[candidate.FactID]++
+		seen[candidate.ID]++
 	}
 	if seen["shared"] != 1 {
 		t.Fatalf("variant merge should dedupe repeated fact once, got candidates %+v", results[0].Candidates)

@@ -76,43 +76,43 @@ in eval/locomo. Subcommands:
 
 func addLocomoRun(parent *cobra.Command, g *cliflags.Global) {
 	var (
-		runnerName         string
-		datasetFlag        string
-		topK               int
-		useExtractor       bool
-		extractorLLM       string
-		extractorMode      string
-		answerLLM          string
-		judgeLLM           string
-		embedderFlag       string
-		limitConvs         int
-		limitQs            int
-		concurrency        int
-		ingestConcurrency  int
-		progressEvery      int
-		ingestTimeout      time.Duration
-		qaTimeout          time.Duration
-		maxFacts           int
-		rerankerLLM        string
-		judgeStyle         string
-		judgeTemp          float64
-		scoreThreshold     float64
-		saveWithContext    bool
-		softMerge          bool
-		multiRecall        bool
-		entityStore        bool
-		entityStoreMaxLnk  int
-		entityLinkBoost    float64
-		queryEntityLLM     bool
-		updateResolver     string
-		recentTurnsK       int
-		dumpFactsPath      string
-		dumpRecallPath     string
-		dumpAnswerReplay   string
-		dumpStageAuditPath string
-		diagnosticsPath    string
-		retrievalBackend   string
-		retrievalDir       string
+		runnerName            string
+		datasetFlag           string
+		topK                  int
+		useExtractor          bool
+		extractorLLM          string
+		answerLLM             string
+		judgeLLM              string
+		embedderFlag          string
+		limitConvs            int
+		limitQs               int
+		concurrency           int
+		ingestConcurrency     int
+		progressEvery         int
+		ingestTimeout         time.Duration
+		qaTimeout             time.Duration
+		maxFacts              int
+		rerankerLLM           string
+		judgeStyle            string
+		judgeTemp             float64
+		scoreThreshold        float64
+		saveWithContext       bool
+		softMerge             bool
+		multiRecall           bool
+		entityStore           bool
+		entityStoreMaxLnk     int
+		entityLinkBoost       float64
+		queryEntityLLM        bool
+		observationOnlyIngest bool
+		updateResolver        string
+		recentTurnsK          int
+		dumpFactsPath         string
+		dumpRecallPath        string
+		dumpAnswerReplay      string
+		dumpStageAuditPath    string
+		diagnosticsPath       string
+		retrievalBackend      string
+		retrievalDir          string
 	)
 
 	cmd := &cobra.Command{
@@ -203,17 +203,11 @@ Example (LLM extractor + LLM answer + LLM judge + Qwen embedder):
 			if useExtractor && extractor == nil {
 				extractor = answer
 			}
-			if canonical == runnerFlowcraftRecallV2 && useExtractor && extractor == nil {
-				return flowcraftv2.ErrExtractorNotSupported
+			if canonical == runnerFlowcraftRecallV2 && observationOnlyIngest && !useExtractor {
+				useExtractor = true
 			}
-			var sdkExtractorMode recall.LLMExtractionMode
-			switch extractorMode {
-			case "", string(recall.LLMExtractionSinglePass):
-				sdkExtractorMode = recall.LLMExtractionSinglePass
-			case string(recall.LLMExtractionTwoPass):
-				sdkExtractorMode = recall.LLMExtractionTwoPass
-			default:
-				return fmt.Errorf("--extractor-mode: unknown value %q (want single_pass or two_pass)", extractorMode)
+			if canonical == runnerFlowcraftRecallV2 && useExtractor && extractor == nil && !observationOnlyIngest {
+				return flowcraftv2.ErrExtractorNotSupported
 			}
 			if canonical != runnerFlowcraftRecallV2 && dumpStageAuditPath != "" {
 				return fmt.Errorf("--dump-stage-audit is only supported for flowcraft-recall-v2 (got %s)", canonical)
@@ -236,7 +230,8 @@ Example (LLM extractor + LLM answer + LLM judge + Qwen embedder):
 				dumpEnc   *json.Encoder
 				dumpStats factDumpTokenStats
 				onFacts   func(recallv1.Scope, []recallv1.ExtractedFact)
-				onV2Facts func(runners.Scope, []recall.TemporalFact, *diagnostics.SaveDiagnostics)
+				onV2Facts func(runners.Scope, recall.SaveRequest, []recall.TemporalFact, *diagnostics.SaveDiagnostics)
+				onV2Error func(runners.Scope, string, turnBatch, int, int, error)
 			)
 			if dumpFactsPath != "" {
 				dumpW, err = os.Create(dumpFactsPath)
@@ -257,13 +252,18 @@ Example (LLM extractor + LLM answer + LLM judge + Qwen embedder):
 					defer dumpMu.Unlock()
 					_ = dumpEnc.Encode(newV1FactsDump(time.Now(), scope, facts))
 				}
-				onV2Facts = func(scope runners.Scope, facts []recall.TemporalFact, diag *diagnostics.SaveDiagnostics) {
+				onV2Facts = func(scope runners.Scope, req recall.SaveRequest, facts []recall.TemporalFact, diag *diagnostics.SaveDiagnostics) {
 					dumpMu.Lock()
 					defer dumpMu.Unlock()
-					_ = dumpEnc.Encode(newV2FactsDump(time.Now(), scope, facts, diag))
+					_ = dumpEnc.Encode(newV2FactsDump(time.Now(), scope, req, facts, diag))
 					if diag != nil {
 						dumpStats.Add(diag.ExtractorTokenUsage)
 					}
+				}
+				onV2Error = func(scope runners.Scope, convID string, batch turnBatch, batchNumber, batchTotal int, err error) {
+					dumpMu.Lock()
+					defer dumpMu.Unlock()
+					_ = dumpEnc.Encode(newV2IngestErrorDump(time.Now(), scope, convID, batch, batchNumber, batchTotal, err))
 				}
 			}
 
@@ -298,7 +298,6 @@ Example (LLM extractor + LLM answer + LLM judge + Qwen embedder):
 				LLM:                       extractor,
 				RetrievalIndex:            v1RetrievalIndex,
 				V2RetrievalIndex:          v2RetrievalIndex,
-				ExtractorMode:             sdkExtractorMode,
 				Embedder:                  embedder,
 				MaxFactsPerCall:           maxFacts,
 				IncludeAssistant:          true,
@@ -313,6 +312,7 @@ Example (LLM extractor + LLM answer + LLM judge + Qwen embedder):
 				QueryEntityLLM:            queryEntLLM,
 				UpdateResolverLLM:         resolverLLM,
 				RecentTurnsK:              recentTurnsK,
+				ObservationOnlyIngest:     observationOnlyIngest,
 				OnFactsExtracted:          onFacts,
 			}, nil, onV2Facts, v2Diag)
 			if err != nil {
@@ -447,6 +447,7 @@ Example (LLM extractor + LLM answer + LLM judge + Qwen embedder):
 				OnQuestionRecall:           onRecall,
 				OnQuestionRecallStageAudit: onStageAudit,
 				OnQuestionAnswer:           onAnswerReplay,
+				OnIngestError:              onV2Error,
 				Hook: func(ctx context.Context, e Event) {
 					notify.Forward(ctx, notifier, notify.Event{
 						Kind: e.Kind, Time: e.Time, Title: e.Title, Body: e.Body, Fields: e.Fields,
@@ -520,14 +521,13 @@ Example (LLM extractor + LLM answer + LLM judge + Qwen embedder):
 	f.IntVar(&topK, "topk", 10, "Recall top-k")
 	f.BoolVar(&useExtractor, "extractor", false, "use LLM extractor on Save (requires --extractor-llm or shared --answer-llm)")
 	f.StringVar(&extractorLLM, "extractor-llm", "", "LLM for fact extraction, format provider:model; falls back to --answer-llm")
-	f.StringVar(&extractorMode, "extractor-mode", string(recall.LLMExtractionTwoPass), "flowcraft-recall-v2 LLM extraction strategy: single_pass | two_pass")
 	f.StringVar(&answerLLM, "answer-llm", "", "LLM that synthesizes the answer from top-k memories, format provider:model")
 	f.StringVar(&judgeLLM, "judge-llm", "", "LLM-as-Judge model, format provider:model; if empty uses EMJudge")
 	f.StringVar(&embedderFlag, "embedder", "", "embedder, format provider:model (e.g. qwen:text-embedding-v4); enables vector lane")
 	f.IntVar(&limitConvs, "limit-convs", 0, "if >0, evaluate only the first N conversations (debug)")
 	f.IntVar(&limitQs, "limit-questions", 0, "if >0, evaluate only the first N questions (debug)")
 	f.IntVar(&concurrency, "concurrency", 1, "QA-loop parallelism")
-	f.IntVar(&ingestConcurrency, "ingest-concurrency", 1, "per-conversation extractor batch parallelism (1=sequential)")
+	f.IntVar(&ingestConcurrency, "ingest-concurrency", 1, "conversation-level ingest parallelism; session batches within one conversation stay sequential")
 	f.IntVar(&progressEvery, "progress-every", 0, "log every N completed questions; 0 disables")
 	f.DurationVar(&ingestTimeout, "ingest-timeout", 10*time.Minute, "per-conversation ingest deadline; bounds hung LLM calls")
 	f.DurationVar(&qaTimeout, "qa-timeout", 2*time.Minute, "per-question recall+answer+judge deadline")
@@ -543,6 +543,7 @@ Example (LLM extractor + LLM answer + LLM judge + Qwen embedder):
 	f.IntVar(&entityStoreMaxLnk, "entity-store-max-linked", 0, "common-noun pollution gate: skip entity rows whose linked_ids count exceeds this threshold at Lookup time (0 = SDK safe default 100; negative = explicit opt-out (audited, see WithEntityStoreMaxLinkedCount godoc); positive = exact threshold)")
 	f.Float64Var(&entityLinkBoost, "entity-link-boost", 0, "switch the entity-store integration from RRF lane to post-fusion score boost when > 0 (recommended 0.2-0.5); vector + BM25 own candidate generation, entity-link only re-ranks the fused result. Mitigates the lane-flooding regression that hits multi-hop questions when one entity dominates the namespace.")
 	f.BoolVar(&queryEntityLLM, "query-entity-extractor", false, "swap the rule-based query-side entity extractor for an LLM call using the SAME LLM as --extractor-llm; closes the asymmetry between QueryEntities (capitalized single tokens) and the multi-word EntityStore keys (LLM-extracted noun phrases). Adds 1 LLM call per recall. No-op when --entity-store is false.")
+	f.BoolVar(&observationOnlyIngest, "observation-only-ingest", false, "flowcraft-recall-v2: save source turns only as Observations without assertion extraction; eval-only fallback ablation")
 	f.StringVar(&updateResolver, "update-resolver", "", "LLM alias for the memory update resolver (ADD/UPDATE/DELETE/NOOP); empty disables. Adds one LLM call per Save batch.")
 	f.IntVar(&recentTurnsK, "recent-turns", 0, "if >0, inject the previous K messages from prior Save batches into the extractor for cross-batch pronoun/entity reference resolution")
 	f.StringVar(&dumpFactsPath, "dump-facts", "", "diagnostic: write one JSONL record per Save batch with the extractor's facts to this path (audits extract-miss vs recall-miss)")

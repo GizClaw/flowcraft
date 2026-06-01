@@ -41,7 +41,7 @@ func TestSource_BudgetCapsCandidates(t *testing.T) {
 	if !res.Truncated {
 		t.Error("expected Truncated to be true when budget was hit")
 	}
-	if res.Candidates[0].FactID != "a" || res.Candidates[0].Rank != 1 {
+	if res.Candidates[0].ID != "a" || res.Candidates[0].Rank != 1 {
 		t.Errorf("rank/order wrong: %+v", res.Candidates)
 	}
 }

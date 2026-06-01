@@ -89,7 +89,7 @@ func TestCandidateExpansionSuggestsBridgeSameEvidenceGroup(t *testing.T) {
 
 func expansionItem(id string, score float64, subject, predicate, object, evidenceID, evidenceText string) domain.ContextItem {
 	return domain.ContextItem{
-		Candidate: domain.Candidate{FactID: id, Source: "retrieval", Score: score, EvidenceIDs: []string{evidenceID}},
+		Candidate: domain.Candidate{Kind: domain.GraphNodeAssertion, ID: id, Source: "retrieval", Score: score, EvidenceIDs: []string{evidenceID}},
 		Fact: domain.TemporalFact{
 			ID:        id,
 			Kind:      domain.KindState,

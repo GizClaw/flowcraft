@@ -49,3 +49,59 @@ func TestAuditRecallStages_IncludesCandidateExpansion(t *testing.T) {
 		t.Fatalf("candidates = %+v", got.Candidates)
 	}
 }
+
+func TestAuditRecallStages_IncludesLinkExpansion(t *testing.T) {
+	audit := diagnostics.AuditRecallStages(domain.RecallTrace{
+		Stages: []diagnostic.StageDiagnostic{{
+			Stage:  "link_expansion",
+			Status: diagnostic.StatusOK,
+			Detail: diagnostic.LinkExpansionDetail{
+				InputCount:        2,
+				OutputCount:       3,
+				ScannedLinks:      4,
+				AddedFacts:        1,
+				AddedEvidenceRefs: 2,
+				AddedFactIDs:      []string{"f3"},
+				Items: &[]diagnostic.CandidateSnapshot{
+					{FactID: "f1", Score: 0.9, Sources: []string{"retrieval"}},
+					{FactID: "f3", Score: 0.7, Sources: []string{"link_expansion"}},
+				},
+			},
+		}},
+	})
+
+	if len(audit.Stages) != 1 {
+		t.Fatalf("stages = %+v", audit.Stages)
+	}
+	got := audit.Stages[0]
+	if got.Stage != "link_expansion" {
+		t.Fatalf("stage = %q, want link_expansion", got.Stage)
+	}
+	if got.ScannedLinks != 4 || got.AddedFacts != 1 || got.AddedEvidenceRefs != 2 {
+		t.Fatalf("link summary = %+v", got)
+	}
+	if len(got.AddedFactIDs) != 1 || got.AddedFactIDs[0] != "f3" {
+		t.Fatalf("added fact ids = %+v", got.AddedFactIDs)
+	}
+	if len(got.Candidates) != 2 || got.Candidates[1].FactID != "f3" {
+		t.Fatalf("candidates = %+v", got.Candidates)
+	}
+
+	diag := diagnostics.DiagnoseRecall(domain.RecallTrace{
+		Stages: []diagnostic.StageDiagnostic{{
+			Stage:  "link_expansion",
+			Status: diagnostic.StatusOK,
+			Detail: diagnostic.LinkExpansionDetail{
+				InputCount:        2,
+				OutputCount:       3,
+				ScannedLinks:      4,
+				AddedFacts:        1,
+				AddedEvidenceRefs: 2,
+				AddedFactIDs:      []string{"f3"},
+			},
+		}},
+	}, nil)
+	if !diag.LinkExpansion.Enabled || diag.LinkExpansion.AddedFacts != 1 || diag.LinkExpansion.AddedEvidenceRefs != 2 {
+		t.Fatalf("diagnose link expansion = %+v", diag.LinkExpansion)
+	}
+}

@@ -2,7 +2,9 @@ package locomo_test
 
 import (
 	"context"
+	"fmt"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -41,6 +43,62 @@ func (r *retryRunner) Recall(_ context.Context, _ runners.Scope, _ string, _ int
 }
 
 func (r *retryRunner) Close() error { return nil }
+
+type sequentialIngestRunner struct {
+	mu             sync.Mutex
+	activeByConv   map[string]bool
+	callsByConv    map[string][]string
+	activeConvs    int
+	maxActiveConvs int
+}
+
+func newSequentialIngestRunner() *sequentialIngestRunner {
+	return &sequentialIngestRunner{
+		activeByConv: map[string]bool{},
+		callsByConv:  map[string][]string{},
+	}
+}
+
+func (r *sequentialIngestRunner) Name() string { return "sequential-ingest-stub" }
+
+func (r *sequentialIngestRunner) Save(_ context.Context, scope runners.Scope, msgs []llm.Message) (int, time.Duration, error) {
+	convID := scope.UserID
+	if idx := strings.LastIndex(convID, "::"); idx >= 0 {
+		convID = convID[idx+2:]
+	}
+	sessionMarker := ""
+	if len(msgs) > 0 {
+		sessionMarker = msgs[0].Content()
+	}
+
+	r.mu.Lock()
+	if r.activeByConv[convID] {
+		r.mu.Unlock()
+		return 0, 0, fmt.Errorf("concurrent Save within conversation %s", convID)
+	}
+	r.activeByConv[convID] = true
+	r.activeConvs++
+	if r.activeConvs > r.maxActiveConvs {
+		r.maxActiveConvs = r.activeConvs
+	}
+	r.mu.Unlock()
+
+	time.Sleep(15 * time.Millisecond)
+
+	r.mu.Lock()
+	r.callsByConv[convID] = append(r.callsByConv[convID], sessionMarker)
+	r.activeByConv[convID] = false
+	r.activeConvs--
+	r.mu.Unlock()
+
+	return 1, time.Millisecond, nil
+}
+
+func (r *sequentialIngestRunner) Recall(_ context.Context, _ runners.Scope, _ string, _ int) ([]runners.RecallArtifact, time.Duration, error) {
+	return nil, time.Millisecond, nil
+}
+
+func (r *sequentialIngestRunner) Close() error { return nil }
 
 func TestStartEventIncludesRetrievalBackend(t *testing.T) {
 	r := &retryRunner{name: "flowcraft-recall-v1"}
@@ -84,6 +142,53 @@ func TestStartEventIncludesRetrievalBackend(t *testing.T) {
 	}
 	if start.Fields["cwd"] == "" {
 		t.Fatalf("cwd field is empty: %+v", start.Fields)
+	}
+}
+
+func TestIngestRunsSessionsSequentiallyWithinConversation(t *testing.T) {
+	r := newSequentialIngestRunner()
+	ds := &dataset.Dataset{
+		Name: "sequential-ingest",
+		Conversations: []dataset.Conversation{
+			{
+				ID: "c1",
+				Turns: []dataset.Turn{
+					{Role: "user", Content: "c1-s1", SessionID: "s1"},
+					{Role: "user", Content: "c1-s2", SessionID: "s2"},
+					{Role: "user", Content: "c1-s3", SessionID: "s3"},
+				},
+			},
+			{
+				ID: "c2",
+				Turns: []dataset.Turn{
+					{Role: "user", Content: "c2-s1", SessionID: "s1"},
+					{Role: "user", Content: "c2-s2", SessionID: "s2"},
+					{Role: "user", Content: "c2-s3", SessionID: "s3"},
+				},
+			},
+		},
+	}
+
+	_, err := locomo.Run(context.Background(), r, ds, locomo.Options{
+		TopK:              5,
+		UseExtractor:      true,
+		Concurrency:       1,
+		IngestConcurrency: 2,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if got, want := strings.Join(r.callsByConv["c1"], ","), "c1-s1,c1-s2,c1-s3"; got != want {
+		t.Fatalf("c1 Save order = %q, want %q", got, want)
+	}
+	if got, want := strings.Join(r.callsByConv["c2"], ","), "c2-s1,c2-s2,c2-s3"; got != want {
+		t.Fatalf("c2 Save order = %q, want %q", got, want)
+	}
+	if r.maxActiveConvs < 2 {
+		t.Fatalf("expected cross-conversation ingest concurrency, max active conversations = %d", r.maxActiveConvs)
 	}
 }
 

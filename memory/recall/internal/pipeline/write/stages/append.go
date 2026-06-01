@@ -8,6 +8,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/memory/recall/internal/domain"
 	"github.com/GizClaw/flowcraft/memory/recall/internal/domain/diagnostic"
+	"github.com/GizClaw/flowcraft/memory/recall/internal/graphledger"
 	"github.com/GizClaw/flowcraft/memory/recall/internal/pipeline"
 	"github.com/GizClaw/flowcraft/memory/recall/internal/pipeline/write"
 	"github.com/GizClaw/flowcraft/memory/recall/internal/port"
@@ -48,6 +49,7 @@ func (Append) Skip(_ context.Context, state *write.WriteState) (bool, diagnostic
 // Run implements pipeline.Stage.
 func (s *Append) Run(ctx context.Context, state *write.WriteState) (diagnostic.StageDetail, error) {
 	started := time.Now()
+	graphledger.StampFactEvidenceRefs(state.Scope, state.Resolution.Facts, state.SaveOutboxID)
 	if err := s.store.Append(ctx, state.Resolution.Facts); err != nil {
 		state.FailedStage = "append"
 		return diagnostic.AppendDetail{

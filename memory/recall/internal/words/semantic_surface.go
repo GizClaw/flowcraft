@@ -44,6 +44,11 @@ var counterfactualCuePhrases = [][]string{
 	{"counterfactual"},
 }
 
+// Assertion cue tables are high-precision surface guards for extractor output.
+// They intentionally cover common direct expressions rather than attempting to
+// model all possible paraphrases. Missing a cue should usually mean "do not
+// override the model/structured result", not "expand the table until it acts
+// like a semantic parser".
 var planCuePhrases = [][]string{
 	{"plan", "to"}, {"plans", "to"}, {"planned", "to"},
 	{"will"}, {"going", "to"}, {"scheduled", "to"},

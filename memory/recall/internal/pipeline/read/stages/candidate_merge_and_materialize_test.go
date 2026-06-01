@@ -44,7 +44,7 @@ func TestCandidateMergeAndMaterializePopulatesStateDrops(t *testing.T) {
 	}
 	mat := scriptedMaterializer{
 		items: []domain.ContextItem{{
-			Candidate: domain.Candidate{FactID: "f-keep", Source: "retrieval"},
+			Candidate: domain.Candidate{Kind: domain.GraphNodeAssertion, ID: "f-keep", Source: "retrieval"},
 			Fact:      domain.TemporalFact{ID: "f-keep", Scope: scope, Kind: domain.KindNote},
 		}},
 		drops: expectedDrops,
@@ -59,7 +59,7 @@ func TestCandidateMergeAndMaterializePopulatesStateDrops(t *testing.T) {
 			Scope: scope,
 			SourceResults: []domain.SourceResult{{
 				Source:     "retrieval",
-				Candidates: []domain.Candidate{{FactID: "any", Source: "retrieval"}},
+				Candidates: []domain.Candidate{{Kind: domain.GraphNodeAssertion, ID: "any", Source: "retrieval"}},
 			}},
 		}},
 	}
@@ -103,8 +103,8 @@ func TestCandidateMergeAndMaterializeAggregatesDropsAcrossSubScopes(t *testing.T
 		Query: domain.Query{IncludeRetired: true},
 		Plan:  &domain.QueryPlan{TotalCap: 10},
 		SubScopeStates: []read.SubScopeState{
-			{Scope: primary, SourceResults: []domain.SourceResult{{Source: "retrieval", Candidates: []domain.Candidate{{FactID: "p"}}}}},
-			{Scope: sibling, SourceResults: []domain.SourceResult{{Source: "retrieval", Candidates: []domain.Candidate{{FactID: "s"}}}}},
+			{Scope: primary, SourceResults: []domain.SourceResult{{Source: "retrieval", Candidates: []domain.Candidate{{Kind: domain.GraphNodeAssertion, ID: "p"}}}}},
+			{Scope: sibling, SourceResults: []domain.SourceResult{{Source: "retrieval", Candidates: []domain.Candidate{{Kind: domain.GraphNodeAssertion, ID: "s"}}}}},
 		},
 	}
 

@@ -139,7 +139,7 @@ func newRunner(t *testing.T, store port.TemporalStore, projs []port.Projection, 
 	t.Helper()
 	fan := pipeline.NewFanout(projs, nil)
 	return forget.NewRunner([]pipeline.Stage[*forget.State]{
-		stages.NewForgetAll(store, fan, projs, ev),
+		stages.NewForgetAll(store, fan, projs, ev, nil, nil, nil),
 	}, nil)
 }
 

@@ -47,7 +47,6 @@ type v1RunnerConfig struct {
 	LLM                       llm.LLM
 	RetrievalIndex            sdkretrieval.Index
 	V2RetrievalIndex          memoryretrieval.Index
-	ExtractorMode             recall.LLMExtractionMode
 	Embedder                  embedding.Embedder
 	MaxFactsPerCall           int
 	IncludeAssistant          bool
@@ -62,22 +61,23 @@ type v1RunnerConfig struct {
 	QueryEntityLLM            llm.LLM
 	UpdateResolverLLM         llm.LLM
 	RecentTurnsK              int
+	ObservationOnlyIngest     bool
 	OnFactsExtracted          func(recallv1.Scope, []recallv1.ExtractedFact)
 }
 
-func buildLocomoRunner(canonical string, v1 v1RunnerConfig, v2OnSaved func(runners.Scope, []string), v2OnFacts func(runners.Scope, []recall.TemporalFact, *diagnostics.SaveDiagnostics), v2Diag *v2DiagnosticHooks) (runners.Runner, error) {
+func buildLocomoRunner(canonical string, v1 v1RunnerConfig, v2OnSaved func(runners.Scope, []string), v2OnFacts func(runners.Scope, recall.SaveRequest, []recall.TemporalFact, *diagnostics.SaveDiagnostics), v2Diag *v2DiagnosticHooks) (runners.Runner, error) {
 	switch canonical {
 	case runnerFlowcraftRecallV2:
 		opts := flowcraftv2.Options{
-			Name:                 runnerFlowcraftRecallV2,
-			LLM:                  v1.LLM,
-			RetrievalIndex:       v1.V2RetrievalIndex,
-			ExtractorMode:        v1.ExtractorMode,
-			Embedder:             v1.Embedder,
-			RerankerLLM:          v1.RerankerLLM,
-			IncludeAssistant:     true,
-			OnFactsSaved:         v2OnSaved,
-			OnFactsSavedDetailed: v2OnFacts,
+			Name:                  runnerFlowcraftRecallV2,
+			LLM:                   v1.LLM,
+			RetrievalIndex:        v1.V2RetrievalIndex,
+			Embedder:              v1.Embedder,
+			RerankerLLM:           v1.RerankerLLM,
+			ObservationOnlyIngest: v1.ObservationOnlyIngest,
+			IncludeAssistant:      true,
+			OnFactsSaved:          v2OnSaved,
+			OnFactsSavedDetailed:  v2OnFacts,
 		}
 		if v2Diag != nil {
 			opts.OnSaveDiagnostics = v2Diag.OnSave

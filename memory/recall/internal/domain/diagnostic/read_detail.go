@@ -95,6 +95,38 @@ type CandidateExpansionDetail struct {
 
 func (CandidateExpansionDetail) isStageDetail() {}
 
+// ObservationRecallDetail captures raw observation candidates added when the
+// assertion lanes miss or under-cover the query.
+type ObservationRecallDetail struct {
+	InputCount          int
+	OutputCount         int
+	ScannedObservations int
+	AddedObservations   int
+	AddedObservationIDs []string
+	Latency             time.Duration
+	Err                 string
+	Items               *[]CandidateSnapshot
+}
+
+func (ObservationRecallDetail) isStageDetail() {}
+
+// LinkExpansionDetail captures bounded canonical graph expansion before
+// policy/rank. It records both linked assertion additions and observation
+// evidence attached to already-materialized assertions.
+type LinkExpansionDetail struct {
+	InputCount        int
+	OutputCount       int
+	ScannedLinks      int
+	AddedFacts        int
+	AddedEvidenceRefs int
+	AddedFactIDs      []string
+	Latency           time.Duration
+	Err               string
+	Items             *[]CandidateSnapshot
+}
+
+func (LinkExpansionDetail) isStageDetail() {}
+
 // PolicyFilterDetail —— read/policy_filter stage.
 type PolicyFilterDetail struct {
 	MaxSensitivity string

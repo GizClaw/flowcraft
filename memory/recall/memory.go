@@ -10,12 +10,14 @@ import (
 	"github.com/GizClaw/flowcraft/memory/recall/internal/domain"
 	"github.com/GizClaw/flowcraft/memory/recall/internal/domain/diagnostic"
 	"github.com/GizClaw/flowcraft/memory/recall/internal/fusion"
+	"github.com/GizClaw/flowcraft/memory/recall/internal/graphledger"
 	"github.com/GizClaw/flowcraft/memory/recall/internal/ingest"
 	"github.com/GizClaw/flowcraft/memory/recall/internal/intent"
 	"github.com/GizClaw/flowcraft/memory/recall/internal/lens"
 	entitylens "github.com/GizClaw/flowcraft/memory/recall/internal/lens/entity"
 	evidencelens "github.com/GizClaw/flowcraft/memory/recall/internal/lens/evidence"
 	graphlens "github.com/GizClaw/flowcraft/memory/recall/internal/lens/graph"
+	observationlens "github.com/GizClaw/flowcraft/memory/recall/internal/lens/observation"
 	profilelens "github.com/GizClaw/flowcraft/memory/recall/internal/lens/profile"
 	relationlens "github.com/GizClaw/flowcraft/memory/recall/internal/lens/relation"
 	retrievallens "github.com/GizClaw/flowcraft/memory/recall/internal/lens/retrieval"
@@ -38,6 +40,8 @@ import (
 	"github.com/GizClaw/flowcraft/memory/recall/internal/planner"
 	"github.com/GizClaw/flowcraft/memory/recall/internal/port"
 	"github.com/GizClaw/flowcraft/memory/recall/internal/ranker"
+	linkstore "github.com/GizClaw/flowcraft/memory/recall/internal/store/link"
+	observationstore "github.com/GizClaw/flowcraft/memory/recall/internal/store/observation"
 	sideeffectstore "github.com/GizClaw/flowcraft/memory/recall/internal/store/sideeffect"
 	temporalstore "github.com/GizClaw/flowcraft/memory/recall/internal/store/temporal"
 	"github.com/GizClaw/flowcraft/memory/recall/internal/telemetry"
@@ -97,13 +101,15 @@ type Memory interface {
 }
 
 type memory struct {
-	store          port.TemporalStore
-	evidenceStore  port.EvidenceStore
-	retrievalIndex retrieval.Index
-	compiler       port.Ingestor
-	resolver       port.ConflictResolver
-	fanout         *pipeline.Fanout
-	telemetry      port.TelemetryHook
+	store            port.TemporalStore
+	evidenceStore    port.EvidenceStore
+	observationStore port.ObservationStore
+	linkStore        port.LinkStore
+	retrievalIndex   retrieval.Index
+	compiler         port.Ingestor
+	resolver         port.ConflictResolver
+	fanout           *pipeline.Fanout
+	telemetry        port.TelemetryHook
 
 	// writePreRunner runs validate + ingest without the per-scope
 	// write lock (legacy runSave compiled outside the lock).
@@ -139,7 +145,8 @@ type memory struct {
 	// projections retains the canonical projection set (in
 	// registration order) so RebuildProjection can resolve a
 	// projection by name without re-deriving it from fanout.
-	projections []port.Projection
+	projections           []port.Projection
+	observationProjection port.ObservationProjection
 
 	queryCompiler port.IntentCompiler
 	planner       port.Planner
@@ -189,6 +196,12 @@ func New(opts ...Option) (Memory, error) {
 	if cfg.store == nil {
 		cfg.store = temporalstore.NewMemoryStore()
 	}
+	if cfg.observationStore == nil {
+		cfg.observationStore = observationstore.New()
+	}
+	if cfg.linkStore == nil {
+		cfg.linkStore = linkstore.New()
+	}
 	if cfg.retrievalIndex == nil {
 		cfg.retrievalIndex = retrievalmem.New()
 	}
@@ -213,7 +226,7 @@ func New(opts ...Option) (Memory, error) {
 	}
 
 	reg := lens.NewRegistry()
-	wireDefaultLenses(reg, cfg.graphEnabled, cfg.evidenceStore != nil)
+	wireDefaultLenses(reg, cfg.graphEnabled, cfg.evidenceStore != nil, cfg.observationStore != nil)
 	lensDeps := lens.Deps{
 		Store:         cfg.store,
 		EvidenceStore: cfg.evidenceStore,
@@ -225,6 +238,10 @@ func New(opts ...Option) (Memory, error) {
 	built, err := reg.BuildAll(lensDeps)
 	if err != nil {
 		return nil, fmt.Errorf("recall.New: %w", err)
+	}
+	var obsProjection port.ObservationProjection
+	if cfg.observationStore != nil {
+		obsProjection = observationlens.NewProjection(cfg.retrievalIndex)
 	}
 	projections := reg.Projections(built)
 	projections = append(projections, cfg.extraProjections...)
@@ -255,7 +272,7 @@ func New(opts ...Option) (Memory, error) {
 	}
 	mat := cfg.materializer
 	if mat == nil {
-		mat = materialize.New(cfg.store, cfg.telemetry)
+		mat = materialize.New(cfg.store, cfg.observationStore, cfg.linkStore, cfg.telemetry)
 	}
 	fusionOpts := cfg.fusionOpts
 	if fusionOpts.Weights == nil {
@@ -276,43 +293,49 @@ func New(opts ...Option) (Memory, error) {
 	fanout := pipeline.NewFanout(projections, cfg.telemetry)
 	needsEmbedding := cfg.embedder != nil
 	m := &memory{
-		store:              cfg.store,
-		evidenceStore:      cfg.evidenceStore,
-		retrievalIndex:     cfg.retrievalIndex,
-		compiler:           cfg.compiler,
-		resolver:           cfg.resolver,
-		fanout:             fanout,
-		telemetry:          cfg.telemetry,
-		projections:        projections,
-		queryCompiler:      qc,
-		planner:            planr,
-		sources:            srcs,
-		fuser:              fuser,
-		materializer:       mat,
-		fusionOpts:         fusionOpts,
-		graphEnabled:       cfg.graphEnabled,
-		reranker:           cfg.reranker,
-		evolution:          cfg.evolution,
-		entitySnap:         entitySnap,
-		writeLocks:         make(map[writeScopeKey]*writeLock),
-		deferredTelemetry:  deferredTel,
-		asyncSemanticQueue: cfg.asyncSemanticQueue,
-		sideEffectOutbox:   cfg.sideEffectOutbox,
+		store:                 cfg.store,
+		evidenceStore:         cfg.evidenceStore,
+		observationStore:      cfg.observationStore,
+		linkStore:             cfg.linkStore,
+		retrievalIndex:        cfg.retrievalIndex,
+		compiler:              cfg.compiler,
+		resolver:              cfg.resolver,
+		fanout:                fanout,
+		telemetry:             cfg.telemetry,
+		projections:           projections,
+		observationProjection: obsProjection,
+		queryCompiler:         qc,
+		planner:               planr,
+		sources:               srcs,
+		fuser:                 fuser,
+		materializer:          mat,
+		fusionOpts:            fusionOpts,
+		graphEnabled:          cfg.graphEnabled,
+		reranker:              cfg.reranker,
+		evolution:             cfg.evolution,
+		entitySnap:            entitySnap,
+		writeLocks:            make(map[writeScopeKey]*writeLock),
+		deferredTelemetry:     deferredTel,
+		asyncSemanticQueue:    cfg.asyncSemanticQueue,
+		sideEffectOutbox:      cfg.sideEffectOutbox,
 	}
 	tel := cfg.telemetry
 	enqueueSide := writestages.NewEnqueueSideEffects(cfg.sideEffectOutbox, needsEmbedding, cfg.evolution)
 	m.writePreRunner = write.NewRunner([]pipeline.Stage[*write.WriteState]{
 		writestages.NewValidate(),
+		writestages.NewCommitObservations(cfg.observationStore, obsProjection),
 		writestages.NewIngest(cfg.compiler, m.entitySnapshots),
 	}, tel)
 	m.writePostRunner = write.NewRunner([]pipeline.Stage[*write.WriteState]{
 		writestages.NewResolve(cfg.resolver, cfg.store),
 		writestages.NewAppend(cfg.store, tel),
 		writestages.NewValidityClose(cfg.store, fanout, tel),
+		writestages.NewCommitGraph(cfg.observationStore, cfg.linkStore, obsProjection),
 		enqueueSide,
 	}, tel)
 	m.asyncEpisodePreRunner = write.NewRunner([]pipeline.Stage[*write.WriteState]{
 		writestages.NewValidate(),
+		writestages.NewCommitObservations(cfg.observationStore, obsProjection),
 		writestages.NewBuildEpisode(),
 		writestages.NewStructuredIngest(cfg.compiler, m.entitySnapshots),
 	}, tel)
@@ -321,6 +344,7 @@ func New(opts ...Option) (Memory, error) {
 		writestages.NewResolve(cfg.resolver, cfg.store),
 		writestages.NewAppend(cfg.store, tel),
 		writestages.NewValidityClose(cfg.store, fanout, tel),
+		writestages.NewCommitGraph(cfg.observationStore, cfg.linkStore, obsProjection),
 		enqueueSide,
 		writestages.NewWriteSemanticOutbox(m.asyncSemanticQueue, tel),
 	}, tel)
@@ -333,13 +357,14 @@ func New(opts ...Option) (Memory, error) {
 		writestages.NewOriginStamp(),
 		writestages.NewAppend(cfg.store, tel),
 		writestages.NewValidityClose(cfg.store, fanout, tel),
+		writestages.NewCommitGraph(cfg.observationStore, cfg.linkStore, obsProjection),
 		enqueueSide,
 	}, tel)
 	var rerank port.Reranker
 	if cfg.reranker != nil {
 		rerank = cfg.reranker
 	}
-	m.readRunner = read.NewRunner([]pipeline.Stage[*read.ReadState]{
+	readStages := []pipeline.Stage[*read.ReadState]{
 		readstages.NewQueryUnderstand(qc),
 		readstages.NewPlan(planr, cfg.graphEnabled, m.entitySnapshotsForScopes),
 		readstages.NewCandidateFanout(
@@ -352,18 +377,23 @@ func New(opts ...Option) (Memory, error) {
 			mat,
 		),
 		readstages.NewCandidateExpansion(cfg.store),
+	}
+	readStages = append(readStages, readstages.NewLinkExpansion(cfg.store, cfg.observationStore, cfg.linkStore))
+	readStages = append(readStages,
 		readstages.NewPolicyFilter(),
 		readstages.NewRank(rnk, cfg.reranker != nil),
 		readstages.NewContextPack(rerank),
-		readstages.NewBuildGroundedHits(),
+		readstages.NewBuildGroundedHits(readstages.WithGroundedHitGraph(cfg.observationStore, cfg.linkStore)),
 		readstages.NewEvolutionAfterRecall(cfg.evolution),
-	}, tel)
+	)
+	m.readRunner = read.NewRunner(readStages, tel)
 	m.rebuildRunner = rebuild.NewRunner([]pipeline.Stage[*rebuild.RebuildState]{
 		rebuildstages.NewScan(cfg.store),
 		rebuildstages.NewProject(fanout, projections),
+		rebuildstages.NewGraphLedger(cfg.observationStore, cfg.linkStore, obsProjection),
 	}, tel)
 	m.forgetRunner = forget.NewRunner([]pipeline.Stage[*forget.State]{
-		forgetstages.NewForgetAll(cfg.store, fanout, projections, cfg.evidenceStore),
+		forgetstages.NewForgetAll(cfg.store, fanout, projections, cfg.evidenceStore, cfg.observationStore, cfg.linkStore, obsProjection),
 	}, tel)
 	m.feedbackRunner = feedback.NewRunner([]pipeline.Stage[*feedback.State]{
 		feedbackstages.NewApplyFeedback(cfg.store, fanout),
@@ -486,6 +516,7 @@ func (m *memory) runSaveSync(ctx context.Context, scope Scope, req SaveRequest, 
 		Scope:                 scope,
 		Facts:                 req.Facts,
 		Turns:                 req.Turns,
+		SaveOutboxID:          req.RequestID,
 		ObservedAt:            req.ObservedAt,
 		Tier:                  req.Tier,
 		DiagnosticsIncludeRaw: includeRawDiagnostics,
@@ -501,6 +532,7 @@ func (m *memory) runSaveSync(ctx context.Context, scope Scope, req SaveRequest, 
 	}
 
 	startGen := m.peekScopeGen(scope)
+	allocateSaveOutboxID(state)
 	if err := m.writePreRunner.Run(ctx, state); err != nil {
 		return SaveResult{}, publicSaveTrace(state), err
 	}
@@ -515,7 +547,6 @@ func (m *memory) runSaveSync(ctx context.Context, scope Scope, req SaveRequest, 
 		return SaveResult{}, publicSaveTrace(state), err
 	}
 
-	allocateSaveOutboxID(state)
 	if err := m.writePostRunner.Run(ctx, state); err != nil {
 		unlock()
 		m.flushWriteTelemetry()
@@ -541,12 +572,12 @@ func (m *memory) runSaveSync(ctx context.Context, scope Scope, req SaveRequest, 
 // SideEffectProcessor.
 func (m *memory) runSaveAsync(ctx context.Context, scope Scope, req SaveRequest, withTrace, includeRawDiagnostics bool) (SaveResult, SaveTrace, error) {
 	state := newEpisodeState(scope, req, withTrace, includeRawDiagnostics)
+	allocateSaveOutboxID(state)
 	if err := m.asyncEpisodePreRunner.Run(ctx, state); err != nil {
 		return SaveResult{}, publicSaveTrace(state), err
 	}
 	m.holdWriteTelemetry()
 	unlock := m.lockWriteScope(scope)
-	allocateSaveOutboxID(state)
 	if err := m.asyncEpisodeCanonicalRunner.Run(ctx, state); err != nil {
 		unlock()
 		m.flushWriteTelemetry()
@@ -586,6 +617,7 @@ func newEpisodeState(scope Scope, req SaveRequest, withTrace, includeRawDiagnost
 		Scope:                 scope,
 		Facts:                 req.Facts,
 		Turns:                 req.Turns,
+		SaveOutboxID:          req.RequestID,
 		ObservedAt:            req.ObservedAt,
 		Tier:                  req.Tier,
 		DiagnosticsIncludeRaw: includeRawDiagnostics,
@@ -611,11 +643,14 @@ func publicSaveTrace(state *write.WriteState) SaveTrace {
 // wireDefaultLenses registers the standard v2 lens set in planner
 // source order. Graph is omitted when graphEnabled is false; evidence
 // is appended when withEvidence is true.
-func wireDefaultLenses(reg *lens.Registry, graphEnabled, withEvidence bool) {
+func wireDefaultLenses(reg *lens.Registry, graphEnabled, withEvidence, withObservation bool) {
 	if reg == nil {
 		return
 	}
 	reg.Register(retrievallens.Lens{})
+	if withObservation {
+		reg.Register(observationlens.Lens{})
+	}
 	reg.Register(entitylens.Lens{})
 	if graphEnabled {
 		reg.Register(graphlens.Lens{})
@@ -657,6 +692,7 @@ func (m *memory) Forget(ctx context.Context, scope Scope, factID string, mode ..
 			if mmode == domain.ForgetHard {
 				_ = m.fanout.ForgetRequired(ctx, scope, []string{factID})
 				m.fanout.ForgetOptional(ctx, scope, []string{factID})
+				_, _, _ = graphledger.ClearAssertion(ctx, scope, factID, m.observationStore, m.linkStore)
 			}
 			return nil
 		}
@@ -677,6 +713,9 @@ func (m *memory) Forget(ctx context.Context, scope Scope, factID string, mode ..
 	default:
 		if err := m.fanout.ForgetRequired(ctx, scope, []string{factID}); err != nil {
 			return err
+		}
+		if _, _, err := graphledger.ClearAssertion(ctx, scope, factID, m.observationStore, m.linkStore); err != nil {
+			return fmt.Errorf("recall.Forget: graph cleanup: %w", err)
 		}
 		if err := m.store.Delete(ctx, scope, []string{factID}); err != nil {
 			m.compensateForgetStoreFailure(ctx, scope, snapshot, err)
@@ -1182,6 +1221,16 @@ func (m *memory) Close() error {
 	}
 	if m.evidenceStore != nil {
 		if err := m.evidenceStore.Close(); err != nil {
+			return err
+		}
+	}
+	if m.observationStore != nil {
+		if err := m.observationStore.Close(); err != nil {
+			return err
+		}
+	}
+	if m.linkStore != nil {
+		if err := m.linkStore.Close(); err != nil {
 			return err
 		}
 	}

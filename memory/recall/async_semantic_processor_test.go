@@ -124,13 +124,21 @@ func TestProcessAsyncSemantic_DerivesRecallableFacts(t *testing.T) {
 	if len(hits) == 0 {
 		t.Fatal("Recall must surface semantic facts after processor drain")
 	}
+	factHits := 0
 	for _, h := range hits {
+		if h.Fact.ID == "" {
+			continue
+		}
+		factHits++
 		if h.Fact.Origin.Kind != OriginKindSemanticDerivation {
 			t.Errorf("hit origin kind = %q, want semantic_derivation", h.Fact.Origin.Kind)
 		}
 		if h.Fact.Origin.RequestID != res.AsyncRequestID {
 			t.Errorf("hit origin request = %q, want %q", h.Fact.Origin.RequestID, res.AsyncRequestID)
 		}
+	}
+	if factHits == 0 {
+		t.Fatalf("Recall must surface semantic fact hits, got %+v", hits)
 	}
 }
 

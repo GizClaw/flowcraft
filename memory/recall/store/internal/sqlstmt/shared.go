@@ -63,6 +63,37 @@ var Schema = []string{
 		PRIMARY KEY (runtime_id, user_id, evidence_id)
 	)`,
 	`CREATE INDEX IF NOT EXISTS recall_evidence_fact_idx ON recall_evidence_refs(runtime_id, user_id, fact_id, ordinal, evidence_id)`,
+	`CREATE TABLE IF NOT EXISTS recall_observations (
+		runtime_id text NOT NULL,
+		user_id text NOT NULL,
+		id text NOT NULL,
+		kind text NOT NULL,
+		source_id text NOT NULL DEFAULT '',
+		observed_at_ns bigint NOT NULL,
+		payload_json text NOT NULL,
+		PRIMARY KEY (runtime_id, user_id, id)
+	)`,
+	`CREATE INDEX IF NOT EXISTS recall_observations_list_idx ON recall_observations(runtime_id, user_id, observed_at_ns, id)`,
+	`CREATE INDEX IF NOT EXISTS recall_observations_kind_idx ON recall_observations(runtime_id, user_id, kind, observed_at_ns, id)`,
+	`CREATE INDEX IF NOT EXISTS recall_observations_source_idx ON recall_observations(runtime_id, user_id, source_id, observed_at_ns, id)`,
+	`CREATE TABLE IF NOT EXISTS recall_links (
+		runtime_id text NOT NULL,
+		user_id text NOT NULL,
+		id text NOT NULL,
+		type text NOT NULL,
+		from_kind text NOT NULL,
+		from_id text NOT NULL,
+		to_kind text NOT NULL,
+		to_id text NOT NULL,
+		merge_key text NOT NULL DEFAULT '',
+		created_at_ns bigint NOT NULL,
+		payload_json text NOT NULL,
+		PRIMARY KEY (runtime_id, user_id, id)
+	)`,
+	`CREATE UNIQUE INDEX IF NOT EXISTS recall_links_merge_idx ON recall_links(runtime_id, user_id, merge_key) WHERE merge_key <> ''`,
+	`CREATE INDEX IF NOT EXISTS recall_links_from_idx ON recall_links(runtime_id, user_id, from_kind, from_id, created_at_ns, id)`,
+	`CREATE INDEX IF NOT EXISTS recall_links_to_idx ON recall_links(runtime_id, user_id, to_kind, to_id, created_at_ns, id)`,
+	`CREATE INDEX IF NOT EXISTS recall_links_type_idx ON recall_links(runtime_id, user_id, type, created_at_ns, id)`,
 	`CREATE TABLE IF NOT EXISTS recall_queue_counters (
 		kind text NOT NULL,
 		runtime_id text NOT NULL,

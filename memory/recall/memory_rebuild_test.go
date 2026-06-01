@@ -36,7 +36,8 @@ func (s staleCandidateSource) Query(_ context.Context, plan domain.QueryPlan) do
 	return domain.SourceResult{
 		Source: s.Name(),
 		Candidates: []domain.Candidate{{
-			FactID: s.id,
+			Kind:   domain.GraphNodeAssertion,
+			ID:     s.id,
 			Scope:  plan.Intent.Scope,
 			Source: s.Name(),
 			Rank:   1,

@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -27,9 +28,6 @@ type Options struct {
 	LLM  llm.LLM
 	// RetrievalIndex is required and must be selected by the caller.
 	RetrievalIndex retrieval.Index
-	// ExtractorMode selects the SDK LLM extraction strategy. Empty uses the
-	// SDK default single-pass extractor.
-	ExtractorMode recall.LLMExtractionMode
 	// Embedder, when non-nil, enables hybrid (BM25 + cosine) retrieval
 	// on the recall memory: the retrieval projection embeds every
 	// indexed fact and the retrieval source embeds each query.
@@ -39,15 +37,19 @@ type Options struct {
 	// the model sees the full overfetched pool (typically 2× topK).
 	// nil keeps the default fusion-only ranking.
 	RerankerLLM llm.LLM
+	// ObservationOnlyIngest saves source turns as Observation ledger rows without
+	// running assertion extraction. This is an eval-only ablation for measuring
+	// raw evidence fallback without depending on an LLM failure.
+	ObservationOnlyIngest bool
 
 	IncludeAssistant bool
 	// OnFactsSaved is invoked after each successful Save with the scope and
 	// fact ids persisted. nil disables.
 	OnFactsSaved func(scope runners.Scope, factIDs []string)
 	// OnFactsSavedDetailed is invoked after each successful Save with
-	// the materialized facts persisted by that Save and, when available,
-	// per-save diagnostics. nil disables.
-	OnFactsSavedDetailed func(scope runners.Scope, facts []recall.TemporalFact, diag *diagnostics.SaveDiagnostics)
+	// the SaveRequest, materialized facts persisted by that Save, and,
+	// when available, per-save diagnostics. nil disables.
+	OnFactsSavedDetailed func(scope runners.Scope, req recall.SaveRequest, facts []recall.TemporalFact, diag *diagnostics.SaveDiagnostics)
 	// OnSaveDiagnostics, when non-nil, switches the runner to the SaveExplain
 	// path and reports per-stage SaveDiagnostics for every successful Save.
 	OnSaveDiagnostics func(scope runners.Scope, diag diagnostics.SaveDiagnostics)
@@ -59,19 +61,25 @@ type Options struct {
 
 // Runner implements runners.Runner against sdk/recall v2.
 type Runner struct {
-	name          string
-	mem           recall.Memory
-	saveExplainer recall.SaveExplainer
-	saveDebug     recall.SaveDebugExplainer
-	sideEffects   recall.SideEffectProcessor
-	recallExplain recall.RecallExplainer
-	hasLLM        bool
-	includeAs     bool
-	onSaved       func(scope runners.Scope, factIDs []string)
-	onFacts       func(scope runners.Scope, facts []recall.TemporalFact, diag *diagnostics.SaveDiagnostics)
-	onSaveDiag    func(runners.Scope, diagnostics.SaveDiagnostics)
-	onRecallDiag  func(runners.Scope, diagnostics.RecallDiagnostics)
+	name                  string
+	mem                   recall.Memory
+	saveExplainer         recall.SaveExplainer
+	saveDebug             recall.SaveDebugExplainer
+	sideEffects           recall.SideEffectProcessor
+	recallExplain         recall.RecallExplainer
+	hasLLM                bool
+	includeAs             bool
+	onSaved               func(scope runners.Scope, factIDs []string)
+	onFacts               func(scope runners.Scope, req recall.SaveRequest, facts []recall.TemporalFact, diag *diagnostics.SaveDiagnostics)
+	onSaveDiag            func(runners.Scope, diagnostics.SaveDiagnostics)
+	onRecallDiag          func(runners.Scope, diagnostics.RecallDiagnostics)
+	observationOnlyIngest bool
 }
+
+const (
+	writeAnchorTopK          = 8
+	writeAnchorQueryMaxChars = 2000
+)
 
 // New constructs a flowcraft-recall-v2 bootstrap runner.
 func New(opts Options) (runners.Runner, error) {
@@ -90,11 +98,7 @@ func New(opts Options) (runners.Runner, error) {
 		recall.WithGraphEnabled(true),
 	}
 	if opts.LLM != nil {
-		extractorOpts := []recall.LLMExtractorOption{}
-		if opts.ExtractorMode != "" {
-			extractorOpts = append(extractorOpts, recall.WithLLMExtractionMode(opts.ExtractorMode))
-		}
-		memOpts = append(memOpts, recall.WithLLMExtractor(opts.LLM, extractorOpts...))
+		memOpts = append(memOpts, recall.WithLLMExtractor(opts.LLM))
 	}
 	if opts.Embedder != nil {
 		memOpts = append(memOpts, recall.WithEmbedder(opts.Embedder))
@@ -107,14 +111,15 @@ func New(opts Options) (runners.Runner, error) {
 		return nil, err
 	}
 	r := &Runner{
-		name:         opts.Name,
-		mem:          mem,
-		hasLLM:       opts.LLM != nil,
-		includeAs:    opts.IncludeAssistant,
-		onSaved:      opts.OnFactsSaved,
-		onFacts:      opts.OnFactsSavedDetailed,
-		onSaveDiag:   opts.OnSaveDiagnostics,
-		onRecallDiag: opts.OnRecallDiagnostics,
+		name:                  opts.Name,
+		mem:                   mem,
+		hasLLM:                opts.LLM != nil,
+		includeAs:             opts.IncludeAssistant,
+		onSaved:               opts.OnFactsSaved,
+		onFacts:               opts.OnFactsSavedDetailed,
+		onSaveDiag:            opts.OnSaveDiagnostics,
+		onRecallDiag:          opts.OnRecallDiagnostics,
+		observationOnlyIngest: opts.ObservationOnlyIngest,
 	}
 	if opts.OnSaveDiagnostics != nil || opts.OnFactsSavedDetailed != nil {
 		if explainer, ok := mem.(recall.SaveDebugExplainer); ok {
@@ -195,14 +200,30 @@ func (r *Runner) SaveRawTurns(ctx context.Context, scope runners.Scope, turns []
 // extractor handles JSONL rendering; this adapter only owns the
 // RawTurn -> TurnContext shape conversion.
 func (r *Runner) SaveSourceTurns(ctx context.Context, scope runners.Scope, turns []runners.RawTurn) (int, time.Duration, error) {
-	if !r.hasLLM {
+	return r.SaveSourceTurnsWithContext(ctx, scope, turns, nil)
+}
+
+// SaveSourceTurnsWithContext implements runners.ContextualSourceTurnSaver. It
+// mirrors online Save usage: current turns are extractable source_turns, prior
+// turns from the same session are recent_context, and recalled memories are
+// existing_memory_anchors. Context sections are marked extract=false by the
+// recall extractor prompt.
+func (r *Runner) SaveSourceTurnsWithContext(ctx context.Context, scope runners.Scope, turns []runners.RawTurn, recentTurns []runners.RawTurn) (int, time.Duration, error) {
+	if !r.hasLLM && !r.observationOnlyIngest {
 		return 0, 0, ErrExtractorNotSupported
 	}
 	ctxs, observedAt := buildTurnContexts(turns, r.includeAs)
 	if len(ctxs) == 0 {
 		return 0, 0, nil
 	}
-	return r.runSave(ctx, scope, recall.SaveRequest{Turns: ctxs, ObservedAt: observedAt})
+	req := recall.SaveRequest{Turns: ctxs, ObservedAt: observedAt}
+	req.RecentMessages = recentMessagesFromRawTurns(recentTurns, r.includeAs)
+	anchors, err := r.writeAnchors(ctx, scope, ctxs, req.RecentMessages)
+	if err != nil {
+		return 0, 0, err
+	}
+	req.ExistingFactsAnchor = anchors
+	return r.runSave(ctx, scope, req)
 }
 
 func (r *Runner) saveFacts(ctx context.Context, scope runners.Scope, facts []recall.TemporalFact) (int, time.Duration, error) {
@@ -249,7 +270,7 @@ func (r *Runner) runSave(ctx context.Context, scope runners.Scope, req recall.Sa
 				return 0, elapsed, err
 			}
 		}
-		r.onFacts(scope, facts, saveDiag)
+		r.onFacts(scope, req, facts, saveDiag)
 	}
 	if r.onSaveDiag != nil && saveDiag != nil {
 		r.onSaveDiag(scope, *saveDiag)
@@ -270,6 +291,82 @@ func (r *Runner) savedFacts(ctx context.Context, scope recall.Scope, ids []strin
 		out = append(out, versions[len(versions)-1].Fact)
 	}
 	return out, nil
+}
+
+func (r *Runner) writeAnchors(ctx context.Context, scope runners.Scope, turns []recall.TurnContext, recent []recall.Message) ([]recall.TemporalFact, error) {
+	query := writeAnchorQuery(turns, recent)
+	if query == "" {
+		return nil, nil
+	}
+	hits, err := r.mem.Recall(ctx, toRecallScope(scope), recall.Query{Text: query, Limit: writeAnchorTopK})
+	if err != nil {
+		return nil, fmt.Errorf("flowcraftv2: recall write anchors: %w", err)
+	}
+	anchors := make([]recall.TemporalFact, 0, len(hits))
+	seen := map[string]struct{}{}
+	for _, hit := range hits {
+		if hit.Fact.ID == "" || strings.TrimSpace(hit.Fact.Content) == "" {
+			continue
+		}
+		key := hit.Fact.ID
+		if key == "" {
+			key = strings.ToLower(strings.TrimSpace(hit.Fact.Content))
+		}
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		anchors = append(anchors, hit.Fact.Clone())
+		if len(anchors) >= writeAnchorTopK {
+			break
+		}
+	}
+	return anchors, nil
+}
+
+func writeAnchorQuery(turns []recall.TurnContext, recent []recall.Message) string {
+	var parts []string
+	for _, msg := range recent {
+		if text := strings.TrimSpace(msg.Text); text != "" {
+			parts = append(parts, text)
+		}
+	}
+	for _, turn := range turns {
+		if text := strings.TrimSpace(turn.Text); text != "" {
+			parts = append(parts, text)
+		}
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	query := strings.Join(parts, "\n")
+	if len(query) <= writeAnchorQueryMaxChars {
+		return query
+	}
+	return query[len(query)-writeAnchorQueryMaxChars:]
+}
+
+func recentMessagesFromRawTurns(turns []runners.RawTurn, includeAssistant bool) []recall.Message {
+	ctxs, _ := buildTurnContexts(turns, includeAssistant)
+	out := make([]recall.Message, 0, len(ctxs))
+	for _, turn := range ctxs {
+		if strings.TrimSpace(turn.Text) == "" {
+			continue
+		}
+		out = append(out, recall.Message{
+			Role:    turn.Role,
+			Speaker: turn.Speaker,
+			Text:    turn.Text,
+			Time:    turn.Time,
+		})
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].Time.IsZero() || out[j].Time.IsZero() {
+			return false
+		}
+		return out[i].Time.Before(out[j].Time)
+	})
+	return out
 }
 
 func (r *Runner) drainSideEffects(ctx context.Context, scope runners.Scope) error {

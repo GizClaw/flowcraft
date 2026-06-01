@@ -40,6 +40,19 @@ type HitProvenance struct {
 	NoProvenance       int
 }
 
+// LinkExpansionDiagnostic summarizes the link_expansion read stage.
+type LinkExpansionDiagnostic struct {
+	Enabled           bool
+	InputCount        int
+	OutputCount       int
+	ScannedLinks      int
+	AddedFacts        int
+	AddedEvidenceRefs int
+	AddedFactIDs      []string
+	Latency           time.Duration
+	Err               string
+}
+
 // RecallDiagnostics summarises per-stage health of one Recall call.
 type RecallDiagnostics struct {
 	Plan              diagnostic.PlanView
@@ -47,6 +60,7 @@ type RecallDiagnostics struct {
 	Drops             []diagnostic.CandidateDrop
 	CandidateCount    int
 	MaterializedCount int
+	LinkExpansion     LinkExpansionDiagnostic
 	DropsByStage      map[FailureStage]int
 	HitRenderability  HitRenderability
 	HitProvenance     HitProvenance
@@ -67,6 +81,7 @@ func DiagnoseRecall(trace domain.RecallTrace, hits []domain.Hit) RecallDiagnosti
 		Drops:             Drops(trace),
 		CandidateCount:    diagnostic.ExtractCandidateCount(stages),
 		MaterializedCount: diagnostic.ExtractMaterialized(stages),
+		LinkExpansion:     LinkExpansion(trace),
 		TotalLatency:      totalLatency(stages),
 		StageLatency:      stageLatencies(stages),
 		SourceLatency:     sourceLatencies(Sources(trace)),
@@ -135,6 +150,28 @@ func CandidateCount(trace domain.RecallTrace) int {
 	return diagnostic.ExtractCandidateCount(trace.Stages)
 }
 
+// LinkExpansion returns the link_expansion stage summary, if present.
+func LinkExpansion(trace domain.RecallTrace) LinkExpansionDiagnostic {
+	for _, st := range trace.Stages {
+		d, ok := st.Detail.(diagnostic.LinkExpansionDetail)
+		if !ok {
+			continue
+		}
+		return LinkExpansionDiagnostic{
+			Enabled:           st.Status != diagnostic.StatusSkipped,
+			InputCount:        d.InputCount,
+			OutputCount:       d.OutputCount,
+			ScannedLinks:      d.ScannedLinks,
+			AddedFacts:        d.AddedFacts,
+			AddedEvidenceRefs: d.AddedEvidenceRefs,
+			AddedFactIDs:      append([]string(nil), d.AddedFactIDs...),
+			Latency:           d.Latency,
+			Err:               d.Err,
+		}
+	}
+	return LinkExpansionDiagnostic{}
+}
+
 func totalLatency(stages []diagnostic.StageDiagnostic) time.Duration {
 	var d time.Duration
 	for _, st := range stages {
@@ -148,6 +185,9 @@ func diagnoseHits(hits []domain.Hit) HitRenderability {
 	const topK = 3
 	for i, h := range hits {
 		content := strings.TrimSpace(h.Fact.Content)
+		if content == "" && h.Observation.ID != "" {
+			content = strings.TrimSpace(h.Observation.Text)
+		}
 		structured := h.Fact.Subject != "" || h.Fact.Predicate != "" || h.Fact.Object != ""
 		evidence := strings.TrimSpace(h.Fact.EvidenceText) != "" || len(hitEvidenceRefs(h)) > 0
 		if evidence {

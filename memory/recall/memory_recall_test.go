@@ -199,8 +199,8 @@ func TestRecallExplain_PopulatesTrace(t *testing.T) {
 	if len(hits) == 0 {
 		t.Fatal("expected hits")
 	}
-	if len(diagnostics.Sources(trace)) != 2 {
-		t.Fatalf("want 2 sources in trace, got %d (%+v)", len(diagnostics.Sources(trace)), diagnostics.Sources(trace))
+	if len(diagnostics.Sources(trace)) < 2 {
+		t.Fatalf("want retrieval/entity sources in trace, got %d (%+v)", len(diagnostics.Sources(trace)), diagnostics.Sources(trace))
 	}
 	gotNames := map[string]bool{}
 	for _, s := range diagnostics.Sources(trace) {
@@ -356,7 +356,8 @@ func (s *staticCandidateSource) Query(_ context.Context, plan domain.QueryPlan) 
 	candidates := make([]domain.Candidate, 0, len(s.factIDs))
 	for i, id := range s.factIDs {
 		candidates = append(candidates, domain.Candidate{
-			FactID: id,
+			Kind:   domain.GraphNodeAssertion,
+			ID:     id,
 			Scope:  plan.Intent.Scope,
 			Source: s.name,
 			Rank:   i + 1,

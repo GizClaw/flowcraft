@@ -56,7 +56,8 @@ func (s *Source) Query(ctx context.Context, plan domain.QueryPlan) domain.Source
 	candidates := make([]domain.Candidate, 0, len(ids))
 	for i, id := range ids {
 		candidates = append(candidates, domain.Candidate{
-			FactID: id,
+			Kind:   domain.GraphNodeAssertion,
+			ID:     id,
 			Scope:  scope,
 			Source: s.Name(),
 			Rank:   i + 1,

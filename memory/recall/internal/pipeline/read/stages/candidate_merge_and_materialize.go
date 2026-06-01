@@ -175,7 +175,7 @@ func mergeFederationItems(items []domain.ContextItem, topK int) ([]domain.Contex
 	for i, item := range items {
 		id := item.Fact.ID
 		if id == "" {
-			id = item.Candidate.FactID
+			id = item.Candidate.ID
 		}
 		if id == "" {
 			continue

@@ -52,12 +52,12 @@ func TestContextPackSnapshotsInputRerankedAndFinal(t *testing.T) {
 		Query: domain.Query{Text: "where did alice go"},
 		Ranked: []domain.ContextItem{
 			{
-				Candidate: domain.Candidate{FactID: "evidence", Source: "retrieval", Score: 0.9, EvidenceIDs: []string{"e1"}},
+				Candidate: domain.Candidate{Kind: domain.GraphNodeAssertion, ID: "evidence", Source: "retrieval", Score: 0.9, EvidenceIDs: []string{"e1"}},
 				Fact:      domain.TemporalFact{ID: "evidence", EvidenceRefs: []domain.EvidenceRef{{ID: "e1"}}},
 				Evidence:  []domain.EvidenceRef{{ID: "e1", Text: "selected evidence"}},
 			},
 			{
-				Candidate: domain.Candidate{FactID: "distractor", Source: "entity", Score: 0.8, EvidenceIDs: []string{"e2"}},
+				Candidate: domain.Candidate{Kind: domain.GraphNodeAssertion, ID: "distractor", Source: "entity", Score: 0.8, EvidenceIDs: []string{"e2"}},
 				Fact:      domain.TemporalFact{ID: "distractor", EvidenceRefs: []domain.EvidenceRef{{ID: "e2"}}},
 				Evidence:  []domain.EvidenceRef{{ID: "e2", Text: "selected distractor"}},
 			},
@@ -94,7 +94,7 @@ func TestBuildGroundedHitsDoesNotAffectRerankerInput(t *testing.T) {
 		Plan:  &domain.QueryPlan{TotalCap: 1},
 		Query: domain.Query{Text: "Where did Avery move from?"},
 		Ranked: []domain.ContextItem{{
-			Candidate: domain.Candidate{FactID: "move", Source: "retrieval", Score: 0.9, EvidenceIDs: []string{"e1"}},
+			Candidate: domain.Candidate{Kind: domain.GraphNodeAssertion, ID: "move", Source: "retrieval", Score: 0.9, EvidenceIDs: []string{"e1"}},
 			Fact: domain.TemporalFact{
 				ID:      "move",
 				Kind:    domain.KindState,
@@ -129,11 +129,11 @@ func TestContextPackSkipsSnapshotsWithoutTrace(t *testing.T) {
 		Query: domain.Query{Text: "where did alice go"},
 		Ranked: []domain.ContextItem{
 			{
-				Candidate: domain.Candidate{FactID: "evidence", Source: "retrieval", Score: 0.9, EvidenceIDs: []string{"e1"}},
+				Candidate: domain.Candidate{Kind: domain.GraphNodeAssertion, ID: "evidence", Source: "retrieval", Score: 0.9, EvidenceIDs: []string{"e1"}},
 				Fact:      domain.TemporalFact{ID: "evidence", EvidenceRefs: []domain.EvidenceRef{{ID: "e1"}}},
 			},
 			{
-				Candidate: domain.Candidate{FactID: "distractor", Source: "entity", Score: 0.8, EvidenceIDs: []string{"e2"}},
+				Candidate: domain.Candidate{Kind: domain.GraphNodeAssertion, ID: "distractor", Source: "entity", Score: 0.8, EvidenceIDs: []string{"e2"}},
 				Fact:      domain.TemporalFact{ID: "distractor", EvidenceRefs: []domain.EvidenceRef{{ID: "e2"}}},
 			},
 		},
@@ -162,19 +162,19 @@ func TestContextPackKeepsQueryRelevantContext(t *testing.T) {
 		Query: domain.Query{Text: "When did Alice buy 2 ceramic figurines?"},
 		Ranked: []domain.ContextItem{
 			{
-				Candidate: domain.Candidate{FactID: "distractor", Source: "entity", Score: 0.9, EvidenceIDs: []string{"e1"}},
+				Candidate: domain.Candidate{Kind: domain.GraphNodeAssertion, ID: "distractor", Source: "entity", Score: 0.9, EvidenceIDs: []string{"e1"}},
 				Fact:      domain.TemporalFact{ID: "distractor", Kind: domain.KindState, Content: "Alice likes Paris."},
 				Evidence:  []domain.EvidenceRef{{ID: "e1", Text: "Alice likes Paris."}},
 			},
 		},
 		AfterTrust: []domain.ContextItem{
 			{
-				Candidate: domain.Candidate{FactID: "distractor", Source: "entity", Score: 0.9, EvidenceIDs: []string{"e1"}},
+				Candidate: domain.Candidate{Kind: domain.GraphNodeAssertion, ID: "distractor", Source: "entity", Score: 0.9, EvidenceIDs: []string{"e1"}},
 				Fact:      domain.TemporalFact{ID: "distractor", Kind: domain.KindState, Content: "Alice likes Paris."},
 				Evidence:  []domain.EvidenceRef{{ID: "e1", Text: "Alice likes Paris."}},
 			},
 			{
-				Candidate: domain.Candidate{FactID: "specific", Source: "retrieval", Score: 0.2, EvidenceIDs: []string{"e2"}},
+				Candidate: domain.Candidate{Kind: domain.GraphNodeAssertion, ID: "specific", Source: "retrieval", Score: 0.2, EvidenceIDs: []string{"e2"}},
 				Fact:      domain.TemporalFact{ID: "specific", Kind: domain.KindEvent, Content: "Alice bought 2 ceramic figurines."},
 				Evidence:  []domain.EvidenceRef{{ID: "e2", Text: "On 2023-05-07 Alice bought 2 ceramic figurines."}},
 			},
@@ -197,12 +197,12 @@ func TestContextPackKeepsBestContextForSharedEvidence(t *testing.T) {
 		Query: domain.Query{Text: "When did Jordan paint a sunrise?"},
 		Ranked: []domain.ContextItem{
 			{
-				Candidate: domain.Candidate{FactID: "state", Source: "graph", Score: 0.9, EvidenceIDs: []string{"e1"}},
+				Candidate: domain.Candidate{Kind: domain.GraphNodeAssertion, ID: "state", Source: "graph", Score: 0.9, EvidenceIDs: []string{"e1"}},
 				Fact:      domain.TemporalFact{ID: "state", Kind: domain.KindState, Content: "Jordan's painting of the lake sunrise is special to her.", EvidenceRefs: []domain.EvidenceRef{shared}},
 				Evidence:  []domain.EvidenceRef{shared},
 			},
 			{
-				Candidate: domain.Candidate{FactID: "event", Source: "retrieval", Score: 0.8, EvidenceIDs: []string{"e1"}},
+				Candidate: domain.Candidate{Kind: domain.GraphNodeAssertion, ID: "event", Source: "retrieval", Score: 0.8, EvidenceIDs: []string{"e1"}},
 				Fact:      domain.TemporalFact{ID: "event", Kind: domain.KindEvent, Content: "Jordan painted a lake sunrise last year.", EvidenceRefs: []domain.EvidenceRef{shared}},
 				Evidence:  []domain.EvidenceRef{shared},
 			},
@@ -273,7 +273,7 @@ func TestContextPackUsesWiderPoolForCoverage(t *testing.T) {
 			weakContextItem("weak-1", "e1", "Bob visited Paris."),
 			weakContextItem("weak-2", "e2", "Carol likes hiking."),
 			{
-				Candidate: domain.Candidate{FactID: "specific", Source: "retrieval", Score: 0.15, EvidenceIDs: []string{"e3"}},
+				Candidate: domain.Candidate{Kind: domain.GraphNodeAssertion, ID: "specific", Source: "retrieval", Score: 0.15, EvidenceIDs: []string{"e3"}},
 				Fact:      domain.TemporalFact{ID: "specific", Kind: domain.KindEvent, Content: "Alice bought 2 ceramic figurines."},
 				Evidence:  []domain.EvidenceRef{{ID: "e3", Text: "On 2023-05-07 Alice bought 2 ceramic figurines."}},
 			},
@@ -369,7 +369,7 @@ func TestContextPackUsesFactContentWhenEvidenceIsThin(t *testing.T) {
 		AfterTrust: []domain.ContextItem{
 			weakContextItem("weak", "e1", "Bob visited Paris."),
 			{
-				Candidate: domain.Candidate{FactID: "instrument", Source: "graph", Score: 0.1, EvidenceIDs: []string{"e2"}},
+				Candidate: domain.Candidate{Kind: domain.GraphNodeAssertion, ID: "instrument", Source: "graph", Score: 0.1, EvidenceIDs: []string{"e2"}},
 				Fact: domain.TemporalFact{
 					ID:        "instrument",
 					Kind:      domain.KindPreference,
@@ -593,7 +593,7 @@ func TestContextPackRerankerPathUsesContextPacker(t *testing.T) {
 		AfterTrust: []domain.ContextItem{
 			weakContextItem("weak", "e1", "Bob visited Paris."),
 			{
-				Candidate: domain.Candidate{FactID: "instrument", Source: "graph", Score: 0.1, EvidenceIDs: []string{"e2"}},
+				Candidate: domain.Candidate{Kind: domain.GraphNodeAssertion, ID: "instrument", Source: "graph", Score: 0.1, EvidenceIDs: []string{"e2"}},
 				Fact: domain.TemporalFact{
 					ID:        "instrument",
 					Kind:      domain.KindPreference,
@@ -640,7 +640,7 @@ func TestContextPackFallsBackToPoolWhenRerankerReturnsEmpty(t *testing.T) {
 		AfterTrust: []domain.ContextItem{
 			weakContextItem("weak", "e1", "Bob visited Paris."),
 			{
-				Candidate: domain.Candidate{FactID: "instrument", Source: "graph", Score: 0.1, EvidenceIDs: []string{"e2"}},
+				Candidate: domain.Candidate{Kind: domain.GraphNodeAssertion, ID: "instrument", Source: "graph", Score: 0.1, EvidenceIDs: []string{"e2"}},
 				Fact: domain.TemporalFact{
 					ID:        "instrument",
 					Kind:      domain.KindPreference,
@@ -668,7 +668,7 @@ func TestContextPackPropagatesRerankerContextCancellation(t *testing.T) {
 		Plan:  &domain.QueryPlan{TotalCap: 1},
 		Query: domain.Query{Text: "What did Alice buy?"},
 		Ranked: []domain.ContextItem{{
-			Candidate: domain.Candidate{FactID: "a", Source: "retrieval", Score: 0.9, EvidenceIDs: []string{"e1"}},
+			Candidate: domain.Candidate{Kind: domain.GraphNodeAssertion, ID: "a", Source: "retrieval", Score: 0.9, EvidenceIDs: []string{"e1"}},
 			Fact:      domain.TemporalFact{ID: "a", Kind: domain.KindEvent, Content: "Alice bought woodworking."},
 			Evidence:  []domain.EvidenceRef{{ID: "e1", Text: "Alice bought woodworking."}},
 		}},
@@ -687,17 +687,17 @@ func TestContextPackDedupesSameEvidence(t *testing.T) {
 		Query: domain.Query{Text: "What did Alice buy?"},
 		Ranked: []domain.ContextItem{
 			{
-				Candidate: domain.Candidate{FactID: "a", Source: "retrieval", Score: 0.9, EvidenceIDs: []string{"e1"}},
+				Candidate: domain.Candidate{Kind: domain.GraphNodeAssertion, ID: "a", Source: "retrieval", Score: 0.9, EvidenceIDs: []string{"e1"}},
 				Fact:      domain.TemporalFact{ID: "a", Kind: domain.KindEvent, Content: "Alice bought woodworking."},
 				Evidence:  []domain.EvidenceRef{{ID: "e1", Text: "Alice bought woodworking."}},
 			},
 			{
-				Candidate: domain.Candidate{FactID: "b", Source: "graph", Score: 0.8, EvidenceIDs: []string{"e1"}},
+				Candidate: domain.Candidate{Kind: domain.GraphNodeAssertion, ID: "b", Source: "graph", Score: 0.8, EvidenceIDs: []string{"e1"}},
 				Fact:      domain.TemporalFact{ID: "b", Kind: domain.KindEvent, Content: "Alice purchased woodworking."},
 				Evidence:  []domain.EvidenceRef{{ID: "e1", Text: "Alice bought woodworking."}},
 			},
 			{
-				Candidate: domain.Candidate{FactID: "c", Source: "retrieval", Score: 0.7, EvidenceIDs: []string{"e2"}},
+				Candidate: domain.Candidate{Kind: domain.GraphNodeAssertion, ID: "c", Source: "retrieval", Score: 0.7, EvidenceIDs: []string{"e2"}},
 				Fact:      domain.TemporalFact{ID: "c", Kind: domain.KindState, Content: "Alice likes Paris."},
 				Evidence:  []domain.EvidenceRef{{ID: "e2", Text: "Alice likes Paris."}},
 			},
@@ -781,13 +781,77 @@ func TestContextPackKeepsSourceDiversity(t *testing.T) {
 	}
 }
 
+func TestContextPackPromotesStrongObservationEvidenceAnchor(t *testing.T) {
+	hits := []domain.Hit{
+		{
+			Fact:     domain.TemporalFact{ID: "distractor-a", Kind: domain.KindState, Content: "Bob likes Paris."},
+			Score:    0.95,
+			Sources:  []string{"retrieval"},
+			Evidence: []domain.EvidenceRef{{ID: "e1", Text: "Bob likes Paris."}},
+		},
+		{
+			Fact:     domain.TemporalFact{ID: "distractor-b", Kind: domain.KindState, Content: "Carol enjoys hiking."},
+			Score:    0.90,
+			Sources:  []string{"entity"},
+			Evidence: []domain.EvidenceRef{{ID: "e2", Text: "Carol enjoys hiking."}},
+		},
+		{
+			Ref: domain.CandidateRef{Kind: domain.GraphNodeObservation, ID: "obs"},
+			Observation: domain.Observation{
+				ID:   "obs",
+				Text: "Alice bought ceramic figurines yesterday.",
+			},
+			Score:    0.05,
+			Sources:  []string{"observation"},
+			Evidence: []domain.EvidenceRef{{ID: "obs", ObservationID: "obs", Text: "Alice bought ceramic figurines yesterday."}},
+		},
+	}
+
+	got := packRecallContext("What did Alice buy?", hits, hits, 2)
+	if len(got) == 0 || got[0].Ref.Kind != domain.GraphNodeObservation {
+		t.Fatalf("strong observation evidence should become the primary anchor, got %+v", got)
+	}
+}
+
+func TestContextPackDoesNotPromoteWeakObservationAnchor(t *testing.T) {
+	hits := []domain.Hit{
+		{
+			Fact:     domain.TemporalFact{ID: "answer", Kind: domain.KindState, Content: "Alice bought ceramic figurines."},
+			Score:    0.90,
+			Sources:  []string{"retrieval"},
+			Evidence: []domain.EvidenceRef{{ID: "e1", Text: "Alice bought ceramic figurines."}},
+		},
+		{
+			Ref: domain.CandidateRef{Kind: domain.GraphNodeObservation, ID: "obs"},
+			Observation: domain.Observation{
+				ID:   "obs",
+				Text: "Bob visited Paris.",
+			},
+			Score:    0.80,
+			Sources:  []string{"observation"},
+			Evidence: []domain.EvidenceRef{{ID: "obs", ObservationID: "obs", Text: "Bob visited Paris."}},
+		},
+		{
+			Fact:     domain.TemporalFact{ID: "support", Kind: domain.KindState, Content: "Alice also likes pottery."},
+			Score:    0.70,
+			Sources:  []string{"graph"},
+			Evidence: []domain.EvidenceRef{{ID: "e2", Text: "Alice also likes pottery."}},
+		},
+	}
+
+	got := packRecallContext("What did Alice buy?", hits, hits, 2)
+	if len(got) == 0 || got[0].Ref.Kind == domain.GraphNodeObservation {
+		t.Fatalf("weak observation evidence should not be promoted as primary anchor, got %+v", got)
+	}
+}
+
 func TestBuildGroundedHitsGroundsSelectedEvidenceWithRelevantFactRefs(t *testing.T) {
 	stage := NewContextPack(nil)
 	state := &read.ReadState{
 		Plan:  &domain.QueryPlan{TotalCap: 1},
 		Query: domain.Query{Text: "Where did Avery move from?"},
 		Ranked: []domain.ContextItem{{
-			Candidate: domain.Candidate{FactID: "move", Source: "retrieval", Score: 0.9, EvidenceIDs: []string{"e1"}},
+			Candidate: domain.Candidate{Kind: domain.GraphNodeAssertion, ID: "move", Source: "retrieval", Score: 0.9, EvidenceIDs: []string{"e1"}},
 			Fact: domain.TemporalFact{
 				ID:      "move",
 				Kind:    domain.KindState,
@@ -911,7 +975,7 @@ func evidenceIDs(refs []domain.EvidenceRef) []string {
 
 func weakContextItem(id, evidenceID, text string) domain.ContextItem {
 	return domain.ContextItem{
-		Candidate: domain.Candidate{FactID: id, Source: "retrieval", Score: 0.9, EvidenceIDs: []string{evidenceID}},
+		Candidate: domain.Candidate{Kind: domain.GraphNodeAssertion, ID: id, Source: "retrieval", Score: 0.9, EvidenceIDs: []string{evidenceID}},
 		Fact:      domain.TemporalFact{ID: id, Kind: domain.KindState, Content: text},
 		Evidence:  []domain.EvidenceRef{{ID: evidenceID, Text: text}},
 	}
@@ -919,7 +983,7 @@ func weakContextItem(id, evidenceID, text string) domain.ContextItem {
 
 func strongContextItem(id, evidenceID, text string) domain.ContextItem {
 	return domain.ContextItem{
-		Candidate: domain.Candidate{FactID: id, Source: "retrieval", Score: 0.2, EvidenceIDs: []string{evidenceID}},
+		Candidate: domain.Candidate{Kind: domain.GraphNodeAssertion, ID: id, Source: "retrieval", Score: 0.2, EvidenceIDs: []string{evidenceID}},
 		Fact:      domain.TemporalFact{ID: id, Kind: domain.KindState, Content: text},
 		Evidence:  []domain.EvidenceRef{{ID: evidenceID, Text: text}},
 	}
@@ -927,7 +991,7 @@ func strongContextItem(id, evidenceID, text string) domain.ContextItem {
 
 func contextItemWithSource(id, evidenceID, source string, score float64, text string) domain.ContextItem {
 	return domain.ContextItem{
-		Candidate: domain.Candidate{FactID: id, Source: source, Score: score, EvidenceIDs: []string{evidenceID}},
+		Candidate: domain.Candidate{Kind: domain.GraphNodeAssertion, ID: id, Source: source, Score: score, EvidenceIDs: []string{evidenceID}},
 		Fact:      domain.TemporalFact{ID: id, Kind: domain.KindState, Content: text},
 		Evidence:  []domain.EvidenceRef{{ID: evidenceID, Text: text}},
 	}
@@ -935,7 +999,7 @@ func contextItemWithSource(id, evidenceID, source string, score float64, text st
 
 func contextItemWithStructuredFact(id, evidenceID, source string, score float64, text, subject, predicate, object string) domain.ContextItem {
 	return domain.ContextItem{
-		Candidate: domain.Candidate{FactID: id, Source: source, Score: score, EvidenceIDs: []string{evidenceID}},
+		Candidate: domain.Candidate{Kind: domain.GraphNodeAssertion, ID: id, Source: source, Score: score, EvidenceIDs: []string{evidenceID}},
 		Fact: domain.TemporalFact{
 			ID:        id,
 			Kind:      domain.KindState,

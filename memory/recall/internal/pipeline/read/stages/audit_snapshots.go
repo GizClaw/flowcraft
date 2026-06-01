@@ -48,7 +48,7 @@ func contextItemSnapshots(items []domain.ContextItem) []diagnostic.CandidateSnap
 	for _, item := range items {
 		snap := candidateSnapshot(item.Candidate)
 		if snap.FactID == "" {
-			snap.FactID = item.Fact.ID
+			snap.FactID = contextItemNodeID(item)
 		}
 		if len(snap.EvidenceIDs) == 0 {
 			for _, ref := range item.Fact.EvidenceRefs {
@@ -86,13 +86,29 @@ func hitSnapshots(hits []domain.Hit) []diagnostic.CandidateSnapshot {
 
 func candidateSnapshot(c domain.Candidate) diagnostic.CandidateSnapshot {
 	return diagnostic.CandidateSnapshot{
-		FactID:      c.FactID,
+		FactID:      c.ID,
 		Source:      c.Source,
 		Rank:        c.Rank,
 		Score:       c.Score,
 		EvidenceIDs: append([]string(nil), c.EvidenceIDs...),
 		Sources:     candidateSources(c),
 	}
+}
+
+func contextItemNodeID(item domain.ContextItem) string {
+	if item.Ref.ID != "" {
+		return item.Ref.ID
+	}
+	if item.Candidate.ID != "" {
+		return item.Candidate.ID
+	}
+	if item.Fact.ID != "" {
+		return item.Fact.ID
+	}
+	if item.Observation.ID != "" {
+		return item.Observation.ID
+	}
+	return item.Link.ID
 }
 
 func candidateSources(c domain.Candidate) []string {

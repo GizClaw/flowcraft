@@ -27,3 +27,13 @@ type RebuildProjectionDetail struct {
 }
 
 func (RebuildProjectionDetail) isStageDetail() {}
+
+// RebuildGraphDetail —— rebuild/graph_ledger stage. Rebuilds the experimental
+// Observation/Assertion/Link ledger from canonical TemporalFacts.
+type RebuildGraphDetail struct {
+	Observations int
+	Links        int
+	Latency      time.Duration
+}
+
+func (RebuildGraphDetail) isStageDetail() {}

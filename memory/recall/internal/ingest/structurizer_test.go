@@ -324,6 +324,69 @@ func TestDefaultStructurizer_LiftsLexicalRelativeTimeOverTurnTime(t *testing.T) 
 	}
 }
 
+func TestDefaultStructurizer_PrefersEvidenceRelativeTimeOverContentDate(t *testing.T) {
+	turn := port.TurnContext{
+		ID:   "D1:1",
+		Time: time.Date(2024, 5, 8, 9, 0, 0, 0, time.UTC),
+		Text: "I visited the observatory yesterday.",
+	}
+	f := domain.TemporalFact{
+		Kind:         domain.KindEvent,
+		Content:      "On 2024-05-08, Avery visited the observatory yesterday.",
+		EvidenceRefs: []domain.EvidenceRef{{ID: "D1:1", Text: "I visited the observatory yesterday."}},
+	}
+	out := DefaultStructurizer{}.Structurize(f, port.IngestInput{Turns: []port.TurnContext{turn}})
+	hint, _ := out.Metadata[MetaValidFromHint].(string)
+	if hint != "yesterday" {
+		t.Fatalf("hint = %q, want evidence relative phrase; metadata=%v", hint, out.Metadata)
+	}
+	at, _ := out.Metadata[MetaValidFromAt].(string)
+	parsed, ok := parseTimeHint(at, time.Time{}, false)
+	want := time.Date(2024, 5, 7, 0, 0, 0, 0, time.UTC)
+	if !ok || !parsed.Equal(want) {
+		t.Fatalf("ValidFromAt = %v ok=%v, want %v (at=%q metadata=%v)", parsed, ok, want, at, out.Metadata)
+	}
+}
+
+func TestDefaultStructurizer_EvidenceRelativeTimeDoesNotRewriteModality(t *testing.T) {
+	turn := port.TurnContext{
+		ID:   "D1:1",
+		Time: time.Date(2024, 5, 8, 9, 0, 0, 0, time.UTC),
+		Text: "I plan to visit the observatory next month.",
+	}
+	f := domain.TemporalFact{
+		Kind:         domain.KindPlan,
+		Content:      "On 2024-05-08, Avery plans to visit the observatory next month.",
+		Modality:     domain.ModalityActual,
+		EvidenceRefs: []domain.EvidenceRef{{ID: "D1:1", Text: "I plan to visit the observatory next month."}},
+	}
+	out := DefaultStructurizer{}.Structurize(f, port.IngestInput{Turns: []port.TurnContext{turn}})
+	hint, _ := out.Metadata[MetaValidFromHint].(string)
+	if hint != "next month" {
+		t.Fatalf("hint = %q, want next month; metadata=%v", hint, out.Metadata)
+	}
+	if out.Modality != domain.ModalityActual {
+		t.Fatalf("structurizer must not infer modality, got %q", out.Modality)
+	}
+}
+
+func TestDefaultStructurizer_DoesNotUseEvidenceRelativeTimeForNotes(t *testing.T) {
+	turn := port.TurnContext{
+		ID:   "D1:1",
+		Time: time.Date(2024, 5, 8, 9, 0, 0, 0, time.UTC),
+		Text: "It feels like yesterday when I wore that costume.",
+	}
+	f := domain.TemporalFact{
+		Kind:         domain.KindNote,
+		Content:      "On 2024-05-08, Avery said it feels like yesterday when Avery wore that costume.",
+		EvidenceRefs: []domain.EvidenceRef{{ID: "D1:1", Text: "It feels like yesterday when I wore that costume."}},
+	}
+	out := DefaultStructurizer{}.Structurize(f, port.IngestInput{Turns: []port.TurnContext{turn}})
+	if hint, _ := out.Metadata[MetaValidFromHint].(string); hint != "2024-05-08" {
+		t.Fatalf("note should use content/source date fallback, got hint=%q metadata=%v", hint, out.Metadata)
+	}
+}
+
 func TestDefaultStructurizer_DoesNotPromoteDurationOrSetToEventTime(t *testing.T) {
 	turn := port.TurnContext{
 		ID:   "D1:1",

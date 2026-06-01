@@ -26,7 +26,7 @@ func TestSource_BudgetCapsCandidates(t *testing.T) {
 		SourceBudgets: map[string]int{planner.SourceRelation: 1},
 	})
 
-	if len(res.Candidates) != 1 || res.Candidates[0].FactID != "a" {
+	if len(res.Candidates) != 1 || res.Candidates[0].ID != "a" {
 		t.Fatalf("expected relation source to clamp to budget, got %+v", res.Candidates)
 	}
 	if !res.Truncated {

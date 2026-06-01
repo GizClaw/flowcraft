@@ -111,7 +111,8 @@ func (s *Source) Query(ctx context.Context, plan domain.QueryPlan) domain.Source
 			continue
 		}
 		candidates = append(candidates, domain.Candidate{
-			FactID:      factID,
+			Kind:        domain.GraphNodeAssertion,
+			ID:          factID,
 			Scope:       scope,
 			Source:      s.Name(),
 			Rank:        len(candidates) + 1,

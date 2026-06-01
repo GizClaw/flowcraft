@@ -15,6 +15,11 @@ type SaveRequest struct {
 	Facts []TemporalFact
 	Turns []TurnContext
 
+	// RequestID is an optional caller-stable write/source key. When supplied it
+	// participates in Observation and ObservationSpan IDs so retries address the
+	// same raw evidence graph nodes.
+	RequestID string
+
 	// ObservedAt anchors the wall-clock for relative-time
 	// resolution inside Turns. Zero means "use time.Now()".
 	ObservedAt time.Time

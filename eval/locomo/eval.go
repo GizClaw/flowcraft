@@ -150,7 +150,7 @@ type Options struct {
 	AnswerLLM         llm.LLM       // optional; when set, prediction = LLM(query | top-k hits) instead of raw concat
 	AnswerPrompt      string        // optional template; %s receives "Q: …\nMEMORIES:\n- …" — default below
 	Concurrency       int           // QA-loop parallelism; defaults to 1 (sequential). Recall/Index is goroutine-safe.
-	IngestConcurrency int           // per-conversation extractor batch parallelism; defaults to 1. LTM Save is goroutine-safe; raising this from 1→8 cuts ingest from ~2h to ~15m on LoCoMo10 with qwen-flash.
+	IngestConcurrency int           // conversation-level ingest parallelism; defaults to 1. Each conversation's session batches are saved sequentially to preserve write-time causality.
 	ProgressEvery     int           // log every N completed questions; 0 disables.
 	IngestTimeout     time.Duration // per-conversation Save() deadline; 0 disables. LLM extractors occasionally hang on Qwen — without this a single bad call wedges the entire run.
 	QATimeout         time.Duration // per-question recall+answer+judge deadline; 0 disables.
@@ -197,6 +197,11 @@ type Options struct {
 	// outcome after a successful answer+judge pair. It is diagnostic-only:
 	// callbacks must not mutate hits or scores.
 	OnQuestionAnswer func(AnswerReplayRecord)
+	// OnIngestError receives failed Save batches so diagnostics like
+	// --dump-facts can record extract failures that never reach runner hooks.
+	// It is called while the ingest progress mutex is held, so callbacks should
+	// be lightweight and must not call back into Run.
+	OnIngestError func(scope runners.Scope, convID string, batch turnBatch, batchNumber, batchTotal int, err error)
 }
 
 // Event describes one lifecycle checkpoint. See [EventHook].
@@ -404,14 +409,13 @@ func Run(ctx context.Context, r runners.Runner, ds *dataset.Dataset, opts Option
 	// extractor produces 5-15 atomic facts per chunk, and the per-conv
 	// total ends up in the 100-400 range expected by the bench.
 	//
-	// Across conversations we flatten all (conv, batch) pairs into a single
-	// worker pool: different conv scopes are independent, so there is no
-	// ordering or visibility constraint. This keeps workers busy even when
-	// one conv has fewer sessions than another and cuts the 10-conv ingest
-	// wall time from ~20 min (conv-serial / batch-parallel) to ~5 min
-	// (fully flat) on LoCoMo10.
+	// Across conversations we use a worker pool, but a worker processes one
+	// conversation's session batches in order. This matches online usage more
+	// closely: prior sessions in the same conversation are committed before
+	// later sessions are extracted, while independent conversations can still
+	// ingest in parallel.
 	ingestStart := time.Now()
-	saveLatencies := ingestFlat(ctx, r, scopeOf, ds.Conversations, opts, emit)
+	saveLatencies := ingestConversations(ctx, r, scopeOf, ds.Conversations, opts, emit)
 	ingestSummary := metrics.Summarize(saveLatencies)
 	emit(Event{
 		Kind: "ingest_done",
@@ -496,25 +500,22 @@ func perQuestionCtx(parent context.Context, timeout time.Duration) (context.Cont
 	return context.WithTimeout(parent, timeout)
 }
 
-// ingestJob carries one Save unit: a single session-sliced batch of turns
-// tagged with its owning conversation. All jobs across all conversations
-// are drained by a single worker pool so workers stay busy even when one
-// conversation has fewer sessions than another.
-type ingestJob struct {
-	convID    string
-	scope     runners.Scope
-	batch     turnBatch
-	batchIdx  int // 0-based position within its conversation, for WARN logs
-	convTotal int // total batches for the owning conversation, for WARN logs
+// ingestConversationJob carries one conversation's session-sliced Save units.
+// A worker processes batches in slice order so the write path observes the same
+// temporal sequence a real online app would see for that conversation.
+type ingestConversationJob struct {
+	convID  string
+	scope   runners.Scope
+	batches []turnBatch
 }
 
-// ingestFlat runs every (conversation, batch) pair through a single worker
-// pool. LTM Save is goroutine-safe within a scope and conversations use
-// distinct scopes, so there are no cross-batch ordering constraints.
+// ingestConversations runs a conversation-level worker pool. Conversations use
+// distinct scopes and can ingest concurrently, but session batches inside one
+// conversation are saved strictly in order.
 //
-// The pool size is IngestConcurrency (global, not per-conversation) — with
-// 16 workers and ~250 batches total on LoCoMo10 the ingest phase drops from
-// ~20 min to ~5 min while keeping provider-side pressure bounded.
+// The pool size is IngestConcurrency over conversations, not over individual
+// Save calls. With 16 workers on LoCoMo10 this caps at the number of
+// conversations while preserving per-conversation write-time causality.
 //
 // Progress is logged per-conversation: a counter tracks remaining batches
 // per conv and a completion line is emitted when the last batch of a conv
@@ -526,34 +527,23 @@ type ingestJob struct {
 // emit is a checkpoint callback that fires at coarse-grained progress
 // boundaries (controlled by opts.ProgressPct). Passing a no-op closure
 // disables notifications without touching the inner loop.
-func ingestFlat(ctx context.Context, r runners.Runner, scopeOf func(string) runners.Scope, convs []dataset.Conversation, opts Options, emit func(Event)) []time.Duration {
-	// Precompute conversation-level counters + expand every conv into its
-	// batches. Keeping convStart out of the worker path means no
-	// synchronization is needed for timing.
-	type convAgg struct {
-		start     time.Time
-		remaining int
-		facts     int
-		total     int
-	}
-	aggs := make(map[string]*convAgg, len(convs))
-	var jobs []ingestJob
+func ingestConversations(ctx context.Context, r runners.Runner, scopeOf func(string) runners.Scope, convs []dataset.Conversation, opts Options, emit func(Event)) []time.Duration {
+	var jobs []ingestConversationJob
+	totalBatches := 0
 	for _, c := range convs {
 		batches := batchTurnsBySession(c)
+		if opts.UseExtractor {
+			batches = batchTurnsByOnlineSavePoint(c)
+		}
 		if len(batches) == 0 {
 			continue
 		}
-		scope := scopeOf(c.ID)
-		aggs[c.ID] = &convAgg{start: time.Now(), remaining: len(batches), total: len(batches)}
-		for bi, b := range batches {
-			jobs = append(jobs, ingestJob{
-				convID:    c.ID,
-				scope:     scope,
-				batch:     b,
-				batchIdx:  bi,
-				convTotal: len(batches),
-			})
-		}
+		jobs = append(jobs, ingestConversationJob{
+			convID:  c.ID,
+			scope:   scopeOf(c.ID),
+			batches: batches,
+		})
+		totalBatches += len(batches)
 	}
 	if len(jobs) == 0 {
 		return nil
@@ -573,10 +563,9 @@ func ingestFlat(ctx context.Context, r runners.Runner, scopeOf func(string) runn
 		done        int
 		totalFacts  int
 		nextPctMark int
-		jobCh       = make(chan ingestJob)
+		jobCh       = make(chan ingestConversationJob)
 		wg          sync.WaitGroup
 	)
-	totalJobs := len(jobs)
 	if opts.ProgressPct > 0 {
 		nextPctMark = opts.ProgressPct
 	}
@@ -587,93 +576,102 @@ func ingestFlat(ctx context.Context, r runners.Runner, scopeOf func(string) runn
 		go func() {
 			defer wg.Done()
 			for job := range jobCh {
-				// attempt does one Save dispatch with a fresh per-batch
-				// context. Pulled into a closure so the NotAvailable
-				// retry below reuses the exact same provider/extractor
-				// switch without duplicating it.
-				attempt := func() (int, time.Duration, error) {
-					ingestCtx, cancel := perQuestionCtx(ctx, opts.IngestTimeout)
-					defer cancel()
-					if !opts.UseExtractor {
-						switch rs := r.(type) {
-						case runners.RawIngestSaver:
-							return rs.SaveRawTurns(ingestCtx, job.scope, job.batch.rawTurns)
-						case IngestSaver:
-							return rs.SaveRaw(ingestCtx, job.scope, job.batch.msgs)
+				convStart := time.Now()
+				convFacts := 0
+				convTotal := len(job.batches)
+				for bi, batch := range job.batches {
+					// attempt does one Save dispatch with a fresh per-batch
+					// context. Pulled into a closure so the NotAvailable
+					// retry below reuses the exact same provider/extractor
+					// switch without duplicating it.
+					attempt := func() (int, time.Duration, error) {
+						ingestCtx, cancel := perQuestionCtx(ctx, opts.IngestTimeout)
+						defer cancel()
+						if !opts.UseExtractor {
+							switch rs := r.(type) {
+							case runners.RawIngestSaver:
+								return rs.SaveRawTurns(ingestCtx, job.scope, batch.rawTurns)
+							case IngestSaver:
+								return rs.SaveRaw(ingestCtx, job.scope, batch.msgs)
+							}
 						}
+						if ts, ok := r.(runners.ContextualSourceTurnSaver); ok {
+							return ts.SaveSourceTurnsWithContext(ingestCtx, job.scope, batch.rawTurns, batch.recentRawTurns)
+						}
+						if ts, ok := r.(runners.SourceTurnSaver); ok {
+							return ts.SaveSourceTurns(ingestCtx, job.scope, batch.rawTurns)
+						}
+						return r.Save(ingestCtx, job.scope, batch.msgs)
 					}
-					if ts, ok := r.(runners.SourceTurnSaver); ok {
-						return ts.SaveSourceTurns(ingestCtx, job.scope, job.batch.rawTurns)
-					}
-					return r.Save(ingestCtx, job.scope, job.batch.msgs)
-				}
 
-				n, d, err := attempt()
-				// Single-shot retry on transient provider errors
-				// (errdefs.NotAvailable = 5xx, network flake, plus
-				// Azure MaaS capacity 404s that ClassifyProviderError
-				// falls through to the default bucket). One retry only
-				// — it's cheap, recovers the common Azure cold-start
-				// blip seen on the c50-azure run, and won't mask a
-				// sustained outage.
-				if err != nil && errdefs.IsNotAvailable(err) {
-					log.Printf("[locomo] retry ingest %s/%s (batch %d/%d): %v", job.convID, job.batch.session, job.batchIdx+1, job.convTotal, err)
-					select {
-					case <-ctx.Done():
-					case <-time.After(ingestRetryDelay):
+					n, d, err := attempt()
+					// Single-shot retry on transient provider errors
+					// (errdefs.NotAvailable = 5xx, network flake, plus
+					// Azure MaaS capacity 404s that ClassifyProviderError
+					// falls through to the default bucket). One retry only
+					// — it's cheap, recovers the common Azure cold-start
+					// blip seen on the c50-azure run, and won't mask a
+					// sustained outage.
+					if err != nil && errdefs.IsNotAvailable(err) {
+						log.Printf("[locomo] retry ingest %s/%s (batch %d/%d): %v", job.convID, batch.session, bi+1, convTotal, err)
+						select {
+						case <-ctx.Done():
+						case <-time.After(ingestRetryDelay):
+						}
+						if ctx.Err() == nil {
+							n, d, err = attempt()
+						}
 					}
-					if ctx.Err() == nil {
-						n, d, err = attempt()
-					}
-				}
 
-				mu.Lock()
-				done++
-				a := aggs[job.convID]
-				a.remaining--
-				if err != nil {
-					log.Printf("[locomo] WARN ingest %s/%s (batch %d/%d, overall %d/%d): %v", job.convID, job.batch.session, job.batchIdx+1, job.convTotal, done, totalJobs, err)
-				} else {
-					latencies = append(latencies, d)
-					a.facts += n
-					totalFacts += n
-				}
-				// Per-batch heartbeat: without this the run looks frozen for
-				// 5-15 min on slow extractor models because the only previous
-				// log point was per-conversation completion. Now the user
-				// gets a line every Save call (success or failure) so they
-				// can spot rate-limit walls or hung calls early.
-				if opts.ProgressEvery > 0 {
-					if err == nil {
-						log.Printf("[locomo] ingest %s/%s batch %d/%d in %s, %d facts (overall %d/%d)", job.convID, job.batch.session, job.batchIdx+1, job.convTotal, d.Truncate(100*time.Millisecond), n, done, totalJobs)
-					}
-				}
-				if a.remaining == 0 {
-					log.Printf("[locomo] ingest %s done in %s, %d facts saved (%d batches, overall %d/%d)", job.convID, time.Since(a.start).Truncate(time.Second), a.facts, a.total, done, totalJobs)
-				}
-				// Milestone notification (e.g. every 25%): emit on the
-				// completing worker so we don't need a separate goroutine.
-				// Done count is monotonic and protected by mu, so the
-				// first worker to cross the boundary fires exactly once.
-				var milestone *Event
-				if nextPctMark > 0 && totalJobs > 0 {
-					pct := done * 100 / totalJobs
-					if pct >= nextPctMark && pct < 100 {
-						milestone = &Event{
-							Kind: "ingest_progress",
-							Title: fmt.Sprintf("ingest %d%% (%d/%d batches)",
-								pct, done, totalJobs),
-							Body: fmt.Sprintf("facts=%d  elapsed=%s",
-								totalFacts, time.Since(ingestStarted).Truncate(time.Second)),
+					mu.Lock()
+					done++
+					if err != nil {
+						log.Printf("[locomo] WARN ingest %s/%s (batch %d/%d, overall %d/%d): %v", job.convID, batch.session, bi+1, convTotal, done, totalBatches, err)
+						if opts.OnIngestError != nil {
+							opts.OnIngestError(job.scope, job.convID, batch, bi+1, convTotal, err)
 						}
-						for nextPctMark <= pct {
-							nextPctMark += opts.ProgressPct
+					} else {
+						latencies = append(latencies, d)
+						convFacts += n
+						totalFacts += n
+					}
+					// Per-batch heartbeat: without this the run looks frozen for
+					// 5-15 min on slow extractor models because the only previous
+					// log point was per-conversation completion. Now the user
+					// gets a line every Save call (success or failure) so they
+					// can spot rate-limit walls or hung calls early.
+					if opts.ProgressEvery > 0 {
+						if err == nil {
+							log.Printf("[locomo] ingest %s/%s batch %d/%d in %s, %d facts (overall %d/%d)", job.convID, batch.session, bi+1, convTotal, d.Truncate(100*time.Millisecond), n, done, totalBatches)
 						}
 					}
-				}
-				mu.Unlock()
-				if milestone != nil {
-					emit(*milestone)
+					if bi == convTotal-1 {
+						log.Printf("[locomo] ingest %s done in %s, %d facts saved (%d batches, overall %d/%d)", job.convID, time.Since(convStart).Truncate(time.Second), convFacts, convTotal, done, totalBatches)
+					}
+					// Milestone notification (e.g. every 25%): emit on the
+					// completing worker so we don't need a separate goroutine.
+					// Done count is monotonic and protected by mu, so the
+					// first worker to cross the boundary fires exactly once.
+					var milestone *Event
+					if nextPctMark > 0 && totalBatches > 0 {
+						pct := done * 100 / totalBatches
+						if pct >= nextPctMark && pct < 100 {
+							milestone = &Event{
+								Kind: "ingest_progress",
+								Title: fmt.Sprintf("ingest %d%% (%d/%d batches)",
+									pct, done, totalBatches),
+								Body: fmt.Sprintf("facts=%d  elapsed=%s",
+									totalFacts, time.Since(ingestStarted).Truncate(time.Second)),
+							}
+							for nextPctMark <= pct {
+								nextPctMark += opts.ProgressPct
+							}
+						}
+					}
+					mu.Unlock()
+					if milestone != nil {
+						emit(*milestone)
+					}
 				}
 			}
 		}()
@@ -896,10 +894,13 @@ func evalQuestions(ctx context.Context, r runners.Runner, scopeOf func(string) r
 // SessionID. Both shapes (LLM messages + raw turns) are precomputed so the
 // ingest loop can dispatch to either Runner variant without re-iterating.
 type turnBatch struct {
-	session  string
-	msgs     []llm.Message
-	rawTurns []runners.RawTurn
+	session        string
+	msgs           []llm.Message
+	rawTurns       []runners.RawTurn
+	recentRawTurns []runners.RawTurn
 }
+
+const recentTurnsPerSavePoint = 12
 
 // batchTurnsBySession splits a Conversation by Turn.SessionID, preserving
 // turn order. Turns without SessionID fall into a single "" bucket — that
@@ -928,5 +929,41 @@ func batchTurnsBySession(c dataset.Conversation) []turnBatch {
 		})
 	}
 	batches = append(batches, cur)
+	return batches
+}
+
+// batchTurnsByOnlineSavePoint models online writes for extractor-backed runs:
+// each source turn is a Save point, while previous turns from the same dataset
+// session are passed as recent context. It deliberately does not include future
+// turns from the session.
+func batchTurnsByOnlineSavePoint(c dataset.Conversation) []turnBatch {
+	if len(c.Turns) == 0 {
+		return nil
+	}
+	var batches []turnBatch
+	recentBySession := map[string][]runners.RawTurn{}
+	for _, t := range c.Turns {
+		msg := llm.Message{
+			Role:  model.Role(t.Role),
+			Parts: []model.Part{{Type: model.PartText, Text: t.Content}},
+		}
+		raw := runners.RawTurn{
+			Role:       t.Role,
+			Content:    t.Content,
+			EvidenceID: t.EvidenceID,
+			SessionID:  t.SessionID,
+		}
+		recent := recentBySession[t.SessionID]
+		if len(recent) > recentTurnsPerSavePoint {
+			recent = recent[len(recent)-recentTurnsPerSavePoint:]
+		}
+		batches = append(batches, turnBatch{
+			session:        t.SessionID,
+			msgs:           []llm.Message{msg},
+			rawTurns:       []runners.RawTurn{raw},
+			recentRawTurns: append([]runners.RawTurn(nil), recent...),
+		})
+		recentBySession[t.SessionID] = append(recentBySession[t.SessionID], raw)
+	}
 	return batches
 }

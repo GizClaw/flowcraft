@@ -87,4 +87,14 @@ func (b *Backend) EvidenceStore() recall.EvidenceStore {
 	return &evidenceStore{b: b}
 }
 
+// ObservationStore returns the canonical raw-evidence graph adapter.
+func (b *Backend) ObservationStore() recall.ObservationStore {
+	return &observationStore{b: b}
+}
+
+// LinkStore returns the canonical graph link adapter.
+func (b *Backend) LinkStore() recall.LinkStore {
+	return &linkStore{b: b}
+}
+
 func phs(start, n int) string { return sqlstmt.Placeholders(start, n, false) }

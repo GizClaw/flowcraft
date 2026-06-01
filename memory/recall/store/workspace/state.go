@@ -16,12 +16,14 @@ import (
 const stateVersion = 1
 
 type state struct {
-	Version     int                    `json:"version"`
-	Facts       []domain.TemporalFact  `json:"facts,omitempty"`
-	Evidence    []evidenceRecord       `json:"evidence,omitempty"`
-	SideEffects []sideEffectRecord     `json:"side_effects,omitempty"`
-	Async       []asyncSemanticRecord  `json:"async_semantic,omitempty"`
-	Counters    map[string]counterPair `json:"counters,omitempty"`
+	Version      int                    `json:"version"`
+	Facts        []domain.TemporalFact  `json:"facts,omitempty"`
+	Evidence     []evidenceRecord       `json:"evidence,omitempty"`
+	Observations []domain.Observation   `json:"observations,omitempty"`
+	Links        []domain.FactLink      `json:"links,omitempty"`
+	SideEffects  []sideEffectRecord     `json:"side_effects,omitempty"`
+	Async        []asyncSemanticRecord  `json:"async_semantic,omitempty"`
+	Counters     map[string]counterPair `json:"counters,omitempty"`
 }
 
 type counterPair struct {

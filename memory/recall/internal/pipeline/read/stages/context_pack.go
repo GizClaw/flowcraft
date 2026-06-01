@@ -76,14 +76,34 @@ func (s *ContextPack) rerankHits(ctx context.Context, query string, hits []domai
 }
 
 // BuildGroundedHits finalizes recall output by adding query-relevant
-// supporting refs to each already-packed hit.
-type BuildGroundedHits struct{}
+// supporting refs and a canonical O/A/L evidence packet to each packed hit.
+type BuildGroundedHits struct {
+	observations port.ObservationStore
+	links        port.LinkStore
+}
 
-func NewBuildGroundedHits() *BuildGroundedHits { return &BuildGroundedHits{} }
+type BuildGroundedHitsOption func(*BuildGroundedHits)
+
+func WithGroundedHitGraph(observations port.ObservationStore, links port.LinkStore) BuildGroundedHitsOption {
+	return func(s *BuildGroundedHits) {
+		s.observations = observations
+		s.links = links
+	}
+}
+
+func NewBuildGroundedHits(opts ...BuildGroundedHitsOption) *BuildGroundedHits {
+	s := &BuildGroundedHits{}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(s)
+		}
+	}
+	return s
+}
 
 func (BuildGroundedHits) Name() string { return "build_grounded_hits" }
 
-func (BuildGroundedHits) Run(_ context.Context, state *read.ReadState) (diagnostic.StageDetail, error) {
+func (s *BuildGroundedHits) Run(ctx context.Context, state *read.ReadState) (diagnostic.StageDetail, error) {
 	started := time.Now()
 	features := queryFeaturesFromState(state)
 	now := contextPackNow(state)
@@ -94,6 +114,7 @@ func (BuildGroundedHits) Run(_ context.Context, state *read.ReadState) (diagnost
 	}
 	hits = groundHitsWithSupportingEvidence(features, now, hits)
 	for i := range hits {
+		hits[i].EvidencePacket = s.buildEvidencePacket(ctx, hits[i])
 		hits[i].AnswerEvidence = domain.BuildEvidenceTable([]domain.Hit{hits[i]})
 	}
 	state.Hits = hits
@@ -103,6 +124,104 @@ func (BuildGroundedHits) Run(_ context.Context, state *read.ReadState) (diagnost
 		detail.Hits = candidateSnapshotPtr(hitSnapshots(hits))
 	}
 	return detail, nil
+}
+
+func (s *BuildGroundedHits) buildEvidencePacket(ctx context.Context, hit domain.Hit) domain.EvidencePacket {
+	packet := domain.EvidencePacket{
+		Primary:      hit.Ref,
+		EvidenceRefs: append([]domain.EvidenceRef(nil), hit.Evidence...),
+	}
+	if packet.Primary.ID == "" && packet.Primary.Kind == "" {
+		packet.Primary = domain.CandidateRef{Kind: domain.GraphNodeAssertion, ID: hit.Fact.ID, Scope: hit.Fact.Scope}
+		if hit.Observation.ID != "" {
+			packet.Primary = domain.CandidateRef{Kind: domain.GraphNodeObservation, ID: hit.Observation.ID, Scope: hit.Observation.Scope}
+		}
+	}
+	if hit.Fact.ID != "" {
+		packet.Assertions = append(packet.Assertions, hit.Fact.Clone())
+	}
+	if hit.Observation.ID != "" {
+		packet.Observations = append(packet.Observations, hit.Observation.Clone())
+	}
+	if hit.Link.ID != "" {
+		packet.Links = append(packet.Links, hit.Link.Clone())
+	}
+	if s == nil {
+		return packet
+	}
+	seenObs := map[string]struct{}{}
+	for _, obs := range packet.Observations {
+		if obs.ID != "" {
+			seenObs[obs.ID] = struct{}{}
+		}
+	}
+	if s.observations != nil {
+		for _, ref := range hit.Evidence {
+			if ref.ObservationID == "" {
+				continue
+			}
+			if _, ok := seenObs[ref.ObservationID]; ok {
+				continue
+			}
+			obs, err := s.observations.Get(ctx, packetScope(hit), ref.ObservationID)
+			if err != nil {
+				continue
+			}
+			packet.Observations = append(packet.Observations, obs.Clone())
+			seenObs[obs.ID] = struct{}{}
+		}
+	}
+	if s.links != nil && hit.Fact.ID != "" {
+		links, err := s.links.FindByNode(ctx, hit.Fact.Scope, domain.GraphNodeRef{Kind: domain.GraphNodeAssertion, ID: hit.Fact.ID})
+		if err == nil {
+			seenLinks := map[string]struct{}{}
+			for _, link := range packet.Links {
+				if link.ID != "" {
+					seenLinks[link.ID] = struct{}{}
+				}
+			}
+			for _, link := range links {
+				if link.ID == "" {
+					continue
+				}
+				if _, ok := seenLinks[link.ID]; ok {
+					continue
+				}
+				packet.Links = append(packet.Links, link.Clone())
+				seenLinks[link.ID] = struct{}{}
+				if s.observations != nil {
+					for _, ref := range link.EvidenceRefs {
+						if ref.ObservationID == "" {
+							continue
+						}
+						if _, ok := seenObs[ref.ObservationID]; ok {
+							continue
+						}
+						obs, err := s.observations.Get(ctx, hit.Fact.Scope, ref.ObservationID)
+						if err != nil {
+							continue
+						}
+						packet.Observations = append(packet.Observations, obs.Clone())
+						seenObs[obs.ID] = struct{}{}
+					}
+				}
+			}
+		}
+	}
+	return packet
+}
+
+func packetScope(hit domain.Hit) domain.Scope {
+	if hit.Fact.Scope.RuntimeID != "" {
+		return hit.Fact.Scope
+	}
+	if hit.Observation.Scope.RuntimeID != "" {
+		return hit.Observation.Scope
+	}
+	if hit.Link.Scope.RuntimeID != "" {
+		return hit.Link.Scope
+	}
+	return hit.Ref.Scope
 }
 
 func contextPackInitialHits(state *read.ReadState) []domain.Hit {
@@ -226,13 +345,23 @@ func hitsFromItems(items []domain.ContextItem) []domain.Hit {
 	hits := make([]domain.Hit, 0, len(items))
 	for _, it := range items {
 		hits = append(hits, domain.Hit{
-			Fact:     it.Fact,
-			Evidence: append([]domain.EvidenceRef(nil), it.Evidence...),
-			Score:    it.Candidate.Score,
-			Sources:  hitSources(it.Candidate),
+			Ref:         contextItemRef(it),
+			Fact:        it.Fact,
+			Observation: it.Observation,
+			Link:        it.Link,
+			Evidence:    append([]domain.EvidenceRef(nil), it.Evidence...),
+			Score:       it.Candidate.Score,
+			Sources:     hitSources(it.Candidate),
 		})
 	}
 	return hits
+}
+
+func contextItemRef(item domain.ContextItem) domain.CandidateRef {
+	if item.Ref.ID != "" || item.Ref.Kind != "" {
+		return item.Ref
+	}
+	return item.Candidate
 }
 
 const maxHitEvidenceRefs = 3

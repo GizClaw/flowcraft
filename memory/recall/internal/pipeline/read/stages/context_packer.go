@@ -48,6 +48,14 @@ const (
 	contextPackSiblingTextFloor      = 0.16
 	contextPackCompletenessTextFloor = 0.08
 	contextPackAnswerabilityFloor    = 0.50
+
+	contextPackObservationDefaultCap  = 1
+	contextPackObservationSignalCap   = 2
+	contextPackObservationRescueCap   = 4
+	contextPackObservationTextFloor   = 0.30
+	contextPackObservationSignalFloor = 0.42
+	contextPackObservationStrongFloor = 0.55
+	contextPackObservationAnchorFloor = 0.55
 )
 
 type contextPackInput struct {
@@ -94,6 +102,7 @@ func packRecallContextWithFeatures(query string, features domain.QueryFeatures, 
 		return ordered
 	}
 	candidates := contextPackCandidates(input, candidatePool)
+	candidates = contextPackLimitObservationCandidates(input.features, candidates)
 	if len(candidates) <= input.cap {
 		return contextPackHits(candidates)
 	}
@@ -107,6 +116,7 @@ func contextPackSelectCoreEvidence(query contextPackQueryFeatures, candidates []
 		return nil
 	}
 	selected := make([]contextPackCandidate, 0, min(cap, 8))
+	selected = contextPackSelectObservationAnchorCore(query, candidates, selected, cap)
 	selected = contextPackSelectSignalCore(query, candidates, selected, cap)
 	selected = contextPackSelectEvidenceAnchorCore(query, candidates, selected, cap)
 	selected = contextPackSelectAnswerabilityCore(query, candidates, selected, cap)
@@ -164,6 +174,56 @@ func contextPackFillWithMMR(query contextPackQueryFeatures, candidates, selected
 		}
 	}
 	return out
+}
+
+func contextPackSelectObservationAnchorCore(query contextPackQueryFeatures, candidates, selected []contextPackCandidate, cap int) []contextPackCandidate {
+	if cap <= 0 || len(selected) >= cap || len(candidates) == 0 {
+		return selected
+	}
+	if contextPackAnySelected(selected, contextPackObservationCandidate) {
+		return selected
+	}
+	return contextPackSelectSingleCore(candidates, selected, cap, func(c contextPackCandidate) bool {
+		return contextPackStrongObservationAnchorCandidate(query, c)
+	}, func(c contextPackCandidate) float64 {
+		return contextPackObservationAnchorScore(query, c)
+	})
+}
+
+func contextPackStrongObservationAnchorCandidate(query contextPackQueryFeatures, cand contextPackCandidate) bool {
+	if !contextPackObservationCandidate(cand) {
+		return false
+	}
+	if cand.textScore >= contextPackObservationAnchorFloor {
+		return true
+	}
+	if query.hasTimeSignal && cand.hasTimeSignal && cand.textScore >= contextPackObservationSignalFloor {
+		return true
+	}
+	if query.hasNumericIntent && cand.hasNumeric && cand.textScore >= contextPackObservationSignalFloor {
+		return true
+	}
+	if len(query.quoted) > 0 && (intersects(query.quoted, cand.evidenceTokens) || intersects(query.quoted, cand.factTokens)) {
+		return true
+	}
+	return false
+}
+
+func contextPackObservationAnchorScore(query contextPackQueryFeatures, cand contextPackCandidate) float64 {
+	score := 0.70*cand.textScore + 0.20*cand.score + 0.10*cand.baseScore
+	if query.hasTimeSignal && cand.hasTimeSignal {
+		score += 0.18
+	}
+	if query.hasNumericIntent && cand.hasNumeric {
+		score += 0.14
+	}
+	if len(query.quoted) > 0 && (intersects(query.quoted, cand.evidenceTokens) || intersects(query.quoted, cand.factTokens)) {
+		score += 0.14
+	}
+	if len(query.proper) > 0 && (intersects(query.proper, cand.evidenceTokens) || intersects(query.proper, cand.factTokens)) {
+		score += 0.08
+	}
+	return score
 }
 
 func contextPackSelectSignalCore(query contextPackQueryFeatures, candidates, selected []contextPackCandidate, cap int) []contextPackCandidate {
@@ -586,6 +646,76 @@ func contextPackCandidates(input contextPackInput, hits []domain.Hit) []contextP
 	return out
 }
 
+func contextPackLimitObservationCandidates(query contextPackQueryFeatures, candidates []contextPackCandidate) []contextPackCandidate {
+	if len(candidates) == 0 {
+		return candidates
+	}
+	factCount := 0
+	observationCount := 0
+	for _, cand := range candidates {
+		if contextPackObservationCandidate(cand) {
+			observationCount++
+			continue
+		}
+		factCount++
+	}
+	if observationCount == 0 {
+		return candidates
+	}
+	cap := contextPackObservationDefaultCap
+	floor := contextPackObservationTextFloor
+	if query.hasTimeSignal || query.hasNumericIntent {
+		cap = contextPackObservationSignalCap
+		floor = contextPackObservationSignalFloor
+	}
+	if factCount == 0 {
+		cap = contextPackObservationRescueCap
+		floor = contextPackObservationTextFloor
+	}
+	out := make([]contextPackCandidate, 0, len(candidates))
+	keptObservation := 0
+	for _, cand := range candidates {
+		if !contextPackObservationCandidate(cand) {
+			out = append(out, cand)
+			continue
+		}
+		if keptObservation >= cap {
+			continue
+		}
+		if factCount > 0 && cand.textScore < floor {
+			continue
+		}
+		out = append(out, cand)
+		keptObservation++
+	}
+	if keptObservation == 0 && factCount == 0 {
+		for _, cand := range candidates {
+			if !contextPackObservationCandidate(cand) {
+				continue
+			}
+			out = append(out, cand)
+			keptObservation++
+			if keptObservation >= cap {
+				break
+			}
+		}
+	}
+	return out
+}
+
+func contextPackObservationCandidate(cand contextPackCandidate) bool {
+	hit := cand.hit
+	if hit.Ref.Kind == domain.GraphNodeObservation || hit.Observation.ID != "" {
+		return true
+	}
+	for _, source := range hit.Sources {
+		if source == "observation" {
+			return true
+		}
+	}
+	return false
+}
+
 func newContextPackInput(query string, features domain.QueryFeatures, now time.Time, cap int) contextPackInput {
 	if now.IsZero() {
 		now = time.Now()
@@ -704,10 +834,21 @@ func contextPackScore(query contextPackQueryFeatures, candidate contextPackCandi
 	if signalPresence > 1 {
 		signalPresence = 1
 	}
-	return contextPackBaseScoreWeight*base +
+	score := contextPackBaseScoreWeight*base +
 		contextPackTextScoreWeight*candidate.textScore +
 		contextPackRankPriorWeight*rankPrior +
 		contextPackSignalScoreWeight*signalPresence
+	if contextPackObservationCandidate(candidate) {
+		switch {
+		case candidate.textScore >= contextPackObservationStrongFloor:
+			score *= 1.05
+		case query.hasTimeSignal || query.hasNumericIntent:
+			score *= 0.70
+		default:
+			score *= 0.75
+		}
+	}
+	return score
 }
 
 func contextPackEnsureSignalCoverage(query contextPackQueryFeatures, candidates []contextPackCandidate, selected []domain.Hit, selectedCandidates []contextPackCandidate) ([]domain.Hit, []contextPackCandidate) {
@@ -766,35 +907,6 @@ func contextPackEnsureSignalCoverage(query contextPackQueryFeatures, candidates 
 	return out, outCandidates
 }
 
-func contextPackEnsureCollectionCoverage(query contextPackQueryFeatures, candidates []contextPackCandidate, selected []domain.Hit, selectedCandidates []contextPackCandidate, cap int) ([]domain.Hit, []contextPackCandidate) {
-	if !query.collectionIntent || cap <= 1 || len(selected) == 0 || len(candidates) == 0 {
-		return selected, selectedCandidates
-	}
-	out := append([]domain.Hit(nil), selected...)
-	outCandidates := append([]contextPackCandidate(nil), selectedCandidates...)
-	targetAdds := min(6, max(2, cap/5))
-	added := 0
-	for _, cand := range candidates {
-		if added >= targetAdds {
-			break
-		}
-		if cand.textScore < contextPackSiblingTextFloor || contextPackCandidateDuplicate(cand, outCandidates) {
-			continue
-		}
-		if !contextPackCollectionCandidateUseful(query, cand, outCandidates) {
-			continue
-		}
-		replace := contextPackCollectionReplacement(outCandidates, cand)
-		if replace < 0 {
-			continue
-		}
-		out[replace] = cand.hit
-		outCandidates[replace] = cand
-		added++
-	}
-	return out, outCandidates
-}
-
 func contextPackCollectionCandidateUseful(query contextPackQueryFeatures, cand contextPackCandidate, selected []contextPackCandidate) bool {
 	if cand.textScore >= contextPackQueryFloor {
 		return true
@@ -810,52 +922,6 @@ func contextPackCollectionCandidateUseful(query contextPackQueryFeatures, cand c
 	return false
 }
 
-func contextPackCollectionReplacement(selected []contextPackCandidate, incoming contextPackCandidate) int {
-	replace := -1
-	for i, cand := range selected {
-		if cand.queryRank < 5 && cand.textScore >= contextPackHighTextScoreFloor {
-			continue
-		}
-		if cand.textScore >= incoming.textScore && cand.score >= incoming.score {
-			continue
-		}
-		if replace < 0 || contextPackUtility(cand) < contextPackUtility(selected[replace]) {
-			replace = i
-		}
-	}
-	return replace
-}
-
-func contextPackEnsureBridgeCoverage(query contextPackQueryFeatures, candidates []contextPackCandidate, selected []domain.Hit, selectedCandidates []contextPackCandidate, cap int) ([]domain.Hit, []contextPackCandidate) {
-	if !query.bridgeIntent || cap <= 1 || len(selected) == 0 || len(candidates) == 0 || contextPackQueryCoverage(query, selectedCandidates) >= 0.85 {
-		return selected, selectedCandidates
-	}
-	out := append([]domain.Hit(nil), selected...)
-	outCandidates := append([]contextPackCandidate(nil), selectedCandidates...)
-	covered := contextPackCoveredQueryTokens(query, outCandidates)
-	added := 0
-	for _, cand := range candidates {
-		if added >= 2 {
-			break
-		}
-		if cand.textScore < contextPackSiblingTextFloor || contextPackCandidateDuplicate(cand, outCandidates) {
-			continue
-		}
-		if !contextPackAssociatedCandidate(cand, outCandidates) || contextPackCoverageGain(query, cand, covered) <= 0 {
-			continue
-		}
-		replace := contextPackLowestUtilityReplacement(outCandidates, cand)
-		if replace < 0 {
-			continue
-		}
-		out[replace] = cand.hit
-		outCandidates[replace] = cand
-		covered = contextPackCoveredQueryTokens(query, outCandidates)
-		added++
-	}
-	return out, outCandidates
-}
-
 func contextPackAssociatedCandidate(cand contextPackCandidate, selected []contextPackCandidate) bool {
 	for _, existing := range selected {
 		if cand.evidenceGroup != "" && cand.evidenceGroup == existing.evidenceGroup {
@@ -866,44 +932,6 @@ func contextPackAssociatedCandidate(cand contextPackCandidate, selected []contex
 		}
 	}
 	return false
-}
-
-func contextPackEnsureGroupCompleteness(query contextPackQueryFeatures, candidates []contextPackCandidate, selected []domain.Hit, selectedCandidates []contextPackCandidate, cap int) ([]domain.Hit, []contextPackCandidate) {
-	if !contextPackCompletenessIntent(query) || cap <= 1 || len(selected) == 0 || len(candidates) == 0 {
-		return selected, selectedCandidates
-	}
-	out := append([]domain.Hit(nil), selected...)
-	outCandidates := append([]contextPackCandidate(nil), selectedCandidates...)
-	targetAdds := min(4, max(1, cap/8))
-	if query.collectionIntent {
-		targetAdds = min(6, max(targetAdds, max(2, cap/6)))
-	}
-	added := 0
-	for _, cand := range candidates {
-		if added >= targetAdds {
-			break
-		}
-		if cand.textScore < contextPackCompletenessTextFloor || contextPackCandidateDuplicate(cand, outCandidates) {
-			continue
-		}
-		if !contextPackCompletenessCandidateUseful(query, cand, outCandidates) {
-			continue
-		}
-		if len(out) < cap {
-			out = append(out, cand.hit)
-			outCandidates = append(outCandidates, cand)
-			added++
-			continue
-		}
-		replace := contextPackCompletenessReplacement(query, outCandidates, cand)
-		if replace < 0 {
-			continue
-		}
-		out[replace] = cand.hit
-		outCandidates[replace] = cand
-		added++
-	}
-	return out, outCandidates
 }
 
 func contextPackCompletenessIntent(query contextPackQueryFeatures) bool {
@@ -978,28 +1006,6 @@ func sameDay(a, b time.Time) bool {
 	return ay == by && am == bm && ad == bd
 }
 
-func contextPackCompletenessReplacement(query contextPackQueryFeatures, selected []contextPackCandidate, incoming contextPackCandidate) int {
-	replace := -1
-	bestUtility := math.Inf(1)
-	for i, cand := range selected {
-		if cand.queryRank < 5 && cand.textScore >= contextPackHighTextScoreFloor {
-			continue
-		}
-		if contextPackStrongSibling(query, cand, incoming) && cand.textScore >= contextPackCompletenessTextFloor {
-			continue
-		}
-		utility := contextPackUtility(cand)
-		if contextPackCompletenessCandidateUseful(query, cand, selectedWithoutIndex(selected, i)) {
-			utility += 0.20
-		}
-		if utility < bestUtility {
-			bestUtility = utility
-			replace = i
-		}
-	}
-	return replace
-}
-
 func selectedWithoutIndex(selected []contextPackCandidate, idx int) []contextPackCandidate {
 	if idx < 0 || idx >= len(selected) || len(selected) == 0 {
 		return selected
@@ -1008,26 +1014,6 @@ func selectedWithoutIndex(selected []contextPackCandidate, idx int) []contextPac
 	out = append(out, selected[:idx]...)
 	out = append(out, selected[idx+1:]...)
 	return out
-}
-
-func contextPackEnsureRankedHeadCoverage(candidates []contextPackCandidate, selected []domain.Hit, selectedCandidates []contextPackCandidate, cap int) ([]domain.Hit, []contextPackCandidate) {
-	if cap <= 0 || len(selected) == 0 || len(candidates) == 0 {
-		return selected, selectedCandidates
-	}
-	out := append([]domain.Hit(nil), selected...)
-	outCandidates := append([]contextPackCandidate(nil), selectedCandidates...)
-	for _, cand := range candidates {
-		if cand.queryRank >= cap || cand.textScore < contextPackRankedHeadTextFloor || contextPackCandidateDuplicate(cand, outCandidates) {
-			continue
-		}
-		replace := contextPackLowestUtilityReplacement(outCandidates, cand)
-		if replace < 0 {
-			continue
-		}
-		out[replace] = cand.hit
-		outCandidates[replace] = cand
-	}
-	return out, outCandidates
 }
 
 func contextPackEnsureAnswerabilityCoverage(query contextPackQueryFeatures, candidates []contextPackCandidate, selected []domain.Hit, selectedCandidates []contextPackCandidate, cap int) ([]domain.Hit, []contextPackCandidate) {

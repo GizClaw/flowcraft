@@ -94,7 +94,7 @@ func (WeightedRRF) Fuse(_ context.Context, results []domain.SourceResult, opts p
 				drops = append(drops, diagnostic.CandidateDrop{
 					Stage:  "candidate_merge",
 					Reason: diagnostic.DropPerSourceCap,
-					FactID: c.FactID,
+					FactID: c.ID,
 					Source: res.Source,
 				})
 			}
@@ -105,8 +105,8 @@ func (WeightedRRF) Fuse(_ context.Context, results []domain.SourceResult, opts p
 				floor = len(input)
 			}
 			for _, c := range input[:floor] {
-				if c.FactID != "" {
-					floorIDs[c.FactID] = struct{}{}
+				if c.ID != "" {
+					floorIDs[c.ID] = struct{}{}
 				}
 			}
 		}
@@ -123,7 +123,7 @@ func (WeightedRRF) Fuse(_ context.Context, results []domain.SourceResult, opts p
 		// score-magnitude signal to amplify.
 		refScore := sourceReferenceScore(input)
 		for _, c := range input {
-			if c.FactID == "" {
+			if c.ID == "" {
 				continue
 			}
 			contribution := w / float64(opts.RRFK+c.Rank)
@@ -131,7 +131,7 @@ func (WeightedRRF) Fuse(_ context.Context, results []domain.SourceResult, opts p
 			if mult := outlierMultiplier(c, refScore, opts); mult > 1 {
 				contribution *= mult
 			}
-			if existing, ok := agg[c.FactID]; ok {
+			if existing, ok := agg[c.ID]; ok {
 				existing.Score += contribution
 				existing.EvidenceIDs = mergeEvidenceIDs(existing.EvidenceIDs, c.EvidenceIDs)
 				// Track multi-source membership in metadata so the
@@ -143,8 +143,8 @@ func (WeightedRRF) Fuse(_ context.Context, results []domain.SourceResult, opts p
 			merged.Score = contribution
 			merged.Metadata = cloneMeta(c.Metadata)
 			appendSourceMeta(&merged, res.Source)
-			agg[c.FactID] = &merged
-			order = append(order, c.FactID)
+			agg[c.ID] = &merged
+			order = append(order, c.ID)
 		}
 	}
 
@@ -162,7 +162,7 @@ func (WeightedRRF) Fuse(_ context.Context, results []domain.SourceResult, opts p
 			drops = append(drops, diagnostic.CandidateDrop{
 				Stage:  "candidate_merge",
 				Reason: diagnostic.DropTotalCap,
-				FactID: c.FactID,
+				FactID: c.ID,
 				Source: c.Source,
 			})
 		}
@@ -208,24 +208,24 @@ func capWithSourceFloors(sorted []domain.Candidate, totalCap int, floorIDs map[s
 		if len(keep) >= totalCap {
 			break
 		}
-		if _, ok := floorIDs[c.FactID]; !ok {
+		if _, ok := floorIDs[c.ID]; !ok {
 			continue
 		}
-		keep[c.FactID] = struct{}{}
+		keep[c.ID] = struct{}{}
 	}
 	for _, c := range sorted {
 		if len(keep) >= totalCap {
 			break
 		}
-		if _, ok := keep[c.FactID]; ok {
+		if _, ok := keep[c.ID]; ok {
 			continue
 		}
-		keep[c.FactID] = struct{}{}
+		keep[c.ID] = struct{}{}
 	}
 	kept := make([]domain.Candidate, 0, totalCap)
 	dropped := make([]domain.Candidate, 0, len(sorted)-len(kept))
 	for _, c := range sorted {
-		if _, ok := keep[c.FactID]; ok {
+		if _, ok := keep[c.ID]; ok {
 			kept = append(kept, c)
 		} else {
 			dropped = append(dropped, c)

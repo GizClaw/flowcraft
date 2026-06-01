@@ -27,10 +27,10 @@ func TestMaterialize_AttachesFactAndDropsStale(t *testing.T) {
 	if err := store.Append(context.Background(), []domain.TemporalFact{fact}); err != nil {
 		t.Fatal(err)
 	}
-	mat := New(store, nil)
+	mat := New(store, nil, nil, nil)
 	items, drops, err := mat.Materialize(context.Background(), []domain.Candidate{
-		{FactID: "real", Scope: scope, Source: "retrieval", Score: 0.9},
-		{FactID: "ghost", Scope: scope, Source: "retrieval", Score: 0.5},
+		{Kind: domain.GraphNodeAssertion, ID: "real", Scope: scope, Source: "retrieval", Score: 0.9},
+		{Kind: domain.GraphNodeAssertion, ID: "ghost", Scope: scope, Source: "retrieval", Score: 0.5},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -62,9 +62,9 @@ func TestMaterialize_SelectsCandidateEvidence(t *testing.T) {
 	if err := store.Append(context.Background(), []domain.TemporalFact{fact}); err != nil {
 		t.Fatal(err)
 	}
-	mat := New(store, nil)
+	mat := New(store, nil, nil, nil)
 	items, _, err := mat.Materialize(context.Background(), []domain.Candidate{
-		{FactID: "real", Scope: scope, Source: "retrieval", EvidenceIDs: []string{"msg-2"}},
+		{Kind: domain.GraphNodeAssertion, ID: "real", Scope: scope, Source: "retrieval", EvidenceIDs: []string{"msg-2"}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -94,10 +94,10 @@ func TestMaterialize_DropsSuperseded(t *testing.T) {
 	if err := store.UpdateValidity(context.Background(), scope, "old", time.Unix(2, 0), "new"); err != nil {
 		t.Fatal(err)
 	}
-	mat := New(store, nil)
+	mat := New(store, nil, nil, nil)
 	items, drops, err := mat.Materialize(context.Background(), []domain.Candidate{
-		{FactID: "old", Scope: scope, Source: "retrieval"},
-		{FactID: "new", Scope: scope, Source: "retrieval"},
+		{Kind: domain.GraphNodeAssertion, ID: "old", Scope: scope, Source: "retrieval"},
+		{Kind: domain.GraphNodeAssertion, ID: "new", Scope: scope, Source: "retrieval"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -112,11 +112,11 @@ func TestMaterialize_DropsSuperseded(t *testing.T) {
 
 func TestMaterialize_PropagatesContextCancellation(t *testing.T) {
 	store := temporalstore.NewMemoryStore()
-	mat := New(store, nil)
+	mat := New(store, nil, nil, nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	_, _, err := mat.Materialize(ctx, []domain.Candidate{{FactID: "real", Scope: domain.Scope{RuntimeID: "rt"}}})
+	_, _, err := mat.Materialize(ctx, []domain.Candidate{{Kind: domain.GraphNodeAssertion, ID: "real", Scope: domain.Scope{RuntimeID: "rt"}}})
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("context cancellation must propagate, got %v", err)
 	}
