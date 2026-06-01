@@ -3,7 +3,7 @@ module github.com/GizClaw/flowcraft/vessel
 go 1.25.0
 
 require (
-	github.com/GizClaw/flowcraft/sdk v0.4.0
+	github.com/GizClaw/flowcraft/sdk v0.4.2
 	go.opentelemetry.io/otel/log v0.16.0
 	gopkg.in/yaml.v3 v3.0.1
 )
@@ -15,7 +15,7 @@ require (
 )
 
 require (
-	github.com/GizClaw/flowcraft/memory v0.1.0
+	github.com/GizClaw/flowcraft/memory v0.1.2
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/dlclark/regexp2 v1.11.4 // indirect
