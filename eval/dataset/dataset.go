@@ -10,11 +10,23 @@ import (
 
 // Turn is a single conversation utterance.
 type Turn struct {
-	Role       string `json:"role"`                  // "user" | "assistant"
-	Content    string `json:"content"`               // raw text
-	EvidenceID string `json:"evidence_id,omitempty"` // upstream id (e.g. LoCoMo dia_id "D1:3"); preserved as MemoryEntry.ID by SaveRaw so recall.k_hit is meaningful.
-	SessionID  string `json:"session_id,omitempty"`  // upstream session bucket (e.g. LoCoMo "session_3"); used by eval to chunk LLM extractor calls so a single Save doesn't exceed model context / output budget.
-	HasAnswer  bool   `json:"has_answer,omitempty"`  // upstream evidence flag (LongMemEval `has_answer`): true for turns that contain the gold evidence for the question. Carried through so the converter can promote these turns into Question.EvidenceIDs for turn-level recall.k_hit.
+	Role       string  `json:"role"`                  // "user" | "assistant"
+	Content    string  `json:"content"`               // speaker-authored text, without structured speaker/time/image metadata.
+	Speaker    string  `json:"speaker,omitempty"`     // upstream speaker label when available.
+	Timestamp  string  `json:"timestamp,omitempty"`   // upstream turn/session timestamp when available.
+	EvidenceID string  `json:"evidence_id,omitempty"` // upstream id (e.g. LoCoMo dia_id "D1:3"); preserved as MemoryEntry.ID by SaveRaw so recall.k_hit is meaningful.
+	SessionID  string  `json:"session_id,omitempty"`  // upstream session bucket (e.g. LoCoMo "session_3"); used by eval to chunk LLM extractor calls so a single Save doesn't exceed model context / output budget.
+	Images     []Image `json:"images,omitempty"`      // optional structured image metadata attached to this turn.
+	HasAnswer  bool    `json:"has_answer,omitempty"`  // upstream evidence flag (LongMemEval `has_answer`): true for turns that contain the gold evidence for the question. Carried through so the converter can promote these turns into Question.EvidenceIDs for turn-level recall.k_hit.
+}
+
+// Image is structured metadata for a visual attachment associated with a turn.
+// It is not speaker-authored prose; runners decide how to present it to their
+// extractor or retrieval backend.
+type Image struct {
+	URL     string `json:"url,omitempty"`
+	Query   string `json:"query,omitempty"`
+	Caption string `json:"caption,omitempty"`
 }
 
 // Conversation is a single dialog history that the runner ingests via Save.

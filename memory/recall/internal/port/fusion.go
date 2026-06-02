@@ -26,15 +26,6 @@ type FusionOptions struct {
 	// single-source evidence from being completely displaced by
 	// multi-source RRF corroboration. Missing names default to no floor.
 	SourceFloors map[string]int
-	// OutlierBoostCap caps the multiplier applied to within-source
-	// score outliers. Values <= 1.0 disable the boost.
-	OutlierBoostCap float64
-	// OutlierScoreThreshold is the minimum (score / source-median)
-	// ratio a candidate must hit to qualify as an outlier.
-	OutlierScoreThreshold float64
-	// OutlierMaxRank caps how far down the source's ranking we
-	// will search for outliers.
-	OutlierMaxRank int
 }
 
 // Fuser combines multi-source candidate streams.

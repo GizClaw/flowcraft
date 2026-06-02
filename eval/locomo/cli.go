@@ -106,7 +106,6 @@ func addLocomoRun(parent *cobra.Command, g *cliflags.Global) {
 		observationOnlyIngest bool
 		updateResolver        string
 		recentTurnsK          int
-		loadFactsPath         string
 		dumpFactsPath         string
 		dumpRecallPath        string
 		dumpAnswerReplay      string
@@ -324,41 +323,6 @@ Example (LLM extractor + LLM answer + LLM judge + Qwen embedder):
 			if err != nil {
 				return fmt.Errorf("notify: %w", err)
 			}
-			var loadedFacts factsLoadSummary
-			if loadFactsPath != "" {
-				if canonical != runnerFlowcraftRecallV2 {
-					return fmt.Errorf("--load-facts is only supported for flowcraft-recall-v2 (got %s)", canonical)
-				}
-				notify.Forward(c.Context(), notifier, notify.Event{
-					Kind:  "start",
-					Time:  time.Now(),
-					Title: fmt.Sprintf("facts replay load start: runner=%s dataset=%s", canonical, ds.Name),
-					Body:  fmt.Sprintf("facts=%s\ntopk=%d  qa_concurrency=%d", loadFactsPath, topK, concurrency),
-					Fields: map[string]string{
-						"runner": canonical,
-						"facts":  loadFactsPath,
-					},
-				})
-				loadedFacts, err = loadV2FactsDump(c.Context(), r, loadFactsPath)
-				if err != nil {
-					notify.Forward(c.Context(), notifier, notify.Event{
-						Kind:  "error",
-						Time:  time.Now(),
-						Title: "facts replay load failed",
-						Body:  err.Error(),
-					})
-					return fmt.Errorf("--load-facts: %w", err)
-				}
-				summary := metrics.Summarize(loadedFacts.Latencies)
-				fmt.Fprintf(os.Stderr, "  loaded facts from %s: records=%d facts=%d save.p95=%s\n",
-					loadFactsPath, loadedFacts.Records, loadedFacts.Facts, summary.P95)
-				notify.Forward(c.Context(), notifier, notify.Event{
-					Kind:  "ingest_done",
-					Time:  time.Now(),
-					Title: fmt.Sprintf("facts replay loaded: %d facts", loadedFacts.Facts),
-					Body:  fmt.Sprintf("records=%d save_calls=%d save.p95=%s", loadedFacts.Records, loadedFacts.SaveCalls, summary.P95),
-				})
-			}
 			// --dump-recall diagnostic: capture per-question recall
 			// artifacts (id, score, content) to JSONL so we can audit
 			// "recall miss vs answer miss" — does the retrieval
@@ -469,14 +433,14 @@ Example (LLM extractor + LLM answer + LLM judge + Qwen embedder):
 
 			opts := Options{
 				TopK:                       topK,
-				UseExtractor:               useExtractor && loadFactsPath == "",
+				UseExtractor:               useExtractor,
 				AnswerLLM:                  answer,
 				Concurrency:                concurrency,
 				IngestConcurrency:          ingestConcurrency,
 				ProgressEvery:              progressEvery,
 				IngestTimeout:              ingestTimeout,
 				QATimeout:                  qaTimeout,
-				SkipIngest:                 loadFactsPath != "",
+				SkipIngest:                 false,
 				ProgressPct:                g.Notify.ProgressPct,
 				RetrievalBackend:           retrievalBackend,
 				RunName:                    g.Notify.Name,
@@ -582,7 +546,6 @@ Example (LLM extractor + LLM answer + LLM judge + Qwen embedder):
 	f.BoolVar(&observationOnlyIngest, "observation-only-ingest", false, "flowcraft-recall-v2: save source turns only as Observations without assertion extraction; eval-only fallback ablation")
 	f.StringVar(&updateResolver, "update-resolver", "", "LLM alias for the memory update resolver (ADD/UPDATE/DELETE/NOOP); empty disables. Adds one LLM call per Save batch.")
 	f.IntVar(&recentTurnsK, "recent-turns", 0, "if >0, inject the previous K messages from prior Save batches into the extractor for cross-batch pronoun/entity reference resolution")
-	f.StringVar(&loadFactsPath, "load-facts", "", "flowcraft-recall-v2: load a previous --dump-facts JSONL and skip conversation ingest, then run QA against those facts")
 	f.StringVar(&dumpFactsPath, "dump-facts", "", "diagnostic: write one JSONL record per Save batch with the extractor's facts to this path (audits extract-miss vs recall-miss)")
 	f.StringVar(&dumpRecallPath, "dump-recall", "", "diagnostic: write one JSONL record per question with the top-k recall hits to this path (audits recall-miss vs answer-miss)")
 	f.StringVar(&dumpAnswerReplay, "dump-answer-replay", "", "diagnostic: write one JSONL record per answered question with full answer prompt/body, recall artifacts, prediction, and scores")

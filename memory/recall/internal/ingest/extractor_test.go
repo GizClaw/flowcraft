@@ -185,8 +185,8 @@ func TestLLMExtractor_ProseTurnSynthesizesID(t *testing.T) {
 func TestLLMExtractor_RendersTurnsAsJSONL(t *testing.T) {
 	client := &fakeLLM{
 		Responses: []string{`{"facts":[
-			{"text":"Avery prefers blue over red.","evidence_refs":[{"id":"D1:3"}]},
-			{"text":"Avery plans to visit Riverton on 2024-05-07.","evidence_refs":[{"id":"D1:5","text":"[2024-05-07] Avery: I'm going to Riverton."}]}
+			{"text":"Avery prefers blue over red.","evidence_refs":[{"id":"D1:3","text":"Blue is my favorite color, not red."}]},
+			{"text":"Avery plans to visit Riverton on 2024-05-07.","evidence_refs":[{"id":"D1:5","text":"I'm going to Riverton."}]}
 		]}`},
 	}
 	ex := NewLLMExtractor(client)
@@ -216,8 +216,8 @@ func TestLLMExtractor_RendersTurnsAsJSONL(t *testing.T) {
 	if out[0].EvidenceText != turn1.Text || out[0].EvidenceRefs[0].Text != turn1.Text {
 		t.Errorf("evidence text should use source turn text, got fact=%q ref=%q", out[0].EvidenceText, out[0].EvidenceRefs[0].Text)
 	}
-	if out[1].EvidenceText != turn2.Text || out[1].EvidenceRefs[0].Text != turn2.Text {
-		t.Errorf("non-verbatim evidence quote should fall back to source turn text, got fact=%q ref=%q", out[1].EvidenceText, out[1].EvidenceRefs[0].Text)
+	if out[1].EvidenceText != "I'm going to Riverton." || out[1].EvidenceRefs[0].Text != "I'm going to Riverton." {
+		t.Errorf("evidence quote should be preserved, got fact=%q ref=%q", out[1].EvidenceText, out[1].EvidenceRefs[0].Text)
 	}
 	if len(out[0].SourceMessageIDs) != 1 || out[0].SourceMessageIDs[0] != "D1:3" {
 		t.Errorf("source ids not derived from evidence: %+v", out[0].SourceMessageIDs)
@@ -229,7 +229,7 @@ func TestLLMExtractor_RendersTurnsAsJSONL(t *testing.T) {
 		t.Fatalf("LLM must be called once, got %d", len(client.Messages))
 	}
 	userMsg := client.Messages[0][1].Content()
-	if !strings.Contains(userMsg, "<extractor_input>") || !strings.Contains(userMsg, `<source_turns format="jsonl">`) || !strings.Contains(userMsg, "</source_turns>") {
+	if !strings.Contains(userMsg, "<extractor_input>") || !strings.Contains(userMsg, `<source_turns extractable="true" evidence_scope="only" format="jsonl">`) || !strings.Contains(userMsg, "</source_turns>") {
 		t.Errorf("tagged source-turn envelope missing from user message: %q", userMsg)
 	}
 	if !strings.Contains(userMsg, `"id":"D1:3"`) || !strings.Contains(userMsg, `"speaker":"Avery"`) || !strings.Contains(userMsg, `"time":"2024-05-01T09:00:00Z"`) {
@@ -432,7 +432,7 @@ func TestExtractorPromptsForbidGenericSurfaceCollapse(t *testing.T) {
 	}
 }
 
-func TestLLMExtractorReattachesMissingQuotedEvidenceSurface(t *testing.T) {
+func TestLLMExtractorDoesNotMutateContentWithQuotedEvidenceSurface(t *testing.T) {
 	client := &fakeLLM{
 		Responses: []string{`{"facts":[{
 			"text":"Avery finished reading a book yesterday.",
@@ -455,12 +455,11 @@ func TestLLMExtractorReattachesMissingQuotedEvidenceSurface(t *testing.T) {
 	if len(out) != 1 {
 		t.Fatalf("want 1 fact, got %d (%+v)", len(out), out)
 	}
-	if strings.Contains(out[0].Content, "Exact source phrase") {
-		t.Fatalf("quoted evidence surface should not pollute content: %q", out[0].Content)
+	if out[0].Content != "Avery finished reading a book yesterday." {
+		t.Fatalf("extractor post-process should not mutate content: %q", out[0].Content)
 	}
-	phrases, _ := out[0].Metadata[domain.MetaExactSourcePhrases].([]string)
-	if len(phrases) != 1 || phrases[0] != "Charlotte's Web" {
-		t.Fatalf("missing quoted evidence surface metadata: %+v", out[0].Metadata)
+	if len(out[0].Metadata) != 0 {
+		t.Fatalf("extractor post-process should not attach semantic surface metadata: %+v", out[0].Metadata)
 	}
 }
 
@@ -537,7 +536,7 @@ func TestLLMExtractor_PropagatesKindEnum(t *testing.T) {
 	}
 }
 
-func TestLLMExtractor_DowngradesUnsupportedAssertionFields(t *testing.T) {
+func TestLLMExtractor_PropagatesAssertionFieldsWithoutCueDowngrade(t *testing.T) {
 	client := &fakeLLM{
 		Responses: []string{`{"facts":[{
 			"text":"Avery adopted a cat.",
@@ -563,8 +562,8 @@ func TestLLMExtractor_DowngradesUnsupportedAssertionFields(t *testing.T) {
 	if len(out) != 1 {
 		t.Fatalf("facts = %+v", out)
 	}
-	if out[0].Polarity != domain.PolarityAffirmed || out[0].Modality != domain.ModalityActual || out[0].Certainty != domain.CertaintyExplicit {
-		t.Fatalf("unsupported assertion fields were not downgraded: %+v", out[0])
+	if out[0].Polarity != domain.PolarityNegated || out[0].Modality != domain.ModalityCounterfactual || out[0].Certainty != domain.CertaintyUncertain {
+		t.Fatalf("assertion fields should be normalized but not cue-downgraded: %+v", out[0])
 	}
 }
 
@@ -599,16 +598,13 @@ func TestLLMExtractor_KeepsSupportedAssertionFields(t *testing.T) {
 	}
 }
 
-func TestSelfContainedExtractedContent_ReducesRepeatedSubjectMentions(t *testing.T) {
-	got, ok := selfContainedExtractedContent("My art is about expressing my experience. It's my way of showing my story.", "Riley")
+func TestSelfContainedExtractedContent_TrimsOnly(t *testing.T) {
+	got, ok := selfContainedExtractedContent("  My art is about expressing my experience. It's my way of showing my story.  ")
 	if !ok {
-		t.Fatal("expected self-contained rewrite")
+		t.Fatal("expected non-empty content")
 	}
-	if strings.Count(got, "Riley") > 1 {
-		t.Fatalf("subject repeated too often: %q", got)
-	}
-	if !strings.Contains(got, "their experience") || !strings.Contains(got, "their way") {
-		t.Fatalf("possessive repeats were not reduced naturally: %q", got)
+	if got != "My art is about expressing my experience. It's my way of showing my story." {
+		t.Fatalf("content should only be trimmed, got %q", got)
 	}
 }
 
@@ -643,16 +639,16 @@ func TestLLMExtractor_PropagatesSubjectAndCleansEntities(t *testing.T) {
 	if out[0].Subject != "Juno" {
 		t.Fatalf("subject should come from extractor, not evidence speaker: %+v", out[0])
 	}
-	if out[0].Predicate != "" || out[0].Object != "" {
-		t.Fatalf("predicate/object should be cleared when the predicate token is not directly supported, got %q/%q", out[0].Predicate, out[0].Object)
+	if out[0].Predicate != "made" || out[0].Object != "model bridge" {
+		t.Fatalf("predicate/object should be normalized but not semantically cleared, got %q/%q", out[0].Predicate, out[0].Object)
 	}
-	wantEntities := []string{"Juno", "workshop", "model bridge"}
+	wantEntities := []string{"Juno", "workshop", "model bridge", "being", "taking", "finding"}
 	if strings.Join(out[0].Entities, ",") != strings.Join(wantEntities, ",") {
 		t.Fatalf("entities = %+v, want %+v", out[0].Entities, wantEntities)
 	}
 }
 
-func TestLLMExtractor_ReplacesWeakSubjectAndDropsWeakContractionEntities(t *testing.T) {
+func TestLLMExtractor_SuppressesFirstPersonSubjectAndKeepsModelEntities(t *testing.T) {
 	client := &fakeLLM{
 		Responses: []string{`{"facts":[{
 			"text":"Orin listens to jazz while working on puzzles.",
@@ -680,10 +676,13 @@ func TestLLMExtractor_ReplacesWeakSubjectAndDropsWeakContractionEntities(t *test
 	if len(out) != 1 {
 		t.Fatalf("want 1 fact, got %d", len(out))
 	}
-	if out[0].Subject != "Orin" {
-		t.Fatalf("weak subject should fall back to evidence speaker: %+v", out[0])
+	if out[0].Subject != "" {
+		t.Fatalf("first-person subject should be suppressed rather than mapped to speaker: %+v", out[0])
 	}
-	wantEntities := []string{"Orin", "jazz"}
+	if suppressed, _ := out[0].Metadata[domain.MetaSubjectSuppressed].(bool); !suppressed {
+		t.Fatalf("subject suppression metadata missing: %+v", out[0].Metadata)
+	}
+	wantEntities := []string{"Orin", "working on puzzles", "writing", "jazz"}
 	if strings.Join(out[0].Entities, ",") != strings.Join(wantEntities, ",") {
 		t.Fatalf("entities = %+v, want %+v", out[0].Entities, wantEntities)
 	}
@@ -720,7 +719,7 @@ func TestLLMExtractor_DropsUnresolvedPronounSubject(t *testing.T) {
 	}
 }
 
-func TestLLMExtractor_ClearsIncompleteRelationAndDropsActionPhraseEntities(t *testing.T) {
+func TestLLMExtractor_ClearsIncompleteRelationAndKeepsModelEntities(t *testing.T) {
 	client := &fakeLLM{
 		Responses: []string{`{"facts":[
 			{
@@ -762,8 +761,8 @@ func TestLLMExtractor_ClearsIncompleteRelationAndDropsActionPhraseEntities(t *te
 			t.Fatalf("fact[%d] incomplete relation should be cleared, got %q/%q", i, fact.Predicate, fact.Object)
 		}
 	}
-	if got := strings.Join(out[0].Entities, ","); got != "John,bicycle" {
-		t.Fatalf("action phrase entity should be dropped, got %q", got)
+	if got := strings.Join(out[0].Entities, ","); got != "John,planning to repair a bicycle,bicycle" {
+		t.Fatalf("entities should only be structurally normalized, got %q", got)
 	}
 }
 
@@ -906,7 +905,182 @@ func TestLLMExtractor_DropsUngroundedMultiTurnMemory(t *testing.T) {
 	}
 }
 
-func TestLLMExtractor_DropsNamedEntityUnsupportedByEvidence(t *testing.T) {
+func TestLLMExtractor_DropsLegacyEvidenceRefWithoutQuoteInMultiTurnInput(t *testing.T) {
+	client := &fakeLLM{
+		Responses: []string{`{"facts":[{
+			"text":"Avery likes Riverton.",
+			"kind":"state",
+			"subject":"Avery",
+			"entities":["Avery","Riverton"],
+			"evidence_refs":[{"id":"D1:1"}]
+		}]}`},
+	}
+	ex := NewLLMExtractor(client)
+	out, err := ex.Extract(context.Background(), port.IngestInput{
+		Scope: domain.Scope{RuntimeID: "rt"},
+		Turns: []port.TurnContext{
+			{ID: "D1:1", Role: "user", Text: "Avery likes Riverton."},
+			{ID: "D1:2", Role: "assistant", Text: "Nice."},
+		},
+	})
+	if err != nil {
+		t.Fatalf("extract: %v", err)
+	}
+	if len(out) != 0 {
+		t.Fatalf("multi-turn legacy evidence_refs must include a locating quote, got %+v", out)
+	}
+}
+
+func TestLLMExtractor_DropsSourceIDWhenQuoteOnlyExistsInContext(t *testing.T) {
+	client := &fakeLLM{
+		Responses: []string{`{"facts":[{
+			"text":"Jon lost his job as a banker on 2023-01-19.",
+			"kind":"event",
+			"subject":"Jon",
+			"entities":["Jon","banker"],
+			"source_ids":["D1:4"],
+			"quote":"Lost my job as a banker yesterday."
+		}]}`},
+	}
+	ex := NewLLMExtractor(client)
+	out, err := ex.Extract(context.Background(), port.IngestInput{
+		Scope: domain.Scope{RuntimeID: "rt"},
+		RecentMessages: []domain.Message{{
+			Role:    "user",
+			Speaker: "Jon",
+			Text:    "Lost my job as a banker yesterday, so I'm gonna take a shot at starting my own business.",
+		}},
+		ExistingFactsAnchor: []domain.TemporalFact{{
+			Content: "On 2023-01-19, Jon lost his job as a banker.",
+		}},
+		Turns: []port.TurnContext{
+			{ID: "D1:3", Role: "assistant", Speaker: "Gina", Text: "Sorry about your job Jon, but starting your own business sounds awesome!"},
+			{ID: "D1:4", Role: "user", Speaker: "Jon", Text: "Sorry to hear that! I'm starting a dance studio because I'm passionate about dancing."},
+		},
+	})
+	if err != nil {
+		t.Fatalf("extract: %v", err)
+	}
+	if len(out) != 0 {
+		t.Fatalf("quote that only appears in extractable=false context should be dropped, got %+v", out)
+	}
+}
+
+func TestLLMExtractor_AcceptsQuoteWithSourceSpanPunctuationDrift(t *testing.T) {
+	client := &fakeLLM{
+		Responses: []string{`{"facts":[{
+			"text":"Jon lost his job as a banker on 2023-01-19.",
+			"kind":"event",
+			"subject":"Jon",
+			"entities":["Jon","banker"],
+			"source_ids":["D1:2"],
+			"quote":"Lost my job as a banker yesterday."
+		}]}`},
+	}
+	ex := NewLLMExtractor(client)
+	out, err := ex.Extract(context.Background(), port.IngestInput{
+		Scope: domain.Scope{RuntimeID: "rt"},
+		Turns: []port.TurnContext{
+			{ID: "D1:1", Role: "assistant", Speaker: "Gina", Text: "Hey Jon! Anything new?"},
+			{ID: "D1:2", Role: "user", Speaker: "Jon", Text: "Hey Gina! Lost my job as a banker yesterday, so I'm gonna take a shot at starting my own business."},
+		},
+	})
+	if err != nil {
+		t.Fatalf("extract: %v", err)
+	}
+	if len(out) != 1 {
+		t.Fatalf("quote with only terminal punctuation drift should be accepted, got %+v", out)
+	}
+	if got := out[0].EvidenceRefs[0].Text; got != "Lost my job as a banker yesterday" {
+		t.Fatalf("evidence quote should be canonical source span, got %q", got)
+	}
+}
+
+func TestLLMExtractor_DoesNotSemanticGuardAnchorFactWhenQuoteIsValid(t *testing.T) {
+	client := &fakeLLM{
+		Responses: []string{`{"facts":[{
+			"text":"Jon lost his job as a banker on 2023-01-19.",
+			"kind":"event",
+			"subject":"Jon",
+			"entities":["Jon","banker"],
+			"source_ids":["D1:4"],
+			"quote":"I'm starting a dance studio because I'm passionate about dancing."
+		}]}`},
+	}
+	ex := NewLLMExtractor(client)
+	out, err := ex.Extract(context.Background(), port.IngestInput{
+		Scope: domain.Scope{RuntimeID: "rt"},
+		ExistingFactsAnchor: []domain.TemporalFact{{
+			Content: "On 2023-01-19, Jon lost his job as a banker.",
+		}},
+		Turns: []port.TurnContext{
+			{ID: "D1:3", Role: "assistant", Speaker: "Gina", Text: "Sorry about your job Jon, but starting your own business sounds awesome!"},
+			{ID: "D1:4", Role: "user", Speaker: "Jon", Text: "Sorry to hear that! I'm starting a dance studio because I'm passionate about dancing."},
+		},
+	})
+	if err != nil {
+		t.Fatalf("extract: %v", err)
+	}
+	if len(out) != 1 {
+		t.Fatalf("valid source id and quote should pass structural extraction, got %+v", out)
+	}
+}
+
+func TestLLMExtractor_AcceptsEntitySupportedByNonContiguousEvidenceTokens(t *testing.T) {
+	client := &fakeLLM{
+		Responses: []string{`{"facts":[{
+			"text":"Dave spoke with car owners and heard their stories.",
+			"kind":"event",
+			"subject":"Dave",
+			"entities":["Dave","car owners","stories"],
+			"source_ids":["D1:1"],
+			"quote":"I went to the classic car show and spoke with some of the owners about their stories."
+		}]}`},
+	}
+	ex := NewLLMExtractor(client)
+	out, err := ex.Extract(context.Background(), port.IngestInput{
+		Scope: domain.Scope{RuntimeID: "rt"},
+		Turns: []port.TurnContext{
+			{ID: "D1:1", Role: "user", Speaker: "Dave", Text: "I went to the classic car show and spoke with some of the owners about their stories."},
+			{ID: "D1:2", Role: "assistant", Speaker: "Calvin", Text: "That sounds great."},
+		},
+	})
+	if err != nil {
+		t.Fatalf("extract: %v", err)
+	}
+	if len(out) != 1 {
+		t.Fatalf("non-contiguous evidence tokens should support the entity, got %+v", out)
+	}
+}
+
+func TestLLMExtractor_DoesNotInferOrRejectImplicitSpeakerGroup(t *testing.T) {
+	client := &fakeLLM{
+		Responses: []string{`{"facts":[{
+			"text":"Evan and his family hiked the trails last week.",
+			"kind":"event",
+			"subject":"Evan",
+			"entities":["Evan","family"],
+			"source_ids":["D1:1"],
+			"quote":"We all hiked the trails last week."
+		}]}`},
+	}
+	ex := NewLLMExtractor(client)
+	out, err := ex.Extract(context.Background(), port.IngestInput{
+		Scope: domain.Scope{RuntimeID: "rt"},
+		Turns: []port.TurnContext{
+			{ID: "D1:1", Role: "user", Speaker: "Evan", Text: "We all hiked the trails last week."},
+			{ID: "D1:2", Role: "assistant", Speaker: "James", Text: "Nice."},
+		},
+	})
+	if err != nil {
+		t.Fatalf("extract: %v", err)
+	}
+	if len(out) != 1 {
+		t.Fatalf("implicit speaker group semantics should be left to the extractor contract, got %+v", out)
+	}
+}
+
+func TestLLMExtractor_DoesNotDropNamedEntityUnsupportedByEvidence(t *testing.T) {
 	client := &fakeLLM{
 		Responses: []string{`{"facts":[{
 			"text":"Eli visited Riverton yesterday.",
@@ -928,12 +1102,12 @@ func TestLLMExtractor_DropsNamedEntityUnsupportedByEvidence(t *testing.T) {
 	if err != nil {
 		t.Fatalf("extract: %v", err)
 	}
-	if len(out) != 0 {
-		t.Fatalf("named entity absent from evidence should drop fact, got %+v", out)
+	if len(out) != 1 {
+		t.Fatalf("valid evidence ref should pass structural extraction, got %+v", out)
 	}
 }
 
-func TestLLMExtractor_DropsUnsupportedContentAnchorsWhenFieldsEmpty(t *testing.T) {
+func TestLLMExtractor_DoesNotScanContentAnchorsWhenFieldsEmpty(t *testing.T) {
 	client := &fakeLLM{
 		Responses: []string{`{"facts":[{
 			"text":"Eli visited Riverton yesterday.",
@@ -957,12 +1131,12 @@ func TestLLMExtractor_DropsUnsupportedContentAnchorsWhenFieldsEmpty(t *testing.T
 	if err != nil {
 		t.Fatalf("extract: %v", err)
 	}
-	if len(out) != 0 {
-		t.Fatalf("unsupported title-case content anchors should drop fact, got %+v", out)
+	if len(out) != 1 {
+		t.Fatalf("content anchors should not be semantically scanned, got %+v", out)
 	}
 }
 
-func TestLLMExtractor_DropsNumericMismatchUnsupportedByEvidence(t *testing.T) {
+func TestLLMExtractor_DoesNotDropNumericMismatchWhenQuoteIsValid(t *testing.T) {
 	client := &fakeLLM{
 		Responses: []string{`{"facts":[{
 			"text":"Avery bought 3 books yesterday.",
@@ -986,8 +1160,8 @@ func TestLLMExtractor_DropsNumericMismatchUnsupportedByEvidence(t *testing.T) {
 	if err != nil {
 		t.Fatalf("extract: %v", err)
 	}
-	if len(out) != 0 {
-		t.Fatalf("numeric mismatch should drop fact, got %+v", out)
+	if len(out) != 1 {
+		t.Fatalf("numeric content should not be semantically compared in post-process, got %+v", out)
 	}
 }
 
@@ -1019,12 +1193,12 @@ func TestLLMExtractor_AllowsResolvedRelativeDateNotLiteralInEvidence(t *testing.
 	if len(out) != 1 {
 		t.Fatalf("resolved relative date should not be treated as unsupported numeric hallucination, got %+v", out)
 	}
-	if out[0].Predicate != "" || out[0].Object != "" {
-		t.Fatalf("relation should be cleared without predicate-token support, got %q/%q", out[0].Predicate, out[0].Object)
+	if out[0].Predicate != "attended" || out[0].Object != "woodworking meetup" {
+		t.Fatalf("relation fields should be normalized without semantic support checks, got %q/%q", out[0].Predicate, out[0].Object)
 	}
 }
 
-func TestLLMExtractor_RewritesFirstPersonContentWhenSubjectResolved(t *testing.T) {
+func TestLLMExtractor_DoesNotRewriteFirstPersonContentWhenSubjectResolved(t *testing.T) {
 	client := &fakeLLM{
 		Responses: []string{`{"facts":[{
 			"text":"I went to a woodworking meetup yesterday.",
@@ -1049,14 +1223,14 @@ func TestLLMExtractor_RewritesFirstPersonContentWhenSubjectResolved(t *testing.T
 		t.Fatalf("extract: %v", err)
 	}
 	if len(out) != 1 {
-		t.Fatalf("want rewritten fact, got %+v", out)
+		t.Fatalf("want structurally valid fact, got %+v", out)
 	}
-	if out[0].Content != "Mira went to a woodworking meetup yesterday." {
+	if out[0].Content != "I went to a woodworking meetup yesterday." {
 		t.Fatalf("content = %q", out[0].Content)
 	}
 }
 
-func TestLLMExtractor_RewritesLowercasePossessiveContentWhenSubjectResolved(t *testing.T) {
+func TestLLMExtractor_DoesNotRewriteLowercasePossessiveContentWhenSubjectResolved(t *testing.T) {
 	client := &fakeLLM{
 		Responses: []string{`{"facts":[{
 			"text":"my apartment lost power.",
@@ -1075,14 +1249,14 @@ func TestLLMExtractor_RewritesLowercasePossessiveContentWhenSubjectResolved(t *t
 		t.Fatalf("extract: %v", err)
 	}
 	if len(out) != 1 {
-		t.Fatalf("want rewritten fact, got %+v", out)
+		t.Fatalf("want structurally valid fact, got %+v", out)
 	}
-	if out[0].Content != "James's apartment lost power." {
+	if out[0].Content != "my apartment lost power." {
 		t.Fatalf("content = %q", out[0].Content)
 	}
 }
 
-func TestLLMExtractor_RewritesEmbeddedFirstPersonContentWhenSubjectResolved(t *testing.T) {
+func TestLLMExtractor_DoesNotRewriteEmbeddedFirstPersonContentWhenSubjectResolved(t *testing.T) {
 	client := &fakeLLM{
 		Responses: []string{`{"facts":[{
 			"text":"Woodworking helps me express my emotions.",
@@ -1101,14 +1275,14 @@ func TestLLMExtractor_RewritesEmbeddedFirstPersonContentWhenSubjectResolved(t *t
 		t.Fatalf("extract: %v", err)
 	}
 	if len(out) != 1 {
-		t.Fatalf("want rewritten fact, got %+v", out)
+		t.Fatalf("want structurally valid fact, got %+v", out)
 	}
-	if out[0].Content != "Woodworking helps Mira express Mira's emotions." {
+	if out[0].Content != "Woodworking helps me express my emotions." {
 		t.Fatalf("content = %q", out[0].Content)
 	}
 }
 
-func TestLLMExtractor_DropsUnresolvedEmbeddedPluralContent(t *testing.T) {
+func TestLLMExtractor_DoesNotRewriteOrDropEmbeddedPluralContent(t *testing.T) {
 	client := &fakeLLM{
 		Responses: []string{`{"facts":[{
 			"text":"Taking care of ourselves is important.",
@@ -1126,12 +1300,12 @@ func TestLLMExtractor_DropsUnresolvedEmbeddedPluralContent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("extract: %v", err)
 	}
-	if len(out) != 0 {
-		t.Fatalf("plural first-person residue should drop, got %+v", out)
+	if len(out) != 1 {
+		t.Fatalf("plural first-person residue should be left to extractor contract, got %+v", out)
 	}
 }
 
-func TestLLMExtractor_DropsNonSelfContainedPluralContent(t *testing.T) {
+func TestLLMExtractor_DoesNotDropNonSelfContainedPluralContent(t *testing.T) {
 	client := &fakeLLM{
 		Responses: []string{`{"facts":[{
 			"text":"We went to a woodworking meetup yesterday.",
@@ -1149,8 +1323,8 @@ func TestLLMExtractor_DropsNonSelfContainedPluralContent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("extract: %v", err)
 	}
-	if len(out) != 0 {
-		t.Fatalf("non-self-contained plural content should drop, got %+v", out)
+	if len(out) != 1 {
+		t.Fatalf("non-self-contained content should not be semantically rejected, got %+v", out)
 	}
 }
 
@@ -1407,7 +1581,10 @@ func TestLLMExtractorSystemPrompt_GuardsAntiAbstraction(t *testing.T) {
 		"Work source-turn by source-turn",
 		"Do not stop after the first event in a turn",
 		`Treat "note" as a first-class memory kind`,
-		"Be exhaustive about concrete, retrievable details",
+		"use it sparingly",
+		"Be exhaustive about concrete, retrievable details that form",
+		"when in doubt about praise, filler, or a descriptive aside",
+		"prefer at most one note for one explanatory theme",
 		"Split answer-bearing entity lists into separate facts",
 		"PersonA enjoys birdwatching",
 		"Do not\n  collapse lists into",
@@ -1449,7 +1626,7 @@ func TestLLMExtractorSystemPrompt_GuardsAntiAbstraction(t *testing.T) {
 		"Do not create cross-turn summary facts",
 		"Use multiple source_ids only when one fact truly\n  requires both turns together",
 		"Never cite ids from <recent_context>",
-		"Prefer quoting the exact words that make the fact true",
+		"Prefer quoting the exact words\n  that make the fact true",
 		"names\n  of groups, clubs, organisations",
 		"reasons, outcomes,\n  lessons learned",
 		`emit it as kind "note" instead of dropping it`,
@@ -1465,6 +1642,44 @@ func TestLLMExtractorSystemPrompt_GuardsAntiAbstraction(t *testing.T) {
 	for _, s := range mustContain {
 		if !strings.Contains(LLMExtractorSystemPrompt, s) {
 			t.Errorf("LLMExtractorSystemPrompt missing anti-abstraction guard: %q", s)
+		}
+	}
+}
+
+func TestLLMExtractorSystemPrompt_GuardsSourceOnlyAssistantAndNotePolicy(t *testing.T) {
+	mustContain := []string{
+		`<source_turns
+extractable="true" evidence_scope="only"> is the ONLY extractable source`,
+		`extractable="true" evidence_scope="only"`,
+		`<recent_context extractable="false">`,
+		`<existing_memory_anchors
+extractable="false">`,
+		"they may resolve\npronouns, short names, and relative dates",
+		"Never copy, restate, revive, or complete a fact",
+		"unless the current <source_turns> text\nre-asserts that fact",
+		"Source-only grounding is stricter than source_id validation",
+		"the fact text\n  itself must be directly supported by the quoted words",
+		"even if the current turn\n  acknowledges, praises, asks about, or vaguely refers",
+		"Copy it EXACTLY from the source turn text",
+		"including capitalization,\n  punctuation, contractions, and spacing",
+		"Never paraphrase, normalize,\n  repair punctuation, or add/remove words",
+		"Assistant utterance policy",
+		"A pure question, greeting, thanks, congratulations, praise,\n  encouragement, empathy, or follow-up prompt normally yields",
+		`Do not convert a question into a fact such as "PersonA is interested in`,
+		"Do not re-extract a user's previous detail just because the assistant\n  responds to it",
+		"only when that same turn\n  introduces a concrete fact of its own",
+		"Do not use \"note\" as a fallback for weak social dialogue",
+		"Do not use note when event, state,\n                     preference, plan, relation, or procedure fits",
+		"Do\n                     not use note for praise, filler, generic social\n                     reactions, ordinary politeness, or follow-up\n                     questions",
+		"emit no fact rather than a\n                     vague note",
+		"return no facts for pure greetings, acknowledgements, thanks,\n  congratulations, vague encouragement, praise, follow-up questions",
+		"when a source\n  turn only reacts to a prior memory",
+		`only concrete detail
+  appears in extractable="false" context`,
+	}
+	for _, s := range mustContain {
+		if !strings.Contains(LLMExtractorSystemPrompt, s) {
+			t.Errorf("LLMExtractorSystemPrompt missing source-only/assistant/note guard: %q", s)
 		}
 	}
 }

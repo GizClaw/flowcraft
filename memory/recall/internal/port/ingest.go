@@ -46,6 +46,7 @@ type IngestResult struct {
 	Dropped              []diagnostic.DroppedFact
 	StructurizerCoverage diagnostic.StructurizerCoverage
 	ExtractorTokenUsage  diagnostic.ExtractorTokenUsage
+	ExtractorGuard       diagnostic.ExtractorGuard
 }
 
 // TurnContext re-exports the canonical domain.TurnContext for

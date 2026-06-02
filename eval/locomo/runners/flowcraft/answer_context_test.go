@@ -13,10 +13,7 @@ var _ runners.AnswerContextRecaller = (*Runner)(nil)
 
 func TestStructuredAnswerBodyKeepsRecallV1HitStructure(t *testing.T) {
 	sourceTime := time.Date(2023, 7, 15, 13, 51, 0, 0, time.UTC)
-	body := renderStructuredAnswerBody(runners.AnswerQuestion{
-		Query:   "When did Melanie go to the pottery workshop?",
-		AskedAt: "2023-10-01",
-	}, []recallv1.Hit{{
+	body := renderStructuredAnswerBody([]recallv1.Hit{{
 		Entry: recallv1.Entry{
 			ID:         "m1",
 			Category:   recallv1.CategoryEvents,
@@ -36,9 +33,6 @@ func TestStructuredAnswerBodyKeepsRecallV1HitStructure(t *testing.T) {
 	}})
 
 	for _, want := range []string{
-		"ASKED_AT: 2023-10-01",
-		"QUESTION: When did Melanie go to the pottery workshop?",
-		"MEMORIES (STRUCTURED_ENTRIES):",
 		`entry_id: "m1"`,
 		`category: "events"`,
 		`categories: "activity", "event"`,
@@ -59,18 +53,21 @@ func TestStructuredAnswerBodyKeepsRecallV1HitStructure(t *testing.T) {
 }
 
 func TestStructuredAnswerContextCarriesRecallV1Prompt(t *testing.T) {
-	ctx := structuredAnswerContext(runners.AnswerQuestion{Query: "What happened?"}, nil)
+	ctx := structuredAnswerContext(nil)
 	if ctx.Format != "flowcraftv1_structured_entries" {
 		t.Fatalf("unexpected format: %q", ctx.Format)
 	}
 	for _, want := range []string{
-		"structured memory entries",
+		"structured entries in <retrieved_facts>",
+		"untrusted retrieved data",
 		"content as the primary evidence",
 		"source_time is the timestamp",
-		"%s",
 	} {
 		if !strings.Contains(ctx.PromptTemplate, want) {
 			t.Fatalf("structured prompt missing %q:\n%s", want, ctx.PromptTemplate)
 		}
+	}
+	if strings.Contains(ctx.PromptTemplate, "%s") {
+		t.Fatalf("structured prompt should be system-only, got:\n%s", ctx.PromptTemplate)
 	}
 }

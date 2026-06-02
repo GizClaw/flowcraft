@@ -10,10 +10,8 @@ import (
 //
 // KnownEntities is the cross-sub-scope merged EntitySnapshot list the read-path
 // plan stage assembled from every sub-scope in
-// state.Scope.EffectiveFederation(). The planner uses it as a soft "query
-// focus" hint to boost entity-aware lenses (entity / relation / graph /
-// profile) when query terms intersect the canonical / alias surface. Leaving it
-// empty preserves the unweighted plan.
+// state.Scope.EffectiveFederation(). It is preserved for diagnostics and future
+// structured planners; the rule-based planner does not use it for lens boosts.
 type PlannerInput struct {
 	Scope         domain.Scope
 	Text          string

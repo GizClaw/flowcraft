@@ -203,6 +203,40 @@ func fromRecallArtifacts(hits []recall.Hit) []runners.RecallArtifact {
 	return out
 }
 
+func renderSourceTurnText(text string, images []runners.RawImage) string {
+	text = strings.TrimSpace(text)
+	if len(images) == 0 {
+		return text
+	}
+	var b strings.Builder
+	b.WriteString(text)
+	for _, image := range images {
+		url := strings.TrimSpace(image.URL)
+		query := strings.TrimSpace(image.Query)
+		caption := strings.TrimSpace(image.Caption)
+		if url == "" && query == "" && caption == "" {
+			continue
+		}
+		if b.Len() > 0 {
+			b.WriteString("\n")
+		}
+		b.WriteString("ATTACHED_IMAGE_METADATA (visual evidence for this turn; not speaker-authored prose):")
+		if query != "" {
+			b.WriteString("\n- query: ")
+			b.WriteString(query)
+		}
+		if caption != "" {
+			b.WriteString("\n- caption: ")
+			b.WriteString(caption)
+		}
+		if url != "" {
+			b.WriteString("\n- url: ")
+			b.WriteString(url)
+		}
+	}
+	return strings.TrimSpace(b.String())
+}
+
 func fromRecallStageAudit(a diagnostics.RecallStageAudit) runners.RecallStageAudit {
 	out := runners.RecallStageAudit{Stages: make([]runners.RecallStageSnapshot, 0, len(a.Stages))}
 	for _, st := range a.Stages {

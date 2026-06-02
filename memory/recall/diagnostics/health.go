@@ -14,6 +14,7 @@ type PipelineHealth struct {
 	InputCoverage        InputCoverage
 	SavesWithObservedAt  int
 	StructurizerCoverage diagnostic.StructurizerCoverage
+	ExtractorGuard       diagnostic.ExtractorGuard
 	CompiledFacts        FactQuality
 	AppendedFacts        FactQuality
 	SaveDrops            map[FailureStage]int
@@ -59,6 +60,7 @@ func (p *PipelineHealth) RecordSave(diag SaveDiagnostics) {
 		p.SavesWithObservedAt++
 	}
 	mergeStructurizerCoverage(&p.StructurizerCoverage, diag.StructurizerCoverage)
+	mergeExtractorGuard(&p.ExtractorGuard, diag.ExtractorGuard)
 	mergeFactQuality(&p.CompiledFacts, diag.Compiled)
 	mergeFactQuality(&p.AppendedFacts, diag.Appended)
 	for stage, n := range diag.DropsByStage {
@@ -101,6 +103,21 @@ func (p *PipelineHealth) RecordRecall(diag RecallDiagnostics) {
 	}
 	p.MultiSourceWinners += diag.HitProvenance.MultiSourceWinners
 	p.NoProvenanceHits += diag.HitProvenance.NoProvenance
+}
+
+func mergeExtractorGuard(dst *diagnostic.ExtractorGuard, src diagnostic.ExtractorGuard) {
+	dst.Candidates += src.Candidates
+	dst.Accepted += src.Accepted
+	dst.Rejected += src.Rejected
+	if len(src.ByReason) == 0 {
+		return
+	}
+	if dst.ByReason == nil {
+		dst.ByReason = map[string]int{}
+	}
+	for reason, count := range src.ByReason {
+		dst.ByReason[reason] += count
+	}
 }
 
 func mergeStructurizerCoverage(dst *diagnostic.StructurizerCoverage, src diagnostic.StructurizerCoverage) {

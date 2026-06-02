@@ -9,6 +9,7 @@ package runners
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	"github.com/GizClaw/flowcraft/sdk/llm"
@@ -53,8 +54,11 @@ type AnswerQuestion struct {
 // native recall results. Backends with structured memory should prefer this
 // over flattening their hits into the runner-neutral Hit.Content field.
 type AnswerContext struct {
-	Body           string
-	Format         string
+	Body   string
+	Format string
+	// PromptTemplate is the backend-specific system prompt for answering
+	// from Body. It is kept for API compatibility with older eval code, but
+	// is no longer a fmt.Sprintf template and must not contain retrieved data.
 	PromptTemplate string
 }
 
@@ -123,8 +127,76 @@ type AnswerContextStageAuditor interface {
 type RawTurn struct {
 	Role       string
 	Content    string
+	Speaker    string
+	Timestamp  string
 	EvidenceID string
 	SessionID  string
+	Images     []RawImage
+}
+
+// RawImage carries structured visual metadata attached to a RawTurn. It is
+// intentionally separate from Content so runner adapters can decide how to
+// expose visual evidence to their own extractor contracts.
+type RawImage struct {
+	URL     string
+	Query   string
+	Caption string
+}
+
+// RenderRawTurnContent renders a structured RawTurn for legacy/raw ingest paths
+// that only accept plain text. Extractor-backed runners should prefer the
+// structured fields directly.
+func RenderRawTurnContent(t RawTurn) string {
+	body := strings.TrimSpace(t.Content)
+	speaker := strings.TrimSpace(t.Speaker)
+	timestamp := strings.TrimSpace(t.Timestamp)
+	if speaker == "" && timestamp == "" && len(t.Images) == 0 {
+		return body
+	}
+	var b strings.Builder
+	if timestamp != "" {
+		b.WriteString("[")
+		b.WriteString(timestamp)
+		b.WriteString("]")
+	}
+	if speaker != "" {
+		if b.Len() > 0 {
+			b.WriteString(" ")
+		}
+		b.WriteString(speaker)
+		b.WriteString(":")
+	}
+	if body != "" {
+		if b.Len() > 0 {
+			b.WriteString(" ")
+		}
+		b.WriteString(body)
+	}
+	for _, image := range t.Images {
+		url := strings.TrimSpace(image.URL)
+		query := strings.TrimSpace(image.Query)
+		caption := strings.TrimSpace(image.Caption)
+		if url == "" && query == "" && caption == "" {
+			continue
+		}
+		if b.Len() > 0 {
+			b.WriteString("\n")
+		}
+		b.WriteString("ATTACHED_IMAGE_METADATA (visual evidence for this turn; not speaker-authored prose):")
+		if query != "" {
+			b.WriteString("\n- query: ")
+			b.WriteString(query)
+		}
+		if caption != "" {
+			b.WriteString("\n- caption: ")
+			b.WriteString(caption)
+		}
+		if url != "" {
+			b.WriteString("\n- url: ")
+			b.WriteString(url)
+		}
+	}
+	return strings.TrimSpace(b.String())
 }
 
 // RawIngestSaver is an optional Runner extension that ingests verbatim turns

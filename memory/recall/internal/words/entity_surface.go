@@ -18,6 +18,10 @@ func NormalizeIntentEntityMention(s string) string {
 	if len(s) < 2 {
 		return ""
 	}
+	s = strings.TrimSuffix(strings.TrimSuffix(s, "'s"), "’s")
+	if len(s) < 2 {
+		return ""
+	}
 	return strings.ToLower(s)
 }
 

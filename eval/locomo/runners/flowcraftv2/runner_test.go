@@ -65,16 +65,15 @@ func TestBuildTurnContexts_FiltersAssistantAndPreservesEvidence(t *testing.T) {
 	}
 }
 
-// TestBuildTurnContexts_LiftsTimestampAndSpeaker pins the typed-channel
-// contract: LoCoMo bakes "[<time>] <speaker>: <body>" into the turn
-// content, and the runner must strip that prefix into typed Time /
-// Speaker fields so the LLM no longer has to grep timestamps out of
-// prose. The body that downstream consumers see must contain ONLY
-// the spoken text.
-func TestBuildTurnContexts_LiftsTimestampAndSpeaker(t *testing.T) {
+// TestBuildTurnContexts_UsesStructuredTimestampAndSpeaker pins the typed-channel
+// contract: LoCoMo conversion carries speaker/time separately from Content, so
+// the LLM sees clean speaker-authored text plus typed metadata.
+func TestBuildTurnContexts_UsesStructuredTimestampAndSpeaker(t *testing.T) {
 	ctxs, observedAt := buildTurnContexts([]runners.RawTurn{{
 		Role:       "user",
-		Content:    "[11:30 pm on 21 January, 2023] Melanie: I signed up yesterday.",
+		Content:    "I signed up yesterday.",
+		Speaker:    "Melanie",
+		Timestamp:  "11:30 pm on 21 January, 2023",
 		EvidenceID: "D1:7",
 		SessionID:  "session_3",
 	}}, false)
@@ -93,6 +92,77 @@ func TestBuildTurnContexts_LiftsTimestampAndSpeaker(t *testing.T) {
 	}
 	if observedAt != got.Time {
 		t.Errorf("observedAt = %v, want %v", observedAt, got.Time)
+	}
+}
+
+func TestBuildTurnContexts_LegacyPrefixFallback(t *testing.T) {
+	ctxs, observedAt := buildTurnContexts([]runners.RawTurn{{
+		Role:       "user",
+		Content:    "[11:30 pm on 21 January, 2023] Melanie: I signed up yesterday.",
+		EvidenceID: "D1:7",
+		SessionID:  "session_3",
+	}}, false)
+	if len(ctxs) != 1 {
+		t.Fatalf("expected 1 typed turn, got %d", len(ctxs))
+	}
+	got := ctxs[0]
+	if got.Speaker != "Melanie" {
+		t.Errorf("speaker = %q, want Melanie", got.Speaker)
+	}
+	if got.Text != "I signed up yesterday." {
+		t.Errorf("legacy prefix should be stripped, got %q", got.Text)
+	}
+	if got.Time.IsZero() || observedAt != got.Time {
+		t.Errorf("typed Time/observedAt should be parsed from legacy prefix, got time=%v observed=%v", got.Time, observedAt)
+	}
+}
+
+func TestBuildTurnContexts_RendersStructuredImagesAsVisualEvidence(t *testing.T) {
+	ctxs, _ := buildTurnContexts([]runners.RawTurn{{
+		Role:       "user",
+		Content:    "Take a look at my new camera.",
+		Speaker:    "Dave",
+		Timestamp:  "10:54 am on 17 November, 2023",
+		EvidenceID: "D30:5",
+		SessionID:  "session_30",
+		Images: []runners.RawImage{{
+			URL:     "https://example/camera.jpg",
+			Query:   "vintage camera",
+			Caption: "a photo of a camera sitting on a table next to a plant",
+		}},
+	}}, false)
+	if len(ctxs) != 1 {
+		t.Fatalf("expected 1 typed turn, got %d", len(ctxs))
+	}
+	for _, want := range []string{
+		"Take a look at my new camera.",
+		"ATTACHED_IMAGE_METADATA (visual evidence for this turn; not speaker-authored prose):",
+		"query: vintage camera",
+		"caption: a photo of a camera sitting on a table next to a plant",
+		"url: https://example/camera.jpg",
+	} {
+		if !strings.Contains(ctxs[0].Text, want) {
+			t.Fatalf("turn text missing %q:\n%s", want, ctxs[0].Text)
+		}
+	}
+}
+
+func TestBuildTurnContexts_KeepsImageOnlyTurn(t *testing.T) {
+	ctxs, _ := buildTurnContexts([]runners.RawTurn{{
+		Role:      "user",
+		Speaker:   "Dave",
+		Timestamp: "10:54 am on 17 November, 2023",
+		Images: []runners.RawImage{{
+			Query:   "waterfall rocks",
+			Caption: "a photo of rocks and a waterfall",
+		}},
+	}}, false)
+	if len(ctxs) != 1 {
+		t.Fatalf("expected image-only turn to be kept, got %d", len(ctxs))
+	}
+	if !strings.Contains(ctxs[0].Text, "ATTACHED_IMAGE_METADATA") ||
+		!strings.Contains(ctxs[0].Text, "caption: a photo of rocks and a waterfall") {
+		t.Fatalf("image-only turn did not render metadata:\n%s", ctxs[0].Text)
 	}
 }
 
@@ -186,7 +256,7 @@ func TestSaveSourceTurnsPersistsExtractorEvidenceRefs(t *testing.T) {
 			break
 		}
 	}
-	if !containsString(hit.EvidenceIDs, "D1:3") {
+	if !containsStringValue(hit.EvidenceIDs, "D1:3") {
 		t.Fatalf("evidence ids not preserved in hit: %+v", hit)
 	}
 	if !strings.Contains(hit.Content, "Alice likes Paris.") {
@@ -355,10 +425,7 @@ func TestGroundedHitContentRendersSourceTimeFallbackAsObservedAt(t *testing.T) {
 func TestStructuredAnswerBodyKeepsRecallHitStructure(t *testing.T) {
 	eventTime := time.Date(2023, 7, 14, 0, 0, 0, 0, time.UTC)
 	observedAt := time.Date(2023, 7, 15, 13, 51, 0, 0, time.UTC)
-	body := renderStructuredAnswerBody(runners.AnswerQuestion{
-		Query:   "When did Melanie go to the pottery workshop?",
-		AskedAt: "2023-10-01",
-	}, []recall.Hit{{
+	body := renderStructuredAnswerBody([]recall.Hit{{
 		Fact: recall.TemporalFact{
 			ID:         "f1",
 			Kind:       recall.FactEvent,
@@ -384,11 +451,6 @@ func TestStructuredAnswerBodyKeepsRecallHitStructure(t *testing.T) {
 	}})
 
 	for _, want := range []string{
-		"ASKED_AT: 2023-10-01",
-		"QUESTION: When did Melanie go to the pottery workshop?",
-		"EVIDENCE_PACKAGE:",
-		`types: "direct", "temporal_anchor"`,
-		"MEMORIES (STRUCTURED_FACTS):",
 		`fact_id: "f1"`,
 		`kind: "event"`,
 		`content: "Last Friday, Melanie took her kids to a pottery workshop."`,
@@ -406,18 +468,20 @@ func TestStructuredAnswerBodyKeepsRecallHitStructure(t *testing.T) {
 	if strings.Contains(body, "| evidence:") {
 		t.Fatalf("structured answer body should not use flattened evidence rendering:\n%s", body)
 	}
+	if strings.Contains(body, "EVIDENCE_PACKAGE") {
+		t.Fatalf("plain TopK answer body should not render an evidence package:\n%s", body)
+	}
 }
 
 func TestStructuredAnswerBodyDoesNotExposeNeighborCandidateSourceAsEvidencePackage(t *testing.T) {
-	body := renderStructuredAnswerBody(runners.AnswerQuestion{
-		Query: "Where did Alice buy the necklace that she wore?",
-	}, []recall.Hit{{
+	body := renderStructuredAnswerBody([]recall.Hit{{
 		Fact:    recall.TemporalFact{ID: "f1", Kind: recall.FactState, Content: "Alice bought the necklace in Paris."},
 		Sources: []string{"retrieval", "neighbor_candidate"},
 	}})
 	for _, want := range []string{
-		"EVIDENCE_PACKAGE:",
-		`"bridge_chain"`,
+		`fact_id: "f1"`,
+		`content: "Alice bought the necklace in Paris."`,
+		`sources: "retrieval"`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("structured answer body missing %q:\n%s", want, body)
@@ -431,32 +495,73 @@ func TestStructuredAnswerBodyDoesNotExposeNeighborCandidateSourceAsEvidencePacka
 	}
 }
 
-func TestStructuredAnswerBodyPackagesSupportingEvidenceRanks(t *testing.T) {
-	body := renderStructuredAnswerBody(runners.AnswerQuestion{
-		Query: "Where did Alice buy the necklace that she wore?",
-	}, []recall.Hit{
-		{Fact: recall.TemporalFact{ID: "wore", Kind: recall.FactState, Content: "Alice wore the necklace."}, Evidence: []recall.EvidenceRef{{ID: "D1:1", Text: "Alice wore the necklace."}}},
-		{Fact: recall.TemporalFact{ID: "dog", Kind: recall.FactState, Content: "Alice walked her dog."}, Evidence: []recall.EvidenceRef{{ID: "D2:1", Text: "Alice walked her dog."}}},
-		{Fact: recall.TemporalFact{ID: "tea", Kind: recall.FactState, Content: "Alice drank tea."}, Evidence: []recall.EvidenceRef{{ID: "D3:1", Text: "Alice drank tea."}}},
-		{Fact: recall.TemporalFact{ID: "music", Kind: recall.FactState, Content: "Alice likes music."}, Evidence: []recall.EvidenceRef{{ID: "D4:1", Text: "Alice likes music."}}},
-		{Fact: recall.TemporalFact{ID: "book", Kind: recall.FactState, Content: "Alice read a book."}, Evidence: []recall.EvidenceRef{{ID: "D5:1", Text: "Alice read a book."}}},
-		{Fact: recall.TemporalFact{ID: "bought", Kind: recall.FactState, Content: "Alice bought the necklace in Paris."}, Evidence: []recall.EvidenceRef{{ID: "D1:2", Text: "Alice bought the necklace in Paris."}}},
-	})
+func TestStructuredAnswerBodyRendersAllTopKMemories(t *testing.T) {
+	hits := make([]recall.Hit, 0, 14)
+	for i := 0; i < 14; i++ {
+		hits = append(hits, recall.Hit{
+			Fact: recall.TemporalFact{
+				ID:      fmt.Sprintf("f%d", i+1),
+				Kind:    recall.FactState,
+				Content: fmt.Sprintf("Alice keeps item %d.", i+1),
+				Subject: "Alice",
+			},
+			Evidence: []recall.EvidenceRef{{ID: fmt.Sprintf("D%d:1", i+1), Text: fmt.Sprintf("Alice keeps item %d.", i+1)}},
+		})
+	}
+	body := renderStructuredAnswerBody(hits)
+
 	for _, want := range []string{
-		`types: "direct", "bridge_chain"`,
-		`primary_ranks: "#1", "#2", "#3", "#4", "#5"`,
-		`supporting_ranks: "#6"`,
+		`- [#1]`,
+		`- [#14]`,
+		`fact_id: "f14"`,
+		`quote: "Alice keeps item 14."`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("structured answer body missing %q:\n%s", want, body)
 		}
 	}
+	if strings.Contains(body, "additional recalled memories omitted") {
+		t.Fatalf("plain TopK renderer should not omit recalled memories:\n%s", body)
+	}
+}
+
+func TestStructuredAnswerBodyDoesNotRenderCoverageGroups(t *testing.T) {
+	body := renderStructuredAnswerBody([]recall.Hit{
+		{
+			Fact: recall.TemporalFact{
+				ID:        "cat",
+				Kind:      recall.FactState,
+				Content:   "Jordan has a cat named Bailey.",
+				Subject:   "Jordan",
+				Predicate: "has_pet",
+				Object:    "Bailey",
+			},
+			Evidence: []recall.EvidenceRef{{ID: "D1:1", Text: "I have a cat named Bailey."}},
+		},
+		{
+			Fact: recall.TemporalFact{
+				ID:        "dog",
+				Kind:      recall.FactState,
+				Content:   "Jordan has a dog named Oliver.",
+				Subject:   "Jordan",
+				Predicate: "has_pet",
+				Object:    "Oliver",
+			},
+			Evidence: []recall.EvidenceRef{{ID: "D2:1", Text: "Oliver is my dog."}},
+		},
+	})
+	for _, want := range []string{`fact_id: "cat"`, `fact_id: "dog"`, `object: "Bailey"`, `object: "Oliver"`} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("structured answer body missing %q:\n%s", want, body)
+		}
+	}
+	if strings.Contains(body, "coverage_groups:") || strings.Contains(body, "ranked_memories:") {
+		t.Fatalf("plain TopK renderer should not prepend coverage groups:\n%s", body)
+	}
 }
 
 func TestStructuredAnswerBodyPackagesDirectAnswerCues(t *testing.T) {
-	body := renderStructuredAnswerBody(runners.AnswerQuestion{
-		Query: "What workshop did Caroline attend recently?",
-	}, []recall.Hit{{
+	body := renderStructuredAnswerBody([]recall.Hit{{
 		Fact: recall.TemporalFact{
 			ID:        "f1",
 			Kind:      recall.FactEvent,
@@ -471,10 +576,7 @@ func TestStructuredAnswerBodyPackagesDirectAnswerCues(t *testing.T) {
 		}},
 	}})
 	for _, want := range []string{
-		"EVIDENCE_PACKAGE:",
-		`types: "direct"`,
-		"answer_cues:",
-		`rank: "#1"`,
+		`- [#1]`,
 		`content: "Caroline attended an LGBTQ+ counseling workshop."`,
 		`object: "LGBTQ+ counseling workshop"`,
 		`quote: "Last Friday, I went to an LGBTQ+ counseling workshop."`,
@@ -486,12 +588,13 @@ func TestStructuredAnswerBodyPackagesDirectAnswerCues(t *testing.T) {
 	if strings.Contains(body, "candidate_answers:") || strings.Contains(body, `type: "direct_answer"`) {
 		t.Fatalf("direct questions should not promote candidate_answers:\n%s", body)
 	}
+	if strings.Contains(body, "answer_cues:") {
+		t.Fatalf("plain TopK renderer should not emit answer_cues:\n%s", body)
+	}
 }
 
 func TestStructuredAnswerBodyKeepsSurfaceSpansInCuesOnly(t *testing.T) {
-	body := renderStructuredAnswerBody(runners.AnswerQuestion{
-		Query: "What was Melanie's favorite book from childhood?",
-	}, []recall.Hit{{
+	body := renderStructuredAnswerBody([]recall.Hit{{
 		Fact: recall.TemporalFact{
 			ID:      "f1",
 			Kind:    recall.FactState,
@@ -523,9 +626,7 @@ func TestStructuredAnswerBodyKeepsSurfaceSpansInCuesOnly(t *testing.T) {
 }
 
 func TestStructuredAnswerBodyDoesNotPromoteWhereCandidateAnswers(t *testing.T) {
-	body := renderStructuredAnswerBody(runners.AnswerQuestion{
-		Query: "Where did Alice buy the necklace?",
-	}, []recall.Hit{{
+	body := renderStructuredAnswerBody([]recall.Hit{{
 		Fact: recall.TemporalFact{
 			ID:       "f1",
 			Kind:     recall.FactEvent,
@@ -553,12 +654,10 @@ func TestStructuredAnswerBodyDoesNotPromoteWhereCandidateAnswers(t *testing.T) {
 	}
 }
 
-func TestStructuredAnswerBodyAddsRelativeTimeAnswerCue(t *testing.T) {
+func TestStructuredAnswerBodyRendersStructuredEventTimeOnly(t *testing.T) {
 	sourceTime := time.Date(2023, 7, 15, 13, 51, 0, 0, time.UTC)
 	eventTime := time.Date(2023, 7, 15, 0, 0, 0, 0, time.UTC)
-	body := renderStructuredAnswerBody(runners.AnswerQuestion{
-		Query: "When did Caroline go to the adoption meeting?",
-	}, []recall.Hit{{
+	body := renderStructuredAnswerBody([]recall.Hit{{
 		Fact: recall.TemporalFact{
 			ID:         "f1",
 			Kind:       recall.FactEvent,
@@ -580,27 +679,30 @@ func TestStructuredAnswerBodyAddsRelativeTimeAnswerCue(t *testing.T) {
 		}},
 	}})
 	for _, want := range []string{
-		`types: "direct", "temporal_anchor"`,
 		`event_time: "2023-07-15"`,
 		`event_time_text: "2023-07-15"`,
-		`relative_time_answer: "2023-07-14 (the Friday before 2023-07-15)"`,
-		`type: "temporal"`,
-		`value: "2023-07-14 (the Friday before 2023-07-15)"`,
-		`source: "relative_time"`,
 		`source_time: "2023-07-15 13:51"`,
+		`quote: "Last Friday I went to a council meeting for adoption."`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("structured answer body missing %q:\n%s", want, body)
 		}
 	}
+	for _, unwanted := range []string{
+		"EVIDENCE_PACKAGE",
+		"temporal_answer_candidates",
+		"relative_time_answer",
+	} {
+		if strings.Contains(body, unwanted) {
+			t.Fatalf("plain renderer should not emit %q:\n%s", unwanted, body)
+		}
+	}
 }
 
-func TestStructuredAnswerBodyAddsExactYesterdayCandidateAnswer(t *testing.T) {
+func TestStructuredAnswerBodyKeepsRelativeTextWithoutAnswerSideParsing(t *testing.T) {
 	sourceTime := time.Date(2023, 7, 15, 13, 51, 0, 0, time.UTC)
 	eventTime := time.Date(2023, 7, 15, 0, 0, 0, 0, time.UTC)
-	body := renderStructuredAnswerBody(runners.AnswerQuestion{
-		Query: "When did Alice sign up for the pottery class?",
-	}, []recall.Hit{{
+	body := renderStructuredAnswerBody([]recall.Hit{{
 		Fact: recall.TemporalFact{
 			ID:         "f1",
 			Kind:       recall.FactEvent,
@@ -622,23 +724,24 @@ func TestStructuredAnswerBodyAddsExactYesterdayCandidateAnswer(t *testing.T) {
 		}},
 	}})
 	for _, want := range []string{
-		`relative_time_answer: "2023-07-14 (the day before 2023-07-15)"`,
-		`value: "2023-07-14 (the day before 2023-07-15)"`,
-		`source: "relative_time"`,
+		`event_time: "2023-07-15"`,
+		`event_time_text: "2023-07-15"`,
+		`quote: "I signed up for the pottery class yesterday."`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("structured answer body missing %q:\n%s", want, body)
 		}
 	}
+	if strings.Contains(body, `day before`) || strings.Contains(body, `source: "relative_time"`) {
+		t.Fatalf("answer context should not parse relative time from prose:\n%s", body)
+	}
 }
 
-func TestStructuredAnswerBodyPrefersDirectTemporalCandidates(t *testing.T) {
+func TestStructuredAnswerBodyRendersAllTemporalFactsWithoutDirectPromotion(t *testing.T) {
 	sourceTime := time.Date(2023, 8, 25, 13, 51, 0, 0, time.UTC)
 	unrelatedTime := time.Date(2023, 7, 3, 0, 0, 0, 0, time.UTC)
 	directTime := time.Date(2023, 8, 24, 0, 0, 0, 0, time.UTC)
-	body := renderStructuredAnswerBody(runners.AnswerQuestion{
-		Query: "When did Melanie make a plate in pottery class?",
-	}, []recall.Hit{
+	body := renderStructuredAnswerBody([]recall.Hit{
 		{
 			Fact: recall.TemporalFact{
 				ID:        "unrelated",
@@ -674,105 +777,74 @@ func TestStructuredAnswerBodyPrefersDirectTemporalCandidates(t *testing.T) {
 	})
 
 	for _, want := range []string{
-		`query_terms: "melanie", "make", "plate", "pottery", "class"`,
-		`direct_ranks: "#2"`,
-		`value: "2023-08-24 (the day before 2023-08-25)"`,
-		`direct: "true"`,
+		`- [#1]`,
+		`content: "On 2023-07-03, Melanie made a bowl."`,
+		`event_time: "2023-07-03"`,
+		`- [#2]`,
+		`content: "Melanie made a plate in pottery class yesterday."`,
+		`event_time: "2023-08-24"`,
+		`event_time_text: "yesterday"`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("structured answer body missing %q:\n%s", want, body)
 		}
 	}
-	if strings.Contains(body, `value: "2023-07-03"`) {
-		t.Fatalf("non-direct temporal candidate should not be promoted:\n%s", body)
+	if strings.Contains(body, "direct_ranks") || strings.Contains(body, "temporal_answer_candidates") {
+		t.Fatalf("plain renderer should not promote temporal candidates:\n%s", body)
 	}
 }
 
-func TestStructuredAnswerBodyAddsListAndCountCandidateAnswers(t *testing.T) {
-	body := renderStructuredAnswerBody(runners.AnswerQuestion{
-		Query: "How many pets does Melanie have?",
-	}, []recall.Hit{
+func TestStructuredAnswerBodyRendersListFactsWithoutCountCandidate(t *testing.T) {
+	body := renderStructuredAnswerBody([]recall.Hit{
 		{Fact: recall.TemporalFact{ID: "f1", Kind: recall.FactState, Content: "Melanie has a cat named Bailey.", Subject: "Melanie", Predicate: "has_pet", Object: "Bailey"}, Evidence: []recall.EvidenceRef{{ID: "D1:1", Text: "Melanie has a cat named Bailey."}}},
 		{Fact: recall.TemporalFact{ID: "f2", Kind: recall.FactState, Content: "Melanie has a dog named Oliver.", Subject: "Melanie", Predicate: "has_pet", Object: "Oliver"}, Evidence: []recall.EvidenceRef{{ID: "D1:2", Text: "Melanie has a dog named Oliver."}}},
 	})
 	for _, want := range []string{
-		`type: "list_item"`,
-		`value: "Bailey"`,
-		`value: "Oliver"`,
-		`type: "count"`,
-		`value: "2"`,
-		`support: "unique list_item candidate count"`,
+		`content: "Melanie has a cat named Bailey."`,
+		`object: "Bailey"`,
+		`content: "Melanie has a dog named Oliver."`,
+		`object: "Oliver"`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("structured answer body missing %q:\n%s", want, body)
 		}
 	}
-}
-
-func TestStructuredAnswerBodyCountIgnoresWeakListObjects(t *testing.T) {
-	body := renderStructuredAnswerBody(runners.AnswerQuestion{
-		Query: "How many pets does Melanie have?",
-	}, []recall.Hit{
-		{Fact: recall.TemporalFact{ID: "f1", Kind: recall.FactState, Content: "Melanie has a cat named Bailey.", Subject: "Melanie", Predicate: "has_pet", Object: "Bailey"}, Evidence: []recall.EvidenceRef{{ID: "D1:1", Text: "Melanie has a cat named Bailey."}}},
-		{Fact: recall.TemporalFact{ID: "f2", Kind: recall.FactState, Content: "Melanie visited Paris.", Subject: "Melanie", Predicate: "visited", Object: "Paris"}, Evidence: []recall.EvidenceRef{{ID: "D1:2", Text: "Melanie visited Paris."}}},
-	})
 	for _, unwanted := range []string{
-		`value: "Paris"`,
-		`value: "2"`,
+		"list_answer_candidates",
+		"count_answer_candidate",
 	} {
 		if strings.Contains(body, unwanted) {
-			t.Fatalf("weak list object must not be counted/rendered %q:\n%s", unwanted, body)
-		}
-	}
-	for _, want := range []string{
-		`value: "Bailey"`,
-		`type: "count"`,
-		`value: "1"`,
-	} {
-		if !strings.Contains(body, want) {
-			t.Fatalf("structured answer body missing %q:\n%s", want, body)
+			t.Fatalf("plain renderer should not emit %q:\n%s", unwanted, body)
 		}
 	}
 }
 
-func TestCompactAnswerCueTruncatesByRune(t *testing.T) {
-	in := strings.Repeat("猫", 300)
-	got := compactAnswerCue(in)
-	if !strings.HasSuffix(got, "...") {
-		t.Fatalf("truncated cue should end with ellipsis: %q", got)
+func TestCleanAnswerScalarKeepsFullText(t *testing.T) {
+	in := strings.Repeat("猫", 300) + "\n" + strings.Repeat("x", 300)
+	got := cleanAnswerScalar(in)
+	if strings.Contains(got, "\n") {
+		t.Fatalf("cue should normalize newlines: %q", got)
 	}
-	if !strings.Contains(got, "猫") {
-		t.Fatalf("truncated cue should preserve valid UTF-8 runes: %q", got)
-	}
-	if len([]rune(strings.TrimSuffix(got, "..."))) != 257 {
-		t.Fatalf("truncated rune count = %d, want 257", len([]rune(strings.TrimSuffix(got, "..."))))
+	if !strings.Contains(got, strings.Repeat("猫", 300)) || !strings.Contains(got, strings.Repeat("x", 300)) {
+		t.Fatalf("cue should preserve full text: %q", got)
 	}
 }
 
-func TestStructuredAnswerBodyLimitsFullMemoriesButKeepsCueRanks(t *testing.T) {
-	hits := make([]recall.Hit, 0, maxStructuredAnswerMemories+2)
-	for i := 0; i < maxStructuredAnswerMemories+2; i++ {
-		hits = append(hits, recall.Hit{
-			Fact: recall.TemporalFact{
-				ID:      fmt.Sprintf("f%d", i+1),
-				Kind:    recall.FactState,
-				Content: fmt.Sprintf("Alice keeps item %d.", i+1),
-				Subject: "Alice",
-			},
-			Evidence: []recall.EvidenceRef{{ID: fmt.Sprintf("D%d:1", i+1), Text: fmt.Sprintf("Alice keeps item %d.", i+1)}},
-		})
-	}
-	body := renderStructuredAnswerBody(runners.AnswerQuestion{
-		Query: "What items has Alice kept?",
-	}, hits)
+func TestStructuredAnswerBodyRendersFullEvidenceForEveryTopKMemory(t *testing.T) {
+	body := renderStructuredAnswerBody([]recall.Hit{
+		{Fact: recall.TemporalFact{ID: "carried", Kind: recall.FactState, Content: "Avery carried a brass compass.", Subject: "Avery", Object: "brass compass"}, Evidence: []recall.EvidenceRef{{ID: "D1:1", Text: "Avery carried a brass compass."}}},
+		{Fact: recall.TemporalFact{ID: "map", Kind: recall.FactState, Content: "Avery likes old maps.", Subject: "Avery"}, Evidence: []recall.EvidenceRef{{ID: "D2:1", Text: "Avery likes old maps."}}},
+		{Fact: recall.TemporalFact{ID: "tea", Kind: recall.FactState, Content: "Avery brewed tea.", Subject: "Avery"}, Evidence: []recall.EvidenceRef{{ID: "D3:1", Text: "Avery brewed tea."}}},
+		{Fact: recall.TemporalFact{ID: "walk", Kind: recall.FactState, Content: "Avery walked by the river.", Subject: "Avery"}, Evidence: []recall.EvidenceRef{{ID: "D4:1", Text: "Avery walked by the river."}}},
+		{Fact: recall.TemporalFact{ID: "book", Kind: recall.FactState, Content: "Avery read a field guide.", Subject: "Avery"}, Evidence: []recall.EvidenceRef{{ID: "D5:1", Text: "Avery read a field guide."}}},
+		{Fact: recall.TemporalFact{ID: "bought", Kind: recall.FactEvent, Content: "Avery bought the brass compass in Harbor Market.", Subject: "Avery", Object: "brass compass", Location: "Harbor Market"}, Evidence: []recall.EvidenceRef{{ID: "D1:2", Text: "I bought the brass compass in Harbor Market."}}},
+	})
 
-	if strings.Contains(body, `- [#13]`) {
-		t.Fatalf("full memories should stop at configured cap:\n%s", body)
-	}
 	for _, want := range []string{
-		`rank: "#13"`,
-		`rank: "#14"`,
-		"additional recalled memories omitted",
+		`- [#6]`,
+		`evidence_ids: "D1:2"`,
+		"evidence:",
+		`quote: "I bought the brass compass in Harbor Market."`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("structured answer body missing %q:\n%s", want, body)
@@ -782,9 +854,7 @@ func TestStructuredAnswerBodyLimitsFullMemoriesButKeepsCueRanks(t *testing.T) {
 
 func TestStructuredAnswerBodyDoesNotPromoteSourceTimeFallbackToEventTime(t *testing.T) {
 	validFrom := time.Date(2024, 5, 7, 9, 30, 0, 0, time.UTC)
-	body := renderStructuredAnswerBody(runners.AnswerQuestion{
-		Query: "When did Alice mention Tampa?",
-	}, []recall.Hit{{
+	body := renderStructuredAnswerBody([]recall.Hit{{
 		Fact: recall.TemporalFact{
 			ID:         "f1",
 			Kind:       recall.FactState,
@@ -824,26 +894,41 @@ func TestStructuredAnswerBodyDoesNotPromoteSourceTimeFallbackToEventTime(t *test
 }
 
 func TestStructuredAnswerContextCarriesBackendPrompt(t *testing.T) {
-	ctx := structuredAnswerContext(runners.AnswerQuestion{Query: "What happened?"}, nil)
+	ctx := structuredAnswerContext(nil)
 	if ctx.Format != "flowcraftv2_structured_facts" {
 		t.Fatalf("unexpected format: %q", ctx.Format)
 	}
 	for _, want := range []string{
-		"structured memory facts",
+		"structured facts in <retrieved_facts>",
+		"untrusted retrieved data",
+		"ranked TOPK structured facts",
 		"event_time as the event date",
 		"observed_at and evidence source_time",
-		"relative_time_answer",
-		"ISO date",
 		"content as the canonical extracted fact",
-		"best-supported yes/no inference",
-		"%s",
+		"Match the form of the question",
+		"inspect [#1], [#2], and [#3] carefully",
+		"For WHEN questions, answer from event_time first",
+		"HOW MANY, HOW LONG, AGE, duration, count, and comparison",
+		"Reply \"I don't know\" only after checking the top three memories",
 	} {
 		if !strings.Contains(ctx.PromptTemplate, want) {
 			t.Fatalf("structured prompt missing %q:\n%s", want, ctx.PromptTemplate)
 		}
 	}
+	if strings.Contains(ctx.PromptTemplate, "%s") {
+		t.Fatalf("structured prompt should be system-only, got:\n%s", ctx.PromptTemplate)
+	}
 }
 
 func ptrTime(t time.Time) *time.Time {
 	return &t
+}
+
+func containsStringValue(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }

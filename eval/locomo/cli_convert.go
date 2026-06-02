@@ -15,13 +15,13 @@ import (
 // addLocomoConvert wires `eval locomo convert` — the upstream
 // snap-research/locomo `locomo10.json` → eval JSONL converter.
 //
-// Mapping rules (unchanged from the legacy cmd/convert-locomo binary):
+// Mapping rules:
 //   - One LoCoMo `sample` → one Conversation; turns flattened across
-//     sessions in chronological order with "[<datetime>] <speaker>:"
-//     content prefixes so the LTM extractor sees timestamps + names
-//     inline (without those, LoCoMo's temporal questions are
-//     unanswerable).
+//     sessions in chronological order. Speaker and session timestamp remain
+//     structured turn fields instead of being baked into content.
 //   - speaker_a → "user", speaker_b → "assistant".
+//   - Image side fields stay structured on the turn. Runners decide how
+//     to expose visual evidence to their own extractors.
 //   - Each `qa` entry → Question; `evidence` → evidence_ids;
 //     `category` → "catN" tag.
 func addLocomoConvert(parent *cobra.Command) {
@@ -146,37 +146,43 @@ type convRawTurn struct {
 	//                  cover, so we keep it only as a fallback when
 	//                  query is empty.
 	//
-	// We flatten the chosen annotation into the turn content so the
-	// LTM extractor sees it inline as part of the same speaker turn,
-	// matching the way published LoCoMo runs (Mem0 et al.) ingest the
-	// multimodal dataset on a text-only stack.
+	// The converter preserves this as structured metadata instead of
+	// appending it to the speaker's text; adapters decide how to render
+	// visual evidence for their extractor.
 	Query       string   `json:"query,omitempty"`
 	BlipCaption string   `json:"blip_caption,omitempty"`
 	ImgURL      []string `json:"img_url,omitempty"`
 }
 
-// imageAnnotation returns the inline annotation appended to a text turn
-// that also shared an image. Returns "" when the turn has no image
-// side-fields. See convRawTurn for the rationale on preferring
-// `query` over `blip_caption`.
-func (t convRawTurn) imageAnnotation() string {
+// images returns structured image metadata for a turn that actually shared an
+// image. query/blip_caption without img_url is treated as stale metadata.
+func (t convRawTurn) images() []convOutImage {
 	// We gate on img_url presence because the upstream schema also
 	// emits stale query/blip_caption fields on ~316 turns (locomo10)
-	// that no longer reference an actual shared image. Surfacing
-	// those would inject noise into ~5 % of turns where the speaker
-	// only said "Congrats!" but the JSON still carries an orphan
-	// blip caption like "a photo of a book shelf with many books".
+	// that no longer reference an actual shared image. Surfacing those
+	// would inject noise into turns where the speaker only said
+	// "Congrats!" but the JSON still carries an orphan blip caption.
 	if len(t.ImgURL) == 0 {
-		return ""
+		return nil
 	}
-	hint := strings.TrimSpace(t.Query)
-	if hint == "" {
-		hint = strings.TrimSpace(t.BlipCaption)
+	query := strings.TrimSpace(t.Query)
+	caption := strings.TrimSpace(t.BlipCaption)
+	if query == "" && caption == "" {
+		return nil
 	}
-	if hint == "" {
-		return ""
+	out := make([]convOutImage, 0, len(t.ImgURL))
+	for _, rawURL := range t.ImgURL {
+		url := strings.TrimSpace(rawURL)
+		if url == "" {
+			continue
+		}
+		out = append(out, convOutImage{
+			URL:     url,
+			Query:   query,
+			Caption: caption,
+		})
 	}
-	return "[shared image: " + hint + "]"
+	return out
 }
 
 type convRawQA struct {
@@ -194,10 +200,19 @@ type convRawSample struct {
 }
 
 type convOutConvTurn struct {
-	Role       string `json:"role"`
-	Content    string `json:"content"`
-	EvidenceID string `json:"evidence_id,omitempty"`
-	SessionID  string `json:"session_id,omitempty"`
+	Role       string         `json:"role"`
+	Content    string         `json:"content"`
+	Speaker    string         `json:"speaker,omitempty"`
+	Timestamp  string         `json:"timestamp,omitempty"`
+	EvidenceID string         `json:"evidence_id,omitempty"`
+	SessionID  string         `json:"session_id,omitempty"`
+	Images     []convOutImage `json:"images,omitempty"`
+}
+
+type convOutImage struct {
+	URL     string `json:"url,omitempty"`
+	Query   string `json:"query,omitempty"`
+	Caption string `json:"caption,omitempty"`
 }
 
 type convOutConv struct {
@@ -262,29 +277,23 @@ func convFlattenSessions(c map[string]json.RawMessage, speakerA, speakerB string
 				role = "user"
 			}
 			text := strings.TrimSpace(t.Text)
-			imgAnnot := t.imageAnnotation()
-			if text == "" && imgAnnot == "" {
+			images := t.images()
+			if text == "" && len(images) == 0 {
 				continue
 			}
 			speaker := t.Speaker
 			if speaker == "" {
 				speaker = role
 			}
-			body := text
-			if imgAnnot != "" {
-				if body == "" {
-					body = imgAnnot
-				} else {
-					body = body + " " + imgAnnot
-				}
-			}
-			content := body
-			if s.dateTime != "" {
-				content = fmt.Sprintf("[%s] %s: %s", s.dateTime, speaker, body)
-			} else {
-				content = fmt.Sprintf("%s: %s", speaker, body)
-			}
-			out = append(out, convOutConvTurn{Role: role, Content: content, EvidenceID: t.DiaID, SessionID: s.key})
+			out = append(out, convOutConvTurn{
+				Role:       role,
+				Content:    text,
+				Speaker:    speaker,
+				Timestamp:  strings.TrimSpace(s.dateTime),
+				EvidenceID: t.DiaID,
+				SessionID:  s.key,
+				Images:     images,
+			})
 		}
 	}
 	return out

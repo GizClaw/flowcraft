@@ -290,12 +290,13 @@ func (r *Runner) SaveRawTurns(ctx context.Context, scope runners.Scope, turns []
 	t0 := time.Now()
 	saved := 0
 	for i, t := range turns {
-		if t.Content == "" {
+		text := runners.RenderRawTurnContent(t)
+		if text == "" {
 			continue
 		}
 		entry := recallv1.Entry{
 			ID:         t.EvidenceID,
-			Content:    t.Content,
+			Content:    text,
 			Categories: []string{"raw"},
 			Source:     recallv1.Source{RuntimeID: scope.RuntimeID},
 		}
@@ -322,7 +323,7 @@ func (r *Runner) RecallAnswerContext(ctx context.Context, scope runners.Scope, q
 	if err != nil {
 		return nil, runners.AnswerContext{}, elapsed, err
 	}
-	return fromRecallV1Artifacts(hits), structuredAnswerContext(question, hits), elapsed, nil
+	return fromRecallV1Artifacts(hits), structuredAnswerContext(hits), elapsed, nil
 }
 
 // Close implements runners.Runner.

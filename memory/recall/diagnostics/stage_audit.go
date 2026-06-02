@@ -22,7 +22,15 @@ type RecallStageSnapshot struct {
 	ScannedLinks      int                       `json:"scanned_links,omitempty"`
 	AddedFacts        int                       `json:"added_facts,omitempty"`
 	AddedEvidenceRefs int                       `json:"added_evidence_refs,omitempty"`
+	CoverageBundles   []RecallCoverageBundle    `json:"coverage_bundles,omitempty"`
 	Candidates        []RecallCandidateSnapshot `json:"candidates,omitempty"`
+}
+
+type RecallCoverageBundle struct {
+	SeedFactID      string   `json:"seed_fact_id,omitempty"`
+	RescuedFactIDs  []string `json:"rescued_fact_ids,omitempty"`
+	ReplacedFactIDs []string `json:"replaced_fact_ids,omitempty"`
+	Reason          string   `json:"reason,omitempty"`
 }
 
 type RecallCandidateSnapshot struct {
@@ -98,10 +106,31 @@ func AuditRecallStages(trace domain.RecallTrace) RecallStageAudit {
 			if d.RerankedHits != nil {
 				appendStage("context_pack_reranked", "", status, snapshotValue(d.RerankedHits))
 			}
-			appendStage("context_pack", "", status, snapshotValue(d.Hits))
+			out.Stages = append(out.Stages, RecallStageSnapshot{
+				Stage:           "context_pack",
+				Status:          status,
+				CoverageBundles: publicCoverageBundles(d.CoverageBundles),
+				Candidates:      publicCandidateSnapshots(snapshotValue(d.Hits)),
+			})
 		case diagnostic.BuildGroundedHitsDetail:
 			appendStage("build_grounded_hits", "", status, snapshotValue(d.Hits))
 		}
+	}
+	return out
+}
+
+func publicCoverageBundles(in []diagnostic.CoverageBundle) []RecallCoverageBundle {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]RecallCoverageBundle, 0, len(in))
+	for _, bundle := range in {
+		out = append(out, RecallCoverageBundle{
+			SeedFactID:      bundle.SeedFactID,
+			RescuedFactIDs:  append([]string(nil), bundle.RescuedFactIDs...),
+			ReplacedFactIDs: append([]string(nil), bundle.ReplacedFactIDs...),
+			Reason:          bundle.Reason,
+		})
 	}
 	return out
 }

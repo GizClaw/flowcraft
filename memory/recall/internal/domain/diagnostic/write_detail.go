@@ -24,6 +24,7 @@ type IngestDetail struct {
 	StructurizerCoverage StructurizerCoverage
 	ExtractorLatency     time.Duration
 	ExtractorTokenUsage  ExtractorTokenUsage
+	ExtractorGuard       ExtractorGuard
 	StructurizerLatency  time.Duration
 	// RecentMessagesProvided / AnchorsProvided / TierApplied are fields wired
 	// through SaveRequest. Zero values here today.

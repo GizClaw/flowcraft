@@ -1,6 +1,10 @@
 package words
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/GizClaw/flowcraft/memory/recall/internal/domain"
+)
 
 func TestQueryIntentLexiconTemporalMultilingual(t *testing.T) {
 	cases := []string{
@@ -56,22 +60,25 @@ func TestQueryIntentLexiconNumericMultilingual(t *testing.T) {
 		"这是第几次会议?",
 	}
 	for _, c := range cases {
-		if !HasNumericIntentCue(c) {
+		if len(NumericIntentKinds(c)) == 0 {
 			t.Fatalf("expected numeric cue for %q", c)
 		}
 	}
-	if HasNumericIntentCue("Open the account settings") {
+	if len(NumericIntentKinds("Open the account settings")) > 0 {
 		t.Fatal("count must not match account")
+	}
+	if !hasNumericKind(NumericIntentKinds("How many times did Alice visit?"), domain.QueryNumericIntentFrequency) {
+		t.Fatal("expected frequency kind")
 	}
 }
 
 func TestSubjectInferenceCue(t *testing.T) {
-	for _, q := range []string{"Who did Alice meet?", "Alice's favorite city"} {
-		if !HasSubjectInferenceCue(q) {
-			t.Fatalf("expected subject inference cue for %q", q)
-		}
+	if !HasSubjectInferenceCue("Alice's favorite city") {
+		t.Fatal("expected explicit possessive subject inference cue")
 	}
-	if HasSubjectInferenceCue("Alice went to Paris.") {
-		t.Fatal("plain statement should not infer query subject")
+	for _, q := range []string{"Who did Alice meet?", "Alice went to Paris."} {
+		if HasSubjectInferenceCue(q) {
+			t.Fatalf("plain question/statement should not infer query subject for %q", q)
+		}
 	}
 }

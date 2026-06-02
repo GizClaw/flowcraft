@@ -2,6 +2,7 @@ package stages
 
 import (
 	"context"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -237,7 +238,7 @@ func packContextPackSelection(state *read.ReadState, features domain.QueryFeatur
 	}
 	contextPackingStarted := time.Now()
 	poolHits := hitsFromItems(contextPackingPool(state))
-	out := packRecallContextWithFeatures(state.Query.Text, features, now, hits, poolHits, state.Plan.TotalCap)
+	out := packRecallContextWithFeaturesAndDetail(hits, poolHits, state.Plan.TotalCap)
 	out = packTaskAwareEvidenceClusters(state.Plan.TaskIntents, out, poolHits, state.Plan.TotalCap)
 	detail.ContextPackingLatency = time.Since(contextPackingStarted)
 	return out
@@ -286,12 +287,7 @@ func ensureTaskEvidence(selected, pool []domain.Hit, cap int, match func(domain.
 }
 
 func taskEvidenceCovered(hits []domain.Hit, match func(domain.Hit) bool) bool {
-	for _, hit := range hits {
-		if match(hit) {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(hits, match)
 }
 
 func hitAlreadySelected(hits []domain.Hit, candidate domain.Hit) bool {
@@ -366,14 +362,6 @@ func contextItemRef(item domain.ContextItem) domain.CandidateRef {
 
 const maxHitEvidenceRefs = 3
 
-type groundingQueryFeatures struct {
-	tokens           map[string]struct{}
-	numeric          map[string]struct{}
-	proper           map[string]struct{}
-	hasTimeSignal    bool
-	hasNumericIntent bool
-}
-
 func queryFeaturesFromState(state *read.ReadState) domain.QueryFeatures {
 	if state != nil && state.Intent != nil && !state.Intent.Features.IsZero() {
 		return state.Intent.Features
@@ -399,15 +387,12 @@ func groundHitsWithSupportingEvidence(features domain.QueryFeatures, now time.Ti
 	return out
 }
 
-func selectGroundingEvidence(query string, selected []domain.EvidenceRef, refs []domain.EvidenceRef) []domain.EvidenceRef {
-	return selectGroundingEvidenceWithFeatures(recallintent.ExtractFeatures(query), time.Now(), selected, refs)
+func selectGroundingEvidence(_ string, selected []domain.EvidenceRef, refs []domain.EvidenceRef) []domain.EvidenceRef {
+	return selectGroundingEvidenceWithFeatures(domain.QueryFeatures{}, time.Time{}, selected, refs)
 }
 
-func selectGroundingEvidenceWithFeatures(features domain.QueryFeatures, now time.Time, selected []domain.EvidenceRef, refs []domain.EvidenceRef) []domain.EvidenceRef {
-	if now.IsZero() {
-		now = time.Now()
-	}
-	limit := maxGroundingEvidenceRefs(features)
+func selectGroundingEvidenceWithFeatures(_ domain.QueryFeatures, _ time.Time, selected []domain.EvidenceRef, refs []domain.EvidenceRef) []domain.EvidenceRef {
+	limit := maxHitEvidenceRefs
 	out := make([]domain.EvidenceRef, 0, limit)
 	seen := map[string]struct{}{}
 	appendRef := func(ref domain.EvidenceRef) {
@@ -429,113 +414,10 @@ func selectGroundingEvidenceWithFeatures(features domain.QueryFeatures, now time
 	if len(out) >= limit || len(refs) == 0 {
 		return out
 	}
-	queryFeatures := newGroundingQueryFeatures(features)
-	if len(queryFeatures.tokens) == 0 && len(queryFeatures.numeric) == 0 && len(queryFeatures.proper) == 0 && !queryFeatures.hasTimeSignal {
-		return out
-	}
-	type scoredRef struct {
-		ref   domain.EvidenceRef
-		score float64
-		rank  int
-	}
-	candidates := make([]scoredRef, 0, len(refs))
-	for i, ref := range refs {
-		if strings.TrimSpace(ref.Text) == "" {
-			continue
-		}
-		if key := evidenceRefKey(ref); key != "" {
-			if _, ok := seen[key]; ok {
-				continue
-			}
-		}
-		score, eligible := groundingEvidenceScore(queryFeatures, now, ref)
-		if !eligible {
-			continue
-		}
-		candidates = append(candidates, scoredRef{ref: ref, score: score, rank: i})
-	}
-	sort.SliceStable(candidates, func(i, j int) bool {
-		if candidates[i].score != candidates[j].score {
-			return candidates[i].score > candidates[j].score
-		}
-		return candidates[i].rank < candidates[j].rank
-	})
-	for _, cand := range candidates {
-		appendRef(cand.ref)
+	for _, ref := range refs {
+		appendRef(ref)
 	}
 	return out
-}
-
-func maxGroundingEvidenceRefs(features domain.QueryFeatures) int {
-	if features.HasTimeSignal() || features.NumericIntent {
-		return maxHitEvidenceRefs + 1
-	}
-	return maxHitEvidenceRefs
-}
-
-func newGroundingQueryFeatures(features domain.QueryFeatures) groundingQueryFeatures {
-	return groundingQueryFeatures{
-		tokens:           features.Tokens,
-		numeric:          features.Numeric,
-		proper:           features.Proper,
-		hasTimeSignal:    features.HasTimeSignal(),
-		hasNumericIntent: features.NumericIntent,
-	}
-}
-
-func groundingEvidenceScore(query groundingQueryFeatures, now time.Time, ref domain.EvidenceRef) (float64, bool) {
-	text := ref.Text
-	tokens := groundingTokenSet(text)
-	matched := 0
-	for tok := range query.tokens {
-		if _, ok := tokens[tok]; ok {
-			matched++
-		}
-	}
-	coverage := 0.0
-	if len(query.tokens) > 0 {
-		coverage = float64(matched) / float64(len(query.tokens))
-	}
-	numericMatch := intersects(query.numeric, recallintent.NumericTokens(text))
-	timeMatch := query.hasTimeSignal && (!ref.Timestamp.IsZero() || recallintent.HasTimex(text, now))
-	properMatch := intersects(query.proper, recallintent.ProperNounSet(text))
-	if len(query.tokens) == 0 && (numericMatch || timeMatch || (properMatch && !query.hasTimeSignal && !query.hasNumericIntent)) {
-		score := 0.40
-		if numericMatch {
-			score += 0.25
-		}
-		if timeMatch {
-			score += 0.20
-		}
-		if properMatch {
-			score += 0.10
-		}
-		if score > 1 {
-			score = 1
-		}
-		return score, true
-	}
-	eligible := matched >= 2 ||
-		(matched >= 1 && query.hasTimeSignal && timeMatch) ||
-		(matched >= 1 && query.hasNumericIntent && numericMatch)
-	if !eligible {
-		return 0, false
-	}
-	score := coverage
-	if numericMatch || timeMatch {
-		score += 0.20
-	}
-	if properMatch {
-		score += 0.05
-	}
-	if score > 1 {
-		score = 1
-	}
-	return score, true
-}
-
-func groundingTokenSet(text string) map[string]struct{} {
-	return recallintent.TextTokenSet(text)
 }
 
 func evidenceRefKey(ref domain.EvidenceRef) string {

@@ -16,30 +16,38 @@ func buildExtractorInputEnvelope(input port.IngestInput, sourceTurnsJSONL string
 	var b strings.Builder
 	b.WriteString("<extractor_input>\n")
 	if len(input.RecentMessages) > 0 {
-		b.WriteString("<recent_context extract=\"false\" format=\"jsonl\">\n")
+		b.WriteString("<recent_context extractable=\"false\" purpose=\"disambiguation_only\" format=\"jsonl\">\n")
 		for _, m := range input.RecentMessages {
 			if !m.Time.IsZero() {
 				lineJSON, _ := json.Marshal(struct {
-					Role    string `json:"role,omitempty"`
-					Speaker string `json:"speaker,omitempty"`
-					Time    string `json:"time,omitempty"`
-					Text    string `json:"text"`
+					Extractable bool   `json:"extractable"`
+					Source      string `json:"source"`
+					Role        string `json:"role,omitempty"`
+					Speaker     string `json:"speaker,omitempty"`
+					Time        string `json:"time,omitempty"`
+					Text        string `json:"text"`
 				}{
-					Role:    strings.TrimSpace(m.Role),
-					Speaker: strings.TrimSpace(m.Speaker),
-					Time:    m.Time.UTC().Format(time.RFC3339),
-					Text:    strings.TrimSpace(m.Text),
+					Extractable: false,
+					Source:      "recent_context",
+					Role:        strings.TrimSpace(m.Role),
+					Speaker:     strings.TrimSpace(m.Speaker),
+					Time:        m.Time.UTC().Format(time.RFC3339),
+					Text:        strings.TrimSpace(m.Text),
 				})
 				b.Write(lineJSON)
 			} else {
 				lineJSON, _ := json.Marshal(struct {
-					Role    string `json:"role,omitempty"`
-					Speaker string `json:"speaker,omitempty"`
-					Text    string `json:"text"`
+					Extractable bool   `json:"extractable"`
+					Source      string `json:"source"`
+					Role        string `json:"role,omitempty"`
+					Speaker     string `json:"speaker,omitempty"`
+					Text        string `json:"text"`
 				}{
-					Role:    strings.TrimSpace(m.Role),
-					Speaker: strings.TrimSpace(m.Speaker),
-					Text:    strings.TrimSpace(m.Text),
+					Extractable: false,
+					Source:      "recent_context",
+					Role:        strings.TrimSpace(m.Role),
+					Speaker:     strings.TrimSpace(m.Speaker),
+					Text:        strings.TrimSpace(m.Text),
 				})
 				b.Write(lineJSON)
 			}
@@ -48,20 +56,26 @@ func buildExtractorInputEnvelope(input port.IngestInput, sourceTurnsJSONL string
 		b.WriteString("</recent_context>\n")
 	}
 	if len(input.ExistingFactsAnchor) > 0 {
-		b.WriteString("<existing_memory_anchors extract=\"false\" format=\"jsonl\">\n")
+		b.WriteString("<existing_memory_anchors extractable=\"false\" purpose=\"dedupe_and_disambiguation_only\" format=\"jsonl\">\n")
 		for _, f := range input.ExistingFactsAnchor {
 			if strings.TrimSpace(f.Content) == "" {
 				continue
 			}
 			lineJSON, _ := json.Marshal(struct {
-				Text string `json:"text"`
-			}{Text: strings.TrimSpace(f.Content)})
+				Extractable bool   `json:"extractable"`
+				Source      string `json:"source"`
+				Text        string `json:"text"`
+			}{
+				Extractable: false,
+				Source:      "existing_memory_anchor",
+				Text:        strings.TrimSpace(f.Content),
+			})
 			b.Write(lineJSON)
 			b.WriteByte('\n')
 		}
 		b.WriteString("</existing_memory_anchors>\n")
 	}
-	b.WriteString("<source_turns format=\"jsonl\">\n")
+	b.WriteString("<source_turns extractable=\"true\" evidence_scope=\"only\" format=\"jsonl\">\n")
 	b.WriteString(sourceTurnsJSONL)
 	if !strings.HasSuffix(sourceTurnsJSONL, "\n") {
 		b.WriteByte('\n')

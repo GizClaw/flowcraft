@@ -17,13 +17,13 @@ import (
 // receives the query and a numbered list of candidate fact contents
 // and replies with a JSON object {"ranking":[{"index":int,
 // "score":0..1}]}; the returned score multiplies the candidate's
-// pre-rerank Score so prior boosts/decays still influence the final
-// ordering.
+// pre-rerank Score so prior deterministic adjustments/decays still influence
+// the final ordering.
 //
 // Failure modes are graceful: provider errors, malformed JSON, and
 // missing-score entries all degrade to the pre-rerank order with the
 // underlying error surfaced to the caller via Recall's stage trace.
-// A non-fatal trace is the right shape for a precision booster: a
+// A non-fatal trace is the right shape for an optional precision pass: a
 // rerank outage must never cost availability.
 //
 // The reranker is intentionally framework-agnostic: it depends only

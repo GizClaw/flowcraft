@@ -4,11 +4,9 @@ import (
 	"context"
 	"sort"
 	"strings"
-	"time"
 
 	"github.com/GizClaw/flowcraft/memory/recall/internal/domain"
 	"github.com/GizClaw/flowcraft/memory/recall/internal/domain/diagnostic"
-	recallintent "github.com/GizClaw/flowcraft/memory/recall/internal/intent"
 	"github.com/GizClaw/flowcraft/memory/recall/internal/pipeline"
 	"github.com/GizClaw/flowcraft/memory/recall/internal/pipeline/read"
 	"github.com/GizClaw/flowcraft/memory/recall/internal/port"
@@ -16,7 +14,6 @@ import (
 
 const (
 	neighborCandidateSource         = "neighbor_candidate"
-	neighborCandidateTextFloor      = 0.45
 	neighborCandidateMaxScanDefault = 240
 	neighborCandidatePerGroupCap    = 3
 )
@@ -49,6 +46,9 @@ func (s *CandidateExpansion) Run(ctx context.Context, state *read.ReadState) (di
 		return detail, nil
 	}
 	anchors := neighborCandidateAnchors(state.Plan.Intent)
+	if neighborCandidateUsesSeedAnchors(tasks) {
+		anchors = appendNeighborCandidateSeedAnchors(anchors, candidateExpansionSuggestionSeeds(state.MergedItems, state.Plan.TotalCap))
+	}
 	if len(anchors) == 0 && len(state.MergedItems) == 0 {
 		finalizeCandidateExpansionDetail(state, &detail)
 		return detail, nil
@@ -82,7 +82,7 @@ func (s *CandidateExpansion) Run(ctx context.Context, state *read.ReadState) (di
 				continue
 			}
 			item := neighborCandidateItem(fact, state.Scope)
-			score, ok := neighborCandidateScore(state.Plan.Intent.Features, item, state.MergedItems)
+			score, ok := neighborCandidateScore(item, state.MergedItems)
 			if !ok {
 				continue
 			}
@@ -96,12 +96,13 @@ func (s *CandidateExpansion) Run(ctx context.Context, state *read.ReadState) (di
 		return scored[i].item.Fact.ID < scored[j].item.Fact.ID
 	})
 	groupCounts := map[string]int{}
+	perGroupCap := neighborCandidatePerGroupLimit(tasks, state.Plan.Intent.Features)
 	for _, candidate := range scored {
 		if len(detail.AddedFactIDs) >= maxAdds {
 			break
 		}
 		group := neighborCandidateGroup(candidate.item)
-		if group != "" && groupCounts[group] >= neighborCandidatePerGroupCap {
+		if group != "" && groupCounts[group] >= perGroupCap {
 			continue
 		}
 		state.MergedItems = append(state.MergedItems, candidate.item)
@@ -122,23 +123,18 @@ func recordCandidateExpansionSuggestions(state *read.ReadState, detail *diagnost
 		return
 	}
 	seeds := candidateExpansionSuggestionSeeds(state.MergedItems, state.Plan.TotalCap)
-	covered := candidateExpansionSuggestionCoveredTokens(state.Plan.Intent.Features, seeds)
 	suggested := map[string]struct{}{}
 	for i := range state.MergedItems {
 		item := &state.MergedItems[i]
 		if candidateExpansionSuggestionSeedContains(seeds, item.Fact.ID) {
 			continue
 		}
-		textScore := candidateExpansionSuggestionTextScore(state.Plan.Intent.Features, *item)
 		structuralSetSibling := hasTask(state.Plan.TaskIntents, domain.QueryTaskSetCompletion) && candidateExpansionSuggestionHasSetSibling(*item, seeds)
-		if textScore < candidateExpansionSuggestionTextFloor && !structuralSetSibling {
-			continue
-		}
-		if hasTask(state.Plan.TaskIntents, domain.QueryTaskSetCompletion) && candidateExpansionSuggestionSetCandidate(state.Plan.Intent.Features, *item, seeds, covered, structuralSetSibling) {
+		if hasTask(state.Plan.TaskIntents, domain.QueryTaskSetCompletion) && candidateExpansionSuggestionSetCandidate(structuralSetSibling) {
 			recordCandidateExpansionSuggestion(detail, suggested, item.Fact.ID, domain.QueryTaskSetCompletion)
 			continue
 		}
-		if hasTask(state.Plan.TaskIntents, domain.QueryTaskBridgeResolution) && candidateExpansionSuggestionBridgeCandidate(state.Plan.Intent.Features, *item, seeds, covered) {
+		if hasTask(state.Plan.TaskIntents, domain.QueryTaskBridgeResolution) && candidateExpansionSuggestionBridgeCandidate(*item, seeds) {
 			recordCandidateExpansionSuggestion(detail, suggested, item.Fact.ID, domain.QueryTaskBridgeResolution)
 		}
 	}
@@ -224,6 +220,38 @@ func neighborCandidateAnchors(intent domain.QueryIntent) []string {
 	return out
 }
 
+func appendNeighborCandidateSeedAnchors(anchors []string, seeds []domain.ContextItem) []string {
+	add := func(s string) {
+		s = strings.TrimSpace(s)
+		if s == "" || containsStringFold(anchors, s) {
+			return
+		}
+		anchors = append(anchors, s)
+	}
+	for _, seed := range seeds {
+		add(seed.Fact.Subject)
+		add(seed.Fact.Object)
+		for _, entity := range seed.Fact.Entities {
+			add(entity)
+		}
+		for _, participant := range seed.Fact.Participants {
+			add(participant)
+		}
+	}
+	return anchors
+}
+
+func neighborCandidatePerGroupLimit(tasks []domain.QueryTaskIntent, features domain.QueryFeatures) int {
+	if hasTask(tasks, domain.QueryTaskSetCompletion) || features.NumericIntent {
+		return 6
+	}
+	return neighborCandidatePerGroupCap
+}
+
+func neighborCandidateUsesSeedAnchors(tasks []domain.QueryTaskIntent) bool {
+	return hasTask(tasks, domain.QueryTaskSetCompletion) || hasTask(tasks, domain.QueryTaskBridgeResolution)
+}
+
 func entityLookupVariants(anchor string) []string {
 	anchor = strings.TrimSpace(anchor)
 	if anchor == "" {
@@ -276,9 +304,8 @@ func neighborCandidateItem(fact domain.TemporalFact, _ domain.Scope) domain.Cont
 	}
 }
 
-func neighborCandidateScore(features domain.QueryFeatures, item domain.ContextItem, seeds []domain.ContextItem) (float64, bool) {
-	textScore := candidateExpansionSuggestionTextScore(features, item)
-	score := textScore
+func neighborCandidateScore(item domain.ContextItem, seeds []domain.ContextItem) (float64, bool) {
+	score := 0.0
 	for _, seed := range seeds {
 		if sameSubjectPredicate(item.Fact, seed.Fact) {
 			score += 1.0
@@ -288,32 +315,10 @@ func neighborCandidateScore(features domain.QueryFeatures, item domain.ContextIt
 			score += 0.55
 		}
 	}
-	if score > textScore {
+	if score > 0 {
 		return score, true
-	}
-	if textScore >= neighborCandidateTextFloor && neighborCandidateTokenMatches(features, item) >= 2 {
-		return score, true
-	}
-	// Temporal questions often need a dated neighbor whose wording only
-	// weakly overlaps the query but carries the event anchor.
-	if features.HasTimeSignal() && factHasTimeSignal(item.Fact) && textScore >= 0.12 {
-		return score + 0.25, true
 	}
 	return 0, false
-}
-
-func neighborCandidateTokenMatches(features domain.QueryFeatures, item domain.ContextItem) int {
-	if len(features.Tokens) == 0 {
-		return 0
-	}
-	tokens := candidateExpansionSuggestionTokenSet(item)
-	matched := 0
-	for tok := range features.Tokens {
-		if _, ok := tokens[tok]; ok {
-			matched++
-		}
-	}
-	return matched
 }
 
 func neighborCandidateGroup(item domain.ContextItem) string {
@@ -326,18 +331,6 @@ func neighborCandidateGroup(item domain.ContextItem) string {
 	return ""
 }
 
-func factHasTimeSignal(fact domain.TemporalFact) bool {
-	if fact.ValidFrom != nil || fact.ValidTo != nil || !fact.ObservedAt.IsZero() {
-		return true
-	}
-	for _, ref := range fact.EvidenceRefs {
-		if !ref.Timestamp.IsZero() {
-			return true
-		}
-	}
-	return recallintent.HasTimex(fact.Content+" "+fact.EvidenceText, timeNowUTC())
-}
-
 func containsStringFold(values []string, want string) bool {
 	for _, value := range values {
 		if strings.EqualFold(value, want) {
@@ -345,10 +338,6 @@ func containsStringFold(values []string, want string) bool {
 		}
 	}
 	return false
-}
-
-func timeNowUTC() time.Time {
-	return time.Now().UTC()
 }
 
 var _ pipeline.Stage[*read.ReadState] = (*CandidateExpansion)(nil)

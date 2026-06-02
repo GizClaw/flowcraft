@@ -106,12 +106,16 @@ type answerVerifyRecord struct {
 
 func addLocomoVerifyAnswer(parent *cobra.Command) {
 	var (
-		verifierSpec string
-		outPath      string
-		onlyMisses   bool
-		limit        int
-		concurrency  int
-		timeout      time.Duration
+		verifierSpec        string
+		outPath             string
+		auditPath           string
+		onlyMisses          bool
+		secondaryMissFilter string
+		tagFilter           string
+		qidFilter           string
+		limit               int
+		concurrency         int
+		timeout             time.Duration
 	)
 	cmd := &cobra.Command{
 		Use:   "verify-answer <report.json> <answer-replay.jsonl>",
@@ -126,6 +130,10 @@ func addLocomoVerifyAnswer(parent *cobra.Command) {
 			if err != nil {
 				return err
 			}
+			auditRows, err := loadAnswerAuditRows(auditPath)
+			if err != nil {
+				return err
+			}
 			verifier, err := env.BuildLLM(verifierSpec)
 			if err != nil {
 				return fmt.Errorf("--verifier-llm: %w", err)
@@ -133,7 +141,14 @@ func addLocomoVerifyAnswer(parent *cobra.Command) {
 			if verifier == nil {
 				return fmt.Errorf("--verifier-llm is required")
 			}
-			records := answerReplayRecordsForVerification(report, replays, onlyMisses, limit)
+			records := answerReplayRecordsForVerification(report, replays, answerReplayFilter{
+				OnlyMisses:      onlyMisses,
+				Limit:           limit,
+				Tags:            csvSet(tagFilter),
+				QIDs:            csvSet(qidFilter),
+				SecondaryMisses: csvSet(secondaryMissFilter),
+				AuditRows:       auditRows,
+			})
 			var w io.Writer = os.Stdout
 			if outPath != "" {
 				f, err := os.Create(outPath)
@@ -152,7 +167,11 @@ func addLocomoVerifyAnswer(parent *cobra.Command) {
 	}
 	cmd.Flags().StringVar(&verifierSpec, "verifier-llm", "azure_gpt54", "LLM alias for grounded verifier")
 	cmd.Flags().StringVar(&outPath, "out", "", "output JSONL path; defaults to stdout")
+	cmd.Flags().StringVar(&auditPath, "audit", "", "optional analyze-recall JSONL path used for secondary_miss filtering")
 	cmd.Flags().BoolVar(&onlyMisses, "only-misses", true, "only verify questions whose report judge is 0")
+	cmd.Flags().StringVar(&secondaryMissFilter, "secondary-miss", "", "comma-separated secondary_miss values to replay, e.g. answer_miss_temporal_or_numeric_reasoning")
+	cmd.Flags().StringVar(&tagFilter, "tags", "", "comma-separated question tags/categories to replay")
+	cmd.Flags().StringVar(&qidFilter, "qids", "", "comma-separated question ids to replay")
 	cmd.Flags().IntVar(&limit, "limit", 0, "verify at most N records after filtering (0 = all)")
 	cmd.Flags().IntVar(&concurrency, "concurrency", 4, "parallel verifier calls")
 	cmd.Flags().DurationVar(&timeout, "timeout", 90*time.Second, "per-record verifier timeout")
@@ -187,11 +206,67 @@ func loadAnswerReplayDump(path string) (map[string]AnswerReplayRecord, error) {
 	return out, sc.Err()
 }
 
-func answerReplayRecordsForVerification(report *Report, replays map[string]AnswerReplayRecord, onlyMisses bool, limit int) []AnswerReplayRecord {
+type answerReplayFilter struct {
+	OnlyMisses      bool
+	Limit           int
+	Tags            map[string]struct{}
+	QIDs            map[string]struct{}
+	SecondaryMisses map[string]struct{}
+	AuditRows       map[string]answerAuditRow
+}
+
+type answerAuditRow struct {
+	QID           string `json:"qid"`
+	MissType      string `json:"miss_type"`
+	SecondaryMiss string `json:"secondary_miss"`
+}
+
+func loadAnswerAuditRows(path string) (map[string]answerAuditRow, error) {
+	if strings.TrimSpace(path) == "" {
+		return nil, nil
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	out := map[string]answerAuditRow{}
+	sc := bufio.NewScanner(f)
+	buf := make([]byte, 0, 1024*1024)
+	sc.Buffer(buf, 64*1024*1024)
+	for sc.Scan() {
+		line := strings.TrimSpace(sc.Text())
+		if line == "" {
+			continue
+		}
+		var row answerAuditRow
+		if err := json.Unmarshal([]byte(line), &row); err != nil {
+			return nil, err
+		}
+		if row.QID != "" {
+			out[row.QID] = row
+		}
+	}
+	return out, sc.Err()
+}
+
+func answerReplayRecordsForVerification(report *Report, replays map[string]AnswerReplayRecord, filter answerReplayFilter) []AnswerReplayRecord {
 	out := make([]AnswerReplayRecord, 0, len(report.PerQuestion))
 	for _, q := range report.PerQuestion {
-		if onlyMisses && q.Judge >= 0.5 {
+		if filter.OnlyMisses && q.Judge >= 0.5 {
 			continue
+		}
+		if len(filter.QIDs) > 0 && !setContains(filter.QIDs, q.ID) {
+			continue
+		}
+		if len(filter.Tags) > 0 && !anySetContains(filter.Tags, q.Tags) {
+			continue
+		}
+		if len(filter.SecondaryMisses) > 0 {
+			row, ok := filter.AuditRows[q.ID]
+			if !ok || !setContains(filter.SecondaryMisses, row.SecondaryMiss) {
+				continue
+			}
 		}
 		rec, ok := replays[q.ID]
 		if !ok {
@@ -203,11 +278,41 @@ func answerReplayRecordsForVerification(report *Report, replays map[string]Answe
 		rec.Outcome.Judge = q.Judge
 		rec.Tags = append([]string(nil), q.Tags...)
 		out = append(out, rec)
-		if limit > 0 && len(out) >= limit {
+		if filter.Limit > 0 && len(out) >= filter.Limit {
 			break
 		}
 	}
 	return out
+}
+
+func csvSet(raw string) map[string]struct{} {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	out := map[string]struct{}{}
+	for _, part := range strings.Split(raw, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		out[part] = struct{}{}
+	}
+	return out
+}
+
+func setContains(set map[string]struct{}, value string) bool {
+	_, ok := set[value]
+	return ok
+}
+
+func anySetContains(set map[string]struct{}, values []string) bool {
+	for _, value := range values {
+		if setContains(set, value) {
+			return true
+		}
+	}
+	return false
 }
 
 type verifyAnswerOptions struct {
@@ -318,6 +423,13 @@ func buildAnswerVerifierUserMessage(rec AnswerReplayRecord) string {
 	fmt.Fprintf(&b, "GOLD ANSWERS: %s\n", strings.Join(rec.GoldAnswers, " | "))
 	fmt.Fprintf(&b, "PREDICTION: %s\n", rec.Outcome.Prediction)
 	fmt.Fprintf(&b, "JUDGE: %.3f\n", rec.Outcome.Judge)
+	if strings.TrimSpace(rec.AnswerBody) != "" {
+		b.WriteString("\nANSWER_CONTEXT_BODY:\n")
+		b.WriteString(rec.AnswerBody)
+		if !strings.HasSuffix(rec.AnswerBody, "\n") {
+			b.WriteString("\n")
+		}
+	}
 	b.WriteString("\nTOP MEMORIES:\n")
 	for _, artifact := range rec.RecallArtifacts {
 		fmt.Fprintf(&b, "[#%d]", artifact.Rank)

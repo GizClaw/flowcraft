@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"maps"
 	"os"
 	"os/exec"
 	"runtime/debug"
@@ -377,9 +378,7 @@ func Run(ctx context.Context, r runners.Runner, ds *dataset.Dataset, opts Option
 		"runner":  report.Runner,
 		"dataset": report.Dataset,
 	}
-	for k, v := range startDebug {
-		startFields[k] = v
-	}
+	maps.Copy(startFields, startDebug)
 	startTitle := fmt.Sprintf("eval start: runner=%s dataset=%s", report.Runner, report.Dataset)
 	if opts.RetrievalBackend != "" {
 		startFields["retrieval_backend"] = opts.RetrievalBackend
@@ -929,51 +928,89 @@ func batchTurnsBySession(c dataset.Conversation) []turnBatch {
 		}
 		cur.msgs = append(cur.msgs, llm.Message{
 			Role:  model.Role(t.Role),
-			Parts: []model.Part{{Type: model.PartText, Text: t.Content}},
+			Parts: []model.Part{{Type: model.PartText, Text: renderDatasetTurnForMessage(t)}},
 		})
-		cur.rawTurns = append(cur.rawTurns, runners.RawTurn{
-			Role:       t.Role,
-			Content:    t.Content,
-			EvidenceID: t.EvidenceID,
-			SessionID:  t.SessionID,
-		})
+		cur.rawTurns = append(cur.rawTurns, rawTurnFromDataset(t))
 	}
 	batches = append(batches, cur)
 	return batches
 }
 
-// batchTurnsByOnlineSavePoint models online writes for extractor-backed runs:
-// each source turn is a Save point, while previous turns from the same dataset
-// session are passed as recent context. It deliberately does not include future
-// turns from the session.
+// batchTurnsByOnlineSavePoint models online writes for extractor-backed runs.
+// Each save point is a small adjacent exchange, rather than an isolated
+// utterance, so question/answer and image-sharing context stays inside
+// <source_turns>. Previous turns from the same dataset session are passed as
+// recent context, and future turns are never included.
 func batchTurnsByOnlineSavePoint(c dataset.Conversation) []turnBatch {
 	if len(c.Turns) == 0 {
 		return nil
 	}
 	var batches []turnBatch
 	recentBySession := map[string][]runners.RawTurn{}
-	for _, t := range c.Turns {
-		msg := llm.Message{
-			Role:  model.Role(t.Role),
-			Parts: []model.Part{{Type: model.PartText, Text: t.Content}},
+	for i := 0; i < len(c.Turns); {
+		session := c.Turns[i].SessionID
+		end := i + 1
+		for end < len(c.Turns) && c.Turns[end].SessionID == session && end-i < 2 {
+			end++
 		}
-		raw := runners.RawTurn{
-			Role:       t.Role,
-			Content:    t.Content,
-			EvidenceID: t.EvidenceID,
-			SessionID:  t.SessionID,
+
+		raws := make([]runners.RawTurn, 0, end-i)
+		msgs := make([]llm.Message, 0, end-i)
+		for _, t := range c.Turns[i:end] {
+			msgs = append(msgs, llm.Message{
+				Role:  model.Role(t.Role),
+				Parts: []model.Part{{Type: model.PartText, Text: renderDatasetTurnForMessage(t)}},
+			})
+			raws = append(raws, rawTurnFromDataset(t))
 		}
-		recent := recentBySession[t.SessionID]
+
+		recent := recentBySession[session]
 		if len(recent) > recentTurnsPerSavePoint {
 			recent = recent[len(recent)-recentTurnsPerSavePoint:]
 		}
 		batches = append(batches, turnBatch{
-			session:        t.SessionID,
-			msgs:           []llm.Message{msg},
-			rawTurns:       []runners.RawTurn{raw},
+			session:        session,
+			msgs:           msgs,
+			rawTurns:       raws,
 			recentRawTurns: append([]runners.RawTurn(nil), recent...),
 		})
-		recentBySession[t.SessionID] = append(recentBySession[t.SessionID], raw)
+		recentBySession[session] = append(recentBySession[session], raws...)
+		i = end
 	}
 	return batches
+}
+
+func rawTurnFromDataset(t dataset.Turn) runners.RawTurn {
+	return runners.RawTurn{
+		Role:       t.Role,
+		Content:    t.Content,
+		Speaker:    t.Speaker,
+		Timestamp:  t.Timestamp,
+		EvidenceID: t.EvidenceID,
+		SessionID:  t.SessionID,
+		Images:     rawImagesFromDataset(t.Images),
+	}
+}
+
+func renderDatasetTurnForMessage(t dataset.Turn) string {
+	return runners.RenderRawTurnContent(rawTurnFromDataset(t))
+}
+
+func rawImagesFromDataset(images []dataset.Image) []runners.RawImage {
+	if len(images) == 0 {
+		return nil
+	}
+	out := make([]runners.RawImage, 0, len(images))
+	for _, image := range images {
+		raw := runners.RawImage{
+			URL:     strings.TrimSpace(image.URL),
+			Query:   strings.TrimSpace(image.Query),
+			Caption: strings.TrimSpace(image.Caption),
+		}
+		if raw.URL == "" && raw.Query == "" && raw.Caption == "" {
+			continue
+		}
+		out = append(out, raw)
+	}
+	return out
 }

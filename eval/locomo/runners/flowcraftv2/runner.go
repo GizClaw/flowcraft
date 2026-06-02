@@ -173,19 +173,20 @@ func (r *Runner) SaveRaw(ctx context.Context, scope runners.Scope, msgs []llm.Me
 func (r *Runner) SaveRawTurns(ctx context.Context, scope runners.Scope, turns []runners.RawTurn) (int, time.Duration, error) {
 	facts := make([]recall.TemporalFact, 0, len(turns))
 	for _, t := range turns {
-		if t.Content == "" {
+		text := runners.RenderRawTurnContent(t)
+		if text == "" {
 			continue
 		}
 		f := recall.TemporalFact{
 			Kind:    recall.FactNote,
-			Content: t.Content,
+			Content: text,
 		}
 		if t.EvidenceID != "" {
 			f.ID = t.EvidenceID
 			f.EvidenceRefs = []recall.EvidenceRef{{
 				ID:   t.EvidenceID,
 				Role: t.Role,
-				Text: t.Content,
+				Text: text,
 			}}
 		}
 		facts = append(facts, f)
@@ -193,12 +194,10 @@ func (r *Runner) SaveRawTurns(ctx context.Context, scope runners.Scope, turns []
 	return r.saveFacts(ctx, scope, facts)
 }
 
-// SaveSourceTurns implements runners.SourceTurnSaver. It converts each
-// RawTurn into a typed recall.TurnContext (parsing the optional
-// "[<time>] <speaker>:" prefix LoCoMo bakes into raw content) and
-// passes the typed channel through SaveRequest.Turns. The SDK
-// extractor handles JSONL rendering; this adapter only owns the
-// RawTurn -> TurnContext shape conversion.
+// SaveSourceTurns implements runners.SourceTurnSaver. It converts each RawTurn
+// into a typed recall.TurnContext and passes the typed channel through
+// SaveRequest.Turns. The SDK extractor handles JSONL rendering; this adapter
+// only owns the RawTurn -> TurnContext shape conversion.
 func (r *Runner) SaveSourceTurns(ctx context.Context, scope runners.Scope, turns []runners.RawTurn) (int, time.Duration, error) {
 	return r.SaveSourceTurnsWithContext(ctx, scope, turns, nil)
 }
@@ -231,46 +230,6 @@ func (r *Runner) saveFacts(ctx context.Context, scope runners.Scope, facts []rec
 		return 0, 0, nil
 	}
 	return r.runSave(ctx, scope, recall.SaveRequest{Facts: facts})
-}
-
-// SaveFacts persists already-extracted v2 facts. It is used by eval replay
-// paths that load facts.jsonl and rerun QA without paying extraction again.
-func (r *Runner) SaveFacts(ctx context.Context, scope runners.Scope, facts []recall.TemporalFact) (int, time.Duration, error) {
-	return r.saveFacts(ctx, scope, facts)
-}
-
-// SaveFactsWithTurns persists already-extracted facts while also replaying the
-// typed source turns that produced them. The turns rebuild the raw Observation
-// ledger for facts.jsonl QA replay; extraction must be disabled on this path so
-// replay does not mint new assertions from the same turns.
-func (r *Runner) SaveFactsWithTurns(ctx context.Context, scope runners.Scope, facts []recall.TemporalFact, turns []recall.TurnContext, observedAt time.Time) (int, time.Duration, error) {
-	if len(facts) == 0 && len(turns) == 0 {
-		return 0, 0, nil
-	}
-	if r.hasLLM && len(turns) > 0 {
-		return 0, 0, fmt.Errorf("flowcraftv2: SaveFactsWithTurns requires extractor-disabled replay")
-	}
-	if observedAt.IsZero() {
-		observedAt = observedAtFromTurns(turns)
-	}
-	return r.runSave(ctx, scope, recall.SaveRequest{
-		Facts:      facts,
-		Turns:      turns,
-		ObservedAt: observedAt,
-	})
-}
-
-func observedAtFromTurns(turns []recall.TurnContext) time.Time {
-	var out time.Time
-	for _, turn := range turns {
-		if turn.Time.IsZero() {
-			continue
-		}
-		if out.IsZero() || turn.Time.Before(out) {
-			out = turn.Time
-		}
-	}
-	return out
 }
 
 func (r *Runner) runSave(ctx context.Context, scope runners.Scope, req recall.SaveRequest) (int, time.Duration, error) {
@@ -414,7 +373,7 @@ func (r *Runner) drainSideEffects(ctx context.Context, scope runners.Scope) erro
 		return nil
 	}
 	recallScope := toRecallScope(scope)
-	for i := 0; i < 64; i++ {
+	for range 64 {
 		out, err := r.sideEffects.ProcessSideEffects(ctx, recall.SideEffectProcessOptions{
 			Scope: recallScope,
 			Limit: 128,
@@ -455,7 +414,7 @@ func (r *Runner) RecallAnswerContext(ctx context.Context, scope runners.Scope, q
 	if err != nil {
 		return nil, runners.AnswerContext{}, elapsed, err
 	}
-	return fromRecallArtifacts(hits), structuredAnswerContext(question, hits), elapsed, nil
+	return fromRecallArtifacts(hits), structuredAnswerContext(hits), elapsed, nil
 }
 
 // RecallAnswerContextWithStageAudit implements runners.AnswerContextStageAuditor.
@@ -464,7 +423,7 @@ func (r *Runner) RecallAnswerContextWithStageAudit(ctx context.Context, scope ru
 	if err != nil {
 		return nil, runners.AnswerContext{}, audit, elapsed, err
 	}
-	return fromRecallArtifacts(hits), structuredAnswerContext(question, hits), audit, elapsed, nil
+	return fromRecallArtifacts(hits), structuredAnswerContext(hits), audit, elapsed, nil
 }
 
 func (r *Runner) recallRaw(ctx context.Context, scope runners.Scope, query string, topK int, explain bool) ([]recall.Hit, runners.RecallStageAudit, time.Duration, error) {
@@ -537,13 +496,25 @@ func buildTurnContexts(turns []runners.RawTurn, includeAssistant bool) ([]recall
 	for i, t := range turns {
 		role := strings.TrimSpace(t.Role)
 		raw := strings.TrimSpace(t.Content)
-		if raw == "" {
+		if raw == "" && len(t.Images) == 0 {
 			continue
 		}
 		if !includeAssistant && model.Role(role) == model.RoleAssistant {
 			continue
 		}
-		ts, speaker, body := splitTurnPrefix(raw)
+		ts := strings.TrimSpace(t.Timestamp)
+		speaker := strings.TrimSpace(t.Speaker)
+		body := raw
+		fallbackTS, fallbackSpeaker, fallbackBody := splitTurnPrefix(raw)
+		if fallbackTS != "" || fallbackSpeaker != "" {
+			if ts == "" {
+				ts = fallbackTS
+			}
+			if speaker == "" {
+				speaker = fallbackSpeaker
+			}
+			body = fallbackBody
+		}
 		typedTime := parseLocomoTimestamp(ts)
 		if !typedTime.IsZero() && (observedAt.IsZero() || typedTime.Before(observedAt)) {
 			observedAt = typedTime
@@ -555,19 +526,16 @@ func buildTurnContexts(turns []runners.RawTurn, includeAssistant bool) ([]recall
 			Role:       role,
 			Speaker:    speaker,
 			Time:       typedTime,
-			Text:       body,
+			Text:       renderSourceTurnText(body, t.Images),
 		})
 	}
 	return out, observedAt
 }
 
-// splitTurnPrefix pulls the optional "[<time>] <speaker>: <body>"
-// prefix the LoCoMo convert step bakes into each turn's content.
-// Both the bracketed time and the trailing "speaker: " are stripped
-// from body so the text the LLM reads is clean prose; the same
-// information is reinjected via the typed Time / Speaker fields on
-// TurnContext. Returns ts="" and speaker="" when the prefix is
-// absent so the adapter degrades cleanly for raw chat dumps.
+// splitTurnPrefix is a legacy fallback for datasets that still embed
+// "[<time>] <speaker>: <body>" in Content. Current LoCoMo conversion carries
+// speaker and timestamp as structured fields, so prefix parsing should only
+// run for older JSONL files or raw chat dumps.
 func splitTurnPrefix(raw string) (ts, speaker, body string) {
 	body = raw
 	if strings.HasPrefix(body, "[") {

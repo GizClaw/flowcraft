@@ -29,19 +29,20 @@ type diagnosticsReport struct {
 	// fired across the run. The pct fields are the ratio over
 	// total_facts_seen so operators can read "kind keyword fallback
 	// owned X% of classifications" at a glance.
-	StructurizerCoverage structurizerCoverageReport `json:"structurizer_coverage"`
-	Compiled             factQualityReport          `json:"compiled_facts"`
-	Appended             factQualityReport          `json:"appended_facts"`
-	SaveDrops            map[string]int             `json:"save_drops,omitempty"`
-	HitRenderability     hitReport                  `json:"hit_renderability"`
-	RecallDrops          map[string]int             `json:"recall_drops,omitempty"`
-	SaveLatencyAvg       string                     `json:"save_latency_avg,omitempty"`
-	RecallLatencyAvg     string                     `json:"recall_latency_avg,omitempty"`
-	SaveStageLatency     map[string]latencyReport   `json:"save_stage_latency,omitempty"`
-	RecallStageLatency   map[string]latencyReport   `json:"recall_stage_latency,omitempty"`
-	RecallSourceLatency  map[string]latencyReport   `json:"recall_source_latency,omitempty"`
-	SourceActivation     map[string]int             `json:"source_activation,omitempty"`
-	SourceReturnedAv     map[string]int             `json:"source_returned_avg,omitempty"`
+	StructurizerCoverage structurizerCoverageReport  `json:"structurizer_coverage"`
+	ExtractorGuard       *diagnostics.ExtractorGuard `json:"extract_guard,omitempty"`
+	Compiled             factQualityReport           `json:"compiled_facts"`
+	Appended             factQualityReport           `json:"appended_facts"`
+	SaveDrops            map[string]int              `json:"save_drops,omitempty"`
+	HitRenderability     hitReport                   `json:"hit_renderability"`
+	RecallDrops          map[string]int              `json:"recall_drops,omitempty"`
+	SaveLatencyAvg       string                      `json:"save_latency_avg,omitempty"`
+	RecallLatencyAvg     string                      `json:"recall_latency_avg,omitempty"`
+	SaveStageLatency     map[string]latencyReport    `json:"save_stage_latency,omitempty"`
+	RecallStageLatency   map[string]latencyReport    `json:"recall_stage_latency,omitempty"`
+	RecallSourceLatency  map[string]latencyReport    `json:"recall_source_latency,omitempty"`
+	SourceActivation     map[string]int              `json:"source_activation,omitempty"`
+	SourceReturnedAv     map[string]int              `json:"source_returned_avg,omitempty"`
 	// Provenance: which sources actually surfaced final winners. The
 	// distinction between "source activated" and "source produced a
 	// final hit" is the answer to "is this projection pulling its
@@ -127,6 +128,7 @@ func writeDiagnosticsReport(path string, h *diagnostics.PipelineHealth) error {
 		InputFacts:           h.InputFacts,
 		InputCoverage:        toInputCoverageReport(h),
 		StructurizerCoverage: toStructurizerCoverageReport(h.StructurizerCoverage),
+		ExtractorGuard:       toExtractorGuardReport(h.ExtractorGuard),
 		Compiled:             toFactQualityReport(h.CompiledFacts),
 		Appended:             toFactQualityReport(h.AppendedFacts),
 		HitRenderability:     toHitReport(h.HitRenderability),
@@ -174,6 +176,21 @@ func writeDiagnosticsReport(path string, h *diagnostics.PipelineHealth) error {
 		return err
 	}
 	return os.WriteFile(path, b, 0o644)
+}
+
+func toExtractorGuardReport(g diagnostics.ExtractorGuard) *diagnostics.ExtractorGuard {
+	if g.Candidates == 0 {
+		return nil
+	}
+	g.RejectedFacts = nil
+	if len(g.ByReason) > 0 {
+		byReason := make(map[string]int, len(g.ByReason))
+		for reason, count := range g.ByReason {
+			byReason[reason] = count
+		}
+		g.ByReason = byReason
+	}
+	return &g
 }
 
 func toLatencyReports(stats map[string]diagnostics.LatencyStats) map[string]latencyReport {

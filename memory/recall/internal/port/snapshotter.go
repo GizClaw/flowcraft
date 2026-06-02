@@ -16,12 +16,9 @@ type EntitySnapshotter interface {
 // (e.g. the ingest pipeline) match canonical forms case-insensitively
 // to fold case / alias drift into the same canonical entity.
 //
-// Weight is an optional "query focus" signal used by the read-path plan stage
-// when it merges per-sub-scope snapshots into the global planner input.
-// Per-scope EntitySnapshotter implementations leave it zero; the merge helper
-// bumps it to record how many sub-scopes the same canonical entity surfaced in,
-// so the planner can boost entity-aware lenses (entity / relation / graph /
-// profile) proportionally.
+// Weight records how many sub-scopes surfaced the same canonical entity when
+// the read-path plan stage merges per-sub-scope snapshots into the global
+// planner input. The current rule-based planner keeps it diagnostic-only.
 type EntitySnapshot struct {
 	Canonical string
 	Aliases   []string

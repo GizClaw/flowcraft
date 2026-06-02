@@ -99,6 +99,32 @@ type ExtractorTokenUsage struct {
 	Stages                 []ExtractorStageTokenUsage `json:"stages,omitempty"`
 }
 
+// ExtractorGuard records post-LLM candidate filtering for one Extract call.
+// It answers "did the LLM omit this fact, or did deterministic grounding
+// reject it?" without making saved facts carry empty guard fields.
+type ExtractorGuard struct {
+	Candidates    int                    `json:"candidates,omitempty"`
+	Accepted      int                    `json:"accepted,omitempty"`
+	Rejected      int                    `json:"rejected,omitempty"`
+	ByReason      map[string]int         `json:"by_reason,omitempty"`
+	RejectedFacts []GuardedExtractedFact `json:"rejected_facts,omitempty"`
+}
+
+// GuardedExtractedFact is the minimal rejected LLM candidate shape exposed in
+// diagnostics. It mirrors the extractor wire fields plus a deterministic guard
+// reason.
+type GuardedExtractedFact struct {
+	Content     string   `json:"content,omitempty"`
+	Kind        string   `json:"kind,omitempty"`
+	Subject     string   `json:"subject,omitempty"`
+	Predicate   string   `json:"predicate,omitempty"`
+	Object      string   `json:"object,omitempty"`
+	Entities    []string `json:"entities,omitempty"`
+	SourceIDs   []string `json:"source_ids,omitempty"`
+	Quote       string   `json:"quote,omitempty"`
+	GuardReason string   `json:"guard_reason"`
+}
+
 // DropReason categorises why a candidate did not survive read-path
 // processing. Used by RecallTrace for failure attribution
 // (docs §10.4).

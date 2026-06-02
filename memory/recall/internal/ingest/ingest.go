@@ -109,13 +109,17 @@ func (c *defaultIngestor) Compile(ctx context.Context, input port.IngestInput) (
 	}
 
 	usageAcc := newExtractorUsageAccumulator()
-	extracted, err := c.stages.Extractor.Extract(withExtractorUsageAccumulator(ctx, usageAcc), input)
+	guardAcc := newExtractorGuardAccumulator()
+	extractCtx := withExtractorUsageAccumulator(ctx, usageAcc)
+	extractCtx = withExtractorGuardAccumulator(extractCtx, guardAcc)
+	extracted, err := c.stages.Extractor.Extract(extractCtx, input)
 	if err != nil {
 		return port.IngestResult{}, fmt.Errorf("recall ingest: extract: %w", err)
 	}
 
 	var result port.IngestResult
 	result.ExtractorTokenUsage = usageAcc.snapshot()
+	result.ExtractorGuard = guardAcc.snapshot()
 	for i := range extracted {
 		f := extracted[i]
 		f.Scope = input.Scope

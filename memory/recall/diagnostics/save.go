@@ -39,6 +39,7 @@ type SaveDiagnostics struct {
 	InputCoverage        InputCoverage
 	StructurizerCoverage diagnostic.StructurizerCoverage
 	ExtractorTokenUsage  ExtractorTokenUsage
+	ExtractorGuard       ExtractorGuard
 	Compiled             FactQuality
 	Appended             FactQuality
 	DropsByStage         map[FailureStage]int
@@ -50,6 +51,8 @@ type SaveDiagnostics struct {
 type TokenUsage = diagnostic.TokenUsage
 type ExtractorStageTokenUsage = diagnostic.ExtractorStageTokenUsage
 type ExtractorTokenUsage = diagnostic.ExtractorTokenUsage
+type ExtractorGuard = diagnostic.ExtractorGuard
+type GuardedExtractedFact = diagnostic.GuardedExtractedFact
 
 // DiagnoseSave produces a per-stage health view from trace.Stages.
 // The request is inspected for typed-channel coverage (Tier / Turns
@@ -62,6 +65,7 @@ func DiagnoseSave(req domain.SaveRequest, trace domain.SaveTrace) SaveDiagnostic
 		InputCoverage:        cov,
 		StructurizerCoverage: diagnostic.ExtractStructurizerCoverage(stages),
 		ExtractorTokenUsage:  extractorTokenUsage(stages),
+		ExtractorGuard:       extractorGuard(stages),
 		Compiled:             factQualityFromIngest(stages),
 		Appended:             factQualityFromResolve(stages),
 		TotalLatency:         SaveLatency(trace),
@@ -102,6 +106,20 @@ func inputCoverage(req domain.SaveRequest, stages []diagnostic.StageDiagnostic) 
 		}
 	}
 	return cov
+}
+
+func extractorGuard(stages []diagnostic.StageDiagnostic) ExtractorGuard {
+	for _, st := range stages {
+		if st.Stage != "ingest" && st.Stage != "structured_ingest" {
+			continue
+		}
+		d, ok := st.Detail.(diagnostic.IngestDetail)
+		if !ok {
+			continue
+		}
+		return d.ExtractorGuard
+	}
+	return ExtractorGuard{}
 }
 
 func extractorTokenUsage(stages []diagnostic.StageDiagnostic) ExtractorTokenUsage {

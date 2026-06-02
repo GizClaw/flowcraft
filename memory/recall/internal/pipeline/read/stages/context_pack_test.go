@@ -33,12 +33,6 @@ func (r *inspectEvidenceReranker) Rerank(_ context.Context, _ string, hits []dom
 	return hits, nil
 }
 
-type emptyReranker struct{}
-
-func (emptyReranker) Rerank(_ context.Context, _ string, _ []domain.Hit) ([]domain.Hit, error) {
-	return nil, nil
-}
-
 type cancelReranker struct{}
 
 func (cancelReranker) Rerank(_ context.Context, _ string, hits []domain.Hit) ([]domain.Hit, error) {
@@ -155,41 +149,7 @@ func TestContextPackSkipsSnapshotsWithoutTrace(t *testing.T) {
 	}
 }
 
-func TestContextPackKeepsQueryRelevantContext(t *testing.T) {
-	stage := NewContextPack(nil)
-	state := &read.ReadState{
-		Plan:  &domain.QueryPlan{TotalCap: 1},
-		Query: domain.Query{Text: "When did Alice buy 2 ceramic figurines?"},
-		Ranked: []domain.ContextItem{
-			{
-				Candidate: domain.Candidate{Kind: domain.GraphNodeAssertion, ID: "distractor", Source: "entity", Score: 0.9, EvidenceIDs: []string{"e1"}},
-				Fact:      domain.TemporalFact{ID: "distractor", Kind: domain.KindState, Content: "Alice likes Paris."},
-				Evidence:  []domain.EvidenceRef{{ID: "e1", Text: "Alice likes Paris."}},
-			},
-		},
-		AfterTrust: []domain.ContextItem{
-			{
-				Candidate: domain.Candidate{Kind: domain.GraphNodeAssertion, ID: "distractor", Source: "entity", Score: 0.9, EvidenceIDs: []string{"e1"}},
-				Fact:      domain.TemporalFact{ID: "distractor", Kind: domain.KindState, Content: "Alice likes Paris."},
-				Evidence:  []domain.EvidenceRef{{ID: "e1", Text: "Alice likes Paris."}},
-			},
-			{
-				Candidate: domain.Candidate{Kind: domain.GraphNodeAssertion, ID: "specific", Source: "retrieval", Score: 0.2, EvidenceIDs: []string{"e2"}},
-				Fact:      domain.TemporalFact{ID: "specific", Kind: domain.KindEvent, Content: "Alice bought 2 ceramic figurines."},
-				Evidence:  []domain.EvidenceRef{{ID: "e2", Text: "On 2023-05-07 Alice bought 2 ceramic figurines."}},
-			},
-		},
-	}
-
-	if _, err := stage.Run(context.Background(), state); err != nil {
-		t.Fatalf("Run returned error: %v", err)
-	}
-	if len(state.Hits) != 1 || state.Hits[0].Fact.ID != "specific" {
-		t.Fatalf("context packer should keep query-relevant evidence, got %+v", state.Hits)
-	}
-}
-
-func TestContextPackKeepsBestContextForSharedEvidence(t *testing.T) {
+func TestContextPackKeepsHighestScoreContextForSharedEvidence(t *testing.T) {
 	stage := NewContextPack(nil)
 	shared := domain.EvidenceRef{ID: "e1", Text: "I painted that lake sunrise last year!"}
 	state := &read.ReadState{
@@ -212,453 +172,8 @@ func TestContextPackKeepsBestContextForSharedEvidence(t *testing.T) {
 	if _, err := stage.Run(context.Background(), state); err != nil {
 		t.Fatalf("Run returned error: %v", err)
 	}
-	if len(state.Hits) != 1 || state.Hits[0].Fact.ID != "event" {
-		t.Fatalf("shared evidence representative should keep the more query-relevant context, got %+v", state.Hits)
-	}
-}
-
-func TestContextPackCoversQueryAnchors(t *testing.T) {
-	stage := NewContextPack(nil)
-	query := "What books and instruments does Alice like?"
-	weak := []domain.ContextItem{
-		weakContextItem("weak-1", "e1", "Bob visited Paris."),
-		weakContextItem("weak-2", "e2", "Carol likes hiking."),
-		weakContextItem("weak-3", "e3", "Dylan cooked soup."),
-		weakContextItem("weak-4", "e4", "Eve bought woodworking."),
-	}
-	strong := []domain.ContextItem{
-		strongContextItem("book", "e5", "Alice likes books such as Charlotte's Web."),
-		strongContextItem("violin", "e6", "Alice likes instruments such as the violin."),
-		strongContextItem("clarinet", "e7", "Alice likes instruments such as the clarinet."),
-		strongContextItem("guitar", "e8", "Alice likes instruments such as the guitar."),
-	}
-	state := &read.ReadState{
-		Plan:       &domain.QueryPlan{TotalCap: 4},
-		Query:      domain.Query{Text: query},
-		Ranked:     append([]domain.ContextItem(nil), weak...),
-		AfterTrust: append(append([]domain.ContextItem(nil), weak...), strong...),
-	}
-
-	if _, err := stage.Run(context.Background(), state); err != nil {
-		t.Fatalf("Run returned error: %v", err)
-	}
-	got := map[string]bool{}
-	for _, hit := range state.Hits {
-		got[hit.Fact.ID] = true
-	}
-	if !got["book"] {
-		t.Fatalf("expected context covering the books anchor, got %+v", state.Hits)
-	}
-	instrumentContexts := 0
-	for _, id := range []string{"violin", "clarinet", "guitar"} {
-		if got[id] {
-			instrumentContexts++
-		}
-	}
-	if instrumentContexts < 2 {
-		t.Fatalf("expected diverse context covering instruments, got %+v", state.Hits)
-	}
-}
-
-func TestContextPackUsesWiderPoolForCoverage(t *testing.T) {
-	stage := NewContextPack(nil)
-	state := &read.ReadState{
-		Plan:  &domain.QueryPlan{TotalCap: 2},
-		Query: domain.Query{Text: "When did Alice buy 2 ceramic figurines?"},
-		Ranked: []domain.ContextItem{
-			weakContextItem("weak-1", "e1", "Bob visited Paris."),
-			weakContextItem("weak-2", "e2", "Carol likes hiking."),
-		},
-		AfterTrust: []domain.ContextItem{
-			weakContextItem("weak-1", "e1", "Bob visited Paris."),
-			weakContextItem("weak-2", "e2", "Carol likes hiking."),
-			{
-				Candidate: domain.Candidate{Kind: domain.GraphNodeAssertion, ID: "specific", Source: "retrieval", Score: 0.15, EvidenceIDs: []string{"e3"}},
-				Fact:      domain.TemporalFact{ID: "specific", Kind: domain.KindEvent, Content: "Alice bought 2 ceramic figurines."},
-				Evidence:  []domain.EvidenceRef{{ID: "e3", Text: "On 2023-05-07 Alice bought 2 ceramic figurines."}},
-			},
-		},
-	}
-
-	if _, err := stage.Run(context.Background(), state); err != nil {
-		t.Fatalf("Run returned error: %v", err)
-	}
-	got := map[string]bool{}
-	for _, hit := range state.Hits {
-		got[hit.Fact.ID] = true
-	}
-	if !got["specific"] {
-		t.Fatalf("context packer should keep relevant evidence from the wider pool, got %+v", state.Hits)
-	}
-}
-
-func TestContextPackLocksTemporalCoreBeforeMMRFill(t *testing.T) {
-	stage := NewContextPack(nil)
-	state := &read.ReadState{
-		Plan:  &domain.QueryPlan{TotalCap: 2},
-		Query: domain.Query{Text: "When did Alice buy ceramic figurines?"},
-		Ranked: []domain.ContextItem{
-			contextItemWithSource("purchase-no-time", "e1", "retrieval", 0.95, "Alice bought ceramic figurines."),
-			contextItemWithSource("distractor", "e2", "entity", 0.90, "Alice likes woodworking class."),
-		},
-		AfterTrust: []domain.ContextItem{
-			contextItemWithSource("purchase-no-time", "e1", "retrieval", 0.95, "Alice bought ceramic figurines."),
-			contextItemWithSource("distractor", "e2", "entity", 0.90, "Alice likes woodworking class."),
-			contextItemWithSource("purchase-time", "e3", "retrieval", 0.20, "On 2023-05-07 Alice bought ceramic figurines."),
-		},
-	}
-
-	if _, err := stage.Run(context.Background(), state); err != nil {
-		t.Fatalf("Run returned error: %v", err)
-	}
-	if len(state.Hits) != 2 {
-		t.Fatalf("hits = %+v", state.Hits)
-	}
-	if state.Hits[0].Fact.ID != "purchase-time" {
-		t.Fatalf("temporal core evidence should be locked before MMR fill, got %+v", state.Hits)
-	}
-}
-
-func TestContextPackRescuesExactSourcePhraseAnswerCandidate(t *testing.T) {
-	stage := NewContextPack(nil)
-	ranked := []domain.ContextItem{
-		contextItemWithStructuredFact("book-club", "e1", "retrieval", 0.95, "Jordan's favorite childhood club was a reading group.", "Jordan", "favorite", "reading group"),
-		contextItemWithStructuredFact("library", "e2", "entity", 0.93, "Jordan talked about childhood library visits.", "Jordan", "talked_about", "library visits"),
-		contextItemWithStructuredFact("school", "e3", "graph", 0.91, "Jordan discussed books she read at school.", "Jordan", "discussed", "school books"),
-		contextItemWithStructuredFact("painting", "e4", "retrieval", 0.89, "Jordan liked painting as a child.", "Jordan", "liked", "painting"),
-		contextItemWithStructuredFact("woodworking", "e5", "entity", 0.87, "Jordan's favorite creative hobby was woodworking.", "Jordan", "favorite", "woodworking"),
-	}
-	answer := contextItemWithStructuredFact(
-		"charlottes-web",
-		"e6",
-		"retrieval",
-		0.05,
-		"Jordan mentioned childhood reading. Exact source phrase: \"Charlotte's Web\".",
-		"Jordan",
-		"favorite_book",
-		"Charlotte's Web",
-	)
-	answer.Evidence = []domain.EvidenceRef{{ID: "e6", Text: "As a kid, I loved reading \"Charlotte's Web\"."}}
-	state := &read.ReadState{
-		Plan:       &domain.QueryPlan{TotalCap: 5},
-		Query:      domain.Query{Text: "What was Jordan's favorite book from childhood?"},
-		Ranked:     ranked,
-		AfterTrust: append(append([]domain.ContextItem(nil), ranked...), answer),
-	}
-
-	if _, err := stage.Run(context.Background(), state); err != nil {
-		t.Fatalf("Run returned error: %v", err)
-	}
-	got := map[string]bool{}
-	for _, hit := range state.Hits {
-		got[hit.Fact.ID] = true
-	}
-	if !got["charlottes-web"] {
-		t.Fatalf("exact source phrase answer candidate should be locked before MMR fill, got %+v", state.Hits)
-	}
-}
-
-func TestContextPackUsesFactContentWhenEvidenceIsThin(t *testing.T) {
-	stage := NewContextPack(nil)
-	state := &read.ReadState{
-		Plan:  &domain.QueryPlan{TotalCap: 1},
-		Query: domain.Query{Text: "What instrument does Alice play?"},
-		Ranked: []domain.ContextItem{
-			weakContextItem("weak", "e1", "Bob visited Paris."),
-		},
-		AfterTrust: []domain.ContextItem{
-			weakContextItem("weak", "e1", "Bob visited Paris."),
-			{
-				Candidate: domain.Candidate{Kind: domain.GraphNodeAssertion, ID: "instrument", Source: "graph", Score: 0.1, EvidenceIDs: []string{"e2"}},
-				Fact: domain.TemporalFact{
-					ID:        "instrument",
-					Kind:      domain.KindPreference,
-					Content:   "Alice plays the violin.",
-					Subject:   "Alice",
-					Predicate: "plays",
-					Object:    "violin",
-				},
-				Evidence: []domain.EvidenceRef{{ID: "e2", Text: "She mentioned it."}},
-			},
-		},
-	}
-
-	if _, err := stage.Run(context.Background(), state); err != nil {
-		t.Fatalf("Run returned error: %v", err)
-	}
-	if len(state.Hits) != 1 || state.Hits[0].Fact.ID != "instrument" {
-		t.Fatalf("context packer should score fact content as well as evidence text, got %+v", state.Hits)
-	}
-}
-
-func TestContextPackKeepsCollectionSiblings(t *testing.T) {
-	stage := NewContextPack(nil)
-	state := &read.ReadState{
-		Plan:  &domain.QueryPlan{TotalCap: 2},
-		Query: domain.Query{Text: "What items has Alice bought?"},
-		Ranked: []domain.ContextItem{
-			contextItemWithSource("figurines", "e1", "retrieval", 0.90, "Alice bought ceramic figurines."),
-			contextItemWithSource("paris", "e2", "entity", 0.88, "Alice likes Paris."),
-		},
-		AfterTrust: []domain.ContextItem{
-			contextItemWithSource("figurines", "e1", "retrieval", 0.90, "Alice bought ceramic figurines."),
-			contextItemWithSource("paris", "e2", "entity", 0.88, "Alice likes Paris."),
-			contextItemWithSource("shoes", "e3", "retrieval", 0.20, "Alice bought red shoes."),
-		},
-	}
-
-	if _, err := stage.Run(context.Background(), state); err != nil {
-		t.Fatalf("Run returned error: %v", err)
-	}
-	got := map[string]bool{}
-	for _, hit := range state.Hits {
-		got[hit.Fact.ID] = true
-	}
-	if !got["figurines"] || !got["shoes"] {
-		t.Fatalf("collection packing should keep sibling purchased items, got %+v", state.Hits)
-	}
-}
-
-func TestContextPackPreservesLowScoreSetSiblings(t *testing.T) {
-	stage := NewContextPack(nil)
-	state := &read.ReadState{
-		Plan:  &domain.QueryPlan{TotalCap: 3},
-		Query: domain.Query{Text: "What pets does Jordan have?"},
-		Ranked: []domain.ContextItem{
-			contextItemWithStructuredFact("bailey", "e1", "retrieval", 0.90, "Jordan has a cat named Bailey.", "Jordan", "has_pet", "Bailey"),
-			contextItemWithStructuredFact("hiking", "e2", "graph", 0.88, "Jordan went hiking with her family.", "Jordan", "went", "hiking"),
-			contextItemWithStructuredFact("woodworking", "e3", "entity", 0.86, "Jordan enjoys woodworking class.", "Jordan", "enjoys", "woodworking"),
-		},
-		AfterTrust: []domain.ContextItem{
-			contextItemWithStructuredFact("bailey", "e1", "retrieval", 0.90, "Jordan has a cat named Bailey.", "Jordan", "has_pet", "Bailey"),
-			contextItemWithStructuredFact("hiking", "e2", "graph", 0.88, "Jordan went hiking with her family.", "Jordan", "went", "hiking"),
-			contextItemWithStructuredFact("woodworking", "e3", "entity", 0.86, "Jordan enjoys woodworking class.", "Jordan", "enjoys", "woodworking"),
-			contextItemWithStructuredFact("oliver", "e4", "retrieval", 0.12, "Jordan has a pet dog named Oliver.", "Jordan", "has_pet", "Oliver"),
-			contextItemWithStructuredFact("luna", "e5", "retrieval", 0.10, "Jordan has a pet dog named Luna.", "Jordan", "has_pet", "Luna"),
-		},
-	}
-
-	if _, err := stage.Run(context.Background(), state); err != nil {
-		t.Fatalf("Run returned error: %v", err)
-	}
-	got := map[string]bool{}
-	for _, hit := range state.Hits {
-		got[hit.Fact.ID] = true
-	}
-	for _, id := range []string{"bailey", "oliver", "luna"} {
-		if !got[id] {
-			t.Fatalf("set-completion packing should preserve low-score sibling %q, got %+v", id, state.Hits)
-		}
-	}
-}
-
-func TestContextPackKeepsBridgeAssociatedEvidence(t *testing.T) {
-	stage := NewContextPack(nil)
-	state := &read.ReadState{
-		Plan:  &domain.QueryPlan{TotalCap: 2},
-		Query: domain.Query{Text: "Where did Alice buy the necklace that she wore?"},
-		Ranked: []domain.ContextItem{
-			contextItemWithSource("wore-necklace", "D1:1", "retrieval", 0.90, "Alice wore the necklace to dinner."),
-			contextItemWithSource("dog", "D2:1", "entity", 0.88, "Alice walked her dog."),
-		},
-		AfterTrust: []domain.ContextItem{
-			contextItemWithSource("wore-necklace", "D1:1", "retrieval", 0.90, "Alice wore the necklace to dinner."),
-			contextItemWithSource("dog", "D2:1", "entity", 0.88, "Alice walked her dog."),
-			contextItemWithSource("bought-necklace", "D1:2", "retrieval", 0.20, "Alice bought the necklace in Paris."),
-		},
-	}
-
-	if _, err := stage.Run(context.Background(), state); err != nil {
-		t.Fatalf("Run returned error: %v", err)
-	}
-	got := map[string]bool{}
-	for _, hit := range state.Hits {
-		got[hit.Fact.ID] = true
-	}
-	if !got["wore-necklace"] || !got["bought-necklace"] {
-		t.Fatalf("bridge packing should keep associated evidence from the same group, got %+v", state.Hits)
-	}
-}
-
-func TestContextPackerSignalCoverageReplacesWeakDuplicateContext(t *testing.T) {
-	features := domain.QueryFeatures{
-		Tokens: map[string]struct{}{
-			"alice":       {},
-			"books":       {},
-			"instruments": {},
-		},
-	}
-	queryFeatures := newContextPackQueryFeatures("", features)
-	selectedCandidates := []contextPackCandidate{
-		coverageCandidate("generic-1", 6, 0.20, map[string]struct{}{"alice": {}}),
-		coverageCandidate("generic-2", 7, 0.18, map[string]struct{}{"alice": {}}),
-	}
-	selected := contextPackHits(selectedCandidates)
-	rescue := coverageCandidate("rescue", 15, 0.55, map[string]struct{}{
-		"alice":       {},
-		"books":       {},
-		"instruments": {},
-		"violin":      {},
-	})
-
-	got, gotCandidates := contextPackEnsureSignalCoverage(queryFeatures, append(selectedCandidates, rescue), selected, selectedCandidates)
-	if len(got) != 2 || len(gotCandidates) != 2 {
-		t.Fatalf("context coverage lengths = hits:%d candidates:%d", len(got), len(gotCandidates))
-	}
-	found := false
-	for _, hit := range got {
-		if hit.Fact.ID == "rescue" {
-			found = true
-		}
-	}
-	if !found {
-		t.Fatalf("context packer should add the candidate covering missing query anchors, got %+v", got)
-	}
-}
-
-func TestContextPackAnswerabilityCoverageAddsShortAnswerCandidate(t *testing.T) {
-	query := newContextPackQueryFeatures("What workshop did Avery attend?", domain.QueryFeatures{
-		Tokens: map[string]struct{}{"workshop": {}, "avery": {}, "attend": {}},
-	})
-	selectedCandidates := []contextPackCandidate{
-		answerabilityCandidate("generic-1", 8, 0.24, 0.30, domain.TemporalFact{ID: "generic-1", Kind: domain.KindState, Content: "Avery attended an event."}, ""),
-		answerabilityCandidate("generic-2", 9, 0.20, 0.28, domain.TemporalFact{ID: "generic-2", Kind: domain.KindState, Content: "Avery likes painting."}, ""),
-	}
-	selected := contextPackHits(selectedCandidates)
-	rescue := answerabilityCandidate("workshop", 15, 0.30, 0.30, domain.TemporalFact{
-		ID:        "workshop",
-		Kind:      domain.KindEvent,
-		Content:   "Avery attended an community counseling workshop.",
-		Subject:   "Avery",
-		Predicate: "attended",
-		Object:    "community counseling workshop",
-	}, "")
-
-	got, _ := contextPackEnsureAnswerabilityCoverage(query, append(selectedCandidates, rescue), selected, selectedCandidates, 2)
-	found := false
-	for _, hit := range got {
-		if hit.Fact.ID == "workshop" {
-			found = true
-		}
-	}
-	if !found {
-		t.Fatalf("answerability guard should add short-answer candidate, got %+v", got)
-	}
-	if len(got) != 2 {
-		t.Fatalf("answerability guard must preserve cap, got %d", len(got))
-	}
-}
-
-func TestContextPackAnswerabilityCoverageCompletesBridgeEvidenceGroup(t *testing.T) {
-	query := newContextPackQueryFeatures("Where did Alice buy the necklace that she wore?", domain.QueryFeatures{
-		Tokens: map[string]struct{}{"alice": {}, "buy": {}, "necklace": {}, "wore": {}},
-	})
-	selectedCandidates := []contextPackCandidate{
-		answerabilityCandidate("wore", 0, 0.45, 0.60, domain.TemporalFact{ID: "wore", Kind: domain.KindState, Content: "Alice wore the necklace."}, "D1"),
-		answerabilityCandidate("dog", 1, 0.20, 0.55, domain.TemporalFact{ID: "dog", Kind: domain.KindState, Content: "Alice walked her dog."}, "D2"),
-	}
-	selected := contextPackHits(selectedCandidates)
-	rescue := answerabilityCandidate("bought", 12, 0.30, 0.50, domain.TemporalFact{
-		ID:       "bought",
-		Kind:     domain.KindState,
-		Content:  "Alice bought the necklace in Paris.",
-		Subject:  "Alice",
-		Object:   "Paris",
-		Location: "Paris",
-	}, "D1")
-
-	got, _ := contextPackEnsureAnswerabilityCoverage(query, append(selectedCandidates, rescue), selected, selectedCandidates, 2)
-	found := false
-	for _, hit := range got {
-		if hit.Fact.ID == "bought" {
-			found = true
-		}
-	}
-	if !found {
-		t.Fatalf("answerability guard should complete bridge evidence group, got %+v", got)
-	}
-	if len(got) != 2 {
-		t.Fatalf("answerability guard must preserve cap, got %d", len(got))
-	}
-}
-
-func TestContextPackRerankerPathUsesContextPacker(t *testing.T) {
-	stage := NewContextPack(reorderReranker{})
-	state := &read.ReadState{
-		Plan:  &domain.QueryPlan{TotalCap: 1},
-		Query: domain.Query{Text: "What instrument does Alice play?"},
-		Ranked: []domain.ContextItem{
-			weakContextItem("weak", "e1", "Bob visited Paris."),
-		},
-		AfterTrust: []domain.ContextItem{
-			weakContextItem("weak", "e1", "Bob visited Paris."),
-			{
-				Candidate: domain.Candidate{Kind: domain.GraphNodeAssertion, ID: "instrument", Source: "graph", Score: 0.1, EvidenceIDs: []string{"e2"}},
-				Fact: domain.TemporalFact{
-					ID:        "instrument",
-					Kind:      domain.KindPreference,
-					Content:   "Alice plays the violin.",
-					Subject:   "Alice",
-					Predicate: "plays",
-					Object:    "violin",
-				},
-				Evidence: []domain.EvidenceRef{{ID: "e2", Text: "She mentioned it."}},
-			},
-		},
-	}
-
-	if _, err := stage.Run(context.Background(), state); err != nil {
-		t.Fatalf("Run returned error: %v", err)
-	}
-	if len(state.Hits) != 1 || state.Hits[0].Fact.ID != "instrument" {
-		t.Fatalf("reranker path should use context packer, got %+v", state.Hits)
-	}
-}
-
-func answerabilityCandidate(id string, rank int, textScore, score float64, fact domain.TemporalFact, group string) contextPackCandidate {
-	if fact.ID == "" {
-		fact.ID = id
-	}
-	return contextPackCandidate{
-		hit:           domain.Hit{Fact: fact, Score: score},
-		score:         score,
-		baseScore:     score,
-		textScore:     textScore,
-		queryRank:     rank,
-		evidenceGroup: group,
-	}
-}
-
-func TestContextPackFallsBackToPoolWhenRerankerReturnsEmpty(t *testing.T) {
-	stage := NewContextPack(emptyReranker{})
-	state := &read.ReadState{
-		Plan:  &domain.QueryPlan{TotalCap: 1},
-		Query: domain.Query{Text: "What instrument does Alice play?"},
-		Ranked: []domain.ContextItem{
-			weakContextItem("weak", "e1", "Bob visited Paris."),
-		},
-		AfterTrust: []domain.ContextItem{
-			weakContextItem("weak", "e1", "Bob visited Paris."),
-			{
-				Candidate: domain.Candidate{Kind: domain.GraphNodeAssertion, ID: "instrument", Source: "graph", Score: 0.1, EvidenceIDs: []string{"e2"}},
-				Fact: domain.TemporalFact{
-					ID:        "instrument",
-					Kind:      domain.KindPreference,
-					Content:   "Alice plays the violin.",
-					Subject:   "Alice",
-					Predicate: "plays",
-					Object:    "violin",
-				},
-				Evidence: []domain.EvidenceRef{{ID: "e2", Text: "She mentioned it."}},
-			},
-		},
-	}
-
-	if _, err := stage.Run(context.Background(), state); err != nil {
-		t.Fatalf("Run returned error: %v", err)
-	}
-	if len(state.Hits) != 1 || state.Hits[0].Fact.ID != "instrument" {
-		t.Fatalf("context packer should fall back to the wider pool when reranker returns empty, got %+v", state.Hits)
+	if len(state.Hits) != 1 || state.Hits[0].Fact.ID != "state" {
+		t.Fatalf("shared evidence representative should keep the highest-score context, got %+v", state.Hits)
 	}
 }
 
@@ -715,10 +230,8 @@ func TestContextPackDedupesSameEvidence(t *testing.T) {
 	}
 }
 
-func TestContextPackRepresentativeReplacementDoesNotPoisonSeenFacts(t *testing.T) {
-	input := newContextPackInput("What did Alice buy?", domain.QueryFeatures{
-		Tokens: map[string]struct{}{"alice": {}, "buy": {}},
-	}, time.Now(), 3)
+func TestContextPackSharedEvidenceRepresentativeDoesNotUseQuerySurface(t *testing.T) {
+	input := newContextPackInput(3)
 	hits := []domain.Hit{
 		{
 			Fact:     domain.TemporalFact{ID: "old", Kind: domain.KindState, Content: "Bob visited Paris."},
@@ -742,8 +255,8 @@ func TestContextPackRepresentativeReplacementDoesNotPoisonSeenFacts(t *testing.T
 	for _, cand := range candidates {
 		got[cand.hit.Fact.ID] = true
 	}
-	if !got["new"] || !got["old"] {
-		t.Fatalf("replacing shared-evidence representative must not suppress old fact's other evidence, got %+v", candidates)
+	if got["new"] || !got["old"] {
+		t.Fatalf("shared-evidence representative should preserve highest-score fact without query-surface replacement, got %+v", candidates)
 	}
 }
 
@@ -781,38 +294,6 @@ func TestContextPackKeepsSourceDiversity(t *testing.T) {
 	}
 }
 
-func TestContextPackPromotesStrongObservationEvidenceAnchor(t *testing.T) {
-	hits := []domain.Hit{
-		{
-			Fact:     domain.TemporalFact{ID: "distractor-a", Kind: domain.KindState, Content: "Bob likes Paris."},
-			Score:    0.95,
-			Sources:  []string{"retrieval"},
-			Evidence: []domain.EvidenceRef{{ID: "e1", Text: "Bob likes Paris."}},
-		},
-		{
-			Fact:     domain.TemporalFact{ID: "distractor-b", Kind: domain.KindState, Content: "Carol enjoys hiking."},
-			Score:    0.90,
-			Sources:  []string{"entity"},
-			Evidence: []domain.EvidenceRef{{ID: "e2", Text: "Carol enjoys hiking."}},
-		},
-		{
-			Ref: domain.CandidateRef{Kind: domain.GraphNodeObservation, ID: "obs"},
-			Observation: domain.Observation{
-				ID:   "obs",
-				Text: "Alice bought ceramic figurines yesterday.",
-			},
-			Score:    0.05,
-			Sources:  []string{"observation"},
-			Evidence: []domain.EvidenceRef{{ID: "obs", ObservationID: "obs", Text: "Alice bought ceramic figurines yesterday."}},
-		},
-	}
-
-	got := packRecallContext("What did Alice buy?", hits, hits, 2)
-	if len(got) == 0 || got[0].Ref.Kind != domain.GraphNodeObservation {
-		t.Fatalf("strong observation evidence should become the primary anchor, got %+v", got)
-	}
-}
-
 func TestContextPackDoesNotPromoteWeakObservationAnchor(t *testing.T) {
 	hits := []domain.Hit{
 		{
@@ -839,7 +320,7 @@ func TestContextPackDoesNotPromoteWeakObservationAnchor(t *testing.T) {
 		},
 	}
 
-	got := packRecallContext("What did Alice buy?", hits, hits, 2)
+	got := packRecallContextWithFeaturesAndDetail(hits, hits, 2)
 	if len(got) == 0 || got[0].Ref.Kind == domain.GraphNodeObservation {
 		t.Fatalf("weak observation evidence should not be promoted as primary anchor, got %+v", got)
 	}
@@ -876,8 +357,8 @@ func TestBuildGroundedHitsGroundsSelectedEvidenceWithRelevantFactRefs(t *testing
 		t.Fatalf("hits = %+v", state.Hits)
 	}
 	got := evidenceIDs(state.Hits[0].Evidence)
-	want := []string{"e1", "e2"}
-	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+	want := []string{"e1", "e2", "e3"}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] || got[2] != want[2] {
 		t.Fatalf("grounding evidence ids = %+v, want %+v", got, want)
 	}
 }
@@ -898,19 +379,19 @@ func TestBuildGroundedHitsEvidenceIsCapped(t *testing.T) {
 	}
 }
 
-func TestBuildGroundedHitsSkipsWeakStopwordOrEntityOnlyRefs(t *testing.T) {
+func TestBuildGroundedHitsAppendsSupportingRefsInSourceOrder(t *testing.T) {
 	refs := []domain.EvidenceRef{
 		{ID: "e1", Text: "Jordan has two cats named Oscar and Luna."},
 		{ID: "e2", Text: "Jordan went hiking with her family."},
 		{ID: "e3", Text: "The woodworking class was relaxing."},
 	}
 	got := selectGroundingEvidence("What pets does Jordan have?", []domain.EvidenceRef{refs[0]}, refs)
-	if ids := evidenceIDs(got); len(ids) != 1 || ids[0] != "e1" {
-		t.Fatalf("weak entity-only refs should not be added, got %+v", ids)
+	if ids := evidenceIDs(got); len(ids) != 3 || ids[0] != "e1" || ids[1] != "e2" || ids[2] != "e3" {
+		t.Fatalf("supporting refs should be appended in source order, got %+v", ids)
 	}
 }
 
-func TestBuildGroundedHitsKeepsTimestampedTemporalSupport(t *testing.T) {
+func TestBuildGroundedHitsDoesNotPrioritizeTimestampedSupport(t *testing.T) {
 	refs := []domain.EvidenceRef{
 		{ID: "e1", Text: "Jordan painted a lake sunrise last year."},
 		{ID: "e2", Text: "Jordan shared the sunrise painting with Avery.", Timestamp: time.Date(2023, 5, 8, 13, 56, 0, 0, time.UTC)},
@@ -918,13 +399,12 @@ func TestBuildGroundedHitsKeepsTimestampedTemporalSupport(t *testing.T) {
 	}
 	got := selectGroundingEvidence("When did Jordan paint a sunrise?", []domain.EvidenceRef{refs[0]}, refs)
 	ids := evidenceIDs(got)
-	if len(ids) != 2 || ids[0] != "e1" || ids[1] != "e2" {
-		t.Fatalf("timestamped temporal support should be added, got %+v", ids)
+	if len(ids) != 3 || ids[0] != "e1" || ids[1] != "e2" || ids[2] != "e3" {
+		t.Fatalf("supporting refs should stay in source order without temporal prioritization, got %+v", ids)
 	}
 }
 
 func BenchmarkPackRecallContext(b *testing.B) {
-	query := "When did Alice buy 2 ceramic figurines and which instrument does she play?"
 	ordered := make([]domain.Hit, 0, 30)
 	pool := make([]domain.Hit, 0, 120)
 	for i := 0; i < 120; i++ {
@@ -958,7 +438,7 @@ func BenchmarkPackRecallContext(b *testing.B) {
 
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
-		hits := packRecallContext(query, ordered, pool, 30)
+		hits := packRecallContextWithFeaturesAndDetail(ordered, pool, 30)
 		if len(hits) != 30 {
 			b.Fatalf("len(hits) = %d, want 30", len(hits))
 		}
@@ -973,55 +453,10 @@ func evidenceIDs(refs []domain.EvidenceRef) []string {
 	return out
 }
 
-func weakContextItem(id, evidenceID, text string) domain.ContextItem {
-	return domain.ContextItem{
-		Candidate: domain.Candidate{Kind: domain.GraphNodeAssertion, ID: id, Source: "retrieval", Score: 0.9, EvidenceIDs: []string{evidenceID}},
-		Fact:      domain.TemporalFact{ID: id, Kind: domain.KindState, Content: text},
-		Evidence:  []domain.EvidenceRef{{ID: evidenceID, Text: text}},
-	}
-}
-
-func strongContextItem(id, evidenceID, text string) domain.ContextItem {
-	return domain.ContextItem{
-		Candidate: domain.Candidate{Kind: domain.GraphNodeAssertion, ID: id, Source: "retrieval", Score: 0.2, EvidenceIDs: []string{evidenceID}},
-		Fact:      domain.TemporalFact{ID: id, Kind: domain.KindState, Content: text},
-		Evidence:  []domain.EvidenceRef{{ID: evidenceID, Text: text}},
-	}
-}
-
 func contextItemWithSource(id, evidenceID, source string, score float64, text string) domain.ContextItem {
 	return domain.ContextItem{
 		Candidate: domain.Candidate{Kind: domain.GraphNodeAssertion, ID: id, Source: source, Score: score, EvidenceIDs: []string{evidenceID}},
 		Fact:      domain.TemporalFact{ID: id, Kind: domain.KindState, Content: text},
 		Evidence:  []domain.EvidenceRef{{ID: evidenceID, Text: text}},
-	}
-}
-
-func contextItemWithStructuredFact(id, evidenceID, source string, score float64, text, subject, predicate, object string) domain.ContextItem {
-	return domain.ContextItem{
-		Candidate: domain.Candidate{Kind: domain.GraphNodeAssertion, ID: id, Source: source, Score: score, EvidenceIDs: []string{evidenceID}},
-		Fact: domain.TemporalFact{
-			ID:        id,
-			Kind:      domain.KindState,
-			Content:   text,
-			Subject:   subject,
-			Predicate: predicate,
-			Object:    object,
-		},
-		Evidence: []domain.EvidenceRef{{ID: evidenceID, Text: text}},
-	}
-}
-
-func coverageCandidate(id string, rank int, score float64, tokens map[string]struct{}) contextPackCandidate {
-	return contextPackCandidate{
-		hit: domain.Hit{
-			Fact: domain.TemporalFact{ID: id, Kind: domain.KindState, Content: id},
-		},
-		score:          score,
-		baseScore:      score,
-		textScore:      score,
-		queryRank:      rank,
-		evidenceTokens: tokens,
-		factTokens:     tokens,
 	}
 }

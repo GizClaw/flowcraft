@@ -121,19 +121,22 @@ func TestRuleBased_PreservesExplicitTimeRange(t *testing.T) {
 	}
 }
 
-func TestRuleBased_InferProfileRelationSubject(t *testing.T) {
+func TestRuleBased_DoesNotInferSubjectFromPlainQuestion(t *testing.T) {
 	out, err := RuleBased{}.Compile(context.Background(), port.IntentInput{
 		Text: "What fields would Avery be likely to pursue in her education?",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if out.Subject != "avery" {
-		t.Fatalf("subject = %q, want avery", out.Subject)
+	if out.Subject != "" {
+		t.Fatalf("subject = %q, want empty for plain question", out.Subject)
+	}
+	if !slices.Contains(out.Entities, "avery") {
+		t.Fatalf("entities = %v, want avery preserved as entity", out.Entities)
 	}
 }
 
-func TestRuleBased_InferSubjectRespectsTokenBoundaries(t *testing.T) {
+func TestRuleBased_DoesNotInferSubjectFromFirstEntityGuess(t *testing.T) {
 	out, err := RuleBased{}.Compile(context.Background(), port.IntentInput{
 		Text:     "What did Joanna tell Ann about her trip?",
 		Entities: []string{"Ann", "Joanna"},
@@ -141,8 +144,20 @@ func TestRuleBased_InferSubjectRespectsTokenBoundaries(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if out.Subject != "joanna" {
-		t.Fatalf("subject = %q, want joanna", out.Subject)
+	if out.Subject != "" {
+		t.Fatalf("subject = %q, want empty for plain question", out.Subject)
+	}
+}
+
+func TestRuleBased_InferSubjectFromPossessiveSurface(t *testing.T) {
+	out, err := RuleBased{}.Compile(context.Background(), port.IntentInput{
+		Text: "Avery's favorite field of study?",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Subject != "avery" {
+		t.Fatalf("subject = %q, want possessive subject", out.Subject)
 	}
 }
 

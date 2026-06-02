@@ -70,6 +70,7 @@ func (s *Ingest) Run(ctx context.Context, state *write.WriteState) (diagnostic.S
 			ExtractedFacts:      len(res.Facts),
 			ExtractorLatency:    latency,
 			ExtractorTokenUsage: res.ExtractorTokenUsage,
+			ExtractorGuard:      res.ExtractorGuard,
 		}, err
 	}
 	state.Ingest = res
@@ -82,6 +83,7 @@ func (s *Ingest) Run(ctx context.Context, state *write.WriteState) (diagnostic.S
 		StructurizerCoverage:   res.StructurizerCoverage,
 		ExtractorLatency:       latency,
 		ExtractorTokenUsage:    res.ExtractorTokenUsage,
+		ExtractorGuard:         res.ExtractorGuard,
 		TierApplied:            ingest.TierAppliedFor(state.Tier),
 		RecentMessagesProvided: len(state.RecentMessages),
 		AnchorsProvided:        len(state.ExistingFactsAnchor),

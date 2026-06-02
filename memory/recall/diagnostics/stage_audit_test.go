@@ -50,6 +50,39 @@ func TestAuditRecallStages_IncludesCandidateExpansion(t *testing.T) {
 	}
 }
 
+func TestAuditRecallStages_IncludesContextPackCoverageBundles(t *testing.T) {
+	audit := diagnostics.AuditRecallStages(domain.RecallTrace{
+		Stages: []diagnostic.StageDiagnostic{{
+			Stage:  "context_pack",
+			Status: diagnostic.StatusOK,
+			Detail: diagnostic.ContextPackDetail{
+				CoverageBundles: []diagnostic.CoverageBundle{{
+					SeedFactID:      "f1",
+					RescuedFactIDs:  []string{"f2"},
+					ReplacedFactIDs: []string{"noise"},
+					Reason:          "subject_predicate_set",
+				}},
+				Hits: &[]diagnostic.CandidateSnapshot{
+					{FactID: "f1", Score: 0.9, Sources: []string{"retrieval"}},
+					{FactID: "f2", Score: 0.2, Sources: []string{"retrieval"}},
+				},
+			},
+		}},
+	})
+
+	if len(audit.Stages) != 1 {
+		t.Fatalf("stages = %+v", audit.Stages)
+	}
+	got := audit.Stages[0]
+	if got.Stage != "context_pack" || len(got.CoverageBundles) != 1 {
+		t.Fatalf("context pack audit = %+v", got)
+	}
+	bundle := got.CoverageBundles[0]
+	if bundle.SeedFactID != "f1" || bundle.RescuedFactIDs[0] != "f2" || bundle.Reason != "subject_predicate_set" {
+		t.Fatalf("coverage bundle = %+v", bundle)
+	}
+}
+
 func TestAuditRecallStages_IncludesLinkExpansion(t *testing.T) {
 	audit := diagnostics.AuditRecallStages(domain.RecallTrace{
 		Stages: []diagnostic.StageDiagnostic{{

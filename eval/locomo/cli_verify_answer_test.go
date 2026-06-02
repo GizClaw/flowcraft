@@ -61,6 +61,41 @@ func TestVerifyOneAnswer_ClassifiesIgnoredEvidence(t *testing.T) {
 	}
 }
 
+func TestVerifyOneAnswer_IncludesAnswerContextBody(t *testing.T) {
+	verifier := &fakeVerifierLLM{response: `{
+		"verdict":"wrong_temporal_numeric_reasoning",
+		"suggested_fix":"context_rendering",
+		"supporting_ranks":[1],
+		"strong_evidence_ranks":[1],
+		"reason":"The structured answer context already contains the count candidate."
+	}`}
+	rec := AnswerReplayRecord{
+		QID:         "q1",
+		Query:       "How many tickets did Alice buy?",
+		GoldAnswers: []string{"2"},
+		AnswerBody:  "EVIDENCE_PACKAGE:\n  count_answer_candidate:\n    value: \"2\"\n",
+		Outcome: AnswerReplayOutcome{
+			Prediction: "Alice bought 3 tickets.",
+			Judge:      0,
+		},
+		RecallArtifacts: []AnswerReplayArtifact{{Rank: 1, Content: "Alice bought 2 tickets."}},
+	}
+	out := verifyOneAnswer(context.Background(), verifier, rec, 0)
+	if out.Error != "" {
+		t.Fatalf("unexpected verifier error: %s", out.Error)
+	}
+	for _, want := range []string{
+		"ANSWER_CONTEXT_BODY:",
+		"count_answer_candidate",
+		`value: "2"`,
+		"TOP MEMORIES:",
+	} {
+		if !strings.Contains(verifier.seen, want) {
+			t.Fatalf("verifier prompt missing %q:\n%s", want, verifier.seen)
+		}
+	}
+}
+
 func TestAnswerReplayRecordsForVerification_OnlyMisses(t *testing.T) {
 	report := &Report{PerQuestion: []QuestionScore{
 		{ID: "ok", Judge: 1, Prediction: "right"},
@@ -70,7 +105,7 @@ func TestAnswerReplayRecordsForVerification_OnlyMisses(t *testing.T) {
 		"ok":   {QID: "ok"},
 		"miss": {QID: "miss"},
 	}
-	out := answerReplayRecordsForVerification(report, replays, true, 0)
+	out := answerReplayRecordsForVerification(report, replays, answerReplayFilter{OnlyMisses: true})
 	if len(out) != 1 || out[0].QID != "miss" {
 		t.Fatalf("filtered replays = %+v", out)
 	}
@@ -79,5 +114,30 @@ func TestAnswerReplayRecordsForVerification_OnlyMisses(t *testing.T) {
 	}
 	if len(out[0].Tags) != 1 || out[0].Tags[0] != "temporal" {
 		t.Fatalf("report tags should refresh replay tags: %+v", out[0].Tags)
+	}
+}
+
+func TestAnswerReplayRecordsForVerification_FiltersBySecondaryMissAndTag(t *testing.T) {
+	report := &Report{PerQuestion: []QuestionScore{
+		{ID: "temporal", Query: "q1", Judge: 0, Tags: []string{"temporal"}},
+		{ID: "surface", Query: "q2", Judge: 0, Tags: []string{"single-hop"}},
+		{ID: "ok", Query: "q3", Judge: 0, Tags: []string{"temporal"}},
+	}}
+	replays := map[string]AnswerReplayRecord{
+		"temporal": {QID: "temporal"},
+		"surface":  {QID: "surface"},
+		"ok":       {QID: "ok"},
+	}
+	out := answerReplayRecordsForVerification(report, replays, answerReplayFilter{
+		OnlyMisses:      true,
+		Tags:            csvSet("temporal"),
+		SecondaryMisses: csvSet("answer_miss_temporal_or_numeric_reasoning"),
+		AuditRows: map[string]answerAuditRow{
+			"temporal": {QID: "temporal", SecondaryMiss: "answer_miss_temporal_or_numeric_reasoning"},
+			"surface":  {QID: "surface", SecondaryMiss: "answer_miss_gold_surface_missing"},
+		},
+	})
+	if len(out) != 1 || out[0].QID != "temporal" {
+		t.Fatalf("filtered replays = %+v", out)
 	}
 }

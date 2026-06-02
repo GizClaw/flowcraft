@@ -274,7 +274,7 @@ func WithGraphEnabled(enabled bool) Option {
 }
 
 // WithReranker installs a Reranker into the Recall pipeline. The
-// reranker fires between rank-boost and the final TotalCap, so it
+// reranker fires between deterministic ranking and the final TotalCap, so it
 // sees up to fusionCandidateCap(TotalCap) hits (default = 2 ×
 // requested topK).
 //

@@ -334,7 +334,7 @@ type FactLineageNode struct {
 // in-pipeline ranker alone (typically an LLM call or
 // cross-encoder).
 //
-// It runs after materialize / rank-boost and before the final
+// It runs after materialize / deterministic rank adjustments and before the final
 // TotalCap is applied so the reranker sees the widest fused pool
 // (typically 2× the requested topK). Errors are non-fatal: the
 // caller falls back to the input order when Rerank returns a

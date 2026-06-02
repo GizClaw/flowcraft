@@ -106,16 +106,10 @@ var _ port.Structurizer = DefaultStructurizer{}
 func (s DefaultStructurizer) Structurize(f domain.TemporalFact, input port.IngestInput) domain.TemporalFact {
 	turn := resolveSupportingTurn(f, input.Turns)
 
-	// Only infer Kind when it is unset. A caller / extractor that
-	// explicitly emitted a Kind value — even an invalid one — must
-	// surface as an error from the compiler, not get silently
-	// rewritten by the heuristic.
+	// Only default Kind when it is unset. Semantic kind classification belongs
+	// to the extractor contract, not Go-side keyword heuristics.
 	if f.Kind == "" {
-		if words.LooksProcedural(f.Content) {
-			f.Kind = domain.KindProcedure
-		} else {
-			f.Kind = domain.KindNote
-		}
+		f.Kind = domain.KindNote
 	}
 
 	if len(f.Entities) == 0 {
@@ -273,7 +267,7 @@ func extractEntities(content string, known []port.EntitySnapshot) []string {
 
 	add := func(s string) {
 		cleaned := cleanExtractedEntity(s)
-		if isWeakExtractedEntity(cleaned) {
+		if isInvalidExtractedEntityAnchor(cleaned) {
 			return
 		}
 		c := strings.ToLower(strings.TrimSpace(cleaned))
@@ -312,7 +306,7 @@ func extractEntities(content string, known []port.EntitySnapshot) []string {
 	// survive as single tokens — plain tokenize.SplitWords would
 	// fragment them into useless capitalised letter fragments.
 	for _, tok := range tokenize.SplitProperNouns(content) {
-		if words.IsStructurizerEntityStopword(tok) {
+		if words.IsInvalidEntityAnchorToken(tok) {
 			continue
 		}
 		if isTitleCased(tok) {

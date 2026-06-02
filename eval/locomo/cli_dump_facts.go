@@ -18,9 +18,11 @@ type factDumpRecord struct {
 	ExtractCount     int                              `json:"extract_count,omitempty"`
 	ExtractTokens    *diagnostics.ExtractorTokenUsage `json:"extract_tokens,omitempty"`
 	AvgExtractTokens *factDumpAvgTokens               `json:"avg_extract_tokens,omitempty"`
+	ExtractGuard     *diagnostics.ExtractorGuard      `json:"extract_guard,omitempty"`
 	Batch            *factDumpBatch                   `json:"batch,omitempty"`
 	Error            string                           `json:"error,omitempty"`
 	Facts            []factDumpFact                   `json:"facts"`
+	RejectedFacts    []factDumpRejectedFact           `json:"rejected_facts,omitempty"`
 }
 
 type factDumpTokenStats struct {
@@ -134,6 +136,18 @@ type factDumpFact struct {
 	Episodic         bool                  `json:"episodic,omitempty"`
 }
 
+type factDumpRejectedFact struct {
+	Content     string   `json:"content,omitempty"`
+	Kind        string   `json:"kind,omitempty"`
+	Subject     string   `json:"subject,omitempty"`
+	Predicate   string   `json:"predicate,omitempty"`
+	Object      string   `json:"object,omitempty"`
+	Entities    []string `json:"entities,omitempty"`
+	SourceIDs   []string `json:"source_ids,omitempty"`
+	Quote       string   `json:"quote,omitempty"`
+	GuardReason string   `json:"guard_reason"`
+}
+
 type factDumpEvidenceRef struct {
 	ID            string `json:"id,omitempty"`
 	MessageID     string `json:"message_id,omitempty"`
@@ -185,6 +199,12 @@ func newV2FactsDump(ts time.Time, scope runners.Scope, req recall.SaveRequest, f
 		usage := diag.ExtractorTokenUsage
 		out.ExtractTokens = &usage
 	}
+	if diag != nil && diag.ExtractorGuard.Candidates > 0 {
+		guard := diag.ExtractorGuard
+		out.RejectedFacts = factDumpRejectedFacts(guard.RejectedFacts)
+		guard.RejectedFacts = nil
+		out.ExtractGuard = &guard
+	}
 	for _, f := range facts {
 		rec := factDumpFact{
 			ID:               f.ID,
@@ -223,6 +243,27 @@ func newV2FactsDump(ts time.Time, scope runners.Scope, req recall.SaveRequest, f
 			})
 		}
 		out.Facts = append(out.Facts, rec)
+	}
+	return out
+}
+
+func factDumpRejectedFacts(in []diagnostics.GuardedExtractedFact) []factDumpRejectedFact {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]factDumpRejectedFact, 0, len(in))
+	for _, fact := range in {
+		out = append(out, factDumpRejectedFact{
+			Content:     fact.Content,
+			Kind:        fact.Kind,
+			Subject:     fact.Subject,
+			Predicate:   fact.Predicate,
+			Object:      fact.Object,
+			Entities:    append([]string(nil), fact.Entities...),
+			SourceIDs:   append([]string(nil), fact.SourceIDs...),
+			Quote:       fact.Quote,
+			GuardReason: fact.GuardReason,
+		})
 	}
 	return out
 }
@@ -322,9 +363,10 @@ func batchFromRawTurns(scope runners.Scope, convID string, turns []runners.RawTu
 	evidenceSeen := map[string]struct{}{}
 	for _, turn := range turns {
 		b.TurnCount++
-		if strings.TrimSpace(turn.Content) != "" {
+		text := runners.RenderRawTurnContent(turn)
+		if text != "" {
 			b.TurnsWithText++
-			b.InputTextChars += len(turn.Content)
+			b.InputTextChars += len(text)
 		}
 		if session := strings.TrimSpace(turn.SessionID); session != "" {
 			if _, ok := sessionSeen[session]; !ok {
@@ -338,13 +380,15 @@ func batchFromRawTurns(scope runners.Scope, convID string, turns []runners.RawTu
 				b.EvidenceIDs = append(b.EvidenceIDs, id)
 			}
 		}
-		if text := strings.TrimSpace(turn.Content); text != "" {
+		if text != "" {
 			b.Turns = append(b.Turns, factDumpTurn{
 				ID:         strings.TrimSpace(turn.EvidenceID),
 				EvidenceID: strings.TrimSpace(turn.EvidenceID),
 				SessionID:  strings.TrimSpace(turn.SessionID),
 				Role:       strings.TrimSpace(turn.Role),
+				Speaker:    strings.TrimSpace(turn.Speaker),
 				Text:       text,
+				Timestamp:  strings.TrimSpace(turn.Timestamp),
 			})
 		}
 	}

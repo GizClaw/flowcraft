@@ -150,14 +150,9 @@ const (
 // QueryPlan describes how the read pipeline will visit candidate
 // sources for a single Recall call.
 //
-// LensWeights carries optional, planner-derived per-lens weight hints. The
-// rule-based planner populates it when port.PlannerInput.KnownEntities
-// intersects the query (Text / Entities / Subject / Object): entity-aware
-// lenses (entity / relation / graph / profile) receive a small additive boost
-// so downstream stages and dashboards can attribute lens activation back to the
-// "query focus" entity hint. Empty map / nil
-// means no hint was applied; the read pipeline never errors on a
-// missing entry.
+// LensWeights carries optional, planner-derived per-lens weight hints for
+// future structured planners. The current rule-based planner leaves it empty so
+// entity snapshots do not change source ordering or ranking.
 type QueryPlan struct {
 	Intent        QueryIntent
 	SourceOrder   []string
@@ -180,14 +175,12 @@ type ContextItem struct {
 }
 
 // Hit is one recall winner. Evidence is the grounded evidence slice exposed to
-// consumers: candidate-matched refs come first, followed by a small number of
-// query-relevant supporting refs from the same fact when they improve grounding.
-// Score is the fused score after the post-materialize ranker has applied its
-// boost. Sources lists every CandidateSource that surfaced this fact, in the
-// order fusion saw them; consumers can read it to attribute winners to specific
-// sources (retrieval / entity / timeline / relation / profile / graph) for
-// diagnostics and explainability. An empty Sources slice means the candidate
-// carried no provenance metadata.
+// consumers: candidate-matched refs come first, followed by bounded supporting
+// refs from the same fact. Score is the fused score after deterministic rank
+// adjustments such as confidence, feedback, and decay. Sources lists every
+// CandidateSource that surfaced this fact, in the order fusion saw them;
+// consumers can read it for diagnostics and explainability. An empty Sources
+// slice means the candidate carried no provenance metadata.
 type Hit struct {
 	Ref            CandidateRef
 	Fact           TemporalFact

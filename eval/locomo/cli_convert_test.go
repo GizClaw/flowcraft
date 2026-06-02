@@ -10,22 +10,21 @@ package locomo
 import (
 	"encoding/json"
 	"reflect"
-	"strings"
 	"testing"
 )
 
-// TestImageAnnotation pins the gate that produced a 316-turn
+// TestImageMetadata pins the gate that produced a 316-turn
 // false-positive on locomo10 in May 2026: the upstream LoCoMo schema
 // emits orphan query / blip_caption fields on turns that no longer
 // reference an actual shared image, and surfacing those would inject
 // stale visual hints ("a photo of a book shelf with many books") into
 // turns where the speaker only said "Congrats!". The gate must be
 // img_url presence — not query or blip_caption presence.
-func TestImageAnnotation(t *testing.T) {
+func TestImageMetadata(t *testing.T) {
 	cases := []struct {
 		name string
 		turn convRawTurn
-		want string
+		want []convOutImage
 	}{
 		{
 			name: "img_url+query prefers query",
@@ -34,66 +33,72 @@ func TestImageAnnotation(t *testing.T) {
 				Query:       "banff national park rocky mountains snow",
 				BlipCaption: "a photo of a person on skis on a snowy trail",
 			},
-			want: "[shared image: banff national park rocky mountains snow]",
+			want: []convOutImage{{
+				URL:     "https://example/a.jpg",
+				Query:   "banff national park rocky mountains snow",
+				Caption: "a photo of a person on skis on a snowy trail",
+			}},
 		},
 		{
-			name: "img_url+blip only falls back to blip",
+			name: "img_url+blip only keeps caption",
 			turn: convRawTurn{
 				ImgURL:      []string{"https://example/b.jpg"},
 				BlipCaption: "a photo of a chocolate tart with raspberries on top",
 			},
-			want: "[shared image: a photo of a chocolate tart with raspberries on top]",
+			want: []convOutImage{{
+				URL:     "https://example/b.jpg",
+				Caption: "a photo of a chocolate tart with raspberries on top",
+			}},
 		},
 		{
 			name: "query without img_url is NOT surfaced (stale-annotation guard)",
 			turn: convRawTurn{
 				Query: "becoming nicole book amy ellis nutt",
 			},
-			want: "",
 		},
 		{
 			name: "blip without img_url is NOT surfaced (stale-annotation guard)",
 			turn: convRawTurn{
 				BlipCaption: "a photo of a book shelf with many books on it",
 			},
-			want: "",
 		},
 		{
 			name: "img_url with empty hints emits nothing (no annotation noise)",
 			turn: convRawTurn{
 				ImgURL: []string{"https://example/c.jpg"},
 			},
-			want: "",
 		},
 		{
 			name: "empty turn → empty annotation",
 			turn: convRawTurn{},
-			want: "",
 		},
 		{
-			name: "whitespace-only query falls through to blip",
+			name: "whitespace-only query keeps trimmed blip",
 			turn: convRawTurn{
 				ImgURL:      []string{"x"},
 				Query:       "   \n  ",
 				BlipCaption: "fallback caption",
 			},
-			want: "[shared image: fallback caption]",
+			want: []convOutImage{{
+				URL:     "x",
+				Caption: "fallback caption",
+			}},
 		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := tc.turn.imageAnnotation()
-			if got != tc.want {
-				t.Errorf("got %q, want %q", got, tc.want)
+			got := tc.turn.images()
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Errorf("got %#v, want %#v", got, tc.want)
 			}
 		})
 	}
 }
 
 // TestConvFlattenSessions pins the contract for the per-conversation
-// turn flattening: sessions sorted by index, speaker → role mapping,
-// date_time prefix injected, image annotation appended inline, and
-// turns with empty text + no image are dropped.
+// turn flattening: sessions sorted by index, speaker -> role mapping,
+// speaker/timestamp/image metadata preserved structurally, and turns with empty
+// text + no image are dropped.
 func TestConvFlattenSessions(t *testing.T) {
 	// Build a minimal upstream conversation. Use json.RawMessage so the
 	// fixture's shape matches what json.Unmarshal hands the converter.
@@ -118,10 +123,14 @@ func TestConvFlattenSessions(t *testing.T) {
 	turns := convFlattenSessions(raw, "Alice", "Bob")
 
 	want := []convOutConvTurn{
-		{Role: "user", Content: "[9:00 am on 7 May, 2024] Alice: Hello Bob!", EvidenceID: "D1:1", SessionID: "session_1"},
-		{Role: "assistant", Content: "[9:00 am on 7 May, 2024] Bob: Hi Alice.", EvidenceID: "D1:2", SessionID: "session_1"},
+		{Role: "user", Content: "Hello Bob!", Speaker: "Alice", Timestamp: "9:00 am on 7 May, 2024", EvidenceID: "D1:1", SessionID: "session_1"},
+		{Role: "assistant", Content: "Hi Alice.", Speaker: "Bob", Timestamp: "9:00 am on 7 May, 2024", EvidenceID: "D1:2", SessionID: "session_1"},
 		// session_1 turn 3: empty text + no img_url → DROPPED (query alone is not enough)
-		{Role: "user", Content: "[3:00 pm on 10 May, 2024] Alice: Here's my new bowl [shared image: hand-painted ceramic bowl]", EvidenceID: "D2:1", SessionID: "session_2"},
+		{Role: "user", Content: "Here's my new bowl", Speaker: "Alice", Timestamp: "3:00 pm on 10 May, 2024", EvidenceID: "D2:1", SessionID: "session_2", Images: []convOutImage{{
+			URL:     "http://x/y.jpg",
+			Query:   "hand-painted ceramic bowl",
+			Caption: "a photo of a bowl on a table",
+		}}},
 	}
 
 	if !reflect.DeepEqual(turns, want) {
@@ -152,9 +161,9 @@ func TestConvFlattenSessionsOrdering(t *testing.T) {
 		t.Errorf("session ordering wrong: got %v %v %v, want A B C",
 			turns[0].EvidenceID, turns[1].EvidenceID, turns[2].EvidenceID)
 	}
-	// And the date-time prefix must follow the same order, not lex order
-	if !strings.Contains(turns[2].Content, "t10") {
-		t.Errorf("session_10 missing its t10 prefix: %q", turns[2].Content)
+	// And the structured timestamp must follow the same order, not lex order.
+	if turns[2].Timestamp != "t10" {
+		t.Errorf("session_10 timestamp = %q, want t10", turns[2].Timestamp)
 	}
 }
 

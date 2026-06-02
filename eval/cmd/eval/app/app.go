@@ -13,7 +13,6 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/GizClaw/flowcraft/eval/beir"
-	"github.com/GizClaw/flowcraft/eval/history"
 	"github.com/GizClaw/flowcraft/eval/internal/cliflags"
 	knowledgeqa "github.com/GizClaw/flowcraft/eval/knowledge"
 	"github.com/GizClaw/flowcraft/eval/locomo"
@@ -69,7 +68,6 @@ func init() {
 	// and the *cliflags.Global handle.
 	locomo.RegisterCobra(rootCmd, Global)
 	longmemeval.RegisterCobra(rootCmd, Global)
-	history.RegisterCobra(rootCmd, Global)
 	knowledgeqa.RegisterCobra(rootCmd, Global)
 	beir.RegisterCobra(rootCmd, Global)
 	simpleqa.RegisterCobra(rootCmd, Global)

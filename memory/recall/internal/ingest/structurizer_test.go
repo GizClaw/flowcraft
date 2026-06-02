@@ -13,10 +13,9 @@ import (
 
 // TestDefaultStructurizer_KindFallbackDefaultsToNote pins the post-route-2
 // contract: when neither the caller nor the LLM extractor populated
-// f.Kind, the Structurizer's fallback is KindNote except for narrow
-// procedural-memory patterns. The LLM still owns normal
-// classification; this test guards against reintroducing broad
-// keyword inference for event/state/preference/relation/plan.
+// f.Kind, the Structurizer's fallback is KindNote. The LLM owns normal
+// classification; this test guards against reintroducing Go keyword inference
+// for event/state/preference/relation/plan/procedure.
 func TestDefaultStructurizer_KindFallbackDefaultsToNote(t *testing.T) {
 	cases := []string{
 		"Avery loves black coffee in the morning.",
@@ -24,6 +23,10 @@ func TestDefaultStructurizer_KindFallbackDefaultsToNote(t *testing.T) {
 		"Avery is married to Rowan.",
 		"Avery lives in San Francisco.",
 		"Avery went to the cinema yesterday.",
+		"When comparing options, use a markdown table.",
+		"Before processing invoices, run OCR and then extract entities.",
+		"Always use markdown tables for comparisons.",
+		"First run OCR, then extract invoice entities.",
 		"Some unmarked observation.",
 	}
 	for _, content := range cases {
@@ -34,30 +37,6 @@ func TestDefaultStructurizer_KindFallbackDefaultsToNote(t *testing.T) {
 				t.Errorf("kind = %q, want KindNote (fallback path)", out.Kind)
 			}
 		})
-	}
-}
-
-func TestDefaultStructurizer_KindFallbackDetectsProcedure(t *testing.T) {
-	cases := []string{
-		"When comparing options, use a markdown table.",
-		"Before processing invoices, run OCR and then extract entities.",
-		"Always use markdown tables for comrivertonons.",
-		"First run OCR, then extract invoice entities.",
-	}
-	for _, content := range cases {
-		t.Run(content, func(t *testing.T) {
-			f := domain.TemporalFact{Content: content}
-			out := DefaultStructurizer{}.Structurize(f, port.IngestInput{})
-			if out.Kind != domain.KindProcedure {
-				t.Errorf("kind = %q, want KindProcedure", out.Kind)
-			}
-		})
-	}
-
-	f := domain.TemporalFact{Content: "Avery prefers tea in the morning."}
-	out := DefaultStructurizer{}.Structurize(f, port.IngestInput{})
-	if out.Kind != domain.KindNote {
-		t.Errorf("simple preference text should stay Note fallback, got %q", out.Kind)
 	}
 }
 
@@ -460,15 +439,13 @@ func TestDefaultStructurizer_ExtractsEntitiesFromContent(t *testing.T) {
 	}
 }
 
-func TestDefaultStructurizer_DropsWeakSentenceOpenersFromEntities(t *testing.T) {
+func TestDefaultStructurizer_DropsStructuralStopwordsFromEntities(t *testing.T) {
 	f := domain.TemporalFact{Content: "On 2024-05-07, Avery signed up for woodworking. Taking time for herself helps Avery."}
 	out := DefaultStructurizer{}.Structurize(f, port.IngestInput{})
 
-	for _, weak := range []string{"on", "taking"} {
-		for _, entity := range out.Entities {
-			if entity == weak {
-				t.Fatalf("weak entity %q should be dropped, got %v", weak, out.Entities)
-			}
+	for _, entity := range out.Entities {
+		if entity == "on" {
+			t.Fatalf("structural stopword should be dropped, got %v", out.Entities)
 		}
 	}
 }

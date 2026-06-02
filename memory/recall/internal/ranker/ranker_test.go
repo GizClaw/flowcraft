@@ -10,7 +10,7 @@ import (
 	"github.com/GizClaw/flowcraft/memory/recall/internal/ranker"
 )
 
-func TestDefault_Rank_UsesEvidenceAndIntentSignals(t *testing.T) {
+func TestDefault_Rank_DoesNotUseQuerySignalsForBoost(t *testing.T) {
 	now := time.Unix(1, 0)
 	r := ranker.NewDefault()
 	items := []domain.ContextItem{
@@ -52,46 +52,8 @@ func TestDefault_Rank_UsesEvidenceAndIntentSignals(t *testing.T) {
 	if len(out.Items) != 1 {
 		t.Fatalf("ranked len = %d, want 1", len(out.Items))
 	}
-	if out.Items[0].Fact.ID != "grounded" {
-		t.Fatalf("top ranked fact = %s, want grounded", out.Items[0].Fact.ID)
-	}
-}
-
-func TestDefault_Rank_WentGoStemLemmaRegression(t *testing.T) {
-	now := time.Now()
-	r := ranker.NewDefault()
-	items := []domain.ContextItem{
-		{
-			Candidate: domain.Candidate{Kind: domain.GraphNodeAssertion, ID: "walk", Score: 0.5},
-			Fact: domain.TemporalFact{
-				ID:         "walk",
-				Content:    "Alice walked to the store yesterday",
-				ObservedAt: now,
-			},
-		},
-		{
-			Candidate: domain.Candidate{Kind: domain.GraphNodeAssertion, ID: "go", Score: 0.5},
-			Fact: domain.TemporalFact{
-				ID:         "go",
-				Content:    "Alice went to the store last week",
-				ObservedAt: now,
-			},
-		},
-	}
-	out := r.Rank(context.Background(), port.RankInput{
-		Items: items,
-		Intent: domain.QueryIntent{
-			Text:  "when did Alice go to the store",
-			Limit: 2,
-		},
-		FinalCap: 2,
-		Now:      now,
-	})
-	if len(out.Items) < 2 {
-		t.Fatalf("want 2 items, got %d", len(out.Items))
-	}
-	if out.BoostsApplied == 0 {
-		t.Fatal("expected rank boost when query go matches fact went via lemma+stem")
+	if out.Items[0].Fact.ID != "generic" {
+		t.Fatalf("top ranked fact = %s, want generic by backend score", out.Items[0].Fact.ID)
 	}
 }
 
@@ -181,7 +143,7 @@ func TestDefault_Rank_TimeDecayPrefersRecentWhenOptedIn(t *testing.T) {
 	}
 }
 
-func TestDefault_Rank_QueryCoveragePrefersSpecificEvidence(t *testing.T) {
+func TestDefault_Rank_QueryCoverageDoesNotReorderEqualScores(t *testing.T) {
 	r := ranker.NewDefault()
 	items := []domain.ContextItem{
 		{
@@ -213,7 +175,10 @@ func TestDefault_Rank_QueryCoveragePrefersSpecificEvidence(t *testing.T) {
 	if len(out.Items) != 2 {
 		t.Fatalf("ranked len = %d, want 2", len(out.Items))
 	}
-	if out.Items[0].Fact.ID != "specific" {
-		t.Fatalf("top ranked fact = %s, want specific", out.Items[0].Fact.ID)
+	if out.Items[0].Fact.ID != "generic" {
+		t.Fatalf("top ranked fact = %s, want stable backend order", out.Items[0].Fact.ID)
+	}
+	if out.BoostsApplied != 0 {
+		t.Fatalf("query coverage should not apply rank boosts, got %d", out.BoostsApplied)
 	}
 }

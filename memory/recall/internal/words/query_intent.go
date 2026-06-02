@@ -221,7 +221,7 @@ func HasTemporalQuestionCue(text string) bool {
 		phrases.ContainsAny("when", "cuándo", "cuando", "quand", "wann", "quando") {
 		return true
 	}
-	if IsQuestionLike(text) && containsAnyToken(phrases, temporalIntentTokens) {
+	if isQuestionLike(text) && containsAnyToken(phrases, temporalIntentTokens) {
 		return true
 	}
 	return false
@@ -264,12 +264,6 @@ func HasDurationQuestionCue(text string) bool {
 	phrases := phrase.New(text)
 	return phrases.ContainsAnyLiteral(durationIntentLiterals...) ||
 		containsAnyPhrase(phrases, durationIntentPhrases)
-}
-
-// HasNumericIntentCue reports whether text asks for a count, amount, ordinal,
-// age, frequency, price, or other numeric value.
-func HasNumericIntentCue(text string) bool {
-	return len(NumericIntentKinds(text)) > 0
 }
 
 // NumericIntentKinds returns finer-grained numeric question categories.
@@ -323,23 +317,23 @@ func NumericIntentKinds(text string) []domain.QueryNumericIntentKind {
 	}
 	if len(out) == 0 && (phrases.ContainsAnyLiteral(numericIntentLiterals...) ||
 		containsAnyPhrase(phrases, numericIntentPhrases) ||
-		(IsQuestionLike(text) && containsAnyToken(phrases, numericIntentTokens))) {
+		(isQuestionLike(text) && containsAnyToken(phrases, numericIntentTokens))) {
 		add(domain.QueryNumericIntentAmount)
 	}
 	return out
 }
 
-// IsQuestionLike reports whether text has interrogative surface cues.
-func IsQuestionLike(text string) bool {
+func isQuestionLike(text string) bool {
 	phrases := phrase.New(text)
 	return phrases.ContainsAnyLiteral(questionLiterals...) ||
 		containsAnyToken(phrases, questionTokens)
 }
 
-// HasSubjectInferenceCue reports whether a query shape is likely to benefit
-// from using the first mentioned entity as the structured subject.
+// HasSubjectInferenceCue reports whether the surface explicitly marks a
+// possessive subject. Plain questions do not infer a structured subject because
+// that would activate relation/profile sources from a weak first-entity guess.
 func HasSubjectInferenceCue(text string) bool {
-	return IsQuestionLike(text) || phrase.New(text).ContainsAnyLiteral(subjectInferenceLiterals...)
+	return phrase.New(text).ContainsAnyLiteral(subjectInferenceLiterals...)
 }
 
 func containsAnyToken(phrases phrase.Matcher, tokens []string) bool {

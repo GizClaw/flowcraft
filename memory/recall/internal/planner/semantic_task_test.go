@@ -8,7 +8,7 @@ import (
 	"github.com/GizClaw/flowcraft/memory/recall/internal/port"
 )
 
-func TestRuleBasedPlannerSemanticTaskIntents(t *testing.T) {
+func TestRuleBasedPlannerDoesNotInferSemanticTasksFromCues(t *testing.T) {
 	plan, err := New().Plan(context.Background(), port.PlannerInput{
 		Scope: domain.Scope{RuntimeID: "rt"},
 		Text:  "Did Dave cancel the Dodge Charger test drive?",
@@ -20,12 +20,12 @@ func TestRuleBasedPlannerSemanticTaskIntents(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	assertTask(t, plan.TaskIntents, domain.QueryTaskYesNoVerification)
-	assertTask(t, plan.TaskIntents, domain.QueryTaskAbsenceCheck)
-	assertSource(t, plan.SourceOrder, SourceAssertion)
+	assertNoTask(t, plan.TaskIntents, domain.QueryTaskYesNoVerification)
+	assertNoTask(t, plan.TaskIntents, domain.QueryTaskAbsenceCheck)
+	assertNoSource(t, plan.SourceOrder, SourceAssertion)
 }
 
-func TestRuleBasedPlannerCounterfactualTaskUsesAssertionOnly(t *testing.T) {
+func TestRuleBasedPlannerDoesNotInferCounterfactualTaskFromCue(t *testing.T) {
 	plan, err := New().Plan(context.Background(), port.PlannerInput{
 		Scope: domain.Scope{RuntimeID: "rt"},
 		Text:  "Would Mira have moved if the lease had been cheaper?",
@@ -37,8 +37,8 @@ func TestRuleBasedPlannerCounterfactualTaskUsesAssertionOnly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	assertTask(t, plan.TaskIntents, domain.QueryTaskCounterfactual)
-	assertSource(t, plan.SourceOrder, SourceAssertion)
+	assertNoTask(t, plan.TaskIntents, domain.QueryTaskCounterfactual)
+	assertNoSource(t, plan.SourceOrder, SourceAssertion)
 }
 
 func TestRuleBasedPlannerOrdinaryIfQuestionIsNotCounterfactual(t *testing.T) {
@@ -85,26 +85,6 @@ func TestRuleBasedPlannerBareWhichDoesNotActivateAssertion(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertNoSource(t, plan.SourceOrder, SourceAssertion)
-}
-
-func assertTask(t *testing.T, got []domain.QueryTaskIntent, want domain.QueryTaskIntent) {
-	t.Helper()
-	for _, task := range got {
-		if task == want {
-			return
-		}
-	}
-	t.Fatalf("missing task %q in %v", want, got)
-}
-
-func assertSource(t *testing.T, got []string, want string) {
-	t.Helper()
-	for _, source := range got {
-		if source == want {
-			return
-		}
-	}
-	t.Fatalf("missing source %q in %v", want, got)
 }
 
 func assertNoTask(t *testing.T, got []domain.QueryTaskIntent, want domain.QueryTaskIntent) {

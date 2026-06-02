@@ -21,102 +21,25 @@ func TestEntityStopwords(t *testing.T) {
 	}
 }
 
-func TestExtractorEntityWeakTokens(t *testing.T) {
+func TestInvalidEntityAnchorTokens(t *testing.T) {
 	for _, tok := range []string{"on", "into", "as", "para", "avec", "zu", "voor", "для"} {
-		if !IsExtractorEntityFunctionWord(tok) {
-			t.Fatalf("%q should be an extractor entity function word", tok)
-		}
-	}
-	for _, tok := range []string{"will", "her", "the"} {
-		if IsExtractorEntityFunctionWord(tok) || IsExtractorAbstractGerundEntityToken(tok) {
-			t.Fatalf("%q should not be inherited into extractor semantic token dictionaries", tok)
-		}
-	}
-	for _, tok := range []string{"being", "taking", "finding", "working", "writing", "intentando", "essayer", "versuchen", "planejando", "proberen", "планировать", "计划"} {
-		if !IsExtractorAbstractGerundEntityToken(tok) {
-			t.Fatalf("%q should be an extractor abstract gerund token", tok)
-		}
-	}
-	for _, phrase := range [][]string{{"planning", "to", "repair", "a", "bicycle"}, {"enough", "to", "finish", "the", "fundraiser"}, {"i", "m"}, {"we", "re"}, {"working", "on", "cars"}, {"tratando", "de", "ayudar"}, {"capable", "de", "finir"}, {"versuchen", "zu", "helfen"}, {"tentando", "ajudar"}, {"планируя", "поездку"}, {"计划", "旅行"}} {
-		if !IsWeakExtractorEntityPhrase(phrase) {
-			t.Fatalf("%q should be a weak extractor entity phrase", phrase)
-		}
-	}
-	if IsWeakExtractorEntityPhrase([]string{"woodworking", "class", "yesterday"}) {
-		t.Fatal("concrete entity phrases should not be weak extractor entity phrases")
-	}
-	if IsWeakExtractorRelationObjectPhrase([]string{"ceramic", "bowl"}) {
-		t.Fatal("concrete relation objects should not be weak relation object phrases")
-	}
-	if IsWeakExtractorRelationObjectPhrase([]string{"her", "cat"}) {
-		t.Fatal("relation object start-token dictionary should not inherit broad English stopwords")
-	}
-	if IsWeakExtractorRelationObjectPhrase([]string{"su", "perro"}) {
-		t.Fatal("relation object checks should preserve concrete multilingual objects after determiners")
-	}
-	if IsWeakExtractorEntityPhrase([]string{"the", "woodworking", "class"}) {
-		t.Fatal("entity phrase checks should not treat all English stopwords as abstract gerunds")
-	}
-	for _, subject := range [][]string{{"i"}, {"me"}, {"my"}, {"i", "m"}, {"i", "ll"}, {"yo"}, {"je"}, {"ich"}, {"eu"}, {"ik"}, {"я"}, {"我"}} {
-		if !IsFirstPersonSingularExtractorSubject(subject) {
-			t.Fatalf("%q should be a first-person singular extractor subject", subject)
-		}
-	}
-	for _, subject := range [][]string{{"we"}, {"they"}, {"alice"}} {
-		if IsFirstPersonSingularExtractorSubject(subject) {
-			t.Fatalf("%q should not be a first-person singular extractor subject", subject)
+		if !IsInvalidEntityAnchorToken(tok) {
+			t.Fatalf("%q should be an invalid function-word entity anchor", tok)
 		}
 	}
 	for _, tok := range []string{"today", "next", "ago", "mañana", "demain", "gestern", "hoje", "gisteren", "завтра", "今天"} {
-		if !IsRelativeTimeEntityToken(tok) {
-			t.Fatalf("%q should be a relative-time entity token", tok)
-		}
-	}
-	for _, tok := range []string{"the", "will", "her"} {
-		if IsRelativeTimeEntityToken(tok) {
-			t.Fatalf("%q should not be inherited into relative-time tokens", tok)
+		if !IsInvalidEntityAnchorToken(tok) {
+			t.Fatalf("%q should be an invalid relative-time entity anchor", tok)
 		}
 	}
 	for _, tok := range []string{"July", "Monday"} {
-		if !IsCalendarEntityToken(tok) {
-			t.Fatalf("%q should be a calendar entity token", tok)
+		if !IsInvalidEntityAnchorToken(tok) {
+			t.Fatalf("%q should be an invalid calendar entity anchor", tok)
 		}
 	}
-	for _, tok := range []string{"went", "bought", "visited", "could"} {
-		if !IsSafeFirstPersonExtractorContentVerb(tok) {
-			t.Fatalf("%q should be safe for first-person content rewrite", tok)
+	for _, tok := range []string{"Will", "Avery", "Riverton"} {
+		if IsInvalidEntityAnchorToken(tok) {
+			t.Fatalf("%q should remain available as an entity anchor", tok)
 		}
-	}
-	if got, ok := ThirdPersonExtractorContentVerb("prefer"); !ok || got != "prefers" {
-		t.Fatalf("prefer third-person rewrite = %q/%v, want prefers/true", got, ok)
-	}
-	if !IsUnsupportedFirstPersonExtractorContentStart([]string{"my", "apartment"}) {
-		t.Fatal("lowercase possessive content starts should be treated as first-person")
-	}
-	if !IsUnsupportedFirstPersonExtractorContentStart([]string{"me"}) || !IsUnsupportedFirstPersonExtractorContentStart([]string{"ourselves"}) {
-		t.Fatal("embedded first-person residue tokens should be treated as unsupported")
-	}
-}
-
-func TestExtractorSurfaceHelpers(t *testing.T) {
-	prefix := FirstPersonSingularExtractorContentPrefixRewrites("Avery")
-	if len(prefix) == 0 || prefix[0].Prefix == "" || prefix[0].Replacement == "" {
-		t.Fatalf("missing first-person prefix rewrites: %+v", prefix)
-	}
-	embedded := EmbeddedFirstPersonSingularExtractorContentRewrites("Avery")
-	if len(embedded) == 0 || embedded[len(embedded)-1].Token != "my" {
-		t.Fatalf("missing embedded rewrites: %+v", embedded)
-	}
-	if !IsFirstPersonSingularExtractorSubjectText("I’m") {
-		t.Fatal("subject text helper should use canonical tokenization")
-	}
-	if !IsWeakExtractorEntityText("planning to repair") {
-		t.Fatal("weak entity text helper should use canonical tokenization")
-	}
-	if !HasExtractorUppercase("Avery") || !IsExtractorAllCapsAnchor("NASA") {
-		t.Fatal("case helpers should preserve extractor anchor semantics")
-	}
-	if got := NormalizeExtractorEvidenceAnchor("Favorite-color: Blue!"); got != "favorite color blue" {
-		t.Fatalf("normalized extractor evidence anchor = %q", got)
 	}
 }

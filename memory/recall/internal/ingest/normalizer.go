@@ -101,7 +101,7 @@ func canonicalSet(in []string) []string {
 	out := make([]string, 0, len(in))
 	for _, v := range in {
 		v = strings.ToLower(strings.TrimSpace(v))
-		if v == "" || isWeakExtractedEntity(v) {
+		if v == "" || isInvalidExtractedEntityAnchor(v) {
 			continue
 		}
 		if _, ok := seen[v]; ok {

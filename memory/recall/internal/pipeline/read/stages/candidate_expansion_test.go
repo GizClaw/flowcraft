@@ -61,6 +61,48 @@ func TestCandidateExpansionAddsCappedSubjectPredicateSiblings(t *testing.T) {
 	}
 }
 
+func TestCandidateExpansionUsesSeedFactAnchorsForStructuralSiblings(t *testing.T) {
+	scope := domain.Scope{RuntimeID: "rt", UserID: "u"}
+	store := temporalstore.NewMemoryStore()
+	facts := []domain.TemporalFact{
+		neighborFact(scope, "bailey", "Jordan has a cat named Bailey.", "Jordan", "has_pet", "Bailey"),
+		neighborFact(scope, "oliver", "Jordan has a pet dog named Oliver.", "Jordan", "has_pet", "Oliver"),
+	}
+	if err := store.Append(context.Background(), facts); err != nil {
+		t.Fatalf("append facts: %v", err)
+	}
+	query := "What pets are there?"
+	stage := NewCandidateExpansion(store)
+	state := &read.ReadState{
+		Scope: scope,
+		Query: domain.Query{Text: query},
+		Plan: &domain.QueryPlan{
+			Intent: domain.QueryIntent{
+				Text:     query,
+				Features: recallintent.ExtractFeatures(query),
+			},
+			TotalCap:    12,
+			TaskIntents: []domain.QueryTaskIntent{domain.QueryTaskSetCompletion},
+		},
+		MergedItems: []domain.ContextItem{{
+			Candidate: domain.Candidate{Kind: domain.GraphNodeAssertion, ID: "bailey", Scope: scope, Source: "retrieval", Score: 0.9},
+			Fact:      facts[0],
+			Evidence:  facts[0].EvidenceRefs,
+		}},
+	}
+
+	if _, err := stage.Run(context.Background(), state); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	got := map[string]bool{}
+	for _, item := range state.MergedItems {
+		got[item.Fact.ID] = true
+	}
+	if !got["oliver"] {
+		t.Fatalf("seed subject anchor should add sibling pet fact, got %+v", state.MergedItems)
+	}
+}
+
 func TestCandidateExpansionPropagatesCanceledContext(t *testing.T) {
 	scope := domain.Scope{RuntimeID: "rt", UserID: "u"}
 	store := temporalstore.NewMemoryStore()

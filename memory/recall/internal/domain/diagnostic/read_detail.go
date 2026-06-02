@@ -163,12 +163,22 @@ type ContextPackDetail struct {
 	Latency               time.Duration
 	RerankLatency         time.Duration
 	ContextPackingLatency time.Duration
+	CoverageBundles       []CoverageBundle
 	Input                 *[]CandidateSnapshot
 	RerankedHits          *[]CandidateSnapshot
 	Hits                  *[]CandidateSnapshot
 }
 
 func (ContextPackDetail) isStageDetail() {}
+
+// CoverageBundle records a deterministic context-pack rescue that keeps
+// structurally related evidence together for answerability.
+type CoverageBundle struct {
+	SeedFactID      string
+	RescuedFactIDs  []string
+	ReplacedFactIDs []string
+	Reason          string
+}
 
 // BuildGroundedHitsDetail —— read/build_grounded_hits stage.
 type BuildGroundedHitsDetail struct {

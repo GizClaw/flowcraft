@@ -83,14 +83,6 @@ func sourceExpansionQueryTexts(plan domain.QueryPlan) []string {
 	}
 	add(text)
 	add(words.SignificantQueryText(text))
-	if hasTask(plan.TaskIntents, domain.QueryTaskBridgeResolution) {
-		for _, clause := range words.BridgeClauses(text) {
-			add(words.SignificantQueryText(clause))
-		}
-	}
-	if hasTask(plan.TaskIntents, domain.QueryTaskSetCompletion) {
-		add(anchorQueryText(text, words.CollectionAnchorWords(text)))
-	}
 	if hasTask(plan.TaskIntents, domain.QueryTaskTemporalReasoning) {
 		add(words.SignificantQueryText(words.StripTemporalQuestionWords(text)))
 	}
@@ -240,25 +232,4 @@ func cloneSourceBudgets(in map[string]int) map[string]int {
 		out[k] = v
 	}
 	return out
-}
-
-func anchorQueryText(text string, anchors []string) string {
-	terms := words.SignificantQueryTerms(text)
-	if len(anchors) == 0 {
-		return strings.Join(terms, " ")
-	}
-	seen := map[string]struct{}{}
-	out := make([]string, 0, len(anchors)+len(terms))
-	for _, term := range append(anchors, terms...) {
-		key := strings.ToLower(term)
-		if key == "" {
-			continue
-		}
-		if _, ok := seen[key]; ok {
-			continue
-		}
-		seen[key] = struct{}{}
-		out = append(out, term)
-	}
-	return strings.Join(out, " ")
 }

@@ -89,20 +89,7 @@ func TestWeightedRRF_PerSourceCapEmitsDrops(t *testing.T) {
 	}
 }
 
-func TestWeightedRRF_OutlierBoost_RescuesRareTokenMatch(t *testing.T) {
-	// Models a rare-token retrieval scenario:
-	//
-	// - retrieval lane returns one rare-token outlier ("rare_fact")
-	//   with a BM25 score ~7x the median of the rest of the lane
-	// - several mid-rank candidates appear in BOTH retrieval and
-	//   entity lanes (the multi-source corroboration that vanilla RRF
-	//   rewards), with BM25 scores around the lane's typical noise
-	//
-	// Without the outlier boost, RRF prefers the multi-source
-	// candidate because rank-based aggregation discards BM25's
-	// magnitude. With the boost, the within-source rank-1 outlier's
-	// contribution is amplified just enough to overcome the
-	// dual-source rank-2 corroboration — the rare-token match wins.
+func TestWeightedRRF_DoesNotBoostSourceScoreOutlier(t *testing.T) {
 	retrievalCands := []domain.Candidate{
 		{Kind: domain.GraphNodeAssertion, ID: "rare_fact", Source: "retrieval", Rank: 1, Score: 14.0},
 		{Kind: domain.GraphNodeAssertion, ID: "filler1", Source: "retrieval", Rank: 2, Score: 2.0},
@@ -118,23 +105,11 @@ func TestWeightedRRF_OutlierBoost_RescuesRareTokenMatch(t *testing.T) {
 		{Source: "entity", Candidates: entityCands},
 	}
 
-	// Baseline (boost disabled): filler1 wins because it's
-	// multi-source corroborated.
 	fused, _, _ := WeightedRRF{}.Fuse(context.Background(), results, port.FusionOptions{
-		Weights:         map[string]float64{"retrieval": 1.0, "entity": 1.0},
-		OutlierBoostCap: 1.0, // disable boost
+		Weights: map[string]float64{"retrieval": 1.0, "entity": 1.0},
 	})
 	if fused[0].ID != "filler1" {
-		t.Fatalf("baseline: expected multi-source 'filler1' to win without boost, got %+v", fused[0])
-	}
-
-	// With boost on: the rare-token outlier wins.
-	fused, _, _ = WeightedRRF{}.Fuse(context.Background(), results, port.FusionOptions{
-		Weights: map[string]float64{"retrieval": 1.0, "entity": 1.0},
-		// rely on defaults (cap=2.0, threshold=2.0, max-rank=5)
-	})
-	if fused[0].ID != "rare_fact" {
-		t.Errorf("with boost: expected rare-token 'rare_fact' to win, got rank order: %+v",
+		t.Fatalf("expected multi-source 'filler1' to remain top without source-score outlier boost, got rank order: %+v",
 			func() []string {
 				out := []string{}
 				for _, c := range fused {
@@ -145,12 +120,7 @@ func TestWeightedRRF_OutlierBoost_RescuesRareTokenMatch(t *testing.T) {
 	}
 }
 
-func TestWeightedRRF_OutlierBoost_NoOpOnUniformScores(t *testing.T) {
-	// Sources whose candidates all share the same score (entity /
-	// graph / profile in presence-signal mode) should NOT receive
-	// boosts — there's no magnitude signal to amplify. We verify the
-	// boost factor stays at 1 by checking that fused scores equal
-	// the plain RRF formula.
+func TestWeightedRRF_IgnoresUniformSourceScores(t *testing.T) {
 	results := []domain.SourceResult{
 		{
 			Source: "entity",

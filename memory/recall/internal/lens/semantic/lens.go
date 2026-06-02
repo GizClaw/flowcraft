@@ -55,8 +55,6 @@ type semanticEntry struct {
 	scope     domain.Scope
 	text      string
 	terms     map[string]struct{}
-	polarity  domain.Polarity
-	modality  domain.Modality
 	observed  time.Time
 	validFrom *time.Time
 }
@@ -96,8 +94,6 @@ func (p *Projection) Project(_ context.Context, facts []domain.TemporalFact) err
 			scope:     f.Scope,
 			text:      semanticSearchText(f),
 			terms:     semanticSearchTerms(f),
-			polarity:  f.Polarity,
-			modality:  f.Modality,
 			observed:  f.ObservedAt,
 			validFrom: cloneTime(f.ValidFrom),
 		}
@@ -280,20 +276,7 @@ func entryMatchesIntent(entry semanticEntry, intent domain.QueryIntent, terms []
 	if len(terms) < required {
 		required = len(terms)
 	}
-	return matches >= required || semanticTaskCompatible(entry, intent)
-}
-
-func semanticTaskCompatible(entry semanticEntry, intent domain.QueryIntent) bool {
-	if words.HasNegationCue(intent.Text) && entry.polarity == domain.PolarityNegated {
-		return true
-	}
-	if words.HasCancellationCue(intent.Text) && entry.modality == domain.ModalityCanceled {
-		return true
-	}
-	if words.HasCounterfactualCue(intent.Text) && entry.modality == domain.ModalityCounterfactual {
-		return true
-	}
-	return false
+	return matches >= required
 }
 
 func entryMatchesAgent(entryScope, queryScope domain.Scope) bool {

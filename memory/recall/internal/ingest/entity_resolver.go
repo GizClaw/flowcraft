@@ -66,7 +66,7 @@ func (r aliasEntityResolver) Resolve(f domain.TemporalFact) domain.TemporalFact 
 	out := make([]string, 0, len(f.Entities)+2)
 	add := func(s string) {
 		canon := canonicalEntityLowercase(r.applyAlias(f.Scope, s))
-		if canon == "" || isWeakExtractedEntity(canon) {
+		if canon == "" || isInvalidExtractedEntityAnchor(canon) {
 			return
 		}
 		if _, ok := seen[canon]; ok {

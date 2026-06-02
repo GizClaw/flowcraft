@@ -23,8 +23,8 @@ type RankOutput struct {
 	SupersededDecayApplied int
 }
 
-// Ranker applies deterministic boosts, optional time decay, and supersede
-// penalties after materialization.
+// Ranker applies deterministic confidence/feedback adjustments, optional time
+// decay, and supersede penalties after materialization.
 type Ranker interface {
 	Rank(ctx context.Context, in RankInput) RankOutput
 }
@@ -34,7 +34,7 @@ type Ranker interface {
 // deterministic Ranker alone (typically an LLM call or
 // cross-encoder).
 //
-// It runs after materialize / Ranker boosts and before the final
+// It runs after materialize / Ranker adjustments and before the final
 // TotalCap is applied so the reranker sees the widest fused pool
 // (typically 2× the requested topK). Implementations:
 //

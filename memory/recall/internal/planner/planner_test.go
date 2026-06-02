@@ -71,30 +71,6 @@ func TestRuleBased_InfersTaskIntents(t *testing.T) {
 			want: domain.QueryTaskSetCompletion,
 		},
 		{
-			name: "relative clause asks for bridge resolution",
-			in: port.PlannerInput{
-				Text:     "Where did Alice buy the necklace that she wore?",
-				Features: domain.QueryFeatures{Tokens: map[string]struct{}{"alice": {}, "buy": {}, "necklace": {}, "wore": {}}},
-			},
-			want: domain.QueryTaskBridgeResolution,
-		},
-		{
-			name: "multilingual collection surface asks for set completion",
-			in: port.PlannerInput{
-				Text:     "¿Qué mascotas tiene Jordan?",
-				Features: domain.QueryFeatures{Tokens: map[string]struct{}{"mascota": {}, "jordan": {}}},
-			},
-			want: domain.QueryTaskSetCompletion,
-		},
-		{
-			name: "multilingual bridge surface asks for bridge resolution",
-			in: port.PlannerInput{
-				Text:     "Où Alice a-t-elle acheté le collier qu'elle portait?",
-				Features: domain.QueryFeatures{Tokens: map[string]struct{}{"alice": {}, "collier": {}, "portait": {}}},
-			},
-			want: domain.QueryTaskBridgeResolution,
-		},
-		{
 			name: "temporal query asks for temporal reasoning",
 			in: port.PlannerInput{
 				Text: "When did Alice move?",
@@ -231,29 +207,10 @@ func TestFusionCandidateCapKeepsWiderCrossSourcePool(t *testing.T) {
 	}
 }
 
-// TestPlanner_KnownEntitiesInfluenceLensWeights pins planner behavior:
-// when the cross-sub-scope KnownEntities merge surfaces an entity
-// that also appears in the query (Entities /
-// Text / Subject / Object), the rule-based planner emits a small,
-// deterministic per-lens weight boost for entity-aware lenses. The
-// boost is observable through QueryPlan.LensWeights so the read-path
-// plan stage diagnostic surfaces it without changing activation
-// rules.
-func TestPlanner_KnownEntitiesInfluenceLensWeights(t *testing.T) {
+func TestPlanner_KnownEntitiesDoNotInfluenceLensWeights(t *testing.T) {
 	p := New()
 	scope := domain.Scope{RuntimeID: "rt"}
-	baseline, err := p.Plan(context.Background(), port.PlannerInput{
-		Scope:    scope,
-		Entities: []string{"alice"},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if w := baseline.LensWeights[SourceEntity]; w != 0 {
-		t.Fatalf("baseline LensWeights[entity] = %v, want 0 (no known entities)", w)
-	}
-
-	hinted, err := p.Plan(context.Background(), port.PlannerInput{
+	plan, err := p.Plan(context.Background(), port.PlannerInput{
 		Scope:    scope,
 		Entities: []string{"alice"},
 		KnownEntities: []port.EntitySnapshot{
@@ -263,38 +220,8 @@ func TestPlanner_KnownEntitiesInfluenceLensWeights(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if w := hinted.LensWeights[SourceEntity]; w <= 0 {
-		t.Fatalf("hinted LensWeights[entity] = %v, want > 0 (known entity intersects query)", w)
-	}
-	if hinted.LensWeights[SourceRetrieval] != 0 {
-		t.Fatalf("retrieval lens should not receive entity-hint boost, got %v", hinted.LensWeights[SourceRetrieval])
-	}
-	// Boost should be deterministic and match the EntityHintBoost
-	// schedule: each matching snapshot contributes Weight × boost.
-	want := EntityHintBoost * 2
-	if got := hinted.LensWeights[SourceEntity]; got != want {
-		t.Fatalf("entity boost = %v, want %v (EntityHintBoost * snapshot.Weight)", got, want)
-	}
-}
-
-// TestPlanner_KnownEntitiesNoMatchNoBoost guards the "conservative
-// boost" contract: when KnownEntities supplies entities that do NOT
-// intersect the query, no boost is emitted. This prevents the entity
-// hint from drifting into a global "always boost" effect.
-func TestPlanner_KnownEntitiesNoMatchNoBoost(t *testing.T) {
-	p := New()
-	plan, err := p.Plan(context.Background(), port.PlannerInput{
-		Scope:    domain.Scope{RuntimeID: "rt"},
-		Entities: []string{"bob"},
-		KnownEntities: []port.EntitySnapshot{
-			{Canonical: "carol"},
-		},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
 	if len(plan.LensWeights) != 0 {
-		t.Fatalf("LensWeights = %+v, want empty (no query intersection)", plan.LensWeights)
+		t.Fatalf("LensWeights = %+v, want empty; KnownEntities should not boost lens weights", plan.LensWeights)
 	}
 }
 
