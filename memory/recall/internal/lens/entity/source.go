@@ -64,7 +64,7 @@ func (s *Source) Query(ctx context.Context, plan domain.QueryPlan) domain.Source
 	latency := time.Since(started)
 
 	truncated := false
-	if !agentSoftIsolationQuery(scope) && len(ids) > budget {
+	if len(ids) > budget {
 		ids = ids[:budget]
 		truncated = true
 	}
@@ -86,8 +86,4 @@ func (s *Source) Query(ctx context.Context, plan domain.QueryPlan) domain.Source
 		Truncated:  truncated,
 		Latency:    latency,
 	}
-}
-
-func agentSoftIsolationQuery(scope domain.Scope) bool {
-	return scope.AgentID != ""
 }

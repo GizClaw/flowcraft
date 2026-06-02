@@ -33,12 +33,18 @@ func (e *Executor) Run(ctx context.Context, job port.SideEffectJob) error {
 		if e.Fanout == nil {
 			return nil
 		}
+		if len(job.Facts) == 0 {
+			return nil
+		}
 		started := time.Now()
 		err := e.Fanout.ProjectRequired(ctx, job.Facts)
 		e.emitProject("project_required", "required", len(job.Facts), started, err)
 		return err
 	case port.SideEffectProjectOptional:
 		if e.Fanout == nil {
+			return nil
+		}
+		if len(job.Facts) == 0 {
 			return nil
 		}
 		started := time.Now()

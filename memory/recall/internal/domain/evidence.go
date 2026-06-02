@@ -11,6 +11,7 @@ type EvidenceRef struct {
 	RequestID     string
 	SessionID     string
 	Role          string
+	Speaker       string
 	Text          string
 	Timestamp     time.Time
 }

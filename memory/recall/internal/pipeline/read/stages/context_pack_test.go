@@ -230,6 +230,39 @@ func TestContextPackDedupesSameEvidence(t *testing.T) {
 	}
 }
 
+func TestContextPackKeepsComplementarySiblingFactsFromSameEvidence(t *testing.T) {
+	stage := NewContextPack(nil)
+	shared := domain.EvidenceRef{ID: "e1", Text: "I have a hand-painted bowl. The pattern reminds me of art and self-expression."}
+	state := &read.ReadState{
+		Plan:  &domain.QueryPlan{TotalCap: 2},
+		Query: domain.Query{Text: "What is Avery's hand-painted bowl a reminder of?"},
+		Ranked: []domain.ContextItem{
+			{
+				Candidate: domain.Candidate{Kind: domain.GraphNodeAssertion, ID: "object", Source: "retrieval", Score: 0.9, EvidenceIDs: []string{"e1"}},
+				Fact:      domain.TemporalFact{ID: "object", Kind: domain.KindState, Content: "Avery has a hand-painted bowl that has sentimental value.", EvidenceRefs: []domain.EvidenceRef{shared}},
+				Evidence:  []domain.EvidenceRef{{ID: "e1", Text: "I have a hand-painted bowl."}},
+			},
+			{
+				Candidate: domain.Candidate{Kind: domain.GraphNodeAssertion, ID: "meaning", Source: "retrieval", Score: 0.8, EvidenceIDs: []string{"e1"}},
+				Fact:      domain.TemporalFact{ID: "meaning", Kind: domain.KindNote, Content: "The pattern of Avery's hand-painted bowl reminds her of art and self-expression.", EvidenceRefs: []domain.EvidenceRef{shared}},
+				Evidence:  []domain.EvidenceRef{{ID: "e1", Text: "The pattern reminds me of art and self-expression."}},
+			},
+			{
+				Candidate: domain.Candidate{Kind: domain.GraphNodeAssertion, ID: "distractor", Source: "retrieval", Score: 0.7, EvidenceIDs: []string{"e2"}},
+				Fact:      domain.TemporalFact{ID: "distractor", Kind: domain.KindState, Content: "Jordan likes pottery."},
+				Evidence:  []domain.EvidenceRef{{ID: "e2", Text: "Jordan likes pottery."}},
+			},
+		},
+	}
+
+	if _, err := stage.Run(context.Background(), state); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if len(state.Hits) != 2 || state.Hits[0].Fact.ID != "object" || state.Hits[1].Fact.ID != "meaning" {
+		t.Fatalf("complementary sibling facts from one source turn should survive pack, got %+v", state.Hits)
+	}
+}
+
 func TestContextPackSharedEvidenceRepresentativeDoesNotUseQuerySurface(t *testing.T) {
 	input := newContextPackInput(3)
 	hits := []domain.Hit{
@@ -294,6 +327,108 @@ func TestContextPackKeepsSourceDiversity(t *testing.T) {
 	}
 }
 
+func TestContextPackDoesNotFallbackWhenTrustFilteredAllItems(t *testing.T) {
+	stage := NewContextPack(nil)
+	state := &read.ReadState{
+		Plan:           &domain.QueryPlan{TotalCap: 3},
+		Query:          domain.Query{Text: "secret"},
+		PolicyFiltered: true,
+		MergedItems: []domain.ContextItem{
+			contextItemWithSource("secret", "e1", "retrieval", 0.9, "secret fact"),
+		},
+	}
+
+	if _, err := stage.Run(context.Background(), state); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if len(state.Hits) != 0 {
+		t.Fatalf("context pack must preserve empty policy-filtered set, got %+v", state.Hits)
+	}
+}
+
+func TestContextPackPreservesRankOutputAnchorsBeforeDiversityFill(t *testing.T) {
+	ordered := []domain.Hit{
+		{
+			Fact:     domain.TemporalFact{ID: "gold", Kind: domain.KindEvent, Content: "Alice went to the museum on Tuesday."},
+			Score:    0.20,
+			Sources:  []string{"retrieval"},
+			Evidence: []domain.EvidenceRef{{ID: "e-gold", Text: "I went to the museum on Tuesday."}},
+		},
+	}
+	pool := []domain.Hit{
+		{
+			Fact:     domain.TemporalFact{ID: "distractor", Kind: domain.KindNote, Content: "Alice received kind encouragement."},
+			Score:    0.95,
+			Sources:  []string{"entity", "graph", "profile"},
+			Evidence: []domain.EvidenceRef{{ID: "e-distractor", Text: "Great job, Alice!"}},
+		},
+		ordered[0],
+	}
+
+	got := packRecallContextWithFeaturesAndDetail(ordered, pool, 1)
+	if len(got) != 1 || got[0].Fact.ID != "gold" {
+		t.Fatalf("rank_output anchor should survive higher-scored projection distractor, got %+v", got)
+	}
+}
+
+func TestContextPackDoesNotAnchorEntityOnlyRankOutput(t *testing.T) {
+	ordered := []domain.Hit{
+		contextHitWithSources("entity-only", "e-entity", 0.40, []string{"entity"}),
+	}
+	pool := []domain.Hit{
+		contextHitWithSources("retrieved", "e-retrieved", 0.95, []string{"retrieval"}),
+		ordered[0],
+	}
+
+	got, trace := packRecallContextWithIntentTrace(domain.QueryIntent{}, ordered, pool, 1)
+	if len(got) != 1 || got[0].Fact.ID != "retrieved" {
+		t.Fatalf("entity-only rank_output should not become a final-pack anchor, got %+v", got)
+	}
+	var entityTrace diagnostic.CandidateSnapshot
+	for _, snap := range trace {
+		if snap.FactID == "entity-only" {
+			entityTrace = snap
+			break
+		}
+	}
+	if entityTrace.RankOutputRank != 1 || entityTrace.ContextPackRank != 0 {
+		t.Fatalf("entity-only trace should show rank_output candidate dropped by pack, got %+v", entityTrace)
+	}
+}
+
+func TestContextPackTraceRecordsRanksRoutesAndDrops(t *testing.T) {
+	ordered := []domain.Hit{
+		contextHitWithSources("gold", "e-gold", 0.90, []string{"retrieval"}),
+		contextHitWithSources("filler", "e-filler", 0.80, []string{"retrieval"}),
+	}
+	pool := []domain.Hit{
+		contextHitWithSources("projection", "e-projection", 0.95, []string{"entity", "graph"}),
+	}
+
+	got, trace := packRecallContextWithTrace(ordered, pool, 1)
+	if len(got) != 1 || got[0].Fact.ID != "gold" {
+		t.Fatalf("packed hits = %+v", got)
+	}
+	if len(trace) != 3 {
+		t.Fatalf("trace len = %d, want 3: %+v", len(trace), trace)
+	}
+	var gold, projection diagnostic.CandidateSnapshot
+	for _, snap := range trace {
+		switch snap.FactID {
+		case "gold":
+			gold = snap
+		case "projection":
+			projection = snap
+		}
+	}
+	if gold.RankOutputRank != 1 || gold.ContextPackRank != 1 || gold.PrimarySource != "retrieval" {
+		t.Fatalf("gold trace = %+v", gold)
+	}
+	if projection.DroppedReason == "" || projection.ContextPackRank != 0 || len(projection.ProjectionRoutes) != 2 {
+		t.Fatalf("projection trace should record drop and routes, got %+v", projection)
+	}
+}
+
 func TestContextPackDoesNotPromoteWeakObservationAnchor(t *testing.T) {
 	hits := []domain.Hit{
 		{
@@ -323,6 +458,35 @@ func TestContextPackDoesNotPromoteWeakObservationAnchor(t *testing.T) {
 	got := packRecallContextWithFeaturesAndDetail(hits, hits, 2)
 	if len(got) == 0 || got[0].Ref.Kind == domain.GraphNodeObservation {
 		t.Fatalf("weak observation evidence should not be promoted as primary anchor, got %+v", got)
+	}
+}
+
+func TestContextPackKeepsRawObservationBehindStructuredEvidence(t *testing.T) {
+	hits := []domain.Hit{
+		{
+			Fact:     domain.TemporalFact{ID: "structured", Kind: domain.KindEvent, Content: "Avery went to the workshop on Tuesday."},
+			Score:    0.02,
+			Sources:  []string{"retrieval"},
+			Evidence: []domain.EvidenceRef{{ID: "e1", Text: "I went to the workshop on Tuesday."}},
+		},
+		{
+			Ref: domain.CandidateRef{Kind: domain.GraphNodeObservation, ID: "obs"},
+			Observation: domain.Observation{
+				ID:   "obs",
+				Text: "I went to a similar workshop last Friday and it was useful.",
+			},
+			Score:    1.0,
+			Sources:  []string{"observation"},
+			Evidence: []domain.EvidenceRef{{ID: "obs", ObservationID: "obs", Text: "I went to a similar workshop last Friday and it was useful."}},
+		},
+	}
+
+	got := packRecallContextWithFeaturesAndDetail(hits, hits, 2)
+	if len(got) != 2 {
+		t.Fatalf("packed hits = %+v", got)
+	}
+	if got[0].Fact.ID != "structured" || got[1].Ref.Kind != domain.GraphNodeObservation {
+		t.Fatalf("raw observation should support structured evidence, not outrank it: %+v", got)
 	}
 }
 
@@ -458,5 +622,15 @@ func contextItemWithSource(id, evidenceID, source string, score float64, text st
 		Candidate: domain.Candidate{Kind: domain.GraphNodeAssertion, ID: id, Source: source, Score: score, EvidenceIDs: []string{evidenceID}},
 		Fact:      domain.TemporalFact{ID: id, Kind: domain.KindState, Content: text},
 		Evidence:  []domain.EvidenceRef{{ID: evidenceID, Text: text}},
+	}
+}
+
+func contextHitWithSources(id, evidenceID string, score float64, sources []string) domain.Hit {
+	text := id + " evidence"
+	return domain.Hit{
+		Fact:     domain.TemporalFact{ID: id, Kind: domain.KindState, Content: text},
+		Score:    score,
+		Sources:  append([]string(nil), sources...),
+		Evidence: []domain.EvidenceRef{{ID: evidenceID, Text: text}},
 	}
 }

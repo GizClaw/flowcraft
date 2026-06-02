@@ -170,6 +170,10 @@ type WriteState struct {
 	// Set before the canonical locked pipeline runs.
 	SaveOutboxID string
 
+	// ScopeGeneration is captured under the scope write lock. Commit-after
+	// side-effect jobs use it as a stale-job fence after hard forget / expiry.
+	ScopeGeneration uint64
+
 	// SideEffectsEnqueued counts jobs written by enqueue_side_effects.
 	SideEffectsEnqueued int
 

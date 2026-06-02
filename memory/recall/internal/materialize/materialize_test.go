@@ -8,6 +8,8 @@ import (
 
 	"github.com/GizClaw/flowcraft/memory/recall/internal/domain"
 	"github.com/GizClaw/flowcraft/memory/recall/internal/domain/diagnostic"
+	linkstore "github.com/GizClaw/flowcraft/memory/recall/internal/store/link"
+	observationstore "github.com/GizClaw/flowcraft/memory/recall/internal/store/observation"
 	temporalstore "github.com/GizClaw/flowcraft/memory/recall/internal/store/temporal"
 )
 
@@ -107,6 +109,45 @@ func TestMaterialize_DropsSuperseded(t *testing.T) {
 	}
 	if len(drops) != 1 || drops[0].Reason != diagnostic.DropSuperseded {
 		t.Errorf("superseded drop = %+v", drops)
+	}
+}
+
+func TestMaterialize_DropsObservationAndLinkScopeViolations(t *testing.T) {
+	ctx := context.Background()
+	queryScope := domain.Scope{RuntimeID: "rt", UserID: "u1", AgentID: "agent-a"}
+	siblingScope := domain.Scope{RuntimeID: "rt", UserID: "u1", AgentID: "agent-b"}
+	observations := observationstore.New()
+	links := linkstore.New()
+	if err := observations.Append(ctx, []domain.Observation{{
+		ID:    "obs-1",
+		Scope: siblingScope,
+		Kind:  domain.ObservationKindEvidence,
+		Text:  "sibling raw evidence",
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := links.Append(ctx, []domain.FactLink{{
+		ID:    "link-1",
+		Scope: siblingScope,
+		Type:  domain.LinkSupports,
+		From:  domain.GraphNodeRef{Kind: domain.GraphNodeObservation, ID: "obs-1"},
+		To:    domain.GraphNodeRef{Kind: domain.GraphNodeAssertion, ID: "fact-1"},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	mat := New(temporalstore.NewMemoryStore(), observations, links, nil)
+	items, drops, err := mat.Materialize(ctx, []domain.Candidate{
+		{Kind: domain.GraphNodeObservation, ID: "obs-1", Scope: queryScope, Source: "custom"},
+		{Kind: domain.GraphNodeLink, ID: "link-1", Scope: queryScope, Source: "custom"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 0 {
+		t.Fatalf("scope-violating observation/link should not materialize, got %+v", items)
+	}
+	if len(drops) != 2 || drops[0].Reason != diagnostic.DropScopeViolation || drops[1].Reason != diagnostic.DropScopeViolation {
+		t.Fatalf("drops = %+v, want scope violations", drops)
 	}
 }
 

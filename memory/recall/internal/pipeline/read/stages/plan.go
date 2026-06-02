@@ -52,6 +52,7 @@ func (s *Plan) Run(ctx context.Context, state *read.ReadState) (diagnostic.Stage
 		Kinds:         state.Intent.Kinds,
 		TimeRange:     state.Intent.TimeRange,
 		Features:      state.Intent.Features,
+		IntentRoute:   state.Intent.Route,
 		GraphEnabled:  s.graphEnabled,
 		GraphHops:     state.Query.GraphHops,
 		KnownEntities: known,

@@ -32,7 +32,7 @@ var (
 	_ diagnostic.StageDetail = diagnostic.OriginStampDetail{}
 	_ diagnostic.StageDetail = diagnostic.AsyncSemanticProcessDetail{}
 
-	_ diagnostic.StageDetail = diagnostic.QueryUnderstandDetail{}
+	_ diagnostic.StageDetail = diagnostic.IntentRouteDetail{}
 	_ diagnostic.StageDetail = diagnostic.PlanDetail{}
 	_ diagnostic.StageDetail = diagnostic.CandidateFanoutDetail{}
 	_ diagnostic.StageDetail = diagnostic.CandidateMergeAndMaterializeDetail{}
@@ -151,16 +151,19 @@ func TestDetail_RoundTrip(t *testing.T) {
 			Latency:        1 * time.Millisecond,
 		}, &diagnostic.EnqueueSemanticDetail{}},
 
-		{"query_understand", diagnostic.QueryUnderstandDetail{
-			QueryLen:     22,
-			Entities:     []string{"alice"},
-			Kinds:        []string{"event", "state"},
-			Subject:      "alice",
-			HasTimeRange: false,
-			GraphEnabled: false,
-			NERLatency:   1 * time.Millisecond,
-			LLMUsed:      false,
-		}, &diagnostic.QueryUnderstandDetail{}},
+		{"intent_route", diagnostic.IntentRouteDetail{
+			QueryLen:       22,
+			Entities:       []string{"alice"},
+			Kinds:          []string{"event", "state"},
+			Subject:        "alice",
+			HasTimeRange:   false,
+			GraphEnabled:   false,
+			Strategy:       "default",
+			Confidence:     0.7,
+			Signals:        []string{"embedding_route"},
+			FallbackReason: "",
+			Latency:        1 * time.Millisecond,
+		}, &diagnostic.IntentRouteDetail{}},
 		{"plan", diagnostic.PlanDetail{
 			ActivatedLenses: []diagnostic.ActivatedLens{{Lens: "retrieval", Weight: 1.0, Budget: 20, ActivatedBy: "default"}},
 			TotalBudget:     20,

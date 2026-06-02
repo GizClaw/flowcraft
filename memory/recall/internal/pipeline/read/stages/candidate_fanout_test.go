@@ -67,6 +67,23 @@ func (cancelingSource) Query(context.Context, domain.QueryPlan) domain.SourceRes
 	}
 }
 
+type truncatedSource struct{}
+
+func (truncatedSource) Name() string { return "retrieval" }
+
+func (truncatedSource) Query(context.Context, domain.QueryPlan) domain.SourceResult {
+	return domain.SourceResult{
+		Source: "retrieval",
+		Candidates: []domain.Candidate{{
+			Kind:   domain.GraphNodeAssertion,
+			ID:     "truncated",
+			Source: "retrieval",
+			Rank:   1,
+		}},
+		Truncated: true,
+	}
+}
+
 type slowFanoutSource struct {
 	name  string
 	delay time.Duration
@@ -90,6 +107,31 @@ func (s slowFanoutSource) Query(ctx context.Context, plan domain.QueryPlan) doma
 			Score:  1,
 		}},
 		Latency: s.delay,
+	}
+}
+
+func TestCandidateFanoutDiagnosticsExposeTruncatedSources(t *testing.T) {
+	stage := NewCandidateFanout(func() []port.Source { return []port.Source{truncatedSource{}} })
+	intent := domain.QueryIntent{Text: "query"}
+	plan := domain.QueryPlan{
+		Intent:        intent,
+		SourceOrder:   []string{"retrieval"},
+		SourceBudgets: map[string]int{"retrieval": 1},
+		TotalCap:      1,
+	}
+	state := &read.ReadState{
+		Scope:  domain.Scope{RuntimeID: "rt", UserID: "u"},
+		Intent: &intent,
+		Plan:   &plan,
+	}
+
+	detail, err := stage.Run(context.Background(), state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := detail.(diagnostic.CandidateFanoutDetail)
+	if len(got.Sources) != 1 || !got.Sources[0].Truncated {
+		t.Fatalf("fanout diagnostics should expose source truncation, got %+v", got.Sources)
 	}
 }
 
@@ -130,6 +172,13 @@ func TestCandidateFanoutUsesPlanDrivenQueryVariantsWithoutDuplicateBoost(t *test
 	}
 	if len(results[0].Candidates) != 3 {
 		t.Fatalf("variant merge should widen candidate pool without duplicates, got %+v", results[0].Candidates)
+	}
+	ranks := map[string]int{}
+	for _, candidate := range results[0].Candidates {
+		ranks[candidate.ID] = candidate.Rank
+	}
+	if ranks["shared"] != 2 || ranks["oliver"] <= sourceExpansionRankPenalty {
+		t.Fatalf("secondary variants should keep a real RRF rank penalty, ranks=%+v candidates=%+v", ranks, results[0].Candidates)
 	}
 	gotDetail := detail.(diagnostic.CandidateFanoutDetail)
 	if len(gotDetail.Sources) != 1 || gotDetail.Sources[0].QueryVariants < 2 {

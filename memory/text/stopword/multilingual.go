@@ -1,7 +1,7 @@
 package stopword
 
 // multilingualStopWords is a compact conversational baseline for languages
-// commonly seen by recall query understanding. It intentionally complements the
+// commonly seen by recall literal feature extraction. It intentionally complements the
 // English tokenizer baseline instead of replacing it.
 var multilingualStopWords = newWordTable(
 	// Spanish

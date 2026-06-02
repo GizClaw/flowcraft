@@ -75,6 +75,9 @@ func (s *CandidateExpansion) Run(ctx context.Context, state *read.ReadState) (di
 		}
 		detail.Scanned += len(facts)
 		for _, fact := range facts {
+			if !domain.ScopeVisible(scope, fact.Scope) {
+				continue
+			}
 			if _, ok := existing[fact.ID]; ok || fact.ID == "" {
 				continue
 			}
@@ -96,7 +99,7 @@ func (s *CandidateExpansion) Run(ctx context.Context, state *read.ReadState) (di
 		return scored[i].item.Fact.ID < scored[j].item.Fact.ID
 	})
 	groupCounts := map[string]int{}
-	perGroupCap := neighborCandidatePerGroupLimit(tasks, state.Plan.Intent.Features)
+	perGroupCap := neighborCandidatePerGroupLimit(tasks)
 	for _, candidate := range scored {
 		if len(detail.AddedFactIDs) >= maxAdds {
 			break
@@ -241,8 +244,8 @@ func appendNeighborCandidateSeedAnchors(anchors []string, seeds []domain.Context
 	return anchors
 }
 
-func neighborCandidatePerGroupLimit(tasks []domain.QueryTaskIntent, features domain.QueryFeatures) int {
-	if hasTask(tasks, domain.QueryTaskSetCompletion) || features.NumericIntent {
+func neighborCandidatePerGroupLimit(tasks []domain.QueryTaskIntent) int {
+	if hasTask(tasks, domain.QueryTaskSetCompletion) {
 		return 6
 	}
 	return neighborCandidatePerGroupCap

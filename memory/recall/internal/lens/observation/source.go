@@ -29,6 +29,9 @@ func (s *Source) Query(ctx context.Context, plan domain.QueryPlan) domain.Source
 	if s == nil || s.index == nil {
 		return domain.SourceResult{Source: planner.SourceObservation}
 	}
+	if strings.TrimSpace(plan.Intent.Text) == "" {
+		return domain.SourceResult{Source: s.Name()}
+	}
 	budget := plan.SourceBudgets[s.Name()]
 	if budget <= 0 {
 		budget = max(1, plan.TotalCap/2)

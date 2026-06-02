@@ -14,7 +14,7 @@ import (
 //
 // Assembly order (memory.New):
 //
-//	query_understand → plan → candidate_fanout →
+//	intent_route → plan → candidate_fanout →
 //	candidate_merge_and_materialize → candidate_expansion →
 //	policy_filter → rank → context_pack → build_grounded_hits →
 //	evolution_after_recall

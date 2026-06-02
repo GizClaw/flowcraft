@@ -28,7 +28,7 @@ func TestSource_CapsAndMarksTruncated(t *testing.T) {
 	plan := domain.QueryPlan{
 		Intent: domain.QueryIntent{
 			Scope:        domain.Scope{RuntimeID: "rt", UserID: "u1"},
-			Entities:     []string{"alice"},
+			Entities:     []string{"alice", "bob"},
 			GraphEnabled: true,
 			Limit:        2,
 		},

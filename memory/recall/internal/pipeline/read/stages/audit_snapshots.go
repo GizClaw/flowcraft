@@ -69,16 +69,15 @@ func hitSnapshots(hits []domain.Hit) []diagnostic.CandidateSnapshot {
 	out := make([]diagnostic.CandidateSnapshot, 0, len(hits))
 	for i, hit := range hits {
 		snap := diagnostic.CandidateSnapshot{
-			FactID:  hit.Fact.ID,
-			Rank:    i + 1,
-			Score:   hit.Score,
-			Sources: append([]string(nil), hit.Sources...),
+			FactID:           contextPackTraceFactID(hit),
+			Rank:             i + 1,
+			Score:            hit.Score,
+			Source:           primaryHitSource(hit),
+			Sources:          append([]string(nil), hit.Sources...),
+			PrimarySource:    primaryHitSource(hit),
+			ProjectionRoutes: append([]string(nil), hit.Sources...),
 		}
-		for _, ref := range hit.Fact.EvidenceRefs {
-			if ref.ID != "" {
-				snap.EvidenceIDs = append(snap.EvidenceIDs, ref.ID)
-			}
-		}
+		snap.EvidenceIDs = contextPackTraceEvidenceIDs(hit)
 		out = append(out, snap)
 	}
 	return out

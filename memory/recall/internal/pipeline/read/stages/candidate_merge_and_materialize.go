@@ -59,7 +59,7 @@ func (s *CandidateMergeAndMaterialize) Run(ctx context.Context, state *read.Read
 		if opts.TotalCap == 0 && s.capFunc != nil {
 			opts.TotalCap = s.capFunc(state.Plan.TotalCap)
 		}
-		opts.SourceFloors = mergeSourceFloors(opts.SourceFloors, fusionSourceFloors(state.Plan.Intent.Features))
+		opts.SourceFloors = mergeSourceFloors(opts.SourceFloors, fusionSourceFloors(state.Plan.Intent.Route))
 		fused, drops, err := s.fuser.Fuse(ctx, sub.SourceResults, opts)
 		if err != nil {
 			detail.SubScopes = append(detail.SubScopes, diagnostic.SubScopeRun{Scope: sub.Scope.CanonicalKey(), Err: err.Error(), Latency: time.Since(subStarted)})
@@ -120,16 +120,20 @@ func mergeSourceFloors(base, extra map[string]int) map[string]int {
 			out[k] = v
 		}
 	}
+	if len(out) == 0 {
+		return nil
+	}
 	return out
 }
 
-func fusionSourceFloors(features domain.QueryFeatures) map[string]int {
+func fusionSourceFloors(route domain.IntentRoute) map[string]int {
 	floors := map[string]int{}
-	if features.HasTimeSignal() || features.NumericIntent {
+	switch route.EffectiveStrategy() {
+	case domain.RecallStrategyTemporal, domain.RecallStrategySet, domain.RecallStrategyCount:
 		floors[planner.SourceRetrieval] = 5
-	}
-	if planner.DirectTimelineDateIntent(features) {
-		floors[planner.SourceTimeline] = 3
+		if route.EffectiveStrategy() == domain.RecallStrategyTemporal {
+			floors[planner.SourceTimeline] = 3
+		}
 	}
 	if len(floors) == 0 {
 		return nil

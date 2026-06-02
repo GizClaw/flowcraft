@@ -49,16 +49,20 @@ func (s *CommitObservations) Run(ctx context.Context, state *write.WriteState) (
 			Latency:      time.Since(started),
 		}, fmt.Errorf("recall.Save: graph turn observations append: %w", err)
 	}
+	state.RawObservationIDs = observationIDs(delta.Observations)
 	if s.projection != nil {
 		if err := s.projection.ProjectObservations(ctx, delta.Observations); err != nil {
 			state.FailedStage = "commit_observations"
+			cleanupCtx := pipeline.DetachCancel(ctx)
+			_ = s.projection.ForgetObservations(cleanupCtx, state.Scope, state.RawObservationIDs)
+			_ = s.observations.Delete(cleanupCtx, state.Scope, state.RawObservationIDs)
+			state.RawObservationIDs = nil
 			return diagnostic.ObservationCommitDetail{
 				Observations: len(delta.Observations),
 				Latency:      time.Since(started),
 			}, fmt.Errorf("recall.Save: observation projection project: %w", err)
 		}
 	}
-	state.RawObservationIDs = observationIDs(delta.Observations)
 	return diagnostic.ObservationCommitDetail{
 		Observations: len(delta.Observations),
 		Latency:      time.Since(started),

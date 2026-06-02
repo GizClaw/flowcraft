@@ -34,7 +34,6 @@ Run a suite by name; each suite has its own --help with full flag detail.
 Memory / dialog:
   eval locomo                LoCoMo-10 dialog memory benchmark
   eval longmemeval           LongMemEval converter (uses the locomo runner)
-  eval history               history-compression regression suite
 
 Retrieval:
   eval knowledge             hand-curated knowledge-base regression

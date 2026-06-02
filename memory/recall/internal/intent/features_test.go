@@ -3,14 +3,12 @@ package intent
 import (
 	"testing"
 	"time"
-
-	"github.com/GizClaw/flowcraft/memory/recall/internal/domain"
 )
 
-func TestExtractFeaturesTemporal(t *testing.T) {
+func TestExtractFeaturesDoesNotInferTemporalFromQuestionCue(t *testing.T) {
 	features := ExtractFeatures("When did Avery go to the community meetup?")
-	if !features.Temporal.HasIntent || !features.HasTimeSignal() {
-		t.Fatalf("expected temporal intent, got %+v", features.Temporal)
+	if features.HasTimeSignal() {
+		t.Fatalf("question cue should not become structural temporal intent, got %+v", features.Temporal)
 	}
 	if features.Temporal.TimeRange.IsZero() == false {
 		t.Fatalf("question without explicit date should not infer range: %+v", features.Temporal.TimeRange)
@@ -19,8 +17,8 @@ func TestExtractFeaturesTemporal(t *testing.T) {
 
 func TestExtractFeaturesAvoidsProceduralBeforeAsTemporalIntent(t *testing.T) {
 	features := ExtractFeatures("Before processing invoices, run OCR and then extract entities.")
-	if features.Temporal.HasIntent {
-		t.Fatalf("procedural before should not be temporal query intent: %+v", features.Temporal)
+	if features.HasTimeSignal() {
+		t.Fatalf("procedural before should not be temporal literal signal: %+v", features.Temporal)
 	}
 }
 
@@ -64,51 +62,27 @@ func TestExtractFeaturesTimeRangeFromRelativeExpression(t *testing.T) {
 	}
 }
 
-func TestExtractFeaturesNumericIntentUsesTokenBoundaries(t *testing.T) {
-	features := ExtractFeatures("How many pets does Alice have?")
-	if !features.NumericIntent {
-		t.Fatal("expected numeric intent")
-	}
-	if !hasNumericKind(features.NumericIntentKind, domain.QueryNumericIntentCount) {
-		t.Fatalf("expected count numeric kind, got %v", features.NumericIntentKind)
-	}
-	if ExtractFeatures("Open the account settings").NumericIntent {
-		t.Fatal("account must not match count")
+func TestExtractFeaturesNumericLiteralsOnly(t *testing.T) {
+	withLiteral := ExtractFeatures("Did Alice buy 2 pets?")
+	if len(withLiteral.Numeric) == 0 {
+		t.Fatalf("numeric literal should be preserved: %+v", withLiteral)
 	}
 }
 
-func TestExtractFeaturesCJKIntent(t *testing.T) {
+func TestExtractFeaturesCJKTokenizationWithoutIntentCues(t *testing.T) {
 	features := ExtractFeatures("Alice 最早什么时候 moved?")
-	if !features.Temporal.HasIntent {
-		t.Fatalf("expected CJK temporal intent: %+v", features.Temporal)
+	if features.HasTimeSignal() {
+		t.Fatalf("CJK question cue should not become structural temporal signal: %+v", features.Temporal)
 	}
-	if !ExtractFeatures("Alice 有多少只猫?").NumericIntent {
-		t.Fatal("expected CJK numeric intent")
-	}
-}
-
-func TestExtractFeaturesMultilingualIntentCues(t *testing.T) {
-	if !ExtractFeatures("¿Cuántas veces visitó Alice?").NumericIntent {
-		t.Fatal("expected Spanish numeric intent")
-	}
-	if !ExtractFeatures("Depuis quand Alice habite-t-elle là?").Temporal.HasIntent {
-		t.Fatal("expected French temporal intent")
-	}
-	if !ExtractFeatures("Wie lange dauerte die Reise?").Temporal.HasDurationIntent {
-		t.Fatal("expected German duration intent")
-	}
-	if !ExtractFeatures("Quantas vezes Alice visitou?").NumericIntent {
-		t.Fatal("expected Portuguese numeric intent")
+	if len(features.Tokens) == 0 {
+		t.Fatalf("CJK tokens should still be preserved: %+v", features)
 	}
 }
 
-func TestExtractFeaturesClassifiesIntentKinds(t *testing.T) {
+func TestExtractFeaturesDoesNotClassifySemanticQuestionCues(t *testing.T) {
 	features := ExtractFeatures("How often did Alice visit after 2021?")
-	if !hasNumericKind(features.NumericIntentKind, domain.QueryNumericIntentFrequency) {
-		t.Fatalf("expected frequency numeric kind, got %v", features.NumericIntentKind)
-	}
-	if !hasTemporalKind(features.Temporal.IntentKind, domain.QueryTemporalIntentRange) {
-		t.Fatalf("expected temporal range kind, got %v", features.Temporal.IntentKind)
+	if len(features.Numeric) == 0 {
+		t.Fatalf("numeric literal should still be preserved: %+v", features)
 	}
 }
 
@@ -119,22 +93,4 @@ func TestHasTimex(t *testing.T) {
 	if HasTimex("plain account settings", time.Now()) {
 		t.Fatal("unexpected timex")
 	}
-}
-
-func hasNumericKind(kinds []domain.QueryNumericIntentKind, want domain.QueryNumericIntentKind) bool {
-	for _, kind := range kinds {
-		if kind == want {
-			return true
-		}
-	}
-	return false
-}
-
-func hasTemporalKind(kinds []domain.QueryTemporalIntentKind, want domain.QueryTemporalIntentKind) bool {
-	for _, kind := range kinds {
-		if kind == want {
-			return true
-		}
-	}
-	return false
 }

@@ -489,6 +489,42 @@ func TestRebuildAll_RehydratesGraphLedger(t *testing.T) {
 	}
 }
 
+func TestRebuildAll_PreservesRawTurnObservations(t *testing.T) {
+	ctx := context.Background()
+	scope := Scope{RuntimeID: "rt", UserID: "u1"}
+	observations := NewInMemoryObservationStore()
+	links := NewInMemoryLinkStore()
+	mem, err := New(
+		WithObservationStore(observations),
+		WithLinkStore(links),
+	)
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+
+	rawText := "The raw-only rebuild phrase is violet sundial."
+	if _, err := mem.Save(ctx, scope, SaveRequest{
+		Turns: []TurnContext{{
+			ID:   "turn-raw-rebuild",
+			Role: "user",
+			Text: rawText,
+		}},
+	}); err != nil {
+		t.Fatalf("save raw turn: %v", err)
+	}
+	if err := mem.(ProjectionRebuilder).RebuildAll(ctx, scope); err != nil {
+		t.Fatalf("rebuild all: %v", err)
+	}
+
+	got, err := observations.List(ctx, scope, ObservationListQuery{})
+	if err != nil {
+		t.Fatalf("observations.List: %v", err)
+	}
+	if len(got) != 1 || got[0].Kind != ObservationKindTurn || got[0].Text != rawText {
+		t.Fatalf("observations after rebuild = %+v, want raw turn preserved", got)
+	}
+}
+
 func hasLink(links []FactLink, typ FactLinkType, fromKind GraphNodeKind, fromID string, toKind GraphNodeKind, toID string) bool {
 	for _, link := range links {
 		if link.Type != typ {

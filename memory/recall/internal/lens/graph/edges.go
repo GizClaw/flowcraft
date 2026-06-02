@@ -22,6 +22,7 @@ type Config struct {
 	MaxEdgesPerFact             int
 	MaxCooccurrenceParticipants int
 	MinConfidence               float64
+	IncludeCooccurrence         bool
 }
 
 func (c Config) maxEdgesPerFact() int {
@@ -67,9 +68,27 @@ func extractEdges(f domain.TemporalFact, cfg Config, now time.Time) []directedEd
 	case domain.KindRelation:
 		return typed
 	case domain.KindEvent, domain.KindState, domain.KindProcedure, domain.KindNote:
+		if !cfg.IncludeCooccurrence {
+			return typed
+		}
 		return append(typed, extractCooccurrenceEdges(f, cfg)...)
 	default:
 		return typed
+	}
+}
+
+func extractDiagnosticCooccurrenceEdges(f domain.TemporalFact, cfg Config, now time.Time) []directedEdge {
+	if f.ID == "" || !domain.IsHistorical(f, now) {
+		return nil
+	}
+	if f.Confidence < cfg.minConfidence() {
+		return nil
+	}
+	switch f.Kind {
+	case domain.KindEvent, domain.KindState, domain.KindProcedure, domain.KindNote:
+		return extractCooccurrenceEdges(f, cfg)
+	default:
+		return nil
 	}
 }
 

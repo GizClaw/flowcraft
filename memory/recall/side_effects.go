@@ -2,14 +2,18 @@ package recall
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
+	"github.com/GizClaw/flowcraft/memory/recall/internal/domain"
 	"github.com/GizClaw/flowcraft/memory/recall/internal/domain/diagnostic"
 	retrievallens "github.com/GizClaw/flowcraft/memory/recall/internal/lens/retrieval"
+	"github.com/GizClaw/flowcraft/memory/recall/internal/pipeline"
 	"github.com/GizClaw/flowcraft/memory/recall/internal/pipeline/sideeffect"
 	"github.com/GizClaw/flowcraft/memory/recall/internal/pipeline/write"
 	"github.com/GizClaw/flowcraft/memory/recall/internal/port"
+	temporalstore "github.com/GizClaw/flowcraft/memory/recall/internal/store/temporal"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 )
 
@@ -163,25 +167,91 @@ func (m *memory) ProcessSideEffects(ctx context.Context, opts SideEffectProcessO
 	}
 	res := SideEffectProcessResult{Claimed: len(jobs)}
 	exec := m.sideEffectExecutor()
+	ackCtx := pipeline.DetachCancel(ctx)
 	for _, job := range jobs {
+		if !m.sideEffectJobGenerationCurrent(job) {
+			if err := m.sideEffectOutbox.Complete(ackCtx, job.ID, job.LeaseToken, port.SideEffectResult{CompletedAt: now}); err != nil {
+				res.Failed++
+				return res, fmt.Errorf("recall.ProcessSideEffects: complete stale job %s: %w", job.ID, err)
+			}
+			res.Completed++
+			continue
+		}
+		filtered, err := m.sideEffectJobWithLiveFacts(ctx, job, now)
+		if err != nil {
+			res.Failed++
+			failure := sideEffectFailure(err, job.Attempt, now)
+			if failure.ErrClass == diagnostic.ErrClassPermanent {
+				res.DeadLetter++
+			}
+			if ackErr := m.sideEffectOutbox.Fail(ackCtx, job.ID, job.LeaseToken, failure); ackErr != nil {
+				return res, fmt.Errorf("recall.ProcessSideEffects: fail ack %s: %w", job.ID, ackErr)
+			}
+			continue
+		}
+		if len(job.Facts) > 0 && len(filtered.Facts) == 0 {
+			if err := m.sideEffectOutbox.Complete(ackCtx, job.ID, job.LeaseToken, port.SideEffectResult{CompletedAt: now}); err != nil {
+				res.Failed++
+				return res, fmt.Errorf("recall.ProcessSideEffects: complete stale facts job %s: %w", job.ID, err)
+			}
+			res.Completed++
+			continue
+		}
+		job = filtered
 		if err := exec.Run(ctx, job); err != nil {
 			res.Failed++
 			failure := sideEffectFailure(err, job.Attempt, now)
 			if failure.ErrClass == diagnostic.ErrClassPermanent {
 				res.DeadLetter++
 			}
-			if ackErr := m.sideEffectOutbox.Fail(ctx, job.ID, job.LeaseToken, failure); ackErr != nil {
+			if ackErr := m.sideEffectOutbox.Fail(ackCtx, job.ID, job.LeaseToken, failure); ackErr != nil {
 				return res, fmt.Errorf("recall.ProcessSideEffects: fail ack %s: %w", job.ID, ackErr)
 			}
 			continue
 		}
-		if err := m.sideEffectOutbox.Complete(ctx, job.ID, job.LeaseToken, port.SideEffectResult{CompletedAt: now}); err != nil {
+		if err := m.sideEffectOutbox.Complete(ackCtx, job.ID, job.LeaseToken, port.SideEffectResult{CompletedAt: now}); err != nil {
 			res.Failed++
 			return res, fmt.Errorf("recall.ProcessSideEffects: complete ack %s: %w", job.ID, err)
 		}
 		res.Completed++
 	}
 	return res, nil
+}
+
+func (m *memory) sideEffectJobGenerationCurrent(job port.SideEffectJob) bool {
+	if m == nil {
+		return false
+	}
+	return m.peekScopeGen(job.Scope) == job.ScopeGeneration
+}
+
+func (m *memory) sideEffectJobWithLiveFacts(ctx context.Context, job port.SideEffectJob, now time.Time) (port.SideEffectJob, error) {
+	if m == nil || m.store == nil || len(job.Facts) == 0 {
+		return job, nil
+	}
+	out := job
+	out.Facts = make([]domain.TemporalFact, 0, len(job.Facts))
+	for _, queued := range job.Facts {
+		if queued.ID == "" {
+			continue
+		}
+		scope := queued.Scope
+		if scope.RuntimeID == "" {
+			scope = job.Scope
+		}
+		fresh, err := m.store.Get(ctx, scope, queued.ID)
+		if err != nil {
+			if errors.Is(err, temporalstore.ErrNotFound) {
+				continue
+			}
+			return out, err
+		}
+		if fresh.CorrectedBy != "" || domain.IsRetired(fresh, now) {
+			continue
+		}
+		out.Facts = append(out.Facts, fresh)
+	}
+	return out, nil
 }
 
 const maxSideEffectAttempts = 5

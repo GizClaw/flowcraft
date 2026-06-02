@@ -445,10 +445,11 @@ func TestStructuredAnswerBodyKeepsRecallHitStructure(t *testing.T) {
 		Evidence: []recall.EvidenceRef{{
 			ID:        "conv-26:D8:2",
 			Role:      "user",
+			Speaker:   "Melanie",
 			Text:      "Last Fri I finally took the kids to a pottery workshop.",
 			Timestamp: observedAt,
 		}},
-	}})
+	}}, "")
 
 	for _, want := range []string{
 		`fact_id: "f1"`,
@@ -458,6 +459,7 @@ func TestStructuredAnswerBodyKeepsRecallHitStructure(t *testing.T) {
 		`event_time_source: "content_relative"`,
 		`event_time_text: "Last Friday"`,
 		`observed_at: "2023-07-15 13:51"`,
+		`speaker: "Melanie"`,
 		`source_time: "2023-07-15 13:51"`,
 		`quote: "Last Fri I finally took the kids to a pottery workshop."`,
 	} {
@@ -477,7 +479,7 @@ func TestStructuredAnswerBodyDoesNotExposeNeighborCandidateSourceAsEvidencePacka
 	body := renderStructuredAnswerBody([]recall.Hit{{
 		Fact:    recall.TemporalFact{ID: "f1", Kind: recall.FactState, Content: "Alice bought the necklace in Paris."},
 		Sources: []string{"retrieval", "neighbor_candidate"},
-	}})
+	}}, "")
 	for _, want := range []string{
 		`fact_id: "f1"`,
 		`content: "Alice bought the necklace in Paris."`,
@@ -508,7 +510,7 @@ func TestStructuredAnswerBodyRendersAllTopKMemories(t *testing.T) {
 			Evidence: []recall.EvidenceRef{{ID: fmt.Sprintf("D%d:1", i+1), Text: fmt.Sprintf("Alice keeps item %d.", i+1)}},
 		})
 	}
-	body := renderStructuredAnswerBody(hits)
+	body := renderStructuredAnswerBody(hits, "")
 
 	for _, want := range []string{
 		`- [#1]`,
@@ -549,7 +551,7 @@ func TestStructuredAnswerBodyDoesNotRenderCoverageGroups(t *testing.T) {
 			},
 			Evidence: []recall.EvidenceRef{{ID: "D2:1", Text: "Oliver is my dog."}},
 		},
-	})
+	}, "")
 	for _, want := range []string{`fact_id: "cat"`, `fact_id: "dog"`, `object: "Bailey"`, `object: "Oliver"`} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("structured answer body missing %q:\n%s", want, body)
@@ -574,7 +576,7 @@ func TestStructuredAnswerBodyPackagesDirectAnswerCues(t *testing.T) {
 			ID:   "D4:13",
 			Text: "Last Friday, I went to an LGBTQ+ counseling workshop.",
 		}},
-	}})
+	}}, "")
 	for _, want := range []string{
 		`- [#1]`,
 		`content: "Caroline attended an LGBTQ+ counseling workshop."`,
@@ -605,7 +607,7 @@ func TestStructuredAnswerBodyKeepsSurfaceSpansInCuesOnly(t *testing.T) {
 			ID:   "D6:10",
 			Text: "I loved reading \"Charlotte's Web\" as a kid.",
 		}},
-	}})
+	}}, "")
 	for _, want := range []string{
 		`content: "Melanie loved reading \"Charlotte's Web\" as a kid."`,
 		`quote: "I loved reading \"Charlotte's Web\" as a kid."`,
@@ -639,7 +641,7 @@ func TestStructuredAnswerBodyDoesNotPromoteWhereCandidateAnswers(t *testing.T) {
 			ID:   "D1:9",
 			Text: "I bought the necklace in Paris.",
 		}},
-	}})
+	}}, "")
 	for _, want := range []string{
 		`location: "Paris"`,
 		`object: "necklace"`,
@@ -677,7 +679,7 @@ func TestStructuredAnswerBodyRendersStructuredEventTimeOnly(t *testing.T) {
 			Text:      "Last Friday I went to a council meeting for adoption.",
 			Timestamp: sourceTime,
 		}},
-	}})
+	}}, "")
 	for _, want := range []string{
 		`event_time: "2023-07-15"`,
 		`event_time_text: "2023-07-15"`,
@@ -722,7 +724,7 @@ func TestStructuredAnswerBodyKeepsRelativeTextWithoutAnswerSideParsing(t *testin
 			Text:      "I signed up for the pottery class yesterday.",
 			Timestamp: sourceTime,
 		}},
-	}})
+	}}, "")
 	for _, want := range []string{
 		`event_time: "2023-07-15"`,
 		`event_time_text: "2023-07-15"`,
@@ -774,7 +776,7 @@ func TestStructuredAnswerBodyRendersAllTemporalFactsWithoutDirectPromotion(t *te
 				Timestamp: sourceTime,
 			}},
 		},
-	})
+	}, "")
 
 	for _, want := range []string{
 		`- [#1]`,
@@ -798,7 +800,7 @@ func TestStructuredAnswerBodyRendersListFactsWithoutCountCandidate(t *testing.T)
 	body := renderStructuredAnswerBody([]recall.Hit{
 		{Fact: recall.TemporalFact{ID: "f1", Kind: recall.FactState, Content: "Melanie has a cat named Bailey.", Subject: "Melanie", Predicate: "has_pet", Object: "Bailey"}, Evidence: []recall.EvidenceRef{{ID: "D1:1", Text: "Melanie has a cat named Bailey."}}},
 		{Fact: recall.TemporalFact{ID: "f2", Kind: recall.FactState, Content: "Melanie has a dog named Oliver.", Subject: "Melanie", Predicate: "has_pet", Object: "Oliver"}, Evidence: []recall.EvidenceRef{{ID: "D1:2", Text: "Melanie has a dog named Oliver."}}},
-	})
+	}, "")
 	for _, want := range []string{
 		`content: "Melanie has a cat named Bailey."`,
 		`object: "Bailey"`,
@@ -838,7 +840,7 @@ func TestStructuredAnswerBodyRendersFullEvidenceForEveryTopKMemory(t *testing.T)
 		{Fact: recall.TemporalFact{ID: "walk", Kind: recall.FactState, Content: "Avery walked by the river.", Subject: "Avery"}, Evidence: []recall.EvidenceRef{{ID: "D4:1", Text: "Avery walked by the river."}}},
 		{Fact: recall.TemporalFact{ID: "book", Kind: recall.FactState, Content: "Avery read a field guide.", Subject: "Avery"}, Evidence: []recall.EvidenceRef{{ID: "D5:1", Text: "Avery read a field guide."}}},
 		{Fact: recall.TemporalFact{ID: "bought", Kind: recall.FactEvent, Content: "Avery bought the brass compass in Harbor Market.", Subject: "Avery", Object: "brass compass", Location: "Harbor Market"}, Evidence: []recall.EvidenceRef{{ID: "D1:2", Text: "I bought the brass compass in Harbor Market."}}},
-	})
+	}, "")
 
 	for _, want := range []string{
 		`- [#6]`,
@@ -871,7 +873,7 @@ func TestStructuredAnswerBodyDoesNotPromoteSourceTimeFallbackToEventTime(t *test
 			Text:      "I mentioned Tampa.",
 			Timestamp: validFrom,
 		}},
-	}})
+	}}, "")
 
 	for _, unwanted := range []string{
 		`event_time: "2024-05-07"`,
@@ -894,7 +896,7 @@ func TestStructuredAnswerBodyDoesNotPromoteSourceTimeFallbackToEventTime(t *test
 }
 
 func TestStructuredAnswerContextCarriesBackendPrompt(t *testing.T) {
-	ctx := structuredAnswerContext(nil)
+	ctx := structuredAnswerContext(nil, "")
 	if ctx.Format != "flowcraftv2_structured_facts" {
 		t.Fatalf("unexpected format: %q", ctx.Format)
 	}
@@ -904,7 +906,8 @@ func TestStructuredAnswerContextCarriesBackendPrompt(t *testing.T) {
 		"ranked TOPK structured facts",
 		"event_time as the event date",
 		"observed_at and evidence source_time",
-		"content as the canonical extracted fact",
+		"content as the canonical extracted fact when it agrees with the evidence",
+		"evidence speaker as the speaker of the quoted source turn",
 		"Match the form of the question",
 		"inspect [#1], [#2], and [#3] carefully",
 		"For WHEN questions, answer from event_time first",

@@ -25,9 +25,10 @@ const (
 	DefaultRetrievalFloor  = 5
 )
 
-// WeightedRRF implements reciprocal-rank-fusion with per-source
-// weights. Same fact id appearing in multiple sources accumulates
-// scores; the higher-ranked appearance wins for metadata.
+// WeightedRRF implements reciprocal-rank-fusion with per-source weights. Same
+// fact id appearing in multiple projections keeps its best route score and
+// records all routes for diagnostics; projections are derived views over the
+// same canonical fact, not independent evidence votes.
 type WeightedRRF struct{}
 
 var _ port.Fuser = WeightedRRF{}
@@ -74,7 +75,7 @@ func (WeightedRRF) Fuse(_ context.Context, results []domain.SourceResult, opts p
 			}
 			for _, c := range input[:floor] {
 				if c.ID != "" {
-					floorIDs[c.ID] = struct{}{}
+					floorIDs[fusionCandidateKey(c)] = struct{}{}
 				}
 			}
 		}
@@ -86,11 +87,23 @@ func (WeightedRRF) Fuse(_ context.Context, results []domain.SourceResult, opts p
 			if c.ID == "" {
 				continue
 			}
+			key := fusionCandidateKey(c)
 			contribution := w / float64(opts.RRFK+c.Rank)
 			contribution *= evolution.FeedbackBoostFromMeta(c.Metadata)
-			if existing, ok := agg[c.ID]; ok {
-				existing.Score += contribution
+			if existing, ok := agg[key]; ok {
 				existing.EvidenceIDs = mergeEvidenceIDs(existing.EvidenceIDs, c.EvidenceIDs)
+				if contribution > existing.Score {
+					sourceRoutes := candidateSourceRoutes(*existing)
+					merged := c
+					merged.Score = contribution
+					merged.EvidenceIDs = existing.EvidenceIDs
+					merged.Metadata = cloneMeta(c.Metadata)
+					for _, source := range sourceRoutes {
+						appendSourceMeta(&merged, source)
+					}
+					agg[key] = &merged
+					existing = &merged
+				}
 				// Track multi-source membership in metadata so the
 				// trace can surface why a fact ranked highly.
 				appendSourceMeta(existing, res.Source)
@@ -100,8 +113,8 @@ func (WeightedRRF) Fuse(_ context.Context, results []domain.SourceResult, opts p
 			merged.Score = contribution
 			merged.Metadata = cloneMeta(c.Metadata)
 			appendSourceMeta(&merged, res.Source)
-			agg[c.ID] = &merged
-			order = append(order, c.ID)
+			agg[key] = &merged
+			order = append(order, key)
 		}
 	}
 
@@ -165,30 +178,35 @@ func capWithSourceFloors(sorted []domain.Candidate, totalCap int, floorIDs map[s
 		if len(keep) >= totalCap {
 			break
 		}
-		if _, ok := floorIDs[c.ID]; !ok {
+		if _, ok := floorIDs[fusionCandidateKey(c)]; !ok {
 			continue
 		}
-		keep[c.ID] = struct{}{}
+		keep[fusionCandidateKey(c)] = struct{}{}
 	}
 	for _, c := range sorted {
 		if len(keep) >= totalCap {
 			break
 		}
-		if _, ok := keep[c.ID]; ok {
+		key := fusionCandidateKey(c)
+		if _, ok := keep[key]; ok {
 			continue
 		}
-		keep[c.ID] = struct{}{}
+		keep[key] = struct{}{}
 	}
 	kept := make([]domain.Candidate, 0, totalCap)
 	dropped := make([]domain.Candidate, 0, len(sorted)-len(kept))
 	for _, c := range sorted {
-		if _, ok := keep[c.ID]; ok {
+		if _, ok := keep[fusionCandidateKey(c)]; ok {
 			kept = append(kept, c)
 		} else {
 			dropped = append(dropped, c)
 		}
 	}
 	return kept, dropped
+}
+
+func fusionCandidateKey(c domain.Candidate) string {
+	return string(c.Kind) + "|" + c.Scope.CanonicalKey() + "|" + c.ID
 }
 
 func appendSourceMeta(c *domain.Candidate, src string) {
@@ -202,6 +220,17 @@ func appendSourceMeta(c *domain.Candidate, src string) {
 		}
 	}
 	c.Metadata["sources"] = append(existing, src)
+}
+
+func candidateSourceRoutes(c domain.Candidate) []string {
+	if c.Metadata == nil {
+		if c.Source == "" {
+			return nil
+		}
+		return []string{c.Source}
+	}
+	existing, _ := c.Metadata["sources"].([]string)
+	return append([]string(nil), existing...)
 }
 
 func cloneMeta(in map[string]any) map[string]any {

@@ -380,7 +380,7 @@ func (s *temporalStore) loadFact(ctx context.Context, scope domain.Scope, factID
 func (s *temporalStore) loadFactTx(ctx context.Context, tx pgx.Tx, scope domain.Scope, factID string) (domain.TemporalFact, error) {
 	runtimeID, userID := sqlstmt.ScopeParts(scope)
 	var raw string
-	err := tx.QueryRow(ctx, `SELECT payload_json FROM recall_facts WHERE runtime_id = $1 AND user_id = $2 AND id = $3`, runtimeID, userID, factID).Scan(&raw)
+	err := tx.QueryRow(ctx, `SELECT payload_json FROM recall_facts WHERE runtime_id = $1 AND user_id = $2 AND id = $3 FOR UPDATE`, runtimeID, userID, factID).Scan(&raw)
 	if err == pgx.ErrNoRows {
 		return domain.TemporalFact{}, temporalstore.ErrNotFound
 	}

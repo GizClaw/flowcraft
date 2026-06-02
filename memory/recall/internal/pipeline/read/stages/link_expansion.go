@@ -160,7 +160,7 @@ func (s *LinkExpansion) Run(ctx context.Context, state *read.ReadState) (diagnos
 				if detail.AddedFacts >= maxAdds || !linkCanExpandAssertion(link) {
 					continue
 				}
-				added, ok, err := s.linkedAssertionItem(ctx, item, other.ID)
+				added, ok, err := s.linkedAssertionItem(ctx, state, item, other.ID)
 				if err != nil {
 					if isContextError(err) {
 						return detail, err
@@ -218,7 +218,7 @@ func (s *LinkExpansion) expandObservationSupportedAssertions(ctx context.Context
 		if _, ok := existing[link.To.ID]; ok {
 			continue
 		}
-		added, ok, err := s.linkedAssertionItem(ctx, seed, link.To.ID)
+		added, ok, err := s.linkedAssertionItem(ctx, state, seed, link.To.ID)
 		if err != nil || !ok {
 			return addedIDs, len(links), err
 		}
@@ -300,7 +300,7 @@ func (s *LinkExpansion) expandEvidenceNodeSupportedAssertions(ctx context.Contex
 		if _, ok := existing[link.To.ID]; ok {
 			continue
 		}
-		added, ok, err := s.linkedAssertionItem(ctx, seed, link.To.ID)
+		added, ok, err := s.linkedAssertionItem(ctx, state, seed, link.To.ID)
 		if err != nil || !ok {
 			return addedIDs, len(links), err
 		}
@@ -378,7 +378,7 @@ func attachSpanEvidence(item *domain.ContextItem, link domain.FactLink, spanID s
 	return 0
 }
 
-func (s *LinkExpansion) linkedAssertionItem(ctx context.Context, seed *domain.ContextItem, factID string) (domain.ContextItem, bool, error) {
+func (s *LinkExpansion) linkedAssertionItem(ctx context.Context, state *read.ReadState, seed *domain.ContextItem, factID string) (domain.ContextItem, bool, error) {
 	if seed == nil || factID == "" {
 		return domain.ContextItem{}, false, nil
 	}
@@ -389,7 +389,7 @@ func (s *LinkExpansion) linkedAssertionItem(ctx context.Context, seed *domain.Co
 		}
 		return domain.ContextItem{}, false, err
 	}
-	if fact.CorrectedBy != "" {
+	if fact.CorrectedBy != "" || (state != nil && !domain.ScopeVisible(state.Scope, fact.Scope)) {
 		return domain.ContextItem{}, false, nil
 	}
 	score := seed.Candidate.Score * linkExpansionScoreFactor

@@ -106,6 +106,9 @@ func (s *ForgetAll) Run(ctx context.Context, state *forget.State) (diagnostic.St
 			fmt.Errorf("recall.ForgetAll: list: %w", err)
 	}
 	if len(facts) == 0 {
+		if mode == domain.ForgetHard && s.hasHardEmptyCleanup() {
+			return s.runHard(ctx, state, scopeKey, nil, started)
+		}
 		return diagnostic.ForgetAllDetail{
 			ScopeKey: scopeKey,
 			Mode:     string(mode),
@@ -119,6 +122,14 @@ func (s *ForgetAll) Run(ctx context.Context, state *forget.State) (diagnostic.St
 	default:
 		return s.runHard(ctx, state, scopeKey, facts, started)
 	}
+}
+
+func (s *ForgetAll) hasHardEmptyCleanup() bool {
+	return len(s.projections) > 0 ||
+		s.evidenceLookup != nil ||
+		s.observations != nil ||
+		s.links != nil ||
+		s.observationProjection != nil
 }
 
 // runSoft marks every fact Closed=true and re-projects the closed
@@ -406,9 +417,14 @@ func (s *ForgetAll) clearGraphAssertions(ctx context.Context, scope domain.Scope
 		if factID == "" {
 			continue
 		}
-		links, observations, err := graphledger.ClearAssertion(ctx, scope, factID, s.observations, s.links)
+		links, observations, deletedObservationIDs, err := graphledger.ClearAssertion(ctx, scope, factID, s.observations, s.links)
 		if err != nil {
 			return linkCount, observationCount, err
+		}
+		if len(deletedObservationIDs) > 0 && s.observationProjection != nil {
+			if err := s.observationProjection.ForgetObservations(ctx, scope, deletedObservationIDs); err != nil {
+				return linkCount, observationCount, err
+			}
 		}
 		linkCount += links
 		observationCount += observations

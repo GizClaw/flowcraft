@@ -20,8 +20,9 @@ func TestSource_BudgetCapsCandidates(t *testing.T) {
 	src := NewSource(stubRelationLookup{want: []string{"a", "b", "c"}})
 	res := src.Query(context.Background(), domain.QueryPlan{
 		Intent: domain.QueryIntent{
-			Scope:   domain.Scope{RuntimeID: "rt", UserID: "u1"},
-			Subject: "alice",
+			Scope:     domain.Scope{RuntimeID: "rt", UserID: "u1"},
+			Subject:   "alice",
+			Predicate: "knows",
 		},
 		SourceBudgets: map[string]int{planner.SourceRelation: 1},
 	})
@@ -38,8 +39,9 @@ func TestSource_AgentScopedQueryDefersBudgetUntilMaterialize(t *testing.T) {
 	src := NewSource(stubRelationLookup{want: []string{"private-a", "private-b", "visible"}})
 	res := src.Query(context.Background(), domain.QueryPlan{
 		Intent: domain.QueryIntent{
-			Scope:   domain.Scope{RuntimeID: "rt", UserID: "u1", AgentID: "agent-b"},
-			Subject: "alice",
+			Scope:     domain.Scope{RuntimeID: "rt", UserID: "u1", AgentID: "agent-b"},
+			Subject:   "alice",
+			Predicate: "knows",
 		},
 		SourceBudgets: map[string]int{planner.SourceRelation: 1},
 	})

@@ -9,7 +9,7 @@ import (
 	"github.com/GizClaw/flowcraft/memory/recall/internal/port"
 )
 
-func TestWeightedRRF_DedupesAndCombinesScores(t *testing.T) {
+func TestWeightedRRF_DedupesAndRecordsProjectionRoutes(t *testing.T) {
 	results := []domain.SourceResult{
 		{
 			Source: "retrieval",
@@ -39,7 +39,7 @@ func TestWeightedRRF_DedupesAndCombinesScores(t *testing.T) {
 		t.Fatalf("expected 3 unique facts, got %d (%+v)", len(fused), fused)
 	}
 	if fused[0].ID != "a" {
-		t.Errorf("top hit should be 'a' (matches both sources), got %+v", fused[0])
+		t.Errorf("top hit should keep the best single route for 'a', got %+v", fused[0])
 	}
 	srcs, _ := fused[0].Metadata["sources"].([]string)
 	if len(srcs) != 2 {
@@ -67,6 +67,24 @@ func TestWeightedRRF_MergesEvidenceIDsForSameFact(t *testing.T) {
 	}
 }
 
+func TestWeightedRRF_DoesNotMergeDifferentKindsWithSameID(t *testing.T) {
+	results := []domain.SourceResult{
+		{Source: "retrieval", Candidates: []domain.Candidate{
+			{Kind: domain.GraphNodeAssertion, ID: "same", Scope: domain.Scope{RuntimeID: "rt", UserID: "u1"}, Source: "retrieval", Rank: 1},
+		}},
+		{Source: "observation", Candidates: []domain.Candidate{
+			{Kind: domain.GraphNodeObservation, ID: "same", Scope: domain.Scope{RuntimeID: "rt", UserID: "u1"}, Source: "observation", Rank: 1},
+		}},
+	}
+	fused, _, err := WeightedRRF{}.Fuse(context.Background(), results, port.FusionOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(fused) != 2 {
+		t.Fatalf("different candidate kinds with same ID must not merge, got %+v", fused)
+	}
+}
+
 func TestWeightedRRF_PerSourceCapEmitsDrops(t *testing.T) {
 	results := []domain.SourceResult{
 		{
@@ -89,7 +107,7 @@ func TestWeightedRRF_PerSourceCapEmitsDrops(t *testing.T) {
 	}
 }
 
-func TestWeightedRRF_DoesNotBoostSourceScoreOutlier(t *testing.T) {
+func TestWeightedRRF_DoesNotLetProjectionCountBeatTopRetrieval(t *testing.T) {
 	retrievalCands := []domain.Candidate{
 		{Kind: domain.GraphNodeAssertion, ID: "rare_fact", Source: "retrieval", Rank: 1, Score: 14.0},
 		{Kind: domain.GraphNodeAssertion, ID: "filler1", Source: "retrieval", Rank: 2, Score: 2.0},
@@ -108,8 +126,8 @@ func TestWeightedRRF_DoesNotBoostSourceScoreOutlier(t *testing.T) {
 	fused, _, _ := WeightedRRF{}.Fuse(context.Background(), results, port.FusionOptions{
 		Weights: map[string]float64{"retrieval": 1.0, "entity": 1.0},
 	})
-	if fused[0].ID != "filler1" {
-		t.Fatalf("expected multi-source 'filler1' to remain top without source-score outlier boost, got rank order: %+v",
+	if fused[0].ID != "rare_fact" {
+		t.Fatalf("expected top retrieval route to win without projection-count boost, got rank order: %+v",
 			func() []string {
 				out := []string{}
 				for _, c := range fused {
@@ -188,8 +206,8 @@ func TestWeightedRRF_RetrievalFloorProtectsStrongSingleSourceEvidence(t *testing
 		TotalCap:     1,
 		SourceFloors: map[string]int{}, // explicit opt-out
 	})
-	if withoutFloor[0].ID != "multi-source-distractor" {
-		t.Fatalf("without floor expected multi-source distractor to win, got %+v", withoutFloor)
+	if withoutFloor[0].ID != "retrieval-evidence" {
+		t.Fatalf("projection count should not beat top retrieval even without floor, got %+v", withoutFloor)
 	}
 
 	withFloor, drops, _ := WeightedRRF{}.Fuse(context.Background(), results, port.FusionOptions{

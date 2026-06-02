@@ -51,6 +51,9 @@ func (s Scope) EffectiveFederation() []Scope {
 		if normalized.RuntimeID == "" {
 			continue
 		}
+		if !federationScopeAllowed(primary, normalized) {
+			continue
+		}
 		k := normalized.CanonicalKey()
 		if _, dup := seen[k]; dup {
 			continue
@@ -61,9 +64,34 @@ func (s Scope) EffectiveFederation() []Scope {
 	return out
 }
 
+func federationScopeAllowed(primary, sub Scope) bool {
+	if sub.RuntimeID != primary.RuntimeID {
+		return false
+	}
+	if primary.AgentID != "" && sub.AgentID != "" && sub.AgentID != primary.AgentID {
+		return false
+	}
+	if sub.UserID == primary.UserID {
+		return true
+	}
+	return primary.UserID != "" && sub.UserID == ""
+}
+
 // ScopesMatch reports whether two scopes share the same canonical
 // store partition (runtime + user). Federation and AgentID are
 // recall-only dimensions and do not affect the match.
 func ScopesMatch(a, b Scope) bool {
 	return a.PartitionKey() == b.PartitionKey()
+}
+
+// ScopeVisible reports whether an object owned by owner is visible from query
+// under recall's partition and AgentID soft-isolation rules.
+func ScopeVisible(query, owner Scope) bool {
+	if owner.RuntimeID != query.RuntimeID || owner.UserID != query.UserID {
+		return false
+	}
+	if query.AgentID != "" && owner.AgentID != "" && owner.AgentID != query.AgentID {
+		return false
+	}
+	return true
 }

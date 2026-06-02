@@ -36,7 +36,7 @@ func StageFromPipeline(stage string) FailureStage {
 	switch stage {
 	case "compiler", "ingest":
 		return FailureExtract
-	case "query_compile", "query_understand", "intent":
+	case "intent_route", "intent":
 		return FailureNormalize
 	case "conflict_resolve", "resolve":
 		return FailureMerge

@@ -135,11 +135,57 @@ func (e *fakeEvidenceStore) ListFactIDs(context.Context, domain.Scope) ([]string
 func (e *fakeEvidenceStore) ForgetByFact(context.Context, domain.Scope, []string) error { return nil }
 func (e *fakeEvidenceStore) Close() error                                               { return nil }
 
+type fakeObservationStore struct {
+	deleteScopeCount int
+	deleteScopes     []domain.Scope
+}
+
+func (s *fakeObservationStore) Append(context.Context, []domain.Observation) error { return nil }
+func (s *fakeObservationStore) Get(context.Context, domain.Scope, string) (domain.Observation, error) {
+	return domain.Observation{}, nil
+}
+func (s *fakeObservationStore) List(context.Context, domain.Scope, port.ObservationListQuery) ([]domain.Observation, error) {
+	return nil, nil
+}
+func (s *fakeObservationStore) Delete(context.Context, domain.Scope, []string) error { return nil }
+func (s *fakeObservationStore) DeleteByScope(_ context.Context, scope domain.Scope) (int, error) {
+	s.deleteScopes = append(s.deleteScopes, scope)
+	return s.deleteScopeCount, nil
+}
+func (s *fakeObservationStore) Close() error { return nil }
+
+type fakeObservationProjection struct {
+	clearScopes []domain.Scope
+}
+
+func (p *fakeObservationProjection) Name() string { return "observation" }
+func (p *fakeObservationProjection) ProjectObservations(context.Context, []domain.Observation) error {
+	return nil
+}
+func (p *fakeObservationProjection) RebuildObservations(context.Context, domain.Scope, []domain.Observation) error {
+	return nil
+}
+func (p *fakeObservationProjection) ForgetObservations(context.Context, domain.Scope, []string) error {
+	return nil
+}
+func (p *fakeObservationProjection) ClearObservationScope(_ context.Context, scope domain.Scope) error {
+	p.clearScopes = append(p.clearScopes, scope)
+	return nil
+}
+
 func newRunner(t *testing.T, store port.TemporalStore, projs []port.Projection, ev port.EvidenceStore) *forget.Runner {
 	t.Helper()
 	fan := pipeline.NewFanout(projs, nil)
 	return forget.NewRunner([]pipeline.Stage[*forget.State]{
 		stages.NewForgetAll(store, fan, projs, ev, nil, nil, nil),
+	}, nil)
+}
+
+func newRunnerWithGraph(t *testing.T, store port.TemporalStore, projs []port.Projection, ev port.EvidenceStore, observations port.ObservationStore, observationProjection port.ObservationProjection) *forget.Runner {
+	t.Helper()
+	fan := pipeline.NewFanout(projs, nil)
+	return forget.NewRunner([]pipeline.Stage[*forget.State]{
+		stages.NewForgetAll(store, fan, projs, ev, observations, nil, observationProjection),
 	}, nil)
 }
 
@@ -246,8 +292,7 @@ func TestForgetAll_Soft_MarksClosedAndReprojects(t *testing.T) {
 func TestForgetAll_EmptyScope_NoOps(t *testing.T) {
 	scope := domain.Scope{RuntimeID: "rt", UserID: "alice"}
 	store := &fakeStore{facts: nil}
-	r := &fakeProjection{name: "retrieval", level: port.Required}
-	runner := newRunner(t, store, []port.Projection{r}, nil)
+	runner := newRunner(t, store, nil, nil)
 
 	state := &forget.State{
 		Scope:           scope,
@@ -257,9 +302,37 @@ func TestForgetAll_EmptyScope_NoOps(t *testing.T) {
 	if err := runner.Run(context.Background(), state); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if state.Deleted != 0 || r.clearN != 0 || len(store.deleteByScopeArgs) != 0 {
-		t.Errorf("empty scope must short-circuit; got deleted=%d clear=%d delete=%d",
-			state.Deleted, r.clearN, len(store.deleteByScopeArgs))
+	if state.Deleted != 0 || len(store.deleteByScopeArgs) != 0 {
+		t.Errorf("empty scope must short-circuit; got deleted=%d delete=%d",
+			state.Deleted, len(store.deleteByScopeArgs))
+	}
+}
+
+func TestForgetAll_HardEmptyFactsStillClearsGraphScope(t *testing.T) {
+	scope := domain.Scope{RuntimeID: "rt", UserID: "alice"}
+	store := &fakeStore{facts: nil}
+	observations := &fakeObservationStore{deleteScopeCount: 1}
+	observationProjection := &fakeObservationProjection{}
+	runner := newRunnerWithGraph(t, store, nil, nil, observations, observationProjection)
+
+	state := &forget.State{
+		Scope:           scope,
+		Mode:            domain.ForgetHard,
+		ConfirmScopeKey: scope.PartitionKey(),
+	}
+	state.EnsureTrace()
+	if err := runner.Run(context.Background(), state); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(observationProjection.clearScopes) != 1 {
+		t.Fatalf("ClearObservationScope calls = %d, want 1", len(observationProjection.clearScopes))
+	}
+	if len(observations.deleteScopes) != 1 {
+		t.Fatalf("Observation DeleteByScope calls = %d, want 1", len(observations.deleteScopes))
+	}
+	d := state.Trace.Stages[0].Detail.(diagnostic.ForgetAllDetail)
+	if d.GraphObservationsCleared != 1 {
+		t.Fatalf("GraphObservationsCleared = %d, want 1", d.GraphObservationsCleared)
 	}
 }
 

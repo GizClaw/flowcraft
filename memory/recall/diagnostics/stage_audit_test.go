@@ -50,6 +50,56 @@ func TestAuditRecallStages_IncludesCandidateExpansion(t *testing.T) {
 	}
 }
 
+func TestAuditRecallStages_IncludesIntentRouteAndPlan(t *testing.T) {
+	audit := diagnostics.AuditRecallStages(domain.RecallTrace{
+		Stages: []diagnostic.StageDiagnostic{
+			{
+				Stage:  "intent_route",
+				Status: diagnostic.StatusOK,
+				Detail: diagnostic.IntentRouteDetail{
+					QueryLen:    42,
+					Entities:    []string{"Melanie"},
+					Kinds:       []string{"event"},
+					Subject:     "Melanie",
+					Predicate:   "bought",
+					Object:      "items",
+					TokenCount:  5,
+					QuotedCount: 1,
+					Strategy:    "set",
+					Confidence:  0.8,
+				},
+			},
+			{
+				Stage:  "plan",
+				Status: diagnostic.StatusOK,
+				Detail: diagnostic.PlanDetail{
+					TotalBudget: 30,
+					TaskIntents: []string{"set_completion"},
+					ActivatedLenses: []diagnostic.ActivatedLens{
+						{Lens: "retrieval", Weight: 1, Budget: 30, ActivatedBy: "planner"},
+						{Lens: "timeline", Weight: 0.7, Budget: 8, ActivatedBy: "planner"},
+					},
+				},
+			},
+		},
+	})
+
+	if len(audit.Stages) != 2 {
+		t.Fatalf("stages = %+v", audit.Stages)
+	}
+	query := audit.Stages[0].Query
+	if query == nil || query.Subject != "Melanie" || query.Predicate != "bought" || query.Object != "items" {
+		t.Fatalf("query audit = %+v", audit.Stages[0])
+	}
+	if query.Strategy != "set" || query.Confidence != 0.8 {
+		t.Fatalf("route audit = %+v", query)
+	}
+	plan := audit.Stages[1]
+	if plan.TotalBudget != 30 || len(plan.ActivatedLenses) != 2 || plan.ActivatedLenses[1].Lens != "timeline" {
+		t.Fatalf("plan audit = %+v", plan)
+	}
+}
+
 func TestAuditRecallStages_IncludesContextPackCoverageBundles(t *testing.T) {
 	audit := diagnostics.AuditRecallStages(domain.RecallTrace{
 		Stages: []diagnostic.StageDiagnostic{{

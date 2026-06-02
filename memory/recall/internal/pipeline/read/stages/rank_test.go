@@ -61,6 +61,21 @@ func TestRankLeavesPoolUncappedForReranker(t *testing.T) {
 	}
 }
 
+func TestRankDoesNotFallbackWhenTrustFilteredAllItems(t *testing.T) {
+	stage := NewRank(nil, false)
+	state := &read.ReadState{
+		PolicyFiltered: true,
+		MergedItems:    makeContextItems(3),
+	}
+
+	if _, err := stage.Run(context.Background(), state); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if len(state.Ranked) != 0 {
+		t.Fatalf("rank must preserve empty policy-filtered set, got %+v", state.Ranked)
+	}
+}
+
 func makeContextItems(n int) []domain.ContextItem {
 	items := make([]domain.ContextItem, 0, n)
 	for i := 0; i < n; i++ {

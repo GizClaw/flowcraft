@@ -9,9 +9,9 @@ import (
 	"github.com/GizClaw/flowcraft/memory/recall"
 )
 
-func structuredAnswerContext(hits []recall.Hit) runners.AnswerContext {
+func structuredAnswerContext(hits []recall.Hit, strategy string) runners.AnswerContext {
 	return runners.AnswerContext{
-		Body:           renderStructuredAnswerBody(hits),
+		Body:           renderStructuredAnswerBody(hits, strategy),
 		Format:         "flowcraftv2_structured_facts",
 		PromptTemplate: structuredFactsAnswerPrompt,
 	}
@@ -26,17 +26,21 @@ Guidelines:
 - Before answering, inspect [#1], [#2], and [#3] carefully. If any of them directly answers the question, use it even when later memories are noisy or only weakly related.
 - Treat event_time as the event date. event_time_source and event_time_text explain how that date was derived.
 - Treat observed_at and evidence source_time as evidence timestamps, not event dates by themselves. Use source_time only as provenance for the quoted evidence.
+- Treat evidence speaker as the speaker of the quoted source turn. When a quote is first-person ("I", "my", "we") and the evidence speaker is named, attribute that statement to the evidence speaker.
 - For WHEN questions, answer from event_time first. If event_time_source is content_relative, use event_time as the resolved answer and preserve event_time_text as supporting wording when helpful. Do not answer from observed_at/source_time unless no event_time is present.
 - For HOW MANY, HOW LONG, AGE, duration, count, and comparison questions, look for numbers in content, object, event_time_text, and evidence quotes before saying you do not know.
 - Preserve qualifiers from content or event_time_text when the source is imprecise rather than fabricating precision.
 - Match the form of the question. If asked WHEN, give a date or duration; HOW MANY, a number; YES/NO, lead with yes/no.
 - Prefer exact spans from content, object, location, entities, participants, and evidence quotes over broad paraphrases.
-- Treat content as the canonical extracted fact. Evidence quotes are grounding snippets and may be partial; do not ignore a directly relevant content field just because the quote omits surrounding context.
+- Treat content as the canonical extracted fact when it agrees with the evidence. If content/subject appears to conflict with the evidence speaker or quote, trust the evidence speaker and exact quote for attribution.
+- If an exact quote in a ranked memory directly answers the question, use it even when the extracted content sentence has a wrong or over-broad subject.
+- If <recall_strategy> is present, use it as a retrieval hint: temporal favors event_time/date evidence; count favors numeric coverage; set favors complete item lists; join/intersection favors combining multiple ranked facts; profile favors stable person attributes.
 - When the <question> tag has an asked_at attribute, treat that timestamp as the "now" for the question.
 - Answer in 1-2 sentences. Avoid hedging when the facts are unambiguous. Reply "I don't know" only after checking the top three memories and any memory that contains the asked entity or numeric/temporal cue.`
 
-func renderStructuredAnswerBody(hits []recall.Hit) string {
+func renderStructuredAnswerBody(hits []recall.Hit, strategy string) string {
 	var b strings.Builder
+	renderRecallStrategy(&b, strategy)
 	if len(hits) == 0 {
 		b.WriteString("(none)\n")
 		return b.String()
@@ -45,6 +49,15 @@ func renderStructuredAnswerBody(hits []recall.Hit) string {
 		renderStructuredHit(&b, i+1, hit)
 	}
 	return b.String()
+}
+
+func renderRecallStrategy(b *strings.Builder, strategy string) {
+	strategy = strings.TrimSpace(strategy)
+	if strategy == "" {
+		return
+	}
+	fmt.Fprintf(b, "<recall_strategy strategy=%q>\n", strategy)
+	b.WriteString("</recall_strategy>\n")
 }
 
 func renderStructuredHit(b *strings.Builder, rank int, hit recall.Hit) {
@@ -148,6 +161,7 @@ func renderStructuredEvidence(b *strings.Builder, ref recall.EvidenceRef) {
 	b.WriteString("\n")
 	writeKV(b, 3, "message_id", ref.MessageID)
 	writeKV(b, 3, "role", ref.Role)
+	writeKV(b, 3, "speaker", ref.Speaker)
 	if !ref.Timestamp.IsZero() {
 		writeKV(b, 3, "source_time", evidenceSourceTimeLabel(ref))
 	}

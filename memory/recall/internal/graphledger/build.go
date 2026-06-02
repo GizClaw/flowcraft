@@ -16,13 +16,19 @@ import (
 // stay deterministic across online writes and offline repair.
 func BuildDelta(scope domain.Scope, facts []domain.TemporalFact, closes []domain.ValidityClose, turns []domain.TurnContext, observedAt, now time.Time, requestID string) domain.MemoryGraphDelta {
 	observations := make([]domain.Observation, 0, len(turns))
-	observationByKey := make(map[string]domain.Observation)
+	observationByKey := make(map[string]int)
 	addObservation := func(o domain.Observation) string {
 		if o.ID == "" {
 			return ""
 		}
-		if _, ok := observationByKey[o.ID]; !ok {
-			observationByKey[o.ID] = o.Clone()
+		if idx, ok := observationByKey[o.ID]; ok {
+			merged, _, conflict := domain.MergeObservation(observations[idx], o)
+			if conflict {
+				return ""
+			}
+			observations[idx] = merged
+		} else {
+			observationByKey[o.ID] = len(observations)
 			observations = append(observations, o.Clone())
 		}
 		return o.ID

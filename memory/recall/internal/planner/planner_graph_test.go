@@ -8,7 +8,7 @@ import (
 	"github.com/GizClaw/flowcraft/memory/recall/internal/port"
 )
 
-func TestRuleBased_GraphOffByDefault(t *testing.T) {
+func TestRecallStrategyPlanner_GraphOffByDefault(t *testing.T) {
 	p := New()
 	plan, err := p.Plan(context.Background(), port.PlannerInput{
 		Scope:        domain.Scope{RuntimeID: "rt"},
@@ -20,17 +20,17 @@ func TestRuleBased_GraphOffByDefault(t *testing.T) {
 	}
 	for _, src := range plan.SourceOrder {
 		if src == SourceGraph {
-			t.Fatalf("graph must stay off unless RuleBased.GraphEnabled, order=%+v", plan.SourceOrder)
+			t.Fatalf("graph must stay off unless planner graph is enabled, order=%+v", plan.SourceOrder)
 		}
 	}
 }
 
-func TestRuleBased_GraphOnWithSeeds(t *testing.T) {
+func TestRecallStrategyPlanner_GraphOnWithBridgeSeeds(t *testing.T) {
 	p := New()
 	p.GraphEnabled = true
 	plan, err := p.Plan(context.Background(), port.PlannerInput{
 		Scope:        domain.Scope{RuntimeID: "rt"},
-		Entities:     []string{"alice"},
+		Entities:     []string{"alice", "bob"},
 		GraphEnabled: true,
 		Limit:        10,
 	})

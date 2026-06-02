@@ -7,13 +7,17 @@ import (
 	"strings"
 
 	"github.com/GizClaw/flowcraft/memory/recall/internal/domain"
+	"github.com/GizClaw/flowcraft/memory/recall/internal/domain/diagnostic"
 	recallintent "github.com/GizClaw/flowcraft/memory/recall/internal/intent"
 )
 
 const (
-	contextPackDuplicateJaccardCutoff = 0.86
-	contextPackBaseScoreWeight        = 0.85
-	contextPackRankPriorWeight        = 0.15
+	contextPackDuplicateJaccardCutoff   = 0.86
+	contextPackSiblingFactJaccardFloor  = 0.10
+	contextPackSiblingFactJaccardCutoff = 0.62
+	contextPackSameEvidenceSiblingCap   = 2
+	contextPackBaseScoreWeight          = 0.85
+	contextPackRankPriorWeight          = 0.15
 
 	contextPackSourcePenaltyPerExtra = 0.03
 	contextPackSourcePenaltyMax      = 0.12
@@ -22,6 +26,8 @@ const (
 
 	contextPackObservationDefaultCap = 1
 	contextPackObservationRescueCap  = 4
+
+	contextPackRankOutputAnchorDivisor = 3
 )
 
 type contextPackInput struct {
@@ -40,21 +46,37 @@ type contextPackCandidate struct {
 }
 
 func packRecallContextWithFeaturesAndDetail(ordered []domain.Hit, pool []domain.Hit, cap int) []domain.Hit {
+	hits, _ := packRecallContextWithTrace(ordered, pool, cap)
+	return hits
+}
+
+func packRecallContextWithTrace(ordered []domain.Hit, pool []domain.Hit, cap int) ([]domain.Hit, []diagnostic.CandidateSnapshot) {
+	return packRecallContextWithIntentTrace(domain.QueryIntent{}, ordered, pool, cap)
+}
+
+func packRecallContextWithIntentTrace(intent domain.QueryIntent, ordered []domain.Hit, pool []domain.Hit, cap int) ([]domain.Hit, []diagnostic.CandidateSnapshot) {
 	input := newContextPackInput(cap)
 	if input.cap <= 0 {
-		return ordered
+		return ordered, nil
 	}
 	candidatePool := mergeContextPackPool(ordered, pool)
 	if len(candidatePool) == 0 {
-		return ordered
+		return ordered, nil
 	}
 	candidates := contextPackCandidates(input, candidatePool)
-	candidates = contextPackLimitObservationCandidates(candidates)
+	traceCandidates := append([]contextPackCandidate(nil), candidates...)
+	dropReasons := map[string]string{}
+	candidates = contextPackLimitObservationCandidates(candidates, dropReasons)
+	candidates = contextPackLimitRouteLaneCandidates(intent, candidates, input.cap, dropReasons)
+	selectedCandidates := candidates
 	if len(candidates) <= input.cap {
-		return contextPackHits(candidates)
+		hits := contextPackHits(selectedCandidates)
+		return hits, contextPackTrace(traceCandidates, selectedCandidates, len(ordered), dropReasons)
 	}
-	selectedCandidates := contextPackFillWithMMR(candidates, nil, input.cap)
-	return contextPackHits(selectedCandidates)
+	anchors := contextPackRankOutputAnchors(candidates, len(ordered), input.cap)
+	anchors = contextPackFilterAnchorsByRoute(intent, anchors)
+	selectedCandidates = contextPackFillWithMMR(candidates, anchors, input.cap)
+	return contextPackHits(selectedCandidates), contextPackTrace(traceCandidates, selectedCandidates, len(ordered), dropReasons)
 }
 
 func contextPackFillWithMMR(candidates, selected []contextPackCandidate, cap int) []contextPackCandidate {
@@ -125,32 +147,19 @@ func contextPackCandidates(input contextPackInput, hits []domain.Hit) []contextP
 	}
 	out := make([]contextPackCandidate, 0, len(hits))
 	seenFacts := map[string]struct{}{}
-	seenEvidence := map[string]int{}
 	for i, hit := range hits {
 		evidenceKey := primaryEvidenceKey(hit)
 		candidate := newContextPackCandidate(hit, i, maxScore, evidenceKey)
-		if evidenceKey != "" {
-			if existing, ok := seenEvidence[evidenceKey]; ok {
-				if betterContextPackRepresentative(candidate, out[existing]) {
-					if oldFactID := out[existing].hit.Fact.ID; oldFactID != "" && oldFactID != candidate.hit.Fact.ID {
-						delete(seenFacts, oldFactID)
-					}
-					out[existing] = candidate
-					if candidate.hit.Fact.ID != "" {
-						seenFacts[candidate.hit.Fact.ID] = struct{}{}
-					}
-				}
-				continue
-			}
-		}
 		if hit.Fact.ID != "" {
 			if _, ok := seenFacts[hit.Fact.ID]; ok {
 				continue
 			}
-			seenFacts[hit.Fact.ID] = struct{}{}
 		}
-		if evidenceKey != "" {
-			seenEvidence[evidenceKey] = len(out)
+		if contextPackCandidateDuplicate(candidate, out) {
+			continue
+		}
+		if hit.Fact.ID != "" {
+			seenFacts[hit.Fact.ID] = struct{}{}
 		}
 		out = append(out, candidate)
 	}
@@ -163,7 +172,7 @@ func contextPackCandidates(input contextPackInput, hits []domain.Hit) []contextP
 	return out
 }
 
-func contextPackLimitObservationCandidates(candidates []contextPackCandidate) []contextPackCandidate {
+func contextPackLimitObservationCandidates(candidates []contextPackCandidate, dropReasons ...map[string]string) []contextPackCandidate {
 	if len(candidates) == 0 {
 		return candidates
 	}
@@ -191,6 +200,7 @@ func contextPackLimitObservationCandidates(candidates []contextPackCandidate) []
 			continue
 		}
 		if keptObservation >= cap {
+			contextPackRecordDropReason(dropReasons, cand, "observation_lane_cap")
 			continue
 		}
 		out = append(out, cand)
@@ -209,6 +219,190 @@ func contextPackLimitObservationCandidates(candidates []contextPackCandidate) []
 		}
 	}
 	return out
+}
+
+func contextPackLimitRouteLaneCandidates(intent domain.QueryIntent, candidates []contextPackCandidate, cap int, dropReasons ...map[string]string) []contextPackCandidate {
+	if len(candidates) == 0 || cap <= 0 {
+		return candidates
+	}
+	directCount := 0
+	for _, cand := range candidates {
+		if contextPackDirectCandidate(cand.hit) || contextPackObservationCandidate(cand) {
+			directCount++
+		}
+	}
+	entityLimit := 1
+	if contextPackEntityStrategy(intent) {
+		entityLimit = 2
+	}
+	timelineLimit := 1
+	if contextPackTemporalIntent(intent) {
+		timelineLimit = 3
+	}
+	graphLimit := 1
+	if contextPackBridgeStrategy(intent) && len(intent.Entities) >= 2 {
+		graphLimit = 2
+	}
+	if directCount == 0 {
+		rescueCap := min(cap, 3)
+		entityLimit = max(entityLimit, rescueCap)
+		timelineLimit = max(timelineLimit, rescueCap)
+		graphLimit = max(graphLimit, min(cap, 2))
+	}
+
+	counts := map[string]int{}
+	out := make([]contextPackCandidate, 0, len(candidates))
+	for _, cand := range candidates {
+		lane := contextPackRouteLane(cand.hit)
+		switch lane {
+		case "entity":
+			if counts[lane] >= entityLimit {
+				contextPackRecordDropReason(dropReasons, cand, "strategy_lane_cap")
+				continue
+			}
+		case "timeline":
+			if counts[lane] >= timelineLimit {
+				contextPackRecordDropReason(dropReasons, cand, "strategy_lane_cap")
+				continue
+			}
+		case "graph":
+			if counts[lane] >= graphLimit {
+				contextPackRecordDropReason(dropReasons, cand, "strategy_lane_cap")
+				continue
+			}
+		}
+		if lane != "" {
+			counts[lane]++
+		}
+		out = append(out, cand)
+	}
+	return out
+}
+
+func contextPackRecordDropReason(dropReasons []map[string]string, cand contextPackCandidate, reason string) {
+	if len(dropReasons) == 0 || dropReasons[0] == nil {
+		return
+	}
+	dropReasons[0][contextPackCandidateTraceKey(cand)] = reason
+}
+
+func contextPackDirectCandidate(hit domain.Hit) bool {
+	return contextPackHasRoute(hit, "retrieval") ||
+		contextPackHasRoute(hit, "assertion") ||
+		contextPackHasRoute(hit, "relation") ||
+		contextPackHasRoute(hit, "profile")
+}
+
+func contextPackRouteLane(hit domain.Hit) string {
+	if contextPackDirectCandidate(hit) {
+		return ""
+	}
+	switch {
+	case contextPackHasRoute(hit, "timeline"):
+		return "timeline"
+	case contextPackHasRoute(hit, "entity"):
+		return "entity"
+	case contextPackHasRoute(hit, "graph"):
+		return "graph"
+	default:
+		return ""
+	}
+}
+
+func contextPackEntityStrategy(intent domain.QueryIntent) bool {
+	switch intent.Route.EffectiveStrategy() {
+	case domain.RecallStrategySet, domain.RecallStrategyCount, domain.RecallStrategyIntersection, domain.RecallStrategyProfile:
+		return true
+	default:
+		return false
+	}
+}
+
+func contextPackTemporalIntent(intent domain.QueryIntent) bool {
+	return !intent.TimeRange.IsZero() || intent.Route.EffectiveStrategy() == domain.RecallStrategyTemporal
+}
+
+func contextPackBridgeStrategy(intent domain.QueryIntent) bool {
+	switch intent.Route.EffectiveStrategy() {
+	case domain.RecallStrategyJoin, domain.RecallStrategyIntersection:
+		return true
+	default:
+		return false
+	}
+}
+
+func contextPackRankOutputAnchors(candidates []contextPackCandidate, rankOutputCount, cap int) []contextPackCandidate {
+	anchorCap := contextPackRankOutputAnchorCount(cap)
+	if anchorCap <= 0 || rankOutputCount <= 0 {
+		return nil
+	}
+	byRank := append([]contextPackCandidate(nil), candidates...)
+	sort.SliceStable(byRank, func(i, j int) bool {
+		return byRank[i].queryRank < byRank[j].queryRank
+	})
+	out := make([]contextPackCandidate, 0, anchorCap)
+	for _, cand := range byRank {
+		if cand.queryRank >= rankOutputCount || contextPackObservationCandidate(cand) {
+			continue
+		}
+		if contextPackCandidateDuplicate(cand, out) {
+			continue
+		}
+		out = append(out, cand)
+		if len(out) >= anchorCap {
+			break
+		}
+	}
+	return out
+}
+
+func contextPackRankOutputAnchorCount(cap int) int {
+	if cap <= 0 {
+		return 0
+	}
+	count := (cap + contextPackRankOutputAnchorDivisor - 1) / contextPackRankOutputAnchorDivisor
+	if count < 1 {
+		return 1
+	}
+	if count > cap {
+		return cap
+	}
+	return count
+}
+
+func contextPackFilterAnchorsByRoute(intent domain.QueryIntent, anchors []contextPackCandidate) []contextPackCandidate {
+	if len(anchors) == 0 {
+		return anchors
+	}
+	out := anchors[:0]
+	for _, cand := range anchors {
+		if contextPackAnchorRouteAllowed(intent, cand.hit) {
+			out = append(out, cand)
+		}
+	}
+	return out
+}
+
+func contextPackAnchorRouteAllowed(intent domain.QueryIntent, hit domain.Hit) bool {
+	if contextPackHasRoute(hit, "retrieval") {
+		return true
+	}
+	if contextPackHasRoute(hit, "timeline") {
+		return contextPackTemporalIntent(intent)
+	}
+	if contextPackHasRoute(hit, "relation") || contextPackHasRoute(hit, "assertion") || contextPackHasRoute(hit, "profile") {
+		return intent.Subject != "" && (intent.Predicate != "" || intent.Object != "" || len(intent.Kinds) > 0)
+	}
+	return false
+}
+
+func contextPackHasRoute(hit domain.Hit, want string) bool {
+	for _, source := range hit.Sources {
+		if source == want {
+			return true
+		}
+	}
+	return false
 }
 
 func contextPackObservationCandidate(cand contextPackCandidate) bool {
@@ -258,7 +452,10 @@ func contextPackScore(candidate contextPackCandidate, maxHitScore float64) float
 	score := contextPackBaseScoreWeight*base +
 		contextPackRankPriorWeight*rankPrior
 	if contextPackObservationCandidate(candidate) {
-		score *= 0.75
+		// Observation hits are raw evidence rescue/support. Their lexical score is
+		// not calibrated against structured facts, so keep them from outranking
+		// direct assertion/event hits when both are available.
+		score = 0.04*base + 0.08*rankPrior
 	}
 	return score
 }
@@ -317,18 +514,40 @@ func primaryHitSource(hit domain.Hit) string {
 }
 
 func contextPackCandidateDuplicate(candidate contextPackCandidate, selected []contextPackCandidate) bool {
+	sameEvidenceCount := 0
 	for _, existing := range selected {
 		if candidate.hit.Fact.ID != "" && candidate.hit.Fact.ID == existing.hit.Fact.ID {
-			return true
-		}
-		if candidate.evidenceKey != "" && candidate.evidenceKey == existing.evidenceKey {
 			return true
 		}
 		if sameStructuredMemory(candidate.hit.Fact, existing.hit.Fact) && tokenSetJaccard(candidate.evidenceTokens, existing.evidenceTokens) >= contextPackDuplicateJaccardCutoff {
 			return true
 		}
+		if candidate.evidenceKey != "" && candidate.evidenceKey == existing.evidenceKey {
+			sameEvidenceCount++
+			if !contextPackComplementarySameEvidence(candidate, existing) {
+				return true
+			}
+		}
+	}
+	if candidate.evidenceKey != "" && sameEvidenceCount >= contextPackSameEvidenceSiblingCap {
+		return true
 	}
 	return false
+}
+
+func contextPackComplementarySameEvidence(candidate, existing contextPackCandidate) bool {
+	if candidate.hit.Fact.ID == "" || existing.hit.Fact.ID == "" {
+		return false
+	}
+	similarity := tokenSetJaccard(candidate.factTokens, existing.factTokens)
+	if similarity <= contextPackSiblingFactJaccardFloor {
+		return false
+	}
+	if sameStructuredMemory(candidate.hit.Fact, existing.hit.Fact) &&
+		similarity >= contextPackSiblingFactJaccardCutoff {
+		return false
+	}
+	return true
 }
 
 func contextPackHits(candidates []contextPackCandidate) []domain.Hit {
@@ -339,11 +558,121 @@ func contextPackHits(candidates []contextPackCandidate) []domain.Hit {
 	return out
 }
 
-func betterContextPackRepresentative(a, b contextPackCandidate) bool {
-	if math.Abs(a.score-b.score) > 1e-9 {
-		return a.score > b.score
+func contextPackTrace(candidates, selected []contextPackCandidate, rankOutputCount int, dropReasonMaps ...map[string]string) []diagnostic.CandidateSnapshot {
+	if len(candidates) == 0 {
+		return nil
 	}
-	return betterContextPackTieBreak(a, b)
+	var explicitDropReasons map[string]string
+	if len(dropReasonMaps) > 0 {
+		explicitDropReasons = dropReasonMaps[0]
+	}
+	out := make([]diagnostic.CandidateSnapshot, 0, len(candidates))
+	for _, cand := range candidates {
+		contextPackRank := contextPackSelectedRank(cand, selected)
+		rankOutputRank := 0
+		if cand.queryRank < rankOutputCount {
+			rankOutputRank = cand.queryRank + 1
+		}
+		droppedReason := ""
+		if contextPackRank == 0 {
+			droppedReason = "capacity"
+			if explicitDropReasons != nil {
+				if reason := explicitDropReasons[contextPackCandidateTraceKey(cand)]; reason != "" {
+					droppedReason = reason
+				}
+			}
+		}
+		routes := append([]string(nil), cand.hit.Sources...)
+		out = append(out, diagnostic.CandidateSnapshot{
+			FactID:           contextPackTraceFactID(cand.hit),
+			Source:           primaryHitSource(cand.hit),
+			Rank:             cand.queryRank + 1,
+			Score:            cand.baseScore,
+			EvidenceIDs:      contextPackTraceEvidenceIDs(cand.hit),
+			Sources:          routes,
+			RankOutputRank:   rankOutputRank,
+			ContextPackRank:  contextPackRank,
+			PrimarySource:    primaryHitSource(cand.hit),
+			ProjectionRoutes: routes,
+			DroppedReason:    droppedReason,
+		})
+	}
+	return out
+}
+
+func contextPackCandidateTraceKey(cand contextPackCandidate) string {
+	if id := contextPackTraceFactID(cand.hit); id != "" {
+		return "id:" + id
+	}
+	if cand.evidenceKey != "" {
+		return "ev:" + cand.evidenceKey
+	}
+	return "rank:" + strconv.Itoa(cand.queryRank)
+}
+
+func contextPackSelectedRank(candidate contextPackCandidate, selected []contextPackCandidate) int {
+	for i, existing := range selected {
+		if sameContextPackCandidate(candidate, existing) {
+			return i + 1
+		}
+	}
+	return 0
+}
+
+func sameContextPackCandidate(a, b contextPackCandidate) bool {
+	if a.hit.Fact.ID != "" && a.hit.Fact.ID == b.hit.Fact.ID {
+		return true
+	}
+	if a.hit.Observation.ID != "" && a.hit.Observation.ID == b.hit.Observation.ID {
+		return true
+	}
+	return false
+}
+
+func contextPackTraceFactID(hit domain.Hit) string {
+	if hit.Fact.ID != "" {
+		return hit.Fact.ID
+	}
+	if hit.Observation.ID != "" {
+		return hit.Observation.ID
+	}
+	if hit.Link.ID != "" {
+		return hit.Link.ID
+	}
+	return hit.Ref.ID
+}
+
+func contextPackTraceEvidenceIDs(hit domain.Hit) []string {
+	seen := map[string]struct{}{}
+	var out []string
+	appendID := func(id string) {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			return
+		}
+		if _, ok := seen[id]; ok {
+			return
+		}
+		seen[id] = struct{}{}
+		out = append(out, id)
+	}
+	for _, ref := range hit.Evidence {
+		appendID(ref.ID)
+		appendID(ref.ObservationID)
+		appendID(ref.SpanID)
+	}
+	for _, ref := range hit.Fact.EvidenceRefs {
+		appendID(ref.ID)
+		appendID(ref.ObservationID)
+		appendID(ref.SpanID)
+	}
+	if hit.Observation.ID != "" {
+		appendID(hit.Observation.ID)
+		for _, span := range hit.Observation.Spans {
+			appendID(span.ID)
+		}
+	}
+	return out
 }
 
 func contextPackFactText(hit domain.Hit) string {

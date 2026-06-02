@@ -80,10 +80,10 @@ func (s *MemoryStore) Append(_ context.Context, scope domain.Scope, factID strin
 		if _, dup := existing[r.ID]; dup {
 			// idempotent replay: overwrite payload but do not
 			// duplicate the byFact index entry.
-			sh.byID[r.ID] = r
+			sh.byID[evidenceStoreKey(factID, r.ID)] = r
 			continue
 		}
-		sh.byID[r.ID] = r
+		sh.byID[evidenceStoreKey(factID, r.ID)] = r
 		sh.byFact[factID] = append(sh.byFact[factID], r.ID)
 		existing[r.ID] = struct{}{}
 	}
@@ -98,11 +98,17 @@ func (s *MemoryStore) Get(_ context.Context, scope domain.Scope, evidenceID stri
 	if !ok {
 		return domain.EvidenceRef{}, ErrNotFound
 	}
-	r, ok := sh.byID[evidenceID]
-	if !ok {
-		return domain.EvidenceRef{}, ErrNotFound
+	for _, ids := range sh.byFact {
+		for _, id := range ids {
+			if id != evidenceID {
+				continue
+			}
+			if r, ok := sh.byID[evidenceStoreKeyForAnyFact(sh, id)]; ok {
+				return r, nil
+			}
+		}
 	}
-	return r, nil
+	return domain.EvidenceRef{}, ErrNotFound
 }
 
 // ListFactIDs enumerates every fact id with at least one ref in
@@ -140,7 +146,7 @@ func (s *MemoryStore) ListByFact(_ context.Context, scope domain.Scope, factID s
 	}
 	out := make([]domain.EvidenceRef, 0, len(ids))
 	for _, id := range ids {
-		if r, ok := sh.byID[id]; ok {
+		if r, ok := sh.byID[evidenceStoreKey(factID, id)]; ok {
 			out = append(out, r)
 		}
 	}
@@ -166,11 +172,29 @@ func (s *MemoryStore) ForgetByFact(_ context.Context, scope domain.Scope, factID
 			continue
 		}
 		for _, id := range ids {
-			delete(sh.byID, id)
+			delete(sh.byID, evidenceStoreKey(fid, id))
 		}
 		delete(sh.byFact, fid)
 	}
 	return nil
+}
+
+func evidenceStoreKey(factID, evidenceID string) string {
+	return factID + "\x00" + evidenceID
+}
+
+func evidenceStoreKeyForAnyFact(sh *scopeShard, evidenceID string) string {
+	if sh == nil {
+		return evidenceStoreKey("", evidenceID)
+	}
+	for factID, ids := range sh.byFact {
+		for _, id := range ids {
+			if id == evidenceID {
+				return evidenceStoreKey(factID, evidenceID)
+			}
+		}
+	}
+	return evidenceStoreKey("", evidenceID)
 }
 
 // Close releases backend resources.

@@ -2,6 +2,7 @@ package stages
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -43,6 +44,15 @@ func (s *CommitGraph) Run(ctx context.Context, state *write.WriteState) (diagnos
 	started := time.Now()
 	delta := graphledger.BuildDelta(state.Scope, state.Resolution.Facts, state.Resolution.Closes, nil, state.ObservedAt, started, state.SaveOutboxID)
 	state.GraphDelta = delta.Clone()
+	createdObservationIDs, err := s.createdObservationIDs(ctx, state.Scope, delta.Observations)
+	if err != nil {
+		state.FailedStage = "commit_graph"
+		return diagnostic.GraphCommitDetail{
+			Observations: len(delta.Observations),
+			Links:        len(delta.Links),
+			Latency:      time.Since(started),
+		}, err
+	}
 
 	if err := s.observations.Append(ctx, delta.Observations); err != nil {
 		state.FailedStage = "commit_graph"
@@ -52,11 +62,12 @@ func (s *CommitGraph) Run(ctx context.Context, state *write.WriteState) (diagnos
 			Latency:      time.Since(started),
 		}, fmt.Errorf("recall.Save: graph observations append: %w", err)
 	}
-	state.GraphObservationIDs = observationIDs(delta.Observations)
+	state.GraphObservationIDs = createdObservationIDs
 	if s.projection != nil {
 		if err := s.projection.ProjectObservations(ctx, delta.Observations); err != nil {
 			state.FailedStage = "commit_graph"
-			_ = s.observations.Delete(pipeline.DetachCancel(ctx), state.Scope, state.GraphObservationIDs)
+			s.cleanupProjectedObservations(ctx, state.Scope, observationIDs(delta.Observations))
+			s.cleanupGraphObservations(ctx, state)
 			state.GraphObservationIDs = nil
 			return diagnostic.GraphCommitDetail{
 				Observations: len(delta.Observations),
@@ -68,7 +79,8 @@ func (s *CommitGraph) Run(ctx context.Context, state *write.WriteState) (diagnos
 
 	if err := s.links.Append(ctx, delta.Links); err != nil {
 		state.FailedStage = "commit_graph"
-		_ = s.observations.Delete(pipeline.DetachCancel(ctx), state.Scope, state.GraphObservationIDs)
+		s.cleanupProjectedObservations(ctx, state.Scope, observationIDs(delta.Observations))
+		s.cleanupGraphObservations(ctx, state)
 		state.GraphObservationIDs = nil
 		return diagnostic.GraphCommitDetail{
 			Observations: len(delta.Observations),
@@ -85,6 +97,13 @@ func (s *CommitGraph) Run(ctx context.Context, state *write.WriteState) (diagnos
 	}, nil
 }
 
+func (s *CommitGraph) cleanupProjectedObservations(ctx context.Context, scope domain.Scope, observationIDs []string) {
+	if s == nil || s.projection == nil || len(observationIDs) == 0 {
+		return
+	}
+	_ = s.projection.ForgetObservations(pipeline.DetachCancel(ctx), scope, observationIDs)
+}
+
 func (s *CommitGraph) Compensate(ctx context.Context, state *write.WriteState) error {
 	if state == nil {
 		return nil
@@ -93,10 +112,44 @@ func (s *CommitGraph) Compensate(ctx context.Context, state *write.WriteState) e
 	if len(state.GraphLinkIDs) > 0 && s.links != nil {
 		_ = s.links.Delete(cleanupCtx, state.Scope, state.GraphLinkIDs)
 	}
-	if len(state.GraphObservationIDs) > 0 && s.observations != nil {
+	projectedObservationIDs := observationIDs(state.GraphDelta.Observations)
+	if len(projectedObservationIDs) == 0 {
+		projectedObservationIDs = state.GraphObservationIDs
+	}
+	s.cleanupProjectedObservations(cleanupCtx, state.Scope, projectedObservationIDs)
+	s.cleanupGraphObservations(cleanupCtx, state)
+	return nil
+}
+
+func (s *CommitGraph) createdObservationIDs(ctx context.Context, scope domain.Scope, observations []domain.Observation) ([]string, error) {
+	if s == nil || s.observations == nil || len(observations) == 0 {
+		return nil, nil
+	}
+	out := make([]string, 0, len(observations))
+	for _, observation := range observations {
+		if observation.ID == "" {
+			continue
+		}
+		_, err := s.observations.Get(ctx, scope, observation.ID)
+		if err == nil {
+			continue
+		}
+		if !errors.Is(err, port.ErrNotFound) {
+			return nil, fmt.Errorf("recall.Save: graph observation preflight: %w", err)
+		}
+		out = append(out, observation.ID)
+	}
+	return out, nil
+}
+
+func (s *CommitGraph) cleanupGraphObservations(ctx context.Context, state *write.WriteState) {
+	if state == nil || len(state.GraphObservationIDs) == 0 {
+		return
+	}
+	cleanupCtx := pipeline.DetachCancel(ctx)
+	if s.observations != nil {
 		_ = s.observations.Delete(cleanupCtx, state.Scope, state.GraphObservationIDs)
 	}
-	return nil
 }
 
 func observationIDs(observations []domain.Observation) []string {

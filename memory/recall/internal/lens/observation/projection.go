@@ -63,17 +63,55 @@ func (p *Projection) ForgetObservations(ctx context.Context, scope domain.Scope,
 	if p == nil || p.index == nil || len(observationIDs) == 0 {
 		return nil
 	}
+	seen := map[string]struct{}{}
 	ids := make([]string, 0, len(observationIDs))
+	filterValues := make([]any, 0, len(observationIDs))
 	for _, id := range observationIDs {
-		if strings.TrimSpace(id) == "" {
+		id = strings.TrimSpace(id)
+		if id == "" {
 			continue
 		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
 		ids = append(ids, id)
+		filterValues = append(filterValues, id)
 	}
 	if len(ids) == 0 {
 		return nil
 	}
-	return p.index.Delete(ctx, NamespaceFor(scope), ids)
+	deleteIDs := append([]string(nil), ids...)
+	pageToken := ""
+	for {
+		resp, err := p.index.List(ctx, NamespaceFor(scope), retrieval.ListRequest{
+			Filter:    retrieval.Filter{In: map[string][]any{MetaObservationID: filterValues}},
+			PageSize:  1000,
+			PageToken: pageToken,
+			Project:   []string{MetaObservationID, MetaSpanID},
+		})
+		if err != nil {
+			return err
+		}
+		if resp == nil {
+			break
+		}
+		for _, doc := range resp.Items {
+			if doc.ID == "" {
+				continue
+			}
+			if _, ok := seen[doc.ID]; ok {
+				continue
+			}
+			seen[doc.ID] = struct{}{}
+			deleteIDs = append(deleteIDs, doc.ID)
+		}
+		if resp.NextPageToken == "" {
+			break
+		}
+		pageToken = resp.NextPageToken
+	}
+	return p.index.Delete(ctx, NamespaceFor(scope), deleteIDs)
 }
 
 func (p *Projection) ClearObservationScope(ctx context.Context, scope domain.Scope) error {
@@ -85,15 +123,22 @@ func (p *Projection) ClearObservationScope(ctx context.Context, scope domain.Sco
 	}); ok {
 		return dropper.Drop(ctx, NamespaceFor(scope))
 	}
-	resp, err := p.index.List(ctx, NamespaceFor(scope), retrieval.ListRequest{})
-	if err != nil {
-		return err
-	}
-	ids := make([]string, 0, len(resp.Items))
-	for _, doc := range resp.Items {
-		if doc.ID != "" {
-			ids = append(ids, doc.ID)
+	var ids []string
+	pageToken := ""
+	for {
+		resp, err := p.index.List(ctx, NamespaceFor(scope), retrieval.ListRequest{PageToken: pageToken})
+		if err != nil {
+			return err
 		}
+		for _, doc := range resp.Items {
+			if doc.ID != "" {
+				ids = append(ids, doc.ID)
+			}
+		}
+		if resp.NextPageToken == "" {
+			break
+		}
+		pageToken = resp.NextPageToken
 	}
 	if len(ids) == 0 {
 		return nil

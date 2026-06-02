@@ -70,7 +70,7 @@ func (s *Ingest) Run(ctx context.Context, state *write.WriteState) (diagnostic.S
 			ExtractedFacts:      len(res.Facts),
 			ExtractorLatency:    latency,
 			ExtractorTokenUsage: res.ExtractorTokenUsage,
-			ExtractorGuard:      res.ExtractorGuard,
+			ExtractorGuard:      ingestExtractorGuardForDiagnostics(state, res.ExtractorGuard),
 		}, err
 	}
 	state.Ingest = res
@@ -83,7 +83,7 @@ func (s *Ingest) Run(ctx context.Context, state *write.WriteState) (diagnostic.S
 		StructurizerCoverage:   res.StructurizerCoverage,
 		ExtractorLatency:       latency,
 		ExtractorTokenUsage:    res.ExtractorTokenUsage,
-		ExtractorGuard:         res.ExtractorGuard,
+		ExtractorGuard:         ingestExtractorGuardForDiagnostics(state, res.ExtractorGuard),
 		TierApplied:            ingest.TierAppliedFor(state.Tier),
 		RecentMessagesProvided: len(state.RecentMessages),
 		AnchorsProvided:        len(state.ExistingFactsAnchor),
@@ -95,6 +95,14 @@ func (s *Ingest) Run(ctx context.Context, state *write.WriteState) (diagnostic.S
 		return detail, pipeline.ShortCircuitWith("empty_ingest")
 	}
 	return detail, nil
+}
+
+func ingestExtractorGuardForDiagnostics(state *write.WriteState, guard diagnostic.ExtractorGuard) diagnostic.ExtractorGuard {
+	if state != nil && state.DiagnosticsIncludeRaw {
+		return guard
+	}
+	guard.RejectedFacts = nil
+	return guard
 }
 
 // countDroppedReason tallies dropped facts whose Reason matches any

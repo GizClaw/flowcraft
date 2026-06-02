@@ -30,7 +30,7 @@ func TestStructurizerCoverage_Add(t *testing.T) {
 }
 
 func TestHasStage(t *testing.T) {
-	stages := []StageDiagnostic{{Stage: "query_understand"}, {Stage: "plan"}}
+	stages := []StageDiagnostic{{Stage: "intent_route"}, {Stage: "plan"}}
 	if !HasStage(stages, "plan") {
 		t.Error("HasStage(plan) → true")
 	}
@@ -47,8 +47,8 @@ func TestHasStage(t *testing.T) {
 func readStages() []StageDiagnostic {
 	return []StageDiagnostic{
 		{
-			Stage: "query_understand",
-			Detail: QueryUnderstandDetail{
+			Stage: "intent_route",
+			Detail: IntentRouteDetail{
 				QueryLen: 22,
 				Subject:  "alice",
 				Entities: []string{"alice"},

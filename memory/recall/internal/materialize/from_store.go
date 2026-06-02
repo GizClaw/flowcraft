@@ -191,6 +191,15 @@ func (m *FromStore) materializeObservation(ctx context.Context, c domain.Candida
 			Details: err.Error(),
 		}, false, nil
 	}
+	if reason, ok := violatesScope(c.Scope, obs.Scope); ok {
+		return domain.ContextItem{}, diagnostic.CandidateDrop{
+			Stage:   "candidate_materialize",
+			Reason:  diagnostic.DropScopeViolation,
+			FactID:  c.ID,
+			Source:  c.Source,
+			Details: reason,
+		}, false, nil
+	}
 	return domain.ContextItem{
 		Candidate:   c,
 		Ref:         c,
@@ -228,6 +237,15 @@ func (m *FromStore) materializeLink(ctx context.Context, c domain.Candidate) (do
 			FactID:  c.ID,
 			Source:  c.Source,
 			Details: err.Error(),
+		}, false, nil
+	}
+	if reason, ok := violatesScope(c.Scope, link.Scope); ok {
+		return domain.ContextItem{}, diagnostic.CandidateDrop{
+			Stage:   "candidate_materialize",
+			Reason:  diagnostic.DropScopeViolation,
+			FactID:  c.ID,
+			Source:  c.Source,
+			Details: reason,
 		}, false, nil
 	}
 	return domain.ContextItem{
@@ -323,7 +341,7 @@ func violatesScope(query, owner domain.Scope) (string, bool) {
 	if owner.UserID != query.UserID {
 		return "user_id mismatch", true
 	}
-	if query.AgentID != "" && owner.AgentID != "" && owner.AgentID != query.AgentID {
+	if !domain.ScopeVisible(query, owner) {
 		return "agent_id soft isolation", true
 	}
 	return "", false

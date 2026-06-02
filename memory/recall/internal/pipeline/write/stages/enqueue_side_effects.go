@@ -46,10 +46,11 @@ func (s *EnqueueSideEffects) Run(ctx context.Context, state *write.WriteState) (
 		}
 		detail.Enqueued++
 		return s.outbox.Enqueue(ctx, port.SideEffectJob{
-			RequestID: batchID,
-			Scope:     state.Scope,
-			Kind:      kind,
-			Facts:     facts,
+			RequestID:       batchID,
+			Scope:           state.Scope,
+			Kind:            kind,
+			ScopeGeneration: state.ScopeGeneration,
+			Facts:           facts,
 		})
 	}
 

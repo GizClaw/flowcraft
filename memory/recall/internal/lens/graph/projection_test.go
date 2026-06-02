@@ -97,8 +97,26 @@ func TestGraph_SkipsCommonNounEndpoints(t *testing.T) {
 	}
 }
 
-func TestGraph_CooccurrenceBounded(t *testing.T) {
-	cfg := Config{MaxCooccurrenceParticipants: 2, MaxEdgesPerFact: 2}
+func TestGraph_CooccurrenceDisabledByDefault(t *testing.T) {
+	p := New()
+	ctx := context.Background()
+	if err := p.Project(ctx, []domain.TemporalFact{
+		{ID: "e1", Scope: scope(), Kind: domain.KindEvent,
+			Entities:   []string{"a", "b"},
+			ObservedAt: time.Unix(1, 0)},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got := p.Traverse(ctx, scope(), []string{"a"}, 1, 0); len(got) != 0 {
+		t.Fatalf("co-occurrence edges should be disabled by default, got %+v", got)
+	}
+	if got := p.CooccurrenceDiagnostics(scope()); len(got) != 2 {
+		t.Fatalf("co-occurrence should be diagnostic-only by default, got %+v", got)
+	}
+}
+
+func TestGraph_CooccurrenceBoundedWhenEnabled(t *testing.T) {
+	cfg := Config{MaxCooccurrenceParticipants: 2, MaxEdgesPerFact: 2, IncludeCooccurrence: true}
 	p := New(cfg)
 	ctx := context.Background()
 	if err := p.Project(ctx, []domain.TemporalFact{
@@ -115,8 +133,8 @@ func TestGraph_CooccurrenceBounded(t *testing.T) {
 	}
 }
 
-func TestGraph_IndexesProcedureCooccurrence(t *testing.T) {
-	p := New()
+func TestGraph_IndexesProcedureCooccurrenceWhenEnabled(t *testing.T) {
+	p := New(Config{IncludeCooccurrence: true})
 	ctx := context.Background()
 	if err := p.Project(ctx, []domain.TemporalFact{
 		{ID: "proc1", Scope: scope(), Kind: domain.KindProcedure,

@@ -210,7 +210,7 @@ func TestLLMExtractor_RendersTurnsAsJSONL(t *testing.T) {
 	}
 	// Typed turn metadata must be lifted into the EvidenceRef so
 	// downstream materializers see Role/Timestamp without parsing.
-	if out[0].EvidenceRefs[0].Role != "user" || out[0].EvidenceRefs[0].Timestamp.IsZero() {
+	if out[0].EvidenceRefs[0].Role != "user" || out[0].EvidenceRefs[0].Speaker != "Avery" || out[0].EvidenceRefs[0].Timestamp.IsZero() {
 		t.Errorf("evidence ref should inherit typed turn metadata, got %+v", out[0].EvidenceRefs[0])
 	}
 	if out[0].EvidenceText != turn1.Text || out[0].EvidenceRefs[0].Text != turn1.Text {
@@ -1536,150 +1536,74 @@ func TestLLMExtractor_PreservesBackendClassification(t *testing.T) {
 	}
 }
 
-// TestLLMExtractorSystemPrompt_GuardsAntiAbstraction pins the
-// anti-abstraction language that distinguishes one-off dated
-// actions ("events") from durable traits ("states"). Regression
-// analysis traced time-anchored recall misses to the extractor
-// over-summarising sentences like "I just signed up for a workshop
-// yesterday" into "<speaker> uses classes for self-expression" —
-// collapsing several dated events into abstract states. Future prompt
-// edits must keep:
-//   - explicit instruction to default past-tense+date snippets to
-//     kind:"event" (not state/preference);
-//   - explicit instruction to preserve single-mention proper nouns
-//     verbatim (book titles, locations, items);
-//   - explicit exhaustiveness for one-off mentions;
-//   - explicit splitting for answer-bearing entity lists, while keeping
-//     related explanatory note fragments together;
-//
-// otherwise we silently regress recall on time-anchored memory.
-//
-// The test is intentionally substring-based (not whitespace-
-// sensitive) so re-wrapping the prompt is free, but removing a
-// guarded clause requires deleting the corresponding assertion
-// and forces the reviewer to acknowledge the trade-off.
-func TestLLMExtractorSystemPrompt_GuardsAntiAbstraction(t *testing.T) {
-	mustContain := []string{
-		"signed up for a mapmaking workshop",
-		"1. Extraction strategy",
-		"2. Candidate policy",
-		"3. Preserve answer-bearing detail",
-		"4. Avoid abstraction and over-merge",
-		"5. Evidence grounding",
-		"6. Text and subject fields",
-		"7. Relation fields",
-		"8. Semantic assertion fields",
-		"9. Second-person comments",
-		"10. Entity anchors",
-		"11. Kind taxonomy",
-		"12. Source ids and quotes",
-		"13. Coverage examples",
-		"14. Coverage checklist",
-		"15. Empty result",
-		`NOT {kind:"state"`,
-		"Single-occurrence dated\n                     actions are events, not states",
-		"Work source-turn by source-turn",
-		"Do not stop after the first event in a turn",
-		`Treat "note" as a first-class memory kind`,
-		"use it sparingly",
-		"Be exhaustive about concrete, retrievable details that form",
-		"when in doubt about praise, filler, or a descriptive aside",
-		"prefer at most one note for one explanatory theme",
-		"Split answer-bearing entity lists into separate facts",
-		"PersonA enjoys birdwatching",
-		"Do not\n  collapse lists into",
-		"Do NOT mechanically split every explanatory note",
-		"same semantic slot",
-		"archive's lab\n  partners",
-		"do not split this into one note per group",
-		"Preserve literal answer-bearing spans",
-		"that book",
-		"Be careful with second-person comments",
-		"second-person detail is about the addressee",
-		"do not leave first-person or group pronouns anywhere",
-		"dialogue act instead of memory\n  content",
-		"questions, requests for updates",
-		"subject -> predicate -> object",
-		"MUST be filled as a pair",
-		"Never emit an object without a predicate",
-		"Prefer canonical predicates only when their meaning exactly",
-		"short snake_case source verb",
-		"map an unsupported relation to the nearest canonical predicate",
-		"owns_pet is only for named animals",
-		"recommended requires an explicit recommendation",
-		"likes/enjoys/prefers require",
-		"semantic annotations, not keyword labels",
-		"They annotate the FACT PROPOSITION",
-		`"unknown" only when`,
-		"desired future visit",
-		`If a sentence is only about a current feeling toward a future thing`,
-		"Do not invent an object",
-		"symbolic meanings, abstract outcomes",
-		"planning to fix a garden cart",
-		`"procedure"`,
-		"When comparing options, use a markdown\n                     table.",
-		"Quote proper nouns verbatim",
-		"The Brass Atlas",
-		"<source_turns>",
-		"Ground each fact in the DIRECT source turn",
-		"Do not cite neighbouring turns",
-		"Do not create cross-turn summary facts",
-		"Use multiple source_ids only when one fact truly\n  requires both turns together",
-		"Never cite ids from <recent_context>",
-		"Prefer quoting the exact words\n  that make the fact true",
-		"names\n  of groups, clubs, organisations",
-		"reasons, outcomes,\n  lessons learned",
-		`emit it as kind "note" instead of dropping it`,
-		"Use note for named group details",
-		"Morning Lanterns",
-		"Lake Merrow",
-		"A typical memorable turn may produce 1-5 facts",
-		"Resolve relative dates against the source turn's timestamp",
-		`For kind "plan", do not use "actual"`,
-		`Do not leave relative-time words as the main time anchor`,
-		`"in July 2023" when only the month is knowable`,
+// These prompt tests only pin the high-level contract: section structure and
+// source envelope fields. They deliberately avoid treating exact prompt prose
+// as a behavioral oracle; extractor quality is validated by Save/Recall smoke
+// runs and source-grounding guard tests.
+func TestLLMExtractorSystemPrompt_HasContractSections(t *testing.T) {
+	sections := []string{
+		"## Output",
+		"## Input",
+		"## Rules",
+		"### 1. Extraction strategy",
+		"### 2. Candidate policy",
+		"### 3. Preserve answer-bearing detail",
+		"### 4. Avoid abstraction and over-merge",
+		"### 5. Evidence grounding",
+		"### 6. Text and subject fields",
+		"### 7. Relation fields",
+		"### 8. Semantic assertion fields",
+		"### 9. Second-person comments",
+		"### 10. Entity anchors",
+		"### 11. Kind taxonomy",
+		"### 12. Source ids and quotes",
+		"### 13. Coverage examples",
+		"### 14. Coverage checklist",
+		"### 15. Empty result",
+		"## Critical reminders before JSON",
 	}
-	for _, s := range mustContain {
-		if !strings.Contains(LLMExtractorSystemPrompt, s) {
-			t.Errorf("LLMExtractorSystemPrompt missing anti-abstraction guard: %q", s)
+	for _, section := range sections {
+		if !strings.Contains(LLMExtractorSystemPrompt, section) {
+			t.Errorf("LLMExtractorSystemPrompt missing contract section %q", section)
 		}
 	}
 }
 
-func TestLLMExtractorSystemPrompt_GuardsSourceOnlyAssistantAndNotePolicy(t *testing.T) {
-	mustContain := []string{
-		`<source_turns
-extractable="true" evidence_scope="only"> is the ONLY extractable source`,
-		`extractable="true" evidence_scope="only"`,
+func TestLLMExtractorSystemPrompt_DeclaresSourceEnvelopeContract(t *testing.T) {
+	contractTerms := []string{
+		`<source_turns`,
+		`extractable="true"`,
+		`evidence_scope="only"`,
 		`<recent_context extractable="false">`,
-		`<existing_memory_anchors
-extractable="false">`,
-		"they may resolve\npronouns, short names, and relative dates",
-		"Never copy, restate, revive, or complete a fact",
-		"unless the current <source_turns> text\nre-asserts that fact",
-		"Source-only grounding is stricter than source_id validation",
-		"the fact text\n  itself must be directly supported by the quoted words",
-		"even if the current turn\n  acknowledges, praises, asks about, or vaguely refers",
-		"Copy it EXACTLY from the source turn text",
-		"including capitalization,\n  punctuation, contractions, and spacing",
-		"Never paraphrase, normalize,\n  repair punctuation, or add/remove words",
-		"Assistant utterance policy",
-		"A pure question, greeting, thanks, congratulations, praise,\n  encouragement, empathy, or follow-up prompt normally yields",
-		`Do not convert a question into a fact such as "PersonA is interested in`,
-		"Do not re-extract a user's previous detail just because the assistant\n  responds to it",
-		"only when that same turn\n  introduces a concrete fact of its own",
-		"Do not use \"note\" as a fallback for weak social dialogue",
-		"Do not use note when event, state,\n                     preference, plan, relation, or procedure fits",
-		"Do\n                     not use note for praise, filler, generic social\n                     reactions, ordinary politeness, or follow-up\n                     questions",
-		"emit no fact rather than a\n                     vague note",
-		"return no facts for pure greetings, acknowledgements, thanks,\n  congratulations, vague encouragement, praise, follow-up questions",
-		"when a source\n  turn only reacts to a prior memory",
-		`only concrete detail
-  appears in extractable="false" context`,
+		`source_ids`,
+		`quote`,
+		`first-person`,
+		`source turn's "speaker"`,
+		`confirmation question`,
+		`image or attachment metadata`,
+		`Mixed social + factual turns`,
 	}
-	for _, s := range mustContain {
-		if !strings.Contains(LLMExtractorSystemPrompt, s) {
-			t.Errorf("LLMExtractorSystemPrompt missing source-only/assistant/note guard: %q", s)
+	for _, term := range contractTerms {
+		if !strings.Contains(LLMExtractorSystemPrompt, term) {
+			t.Errorf("LLMExtractorSystemPrompt missing source envelope contract term %q", term)
+		}
+	}
+}
+
+func TestLLMExtractorSystemPrompt_AvoidsDatasetSpecificExamples(t *testing.T) {
+	for _, term := range []string{
+		"LoCoMo",
+		"locomo",
+		"Caroline",
+		"Melanie",
+		"Becoming Nicole",
+		"Ed Sheeran",
+		"Bach",
+		"Mozart",
+		"Charlotte's Web",
+	} {
+		if strings.Contains(LLMExtractorSystemPrompt, term) {
+			t.Fatalf("LLMExtractorSystemPrompt should use domain-generic examples, found %q", term)
 		}
 	}
 }

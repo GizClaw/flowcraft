@@ -8,7 +8,7 @@ import (
 	"github.com/GizClaw/flowcraft/memory/recall/internal/port"
 )
 
-func TestRuleBased_RetrievalOnlyWithoutEntities(t *testing.T) {
+func TestRecallStrategyPlanner_RetrievalOnlyWithoutEntities(t *testing.T) {
 	p := New()
 	plan, err := p.Plan(context.Background(), port.PlannerInput{
 		Scope: domain.Scope{RuntimeID: "rt"},
@@ -31,7 +31,7 @@ func TestRuleBased_RetrievalOnlyWithoutEntities(t *testing.T) {
 	}
 }
 
-func TestRuleBased_EntityActivatedByHints(t *testing.T) {
+func TestRecallStrategyPlanner_EntityActivatedByHints(t *testing.T) {
 	p := New()
 	plan, err := p.Plan(context.Background(), port.PlannerInput{
 		Scope:    domain.Scope{RuntimeID: "rt"},
@@ -51,7 +51,7 @@ func TestRuleBased_EntityActivatedByHints(t *testing.T) {
 	}
 }
 
-func TestRuleBased_InfersTaskIntents(t *testing.T) {
+func TestRecallStrategyPlanner_TaskIntentsFollowRoute(t *testing.T) {
 	p := New()
 	cases := []struct {
 		name string
@@ -59,27 +59,18 @@ func TestRuleBased_InfersTaskIntents(t *testing.T) {
 		want domain.QueryTaskIntent
 	}{
 		{
-			name: "count query asks for set completion",
+			name: "count route asks for set completion",
 			in: port.PlannerInput{
-				Text: "How many books does Alice like?",
-				Features: domain.QueryFeatures{
-					Tokens:            map[string]struct{}{"alice": {}, "books": {}, "like": {}},
-					NumericIntent:     true,
-					NumericIntentKind: []domain.QueryNumericIntentKind{domain.QueryNumericIntentCount},
-				},
+				Text:        "How many books does Alice like?",
+				IntentRoute: domain.IntentRoute{Strategy: domain.RecallStrategyCount},
 			},
 			want: domain.QueryTaskSetCompletion,
 		},
 		{
-			name: "temporal query asks for temporal reasoning",
+			name: "temporal route asks for temporal reasoning",
 			in: port.PlannerInput{
-				Text: "When did Alice move?",
-				Features: domain.QueryFeatures{Temporal: domain.QueryTemporalFeatures{
-					HasIntent: true,
-					IntentKind: []domain.QueryTemporalIntentKind{
-						domain.QueryTemporalIntentDate,
-					},
-				}},
+				Text:        "When did Alice move?",
+				IntentRoute: domain.IntentRoute{Strategy: domain.RecallStrategyTemporal},
 			},
 			want: domain.QueryTaskTemporalReasoning,
 		},
@@ -98,7 +89,7 @@ func TestRuleBased_InfersTaskIntents(t *testing.T) {
 	}
 }
 
-func TestRuleBased_SurfaceIntentHelpersRespectTokenBoundaries(t *testing.T) {
+func TestRecallStrategyPlanner_DoesNotInferBridgeFromSurfaceTokens(t *testing.T) {
 	p := New()
 	plan, err := p.Plan(context.Background(), port.PlannerInput{
 		Scope:    domain.Scope{RuntimeID: "rt"},
@@ -122,27 +113,19 @@ func containsTask(tasks []domain.QueryTaskIntent, want domain.QueryTaskIntent) b
 	return false
 }
 
-func TestActivatesTimelineForDirectDateIntent(t *testing.T) {
+func TestActivatesTimelineForTemporalStrategy(t *testing.T) {
 	intent := domain.QueryIntent{
-		Kinds: []domain.FactKind{domain.KindEvent, domain.KindState, domain.KindPlan},
-		Features: domain.QueryFeatures{Temporal: domain.QueryTemporalFeatures{
-			HasIntent:  true,
-			IntentKind: []domain.QueryTemporalIntentKind{domain.QueryTemporalIntentDate},
-		}},
+		Route: domain.IntentRoute{Strategy: domain.RecallStrategyTemporal},
 	}
 
 	if !ActivatesTimeline(intent) {
-		t.Fatalf("timeline should activate for direct date/when intent")
+		t.Fatalf("timeline should activate for temporal strategy")
 	}
 }
 
-func TestActivatesTimelineSkipsBroadTemporalIntentWithoutRange(t *testing.T) {
+func TestActivatesTimelineSkipsBroadTemporalFeaturesWithoutRoute(t *testing.T) {
 	intent := domain.QueryIntent{
 		Kinds: []domain.FactKind{domain.KindEvent, domain.KindState, domain.KindPlan},
-		Features: domain.QueryFeatures{Temporal: domain.QueryTemporalFeatures{
-			HasIntent:  true,
-			IntentKind: []domain.QueryTemporalIntentKind{domain.QueryTemporalIntentDate, domain.QueryTemporalIntentRange},
-		}},
 	}
 
 	if ActivatesTimeline(intent) {
@@ -150,17 +133,17 @@ func TestActivatesTimelineSkipsBroadTemporalIntentWithoutRange(t *testing.T) {
 	}
 }
 
-func TestActivatesTimelinePreservesExplicitStructuredKinds(t *testing.T) {
+func TestActivatesTimelineIgnoresBroadStructuredKinds(t *testing.T) {
 	intent := domain.QueryIntent{
 		Kinds: []domain.FactKind{domain.KindEvent},
 	}
 
-	if !ActivatesTimeline(intent) {
-		t.Fatalf("timeline should still activate for explicit structured temporal kinds")
+	if ActivatesTimeline(intent) {
+		t.Fatalf("timeline should not activate from broad fact kinds alone")
 	}
 }
 
-func TestRuleBased_SourceBudgetsOverfetchFinalLimit(t *testing.T) {
+func TestRecallStrategyPlanner_SourceBudgetsOverfetchFinalLimit(t *testing.T) {
 	p := New()
 	plan, err := p.Plan(context.Background(), port.PlannerInput{
 		Scope:    domain.Scope{RuntimeID: "rt"},
@@ -181,7 +164,7 @@ func TestRuleBased_SourceBudgetsOverfetchFinalLimit(t *testing.T) {
 	}
 }
 
-func TestRuleBased_SourceBudgetCapsAtMaxOverfetch(t *testing.T) {
+func TestRecallStrategyPlanner_SourceBudgetCapsAtMaxOverfetch(t *testing.T) {
 	p := New()
 	plan, err := p.Plan(context.Background(), port.PlannerInput{
 		Scope: domain.Scope{RuntimeID: "rt"},
@@ -225,7 +208,7 @@ func TestPlanner_KnownEntitiesDoNotInfluenceLensWeights(t *testing.T) {
 	}
 }
 
-func TestRuleBased_ClampsMaxLimit(t *testing.T) {
+func TestRecallStrategyPlanner_ClampsMaxLimit(t *testing.T) {
 	p := New()
 	plan, _ := p.Plan(context.Background(), port.PlannerInput{
 		Scope: domain.Scope{RuntimeID: "rt"},

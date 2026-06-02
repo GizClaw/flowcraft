@@ -33,48 +33,50 @@ func (s *observationStore) Append(ctx context.Context, observations []domain.Obs
 			return errdefs.Validationf("recall postgres observation: observation %q missing scope.runtime_id", obs.ID)
 		}
 		runtimeID, userID := sqlstmt.ScopeParts(obs.Scope)
-		var existingPayload string
-		err := tx.QueryRow(ctx, `
-			SELECT payload_json FROM recall_observations
-			WHERE runtime_id = $1 AND user_id = $2 AND id = $3
-		`, runtimeID, userID, obs.ID).Scan(&existingPayload)
-		if err == nil {
-			existing, err := sqlstmt.DecodeJSON[domain.Observation](existingPayload)
-			if err != nil {
-				return err
-			}
-			merged, changed, conflict := domain.MergeObservation(existing, obs)
-			if conflict {
-				return errdefs.Conflictf("recall postgres observation: duplicate observation id %q in scope", obs.ID)
-			}
-			if !changed {
-				continue
-			}
-			payload, err := sqlstmt.EncodeJSON(merged)
-			if err != nil {
-				return err
-			}
-			if _, err := tx.Exec(ctx, `
-				UPDATE recall_observations
-				SET kind = $1, source_id = $2, observed_at_ns = $3, payload_json = $4
-				WHERE runtime_id = $5 AND user_id = $6 AND id = $7
-			`, string(merged.Kind), merged.SourceID, merged.ObservedAt.UnixNano(), payload, runtimeID, userID, obs.ID); err != nil {
-				return err
-			}
-			continue
-		}
-		if err != pgx.ErrNoRows {
-			return err
-		}
 		payload, err := sqlstmt.EncodeJSON(obs)
 		if err != nil {
 			return err
 		}
-		if _, err := tx.Exec(ctx, `
+		tag, err := tx.Exec(ctx, `
 			INSERT INTO recall_observations(runtime_id, user_id, id, kind, source_id, observed_at_ns, payload_json)
 			VALUES($1,$2,$3,$4,$5,$6,$7)
 			ON CONFLICT DO NOTHING
-		`, runtimeID, userID, obs.ID, string(obs.Kind), obs.SourceID, obs.ObservedAt.UnixNano(), payload); err != nil {
+		`, runtimeID, userID, obs.ID, string(obs.Kind), obs.SourceID, obs.ObservedAt.UnixNano(), payload)
+		if err != nil {
+			return err
+		}
+		if tag.RowsAffected() > 0 {
+			continue
+		}
+		var existingPayload string
+		err = tx.QueryRow(ctx, `
+			SELECT payload_json FROM recall_observations
+			WHERE runtime_id = $1 AND user_id = $2 AND id = $3
+			FOR UPDATE
+		`, runtimeID, userID, obs.ID).Scan(&existingPayload)
+		if err != nil {
+			return err
+		}
+		existing, err := sqlstmt.DecodeJSON[domain.Observation](existingPayload)
+		if err != nil {
+			return err
+		}
+		merged, changed, conflict := domain.MergeObservation(existing, obs)
+		if conflict {
+			return errdefs.Conflictf("recall postgres observation: duplicate observation id %q in scope", obs.ID)
+		}
+		if !changed {
+			continue
+		}
+		payload, err = sqlstmt.EncodeJSON(merged)
+		if err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `
+			UPDATE recall_observations
+			SET kind = $1, source_id = $2, observed_at_ns = $3, payload_json = $4
+			WHERE runtime_id = $5 AND user_id = $6 AND id = $7
+		`, string(merged.Kind), merged.SourceID, merged.ObservedAt.UnixNano(), payload, runtimeID, userID, obs.ID); err != nil {
 			return err
 		}
 	}
@@ -99,24 +101,13 @@ func (s *observationStore) Get(ctx context.Context, scope domain.Scope, observat
 
 func (s *observationStore) List(ctx context.Context, scope domain.Scope, query port.ObservationListQuery) ([]domain.Observation, error) {
 	runtimeID, userID := sqlstmt.ScopeParts(scope)
-	rows, err := s.b.pool.Query(ctx, `
-		SELECT payload_json FROM recall_observations
-		WHERE runtime_id = $1 AND user_id = $2
-		ORDER BY observed_at_ns ASC, id ASC
-	`, runtimeID, userID)
+	sqlText, args := postgresObservationListSQL(runtimeID, userID, query)
+	rows, err := s.b.pool.Query(ctx, sqlText, args...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	out, err := scanObservations(rows)
-	if err != nil {
-		return nil, err
-	}
-	out = filterObservations(out, query)
-	if query.Limit > 0 && len(out) > query.Limit {
-		out = out[:query.Limit]
-	}
-	return out, nil
+	return scanObservations(rows)
 }
 
 func (s *observationStore) Delete(ctx context.Context, scope domain.Scope, observationIDs []string) error {
@@ -166,15 +157,6 @@ func (s *linkStore) Append(ctx context.Context, links []domain.FactLink) error {
 	for _, link := range links {
 		if err := validateLink(link, "postgres"); err != nil {
 			return err
-		}
-		if link.MergeKey != "" {
-			exists, err := postgresLinkMergeKeyExists(ctx, tx, link.Scope, link.MergeKey)
-			if err != nil {
-				return err
-			}
-			if exists {
-				continue
-			}
 		}
 		payload, err := sqlstmt.EncodeJSON(link)
 		if err != nil {
@@ -356,24 +338,28 @@ func scanLinks(rows payloadRows) ([]domain.FactLink, error) {
 	return out, rows.Err()
 }
 
-func filterObservations(observations []domain.Observation, query port.ObservationListQuery) []domain.Observation {
-	kindSet := make(map[domain.ObservationKind]struct{}, len(query.Kinds))
-	for _, kind := range query.Kinds {
-		kindSet[kind] = struct{}{}
-	}
-	out := observations[:0]
-	for _, obs := range observations {
-		if len(kindSet) > 0 {
-			if _, ok := kindSet[obs.Kind]; !ok {
-				continue
-			}
+func postgresObservationListSQL(runtimeID, userID string, query port.ObservationListQuery) (string, []any) {
+	args := []any{runtimeID, userID}
+	sqlText := `
+		SELECT payload_json FROM recall_observations
+		WHERE runtime_id = $1 AND user_id = $2
+	`
+	if len(query.Kinds) > 0 {
+		sqlText += fmt.Sprintf(" AND kind IN (%s)", phs(len(args)+1, len(query.Kinds)))
+		for _, kind := range query.Kinds {
+			args = append(args, string(kind))
 		}
-		if query.SourceID != "" && obs.SourceID != query.SourceID {
-			continue
-		}
-		out = append(out, obs)
 	}
-	return out
+	if query.SourceID != "" {
+		args = append(args, query.SourceID)
+		sqlText += fmt.Sprintf(" AND source_id = %s", ph(len(args)))
+	}
+	sqlText += " ORDER BY observed_at_ns ASC, id ASC"
+	if query.Limit > 0 {
+		args = append(args, query.Limit)
+		sqlText += fmt.Sprintf(" LIMIT %s", ph(len(args)))
+	}
+	return sqlText, args
 }
 
 func filterLinks(links []domain.FactLink, query port.LinkListQuery) []domain.FactLink {
@@ -400,22 +386,6 @@ func filterLinks(links []domain.FactLink, query port.LinkListQuery) []domain.Fac
 		return out[i].CreatedAt.Before(out[j].CreatedAt)
 	})
 	return out
-}
-
-func postgresLinkMergeKeyExists(ctx context.Context, tx pgx.Tx, scope domain.Scope, mergeKey string) (bool, error) {
-	runtimeID, userID := sqlstmt.ScopeParts(scope)
-	var id string
-	err := tx.QueryRow(ctx, `
-		SELECT id FROM recall_links
-		WHERE runtime_id = $1 AND user_id = $2 AND merge_key = $3
-	`, runtimeID, userID, mergeKey).Scan(&id)
-	if err != nil {
-		if err == pgx.ErrNoRows {
-			return false, nil
-		}
-		return false, err
-	}
-	return true, nil
 }
 
 func nodeRefMatches(query, actual domain.GraphNodeRef) bool {

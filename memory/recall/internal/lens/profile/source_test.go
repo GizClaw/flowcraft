@@ -22,6 +22,7 @@ func TestSource_BudgetCapsCandidates(t *testing.T) {
 		Intent: domain.QueryIntent{
 			Scope:   domain.Scope{RuntimeID: "rt", UserID: "u1"},
 			Subject: "alice",
+			Kinds:   []domain.FactKind{domain.KindState},
 		},
 		SourceBudgets: map[string]int{planner.SourceProfile: 1},
 	})
@@ -40,6 +41,7 @@ func TestSource_AgentScopedQueryDefersBudgetUntilMaterialize(t *testing.T) {
 		Intent: domain.QueryIntent{
 			Scope:   domain.Scope{RuntimeID: "rt", UserID: "u1", AgentID: "agent-b"},
 			Subject: "alice",
+			Kinds:   []domain.FactKind{domain.KindState},
 		},
 		SourceBudgets: map[string]int{planner.SourceProfile: 1},
 	})

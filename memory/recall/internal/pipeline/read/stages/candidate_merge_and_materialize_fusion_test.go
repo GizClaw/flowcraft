@@ -7,25 +7,23 @@ import (
 	"github.com/GizClaw/flowcraft/memory/recall/internal/planner"
 )
 
-func TestFusionSourceFloorsGatesTimelineFloorToDirectDateIntent(t *testing.T) {
-	direct := domain.QueryFeatures{Temporal: domain.QueryTemporalFeatures{
-		HasIntent:  true,
-		IntentKind: []domain.QueryTemporalIntentKind{domain.QueryTemporalIntentDate},
-	}}
-	directFloors := fusionSourceFloors(direct)
-	if directFloors[planner.SourceRetrieval] != 5 || directFloors[planner.SourceTimeline] != 3 {
-		t.Fatalf("direct date floors = %+v, want retrieval and timeline floors", directFloors)
+func TestFusionSourceFloorsFollowRecallStrategy(t *testing.T) {
+	temporalFloors := fusionSourceFloors(domain.IntentRoute{Strategy: domain.RecallStrategyTemporal})
+	if temporalFloors[planner.SourceRetrieval] != 5 || temporalFloors[planner.SourceTimeline] != 3 {
+		t.Fatalf("temporal floors = %+v, want retrieval and timeline floors", temporalFloors)
 	}
 
-	rangeOnly := domain.QueryFeatures{Temporal: domain.QueryTemporalFeatures{
-		HasIntent:  true,
-		IntentKind: []domain.QueryTemporalIntentKind{domain.QueryTemporalIntentDate, domain.QueryTemporalIntentRange},
-	}}
-	rangeFloors := fusionSourceFloors(rangeOnly)
-	if rangeFloors[planner.SourceRetrieval] != 5 {
-		t.Fatalf("range floors should keep retrieval floor, got %+v", rangeFloors)
+	setFloors := fusionSourceFloors(domain.IntentRoute{Strategy: domain.RecallStrategySet})
+	if setFloors[planner.SourceRetrieval] != 5 {
+		t.Fatalf("set floors should keep retrieval floor, got %+v", setFloors)
 	}
-	if _, ok := rangeFloors[planner.SourceTimeline]; ok {
-		t.Fatalf("range floors should not reserve timeline slots without explicit bounds, got %+v", rangeFloors)
+	if _, ok := setFloors[planner.SourceTimeline]; ok {
+		t.Fatalf("set floors should not reserve timeline slots, got %+v", setFloors)
+	}
+}
+
+func TestMergeSourceFloorsPreservesNilDefaultWhenEmpty(t *testing.T) {
+	if got := mergeSourceFloors(nil, nil); got != nil {
+		t.Fatalf("empty source floors should remain nil so fuser applies defaults, got %+v", got)
 	}
 }

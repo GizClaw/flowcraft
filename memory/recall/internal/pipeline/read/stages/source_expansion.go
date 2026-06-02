@@ -3,6 +3,7 @@ package stages
 import (
 	"context"
 	"errors"
+	"sort"
 	"strings"
 	"sync"
 
@@ -16,6 +17,7 @@ const (
 	sourceExpansionMaxVariants = 4
 	sourceExpansionMinBudget   = 8
 	sourceExpansionMaxExtra    = 20
+	sourceExpansionRankPenalty = 32
 )
 
 func querySourceWithPlanVariants(ctx context.Context, src port.Source, plan domain.QueryPlan) domain.SourceResult {
@@ -136,7 +138,7 @@ func mergeVariantSourceResults(sourceName string, plan domain.QueryPlan, results
 		return domain.SourceResult{Source: sourceName}
 	}
 	merged := domain.SourceResult{Source: sourceName}
-	byFactID := map[string]int{}
+	byCandidateKey := map[string]int{}
 	var errs []error
 	for resultIdx, res := range results {
 		if res.Source != "" {
@@ -147,28 +149,35 @@ func mergeVariantSourceResults(sourceName string, plan domain.QueryPlan, results
 		if res.Err != nil {
 			errs = append(errs, res.Err)
 		}
-		for _, candidate := range res.Candidates {
+		for candidateIdx, candidate := range res.Candidates {
 			if candidate.ID == "" {
 				continue
 			}
 			candidate.Source = merged.Source
-			if resultIdx > 0 {
-				candidate.Score = 0
+			if candidate.Rank <= 0 {
+				candidate.Rank = candidateIdx + 1
 			}
-			if existing, ok := byFactID[candidate.ID]; ok {
+			if resultIdx > 0 {
+				candidate.Rank += resultIdx * sourceExpansionRankPenalty
+			}
+			key := sourceExpansionCandidateKey(candidate)
+			if existing, ok := byCandidateKey[key]; ok {
 				merged.Candidates[existing] = mergeVariantCandidate(merged.Candidates[existing], candidate)
 				continue
 			}
-			byFactID[candidate.ID] = len(merged.Candidates)
+			byCandidateKey[key] = len(merged.Candidates)
 			merged.Candidates = append(merged.Candidates, candidate)
 		}
 	}
+	sort.SliceStable(merged.Candidates, func(i, j int) bool {
+		if merged.Candidates[i].Rank != merged.Candidates[j].Rank {
+			return merged.Candidates[i].Rank < merged.Candidates[j].Rank
+		}
+		return sourceExpansionCandidateKey(merged.Candidates[i]) < sourceExpansionCandidateKey(merged.Candidates[j])
+	})
 	if cap := sourceExpansionMergedCap(plan, sourceName); cap > 0 && len(merged.Candidates) > cap {
 		merged.Candidates = merged.Candidates[:cap]
 		merged.Truncated = true
-	}
-	for i := range merged.Candidates {
-		merged.Candidates[i].Rank = i + 1
 	}
 	merged.Err = errors.Join(errs...)
 	return merged
@@ -177,7 +186,7 @@ func mergeVariantSourceResults(sourceName string, plan domain.QueryPlan, results
 func mergeVariantCandidate(existing, incoming domain.Candidate) domain.Candidate {
 	out := existing
 	out.EvidenceIDs = mergeSourceExpansionEvidenceIDs(out.EvidenceIDs, incoming.EvidenceIDs)
-	if incoming.Score > out.Score || (incoming.Score == out.Score && incoming.Rank < out.Rank) {
+	if incoming.Rank < out.Rank || (incoming.Rank == out.Rank && incoming.Score > out.Score) {
 		out.Score = incoming.Score
 		out.Rank = incoming.Rank
 		out.Scope = incoming.Scope
@@ -188,6 +197,10 @@ func mergeVariantCandidate(existing, incoming domain.Candidate) domain.Candidate
 		out.Metadata = cloneCandidateMetadata(existing.Metadata)
 	}
 	return out
+}
+
+func sourceExpansionCandidateKey(c domain.Candidate) string {
+	return string(c.Kind) + "|" + c.Scope.CanonicalKey() + "|" + c.ID
 }
 
 func cloneCandidateMetadata(in map[string]any) map[string]any {

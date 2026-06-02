@@ -46,6 +46,7 @@ func (s *PolicyFilter) Skip(_ context.Context, state *read.ReadState) (bool, dia
 func (s *PolicyFilter) Run(_ context.Context, state *read.ReadState) (diagnostic.StageDetail, error) {
 	_ = s
 	read.PromoteMergedItems(state)
+	state.PolicyFiltered = true
 	trust := state.Query.Trust
 	maxRank := sensitivityRank[strings.ToLower(trust.MaxSensitivity)]
 	allowedScopes := trustScopes(trust)
@@ -57,11 +58,12 @@ func (s *PolicyFilter) Run(_ context.Context, state *read.ReadState) (diagnostic
 	}
 	for _, item := range state.MergedItems {
 		f := item.Fact
-		if trust.ActorID != "" && f.Scope.AgentID != "" && f.Scope.AgentID != trust.ActorID {
+		scope := policyItemScope(item)
+		if trust.ActorID != "" && scope.AgentID != "" && scope.AgentID != trust.ActorID {
 			detail.Removed++
 			continue
 		}
-		if len(allowedScopes) > 0 && !scopeAllowed(f.Scope, allowedScopes) {
+		if len(allowedScopes) > 0 && !scopeAllowed(scope, allowedScopes) {
 			detail.Removed++
 			continue
 		}
@@ -94,6 +96,19 @@ func factSensitivity(f domain.TemporalFact) string {
 		return strings.ToLower(s)
 	}
 	return "public"
+}
+
+func policyItemScope(item domain.ContextItem) domain.Scope {
+	if item.Fact.Scope.RuntimeID != "" {
+		return item.Fact.Scope
+	}
+	if item.Observation.Scope.RuntimeID != "" {
+		return item.Observation.Scope
+	}
+	if item.Link.Scope.RuntimeID != "" {
+		return item.Link.Scope
+	}
+	return item.Ref.Scope
 }
 
 func redactFact(f domain.TemporalFact) domain.TemporalFact {

@@ -8,7 +8,7 @@ import (
 	"github.com/GizClaw/flowcraft/memory/recall/internal/port"
 )
 
-func TestRuleBasedPlannerDoesNotInferSemanticTasksFromCues(t *testing.T) {
+func TestRecallStrategyPlannerDoesNotInferSemanticTasksFromCues(t *testing.T) {
 	plan, err := New().Plan(context.Background(), port.PlannerInput{
 		Scope: domain.Scope{RuntimeID: "rt"},
 		Text:  "Did Dave cancel the Dodge Charger test drive?",
@@ -25,7 +25,7 @@ func TestRuleBasedPlannerDoesNotInferSemanticTasksFromCues(t *testing.T) {
 	assertNoSource(t, plan.SourceOrder, SourceAssertion)
 }
 
-func TestRuleBasedPlannerDoesNotInferCounterfactualTaskFromCue(t *testing.T) {
+func TestRecallStrategyPlannerDoesNotInferCounterfactualTaskFromCue(t *testing.T) {
 	plan, err := New().Plan(context.Background(), port.PlannerInput{
 		Scope: domain.Scope{RuntimeID: "rt"},
 		Text:  "Would Mira have moved if the lease had been cheaper?",
@@ -41,7 +41,7 @@ func TestRuleBasedPlannerDoesNotInferCounterfactualTaskFromCue(t *testing.T) {
 	assertNoSource(t, plan.SourceOrder, SourceAssertion)
 }
 
-func TestRuleBasedPlannerOrdinaryIfQuestionIsNotCounterfactual(t *testing.T) {
+func TestRecallStrategyPlannerOrdinaryIfQuestionIsNotCounterfactual(t *testing.T) {
 	plan, err := New().Plan(context.Background(), port.PlannerInput{
 		Scope: domain.Scope{RuntimeID: "rt"},
 		Text:  "Would Mira move if the lease is cheaper?",
@@ -56,7 +56,7 @@ func TestRuleBasedPlannerOrdinaryIfQuestionIsNotCounterfactual(t *testing.T) {
 	assertNoTask(t, plan.TaskIntents, domain.QueryTaskCounterfactual)
 }
 
-func TestRuleBasedPlannerDoesNotTreatEveryQuestionAsYesNo(t *testing.T) {
+func TestRecallStrategyPlannerDoesNotTreatEveryQuestionAsYesNo(t *testing.T) {
 	plan, err := New().Plan(context.Background(), port.PlannerInput{
 		Scope: domain.Scope{RuntimeID: "rt"},
 		Text:  "What city did Mira visit?",
@@ -72,7 +72,7 @@ func TestRuleBasedPlannerDoesNotTreatEveryQuestionAsYesNo(t *testing.T) {
 	assertNoSource(t, plan.SourceOrder, SourceAssertion)
 }
 
-func TestRuleBasedPlannerBareWhichDoesNotActivateAssertion(t *testing.T) {
+func TestRecallStrategyPlannerBareWhichDoesNotActivateAssertion(t *testing.T) {
 	plan, err := New().Plan(context.Background(), port.PlannerInput{
 		Scope: domain.Scope{RuntimeID: "rt"},
 		Text:  "Which city did Mira visit?",

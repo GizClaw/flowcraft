@@ -45,9 +45,8 @@ type Query struct {
 	IncludeRetired bool
 }
 
-// QueryIntent is the structured form of a caller Query after the
-// query compiler and planner have interpreted it. The default query
-// compiler is rule-based; an LLM query compiler is opt-in.
+// QueryIntent is the structured form of a caller Query after the intent router
+// has selected a recall strategy and preserved low-risk literal signals.
 type QueryIntent struct {
 	Text      string
 	Entities  []string
@@ -59,6 +58,7 @@ type QueryIntent struct {
 	Features  QueryFeatures
 	Scope     Scope
 	Limit     int
+	Route     IntentRoute
 
 	// GraphEnabled is set by the planner when graph expansion is
 	// wired and opted in at Memory construction (docs §17).
@@ -67,26 +67,22 @@ type QueryIntent struct {
 	GraphHops int
 }
 
-// QueryFeatures is the shared query-understanding result produced by
-// IntentCompiler. Planner, rank, final selection, and grounding consume this
-// instead of re-parsing the raw query independently.
+// QueryFeatures carries low-risk literal features produced during intent
+// routing. These features may help retrieval and packing preserve exact
+// evidence, but they should not be treated as a semantic intent classifier.
 type QueryFeatures struct {
 	Tokens  map[string]struct{}
 	Numeric map[string]struct{}
 	Quoted  map[string]struct{}
 	Proper  map[string]struct{}
 
-	Temporal          QueryTemporalFeatures
-	NumericIntent     bool
-	NumericIntentKind []QueryNumericIntentKind
+	Temporal QueryTemporalFeatures
 }
 
-// HasTimeSignal reports whether the query asks for or contains a time signal.
+// HasTimeSignal reports whether the query contains a literal time signal.
 func (f QueryFeatures) HasTimeSignal() bool {
-	return f.Temporal.HasIntent ||
-		f.Temporal.HasExplicitDate ||
+	return f.Temporal.HasExplicitDate ||
 		f.Temporal.HasRelativeExpression ||
-		f.Temporal.HasDurationIntent ||
 		!f.Temporal.TimeRange.IsZero()
 }
 
@@ -96,40 +92,13 @@ func (f QueryFeatures) IsZero() bool {
 		len(f.Numeric) == 0 &&
 		len(f.Quoted) == 0 &&
 		len(f.Proper) == 0 &&
-		!f.NumericIntent &&
-		len(f.NumericIntentKind) == 0 &&
 		!f.HasTimeSignal()
 }
 
-type QueryTemporalIntentKind string
-
-const (
-	QueryTemporalIntentDate     QueryTemporalIntentKind = "date"
-	QueryTemporalIntentDuration QueryTemporalIntentKind = "duration"
-	QueryTemporalIntentRange    QueryTemporalIntentKind = "range"
-	QueryTemporalIntentOrder    QueryTemporalIntentKind = "order"
-)
-
-type QueryNumericIntentKind string
-
-const (
-	QueryNumericIntentCount     QueryNumericIntentKind = "count"
-	QueryNumericIntentAmount    QueryNumericIntentKind = "amount"
-	QueryNumericIntentAge       QueryNumericIntentKind = "age"
-	QueryNumericIntentFrequency QueryNumericIntentKind = "frequency"
-	QueryNumericIntentOrdinal   QueryNumericIntentKind = "ordinal"
-	QueryNumericIntentPrice     QueryNumericIntentKind = "price"
-	QueryNumericIntentPercent   QueryNumericIntentKind = "percent"
-	QueryNumericIntentDuration  QueryNumericIntentKind = "duration"
-)
-
-// QueryTemporalFeatures captures temporal query-understanding signals.
+// QueryTemporalFeatures captures temporal literal signals.
 type QueryTemporalFeatures struct {
-	HasIntent             bool
 	HasExplicitDate       bool
 	HasRelativeExpression bool
-	HasDurationIntent     bool
-	IntentKind            []QueryTemporalIntentKind
 	MatchedText           string
 	TimeRange             TimeRange
 }
@@ -147,6 +116,40 @@ const (
 	QueryTaskCounterfactual    QueryTaskIntent = "counterfactual_check"
 )
 
+type RecallStrategy string
+
+const (
+	RecallStrategyDefault        RecallStrategy = "default"
+	RecallStrategyTemporal       RecallStrategy = "temporal"
+	RecallStrategySet            RecallStrategy = "set"
+	RecallStrategyCount          RecallStrategy = "count"
+	RecallStrategyJoin           RecallStrategy = "join"
+	RecallStrategyIntersection   RecallStrategy = "intersection"
+	RecallStrategyProfile        RecallStrategy = "profile"
+	RecallStrategyYesNo          RecallStrategy = "yes_no"
+	RecallStrategyCounterfactual RecallStrategy = "counterfactual"
+)
+
+type IntentRoute struct {
+	Strategy       RecallStrategy
+	Confidence     float64
+	Alternates     []IntentRouteCandidate
+	Signals        []string
+	FallbackReason string
+}
+
+type IntentRouteCandidate struct {
+	Strategy   RecallStrategy
+	Confidence float64
+}
+
+func (r IntentRoute) EffectiveStrategy() RecallStrategy {
+	if r.Strategy == "" {
+		return RecallStrategyDefault
+	}
+	return r.Strategy
+}
+
 // QueryPlan describes how the read pipeline will visit candidate
 // sources for a single Recall call.
 //
@@ -155,6 +158,7 @@ const (
 // entity snapshots do not change source ordering or ranking.
 type QueryPlan struct {
 	Intent        QueryIntent
+	IntentRoute   IntentRoute
 	SourceOrder   []string
 	SourceBudgets map[string]int
 	TotalCap      int

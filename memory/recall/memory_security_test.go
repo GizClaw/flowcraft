@@ -106,6 +106,41 @@ func TestForgetAll_HardPurgeScopeRemovesCompletedOutboxPII(t *testing.T) {
 	}
 }
 
+func TestForgetAll_HardPurgesSideEffectOutboxWithoutAsyncQueue(t *testing.T) {
+	store := temporalstore.NewMemoryStore()
+	mem, err := New(WithTemporalStore(store))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	scope := Scope{RuntimeID: "rt", UserID: "u1", AgentID: "agent-a"}
+	m := mem.(*memory)
+	if m.asyncSemanticQueue != nil {
+		t.Fatal("test requires no async semantic queue")
+	}
+	if err := m.sideEffectOutbox.Enqueue(ctx, port.SideEffectJob{
+		ID:        "side-1",
+		RequestID: "save-1",
+		Scope:     scope,
+		Kind:      port.SideEffectProjectRequired,
+		Facts: []domain.TemporalFact{{
+			ID: "secret", Kind: domain.KindState, Content: "secret user fact",
+		}},
+	}); err != nil {
+		t.Fatalf("enqueue side effect: %v", err)
+	}
+	if _, err := mem.ForgetAll(ctx, scope, ForgetHard, scope.PartitionKey()); err != nil {
+		t.Fatalf("ForgetAll: %v", err)
+	}
+	stats, err := m.sideEffectOutbox.Stats(ctx, scope, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.Pending != 0 || stats.Leased != 0 || stats.Failed != 0 || stats.DeadLetter != 0 {
+		t.Fatalf("hard ForgetAll must purge side-effect outbox without async queue, stats=%+v", stats)
+	}
+}
+
 func TestSave_AbortsWhenForgetAllHardDuringIngest(t *testing.T) {
 	store := temporalstore.NewMemoryStore()
 	ingestStarted := make(chan struct{})
@@ -143,6 +178,50 @@ func TestSave_AbortsWhenForgetAllHardDuringIngest(t *testing.T) {
 	}
 	if _, err := store.Get(ctx, scope, "late"); !errors.Is(err, temporalstore.ErrNotFound) {
 		t.Fatalf("aborted save must not leave facts, got %v", err)
+	}
+}
+
+func TestSave_CleansRawObservationsWhenForgetAllHardWinsGenerationRace(t *testing.T) {
+	ctx := context.Background()
+	scope := Scope{RuntimeID: "rt", UserID: "u1"}
+	observations := &hookedObservationStore{ObservationStore: NewInMemoryObservationStore()}
+	var mem Memory
+	observations.beforeAppend = func() {
+		if _, err := mem.ForgetAll(ctx, scope, ForgetHard, scope.PartitionKey()); err != nil {
+			t.Fatalf("ForgetAll from observation hook: %v", err)
+		}
+	}
+	var err error
+	mem, err = New(WithObservationStore(observations))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = mem.Save(ctx, scope, SaveRequest{
+		Turns: []TurnContext{{
+			ID:   "turn-after-wipe",
+			Role: "user",
+			Text: "raw text written after the wipe must be cleaned",
+		}},
+		Facts: []TemporalFact{{
+			ID:      "late",
+			Kind:    domain.KindState,
+			Subject: "alice",
+			Content: "late fact",
+		}},
+	})
+	if err == nil {
+		t.Fatal("Save must abort after ForgetAll bumps the generation")
+	}
+	if !errdefs.IsAborted(err) {
+		t.Fatalf("save err = %v, want aborted", err)
+	}
+	got, listErr := observations.List(ctx, scope, ObservationListQuery{})
+	if listErr != nil {
+		t.Fatalf("observations.List: %v", listErr)
+	}
+	if len(got) != 0 {
+		t.Fatalf("aborted save must clean raw observations, got %+v", got)
 	}
 }
 
@@ -266,4 +345,19 @@ func (b *barrierIngestor) Compile(ctx context.Context, in port.IngestInput) (por
 		}
 	}
 	return port.IngestResult{Facts: facts}, nil
+}
+
+type hookedObservationStore struct {
+	ObservationStore
+	once         sync.Once
+	beforeAppend func()
+}
+
+func (s *hookedObservationStore) Append(ctx context.Context, observations []Observation) error {
+	s.once.Do(func() {
+		if s.beforeAppend != nil {
+			s.beforeAppend()
+		}
+	})
+	return s.ObservationStore.Append(ctx, observations)
 }

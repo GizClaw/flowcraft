@@ -148,16 +148,16 @@ type memory struct {
 	projections           []port.Projection
 	observationProjection port.ObservationProjection
 
-	queryCompiler port.IntentCompiler
-	planner       port.Planner
-	sources       []port.Source
-	fuser         port.Fuser
-	materializer  port.Materializer
-	fusionOpts    port.FusionOptions
-	graphEnabled  bool
-	reranker      port.Reranker
-	evolution     port.EvolutionRunner
-	entitySnap    port.EntitySnapshotter
+	intentRouter port.IntentRouter
+	planner      port.Planner
+	sources      []port.Source
+	fuser        port.Fuser
+	materializer port.Materializer
+	fusionOpts   port.FusionOptions
+	graphEnabled bool
+	reranker     port.Reranker
+	evolution    port.EvolutionRunner
+	entitySnap   port.EntitySnapshotter
 
 	writeMu    sync.Mutex
 	writeLocks map[writeScopeKey]*writeLock
@@ -251,19 +251,19 @@ func New(opts ...Option) (Memory, error) {
 	}
 	entitySnap := reg.EntitySnapshotter(built)
 
-	qc := cfg.queryCompiler
-	if qc == nil {
-		qc = intent.Default()
+	ir := cfg.intentRouter
+	if ir == nil {
+		ir = intent.Default(cfg.embedder)
 	}
 	specs := reg.Specs()
 	planr := cfg.planner
 	if planr == nil {
-		rb := planner.NewFromSpecs(specs)
-		rb.GraphEnabled = cfg.graphEnabled
-		planr = rb
+		strategyPlanner := planner.NewFromSpecs(specs)
+		strategyPlanner.GraphEnabled = cfg.graphEnabled
+		planr = strategyPlanner
 	} else if cfg.graphEnabled {
-		if rb, ok := planr.(*planner.RuleBased); ok {
-			rb.GraphEnabled = true
+		if strategyPlanner, ok := planr.(*planner.RecallStrategyPlanner); ok {
+			strategyPlanner.GraphEnabled = true
 		}
 	}
 	fuser := cfg.fuser
@@ -304,7 +304,7 @@ func New(opts ...Option) (Memory, error) {
 		telemetry:             cfg.telemetry,
 		projections:           projections,
 		observationProjection: obsProjection,
-		queryCompiler:         qc,
+		intentRouter:          ir,
 		planner:               planr,
 		sources:               srcs,
 		fuser:                 fuser,
@@ -365,7 +365,7 @@ func New(opts ...Option) (Memory, error) {
 		rerank = cfg.reranker
 	}
 	readStages := []pipeline.Stage[*read.ReadState]{
-		readstages.NewQueryUnderstand(qc),
+		readstages.NewIntentRoute(ir),
 		readstages.NewPlan(planr, cfg.graphEnabled, m.entitySnapshotsForScopes),
 		readstages.NewCandidateFanout(
 			func() []port.Source { return m.sources },
@@ -379,6 +379,9 @@ func New(opts ...Option) (Memory, error) {
 		readstages.NewCandidateExpansion(cfg.store),
 	}
 	readStages = append(readStages, readstages.NewLinkExpansion(cfg.store, cfg.observationStore, cfg.linkStore))
+	if cfg.observationStore != nil {
+		readStages = append(readStages, readstages.NewObservationRecall(cfg.observationStore))
+	}
 	readStages = append(readStages,
 		readstages.NewPolicyFilter(),
 		readstages.NewRank(rnk, cfg.reranker != nil),
@@ -543,9 +546,11 @@ func (m *memory) runSaveSync(ctx context.Context, scope Scope, req SaveRequest, 
 	m.holdWriteTelemetry()
 	unlock, err := m.enterScopeWrite(scope, startGen)
 	if err != nil {
+		m.cleanupSaveGraphArtifacts(context.Background(), scope, state)
 		m.flushWriteTelemetry()
 		return SaveResult{}, publicSaveTrace(state), err
 	}
+	state.ScopeGeneration = startGen
 
 	if err := m.writePostRunner.Run(ctx, state); err != nil {
 		unlock()
@@ -571,13 +576,21 @@ func (m *memory) runSaveSync(ctx context.Context, scope Scope, req SaveRequest, 
 // committed. Projection, embedding, and evolution converge later via
 // SideEffectProcessor.
 func (m *memory) runSaveAsync(ctx context.Context, scope Scope, req SaveRequest, withTrace, includeRawDiagnostics bool) (SaveResult, SaveTrace, error) {
+	startGen := m.peekScopeGen(scope)
 	state := newEpisodeState(scope, req, withTrace, includeRawDiagnostics)
 	allocateSaveOutboxID(state)
 	if err := m.asyncEpisodePreRunner.Run(ctx, state); err != nil {
+		m.cleanupSaveGraphArtifacts(context.Background(), scope, state)
 		return SaveResult{}, publicSaveTrace(state), err
 	}
 	m.holdWriteTelemetry()
-	unlock := m.lockWriteScope(scope)
+	unlock, err := m.enterScopeWrite(scope, startGen)
+	if err != nil {
+		m.cleanupSaveGraphArtifacts(context.Background(), scope, state)
+		m.flushWriteTelemetry()
+		return SaveResult{}, publicSaveTrace(state), err
+	}
+	state.ScopeGeneration = startGen
 	if err := m.asyncEpisodeCanonicalRunner.Run(ctx, state); err != nil {
 		unlock()
 		m.flushWriteTelemetry()
@@ -640,17 +653,14 @@ func publicSaveTrace(state *write.WriteState) SaveTrace {
 	return SaveTrace{Stages: append([]diagnostic.StageDiagnostic(nil), state.Trace.Stages...)}
 }
 
-// wireDefaultLenses registers the standard v2 lens set in planner
-// source order. Graph is omitted when graphEnabled is false; evidence
-// is appended when withEvidence is true.
-func wireDefaultLenses(reg *lens.Registry, graphEnabled, withEvidence, withObservation bool) {
+// wireDefaultLenses registers canonical fact projections in planner source
+// order. Observation indexing is wired separately as a raw-evidence rescue lane
+// so raw observations do not compete as ordinary projection votes.
+func wireDefaultLenses(reg *lens.Registry, graphEnabled, withEvidence, _ bool) {
 	if reg == nil {
 		return
 	}
 	reg.Register(retrievallens.Lens{})
-	if withObservation {
-		reg.Register(observationlens.Lens{})
-	}
 	reg.Register(entitylens.Lens{})
 	if graphEnabled {
 		reg.Register(graphlens.Lens{})
@@ -690,9 +700,22 @@ func (m *memory) Forget(ctx context.Context, scope Scope, factID string, mode ..
 	if err != nil {
 		if errors.Is(err, temporalstore.ErrNotFound) {
 			if mmode == domain.ForgetHard {
-				_ = m.fanout.ForgetRequired(ctx, scope, []string{factID})
+				deletedObservationIDs, planErr := graphledger.PlanClearAssertion(ctx, scope, factID, m.observationStore, m.linkStore)
+				if planErr != nil {
+					return fmt.Errorf("recall.Forget: graph cleanup plan: %w", planErr)
+				}
+				if err := m.fanout.ForgetRequired(ctx, scope, []string{factID}); err != nil {
+					return err
+				}
 				m.fanout.ForgetOptional(ctx, scope, []string{factID})
-				_, _, _ = graphledger.ClearAssertion(ctx, scope, factID, m.observationStore, m.linkStore)
+				if len(deletedObservationIDs) > 0 && m.observationProjection != nil {
+					if err := m.observationProjection.ForgetObservations(ctx, scope, deletedObservationIDs); err != nil {
+						return fmt.Errorf("recall.Forget: observation projection cleanup: %w", err)
+					}
+				}
+				if _, _, _, err := graphledger.ClearAssertion(ctx, scope, factID, m.observationStore, m.linkStore); err != nil {
+					return fmt.Errorf("recall.Forget: graph cleanup: %w", err)
+				}
 			}
 			return nil
 		}
@@ -711,15 +734,24 @@ func (m *memory) Forget(ctx context.Context, scope Scope, factID string, mode ..
 		m.fanout.ProjectOptional(ctx, []domain.TemporalFact{snapshot})
 		return nil
 	default:
+		deletedObservationIDs, err := graphledger.PlanClearAssertion(ctx, scope, factID, m.observationStore, m.linkStore)
+		if err != nil {
+			return fmt.Errorf("recall.Forget: graph cleanup plan: %w", err)
+		}
 		if err := m.fanout.ForgetRequired(ctx, scope, []string{factID}); err != nil {
 			return err
-		}
-		if _, _, err := graphledger.ClearAssertion(ctx, scope, factID, m.observationStore, m.linkStore); err != nil {
-			return fmt.Errorf("recall.Forget: graph cleanup: %w", err)
 		}
 		if err := m.store.Delete(ctx, scope, []string{factID}); err != nil {
 			m.compensateForgetStoreFailure(ctx, scope, snapshot, err)
 			return fmt.Errorf("recall.Forget: store delete: %w", err)
+		}
+		if len(deletedObservationIDs) > 0 && m.observationProjection != nil {
+			if err := m.observationProjection.ForgetObservations(ctx, scope, deletedObservationIDs); err != nil {
+				return fmt.Errorf("recall.Forget: observation projection cleanup: %w", err)
+			}
+		}
+		if _, _, _, err := graphledger.ClearAssertion(ctx, scope, factID, m.observationStore, m.linkStore); err != nil {
+			return fmt.Errorf("recall.Forget: graph cleanup: %w", err)
 		}
 		m.fanout.ForgetOptional(ctx, scope, []string{factID})
 		return nil

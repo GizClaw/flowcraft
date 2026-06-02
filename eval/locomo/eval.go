@@ -82,11 +82,23 @@ type Report struct {
 	Dataset          string                            `json:"dataset"`
 	Source           map[string]string                 `json:"source,omitempty"`
 	N                int                               `json:"n"`
+	Ingest           *IngestSummary                    `json:"ingest,omitempty"`
 	Aggregate        ScoreAggregate                    `json:"aggregate"`
 	PerQuestion      []QuestionScore                   `json:"per_question"`
 	Latency          map[string]metrics.LatencySummary `json:"latency"`
 	StartedAt        time.Time                         `json:"started_at"`
 	FinishedAt       time.Time                         `json:"finished_at"`
+}
+
+// IngestSummary records Save batch outcomes. Failed batches are skipped by the
+// eval loop, so surfacing them in the report keeps provider filters/timeouts
+// from being mistaken for normal extraction quality.
+type IngestSummary struct {
+	AttemptedBatches int             `json:"attempted_batches"`
+	SucceededBatches int             `json:"succeeded_batches"`
+	FailedBatches    int             `json:"failed_batches"`
+	SavedFacts       int             `json:"saved_facts"`
+	SaveLatencies    []time.Duration `json:"-"`
 }
 
 // ScoreAggregate is the headline numbers (qa.em, qa.f1, qa.judge, recall.k_hit).
@@ -416,6 +428,7 @@ func Run(ctx context.Context, r runners.Runner, ds *dataset.Dataset, opts Option
 	// ingest in parallel.
 	var saveLatencies []time.Duration
 	if opts.SkipIngest {
+		report.Ingest = &IngestSummary{}
 		emit(Event{
 			Kind:  "ingest_done",
 			Title: "ingest skipped: runner preloaded",
@@ -423,13 +436,19 @@ func Run(ctx context.Context, r runners.Runner, ds *dataset.Dataset, opts Option
 		})
 	} else {
 		ingestStart := time.Now()
-		saveLatencies = ingestConversations(ctx, r, scopeOf, ds.Conversations, opts, emit)
+		ingest := ingestConversations(ctx, r, scopeOf, ds.Conversations, opts, emit)
+		report.Ingest = &ingest
+		saveLatencies = ingest.SaveLatencies
 		ingestSummary := metrics.Summarize(saveLatencies)
+		warning := ""
+		if ingest.FailedBatches > 0 {
+			warning = fmt.Sprintf(" failed_batches=%d", ingest.FailedBatches)
+		}
 		emit(Event{
 			Kind: "ingest_done",
 			Title: fmt.Sprintf("ingest done in %s (%d Save calls)",
-				time.Since(ingestStart).Truncate(time.Second), len(saveLatencies)),
-			Body: fmt.Sprintf("save.p50=%s save.p95=%s", ingestSummary.P50, ingestSummary.P95),
+				time.Since(ingestStart).Truncate(time.Second), ingest.AttemptedBatches),
+			Body: fmt.Sprintf("save.p50=%s save.p95=%s saved_facts=%d%s", ingestSummary.P50, ingestSummary.P95, ingest.SavedFacts, warning),
 		})
 	}
 
@@ -536,7 +555,7 @@ type ingestConversationJob struct {
 // emit is a checkpoint callback that fires at coarse-grained progress
 // boundaries (controlled by opts.ProgressPct). Passing a no-op closure
 // disables notifications without touching the inner loop.
-func ingestConversations(ctx context.Context, r runners.Runner, scopeOf func(string) runners.Scope, convs []dataset.Conversation, opts Options, emit func(Event)) []time.Duration {
+func ingestConversations(ctx context.Context, r runners.Runner, scopeOf func(string) runners.Scope, convs []dataset.Conversation, opts Options, emit func(Event)) IngestSummary {
 	var jobs []ingestConversationJob
 	totalBatches := 0
 	for _, c := range convs {
@@ -555,7 +574,7 @@ func ingestConversations(ctx context.Context, r runners.Runner, scopeOf func(str
 		totalBatches += len(batches)
 	}
 	if len(jobs) == 0 {
-		return nil
+		return IngestSummary{}
 	}
 
 	conc := opts.IngestConcurrency
@@ -568,7 +587,7 @@ func ingestConversations(ctx context.Context, r runners.Runner, scopeOf func(str
 
 	var (
 		mu          sync.Mutex
-		latencies   []time.Duration
+		stats       = IngestSummary{AttemptedBatches: totalBatches}
 		done        int
 		totalFacts  int
 		nextPctMark int
@@ -635,14 +654,17 @@ func ingestConversations(ctx context.Context, r runners.Runner, scopeOf func(str
 					mu.Lock()
 					done++
 					if err != nil {
+						stats.FailedBatches++
 						log.Printf("[locomo] WARN ingest %s/%s (batch %d/%d, overall %d/%d): %v", job.convID, batch.session, bi+1, convTotal, done, totalBatches, err)
 						if opts.OnIngestError != nil {
 							opts.OnIngestError(job.scope, job.convID, batch, bi+1, convTotal, err)
 						}
 					} else {
-						latencies = append(latencies, d)
+						stats.SucceededBatches++
+						stats.SaveLatencies = append(stats.SaveLatencies, d)
 						convFacts += n
 						totalFacts += n
+						stats.SavedFacts += n
 					}
 					// Per-batch heartbeat: without this the run looks frozen for
 					// 5-15 min on slow extractor models because the only previous
@@ -691,7 +713,7 @@ func ingestConversations(ctx context.Context, r runners.Runner, scopeOf func(str
 	}
 	close(jobCh)
 	wg.Wait()
-	return latencies
+	return stats
 }
 
 func evalQuestions(ctx context.Context, r runners.Runner, scopeOf func(string) runners.Scope, qs []dataset.Question, opts Options, emit func(Event)) ([]QuestionScore, []time.Duration, error) {

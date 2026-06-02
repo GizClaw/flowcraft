@@ -106,7 +106,7 @@ func compatibleObservationBase(a, b Observation) bool {
 			return false
 		}
 	}
-	if a.Text != "" && b.Text != "" && !compatibleText(a.Text, b.Text) {
+	if a.Text != "" && b.Text != "" && !compatibleText(a.Text, b.Text) && a.SourceID != b.SourceID {
 		return false
 	}
 	return true

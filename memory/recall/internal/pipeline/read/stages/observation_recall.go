@@ -25,8 +25,8 @@ const (
 )
 
 // ObservationRecall is the raw-evidence lane for the O/A/L architecture. It
-// materializes high-overlap observations as low-priority note facts so extractor
-// misses can still surface in recall without inventing assertion links.
+// adds high-overlap observations as observation nodes so extractor misses can
+// surface in recall without inventing assertion facts.
 type ObservationRecall struct {
 	observations port.ObservationStore
 }
@@ -226,23 +226,9 @@ func observationContextItem(obs domain.Observation, score float64) domain.Contex
 			ref.Text = span.Text
 		}
 	}
-	fact := domain.TemporalFact{
-		ID:           obs.ID,
-		Scope:        obs.Scope,
-		Kind:         domain.KindNote,
-		Content:      obs.Text,
-		Subject:      obs.Speaker,
-		ObservedAt:   ts,
-		EvidenceRefs: []domain.EvidenceRef{ref},
-		Confidence:   0.25,
-		Metadata: map[string]any{
-			"graph_node_kind": string(domain.GraphNodeObservation),
-			"observation_id":  obs.ID,
-		},
-	}
 	return domain.ContextItem{
 		Candidate: domain.Candidate{
-			Kind:        domain.GraphNodeAssertion,
+			Kind:        domain.GraphNodeObservation,
 			ID:          obs.ID,
 			Scope:       obs.Scope,
 			Source:      observationRecallSource,
@@ -250,8 +236,9 @@ func observationContextItem(obs domain.Observation, score float64) domain.Contex
 			EvidenceIDs: []string{obs.ID},
 			Metadata:    map[string]any{"sources": []string{observationRecallSource}},
 		},
-		Fact:     fact,
-		Evidence: []domain.EvidenceRef{ref},
+		Ref:         domain.CandidateRef{Kind: domain.GraphNodeObservation, ID: obs.ID, Scope: obs.Scope, Source: observationRecallSource, Score: score, EvidenceIDs: []string{obs.ID}},
+		Observation: obs,
+		Evidence:    []domain.EvidenceRef{ref},
 	}
 }
 
@@ -290,13 +277,24 @@ func observationRecallExactEvidenceQuery(state *read.ReadState) bool {
 	}
 	if state.Plan != nil {
 		features := state.Plan.Intent.Features
-		return features.HasTimeSignal() || features.NumericIntent || len(features.Numeric) > 0 || len(features.Quoted) > 0
+		return observationRecallExactEvidenceRoute(state.Plan.Intent.Route) ||
+			features.HasTimeSignal() || len(features.Numeric) > 0 || len(features.Quoted) > 0
 	}
 	if state.Intent != nil {
 		features := state.Intent.Features
-		return features.HasTimeSignal() || features.NumericIntent || len(features.Numeric) > 0 || len(features.Quoted) > 0
+		return observationRecallExactEvidenceRoute(state.Intent.Route) ||
+			features.HasTimeSignal() || len(features.Numeric) > 0 || len(features.Quoted) > 0
 	}
 	return false
+}
+
+func observationRecallExactEvidenceRoute(route domain.IntentRoute) bool {
+	switch route.EffectiveStrategy() {
+	case domain.RecallStrategyTemporal, domain.RecallStrategyCount, domain.RecallStrategySet:
+		return true
+	default:
+		return false
+	}
 }
 
 func observationRecallMinScoreForState(state *read.ReadState) float64 {

@@ -3,6 +3,7 @@ package intent
 import (
 	"context"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -10,34 +11,37 @@ import (
 	"github.com/GizClaw/flowcraft/memory/recall/internal/port"
 )
 
-func TestRuleBased_ExtractsCapitalizedEntities(t *testing.T) {
-	out, err := RuleBased{}.Compile(context.Background(), port.IntentInput{
-		Text: "Who did Alice meet in Paris?",
+func TestSemanticRouter_RoutesByEmbeddingExamples(t *testing.T) {
+	router := NewSemanticRouter(testRouteEmbedder{}, WithThreshold(0.2))
+	out, err := router.Route(context.Background(), port.IntentRouterInput{
+		Text: "How many times did Melanie go to the beach?",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"alice", "paris"}
-	if !slices.Equal(out.Entities, want) {
-		t.Fatalf("entities = %v, want %v", out.Entities, want)
+	if out.Route.Strategy != domain.RecallStrategyCount {
+		t.Fatalf("strategy = %q, want count (route=%+v)", out.Route.Strategy, out.Route)
+	}
+	if out.Route.Confidence <= 0 {
+		t.Fatalf("confidence should be populated: %+v", out.Route)
 	}
 }
 
-func TestRuleBased_MergesExplicitEntities(t *testing.T) {
-	out, err := RuleBased{}.Compile(context.Background(), port.IntentInput{
-		Text:     "When did they travel?",
-		Entities: []string{"Bob", "ALICE"},
+func TestSemanticRouter_FallsBackWhenConfidenceLow(t *testing.T) {
+	router := NewSemanticRouter(testRouteEmbedder{}, WithThreshold(0.99))
+	out, err := router.Route(context.Background(), port.IntentRouterInput{
+		Text: "unrelated opaque request",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Equal(out.Entities, []string{"bob", "alice"}) {
-		t.Fatalf("entities = %v", out.Entities)
+	if out.Route.Strategy != domain.RecallStrategyDefault || out.Route.FallbackReason != "low_confidence" {
+		t.Fatalf("route = %+v, want low-confidence default", out.Route)
 	}
 }
 
-func TestRuleBased_PreservesStructuredHints(t *testing.T) {
-	out, err := RuleBased{}.Compile(context.Background(), port.IntentInput{
+func TestSemanticRouter_PreservesStructuredHints(t *testing.T) {
+	out, err := NewSemanticRouter(testRouteEmbedder{}).Route(context.Background(), port.IntentRouterInput{
 		Text:      "hello",
 		Subject:   "alice",
 		Predicate: "city",
@@ -51,27 +55,26 @@ func TestRuleBased_PreservesStructuredHints(t *testing.T) {
 	}
 }
 
-func TestRuleBased_InferTemporalIntent(t *testing.T) {
-	out, err := RuleBased{}.Compile(context.Background(), port.IntentInput{
-		Text: "When did Avery go to the community meetup?",
+func TestSemanticRouter_PreservesLiteralFeaturesWithoutSemanticCueFlags(t *testing.T) {
+	out, err := NewSemanticRouter(testRouteEmbedder{}).Route(context.Background(), port.IntentRouterInput{
+		Text: "When did Avery read \"Becoming Nicole\"?",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if out.Subject != "" {
-		t.Fatalf("temporal question should not infer broad subject-only structured lookup, got %q", out.Subject)
+	if out.Features.HasTimeSignal() {
+		t.Fatalf("literal features must not hard-code temporal question semantics: %+v", out.Features.Temporal)
 	}
-	wantKinds := []domain.FactKind{domain.KindEvent, domain.KindState, domain.KindPlan}
-	if !slices.Equal(out.Kinds, wantKinds) {
-		t.Fatalf("kinds = %v, want %v", out.Kinds, wantKinds)
+	if len(out.Features.Quoted) == 0 {
+		t.Fatalf("quoted literal should be preserved: %+v", out.Features)
 	}
-	if !out.Features.Temporal.HasIntent || !out.Features.HasTimeSignal() {
-		t.Fatalf("features should carry temporal intent: %+v", out.Features.Temporal)
+	if !slices.Contains(out.Entities, "avery") {
+		t.Fatalf("literal entity spans should be preserved as retrieval hints: %v", out.Entities)
 	}
 }
 
-func TestRuleBased_InferDayTimeRangeFromMonthDayYear(t *testing.T) {
-	out, err := RuleBased{}.Compile(context.Background(), port.IntentInput{
+func TestSemanticRouter_ExtractsExplicitTimeRange(t *testing.T) {
+	out, err := NewSemanticRouter(testRouteEmbedder{}).Route(context.Background(), port.IntentRouterInput{
 		Text: "What painting did Jordan show to Avery on October 13, 2023?",
 	})
 	if err != nil {
@@ -87,26 +90,12 @@ func TestRuleBased_InferDayTimeRangeFromMonthDayYear(t *testing.T) {
 	}
 }
 
-func TestRuleBased_InferMonthTimeRangeFromMonthYear(t *testing.T) {
-	out, err := RuleBased{}.Compile(context.Background(), port.IntentInput{
-		Text: "Where did Joanna travel to in July 2022?",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	wantFrom := time.Date(2022, time.July, 1, 0, 0, 0, 0, time.UTC)
-	wantTo := time.Date(2022, time.August, 1, 0, 0, 0, 0, time.UTC)
-	if !out.TimeRange.From.Equal(wantFrom) || !out.TimeRange.To.Equal(wantTo) {
-		t.Fatalf("time range = %s..%s, want %s..%s", out.TimeRange.From, out.TimeRange.To, wantFrom, wantTo)
-	}
-}
-
-func TestRuleBased_PreservesExplicitTimeRange(t *testing.T) {
+func TestSemanticRouter_PreservesExplicitTimeRange(t *testing.T) {
 	explicit := domain.TimeRange{
 		From: time.Date(2024, time.May, 1, 0, 0, 0, 0, time.UTC),
 		To:   time.Date(2024, time.May, 2, 0, 0, 0, 0, time.UTC),
 	}
-	out, err := RuleBased{}.Compile(context.Background(), port.IntentInput{
+	out, err := NewSemanticRouter(testRouteEmbedder{}).Route(context.Background(), port.IntentRouterInput{
 		Text:      "What happened on October 13, 2023?",
 		TimeRange: explicit,
 	})
@@ -115,49 +104,6 @@ func TestRuleBased_PreservesExplicitTimeRange(t *testing.T) {
 	}
 	if !out.TimeRange.From.Equal(explicit.From) || !out.TimeRange.To.Equal(explicit.To) {
 		t.Fatalf("time range = %+v, want explicit %+v", out.TimeRange, explicit)
-	}
-	if out.Features.Temporal.TimeRange.IsZero() {
-		t.Fatal("features should still describe query calendar expression")
-	}
-}
-
-func TestRuleBased_DoesNotInferSubjectFromPlainQuestion(t *testing.T) {
-	out, err := RuleBased{}.Compile(context.Background(), port.IntentInput{
-		Text: "What fields would Avery be likely to pursue in her education?",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if out.Subject != "" {
-		t.Fatalf("subject = %q, want empty for plain question", out.Subject)
-	}
-	if !slices.Contains(out.Entities, "avery") {
-		t.Fatalf("entities = %v, want avery preserved as entity", out.Entities)
-	}
-}
-
-func TestRuleBased_DoesNotInferSubjectFromFirstEntityGuess(t *testing.T) {
-	out, err := RuleBased{}.Compile(context.Background(), port.IntentInput{
-		Text:     "What did Joanna tell Ann about her trip?",
-		Entities: []string{"Ann", "Joanna"},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if out.Subject != "" {
-		t.Fatalf("subject = %q, want empty for plain question", out.Subject)
-	}
-}
-
-func TestRuleBased_InferSubjectFromPossessiveSurface(t *testing.T) {
-	out, err := RuleBased{}.Compile(context.Background(), port.IntentInput{
-		Text: "Avery's favorite field of study?",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if out.Subject != "avery" {
-		t.Fatalf("subject = %q, want possessive subject", out.Subject)
 	}
 }
 
@@ -169,4 +115,44 @@ func TestExtractEntitiesFromText_SkipsStopwords(t *testing.T) {
 	if !slices.Contains(got, "france") {
 		t.Fatalf("want france in %v", got)
 	}
+}
+
+type testRouteEmbedder struct{}
+
+func (testRouteEmbedder) Embed(_ context.Context, text string) ([]float32, error) {
+	return testRouteVector(text), nil
+}
+
+func (e testRouteEmbedder) EmbedBatch(ctx context.Context, texts []string) ([][]float32, error) {
+	out := make([][]float32, len(texts))
+	for i, text := range texts {
+		vec, err := e.Embed(ctx, text)
+		if err != nil {
+			return nil, err
+		}
+		out[i] = vec
+	}
+	return out, nil
+}
+
+func testRouteVector(text string) []float32 {
+	text = strings.ToLower(text)
+	vec := make([]float32, 9)
+	add := func(i int, terms ...string) {
+		for _, term := range terms {
+			if strings.Contains(text, term) {
+				vec[i]++
+			}
+		}
+	}
+	add(0, "when", "date", "happen", "attend")
+	add(1, "what items", "which books", "plans", "buy", "bought", "read")
+	add(2, "how many", "how long", "times", "children")
+	add(3, "suggestion", "after", "connects", "earlier")
+	add(4, "both", "common", "two people")
+	add(5, "what is", "preferences", "traits")
+	add(6, "would", "true", "member")
+	add(7, "if", "hypothetical", "likely")
+	add(8, "opaque")
+	return vec
 }

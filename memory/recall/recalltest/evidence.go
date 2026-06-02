@@ -82,6 +82,35 @@ func RunEvidenceStoreSuite(t *testing.T, newStore EvidenceStoreFactory) {
 		}
 	})
 
+	t.Run("shared evidence id is isolated by fact", func(t *testing.T) {
+		store := evidenceStoreForTest(t, newStore)
+		ctx := context.Background()
+		if err := store.Append(ctx, conformanceScope(), "f1", []recall.EvidenceRef{
+			evidenceRef("turn-1", "m1", "fact one quote", 1),
+		}); err != nil {
+			t.Fatalf("Append f1: %v", err)
+		}
+		if err := store.Append(ctx, conformanceScope(), "f2", []recall.EvidenceRef{
+			evidenceRef("turn-1", "m1", "fact two quote", 2),
+		}); err != nil {
+			t.Fatalf("Append f2: %v", err)
+		}
+		f1, err := store.ListByFact(ctx, conformanceScope(), "f1")
+		if err != nil {
+			t.Fatalf("ListByFact f1: %v", err)
+		}
+		f2, err := store.ListByFact(ctx, conformanceScope(), "f2")
+		if err != nil {
+			t.Fatalf("ListByFact f2: %v", err)
+		}
+		if len(f1) != 1 || f1[0].Text != "fact one quote" {
+			t.Fatalf("f1 refs = %+v", f1)
+		}
+		if len(f2) != 1 || f2[0].Text != "fact two quote" {
+			t.Fatalf("f2 refs = %+v", f2)
+		}
+	})
+
 	t.Run("validation and not found errors are classified", func(t *testing.T) {
 		store := evidenceStoreForTest(t, newStore)
 		ctx := context.Background()

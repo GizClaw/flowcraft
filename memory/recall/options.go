@@ -50,12 +50,12 @@ type config struct {
 
 	extraProjections []port.Projection
 
-	queryCompiler port.IntentCompiler
-	planner       port.Planner
-	sources       []port.Source
-	fuser         port.Fuser
-	materializer  port.Materializer
-	fusionOpts    port.FusionOptions
+	intentRouter port.IntentRouter
+	planner      port.Planner
+	sources      []port.Source
+	fuser        port.Fuser
+	materializer port.Materializer
+	fusionOpts   port.FusionOptions
 
 	graphEnabled  bool
 	reranker      port.Reranker

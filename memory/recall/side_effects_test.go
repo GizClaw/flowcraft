@@ -155,6 +155,102 @@ func TestProcessSideEffects_EvolutionFailureRetries(t *testing.T) {
 	}
 }
 
+func TestProcessSideEffects_SkipsStaleGenerationJobs(t *testing.T) {
+	mem, err := New(withExtraProjection(failingProjection{}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	scope := Scope{RuntimeID: "rt", UserID: "u1"}
+	if _, err := mem.Save(context.Background(), scope, SaveRequest{
+		Facts: []TemporalFact{{Kind: FactNote, Content: "stale projection"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	m := mem.(*memory)
+	m.bumpScopeGen(scope)
+
+	proc, ok := NewSideEffectProcessor(mem)
+	if !ok {
+		t.Fatal("processor missing")
+	}
+	out, err := proc.ProcessSideEffects(context.Background(), SideEffectProcessOptions{Scope: scope, Limit: 8})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Completed == 0 || out.Failed != 0 {
+		t.Fatalf("stale side-effect job should be completed without executing projection, got %+v", out)
+	}
+	stats, err := mem.(SideEffectOutboxObserver).SideEffectOutboxStats(context.Background(), scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.Completed != out.Completed || stats.Pending != 0 || stats.Failed != 0 {
+		t.Fatalf("stats = %+v, want stale job completed", stats)
+	}
+}
+
+func TestProcessSideEffects_SkipsDeletedFactJobs(t *testing.T) {
+	mem, err := New(withExtraProjection(failingProjection{}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	scope := Scope{RuntimeID: "rt", UserID: "u1"}
+	res, err := mem.Save(context.Background(), scope, SaveRequest{
+		Facts: []TemporalFact{{Kind: FactNote, Content: "delete before side effect"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.FactIDs) != 1 {
+		t.Fatalf("Save fact ids = %+v", res.FactIDs)
+	}
+	if err := mem.Forget(context.Background(), scope, res.FactIDs[0], ForgetHard); err != nil {
+		t.Fatal(err)
+	}
+
+	proc, ok := NewSideEffectProcessor(mem)
+	if !ok {
+		t.Fatal("processor missing")
+	}
+	out, err := proc.ProcessSideEffects(context.Background(), SideEffectProcessOptions{Scope: scope, Limit: 8})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Completed == 0 || out.Failed != 0 {
+		t.Fatalf("deleted fact side-effect jobs should complete without projection, got %+v", out)
+	}
+}
+
+func TestProcessSideEffects_DetachesCompleteAckAfterExecution(t *testing.T) {
+	base := NewInMemorySideEffectOutbox()
+	outbox := ctxAwareCompleteOutbox{inner: base}
+	ctx, cancel := context.WithCancel(context.Background())
+	mem, err := New(
+		WithSideEffectOutbox(outbox),
+		withExtraProjection(cancelingProjection{cancel: cancel}),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scope := Scope{RuntimeID: "rt", UserID: "u1"}
+	if _, err := mem.Save(context.Background(), scope, SaveRequest{
+		Facts: []TemporalFact{{Kind: FactNote, Content: "cancel after project"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	proc, ok := NewSideEffectProcessor(mem)
+	if !ok {
+		t.Fatal("processor missing")
+	}
+	out, err := proc.ProcessSideEffects(ctx, SideEffectProcessOptions{Scope: scope, Limit: 8})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Completed == 0 || out.Failed != 0 {
+		t.Fatalf("complete ack should ignore caller cancellation after execution, got %+v", out)
+	}
+}
+
 func TestProcessSideEffects_ReturnsCompleteAckError(t *testing.T) {
 	mem, err := New(WithSideEffectOutbox(ackFailOutbox{
 		inner: NewInMemorySideEffectOutbox(),
@@ -216,6 +312,63 @@ type ackFailOutbox struct {
 	inner port.SideEffectOutbox
 	fail  string
 }
+
+type ctxAwareCompleteOutbox struct {
+	inner port.SideEffectOutbox
+}
+
+func (o ctxAwareCompleteOutbox) Enqueue(ctx context.Context, job port.SideEffectJob) error {
+	return o.inner.Enqueue(ctx, job)
+}
+
+func (o ctxAwareCompleteOutbox) Claim(ctx context.Context, opts port.SideEffectClaimOptions) ([]port.SideEffectJob, error) {
+	return o.inner.Claim(ctx, opts)
+}
+
+func (o ctxAwareCompleteOutbox) Complete(ctx context.Context, jobID, leaseToken string, result port.SideEffectResult) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return o.inner.Complete(ctx, jobID, leaseToken, result)
+}
+
+func (o ctxAwareCompleteOutbox) Fail(ctx context.Context, jobID, leaseToken string, failure port.SideEffectFailure) error {
+	return o.inner.Fail(ctx, jobID, leaseToken, failure)
+}
+
+func (o ctxAwareCompleteOutbox) Cancel(ctx context.Context, requestID string) error {
+	return o.inner.Cancel(ctx, requestID)
+}
+
+func (o ctxAwareCompleteOutbox) CancelScope(ctx context.Context, scope domain.Scope) (int, error) {
+	return o.inner.CancelScope(ctx, scope)
+}
+
+func (o ctxAwareCompleteOutbox) PurgeScope(ctx context.Context, scope domain.Scope) (int, error) {
+	return o.inner.PurgeScope(ctx, scope)
+}
+
+func (o ctxAwareCompleteOutbox) Stats(ctx context.Context, scope domain.Scope, now time.Time) (port.SideEffectStats, error) {
+	return o.inner.Stats(ctx, scope, now)
+}
+
+type cancelingProjection struct {
+	cancel context.CancelFunc
+}
+
+func (p cancelingProjection) Name() string                  { return "canceling" }
+func (p cancelingProjection) Consistency() port.Consistency { return port.Required }
+func (p cancelingProjection) Project(context.Context, []domain.TemporalFact) error {
+	if p.cancel != nil {
+		p.cancel()
+	}
+	return nil
+}
+func (p cancelingProjection) Forget(context.Context, domain.Scope, []string) error { return nil }
+func (p cancelingProjection) Rebuild(context.Context, domain.Scope, []domain.TemporalFact) error {
+	return nil
+}
+func (p cancelingProjection) ClearScope(context.Context, domain.Scope) error { return nil }
 
 func (o ackFailOutbox) Enqueue(ctx context.Context, job port.SideEffectJob) error {
 	return o.inner.Enqueue(ctx, job)

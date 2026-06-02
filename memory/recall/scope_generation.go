@@ -65,5 +65,43 @@ func (m *memory) abortIfScopeGenChanged(scope Scope, lockedGen uint64, state *wr
 	if state != nil && len(state.AppendedFactIDs) > 0 {
 		_ = m.store.Delete(context.Background(), scope, state.AppendedFactIDs)
 	}
+	m.cleanupSaveGraphArtifacts(context.Background(), scope, state)
 	return errdefs.Abortedf("recall: scope partition wiped during save")
+}
+
+func (m *memory) cleanupSaveGraphArtifacts(ctx context.Context, scope Scope, state *write.WriteState) {
+	if m == nil || state == nil {
+		return
+	}
+	if len(state.GraphLinkIDs) > 0 && m.linkStore != nil {
+		_ = m.linkStore.Delete(ctx, scope, state.GraphLinkIDs)
+	}
+	observationIDs := uniqueNonEmptyStrings(state.RawObservationIDs, state.GraphObservationIDs)
+	if len(observationIDs) == 0 {
+		return
+	}
+	if m.observationProjection != nil {
+		_ = m.observationProjection.ForgetObservations(ctx, scope, observationIDs)
+	}
+	if m.observationStore != nil {
+		_ = m.observationStore.Delete(ctx, scope, observationIDs)
+	}
+}
+
+func uniqueNonEmptyStrings(groups ...[]string) []string {
+	seen := map[string]struct{}{}
+	var out []string
+	for _, group := range groups {
+		for _, value := range group {
+			if value == "" {
+				continue
+			}
+			if _, ok := seen[value]; ok {
+				continue
+			}
+			seen[value] = struct{}{}
+			out = append(out, value)
+		}
+	}
+	return out
 }

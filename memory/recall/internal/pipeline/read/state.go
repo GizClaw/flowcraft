@@ -1,5 +1,5 @@
 // Package read owns the read-flow pipeline State and Runner.
-// Stages (query_understand / plan / candidate_fanout /
+// Stages (intent_route / plan / candidate_fanout /
 // candidate_merge_and_materialize / candidate_expansion / policy_filter /
 // rank / context_pack / build_grounded_hits / evolution_after_recall) land
 // here; this package owns the State schema so each stage stays narrow.
@@ -24,7 +24,7 @@ import (
 //
 // Field ownership by read stage:
 //
-//	query_understand                → Intent
+//	intent_route                     → Intent
 //	plan                            → Plan
 //	candidate_fanout                → SubScopeStates[i].SourceResults
 //	candidate_merge_and_materialize → SubScopeStates[i].Candidates /
@@ -60,7 +60,7 @@ type ReadState struct {
 	// Stage outputs — populated in order, each stage owns
 	// exactly one field group below.
 
-	// Intent is the structurized query produced by the query_understand
+	// Intent is the routed query produced by the intent_route
 	// stage. Plan stage consumes it; later stages read it via
 	// Plan.Intent.
 	Intent *domain.QueryIntent
@@ -89,6 +89,11 @@ type ReadState struct {
 	// policy_filter read this; the runner populates it from MergedItems
 	// when policy_filter is disabled.
 	AfterTrust []domain.ContextItem
+
+	// PolicyFiltered is true only when policy_filter actually evaluated
+	// Query.Trust. An empty AfterTrust then means "all candidates were denied",
+	// not "policy_filter was skipped".
+	PolicyFiltered bool
 
 	// Ranked is the rank stage output (and the input to
 	// context_pack). Distinct from AfterTrust so explain traces

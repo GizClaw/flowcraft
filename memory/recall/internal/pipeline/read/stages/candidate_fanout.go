@@ -131,6 +131,7 @@ func runCandidateFanoutSource(ctx context.Context, src port.Source, plan domain.
 	row := diagnostic.SourceResult{
 		Lens:          res.Source,
 		Candidates:    len(res.Candidates),
+		Truncated:     res.Truncated,
 		QueryVariants: len(sourceFanoutPlanVariants(plan, name)),
 		Latency:       res.Latency,
 	}

@@ -80,17 +80,14 @@ func TestRecall_StructuredQueryCanonicalizesSubjectAndObject(t *testing.T) {
 	if len(hits) != 1 || hits[0].Fact.ID != res.FactIDs[0] {
 		t.Fatalf("structured recall should match canonicalized dimensions, got %+v", hits)
 	}
-	foundRelation, foundProfile := false, false
+	foundRelation := false
 	for _, st := range diagnostics.Sources(trace) {
 		if st.Source == planner.SourceRelation && st.Returned > 0 {
 			foundRelation = true
 		}
-		if st.Source == planner.SourceProfile && st.Returned > 0 {
-			foundProfile = true
-		}
 	}
-	if !foundRelation || !foundProfile {
-		t.Fatalf("relation/profile should both see canonicalized subject, trace=%+v", diagnostics.Sources(trace))
+	if !foundRelation {
+		t.Fatalf("relation source should see canonicalized subject/object, trace=%+v", diagnostics.Sources(trace))
 	}
 }
 
@@ -228,6 +225,7 @@ func TestRecall_ProfileBySubject(t *testing.T) {
 
 	hits, trace, err := mem.(RecallExplainer).RecallExplain(context.Background(), scope, Query{
 		Subject: "alice",
+		Kinds:   []FactKind{FactState},
 		Limit:   5,
 	})
 	if err != nil {

@@ -28,6 +28,11 @@ type SideEffectJob struct {
 	Scope     domain.Scope
 	Kind      SideEffectJobKind
 
+	// ScopeGeneration is the partition generation captured under the write
+	// lock when the job was enqueued. Workers must skip jobs whose generation no
+	// longer matches the owning partition after ForgetAll(Hard) / ExpireRetired.
+	ScopeGeneration uint64
+
 	Facts []domain.TemporalFact
 
 	Attempt    int

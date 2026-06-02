@@ -55,6 +55,9 @@ func (s *Source) Name() string { return planner.SourceRetrieval }
 // when AgentID is empty, no agent filter is applied (cross-agent
 // recall).
 func (s *Source) Query(ctx context.Context, plan domain.QueryPlan) domain.SourceResult {
+	if strings.TrimSpace(plan.Intent.Text) == "" {
+		return domain.SourceResult{Source: s.Name()}
+	}
 	scope := plan.Intent.Scope
 	ns := NamespaceFor(scope)
 	budget := plan.SourceBudgets[s.Name()]

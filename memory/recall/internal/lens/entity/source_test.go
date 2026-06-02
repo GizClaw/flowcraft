@@ -46,7 +46,7 @@ func TestSource_BudgetCapsCandidates(t *testing.T) {
 	}
 }
 
-func TestSource_AgentScopedQueryDefersBudgetUntilMaterialize(t *testing.T) {
+func TestSource_AgentScopedQueryStillHonorsBudget(t *testing.T) {
 	src := NewSource(stubLookup{want: []string{"private-a", "private-b", "visible"}})
 	res := src.Query(context.Background(), domain.QueryPlan{
 		Intent: domain.QueryIntent{
@@ -56,10 +56,10 @@ func TestSource_AgentScopedQueryDefersBudgetUntilMaterialize(t *testing.T) {
 		SourceBudgets: map[string]int{planner.SourceEntity: 1},
 	})
 
-	if len(res.Candidates) != 3 {
-		t.Fatalf("agent-scoped source must not let invisible facts consume budget, got %+v", res.Candidates)
+	if len(res.Candidates) != 1 {
+		t.Fatalf("entity source budget should bound agent-scoped candidate fanout too, got %+v", res.Candidates)
 	}
-	if res.Truncated {
-		t.Fatal("agent-scoped source should defer truncation to post-materialize stages")
+	if !res.Truncated {
+		t.Fatal("expected Truncated when agent-scoped entity results exceed budget")
 	}
 }

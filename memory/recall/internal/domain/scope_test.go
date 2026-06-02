@@ -20,6 +20,8 @@ func TestScope_EffectiveFederation(t *testing.T) {
 		Federation: []Scope{
 			{RuntimeID: "rt"},
 			{RuntimeID: "rt", UserID: "alice"},
+			{RuntimeID: "rt", UserID: "bob"},
+			{RuntimeID: "other", UserID: "alice"},
 		},
 	}
 	got = multi.EffectiveFederation()
@@ -28,6 +30,28 @@ func TestScope_EffectiveFederation(t *testing.T) {
 	}
 	if got[0].UserID != "alice" || got[1].UserID != "" {
 		t.Fatalf("order/dedup wrong: %+v", got)
+	}
+
+	agentScoped := Scope{
+		RuntimeID: "rt",
+		UserID:    "alice",
+		AgentID:   "agent-a",
+		Federation: []Scope{
+			{RuntimeID: "rt", UserID: "alice", AgentID: "agent-b"},
+			{RuntimeID: "rt", UserID: "alice", AgentID: "agent-a"},
+			{RuntimeID: "rt", UserID: "alice"},
+			{RuntimeID: "rt", AgentID: "agent-b"},
+			{RuntimeID: "rt"},
+		},
+	}
+	got = agentScoped.EffectiveFederation()
+	if len(got) != 3 {
+		t.Fatalf("want primary + user-wide + runtime-global, got %+v", got)
+	}
+	for _, scope := range got {
+		if scope.AgentID == "agent-b" {
+			t.Fatalf("sibling agent federation must be filtered: %+v", got)
+		}
 	}
 }
 

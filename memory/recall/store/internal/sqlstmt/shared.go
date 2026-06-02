@@ -60,8 +60,9 @@ var Schema = []string{
 		evidence_id text NOT NULL,
 		ordinal integer NOT NULL,
 		payload_json text NOT NULL,
-		PRIMARY KEY (runtime_id, user_id, evidence_id)
+		PRIMARY KEY (runtime_id, user_id, fact_id, evidence_id)
 	)`,
+	`CREATE INDEX IF NOT EXISTS recall_evidence_id_idx ON recall_evidence_refs(runtime_id, user_id, evidence_id)`,
 	`CREATE INDEX IF NOT EXISTS recall_evidence_fact_idx ON recall_evidence_refs(runtime_id, user_id, fact_id, ordinal, evidence_id)`,
 	`CREATE TABLE IF NOT EXISTS recall_observations (
 		runtime_id text NOT NULL,

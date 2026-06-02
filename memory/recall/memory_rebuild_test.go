@@ -445,7 +445,7 @@ func TestSaveRecall_EmitsPipelineTelemetry(t *testing.T) {
 	for _, want := range []string{
 		"validate", "ingest", "resolve", "append", "validity_close",
 		"enqueue_side_effects", "project_required", "project_optional",
-		"query_understand", "plan", "candidate_fanout", "candidate_merge_and_materialize",
+		"intent_route", "plan", "candidate_fanout", "candidate_merge_and_materialize",
 		"candidate_expansion", "policy_filter", "rank", "context_pack", "build_grounded_hits",
 	} {
 		if !hasStage(hook.stages, want) {

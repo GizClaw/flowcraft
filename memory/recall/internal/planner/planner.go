@@ -27,18 +27,10 @@ const (
 
 // Default per-source RRF weights (docs §9.3 / PR-6).
 //
-// The hierarchy reflects each source's role in the fused candidate
-// set: retrieval is the lexical anchor and the only lane that
-// reliably solo-wins, timeline is the rescue lane for temporal
-// ("when did X happen") queries where BM25 ranks the date-bearing
-// fact below the cap, and the remaining structured sources (graph,
-// relation, profile, entity) contribute almost entirely as
-// multi-source corroboration that raises the right fact under RRF
-// when they agree. We keep retrieval at 1.0, give timeline the
-// highest non-retrieval weight because of its rescue role, and pack
-// the remaining structured sources in a narrow 0.85 band so they all
-// contribute meaningfully to corroboration without any single one
-// dominating.
+// Retrieval is the lexical anchor and the only lane expected to
+// solo-win broadly. Other projections are candidate routes over the
+// same canonical facts/observations; their weights are route priors,
+// not independent evidence votes.
 const (
 	WeightRetrieval   = 1.0
 	WeightTimeline    = 0.9
@@ -75,8 +67,9 @@ const FusionPoolMultiplier = 3
 // while fusion can preserve more cross-source diversity for final selection.
 const MaxFusionCandidateCap = 100
 
-// RuleBased is the deterministic planner.
-type RuleBased struct {
+// RecallStrategyPlanner builds source order and budgets from explicit hints and
+// the routed recall strategy.
+type RecallStrategyPlanner struct {
 	// Specs is the lens registration table (name, weight, activate).
 	// When empty, Plan falls back to builtinSpecs().
 	Specs []LensSpec
@@ -88,14 +81,14 @@ type RuleBased struct {
 	GraphEnabled bool
 }
 
-// New returns the default rule-based planner with built-in lens
+// New returns the default recall strategy planner with built-in lens
 // specs (tests and callers that do not use lens.Registry).
-func New() *RuleBased { return NewFromSpecs(builtinSpecs()) }
+func New() *RecallStrategyPlanner { return NewFromSpecs(builtinSpecs()) }
 
 // NewFromSpecs constructs a planner driven by the supplied lens
 // registration order and activation predicates.
-func NewFromSpecs(specs []LensSpec) *RuleBased {
-	return &RuleBased{Specs: specs, RetrievalShare: 0.6}
+func NewFromSpecs(specs []LensSpec) *RecallStrategyPlanner {
+	return &RecallStrategyPlanner{Specs: specs, RetrievalShare: 0.6}
 }
 
 // builtinSpecs mirrors the default lens.Registry registration order
@@ -112,11 +105,11 @@ func builtinSpecs() []LensSpec {
 	}
 }
 
-var _ port.Planner = (*RuleBased)(nil)
+var _ port.Planner = (*RecallStrategyPlanner)(nil)
 
 // Plan returns the QueryPlan with normalized limits and per-source
 // budgets.
-func (r *RuleBased) Plan(_ context.Context, input port.PlannerInput) (domain.QueryPlan, error) {
+func (r *RecallStrategyPlanner) Plan(_ context.Context, input port.PlannerInput) (domain.QueryPlan, error) {
 	limit := input.Limit
 	if limit <= 0 {
 		limit = DefaultLimit
@@ -134,6 +127,7 @@ func (r *RuleBased) Plan(_ context.Context, input port.PlannerInput) (domain.Que
 		Kinds:        append([]domain.FactKind(nil), input.Kinds...),
 		TimeRange:    input.TimeRange,
 		Features:     input.Features,
+		Route:        input.IntentRoute,
 		Scope:        input.Scope,
 		Limit:        limit,
 		GraphEnabled: input.GraphEnabled && r.GraphEnabled,
@@ -145,6 +139,7 @@ func (r *RuleBased) Plan(_ context.Context, input port.PlannerInput) (domain.Que
 
 	return domain.QueryPlan{
 		Intent:        intent,
+		IntentRoute:   intent.Route,
 		SourceOrder:   order,
 		SourceBudgets: budgets,
 		TotalCap:      limit,
@@ -159,21 +154,21 @@ func inferTaskIntents(intent domain.QueryIntent) []domain.QueryTaskIntent {
 			out = append(out, task)
 		}
 	}
-	if intent.Features.HasTimeSignal() {
+	switch intent.Route.EffectiveStrategy() {
+	case domain.RecallStrategyTemporal:
 		add(domain.QueryTaskTemporalReasoning)
-	}
-	if hasNumericIntentKind(intent.Features.NumericIntentKind, domain.QueryNumericIntentCount) ||
-		hasNumericIntentKind(intent.Features.NumericIntentKind, domain.QueryNumericIntentFrequency) {
+	case domain.RecallStrategySet, domain.RecallStrategyCount:
 		add(domain.QueryTaskSetCompletion)
-	}
-	if len(out) == 0 {
+	case domain.RecallStrategyJoin, domain.RecallStrategyIntersection:
+		add(domain.QueryTaskBridgeResolution)
+	case domain.RecallStrategyYesNo:
+		add(domain.QueryTaskYesNoVerification)
+	case domain.RecallStrategyCounterfactual:
+		add(domain.QueryTaskCounterfactual)
+	default:
 		add(domain.QueryTaskDirectLookup)
 	}
 	return out
-}
-
-func hasNumericIntentKind(kinds []domain.QueryNumericIntentKind, want domain.QueryNumericIntentKind) bool {
-	return slices.Contains(kinds, want)
 }
 
 // ActivatesTimeline reports whether the timeline source should run.
@@ -181,18 +176,12 @@ func ActivatesTimeline(intent domain.QueryIntent) bool {
 	if !intent.TimeRange.IsZero() {
 		return true
 	}
-	if DirectTimelineDateIntent(intent.Features) {
-		return true
-	}
-	if intent.Features.Temporal.HasIntent {
-		return false
-	}
-	return kindsIntersectTimeline(intent.Kinds)
+	return intent.Route.EffectiveStrategy() == domain.RecallStrategyTemporal
 }
 
 // ActivatesRelation reports whether the relation source should run.
 func ActivatesRelation(intent domain.QueryIntent) bool {
-	return intent.Subject != "" || intent.Predicate != "" || intent.Object != ""
+	return intent.Subject != "" && (intent.Predicate != "" || intent.Object != "")
 }
 
 func ActivatesAssertion(intent domain.QueryIntent) bool {
@@ -201,22 +190,46 @@ func ActivatesAssertion(intent domain.QueryIntent) bool {
 
 // ActivatesProfile reports whether the profile source should run.
 func ActivatesProfile(intent domain.QueryIntent) bool {
-	return intent.Subject != ""
+	if intent.Route.EffectiveStrategy() == domain.RecallStrategyProfile {
+		return true
+	}
+	return intent.Subject != "" && kindsIntersectProfile(intent.Kinds)
 }
 
 // ActivatesGraph reports whether bounded graph expansion should run.
 func ActivatesGraph(intent domain.QueryIntent) bool {
-	return intent.GraphEnabled && len(intent.Entities) > 0
+	if !intent.GraphEnabled || len(intent.Entities) < 2 {
+		return false
+	}
+	switch intent.Route.EffectiveStrategy() {
+	case domain.RecallStrategyJoin, domain.RecallStrategyIntersection:
+		return true
+	default:
+		return len(intent.Entities) >= 2
+	}
 }
 
-func (r *RuleBased) buildSourceOrder(intent domain.QueryIntent) []string {
+func kindsIntersectProfile(kinds []domain.FactKind) bool {
+	if len(kinds) == 0 {
+		return false
+	}
+	for _, k := range kinds {
+		switch k {
+		case domain.KindPreference, domain.KindRelation, domain.KindState:
+			return true
+		}
+	}
+	return false
+}
+
+func (r *RecallStrategyPlanner) buildSourceOrder(intent domain.QueryIntent) []string {
 	specs := r.Specs
 	if len(specs) == 0 {
 		specs = builtinSpecs()
 	}
 	var order []string
 	for _, spec := range specs {
-		if spec.Activate != nil && !spec.Activate(intent) {
+		if !strategyAllowsSource(intent, spec.Name) {
 			continue
 		}
 		order = append(order, spec.Name)
@@ -224,42 +237,33 @@ func (r *RuleBased) buildSourceOrder(intent domain.QueryIntent) []string {
 	return order
 }
 
-func kindsIntersectTimeline(kinds []domain.FactKind) bool {
-	if len(kinds) == 0 {
-		return false
-	}
-	for _, k := range kinds {
-		switch k {
-		case domain.KindEvent, domain.KindPlan, domain.KindState:
-			return true
-		}
-	}
-	return false
-}
-
-// DirectTimelineDateIntent reports whether query understanding indicates a
-// direct "when/date" ask rather than a broad range/order/duration cue.
-func DirectTimelineDateIntent(features domain.QueryFeatures) bool {
-	temporal := features.Temporal
-	if temporal.HasExplicitDate || !temporal.TimeRange.IsZero() {
+func strategyAllowsSource(intent domain.QueryIntent, source string) bool {
+	switch source {
+	case SourceRetrieval:
 		return true
-	}
-	if !hasTemporalIntentKind(temporal.IntentKind, domain.QueryTemporalIntentDate) {
-		return false
-	}
-	return !temporal.HasDurationIntent &&
-		!hasTemporalIntentKind(temporal.IntentKind, domain.QueryTemporalIntentDuration) &&
-		!hasTemporalIntentKind(temporal.IntentKind, domain.QueryTemporalIntentRange) &&
-		!hasTemporalIntentKind(temporal.IntentKind, domain.QueryTemporalIntentOrder)
-}
-
-func hasTemporalIntentKind(kinds []domain.QueryTemporalIntentKind, want domain.QueryTemporalIntentKind) bool {
-	for _, kind := range kinds {
-		if kind == want {
+	case SourceTimeline:
+		return ActivatesTimeline(intent)
+	case SourceRelation:
+		return ActivatesRelation(intent)
+	case SourceAssertion:
+		return ActivatesAssertion(intent)
+	case SourceProfile:
+		return ActivatesProfile(intent)
+	case SourceGraph:
+		return ActivatesGraph(intent)
+	case SourceEntity:
+		if len(intent.Entities) > 0 {
 			return true
 		}
+		switch intent.Route.EffectiveStrategy() {
+		case domain.RecallStrategySet, domain.RecallStrategyCount, domain.RecallStrategyIntersection, domain.RecallStrategyProfile:
+			return true
+		default:
+			return false
+		}
+	default:
+		return false
 	}
-	return false
 }
 
 // allocateBudgets splits limit across active sources. When only

@@ -42,7 +42,7 @@ func (s *evidenceStore) Append(ctx context.Context, scope domain.Scope, factID s
 			Ordinal:    i,
 			Ref:        ref,
 		}
-		idx := evidenceIndex(st.Evidence, scope, ref.ID)
+		idx := evidenceFactIndex(st.Evidence, scope, factID, ref.ID)
 		if idx >= 0 {
 			st.Evidence[idx] = rec
 			continue
@@ -144,6 +144,15 @@ func (s *evidenceStore) Close() error { return s.b.Close() }
 func evidenceIndex(records []evidenceRecord, scope domain.Scope, evidenceID string) int {
 	for i, rec := range records {
 		if samePartition(rec.Scope, scope) && rec.EvidenceID == evidenceID {
+			return i
+		}
+	}
+	return -1
+}
+
+func evidenceFactIndex(records []evidenceRecord, scope domain.Scope, factID, evidenceID string) int {
+	for i, rec := range records {
+		if samePartition(rec.Scope, scope) && rec.FactID == factID && rec.EvidenceID == evidenceID {
 			return i
 		}
 	}

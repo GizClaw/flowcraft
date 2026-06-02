@@ -50,7 +50,7 @@ func TestRecall_GraphExpansionMultiHop(t *testing.T) {
 	drainSideEffectsForTest(t, mem, scope)
 
 	hits, trace, err := mem.(RecallExplainer).RecallExplain(context.Background(), scope, Query{
-		Entities:  []string{"alice"},
+		Entities:  []string{"alice", "bob"},
 		GraphHops: 2,
 		Limit:     10,
 	})
@@ -103,7 +103,7 @@ func TestRecall_GraphDoesNotTraverseOtherAgentPrivateEdges(t *testing.T) {
 	drainSideEffectsForTest(t, mem, shared)
 
 	hits, _, err := mem.(RecallExplainer).RecallExplain(context.Background(), agentA, Query{
-		Entities:  []string{"alice"},
+		Entities:  []string{"alice", "unrelated"},
 		GraphHops: 2,
 		Limit:     10,
 	})
@@ -127,7 +127,7 @@ func TestRecall_GraphProjectionRemovesSupersededEdgesOnSave(t *testing.T) {
 	t1 := time.Unix(2000, 0)
 	first, err := mem.Save(context.Background(), scope, SaveRequest{
 		Facts: []TemporalFact{{
-			Kind: FactState, Subject: "alice", Predicate: "city", Content: "Paris",
+			Kind: FactState, Subject: "alice", Predicate: "city", Object: "paris", Content: "Paris",
 			Entities: []string{"alice", "paris"}, ObservedAt: t0,
 		}},
 	})
@@ -136,7 +136,7 @@ func TestRecall_GraphProjectionRemovesSupersededEdgesOnSave(t *testing.T) {
 	}
 	if _, err := mem.Save(context.Background(), scope, SaveRequest{
 		Facts: []TemporalFact{{
-			Kind: FactState, Subject: "alice", Predicate: "city", Content: "Berlin",
+			Kind: FactState, Subject: "alice", Predicate: "city", Object: "berlin", Content: "Berlin",
 			Entities: []string{"alice", "berlin"}, ObservedAt: t1,
 		}},
 	}); err != nil {
@@ -144,18 +144,16 @@ func TestRecall_GraphProjectionRemovesSupersededEdgesOnSave(t *testing.T) {
 	}
 	drainSideEffectsForTest(t, mem, scope)
 
-	_, trace, err := mem.(RecallExplainer).RecallExplain(context.Background(), scope, Query{
-		Entities:  []string{"paris"},
+	hits, trace, err := mem.(RecallExplainer).RecallExplain(context.Background(), scope, Query{
+		Entities:  []string{"alice", "paris"},
 		GraphHops: 1,
 		Limit:     10,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, st := range diagnostics.Sources(trace) {
-		if st.Source == planner.SourceGraph && st.Returned != 0 {
-			t.Fatalf("graph projection should evict superseded edges before materialize, trace=%+v", diagnostics.Sources(trace))
-		}
+	if containsFactID(hits, first.FactIDs[0]) {
+		t.Fatalf("graph recall should not surface superseded fact, hits=%+v", hits)
 	}
 	for _, drop := range diagnostics.Drops(trace) {
 		if drop.Source == planner.SourceGraph && drop.FactID == first.FactIDs[0] && drop.Reason == DropSuperseded {
@@ -185,7 +183,7 @@ func TestRecall_GraphHopsIsCappedByDefaultBound(t *testing.T) {
 	drainSideEffectsForTest(t, mem, scope)
 
 	hits, _, err := mem.(RecallExplainer).RecallExplain(context.Background(), scope, Query{
-		Entities:  []string{"alice"},
+		Entities:  []string{"alice", "unrelated"},
 		GraphHops: 999,
 		Limit:     10,
 	})

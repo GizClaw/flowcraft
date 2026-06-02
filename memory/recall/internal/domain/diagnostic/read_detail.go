@@ -2,21 +2,38 @@ package diagnostic
 
 import "time"
 
-// QueryUnderstandDetail —— read/query_understand stage diagnostic.
-type QueryUnderstandDetail struct {
-	// QueryLen is the compiled query length; raw text is omitted from
-	// diagnostics to avoid PII retention in telemetry after ForgetAll.
-	QueryLen     int
-	Entities     []string
-	Kinds        []string
-	Subject      string
-	HasTimeRange bool
-	GraphEnabled bool
-	NERLatency   time.Duration
-	LLMUsed      bool
+type IntentRouteCandidate struct {
+	Strategy   string
+	Confidence float64
 }
 
-func (QueryUnderstandDetail) isStageDetail() {}
+// IntentRouteDetail captures read/intent_route diagnostics.
+type IntentRouteDetail struct {
+	// QueryLen is the compiled query length; raw text is omitted from
+	// diagnostics to avoid PII retention in telemetry after ForgetAll.
+	QueryLen                      int
+	Entities                      []string
+	Kinds                         []string
+	Subject                       string
+	Predicate                     string
+	Object                        string
+	HasTimeRange                  bool
+	HasExplicitDate               bool
+	HasRelativeTemporalExpression bool
+	TokenCount                    int
+	NumericCount                  int
+	QuotedCount                   int
+	ProperCount                   int
+	Strategy                      string
+	Confidence                    float64
+	Alternates                    []IntentRouteCandidate
+	Signals                       []string
+	FallbackReason                string
+	GraphEnabled                  bool
+	Latency                       time.Duration
+}
+
+func (IntentRouteDetail) isStageDetail() {}
 
 // PlanDetail —— read/plan stage diagnostic. ActivatedLenses captures
 // which lenses the planner enabled and why. ActivatedLens itself lives
@@ -69,6 +86,7 @@ type SubScopeRun struct {
 type SourceResult struct {
 	Lens          string
 	Candidates    int
+	Truncated     bool
 	QueryVariants int
 	Snapshots     *[]CandidateSnapshot
 	Drops         []CandidateDrop
@@ -167,6 +185,7 @@ type ContextPackDetail struct {
 	Input                 *[]CandidateSnapshot
 	RerankedHits          *[]CandidateSnapshot
 	Hits                  *[]CandidateSnapshot
+	PackTrace             *[]CandidateSnapshot
 }
 
 func (ContextPackDetail) isStageDetail() {}
@@ -220,15 +239,15 @@ type SourceView struct {
 	Err       string
 }
 
-// ExtractPlan rebuilds planner output from query-understanding + plan stage
+// ExtractPlan rebuilds planner output from intent-routing + plan stage
 // details.
 func ExtractPlan(stages []StageDiagnostic) PlanView {
 	var out PlanView
 	out.SourceBudgets = map[string]int{}
 	for _, st := range stages {
 		switch st.Stage {
-		case "query_understand":
-			if d, ok := st.Detail.(QueryUnderstandDetail); ok {
+		case "intent_route":
+			if d, ok := st.Detail.(IntentRouteDetail); ok {
 				_ = d.QueryLen // IntentText omitted from diagnostics (PII)
 				out.IntentSubject = d.Subject
 				out.IntentEntities = append([]string(nil), d.Entities...)

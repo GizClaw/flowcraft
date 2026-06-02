@@ -321,7 +321,7 @@ func TestPipeline_OnStageMatchesTrace(t *testing.T) {
 	st := &testState{}
 	p := newPipeline([]pipeline.Stage[*testState]{
 		fakeStage{name: "s1"},
-		conditionalSkipStage{name: "s2", detail: diagnostic.QueryUnderstandDetail{QueryLen: 7}},
+		conditionalSkipStage{name: "s2", detail: diagnostic.IntentRouteDetail{QueryLen: 7}},
 		fakeStage{name: "s3"},
 	}, hook)
 

@@ -9,7 +9,7 @@ import (
 	"github.com/GizClaw/flowcraft/memory/recall/internal/port"
 )
 
-func TestRuleBased_ActivatesStructuredSources(t *testing.T) {
+func TestRecallStrategyPlanner_ActivatesStructuredSources(t *testing.T) {
 	p := New()
 	plan, err := p.Plan(context.Background(), port.PlannerInput{
 		Scope:     domain.Scope{RuntimeID: "rt"},
@@ -25,7 +25,6 @@ func TestRuleBased_ActivatesStructuredSources(t *testing.T) {
 	want := map[string]bool{
 		SourceRetrieval: true,
 		SourceRelation:  true,
-		SourceProfile:   true,
 		SourceTimeline:  true,
 	}
 	for _, src := range plan.SourceOrder {
@@ -38,7 +37,23 @@ func TestRuleBased_ActivatesStructuredSources(t *testing.T) {
 	}
 }
 
-func TestRuleBased_StructuredBudgetsOverfetchFinalLimit(t *testing.T) {
+func TestRecallStrategyPlanner_ActivatesProfileOnlyForProfileKinds(t *testing.T) {
+	p := New()
+	plan, err := p.Plan(context.Background(), port.PlannerInput{
+		Scope:   domain.Scope{RuntimeID: "rt"},
+		Subject: "alice",
+		Kinds:   []domain.FactKind{domain.KindPreference},
+		Limit:   10,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !containsSource(plan.SourceOrder, SourceProfile) {
+		t.Fatalf("profile kind should activate profile source, order=%+v", plan.SourceOrder)
+	}
+}
+
+func TestRecallStrategyPlanner_StructuredBudgetsOverfetchFinalLimit(t *testing.T) {
 	p := New()
 	limit := 10
 	plan, err := p.Plan(context.Background(), port.PlannerInput{
@@ -60,7 +75,7 @@ func TestRuleBased_StructuredBudgetsOverfetchFinalLimit(t *testing.T) {
 	}
 }
 
-func TestRuleBased_LimitLessThanSourcesStillOverfetchesEachSource(t *testing.T) {
+func TestRecallStrategyPlanner_LimitLessThanSourcesStillOverfetchesEachSource(t *testing.T) {
 	p := New()
 	plan, err := p.Plan(context.Background(), port.PlannerInput{
 		Scope:     domain.Scope{RuntimeID: "rt"},
@@ -81,7 +96,7 @@ func TestRuleBased_LimitLessThanSourcesStillOverfetchesEachSource(t *testing.T) 
 	}
 }
 
-func TestRuleBased_TinyStructuredQueryDoesNotStarveStructuredSources(t *testing.T) {
+func TestRecallStrategyPlanner_BareSubjectDoesNotForceStructuredSources(t *testing.T) {
 	p := New()
 	plan, err := p.Plan(context.Background(), port.PlannerInput{
 		Scope:   domain.Scope{RuntimeID: "rt"},
@@ -92,8 +107,16 @@ func TestRuleBased_TinyStructuredQueryDoesNotStarveStructuredSources(t *testing.
 		t.Fatal(err)
 	}
 
-	structuredBudget := plan.SourceBudgets[SourceRelation] + plan.SourceBudgets[SourceProfile]
-	if structuredBudget == 0 {
-		t.Fatalf("structured subject query with tiny limit must budget a structured source, got order=%+v budgets=%+v", plan.SourceOrder, plan.SourceBudgets)
+	if containsSource(plan.SourceOrder, SourceRelation) || containsSource(plan.SourceOrder, SourceProfile) {
+		t.Fatalf("bare subject should not activate exact structured sources, got order=%+v budgets=%+v", plan.SourceOrder, plan.SourceBudgets)
 	}
+}
+
+func containsSource(sources []string, want string) bool {
+	for _, src := range sources {
+		if src == want {
+			return true
+		}
+	}
+	return false
 }

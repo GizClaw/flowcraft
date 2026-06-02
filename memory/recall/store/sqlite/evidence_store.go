@@ -44,8 +44,7 @@ func (s *evidenceStore) Append(ctx context.Context, scope domain.Scope, factID s
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO recall_evidence_refs(runtime_id, user_id, fact_id, evidence_id, ordinal, payload_json)
 			VALUES(?,?,?,?,?,?)
-			ON CONFLICT(runtime_id, user_id, evidence_id) DO UPDATE SET
-				fact_id = excluded.fact_id,
+			ON CONFLICT(runtime_id, user_id, fact_id, evidence_id) DO UPDATE SET
 				ordinal = excluded.ordinal,
 				payload_json = excluded.payload_json
 		`, runtimeID, userID, factID, ref.ID, i, payload); err != nil {
@@ -61,6 +60,7 @@ func (s *evidenceStore) Get(ctx context.Context, scope domain.Scope, evidenceID 
 	err := s.b.db.QueryRowContext(ctx, `
 		SELECT payload_json FROM recall_evidence_refs
 		WHERE runtime_id = ? AND user_id = ? AND evidence_id = ?
+		ORDER BY fact_id ASC
 	`, runtimeID, userID, evidenceID).Scan(&payload)
 	if err != nil {
 		if err == sql.ErrNoRows {

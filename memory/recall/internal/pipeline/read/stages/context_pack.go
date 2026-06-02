@@ -29,9 +29,8 @@ func (ContextPack) Name() string { return "context_pack" }
 
 func (s *ContextPack) Run(ctx context.Context, state *read.ReadState) (diagnostic.StageDetail, error) {
 	started := time.Now()
-	features := queryFeaturesFromState(state)
-	now := contextPackNow(state)
 	hits := contextPackInitialHits(state)
+	rankOutputHits := append([]domain.Hit(nil), hits...)
 	state.Hits = hits
 	detail := diagnostic.ContextPackDetail{Count: len(hits), InputCount: len(hits)}
 	captureSnapshots := snapshotsEnabled(state)
@@ -45,7 +44,7 @@ func (s *ContextPack) Run(ctx context.Context, state *read.ReadState) (diagnosti
 		return detail, err
 	}
 	state.Hits = hits
-	hits = packContextPackSelection(state, features, now, hits, &detail)
+	hits = packContextPackSelection(state, rankOutputHits, hits, &detail)
 	state.Hits = hits
 	detail.Count = len(hits)
 	if captureSnapshots {
@@ -106,6 +105,9 @@ func (BuildGroundedHits) Name() string { return "build_grounded_hits" }
 
 func (s *BuildGroundedHits) Run(ctx context.Context, state *read.ReadState) (diagnostic.StageDetail, error) {
 	started := time.Now()
+	if state == nil {
+		return diagnostic.BuildGroundedHitsDetail{Latency: time.Since(started)}, nil
+	}
 	features := queryFeaturesFromState(state)
 	now := contextPackNow(state)
 	hits := state.Hits
@@ -114,8 +116,9 @@ func (s *BuildGroundedHits) Run(ctx context.Context, state *read.ReadState) (dia
 		detail.Input = candidateSnapshotPtr(hitSnapshots(hits))
 	}
 	hits = groundHitsWithSupportingEvidence(features, now, hits)
+	queryScope := state.Scope
 	for i := range hits {
-		hits[i].EvidencePacket = s.buildEvidencePacket(ctx, hits[i])
+		hits[i].EvidencePacket = s.buildEvidencePacket(ctx, queryScope, hits[i])
 		hits[i].AnswerEvidence = domain.BuildEvidenceTable([]domain.Hit{hits[i]})
 	}
 	state.Hits = hits
@@ -127,7 +130,7 @@ func (s *BuildGroundedHits) Run(ctx context.Context, state *read.ReadState) (dia
 	return detail, nil
 }
 
-func (s *BuildGroundedHits) buildEvidencePacket(ctx context.Context, hit domain.Hit) domain.EvidencePacket {
+func (s *BuildGroundedHits) buildEvidencePacket(ctx context.Context, queryScope domain.Scope, hit domain.Hit) domain.EvidencePacket {
 	packet := domain.EvidencePacket{
 		Primary:      hit.Ref,
 		EvidenceRefs: append([]domain.EvidenceRef(nil), hit.Evidence...),
@@ -141,10 +144,10 @@ func (s *BuildGroundedHits) buildEvidencePacket(ctx context.Context, hit domain.
 	if hit.Fact.ID != "" {
 		packet.Assertions = append(packet.Assertions, hit.Fact.Clone())
 	}
-	if hit.Observation.ID != "" {
+	if hit.Observation.ID != "" && (queryScope.RuntimeID == "" || domain.ScopeVisible(queryScope, hit.Observation.Scope)) {
 		packet.Observations = append(packet.Observations, hit.Observation.Clone())
 	}
-	if hit.Link.ID != "" {
+	if hit.Link.ID != "" && (queryScope.RuntimeID == "" || domain.ScopeVisible(queryScope, hit.Link.Scope)) {
 		packet.Links = append(packet.Links, hit.Link.Clone())
 	}
 	if s == nil {
@@ -168,6 +171,9 @@ func (s *BuildGroundedHits) buildEvidencePacket(ctx context.Context, hit domain.
 			if err != nil {
 				continue
 			}
+			if queryScope.RuntimeID != "" && !domain.ScopeVisible(queryScope, obs.Scope) {
+				continue
+			}
 			packet.Observations = append(packet.Observations, obs.Clone())
 			seenObs[obs.ID] = struct{}{}
 		}
@@ -182,6 +188,9 @@ func (s *BuildGroundedHits) buildEvidencePacket(ctx context.Context, hit domain.
 				}
 			}
 			for _, link := range links {
+				if queryScope.RuntimeID != "" && !domain.ScopeVisible(queryScope, link.Scope) {
+					continue
+				}
 				if link.ID == "" {
 					continue
 				}
@@ -200,6 +209,9 @@ func (s *BuildGroundedHits) buildEvidencePacket(ctx context.Context, hit domain.
 						}
 						obs, err := s.observations.Get(ctx, hit.Fact.Scope, ref.ObservationID)
 						if err != nil {
+							continue
+						}
+						if queryScope.RuntimeID != "" && !domain.ScopeVisible(queryScope, obs.Scope) {
 							continue
 						}
 						packet.Observations = append(packet.Observations, obs.Clone())
@@ -232,15 +244,21 @@ func contextPackInitialHits(state *read.ReadState) []domain.Hit {
 	return hitsFromItems(state.Ranked)
 }
 
-func packContextPackSelection(state *read.ReadState, features domain.QueryFeatures, now time.Time, hits []domain.Hit, detail *diagnostic.ContextPackDetail) []domain.Hit {
+func packContextPackSelection(state *read.ReadState, rankOutputHits, hits []domain.Hit, detail *diagnostic.ContextPackDetail) []domain.Hit {
 	if state == nil || state.Plan == nil || state.Plan.TotalCap <= 0 {
 		return hits
 	}
 	contextPackingStarted := time.Now()
 	poolHits := hitsFromItems(contextPackingPool(state))
-	out := packRecallContextWithFeaturesAndDetail(hits, poolHits, state.Plan.TotalCap)
+	if len(hits) > 0 {
+		poolHits = mergeContextPackPool(hits, poolHits)
+	}
+	out, trace := packRecallContextWithIntentTrace(state.Plan.Intent, rankOutputHits, poolHits, state.Plan.TotalCap)
 	out = packTaskAwareEvidenceClusters(state.Plan.TaskIntents, out, poolHits, state.Plan.TotalCap)
 	detail.ContextPackingLatency = time.Since(contextPackingStarted)
+	if len(trace) > 0 {
+		detail.PackTrace = candidateSnapshotPtr(trace)
+	}
 	return out
 }
 
@@ -328,6 +346,9 @@ func contextPackingPool(state *read.ReadState) []domain.ContextItem {
 		return nil
 	}
 	if len(state.AfterTrust) > 0 {
+		return state.AfterTrust
+	}
+	if state.PolicyFiltered {
 		return state.AfterTrust
 	}
 	if len(state.MergedItems) > 0 {

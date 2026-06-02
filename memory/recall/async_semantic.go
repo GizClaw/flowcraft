@@ -7,6 +7,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/memory/recall/internal/domain"
 	"github.com/GizClaw/flowcraft/memory/recall/internal/domain/diagnostic"
+	"github.com/GizClaw/flowcraft/memory/recall/internal/pipeline"
 	"github.com/GizClaw/flowcraft/memory/recall/internal/pipeline/forget"
 	"github.com/GizClaw/flowcraft/memory/recall/internal/pipeline/write"
 	writestages "github.com/GizClaw/flowcraft/memory/recall/internal/pipeline/write/stages"
@@ -375,28 +376,39 @@ type asyncJobCancelResult struct {
 }
 
 func (m *memory) cancelAsyncJobsAfterForget(ctx context.Context, state *forget.State) asyncJobCancelResult {
-	if m.asyncSemanticQueue == nil || state == nil {
+	if state == nil {
 		return asyncJobCancelResult{}
 	}
+	cleanupCtx := pipeline.DetachCancel(ctx)
 	if state.Filter == nil && domain.NormalizeForgetMode(state.Mode) == domain.ForgetHard {
-		n, err := m.asyncSemanticQueue.CancelScope(ctx, state.Scope)
-		if err != nil {
-			return asyncJobCancelResult{Cancelled: n, Err: err}
+		var cancelled int
+		var firstErr error
+		if m.asyncSemanticQueue != nil {
+			n, err := m.asyncSemanticQueue.CancelScope(cleanupCtx, state.Scope)
+			cancelled += n
+			if err != nil && firstErr == nil {
+				firstErr = err
+			}
+			purged, err := m.asyncSemanticQueue.PurgeScope(cleanupCtx, state.Scope)
+			cancelled += purged
+			if err != nil && firstErr == nil {
+				firstErr = err
+			}
 		}
-		purged, purgeErr := m.asyncSemanticQueue.PurgeScope(ctx, state.Scope)
-		if purgeErr != nil {
-			return asyncJobCancelResult{Cancelled: n, Err: purgeErr}
-		}
-		sidePurged, sideErr := m.purgeSideEffectOutbox(ctx, state.Scope)
+		sidePurged, sideErr := m.purgeSideEffectOutbox(cleanupCtx, state.Scope)
+		cancelled += sidePurged
 		if sideErr != nil {
-			return asyncJobCancelResult{Cancelled: n + purged, Err: sideErr}
+			firstErr = sideErr
 		}
-		return asyncJobCancelResult{Cancelled: n + purged + sidePurged, Err: nil}
+		return asyncJobCancelResult{Cancelled: cancelled, Err: firstErr}
+	}
+	if m.asyncSemanticQueue == nil {
+		return asyncJobCancelResult{}
 	}
 	if len(state.DeletedFactIDs) == 0 {
 		return asyncJobCancelResult{}
 	}
-	n, err := m.asyncSemanticQueue.CancelMatchingEpisodes(ctx, state.Scope, state.DeletedFactIDs)
+	n, err := m.asyncSemanticQueue.CancelMatchingEpisodes(cleanupCtx, state.Scope, state.DeletedFactIDs)
 	return asyncJobCancelResult{Cancelled: n, Err: err}
 }
 
