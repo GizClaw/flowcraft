@@ -2,6 +2,7 @@ package anthropic
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -11,6 +12,158 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/llm"
 )
+
+func TestGenerate_ThinkingFalseWritesDisabledRequestBody(t *testing.T) {
+	captured := make(chan map[string]any, 1)
+	srv := thinkingCaptureServer(t, captured)
+	defer srv.Close()
+
+	c, err := New("claude-3-sonnet-20240229", "test-key", srv.URL, nil)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	_, _, err = c.Generate(context.Background(), []llm.Message{
+		llm.NewTextMessage(llm.RoleUser, "hi"),
+	}, llm.WithThinking(false))
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+
+	body := readCapturedBody(t, captured)
+	assertThinking(t, body, "disabled", 0)
+}
+
+func TestGenerate_JSONModeThinkingFalseWritesBetaDisabledRequestBody(t *testing.T) {
+	captured := make(chan map[string]any, 1)
+	srv := thinkingCaptureServer(t, captured)
+	defer srv.Close()
+
+	c, err := New("claude-3-sonnet-20240229", "test-key", srv.URL, nil)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	_, _, err = c.Generate(context.Background(), []llm.Message{
+		llm.NewTextMessage(llm.RoleUser, "hi"),
+	}, llm.WithJSONMode(true), llm.WithThinking(false))
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+
+	body := readCapturedBody(t, captured)
+	if _, ok := body["output_format"]; !ok {
+		t.Fatalf("expected beta JSON-mode request body to include output_format, got %#v", body)
+	}
+	assertThinking(t, body, "disabled", 0)
+}
+
+func TestGenerate_ThinkingTrueWritesDefaultBudget(t *testing.T) {
+	captured := make(chan map[string]any, 1)
+	srv := thinkingCaptureServer(t, captured)
+	defer srv.Close()
+
+	c, err := New("claude-3-sonnet-20240229", "test-key", srv.URL, nil)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	_, _, err = c.Generate(context.Background(), []llm.Message{
+		llm.NewTextMessage(llm.RoleUser, "hi"),
+	}, llm.WithThinking(true))
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+
+	body := readCapturedBody(t, captured)
+	assertThinking(t, body, "enabled", defaultThinkingBudgetTokens)
+}
+
+func TestGenerate_ThinkingTrueRejectsTooSmallMaxTokens(t *testing.T) {
+	captured := make(chan map[string]any, 1)
+	srv := thinkingCaptureServer(t, captured)
+	defer srv.Close()
+
+	c, err := New("claude-3-sonnet-20240229", "test-key", srv.URL, nil)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	_, _, err = c.Generate(context.Background(), []llm.Message{
+		llm.NewTextMessage(llm.RoleUser, "hi"),
+	}, llm.WithMaxTokens(defaultThinkingBudgetTokens), llm.WithThinking(true))
+	if !errdefs.IsValidation(err) {
+		t.Fatalf("expected validation error, got %v", err)
+	}
+	select {
+	case body := <-captured:
+		t.Fatalf("request should not have reached server, got body %#v", body)
+	default:
+	}
+}
+
+func thinkingCaptureServer(t *testing.T, captured chan<- map[string]any) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer r.Body.Close()
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode request body: %v", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		select {
+		case captured <- body:
+		default:
+			t.Errorf("unexpected additional request body: %#v", body)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{
+			"id": "msg_test",
+			"type": "message",
+			"role": "assistant",
+			"model": "claude-3-sonnet-20240229",
+			"content": [{"type": "text", "text": "ok"}],
+			"stop_reason": "end_turn",
+			"usage": {"input_tokens": 1, "output_tokens": 1}
+		}`)
+	}))
+}
+
+func readCapturedBody(t *testing.T, captured <-chan map[string]any) map[string]any {
+	t.Helper()
+	select {
+	case body := <-captured:
+		return body
+	default:
+		t.Fatal("server did not capture request body")
+		return nil
+	}
+}
+
+func assertThinking(t *testing.T, body map[string]any, wantType string, wantBudget int64) {
+	t.Helper()
+	raw, ok := body["thinking"]
+	if !ok {
+		t.Fatalf("request body missing thinking: %#v", body)
+	}
+	thinking, ok := raw.(map[string]any)
+	if !ok {
+		t.Fatalf("thinking has unexpected shape: %#v", raw)
+	}
+	if got := thinking["type"]; got != wantType {
+		t.Fatalf("thinking.type = %v, want %q (thinking=%#v)", got, wantType, thinking)
+	}
+	if wantBudget == 0 {
+		if _, ok := thinking["budget_tokens"]; ok {
+			t.Fatalf("disabled thinking should not include budget_tokens: %#v", thinking)
+		}
+		return
+	}
+	gotBudget, ok := thinking["budget_tokens"].(float64)
+	if !ok {
+		t.Fatalf("thinking.budget_tokens missing or non-numeric: %#v", thinking)
+	}
+	if int64(gotBudget) != wantBudget {
+		t.Fatalf("thinking.budget_tokens = %v, want %d", gotBudget, wantBudget)
+	}
+}
 
 // TestGenerate_NilResp_NoPanic regresses the same family of bug
 // fixed in sdkx/llm/openai: anthropic-sdk-go's MessageService.New
