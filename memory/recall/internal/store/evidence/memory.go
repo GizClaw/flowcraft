@@ -98,15 +98,25 @@ func (s *MemoryStore) Get(_ context.Context, scope domain.Scope, evidenceID stri
 	if !ok {
 		return domain.EvidenceRef{}, ErrNotFound
 	}
-	for _, ids := range sh.byFact {
+	var found *domain.EvidenceRef
+	for factID, ids := range sh.byFact {
 		for _, id := range ids {
 			if id != evidenceID {
 				continue
 			}
-			if r, ok := sh.byID[evidenceStoreKeyForAnyFact(sh, id)]; ok {
-				return r, nil
+			r, ok := sh.byID[evidenceStoreKey(factID, id)]
+			if !ok {
+				continue
 			}
+			if found != nil {
+				return domain.EvidenceRef{}, ErrAmbiguous
+			}
+			ref := r
+			found = &ref
 		}
+	}
+	if found != nil {
+		return *found, nil
 	}
 	return domain.EvidenceRef{}, ErrNotFound
 }
@@ -181,20 +191,6 @@ func (s *MemoryStore) ForgetByFact(_ context.Context, scope domain.Scope, factID
 
 func evidenceStoreKey(factID, evidenceID string) string {
 	return factID + "\x00" + evidenceID
-}
-
-func evidenceStoreKeyForAnyFact(sh *scopeShard, evidenceID string) string {
-	if sh == nil {
-		return evidenceStoreKey("", evidenceID)
-	}
-	for factID, ids := range sh.byFact {
-		for _, id := range ids {
-			if id == evidenceID {
-				return evidenceStoreKey(factID, evidenceID)
-			}
-		}
-	}
-	return evidenceStoreKey("", evidenceID)
 }
 
 // Close releases backend resources.

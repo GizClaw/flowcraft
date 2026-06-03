@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/memory/recall"
+	"github.com/GizClaw/flowcraft/sdk/errdefs"
 )
 
 // RunObservationStoreSuite verifies the portable ObservationStore contract.
@@ -184,6 +185,27 @@ func RunLinkStoreSuite(t *testing.T, newStore func(testing.TB) recall.LinkStore)
 		}
 		if n != 1 {
 			t.Fatalf("delete scope count = %d, want 1", n)
+		}
+	})
+	t.Run("duplicate_link_id_with_different_payload_conflicts", func(t *testing.T) {
+		ctx := context.Background()
+		store := newStore(t)
+		scope := conformanceScope()
+		link := recall.FactLink{
+			ID:        "link-conflict",
+			Scope:     scope,
+			Type:      recall.LinkSupports,
+			From:      recall.GraphNodeRef{Kind: recall.GraphNodeObservation, ID: "obs-1"},
+			To:        recall.GraphNodeRef{Kind: recall.GraphNodeAssertion, ID: "fact-1"},
+			CreatedAt: time.Unix(1, 0),
+		}
+		if err := store.Append(ctx, []recall.FactLink{link}); err != nil {
+			t.Fatalf("append first link: %v", err)
+		}
+		conflict := link
+		conflict.To.ID = "fact-2"
+		if err := store.Append(ctx, []recall.FactLink{conflict}); !errdefs.IsConflict(err) {
+			t.Fatalf("duplicate link id error = %v, want conflict", err)
 		}
 	})
 }

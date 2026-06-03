@@ -136,11 +136,20 @@ type LinkExpansionDetail struct {
 	OutputCount       int
 	ScannedLinks      int
 	AddedFacts        int
-	AddedEvidenceRefs int
 	AddedFactIDs      []string
-	Latency           time.Duration
-	Err               string
-	Items             *[]CandidateSnapshot
+	AddedEvidenceRefs int
+
+	AdjacentBridgeRefs                  int
+	AdjacentBridgeObservationScans      int
+	AdjacentBridgeMatchedObservations   int
+	AdjacentBridgeMatchedObservationIDs []string
+	AdjacentBridgeScannedLinks          int
+	AdjacentBridgeAddedFacts            int
+	AdjacentBridgeAddedFactIDs          []string
+
+	Latency time.Duration
+	Err     string
+	Items   *[]CandidateSnapshot
 }
 
 func (LinkExpansionDetail) isStageDetail() {}
@@ -279,6 +288,7 @@ func ExtractSources(stages []StageDiagnostic) []SourceView {
 				Activated: true,
 				Budget:    plan.SourceBudgets[r.Lens],
 				Returned:  r.Candidates,
+				Truncated: r.Truncated,
 				Latency:   r.Latency,
 				Err:       r.Err,
 			})

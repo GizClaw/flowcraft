@@ -19,9 +19,10 @@ const (
 	observationRecallScanLimit   = 500
 	observationRecallDefaultCap  = 4
 	observationRecallStrictCap   = 2
-	observationRecallMinScore    = 0.18
-	observationRecallStrictScore = 0.55
+	observationRecallMinScore    = 0.35
+	observationRecallStrictScore = 0.65
 	observationRecallUnderCount  = 3
+	observationRecallMinOverlap  = 3
 )
 
 // ObservationRecall is the raw-evidence lane for the O/A/L architecture. It
@@ -83,7 +84,10 @@ func (s *ObservationRecall) Run(ctx context.Context, state *read.ReadState) (dia
 				continue
 			}
 			scoreText := strings.TrimSpace(strings.Join([]string{obs.Speaker, obs.Text}, " "))
-			score := observationRecallScore(queryTokens, state.Query.Text, scoreText)
+			if !observationRecallAllowsLexicalRescue(state, scoreText) {
+				continue
+			}
+			score := observationRecallScore(queryTokens, scoreText)
 			if score < minScore {
 				continue
 			}
@@ -183,7 +187,7 @@ func observationRecallDuplicateText(existing map[string]struct{}, text string) b
 	return ok
 }
 
-func observationRecallScore(queryTokens map[string]struct{}, query, text string) float64 {
+func observationRecallScore(queryTokens map[string]struct{}, text string) float64 {
 	text = strings.TrimSpace(text)
 	if text == "" || len(queryTokens) == 0 {
 		return 0
@@ -195,16 +199,31 @@ func observationRecallScore(queryTokens map[string]struct{}, query, text string)
 			overlap++
 		}
 	}
-	queryNorm := observationRecallTextKey(query)
-	textNorm := observationRecallTextKey(text)
-	phraseBonus := 0.0
-	if queryNorm != "" && strings.Contains(textNorm, queryNorm) {
-		phraseBonus = 0.35
-	}
-	if overlap < 2 && phraseBonus == 0 {
+	requiredOverlap := min(observationRecallMinOverlap, len(queryTokens))
+	if overlap < requiredOverlap {
 		return 0
 	}
-	return min(1, float64(overlap)/float64(len(queryTokens))+phraseBonus)
+	return float64(overlap) / float64(len(queryTokens))
+}
+
+func observationRecallAllowsLexicalRescue(state *read.ReadState, text string) bool {
+	if state == nil || len(state.MergedItems) < observationRecallUnderCount {
+		return true
+	}
+	if !observationRecallExactEvidenceQuery(state) {
+		return false
+	}
+	features := observationRecallFeatures(state)
+	if features.IsZero() {
+		return false
+	}
+	textTokens := recallintent.TextTokenSet(text)
+	if tokenSetIntersects(features.Proper, textTokens) ||
+		tokenSetIntersects(features.Numeric, textTokens) ||
+		tokenSetIntersects(features.Quoted, textTokens) {
+		return true
+	}
+	return false
 }
 
 func observationContextItem(obs domain.Observation, score float64) domain.ContextItem {
@@ -275,15 +294,38 @@ func observationRecallExactEvidenceQuery(state *read.ReadState) bool {
 	if state == nil {
 		return false
 	}
+	features := observationRecallFeatures(state)
+	route := domain.IntentRoute{}
 	if state.Plan != nil {
-		features := state.Plan.Intent.Features
-		return observationRecallExactEvidenceRoute(state.Plan.Intent.Route) ||
-			features.HasTimeSignal() || len(features.Numeric) > 0 || len(features.Quoted) > 0
+		route = state.Plan.Intent.Route
+	} else if state.Intent != nil {
+		route = state.Intent.Route
 	}
-	if state.Intent != nil {
-		features := state.Intent.Features
-		return observationRecallExactEvidenceRoute(state.Intent.Route) ||
-			features.HasTimeSignal() || len(features.Numeric) > 0 || len(features.Quoted) > 0
+	return observationRecallExactEvidenceRoute(route) ||
+		features.HasTimeSignal() || len(features.Numeric) > 0 || len(features.Quoted) > 0
+}
+
+func observationRecallFeatures(state *read.ReadState) domain.QueryFeatures {
+	if state != nil && state.Plan != nil {
+		return state.Plan.Intent.Features
+	}
+	if state != nil && state.Intent != nil {
+		return state.Intent.Features
+	}
+	return domain.QueryFeatures{}
+}
+
+func tokenSetIntersects(a, b map[string]struct{}) bool {
+	if len(a) == 0 || len(b) == 0 {
+		return false
+	}
+	if len(a) > len(b) {
+		a, b = b, a
+	}
+	for token := range a {
+		if _, ok := b[token]; ok {
+			return true
+		}
 	}
 	return false
 }

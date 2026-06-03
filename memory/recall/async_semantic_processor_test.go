@@ -272,6 +272,13 @@ func TestProcessAsyncSemantic_DeletedEpisodePermanentFail(t *testing.T) {
 	if out.Failed != 1 || out.Completed != 0 {
 		t.Fatalf("result = %+v, want failed=1 completed=0", out)
 	}
+	stats, err := queue.Stats(ctx, port.AsyncSemanticStatsFilter{Scope: scope})
+	if err != nil {
+		t.Fatalf("Stats: %v", err)
+	}
+	if stats.DeadLetter != 1 {
+		t.Fatalf("deleted episode must fail permanently, stats=%+v", stats)
+	}
 	semantic, _ := store.FindByOriginRequestID(ctx, scope, res.AsyncRequestID)
 	for _, f := range semantic {
 		if f.Origin.Kind == domain.OriginKindSemanticDerivation {

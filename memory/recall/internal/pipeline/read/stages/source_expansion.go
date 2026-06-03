@@ -6,11 +6,13 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"unicode"
 
 	"github.com/GizClaw/flowcraft/memory/recall/internal/domain"
 	"github.com/GizClaw/flowcraft/memory/recall/internal/planner"
 	"github.com/GizClaw/flowcraft/memory/recall/internal/port"
 	"github.com/GizClaw/flowcraft/memory/recall/internal/words"
+	"github.com/GizClaw/flowcraft/memory/text/tokenize"
 )
 
 const (
@@ -69,6 +71,9 @@ func sourceExpansionQueryTexts(plan domain.QueryPlan) []string {
 	if text == "" || !sourceExpansionEnabled(plan.TaskIntents) {
 		return []string{text}
 	}
+	if !sourceExpansionHasQueryAnchor(plan.Intent) {
+		return []string{text}
+	}
 	var out []string
 	seen := map[string]struct{}{}
 	add := func(s string) {
@@ -92,6 +97,46 @@ func sourceExpansionQueryTexts(plan domain.QueryPlan) []string {
 		out = out[:sourceExpansionMaxVariants]
 	}
 	return out
+}
+
+func sourceExpansionHasQueryAnchor(intent domain.QueryIntent) bool {
+	if strings.TrimSpace(intent.Subject) != "" ||
+		strings.TrimSpace(intent.Predicate) != "" ||
+		strings.TrimSpace(intent.Object) != "" ||
+		len(intent.Entities) > 0 {
+		return true
+	}
+	features := intent.Features
+	return len(features.Proper) > 0 ||
+		len(features.Numeric) > 0 ||
+		len(features.Quoted) > 0 ||
+		features.HasTimeSignal() ||
+		sourceExpansionTextHasProperNoun(intent.Text)
+}
+
+func sourceExpansionTextHasProperNoun(text string) bool {
+	for _, token := range tokenize.SplitProperNouns(text) {
+		if words.IsIntentEntityStopword(strings.ToLower(token)) {
+			continue
+		}
+		runes := []rune(token)
+		if len(runes) < 2 || !unicode.IsUpper(runes[0]) {
+			continue
+		}
+		if hasLower := slicesContainsFunc(runes[1:], unicode.IsLower); hasLower {
+			return true
+		}
+	}
+	return false
+}
+
+func slicesContainsFunc[T any](values []T, fn func(T) bool) bool {
+	for _, value := range values {
+		if fn(value) {
+			return true
+		}
+	}
+	return false
 }
 
 func sourceExpansionEnabled(tasks []domain.QueryTaskIntent) bool {

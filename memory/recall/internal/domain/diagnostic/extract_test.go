@@ -68,7 +68,7 @@ func readStages() []StageDiagnostic {
 			Stage: "candidate_fanout",
 			Detail: CandidateFanoutDetail{
 				Sources: []SourceResult{
-					{Lens: "retrieval", Candidates: 3, Latency: 5 * time.Millisecond},
+					{Lens: "retrieval", Candidates: 3, Truncated: true, Latency: 5 * time.Millisecond},
 				},
 			},
 		},
@@ -128,6 +128,9 @@ func TestExtractSources_PadsNonActivated(t *testing.T) {
 	}
 	if got[0].Source != "retrieval" || !got[0].Activated || got[0].Budget != 5 || got[0].Returned != 3 {
 		t.Errorf("retrieval row = %+v", got[0])
+	}
+	if !got[0].Truncated {
+		t.Errorf("retrieval row should expose truncation: %+v", got[0])
 	}
 	if got[1].Source != "timeline" || got[1].Activated || got[1].Budget != 7 {
 		t.Errorf("timeline padding row = %+v", got[1])

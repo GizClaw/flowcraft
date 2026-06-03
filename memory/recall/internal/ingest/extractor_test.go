@@ -418,12 +418,10 @@ func TestExtractorPromptsForbidGenericSurfaceCollapse(t *testing.T) {
 		"single_pass": LLMExtractorSystemPrompt,
 	} {
 		for _, want := range []string{
-			"Never replace an answer-bearing span with only a category word",
-			`The Brass Atlas`,
-			`North Window`,
-			`my dog Comet`,
-			`a pet`,
-			`an item`,
+			"Never replace a concrete span with only a category word",
+			"source names a person, title, organisation, object descriptor, or",
+			"rather than only",
+			"a broad category",
 		} {
 			if !strings.Contains(prompt, want) {
 				t.Fatalf("%s prompt missing %q:\n%s", name, want, prompt)
@@ -1547,7 +1545,7 @@ func TestLLMExtractorSystemPrompt_HasContractSections(t *testing.T) {
 		"## Rules",
 		"### 1. Extraction strategy",
 		"### 2. Candidate policy",
-		"### 3. Preserve answer-bearing detail",
+		"### 3. Preserve concrete source detail",
 		"### 4. Avoid abstraction and over-merge",
 		"### 5. Evidence grounding",
 		"### 6. Text and subject fields",
@@ -1557,7 +1555,7 @@ func TestLLMExtractorSystemPrompt_HasContractSections(t *testing.T) {
 		"### 10. Entity anchors",
 		"### 11. Kind taxonomy",
 		"### 12. Source ids and quotes",
-		"### 13. Coverage examples",
+		"### 13. Coverage principles",
 		"### 14. Coverage checklist",
 		"### 15. Empty result",
 		"## Critical reminders before JSON",

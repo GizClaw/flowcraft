@@ -61,6 +61,10 @@ var relativeTimeEntityTokens = stopword.NewSet().Extend(
 	"今天", "明天", "昨天", "下次", "上次", "之前",
 )
 
+// IsIntentEntityStopword is scoped to low-risk query entity extraction. Callers
+// must not treat the remaining entity tokens as semantic slot evidence; verbs
+// and function-like words can be valid query meaning even when they are poor
+// entity anchors.
 func IsIntentEntityStopword(token string) bool {
 	return intentEntityStopwords.Contains(token)
 }

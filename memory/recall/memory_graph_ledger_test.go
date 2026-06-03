@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/memory/recall/internal/port"
+	temporalstore "github.com/GizClaw/flowcraft/memory/recall/internal/store/temporal"
 )
 
 func TestSave_CommitsObservationAssertionLinks(t *testing.T) {
@@ -429,6 +430,70 @@ func TestForgetHard_CleansGraphLedgerForFact(t *testing.T) {
 	}
 }
 
+func TestForgetHard_StoreDeleteFailureRestoresGraphLedger(t *testing.T) {
+	ctx := context.Background()
+	scope := Scope{RuntimeID: "rt", UserID: "u1"}
+	baseStore := temporalstore.NewMemoryStore()
+	store := &deleteFailTemporalStore{TemporalStore: baseStore, err: errors.New("delete unavailable")}
+	observations := NewInMemoryObservationStore()
+	links := NewInMemoryLinkStore()
+	projection := &forgetObservationProjectionRecorder{}
+	mem, err := New(
+		WithTemporalStore(store),
+		WithObservationStore(observations),
+		WithLinkStore(links),
+	)
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	m := mem.(*memory)
+	m.observationProjection = projection
+
+	saved, err := mem.Save(ctx, scope, SaveRequest{
+		Facts: []TemporalFact{{
+			Kind:    FactNote,
+			Content: "Alice shared that she likes tea",
+			EvidenceRefs: []EvidenceRef{{
+				ID:        "ev-restore",
+				MessageID: "msg-restore",
+				Text:      "Alice likes tea",
+			}},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	factID := saved.FactIDs[0]
+	if got, err := links.List(ctx, scope, LinkListQuery{}); err != nil || len(got) == 0 {
+		t.Fatalf("precondition links = %+v err=%v, want graph links", got, err)
+	}
+	if got, err := observations.List(ctx, scope, ObservationListQuery{}); err != nil || len(got) == 0 {
+		t.Fatalf("precondition observations = %+v err=%v, want observations", got, err)
+	}
+	projection.projected = nil
+	projection.forgotten = nil
+
+	err = mem.Forget(ctx, scope, factID, ForgetHard)
+	if err == nil {
+		t.Fatal("Forget must return store delete error")
+	}
+	if _, err := baseStore.Get(ctx, scope, factID); err != nil {
+		t.Fatalf("canonical fact should remain after delete failure: %v", err)
+	}
+	if got, err := links.List(ctx, scope, LinkListQuery{}); err != nil || len(got) == 0 {
+		t.Fatalf("graph links should be restored after delete failure, got %+v err=%v", got, err)
+	}
+	if got, err := observations.List(ctx, scope, ObservationListQuery{}); err != nil || len(got) == 0 {
+		t.Fatalf("observations should be restored after delete failure, got %+v err=%v", got, err)
+	}
+	if len(projection.forgotten) == 0 {
+		t.Fatalf("test precondition failed: observation projection was not cleaned")
+	}
+	if len(projection.projected) == 0 {
+		t.Fatalf("observation projection should be restored after delete failure")
+	}
+}
+
 func TestRebuildAll_RehydratesGraphLedger(t *testing.T) {
 	ctx := context.Background()
 	scope := Scope{RuntimeID: "rt", UserID: "u1"}
@@ -571,4 +636,38 @@ func hasTraceStage(trace RecallTrace, stage string) bool {
 		}
 	}
 	return false
+}
+
+type deleteFailTemporalStore struct {
+	TemporalStore
+	err error
+}
+
+func (s *deleteFailTemporalStore) Delete(context.Context, Scope, []string) error {
+	return s.err
+}
+
+type forgetObservationProjectionRecorder struct {
+	projected []Observation
+	forgotten []string
+}
+
+func (p *forgetObservationProjectionRecorder) Name() string { return "observation" }
+
+func (p *forgetObservationProjectionRecorder) ProjectObservations(_ context.Context, observations []Observation) error {
+	p.projected = append(p.projected, observations...)
+	return nil
+}
+
+func (p *forgetObservationProjectionRecorder) RebuildObservations(context.Context, Scope, []Observation) error {
+	return nil
+}
+
+func (p *forgetObservationProjectionRecorder) ForgetObservations(_ context.Context, _ Scope, ids []string) error {
+	p.forgotten = append(p.forgotten, ids...)
+	return nil
+}
+
+func (p *forgetObservationProjectionRecorder) ClearObservationScope(context.Context, Scope) error {
+	return nil
 }

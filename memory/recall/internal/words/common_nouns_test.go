@@ -11,4 +11,7 @@ func TestCommonGraphNouns(t *testing.T) {
 	if IsCommonGraphNoun("alice") {
 		t.Fatal("specific entity should not be a common graph noun")
 	}
+	if IsCommonGraphNoun("person archive") {
+		t.Fatal("common graph noun filter must only match the whole canonical node")
+	}
 }

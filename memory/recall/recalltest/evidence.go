@@ -109,6 +109,9 @@ func RunEvidenceStoreSuite(t *testing.T, newStore EvidenceStoreFactory) {
 		if len(f2) != 1 || f2[0].Text != "fact two quote" {
 			t.Fatalf("f2 refs = %+v", f2)
 		}
+		if _, err := store.Get(ctx, conformanceScope(), "turn-1"); !errdefs.IsConflict(err) {
+			t.Fatalf("shared evidence id Get error = %v, want conflict/ambiguous", err)
+		}
 	})
 
 	t.Run("validation and not found errors are classified", func(t *testing.T) {

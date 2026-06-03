@@ -2,6 +2,7 @@ package intent
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"strings"
 	"testing"
@@ -24,6 +25,22 @@ func TestSemanticRouter_RoutesByEmbeddingExamples(t *testing.T) {
 	}
 	if out.Route.Confidence <= 0 {
 		t.Fatalf("confidence should be populated: %+v", out.Route)
+	}
+}
+
+func TestSemanticRouter_FallsBackToSingleEmbeddingsWhenBatchUnavailable(t *testing.T) {
+	router := NewSemanticRouter(batchUnavailableRouteEmbedder{}, WithThreshold(0.2))
+	out, err := router.Route(context.Background(), port.IntentRouterInput{
+		Text: "How many times did the person go to the beach?",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Route.Strategy != domain.RecallStrategyCount {
+		t.Fatalf("strategy = %q, want count (route=%+v)", out.Route.Strategy, out.Route)
+	}
+	if out.Route.FallbackReason != "" {
+		t.Fatalf("unexpected route fallback: %+v", out.Route)
 	}
 }
 
@@ -135,6 +152,14 @@ func (e testRouteEmbedder) EmbedBatch(ctx context.Context, texts []string) ([][]
 	return out, nil
 }
 
+type batchUnavailableRouteEmbedder struct {
+	testRouteEmbedder
+}
+
+func (batchUnavailableRouteEmbedder) EmbedBatch(context.Context, []string) ([][]float32, error) {
+	return nil, errors.New("batch unavailable")
+}
+
 func testRouteVector(text string) []float32 {
 	text = strings.ToLower(text)
 	vec := make([]float32, 9)
@@ -145,14 +170,14 @@ func testRouteVector(text string) []float32 {
 			}
 		}
 	}
-	add(0, "when", "date", "happen", "attend")
-	add(1, "what items", "which books", "plans", "buy", "bought", "read")
-	add(2, "how many", "how long", "times", "children")
-	add(3, "suggestion", "after", "connects", "earlier")
-	add(4, "both", "common", "two people")
-	add(5, "what is", "preferences", "traits")
-	add(6, "would", "true", "member")
-	add(7, "if", "hypothetical", "likely")
+	add(0, "time", "date", "when", "duration", "ordering")
+	add(1, "set", "members", "options", "items", "list")
+	add(2, "number", "count", "frequency", "age", "duration", "how many", "how long", "times")
+	add(3, "connect", "bridge", "multiple events", "multiple assertions")
+	add(4, "shared", "overlap", "multiple entities")
+	add(5, "stable attributes", "preferences", "traits", "identity", "status")
+	add(6, "verify", "refute", "yes", "no", "claim")
+	add(7, "hypothetical", "counterfactual", "alternate premise", "prediction")
 	add(8, "opaque")
 	return vec
 }

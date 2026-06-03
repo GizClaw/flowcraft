@@ -186,10 +186,13 @@ type WriteState struct {
 	// can be recalled or re-extracted later.
 	RawObservationIDs []string
 
-	// GraphObservationIDs / GraphLinkIDs are the rows commit_graph wrote. Its
-	// compensator deletes exactly these ids if a downstream stage fails.
-	GraphObservationIDs []string
-	GraphLinkIDs        []string
+	// GraphObservationIDs are newly-created observation rows commit_graph wrote.
+	// GraphObservationSnapshots are pre-commit snapshots for existing observation
+	// rows that commit_graph merged new spans into. The compensator deletes new
+	// rows and restores snapshots so rollback removes span merges too.
+	GraphObservationIDs       []string
+	GraphObservationSnapshots []domain.Observation
+	GraphLinkIDs              []string
 
 	// SemanticDerivationOrigin is stamped onto every appended fact by
 	// origin_stamp in the async worker lane. Zero in sync and episode

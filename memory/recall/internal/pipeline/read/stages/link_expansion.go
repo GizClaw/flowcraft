@@ -183,6 +183,19 @@ func (s *LinkExpansion) Run(ctx context.Context, state *read.ReadState) (diagnos
 				detail.AddedFactIDs = append(detail.AddedFactIDs, added.Fact.ID)
 			}
 		}
+		if detail.AddedFacts < maxAdds && linkExpansionBridgeTask(state) {
+			bridgeStats, err := s.expandAdjacentEvidenceAssertions(ctx, state, item, existing, maxAdds-detail.AddedFacts, observationLinkCache)
+			detail.ScannedLinks += bridgeStats.ScannedLinks
+			recordAdjacentBridgeStats(&detail, bridgeStats)
+			if err != nil {
+				if isContextError(err) {
+					return detail, err
+				}
+				detail.Err = err.Error()
+			}
+			detail.AddedFacts += len(bridgeStats.AddedFactIDs)
+			detail.AddedFactIDs = append(detail.AddedFactIDs, bridgeStats.AddedFactIDs...)
+		}
 	}
 
 	detail.OutputCount = len(state.MergedItems)
@@ -191,6 +204,142 @@ func (s *LinkExpansion) Run(ctx context.Context, state *read.ReadState) (diagnos
 		detail.Items = candidateSnapshotPtr(contextItemSnapshots(state.MergedItems))
 	}
 	return detail, nil
+}
+
+type adjacentBridgeStats struct {
+	Refs                  int
+	ObservationScans      int
+	MatchedObservationIDs []string
+	ScannedLinks          int
+	AddedFactIDs          []string
+}
+
+func recordAdjacentBridgeStats(detail *diagnostic.LinkExpansionDetail, stats adjacentBridgeStats) {
+	if detail == nil {
+		return
+	}
+	detail.AdjacentBridgeRefs += stats.Refs
+	detail.AdjacentBridgeObservationScans += stats.ObservationScans
+	detail.AdjacentBridgeMatchedObservations += len(stats.MatchedObservationIDs)
+	detail.AdjacentBridgeMatchedObservationIDs = append(detail.AdjacentBridgeMatchedObservationIDs, stats.MatchedObservationIDs...)
+	detail.AdjacentBridgeScannedLinks += stats.ScannedLinks
+	detail.AdjacentBridgeAddedFacts += len(stats.AddedFactIDs)
+	detail.AdjacentBridgeAddedFactIDs = append(detail.AdjacentBridgeAddedFactIDs, stats.AddedFactIDs...)
+}
+
+func (s *LinkExpansion) expandAdjacentEvidenceAssertions(ctx context.Context, state *read.ReadState, seed *domain.ContextItem, existing map[string]struct{}, maxAdds int, linkCache map[string][]domain.FactLink) (adjacentBridgeStats, error) {
+	stats := adjacentBridgeStats{}
+	if s == nil || state == nil || seed == nil || maxAdds <= 0 {
+		return stats, nil
+	}
+	refs := seed.Evidence
+	if len(refs) == 0 {
+		refs = seed.Fact.EvidenceRefs
+	}
+	if len(refs) == 0 {
+		return stats, nil
+	}
+	stats.Refs = len(refs)
+	observations, err := s.observations.List(ctx, contextItemScope(*seed), port.ObservationListQuery{Limit: 1000})
+	if err != nil {
+		return stats, err
+	}
+	seenObservations := map[string]struct{}{}
+	for _, ref := range refs {
+		if len(stats.AddedFactIDs) >= maxAdds {
+			break
+		}
+		for _, obs := range observations {
+			stats.ObservationScans++
+			if len(stats.AddedFactIDs) >= maxAdds {
+				break
+			}
+			if obs.ID == "" || !observationAdjacentToEvidenceRef(obs, ref) {
+				continue
+			}
+			if _, seen := seenObservations[obs.ID]; seen {
+				continue
+			}
+			seenObservations[obs.ID] = struct{}{}
+			stats.MatchedObservationIDs = append(stats.MatchedObservationIDs, obs.ID)
+			for _, span := range obs.Spans {
+				if len(stats.AddedFactIDs) >= maxAdds {
+					break
+				}
+				if span.ID == "" {
+					continue
+				}
+				node := domain.GraphNodeRef{Kind: domain.GraphNodeObservationSpan, ID: span.ID}
+				spanAdded, spanScanned, err := s.expandEvidenceNodeSupportedAssertions(ctx, state, seed, node, existing, maxAdds-len(stats.AddedFactIDs), linkCache)
+				stats.ScannedLinks += spanScanned
+				if err != nil {
+					return stats, err
+				}
+				stats.AddedFactIDs = append(stats.AddedFactIDs, spanAdded...)
+			}
+		}
+	}
+	return stats, nil
+}
+
+func linkExpansionBridgeTask(state *read.ReadState) bool {
+	if state == nil || state.Plan == nil {
+		return false
+	}
+	return hasTask(state.Plan.TaskIntents, domain.QueryTaskBridgeResolution) ||
+		hasTask(state.Plan.TaskIntents, domain.QueryTaskSetCompletion)
+}
+
+func observationAdjacentToEvidenceRef(obs domain.Observation, ref domain.EvidenceRef) bool {
+	if strings.TrimSpace(obs.SessionID) == "" || strings.TrimSpace(ref.SessionID) == "" || obs.SessionID != ref.SessionID {
+		return false
+	}
+	obsSource := observationSourceID(obs)
+	refSource := evidenceRefSourceID(ref)
+	if obsSource == "" || refSource == "" || obsSource == refSource {
+		return false
+	}
+	return sourceIDsAdjacent(obsSource, refSource)
+}
+
+func observationSourceID(obs domain.Observation) string {
+	if id := strings.TrimSpace(obs.SourceID); id != "" {
+		return id
+	}
+	return strings.TrimSpace(obs.MessageID)
+}
+
+func evidenceRefSourceID(ref domain.EvidenceRef) string {
+	if id := strings.TrimSpace(ref.MessageID); id != "" {
+		return id
+	}
+	return strings.TrimSpace(ref.ID)
+}
+
+func sourceIDsAdjacent(a, b string) bool {
+	prefixA, nA, okA := splitSourceOrdinal(a)
+	prefixB, nB, okB := splitSourceOrdinal(b)
+	if !okA || !okB || prefixA != prefixB {
+		return false
+	}
+	delta := nA - nB
+	return delta == 1 || delta == -1
+}
+
+func splitSourceOrdinal(id string) (string, int, bool) {
+	id = strings.TrimSpace(id)
+	idx := strings.LastIndex(id, ":")
+	if idx < 0 || idx == len(id)-1 {
+		return "", 0, false
+	}
+	n := 0
+	for _, r := range id[idx+1:] {
+		if r < '0' || r > '9' {
+			return "", 0, false
+		}
+		n = n*10 + int(r-'0')
+	}
+	return id[:idx], n, true
 }
 
 func (s *LinkExpansion) expandObservationSupportedAssertions(ctx context.Context, state *read.ReadState, seed *domain.ContextItem, observationID string, existing map[string]struct{}, maxAdds int, linkCache map[string][]domain.FactLink) ([]string, int, error) {
@@ -464,16 +613,58 @@ func linkedAssertionMatchesQueryText(state *read.ReadState, text string) bool {
 		return false
 	}
 	textTokens := recallintent.TextTokenSet(text)
+	if linkExpansionMatchesExplicitAnchor(state, textTokens) {
+		return true
+	}
 	overlap := 0
 	for token := range queryTokens {
 		if _, ok := textTokens[token]; ok {
 			overlap++
 		}
 	}
-	if overlap >= 2 {
-		return true
+	if len(queryTokens) <= 2 {
+		return overlap == len(queryTokens)
 	}
-	return overlap == len(queryTokens) && len(queryTokens) <= 2
+	return overlap >= 3 && float64(overlap)/float64(len(queryTokens)) >= 0.55
+}
+
+func linkExpansionMatchesExplicitAnchor(state *read.ReadState, textTokens map[string]struct{}) bool {
+	features := linkExpansionFeatures(state)
+	return tokenSetIntersects(features.Proper, textTokens) ||
+		tokenSetIntersects(features.Numeric, textTokens) ||
+		tokenSetIntersects(features.Quoted, textTokens) ||
+		tokenSetIntersects(linkExpansionEntityTokens(state), textTokens)
+}
+
+func linkExpansionFeatures(state *read.ReadState) domain.QueryFeatures {
+	if state != nil && state.Plan != nil {
+		return state.Plan.Intent.Features
+	}
+	if state != nil && state.Intent != nil {
+		return state.Intent.Features
+	}
+	return domain.QueryFeatures{}
+}
+
+func linkExpansionEntityTokens(state *read.ReadState) map[string]struct{} {
+	var values []string
+	if state != nil && state.Plan != nil {
+		values = append(values, state.Plan.Intent.Entities...)
+		values = append(values, state.Plan.Intent.Subject, state.Plan.Intent.Object)
+	} else if state != nil && state.Intent != nil {
+		values = append(values, state.Intent.Entities...)
+		values = append(values, state.Intent.Subject, state.Intent.Object)
+	}
+	if len(values) == 0 {
+		return nil
+	}
+	out := map[string]struct{}{}
+	for _, value := range values {
+		for token := range recallintent.TextTokenSet(value) {
+			out[token] = struct{}{}
+		}
+	}
+	return out
 }
 
 func linkExpansionQueryTokens(state *read.ReadState) map[string]struct{} {

@@ -239,12 +239,12 @@ func TestContextPackKeepsComplementarySiblingFactsFromSameEvidence(t *testing.T)
 		Ranked: []domain.ContextItem{
 			{
 				Candidate: domain.Candidate{Kind: domain.GraphNodeAssertion, ID: "object", Source: "retrieval", Score: 0.9, EvidenceIDs: []string{"e1"}},
-				Fact:      domain.TemporalFact{ID: "object", Kind: domain.KindState, Content: "Avery has a hand-painted bowl that has sentimental value.", EvidenceRefs: []domain.EvidenceRef{shared}},
+				Fact:      domain.TemporalFact{ID: "object", Kind: domain.KindState, Content: "Avery has a hand-painted bowl that has sentimental value.", Subject: "Avery", Entities: []string{"avery", "bowl"}, EvidenceRefs: []domain.EvidenceRef{shared}},
 				Evidence:  []domain.EvidenceRef{{ID: "e1", Text: "I have a hand-painted bowl."}},
 			},
 			{
 				Candidate: domain.Candidate{Kind: domain.GraphNodeAssertion, ID: "meaning", Source: "retrieval", Score: 0.8, EvidenceIDs: []string{"e1"}},
-				Fact:      domain.TemporalFact{ID: "meaning", Kind: domain.KindNote, Content: "The pattern of Avery's hand-painted bowl reminds her of art and self-expression.", EvidenceRefs: []domain.EvidenceRef{shared}},
+				Fact:      domain.TemporalFact{ID: "meaning", Kind: domain.KindNote, Content: "The pattern of Avery's hand-painted bowl reminds her of art and self-expression.", Subject: "Avery", Entities: []string{"avery", "bowl"}, EvidenceRefs: []domain.EvidenceRef{shared}},
 				Evidence:  []domain.EvidenceRef{{ID: "e1", Text: "The pattern reminds me of art and self-expression."}},
 			},
 			{
@@ -260,6 +260,119 @@ func TestContextPackKeepsComplementarySiblingFactsFromSameEvidence(t *testing.T)
 	}
 	if len(state.Hits) != 2 || state.Hits[0].Fact.ID != "object" || state.Hits[1].Fact.ID != "meaning" {
 		t.Fatalf("complementary sibling facts from one source turn should survive pack, got %+v", state.Hits)
+	}
+}
+
+func TestContextPackRescuesComplementarySameMessageCluster(t *testing.T) {
+	stage := NewContextPack(nil)
+	state := &read.ReadState{
+		Plan:  &domain.QueryPlan{TotalCap: 3},
+		Query: domain.Query{Text: "What did the speaker make with clay?"},
+		Ranked: []domain.ContextItem{
+			{
+				Candidate: domain.Candidate{Kind: domain.GraphNodeAssertion, ID: "pots", Source: "retrieval", Score: 0.9, EvidenceIDs: []string{"turn-1:span-a"}},
+				Fact: domain.TemporalFact{
+					ID:       "pots",
+					Kind:     domain.KindEvent,
+					Content:  "The speaker and family made their own pots at a workshop.",
+					Subject:  "the speaker and family",
+					Entities: []string{"speaker", "family", "pottery"},
+				},
+				Evidence: []domain.EvidenceRef{{ID: "turn-1:span-a", MessageID: "turn-1", Text: "We all made our own pots."}},
+			},
+			{
+				Candidate: domain.Candidate{Kind: domain.GraphNodeAssertion, ID: "distractor", Source: "retrieval", Score: 0.89, EvidenceIDs: []string{"turn-9:span-a"}},
+				Fact: domain.TemporalFact{
+					ID:       "distractor",
+					Kind:     domain.KindState,
+					Content:  "The speaker's family is resilient.",
+					Subject:  "the speaker's family",
+					Entities: []string{"speaker", "family"},
+				},
+				Evidence: []domain.EvidenceRef{{ID: "turn-9:span-a", MessageID: "turn-9", Text: "They're resilient."}},
+			},
+			{
+				Candidate: domain.Candidate{Kind: domain.GraphNodeAssertion, ID: "other", Source: "retrieval", Score: 0.88, EvidenceIDs: []string{"turn-10:span-a"}},
+				Fact: domain.TemporalFact{
+					ID:      "other",
+					Kind:    domain.KindEvent,
+					Content: "The speaker attended another event.",
+					Subject: "the speaker",
+				},
+				Evidence: []domain.EvidenceRef{{ID: "turn-10:span-a", MessageID: "turn-10", Text: "The other event was busy."}},
+			},
+			{
+				Candidate: domain.Candidate{Kind: domain.GraphNodeAssertion, ID: "clay", Source: "retrieval", Score: 0.2, EvidenceIDs: []string{"turn-1:span-b"}},
+				Fact: domain.TemporalFact{
+					ID:       "clay",
+					Kind:     domain.KindEvent,
+					Content:  "The speaker's family was excited to make something with clay.",
+					Subject:  "the speaker's family",
+					Entities: []string{"speaker", "family", "clay"},
+				},
+				Evidence: []domain.EvidenceRef{{ID: "turn-1:span-b", MessageID: "turn-1", Text: "They were so excited to make something with clay."}},
+			},
+		},
+	}
+
+	if _, err := stage.Run(context.Background(), state); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if len(state.Hits) < 2 {
+		t.Fatalf("expected clustered hits, got %+v", state.Hits)
+	}
+	if state.Hits[0].Fact.ID != "pots" || state.Hits[1].Fact.ID != "clay" {
+		t.Fatalf("cluster rescue should keep complementary same-message fact near anchor, got order %v", hitFactIDs(state.Hits))
+	}
+}
+
+func TestContextPackEvidenceGroupRequiresStructuredSourceID(t *testing.T) {
+	if group := primaryEvidenceGroup(domain.Hit{
+		Evidence: []domain.EvidenceRef{{ID: "turn-1:span-a", Text: "same source-shaped id"}},
+	}); group != "" {
+		t.Fatalf("evidence group should not be inferred from evidence ID shape, got %q", group)
+	}
+	if group := primaryEvidenceGroup(domain.Hit{
+		Evidence: []domain.EvidenceRef{{ID: "turn-1:span-a", MessageID: "turn-1", Text: "explicit source"}},
+	}); group != "msg:turn-1" {
+		t.Fatalf("evidence group should use explicit message id, got %q", group)
+	}
+	if group := primaryEvidenceGroup(domain.Hit{
+		Evidence: []domain.EvidenceRef{{ID: "span-a", ObservationID: "obs-1", MessageID: "turn-1", Text: "explicit observation"}},
+	}); group != "obs:obs-1" {
+		t.Fatalf("observation id should take precedence, got %q", group)
+	}
+}
+
+func TestContextPackClusterRescueRequiresStructuredRelation(t *testing.T) {
+	stage := NewContextPack(nil)
+	state := &read.ReadState{
+		Plan:  &domain.QueryPlan{TotalCap: 2},
+		Query: domain.Query{Text: "What object did the speaker store?"},
+		Ranked: []domain.ContextItem{
+			{
+				Candidate: domain.Candidate{Kind: domain.GraphNodeAssertion, ID: "anchor", Source: "retrieval", Score: 0.9, EvidenceIDs: []string{"turn-1:span-a"}},
+				Fact:      domain.TemporalFact{ID: "anchor", Kind: domain.KindState, Content: "Avery stored a field compass.", Subject: "Avery", Entities: []string{"avery", "compass"}},
+				Evidence:  []domain.EvidenceRef{{ID: "turn-1:span-a", MessageID: "turn-1", Text: "I stored the field compass."}},
+			},
+			{
+				Candidate: domain.Candidate{Kind: domain.GraphNodeAssertion, ID: "distractor", Source: "retrieval", Score: 0.89, EvidenceIDs: []string{"turn-9:span-a"}},
+				Fact:      domain.TemporalFact{ID: "distractor", Kind: domain.KindState, Content: "Avery owns a notebook.", Subject: "Avery", Entities: []string{"avery", "notebook"}},
+				Evidence:  []domain.EvidenceRef{{ID: "turn-9:span-a", MessageID: "turn-9", Text: "I own a notebook."}},
+			},
+			{
+				Candidate: domain.Candidate{Kind: domain.GraphNodeAssertion, ID: "same-message-noise", Source: "retrieval", Score: 0.1, EvidenceIDs: []string{"turn-1:span-b"}},
+				Fact:      domain.TemporalFact{ID: "same-message-noise", Kind: domain.KindState, Content: "The archive room has stored boxes.", Subject: "archive room", Entities: []string{"archive", "boxes"}},
+				Evidence:  []domain.EvidenceRef{{ID: "turn-1:span-b", MessageID: "turn-1", Text: "The archive room has stored boxes."}},
+			},
+		},
+	}
+
+	if _, err := stage.Run(context.Background(), state); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if len(state.Hits) != 2 || state.Hits[1].Fact.ID != "distractor" {
+		t.Fatalf("cluster rescue should require structured relation, got order %v", hitFactIDs(state.Hits))
 	}
 }
 
@@ -613,6 +726,14 @@ func evidenceIDs(refs []domain.EvidenceRef) []string {
 	out := make([]string, 0, len(refs))
 	for _, ref := range refs {
 		out = append(out, ref.ID)
+	}
+	return out
+}
+
+func hitFactIDs(hits []domain.Hit) []string {
+	out := make([]string, 0, len(hits))
+	for _, hit := range hits {
+		out = append(out, hit.Fact.ID)
 	}
 	return out
 }

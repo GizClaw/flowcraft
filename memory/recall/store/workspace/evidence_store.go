@@ -59,11 +59,14 @@ func (s *evidenceStore) Get(ctx context.Context, scope domain.Scope, evidenceID 
 	if err != nil {
 		return domain.EvidenceRef{}, err
 	}
-	idx := evidenceIndex(st.Evidence, scope, evidenceID)
-	if idx < 0 {
+	records := evidenceRecordsByID(st.Evidence, scope, evidenceID)
+	if len(records) == 0 {
 		return domain.EvidenceRef{}, evidencestore.ErrNotFound
 	}
-	return st.Evidence[idx].Ref, nil
+	if len(records) > 1 {
+		return domain.EvidenceRef{}, evidencestore.ErrAmbiguous
+	}
+	return records[0].Ref, nil
 }
 
 func (s *evidenceStore) ListByFact(ctx context.Context, scope domain.Scope, factID string) ([]domain.EvidenceRef, error) {
@@ -141,13 +144,14 @@ func (s *evidenceStore) ForgetByFact(ctx context.Context, scope domain.Scope, fa
 
 func (s *evidenceStore) Close() error { return s.b.Close() }
 
-func evidenceIndex(records []evidenceRecord, scope domain.Scope, evidenceID string) int {
-	for i, rec := range records {
+func evidenceRecordsByID(records []evidenceRecord, scope domain.Scope, evidenceID string) []evidenceRecord {
+	var out []evidenceRecord
+	for _, rec := range records {
 		if samePartition(rec.Scope, scope) && rec.EvidenceID == evidenceID {
-			return i
+			out = append(out, rec)
 		}
 	}
-	return -1
+	return out
 }
 
 func evidenceFactIndex(records []evidenceRecord, scope domain.Scope, factID, evidenceID string) int {

@@ -2,6 +2,7 @@ package workspace
 
 import (
 	"context"
+	"reflect"
 	"sort"
 
 	"github.com/GizClaw/flowcraft/memory/recall/internal/domain"
@@ -173,17 +174,20 @@ func (s *linkStore) Append(ctx context.Context, links []domain.FactLink) error {
 		return nil
 	}
 	staged := make([]domain.FactLink, 0, len(links))
-	seenIDs := map[string]struct{}{}
+	seenIDs := map[string]domain.FactLink{}
 	seenMergeKeys := map[string]struct{}{}
 	for _, link := range links {
 		if err := validateLink(link, "workspace"); err != nil {
 			return err
 		}
 		idKey := factKey(link.Scope, link.ID)
-		if _, ok := seenIDs[idKey]; ok {
+		if prev, ok := seenIDs[idKey]; ok {
+			if !reflect.DeepEqual(prev.Clone(), link.Clone()) {
+				return errdefs.Conflictf("recall workspace link: duplicate link id %q within append batch", link.ID)
+			}
 			continue
 		}
-		seenIDs[idKey] = struct{}{}
+		seenIDs[idKey] = link.Clone()
 		if link.MergeKey != "" {
 			mergeKey := factKey(link.Scope, link.MergeKey)
 			if _, ok := seenMergeKeys[mergeKey]; ok {
@@ -204,7 +208,10 @@ func (s *linkStore) Append(ctx context.Context, links []domain.FactLink) error {
 		if link.MergeKey != "" && linkMergeKeyIndex(st.Links, link.Scope, link.MergeKey) >= 0 {
 			continue
 		}
-		if linkIndex(st.Links, link.Scope, link.ID) >= 0 {
+		if idx := linkIndex(st.Links, link.Scope, link.ID); idx >= 0 {
+			if !reflect.DeepEqual(st.Links[idx].Clone(), link.Clone()) {
+				return errdefs.Conflictf("recall workspace link: duplicate link id %q in scope", link.ID)
+			}
 			continue
 		}
 		st.Links = append(st.Links, link.Clone())

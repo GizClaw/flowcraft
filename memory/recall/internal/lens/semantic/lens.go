@@ -254,13 +254,10 @@ func querySemanticTerms(intent domain.QueryIntent) []string {
 }
 
 func entryMatchesIntent(entry semanticEntry, intent domain.QueryIntent, terms []string) bool {
-	if intent.Subject != "" && !strings.Contains(entry.text, words.CanonicalSurface(intent.Subject)) {
+	if !semanticFieldMatches(entry.terms, intent.Subject) {
 		return false
 	}
-	if intent.Predicate != "" && !strings.Contains(entry.text, words.CanonicalSurface(intent.Predicate)) {
-		return false
-	}
-	if intent.Object != "" && !strings.Contains(entry.text, words.CanonicalSurface(intent.Object)) {
+	if !semanticFieldMatches(entry.terms, intent.Object) {
 		return false
 	}
 	if len(terms) == 0 {
@@ -277,6 +274,23 @@ func entryMatchesIntent(entry semanticEntry, intent domain.QueryIntent, terms []
 		required = len(terms)
 	}
 	return matches >= required
+}
+
+func semanticFieldMatches(entryTerms map[string]struct{}, field string) bool {
+	field = strings.TrimSpace(field)
+	if field == "" {
+		return true
+	}
+	terms := words.SemanticQueryTerms(field)
+	if len(terms) == 0 {
+		return true
+	}
+	for _, term := range terms {
+		if _, ok := entryTerms[term]; !ok {
+			return false
+		}
+	}
+	return true
 }
 
 func entryMatchesAgent(entryScope, queryScope domain.Scope) bool {

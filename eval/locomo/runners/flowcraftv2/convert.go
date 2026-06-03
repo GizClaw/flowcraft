@@ -205,34 +205,14 @@ func fromRecallArtifacts(hits []recall.Hit) []runners.RecallArtifact {
 
 func renderSourceTurnText(text string, images []runners.RawImage) string {
 	text = strings.TrimSpace(text)
-	if len(images) == 0 {
-		return text
-	}
 	var b strings.Builder
 	b.WriteString(text)
-	for _, image := range images {
-		url := strings.TrimSpace(image.URL)
-		query := strings.TrimSpace(image.Query)
-		caption := strings.TrimSpace(image.Caption)
-		if url == "" && query == "" && caption == "" {
-			continue
-		}
+	visual := runners.RenderRawImageMetadata(images)
+	if visual != "" {
 		if b.Len() > 0 {
 			b.WriteString("\n")
 		}
-		b.WriteString("ATTACHED_IMAGE_METADATA (visual evidence for this turn; not speaker-authored prose):")
-		if query != "" {
-			b.WriteString("\n- query: ")
-			b.WriteString(query)
-		}
-		if caption != "" {
-			b.WriteString("\n- caption: ")
-			b.WriteString(caption)
-		}
-		if url != "" {
-			b.WriteString("\n- url: ")
-			b.WriteString(url)
-		}
+		b.WriteString(visual)
 	}
 	return strings.TrimSpace(b.String())
 }
@@ -244,12 +224,93 @@ func fromRecallStageAudit(a diagnostics.RecallStageAudit) runners.RecallStageAud
 			Stage:             st.Stage,
 			Source:            st.Source,
 			Status:            st.Status,
+			Query:             fromRecallQueryIntent(st.Query),
+			ActivatedLenses:   fromRecallActivatedLenses(st.ActivatedLenses),
+			TaskIntents:       append([]string(nil), st.TaskIntents...),
+			TotalBudget:       st.TotalBudget,
+			Suggested:         st.Suggested,
+			SuggestedByTask:   cloneIntMap(st.SuggestedByTask),
+			SuggestedFactIDs:  append([]string(nil), st.SuggestedFactIDs...),
 			Added:             st.Added,
 			AddedFactIDs:      append([]string(nil), st.AddedFactIDs...),
 			ScannedLinks:      st.ScannedLinks,
 			AddedFacts:        st.AddedFacts,
 			AddedEvidenceRefs: st.AddedEvidenceRefs,
+			CoverageBundles:   fromRecallCoverageBundles(st.CoverageBundles),
 			Candidates:        fromRecallAuditCandidates(st.Candidates),
+			PackTrace:         fromRecallAuditCandidates(st.PackTrace),
+		})
+	}
+	return out
+}
+
+func fromRecallQueryIntent(in *diagnostics.RecallQueryIntent) *runners.RecallQueryIntent {
+	if in == nil {
+		return nil
+	}
+	return &runners.RecallQueryIntent{
+		QueryLen:                      in.QueryLen,
+		Entities:                      append([]string(nil), in.Entities...),
+		Kinds:                         append([]string(nil), in.Kinds...),
+		Subject:                       in.Subject,
+		Predicate:                     in.Predicate,
+		Object:                        in.Object,
+		HasTimeRange:                  in.HasTimeRange,
+		HasExplicitDate:               in.HasExplicitDate,
+		HasRelativeTemporalExpression: in.HasRelativeTemporalExpression,
+		TokenCount:                    in.TokenCount,
+		NumericCount:                  in.NumericCount,
+		QuotedCount:                   in.QuotedCount,
+		ProperCount:                   in.ProperCount,
+		Strategy:                      in.Strategy,
+		Confidence:                    in.Confidence,
+		Alternates:                    fromRecallIntentRouteCandidates(in.Alternates),
+		Signals:                       append([]string(nil), in.Signals...),
+		FallbackReason:                in.FallbackReason,
+	}
+}
+
+func fromRecallIntentRouteCandidates(in []diagnostics.RecallIntentRouteCandidate) []runners.RecallIntentRouteCandidate {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]runners.RecallIntentRouteCandidate, 0, len(in))
+	for _, candidate := range in {
+		out = append(out, runners.RecallIntentRouteCandidate{
+			Strategy:   candidate.Strategy,
+			Confidence: candidate.Confidence,
+		})
+	}
+	return out
+}
+
+func fromRecallActivatedLenses(in []diagnostics.RecallActivatedLens) []runners.RecallActivatedLens {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]runners.RecallActivatedLens, 0, len(in))
+	for _, lens := range in {
+		out = append(out, runners.RecallActivatedLens{
+			Lens:        lens.Lens,
+			Weight:      lens.Weight,
+			Budget:      lens.Budget,
+			ActivatedBy: lens.ActivatedBy,
+		})
+	}
+	return out
+}
+
+func fromRecallCoverageBundles(in []diagnostics.RecallCoverageBundle) []runners.RecallCoverageBundle {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]runners.RecallCoverageBundle, 0, len(in))
+	for _, bundle := range in {
+		out = append(out, runners.RecallCoverageBundle{
+			SeedFactID:      bundle.SeedFactID,
+			RescuedFactIDs:  append([]string(nil), bundle.RescuedFactIDs...),
+			ReplacedFactIDs: append([]string(nil), bundle.ReplacedFactIDs...),
+			Reason:          bundle.Reason,
 		})
 	}
 	return out
@@ -262,13 +323,29 @@ func fromRecallAuditCandidates(in []diagnostics.RecallCandidateSnapshot) []runne
 	out := make([]runners.RecallCandidateSnapshot, 0, len(in))
 	for _, c := range in {
 		out = append(out, runners.RecallCandidateSnapshot{
-			FactID:      c.FactID,
-			Source:      c.Source,
-			Rank:        c.Rank,
-			Score:       c.Score,
-			EvidenceIDs: append([]string(nil), c.EvidenceIDs...),
-			Sources:     append([]string(nil), c.Sources...),
+			FactID:           c.FactID,
+			Source:           c.Source,
+			Rank:             c.Rank,
+			Score:            c.Score,
+			EvidenceIDs:      append([]string(nil), c.EvidenceIDs...),
+			Sources:          append([]string(nil), c.Sources...),
+			RankOutputRank:   c.RankOutputRank,
+			ContextPackRank:  c.ContextPackRank,
+			PrimarySource:    c.PrimarySource,
+			ProjectionRoutes: append([]string(nil), c.ProjectionRoutes...),
+			DroppedReason:    c.DroppedReason,
 		})
+	}
+	return out
+}
+
+func cloneIntMap(in map[string]int) map[string]int {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]int, len(in))
+	for k, v := range in {
+		out[k] = v
 	}
 	return out
 }

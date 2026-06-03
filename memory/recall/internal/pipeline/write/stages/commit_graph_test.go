@@ -92,6 +92,71 @@ func TestCommitGraph_LinkFailureCleansObservationsAndProjection(t *testing.T) {
 	}
 }
 
+func TestCommitGraph_LinkFailureRestoresExistingObservationSnapshot(t *testing.T) {
+	boom := errors.New("links down")
+	scope := domain.Scope{RuntimeID: "rt", UserID: "u1"}
+	existing := domain.Observation{
+		ID:       "obs-existing",
+		Scope:    scope,
+		Kind:     domain.ObservationKindEvidence,
+		SourceID: "ev-1",
+		Text:     "old text",
+		Spans: []domain.ObservationSpan{{
+			ID:            "span-old",
+			ObservationID: "obs-existing",
+			SourceID:      "ev-1",
+			Kind:          domain.ObservationSpanKindQuote,
+			Text:          "old text",
+		}},
+	}
+	observations := &observationStoreRecorder{getByID: map[string]domain.Observation{
+		existing.ID: existing,
+	}}
+	projection := &observationProjectionRecorder{}
+	links := &linkStoreRecorder{appendErr: boom}
+	stage := stages.NewCommitGraph(observations, links, projection)
+	state := &write.WriteState{
+		Scope: scope,
+		Resolution: domain.Resolution{Facts: []domain.TemporalFact{{
+			ID:      "fact-1",
+			Scope:   scope,
+			Content: "Alice likes tea",
+			EvidenceRefs: []domain.EvidenceRef{{
+				ID:            "ev-1",
+				MessageID:     "msg-1",
+				Text:          "new text",
+				ObservationID: existing.ID,
+				SpanID:        "span-new",
+			}},
+		}}},
+	}
+
+	_, err := stage.Run(context.Background(), state)
+	if !errors.Is(err, boom) {
+		t.Fatalf("Run err = %v, want %v", err, boom)
+	}
+	if len(observations.deleted) != 1 || observations.deleted[0] != existing.ID {
+		t.Fatalf("existing observation must be deleted before restore, deleted=%v", observations.deleted)
+	}
+	if len(observations.appended) < 2 {
+		t.Fatalf("expected delta append and snapshot restore, got %+v", observations.appended)
+	}
+	restored := observations.appended[len(observations.appended)-1]
+	if restored.ID != existing.ID || len(restored.Spans) != 1 || restored.Spans[0].ID != "span-old" {
+		t.Fatalf("restored observation = %+v, want original snapshot", restored)
+	}
+	if len(projection.forgotten) != 1 || projection.forgotten[0] != existing.ID {
+		t.Fatalf("projection forgotten = %v, want %q", projection.forgotten, existing.ID)
+	}
+	if len(projection.projected) < 2 {
+		t.Fatalf("expected delta projection and snapshot projection restore, got %+v", projection.projected)
+	}
+	reprojected := projection.projected[len(projection.projected)-1]
+	if reprojected.ID != existing.ID || len(reprojected.Spans) != 1 || reprojected.Spans[0].ID != "span-old" {
+		t.Fatalf("reprojected observation = %+v, want original snapshot", reprojected)
+	}
+}
+
 func TestCommitGraph_CompensateCleansProjection(t *testing.T) {
 	observations := &observationStoreRecorder{}
 	projection := &observationProjectionRecorder{}

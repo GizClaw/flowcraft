@@ -44,7 +44,7 @@ func (s *CommitGraph) Run(ctx context.Context, state *write.WriteState) (diagnos
 	started := time.Now()
 	delta := graphledger.BuildDelta(state.Scope, state.Resolution.Facts, state.Resolution.Closes, nil, state.ObservedAt, started, state.SaveOutboxID)
 	state.GraphDelta = delta.Clone()
-	createdObservationIDs, err := s.createdObservationIDs(ctx, state.Scope, delta.Observations)
+	plan, err := s.planObservationCommit(ctx, state.Scope, delta.Observations)
 	if err != nil {
 		state.FailedStage = "commit_graph"
 		return diagnostic.GraphCommitDetail{
@@ -62,13 +62,16 @@ func (s *CommitGraph) Run(ctx context.Context, state *write.WriteState) (diagnos
 			Latency:      time.Since(started),
 		}, fmt.Errorf("recall.Save: graph observations append: %w", err)
 	}
-	state.GraphObservationIDs = createdObservationIDs
+	state.GraphObservationIDs = append([]string(nil), plan.createdIDs...)
+	state.GraphObservationSnapshots = cloneObservations(plan.existingSnapshots)
 	if s.projection != nil {
 		if err := s.projection.ProjectObservations(ctx, delta.Observations); err != nil {
 			state.FailedStage = "commit_graph"
 			s.cleanupProjectedObservations(ctx, state.Scope, observationIDs(delta.Observations))
-			s.cleanupGraphObservations(ctx, state)
+			s.restoreGraphObservations(ctx, state)
+			s.restoreProjectedObservations(ctx, state.Scope, state.GraphObservationSnapshots)
 			state.GraphObservationIDs = nil
+			state.GraphObservationSnapshots = nil
 			return diagnostic.GraphCommitDetail{
 				Observations: len(delta.Observations),
 				Links:        len(delta.Links),
@@ -80,8 +83,10 @@ func (s *CommitGraph) Run(ctx context.Context, state *write.WriteState) (diagnos
 	if err := s.links.Append(ctx, delta.Links); err != nil {
 		state.FailedStage = "commit_graph"
 		s.cleanupProjectedObservations(ctx, state.Scope, observationIDs(delta.Observations))
-		s.cleanupGraphObservations(ctx, state)
+		s.restoreGraphObservations(ctx, state)
+		s.restoreProjectedObservations(ctx, state.Scope, state.GraphObservationSnapshots)
 		state.GraphObservationIDs = nil
+		state.GraphObservationSnapshots = nil
 		return diagnostic.GraphCommitDetail{
 			Observations: len(delta.Observations),
 			Links:        len(delta.Links),
@@ -117,39 +122,66 @@ func (s *CommitGraph) Compensate(ctx context.Context, state *write.WriteState) e
 		projectedObservationIDs = state.GraphObservationIDs
 	}
 	s.cleanupProjectedObservations(cleanupCtx, state.Scope, projectedObservationIDs)
-	s.cleanupGraphObservations(cleanupCtx, state)
+	s.restoreGraphObservations(cleanupCtx, state)
+	s.restoreProjectedObservations(cleanupCtx, state.Scope, state.GraphObservationSnapshots)
 	return nil
 }
 
-func (s *CommitGraph) createdObservationIDs(ctx context.Context, scope domain.Scope, observations []domain.Observation) ([]string, error) {
+type observationCommitPlan struct {
+	createdIDs        []string
+	existingSnapshots []domain.Observation
+}
+
+func (s *CommitGraph) planObservationCommit(ctx context.Context, scope domain.Scope, observations []domain.Observation) (observationCommitPlan, error) {
 	if s == nil || s.observations == nil || len(observations) == 0 {
-		return nil, nil
+		return observationCommitPlan{}, nil
 	}
-	out := make([]string, 0, len(observations))
+	var out observationCommitPlan
+	seen := make(map[string]struct{}, len(observations))
 	for _, observation := range observations {
 		if observation.ID == "" {
 			continue
 		}
-		_, err := s.observations.Get(ctx, scope, observation.ID)
+		if _, ok := seen[observation.ID]; ok {
+			continue
+		}
+		seen[observation.ID] = struct{}{}
+		existing, err := s.observations.Get(ctx, scope, observation.ID)
 		if err == nil {
+			out.existingSnapshots = append(out.existingSnapshots, existing.Clone())
 			continue
 		}
 		if !errors.Is(err, port.ErrNotFound) {
-			return nil, fmt.Errorf("recall.Save: graph observation preflight: %w", err)
+			return observationCommitPlan{}, fmt.Errorf("recall.Save: graph observation preflight: %w", err)
 		}
-		out = append(out, observation.ID)
+		out.createdIDs = append(out.createdIDs, observation.ID)
 	}
 	return out, nil
 }
 
-func (s *CommitGraph) cleanupGraphObservations(ctx context.Context, state *write.WriteState) {
-	if state == nil || len(state.GraphObservationIDs) == 0 {
+func (s *CommitGraph) restoreGraphObservations(ctx context.Context, state *write.WriteState) {
+	if state == nil || s.observations == nil {
 		return
 	}
 	cleanupCtx := pipeline.DetachCancel(ctx)
-	if s.observations != nil {
+	if len(state.GraphObservationIDs) > 0 {
 		_ = s.observations.Delete(cleanupCtx, state.Scope, state.GraphObservationIDs)
 	}
+	if len(state.GraphObservationSnapshots) == 0 {
+		return
+	}
+	snapshotIDs := observationIDs(state.GraphObservationSnapshots)
+	if len(snapshotIDs) > 0 {
+		_ = s.observations.Delete(cleanupCtx, state.Scope, snapshotIDs)
+	}
+	_ = s.observations.Append(cleanupCtx, cloneObservations(state.GraphObservationSnapshots))
+}
+
+func (s *CommitGraph) restoreProjectedObservations(ctx context.Context, scope domain.Scope, observations []domain.Observation) {
+	if s == nil || s.projection == nil || len(observations) == 0 {
+		return
+	}
+	_ = s.projection.ProjectObservations(pipeline.DetachCancel(ctx), cloneObservations(observations))
 }
 
 func observationIDs(observations []domain.Observation) []string {
@@ -158,6 +190,17 @@ func observationIDs(observations []domain.Observation) []string {
 		if o.ID != "" {
 			out = append(out, o.ID)
 		}
+	}
+	return out
+}
+
+func cloneObservations(observations []domain.Observation) []domain.Observation {
+	if len(observations) == 0 {
+		return nil
+	}
+	out := make([]domain.Observation, 0, len(observations))
+	for _, observation := range observations {
+		out = append(out, observation.Clone())
 	}
 	return out
 }

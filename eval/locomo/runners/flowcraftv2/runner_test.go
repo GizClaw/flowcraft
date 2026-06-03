@@ -136,7 +136,7 @@ func TestBuildTurnContexts_RendersStructuredImagesAsVisualEvidence(t *testing.T)
 	}
 	for _, want := range []string{
 		"Take a look at my new camera.",
-		"ATTACHED_IMAGE_METADATA (visual evidence for this turn; not speaker-authored prose):",
+		"speaker_shared_image (image shared by the speaker in this turn; metadata is not quoted speech):",
 		"query: vintage camera",
 		"caption: a photo of a camera sitting on a table next to a plant",
 		"url: https://example/camera.jpg",
@@ -144,6 +144,9 @@ func TestBuildTurnContexts_RendersStructuredImagesAsVisualEvidence(t *testing.T)
 		if !strings.Contains(ctxs[0].Text, want) {
 			t.Fatalf("turn text missing %q:\n%s", want, ctxs[0].Text)
 		}
+	}
+	if strings.Contains(ctxs[0].Text, "ATTACHED_IMAGE_METADATA") {
+		t.Fatalf("turn text should not use legacy LoCoMo image marker:\n%s", ctxs[0].Text)
 	}
 }
 
@@ -160,9 +163,12 @@ func TestBuildTurnContexts_KeepsImageOnlyTurn(t *testing.T) {
 	if len(ctxs) != 1 {
 		t.Fatalf("expected image-only turn to be kept, got %d", len(ctxs))
 	}
-	if !strings.Contains(ctxs[0].Text, "ATTACHED_IMAGE_METADATA") ||
+	if !strings.Contains(ctxs[0].Text, "speaker_shared_image") ||
 		!strings.Contains(ctxs[0].Text, "caption: a photo of rocks and a waterfall") {
 		t.Fatalf("image-only turn did not render metadata:\n%s", ctxs[0].Text)
+	}
+	if strings.Contains(ctxs[0].Text, "ATTACHED_IMAGE_METADATA") {
+		t.Fatalf("image-only turn should not use legacy LoCoMo image marker:\n%s", ctxs[0].Text)
 	}
 }
 
@@ -186,6 +192,35 @@ func TestBuildTurnContexts_ParsesLongMemEvalTimestamp(t *testing.T) {
 	}
 	if !observedAt.Equal(want) {
 		t.Fatalf("observedAt = %v, want %v", observedAt, want)
+	}
+}
+
+func TestStructuredAnswerContextUsesGenericRelativeTimeGuidance(t *testing.T) {
+	ctx := structuredAnswerContext([]recall.Hit{{
+		Fact: recall.TemporalFact{
+			ID:      "fact-1",
+			Content: "Melanie said she visited the pottery studio yesterday.",
+		},
+		Evidence: []recall.EvidenceRef{{
+			ID:        "D8:4",
+			Speaker:   "Melanie",
+			Timestamp: time.Date(2023, 1, 21, 11, 30, 0, 0, time.UTC),
+			Text:      "I visited the pottery studio yesterday.",
+		}},
+		Score: 0.9,
+	}}, "temporal")
+
+	for _, want := range []string{
+		`<recall_strategy strategy="temporal">`,
+		"relative temporal expression",
+		"answer the supported part and name the missing detail",
+	} {
+		if !strings.Contains(ctx.Body+ctx.PromptTemplate, want) {
+			t.Fatalf("answer context missing %q:\nbody:\n%s\nprompt:\n%s", want, ctx.Body, ctx.PromptTemplate)
+		}
+	}
+	if strings.Contains(ctx.Body, "relative_time_hint") {
+		t.Fatalf("answer context should not synthesize hard-matched temporal hints:\n%s", ctx.Body)
 	}
 }
 
@@ -274,8 +309,14 @@ func TestSaveSourceTurnsPersistsExtractorEvidenceRefs(t *testing.T) {
 	if len(audit.Stages) == 0 {
 		t.Fatal("expected stage audit snapshots")
 	}
-	var sawSource, sawRank, sawHits bool
+	var sawIntent, sawSource, sawRank, sawHits bool
 	for _, st := range audit.Stages {
+		if st.Stage == "intent_route" && st.Query != nil {
+			sawIntent = true
+			if st.Query.Strategy == "" {
+				t.Fatalf("intent route audit must include strategy: %+v", st.Query)
+			}
+		}
 		if st.Stage == "candidate_fanout" && len(st.Candidates) > 0 {
 			sawSource = true
 		}
@@ -286,7 +327,7 @@ func TestSaveSourceTurnsPersistsExtractorEvidenceRefs(t *testing.T) {
 			sawHits = true
 		}
 	}
-	if !sawSource || !sawRank || !sawHits {
+	if !sawIntent || !sawSource || !sawRank || !sawHits {
 		t.Fatalf("missing expected source/rank/hits snapshots: %+v", audit.Stages)
 	}
 }
@@ -909,10 +950,12 @@ func TestStructuredAnswerContextCarriesBackendPrompt(t *testing.T) {
 		"content as the canonical extracted fact when it agrees with the evidence",
 		"evidence speaker as the speaker of the quoted source turn",
 		"Match the form of the question",
+		"Start with the shortest supported answer span",
+		"concise comma-separated list first",
 		"inspect [#1], [#2], and [#3] carefully",
 		"For WHEN questions, answer from event_time first",
 		"HOW MANY, HOW LONG, AGE, duration, count, and comparison",
-		"Reply \"I don't know\" only after checking the top three memories",
+		"Reply \"I don't know\" only when no memory or evidence quote supports the requested value",
 	} {
 		if !strings.Contains(ctx.PromptTemplate, want) {
 			t.Fatalf("structured prompt missing %q:\n%s", want, ctx.PromptTemplate)

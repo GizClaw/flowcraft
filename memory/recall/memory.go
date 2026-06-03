@@ -734,24 +734,27 @@ func (m *memory) Forget(ctx context.Context, scope Scope, factID string, mode ..
 		m.fanout.ProjectOptional(ctx, []domain.TemporalFact{snapshot})
 		return nil
 	default:
-		deletedObservationIDs, err := graphledger.PlanClearAssertion(ctx, scope, factID, m.observationStore, m.linkStore)
+		graphSnapshot, err := m.snapshotForgetGraphCleanup(ctx, scope, factID)
 		if err != nil {
 			return fmt.Errorf("recall.Forget: graph cleanup plan: %w", err)
 		}
 		if err := m.fanout.ForgetRequired(ctx, scope, []string{factID}); err != nil {
+			m.compensateForgetFailure(ctx, scope, snapshot, graphSnapshot, err)
 			return err
 		}
-		if err := m.store.Delete(ctx, scope, []string{factID}); err != nil {
-			m.compensateForgetStoreFailure(ctx, scope, snapshot, err)
-			return fmt.Errorf("recall.Forget: store delete: %w", err)
-		}
-		if len(deletedObservationIDs) > 0 && m.observationProjection != nil {
-			if err := m.observationProjection.ForgetObservations(ctx, scope, deletedObservationIDs); err != nil {
+		if len(graphSnapshot.deletedObservationIDs) > 0 && m.observationProjection != nil {
+			if err := m.observationProjection.ForgetObservations(ctx, scope, graphSnapshot.deletedObservationIDs); err != nil {
+				m.compensateForgetFailure(ctx, scope, snapshot, graphSnapshot, err)
 				return fmt.Errorf("recall.Forget: observation projection cleanup: %w", err)
 			}
 		}
 		if _, _, _, err := graphledger.ClearAssertion(ctx, scope, factID, m.observationStore, m.linkStore); err != nil {
+			m.compensateForgetFailure(ctx, scope, snapshot, graphSnapshot, err)
 			return fmt.Errorf("recall.Forget: graph cleanup: %w", err)
+		}
+		if err := m.store.Delete(ctx, scope, []string{factID}); err != nil {
+			m.compensateForgetFailure(ctx, scope, snapshot, graphSnapshot, err)
+			return fmt.Errorf("recall.Forget: store delete: %w", err)
 		}
 		m.fanout.ForgetOptional(ctx, scope, []string{factID})
 		return nil
@@ -1080,14 +1083,57 @@ func trustToDomain(t *TrustContext) *domain.TrustContext {
 	return out
 }
 
-// compensateForgetStoreFailure runs after store.Delete fails between
-// the projection forget and store delete steps. It tries to re-Project
-// the snapshot so required projections recover the fact that still
-// lives in the canonical store. The compensation is best-effort and
-// only reports telemetry on failure; the user already sees the
-// store-delete error returned from Forget.
-func (m *memory) compensateForgetStoreFailure(ctx context.Context, scope Scope, snapshot domain.TemporalFact, cause error) {
+type forgetGraphSnapshot struct {
+	links                 []domain.FactLink
+	observations          []domain.Observation
+	deletedObservationIDs []string
+}
+
+func (m *memory) snapshotForgetGraphCleanup(ctx context.Context, scope Scope, factID string) (forgetGraphSnapshot, error) {
+	var out forgetGraphSnapshot
+	if m.linkStore == nil || factID == "" {
+		return out, nil
+	}
+	node := domain.GraphNodeRef{Kind: domain.GraphNodeAssertion, ID: factID}
+	links, err := m.linkStore.FindByNode(ctx, scope, node)
+	if err != nil {
+		return out, fmt.Errorf("graph ledger: snapshot assertion links: %w", err)
+	}
+	out.links = append([]domain.FactLink(nil), links...)
+	deletedObservationIDs, err := graphledger.PlanClearAssertion(ctx, scope, factID, m.observationStore, m.linkStore)
+	if err != nil {
+		return out, err
+	}
+	out.deletedObservationIDs = append([]string(nil), deletedObservationIDs...)
+	if m.observationStore == nil || len(deletedObservationIDs) == 0 {
+		return out, nil
+	}
+	out.observations = make([]domain.Observation, 0, len(deletedObservationIDs))
+	for _, observationID := range deletedObservationIDs {
+		obs, err := m.observationStore.Get(ctx, scope, observationID)
+		if err != nil {
+			return out, fmt.Errorf("graph ledger: snapshot observation: %w", err)
+		}
+		out.observations = append(out.observations, obs)
+	}
+	return out, nil
+}
+
+// compensateForgetFailure runs when hard Forget fails after any derived state
+// may have been removed but before the canonical fact is deleted. The canonical
+// fact still exists, so best-effort compensation restores graph/observation
+// derived state and re-projects the fact snapshot.
+func (m *memory) compensateForgetFailure(ctx context.Context, scope Scope, snapshot domain.TemporalFact, graphSnapshot forgetGraphSnapshot, cause error) {
 	cleanupCtx := pipeline.DetachCancel(ctx)
+	if len(graphSnapshot.observations) > 0 && m.observationStore != nil {
+		_ = m.observationStore.Append(cleanupCtx, append([]domain.Observation(nil), graphSnapshot.observations...))
+	}
+	if len(graphSnapshot.links) > 0 && m.linkStore != nil {
+		_ = m.linkStore.Append(cleanupCtx, append([]domain.FactLink(nil), graphSnapshot.links...))
+	}
+	if len(graphSnapshot.observations) > 0 && m.observationProjection != nil {
+		_ = m.observationProjection.ProjectObservations(cleanupCtx, append([]domain.Observation(nil), graphSnapshot.observations...))
+	}
 	_ = m.fanout.ProjectRequired(cleanupCtx, []domain.TemporalFact{snapshot})
 	_ = cause
 }

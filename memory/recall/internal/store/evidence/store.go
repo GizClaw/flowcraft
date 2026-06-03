@@ -22,5 +22,9 @@ import (
 // stays compatible with errors.Is(err, ErrNotFound).
 var ErrNotFound = errdefs.NotFound(errdefs.New("recall evidence store: evidence not found"))
 
+// ErrAmbiguous is returned by Get when an evidence id belongs to more than one
+// fact in the requested scope. Use ListByFact for fact-scoped lookup.
+var ErrAmbiguous = errdefs.Conflict(errdefs.New("recall evidence store: evidence id is ambiguous"))
+
 // EvidenceStore lives in internal/port/store.go.
 // This package implements port.EvidenceStore (see memory_store.go).

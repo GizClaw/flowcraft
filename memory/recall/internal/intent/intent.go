@@ -13,7 +13,7 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/embedding"
 )
 
-const defaultRouteThreshold = 0.42
+const defaultRouteThreshold = 0.34
 
 type SemanticRouter struct {
 	embedder  embedding.Embedder
@@ -82,7 +82,7 @@ func (r *SemanticRouter) route(ctx context.Context, text string) domain.IntentRo
 	}
 	r.once.Do(func() {
 		examples := routeExampleTexts()
-		r.exampleVectors, r.exampleErr = r.embedder.EmbedBatch(ctx, examples)
+		r.exampleVectors, r.exampleErr = embedRouteExamples(ctx, r.embedder, examples)
 	})
 	if r.exampleErr != nil || len(r.exampleVectors) != len(defaultRouteExamples) {
 		return defaultRoute("route_examples_unavailable")
@@ -115,6 +115,25 @@ func (r *SemanticRouter) route(ctx context.Context, text string) domain.IntentRo
 	return route
 }
 
+func embedRouteExamples(ctx context.Context, emb embedding.Embedder, examples []string) ([][]float32, error) {
+	vectors, err := emb.EmbedBatch(ctx, examples)
+	if err == nil && len(vectors) == len(examples) {
+		return vectors, nil
+	}
+	out := make([][]float32, len(examples))
+	for i, example := range examples {
+		vec, embedErr := emb.Embed(ctx, example)
+		if embedErr != nil {
+			if err != nil {
+				return nil, err
+			}
+			return nil, embedErr
+		}
+		out[i] = vec
+	}
+	return out, nil
+}
+
 func defaultRoute(reason string) domain.IntentRoute {
 	return domain.IntentRoute{
 		Strategy:       domain.RecallStrategyDefault,
@@ -128,26 +147,24 @@ type routeExample struct {
 }
 
 var defaultRouteExamples = []routeExample{
-	{domain.RecallStrategyTemporal, "When did the event happen?"},
-	{domain.RecallStrategyTemporal, "What date did the person attend the meeting?"},
-	{domain.RecallStrategyTemporal, "When was the class or trip?"},
-	{domain.RecallStrategySet, "What items did the person buy?"},
-	{domain.RecallStrategySet, "Which books did the person read?"},
-	{domain.RecallStrategySet, "What are the plans for summer?"},
-	{domain.RecallStrategyCount, "How many times did this happen?"},
-	{domain.RecallStrategyCount, "How many children does the person have?"},
-	{domain.RecallStrategyCount, "How long has the person been doing this?"},
-	{domain.RecallStrategyJoin, "What book did one person read from another person's suggestion?"},
-	{domain.RecallStrategyJoin, "What did someone do after the earlier trip?"},
-	{domain.RecallStrategyJoin, "Which fact connects two remembered events?"},
-	{domain.RecallStrategyIntersection, "What subject did both people paint?"},
-	{domain.RecallStrategyIntersection, "What do the two people have in common?"},
-	{domain.RecallStrategyProfile, "What is the person like?"},
-	{domain.RecallStrategyProfile, "What are the person's preferences or traits?"},
-	{domain.RecallStrategyYesNo, "Would this statement be true?"},
-	{domain.RecallStrategyYesNo, "Is the person a member of the group?"},
-	{domain.RecallStrategyCounterfactual, "Would this still happen if something had not happened?"},
-	{domain.RecallStrategyCounterfactual, "What would likely happen in a hypothetical situation?"},
+	{domain.RecallStrategyTemporal, "Question asking for the time or date of an event."},
+	{domain.RecallStrategyTemporal, "Question asking when a planned or completed action occurs."},
+	{domain.RecallStrategyTemporal, "Question requiring temporal ordering or duration."},
+	{domain.RecallStrategySet, "Question asking for all members of a remembered set."},
+	{domain.RecallStrategySet, "Question asking which options, items, entities, or activities were mentioned."},
+	{domain.RecallStrategySet, "Question requiring complete list coverage rather than one match."},
+	{domain.RecallStrategyCount, "Question asking for a number, count, frequency, age, or duration."},
+	{domain.RecallStrategyCount, "Question requiring numeric aggregation over remembered facts."},
+	{domain.RecallStrategyJoin, "Question requiring one remembered fact to connect to another remembered fact."},
+	{domain.RecallStrategyJoin, "Question requiring a bridge across multiple events or assertions."},
+	{domain.RecallStrategyIntersection, "Question asking what is shared by multiple entities or conditions."},
+	{domain.RecallStrategyIntersection, "Question requiring the overlap between remembered sets or facts."},
+	{domain.RecallStrategyProfile, "Question asking for stable attributes, preferences, identity, status, or relationships."},
+	{domain.RecallStrategyProfile, "Question asking what is generally true about an entity."},
+	{domain.RecallStrategyYesNo, "Question asking whether remembered facts verify or refute a claim."},
+	{domain.RecallStrategyYesNo, "Question whose answer should start with yes or no when evidence is sufficient."},
+	{domain.RecallStrategyCounterfactual, "Question asking about a hypothetical or counterfactual condition."},
+	{domain.RecallStrategyCounterfactual, "Question requiring prediction under an alternate premise using remembered context."},
 }
 
 func routeExampleTexts() []string {

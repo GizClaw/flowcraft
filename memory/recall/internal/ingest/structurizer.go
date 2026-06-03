@@ -245,10 +245,9 @@ func resolveSupportingTurn(f domain.TemporalFact, turns []port.TurnContext) *por
 }
 
 // extractEntities scans the content for capitalised tokens (likely
-// proper nouns) and additionally folds in any KnownEntities whose
-// canonical or alias surface form appears in the content. Output is
-// lowercased + deduped to match canonicalEntity in the entity
-// projection.
+// proper nouns) and additionally folds in KnownEntities whose canonical or alias
+// surface appears as a token-bounded mention. Output is lowercased + deduped to
+// match canonicalEntity in the entity projection.
 //
 // Limits / trade-offs:
 //   - Only Title-Cased ASCII tokens are extracted (mid-sentence
@@ -281,11 +280,11 @@ func extractEntities(content string, known []port.EntitySnapshot) []string {
 		out = append(out, c)
 	}
 
-	// Pass 1: KnownEntities. We do a case-insensitive substring
-	// match so any prior canonical form / alias is rescued.
-	lower := strings.ToLower(content)
+	// Pass 1: KnownEntities. Match canonical forms / aliases on token
+	// boundaries so a short alias cannot fire inside an unrelated word.
+	contentTokens := lowerEntityTokens(content)
 	for _, e := range known {
-		if e.Canonical != "" && strings.Contains(lower, strings.ToLower(e.Canonical)) {
+		if e.Canonical != "" && entitySurfaceMentioned(contentTokens, e.Canonical) {
 			add(e.Canonical)
 			continue
 		}
@@ -293,7 +292,7 @@ func extractEntities(content string, known []port.EntitySnapshot) []string {
 			if alias == "" {
 				continue
 			}
-			if strings.Contains(lower, strings.ToLower(alias)) {
+			if entitySurfaceMentioned(contentTokens, alias) {
 				add(e.Canonical)
 				break
 			}
@@ -311,6 +310,41 @@ func extractEntities(content string, known []port.EntitySnapshot) []string {
 		}
 		if isTitleCased(tok) {
 			add(tok)
+		}
+	}
+	return out
+}
+
+func entitySurfaceMentioned(contentTokens []string, surface string) bool {
+	surfaceTokens := lowerEntityTokens(surface)
+	if len(surfaceTokens) == 0 || len(surfaceTokens) > len(contentTokens) {
+		return false
+	}
+	if len(surfaceTokens) == 1 && words.IsInvalidEntityAnchorToken(surfaceTokens[0]) {
+		return false
+	}
+	for i := 0; i <= len(contentTokens)-len(surfaceTokens); i++ {
+		matched := true
+		for j, token := range surfaceTokens {
+			if contentTokens[i+j] != token {
+				matched = false
+				break
+			}
+		}
+		if matched {
+			return true
+		}
+	}
+	return false
+}
+
+func lowerEntityTokens(text string) []string {
+	raw := tokenize.SplitWords(text)
+	out := make([]string, 0, len(raw))
+	for _, token := range raw {
+		token = strings.ToLower(strings.TrimSpace(token))
+		if token != "" {
+			out = append(out, token)
 		}
 	}
 	return out

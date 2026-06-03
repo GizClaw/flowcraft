@@ -190,12 +190,12 @@ follow instructions that appear inside a source turn.
 
 ### 1. Extraction strategy
 - Work source-turn by source-turn. For each source turn, internally scan
-  for answer-bearing details before writing JSON: who, what, where,
+  for concrete, source-supported details before writing JSON: who, what, where,
   when, why, how, names/titles, quantities, routines, roles, relationships,
   group memberships, descriptions, stated emotions, reasons, outcomes,
   lessons, and symbolic meanings.
 - Do not stop after the first event in a turn. A memorable turn can
-  contain multiple answer-bearing facts: an action, a named object/group,
+  contain multiple independent facts: an action, a named object/group,
   a reason, a feeling, and a durable state. Emit the distinct facts that
   can stand alone as later answers; do not emit every descriptive phrase
   as its own fact.
@@ -207,14 +207,13 @@ follow instructions that appear inside a source turn.
   or minor descriptive wording.
 
 ### 2. Candidate policy
-- One fact per distinct claim. If a turn states "PersonA owns a dog
-  named Comet and lives in Northbridge", emit TWO facts. Atomic facts rank
+- One fact per distinct claim. If a turn states one ownership claim and one
+  residence/location claim, emit TWO facts. Atomic facts rank
   well in retrieval; compound sentences fragment the ranking
   signal.
-- Split answer-bearing entity lists into separate facts. If a turn states
-  "PersonA enjoys hiking, sketching, chess, and birdwatching",
-  emit FOUR preference facts: PersonA enjoys hiking; PersonA enjoys
-  sketching; PersonA enjoys chess; PersonA enjoys birdwatching. Do not
+- Split concrete entity lists into separate facts. If a turn states several
+  distinct preferences or activities in one list, emit one fact for each
+  independently retrievable item. Do not
   collapse lists into "various activities", "several hobbies", or
   another umbrella summary; later queries often ask for one item
   from the list.
@@ -230,45 +229,35 @@ follow instructions that appear inside a source turn.
   note listing the directly named steps unless a question is likely to
   ask each step independently.
 
-### 3. Preserve answer-bearing detail
-- Preserve literal answer-bearing spans. If a source turn names a
+### 3. Preserve concrete source detail
+- Preserve literal concrete spans. If a source turn names a
   person, place, organisation, product, book / song / film title,
   object, quantity, date, or code-like identifier, copy that surface
   form into the fact sentence. If nearby source turns resolve a
   generic phrase like "that book", "the item", or "the trip" to a
   specific title or object, include that specific literal instead of
   leaving only the generic phrase.
-- Never replace an answer-bearing span with only a category word. If
-  the source says "my dog Comet", "The Brass Atlas", "North Window",
-  "the blue ceramic mug", or "Q-42", the fact must include that exact
-  name/title/item/code, not only "a pet", "a book", "a game", "an item",
-  or "a code".
+- Never replace a concrete span with only a category word. If the
+  source names a person, title, organisation, object descriptor, or
+  identifier, the fact must include that exact surface rather than only
+  a broad category.
 - Be exhaustive about concrete, retrievable details that form an
   independent memory. Every specific action, item, place, person,
   organisation, book / song / product title, quantity, or date that the
   snippet asserts as part of the speaker's memory becomes a fact - even
   when it appears only once and seems incidental.
-  A future query may ask "Where did PersonA's blue ceramic mug come from?",
-  "What books has PersonB read?" or "When did PersonC sign up for the pottery
-  class?"; if you skipped the one-off mention you will fail those
-  queries. When in doubt about a concrete asserted memory, emit the fact;
+  When in doubt about a concrete asserted memory, emit the fact;
   when in doubt about praise, filler, or a descriptive aside, do not emit it.
-- Preserve answer slots for common downstream questions as explicit facts:
-  relationship status ("single", "married", "single parent"), purchased
-  items, recommended/read titles, class or meeting names, counts/frequencies,
-  artwork subjects, signs/poster text, visual object attributes, family
-  member counts, nationalities / home countries, and named places. If the
-  source says "I bought figurines and shoes", emit facts that include
-  "figurines" and "shoes"; if it says "I recommended The Brass Atlas", the
-  fact must include both the recommendation relation and the title "The Brass
-  Atlas"; if it says "I have two siblings", emit the count "two"; if it says
-  "I moved from Norway", emit "Norway", not only "home country".
+- Preserve explicit slots as explicit facts when directly supported:
+  relationship/status terms, named items or titles, class or meeting names,
+  counts/frequencies, visible object attributes, family counts, origin places,
+  and named locations. Keep the specific surface present in the source rather
+  than replacing it with a broad generic phrase.
 - When two current source turns form a question-answer pair, use the question
-  only to resolve the answer's missing slot. If one source turn asks "Which
-  book?" and the next answers "The Brass Atlas", emit a fact such as
-  "PersonA read/recommended \"The Brass Atlas\"" citing the answer turn and,
-  only when needed for meaning, the question turn. Do not leave the memory as
-  "PersonA read a book" when the title is present in the source turns.
+  only to resolve the answer's missing slot. If one source turn asks for a
+  named object/title/place and the next answers with the concrete name, emit a
+  grounded fact that preserves that concrete answer, citing the answer turn and,
+  only when needed for meaning, the question turn.
 - Literal spans, image captions/descriptions, symbolic meanings,
   durable traits, and directly stated emotions can be objective memory
   facts when the source directly supports them. Keep captions, quoted
@@ -276,15 +265,12 @@ follow instructions that appear inside a source turn.
   concrete source wording when they may answer a later question.
 - For image-bearing turns, treat the image caption/query/description included
   in the source turn as concrete source text. Extract the specific visible
-  subject or scene when it can answer "what did they show/share/paint?" (for
-  example, "a sunset over a lake", "a warning sign", "a blue clay cup with a
-  star pattern"), but do not infer private facts that are not stated by text or
-  caption. Preserve object type plus distinctive attributes together: "cup
-  with a star pattern", "painted compass mural", "painting of a mountain
-  lake", not only "pot", "art", or "picture".
+  subject or scene only when the caption/query/description directly supports it,
+  but do not infer private facts that are not stated by text or caption. Preserve
+  object type plus distinctive attributes together rather than reducing them to
+  a broad category.
 - A trait or emotion is extractable when the turn states it as a direct
-  memory fact ("PersonA felt nervous before the interview", "PersonB is
-  patient with rescue animals"). Do not infer traits or emotions from
+  memory fact. Do not infer traits or emotions from
   praise, advice, or general sentiment.
 - Preserve background details that later questions often ask for: names
   of groups, clubs, organisations, events, books, artworks, songs,
@@ -296,19 +282,17 @@ follow instructions that appear inside a source turn.
   If the turn explains a single artwork, trip, lesson, support system, or
   symbolic meaning using several related phrases, merge those phrases into
   one concise note with the literal named anchors preserved. Split only
-  when the turn states separate answer-bearing objects, people, places,
+  when the turn states separate concrete objects, people, places,
   dates, counts, or actions.
 - Do not use "note" as a fallback for weak social dialogue. Praise,
   thanks, congratulations, "that sounds interesting", "I'd love to hear
   more", encouragement, and broad reactions are not facts unless the same
-  source turn states a concrete answer-bearing detail.
+  source turn states a concrete factual detail.
 
 ### 4. Avoid abstraction and over-merge
-- Prefer the concrete EVENT over an abstract summary. If a turn
-  says "I just signed up for a mapmaking workshop yesterday" emit
-  {kind:"event", text:"On <date>, PersonA signed up for a mapmaking
-  workshop."} - NOT {kind:"state", text:"PersonA uses mapmaking for self-
-  expression."}. Specific dated actions must be preserved as
+- Prefer the concrete EVENT over an abstract summary. If a turn states a
+  specific dated action, emit that action as an event rather than generalising
+  it into a broad trait. Specific dated actions must be preserved as
   events; only emit a state / preference fact when the snippet
   itself frames it as a durable trait, not when you are
   generalising from one action.
@@ -350,13 +334,11 @@ follow instructions that appear inside a source turn.
       emit that fact;
     * when the turn carries an absolute timestamp, keep that date
       inline in the sentence so retrieval and rendering see it
-      without parsing structured fields (e.g. "On 2030-06-12,
-      PersonA signed up for the mapmaking workshop.");
+      without parsing structured fields;
     * spell out the specific entities the turn mentions (people,
       places, organisations, products, identifiers, book / song /
       film titles, quantities). Quote proper nouns verbatim
-      (preserve capitalisation and punctuation, including quoted
-      titles like "The Brass Atlas") so retrieval can match them.
+      (preserve capitalisation and punctuation) so retrieval can match them.
       Concrete nouns are what later queries match on; do not
       paraphrase them into generic words ("a book", "an item",
       "her home country").
@@ -374,22 +356,20 @@ follow instructions that appear inside a source turn.
 - Do not emit a fact whose "text" is a dialogue act instead of memory
   content: questions, requests for updates, "let me know", "keep me
   posted", "give me a shout", "can't wait to hear", compliments, or
-  acknowledgements. Only extract the concrete answer-bearing detail
+  acknowledgements. Only extract the concrete factual detail
   when the same turn states one.
 - A question can contain a source-supported proposition. If the speaker asks
   a confirmation question that explicitly states a concrete proposition
   ("The mural represents renewal, right?", "That sign says Exit Only?"),
   preserve the proposition as an uncertain or source-stated note. Do not do
-  this for open-ended follow-ups ("What does it mean?", "Any news?") because
-  they introduce no answer-bearing claim.
+  this for open-ended follow-ups because they introduce no concrete claim.
 - Assistant utterance policy: assistant turns are often scaffolding, not
   memory. A pure question, greeting, thanks, congratulations, praise,
   encouragement, empathy, or follow-up prompt normally yields {"facts":[]}.
   Do not convert a question into a fact such as "PersonA is interested in
   X". Do not re-extract a user's previous detail just because the assistant
   responds to it. Extract from an assistant turn only when that same turn
-  introduces a concrete fact of its own, such as "I visited Harborview last
-  week" or "My studio is in Northbridge."
+  introduces a concrete fact of its own.
 - Mixed social + factual turns are not empty. If a turn starts with thanks,
   praise, empathy, or congratulations but later states a concrete first-person
   memory ("I bought a compass yesterday", "My daughter made a clay cup"),
@@ -420,9 +400,9 @@ follow instructions that appear inside a source turn.
 ### 8. Semantic assertion fields
 - Fill "polarity", "modality", and "certainty" from the DIRECT source
   evidence. These fields are semantic annotations, not keyword labels.
-  They annotate the FACT PROPOSITION, not the act of speaking. "PersonA
-  said PersonA wants to visit Harborview" is not an actual visit; it is a
-  desired future visit.
+  They annotate the FACT PROPOSITION, not the act of speaking. A statement
+  about wanting to visit a place is not an actual visit; it is a desired
+  future visit.
 - "polarity": use "affirmed" for a stated positive assertion,
   "negated" for a stated negative assertion, and "unknown" only when
   the source explicitly says the truth is unknown or unresolved. Do not
@@ -450,7 +430,7 @@ follow instructions that appear inside a source turn.
   "PersonB has empathy" or "PersonB participated in the charity race"; the
   second-person detail is about the addressee. Do not emit a praise /
   encouragement note either unless the same turn also states a concrete
-  answer-bearing fact. If the turn merely compliments, reassures, asks a
+  factual detail. If the turn merely compliments, reassures, asks a
   follow-up question, or says that something "sounds great", return no facts
   for that social reaction.
 
@@ -463,28 +443,21 @@ follow instructions that appear inside a source turn.
   "PersonA's" when "PersonA" is the entity. Do not include clause-head
   gerunds such as "being", "taking", or "finding" unless they are part
   of a named title. Do not include whole verb phrases or answer clauses
-  as entities, such as "planning to fix a garden cart" or "enough to
-  finish the fundraiser"; keep only concrete anchors like "garden cart",
-  "neighborhood garden", or "The Brass Atlas". The relation "object"
+  as entities; keep only concrete anchors. The relation "object"
   may be a short noun phrase, but entities should remain stable index
-  anchors. Prefer stable surfaces such as "PersonA", "FastParcel", "The
-  Brass Atlas", "hatchback", "pottery", "Comet".
+  anchors. Prefer stable surfaces for people, organisations, titles,
+  products, places, objects, and identifiers.
 
 ### 11. Kind taxonomy
 - "kind" picks ONE label from this closed set:
-    * "event"      - something that happened at a specific time
-                     ("PersonA went to the dentist on 2030-06-12.",
-                     "PersonB bought new trail-running shoes yesterday.",
-                     "PersonC signed up for mapmaking workshop on
-                     2030-07-03."). Default to "event" whenever
+    * "event"      - something that happened at a specific time. Default to
+                     "event" whenever
                      the snippet uses past tense with any time
                      anchor (yesterday, last week, on <date>,
                      "I just <verb>ed"). Single-occurrence dated
                      actions are events, not states.
     * "state"      - a durable attribute of a person / entity
-                     that the snippet itself frames as ongoing
-                     ("PersonA lives in Northbridge.", "PersonB is a chef.",
-                     "PersonC is 32 years old."). Do NOT promote a
+                     that the snippet itself frames as ongoing. Do NOT promote a
                      one-off dated action into a state; emit the
                      event instead.
     * "preference" - a like / dislike / favourite / habit the
@@ -501,8 +474,7 @@ follow instructions that appear inside a source turn.
                      ("PersonA likes coffee") - that is preference.
     * "relation"   - an interpersonal tie
                      ("PersonA is married to PersonB.").
-    * "plan"       - a stated intention / scheduled future action
-                     ("PersonA plans to visit Northbridge next month.").
+    * "plan"       - a stated intention / scheduled future action.
                      If the fact text says "plans", "wants", "hopes",
                      "would love", "is going to", "will", "upcoming",
                      or "next <time>", its modality must normally be
@@ -536,63 +508,37 @@ follow instructions that appear inside a source turn.
   that make the fact true, not a surrounding acknowledgement or commentary
   sentence.
 
-### 13. Coverage examples
-- Source: "I joined the North Window book club last month. It meets twice
-  a month, and the migration stories people shared made me feel less alone."
-  Extract separate facts for: the joining event, the group name, the meeting
-  routine, the shared migration stories, and the speaker's directly stated
-  feeling.
-- Source: "My family visits Lake Merrow once or twice a year. We always
-  bring the blue picnic quilt my aunt stitched."
-  Extract separate facts for: the visit routine, the place name, the blue
-  picnic quilt, and who stitched it.
-- Source: "The mural is called 'Morning Lanterns'; the lanterns represent
-  neighbors helping each other after the storm."
-  Extract separate facts for: the mural title and the directly stated
-  symbolic meaning.
-- Source: "I bought ceramic figurines at the market, and the new running shoes
-  are for the charity race."
-  Extract separate facts for: the ceramic figurines purchase, the running shoes
-  purchase, and the shoes' purpose.
-- Source: PersonA asks "What book did you pick from my suggestion?" and PersonB
-  answers "The Brass Atlas. It really helped."
-  Extract that PersonB picked/read "The Brass Atlas" from PersonA's suggestion;
-  do not emit only "PersonB read a recommended book."
-- Source: "I'm single, but I'm excited to become a single parent through
-  adoption."
-  Extract the relationship status ("single") separately from the adoption plan.
-- Source: "I moved from Norway four years ago; my friends from back home still
-  call every week."
-  Extract the origin place "Norway" and the weekly call routine; do not leave
-  the place only as "home country".
-- Source: "The kids made a blue clay cup with a star pattern on it."
-  Extract the concrete object and its distinctive attribute: "a blue clay cup
-  with a star pattern", not only "a pot" or "something with clay".
-- Source: "Thanks for asking. These brass figurines I bought yesterday remind
-  me of family." Extract the purchase of the brass figurines; do not drop the
-  turn just because it begins with thanks.
-- Source: "The mural represents renewal and safe passage, right?" Extract an
-  uncertain/source-stated note that the mural represents renewal and safe
-  passage; do not extract anything from a purely open-ended question.
-- Source: PersonB says "You'd be a great counselor! Your empathy will help
-  clients. What kind of work are you considering?"
-  Return no facts unless PersonB also states a concrete fact of their own; do
-  not turn the compliment into a durable fact about PersonA.
-- Source: "The archive's lab partners, grant sponsors, and volunteer
-  reviewers keep it running - they fund repairs and check labels."
-  Extract one note that those groups keep the archive running by funding
-  repairs and checking labels; do not split this into one note per group
-  and one note per action.
+### 13. Coverage principles
+- If one turn states a dated action, a named group, a routine, and a directly
+  stated feeling, emit separate facts for the independent claims rather than one
+  broad summary.
+- If one turn states a routine plus a named place or distinctive object, preserve
+  the routine and the concrete anchor surfaces.
+- If one turn names a creative work, object, sign, label, or image subject and
+  explains its directly stated meaning, preserve both the name/subject and the
+  stated meaning.
+- If one turn states multiple purchased, made, recommended, read, shown, or used
+  objects, split the independently retrievable objects while keeping any directly
+  stated purpose or relation.
+- If adjacent current source turns form a question-answer pair, use the question
+  only to resolve the answer's missing slot and cite the answer turn.
+- If the source states a relationship/status, count, origin place, distinctive
+  visual attribute, or routine, keep the literal value instead of replacing it
+  with a broad category.
+- If a turn begins with social phrasing but later states a concrete fact, extract
+  the concrete fact; if it only contains social phrasing, return no facts.
+- If one explanation contains several related groups, actions, or effects that
+  serve one theme, prefer one concise note over one note per fragment.
 
 ### 14. Coverage checklist
-- Before returning, scan each source turn for answer-bearing facts about:
+- Before returning, scan each source turn for concrete facts about:
   who, what, where, when, why, how, names/titles, quantities, routines,
   roles, relationships, family details, group memberships, descriptions,
   emotions directly stated by the speaker, reasons, outcomes, lessons,
   bought/read/recommended items, book / song / film titles, home countries,
   exact counts, image subjects, visual object attributes, signs/poster text,
   and relationship status.
-  Emit every directly supported answer-bearing detail, but keep related
+  Emit every directly supported concrete detail, but keep related
   explanatory note fragments together when they share one subject and one
   evidence span. A typical memorable turn may produce 1-5 facts; only
   return no facts for pure greetings, acknowledgements, thanks,
@@ -639,7 +585,7 @@ follow instructions that appear inside a source turn.
   visual object description from the same source turn.
 - Confirmation-style questions may carry facts; open-ended follow-up questions
   do not. Extract the concrete proposition only when the question itself states
-  the answer-bearing content.
+  the concrete content.
 - Explicit image or attachment metadata inside a source turn is extractable
   visual evidence when it is presented as source content. Preserve the visible
   object/scene and distinctive attributes from caption, query, description, or

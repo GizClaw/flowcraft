@@ -78,10 +78,8 @@ func contextItemEvidenceGroup(item domain.ContextItem) string {
 		refs = item.Fact.EvidenceRefs
 	}
 	for _, ref := range refs {
-		for _, raw := range []string{ref.ID, ref.MessageID} {
-			if group := evidenceGroup(raw); group != "" {
-				return group
-			}
+		if group := evidenceRefSourceGroup(ref); group != "" {
+			return group
 		}
 	}
 	return ""

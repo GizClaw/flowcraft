@@ -10,7 +10,6 @@ import (
 	evidencestore "github.com/GizClaw/flowcraft/memory/recall/internal/store/evidence"
 	"github.com/GizClaw/flowcraft/memory/recall/store/internal/sqlstmt"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
-	"github.com/jackc/pgx/v5"
 )
 
 type evidenceStore struct {
@@ -56,18 +55,34 @@ func (s *evidenceStore) Append(ctx context.Context, scope domain.Scope, factID s
 
 func (s *evidenceStore) Get(ctx context.Context, scope domain.Scope, evidenceID string) (domain.EvidenceRef, error) {
 	runtimeID, userID := sqlstmt.ScopeParts(scope)
-	var payload string
-	err := s.b.pool.QueryRow(ctx, `
+	rows, err := s.b.pool.Query(ctx, `
 		SELECT payload_json FROM recall_evidence_refs
 		WHERE runtime_id = $1 AND user_id = $2 AND evidence_id = $3
 		ORDER BY fact_id ASC
-	`, runtimeID, userID, evidenceID).Scan(&payload)
+		LIMIT 2
+	`, runtimeID, userID, evidenceID)
 	if err != nil {
-		if err == pgx.ErrNoRows {
-			return domain.EvidenceRef{}, evidencestore.ErrNotFound
-		}
 		return domain.EvidenceRef{}, err
 	}
+	defer rows.Close()
+	var payloads []string
+	for rows.Next() {
+		var payload string
+		if err := rows.Scan(&payload); err != nil {
+			return domain.EvidenceRef{}, err
+		}
+		payloads = append(payloads, payload)
+	}
+	if err := rows.Err(); err != nil {
+		return domain.EvidenceRef{}, err
+	}
+	if len(payloads) == 0 {
+		return domain.EvidenceRef{}, evidencestore.ErrNotFound
+	}
+	if len(payloads) > 1 {
+		return domain.EvidenceRef{}, evidencestore.ErrAmbiguous
+	}
+	payload := payloads[0]
 	return sqlstmt.DecodeJSON[domain.EvidenceRef](payload)
 }
 

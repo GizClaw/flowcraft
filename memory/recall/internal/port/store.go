@@ -122,7 +122,9 @@ type EvidenceStore interface {
 	// must be idempotent on (scope, factID, refs[i].ID).
 	Append(ctx context.Context, scope domain.Scope, factID string, refs []domain.EvidenceRef) error
 
-	// Get returns one EvidenceRef by id. Missing → ErrNotFound.
+	// Get returns one EvidenceRef by id only when the id is unique in scope.
+	// Shared turn/evidence ids across facts are ambiguous; use ListByFact for
+	// fact-scoped lookup. Missing → ErrNotFound.
 	Get(ctx context.Context, scope domain.Scope, evidenceID string) (domain.EvidenceRef, error)
 
 	// ListByFact returns refs in append order.

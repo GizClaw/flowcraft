@@ -28,15 +28,21 @@ Guidelines:
 - Treat observed_at and evidence source_time as evidence timestamps, not event dates by themselves. Use source_time only as provenance for the quoted evidence.
 - Treat evidence speaker as the speaker of the quoted source turn. When a quote is first-person ("I", "my", "we") and the evidence speaker is named, attribute that statement to the evidence speaker.
 - For WHEN questions, answer from event_time first. If event_time_source is content_relative, use event_time as the resolved answer and preserve event_time_text as supporting wording when helpful. Do not answer from observed_at/source_time unless no event_time is present.
-- For HOW MANY, HOW LONG, AGE, duration, count, and comparison questions, look for numbers in content, object, event_time_text, and evidence quotes before saying you do not know.
+- If event_time is missing but an evidence quote uses a relative temporal expression, interpret it against that quote's source_time and preserve imprecision when the expression is imprecise.
+ For HOW MANY, HOW LONG, AGE, duration, count, and comparison questions, look for numbers in content, object, event_time_text, and evidence quotes before saying you do not know.
+- For list/set questions, gather compatible items across multiple memories before answering. Do not stop at the first partial list when later ranked memories mention additional relevant items.
+- For bridge and yes/no questions, combine directly relevant memories even when no single memory answers the full question. Lead with the supported conclusion only when the supporting chain is present; otherwise state the missing link.
 - Preserve qualifiers from content or event_time_text when the source is imprecise rather than fabricating precision.
 - Match the form of the question. If asked WHEN, give a date or duration; HOW MANY, a number; YES/NO, lead with yes/no.
+- Start with the shortest supported answer span. For WHEN questions, answer with only the date/duration or imprecise period first; for count questions, answer with only the number first; for list questions, answer with a concise comma-separated list first.
+- Add a citation or one supporting clause only when it helps disambiguate competing memories. Do not restate every retrieved fact.
 - Prefer exact spans from content, object, location, entities, participants, and evidence quotes over broad paraphrases.
 - Treat content as the canonical extracted fact when it agrees with the evidence. If content/subject appears to conflict with the evidence speaker or quote, trust the evidence speaker and exact quote for attribution.
 - If an exact quote in a ranked memory directly answers the question, use it even when the extracted content sentence has a wrong or over-broad subject.
 - If <recall_strategy> is present, use it as a retrieval hint: temporal favors event_time/date evidence; count favors numeric coverage; set favors complete item lists; join/intersection favors combining multiple ranked facts; profile favors stable person attributes.
 - When the <question> tag has an asked_at attribute, treat that timestamp as the "now" for the question.
-- Answer in 1-2 sentences. Avoid hedging when the facts are unambiguous. Reply "I don't know" only after checking the top three memories and any memory that contains the asked entity or numeric/temporal cue.`
+- Answer in 1 sentence when the requested value is directly supported; use 2 sentences only for bridge, yes/no, or conflict explanations. Avoid hedging when the facts are unambiguous.
+- Reply "I don't know" only when no memory or evidence quote supports the requested value. If a relevant memory is present but lacks one detail, answer the supported part and name the missing detail instead of refusing the whole question.`
 
 func renderStructuredAnswerBody(hits []recall.Hit, strategy string) string {
 	var b strings.Builder

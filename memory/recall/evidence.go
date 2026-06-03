@@ -12,6 +12,9 @@ import (
 // canonical facts via ProjectionRebuilder.RebuildAll.
 type EvidenceStore interface {
 	Append(ctx context.Context, scope Scope, factID string, refs []EvidenceRef) error
+	// Get returns a ref by evidence id only when that id is unique in scope.
+	// Shared turn/evidence ids across facts are ambiguous; use ListByFact for
+	// fact-scoped lookup.
 	Get(ctx context.Context, scope Scope, evidenceID string) (EvidenceRef, error)
 	ListByFact(ctx context.Context, scope Scope, factID string) ([]EvidenceRef, error)
 	ListFactIDs(ctx context.Context, scope Scope) ([]string, error)

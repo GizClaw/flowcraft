@@ -70,21 +70,75 @@ type RecallStageSnapshot struct {
 	Stage             string                    `json:"stage"`
 	Source            string                    `json:"source,omitempty"`
 	Status            string                    `json:"status,omitempty"`
+	Query             *RecallQueryIntent        `json:"query_intent,omitempty"`
+	ActivatedLenses   []RecallActivatedLens     `json:"activated_lenses,omitempty"`
+	TaskIntents       []string                  `json:"task_intents,omitempty"`
+	TotalBudget       int                       `json:"total_budget,omitempty"`
+	Suggested         int                       `json:"suggested,omitempty"`
+	SuggestedByTask   map[string]int            `json:"suggested_by_task,omitempty"`
+	SuggestedFactIDs  []string                  `json:"suggested_fact_ids,omitempty"`
 	Added             int                       `json:"added,omitempty"`
 	AddedFactIDs      []string                  `json:"added_fact_ids,omitempty"`
 	ScannedLinks      int                       `json:"scanned_links,omitempty"`
 	AddedFacts        int                       `json:"added_facts,omitempty"`
 	AddedEvidenceRefs int                       `json:"added_evidence_refs,omitempty"`
+	CoverageBundles   []RecallCoverageBundle    `json:"coverage_bundles,omitempty"`
 	Candidates        []RecallCandidateSnapshot `json:"candidates,omitempty"`
+	PackTrace         []RecallCandidateSnapshot `json:"pack_trace,omitempty"`
+}
+
+type RecallQueryIntent struct {
+	QueryLen                      int                          `json:"query_len,omitempty"`
+	Entities                      []string                     `json:"entities,omitempty"`
+	Kinds                         []string                     `json:"kinds,omitempty"`
+	Subject                       string                       `json:"subject,omitempty"`
+	Predicate                     string                       `json:"predicate,omitempty"`
+	Object                        string                       `json:"object,omitempty"`
+	HasTimeRange                  bool                         `json:"has_time_range,omitempty"`
+	HasExplicitDate               bool                         `json:"has_explicit_date,omitempty"`
+	HasRelativeTemporalExpression bool                         `json:"has_relative_temporal_expression,omitempty"`
+	TokenCount                    int                          `json:"token_count,omitempty"`
+	NumericCount                  int                          `json:"numeric_count,omitempty"`
+	QuotedCount                   int                          `json:"quoted_count,omitempty"`
+	ProperCount                   int                          `json:"proper_count,omitempty"`
+	Strategy                      string                       `json:"strategy,omitempty"`
+	Confidence                    float64                      `json:"confidence,omitempty"`
+	Alternates                    []RecallIntentRouteCandidate `json:"alternates,omitempty"`
+	Signals                       []string                     `json:"signals,omitempty"`
+	FallbackReason                string                       `json:"fallback_reason,omitempty"`
+}
+
+type RecallIntentRouteCandidate struct {
+	Strategy   string  `json:"strategy,omitempty"`
+	Confidence float64 `json:"confidence,omitempty"`
+}
+
+type RecallActivatedLens struct {
+	Lens        string  `json:"lens,omitempty"`
+	Weight      float64 `json:"weight,omitempty"`
+	Budget      int     `json:"budget,omitempty"`
+	ActivatedBy string  `json:"activated_by,omitempty"`
+}
+
+type RecallCoverageBundle struct {
+	SeedFactID      string   `json:"seed_fact_id,omitempty"`
+	RescuedFactIDs  []string `json:"rescued_fact_ids,omitempty"`
+	ReplacedFactIDs []string `json:"replaced_fact_ids,omitempty"`
+	Reason          string   `json:"reason,omitempty"`
 }
 
 type RecallCandidateSnapshot struct {
-	FactID      string   `json:"fact_id,omitempty"`
-	Source      string   `json:"source,omitempty"`
-	Rank        int      `json:"rank,omitempty"`
-	Score       float64  `json:"score,omitempty"`
-	EvidenceIDs []string `json:"evidence_ids,omitempty"`
-	Sources     []string `json:"sources,omitempty"`
+	FactID           string   `json:"fact_id,omitempty"`
+	Source           string   `json:"source,omitempty"`
+	Rank             int      `json:"rank,omitempty"`
+	Score            float64  `json:"score,omitempty"`
+	EvidenceIDs      []string `json:"evidence_ids,omitempty"`
+	Sources          []string `json:"sources,omitempty"`
+	RankOutputRank   int      `json:"rank_output_rank,omitempty"`
+	ContextPackRank  int      `json:"context_pack_rank,omitempty"`
+	PrimarySource    string   `json:"primary_source,omitempty"`
+	ProjectionRoutes []string `json:"projection_routes,omitempty"`
+	DroppedReason    string   `json:"dropped_reason,omitempty"`
 }
 
 // Runner abstracts a Memory implementation under evaluation.
@@ -172,7 +226,20 @@ func RenderRawTurnContent(t RawTurn) string {
 		}
 		b.WriteString(body)
 	}
-	for _, image := range t.Images {
+	appendVisualEvidenceBlock(&b, t.Images)
+	return strings.TrimSpace(b.String())
+}
+
+// RenderRawImageMetadata renders LoCoMo image fields into plain text for
+// adapters that must pass visual metadata through text-only extractor APIs.
+func RenderRawImageMetadata(images []RawImage) string {
+	var b strings.Builder
+	appendVisualEvidenceBlock(&b, images)
+	return strings.TrimSpace(b.String())
+}
+
+func appendVisualEvidenceBlock(b *strings.Builder, images []RawImage) {
+	for _, image := range images {
 		url := strings.TrimSpace(image.URL)
 		query := strings.TrimSpace(image.Query)
 		caption := strings.TrimSpace(image.Caption)
@@ -182,7 +249,7 @@ func RenderRawTurnContent(t RawTurn) string {
 		if b.Len() > 0 {
 			b.WriteString("\n")
 		}
-		b.WriteString("ATTACHED_IMAGE_METADATA (visual evidence for this turn; not speaker-authored prose):")
+		b.WriteString("speaker_shared_image (image shared by the speaker in this turn; metadata is not quoted speech):")
 		if query != "" {
 			b.WriteString("\n- query: ")
 			b.WriteString(query)
@@ -196,7 +263,6 @@ func RenderRawTurnContent(t RawTurn) string {
 			b.WriteString(url)
 		}
 	}
-	return strings.TrimSpace(b.String())
 }
 
 // RawIngestSaver is an optional Runner extension that ingests verbatim turns

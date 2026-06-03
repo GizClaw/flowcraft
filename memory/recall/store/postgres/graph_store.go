@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"sort"
 
 	"github.com/GizClaw/flowcraft/memory/recall/internal/domain"
@@ -163,15 +164,69 @@ func (s *linkStore) Append(ctx context.Context, links []domain.FactLink) error {
 			return err
 		}
 		runtimeID, userID := sqlstmt.ScopeParts(link.Scope)
-		if _, err := tx.Exec(ctx, `
+		tag, err := tx.Exec(ctx, `
 			INSERT INTO recall_links(runtime_id, user_id, id, type, from_kind, from_id, to_kind, to_id, merge_key, created_at_ns, payload_json)
 			VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
 			ON CONFLICT DO NOTHING
-		`, runtimeID, userID, link.ID, string(link.Type), string(link.From.Kind), link.From.ID, string(link.To.Kind), link.To.ID, link.MergeKey, link.CreatedAt.UnixNano(), payload); err != nil {
+		`, runtimeID, userID, link.ID, string(link.Type), string(link.From.Kind), link.From.ID, string(link.To.Kind), link.To.ID, link.MergeKey, link.CreatedAt.UnixNano(), payload)
+		if err != nil {
 			return err
+		}
+		if tag.RowsAffected() > 0 {
+			continue
+		}
+		if link.MergeKey != "" {
+			existingByMergeKey, err := s.findByMergeKeyTx(ctx, tx, runtimeID, userID, link.MergeKey)
+			if err != nil {
+				return err
+			}
+			if existingByMergeKey != nil {
+				continue
+			}
+		}
+		existing, err := s.getByIDTx(ctx, tx, runtimeID, userID, link.ID)
+		if err != nil {
+			return err
+		}
+		if !reflect.DeepEqual(existing.Clone(), link.Clone()) {
+			return errdefs.Conflictf("recall postgres link: duplicate link id %q in scope", link.ID)
 		}
 	}
 	return tx.Commit(ctx)
+}
+
+func (s *linkStore) getByIDTx(ctx context.Context, tx pgx.Tx, runtimeID, userID, linkID string) (domain.FactLink, error) {
+	var payload string
+	err := tx.QueryRow(ctx, `
+		SELECT payload_json FROM recall_links
+		WHERE runtime_id = $1 AND user_id = $2 AND id = $3
+	`, runtimeID, userID, linkID).Scan(&payload)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return domain.FactLink{}, errdefs.Conflictf("recall postgres link: conflict did not resolve to existing link %q", linkID)
+		}
+		return domain.FactLink{}, err
+	}
+	return sqlstmt.DecodeJSON[domain.FactLink](payload)
+}
+
+func (s *linkStore) findByMergeKeyTx(ctx context.Context, tx pgx.Tx, runtimeID, userID, mergeKey string) (*domain.FactLink, error) {
+	var payload string
+	err := tx.QueryRow(ctx, `
+		SELECT payload_json FROM recall_links
+		WHERE runtime_id = $1 AND user_id = $2 AND merge_key = $3
+	`, runtimeID, userID, mergeKey).Scan(&payload)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, nil
+		}
+		return nil, err
+	}
+	link, err := sqlstmt.DecodeJSON[domain.FactLink](payload)
+	if err != nil {
+		return nil, err
+	}
+	return &link, nil
 }
 
 func (s *linkStore) Get(ctx context.Context, scope domain.Scope, linkID string) (domain.FactLink, error) {

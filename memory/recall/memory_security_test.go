@@ -141,6 +141,37 @@ func TestForgetAll_HardPurgesSideEffectOutboxWithoutAsyncQueue(t *testing.T) {
 	}
 }
 
+func TestForgetHard_ProjectionCleanupFailureKeepsCanonicalFact(t *testing.T) {
+	store := temporalstore.NewMemoryStore()
+	mem, err := New(WithTemporalStore(store))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	scope := Scope{RuntimeID: "rt", UserID: "u1"}
+	if _, err := mem.Save(ctx, scope, SaveRequest{Facts: []TemporalFact{{
+		ID:      "f1",
+		Kind:    domain.KindState,
+		Content: "Alice likes tea.",
+		EvidenceRefs: []EvidenceRef{{
+			ID:        "ev-1",
+			MessageID: "msg-1",
+			Text:      "Alice likes tea.",
+		}},
+	}}}); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	m := mem.(*memory)
+	m.observationProjection = failingObservationProjection{err: errors.New("projection down")}
+
+	if err := mem.Forget(ctx, scope, "f1", ForgetHard); err == nil {
+		t.Fatal("Forget must return projection cleanup error")
+	}
+	if _, err := store.Get(ctx, scope, "f1"); err != nil {
+		t.Fatalf("canonical fact must remain when derived cleanup fails before delete: %v", err)
+	}
+}
+
 func TestSave_AbortsWhenForgetAllHardDuringIngest(t *testing.T) {
 	store := temporalstore.NewMemoryStore()
 	ingestStarted := make(chan struct{})
@@ -323,6 +354,28 @@ func (v *ingestTestView) Get(_ context.Context, _ domain.Scope, factID string) (
 type barrierIngestor struct {
 	onStart func()
 	wait    func()
+}
+
+type failingObservationProjection struct {
+	err error
+}
+
+func (p failingObservationProjection) Name() string { return "observation" }
+
+func (p failingObservationProjection) ProjectObservations(context.Context, []domain.Observation) error {
+	return nil
+}
+
+func (p failingObservationProjection) RebuildObservations(context.Context, domain.Scope, []domain.Observation) error {
+	return nil
+}
+
+func (p failingObservationProjection) ForgetObservations(context.Context, domain.Scope, []string) error {
+	return p.err
+}
+
+func (p failingObservationProjection) ClearObservationScope(context.Context, domain.Scope) error {
+	return p.err
 }
 
 func (b *barrierIngestor) Compile(ctx context.Context, in port.IngestInput) (port.IngestResult, error) {

@@ -49,11 +49,13 @@ func (s *observationStoreRecorder) Close() error { return nil }
 type observationProjectionRecorder struct {
 	projectErr error
 	forgotten  []string
+	projected  []domain.Observation
 }
 
 func (p *observationProjectionRecorder) Name() string { return "observation" }
 
-func (p *observationProjectionRecorder) ProjectObservations(context.Context, []domain.Observation) error {
+func (p *observationProjectionRecorder) ProjectObservations(_ context.Context, observations []domain.Observation) error {
+	p.projected = append(p.projected, observations...)
 	return p.projectErr
 }
 

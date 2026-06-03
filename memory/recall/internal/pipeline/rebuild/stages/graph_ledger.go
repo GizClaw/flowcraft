@@ -62,6 +62,7 @@ func (s *GraphLedger) Run(ctx context.Context, state *rebuild.RebuildState) (dia
 			fmt.Errorf("recall.RebuildAll: graph links clear: %w", err)
 	}
 	if _, err := s.observations.DeleteByScope(ctx, state.Scope); err != nil {
+		err = s.restorePriorLedger(ctx, state.Scope, priorObservations, priorLinks, err)
 		return diagnostic.RebuildGraphDetail{Latency: time.Since(started)},
 			fmt.Errorf("recall.RebuildAll: graph observations clear: %w", err)
 	}

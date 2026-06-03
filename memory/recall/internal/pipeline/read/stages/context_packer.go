@@ -13,7 +13,6 @@ import (
 
 const (
 	contextPackDuplicateJaccardCutoff   = 0.86
-	contextPackSiblingFactJaccardFloor  = 0.10
 	contextPackSiblingFactJaccardCutoff = 0.62
 	contextPackSameEvidenceSiblingCap   = 2
 	contextPackBaseScoreWeight          = 0.85
@@ -28,6 +27,8 @@ const (
 	contextPackObservationRescueCap  = 4
 
 	contextPackRankOutputAnchorDivisor = 3
+	contextPackClusterRescueMax        = 4
+	contextPackClusterRescuePerGroup   = 2
 )
 
 type contextPackInput struct {
@@ -75,8 +76,80 @@ func packRecallContextWithIntentTrace(intent domain.QueryIntent, ordered []domai
 	}
 	anchors := contextPackRankOutputAnchors(candidates, len(ordered), input.cap)
 	anchors = contextPackFilterAnchorsByRoute(intent, anchors)
+	anchors = contextPackRescueEvidenceClusters(candidates, anchors, input.cap)
 	selectedCandidates = contextPackFillWithMMR(candidates, anchors, input.cap)
 	return contextPackHits(selectedCandidates), contextPackTrace(traceCandidates, selectedCandidates, len(ordered), dropReasons)
+}
+
+func contextPackRescueEvidenceClusters(candidates, selected []contextPackCandidate, cap int) []contextPackCandidate {
+	if cap <= 0 || len(selected) >= cap || len(candidates) == 0 || len(selected) == 0 {
+		return selected[:min(len(selected), cap)]
+	}
+	groups := map[string]int{}
+	for _, cand := range selected {
+		if cand.evidenceGroup != "" {
+			groups[cand.evidenceGroup]++
+		}
+	}
+	if len(groups) == 0 {
+		return selected
+	}
+	out := append([]contextPackCandidate(nil), selected...)
+	rescued := 0
+	rescueCap := min(contextPackClusterRescueMax, cap-len(out))
+	for _, cand := range candidates {
+		if rescued >= rescueCap || len(out) >= cap {
+			break
+		}
+		if cand.evidenceGroup == "" || groups[cand.evidenceGroup] == 0 {
+			continue
+		}
+		if groups[cand.evidenceGroup] > contextPackClusterRescuePerGroup {
+			continue
+		}
+		if contextPackCandidateDuplicate(cand, out) {
+			continue
+		}
+		if !contextPackClusterSupported(cand, out) {
+			continue
+		}
+		out = append(out, cand)
+		groups[cand.evidenceGroup]++
+		rescued++
+	}
+	return out
+}
+
+func contextPackClusterSupported(candidate contextPackCandidate, selected []contextPackCandidate) bool {
+	for _, existing := range selected {
+		if candidate.evidenceGroup == "" || candidate.evidenceGroup != existing.evidenceGroup {
+			continue
+		}
+		if sharedContextPackSubjectOrEntity(candidate.hit.Fact, existing.hit.Fact) {
+			return true
+		}
+	}
+	return false
+}
+
+func sharedContextPackSubjectOrEntity(a, b domain.TemporalFact) bool {
+	if a.Subject != "" && b.Subject != "" && strings.EqualFold(a.Subject, b.Subject) {
+		return true
+	}
+	seen := map[string]struct{}{}
+	for _, entity := range a.Entities {
+		entity = strings.ToLower(strings.TrimSpace(entity))
+		if entity != "" {
+			seen[entity] = struct{}{}
+		}
+	}
+	for _, entity := range b.Entities {
+		entity = strings.ToLower(strings.TrimSpace(entity))
+		if _, ok := seen[entity]; ok && entity != "" {
+			return true
+		}
+	}
+	return false
 }
 
 func contextPackFillWithMMR(candidates, selected []contextPackCandidate, cap int) []contextPackCandidate {
@@ -539,10 +612,10 @@ func contextPackComplementarySameEvidence(candidate, existing contextPackCandida
 	if candidate.hit.Fact.ID == "" || existing.hit.Fact.ID == "" {
 		return false
 	}
-	similarity := tokenSetJaccard(candidate.factTokens, existing.factTokens)
-	if similarity <= contextPackSiblingFactJaccardFloor {
+	if !sharedContextPackSubjectOrEntity(candidate.hit.Fact, existing.hit.Fact) {
 		return false
 	}
+	similarity := tokenSetJaccard(candidate.factTokens, existing.factTokens)
 	if sameStructuredMemory(candidate.hit.Fact, existing.hit.Fact) &&
 		similarity >= contextPackSiblingFactJaccardCutoff {
 		return false
@@ -763,35 +836,21 @@ func primaryEvidenceGroup(hit domain.Hit) string {
 		evidence = hit.Fact.EvidenceRefs
 	}
 	for _, ref := range evidence {
-		for _, raw := range []string{ref.ID, ref.MessageID} {
-			if group := evidenceGroup(raw); group != "" {
-				return group
-			}
+		if group := evidenceRefSourceGroup(ref); group != "" {
+			return group
 		}
 	}
 	return ""
 }
 
-func evidenceGroup(raw string) string {
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return ""
+func evidenceRefSourceGroup(ref domain.EvidenceRef) string {
+	if observationID := strings.TrimSpace(ref.ObservationID); observationID != "" {
+		return "obs:" + observationID
 	}
-	parts := strings.FieldsFunc(raw, func(r rune) bool {
-		return r == ';' || r == ',' || r == ' '
-	})
-	if len(parts) == 0 {
-		return ""
+	if messageID := strings.TrimSpace(ref.MessageID); messageID != "" {
+		return "msg:" + messageID
 	}
-	raw = parts[0]
-	idx := strings.LastIndex(raw, ":")
-	if idx <= 0 || idx == len(raw)-1 {
-		return ""
-	}
-	if _, err := strconv.Atoi(raw[idx+1:]); err != nil {
-		return ""
-	}
-	return raw[:idx]
+	return ""
 }
 
 func sameStructuredMemory(a, b domain.TemporalFact) bool {

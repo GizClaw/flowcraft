@@ -54,7 +54,7 @@ func TestCandidateExpansionSuggestsSetCompletionSiblings(t *testing.T) {
 	}
 }
 
-func TestCandidateExpansionSuggestsBridgeSameEvidenceGroup(t *testing.T) {
+func TestCandidateExpansionSuggestsBridgeSameMessageGroup(t *testing.T) {
 	stage := NewCandidateExpansion(nil)
 	state := &read.ReadState{
 		Plan: &domain.QueryPlan{
@@ -65,9 +65,9 @@ func TestCandidateExpansionSuggestsBridgeSameEvidenceGroup(t *testing.T) {
 			}},
 		},
 		MergedItems: []domain.ContextItem{
-			expansionItem("wore", 0.90, "Alice", "wore", "necklace", "D1:1", "Alice wore the necklace to dinner."),
-			expansionItem("bought", 0.10, "Alice", "bought", "necklace", "D1:2", "Alice bought the necklace in Paris."),
-			expansionItem("dog", 0.80, "Alice", "walked", "dog", "D2:1", "Alice walked her dog."),
+			expansionItemWithMessage("wore", 0.90, "Alice", "wore", "necklace", "turn-1:span-a", "turn-1", "Alice wore the necklace to dinner."),
+			expansionItemWithMessage("bought", 0.10, "Alice", "bought", "necklace", "turn-1:span-b", "turn-1", "Alice bought the necklace in Paris."),
+			expansionItemWithMessage("dog", 0.80, "Alice", "walked", "dog", "turn-2:span-a", "turn-2", "Alice walked her dog."),
 		},
 	}
 
@@ -88,6 +88,10 @@ func TestCandidateExpansionSuggestsBridgeSameEvidenceGroup(t *testing.T) {
 }
 
 func expansionItem(id string, score float64, subject, predicate, object, evidenceID, evidenceText string) domain.ContextItem {
+	return expansionItemWithMessage(id, score, subject, predicate, object, evidenceID, "", evidenceText)
+}
+
+func expansionItemWithMessage(id string, score float64, subject, predicate, object, evidenceID, messageID, evidenceText string) domain.ContextItem {
 	return domain.ContextItem{
 		Candidate: domain.Candidate{Kind: domain.GraphNodeAssertion, ID: id, Source: "retrieval", Score: score, EvidenceIDs: []string{evidenceID}},
 		Fact: domain.TemporalFact{
@@ -98,6 +102,6 @@ func expansionItem(id string, score float64, subject, predicate, object, evidenc
 			Predicate: predicate,
 			Object:    object,
 		},
-		Evidence: []domain.EvidenceRef{{ID: evidenceID, Text: evidenceText}},
+		Evidence: []domain.EvidenceRef{{ID: evidenceID, MessageID: messageID, Text: evidenceText}},
 	}
 }

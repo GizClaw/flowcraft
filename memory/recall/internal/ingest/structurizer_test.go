@@ -472,6 +472,20 @@ func TestDefaultStructurizer_FoldsKnownEntityAliases(t *testing.T) {
 	}
 }
 
+func TestDefaultStructurizer_KnownEntityAliasRequiresTokenBoundary(t *testing.T) {
+	f := domain.TemporalFact{Content: "The cart arrived after dinner."}
+	out := DefaultStructurizer{}.Structurize(f, port.IngestInput{
+		KnownEntities: []port.EntitySnapshot{
+			{Canonical: "art collective", Aliases: []string{"art"}},
+		},
+	})
+	for _, e := range out.Entities {
+		if e == "art collective" {
+			t.Fatalf("known alias should not match inside unrelated token, got %v", out.Entities)
+		}
+	}
+}
+
 func TestDefaultStructurizer_GrepsAbsoluteDateFromContent(t *testing.T) {
 	f := domain.TemporalFact{Content: "On 2024-05-07, Avery signed up for the gym."}
 	out := DefaultStructurizer{}.Structurize(f, port.IngestInput{})
