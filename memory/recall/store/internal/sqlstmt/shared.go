@@ -23,6 +23,7 @@ const (
 	SideEffectLeaseTTL    = 30 * time.Second
 	AsyncSemanticLeaseTTL = 5 * time.Minute
 	AsyncRetryBackoff     = 30 * time.Second
+	AsyncMaxAttempts      = 5
 )
 
 var Schema = []string{
@@ -45,6 +46,14 @@ var Schema = []string{
 	`CREATE INDEX IF NOT EXISTS recall_facts_merge_idx ON recall_facts(runtime_id, user_id, merge_key, observed_at_ns, id)`,
 	`CREATE INDEX IF NOT EXISTS recall_facts_corrected_idx ON recall_facts(runtime_id, user_id, corrected_by, observed_at_ns, id)`,
 	`CREATE INDEX IF NOT EXISTS recall_facts_origin_idx ON recall_facts(runtime_id, user_id, origin_request_id, observed_at_ns, id)`,
+	`CREATE TABLE IF NOT EXISTS recall_scope_generations (
+		runtime_id text NOT NULL,
+		user_id text NOT NULL,
+		generation bigint NOT NULL DEFAULT 0,
+		deleting integer NOT NULL DEFAULT 0,
+		updated_at_ns bigint NOT NULL DEFAULT 0,
+		PRIMARY KEY (runtime_id, user_id)
+	)`,
 	`CREATE TABLE IF NOT EXISTS recall_fact_entities (
 		runtime_id text NOT NULL,
 		user_id text NOT NULL,

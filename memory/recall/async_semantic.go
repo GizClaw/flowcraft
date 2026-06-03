@@ -2,7 +2,9 @@ package recall
 
 import (
 	"context"
+	"crypto/rand"
 	"fmt"
+	"math/big"
 	"time"
 
 	"github.com/GizClaw/flowcraft/memory/recall/internal/domain"
@@ -195,7 +197,11 @@ func (m *memory) processOneAsyncSemanticJob(ctx context.Context, job port.AsyncS
 	}
 	state.EnsureTrace()
 
-	startGen := m.peekScopeGen(job.Scope)
+	startGen, _, err := m.scopeGeneration(ctx, job.Scope)
+	if err != nil {
+		m.ackAsyncJobFail(ctx, job, start, fmt.Errorf("recall.ProcessAsyncSemantic: scope generation: %w", err))
+		return asyncJobFailed
+	}
 	// Ingest (possibly LLM-backed) runs outside the scope write lock,
 	// matching the sync Save path and avoiding blocking other writers.
 	if err := m.asyncSemanticWorkerPreRunner.Run(ctx, state); err != nil {
@@ -204,7 +210,7 @@ func (m *memory) processOneAsyncSemanticJob(ctx context.Context, job port.AsyncS
 	}
 
 	m.holdWriteTelemetry()
-	unlock, err := m.enterScopeWrite(job.Scope, startGen)
+	unlock, err := m.enterScopeWrite(ctx, job.Scope, startGen)
 	if err != nil {
 		m.flushWriteTelemetry()
 		m.ackAsyncJobFail(ctx, job, start, err)
@@ -338,7 +344,7 @@ func (m *memory) recoverCompletedSemanticFacts(ctx context.Context, job port.Asy
 }
 
 func (m *memory) completeAsyncJob(ctx context.Context, job port.AsyncSemanticJob, result port.AsyncSemanticResult) error {
-	return m.asyncSemanticQueue.Complete(ctx, job.RequestID, job.LeaseToken, result)
+	return m.asyncSemanticQueue.Complete(pipeline.DetachCancel(ctx), job.RequestID, job.LeaseToken, result)
 }
 
 func (m *memory) failAsyncJob(ctx context.Context, job port.AsyncSemanticJob, err error) error {
@@ -347,10 +353,13 @@ func (m *memory) failAsyncJob(ctx context.Context, job port.AsyncSemanticJob, er
 		class = diagnostic.ErrClassPermanent
 	}
 	var retryAt time.Time
-	if class == diagnostic.ErrClassTransient {
-		retryAt = time.Now().Add(defaultAsyncSemanticRetryBackoff)
+	if class == diagnostic.ErrClassTransient && job.Attempt >= maxAsyncSemanticAttempts {
+		class = diagnostic.ErrClassPermanent
 	}
-	return m.asyncSemanticQueue.Fail(ctx, job.RequestID, job.LeaseToken, port.AsyncSemanticFailure{
+	if class == diagnostic.ErrClassTransient {
+		retryAt = time.Now().Add(asyncSemanticRetryBackoff(job.Attempt))
+	}
+	return m.asyncSemanticQueue.Fail(pipeline.DetachCancel(ctx), job.RequestID, job.LeaseToken, port.AsyncSemanticFailure{
 		ErrClass: class,
 		Err:      err.Error(),
 		RetryAt:  retryAt,
@@ -368,7 +377,31 @@ func (m *memory) ackAsyncJobFail(ctx context.Context, job port.AsyncSemanticJob,
 	}, diagnostic.StatusFailed, errMsg, start)
 }
 
-const defaultAsyncSemanticRetryBackoff = 30 * time.Second
+const (
+	maxAsyncSemanticAttempts = 5
+)
+
+func asyncSemanticRetryBackoff(attempt int) time.Duration {
+	if attempt <= 0 {
+		attempt = 1
+	}
+	if attempt > 6 {
+		attempt = 6
+	}
+	base := time.Duration(1<<uint(attempt-1)) * time.Second
+	return base + retryJitter(base/2)
+}
+
+func retryJitter(max time.Duration) time.Duration {
+	if max <= 0 {
+		return 0
+	}
+	n, err := rand.Int(rand.Reader, big.NewInt(int64(max)))
+	if err != nil {
+		return 0
+	}
+	return time.Duration(n.Int64())
+}
 
 type asyncJobCancelResult struct {
 	Cancelled int

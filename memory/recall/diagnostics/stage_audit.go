@@ -10,24 +10,28 @@ type RecallStageAudit struct {
 }
 
 type RecallStageSnapshot struct {
-	Stage             string                    `json:"stage"`
-	Source            string                    `json:"source,omitempty"`
-	Status            string                    `json:"status,omitempty"`
-	Query             *RecallQueryIntent        `json:"query_intent,omitempty"`
-	ActivatedLenses   []RecallActivatedLens     `json:"activated_lenses,omitempty"`
-	TaskIntents       []string                  `json:"task_intents,omitempty"`
-	TotalBudget       int                       `json:"total_budget,omitempty"`
-	Suggested         int                       `json:"suggested,omitempty"`
-	SuggestedByTask   map[string]int            `json:"suggested_by_task,omitempty"`
-	SuggestedFactIDs  []string                  `json:"suggested_fact_ids,omitempty"`
-	Added             int                       `json:"added,omitempty"`
-	AddedFactIDs      []string                  `json:"added_fact_ids,omitempty"`
-	ScannedLinks      int                       `json:"scanned_links,omitempty"`
-	AddedFacts        int                       `json:"added_facts,omitempty"`
-	AddedEvidenceRefs int                       `json:"added_evidence_refs,omitempty"`
-	CoverageBundles   []RecallCoverageBundle    `json:"coverage_bundles,omitempty"`
-	Candidates        []RecallCandidateSnapshot `json:"candidates,omitempty"`
-	PackTrace         []RecallCandidateSnapshot `json:"pack_trace,omitempty"`
+	Stage             string                      `json:"stage"`
+	Source            string                      `json:"source,omitempty"`
+	Status            string                      `json:"status,omitempty"`
+	Query             *RecallQueryIntent          `json:"query_intent,omitempty"`
+	ActivatedLenses   []RecallActivatedLens       `json:"activated_lenses,omitempty"`
+	TaskIntents       []string                    `json:"task_intents,omitempty"`
+	TotalBudget       int                         `json:"total_budget,omitempty"`
+	Suggested         int                         `json:"suggested,omitempty"`
+	SuggestedByTask   map[string]int              `json:"suggested_by_task,omitempty"`
+	SuggestedFactIDs  []string                    `json:"suggested_fact_ids,omitempty"`
+	InputCount        int                         `json:"input_count,omitempty"`
+	OutputCount       int                         `json:"output_count,omitempty"`
+	Dropped           int                         `json:"dropped,omitempty"`
+	Added             int                         `json:"added,omitempty"`
+	AddedFactIDs      []string                    `json:"added_fact_ids,omitempty"`
+	ScannedLinks      int                         `json:"scanned_links,omitempty"`
+	AddedFacts        int                         `json:"added_facts,omitempty"`
+	AddedEvidenceRefs int                         `json:"added_evidence_refs,omitempty"`
+	CoverageBundles   []RecallCoverageBundle      `json:"coverage_bundles,omitempty"`
+	Candidates        []RecallCandidateSnapshot   `json:"candidates,omitempty"`
+	Assessment        []RecallAssessmentComponent `json:"assessment,omitempty"`
+	PackTrace         []RecallCandidateSnapshot   `json:"pack_trace,omitempty"`
 }
 
 type RecallQueryIntent struct {
@@ -82,6 +86,17 @@ type RecallCandidateSnapshot struct {
 	PrimarySource    string   `json:"primary_source,omitempty"`
 	ProjectionRoutes []string `json:"projection_routes,omitempty"`
 	DroppedReason    string   `json:"dropped_reason,omitempty"`
+}
+
+type RecallAssessmentComponent struct {
+	ID              string  `json:"id,omitempty"`
+	Kind            string  `json:"kind,omitempty"`
+	SupportScore    float64 `json:"support_score,omitempty"`
+	StructuredScore float64 `json:"structured_score,omitempty"`
+	LiteralScore    float64 `json:"literal_score,omitempty"`
+	SourcePrior     float64 `json:"source_prior,omitempty"`
+	RelevanceScore  float64 `json:"relevance_score,omitempty"`
+	DropReason      string  `json:"drop_reason,omitempty"`
 }
 
 func AuditRecallStages(trace domain.RecallTrace) RecallStageAudit {
@@ -152,6 +167,16 @@ func AuditRecallStages(trace domain.RecallTrace) RecallStageAudit {
 			})
 		case diagnostic.PolicyFilterDetail:
 			appendStage("policy_filter", "", status, snapshotValue(d.Items))
+		case diagnostic.CandidateAssessmentDetail:
+			out.Stages = append(out.Stages, RecallStageSnapshot{
+				Stage:       "candidate_assessment",
+				Status:      status,
+				InputCount:  d.InputCount,
+				OutputCount: d.OutputCount,
+				Dropped:     d.Dropped,
+				Candidates:  publicCandidateSnapshots(snapshotValue(d.Items)),
+				Assessment:  publicAssessmentComponents(d.Components),
+			})
 		case diagnostic.RankDetail:
 			appendStage("rank_input", "", status, snapshotValue(d.Input))
 			appendStage("rank_output", "", status, snapshotValue(d.Output))
@@ -261,6 +286,26 @@ func snapshotValue(in *[]diagnostic.CandidateSnapshot) []diagnostic.CandidateSna
 		return nil
 	}
 	return *in
+}
+
+func publicAssessmentComponents(in []diagnostic.CandidateAssessmentComponent) []RecallAssessmentComponent {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]RecallAssessmentComponent, 0, len(in))
+	for _, component := range in {
+		out = append(out, RecallAssessmentComponent{
+			ID:              component.ID,
+			Kind:            component.Kind,
+			SupportScore:    component.SupportScore,
+			StructuredScore: component.StructuredScore,
+			LiteralScore:    component.LiteralScore,
+			SourcePrior:     component.SourcePrior,
+			RelevanceScore:  component.RelevanceScore,
+			DropReason:      component.DropReason,
+		})
+	}
+	return out
 }
 
 func publicCandidateSnapshots(in []diagnostic.CandidateSnapshot) []RecallCandidateSnapshot {

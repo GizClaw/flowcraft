@@ -384,6 +384,7 @@ func New(opts ...Option) (Memory, error) {
 	}
 	readStages = append(readStages,
 		readstages.NewPolicyFilter(),
+		readstages.NewCandidateAssessment(),
 		readstages.NewRank(rnk, cfg.reranker != nil),
 		readstages.NewContextPack(rerank),
 		readstages.NewBuildGroundedHits(readstages.WithGroundedHitGraph(cfg.observationStore, cfg.linkStore)),
@@ -534,7 +535,10 @@ func (m *memory) runSaveSync(ctx context.Context, scope Scope, req SaveRequest, 
 		state.EnsureTrace()
 	}
 
-	startGen := m.peekScopeGen(scope)
+	startGen, _, err := m.scopeGeneration(ctx, scope)
+	if err != nil {
+		return SaveResult{}, publicSaveTrace(state), fmt.Errorf("recall.Save: scope generation: %w", err)
+	}
 	allocateSaveOutboxID(state)
 	if err := m.writePreRunner.Run(ctx, state); err != nil {
 		return SaveResult{}, publicSaveTrace(state), err
@@ -544,7 +548,7 @@ func (m *memory) runSaveSync(ctx context.Context, scope Scope, req SaveRequest, 
 	}
 
 	m.holdWriteTelemetry()
-	unlock, err := m.enterScopeWrite(scope, startGen)
+	unlock, err := m.enterScopeWrite(ctx, scope, startGen)
 	if err != nil {
 		m.cleanupSaveGraphArtifacts(context.Background(), scope, state)
 		m.flushWriteTelemetry()
@@ -576,15 +580,18 @@ func (m *memory) runSaveSync(ctx context.Context, scope Scope, req SaveRequest, 
 // committed. Projection, embedding, and evolution converge later via
 // SideEffectProcessor.
 func (m *memory) runSaveAsync(ctx context.Context, scope Scope, req SaveRequest, withTrace, includeRawDiagnostics bool) (SaveResult, SaveTrace, error) {
-	startGen := m.peekScopeGen(scope)
 	state := newEpisodeState(scope, req, withTrace, includeRawDiagnostics)
+	startGen, _, err := m.scopeGeneration(ctx, scope)
+	if err != nil {
+		return SaveResult{}, publicSaveTrace(state), fmt.Errorf("recall.Save: scope generation: %w", err)
+	}
 	allocateSaveOutboxID(state)
 	if err := m.asyncEpisodePreRunner.Run(ctx, state); err != nil {
 		m.cleanupSaveGraphArtifacts(context.Background(), scope, state)
 		return SaveResult{}, publicSaveTrace(state), err
 	}
 	m.holdWriteTelemetry()
-	unlock, err := m.enterScopeWrite(scope, startGen)
+	unlock, err := m.enterScopeWrite(ctx, scope, startGen)
 	if err != nil {
 		m.cleanupSaveGraphArtifacts(context.Background(), scope, state)
 		m.flushWriteTelemetry()
@@ -592,6 +599,11 @@ func (m *memory) runSaveAsync(ctx context.Context, scope Scope, req SaveRequest,
 	}
 	state.ScopeGeneration = startGen
 	if err := m.asyncEpisodeCanonicalRunner.Run(ctx, state); err != nil {
+		unlock()
+		m.flushWriteTelemetry()
+		return SaveResult{}, publicSaveTrace(state), err
+	}
+	if err := m.abortIfScopeGenChanged(scope, startGen, state); err != nil {
 		unlock()
 		m.flushWriteTelemetry()
 		return SaveResult{}, publicSaveTrace(state), err
@@ -784,7 +796,7 @@ func (m *memory) Forget(ctx context.Context, scope Scope, factID string, mode ..
 // The operation goes through the forget pipeline so each call emits one
 // ForgetAllDetail diagnostic via the registered TelemetryHook. The returned int
 // matches Detail.Deleted.
-func (m *memory) ForgetAll(ctx context.Context, scope Scope, mode ForgetMode, confirmScopeKey string) (int, error) {
+func (m *memory) ForgetAll(ctx context.Context, scope Scope, mode ForgetMode, confirmScopeKey string) (deleted int, retErr error) {
 	if err := ctx.Err(); err != nil {
 		return 0, err
 	}
@@ -805,30 +817,65 @@ func (m *memory) ForgetAll(ctx context.Context, scope Scope, mode ForgetMode, co
 		m.flushWriteTelemetry()
 	}()
 
-	if domain.NormalizeForgetMode(mode) == domain.ForgetHard {
-		m.bumpScopeGen(scope)
-	}
-
 	state := &forget.State{
 		Scope:           scope,
 		Mode:            mode,
 		ConfirmScopeKey: confirmScopeKey,
 	}
 	state.EnsureTrace()
+	var preDeleteCancel asyncJobCancelResult
+	hard := domain.NormalizeForgetMode(mode) == domain.ForgetHard
+	markerSet := false
+	if hard {
+		if _, err := m.bumpScopeGenDeleting(ctx, scope, true); err != nil {
+			return 0, fmt.Errorf("recall.ForgetAll: bump scope generation: %w", err)
+		}
+		markerSet = true
+		defer func() {
+			if !markerSet {
+				return
+			}
+			if err := m.setScopeDeleting(context.Background(), scope, false); err != nil {
+				cleanupErr := fmt.Errorf("recall.ForgetAll: clear deleting marker: %w", err)
+				if retErr != nil {
+					retErr = errors.Join(retErr, cleanupErr)
+				} else {
+					retErr = cleanupErr
+				}
+			}
+		}()
+		preDeleteCancel = m.cancelAsyncJobsAfterForget(ctx, state)
+		if preDeleteCancel.Err != nil {
+			m.emitAsyncJobCancelTelemetry(state, preDeleteCancel, "forget_all_pre_delete")
+			return 0, fmt.Errorf("recall.ForgetAll: async job pre-delete purge: %w", preDeleteCancel.Err)
+		}
+	}
 	if err := m.forgetRunner.Run(ctx, state); err != nil {
 		return 0, err
 	}
-	cancel := m.cancelAsyncJobsAfterForget(ctx, state)
-	m.patchForgetTraceAsyncCancel(state, cancel)
-	m.emitAsyncJobCancelTelemetry(state, cancel, "forget_all")
-	if cancel.Err != nil {
-		return state.Deleted, fmt.Errorf("recall.ForgetAll: async job cancel: %w", cancel.Err)
+	if hard {
+		m.patchForgetTraceAsyncCancel(state, preDeleteCancel)
+		m.emitAsyncJobCancelTelemetry(state, preDeleteCancel, "forget_all")
+	} else {
+		cancel := m.cancelAsyncJobsAfterForget(ctx, state)
+		m.patchForgetTraceAsyncCancel(state, cancel)
+		m.emitAsyncJobCancelTelemetry(state, cancel, "forget_all")
+		if cancel.Err != nil {
+			return state.Deleted, fmt.Errorf("recall.ForgetAll: async job cancel: %w", cancel.Err)
+		}
 	}
 	return state.Deleted, nil
 }
 
 // ExpireRetired hard-deletes every scope-local fact whose ExpiresAt
 // is non-nil and not after now.
+//
+// ExpireRetired is a periodic TTL sweep, not a full-scope transactional
+// boundary: it scans the expired IDs first, installs a generation fence, then
+// deletes only that preselected set. A fact appended by another process after
+// the scan but before the fence is intentionally left for the next sweep. The
+// fence prevents pre-scan/old-generation writers from committing after this
+// destructive delete starts.
 //
 // The call routes through the forget pipeline with State.Filter set,
 // which:
@@ -859,11 +906,22 @@ func (m *memory) ExpireRetired(ctx context.Context, scope Scope, now time.Time) 
 		Now:    now,
 	}
 	state.EnsureTrace()
+	expireIDs, scanned, err := m.scanExpiredFacts(ctx, scope, now)
+	if err != nil {
+		return 0, fmt.Errorf("recall.ExpireRetired: scan expired facts: %w", err)
+	}
+	// Delete only the pre-fence scan result; later expired writes are swept by
+	// a future call, while the generation bump blocks old-generation commits.
+	state.ExpirePreselected = true
+	state.ExpireScanned = scanned
+	state.ExpireFactIDs = expireIDs
+	if len(expireIDs) > 0 {
+		if _, err := m.bumpScopeGenDeleting(ctx, scope, false); err != nil {
+			return 0, fmt.Errorf("recall.ExpireRetired: bump scope generation: %w", err)
+		}
+	}
 	if err := m.forgetRunner.Run(ctx, state); err != nil {
 		return 0, err
-	}
-	if state.Deleted > 0 {
-		m.bumpScopeGen(scope)
 	}
 	var cancel asyncJobCancelResult
 	if state.Deleted > 0 {
@@ -875,6 +933,20 @@ func (m *memory) ExpireRetired(ctx context.Context, scope Scope, now time.Time) 
 		}
 	}
 	return state.Deleted, nil
+}
+
+func (m *memory) scanExpiredFacts(ctx context.Context, scope Scope, now time.Time) ([]string, int, error) {
+	facts, err := m.store.List(ctx, scope, port.ListQuery{IncludeSuperseded: true})
+	if err != nil {
+		return nil, 0, err
+	}
+	ids := make([]string, 0, len(facts))
+	for _, fact := range facts {
+		if fact.ExpiresAt != nil && !fact.ExpiresAt.IsZero() && !fact.ExpiresAt.After(now) {
+			ids = append(ids, fact.ID)
+		}
+	}
+	return ids, len(facts), nil
 }
 
 // Lineage walks the revision DAG rooted at factID via the temporal

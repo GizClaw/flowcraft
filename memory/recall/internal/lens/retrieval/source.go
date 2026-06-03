@@ -55,7 +55,8 @@ func (s *Source) Name() string { return planner.SourceRetrieval }
 // when AgentID is empty, no agent filter is applied (cross-agent
 // recall).
 func (s *Source) Query(ctx context.Context, plan domain.QueryPlan) domain.SourceResult {
-	if strings.TrimSpace(plan.Intent.Text) == "" {
+	queryText := canonicalRetrievalQueryText(plan.Intent)
+	if strings.TrimSpace(queryText) == "" {
 		return domain.SourceResult{Source: s.Name()}
 	}
 	scope := plan.Intent.Scope
@@ -69,12 +70,12 @@ func (s *Source) Query(ctx context.Context, plan domain.QueryPlan) domain.Source
 	}
 
 	req := retrieval.SearchRequest{
-		QueryText: plan.Intent.Text,
+		QueryText: queryText,
 		TopK:      budget,
 		Filter:    buildFilter(scope),
 	}
 	if s.embedder != nil {
-		if vec := s.embedQuery(ctx, plan.Intent.Text); len(vec) > 0 {
+		if vec := s.embedQuery(ctx, queryText); len(vec) > 0 {
 			req.QueryVector = vec
 		}
 	}
@@ -132,6 +133,46 @@ func (s *Source) Query(ctx context.Context, plan domain.QueryPlan) domain.Source
 		Truncated:  len(resp.Hits) >= budget,
 		Latency:    latency,
 	}
+}
+
+func canonicalRetrievalQueryText(intent domain.QueryIntent) string {
+	if text := strings.TrimSpace(intent.Text); text != "" {
+		return text
+	}
+	if strings.TrimSpace(intent.Subject) == "" &&
+		strings.TrimSpace(intent.Predicate) == "" &&
+		strings.TrimSpace(intent.Object) == "" &&
+		len(intent.Entities) == 0 &&
+		len(intent.Kinds) == 0 &&
+		intent.TimeRange.IsZero() {
+		return ""
+	}
+	parts := make([]string, 0, 6+len(intent.Entities)+len(intent.Kinds))
+	parts = appendNonEmpty(parts, intent.Subject, intent.Predicate, intent.Object)
+	parts = append(parts, intent.Entities...)
+	for _, kind := range intent.Kinds {
+		if kind != "" {
+			parts = append(parts, string(kind))
+		}
+	}
+	if !intent.TimeRange.IsZero() {
+		if !intent.TimeRange.From.IsZero() {
+			parts = append(parts, intent.TimeRange.From.Format("2006-01-02"))
+		}
+		if !intent.TimeRange.To.IsZero() {
+			parts = append(parts, intent.TimeRange.To.Format("2006-01-02"))
+		}
+	}
+	return strings.Join(parts, " ")
+}
+
+func appendNonEmpty(out []string, values ...string) []string {
+	for _, value := range values {
+		if value = strings.TrimSpace(value); value != "" {
+			out = append(out, value)
+		}
+	}
+	return out
 }
 
 // embedQuery embeds the query text. Embedder errors degrade to BM25

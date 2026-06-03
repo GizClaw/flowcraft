@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"reflect"
-	"sort"
 
 	"github.com/GizClaw/flowcraft/memory/recall/internal/domain"
 	"github.com/GizClaw/flowcraft/memory/recall/internal/port"
@@ -140,7 +139,7 @@ func (s *observationStore) DeleteByScope(ctx context.Context, scope domain.Scope
 	return int(tag.RowsAffected()), nil
 }
 
-func (s *observationStore) Close() error { return s.b.Close() }
+func (s *observationStore) Close() error { return nil }
 
 type linkStore struct {
 	b *Backend
@@ -181,6 +180,9 @@ func (s *linkStore) Append(ctx context.Context, links []domain.FactLink) error {
 				return err
 			}
 			if existingByMergeKey != nil {
+				if !linksEquivalentForMergeKey(existingByMergeKey.Clone(), link.Clone()) {
+					return errdefs.Conflictf("recall postgres link: duplicate merge key %q with different payload", link.MergeKey)
+				}
 				continue
 			}
 		}
@@ -247,24 +249,13 @@ func (s *linkStore) Get(ctx context.Context, scope domain.Scope, linkID string) 
 
 func (s *linkStore) List(ctx context.Context, scope domain.Scope, query port.LinkListQuery) ([]domain.FactLink, error) {
 	runtimeID, userID := sqlstmt.ScopeParts(scope)
-	rows, err := s.b.pool.Query(ctx, `
-		SELECT payload_json FROM recall_links
-		WHERE runtime_id = $1 AND user_id = $2
-		ORDER BY created_at_ns ASC, id ASC
-	`, runtimeID, userID)
+	sqlText, args := postgresLinkListSQL(runtimeID, userID, query)
+	rows, err := s.b.pool.Query(ctx, sqlText, args...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	out, err := scanLinks(rows)
-	if err != nil {
-		return nil, err
-	}
-	out = filterLinks(out, query)
-	if query.Limit > 0 && len(out) > query.Limit {
-		out = out[:query.Limit]
-	}
-	return out, nil
+	return scanLinks(rows)
 }
 
 func (s *linkStore) FindByNode(ctx context.Context, scope domain.Scope, node domain.GraphNodeRef) ([]domain.FactLink, error) {
@@ -353,7 +344,7 @@ func (s *linkStore) DeleteByScope(ctx context.Context, scope domain.Scope) (int,
 	return int(tag.RowsAffected()), nil
 }
 
-func (s *linkStore) Close() error { return s.b.Close() }
+func (s *linkStore) Close() error { return nil }
 
 type payloadRows interface {
 	Next() bool
@@ -417,40 +408,47 @@ func postgresObservationListSQL(runtimeID, userID string, query port.Observation
 	return sqlText, args
 }
 
-func filterLinks(links []domain.FactLink, query port.LinkListQuery) []domain.FactLink {
-	typeSet := make(map[domain.FactLinkType]struct{}, len(query.Types))
-	for _, typ := range query.Types {
-		typeSet[typ] = struct{}{}
+func postgresLinkListSQL(runtimeID, userID string, query port.LinkListQuery) (string, []any) {
+	args := []any{runtimeID, userID}
+	sqlText := `
+		SELECT payload_json FROM recall_links
+		WHERE runtime_id = $1 AND user_id = $2
+	`
+	if len(query.Types) > 0 {
+		sqlText += fmt.Sprintf(" AND type IN (%s)", phs(len(args)+1, len(query.Types)))
+		for _, typ := range query.Types {
+			args = append(args, string(typ))
+		}
 	}
-	out := links[:0]
-	for _, link := range links {
-		if len(typeSet) > 0 {
-			if _, ok := typeSet[link.Type]; !ok {
-				continue
-			}
-		}
-		if !nodeRefMatches(query.From, link.From) || !nodeRefMatches(query.To, link.To) {
-			continue
-		}
-		out = append(out, link)
+	if query.From.Kind != "" {
+		args = append(args, string(query.From.Kind))
+		sqlText += fmt.Sprintf(" AND from_kind = %s", ph(len(args)))
 	}
-	sort.SliceStable(out, func(i, j int) bool {
-		if out[i].CreatedAt.Equal(out[j].CreatedAt) {
-			return out[i].ID < out[j].ID
-		}
-		return out[i].CreatedAt.Before(out[j].CreatedAt)
-	})
-	return out
+	if query.From.ID != "" {
+		args = append(args, query.From.ID)
+		sqlText += fmt.Sprintf(" AND from_id = %s", ph(len(args)))
+	}
+	if query.To.Kind != "" {
+		args = append(args, string(query.To.Kind))
+		sqlText += fmt.Sprintf(" AND to_kind = %s", ph(len(args)))
+	}
+	if query.To.ID != "" {
+		args = append(args, query.To.ID)
+		sqlText += fmt.Sprintf(" AND to_id = %s", ph(len(args)))
+	}
+	sqlText += " ORDER BY created_at_ns ASC, id ASC"
+	if query.Limit > 0 {
+		args = append(args, query.Limit)
+		sqlText += fmt.Sprintf(" LIMIT %s", ph(len(args)))
+	}
+	return sqlText, args
 }
 
-func nodeRefMatches(query, actual domain.GraphNodeRef) bool {
-	if query.Kind != "" && query.Kind != actual.Kind {
-		return false
-	}
-	if query.ID != "" && query.ID != actual.ID {
-		return false
-	}
-	return true
+func linksEquivalentForMergeKey(a, b domain.FactLink) bool {
+	a.ID = ""
+	b.ID = ""
+	a.CreatedAt = b.CreatedAt
+	return reflect.DeepEqual(a.Clone(), b.Clone())
 }
 
 func validateLink(link domain.FactLink, backend string) error {

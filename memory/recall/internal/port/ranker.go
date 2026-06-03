@@ -50,3 +50,10 @@ type Ranker interface {
 type Reranker interface {
 	Rerank(ctx context.Context, query string, hits []domain.Hit) ([]domain.Hit, error)
 }
+
+// IntentReranker is an optional structured-query extension. Context packing
+// prefers it when available so Subject/Predicate/Object-only recalls are not
+// flattened to an empty query string.
+type IntentReranker interface {
+	RerankWithIntent(ctx context.Context, intent domain.QueryIntent, hits []domain.Hit) ([]domain.Hit, error)
+}

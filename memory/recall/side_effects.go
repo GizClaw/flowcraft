@@ -222,7 +222,11 @@ func (m *memory) sideEffectJobGenerationCurrent(job port.SideEffectJob) bool {
 	if m == nil {
 		return false
 	}
-	return m.peekScopeGen(job.Scope) == job.ScopeGeneration
+	gen, deleting, err := m.scopeGeneration(context.Background(), job.Scope)
+	if err != nil || deleting {
+		return false
+	}
+	return gen == job.ScopeGeneration
 }
 
 func (m *memory) sideEffectJobWithLiveFacts(ctx context.Context, job port.SideEffectJob, now time.Time) (port.SideEffectJob, error) {
@@ -257,12 +261,16 @@ func (m *memory) sideEffectJobWithLiveFacts(ctx context.Context, job port.SideEf
 const maxSideEffectAttempts = 5
 
 func sideEffectFailure(err error, attempt int, now time.Time) port.SideEffectFailure {
+	class := diagnostic.ErrClassTransient
+	if errdefs.IsValidation(err) {
+		class = diagnostic.ErrClassPermanent
+	}
 	failure := port.SideEffectFailure{
 		Err:      err.Error(),
-		ErrClass: diagnostic.ErrClassTransient,
+		ErrClass: class,
 		RetryAt:  now.Add(sideEffectRetryBackoff(attempt)),
 	}
-	if attempt >= maxSideEffectAttempts {
+	if failure.ErrClass == diagnostic.ErrClassPermanent || attempt >= maxSideEffectAttempts {
 		failure.ErrClass = diagnostic.ErrClassPermanent
 		failure.RetryAt = time.Time{}
 	}

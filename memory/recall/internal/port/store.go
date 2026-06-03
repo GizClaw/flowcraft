@@ -35,6 +35,15 @@ type ScopeEnumerator interface {
 	ListScopes(ctx context.Context, query ScopeListQuery) ([]domain.Scope, error)
 }
 
+// ScopeGenerationStore is an optional durable fence for scope-wide destructive
+// operations. Implementations that share a backend across Memory instances use
+// it to prevent stale Save / worker writes from crossing ForgetAll(Hard).
+type ScopeGenerationStore interface {
+	ScopeGeneration(ctx context.Context, scope domain.Scope) (generation uint64, deleting bool, err error)
+	BumpScopeGeneration(ctx context.Context, scope domain.Scope, deleting bool) (uint64, error)
+	SetScopeDeleting(ctx context.Context, scope domain.Scope, deleting bool) error
+}
+
 // TemporalStore is the canonical TemporalFact ledger boundary.
 //
 // It is deliberately NOT a retrieval index: vector / BM25 search and

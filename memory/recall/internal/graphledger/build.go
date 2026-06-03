@@ -55,6 +55,7 @@ func BuildDelta(scope domain.Scope, facts []domain.TemporalFact, closes []domain
 		links = append(links, l.Clone())
 	}
 
+	assertionsByObservation := make(map[string][]domain.TemporalFact)
 	for _, fact := range assertions {
 		observationIDsForFact := make([]string, 0, len(fact.EvidenceRefs))
 		evidenceRefsForFact := normalizedEvidenceRefs(fact.EvidenceRefs)
@@ -65,6 +66,11 @@ func BuildDelta(scope domain.Scope, facts []domain.TemporalFact, closes []domain
 				continue
 			}
 			observationIDsForFact = append(observationIDsForFact, obsID)
+			assertionsByObservation[obsID] = append(assertionsByObservation[obsID], fact)
+			refForObservationLink := ref
+			refForObservationLink.ObservationID = obsID
+			addLink(NewFactObservationLink(fact.Scope, domain.LinkDerivedFrom, fact.ID, obsID, []domain.EvidenceRef{refForObservationLink}, now))
+			addLink(NewObservationFactLink(fact.Scope, domain.LinkSupports, obsID, fact.ID, []domain.EvidenceRef{refForObservationLink}, now))
 			for _, span := range obs.Spans {
 				if span.ID == "" {
 					continue
@@ -79,6 +85,9 @@ func BuildDelta(scope domain.Scope, facts []domain.TemporalFact, closes []domain
 		for _, priorID := range fact.Supersedes {
 			addLink(NewAssertionAssertionLink(fact.Scope, domain.LinkSupersedes, fact.ID, priorID, observationIDsForFact, evidenceRefsForFact, now))
 		}
+	}
+	for observationID, facts := range assertionsByObservation {
+		addSameObservationLinks(addLink, observationID, facts, now)
 	}
 	for _, close := range closes {
 		if close.CorrectedBy == "" || close.FactID == "" {
@@ -204,10 +213,64 @@ func NewObservationSpanFactLink(scope domain.Scope, typ domain.FactLinkType, spa
 	return NewLink(scope, typ, from, to, evidenceObservationIDs(evidenceRefs), evidenceRefs, now)
 }
 
+func NewFactObservationLink(scope domain.Scope, typ domain.FactLinkType, factID, observationID string, evidenceRefs []domain.EvidenceRef, now time.Time) domain.FactLink {
+	from := domain.GraphNodeRef{Kind: domain.GraphNodeAssertion, ID: factID}
+	to := domain.GraphNodeRef{Kind: domain.GraphNodeObservation, ID: observationID}
+	return NewLink(scope, typ, from, to, evidenceObservationIDs(evidenceRefs), evidenceRefs, now)
+}
+
+func NewObservationFactLink(scope domain.Scope, typ domain.FactLinkType, observationID, factID string, evidenceRefs []domain.EvidenceRef, now time.Time) domain.FactLink {
+	from := domain.GraphNodeRef{Kind: domain.GraphNodeObservation, ID: observationID}
+	to := domain.GraphNodeRef{Kind: domain.GraphNodeAssertion, ID: factID}
+	return NewLink(scope, typ, from, to, evidenceObservationIDs(evidenceRefs), evidenceRefs, now)
+}
+
 func NewAssertionAssertionLink(scope domain.Scope, typ domain.FactLinkType, fromFactID, toFactID string, evidenceObservationIDs []string, evidenceRefs []domain.EvidenceRef, now time.Time) domain.FactLink {
 	from := domain.GraphNodeRef{Kind: domain.GraphNodeAssertion, ID: fromFactID}
 	to := domain.GraphNodeRef{Kind: domain.GraphNodeAssertion, ID: toFactID}
 	return NewLink(scope, typ, from, to, evidenceObservationIDs, evidenceRefs, now)
+}
+
+func addSameObservationLinks(addLink func(domain.FactLink), observationID string, facts []domain.TemporalFact, now time.Time) {
+	if len(facts) < 2 {
+		return
+	}
+	sort.SliceStable(facts, func(i, j int) bool { return facts[i].ID < facts[j].ID })
+	for i := 0; i < len(facts); i++ {
+		for j := i + 1; j < len(facts); j++ {
+			a, b := facts[i], facts[j]
+			if a.ID == "" || b.ID == "" {
+				continue
+			}
+			evidenceIDs := []string{observationID}
+			refs := sharedEvidenceRefs(a.EvidenceRefs, b.EvidenceRefs, observationID)
+			addLink(NewAssertionAssertionLink(a.Scope, domain.LinkSameObservation, a.ID, b.ID, evidenceIDs, refs, now))
+			addLink(NewAssertionAssertionLink(a.Scope, domain.LinkSameEventAs, a.ID, b.ID, evidenceIDs, refs, now))
+		}
+	}
+}
+
+func sharedEvidenceRefs(a, b []domain.EvidenceRef, observationID string) []domain.EvidenceRef {
+	seen := map[string]domain.EvidenceRef{}
+	for _, ref := range append(normalizedEvidenceRefs(a), normalizedEvidenceRefs(b)...) {
+		if observationID != "" && ref.ObservationID != "" && ref.ObservationID != observationID {
+			continue
+		}
+		key := ref.ID
+		if key == "" {
+			key = strings.Join([]string{ref.ObservationID, ref.SpanID, ref.MessageID, ref.Text}, "\x00")
+		}
+		if key == "" {
+			continue
+		}
+		seen[key] = ref
+	}
+	out := make([]domain.EvidenceRef, 0, len(seen))
+	for _, ref := range seen {
+		out = append(out, ref)
+	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out
 }
 
 func NewLink(scope domain.Scope, typ domain.FactLinkType, from, to domain.GraphNodeRef, evidenceObservationIDs []string, evidenceRefs []domain.EvidenceRef, now time.Time) domain.FactLink {

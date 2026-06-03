@@ -65,10 +65,8 @@ func TestRecallStrategyPlanner_StructuredBudgetsOverfetchFinalLimit(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, src := range plan.SourceOrder {
-		if got := plan.SourceBudgets[src]; got != limit*SourceOverfetchMultiplier {
-			t.Fatalf("budget[%s] = %d, want %d (%+v)", src, got, limit*SourceOverfetchMultiplier, plan.SourceBudgets)
-		}
+	if got := plan.SourceBudgets[SourceRetrieval]; got <= plan.SourceBudgets[SourceTimeline] {
+		t.Fatalf("retrieval budget should reflect higher weight than timeline, budgets=%+v", plan.SourceBudgets)
 	}
 	if plan.TotalCap != limit {
 		t.Errorf("total cap = %d, want %d", plan.TotalCap, limit)

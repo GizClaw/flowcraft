@@ -68,6 +68,14 @@ type State struct {
 	// the cutoff is testable.
 	Now time.Time
 
+	// ExpirePreselected tells the stage that the caller already scanned the
+	// TTL delete set before installing the scope generation fence. The stage
+	// must delete only these IDs so post-fence writes are left for a later
+	// sweep.
+	ExpirePreselected bool
+	ExpireScanned     int
+	ExpireFactIDs     []string
+
 	// Deleted is the stage output — number of facts the run
 	// retired. For Soft mode this is the count of Closed=true
 	// writes; for Hard mode it is the store's reported delete count.

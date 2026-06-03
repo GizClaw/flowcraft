@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/memory/recall/internal/domain"
+	"github.com/GizClaw/flowcraft/memory/recall/internal/port"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 )
 
@@ -40,6 +41,11 @@ const (
 type AsyncSemanticReconcileOptions struct {
 	// Now anchors canonical-active and retired checks. Zero defaults to time.Now.
 	Now time.Time
+	// RequeueMissing re-enqueues a minimal async semantic job when canonical
+	// episode facts exist but no semantic derivation facts are present. The
+	// rebuilt job intentionally omits enqueue-time RecentMessages/anchors that
+	// cannot be recovered from canonical facts.
+	RequeueMissing bool
 }
 
 // AsyncSemanticReconcileResult summarizes one async semantic recovery audit.
@@ -223,7 +229,7 @@ func (m *memory) ReconcileAsyncSemantic(ctx context.Context, scope Scope, opts A
 	}
 	sort.Strings(requestIDs)
 	for _, requestID := range requestIDs {
-		row, err := m.reconcileAsyncSemanticRequest(ctx, scope, requestID, grouped[requestID], now)
+		row, err := m.reconcileAsyncSemanticRequest(ctx, scope, requestID, grouped[requestID], now, opts)
 		if err != nil {
 			return result, err
 		}
@@ -243,7 +249,7 @@ func (m *memory) ReconcileAsyncSemantic(ctx context.Context, scope Scope, opts A
 	return result, nil
 }
 
-func (m *memory) reconcileAsyncSemanticRequest(ctx context.Context, scope Scope, requestID string, episodes []TemporalFact, now time.Time) (AsyncSemanticRequestReconcileResult, error) {
+func (m *memory) reconcileAsyncSemanticRequest(ctx context.Context, scope Scope, requestID string, episodes []TemporalFact, now time.Time, opts AsyncSemanticReconcileOptions) (AsyncSemanticRequestReconcileResult, error) {
 	row := AsyncSemanticRequestReconcileResult{
 		RequestID:      requestID,
 		EpisodeFactIDs: reconcileFactIDs(episodes),
@@ -275,8 +281,51 @@ func (m *memory) reconcileAsyncSemanticRequest(ctx context.Context, scope Scope,
 		return row, nil
 	}
 	row.Status = AsyncSemanticReconcilePending
-	row.Reason = "semantic derivation facts not found; queue state not modified"
+	row.Reason = "semantic derivation facts not found"
+	if opts.RequeueMissing {
+		if m.asyncSemanticQueue == nil {
+			row.Reason = "semantic derivation facts not found; async semantic queue not configured"
+			return row, nil
+		}
+		requeued, err := m.requeueAsyncSemanticRequest(ctx, scope, requestID, episodes)
+		if err != nil {
+			return row, err
+		}
+		if !requeued {
+			row.Status = AsyncSemanticReconcileSkipped
+			row.Reason = "semantic derivation facts not found; async semantic queue cannot requeue terminal jobs"
+			return row, nil
+		}
+		row.Reason = "semantic derivation facts not found; requeued minimal async job"
+	}
 	return row, nil
+}
+
+func (m *memory) requeueAsyncSemanticRequest(ctx context.Context, scope Scope, requestID string, episodes []TemporalFact) (bool, error) {
+	if m == nil || m.asyncSemanticQueue == nil {
+		return false, nil
+	}
+	ids := reconcileFactIDs(episodes)
+	if requestID == "" || len(ids) == 0 {
+		return false, nil
+	}
+	observedAt := time.Time{}
+	for _, episode := range episodes {
+		if observedAt.IsZero() || (!episode.ObservedAt.IsZero() && episode.ObservedAt.Before(observedAt)) {
+			observedAt = episode.ObservedAt
+		}
+	}
+	requeue, ok := m.asyncSemanticQueue.(port.AsyncSemanticRequeueQueue)
+	if !ok {
+		return false, nil
+	}
+	_, requeued, err := requeue.Requeue(ctx, port.AsyncSemanticJob{
+		RequestID:      requestID,
+		Scope:          Scope{RuntimeID: scope.RuntimeID, UserID: scope.UserID},
+		EpisodeFactIDs: ids,
+		ObservedAt:     observedAt,
+	})
+	return requeued, err
 }
 
 // ReconcileSideEffects repairs derived side effects from canonical facts.

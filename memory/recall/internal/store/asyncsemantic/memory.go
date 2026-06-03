@@ -47,6 +47,8 @@ const (
 
 	// defaultTransientRetryBackoff applies when Fail omits RetryAt.
 	defaultTransientRetryBackoff = 30 * time.Second
+
+	defaultMaxAttempts = 5
 )
 
 type entry struct {
@@ -103,6 +105,74 @@ func (q *Queue) Enqueue(_ context.Context, job port.AsyncSemanticJob) (port.Asyn
 	}, nil
 }
 
+// Requeue resets an existing request back to pending, or enqueues it when
+// missing. It is used by reconcile after canonical episodes prove the request
+// still needs semantic derivation.
+func (q *Queue) Requeue(_ context.Context, job port.AsyncSemanticJob) (port.AsyncSemanticReceipt, bool, error) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
+	now := time.Now()
+	if existing, ok := q.byRequest[job.RequestID]; ok {
+		delete(q.leased, job.RequestID)
+		existing.job = port.CloneAsyncSemanticJob(job)
+		existing.job.Attempt = 0
+		existing.job.LeaseUntil = time.Time{}
+		existing.job.LeaseToken = ""
+		existing.leaseUntil = time.Time{}
+		existing.leaseToken = ""
+		existing.status = statusPending
+		existing.wasLeased = false
+		existing.result = port.AsyncSemanticResult{}
+		existing.failure = port.AsyncSemanticFailure{}
+		if !pendingContainsRequest(q.pending, job.RequestID) {
+			q.pending = append(q.pending, existing)
+		}
+		sort.SliceStable(q.pending, func(i, j int) bool {
+			return lessEntry(q.pending[i], q.pending[j])
+		})
+		return port.AsyncSemanticReceipt{
+			RequestID:  existing.job.RequestID,
+			EnqueuedAt: existing.enqueuedAt,
+			QueueDepth: q.pendingDepthLocked(),
+		}, true, nil
+	}
+
+	e := &entry{
+		job:        port.CloneAsyncSemanticJob(job),
+		enqueuedAt: now,
+		status:     statusPending,
+	}
+	q.byRequest[job.RequestID] = e
+	q.pending = append(q.pending, e)
+	return port.AsyncSemanticReceipt{
+		RequestID:  job.RequestID,
+		EnqueuedAt: now,
+		QueueDepth: q.pendingDepthLocked(),
+	}, true, nil
+}
+
+func pendingContainsRequest(entries []*entry, requestID string) bool {
+	for _, e := range entries {
+		if e != nil && e.job.RequestID == requestID {
+			return true
+		}
+	}
+	return false
+}
+
+func lessEntry(a, b *entry) bool {
+	if a.enqueuedAt.Equal(b.enqueuedAt) {
+		sa := a.job.Scope.PartitionKey()
+		sb := b.job.Scope.PartitionKey()
+		if sa == sb {
+			return a.job.RequestID < b.job.RequestID
+		}
+		return sa < sb
+	}
+	return a.enqueuedAt.Before(b.enqueuedAt)
+}
+
 // jobMatchesClaimFilter reports whether e is eligible for Claim under
 // opts. Scope wins over RuntimeID when both are set.
 func jobMatchesClaimFilter(job port.AsyncSemanticJob, opts port.AsyncSemanticClaimOptions) bool {
@@ -146,17 +216,7 @@ func (q *Queue) Claim(_ context.Context, opts port.AsyncSemanticClaimOptions) ([
 		}
 	}
 
-	sort.SliceStable(q.pending, func(i, j int) bool {
-		if q.pending[i].enqueuedAt.Equal(q.pending[j].enqueuedAt) {
-			si := q.pending[i].job.Scope.PartitionKey()
-			sj := q.pending[j].job.Scope.PartitionKey()
-			if si == sj {
-				return q.pending[i].job.RequestID < q.pending[j].job.RequestID
-			}
-			return si < sj
-		}
-		return q.pending[i].enqueuedAt.Before(q.pending[j].enqueuedAt)
-	})
+	sort.SliceStable(q.pending, func(i, j int) bool { return lessEntry(q.pending[i], q.pending[j]) })
 
 	out := make([]port.AsyncSemanticJob, 0, opts.Max)
 	remaining := q.pending[:0]
@@ -444,10 +504,17 @@ func (q *Queue) Fail(_ context.Context, requestID, leaseToken string, failure po
 	if retryAt.IsZero() || !retryAt.After(now) {
 		retryAt = now.Add(defaultTransientRetryBackoff)
 	}
-	e.job.Attempt++
 	e.job.LeaseUntil = retryAt
 	e.leaseUntil = retryAt
 	e.failure = failure
+	if e.job.Attempt >= defaultMaxAttempts {
+		e.status = statusFailed
+		e.job.LeaseUntil = time.Time{}
+		e.failure.ErrClass = diagnostic.ErrClassPermanent
+		e.failure.RetryAt = time.Time{}
+		port.ScrubAsyncSemanticJobPII(&e.job)
+		return nil
+	}
 	e.status = statusPending
 	q.pending = append(q.pending, e)
 	return nil

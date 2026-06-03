@@ -60,7 +60,7 @@ func RunEvidenceStoreSuite(t *testing.T, newStore EvidenceStoreFactory) {
 		}
 	})
 
-	t.Run("append replay updates payload without duplicating index", func(t *testing.T) {
+	t.Run("append replay with conflicting payload fails", func(t *testing.T) {
 		store := evidenceStoreForTest(t, newStore)
 		ctx := context.Background()
 		if err := store.Append(ctx, conformanceScope(), "f1", []recall.EvidenceRef{
@@ -70,15 +70,15 @@ func RunEvidenceStoreSuite(t *testing.T, newStore EvidenceStoreFactory) {
 		}
 		if err := store.Append(ctx, conformanceScope(), "f1", []recall.EvidenceRef{
 			evidenceRef("e1", "m1", "v2", 2),
-		}); err != nil {
-			t.Fatalf("Append 2: %v", err)
+		}); err == nil {
+			t.Fatal("Append 2 succeeded, want conflict for different payload")
 		}
 		got, err := store.ListByFact(ctx, conformanceScope(), "f1")
 		if err != nil {
 			t.Fatalf("ListByFact: %v", err)
 		}
-		if len(got) != 1 || got[0].Text != "v2" {
-			t.Fatalf("replay should update one ref payload, got %+v", got)
+		if len(got) != 1 || got[0].Text != "v1" {
+			t.Fatalf("conflict must preserve original payload, got %+v", got)
 		}
 	})
 

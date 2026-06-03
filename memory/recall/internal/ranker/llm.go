@@ -55,6 +55,7 @@ type LLMReranker struct {
 }
 
 var _ port.Reranker = (*LLMReranker)(nil)
+var _ port.IntentReranker = (*LLMReranker)(nil)
 
 // NewLLM wires an llm.LLM with the default batch / snippet caps.
 // Use recall.WithReranker(ranker.NewLLM(client)) at construction
@@ -65,6 +66,14 @@ func NewLLM(client llm.LLM) *LLMReranker {
 
 // Rerank implements port.Reranker.
 func (r *LLMReranker) Rerank(ctx context.Context, query string, hits []domain.Hit) ([]domain.Hit, error) {
+	return r.rerank(ctx, strings.TrimSpace(query), hits)
+}
+
+func (r *LLMReranker) RerankWithIntent(ctx context.Context, intent domain.QueryIntent, hits []domain.Hit) ([]domain.Hit, error) {
+	return r.rerank(ctx, rerankIntentText(intent), hits)
+}
+
+func (r *LLMReranker) rerank(ctx context.Context, query string, hits []domain.Hit) ([]domain.Hit, error) {
 	if r == nil || r.Client == nil || len(hits) == 0 {
 		return hits, nil
 	}
@@ -123,6 +132,63 @@ func (r *LLMReranker) Rerank(ctx context.Context, query string, hits []domain.Hi
 		sort.SliceStable(out, func(i, j int) bool { return out[i].Score > out[j].Score })
 	}
 	return out, nil
+}
+
+func rerankIntentText(intent domain.QueryIntent) string {
+	parts := appendRerankPart(nil, "text", intent.Text)
+	parts = appendRerankPart(parts, "subject", intent.Subject)
+	parts = appendRerankPart(parts, "predicate", intent.Predicate)
+	parts = appendRerankPart(parts, "object", intent.Object)
+	parts = appendRerankKinds(parts, intent.Kinds)
+	parts = appendRerankEntities(parts, intent.Entities)
+	parts = appendRerankTimeRange(parts, intent.TimeRange)
+	if len(parts) > 0 {
+		return strings.Join(parts, "\n")
+	}
+	return strings.TrimSpace(intent.Text)
+}
+
+func appendRerankPart(parts []string, label, value string) []string {
+	if value = strings.TrimSpace(value); value != "" {
+		parts = append(parts, label+": "+value)
+	}
+	return parts
+}
+
+func appendRerankKinds(parts []string, in []domain.FactKind) []string {
+	if len(in) == 0 {
+		return parts
+	}
+	kinds := make([]string, 0, len(in))
+	for _, kind := range in {
+		if kind != "" {
+			kinds = append(kinds, string(kind))
+		}
+	}
+	if len(kinds) > 0 {
+		parts = append(parts, "kinds: "+strings.Join(kinds, ", "))
+	}
+	return parts
+}
+
+func appendRerankEntities(parts []string, in []string) []string {
+	if len(in) > 0 {
+		parts = append(parts, "entities: "+strings.Join(in, ", "))
+	}
+	return parts
+}
+
+func appendRerankTimeRange(parts []string, r domain.TimeRange) []string {
+	if r.IsZero() {
+		return parts
+	}
+	if !r.From.IsZero() {
+		parts = append(parts, "from: "+r.From.Format("2006-01-02"))
+	}
+	if !r.To.IsZero() {
+		parts = append(parts, "to: "+r.To.Format("2006-01-02"))
+	}
+	return parts
 }
 
 const defaultRerankPrompt = `You are a relevance ranker. Given a user query and a numbered list of candidate memory snippets, score each candidate's relevance to the query.

@@ -2,10 +2,30 @@ package recall
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/GizClaw/flowcraft/memory/recall/internal/pipeline/write"
+	"github.com/GizClaw/flowcraft/memory/recall/internal/port"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 )
+
+func (m *memory) scopeGenerationStore() port.ScopeGenerationStore {
+	if m == nil || m.store == nil {
+		return nil
+	}
+	genStore, ok := m.store.(port.ScopeGenerationStore)
+	if !ok {
+		return nil
+	}
+	return genStore
+}
+
+func (m *memory) scopeGeneration(ctx context.Context, scope Scope) (uint64, bool, error) {
+	if genStore := m.scopeGenerationStore(); genStore != nil {
+		return genStore.ScopeGeneration(ctx, scope)
+	}
+	return m.peekScopeGen(scope), false, nil
+}
 
 // peekScopeGen returns the current wipe generation for the scope's
 // canonical (runtime, user) partition.
@@ -23,6 +43,13 @@ func (m *memory) peekScopeGen(scope Scope) uint64 {
 // ExpireRetired call this before deleting canonical rows so in-flight
 // Saves that started before the wipe cannot append afterward.
 func (m *memory) bumpScopeGen(scope Scope) {
+	_, _ = m.bumpScopeGenDeleting(context.Background(), scope, false)
+}
+
+func (m *memory) bumpScopeGenDeleting(ctx context.Context, scope Scope, deleting bool) (uint64, error) {
+	if genStore := m.scopeGenerationStore(); genStore != nil {
+		return genStore.BumpScopeGeneration(ctx, scope, deleting)
+	}
 	key := writeScopeKey{runtimeID: scope.RuntimeID, userID: scope.UserID}
 	m.scopeGenMu.Lock()
 	defer m.scopeGenMu.Unlock()
@@ -30,14 +57,31 @@ func (m *memory) bumpScopeGen(scope Scope) {
 		m.scopeGen = make(map[writeScopeKey]uint64)
 	}
 	m.scopeGen[key]++
+	return m.scopeGen[key], nil
+}
+
+func (m *memory) setScopeDeleting(ctx context.Context, scope Scope, deleting bool) error {
+	if genStore := m.scopeGenerationStore(); genStore != nil {
+		return genStore.SetScopeDeleting(ctx, scope, deleting)
+	}
+	return nil
 }
 
 // enterScopeWrite acquires the scope write lock and refuses entry when
 // the partition generation changed since startGen (another caller
 // completed ForgetAll / ExpireRetired while this Save ran ingest).
-func (m *memory) enterScopeWrite(scope Scope, startGen uint64) (func(), error) {
+func (m *memory) enterScopeWrite(ctx context.Context, scope Scope, startGen uint64) (func(), error) {
 	unlock := m.lockWriteScope(scope)
-	if m.peekScopeGen(scope) != startGen {
+	gen, deleting, err := m.scopeGeneration(ctx, scope)
+	if err != nil {
+		unlock()
+		return nil, fmt.Errorf("recall: scope partition generation read: %w", err)
+	}
+	if deleting {
+		unlock()
+		return nil, errdefs.Abortedf("recall: scope partition is being deleted")
+	}
+	if gen != startGen {
 		unlock()
 		return nil, errdefs.Abortedf("recall: scope partition generation changed before write lock")
 	}
@@ -59,7 +103,11 @@ func (m *memory) flushWriteTelemetry() {
 // abortIfScopeGenChanged rolls back appended facts when the partition
 // was wiped mid-post-runner.
 func (m *memory) abortIfScopeGenChanged(scope Scope, lockedGen uint64, state *write.WriteState) error {
-	if m.peekScopeGen(scope) == lockedGen {
+	gen, deleting, err := m.scopeGeneration(context.Background(), scope)
+	if err != nil {
+		return fmt.Errorf("recall: scope partition generation read: %w", err)
+	}
+	if gen == lockedGen && !deleting {
 		return nil
 	}
 	if state != nil && len(state.AppendedFactIDs) > 0 {

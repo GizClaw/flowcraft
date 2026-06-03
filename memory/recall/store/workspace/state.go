@@ -16,19 +16,26 @@ import (
 const stateVersion = 1
 
 type state struct {
-	Version      int                    `json:"version"`
-	Facts        []domain.TemporalFact  `json:"facts,omitempty"`
-	Evidence     []evidenceRecord       `json:"evidence,omitempty"`
-	Observations []domain.Observation   `json:"observations,omitempty"`
-	Links        []domain.FactLink      `json:"links,omitempty"`
-	SideEffects  []sideEffectRecord     `json:"side_effects,omitempty"`
-	Async        []asyncSemanticRecord  `json:"async_semantic,omitempty"`
-	Counters     map[string]counterPair `json:"counters,omitempty"`
+	Version          int                              `json:"version"`
+	Facts            []domain.TemporalFact            `json:"facts,omitempty"`
+	Evidence         []evidenceRecord                 `json:"evidence,omitempty"`
+	Observations     []domain.Observation             `json:"observations,omitempty"`
+	Links            []domain.FactLink                `json:"links,omitempty"`
+	SideEffects      []sideEffectRecord               `json:"side_effects,omitempty"`
+	Async            []asyncSemanticRecord            `json:"async_semantic,omitempty"`
+	Counters         map[string]counterPair           `json:"counters,omitempty"`
+	ScopeGenerations map[string]scopeGenerationRecord `json:"scope_generations,omitempty"`
 }
 
 type counterPair struct {
 	SideEffect    int `json:"side_effect,omitempty"`
 	AsyncSemantic int `json:"async_semantic,omitempty"`
+}
+
+type scopeGenerationRecord struct {
+	Generation uint64    `json:"generation"`
+	Deleting   bool      `json:"deleting,omitempty"`
+	UpdatedAt  time.Time `json:"updated_at,omitempty"`
 }
 
 type evidenceRecord struct {
@@ -57,7 +64,7 @@ type asyncSemanticRecord struct {
 }
 
 func newState() state {
-	return state{Version: stateVersion, Counters: map[string]counterPair{}}
+	return state{Version: stateVersion, Counters: map[string]counterPair{}, ScopeGenerations: map[string]scopeGenerationRecord{}}
 }
 
 func encodeState(st state) ([]byte, error) {
@@ -66,6 +73,9 @@ func encodeState(st state) ([]byte, error) {
 	}
 	if st.Counters == nil {
 		st.Counters = map[string]counterPair{}
+	}
+	if st.ScopeGenerations == nil {
+		st.ScopeGenerations = map[string]scopeGenerationRecord{}
 	}
 	return json.MarshalIndent(st, "", "  ")
 }
@@ -83,6 +93,9 @@ func decodeState(raw []byte) (state, error) {
 	}
 	if st.Counters == nil {
 		st.Counters = map[string]counterPair{}
+	}
+	if st.ScopeGenerations == nil {
+		st.ScopeGenerations = map[string]scopeGenerationRecord{}
 	}
 	return st, nil
 }

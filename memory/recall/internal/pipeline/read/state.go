@@ -95,6 +95,11 @@ type ReadState struct {
 	// not "policy_filter was skipped".
 	PolicyFiltered bool
 
+	// AssessmentApplied is true after candidate_assessment has evaluated the
+	// post-policy candidate set. An empty AfterTrust then means "all candidates
+	// were rejected by assessment", not "no stage populated AfterTrust".
+	AssessmentApplied bool
+
 	// Ranked is the rank stage output (and the input to
 	// context_pack). Distinct from AfterTrust so explain traces
 	// can attribute rank's reordering separately.

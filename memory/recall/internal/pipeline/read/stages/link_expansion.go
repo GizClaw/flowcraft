@@ -172,6 +172,7 @@ func (s *LinkExpansion) Run(ctx context.Context, state *read.ReadState) (diagnos
 					continue
 				}
 				if _, exists := existing[added.Fact.ID]; exists {
+					markContextItemSource(state, added.Fact.ID, linkExpansionSource)
 					continue
 				}
 				if !state.Query.IncludeRetired && domain.IsRetired(added.Fact, state.Now) {
@@ -350,7 +351,7 @@ func (s *LinkExpansion) expandObservationSupportedAssertions(ctx context.Context
 	links, ok := linkCache[observationID]
 	if !ok {
 		var err error
-		links, err = s.links.FindByNode(ctx, seed.Fact.Scope, obsNode)
+		links, err = s.links.FindByNode(ctx, contextItemScope(*seed), obsNode)
 		if err != nil {
 			return nil, 0, err
 		}
@@ -371,7 +372,7 @@ func (s *LinkExpansion) expandObservationSupportedAssertions(ctx context.Context
 		if err != nil || !ok {
 			return addedIDs, len(links), err
 		}
-		if !linkedAssertionMatchesQuery(state, added.Fact) {
+		if !linkedAssertionMatchesQueryWithLink(state, added.Fact, link) {
 			continue
 		}
 		if !state.Query.IncludeRetired && domain.IsRetired(added.Fact, state.Now) {
@@ -398,7 +399,7 @@ func (s *LinkExpansion) expandSiblingSpanSupportedAssertions(ctx context.Context
 		if len(addedIDs) >= maxAdds {
 			break
 		}
-		obs, err := s.observations.Get(ctx, seed.Fact.Scope, observationID)
+		obs, err := s.observations.Get(ctx, contextItemScope(*seed), observationID)
 		if err != nil {
 			if errors.Is(err, port.ErrNotFound) {
 				continue
@@ -561,6 +562,56 @@ func (s *LinkExpansion) linkedAssertionItem(ctx context.Context, state *read.Rea
 	}, true, nil
 }
 
+func markContextItemSource(state *read.ReadState, factID, source string) {
+	if state == nil || factID == "" || source == "" {
+		return
+	}
+	for i := range state.MergedItems {
+		item := &state.MergedItems[i]
+		if item.Fact.ID != factID && item.Candidate.ID != factID {
+			continue
+		}
+		if item.Candidate.Metadata == nil {
+			item.Candidate.Metadata = map[string]any{}
+		}
+		item.Candidate.Metadata["sources"] = appendUniqueString(metadataSources(item.Candidate.Metadata), source)
+		if item.Ref.Metadata == nil {
+			item.Ref.Metadata = map[string]any{}
+		}
+		item.Ref.Metadata["sources"] = appendUniqueString(metadataSources(item.Ref.Metadata), source)
+		return
+	}
+}
+
+func metadataSources(md map[string]any) []string {
+	if len(md) == 0 {
+		return nil
+	}
+	switch v := md["sources"].(type) {
+	case []string:
+		return append([]string(nil), v...)
+	case []any:
+		out := make([]string, 0, len(v))
+		for _, item := range v {
+			if s, ok := item.(string); ok && s != "" {
+				out = append(out, s)
+			}
+		}
+		return out
+	default:
+		return nil
+	}
+}
+
+func appendUniqueString(in []string, value string) []string {
+	for _, existing := range in {
+		if existing == value {
+			return in
+		}
+	}
+	return append(in, value)
+}
+
 func contextItemScope(item domain.ContextItem) domain.Scope {
 	if item.Fact.Scope.RuntimeID != "" {
 		return item.Fact.Scope
@@ -585,19 +636,18 @@ func otherNode(link domain.FactLink, node domain.GraphNodeRef) domain.GraphNodeR
 }
 
 func linkCanExpandAssertion(link domain.FactLink) bool {
-	return link.Type == domain.LinkSupports
-}
-
-func linkedAssertionMatchesQuery(state *read.ReadState, fact domain.TemporalFact) bool {
-	return linkedAssertionMatchesQueryText(state, strings.Join([]string{
-		fact.Subject,
-		fact.Content,
-		fact.EvidenceText,
-		evidenceTextForMatch(fact.EvidenceRefs),
-	}, " "))
+	switch link.Type {
+	case domain.LinkSupports, domain.LinkSameObservation, domain.LinkSameEventAs:
+		return true
+	default:
+		return false
+	}
 }
 
 func linkedAssertionMatchesQueryWithLink(state *read.ReadState, fact domain.TemporalFact, link domain.FactLink) bool {
+	if link.Type == domain.LinkSupports && link.From.Kind == domain.GraphNodeAssertion && link.To.Kind == domain.GraphNodeAssertion {
+		return true
+	}
 	return linkedAssertionMatchesQueryText(state, strings.Join([]string{
 		fact.Subject,
 		fact.Content,

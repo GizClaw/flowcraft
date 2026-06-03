@@ -153,11 +153,11 @@ func TestRecallStrategyPlanner_SourceBudgetsOverfetchFinalLimit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := plan.SourceBudgets[SourceRetrieval]; got != 20 {
-		t.Errorf("retrieval budget = %d, want 20", got)
+	if got := plan.SourceBudgets[SourceRetrieval]; got != 24 {
+		t.Errorf("retrieval budget = %d, want 24", got)
 	}
-	if got := plan.SourceBudgets[SourceEntity]; got != 20 {
-		t.Errorf("entity budget = %d, want 20", got)
+	if got := plan.SourceBudgets[SourceEntity]; got != 16 {
+		t.Errorf("entity budget = %d, want 16", got)
 	}
 	if plan.TotalCap != 10 {
 		t.Errorf("total cap = %d, want 10", plan.TotalCap)
@@ -203,8 +203,8 @@ func TestPlanner_KnownEntitiesDoNotInfluenceLensWeights(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(plan.LensWeights) != 0 {
-		t.Fatalf("LensWeights = %+v, want empty; KnownEntities should not boost lens weights", plan.LensWeights)
+	if got := plan.LensWeights[SourceEntity]; got != WeightEntity {
+		t.Fatalf("entity lens weight = %v, want default %v; KnownEntities must not boost lens weights", got, WeightEntity)
 	}
 }
 

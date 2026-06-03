@@ -4,6 +4,7 @@ package sideeffect
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/GizClaw/flowcraft/memory/recall/internal/domain"
@@ -11,6 +12,7 @@ import (
 	"github.com/GizClaw/flowcraft/memory/recall/internal/lens/retrieval"
 	"github.com/GizClaw/flowcraft/memory/recall/internal/pipeline"
 	"github.com/GizClaw/flowcraft/memory/recall/internal/port"
+	"github.com/GizClaw/flowcraft/sdk/errdefs"
 )
 
 // Executor runs SideEffectOutbox jobs against the wired fanout,
@@ -26,12 +28,12 @@ type Executor struct {
 // Run implements port.SideEffectExecutor.
 func (e *Executor) Run(ctx context.Context, job port.SideEffectJob) error {
 	if e == nil {
-		return nil
+		return errdefs.Validationf("recall sideeffect: nil executor for job kind %q", job.Kind)
 	}
 	switch job.Kind {
 	case port.SideEffectProjectRequired:
 		if e.Fanout == nil {
-			return nil
+			return errdefs.Validationf("recall sideeffect: fanout is required for %s", job.Kind)
 		}
 		if len(job.Facts) == 0 {
 			return nil
@@ -42,7 +44,7 @@ func (e *Executor) Run(ctx context.Context, job port.SideEffectJob) error {
 		return err
 	case port.SideEffectProjectOptional:
 		if e.Fanout == nil {
-			return nil
+			return errdefs.Validationf("recall sideeffect: fanout is required for %s", job.Kind)
 		}
 		if len(job.Facts) == 0 {
 			return nil
@@ -53,6 +55,9 @@ func (e *Executor) Run(ctx context.Context, job port.SideEffectJob) error {
 		return nil
 	case port.SideEffectProjectEpisodeEvidence:
 		if e.Fanout == nil || len(job.Facts) == 0 {
+			if e.Fanout == nil {
+				return errdefs.Validationf("recall sideeffect: fanout is required for %s", job.Kind)
+			}
 			return nil
 		}
 		started := time.Now()
@@ -80,12 +85,15 @@ func (e *Executor) Run(ctx context.Context, job port.SideEffectJob) error {
 		return err
 	case port.SideEffectEmbeddingBackfill:
 		if e.Retrieval == nil || len(job.Facts) == 0 {
+			if e.Retrieval == nil {
+				return errdefs.Validationf("recall sideeffect: retrieval projection is required for %s", job.Kind)
+			}
 			return nil
 		}
 		return e.Retrieval.BackfillEmbeddings(ctx, job.Facts)
 	case port.SideEffectEvolutionAfterSave:
 		if e.Evolution == nil {
-			return nil
+			return errdefs.Validationf("recall sideeffect: evolution runner is required for %s", job.Kind)
 		}
 		ids := factIDs(job.Facts)
 		if len(ids) == 0 {
@@ -93,7 +101,7 @@ func (e *Executor) Run(ctx context.Context, job port.SideEffectJob) error {
 		}
 		return e.Evolution.AfterSave(ctx, job.Scope, ids)
 	default:
-		return nil
+		return errdefs.Validation(fmt.Errorf("recall sideeffect: unknown job kind %q", job.Kind))
 	}
 }
 

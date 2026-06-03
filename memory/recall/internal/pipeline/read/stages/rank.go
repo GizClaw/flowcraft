@@ -29,7 +29,7 @@ func (Rank) Name() string { return "rank" }
 // Run implements pipeline.Stage.
 func (s *Rank) Run(ctx context.Context, state *read.ReadState) (diagnostic.StageDetail, error) {
 	items := state.AfterTrust
-	if len(items) == 0 && !state.PolicyFiltered {
+	if len(items) == 0 && !state.PolicyFiltered && !state.AssessmentApplied {
 		read.PromoteMergedItems(state)
 		items = state.MergedItems
 	}

@@ -304,7 +304,64 @@ func (s *temporalStore) ListScopes(ctx context.Context, query port.ScopeListQuer
 	return scopes, nil
 }
 
-func (s *temporalStore) Close() error { return s.b.Close() }
+func (s *temporalStore) Close() error { return nil }
+
+func (s *temporalStore) ScopeGeneration(ctx context.Context, scope domain.Scope) (uint64, bool, error) {
+	if scope.PartitionKey() == "" {
+		return 0, false, errdefs.Validationf("recall workspace scope generation: scope partition is required")
+	}
+	s.b.mu.Lock()
+	defer s.b.mu.Unlock()
+	st, err := s.b.load(ctx)
+	if err != nil {
+		return 0, false, err
+	}
+	rec := st.ScopeGenerations[scope.PartitionKey()]
+	return rec.Generation, rec.Deleting, nil
+}
+
+func (s *temporalStore) BumpScopeGeneration(ctx context.Context, scope domain.Scope, deleting bool) (uint64, error) {
+	if scope.PartitionKey() == "" {
+		return 0, errdefs.Validationf("recall workspace scope generation: scope partition is required")
+	}
+	s.b.mu.Lock()
+	defer s.b.mu.Unlock()
+	st, err := s.b.load(ctx)
+	if err != nil {
+		return 0, err
+	}
+	if st.ScopeGenerations == nil {
+		st.ScopeGenerations = map[string]scopeGenerationRecord{}
+	}
+	key := scope.PartitionKey()
+	rec := st.ScopeGenerations[key]
+	rec.Generation++
+	rec.Deleting = deleting
+	rec.UpdatedAt = time.Now()
+	st.ScopeGenerations[key] = rec
+	return rec.Generation, s.b.save(ctx, st)
+}
+
+func (s *temporalStore) SetScopeDeleting(ctx context.Context, scope domain.Scope, deleting bool) error {
+	if scope.PartitionKey() == "" {
+		return errdefs.Validationf("recall workspace scope generation: scope partition is required")
+	}
+	s.b.mu.Lock()
+	defer s.b.mu.Unlock()
+	st, err := s.b.load(ctx)
+	if err != nil {
+		return err
+	}
+	if st.ScopeGenerations == nil {
+		st.ScopeGenerations = map[string]scopeGenerationRecord{}
+	}
+	key := scope.PartitionKey()
+	rec := st.ScopeGenerations[key]
+	rec.Deleting = deleting
+	rec.UpdatedAt = time.Now()
+	st.ScopeGenerations[key] = rec
+	return s.b.save(ctx, st)
+}
 
 func (s *temporalStore) findFacts(ctx context.Context, scope domain.Scope, match func(domain.TemporalFact) bool) ([]domain.TemporalFact, error) {
 	s.b.mu.Lock()

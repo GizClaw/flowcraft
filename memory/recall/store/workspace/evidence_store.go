@@ -3,6 +3,7 @@ package workspace
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"sort"
 
 	"github.com/GizClaw/flowcraft/memory/recall/internal/domain"
@@ -44,7 +45,9 @@ func (s *evidenceStore) Append(ctx context.Context, scope domain.Scope, factID s
 		}
 		idx := evidenceFactIndex(st.Evidence, scope, factID, ref.ID)
 		if idx >= 0 {
-			st.Evidence[idx] = rec
+			if st.Evidence[idx].Ordinal != rec.Ordinal || !reflect.DeepEqual(st.Evidence[idx].Ref, rec.Ref) {
+				return errdefs.Conflictf("recall workspace evidence: duplicate evidence id %q for fact %q with different payload", ref.ID, factID)
+			}
 			continue
 		}
 		st.Evidence = append(st.Evidence, rec)
@@ -142,7 +145,7 @@ func (s *evidenceStore) ForgetByFact(ctx context.Context, scope domain.Scope, fa
 	return s.b.save(ctx, st)
 }
 
-func (s *evidenceStore) Close() error { return s.b.Close() }
+func (s *evidenceStore) Close() error { return nil }
 
 func evidenceRecordsByID(records []evidenceRecord, scope domain.Scope, evidenceID string) []evidenceRecord {
 	var out []evidenceRecord

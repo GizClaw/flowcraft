@@ -212,7 +212,7 @@ func (s *ForgetAll) runHard(
 		}, err
 	}
 
-	n, err := s.store.DeleteByScope(ctx, state.Scope)
+	graphLinks, graphObservations, err := s.clearGraphScope(ctx, state.Scope)
 	if err != nil {
 		return diagnostic.ForgetAllDetail{
 			ScopeKey:           scopeKey,
@@ -220,6 +220,19 @@ func (s *ForgetAll) runHard(
 			ProjectionsCleared: cleared,
 			EvidenceCleared:    evidenceCount,
 			Latency:            time.Since(started),
+		}, err
+	}
+
+	n, err := s.store.DeleteByScope(ctx, state.Scope)
+	if err != nil {
+		return diagnostic.ForgetAllDetail{
+			ScopeKey:                 scopeKey,
+			Mode:                     string(domain.ForgetHard),
+			ProjectionsCleared:       cleared,
+			EvidenceCleared:          evidenceCount,
+			GraphLinksCleared:        graphLinks,
+			GraphObservationsCleared: graphObservations,
+			Latency:                  time.Since(started),
 		}, fmt.Errorf("recall.ForgetAll: store delete: %w", err)
 	}
 	if n == 0 {
@@ -227,17 +240,6 @@ func (s *ForgetAll) runHard(
 		// back to the snapshot we have so the detail is non-zero
 		// when work was actually done.
 		n = len(facts)
-	}
-	graphLinks, graphObservations, err := s.clearGraphScope(ctx, state.Scope)
-	if err != nil {
-		return diagnostic.ForgetAllDetail{
-			ScopeKey:           scopeKey,
-			Mode:               string(domain.ForgetHard),
-			Deleted:            n,
-			ProjectionsCleared: cleared,
-			EvidenceCleared:    evidenceCount,
-			Latency:            time.Since(started),
-		}, err
 	}
 	state.Deleted = n
 	state.DeletedFactIDs = factIDsFromFacts(facts)
@@ -268,21 +270,25 @@ func (s *ForgetAll) runExpire(
 	scopeKey string,
 	started time.Time,
 ) (diagnostic.StageDetail, error) {
-	facts, err := s.store.List(ctx, state.Scope, port.ListQuery{IncludeSuperseded: true})
-	if err != nil {
-		return diagnostic.ExpireRetiredDetail{
-			ScopeKey:      scopeKey,
-			ExpiresBefore: deref(state.Filter.ExpiresBefore),
-			Latency:       time.Since(started),
-		}, fmt.Errorf("recall.ExpireRetired: list: %w", err)
+	scanned := state.ExpireScanned
+	matched := append([]string(nil), state.ExpireFactIDs...)
+	if !state.ExpirePreselected {
+		facts, err := s.store.List(ctx, state.Scope, port.ListQuery{IncludeSuperseded: true})
+		if err != nil {
+			return diagnostic.ExpireRetiredDetail{
+				ScopeKey:      scopeKey,
+				ExpiresBefore: deref(state.Filter.ExpiresBefore),
+				Latency:       time.Since(started),
+			}, fmt.Errorf("recall.ExpireRetired: list: %w", err)
+		}
+		scanned = len(facts)
+		matched = filterByExpiresBefore(facts, state.Filter.ExpiresBefore)
 	}
-
-	matched := filterByExpiresBefore(facts, state.Filter.ExpiresBefore)
 	if len(matched) == 0 {
 		return diagnostic.ExpireRetiredDetail{
 			ScopeKey:      scopeKey,
 			ExpiresBefore: deref(state.Filter.ExpiresBefore),
-			Scanned:       len(facts),
+			Scanned:       scanned,
 			Latency:       time.Since(started),
 		}, nil
 	}
@@ -291,7 +297,7 @@ func (s *ForgetAll) runExpire(
 		return diagnostic.ExpireRetiredDetail{
 			ScopeKey:      scopeKey,
 			ExpiresBefore: deref(state.Filter.ExpiresBefore),
-			Scanned:       len(facts),
+			Scanned:       scanned,
 			Latency:       time.Since(started),
 		}, err
 	}
@@ -301,7 +307,7 @@ func (s *ForgetAll) runExpire(
 		return diagnostic.ExpireRetiredDetail{
 			ScopeKey:      scopeKey,
 			ExpiresBefore: deref(state.Filter.ExpiresBefore),
-			Scanned:       len(facts),
+			Scanned:       scanned,
 			Latency:       time.Since(started),
 		}, fmt.Errorf("recall.ExpireRetired: store delete: %w", err)
 	}
@@ -311,7 +317,7 @@ func (s *ForgetAll) runExpire(
 		return diagnostic.ExpireRetiredDetail{
 			ScopeKey:      scopeKey,
 			ExpiresBefore: deref(state.Filter.ExpiresBefore),
-			Scanned:       len(facts),
+			Scanned:       scanned,
 			Deleted:       len(matched),
 			Latency:       time.Since(started),
 		}, err
@@ -322,7 +328,7 @@ func (s *ForgetAll) runExpire(
 	return diagnostic.ExpireRetiredDetail{
 		ScopeKey:                 scopeKey,
 		ExpiresBefore:            deref(state.Filter.ExpiresBefore),
-		Scanned:                  len(facts),
+		Scanned:                  scanned,
 		Deleted:                  len(matched),
 		ProjectionsHit:           countProjections(s.projections),
 		GraphLinksCleared:        graphLinks,

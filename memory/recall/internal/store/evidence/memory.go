@@ -3,6 +3,7 @@ package evidence
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"sync"
 
 	"github.com/GizClaw/flowcraft/memory/recall/internal/domain"
@@ -73,19 +74,33 @@ func (s *MemoryStore) Append(_ context.Context, scope domain.Scope, factID strin
 	for _, id := range sh.byFact[factID] {
 		existing[id] = struct{}{}
 	}
+	normalized := make([]domain.EvidenceRef, 0, len(refs))
+	seenNew := make(map[string]domain.EvidenceRef, len(refs))
 	for i, r := range refs {
 		if r.ID == "" {
 			r.ID = fmt.Sprintf("%s#%d", factID, i)
 		}
 		if _, dup := existing[r.ID]; dup {
-			// idempotent replay: overwrite payload but do not
-			// duplicate the byFact index entry.
-			sh.byID[evidenceStoreKey(factID, r.ID)] = r
+			// Idempotent replay must be byte-for-byte equivalent at
+			// the structured payload boundary; different payloads for
+			// the same evidence key indicate drift between stores.
+			if !reflect.DeepEqual(sh.byID[evidenceStoreKey(factID, r.ID)], r) {
+				return errdefs.Conflictf("recall evidence store: duplicate evidence id %q for fact %q with different payload", r.ID, factID)
+			}
 			continue
 		}
+		if prev, dup := seenNew[r.ID]; dup {
+			if !reflect.DeepEqual(prev, r) {
+				return errdefs.Conflictf("recall evidence store: duplicate evidence id %q for fact %q with different payload", r.ID, factID)
+			}
+			continue
+		}
+		seenNew[r.ID] = r
+		normalized = append(normalized, r)
+	}
+	for _, r := range normalized {
 		sh.byID[evidenceStoreKey(factID, r.ID)] = r
 		sh.byFact[factID] = append(sh.byFact[factID], r.ID)
-		existing[r.ID] = struct{}{}
 	}
 	return nil
 }

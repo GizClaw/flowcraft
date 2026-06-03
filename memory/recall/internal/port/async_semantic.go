@@ -50,6 +50,12 @@ type AsyncSemanticQueue interface {
 	Stats(ctx context.Context, filter AsyncSemanticStatsFilter) (AsyncSemanticStats, error)
 }
 
+// AsyncSemanticRequeueQueue is an optional reconcile extension for queues that
+// can reset a terminal/missing request back to pending from canonical episodes.
+type AsyncSemanticRequeueQueue interface {
+	Requeue(ctx context.Context, job AsyncSemanticJob) (AsyncSemanticReceipt, bool, error)
+}
+
 // AsyncSemanticStatsFilter scopes Stats to one scope partition.
 type AsyncSemanticStatsFilter struct {
 	Scope domain.Scope

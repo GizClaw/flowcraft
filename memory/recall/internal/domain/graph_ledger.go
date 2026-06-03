@@ -102,6 +102,15 @@ const (
 	LinkSupports FactLinkType = "supports"
 	// LinkSupersedes means one assertion replaces a prior assertion.
 	LinkSupersedes FactLinkType = "supersedes"
+	// LinkSameObservation groups assertions grounded in the same raw observation.
+	LinkSameObservation FactLinkType = "same_observation"
+	// LinkSameEventAs links assertions that describe the same observed event.
+	LinkSameEventAs FactLinkType = "same_event_as"
+	// LinkAnswersSlot links an assertion to another assertion that fills a
+	// structured slot for it (for example subject attribute -> value).
+	LinkAnswersSlot FactLinkType = "answers_slot"
+	// LinkResolvesTo links a referring assertion to the resolved assertion/entity.
+	LinkResolvesTo FactLinkType = "resolves_to"
 )
 
 // FactLink is a typed edge in the canonical memory graph.

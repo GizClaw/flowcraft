@@ -323,7 +323,68 @@ func (s *temporalStore) ListScopes(ctx context.Context, query port.ScopeListQuer
 	return scopes, rows.Err()
 }
 
-func (s *temporalStore) Close() error { return s.b.Close() }
+func (s *temporalStore) Close() error { return nil }
+
+func (s *temporalStore) ScopeGeneration(ctx context.Context, scope domain.Scope) (uint64, bool, error) {
+	if scope.PartitionKey() == "" {
+		return 0, false, errdefs.Validationf("recall postgres scope generation: scope partition is required")
+	}
+	runtimeID, userID := sqlstmt.ScopeParts(scope)
+	var generation uint64
+	var deleting bool
+	err := s.b.pool.QueryRow(ctx, `
+		SELECT generation, deleting <> 0 FROM recall_scope_generations
+		WHERE runtime_id = $1 AND user_id = $2
+	`, runtimeID, userID).Scan(&generation, &deleting)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return 0, false, nil
+		}
+		return 0, false, err
+	}
+	return generation, deleting, nil
+}
+
+func (s *temporalStore) BumpScopeGeneration(ctx context.Context, scope domain.Scope, deleting bool) (uint64, error) {
+	if scope.PartitionKey() == "" {
+		return 0, errdefs.Validationf("recall postgres scope generation: scope partition is required")
+	}
+	runtimeID, userID := sqlstmt.ScopeParts(scope)
+	deletingInt := 0
+	if deleting {
+		deletingInt = 1
+	}
+	var generation uint64
+	err := s.b.pool.QueryRow(ctx, `
+		INSERT INTO recall_scope_generations(runtime_id, user_id, generation, deleting, updated_at_ns)
+		VALUES($1,$2,1,$3,$4)
+		ON CONFLICT(runtime_id, user_id) DO UPDATE SET
+			generation = recall_scope_generations.generation + 1,
+			deleting = EXCLUDED.deleting,
+			updated_at_ns = EXCLUDED.updated_at_ns
+		RETURNING generation
+	`, runtimeID, userID, deletingInt, time.Now().UnixNano()).Scan(&generation)
+	return generation, err
+}
+
+func (s *temporalStore) SetScopeDeleting(ctx context.Context, scope domain.Scope, deleting bool) error {
+	if scope.PartitionKey() == "" {
+		return errdefs.Validationf("recall postgres scope generation: scope partition is required")
+	}
+	runtimeID, userID := sqlstmt.ScopeParts(scope)
+	deletingInt := 0
+	if deleting {
+		deletingInt = 1
+	}
+	_, err := s.b.pool.Exec(ctx, `
+		INSERT INTO recall_scope_generations(runtime_id, user_id, generation, deleting, updated_at_ns)
+		VALUES($1,$2,0,$3,$4)
+		ON CONFLICT(runtime_id, user_id) DO UPDATE SET
+			deleting = EXCLUDED.deleting,
+			updated_at_ns = EXCLUDED.updated_at_ns
+	`, runtimeID, userID, deletingInt, time.Now().UnixNano())
+	return err
+}
 
 func (s *temporalStore) factExistsTx(ctx context.Context, tx pgx.Tx, scope domain.Scope, id string) (bool, error) {
 	runtimeID, userID := sqlstmt.ScopeParts(scope)

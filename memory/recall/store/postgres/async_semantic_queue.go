@@ -71,6 +71,58 @@ func (q *asyncSemanticQueue) Enqueue(ctx context.Context, job port.AsyncSemantic
 	return port.AsyncSemanticReceipt{RequestID: job.RequestID, EnqueuedAt: now, QueueDepth: depth}, nil
 }
 
+func (q *asyncSemanticQueue) Requeue(ctx context.Context, job port.AsyncSemanticJob) (port.AsyncSemanticReceipt, bool, error) {
+	if job.RequestID == "" {
+		return port.AsyncSemanticReceipt{}, false, nil
+	}
+	job = port.CloneAsyncSemanticJob(job)
+	job.Attempt = 0
+	job.LeaseUntil = time.Time{}
+	job.LeaseToken = ""
+	runtimeID, userID := sqlstmt.ScopeParts(job.Scope)
+	raw, err := sqlstmt.EncodeJSON(job)
+	if err != nil {
+		return port.AsyncSemanticReceipt{}, false, err
+	}
+	tx, err := q.b.pool.Begin(ctx)
+	if err != nil {
+		return port.AsyncSemanticReceipt{}, false, err
+	}
+	defer tx.Rollback(ctx)
+	now := time.Now()
+	enqueuedAt := now.UnixNano()
+	err = tx.QueryRow(ctx, `SELECT enqueued_at_ns FROM recall_async_semantic_jobs WHERE request_id = $1`, job.RequestID).Scan(&enqueuedAt)
+	if err != nil && err != pgx.ErrNoRows {
+		return port.AsyncSemanticReceipt{}, false, err
+	}
+	if err == pgx.ErrNoRows {
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO recall_async_semantic_jobs(request_id, runtime_id, user_id, status, enqueued_at_ns, lease_until_ns, lease_token, attempt, failure_class, failure_err, result_json, payload_json)
+			 VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
+			job.RequestID, runtimeID, userID, sqlstmt.StatusPending, enqueuedAt, nil, "", 0, "", "", "", raw); err != nil {
+			return port.AsyncSemanticReceipt{}, false, err
+		}
+	} else {
+		if _, err := tx.Exec(ctx, `UPDATE recall_async_semantic_jobs
+			SET runtime_id = $1, user_id = $2, status = $3, lease_until_ns = NULL, lease_token = '', attempt = 0, failure_class = '', failure_err = '', result_json = '', payload_json = $4
+			WHERE request_id = $5`,
+			runtimeID, userID, sqlstmt.StatusPending, raw, job.RequestID); err != nil {
+			return port.AsyncSemanticReceipt{}, false, err
+		}
+	}
+	if err := q.replaceEpisodeRowsTx(ctx, tx, job); err != nil {
+		return port.AsyncSemanticReceipt{}, false, err
+	}
+	depth, err := q.pendingDepthTx(ctx, tx, job.Scope)
+	if err != nil {
+		return port.AsyncSemanticReceipt{}, false, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return port.AsyncSemanticReceipt{}, false, err
+	}
+	return port.AsyncSemanticReceipt{RequestID: job.RequestID, EnqueuedAt: time.Unix(0, enqueuedAt).UTC(), QueueDepth: depth}, true, nil
+}
+
 func (q *asyncSemanticQueue) Cancel(ctx context.Context, requestID string) error {
 	if requestID == "" {
 		return nil
@@ -410,6 +462,12 @@ func (q *asyncSemanticQueue) mutateLeased(ctx context.Context, requestID, leaseT
 	nextStatus, failure, resultRaw, err := mutate(&job)
 	if err != nil {
 		return err
+	}
+	if nextStatus == sqlstmt.StatusPending && job.Attempt >= sqlstmt.AsyncMaxAttempts {
+		nextStatus = sqlstmt.StatusFailed
+		failure.ErrClass = diagnostic.ErrClassPermanent
+		failure.RetryAt = time.Time{}
+		port.ScrubAsyncSemanticJobPII(&job)
 	}
 	var leaseUntil any
 	if nextStatus == sqlstmt.StatusPending {

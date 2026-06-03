@@ -38,7 +38,7 @@ func (s *ContextPack) Run(ctx context.Context, state *read.ReadState) (diagnosti
 		detail.Input = candidateSnapshotPtr(hitSnapshots(hits))
 		detail.Hits = candidateSnapshotPtr(hitSnapshots(hits))
 	}
-	hits, err := s.rerankHits(ctx, state.Query.Text, hits, &detail, captureSnapshots)
+	hits, err := s.rerankHits(ctx, state, hits, &detail, captureSnapshots)
 	if err != nil {
 		detail.Latency = time.Since(started)
 		return detail, err
@@ -54,12 +54,19 @@ func (s *ContextPack) Run(ctx context.Context, state *read.ReadState) (diagnosti
 	return detail, nil
 }
 
-func (s *ContextPack) rerankHits(ctx context.Context, query string, hits []domain.Hit, detail *diagnostic.ContextPackDetail, captureSnapshots bool) ([]domain.Hit, error) {
+func (s *ContextPack) rerankHits(ctx context.Context, state *read.ReadState, hits []domain.Hit, detail *diagnostic.ContextPackDetail, captureSnapshots bool) ([]domain.Hit, error) {
 	if s.reranker == nil || len(hits) == 0 {
 		return hits, nil
 	}
 	rerankStarted := time.Now()
-	reranked, err := s.reranker.Rerank(ctx, query, hits)
+	intent := contextPackIntent(state)
+	var reranked []domain.Hit
+	var err error
+	if structured, ok := s.reranker.(port.IntentReranker); ok {
+		reranked, err = structured.RerankWithIntent(ctx, intent, hits)
+	} else {
+		reranked, err = s.reranker.Rerank(ctx, canonicalRerankQuery(intent), hits)
+	}
 	detail.RerankLatency = time.Since(rerankStarted)
 	if err != nil {
 		detail.RerankErr = err.Error()
@@ -73,6 +80,47 @@ func (s *ContextPack) rerankHits(ctx context.Context, query string, hits []domai
 		detail.RerankedHits = candidateSnapshotPtr(hitSnapshots(reranked))
 	}
 	return reranked, nil
+}
+
+func contextPackIntent(state *read.ReadState) domain.QueryIntent {
+	if state != nil && state.Plan != nil {
+		return state.Plan.Intent
+	}
+	if state != nil && state.Intent != nil {
+		return *state.Intent
+	}
+	if state != nil {
+		return domain.QueryIntent{Text: state.Query.Text, Entities: state.Query.Entities, Subject: state.Query.Subject, Predicate: state.Query.Predicate, Object: state.Query.Object}
+	}
+	return domain.QueryIntent{}
+}
+
+func canonicalRerankQuery(intent domain.QueryIntent) string {
+	parts := appendNonEmpty(nil, intent.Text, intent.Subject, intent.Predicate, intent.Object)
+	parts = append(parts, intent.Entities...)
+	for _, kind := range intent.Kinds {
+		if kind != "" {
+			parts = append(parts, string(kind))
+		}
+	}
+	if !intent.TimeRange.IsZero() {
+		if !intent.TimeRange.From.IsZero() {
+			parts = append(parts, intent.TimeRange.From.Format("2006-01-02"))
+		}
+		if !intent.TimeRange.To.IsZero() {
+			parts = append(parts, intent.TimeRange.To.Format("2006-01-02"))
+		}
+	}
+	return strings.Join(parts, " ")
+}
+
+func appendNonEmpty(out []string, values ...string) []string {
+	for _, value := range values {
+		if value = strings.TrimSpace(value); value != "" {
+			out = append(out, value)
+		}
+	}
+	return out
 }
 
 // BuildGroundedHits finalizes recall output by adding query-relevant
@@ -348,7 +396,7 @@ func contextPackingPool(state *read.ReadState) []domain.ContextItem {
 	if len(state.AfterTrust) > 0 {
 		return state.AfterTrust
 	}
-	if state.PolicyFiltered {
+	if state.PolicyFiltered || state.AssessmentApplied {
 		return state.AfterTrust
 	}
 	if len(state.MergedItems) > 0 {

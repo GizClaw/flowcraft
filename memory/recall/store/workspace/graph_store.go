@@ -163,7 +163,7 @@ func (s *observationStore) DeleteByScope(ctx context.Context, scope domain.Scope
 	return deleted, s.b.save(ctx, st)
 }
 
-func (s *observationStore) Close() error { return s.b.Close() }
+func (s *observationStore) Close() error { return nil }
 
 type linkStore struct {
 	b *Backend
@@ -175,7 +175,7 @@ func (s *linkStore) Append(ctx context.Context, links []domain.FactLink) error {
 	}
 	staged := make([]domain.FactLink, 0, len(links))
 	seenIDs := map[string]domain.FactLink{}
-	seenMergeKeys := map[string]struct{}{}
+	seenMergeKeys := map[string]domain.FactLink{}
 	for _, link := range links {
 		if err := validateLink(link, "workspace"); err != nil {
 			return err
@@ -190,10 +190,13 @@ func (s *linkStore) Append(ctx context.Context, links []domain.FactLink) error {
 		seenIDs[idKey] = link.Clone()
 		if link.MergeKey != "" {
 			mergeKey := factKey(link.Scope, link.MergeKey)
-			if _, ok := seenMergeKeys[mergeKey]; ok {
+			if prev, ok := seenMergeKeys[mergeKey]; ok {
+				if !linksEquivalentForMergeKey(prev.Clone(), link.Clone()) {
+					return errdefs.Conflictf("recall workspace link: duplicate merge key %q within append batch", link.MergeKey)
+				}
 				continue
 			}
-			seenMergeKeys[mergeKey] = struct{}{}
+			seenMergeKeys[mergeKey] = link.Clone()
 		}
 		staged = append(staged, link.Clone())
 	}
@@ -205,8 +208,13 @@ func (s *linkStore) Append(ctx context.Context, links []domain.FactLink) error {
 		return err
 	}
 	for _, link := range staged {
-		if link.MergeKey != "" && linkMergeKeyIndex(st.Links, link.Scope, link.MergeKey) >= 0 {
-			continue
+		if link.MergeKey != "" {
+			if idx := linkMergeKeyIndex(st.Links, link.Scope, link.MergeKey); idx >= 0 {
+				if !linksEquivalentForMergeKey(st.Links[idx].Clone(), link.Clone()) {
+					return errdefs.Conflictf("recall workspace link: duplicate merge key %q with different payload", link.MergeKey)
+				}
+				continue
+			}
 		}
 		if idx := linkIndex(st.Links, link.Scope, link.ID); idx >= 0 {
 			if !reflect.DeepEqual(st.Links[idx].Clone(), link.Clone()) {
@@ -348,7 +356,7 @@ func (s *linkStore) DeleteByScope(ctx context.Context, scope domain.Scope) (int,
 	return deleted, s.b.save(ctx, st)
 }
 
-func (s *linkStore) Close() error { return s.b.Close() }
+func (s *linkStore) Close() error { return nil }
 
 func observationIndex(observations []domain.Observation, scope domain.Scope, id string) int {
 	for i, obs := range observations {
@@ -438,6 +446,13 @@ func targetSet(ids []string) map[string]struct{} {
 		targets[id] = struct{}{}
 	}
 	return targets
+}
+
+func linksEquivalentForMergeKey(a, b domain.FactLink) bool {
+	a.ID = ""
+	b.ID = ""
+	a.CreatedAt = b.CreatedAt
+	return reflect.DeepEqual(a.Clone(), b.Clone())
 }
 
 func validateLink(link domain.FactLink, backend string) error {

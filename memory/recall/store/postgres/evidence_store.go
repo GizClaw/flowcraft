@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"sort"
 
 	"github.com/GizClaw/flowcraft/memory/recall/internal/domain"
@@ -40,14 +41,32 @@ func (s *evidenceStore) Append(ctx context.Context, scope domain.Scope, factID s
 		if err != nil {
 			return err
 		}
-		if _, err := tx.Exec(ctx, `
+		tag, err := tx.Exec(ctx, `
 			INSERT INTO recall_evidence_refs(runtime_id, user_id, fact_id, evidence_id, ordinal, payload_json)
 			VALUES($1,$2,$3,$4,$5,$6)
-			ON CONFLICT(runtime_id, user_id, fact_id, evidence_id) DO UPDATE SET
-				ordinal = excluded.ordinal,
-				payload_json = excluded.payload_json
-		`, runtimeID, userID, factID, ref.ID, i, payload); err != nil {
+			ON CONFLICT(runtime_id, user_id, fact_id, evidence_id) DO NOTHING
+		`, runtimeID, userID, factID, ref.ID, i, payload)
+		if err != nil {
 			return err
+		}
+		if tag.RowsAffected() > 0 {
+			continue
+		}
+		var existingOrdinal int
+		var existingPayload string
+		if err := tx.QueryRow(ctx, `
+			SELECT ordinal, payload_json FROM recall_evidence_refs
+			WHERE runtime_id = $1 AND user_id = $2 AND fact_id = $3 AND evidence_id = $4
+			FOR UPDATE
+		`, runtimeID, userID, factID, ref.ID).Scan(&existingOrdinal, &existingPayload); err != nil {
+			return err
+		}
+		existingRef, err := sqlstmt.DecodeJSON[domain.EvidenceRef](existingPayload)
+		if err != nil {
+			return err
+		}
+		if existingOrdinal != i || !reflect.DeepEqual(existingRef, ref) {
+			return errdefs.Conflictf("recall postgres evidence: duplicate evidence id %q for fact %q with different payload", ref.ID, factID)
 		}
 	}
 	return tx.Commit(ctx)
@@ -155,6 +174,6 @@ func (s *evidenceStore) ForgetByFact(ctx context.Context, scope domain.Scope, fa
 	return err
 }
 
-func (s *evidenceStore) Close() error { return s.b.Close() }
+func (s *evidenceStore) Close() error { return nil }
 
 var _ port.EvidenceStore = (*evidenceStore)(nil)

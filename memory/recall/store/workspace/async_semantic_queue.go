@@ -45,6 +45,42 @@ func (q *asyncSemanticQueue) Enqueue(ctx context.Context, job port.AsyncSemantic
 	return port.AsyncSemanticReceipt{RequestID: job.RequestID, EnqueuedAt: now, QueueDepth: depth}, nil
 }
 
+func (q *asyncSemanticQueue) Requeue(ctx context.Context, job port.AsyncSemanticJob) (port.AsyncSemanticReceipt, bool, error) {
+	if job.RequestID == "" {
+		return port.AsyncSemanticReceipt{}, false, nil
+	}
+	job = port.CloneAsyncSemanticJob(job)
+	job.Attempt = 0
+	job.LeaseUntil = time.Time{}
+	job.LeaseToken = ""
+	q.b.mu.Lock()
+	defer q.b.mu.Unlock()
+	st, err := q.b.load(ctx)
+	if err != nil {
+		return port.AsyncSemanticReceipt{}, false, err
+	}
+	now := time.Now()
+	enqueuedAt := now
+	if idx := asyncIndex(st.Async, job.RequestID); idx >= 0 {
+		enqueuedAt = st.Async[idx].EnqueuedAt
+		st.Async[idx].Job = job
+		st.Async[idx].Status = sqlstmt.StatusPending
+		st.Async[idx].Result = port.AsyncSemanticResult{}
+		st.Async[idx].Failure = port.AsyncSemanticFailure{}
+	} else {
+		st.Async = append(st.Async, asyncSemanticRecord{
+			Job:        job,
+			Status:     sqlstmt.StatusPending,
+			EnqueuedAt: enqueuedAt,
+		})
+	}
+	depth := asyncPendingDepth(st, job.Scope)
+	if err := q.b.save(ctx, st); err != nil {
+		return port.AsyncSemanticReceipt{}, false, err
+	}
+	return port.AsyncSemanticReceipt{RequestID: job.RequestID, EnqueuedAt: enqueuedAt, QueueDepth: depth}, true, nil
+}
+
 func (q *asyncSemanticQueue) Cancel(ctx context.Context, requestID string) error {
 	if requestID == "" {
 		return nil
@@ -227,6 +263,13 @@ func (q *asyncSemanticQueue) Fail(ctx context.Context, requestID, leaseToken str
 			retryAt = time.Now().Add(sqlstmt.AsyncRetryBackoff)
 		}
 		r.Job.LeaseUntil = retryAt
+		if r.Job.Attempt >= sqlstmt.AsyncMaxAttempts {
+			r.Status = sqlstmt.StatusFailed
+			r.Job.LeaseUntil = time.Time{}
+			r.Failure.ErrClass = diagnostic.ErrClassPermanent
+			r.Failure.RetryAt = time.Time{}
+			port.ScrubAsyncSemanticJobPII(&r.Job)
+		}
 	})
 }
 

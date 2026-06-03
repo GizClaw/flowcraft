@@ -60,9 +60,13 @@ const (
 	GraphNodeAssertion       = domain.GraphNodeAssertion
 	GraphNodeLink            = domain.GraphNodeLink
 
-	LinkDerivedFrom = domain.LinkDerivedFrom
-	LinkSupports    = domain.LinkSupports
-	LinkSupersedes  = domain.LinkSupersedes
+	LinkDerivedFrom     = domain.LinkDerivedFrom
+	LinkSupports        = domain.LinkSupports
+	LinkSupersedes      = domain.LinkSupersedes
+	LinkSameObservation = domain.LinkSameObservation
+	LinkSameEventAs     = domain.LinkSameEventAs
+	LinkAnswersSlot     = domain.LinkAnswersSlot
+	LinkResolvesTo      = domain.LinkResolvesTo
 )
 
 // MergeHints are LLM-supplied hints about merge behaviour. They are

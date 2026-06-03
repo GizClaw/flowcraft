@@ -16,7 +16,6 @@ import (
 const (
 	defaultRoot = "recall"
 	stateFile   = "state.json"
-	stateTmp    = "state.json.tmp"
 )
 
 // Store is the durable canonical ledger plus its optional scope enumerator.
@@ -96,10 +95,11 @@ func (b *Backend) statePath() string {
 }
 
 func (b *Backend) stateTmpPath() string {
+	tmp := "." + stateFile + ".tmp." + newLeaseToken()
 	if b.root == "" {
-		return stateTmp
+		return tmp
 	}
-	return path.Join(b.root, stateTmp)
+	return path.Join(b.root, tmp)
 }
 
 func (b *Backend) load(ctx context.Context) (state, error) {
@@ -118,10 +118,15 @@ func (b *Backend) save(ctx context.Context, st state) error {
 	if err != nil {
 		return err
 	}
-	if err := b.ws.Write(ctx, b.stateTmpPath(), raw); err != nil {
+	tmp := b.stateTmpPath()
+	if err := b.ws.Write(ctx, tmp, raw); err != nil {
 		return err
 	}
-	return b.ws.Rename(ctx, b.stateTmpPath(), b.statePath())
+	if err := b.ws.Rename(ctx, tmp, b.statePath()); err != nil {
+		_ = b.ws.Delete(ctx, tmp)
+		return err
+	}
+	return nil
 }
 
 func samePartition(a, b domain.Scope) bool {

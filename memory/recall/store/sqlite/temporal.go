@@ -322,7 +322,86 @@ func (s *temporalStore) ListScopes(ctx context.Context, query port.ScopeListQuer
 	return scopes, rows.Err()
 }
 
-func (s *temporalStore) Close() error { return s.b.Close() }
+func (s *temporalStore) Close() error { return nil }
+
+func (s *temporalStore) ScopeGeneration(ctx context.Context, scope domain.Scope) (uint64, bool, error) {
+	if scope.PartitionKey() == "" {
+		return 0, false, errdefs.Validationf("recall sqlite scope generation: scope partition is required")
+	}
+	runtimeID, userID := sqlstmt.ScopeParts(scope)
+	var generation uint64
+	var deleting int
+	err := s.b.db.QueryRowContext(ctx, `
+		SELECT generation, deleting FROM recall_scope_generations
+		WHERE runtime_id = ? AND user_id = ?
+	`, runtimeID, userID).Scan(&generation, &deleting)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return 0, false, nil
+		}
+		return 0, false, err
+	}
+	return generation, deleting != 0, nil
+}
+
+func (s *temporalStore) BumpScopeGeneration(ctx context.Context, scope domain.Scope, deleting bool) (uint64, error) {
+	if scope.PartitionKey() == "" {
+		return 0, errdefs.Validationf("recall sqlite scope generation: scope partition is required")
+	}
+	tx, err := s.b.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+	runtimeID, userID := sqlstmt.ScopeParts(scope)
+	var current uint64
+	err = tx.QueryRowContext(ctx, `
+		SELECT generation FROM recall_scope_generations
+		WHERE runtime_id = ? AND user_id = ?
+	`, runtimeID, userID).Scan(&current)
+	if err != nil && err != sql.ErrNoRows {
+		return 0, err
+	}
+	next := current + 1
+	deletingInt := 0
+	if deleting {
+		deletingInt = 1
+	}
+	if err == sql.ErrNoRows {
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO recall_scope_generations(runtime_id, user_id, generation, deleting, updated_at_ns)
+			VALUES(?,?,?,?,?)
+		`, runtimeID, userID, next, deletingInt, time.Now().UnixNano()); err != nil {
+			return 0, err
+		}
+	} else if _, err := tx.ExecContext(ctx, `
+		UPDATE recall_scope_generations
+		SET generation = ?, deleting = ?, updated_at_ns = ?
+		WHERE runtime_id = ? AND user_id = ?
+	`, next, deletingInt, time.Now().UnixNano(), runtimeID, userID); err != nil {
+		return 0, err
+	}
+	return next, tx.Commit()
+}
+
+func (s *temporalStore) SetScopeDeleting(ctx context.Context, scope domain.Scope, deleting bool) error {
+	if scope.PartitionKey() == "" {
+		return errdefs.Validationf("recall sqlite scope generation: scope partition is required")
+	}
+	runtimeID, userID := sqlstmt.ScopeParts(scope)
+	deletingInt := 0
+	if deleting {
+		deletingInt = 1
+	}
+	_, err := s.b.db.ExecContext(ctx, `
+		INSERT INTO recall_scope_generations(runtime_id, user_id, generation, deleting, updated_at_ns)
+		VALUES(?,?,?,?,?)
+		ON CONFLICT(runtime_id, user_id) DO UPDATE SET
+			deleting = excluded.deleting,
+			updated_at_ns = excluded.updated_at_ns
+	`, runtimeID, userID, 0, deletingInt, time.Now().UnixNano())
+	return err
+}
 
 func (s *temporalStore) factExistsTx(ctx context.Context, tx *sql.Tx, scope domain.Scope, id string) (bool, error) {
 	runtimeID, userID := sqlstmt.ScopeParts(scope)

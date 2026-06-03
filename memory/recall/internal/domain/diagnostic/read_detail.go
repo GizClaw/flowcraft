@@ -165,6 +165,30 @@ type PolicyFilterDetail struct {
 
 func (PolicyFilterDetail) isStageDetail() {}
 
+// CandidateAssessmentDetail records centralized relevance assessment after
+// discovery/policy and before ranking. Discovery stages may add candidates, but
+// this stage owns the final read-side relevance score.
+type CandidateAssessmentDetail struct {
+	InputCount  int
+	OutputCount int
+	Dropped     int
+	Components  []CandidateAssessmentComponent
+	Items       *[]CandidateSnapshot
+}
+
+func (CandidateAssessmentDetail) isStageDetail() {}
+
+type CandidateAssessmentComponent struct {
+	ID              string
+	Kind            string
+	SupportScore    float64
+	StructuredScore float64
+	LiteralScore    float64
+	SourcePrior     float64
+	RelevanceScore  float64
+	DropReason      string
+}
+
 // RankDetail —— read/rank stage. Captures the post-fusion / pre-hits
 // ranker's effect on the candidate pool.
 type RankDetail struct {

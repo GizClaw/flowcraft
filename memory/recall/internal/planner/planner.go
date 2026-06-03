@@ -6,6 +6,7 @@ package planner
 
 import (
 	"context"
+	"math"
 	"slices"
 
 	"github.com/GizClaw/flowcraft/memory/recall/internal/domain"
@@ -135,7 +136,8 @@ func (r *RecallStrategyPlanner) Plan(_ context.Context, input port.PlannerInput)
 	}
 
 	order := r.buildSourceOrder(intent)
-	budgets := allocateBudgets(order, limit)
+	weights := r.activeWeights(intent, order)
+	budgets := allocateBudgets(order, limit, weights, r.RetrievalShare)
 
 	return domain.QueryPlan{
 		Intent:        intent,
@@ -143,6 +145,7 @@ func (r *RecallStrategyPlanner) Plan(_ context.Context, input port.PlannerInput)
 		SourceOrder:   order,
 		SourceBudgets: budgets,
 		TotalCap:      limit,
+		LensWeights:   weights,
 		TaskIntents:   inferTaskIntents(intent),
 	}, nil
 }
@@ -237,6 +240,30 @@ func (r *RecallStrategyPlanner) buildSourceOrder(intent domain.QueryIntent) []st
 	return order
 }
 
+func (r *RecallStrategyPlanner) activeWeights(intent domain.QueryIntent, order []string) map[string]float64 {
+	specs := r.Specs
+	if len(specs) == 0 {
+		specs = builtinSpecs()
+	}
+	byName := make(map[string]float64, len(specs))
+	for _, spec := range specs {
+		weight := spec.Weight
+		if weight <= 0 {
+			weight = 1
+		}
+		byName[spec.Name] = weight
+	}
+	out := make(map[string]float64, len(order))
+	for _, source := range order {
+		weight := byName[source]
+		if weight <= 0 {
+			weight = 1
+		}
+		out[source] = weight
+	}
+	return out
+}
+
 func strategyAllowsSource(intent domain.QueryIntent, source string) bool {
 	switch source {
 	case SourceRetrieval:
@@ -270,14 +297,42 @@ func strategyAllowsSource(intent domain.QueryIntent, source string) bool {
 // retrieval+entity are active the PR-3 RetrievalShare split applies.
 // Otherwise budgets are weight-normalized to sum to limit. When
 // limit < len(sources) the first limit sources each get budget 1.
-func allocateBudgets(order []string, limit int) map[string]int {
+func allocateBudgets(order []string, limit int, weights map[string]float64, retrievalShare float64) map[string]int {
 	budgets := make(map[string]int, len(order))
 	if len(order) == 0 {
 		return budgets
 	}
-	b := sourceBudget(limit)
-	for _, src := range order {
-		budgets[src] = b
+	total := sourceBudget(limit) * len(order)
+	if retrievalShare > 0 && len(order) == 2 && order[0] == SourceRetrieval && order[1] == SourceEntity {
+		retrievalBudget := int(math.Ceil(float64(total) * retrievalShare))
+		budgets[SourceRetrieval] = clampSourceBudget(retrievalBudget)
+		budgets[SourceEntity] = clampSourceBudget(total - retrievalBudget)
+		return budgets
+	}
+	var weightSum float64
+	for _, source := range order {
+		weight := weights[source]
+		if weight <= 0 {
+			weight = 1
+		}
+		weightSum += weight
+	}
+	if weightSum <= 0 {
+		weightSum = float64(len(order))
+	}
+	remaining := total
+	for i, src := range order {
+		weight := weights[src]
+		if weight <= 0 {
+			weight = 1
+		}
+		budget := int(math.Round(float64(total) * weight / weightSum))
+		if i == len(order)-1 && remaining > 0 {
+			budget = remaining
+		}
+		budget = clampSourceBudget(budget)
+		budgets[src] = budget
+		remaining -= budget
 	}
 	return budgets
 }
@@ -299,6 +354,16 @@ func FusionCandidateCap(finalCap int) int {
 		cap = 1
 	}
 	return cap
+}
+
+func clampSourceBudget(budget int) int {
+	if budget < 1 {
+		return 1
+	}
+	if budget > MaxSourceOverfetch {
+		return MaxSourceOverfetch
+	}
+	return budget
 }
 
 func sourceBudget(limit int) int {
