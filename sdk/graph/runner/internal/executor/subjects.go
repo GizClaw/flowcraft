@@ -26,6 +26,8 @@ import (
 //
 //	engine.run.<runID>.parallel.fork
 //	engine.run.<runID>.parallel.join
+//	engine.run.<runID>.parallel.branch.accept
+//	engine.run.<runID>.parallel.branch.cancel
 //	engine.run.<runID>.step.<stepActor>.skipped
 //
 // stepActor follows the engine contract documented in
@@ -56,6 +58,24 @@ func subjParallelFork(runID string) event.Subject {
 // graph-private: see subjParallelFork.
 func subjParallelJoin(runID string) event.Subject {
 	return event.Subject(fmt.Sprintf("%s%s.parallel.join", engine.SubjectPrefix, engine.SanitiseID(runID)))
+}
+
+// subjParallelBranchAccept returns
+// "engine.run.<runID>.parallel.branch.accept".
+//
+// graph-private: signals that speculative events emitted by a parallel branch
+// should be treated as retained by observers.
+func subjParallelBranchAccept(runID string) event.Subject {
+	return event.Subject(fmt.Sprintf("%s%s.parallel.branch.accept", engine.SubjectPrefix, engine.SanitiseID(runID)))
+}
+
+// subjParallelBranchCancel returns
+// "engine.run.<runID>.parallel.branch.cancel".
+//
+// graph-private: signals that speculative events emitted by a parallel branch
+// should be discarded or visually rolled back by observers.
+func subjParallelBranchCancel(runID string) event.Subject {
+	return event.Subject(fmt.Sprintf("%s%s.parallel.branch.cancel", engine.SubjectPrefix, engine.SanitiseID(runID)))
 }
 
 // subjNodeSkipped returns "engine.run.<runID>.step.<nodeID>.skipped".

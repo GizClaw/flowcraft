@@ -185,6 +185,14 @@ func validateStreamDelta(p StreamDeltaPayload) error {
 			return fmt.Errorf("engine: stream delta tool_result requires ToolCallID")
 		}
 		return nil
+	case StreamDeltaParallelBranchAccept, StreamDeltaParallelBranchCancel:
+		if p.ForkID == "" {
+			return fmt.Errorf("engine: stream delta %s requires ForkID", p.Type)
+		}
+		if p.BranchID == "" {
+			return fmt.Errorf("engine: stream delta %s requires BranchID", p.Type)
+		}
+		return nil
 	case "":
 		return fmt.Errorf("engine: stream delta requires Type")
 	default:

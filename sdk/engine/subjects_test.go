@@ -264,6 +264,48 @@ func TestDecodeStreamDelta_CancelledToolResult(t *testing.T) {
 	}
 }
 
+func TestDecodeStreamDelta_ParallelBranchControl(t *testing.T) {
+	acceptEnv := mustEnvelope(t,
+		engine.SubjectStreamDelta("r1", "branch-a"),
+		map[string]any{
+			"type":        "parallel_branch_accept",
+			"fork_id":     "r1:start",
+			"branch_id":   "branch-a",
+			"speculative": true,
+		},
+	)
+	accept, err := engine.DecodeStreamDelta(acceptEnv)
+	if err != nil {
+		t.Fatalf("decode accept: %v", err)
+	}
+	if accept.Type != engine.StreamDeltaParallelBranchAccept ||
+		accept.ForkID != "r1:start" ||
+		accept.BranchID != "branch-a" ||
+		!accept.Speculative {
+		t.Fatalf("accept payload = %+v", accept)
+	}
+
+	cancelEnv := mustEnvelope(t,
+		engine.SubjectStreamDelta("r1", "branch-b"),
+		map[string]any{
+			"type":      "parallel_branch_cancel",
+			"fork_id":   "r1:start",
+			"branch_id": "branch-b",
+			"reason":    "intent rejected",
+		},
+	)
+	cancel, err := engine.DecodeStreamDelta(cancelEnv)
+	if err != nil {
+		t.Fatalf("decode cancel: %v", err)
+	}
+	if cancel.Type != engine.StreamDeltaParallelBranchCancel ||
+		cancel.ForkID != "r1:start" ||
+		cancel.BranchID != "branch-b" ||
+		cancel.Reason != "intent rejected" {
+		t.Fatalf("cancel payload = %+v", cancel)
+	}
+}
+
 func TestDecodeStreamDelta_EmptyPayload(t *testing.T) {
 	env := event.Envelope{Subject: engine.SubjectStreamDelta("r1", "s1")}
 	if _, err := engine.DecodeStreamDelta(env); err == nil {

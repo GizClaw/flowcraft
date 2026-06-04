@@ -235,6 +235,16 @@ const (
 	// Required fields: ToolCallID, Content. Recommended: Name,
 	// IsError, Cancelled.
 	StreamDeltaToolResult StreamDeltaType = "tool_result"
+
+	// StreamDeltaParallelBranchAccept marks a speculative parallel
+	// branch's stream output as accepted by the graph runner.
+	// Required fields: ForkID, BranchID.
+	StreamDeltaParallelBranchAccept StreamDeltaType = "parallel_branch_accept"
+
+	// StreamDeltaParallelBranchCancel marks a speculative parallel
+	// branch's stream output as canceled/rolled back by the graph runner.
+	// Required fields: ForkID, BranchID. Recommended: Reason.
+	StreamDeltaParallelBranchCancel StreamDeltaType = "parallel_branch_cancel"
 )
 
 // StreamDeltaPayload is the canonical decoded shape of a
@@ -253,6 +263,8 @@ const (
 //	token          Content                —
 //	tool_call      ID, Name               Arguments
 //	tool_result    ToolCallID, Content    Name, IsError, Cancelled
+//	parallel_branch_accept ForkID, BranchID —
+//	parallel_branch_cancel ForkID, BranchID Reason
 type StreamDeltaPayload struct {
 	// Type discriminates the payload variant. See StreamDeltaType
 	// constants for the standard values.
@@ -288,6 +300,21 @@ type StreamDeltaPayload struct {
 	// cancellation (the call was never dispatched because the round
 	// was interrupted). Set on "tool_result" only.
 	Cancelled bool `json:"cancelled,omitempty"`
+
+	// Speculative reports whether the delta belongs to a parallel branch
+	// whose output has not yet been accepted into the parent board.
+	Speculative bool `json:"speculative,omitempty"`
+
+	// ForkID identifies the graph-runner parallel fork for speculative
+	// branch deltas and parallel_branch_* control deltas.
+	ForkID string `json:"fork_id,omitempty"`
+
+	// BranchID identifies the branch within ForkID for speculative
+	// branch deltas and parallel_branch_* control deltas.
+	BranchID string `json:"branch_id,omitempty"`
+
+	// Reason carries the rollback/abort reason for parallel_branch_cancel.
+	Reason string `json:"reason,omitempty"`
 }
 
 // DecodeStreamDelta extracts the payload of a stream-delta envelope.
