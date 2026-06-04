@@ -15,13 +15,13 @@ type passthroughExtractor struct{}
 
 var _ port.Extractor = passthroughExtractor{}
 
-func (passthroughExtractor) Extract(_ context.Context, input port.IngestInput) ([]domain.TemporalFact, error) {
+func (passthroughExtractor) CompileExtraction(_ context.Context, input port.IngestInput) (port.ExtractionResult, error) {
 	if len(input.Facts) == 0 {
-		return nil, nil
+		return port.ExtractionResult{}, nil
 	}
 	out := make([]domain.TemporalFact, len(input.Facts))
 	for i, f := range input.Facts {
 		out[i] = f.Clone()
 	}
-	return out, nil
+	return port.ExtractionResult{PromotedFacts: out}, nil
 }

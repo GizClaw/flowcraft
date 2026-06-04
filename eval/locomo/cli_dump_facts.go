@@ -1,6 +1,7 @@
 package locomo
 
 import (
+	"fmt"
 	"strings"
 	"time"
 
@@ -11,18 +12,19 @@ import (
 )
 
 type factDumpRecord struct {
-	TS               time.Time                        `json:"ts"`
-	Type             string                           `json:"type,omitempty"`
-	Runner           string                           `json:"runner,omitempty"`
-	Scope            factDumpScope                    `json:"scope"`
-	ExtractCount     int                              `json:"extract_count,omitempty"`
-	ExtractTokens    *diagnostics.ExtractorTokenUsage `json:"extract_tokens,omitempty"`
-	AvgExtractTokens *factDumpAvgTokens               `json:"avg_extract_tokens,omitempty"`
-	ExtractGuard     *diagnostics.ExtractorGuard      `json:"extract_guard,omitempty"`
-	Batch            *factDumpBatch                   `json:"batch,omitempty"`
-	Error            string                           `json:"error,omitempty"`
-	Facts            []factDumpFact                   `json:"facts"`
-	RejectedFacts    []factDumpRejectedFact           `json:"rejected_facts,omitempty"`
+	TS                time.Time                            `json:"ts"`
+	Type              string                               `json:"type,omitempty"`
+	Runner            string                               `json:"runner,omitempty"`
+	Scope             factDumpScope                        `json:"scope"`
+	ExtractCount      int                                  `json:"extract_count,omitempty"`
+	ExtractTokens     *diagnostics.ExtractorTokenUsage     `json:"extract_tokens,omitempty"`
+	AvgExtractTokens  *factDumpAvgTokens                   `json:"avg_extract_tokens,omitempty"`
+	ExtractGuard      *diagnostics.ExtractorGuard          `json:"extract_guard,omitempty"`
+	ProposalLifecycle *diagnostics.ProposalLifecycleDetail `json:"proposal_lifecycle,omitempty"`
+	Batch             *factDumpBatch                       `json:"batch,omitempty"`
+	Error             string                               `json:"error,omitempty"`
+	Facts             []factDumpFact                       `json:"facts"`
+	RejectedProposals []factDumpRejectedProposal           `json:"rejected_proposals,omitempty"`
 }
 
 type factDumpTokenStats struct {
@@ -45,19 +47,19 @@ type factDumpScope struct {
 }
 
 type factDumpBatch struct {
-	ConversationID   string         `json:"conversation_id,omitempty"`
-	SessionID        string         `json:"session_id,omitempty"`
-	SessionIDs       []string       `json:"session_ids,omitempty"`
-	BatchNumber      int            `json:"batch_number,omitempty"`
-	BatchTotal       int            `json:"batch_total,omitempty"`
-	TurnCount        int            `json:"turn_count,omitempty"`
-	TurnsWithText    int            `json:"turns_with_text,omitempty"`
-	RecentMessages   int            `json:"recent_messages,omitempty"`
-	Anchors          int            `json:"anchors,omitempty"`
-	EvidenceIDs      []string       `json:"evidence_ids,omitempty"`
-	SourceMessageIDs []string       `json:"source_message_ids,omitempty"`
-	InputTextChars   int            `json:"input_text_chars,omitempty"`
-	Turns            []factDumpTurn `json:"turns,omitempty"`
+	ConversationID    string         `json:"conversation_id,omitempty"`
+	SessionID         string         `json:"session_id,omitempty"`
+	SessionIDs        []string       `json:"session_ids,omitempty"`
+	BatchNumber       int            `json:"batch_number,omitempty"`
+	BatchTotal        int            `json:"batch_total,omitempty"`
+	TurnCount         int            `json:"turn_count,omitempty"`
+	TurnsWithText     int            `json:"turns_with_text,omitempty"`
+	RecentMessages    int            `json:"recent_messages,omitempty"`
+	ExistingFactHints int            `json:"existing_fact_hints,omitempty"`
+	EvidenceIDs       []string       `json:"evidence_ids,omitempty"`
+	SourceMessageIDs  []string       `json:"source_message_ids,omitempty"`
+	InputTextChars    int            `json:"input_text_chars,omitempty"`
+	Turns             []factDumpTurn `json:"turns,omitempty"`
 }
 
 type factDumpTurn struct {
@@ -119,9 +121,6 @@ type factDumpFact struct {
 	Predicate        string                `json:"predicate,omitempty"`
 	Object           string                `json:"object,omitempty"`
 	Location         string                `json:"location,omitempty"`
-	Polarity         string                `json:"polarity,omitempty"`
-	Modality         string                `json:"modality,omitempty"`
-	Certainty        string                `json:"certainty,omitempty"`
 	Entities         []string              `json:"entities,omitempty"`
 	Participants     []string              `json:"participants,omitempty"`
 	EvidenceIDs      []string              `json:"evidence_ids,omitempty"`
@@ -134,9 +133,10 @@ type factDumpFact struct {
 	Source           string                `json:"source,omitempty"`
 	Confidence       float64               `json:"confidence,omitempty"`
 	Episodic         bool                  `json:"episodic,omitempty"`
+	Parameter        *factDumpParameter    `json:"parameter,omitempty"`
 }
 
-type factDumpRejectedFact struct {
+type factDumpRejectedProposal struct {
 	Content     string   `json:"content,omitempty"`
 	Kind        string   `json:"kind,omitempty"`
 	Subject     string   `json:"subject,omitempty"`
@@ -155,6 +155,20 @@ type factDumpEvidenceRef struct {
 	Role          string `json:"role,omitempty"`
 	Text          string `json:"text,omitempty"`
 	Timestamp     string `json:"timestamp,omitempty"`
+}
+
+type factDumpParameter struct {
+	Owner              string `json:"owner,omitempty"`
+	Namespace          string `json:"namespace,omitempty"`
+	Name               string `json:"name,omitempty"`
+	NameSurface        string `json:"name_surface,omitempty"`
+	Operation          string `json:"operation,omitempty"`
+	Value              string `json:"value,omitempty"`
+	RawValue           string `json:"raw_value,omitempty"`
+	ValueKind          string `json:"value_kind,omitempty"`
+	Unit               string `json:"unit,omitempty"`
+	Condition          string `json:"condition,omitempty"`
+	ConstraintOperator string `json:"constraint_operator,omitempty"`
 }
 
 func newV1FactsDump(ts time.Time, scope recallv1.Scope, facts []recallv1.ExtractedFact) factDumpRecord {
@@ -201,9 +215,12 @@ func newV2FactsDump(ts time.Time, scope runners.Scope, req recall.SaveRequest, f
 	}
 	if diag != nil && diag.ExtractorGuard.Candidates > 0 {
 		guard := diag.ExtractorGuard
-		out.RejectedFacts = factDumpRejectedFacts(guard.RejectedFacts)
-		guard.RejectedFacts = nil
+		out.RejectedProposals = factDumpRejectedProposals(guard.RejectedProposals)
+		guard.RejectedProposals = nil
 		out.ExtractGuard = &guard
+	}
+	if diag != nil {
+		out.ProposalLifecycle = proposalLifecycleForDump(diag.ProposalLifecycle)
 	}
 	for _, f := range facts {
 		rec := factDumpFact{
@@ -214,9 +231,6 @@ func newV2FactsDump(ts time.Time, scope runners.Scope, req recall.SaveRequest, f
 			Predicate:        f.Predicate,
 			Object:           f.Object,
 			Location:         f.Location,
-			Polarity:         string(f.Polarity),
-			Modality:         string(f.Modality),
-			Certainty:        string(f.Certainty),
 			Entities:         append([]string(nil), f.Entities...),
 			Participants:     append([]string(nil), f.Participants...),
 			SourceMessageIDs: append([]string(nil), f.SourceMessageIDs...),
@@ -229,6 +243,7 @@ func newV2FactsDump(ts time.Time, scope runners.Scope, req recall.SaveRequest, f
 		if f.ValidFrom != nil && !f.ValidFrom.IsZero() {
 			rec.ValidFrom = f.ValidFrom.Format("2006-01-02")
 		}
+		rec.Parameter = factDumpParameterFromFact(f)
 		for _, ref := range f.EvidenceRefs {
 			if ref.ID != "" {
 				rec.EvidenceIDs = append(rec.EvidenceIDs, ref.ID)
@@ -247,22 +262,70 @@ func newV2FactsDump(ts time.Time, scope runners.Scope, req recall.SaveRequest, f
 	return out
 }
 
-func factDumpRejectedFacts(in []diagnostics.GuardedExtractedFact) []factDumpRejectedFact {
+func proposalLifecycleForDump(lifecycle diagnostics.ProposalLifecycleDetail) *diagnostics.ProposalLifecycleDetail {
+	if lifecycle.Grounding.Input == 0 &&
+		lifecycle.Arbitration.Input == 0 &&
+		lifecycle.Promotion.Input == 0 &&
+		lifecycle.Compile.Input == 0 &&
+		len(lifecycle.ByFamily) == 0 {
+		return nil
+	}
+	return &lifecycle
+}
+
+func factDumpParameterFromFact(f recall.TemporalFact) *factDumpParameter {
+	if string(f.Kind) != "parameter" {
+		return nil
+	}
+	p := &factDumpParameter{
+		Owner:              factDumpMetadataString(f.Metadata, recall.MetaParameterOwner),
+		Namespace:          factDumpMetadataString(f.Metadata, recall.MetaParameterNamespacePath),
+		Name:               factDumpMetadataString(f.Metadata, recall.MetaParameterCanonicalName),
+		NameSurface:        factDumpMetadataString(f.Metadata, recall.MetaParameterNameSurface),
+		Operation:          factDumpMetadataString(f.Metadata, recall.MetaParameterOperation),
+		Value:              factDumpMetadataString(f.Metadata, recall.MetaParameterNormalizedValue),
+		RawValue:           factDumpMetadataString(f.Metadata, recall.MetaParameterRawValue),
+		ValueKind:          factDumpMetadataString(f.Metadata, recall.MetaParameterValueKind),
+		Unit:               factDumpMetadataString(f.Metadata, recall.MetaParameterUnit),
+		Condition:          factDumpMetadataString(f.Metadata, recall.MetaParameterCondition),
+		ConstraintOperator: factDumpMetadataString(f.Metadata, recall.MetaParameterConstraintOperator),
+	}
+	if p.Name == "" {
+		p.Name = p.NameSurface
+	}
+	if p.Value == "" {
+		p.Value = p.RawValue
+	}
+	return p
+}
+
+func factDumpMetadataString(meta map[string]any, key string) string {
+	if len(meta) == 0 {
+		return ""
+	}
+	raw, ok := meta[key]
+	if !ok {
+		return ""
+	}
+	return strings.TrimSpace(fmt.Sprint(raw))
+}
+
+func factDumpRejectedProposals(in []diagnostics.GuardedSemanticProposal) []factDumpRejectedProposal {
 	if len(in) == 0 {
 		return nil
 	}
-	out := make([]factDumpRejectedFact, 0, len(in))
-	for _, fact := range in {
-		out = append(out, factDumpRejectedFact{
-			Content:     fact.Content,
-			Kind:        fact.Kind,
-			Subject:     fact.Subject,
-			Predicate:   fact.Predicate,
-			Object:      fact.Object,
-			Entities:    append([]string(nil), fact.Entities...),
-			SourceIDs:   append([]string(nil), fact.SourceIDs...),
-			Quote:       fact.Quote,
-			GuardReason: fact.GuardReason,
+	out := make([]factDumpRejectedProposal, 0, len(in))
+	for _, proposal := range in {
+		out = append(out, factDumpRejectedProposal{
+			Content:     proposal.Content,
+			Kind:        proposal.Kind,
+			Subject:     proposal.Subject,
+			Predicate:   proposal.Predicate,
+			Object:      proposal.Object,
+			Entities:    append([]string(nil), proposal.Entities...),
+			SourceIDs:   append([]string(nil), proposal.SourceIDs...),
+			Quote:       proposal.Quote,
+			GuardReason: proposal.GuardReason,
 		})
 	}
 	return out
@@ -299,9 +362,9 @@ func batchFromSaveRequest(scope runners.Scope, req recall.SaveRequest) *factDump
 		return nil
 	}
 	b := &factDumpBatch{
-		ConversationID: conversationIDFromRunnerScope(scope),
-		RecentMessages: len(req.RecentMessages),
-		Anchors:        len(req.ExistingFactsAnchor),
+		ConversationID:    conversationIDFromRunnerScope(scope),
+		RecentMessages:    len(req.RecentMessages),
+		ExistingFactHints: len(req.ExistingFactHints),
 	}
 	sessionSeen := map[string]struct{}{}
 	evidenceSeen := map[string]struct{}{}

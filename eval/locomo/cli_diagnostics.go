@@ -31,6 +31,7 @@ type diagnosticsReport struct {
 	// owned X% of classifications" at a glance.
 	StructurizerCoverage structurizerCoverageReport  `json:"structurizer_coverage"`
 	ExtractorGuard       *diagnostics.ExtractorGuard `json:"extract_guard,omitempty"`
+	ProposalLifecycle    *proposalLifecycleReport    `json:"proposal_lifecycle,omitempty"`
 	Compiled             factQualityReport           `json:"compiled_facts"`
 	Appended             factQualityReport           `json:"appended_facts"`
 	SaveDrops            map[string]int              `json:"save_drops,omitempty"`
@@ -129,6 +130,7 @@ func writeDiagnosticsReport(path string, h *diagnostics.PipelineHealth) error {
 		InputCoverage:        toInputCoverageReport(h),
 		StructurizerCoverage: toStructurizerCoverageReport(h.StructurizerCoverage),
 		ExtractorGuard:       toExtractorGuardReport(h.ExtractorGuard),
+		ProposalLifecycle:    toProposalLifecycleReport(h.ProposalLifecycle),
 		Compiled:             toFactQualityReport(h.CompiledFacts),
 		Appended:             toFactQualityReport(h.AppendedFacts),
 		HitRenderability:     toHitReport(h.HitRenderability),
@@ -178,11 +180,25 @@ func writeDiagnosticsReport(path string, h *diagnostics.PipelineHealth) error {
 	return os.WriteFile(path, b, 0o644)
 }
 
+type proposalLifecycleReport = diagnostics.ProposalLifecycleDetail
+
+func toProposalLifecycleReport(lifecycle diagnostics.ProposalLifecycleDetail) *proposalLifecycleReport {
+	if lifecycle.Grounding.Input == 0 &&
+		lifecycle.Arbitration.Input == 0 &&
+		lifecycle.Promotion.Input == 0 &&
+		lifecycle.Compile.Input == 0 &&
+		len(lifecycle.ByFamily) == 0 {
+		return nil
+	}
+	out := proposalLifecycleReport(lifecycle)
+	return &out
+}
+
 func toExtractorGuardReport(g diagnostics.ExtractorGuard) *diagnostics.ExtractorGuard {
 	if g.Candidates == 0 {
 		return nil
 	}
-	g.RejectedFacts = nil
+	g.RejectedProposals = nil
 	if len(g.ByReason) > 0 {
 		byReason := make(map[string]int, len(g.ByReason))
 		for reason, count := range g.ByReason {

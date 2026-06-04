@@ -82,6 +82,27 @@ func TestBuildDeltaLinksAssertionToObservationSpan(t *testing.T) {
 	t.Fatalf("missing assertion -> observation_span link in %#v", delta.Links)
 }
 
+func TestBuildDelta_DoesNotEmitAnswersSlotForSingleAssertionParameter(t *testing.T) {
+	scope := domain.Scope{RuntimeID: "rt", UserID: "u"}
+	now := time.Date(2026, 6, 1, 1, 2, 3, 0, time.UTC)
+	fact := domain.TemporalFact{
+		ID:    "fact-param",
+		Scope: scope,
+		Kind:  domain.KindParameter,
+		EvidenceRefs: []domain.EvidenceRef{{
+			ObservationID: "obs-1",
+			SpanID:        "span-1",
+			Text:          "mode = fast",
+		}},
+	}
+	delta := BuildDelta(scope, []domain.TemporalFact{fact}, nil, nil, now, now, "req-1")
+	for _, link := range delta.Links {
+		if link.Type == domain.LinkAnswersSlot {
+			t.Fatalf("answers_slot should not be emitted for single-assertion parameter facts: %+v", link)
+		}
+	}
+}
+
 func TestBuildDeltaMergesSpansForSharedObservation(t *testing.T) {
 	scope := domain.Scope{RuntimeID: "rt", UserID: "u"}
 	now := time.Date(2026, 6, 1, 1, 2, 3, 0, time.UTC)
@@ -120,11 +141,37 @@ func TestBuildDeltaMergesSpansForSharedObservation(t *testing.T) {
 		spanIDs[span.ID] = true
 	}
 	for _, link := range delta.Links {
+		if link.Type == domain.LinkSameEventAs {
+			t.Fatalf("same_event_as must not be inferred from shared observation alone: %+v", link)
+		}
 		if link.To.Kind == domain.GraphNodeObservationSpan && !spanIDs[link.To.ID] {
 			t.Fatalf("link points at missing span %q; spans=%#v link=%#v", link.To.ID, delta.Observations[0].Spans, link)
 		}
 		if link.From.Kind == domain.GraphNodeObservationSpan && !spanIDs[link.From.ID] {
 			t.Fatalf("link points from missing span %q; spans=%#v link=%#v", link.From.ID, delta.Observations[0].Spans, link)
 		}
+	}
+}
+
+func TestBuildDeltaDoesNotSynthesizeParameterEvidenceSpans(t *testing.T) {
+	scope := domain.Scope{RuntimeID: "rt", UserID: "u"}
+	now := time.Date(2026, 6, 1, 1, 2, 3, 0, time.UTC)
+	fact := domain.TemporalFact{
+		ID:      "param-1",
+		Scope:   scope,
+		Kind:    domain.KindParameter,
+		Content: "experiment has parameter temperature set to 0.2.",
+		EvidenceRefs: []domain.EvidenceRef{{
+			ID:   "source-1",
+			Text: "temperature 0.2",
+		}},
+	}
+
+	delta := BuildDelta(scope, []domain.TemporalFact{fact}, nil, nil, now, now, "req-1")
+	if len(delta.Observations) != 0 {
+		t.Fatalf("parameter facts must not synthesize observations: %#v", delta.Observations)
+	}
+	if len(delta.Links) != 0 {
+		t.Fatalf("parameter facts without canonical spans must not synthesize links: %#v", delta.Links)
 	}
 }

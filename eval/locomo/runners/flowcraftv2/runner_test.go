@@ -31,9 +31,16 @@ type fakeLLM struct {
 	response string
 }
 
-func (f fakeLLM) Generate(context.Context, []llm.Message, ...llm.GenerateOption) (llm.Message, llm.TokenUsage, error) {
+func (f fakeLLM) Generate(_ context.Context, _ []llm.Message, opts ...llm.GenerateOption) (llm.Message, llm.TokenUsage, error) {
+	got := llm.GenerateOptions{}
+	for _, opt := range opts {
+		opt(&got)
+	}
+	if got.JSONSchema != nil && strings.Contains(got.JSONSchema.Name, "segment_classifier") {
+		return llm.NewTextMessage(llm.RoleAssistant, `{"segments":[{"segment_id":"D1:3","families":["semantic_fact"]}]}`), llm.TokenUsage{}, nil
+	}
 	if f.response == "" {
-		return llm.NewTextMessage(llm.RoleAssistant, `{"facts":[]}`), llm.TokenUsage{}, nil
+		return llm.NewTextMessage(llm.RoleAssistant, `{"proposals":[]}`), llm.TokenUsage{}, nil
 	}
 	return llm.NewTextMessage(llm.RoleAssistant, f.response), llm.TokenUsage{}, nil
 }
@@ -252,9 +259,14 @@ func TestSaveSourceTurnsPersistsExtractorEvidenceRefs(t *testing.T) {
 	r, err := New(Options{
 		Name:           "flowcraft-recall-v2",
 		RetrievalIndex: retrievalmem.New(),
-		LLM: fakeLLM{response: `{"facts":[{
+		LLM: fakeLLM{response: `{"proposals":[{
 			"text":"Alice likes Paris.",
-			"evidence_refs":[{"id":"D1:3","text":"Alice likes Paris."}]
+			"kind":"preference",
+			"subject":"Alice",
+			"predicate":"likes",
+			"object":"Paris",
+			"source_ids":["D1:3"],
+			"quote":"Alice likes Paris."
 		}]}`},
 	})
 	if err != nil {
@@ -493,6 +505,11 @@ func TestStructuredAnswerBodyKeepsRecallHitStructure(t *testing.T) {
 	}}, "")
 
 	for _, want := range []string{
+		`<answer_candidates>`,
+		`content_span: "Last Friday, Melanie took her kids to a pottery workshop."`,
+		`object_span: "pottery workshop"`,
+		`event_time_candidate: "2023-07-14"`,
+		`event_time_precision: "day"`,
 		`fact_id: "f1"`,
 		`kind: "event"`,
 		`content: "Last Friday, Melanie took her kids to a pottery workshop."`,
@@ -731,14 +748,68 @@ func TestStructuredAnswerBodyRendersStructuredEventTimeOnly(t *testing.T) {
 			t.Fatalf("structured answer body missing %q:\n%s", want, body)
 		}
 	}
+	for _, want := range []string{
+		`<answer_candidates>`,
+		`event_time_candidate: "2023-07-15"`,
+		`event_time_precision: "day"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("structured answer body missing %q:\n%s", want, body)
+		}
+	}
 	for _, unwanted := range []string{
 		"EVIDENCE_PACKAGE",
-		"temporal_answer_candidates",
 		"relative_time_answer",
 	} {
 		if strings.Contains(body, unwanted) {
-			t.Fatalf("plain renderer should not emit %q:\n%s", unwanted, body)
+			t.Fatalf("structured renderer should not emit %q:\n%s", unwanted, body)
 		}
+	}
+}
+
+func TestStructuredAnswerBodyRendersCoarseRelativeTimeAsImpreciseCandidate(t *testing.T) {
+	sourceTime := time.Date(2023, 8, 3, 18, 20, 0, 0, time.UTC)
+	eventTime := time.Date(2022, 1, 1, 0, 0, 0, 0, time.UTC)
+	hit := recall.Hit{
+		Fact: recall.TemporalFact{
+			ID:         "f1",
+			Kind:       recall.FactEvent,
+			Content:    "Maria started volunteering at the homeless shelter about a year ago.",
+			Subject:    "Maria",
+			ObservedAt: sourceTime,
+			ValidFrom:  &eventTime,
+			Metadata: map[string]any{
+				"valid_from_source":    "content_relative",
+				"valid_from_text":      "about a year ago",
+				"valid_from_precision": "year",
+				"valid_from_timex":     "2022",
+			},
+		},
+		Evidence: []recall.EvidenceRef{{
+			ID:        "D27:4",
+			Text:      "I started volunteering here about a year ago.",
+			Timestamp: sourceTime,
+		}},
+	}
+	body := renderStructuredAnswerBody([]recall.Hit{hit}, "temporal")
+	for _, want := range []string{
+		`event_time_candidate: "2022"`,
+		`event_time: "2022"`,
+		`event_time_precision: "year"`,
+		`event_time_text: "about a year ago"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("structured answer body missing %q:\n%s", want, body)
+		}
+	}
+	if strings.Contains(body, `event_time: "2022-01-01"`) || strings.Contains(body, `event_time_candidate: "2022-01-01"`) {
+		t.Fatalf("coarse relative time should not render as a precise day:\n%s", body)
+	}
+	if content := groundedHitContent(hit); !strings.Contains(content, "[time: 2022]") || strings.Contains(content, "[time: 2022-01-01]") {
+		t.Fatalf("flattened artifact should preserve year precision, got: %s", content)
+	}
+	if got := fromRecallArtifact(hit).ValidFrom; got != "2022" {
+		t.Fatalf("runner artifact ValidFrom = %q, want 2022", got)
 	}
 }
 
@@ -824,6 +895,7 @@ func TestStructuredAnswerBodyRendersAllTemporalFactsWithoutDirectPromotion(t *te
 		`content: "On 2023-07-03, Melanie made a bowl."`,
 		`event_time: "2023-07-03"`,
 		`- [#2]`,
+		`event_time_candidate: "2023-08-24"`,
 		`content: "Melanie made a plate in pottery class yesterday."`,
 		`event_time: "2023-08-24"`,
 		`event_time_text: "yesterday"`,
@@ -832,8 +904,8 @@ func TestStructuredAnswerBodyRendersAllTemporalFactsWithoutDirectPromotion(t *te
 			t.Fatalf("structured answer body missing %q:\n%s", want, body)
 		}
 	}
-	if strings.Contains(body, "direct_ranks") || strings.Contains(body, "temporal_answer_candidates") {
-		t.Fatalf("plain renderer should not promote temporal candidates:\n%s", body)
+	if strings.Contains(body, "direct_ranks") {
+		t.Fatalf("structured renderer should not emit legacy direct ranks:\n%s", body)
 	}
 }
 
@@ -843,21 +915,23 @@ func TestStructuredAnswerBodyRendersListFactsWithoutCountCandidate(t *testing.T)
 		{Fact: recall.TemporalFact{ID: "f2", Kind: recall.FactState, Content: "Melanie has a dog named Oliver.", Subject: "Melanie", Predicate: "has_pet", Object: "Oliver"}, Evidence: []recall.EvidenceRef{{ID: "D1:2", Text: "Melanie has a dog named Oliver."}}},
 	}, "")
 	for _, want := range []string{
+		`<answer_candidates>`,
 		`content: "Melanie has a cat named Bailey."`,
 		`object: "Bailey"`,
+		`object_span: "Bailey"`,
 		`content: "Melanie has a dog named Oliver."`,
 		`object: "Oliver"`,
+		`object_span: "Oliver"`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("structured answer body missing %q:\n%s", want, body)
 		}
 	}
 	for _, unwanted := range []string{
-		"list_answer_candidates",
 		"count_answer_candidate",
 	} {
 		if strings.Contains(body, unwanted) {
-			t.Fatalf("plain renderer should not emit %q:\n%s", unwanted, body)
+			t.Fatalf("structured renderer should not emit %q:\n%s", unwanted, body)
 		}
 	}
 }
@@ -952,7 +1026,9 @@ func TestStructuredAnswerContextCarriesBackendPrompt(t *testing.T) {
 		"Match the form of the question",
 		"Start with the shortest supported answer span",
 		"concise comma-separated list first",
-		"inspect [#1], [#2], and [#3] carefully",
+		"inspect <answer_candidates> first",
+		"scan all ranked memories",
+		"bounded common knowledge",
 		"For WHEN questions, answer from event_time first",
 		"HOW MANY, HOW LONG, AGE, duration, count, and comparison",
 		"Reply \"I don't know\" only when no memory or evidence quote supports the requested value",

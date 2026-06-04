@@ -10,6 +10,7 @@ import (
 
 func TestCloneAsyncSemanticJob_IsolatesMutableSlices(t *testing.T) {
 	turns := []domain.TurnContext{{ID: "t1", Text: "hello"}}
+	sourceSpans := []domain.SourceEvidenceSpan{{ObservationID: "obs-1", SpanID: "span-1", Text: "hello"}}
 	msgs := []domain.Message{{Role: "user", Text: "hi"}}
 	anchor := []domain.TemporalFact{{
 		ID:       "f1",
@@ -19,12 +20,14 @@ func TestCloneAsyncSemanticJob_IsolatesMutableSlices(t *testing.T) {
 		RequestID:           "req-1",
 		EpisodeFactIDs:      []string{"epi-1"},
 		TurnsSnapshot:       turns,
+		SourceEvidenceSpans: sourceSpans,
 		RecentMessages:      msgs,
-		ExistingFactsAnchor: anchor,
+		ExistingFactHints:   anchor,
 	}
 	cloned := port.CloneAsyncSemanticJob(job)
 
 	turns[0].Text = "mutated"
+	sourceSpans[0].Text = "mutated"
 	msgs[0].Text = "mutated"
 	anchor[0].Metadata["k"] = "mutated"
 	job.EpisodeFactIDs[0] = "mutated"
@@ -32,28 +35,32 @@ func TestCloneAsyncSemanticJob_IsolatesMutableSlices(t *testing.T) {
 	if cloned.TurnsSnapshot[0].Text != "hello" {
 		t.Errorf("TurnsSnapshot = %q, want hello", cloned.TurnsSnapshot[0].Text)
 	}
+	if cloned.SourceEvidenceSpans[0].Text != "hello" {
+		t.Errorf("SourceEvidenceSpans = %q, want hello", cloned.SourceEvidenceSpans[0].Text)
+	}
 	if cloned.RecentMessages[0].Text != "hi" {
 		t.Errorf("RecentMessages = %q, want hi", cloned.RecentMessages[0].Text)
 	}
 	if cloned.EpisodeFactIDs[0] != "epi-1" {
 		t.Errorf("EpisodeFactIDs = %v, want epi-1", cloned.EpisodeFactIDs)
 	}
-	if cloned.ExistingFactsAnchor[0].Metadata["k"] != "v" {
-		t.Errorf("anchor metadata = %v, want v", cloned.ExistingFactsAnchor[0].Metadata["k"])
+	if cloned.ExistingFactHints[0].Metadata["k"] != "v" {
+		t.Errorf("anchor metadata = %v, want v", cloned.ExistingFactHints[0].Metadata["k"])
 	}
 }
 
 func TestCloneAsyncSemanticJob_PreservesScalarFields(t *testing.T) {
 	at := time.Date(2026, 5, 21, 12, 0, 0, 0, time.UTC)
 	job := port.AsyncSemanticJob{
-		RequestID:  "req-2",
-		Scope:      domain.Scope{RuntimeID: "rt", UserID: "u1"},
-		ObservedAt: at,
-		Tier:       "core",
-		Attempt:    2,
+		RequestID:    "req-2",
+		SaveOutboxID: "save-2",
+		Scope:        domain.Scope{RuntimeID: "rt", UserID: "u1"},
+		ObservedAt:   at,
+		Tier:         "core",
+		Attempt:      2,
 	}
 	cloned := port.CloneAsyncSemanticJob(job)
-	if cloned.RequestID != job.RequestID || cloned.Tier != job.Tier || cloned.Attempt != 2 {
+	if cloned.RequestID != job.RequestID || cloned.SaveOutboxID != job.SaveOutboxID || cloned.Tier != job.Tier || cloned.Attempt != 2 {
 		t.Fatalf("cloned scalars = %+v, want %+v", cloned, job)
 	}
 	if !cloned.ObservedAt.Equal(at) {

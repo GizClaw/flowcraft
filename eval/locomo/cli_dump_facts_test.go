@@ -32,9 +32,6 @@ func TestNewV2FactsDump_IncludesAuditFields(t *testing.T) {
 		Predicate:        "booked",
 		Object:           "flight to Tampa",
 		Location:         "Tampa",
-		Polarity:         recall.PolarityNegated,
-		Modality:         recall.ModalityCanceled,
-		Certainty:        recall.CertaintyUncertain,
 		Entities:         []string{"Alice", "Tampa"},
 		Participants:     []string{"Alice"},
 		SourceMessageIDs: []string{"m1"},
@@ -64,9 +61,6 @@ func TestNewV2FactsDump_IncludesAuditFields(t *testing.T) {
 	fact := rec.Facts[0]
 	if fact.ID != "f1" || fact.Kind != "event" || fact.ValidFrom != "2026-05-21" {
 		t.Fatalf("fact core fields = %+v", fact)
-	}
-	if fact.Polarity != "negated" || fact.Modality != "canceled" || fact.Certainty != "uncertain" {
-		t.Fatalf("semantic assertion fields = %+v", fact)
 	}
 	if len(fact.EvidenceIDs) != 1 || fact.EvidenceIDs[0] != "e1" {
 		t.Fatalf("evidence ids = %+v", fact.EvidenceIDs)

@@ -1,6 +1,6 @@
 // Package relation implements the optional typed-relation projection.
 //
-// It indexes projectable facts that supply a complete
+// It indexes projectable non-parameter facts that supply a complete
 // (Subject, Predicate, Object) triple for typed lookup (docs §8.3). The
 // original guard "Kind == KindRelation" was too narrow: structurized
 // event / state / preference facts frequently carry a meaningful
@@ -50,10 +50,12 @@ func (p *Projection) Name() string { return "relation" }
 
 func (p *Projection) Consistency() port.Consistency { return port.Optional }
 
-// AcceptsKind rejects KindEpisode. Episode facts are raw conversation
-// captures; routing them through the relation projection would
-// pollute the structured (subject, predicate, object) edges.
-func (p *Projection) AcceptsKind(k domain.FactKind) bool { return k != domain.KindEpisode }
+// AcceptsKind rejects raw episodes and parameter slots. Parameter facts have
+// Subject/Predicate/Object for display and merge semantics, but relation has no
+// parameter-specific handling and must not index them as typed relations.
+func (p *Projection) AcceptsKind(k domain.FactKind) bool {
+	return k != domain.KindEpisode && k != domain.KindParameter
+}
 
 // Project upserts active relation facts only.
 func (p *Projection) Project(_ context.Context, facts []domain.TemporalFact) error {
@@ -73,6 +75,9 @@ func (p *Projection) Project(_ context.Context, facts []domain.TemporalFact) err
 			removeFactLocked(sh, priorID)
 		}
 		if !domain.IsProjectable(f, now) {
+			continue
+		}
+		if f.Kind == domain.KindParameter {
 			continue
 		}
 		// Drop the Kind gate (was `Kind != KindRelation`) — see the

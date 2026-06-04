@@ -30,6 +30,7 @@ var (
 	_ diagnostic.StageDetail = diagnostic.ProjectEpisodeEvidenceDetail{}
 	_ diagnostic.StageDetail = diagnostic.EnqueueSemanticDetail{}
 	_ diagnostic.StageDetail = diagnostic.OriginStampDetail{}
+	_ diagnostic.StageDetail = diagnostic.GraphDependencyDetail{}
 	_ diagnostic.StageDetail = diagnostic.AsyncSemanticProcessDetail{}
 
 	_ diagnostic.StageDetail = diagnostic.IntentRouteDetail{}
@@ -150,6 +151,7 @@ func TestDetail_RoundTrip(t *testing.T) {
 			EpisodeFactIDs: []string{"e1", "e2"},
 			Latency:        1 * time.Millisecond,
 		}, &diagnostic.EnqueueSemanticDetail{}},
+		{"graph_dependencies", diagnostic.GraphDependencyDetail{Checked: 2, MissingDependencies: true, FailedReason: "missing_dependencies", Latency: 2 * time.Millisecond}, &diagnostic.GraphDependencyDetail{}},
 
 		{"intent_route", diagnostic.IntentRouteDetail{
 			QueryLen:       22,

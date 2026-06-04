@@ -205,7 +205,7 @@ func (r *Runner) SaveSourceTurns(ctx context.Context, scope runners.Scope, turns
 // SaveSourceTurnsWithContext implements runners.ContextualSourceTurnSaver. It
 // mirrors online Save usage: current turns are extractable source_turns, prior
 // turns from the same session are recent_context, and recalled memories are
-// existing_memory_anchors. Context sections are marked extract=false by the
+// existing_fact_hints. Context sections are marked extract=false by the
 // recall extractor prompt.
 func (r *Runner) SaveSourceTurnsWithContext(ctx context.Context, scope runners.Scope, turns []runners.RawTurn, recentTurns []runners.RawTurn) (int, time.Duration, error) {
 	if !r.hasLLM && !r.observationOnlyIngest {
@@ -221,7 +221,7 @@ func (r *Runner) SaveSourceTurnsWithContext(ctx context.Context, scope runners.S
 	if err != nil {
 		return 0, 0, err
 	}
-	req.ExistingFactsAnchor = anchors
+	req.ExistingFactHints = anchors
 	return r.runSave(ctx, scope, req)
 }
 

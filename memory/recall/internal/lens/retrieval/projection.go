@@ -602,7 +602,9 @@ func buildContent(f domain.TemporalFact) string {
 	appendPart(f.Subject)
 	appendPart(f.Predicate)
 	appendPart(f.Object)
-	appendPart(domain.SemanticTextBlob(f))
+	for _, value := range parameterSearchParts(f) {
+		appendPart(value)
+	}
 	for _, e := range f.Entities {
 		appendPart(e)
 	}
@@ -615,6 +617,30 @@ func buildContent(f domain.TemporalFact) string {
 		appendPart(ref.Text)
 	}
 	return strings.Join(parts, " ")
+}
+
+func parameterSearchParts(f domain.TemporalFact) []string {
+	if f.Kind != domain.KindParameter || len(f.Metadata) == 0 {
+		return nil
+	}
+	keys := []string{
+		domain.MetaParameterOwner,
+		domain.MetaParameterNamespacePath,
+		domain.MetaParameterNameSurface,
+		domain.MetaParameterCanonicalName,
+		domain.MetaParameterRawValue,
+		domain.MetaParameterNormalizedValue,
+		domain.MetaParameterUnit,
+		domain.MetaParameterCondition,
+		domain.MetaParameterConstraintOperator,
+	}
+	out := make([]string, 0, len(keys))
+	for _, key := range keys {
+		if raw, ok := f.Metadata[key]; ok {
+			out = append(out, fmt.Sprint(raw))
+		}
+	}
+	return out
 }
 
 // pickTimestamp resolves Doc.Timestamp from valid_from -> observed_at.

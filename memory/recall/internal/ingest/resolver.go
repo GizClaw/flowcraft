@@ -35,9 +35,9 @@ import (
 //   - Implicit (merge_key driven) supersede closes at most one
 //     prior fact — the most-recent active one — to keep the
 //     deterministic dedupe path 1:1. Explicit supersede via
-//     Supersedes / MergeHints.Supersedes supports 1:N: every
-//     listed prior fact is validated and closed atomically (D1
-//     decision, 2026-05-21).
+//     Supersedes supports 1:N: every listed prior fact is validated
+//     and closed atomically. MergeHints remain non-authoritative
+//     diagnostics/hints and do not drive canonical closure.
 type DefaultResolver struct {
 	// Clock supplies the ValidTo timestamp written when a state /
 	// preference fact closes an older revision. Defaults to
@@ -189,10 +189,9 @@ type resolverDecision struct {
 	reason string
 	// priorIDs lists the prior facts this decision closes. For
 	// actionAppend / actionNoop the slice is empty. For
-	// actionSupersede it carries at least one ID; explicit
-	// supersede (Supersedes / MergeHints.Supersedes) may carry N
-	// IDs, while implicit merge_key supersede always carries exactly
-	// one.
+	// actionSupersede it carries at least one ID; explicit Supersedes
+	// may carry N IDs, while implicit merge_key supersede always
+	// carries exactly one.
 	priorIDs []string
 	kind     domain.RevisionKind
 }
@@ -208,7 +207,7 @@ func (r *DefaultResolver) classify(ctx context.Context, view port.View, f domain
 			return resolverDecision{action: actionAppend, reason: "revision:" + string(rev.Kind), kind: rev.Kind}, nil
 		}
 	}
-	if len(f.Supersedes) > 0 || len(f.MergeHints.Supersedes) > 0 {
+	if len(f.Supersedes) > 0 {
 		decision, err := r.resolveExplicitSupersedes(ctx, view, f)
 		if err != nil {
 			return resolverDecision{}, err
@@ -232,8 +231,8 @@ func (r *DefaultResolver) classify(ctx context.Context, view port.View, f domain
 		// content is still a noop dedupe.
 		return r.dedupeOrSupersede(ctx, view, f, false)
 
-	case domain.KindState, domain.KindPreference, domain.KindProcedure:
-		// Active state / preference / procedure with a changed value supersedes
+	case domain.KindState, domain.KindPreference, domain.KindProcedure, domain.KindParameter:
+		// Active state / preference / procedure / parameter with a changed value supersedes
 		// the older revision.
 		return r.dedupeOrSupersede(ctx, view, f, true)
 
@@ -248,8 +247,9 @@ func (r *DefaultResolver) classify(ctx context.Context, view port.View, f domain
 	return resolverDecision{action: actionAppend}, nil
 }
 
-// resolveExplicitSupersedes closes facts named in Supersedes /
-// MergeHints.Supersedes without requiring a merge_key collision.
+// resolveExplicitSupersedes closes facts named in Supersedes without requiring
+// a merge_key collision. MergeHints.Supersedes is deliberately ignored here:
+// hints are not canonical authority.
 //
 // 1:N semantics: every listed prior must resolve via view.Get before
 // the resolver returns actionSupersede. Any missing prior aborts with
@@ -257,11 +257,7 @@ func (r *DefaultResolver) classify(ctx context.Context, view port.View, f domain
 // commit. Targets are deduplicated (mergeStrings already does this)
 // and returned in iteration order.
 func (r *DefaultResolver) resolveExplicitSupersedes(ctx context.Context, view port.View, f domain.TemporalFact) (resolverDecision, error) {
-	// mergeStrings dedupes across (a, b); pass both halves through
-	// it so even a single-slice input like Supersedes=[a, a, b]
-	// collapses to [a, b].
-	targets := mergeStrings(f.Supersedes, f.MergeHints.Supersedes)
-	targets = mergeStrings(nil, targets)
+	targets := mergeStrings(nil, f.Supersedes)
 	if len(targets) == 0 {
 		return resolverDecision{action: actionAppend}, nil
 	}
@@ -370,7 +366,26 @@ func canSupersede(newAgent, priorAgent string) bool {
 // The comparison purposefully ignores ID / ObservedAt / evidence /
 // salience metadata so re-observing the same fact dedupes cleanly.
 func sameContent(a, b domain.TemporalFact) bool {
+	if a.Kind == domain.KindParameter || b.Kind == domain.KindParameter {
+		return parameterValueIdentity(a) == parameterValueIdentity(b)
+	}
 	return canonicalContent(a) == canonicalContent(b)
+}
+
+func parameterValueIdentity(f domain.TemporalFact) string {
+	meta := f.Metadata
+	parts := []string{
+		string(f.Kind),
+		strings.ToLower(strings.TrimSpace(metadataString(meta, domain.MetaParameterNormalizedValue))),
+		strings.ToLower(strings.TrimSpace(metadataString(meta, domain.MetaParameterUnit))),
+		strings.ToLower(strings.TrimSpace(metadataString(meta, domain.MetaParameterConstraintOperator))),
+		strings.ToLower(canonicalParameterCondition(metadataString(meta, domain.MetaParameterCondition))),
+	}
+	if parts[1] == "" {
+		parts[1] = strings.ToLower(strings.TrimSpace(f.Object))
+	}
+	h := sha256.Sum256([]byte(strings.Join(parts, "\x00")))
+	return hex.EncodeToString(h[:])
 }
 
 func canonicalContent(f domain.TemporalFact) string {

@@ -328,6 +328,7 @@ func New(opts ...Option) (Memory, error) {
 	}, tel)
 	m.writePostRunner = write.NewRunner([]pipeline.Stage[*write.WriteState]{
 		writestages.NewResolve(cfg.resolver, cfg.store),
+		writestages.NewGraphDependencies(cfg.observationStore, cfg.linkStore),
 		writestages.NewAppend(cfg.store, tel),
 		writestages.NewValidityClose(cfg.store, fanout, tel),
 		writestages.NewCommitGraph(cfg.observationStore, cfg.linkStore, obsProjection),
@@ -342,6 +343,7 @@ func New(opts ...Option) (Memory, error) {
 	m.asyncEpisodeCanonicalRunner = write.NewRunner([]pipeline.Stage[*write.WriteState]{
 		writestages.NewAppendEpisode(cfg.store, tel),
 		writestages.NewResolve(cfg.resolver, cfg.store),
+		writestages.NewGraphDependencies(cfg.observationStore, cfg.linkStore),
 		writestages.NewAppend(cfg.store, tel),
 		writestages.NewValidityClose(cfg.store, fanout, tel),
 		writestages.NewCommitGraph(cfg.observationStore, cfg.linkStore, obsProjection),
@@ -350,11 +352,13 @@ func New(opts ...Option) (Memory, error) {
 	}, tel)
 	m.asyncSemanticWorkerPreRunner = write.NewRunner([]pipeline.Stage[*write.WriteState]{
 		writestages.NewValidate(),
+		writestages.NewCommitObservations(cfg.observationStore, obsProjection),
 		writestages.NewIngest(cfg.compiler, m.entitySnapshots),
 	}, tel)
 	m.asyncSemanticWorkerPostRunner = write.NewRunner([]pipeline.Stage[*write.WriteState]{
 		writestages.NewResolve(cfg.resolver, cfg.store),
 		writestages.NewOriginStamp(),
+		writestages.NewGraphDependencies(cfg.observationStore, cfg.linkStore),
 		writestages.NewAppend(cfg.store, tel),
 		writestages.NewValidityClose(cfg.store, fanout, tel),
 		writestages.NewCommitGraph(cfg.observationStore, cfg.linkStore, obsProjection),
@@ -525,7 +529,8 @@ func (m *memory) runSaveSync(ctx context.Context, scope Scope, req SaveRequest, 
 		Tier:                  req.Tier,
 		DiagnosticsIncludeRaw: includeRawDiagnostics,
 		RecentMessages:        req.RecentMessages,
-		ExistingFactsAnchor:   req.ExistingFactsAnchor,
+		ExistingFactHints:     req.ExistingFactHints,
+		EvidenceWindowRefs:    req.EvidenceWindowRefs,
 		// Now left zero so the ingestor's Clock (or time.Now
 		// fallback inside ingest) anchors relative-time resolution,
 		// matching the legacy runSave path that did not pass Now on
@@ -647,7 +652,8 @@ func newEpisodeState(scope Scope, req SaveRequest, withTrace, includeRawDiagnost
 		Tier:                  req.Tier,
 		DiagnosticsIncludeRaw: includeRawDiagnostics,
 		RecentMessages:        req.RecentMessages,
-		ExistingFactsAnchor:   req.ExistingFactsAnchor,
+		ExistingFactHints:     req.ExistingFactHints,
+		EvidenceWindowRefs:    req.EvidenceWindowRefs,
 		Mode:                  domain.WriteModeAsyncSemantic,
 	}
 	if withTrace {

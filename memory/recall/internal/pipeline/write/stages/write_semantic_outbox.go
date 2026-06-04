@@ -42,12 +42,15 @@ func (s *WriteSemanticOutbox) Run(ctx context.Context, state *write.WriteState) 
 	job := port.AsyncSemanticJob{
 		RequestID:           state.AsyncRequestID,
 		Scope:               state.Scope,
+		SaveOutboxID:        state.SaveOutboxID,
 		EpisodeFactIDs:      ids,
 		TurnsSnapshot:       state.Turns,
+		SourceEvidenceSpans: state.SourceEvidenceSpans,
 		ObservedAt:          state.ObservedAt,
 		Tier:                state.Tier,
 		RecentMessages:      state.RecentMessages,
-		ExistingFactsAnchor: state.ExistingFactsAnchor,
+		ExistingFactHints:   state.ExistingFactHints,
+		EvidenceWindowRefs:  state.EvidenceWindowRefs,
 	}
 	if s.queue == nil {
 		state.FailedStage = "write_semantic_outbox"

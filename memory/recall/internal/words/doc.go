@@ -6,7 +6,7 @@
 // temporal/numeric questions, canonicalizing token surfaces, or rejecting weak
 // entity anchors.
 //
-// Keep additions narrow and high precision. Complex meaning, ranking decisions,
-// and modality interpretation should live in the extractor contract, evidence
-// grounding, or dedicated parsers such as memory/text/timex.
+// Keep additions narrow and high precision. Complex meaning and ranking
+// decisions should live in assessment, evidence grounding, or dedicated parsers
+// such as memory/text/timex.
 package words

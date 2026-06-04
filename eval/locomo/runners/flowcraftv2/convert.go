@@ -52,7 +52,7 @@ func fromRecallArtifact(h recall.Hit) runners.RecallArtifact {
 		artifact.Sources = append([]string(nil), h.Sources...)
 	}
 	if h.Fact.ValidFrom != nil && !h.Fact.ValidFrom.IsZero() && rendersEventTime(h.Fact.Metadata) {
-		artifact.ValidFrom = h.Fact.ValidFrom.Format("2006-01-02")
+		artifact.ValidFrom = eventTimeDisplay(h.Fact)
 	}
 	evidence := h.Evidence
 	if len(evidence) == 0 {
@@ -107,7 +107,7 @@ func groundedHitContent(h recall.Hit) string {
 	if f.ValidFrom != nil && !f.ValidFrom.IsZero() {
 		switch validFromRenderKind(f.Metadata) {
 		case validFromRenderEventTime:
-			parts = append(parts, fmt.Sprintf("[time: %s]", f.ValidFrom.Format("2006-01-02")))
+			parts = append(parts, fmt.Sprintf("[time: %s]", eventTimeDisplay(f)))
 		case validFromRenderObservedAt:
 			parts = append(parts, fmt.Sprintf("[observed_at: %s]", f.ValidFrom.Format("2006-01-02")))
 		}

@@ -12,6 +12,10 @@ const (
 	KindRelation   FactKind = "relation"
 	KindPlan       FactKind = "plan"
 	KindNote       FactKind = "note"
+	// KindParameter is a first-class slot/configuration assertion. Parameter
+	// identity is derived from parameter metadata, not from natural-language
+	// content.
+	KindParameter FactKind = "parameter"
 	// KindEpisode is the raw conversation episode captured by the
 	// async semantic write lane. Episode facts represent durable
 	// source turns, NOT semantic conclusions, and are excluded from
@@ -23,7 +27,7 @@ const (
 // IsValid reports whether k is one of the canonical FactKinds.
 func (k FactKind) IsValid() bool {
 	switch k {
-	case KindEvent, KindState, KindPreference, KindProcedure, KindRelation, KindPlan, KindNote, KindEpisode:
+	case KindEvent, KindState, KindPreference, KindProcedure, KindRelation, KindPlan, KindNote, KindParameter, KindEpisode:
 		return true
 	}
 	return false

@@ -961,7 +961,7 @@ func batchTurnsBySession(c dataset.Conversation) []turnBatch {
 // batchTurnsByOnlineSavePoint models online writes for extractor-backed runs.
 // Each save point is a small adjacent exchange, rather than an isolated
 // utterance, so question/answer and image-sharing context stays inside
-// <source_turns>. Previous turns from the same dataset session are passed as
+// <extractable_evidence>. Previous turns from the same dataset session are passed as
 // recent context, and future turns are never included.
 func batchTurnsByOnlineSavePoint(c dataset.Conversation) []turnBatch {
 	if len(c.Turns) == 0 {

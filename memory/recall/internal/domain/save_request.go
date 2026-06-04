@@ -32,8 +32,13 @@ type SaveRequest struct {
 	// RecentMessages is optional prior-turn context for the LLM extractor.
 	RecentMessages []Message
 
-	// ExistingFactsAnchor is optional dedup context for extract.
-	ExistingFactsAnchor []TemporalFact
+	// ExistingFactHints is optional dedup/conflict context for extract.
+	ExistingFactHints []TemporalFact
+
+	// EvidenceWindowRefs explicitly marks prior raw observations/spans as
+	// extractable evidence for this Save. RecentMessages and
+	// ExistingFactHints remain non-extractable hints.
+	EvidenceWindowRefs []EvidenceWindowRef
 
 	// Mode controls write semantics. Zero value = synchronous
 	// (preserves current behaviour). WriteModeAsyncSemantic stores
@@ -65,6 +70,15 @@ type Message struct {
 	Speaker string
 	Text    string
 	Time    time.Time
+}
+
+// EvidenceWindowRef is a caller-declared pointer to canonical raw evidence
+// that may participate in this Save's extraction source set.
+type EvidenceWindowRef struct {
+	ObservationID string
+	SpanID        string
+	SourceID      string
+	SessionID     string
 }
 
 // Save-tier intent labels. These are caller-supplied importance hints on

@@ -4,6 +4,7 @@ package semantic
 
 import (
 	"context"
+	"fmt"
 	"sort"
 	"strings"
 	"sync"
@@ -88,7 +89,6 @@ func (p *Projection) Project(_ context.Context, facts []domain.TemporalFact) err
 		if !domain.IsProjectable(f, now) || !projectionKindMatches(p.name, f) {
 			continue
 		}
-		f = domain.NormalizeSemantic(f)
 		sh.byID[f.ID] = semanticEntry{
 			id:        f.ID,
 			scope:     f.Scope,
@@ -221,21 +221,47 @@ func (s *Source) Query(ctx context.Context, plan domain.QueryPlan) domain.Source
 }
 
 func projectionKindMatches(name string, f domain.TemporalFact) bool {
-	f = domain.NormalizeSemantic(f)
 	switch name {
 	case planner.SourceAssertion:
-		return (f.Subject != "" && f.Predicate != "" && f.Object != "") ||
-			f.Polarity == domain.PolarityNegated || f.Modality != domain.ModalityActual
+		if f.Kind == domain.KindParameter {
+			return true
+		}
+		return f.Subject != "" && f.Predicate != "" && f.Object != ""
 	default:
 		return false
 	}
 }
 
 func semanticSearchText(f domain.TemporalFact) string {
-	parts := []string{f.Content, f.Subject, f.Predicate, f.Object, f.Location, f.EvidenceText, domain.SemanticTextBlob(f)}
+	parts := []string{f.Content, f.Subject, f.Predicate, f.Object, f.Location, f.EvidenceText}
+	parts = append(parts, parameterSearchParts(f)...)
 	parts = append(parts, f.Entities...)
 	parts = append(parts, f.Participants...)
 	return words.CanonicalSurface(strings.Join(parts, " "))
+}
+
+func parameterSearchParts(f domain.TemporalFact) []string {
+	if f.Kind != domain.KindParameter || len(f.Metadata) == 0 {
+		return nil
+	}
+	keys := []string{
+		domain.MetaParameterOwner,
+		domain.MetaParameterNamespacePath,
+		domain.MetaParameterNameSurface,
+		domain.MetaParameterCanonicalName,
+		domain.MetaParameterRawValue,
+		domain.MetaParameterNormalizedValue,
+		domain.MetaParameterUnit,
+		domain.MetaParameterCondition,
+		domain.MetaParameterConstraintOperator,
+	}
+	out := make([]string, 0, len(keys))
+	for _, key := range keys {
+		if raw, ok := f.Metadata[key]; ok {
+			out = append(out, strings.TrimSpace(fmt.Sprint(raw)))
+		}
+	}
+	return out
 }
 
 func semanticSearchTerms(f domain.TemporalFact) map[string]struct{} {

@@ -72,7 +72,6 @@ type config struct {
 // concrete extractor selection until the default compiler is wired.
 type llmExtractorConfig struct {
 	client       llm.LLM
-	systemPrompt string
 	schemaName   string
 	temperature  float64
 	extraOptions []llm.GenerateOption
@@ -83,9 +82,6 @@ func (c *llmExtractorConfig) build() port.Extractor {
 		return nil
 	}
 	ex := ingest.NewLLMExtractor(c.client)
-	if c.systemPrompt != "" {
-		ex.System = c.systemPrompt
-	}
 	if c.schemaName != "" {
 		ex.SchemaName = c.schemaName
 	}
@@ -174,16 +170,6 @@ func newLLMExtractorOption(apply func(*llmExtractorConfig)) LLMExtractorOption {
 	return LLMExtractorOption{apply: apply}
 }
 
-// WithLLMExtractorSystemPrompt overrides the default fact extraction
-// system prompt.
-func WithLLMExtractorSystemPrompt(prompt string) LLMExtractorOption {
-	return newLLMExtractorOption(func(c *llmExtractorConfig) {
-		if prompt != "" {
-			c.systemPrompt = prompt
-		}
-	})
-}
-
 // WithLLMExtractorTemperature sets the sampling temperature. Zero
 // means "use provider default".
 func WithLLMExtractorTemperature(t float64) LLMExtractorOption {
@@ -200,6 +186,14 @@ func WithLLMExtractorSchemaName(name string) LLMExtractorOption {
 	})
 }
 
+// WithLLMExtractorProposalPrompt is retained as a no-op. Save extraction now
+// uses fixed stage-owned authority prompts for classifier and typed extractors;
+// allowing callers to replace them would bypass deterministic grounding
+// boundaries.
+func WithLLMExtractorProposalPrompt(_ string) LLMExtractorOption {
+	return newLLMExtractorOption(func(*llmExtractorConfig) {})
+}
+
 // WithLLMExtractorExtraOptions forwards provider-specific
 // llm.GenerateOption values on every extraction call (e.g. provider
 // extra params, reasoning toggles).
@@ -209,11 +203,11 @@ func WithLLMExtractorExtraOptions(opts ...llm.GenerateOption) LLMExtractorOption
 	})
 }
 
-// WithLLMExtractor enables LLM-driven fact extraction in the
+// WithLLMExtractor enables LLM-driven proposal extraction in the
 // default compiler pipeline. The supplied client is consulted on
 // Save calls whose SaveRequest carries non-empty Turns; the
-// extractor renders Turns into a canonical JSONL wire shape and
-// asks the model to emit minimal memories and supporting evidence ids.
+// extractor renders canonical extractable evidence and asks the model
+// to emit typed semantic proposals with source_ids and quotes.
 //
 // nil client falls back to the deterministic passthrough extractor.
 func WithLLMExtractor(client llm.LLM, opts ...LLMExtractorOption) Option {

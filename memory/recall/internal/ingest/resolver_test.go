@@ -101,6 +101,51 @@ func TestResolver_StateSupersedesOnChange(t *testing.T) {
 	}
 }
 
+func TestResolver_ParameterSetAndUpdateSupersedeSameSlot(t *testing.T) {
+	scope := domain.Scope{RuntimeID: "rt", UserID: "u1"}
+	baseMeta := map[string]any{
+		domain.MetaParameterOwner:           "experiment",
+		domain.MetaParameterCanonicalName:   "temperature",
+		domain.MetaParameterValueKind:       "number",
+		domain.MetaParameterNormalizedValue: "0.2",
+	}
+	oldMeta := cloneTestMeta(baseMeta)
+	oldMeta[domain.MetaParameterOperation] = "set"
+	existing := domain.TemporalFact{
+		ID:         "old",
+		Scope:      scope,
+		Kind:       domain.KindParameter,
+		Content:    "temperature = 0.2",
+		Object:     "0.2",
+		Metadata:   oldMeta,
+		MergeKey:   parameterMergeKey(domain.TemporalFact{Kind: domain.KindParameter, Scope: scope, Metadata: oldMeta}),
+		ObservedAt: time.Unix(1, 0),
+	}
+	newMeta := cloneTestMeta(baseMeta)
+	newMeta[domain.MetaParameterOperation] = "update"
+	newMeta[domain.MetaParameterNormalizedValue] = "0.3"
+	next := domain.TemporalFact{
+		ID:         "new",
+		Scope:      scope,
+		Kind:       domain.KindParameter,
+		Content:    "temperature = 0.3",
+		Object:     "0.3",
+		Metadata:   newMeta,
+		MergeKey:   parameterMergeKey(domain.TemporalFact{Kind: domain.KindParameter, Scope: scope, Metadata: newMeta}),
+		ObservedAt: time.Unix(2, 0),
+	}
+	if existing.MergeKey != next.MergeKey {
+		t.Fatalf("merge keys differ:\n%s\n%s", existing.MergeKey, next.MergeKey)
+	}
+	out, err := (&DefaultResolver{Clock: func() time.Time { return time.Unix(100, 0) }}).ResolveConflicts(context.Background(), &fakeView{facts: []domain.TemporalFact{existing}}, []domain.TemporalFact{next})
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if len(out.Facts) != 1 || len(out.Facts[0].Supersedes) != 1 || out.Facts[0].Supersedes[0] != "old" {
+		t.Fatalf("resolution = %+v, want new supersedes old", out)
+	}
+}
+
 func TestResolver_StateSupersedeChainsWithinBatch(t *testing.T) {
 	scope := domain.Scope{RuntimeID: "rt"}
 	existing := domain.TemporalFact{
@@ -371,6 +416,64 @@ func TestResolveExplicit_NSupersede_Dedup(t *testing.T) {
 	ids := []string{out.Closes[0].FactID, out.Closes[1].FactID}
 	if want := []string{"a", "b"}; !equalStrings(ids, want) {
 		t.Errorf("close ids = %v, want %v", ids, want)
+	}
+}
+
+func TestResolver_IgnoresMergeHintsSupersedesAuthority(t *testing.T) {
+	scope := domain.Scope{RuntimeID: "rt"}
+	view := &fakeView{facts: []domain.TemporalFact{{
+		ID: "prior", Scope: scope, Kind: domain.KindState, Subject: "x", Predicate: "p", Content: "old",
+	}}}
+	r := NewResolver()
+	out, err := r.ResolveConflicts(context.Background(), view, []domain.TemporalFact{{
+		ID: "new", Scope: scope, Kind: domain.KindState, Subject: "x", Predicate: "p", Content: "new",
+		MergeHints: domain.MergeHints{Supersedes: []string{"prior"}},
+	}})
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if len(out.Closes) != 0 {
+		t.Fatalf("MergeHints.Supersedes closed facts: %+v", out.Closes)
+	}
+	if len(out.Facts) != 1 || len(out.Facts[0].Supersedes) != 0 {
+		t.Fatalf("resolution = %+v, want append without canonical supersede", out)
+	}
+}
+
+func TestResolver_ParameterSameNormalizedValueNoopsAcrossOperationWording(t *testing.T) {
+	scope := domain.Scope{RuntimeID: "rt"}
+	meta := map[string]any{
+		domain.MetaParameterOwner:           "experiment",
+		domain.MetaParameterCanonicalName:   "temperature",
+		domain.MetaParameterValueKind:       "number",
+		domain.MetaParameterNormalizedValue: "0.2",
+	}
+	existing := domain.TemporalFact{
+		ID:       "old",
+		Scope:    scope,
+		Kind:     domain.KindParameter,
+		Content:  "experiment has parameter temperature set to 0.2.",
+		Object:   "0.2",
+		Metadata: cloneTestMeta(meta),
+		MergeKey: "parameter-slot",
+	}
+	nextMeta := cloneTestMeta(meta)
+	nextMeta[domain.MetaParameterOperation] = "update"
+	next := domain.TemporalFact{
+		ID:       "new",
+		Scope:    scope,
+		Kind:     domain.KindParameter,
+		Content:  "experiment has parameter temperature update to 0.2.",
+		Object:   "0.2",
+		Metadata: nextMeta,
+		MergeKey: "parameter-slot",
+	}
+	out, err := NewResolver().ResolveConflicts(context.Background(), &fakeView{facts: []domain.TemporalFact{existing}}, []domain.TemporalFact{next})
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if len(out.Facts) != 0 || len(out.Closes) != 0 || len(out.Drops) != 1 {
+		t.Fatalf("resolution = %+v, want noop duplicate", out)
 	}
 }
 

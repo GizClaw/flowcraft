@@ -10,6 +10,84 @@ import (
 	temporalstore "github.com/GizClaw/flowcraft/memory/recall/internal/store/temporal"
 )
 
+func TestSave_ParameterFailsBeforeAppendWhenGraphDependenciesMissing(t *testing.T) {
+	ctx := context.Background()
+	scope := Scope{RuntimeID: "rt", UserID: "u1"}
+	store := temporalstore.NewMemoryStore()
+	mem, err := New(WithTemporalStore(store))
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	_, err = mem.Save(ctx, scope, SaveRequest{Facts: []TemporalFact{{
+		Kind:      FactParameter,
+		Content:   "experiment.temperature = 0.2",
+		Subject:   "experiment",
+		Predicate: "parameter_value",
+		Object:    "0.2",
+		Metadata: map[string]any{
+			MetaParameterOwner:           "experiment",
+			MetaParameterCanonicalName:   "temperature",
+			MetaParameterNormalizedValue: "0.2",
+		},
+		EvidenceRefs: []EvidenceRef{{
+			ObservationID: "obs-1",
+			SpanID:        "span-1",
+			Text:          "temperature = 0.2",
+		}},
+	}}})
+	if err == nil {
+		t.Fatal("Save err = nil, want graph dependency validation error")
+	}
+	got, listErr := store.List(ctx, scope, port.ListQuery{})
+	if listErr != nil {
+		t.Fatalf("store.List: %v", listErr)
+	}
+	if len(got) != 0 {
+		t.Fatalf("stored facts = %+v, want none", got)
+	}
+}
+
+func TestSave_ParameterMissingObservationFailsBeforeAppend(t *testing.T) {
+	ctx := context.Background()
+	scope := Scope{RuntimeID: "rt", UserID: "u1"}
+	store := temporalstore.NewMemoryStore()
+	mem, err := New(
+		WithTemporalStore(store),
+		WithObservationStore(NewInMemoryObservationStore()),
+		WithLinkStore(NewInMemoryLinkStore()),
+	)
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	_, err = mem.Save(ctx, scope, SaveRequest{Facts: []TemporalFact{{
+		Kind:      FactParameter,
+		Content:   "experiment.temperature = 0.2",
+		Subject:   "experiment",
+		Predicate: "parameter_value",
+		Object:    "0.2",
+		Metadata: map[string]any{
+			MetaParameterOwner:           "experiment",
+			MetaParameterCanonicalName:   "temperature",
+			MetaParameterNormalizedValue: "0.2",
+		},
+		EvidenceRefs: []EvidenceRef{{
+			ObservationID: "missing-obs",
+			SpanID:        "span-1",
+			Text:          "temperature = 0.2",
+		}},
+	}}})
+	if err == nil {
+		t.Fatal("Save err = nil, want missing graph dependency error")
+	}
+	got, listErr := store.List(ctx, scope, port.ListQuery{})
+	if listErr != nil {
+		t.Fatalf("store.List: %v", listErr)
+	}
+	if len(got) != 0 {
+		t.Fatalf("stored facts = %+v, want none", got)
+	}
+}
+
 func TestSave_CommitsObservationAssertionLinks(t *testing.T) {
 	ctx := context.Background()
 	scope := Scope{RuntimeID: "rt", UserID: "u1"}

@@ -82,7 +82,7 @@ func (s *Resolve) Run(ctx context.Context, state *write.WriteState) (diagnostic.
 				detail.Contested++
 			}
 		}
-		if len(f.Supersedes) > 0 || len(f.MergeHints.Supersedes) > 0 {
+		if len(f.Supersedes) > 0 {
 			detail.Merged++
 		}
 	}

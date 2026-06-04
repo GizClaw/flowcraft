@@ -218,7 +218,7 @@ func kindsIntersectProfile(kinds []domain.FactKind) bool {
 	}
 	for _, k := range kinds {
 		switch k {
-		case domain.KindPreference, domain.KindRelation, domain.KindState:
+		case domain.KindPreference, domain.KindRelation, domain.KindState, domain.KindParameter:
 			return true
 		}
 	}

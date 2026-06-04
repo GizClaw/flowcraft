@@ -75,10 +75,11 @@ type WriteState struct {
 	// drops redacted.
 	DiagnosticsIncludeRaw bool
 
-	// RecentMessages / ExistingFactsAnchor are caller-composed LLM
+	// RecentMessages / ExistingFactHints are caller-composed LLM
 	// context.
-	RecentMessages      []domain.Message
-	ExistingFactsAnchor []domain.TemporalFact
+	RecentMessages     []domain.Message
+	ExistingFactHints  []domain.TemporalFact
+	EvidenceWindowRefs []domain.EvidenceWindowRef
 
 	// Stage outputs — populated in order, each stage owns
 	// exactly one field group below.
@@ -186,13 +187,15 @@ type WriteState struct {
 	// can be recalled or re-extracted later.
 	RawObservationIDs []string
 
+	// SourceEvidenceSpans are canonical, extractable evidence spans resolved by
+	// commit_observations from current Turns and explicit EvidenceWindowRefs.
+	SourceEvidenceSpans []domain.SourceEvidenceSpan
+
 	// GraphObservationIDs are newly-created observation rows commit_graph wrote.
-	// GraphObservationSnapshots are pre-commit snapshots for existing observation
-	// rows that commit_graph merged new spans into. The compensator deletes new
-	// rows and restores snapshots so rollback removes span merges too.
-	GraphObservationIDs       []string
-	GraphObservationSnapshots []domain.Observation
-	GraphLinkIDs              []string
+	// Existing canonical observations are never rewritten in commit_graph; links
+	// point at them directly.
+	GraphObservationIDs []string
+	GraphLinkIDs        []string
 
 	// SemanticDerivationOrigin is stamped onto every appended fact by
 	// origin_stamp in the async worker lane. Zero in sync and episode

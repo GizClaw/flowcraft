@@ -7,6 +7,7 @@ package entity
 
 import (
 	"context"
+	"fmt"
 	"sort"
 	"strings"
 	"sync"
@@ -275,7 +276,24 @@ func collectEntities(f domain.TemporalFact) []string {
 	}
 	add(f.Subject)
 	add(f.Object)
+	if f.Kind == domain.KindParameter {
+		add(metadataString(f.Metadata, domain.MetaParameterOwner))
+		add(metadataString(f.Metadata, domain.MetaParameterNamespacePath))
+		add(metadataString(f.Metadata, domain.MetaParameterNameSurface))
+		add(metadataString(f.Metadata, domain.MetaParameterCanonicalName))
+		add(metadataString(f.Metadata, domain.MetaParameterNormalizedValue))
+	}
 	return out
+}
+
+func metadataString(meta map[string]any, key string) string {
+	if len(meta) == 0 {
+		return ""
+	}
+	if raw, ok := meta[key]; ok {
+		return strings.TrimSpace(fmt.Sprint(raw))
+	}
+	return ""
 }
 
 // canonicalEntity lower-cases and trims whitespace. The compiler

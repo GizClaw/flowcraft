@@ -87,3 +87,34 @@ func TestDiagnoseSave_FallsBackToExtractedCountWhenStatsMissing(t *testing.T) {
 		t.Fatalf("legacy fallback failed: Compiled=%+v Appended=%+v", diag.Compiled, diag.Appended)
 	}
 }
+
+func TestDiagnoseSave_ExposesProposalLifecycle(t *testing.T) {
+	trace := domain.SaveTrace{Stages: []diagnostic.StageDiagnostic{{
+		Stage: "ingest",
+		Detail: diagnostic.IngestDetail{
+			ProposalLifecycle: diagnostic.ProposalLifecycleDetail{
+				ByFamily: map[string]diagnostic.ProposalFamilyLifecycle{
+					"parameter_slot": {Proposed: 2, Grounded: 1, Promoted: 1, Rejected: 1},
+				},
+				Grounding: diagnostic.GroundingLifecycle{
+					Input:    2,
+					Accepted: 1,
+					Rejected: 1,
+					RejectReasons: map[string]int{
+						"value_not_grounded": 1,
+					},
+				},
+				Arbitration: diagnostic.ArbitrationLifecycle{Input: 1, Winners: 1},
+				Promotion:   diagnostic.PromotionLifecycle{Input: 1, Accepted: 1},
+				Compile:     diagnostic.CompileLifecycle{Input: 1, Compiled: 1},
+			},
+		},
+	}}}
+	diag := diagnostics.DiagnoseSave(domain.SaveRequest{}, trace)
+	if got := diag.ProposalLifecycle.ByFamily["parameter_slot"]; got.Proposed != 2 || got.Promoted != 1 {
+		t.Fatalf("proposal lifecycle family = %+v", got)
+	}
+	if diag.ProposalLifecycle.Grounding.RejectReasons["value_not_grounded"] != 1 {
+		t.Fatalf("proposal lifecycle grounding = %+v", diag.ProposalLifecycle.Grounding)
+	}
+}

@@ -13,14 +13,20 @@ func CloneAsyncSemanticJob(job AsyncSemanticJob) AsyncSemanticJob {
 	if len(job.TurnsSnapshot) > 0 {
 		out.TurnsSnapshot = append([]domain.TurnContext(nil), job.TurnsSnapshot...)
 	}
+	if len(job.SourceEvidenceSpans) > 0 {
+		out.SourceEvidenceSpans = append([]domain.SourceEvidenceSpan(nil), job.SourceEvidenceSpans...)
+	}
 	if len(job.RecentMessages) > 0 {
 		out.RecentMessages = append([]domain.Message(nil), job.RecentMessages...)
 	}
-	if len(job.ExistingFactsAnchor) > 0 {
-		out.ExistingFactsAnchor = make([]domain.TemporalFact, len(job.ExistingFactsAnchor))
-		for i, f := range job.ExistingFactsAnchor {
-			out.ExistingFactsAnchor[i] = f.Clone()
+	if len(job.ExistingFactHints) > 0 {
+		out.ExistingFactHints = make([]domain.TemporalFact, len(job.ExistingFactHints))
+		for i, f := range job.ExistingFactHints {
+			out.ExistingFactHints[i] = f.Clone()
 		}
+	}
+	if len(job.EvidenceWindowRefs) > 0 {
+		out.EvidenceWindowRefs = append([]domain.EvidenceWindowRef(nil), job.EvidenceWindowRefs...)
 	}
 	return out
 }

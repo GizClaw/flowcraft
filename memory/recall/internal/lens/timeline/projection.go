@@ -58,10 +58,8 @@ func (p *Projection) Name() string { return "timeline" }
 
 func (p *Projection) Consistency() port.Consistency { return port.Optional }
 
-// AcceptsKind rejects KindEpisode. Episode facts are raw conversation
-// captures; routing them through the timeline projection would
-// pollute the event/state/plan timeline view with raw turn text.
-func (p *Projection) AcceptsKind(k domain.FactKind) bool { return k != domain.KindEpisode }
+// AcceptsKind mirrors the projection's event/state/plan eligibility.
+func (p *Projection) AcceptsKind(k domain.FactKind) bool { return isTimelineKind(k) }
 
 // Project upserts timeline-eligible facts. Non-projectable facts
 // (superseded, soft-closed, TTL-expired, or past their validity

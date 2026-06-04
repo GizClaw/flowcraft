@@ -22,18 +22,26 @@ import (
 // turn without LLM calls.
 type turnNoteExtractor struct{}
 
-func (turnNoteExtractor) Extract(_ context.Context, input port.IngestInput) ([]domain.TemporalFact, error) {
+func (turnNoteExtractor) CompileExtraction(_ context.Context, input port.IngestInput) (port.ExtractionResult, error) {
 	var facts []domain.TemporalFact
-	for _, turn := range input.Turns {
-		if turn.Text == "" {
+	for _, span := range input.SourceEvidenceSpans {
+		if span.Text == "" {
 			continue
 		}
 		facts = append(facts, domain.TemporalFact{
 			Kind:    domain.KindNote,
-			Content: turn.Text,
+			Content: span.Text,
+			EvidenceRefs: []domain.EvidenceRef{{
+				ID:            span.SourceID,
+				MessageID:     span.SourceID,
+				ObservationID: span.ObservationID,
+				SpanID:        span.SpanID,
+				Text:          span.Text,
+				Timestamp:     span.Timestamp,
+			}},
 		})
 	}
-	return facts, nil
+	return port.ExtractionResult{PromotedFacts: facts}, nil
 }
 
 func testSemanticIngestor() port.Ingestor {
@@ -45,10 +53,10 @@ type deletingEpisodeExtractor struct {
 	scope Scope
 }
 
-func (e deletingEpisodeExtractor) Extract(ctx context.Context, input port.IngestInput) ([]domain.TemporalFact, error) {
+func (e deletingEpisodeExtractor) CompileExtraction(ctx context.Context, input port.IngestInput) (port.ExtractionResult, error) {
 	facts, err := e.store.List(ctx, e.scope, port.ListQuery{Kinds: []domain.FactKind{domain.KindEpisode}, IncludeSuperseded: true})
 	if err != nil {
-		return nil, err
+		return port.ExtractionResult{}, err
 	}
 	ids := make([]string, 0, len(facts))
 	for _, f := range facts {
@@ -56,10 +64,10 @@ func (e deletingEpisodeExtractor) Extract(ctx context.Context, input port.Ingest
 	}
 	if len(ids) > 0 {
 		if err := e.store.Delete(ctx, e.scope, ids); err != nil {
-			return nil, err
+			return port.ExtractionResult{}, err
 		}
 	}
-	return turnNoteExtractor{}.Extract(ctx, input)
+	return turnNoteExtractor{}.CompileExtraction(ctx, input)
 }
 
 type cancelScopeFailQueue struct {
@@ -390,14 +398,14 @@ func TestProcessAsyncSemantic_LeaseRecycleRecoversWithoutReappend(t *testing.T) 
 
 	// Worker A appends semantic facts but never calls Complete (simulates
 	// crash before ack). Lease expiry makes the job claimable again.
-	turns, err := writestages.ReconstructTurnsForJob(ctx, store, job)
+	sourceSpans, err := writestages.SourceEvidenceSpansForJob(ctx, m.observationStore, scope, job)
 	if err != nil {
-		t.Fatalf("ReconstructTurns: %v", err)
+		t.Fatalf("SourceEvidenceSpansForJob: %v", err)
 	}
 	state := &write.WriteState{
-		Scope:          scope,
-		Turns:          turns,
-		AsyncRequestID: job.RequestID,
+		Scope:               scope,
+		SourceEvidenceSpans: sourceSpans,
+		AsyncRequestID:      job.RequestID,
 		SemanticDerivationOrigin: domain.FactOrigin{
 			RequestID:      job.RequestID,
 			Kind:           domain.OriginKindSemanticDerivation,

@@ -10,17 +10,19 @@ import (
 
 // IngestInput drives a single Ingestor.Ingest call.
 //
-// Facts is the structured channel (passthrough extractor); Turns is
-// the typed per-turn channel consumed by LLM-backed extractors.
-// Empty channels are valid — the default extractor just returns
-// caller-supplied Facts unchanged.
+// Facts is the structured channel (passthrough extractor). Turns carry
+// typed metadata for observation commit and deterministic structuring.
+// SourceEvidenceSpans are the only extractable evidence source for
+// LLM-backed proposal extraction. Empty channels are valid; the default
+// extractor just returns caller-supplied Facts unchanged.
 type IngestInput struct {
-	Scope         domain.Scope
-	Facts         []domain.TemporalFact
-	Turns         []domain.TurnContext
-	ObservedAt    time.Time
-	KnownEntities []EntitySnapshot
-	Now           time.Time
+	Scope               domain.Scope
+	Facts               []domain.TemporalFact
+	Turns               []domain.TurnContext
+	SourceEvidenceSpans []domain.SourceEvidenceSpan
+	ObservedAt          time.Time
+	KnownEntities       []EntitySnapshot
+	Now                 time.Time
 
 	// Tier is the SaveRequest importance intent label.
 	// Empty means "general". Mapped to Confidence in salience scoring.
@@ -30,8 +32,8 @@ type IngestInput struct {
 	// extractor. Recall does not fetch history itself.
 	RecentMessages []domain.Message
 
-	// ExistingFactsAnchor is caller-supplied dedup anchors for extract.
-	ExistingFactsAnchor []domain.TemporalFact
+	// ExistingFactHints is caller-supplied dedup/conflict hint context for extract.
+	ExistingFactHints []domain.TemporalFact
 }
 
 // IngestResult is what the ingest pipeline returns.
@@ -47,6 +49,16 @@ type IngestResult struct {
 	StructurizerCoverage diagnostic.StructurizerCoverage
 	ExtractorTokenUsage  diagnostic.ExtractorTokenUsage
 	ExtractorGuard       diagnostic.ExtractorGuard
+	ProposalLifecycle    diagnostic.ProposalLifecycleDetail
+}
+
+// ExtractionResult is the output of the proposal compiler boundary. LLM-backed
+// implementations may classify evidence, extract typed proposals, ground,
+// arbitrate, and promote internally; callers only receive deterministically
+// promoted facts that are ready for the remaining canonical ingest stages.
+type ExtractionResult struct {
+	PromotedFacts     []domain.TemporalFact
+	ProposalLifecycle diagnostic.ProposalLifecycleDetail
 }
 
 // TurnContext re-exports the canonical domain.TurnContext for
@@ -54,6 +66,7 @@ type IngestResult struct {
 // internal/domain/turn_context.go so the public recall facade can
 // alias it without referencing port.
 type TurnContext = domain.TurnContext
+type SourceEvidenceSpan = domain.SourceEvidenceSpan
 
 // Ingestor owns the write-time ingest pipeline. Concrete
 // implementations live in internal/ingest/.
@@ -61,9 +74,9 @@ type Ingestor interface {
 	Compile(ctx context.Context, input IngestInput) (IngestResult, error)
 }
 
-// Extractor turns raw input into candidate facts.
+// Extractor compiles raw input through the extraction/proposal pipeline.
 type Extractor interface {
-	Extract(ctx context.Context, input IngestInput) ([]domain.TemporalFact, error)
+	CompileExtraction(ctx context.Context, input IngestInput) (ExtractionResult, error)
 }
 
 // Structurizer fills the structural fields the slim LLM extractor

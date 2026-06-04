@@ -8,7 +8,7 @@ import (
 	"github.com/GizClaw/flowcraft/memory/recall/internal/words"
 )
 
-func TestProjectionKindMatchesOnlyExplicitSemanticSignals(t *testing.T) {
+func TestProjectionKindMatchesStructuredAssertions(t *testing.T) {
 	subjectOnly := domain.TemporalFact{Subject: "Mira"}
 	if projectionKindMatches(planner.SourceAssertion, subjectOnly) {
 		t.Fatal("assertion projection must not index subject-only facts")
@@ -19,9 +19,9 @@ func TestProjectionKindMatchesOnlyExplicitSemanticSignals(t *testing.T) {
 		t.Fatal("assertion projection should index complete assertion triples")
 	}
 
-	negated := domain.TemporalFact{Content: "Mira did not visit Paris.", Polarity: domain.PolarityNegated}
-	if !projectionKindMatches(planner.SourceAssertion, negated) {
-		t.Fatal("assertion projection should index explicit assertion metadata")
+	contentOnly := domain.TemporalFact{Content: "Mira did not visit Paris."}
+	if projectionKindMatches(planner.SourceAssertion, contentOnly) {
+		t.Fatal("assertion projection must not use legacy assertion metadata or content-only text as eligibility")
 	}
 }
 

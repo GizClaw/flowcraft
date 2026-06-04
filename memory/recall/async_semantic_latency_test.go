@@ -4,11 +4,11 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
-	"github.com/GizClaw/flowcraft/memory/recall/internal/domain"
 	"github.com/GizClaw/flowcraft/memory/recall/internal/ingest"
 	"github.com/GizClaw/flowcraft/memory/recall/internal/port"
 	"github.com/GizClaw/flowcraft/sdk/llm"
@@ -25,16 +25,16 @@ type slowExtractor struct {
 	calls *atomic.Int64
 }
 
-func (s *slowExtractor) Extract(ctx context.Context, input port.IngestInput) ([]domain.TemporalFact, error) {
+func (s *slowExtractor) CompileExtraction(ctx context.Context, input port.IngestInput) (port.ExtractionResult, error) {
 	if s.calls != nil {
 		s.calls.Add(1)
 	}
 	select {
 	case <-ctx.Done():
-		return nil, ctx.Err()
+		return port.ExtractionResult{}, ctx.Err()
 	case <-time.After(s.delay):
 	}
-	return turnNoteExtractor{}.Extract(ctx, input)
+	return turnNoteExtractor{}.CompileExtraction(ctx, input)
 }
 
 func p95(durations []time.Duration) time.Duration {
@@ -60,6 +60,7 @@ func assertAsyncSaveP95BeatsSync(
 	turns []TurnContext,
 	ingestCalls *atomic.Int64,
 	resetCalls func(),
+	expectedProcessorCalls int64,
 ) {
 	t.Helper()
 	ctx := context.Background()
@@ -104,8 +105,8 @@ func assertAsyncSaveP95BeatsSync(
 	}); err != nil {
 		t.Fatalf("ProcessAsyncSemantic: %v", err)
 	}
-	if ingestCalls.Load() != int64(samples) {
-		t.Fatalf("processor ingest/LLM calls = %d, want %d", ingestCalls.Load(), samples)
+	if ingestCalls.Load() != expectedProcessorCalls {
+		t.Fatalf("processor ingest/LLM calls = %d, want %d", ingestCalls.Load(), expectedProcessorCalls)
 	}
 }
 
@@ -138,7 +139,7 @@ func TestAsyncWrite_SaveP95BeatsSync(t *testing.T) {
 		t.Fatal("processor missing")
 	}
 	assertAsyncSaveP95BeatsSync(t, delay, samples, syncMem, asyncMem, proc, scope, turns,
-		&ingestCalls, func() { ingestCalls.Store(0) })
+		&ingestCalls, func() { ingestCalls.Store(0) }, int64(samples))
 }
 
 // TestAsyncWrite_SaveP95BeatsSync_SlowLLM repeats the async latency
@@ -175,7 +176,7 @@ func TestAsyncWrite_SaveP95BeatsSync_SlowLLM(t *testing.T) {
 		t.Fatal("processor missing")
 	}
 	assertAsyncSaveP95BeatsSync(t, delay, samples, syncMem, asyncMem, proc, scope, turns,
-		&llmClient.calls, func() { llmClient.calls.Store(0) })
+		&llmClient.calls, func() { llmClient.calls.Store(0) }, int64(samples*4))
 }
 
 // slowLLM simulates provider latency on the sync Save path while
@@ -185,10 +186,17 @@ type slowLLM struct {
 	calls atomic.Int64
 }
 
-func (s *slowLLM) Generate(_ context.Context, _ []llm.Message, _ ...llm.GenerateOption) (llm.Message, llm.TokenUsage, error) {
+func (s *slowLLM) Generate(_ context.Context, _ []llm.Message, opts ...llm.GenerateOption) (llm.Message, llm.TokenUsage, error) {
 	s.calls.Add(1)
 	time.Sleep(s.delay)
-	return llm.NewTextMessage(model.RoleAssistant, `{"facts":[{"text":"bench","kind":"note"}]}`), llm.TokenUsage{}, nil
+	got := llm.GenerateOptions{}
+	for _, opt := range opts {
+		opt(&got)
+	}
+	if got.JSONSchema != nil && strings.Contains(got.JSONSchema.Name, "segment_classifier") {
+		return llm.NewTextMessage(model.RoleAssistant, `{"segments":[{"segment_id":"t1","families":["semantic_fact"]}]}`), llm.TokenUsage{}, nil
+	}
+	return llm.NewTextMessage(model.RoleAssistant, `{"proposals":[{"family":"semantic_fact","text":"bench","kind":"note","source_ids":["t1"],"quote":"async write bench"}]}`), llm.TokenUsage{}, nil
 }
 
 func (s *slowLLM) GenerateStream(context.Context, []llm.Message, ...llm.GenerateOption) (llm.StreamMessage, error) {

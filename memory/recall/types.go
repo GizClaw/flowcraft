@@ -27,12 +27,31 @@ const (
 	FactRelation   FactKind = domain.KindRelation
 	FactPlan       FactKind = domain.KindPlan
 	FactNote       FactKind = domain.KindNote
+	FactParameter  FactKind = domain.KindParameter
 	// FactEpisode is the raw-conversation FactKind written by the
 	// synchronous episode lane of WriteModeAsyncSemantic. Episode
 	// facts are excluded from default Recall and from every
 	// projection except evidence — they represent durable source
 	// turns, not semantic conclusions.
 	FactEpisode FactKind = domain.KindEpisode
+)
+
+const (
+	MetaAssertionFamily             = domain.MetaAssertionFamily
+	MetaParameterOwner              = domain.MetaParameterOwner
+	MetaParameterNamespacePath      = domain.MetaParameterNamespacePath
+	MetaParameterNameSurface        = domain.MetaParameterNameSurface
+	MetaParameterCanonicalName      = domain.MetaParameterCanonicalName
+	MetaParameterOperation          = domain.MetaParameterOperation
+	MetaParameterValueKind          = domain.MetaParameterValueKind
+	MetaParameterRawValue           = domain.MetaParameterRawValue
+	MetaParameterNormalizedValue    = domain.MetaParameterNormalizedValue
+	MetaParameterUnit               = domain.MetaParameterUnit
+	MetaParameterCondition          = domain.MetaParameterCondition
+	MetaParameterConstraintOperator = domain.MetaParameterConstraintOperator
+	MetaParameterGroundingLevel     = domain.MetaParameterGroundingLevel
+	MetaParameterSupportSpanIDs     = domain.MetaParameterSupportSpanIDs
+	MetaParameterNormalizationTrace = domain.MetaParameterNormalizationTrace
 )
 
 // EvidenceRef points back to source material used to produce a fact.
@@ -52,8 +71,14 @@ const (
 	ObservationKindEvidence = domain.ObservationKindEvidence
 	ObservationKindDocument = domain.ObservationKindDocument
 
-	ObservationSpanKindText  = domain.ObservationSpanKindText
-	ObservationSpanKindQuote = domain.ObservationSpanKindQuote
+	ObservationSpanKindText          = domain.ObservationSpanKindText
+	ObservationSpanKindQuote         = domain.ObservationSpanKindQuote
+	ObservationSpanKindTurn          = domain.ObservationSpanKindTurn
+	ObservationSpanKindParagraph     = domain.ObservationSpanKindParagraph
+	ObservationSpanKindListItem      = domain.ObservationSpanKindListItem
+	ObservationSpanKindTableRow      = domain.ObservationSpanKindTableRow
+	ObservationSpanKindSentence      = domain.ObservationSpanKindSentence
+	ObservationSpanKindOverflowChunk = domain.ObservationSpanKindOverflowChunk
 
 	GraphNodeObservation     = domain.GraphNodeObservation
 	GraphNodeObservationSpan = domain.GraphNodeObservationSpan
@@ -74,31 +99,9 @@ const (
 // merge decisions.
 type MergeHints = domain.MergeHints
 
-type Polarity = domain.Polarity
-type Modality = domain.Modality
-type Certainty = domain.Certainty
 type EvidenceRow = domain.EvidenceRow
 type EvidencePacket = domain.EvidencePacket
 type ReasoningResult = domain.ReasoningResult
-
-const (
-	PolarityAffirmed = domain.PolarityAffirmed
-	PolarityNegated  = domain.PolarityNegated
-	PolarityUnknown  = domain.PolarityUnknown
-
-	ModalityActual         = domain.ModalityActual
-	ModalityPlanned        = domain.ModalityPlanned
-	ModalityHypothetical   = domain.ModalityHypothetical
-	ModalityCounterfactual = domain.ModalityCounterfactual
-	ModalityCanceled       = domain.ModalityCanceled
-	ModalityDesired        = domain.ModalityDesired
-	ModalitySuggested      = domain.ModalitySuggested
-
-	CertaintyExplicit  = domain.CertaintyExplicit
-	CertaintyInferred  = domain.CertaintyInferred
-	CertaintyLikely    = domain.CertaintyLikely
-	CertaintyUncertain = domain.CertaintyUncertain
-)
 
 // TemporalFact is the public v2 memory unit. It aliases the internal
 // canonical model — sdk/recall owns the public name, internal/model
@@ -141,17 +144,16 @@ const (
 // FactVersion is one row in a fact's supersede history.
 type FactVersion = domain.FactVersion
 
-// TurnContext is the typed per-turn channel adapters use to feed
-// the LLMExtractor. Each TurnContext carries an id, an optional
-// absolute timestamp, the canonical speaker name, the conversational
-// role, and the body text — the same information adapters used to
-// bake into a prose "[<date>] <Speaker>:" prefix.
+// TurnContext is the typed per-turn channel adapters use to create raw
+// observations. Each TurnContext carries an id, an optional absolute
+// timestamp, the canonical speaker name, the conversational role, and
+// the body text - the same information adapters used to bake into a
+// prose "[<date>] <Speaker>:" prefix.
 //
-// Passing typed turns instead of prose lets the SDK render the LLM
-// user message in a canonical JSONL shape (one source of truth) and
-// lets the Structurizer use the typed Time/Speaker fields directly
-// for valid_from resolution and Subject inference — the LLM stops
-// doing regex archaeology on prose.
+// Save commits turns as observations first, then passes canonical
+// SourceEvidenceSpans to the extractor. The Structurizer still uses the
+// typed Time/Speaker fields directly for valid_from resolution and
+// Subject inference.
 type TurnContext = domain.TurnContext
 
 // EntitySnapshot is a hint about an entity the canonical projection
@@ -166,6 +168,7 @@ type EntitySnapshot = port.EntitySnapshot
 // SaveRequest is the v2 ingestion input. Aliases the canonical domain type so
 // the recall facade and internal pipelines share one schema.
 type SaveRequest = domain.SaveRequest
+type EvidenceWindowRef = domain.EvidenceWindowRef
 
 // WriteMode controls SaveRequest semantics. Zero value selects the
 // existing fully-synchronous Save path; WriteModeAsyncSemantic

@@ -52,37 +52,40 @@ func (s *StructuredIngest) Run(ctx context.Context, state *write.WriteState) (di
 		Scope:               state.Scope,
 		Facts:               state.Facts,
 		Turns:               nil,
+		SourceEvidenceSpans: nil,
 		ObservedAt:          state.ObservedAt,
 		KnownEntities:       state.KnownEntities,
 		Now:                 state.Now,
 		Tier:                state.Tier,
 		RecentMessages:      state.RecentMessages,
-		ExistingFactsAnchor: state.ExistingFactsAnchor,
+		ExistingFactHints:   state.ExistingFactHints,
 	})
 	latency := time.Since(started)
 	if err != nil {
 		state.FailedStage = "structured_ingest"
 		return diagnostic.IngestDetail{
-			InputTurns:       0,
-			ExtractedFacts:   len(res.Facts),
-			ExtractorLatency: latency,
+			InputTurns:        0,
+			ExtractedFacts:    len(res.Facts),
+			ExtractorLatency:  latency,
+			ProposalLifecycle: res.ProposalLifecycle,
 		}, err
 	}
 	state.Ingest = res
 	return diagnostic.IngestDetail{
-		InputTurns:             0,
-		ExtractedFacts:         len(res.Facts),
-		DroppedByPolicy:        countDroppedReason(res.Dropped, "policy:reject", "governance:reject"),
-		DroppedByValidation:    countDroppedReason(res.Dropped, "validation:reject"),
-		DroppedByDedup:         countDroppedReason(res.Dropped, "dedup:reject"),
-		StructurizerCoverage:   res.StructurizerCoverage,
-		ExtractorLatency:       latency,
-		TierApplied:            ingest.TierAppliedFor(state.Tier),
-		RecentMessagesProvided: len(state.RecentMessages),
-		AnchorsProvided:        len(state.ExistingFactsAnchor),
-		Dropped:                droppedFactsForTelemetry(state, res.Dropped),
-		KnownEntitiesSeen:      len(state.KnownEntities),
-		FactStats:              computeFactStats(res.Facts),
+		InputTurns:                0,
+		ExtractedFacts:            len(res.Facts),
+		DroppedByPolicy:           countDroppedReason(res.Dropped, "policy:reject", "governance:reject"),
+		DroppedByValidation:       countDroppedReason(res.Dropped, "validation:reject"),
+		DroppedByDedup:            countDroppedReason(res.Dropped, "dedup:reject"),
+		StructurizerCoverage:      res.StructurizerCoverage,
+		ExtractorLatency:          latency,
+		ProposalLifecycle:         res.ProposalLifecycle,
+		TierApplied:               ingest.TierAppliedFor(state.Tier),
+		RecentMessagesProvided:    len(state.RecentMessages),
+		ExistingFactHintsProvided: len(state.ExistingFactHints),
+		Dropped:                   droppedFactsForTelemetry(state, res.Dropped),
+		KnownEntitiesSeen:         len(state.KnownEntities),
+		FactStats:                 computeFactStats(res.Facts),
 	}, nil
 }
 

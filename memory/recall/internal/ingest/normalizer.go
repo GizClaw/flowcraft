@@ -3,6 +3,7 @@ package ingest
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"sort"
 	"strings"
 
@@ -147,6 +148,8 @@ func DefaultMergeKey(f domain.TemporalFact) string {
 	object := strings.ToLower(f.Object)
 
 	switch f.Kind {
+	case domain.KindParameter:
+		return parameterMergeKey(f)
 	case domain.KindRelation:
 		return joinKey("relation", subject, predicate, object)
 	case domain.KindState, domain.KindPreference, domain.KindProcedure:
@@ -160,6 +163,44 @@ func DefaultMergeKey(f domain.TemporalFact) string {
 		return joinKey(string(f.Kind), contentDigest(f))
 	}
 	return joinKey(string(f.Kind), contentDigest(f))
+}
+
+func parameterMergeKey(f domain.TemporalFact) string {
+	meta := f.Metadata
+	owner := strings.ToLower(metadataString(meta, domain.MetaParameterOwner))
+	if owner == "" {
+		owner = strings.ToLower(f.Subject)
+	}
+	namespace := strings.ToLower(metadataString(meta, domain.MetaParameterNamespacePath))
+	name := strings.ToLower(metadataString(meta, domain.MetaParameterCanonicalName))
+	if name == "" {
+		name = strings.ToLower(f.Predicate)
+	}
+	kind := strings.ToLower(metadataString(meta, domain.MetaParameterValueKind))
+	condition := canonicalParameterCondition(metadataString(meta, domain.MetaParameterCondition))
+	scopePart := f.Scope.RuntimeID + ":" + f.Scope.UserID
+	agentPart := f.Scope.AgentID
+	return joinKey("parameter", scopePart, agentPart, owner, namespace, name, kind, condition)
+}
+
+func canonicalParameterCondition(raw string) string {
+	condition := strings.ToLower(canonicalSpace(raw))
+	condition = strings.Trim(condition, " .。!！?？")
+	for _, prefix := range []string{"when ", "if ", "under ", "for ", "条件是", "当", "如果"} {
+		condition = strings.TrimSpace(strings.TrimPrefix(condition, prefix))
+	}
+	condition = strings.Trim(condition, " .。!！?？")
+	return canonicalSpace(normalize.ReplaceNonAlnumWithSpace(condition))
+}
+
+func metadataString(meta map[string]any, key string) string {
+	if len(meta) == 0 {
+		return ""
+	}
+	if raw, ok := meta[key]; ok {
+		return strings.TrimSpace(fmt.Sprint(raw))
+	}
+	return ""
 }
 
 func joinKey(parts ...string) string {

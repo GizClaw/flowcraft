@@ -10,6 +10,18 @@ import (
 
 func scope() domain.Scope { return domain.Scope{RuntimeID: "rt", UserID: "u1"} }
 
+func TestTimeline_AcceptsOnlyTimelineKinds(t *testing.T) {
+	p := New()
+	for _, kind := range []domain.FactKind{domain.KindEvent, domain.KindState, domain.KindPlan} {
+		if !p.AcceptsKind(kind) {
+			t.Fatalf("AcceptsKind(%q) = false, want true", kind)
+		}
+	}
+	if p.AcceptsKind(domain.KindParameter) {
+		t.Fatal("timeline must not advertise KindParameter eligibility")
+	}
+}
+
 func TestTimeline_KeepsPastEventWithOpenValidity(t *testing.T) {
 	p := New()
 	ctx := context.Background()

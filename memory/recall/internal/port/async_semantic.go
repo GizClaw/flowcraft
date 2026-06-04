@@ -33,7 +33,7 @@ type AsyncSemanticQueue interface {
 	CancelScope(ctx context.Context, scope domain.Scope) (int, error)
 	// PurgeScope removes every job in the partition, including
 	// completed and dead-letter entries, and clears enqueue-time PII
-	// snapshots (TurnsSnapshot, RecentMessages, ExistingFactsAnchor).
+	// snapshots (TurnsSnapshot, RecentMessages, ExistingFactHints).
 	// It backs ForgetAll(Hard) after CancelScope so durable outbox
 	// rows cannot leak post-wipe.
 	PurgeScope(ctx context.Context, scope domain.Scope) (int, error)
@@ -94,20 +94,30 @@ type AsyncSemanticJob struct {
 	RequestID string
 	Scope     domain.Scope
 
+	// SaveOutboxID is the original Save batch id used to commit raw
+	// observations. Workers must reuse it so semantic extraction grounds facts
+	// against the same canonical observation/span namespace.
+	SaveOutboxID string
+
 	EpisodeFactIDs []string
-	// TurnsSnapshot is an optional compressed fallback for backends
-	// that cannot cheaply read the canonical store during processing.
-	// Workers SHOULD prefer reconstructing turns from EpisodeFactIDs.
+	// TurnsSnapshot is enqueue-time audit/debug context only. Workers must not
+	// use it as extraction authority; SourceEvidenceSpans are required and are
+	// revalidated against ObservationStore before LLM extraction.
 	TurnsSnapshot []domain.TurnContext
+	// SourceEvidenceSpans is the canonical extractable evidence set resolved
+	// during the original Save. Workers must use this instead of rendered
+	// episode text or snapshot-only source reconstruction.
+	SourceEvidenceSpans []domain.SourceEvidenceSpan
 
 	ObservedAt time.Time
 	Tier       string
 
-	// RecentMessages / ExistingFactsAnchor are enqueue-time snapshots,
+	// RecentMessages / ExistingFactHints are enqueue-time snapshots,
 	// NOT live reads. Delayed workers must extract against the context
 	// that existed when the user-facing Save was accepted.
-	RecentMessages      []domain.Message
-	ExistingFactsAnchor []domain.TemporalFact
+	RecentMessages     []domain.Message
+	ExistingFactHints  []domain.TemporalFact
+	EvidenceWindowRefs []domain.EvidenceWindowRef
 
 	Attempt    int
 	LeaseUntil time.Time

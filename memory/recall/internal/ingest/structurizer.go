@@ -86,23 +86,22 @@ var _ port.Structurizer = DefaultStructurizer{}
 //
 // Order matters:
 //
-//  1. Resolve the supporting turn (by evidence_refs[].id). Once we
+//  1. Resolve the supporting turn from canonical EvidenceRefs. Once we
 //     have it, Time / Speaker become typed sources for Subject and
-//     valid_from arithmetic — no regex archaeology on prose.
+//     valid_from arithmetic - no regex archaeology on prose.
 //  2. Fill Kind by keyword vote against the content. Default note.
 //  3. Fill Entities: extract Title-Cased tokens from content + add
 //     any KnownEntities whose canonical / alias appears in content.
 //     Lowercased + deduped to match the entity-projection contract.
 //  4. Fill Subject from the supporting turn's Speaker; fall back to
 //     the first entity. Object / Predicate stay empty unless the
-//     LLM provided them.
+//     the promoted proposal provided them.
 //  5. Fill time metadata from content when it carries a time phrase,
 //     otherwise from the supporting turn's typed Time. TimeResolver
 //     later normalises the metadata into ValidFrom.
 //
 // Confidence is left to the SalienceScorer's DefaultConfidence so
-// we don't compete with that contract; the slim LLM schema does not
-// emit one and 0.5 is the canonical floor.
+// we don't compete with that contract; 0.5 is the canonical floor.
 func (s DefaultStructurizer) Structurize(f domain.TemporalFact, input port.IngestInput) domain.TemporalFact {
 	turn := resolveSupportingTurn(f, input.Turns)
 

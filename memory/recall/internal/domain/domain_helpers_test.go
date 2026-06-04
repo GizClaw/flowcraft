@@ -26,7 +26,7 @@ func TestNormalizeForgetMode(t *testing.T) {
 }
 
 func TestFactKind_IsValid(t *testing.T) {
-	valid := []FactKind{KindEvent, KindState, KindPreference, KindProcedure, KindRelation, KindPlan, KindNote}
+	valid := []FactKind{KindEvent, KindState, KindPreference, KindProcedure, KindRelation, KindPlan, KindNote, KindParameter}
 	for _, k := range valid {
 		if !k.IsValid() {
 			t.Errorf("%q must be valid", k)

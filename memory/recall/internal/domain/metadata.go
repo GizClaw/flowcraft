@@ -42,4 +42,20 @@ const (
 	// treat an empty subject on these facts as permission to fill it from
 	// the supporting turn speaker.
 	MetaSubjectSuppressed = "subject_suppressed"
+
+	MetaAssertionFamily             = "assertion_family"
+	MetaParameterOwner              = "parameter.owner"
+	MetaParameterNamespacePath      = "parameter.namespace_path"
+	MetaParameterNameSurface        = "parameter.name_surface"
+	MetaParameterCanonicalName      = "parameter.canonical_name"
+	MetaParameterOperation          = "parameter.operation"
+	MetaParameterValueKind          = "parameter.value_kind"
+	MetaParameterRawValue           = "parameter.raw_value"
+	MetaParameterNormalizedValue    = "parameter.normalized_value"
+	MetaParameterUnit               = "parameter.unit"
+	MetaParameterCondition          = "parameter.condition"
+	MetaParameterConstraintOperator = "parameter.constraint_operator"
+	MetaParameterGroundingLevel     = "parameter.grounding_level"
+	MetaParameterSupportSpanIDs     = "parameter.support_span_ids"
+	MetaParameterNormalizationTrace = "parameter.normalization_trace"
 )

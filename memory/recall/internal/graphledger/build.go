@@ -44,6 +44,7 @@ func BuildDelta(scope domain.Scope, facts []domain.TemporalFact, closes []domain
 
 	links := make([]domain.FactLink, 0)
 	linkSeen := make(map[string]struct{})
+	supersedesSeen := make(map[string]struct{})
 	addLink := func(l domain.FactLink) {
 		if l.ID == "" || l.MergeKey == "" {
 			return
@@ -60,6 +61,18 @@ func BuildDelta(scope domain.Scope, facts []domain.TemporalFact, closes []domain
 		observationIDsForFact := make([]string, 0, len(fact.EvidenceRefs))
 		evidenceRefsForFact := normalizedEvidenceRefs(fact.EvidenceRefs)
 		for i, ref := range fact.EvidenceRefs {
+			if ref.ObservationID != "" && ref.SpanID != "" && !IsGeneratedQuoteEvidenceRef(ref) {
+				observationIDsForFact = append(observationIDsForFact, ref.ObservationID)
+				assertionsByObservation[ref.ObservationID] = append(assertionsByObservation[ref.ObservationID], fact)
+				addLink(NewFactObservationLink(fact.Scope, domain.LinkDerivedFrom, fact.ID, ref.ObservationID, []domain.EvidenceRef{ref}, now))
+				addLink(NewObservationFactLink(fact.Scope, domain.LinkSupports, ref.ObservationID, fact.ID, []domain.EvidenceRef{ref}, now))
+				addLink(NewFactObservationSpanLink(fact.Scope, domain.LinkDerivedFrom, fact.ID, ref.SpanID, []domain.EvidenceRef{ref}, now))
+				addLink(NewObservationSpanFactLink(fact.Scope, domain.LinkSupports, ref.SpanID, fact.ID, []domain.EvidenceRef{ref}, now))
+				continue
+			}
+			if fact.Kind == domain.KindParameter {
+				continue
+			}
 			obs := ObservationFromEvidenceRef(fact.Scope, ref, fact.ID, i, now, requestID)
 			obsID := addObservation(obs)
 			if obsID == "" {
@@ -83,6 +96,7 @@ func BuildDelta(scope domain.Scope, facts []domain.TemporalFact, closes []domain
 			}
 		}
 		for _, priorID := range fact.Supersedes {
+			supersedesSeen[assertionPairKey(fact.ID, priorID)] = struct{}{}
 			addLink(NewAssertionAssertionLink(fact.Scope, domain.LinkSupersedes, fact.ID, priorID, observationIDsForFact, evidenceRefsForFact, now))
 		}
 	}
@@ -91,6 +105,9 @@ func BuildDelta(scope domain.Scope, facts []domain.TemporalFact, closes []domain
 	}
 	for _, close := range closes {
 		if close.CorrectedBy == "" || close.FactID == "" {
+			continue
+		}
+		if _, ok := supersedesSeen[assertionPairKey(close.CorrectedBy, close.FactID)]; ok {
 			continue
 		}
 		addLink(NewAssertionAssertionLink(close.Scope, domain.LinkSupersedes, close.CorrectedBy, close.FactID, nil, nil, now))
@@ -102,6 +119,13 @@ func BuildDelta(scope domain.Scope, facts []domain.TemporalFact, closes []domain
 		Links:        links,
 		Closes:       append([]domain.ValidityClose(nil), closes...),
 	}
+}
+
+func IsGeneratedQuoteEvidenceRef(ref domain.EvidenceRef) bool {
+	if ref.ObservationID == "" || ref.SpanID == "" || ref.Text == "" {
+		return false
+	}
+	return ref.SpanID == StableObservationSpanID(ref.ObservationID, observationSourceID(ref), domain.ObservationSpanKindQuote, 0, len(ref.Text), ref.Text)
 }
 
 // StampFactEvidenceRefs fills canonical Observation/Span references on fact
@@ -147,7 +171,7 @@ func ObservationFromTurn(scope domain.Scope, turn domain.TurnContext, index int,
 		sourceID = turn.ID
 	}
 	id := stableObservationIDForSource(scope, requestID, turn.SessionID, sourceID, fmt.Sprintf("turn:%d:%s", index, turn.Text))
-	span := ObservationSpanFromText(id, sourceID, domain.ObservationSpanKindText, turn.Text, 0, len(turn.Text))
+	spans := SegmentObservationText(id, sourceID, turn.Text)
 	return domain.Observation{
 		ID:         id,
 		Scope:      scope,
@@ -158,7 +182,7 @@ func ObservationFromTurn(scope domain.Scope, turn domain.TurnContext, index int,
 		Role:       turn.Role,
 		Speaker:    turn.Speaker,
 		Text:       turn.Text,
-		Spans:      []domain.ObservationSpan{span},
+		Spans:      spans,
 		ObservedAt: ts,
 		ReceivedAt: now,
 	}
@@ -201,6 +225,159 @@ func ObservationSpanFromText(observationID, sourceID string, kind domain.Observa
 	}
 }
 
+// SegmentObservationText preserves replayable source spans for Save grounding.
+// It keeps a full turn span and then adds stable paragraph/list/table/sentence
+// spans without lower-casing or tokenizing the source text.
+func SegmentObservationText(observationID, sourceID, text string) []domain.ObservationSpan {
+	if text == "" {
+		return nil
+	}
+	var spans []domain.ObservationSpan
+	add := func(kind domain.ObservationSpanKind, start, end int) {
+		if start < 0 || end > len(text) || start >= end {
+			return
+		}
+		spanText := text[start:end]
+		if strings.TrimSpace(spanText) == "" {
+			return
+		}
+		spans = append(spans, ObservationSpanFromText(observationID, sourceID, kind, spanText, start, end))
+	}
+	add(domain.ObservationSpanKindTurn, 0, len(text))
+	for _, block := range lineBlocks(text) {
+		kind := domain.ObservationSpanKindParagraph
+		trimmed := strings.TrimSpace(text[block.start:block.end])
+		if isListItem(trimmed) {
+			kind = domain.ObservationSpanKindListItem
+		} else if isTableRow(trimmed) {
+			kind = domain.ObservationSpanKindTableRow
+		}
+		add(kind, block.start, block.end)
+		if kind == domain.ObservationSpanKindParagraph {
+			for _, sentence := range sentenceSpans(text, block.start, block.end) {
+				add(domain.ObservationSpanKindSentence, sentence.start, sentence.end)
+			}
+		}
+	}
+	return dedupeObservationSpans(spans)
+}
+
+type byteSpan struct {
+	start int
+	end   int
+}
+
+func lineBlocks(text string) []byteSpan {
+	var out []byteSpan
+	start := 0
+	lineStart := 0
+	blankRun := false
+	flush := func(end int) {
+		for start < end && (text[start] == '\n' || text[start] == '\r') {
+			start++
+		}
+		for end > start && (text[end-1] == '\n' || text[end-1] == '\r') {
+			end--
+		}
+		if start < end {
+			out = append(out, byteSpan{start: start, end: end})
+		}
+	}
+	for i, r := range text {
+		if r != '\n' {
+			continue
+		}
+		line := strings.TrimSpace(text[lineStart:i])
+		if line == "" {
+			flush(lineStart)
+			start = i + 1
+			blankRun = true
+		} else if blankRun || isListItem(line) || isTableRow(line) {
+			if lineStart > start {
+				flush(lineStart)
+				start = lineStart
+			}
+			flush(i)
+			start = i + 1
+			blankRun = false
+		} else {
+			blankRun = false
+		}
+		lineStart = i + 1
+	}
+	flush(len(text))
+	return out
+}
+
+func sentenceSpans(text string, start, end int) []byteSpan {
+	var out []byteSpan
+	segStart := start
+	for i, r := range text[start:end] {
+		abs := start + i
+		switch r {
+		case '.', '?', '!', '。', '？', '！', '；':
+			segEnd := abs + len(string(r))
+			if segEnd > segStart {
+				out = append(out, byteSpan{start: trimLeftByte(text, segStart, segEnd), end: trimRightByte(text, segStart, segEnd)})
+			}
+			segStart = segEnd
+		}
+	}
+	if segStart < end {
+		out = append(out, byteSpan{start: trimLeftByte(text, segStart, end), end: trimRightByte(text, segStart, end)})
+	}
+	return out
+}
+
+func trimLeftByte(text string, start, end int) int {
+	for start < end && (text[start] == ' ' || text[start] == '\t' || text[start] == '\n' || text[start] == '\r') {
+		start++
+	}
+	return start
+}
+
+func trimRightByte(text string, start, end int) int {
+	for end > start && (text[end-1] == ' ' || text[end-1] == '\t' || text[end-1] == '\n' || text[end-1] == '\r') {
+		end--
+	}
+	return end
+}
+
+func isListItem(line string) bool {
+	if strings.HasPrefix(line, "- ") || strings.HasPrefix(line, "* ") {
+		return true
+	}
+	if len(line) < 3 {
+		return false
+	}
+	i := 0
+	for i < len(line) && line[i] >= '0' && line[i] <= '9' {
+		i++
+	}
+	return i > 0 && i+1 < len(line) && (line[i] == '.' || line[i] == ')') && line[i+1] == ' '
+}
+
+func isTableRow(line string) bool {
+	if strings.Count(line, "|") >= 2 {
+		return true
+	}
+	return strings.Count(line, "\t") >= 1
+}
+
+func dedupeObservationSpans(spans []domain.ObservationSpan) []domain.ObservationSpan {
+	seen := map[string]struct{}{}
+	out := make([]domain.ObservationSpan, 0, len(spans))
+	for _, span := range spans {
+		key := string(span.Kind) + "\x00" + fmt.Sprintf("%d:%d", span.Start, span.End) + "\x00" + span.Text
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, span)
+	}
+	return out
+}
+
 func NewFactObservationSpanLink(scope domain.Scope, typ domain.FactLinkType, factID, spanID string, evidenceRefs []domain.EvidenceRef, now time.Time) domain.FactLink {
 	from := domain.GraphNodeRef{Kind: domain.GraphNodeAssertion, ID: factID}
 	to := domain.GraphNodeRef{Kind: domain.GraphNodeObservationSpan, ID: spanID}
@@ -226,9 +403,16 @@ func NewObservationFactLink(scope domain.Scope, typ domain.FactLinkType, observa
 }
 
 func NewAssertionAssertionLink(scope domain.Scope, typ domain.FactLinkType, fromFactID, toFactID string, evidenceObservationIDs []string, evidenceRefs []domain.EvidenceRef, now time.Time) domain.FactLink {
+	if typ == domain.LinkSameObservation && toFactID < fromFactID {
+		fromFactID, toFactID = toFactID, fromFactID
+	}
 	from := domain.GraphNodeRef{Kind: domain.GraphNodeAssertion, ID: fromFactID}
 	to := domain.GraphNodeRef{Kind: domain.GraphNodeAssertion, ID: toFactID}
 	return NewLink(scope, typ, from, to, evidenceObservationIDs, evidenceRefs, now)
+}
+
+func assertionPairKey(fromFactID, toFactID string) string {
+	return strings.TrimSpace(fromFactID) + "\x00" + strings.TrimSpace(toFactID)
 }
 
 func addSameObservationLinks(addLink func(domain.FactLink), observationID string, facts []domain.TemporalFact, now time.Time) {
@@ -245,7 +429,6 @@ func addSameObservationLinks(addLink func(domain.FactLink), observationID string
 			evidenceIDs := []string{observationID}
 			refs := sharedEvidenceRefs(a.EvidenceRefs, b.EvidenceRefs, observationID)
 			addLink(NewAssertionAssertionLink(a.Scope, domain.LinkSameObservation, a.ID, b.ID, evidenceIDs, refs, now))
-			addLink(NewAssertionAssertionLink(a.Scope, domain.LinkSameEventAs, a.ID, b.ID, evidenceIDs, refs, now))
 		}
 	}
 }

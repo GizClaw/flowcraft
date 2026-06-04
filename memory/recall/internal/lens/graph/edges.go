@@ -67,7 +67,7 @@ func extractEdges(f domain.TemporalFact, cfg Config, now time.Time) []directedEd
 	switch f.Kind {
 	case domain.KindRelation:
 		return typed
-	case domain.KindEvent, domain.KindState, domain.KindProcedure, domain.KindNote:
+	case domain.KindEvent, domain.KindState, domain.KindProcedure, domain.KindNote, domain.KindParameter:
 		if !cfg.IncludeCooccurrence {
 			return typed
 		}
@@ -85,7 +85,7 @@ func extractDiagnosticCooccurrenceEdges(f domain.TemporalFact, cfg Config, now t
 		return nil
 	}
 	switch f.Kind {
-	case domain.KindEvent, domain.KindState, domain.KindProcedure, domain.KindNote:
+	case domain.KindEvent, domain.KindState, domain.KindProcedure, domain.KindNote, domain.KindParameter:
 		return extractCooccurrenceEdges(f, cfg)
 	default:
 		return nil

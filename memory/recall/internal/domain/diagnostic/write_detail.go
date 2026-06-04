@@ -25,14 +25,15 @@ type IngestDetail struct {
 	ExtractorLatency     time.Duration
 	ExtractorTokenUsage  ExtractorTokenUsage
 	ExtractorGuard       ExtractorGuard
+	ProposalLifecycle    ProposalLifecycleDetail
 	StructurizerLatency  time.Duration
-	// RecentMessagesProvided / AnchorsProvided / TierApplied are fields wired
-	// through SaveRequest. Zero values here today.
-	RecentMessagesProvided int
-	AnchorsProvided        int
-	TierApplied            string
-	Dropped                []DroppedFact
-	KnownEntitiesSeen      int
+	// RecentMessagesProvided / ExistingFactHintsProvided / TierApplied are
+	// fields wired through SaveRequest. Zero values here today.
+	RecentMessagesProvided    int
+	ExistingFactHintsProvided int
+	TierApplied               string
+	Dropped                   []DroppedFact
+	KnownEntitiesSeen         int
 	// FactStats summarises per-fact shape (Content / Subject /
 	// Evidence / ValidFrom / Confidence / Kind) over res.Facts. The
 	// ingest stage owns the walk because diagnostic/ cannot import
@@ -145,6 +146,17 @@ type GraphCommitDetail struct {
 }
 
 func (GraphCommitDetail) isStageDetail() {}
+
+// GraphDependencyDetail —— write/graph_dependencies stage. Records graph
+// dependency preflight before canonical append.
+type GraphDependencyDetail struct {
+	Checked             int
+	MissingDependencies bool
+	FailedReason        string
+	Latency             time.Duration
+}
+
+func (GraphDependencyDetail) isStageDetail() {}
 
 // ForgetAllDetail —— forget_all stage for GDPR Art.17 / CCPA 1798.105
 // compliant scope-level retirement.
@@ -279,36 +291,41 @@ func (AsyncSemanticProcessDetail) isStageDetail() {}
 
 // ExtractSaveDropped returns write-path compiler drops from ingest detail.
 func ExtractSaveDropped(stages []StageDiagnostic) []DroppedFact {
+	var out []DroppedFact
 	for _, st := range stages {
-		if st.Stage == "ingest" {
+		if st.Stage == "ingest" || st.Stage == "structured_ingest" {
 			if d, ok := st.Detail.(IngestDetail); ok {
-				return append([]DroppedFact(nil), d.Dropped...)
+				out = append(out, d.Dropped...)
 			}
 		}
 	}
-	return nil
+	return out
 }
 
 // ExtractStructurizerCoverage reads ingest stage coverage tallies.
 func ExtractStructurizerCoverage(stages []StageDiagnostic) StructurizerCoverage {
+	var out StructurizerCoverage
 	for _, st := range stages {
-		if st.Stage == "ingest" {
+		if st.Stage == "ingest" || st.Stage == "structured_ingest" {
 			if d, ok := st.Detail.(IngestDetail); ok {
-				return d.StructurizerCoverage
+				out.Add(d.StructurizerCoverage)
 			}
 		}
 	}
-	return StructurizerCoverage{}
+	return out
 }
 
 // ExtractKnownEntitiesSeen returns entity snapshot count from ingest.
 func ExtractKnownEntitiesSeen(stages []StageDiagnostic) int {
+	var out int
 	for _, st := range stages {
-		if st.Stage == "ingest" {
+		if st.Stage == "ingest" || st.Stage == "structured_ingest" {
 			if d, ok := st.Detail.(IngestDetail); ok {
-				return d.KnownEntitiesSeen
+				if d.KnownEntitiesSeen > out {
+					out = d.KnownEntitiesSeen
+				}
 			}
 		}
 	}
-	return 0
+	return out
 }

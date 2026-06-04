@@ -15,8 +15,14 @@ const (
 type ObservationSpanKind string
 
 const (
-	ObservationSpanKindText  ObservationSpanKind = "text"
-	ObservationSpanKindQuote ObservationSpanKind = "quote"
+	ObservationSpanKindText          ObservationSpanKind = "text"
+	ObservationSpanKindTurn          ObservationSpanKind = "turn"
+	ObservationSpanKindParagraph     ObservationSpanKind = "paragraph"
+	ObservationSpanKindListItem      ObservationSpanKind = "list_item"
+	ObservationSpanKindTableRow      ObservationSpanKind = "table_row"
+	ObservationSpanKindSentence      ObservationSpanKind = "sentence"
+	ObservationSpanKindQuote         ObservationSpanKind = "quote"
+	ObservationSpanKindOverflowChunk ObservationSpanKind = "overflow_chunk"
 )
 
 // ObservationSpan is an addressable raw-evidence slice. It lets links and
@@ -31,6 +37,24 @@ type ObservationSpan struct {
 	Start         int
 	End           int
 	Metadata      map[string]any
+}
+
+// SourceEvidenceSpan is the canonical evidence unit consumed by Save
+// extraction. It is derived only from current committed observations or
+// caller-declared EvidenceWindowRefs.
+type SourceEvidenceSpan struct {
+	ObservationID string
+	SpanID        string
+	SourceID      string
+	SessionID     string
+	Scope         Scope
+	Kind          ObservationSpanKind
+	Text          string
+	Start         int
+	End           int
+	Role          string
+	Speaker       string
+	Timestamp     time.Time
 }
 
 // Clone returns a defensive copy of the span.

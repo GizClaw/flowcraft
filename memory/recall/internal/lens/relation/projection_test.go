@@ -65,6 +65,30 @@ func TestRelation_DropsIncompleteTriples(t *testing.T) {
 	}
 }
 
+func TestRelation_DoesNotIndexParameterFacts(t *testing.T) {
+	p := New()
+	ctx := context.Background()
+	future := time.Now().Add(24 * time.Hour)
+	f := domain.TemporalFact{
+		ID: "param1", Scope: scope(),
+		Kind:       domain.KindParameter,
+		Subject:    "experiment",
+		Predicate:  "parameter_value",
+		Object:     "0.2",
+		ObservedAt: time.Now(),
+		ValidTo:    &future,
+	}
+	if p.AcceptsKind(domain.KindParameter) {
+		t.Fatal("relation projection must explicitly reject KindParameter")
+	}
+	if err := p.Project(ctx, []domain.TemporalFact{f}); err != nil {
+		t.Fatal(err)
+	}
+	if got := p.Lookup(ctx, scope(), "experiment", "parameter_value", "0.2"); len(got) != 0 {
+		t.Fatalf("parameter fact polluted relation projection: %+v", got)
+	}
+}
+
 func TestRelation_LookupByDimensions(t *testing.T) {
 	p := New()
 	ctx := context.Background()

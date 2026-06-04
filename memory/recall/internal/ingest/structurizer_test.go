@@ -327,7 +327,7 @@ func TestDefaultStructurizer_PrefersEvidenceRelativeTimeOverContentDate(t *testi
 	}
 }
 
-func TestDefaultStructurizer_EvidenceRelativeTimeDoesNotRewriteModality(t *testing.T) {
+func TestDefaultStructurizer_EvidenceRelativeTimeDoesNotRewriteKind(t *testing.T) {
 	turn := port.TurnContext{
 		ID:   "D1:1",
 		Time: time.Date(2024, 5, 8, 9, 0, 0, 0, time.UTC),
@@ -336,7 +336,6 @@ func TestDefaultStructurizer_EvidenceRelativeTimeDoesNotRewriteModality(t *testi
 	f := domain.TemporalFact{
 		Kind:         domain.KindPlan,
 		Content:      "On 2024-05-08, Avery plans to visit the observatory next month.",
-		Modality:     domain.ModalityActual,
 		EvidenceRefs: []domain.EvidenceRef{{ID: "D1:1", Text: "I plan to visit the observatory next month."}},
 	}
 	out := DefaultStructurizer{}.Structurize(f, port.IngestInput{Turns: []port.TurnContext{turn}})
@@ -344,8 +343,8 @@ func TestDefaultStructurizer_EvidenceRelativeTimeDoesNotRewriteModality(t *testi
 	if hint != "next month" {
 		t.Fatalf("hint = %q, want next month; metadata=%v", hint, out.Metadata)
 	}
-	if out.Modality != domain.ModalityActual {
-		t.Fatalf("structurizer must not infer modality, got %q", out.Modality)
+	if out.Kind != domain.KindPlan {
+		t.Fatalf("structurizer must not rewrite kind, got %q", out.Kind)
 	}
 }
 

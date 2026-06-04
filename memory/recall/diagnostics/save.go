@@ -35,24 +35,28 @@ type InputCoverage struct {
 
 // SaveDiagnostics is the per-stage health view of one Save call.
 type SaveDiagnostics struct {
-	Input                int
-	InputCoverage        InputCoverage
-	StructurizerCoverage diagnostic.StructurizerCoverage
-	ExtractorTokenUsage  ExtractorTokenUsage
-	ExtractorGuard       ExtractorGuard
-	Compiled             FactQuality
-	Appended             FactQuality
-	DropsByStage         map[FailureStage]int
-	TotalLatency         time.Duration
-	StageLatency         map[string]time.Duration
-	Attributions         []Attribution
+	Input                     int
+	InputCoverage             InputCoverage
+	StructurizerCoverage      diagnostic.StructurizerCoverage
+	ExtractorTokenUsage       ExtractorTokenUsage
+	ExtractorGuard            ExtractorGuard
+	ProposalLifecycle         diagnostic.ProposalLifecycleDetail
+	RecentMessagesProvided    int
+	ExistingFactHintsProvided int
+	Compiled                  FactQuality
+	Appended                  FactQuality
+	DropsByStage              map[FailureStage]int
+	TotalLatency              time.Duration
+	StageLatency              map[string]time.Duration
+	Attributions              []Attribution
 }
 
 type TokenUsage = diagnostic.TokenUsage
 type ExtractorStageTokenUsage = diagnostic.ExtractorStageTokenUsage
 type ExtractorTokenUsage = diagnostic.ExtractorTokenUsage
 type ExtractorGuard = diagnostic.ExtractorGuard
-type GuardedExtractedFact = diagnostic.GuardedExtractedFact
+type GuardedSemanticProposal = diagnostic.GuardedSemanticProposal
+type ProposalLifecycleDetail = diagnostic.ProposalLifecycleDetail
 
 // DiagnoseSave produces a per-stage health view from trace.Stages.
 // The request is inspected for typed-channel coverage (Tier / Turns
@@ -61,16 +65,19 @@ func DiagnoseSave(req domain.SaveRequest, trace domain.SaveTrace) SaveDiagnostic
 	stages := trace.Stages
 	cov := inputCoverage(req, stages)
 	out := SaveDiagnostics{
-		Input:                cov.Facts + cov.Turns,
-		InputCoverage:        cov,
-		StructurizerCoverage: diagnostic.ExtractStructurizerCoverage(stages),
-		ExtractorTokenUsage:  extractorTokenUsage(stages),
-		ExtractorGuard:       extractorGuard(stages),
-		Compiled:             factQualityFromIngest(stages),
-		Appended:             factQualityFromResolve(stages),
-		TotalLatency:         SaveLatency(trace),
-		StageLatency:         stageLatencies(stages),
-		Attributions:         AttributeSaveTrace(trace),
+		Input:                     cov.Facts + cov.Turns,
+		InputCoverage:             cov,
+		StructurizerCoverage:      diagnostic.ExtractStructurizerCoverage(stages),
+		ExtractorTokenUsage:       extractorTokenUsage(stages),
+		ExtractorGuard:            extractorGuard(stages),
+		ProposalLifecycle:         proposalLifecycle(stages),
+		RecentMessagesProvided:    ingestContextCoverage(stages).RecentMessages,
+		ExistingFactHintsProvided: ingestContextCoverage(stages).ExistingFactHints,
+		Compiled:                  factQualityFromIngest(stages),
+		Appended:                  factQualityFromResolve(stages),
+		TotalLatency:              SaveLatency(trace),
+		StageLatency:              stageLatencies(stages),
+		Attributions:              AttributeSaveTrace(trace),
 	}
 	if len(out.Attributions) > 0 {
 		out.DropsByStage = make(map[FailureStage]int, len(out.Attributions))
@@ -108,7 +115,8 @@ func inputCoverage(req domain.SaveRequest, stages []diagnostic.StageDiagnostic) 
 	return cov
 }
 
-func extractorGuard(stages []diagnostic.StageDiagnostic) ExtractorGuard {
+func proposalLifecycle(stages []diagnostic.StageDiagnostic) diagnostic.ProposalLifecycleDetail {
+	var out diagnostic.ProposalLifecycleDetail
 	for _, st := range stages {
 		if st.Stage != "ingest" && st.Stage != "structured_ingest" {
 			continue
@@ -117,9 +125,66 @@ func extractorGuard(stages []diagnostic.StageDiagnostic) ExtractorGuard {
 		if !ok {
 			continue
 		}
-		return d.ExtractorGuard
+		mergeProposalLifecycle(&out, d.ProposalLifecycle)
 	}
-	return ExtractorGuard{}
+	for _, st := range stages {
+		if st.Stage != "graph_dependencies" {
+			continue
+		}
+		d, ok := st.Detail.(diagnostic.GraphDependencyDetail)
+		if !ok {
+			continue
+		}
+		out.GraphDependency.Checked += d.Checked
+		if d.FailedReason != "" {
+			out.GraphDependency.Failed++
+			if out.GraphDependency.RejectReasons == nil {
+				out.GraphDependency.RejectReasons = map[string]int{}
+			}
+			out.GraphDependency.RejectReasons[d.FailedReason]++
+		}
+	}
+	return out
+}
+
+type ingestContextCounts struct {
+	RecentMessages    int
+	ExistingFactHints int
+}
+
+func ingestContextCoverage(stages []diagnostic.StageDiagnostic) ingestContextCounts {
+	var out ingestContextCounts
+	for _, st := range stages {
+		if st.Stage != "ingest" && st.Stage != "structured_ingest" {
+			continue
+		}
+		d, ok := st.Detail.(diagnostic.IngestDetail)
+		if !ok {
+			continue
+		}
+		if d.RecentMessagesProvided > out.RecentMessages {
+			out.RecentMessages = d.RecentMessagesProvided
+		}
+		if d.ExistingFactHintsProvided > out.ExistingFactHints {
+			out.ExistingFactHints = d.ExistingFactHintsProvided
+		}
+	}
+	return out
+}
+
+func extractorGuard(stages []diagnostic.StageDiagnostic) ExtractorGuard {
+	var out ExtractorGuard
+	for _, st := range stages {
+		if st.Stage != "ingest" && st.Stage != "structured_ingest" {
+			continue
+		}
+		d, ok := st.Detail.(diagnostic.IngestDetail)
+		if !ok {
+			continue
+		}
+		mergeExtractorGuard(&out, d.ExtractorGuard)
+	}
+	return out
 }
 
 func extractorTokenUsage(stages []diagnostic.StageDiagnostic) ExtractorTokenUsage {
@@ -147,6 +212,7 @@ func extractorTokenUsage(stages []diagnostic.StageDiagnostic) ExtractorTokenUsag
 // same IngestDetail shape, so we accept either name and prefer the
 // one that actually carried facts (Total > 0).
 func factQualityFromIngest(stages []diagnostic.StageDiagnostic) FactQuality {
+	var out FactQuality
 	for _, st := range stages {
 		if st.Stage != "ingest" && st.Stage != "structured_ingest" {
 			continue
@@ -159,9 +225,9 @@ func factQualityFromIngest(stages []diagnostic.StageDiagnostic) FactQuality {
 		if q.Total == 0 {
 			q.Total = d.ExtractedFacts
 		}
-		return q
+		mergeFactQuality(&out, q)
 	}
-	return FactQuality{}
+	return out
 }
 
 func factQualityFromResolve(stages []diagnostic.StageDiagnostic) FactQuality {

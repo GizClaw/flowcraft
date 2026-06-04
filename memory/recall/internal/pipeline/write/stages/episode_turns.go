@@ -6,66 +6,60 @@ import (
 	"strings"
 
 	"github.com/GizClaw/flowcraft/memory/recall/internal/domain"
+	recallingest "github.com/GizClaw/flowcraft/memory/recall/internal/ingest"
 	"github.com/GizClaw/flowcraft/memory/recall/internal/port"
 )
 
-// ParseCanonicalTurns parses the "<speaker>: <text>" lines stored on
-// KindEpisode facts by build_episode. Turn IDs are synthetic; prefer
-// enqueue-time TurnsSnapshot when present (see ReconstructTurnsForJob).
-func ParseCanonicalTurns(content string) []domain.TurnContext {
-	if content == "" {
-		return nil
+// SourceEvidenceSpansForJob revalidates the canonical extractable evidence
+// captured at enqueue time against the current observation store. Async semantic
+// workers must not reconstruct source turns from rendered episode content or
+// snapshot-only state; those shapes are hints and audit material, not extraction
+// authority.
+func SourceEvidenceSpansForJob(ctx context.Context, observations port.ObservationStore, scope domain.Scope, job port.AsyncSemanticJob) ([]domain.SourceEvidenceSpan, error) {
+	if observations == nil {
+		return nil, fmt.Errorf("recall async semantic: observation store is required for source evidence validation")
 	}
-	lines := strings.Split(content, "\n")
-	out := make([]domain.TurnContext, 0, len(lines))
-	for i, line := range lines {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
+	if len(job.SourceEvidenceSpans) == 0 {
+		return nil, fmt.Errorf("recall async semantic: canonical source evidence spans are required")
+	}
+	out := make([]domain.SourceEvidenceSpan, 0, len(job.SourceEvidenceSpans))
+	for i, span := range job.SourceEvidenceSpans {
+		if strings.TrimSpace(span.ObservationID) == "" || strings.TrimSpace(span.SpanID) == "" {
+			return nil, fmt.Errorf("recall async semantic: source evidence span[%d] requires canonical observation/span ids", i)
 		}
-		speaker, text, ok := strings.Cut(line, ": ")
+		if strings.TrimSpace(span.Text) == "" {
+			return nil, fmt.Errorf("recall async semantic: source evidence span[%d] text is required", i)
+		}
+		obs, err := observations.Get(ctx, scope, span.ObservationID)
+		if err != nil {
+			return nil, fmt.Errorf("recall async semantic: source evidence span[%d] observation %q: %w", i, span.ObservationID, err)
+		}
+		if !domain.ScopeVisible(scope, obs.Scope) {
+			return nil, fmt.Errorf("recall async semantic: source evidence span[%d] observation %q is outside scope", i, span.ObservationID)
+		}
+		if !recallingest.ExtractableEvidenceWindowObservation(obs) {
+			return nil, fmt.Errorf("recall async semantic: source evidence span[%d] observation %q is not extractable raw evidence", i, span.ObservationID)
+		}
+		validated, ok := sourceEvidenceSpanFromObservation(obs, span)
 		if !ok {
-			text = line
-			speaker = "unknown"
+			return nil, fmt.Errorf("recall async semantic: source evidence span[%d] %q not found on observation %q", i, span.SpanID, span.ObservationID)
 		}
-		if speaker == "" {
-			speaker = "unknown"
-		}
-		out = append(out, domain.TurnContext{
-			ID:      fmt.Sprintf("turn-%d", i),
-			Speaker: speaker,
-			Text:    text,
-		})
+		out = append(out, validated)
 	}
-	if len(out) == 0 {
-		return nil
-	}
-	return out
+	return out, nil
 }
 
-// ReconstructTurnsForJob prefers the enqueue-time TurnsSnapshot so
-// worker extraction keeps stable turn IDs and full TurnContext fields.
-// When the snapshot is absent it loads canonical episode content.
-func ReconstructTurnsForJob(ctx context.Context, store port.TemporalStore, job port.AsyncSemanticJob) ([]domain.TurnContext, error) {
-	if len(job.TurnsSnapshot) > 0 {
-		return append([]domain.TurnContext(nil), job.TurnsSnapshot...), nil
+func sourceEvidenceSpanFromObservation(obs domain.Observation, requested domain.SourceEvidenceSpan) (domain.SourceEvidenceSpan, bool) {
+	spans, err := recallingest.SourceEvidenceSpansFromObservation(obs)
+	if err != nil {
+		return domain.SourceEvidenceSpan{}, false
 	}
-	if store != nil && len(job.EpisodeFactIDs) > 0 {
-		var turns []domain.TurnContext
-		for _, id := range job.EpisodeFactIDs {
-			f, err := store.Get(ctx, job.Scope, id)
-			if err != nil {
-				return nil, fmt.Errorf("episode fact %q: %w", id, err)
-			}
-			if f.Kind != domain.KindEpisode {
-				return nil, fmt.Errorf("fact %q kind=%s, want episode", id, f.Kind)
-			}
-			parsed := ParseCanonicalTurns(f.Content)
-			turns = append(turns, parsed...)
-		}
-		if len(turns) > 0 {
-			return turns, nil
+	for _, span := range spans {
+		if span.SpanID == requested.SpanID &&
+			span.ObservationID == requested.ObservationID &&
+			span.SourceID == requested.SourceID {
+			return span, true
 		}
 	}
-	return nil, fmt.Errorf("recall async semantic: no turns from snapshot or episodes")
+	return domain.SourceEvidenceSpan{}, false
 }

@@ -112,25 +112,26 @@ func (c *defaultIngestor) Compile(ctx context.Context, input port.IngestInput) (
 	guardAcc := newExtractorGuardAccumulator()
 	extractCtx := withExtractorUsageAccumulator(ctx, usageAcc)
 	extractCtx = withExtractorGuardAccumulator(extractCtx, guardAcc)
-	extracted, err := c.stages.Extractor.Extract(extractCtx, input)
+	extraction, err := c.stages.Extractor.CompileExtraction(extractCtx, input)
 	if err != nil {
 		return port.IngestResult{}, fmt.Errorf("recall ingest: extract: %w", err)
 	}
+	extracted := extraction.PromotedFacts
 
 	var result port.IngestResult
 	result.ExtractorTokenUsage = usageAcc.snapshot()
 	result.ExtractorGuard = guardAcc.snapshot()
+	result.ProposalLifecycle = extraction.ProposalLifecycle
 	for i := range extracted {
 		f := extracted[i]
 		f.Scope = input.Scope
 		if f.ObservedAt.IsZero() {
 			f.ObservedAt = observedNow
 		}
-		// Structurizer runs BEFORE kind validation so the slim
-		// LLM output (text + evidence_refs only) gets its Kind /
-		// entities / SPO filled deterministically. Caller-supplied
-		// fully-formed facts pass through unchanged because the
-		// Structurizer only fills empty fields.
+		// Structurizer runs BEFORE kind validation so promoted semantic
+		// proposals get any remaining deterministic fields filled.
+		// Caller-supplied fully-formed facts pass through unchanged
+		// because the Structurizer only fills empty fields.
 		before := f
 		f = c.stages.Structurizer.Structurize(f, input)
 		result.StructurizerCoverage.Add(DiffStructurizerCoverage(before, f))
@@ -142,7 +143,6 @@ func (c *defaultIngestor) Compile(ctx context.Context, input port.IngestInput) (
 		f = c.stages.Normalizer.Normalize(f)
 		f = c.stages.EntityResolver.Resolve(f)
 		f = c.stages.TimeResolver.Resolve(f, observedNow)
-		f = domain.NormalizeSemantic(f)
 
 		var allow bool
 		if c.stages.Governance != nil {
@@ -163,7 +163,14 @@ func (c *defaultIngestor) Compile(ctx context.Context, input port.IngestInput) (
 			return port.IngestResult{}, errdefs.Validationf("recall ingest: fact %d has invalid kind %q after policy", i, f.Kind)
 		}
 
-		if f.MergeKey == "" {
+		if f.Kind == domain.KindParameter {
+			var err error
+			f, err = CanonicalizeParameterFact(f)
+			if err != nil {
+				return port.IngestResult{}, errdefs.Validationf("recall ingest: parameter fact %d: %v", i, err)
+			}
+			f.MergeKey = DefaultMergeKey(f)
+		} else if f.MergeKey == "" {
 			f.MergeKey = DefaultMergeKey(f)
 		}
 

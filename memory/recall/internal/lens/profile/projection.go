@@ -5,6 +5,7 @@ package profile
 
 import (
 	"context"
+	"fmt"
 	"sort"
 	"strings"
 	"sync"
@@ -187,7 +188,7 @@ func keyOf(s domain.Scope) scopeKey {
 
 func isProfileKind(k domain.FactKind) bool {
 	switch k {
-	case domain.KindState, domain.KindPreference, domain.KindProcedure, domain.KindRelation:
+	case domain.KindState, domain.KindPreference, domain.KindProcedure, domain.KindRelation, domain.KindParameter:
 		return true
 	}
 	return false
@@ -203,6 +204,8 @@ func slotKey(f domain.TemporalFact) string {
 	}
 	agent := f.Scope.AgentID
 	switch f.Kind {
+	case domain.KindParameter:
+		return parameterSlotKey(f, agent)
 	case domain.KindState, domain.KindPreference, domain.KindProcedure:
 		predicate := canonicalKeyPart(f.Predicate)
 		if predicate == "" {
@@ -211,6 +214,34 @@ func slotKey(f domain.TemporalFact) string {
 		return subject + "\x00" + predicate + "\x00" + agent
 	case domain.KindRelation:
 		return subject + "\x00" + canonicalKeyPart(f.Predicate) + "\x00" + canonicalKeyPart(f.Object) + "\x00" + agent
+	}
+	return ""
+}
+
+func parameterSlotKey(f domain.TemporalFact, agent string) string {
+	owner := canonicalKeyPart(metadataString(f.Metadata, domain.MetaParameterOwner))
+	if owner == "" {
+		owner = canonicalKeyPart(f.Subject)
+	}
+	namespace := canonicalKeyPart(metadataString(f.Metadata, domain.MetaParameterNamespacePath))
+	name := canonicalKeyPart(metadataString(f.Metadata, domain.MetaParameterCanonicalName))
+	if name == "" {
+		name = canonicalKeyPart(metadataString(f.Metadata, domain.MetaParameterNameSurface))
+	}
+	if owner == "" || name == "" {
+		return ""
+	}
+	valueKind := canonicalKeyPart(metadataString(f.Metadata, domain.MetaParameterValueKind))
+	condition := canonicalKeyPart(metadataString(f.Metadata, domain.MetaParameterCondition))
+	return strings.Join([]string{"parameter", owner, namespace, name, valueKind, condition, agent}, "\x00")
+}
+
+func metadataString(meta map[string]any, key string) string {
+	if len(meta) == 0 {
+		return ""
+	}
+	if raw, ok := meta[key]; ok {
+		return strings.TrimSpace(fmt.Sprint(raw))
 	}
 	return ""
 }

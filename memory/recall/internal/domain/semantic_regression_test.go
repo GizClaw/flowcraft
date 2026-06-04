@@ -2,31 +2,31 @@ package domain
 
 import "testing"
 
-func TestSemanticFactClonePreservesAssertionFields(t *testing.T) {
+func TestSemanticFactClonePreservesStructuredFields(t *testing.T) {
 	f := TemporalFact{
 		ID:        "f1",
-		Polarity:  PolarityNegated,
-		Modality:  ModalityCanceled,
-		Certainty: CertaintyExplicit,
+		Subject:   "Mira",
+		Predicate: "visited",
+		Object:    "Paris",
 	}
 
 	got := f.Clone()
 
-	if got.Polarity != PolarityNegated || got.Modality != ModalityCanceled || got.Certainty != CertaintyExplicit {
-		t.Fatalf("clone should preserve assertion metadata, got %+v", got)
+	if got.Subject != "Mira" || got.Predicate != "visited" || got.Object != "Paris" {
+		t.Fatalf("clone should preserve structured assertion fields, got %+v", got)
 	}
 }
 
-func TestReasonEvidenceCalibratesYesNoUnknown(t *testing.T) {
+func TestReasonEvidenceReturnsNeutralSummary(t *testing.T) {
 	if got := ReasonEvidence([]QueryTaskIntent{QueryTaskYesNoVerification}, nil); got.Outcome != "unknown" {
 		t.Fatalf("empty yes/no evidence should be unknown, got %q", got.Outcome)
 	}
 
-	no := ReasonEvidence([]QueryTaskIntent{QueryTaskYesNoVerification}, []EvidenceRow{{
-		Polarity: PolarityNegated,
-		Modality: ModalityActual,
+	evidence := ReasonEvidence([]QueryTaskIntent{QueryTaskYesNoVerification}, []EvidenceRow{{
+		Subject: "Mira",
+		Object:  "Paris",
 	}})
-	if no.Outcome != "no" || no.Negated != 1 {
-		t.Fatalf("negated evidence should determine no, got %+v", no)
+	if evidence.Outcome != "evidence" || evidence.Evidence != 1 {
+		t.Fatalf("yes/no evidence should stay neutral, got %+v", evidence)
 	}
 }

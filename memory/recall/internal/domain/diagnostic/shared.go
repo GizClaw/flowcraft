@@ -103,18 +103,26 @@ type ExtractorTokenUsage struct {
 // It answers "did the LLM omit this fact, or did deterministic grounding
 // reject it?" without making saved facts carry empty guard fields.
 type ExtractorGuard struct {
-	Candidates    int                    `json:"candidates,omitempty"`
-	Accepted      int                    `json:"accepted,omitempty"`
-	Rejected      int                    `json:"rejected,omitempty"`
-	ByReason      map[string]int         `json:"by_reason,omitempty"`
-	RejectedFacts []GuardedExtractedFact `json:"rejected_facts,omitempty"`
+	Candidates        int                       `json:"candidates,omitempty"`
+	Accepted          int                       `json:"accepted,omitempty"`
+	Rejected          int                       `json:"rejected,omitempty"`
+	ByReason          map[string]int            `json:"by_reason,omitempty"`
+	ByFamily          map[string]FamilyGuard    `json:"by_family,omitempty"`
+	RejectedProposals []GuardedSemanticProposal `json:"rejected_proposals,omitempty"`
 }
 
-// GuardedExtractedFact is the minimal rejected LLM candidate shape exposed in
+type FamilyGuard struct {
+	Candidates int `json:"candidates,omitempty"`
+	Accepted   int `json:"accepted,omitempty"`
+	Rejected   int `json:"rejected,omitempty"`
+}
+
+// GuardedSemanticProposal is the minimal rejected LLM candidate shape exposed in
 // diagnostics. It mirrors the extractor wire fields plus a deterministic guard
 // reason.
-type GuardedExtractedFact struct {
+type GuardedSemanticProposal struct {
 	Content     string   `json:"content,omitempty"`
+	Family      string   `json:"family,omitempty"`
 	Kind        string   `json:"kind,omitempty"`
 	Subject     string   `json:"subject,omitempty"`
 	Predicate   string   `json:"predicate,omitempty"`
@@ -123,6 +131,63 @@ type GuardedExtractedFact struct {
 	SourceIDs   []string `json:"source_ids,omitempty"`
 	Quote       string   `json:"quote,omitempty"`
 	GuardReason string   `json:"guard_reason"`
+}
+
+// ProposalLifecycleDetail is the structured compiler-stage diagnostic for the
+// Save extraction pipeline. It keeps proposal, grounding, arbitration,
+// promotion, compile, and graph dependency attribution separate so callers do
+// not have to infer stage ownership from flattened guard reasons.
+type ProposalLifecycleDetail struct {
+	ByFamily        map[string]ProposalFamilyLifecycle `json:"by_family,omitempty"`
+	Grounding       GroundingLifecycle                 `json:"grounding,omitempty"`
+	Arbitration     ArbitrationLifecycle               `json:"arbitration,omitempty"`
+	Promotion       PromotionLifecycle                 `json:"promotion,omitempty"`
+	Compile         CompileLifecycle                   `json:"compile,omitempty"`
+	GraphDependency GraphDependencyLifecycle           `json:"graph_dependency,omitempty"`
+}
+
+type ProposalFamilyLifecycle struct {
+	Proposed  int `json:"proposed,omitempty"`
+	Grounded  int `json:"grounded,omitempty"`
+	Promoted  int `json:"promoted,omitempty"`
+	Rejected  int `json:"rejected,omitempty"`
+	Overflow  int `json:"overflow,omitempty"`
+	Omissions int `json:"omissions,omitempty"`
+}
+
+type GroundingLifecycle struct {
+	Input         int            `json:"input,omitempty"`
+	Accepted      int            `json:"accepted,omitempty"`
+	Rejected      int            `json:"rejected,omitempty"`
+	ByLevel       map[string]int `json:"by_level,omitempty"`
+	RejectReasons map[string]int `json:"reject_reasons,omitempty"`
+}
+
+type ArbitrationLifecycle struct {
+	Input         int            `json:"input,omitempty"`
+	Winners       int            `json:"winners,omitempty"`
+	Losers        int            `json:"losers,omitempty"`
+	RejectReasons map[string]int `json:"reject_reasons,omitempty"`
+}
+
+type PromotionLifecycle struct {
+	Input         int            `json:"input,omitempty"`
+	Accepted      int            `json:"accepted,omitempty"`
+	Rejected      int            `json:"rejected,omitempty"`
+	RejectReasons map[string]int `json:"reject_reasons,omitempty"`
+}
+
+type CompileLifecycle struct {
+	Input         int            `json:"input,omitempty"`
+	Compiled      int            `json:"compiled,omitempty"`
+	Rejected      int            `json:"rejected,omitempty"`
+	RejectReasons map[string]int `json:"reject_reasons,omitempty"`
+}
+
+type GraphDependencyLifecycle struct {
+	Checked       int            `json:"checked,omitempty"`
+	Failed        int            `json:"failed,omitempty"`
+	RejectReasons map[string]int `json:"reject_reasons,omitempty"`
 }
 
 // DropReason categorises why a candidate did not survive read-path

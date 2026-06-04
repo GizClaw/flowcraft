@@ -263,7 +263,7 @@ func observationContextItem(obs domain.Observation, score float64) domain.Contex
 
 func observationPrimarySpan(obs domain.Observation) domain.ObservationSpan {
 	for _, span := range obs.Spans {
-		if span.Text != "" && (span.Text == obs.Text || span.Kind == domain.ObservationSpanKindText) {
+		if span.Text != "" && (span.Text == obs.Text || span.Kind == domain.ObservationSpanKindText || span.Kind == domain.ObservationSpanKindTurn) {
 			return span
 		}
 	}

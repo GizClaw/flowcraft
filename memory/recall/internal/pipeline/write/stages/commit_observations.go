@@ -8,6 +8,7 @@ import (
 	"github.com/GizClaw/flowcraft/memory/recall/internal/domain"
 	"github.com/GizClaw/flowcraft/memory/recall/internal/domain/diagnostic"
 	"github.com/GizClaw/flowcraft/memory/recall/internal/graphledger"
+	"github.com/GizClaw/flowcraft/memory/recall/internal/ingest"
 	"github.com/GizClaw/flowcraft/memory/recall/internal/pipeline"
 	"github.com/GizClaw/flowcraft/memory/recall/internal/pipeline/write"
 	"github.com/GizClaw/flowcraft/memory/recall/internal/port"
@@ -29,7 +30,7 @@ func NewCommitObservations(observations port.ObservationStore, projection port.O
 func (CommitObservations) Name() string { return "commit_observations" }
 
 func (s *CommitObservations) Skip(_ context.Context, state *write.WriteState) (bool, diagnostic.StageDetail) {
-	if s == nil || s.observations == nil || state == nil || len(state.Turns) == 0 {
+	if s == nil || s.observations == nil || state == nil || (len(state.Turns) == 0 && len(state.EvidenceWindowRefs) == 0) {
 		return true, diagnostic.ObservationCommitDetail{}
 	}
 	return false, nil
@@ -42,25 +43,48 @@ func (s *CommitObservations) Run(ctx context.Context, state *write.WriteState) (
 		now = started
 	}
 	delta := graphledger.BuildDelta(state.Scope, nil, nil, turnsFromPort(state.Turns), state.ObservedAt, now, state.SaveOutboxID)
-	if err := s.observations.Append(ctx, delta.Observations); err != nil {
+	rawSpans, err := ingest.SourceEvidenceSpansFromObservations(delta.Observations)
+	if err != nil {
 		state.FailedStage = "commit_observations"
 		return diagnostic.ObservationCommitDetail{
 			Observations: len(delta.Observations),
 			Latency:      time.Since(started),
-		}, fmt.Errorf("recall.Save: graph turn observations append: %w", err)
+		}, fmt.Errorf("recall.Save: graph turn observation spans: %w", err)
 	}
-	state.RawObservationIDs = observationIDs(delta.Observations)
-	if s.projection != nil {
-		if err := s.projection.ProjectObservations(ctx, delta.Observations); err != nil {
+	windowSpans, err := ingest.ResolveEvidenceWindowRefs(ctx, s.observations, state.Scope, state.EvidenceWindowRefs)
+	if err != nil {
+		state.FailedStage = "commit_observations"
+		return diagnostic.ObservationCommitDetail{
+			Observations: len(delta.Observations),
+			Latency:      time.Since(started),
+		}, err
+	}
+	if len(delta.Observations) > 0 {
+		if err := s.observations.Append(ctx, delta.Observations); err != nil {
 			state.FailedStage = "commit_observations"
-			cleanupCtx := pipeline.DetachCancel(ctx)
-			_ = s.projection.ForgetObservations(cleanupCtx, state.Scope, state.RawObservationIDs)
-			_ = s.observations.Delete(cleanupCtx, state.Scope, state.RawObservationIDs)
-			state.RawObservationIDs = nil
 			return diagnostic.ObservationCommitDetail{
 				Observations: len(delta.Observations),
 				Latency:      time.Since(started),
-			}, fmt.Errorf("recall.Save: observation projection project: %w", err)
+			}, fmt.Errorf("recall.Save: graph turn observations append: %w", err)
+		}
+	}
+	state.RawObservationIDs = observationIDs(delta.Observations)
+	state.SourceEvidenceSpans = rawSpans
+	state.SourceEvidenceSpans = append(state.SourceEvidenceSpans, windowSpans...)
+	if s.projection != nil {
+		if len(delta.Observations) > 0 {
+			if err := s.projection.ProjectObservations(ctx, delta.Observations); err != nil {
+				state.FailedStage = "commit_observations"
+				cleanupCtx := pipeline.DetachCancel(ctx)
+				_ = s.projection.ForgetObservations(cleanupCtx, state.Scope, state.RawObservationIDs)
+				_ = s.observations.Delete(cleanupCtx, state.Scope, state.RawObservationIDs)
+				state.RawObservationIDs = nil
+				state.SourceEvidenceSpans = nil
+				return diagnostic.ObservationCommitDetail{
+					Observations: len(delta.Observations),
+					Latency:      time.Since(started),
+				}, fmt.Errorf("recall.Save: observation projection project: %w", err)
+			}
 		}
 	}
 	return diagnostic.ObservationCommitDetail{

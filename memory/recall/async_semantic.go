@@ -174,19 +174,26 @@ func (m *memory) processOneAsyncSemanticJob(ctx context.Context, job port.AsyncS
 		return asyncJobFailed
 	}
 
-	turns, err := writestages.ReconstructTurnsForJob(ctx, m.store, job)
+	sourceEvidenceSpans, err := writestages.SourceEvidenceSpansForJob(ctx, m.observationStore, job.Scope, job)
 	if err != nil {
 		m.ackAsyncJobFail(ctx, job, start, err)
 		return asyncJobFailed
 	}
 
+	saveOutboxID := job.SaveOutboxID
+	if saveOutboxID == "" {
+		saveOutboxID = job.RequestID
+	}
 	state := &write.WriteState{
 		Scope:               job.Scope,
-		Turns:               turns,
+		Turns:               nil,
+		SourceEvidenceSpans: sourceEvidenceSpans,
 		ObservedAt:          job.ObservedAt,
 		Tier:                job.Tier,
 		RecentMessages:      job.RecentMessages,
-		ExistingFactsAnchor: job.ExistingFactsAnchor,
+		ExistingFactHints:   job.ExistingFactHints,
+		EvidenceWindowRefs:  nil,
+		SaveOutboxID:        saveOutboxID,
 		Now:                 now,
 		AsyncRequestID:      job.RequestID,
 		SemanticDerivationOrigin: domain.FactOrigin{
@@ -204,6 +211,7 @@ func (m *memory) processOneAsyncSemanticJob(ctx context.Context, job port.AsyncS
 	}
 	// Ingest (possibly LLM-backed) runs outside the scope write lock,
 	// matching the sync Save path and avoiding blocking other writers.
+	allocateSaveOutboxID(state)
 	if err := m.asyncSemanticWorkerPreRunner.Run(ctx, state); err != nil {
 		m.ackAsyncJobFail(ctx, job, start, err)
 		return asyncJobFailed
@@ -216,14 +224,25 @@ func (m *memory) processOneAsyncSemanticJob(ctx context.Context, job port.AsyncS
 		m.ackAsyncJobFail(ctx, job, start, err)
 		return asyncJobFailed
 	}
-	allocateSaveOutboxID(state)
-
 	// Re-validate under the lock so ForgetAll / ExpireRetired cannot
 	// delete episodes after the lock-free preflight.
 	if err := writestages.ValidateEpisodesForJob(ctx, m.store, job, now); err != nil {
 		unlock()
 		m.flushWriteTelemetry()
 		m.ackAsyncJobFail(ctx, job, start, err)
+		return asyncJobFailed
+	}
+	lockedSourceEvidenceSpans, err := writestages.SourceEvidenceSpansForJob(ctx, m.observationStore, job.Scope, job)
+	if err != nil {
+		unlock()
+		m.flushWriteTelemetry()
+		m.ackAsyncJobFail(ctx, job, start, err)
+		return asyncJobFailed
+	}
+	if !sameSourceEvidenceSpans(sourceEvidenceSpans, lockedSourceEvidenceSpans) {
+		unlock()
+		m.flushWriteTelemetry()
+		m.ackAsyncJobFail(ctx, job, start, fmt.Errorf("recall.ProcessAsyncSemantic: source evidence changed before append"))
 		return asyncJobFailed
 	}
 
@@ -320,6 +339,22 @@ func (m *memory) emitAsyncProcessStage(
 		AsyncRequestID: job.RequestID,
 		Detail:         detail,
 	})
+}
+
+func sameSourceEvidenceSpans(a, b []domain.SourceEvidenceSpan) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i].ObservationID != b[i].ObservationID ||
+			a[i].SpanID != b[i].SpanID ||
+			a[i].SourceID != b[i].SourceID ||
+			a[i].Text != b[i].Text ||
+			!a[i].Timestamp.Equal(b[i].Timestamp) {
+			return false
+		}
+	}
+	return true
 }
 
 func (m *memory) recoverCompletedSemanticFacts(ctx context.Context, job port.AsyncSemanticJob, now time.Time) (bool, []string) {

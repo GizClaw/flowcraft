@@ -55,12 +55,13 @@ func (s *Ingest) Run(ctx context.Context, state *write.WriteState) (diagnostic.S
 		Scope:               state.Scope,
 		Facts:               state.Facts,
 		Turns:               state.Turns,
+		SourceEvidenceSpans: state.SourceEvidenceSpans,
 		ObservedAt:          state.ObservedAt,
 		KnownEntities:       state.KnownEntities,
 		Now:                 state.Now,
 		Tier:                state.Tier,
 		RecentMessages:      state.RecentMessages,
-		ExistingFactsAnchor: state.ExistingFactsAnchor,
+		ExistingFactHints:   state.ExistingFactHints,
 	})
 	latency := time.Since(started)
 	if err != nil {
@@ -71,25 +72,27 @@ func (s *Ingest) Run(ctx context.Context, state *write.WriteState) (diagnostic.S
 			ExtractorLatency:    latency,
 			ExtractorTokenUsage: res.ExtractorTokenUsage,
 			ExtractorGuard:      ingestExtractorGuardForDiagnostics(state, res.ExtractorGuard),
+			ProposalLifecycle:   res.ProposalLifecycle,
 		}, err
 	}
 	state.Ingest = res
 	detail := diagnostic.IngestDetail{
-		InputTurns:             len(state.Turns),
-		ExtractedFacts:         len(res.Facts),
-		DroppedByPolicy:        countDroppedReason(res.Dropped, "policy:reject", "governance:reject"),
-		DroppedByValidation:    countDroppedReason(res.Dropped, "validation:reject"),
-		DroppedByDedup:         countDroppedReason(res.Dropped, "dedup:reject"),
-		StructurizerCoverage:   res.StructurizerCoverage,
-		ExtractorLatency:       latency,
-		ExtractorTokenUsage:    res.ExtractorTokenUsage,
-		ExtractorGuard:         ingestExtractorGuardForDiagnostics(state, res.ExtractorGuard),
-		TierApplied:            ingest.TierAppliedFor(state.Tier),
-		RecentMessagesProvided: len(state.RecentMessages),
-		AnchorsProvided:        len(state.ExistingFactsAnchor),
-		Dropped:                droppedFactsForTelemetry(state, res.Dropped),
-		KnownEntitiesSeen:      len(state.KnownEntities),
-		FactStats:              computeFactStats(res.Facts),
+		InputTurns:                len(state.Turns),
+		ExtractedFacts:            len(res.Facts),
+		DroppedByPolicy:           countDroppedReason(res.Dropped, "policy:reject", "governance:reject"),
+		DroppedByValidation:       countDroppedReason(res.Dropped, "validation:reject"),
+		DroppedByDedup:            countDroppedReason(res.Dropped, "dedup:reject"),
+		StructurizerCoverage:      res.StructurizerCoverage,
+		ExtractorLatency:          latency,
+		ExtractorTokenUsage:       res.ExtractorTokenUsage,
+		ExtractorGuard:            ingestExtractorGuardForDiagnostics(state, res.ExtractorGuard),
+		ProposalLifecycle:         res.ProposalLifecycle,
+		TierApplied:               ingest.TierAppliedFor(state.Tier),
+		RecentMessagesProvided:    len(state.RecentMessages),
+		ExistingFactHintsProvided: len(state.ExistingFactHints),
+		Dropped:                   droppedFactsForTelemetry(state, res.Dropped),
+		KnownEntitiesSeen:         len(state.KnownEntities),
+		FactStats:                 computeFactStats(res.Facts),
 	}
 	if len(res.Facts) == 0 {
 		return detail, pipeline.ShortCircuitWith("empty_ingest")
@@ -101,7 +104,7 @@ func ingestExtractorGuardForDiagnostics(state *write.WriteState, guard diagnosti
 	if state != nil && state.DiagnosticsIncludeRaw {
 		return guard
 	}
-	guard.RejectedFacts = nil
+	guard.RejectedProposals = nil
 	return guard
 }
 
