@@ -50,11 +50,12 @@ func (idx *Index) Upsert(ctx context.Context, namespace string, docs []retrieval
 		if err != nil {
 			return fmt.Errorf("Upsert: marshal %s: %w", d.ID, err)
 		}
-		rec := walRecord{Op: walOpUpsert, DocID: d.ID, Doc: &d}
+		doc := cloneDoc(d)
+		rec := walRecord{Op: walOpUpsert, DocID: doc.ID, Doc: &doc}
 		if err := st.wal.Append(ctx, rec); err != nil {
 			return err
 		}
-		st.memtable.upsert(d, len(raw))
+		st.memtable.upsert(doc, len(raw))
 	}
 
 	return idx.maybeFlushLocked(ctx, st)

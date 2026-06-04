@@ -2,6 +2,7 @@ package workspace
 
 import (
 	"context"
+	"reflect"
 	"sort"
 
 	"github.com/GizClaw/flowcraft/memory/retrieval"
@@ -321,7 +322,7 @@ func cloneDoc(d retrieval.Doc) retrieval.Doc {
 	if d.Metadata != nil {
 		out.Metadata = make(map[string]any, len(d.Metadata))
 		for k, v := range d.Metadata {
-			out.Metadata[k] = v
+			out.Metadata[k] = cloneMetadataValue(v)
 		}
 	}
 	if d.SparseVector != nil {
@@ -331,6 +332,87 @@ func cloneDoc(d retrieval.Doc) retrieval.Doc {
 		}
 	}
 	return out
+}
+
+func cloneMetadataValue(v any) any {
+	if v == nil {
+		return v
+	}
+	return cloneMetadataReflect(reflect.ValueOf(v)).Interface()
+}
+
+func cloneMetadataReflect(v reflect.Value) reflect.Value {
+	if !v.IsValid() {
+		return v
+	}
+	switch v.Kind() {
+	case reflect.Interface:
+		if v.IsNil() {
+			return v
+		}
+		return cloneMetadataReflect(v.Elem())
+	case reflect.Map:
+		if v.IsNil() {
+			return v
+		}
+		out := reflect.MakeMapWithSize(v.Type(), v.Len())
+		iter := v.MapRange()
+		for iter.Next() {
+			out.SetMapIndex(iter.Key(), cloneMetadataAssignable(cloneMetadataReflect(iter.Value()), v.Type().Elem()))
+		}
+		return out
+	case reflect.Slice:
+		if v.IsNil() {
+			return v
+		}
+		out := reflect.MakeSlice(v.Type(), v.Len(), v.Cap())
+		for i := 0; i < v.Len(); i++ {
+			out.Index(i).Set(cloneMetadataAssignable(cloneMetadataReflect(v.Index(i)), v.Type().Elem()))
+		}
+		return out
+	case reflect.Array:
+		out := reflect.New(v.Type()).Elem()
+		for i := 0; i < v.Len(); i++ {
+			out.Index(i).Set(cloneMetadataAssignable(cloneMetadataReflect(v.Index(i)), v.Type().Elem()))
+		}
+		return out
+	case reflect.Struct:
+		out := reflect.New(v.Type()).Elem()
+		out.Set(v)
+		for i := 0; i < v.NumField(); i++ {
+			dst := out.Field(i)
+			if !dst.CanSet() {
+				continue
+			}
+			dst.Set(cloneMetadataAssignable(cloneMetadataReflect(v.Field(i)), dst.Type()))
+		}
+		return out
+	case reflect.Pointer:
+		if v.IsNil() {
+			return v
+		}
+		out := reflect.New(v.Type().Elem())
+		out.Elem().Set(cloneMetadataAssignable(cloneMetadataReflect(v.Elem()), v.Type().Elem()))
+		return out
+	default:
+		return v
+	}
+}
+
+func cloneMetadataAssignable(v reflect.Value, typ reflect.Type) reflect.Value {
+	if !v.IsValid() {
+		return reflect.Zero(typ)
+	}
+	if v.Type().AssignableTo(typ) {
+		return v
+	}
+	if v.Type().ConvertibleTo(typ) {
+		return v.Convert(typ)
+	}
+	if typ.Kind() == reflect.Interface && v.Type().Implements(typ) {
+		return v
+	}
+	return reflect.Zero(typ)
 }
 
 // List walks every segment + the memtable, applies the filter,
@@ -611,6 +693,7 @@ func (idx *Index) Get(ctx context.Context, namespace, id string) (retrieval.Doc,
 func projectDoc(d retrieval.Doc, fields []string, withVector bool) retrieval.Doc {
 	if !withVector {
 		d.Vector = nil
+		d.SparseVector = nil
 	}
 	if len(fields) == 0 {
 		return d
