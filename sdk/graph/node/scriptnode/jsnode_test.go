@@ -164,3 +164,56 @@ func TestScriptNode_RunInfo_AllFieldsPropagate(t *testing.T) {
 		}
 	}
 }
+
+func TestScriptNode_ParallelCancelNodeBridge(t *testing.T) {
+	rt := jsrt.New(jsrt.WithPoolSize(1))
+	src := `
+		var ok = parallel.cancelNode("draft_answer", "intent rejected");
+		board.setVar("cancel_ok", ok);
+	`
+	n := New("decide", "script", src, nil, rt)
+	controller := &stubParallelController{}
+
+	board := graph.NewBoard()
+	ctx := graph.ExecutionContext{
+		Context: graph.WithParallelController(context.Background(), controller),
+	}
+	if err := n.ExecuteBoard(ctx, board); err != nil {
+		t.Fatalf("ExecuteBoard: %v", err)
+	}
+
+	if v, _ := board.GetVar("cancel_ok"); v != true {
+		t.Fatalf("cancel_ok = %v", v)
+	}
+	if controller.nodeID != "draft_answer" {
+		t.Fatalf("nodeID = %q", controller.nodeID)
+	}
+	if controller.reason != "intent rejected" {
+		t.Fatalf("reason = %q", controller.reason)
+	}
+}
+
+func TestScriptNode_ParallelCancelNodeBridge_NoParallelContext(t *testing.T) {
+	rt := jsrt.New(jsrt.WithPoolSize(1))
+	src := `board.setVar("cancel_ok", parallel.cancelNode("draft_answer", "intent rejected"));`
+	n := New("decide", "script", src, nil, rt)
+
+	board := graph.NewBoard()
+	if err := n.ExecuteBoard(graph.ExecutionContext{Context: context.Background()}, board); err != nil {
+		t.Fatalf("ExecuteBoard: %v", err)
+	}
+	if v, _ := board.GetVar("cancel_ok"); v != false {
+		t.Fatalf("cancel_ok = %v, want false", v)
+	}
+}
+
+type stubParallelController struct {
+	nodeID string
+	reason string
+}
+
+func (s *stubParallelController) CancelNode(nodeID, reason string) bool {
+	s.nodeID = nodeID
+	s.reason = reason
+	return true
+}

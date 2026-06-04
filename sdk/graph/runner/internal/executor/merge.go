@@ -50,7 +50,11 @@ func mergeLastWins(board *graph.Board, _ *graph.BoardSnapshot, results []branchR
 
 func mergeNamespace(board *graph.Board, _ *graph.BoardSnapshot, results []branchResult) error {
 	for i, r := range results {
-		prefix := fmt.Sprintf("__branch_%d.", i)
+		idx := i
+		if r.index > 0 {
+			idx = r.index
+		}
+		prefix := fmt.Sprintf("__branch_%d.", idx)
 		for k, v := range r.vars {
 			board.SetVar(prefix+k, v)
 		}
