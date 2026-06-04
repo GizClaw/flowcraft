@@ -27,6 +27,10 @@ func Run(t *testing.T, f Factory) {
 	t.Run("FilterEqAndIn", func(t *testing.T) { testFilterEqIn(t, f) })
 	t.Run("FilterRangeAndExists", func(t *testing.T) { testFilterRangeExists(t, f) })
 	t.Run("FilterNotComposes", func(t *testing.T) { testFilterNotComposes(t, f) })
+	t.Run("HybridIgnoresSearchMinScore", func(t *testing.T) { testHybridIgnoresSearchMinScore(t, f) })
+	t.Run("HybridDropsZeroEvidenceDocs", func(t *testing.T) { testHybridDropsZeroEvidenceDocs(t, f) })
+	t.Run("SparseCapabilityMatchesSearch", func(t *testing.T) { testSparseCapabilityMatchesSearch(t, f) })
+	t.Run("ListWithVectorFalseDropsAllVectors", func(t *testing.T) { testListWithVectorFalseDropsAllVectors(t, f) })
 	t.Run("DeleteByFilterValidation", func(t *testing.T) { testDeleteByFilterValidation(t, f) })
 	t.Run("CapabilitiesShape", func(t *testing.T) { testCapabilitiesShape(t, f) })
 	t.Run("SearchDebugIncludeLanesPopulatesExecution", func(t *testing.T) { testSearchDebugIncludeLanesPopulatesExecution(t, f) })
@@ -281,6 +285,120 @@ func testFilterNotComposes(t *testing.T, f Factory) {
 	}
 }
 
+func testHybridIgnoresSearchMinScore(t *testing.T, f Factory) {
+	idx, cleanup := f(t)
+	defer cleanup()
+	defer idx.Close()
+	ctx := context.Background()
+	ns := "ns_hybrid_minscore"
+	mustUpsert(t, idx, ns, []retrieval.Doc{
+		{ID: "a", Content: "alpha", Vector: []float32{1, 0}, Timestamp: time.Now()},
+	})
+	resp, err := idx.Search(ctx, ns, retrieval.SearchRequest{
+		QueryText:   "alpha",
+		QueryVector: []float32{1, 0},
+		TopK:        1,
+		MinScore:    1e9,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Hits) != 1 || resp.Hits[0].Doc.ID != "a" {
+		t.Fatalf("hybrid search must ignore SearchRequest.MinScore, hits=%+v", resp.Hits)
+	}
+}
+
+func testHybridDropsZeroEvidenceDocs(t *testing.T, f Factory) {
+	idx, cleanup := f(t)
+	defer cleanup()
+	defer idx.Close()
+	ctx := context.Background()
+	ns := "ns_hybrid_zero"
+	mustUpsert(t, idx, ns, []retrieval.Doc{
+		{ID: "text-only", Content: "alpha", Vector: []float32{0, 1}, Timestamp: time.Now()},
+		{ID: "vector-only", Content: "zzz", Vector: []float32{1, 0}, Timestamp: time.Now().Add(time.Second)},
+		{ID: "zero-evidence", Content: "zzz", Vector: []float32{0, 1}, Timestamp: time.Now().Add(2 * time.Second)},
+	})
+	resp, err := idx.Search(ctx, ns, retrieval.SearchRequest{
+		QueryText:   "alpha",
+		QueryVector: []float32{1, 0},
+		TopK:        3,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids := idsOf(resp.Hits)
+	if !containsID(ids, "text-only") {
+		t.Fatalf("hybrid search dropped text-lane positive doc: hits=%+v", resp.Hits)
+	}
+	if idx.Capabilities().Hybrid && !containsID(ids, "vector-only") {
+		t.Fatalf("native hybrid search dropped vector-lane positive doc: hits=%+v", resp.Hits)
+	}
+	for _, h := range resp.Hits {
+		if h.Doc.ID == "zero-evidence" {
+			t.Fatalf("hybrid search returned zero-evidence doc: hits=%+v", resp.Hits)
+		}
+	}
+}
+
+func testSparseCapabilityMatchesSearch(t *testing.T, f Factory) {
+	idx, cleanup := f(t)
+	defer cleanup()
+	defer idx.Close()
+	ctx := context.Background()
+	ns := "ns_sparse"
+	mustUpsert(t, idx, ns, []retrieval.Doc{
+		{ID: "sparse", Content: "x", SparseVector: map[string]float32{"needle": 2}, Timestamp: time.Now()},
+		{ID: "other", Content: "x", SparseVector: map[string]float32{"other": 2}, Timestamp: time.Now().Add(time.Second)},
+	})
+	resp, err := idx.Search(ctx, ns, retrieval.SearchRequest{
+		SparseVec: map[string]float32{"needle": 0.5},
+		TopK:      2,
+	})
+	if retrieval.CapabilitiesOf(idx).Sparse {
+		if err != nil {
+			t.Fatalf("Sparse=true backend rejected sparse search: %v", err)
+		}
+		if len(resp.Hits) == 0 || resp.Hits[0].Doc.ID != "sparse" || resp.Hits[0].Scores["sparse"] <= 0 {
+			t.Fatalf("sparse search returned wrong hits: %+v", resp.Hits)
+		}
+		return
+	}
+	if err == nil {
+		t.Fatalf("Sparse=false backend must reject sparse-only search, got response %+v", resp)
+	}
+	if !errdefs.IsValidation(err) && !errdefs.IsNotAvailable(err) && !errors.Is(err, retrieval.ErrNoQuery) {
+		t.Fatalf("Sparse=false backend returned unexpected error: %v", err)
+	}
+}
+
+func testListWithVectorFalseDropsAllVectors(t *testing.T, f Factory) {
+	idx, cleanup := f(t)
+	defer cleanup()
+	defer idx.Close()
+	ctx := context.Background()
+	ns := "ns_projection_vectors"
+	mustUpsert(t, idx, ns, []retrieval.Doc{
+		{
+			ID:           "a",
+			Content:      "alpha",
+			Vector:       []float32{1, 0},
+			SparseVector: map[string]float32{"alpha": 1},
+			Timestamp:    time.Now(),
+		},
+	})
+	resp, err := idx.List(ctx, ns, retrieval.ListRequest{PageSize: 1, WithVector: false})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Items) != 1 {
+		t.Fatalf("items=%+v", resp.Items)
+	}
+	if resp.Items[0].Vector != nil || resp.Items[0].SparseVector != nil {
+		t.Fatalf("WithVector=false leaked vector payloads: %+v", resp.Items[0])
+	}
+}
+
 func testDeleteByFilterValidation(t *testing.T, f Factory) {
 	idx, cleanup := f(t)
 	defer cleanup()
@@ -366,4 +484,13 @@ func idsOf(hits []retrieval.Hit) []string {
 		out = append(out, h.Doc.ID)
 	}
 	return out
+}
+
+func containsID(ids []string, want string) bool {
+	for _, id := range ids {
+		if id == want {
+			return true
+		}
+	}
+	return false
 }

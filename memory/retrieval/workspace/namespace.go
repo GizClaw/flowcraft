@@ -135,6 +135,7 @@ func (idx *Index) flushLocked(ctx context.Context, st *namespaceState) error {
 	segID := st.manifest.LastSegmentID + 1
 	build, err := writeSegment(ctx, idx.ws, st.paths, segID, snap, idx.cfg.now())
 	if err != nil {
+		st.memtable.restoreSnapshot(snap)
 		return fmt.Errorf("flush: write segment: %w", err)
 	}
 
@@ -156,6 +157,7 @@ func (idx *Index) flushLocked(ctx context.Context, st *namespaceState) error {
 	}
 
 	if err := writeManifest(ctx, idx.ws, st.paths, &newMan); err != nil {
+		st.memtable.restoreSnapshot(snap)
 		return fmt.Errorf("flush: write manifest: %w", err)
 	}
 	st.manifest = &newMan

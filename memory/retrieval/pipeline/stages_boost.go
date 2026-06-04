@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/GizClaw/flowcraft/memory/text/bm25"
 	"github.com/GizClaw/flowcraft/memory/text/tokenize"
 )
 
@@ -41,61 +42,21 @@ func (s BM25Boost) Run(_ context.Context, st *State) error {
 		w = 0.3
 	}
 	tok := tokenize.Detect(st.Request.QueryText)
-	qTerms := tok.Tokenize(st.Request.QueryText)
+	qTerms := bm25.ExtractKeywords(st.Request.QueryText, tok)
 	if len(qTerms) == 0 {
 		return nil
 	}
 	docTokens := make([][]string, len(hits))
-	totalLen := 0
+	corpus := bm25.NewCorpus()
 	for i, h := range hits {
 		docTokens[i] = tok.Tokenize(h.Doc.Content)
-		totalLen += len(docTokens[i])
+		corpus.AddDocument(docTokens[i])
 	}
-	avgLen := 0.0
-	if len(hits) > 0 {
-		avgLen = float64(totalLen) / float64(len(hits))
-	}
-	const k1, b = 1.5, 0.75
-	df := map[string]int{}
-	for _, terms := range docTokens {
-		seen := map[string]struct{}{}
-		for _, t := range terms {
-			seen[t] = struct{}{}
-		}
-		for t := range seen {
-			df[t]++
-		}
-	}
-	N := float64(len(hits))
 	scoresBM25 := make([]float64, len(hits))
 	maxBM25 := math.Inf(-1)
 	minBM25 := math.Inf(+1)
 	for i, terms := range docTokens {
-		tf := map[string]int{}
-		for _, t := range terms {
-			tf[t]++
-		}
-		dl := float64(len(terms))
-		denomNorm := 1.0
-		if avgLen > 0 {
-			denomNorm = 1 - b + b*dl/avgLen
-		}
-		var s float64
-		for _, q := range qTerms {
-			n := float64(df[q])
-			if n == 0 {
-				continue
-			}
-			idf := safeLog((N - n + 0.5) / (n + 0.5))
-			if idf < 0 {
-				idf = 0
-			}
-			f := float64(tf[q])
-			if f == 0 {
-				continue
-			}
-			s += idf * (f * (k1 + 1)) / (f + k1*denomNorm)
-		}
+		s := bm25.Score(terms, qTerms, corpus, bm25.WithK1(1.5))
 		scoresBM25[i] = s
 		if s > maxBM25 {
 			maxBM25 = s
@@ -205,11 +166,4 @@ func (s SupersededDecay) Run(_ context.Context, st *State) error {
 	sort.SliceStable(hits, func(i, j int) bool { return hits[i].Score > hits[j].Score })
 	st.Final = hits
 	return nil
-}
-
-func safeLog(x float64) float64 {
-	if x <= 0 {
-		return 0
-	}
-	return math.Log(x)
 }

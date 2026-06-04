@@ -210,55 +210,45 @@ func (m *Index) Search(_ context.Context, namespace string, req retrieval.Search
 	m.mu.RUnlock()
 
 	if hasText && hasVec {
-		bmOrder := append([]scored(nil), out...)
-		sort.SliceStable(bmOrder, func(i, j int) bool {
-			if bmOrder[i].bm25 == bmOrder[j].bm25 {
-				if bmOrder[i].cos == bmOrder[j].cos {
-					return bmOrder[i].d.ID < bmOrder[j].d.ID
+		buildLane := func(score func(scored) float64) []retrieval.Hit {
+			hits := make([]retrieval.Hit, 0, len(out))
+			for _, s := range out {
+				v := score(s)
+				if v <= 0 {
+					continue
 				}
-				return bmOrder[i].cos > bmOrder[j].cos
+				hits = append(hits, retrieval.Hit{Doc: cloneDoc(s.d), Score: v})
 			}
-			return bmOrder[i].bm25 > bmOrder[j].bm25
-		})
-		bmRank := make(map[string]int, len(bmOrder))
-		for i, s := range bmOrder {
-			bmRank[s.d.ID] = i + 1
-		}
-		vecOrder := append([]scored(nil), out...)
-		sort.SliceStable(vecOrder, func(i, j int) bool {
-			if vecOrder[i].cos == vecOrder[j].cos {
-				if vecOrder[i].bm25 == vecOrder[j].bm25 {
-					return vecOrder[i].d.ID < vecOrder[j].d.ID
+			sort.SliceStable(hits, func(i, j int) bool {
+				if hits[i].Score == hits[j].Score {
+					return hits[i].Doc.ID < hits[j].Doc.ID
 				}
-				return vecOrder[i].bm25 > vecOrder[j].bm25
-			}
-			return vecOrder[i].cos > vecOrder[j].cos
-		})
-		vecRank := make(map[string]int, len(vecOrder))
-		for i, s := range vecOrder {
-			vecRank[s.d.ID] = i + 1
-		}
-		const k = 60.0
-		var hits []retrieval.Hit
-		for _, s := range out {
-			rrf := 1.0/(k+float64(bmRank[s.d.ID])) + 1.0/(k+float64(vecRank[s.d.ID]))
-			// SearchRequest.MinScore is intentionally NOT consulted on the
-			// hybrid path: RRF scores live on a different scale (~1/k) than
-			// raw BM25/cosine, and applying the same threshold here would
-			// silently change meaning depending on which modes were
-			// supplied. Use pipeline.ScoreThreshold for hybrid filtering.
-			hits = append(hits, retrieval.Hit{
-				Doc:    cloneDoc(s.d),
-				Score:  rrf,
-				Scores: map[string]float64{"bm25": s.bm25, "cos": s.cos, "rrf": rrf},
+				return hits[i].Score > hits[j].Score
 			})
+			return hits
 		}
-		sort.SliceStable(hits, func(i, j int) bool {
-			if hits[i].Score == hits[j].Score {
-				return hits[i].Doc.ID < hits[j].Doc.ID
+		bmHits := buildLane(func(s scored) float64 { return s.bm25 })
+		vecHits := buildLane(func(s scored) float64 { return s.cos })
+		hits := scoring.RRF([][]retrieval.Hit{bmHits, vecHits}, scoring.DefaultRRFK)
+		bmByID := make(map[string]float64, len(out))
+		cosByID := make(map[string]float64, len(out))
+		for _, s := range out {
+			bmByID[s.d.ID] = s.bm25
+			cosByID[s.d.ID] = s.cos
+		}
+		for i := range hits {
+			rrf := hits[i].Score
+			hits[i].Scores = map[string]float64{
+				"bm25": bmByID[hits[i].Doc.ID],
+				"cos":  cosByID[hits[i].Doc.ID],
+				"rrf":  rrf,
 			}
-			return hits[i].Score > hits[j].Score
-		})
+		}
+		// SearchRequest.MinScore is intentionally NOT consulted on the
+		// hybrid path: RRF scores live on a different scale (~1/k) than
+		// raw BM25/cosine, and applying the same threshold here would
+		// silently change meaning depending on which modes were supplied.
+		// Use pipeline.ScoreThreshold for hybrid filtering.
 		if len(hits) > req.TopK {
 			hits = hits[:req.TopK]
 		}

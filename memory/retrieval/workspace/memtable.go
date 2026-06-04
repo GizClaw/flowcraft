@@ -55,7 +55,7 @@ func newMemtable() *memtable {
 func (m *memtable) upsert(d retrieval.Doc, sizeHint int) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	clone := d
+	clone := cloneDoc(d)
 	item := memtableItem{op: walOpUpsert, id: d.ID, doc: &clone}
 	if i, ok := m.index[d.ID]; ok {
 		// Overwriting an existing entry; bytes ≈ replace, not add.
@@ -127,16 +127,34 @@ func (m *memtable) approxByteCount() int {
 func (m *memtable) snapshot() *memtableSnapshot {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	snap := &memtableSnapshot{items: m.items}
+	snap := &memtableSnapshot{items: m.items, approxBytes: m.approxBytes}
 	m.items = nil
 	m.index = make(map[string]int)
 	m.approxBytes = 0
 	return snap
 }
 
+// restoreSnapshot puts a failed flush snapshot back into the live
+// memtable. Caller holds the namespace write lock, so no newer writes
+// can have been staged since snapshot() emptied the memtable.
+func (m *memtable) restoreSnapshot(snap *memtableSnapshot) {
+	if snap == nil || snap.empty() {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.items = append([]memtableItem(nil), snap.items...)
+	m.index = make(map[string]int, len(m.items))
+	m.approxBytes = snap.approxBytes
+	for i, it := range m.items {
+		m.index[it.id] = i
+	}
+}
+
 // memtableSnapshot is the sealed view returned by [memtable.snapshot].
 type memtableSnapshot struct {
-	items []memtableItem
+	items       []memtableItem
+	approxBytes int
 }
 
 // upserts iterates docs that should be persisted to the new segment
