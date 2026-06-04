@@ -77,6 +77,7 @@ func (n *ScriptNode) ExecuteBoard(ctx graph.ExecutionContext, board *graph.Board
 		bindings.NewBoardBridge(board),
 		bindings.NewExprBridge(),
 		bindings.NewHostBridge(ctx.Host, n.id, ctx.Publisher),
+		newParallelBridge(),
 		// Reconstruct the full RunInfo from engine.Run.Attributes
 		// (promoted by agent.Run upstream) instead of the legacy
 		// RunInfo{RunID: ec.RunID} one-field bridge that left

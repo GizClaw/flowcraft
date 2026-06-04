@@ -21,8 +21,9 @@ import (
 )
 
 const (
-	defaultModel     = "claude-opus-4-6"
-	defaultMaxTokens = int64(4096)
+	defaultModel                = "claude-opus-4-6"
+	defaultMaxTokens            = int64(4096)
+	defaultThinkingBudgetTokens = int64(1024)
 )
 
 // normalizeAnthropicUsage maps Anthropic's three-bucket prompt-token
@@ -257,7 +258,9 @@ func (c *LLM) Generate(ctx context.Context, messages []llm.Message, opts ...llm.
 				},
 			},
 		}
-		applyBetaOptions(&p, options)
+		if err := applyBetaOptions(&p, options); err != nil {
+			return llm.Message{}, llm.TokenUsage{}, err
+		}
 		// Plan anchors against the stable params (planCacheAnchors
 		// reads only Text / content-length fields, which are
 		// identical across the stable / beta type pair) and then
@@ -313,7 +316,9 @@ func (c *LLM) Generate(ctx context.Context, messages []llm.Message, opts ...llm.
 		Messages:  msgParams,
 		System:    sys,
 	}
-	applyOptions(&p, options)
+	if err := applyOptions(&p, options); err != nil {
+		return llm.Message{}, llm.TokenUsage{}, err
+	}
 	// Cache-anchor planning must run *after* applyOptions has
 	// populated p.Tools — the plan's tools-end anchor needs the
 	// final tool slice to mutate in place. System / history
@@ -397,7 +402,10 @@ func (c *LLM) GenerateStream(ctx context.Context, messages []llm.Message, opts .
 				},
 			},
 		}
-		applyBetaOptions(&p, options)
+		if err := applyBetaOptions(&p, options); err != nil {
+			span.End()
+			return nil, err
+		}
 		// Same cache-anchor plumbing as the non-streaming Beta
 		// branch; see the comment there.
 		plan := planCacheAnchors(sys, msgParams, nil)
@@ -425,7 +433,10 @@ func (c *LLM) GenerateStream(ctx context.Context, messages []llm.Message, opts .
 		Messages:  msgParams,
 		System:    sys,
 	}
-	applyOptions(&p, options)
+	if err := applyOptions(&p, options); err != nil {
+		span.End()
+		return nil, err
+	}
 	plan := planCacheAnchors(p.System, p.Messages, p.Tools)
 	applyAnchorsToSystem(p.System, plan.systemBlocks)
 	applyAnchorToHistory(p.Messages, plan.historyMsgIdx)
@@ -605,7 +616,7 @@ func convertResponse(blocks []asdk.ContentBlockUnion) llm.Message {
 
 // --- Beta API helpers (JSON mode) ---
 
-func applyBetaOptions(p *asdk.BetaMessageNewParams, options *llm.GenerateOptions) {
+func applyBetaOptions(p *asdk.BetaMessageNewParams, options *llm.GenerateOptions) error {
 	if options.Temperature != nil {
 		p.Temperature = param.NewOpt(*options.Temperature)
 	}
@@ -618,6 +629,19 @@ func applyBetaOptions(p *asdk.BetaMessageNewParams, options *llm.GenerateOptions
 	if len(options.StopWords) > 0 {
 		p.StopSequences = options.StopWords
 	}
+	if options.Thinking != nil {
+		if *options.Thinking {
+			budget, err := thinkingBudgetTokens(p.MaxTokens)
+			if err != nil {
+				return err
+			}
+			p.Thinking = asdk.BetaThinkingConfigParamOfEnabled(budget)
+		} else {
+			disabled := asdk.NewBetaThinkingConfigDisabledParam()
+			p.Thinking = asdk.BetaThinkingConfigParamUnion{OfDisabled: &disabled}
+		}
+	}
+	return nil
 }
 
 func extractBetaText(blocks []asdk.BetaContentBlockUnion) string {
@@ -674,7 +698,7 @@ func convertToBetaSystemBlocks(sys []asdk.TextBlockParam) []asdk.BetaTextBlockPa
 
 // --- Stable API helpers ---
 
-func applyOptions(p *asdk.MessageNewParams, options *llm.GenerateOptions) {
+func applyOptions(p *asdk.MessageNewParams, options *llm.GenerateOptions) error {
 	if options.Temperature != nil {
 		p.Temperature = param.NewOpt(*options.Temperature)
 	}
@@ -686,6 +710,18 @@ func applyOptions(p *asdk.MessageNewParams, options *llm.GenerateOptions) {
 	}
 	if len(options.StopWords) > 0 {
 		p.StopSequences = options.StopWords
+	}
+	if options.Thinking != nil {
+		if *options.Thinking {
+			budget, err := thinkingBudgetTokens(p.MaxTokens)
+			if err != nil {
+				return err
+			}
+			p.Thinking = asdk.ThinkingConfigParamOfEnabled(budget)
+		} else {
+			disabled := asdk.NewThinkingConfigDisabledParam()
+			p.Thinking = asdk.ThinkingConfigParamUnion{OfDisabled: &disabled}
+		}
 	}
 
 	if len(options.Tools) > 0 {
@@ -758,6 +794,14 @@ func applyOptions(p *asdk.MessageNewParams, options *llm.GenerateOptions) {
 			DisableParallelToolUse: param.NewOpt(disableParallel),
 		}}
 	}
+	return nil
+}
+
+func thinkingBudgetTokens(maxTokens int64) (int64, error) {
+	if maxTokens <= defaultThinkingBudgetTokens {
+		return 0, errdefs.Validationf("anthropic: thinking requires max_tokens > %d", defaultThinkingBudgetTokens)
+	}
+	return defaultThinkingBudgetTokens, nil
 }
 
 func parseDataURL(s string) (mediaType, base64Data string, err error) {

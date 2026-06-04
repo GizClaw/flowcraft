@@ -62,7 +62,7 @@ func (s *Index) Capabilities() retrieval.Capabilities {
 	return retrieval.Capabilities{
 		BM25:   true,
 		Vector: false,
-		Sparse: false,
+		Sparse: true,
 		Hybrid: false,
 
 		FilterPushdown: false,
@@ -301,6 +301,9 @@ func (s *Index) Search(ctx context.Context, ns string, req retrieval.SearchReque
 	if !hasText && !hasVec && !hasSparse {
 		return nil, retrieval.ErrNoQuery
 	}
+	if hasVec && !hasText {
+		return nil, errdefs.NotAvailablef("sqlite: vector-only search is not supported")
+	}
 	topK := req.TopK
 	if topK <= 0 {
 		topK = 10
@@ -308,9 +311,10 @@ func (s *Index) Search(ctx context.Context, ns string, req retrieval.SearchReque
 	start := time.Now()
 
 	type cand struct {
-		d    retrieval.Doc
-		bm25 float64
-		cos  float64
+		d      retrieval.Doc
+		bm25   float64
+		cos    float64
+		sparse float64
 	}
 	var rows []cand
 
@@ -326,11 +330,7 @@ func (s *Index) Search(ctx context.Context, ns string, req retrieval.SearchReque
 		if pageSize < 100 {
 			pageSize = 100
 		}
-		maxScan := topK * 256
-		if maxScan < 1000 {
-			maxScan = 1000
-		}
-		for offset := 0; offset < maxScan; offset += pageSize {
+		for offset := 0; ; offset += pageSize {
 			r, err := s.db.QueryContext(ctx, query, q, pageSize, offset)
 			if err != nil {
 				return nil, err
@@ -373,7 +373,7 @@ func (s *Index) Search(ctx context.Context, ns string, req retrieval.SearchReque
 			}
 		}
 	} else {
-		all, err := s.scanAll(ctx, ns, req.Filter, 4*topK)
+		all, err := s.scanAll(ctx, ns, req.Filter, 0)
 		if err != nil {
 			return nil, err
 		}
@@ -389,6 +389,11 @@ func (s *Index) Search(ctx context.Context, ns string, req retrieval.SearchReque
 			}
 		}
 	}
+	if hasSparse {
+		for i := range rows {
+			rows[i].sparse = sparseDot(rows[i].d.SparseVector, req.SparseVec)
+		}
+	}
 
 	sort.SliceStable(rows, func(i, j int) bool {
 		if hasText && hasVec {
@@ -398,6 +403,9 @@ func (s *Index) Search(ctx context.Context, ns string, req retrieval.SearchReque
 		}
 		if hasVec {
 			return rows[i].cos > rows[j].cos
+		}
+		if hasSparse && !hasText {
+			return rows[i].sparse > rows[j].sparse
 		}
 		return rows[i].bm25 > rows[j].bm25
 	})
@@ -409,14 +417,16 @@ func (s *Index) Search(ctx context.Context, ns string, req retrieval.SearchReque
 			score = c.bm25 + c.cos
 		} else if hasVec && !hasText {
 			score = c.cos
+		} else if hasSparse && !hasText {
+			score = c.sparse
 		}
-		if score < req.MinScore {
+		if !(hasText && hasVec) && score < req.MinScore {
 			continue
 		}
 		out = append(out, retrieval.Hit{
 			Doc:    c.d,
 			Score:  score,
-			Scores: map[string]float64{"bm25": c.bm25, "cos": c.cos},
+			Scores: map[string]float64{"bm25": c.bm25, "cos": c.cos, "sparse": c.sparse},
 		})
 		if len(out) >= topK {
 			break
@@ -426,11 +436,16 @@ func (s *Index) Search(ctx context.Context, ns string, req retrieval.SearchReque
 }
 
 func (s *Index) scanAll(ctx context.Context, ns string, f retrieval.Filter, limit int) ([]retrieval.Doc, error) {
-	if limit <= 0 {
-		limit = 1000
+	query := fmt.Sprintf(`SELECT id,content,metadata,vector,sparse,ts FROM "docs_%s" ORDER BY ts DESC`, ns)
+	var (
+		rows *sql.Rows
+		err  error
+	)
+	if limit > 0 {
+		rows, err = s.db.QueryContext(ctx, query+` LIMIT ?`, limit)
+	} else {
+		rows, err = s.db.QueryContext(ctx, query)
 	}
-	rows, err := s.db.QueryContext(ctx,
-		fmt.Sprintf(`SELECT id,content,metadata,vector,sparse,ts FROM "docs_%s" ORDER BY ts DESC LIMIT ?`, ns), limit)
 	if err != nil {
 		return nil, err
 	}
@@ -981,6 +996,19 @@ func cosineSim(a, b []float32) float64 {
 		return 0
 	}
 	return dot / (math.Sqrt(na) * math.Sqrt(nb))
+}
+
+func sparseDot(doc, q map[string]float32) float64 {
+	if len(doc) == 0 || len(q) == 0 {
+		return 0
+	}
+	var out float64
+	for k, qv := range q {
+		if dv, ok := doc[k]; ok {
+			out += float64(dv * qv)
+		}
+	}
+	return out
 }
 
 func isEmptyFilter(f retrieval.Filter) bool {

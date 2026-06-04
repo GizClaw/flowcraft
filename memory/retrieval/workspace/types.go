@@ -162,8 +162,8 @@ type segmentRef struct {
 	VectorDim int `json:"vector_dim"`
 
 	// SizeBytes is the total bytes occupied by the segment files
-	// (docs.jsonl + offsets + bm25 + vector + tombstones + meta),
-	// used by the size-tiered compactor to pick merge candidates.
+	// (docs.jsonl + offsets + tombstones + meta), used by the
+	// size-tiered compactor to pick merge candidates.
 	SizeBytes int64 `json:"size_bytes"`
 
 	// BuildAt is the writer's local clock at flush completion.
@@ -184,21 +184,19 @@ type segmentMeta struct {
 	DocCount  int `json:"doc_count"`
 	VectorDim int `json:"vector_dim"`
 
-	// AvgDocLength is the BM25 average term count per doc captured
-	// at build time. Used by per-segment scoring (BM25 is corpus-
-	// local; the per-segment value gives stable scores even when
-	// other segments come and go).
+	// AvgDocLength is retained for v1 metadata compatibility. It is
+	// currently the average marshaled-doc byte length at segment build
+	// time; Search does not use it for BM25 scoring.
 	AvgDocLength float64 `json:"avg_doc_length"`
 
 	// BuildAt is the flush completion time.
 	BuildAt time.Time `json:"build_at"`
 
-	// FileChecksums maps "docs.jsonl", "docs.offsets.bin",
-	// "bm25.bin", "vector.bin", "tombstones.bin" to their crc32
-	// (IEEE) of the file contents at build time. Reads verify the
-	// checksum on first load and refuse to use a corrupt file
-	// rather than silently feed garbled data into BM25 / vector
-	// scoring.
+	// FileChecksums maps "docs.jsonl", "docs.offsets.bin", and
+	// "tombstones.bin" to their crc32 (IEEE) of the file contents at
+	// build time. Reads verify the checksum on first load and refuse
+	// to use a corrupt file rather than silently feed garbled data
+	// into scoring.
 	FileChecksums map[string]uint32 `json:"file_checksums"`
 }
 

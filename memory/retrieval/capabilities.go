@@ -58,7 +58,7 @@ func DefaultMemoryCapabilities() Capabilities {
 	return Capabilities{
 		BM25:   true,
 		Vector: true,
-		Sparse: false,
+		Sparse: true,
 		Hybrid: true,
 
 		FilterPushdown: true,

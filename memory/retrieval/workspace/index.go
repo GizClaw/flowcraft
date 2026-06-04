@@ -16,10 +16,6 @@ import (
 // callers with very different shapes (mostly-read, very-write-heavy,
 // large vectors) should pass explicit options.
 const (
-	// DefaultRoot is the empty string, which means "use workspace
-	// root". Set [WithRoot] to nest the index under a sub-path.
-	DefaultRoot = ""
-
 	// DefaultMemtableMaxDocs is the doc-count threshold that
 	// triggers a memtable flush. Mid-thousands keeps each segment
 	// readable in a single Workspace.Read call.
@@ -65,7 +61,6 @@ const (
 // produced from a slice of [Option] values; callers do not
 // instantiate Config directly.
 type Config struct {
-	root             string
 	memtableMaxDocs  int
 	memtableMaxBytes int
 	walMaxBytes      int
@@ -81,7 +76,6 @@ type Config struct {
 
 func defaultConfig() Config {
 	return Config{
-		root:             DefaultRoot,
 		memtableMaxDocs:  DefaultMemtableMaxDocs,
 		memtableMaxBytes: DefaultMemtableMaxBytes,
 		walMaxBytes:      DefaultWALMaxBytes,
@@ -102,12 +96,6 @@ func defaultConfig() Config {
 
 // Option configures an [Index] at construction time.
 type Option func(*Config)
-
-// WithRoot nests the index under a sub-path of the workspace, which
-// lets a single Workspace host the index next to recall/, knowledge/,
-// memories/, history/ subtrees without name collisions. The default
-// is "" (workspace root).
-func WithRoot(p string) Option { return func(c *Config) { c.root = p } }
 
 // WithMemtableMaxDocs overrides the doc-count flush threshold.
 func WithMemtableMaxDocs(n int) Option {

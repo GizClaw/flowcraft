@@ -8,6 +8,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/memory/retrieval"
 	"github.com/GizClaw/flowcraft/memory/retrieval/contract"
+	"github.com/GizClaw/flowcraft/sdk/errdefs"
 
 	pgx "github.com/GizClaw/flowcraft/memory/retrieval/postgres"
 )
@@ -29,7 +30,11 @@ func TestContract(t *testing.T) {
 		}
 		return idx, func() {
 			ctx := context.Background()
-			for _, ns := range []string{"ns_a", "ns_idem", "ns_raw", "ns_x", "ns_y", "ns_list", "ns_filt", "ns_rng"} {
+			for _, ns := range []string{
+				"ns_a", "ns_idem", "ns_raw", "ns_x", "ns_y", "ns_list", "ns_list_stale",
+				"ns_filt", "ns_rng", "ns_not", "ns_hybrid_minscore", "ns_hybrid_zero",
+				"ns_sparse", "ns_projection_vectors", "ns_debug",
+			} {
 				_ = idx.Drop(ctx, ns)
 			}
 		}
@@ -50,8 +55,8 @@ func TestSearchSelectiveFilterBeyondInitialWindow(t *testing.T) {
 	const ns = "ns_selective_pg"
 	_ = idx.Drop(ctx, ns)
 	t.Cleanup(func() { _ = idx.Drop(context.Background(), ns) })
-	docs := make([]retrieval.Doc, 0, 80)
-	for i := 0; i < 79; i++ {
+	docs := make([]retrieval.Doc, 0, 1001)
+	for i := 0; i < 1000; i++ {
 		docs = append(docs, retrieval.Doc{
 			ID:       "common-" + strconv.Itoa(i),
 			Content:  "alpha alpha alpha common",
@@ -76,5 +81,33 @@ func TestSearchSelectiveFilterBeyondInitialWindow(t *testing.T) {
 	}
 	if len(resp.Hits) != 1 || resp.Hits[0].Doc.ID != "rare" {
 		t.Fatalf("hits = %+v, want rare", resp.Hits)
+	}
+}
+
+func TestSearchVectorOnlyNotAvailable(t *testing.T) {
+	dsn := os.Getenv("FC_PG_DSN")
+	if dsn == "" {
+		t.Skip("FC_PG_DSN not set; skipping postgres integration test")
+	}
+	ctx := context.Background()
+	idx, err := pgx.Open(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer idx.Close()
+	const ns = "ns_vector_disabled_pg"
+	_ = idx.Drop(ctx, ns)
+	t.Cleanup(func() { _ = idx.Drop(context.Background(), ns) })
+	if err := idx.Upsert(ctx, ns, []retrieval.Doc{
+		{ID: "a", Content: "alpha", Vector: []float32{1, 0}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	_, err = idx.Search(ctx, ns, retrieval.SearchRequest{
+		QueryVector: []float32{1, 0},
+		TopK:        1,
+	})
+	if !errdefs.IsNotAvailable(err) {
+		t.Fatalf("vector-only search err=%v, want NotAvailable", err)
 	}
 }

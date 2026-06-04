@@ -3,6 +3,8 @@ package assembly_test
 import (
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -118,6 +120,43 @@ agents:
 		if _, ok := a.Tools.Get(name); !ok {
 			t.Fatalf("tool %q not registered", name)
 		}
+	}
+}
+
+func TestWorkspaceRecallBackendUsesRecallSubWorkspace(t *testing.T) {
+	root := t.TempDir()
+	defaults := assembly.Defaults{
+		Workspace: assembly.FilesystemWorkspaceBackend(),
+		Recall:    assembly.WorkspaceRecallBackend(),
+	}
+	manifest := `
+id: demo
+workspace:
+  root: ` + root + `
+recall: {}
+agents:
+  - name: primary
+    engine: test
+`
+	m, err := assembly.DecodeWithDefaults(strings.NewReader(manifest), defaults)
+	if err != nil {
+		t.Fatalf("DecodeWithDefaults: %v", err)
+	}
+	a, err := assembly.Build(context.Background(), m, assembly.WithCatalog(newTestCatalog(t)), assembly.WithDefaults(defaults))
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	t.Cleanup(func() { _ = a.Close() })
+	if _, err := a.Recall.Save(context.Background(), recall.Scope{RuntimeID: "rt", UserID: "u1"}, recall.SaveRequest{
+		Facts: []recall.TemporalFact{{Kind: recall.FactNote, Content: "alpha"}},
+	}); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "recall", "state.json")); err != nil {
+		t.Fatalf("recall state path: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "state.json")); !os.IsNotExist(err) {
+		t.Fatalf("root state path err = %v, want not exist", err)
 	}
 }
 

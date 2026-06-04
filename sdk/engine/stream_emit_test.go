@@ -135,6 +135,49 @@ func TestEmitStreamDelta_RejectsEmptyType(t *testing.T) {
 	}
 }
 
+func TestEmitStreamDelta_ParallelBranchControlRequiredFields(t *testing.T) {
+	t.Parallel()
+	pub := &capturePublisher{}
+
+	if err := EmitStreamDelta(context.Background(), pub, "r", "branch-a", StreamDeltaPayload{
+		Type:     StreamDeltaParallelBranchAccept,
+		BranchID: "branch-a",
+	}); err == nil {
+		t.Fatal("expected error for missing ForkID")
+	}
+	if err := EmitStreamDelta(context.Background(), pub, "r", "branch-a", StreamDeltaPayload{
+		Type:   StreamDeltaParallelBranchCancel,
+		ForkID: "r:start",
+		Reason: "intent rejected",
+	}); err == nil {
+		t.Fatal("expected error for missing BranchID")
+	}
+	if len(pub.got) != 0 {
+		t.Fatalf("malformed parallel control deltas leaked through: %d envelopes", len(pub.got))
+	}
+
+	if err := EmitStreamDelta(context.Background(), pub, "r", "branch-a", StreamDeltaPayload{
+		Type:        StreamDeltaParallelBranchCancel,
+		ForkID:      "r:start",
+		BranchID:    "branch-a",
+		Reason:      "intent rejected",
+		Speculative: true,
+	}); err != nil {
+		t.Fatalf("valid parallel control delta: %v", err)
+	}
+	got, err := DecodeStreamDelta(pub.got[0])
+	if err != nil {
+		t.Fatalf("DecodeStreamDelta: %v", err)
+	}
+	if got.Type != StreamDeltaParallelBranchCancel ||
+		got.ForkID != "r:start" ||
+		got.BranchID != "branch-a" ||
+		got.Reason != "intent rejected" ||
+		!got.Speculative {
+		t.Fatalf("payload = %+v", got)
+	}
+}
+
 func TestEmitStreamDelta_AcceptsForwardCompatibleType(t *testing.T) {
 	t.Parallel()
 	pub := &capturePublisher{}

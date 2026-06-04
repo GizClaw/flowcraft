@@ -8,10 +8,10 @@ github.com/Azure/azure-sdk-for-go/sdk/internal v1.10.0/go.mod h1:iZDifYGJTIgIIkY
 github.com/AzureAD/microsoft-authentication-library-for-go v1.2.2 h1:XHOnouVk1mxXfQidrMEnLlPk9UMeRtyBTnEFtxkV0kU=
 github.com/AzureAD/microsoft-authentication-library-for-go v1.2.2/go.mod h1:wP83P5OoQ5p6ip3ScPr0BAq0BvuPAvacpEuSzyouqAI=
 github.com/BurntSushi/toml v0.3.1/go.mod h1:xHWCNGjB5oqiDr8zfno3MHue2Ht5sIBksp03qcyfWMU=
-github.com/GizClaw/flowcraft/memory v0.1.0 h1:/bMi3yorT2ig3Syyq76dcr+laXtfEYeU68KUTQGsulI=
-github.com/GizClaw/flowcraft/memory v0.1.0/go.mod h1:ddcjEcyaxlXXOR4ktW9VXI4vRIf4NPsQjLzL7P6CJjQ=
-github.com/GizClaw/flowcraft/sdk v0.4.0 h1:L0wOTgjfizol33sgEJC/WzloB8O+vtNNHBqRXDo6/I8=
-github.com/GizClaw/flowcraft/sdk v0.4.0/go.mod h1:pMY9bxfdEOnj5gJndX9Yrrw3mpBvIbldBZ9Ug4b9Ltk=
+github.com/GizClaw/flowcraft/memory v0.1.2 h1:0Dxj1uZVvf1J+aKzh8wuX8iwbDhu/eg9NL7QlaO0pIQ=
+github.com/GizClaw/flowcraft/memory v0.1.2/go.mod h1:FKrzqusZECJVKhsHVRBZZbZbbtwQ/DVKq0AnL+wUmuM=
+github.com/GizClaw/flowcraft/sdk v0.4.2 h1:xKQ9zhdK6C0ioJIrc4GOnog8TbAnEDJaGQqSbBXjaaQ=
+github.com/GizClaw/flowcraft/sdk v0.4.2/go.mod h1:CtWO/keRfKzfyTuKD3axf6QSpDB/vEqbBIRgvK9qpKw=
 github.com/PuerkitoBio/goquery v1.11.0 h1:jZ7pwMQXIITcUXNH83LLk+txlaEy6NVOfTuP43xxfqw=
 github.com/PuerkitoBio/goquery v1.11.0/go.mod h1:wQHgxUOU3JGuj3oD/QFfxUdlzW6xPHfqyHre6VMY4DQ=
 github.com/andybalholm/cascadia v1.3.3 h1:AG2YHrzJIm4BZ19iwJ/DAua6Btl3IwJX+VI4kktS1LM=

@@ -561,7 +561,7 @@ func (e *LocalExecutor) Execute(ctx context.Context, g *graph.Graph, board *grap
 			}
 
 			if cfg.parallel != nil && len(resolved) > 1 && allUnconditional(g.Edges(nodeID), resolved) {
-				joinBoard, err := executeForkJoin(ctx, g, board, resolved, cfg)
+				joinBoard, err := executeForkJoin(ctx, g, board, nodeID, resolved, cfg)
 				if err != nil {
 					return board, err
 				}

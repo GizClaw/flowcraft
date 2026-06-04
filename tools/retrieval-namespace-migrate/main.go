@@ -128,15 +128,15 @@ func openIndex(ctx context.Context, cfg config) (retrieval.Index, error) {
 		if cfg.workspaceRoot == "" {
 			return nil, fmt.Errorf("-workspace-root is required for workspace backend")
 		}
-		ws, err := sdkworkspace.NewLocalWorkspace(cfg.workspaceRoot)
+		local, err := sdkworkspace.NewLocalWorkspace(cfg.workspaceRoot)
 		if err != nil {
 			return nil, err
 		}
-		var opts []wsretrieval.Option
+		var ws sdkworkspace.Workspace = local
 		if cfg.workspaceIndexRoot != "" {
-			opts = append(opts, wsretrieval.WithRoot(cfg.workspaceIndexRoot))
+			ws = sdkworkspace.Sub(ws, cfg.workspaceIndexRoot)
 		}
-		return wsretrieval.New(ws, opts...)
+		return wsretrieval.New(ws)
 	default:
 		return nil, fmt.Errorf("-backend must be sqlite, postgres, or workspace")
 	}

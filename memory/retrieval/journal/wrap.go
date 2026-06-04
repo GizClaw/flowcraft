@@ -264,22 +264,30 @@ func (w *journaledIndex) supportsFilter(f retrieval.Filter) bool {
 }
 
 func (w *journaledIndex) deleteByFilter(ctx context.Context, namespace string, f retrieval.Filter) (int64, error) {
-	d, ok := w.inner.(retrieval.DeletableByFilter)
-	if !ok {
+	if _, ok := w.inner.(retrieval.DeletableByFilter); !ok {
 		return 0, nil
+	}
+	if isEmptyFilter(f) {
+		return 0, retrieval.ErrEmptyDeleteFilter
 	}
 	docs, err := w.snapshotForFilter(ctx, namespace, f)
 	if err != nil {
 		return 0, err
 	}
-	n, err := d.DeleteByFilter(ctx, namespace, f)
-	if err != nil {
-		return n, err
+	if len(docs) == 0 {
+		return 0, nil
+	}
+	ids := make([]string, 0, len(docs))
+	for _, d := range docs {
+		ids = append(ids, d.ID)
+	}
+	if err := w.inner.Delete(ctx, namespace, ids); err != nil {
+		return 0, err
 	}
 	if err := w.recordDocEvents(ctx, namespace, docs); err != nil {
-		return n, err
+		return int64(len(docs)), err
 	}
-	return n, nil
+	return int64(len(docs)), nil
 }
 
 func (w *journaledIndex) drop(ctx context.Context, namespace string) error {
@@ -468,3 +476,10 @@ var (
 	_ retrieval.Countable         = (*wrappedAuditableCount)(nil)
 	_ retrieval.Countable         = (*wrappedReadableCount)(nil)
 )
+
+func isEmptyFilter(f retrieval.Filter) bool {
+	return len(f.And) == 0 && len(f.Or) == 0 && f.Not == nil &&
+		len(f.Eq) == 0 && len(f.Neq) == 0 && len(f.In) == 0 && len(f.NotIn) == 0 &&
+		len(f.Range) == 0 && len(f.Exists) == 0 && len(f.Missing) == 0 && len(f.Match) == 0 &&
+		len(f.Contains) == 0 && len(f.IContains) == 0 && len(f.ContainsAny) == 0 && len(f.ContainsAll) == 0
+}

@@ -580,10 +580,12 @@ func (idx *Index) Search(ctx context.Context, namespace string, req retrieval.Se
 		if err != nil {
 			return nil, err
 		}
+		textHits = positiveLaneHits(textHits)
 		vectorHits, err := idx.searchVectorLocked(sh, laneReq)
 		if err != nil {
 			return nil, err
 		}
+		vectorHits = positiveLaneHits(vectorHits)
 		hits = scoring.RRF([][]retrieval.Hit{textHits, vectorHits}, scoring.DefaultRRFK)
 	case hasText:
 		hits, err = idx.searchTextLocked(ctx, sh, req)
@@ -719,6 +721,16 @@ func (idx *Index) searchVectorFilteredScan(namespace string, req retrieval.Searc
 		out = out[:req.TopK]
 	}
 	return out, nil
+}
+
+func positiveLaneHits(hits []retrieval.Hit) []retrieval.Hit {
+	out := hits[:0]
+	for _, h := range hits {
+		if h.Score > 0 {
+			out = append(out, h)
+		}
+	}
+	return out
 }
 
 func filterIsZero(f retrieval.Filter) bool {
