@@ -44,8 +44,6 @@
 //	segments/<id>/meta.json         doc count, vector dim, build time, checksums
 //	segments/<id>/docs.jsonl        one Doc per line, immutable
 //	segments/<id>/docs.offsets.bin  uint64 line→byte offsets (point lookup)
-//	segments/<id>/bm25.bin          serialized term→postings + per-doc length
-//	segments/<id>/vector.bin        flat float32 + id index
 //	segments/<id>/tombstones.bin    doc IDs deleted during this segment's life
 //
 // Write path: every Upsert / Delete is appended to the current WAL
@@ -63,10 +61,12 @@
 // without a fsck-style rebuild.
 //
 // Read path: a query consults the memtable plus every live segment
-// listed in the manifest. Per-segment BM25 and vector lanes produce
-// independent ranked lists; results are merged with tombstones
-// filtered out and the final ranking is performed by
-// [scoring.RRF] (the default fusion shipped with sdk/retrieval).
+// listed in the manifest. Segment docs are loaded from docs.jsonl;
+// BM25 token streams are derived from content on first use and cached
+// in the segment reader. Search builds one global corpus across all
+// live docs for each request so IDF does not depend on which segment a
+// doc landed in. Hybrid text+vector queries are fused with
+// [scoring.RRF].
 //
 // Compaction: a background goroutine selects size-tiered groups of
 // small segments, reads them, drops tombstoned IDs, and writes a
@@ -77,11 +77,11 @@
 // # Crash recovery
 //
 // On New() / re-open the index reads the manifest (if any), loads
-// every live segment's metadata into memory (postings and vectors
-// stay on disk and are paged in at search time), then replays each
-// outstanding wal/<seq>.log into the memtable. After a successful
-// replay the index is open for reads and writes; the next flush
-// will atomically retire those WAL files.
+// every live segment's metadata into memory, then replays each
+// outstanding wal/<seq>.log into the memtable. Docs and derived BM25
+// tokens are loaded lazily by segment readers. After a successful
+// replay the index is open for reads and writes; the next flush will
+// atomically retire those WAL files.
 //
 // # Concurrency
 //

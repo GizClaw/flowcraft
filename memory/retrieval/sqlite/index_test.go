@@ -7,6 +7,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/memory/retrieval"
 	"github.com/GizClaw/flowcraft/memory/retrieval/contract"
+	"github.com/GizClaw/flowcraft/sdk/errdefs"
 
 	sqlx "github.com/GizClaw/flowcraft/memory/retrieval/sqlite"
 )
@@ -29,8 +30,8 @@ func TestSearchSelectiveFilterBeyondInitialWindow(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer idx.Close()
-	docs := make([]retrieval.Doc, 0, 80)
-	for i := 0; i < 79; i++ {
+	docs := make([]retrieval.Doc, 0, 1001)
+	for i := 0; i < 1000; i++ {
 		docs = append(docs, retrieval.Doc{
 			ID:       "common-" + strconv.Itoa(i),
 			Content:  "alpha alpha alpha common",
@@ -74,17 +75,38 @@ func TestSearchHybridUsesConsistentScore(t *testing.T) {
 		QueryText:   "alpha",
 		QueryVector: []float32{1, 0},
 		TopK:        1,
-		MinScore:    0.9,
+		MinScore:    1e9,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(resp.Hits) != 1 {
-		t.Fatalf("hybrid final score should satisfy MinScore, hits=%+v", resp.Hits)
+		t.Fatalf("hybrid search should ignore SearchRequest.MinScore, hits=%+v", resp.Hits)
 	}
 	got := resp.Hits[0]
 	if got.Score != got.Scores["bm25"]+got.Scores["cos"] {
 		t.Fatalf("Hit.Score=%v, bm25+cos=%v", got.Score, got.Scores["bm25"]+got.Scores["cos"])
+	}
+}
+
+func TestSearchVectorOnlyNotAvailable(t *testing.T) {
+	dir := t.TempDir()
+	idx, err := sqlx.Open(filepath.Join(dir, "fc.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer idx.Close()
+	if err := idx.Upsert(t.Context(), "ns_vector_disabled", []retrieval.Doc{
+		{ID: "a", Content: "alpha", Vector: []float32{1, 0}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	_, err = idx.Search(t.Context(), "ns_vector_disabled", retrieval.SearchRequest{
+		QueryVector: []float32{1, 0},
+		TopK:        1,
+	})
+	if !errdefs.IsNotAvailable(err) {
+		t.Fatalf("vector-only search err=%v, want NotAvailable", err)
 	}
 }
 
