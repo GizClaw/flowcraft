@@ -222,9 +222,6 @@ func factQualityFromIngest(stages []diagnostic.StageDiagnostic) FactQuality {
 			continue
 		}
 		q := factQualityFromStats(d.FactStats)
-		if q.Total == 0 {
-			q.Total = d.ExtractedFacts
-		}
 		mergeFactQuality(&out, q)
 	}
 	return out
@@ -240,9 +237,6 @@ func factQualityFromResolve(stages []diagnostic.StageDiagnostic) FactQuality {
 			continue
 		}
 		q := factQualityFromStats(d.FactStats)
-		if q.Total == 0 {
-			q.Total = d.Appended
-		}
 		return q
 	}
 	return FactQuality{}

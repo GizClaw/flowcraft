@@ -6,20 +6,6 @@ import (
 	"github.com/GizClaw/flowcraft/memory/recall/internal/domain/diagnostic"
 )
 
-// MergeHints are LLM-supplied hints about merge behaviour. They are
-// schema-level metadata only and MUST NOT participate in canonical
-// merge-key decisions (see docs §5.5).
-type MergeHints struct {
-	// SuggestedMergeKey is an opaque hint from upstream extractors.
-	SuggestedMergeKey string
-	// Supersedes lists fact IDs the upstream extractor believes are
-	// replaced. The compiler treats these as hints, not authority.
-	Supersedes []string
-	// Extra carries arbitrary upstream notes; never read by canonical
-	// merge logic.
-	Extra map[string]any
-}
-
 // TemporalFact is the canonical write unit of v2 memory.
 //
 // All ledger writes go through this shape. Projections derive views
@@ -58,7 +44,6 @@ type TemporalFact struct {
 	Penalty       float64
 
 	MergeKey    string
-	MergeHints  MergeHints
 	Supersedes  []string
 	CorrectedBy string
 
@@ -89,7 +74,6 @@ func (f TemporalFact) Clone() TemporalFact {
 	out.EvidenceRefs = cloneEvidence(f.EvidenceRefs)
 	out.SourceMessageIDs = cloneStrings(f.SourceMessageIDs)
 	out.Supersedes = cloneStrings(f.Supersedes)
-	out.MergeHints = cloneMergeHints(f.MergeHints)
 	out.Origin.EpisodeFactIDs = cloneStrings(f.Origin.EpisodeFactIDs)
 	out.Metadata = cloneMetadata(f.Metadata)
 	if f.ValidFrom != nil {
@@ -122,20 +106,6 @@ func cloneEvidence(in []EvidenceRef) []EvidenceRef {
 	}
 	out := make([]EvidenceRef, len(in))
 	copy(out, in)
-	return out
-}
-
-func cloneMergeHints(in MergeHints) MergeHints {
-	out := MergeHints{
-		SuggestedMergeKey: in.SuggestedMergeKey,
-		Supersedes:        cloneStrings(in.Supersedes),
-	}
-	if len(in.Extra) > 0 {
-		out.Extra = make(map[string]any, len(in.Extra))
-		for k, v := range in.Extra {
-			out.Extra[k] = v
-		}
-	}
 	return out
 }
 
@@ -195,14 +165,6 @@ func IsCanonicalActive(f TemporalFact, now time.Time) bool {
 // projectable / recallable).
 func IsProjectable(f TemporalFact, now time.Time) bool {
 	return IsCanonicalActive(f, now) && !IsRetired(f, now)
-}
-
-// IsActive is a backward-compatibility alias for IsCanonicalActive.
-//
-// Deprecated: use IsCanonicalActive or IsProjectable; IsActive
-// remains for v2 transition.
-func IsActive(f TemporalFact, now time.Time) bool {
-	return IsCanonicalActive(f, now)
 }
 
 // IsHistorical reports whether a fact belongs in HISTORICAL

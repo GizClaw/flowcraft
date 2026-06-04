@@ -10,7 +10,7 @@ import (
 	observationstore "github.com/GizClaw/flowcraft/memory/recall/internal/store/observation"
 )
 
-func TestObservationRecallDoesNotRescueOnSparseTokenOverlap(t *testing.T) {
+func TestObservationRecallRecordsSparseOverlapAsDiscoverySignal(t *testing.T) {
 	ctx := context.Background()
 	scope := domain.Scope{RuntimeID: "rt", UserID: "u1"}
 	observations := observationstore.New()
@@ -42,8 +42,19 @@ func TestObservationRecallDoesNotRescueOnSparseTokenOverlap(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 	got := detail.(diagnostic.ObservationRecallDetail)
-	if got.AddedObservations != 0 || len(state.MergedItems) != 3 {
-		t.Fatalf("sparse lexical overlap should not rescue raw observation: detail=%+v items=%+v", got, state.MergedItems)
+	if got.AddedObservations != 1 || len(state.MergedItems) != 4 {
+		t.Fatalf("sparse lexical overlap should only nominate a bounded raw observation: detail=%+v items=%+v", got, state.MergedItems)
+	}
+	added := state.MergedItems[3]
+	if added.Candidate.Score >= 0.35 {
+		t.Fatalf("expected sparse overlap to remain a weak discovery score, got %.3f", added.Candidate.Score)
+	}
+	signals := domain.CandidateDiscoverySignals(added.Candidate)
+	if len(signals) != 1 {
+		t.Fatalf("expected discovery signal metadata, got %+v", added.Candidate.Metadata)
+	}
+	if signals[0].Kind != "observation_overlap" || signals[0].Score != added.Candidate.Score {
+		t.Fatalf("unexpected discovery signal: %+v candidate=%+v", signals[0], added.Candidate)
 	}
 }
 

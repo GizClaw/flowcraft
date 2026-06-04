@@ -86,6 +86,17 @@ func readStages() []StageDiagnostic {
 			Stage:  "rank",
 			Detail: RankDetail{InputCount: 2, OutputCount: 2},
 		},
+		{
+			Stage: "candidate_assessment",
+			Detail: CandidateAssessmentDetail{
+				Components: []CandidateAssessmentComponent{{
+					ID:             "f-rejected",
+					DropReason:     "unsupported_candidate",
+					RelevanceScore: 0,
+					Reason:         "unsupported_candidate",
+				}},
+			},
+		},
 	}
 }
 
@@ -139,8 +150,11 @@ func TestExtractSources_PadsNonActivated(t *testing.T) {
 
 func TestExtractDrops(t *testing.T) {
 	drops := ExtractDrops(readStages())
-	if len(drops) != 1 || drops[0].FactID != "f-drop" {
+	if len(drops) != 2 || drops[0].FactID != "f-drop" {
 		t.Errorf("drops = %+v", drops)
+	}
+	if drops[1].Stage != "candidate_assessment" || drops[1].Reason != DropReason("unsupported_candidate") || drops[1].FactID != "f-rejected" {
+		t.Errorf("assessment drop missing = %+v", drops)
 	}
 }
 

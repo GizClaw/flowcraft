@@ -38,7 +38,8 @@ func TestDefault_Rank_DoesNotUseQuerySignalsForBoost(t *testing.T) {
 		},
 	}
 	out := r.Rank(context.Background(), port.RankInput{
-		Items: items,
+		Items:            items,
+		AssessmentScores: []float64{0.05, 0.01},
 		Intent: domain.QueryIntent{
 			Text:     "When did Avery go to the community meetup?",
 			Entities: []string{"avery", "lgbtq"},
@@ -81,7 +82,8 @@ func TestDefault_Rank_DoesNotApplyTimeDecayByDefault(t *testing.T) {
 		},
 	}
 	out := r.Rank(context.Background(), port.RankInput{
-		Items: items,
+		Items:            items,
+		AssessmentScores: []float64{0.9, 0.9},
 		Intent: domain.QueryIntent{
 			Text:  "deploy alpha",
 			Limit: 2,
@@ -124,7 +126,8 @@ func TestDefault_Rank_TimeDecayPrefersRecentWhenOptedIn(t *testing.T) {
 		},
 	}
 	out := r.Rank(context.Background(), port.RankInput{
-		Items: items,
+		Items:            items,
+		AssessmentScores: []float64{0.9, 0.9},
 		Intent: domain.QueryIntent{
 			Text:  "latest alpha deployment",
 			Limit: 2,
@@ -166,7 +169,8 @@ func TestDefault_Rank_QueryCoverageDoesNotReorderEqualScores(t *testing.T) {
 		},
 	}
 	out := r.Rank(context.Background(), port.RankInput{
-		Items: items,
+		Items:            items,
+		AssessmentScores: []float64{0.01, 0.01},
 		Intent: domain.QueryIntent{
 			Text: "What might John's degree be in?",
 		},

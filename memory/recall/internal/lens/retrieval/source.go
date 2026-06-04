@@ -111,18 +111,21 @@ func (s *Source) Query(ctx context.Context, plan domain.QueryPlan) domain.Source
 			candidates[existing].EvidenceIDs = mergeRetrievalEvidenceIDs(candidates[existing].EvidenceIDs, evidenceIDs)
 			if hit.Score > candidates[existing].Score {
 				candidates[existing].Score = hit.Score
+				candidates[existing].DiscoverySignals = retrievalDiscoverySignals(s.Name(), retrievalDiscoveryKind(req), hit.Score)
 			}
 			continue
 		}
+		meta := retrievalCandidateMeta(hit.Doc.Metadata)
 		candidates = append(candidates, domain.Candidate{
-			Kind:        domain.GraphNodeAssertion,
-			ID:          factID,
-			Scope:       scope,
-			Source:      s.Name(),
-			Rank:        len(candidates) + 1,
-			Score:       hit.Score,
-			EvidenceIDs: evidenceIDs,
-			Metadata:    retrievalCandidateMeta(hit.Doc.Metadata),
+			Kind:             domain.GraphNodeAssertion,
+			ID:               factID,
+			Scope:            scope,
+			Source:           s.Name(),
+			Rank:             len(candidates) + 1,
+			Score:            hit.Score,
+			EvidenceIDs:      evidenceIDs,
+			DiscoverySignals: retrievalDiscoverySignals(s.Name(), retrievalDiscoveryKind(req), hit.Score),
+			Metadata:         meta,
 		})
 		byFactID[factID] = len(candidates) - 1
 	}
@@ -203,6 +206,22 @@ func retrievalCandidateEvidenceIDs(docMeta map[string]any) []string {
 		}
 	}
 	return nil
+}
+
+func retrievalDiscoveryKind(req retrieval.SearchRequest) string {
+	if len(req.QueryVector) > 0 {
+		return "vector"
+	}
+	return "bm25"
+}
+
+func retrievalDiscoverySignals(source, kind string, score float64) []domain.DiscoverySignal {
+	return []domain.DiscoverySignal{{
+		Source: source,
+		Kind:   kind,
+		Value:  "retrieval_score",
+		Score:  score,
+	}}
 }
 
 func mergeRetrievalEvidenceIDs(existing, incoming []string) []string {

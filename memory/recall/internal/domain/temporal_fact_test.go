@@ -20,11 +20,6 @@ func TestTemporalFact_Clone(t *testing.T) {
 		EvidenceRefs:     []EvidenceRef{{ID: "ev1"}},
 		SourceMessageIDs: []string{"m1"},
 		Supersedes:       []string{"s1"},
-		MergeHints: MergeHints{
-			SuggestedMergeKey: "k",
-			Supersedes:        []string{"sm1"},
-			Extra:             map[string]any{"a": 1},
-		},
 		Metadata:  map[string]any{"k": "v"},
 		ValidFrom: &valid,
 		ValidTo:   &valid,
@@ -38,8 +33,6 @@ func TestTemporalFact_Clone(t *testing.T) {
 	cp.EvidenceRefs[0].ID = "MUT"
 	cp.SourceMessageIDs[0] = "MUT"
 	cp.Supersedes[0] = "MUT"
-	cp.MergeHints.Supersedes[0] = "MUT"
-	cp.MergeHints.Extra["a"] = 999
 	cp.Metadata["k"] = "MUT"
 	*cp.ValidFrom = valid.Add(time.Hour)
 	*cp.ValidTo = valid.Add(time.Hour)
@@ -59,12 +52,6 @@ func TestTemporalFact_Clone(t *testing.T) {
 	}
 	if orig.Supersedes[0] != "s1" {
 		t.Errorf("Supersedes aliased: %v", orig.Supersedes)
-	}
-	if orig.MergeHints.Supersedes[0] != "sm1" {
-		t.Errorf("MergeHints.Supersedes aliased: %v", orig.MergeHints.Supersedes)
-	}
-	if orig.MergeHints.Extra["a"] != 1 {
-		t.Errorf("MergeHints.Extra aliased: %v", orig.MergeHints.Extra)
 	}
 	if orig.Metadata["k"] != "v" {
 		t.Errorf("Metadata aliased: %v", orig.Metadata)
@@ -126,21 +113,21 @@ func TestIsSuperseded(t *testing.T) {
 	}
 }
 
-func TestIsActive(t *testing.T) {
+func TestIsCanonicalActive(t *testing.T) {
 	now := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
 	past := now.Add(-time.Hour)
 	future := now.Add(time.Hour)
 
-	if !IsActive(TemporalFact{}, now) {
+	if !IsCanonicalActive(TemporalFact{}, now) {
 		t.Error("open-ended fact is active")
 	}
-	if !IsActive(TemporalFact{ValidTo: &future}, now) {
+	if !IsCanonicalActive(TemporalFact{ValidTo: &future}, now) {
 		t.Error("future ValidTo → still active")
 	}
-	if IsActive(TemporalFact{ValidTo: &past}, now) {
+	if IsCanonicalActive(TemporalFact{ValidTo: &past}, now) {
 		t.Error("past ValidTo → not active")
 	}
-	if IsActive(TemporalFact{CorrectedBy: "f2"}, now) {
+	if IsCanonicalActive(TemporalFact{CorrectedBy: "f2"}, now) {
 		t.Error("superseded → not active even if open-ended")
 	}
 }

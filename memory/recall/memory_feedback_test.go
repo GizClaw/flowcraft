@@ -45,7 +45,7 @@ func TestSave_TierCoreBoostsConfidence(t *testing.T) {
 }
 
 func factConfidence(mem Memory, scope Scope, id, text string) float64 {
-	hits, err := mem.Recall(context.Background(), scope, Query{Text: text, Limit: 5})
+	hits, err := mem.Recall(context.Background(), scope, Query{Text: text, Kinds: []FactKind{FactNote}, Limit: 5})
 	if err != nil {
 		panic(err)
 	}
@@ -79,7 +79,7 @@ func TestReinforce_BoostsRank(t *testing.T) {
 	if err := mem.Reinforce(context.Background(), scope, low.FactIDs[0], 2.0); err != nil {
 		t.Fatal(err)
 	}
-	hits, err := mem.Recall(context.Background(), scope, Query{Text: "alpha beta gamma", Limit: 5})
+	hits, err := mem.Recall(context.Background(), scope, Query{Text: "alpha beta gamma", Kinds: []FactKind{FactNote}, Limit: 5})
 	if err != nil {
 		t.Fatal(err)
 	}

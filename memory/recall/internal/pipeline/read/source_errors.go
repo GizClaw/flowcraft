@@ -10,7 +10,7 @@ import (
 // AllSourcesFailed wraps per-source failures when every activated source
 // returned an error and produced zero candidates. When all underlying
 // errors are NotAvailable the aggregate maps to NotAvailable; otherwise
-// Internal so HTTP shims do not treat a total recall outage as 400.
+// Internal so HTTP adapters do not treat a total recall outage as 400.
 func AllSourcesFailed(sourceErrs []error) error {
 	if len(sourceErrs) == 0 {
 		return nil

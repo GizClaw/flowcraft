@@ -46,9 +46,6 @@ func (s *EvolutionAfterRecall) Skip(_ context.Context, _ *read.ReadState) (bool,
 func (s *EvolutionAfterRecall) Run(ctx context.Context, state *read.ReadState) (diagnostic.StageDetail, error) {
 	trace := traceFromState(state)
 	err := s.runner.AfterRecall(ctx, state.Scope, trace)
-	if err != nil {
-		state.EvolutionErr = err
-	}
 	return diagnostic.EvolutionAfterRecallDetail{}, pipeline.BestEffort(err)
 }
 

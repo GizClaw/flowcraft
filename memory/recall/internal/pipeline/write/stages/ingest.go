@@ -21,16 +21,12 @@ import (
 // takes.
 type EntitySnapshotFunc func(scope domain.Scope) []port.EntitySnapshot
 
-// Ingest is the structurize + governance-filter stage. It mirrors
-// the legacy runSave block that called snapshotKnownEntities then
-// port.Ingestor.Compile, populating state.KnownEntities and
-// state.Ingest so resolve can run downstream.
+// Ingest is the structurize + governance-filter stage. It snapshots known
+// entities before calling port.Ingestor.Compile, then populates
+// state.KnownEntities and state.Ingest so resolve can run downstream.
 //
-// Empty extractor output is a normal terminal outcome (no facts to
-// save); the stage returns pipeline.ShortCircuit so later stages do
-// not run and the pipeline returns nil — matching the legacy
-// `if len(compiled.Facts) == 0 { return SaveResult{}, trace, nil }`
-// early exit.
+// Empty extractor output is a normal terminal outcome (no facts to save); the
+// stage returns pipeline.ShortCircuit so later stages do not run.
 type Ingest struct {
 	ingestor port.Ingestor
 	snapshot EntitySnapshotFunc

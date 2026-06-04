@@ -7,24 +7,28 @@ import (
 	"github.com/GizClaw/flowcraft/memory/recall/internal/domain"
 )
 
-// RankInput is the post-materialize candidate pool the ranker reorders.
+// RankInput is the assessment-passed candidate pool the ranker reorders.
+// AssessmentScores is aligned with Items; Candidate.Score remains source-local
+// discovery provenance and must not be read as rank input.
 type RankInput struct {
-	Items    []domain.ContextItem
-	Intent   domain.QueryIntent
-	FinalCap int
-	Now      time.Time
+	Items            []domain.ContextItem
+	AssessmentScores []float64
+	Intent           domain.QueryIntent
+	FinalCap         int
+	Now              time.Time
 }
 
 // RankOutput is the ranked pool plus counters for RankDetail telemetry.
 type RankOutput struct {
 	Items                  []domain.ContextItem
+	RankScores             []float64
 	BoostsApplied          int
 	TimeDecayApplied       int
 	SupersededDecayApplied int
 }
 
 // Ranker applies deterministic confidence/feedback adjustments, optional time
-// decay, and supersede penalties after materialization.
+// decay, and supersede penalties after centralized candidate assessment.
 type Ranker interface {
 	Rank(ctx context.Context, in RankInput) RankOutput
 }

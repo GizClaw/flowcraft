@@ -37,7 +37,7 @@ const (
 // (root = 0). SourceFactID is the fact whose lookup discovered this
 // node (empty on the root); it is NOT necessarily the upstream fact
 // id stored in the Revision metadata, since lineage can be reached
-// from either direction (e.g. via FindSupersededBy).
+// from either direction (e.g. CorrectedBy or Supersedes).
 type FactLineageNode struct {
 	Fact         TemporalFact
 	Relation     LineageRelation
@@ -54,22 +54,17 @@ type FactLineageNode struct {
 type LineageLookups struct {
 	Get                  func(ctx context.Context, scope Scope, id string) (TemporalFact, error)
 	FindByRevisionSource func(ctx context.Context, scope Scope, sourceID string) ([]TemporalFact, error)
-	FindSupersededBy     func(ctx context.Context, scope Scope, sourceID string) ([]TemporalFact, error)
 }
 
 // BuildLineage walks the supersede chain and revision DAG outward
 // from root and returns every reachable fact exactly once. The
-// traversal follows four edge kinds per visited node:
+// traversal follows three edge kinds per visited node:
 //
 //  1. root.Supersedes  → prior facts (Get + Relation=Supersede)
 //  2. root.CorrectedBy → successor fact (Get + Relation=Supersede)
 //  3. FindByRevisionSource(root.ID) → descendants whose Revision
 //     metadata points back at root; classified by Revision.Kind
 //     (Fork / Contest / Merge / Supersede, default Supersede).
-//  4. FindSupersededBy(root.ID) → ancestor facts CorrectedBy == root
-//     that were not already discovered via (1); enqueued as
-//     Supersede so the traversal recovers from missing Supersedes
-//     pointers on legacy data.
 //
 // Results are returned in stable order: root first (depth 0), then
 // BFS in increasing depth; within a depth, lexicographically by
@@ -158,18 +153,6 @@ func BuildLineage(ctx context.Context, root TemporalFact, lookups LineageLookups
 			}
 		}
 
-		if lookups.FindSupersededBy != nil {
-			succs, err := lookups.FindSupersededBy(ctx, cur.fact.Scope, cur.fact.ID)
-			if err != nil {
-				return nil, err
-			}
-			for _, sf := range succs {
-				if _, seen := visited[sf.ID]; seen {
-					continue
-				}
-				enqueue(sf, LineageRelationSupersede, cur.fact.ID, nextDepth)
-			}
-		}
 	}
 
 	sort.SliceStable(out, func(i, j int) bool {

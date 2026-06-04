@@ -8,12 +8,9 @@ import (
 	"github.com/GizClaw/flowcraft/memory/recall/internal/port"
 )
 
-// Runner is the write-flow pipeline driver. It owns the stage list
-// (assembled once at NewRunner) and the dual-rail telemetry hook
-// (legacyAdapter wraps it per call to capture state.Scope + counts
-// the legacy emitPipeline read inline). The facade layer
-// (sdk/recall.Memory.Save) calls Run instead of hand-rolling stage
-// orchestration.
+// Runner is the write-flow pipeline driver. It owns the stage list assembled at
+// NewRunner and the telemetry hook used by the framework. The facade layer
+// calls Run instead of hand-rolling stage orchestration.
 //
 // The zero Runner is valid and Run on it is a successful no-op so
 // the smoke-test path (no stages wired) keeps working.
@@ -33,17 +30,15 @@ func NewRunner(stages []pipeline.Stage[*WriteState], hook port.TelemetryHook) *R
 	return &Runner{stages: stages, hook: hook}
 }
 
-// Run executes the write pipeline against state. The dual-rail
-// telemetry adapter is built fresh per call so it can capture
-// state.Scope + fact counts that legacy emitPipeline read at emit
-// time. ShortCircuit is treated as success and returns nil; any
+// Run executes the write pipeline against state. A telemetry adapter is built
+// fresh per call so downstream stage diagnostics can be enriched from the
+// in-flight WriteState. ShortCircuit is treated as success and returns nil; any
 // other error propagates verbatim.
 //
-// The configured telemetry hook is wrapped with a per-call shim that
+// The configured telemetry hook is wrapped with a per-call adapter that
 // enriches every StageDiagnostic with state.AsyncRequestID once the
-// episode lane has stamped it. The wrapper is a no-op for the sync
-// path (state.AsyncRequestID stays empty), so existing callers see
-// byte-identical events.
+// episode lane has stamped it. The wrapper is a no-op for the sync path
+// (state.AsyncRequestID stays empty).
 func (r *Runner) Run(ctx context.Context, state *WriteState) error {
 	if r == nil || state == nil {
 		return nil

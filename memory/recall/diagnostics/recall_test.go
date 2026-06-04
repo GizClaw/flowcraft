@@ -27,6 +27,22 @@ func TestAttributeRecallTrace_MapsDrops(t *testing.T) {
 	}
 }
 
+func TestAttributeRecallTrace_MapsAssessmentDrops(t *testing.T) {
+	attrs := diagnostics.AttributeRecallTrace(domain.RecallTrace{
+		Stages: []diagnostic.StageDiagnostic{{
+			Stage: "candidate_assessment",
+			Detail: diagnostic.CandidateAssessmentDetail{Components: []diagnostic.CandidateAssessmentComponent{{
+				ID:         "f1",
+				DropReason: "unsupported_candidate",
+				Reason:     "unsupported_candidate",
+			}}},
+		}},
+	})
+	if len(attrs) != 1 || attrs[0].Stage != diagnostics.FailureCandidateAssessment || attrs[0].Reason != "unsupported_candidate" {
+		t.Fatalf("attrs = %+v", attrs)
+	}
+}
+
 func TestAttributeAnswerContext_FindsDroppedEvidenceGrounding(t *testing.T) {
 	hits := []domain.Hit{{
 		Fact: domain.TemporalFact{
@@ -142,11 +158,19 @@ func TestDiagnoseSave_SummarisesFactQuality(t *testing.T) {
 		Stages: []diagnostic.StageDiagnostic{
 			{Stage: "ingest", Duration: 3 * time.Millisecond, Detail: diagnostic.IngestDetail{
 				ExtractedFacts: 3,
+				FactStats: diagnostic.FactStats{
+					Total: 3,
+				},
 				Dropped: []diagnostic.DroppedFact{{
 					Reason: "policy:reject",
 				}},
 			}},
-			{Stage: "resolve", Duration: 5 * time.Millisecond, Detail: diagnostic.ResolveDetail{Appended: 2}},
+			{Stage: "resolve", Duration: 5 * time.Millisecond, Detail: diagnostic.ResolveDetail{
+				Appended: 2,
+				FactStats: diagnostic.FactStats{
+					Total: 2,
+				},
+			}},
 		},
 	}
 
@@ -250,14 +274,14 @@ func TestPipelineHealth_AggregatesSaveAndRecall(t *testing.T) {
 
 	health.RecordSave(diagnostics.DiagnoseSave(domain.SaveRequest{Facts: []domain.TemporalFact{{Kind: domain.KindNote}}}, domain.SaveTrace{
 		Stages: []diagnostic.StageDiagnostic{
-			{Stage: "ingest", Detail: diagnostic.IngestDetail{ExtractedFacts: 2}},
-			{Stage: "resolve", Detail: diagnostic.ResolveDetail{Appended: 1}},
+			{Stage: "ingest", Detail: diagnostic.IngestDetail{ExtractedFacts: 2, FactStats: diagnostic.FactStats{Total: 2}}},
+			{Stage: "resolve", Detail: diagnostic.ResolveDetail{Appended: 1, FactStats: diagnostic.FactStats{Total: 1}}},
 		},
 	}))
 	health.RecordSave(diagnostics.DiagnoseSave(domain.SaveRequest{Turns: []domain.TurnContext{{ID: "t1", Text: "raw"}}}, domain.SaveTrace{
 		Stages: []diagnostic.StageDiagnostic{
-			{Stage: "ingest", Detail: diagnostic.IngestDetail{ExtractedFacts: 1}},
-			{Stage: "resolve", Detail: diagnostic.ResolveDetail{Appended: 1}},
+			{Stage: "ingest", Detail: diagnostic.IngestDetail{ExtractedFacts: 1, FactStats: diagnostic.FactStats{Total: 1}}},
+			{Stage: "resolve", Detail: diagnostic.ResolveDetail{Appended: 1, FactStats: diagnostic.FactStats{Total: 1}}},
 		},
 	}))
 

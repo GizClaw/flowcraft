@@ -27,14 +27,14 @@ type AnswerReplayRecord struct {
 	AnswerBody          string                 `json:"answer_body,omitempty"`
 	AnswerContextFormat string                 `json:"answer_context_format,omitempty"`
 	RecallArtifacts     []AnswerReplayArtifact `json:"recall_artifacts,omitempty"`
-	LegacyArtifacts     []AnswerReplayArtifact `json:"hits,omitempty"`
 	Outcome             AnswerReplayOutcome    `json:"outcome"`
 }
 
 type AnswerReplayArtifact struct {
 	ID          string         `json:"id,omitempty"`
 	Rank        int            `json:"rank"`
-	Score       float64        `json:"score,omitempty"`
+	ScoreLabel  string         `json:"score_label,omitempty"`
+	FinalScore  float64        `json:"final_score,omitempty"`
 	Kind        string         `json:"kind,omitempty"`
 	Sources     []string       `json:"sources,omitempty"`
 	EvidenceIDs []string       `json:"evidence_ids,omitempty"`
@@ -72,7 +72,8 @@ func NewAnswerReplayRecord(ts time.Time, q dataset.Question, artifacts []runners
 		rec.RecallArtifacts = append(rec.RecallArtifacts, AnswerReplayArtifact{
 			ID:          artifact.ID,
 			Rank:        i + 1,
-			Score:       artifact.Score,
+			ScoreLabel:  artifact.ScoreLabel,
+			FinalScore:  artifact.FinalScore,
 			Kind:        artifact.Kind,
 			Sources:     append([]string(nil), artifact.Sources...),
 			EvidenceIDs: append([]string(nil), artifact.EvidenceIDs...),

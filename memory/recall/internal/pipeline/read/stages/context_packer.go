@@ -8,15 +8,12 @@ import (
 
 	"github.com/GizClaw/flowcraft/memory/recall/internal/domain"
 	"github.com/GizClaw/flowcraft/memory/recall/internal/domain/diagnostic"
-	recallintent "github.com/GizClaw/flowcraft/memory/recall/internal/intent"
 )
 
 const (
-	contextPackDuplicateJaccardCutoff   = 0.86
-	contextPackSiblingFactJaccardCutoff = 0.62
-	contextPackSameEvidenceSiblingCap   = 2
-	contextPackBaseScoreWeight          = 0.85
-	contextPackRankPriorWeight          = 0.15
+	contextPackSameEvidenceSiblingCap = 2
+	contextPackBaseScoreWeight        = 0.85
+	contextPackRankPriorWeight        = 0.15
 
 	contextPackSourcePenaltyPerExtra = 0.03
 	contextPackSourcePenaltyMax      = 0.12
@@ -24,11 +21,9 @@ const (
 	contextPackDiversityPenaltyFloor = 0.35
 
 	contextPackObservationDefaultCap = 1
-	contextPackObservationRescueCap  = 4
+	contextPackObservationOnlyCap    = 4
 
 	contextPackRankOutputAnchorDivisor = 3
-	contextPackClusterRescueMax        = 4
-	contextPackClusterRescuePerGroup   = 2
 )
 
 type contextPackInput struct {
@@ -36,14 +31,12 @@ type contextPackInput struct {
 }
 
 type contextPackCandidate struct {
-	hit            domain.Hit
-	score          float64
-	baseScore      float64
-	queryRank      int
-	evidenceKey    string
-	evidenceGroup  string
-	evidenceTokens map[string]struct{}
-	factTokens     map[string]struct{}
+	hit           domain.Hit
+	score         float64
+	baseScore     float64
+	queryRank     int
+	evidenceKey   string
+	evidenceGroup string
 }
 
 func packRecallContextWithFeaturesAndDetail(ordered []domain.Hit, pool []domain.Hit, cap int) []domain.Hit {
@@ -56,6 +49,14 @@ func packRecallContextWithTrace(ordered []domain.Hit, pool []domain.Hit, cap int
 }
 
 func packRecallContextWithIntentTrace(intent domain.QueryIntent, ordered []domain.Hit, pool []domain.Hit, cap int) ([]domain.Hit, []diagnostic.CandidateSnapshot) {
+	return packRecallContextWithIntentTraceAndAnchorCap(intent, ordered, pool, cap, contextPackRankOutputAnchorCount(cap))
+}
+
+func packRerankedRecallContextWithIntentTrace(intent domain.QueryIntent, ordered []domain.Hit, pool []domain.Hit, cap int) ([]domain.Hit, []diagnostic.CandidateSnapshot) {
+	return packRecallContextWithIntentTraceAndAnchorCap(intent, ordered, pool, cap, cap)
+}
+
+func packRecallContextWithIntentTraceAndAnchorCap(intent domain.QueryIntent, ordered []domain.Hit, pool []domain.Hit, cap int, anchorCap int) ([]domain.Hit, []diagnostic.CandidateSnapshot) {
 	input := newContextPackInput(cap)
 	if input.cap <= 0 {
 		return ordered, nil
@@ -68,88 +69,14 @@ func packRecallContextWithIntentTrace(intent domain.QueryIntent, ordered []domai
 	traceCandidates := append([]contextPackCandidate(nil), candidates...)
 	dropReasons := map[string]string{}
 	candidates = contextPackLimitObservationCandidates(candidates, dropReasons)
-	candidates = contextPackLimitRouteLaneCandidates(intent, candidates, input.cap, dropReasons)
 	selectedCandidates := candidates
 	if len(candidates) <= input.cap {
 		hits := contextPackHits(selectedCandidates)
 		return hits, contextPackTrace(traceCandidates, selectedCandidates, len(ordered), dropReasons)
 	}
-	anchors := contextPackRankOutputAnchors(candidates, len(ordered), input.cap)
-	anchors = contextPackFilterAnchorsByRoute(intent, anchors)
-	anchors = contextPackRescueEvidenceClusters(candidates, anchors, input.cap)
+	anchors := contextPackRankOutputAnchors(candidates, len(ordered), anchorCap)
 	selectedCandidates = contextPackFillWithMMR(candidates, anchors, input.cap)
 	return contextPackHits(selectedCandidates), contextPackTrace(traceCandidates, selectedCandidates, len(ordered), dropReasons)
-}
-
-func contextPackRescueEvidenceClusters(candidates, selected []contextPackCandidate, cap int) []contextPackCandidate {
-	if cap <= 0 || len(selected) >= cap || len(candidates) == 0 || len(selected) == 0 {
-		return selected[:min(len(selected), cap)]
-	}
-	groups := map[string]int{}
-	for _, cand := range selected {
-		if cand.evidenceGroup != "" {
-			groups[cand.evidenceGroup]++
-		}
-	}
-	if len(groups) == 0 {
-		return selected
-	}
-	out := append([]contextPackCandidate(nil), selected...)
-	rescued := 0
-	rescueCap := min(contextPackClusterRescueMax, cap-len(out))
-	for _, cand := range candidates {
-		if rescued >= rescueCap || len(out) >= cap {
-			break
-		}
-		if cand.evidenceGroup == "" || groups[cand.evidenceGroup] == 0 {
-			continue
-		}
-		if groups[cand.evidenceGroup] > contextPackClusterRescuePerGroup {
-			continue
-		}
-		if contextPackCandidateDuplicate(cand, out) {
-			continue
-		}
-		if !contextPackClusterSupported(cand, out) {
-			continue
-		}
-		out = append(out, cand)
-		groups[cand.evidenceGroup]++
-		rescued++
-	}
-	return out
-}
-
-func contextPackClusterSupported(candidate contextPackCandidate, selected []contextPackCandidate) bool {
-	for _, existing := range selected {
-		if candidate.evidenceGroup == "" || candidate.evidenceGroup != existing.evidenceGroup {
-			continue
-		}
-		if sharedContextPackSubjectOrEntity(candidate.hit.Fact, existing.hit.Fact) {
-			return true
-		}
-	}
-	return false
-}
-
-func sharedContextPackSubjectOrEntity(a, b domain.TemporalFact) bool {
-	if a.Subject != "" && b.Subject != "" && strings.EqualFold(a.Subject, b.Subject) {
-		return true
-	}
-	seen := map[string]struct{}{}
-	for _, entity := range a.Entities {
-		entity = strings.ToLower(strings.TrimSpace(entity))
-		if entity != "" {
-			seen[entity] = struct{}{}
-		}
-	}
-	for _, entity := range b.Entities {
-		entity = strings.ToLower(strings.TrimSpace(entity))
-		if _, ok := seen[entity]; ok && entity != "" {
-			return true
-		}
-	}
-	return false
 }
 
 func contextPackFillWithMMR(candidates, selected []contextPackCandidate, cap int) []contextPackCandidate {
@@ -263,7 +190,7 @@ func contextPackLimitObservationCandidates(candidates []contextPackCandidate, dr
 	}
 	cap := contextPackObservationDefaultCap
 	if factCount == 0 {
-		cap = contextPackObservationRescueCap
+		cap = contextPackObservationOnlyCap
 	}
 	out := make([]contextPackCandidate, 0, len(candidates))
 	keptObservation := 0
@@ -294,64 +221,6 @@ func contextPackLimitObservationCandidates(candidates []contextPackCandidate, dr
 	return out
 }
 
-func contextPackLimitRouteLaneCandidates(intent domain.QueryIntent, candidates []contextPackCandidate, cap int, dropReasons ...map[string]string) []contextPackCandidate {
-	if len(candidates) == 0 || cap <= 0 {
-		return candidates
-	}
-	directCount := 0
-	for _, cand := range candidates {
-		if contextPackDirectCandidate(cand.hit) || contextPackObservationCandidate(cand) {
-			directCount++
-		}
-	}
-	entityLimit := 1
-	if contextPackEntityStrategy(intent) {
-		entityLimit = 2
-	}
-	timelineLimit := 1
-	if contextPackTemporalIntent(intent) {
-		timelineLimit = 3
-	}
-	graphLimit := 1
-	if contextPackBridgeStrategy(intent) && len(intent.Entities) >= 2 {
-		graphLimit = 2
-	}
-	if directCount == 0 {
-		rescueCap := min(cap, 3)
-		entityLimit = max(entityLimit, rescueCap)
-		timelineLimit = max(timelineLimit, rescueCap)
-		graphLimit = max(graphLimit, min(cap, 2))
-	}
-
-	counts := map[string]int{}
-	out := make([]contextPackCandidate, 0, len(candidates))
-	for _, cand := range candidates {
-		lane := contextPackRouteLane(cand.hit)
-		switch lane {
-		case "entity":
-			if counts[lane] >= entityLimit {
-				contextPackRecordDropReason(dropReasons, cand, "strategy_lane_cap")
-				continue
-			}
-		case "timeline":
-			if counts[lane] >= timelineLimit {
-				contextPackRecordDropReason(dropReasons, cand, "strategy_lane_cap")
-				continue
-			}
-		case "graph":
-			if counts[lane] >= graphLimit {
-				contextPackRecordDropReason(dropReasons, cand, "strategy_lane_cap")
-				continue
-			}
-		}
-		if lane != "" {
-			counts[lane]++
-		}
-		out = append(out, cand)
-	}
-	return out
-}
-
 func contextPackRecordDropReason(dropReasons []map[string]string, cand contextPackCandidate, reason string) {
 	if len(dropReasons) == 0 || dropReasons[0] == nil {
 		return
@@ -359,53 +228,7 @@ func contextPackRecordDropReason(dropReasons []map[string]string, cand contextPa
 	dropReasons[0][contextPackCandidateTraceKey(cand)] = reason
 }
 
-func contextPackDirectCandidate(hit domain.Hit) bool {
-	return contextPackHasRoute(hit, "retrieval") ||
-		contextPackHasRoute(hit, "assertion") ||
-		contextPackHasRoute(hit, "relation") ||
-		contextPackHasRoute(hit, "profile")
-}
-
-func contextPackRouteLane(hit domain.Hit) string {
-	if contextPackDirectCandidate(hit) {
-		return ""
-	}
-	switch {
-	case contextPackHasRoute(hit, "timeline"):
-		return "timeline"
-	case contextPackHasRoute(hit, "entity"):
-		return "entity"
-	case contextPackHasRoute(hit, "graph"):
-		return "graph"
-	default:
-		return ""
-	}
-}
-
-func contextPackEntityStrategy(intent domain.QueryIntent) bool {
-	switch intent.Route.EffectiveStrategy() {
-	case domain.RecallStrategySet, domain.RecallStrategyCount, domain.RecallStrategyIntersection, domain.RecallStrategyProfile:
-		return true
-	default:
-		return false
-	}
-}
-
-func contextPackTemporalIntent(intent domain.QueryIntent) bool {
-	return !intent.TimeRange.IsZero() || intent.Route.EffectiveStrategy() == domain.RecallStrategyTemporal
-}
-
-func contextPackBridgeStrategy(intent domain.QueryIntent) bool {
-	switch intent.Route.EffectiveStrategy() {
-	case domain.RecallStrategyJoin, domain.RecallStrategyIntersection:
-		return true
-	default:
-		return false
-	}
-}
-
-func contextPackRankOutputAnchors(candidates []contextPackCandidate, rankOutputCount, cap int) []contextPackCandidate {
-	anchorCap := contextPackRankOutputAnchorCount(cap)
+func contextPackRankOutputAnchors(candidates []contextPackCandidate, rankOutputCount, anchorCap int) []contextPackCandidate {
 	if anchorCap <= 0 || rankOutputCount <= 0 {
 		return nil
 	}
@@ -443,41 +266,6 @@ func contextPackRankOutputAnchorCount(cap int) int {
 	return count
 }
 
-func contextPackFilterAnchorsByRoute(intent domain.QueryIntent, anchors []contextPackCandidate) []contextPackCandidate {
-	if len(anchors) == 0 {
-		return anchors
-	}
-	out := anchors[:0]
-	for _, cand := range anchors {
-		if contextPackAnchorRouteAllowed(intent, cand.hit) {
-			out = append(out, cand)
-		}
-	}
-	return out
-}
-
-func contextPackAnchorRouteAllowed(intent domain.QueryIntent, hit domain.Hit) bool {
-	if contextPackHasRoute(hit, "retrieval") {
-		return true
-	}
-	if contextPackHasRoute(hit, "timeline") {
-		return contextPackTemporalIntent(intent)
-	}
-	if contextPackHasRoute(hit, "relation") || contextPackHasRoute(hit, "assertion") || contextPackHasRoute(hit, "profile") {
-		return intent.Subject != "" && (intent.Predicate != "" || intent.Object != "" || len(intent.Kinds) > 0)
-	}
-	return false
-}
-
-func contextPackHasRoute(hit domain.Hit, want string) bool {
-	for _, source := range hit.Sources {
-		if source == want {
-			return true
-		}
-	}
-	return false
-}
-
 func contextPackObservationCandidate(cand contextPackCandidate) bool {
 	hit := cand.hit
 	if hit.Ref.Kind == domain.GraphNodeObservation || hit.Observation.ID != "" {
@@ -496,18 +284,12 @@ func newContextPackInput(cap int) contextPackInput {
 }
 
 func newContextPackCandidate(hit domain.Hit, queryRank int, maxHitScore float64, evidenceKey string) contextPackCandidate {
-	evidenceText := hitEvidenceText(hit)
-	factText := contextPackFactText(hit)
-	evidenceTokens := recallintent.TextTokenSet(evidenceText)
-	factTokens := recallintent.TextTokenSet(factText)
 	candidate := contextPackCandidate{
-		hit:            hit,
-		baseScore:      hit.Score,
-		queryRank:      queryRank,
-		evidenceKey:    evidenceKey,
-		evidenceGroup:  primaryEvidenceGroup(hit),
-		evidenceTokens: evidenceTokens,
-		factTokens:     factTokens,
+		hit:           hit,
+		baseScore:     hit.Score,
+		queryRank:     queryRank,
+		evidenceKey:   evidenceKey,
+		evidenceGroup: primaryEvidenceGroup(hit),
 	}
 	candidate.score = contextPackScore(candidate, maxHitScore)
 	return candidate
@@ -525,9 +307,8 @@ func contextPackScore(candidate contextPackCandidate, maxHitScore float64) float
 	score := contextPackBaseScoreWeight*base +
 		contextPackRankPriorWeight*rankPrior
 	if contextPackObservationCandidate(candidate) {
-		// Observation hits are raw evidence rescue/support. Their lexical score is
-		// not calibrated against structured facts, so keep them from outranking
-		// direct assertion/event hits when both are available.
+		// Observation hits are raw evidence support. Keep them from outranking
+		// structured hits when both have passed assessment.
 		score = 0.04*base + 0.08*rankPrior
 	}
 	return score
@@ -541,11 +322,14 @@ func betterContextPackTieBreak(a, b contextPackCandidate) bool {
 }
 
 func contextPackDiversityPenalty(candidate contextPackCandidate, selected []contextPackCandidate) float64 {
+	if candidate.evidenceGroup == "" {
+		return 0
+	}
 	maxSimilarity := 0.0
 	for _, existing := range selected {
-		similarity := tokenSetJaccard(candidate.evidenceTokens, existing.evidenceTokens)
-		if sameStructuredMemory(candidate.hit.Fact, existing.hit.Fact) {
-			similarity += 0.15
+		similarity := 0.0
+		if candidate.evidenceGroup == existing.evidenceGroup {
+			similarity = 0.45
 		}
 		if similarity > maxSimilarity {
 			maxSimilarity = similarity
@@ -592,35 +376,20 @@ func contextPackCandidateDuplicate(candidate contextPackCandidate, selected []co
 		if candidate.hit.Fact.ID != "" && candidate.hit.Fact.ID == existing.hit.Fact.ID {
 			return true
 		}
-		if sameStructuredMemory(candidate.hit.Fact, existing.hit.Fact) && tokenSetJaccard(candidate.evidenceTokens, existing.evidenceTokens) >= contextPackDuplicateJaccardCutoff {
+		if candidate.hit.Observation.ID != "" && candidate.hit.Observation.ID == existing.hit.Observation.ID {
+			return true
+		}
+		if candidate.hit.Link.ID != "" && candidate.hit.Link.ID == existing.hit.Link.ID {
 			return true
 		}
 		if candidate.evidenceKey != "" && candidate.evidenceKey == existing.evidenceKey {
 			sameEvidenceCount++
-			if !contextPackComplementarySameEvidence(candidate, existing) {
-				return true
-			}
 		}
 	}
 	if candidate.evidenceKey != "" && sameEvidenceCount >= contextPackSameEvidenceSiblingCap {
 		return true
 	}
 	return false
-}
-
-func contextPackComplementarySameEvidence(candidate, existing contextPackCandidate) bool {
-	if candidate.hit.Fact.ID == "" || existing.hit.Fact.ID == "" {
-		return false
-	}
-	if !sharedContextPackSubjectOrEntity(candidate.hit.Fact, existing.hit.Fact) {
-		return false
-	}
-	similarity := tokenSetJaccard(candidate.factTokens, existing.factTokens)
-	if sameStructuredMemory(candidate.hit.Fact, existing.hit.Fact) &&
-		similarity >= contextPackSiblingFactJaccardCutoff {
-		return false
-	}
-	return true
 }
 
 func contextPackHits(candidates []contextPackCandidate) []domain.Hit {
@@ -660,7 +429,8 @@ func contextPackTrace(candidates, selected []contextPackCandidate, rankOutputCou
 			FactID:           contextPackTraceFactID(cand.hit),
 			Source:           primaryHitSource(cand.hit),
 			Rank:             cand.queryRank + 1,
-			Score:            cand.baseScore,
+			ScoreLabel:       scoreLabelContextPackRank,
+			RankScore:        cand.baseScore,
 			EvidenceIDs:      contextPackTraceEvidenceIDs(cand.hit),
 			Sources:          routes,
 			RankOutputRank:   rankOutputRank,
@@ -748,72 +518,6 @@ func contextPackTraceEvidenceIDs(hit domain.Hit) []string {
 	return out
 }
 
-func contextPackFactText(hit domain.Hit) string {
-	var b strings.Builder
-	for _, part := range []string{
-		hit.Fact.Content,
-		hit.Fact.Subject,
-		hit.Fact.Predicate,
-		hit.Fact.Object,
-		string(hit.Fact.Kind),
-		hit.Fact.Location,
-	} {
-		part = strings.TrimSpace(part)
-		if part == "" {
-			continue
-		}
-		if b.Len() > 0 {
-			b.WriteByte(' ')
-		}
-		b.WriteString(part)
-	}
-	for _, entity := range hit.Fact.Entities {
-		entity = strings.TrimSpace(entity)
-		if entity == "" {
-			continue
-		}
-		if b.Len() > 0 {
-			b.WriteByte(' ')
-		}
-		b.WriteString(entity)
-	}
-	for _, participant := range hit.Fact.Participants {
-		participant = strings.TrimSpace(participant)
-		if participant == "" {
-			continue
-		}
-		if b.Len() > 0 {
-			b.WriteByte(' ')
-		}
-		b.WriteString(participant)
-	}
-	if b.Len() == 0 {
-		return hitEvidenceText(hit)
-	}
-	return b.String()
-}
-
-func hitEvidenceText(hit domain.Hit) string {
-	var b strings.Builder
-	evidence := hit.Evidence
-	if len(evidence) == 0 {
-		evidence = hit.Fact.EvidenceRefs
-	}
-	for _, ref := range evidence {
-		if strings.TrimSpace(ref.Text) == "" {
-			continue
-		}
-		if b.Len() > 0 {
-			b.WriteByte(' ')
-		}
-		b.WriteString(ref.Text)
-	}
-	if b.Len() == 0 {
-		b.WriteString(hit.Fact.EvidenceText)
-	}
-	return b.String()
-}
-
 func primaryEvidenceKey(hit domain.Hit) string {
 	evidence := hit.Evidence
 	if len(evidence) == 0 {
@@ -851,34 +555,4 @@ func evidenceRefSourceGroup(ref domain.EvidenceRef) string {
 		return "msg:" + messageID
 	}
 	return ""
-}
-
-func sameStructuredMemory(a, b domain.TemporalFact) bool {
-	if a.Subject != "" && b.Subject != "" && !strings.EqualFold(a.Subject, b.Subject) {
-		return false
-	}
-	if a.Predicate != "" && b.Predicate != "" && !strings.EqualFold(a.Predicate, b.Predicate) {
-		return false
-	}
-	return a.Kind == b.Kind
-}
-
-func tokenSetJaccard(a, b map[string]struct{}) float64 {
-	if len(a) == 0 || len(b) == 0 {
-		return 0
-	}
-	if len(a) > len(b) {
-		a, b = b, a
-	}
-	intersect := 0
-	for tok := range a {
-		if _, ok := b[tok]; ok {
-			intersect++
-		}
-	}
-	union := len(a) + len(b) - intersect
-	if union == 0 {
-		return 0
-	}
-	return float64(intersect) / float64(union)
 }

@@ -88,7 +88,7 @@ func TestRecall_ForgottenFactDoesNotSurface(t *testing.T) {
 		t.Fatal(err)
 	}
 	drainSideEffectsForTest(t, mem, scope)
-	if err := mem.Forget(context.Background(), scope, res.FactIDs[0]); err != nil {
+	if err := mem.Forget(context.Background(), scope, res.FactIDs[0], ForgetHard); err != nil {
 		t.Fatal(err)
 	}
 	hits, err := mem.Recall(context.Background(), scope, Query{Text: "fleeting"})
@@ -225,12 +225,12 @@ func TestRecall_AgentIDSoftIsolation(t *testing.T) {
 
 	// Two agent-owned facts plus one shared.
 	if _, err := mem.Save(context.Background(), agentA, SaveRequest{
-		Facts: []TemporalFact{{Kind: FactNote, Content: "agent-a secret"}},
+		Facts: []TemporalFact{{Kind: FactNote, Content: "agent-a secret", Predicate: "secret"}},
 	}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := mem.Save(context.Background(), agentB, SaveRequest{
-		Facts: []TemporalFact{{Kind: FactNote, Content: "agent-b secret"}},
+		Facts: []TemporalFact{{Kind: FactNote, Content: "agent-b secret", Predicate: "secret"}},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -245,7 +245,7 @@ func TestRecall_AgentIDSoftIsolation(t *testing.T) {
 
 	// agent-a query: must see its own secret + shared, NOT agent-b
 	// secret.
-	hits, err := mem.Recall(context.Background(), agentA, Query{Text: "secret"})
+	hits, err := mem.Recall(context.Background(), agentA, Query{Text: "secret", Predicate: "secret"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -265,7 +265,7 @@ func TestRecall_AgentIDSoftIsolation(t *testing.T) {
 	}
 
 	// cross-agent query (AgentID empty): sees everything.
-	hits, err = mem.Recall(context.Background(), base, Query{Text: "secret"})
+	hits, err = mem.Recall(context.Background(), base, Query{Text: "secret", Predicate: "secret"})
 	if err != nil {
 		t.Fatal(err)
 	}

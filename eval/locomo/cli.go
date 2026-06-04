@@ -343,29 +343,31 @@ Example (LLM extractor + LLM answer + LLM judge + Qwen embedder):
 					recallMu.Lock()
 					defer recallMu.Unlock()
 					type artifactRec struct {
-						ID       string             `json:"id"`
-						Rank     int                `json:"rank"`
-						Score    float64            `json:"score"`
-						Kind     string             `json:"kind,omitempty"`
-						Sources  []string           `json:"sources,omitempty"`
-						Content  string             `json:"content"`
-						Evidence []string           `json:"evidence_ids,omitempty"`
-						ValidAt  string             `json:"valid_from,omitempty"`
-						Episodic bool               `json:"episodic,omitempty"`
-						Cats     []string           `json:"categories,omitempty"`
-						Scores   map[string]float64 `json:"scores,omitempty"`
+						ID         string             `json:"id"`
+						Rank       int                `json:"rank"`
+						ScoreLabel string             `json:"score_label,omitempty"`
+						FinalScore float64            `json:"final_score,omitempty"`
+						Kind       string             `json:"kind,omitempty"`
+						Sources    []string           `json:"sources,omitempty"`
+						Content    string             `json:"content"`
+						Evidence   []string           `json:"evidence_ids,omitempty"`
+						ValidAt    string             `json:"valid_from,omitempty"`
+						Episodic   bool               `json:"episodic,omitempty"`
+						Cats       []string           `json:"categories,omitempty"`
+						Scores     map[string]float64 `json:"scores,omitempty"`
 					}
 					recs := make([]artifactRec, 0, len(artifacts))
 					for i, artifact := range artifacts {
 						rec := artifactRec{
-							ID:       artifact.ID,
-							Rank:     i + 1,
-							Score:    artifact.Score,
-							Kind:     artifact.Kind,
-							Sources:  append([]string(nil), artifact.Sources...),
-							Content:  artifact.Content,
-							Evidence: append([]string(nil), artifact.EvidenceIDs...),
-							ValidAt:  artifact.ValidFrom,
+							ID:         artifact.ID,
+							Rank:       i + 1,
+							ScoreLabel: artifact.ScoreLabel,
+							FinalScore: artifact.FinalScore,
+							Kind:       artifact.Kind,
+							Sources:    append([]string(nil), artifact.Sources...),
+							Content:    artifact.Content,
+							Evidence:   append([]string(nil), artifact.EvidenceIDs...),
+							ValidAt:    artifact.ValidFrom,
 						}
 						if artifact.Metadata != nil {
 							if cats, ok := artifact.Metadata["categories"].([]string); ok {

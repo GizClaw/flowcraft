@@ -23,7 +23,7 @@ func TestForget_RemovesFromStoreAndProjections(t *testing.T) {
 	}
 	id := res.FactIDs[0]
 	drainSideEffectsForTest(t, mem, scope)
-	if err := mem.Forget(context.Background(), scope, id); err != nil {
+	if err := mem.Forget(context.Background(), scope, id, ForgetHard); err != nil {
 		t.Fatalf("forget: %v", err)
 	}
 	if _, err := store.Get(context.Background(), scope, id); !errors.Is(err, temporalstore.ErrNotFound) {
@@ -50,7 +50,7 @@ func TestForget_RequiredProjectionFailurePreservesCanonicalFact(t *testing.T) {
 	}
 	id := res.FactIDs[0]
 
-	if err := mem.Forget(context.Background(), scope, id); err == nil {
+	if err := mem.Forget(context.Background(), scope, id, ForgetHard); err == nil {
 		t.Fatal("forget should surface required projection failure")
 	}
 	if _, err := store.Get(context.Background(), scope, id); err != nil {

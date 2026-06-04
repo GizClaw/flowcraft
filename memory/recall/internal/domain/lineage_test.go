@@ -40,15 +40,6 @@ func lookupsFromFacts(facts ...TemporalFact) (LineageLookups, map[string]Tempora
 			}
 			return out, nil
 		},
-		FindSupersededBy: func(_ context.Context, _ Scope, src string) ([]TemporalFact, error) {
-			var out []TemporalFact
-			for _, f := range facts {
-				if f.CorrectedBy == src {
-					out = append(out, f)
-				}
-			}
-			return out, nil
-		},
 	}, byID
 }
 

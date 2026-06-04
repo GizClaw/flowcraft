@@ -14,6 +14,10 @@ type Lookup interface {
 	Lookup(ctx context.Context, scope domain.Scope, subject, predicate, object string) []string
 }
 
+type boundedLookup interface {
+	LookupLimit(ctx context.Context, scope domain.Scope, subject, predicate, object string, limit int) []string
+}
+
 // Source surfaces fact ids matching typed relation dimensions.
 type Source struct {
 	lookup    Lookup
@@ -38,11 +42,16 @@ func (s *Source) Query(ctx context.Context, plan domain.QueryPlan) domain.Source
 	}
 
 	started := time.Now()
-	ids := s.lookup.Lookup(ctx, intent.Scope, intent.Subject, intent.Predicate, intent.Object)
+	var ids []string
+	if bounded, ok := s.lookup.(boundedLookup); ok {
+		ids = bounded.LookupLimit(ctx, intent.Scope, intent.Subject, intent.Predicate, intent.Object, budget+1)
+	} else {
+		ids = s.lookup.Lookup(ctx, intent.Scope, intent.Subject, intent.Predicate, intent.Object)
+	}
 	latency := time.Since(started)
 
 	truncated := false
-	if !agentSoftIsolationQuery(intent.Scope) && len(ids) > budget {
+	if len(ids) > budget {
 		ids = ids[:budget]
 		truncated = true
 	}
@@ -56,6 +65,12 @@ func (s *Source) Query(ctx context.Context, plan domain.QueryPlan) domain.Source
 			Source: s.Name(),
 			Rank:   i + 1,
 			Score:  s.BaseScore,
+			DiscoverySignals: []domain.DiscoverySignal{{
+				Source: s.Name(),
+				Kind:   "relation_exact",
+				Value:  "typed_triple",
+				Score:  s.BaseScore,
+			}},
 		})
 	}
 	return domain.SourceResult{
@@ -64,8 +79,4 @@ func (s *Source) Query(ctx context.Context, plan domain.QueryPlan) domain.Source
 		Truncated:  truncated,
 		Latency:    latency,
 	}
-}
-
-func agentSoftIsolationQuery(scope domain.Scope) bool {
-	return scope.AgentID != ""
 }

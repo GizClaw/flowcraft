@@ -35,7 +35,7 @@ func TestSource_BudgetCapsCandidates(t *testing.T) {
 	}
 }
 
-func TestSource_AgentScopedQueryDefersBudgetUntilMaterialize(t *testing.T) {
+func TestSource_AgentScopedQueryStillHonorsBudget(t *testing.T) {
 	src := NewSource(stubRelationLookup{want: []string{"private-a", "private-b", "visible"}})
 	res := src.Query(context.Background(), domain.QueryPlan{
 		Intent: domain.QueryIntent{
@@ -46,10 +46,10 @@ func TestSource_AgentScopedQueryDefersBudgetUntilMaterialize(t *testing.T) {
 		SourceBudgets: map[string]int{planner.SourceRelation: 1},
 	})
 
-	if len(res.Candidates) != 3 {
-		t.Fatalf("agent-scoped relation source must defer cap until materialize, got %+v", res.Candidates)
+	if len(res.Candidates) != 1 {
+		t.Fatalf("agent-scoped relation source must honor budget, got %+v", res.Candidates)
 	}
-	if res.Truncated {
-		t.Fatal("agent-scoped relation source should not be truncated before materialize")
+	if !res.Truncated {
+		t.Fatal("expected truncated relation result for over-budget agent-scoped query")
 	}
 }

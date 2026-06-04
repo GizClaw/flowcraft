@@ -15,9 +15,10 @@ func toRecallV1Scope(s runners.Scope) recallv1.Scope {
 
 func fromRecallV1Artifact(h recallv1.Hit) runners.RecallArtifact {
 	artifact := runners.RecallArtifact{
-		ID:      h.Entry.ID,
-		Content: h.Entry.Content,
-		Score:   h.Score,
+		ID:         h.Entry.ID,
+		Content:    h.Entry.Content,
+		ScoreLabel: "final_score",
+		FinalScore: h.Score,
 	}
 	if len(h.Entry.Categories) > 0 || len(h.Scores) > 0 {
 		artifact.Metadata = make(map[string]any, 2)

@@ -565,6 +565,42 @@ func TestLLMExtractor_RejectsSemanticTypedFieldsThatConflictWithBoundText(t *tes
 	}
 }
 
+func TestLLMExtractor_RejectsUnsupportedSemanticKind(t *testing.T) {
+	client := &fakeLLM{Responses: []string{
+		`{"segments":[{"segment_id":"span-1","families":["semantic_fact"]}]}`,
+		`{"proposals":[{
+			"family":"semantic_fact",
+			"text":"Alice likes tea.",
+			"kind":"unsupported",
+			"subject":"Alice",
+			"predicate":"likes",
+			"object":"tea",
+			"entities":["Alice","tea"],
+			"source_ids":["turn-1"],
+			"quote":"Alice likes tea."
+		}]}`,
+	}}
+	cp := New(Stages{Extractor: NewLLMExtractor(client), IDGen: SequentialIDGenerator("fct_")})
+	res, err := cp.Compile(context.Background(), port.IngestInput{
+		Scope: domain.Scope{RuntimeID: "rt"},
+		SourceEvidenceSpans: []domain.SourceEvidenceSpan{{
+			ObservationID: "obs-1",
+			SpanID:        "span-1",
+			SourceID:      "turn-1",
+			Text:          "Alice likes tea.",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	if len(res.Facts) != 0 {
+		t.Fatalf("facts = %+v, want none", res.Facts)
+	}
+	if res.ExtractorGuard.ByReason["unsupported_schema"] == 0 {
+		t.Fatalf("extractor guard = %+v, want unsupported_schema", res.ExtractorGuard)
+	}
+}
+
 func TestParseSemanticFactProposalReplyRejectsMismatchedFamily(t *testing.T) {
 	_, err := parseSemanticFactProposalReply([]byte(`{"proposals":[{
 		"family":"procedure_step",
@@ -645,9 +681,9 @@ func TestLLMExtractor_DoesNotUseUnrelatedLaterAffirmativeForConfirmation(t *test
 }
 
 func TestParameterProposalSchemaOmitsConfirmationSentimentField(t *testing.T) {
-	legacyField := "confirmation_" + "polar" + "ity"
-	if strings.Contains(ParameterProposalSchema, legacyField) {
-		t.Fatalf("parameter proposal schema must not expose %s: %s", legacyField, ParameterProposalSchema)
+	removedField := "confirmation_" + "polar" + "ity"
+	if strings.Contains(ParameterProposalSchema, removedField) {
+		t.Fatalf("parameter proposal schema must not expose %s: %s", removedField, ParameterProposalSchema)
 	}
 }
 

@@ -18,6 +18,7 @@ const (
 	FailureSource               FailureStage = "source"
 	FailureCandidateMerge       FailureStage = "candidate_merge"
 	FailureCandidateMaterialize FailureStage = "candidate_materialize"
+	FailureCandidateAssessment  FailureStage = "candidate_assessment"
 	FailureRerank               FailureStage = "rerank"
 	FailureAnswer               FailureStage = "answer"
 )
@@ -52,6 +53,8 @@ func StageFromPipeline(stage string) FailureStage {
 		return FailureCandidateMerge
 	case "candidate_materialize":
 		return FailureCandidateMaterialize
+	case "candidate_assessment":
+		return FailureCandidateAssessment
 	case "rerank":
 		return FailureRerank
 	case "context_pack", "build_grounded_hits":
@@ -70,6 +73,8 @@ func StageFromDropReason(reason diagnostic.DropReason) FailureStage {
 		return FailureCandidateMaterialize
 	case diagnostic.DropDuplicate, diagnostic.DropTotalCap, diagnostic.DropPerSourceCap:
 		return FailureCandidateMerge
+	case "unsupported_candidate", "no_query_anchor_match":
+		return FailureCandidateAssessment
 	default:
 		return FailureCandidateMaterialize
 	}

@@ -1,8 +1,9 @@
 // Package read owns the read-flow pipeline State and Runner.
 // Stages (intent_route / plan / candidate_fanout /
-// candidate_merge_and_materialize / candidate_expansion / policy_filter /
-// rank / context_pack / build_grounded_hits / evolution_after_recall) land
-// here; this package owns the State schema so each stage stays narrow.
+// candidate_merge_and_materialize / candidate_expansion / link_expansion /
+// observation_recall / policy_filter / candidate_assessment / rank /
+// context_pack / build_grounded_hits / evolution_after_recall) land here; this
+// package owns the State schema so each stage stays narrow.
 //
 // Federation note: ReadState's MergedItems / SubScopeStates layout is the
 // canonical shape. Non-federation runs use len(SubScopeStates)==1; candidate
@@ -29,11 +30,12 @@ import (
 //	candidate_fanout                → SubScopeStates[i].SourceResults
 //	candidate_merge_and_materialize → SubScopeStates[i].Candidates /
 //	                                   SubScopeStates[i].Materialized /
-//	                                   MergedItems
+//	                                   MergedItems / CandidateEnvelopes
 //	candidate_expansion             → MergedItems
 //	policy_filter                   → AfterTrust
+//	candidate_assessment            → AssessedItems / CandidateEnvelopes
 //	rank                            → Ranked
-//	context_pack                    → Hits
+//	context_pack                    → Hits / CandidateEnvelopes
 //	build_grounded_hits             → Hits
 //	evolution_after_recall          → no state mutation; best-effort
 type ReadState struct {
@@ -85,6 +87,11 @@ type ReadState struct {
 	// uniform slice regardless of federation.
 	MergedItems []domain.ContextItem
 
+	// CandidateEnvelopes carries the explicit discovery, assessment, rank, and
+	// pack state for the current candidate pool. Candidate.Score remains
+	// source-local discovery score; downstream stages use the typed slots here.
+	CandidateEnvelopes []domain.CandidateEnvelope
+
 	// AfterTrust is the policy_filter output. Stages downstream of
 	// policy_filter read this; the runner populates it from MergedItems
 	// when policy_filter is disabled.
@@ -95,13 +102,18 @@ type ReadState struct {
 	// not "policy_filter was skipped".
 	PolicyFiltered bool
 
+	// AssessedItems is the candidate_assessment output. Rank and context_pack
+	// consume this pool instead of policy or discovery outputs so source score
+	// and discovery rank cannot bypass assessment.
+	AssessedItems []domain.ContextItem
+
 	// AssessmentApplied is true after candidate_assessment has evaluated the
-	// post-policy candidate set. An empty AfterTrust then means "all candidates
-	// were rejected by assessment", not "no stage populated AfterTrust".
+	// post-policy candidate set. An empty AssessedItems then means "all
+	// candidates were rejected by assessment", not "no stage populated it".
 	AssessmentApplied bool
 
 	// Ranked is the rank stage output (and the input to
-	// context_pack). Distinct from AfterTrust so explain traces
+	// context_pack). Distinct from AssessedItems so explain traces
 	// can attribute rank's reordering separately.
 	Ranked []domain.ContextItem
 
@@ -117,10 +129,6 @@ type ReadState struct {
 	// diagnostic-only and be elided when the caller does not request
 	// RecallExplain.
 	MaterializeDrops []diagnostic.CandidateDrop
-
-	// EvolutionErr captures a non-fatal AfterRecall failure surfaced by the
-	// evolution_after_recall stage detail.
-	EvolutionErr error
 
 	// Trace is a DIAGNOSTIC artifact — it carries human-readable
 	// StageDiagnostic entries for explainability. Stages MUST NOT
@@ -216,6 +224,131 @@ func (s *ReadState) CollectMaterializeDrops() []diagnostic.CandidateDrop {
 		out = append(out, s.SubScopeStates[i].MaterializeDrops...)
 	}
 	return out
+}
+
+func (s *ReadState) SetCandidateEnvelopes(items []domain.ContextItem) {
+	if s == nil {
+		return
+	}
+	s.CandidateEnvelopes = domain.NewCandidateEnvelopes(items)
+}
+
+func (s *ReadState) UpsertCandidateEnvelope(item domain.ContextItem) *domain.CandidateEnvelope {
+	if s == nil {
+		return nil
+	}
+	key := candidateEnvelopeKey(item)
+	if key == "" {
+		return nil
+	}
+	for i := range s.CandidateEnvelopes {
+		if candidateEnvelopeKey(s.CandidateEnvelopes[i].Item) == key {
+			s.CandidateEnvelopes[i].Candidate = item.Candidate
+			s.CandidateEnvelopes[i].Item = item
+			if len(s.CandidateEnvelopes[i].DiscoverySignals) == 0 {
+				s.CandidateEnvelopes[i].DiscoverySignals = domain.ContextItemDiscoverySignals(item)
+			}
+			return &s.CandidateEnvelopes[i]
+		}
+	}
+	s.CandidateEnvelopes = append(s.CandidateEnvelopes, domain.NewCandidateEnvelope(item))
+	return &s.CandidateEnvelopes[len(s.CandidateEnvelopes)-1]
+}
+
+func (s *ReadState) CandidateEnvelopeForItem(item domain.ContextItem) (*domain.CandidateEnvelope, bool) {
+	if s == nil {
+		return nil, false
+	}
+	key := candidateEnvelopeKey(item)
+	if key == "" {
+		return nil, false
+	}
+	for i := range s.CandidateEnvelopes {
+		if candidateEnvelopeOwnKey(s.CandidateEnvelopes[i]) == key {
+			return &s.CandidateEnvelopes[i], true
+		}
+	}
+	return nil, false
+}
+
+func (s *ReadState) CandidateDiscoveryScore(item domain.ContextItem) (float64, bool) {
+	if env, ok := s.CandidateEnvelopeForItem(item); ok {
+		return env.DiscoveryScore, true
+	}
+	return 0, false
+}
+
+func (s *ReadState) CandidateAssessmentScore(item domain.ContextItem) (float64, bool) {
+	if env, ok := s.CandidateEnvelopeForItem(item); ok && env.Assessment.RelevanceScore > 0 {
+		return env.Assessment.RelevanceScore, true
+	}
+	return 0, false
+}
+
+func (s *ReadState) CandidateRankScore(item domain.ContextItem) (float64, bool) {
+	if env, ok := s.CandidateEnvelopeForItem(item); ok && env.RankScore > 0 {
+		return env.RankScore, true
+	}
+	return 0, false
+}
+
+func (s *ReadState) RecordCandidateAssessment(item domain.ContextItem, assessment domain.CandidateAssessment) {
+	if env := s.UpsertCandidateEnvelope(item); env != nil {
+		env.Assessment = assessment
+	}
+}
+
+func (s *ReadState) RecordCandidateRank(item domain.ContextItem, rankScore float64) {
+	if env := s.UpsertCandidateEnvelope(item); env != nil {
+		env.RankScore = rankScore
+		env.Item = item
+		env.Candidate = item.Candidate
+	}
+}
+
+func (s *ReadState) RecordCandidatePack(factID string, decision domain.PackDecision) {
+	if s == nil || factID == "" {
+		return
+	}
+	for i := range s.CandidateEnvelopes {
+		if candidateEnvelopeMatchesID(s.CandidateEnvelopes[i], factID) {
+			s.CandidateEnvelopes[i].PackDecision = decision
+			return
+		}
+	}
+}
+
+func candidateEnvelopeKey(item domain.ContextItem) string {
+	switch {
+	case item.Ref.Kind != "" && item.Ref.ID != "":
+		return string(item.Ref.Kind) + ":" + item.Ref.ID
+	case item.Candidate.Kind != "" && item.Candidate.ID != "":
+		return string(item.Candidate.Kind) + ":" + item.Candidate.ID
+	case item.Fact.ID != "":
+		return string(domain.GraphNodeAssertion) + ":" + item.Fact.ID
+	case item.Observation.ID != "":
+		return string(domain.GraphNodeObservation) + ":" + item.Observation.ID
+	case item.Link.ID != "":
+		return string(domain.GraphNodeLink) + ":" + item.Link.ID
+	default:
+		return ""
+	}
+}
+
+func candidateEnvelopeOwnKey(env domain.CandidateEnvelope) string {
+	if key := candidateEnvelopeKey(env.Item); key != "" {
+		return key
+	}
+	return candidateEnvelopeKey(domain.ContextItem{Candidate: env.Candidate, Ref: env.Candidate})
+}
+
+func candidateEnvelopeMatchesID(env domain.CandidateEnvelope, id string) bool {
+	return env.Candidate.ID == id ||
+		env.Item.Candidate.ID == id ||
+		env.Item.Ref.ID == id ||
+		env.Item.Fact.ID == id ||
+		env.Item.Observation.ID == id ||
+		env.Item.Link.ID == id
 }
 
 // AppendStage is the TraceAppender the runner registers with the

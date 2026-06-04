@@ -7,7 +7,6 @@ type ObservationKind string
 
 const (
 	ObservationKindTurn     ObservationKind = "turn"
-	ObservationKindEvidence ObservationKind = "evidence"
 	ObservationKindDocument ObservationKind = "document"
 )
 

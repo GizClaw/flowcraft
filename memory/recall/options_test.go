@@ -2,15 +2,12 @@ package recall_test
 
 import (
 	"context"
-	"errors"
-	"strings"
 	"testing"
 	"time"
 
 	"github.com/GizClaw/flowcraft/memory/recall"
 	retrievalmem "github.com/GizClaw/flowcraft/memory/retrieval/memory"
 	"github.com/GizClaw/flowcraft/memory/text/timex"
-	"github.com/GizClaw/flowcraft/sdk/llm"
 )
 
 type externalTelemetryHook struct{}
@@ -157,7 +154,6 @@ func TestPublicOptionsDoNotRequireInternalImports(t *testing.T) {
 		recall.WithTimeParser(externalTimeParser{}),
 		recall.WithEntityExtractor(externalEntityExtractor{}),
 		recall.WithLLMExtractor(nil,
-			recall.WithLLMExtractorProposalPrompt("extract proposals"),
 			recall.WithLLMExtractorSchemaName("recall_facts"),
 			recall.WithLLMExtractorTemperature(0.1),
 		),
@@ -170,60 +166,16 @@ func TestPublicOptionsDoNotRequireInternalImports(t *testing.T) {
 	}
 }
 
-func TestWithLLMExtractorProposalPromptDoesNotOverrideAuthorityPrompts(t *testing.T) {
-	client := &recordingLLM{}
-	mem, err := recall.New(recall.WithLLMExtractor(client,
-		recall.WithLLMExtractorProposalPrompt("override prompt"),
-	))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer mem.Close()
-	_, err = mem.Save(context.Background(), recall.Scope{RuntimeID: "rt", UserID: "u1"}, recall.SaveRequest{
-		Turns: []recall.TurnContext{{ID: "turn-1", Text: "temperature = 0.2"}},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, system := range client.systems {
-		if system == "override prompt" {
-			t.Fatalf("proposal prompt override replaced authority prompt: %q", system)
-		}
-	}
-}
-
-type recordingLLM struct {
-	systems []string
-}
-
-func (r *recordingLLM) Generate(_ context.Context, msgs []llm.Message, opts ...llm.GenerateOption) (llm.Message, llm.TokenUsage, error) {
-	if len(msgs) > 0 {
-		r.systems = append(r.systems, msgs[0].Content())
-	}
-	got := llm.GenerateOptions{}
-	for _, opt := range opts {
-		opt(&got)
-	}
-	if got.JSONSchema != nil && strings.Contains(got.JSONSchema.Name, "segment_classifier") {
-		return llm.NewTextMessage(llm.RoleAssistant, `{"segments":[{"segment_id":"turn-1","families":["parameter_slot"]}]}`), llm.TokenUsage{}, nil
-	}
-	return llm.NewTextMessage(llm.RoleAssistant, `{"proposals":[]}`), llm.TokenUsage{}, nil
-}
-
-func (*recordingLLM) GenerateStream(context.Context, []llm.Message, ...llm.GenerateOption) (llm.StreamMessage, error) {
-	return nil, errors.New("recordingLLM: streaming not implemented")
-}
-
 func TestPublicDurableAdapterHelpersDoNotRequireInternalImports(t *testing.T) {
 	job := recall.AsyncSemanticJob{
-		RequestID:      "req-1",
-		TurnsSnapshot:  []recall.TurnContext{{Text: "secret"}},
-		RecentMessages: []recall.Message{{Text: "context"}},
+		RequestID:           "req-1",
+		SourceEvidenceSpans: []recall.SourceEvidenceSpan{{ObservationID: "obs-1", SpanID: "span-1", Text: "secret"}},
+		RecentMessages:      []recall.Message{{Text: "context"}},
 	}
 	cloned := recall.CloneAsyncSemanticJob(job)
 	recall.ScrubAsyncSemanticJobPII(&cloned)
-	if len(cloned.TurnsSnapshot) != 0 || len(cloned.RecentMessages) != 0 {
-		t.Fatalf("async semantic scrub retained PII snapshots: %+v", cloned)
+	if len(cloned.SourceEvidenceSpans) != 0 || len(cloned.RecentMessages) != 0 {
+		t.Fatalf("async semantic scrub retained PII context: %+v", cloned)
 	}
 
 	side := recall.SideEffectJob{

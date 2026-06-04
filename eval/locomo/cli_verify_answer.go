@@ -197,10 +197,6 @@ func loadAnswerReplayDump(path string) (map[string]AnswerReplayRecord, error) {
 		if err := json.Unmarshal([]byte(line), &rec); err != nil {
 			return nil, err
 		}
-		if len(rec.RecallArtifacts) == 0 && len(rec.LegacyArtifacts) > 0 {
-			rec.RecallArtifacts = rec.LegacyArtifacts
-		}
-		rec.LegacyArtifacts = nil
 		out[rec.QID] = rec
 	}
 	return out, sc.Err()

@@ -12,18 +12,15 @@ import (
 	"github.com/GizClaw/flowcraft/memory/recall/internal/port"
 )
 
-// Resolve applies the ConflictResolver against a read-only store
-// view. It mirrors the legacy runSave block that wrapped resolver
-// invocation under the per-scope write lock.
+// Resolve applies the ConflictResolver against a read-only store view under
+// the per-scope write lock.
 //
 // The stage implements Conditional so that a nil resolver (the
 // caller explicitly opted out via Options) is reported as a single
 // Skipped diagnostic.
 //
-// An empty resolution (no facts to append and no closes) short-
-// circuits the pipeline so downstream stages do not run with an
-// empty work set, matching legacy `if len(resolution.Facts) == 0 {
-// return SaveResult{}, trace, nil }`.
+// An empty resolution (no facts to append and no closes) short-circuits the
+// pipeline so downstream stages do not run with an empty work set.
 type Resolve struct {
 	resolver port.ConflictResolver
 	store    port.TemporalStore

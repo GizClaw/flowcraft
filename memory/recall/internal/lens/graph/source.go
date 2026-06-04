@@ -57,6 +57,12 @@ func (s *Source) Query(ctx context.Context, plan domain.QueryPlan) domain.Source
 			Source: s.Name(),
 			Rank:   i + 1,
 			Score:  s.BaseScore,
+			DiscoverySignals: []domain.DiscoverySignal{{
+				Source: s.Name(),
+				Kind:   "graph_neighbor",
+				Value:  "bounded_bfs",
+				Score:  s.BaseScore,
+			}},
 		})
 	}
 	return domain.SourceResult{

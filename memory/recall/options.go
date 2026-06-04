@@ -186,14 +186,6 @@ func WithLLMExtractorSchemaName(name string) LLMExtractorOption {
 	})
 }
 
-// WithLLMExtractorProposalPrompt is retained as a no-op. Save extraction now
-// uses fixed stage-owned authority prompts for classifier and typed extractors;
-// allowing callers to replace them would bypass deterministic grounding
-// boundaries.
-func WithLLMExtractorProposalPrompt(_ string) LLMExtractorOption {
-	return newLLMExtractorOption(func(*llmExtractorConfig) {})
-}
-
 // WithLLMExtractorExtraOptions forwards provider-specific
 // llm.GenerateOption values on every extraction call (e.g. provider
 // extra params, reasoning toggles).

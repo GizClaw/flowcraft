@@ -290,7 +290,11 @@ func asyncSemanticJob(requestID string, episodeIDs ...string) recall.AsyncSemant
 		RequestID:      requestID,
 		Scope:          conformanceScope(),
 		EpisodeFactIDs: episodeIDs,
-		TurnsSnapshot:  []recall.TurnContext{{ID: "turn-" + requestID, Role: "user", Text: "secret text"}},
+		SourceEvidenceSpans: []recall.SourceEvidenceSpan{{
+			ObservationID: "obs-" + requestID,
+			SpanID:        "span-" + requestID,
+			Text:          "secret text",
+		}},
 		RecentMessages: []recall.Message{{Role: "user", Text: "secret message"}},
 	}
 }

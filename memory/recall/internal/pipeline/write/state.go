@@ -130,11 +130,6 @@ type WriteState struct {
 	// design Optional projections are best-effort.
 	OptionalApplied int
 
-	// EvolutionErr captures a non-fatal AfterSave failure. The
-	// evolution_after_save stage detail surfaces it via the
-	// Stages-only trace.
-	EvolutionErr error
-
 	// Async lane. These fields stay zero in the synchronous path; they
 	// are populated only when the facade dispatches to the async
 	// episode runner.

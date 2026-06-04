@@ -212,7 +212,7 @@ func TestTelemetry_RoundTripsConstructorHook(t *testing.T) {
 
 // kindFilteredFake extends fakeProjection with a configurable
 // AcceptsKind, so we can assert that ProjectRequiredForKinds honours
-// the optional port.KindFilteredProjection contract.
+// the port.KindFilteredProjection contract.
 type kindFilteredFake struct {
 	fakeProjection
 	accept map[domain.FactKind]bool
@@ -251,33 +251,28 @@ func TestFanout_ProjectRequiredForKinds_RoutesByAcceptsKind(t *testing.T) {
 	}
 }
 
-// TestFanout_ProjectRequiredForKinds_NonFilteredAlwaysCalled pins the
-// backward-compat clause: a projection that does NOT implement
-// port.KindFilteredProjection participates unconditionally, regardless
-// of the allowed-kinds list.
-func TestFanout_ProjectRequiredForKinds_NonFilteredAlwaysCalled(t *testing.T) {
+// TestFanout_ProjectRequiredForKinds_SkipsUnfiltered pins the kind-scoped
+// contract: required projections without KindFilteredProjection must not run.
+func TestFanout_ProjectRequiredForKinds_SkipsUnfiltered(t *testing.T) {
 	plain := &fakeProjection{name: "plain", level: port.Required}
 	f := NewFanout([]port.Projection{plain}, nil)
 	if err := f.ProjectRequiredForKinds(context.Background(), sampleFacts(), domain.KindEpisode); err != nil {
 		t.Fatalf("ProjectRequiredForKinds: %v", err)
 	}
-	if plain.projectCalls != 1 {
-		t.Errorf("plain projectCalls = %d, want 1", plain.projectCalls)
+	if plain.projectCalls != 0 {
+		t.Errorf("plain projectCalls = %d, want 0", plain.projectCalls)
 	}
 }
 
-// TestFanout_ProjectRequiredForKindsStrict_SkipsUnfiltered pins the
-// episode-lane contract: required projections without
-// KindFilteredProjection must not run under scope lock.
-func TestFanout_ProjectRequiredForKindsStrict_SkipsUnfiltered(t *testing.T) {
+func TestFanout_ProjectRequiredForKinds_CallsFilteredAccepter(t *testing.T) {
 	plain := &fakeProjection{name: "plain", level: port.Required}
 	accepter := &kindFilteredFake{
 		fakeProjection: fakeProjection{name: "evidence", level: port.Required},
 		accept:         map[domain.FactKind]bool{domain.KindEpisode: true},
 	}
 	f := NewFanout([]port.Projection{plain, accepter}, nil)
-	if err := f.ProjectRequiredForKindsStrict(context.Background(), sampleFacts(), domain.KindEpisode); err != nil {
-		t.Fatalf("ProjectRequiredForKindsStrict: %v", err)
+	if err := f.ProjectRequiredForKinds(context.Background(), sampleFacts(), domain.KindEpisode); err != nil {
+		t.Fatalf("ProjectRequiredForKinds: %v", err)
 	}
 	if plain.projectCalls != 0 {
 		t.Errorf("plain projectCalls = %d, want 0", plain.projectCalls)

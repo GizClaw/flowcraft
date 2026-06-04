@@ -419,27 +419,6 @@ func TestResolveExplicit_NSupersede_Dedup(t *testing.T) {
 	}
 }
 
-func TestResolver_IgnoresMergeHintsSupersedesAuthority(t *testing.T) {
-	scope := domain.Scope{RuntimeID: "rt"}
-	view := &fakeView{facts: []domain.TemporalFact{{
-		ID: "prior", Scope: scope, Kind: domain.KindState, Subject: "x", Predicate: "p", Content: "old",
-	}}}
-	r := NewResolver()
-	out, err := r.ResolveConflicts(context.Background(), view, []domain.TemporalFact{{
-		ID: "new", Scope: scope, Kind: domain.KindState, Subject: "x", Predicate: "p", Content: "new",
-		MergeHints: domain.MergeHints{Supersedes: []string{"prior"}},
-	}})
-	if err != nil {
-		t.Fatalf("resolve: %v", err)
-	}
-	if len(out.Closes) != 0 {
-		t.Fatalf("MergeHints.Supersedes closed facts: %+v", out.Closes)
-	}
-	if len(out.Facts) != 1 || len(out.Facts[0].Supersedes) != 0 {
-		t.Fatalf("resolution = %+v, want append without canonical supersede", out)
-	}
-}
-
 func TestResolver_ParameterSameNormalizedValueNoopsAcrossOperationWording(t *testing.T) {
 	scope := domain.Scope{RuntimeID: "rt"}
 	meta := map[string]any{

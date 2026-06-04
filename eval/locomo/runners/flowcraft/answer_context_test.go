@@ -36,7 +36,7 @@ func TestStructuredAnswerBodyKeepsRecallV1HitStructure(t *testing.T) {
 		`entry_id: "m1"`,
 		`category: "events"`,
 		`categories: "activity", "event"`,
-		`score: "0.420000"`,
+		`final_score: "0.420000"`,
 		`scores: bm25=0.200000, vector=0.700000`,
 		`content: "Last Friday, Melanie took her kids to a pottery workshop."`,
 		`subject: "Melanie"`,
@@ -63,11 +63,11 @@ func TestStructuredAnswerContextCarriesRecallV1Prompt(t *testing.T) {
 		"content as the primary evidence",
 		"source_time is the timestamp",
 	} {
-		if !strings.Contains(ctx.PromptTemplate, want) {
-			t.Fatalf("structured prompt missing %q:\n%s", want, ctx.PromptTemplate)
+		if !strings.Contains(ctx.SystemPrompt, want) {
+			t.Fatalf("structured prompt missing %q:\n%s", want, ctx.SystemPrompt)
 		}
 	}
-	if strings.Contains(ctx.PromptTemplate, "%s") {
-		t.Fatalf("structured prompt should be system-only, got:\n%s", ctx.PromptTemplate)
+	if strings.Contains(ctx.SystemPrompt, "%s") {
+		t.Fatalf("structured prompt should be system-only, got:\n%s", ctx.SystemPrompt)
 	}
 }

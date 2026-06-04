@@ -19,11 +19,8 @@ func ValidateEpisodesForJob(ctx context.Context, store port.TemporalStore, job p
 	if store == nil {
 		return errdefs.Validationf("recall async semantic: store not configured")
 	}
-	if len(job.EpisodeFactIDs) == 0 && len(job.TurnsSnapshot) == 0 {
-		return errdefs.Validationf("recall async semantic: job has no episode ids or turn snapshot")
-	}
 	if len(job.EpisodeFactIDs) == 0 {
-		return nil
+		return errdefs.Validationf("recall async semantic: job has no episode ids")
 	}
 	if now.IsZero() {
 		now = time.Now()

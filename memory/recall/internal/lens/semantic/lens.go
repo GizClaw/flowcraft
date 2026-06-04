@@ -138,21 +138,9 @@ func (p *Projection) QuerySemantic(_ context.Context, scope domain.Scope, intent
 	if !ok {
 		return nil
 	}
-	queryTerms := querySemanticTerms(intent)
-	out := make([]semanticEntry, 0, len(sh.byID))
-	for _, entry := range sh.byID {
-		if !entryMatchesAgent(entry.scope, scope) || !entryMatchesIntent(entry, intent, queryTerms) {
-			continue
-		}
-		out = append(out, entry)
-	}
+	out := selectSemanticEntries(sh.byID, scope, limit)
 	sort.SliceStable(out, func(i, j int) bool {
-		ti := entryTime(out[i])
-		tj := entryTime(out[j])
-		if !ti.Equal(tj) {
-			return ti.After(tj)
-		}
-		return out[i].id < out[j].id
+		return semanticEntryBefore(out[i], out[j])
 	})
 	if limit > 0 && len(out) > limit {
 		out = out[:limit]
@@ -162,6 +150,47 @@ func (p *Projection) QuerySemantic(_ context.Context, scope domain.Scope, intent
 		ids[i] = entry.id
 	}
 	return ids
+}
+
+func selectSemanticEntries(entries map[string]semanticEntry, scope domain.Scope, limit int) []semanticEntry {
+	if limit <= 0 {
+		out := make([]semanticEntry, 0, len(entries))
+		for _, entry := range entries {
+			if entryMatchesAgent(entry.scope, scope) {
+				out = append(out, entry)
+			}
+		}
+		return out
+	}
+	out := make([]semanticEntry, 0, limit)
+	for _, entry := range entries {
+		if !entryMatchesAgent(entry.scope, scope) {
+			continue
+		}
+		if len(out) < limit {
+			out = append(out, entry)
+			continue
+		}
+		worst := 0
+		for i := 1; i < len(out); i++ {
+			if semanticEntryBefore(out[worst], out[i]) {
+				worst = i
+			}
+		}
+		if semanticEntryBefore(entry, out[worst]) {
+			out[worst] = entry
+		}
+	}
+	return out
+}
+
+func semanticEntryBefore(a, b semanticEntry) bool {
+	ta := entryTime(a)
+	tb := entryTime(b)
+	if !ta.Equal(tb) {
+		return ta.After(tb)
+	}
+	return a.id < b.id
 }
 
 func (p *Projection) shardLocked(scope domain.Scope) *shard {
@@ -192,14 +221,11 @@ func (s *Source) Query(ctx context.Context, plan domain.QueryPlan) domain.Source
 		return domain.SourceResult{Source: s.name}
 	}
 	queryLimit := budget + 1
-	if plan.Intent.Scope.AgentID != "" {
-		queryLimit = 0
-	}
 	started := time.Now()
 	ids := s.proj.QuerySemantic(ctx, plan.Intent.Scope, plan.Intent, queryLimit)
 	latency := time.Since(started)
 	truncated := false
-	if plan.Intent.Scope.AgentID == "" && len(ids) > budget {
+	if len(ids) > budget {
 		ids = ids[:budget]
 		truncated = true
 	}
@@ -212,9 +238,13 @@ func (s *Source) Query(ctx context.Context, plan domain.QueryPlan) domain.Source
 			Source: s.name,
 			Rank:   i + 1,
 			Score:  s.BaseScore,
-			Metadata: map[string]any{
-				"semantic_source": s.name,
-			},
+			DiscoverySignals: []domain.DiscoverySignal{{
+				Source: s.name,
+				Kind:   "source_variant",
+				Value:  "structured_assertion",
+				Score:  s.BaseScore,
+			}},
+			Metadata: map[string]any{"semantic_source": s.name},
 		})
 	}
 	return domain.SourceResult{Source: s.name, Candidates: candidates, Truncated: truncated, Latency: latency}
@@ -271,52 +301,6 @@ func semanticSearchTerms(f domain.TemporalFact) map[string]struct{} {
 		out[term] = struct{}{}
 	}
 	return out
-}
-
-func querySemanticTerms(intent domain.QueryIntent) []string {
-	parts := []string{intent.Text, intent.Subject, intent.Predicate, intent.Object}
-	parts = append(parts, intent.Entities...)
-	return words.SemanticQueryTerms(strings.Join(parts, " "))
-}
-
-func entryMatchesIntent(entry semanticEntry, intent domain.QueryIntent, terms []string) bool {
-	if !semanticFieldMatches(entry.terms, intent.Subject) {
-		return false
-	}
-	if !semanticFieldMatches(entry.terms, intent.Object) {
-		return false
-	}
-	if len(terms) == 0 {
-		return true
-	}
-	matches := 0
-	for _, term := range terms {
-		if _, ok := entry.terms[term]; ok {
-			matches++
-		}
-	}
-	required := 2
-	if len(terms) < required {
-		required = len(terms)
-	}
-	return matches >= required
-}
-
-func semanticFieldMatches(entryTerms map[string]struct{}, field string) bool {
-	field = strings.TrimSpace(field)
-	if field == "" {
-		return true
-	}
-	terms := words.SemanticQueryTerms(field)
-	if len(terms) == 0 {
-		return true
-	}
-	for _, term := range terms {
-		if _, ok := entryTerms[term]; !ok {
-			return false
-		}
-	}
-	return true
 }
 
 func entryMatchesAgent(entryScope, queryScope domain.Scope) bool {

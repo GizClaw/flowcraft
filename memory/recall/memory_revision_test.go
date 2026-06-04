@@ -38,7 +38,7 @@ func TestFork_KeepsPriorActive(t *testing.T) {
 		t.Fatal(err)
 	}
 	drainSideEffectsForTest(t, mem, scope)
-	hits, err := mem.Recall(context.Background(), scope, Query{Text: "alice location", Limit: 10})
+	hits, err := mem.Recall(context.Background(), scope, Query{Text: "alice", Subject: "alice", Predicate: "location", Limit: 10})
 	if err != nil {
 		t.Fatal(err)
 	}

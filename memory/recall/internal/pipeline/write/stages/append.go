@@ -8,7 +8,6 @@ import (
 
 	"github.com/GizClaw/flowcraft/memory/recall/internal/domain"
 	"github.com/GizClaw/flowcraft/memory/recall/internal/domain/diagnostic"
-	"github.com/GizClaw/flowcraft/memory/recall/internal/graphledger"
 	"github.com/GizClaw/flowcraft/memory/recall/internal/pipeline"
 	"github.com/GizClaw/flowcraft/memory/recall/internal/pipeline/write"
 	"github.com/GizClaw/flowcraft/memory/recall/internal/port"
@@ -19,10 +18,9 @@ import (
 // compensator deletes whatever was appended on any downstream
 // failure. When the downstream failure is validity_close, the
 // compensator also reopens the validity-close prefix that did land
-// — preserving the legacy rollbackAppendedFacts ordering (store
-// delete first, then reopen) which the v2 framework cannot reproduce
-// from validity_close's compensator alone because the framework does
-// not invoke a failing stage's own compensator.
+// so the rollback sequence stays delete-first, reopen-second even
+// though the framework does not invoke a failing stage's own
+// compensator.
 type Append struct {
 	store port.TemporalStore
 	hook  port.TelemetryHook
@@ -49,7 +47,6 @@ func (Append) Skip(_ context.Context, state *write.WriteState) (bool, diagnostic
 // Run implements pipeline.Stage.
 func (s *Append) Run(ctx context.Context, state *write.WriteState) (diagnostic.StageDetail, error) {
 	started := time.Now()
-	graphledger.StampFactEvidenceRefs(state.Scope, state.Resolution.Facts, state.SaveOutboxID)
 	if err := s.store.Append(ctx, state.Resolution.Facts); err != nil {
 		state.FailedStage = "append"
 		return diagnostic.AppendDetail{
@@ -68,19 +65,16 @@ func (s *Append) Run(ctx context.Context, state *write.WriteState) (diagnostic.S
 	}, nil
 }
 
-// Compensate implements pipeline.Compensator. The emit name is
-// chosen to mirror the legacy rollback helpers byte-for-byte:
+// Compensate implements pipeline.Compensator. Rollback event names identify
+// which cleanup leg failed:
 //
-//   - state.FailedStage == "validity_close" → rollbackAppendedFacts
-//     fired "save_rollback.appended_facts" before reopening the
-//     applied close prefix. We honour the same name AND replay the
-//     reopen here so the framework's per-stage compensator order
-//     does not invert the legacy {delete, reopen} sequence.
+//   - state.FailedStage == "validity_close" uses
+//     "save_rollback.appended_facts" because append must delete the newly
+//     written facts and then reopen the close prefix itself.
 //   - any other downstream failure (project_required and beyond) →
-//     rollbackSave fired "save_rollback.store_delete"; the reopen
-//     and reproject moves happen in validity_close's own
-//     compensator (the framework still invokes it because
-//     validity_close ran to completion).
+//     "save_rollback.store_delete"; the reopen and reproject moves happen in
+//     validity_close's own compensator because validity_close ran to
+//     completion.
 func (s *Append) Compensate(ctx context.Context, state *write.WriteState) error {
 	if len(state.AppendedFactIDs) == 0 {
 		return nil
@@ -107,9 +101,8 @@ func (s *Append) Compensate(ctx context.Context, state *write.WriteState) error 
 	return nil
 }
 
-// reopenAppliedCloses mirrors the legacy reopenAfterRollback helper:
-// for every close that did land before validity_close failed, undo
-// it via Store.ReopenValidity. ErrNotFound is tolerated silently
+// reopenAppliedCloses undoes every close that landed before validity_close
+// failed via Store.ReopenValidity. ErrNotFound is tolerated silently
 // (the prior fact may already have been forgotten). Any other
 // surface error emits a CompensationFailedDetail and the loop
 // continues so a single bad row does not strand the others.

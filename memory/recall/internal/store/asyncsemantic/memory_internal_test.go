@@ -15,13 +15,13 @@ func TestQueue_CompleteScrubsEnqueuePII(t *testing.T) {
 	ctx := context.Background()
 	_, _ = q.Enqueue(ctx, port.AsyncSemanticJob{
 		RequestID: "req-1", Scope: domain.Scope{RuntimeID: "rt", UserID: "u1"},
-		TurnsSnapshot: []domain.TurnContext{{Text: "secret"}},
+		SourceEvidenceSpans: []domain.SourceEvidenceSpan{{ObservationID: "obs-1", SpanID: "span-1", Text: "secret"}},
 	})
 	jobs, _ := claimBatch(ctx, q, "w", time.Now(), 1)
 	_ = q.Complete(ctx, jobs[0].RequestID, jobs[0].LeaseToken, port.AsyncSemanticResult{})
 	e := q.byRequest["req-1"]
-	if len(e.job.TurnsSnapshot) != 0 {
-		t.Fatalf("completed job must scrub TurnsSnapshot, got %+v", e.job.TurnsSnapshot)
+	if len(e.job.SourceEvidenceSpans) != 0 {
+		t.Fatalf("completed job must scrub SourceEvidenceSpans, got %+v", e.job.SourceEvidenceSpans)
 	}
 }
 

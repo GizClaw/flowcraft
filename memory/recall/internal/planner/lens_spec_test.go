@@ -18,9 +18,9 @@ import (
 	"github.com/GizClaw/flowcraft/memory/recall/internal/port"
 )
 
-// TestLensRegistryOrderMatchesLegacy verifies lens registration produces the
-// same SourceOrder as the earlier builtin planner.
-func TestLensRegistryOrderMatchesLegacy(t *testing.T) {
+// TestLensRegistryOrderMatchesBuiltin verifies lens registration produces the
+// same SourceOrder as the builtin planner.
+func TestLensRegistryOrderMatchesBuiltin(t *testing.T) {
 	reg := lens.NewRegistry()
 	// mirror memory.New registration order (graph on, no evidence)
 	reg.Register(retrievallens.Lens{})
@@ -32,7 +32,7 @@ func TestLensRegistryOrderMatchesLegacy(t *testing.T) {
 	reg.Register(timelinelens.Lens{})
 	specs := reg.Specs()
 	newPlanner := planner.NewFromSpecs(specs)
-	legacy := planner.New()
+	builtin := planner.New()
 	scope := domain.Scope{RuntimeID: "rt"}
 
 	cases := []struct {
@@ -59,12 +59,12 @@ func TestLensRegistryOrderMatchesLegacy(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			want, err := legacy.Plan(ctx, tc.input)
+			want, err := builtin.Plan(ctx, tc.input)
 			if err != nil {
 				t.Fatal(err)
 			}
 			if len(got.SourceOrder) != len(want.SourceOrder) {
-				t.Fatalf("order len %d vs legacy %d: got %v want %v", len(got.SourceOrder), len(want.SourceOrder), got.SourceOrder, want.SourceOrder)
+				t.Fatalf("order len %d vs builtin %d: got %v want %v", len(got.SourceOrder), len(want.SourceOrder), got.SourceOrder, want.SourceOrder)
 			}
 			for i := range got.SourceOrder {
 				if got.SourceOrder[i] != want.SourceOrder[i] {

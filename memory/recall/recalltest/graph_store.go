@@ -27,7 +27,7 @@ func RunObservationStoreSuite(t *testing.T, newStore func(testing.TB) recall.Obs
 		obs2 := recall.Observation{
 			ID:         "obs-2",
 			Scope:      scope,
-			Kind:       recall.ObservationKindEvidence,
+			Kind:       recall.ObservationKindDocument,
 			SourceID:   "src-2",
 			Text:       "second",
 			ObservedAt: time.Unix(2, 0),
@@ -42,7 +42,7 @@ func RunObservationStoreSuite(t *testing.T, newStore func(testing.TB) recall.Obs
 		if got.Text != "first" {
 			t.Fatalf("got.Text = %q", got.Text)
 		}
-		list, err := store.List(ctx, scope, recall.ObservationListQuery{Kinds: []recall.ObservationKind{recall.ObservationKindEvidence}})
+		list, err := store.List(ctx, scope, recall.ObservationListQuery{Kinds: []recall.ObservationKind{recall.ObservationKindDocument}})
 		if err != nil {
 			t.Fatalf("list kind: %v", err)
 		}
@@ -90,7 +90,7 @@ func RunObservationStoreSuite(t *testing.T, newStore func(testing.TB) recall.Obs
 		quote := recall.Observation{
 			ID:         "obs-span",
 			Scope:      scope,
-			Kind:       recall.ObservationKindEvidence,
+			Kind:       recall.ObservationKindTurn,
 			SourceID:   "src-span",
 			Text:       "ZXQ capsule in the blue box",
 			ObservedAt: time.Unix(1, 0),

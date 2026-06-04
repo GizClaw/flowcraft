@@ -15,19 +15,17 @@ import (
 )
 
 const (
-	observationRecallSource      = "observation"
-	observationRecallScanLimit   = 500
-	observationRecallDefaultCap  = 4
-	observationRecallStrictCap   = 2
-	observationRecallMinScore    = 0.35
-	observationRecallStrictScore = 0.65
-	observationRecallUnderCount  = 3
-	observationRecallMinOverlap  = 3
+	observationRecallSource     = "observation"
+	observationRecallScanLimit  = 500
+	observationRecallDefaultCap = 4
+	observationRecallStrictCap  = 2
+	observationRecallUnderCount = 3
 )
 
 // ObservationRecall is the raw-evidence lane for the O/A/L architecture. It
-// adds high-overlap observations as observation nodes so extractor misses can
-// surface in recall without inventing assertion facts.
+// adds bounded raw observations so extractor misses can surface in recall
+// without inventing assertion facts. Lexical overlap is retained only as a
+// discovery score/provenance signal; assessment owns relevance.
 type ObservationRecall struct {
 	observations port.ObservationStore
 }
@@ -61,7 +59,6 @@ func (s *ObservationRecall) Run(ctx context.Context, state *read.ReadState) (dia
 	}
 
 	existing := observationRecallExisting(state.MergedItems)
-	minScore := observationRecallMinScoreForState(state)
 	var scored []observationScored
 	for _, scope := range state.Scope.EffectiveFederation() {
 		if err := ctx.Err(); err != nil {
@@ -84,19 +81,18 @@ func (s *ObservationRecall) Run(ctx context.Context, state *read.ReadState) (dia
 				continue
 			}
 			scoreText := strings.TrimSpace(strings.Join([]string{obs.Speaker, obs.Text}, " "))
-			if !observationRecallAllowsLexicalRescue(state, scoreText) {
-				continue
-			}
-			score := observationRecallScore(queryTokens, scoreText)
-			if score < minScore {
-				continue
-			}
+			score := observationRecallDiscoveryScore(queryTokens, scoreText)
 			scored = append(scored, observationScored{observation: obs, score: score})
 		}
 	}
 	sort.SliceStable(scored, func(i, j int) bool {
 		if scored[i].score != scored[j].score {
 			return scored[i].score > scored[j].score
+		}
+		ti := observationRecallObservedAt(scored[i].observation)
+		tj := observationRecallObservedAt(scored[j].observation)
+		if !ti.Equal(tj) {
+			return ti.After(tj)
 		}
 		return scored[i].observation.ID < scored[j].observation.ID
 	})
@@ -187,7 +183,7 @@ func observationRecallDuplicateText(existing map[string]struct{}, text string) b
 	return ok
 }
 
-func observationRecallScore(queryTokens map[string]struct{}, text string) float64 {
+func observationRecallDiscoveryScore(queryTokens map[string]struct{}, text string) float64 {
 	text = strings.TrimSpace(text)
 	if text == "" || len(queryTokens) == 0 {
 		return 0
@@ -199,38 +195,11 @@ func observationRecallScore(queryTokens map[string]struct{}, text string) float6
 			overlap++
 		}
 	}
-	requiredOverlap := min(observationRecallMinOverlap, len(queryTokens))
-	if overlap < requiredOverlap {
-		return 0
-	}
 	return float64(overlap) / float64(len(queryTokens))
 }
 
-func observationRecallAllowsLexicalRescue(state *read.ReadState, text string) bool {
-	if state == nil || len(state.MergedItems) < observationRecallUnderCount {
-		return true
-	}
-	if !observationRecallExactEvidenceQuery(state) {
-		return false
-	}
-	features := observationRecallFeatures(state)
-	if features.IsZero() {
-		return false
-	}
-	textTokens := recallintent.TextTokenSet(text)
-	if tokenSetIntersects(features.Proper, textTokens) ||
-		tokenSetIntersects(features.Numeric, textTokens) ||
-		tokenSetIntersects(features.Quoted, textTokens) {
-		return true
-	}
-	return false
-}
-
 func observationContextItem(obs domain.Observation, score float64) domain.ContextItem {
-	ts := obs.ObservedAt
-	if ts.IsZero() {
-		ts = obs.ReceivedAt
-	}
+	ts := observationRecallObservedAt(obs)
 	ref := domain.EvidenceRef{
 		ID:            obs.ID,
 		ObservationID: obs.ID,
@@ -245,17 +214,24 @@ func observationContextItem(obs domain.Observation, score float64) domain.Contex
 			ref.Text = span.Text
 		}
 	}
+	signals := []domain.DiscoverySignal{{
+		Source: observationRecallSource,
+		Kind:   "observation_overlap",
+		Value:  "query_token_overlap",
+		Score:  score,
+	}}
 	return domain.ContextItem{
 		Candidate: domain.Candidate{
-			Kind:        domain.GraphNodeObservation,
-			ID:          obs.ID,
-			Scope:       obs.Scope,
-			Source:      observationRecallSource,
-			Score:       score,
-			EvidenceIDs: []string{obs.ID},
-			Metadata:    map[string]any{"sources": []string{observationRecallSource}},
+			Kind:             domain.GraphNodeObservation,
+			ID:               obs.ID,
+			Scope:            obs.Scope,
+			Source:           observationRecallSource,
+			Score:            score,
+			EvidenceIDs:      []string{obs.ID},
+			DiscoverySignals: signals,
+			Metadata:         map[string]any{"sources": []string{observationRecallSource}},
 		},
-		Ref:         domain.CandidateRef{Kind: domain.GraphNodeObservation, ID: obs.ID, Scope: obs.Scope, Source: observationRecallSource, Score: score, EvidenceIDs: []string{obs.ID}},
+		Ref:         domain.CandidateRef{Kind: domain.GraphNodeObservation, ID: obs.ID, Scope: obs.Scope, Source: observationRecallSource, Score: score, EvidenceIDs: []string{obs.ID}, DiscoverySignals: signals},
 		Observation: obs,
 		Evidence:    []domain.EvidenceRef{ref},
 	}
@@ -271,6 +247,13 @@ func observationPrimarySpan(obs domain.Observation) domain.ObservationSpan {
 		return obs.Spans[0]
 	}
 	return domain.ObservationSpan{}
+}
+
+func observationRecallObservedAt(obs domain.Observation) time.Time {
+	if !obs.ObservedAt.IsZero() {
+		return obs.ObservedAt
+	}
+	return obs.ReceivedAt
 }
 
 func observationRecallTextKey(text string) string {
@@ -337,13 +320,6 @@ func observationRecallExactEvidenceRoute(route domain.IntentRoute) bool {
 	default:
 		return false
 	}
-}
-
-func observationRecallMinScoreForState(state *read.ReadState) float64 {
-	if state != nil && len(state.MergedItems) >= observationRecallUnderCount {
-		return observationRecallStrictScore
-	}
-	return observationRecallMinScore
 }
 
 var (

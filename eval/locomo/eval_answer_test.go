@@ -116,9 +116,9 @@ func TestBuildPredictionUsesSystemAndUserMessages(t *testing.T) {
 	answerLLM := &answerFakeLLM{}
 	artifacts := []runners.RecallArtifact{{Content: "legacy fallback content"}}
 	answerContext := runners.AnswerContext{
-		Body:           "[#1]\n  content: \"Alice went hiking.\"",
-		Format:         "flowcraftv2_structured_facts",
-		PromptTemplate: "backend system prompt",
+		Body:         "[#1]\n  content: \"Alice went hiking.\"",
+		Format:       "flowcraftv2_structured_facts",
+		SystemPrompt: "backend system prompt",
 	}
 
 	pred, prompt, err := buildPrediction(context.Background(), Options{AnswerLLM: answerLLM}, dataset.Question{
@@ -160,7 +160,7 @@ func TestBuildPredictionUsesSystemAndUserMessages(t *testing.T) {
 	if prompt.ContextFormat != answerContext.Format {
 		t.Fatalf("context format mismatch: %q", prompt.ContextFormat)
 	}
-	if prompt.Template != answerContext.PromptTemplate {
+	if prompt.Template != answerContext.SystemPrompt {
 		t.Fatalf("prompt template should come from backend context: %q", prompt.Template)
 	}
 }

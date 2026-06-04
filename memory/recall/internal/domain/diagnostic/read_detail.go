@@ -139,14 +139,6 @@ type LinkExpansionDetail struct {
 	AddedFactIDs      []string
 	AddedEvidenceRefs int
 
-	AdjacentBridgeRefs                  int
-	AdjacentBridgeObservationScans      int
-	AdjacentBridgeMatchedObservations   int
-	AdjacentBridgeMatchedObservationIDs []string
-	AdjacentBridgeScannedLinks          int
-	AdjacentBridgeAddedFacts            int
-	AdjacentBridgeAddedFactIDs          []string
-
 	Latency time.Duration
 	Err     string
 	Items   *[]CandidateSnapshot
@@ -169,24 +161,53 @@ func (PolicyFilterDetail) isStageDetail() {}
 // discovery/policy and before ranking. Discovery stages may add candidates, but
 // this stage owns the final read-side relevance score.
 type CandidateAssessmentDetail struct {
-	InputCount  int
-	OutputCount int
-	Dropped     int
-	Components  []CandidateAssessmentComponent
-	Items       *[]CandidateSnapshot
+	InputCount    int
+	Accepted      int
+	Rejected      int
+	OutputCount   int
+	Dropped       int
+	DropReasons   map[string]int
+	ScoreSummary  CandidateAssessmentScoreSummary
+	Components    []CandidateAssessmentComponent
+	Input         *[]CandidateSnapshot
+	AcceptedItems *[]CandidateSnapshot
+	RejectedItems *[]CandidateSnapshot
+	Items         *[]CandidateSnapshot
 }
 
 func (CandidateAssessmentDetail) isStageDetail() {}
 
+type CandidateAssessmentScoreSummary struct {
+	Count                int
+	RelevanceScoreMin    float64
+	RelevanceScoreMax    float64
+	RelevanceScoreAvg    float64
+	SemanticScoreAvg     float64
+	SupportScoreAvg      float64
+	StructuredScoreAvg   float64
+	LiteralScoreAvg      float64
+	SourcePriorAvg       float64
+	ConfidenceAvg        float64
+	HardConstraintPasses int
+}
+
 type CandidateAssessmentComponent struct {
-	ID              string
-	Kind            string
-	SupportScore    float64
-	StructuredScore float64
-	LiteralScore    float64
-	SourcePrior     float64
-	RelevanceScore  float64
-	DropReason      string
+	ID                 string
+	Kind               string
+	HardConstraintPass bool
+	SupportScore       float64
+	StructuredScore    float64
+	LiteralScore       float64
+	SemanticScore      float64
+	SourcePrior        float64
+	RelevanceScore     float64
+	Confidence         float64
+	Reason             string
+	DropReason         string
+	FallbackReason     string
+	EquivalenceGroup   string
+	SupportGroup       string
+	DiversityGroup     string
 }
 
 // RankDetail —— read/rank stage. Captures the post-fusion / pre-hits
@@ -343,6 +364,20 @@ func ExtractDrops(stages []StageDiagnostic) []CandidateDrop {
 		case "candidate_merge_and_materialize":
 			if d, ok := st.Detail.(CandidateMergeAndMaterializeDetail); ok {
 				out = append(out, d.Drops...)
+			}
+		case "candidate_assessment":
+			if d, ok := st.Detail.(CandidateAssessmentDetail); ok {
+				for _, component := range d.Components {
+					if component.DropReason == "" {
+						continue
+					}
+					out = append(out, CandidateDrop{
+						Stage:   "candidate_assessment",
+						Reason:  DropReason(component.DropReason),
+						FactID:  component.ID,
+						Details: component.Reason,
+					})
+				}
 			}
 		}
 	}

@@ -55,17 +55,21 @@ func compileTemporalFact(promotion promotionDecision, turnIndex map[string]port.
 		if promotion.Grounded.Proposal.Semantic == nil {
 			return domain.TemporalFact{}, false, "unsupported_schema"
 		}
-		return compileSemanticTemporalFact(promotion, turnIndex), true, ""
+		return compileSemanticTemporalFact(promotion, turnIndex)
 	}
 }
 
-func compileSemanticTemporalFact(promotion promotionDecision, turnIndex map[string]port.TurnContext) domain.TemporalFact {
+func compileSemanticTemporalFact(promotion promotionDecision, turnIndex map[string]port.TurnContext) (domain.TemporalFact, bool, string) {
 	grounded := promotion.Grounded
 	m := grounded.Proposal.Semantic
+	kind, ok := normaliseExtractedKind(m.Kind)
+	if !ok {
+		return domain.TemporalFact{}, false, "unsupported_schema"
+	}
 	fact := domain.TemporalFact{
 		Content:      grounded.SemanticContent,
 		EvidenceText: evidenceTextFromRefs(appendEvidenceRefs(grounded.SupportRefs, grounded.ConfirmationRefs), turnIndex),
-		Kind:         deterministicSemanticKind(grounded.Family),
+		Kind:         kind,
 		Subject:      groundedSemanticField(grounded.SemanticContent, m.Subject),
 		Predicate:    groundedSemanticField(grounded.SemanticContent, m.Predicate),
 		Object:       groundedSemanticField(grounded.SemanticContent, m.Object),
@@ -73,7 +77,7 @@ func compileSemanticTemporalFact(promotion promotionDecision, turnIndex map[stri
 		EvidenceRefs: appendEvidenceRefs(grounded.SupportRefs, grounded.ConfirmationRefs),
 	}
 	fact.SourceMessageIDs = sourceIDsFromEvidence(fact.EvidenceRefs)
-	return fact
+	return fact, true, ""
 }
 
 func groundedSemanticField(content, surface string) string {

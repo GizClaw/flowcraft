@@ -33,28 +33,33 @@ func (s *ContextPack) Run(ctx context.Context, state *read.ReadState) (diagnosti
 	detail := diagnostic.ContextPackDetail{Count: len(hits), InputCount: len(hits)}
 	captureSnapshots := snapshotsEnabled(state)
 	if captureSnapshots {
-		detail.Input = candidateSnapshotPtr(hitSnapshots(hits))
-		detail.Hits = candidateSnapshotPtr(hitSnapshots(hits))
+		detail.Input = candidateSnapshotPtr(hitSnapshotsWithScoreLabel(hits, scoreLabelRank))
+		detail.Hits = candidateSnapshotPtr(hitSnapshotsWithScoreLabel(hits, scoreLabelFinal))
 	}
-	hits, err := s.rerankHits(ctx, state, hits, &detail, captureSnapshots)
+	hits, reranked, err := s.rerankHits(ctx, state, hits, &detail, captureSnapshots)
 	if err != nil {
 		detail.Latency = time.Since(started)
 		return detail, err
 	}
 	state.Hits = hits
-	hits = packContextPackSelection(state, rankOutputHits, hits, &detail)
+	packOrderedHits := rankOutputHits
+	if reranked || len(hits) > 0 {
+		packOrderedHits = append([]domain.Hit(nil), hits...)
+	}
+	hits = packContextPackSelection(state, packOrderedHits, rankOutputHits, hits, reranked, &detail)
 	state.Hits = hits
+	recordContextPackPackedHits(state, hits)
 	detail.Count = len(hits)
 	if captureSnapshots {
-		detail.Hits = candidateSnapshotPtr(hitSnapshots(hits))
+		detail.Hits = candidateSnapshotPtr(hitSnapshotsWithScoreLabel(hits, scoreLabelFinal))
 	}
 	detail.Latency = time.Since(started)
 	return detail, nil
 }
 
-func (s *ContextPack) rerankHits(ctx context.Context, state *read.ReadState, hits []domain.Hit, detail *diagnostic.ContextPackDetail, captureSnapshots bool) ([]domain.Hit, error) {
+func (s *ContextPack) rerankHits(ctx context.Context, state *read.ReadState, hits []domain.Hit, detail *diagnostic.ContextPackDetail, captureSnapshots bool) ([]domain.Hit, bool, error) {
 	if s.reranker == nil || len(hits) == 0 {
-		return hits, nil
+		return hits, false, nil
 	}
 	rerankStarted := time.Now()
 	intent := contextPackIntent(state)
@@ -69,15 +74,73 @@ func (s *ContextPack) rerankHits(ctx context.Context, state *read.ReadState, hit
 	if err != nil {
 		detail.RerankErr = err.Error()
 		if isContextError(err) {
-			return hits, err
+			return hits, false, err
 		}
-		return hits, nil
+		return hits, false, nil
 	}
 	detail.Reranked = len(reranked)
+	reranked = filterContextPackRerankedHits(hits, reranked)
+	detail.Reranked = len(reranked)
 	if captureSnapshots {
-		detail.RerankedHits = candidateSnapshotPtr(hitSnapshots(reranked))
+		detail.RerankedHits = candidateSnapshotPtr(hitSnapshotsWithScoreLabel(reranked, scoreLabelRank))
 	}
-	return reranked, nil
+	return reranked, len(reranked) > 0, nil
+}
+
+func filterContextPackRerankedHits(input []domain.Hit, reranked []domain.Hit) []domain.Hit {
+	if len(reranked) == 0 {
+		return nil
+	}
+	allowed := contextPackAllowedHitKeys(input)
+	if len(allowed) == 0 {
+		return nil
+	}
+	out := make([]domain.Hit, 0, len(reranked))
+	seen := make(map[string]struct{}, len(reranked))
+	for _, hit := range reranked {
+		key := contextPackHitKey(hit)
+		if key == "" {
+			continue
+		}
+		if _, ok := allowed[key]; !ok {
+			continue
+		}
+		if _, dup := seen[key]; dup {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, hit)
+	}
+	return out
+}
+
+func contextPackAllowedHitKeys(input []domain.Hit) map[string]struct{} {
+	allowed := make(map[string]struct{}, len(input))
+	add := func(hit domain.Hit) {
+		if key := contextPackHitKey(hit); key != "" {
+			allowed[key] = struct{}{}
+		}
+	}
+	for _, hit := range input {
+		add(hit)
+	}
+	return allowed
+}
+
+func contextPackHitKey(hit domain.Hit) string {
+	if hit.Ref.Kind != "" && hit.Ref.ID != "" {
+		return string(hit.Ref.Kind) + ":" + hit.Ref.ID
+	}
+	if hit.Fact.ID != "" {
+		return string(domain.GraphNodeAssertion) + ":" + hit.Fact.ID
+	}
+	if hit.Observation.ID != "" {
+		return string(domain.GraphNodeObservation) + ":" + hit.Observation.ID
+	}
+	if hit.Link.ID != "" {
+		return string(domain.GraphNodeLink) + ":" + hit.Link.ID
+	}
+	return ""
 }
 
 func contextPackIntent(state *read.ReadState) domain.QueryIntent {
@@ -159,7 +222,7 @@ func (s *BuildGroundedHits) Run(ctx context.Context, state *read.ReadState) (dia
 	hits := state.Hits
 	detail := diagnostic.BuildGroundedHitsDetail{InputCount: len(hits)}
 	if snapshotsEnabled(state) {
-		detail.Input = candidateSnapshotPtr(hitSnapshots(hits))
+		detail.Input = candidateSnapshotPtr(hitSnapshotsWithScoreLabel(hits, scoreLabelFinal))
 	}
 	hits = groundHitsWithSupportingEvidence(features, now, hits)
 	queryScope := state.Scope
@@ -171,7 +234,7 @@ func (s *BuildGroundedHits) Run(ctx context.Context, state *read.ReadState) (dia
 	detail.Count = len(hits)
 	detail.Latency = time.Since(started)
 	if snapshotsEnabled(state) {
-		detail.Hits = candidateSnapshotPtr(hitSnapshots(hits))
+		detail.Hits = candidateSnapshotPtr(hitSnapshotsWithScoreLabel(hits, scoreLabelFinal))
 	}
 	return detail, nil
 }
@@ -179,7 +242,7 @@ func (s *BuildGroundedHits) Run(ctx context.Context, state *read.ReadState) (dia
 func (s *BuildGroundedHits) buildEvidencePacket(ctx context.Context, queryScope domain.Scope, hit domain.Hit) domain.EvidencePacket {
 	packet := domain.EvidencePacket{
 		Primary:      hit.Ref,
-		EvidenceRefs: append([]domain.EvidenceRef(nil), hit.Evidence...),
+		EvidenceRefs: cappedEvidenceRefs(hit.Evidence, maxHitEvidenceRefs),
 	}
 	if packet.Primary.ID == "" && packet.Primary.Kind == "" {
 		packet.Primary = domain.CandidateRef{Kind: domain.GraphNodeAssertion, ID: hit.Fact.ID, Scope: hit.Fact.Scope}
@@ -207,6 +270,9 @@ func (s *BuildGroundedHits) buildEvidencePacket(ctx context.Context, queryScope 
 	}
 	if s.observations != nil {
 		for _, ref := range hit.Evidence {
+			if len(packet.Observations) >= maxEvidencePacketObservations {
+				break
+			}
 			if ref.ObservationID == "" {
 				continue
 			}
@@ -234,6 +300,9 @@ func (s *BuildGroundedHits) buildEvidencePacket(ctx context.Context, queryScope 
 				}
 			}
 			for _, link := range links {
+				if len(packet.Links) >= maxEvidencePacketLinks {
+					break
+				}
 				if queryScope.RuntimeID != "" && !domain.ScopeVisible(queryScope, link.Scope) {
 					continue
 				}
@@ -247,6 +316,9 @@ func (s *BuildGroundedHits) buildEvidencePacket(ctx context.Context, queryScope 
 				seenLinks[link.ID] = struct{}{}
 				if s.observations != nil {
 					for _, ref := range link.EvidenceRefs {
+						if len(packet.Observations) >= maxEvidencePacketObservations {
+							break
+						}
 						if ref.ObservationID == "" {
 							continue
 						}
@@ -270,6 +342,13 @@ func (s *BuildGroundedHits) buildEvidencePacket(ctx context.Context, queryScope 
 	return packet
 }
 
+func cappedEvidenceRefs(refs []domain.EvidenceRef, limit int) []domain.EvidenceRef {
+	if limit <= 0 || len(refs) <= limit {
+		return append([]domain.EvidenceRef(nil), refs...)
+	}
+	return append([]domain.EvidenceRef(nil), refs[:limit]...)
+}
+
 func packetScope(hit domain.Hit) domain.Scope {
 	if hit.Fact.Scope.RuntimeID != "" {
 		return hit.Fact.Scope
@@ -287,22 +366,32 @@ func contextPackInitialHits(state *read.ReadState) []domain.Hit {
 	if state == nil {
 		return nil
 	}
-	return hitsFromItems(state.Ranked)
+	return hitsFromItems(state, state.Ranked)
 }
 
-func packContextPackSelection(state *read.ReadState, rankOutputHits, hits []domain.Hit, detail *diagnostic.ContextPackDetail) []domain.Hit {
+func packContextPackSelection(state *read.ReadState, orderedHits, rankOutputHits, hits []domain.Hit, reranked bool, detail *diagnostic.ContextPackDetail) []domain.Hit {
 	if state == nil || state.Plan == nil || state.Plan.TotalCap <= 0 {
 		return hits
 	}
 	contextPackingStarted := time.Now()
-	poolHits := hitsFromItems(contextPackingPool(state))
+	poolHits := hitsFromItems(state, contextPackingPool(state))
+	if reranked {
+		poolHits = mergeContextPackPool(rankOutputHits, poolHits)
+	}
 	if len(hits) > 0 {
 		poolHits = mergeContextPackPool(hits, poolHits)
 	}
-	out, trace := packRecallContextWithIntentTrace(state.Plan.Intent, rankOutputHits, poolHits, state.Plan.TotalCap)
+	var out []domain.Hit
+	var trace []diagnostic.CandidateSnapshot
+	if reranked {
+		out, trace = packRerankedRecallContextWithIntentTrace(state.Plan.Intent, orderedHits, poolHits, state.Plan.TotalCap)
+	} else {
+		out, trace = packRecallContextWithIntentTrace(state.Plan.Intent, orderedHits, poolHits, state.Plan.TotalCap)
+	}
 	detail.ContextPackingLatency = time.Since(contextPackingStarted)
 	if len(trace) > 0 {
 		detail.PackTrace = candidateSnapshotPtr(trace)
+		recordContextPackTraceDecisions(state, trace)
 	}
 	return out
 }
@@ -315,23 +404,13 @@ func contextPackNow(state *read.ReadState) time.Time {
 }
 
 func contextPackingPool(state *read.ReadState) []domain.ContextItem {
-	if state == nil {
+	if state == nil || !state.AssessmentApplied {
 		return nil
 	}
-	if len(state.AfterTrust) > 0 {
-		return state.AfterTrust
-	}
-	if state.PolicyFiltered || state.AssessmentApplied {
-		return state.AfterTrust
-	}
-	if len(state.MergedItems) > 0 {
-		return state.MergedItems
-	}
-	read.PromoteMergedItems(state)
-	return state.MergedItems
+	return state.AssessedItems
 }
 
-func hitsFromItems(items []domain.ContextItem) []domain.Hit {
+func hitsFromItems(state *read.ReadState, items []domain.ContextItem) []domain.Hit {
 	hits := make([]domain.Hit, 0, len(items))
 	for _, it := range items {
 		hits = append(hits, domain.Hit{
@@ -340,11 +419,53 @@ func hitsFromItems(items []domain.ContextItem) []domain.Hit {
 			Observation: it.Observation,
 			Link:        it.Link,
 			Evidence:    append([]domain.EvidenceRef(nil), it.Evidence...),
-			Score:       it.Candidate.Score,
+			Score:       contextItemHitScore(state, it),
 			Sources:     hitSources(it.Candidate),
 		})
 	}
 	return hits
+}
+
+func contextItemHitScore(state *read.ReadState, item domain.ContextItem) float64 {
+	if score, ok := state.CandidateRankScore(item); ok {
+		return score
+	}
+	if score, ok := state.CandidateAssessmentScore(item); ok {
+		return score
+	}
+	return 0
+}
+
+func recordContextPackPackedHits(state *read.ReadState, hits []domain.Hit) {
+	if state == nil {
+		return
+	}
+	for i, hit := range hits {
+		if id := contextPackTraceFactID(hit); id != "" {
+			state.RecordCandidatePack(id, domain.PackDecision{Packed: true, Reason: "packed", OutputRank: i + 1})
+		}
+	}
+}
+
+func recordContextPackTraceDecisions(state *read.ReadState, trace []diagnostic.CandidateSnapshot) {
+	if state == nil {
+		return
+	}
+	for _, snap := range trace {
+		if snap.FactID == "" {
+			continue
+		}
+		decision := domain.PackDecision{
+			Packed:     snap.ContextPackRank > 0,
+			Reason:     snap.DroppedReason,
+			InputRank:  snap.RankOutputRank,
+			OutputRank: snap.ContextPackRank,
+		}
+		if decision.Packed && decision.Reason == "" {
+			decision.Reason = "packed"
+		}
+		state.RecordCandidatePack(snap.FactID, decision)
+	}
 }
 
 func contextItemRef(item domain.ContextItem) domain.CandidateRef {
@@ -354,7 +475,11 @@ func contextItemRef(item domain.ContextItem) domain.CandidateRef {
 	return item.Candidate
 }
 
-const maxHitEvidenceRefs = 3
+const (
+	maxHitEvidenceRefs            = 3
+	maxEvidencePacketLinks        = 8
+	maxEvidencePacketObservations = 4
+)
 
 func queryFeaturesFromState(state *read.ReadState) domain.QueryFeatures {
 	if state != nil && state.Intent != nil && !state.Intent.Features.IsZero() {

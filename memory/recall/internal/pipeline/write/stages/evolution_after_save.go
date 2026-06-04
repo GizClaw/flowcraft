@@ -11,9 +11,8 @@ import (
 )
 
 // EvolutionAfterSave runs the post-Save best-effort evolution pass
-// (reinforce / decay / repair). Errors are surfaced as a
-// Status=failed diagnostic but never abort Save, mirroring legacy
-// runEvolutionAfterSave behaviour.
+// (reinforce / decay / repair). Errors are surfaced through the
+// pipeline's degraded stage diagnostic but never abort Save.
 //
 // The stage implements Conditional so a nil EvolutionRunner is
 // reported as Status=Skipped (no diagnostic Detail).
@@ -47,13 +46,9 @@ func (s *EvolutionAfterSave) Skip(_ context.Context, state *write.WriteState) (b
 // itself has already committed, so a runner failure must NOT abort
 // the pipeline or trigger compensation. The error is wrapped via
 // pipeline.BestEffort so the framework records the stage as
-// Status=Degraded; state.EvolutionErr is kept populated for
-// backward-compatible callers that read it directly.
+// Status=Degraded.
 func (s *EvolutionAfterSave) Run(ctx context.Context, state *write.WriteState) (diagnostic.StageDetail, error) {
 	err := s.runner.AfterSave(ctx, state.Scope, state.AppendedFactIDs)
-	if err != nil {
-		state.EvolutionErr = err
-	}
 	return diagnostic.EvolutionAfterSaveDetail{}, pipeline.BestEffort(err)
 }
 

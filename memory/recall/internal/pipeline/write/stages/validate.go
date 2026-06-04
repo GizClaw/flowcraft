@@ -20,10 +20,8 @@ import (
 
 // Validate is the first stage of the write pipeline. It rejects
 // permanently malformed inputs (missing RuntimeID) before any side
-// effect happens. The legacy runSave performed the same check inline
-// and returned an errdefs.Validation error — we preserve that
-// classification so HTTP/gRPC shims still map to 400 without text
-// matching.
+// effect happens. Validation failures return errdefs.Validation so
+// HTTP/gRPC adapters map to 400 without text matching.
 type Validate struct{}
 
 // NewValidate returns a Validate stage instance. The stage is
@@ -33,9 +31,9 @@ func NewValidate() *Validate { return &Validate{} }
 // Name implements pipeline.Stage.
 func (Validate) Name() string { return "validate" }
 
-// Run implements pipeline.Stage. The Detail mirrors the legacy
-// rejection summary so diagnostics consumers can attribute "input
-// turn count" and "permanent reject" counts without a second pass.
+// Run implements pipeline.Stage. The Detail carries rejection summary fields so
+// diagnostics consumers can attribute "input turn count" and "permanent reject"
+// counts without a second pass.
 //
 // Per-fact validation rules:
 //
@@ -54,12 +52,9 @@ func (Validate) Run(_ context.Context, state *write.WriteState) (diagnostic.Stag
 	}
 	for i, f := range state.Facts {
 		// KindEpisode is produced exclusively by the async episode lane
-		// (build_episode stage stamps Origin.Kind=episode). Accepting a
-		// caller-supplied episode fact in the sync path would route it
-		// through ProjectRequired, which doesn't honour
-		// KindFilteredProjection — episodes would land in retrieval /
-		// entity / profile and trigger embedder calls. Reject at the
-		// boundary instead.
+		// (build_episode stage stamps Origin.Kind=episode). Reject caller-
+		// supplied episode facts at the synchronous Save boundary so raw
+		// episodes only flow through the dedicated episode projection path.
 		if f.Kind == domain.KindEpisode {
 			detail.Rejected = 1
 			detail.RejectReason = "KindEpisode is reserved for the async episode lane"

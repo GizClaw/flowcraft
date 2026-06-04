@@ -180,11 +180,11 @@ type ContextItem struct {
 
 // Hit is one recall winner. Evidence is the grounded evidence slice exposed to
 // consumers: candidate-matched refs come first, followed by bounded supporting
-// refs from the same fact. Score is the fused score after deterministic rank
-// adjustments such as confidence, feedback, and decay. Sources lists every
-// CandidateSource that surfaced this fact, in the order fusion saw them;
-// consumers can read it for diagnostics and explainability. An empty Sources
-// slice means the candidate carried no provenance metadata.
+// refs from the same fact. Score is the final rank score; discovery and
+// assessment scores are kept in stage diagnostics and CandidateEnvelope.
+// Sources lists every CandidateSource that surfaced this fact, in the order
+// fusion saw them; consumers can read it for diagnostics and explainability. An
+// empty Sources slice means the candidate carried no provenance metadata.
 type Hit struct {
 	Ref            CandidateRef
 	Fact           TemporalFact

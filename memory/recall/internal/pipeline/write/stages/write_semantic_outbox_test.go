@@ -94,22 +94,22 @@ func TestWriteSemanticOutbox_HappyPathEnqueuesAndFlipsPending(t *testing.T) {
 func TestWriteSemanticOutbox_EnqueueClonesCallerSlices(t *testing.T) {
 	q := &fakeQueue{}
 	s := stages.NewWriteSemanticOutbox(q, nil)
-	turns := []domain.TurnContext{{ID: "t1", Text: "hello"}}
+	sourceSpans := []domain.SourceEvidenceSpan{{ObservationID: "obs-1", SpanID: "span-1", Text: "hello"}}
 	state := &write.WriteState{
-		Scope:          domain.Scope{RuntimeID: "rt"},
-		AsyncRequestID: "areq-1",
-		EpisodeFacts:   []domain.TemporalFact{{ID: "epi-1"}},
-		Turns:          turns,
+		Scope:               domain.Scope{RuntimeID: "rt"},
+		AsyncRequestID:      "areq-1",
+		EpisodeFacts:        []domain.TemporalFact{{ID: "epi-1"}},
+		SourceEvidenceSpans: sourceSpans,
 	}
 	if _, err := s.Run(context.Background(), state); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	turns[0].Text = "mutated"
+	sourceSpans[0].Text = "mutated"
 	if len(q.enqueued) != 1 {
 		t.Fatalf("enqueued = %d, want 1", len(q.enqueued))
 	}
-	if q.enqueued[0].TurnsSnapshot[0].Text != "hello" {
-		t.Errorf("queued TurnsSnapshot = %q, want hello", q.enqueued[0].TurnsSnapshot[0].Text)
+	if q.enqueued[0].SourceEvidenceSpans[0].Text != "hello" {
+		t.Errorf("queued SourceEvidenceSpans = %q, want hello", q.enqueued[0].SourceEvidenceSpans[0].Text)
 	}
 }
 

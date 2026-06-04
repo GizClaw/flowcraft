@@ -10,6 +10,8 @@ import (
 	"github.com/GizClaw/flowcraft/memory/recall/internal/domain"
 	"github.com/GizClaw/flowcraft/memory/recall/internal/domain/diagnostic"
 	"github.com/GizClaw/flowcraft/memory/recall/internal/pipeline/read"
+	linkstore "github.com/GizClaw/flowcraft/memory/recall/internal/store/link"
+	observationstore "github.com/GizClaw/flowcraft/memory/recall/internal/store/observation"
 )
 
 type reorderReranker struct{}
@@ -19,6 +21,37 @@ func (reorderReranker) Rerank(_ context.Context, _ string, hits []domain.Hit) ([
 		return hits, nil
 	}
 	return []domain.Hit{hits[1], hits[0]}, nil
+}
+
+type factIDOrderReranker struct {
+	ids  []string
+	only bool
+}
+
+func (r factIDOrderReranker) Rerank(_ context.Context, _ string, hits []domain.Hit) ([]domain.Hit, error) {
+	byID := make(map[string]domain.Hit, len(hits))
+	for _, hit := range hits {
+		byID[hit.Fact.ID] = hit
+	}
+	out := make([]domain.Hit, 0, len(hits))
+	seen := make(map[string]struct{}, len(hits))
+	for _, id := range r.ids {
+		hit, ok := byID[id]
+		if !ok {
+			continue
+		}
+		out = append(out, hit)
+		seen[id] = struct{}{}
+	}
+	if !r.only {
+		for _, hit := range hits {
+			if _, ok := seen[hit.Fact.ID]; ok {
+				continue
+			}
+			out = append(out, hit)
+		}
+	}
+	return out, nil
 }
 
 type inspectEvidenceReranker struct {
@@ -37,6 +70,16 @@ type cancelReranker struct{}
 
 func (cancelReranker) Rerank(_ context.Context, _ string, hits []domain.Hit) ([]domain.Hit, error) {
 	return hits, context.Canceled
+}
+
+type injectingReranker struct {
+	injected domain.Hit
+}
+
+func (r injectingReranker) Rerank(_ context.Context, _ string, hits []domain.Hit) ([]domain.Hit, error) {
+	out := []domain.Hit{r.injected}
+	out = append(out, hits...)
+	return out, nil
 }
 
 func TestContextPackSnapshotsInputRerankedAndFinal(t *testing.T) {
@@ -70,14 +113,117 @@ func TestContextPackSnapshotsInputRerankedAndFinal(t *testing.T) {
 	if got.RerankedHits == nil || len(*got.RerankedHits) != 2 || (*got.RerankedHits)[0].FactID != "distractor" {
 		t.Fatalf("reranked snapshots = %+v", got.RerankedHits)
 	}
-	if got.Hits == nil || len(*got.Hits) != 1 || (*got.Hits)[0].FactID != "evidence" {
+	if got.Hits == nil || len(*got.Hits) != 1 || (*got.Hits)[0].FactID != "distractor" {
 		t.Fatalf("final snapshots = %+v", got.Hits)
 	}
-	if len(state.Hits) != 1 || state.Hits[0].Fact.ID != "evidence" {
+	if len(state.Hits) != 1 || state.Hits[0].Fact.ID != "distractor" {
 		t.Fatalf("state hits = %+v", state.Hits)
 	}
-	if len(state.Hits[0].Evidence) != 1 || state.Hits[0].Evidence[0].Text != "selected evidence" {
+	if len(state.Hits[0].Evidence) != 1 || state.Hits[0].Evidence[0].Text != "selected distractor" {
 		t.Fatalf("hit evidence should survive context_pack/rerank: %+v", state.Hits[0].Evidence)
+	}
+}
+
+func TestContextPackLimitOneUsesRerankedTopHit(t *testing.T) {
+	stage := NewContextPack(reorderReranker{})
+	state := &read.ReadState{
+		Plan:  &domain.QueryPlan{TotalCap: 1},
+		Query: domain.Query{Text: "where is the capsule"},
+		Ranked: []domain.ContextItem{
+			contextItemWithSource("rank-top", "e1", "retrieval", 0.50, "The capsule status is ready."),
+			contextItemWithSource("reranked-top", "e2", "retrieval", 0.40, "The capsule is in the blue box."),
+		},
+	}
+
+	if _, err := stage.Run(context.Background(), state); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if len(state.Hits) != 1 || state.Hits[0].Fact.ID != "reranked-top" {
+		t.Fatalf("limit=1 should keep reranker top hit, got %+v", hitFactIDs(state.Hits))
+	}
+}
+
+func TestContextPackRerankedTopBeatsHigherScoredOriginalRankTop(t *testing.T) {
+	stage := NewContextPack(reorderReranker{})
+	state := &read.ReadState{
+		Plan:  &domain.QueryPlan{TotalCap: 1},
+		Query: domain.Query{Text: "where is the capsule"},
+		Ranked: []domain.ContextItem{
+			contextItemWithSource("high-score-rank-top", "e1", "retrieval", 0.99, "The capsule calibration is due."),
+			contextItemWithSource("low-score-reranked-top", "e2", "retrieval", 0.01, "The capsule is in the blue box."),
+		},
+	}
+
+	if _, err := stage.Run(context.Background(), state); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if len(state.Hits) != 1 || state.Hits[0].Fact.ID != "low-score-reranked-top" {
+		t.Fatalf("higher original rank score should not override reranker top hit, got %+v", hitFactIDs(state.Hits))
+	}
+}
+
+func TestContextPackRerankerControlsFinalTopKPrefix(t *testing.T) {
+	cases := []struct {
+		name string
+		cap  int
+		want []string
+	}{
+		{name: "topK 2", cap: 2, want: []string{"reranked-1", "reranked-2"}},
+		{name: "topK 3", cap: 3, want: []string{"reranked-1", "reranked-2", "reranked-3"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			stage := NewContextPack(factIDOrderReranker{ids: []string{
+				"reranked-1",
+				"reranked-2",
+				"reranked-3",
+				"original-high-1",
+				"original-high-2",
+			}})
+			state := &read.ReadState{
+				Plan:  &domain.QueryPlan{TotalCap: tc.cap},
+				Query: domain.Query{Text: "where is the capsule"},
+				Ranked: []domain.ContextItem{
+					contextItemWithSource("original-high-1", "e1", "retrieval", 0.99, "The capsule calibration is due."),
+					contextItemWithSource("original-high-2", "e2", "retrieval", 0.98, "The capsule maintenance log is nearby."),
+					contextItemWithSource("reranked-1", "e3", "retrieval", 0.03, "The capsule is in the blue box."),
+					contextItemWithSource("reranked-2", "e4", "retrieval", 0.02, "The blue box is under the desk."),
+					contextItemWithSource("reranked-3", "e5", "retrieval", 0.01, "The desk is in the workshop."),
+				},
+			}
+
+			if _, err := stage.Run(context.Background(), state); err != nil {
+				t.Fatalf("Run returned error: %v", err)
+			}
+			if got := hitFactIDs(state.Hits); !sameStringSlice(got, tc.want) {
+				t.Fatalf("reranker prefix should control final topK, got %+v want %+v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestContextPackFillsAfterShortRerankedPrefix(t *testing.T) {
+	stage := NewContextPack(factIDOrderReranker{ids: []string{
+		"reranked-1",
+		"reranked-2",
+	}, only: true})
+	state := &read.ReadState{
+		Plan:  &domain.QueryPlan{TotalCap: 3},
+		Query: domain.Query{Text: "where is the capsule"},
+		Ranked: []domain.ContextItem{
+			contextItemWithSource("original-high-1", "e1", "retrieval", 0.99, "The capsule calibration is due."),
+			contextItemWithSource("original-high-2", "e2", "retrieval", 0.98, "The capsule maintenance log is nearby."),
+			contextItemWithSource("reranked-1", "e3", "retrieval", 0.03, "The capsule is in the blue box."),
+			contextItemWithSource("reranked-2", "e4", "retrieval", 0.02, "The blue box is under the desk."),
+		},
+	}
+
+	if _, err := stage.Run(context.Background(), state); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	want := []string{"reranked-1", "reranked-2", "original-high-1"}
+	if got := hitFactIDs(state.Hits); !sameStringSlice(got, want) {
+		t.Fatalf("short reranked prefix should be filled without reordering it, got %+v want %+v", got, want)
 	}
 }
 
@@ -116,6 +262,90 @@ func TestBuildGroundedHitsDoesNotAffectRerankerInput(t *testing.T) {
 	}
 }
 
+func TestContextPackFiltersRerankerInjectedUnassessedHit(t *testing.T) {
+	injected := domain.Hit{
+		Ref:      domain.CandidateRef{Kind: domain.GraphNodeAssertion, ID: "unassessed"},
+		Fact:     domain.TemporalFact{ID: "unassessed", Kind: domain.KindState, Content: "This candidate did not pass assessment."},
+		Evidence: []domain.EvidenceRef{{ID: "e2", Text: "unassessed evidence"}},
+		Score:    0.99,
+	}
+	stage := NewContextPack(injectingReranker{injected: injected})
+	state := &read.ReadState{
+		Plan:              &domain.QueryPlan{TotalCap: 1},
+		Query:             domain.Query{Text: "ZXQ capsule"},
+		AssessmentApplied: true,
+		Ranked: []domain.ContextItem{
+			contextItemWithSource("accepted", "e1", "retrieval", 0.42, "The ZXQ capsule is in the blue box."),
+		},
+		AssessedItems: []domain.ContextItem{
+			contextItemWithSource("accepted", "e1", "retrieval", 0.42, "The ZXQ capsule is in the blue box."),
+		},
+		MergedItems: []domain.ContextItem{
+			contextItemWithSource("accepted", "e1", "retrieval", 0.42, "The ZXQ capsule is in the blue box."),
+			contextItemWithSource("unassessed", "e2", "retrieval", 0.99, "This candidate did not pass assessment."),
+		},
+	}
+	state.EnsureTrace()
+
+	detail, err := stage.Run(context.Background(), state)
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if containsHitFact(state.Hits, "unassessed") {
+		t.Fatalf("reranker-injected unassessed hit must be filtered, got %+v", hitFactIDs(state.Hits))
+	}
+	if len(state.Hits) != 1 || state.Hits[0].Fact.ID != "accepted" {
+		t.Fatalf("accepted ranked hit should remain final, got %+v", state.Hits)
+	}
+	got := detail.(diagnostic.ContextPackDetail)
+	if got.RerankedHits != nil {
+		for _, snap := range *got.RerankedHits {
+			if snap.FactID == "unassessed" {
+				t.Fatalf("rerank snapshots must not surface filtered stranger hit: %+v", *got.RerankedHits)
+			}
+		}
+	}
+}
+
+func TestContextPackFiltersRerankerInjectedAssessedButNotInputHit(t *testing.T) {
+	injected := domain.Hit{
+		Ref:      domain.CandidateRef{Kind: domain.GraphNodeAssertion, ID: "assessed-not-input"},
+		Fact:     domain.TemporalFact{ID: "assessed-not-input", Kind: domain.KindState, Content: "This assessed item was not in reranker input."},
+		Evidence: []domain.EvidenceRef{{ID: "e2", Text: "assessed non-input evidence"}},
+		Score:    0.99,
+	}
+	stage := NewContextPack(injectingReranker{injected: injected})
+	state := &read.ReadState{
+		Plan:              &domain.QueryPlan{TotalCap: 1},
+		Query:             domain.Query{Text: "ZXQ capsule"},
+		AssessmentApplied: true,
+		Ranked: []domain.ContextItem{
+			contextItemWithSource("accepted", "e1", "retrieval", 0.42, "The ZXQ capsule is in the blue box."),
+		},
+		AssessedItems: []domain.ContextItem{
+			contextItemWithSource("accepted", "e1", "retrieval", 0.42, "The ZXQ capsule is in the blue box."),
+			contextItemWithSource("assessed-not-input", "e2", "retrieval", 0.99, "This assessed item was not ranked for reranker input."),
+		},
+	}
+	state.EnsureTrace()
+
+	detail, err := stage.Run(context.Background(), state)
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if containsHitFact(state.Hits, "assessed-not-input") {
+		t.Fatalf("reranker-injected assessed non-input hit must be filtered, got %+v", hitFactIDs(state.Hits))
+	}
+	got := detail.(diagnostic.ContextPackDetail)
+	if got.RerankedHits != nil {
+		for _, snap := range *got.RerankedHits {
+			if snap.FactID == "assessed-not-input" {
+				t.Fatalf("rerank snapshots must not surface assessed non-input hit: %+v", *got.RerankedHits)
+			}
+		}
+	}
+}
+
 func TestContextPackSkipsSnapshotsWithoutTrace(t *testing.T) {
 	stage := NewContextPack(reorderReranker{})
 	state := &read.ReadState{
@@ -144,7 +374,7 @@ func TestContextPackSkipsSnapshotsWithoutTrace(t *testing.T) {
 	if got.InputCount != 2 || got.Reranked != 2 || got.Count != 1 {
 		t.Fatalf("counts should still be populated: %+v", got)
 	}
-	if len(state.Hits) != 1 || state.Hits[0].Fact.ID != "evidence" {
+	if len(state.Hits) != 1 || state.Hits[0].Fact.ID != "distractor" {
 		t.Fatalf("state hits = %+v", state.Hits)
 	}
 }
@@ -195,7 +425,7 @@ func TestContextPackPropagatesRerankerContextCancellation(t *testing.T) {
 	}
 }
 
-func TestContextPackDedupesSameEvidence(t *testing.T) {
+func TestContextPackKeepsBoundedSameEvidenceSiblings(t *testing.T) {
 	stage := NewContextPack(nil)
 	state := &read.ReadState{
 		Plan:  &domain.QueryPlan{TotalCap: 2},
@@ -223,10 +453,10 @@ func TestContextPackDedupesSameEvidence(t *testing.T) {
 		t.Fatalf("Run returned error: %v", err)
 	}
 	if len(state.Hits) != 2 {
-		t.Fatalf("want two final hits after dedupe/fill, got %+v", state.Hits)
+		t.Fatalf("want two final hits after bounded same-evidence grouping, got %+v", state.Hits)
 	}
-	if state.Hits[0].Fact.ID != "a" || state.Hits[1].Fact.ID != "c" {
-		t.Fatalf("same evidence id should be deduped while preserving cap, got %+v", state.Hits)
+	if state.Hits[0].Fact.ID != "a" || state.Hits[1].Fact.ID != "b" {
+		t.Fatalf("assessed same-evidence siblings should be bounded but not semantically deduped, got %+v", state.Hits)
 	}
 }
 
@@ -263,7 +493,7 @@ func TestContextPackKeepsComplementarySiblingFactsFromSameEvidence(t *testing.T)
 	}
 }
 
-func TestContextPackRescuesComplementarySameMessageCluster(t *testing.T) {
+func TestContextPackDoesNotRescueSameMessageCluster(t *testing.T) {
 	stage := NewContextPack(nil)
 	state := &read.ReadState{
 		Plan:  &domain.QueryPlan{TotalCap: 3},
@@ -319,10 +549,10 @@ func TestContextPackRescuesComplementarySameMessageCluster(t *testing.T) {
 		t.Fatalf("Run returned error: %v", err)
 	}
 	if len(state.Hits) < 2 {
-		t.Fatalf("expected clustered hits, got %+v", state.Hits)
+		t.Fatalf("expected packed hits, got %+v", state.Hits)
 	}
-	if state.Hits[0].Fact.ID != "pots" || state.Hits[1].Fact.ID != "clay" {
-		t.Fatalf("cluster rescue should keep complementary same-message fact near anchor, got order %v", hitFactIDs(state.Hits))
+	if containsHitFact(state.Hits, "clay") {
+		t.Fatalf("same-message cluster should not rescue lower-ranked sibling, got order %v", hitFactIDs(state.Hits))
 	}
 }
 
@@ -344,7 +574,7 @@ func TestContextPackEvidenceGroupRequiresStructuredSourceID(t *testing.T) {
 	}
 }
 
-func TestContextPackClusterRescueRequiresStructuredRelation(t *testing.T) {
+func TestContextPackDoesNotUseSameMessageClusterAsRelevance(t *testing.T) {
 	stage := NewContextPack(nil)
 	state := &read.ReadState{
 		Plan:  &domain.QueryPlan{TotalCap: 2},
@@ -372,11 +602,11 @@ func TestContextPackClusterRescueRequiresStructuredRelation(t *testing.T) {
 		t.Fatalf("Run returned error: %v", err)
 	}
 	if len(state.Hits) != 2 || state.Hits[1].Fact.ID != "distractor" {
-		t.Fatalf("cluster rescue should require structured relation, got order %v", hitFactIDs(state.Hits))
+		t.Fatalf("same-message cluster should not rescue lower-scored noise, got order %v", hitFactIDs(state.Hits))
 	}
 }
 
-func TestContextPackSharedEvidenceRepresentativeDoesNotUseQuerySurface(t *testing.T) {
+func TestContextPackCandidatesKeepAssessedSameEvidenceSiblings(t *testing.T) {
 	input := newContextPackInput(3)
 	hits := []domain.Hit{
 		{
@@ -401,26 +631,27 @@ func TestContextPackSharedEvidenceRepresentativeDoesNotUseQuerySurface(t *testin
 	for _, cand := range candidates {
 		got[cand.hit.Fact.ID] = true
 	}
-	if got["new"] || !got["old"] {
-		t.Fatalf("shared-evidence representative should preserve highest-score fact without query-surface replacement, got %+v", candidates)
+	if !got["new"] || !got["old"] {
+		t.Fatalf("assessed same-evidence siblings should not be collapsed by query-surface heuristics, got %+v", candidates)
 	}
 }
 
 func TestContextPackKeepsSourceDiversity(t *testing.T) {
 	stage := NewContextPack(nil)
 	state := &read.ReadState{
-		Plan:  &domain.QueryPlan{TotalCap: 3},
-		Query: domain.Query{Text: "What did Alice say about woodworking class?"},
+		Plan:              &domain.QueryPlan{TotalCap: 3},
+		Query:             domain.Query{Text: "What did Alice say about woodworking class?"},
+		AssessmentApplied: true,
 		Ranked: []domain.ContextItem{
 			contextItemWithSource("retrieval-1", "e1", "retrieval", 0.90, "Alice discussed woodworking class logistics."),
 			contextItemWithSource("retrieval-2", "e2", "retrieval", 0.88, "Alice discussed woodworking class timing."),
 			contextItemWithSource("retrieval-3", "e3", "retrieval", 0.86, "Alice discussed woodworking class supplies."),
 		},
-		AfterTrust: []domain.ContextItem{
+		AssessedItems: []domain.ContextItem{
 			contextItemWithSource("retrieval-1", "e1", "retrieval", 0.90, "Alice discussed woodworking class logistics."),
 			contextItemWithSource("retrieval-2", "e2", "retrieval", 0.88, "Alice discussed woodworking class timing."),
 			contextItemWithSource("retrieval-3", "e3", "retrieval", 0.86, "Alice discussed woodworking class supplies."),
-			contextItemWithSource("graph-1", "e4", "graph", 0.84, "Alice discussed woodworking class project details."),
+			contextItemWithSource("graph-1", "e4", "graph", 0.87, "Alice discussed woodworking class project details."),
 		},
 	}
 
@@ -459,6 +690,42 @@ func TestContextPackDoesNotFallbackWhenTrustFilteredAllItems(t *testing.T) {
 	}
 }
 
+func TestContextPackDoesNotRescueRejectedCandidateFromMergedPool(t *testing.T) {
+	stage := NewContextPack(nil)
+	state := &read.ReadState{
+		Plan:              &domain.QueryPlan{TotalCap: 2},
+		Query:             domain.Query{Text: "ZXQ capsule"},
+		AssessmentApplied: true,
+		Ranked: []domain.ContextItem{
+			contextItemWithSource("accepted", "e1", "retrieval", 0.42, "The ZXQ capsule is in the blue box."),
+		},
+		AssessedItems: []domain.ContextItem{
+			contextItemWithSource("accepted", "e1", "retrieval", 0.42, "The ZXQ capsule is in the blue box."),
+		},
+		MergedItems: []domain.ContextItem{
+			contextItemWithSource("accepted", "e1", "retrieval", 0.42, "The ZXQ capsule is in the blue box."),
+			contextItemWithSource("rejected", "e2", "retrieval", 0.99, "The materials science course used a blue capsule."),
+		},
+	}
+	state.EnsureTrace()
+
+	detail, err := stage.Run(context.Background(), state)
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if containsHitFact(state.Hits, "rejected") {
+		t.Fatalf("context pack must not rescue candidate rejected before rank, got %+v", hitFactIDs(state.Hits))
+	}
+	got := detail.(diagnostic.ContextPackDetail)
+	if got.PackTrace != nil {
+		for _, snap := range *got.PackTrace {
+			if snap.FactID == "rejected" {
+				t.Fatalf("context pack trace must not surface rejected candidate as pack candidate: %+v", *got.PackTrace)
+			}
+		}
+	}
+}
+
 func TestContextPackPreservesRankOutputAnchorsBeforeDiversityFill(t *testing.T) {
 	ordered := []domain.Hit{
 		{
@@ -484,7 +751,7 @@ func TestContextPackPreservesRankOutputAnchorsBeforeDiversityFill(t *testing.T) 
 	}
 }
 
-func TestContextPackDoesNotAnchorEntityOnlyRankOutput(t *testing.T) {
+func TestContextPackDoesNotRouteFilterRankOutput(t *testing.T) {
 	ordered := []domain.Hit{
 		contextHitWithSources("entity-only", "e-entity", 0.40, []string{"entity"}),
 	}
@@ -494,8 +761,8 @@ func TestContextPackDoesNotAnchorEntityOnlyRankOutput(t *testing.T) {
 	}
 
 	got, trace := packRecallContextWithIntentTrace(domain.QueryIntent{}, ordered, pool, 1)
-	if len(got) != 1 || got[0].Fact.ID != "retrieved" {
-		t.Fatalf("entity-only rank_output should not become a final-pack anchor, got %+v", got)
+	if len(got) != 1 || got[0].Fact.ID != "entity-only" {
+		t.Fatalf("rank_output should not be route-filtered by context pack, got %+v", got)
 	}
 	var entityTrace diagnostic.CandidateSnapshot
 	for _, snap := range trace {
@@ -504,8 +771,8 @@ func TestContextPackDoesNotAnchorEntityOnlyRankOutput(t *testing.T) {
 			break
 		}
 	}
-	if entityTrace.RankOutputRank != 1 || entityTrace.ContextPackRank != 0 {
-		t.Fatalf("entity-only trace should show rank_output candidate dropped by pack, got %+v", entityTrace)
+	if entityTrace.RankOutputRank != 1 || entityTrace.ContextPackRank != 1 {
+		t.Fatalf("entity-only trace should show rank_output candidate packed, got %+v", entityTrace)
 	}
 }
 
@@ -656,6 +923,56 @@ func TestBuildGroundedHitsEvidenceIsCapped(t *testing.T) {
 	}
 }
 
+func TestBuildGroundedHitsEvidencePacketIsCapped(t *testing.T) {
+	ctx := context.Background()
+	scope := domain.Scope{RuntimeID: "rt", UserID: "u1"}
+	observations := observationstore.New()
+	links := linkstore.New()
+	hit := domain.Hit{
+		Ref:  domain.CandidateRef{Kind: domain.GraphNodeAssertion, ID: "fact", Scope: scope},
+		Fact: domain.TemporalFact{ID: "fact", Scope: scope, Kind: domain.KindState, Content: "Alice bought woodworking."},
+	}
+	for i := 0; i < maxEvidencePacketObservations+4; i++ {
+		obsID := "obs-" + strconv.Itoa(i)
+		hit.Evidence = append(hit.Evidence, domain.EvidenceRef{
+			ID:            "e-" + strconv.Itoa(i),
+			ObservationID: obsID,
+			Text:          "evidence " + strconv.Itoa(i),
+		})
+		if err := observations.Append(ctx, []domain.Observation{{
+			ID:    obsID,
+			Scope: scope,
+			Text:  "observation " + strconv.Itoa(i),
+		}}); err != nil {
+			t.Fatalf("observations.Append: %v", err)
+		}
+	}
+	var factLinks []domain.FactLink
+	for i := 0; i < maxEvidencePacketLinks+4; i++ {
+		factLinks = append(factLinks, domain.FactLink{
+			ID:    "link-" + strconv.Itoa(i),
+			Scope: scope,
+			Type:  domain.LinkSupports,
+			From:  domain.GraphNodeRef{Kind: domain.GraphNodeAssertion, ID: "fact"},
+			To:    domain.GraphNodeRef{Kind: domain.GraphNodeObservation, ID: "obs-" + strconv.Itoa(i)},
+		})
+	}
+	if err := links.Append(ctx, factLinks); err != nil {
+		t.Fatalf("links.Append: %v", err)
+	}
+
+	packet := NewBuildGroundedHits(WithGroundedHitGraph(observations, links)).buildEvidencePacket(ctx, scope, hit)
+	if len(packet.EvidenceRefs) != maxHitEvidenceRefs {
+		t.Fatalf("packet evidence refs = %d, want %d", len(packet.EvidenceRefs), maxHitEvidenceRefs)
+	}
+	if len(packet.Links) != maxEvidencePacketLinks {
+		t.Fatalf("packet links = %d, want %d", len(packet.Links), maxEvidencePacketLinks)
+	}
+	if len(packet.Observations) != maxEvidencePacketObservations {
+		t.Fatalf("packet observations = %d, want %d", len(packet.Observations), maxEvidencePacketObservations)
+	}
+}
+
 func TestBuildGroundedHitsAppendsSupportingRefsInSourceOrder(t *testing.T) {
 	refs := []domain.EvidenceRef{
 		{ID: "e1", Text: "Jordan has two cats named Oscar and Luna."},
@@ -736,6 +1053,27 @@ func hitFactIDs(hits []domain.Hit) []string {
 		out = append(out, hit.Fact.ID)
 	}
 	return out
+}
+
+func containsHitFact(hits []domain.Hit, id string) bool {
+	for _, hit := range hits {
+		if hit.Fact.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
+func sameStringSlice(got, want []string) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func contextItemWithSource(id, evidenceID, source string, score float64, text string) domain.ContextItem {

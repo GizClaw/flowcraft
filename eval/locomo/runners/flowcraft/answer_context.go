@@ -11,9 +11,9 @@ import (
 
 func structuredAnswerContext(hits []recallv1.Hit) runners.AnswerContext {
 	return runners.AnswerContext{
-		Body:           renderStructuredAnswerBody(hits),
-		Format:         "flowcraftv1_structured_entries",
-		PromptTemplate: structuredEntriesAnswerPrompt,
+		Body:         renderStructuredAnswerBody(hits),
+		Format:       "flowcraftv1_structured_entries",
+		SystemPrompt: structuredEntriesAnswerPrompt,
 	}
 }
 
@@ -51,7 +51,7 @@ func renderStructuredHit(b *strings.Builder, rank int, hit recallv1.Hit) {
 	writeKV(b, 1, "entry_id", e.ID)
 	writeKV(b, 1, "category", string(e.Category))
 	writeListKV(b, 1, "categories", e.Categories)
-	writeKV(b, 1, "score", fmt.Sprintf("%.6f", hit.Score))
+	writeKV(b, 1, "final_score", fmt.Sprintf("%.6f", hit.Score))
 	writeScoresKV(b, 1, "scores", hit.Scores)
 	writeKV(b, 1, "content", e.Content)
 	writeKV(b, 1, "subject", e.Subject)

@@ -10,9 +10,6 @@ func CloneAsyncSemanticJob(job AsyncSemanticJob) AsyncSemanticJob {
 	if len(job.EpisodeFactIDs) > 0 {
 		out.EpisodeFactIDs = append([]string(nil), job.EpisodeFactIDs...)
 	}
-	if len(job.TurnsSnapshot) > 0 {
-		out.TurnsSnapshot = append([]domain.TurnContext(nil), job.TurnsSnapshot...)
-	}
 	if len(job.SourceEvidenceSpans) > 0 {
 		out.SourceEvidenceSpans = append([]domain.SourceEvidenceSpan(nil), job.SourceEvidenceSpans...)
 	}

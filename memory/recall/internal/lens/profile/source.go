@@ -41,7 +41,7 @@ func (s *Source) Query(ctx context.Context, plan domain.QueryPlan) domain.Source
 	latency := time.Since(started)
 
 	truncated := false
-	if !agentSoftIsolationQuery(plan.Intent.Scope) && len(ids) > budget {
+	if len(ids) > budget {
 		ids = ids[:budget]
 		truncated = true
 	}
@@ -55,6 +55,12 @@ func (s *Source) Query(ctx context.Context, plan domain.QueryPlan) domain.Source
 			Source: s.Name(),
 			Rank:   i + 1,
 			Score:  s.BaseScore,
+			DiscoverySignals: []domain.DiscoverySignal{{
+				Source: s.Name(),
+				Kind:   "profile_slot",
+				Value:  "active_slot",
+				Score:  s.BaseScore,
+			}},
 		})
 	}
 	return domain.SourceResult{
@@ -63,8 +69,4 @@ func (s *Source) Query(ctx context.Context, plan domain.QueryPlan) domain.Source
 		Truncated:  truncated,
 		Latency:    latency,
 	}
-}
-
-func agentSoftIsolationQuery(scope domain.Scope) bool {
-	return scope.AgentID != ""
 }

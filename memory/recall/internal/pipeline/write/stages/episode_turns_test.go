@@ -11,9 +11,7 @@ import (
 )
 
 func TestSourceEvidenceSpansForJobRequiresCanonicalSpans(t *testing.T) {
-	job := port.AsyncSemanticJob{
-		TurnsSnapshot: []domain.TurnContext{{ID: "turn-stable", Text: "snapshot only"}},
-	}
+	job := port.AsyncSemanticJob{}
 	if _, err := stages.SourceEvidenceSpansForJob(context.Background(), episodeTurnObservationStore{}, domain.Scope{}, job); err == nil {
 		t.Fatal("SourceEvidenceSpansForJob err = nil, want canonical source evidence error")
 	}

@@ -70,7 +70,7 @@ func TestSource_MarksOverBudgetAsTruncated(t *testing.T) {
 	}
 }
 
-func TestSource_AgentScopedQueryRequestsUncappedProjectionResults(t *testing.T) {
+func TestSource_AgentScopedQueryHonorsBudget(t *testing.T) {
 	q := &fixedQuerier{ids: []string{"private-a", "private-b", "visible"}}
 	src := NewSource(q)
 	plan := domain.QueryPlan{
@@ -84,13 +84,13 @@ func TestSource_AgentScopedQueryRequestsUncappedProjectionResults(t *testing.T) 
 	}
 
 	got := src.Query(context.Background(), plan)
-	if q.lastLimit != 0 {
-		t.Fatalf("agent-scoped timeline query should defer cap until materialize, got projection limit %d", q.lastLimit)
+	if q.lastLimit != 2 {
+		t.Fatalf("agent-scoped timeline query should request budget+1, got projection limit %d", q.lastLimit)
 	}
-	if len(got.Candidates) != 3 {
-		t.Fatalf("agent-scoped timeline result should not be source-capped, got %+v", got.Candidates)
+	if len(got.Candidates) != 1 {
+		t.Fatalf("agent-scoped timeline source must honor budget, got %+v", got.Candidates)
 	}
-	if got.Truncated {
-		t.Fatal("agent-scoped timeline result should not be marked truncated before materialize")
+	if !got.Truncated {
+		t.Fatal("expected truncated timeline result for over-budget agent-scoped query")
 	}
 }

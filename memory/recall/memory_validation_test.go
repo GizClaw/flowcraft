@@ -9,7 +9,7 @@ import (
 
 // These tests pin the public-boundary error contract for sdk/recall
 // v2: Save / Recall / Forget input validation must be classifiable
-// as errdefs.Validation so HTTP/gRPC shims map to 400 without
+// as errdefs.Validation so HTTP/gRPC adapters map to 400 without
 // each caller pattern-matching error text.
 
 func TestSave_MissingRuntimeID_IsValidation(t *testing.T) {
@@ -48,7 +48,7 @@ func TestForget_EmptyFactID_IsValidation(t *testing.T) {
 		t.Fatalf("new: %v", err)
 	}
 	defer mem.Close()
-	err = mem.Forget(context.Background(), Scope{RuntimeID: "rt", UserID: "u"}, "")
+	err = mem.Forget(context.Background(), Scope{RuntimeID: "rt", UserID: "u"}, "", ForgetHard)
 	if err == nil {
 		t.Fatal("expected validation error")
 	}

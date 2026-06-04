@@ -18,8 +18,7 @@ import (
 // and rolling them back would be a no-op surface area.
 //
 // The stage implements Conditional so that an empty resolution
-// (HasWork==false) reports Status=Skipped, matching what legacy code
-// effectively did via the early-return short-circuit.
+// (HasWork==false) reports Status=Skipped.
 type ProjectOptional struct {
 	fanout *pipeline.Fanout
 }

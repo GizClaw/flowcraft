@@ -79,9 +79,7 @@ func TestProfile_DropsExpiredSlot(t *testing.T) {
 }
 
 // TestProfile_DropsClosed pins that a soft-forgotten (Closed) fact
-// must not survive in the profile projection cache. Before the
-// predicate split, the projection called IsActive (canonical only)
-// and would re-upsert a closed slot.
+// must not survive in the profile projection cache.
 func TestProfile_DropsClosed(t *testing.T) {
 	p := New()
 	ctx := context.Background()

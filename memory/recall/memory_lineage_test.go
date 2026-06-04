@@ -45,7 +45,7 @@ func TestLineage_SingleNodeReturnsRootOnly(t *testing.T) {
 // TestLineage_FollowsSupersedeChain saves two FactState entries
 // with the same merge key so the resolver closes the prior. Lineage
 // from the prior must surface both, with the successor at depth 1
-// relation=supersedes (reached via FindSupersededBy).
+// relation=supersedes (reached via CorrectedBy).
 func TestLineage_FollowsSupersedeChain(t *testing.T) {
 	mem, err := New()
 	if err != nil {

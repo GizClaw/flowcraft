@@ -19,19 +19,19 @@ type recallDumpRecord struct {
 	QID             string          `json:"qid"`
 	Query           string          `json:"query"`
 	Gold            []string        `json:"gold_answers,omitempty"`
-	Hits            []recallDumpHit `json:"hits,omitempty"` // legacy dump field
 	RecallArtifacts []recallDumpHit `json:"recall_artifacts,omitempty"`
 }
 
 type recallDumpHit struct {
-	ID       string   `json:"id"`
-	Rank     int      `json:"rank"`
-	Score    float64  `json:"score"`
-	Kind     string   `json:"kind,omitempty"`
-	Sources  []string `json:"sources,omitempty"`
-	Content  string   `json:"content"`
-	Evidence []string `json:"evidence_ids,omitempty"`
-	ValidAt  string   `json:"valid_from,omitempty"`
+	ID         string   `json:"id"`
+	Rank       int      `json:"rank"`
+	ScoreLabel string   `json:"score_label,omitempty"`
+	FinalScore float64  `json:"final_score,omitempty"`
+	Kind       string   `json:"kind,omitempty"`
+	Sources    []string `json:"sources,omitempty"`
+	Content    string   `json:"content"`
+	Evidence   []string `json:"evidence_ids,omitempty"`
+	ValidAt    string   `json:"valid_from,omitempty"`
 }
 
 type recallAnalysisRecord struct {
@@ -90,19 +90,59 @@ type stageAuditDumpRecord struct {
 }
 
 type stageAuditDumpStage struct {
-	Stage      string                    `json:"stage"`
-	Source     string                    `json:"source,omitempty"`
-	Status     string                    `json:"status,omitempty"`
-	Candidates []stageAuditDumpCandidate `json:"candidates,omitempty"`
+	Stage        string                          `json:"stage"`
+	Source       string                          `json:"source,omitempty"`
+	Status       string                          `json:"status,omitempty"`
+	InputCount   int                             `json:"input_count,omitempty"`
+	OutputCount  int                             `json:"output_count,omitempty"`
+	Dropped      int                             `json:"dropped,omitempty"`
+	DropReasons  map[string]int                  `json:"drop_reasons,omitempty"`
+	ScoreSummary *stageAuditAssessmentSummary    `json:"score_summary,omitempty"`
+	Candidates   []stageAuditDumpCandidate       `json:"candidates,omitempty"`
+	Assessment   []stageAuditAssessmentComponent `json:"assessment,omitempty"`
 }
 
 type stageAuditDumpCandidate struct {
-	FactID      string   `json:"fact_id,omitempty"`
-	Source      string   `json:"source,omitempty"`
-	Rank        int      `json:"rank,omitempty"`
-	Score       float64  `json:"score,omitempty"`
-	EvidenceIDs []string `json:"evidence_ids,omitempty"`
-	Sources     []string `json:"sources,omitempty"`
+	FactID          string   `json:"fact_id,omitempty"`
+	Source          string   `json:"source,omitempty"`
+	Rank            int      `json:"rank,omitempty"`
+	ScoreLabel      string   `json:"score_label,omitempty"`
+	DiscoveryScore  float64  `json:"discovery_score,omitempty"`
+	AssessmentScore float64  `json:"assessment_relevance_score,omitempty"`
+	RankScore       float64  `json:"rank_score,omitempty"`
+	FinalScore      float64  `json:"final_score,omitempty"`
+	EvidenceIDs     []string `json:"evidence_ids,omitempty"`
+	Sources         []string `json:"sources,omitempty"`
+}
+
+type stageAuditAssessmentComponent struct {
+	ID                 string  `json:"id,omitempty"`
+	Kind               string  `json:"kind,omitempty"`
+	HardConstraintPass bool    `json:"hard_constraint_pass,omitempty"`
+	SupportScore       float64 `json:"support_score,omitempty"`
+	StructuredScore    float64 `json:"structured_score,omitempty"`
+	LiteralScore       float64 `json:"literal_score,omitempty"`
+	SemanticScore      float64 `json:"semantic_score,omitempty"`
+	SourcePrior        float64 `json:"source_prior,omitempty"`
+	RelevanceScore     float64 `json:"relevance_score,omitempty"`
+	Confidence         float64 `json:"confidence,omitempty"`
+	Reason             string  `json:"reason,omitempty"`
+	DropReason         string  `json:"drop_reason,omitempty"`
+	FallbackReason     string  `json:"fallback_reason,omitempty"`
+}
+
+type stageAuditAssessmentSummary struct {
+	Count                int     `json:"count,omitempty"`
+	RelevanceScoreMin    float64 `json:"relevance_score_min,omitempty"`
+	RelevanceScoreMax    float64 `json:"relevance_score_max,omitempty"`
+	RelevanceScoreAvg    float64 `json:"relevance_score_avg,omitempty"`
+	SemanticScoreAvg     float64 `json:"semantic_score_avg,omitempty"`
+	SupportScoreAvg      float64 `json:"support_score_avg,omitempty"`
+	StructuredScoreAvg   float64 `json:"structured_score_avg,omitempty"`
+	LiteralScoreAvg      float64 `json:"literal_score_avg,omitempty"`
+	SourcePriorAvg       float64 `json:"source_prior_avg,omitempty"`
+	ConfidenceAvg        float64 `json:"confidence_avg,omitempty"`
+	HardConstraintPasses int     `json:"hard_constraint_passes,omitempty"`
 }
 
 func addLocomoAnalyzeRecall(parent *cobra.Command) {
@@ -201,7 +241,7 @@ func addLocomoAnalyzeRecall(parent *cobra.Command) {
 	cmd.Flags().StringVar(&baselinePath, "baseline", "", "optional baseline report JSON; marks regressed/improved flips by qid")
 	cmd.Flags().StringVar(&datasetPath, "dataset", "", "optional dataset JSONL; enables evidence-term audit")
 	cmd.Flags().StringVar(&factsPath, "facts", "", "optional --dump-facts JSONL; enables extract-vs-recall classification")
-	cmd.Flags().StringVar(&stageAuditPath, "stage-audit", "", "optional --dump-stage-audit JSONL; enables source/candidate/rank attribution")
+	cmd.Flags().StringVar(&stageAuditPath, "stage-audit", "", "optional --dump-stage-audit JSONL; enables source/candidate/assessment/rank attribution")
 	cmd.Flags().StringVar(&category, "category", "", "optional category tag filter, e.g. multi-hop")
 	cmd.Flags().BoolVar(&onlyErrors, "only-errors", false, "only emit questions whose current judge score is 0")
 	cmd.Flags().BoolVar(&onlyFlips, "only-flips", false, "only emit questions that changed judge outcome vs --baseline")
@@ -247,9 +287,6 @@ func loadRecallDump(path string) (map[string]recallDumpRecord, error) {
 		var rec recallDumpRecord
 		if err := json.Unmarshal([]byte(line), &rec); err != nil {
 			return nil, err
-		}
-		if len(rec.RecallArtifacts) > 0 {
-			rec.Hits = rec.RecallArtifacts
 		}
 		out[rec.QID] = rec
 	}
@@ -411,19 +448,20 @@ func classifyRecallQuestion(q QuestionScore, flip string, dump recallDumpRecord,
 	}
 	evidenceTerms := append([]string(nil), signals.EvidenceTerms...)
 	analysisTerms := uniqueStrings(append(append([]string{}, terms...), evidenceTerms...))
-	termHits := findTermHits(terms, dump.Hits)
+	artifacts := dump.RecallArtifacts
+	termHits := findTermHits(terms, artifacts)
 	missing := missingGoldTerms(terms, termHits)
 	coverage := 0.0
 	if len(terms) > 0 {
 		coverage = float64(len(terms)-len(missing)) / float64(len(terms))
 	}
-	evidenceTermHits := findTermHits(evidenceTerms, dump.Hits)
+	evidenceTermHits := findTermHits(evidenceTerms, artifacts)
 	missingEvidence := missingGoldTerms(evidenceTerms, evidenceTermHits)
 	evidenceCoverage := 0.0
 	if len(evidenceTerms) > 0 {
 		evidenceCoverage = float64(len(evidenceTerms)-len(missingEvidence)) / float64(len(evidenceTerms))
 	}
-	analysisHits := findTermHits(analysisTerms, dump.Hits)
+	analysisHits := findTermHits(analysisTerms, artifacts)
 	analysisMissing := missingGoldTerms(analysisTerms, analysisHits)
 	analysisCoverage := 0.0
 	if len(analysisTerms) > 0 {
@@ -461,7 +499,7 @@ func classifyRecallQuestion(q QuestionScore, flip string, dump recallDumpRecord,
 		Tags:                 append([]string(nil), q.Tags...),
 		Judge:                q.Judge,
 		Flip:                 flip,
-		MissType:             recallMissType(q, terms, coverage, bestRank, len(dump.Hits)),
+		MissType:             recallMissType(q, terms, coverage, bestRank, len(artifacts)),
 		Prediction:           q.Prediction,
 		GoldAnswers:          gold,
 		EvidenceIDs:          append([]string(nil), signals.EvidenceIDs...),
@@ -480,12 +518,12 @@ func classifyRecallQuestion(q QuestionScore, flip string, dump recallDumpRecord,
 		StageMiss:            stage.Miss,
 		StageCoverages:       stage.Coverages,
 		TermHits:             termHits,
-		TopKinds:             countTopKinds(dump.Hits),
-		TopSources:           countTopSources(dump.Hits),
-		TopHits:              topHitViews(dump.Hits, topN),
+		TopKinds:             countTopKinds(artifacts),
+		TopSources:           countTopSources(artifacts),
+		TopHits:              topHitViews(artifacts, topN),
 	}
 	if len(factsByConv) > 0 {
-		rec.MissType = recallAuditMissType(q, extract, analysisTerms, analysisCoverage, bestAnalysisRank, len(dump.Hits))
+		rec.MissType = recallAuditMissType(q, extract, analysisTerms, analysisCoverage, bestAnalysisRank, len(artifacts))
 	}
 	if len(stageAudit.Stages) > 0 {
 		rec.MissType = recallStageAuditMissType(q, extract, stage)
@@ -578,7 +616,7 @@ func auditRecallStages(signals auditSignals, terms []string, audit stageAuditDum
 		}
 		stageCandidates[key] = append(stageCandidates[key], st.Candidates...)
 	}
-	order := []string{"source", "candidate_merge", "candidate_materialize", "candidate_merge_and_materialize", "policy_filter", "rank_input", "rank_output", "context_input", "context_reranked", "final"}
+	order := []string{"source", "candidate_merge", "candidate_materialize", "candidate_merge_and_materialize", "policy_filter", "candidate_assessment", "rank_input", "rank_output", "context_input", "context_reranked", "final"}
 	for _, stage := range order {
 		if candidates, ok := stageCandidates[stage]; ok {
 			coverages[stage] = stageCandidateCoverage(terms, signals.EvidenceIDs, candidates, factByID)
@@ -682,6 +720,7 @@ func stageMissType(coverages map[string]float64) string {
 	source := coverages["source"]
 	candidateMerge := coverages["candidate_merge"]
 	candidateMaterialize := coverages["candidate_materialize"]
+	candidateAssessment, hasAssessment := coverages["candidate_assessment"]
 	rankInput := coverages["rank_input"]
 	rankOutput := coverages["rank_output"]
 	final := coverages["final"]
@@ -693,6 +732,9 @@ func stageMissType(coverages map[string]float64) string {
 	}
 	if candidateMaterialize+0.0001 < candidateMerge {
 		return "candidate_materialize_drop"
+	}
+	if hasAssessment && candidateAssessment+0.0001 < candidateMaterialize {
+		return "candidate_assessment_drop"
 	}
 	if rankInput > 0 && rankOutput+0.0001 < rankInput {
 		return "rank_drop"
@@ -727,6 +769,9 @@ func strictEvidenceStageMiss(evidenceIDs []string, stageCandidates map[string][]
 	}
 	if !present("candidate_materialize") {
 		return "candidate_materialize_drop_evidence_id"
+	}
+	if hasStage("candidate_assessment") && !present("candidate_assessment") {
+		return "candidate_assessment_drop_evidence_id"
 	}
 	if !present("rank_output") {
 		return "rank_drop_evidence_id"

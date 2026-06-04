@@ -79,10 +79,10 @@ func TestForgetAll_HardPurgeScopeRemovesCompletedOutboxPII(t *testing.T) {
 	ctx := context.Background()
 	scope := Scope{RuntimeID: "rt", UserID: "u1", AgentID: "agent-a"}
 	job := port.AsyncSemanticJob{
-		RequestID:      "async-1",
-		Scope:          scope,
-		EpisodeFactIDs: []string{"ep-1"},
-		TurnsSnapshot:  []domain.TurnContext{{Text: "secret user message"}},
+		RequestID:           "async-1",
+		Scope:               scope,
+		EpisodeFactIDs:      []string{"ep-1"},
+		SourceEvidenceSpans: []domain.SourceEvidenceSpan{{ObservationID: "obs-1", SpanID: "span-1", Text: "secret user message"}},
 	}
 	if _, err := queue.Enqueue(ctx, job); err != nil {
 		t.Fatal(err)
@@ -143,20 +143,47 @@ func TestForgetAll_HardPurgesSideEffectOutboxWithoutAsyncQueue(t *testing.T) {
 
 func TestForgetHard_ProjectionCleanupFailureKeepsCanonicalFact(t *testing.T) {
 	store := temporalstore.NewMemoryStore()
-	mem, err := New(WithTemporalStore(store))
+	observations := NewInMemoryObservationStore()
+	mem, err := New(
+		WithTemporalStore(store),
+		WithObservationStore(observations),
+		WithLinkStore(NewInMemoryLinkStore()),
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
 	scope := Scope{RuntimeID: "rt", UserID: "u1"}
+	raw := Observation{
+		ID:        "obs-1",
+		Scope:     scope,
+		Kind:      ObservationKindTurn,
+		SourceID:  "ev-1",
+		MessageID: "msg-1",
+		Text:      "Alice likes tea.",
+		Spans: []ObservationSpan{{
+			ID:            "span-1",
+			ObservationID: "obs-1",
+			SourceID:      "ev-1",
+			Kind:          ObservationSpanKindTurn,
+			Text:          "Alice likes tea.",
+			Start:         0,
+			End:           len("Alice likes tea."),
+		}},
+	}
+	if err := observations.Append(ctx, []Observation{raw}); err != nil {
+		t.Fatalf("observations.Append: %v", err)
+	}
 	if _, err := mem.Save(ctx, scope, SaveRequest{Facts: []TemporalFact{{
 		ID:      "f1",
 		Kind:    domain.KindState,
 		Content: "Alice likes tea.",
 		EvidenceRefs: []EvidenceRef{{
-			ID:        "ev-1",
-			MessageID: "msg-1",
-			Text:      "Alice likes tea.",
+			ID:            "ev-1",
+			MessageID:     "msg-1",
+			ObservationID: raw.ID,
+			SpanID:        raw.Spans[0].ID,
+			Text:          "Alice likes tea.",
 		}},
 	}}}); err != nil {
 		t.Fatalf("Save: %v", err)

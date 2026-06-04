@@ -103,7 +103,7 @@ func TestProcessAsyncSemantic_DerivesRecallableFacts(t *testing.T) {
 
 	res, err := mem.Save(ctx, scope, SaveRequest{
 		Mode:  WriteModeAsyncSemantic,
-		Turns: []TurnContext{{ID: "t1", Speaker: "Alice", Text: "paris trip"}},
+		Turns: []TurnContext{{ID: "t1", Speaker: "Alice", Text: "Paris trip"}},
 	})
 	if err != nil {
 		t.Fatalf("Save: %v", err)
@@ -125,7 +125,7 @@ func TestProcessAsyncSemantic_DerivesRecallableFacts(t *testing.T) {
 	}
 	drainSideEffectsForTest(t, mem, scope)
 
-	hits, err := mem.Recall(ctx, scope, Query{Text: "paris", Limit: 5})
+	hits, err := mem.Recall(ctx, scope, Query{Text: "Paris", Limit: 5})
 	if err != nil {
 		t.Fatalf("Recall: %v", err)
 	}
@@ -352,10 +352,6 @@ func TestProcessAsyncSemantic_RequiresPartitionScope(t *testing.T) {
 	_, err = proc.ProcessAsyncSemantic(context.Background(), AsyncSemanticProcessOptions{Limit: 1})
 	if err == nil {
 		t.Fatal("ProcessAsyncSemantic without Scope must fail")
-	}
-	_, err = proc.ProcessAsyncSemantic(context.Background(), AsyncSemanticProcessOptions{Limit: 1, RuntimeID: "rt"})
-	if err == nil {
-		t.Fatal("ProcessAsyncSemantic with RuntimeID-only drain must fail")
 	}
 }
 

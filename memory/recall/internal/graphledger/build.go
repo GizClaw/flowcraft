@@ -40,7 +40,6 @@ func BuildDelta(scope domain.Scope, facts []domain.TemporalFact, closes []domain
 	}
 
 	assertions := cloneFacts(facts)
-	StampFactEvidenceRefs(scope, assertions, requestID)
 
 	links := make([]domain.FactLink, 0)
 	linkSeen := make(map[string]struct{})
@@ -59,41 +58,17 @@ func BuildDelta(scope domain.Scope, facts []domain.TemporalFact, closes []domain
 	assertionsByObservation := make(map[string][]domain.TemporalFact)
 	for _, fact := range assertions {
 		observationIDsForFact := make([]string, 0, len(fact.EvidenceRefs))
-		evidenceRefsForFact := normalizedEvidenceRefs(fact.EvidenceRefs)
-		for i, ref := range fact.EvidenceRefs {
-			if ref.ObservationID != "" && ref.SpanID != "" && !IsGeneratedQuoteEvidenceRef(ref) {
-				observationIDsForFact = append(observationIDsForFact, ref.ObservationID)
-				assertionsByObservation[ref.ObservationID] = append(assertionsByObservation[ref.ObservationID], fact)
-				addLink(NewFactObservationLink(fact.Scope, domain.LinkDerivedFrom, fact.ID, ref.ObservationID, []domain.EvidenceRef{ref}, now))
-				addLink(NewObservationFactLink(fact.Scope, domain.LinkSupports, ref.ObservationID, fact.ID, []domain.EvidenceRef{ref}, now))
-				addLink(NewFactObservationSpanLink(fact.Scope, domain.LinkDerivedFrom, fact.ID, ref.SpanID, []domain.EvidenceRef{ref}, now))
-				addLink(NewObservationSpanFactLink(fact.Scope, domain.LinkSupports, ref.SpanID, fact.ID, []domain.EvidenceRef{ref}, now))
-				continue
+		evidenceRefsForFact := canonicalEvidenceRefs(fact.EvidenceRefs)
+		for _, ref := range evidenceRefsForFact {
+			if ref.RequestID == "" {
+				ref.RequestID = strings.TrimSpace(requestID)
 			}
-			if fact.Kind == domain.KindParameter {
-				continue
-			}
-			obs := ObservationFromEvidenceRef(fact.Scope, ref, fact.ID, i, now, requestID)
-			obsID := addObservation(obs)
-			if obsID == "" {
-				continue
-			}
-			observationIDsForFact = append(observationIDsForFact, obsID)
-			assertionsByObservation[obsID] = append(assertionsByObservation[obsID], fact)
-			refForObservationLink := ref
-			refForObservationLink.ObservationID = obsID
-			addLink(NewFactObservationLink(fact.Scope, domain.LinkDerivedFrom, fact.ID, obsID, []domain.EvidenceRef{refForObservationLink}, now))
-			addLink(NewObservationFactLink(fact.Scope, domain.LinkSupports, obsID, fact.ID, []domain.EvidenceRef{refForObservationLink}, now))
-			for _, span := range obs.Spans {
-				if span.ID == "" {
-					continue
-				}
-				refForLink := ref
-				refForLink.ObservationID = obsID
-				refForLink.SpanID = span.ID
-				addLink(NewFactObservationSpanLink(fact.Scope, domain.LinkDerivedFrom, fact.ID, span.ID, []domain.EvidenceRef{refForLink}, now))
-				addLink(NewObservationSpanFactLink(fact.Scope, domain.LinkSupports, span.ID, fact.ID, []domain.EvidenceRef{refForLink}, now))
-			}
+			observationIDsForFact = append(observationIDsForFact, ref.ObservationID)
+			assertionsByObservation[ref.ObservationID] = append(assertionsByObservation[ref.ObservationID], fact)
+			addLink(NewFactObservationLink(fact.Scope, domain.LinkDerivedFrom, fact.ID, ref.ObservationID, []domain.EvidenceRef{ref}, now))
+			addLink(NewObservationFactLink(fact.Scope, domain.LinkSupports, ref.ObservationID, fact.ID, []domain.EvidenceRef{ref}, now))
+			addLink(NewFactObservationSpanLink(fact.Scope, domain.LinkDerivedFrom, fact.ID, ref.SpanID, []domain.EvidenceRef{ref}, now))
+			addLink(NewObservationSpanFactLink(fact.Scope, domain.LinkSupports, ref.SpanID, fact.ID, []domain.EvidenceRef{ref}, now))
 		}
 		for _, priorID := range fact.Supersedes {
 			supersedesSeen[assertionPairKey(fact.ID, priorID)] = struct{}{}
@@ -128,36 +103,6 @@ func IsGeneratedQuoteEvidenceRef(ref domain.EvidenceRef) bool {
 	return ref.SpanID == StableObservationSpanID(ref.ObservationID, observationSourceID(ref), domain.ObservationSpanKindQuote, 0, len(ref.Text), ref.Text)
 }
 
-// StampFactEvidenceRefs fills canonical Observation/Span references on fact
-// evidence in-place. It is intentionally separate from BuildDelta so the
-// assertion rows stored by TemporalStore carry the same canonical refs.
-func StampFactEvidenceRefs(scope domain.Scope, facts []domain.TemporalFact, requestID string) {
-	for fi := range facts {
-		factScope := facts[fi].Scope
-		if factScope.RuntimeID == "" && factScope.UserID == "" {
-			factScope = scope
-		}
-		for ri := range facts[fi].EvidenceRefs {
-			facts[fi].EvidenceRefs[ri] = CanonicalEvidenceRef(factScope, facts[fi].EvidenceRefs[ri], facts[fi].ID, ri, requestID)
-		}
-	}
-}
-
-func CanonicalEvidenceRef(scope domain.Scope, ref domain.EvidenceRef, factID string, index int, requestID string) domain.EvidenceRef {
-	out := ref
-	if out.RequestID == "" {
-		out.RequestID = strings.TrimSpace(requestID)
-	}
-	sourceID := observationSourceID(out)
-	if out.ObservationID == "" {
-		out.ObservationID = stableObservationIDForSource(scope, out.RequestID, out.SessionID, sourceID, fmt.Sprintf("evidence:%s:%d:%s", factID, index, out.Text))
-	}
-	if out.SpanID == "" {
-		out.SpanID = StableObservationSpanID(out.ObservationID, sourceID, domain.ObservationSpanKindQuote, 0, len(out.Text), out.Text)
-	}
-	return out
-}
-
 func ObservationFromTurn(scope domain.Scope, turn domain.TurnContext, index int, observedAt, now time.Time, requestID string) domain.Observation {
 	ts := turn.Time
 	if ts.IsZero() {
@@ -183,31 +128,6 @@ func ObservationFromTurn(scope domain.Scope, turn domain.TurnContext, index int,
 		Speaker:    turn.Speaker,
 		Text:       turn.Text,
 		Spans:      spans,
-		ObservedAt: ts,
-		ReceivedAt: now,
-	}
-}
-
-func ObservationFromEvidenceRef(scope domain.Scope, ref domain.EvidenceRef, factID string, index int, now time.Time, requestID string) domain.Observation {
-	ts := ref.Timestamp
-	if ts.IsZero() {
-		ts = now
-	}
-	canonicalRef := CanonicalEvidenceRef(scope, ref, factID, index, requestID)
-	sourceID := observationSourceID(canonicalRef)
-	id := canonicalRef.ObservationID
-	span := ObservationSpanFromText(id, sourceID, domain.ObservationSpanKindQuote, canonicalRef.Text, 0, len(canonicalRef.Text))
-	span.ID = canonicalRef.SpanID
-	return domain.Observation{
-		ID:         id,
-		Scope:      scope,
-		Kind:       domain.ObservationKindEvidence,
-		SourceID:   sourceID,
-		SessionID:  canonicalRef.SessionID,
-		MessageID:  ref.MessageID,
-		Role:       ref.Role,
-		Text:       ref.Text,
-		Spans:      []domain.ObservationSpan{span},
 		ObservedAt: ts,
 		ReceivedAt: now,
 	}
@@ -509,7 +429,7 @@ func stableObservationIDForSource(scope domain.Scope, requestID, sessionID, sour
 	if id := StableSourceObservationID(scope, strings.TrimSpace(requestID), strings.TrimSpace(sessionID), sourceID); id != "" {
 		return id
 	}
-	return StableObservationID(scope, "evidence", strings.TrimSpace(sourceID), strings.Join([]string{strings.TrimSpace(requestID), strings.TrimSpace(sessionID), fallback}, "\x00"), "")
+	return StableObservationID(scope, "turn", strings.TrimSpace(sourceID), strings.Join([]string{strings.TrimSpace(requestID), strings.TrimSpace(sessionID), fallback}, "\x00"), "")
 }
 
 func observationSourceID(ref domain.EvidenceRef) string {
@@ -517,6 +437,20 @@ func observationSourceID(ref domain.EvidenceRef) string {
 		return strings.TrimSpace(ref.ID)
 	}
 	return strings.TrimSpace(ref.MessageID)
+}
+
+func canonicalEvidenceRefs(refs []domain.EvidenceRef) []domain.EvidenceRef {
+	if len(refs) == 0 {
+		return nil
+	}
+	out := make([]domain.EvidenceRef, 0, len(refs))
+	for _, ref := range refs {
+		if ref.ObservationID == "" || ref.SpanID == "" || IsGeneratedQuoteEvidenceRef(ref) {
+			continue
+		}
+		out = append(out, ref)
+	}
+	return normalizedEvidenceRefs(out)
 }
 
 func normalizedEvidenceRefs(refs []domain.EvidenceRef) []domain.EvidenceRef {

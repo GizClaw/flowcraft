@@ -33,7 +33,7 @@ type AsyncSemanticQueue interface {
 	CancelScope(ctx context.Context, scope domain.Scope) (int, error)
 	// PurgeScope removes every job in the partition, including
 	// completed and dead-letter entries, and clears enqueue-time PII
-	// snapshots (TurnsSnapshot, RecentMessages, ExistingFactHints).
+	// context (SourceEvidenceSpans, RecentMessages, ExistingFactHints).
 	// It backs ForgetAll(Hard) after CancelScope so durable outbox
 	// rows cannot leak post-wipe.
 	PurgeScope(ctx context.Context, scope domain.Scope) (int, error)
@@ -100,13 +100,9 @@ type AsyncSemanticJob struct {
 	SaveOutboxID string
 
 	EpisodeFactIDs []string
-	// TurnsSnapshot is enqueue-time audit/debug context only. Workers must not
-	// use it as extraction authority; SourceEvidenceSpans are required and are
-	// revalidated against ObservationStore before LLM extraction.
-	TurnsSnapshot []domain.TurnContext
 	// SourceEvidenceSpans is the canonical extractable evidence set resolved
 	// during the original Save. Workers must use this instead of rendered
-	// episode text or snapshot-only source reconstruction.
+	// episode text or source reconstruction.
 	SourceEvidenceSpans []domain.SourceEvidenceSpan
 
 	ObservedAt time.Time

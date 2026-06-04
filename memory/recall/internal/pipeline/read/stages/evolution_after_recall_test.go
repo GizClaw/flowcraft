@@ -118,8 +118,8 @@ func TestEvolutionAfterRecall_AggregatesFromSubScopes(t *testing.T) {
 }
 
 // TestEvolutionAfterRecall_RunnerErrorIsBestEffort confirms that a
-// runner failure surfaces as a BestEffort-wrapped error and ALSO
-// populates state.EvolutionErr for back-compat consumers.
+// runner failure surfaces as a BestEffort-wrapped error without aborting
+// the read pipeline.
 func TestEvolutionAfterRecall_RunnerErrorIsBestEffort(t *testing.T) {
 	scope := domain.Scope{RuntimeID: "rt", UserID: "u1"}
 	state := &read.ReadState{
@@ -137,9 +137,6 @@ func TestEvolutionAfterRecall_RunnerErrorIsBestEffort(t *testing.T) {
 	var bef pipeline.BestEffortFailure
 	if !errors.As(err, &bef) {
 		t.Fatalf("err must be pipeline.BestEffortFailure, got %T (%v)", err, err)
-	}
-	if !errors.Is(state.EvolutionErr, boom) {
-		t.Fatalf("state.EvolutionErr = %v, want %v", state.EvolutionErr, boom)
 	}
 }
 

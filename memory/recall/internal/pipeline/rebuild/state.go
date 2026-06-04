@@ -1,7 +1,7 @@
 // Package rebuild owns the rebuild-flow pipeline State and Runner.
 // The scan / project stages live under rebuild/stages/; this package
 // owns the State schema so RebuildAll /
-// RebuildProjection / RebuildScope all share one pipeline.
+// RebuildProjection share one pipeline.
 package rebuild
 
 import (
@@ -21,13 +21,10 @@ import (
 //	project → PerProjection (apply each selected projection,
 //	          compute drift = PriorEntries != Applied)
 //
-// The same RebuildState drives all three Memory entry points:
+// The same RebuildState drives both Memory entry points:
 //
 //   - RebuildAll(ctx, scope)         → ProjectionFilter == ""
 //   - RebuildProjection(ctx, scope, name) → ProjectionFilter == name
-//   - RebuildScope(ctx, scope)       → identical to RebuildAll; the
-//     two names exist for caller ergonomics (v1 SyncSideStores
-//     equivalence), not for behavioural divergence.
 type RebuildState struct {
 	// Inputs — populated by the runner before Run begins.
 

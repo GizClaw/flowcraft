@@ -10,9 +10,7 @@ package diagnostic
 // imports diagnostic to embed StageDiagnostic on RecallTrace /
 // SaveTrace). DroppedFact therefore carries the dropped fact as
 // `any`; subsystem code that constructs it passes the concrete
-// domain.TemporalFact value and read sites type-assert. If the
-// deprecated parallel observation channels are removed, we can revisit
-// whether to introduce a forward-declared minimal Fact interface here.
+// domain.TemporalFact value and read sites type-assert.
 
 // StructurizerCoverage tallies how many times each sub-task of the
 // Structurizer actually filled a previously-empty field on its way
@@ -222,15 +220,20 @@ type CandidateDrop struct {
 	Details string
 }
 
-// CandidateSnapshot is the non-PII candidate identity used by
-// RecallExplain stage audits. It intentionally carries ids, scores,
-// ranks, and provenance but not fact content; callers can join against
-// an explicit facts dump when they need term-level analysis.
+// CandidateSnapshot is the non-PII candidate identity used by RecallExplain
+// stage audits. ScoreLabel names the stage-specific score field (discovery,
+// assessment, rank, or final). It intentionally carries ids, scores, ranks, and
+// provenance but not fact content; callers can join against an explicit facts
+// dump when they need term-level analysis.
 type CandidateSnapshot struct {
 	FactID           string   `json:"fact_id,omitempty"`
 	Source           string   `json:"source,omitempty"`
 	Rank             int      `json:"rank,omitempty"`
-	Score            float64  `json:"score,omitempty"`
+	ScoreLabel       string   `json:"score_label,omitempty"`
+	DiscoveryScore   float64  `json:"discovery_score,omitempty"`
+	AssessmentScore  float64  `json:"assessment_relevance_score,omitempty"`
+	RankScore        float64  `json:"rank_score,omitempty"`
+	FinalScore       float64  `json:"final_score,omitempty"`
 	EvidenceIDs      []string `json:"evidence_ids,omitempty"`
 	Sources          []string `json:"sources,omitempty"`
 	RankOutputRank   int      `json:"rank_output_rank,omitempty"`

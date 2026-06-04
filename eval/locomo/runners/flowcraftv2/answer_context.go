@@ -11,9 +11,9 @@ import (
 
 func structuredAnswerContext(hits []recall.Hit, strategy string) runners.AnswerContext {
 	return runners.AnswerContext{
-		Body:           renderStructuredAnswerBody(hits, strategy),
-		Format:         "flowcraftv2_structured_facts",
-		PromptTemplate: structuredFactsAnswerPrompt,
+		Body:         renderStructuredAnswerBody(hits, strategy),
+		Format:       "flowcraftv2_structured_facts",
+		SystemPrompt: structuredFactsAnswerPrompt,
 	}
 }
 
@@ -114,7 +114,7 @@ func renderStructuredHit(b *strings.Builder, rank int, hit recall.Hit) {
 	fmt.Fprintf(b, "- [#%d]\n", rank)
 	writeKV(b, 1, "fact_id", f.ID)
 	writeKV(b, 1, "kind", string(f.Kind))
-	writeKV(b, 1, "score", fmt.Sprintf("%.6f", hit.Score))
+	writeKV(b, 1, "final_score", fmt.Sprintf("%.6f", hit.Score))
 	writeListKV(b, 1, "sources", answerVisibleSources(hit.Sources))
 	writeKV(b, 1, "content", f.Content)
 	writeKV(b, 1, "subject", f.Subject)
@@ -218,7 +218,7 @@ func renderStructuredObservationHit(b *strings.Builder, rank int, hit recall.Hit
 	fmt.Fprintf(b, "- [#%d]\n", rank)
 	writeKV(b, 1, "observation_id", obs.ID)
 	writeKV(b, 1, "kind", "observation")
-	writeKV(b, 1, "score", fmt.Sprintf("%.6f", hit.Score))
+	writeKV(b, 1, "final_score", fmt.Sprintf("%.6f", hit.Score))
 	writeListKV(b, 1, "sources", answerVisibleSources(hit.Sources))
 	writeKV(b, 1, "content", obs.Text)
 	writeKV(b, 1, "subject", obs.Speaker)

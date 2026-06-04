@@ -50,7 +50,7 @@ func buildPrediction(ctx context.Context, opts Options, q dataset.Question, arti
 	}
 	prompt := opts.AnswerPrompt
 	if prompt == "" {
-		prompt = strings.TrimSpace(answerContext.PromptTemplate)
+		prompt = strings.TrimSpace(answerContext.SystemPrompt)
 	}
 	if prompt == "" {
 		prompt = DefaultAnswerPrompt

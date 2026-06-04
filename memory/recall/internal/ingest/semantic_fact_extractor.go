@@ -7,7 +7,6 @@ import (
 
 	"github.com/GizClaw/flowcraft/memory/recall/internal/domain"
 	"github.com/GizClaw/flowcraft/memory/recall/internal/domain/diagnostic"
-	"github.com/GizClaw/flowcraft/memory/recall/internal/port"
 	"github.com/GizClaw/flowcraft/memory/recall/internal/words"
 	"github.com/GizClaw/flowcraft/memory/text/normalize"
 )
@@ -109,25 +108,23 @@ func parseSemanticFactProposalReply(body []byte, family semanticProposalFamily) 
 	return out, nil
 }
 
-// normaliseExtractedKind maps the LLM's "kind" field to a canonical
-// FactKind. Empty / unrecognised values fall through to KindNote-
-// equivalent (empty string) so the Structurizer's keyword fallback
-// stays in charge of classification when the model could not pick.
-// Lowercasing covers minor casing drift from less-strict providers.
-func normaliseExtractedKind(raw string) domain.FactKind {
+// normaliseExtractedKind maps the proposal schema's "kind" field to a
+// canonical FactKind. Empty or unrecognised values are rejected by the compiler;
+// semantic proposals do not fall through to the Structurizer's KindNote default.
+func normaliseExtractedKind(raw string) (domain.FactKind, bool) {
 	switch strings.ToLower(strings.TrimSpace(raw)) {
 	case "event":
-		return domain.KindEvent
+		return domain.KindEvent, true
 	case "state":
-		return domain.KindState
+		return domain.KindState, true
 	case "preference":
-		return domain.KindPreference
+		return domain.KindPreference, true
 	case "relation":
-		return domain.KindRelation
+		return domain.KindRelation, true
 	case "note":
-		return domain.KindNote
+		return domain.KindNote, true
 	}
-	return ""
+	return "", false
 }
 
 func isTrivialExtractedContent(text string) bool {
@@ -194,13 +191,6 @@ func semanticContentFromEvidence(refs []domain.EvidenceRef) string {
 	return strings.Join(parts, " ")
 }
 
-func deterministicSemanticKind(family semanticProposalFamily) domain.FactKind {
-	switch family {
-	default:
-		return ""
-	}
-}
-
 func normalizeExtractedEntities(in []string) []string {
 	if len(in) == 0 {
 		return nil
@@ -236,35 +226,6 @@ func cleanExtractedEntity(s string) string {
 		}
 	}
 	return s
-}
-
-func cleanExtractedSubject(subject string, refs []domain.EvidenceRef, turnIndex map[string]port.TurnContext) (string, bool) {
-	subject = cleanExtractedEntity(subject)
-	if subject == "" {
-		return subject, false
-	}
-	if !isInvalidExtractedEntityAnchor(subject) {
-		return subject, false
-	}
-	return "", true
-}
-
-func cleanExtractedPredicate(s string) string {
-	s = normalize.CollapseSpaces(strings.Trim(s, `"'“”‘’[](){}.,;:`))
-	if s == "" {
-		return ""
-	}
-	canonical := normalize.CollapseSpaces(strings.ToLower(normalize.ReplaceNonAlnumWithSpace(s)))
-	return strings.Join(strings.Fields(canonical), "_")
-}
-
-func normalizeExtractedRelation(predicate, object string) (string, string) {
-	predicate = cleanExtractedPredicate(predicate)
-	object = cleanExtractedEntity(object)
-	if predicate == "" || object == "" {
-		return "", ""
-	}
-	return predicate, object
 }
 
 func isInvalidExtractedEntityAnchor(s string) bool {

@@ -56,6 +56,7 @@ const (
 
 // EvidenceRef points back to source material used to produce a fact.
 type EvidenceRef = domain.EvidenceRef
+type SourceEvidenceSpan = domain.SourceEvidenceSpan
 type Observation = domain.Observation
 type ObservationKind = domain.ObservationKind
 type ObservationSpan = domain.ObservationSpan
@@ -68,7 +69,6 @@ type MemoryGraphDelta = domain.MemoryGraphDelta
 
 const (
 	ObservationKindTurn     = domain.ObservationKindTurn
-	ObservationKindEvidence = domain.ObservationKindEvidence
 	ObservationKindDocument = domain.ObservationKindDocument
 
 	ObservationSpanKindText          = domain.ObservationSpanKindText
@@ -93,11 +93,6 @@ const (
 	LinkAnswersSlot     = domain.LinkAnswersSlot
 	LinkResolvesTo      = domain.LinkResolvesTo
 )
-
-// MergeHints are LLM-supplied hints about merge behaviour. They are
-// schema-level metadata only and do not participate in canonical
-// merge decisions.
-type MergeHints = domain.MergeHints
 
 type EvidenceRow = domain.EvidenceRow
 type EvidencePacket = domain.EvidencePacket
@@ -304,6 +299,9 @@ func TimeRangeFrom(from, to time.Time) TimeRange {
 // Hit.Evidence carries the materialized evidence slice selected for
 // this hit when the candidate source can identify the evidence that
 // caused the match.
+// Hit.Score is the final rank/pack-selected score. Source-local discovery
+// scores are diagnostic provenance and are exposed separately as
+// discovery_score in stage audit snapshots.
 type Hit = domain.Hit
 
 // LineageRelation classifies a fact's relationship to the root in a

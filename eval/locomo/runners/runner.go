@@ -34,7 +34,8 @@ type Scope struct {
 type RecallArtifact struct {
 	ID          string
 	Content     string
-	Score       float64
+	ScoreLabel  string
+	FinalScore  float64
 	Kind        string
 	Sources     []string
 	EvidenceIDs []string
@@ -54,12 +55,9 @@ type AnswerQuestion struct {
 // native recall results. Backends with structured memory should prefer this
 // over flattening their hits into the runner-neutral Hit.Content field.
 type AnswerContext struct {
-	Body   string
-	Format string
-	// PromptTemplate is the backend-specific system prompt for answering
-	// from Body. It is kept for API compatibility with older eval code, but
-	// is no longer a fmt.Sprintf template and must not contain retrieved data.
-	PromptTemplate string
+	Body         string
+	Format       string
+	SystemPrompt string
 }
 
 type RecallStageAudit struct {
@@ -67,24 +65,30 @@ type RecallStageAudit struct {
 }
 
 type RecallStageSnapshot struct {
-	Stage             string                    `json:"stage"`
-	Source            string                    `json:"source,omitempty"`
-	Status            string                    `json:"status,omitempty"`
-	Query             *RecallQueryIntent        `json:"query_intent,omitempty"`
-	ActivatedLenses   []RecallActivatedLens     `json:"activated_lenses,omitempty"`
-	TaskIntents       []string                  `json:"task_intents,omitempty"`
-	TotalBudget       int                       `json:"total_budget,omitempty"`
-	Suggested         int                       `json:"suggested,omitempty"`
-	SuggestedByTask   map[string]int            `json:"suggested_by_task,omitempty"`
-	SuggestedFactIDs  []string                  `json:"suggested_fact_ids,omitempty"`
-	Added             int                       `json:"added,omitempty"`
-	AddedFactIDs      []string                  `json:"added_fact_ids,omitempty"`
-	ScannedLinks      int                       `json:"scanned_links,omitempty"`
-	AddedFacts        int                       `json:"added_facts,omitempty"`
-	AddedEvidenceRefs int                       `json:"added_evidence_refs,omitempty"`
-	CoverageBundles   []RecallCoverageBundle    `json:"coverage_bundles,omitempty"`
-	Candidates        []RecallCandidateSnapshot `json:"candidates,omitempty"`
-	PackTrace         []RecallCandidateSnapshot `json:"pack_trace,omitempty"`
+	Stage             string                      `json:"stage"`
+	Source            string                      `json:"source,omitempty"`
+	Status            string                      `json:"status,omitempty"`
+	Query             *RecallQueryIntent          `json:"query_intent,omitempty"`
+	ActivatedLenses   []RecallActivatedLens       `json:"activated_lenses,omitempty"`
+	TaskIntents       []string                    `json:"task_intents,omitempty"`
+	TotalBudget       int                         `json:"total_budget,omitempty"`
+	Suggested         int                         `json:"suggested,omitempty"`
+	SuggestedByTask   map[string]int              `json:"suggested_by_task,omitempty"`
+	SuggestedFactIDs  []string                    `json:"suggested_fact_ids,omitempty"`
+	InputCount        int                         `json:"input_count,omitempty"`
+	OutputCount       int                         `json:"output_count,omitempty"`
+	Dropped           int                         `json:"dropped,omitempty"`
+	DropReasons       map[string]int              `json:"drop_reasons,omitempty"`
+	Added             int                         `json:"added,omitempty"`
+	AddedFactIDs      []string                    `json:"added_fact_ids,omitempty"`
+	ScannedLinks      int                         `json:"scanned_links,omitempty"`
+	AddedFacts        int                         `json:"added_facts,omitempty"`
+	AddedEvidenceRefs int                         `json:"added_evidence_refs,omitempty"`
+	CoverageBundles   []RecallCoverageBundle      `json:"coverage_bundles,omitempty"`
+	ScoreSummary      *RecallAssessmentSummary    `json:"score_summary,omitempty"`
+	Candidates        []RecallCandidateSnapshot   `json:"candidates,omitempty"`
+	Assessment        []RecallAssessmentComponent `json:"assessment,omitempty"`
+	PackTrace         []RecallCandidateSnapshot   `json:"pack_trace,omitempty"`
 }
 
 type RecallQueryIntent struct {
@@ -131,7 +135,11 @@ type RecallCandidateSnapshot struct {
 	FactID           string   `json:"fact_id,omitempty"`
 	Source           string   `json:"source,omitempty"`
 	Rank             int      `json:"rank,omitempty"`
-	Score            float64  `json:"score,omitempty"`
+	ScoreLabel       string   `json:"score_label,omitempty"`
+	DiscoveryScore   float64  `json:"discovery_score,omitempty"`
+	AssessmentScore  float64  `json:"assessment_relevance_score,omitempty"`
+	RankScore        float64  `json:"rank_score,omitempty"`
+	FinalScore       float64  `json:"final_score,omitempty"`
 	EvidenceIDs      []string `json:"evidence_ids,omitempty"`
 	Sources          []string `json:"sources,omitempty"`
 	RankOutputRank   int      `json:"rank_output_rank,omitempty"`
@@ -139,6 +147,39 @@ type RecallCandidateSnapshot struct {
 	PrimarySource    string   `json:"primary_source,omitempty"`
 	ProjectionRoutes []string `json:"projection_routes,omitempty"`
 	DroppedReason    string   `json:"dropped_reason,omitempty"`
+}
+
+type RecallAssessmentComponent struct {
+	ID                 string  `json:"id,omitempty"`
+	Kind               string  `json:"kind,omitempty"`
+	HardConstraintPass bool    `json:"hard_constraint_pass,omitempty"`
+	SupportScore       float64 `json:"support_score,omitempty"`
+	StructuredScore    float64 `json:"structured_score,omitempty"`
+	LiteralScore       float64 `json:"literal_score,omitempty"`
+	SemanticScore      float64 `json:"semantic_score,omitempty"`
+	SourcePrior        float64 `json:"source_prior,omitempty"`
+	RelevanceScore     float64 `json:"relevance_score,omitempty"`
+	Confidence         float64 `json:"confidence,omitempty"`
+	Reason             string  `json:"reason,omitempty"`
+	DropReason         string  `json:"drop_reason,omitempty"`
+	FallbackReason     string  `json:"fallback_reason,omitempty"`
+	EquivalenceGroup   string  `json:"equivalence_group,omitempty"`
+	SupportGroup       string  `json:"support_group,omitempty"`
+	DiversityGroup     string  `json:"diversity_group,omitempty"`
+}
+
+type RecallAssessmentSummary struct {
+	Count                int     `json:"count,omitempty"`
+	RelevanceScoreMin    float64 `json:"relevance_score_min,omitempty"`
+	RelevanceScoreMax    float64 `json:"relevance_score_max,omitempty"`
+	RelevanceScoreAvg    float64 `json:"relevance_score_avg,omitempty"`
+	SemanticScoreAvg     float64 `json:"semantic_score_avg,omitempty"`
+	SupportScoreAvg      float64 `json:"support_score_avg,omitempty"`
+	StructuredScoreAvg   float64 `json:"structured_score_avg,omitempty"`
+	LiteralScoreAvg      float64 `json:"literal_score_avg,omitempty"`
+	SourcePriorAvg       float64 `json:"source_prior_avg,omitempty"`
+	ConfidenceAvg        float64 `json:"confidence_avg,omitempty"`
+	HardConstraintPasses int     `json:"hard_constraint_passes,omitempty"`
 }
 
 // Runner abstracts a Memory implementation under evaluation.

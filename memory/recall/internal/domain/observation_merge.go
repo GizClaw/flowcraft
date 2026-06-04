@@ -101,10 +101,7 @@ func compatibleObservationBase(a, b Observation) bool {
 		return false
 	}
 	if a.Kind != "" && b.Kind != "" && a.Kind != b.Kind {
-		if !(a.Kind == ObservationKindTurn && b.Kind == ObservationKindEvidence) &&
-			!(a.Kind == ObservationKindEvidence && b.Kind == ObservationKindTurn) {
-			return false
-		}
+		return false
 	}
 	if a.Text != "" && b.Text != "" && !compatibleText(a.Text, b.Text) && a.SourceID != b.SourceID {
 		return false
@@ -114,10 +111,6 @@ func compatibleObservationBase(a, b Observation) bool {
 
 func fillObservationBase(merged *Observation, incoming Observation) bool {
 	changed := false
-	if merged.Kind == ObservationKindEvidence && incoming.Kind == ObservationKindTurn {
-		merged.Kind = incoming.Kind
-		changed = true
-	}
 	if merged.SourceID == "" && incoming.SourceID != "" {
 		merged.SourceID = incoming.SourceID
 		changed = true

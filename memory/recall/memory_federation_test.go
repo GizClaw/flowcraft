@@ -18,19 +18,19 @@ func TestRecall_FederationUserPlusGlobal(t *testing.T) {
 	globalScope := Scope{RuntimeID: "rt"}
 
 	if _, err := mem.Save(ctx, userScope, SaveRequest{
-		Facts: []TemporalFact{{Kind: FactNote, Content: "alice loves espresso coffee", Subject: "alice"}},
+		Facts: []TemporalFact{{Kind: FactNote, Content: "alice loves espresso coffee", Subject: "alice", Predicate: "coffee"}},
 	}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := mem.Save(ctx, globalScope, SaveRequest{
-		Facts: []TemporalFact{{Kind: FactNote, Content: "the office stocks fairtrade coffee", Subject: "office"}},
+		Facts: []TemporalFact{{Kind: FactNote, Content: "the office stocks fairtrade coffee", Subject: "office", Predicate: "coffee"}},
 	}); err != nil {
 		t.Fatal(err)
 	}
 	drainSideEffectsForTest(t, mem, userScope)
 	drainSideEffectsForTest(t, mem, globalScope)
 
-	defaultHits, err := mem.Recall(ctx, userScope, Query{Text: "coffee", Limit: 10})
+	defaultHits, err := mem.Recall(ctx, userScope, Query{Text: "coffee", Predicate: "coffee", Limit: 10})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -49,7 +49,7 @@ func TestRecall_FederationUserPlusGlobal(t *testing.T) {
 
 	fedScope := userScope
 	fedScope.Federation = []Scope{{RuntimeID: "rt"}}
-	multiHits, err := mem.Recall(ctx, fedScope, Query{Text: "coffee", Limit: 10})
+	multiHits, err := mem.Recall(ctx, fedScope, Query{Text: "coffee", Predicate: "coffee", Limit: 10})
 	if err != nil {
 		t.Fatal(err)
 	}

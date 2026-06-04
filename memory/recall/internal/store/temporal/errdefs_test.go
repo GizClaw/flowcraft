@@ -12,7 +12,7 @@ import (
 
 // TestErrNotFound_IsClassifiedAndIdentifiable pins both halves of
 // the dual contract spelled out on the sentinel:
-//   - public boundary (and HTTP shim) classify it as NotFound
+//   - public boundary (and HTTP adapter) classify it as NotFound
 //   - existing errors.Is(err, ErrNotFound) identity checks
 //     callers and tests rely on still hold
 func TestErrNotFound_IsClassifiedAndIdentifiable(t *testing.T) {

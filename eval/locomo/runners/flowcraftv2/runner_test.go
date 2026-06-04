@@ -222,8 +222,8 @@ func TestStructuredAnswerContextUsesGenericRelativeTimeGuidance(t *testing.T) {
 		"relative temporal expression",
 		"answer the supported part and name the missing detail",
 	} {
-		if !strings.Contains(ctx.Body+ctx.PromptTemplate, want) {
-			t.Fatalf("answer context missing %q:\nbody:\n%s\nprompt:\n%s", want, ctx.Body, ctx.PromptTemplate)
+		if !strings.Contains(ctx.Body+ctx.SystemPrompt, want) {
+			t.Fatalf("answer context missing %q:\nbody:\n%s\nprompt:\n%s", want, ctx.Body, ctx.SystemPrompt)
 		}
 	}
 	if strings.Contains(ctx.Body, "relative_time_hint") {
@@ -366,6 +366,63 @@ func TestGroundedHitContentSatisfiesAnswerContextDiagnostics(t *testing.T) {
 		Text:   rendered,
 	}}); len(attrs) != 0 {
 		t.Fatalf("grounded rendering should satisfy diagnostics, got %+v", attrs)
+	}
+}
+
+func TestFromRecallStageAuditPreservesAssessmentAndScoreLabels(t *testing.T) {
+	audit := fromRecallStageAudit(diagnostics.RecallStageAudit{Stages: []diagnostics.RecallStageSnapshot{
+		{
+			Stage:       "candidate_assessment",
+			InputCount:  2,
+			OutputCount: 1,
+			Dropped:     1,
+			DropReasons: map[string]int{"unsupported_candidate": 1},
+			ScoreSummary: &diagnostics.RecallAssessmentScoreSummary{
+				Count:                2,
+				RelevanceScoreMax:    0.8,
+				HardConstraintPasses: 2,
+			},
+			Assessment: []diagnostics.RecallAssessmentComponent{{
+				ID:             "f1",
+				SupportScore:   0.5,
+				LiteralScore:   0.1,
+				RelevanceScore: 0.8,
+			}, {
+				ID:         "f2",
+				DropReason: "unsupported_candidate",
+			}},
+			Candidates: []diagnostics.RecallCandidateSnapshot{{
+				FactID:          "f1",
+				ScoreLabel:      "assessment_relevance_score",
+				DiscoveryScore:  0.99,
+				AssessmentScore: 0.8,
+			}},
+		},
+		{
+			Stage: "build_grounded_hits",
+			Candidates: []diagnostics.RecallCandidateSnapshot{{
+				FactID:     "f1",
+				ScoreLabel: "final_score",
+				FinalScore: 0.8,
+			}},
+		},
+	}})
+
+	if len(audit.Stages) != 2 {
+		t.Fatalf("stages = %+v", audit.Stages)
+	}
+	assessment := audit.Stages[0]
+	if assessment.DropReasons["unsupported_candidate"] != 1 || assessment.ScoreSummary == nil || assessment.ScoreSummary.RelevanceScoreMax != 0.8 {
+		t.Fatalf("assessment summary not preserved: %+v", assessment)
+	}
+	if len(assessment.Assessment) != 2 || assessment.Assessment[1].DropReason != "unsupported_candidate" {
+		t.Fatalf("assessment components not preserved: %+v", assessment.Assessment)
+	}
+	if got := assessment.Candidates[0]; got.ScoreLabel != "assessment_relevance_score" || got.DiscoveryScore != 0.99 || got.AssessmentScore != 0.8 {
+		t.Fatalf("assessment score labels not preserved: %+v", got)
+	}
+	if got := audit.Stages[1].Candidates[0]; got.ScoreLabel != "final_score" || got.FinalScore != 0.8 {
+		t.Fatalf("final score label not preserved: %+v", got)
 	}
 }
 
@@ -1033,12 +1090,12 @@ func TestStructuredAnswerContextCarriesBackendPrompt(t *testing.T) {
 		"HOW MANY, HOW LONG, AGE, duration, count, and comparison",
 		"Reply \"I don't know\" only when no memory or evidence quote supports the requested value",
 	} {
-		if !strings.Contains(ctx.PromptTemplate, want) {
-			t.Fatalf("structured prompt missing %q:\n%s", want, ctx.PromptTemplate)
+		if !strings.Contains(ctx.SystemPrompt, want) {
+			t.Fatalf("structured prompt missing %q:\n%s", want, ctx.SystemPrompt)
 		}
 	}
-	if strings.Contains(ctx.PromptTemplate, "%s") {
-		t.Fatalf("structured prompt should be system-only, got:\n%s", ctx.PromptTemplate)
+	if strings.Contains(ctx.SystemPrompt, "%s") {
+		t.Fatalf("structured prompt should be system-only, got:\n%s", ctx.SystemPrompt)
 	}
 }
 

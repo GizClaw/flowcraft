@@ -102,16 +102,40 @@ func TestSave_CommitsObservationAssertionLinks(t *testing.T) {
 	}
 
 	at := time.Date(2026, 5, 31, 9, 0, 0, 0, time.UTC)
+	raw := Observation{
+		ID:         "obs-tea",
+		Scope:      scope,
+		Kind:       ObservationKindTurn,
+		SourceID:   "ev-1",
+		MessageID:  "msg-1",
+		Role:       "user",
+		Text:       "Alice likes tea",
+		ObservedAt: at,
+		Spans: []ObservationSpan{{
+			ID:            "span-tea",
+			ObservationID: "obs-tea",
+			SourceID:      "ev-1",
+			Kind:          ObservationSpanKindTurn,
+			Text:          "Alice likes tea",
+			Start:         0,
+			End:           len("Alice likes tea"),
+		}},
+	}
+	if err := observations.Append(ctx, []Observation{raw}); err != nil {
+		t.Fatalf("observations.Append: %v", err)
+	}
 	res, err := mem.Save(ctx, scope, SaveRequest{
 		Facts: []TemporalFact{{
 			Kind:    FactNote,
 			Content: "Alice likes tea",
 			EvidenceRefs: []EvidenceRef{{
-				ID:        "ev-1",
-				MessageID: "msg-1",
-				Role:      "user",
-				Text:      "Alice likes tea",
-				Timestamp: at,
+				ID:            "ev-1",
+				MessageID:     "msg-1",
+				ObservationID: raw.ID,
+				SpanID:        raw.Spans[0].ID,
+				Role:          "user",
+				Text:          "Alice likes tea",
+				Timestamp:     at,
 			}},
 		}},
 	})
@@ -129,13 +153,13 @@ func TestSave_CommitsObservationAssertionLinks(t *testing.T) {
 	if len(gotObservations) != 1 {
 		t.Fatalf("observations = %+v, want one observation", gotObservations)
 	}
-	if gotObservations[0].Kind != ObservationKindEvidence || gotObservations[0].Text != "Alice likes tea" {
-		t.Fatalf("observation = %+v, want evidence text", gotObservations[0])
+	if gotObservations[0].Kind != ObservationKindTurn || gotObservations[0].Text != "Alice likes tea" {
+		t.Fatalf("observation = %+v, want pre-existing raw turn", gotObservations[0])
 	}
 	if len(gotObservations[0].Spans) != 1 {
 		t.Fatalf("observation spans = %+v, want one span", gotObservations[0].Spans)
 	}
-	spanID := gotObservations[0].Spans[0].ID
+	spanID := raw.Spans[0].ID
 
 	gotLinks, err := links.List(ctx, scope, LinkListQuery{})
 	if err != nil {
@@ -287,7 +311,7 @@ func TestRecall_ObservationLaneReturnsRawEvidenceWhenExtractorMisses(t *testing.
 		t.Fatalf("new: %v", err)
 	}
 
-	rawText := "The extractor-only phrase is orbital marmalade."
+	rawText := "The extractor-only phrase is Orbital Marmalade."
 	if _, err := mem.Save(ctx, scope, SaveRequest{
 		Turns: []TurnContext{{
 			ID:      "turn-miss",
@@ -299,7 +323,7 @@ func TestRecall_ObservationLaneReturnsRawEvidenceWhenExtractorMisses(t *testing.
 		t.Fatalf("save: %v", err)
 	}
 
-	hits, trace, err := mem.(RecallExplainer).RecallExplain(ctx, scope, Query{Text: "orbital marmalade", Limit: 5})
+	hits, trace, err := mem.(RecallExplainer).RecallExplain(ctx, scope, Query{Text: "Orbital Marmalade", Limit: 5})
 	if err != nil {
 		t.Fatalf("recall: %v", err)
 	}
@@ -318,12 +342,14 @@ func TestRecall_ObservationLaneReturnsRawEvidenceWhenExtractorMisses(t *testing.
 func TestRecall_ObservationLaneReturnsRawEvidenceAfterIngestFailure(t *testing.T) {
 	ctx := context.Background()
 	scope := Scope{RuntimeID: "rt", UserID: "u1"}
-	mem, err := New(withCompiler(failingGraphIngestor{}))
+	mem, err := New(
+		withCompiler(failingGraphIngestor{}),
+	)
 	if err != nil {
 		t.Fatalf("new: %v", err)
 	}
 
-	rawText := "The extractor failure fallback phrase is blue nebula ledger."
+	rawText := "The extractor failure fallback phrase is Blue Nebula Ledger."
 	_, err = mem.Save(ctx, scope, SaveRequest{
 		Turns: []TurnContext{{
 			ID:      "turn-fail",
@@ -336,7 +362,7 @@ func TestRecall_ObservationLaneReturnsRawEvidenceAfterIngestFailure(t *testing.T
 		t.Fatalf("save err = %v, want %v", err, errGraphIngestFailed)
 	}
 
-	hits, trace, err := mem.(RecallExplainer).RecallExplain(ctx, scope, Query{Text: "blue nebula ledger", Limit: 5})
+	hits, trace, err := mem.(RecallExplainer).RecallExplain(ctx, scope, Query{Text: "Blue Nebula Ledger", Limit: 5})
 	if err != nil {
 		t.Fatalf("recall: %v", err)
 	}
@@ -410,11 +436,14 @@ func TestRecall_LinkExpansionAddsObservationEvidence(t *testing.T) {
 	}
 }
 
-func TestRecall_LinkExpansionAddsSupportedAssertion(t *testing.T) {
+func TestRecall_GroundedHitIncludesSupportedAssertionLink(t *testing.T) {
 	ctx := context.Background()
 	scope := Scope{RuntimeID: "rt", UserID: "u1"}
 	links := NewInMemoryLinkStore()
-	mem, err := New(WithLinkStore(links))
+	mem, err := New(
+		WithObservationStore(NewInMemoryObservationStore()),
+		WithLinkStore(links),
+	)
 	if err != nil {
 		t.Fatalf("new: %v", err)
 	}
@@ -430,8 +459,10 @@ func TestRecall_LinkExpansionAddsSupportedAssertion(t *testing.T) {
 	}
 	supported, err := mem.Save(ctx, scope, SaveRequest{
 		Facts: []TemporalFact{{
-			Kind:    FactNote,
-			Content: "ZXQ-774 calibration capsule note.",
+			Kind:      FactNote,
+			Subject:   "alice",
+			Predicate: "favorite_drink",
+			Content:   "ZXQ-774 calibration capsule note.",
 		}},
 	})
 	if err != nil {
@@ -450,15 +481,16 @@ func TestRecall_LinkExpansionAddsSupportedAssertion(t *testing.T) {
 		t.Fatalf("links.Append: %v", err)
 	}
 
-	hits, trace, err := mem.(RecallExplainer).RecallExplain(ctx, scope, Query{Text: "Alice favorite drink", Limit: 10})
+	hits, err := mem.Recall(ctx, scope, Query{Text: "Alice favorite drink", Subject: "alice", Predicate: "favorite_drink", Limit: 10})
 	if err != nil {
 		t.Fatalf("recall: %v", err)
 	}
-	if findHit(hits, supported.FactIDs[0]) == nil {
-		t.Fatalf("missing linked supported assertion in hits: %+v", hits)
+	hit := findHit(hits, seed.FactIDs[0])
+	if hit == nil {
+		t.Fatalf("missing seed assertion in hits: %+v", hits)
 	}
-	if !hasTraceStage(trace, "link_expansion") {
-		t.Fatalf("trace missing link_expansion stage: %+v", trace.Stages)
+	if !hasLink(hit.EvidencePacket.Links, LinkSupports, GraphNodeAssertion, seed.FactIDs[0], GraphNodeAssertion, supported.FactIDs[0]) {
+		t.Fatalf("hit evidence packet links = %+v, want support link to %s", hit.EvidencePacket.Links, supported.FactIDs[0])
 	}
 }
 
@@ -526,15 +558,37 @@ func TestForgetHard_StoreDeleteFailureRestoresGraphLedger(t *testing.T) {
 	}
 	m := mem.(*memory)
 	m.observationProjection = projection
+	raw := Observation{
+		ID:        "obs-restore",
+		Scope:     scope,
+		Kind:      ObservationKindTurn,
+		SourceID:  "ev-restore",
+		MessageID: "msg-restore",
+		Text:      "Alice likes tea",
+		Spans: []ObservationSpan{{
+			ID:            "span-restore",
+			ObservationID: "obs-restore",
+			SourceID:      "ev-restore",
+			Kind:          ObservationSpanKindTurn,
+			Text:          "Alice likes tea",
+			Start:         0,
+			End:           len("Alice likes tea"),
+		}},
+	}
+	if err := observations.Append(ctx, []Observation{raw}); err != nil {
+		t.Fatalf("observations.Append: %v", err)
+	}
 
 	saved, err := mem.Save(ctx, scope, SaveRequest{
 		Facts: []TemporalFact{{
 			Kind:    FactNote,
 			Content: "Alice shared that she likes tea",
 			EvidenceRefs: []EvidenceRef{{
-				ID:        "ev-restore",
-				MessageID: "msg-restore",
-				Text:      "Alice likes tea",
+				ID:            "ev-restore",
+				MessageID:     "msg-restore",
+				ObservationID: raw.ID,
+				SpanID:        raw.Spans[0].ID,
+				Text:          "Alice likes tea",
 			}},
 		}},
 	})
@@ -561,8 +615,8 @@ func TestForgetHard_StoreDeleteFailureRestoresGraphLedger(t *testing.T) {
 	if got, err := links.List(ctx, scope, LinkListQuery{}); err != nil || len(got) == 0 {
 		t.Fatalf("graph links should be restored after delete failure, got %+v err=%v", got, err)
 	}
-	if got, err := observations.List(ctx, scope, ObservationListQuery{}); err != nil || len(got) == 0 {
-		t.Fatalf("observations should be restored after delete failure, got %+v err=%v", got, err)
+	if got, err := observations.List(ctx, scope, ObservationListQuery{}); err != nil || len(got) != 1 {
+		t.Fatalf("raw observation should remain after delete failure, got %+v err=%v", got, err)
 	}
 	if len(projection.forgotten) == 0 {
 		t.Fatalf("test precondition failed: observation projection was not cleaned")
@@ -584,14 +638,35 @@ func TestRebuildAll_RehydratesGraphLedger(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new: %v", err)
 	}
+	raw := Observation{
+		ID:       "obs-rebuild",
+		Scope:    scope,
+		Kind:     ObservationKindTurn,
+		SourceID: "ev-rebuild",
+		Text:     "Alice likes tea",
+		Spans: []ObservationSpan{{
+			ID:            "span-rebuild",
+			ObservationID: "obs-rebuild",
+			SourceID:      "ev-rebuild",
+			Kind:          ObservationSpanKindTurn,
+			Text:          "Alice likes tea",
+			Start:         0,
+			End:           len("Alice likes tea"),
+		}},
+	}
+	if err := observations.Append(ctx, []Observation{raw}); err != nil {
+		t.Fatalf("observations.Append: %v", err)
+	}
 
 	saved, err := mem.Save(ctx, scope, SaveRequest{
 		Facts: []TemporalFact{{
 			Kind:    FactNote,
 			Content: "Alice likes tea",
 			EvidenceRefs: []EvidenceRef{{
-				ID:   "ev-rebuild",
-				Text: "Alice likes tea",
+				ID:            "ev-rebuild",
+				ObservationID: raw.ID,
+				SpanID:        raw.Spans[0].ID,
+				Text:          "Alice likes tea",
 			}},
 		}},
 	})
@@ -600,9 +675,6 @@ func TestRebuildAll_RehydratesGraphLedger(t *testing.T) {
 	}
 	if _, err := links.DeleteByScope(ctx, scope); err != nil {
 		t.Fatalf("links.DeleteByScope: %v", err)
-	}
-	if _, err := observations.DeleteByScope(ctx, scope); err != nil {
-		t.Fatalf("observations.DeleteByScope: %v", err)
 	}
 
 	if err := mem.(ProjectionRebuilder).RebuildAll(ctx, scope); err != nil {
@@ -614,12 +686,12 @@ func TestRebuildAll_RehydratesGraphLedger(t *testing.T) {
 		t.Fatalf("observations.List: %v", err)
 	}
 	if len(gotObservations) != 1 {
-		t.Fatalf("observations = %+v, want one rebuilt observation", gotObservations)
+		t.Fatalf("observations = %+v, want preserved raw observation", gotObservations)
 	}
 	if len(gotObservations[0].Spans) != 1 {
-		t.Fatalf("rebuilt observation spans = %+v, want one span", gotObservations[0].Spans)
+		t.Fatalf("raw observation spans = %+v, want one span", gotObservations[0].Spans)
 	}
-	spanID := gotObservations[0].Spans[0].ID
+	spanID := raw.Spans[0].ID
 	gotLinks, err := links.List(ctx, scope, LinkListQuery{})
 	if err != nil {
 		t.Fatalf("links.List: %v", err)

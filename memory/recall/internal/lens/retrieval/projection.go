@@ -211,8 +211,7 @@ func listEvidenceDocIDs(ctx context.Context, idx retrieval.Index, namespace stri
 //
 // Embedder failure modes are handled defensively:
 //   - EmbedBatch returns an error → retry per-text via Embed so a
-//     single bad input doesn't strand the whole batch (mirrors v1's
-//     embedBatch helper);
+//     single bad input doesn't strand the whole batch;
 //   - EmbedBatch returns fewer vectors than inputs → treat the tail
 //     as missing (skip) rather than panic on out-of-range access.
 //
@@ -268,10 +267,9 @@ func embedTextFor(f domain.TemporalFact) string {
 }
 
 // embedBatchWithFallback calls EmbedBatch and falls back to per-text
-// Embed when the batch fails or returns a partial result. This
-// mirrors recall_v1's embedBatch and protects against providers that
-// occasionally truncate batch responses or fail an entire batch when
-// a single input is problematic.
+// Embed when the batch fails or returns a partial result. This protects against
+// providers that occasionally truncate batch responses or fail an entire batch
+// when a single input is problematic.
 //
 // The returned slice always has len == len(texts); missing entries
 // are zero-length so callers can detect skips without an extra map.

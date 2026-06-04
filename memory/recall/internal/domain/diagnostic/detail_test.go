@@ -37,6 +37,7 @@ var (
 	_ diagnostic.StageDetail = diagnostic.PlanDetail{}
 	_ diagnostic.StageDetail = diagnostic.CandidateFanoutDetail{}
 	_ diagnostic.StageDetail = diagnostic.CandidateMergeAndMaterializeDetail{}
+	_ diagnostic.StageDetail = diagnostic.CandidateAssessmentDetail{}
 	_ diagnostic.StageDetail = diagnostic.PolicyFilterDetail{}
 	_ diagnostic.StageDetail = diagnostic.RankDetail{}
 	_ diagnostic.StageDetail = diagnostic.ContextPackDetail{}
@@ -177,6 +178,54 @@ func TestDetail_RoundTrip(t *testing.T) {
 		{"candidate_merge_and_materialize", diagnostic.CandidateMergeAndMaterializeDetail{InputCount: 30, CandidateCount: 25, MaterializedCount: 9, OutputCount: 5, DroppedByDedup: 2, Latency: 2 * time.Millisecond}, &diagnostic.CandidateMergeAndMaterializeDetail{}},
 		{"candidate_expansion", diagnostic.CandidateExpansionDetail{InputCount: 10, OutputCount: 10, Suggested: 2, TaskIntents: []string{"set_completion"}, SuggestedFactIDs: []string{"f1", "f2"}}, &diagnostic.CandidateExpansionDetail{}},
 		{"policy_filter", diagnostic.PolicyFilterDetail{MaxSensitivity: "private", ActorID: "agent-a", Removed: 2, Redacted: 1}, &diagnostic.PolicyFilterDetail{}},
+		{"candidate_assessment", diagnostic.CandidateAssessmentDetail{
+			InputCount:  2,
+			Accepted:    1,
+			Rejected:    1,
+			OutputCount: 1,
+			Dropped:     1,
+			DropReasons: map[string]int{"unsupported_candidate": 1},
+			ScoreSummary: diagnostic.CandidateAssessmentScoreSummary{
+				Count:                2,
+				RelevanceScoreMin:    0.1,
+				RelevanceScoreMax:    0.8,
+				RelevanceScoreAvg:    0.45,
+				SemanticScoreAvg:     0.2,
+				SupportScoreAvg:      0.3,
+				StructuredScoreAvg:   0.1,
+				LiteralScoreAvg:      0.05,
+				SourcePriorAvg:       0.02,
+				ConfidenceAvg:        0.7,
+				HardConstraintPasses: 2,
+			},
+			Components: []diagnostic.CandidateAssessmentComponent{{
+				ID:                 "f1",
+				Kind:               "assertion",
+				HardConstraintPass: true,
+				SupportScore:       0.5,
+				StructuredScore:    0.2,
+				LiteralScore:       0.1,
+				SemanticScore:      0.4,
+				SourcePrior:        0.02,
+				RelevanceScore:     0.8,
+				Confidence:         0.7,
+				Reason:             "supported",
+				EquivalenceGroup:   "eq:f1",
+				SupportGroup:       "obs:o1",
+				DiversityGroup:     "source:retrieval",
+			}, {
+				ID:                 "f2",
+				Kind:               "assertion",
+				HardConstraintPass: true,
+				RelevanceScore:     0.1,
+				DropReason:         "unsupported_candidate",
+				FallbackReason:     "semantic_scorer_unavailable",
+			}},
+			Input:         &[]diagnostic.CandidateSnapshot{{FactID: "f1"}, {FactID: "f2"}},
+			AcceptedItems: &[]diagnostic.CandidateSnapshot{{FactID: "f1"}},
+			RejectedItems: &[]diagnostic.CandidateSnapshot{{FactID: "f2", DroppedReason: "unsupported_candidate"}},
+			Items:         &[]diagnostic.CandidateSnapshot{{FactID: "f1"}},
+		}, &diagnostic.CandidateAssessmentDetail{}},
 		{"rank", diagnostic.RankDetail{InputCount: 9, OutputCount: 9, FinalCap: 10, BoostsApplied: 2, Latency: 1 * time.Millisecond}, &diagnostic.RankDetail{}},
 		{"context_pack", diagnostic.ContextPackDetail{Count: 9}, &diagnostic.ContextPackDetail{}},
 		{"build_grounded_hits", diagnostic.BuildGroundedHitsDetail{Count: 9}, &diagnostic.BuildGroundedHitsDetail{}},

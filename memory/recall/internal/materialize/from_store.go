@@ -17,7 +17,6 @@ import (
 	"github.com/GizClaw/flowcraft/memory/recall/internal/domain/diagnostic"
 	"github.com/GizClaw/flowcraft/memory/recall/internal/port"
 	temporalstore "github.com/GizClaw/flowcraft/memory/recall/internal/store/temporal"
-	"github.com/GizClaw/flowcraft/memory/recall/internal/telemetry"
 )
 
 // FromStore materializes from a TemporalFactStore.
@@ -25,22 +24,14 @@ type FromStore struct {
 	store        port.TemporalStore
 	observations port.ObservationStore
 	links        port.LinkStore
-	telemetry    port.TelemetryHook
 }
 
 var _ port.Materializer = (*FromStore)(nil)
 
-// New constructs a FromStore. The telemetry hook is retained on the
-// struct for forward compatibility but is intentionally NOT invoked
-// here: drift signals (stale-fact / superseded-fact / scope-violation drops)
-// flow through the read pipeline's CandidateMergeAndMaterializeDetail
-// diagnostic that the stage emits to the same hook. Materializer stays a pure transform;
-// emission is the stage's job.
-func New(store port.TemporalStore, observations port.ObservationStore, links port.LinkStore, hook port.TelemetryHook) *FromStore {
-	if hook == nil {
-		hook = telemetry.NopHook{}
-	}
-	return &FromStore{store: store, observations: observations, links: links, telemetry: hook}
+// New constructs a FromStore. Materializer stays a pure transform; drift
+// signals flow through the read pipeline's CandidateMergeAndMaterializeDetail.
+func New(store port.TemporalStore, observations port.ObservationStore, links port.LinkStore) *FromStore {
+	return &FromStore{store: store, observations: observations, links: links}
 }
 
 // Materialize loads each candidate's canonical fact. Drops fall in

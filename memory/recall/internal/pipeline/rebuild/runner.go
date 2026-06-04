@@ -9,7 +9,7 @@ import (
 )
 
 // Runner is the rebuild-flow pipeline driver. The facade layer
-// (Memory.RebuildAll / RebuildProjection / RebuildScope) calls Run.
+// (Memory.RebuildAll / RebuildProjection) calls Run.
 type Runner struct {
 	pipeline *pipeline.Pipeline[*RebuildState]
 }

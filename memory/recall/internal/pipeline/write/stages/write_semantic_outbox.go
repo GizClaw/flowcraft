@@ -44,7 +44,6 @@ func (s *WriteSemanticOutbox) Run(ctx context.Context, state *write.WriteState) 
 		Scope:               state.Scope,
 		SaveOutboxID:        state.SaveOutboxID,
 		EpisodeFactIDs:      ids,
-		TurnsSnapshot:       state.Turns,
 		SourceEvidenceSpans: state.SourceEvidenceSpans,
 		ObservedAt:          state.ObservedAt,
 		Tier:                state.Tier,

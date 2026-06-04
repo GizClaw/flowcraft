@@ -9,7 +9,6 @@ import (
 )
 
 func TestCloneAsyncSemanticJob_IsolatesMutableSlices(t *testing.T) {
-	turns := []domain.TurnContext{{ID: "t1", Text: "hello"}}
 	sourceSpans := []domain.SourceEvidenceSpan{{ObservationID: "obs-1", SpanID: "span-1", Text: "hello"}}
 	msgs := []domain.Message{{Role: "user", Text: "hi"}}
 	anchor := []domain.TemporalFact{{
@@ -19,22 +18,17 @@ func TestCloneAsyncSemanticJob_IsolatesMutableSlices(t *testing.T) {
 	job := port.AsyncSemanticJob{
 		RequestID:           "req-1",
 		EpisodeFactIDs:      []string{"epi-1"},
-		TurnsSnapshot:       turns,
 		SourceEvidenceSpans: sourceSpans,
 		RecentMessages:      msgs,
 		ExistingFactHints:   anchor,
 	}
 	cloned := port.CloneAsyncSemanticJob(job)
 
-	turns[0].Text = "mutated"
 	sourceSpans[0].Text = "mutated"
 	msgs[0].Text = "mutated"
 	anchor[0].Metadata["k"] = "mutated"
 	job.EpisodeFactIDs[0] = "mutated"
 
-	if cloned.TurnsSnapshot[0].Text != "hello" {
-		t.Errorf("TurnsSnapshot = %q, want hello", cloned.TurnsSnapshot[0].Text)
-	}
 	if cloned.SourceEvidenceSpans[0].Text != "hello" {
 		t.Errorf("SourceEvidenceSpans = %q, want hello", cloned.SourceEvidenceSpans[0].Text)
 	}

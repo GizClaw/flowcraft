@@ -147,7 +147,7 @@ func TestForget_SweepsEvidenceAdapter(t *testing.T) {
 	if err != nil {
 		t.Fatalf("save: %v", err)
 	}
-	if err := mem.Forget(context.Background(), scope, res.FactIDs[0]); err != nil {
+	if err := mem.Forget(context.Background(), scope, res.FactIDs[0], ForgetHard); err != nil {
 		t.Fatalf("forget: %v", err)
 	}
 	got, _ := ev.ListByFact(context.Background(), scope, res.FactIDs[0])

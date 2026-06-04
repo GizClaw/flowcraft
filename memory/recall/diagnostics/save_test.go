@@ -68,26 +68,6 @@ func TestDiagnoseSave_PopulatesFactQualityFromStats(t *testing.T) {
 	}
 }
 
-// TestDiagnoseSave_FallsBackToExtractedCountWhenStatsMissing keeps
-// the diagnostics layer compatible with legacy callers that emit
-// IngestDetail / ResolveDetail without precomputed FactStats (third-
-// party runners, fixture-based tests). When Stats are absent the
-// per-field counters stay zero but Total still reflects pipeline
-// throughput so coverage dashboards do not silently lose the
-// denominator.
-func TestDiagnoseSave_FallsBackToExtractedCountWhenStatsMissing(t *testing.T) {
-	trace := domain.SaveTrace{
-		Stages: []diagnostic.StageDiagnostic{
-			{Stage: "ingest", Detail: diagnostic.IngestDetail{ExtractedFacts: 5}},
-			{Stage: "resolve", Detail: diagnostic.ResolveDetail{Appended: 4}},
-		},
-	}
-	diag := diagnostics.DiagnoseSave(domain.SaveRequest{}, trace)
-	if diag.Compiled.Total != 5 || diag.Appended.Total != 4 {
-		t.Fatalf("legacy fallback failed: Compiled=%+v Appended=%+v", diag.Compiled, diag.Appended)
-	}
-}
-
 func TestDiagnoseSave_ExposesProposalLifecycle(t *testing.T) {
 	trace := domain.SaveTrace{Stages: []diagnostic.StageDiagnostic{{
 		Stage: "ingest",

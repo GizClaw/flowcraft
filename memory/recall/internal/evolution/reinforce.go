@@ -23,19 +23,5 @@ func FeedbackBoostFromMeta(meta map[string]any) float64 {
 	}
 	reinf, _ := meta[domain.MetaReinforcement].(float64)
 	pen, _ := meta[domain.MetaPenalty].(float64)
-	if reinf == 0 && pen == 0 {
-		switch v := meta[domain.MetaReinforcement].(type) {
-		case float32:
-			reinf = float64(v)
-		case int:
-			reinf = float64(v)
-		}
-		switch v := meta[domain.MetaPenalty].(type) {
-		case float32:
-			pen = float64(v)
-		case int:
-			pen = float64(v)
-		}
-	}
 	return FeedbackBoost(reinf, pen)
 }

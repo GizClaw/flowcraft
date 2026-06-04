@@ -22,8 +22,8 @@ func TestAuditRecallStages_IncludesCandidateExpansion(t *testing.T) {
 				SuggestedByTask:  map[string]int{"set_completion": 1},
 				SuggestedFactIDs: []string{"f2"},
 				Items: &[]diagnostic.CandidateSnapshot{
-					{FactID: "f1", Score: 0.9, Sources: []string{"retrieval"}},
-					{FactID: "f2", Score: 0.22, Sources: []string{"retrieval"}},
+					{FactID: "f1", ScoreLabel: "discovery_score", DiscoveryScore: 0.9, Sources: []string{"retrieval"}},
+					{FactID: "f2", ScoreLabel: "discovery_score", DiscoveryScore: 0.22, Sources: []string{"retrieval"}},
 				},
 			},
 		}},
@@ -113,8 +113,8 @@ func TestAuditRecallStages_IncludesContextPackCoverageBundles(t *testing.T) {
 					Reason:          "subject_predicate_set",
 				}},
 				Hits: &[]diagnostic.CandidateSnapshot{
-					{FactID: "f1", Score: 0.9, Sources: []string{"retrieval"}},
-					{FactID: "f2", Score: 0.2, Sources: []string{"retrieval"}},
+					{FactID: "f1", ScoreLabel: "final_score", FinalScore: 0.9, Sources: []string{"retrieval"}},
+					{FactID: "f2", ScoreLabel: "final_score", FinalScore: 0.2, Sources: []string{"retrieval"}},
 				},
 			},
 		}},
@@ -133,6 +133,142 @@ func TestAuditRecallStages_IncludesContextPackCoverageBundles(t *testing.T) {
 	}
 }
 
+func TestAuditRecallStages_IncludesCandidateAssessmentDetail(t *testing.T) {
+	audit := diagnostics.AuditRecallStages(domain.RecallTrace{
+		Stages: []diagnostic.StageDiagnostic{{
+			Stage:  "candidate_assessment",
+			Status: diagnostic.StatusOK,
+			Detail: diagnostic.CandidateAssessmentDetail{
+				InputCount:  2,
+				Accepted:    1,
+				Rejected:    1,
+				OutputCount: 1,
+				Dropped:     1,
+				DropReasons: map[string]int{"unsupported_candidate": 1},
+				ScoreSummary: diagnostic.CandidateAssessmentScoreSummary{
+					Count:                2,
+					RelevanceScoreMin:    0.1,
+					RelevanceScoreMax:    0.8,
+					RelevanceScoreAvg:    0.45,
+					SemanticScoreAvg:     0.2,
+					SupportScoreAvg:      0.3,
+					StructuredScoreAvg:   0.1,
+					LiteralScoreAvg:      0.05,
+					SourcePriorAvg:       0.02,
+					ConfidenceAvg:        0.7,
+					HardConstraintPasses: 2,
+				},
+				Components: []diagnostic.CandidateAssessmentComponent{{
+					ID:                 "f1",
+					Kind:               "assertion",
+					HardConstraintPass: true,
+					SupportScore:       0.5,
+					StructuredScore:    0.2,
+					LiteralScore:       0.1,
+					SemanticScore:      0.4,
+					SourcePrior:        0.02,
+					RelevanceScore:     0.8,
+					Confidence:         0.7,
+					Reason:             "supported",
+					EquivalenceGroup:   "eq:f1",
+					SupportGroup:       "obs:o1",
+					DiversityGroup:     "source:retrieval",
+				}, {
+					ID:                 "f2",
+					Kind:               "assertion",
+					HardConstraintPass: true,
+					DropReason:         "unsupported_candidate",
+					FallbackReason:     "semantic_scorer_unavailable",
+				}},
+				Items: &[]diagnostic.CandidateSnapshot{{FactID: "f1", ScoreLabel: "assessment_relevance_score", AssessmentScore: 0.8, Sources: []string{"retrieval"}}},
+			},
+		}},
+	})
+
+	if len(audit.Stages) != 1 {
+		t.Fatalf("stages = %+v", audit.Stages)
+	}
+	got := audit.Stages[0]
+	if got.Stage != "candidate_assessment" || got.InputCount != 2 || got.OutputCount != 1 || got.Dropped != 1 {
+		t.Fatalf("assessment summary = %+v", got)
+	}
+	if got.DropReasons["unsupported_candidate"] != 1 {
+		t.Fatalf("drop reasons = %+v", got.DropReasons)
+	}
+	if got.ScoreSummary == nil || got.ScoreSummary.RelevanceScoreMax != 0.8 || got.ScoreSummary.HardConstraintPasses != 2 {
+		t.Fatalf("score summary = %+v", got.ScoreSummary)
+	}
+	if len(got.Assessment) != 2 || got.Assessment[0].SemanticScore != 0.4 || got.Assessment[1].FallbackReason == "" {
+		t.Fatalf("assessment components = %+v", got.Assessment)
+	}
+	if len(got.Candidates) != 1 || got.Candidates[0].FactID != "f1" {
+		t.Fatalf("assessment candidates = %+v", got.Candidates)
+	}
+}
+
+func TestAuditRecallStages_LabelsStageSpecificScores(t *testing.T) {
+	audit := diagnostics.AuditRecallStages(domain.RecallTrace{
+		Stages: []diagnostic.StageDiagnostic{
+			{
+				Stage:  "candidate_fanout",
+				Status: diagnostic.StatusOK,
+				Detail: diagnostic.CandidateFanoutDetail{Sources: []diagnostic.SourceResult{{
+					Lens: "retrieval",
+					Snapshots: &[]diagnostic.CandidateSnapshot{{
+						FactID:         "f1",
+						Source:         "retrieval",
+						Rank:           1,
+						ScoreLabel:     "discovery_score",
+						DiscoveryScore: 0.99,
+					}},
+				}}},
+			},
+			{
+				Stage:  "rank",
+				Status: diagnostic.StatusOK,
+				Detail: diagnostic.RankDetail{Output: &[]diagnostic.CandidateSnapshot{{
+					FactID:     "f1",
+					ScoreLabel: "rank_score",
+					RankScore:  0.42,
+				}}},
+			},
+			{
+				Stage:  "build_grounded_hits",
+				Status: diagnostic.StatusOK,
+				Detail: diagnostic.BuildGroundedHitsDetail{Hits: &[]diagnostic.CandidateSnapshot{{
+					FactID:     "f1",
+					ScoreLabel: "final_score",
+					FinalScore: 0.42,
+				}}},
+			},
+		},
+	})
+
+	var discovery, rank, final diagnostics.RecallCandidateSnapshot
+	for _, stage := range audit.Stages {
+		switch stage.Stage {
+		case "candidate_fanout":
+			discovery = stage.Candidates[0]
+		case "rank_output":
+			rank = stage.Candidates[0]
+		case "build_grounded_hits":
+			final = stage.Candidates[0]
+		}
+	}
+	if discovery.ScoreLabel != "discovery_score" || discovery.DiscoveryScore != 0.99 {
+		t.Fatalf("discovery snapshot = %+v", discovery)
+	}
+	if rank.ScoreLabel != "rank_score" || rank.RankScore != 0.42 {
+		t.Fatalf("rank snapshot = %+v", rank)
+	}
+	if final.ScoreLabel != "final_score" || final.FinalScore != 0.42 {
+		t.Fatalf("final snapshot = %+v", final)
+	}
+	if discovery.DiscoveryScore == final.FinalScore {
+		t.Fatalf("source discovery score should remain distinct from final hit score: discovery=%+v final=%+v", discovery, final)
+	}
+}
+
 func TestAuditRecallStages_IncludesLinkExpansion(t *testing.T) {
 	audit := diagnostics.AuditRecallStages(domain.RecallTrace{
 		Stages: []diagnostic.StageDiagnostic{{
@@ -146,8 +282,8 @@ func TestAuditRecallStages_IncludesLinkExpansion(t *testing.T) {
 				AddedEvidenceRefs: 2,
 				AddedFactIDs:      []string{"f3"},
 				Items: &[]diagnostic.CandidateSnapshot{
-					{FactID: "f1", Score: 0.9, Sources: []string{"retrieval"}},
-					{FactID: "f3", Score: 0.7, Sources: []string{"link_expansion"}},
+					{FactID: "f1", ScoreLabel: "discovery_score", DiscoveryScore: 0.9, Sources: []string{"retrieval"}},
+					{FactID: "f3", ScoreLabel: "discovery_score", DiscoveryScore: 0.7, Sources: []string{"link_expansion"}},
 				},
 			},
 		}},

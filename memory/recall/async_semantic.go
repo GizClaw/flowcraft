@@ -32,10 +32,6 @@ type AsyncSemanticProcessOptions struct {
 	Now      time.Time
 	// Scope restricts Claim to that partition and is required.
 	Scope Scope
-	// RuntimeID is retained for source compatibility but is not
-	// accepted by ProcessAsyncSemantic. Runtime-wide draining must go
-	// through an explicit privileged/admin entry point.
-	RuntimeID string
 }
 
 // AsyncSemanticProcessResult summarizes one drain pass.
@@ -104,10 +100,6 @@ func (m *memory) ProcessAsyncSemantic(ctx context.Context, opts AsyncSemanticPro
 	if opts.Scope.PartitionKey() == "" {
 		return AsyncSemanticProcessResult{}, errdefs.Validationf(
 			"recall.ProcessAsyncSemantic: scope partition is required (RuntimeID and UserID)")
-	}
-	if opts.RuntimeID != "" {
-		return AsyncSemanticProcessResult{}, errdefs.Validationf(
-			"recall.ProcessAsyncSemantic: RuntimeID-only drain is not supported; pass Scope")
 	}
 	scope := opts.Scope
 	claimOpts := port.AsyncSemanticClaimOptions{

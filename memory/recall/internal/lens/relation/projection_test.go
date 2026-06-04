@@ -111,6 +111,31 @@ func TestRelation_LookupByDimensions(t *testing.T) {
 	}
 }
 
+func TestRelation_LookupLimitBoundsAndSortsIDs(t *testing.T) {
+	p := New()
+	ctx := context.Background()
+	facts := []domain.TemporalFact{
+		{ID: "rel-c", Scope: scope(), Kind: domain.KindRelation, Subject: "alice", Predicate: "visited", Object: "cairo", ObservedAt: time.Unix(1, 0)},
+		{ID: "rel-a", Scope: scope(), Kind: domain.KindRelation, Subject: "alice", Predicate: "visited", Object: "athens", ObservedAt: time.Unix(1, 0)},
+		{ID: "rel-d", Scope: scope(), Kind: domain.KindRelation, Subject: "alice", Predicate: "visited", Object: "delhi", ObservedAt: time.Unix(1, 0)},
+		{ID: "rel-b", Scope: scope(), Kind: domain.KindRelation, Subject: "alice", Predicate: "visited", Object: "berlin", ObservedAt: time.Unix(1, 0)},
+	}
+	if err := p.Project(ctx, facts); err != nil {
+		t.Fatal(err)
+	}
+
+	got := p.LookupLimit(ctx, scope(), "alice", "", "", 2)
+	want := []string{"rel-a", "rel-b"}
+	if len(got) != len(want) {
+		t.Fatalf("LookupLimit len = %d, want %d: %+v", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("LookupLimit order = %+v, want %+v", got, want)
+		}
+	}
+}
+
 func TestRelation_LookupCanonicalizesDimensions(t *testing.T) {
 	p := New()
 	ctx := context.Background()
@@ -149,7 +174,7 @@ func TestRelation_DropsInactiveValidTo(t *testing.T) {
 
 // TestRelation_DropsClosed pins that soft-forgotten (Closed)
 // relations must not survive in the projection cache. Before the
-// predicate split, the projection called IsActive (canonical only)
+// predicate split, the projection used IsCanonicalActive (canonical only)
 // and re-upserted closed triples after a soft Forget.
 func TestRelation_DropsClosed(t *testing.T) {
 	p := New()

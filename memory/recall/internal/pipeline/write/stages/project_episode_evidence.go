@@ -15,7 +15,7 @@ import (
 // fanout for the episode lane. Today only the evidence projection
 // accepts KindEpisode (see lens/evidence/projection.go); the other
 // required projections (retrieval / entity / etc.) declare
-// AcceptsKind=false so Fanout.ProjectRequiredForKindsStrict skips them.
+// AcceptsKind=false so Fanout.ProjectRequiredForKinds skips them.
 //
 // The compensator handles two failure cases:
 //   - downstream (structured_ingest … write_semantic_outbox) failure: roll back the
@@ -49,7 +49,7 @@ func (s *ProjectEpisodeEvidence) Run(ctx context.Context, state *write.WriteStat
 	started := time.Now()
 	facts := state.EpisodeFacts
 	if s.fanout != nil && len(facts) > 0 {
-		if err := s.fanout.ProjectRequiredForKindsStrict(ctx, facts, domain.KindEpisode); err != nil {
+		if err := s.fanout.ProjectRequiredForKinds(ctx, facts, domain.KindEpisode); err != nil {
 			state.FailedStage = "project_episode_evidence"
 			return diagnostic.ProjectEpisodeEvidenceDetail{
 				AsyncRequestID: state.AsyncRequestID,
@@ -82,7 +82,7 @@ func (s *ProjectEpisodeEvidence) Compensate(ctx context.Context, state *write.Wr
 		if p == nil {
 			continue
 		}
-		if !pipeline.ProjectionAcceptsKindStrict(p, domain.KindEpisode) {
+		if !pipeline.ProjectionAcceptsKind(p, domain.KindEpisode) {
 			continue
 		}
 		if err := p.Forget(cleanupCtx, state.Scope, ids); err != nil {

@@ -77,18 +77,12 @@ func (f *Fanout) ProjectRequired(ctx context.Context, facts []domain.TemporalFac
 	})
 }
 
-// ProjectRequiredForKinds runs required projections synchronously
-// against facts filtered to a set of allowed FactKinds.
-//
-// Projections that implement port.KindFilteredProjection participate
-// only when at least one of the allowed kinds is accepted. Projections
-// that do NOT implement the optional interface are always included,
-// preserving backward compatibility with the unfiltered required tier.
-//
-// The sync episode lane uses ProjectRequiredForKindsStrict instead so extra
-// required projections must opt in via KindFilteredProjection.
+// ProjectRequiredForKinds runs required projections that implement
+// port.KindFilteredProjection and explicitly accept at least one of the allowed
+// kinds. Projections without the interface are skipped so kind-scoped lanes
+// cannot pull unrelated required projection work into their execution window.
 func (f *Fanout) ProjectRequiredForKinds(ctx context.Context, facts []domain.TemporalFact, kinds ...domain.FactKind) error {
-	if f == nil || len(facts) == 0 || len(f.required) == 0 {
+	if f == nil || len(facts) == 0 || len(f.required) == 0 || len(kinds) == 0 {
 		return nil
 	}
 	for _, p := range f.required {
@@ -105,33 +99,10 @@ func (f *Fanout) ProjectRequiredForKinds(ctx context.Context, facts []domain.Tem
 	return nil
 }
 
-// ProjectRequiredForKindsStrict runs required projections that
-// implement port.KindFilteredProjection and explicitly accept at
-// least one of the allowed kinds. Projections without the interface
-// are skipped so the episode lane cannot pull remote IO into the
-// scope write lock through custom required projections.
-func (f *Fanout) ProjectRequiredForKindsStrict(ctx context.Context, facts []domain.TemporalFact, kinds ...domain.FactKind) error {
-	if f == nil || len(facts) == 0 || len(f.required) == 0 || len(kinds) == 0 {
-		return nil
-	}
-	for _, p := range f.required {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		if !projectionAcceptsAnyStrict(p, kinds) {
-			continue
-		}
-		if err := p.Project(ctx, facts); err != nil {
-			return fmt.Errorf("recall projection %q (%s): %w", p.Name(), opProject, err)
-		}
-	}
-	return nil
-}
-
-// ProjectionAcceptsKindStrict reports whether p explicitly opts into
-// kind via port.KindFilteredProjection. Used by the episode lane
-// compensator to match ProjectRequiredForKindsStrict.
-func ProjectionAcceptsKindStrict(p port.Projection, kind domain.FactKind) bool {
+// ProjectionAcceptsKind reports whether p explicitly opts into kind via
+// port.KindFilteredProjection. Used by compensators to match
+// ProjectRequiredForKinds.
+func ProjectionAcceptsKind(p port.Projection, kind domain.FactKind) bool {
 	filt, ok := p.(port.KindFilteredProjection)
 	if !ok {
 		return false
@@ -139,27 +110,7 @@ func ProjectionAcceptsKindStrict(p port.Projection, kind domain.FactKind) bool {
 	return filt.AcceptsKind(kind)
 }
 
-// projectionAcceptsAny reports whether p should participate for the
-// supplied allowed kinds. Projections without the optional interface
-// always participate. An empty kinds slice means "no restriction" and
-// also includes the projection.
 func projectionAcceptsAny(p port.Projection, kinds []domain.FactKind) bool {
-	filt, ok := p.(port.KindFilteredProjection)
-	if !ok {
-		return true
-	}
-	if len(kinds) == 0 {
-		return true
-	}
-	for _, k := range kinds {
-		if filt.AcceptsKind(k) {
-			return true
-		}
-	}
-	return false
-}
-
-func projectionAcceptsAnyStrict(p port.Projection, kinds []domain.FactKind) bool {
 	filt, ok := p.(port.KindFilteredProjection)
 	if !ok || len(kinds) == 0 {
 		return false

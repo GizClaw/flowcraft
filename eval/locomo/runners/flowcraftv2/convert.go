@@ -27,10 +27,11 @@ func toRecallScope(s runners.Scope) recall.Scope {
 func fromRecallArtifact(h recall.Hit) runners.RecallArtifact {
 	if h.Fact.ID == "" && h.Observation.ID != "" {
 		artifact := runners.RecallArtifact{
-			ID:      h.Observation.ID,
-			Content: groundedObservationContent(h),
-			Score:   h.Score,
-			Kind:    "observation",
+			ID:         h.Observation.ID,
+			Content:    groundedObservationContent(h),
+			ScoreLabel: "final_score",
+			FinalScore: h.Score,
+			Kind:       "observation",
 		}
 		if len(h.Sources) > 0 {
 			artifact.Sources = append([]string(nil), h.Sources...)
@@ -43,10 +44,11 @@ func fromRecallArtifact(h recall.Hit) runners.RecallArtifact {
 		return artifact
 	}
 	artifact := runners.RecallArtifact{
-		ID:      h.Fact.ID,
-		Content: groundedHitContent(h),
-		Score:   h.Score,
-		Kind:    string(h.Fact.Kind),
+		ID:         h.Fact.ID,
+		Content:    groundedHitContent(h),
+		ScoreLabel: "final_score",
+		FinalScore: h.Score,
+		Kind:       string(h.Fact.Kind),
 	}
 	if len(h.Sources) > 0 {
 		artifact.Sources = append([]string(nil), h.Sources...)
@@ -231,13 +233,19 @@ func fromRecallStageAudit(a diagnostics.RecallStageAudit) runners.RecallStageAud
 			Suggested:         st.Suggested,
 			SuggestedByTask:   cloneIntMap(st.SuggestedByTask),
 			SuggestedFactIDs:  append([]string(nil), st.SuggestedFactIDs...),
+			InputCount:        st.InputCount,
+			OutputCount:       st.OutputCount,
+			Dropped:           st.Dropped,
+			DropReasons:       cloneIntMap(st.DropReasons),
 			Added:             st.Added,
 			AddedFactIDs:      append([]string(nil), st.AddedFactIDs...),
 			ScannedLinks:      st.ScannedLinks,
 			AddedFacts:        st.AddedFacts,
 			AddedEvidenceRefs: st.AddedEvidenceRefs,
 			CoverageBundles:   fromRecallCoverageBundles(st.CoverageBundles),
+			ScoreSummary:      fromRecallAssessmentSummary(st.ScoreSummary),
 			Candidates:        fromRecallAuditCandidates(st.Candidates),
+			Assessment:        fromRecallAssessmentComponents(st.Assessment),
 			PackTrace:         fromRecallAuditCandidates(st.PackTrace),
 		})
 	}
@@ -326,7 +334,11 @@ func fromRecallAuditCandidates(in []diagnostics.RecallCandidateSnapshot) []runne
 			FactID:           c.FactID,
 			Source:           c.Source,
 			Rank:             c.Rank,
-			Score:            c.Score,
+			ScoreLabel:       c.ScoreLabel,
+			DiscoveryScore:   c.DiscoveryScore,
+			AssessmentScore:  c.AssessmentScore,
+			RankScore:        c.RankScore,
+			FinalScore:       c.FinalScore,
 			EvidenceIDs:      append([]string(nil), c.EvidenceIDs...),
 			Sources:          append([]string(nil), c.Sources...),
 			RankOutputRank:   c.RankOutputRank,
@@ -337,6 +349,53 @@ func fromRecallAuditCandidates(in []diagnostics.RecallCandidateSnapshot) []runne
 		})
 	}
 	return out
+}
+
+func fromRecallAssessmentComponents(in []diagnostics.RecallAssessmentComponent) []runners.RecallAssessmentComponent {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]runners.RecallAssessmentComponent, 0, len(in))
+	for _, component := range in {
+		out = append(out, runners.RecallAssessmentComponent{
+			ID:                 component.ID,
+			Kind:               component.Kind,
+			HardConstraintPass: component.HardConstraintPass,
+			SupportScore:       component.SupportScore,
+			StructuredScore:    component.StructuredScore,
+			LiteralScore:       component.LiteralScore,
+			SemanticScore:      component.SemanticScore,
+			SourcePrior:        component.SourcePrior,
+			RelevanceScore:     component.RelevanceScore,
+			Confidence:         component.Confidence,
+			Reason:             component.Reason,
+			DropReason:         component.DropReason,
+			FallbackReason:     component.FallbackReason,
+			EquivalenceGroup:   component.EquivalenceGroup,
+			SupportGroup:       component.SupportGroup,
+			DiversityGroup:     component.DiversityGroup,
+		})
+	}
+	return out
+}
+
+func fromRecallAssessmentSummary(in *diagnostics.RecallAssessmentScoreSummary) *runners.RecallAssessmentSummary {
+	if in == nil {
+		return nil
+	}
+	return &runners.RecallAssessmentSummary{
+		Count:                in.Count,
+		RelevanceScoreMin:    in.RelevanceScoreMin,
+		RelevanceScoreMax:    in.RelevanceScoreMax,
+		RelevanceScoreAvg:    in.RelevanceScoreAvg,
+		SemanticScoreAvg:     in.SemanticScoreAvg,
+		SupportScoreAvg:      in.SupportScoreAvg,
+		StructuredScoreAvg:   in.StructuredScoreAvg,
+		LiteralScoreAvg:      in.LiteralScoreAvg,
+		SourcePriorAvg:       in.SourcePriorAvg,
+		ConfidenceAvg:        in.ConfidenceAvg,
+		HardConstraintPasses: in.HardConstraintPasses,
+	}
 }
 
 func cloneIntMap(in map[string]int) map[string]int {

@@ -63,7 +63,7 @@ var ErrScopeKeyMismatch = forgetstages.ErrScopeKeyMismatch
 type Memory interface {
 	Save(ctx context.Context, scope Scope, req SaveRequest) (SaveResult, error)
 	Recall(ctx context.Context, scope Scope, query Query) ([]Hit, error)
-	Forget(ctx context.Context, scope Scope, factID string, mode ...ForgetMode) error
+	Forget(ctx context.Context, scope Scope, factID string, mode ForgetMode) error
 	ForgetAll(ctx context.Context, scope Scope, mode ForgetMode, confirmScopeKey string) (int, error)
 	// ExpireRetired hard-deletes every scope-local fact whose
 	// ExpiresAt is non-nil and not after now (TTL sweep). It reuses
@@ -111,8 +111,9 @@ type memory struct {
 	fanout           *pipeline.Fanout
 	telemetry        port.TelemetryHook
 
-	// writePreRunner runs validate + ingest without the per-scope
-	// write lock (legacy runSave compiled outside the lock).
+	// writePreRunner runs validate + ingest without the per-scope write
+	// lock so LLM-backed compilation does not block concurrent scoped
+	// writes.
 	// writePostRunner runs canonical stages under the lock
 	// (resolve/append/validity_close/enqueue_side_effects).
 	// Commit-after projection/evolution/embedding drain outside the lock.
@@ -272,7 +273,11 @@ func New(opts ...Option) (Memory, error) {
 	}
 	mat := cfg.materializer
 	if mat == nil {
-		mat = materialize.New(cfg.store, cfg.observationStore, cfg.linkStore, cfg.telemetry)
+		mat = materialize.New(cfg.store, cfg.observationStore, cfg.linkStore)
+	}
+	var supportReader port.SupportReader
+	if cfg.linkStore != nil {
+		supportReader = linkStoreSupportReader{links: cfg.linkStore}
 	}
 	fusionOpts := cfg.fusionOpts
 	if fusionOpts.Weights == nil {
@@ -388,7 +393,9 @@ func New(opts ...Option) (Memory, error) {
 	}
 	readStages = append(readStages,
 		readstages.NewPolicyFilter(),
-		readstages.NewCandidateAssessment(),
+		readstages.NewCandidateAssessment(
+			readstages.WithAssessmentSupportReader(supportReader),
+		),
 		readstages.NewRank(rnk, cfg.reranker != nil),
 		readstages.NewContextPack(rerank),
 		readstages.NewBuildGroundedHits(readstages.WithGroundedHitGraph(cfg.observationStore, cfg.linkStore)),
@@ -412,6 +419,32 @@ func New(opts ...Option) (Memory, error) {
 		revisionstages.NewSave(m.saveRevisionFact, cfg.store),
 	}, tel)
 	return m, nil
+}
+
+type linkStoreSupportReader struct {
+	links port.LinkStore
+}
+
+func (r linkStoreSupportReader) LinksForCandidate(ctx context.Context, scope domain.Scope, item domain.ContextItem) ([]domain.FactLink, error) {
+	if r.links == nil {
+		return nil, nil
+	}
+	node := domain.GraphNodeRef{}
+	switch {
+	case item.Fact.ID != "":
+		node = domain.GraphNodeRef{Kind: domain.GraphNodeAssertion, ID: item.Fact.ID}
+	case item.Observation.ID != "":
+		node = domain.GraphNodeRef{Kind: domain.GraphNodeObservation, ID: item.Observation.ID}
+	case item.Link.ID != "":
+		node = domain.GraphNodeRef{Kind: domain.GraphNodeLink, ID: item.Link.ID}
+	case item.Candidate.Kind == domain.GraphNodeAssertion && item.Candidate.ID != "":
+		node = domain.GraphNodeRef{Kind: domain.GraphNodeAssertion, ID: item.Candidate.ID}
+	case item.Candidate.Kind == domain.GraphNodeObservation && item.Candidate.ID != "":
+		node = domain.GraphNodeRef{Kind: domain.GraphNodeObservation, ID: item.Candidate.ID}
+	default:
+		return nil, nil
+	}
+	return r.links.FindByNode(ctx, scope, node)
 }
 
 // saveRevisionFact drives the canonical write pipeline (pre + post
@@ -531,10 +564,8 @@ func (m *memory) runSaveSync(ctx context.Context, scope Scope, req SaveRequest, 
 		RecentMessages:        req.RecentMessages,
 		ExistingFactHints:     req.ExistingFactHints,
 		EvidenceWindowRefs:    req.EvidenceWindowRefs,
-		// Now left zero so the ingestor's Clock (or time.Now
-		// fallback inside ingest) anchors relative-time resolution,
-		// matching the legacy runSave path that did not pass Now on
-		// IngestInput.
+		// Now left zero so the ingestor's Clock (or time.Now fallback
+		// inside ingest) anchors relative-time resolution.
 	}
 	if withTrace {
 		state.EnsureTrace()
@@ -692,14 +723,10 @@ func wireDefaultLenses(reg *lens.Registry, graphEnabled, withEvidence, _ bool) {
 	}
 }
 
-// Forget removes a fact. Optional mode defaults to ForgetHard for backward
-// compatibility. Use ForgetSoft to retract without deleting audit history
-// (equivalent to v1 Retract / D.1 guidance).
-func (m *memory) Forget(ctx context.Context, scope Scope, factID string, mode ...ForgetMode) error {
-	mmode := domain.ForgetHard
-	if len(mode) > 0 {
-		mmode = domain.NormalizeForgetMode(mode[0])
-	}
+// Forget removes a fact. Use ForgetSoft to retract without deleting audit
+// history (equivalent to v1 Retract / D.1 guidance).
+func (m *memory) Forget(ctx context.Context, scope Scope, factID string, mode ForgetMode) error {
+	mmode := domain.NormalizeForgetMode(mode)
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -976,7 +1003,6 @@ func (m *memory) Lineage(ctx context.Context, scope Scope, factID string) ([]Fac
 	lookups := domain.LineageLookups{
 		Get:                  m.store.Get,
 		FindByRevisionSource: m.store.FindByRevisionSource,
-		FindSupersededBy:     m.store.FindSupersededBy,
 	}
 	nodes, err := domain.BuildLineage(ctx, root, lookups)
 	if err != nil {
@@ -1231,11 +1257,6 @@ func (m *memory) compensateForgetFailure(ctx context.Context, scope Scope, snaps
 // error; optional-projection / evidence failures only emit
 // telemetry. The canonical store is never modified.
 func (m *memory) RebuildAll(ctx context.Context, scope Scope) error {
-	return m.runRebuild(ctx, scope, "")
-}
-
-// RebuildScope is equivalent to RebuildAll (v1 SyncSideStores parity).
-func (m *memory) RebuildScope(ctx context.Context, scope Scope) error {
 	return m.runRebuild(ctx, scope, "")
 }
 

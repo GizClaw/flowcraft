@@ -36,8 +36,7 @@ import (
 //     prior fact — the most-recent active one — to keep the
 //     deterministic dedupe path 1:1. Explicit supersede via
 //     Supersedes supports 1:N: every listed prior fact is validated
-//     and closed atomically. MergeHints remain non-authoritative
-//     diagnostics/hints and do not drive canonical closure.
+//     and closed atomically.
 type DefaultResolver struct {
 	// Clock supplies the ValidTo timestamp written when a state /
 	// preference fact closes an older revision. Defaults to
@@ -248,8 +247,7 @@ func (r *DefaultResolver) classify(ctx context.Context, view port.View, f domain
 }
 
 // resolveExplicitSupersedes closes facts named in Supersedes without requiring
-// a merge_key collision. MergeHints.Supersedes is deliberately ignored here:
-// hints are not canonical authority.
+// a merge_key collision.
 //
 // 1:N semantics: every listed prior must resolve via view.Get before
 // the resolver returns actionSupersede. Any missing prior aborts with

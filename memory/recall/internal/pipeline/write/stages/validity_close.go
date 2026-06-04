@@ -31,9 +31,7 @@ import (
 //
 // The compensator reopens exactly the closes that did land and
 // reprojects the prior facts so a downstream project_required
-// failure leaves the ledger and projections aligned. The two-step
-// reopen/reproject matches legacy reopenAfterRollback +
-// reprojectReopenedFacts behaviour byte-for-byte.
+// failure leaves the ledger and projections aligned.
 type ValidityClose struct {
 	store  port.TemporalStore
 	fanout *pipeline.Fanout
@@ -103,9 +101,9 @@ func (s *ValidityClose) Compensate(ctx context.Context, state *write.WriteState)
 	return nil
 }
 
-// reopen restores ValidTo / CorrectedBy on every previously closed
-// fact, tolerating ErrNotFound silently and routing other surfaces
-// through the legacy "save_rollback.reopen_validity" channel.
+// reopen restores ValidTo / CorrectedBy on every previously closed fact,
+// tolerating ErrNotFound silently. Other errors are swallowed so one failed
+// reopen does not stop the remaining best-effort compensation work.
 func (s *ValidityClose) reopen(ctx context.Context, closes []domain.ValidityClose) {
 	for _, c := range closes {
 		err := s.store.ReopenValidity(ctx, c.Scope, c.FactID, c.CorrectedBy)

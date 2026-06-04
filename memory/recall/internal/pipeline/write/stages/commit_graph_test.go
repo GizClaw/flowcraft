@@ -62,7 +62,7 @@ func (s *linkStoreRecorder) DeleteByScope(context.Context, domain.Scope) (int, e
 
 func (s *linkStoreRecorder) Close() error { return nil }
 
-func TestCommitGraph_LinkFailureCleansObservationsAndProjection(t *testing.T) {
+func TestCommitGraph_DoesNotSynthesizeObservationsForBareEvidenceRefs(t *testing.T) {
 	boom := errors.New("links down")
 	observations := &observationStoreRecorder{}
 	projection := &observationProjectionRecorder{}
@@ -86,15 +86,14 @@ func TestCommitGraph_LinkFailureCleansObservationsAndProjection(t *testing.T) {
 	if !errors.Is(err, boom) {
 		t.Fatalf("Run err = %v, want %v", err, boom)
 	}
-	if len(observations.appended) != 1 {
-		t.Fatalf("appended observations = %d, want 1", len(observations.appended))
+	if len(observations.appended) != 0 {
+		t.Fatalf("bare evidence refs must not synthesize observations, got %+v", observations.appended)
 	}
-	id := observations.appended[0].ID
-	if len(projection.forgotten) != 1 || projection.forgotten[0] != id {
-		t.Fatalf("projection forgotten = %v, want %q", projection.forgotten, id)
+	if len(projection.projected) != 0 || len(projection.forgotten) != 0 {
+		t.Fatalf("bare evidence refs must not touch observation projection, projected=%+v forgotten=%+v", projection.projected, projection.forgotten)
 	}
-	if len(observations.deleted) != 1 || observations.deleted[0] != id {
-		t.Fatalf("deleted observations = %v, want %q", observations.deleted, id)
+	if len(observations.deleted) != 0 {
+		t.Fatalf("bare evidence refs must not schedule observation cleanup, deleted=%v", observations.deleted)
 	}
 }
 
@@ -104,7 +103,7 @@ func TestCommitGraph_LinkFailureRestoresExistingObservationSnapshot(t *testing.T
 	existing := domain.Observation{
 		ID:       "obs-existing",
 		Scope:    scope,
-		Kind:     domain.ObservationKindEvidence,
+		Kind:     domain.ObservationKindTurn,
 		SourceID: "ev-1",
 		Text:     "old text",
 		Spans: []domain.ObservationSpan{{
@@ -202,7 +201,6 @@ func TestGraphDependencies_RejectsNonExtractableParameterObservation(t *testing.
 		name string
 		obs  domain.Observation
 	}{
-		{name: "synthetic evidence", obs: func() domain.Observation { o := base; o.Kind = domain.ObservationKindEvidence; return o }()},
 		{name: "expired", obs: func() domain.Observation { o := base; o.Metadata = map[string]any{"expired": true}; return o }()},
 		{name: "hard deleted", obs: func() domain.Observation { o := base; o.Metadata = map[string]any{"hard_deleted": true}; return o }()},
 	}
@@ -338,7 +336,7 @@ func TestGraphDependencies_RejectsParameterEvidenceSplitAcrossSpans(t *testing.T
 	}
 }
 
-func TestCommitGraph_ParameterRejectsSyntheticEvidenceRefs(t *testing.T) {
+func TestCommitGraph_ParameterRejectsBareEvidenceRefs(t *testing.T) {
 	scope := domain.Scope{RuntimeID: "rt", UserID: "u1"}
 	state := &write.WriteState{
 		Scope: scope,
@@ -353,9 +351,6 @@ func TestCommitGraph_ParameterRejectsSyntheticEvidenceRefs(t *testing.T) {
 			}},
 		}}},
 	}
-	// Mirrors the append stage: structured facts without canonical spans get
-	// synthetic quote refs, which are not acceptable for KindParameter.
-	graphledger.StampFactEvidenceRefs(scope, state.Resolution.Facts, "req-1")
 	stage := stages.NewCommitGraph(&observationStoreRecorder{}, &linkStoreRecorder{}, nil)
 	_, err := stage.Run(context.Background(), state)
 	if err == nil {

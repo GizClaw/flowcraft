@@ -27,8 +27,9 @@ func TestRankExpandsDeterministicPoolWithoutReranker(t *testing.T) {
 	rnk := &recordingRanker{}
 	stage := NewRank(rnk, false)
 	state := &read.ReadState{
-		Plan:       &domain.QueryPlan{TotalCap: 10},
-		AfterTrust: makeContextItems(50),
+		Plan:              &domain.QueryPlan{TotalCap: 10},
+		AssessmentApplied: true,
+		AssessedItems:     makeContextItems(50),
 	}
 
 	if _, err := stage.Run(context.Background(), state); err != nil {
@@ -46,8 +47,9 @@ func TestRankLeavesPoolUncappedForReranker(t *testing.T) {
 	rnk := &recordingRanker{}
 	stage := NewRank(rnk, true)
 	state := &read.ReadState{
-		Plan:       &domain.QueryPlan{TotalCap: 10},
-		AfterTrust: makeContextItems(50),
+		Plan:              &domain.QueryPlan{TotalCap: 10},
+		AssessmentApplied: true,
+		AssessedItems:     makeContextItems(50),
 	}
 
 	if _, err := stage.Run(context.Background(), state); err != nil {
@@ -64,8 +66,10 @@ func TestRankLeavesPoolUncappedForReranker(t *testing.T) {
 func TestRankDoesNotFallbackWhenTrustFilteredAllItems(t *testing.T) {
 	stage := NewRank(nil, false)
 	state := &read.ReadState{
-		PolicyFiltered: true,
-		MergedItems:    makeContextItems(3),
+		PolicyFiltered:    true,
+		AssessmentApplied: true,
+		AssessedItems:     nil,
+		MergedItems:       makeContextItems(3),
 	}
 
 	if _, err := stage.Run(context.Background(), state); err != nil {
@@ -73,6 +77,21 @@ func TestRankDoesNotFallbackWhenTrustFilteredAllItems(t *testing.T) {
 	}
 	if len(state.Ranked) != 0 {
 		t.Fatalf("rank must preserve empty policy-filtered set, got %+v", state.Ranked)
+	}
+}
+
+func TestRankDoesNotFallbackBeforeAssessment(t *testing.T) {
+	stage := NewRank(nil, false)
+	state := &read.ReadState{
+		MergedItems: makeContextItems(3),
+		AfterTrust:  makeContextItems(2),
+	}
+
+	if _, err := stage.Run(context.Background(), state); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if len(state.Ranked) != 0 {
+		t.Fatalf("rank must fail closed before assessment, got %+v", state.Ranked)
 	}
 }
 

@@ -34,16 +34,11 @@ func TestEvolutionAfterSave_HappyPath(t *testing.T) {
 	if ev.saveN != 1 {
 		t.Errorf("AfterSave call count = %d", ev.saveN)
 	}
-	if state.EvolutionErr != nil {
-		t.Errorf("EvolutionErr should be nil on success, got %v", state.EvolutionErr)
-	}
 }
 
 // TestEvolutionAfterSave_FailureIsBestEffort pins the AfterSave
 // failure contract: failures are surfaced via the BestEffort wrapper
-// so the framework emits Status=Degraded, but the legacy
-// state.EvolutionErr field is still populated so callers that read it
-// directly keep working.
+// so the framework emits Status=Degraded without aborting Save.
 func TestEvolutionAfterSave_FailureIsBestEffort(t *testing.T) {
 	boom := errors.New("evo down")
 	ev := &stubEvolution{saveErr: boom}
@@ -59,9 +54,6 @@ func TestEvolutionAfterSave_FailureIsBestEffort(t *testing.T) {
 	}
 	if !errors.Is(err, boom) {
 		t.Errorf("err must wrap the original cause via Unwrap, got %v", err)
-	}
-	if !errors.Is(state.EvolutionErr, boom) {
-		t.Errorf("EvolutionErr = %v, want %v (legacy field must still populate)", state.EvolutionErr, boom)
 	}
 }
 

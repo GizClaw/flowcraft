@@ -61,7 +61,7 @@ func (e *Executor) Run(ctx context.Context, job port.SideEffectJob) error {
 			return nil
 		}
 		started := time.Now()
-		err := e.Fanout.ProjectRequiredForKindsStrict(ctx, job.Facts, domain.KindEpisode)
+		err := e.Fanout.ProjectRequiredForKinds(ctx, job.Facts, domain.KindEpisode)
 		status := diagnostic.StatusOK
 		errMsg := ""
 		if err != nil {

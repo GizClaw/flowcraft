@@ -16,8 +16,9 @@ type CandidateRef struct {
 	Rank   int
 	Score  float64
 
-	EvidenceIDs []string
-	Metadata    map[string]any
+	EvidenceIDs      []string
+	DiscoverySignals []DiscoverySignal
+	Metadata         map[string]any
 }
 
 // Candidate is kept as the read pipeline vocabulary while its schema is now a

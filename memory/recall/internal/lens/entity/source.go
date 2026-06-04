@@ -78,6 +78,12 @@ func (s *Source) Query(ctx context.Context, plan domain.QueryPlan) domain.Source
 			Source: s.Name(),
 			Rank:   i + 1,
 			Score:  s.BaseScore,
+			DiscoverySignals: []domain.DiscoverySignal{{
+				Source: s.Name(),
+				Kind:   "entity_exact",
+				Value:  "intent_entities",
+				Score:  s.BaseScore,
+			}},
 		})
 	}
 	return domain.SourceResult{

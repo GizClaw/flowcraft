@@ -132,6 +132,14 @@ func (p *Projection) ClearScope(_ context.Context, scope domain.Scope) error {
 // subject/predicate/object means "don't filter on this dimension".
 // All dimensions empty returns nil so callers cannot scan the scope.
 func (p *Projection) Lookup(_ context.Context, scope domain.Scope, subject, predicate, object string) []string {
+	return p.lookup(scope, subject, predicate, object, 0)
+}
+
+func (p *Projection) LookupLimit(_ context.Context, scope domain.Scope, subject, predicate, object string, limit int) []string {
+	return p.lookup(scope, subject, predicate, object, limit)
+}
+
+func (p *Projection) lookup(scope domain.Scope, subject, predicate, object string, limit int) []string {
 	subject = canonicalKeyPart(subject)
 	predicate = canonicalKeyPart(predicate)
 	object = canonicalKeyPart(object)
@@ -161,9 +169,25 @@ func (p *Projection) Lookup(_ context.Context, scope domain.Scope, subject, pred
 			continue
 		}
 		seen[id] = struct{}{}
-		out = append(out, id)
+		out = appendBoundedRelationID(out, id, limit)
 	}
 	sort.Strings(out)
+	return out
+}
+
+func appendBoundedRelationID(out []string, id string, limit int) []string {
+	if limit <= 0 || len(out) < limit {
+		return append(out, id)
+	}
+	worst := 0
+	for i := 1; i < len(out); i++ {
+		if out[i] > out[worst] {
+			worst = i
+		}
+	}
+	if id < out[worst] {
+		out[worst] = id
+	}
 	return out
 }
 

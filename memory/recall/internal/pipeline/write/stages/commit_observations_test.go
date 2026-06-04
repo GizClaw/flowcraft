@@ -124,8 +124,6 @@ func TestCommitObservations_RejectsInvalidEvidenceWindowRefs(t *testing.T) {
 	}
 	outsideScope := stored
 	outsideScope.Scope = domain.Scope{RuntimeID: "rt", UserID: "other"}
-	syntheticEvidence := stored
-	syntheticEvidence.Kind = domain.ObservationKindEvidence
 	expired := stored
 	expired.Metadata = map[string]any{"expired": true}
 	hardDeleted := stored
@@ -154,11 +152,6 @@ func TestCommitObservations_RejectsInvalidEvidenceWindowRefs(t *testing.T) {
 		{
 			name:    "outside scope",
 			getByID: map[string]domain.Observation{"obs-1": outsideScope},
-			ref:     domain.EvidenceWindowRef{ObservationID: "obs-1"},
-		},
-		{
-			name:    "synthesized evidence observation",
-			getByID: map[string]domain.Observation{"obs-1": syntheticEvidence},
 			ref:     domain.EvidenceWindowRef{ObservationID: "obs-1"},
 		},
 		{

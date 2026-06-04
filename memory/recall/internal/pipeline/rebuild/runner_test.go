@@ -33,9 +33,8 @@ func TestRunner_NilSafe(t *testing.T) {
 	}
 }
 
-// TestSelectsProjection covers the three branches RebuildAll /
-// RebuildProjection / RebuildScope rely on so the project stage
-// can route the filter without re-implementing the predicate.
+// TestSelectsProjection covers the RebuildAll / RebuildProjection branches so
+// the project stage can route the filter without re-implementing the predicate.
 func TestSelectsProjection(t *testing.T) {
 	cases := []struct {
 		name   string

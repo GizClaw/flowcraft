@@ -31,10 +31,8 @@ func TestFeedbackBoost_Clamping(t *testing.T) {
 	}
 }
 
-// TestFeedbackBoostFromMeta covers all three numeric metadata
-// flavours: native float64 (LLM extractor / JSON), float32 (legacy
-// retrieval adapters), and int (hand-crafted callers / tests). All
-// must reach the same multiplier as their canonical float64 form.
+// TestFeedbackBoostFromMeta covers canonical float64 feedback metadata from the
+// retrieval lane.
 func TestFeedbackBoostFromMeta(t *testing.T) {
 	if got := FeedbackBoostFromMeta(nil); got != 1 {
 		t.Errorf("nil meta → 1, got %v", got)
@@ -47,18 +45,6 @@ func TestFeedbackBoostFromMeta(t *testing.T) {
 		domain.MetaPenalty:       1.0,
 	}); got != FeedbackBoost(2, 1) {
 		t.Errorf("float64 meta = %v, want %v", got, FeedbackBoost(2, 1))
-	}
-	if got := FeedbackBoostFromMeta(map[string]any{
-		domain.MetaReinforcement: float32(2),
-		domain.MetaPenalty:       float32(1),
-	}); got != FeedbackBoost(2, 1) {
-		t.Errorf("float32 meta = %v, want %v", got, FeedbackBoost(2, 1))
-	}
-	if got := FeedbackBoostFromMeta(map[string]any{
-		domain.MetaReinforcement: 2,
-		domain.MetaPenalty:       1,
-	}); got != FeedbackBoost(2, 1) {
-		t.Errorf("int meta = %v, want %v", got, FeedbackBoost(2, 1))
 	}
 }
 

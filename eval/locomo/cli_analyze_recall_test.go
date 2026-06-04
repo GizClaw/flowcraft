@@ -16,7 +16,7 @@ func TestClassifyRecallQuestion_MissTypesAndTermRanks(t *testing.T) {
 	dump := recallDumpRecord{
 		QID:  "q1",
 		Gold: []string{"Charlotte's Web"},
-		Hits: []recallDumpHit{
+		RecallArtifacts: []recallDumpHit{
 			{ID: "h1", Rank: 1, Kind: "state", Sources: []string{"retrieval"}, Content: "Alice likes books."},
 			{ID: "h2", Rank: 2, Kind: "event", Sources: []string{"graph"}, Content: "Alice read Charlotte's Web as a child."},
 		},
@@ -52,7 +52,7 @@ func TestClassifyRecallQuestion_AbsentGoldTermsIsRecallMiss(t *testing.T) {
 	dump := recallDumpRecord{
 		QID:  "q1",
 		Gold: []string{"Tampa, Florida"},
-		Hits: []recallDumpHit{{
+		RecallArtifacts: []recallDumpHit{{
 			ID:      "h1",
 			Rank:    1,
 			Kind:    "event",
@@ -82,7 +82,7 @@ func TestClassifyRecallQuestion_ExtractMissBeatsRecallMiss(t *testing.T) {
 	dump := recallDumpRecord{
 		QID:  "q1",
 		Gold: []string{"Tampa"},
-		Hits: []recallDumpHit{{
+		RecallArtifacts: []recallDumpHit{{
 			ID:      "h1",
 			Rank:    1,
 			Content: "Alice went to Paris.",
@@ -119,7 +119,7 @@ func TestClassifyRecallQuestion_FactsPresentButNotRecalled(t *testing.T) {
 	dump := recallDumpRecord{
 		QID:  "q1",
 		Gold: []string{"Tampa"},
-		Hits: []recallDumpHit{{
+		RecallArtifacts: []recallDumpHit{{
 			ID:      "h1",
 			Rank:    1,
 			Content: "Alice went to Paris.",
@@ -185,7 +185,7 @@ func TestClassifyRecallQuestion_StageAuditFindsFusionDrop(t *testing.T) {
 		Prediction: "I don't know.",
 		Judge:      0,
 	}
-	dump := recallDumpRecord{QID: "q1", Gold: []string{"Tampa"}, Hits: []recallDumpHit{{ID: "f2", Content: "Alice went to Paris."}}}
+	dump := recallDumpRecord{QID: "q1", Gold: []string{"Tampa"}, RecallArtifacts: []recallDumpHit{{ID: "f2", Content: "Alice went to Paris."}}}
 	signals := auditSignals{
 		ConversationID: "conv-1",
 		EvidenceIDs:    []string{"e1"},
@@ -209,7 +209,7 @@ func TestClassifyRecallQuestion_StageAuditFindsFusionDrop(t *testing.T) {
 
 func TestClassifyRecallQuestion_StageAuditFindsSourceMiss(t *testing.T) {
 	q := QuestionScore{ID: "q1", Query: "Where did Alice go?", Prediction: "Paris.", Judge: 0}
-	dump := recallDumpRecord{QID: "q1", Gold: []string{"Tampa"}, Hits: []recallDumpHit{{ID: "f2", Content: "Alice went to Paris."}}}
+	dump := recallDumpRecord{QID: "q1", Gold: []string{"Tampa"}, RecallArtifacts: []recallDumpHit{{ID: "f2", Content: "Alice went to Paris."}}}
 	signals := auditSignals{
 		ConversationID: "conv-1",
 		EvidenceIDs:    []string{"e1"},
@@ -230,7 +230,7 @@ func TestClassifyRecallQuestion_StageAuditFindsSourceMiss(t *testing.T) {
 
 func TestClassifyRecallQuestion_StageAuditEvidenceInFinalIsAnswerMiss(t *testing.T) {
 	q := QuestionScore{ID: "q1", Query: "Where did Alice go?", Prediction: "Paris.", Judge: 0}
-	dump := recallDumpRecord{QID: "q1", Gold: []string{"Tampa"}, Hits: []recallDumpHit{{ID: "f1", Content: "Alice went to Tampa."}}}
+	dump := recallDumpRecord{QID: "q1", Gold: []string{"Tampa"}, RecallArtifacts: []recallDumpHit{{ID: "f1", Content: "Alice went to Tampa."}}}
 	signals := auditSignals{
 		ConversationID: "conv-1",
 		EvidenceIDs:    []string{"e1"},
@@ -259,7 +259,7 @@ func TestClassifyRecallQuestion_StageAuditEvidenceInFinalIsAnswerMiss(t *testing
 
 func TestClassifyRecallQuestion_StageAuditFindsRerankDrop(t *testing.T) {
 	q := QuestionScore{ID: "q1", Query: "Where did Alice go?", Prediction: "Paris.", Judge: 0}
-	dump := recallDumpRecord{QID: "q1", Gold: []string{"Tampa"}, Hits: []recallDumpHit{{ID: "f2", Content: "Alice went to Paris."}}}
+	dump := recallDumpRecord{QID: "q1", Gold: []string{"Tampa"}, RecallArtifacts: []recallDumpHit{{ID: "f2", Content: "Alice went to Paris."}}}
 	signals := auditSignals{ConversationID: "conv-1", EvidenceIDs: []string{"e1"}, GoldTerms: []string{"tampa"}}
 	facts := map[string][]factDumpFact{"conv-1": {{ID: "f1", Content: "Alice went to Tampa.", EvidenceIDs: []string{"e1"}}}}
 	factByID := map[string]factDumpFact{"f1": facts["conv-1"][0]}
@@ -280,7 +280,7 @@ func TestClassifyRecallQuestion_StageAuditFindsRerankDrop(t *testing.T) {
 
 func TestClassifyRecallQuestion_StageAuditFindsFinalLimitDrop(t *testing.T) {
 	q := QuestionScore{ID: "q1", Query: "Where did Alice go?", Prediction: "Paris.", Judge: 0}
-	dump := recallDumpRecord{QID: "q1", Gold: []string{"Tampa"}, Hits: []recallDumpHit{{ID: "f2", Content: "Alice went to Paris."}}}
+	dump := recallDumpRecord{QID: "q1", Gold: []string{"Tampa"}, RecallArtifacts: []recallDumpHit{{ID: "f2", Content: "Alice went to Paris."}}}
 	signals := auditSignals{ConversationID: "conv-1", EvidenceIDs: []string{"e1"}, GoldTerms: []string{"tampa"}}
 	facts := map[string][]factDumpFact{"conv-1": {{ID: "f1", Content: "Alice went to Tampa.", EvidenceIDs: []string{"e1"}}}}
 	factByID := map[string]factDumpFact{"f1": facts["conv-1"][0]}
@@ -301,7 +301,7 @@ func TestClassifyRecallQuestion_StageAuditFindsFinalLimitDrop(t *testing.T) {
 
 func TestClassifyRecallQuestion_StageAuditFindsFinalSelectionDrop(t *testing.T) {
 	q := QuestionScore{ID: "q1", Query: "Where did Alice go?", Prediction: "Paris.", Judge: 0}
-	dump := recallDumpRecord{QID: "q1", Gold: []string{"Tampa"}, Hits: []recallDumpHit{{ID: "f2", Content: "Alice went to Paris."}}}
+	dump := recallDumpRecord{QID: "q1", Gold: []string{"Tampa"}, RecallArtifacts: []recallDumpHit{{ID: "f2", Content: "Alice went to Paris."}}}
 	signals := auditSignals{ConversationID: "conv-1", EvidenceIDs: []string{"e1"}, GoldTerms: []string{"tampa"}}
 	facts := map[string][]factDumpFact{"conv-1": {{ID: "f1", Content: "Alice went to Tampa.", EvidenceIDs: []string{"e1"}}}}
 	factByID := map[string]factDumpFact{"f1": facts["conv-1"][0]}
@@ -321,7 +321,7 @@ func TestClassifyRecallQuestion_StageAuditFindsFinalSelectionDrop(t *testing.T) 
 
 func TestClassifyRecallQuestion_StageAuditFindsGroundedHitsInconsistency(t *testing.T) {
 	q := QuestionScore{ID: "q1", Query: "Where did Alice go?", Prediction: "Paris.", Judge: 0}
-	dump := recallDumpRecord{QID: "q1", Gold: []string{"Tampa"}, Hits: []recallDumpHit{{ID: "f2", Content: "Alice went to Paris."}}}
+	dump := recallDumpRecord{QID: "q1", Gold: []string{"Tampa"}, RecallArtifacts: []recallDumpHit{{ID: "f2", Content: "Alice went to Paris."}}}
 	signals := auditSignals{ConversationID: "conv-1", EvidenceIDs: []string{"e1"}, GoldTerms: []string{"tampa"}}
 	facts := map[string][]factDumpFact{"conv-1": {{ID: "f1", Content: "Alice went to Tampa.", EvidenceIDs: []string{"e1"}}}}
 	factByID := map[string]factDumpFact{"f1": facts["conv-1"][0]}
@@ -341,7 +341,7 @@ func TestClassifyRecallQuestion_StageAuditFindsGroundedHitsInconsistency(t *test
 
 func TestClassifyRecallQuestion_SecondaryMissSourceEvidenceIDGap(t *testing.T) {
 	q := QuestionScore{ID: "q1", Query: "When did Alice read the book?", Prediction: "I don't know.", Judge: 0}
-	dump := recallDumpRecord{QID: "q1", Gold: []string{"2022"}, Hits: []recallDumpHit{{ID: "f2", Rank: 1, Content: "Alice read the book last summer."}}}
+	dump := recallDumpRecord{QID: "q1", Gold: []string{"2022"}, RecallArtifacts: []recallDumpHit{{ID: "f2", Rank: 1, Content: "Alice read the book last summer."}}}
 	signals := auditSignals{
 		ConversationID: "conv-1",
 		EvidenceIDs:    []string{"e1"},
@@ -366,7 +366,7 @@ func TestClassifyRecallQuestion_SecondaryMissSourceEvidenceIDGap(t *testing.T) {
 
 func TestClassifyRecallQuestion_SecondaryMissTemporalReasoning(t *testing.T) {
 	q := QuestionScore{ID: "q1", Query: "When did Alice go hiking?", Prediction: "Alice went hiking on 2023-07-06.", Judge: 0}
-	dump := recallDumpRecord{QID: "q1", Gold: []string{"The week before 6 July 2023"}, Hits: []recallDumpHit{{ID: "f1", Rank: 1, Content: "Alice went hiking the week before 6 July 2023."}}}
+	dump := recallDumpRecord{QID: "q1", Gold: []string{"The week before 6 July 2023"}, RecallArtifacts: []recallDumpHit{{ID: "f1", Rank: 1, Content: "Alice went hiking the week before 6 July 2023."}}}
 	signals := auditSignals{ConversationID: "conv-1", EvidenceIDs: []string{"e1"}, GoldTerms: []string{"week", "before", "july", "2023"}}
 	facts := map[string][]factDumpFact{"conv-1": {{ID: "f1", Content: "Alice went hiking the week before 6 July 2023.", EvidenceIDs: []string{"e1"}}}}
 	factByID := map[string]factDumpFact{"f1": facts["conv-1"][0]}

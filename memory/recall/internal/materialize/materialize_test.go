@@ -29,7 +29,7 @@ func TestMaterialize_AttachesFactAndDropsStale(t *testing.T) {
 	if err := store.Append(context.Background(), []domain.TemporalFact{fact}); err != nil {
 		t.Fatal(err)
 	}
-	mat := New(store, nil, nil, nil)
+	mat := New(store, nil, nil)
 	items, drops, err := mat.Materialize(context.Background(), []domain.Candidate{
 		{Kind: domain.GraphNodeAssertion, ID: "real", Scope: scope, Source: "retrieval", Score: 0.9},
 		{Kind: domain.GraphNodeAssertion, ID: "ghost", Scope: scope, Source: "retrieval", Score: 0.5},
@@ -64,7 +64,7 @@ func TestMaterialize_SelectsCandidateEvidence(t *testing.T) {
 	if err := store.Append(context.Background(), []domain.TemporalFact{fact}); err != nil {
 		t.Fatal(err)
 	}
-	mat := New(store, nil, nil, nil)
+	mat := New(store, nil, nil)
 	items, _, err := mat.Materialize(context.Background(), []domain.Candidate{
 		{Kind: domain.GraphNodeAssertion, ID: "real", Scope: scope, Source: "retrieval", EvidenceIDs: []string{"msg-2"}},
 	})
@@ -96,7 +96,7 @@ func TestMaterialize_DropsSuperseded(t *testing.T) {
 	if err := store.UpdateValidity(context.Background(), scope, "old", time.Unix(2, 0), "new"); err != nil {
 		t.Fatal(err)
 	}
-	mat := New(store, nil, nil, nil)
+	mat := New(store, nil, nil)
 	items, drops, err := mat.Materialize(context.Background(), []domain.Candidate{
 		{Kind: domain.GraphNodeAssertion, ID: "old", Scope: scope, Source: "retrieval"},
 		{Kind: domain.GraphNodeAssertion, ID: "new", Scope: scope, Source: "retrieval"},
@@ -121,7 +121,7 @@ func TestMaterialize_DropsObservationAndLinkScopeViolations(t *testing.T) {
 	if err := observations.Append(ctx, []domain.Observation{{
 		ID:    "obs-1",
 		Scope: siblingScope,
-		Kind:  domain.ObservationKindEvidence,
+		Kind:  domain.ObservationKindTurn,
 		Text:  "sibling raw evidence",
 	}}); err != nil {
 		t.Fatal(err)
@@ -135,7 +135,7 @@ func TestMaterialize_DropsObservationAndLinkScopeViolations(t *testing.T) {
 	}}); err != nil {
 		t.Fatal(err)
 	}
-	mat := New(temporalstore.NewMemoryStore(), observations, links, nil)
+	mat := New(temporalstore.NewMemoryStore(), observations, links)
 	items, drops, err := mat.Materialize(ctx, []domain.Candidate{
 		{Kind: domain.GraphNodeObservation, ID: "obs-1", Scope: queryScope, Source: "custom"},
 		{Kind: domain.GraphNodeLink, ID: "link-1", Scope: queryScope, Source: "custom"},
@@ -153,7 +153,7 @@ func TestMaterialize_DropsObservationAndLinkScopeViolations(t *testing.T) {
 
 func TestMaterialize_PropagatesContextCancellation(t *testing.T) {
 	store := temporalstore.NewMemoryStore()
-	mat := New(store, nil, nil, nil)
+	mat := New(store, nil, nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 

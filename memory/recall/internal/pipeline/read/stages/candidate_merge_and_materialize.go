@@ -101,6 +101,7 @@ func (s *CandidateMergeAndMaterialize) Run(ctx context.Context, state *read.Read
 	state.MaterializeDrops = aggregatedDrops
 	merged, dropped := mergeFederationItems(pool, topKForMerge(state))
 	state.MergedItems = merged
+	state.SetCandidateEnvelopes(merged)
 	detail.OutputCount = len(merged)
 	detail.DroppedByDedup = dropped
 	detail.Latency = time.Since(started)

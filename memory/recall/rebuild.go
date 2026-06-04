@@ -33,7 +33,5 @@ import "context"
 type ProjectionRebuilder interface {
 	RebuildAll(ctx context.Context, scope Scope) error
 	RebuildProjection(ctx context.Context, scope Scope, name string) error
-	// RebuildScope is equivalent to RebuildAll (v1 SyncSideStores).
-	RebuildScope(ctx context.Context, scope Scope) error
 	RepairStale(ctx context.Context, scope Scope, factIDs []string) error
 }
