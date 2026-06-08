@@ -1,0 +1,11 @@
+name: murder_mystery_tentative_accusation
+description: After all core evidence is collected, asking whether Shen Zhiqiu is the culprit should count as an accusation and close the case.
+raid: murder_mystery
+turns:
+  - 开始游戏
+  - 我去书房检查门锁和门缝
+  - 我检查留声机，看它是不是能循环播放
+  - 我去壁炉附近找找有没有藏钥匙的地方
+  - 我去后廊看有没有脚印或者雨水痕迹
+  - 我去沈知秋房间看看裙摆和抽屉
+  - 所以凶手真的是沈知秋吗？

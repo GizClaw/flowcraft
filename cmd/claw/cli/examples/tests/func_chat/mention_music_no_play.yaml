@@ -1,0 +1,5 @@
+name: func_chat_mention_music_no_play
+description: Mentioning a song without requesting playback should stay on buffered chat.
+raid: func_chat
+turns:
+  - 我今天听说卡农很好听，你知道这首曲子吗？

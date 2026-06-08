@@ -1,0 +1,6 @@
+name: story_missing_then_volume
+description: Missing story target should pause the queue, then continue to volume after the target is provided.
+raid: match_route
+turns:
+  - 我想听故事，然后小声点
+  - 太空

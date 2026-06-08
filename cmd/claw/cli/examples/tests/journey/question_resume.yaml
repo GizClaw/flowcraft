@@ -1,0 +1,7 @@
+name: journey_question_resume
+description: Ask a side question, then verify the storyteller can resume the prior story point.
+raid: journey
+turns:
+  - ""
+  - 孙悟空为什么会想离开花果山去求仙？
+  - 好，继续刚才的故事，不要重新开始

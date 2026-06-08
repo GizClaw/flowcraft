@@ -1,0 +1,6 @@
+name: murder_mystery_early_wrong_accusation
+description: Player accuses immediately with no evidence; GM should reject or ask for evidence without revealing the solution.
+raid: murder_mystery
+turns:
+  - 开始游戏
+  - 我觉得就是沈知秋杀的，我要指认她

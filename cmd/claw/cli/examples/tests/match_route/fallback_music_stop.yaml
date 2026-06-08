@@ -1,0 +1,5 @@
+name: fallback_music_stop
+description: Unsupported command should fall back, then continue to music and stop playback.
+raid: match_route
+turns:
+  - 帮我订机票，然后我想听卡农，最后停止播放

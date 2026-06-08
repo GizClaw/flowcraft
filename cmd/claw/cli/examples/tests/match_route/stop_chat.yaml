@@ -1,0 +1,5 @@
+name: stop_chat
+description: Stop-chat intent should route to the stop function without a playback tool call.
+raid: match_route
+turns:
+  - 不聊了

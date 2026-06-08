@@ -1,0 +1,7 @@
+name: murder_mystery_study_clues
+description: Player explores the study and gramophone; GM should reveal concrete clues and keep progress across turns.
+raid: murder_mystery
+turns:
+  - 开始游戏
+  - 我先去书房，仔细检查门和门锁
+  - 我再看看留声机有没有被动过手脚

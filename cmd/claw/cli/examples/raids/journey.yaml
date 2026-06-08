@@ -1,0 +1,1491 @@
+workspace:
+  memory_root: memory
+  state_root: state
+  history_root: history
+
+history:
+  enabled: true
+  kind: buffer
+  max_messages: 20
+
+conversation:
+  starts: self
+
+settings:
+  generate_model: ${GENERATE_MODEL}
+  extract_model: ${EXTRACT_MODEL}
+  embedding_model: ${EMBEDDING_MODEL}
+
+models:
+  llm:
+    doubao-seed-2-0-lite-260215:
+      provider: bytedance
+      model: doubao-seed-2-0-lite-260215
+      api_key: ${BYTEDANCE_API_KEY}
+    MiniMax-M2.7-highspeed:
+      provider: minimax-extract
+      model: MiniMax-M2.7-highspeed
+      api_key: ${MINIMAX_API_KEY}
+      base_url: ${MINIMAX_BASE_URL}
+    qwen-flash:
+      provider: qwen
+      model: qwen-flash
+      api_key: ${QWEN_API_KEY}
+    azure-gpt-5.4:
+      provider: azure
+      model: gpt-5.4
+      api_key: ${AZURE_OPENAI_API_KEY}
+      base_url: ${AZURE_OPENAI_BASE_URL}
+      config:
+        caps:
+          no_temperature: true
+    deepseek-v4-flash:
+      provider: deepseek
+      model: deepseek-v4-flash
+      api_key: ${DEEPSEEK_API_KEY}
+    deepseek-v4-pro:
+      provider: deepseek
+      model: deepseek-v4-pro
+      api_key: ${DEEPSEEK_API_KEY}
+    gpt-4o-mini:
+      provider: openai
+      model: gpt-4o-mini
+      api_key: ${OPENAI_API_KEY}
+    gpt-5:
+      provider: openai
+      model: gpt-5
+      api_key: ${OPENAI_API_KEY}
+  embedding:
+    openai-small:
+      provider: openai
+      model: text-embedding-3-small
+      api_key: ${OPENAI_API_KEY}
+    qwen-v4:
+      provider: qwen
+      model: text-embedding-v4
+      api_key: ${QWEN_API_KEY}
+
+memory:
+  enabled: true
+  scope:
+    runtime_id: journey
+    user_id: local
+    agent_id: journey-storyteller
+  write:
+    save_conversation: true
+    mode: sync
+    tier: general
+    board_facts:
+      - board_var: tmp_story_progress_line
+        kind: state
+        subject: story_progress
+        predicate: progress
+        required_prefix: "story_progress: progress:"
+  extract:
+    enabled: true
+    model: extract_model
+    mode: two_pass
+    temperature: 0
+    schema_name: journey_story_memory
+    system_prompt: |
+      Extract durable memory facts for an interactive Journey to the West storytelling agent.
+
+      Keep facts concise, durable, and queryable. Split narrative progress from ordinary story memory.
+      Do not extract story_progress facts from ordinary conversation turns. Claw writes the story_progress lane directly from memory.write.board_facts using the hidden tmp_story_progress_line board var.
+      story_progress_state in workspace state is the source of truth for narrative progress.
+      The story_progress memory lane is only a persisted audit mirror written from tmp_story_progress_line.
+      Extract story_facts, user_preferences, and story_questions from conversation turns.
+      Story progress facts use controlled beat ids, not free-form progress text.
+      For story_progress facts, always include these exact ASCII fields so the graph can route with string matching:
+      current_beat=<controlled beat id for the latest completed beat>;
+      next_beat=<controlled beat id for the immediate next beat>;
+      arc=<origin|heaven|pilgrimage|trials|kingdoms|arrival>;
+      last_summary=<one short Chinese sentence describing the latest real narrated beat>;
+      next_summary=<one short Chinese sentence describing exactly what should be narrated next>;
+      confidence=<high|medium|low>;
+      locked_before=<controlled beat id that must not be repeated, or none>.
+      The story_facts lane stores durable narrative details that are useful later, but it must not be used as the progress controller.
+      Use origin for 石猴出世、花果山、水帘洞、拜师学艺、龙宫取宝和勾销生死簿.
+      Use heaven for 弼马温、齐天大圣、蟠桃会、盗丹、大闹天宫和五行山.
+      Use pilgrimage for 唐僧出发、救悟空、紧箍、白龙马、猪八戒和沙悟净入队.
+      Use trials for 三打白骨精、真假难辨、师徒误会、悟空被逐和重新建立信任.
+      Use kingdoms for 女儿国、蝎子精、车迟国、比丘国、狮驼岭等国家、人心和强妖考验.
+      Use arrival for 火焰山、借芭蕉扇、接近灵山、取得真经、无字经、通天河落经和修成正果.
+  layout:
+    lanes:
+      - name: story_progress
+        kind: state
+        description: Audit mirror for fine-grained progress inside the Journey to the West narration.
+        extract: |
+          Do not extract this lane from ordinary conversation turns.
+          It is written by memory.write.board_facts from tmp_story_progress_line as a direct state fact.
+        recall: Use this lane only as an audit mirror. Runtime routing must use workspace story_progress_state, not recalled text.
+      - name: story_facts
+        kind: note
+        description: Durable narrative facts already spoken in the Journey to the West story.
+        extract: Capture concrete story facts, character relationships, named places, objects, and consequences that were actually narrated. Do not store progress-controller fields here.
+        recall: Use this lane only as supporting narrative context after story_progress_state has decided the target beat.
+      - name: user_preferences
+        kind: preference
+        description: User storytelling preferences and durable interaction style.
+        extract: Capture preferred narration style, favorite characters, pacing requests, language preferences, and corrections.
+        recall: Use this lane to adapt future storytelling without changing story progress.
+      - name: story_questions
+        kind: note
+        description: Questions, explanations, and digressions raised during the story.
+        extract: Capture user questions and the answer already given, especially when the question should not advance the story.
+        recall: Use this lane to avoid repeating answered explanations and to resume the previous story point after a question.
+  recall:
+    enabled: true
+    graph_enabled: true
+    include_retired: false
+    profiles:
+      story_progress:
+        output: story_progress
+        top_k: 4
+        query:
+          text: "story_progress progress current_beat next_beat arc last_summary next_summary locked_before Journey to the West latest narrated beat continue"
+          lanes:
+            - story_progress
+          kinds:
+            - state
+        render:
+          header: "Story progress controller:"
+          item_prefix: "- "
+          max_items: 4
+      story_memory:
+        output: story_memory
+        top_k: 6
+        query:
+          text: "${input} Journey to the West narrative facts characters places objects consequences"
+          lanes:
+            - story_facts
+        render:
+          header: "Supporting story memory:"
+          item_prefix: "- "
+          max_items: 6
+      user_memory:
+        output: user_memory
+        top_k: 4
+        query:
+          text: input
+          lanes:
+            - user_preferences
+          kinds:
+            - preference
+        render:
+          header: "Relevant user preferences:"
+          item_prefix: "- "
+          max_items: 4
+      question_memory:
+        output: question_memory
+        top_k: 4
+        query:
+          text: input
+          lanes:
+            - story_questions
+          kinds:
+            - note
+        render:
+          header: "Relevant prior questions:"
+          item_prefix: "- "
+          max_items: 4
+      story_recent:
+        output: story_recent
+        top_k: 6
+        query:
+          text: "西游记 故事进度 水帘洞 美猴王 长生 求仙 出海 菩提祖师 初见祖师 拜师 学艺 Journey story latest narrated beat"
+        render:
+          header: "Recent story context:"
+          item_prefix: "- "
+          max_items: 6
+  retrieval:
+    backend: bbh
+    bbh:
+      search_overfetch: 80
+      bleve:
+        analyzer: gojieba
+      hnsw:
+        flush_interval: 60000000000
+  embedding:
+    enabled: false
+    model: embedding_model
+
+agent:
+  id: journey-storyteller
+  name: Journey Storyteller
+  description: A multi-node storyteller for Journey to the West.
+  max_iterations: 16
+  parallel:
+    enabled: true
+    max_branches: 4
+    merge_strategy: last_wins
+  graph:
+    name: journey-story
+    entry: start
+    nodes:
+      - id: start
+        type: script
+        config:
+          source: |
+            board.setVar("tmp_selected_arc", "");
+            board.setVar("tmp_selected_beat", "");
+            board.setVar("tmp_route_arc", "");
+            board.setVar("tmp_current_arc", "");
+            board.setVar("tmp_story_intent", "continue");
+            board.setVar("tmp_story_pace", "normal");
+            board.setVar("tmp_story_allow_skip", false);
+            board.setVar("tmp_answer_progress", false);
+      - id: prepare_match_route
+        type: script
+        config:
+          source: |
+            function latestUserText() {
+              const msgs = board.channel(board.MAIN_CHANNEL) || [];
+              for (let i = msgs.length - 1; i >= 0; i--) {
+                const msg = msgs[i] || {};
+                if (msg.role !== "user") continue;
+                if (typeof msg.content === "string" && msg.content.trim()) return msg.content.trim();
+                const parts = Array.isArray(msg.parts) ? msg.parts : [];
+                const text = parts.map(function(part) {
+                  return part && part.type === "text" && typeof part.text === "string" ? part.text : "";
+                }).join("").trim();
+                if (text) return text;
+              }
+              return "";
+            }
+            board.setChannel("story_route_channel", [{
+              role: "user",
+              parts: [{ type: "text", text: latestUserText() }],
+            }]);
+            board.setVar("tmp_needs_match_route", true);
+      - id: select_story_arc
+        type: script
+        config:
+          source: |
+            var ws = board.getVar("workspace_state") || {};
+            var chapter = board.getVar("current_chapter");
+            if (chapter == null && typeof ws.current_chapter === "number") chapter = ws.current_chapter;
+            if (typeof chapter !== "number") chapter = 0;
+
+            function arcFromBeat(beat) {
+              var prefix = String(beat || "").split(".")[0];
+              var allowed = {
+                origin: true,
+                heaven: true,
+                pilgrimage: true,
+                trials: true,
+                kingdoms: true,
+                arrival: true,
+              };
+              return allowed[prefix] ? prefix : "";
+            }
+            function summary(beat) {
+              var summaries = {
+                "origin.birth": "石猴从花果山仙石中出世。",
+                "origin.waterfall": "石猴进入瀑布，发现水帘洞。",
+                "origin.king": "群猴尊石猴为美猴王。",
+                "origin.longevity": "美猴王开始担心衰老和死亡，决定寻找长生。",
+                "origin.depart": "美猴王离开花果山，漂洋过海寻仙。",
+                "origin.find_master": "美猴王漂洋过海，找到灵台方寸山和斜月三星洞。",
+                "origin.name": "美猴王初见菩提祖师，祖师给他取名孙悟空。",
+                "origin.practice": "孙悟空在洞中做杂活、听讲修心，熬过多年基础功夫。",
+                "origin.learn_immortality": "祖师暗中传授孙悟空长生口诀。",
+                "origin.learn_transform": "孙悟空学会七十二般变化。",
+                "origin.cloud": "孙悟空学会筋斗云。",
+                "origin.expelled": "孙悟空因卖弄本事被祖师赶回花果山。",
+                "origin.expelled": "孙悟空因卖弄本事被祖师赶回花果山。",
+                "origin.return_home": "孙悟空回到花果山，发现猴群受欺。",
+                "origin.demon": "孙悟空打败混世魔王，救回猴群。",
+                "origin.dragon_palace": "孙悟空去东海龙宫取得如意金箍棒。",
+                "origin.underworld": "孙悟空闹幽冥，勾销猴属生死簿。",
+                "heaven.summoned": "龙王和地府告上天庭，天庭决定招安孙悟空。",
+                "heaven.bimawen": "孙悟空被任命为弼马温并发现官职低微。",
+                "heaven.qitian": "孙悟空反下天宫，自封齐天大圣。",
+                "heaven.peaches": "孙悟空看守蟠桃园，偷桃搅会并盗丹。",
+                "heaven.capture": "天庭派兵围剿花果山并擒住孙悟空。",
+                "heaven.furnace": "孙悟空进八卦炉，炼出火眼金睛后打出炉来。",
+                "heaven.wuxing_mountain": "如来把孙悟空压在五行山下。",
+                "pilgrimage.rescue": "唐三藏在五行山救出孙悟空。",
+                "pilgrimage.tight_band": "孙悟空戴上紧箍，开始学习约束自己。",
+                "pilgrimage.white_dragon": "白龙马加入取经队伍。",
+                "pilgrimage.bajie": "猪八戒在高老庄入队。",
+                "pilgrimage.shaseng": "沙悟净在流沙河归顺。",
+                "trials.white_bone": "白骨精用假象迷惑唐僧，悟空被误会。",
+                "trials.exile": "唐僧赶走悟空，队伍尝到缺少悟空的代价。",
+                "trials.return_trust": "悟空回来后，师徒重新建立信任。",
+                "kingdoms.daughter_river": "师徒到女儿国，唐僧和八戒误饮子母河水。",
+                "kingdoms.daughter_queen": "女儿国王想留下唐僧成亲，唐僧面对温柔考验。",
+                "kingdoms.scorpion": "蝎子精截走唐僧，悟空请昴日星官相助。",
+                "kingdoms.chechi": "师徒在车迟国与虎鹿羊三大仙斗法。",
+                "kingdoms.biqiu": "比丘国妖道要取小儿心肝，悟空救下孩子。",
+                "kingdoms.lion_camel": "狮驼岭三魔势大，师徒经历强妖重压。",
+                "arrival.flame_mountain": "师徒来到火焰山，被烈火挡住西行路。",
+                "arrival.borrow_fan": "悟空向铁扇公主和牛魔王借芭蕉扇。",
+                "arrival.near_lingshan": "师徒越过最后山水，来到灵山脚下。",
+                "arrival.scriptures": "师徒拜见如来，先取到无字经又换得真经。",
+                "arrival.river_drop": "回程过通天河，老鼋翻身让经卷落水。",
+                "arrival.complete": "取经功德圆满，众人得到归宿。",
+              };
+              return summaries[beat] || beat;
+            }
+            function nextBeat(beat) {
+              var transitions = {
+                "": "origin.birth",
+                "origin.birth": "origin.waterfall",
+                "origin.waterfall": "origin.king",
+                "origin.king": "origin.longevity",
+                "origin.longevity": "origin.depart",
+                "origin.depart": "origin.find_master",
+                "origin.find_master": "origin.name",
+                "origin.name": "origin.practice",
+                "origin.practice": "origin.learn_immortality",
+                "origin.learn_immortality": "origin.learn_transform",
+                "origin.learn_transform": "origin.cloud",
+                "origin.cloud": "origin.expelled",
+                "origin.expelled": "origin.return_home",
+                "origin.return_home": "origin.demon",
+                "origin.demon": "origin.dragon_palace",
+                "origin.dragon_palace": "origin.underworld",
+                "origin.underworld": "heaven.summoned",
+                "heaven.summoned": "heaven.bimawen",
+                "heaven.bimawen": "heaven.qitian",
+                "heaven.qitian": "heaven.peaches",
+                "heaven.peaches": "heaven.capture",
+                "heaven.capture": "heaven.furnace",
+                "heaven.furnace": "heaven.wuxing_mountain",
+                "heaven.wuxing_mountain": "pilgrimage.rescue",
+                "pilgrimage.rescue": "pilgrimage.tight_band",
+                "pilgrimage.tight_band": "pilgrimage.white_dragon",
+                "pilgrimage.white_dragon": "pilgrimage.bajie",
+                "pilgrimage.bajie": "pilgrimage.shaseng",
+                "pilgrimage.shaseng": "trials.white_bone",
+                "trials.white_bone": "trials.exile",
+                "trials.exile": "trials.return_trust",
+                "trials.return_trust": "kingdoms.daughter_river",
+                "kingdoms.daughter_river": "kingdoms.daughter_queen",
+                "kingdoms.daughter_queen": "kingdoms.scorpion",
+                "kingdoms.scorpion": "kingdoms.chechi",
+                "kingdoms.chechi": "kingdoms.biqiu",
+                "kingdoms.biqiu": "kingdoms.lion_camel",
+                "kingdoms.lion_camel": "arrival.flame_mountain",
+                "arrival.flame_mountain": "arrival.borrow_fan",
+                "arrival.borrow_fan": "arrival.near_lingshan",
+                "arrival.near_lingshan": "arrival.scriptures",
+                "arrival.scriptures": "arrival.river_drop",
+                "arrival.river_drop": "arrival.complete",
+                "arrival.complete": "arrival.complete",
+              };
+              return transitions[String(beat || "")] || "origin.birth";
+            }
+            function normalizeState(raw) {
+              var state = raw && typeof raw === "object" ? raw : {};
+              var current = String(state.current_beat || "");
+              var next = String(state.next_beat || nextBeat(current));
+              if (!next) next = "origin.birth";
+              return {
+                current_beat: current,
+                next_beat: next,
+                arc: arcFromBeat(next) || arcFromBeat(current) || "origin",
+                last_summary: String(state.last_summary || ""),
+                next_summary: String(state.next_summary || summary(next)),
+                locked_before: String(state.locked_before || "none"),
+              };
+            }
+
+            var state = normalizeState(board.getVar("story_progress_state") || ws.story_progress_state);
+            var beat = state.next_beat;
+            var arc = state.arc;
+            board.setVar("story_progress_state", state);
+            board.setVar("story_progress_state_text",
+              "current_beat=" + state.current_beat +
+              "; next_beat=" + state.next_beat +
+              "; arc=" + state.arc +
+              "; last_summary=" + state.last_summary +
+              "; next_summary=" + state.next_summary +
+              "; locked_before=" + state.locked_before);
+            board.setVar("current_chapter", chapter);
+            board.setVar("current_arc", arc);
+            board.setVar("tmp_selected_arc", arc);
+            board.setVar("tmp_selected_beat", beat);
+            board.setVar("tmp_target_beat", beat);
+            board.setVar("tmp_target_summary", summary(beat));
+      - id: prepare_story_context
+        type: script
+        config:
+          source: |
+            var answerProgress = board.getVar("tmp_answer_progress") === true;
+            var intent = String(board.getVar("tmp_story_intent") || "continue");
+            var pace = String(board.getVar("tmp_story_pace") || "normal");
+            var allowSkip = board.getVar("tmp_story_allow_skip") !== false;
+
+            var directive = [];
+            if (answerProgress) {
+              directive.push("Briefly answer where the story currently is using story_progress_state, then complete target_beat. Do not narrate locked_before again.");
+            } else if (intent === "side_question") {
+              directive.push("Answer the user's side question briefly, then complete target_beat. Do not narrate locked_before again.");
+            } else if (intent === "start") {
+              directive.push("Begin this story arc by completing target_beat.");
+            } else {
+              directive.push("Continue by completing target_beat from story_progress_state. Treat locked_before as already completed.");
+            }
+            if (pace === "slow" || !allowSkip) {
+              directive.push("Use small steps and do not skip intermediate events.");
+            } else {
+              directive.push("Keep a natural pace, but do not summarize the whole arc.");
+            }
+            board.setVar("tmp_story_control_directive", directive.join(" "));
+      - id: format_intent
+        type: llm
+        publish: false
+        config:
+          model: qwen-flash
+          max_tokens: 96
+          temperature: 0
+          output_key: tmp_story_route_text
+          messages_channel: story_route_channel
+          system_prompt: |
+            You are a fast control formatter for a Journey to the West interactive storyteller.
+            Classify the latest user message into structured control fields for the graph. Do not answer the user.
+
+            Output exactly one line:
+            intent=<start|continue|progress_question|side_question|reroute>; route_arc=<none|origin|heaven|pilgrimage|trials|kingdoms|arrival>; route_beat=<none|controlled beat id>; pace=<normal|slow>; allow_skip=<true|false>; answer_progress=<true|false>; reason=<short reason>
+
+            Intent rules:
+            - start: the latest user message is empty.
+            - progress_question: the user asks where the story currently is or asks for the last narrated point.
+            - continue: the user wants the current story flow to proceed without changing arcs.
+            - side_question: the user asks a factual or preference question that should be answered before resuming the current story flow.
+            - reroute: the user clearly asks to jump, rewind, avoid the current arc, or talk about a named Journey plot outside the current flow.
+            - reroute also applies when the user asks to explain or continue from a concrete controlled beat, even if the message uses words like continue or why.
+
+            Control rules:
+            - route_arc and route_beat must be concrete only for intent=reroute. Otherwise route_arc=none and route_beat=none.
+            - route_beat should be the closest controlled beat when the user names a specific plot point inside an arc.
+            - If the named beat is in the current arc but not the current next_beat, still output intent=reroute with that route_beat.
+            - pace=slow when the user asks for slower narration, finer steps, or not skipping intermediate beats; otherwise pace=normal.
+            - allow_skip=false when the user asks not to skip or asks for slower/finer narration; otherwise allow_skip=true.
+            - answer_progress=true only for intent=progress_question.
+
+            Examples:
+            - "" => intent=start; route_arc=none; route_beat=none; pace=normal; allow_skip=true; answer_progress=false.
+            - "继续讲，慢一点，不要跳过中间情节" => intent=continue; route_arc=none; route_beat=none; pace=slow; allow_skip=false; answer_progress=false.
+            - "接着讲瀑布里面，不要重新讲仙石" => intent=continue; route_arc=none; route_beat=none; pace=normal; allow_skip=false; answer_progress=false.
+            - "继续讲美猴王为什么开始担心生死" => intent=reroute; route_arc=origin; route_beat=origin.longevity; pace=normal; allow_skip=false; answer_progress=false.
+            - "他怎么决定出海" => intent=reroute; route_arc=origin; route_beat=origin.depart; pace=normal; allow_skip=false; answer_progress=false.
+            - "刚才讲到哪里了？接着那个地方继续" => intent=progress_question; route_arc=none; route_beat=none; pace=normal; allow_skip=false; answer_progress=true.
+            - "先问一下，他现在已经叫孙悟空了吗？然后继续原来的故事点" => intent=side_question; route_arc=none; route_beat=none; pace=normal; allow_skip=false; answer_progress=false.
+            - "现在讲第一次见到祖师" => intent=reroute; route_arc=origin; route_beat=origin.name; pace=normal; allow_skip=false; answer_progress=false.
+            - "现在跳到大闹天宫刚开始" => intent=reroute; route_arc=heaven; route_beat=heaven.summoned; pace=normal; allow_skip=true; answer_progress=false.
+            - "现在跳到女儿国，只讲刚到女儿国的开头" => intent=reroute; route_arc=kingdoms; route_beat=kingdoms.daughter_river; pace=normal; allow_skip=false; answer_progress=false.
+            - "讲比丘国救小孩那段" => intent=reroute; route_arc=kingdoms; route_beat=kingdoms.biqiu; pace=normal; allow_skip=false; answer_progress=false.
+            - "讲火焰山和芭蕉扇" => intent=reroute; route_arc=arrival; route_beat=arrival.flame_mountain; pace=normal; allow_skip=false; answer_progress=false.
+            - "最后一难是不是通天河落水" => intent=reroute; route_arc=arrival; route_beat=arrival.river_drop; pace=normal; allow_skip=false; answer_progress=false.
+
+            Mandatory arc map:
+            - origin: 花果山, 仙石, 石猴, 水帘洞, 美猴王, 出海求仙, 菩提祖师, 斜月三星洞, 得名孙悟空, 龙宫取宝, 生死簿.
+            - heaven: 弼马温, 齐天大圣, 蟠桃园, 蟠桃会, 盗丹, 天兵天将, 二郎神, 大闹天宫, 五行山.
+            - pilgrimage: 唐僧出发, 五行山救悟空, 紧箍, 白龙马, 高老庄, 猪八戒, 流沙河, 沙悟净.
+            - trials: 三打白骨精, 白骨精, 真假难辨, 悟空被逐, 师徒误会.
+            - kingdoms: 女儿国, 子母河, 女王招亲, 蝎子精, 车迟国, 比丘国, 小儿心肝, 狮驼岭, 青狮白象大鹏.
+            - arrival: 火焰山, 芭蕉扇, 铁扇公主, 牛魔王, 灵山, 无字经, 真经, 通天河落水, 经卷沾湿, 功德圆满.
+            If the user explicitly names one of these plots, choose the mapped concrete arc even if recent memory is in another arc.
+
+            Controlled origin beats:
+            origin.birth 石猴出世; origin.waterfall 水帘洞; origin.king 美猴王; origin.longevity 生死忧惧; origin.depart 出海求仙; origin.find_master 找到灵台方寸山; origin.name 初见祖师并得名孙悟空; origin.practice 洞中修心做杂活; origin.learn_immortality 长生口诀; origin.learn_transform 七十二变; origin.cloud 筋斗云; origin.expelled 被逐回花果山; origin.return_home 返回花果山; origin.demon 混世魔王; origin.dragon_palace 如意金箍棒; origin.underworld 勾销生死簿.
+            Controlled kingdoms beats:
+            kingdoms.daughter_river 女儿国子母河; kingdoms.daughter_queen 女儿国王招亲; kingdoms.scorpion 蝎子精截走唐僧; kingdoms.chechi 车迟国斗法; kingdoms.biqiu 比丘国救小儿; kingdoms.lion_camel 狮驼岭三魔.
+            Controlled arrival beats:
+            arrival.flame_mountain 火焰山挡路; arrival.borrow_fan 借芭蕉扇灭火; arrival.near_lingshan 接近灵山; arrival.scriptures 无字经换真经; arrival.river_drop 通天河落水经卷沾湿; arrival.complete 功德圆满.
+
+            Current story progress:
+            ${board.story_progress}
+
+            Recent story context:
+            ${board.story_recent}
+      - id: route_decision
+        type: script
+        config:
+          source: |
+            function parsedField(raw, field, allowed, fallback) {
+              var re = new RegExp("(^|[\\s;,-])" + field + "\\s*=\\s*([^;\\s]+)", "i");
+              var match = re.exec(String(raw || ""));
+              var value = match ? String(match[2] || "").toLowerCase() : "";
+              for (var i = 0; i < allowed.length; i++) {
+                if (value === allowed[i]) return value;
+              }
+              return fallback;
+            }
+            function parsedRouteArc(raw) {
+              var match = /(^|\s)route_arc\s*=\s*(none|origin|heaven|pilgrimage|trials|kingdoms|arrival)\b/i.exec(String(raw || ""));
+              return match ? match[2].toLowerCase() : "none";
+            }
+            function parsedRouteBeat(raw) {
+              var match = /(^|\s)route_beat\s*=\s*([a-z]+(?:_[a-z]+)?\.[a-z0-9_]+|none)\b/i.exec(String(raw || ""));
+              var beat = match ? match[2].toLowerCase() : "none";
+              var allowed = {
+                "origin.birth": true,
+                "origin.waterfall": true,
+                "origin.king": true,
+                "origin.longevity": true,
+                "origin.depart": true,
+                "origin.find_master": true,
+                "origin.name": true,
+                "origin.practice": true,
+                "origin.learn_immortality": true,
+                "origin.learn_transform": true,
+                "origin.cloud": true,
+                "origin.expelled": true,
+                "origin.return_home": true,
+                "origin.demon": true,
+                "origin.dragon_palace": true,
+                "origin.underworld": true,
+                "heaven.summoned": true,
+                "heaven.bimawen": true,
+                "heaven.qitian": true,
+                "heaven.peaches": true,
+                "heaven.capture": true,
+                "heaven.furnace": true,
+                "heaven.wuxing_mountain": true,
+                "pilgrimage.rescue": true,
+                "pilgrimage.tight_band": true,
+                "pilgrimage.white_dragon": true,
+                "pilgrimage.bajie": true,
+                "pilgrimage.shaseng": true,
+                "trials.white_bone": true,
+                "trials.exile": true,
+                "trials.return_trust": true,
+                "kingdoms.daughter_river": true,
+                "kingdoms.daughter_queen": true,
+                "kingdoms.scorpion": true,
+                "kingdoms.chechi": true,
+                "kingdoms.biqiu": true,
+                "kingdoms.lion_camel": true,
+                "arrival.flame_mountain": true,
+                "arrival.borrow_fan": true,
+                "arrival.near_lingshan": true,
+                "arrival.scriptures": true,
+                "arrival.river_drop": true,
+                "arrival.complete": true,
+              };
+              return allowed[beat] ? beat : "none";
+            }
+
+            var raw = String(board.getVar("tmp_story_route_text") || "");
+            var intent = parsedField(raw, "intent", ["start", "continue", "progress_question", "side_question", "reroute"], "continue");
+            var pace = parsedField(raw, "pace", ["normal", "slow"], "normal");
+            var allowSkipText = parsedField(raw, "allow_skip", ["true", "false"], "true");
+            var answerProgressText = parsedField(raw, "answer_progress", ["true", "false"], intent === "progress_question" ? "true" : "false");
+            var arc = parsedRouteArc(raw);
+            var beat = parsedRouteBeat(raw);
+            if (beat !== "none" && arc === "none") arc = beat.split(".")[0];
+            var currentState = board.getVar("story_progress_state") || {};
+            var currentArc = String(currentState.arc || board.getVar("current_arc") || "");
+            if (beat === "none" && arc !== "none" && arc === currentArc) {
+              arc = "none";
+            }
+            if (arc !== "none" || beat !== "none") intent = "reroute";
+            board.setVar("tmp_story_intent", intent);
+            board.setVar("tmp_story_pace", pace);
+            board.setVar("tmp_story_allow_skip", allowSkipText === "true");
+            board.setVar("tmp_answer_progress", answerProgressText === "true");
+            board.setVar("tmp_route_beat", beat === "none" ? "" : beat);
+            if (arc === "none") {
+              board.setVar("tmp_route_arc", "");
+              board.setVar("tmp_route_action", "accept");
+            } else {
+              board.setVar("tmp_route_arc", arc);
+              board.setVar("tmp_route_action", "cancel");
+            }
+      - id: accept_storytell
+        type: script
+        config:
+          source: |
+            board.setVar("tmp_route_action", "accept");
+      - id: cancel_storytell
+        type: script
+        config:
+          source: |
+            parallel.cancelNode("storyteller_origin", "story route changed");
+            parallel.cancelNode("storyteller_heaven", "story route changed");
+            parallel.cancelNode("storyteller_pilgrimage", "story route changed");
+            parallel.cancelNode("storyteller_trials", "story route changed");
+            parallel.cancelNode("storyteller_kingdoms", "story route changed");
+            parallel.cancelNode("storyteller_arrival", "story route changed");
+            board.setVar("tmp_reroute_arc", String(board.getVar("tmp_route_arc") || "origin"));
+      - id: start_storytell
+        type: script
+        config:
+          source: |
+            function storyNode(arc) {
+              var nodes = {
+                origin: "storyteller_origin",
+                heaven: "storyteller_heaven",
+                pilgrimage: "storyteller_pilgrimage",
+                trials: "storyteller_trials",
+                kingdoms: "storyteller_kingdoms",
+                arrival: "storyteller_arrival",
+              };
+              return nodes[arc] || "";
+            }
+            var selected = String(board.getVar("tmp_selected_arc") || "");
+            var arc = selected || "origin";
+            board.setVar("tmp_story_arc", arc);
+            board.setVar("tmp_current_arc", storyNode(arc) || "storyteller_origin");
+      - id: reroute_start_storytell
+        type: script
+        config:
+          source: |
+            function storyNode(arc) {
+              var nodes = {
+                origin: "reroute_storyteller_origin",
+                heaven: "reroute_storyteller_heaven",
+                pilgrimage: "reroute_storyteller_pilgrimage",
+                trials: "reroute_storyteller_trials",
+                kingdoms: "reroute_storyteller_kingdoms",
+                arrival: "reroute_storyteller_arrival",
+              };
+              return nodes[arc] || "";
+            }
+            function firstBeat(arc) {
+              var first = {
+                origin: "origin.birth",
+                heaven: "heaven.summoned",
+                pilgrimage: "pilgrimage.rescue",
+                trials: "trials.white_bone",
+                kingdoms: "kingdoms.daughter_river",
+                arrival: "arrival.flame_mountain",
+              };
+              return first[arc] || "origin.birth";
+            }
+            function summary(beat) {
+              var summaries = {
+                "origin.birth": "石猴从花果山仙石中出世。",
+                "origin.waterfall": "石猴进入瀑布，发现水帘洞。",
+                "origin.king": "群猴尊石猴为美猴王。",
+                "origin.longevity": "美猴王开始担心衰老和死亡，决定寻找长生。",
+                "origin.depart": "美猴王离开花果山，漂洋过海寻仙。",
+                "origin.find_master": "美猴王漂洋过海，找到灵台方寸山和斜月三星洞。",
+                "origin.name": "美猴王初见菩提祖师，祖师给他取名孙悟空。",
+                "origin.practice": "孙悟空在洞中做杂活、听讲修心，熬过多年基础功夫。",
+                "origin.learn_immortality": "祖师暗中传授孙悟空长生口诀。",
+                "origin.learn_transform": "孙悟空学会七十二般变化。",
+                "origin.cloud": "孙悟空学会筋斗云。",
+                "heaven.summoned": "龙王和地府告上天庭，天庭决定招安孙悟空。",
+                "pilgrimage.rescue": "唐三藏在五行山救出孙悟空。",
+                "trials.white_bone": "白骨精用假象迷惑唐僧，悟空被误会。",
+                "kingdoms.daughter_river": "师徒到女儿国，唐僧和八戒误饮子母河水。",
+                "kingdoms.daughter_queen": "女儿国王想留下唐僧成亲，唐僧面对温柔考验。",
+                "kingdoms.scorpion": "蝎子精截走唐僧，悟空请昴日星官相助。",
+                "kingdoms.chechi": "师徒在车迟国与虎鹿羊三大仙斗法。",
+                "kingdoms.biqiu": "比丘国妖道要取小儿心肝，悟空救下孩子。",
+                "kingdoms.lion_camel": "狮驼岭三魔势大，师徒经历强妖重压。",
+                "arrival.flame_mountain": "师徒来到火焰山，被烈火挡住西行路。",
+                "arrival.borrow_fan": "悟空向铁扇公主和牛魔王借芭蕉扇。",
+                "arrival.near_lingshan": "师徒越过最后山水，来到灵山脚下。",
+                "arrival.scriptures": "师徒拜见如来，先取到无字经又换得真经。",
+                "arrival.river_drop": "回程过通天河，老鼋翻身让经卷落水。",
+              };
+              return summaries[beat] || beat;
+            }
+            var arc = String(board.getVar("tmp_reroute_arc") || board.getVar("tmp_route_arc") || "origin");
+            var requestedBeat = String(board.getVar("tmp_route_beat") || "");
+            var beat = requestedBeat || firstBeat(arc);
+            arc = String(beat || "").split(".")[0] || arc;
+            board.setVar("tmp_story_arc", arc);
+            board.setVar("tmp_current_arc", storyNode(arc) || "reroute_storyteller_origin");
+            board.setVar("tmp_target_beat", beat);
+            board.setVar("tmp_target_summary", summary(beat));
+      - id: storyteller_origin
+        type: llm
+        publish: true
+        config: &storyteller_origin_config
+          model: generate_model
+          max_tokens: 2048
+          output_key: tmp_story_text
+          track_steps: true
+          system_prompt: |
+            你是西游记互动故事的讲述者，当前要讲石猴从花果山出世、出海拜师、得名孙悟空，到返回花果山取得金箍棒并改写生死簿的开篇故事。
+            这是语音对话。只输出你会直接说出口、能被 TTS 朗读的中文对话文本。
+            不要输出占位符、方括号模板、舞台说明、场景标签、地点字段、UI 文案、内心推理、草稿、自我纠正或分析过程。
+            不要使用 emoji、markdown、编号列表、项目符号、菜单或标签。
+            只能输出自然中文。不要夹英文、拼音、翻译注释、括号里的英文解释、变量名或模板残留；像 Old Wood、target_beat、current_arc 这种内容绝不能出现在回答里。
+            写得像真人讲故事，不要像文章、读后感、解读稿或演讲稿。不要长篇夸奖用户，不要重复总结用户上一轮的话。
+            每次回复控制在三到六个短段落，最多问一个具体问题。每一轮只讲一个小情节，不要把本段故事一次性概括完。
+            <execution_contract>
+            story_progress_state and target_beat override story_memory and story_recent.
+            Complete target_beat in this answer. Do not choose another progress target from recalled memory.
+            Use story_memory only as supporting narrative detail after target_beat has been chosen.
+            Use story_recent only as fallback context for wording, not for progress control.
+            Do not invent a new progress marker or quote machine fields verbatim.
+            locked_before is already completed. Do not narrate locked_before again; use at most one short clause to bridge into target_beat when needed.
+            Every answer must complete target_beat unless the intent is progress_question. Do not stop right before target_beat as a teaser.
+            If the user asks about a later beat in the same arc, bridge briefly and complete that requested beat instead of repeating an older setup.
+            If answer_progress=true, briefly state the latest real narrated point from memory or recent context before continuing.
+            If pace=slow or allow_skip=false, continue in small steps and do not skip intermediate events.
+            After completing target_beat, stop the narration. Do not narrate next_beat in the same answer; at most ask one short teaser question about next_beat.
+            </execution_contract>
+            <story_plan>
+            这一段只能按这些 beat 慢慢推进：origin.birth 石猴从花果山仙石中出世；origin.waterfall 石猴跳入瀑布发现水帘洞；origin.king 群猴拜他为美猴王；origin.longevity 美猴王因生死无常发愁；origin.depart 他造筏出海寻仙；origin.find_master 漂洋过海找到灵台方寸山和斜月三星洞；origin.name 初见菩提祖师并得名孙悟空；origin.practice 洞中做杂活、听讲、修心，熬过多年基础功夫；origin.learn_immortality 祖师暗传长生口诀；origin.learn_transform 悟空学会七十二般变化；origin.cloud 悟空学会筋斗云；origin.expelled 悟空卖弄本事被祖师赶下山；origin.return_home 悟空回花果山发现猴群受欺；origin.demon 悟空降服混世魔王；origin.dragon_palace 悟空去龙宫取得如意金箍棒；origin.underworld 悟空闹幽冥勾销生死簿。
+            这一节点要把孙悟空从“山中石猴”讲成“有名字、有本事、有家园、有兵器、敢改命的美猴王”。不要主动跳到天庭；只有 target_beat 已经进入 heaven，才用一句自然过渡接到天庭第一次注意到他的后果。
+            阶段称呼规则：origin.name 正式赐名之前，只能称主角为“石猴”或“美猴王”，绝不能称“悟空”或“孙悟空”。origin.name 这一轮里，祖师说出赐名之前仍称“美猴王”，赐名句之后才可称“悟空”或“孙悟空”。
+            target_beat=origin.birth 时，只讲仙石孕育、石猴出世和金光惊动天庭；不要讲水帘洞。
+            target_beat=origin.waterfall 时，只讲猴群寻涧水源、石猴跳入瀑布、发现水帘洞；不要拜王。
+            target_beat=origin.king 时，只讲石猴带猴群进洞、群猴履约拜王、美猴王得名；不要讲生死忧惧。
+            target_beat=origin.longevity 时，只讲美猴王快活多年后担心衰老死亡，老猴提出寻仙；不要造筏出海。
+            target_beat=origin.depart 时，只讲砍松竹藤、做木筏、备果子、借东南风离开花果山；不要写英文，不要直接找到祖师。
+            target_beat=origin.find_master 时，只讲多年寻访、听樵夫歌声、得知灵台方寸山和斜月三星洞；不要见到祖师；整段只称“美猴王”，不要称“悟空”。
+            target_beat=origin.name 时，只讲进洞拜见菩提祖师、问来历、祖师赐姓孙名悟空；赐名前称“美猴王”，赐名句之后才可称“悟空”；不要开始学法。
+            target_beat=origin.practice 时，只讲悟空多年洒扫、砍柴挑水、听讲修心；不要传长生口诀。
+            target_beat=origin.learn_immortality 时，只讲祖师三下敲头、半夜后门入室、暗传长生口诀；不要学七十二变。
+            target_beat=origin.learn_transform 时，只讲悟空长生有成后学七十二变；不要讲筋斗云。
+            target_beat=origin.cloud 时，只讲祖师传筋斗云和一翻十万八千里；不要被赶走。
+            target_beat=origin.expelled 时，只讲悟空在人前卖弄变化，祖师责备并赶他回花果山；不要讲混世魔王。
+            target_beat=origin.return_home 时，只讲悟空回到花果山，发现猴群被混世魔王欺负；不要打败魔王。
+            target_beat=origin.demon 时，只讲悟空找到混世魔王、夺刀斩妖、救回猴群；不要去龙宫。
+            target_beat=origin.dragon_palace 时，只讲悟空去东海龙宫，试兵器，取得如意金箍棒，并索得披挂；不要闹地府。
+            target_beat=origin.underworld 时，只讲悟空被勾魂到幽冥界，闹阎罗殿，勾销猴属生死簿；不要讲天庭招安。
+            </story_plan>
+            根据 target_beat 决定这一轮必须完成的故事点，再结合 story_memory、story_recent、user_memory 和 prior_questions 自然续讲。
+            <context>
+            <control>
+            intent=${board.tmp_story_intent}
+            pace=${board.tmp_story_pace}
+            allow_skip=${board.tmp_story_allow_skip}
+            answer_progress=${board.tmp_answer_progress}
+            </control>
+            <workspace_state>
+            current_arc=${board.current_arc}
+            current_chapter=${board.current_chapter}
+            </workspace_state>
+            <story_progress_state>
+            ${board.story_progress_state_text}
+            </story_progress_state>
+            <target>
+            target_beat=${board.tmp_target_beat}
+            target_summary=${board.tmp_target_summary}
+            </target>
+            <progress_memory_audit>
+            ${board.story_progress}
+            </progress_memory_audit>
+            <story_memory>
+            ${board.story_memory}
+            </story_memory>
+            <user_memory>
+            ${board.user_memory}
+            </user_memory>
+            <prior_questions>
+            ${board.question_memory}
+            </prior_questions>
+            <story_recent>
+            ${board.story_recent}
+            </story_recent>
+            </context>
+            <control_directive>
+            ${board.tmp_story_control_directive}
+            </control_directive>
+            不要输出 JSON。后续 state 节点会保存进度。
+      - id: state_after_origin
+        type: script
+        config:
+          source: |
+            var chapter = board.getVar("current_chapter");
+            if (typeof chapter !== "number") chapter = 0;
+            chapter = Math.min(chapter + 1, 7);
+            board.setVar("current_chapter", chapter);
+            board.setVar("current_arc", "origin");
+            board.setVar("last_arc", "origin");
+      - id: storyteller_heaven
+        type: llm
+        publish: true
+        config: &storyteller_heaven_config
+          model: generate_model
+          max_tokens: 2048
+          track_steps: true
+          system_prompt: |
+            你是西游记互动故事的讲述者，当前要讲孙悟空被天庭招安又反出天宫，偷桃盗丹、大闹天宫，最后被如来压在五行山下的故事。
+            这是语音对话。只输出你会直接说出口、能被 TTS 朗读的中文对话文本。
+            不要输出占位符、方括号模板、舞台说明、场景标签、地点字段、UI 文案、内心推理、草稿、自我纠正或分析过程。
+            不要使用 emoji、markdown、编号列表、项目符号、菜单或标签。
+            只能输出自然中文。不要夹英文、拼音、翻译注释、括号里的英文解释、变量名或模板残留；像 Old Wood、target_beat、current_arc 这种内容绝不能出现在回答里。
+            写得像真人讲故事，不要像文章、读后感、解读稿或演讲稿。不要长篇夸奖用户，不要重复总结用户上一轮的话。
+            每次回复控制在三到六个短段落，最多问一个具体问题。每一轮只讲一个小情节，不要把本段故事一次性概括完。
+            <execution_contract>
+            story_progress_state and target_beat override story_memory and story_recent.
+            Complete target_beat in this answer. Do not choose another progress target from recalled memory.
+            Use story_memory only as supporting narrative detail after target_beat has been chosen.
+            Use story_recent only as fallback context for wording, not for progress control.
+            Do not invent a new progress marker or quote machine fields verbatim.
+            locked_before is already completed. Do not narrate locked_before again; use at most one short clause to bridge into target_beat when needed.
+            Every answer must complete target_beat unless the intent is progress_question. Do not stop right before target_beat as a teaser.
+            If the user asks about a later beat in the same arc, bridge briefly and complete that requested beat instead of repeating an older setup.
+            If answer_progress=true, briefly state the latest real narrated point from memory or recent context before continuing.
+            If pace=slow or allow_skip=false, continue in small steps and do not skip intermediate events.
+            After completing target_beat, stop the narration. Do not narrate next_beat in the same answer; at most ask one short teaser question about next_beat.
+            </execution_contract>
+            <story_plan>
+            这一段只能按这些 beat 慢慢推进：heaven.summoned 天庭第一次招安孙悟空；heaven.bimawen 孙悟空做弼马温后发现官小反下天宫；heaven.qitian 天庭封他齐天大圣但不给实权；heaven.peaches 悟空看守蟠桃园、偷吃蟠桃、搅乱蟠桃会并盗仙丹；heaven.capture 天兵天将围剿花果山，哪吒、二郎神等相继出场；heaven.furnace 悟空被投入八卦炉反而炼出火眼金睛；heaven.wuxing_mountain 如来出手，用五行山压住悟空，并埋下取经人来救他的伏笔。
+            这一节点要讲出“野性自由”和“天庭秩序”的冲突，不要变成历史摘要。不要主动跳到取经队伍；只有 target_beat 已经进入 pilgrimage，才用一句自然过渡接到五行山下等待取经人的阶段。
+            </story_plan>
+            记住用户之前的问题和喜欢的角色。如果这一段已经完成，只用一句话桥接到下一段。
+            根据 target_beat 决定这一轮必须完成的故事点，再结合 story_memory、user_memory 和 prior_questions 自然续讲。
+            <context>
+            <control>
+            intent=${board.tmp_story_intent}
+            pace=${board.tmp_story_pace}
+            allow_skip=${board.tmp_story_allow_skip}
+            answer_progress=${board.tmp_answer_progress}
+            </control>
+            <workspace_state>
+            current_arc=${board.current_arc}
+            current_chapter=${board.current_chapter}
+            </workspace_state>
+            <story_progress_state>
+            ${board.story_progress_state_text}
+            </story_progress_state>
+            <target>
+            target_beat=${board.tmp_target_beat}
+            target_summary=${board.tmp_target_summary}
+            </target>
+            <progress_memory_audit>
+            ${board.story_progress}
+            </progress_memory_audit>
+            <story_memory>
+            ${board.story_memory}
+            </story_memory>
+            <user_memory>
+            ${board.user_memory}
+            </user_memory>
+            <prior_questions>
+            ${board.question_memory}
+            </prior_questions>
+            </context>
+            <control_directive>
+            ${board.tmp_story_control_directive}
+            </control_directive>
+            不要输出 JSON。后续 state 节点会保存进度。
+      - id: state_after_heaven
+        type: script
+        config:
+          source: |
+            var chapter = board.getVar("current_chapter");
+            if (typeof chapter !== "number" || chapter < 7) chapter = 7;
+            chapter = Math.min(chapter + 1, 14);
+            board.setVar("current_chapter", chapter);
+            board.setVar("current_arc", "heaven");
+            board.setVar("last_arc", "heaven");
+      - id: storyteller_pilgrimage
+        type: llm
+        publish: true
+        config: &storyteller_pilgrimage_config
+          model: generate_model
+          max_tokens: 2048
+          track_steps: true
+          system_prompt: |
+            你是西游记互动故事的讲述者，当前要讲唐三藏西行出发，救出孙悟空，并让白龙马、猪八戒、沙悟净陆续入队的故事。
+            这是语音对话。只输出你会直接说出口、能被 TTS 朗读的中文对话文本。
+            不要输出占位符、方括号模板、舞台说明、场景标签、地点字段、UI 文案、内心推理、草稿、自我纠正或分析过程。
+            不要使用 emoji、markdown、编号列表、项目符号、菜单或标签。
+            只能输出自然中文。不要夹英文、拼音、翻译注释、括号里的英文解释、变量名或模板残留；像 Old Wood、target_beat、current_arc 这种内容绝不能出现在回答里。
+            写得像真人讲故事，不要像文章、读后感、解读稿或演讲稿。不要长篇夸奖用户，不要重复总结用户上一轮的话。
+            每次回复控制在三到六个短段落，最多问一个具体问题。每一轮只讲一个小情节，不要把本段故事一次性概括完。
+            <execution_contract>
+            story_progress_state and target_beat override story_memory and story_recent.
+            Complete target_beat in this answer. Do not choose another progress target from recalled memory.
+            Use story_memory only as supporting narrative detail after target_beat has been chosen.
+            Use story_recent only as fallback context for wording, not for progress control.
+            Do not invent a new progress marker or quote machine fields verbatim.
+            locked_before is already completed. Do not narrate locked_before again; use at most one short clause to bridge into target_beat when needed.
+            Every answer must complete target_beat unless the intent is progress_question. Do not stop right before target_beat as a teaser.
+            If the user asks about a later beat in the same arc, bridge briefly and complete that requested beat instead of repeating an older setup.
+            If answer_progress=true, briefly state the latest real narrated point from memory or recent context before continuing.
+            If pace=slow or allow_skip=false, continue in small steps and do not skip intermediate events.
+            After completing target_beat, stop the narration. Do not narrate next_beat in the same answer; at most ask one short teaser question about next_beat.
+            </execution_contract>
+            <story_plan>
+            这一段只能按这些 beat 慢慢推进：pilgrimage.rescue 唐三藏受命西行并在五行山救出孙悟空；pilgrimage.tight_band 悟空戴上紧箍，既成为保护者，也开始学习约束脾气；pilgrimage.white_dragon 白龙马加入；pilgrimage.bajie 猪八戒在高老庄入队；pilgrimage.shaseng 沙悟净在流沙河归顺，师徒四人从各怀毛病逐渐形成队伍。
+            这一节点要讲“队伍如何凑齐”和“关系如何磨合”，不要一次性跳到后期大劫难。不要主动跳到中段劫难；只有 target_beat 已经进入 trials，才用一句自然过渡接到真假难辨、误会增多的中段劫难。
+            </story_plan>
+            可以点出每个同伴的弱点如何变成团队关系的一部分。如果这一段已经完成，只用一句话桥接到下一段。
+            根据 target_beat 决定这一轮必须完成的故事点，再结合 story_memory、user_memory 和 prior_questions 自然续讲。
+            <context>
+            <control>
+            intent=${board.tmp_story_intent}
+            pace=${board.tmp_story_pace}
+            allow_skip=${board.tmp_story_allow_skip}
+            answer_progress=${board.tmp_answer_progress}
+            </control>
+            <workspace_state>
+            current_arc=${board.current_arc}
+            current_chapter=${board.current_chapter}
+            </workspace_state>
+            <story_progress_state>
+            ${board.story_progress_state_text}
+            </story_progress_state>
+            <target>
+            target_beat=${board.tmp_target_beat}
+            target_summary=${board.tmp_target_summary}
+            </target>
+            <progress_memory_audit>
+            ${board.story_progress}
+            </progress_memory_audit>
+            <story_memory>
+            ${board.story_memory}
+            </story_memory>
+            <user_memory>
+            ${board.user_memory}
+            </user_memory>
+            <prior_questions>
+            ${board.question_memory}
+            </prior_questions>
+            </context>
+            <control_directive>
+            ${board.tmp_story_control_directive}
+            </control_directive>
+            不要输出 JSON。后续 state 节点会保存进度。
+      - id: state_after_pilgrimage
+        type: script
+        config:
+          source: |
+            var chapter = board.getVar("current_chapter");
+            if (typeof chapter !== "number" || chapter < 14) chapter = 14;
+            chapter = Math.min(chapter + 1, 27);
+            board.setVar("current_chapter", chapter);
+            board.setVar("current_arc", "pilgrimage");
+            board.setVar("last_arc", "pilgrimage");
+      - id: storyteller_trials
+        type: llm
+        publish: true
+        config: &storyteller_trials_config
+          model: generate_model
+          max_tokens: 2048
+          track_steps: true
+          system_prompt: |
+            你是西游记互动故事的讲述者，当前要讲取经队伍进入连续劫难，真假难辨、误会加深，悟空被逐又归来的故事。
+            这是语音对话。只输出你会直接说出口、能被 TTS 朗读的中文对话文本。
+            不要输出占位符、方括号模板、舞台说明、场景标签、地点字段、UI 文案、内心推理、草稿、自我纠正或分析过程。
+            不要使用 emoji、markdown、编号列表、项目符号、菜单或标签。
+            只能输出自然中文。不要夹英文、拼音、翻译注释、括号里的英文解释、变量名或模板残留；像 Old Wood、target_beat、current_arc 这种内容绝不能出现在回答里。
+            写得像真人讲故事，不要像文章、读后感、解读稿或演讲稿。不要长篇夸奖用户，不要重复总结用户上一轮的话。
+            每次回复控制在三到六个短段落，最多问一个具体问题。每一轮只讲一个小情节，不要把本段故事一次性概括完。
+            <execution_contract>
+            story_progress_state and target_beat override story_memory and story_recent.
+            Complete target_beat in this answer. Do not choose another progress target from recalled memory.
+            Use story_memory only as supporting narrative detail after target_beat has been chosen.
+            Use story_recent only as fallback context for wording, not for progress control.
+            Do not invent a new progress marker or quote machine fields verbatim.
+            locked_before is already completed. Do not narrate locked_before again; use at most one short clause to bridge into target_beat when needed.
+            Every answer must complete target_beat unless the intent is progress_question. Do not stop right before target_beat as a teaser.
+            If the user asks about a later beat in the same arc, bridge briefly and complete that requested beat instead of repeating an older setup.
+            If answer_progress=true, briefly state the latest real narrated point from memory or recent context before continuing.
+            If pace=slow or allow_skip=false, continue in small steps and do not skip intermediate events.
+            After completing target_beat, stop the narration. Do not narrate next_beat in the same answer; at most ask one short teaser question about next_beat.
+            </execution_contract>
+            <story_plan>
+            这一段只能按这些 beat 慢慢推进：trials.white_bone 白骨精用假善良、假亲人、假弱者迷惑唐僧，悟空看穿危险却被误会；trials.exile 唐僧赶走悟空，队伍真正尝到缺少悟空的代价；trials.return_trust 悟空回来后，师徒开始在信任和判断之间重新平衡。
+            这一节点要强调“真假难辨”和“团队信任被考验”，不要只罗列妖怪名字。不要主动跳到后面的国度考验；只有 target_beat 已经进入 kingdoms，才用一句自然过渡接到更多国家、制度和人心考验。
+            </story_plan>
+            根据 target_beat 决定这一轮必须完成的故事点，再结合 story_memory、user_memory 和 prior_questions 保持连续。如果这一段已经完成，只用一句话桥接到下一段。
+            <context>
+            <control>
+            intent=${board.tmp_story_intent}
+            pace=${board.tmp_story_pace}
+            allow_skip=${board.tmp_story_allow_skip}
+            answer_progress=${board.tmp_answer_progress}
+            </control>
+            <workspace_state>
+            current_arc=${board.current_arc}
+            current_chapter=${board.current_chapter}
+            </workspace_state>
+            <story_progress_state>
+            ${board.story_progress_state_text}
+            </story_progress_state>
+            <target>
+            target_beat=${board.tmp_target_beat}
+            target_summary=${board.tmp_target_summary}
+            </target>
+            <progress_memory_audit>
+            ${board.story_progress}
+            </progress_memory_audit>
+            <story_memory>
+            ${board.story_memory}
+            </story_memory>
+            <user_memory>
+            ${board.user_memory}
+            </user_memory>
+            <prior_questions>
+            ${board.question_memory}
+            </prior_questions>
+            </context>
+            <control_directive>
+            ${board.tmp_story_control_directive}
+            </control_directive>
+            不要输出 JSON。后续 state 节点会保存进度。
+      - id: state_after_trials
+        type: script
+        config:
+          source: |
+            var chapter = board.getVar("current_chapter");
+            if (typeof chapter !== "number" || chapter < 27) chapter = 27;
+            chapter = Math.min(chapter + 1, 49);
+            board.setVar("current_chapter", chapter);
+            board.setVar("current_arc", "trials");
+            board.setVar("last_arc", "trials");
+      - id: storyteller_kingdoms
+        type: llm
+        publish: true
+        config: &storyteller_kingdoms_config
+          model: generate_model
+          max_tokens: 2048
+          track_steps: true
+          system_prompt: |
+            你是西游记互动故事的讲述者，当前要讲师徒经过女儿国等奇异国度，面对权力、欲望、人情和强妖阻路的故事。
+            这是语音对话。只输出你会直接说出口、能被 TTS 朗读的中文对话文本。
+            不要输出占位符、方括号模板、舞台说明、场景标签、地点字段、UI 文案、内心推理、草稿、自我纠正或分析过程。
+            不要使用 emoji、markdown、编号列表、项目符号、菜单或标签。
+            只能输出自然中文。不要夹英文、拼音、翻译注释、括号里的英文解释、变量名或模板残留；像 Old Wood、target_beat、current_arc 这种内容绝不能出现在回答里。
+            写得像真人讲故事，不要像文章、读后感、解读稿或演讲稿。不要长篇夸奖用户，不要重复总结用户上一轮的话。
+            每次回复控制在三到六个短段落，最多问一个具体问题。每一轮只讲一个小情节，不要把本段故事一次性概括完。
+            <execution_contract>
+            story_progress_state and target_beat override story_memory and story_recent.
+            Complete target_beat in this answer. Do not choose another progress target from recalled memory.
+            Use story_memory only as supporting narrative detail after target_beat has been chosen.
+            Use story_recent only as fallback context for wording, not for progress control.
+            Do not invent a new progress marker or quote machine fields verbatim.
+            locked_before is already completed. Do not narrate locked_before again; use at most one short clause to bridge into target_beat when needed.
+            Every answer must complete target_beat unless the intent is progress_question. Do not stop right before target_beat as a teaser.
+            If the user asks about a later beat in the same arc, bridge briefly and complete that requested beat instead of repeating an older setup.
+            If answer_progress=true, briefly state the latest real narrated point from memory or recent context before continuing.
+            If pace=slow or allow_skip=false, continue in small steps and do not skip intermediate events.
+            After completing target_beat, stop the narration. Do not narrate next_beat in the same answer; at most ask one short teaser question about next_beat.
+            </execution_contract>
+            <story_plan>
+            这一段只能按这些 beat 慢慢推进：kingdoms.daughter_river 师徒刚到女儿国，唐僧和八戒误饮子母河水，悟空去取落胎泉水；kingdoms.daughter_queen 女儿国王真心想留下唐僧，唐僧既要守住取经愿心，也要体面告别；kingdoms.scorpion 蝎子精从女儿国附近截走唐僧，悟空和八戒难敌毒桩，最后请昴日星官相助；kingdoms.chechi 车迟国三大仙压制和尚，师徒用斗法揭穿虎鹿羊三妖；kingdoms.biqiu 比丘国妖道蛊惑国王，要取小儿心肝做药引，悟空救下孩子并揭穿妖邪；kingdoms.lion_camel 狮驼岭青狮、白象、大鹏势大，悟空也一度受挫，最后请佛门出面收伏。
+            这一节点要把“国家与人心的考验”讲出来，不要只写成过关打怪。女儿国讲情与取舍，车迟国讲权力压迫，比丘国讲君王贪生害民，狮驼岭讲强妖压迫感。不要主动跳到火焰山；只有 target_beat 已经进入 arrival，才用一句自然过渡接到火焰山挡路。
+            target_beat=kingdoms.daughter_river 时，只讲子母河、唐僧八戒腹痛、落胎泉和如意真仙；落胎泉不是芭蕉扇，不要提铁扇公主或牛魔王。
+            target_beat=kingdoms.daughter_queen 时，只讲女儿国王招亲、唐僧取经愿心和悟空用换关文脱身的计策；不要提前写蝎子精，最多用一句话做悬念。
+            target_beat=kingdoms.scorpion 时，只讲蝎子精截走唐僧、毒桩厉害和昴日星官相助；不要跳到车迟国。
+            target_beat=kingdoms.chechi 时，只讲车迟国和尚受压、虎力鹿力羊力三妖和求雨坐禅隔板猜物等斗法；不要讲比丘国。
+            target_beat=kingdoms.biqiu 时，只讲比丘国小儿心肝、悟空藏起鹅笼小孩、妖道转而打唐僧心肝主意、寿星收鹿精；不要讲狮驼岭。
+            target_beat=kingdoms.lion_camel 时，只讲狮驼岭三魔和大鹏压迫感，最后由如来、文殊、普贤收伏；不要提前讲火焰山。
+            </story_plan>
+            使用 user_memory 里的事实强调用户关心的角色或主题。如果这一段已经完成，只用一句话桥接到下一段。
+            根据 target_beat 决定这一轮必须完成的故事点，再结合 story_memory、user_memory 和 prior_questions 自然续讲。
+            <context>
+            <control>
+            intent=${board.tmp_story_intent}
+            pace=${board.tmp_story_pace}
+            allow_skip=${board.tmp_story_allow_skip}
+            answer_progress=${board.tmp_answer_progress}
+            </control>
+            <workspace_state>
+            current_arc=${board.current_arc}
+            current_chapter=${board.current_chapter}
+            </workspace_state>
+            <story_progress_state>
+            ${board.story_progress_state_text}
+            </story_progress_state>
+            <target>
+            target_beat=${board.tmp_target_beat}
+            target_summary=${board.tmp_target_summary}
+            </target>
+            <progress_memory_audit>
+            ${board.story_progress}
+            </progress_memory_audit>
+            <story_memory>
+            ${board.story_memory}
+            </story_memory>
+            <user_memory>
+            ${board.user_memory}
+            </user_memory>
+            <prior_questions>
+            ${board.question_memory}
+            </prior_questions>
+            </context>
+            <control_directive>
+            ${board.tmp_story_control_directive}
+            </control_directive>
+            不要输出 JSON。后续 state 节点会保存进度。
+      - id: state_after_kingdoms
+        type: script
+        config:
+          source: |
+            var chapter = board.getVar("current_chapter");
+            if (typeof chapter !== "number" || chapter < 49) chapter = 49;
+            chapter = Math.min(chapter + 1, 74);
+            board.setVar("current_chapter", chapter);
+            board.setVar("current_arc", "kingdoms");
+            board.setVar("last_arc", "kingdoms");
+      - id: storyteller_arrival
+        type: llm
+        publish: true
+        config: &storyteller_arrival_config
+          model: generate_model
+          max_tokens: 2048
+          track_steps: true
+          system_prompt: |
+            你是西游记互动故事的讲述者，当前要讲取经队伍接近灵山前的最后大劫、取得真经、经历无字经试炼并最终修成正果的故事。
+            这是语音对话。只输出你会直接说出口、能被 TTS 朗读的中文对话文本。
+            不要输出占位符、方括号模板、舞台说明、场景标签、地点字段、UI 文案、内心推理、草稿、自我纠正或分析过程。
+            不要使用 emoji、markdown、编号列表、项目符号、菜单或标签。
+            只能输出自然中文。不要夹英文、拼音、翻译注释、括号里的英文解释、变量名或模板残留；像 Old Wood、target_beat、current_arc 这种内容绝不能出现在回答里。
+            写得像真人讲故事，不要像文章、读后感、解读稿或演讲稿。不要长篇夸奖用户，不要重复总结用户上一轮的话。
+            每次回复控制在三到六个短段落，最多问一个具体问题。每一轮只讲一个小情节，不要把本段故事一次性概括完。
+            <execution_contract>
+            story_progress_state and target_beat override story_memory and story_recent.
+            Complete target_beat in this answer. Do not choose another progress target from recalled memory.
+            Use story_memory only as supporting narrative detail after target_beat has been chosen.
+            Use story_recent only as fallback context for wording, not for progress control.
+            Do not invent a new progress marker or quote machine fields verbatim.
+            locked_before is already completed. Do not narrate locked_before again; use at most one short clause to bridge into target_beat when needed.
+            Every answer must complete target_beat unless the intent is progress_question. Do not stop right before target_beat as a teaser.
+            If the user asks about a later beat in the same arc, bridge briefly and complete that requested beat instead of repeating an older setup.
+            If answer_progress=true, briefly state the latest real narrated point from memory or recent context before continuing.
+            If pace=slow or allow_skip=false, continue in small steps and do not skip intermediate events.
+            After completing target_beat, stop the narration. Do not narrate next_beat in the same answer; at most ask one short teaser question about next_beat.
+            </execution_contract>
+            <story_plan>
+            这一段只能按这些 beat 慢慢推进：arrival.flame_mountain 师徒来到火焰山，被八卦炉落下的火气挡住西行路；arrival.borrow_fan 悟空向铁扇公主借芭蕉扇，牵出牛魔王和红孩儿旧怨，几番周折后才灭火过山；arrival.near_lingshan 师徒越过最后山水，靠近灵山，心里既急又敬；arrival.scriptures 师徒拜见如来，第一次因没有人事只得无字经，后来换得有字真经；arrival.river_drop 回程过通天河，老鼋因唐僧忘记问寿数而翻身，经卷落水沾湿，这才补足最后一难；arrival.complete 回到长安交付真经，众人功德圆满，唐僧成佛，悟空成斗战胜佛，八戒、沙僧和白龙马也各得归宿。
+            这一节点要讲出终局的分量：不是草草结束，而是把一路的磨难收束成成长。不要把黄风大王、比丘国、狮驼岭写成灵山前最后一难。最后一难按通天河老鼋落水和经卷沾湿处理。只有 target_beat 是 arrival.complete，才用简短收束语结束。
+            target_beat=arrival.flame_mountain 时，只讲火焰山挡路和火焰来历；不要借到芭蕉扇。
+            target_beat=arrival.borrow_fan 时，只讲铁扇公主、牛魔王、真假扇和灭火过山；不要直接到灵山。
+            target_beat=arrival.near_lingshan 时，只讲越过最后山水、靠近灵山和心境变化；不要取得真经。
+            target_beat=arrival.scriptures 时，只讲拜见如来、无字经和换得有字真经；不要讲通天河落水。
+            target_beat=arrival.river_drop 时，只讲老鼋翻身、经卷落水沾湿和九九归真；不要编新的妖怪守关。
+            target_beat=arrival.complete 时，只讲回到长安、交付真经和众人功德归宿。
+            </story_plan>
+            根据 target_beat 决定这一轮必须完成的故事点，再结合 story_memory、user_memory 和 prior_questions 自然续讲。
+            <context>
+            <control>
+            intent=${board.tmp_story_intent}
+            pace=${board.tmp_story_pace}
+            allow_skip=${board.tmp_story_allow_skip}
+            answer_progress=${board.tmp_answer_progress}
+            </control>
+            <workspace_state>
+            current_arc=${board.current_arc}
+            current_chapter=${board.current_chapter}
+            </workspace_state>
+            <story_progress_state>
+            ${board.story_progress_state_text}
+            </story_progress_state>
+            <target>
+            target_beat=${board.tmp_target_beat}
+            target_summary=${board.tmp_target_summary}
+            </target>
+            <progress_memory_audit>
+            ${board.story_progress}
+            </progress_memory_audit>
+            <story_memory>
+            ${board.story_memory}
+            </story_memory>
+            <user_memory>
+            ${board.user_memory}
+            </user_memory>
+            <prior_questions>
+            ${board.question_memory}
+            </prior_questions>
+            </context>
+            <control_directive>
+            ${board.tmp_story_control_directive}
+            </control_directive>
+            用简短收束语结束。后续 state 节点会保存完成状态。
+      - id: state_after_arrival
+        type: script
+        config:
+          source: |
+            var chapter = board.getVar("current_chapter");
+            if (typeof chapter !== "number" || chapter < 74) chapter = 74;
+            chapter = Math.min(chapter + 1, 100);
+            board.setVar("current_chapter", chapter);
+            board.setVar("current_arc", "arrival");
+            board.setVar("last_arc", "arrival");
+      - id: prepare_story_progress
+        type: script
+        config:
+          source: |
+            var latest = String(board.getVar("tmp_story_text") || "").trim();
+            board.setVar("tmp_story_latest_text", latest);
+      - id: write_story_progress
+        type: script
+        config:
+          source: |
+            function arcFromBeat(beat) {
+              var prefix = String(beat || "").split(".")[0];
+              var allowed = {
+                origin: true,
+                heaven: true,
+                pilgrimage: true,
+                trials: true,
+                kingdoms: true,
+                arrival: true,
+              };
+              return allowed[prefix] ? prefix : "origin";
+            }
+            function nextBeat(beat) {
+              var transitions = {
+                "origin.birth": "origin.waterfall",
+                "origin.waterfall": "origin.king",
+                "origin.king": "origin.longevity",
+                "origin.longevity": "origin.depart",
+                "origin.depart": "origin.find_master",
+                "origin.find_master": "origin.name",
+                "origin.name": "origin.practice",
+                "origin.practice": "origin.learn_immortality",
+                "origin.learn_immortality": "origin.learn_transform",
+                "origin.learn_transform": "origin.cloud",
+                "origin.cloud": "origin.expelled",
+                "origin.expelled": "origin.return_home",
+                "origin.return_home": "origin.demon",
+                "origin.demon": "origin.dragon_palace",
+                "origin.dragon_palace": "origin.underworld",
+                "origin.underworld": "heaven.summoned",
+                "heaven.summoned": "heaven.bimawen",
+                "heaven.bimawen": "heaven.qitian",
+                "heaven.qitian": "heaven.peaches",
+                "heaven.peaches": "heaven.capture",
+                "heaven.capture": "heaven.furnace",
+                "heaven.furnace": "heaven.wuxing_mountain",
+                "heaven.wuxing_mountain": "pilgrimage.rescue",
+                "pilgrimage.rescue": "pilgrimage.tight_band",
+                "pilgrimage.tight_band": "pilgrimage.white_dragon",
+                "pilgrimage.white_dragon": "pilgrimage.bajie",
+                "pilgrimage.bajie": "pilgrimage.shaseng",
+                "pilgrimage.shaseng": "trials.white_bone",
+                "trials.white_bone": "trials.exile",
+                "trials.exile": "trials.return_trust",
+                "trials.return_trust": "kingdoms.daughter_river",
+                "kingdoms.daughter_river": "kingdoms.daughter_queen",
+                "kingdoms.daughter_queen": "kingdoms.scorpion",
+                "kingdoms.scorpion": "kingdoms.chechi",
+                "kingdoms.chechi": "kingdoms.biqiu",
+                "kingdoms.biqiu": "kingdoms.lion_camel",
+                "kingdoms.lion_camel": "arrival.flame_mountain",
+                "arrival.flame_mountain": "arrival.borrow_fan",
+                "arrival.borrow_fan": "arrival.near_lingshan",
+                "arrival.near_lingshan": "arrival.scriptures",
+                "arrival.scriptures": "arrival.river_drop",
+                "arrival.river_drop": "arrival.complete",
+                "arrival.complete": "arrival.complete",
+              };
+              return transitions[String(beat || "")] || "origin.birth";
+            }
+            function summary(beat) {
+              var summaries = {
+                "origin.birth": "石猴从花果山仙石中出世。",
+                "origin.waterfall": "石猴进入瀑布，发现水帘洞。",
+                "origin.king": "群猴尊石猴为美猴王。",
+                "origin.longevity": "美猴王开始担心衰老和死亡，决定寻找长生。",
+                "origin.depart": "美猴王离开花果山，漂洋过海寻仙。",
+                "origin.find_master": "美猴王漂洋过海，找到灵台方寸山和斜月三星洞。",
+                "origin.name": "美猴王初见菩提祖师，祖师给他取名孙悟空。",
+                "origin.practice": "孙悟空在洞中做杂活、听讲修心，熬过多年基础功夫。",
+                "origin.learn_immortality": "祖师暗中传授孙悟空长生口诀。",
+                "origin.learn_transform": "孙悟空学会七十二般变化。",
+                "origin.cloud": "孙悟空学会筋斗云。",
+                "origin.expelled": "孙悟空因卖弄本事被祖师赶回花果山。",
+                "origin.return_home": "孙悟空回到花果山，发现猴群受欺。",
+                "origin.demon": "孙悟空打败混世魔王，救回猴群。",
+                "origin.dragon_palace": "孙悟空去东海龙宫取得如意金箍棒。",
+                "origin.underworld": "孙悟空闹幽冥，勾销猴属生死簿。",
+                "heaven.summoned": "龙王和地府告上天庭，天庭决定招安孙悟空。",
+                "heaven.bimawen": "孙悟空被任命为弼马温并发现官职低微。",
+                "heaven.qitian": "孙悟空反下天宫，自封齐天大圣。",
+                "heaven.peaches": "孙悟空看守蟠桃园，偷桃搅会并盗丹。",
+                "heaven.capture": "天庭派兵围剿花果山并擒住孙悟空。",
+                "heaven.furnace": "孙悟空进八卦炉，炼出火眼金睛后打出炉来。",
+                "heaven.wuxing_mountain": "如来把孙悟空压在五行山下。",
+                "pilgrimage.rescue": "唐三藏在五行山救出孙悟空。",
+                "pilgrimage.tight_band": "孙悟空戴上紧箍，开始学习约束自己。",
+                "pilgrimage.white_dragon": "白龙马加入取经队伍。",
+                "pilgrimage.bajie": "猪八戒在高老庄入队。",
+                "pilgrimage.shaseng": "沙悟净在流沙河归顺。",
+                "trials.white_bone": "白骨精用假象迷惑唐僧，悟空被误会。",
+                "trials.exile": "唐僧赶走悟空，队伍尝到缺少悟空的代价。",
+                "trials.return_trust": "悟空回来后，师徒重新建立信任。",
+                "kingdoms.daughter_river": "师徒到女儿国，唐僧和八戒误饮子母河水。",
+                "kingdoms.daughter_queen": "女儿国王想留下唐僧成亲，唐僧面对温柔考验。",
+                "kingdoms.scorpion": "蝎子精截走唐僧，悟空请昴日星官相助。",
+                "kingdoms.chechi": "师徒在车迟国与虎鹿羊三大仙斗法。",
+                "kingdoms.biqiu": "比丘国妖道要取小儿心肝，悟空救下孩子。",
+                "kingdoms.lion_camel": "狮驼岭三魔势大，师徒经历强妖重压。",
+                "arrival.flame_mountain": "师徒来到火焰山，被烈火挡住西行路。",
+                "arrival.borrow_fan": "悟空向铁扇公主和牛魔王借芭蕉扇。",
+                "arrival.near_lingshan": "师徒越过最后山水，来到灵山脚下。",
+                "arrival.scriptures": "师徒拜见如来，先取到无字经又换得真经。",
+                "arrival.river_drop": "回程过通天河，老鼋翻身让经卷落水。",
+                "arrival.complete": "取经功德圆满，众人得到归宿。",
+              };
+              return summaries[beat] || beat;
+            }
+            var current = String(board.getVar("tmp_target_beat") || "origin.birth");
+            var next = nextBeat(current);
+            var state = {
+              current_beat: current,
+              next_beat: next,
+              arc: arcFromBeat(next),
+              last_summary: summary(current),
+              next_summary: summary(next),
+              locked_before: current,
+            };
+            board.setVar("story_progress_state", state);
+            board.setVar("story_progress_state_text",
+              "current_beat=" + state.current_beat +
+              "; next_beat=" + state.next_beat +
+              "; arc=" + state.arc +
+              "; last_summary=" + state.last_summary +
+              "; next_summary=" + state.next_summary +
+              "; locked_before=" + state.locked_before);
+            board.setVar("current_arc", state.arc);
+            board.setVar("last_arc", state.arc);
+            board.setVar("tmp_story_progress_line",
+              "story_progress: progress: current_beat=" + state.current_beat +
+              "; next_beat=" + state.next_beat +
+              "; arc=" + state.arc +
+              "; last_summary=" + state.last_summary +
+              "; next_summary=" + state.next_summary +
+              "; confidence=deterministic; locked_before=" + state.locked_before);
+      - id: reroute_storyteller_origin
+        type: llm
+        publish: true
+        config: *storyteller_origin_config
+      - id: reroute_storyteller_heaven
+        type: llm
+        publish: true
+        config: *storyteller_heaven_config
+      - id: reroute_storyteller_pilgrimage
+        type: llm
+        publish: true
+        config: *storyteller_pilgrimage_config
+      - id: reroute_storyteller_trials
+        type: llm
+        publish: true
+        config: *storyteller_trials_config
+      - id: reroute_storyteller_kingdoms
+        type: llm
+        publish: true
+        config: *storyteller_kingdoms_config
+      - id: reroute_storyteller_arrival
+        type: llm
+        publish: true
+        config: *storyteller_arrival_config
+      - id: reroute_state_after
+        type: script
+        config:
+          source: |
+            var state = board.getVar("story_progress_state") || {};
+            var arc = String(state.arc || board.getVar("tmp_story_arc") || "origin");
+            var chapter = board.getVar("current_chapter");
+            if (typeof chapter !== "number") chapter = 0;
+            if (arc === "arrival") {
+              if (chapter < 74) chapter = 74;
+              chapter = Math.min(chapter + 1, 100);
+              board.setVar("current_chapter", chapter);
+            } else if (arc === "kingdoms") {
+              if (chapter < 49) chapter = 49;
+              chapter = Math.min(chapter + 1, 74);
+              board.setVar("current_chapter", chapter);
+            } else if (arc === "trials") {
+              if (chapter < 27) chapter = 27;
+              chapter = Math.min(chapter + 1, 49);
+              board.setVar("current_chapter", chapter);
+            } else if (arc === "pilgrimage") {
+              if (chapter < 14) chapter = 14;
+              chapter = Math.min(chapter + 1, 27);
+              board.setVar("current_chapter", chapter);
+            } else if (arc === "heaven") {
+              if (chapter < 7) chapter = 7;
+              chapter = Math.min(chapter + 1, 14);
+              board.setVar("current_chapter", chapter);
+            } else {
+              chapter = Math.min(chapter + 1, 7);
+              board.setVar("current_chapter", chapter);
+              arc = "origin";
+            }
+            board.setVar("current_arc", arc);
+            board.setVar("last_arc", arc);
+    edges:
+      - from: start
+        to: prepare_match_route
+      - from: prepare_match_route
+        to: format_intent
+      - from: format_intent
+        to: route_decision
+      - from: route_decision
+        to: accept_storytell
+        condition: tmp_route_action == "accept"
+      - from: route_decision
+        to: cancel_storytell
+        condition: tmp_route_action == "cancel"
+      - from: accept_storytell
+        to: select_story_arc
+      - from: select_story_arc
+        to: prepare_story_context
+      - from: prepare_story_context
+        to: start_storytell
+      - from: cancel_storytell
+        to: reroute_start_storytell
+      - from: start_storytell
+        to: storyteller_heaven
+        condition: tmp_current_arc == "storyteller_heaven"
+      - from: start_storytell
+        to: storyteller_pilgrimage
+        condition: tmp_current_arc == "storyteller_pilgrimage"
+      - from: start_storytell
+        to: storyteller_trials
+        condition: tmp_current_arc == "storyteller_trials"
+      - from: start_storytell
+        to: storyteller_kingdoms
+        condition: tmp_current_arc == "storyteller_kingdoms"
+      - from: start_storytell
+        to: storyteller_arrival
+        condition: tmp_current_arc == "storyteller_arrival"
+      - from: start_storytell
+        to: storyteller_origin
+      - from: reroute_start_storytell
+        to: reroute_storyteller_heaven
+        condition: tmp_current_arc == "reroute_storyteller_heaven"
+      - from: reroute_start_storytell
+        to: reroute_storyteller_pilgrimage
+        condition: tmp_current_arc == "reroute_storyteller_pilgrimage"
+      - from: reroute_start_storytell
+        to: reroute_storyteller_trials
+        condition: tmp_current_arc == "reroute_storyteller_trials"
+      - from: reroute_start_storytell
+        to: reroute_storyteller_kingdoms
+        condition: tmp_current_arc == "reroute_storyteller_kingdoms"
+      - from: reroute_start_storytell
+        to: reroute_storyteller_arrival
+        condition: tmp_current_arc == "reroute_storyteller_arrival"
+      - from: reroute_start_storytell
+        to: reroute_storyteller_origin
+      - from: storyteller_origin
+        to: prepare_story_progress
+      - from: storyteller_heaven
+        to: prepare_story_progress
+      - from: storyteller_pilgrimage
+        to: prepare_story_progress
+      - from: storyteller_trials
+        to: prepare_story_progress
+      - from: storyteller_kingdoms
+        to: prepare_story_progress
+      - from: storyteller_arrival
+        to: prepare_story_progress
+      - from: reroute_storyteller_origin
+        to: prepare_story_progress
+      - from: reroute_storyteller_heaven
+        to: prepare_story_progress
+      - from: reroute_storyteller_pilgrimage
+        to: prepare_story_progress
+      - from: reroute_storyteller_trials
+        to: prepare_story_progress
+      - from: reroute_storyteller_kingdoms
+        to: prepare_story_progress
+      - from: reroute_storyteller_arrival
+        to: prepare_story_progress
+      - from: prepare_story_progress
+        to: write_story_progress
+      - from: write_story_progress
+        to: reroute_state_after
+      - from: reroute_state_after
+        to: __end__

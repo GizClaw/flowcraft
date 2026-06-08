@@ -1,0 +1,5 @@
+name: match_route_story_subject
+description: Story request with a subject should route to function_read_story.
+raid: match_route
+turns:
+  - 给我讲个恐龙的故事

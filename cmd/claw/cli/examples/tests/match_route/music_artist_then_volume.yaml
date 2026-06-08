@@ -1,0 +1,5 @@
+name: music_artist_then_volume
+description: Artist/title music request should play the song and then increase volume.
+raid: match_route
+turns:
+  - 我想听周杰伦的晴天，然后大声点

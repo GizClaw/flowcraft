@@ -1,0 +1,6 @@
+name: func_chat_music_clarify_then_play
+description: Missing music title should ask a function clarification, then resume the function route on the next turn.
+raid: func_chat
+turns:
+  - 我要听歌
+  - 卡农

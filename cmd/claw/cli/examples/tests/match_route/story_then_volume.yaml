@@ -1,0 +1,5 @@
+name: story_then_volume
+description: Story request followed by volume adjustment should execute both commands in order.
+raid: match_route
+turns:
+  - 给我讲个恐龙的故事，然后小声点

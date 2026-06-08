@@ -20,8 +20,10 @@ type AgentConfig struct {
 	ID          string                `json:"id,omitempty"`
 	Name        string                `json:"name,omitempty"`
 	Description string                `json:"description,omitempty"`
-	Tools       []string              `json:"tools,omitempty"`
+	Tools       ToolConfigs           `json:"tools,omitempty"`
 	Graph       graph.GraphDefinition `json:"graph,omitempty"`
+	Parallel    runner.ParallelConfig `json:"parallel,omitempty"`
+	Publisher   PublisherConfig       `json:"publisher,omitempty"`
 
 	// Fallback fields used only when Graph is omitted.
 	SystemPrompt  string   `json:"system_prompt,omitempty"`
@@ -30,10 +32,20 @@ type AgentConfig struct {
 	Temperature   *float64 `json:"temperature,omitempty"`
 }
 
+// PublisherConfig is Claw-local stream visibility policy. It is intentionally
+// not part of the SDK graph schema; Claw extracts it from agent.graph.nodes.
+type PublisherConfig struct {
+	Nodes map[string]NodePublishConfig `json:"nodes,omitempty"`
+}
+
+type NodePublishConfig struct {
+	Publish *bool `json:"publish,omitempty"`
+}
+
 func (c *Claw) buildAgent() agent.Agent {
 	return agent.Agent{
 		ID:    c.cfg.Agent.ID,
-		Tools: append([]string(nil), c.cfg.Agent.Tools...),
+		Tools: c.cfg.Agent.Tools.Names(),
 		Card: agent.AgentCard{
 			Name:        c.cfg.Agent.Name,
 			Description: c.cfg.Agent.Description,
@@ -47,7 +59,10 @@ func (c *Claw) buildAgent() agent.Agent {
 
 func (c *Claw) buildEngine() (engine.Engine, error) {
 	factory := node.NewFactory()
-	tools := tool.NewRegistry()
+	tools := c.tools
+	if tools == nil {
+		tools = tool.NewRegistry()
+	}
 	llmnode.Register(factory, c.resolver, tools)
 	knowledgenode.Register(factory, nil)
 	scriptnode.Register(factory, scriptnode.Deps{
@@ -58,6 +73,9 @@ func (c *Claw) buildEngine() (engine.Engine, error) {
 	opts := []runner.Option{}
 	if c.cfg.Agent.MaxIterations > 0 {
 		opts = append(opts, runner.WithMaxIterations(c.cfg.Agent.MaxIterations))
+	}
+	if c.cfg.Agent.Parallel.Enabled {
+		opts = append(opts, runner.WithParallel(c.cfg.Agent.Parallel))
 	}
 	r, err := runner.New(&c.cfg.Agent.Graph, factory, opts...)
 	if err != nil {
@@ -93,5 +111,12 @@ func (c *Config) ensureAgentGraph() {
 			From: "answer",
 			To:   graph.END,
 		}},
+	}
+	publish := true
+	if c.Agent.Publisher.Nodes == nil {
+		c.Agent.Publisher.Nodes = map[string]NodePublishConfig{}
+	}
+	if c.Agent.Publisher.Nodes["answer"].Publish == nil {
+		c.Agent.Publisher.Nodes["answer"] = NodePublishConfig{Publish: &publish}
 	}
 }

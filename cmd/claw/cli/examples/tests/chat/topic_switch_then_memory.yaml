@@ -1,0 +1,9 @@
+name: chat_topic_switch_then_memory
+description: Mix durable preference, topic switches, and a later indirect recall request.
+raid: chat
+turns:
+  - 我听故事的时候不喜欢太吓人，更喜欢温柔一点、短一点。
+  - 我们现在聊太空，假装有一只月亮兔在修飞船。
+  - 算了，换成森林里的小河，小河会唱歌。
+  - 回到刚才的偏好，如果你继续讲，应该讲得吓人一点还是温柔一点？
+

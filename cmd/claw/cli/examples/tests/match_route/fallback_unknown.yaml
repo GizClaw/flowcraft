@@ -1,0 +1,5 @@
+name: match_route_fallback_unknown
+description: Unsupported request should route to function_fallback.
+raid: match_route
+turns:
+  - 帮我订一张明天去上海的机票

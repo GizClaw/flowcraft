@@ -1,0 +1,10 @@
+name: poetry_adventure_li_bai_full_clear
+description: Clear Tang, Song, Yuan, and Ming checkpoints in order and emit badge tool calls.
+raid: poetry_adventure_li_bai
+turns:
+  - 开始古诗闯关
+  - 床前明月光
+  - 大江东去浪淘尽
+  - 枯藤老树昏鸦
+  - 要留清白在人间
+

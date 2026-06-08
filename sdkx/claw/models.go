@@ -36,6 +36,22 @@ type ModelsConfig struct {
 	Embeddings map[string]ModelConfig `json:"embeddings,omitempty"`
 }
 
+// ModelSettingsConfig maps stable runtime model roles to named model
+// entries. The values may be selected by environment variables in
+// config.yaml while agent and memory configs keep referring to the
+// stable role keys.
+type ModelSettingsConfig struct {
+	GenerateModel  string `json:"generate_model,omitempty"`
+	ExtractModel   string `json:"extract_model,omitempty"`
+	EmbeddingModel string `json:"embedding_model,omitempty"`
+}
+
+func (s ModelSettingsConfig) empty() bool {
+	return strings.TrimSpace(s.GenerateModel) == "" &&
+		strings.TrimSpace(s.ExtractModel) == "" &&
+		strings.TrimSpace(s.EmbeddingModel) == ""
+}
+
 // ModelConfig is forwarded to provider registries after credential expansion.
 type ModelConfig struct {
 	Provider   string         `json:"provider,omitempty"`
@@ -45,6 +61,7 @@ type ModelConfig struct {
 	BaseURL    string         `json:"base_url,omitempty"`
 	APIVersion string         `json:"api_version,omitempty"`
 	Region     string         `json:"region,omitempty"`
+	Spec       llm.ModelSpec  `json:"spec,omitempty"`
 	Config     map[string]any `json:"config,omitempty"`
 }
 
@@ -77,6 +94,7 @@ func (c *Claw) embedder(ctx context.Context) (embedding.Embedder, bool, error) {
 }
 
 func (c *Claw) embedderByName(_ context.Context, name string) (embedding.Embedder, error) {
+	name = c.cfg.settingRef(name)
 	cfg, ok := c.embeddingConfigs()[strings.TrimSpace(name)]
 	if !ok {
 		return nil, fmt.Errorf("claw: embedding model %q is not configured", name)
@@ -103,8 +121,8 @@ func (c *Claw) embeddingConfigs() map[string]ModelConfig {
 }
 
 func (c *Claw) model(ctx context.Context, name string) (llm.LLM, error) {
-	name = strings.TrimSpace(name)
-	if strings.Contains(name, "/") && c.resolver != nil {
+	name = c.cfg.settingRef(name)
+	if c.resolver != nil {
 		return c.resolver.Resolve(ctx, name)
 	}
 	if name == "" {
@@ -119,16 +137,15 @@ func (c *Claw) model(ctx context.Context, name string) (llm.LLM, error) {
 }
 
 func (c *Claw) buildResolver() llm.LLMResolver {
-	if c.chat != nil {
-		return fixedResolver{client: c.chat}
-	}
 	return modelAliasResolver{
-		models: c.cfg.Models,
-		inner:  llm.DefaultResolver(modelStore{models: c.cfg.Models}, llm.WithFallbackModel(c.cfg.modelRef(c.cfg.Models.Chat))),
+		models:   c.cfg.Models,
+		settings: c.cfg.Settings,
+		inner:    llm.DefaultResolver(modelStore{models: c.cfg.Models}, llm.WithFallbackModel(c.cfg.modelRef(c.cfg.Models.Chat))),
 	}
 }
 
 func (c Config) modelRef(name string) string {
+	name = c.settingRef(name)
 	cfg, ok := c.Models.LLM[strings.TrimSpace(name)]
 	if !ok || cfg.Provider == "" || cfg.Model == "" {
 		return name
@@ -162,22 +179,10 @@ func (m ModelConfig) providerConfig() map[string]any {
 	return out
 }
 
-type fixedResolver struct {
-	client llm.LLM
-}
-
-func (r fixedResolver) Resolve(context.Context, string) (llm.LLM, error) {
-	if r.client == nil {
-		return nil, errdefs.NotFoundf("claw: fixed llm resolver has no client")
-	}
-	return r.client, nil
-}
-
-func (r fixedResolver) InvalidateCache(...llm.InvalidateOption) {}
-
 type modelAliasResolver struct {
-	models ModelsConfig
-	inner  llm.LLMResolver
+	models   ModelsConfig
+	settings ModelSettingsConfig
+	inner    llm.LLMResolver
 }
 
 func (r modelAliasResolver) Resolve(ctx context.Context, model string) (llm.LLM, error) {
@@ -196,7 +201,7 @@ func (r modelAliasResolver) InvalidateCache(opts ...llm.InvalidateOption) {
 }
 
 func (r modelAliasResolver) modelRef(name string) string {
-	name = strings.TrimSpace(name)
+	name = settingRef(r.settings, name)
 	if name == "" || strings.Contains(name, "/") {
 		return name
 	}
@@ -205,6 +210,24 @@ func (r modelAliasResolver) modelRef(name string) string {
 		return name
 	}
 	return cfg.Provider + "/" + cfg.Model
+}
+
+func (c Config) settingRef(name string) string {
+	return settingRef(c.Settings, name)
+}
+
+func settingRef(settings ModelSettingsConfig, name string) string {
+	name = strings.TrimSpace(name)
+	switch name {
+	case "generate_model":
+		return firstNonEmpty(settings.GenerateModel, name)
+	case "extract_model":
+		return firstNonEmpty(settings.ExtractModel, name)
+	case "embedding_model":
+		return firstNonEmpty(settings.EmbeddingModel, name)
+	default:
+		return name
+	}
 }
 
 type modelStore struct {
@@ -216,10 +239,8 @@ func (s modelStore) GetProviderConfig(_ context.Context, provider, _ string) (*l
 		if cfg.Provider != provider {
 			continue
 		}
-		cfg.applyCredentialEnv()
 		return &llm.ProviderConfig{
 			Provider: provider,
-			Config:   cfg.providerConfig(),
 		}, nil
 	}
 	return nil, errdefs.NotFoundf("claw: provider %q is not configured", provider)
@@ -230,9 +251,10 @@ func (s modelStore) GetModelConfig(_ context.Context, provider, modelName string
 		if cfg.Provider == provider && cfg.Model == modelName {
 			cfg.applyCredentialEnv()
 			return &llm.ModelConfig{
-				Provider: provider,
-				Model:    modelName,
-				Extra:    cfg.providerConfig(),
+				Provider:     provider,
+				Model:        modelName,
+				SpecOverride: cfg.Spec,
+				Extra:        cfg.providerConfig(),
 			}, nil
 		}
 	}

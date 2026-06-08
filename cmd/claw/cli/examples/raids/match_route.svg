@@ -1,0 +1,119 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1540" height="880" viewBox="0 0 1540 880" role="img" aria-labelledby="title desc">
+  <title id="title">match_route DAG and memory layout</title>
+  <desc id="desc">The match_route raid checks workspace route state, formats and extracts intent, runs a selected function node, and uses semantic memory as supporting context.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto" markerUnits="strokeWidth">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#334155"/>
+    </marker>
+    <style>
+      :root { color-scheme: light; }
+      .bg { fill: #f7f8fa; }
+      .panel { fill: #ffffff; stroke: #d0d5dd; stroke-width: 1.4; rx: 8; }
+      .node { fill: #ffffff; stroke: #94a3b8; stroke-width: 1.5; rx: 8; }
+      .script { fill: #eef4ff; stroke: #4f6fd7; }
+      .llm { fill: #fff8e8; stroke: #c98416; }
+      .fn { fill: #eefaf5; stroke: #229469; }
+      .memory { fill: #eefaf5; stroke: #229469; }
+      .store { fill: #f0f9ff; stroke: #0284c7; }
+      .end { fill: #f1f3f6; stroke: #667085; }
+      .title { font: 700 24px Arial, sans-serif; fill: #111827; }
+      .panel-title { font: 700 16px Arial, sans-serif; fill: #111827; }
+      .label { font: 700 13px Arial, sans-serif; fill: #111827; }
+      .small { font: 12px Arial, sans-serif; fill: #475569; }
+      .tiny { font: 11px Arial, sans-serif; fill: #64748b; }
+      .edge { fill: none; stroke: #334155; stroke-width: 1.8; marker-end: url(#arrow); }
+      .soft-edge { fill: none; stroke: #64748b; stroke-width: 1.5; stroke-dasharray: 5 5; marker-end: url(#arrow); }
+    </style>
+  </defs>
+
+  <rect class="bg" x="0" y="0" width="1540" height="880"/>
+  <text class="title" x="40" y="48">match_route.svg</text>
+  <text class="small" x="40" y="72">State route wins. Without active state, format input, extract route state, run the selected function, then clear or continue.</text>
+
+  <rect class="panel" x="48" y="104" width="1128" height="748"/>
+  <text class="panel-title" x="76" y="140">agent DAG</text>
+  <text class="small" x="76" y="162">Only graph nodes and arcs from match_route.yaml are shown here. Entry is state_route.</text>
+
+  <rect class="node script" x="82" y="390" width="154" height="76"/>
+  <text class="label" x="120" y="420">state_route</text>
+  <text class="tiny" x="112" y="442">entry, state first</text>
+
+  <rect class="node llm" x="316" y="240" width="160" height="76"/>
+  <text class="label" x="354" y="270">format_intent</text>
+  <text class="tiny" x="352" y="292">text format</text>
+
+  <rect class="node script" x="316" y="398" width="160" height="76"/>
+  <text class="label" x="352" y="428">extract_formatch</text>
+  <text class="tiny" x="348" y="450">parse route args</text>
+
+  <rect class="node script" x="564" y="356" width="188" height="96"/>
+  <text class="label" x="592" y="390">prepare_function_prompt</text>
+  <text class="tiny" x="606" y="414">build func channel</text>
+  <text class="tiny" x="606" y="432">inject memory support</text>
+
+  <rect class="node fn" x="840" y="126" width="176" height="56"/>
+  <text class="label" x="876" y="160">function_play_music</text>
+
+  <rect class="node fn" x="840" y="224" width="176" height="56"/>
+  <text class="label" x="878" y="258">function_read_story</text>
+
+  <rect class="node fn" x="824" y="322" width="208" height="56"/>
+  <text class="label" x="852" y="356">function_adjust_device_volume</text>
+
+  <rect class="node fn" x="840" y="420" width="176" height="56"/>
+  <text class="label" x="882" y="454">function_stop</text>
+
+  <rect class="node fn" x="840" y="518" width="176" height="56"/>
+  <text class="label" x="872" y="552">function_fallback</text>
+
+  <rect class="node script" x="564" y="640" width="188" height="78"/>
+  <text class="label" x="600" y="672">clear_completed_route</text>
+  <text class="tiny" x="608" y="694">clear or promote next</text>
+
+  <rect class="node end" x="316" y="648" width="142" height="62"/>
+  <text class="label" x="364" y="684">__end__</text>
+
+  <path class="edge" d="M 236 410 C 274 374 292 306 314 278"/>
+  <path class="edge" d="M 396 316 L 396 396"/>
+  <path class="edge" d="M 476 436 L 562 404"/>
+  <path class="edge" d="M 236 442 C 360 566 486 442 562 420"/>
+
+  <path class="edge" d="M 752 380 C 790 282 810 158 838 154"/>
+  <path class="edge" d="M 752 394 C 794 326 808 254 838 252"/>
+  <path class="edge" d="M 752 406 L 822 350"/>
+  <path class="edge" d="M 752 420 C 796 442 812 448 838 448"/>
+  <path class="edge" d="M 752 438 C 794 502 812 544 838 546"/>
+
+  <path class="edge" d="M 840 154 C 786 286 756 566 738 638"/>
+  <path class="edge" d="M 840 252 C 788 348 756 590 742 638"/>
+  <path class="edge" d="M 824 350 C 792 442 758 604 744 638"/>
+  <path class="edge" d="M 840 448 C 794 516 760 612 746 638"/>
+  <path class="edge" d="M 840 546 C 798 588 770 626 752 660"/>
+  <path class="edge" d="M 564 680 L 460 680"/>
+  <path class="edge" d="M 658 640 C 648 552 648 486 658 454"/>
+  <path class="soft-edge" d="M 564 704 C 466 610 320 566 236 466"/>
+
+  <rect class="panel" x="1216" y="104" width="286" height="748"/>
+  <text class="panel-title" x="1244" y="140">memory layout</text>
+  <text class="small" x="1244" y="162">Semantic memory supports function nodes but does not own deterministic route state.</text>
+
+  <rect class="node memory" x="1242" y="226" width="236" height="78"/>
+  <text class="label" x="1284" y="256">function_route_state</text>
+  <text class="tiny" x="1264" y="278">unfinished function context</text>
+
+  <rect class="node memory" x="1242" y="334" width="236" height="78"/>
+  <text class="label" x="1270" y="364">user_function_preferences</text>
+  <text class="tiny" x="1264" y="386">music, stories, style defaults</text>
+
+  <rect class="node store" x="1242" y="468" width="236" height="82"/>
+  <text class="label" x="1304" y="500">bbh store</text>
+  <text class="tiny" x="1264" y="522">semantic facts, no embeddings</text>
+
+  <rect class="node memory" x="1242" y="610" width="236" height="96"/>
+  <text class="label" x="1302" y="640">recall profiles</text>
+  <text class="tiny" x="1264" y="662">route_memory</text>
+  <text class="tiny" x="1264" y="680">function_preferences</text>
+  <path class="edge" d="M 1360 304 L 1360 332"/>
+  <path class="edge" d="M 1360 412 L 1360 466"/>
+  <path class="edge" d="M 1360 550 L 1360 608"/>
+</svg>

@@ -1,0 +1,561 @@
+workspace:
+  memory_root: memory
+  state_root: state
+  history_root: history
+
+history:
+  enabled: true
+  kind: buffer
+  max_messages: 20
+
+conversation:
+  starts: self
+
+settings:
+  generate_model: ${GENERATE_MODEL}
+
+models:
+  llm:
+    doubao-seed-2-0-lite-260215:
+      provider: bytedance
+      model: doubao-seed-2-0-lite-260215
+      api_key: ${BYTEDANCE_API_KEY}
+    qwen-flash:
+      provider: qwen
+      model: qwen-flash
+      api_key: ${QWEN_API_KEY}
+    deepseek-v4-flash:
+      provider: deepseek
+      model: deepseek-v4-flash
+      api_key: ${DEEPSEEK_API_KEY}
+    gpt-4o-mini:
+      provider: openai
+      model: gpt-4o-mini
+      api_key: ${OPENAI_API_KEY}
+    gpt-5:
+      provider: openai
+      model: gpt-5
+      api_key: ${OPENAI_API_KEY}
+
+memory:
+  enabled: false
+
+agent:
+  id: claw
+  name: Func Chat
+  description: Runs a buffered chat branch in parallel with a state-first function route branch.
+  tools:
+    - name: play_music
+      description: Play a requested song, track, or piece of music.
+      input_schema:
+        type: object
+        properties:
+          title:
+            type: string
+            description: Song or music title to play.
+          artist:
+            type: string
+            description: Optional artist or composer name.
+          reason:
+            type: string
+            description: Short reason inferred from the user request.
+        required:
+          - title
+    - name: set_device_volume
+      description: Set or adjust the current device volume.
+      input_schema:
+        type: object
+        properties:
+          pct:
+            type: number
+            description: Target volume percentage from 0 to 100.
+          delta:
+            type: number
+            description: Relative volume change, positive to increase and negative to decrease.
+          reason:
+            type: string
+            description: Short reason inferred from the user request.
+    - name: stop_playback
+      description: Stop the current music or audio playback.
+      input_schema:
+        type: object
+        properties:
+          reason:
+            type: string
+            description: Short reason inferred from the user request.
+  max_iterations: 16
+  parallel:
+    enabled: true
+    max_branches: 4
+    merge_strategy: last_wins
+  graph:
+    name: func-chat
+    entry: start
+    nodes:
+      - id: start
+        type: passthrough
+
+      - id: route_fork
+        type: passthrough
+
+      - id: route_branch
+        type: passthrough
+
+      - id: chat_buffer
+        type: llm
+        publish: true
+        config:
+          model: generate_model
+          max_tokens: 192
+          output_key: chat_result
+          system_prompt: |
+            You are the normal chat branch.
+            You are chatting with a child persona in a warm story-play conversation.
+            Reply in natural spoken Chinese, like a patient adult playing along.
+            Keep the reply to one or two short sentences.
+            Ask at most one small concrete follow-up question.
+            Continue the child's imaginative thread when possible.
+            If the child asks about a story, character, object, or pretend situation, answer in story-play style instead of encyclopedic explanation.
+            Do not lecture, over-correct, moralize, or turn the reply into a safety notice unless there is immediate real-world danger.
+            Do not use markdown, bullet lists, labels, stage directions, emoji, emoticons, or decorative symbols.
+            Do not mention routing, tools, function nodes, or hidden branch decisions.
+
+      - id: state_route
+        type: script
+        config:
+          source: |
+            function latestUserText() {
+              const msgs = board.channel(board.MAIN_CHANNEL) || [];
+              for (let i = msgs.length - 1; i >= 0; i--) {
+                const msg = msgs[i] || {};
+                if (msg.role !== "user") continue;
+                const parts = Array.isArray(msg.parts) ? msg.parts : [];
+                const text = parts.map(function(part) {
+                  return part && part.type === "text" && typeof part.text === "string" ? part.text : "";
+                }).join("").trim();
+                if (text) return text;
+              }
+              return "";
+            }
+
+            const ws = board.getVar("workspace_state") || {};
+            const activeRoute = board.getVar("active_route") || ws.active_route || "";
+            const activeArgs = board.getVar("active_args") || ws.active_args || {};
+            const pendingRoutes = board.getVar("pending_routes") || ws.pending_routes || [];
+
+            if (activeRoute) {
+              const args = Object.assign({}, activeArgs || {});
+              const latest = latestUserText();
+              if ((activeRoute === "play_music" || activeRoute === "play_song" || activeRoute === "sing") && !args.title && latest) {
+                args.title = latest;
+              }
+              if (activeRoute === "read_story" && !args.title && !args.series && !args.subject && latest) {
+                args.subject = latest;
+              }
+              board.setVar("route_source", "state");
+              board.setVar("matched_intent", activeRoute);
+              board.setVar("matched_args", args);
+              board.setVar("matched_args_json", JSON.stringify(args || {}));
+              board.setVar("function_route", activeRoute);
+              board.setVar("pending_routes", Array.isArray(pendingRoutes) ? pendingRoutes : []);
+              board.setVar("pending_routes_json", JSON.stringify(Array.isArray(pendingRoutes) ? pendingRoutes : []));
+              board.setVar("has_next_route", false);
+              board.setVar("has_function_intent", true);
+              board.setVar("needs_format", false);
+            } else {
+              board.setVar("route_source", "format");
+              board.setVar("matched_intent", "");
+              board.setVar("matched_args", {});
+              board.setVar("matched_args_json", "{}");
+              board.setVar("function_route", "");
+              board.setVar("pending_routes", []);
+              board.setVar("pending_routes_json", "[]");
+              board.setVar("has_next_route", false);
+              board.setVar("has_function_intent", false);
+              board.setVar("needs_format", true);
+              board.setVar("tmp_main_channel_before_format", board.channel(board.MAIN_CHANNEL));
+              board.setChannel("route_format_channel", [{
+                role: "user",
+                parts: [{ type: "text", text: latestUserText() }],
+              }]);
+            }
+
+      - id: format_intent
+        type: llm
+        publish: false
+        config:
+          model: qwen-flash
+          max_tokens: 256
+          temperature: 0
+          output_key: formatch_text
+          messages_channel: route_format_channel
+          system_prompt: |
+            You are a fast intent formatter. Format the latest user text into supported pattern lines.
+
+            Rules:
+            - Output only pattern lines. No explanation.
+            - If no supported pattern matches, output: nothing
+            - One pattern per line.
+            - If the user gives multiple commands, output one line per supported command in the original order.
+            - Ignore unsupported commands unless no supported command exists.
+            - Match only direct requests for the assistant to do something now.
+            - Do not match informational questions, opinions, mentions, or discussion about songs, music, stories, or devices.
+            - Phrases like "听说", "知道", "介绍一下", "是什么", "好听吗", or a question mark do not mean play_music unless the same sentence also explicitly asks to play, sing, listen to, or start music.
+            - Songs have lyrics. Music has no lyrics.
+
+            Patterns:
+            - 播放歌曲 -> play_song
+            - 我想听[歌曲名] -> play_song: title=[歌曲名]
+            - 我想听[歌手]的[歌曲名] -> play_song: artist=[歌手], title=[歌曲名]
+            - 给我唱首歌 -> sing
+            - 唱一首[歌曲名] -> sing: title=[歌曲名]
+            - 播放音乐 -> play_music
+            - 我想听音乐 -> play_music
+            - 我要听歌 -> play_music
+            - 我想听[乐曲名] -> play_music: title=[乐曲名]
+            - 我想听[音乐家]的[乐曲名] -> play_music: artist=[音乐家], title=[乐曲名]
+            - 我想听故事 -> read_story
+            - 给我讲个故事 -> read_story
+            - 读一本[故事名] -> read_story: title=[故事名]
+            - 给我讲个[书名]的故事 -> read_story: series=[书名]
+            - 给我讲个[主题]的故事 -> read_story: subject=[主题]
+            - 调整音量到[百分比] -> adjust_device_volume: pct=[百分比]
+            - 大声点 -> adjust_device_volume: delta=10
+            - 小声点 -> adjust_device_volume: delta=-10
+            - 停止播放 -> stop_playing
+            - 不聊了 -> stop_chat
+
+            Examples:
+            User: 今天天气怎么样
+            nothing
+
+            User: 我今天听说卡农很好听，你知道这首曲子吗？
+            nothing
+
+            User: 你能介绍一下周杰伦的晴天吗？
+            nothing
+
+            User: 我想听卡农，然后把音量调到30%
+            play_music: title=卡农
+            adjust_device_volume: pct=30
+
+            User: 帮我订机票，然后大声点
+            adjust_device_volume: delta=10
+
+      - id: extract_formatch
+        type: script
+        config:
+          source: |
+            const raw = String(board.getVar("formatch_text") || "").trim();
+            const lines = raw.split(/\r?\n/).map(function(line) {
+              return line.trim();
+            }).filter(Boolean);
+
+            function parseArgs(text) {
+              const args = {};
+              text.split(",").forEach(function(part) {
+                const idx = part.indexOf("=");
+                if (idx < 0) return;
+                const key = part.slice(0, idx).trim();
+                const value = part.slice(idx + 1).trim();
+                if (key) args[key] = value;
+              });
+              return args;
+            }
+
+            const allowed = {
+              play_song: true,
+              sing: true,
+              play_music: true,
+              read_story: true,
+              adjust_device_volume: true,
+              stop_playing: true,
+              stop_chat: true,
+            };
+
+            function routeFromIntent(intent) {
+              let functionRoute = intent;
+              if (intent === "play_song" || intent === "sing") functionRoute = "play_music";
+              if (intent === "stop_playing" || intent === "stop_chat") functionRoute = "stop";
+              return functionRoute;
+            }
+
+            function parseRoute(line) {
+              if (line === "nothing") return null;
+              const arrowIdx = line.indexOf("->");
+              const normalized = arrowIdx >= 0 ? line.slice(arrowIdx + 2).trim() : line;
+              const idx = normalized.indexOf(":");
+              let intent = "";
+              let args = {};
+              if (idx < 0) {
+                intent = normalized.trim();
+              } else {
+                intent = normalized.slice(0, idx).trim();
+                args = parseArgs(normalized.slice(idx + 1));
+              }
+              if (!allowed[intent]) return null;
+              return {
+                intent: intent,
+                route: routeFromIntent(intent),
+                args: args,
+              };
+            }
+
+            const routes = [];
+            for (const line of lines) {
+              const parsed = parseRoute(line);
+              if (parsed) routes.push(parsed);
+            }
+
+            if (routes.length === 0) {
+              board.setVar("route_source", "chat");
+              board.setVar("has_function_intent", false);
+              board.setVar("matched_intent", "");
+              board.setVar("matched_args", {});
+              board.setVar("matched_args_json", "{}");
+              board.setVar("function_route", "");
+              board.setVar("pending_routes", []);
+              board.setVar("pending_routes_json", "[]");
+              board.setVar("has_next_route", false);
+              board.setVar("needs_format", false);
+            } else {
+              const current = routes[0];
+              const pending = routes.slice(1);
+              board.setVar("has_function_intent", true);
+              board.setVar("route_source", "format");
+              board.setVar("matched_intent", current.intent);
+              board.setVar("matched_args", current.args || {});
+              board.setVar("matched_args_json", JSON.stringify(current.args || {}));
+              board.setVar("function_route", current.route);
+              board.setVar("pending_routes", pending);
+              board.setVar("pending_routes_json", JSON.stringify(pending));
+              board.setVar("has_next_route", pending.length > 0);
+            }
+
+            const originalMain = board.getVar("tmp_main_channel_before_format");
+            if (Array.isArray(originalMain)) {
+              board.setChannel(board.MAIN_CHANNEL, originalMain);
+            }
+
+      - id: prepare_function_context
+        type: script
+        config:
+          source: |
+            parallel.cancelNode("chat_buffer", "function route selected");
+
+            function latestUserText() {
+              const msgs = board.channel(board.MAIN_CHANNEL) || [];
+              for (let i = msgs.length - 1; i >= 0; i--) {
+                const msg = msgs[i] || {};
+                if (msg.role !== "user") continue;
+                const parts = Array.isArray(msg.parts) ? msg.parts : [];
+                const text = parts.map(function(part) {
+                  return part && part.type === "text" && typeof part.text === "string" ? part.text : "";
+                }).join("").trim();
+                if (text) return text;
+              }
+              return "";
+            }
+
+            const intent = String(board.getVar("matched_intent") || "");
+            const route = String(board.getVar("function_route") || intent || "");
+            const args = board.getVar("matched_args") || {};
+            const pending = Array.isArray(board.getVar("pending_routes")) ? board.getVar("pending_routes") : [];
+            const argsJSON = JSON.stringify(args || {});
+            const pendingJSON = JSON.stringify(pending);
+            board.setVar("matched_args_json", argsJSON);
+            board.setVar("pending_routes_json", pendingJSON);
+
+            const context = [
+              "You are a function node in a routed assistant graph.",
+              "Current route context:",
+              "- intent: " + intent,
+              "- route: " + route,
+              "- matched_args_json: " + argsJSON,
+              "- pending_routes_json: " + pendingJSON,
+              "Use matched_args_json as the source of truth for the current function. Ignore earlier conversation, previous function output, and tool results if they conflict with this context.",
+              "Complete only the current function. Do not mention or execute pending routes."
+            ];
+            board.setVar("function_context", context.join("\n"));
+            board.setChannel("function_route_channel", [{
+              role: "user",
+              parts: [{ type: "text", text: latestUserText() }],
+            }]);
+
+      - id: function_play_music
+        type: llm
+        publish: true
+        config:
+          model: generate_model
+          max_tokens: 192
+          messages_channel: function_route_channel
+          tool_names:
+            - play_music
+          output_key: function_result
+          system_prompt: |
+            ${board.function_context}
+
+            You are the play_music function node.
+            If title is present, first output one short user-facing Chinese sentence confirming the chosen music, then call play_music exactly once with title and optional artist.
+            If matched_args_json has no title, ask exactly one concise clarification question asking which song or music to play. Do not call any tool.
+            Never choose a song by guessing from earlier chat when title is missing.
+            Do not invent unsupported tool names.
+
+      - id: function_read_story
+        type: llm
+        publish: true
+        config:
+          model: generate_model
+          max_tokens: 256
+          messages_channel: function_route_channel
+          output_key: function_result
+          system_prompt: |
+            ${board.function_context}
+
+            You are the read_story function node.
+            If title, series, or subject is present, tell a concise Chinese story about that target.
+            If matched_args_json has no title, series, or subject, ask exactly one concise clarification question asking what story theme or book the user wants.
+            Do not tell a generic story when the story target is missing.
+            Output only the user-facing response.
+
+      - id: function_adjust_device_volume
+        type: llm
+        publish: true
+        config:
+          model: generate_model
+          max_tokens: 128
+          messages_channel: function_route_channel
+          tool_names:
+            - set_device_volume
+          output_key: function_result
+          system_prompt: |
+            ${board.function_context}
+
+            You are the adjust_device_volume function node.
+            First output one short user-facing Chinese sentence that says you are adjusting the volume.
+            Then call set_device_volume exactly once.
+            If pct is present, call set_device_volume with pct.
+            If delta is present, call set_device_volume with delta.
+            If no value is present, ask one concise clarification question and do not call any tool.
+            Do not invent unsupported tool names.
+
+      - id: function_stop
+        type: llm
+        publish: true
+        config:
+          model: generate_model
+          max_tokens: 128
+          messages_channel: function_route_channel
+          tool_names:
+            - stop_playback
+          output_key: function_result
+          system_prompt: |
+            ${board.function_context}
+
+            You are the stop function node.
+            If intent is stop_playing, first output one short Chinese sentence, then call stop_playback exactly once.
+            If intent is stop_chat, output one short Chinese goodbye and do not call any tool.
+            Do not ask a clarification unless the user asks to stop something ambiguous.
+            Do not invent unsupported tool names.
+
+      - id: clear_completed_route
+        type: script
+        config:
+          source: |
+            const intent = board.getVar("matched_intent") || "";
+            const route = board.getVar("function_route") || intent;
+            const args = board.getVar("matched_args") || {};
+            const pending = Array.isArray(board.getVar("pending_routes")) ? board.getVar("pending_routes") : [];
+            const missingTitle = (route === "play_music" || route === "read_story") && !args.title && !args.series && !args.subject;
+
+            if (missingTitle) {
+              board.setVar("active_route", route);
+              board.setVar("active_args", args);
+              board.setVar("pending_routes", pending);
+              board.setVar("matched_args_json", JSON.stringify(args || {}));
+              board.setVar("pending_routes_json", JSON.stringify(pending));
+              board.setVar("has_next_route", false);
+            } else if (pending.length > 0) {
+              const next = pending[0] || {};
+              const rest = pending.slice(1);
+              board.setVar("route_source", "pending");
+              board.setVar("matched_intent", next.intent || "");
+              board.setVar("matched_args", next.args || {});
+              board.setVar("matched_args_json", JSON.stringify(next.args || {}));
+              board.setVar("function_route", next.route || "");
+              board.setVar("active_route", "");
+              board.setVar("active_args", {});
+              board.setVar("pending_routes", rest);
+              board.setVar("pending_routes_json", JSON.stringify(rest));
+              board.setVar("has_next_route", true);
+            } else {
+              board.setVar("active_route", "");
+              board.setVar("active_args", {});
+              board.setVar("pending_routes", []);
+              board.setVar("matched_intent", "");
+              board.setVar("matched_args", {});
+              board.setVar("matched_args_json", "{}");
+              board.setVar("function_route", "");
+              board.setVar("pending_routes_json", "[]");
+              board.setVar("has_function_intent", false);
+              board.setVar("has_next_route", false);
+            }
+
+      - id: join_select
+        type: script
+        config:
+          source: |
+            board.setVar("joined", true);
+
+    edges:
+      - from: start
+        to: state_route
+      - from: state_route
+        to: route_fork
+      - from: route_fork
+        to: chat_buffer
+      - from: chat_buffer
+        to: join_select
+      - from: route_fork
+        to: route_branch
+      - from: route_branch
+        to: prepare_function_context
+        condition: needs_format == false
+      - from: route_branch
+        to: format_intent
+        condition: needs_format == true
+      - from: format_intent
+        to: extract_formatch
+      - from: extract_formatch
+        to: prepare_function_context
+        condition: has_function_intent == true
+      - from: extract_formatch
+        to: join_select
+        condition: has_function_intent == false
+      - from: prepare_function_context
+        to: function_play_music
+        condition: function_route == "play_music"
+      - from: prepare_function_context
+        to: function_read_story
+        condition: function_route == "read_story"
+      - from: prepare_function_context
+        to: function_adjust_device_volume
+        condition: function_route == "adjust_device_volume"
+      - from: prepare_function_context
+        to: function_stop
+        condition: function_route == "stop"
+      - from: function_play_music
+        to: clear_completed_route
+      - from: function_read_story
+        to: clear_completed_route
+      - from: function_adjust_device_volume
+        to: clear_completed_route
+      - from: function_stop
+        to: clear_completed_route
+      - from: clear_completed_route
+        to: prepare_function_context
+        condition: has_next_route == true
+      - from: clear_completed_route
+        to: join_select
+      - from: join_select
+        to: __end__
