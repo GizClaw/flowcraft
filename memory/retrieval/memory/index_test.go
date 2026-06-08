@@ -161,3 +161,148 @@ func TestHybridRRFDeterministicTieBreak(t *testing.T) {
 		}
 	}
 }
+
+func TestHybridWeightedRespectsWeights(t *testing.T) {
+	ctx := context.Background()
+	idx := New()
+	ns := "ns_weighted"
+	if err := idx.Upsert(ctx, ns, []retrieval.Doc{
+		{ID: "text", Content: "alpha alpha", Vector: []float32{0, 1}},
+		{ID: "vector", Content: "beta beta", Vector: []float32{1, 0}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	textFirst, err := idx.Search(ctx, ns, retrieval.SearchRequest{
+		QueryText:   "alpha",
+		QueryVector: []float32{1, 0},
+		TopK:        2,
+		HybridMode:  retrieval.HybridWeighted,
+		HybridOptions: retrieval.HybridOptions{
+			Weights: map[retrieval.SearchSignal]float64{
+				retrieval.SearchSignalBM25:   1.0,
+				retrieval.SearchSignalVector: 0.0,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(textFirst.Hits) == 0 || textFirst.Hits[0].Doc.ID != "text" || textFirst.Hits[0].Scores["weighted"] <= 0 {
+		t.Fatalf("text-weighted hits = %+v", textFirst.Hits)
+	}
+	vectorFirst, err := idx.Search(ctx, ns, retrieval.SearchRequest{
+		QueryText:   "alpha",
+		QueryVector: []float32{1, 0},
+		TopK:        2,
+		HybridMode:  retrieval.HybridWeighted,
+		HybridOptions: retrieval.HybridOptions{
+			Weights: map[retrieval.SearchSignal]float64{
+				retrieval.SearchSignalBM25:   0.0,
+				retrieval.SearchSignalVector: 1.0,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(vectorFirst.Hits) == 0 || vectorFirst.Hits[0].Doc.ID != "vector" || vectorFirst.Hits[0].Scores["weighted"] <= 0 {
+		t.Fatalf("vector-weighted hits = %+v", vectorFirst.Hits)
+	}
+}
+
+func TestHybridConvexAlpha(t *testing.T) {
+	ctx := context.Background()
+	idx := New()
+	ns := "ns_convex"
+	if err := idx.Upsert(ctx, ns, []retrieval.Doc{
+		{ID: "text", Content: "alpha alpha", Vector: []float32{0, 1}},
+		{ID: "vector", Content: "beta beta", Vector: []float32{1, 0}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	alphaText := 1.0
+	alphaVector := 0.0
+	textFirst, err := idx.Search(ctx, ns, retrieval.SearchRequest{
+		QueryText:     "alpha",
+		QueryVector:   []float32{1, 0},
+		TopK:          2,
+		HybridMode:    retrieval.HybridConvex,
+		HybridOptions: retrieval.HybridOptions{Alpha: &alphaText},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(textFirst.Hits) == 0 || textFirst.Hits[0].Doc.ID != "text" || textFirst.Hits[0].Scores["convex"] <= 0 {
+		t.Fatalf("alpha=1 hits = %+v", textFirst.Hits)
+	}
+	vectorFirst, err := idx.Search(ctx, ns, retrieval.SearchRequest{
+		QueryText:     "alpha",
+		QueryVector:   []float32{1, 0},
+		TopK:          2,
+		HybridMode:    retrieval.HybridConvex,
+		HybridOptions: retrieval.HybridOptions{Alpha: &alphaVector},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(vectorFirst.Hits) == 0 || vectorFirst.Hits[0].Doc.ID != "vector" || vectorFirst.Hits[0].Scores["convex"] <= 0 {
+		t.Fatalf("alpha=0 hits = %+v", vectorFirst.Hits)
+	}
+}
+
+func TestHybridConvexAlphaRequiresBM25VectorOnly(t *testing.T) {
+	ctx := context.Background()
+	idx := New()
+	ns := "ns_convex_alpha_sparse"
+	if err := idx.Upsert(ctx, ns, []retrieval.Doc{
+		{ID: "text", Content: "alpha", Vector: []float32{0, 1}, SparseVector: map[string]float32{"other": 1}},
+		{ID: "vector", Content: "beta", Vector: []float32{1, 0}, SparseVector: map[string]float32{"other": 1}},
+		{ID: "sparse", Content: "beta", Vector: []float32{0, 1}, SparseVector: map[string]float32{"needle": 1}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	alpha := 0.5
+	_, err := idx.Search(ctx, ns, retrieval.SearchRequest{
+		QueryText:     "alpha",
+		QueryVector:   []float32{1, 0},
+		SparseVec:     map[string]float32{"needle": 1},
+		TopK:          3,
+		HybridMode:    retrieval.HybridConvex,
+		HybridOptions: retrieval.HybridOptions{Alpha: &alpha},
+	})
+	if err == nil || !errdefs.IsValidation(err) {
+		t.Fatalf("expected validation error for alpha with three signals, got %v", err)
+	}
+}
+
+func TestHybridRRFIncludesSparseSignal(t *testing.T) {
+	ctx := context.Background()
+	idx := New()
+	ns := "ns_sparse_hybrid"
+	if err := idx.Upsert(ctx, ns, []retrieval.Doc{
+		{ID: "text", Content: "alpha", SparseVector: map[string]float32{"other": 1}},
+		{ID: "sparse", Content: "beta", SparseVector: map[string]float32{"needle": 2}},
+		{ID: "none", Content: "beta", SparseVector: map[string]float32{"other": 2}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	resp, err := idx.Search(ctx, ns, retrieval.SearchRequest{
+		QueryText:  "alpha",
+		SparseVec:  map[string]float32{"needle": 1},
+		TopK:       3,
+		HybridMode: retrieval.HybridRRF,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids := map[string]bool{}
+	for _, h := range resp.Hits {
+		ids[h.Doc.ID] = true
+		if h.Doc.ID == "none" {
+			t.Fatalf("zero-evidence sparse hybrid hit returned: %+v", resp.Hits)
+		}
+	}
+	if !ids["text"] || !ids["sparse"] {
+		t.Fatalf("sparse hybrid dropped a positive signal lane: %+v", resp.Hits)
+	}
+}

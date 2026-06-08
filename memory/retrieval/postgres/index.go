@@ -20,7 +20,7 @@ import (
 // Index is a Postgres-backed retrieval.Index.
 //
 // One namespace maps to one table retrieval_<ns> with a tsvector column and
-// jsonb metadata. Vector scoring is computed client-side in the Pipeline.
+// jsonb metadata. Native vector scoring is not supported by this adapter.
 type Index struct {
 	pool *pgxpool.Pool
 }
@@ -58,7 +58,6 @@ func (s *Index) Capabilities() retrieval.Capabilities {
 			"and", "or", "not",
 		},
 
-		Rerank:         false,
 		BatchUpsertMax: 1000,
 		WriteIsAtomic:  true,
 
@@ -232,8 +231,9 @@ func (s *Index) DeleteByFilter(ctx context.Context, ns string, f retrieval.Filte
 
 // Search implements retrieval.Index.
 //
-// Native: ts_rank against tsvector for QueryText. QueryVector is used by
-// Pipeline (server returns vectors when WithVector is set in Pipeline).
+// Native: ts_rank against tsvector for QueryText, plus sparse dot-product
+// scoring when SparseVec is present. Vector-only scoring is not supported by
+// this adapter.
 func (s *Index) Search(ctx context.Context, ns string, req retrieval.SearchRequest) (*retrieval.SearchResponse, error) {
 	if err := s.ensureNS(ctx, ns); err != nil {
 		return nil, err
@@ -244,8 +244,11 @@ func (s *Index) Search(ctx context.Context, ns string, req retrieval.SearchReque
 	if !hasText && !hasVec && !hasSparse {
 		return nil, retrieval.ErrNoQuery
 	}
-	if hasVec && !hasText {
-		return nil, errdefs.NotAvailablef("postgres: vector-only search is not supported")
+	if hasVec {
+		return nil, errdefs.NotAvailablef("postgres: vector search is not supported")
+	}
+	if retrieval.HasMultipleSearchSignals(req) {
+		return nil, errdefs.NotAvailablef("postgres: multi-signal hybrid search is not supported")
 	}
 	topK := req.TopK
 	if topK <= 0 {

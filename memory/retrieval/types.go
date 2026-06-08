@@ -31,8 +31,8 @@ type Range struct {
 //
 // Composition: empty maps / nil branches are no-ops, so a zero Filter
 // matches every document. Backends that cannot push down a particular
-// operator should return Filterable.SupportsFilter=false and let
-// pipeline.PostFilter (or DocMatchesFilter) handle it client-side.
+// operator should return Filterable.SupportsFilter=false and let callers
+// apply [DocMatchesFilter] client-side.
 type Filter struct {
 	// And requires every sub-filter to match.
 	And []Filter

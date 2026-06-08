@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/memory/retrieval"
+	hybridparams "github.com/GizClaw/flowcraft/memory/retrieval/internal/hybrid"
 	"github.com/GizClaw/flowcraft/memory/retrieval/scoring"
 	"github.com/GizClaw/flowcraft/memory/text/bm25"
 	"github.com/GizClaw/flowcraft/memory/text/tokenize"
@@ -38,9 +39,7 @@ func New() *Index {
 
 // Capabilities implements retrieval.Index.
 func (m *Index) Capabilities() retrieval.Capabilities {
-	c := retrieval.DefaultMemoryCapabilities()
-	c.Hybrid = false // hybrid is performed by pipeline, not natively
-	return c
+	return retrieval.DefaultMemoryCapabilities()
 }
 
 // Close implements retrieval.Index.
@@ -209,15 +208,20 @@ func (m *Index) Search(_ context.Context, namespace string, req retrieval.Search
 	}
 	m.mu.RUnlock()
 
-	if hasText && hasVec {
-		buildLane := func(score func(scored) float64) []retrieval.Hit {
+	signals := retrieval.SearchSignals(req)
+	if len(signals) > 1 {
+		mode, err := hybridparams.NormalizeMode(req.HybridMode)
+		if err != nil {
+			return nil, err
+		}
+		buildLane := func(signal retrieval.SearchSignal, score func(scored) float64) []retrieval.Hit {
 			hits := make([]retrieval.Hit, 0, len(out))
 			for _, s := range out {
 				v := score(s)
 				if v <= 0 {
 					continue
 				}
-				hits = append(hits, retrieval.Hit{Doc: cloneDoc(s.d), Score: v})
+				hits = append(hits, retrieval.Hit{Doc: cloneDoc(s.d), Score: v, Scores: map[string]float64{string(signal): v}})
 			}
 			sort.SliceStable(hits, func(i, j int) bool {
 				if hits[i].Score == hits[j].Score {
@@ -227,28 +231,62 @@ func (m *Index) Search(_ context.Context, namespace string, req retrieval.Search
 			})
 			return hits
 		}
-		bmHits := buildLane(func(s scored) float64 { return s.bm25 })
-		vecHits := buildLane(func(s scored) float64 { return s.cos })
-		hits := scoring.RRF([][]retrieval.Hit{bmHits, vecHits}, scoring.DefaultRRFK)
+		lanes := make(map[string][]retrieval.Hit, 3)
+		var ranked [][]retrieval.Hit
+		if hasText {
+			lanes[string(retrieval.SearchSignalBM25)] = buildLane(retrieval.SearchSignalBM25, func(s scored) float64 { return s.bm25 })
+			ranked = append(ranked, lanes[string(retrieval.SearchSignalBM25)])
+		}
+		if hasVec {
+			lanes[string(retrieval.SearchSignalVector)] = buildLane(retrieval.SearchSignalVector, func(s scored) float64 { return s.cos })
+			ranked = append(ranked, lanes[string(retrieval.SearchSignalVector)])
+		}
+		if hasSparse {
+			lanes[string(retrieval.SearchSignalSparse)] = buildLane(retrieval.SearchSignalSparse, func(s scored) float64 { return s.sparse })
+			ranked = append(ranked, lanes[string(retrieval.SearchSignalSparse)])
+		}
+		var hits []retrieval.Hit
+		switch mode {
+		case retrieval.HybridRRF:
+			k, err := hybridparams.RRFK(req.HybridOptions)
+			if err != nil {
+				return nil, err
+			}
+			hits = scoring.RRF(ranked, k)
+		case retrieval.HybridWeighted:
+			weights, err := hybridparams.Weights(req.HybridOptions, signals)
+			if err != nil {
+				return nil, err
+			}
+			hits = scoring.RawWeightedFusion(lanes, weights)
+		case retrieval.HybridConvex:
+			weights, err := hybridparams.ConvexWeights(req.HybridOptions, signals)
+			if err != nil {
+				return nil, err
+			}
+			hits = scoring.ConvexFusion(lanes, weights)
+		}
 		bmByID := make(map[string]float64, len(out))
 		cosByID := make(map[string]float64, len(out))
+		sparseByID := make(map[string]float64, len(out))
 		for _, s := range out {
 			bmByID[s.d.ID] = s.bm25
 			cosByID[s.d.ID] = s.cos
+			sparseByID[s.d.ID] = s.sparse
 		}
 		for i := range hits {
-			rrf := hits[i].Score
+			fused := hits[i].Score
 			hits[i].Scores = map[string]float64{
-				"bm25": bmByID[hits[i].Doc.ID],
-				"cos":  cosByID[hits[i].Doc.ID],
-				"rrf":  rrf,
+				"bm25":   bmByID[hits[i].Doc.ID],
+				"cos":    cosByID[hits[i].Doc.ID],
+				"sparse": sparseByID[hits[i].Doc.ID],
 			}
+			hits[i].Scores[string(mode)] = fused
 		}
 		// SearchRequest.MinScore is intentionally NOT consulted on the
-		// hybrid path: RRF scores live on a different scale (~1/k) than
-		// raw BM25/cosine, and applying the same threshold here would
+		// hybrid path: fused scores live on a different scale than
+		// raw BM25/cosine/sparse, and applying the same threshold here would
 		// silently change meaning depending on which modes were supplied.
-		// Use pipeline.ScoreThreshold for hybrid filtering.
 		if len(hits) > req.TopK {
 			hits = hits[:req.TopK]
 		}
@@ -256,11 +294,26 @@ func (m *Index) Search(_ context.Context, namespace string, req retrieval.Search
 	}
 
 	if hasSparse && !hasText && !hasVec {
-		sort.SliceStable(out, func(i, j int) bool { return out[i].sparse > out[j].sparse })
+		sort.SliceStable(out, func(i, j int) bool {
+			if out[i].sparse == out[j].sparse {
+				return out[i].d.ID < out[j].d.ID
+			}
+			return out[i].sparse > out[j].sparse
+		})
 	} else if hasText {
-		sort.SliceStable(out, func(i, j int) bool { return out[i].bm25 > out[j].bm25 })
+		sort.SliceStable(out, func(i, j int) bool {
+			if out[i].bm25 == out[j].bm25 {
+				return out[i].d.ID < out[j].d.ID
+			}
+			return out[i].bm25 > out[j].bm25
+		})
 	} else if hasVec {
-		sort.SliceStable(out, func(i, j int) bool { return out[i].cos > out[j].cos })
+		sort.SliceStable(out, func(i, j int) bool {
+			if out[i].cos == out[j].cos {
+				return out[i].d.ID < out[j].d.ID
+			}
+			return out[i].cos > out[j].cos
+		})
 	}
 	var hits []retrieval.Hit
 	for _, s := range out {

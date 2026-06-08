@@ -23,6 +23,22 @@ func TestContract(t *testing.T) {
 	})
 }
 
+func TestCapabilitiesDeleteByFilterIsFallback(t *testing.T) {
+	dir := t.TempDir()
+	idx, err := sqlx.Open(filepath.Join(dir, "fc.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer idx.Close()
+	caps := retrieval.CapabilitiesOf(idx)
+	if !caps.Extensions.DeleteByFilter {
+		t.Fatalf("sqlite should expose callable DeleteByFilter: %+v", caps.Extensions)
+	}
+	if caps.NativeDeleteByFilter {
+		t.Fatalf("sqlite DeleteByFilter is a fallback; NativeDeleteByFilter must be false: %+v", caps)
+	}
+}
+
 func TestSearchSelectiveFilterBeyondInitialWindow(t *testing.T) {
 	dir := t.TempDir()
 	idx, err := sqlx.Open(filepath.Join(dir, "fc.db"))
@@ -59,33 +75,33 @@ func TestSearchSelectiveFilterBeyondInitialWindow(t *testing.T) {
 	}
 }
 
-func TestSearchHybridUsesConsistentScore(t *testing.T) {
+func TestSearchMultiSignalNotAvailable(t *testing.T) {
 	dir := t.TempDir()
 	idx, err := sqlx.Open(filepath.Join(dir, "fc.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer idx.Close()
-	if err := idx.Upsert(t.Context(), "ns_hybrid", []retrieval.Doc{
-		{ID: "a", Content: "alpha", Vector: []float32{1, 0}},
+	if err := idx.Upsert(t.Context(), "ns_multi_signal", []retrieval.Doc{
+		{ID: "a", Content: "alpha", Vector: []float32{1, 0}, SparseVector: map[string]float32{"needle": 1}},
 	}); err != nil {
 		t.Fatal(err)
 	}
-	resp, err := idx.Search(t.Context(), "ns_hybrid", retrieval.SearchRequest{
+	_, err = idx.Search(t.Context(), "ns_multi_signal", retrieval.SearchRequest{
 		QueryText:   "alpha",
 		QueryVector: []float32{1, 0},
 		TopK:        1,
-		MinScore:    1e9,
 	})
-	if err != nil {
-		t.Fatal(err)
+	if !errdefs.IsNotAvailable(err) {
+		t.Fatalf("text+vector search err=%v, want NotAvailable", err)
 	}
-	if len(resp.Hits) != 1 {
-		t.Fatalf("hybrid search should ignore SearchRequest.MinScore, hits=%+v", resp.Hits)
-	}
-	got := resp.Hits[0]
-	if got.Score != got.Scores["bm25"]+got.Scores["cos"] {
-		t.Fatalf("Hit.Score=%v, bm25+cos=%v", got.Score, got.Scores["bm25"]+got.Scores["cos"])
+	_, err = idx.Search(t.Context(), "ns_multi_signal", retrieval.SearchRequest{
+		QueryText: "alpha",
+		SparseVec: map[string]float32{"needle": 1},
+		TopK:      1,
+	})
+	if !errdefs.IsNotAvailable(err) {
+		t.Fatalf("text+sparse search err=%v, want NotAvailable", err)
 	}
 }
 

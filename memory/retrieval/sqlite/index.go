@@ -21,8 +21,8 @@ import (
 
 // Index is a SQLite-backed retrieval.Index.
 //
-// Hybrid search is performed by the Pipeline (Capabilities.Hybrid=false);
-// only BM25 over content (FTS5) is native. Vector / sparse are client-side.
+// Only BM25 over content (FTS5) and sparse dot-product scoring are native.
+// The adapter does not support native hybrid or vector-only scoring.
 type Index struct {
 	db *sql.DB
 
@@ -74,7 +74,6 @@ func (s *Index) Capabilities() retrieval.Capabilities {
 			"and", "or", "not",
 		},
 
-		Rerank:         false,
 		BatchUpsertMax: 1000,
 		WriteIsAtomic:  true,
 
@@ -288,9 +287,9 @@ func (s *Index) DeleteByFilter(ctx context.Context, ns string, f retrieval.Filte
 
 // Search implements retrieval.Index.
 //
-// Native scoring: BM25 over FTS5 when QueryText is present.
-// QueryVector / SparseVec are returned untouched in the Hit list ordered by ts (caller
-// performs vector scoring inside the Pipeline).
+// Native scoring: BM25 over FTS5 when QueryText is present, and sparse
+// dot-product scoring when SparseVec is present. Vector-only scoring is not
+// supported by this adapter.
 func (s *Index) Search(ctx context.Context, ns string, req retrieval.SearchRequest) (*retrieval.SearchResponse, error) {
 	if err := s.ensureNS(ctx, ns); err != nil {
 		return nil, err
@@ -301,8 +300,11 @@ func (s *Index) Search(ctx context.Context, ns string, req retrieval.SearchReque
 	if !hasText && !hasVec && !hasSparse {
 		return nil, retrieval.ErrNoQuery
 	}
-	if hasVec && !hasText {
-		return nil, errdefs.NotAvailablef("sqlite: vector-only search is not supported")
+	if hasVec {
+		return nil, errdefs.NotAvailablef("sqlite: vector search is not supported")
+	}
+	if retrieval.HasMultipleSearchSignals(req) {
+		return nil, errdefs.NotAvailablef("sqlite: multi-signal hybrid search is not supported")
 	}
 	topK := req.TopK
 	if topK <= 0 {

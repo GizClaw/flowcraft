@@ -12,9 +12,7 @@ import (
 )
 
 // hybridClaimingIndex is a minimal retrieval.Index that advertises
-// Capabilities.Hybrid == true but DOES NOT implement
-// retrieval.Hybridable — exactly the in-tree workspace.Index profile
-// that triggered #157.
+// Capabilities.Hybrid == true through ordinary Search support.
 type hybridClaimingIndex struct{}
 
 func (hybridClaimingIndex) Capabilities() retrieval.Capabilities {
@@ -32,6 +30,20 @@ func (hybridClaimingIndex) List(context.Context, string, retrieval.ListRequest) 
 	return &retrieval.ListResponse{}, nil
 }
 
+type deleteOnlyIndex struct{ hybridClaimingIndex }
+
+func (deleteOnlyIndex) Capabilities() retrieval.Capabilities {
+	return retrieval.Capabilities{
+		NativeDeleteByFilter: true,
+		Extensions: retrieval.ExtensionCapabilities{
+			DeleteByFilter: true,
+		},
+	}
+}
+func (deleteOnlyIndex) DeleteByFilter(context.Context, string, retrieval.Filter) (int64, error) {
+	return 0, nil
+}
+
 // nullJournal absorbs Record / Close calls so Wrap can return a
 // useful value without spinning up a real journal backend.
 type nullJournal struct{}
@@ -46,33 +58,22 @@ func (nullJournal) Replay(context.Context, string, uint64) iter.Seq2[journal.Eve
 func (nullJournal) Compact(context.Context, time.Time) error { return nil }
 func (nullJournal) Close() error                             { return nil }
 
-// TestWrap_DoesNotFalselyAdvertiseHybridable is the regression guard
-// for issue #157. Pre-fix, journal.Wrap embedded a SearchHybrid
-// bridge on every variant via *journaledIndex, so the type
-// assertion to retrieval.Hybridable always succeeded — and the
-// bridge returned (nil, nil), which downstream
-// pipeline.HybridShortCircuit treated as a successful empty
-// short-circuit.
-//
-// The fix removes the bridge methods from the base wrapper type so
-// no wrapped value falsely advertises Hybridable / Snapshottable /
-// Vectorizable when the inner index does not implement them.
-func TestWrap_DoesNotFalselyAdvertiseHybridable(t *testing.T) {
+// TestWrap_DoesNotFalselyAdvertiseOptionalInterfaces is the regression guard
+// for issue #157. The wrapper must expose only optional method-set interfaces
+// that the wrapped index actually implements.
+func TestWrap_DoesNotFalselyAdvertiseOptionalInterfaces(t *testing.T) {
 	wrapped := journal.Wrap(hybridClaimingIndex{}, nullJournal{})
-	if _, ok := wrapped.(retrieval.Hybridable); ok {
-		t.Fatalf("#157 regression: journal.Wrap of a non-Hybridable inner must NOT satisfy retrieval.Hybridable")
-	}
 	if _, ok := wrapped.(retrieval.Snapshottable); ok {
 		t.Fatalf("#157 regression: journal.Wrap of a non-Snapshottable inner must NOT satisfy retrieval.Snapshottable")
 	}
 	if _, ok := wrapped.(retrieval.Vectorizable); ok {
 		t.Fatalf("#157 regression: journal.Wrap of a non-Vectorizable inner must NOT satisfy retrieval.Vectorizable")
 	}
-	if retrieval.Supports(wrapped, retrieval.CapabilityHybrid) {
-		t.Fatalf("#157 regression: Supports must project Hybrid through the wrapper method set")
+	if !retrieval.Supports(wrapped, retrieval.CapabilityHybrid) {
+		t.Fatalf("Capabilities.Hybrid should describe ordinary Search hybrid support")
 	}
-	if got := retrieval.CapabilitiesOf(wrapped); got.Hybrid || got.Extensions.HybridSearch {
-		t.Fatalf("#157 regression: CapabilitiesOf(wrapped) = %+v", got)
+	if got := retrieval.CapabilitiesOf(wrapped); !got.Hybrid {
+		t.Fatalf("CapabilitiesOf(wrapped) should preserve Hybrid: %+v", got)
 	}
 	if _, ok := wrapped.(retrieval.DocGetter); ok {
 		t.Fatalf("#157 regression: non-DocGetter inner must not satisfy DocGetter")
@@ -121,4 +122,94 @@ func TestWrap_ProjectsImplementedOptionalInterfaces(t *testing.T) {
 	if caps.Extensions.Filterable {
 		t.Fatalf("CapabilitiesOf falsely projected Filterable: %+v", caps.Extensions)
 	}
+	if caps.WriteIsAtomic {
+		t.Fatalf("journal wrapper should not advertise atomic writes: %+v", caps)
+	}
+	if caps.NativeDeleteByFilter {
+		t.Fatalf("journal wrapper should not advertise native DeleteByFilter: %+v", caps)
+	}
+}
+
+func TestWrap_PartialExtensionCapabilitiesMatchWrapperMethodSet(t *testing.T) {
+	wrapped := journal.Wrap(deleteOnlyIndex{}, nullJournal{})
+	caps := retrieval.CapabilitiesOf(wrapped)
+	if caps.Extensions.DeleteByFilter {
+		t.Fatalf("wrapper must not advertise DeleteByFilter when its method set does not expose it: %+v", caps.Extensions)
+	}
+	if caps.NativeDeleteByFilter {
+		t.Fatalf("wrapper must clear NativeDeleteByFilter for journaled fallback deletes: %+v", caps)
+	}
+	if _, ok := wrapped.(retrieval.DeletableByFilter); ok {
+		t.Fatal("wrapped partial-extension backend should not expose DeletableByFilter")
+	}
+	if _, ok := retrieval.AsDeletableByFilter(wrapped); ok {
+		t.Fatal("AsDeletableByFilter should match the wrapper method set")
+	}
+	assertExtensionProjectionMatchesMethodSet(t, wrapped)
+}
+
+func TestWrap_CapabilityProjectionMatchesMethodSet(t *testing.T) {
+	assertExtensionProjectionMatchesMethodSet(t, journal.Wrap(memidx.New(), nullJournal{}))
+}
+
+func assertExtensionProjectionMatchesMethodSet(t *testing.T, idx retrieval.Index) {
+	t.Helper()
+	caps := retrieval.CapabilitiesOf(idx)
+	if got, want := caps.Extensions.DocGetter, implementsDocGetter(idx); got != want {
+		t.Fatalf("DocGetter projection=%v methodSet=%v", got, want)
+	}
+	if got, want := caps.Extensions.Filterable, implementsFilterable(idx); got != want {
+		t.Fatalf("Filterable projection=%v methodSet=%v", got, want)
+	}
+	if got, want := caps.Extensions.Vectorizable, implementsVectorizable(idx); got != want {
+		t.Fatalf("Vectorizable projection=%v methodSet=%v", got, want)
+	}
+	if got, want := caps.Extensions.Snapshottable, implementsSnapshottable(idx); got != want {
+		t.Fatalf("Snapshottable projection=%v methodSet=%v", got, want)
+	}
+	if got, want := caps.Extensions.Iterable, implementsIterable(idx); got != want {
+		t.Fatalf("Iterable projection=%v methodSet=%v", got, want)
+	}
+	if got, want := caps.Extensions.Count, implementsCountable(idx); got != want {
+		t.Fatalf("Count projection=%v methodSet=%v", got, want)
+	}
+	if got, want := caps.Extensions.DeleteByFilter, implementsDeletableByFilter(idx); got != want {
+		t.Fatalf("DeleteByFilter projection=%v methodSet=%v", got, want)
+	}
+	if got, want := caps.Extensions.DropNamespace, implementsDroppable(idx); got != want {
+		t.Fatalf("DropNamespace projection=%v methodSet=%v", got, want)
+	}
+}
+
+func implementsDocGetter(idx retrieval.Index) bool {
+	_, ok := idx.(retrieval.DocGetter)
+	return ok
+}
+func implementsFilterable(idx retrieval.Index) bool {
+	_, ok := idx.(retrieval.Filterable)
+	return ok
+}
+func implementsVectorizable(idx retrieval.Index) bool {
+	_, ok := idx.(retrieval.Vectorizable)
+	return ok
+}
+func implementsSnapshottable(idx retrieval.Index) bool {
+	_, ok := idx.(retrieval.Snapshottable)
+	return ok
+}
+func implementsIterable(idx retrieval.Index) bool {
+	_, ok := idx.(retrieval.Iterable)
+	return ok
+}
+func implementsCountable(idx retrieval.Index) bool {
+	_, ok := idx.(retrieval.Countable)
+	return ok
+}
+func implementsDeletableByFilter(idx retrieval.Index) bool {
+	_, ok := idx.(retrieval.DeletableByFilter)
+	return ok
+}
+func implementsDroppable(idx retrieval.Index) bool {
+	_, ok := idx.(retrieval.Droppable)
+	return ok
 }

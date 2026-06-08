@@ -287,6 +287,12 @@ type namespaceState struct {
 	// writer has taken over. Mutating / reading methods inspect
 	// this via [fenceCheck] and refuse to proceed when set.
 	fenced atomic.Bool
+
+	// retired is set by Drop after the state is removed from the
+	// namespace map but before the namespace directory is deleted.
+	// Stale callers that already obtained this pointer must stop
+	// instead of touching segment files that Drop is about to remove.
+	retired atomic.Bool
 }
 
 // New constructs an [Index] on top of ws. The namespace state is
@@ -386,7 +392,7 @@ func (idx *Index) pokeCompactor() {
 }
 
 // Capabilities advertises what this backend supports. The retrieval
-// algorithm side is fixed (BM25 + flat vectors + hybrid via RRF,
+// algorithm side is fixed (BM25 + flat vectors + sparse dot product + hybrid fusion,
 // full Filter operator coverage), but the storage-medium properties
 // — atomicity, read-after-write, distribution — are derived from the
 // underlying Workspace via [sdkworkspace.CapabilitiesOf]. Pointing
@@ -397,6 +403,7 @@ func (idx *Index) Capabilities() retrieval.Capabilities {
 	return retrieval.Capabilities{
 		BM25:   true,
 		Vector: true,
+		Sparse: true,
 		Hybrid: true,
 
 		FilterPushdown: true,
@@ -414,7 +421,7 @@ func (idx *Index) Capabilities() retrieval.Capabilities {
 		WriteIsAtomic: wsc.AtomicRename,
 
 		MaxListPageSize:      10_000,
-		NativeDeleteByFilter: true,
+		NativeDeleteByFilter: false,
 		SupportedListOrders: []retrieval.ListOrderBy{
 			retrieval.OrderByTimestampDesc,
 			retrieval.OrderByTimestampAsc,
@@ -426,13 +433,13 @@ func (idx *Index) Capabilities() retrieval.Capabilities {
 		// strengthen them.
 		ReadAfterWrite: wsc.ReadAfterWrite,
 		Distributed:    wsc.Distributed,
-		Debug:          false,
 		Extensions: retrieval.ExtensionCapabilities{
 			DocGetter:      true,
 			Filterable:     true,
 			Iterable:       true,
 			Count:          true,
 			DeleteByFilter: true,
+			DropNamespace:  true,
 		},
 	}
 }

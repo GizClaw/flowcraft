@@ -65,8 +65,10 @@
 // BM25 token streams are derived from content on first use and cached
 // in the segment reader. Search builds one global corpus across all
 // live docs for each request so IDF does not depend on which segment a
-// doc landed in. Hybrid text+vector queries are fused with
-// [scoring.RRF].
+// doc landed in. SparseVec is scored as a dot product against
+// Doc.SparseVector. When Search receives multiple query signals, the
+// backend fuses the per-signal rankings according to SearchRequest.HybridMode
+// and SearchRequest.HybridOptions.
 //
 // Compaction: a background goroutine selects size-tiered groups of
 // small segments, reads them, drops tombstoned IDs, and writes a
@@ -98,20 +100,26 @@
 //
 // # Capabilities
 //
-// The Capabilities advertised on construction are:
+// Retrieval capabilities are fixed by this package's index implementation:
 //
 //	BM25                 true
 //	Vector               true
-//	Hybrid               true (RRF; HybridMode "weighted" / "convex" supported)
+//	Sparse               true
+//	Hybrid               true (multi-signal Search fused by requested HybridMode/HybridOptions)
 //	FilterPushdown       true (full retrieval.Filter operator surface)
-//	NativeDeleteByFilter true
-//	WriteIsAtomic        true (single Upsert / Delete batch is atomic)
-//	ReadAfterWrite       true
-//	Distributed          false
-//	Debug                false (callers run their own pipeline if they need lane debug)
+//	NativeDeleteByFilter false (implemented as scan + Delete tombstones)
+//
+// Storage capabilities are derived from the supplied
+// [sdkworkspace.Workspace] rather than hard-coded by this package. For
+// example, WriteIsAtomic, ReadAfterWrite, and Distributed reflect the
+// underlying Workspace's advertised semantics, so a MemWorkspace,
+// LocalWorkspace, or future remote Workspace can report different values while
+// sharing the same retrieval feature set.
 //
 // Optional retrieval.* interfaces implemented:
-// [retrieval.DocGetter], [retrieval.Filterable], [retrieval.Hybridable],
-// [retrieval.Iterable], [retrieval.Snapshottable],
-// [retrieval.DeletableByFilter], [retrieval.Droppable].
+// [retrieval.DocGetter], [retrieval.Filterable], [retrieval.Iterable],
+// [retrieval.Countable], [retrieval.DeletableByFilter], and
+// [retrieval.Droppable]. Iterate is a management/reindex scan that
+// performs an O(N) live-doc walk plus ID sort. Drop is a lifecycle/admin
+// operation that removes the namespace root from the backing Workspace.
 package workspace

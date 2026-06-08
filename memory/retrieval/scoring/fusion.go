@@ -8,8 +8,7 @@ import (
 )
 
 // DefaultRRFK is the default damping constant for [RRF]. The value
-// 60 is the commonly cited choice from Cormack et al. (2009) and is
-// the same default used by sdk/retrieval/pipeline.RRFFusion.
+// 60 is the commonly cited choice from Cormack et al. (2009).
 const DefaultRRFK = 60.0
 
 // RRF (Reciprocal Rank Fusion) merges several ranked hit lists into a
@@ -17,8 +16,8 @@ const DefaultRRFK = 60.0
 // contributes 1 / (k + rank+1) to its document's total score,
 // independent of the original score scales. This makes RRF
 // hyperparameter-light and robust against poorly normalized lanes,
-// which is why it is the default fusion in production retrieval
-// pipelines (Vespa, Elasticsearch, etc.).
+// which is why it is a common default fusion strategy in production
+// retrieval systems (Vespa, Elasticsearch, etc.).
 //
 // The returned slice is sorted by descending RRF score; ties are
 // broken stably by insertion order. Each Hit's Score is replaced by
@@ -73,6 +72,19 @@ func RRF(rankedLists [][]retrieval.Hit, k float64) []retrieval.Hit {
 	return out
 }
 
+// RawWeightedFusion merges lanes by summing weight * raw lane score per doc.
+// Missing weights default to 1.0; missing lanes are skipped.
+func RawWeightedFusion(lanes map[string][]retrieval.Hit, weights map[string]float64) []retrieval.Hit {
+	return weightedFusion(lanes, weights, false)
+}
+
+// ConvexFusion merges lanes by min-max normalizing each lane to [0,1] and
+// summing normalized_weight * normalized_score per doc. The supplied weights
+// are normalized to sum to 1.0; missing weights default to 1.0.
+func ConvexFusion(lanes map[string][]retrieval.Hit, weights map[string]float64) []retrieval.Hit {
+	return weightedFusion(lanes, normalizeWeights(lanes, weights), true)
+}
+
 // WeightedFusion merges several lanes via per-lane weights after
 // independent min-max normalization within each lane. lanes maps a
 // lane label (e.g. "bm25", "vector") to its ranked hit list;
@@ -90,6 +102,10 @@ func RRF(rankedLists [][]retrieval.Hit, k float64) []retrieval.Hit {
 // As with [RRF], when the same doc appears across lanes the returned
 // Hit copy carries the highest-original-score variant.
 func WeightedFusion(lanes map[string][]retrieval.Hit, weights map[string]float64) []retrieval.Hit {
+	return weightedFusion(lanes, weights, true)
+}
+
+func weightedFusion(lanes map[string][]retrieval.Hit, weights map[string]float64, normalizeScores bool) []retrieval.Hit {
 	if len(lanes) == 0 {
 		return nil
 	}
@@ -108,13 +124,18 @@ func WeightedFusion(lanes map[string][]retrieval.Hit, weights map[string]float64
 		if v, ok := weights[lane]; ok {
 			w = v
 		}
+		if w == 0 {
+			continue
+		}
 		var min, max = math.MaxFloat64, -math.MaxFloat64
-		for _, h := range hits {
-			if h.Score < min {
-				min = h.Score
-			}
-			if h.Score > max {
-				max = h.Score
+		if normalizeScores {
+			for _, h := range hits {
+				if h.Score < min {
+					min = h.Score
+				}
+				if h.Score > max {
+					max = h.Score
+				}
 			}
 		}
 		span := max - min
@@ -123,11 +144,14 @@ func WeightedFusion(lanes map[string][]retrieval.Hit, weights map[string]float64
 				firstSeen[h.Doc.ID] = seq
 				seq++
 			}
-			n := 0.0
-			if span > 0 {
-				n = (h.Score - min) / span
-			} else if max > 0 {
-				n = 1
+			n := h.Score
+			if normalizeScores {
+				n = 0
+				if span > 0 {
+					n = (h.Score - min) / span
+				} else if max > 0 {
+					n = 1
+				}
 			}
 			totals[h.Doc.ID] += w * n
 			if cur, ok := docs[h.Doc.ID]; !ok || h.Score > cur.Score {
@@ -137,6 +161,9 @@ func WeightedFusion(lanes map[string][]retrieval.Hit, weights map[string]float64
 	}
 	out := make([]retrieval.Hit, 0, len(totals))
 	for id, t := range totals {
+		if t == 0 {
+			continue
+		}
 		h := retrieval.CloneHit(docs[id])
 		h.Score = t
 		out = append(out, h)
@@ -150,5 +177,25 @@ func WeightedFusion(lanes map[string][]retrieval.Hit, weights map[string]float64
 		}
 		return out[i].Doc.ID < out[j].Doc.ID
 	})
+	return out
+}
+
+func normalizeWeights(lanes map[string][]retrieval.Hit, weights map[string]float64) map[string]float64 {
+	total := 0.0
+	out := make(map[string]float64, len(lanes))
+	for lane := range lanes {
+		w := 1.0
+		if v, ok := weights[lane]; ok {
+			w = v
+		}
+		out[lane] = w
+		total += w
+	}
+	if total <= 0 {
+		return out
+	}
+	for lane := range out {
+		out[lane] /= total
+	}
 	return out
 }

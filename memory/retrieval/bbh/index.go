@@ -21,6 +21,7 @@ import (
 	"github.com/dgraph-io/badger/v4"
 
 	"github.com/GizClaw/flowcraft/memory/retrieval"
+	hybridparams "github.com/GizClaw/flowcraft/memory/retrieval/internal/hybrid"
 	"github.com/GizClaw/flowcraft/memory/retrieval/scoring"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	sdkworkspace "github.com/GizClaw/flowcraft/sdk/workspace"
@@ -152,7 +153,7 @@ func (idx *Index) Capabilities() retrieval.Capabilities {
 		WriteIsAtomic:  false,
 
 		MaxListPageSize:      defaultMaxListPageSize,
-		NativeDeleteByFilter: true,
+		NativeDeleteByFilter: false,
 		SupportedListOrders: []retrieval.ListOrderBy{
 			retrieval.OrderByTimestampDesc,
 			retrieval.OrderByTimestampAsc,
@@ -576,6 +577,7 @@ func (idx *Index) Search(ctx context.Context, namespace string, req retrieval.Se
 	case hasText && hasVec:
 		laneReq := req
 		laneReq.MinScore = 0
+		laneReq.TopK = idx.searchWindow(req.TopK, sh.graph.Len())
 		textHits, err := idx.searchTextLocked(ctx, sh, laneReq)
 		if err != nil {
 			return nil, err
@@ -586,7 +588,35 @@ func (idx *Index) Search(ctx context.Context, namespace string, req retrieval.Se
 			return nil, err
 		}
 		vectorHits = positiveLaneHits(vectorHits)
-		hits = scoring.RRF([][]retrieval.Hit{textHits, vectorHits}, scoring.DefaultRRFK)
+		mode, err := hybridparams.NormalizeMode(req.HybridMode)
+		if err != nil {
+			return nil, err
+		}
+		lanes := map[string][]retrieval.Hit{
+			string(retrieval.SearchSignalBM25):   textHits,
+			string(retrieval.SearchSignalVector): vectorHits,
+		}
+		switch mode {
+		case retrieval.HybridRRF:
+			k, err := hybridparams.RRFK(req.HybridOptions)
+			if err != nil {
+				return nil, err
+			}
+			hits = scoring.RRF([][]retrieval.Hit{textHits, vectorHits}, k)
+		case retrieval.HybridWeighted:
+			weights, err := hybridparams.Weights(req.HybridOptions, []retrieval.SearchSignal{retrieval.SearchSignalBM25, retrieval.SearchSignalVector})
+			if err != nil {
+				return nil, err
+			}
+			hits = scoring.RawWeightedFusion(lanes, weights)
+		case retrieval.HybridConvex:
+			weights, err := hybridparams.ConvexWeights(req.HybridOptions, []retrieval.SearchSignal{retrieval.SearchSignalBM25, retrieval.SearchSignalVector})
+			if err != nil {
+				return nil, err
+			}
+			hits = scoring.ConvexFusion(lanes, weights)
+		}
+		decorateHybridHits(hits, mode, textHits, vectorHits)
 	case hasText:
 		hits, err = idx.searchTextLocked(ctx, sh, req)
 		if err != nil {
@@ -731,6 +761,25 @@ func positiveLaneHits(hits []retrieval.Hit) []retrieval.Hit {
 		}
 	}
 	return out
+}
+
+func decorateHybridHits(hits []retrieval.Hit, mode retrieval.HybridMode, textHits, vectorHits []retrieval.Hit) {
+	bmByID := make(map[string]float64, len(textHits))
+	for _, h := range textHits {
+		bmByID[h.Doc.ID] = h.Score
+	}
+	cosByID := make(map[string]float64, len(vectorHits))
+	for _, h := range vectorHits {
+		cosByID[h.Doc.ID] = h.Score
+	}
+	for i := range hits {
+		score := hits[i].Score
+		hits[i].Scores = map[string]float64{
+			"bm25": bmByID[hits[i].Doc.ID],
+			"cos":  cosByID[hits[i].Doc.ID],
+		}
+		hits[i].Scores[string(mode)] = score
+	}
 }
 
 func filterIsZero(f retrieval.Filter) bool {
@@ -1005,13 +1054,6 @@ func isEmptyFilter(f retrieval.Filter) bool {
 		len(f.IContains) == 0 &&
 		len(f.ContainsAny) == 0 &&
 		len(f.ContainsAll) == 0
-}
-
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
 }
 
 func removeIfExists(path string) error {

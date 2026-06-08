@@ -1,36 +1,37 @@
 package retrieval
 
-// Capabilities describes what an Index implementation supports natively.
+// Capabilities describes the semantics an Index implementation supports
+// through Index.Search and the optional management interfaces below.
 type Capabilities struct {
-	BM25   bool
+	// BM25 means QueryText participates in native ranking.
+	BM25 bool
+	// Vector means QueryVector participates in native ranking.
 	Vector bool
+	// Sparse means SparseVec participates in native ranking.
 	Sparse bool
+	// Hybrid means one Index.Search call can combine two or more supported
+	// query signals (QueryText, QueryVector, SparseVec) using HybridMode and
+	// HybridOptions.
+	// It does not imply a separate optional hybrid execution interface.
 	Hybrid bool
 
+	// FilterPushdown means Search/List/Count/DeleteByFilter evaluate Filter in
+	// the backend's own execution path rather than requiring caller-side scans.
 	FilterPushdown bool
 	MaxFilterDepth int
 	SupportedOps   []string
 
-	Rerank bool
-
 	BatchUpsertMax int
 	WriteIsAtomic  bool
 
-	MaxListPageSize      int
+	MaxListPageSize int
+	// NativeDeleteByFilter means the backend can delete by predicate in its
+	// own storage path; scan/list + Delete fallbacks must report false.
 	NativeDeleteByFilter bool
 	SupportedListOrders  []ListOrderBy
 
 	ReadAfterWrite bool
 	Distributed    bool
-
-	// Debug reports whether the backend will honour SearchRequest.Debug
-	// (or HybridRequest.Debug) by populating SearchResponse.Execution.
-	//
-	// Backends that delegate retrieval to a higher-level pipeline (e.g.
-	// MemoryIndex used through retrieval/pipeline) typically leave this
-	// false: pipelines populate Execution themselves; the backend has no
-	// view of lanes/stages on the direct Search path.
-	Debug bool
 
 	// Extensions declares optional retrieval.Index extension interfaces
 	// implemented by this backend. Callers should prefer CapabilitiesOf(idx)
@@ -44,7 +45,6 @@ type Capabilities struct {
 type ExtensionCapabilities struct {
 	DocGetter      bool
 	Filterable     bool
-	HybridSearch   bool
 	Vectorizable   bool
 	Snapshottable  bool
 	Iterable       bool
@@ -68,8 +68,6 @@ func DefaultMemoryCapabilities() Capabilities {
 			"contains", "icontains", "contains_any", "contains_all",
 			"and", "or", "not", "match",
 		},
-
-		Rerank: false,
 
 		BatchUpsertMax: 0,
 		WriteIsAtomic:  true,
@@ -97,43 +95,38 @@ func CapabilitiesOf(idx Index) Capabilities {
 		return Capabilities{}
 	}
 	c := idx.Capabilities()
-	c.Extensions = extensionCapabilitiesOf(idx, c.Extensions)
-	if c.Hybrid && !c.Extensions.HybridSearch {
-		c.Hybrid = false
-	}
+	c.Extensions = extensionCapabilitiesOf(idx)
 	if c.NativeDeleteByFilter && !c.Extensions.DeleteByFilter {
 		c.NativeDeleteByFilter = false
 	}
 	return c
 }
 
-func extensionCapabilitiesOf(idx Index, declared ExtensionCapabilities) ExtensionCapabilities {
+func extensionCapabilitiesOf(idx Index) ExtensionCapabilities {
+	var projected ExtensionCapabilities
 	if _, ok := idx.(DocGetter); ok {
-		declared.DocGetter = true
+		projected.DocGetter = true
 	}
 	if _, ok := idx.(Filterable); ok {
-		declared.Filterable = true
-	}
-	if _, ok := idx.(Hybridable); ok {
-		declared.HybridSearch = true
+		projected.Filterable = true
 	}
 	if _, ok := idx.(Vectorizable); ok {
-		declared.Vectorizable = true
+		projected.Vectorizable = true
 	}
 	if _, ok := idx.(Snapshottable); ok {
-		declared.Snapshottable = true
+		projected.Snapshottable = true
 	}
 	if _, ok := idx.(Iterable); ok {
-		declared.Iterable = true
+		projected.Iterable = true
 	}
 	if _, ok := idx.(Countable); ok {
-		declared.Count = true
+		projected.Count = true
 	}
 	if _, ok := idx.(DeletableByFilter); ok {
-		declared.DeleteByFilter = true
+		projected.DeleteByFilter = true
 	}
 	if _, ok := idx.(Droppable); ok {
-		declared.DropNamespace = true
+		projected.DropNamespace = true
 	}
-	return declared
+	return projected
 }

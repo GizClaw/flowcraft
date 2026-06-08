@@ -37,12 +37,15 @@ func (idx *Index) ensureNamespace(ctx context.Context, name string) (*namespaceS
 	idx.nsMu.Unlock()
 
 	st.rwMu.Lock()
-	defer st.rwMu.Unlock()
-	if err := idx.openNamespaceLocked(ctx, st); err != nil {
+	err := idx.openNamespaceLocked(ctx, st)
+	st.rwMu.Unlock()
+	if err != nil {
 		// On open failure, evict from the map so the next caller
 		// can retry instead of inheriting a broken state.
 		idx.nsMu.Lock()
-		delete(idx.namespaces, name)
+		if idx.namespaces[name] == st {
+			delete(idx.namespaces, name)
+		}
 		idx.nsMu.Unlock()
 		return nil, err
 	}

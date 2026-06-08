@@ -43,8 +43,8 @@ func TestNewValidationAndClosedIndexErrors(t *testing.T) {
 	if !idx.SupportsFilter(retrieval.Filter{}) {
 		t.Fatal("SupportsFilter should be true")
 	}
-	caps := idx.Capabilities()
-	if !caps.BM25 || !caps.Vector || !caps.Hybrid || !caps.NativeDeleteByFilter {
+	caps := retrieval.CapabilitiesOf(idx)
+	if !caps.BM25 || !caps.Vector || !caps.Hybrid || caps.NativeDeleteByFilter || !caps.Extensions.DeleteByFilter {
 		t.Fatalf("unexpected caps: %+v", caps)
 	}
 	if err := idx.Close(); err != nil {

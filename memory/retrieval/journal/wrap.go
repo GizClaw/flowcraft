@@ -24,10 +24,9 @@ func WithActor(fn ActorFn) Option {
 
 // journaledIndex wraps retrieval.Index with a Journal.
 //
-// v0 ordering: inner Upsert/Delete succeeds first, then Journal.Record, so the
-// index never points at state that lacks a corresponding audit entry on crash
-// after inner success (journal loss) — acceptable for dev; production SQLite
-// journal should use WAL true journal-first.
+// v0 ordering: inner Upsert/Delete succeeds first, then Journal.Record. The
+// public write operation is therefore not atomic: journal writes can fail after
+// the inner index has already changed.
 type journaledIndex struct {
 	inner retrieval.Index
 	j     Journal
@@ -39,20 +38,18 @@ type journaledIndex struct {
 // Capability projection (issue #157): the wrapper exposes ONLY the optional
 // sub-interfaces the inner actually implements. Pre-fix, the base type
 // embedded bridge methods for every optional sub-interface, so a wrapped
-// index always satisfied `idx.(retrieval.Hybridable)` even when the inner
-// did not — and the bridge silently returned (nil, nil), which collapsed
-// the recall pipeline through [pipeline.HybridShortCircuit] to zero hits.
+// index could satisfy extension interfaces even when the inner did not, and
+// some bridges silently returned empty results.
 //
 // Currently transparently delegates: [retrieval.DocGetter],
 // [retrieval.Filterable], [retrieval.DeletableByFilter],
 // [retrieval.Droppable], [retrieval.Iterable]. These have in-tree
 // implementations and the bridge logic on `*journaledIndex` is correct.
-// [retrieval.Hybridable], [retrieval.Snapshottable], and
-// [retrieval.Vectorizable] are NOT delegated by the base wrapper today —
-// no in-tree backend implements them. When a future backend does, add a
-// specialised variant type that explicitly defines the corresponding
-// methods (the same pattern as [wrappedFull] / [wrappedAuditable] below)
-// rather than restoring the leaky base-type bridge.
+// [retrieval.Snapshottable] and [retrieval.Vectorizable] are NOT delegated by
+// the base wrapper today. When a future backend does implement them, add a
+// specialised variant type that explicitly defines the corresponding methods
+// (the same pattern as [wrappedFull] / [wrappedAuditable] below) rather than
+// restoring leaky base-type bridges.
 //
 // DeleteByFilter and Drop additionally emit OpDelete events for every
 // affected document so the journal stays a complete audit log; this can be
@@ -66,7 +63,13 @@ func Wrap(inner retrieval.Index, j Journal, opts ...Option) retrieval.Index {
 	return newWrapped(&journaledIndex{inner: inner, j: j, actor: cfg.actor})
 }
 
-func (w *journaledIndex) Capabilities() retrieval.Capabilities { return w.inner.Capabilities() }
+func (w *journaledIndex) Capabilities() retrieval.Capabilities {
+	c := retrieval.CapabilitiesOf(w.inner)
+	c.WriteIsAtomic = false
+	c.NativeDeleteByFilter = false
+	c.Extensions = retrieval.ExtensionCapabilities{}
+	return c
+}
 func (w *journaledIndex) Close() error {
 	_ = w.j.Close()
 	return w.inner.Close()
@@ -321,16 +324,13 @@ func (w *journaledIndex) count(ctx context.Context, namespace string, f retrieva
 
 // REMOVED in PR-4 (issue #157):
 //   - Snapshot / Restore
-//   - SearchHybrid
 //   - UpsertWithEmbed / SearchByText
 //
 // Pre-fix, these existed on *journaledIndex as 'return (nil, nil)' bridges
 // that fell through to the inner only when it implemented the corresponding
 // optional sub-interface. Embedding *journaledIndex into every variant type
-// then made every wrapped value satisfy [retrieval.Hybridable] etc. via
-// method-set promotion, regardless of the inner's real capabilities. The
-// downstream [pipeline.HybridShortCircuit] then short-circuited recall to
-// zero hits.
+// then made every wrapped value satisfy extension interfaces via method-set
+// promotion, regardless of the inner's real capabilities.
 //
 // Reintroducing them — even gated by type assertions — requires committing
 // to specialised variant types (see newWrapped's matrix) that ONLY embed

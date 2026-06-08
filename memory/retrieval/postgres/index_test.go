@@ -41,6 +41,17 @@ func TestContract(t *testing.T) {
 	})
 }
 
+func TestCapabilitiesDeleteByFilterIsFallback(t *testing.T) {
+	idx := &pgx.Index{}
+	caps := retrieval.CapabilitiesOf(idx)
+	if !caps.Extensions.DeleteByFilter {
+		t.Fatalf("postgres should expose callable DeleteByFilter: %+v", caps.Extensions)
+	}
+	if caps.NativeDeleteByFilter {
+		t.Fatalf("postgres DeleteByFilter is a fallback; NativeDeleteByFilter must be false: %+v", caps)
+	}
+}
+
 func TestSearchSelectiveFilterBeyondInitialWindow(t *testing.T) {
 	dsn := os.Getenv("FC_PG_DSN")
 	if dsn == "" {

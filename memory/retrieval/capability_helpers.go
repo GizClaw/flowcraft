@@ -9,7 +9,6 @@ const (
 	CapabilitySparse               Capability = "sparse"
 	CapabilityHybrid               Capability = "hybrid"
 	CapabilityFilterPushdown       Capability = "filter_pushdown"
-	CapabilityDebug                Capability = "debug"
 	CapabilityDocGetter            Capability = "doc_getter"
 	CapabilityIterable             Capability = "iterable"
 	CapabilityCount                Capability = "count"
@@ -38,8 +37,6 @@ func Supports(idx Index, cap Capability) bool {
 		return c.Hybrid
 	case CapabilityFilterPushdown:
 		return c.FilterPushdown
-	case CapabilityDebug:
-		return c.Debug
 	case CapabilityDocGetter:
 		return c.Extensions.DocGetter
 	case CapabilityIterable:
@@ -67,14 +64,6 @@ func AsDocGetter(idx Index) (DocGetter, bool) {
 	}
 	g, ok := idx.(DocGetter)
 	return g, ok
-}
-
-func AsHybrid(idx Index) (Hybridable, bool) {
-	if !Supports(idx, CapabilityHybrid) {
-		return nil, false
-	}
-	h, ok := idx.(Hybridable)
-	return h, ok
 }
 
 func AsIterable(idx Index) (Iterable, bool) {

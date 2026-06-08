@@ -25,25 +25,6 @@ type Filterable interface {
 	SupportsFilter(f Filter) bool
 }
 
-// Hybridable marks backends with native hybrid search.
-type Hybridable interface {
-	SearchHybrid(ctx context.Context, namespace string, req HybridRequest) (*SearchResponse, error)
-}
-
-// HybridRequest is used by Hybridable backends.
-type HybridRequest struct {
-	QueryText   string
-	QueryVector []float32
-	Filter      Filter
-	TopK        int
-	Mode        HybridMode
-	Param       map[string]any
-
-	// Debug controls how much execution detail Hybridable backends should
-	// attach to SearchResponse.Execution. Zero value disables it.
-	Debug SearchDebug
-}
-
 // Vectorizable marks backends that embed internally.
 type Vectorizable interface {
 	UpsertWithEmbed(ctx context.Context, namespace string, docs []Doc) error

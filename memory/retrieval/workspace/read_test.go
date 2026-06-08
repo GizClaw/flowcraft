@@ -2,11 +2,13 @@ package workspace_test
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
 	"github.com/GizClaw/flowcraft/memory/retrieval"
 	wsindex "github.com/GizClaw/flowcraft/memory/retrieval/workspace"
+	"github.com/GizClaw/flowcraft/sdk/errdefs"
 )
 
 // docsFor builds a small canned corpus shared across read tests.
@@ -362,6 +364,192 @@ func TestList_DropsTombstoned(t *testing.T) {
 	}
 }
 
+func TestIterate_IDCursorAndClone(t *testing.T) {
+	idx, _ := newIdx(t, wsindex.WithAutoCompact(false))
+	ctx := context.Background()
+	if err := idx.Upsert(ctx, "ns", []retrieval.Doc{
+		{ID: "b", Content: "bravo", Metadata: map[string]any{"state": "original"}, Vector: []float32{1, 0}, SparseVector: map[string]float32{"b": 1}},
+		{ID: "a", Content: "alpha", Metadata: map[string]any{"state": "original"}, Vector: []float32{1, 0}, SparseVector: map[string]float32{"a": 1}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := idx.Flush(ctx, "ns"); err != nil {
+		t.Fatal(err)
+	}
+	if err := idx.Upsert(ctx, "ns", []retrieval.Doc{
+		{ID: "d", Content: "delta"},
+		{ID: "c", Content: "charlie"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := idx.Delete(ctx, "ns", []string{"b"}); err != nil {
+		t.Fatal(err)
+	}
+
+	first, next, err := idx.Iterate(ctx, "ns", "", 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := docIDs(first); len(got) != 2 || got[0] != "a" || got[1] != "c" || next != "c" {
+		t.Fatalf("first page ids=%v next=%q, want [a c] next c", got, next)
+	}
+	second, next, err := idx.Iterate(ctx, "ns", next, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := docIDs(second); len(got) != 1 || got[0] != "d" || next != "" {
+		t.Fatalf("second page ids=%v next=%q, want [d] end", got, next)
+	}
+	missingCursor, next, err := idx.Iterate(ctx, "ns", "bb", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := docIDs(missingCursor); len(got) != 2 || got[0] != "c" || got[1] != "d" || next != "" {
+		t.Fatalf("missing cursor ids=%v next=%q, want [c d] end", got, next)
+	}
+
+	first[0].Content = "mutated"
+	first[0].Metadata["state"] = "mutated"
+	first[0].Vector[0] = 99
+	first[0].SparseVector["a"] = 99
+	got, ok, err := idx.Get(ctx, "ns", "a")
+	if err != nil || !ok {
+		t.Fatalf("Get(a) ok=%v err=%v", ok, err)
+	}
+	if got.Content != "alpha" || got.Metadata["state"] != "original" || got.Vector[0] != 1 || got.SparseVector["a"] != 1 {
+		t.Fatalf("Iterate returned aliased doc: %+v", got)
+	}
+}
+
+func TestIterate_DefaultBatchAndEmptyNamespace(t *testing.T) {
+	idx, _ := newIdx(t, wsindex.WithAutoCompact(false))
+	docs, next, err := idx.Iterate(context.Background(), "empty", "", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(docs) != 0 || next != "" {
+		t.Fatalf("empty namespace docs=%+v next=%q, want empty end", docs, next)
+	}
+}
+
+func TestIterate_MergesFlushedMemtableAndTombstones(t *testing.T) {
+	idx, _ := newIdx(t, wsindex.WithAutoCompact(false))
+	ctx := context.Background()
+
+	if err := idx.Upsert(ctx, "ns", []retrieval.Doc{
+		{ID: "b", Content: "bravo segment"},
+		{ID: "d", Content: "delta segment"},
+		{ID: "z", Content: "zulu segment"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := idx.Flush(ctx, "ns"); err != nil {
+		t.Fatal(err)
+	}
+	if err := idx.Delete(ctx, "ns", []string{"d"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := idx.Flush(ctx, "ns"); err != nil {
+		t.Fatal(err)
+	}
+	if err := idx.Upsert(ctx, "ns", []retrieval.Doc{
+		{ID: "a", Content: "alpha pending"},
+		{ID: "c", Content: "charlie pending"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := idx.Delete(ctx, "ns", []string{"b"}); err != nil {
+		t.Fatal(err)
+	}
+
+	docs, next, err := idx.Iterate(ctx, "ns", "", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := docIDs(docs); next != "" || len(got) != 3 || got[0] != "a" || got[1] != "c" || got[2] != "z" {
+		t.Fatalf("Iterate ids=%v next=%q, want [a c z] end", got, next)
+	}
+	for _, d := range docs {
+		if d.ID == "b" || d.ID == "d" {
+			t.Fatalf("Iterate returned tombstoned doc: %+v", d)
+		}
+	}
+}
+
+func TestIterate_CursorBoundariesAndBatchOne(t *testing.T) {
+	idx, _ := newIdx(t, wsindex.WithAutoCompact(false))
+	ctx := context.Background()
+	if err := idx.Upsert(ctx, "ns", []retrieval.Doc{
+		{ID: "b", Content: "bravo"},
+		{ID: "d", Content: "delta"},
+		{ID: "f", Content: "foxtrot"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range []struct {
+		name   string
+		cursor string
+		want   []string
+	}{
+		{name: "last id", cursor: "f", want: []string{}},
+		{name: "after last id", cursor: "z", want: []string{}},
+		{name: "before first id", cursor: "a", want: []string{"b", "d", "f"}},
+		{name: "between ids", cursor: "c", want: []string{"d", "f"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			docs, next, err := idx.Iterate(ctx, "ns", tc.cursor, 10)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := docIDs(docs); !sameStrings(got, tc.want) || next != "" {
+				t.Fatalf("Iterate cursor %q ids=%v next=%q, want %v end", tc.cursor, got, next, tc.want)
+			}
+		})
+	}
+
+	var all []string
+	cursor := ""
+	for {
+		docs, next, err := idx.Iterate(ctx, "ns", cursor, 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(docs) == 0 {
+			if next != "" {
+				t.Fatalf("empty page returned next=%q", next)
+			}
+			break
+		}
+		if next != "" && next == cursor {
+			t.Fatalf("cursor did not advance: %q", cursor)
+		}
+		all = append(all, docs[0].ID)
+		cursor = next
+		if next == "" {
+			break
+		}
+	}
+	if !sameStrings(all, []string{"b", "d", "f"}) {
+		t.Fatalf("batch=1 collected ids=%v, want [b d f]", all)
+	}
+}
+
+func TestIterate_AfterCloseReturnsErrClosedAndEmptyNamespaceRejected(t *testing.T) {
+	idx, _ := newIdx(t, wsindex.WithAutoCompact(false))
+	if err := idx.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := idx.Iterate(context.Background(), "ns", "", 1); !errors.Is(err, wsindex.ErrClosed) {
+		t.Fatalf("Iterate after Close err=%v, want ErrClosed", err)
+	}
+
+	idx, _ = newIdx(t, wsindex.WithAutoCompact(false))
+	if _, _, err := idx.Iterate(context.Background(), "", "", 1); err == nil || !errdefs.IsValidation(err) {
+		t.Fatalf("Iterate empty namespace err=%v, want validation", err)
+	}
+}
+
 func TestGet_HitsMissesAndTombstones(t *testing.T) {
 	idx := flushedIdx(t)
 	ctx := context.Background()
@@ -390,6 +578,26 @@ func TestGet_HitsMissesAndTombstones(t *testing.T) {
 	if _, ok, _ := idx.Get(ctx, "ns", "alpha"); ok {
 		t.Errorf("Get(alpha) ok=true after tombstone")
 	}
+}
+
+func docIDs(docs []retrieval.Doc) []string {
+	out := make([]string, 0, len(docs))
+	for _, d := range docs {
+		out = append(out, d.ID)
+	}
+	return out
+}
+
+func sameStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func TestDeleteByFilter_RemovesMatchingDocs(t *testing.T) {

@@ -4,11 +4,12 @@ import (
 	"context"
 	"reflect"
 	"sort"
+	"strings"
 
 	"github.com/GizClaw/flowcraft/memory/retrieval"
+	hybridparams "github.com/GizClaw/flowcraft/memory/retrieval/internal/hybrid"
 	"github.com/GizClaw/flowcraft/memory/retrieval/scoring"
 	"github.com/GizClaw/flowcraft/memory/text/bm25"
-	"github.com/GizClaw/flowcraft/sdk/errdefs"
 )
 
 // Search runs a single-modality or hybrid retrieval against ns.
@@ -32,8 +33,10 @@ import (
 //     BM25 protocol — IDF is corpus-relative, so a per-segment
 //     corpus would make a doc's rank depend on which segment it
 //     happens to live in. Cosine for QueryVector is
-//     [scoring.CosineSim] over the doc's Vector field. Hybrid
-//     fuses the per-modality rankings via [scoring.RRF].
+//     [scoring.CosineSim] over the doc's Vector field. SparseVec is
+//     scored as a sparse dot product against Doc.SparseVector. Hybrid
+//     fuses the per-signal rankings according to SearchRequest.HybridMode and
+//     SearchRequest.HybridOptions.
 //  4. Filter pushdown: the workspace backend evaluates the full
 //     [retrieval.Filter] tree directly against [retrieval.Doc] via
 //     [retrieval.DocMatchesFilter].
@@ -42,10 +45,9 @@ import (
 //     the [retrieval.SearchRequest.MinScore] contract forbids
 //     applying it there.
 //
-// Empty namespaces (no manifest yet) return an empty SearchResponse
-// rather than an error: matches the in-memory backend so the
-// pipeline package can iterate retrievers without special-casing
-// "not yet ingested".
+// Empty namespaces (no manifest yet) return an empty SearchResponse rather
+// than an error: matches the in-memory backend so callers do not need to
+// special-case "not yet ingested".
 func (idx *Index) Search(
 	ctx context.Context,
 	namespace string,
@@ -56,13 +58,10 @@ func (idx *Index) Search(
 	}
 	start := idx.cfg.now()
 
-	hasText := req.QueryText != ""
+	hasText := strings.TrimSpace(req.QueryText) != ""
 	hasVec := len(req.QueryVector) > 0
 	hasSparse := len(req.SparseVec) > 0
-	if !hasText && !hasVec {
-		if hasSparse {
-			return nil, errdefs.Validationf("workspace retrieval: sparse_vec search is not supported")
-		}
+	if !hasText && !hasVec && !hasSparse {
 		return nil, retrieval.ErrNoQuery
 	}
 
@@ -70,7 +69,7 @@ func (idx *Index) Search(
 	if err != nil {
 		return nil, err
 	}
-	if err := fenceCheck(st); err != nil {
+	if err := namespaceActiveCheck(st); err != nil {
 		return nil, err
 	}
 
@@ -86,6 +85,9 @@ func (idx *Index) Search(
 	// blocked; concurrent Searches still parallelise.
 	st.rwMu.RLock()
 	defer st.rwMu.RUnlock()
+	if err := namespaceActiveCheck(st); err != nil {
+		return nil, err
+	}
 	manifestSnap := st.manifest
 	memSnap := snapshotMemtable(st.memtable)
 
@@ -190,6 +192,9 @@ func (idx *Index) Search(
 		if hasVec && len(ld.doc.Vector) == len(queryVec) {
 			p.cos = scoring.CosineSim(queryVec, ld.doc.Vector)
 		}
+		if hasSparse && len(ld.doc.SparseVector) > 0 {
+			p.sparse = sparseDot(ld.doc.SparseVector, req.SparseVec)
+		}
 		merged[id] = p
 	}
 
@@ -198,7 +203,10 @@ func (idx *Index) Search(
 		scoreds = append(scoreds, *p)
 	}
 
-	hits := rankAndProject(scoreds, hasText, hasVec, req.TopK, req.MinScore)
+	hits, err := rankAndProject(scoreds, hasText, hasVec, hasSparse, req.TopK, req.MinScore, req.HybridMode, req.HybridOptions)
+	if err != nil {
+		return nil, err
+	}
 	return &retrieval.SearchResponse{Hits: hits, Took: idx.cfg.now().Sub(start)}, nil
 }
 
@@ -214,46 +222,90 @@ type liveDoc struct {
 
 // partial holds the per-doc accumulated lane scores during a Search.
 type partial struct {
-	doc retrieval.Doc
-	bm  float64
-	cos float64
+	doc    retrieval.Doc
+	bm     float64
+	cos    float64
+	sparse float64
 }
 
 // rankAndProject sorts scoreds, applies MinScore on single-modality
 // paths, fuses with [scoring.RRF] on hybrid, and trims to TopK.
-func rankAndProject(scoreds []partial, hasText, hasVec bool, topK int, minScore float64) []retrieval.Hit {
+func rankAndProject(scoreds []partial, hasText, hasVec, hasSparse bool, topK int, minScore float64, hybridMode retrieval.HybridMode, hybridOptions retrieval.HybridOptions) ([]retrieval.Hit, error) {
 	if topK <= 0 {
 		topK = 10
 	}
 
-	if hasText && hasVec {
+	if signalCount(hasText, hasVec, hasSparse) > 1 {
+		mode, err := hybridparams.NormalizeMode(hybridMode)
+		if err != nil {
+			return nil, err
+		}
 		// Build per-lane ranked Hit lists. scoring.RRF fuses ranks,
 		// not scores, so "tie-broken by sibling score" is fine
 		// here — what matters is the relative order within each
 		// lane.
-		bmHits := buildLaneHits(scoreds, func(p partial) float64 { return p.bm })
-		vecHits := buildLaneHits(scoreds, func(p partial) float64 { return p.cos })
-		fused := scoring.RRF([][]retrieval.Hit{bmHits, vecHits}, scoring.DefaultRRFK)
+		lanes := make(map[string][]retrieval.Hit, 3)
+		var ranked [][]retrieval.Hit
+		signals := make([]retrieval.SearchSignal, 0, 3)
+		if hasText {
+			signals = append(signals, retrieval.SearchSignalBM25)
+			lanes[string(retrieval.SearchSignalBM25)] = buildLaneHits(retrieval.SearchSignalBM25, scoreds, func(p partial) float64 { return p.bm })
+			ranked = append(ranked, lanes[string(retrieval.SearchSignalBM25)])
+		}
+		if hasVec {
+			signals = append(signals, retrieval.SearchSignalVector)
+			lanes[string(retrieval.SearchSignalVector)] = buildLaneHits(retrieval.SearchSignalVector, scoreds, func(p partial) float64 { return p.cos })
+			ranked = append(ranked, lanes[string(retrieval.SearchSignalVector)])
+		}
+		if hasSparse {
+			signals = append(signals, retrieval.SearchSignalSparse)
+			lanes[string(retrieval.SearchSignalSparse)] = buildLaneHits(retrieval.SearchSignalSparse, scoreds, func(p partial) float64 { return p.sparse })
+			ranked = append(ranked, lanes[string(retrieval.SearchSignalSparse)])
+		}
+		var fused []retrieval.Hit
+		switch mode {
+		case retrieval.HybridRRF:
+			k, err := hybridparams.RRFK(hybridOptions)
+			if err != nil {
+				return nil, err
+			}
+			fused = scoring.RRF(ranked, k)
+		case retrieval.HybridWeighted:
+			weights, err := hybridparams.Weights(hybridOptions, signals)
+			if err != nil {
+				return nil, err
+			}
+			fused = scoring.RawWeightedFusion(lanes, weights)
+		case retrieval.HybridConvex:
+			weights, err := hybridparams.ConvexWeights(hybridOptions, signals)
+			if err != nil {
+				return nil, err
+			}
+			fused = scoring.ConvexFusion(lanes, weights)
+		}
 		// Decorate with per-lane scores for observability; RRF
 		// returned new Hits with empty Scores maps.
 		bmByID := make(map[string]float64, len(scoreds))
 		cosByID := make(map[string]float64, len(scoreds))
+		sparseByID := make(map[string]float64, len(scoreds))
 		for _, s := range scoreds {
 			bmByID[s.doc.ID] = s.bm
 			cosByID[s.doc.ID] = s.cos
+			sparseByID[s.doc.ID] = s.sparse
 		}
 		for i := range fused {
-			if fused[i].Scores == nil {
-				fused[i].Scores = make(map[string]float64, 3)
+			score := fused[i].Score
+			fused[i].Scores = map[string]float64{
+				"bm25":   bmByID[fused[i].Doc.ID],
+				"cos":    cosByID[fused[i].Doc.ID],
+				"sparse": sparseByID[fused[i].Doc.ID],
 			}
-			fused[i].Scores["bm25"] = bmByID[fused[i].Doc.ID]
-			fused[i].Scores["cos"] = cosByID[fused[i].Doc.ID]
-			fused[i].Scores["rrf"] = fused[i].Score
+			fused[i].Scores[string(mode)] = score
 		}
 		if len(fused) > topK {
 			fused = fused[:topK]
 		}
-		return fused
+		return fused, nil
 	}
 
 	hits := make([]retrieval.Hit, 0, len(scoreds))
@@ -264,6 +316,8 @@ func rankAndProject(scoreds []partial, hasText, hasVec bool, topK int, minScore 
 			sc = s.bm
 		case hasVec:
 			sc = s.cos
+		case hasSparse:
+			sc = s.sparse
 		}
 		if sc < minScore {
 			continue
@@ -271,14 +325,19 @@ func rankAndProject(scoreds []partial, hasText, hasVec bool, topK int, minScore 
 		hits = append(hits, retrieval.Hit{
 			Doc:    s.doc,
 			Score:  sc,
-			Scores: map[string]float64{"bm25": s.bm, "cos": s.cos},
+			Scores: map[string]float64{"bm25": s.bm, "cos": s.cos, "sparse": s.sparse},
 		})
 	}
-	sort.SliceStable(hits, func(i, j int) bool { return hits[i].Score > hits[j].Score })
+	sort.SliceStable(hits, func(i, j int) bool {
+		if hits[i].Score == hits[j].Score {
+			return hits[i].Doc.ID < hits[j].Doc.ID
+		}
+		return hits[i].Score > hits[j].Score
+	})
 	if len(hits) > topK {
 		hits = hits[:topK]
 	}
-	return hits
+	return hits, nil
 }
 
 // buildLaneHits projects scoreds onto one lane's score, sorts
@@ -286,17 +345,45 @@ func rankAndProject(scoreds []partial, hasText, hasVec bool, topK int, minScore 
 // of its input as ranked, so a 0-score doc would be wrongly given
 // a respectable rank). Returns []retrieval.Hit suitable as a lane
 // input to [scoring.RRF].
-func buildLaneHits(scoreds []partial, score func(partial) float64) []retrieval.Hit {
+func buildLaneHits(signal retrieval.SearchSignal, scoreds []partial, score func(partial) float64) []retrieval.Hit {
 	hits := make([]retrieval.Hit, 0, len(scoreds))
 	for _, s := range scoreds {
 		v := score(s)
 		if v <= 0 {
 			continue
 		}
-		hits = append(hits, retrieval.Hit{Doc: s.doc, Score: v})
+		hits = append(hits, retrieval.Hit{Doc: s.doc, Score: v, Scores: map[string]float64{string(signal): v}})
 	}
-	sort.SliceStable(hits, func(i, j int) bool { return hits[i].Score > hits[j].Score })
+	sort.SliceStable(hits, func(i, j int) bool {
+		if hits[i].Score == hits[j].Score {
+			return hits[i].Doc.ID < hits[j].Doc.ID
+		}
+		return hits[i].Score > hits[j].Score
+	})
 	return hits
+}
+
+func signalCount(values ...bool) int {
+	n := 0
+	for _, v := range values {
+		if v {
+			n++
+		}
+	}
+	return n
+}
+
+func sparseDot(doc, q map[string]float32) float64 {
+	if len(doc) == 0 || len(q) == 0 {
+		return 0
+	}
+	var out float64
+	for k, qv := range q {
+		if dv, ok := doc[k]; ok {
+			out += float64(dv * qv)
+		}
+	}
+	return out
 }
 
 // snapshotMemtable returns a copy of the current memtable items so
@@ -444,7 +531,7 @@ func (idx *Index) List(
 	if err != nil {
 		return nil, err
 	}
-	if err := fenceCheck(st); err != nil {
+	if err := namespaceActiveCheck(st); err != nil {
 		return nil, err
 	}
 
@@ -456,6 +543,9 @@ func (idx *Index) List(
 	// keep the code simple.
 	st.rwMu.RLock()
 	defer st.rwMu.RUnlock()
+	if err := namespaceActiveCheck(st); err != nil {
+		return nil, err
+	}
 	manifestSnap := st.manifest
 	memSnap := snapshotMemtable(st.memtable)
 
@@ -500,6 +590,66 @@ func (idx *Index) List(
 		}
 	}
 	return &retrieval.ListResponse{Items: page, NextPageToken: next, Total: total}, nil
+}
+
+// Iterate implements [retrieval.Iterable]. It walks the same live-doc
+// snapshot as List/Count, then sorts by doc ID for stable cursoring.
+func (idx *Index) Iterate(ctx context.Context, namespace string, cursor string, batch int) ([]retrieval.Doc, string, error) {
+	if idx.closed.Load() {
+		return nil, "", ErrClosed
+	}
+	if batch <= 0 {
+		batch = 100
+	}
+	st, err := idx.ensureNamespace(ctx, namespace)
+	if err != nil {
+		return nil, "", err
+	}
+	if err := namespaceActiveCheck(st); err != nil {
+		return nil, "", err
+	}
+	st.rwMu.RLock()
+	defer st.rwMu.RUnlock()
+	if err := namespaceActiveCheck(st); err != nil {
+		return nil, "", err
+	}
+	manifestSnap := st.manifest
+	memSnap := snapshotMemtable(st.memtable)
+
+	docs := make([]retrieval.Doc, 0)
+	if err := idx.scanLiveDocsNewestFirst(ctx, st, manifestSnap, memSnap, func(d retrieval.Doc) error {
+		docs = append(docs, d)
+		return nil
+	}); err != nil {
+		return nil, "", err
+	}
+	sort.Slice(docs, func(i, j int) bool { return docs[i].ID < docs[j].ID })
+
+	start := 0
+	if cursor != "" {
+		pos := sort.Search(len(docs), func(i int) bool { return docs[i].ID >= cursor })
+		if pos < len(docs) && docs[pos].ID == cursor {
+			start = pos + 1
+		} else {
+			start = pos
+		}
+	}
+	if start >= len(docs) {
+		return []retrieval.Doc{}, "", nil
+	}
+	end := start + batch
+	if end > len(docs) {
+		end = len(docs)
+	}
+	out := make([]retrieval.Doc, 0, end-start)
+	for _, d := range docs[start:end] {
+		out = append(out, cloneDoc(d))
+	}
+	next := ""
+	if end < len(docs) {
+		next = docs[end-1].ID
+	}
+	return out, next, nil
 }
 
 type boundedListCollector struct {
@@ -610,11 +760,14 @@ func (idx *Index) Count(ctx context.Context, namespace string, f retrieval.Filte
 	if err != nil {
 		return 0, err
 	}
-	if err := fenceCheck(st); err != nil {
+	if err := namespaceActiveCheck(st); err != nil {
 		return 0, err
 	}
 	st.rwMu.RLock()
 	defer st.rwMu.RUnlock()
+	if err := namespaceActiveCheck(st); err != nil {
+		return 0, err
+	}
 	manifestSnap := st.manifest
 	memSnap := snapshotMemtable(st.memtable)
 
@@ -643,13 +796,16 @@ func (idx *Index) Get(ctx context.Context, namespace, id string) (retrieval.Doc,
 	if err != nil {
 		return retrieval.Doc{}, false, err
 	}
-	if err := fenceCheck(st); err != nil {
+	if err := namespaceActiveCheck(st); err != nil {
 		return retrieval.Doc{}, false, err
 	}
 	// Hold RLock through segment open so compaction's RemoveAll
 	// cannot race us into 'segment file not found' (issue #170).
 	st.rwMu.RLock()
 	defer st.rwMu.RUnlock()
+	if err := namespaceActiveCheck(st); err != nil {
+		return retrieval.Doc{}, false, err
+	}
 	manifestSnap := st.manifest
 	memSnap := snapshotMemtable(st.memtable)
 
@@ -743,7 +899,7 @@ func (idx *Index) DeleteByFilter(ctx context.Context, namespace string, f retrie
 	if err != nil {
 		return 0, err
 	}
-	if err := fenceCheck(st); err != nil {
+	if err := namespaceActiveCheck(st); err != nil {
 		return 0, err
 	}
 
@@ -755,6 +911,9 @@ func (idx *Index) DeleteByFilter(ctx context.Context, namespace string, f retrie
 	matched, err := func() ([]string, error) {
 		st.rwMu.RLock()
 		defer st.rwMu.RUnlock()
+		if err := namespaceActiveCheck(st); err != nil {
+			return nil, err
+		}
 		manifestSnap := st.manifest
 		memSnap := snapshotMemtable(st.memtable)
 

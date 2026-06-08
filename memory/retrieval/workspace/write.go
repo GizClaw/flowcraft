@@ -35,12 +35,15 @@ func (idx *Index) Upsert(ctx context.Context, namespace string, docs []retrieval
 	if err != nil {
 		return err
 	}
-	if err := fenceCheck(st); err != nil {
+	if err := namespaceActiveCheck(st); err != nil {
 		return err
 	}
 
 	st.rwMu.Lock()
 	defer st.rwMu.Unlock()
+	if err := namespaceActiveCheck(st); err != nil {
+		return err
+	}
 
 	for _, d := range docs {
 		// Snapshot a marshaled byte estimate; cheaper to compute
@@ -77,12 +80,15 @@ func (idx *Index) Delete(ctx context.Context, namespace string, ids []string) er
 	if err != nil {
 		return err
 	}
-	if err := fenceCheck(st); err != nil {
+	if err := namespaceActiveCheck(st); err != nil {
 		return err
 	}
 
 	st.rwMu.Lock()
 	defer st.rwMu.Unlock()
+	if err := namespaceActiveCheck(st); err != nil {
+		return err
+	}
 
 	for _, id := range ids {
 		if id == "" {
@@ -127,10 +133,13 @@ func (idx *Index) Flush(ctx context.Context, namespace string) error {
 	if err != nil {
 		return err
 	}
-	if err := fenceCheck(st); err != nil {
+	if err := namespaceActiveCheck(st); err != nil {
 		return err
 	}
 	st.rwMu.Lock()
 	defer st.rwMu.Unlock()
+	if err := namespaceActiveCheck(st); err != nil {
+		return err
+	}
 	return idx.flushLocked(ctx, st)
 }

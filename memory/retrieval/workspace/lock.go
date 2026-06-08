@@ -263,3 +263,13 @@ func fenceCheck(st *namespaceState) error {
 	}
 	return nil
 }
+
+func namespaceActiveCheck(st *namespaceState) error {
+	if err := fenceCheck(st); err != nil {
+		return err
+	}
+	if st.retired.Load() {
+		return errNamespaceDropped
+	}
+	return nil
+}

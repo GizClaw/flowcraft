@@ -61,6 +61,8 @@ var (
 	// resource is no longer usable; like ErrClosed but specifically
 	// scoped to one namespace.
 	ErrFenced = errdefs.NotAvailablef("retrieval/workspace: namespace lock was taken over by another writer")
+
+	errNamespaceDropped = errdefs.NotAvailablef("retrieval/workspace: namespace was dropped")
 )
 
 // lockState is the JSON payload of <ns>/.lock. The protocol is

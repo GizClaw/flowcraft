@@ -94,17 +94,20 @@ func TestWeightedFusion_BasicWeights(t *testing.T) {
 		map[string][]retrieval.Hit{"bm25": bm, "vector": vec},
 		map[string]float64{"bm25": 0.7, "vector": 0.3},
 	)
-	if len(out) != 3 {
-		t.Fatalf("len = %d, want 3", len(out))
+	if len(out) != 2 {
+		t.Fatalf("len = %d, want 2", len(out))
 	}
-	// "a" comes from bm only with the highest normalized score.
-	// Ensure ordering at the very least keeps "a" above "c".
+	// "c" only contributes the lane minimum, which normalizes to zero and is
+	// dropped instead of surfacing as a zero-score fused hit.
 	pos := map[string]int{}
 	for i, h := range out {
 		pos[h.Doc.ID] = i
 	}
-	if pos["a"] >= pos["c"] {
-		t.Errorf("a should rank above c, got positions %v", pos)
+	if _, ok := pos["c"]; ok {
+		t.Errorf("zero-score doc c should be dropped, got positions %v", pos)
+	}
+	if pos["a"] >= pos["b"] {
+		t.Errorf("a should rank above b, got positions %v", pos)
 	}
 }
 
@@ -128,8 +131,21 @@ func TestWeightedFusion_MissingWeightDefaultsToOne(t *testing.T) {
 		nil,
 	)
 	// 'a' max → 1.0, 'b' min → 0.0
-	if out[0].Doc.ID != "a" || out[0].Score != 1.0 {
-		t.Errorf("got %v, want a=1.0 first", out)
+	if len(out) != 1 || out[0].Doc.ID != "a" || out[0].Score != 1.0 {
+		t.Errorf("got %v, want only a=1.0", out)
+	}
+}
+
+func TestRawWeightedFusion_SkipsZeroWeightLane(t *testing.T) {
+	out := RawWeightedFusion(
+		map[string][]retrieval.Hit{
+			"bm25":   {hit("text-only", 10)},
+			"vector": {hit("vector-only", 1)},
+		},
+		map[string]float64{"bm25": 0, "vector": 1},
+	)
+	if len(out) != 1 || out[0].Doc.ID != "vector-only" || out[0].Score != 1 {
+		t.Fatalf("zero-weight lane leaked into fused hits: %+v", out)
 	}
 }
 

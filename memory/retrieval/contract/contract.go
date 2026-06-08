@@ -22,18 +22,26 @@ func Run(t *testing.T, f Factory) {
 	t.Run("ReadAfterWrite", func(t *testing.T) { testReadAfterWrite(t, f) })
 	t.Run("NamespaceIsolation", func(t *testing.T) { testNamespaceIsolation(t, f) })
 	t.Run("SearchNoQuery", func(t *testing.T) { testSearchNoQuery(t, f) })
+	t.Run("SearchWhitespaceQueryIsNoQuery", func(t *testing.T) { testSearchWhitespaceQueryIsNoQuery(t, f) })
+	t.Run("WhitespaceQueryVectorIsVectorOnly", func(t *testing.T) { testWhitespaceQueryVectorIsVectorOnly(t, f) })
 	t.Run("ListPagination", func(t *testing.T) { testListPagination(t, f) })
 	t.Run("ListPaginationStalePageToken", func(t *testing.T) { testListPaginationStalePageToken(t, f) })
 	t.Run("FilterEqAndIn", func(t *testing.T) { testFilterEqIn(t, f) })
 	t.Run("FilterRangeAndExists", func(t *testing.T) { testFilterRangeExists(t, f) })
 	t.Run("FilterNotComposes", func(t *testing.T) { testFilterNotComposes(t, f) })
+	t.Run("BM25CapabilityMatchesSearch", func(t *testing.T) { testBM25CapabilityMatchesSearch(t, f) })
+	t.Run("VectorCapabilityMatchesSearch", func(t *testing.T) { testVectorCapabilityMatchesSearch(t, f) })
+	t.Run("SparseCapabilityMatchesSearch", func(t *testing.T) { testSparseCapabilityMatchesSearch(t, f) })
+	t.Run("HybridCapabilityMatchesSearchModes", func(t *testing.T) { testHybridCapabilityMatchesSearchModes(t, f) })
+	t.Run("HybridInvalidModeAndParams", func(t *testing.T) { testHybridInvalidModeAndParams(t, f) })
+	t.Run("SparseHybridCapabilityMatchesSearch", func(t *testing.T) { testSparseHybridCapabilityMatchesSearch(t, f) })
 	t.Run("HybridIgnoresSearchMinScore", func(t *testing.T) { testHybridIgnoresSearchMinScore(t, f) })
 	t.Run("HybridDropsZeroEvidenceDocs", func(t *testing.T) { testHybridDropsZeroEvidenceDocs(t, f) })
-	t.Run("SparseCapabilityMatchesSearch", func(t *testing.T) { testSparseCapabilityMatchesSearch(t, f) })
 	t.Run("ListWithVectorFalseDropsAllVectors", func(t *testing.T) { testListWithVectorFalseDropsAllVectors(t, f) })
 	t.Run("DeleteByFilterValidation", func(t *testing.T) { testDeleteByFilterValidation(t, f) })
+	t.Run("OptionalIterable", func(t *testing.T) { testOptionalIterable(t, f) })
+	t.Run("OptionalDroppable", func(t *testing.T) { testOptionalDroppable(t, f) })
 	t.Run("CapabilitiesShape", func(t *testing.T) { testCapabilitiesShape(t, f) })
-	t.Run("SearchDebugIncludeLanesPopulatesExecution", func(t *testing.T) { testSearchDebugIncludeLanesPopulatesExecution(t, f) })
 }
 
 func mustUpsert(t *testing.T, idx retrieval.Index, ns string, docs []retrieval.Doc) {
@@ -137,6 +145,63 @@ func testSearchNoQuery(t *testing.T, f Factory) {
 	}
 }
 
+func testSearchWhitespaceQueryIsNoQuery(t *testing.T, f Factory) {
+	idx, cleanup := f(t)
+	defer cleanup()
+	defer idx.Close()
+	_, err := idx.Search(context.Background(), "ns", retrieval.SearchRequest{
+		QueryText: " \t\n ",
+		TopK:      5,
+	})
+	if !errors.Is(err, retrieval.ErrNoQuery) && !errdefs.IsValidation(err) {
+		t.Fatalf("expected whitespace-only query to be no-query, got %v", err)
+	}
+}
+
+func testWhitespaceQueryVectorIsVectorOnly(t *testing.T, f Factory) {
+	idx, cleanup := f(t)
+	defer cleanup()
+	defer idx.Close()
+	if !retrieval.CapabilitiesOf(idx).Vector {
+		t.Skip("Vector=false")
+	}
+	ctx := context.Background()
+	ns := "ns_whitespace_vector"
+	mustUpsert(t, idx, ns, []retrieval.Doc{
+		{ID: "x", Content: "alpha", Vector: []float32{1, 0}, Timestamp: time.Now()},
+		{ID: "y", Content: "beta", Vector: []float32{0, 1}, Timestamp: time.Now().Add(time.Second)},
+	})
+	resp, err := idx.Search(ctx, ns, retrieval.SearchRequest{
+		QueryText:   " \t\n ",
+		QueryVector: []float32{0, 1},
+		TopK:        2,
+		HybridMode:  retrieval.HybridMode("invalid-if-hybrid"),
+		HybridOptions: retrieval.HybridOptions{
+			Weights: map[retrieval.SearchSignal]float64{
+				retrieval.SearchSignalBM25:   0,
+				retrieval.SearchSignalVector: 0,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("whitespace QueryText must not turn vector search into hybrid: %v", err)
+	}
+	if len(resp.Hits) == 0 || resp.Hits[0].Doc.ID != "y" || resp.Hits[0].Scores["cos"] <= 0 {
+		t.Fatalf("whitespace+vector did not behave like vector-only search: %+v", resp.Hits)
+	}
+	for _, h := range resp.Hits {
+		if _, ok := h.Scores["rrf"]; ok {
+			t.Fatalf("whitespace+vector unexpectedly used hybrid fusion: %+v", resp.Hits)
+		}
+		if _, ok := h.Scores["weighted"]; ok {
+			t.Fatalf("whitespace+vector unexpectedly used hybrid fusion: %+v", resp.Hits)
+		}
+		if _, ok := h.Scores["convex"]; ok {
+			t.Fatalf("whitespace+vector unexpectedly used hybrid fusion: %+v", resp.Hits)
+		}
+	}
+}
+
 func testListPagination(t *testing.T, f Factory) {
 	idx, cleanup := f(t)
 	defer cleanup()
@@ -145,7 +210,7 @@ func testListPagination(t *testing.T, f Factory) {
 	ns := "ns_list"
 	base := time.Unix(1700, 0).UTC()
 	docs := make([]retrieval.Doc, 0, 5)
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		docs = append(docs, retrieval.Doc{
 			ID:        string(rune('a' + i)),
 			Content:   "x",
@@ -289,6 +354,9 @@ func testHybridIgnoresSearchMinScore(t *testing.T, f Factory) {
 	idx, cleanup := f(t)
 	defer cleanup()
 	defer idx.Close()
+	if !retrieval.CapabilitiesOf(idx).Hybrid {
+		t.Skip("Hybrid=false")
+	}
 	ctx := context.Background()
 	ns := "ns_hybrid_minscore"
 	mustUpsert(t, idx, ns, []retrieval.Doc{
@@ -312,6 +380,9 @@ func testHybridDropsZeroEvidenceDocs(t *testing.T, f Factory) {
 	idx, cleanup := f(t)
 	defer cleanup()
 	defer idx.Close()
+	if !retrieval.CapabilitiesOf(idx).Hybrid {
+		t.Skip("Hybrid=false")
+	}
 	ctx := context.Background()
 	ns := "ns_hybrid_zero"
 	mustUpsert(t, idx, ns, []retrieval.Doc{
@@ -338,6 +409,67 @@ func testHybridDropsZeroEvidenceDocs(t *testing.T, f Factory) {
 		if h.Doc.ID == "zero-evidence" {
 			t.Fatalf("hybrid search returned zero-evidence doc: hits=%+v", resp.Hits)
 		}
+	}
+}
+
+func testBM25CapabilityMatchesSearch(t *testing.T, f Factory) {
+	idx, cleanup := f(t)
+	defer cleanup()
+	defer idx.Close()
+	caps := retrieval.CapabilitiesOf(idx)
+	if !caps.BM25 {
+		t.Skip("BM25=false")
+	}
+	ctx := context.Background()
+	ns := "ns_bm25_cap"
+	mustUpsert(t, idx, ns, []retrieval.Doc{
+		{ID: "alpha", Content: "alpha alpha", Timestamp: time.Now()},
+		{ID: "beta", Content: "beta beta", Timestamp: time.Now().Add(time.Second)},
+	})
+	alpha, err := idx.Search(ctx, ns, retrieval.SearchRequest{QueryText: "alpha", TopK: 2})
+	if err != nil {
+		t.Fatalf("BM25=true backend rejected text search: %v", err)
+	}
+	if len(alpha.Hits) == 0 || alpha.Hits[0].Doc.ID != "alpha" || alpha.Hits[0].Scores["bm25"] <= 0 {
+		t.Fatalf("QueryText did not rank alpha first: %+v", alpha.Hits)
+	}
+	beta, err := idx.Search(ctx, ns, retrieval.SearchRequest{QueryText: "beta", TopK: 2})
+	if err != nil {
+		t.Fatalf("BM25=true backend rejected text search: %v", err)
+	}
+	if len(beta.Hits) == 0 || beta.Hits[0].Doc.ID != "beta" || beta.Hits[0].Scores["bm25"] <= 0 {
+		t.Fatalf("QueryText did not rank beta first: %+v", beta.Hits)
+	}
+}
+
+func testVectorCapabilityMatchesSearch(t *testing.T, f Factory) {
+	idx, cleanup := f(t)
+	defer cleanup()
+	defer idx.Close()
+	ctx := context.Background()
+	ns := "ns_vector_cap"
+	mustUpsert(t, idx, ns, []retrieval.Doc{
+		{ID: "x", Content: "same", Vector: []float32{1, 0}, Timestamp: time.Now()},
+		{ID: "y", Content: "same", Vector: []float32{0, 1}, Timestamp: time.Now().Add(time.Second)},
+	})
+	resp, err := idx.Search(ctx, ns, retrieval.SearchRequest{
+		QueryVector: []float32{0, 1},
+		TopK:        2,
+	})
+	if retrieval.CapabilitiesOf(idx).Vector {
+		if err != nil {
+			t.Fatalf("Vector=true backend rejected vector search: %v", err)
+		}
+		if len(resp.Hits) == 0 || resp.Hits[0].Doc.ID != "y" || resp.Hits[0].Scores["cos"] <= 0 {
+			t.Fatalf("QueryVector did not rank y first: %+v", resp.Hits)
+		}
+		return
+	}
+	if err == nil {
+		t.Fatalf("Vector=false backend must reject vector-only search, got response %+v", resp)
+	}
+	if !errdefs.IsValidation(err) && !errdefs.IsNotAvailable(err) && !errors.Is(err, retrieval.ErrNoQuery) {
+		t.Fatalf("Vector=false backend returned unexpected error: %v", err)
 	}
 }
 
@@ -369,6 +501,295 @@ func testSparseCapabilityMatchesSearch(t *testing.T, f Factory) {
 	}
 	if !errdefs.IsValidation(err) && !errdefs.IsNotAvailable(err) && !errors.Is(err, retrieval.ErrNoQuery) {
 		t.Fatalf("Sparse=false backend returned unexpected error: %v", err)
+	}
+}
+
+func testHybridCapabilityMatchesSearchModes(t *testing.T, f Factory) {
+	idx, cleanup := f(t)
+	defer cleanup()
+	defer idx.Close()
+	caps := retrieval.CapabilitiesOf(idx)
+	if !caps.Hybrid {
+		t.Skip("Hybrid=false")
+	}
+	if !caps.BM25 || !caps.Vector {
+		t.Skip("contract hybrid mode test currently requires bm25+vector")
+	}
+	ctx := context.Background()
+	ns := "ns_hybrid_modes"
+	mustUpsert(t, idx, ns, []retrieval.Doc{
+		{ID: "text", Content: "alpha alpha alpha", Vector: []float32{0, 1}, Timestamp: time.Now()},
+		{ID: "vector", Content: "beta beta beta", Vector: []float32{1, 0}, Timestamp: time.Now().Add(time.Second)},
+	})
+	alphaText := 1.0
+	alphaVector := 0.0
+	rrf, err := idx.Search(ctx, ns, retrieval.SearchRequest{
+		QueryText:   "alpha",
+		QueryVector: []float32{1, 0},
+		TopK:        2,
+		HybridMode:  retrieval.HybridRRF,
+	})
+	if err != nil {
+		t.Fatalf("Hybrid=true backend rejected RRF: %v", err)
+	}
+	ids := idsOf(rrf.Hits)
+	if !containsID(ids, "text") || !containsID(ids, "vector") {
+		t.Fatalf("hybrid RRF ignored one signal: %+v", rrf.Hits)
+	}
+	textRawWeighted, err := idx.Search(ctx, ns, retrieval.SearchRequest{
+		QueryText:   "alpha",
+		QueryVector: []float32{1, 0},
+		TopK:        2,
+		HybridMode:  retrieval.HybridWeighted,
+		HybridOptions: retrieval.HybridOptions{
+			Weights: map[retrieval.SearchSignal]float64{
+				retrieval.SearchSignalBM25:   1.0,
+				retrieval.SearchSignalVector: 0.0,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Hybrid=true backend rejected weighted bm25-only weights: %v", err)
+	}
+	if len(textRawWeighted.Hits) != 1 || textRawWeighted.Hits[0].Doc.ID != "text" || textRawWeighted.Hits[0].Scores["weighted"] <= 0 {
+		t.Fatalf("weighted bm25-only should return only text lane hit: %+v", textRawWeighted.Hits)
+	}
+	vectorRawWeighted, err := idx.Search(ctx, ns, retrieval.SearchRequest{
+		QueryText:   "alpha",
+		QueryVector: []float32{1, 0},
+		TopK:        2,
+		HybridMode:  retrieval.HybridWeighted,
+		HybridOptions: retrieval.HybridOptions{
+			Weights: map[retrieval.SearchSignal]float64{
+				retrieval.SearchSignalBM25:   0.0,
+				retrieval.SearchSignalVector: 1.0,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Hybrid=true backend rejected weighted vector-only weights: %v", err)
+	}
+	if len(vectorRawWeighted.Hits) != 1 || vectorRawWeighted.Hits[0].Doc.ID != "vector" || vectorRawWeighted.Hits[0].Scores["weighted"] <= 0 {
+		t.Fatalf("zero-weight text lane leaked into weighted hits: %+v", vectorRawWeighted.Hits)
+	}
+	textWeighted, err := idx.Search(ctx, ns, retrieval.SearchRequest{
+		QueryText:     "alpha",
+		QueryVector:   []float32{1, 0},
+		TopK:          2,
+		HybridMode:    retrieval.HybridConvex,
+		HybridOptions: retrieval.HybridOptions{Alpha: &alphaText},
+	})
+	if err != nil {
+		t.Fatalf("Hybrid=true backend rejected convex alpha=1: %v", err)
+	}
+	if len(textWeighted.Hits) == 0 || textWeighted.Hits[0].Doc.ID != "text" || textWeighted.Hits[0].Scores["convex"] <= 0 {
+		t.Fatalf("convex alpha=1 should prefer text lane: %+v", textWeighted.Hits)
+	}
+	vectorWeighted, err := idx.Search(ctx, ns, retrieval.SearchRequest{
+		QueryText:     "alpha",
+		QueryVector:   []float32{1, 0},
+		TopK:          2,
+		HybridMode:    retrieval.HybridConvex,
+		HybridOptions: retrieval.HybridOptions{Alpha: &alphaVector},
+	})
+	if err != nil {
+		t.Fatalf("Hybrid=true backend rejected convex alpha=0: %v", err)
+	}
+	if len(vectorWeighted.Hits) == 0 || vectorWeighted.Hits[0].Doc.ID != "vector" || vectorWeighted.Hits[0].Scores["convex"] <= 0 {
+		t.Fatalf("convex alpha=0 should prefer vector lane: %+v", vectorWeighted.Hits)
+	}
+}
+
+func testHybridInvalidModeAndParams(t *testing.T, f Factory) {
+	idx, cleanup := f(t)
+	defer cleanup()
+	defer idx.Close()
+	caps := retrieval.CapabilitiesOf(idx)
+	if !caps.Hybrid {
+		t.Skip("Hybrid=false")
+	}
+	if !caps.BM25 || !caps.Vector {
+		t.Skip("contract hybrid validation test currently requires bm25+vector")
+	}
+	ctx := context.Background()
+	ns := "ns_hybrid_invalid"
+	mustUpsert(t, idx, ns, []retrieval.Doc{
+		{ID: "text", Content: "alpha", Vector: []float32{0, 1}, Timestamp: time.Now()},
+		{ID: "vector", Content: "beta", Vector: []float32{1, 0}, Timestamp: time.Now().Add(time.Second)},
+	})
+	alpha := 0.5
+	cases := []struct {
+		name string
+		req  retrieval.SearchRequest
+	}{
+		{
+			name: "invalid mode",
+			req: retrieval.SearchRequest{
+				QueryText:   "alpha",
+				QueryVector: []float32{1, 0},
+				TopK:        2,
+				HybridMode:  retrieval.HybridMode("bogus"),
+			},
+		},
+		{
+			name: "negative rrf k",
+			req: retrieval.SearchRequest{
+				QueryText:   "alpha",
+				QueryVector: []float32{1, 0},
+				TopK:        2,
+				HybridMode:  retrieval.HybridRRF,
+				HybridOptions: retrieval.HybridOptions{
+					K: -1,
+				},
+			},
+		},
+		{
+			name: "all zero weighted weights",
+			req: retrieval.SearchRequest{
+				QueryText:   "alpha",
+				QueryVector: []float32{1, 0},
+				TopK:        2,
+				HybridMode:  retrieval.HybridWeighted,
+				HybridOptions: retrieval.HybridOptions{
+					Weights: map[retrieval.SearchSignal]float64{
+						retrieval.SearchSignalBM25:   0,
+						retrieval.SearchSignalVector: 0,
+					},
+				},
+			},
+		},
+		{
+			name: "all zero convex weights",
+			req: retrieval.SearchRequest{
+				QueryText:   "alpha",
+				QueryVector: []float32{1, 0},
+				TopK:        2,
+				HybridMode:  retrieval.HybridConvex,
+				HybridOptions: retrieval.HybridOptions{
+					Weights: map[retrieval.SearchSignal]float64{
+						retrieval.SearchSignalBM25:   0,
+						retrieval.SearchSignalVector: 0,
+					},
+				},
+			},
+		},
+		{
+			name: "rrf rejects weights",
+			req: retrieval.SearchRequest{
+				QueryText:   "alpha",
+				QueryVector: []float32{1, 0},
+				TopK:        2,
+				HybridMode:  retrieval.HybridRRF,
+				HybridOptions: retrieval.HybridOptions{
+					Weights: map[retrieval.SearchSignal]float64{
+						retrieval.SearchSignalBM25: 1,
+					},
+				},
+			},
+		},
+		{
+			name: "rrf rejects alpha",
+			req: retrieval.SearchRequest{
+				QueryText:     "alpha",
+				QueryVector:   []float32{1, 0},
+				TopK:          2,
+				HybridMode:    retrieval.HybridRRF,
+				HybridOptions: retrieval.HybridOptions{Alpha: &alpha},
+			},
+		},
+		{
+			name: "weighted rejects k",
+			req: retrieval.SearchRequest{
+				QueryText:   "alpha",
+				QueryVector: []float32{1, 0},
+				TopK:        2,
+				HybridMode:  retrieval.HybridWeighted,
+				HybridOptions: retrieval.HybridOptions{
+					K: 60,
+				},
+			},
+		},
+		{
+			name: "weighted rejects alpha",
+			req: retrieval.SearchRequest{
+				QueryText:     "alpha",
+				QueryVector:   []float32{1, 0},
+				TopK:          2,
+				HybridMode:    retrieval.HybridWeighted,
+				HybridOptions: retrieval.HybridOptions{Alpha: &alpha},
+			},
+		},
+		{
+			name: "convex rejects k",
+			req: retrieval.SearchRequest{
+				QueryText:   "alpha",
+				QueryVector: []float32{1, 0},
+				TopK:        2,
+				HybridMode:  retrieval.HybridConvex,
+				HybridOptions: retrieval.HybridOptions{
+					K: 60,
+				},
+			},
+		},
+		{
+			name: "convex rejects alpha and weights together",
+			req: retrieval.SearchRequest{
+				QueryText:   "alpha",
+				QueryVector: []float32{1, 0},
+				TopK:        2,
+				HybridMode:  retrieval.HybridConvex,
+				HybridOptions: retrieval.HybridOptions{
+					Alpha: &alpha,
+					Weights: map[retrieval.SearchSignal]float64{
+						retrieval.SearchSignalBM25: 1,
+					},
+				},
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := idx.Search(ctx, ns, tc.req)
+			if err == nil || !errdefs.IsValidation(err) {
+				t.Fatalf("expected validation error, got %v", err)
+			}
+		})
+	}
+}
+
+func testSparseHybridCapabilityMatchesSearch(t *testing.T, f Factory) {
+	idx, cleanup := f(t)
+	defer cleanup()
+	defer idx.Close()
+	caps := retrieval.CapabilitiesOf(idx)
+	if !caps.Sparse || !caps.Hybrid {
+		t.Skip("Sparse=false or Hybrid=false")
+	}
+	if !caps.BM25 {
+		t.Skip("sparse hybrid contract currently requires bm25+sparse")
+	}
+	ctx := context.Background()
+	ns := "ns_sparse_hybrid"
+	mustUpsert(t, idx, ns, []retrieval.Doc{
+		{ID: "text", Content: "alpha", SparseVector: map[string]float32{"other": 1}, Timestamp: time.Now()},
+		{ID: "sparse", Content: "beta", SparseVector: map[string]float32{"needle": 2}, Timestamp: time.Now().Add(time.Second)},
+		{ID: "none", Content: "beta", SparseVector: map[string]float32{"other": 2}, Timestamp: time.Now().Add(2 * time.Second)},
+	})
+	resp, err := idx.Search(ctx, ns, retrieval.SearchRequest{
+		QueryText:  "alpha",
+		SparseVec:  map[string]float32{"needle": 1},
+		TopK:       3,
+		HybridMode: retrieval.HybridRRF,
+	})
+	if err != nil {
+		t.Fatalf("Sparse=true Hybrid=true backend rejected sparse hybrid search: %v", err)
+	}
+	ids := idsOf(resp.Hits)
+	if !containsID(ids, "text") || !containsID(ids, "sparse") {
+		t.Fatalf("sparse hybrid dropped a positive signal lane: %+v", resp.Hits)
+	}
+	if containsID(ids, "none") {
+		t.Fatalf("sparse hybrid returned zero-evidence doc: %+v", resp.Hits)
 	}
 }
 
@@ -413,68 +834,108 @@ func testDeleteByFilterValidation(t *testing.T, f Factory) {
 	}
 }
 
+func testOptionalIterable(t *testing.T, f Factory) {
+	idx, cleanup := f(t)
+	defer cleanup()
+	defer idx.Close()
+	it, ok := idx.(retrieval.Iterable)
+	if !ok {
+		t.Skip("not Iterable")
+	}
+	ctx := context.Background()
+	ns := "ns_iterable"
+	mustUpsert(t, idx, ns, []retrieval.Doc{
+		{ID: "c", Content: "charlie", Metadata: map[string]any{"state": "original"}, Vector: []float32{1, 0}, SparseVector: map[string]float32{"c": 1}, Timestamp: time.Now()},
+		{ID: "a", Content: "alpha", Metadata: map[string]any{"state": "original"}, Vector: []float32{1, 0}, SparseVector: map[string]float32{"a": 1}, Timestamp: time.Now().Add(time.Second)},
+		{ID: "b", Content: "bravo", Metadata: map[string]any{"state": "original"}, Vector: []float32{1, 0}, SparseVector: map[string]float32{"b": 1}, Timestamp: time.Now().Add(2 * time.Second)},
+	})
+	first, next, err := it.Iterate(ctx, ns, "", 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := docIDsOf(first); len(got) != 2 || got[0] != "a" || got[1] != "b" || next != "b" {
+		t.Fatalf("first page ids=%v next=%q, want [a b] next b", got, next)
+	}
+	second, next, err := it.Iterate(ctx, ns, next, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := docIDsOf(second); len(got) != 1 || got[0] != "c" {
+		t.Fatalf("second page ids=%v next=%q, want [c]", got, next)
+	}
+	if len(first) > 0 {
+		first[0].Content = "mutated"
+		if first[0].Metadata != nil {
+			first[0].Metadata["state"] = "mutated"
+		}
+		if len(first[0].Vector) > 0 {
+			first[0].Vector[0] = 99
+		}
+		if first[0].SparseVector != nil {
+			first[0].SparseVector["a"] = 99
+		}
+		if g, ok := idx.(retrieval.DocGetter); ok {
+			got, found, err := g.Get(ctx, ns, "a")
+			if err != nil || !found {
+				t.Fatalf("Get(a) found=%v err=%v", found, err)
+			}
+			if got.Content != "alpha" {
+				t.Fatalf("Iterate returned aliased doc: %+v", got)
+			}
+			if got.Metadata != nil && got.Metadata["state"] != "original" {
+				t.Fatalf("Iterate returned aliased metadata: %+v", got.Metadata)
+			}
+			if len(got.Vector) > 0 && got.Vector[0] != 1 {
+				t.Fatalf("Iterate returned aliased vector: %+v", got.Vector)
+			}
+			if got.SparseVector != nil && got.SparseVector["a"] != 1 {
+				t.Fatalf("Iterate returned aliased sparse vector: %+v", got.SparseVector)
+			}
+		}
+	}
+}
+
+func testOptionalDroppable(t *testing.T, f Factory) {
+	idx, cleanup := f(t)
+	defer cleanup()
+	defer idx.Close()
+	d, ok := idx.(retrieval.Droppable)
+	if !ok {
+		t.Skip("not Droppable")
+	}
+	ctx := context.Background()
+	ns := "ns_drop"
+	mustUpsert(t, idx, ns, []retrieval.Doc{{ID: "a", Content: "alpha", Timestamp: time.Now()}})
+	if err := d.Drop(ctx, ns); err != nil {
+		t.Fatal(err)
+	}
+	resp, err := idx.List(ctx, ns, retrieval.ListRequest{PageSize: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Items) != 0 || resp.Total != 0 {
+		t.Fatalf("List after Drop = %+v, want empty", resp)
+	}
+	mustUpsert(t, idx, ns, []retrieval.Doc{{ID: "b", Content: "bravo", Timestamp: time.Now()}})
+	search, err := idx.Search(ctx, ns, retrieval.SearchRequest{QueryText: "bravo", TopK: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(search.Hits) != 1 || search.Hits[0].Doc.ID != "b" {
+		t.Fatalf("Search after recreate = %+v, want b", search.Hits)
+	}
+}
+
 func testCapabilitiesShape(t *testing.T, f Factory) {
 	idx, cleanup := f(t)
 	defer cleanup()
 	defer idx.Close()
-	c := idx.Capabilities()
+	c := retrieval.CapabilitiesOf(idx)
 	if c.MaxListPageSize < 0 {
 		t.Fatalf("invalid MaxListPageSize: %d", c.MaxListPageSize)
 	}
-}
-
-// testSearchDebugIncludeLanesPopulatesExecution validates that backends
-// advertising Capabilities.Debug honour SearchRequest.Debug by populating
-// SearchResponse.Execution. Backends that delegate execution to a higher
-// layer (e.g. retrieval/pipeline) leave the flag false; this test then
-// skips, keeping the Execution surface strictly opt-in for backends.
-func testSearchDebugIncludeLanesPopulatesExecution(t *testing.T, f Factory) {
-	idx, cleanup := f(t)
-	defer cleanup()
-	defer idx.Close()
-	if !idx.Capabilities().Debug {
-		t.Skip("backend does not advertise Capabilities.Debug")
-	}
-	ctx := context.Background()
-	ns := "ns_debug"
-	now := time.Now()
-	mustUpsert(t, idx, ns, []retrieval.Doc{
-		{ID: "a", Content: "alpha bravo", Timestamp: now},
-		{ID: "b", Content: "charlie delta", Timestamp: now},
-	})
-	resp, err := idx.Search(ctx, ns, retrieval.SearchRequest{
-		QueryText: "alpha",
-		TopK:      5,
-		Debug:     retrieval.SearchDebug{IncludeLanes: true, IncludeStages: true},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if resp == nil || resp.Execution == nil {
-		t.Fatalf("expected SearchResponse.Execution when Capabilities.Debug=true, got %+v", resp)
-	}
-	exec := resp.Execution
-	if len(exec.Lanes) == 0 && len(exec.Stages) == 0 {
-		t.Fatal("expected at least one of Execution.Lanes / Execution.Stages to be populated")
-	}
-	hitIDs := make(map[string]struct{}, len(resp.Hits))
-	for _, h := range resp.Hits {
-		hitIDs[h.Doc.ID] = struct{}{}
-	}
-	for _, lane := range exec.Lanes {
-		if lane.Key == "" {
-			t.Fatalf("lane %d missing Key", len(exec.Lanes))
-		}
-		for _, h := range lane.Hits {
-			if _, ok := hitIDs[h.Doc.ID]; !ok && len(resp.Hits) > 0 {
-				// Lanes may legitimately surface candidates that fusion later
-				// drops; only flag a lane hit that names a doc that is not in
-				// the namespace at all.
-				if h.Doc.ID != "a" && h.Doc.ID != "b" {
-					t.Fatalf("lane %q surfaced unknown doc %q", lane.Key, h.Doc.ID)
-				}
-			}
-		}
+	if c.NativeDeleteByFilter && !c.Extensions.DeleteByFilter {
+		t.Fatalf("NativeDeleteByFilter requires callable DeleteByFilter: %+v", c)
 	}
 }
 
@@ -493,4 +954,12 @@ func containsID(ids []string, want string) bool {
 		}
 	}
 	return false
+}
+
+func docIDsOf(docs []retrieval.Doc) []string {
+	out := make([]string, 0, len(docs))
+	for _, d := range docs {
+		out = append(out, d.ID)
+	}
+	return out
 }

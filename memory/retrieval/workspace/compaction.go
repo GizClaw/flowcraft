@@ -117,7 +117,7 @@ func (idx *Index) runCompactionRound(ctx context.Context) {
 		// Skip fenced namespaces: their writer was taken over,
 		// and any compaction we run from this Index would race
 		// the new holder's manifest swaps.
-		if st.fenced.Load() {
+		if namespaceActiveCheck(st) != nil {
 			continue
 		}
 		// One compaction at a time per namespace; skip if another
@@ -125,7 +125,9 @@ func (idx *Index) runCompactionRound(ctx context.Context) {
 		if !st.compactMu.TryLock() {
 			continue
 		}
-		_ = idx.compactNamespaceLocked(ctx, st)
+		if namespaceActiveCheck(st) == nil {
+			_ = idx.compactNamespaceLocked(ctx, st)
+		}
 		st.compactMu.Unlock()
 	}
 }
@@ -147,11 +149,14 @@ func (idx *Index) Compact(ctx context.Context, namespace string) error {
 	if err != nil {
 		return err
 	}
-	if err := fenceCheck(st); err != nil {
+	if err := namespaceActiveCheck(st); err != nil {
 		return err
 	}
 	st.compactMu.Lock()
 	defer st.compactMu.Unlock()
+	if err := namespaceActiveCheck(st); err != nil {
+		return err
+	}
 	return idx.compactNamespaceLocked(ctx, st)
 }
 
@@ -161,6 +166,10 @@ func (idx *Index) compactNamespaceLocked(ctx context.Context, st *namespaceState
 	// Snapshot the manifest under rwMu so the picker sees a
 	// consistent view; the actual merge runs OUTSIDE rwMu.
 	st.rwMu.RLock()
+	if err := namespaceActiveCheck(st); err != nil {
+		st.rwMu.RUnlock()
+		return err
+	}
 	man := st.manifest
 	rwReadHeld := man != nil
 	if !rwReadHeld {

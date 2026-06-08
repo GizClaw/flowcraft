@@ -14,8 +14,7 @@ import (
 // workspace-backed Index. This is the same contract that
 // sdk/retrieval/memory and sdk/retrieval/postgres satisfy, so a
 // passing run here means the workspace backend is plug-compatible
-// with every retrieval consumer in the codebase (recall, history,
-// knowledge, pipelines).
+// with retrieval consumers in the codebase.
 //
 // Each subtest gets a fresh MemWorkspace via the factory below; no
 // per-subtest state leaks. AutoCompact is disabled to keep the
@@ -38,4 +37,54 @@ func TestContract(t *testing.T) {
 		}
 		return idx, func() { _ = idx.Close() }
 	})
+}
+
+func TestCapabilitiesDeleteByFilterIsFallback(t *testing.T) {
+	idx, err := wsindex.New(sdkworkspace.NewMemWorkspace(), wsindex.WithAutoCompact(false))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer idx.Close()
+	caps := retrieval.CapabilitiesOf(idx)
+	if !caps.Extensions.DeleteByFilter {
+		t.Fatalf("workspace should expose callable DeleteByFilter: %+v", caps.Extensions)
+	}
+	if caps.NativeDeleteByFilter {
+		t.Fatalf("workspace DeleteByFilter scans and tombstones; NativeDeleteByFilter must be false: %+v", caps)
+	}
+}
+
+func TestCapabilitiesExposeManagementInterfaces(t *testing.T) {
+	idx, err := wsindex.New(sdkworkspace.NewMemWorkspace(), wsindex.WithAutoCompact(false))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer idx.Close()
+
+	caps := retrieval.CapabilitiesOf(idx)
+	if !caps.FilterPushdown || caps.NativeDeleteByFilter {
+		t.Fatalf("workspace capability flags mismatch: %+v", caps)
+	}
+	if !caps.Extensions.DocGetter || !caps.Extensions.Filterable || !caps.Extensions.Count ||
+		!caps.Extensions.DeleteByFilter || !caps.Extensions.Iterable || !caps.Extensions.DropNamespace {
+		t.Fatalf("workspace should expose management/read extensions: %+v", caps.Extensions)
+	}
+	if _, ok := retrieval.AsDocGetter(idx); !ok {
+		t.Fatal("AsDocGetter should succeed for workspace Index")
+	}
+	if _, ok := any(idx).(retrieval.Filterable); !ok || !retrieval.Supports(idx, retrieval.CapabilityFilterPushdown) {
+		t.Fatal("workspace Index should implement and advertise retrieval.Filterable")
+	}
+	if _, ok := retrieval.AsCountable(idx); !ok {
+		t.Fatal("AsCountable should succeed for workspace Index")
+	}
+	if _, ok := retrieval.AsDeletableByFilter(idx); !ok {
+		t.Fatal("AsDeletableByFilter should succeed for workspace Index")
+	}
+	if _, ok := retrieval.AsIterable(idx); !ok {
+		t.Fatal("AsIterable should succeed for workspace Index")
+	}
+	if _, ok := retrieval.AsDroppable(idx); !ok {
+		t.Fatal("AsDroppable should succeed for workspace Index")
+	}
 }

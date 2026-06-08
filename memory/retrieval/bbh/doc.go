@@ -9,4 +9,9 @@
 // checkpointed by a per-namespace flush loop plus Close. It is intended as a
 // higher-performance local backend for recall's retrieval lens; the canonical
 // memory truth remains the recall TemporalStore.
+//
+// Capabilities.BM25, Vector, and Hybrid are true: Search supports QueryText,
+// QueryVector, and BM25+vector hybrid fusion using SearchRequest.HybridMode
+// and SearchRequest.HybridOptions.
+// Sparse is false; SparseVec requests return a validation error.
 package bbh
