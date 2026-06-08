@@ -5,6 +5,7 @@ import (
 	"errors"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/GizClaw/flowcraft/memory/recall/internal/ingest"
 	temporalstore "github.com/GizClaw/flowcraft/memory/recall/internal/store/temporal"
@@ -51,6 +52,22 @@ func (s *scriptedLLM) Generate(_ context.Context, _ []llm.Message, opts ...llm.G
 
 func (s *scriptedLLM) GenerateStream(context.Context, []llm.Message, ...llm.GenerateOption) (llm.StreamMessage, error) {
 	return nil, errors.New("scriptedLLM: streaming not implemented")
+}
+
+type publicBlockingStageLLM struct {
+	stage string
+}
+
+func (b publicBlockingStageLLM) Generate(ctx context.Context, msgs []llm.Message, _ ...llm.GenerateOption) (llm.Message, llm.TokenUsage, error) {
+	if len(msgs) > 0 && msgs[0].Content() == b.stage {
+		<-ctx.Done()
+		return llm.Message{}, llm.TokenUsage{}, ctx.Err()
+	}
+	return llm.NewTextMessage(llm.RoleAssistant, `{"facts":[]}`), llm.TokenUsage{}, nil
+}
+
+func (b publicBlockingStageLLM) GenerateStream(context.Context, []llm.Message, ...llm.GenerateOption) (llm.StreamMessage, error) {
+	return nil, errors.New("publicBlockingStageLLM: streaming not implemented")
 }
 
 func TestWithLLMExtractor_WiresExtractorIntoSavePath(t *testing.T) {
@@ -187,6 +204,42 @@ func TestWithLLMExtractor_TwoPassModeWiresTwoStepExtractor(t *testing.T) {
 	}
 	if len(fact.EvidenceRefs) != 1 || fact.EvidenceRefs[0].ID != "D1:3" {
 		t.Fatalf("two-pass evidence refs not persisted: %+v", fact.EvidenceRefs)
+	}
+}
+
+func TestWithLLMExtractor_TwoPassStageTimeoutOption(t *testing.T) {
+	store := temporalstore.NewMemoryStore()
+	client := publicBlockingStageLLM{stage: ingest.TwoPassFactExtractionPrompt}
+	mem, err := New(
+		WithTemporalStore(store),
+		WithLLMExtractor(
+			client,
+			WithLLMExtractionMode(LLMExtractionTwoPass),
+			WithLLMExtractorStageTimeout(20*time.Millisecond),
+		),
+	)
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	defer mem.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	start := time.Now()
+	_, err = mem.Save(ctx, Scope{RuntimeID: "rt", UserID: "u1"}, SaveRequest{
+		Turns: []TurnContext{{ID: "D1:3", Role: "user", Text: "Alice likes Paris."}},
+	})
+	if err == nil {
+		t.Fatal("blocked two-pass content stage should fail save")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("save error = %v, want context deadline exceeded", err)
+	}
+	if ctx.Err() != nil {
+		t.Fatalf("outer context should still be live, got %v", ctx.Err())
+	}
+	if elapsed := time.Since(start); elapsed >= time.Second {
+		t.Fatalf("stage timeout should cancel promptly, elapsed=%s", elapsed)
 	}
 }
 

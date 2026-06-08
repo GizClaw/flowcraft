@@ -155,6 +155,22 @@ func (f *fakeLLM) GenerateStream(context.Context, []llm.Message, ...llm.Generate
 	return nil, errors.New("fakeLLM: streaming not implemented")
 }
 
+type blockingStageLLM struct {
+	stage string
+}
+
+func (b blockingStageLLM) Generate(ctx context.Context, msgs []llm.Message, _ ...llm.GenerateOption) (llm.Message, llm.TokenUsage, error) {
+	if len(msgs) > 0 && msgs[0].Content() == b.stage {
+		<-ctx.Done()
+		return llm.Message{}, llm.TokenUsage{}, ctx.Err()
+	}
+	return llm.NewTextMessage(llm.RoleAssistant, `{"facts":[]}`), llm.TokenUsage{}, nil
+}
+
+func (b blockingStageLLM) GenerateStream(context.Context, []llm.Message, ...llm.GenerateOption) (llm.StreamMessage, error) {
+	return nil, errors.New("blockingStageLLM: streaming not implemented")
+}
+
 func fakeTwoPassLLM(content, kind, relation, entity, evidence []string) *fakeLLM {
 	return &fakeLLM{ResponsesBySystem: map[string][]string{
 		TwoPassFactExtractionPrompt:     content,
@@ -1383,6 +1399,31 @@ func TestTwoPassLLMExtractor_ContentPassFailureFailsExtraction(t *testing.T) {
 	}
 }
 
+func TestTwoPassLLMExtractor_StageTimeoutCancelsBlockedGenerate(t *testing.T) {
+	ex := NewTwoPassLLMExtractor(blockingStageLLM{stage: TwoPassFactExtractionPrompt})
+	ex.StageTimeout = 20 * time.Millisecond
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	start := time.Now()
+	_, err := ex.Extract(ctx, port.IngestInput{
+		Scope: domain.Scope{RuntimeID: "rt"},
+		Turns: []port.TurnContext{{ID: "D1:3", Role: "user", Speaker: "Avery", Text: "Avery likes Riverton."}},
+	})
+	if err == nil {
+		t.Fatal("blocked content stage should return an error")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("blocked content stage error = %v, want context deadline exceeded", err)
+	}
+	if ctx.Err() != nil {
+		t.Fatalf("outer context should still be live, got %v", ctx.Err())
+	}
+	if elapsed := time.Since(start); elapsed >= time.Second {
+		t.Fatalf("stage timeout should cancel promptly, elapsed=%s", elapsed)
+	}
+}
+
 func TestTwoPassLLMExtractor_MergePrefersStrongSubject(t *testing.T) {
 	client := fakeTwoPassLLM(
 		[]string{`{"facts":[{"text":"Avery likes Riverton.","subject":"they","source_ids":["D1:3"],"quote":"Avery likes Riverton."}]}`},
@@ -1760,7 +1801,7 @@ func TestCoverageRepairTriageFiltersSelectedTurns(t *testing.T) {
 	}}
 	acc := newExtractorUsageAccumulator()
 	ctx := withExtractorUsageAccumulator(context.Background(), acc)
-	filtered, ok, err := triageCoverageRepairInput(ctx, client, CoverageRepairTriagePrompt, "triage", 0, nil, input, nil)
+	filtered, ok, err := triageCoverageRepairInput(ctx, client, CoverageRepairTriagePrompt, "triage", 0, nil, 0, input, nil)
 	if err != nil {
 		t.Fatalf("triage: %v", err)
 	}
@@ -1777,6 +1818,29 @@ func TestCoverageRepairTriageFiltersSelectedTurns(t *testing.T) {
 	usage := acc.snapshot()
 	if len(usage.Stages) != 1 || usage.Stages[0].Stage != "repair_triage" || usage.Stages[0].Calls != 1 {
 		t.Fatalf("usage stages = %+v, want one repair_triage call", usage.Stages)
+	}
+}
+
+func TestCoverageRepairTriageUsesStageTimeout(t *testing.T) {
+	client := blockingStageLLM{stage: CoverageRepairTriagePrompt}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	start := time.Now()
+	_, _, err := triageCoverageRepairInput(ctx, client, CoverageRepairTriagePrompt, "triage", 0, nil, 20*time.Millisecond, port.IngestInput{
+		Turns: []port.TurnContext{{ID: "D1:2", Role: "user", Speaker: "Avery", Text: "Avery bought a blue mug."}},
+	}, nil)
+	if err == nil {
+		t.Fatal("blocked repair triage should return an error")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("repair triage error = %v, want context deadline exceeded", err)
+	}
+	if ctx.Err() != nil {
+		t.Fatalf("outer context should still be live, got %v", ctx.Err())
+	}
+	if elapsed := time.Since(start); elapsed >= time.Second {
+		t.Fatalf("stage timeout should cancel repair triage promptly, elapsed=%s", elapsed)
 	}
 }
 

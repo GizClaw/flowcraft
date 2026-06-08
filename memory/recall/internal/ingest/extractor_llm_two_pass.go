@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/GizClaw/flowcraft/memory/recall/internal/domain"
 	"github.com/GizClaw/flowcraft/memory/recall/internal/port"
@@ -683,6 +684,7 @@ type TwoPassLLMExtractor struct {
 
 	Temperature  float64
 	ExtraOptions []llm.GenerateOption
+	StageTimeout time.Duration
 
 	mu        sync.Mutex
 	lastStats TwoPassExtractionStats
@@ -900,7 +902,9 @@ func (e *TwoPassLLMExtractor) extractFactsWithSchema(ctx context.Context, userMe
 	if schemaName == "" {
 		schemaName = defaultSchemaName
 	}
-	reply, usage, err := e.Client.Generate(ctx, []llm.Message{
+	stageCtx, cancel := e.stageContext(ctx)
+	defer cancel()
+	reply, usage, err := e.Client.Generate(stageCtx, []llm.Message{
 		llm.NewTextMessage(llm.RoleSystem, system),
 		llm.NewTextMessage(llm.RoleUser, userMessage),
 	}, e.generateOptions(schemaName, schema)...)
@@ -1252,7 +1256,9 @@ func (e *TwoPassLLMExtractor) groundEvidence(ctx context.Context, turnsJSONL str
 	if err != nil {
 		return nil, err
 	}
-	reply, usage, err := e.Client.Generate(ctx, []llm.Message{
+	stageCtx, cancel := e.stageContext(ctx)
+	defer cancel()
+	reply, usage, err := e.Client.Generate(stageCtx, []llm.Message{
 		llm.NewTextMessage(llm.RoleSystem, system),
 		llm.NewTextMessage(llm.RoleUser, userMessage),
 	}, e.generateOptions(schemaName, TwoPassEvidenceGroundingSchema)...)
@@ -1314,7 +1320,9 @@ func (e *TwoPassLLMExtractor) extractAssertionAnnotations(ctx context.Context, m
 	if userMessage == "" {
 		return nil, nil
 	}
-	reply, usage, err := e.Client.Generate(ctx, []llm.Message{
+	stageCtx, cancel := e.stageContext(ctx)
+	defer cancel()
+	reply, usage, err := e.Client.Generate(stageCtx, []llm.Message{
 		llm.NewTextMessage(llm.RoleSystem, system),
 		llm.NewTextMessage(llm.RoleUser, userMessage),
 	}, e.generateOptions(schemaName, TwoPassAssertionExtractionSchema)...)
@@ -1351,6 +1359,13 @@ func (e *TwoPassLLMExtractor) generateOptions(schemaName string, schema string) 
 	}
 	opts = append(opts, e.ExtraOptions...)
 	return opts
+}
+
+func (e *TwoPassLLMExtractor) stageContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	if e == nil || e.StageTimeout <= 0 {
+		return ctx, func() {}
+	}
+	return context.WithTimeout(ctx, e.StageTimeout)
 }
 
 func cleanSourceIDs(ids []string) []string {
@@ -1628,7 +1643,7 @@ func (e *TwoPassLLMExtractor) triageCoverageRepairInput(ctx context.Context, inp
 	if schemaName == "" {
 		schemaName = "recall_coverage_repair_triage"
 	}
-	return triageCoverageRepairInput(ctx, e.Client, system, schemaName, e.Temperature, e.ExtraOptions, input, facts)
+	return triageCoverageRepairInput(ctx, e.Client, system, schemaName, e.Temperature, e.ExtraOptions, e.StageTimeout, input, facts)
 }
 
 type coverageRepairTriageTurn struct {
@@ -1654,7 +1669,7 @@ type coverageRepairTriageResponse struct {
 	Turns []coverageRepairTriageDecision `json:"turns"`
 }
 
-func triageCoverageRepairInput(ctx context.Context, client llm.LLM, system, schemaName string, temperature float64, extraOptions []llm.GenerateOption, input port.IngestInput, facts []domain.TemporalFact) (port.IngestInput, bool, error) {
+func triageCoverageRepairInput(ctx context.Context, client llm.LLM, system, schemaName string, temperature float64, extraOptions []llm.GenerateOption, stageTimeout time.Duration, input port.IngestInput, facts []domain.TemporalFact) (port.IngestInput, bool, error) {
 	if client == nil || len(input.Turns) == 0 {
 		return input, false, nil
 	}
@@ -1679,7 +1694,13 @@ func triageCoverageRepairInput(ctx context.Context, client llm.LLM, system, sche
 	}
 	opts = append(opts, extraOptions...)
 
-	reply, usage, err := client.Generate(ctx, messages, opts...)
+	stageCtx := ctx
+	cancel := func() {}
+	if stageTimeout > 0 {
+		stageCtx, cancel = context.WithTimeout(ctx, stageTimeout)
+	}
+	defer cancel()
+	reply, usage, err := client.Generate(stageCtx, messages, opts...)
 	recordExtractorTokenUsage(ctx, "repair_triage", usage)
 	if err != nil {
 		return input, false, fmt.Errorf("recall extractor: repair triage llm: %w", err)

@@ -1,6 +1,8 @@
 package recall
 
 import (
+	"time"
+
 	"github.com/GizClaw/flowcraft/memory/recall/internal/governance"
 	"github.com/GizClaw/flowcraft/memory/recall/internal/ingest"
 	"github.com/GizClaw/flowcraft/memory/recall/internal/port"
@@ -76,6 +78,7 @@ type llmExtractorConfig struct {
 	schemaName   string
 	temperature  float64
 	extraOptions []llm.GenerateOption
+	stageTimeout time.Duration
 }
 
 func (c *llmExtractorConfig) build() port.Extractor {
@@ -97,6 +100,7 @@ func (c *llmExtractorConfig) build() port.Extractor {
 		}
 		ex.Temperature = c.temperature
 		ex.ExtraOptions = append(ex.ExtraOptions, c.extraOptions...)
+		ex.StageTimeout = c.stageTimeout
 		return ex
 	}
 	ex := ingest.NewLLMExtractor(c.client)
@@ -246,6 +250,17 @@ func WithLLMExtractorSchemaName(name string) LLMExtractorOption {
 func WithLLMExtractorExtraOptions(opts ...llm.GenerateOption) LLMExtractorOption {
 	return newLLMExtractorOption(func(c *llmExtractorConfig) {
 		c.extraOptions = append(c.extraOptions, opts...)
+	})
+}
+
+// WithLLMExtractorStageTimeout bounds each LLM Generate call made by the
+// two-pass extractor. Values <= 0 keep the historical caller-context-only
+// behaviour. Single-pass extraction is intentionally unchanged.
+func WithLLMExtractorStageTimeout(d time.Duration) LLMExtractorOption {
+	return newLLMExtractorOption(func(c *llmExtractorConfig) {
+		if d > 0 {
+			c.stageTimeout = d
+		}
 	})
 }
 

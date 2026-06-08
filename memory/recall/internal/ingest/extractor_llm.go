@@ -615,7 +615,7 @@ func (e *LLMExtractor) triageCoverageRepairInput(ctx context.Context, input port
 	if schemaName == "" {
 		schemaName = "recall_coverage_repair_triage"
 	}
-	return triageCoverageRepairInput(ctx, e.Client, system, schemaName, e.Temperature, e.ExtraOptions, input, facts)
+	return triageCoverageRepairInput(ctx, e.Client, system, schemaName, e.Temperature, e.ExtraOptions, 0, input, facts)
 }
 
 // normaliseExtractedKind maps the LLM's "kind" field to a canonical
