@@ -98,7 +98,7 @@ func CapabilitiesOf(idx Index) Capabilities {
 		return Capabilities{}
 	}
 	c := idx.Capabilities()
-	c.Extensions = extensionCapabilitiesOf(idx, c.Extensions)
+	c.Extensions = extensionCapabilitiesOf(idx)
 	if c.Hybrid && !c.Extensions.HybridSearch {
 		c.Hybrid = false
 	}
@@ -108,36 +108,37 @@ func CapabilitiesOf(idx Index) Capabilities {
 	return c
 }
 
-func extensionCapabilitiesOf(idx Index, declared ExtensionCapabilities) ExtensionCapabilities {
+func extensionCapabilitiesOf(idx Index) ExtensionCapabilities {
+	var projected ExtensionCapabilities
 	if _, ok := idx.(DocGetter); ok {
-		declared.DocGetter = true
+		projected.DocGetter = true
 	}
 	if _, ok := idx.(Filterable); ok {
-		declared.Filterable = true
+		projected.Filterable = true
 	}
 	if _, ok := idx.(Hybridable); ok {
-		declared.HybridSearch = true
+		projected.HybridSearch = true
 	}
 	if _, ok := idx.(Vectorizable); ok {
-		declared.Vectorizable = true
+		projected.Vectorizable = true
 	}
 	if _, ok := idx.(Snapshottable); ok {
-		declared.Snapshottable = true
+		projected.Snapshottable = true
 	}
 	if _, ok := idx.(Iterable); ok {
-		declared.Iterable = true
+		projected.Iterable = true
 	}
 	if _, ok := idx.(Countable); ok {
-		declared.Count = true
+		projected.Count = true
 	}
 	if _, ok := idx.(DeletableByFilter); ok {
-		declared.DeleteByFilter = true
+		projected.DeleteByFilter = true
 	}
 	if _, ok := idx.(Droppable); ok {
-		declared.DropNamespace = true
+		projected.DropNamespace = true
 	}
 	if _, ok := idx.(NamespaceWarmer); ok {
-		declared.NamespaceWarm = true
+		projected.NamespaceWarm = true
 	}
-	return declared
+	return projected
 }

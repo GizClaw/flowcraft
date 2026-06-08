@@ -46,6 +46,27 @@ func (idx *namespaceWarmIndex) WarmNamespace(_ context.Context, namespace string
 	return nil
 }
 
+type namespaceWarmCountIndex struct {
+	hybridClaimingIndex
+	warmed string
+}
+
+func (idx *namespaceWarmCountIndex) Capabilities() retrieval.Capabilities {
+	return retrieval.Capabilities{Extensions: retrieval.ExtensionCapabilities{
+		Count:         true,
+		NamespaceWarm: true,
+	}}
+}
+
+func (idx *namespaceWarmCountIndex) Count(context.Context, string, retrieval.Filter) (int64, error) {
+	return 0, nil
+}
+
+func (idx *namespaceWarmCountIndex) WarmNamespace(_ context.Context, namespace string) error {
+	idx.warmed = namespace
+	return nil
+}
+
 // nullJournal absorbs Record / Close calls so Wrap can return a
 // useful value without spinning up a real journal backend.
 type nullJournal struct{}
@@ -155,5 +176,30 @@ func TestWrap_ProjectsNamespaceWarmer(t *testing.T) {
 	}
 	if _, ok := wrapped.(retrieval.DocGetter); ok {
 		t.Fatal("warm-only wrapper should not expose unrelated DocGetter")
+	}
+}
+
+func TestWrap_WarmFallbackDoesNotAdvertiseDroppedCount(t *testing.T) {
+	inner := &namespaceWarmCountIndex{}
+	wrapped := journal.Wrap(inner, nullJournal{})
+
+	if _, ok := wrapped.(retrieval.NamespaceWarmer); !ok {
+		t.Fatal("wrapped warm+count fallback should expose NamespaceWarmer")
+	}
+	if _, ok := wrapped.(retrieval.Countable); ok {
+		t.Fatal("wrapped warm+count fallback should not expose Countable")
+	}
+	if retrieval.Supports(wrapped, retrieval.CapabilityCount) {
+		t.Fatal("wrapped warm+count fallback should not advertise Count capability")
+	}
+	caps := retrieval.CapabilitiesOf(wrapped)
+	if caps.Extensions.Count {
+		t.Fatalf("CapabilitiesOf falsely projected Count: %+v", caps.Extensions)
+	}
+	if !caps.Extensions.NamespaceWarm {
+		t.Fatalf("CapabilitiesOf did not project NamespaceWarm: %+v", caps.Extensions)
+	}
+	if !retrieval.Supports(wrapped, retrieval.CapabilityNamespaceWarm) {
+		t.Fatal("wrapped warm+count fallback should advertise NamespaceWarm capability")
 	}
 }
