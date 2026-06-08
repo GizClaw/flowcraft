@@ -32,6 +32,20 @@ func (hybridClaimingIndex) List(context.Context, string, retrieval.ListRequest) 
 	return &retrieval.ListResponse{}, nil
 }
 
+type namespaceWarmIndex struct {
+	hybridClaimingIndex
+	warmed string
+}
+
+func (idx *namespaceWarmIndex) Capabilities() retrieval.Capabilities {
+	return retrieval.Capabilities{}
+}
+
+func (idx *namespaceWarmIndex) WarmNamespace(_ context.Context, namespace string) error {
+	idx.warmed = namespace
+	return nil
+}
+
 // nullJournal absorbs Record / Close calls so Wrap can return a
 // useful value without spinning up a real journal backend.
 type nullJournal struct{}
@@ -92,6 +106,9 @@ func TestWrap_DoesNotFalselyAdvertiseHybridable(t *testing.T) {
 	if _, ok := wrapped.(retrieval.Countable); ok {
 		t.Fatalf("#157 regression: non-Countable inner must not satisfy Countable")
 	}
+	if _, ok := wrapped.(retrieval.NamespaceWarmer); ok {
+		t.Fatalf("#157 regression: non-NamespaceWarmer inner must not satisfy NamespaceWarmer")
+	}
 }
 
 func TestWrap_ProjectsImplementedOptionalInterfaces(t *testing.T) {
@@ -120,5 +137,23 @@ func TestWrap_ProjectsImplementedOptionalInterfaces(t *testing.T) {
 	}
 	if caps.Extensions.Filterable {
 		t.Fatalf("CapabilitiesOf falsely projected Filterable: %+v", caps.Extensions)
+	}
+}
+
+func TestWrap_ProjectsNamespaceWarmer(t *testing.T) {
+	inner := &namespaceWarmIndex{}
+	wrapped := journal.Wrap(inner, nullJournal{})
+	warmer, ok := retrieval.AsNamespaceWarmer(wrapped)
+	if !ok {
+		t.Fatal("wrapped namespace warmer should expose NamespaceWarmer")
+	}
+	if err := warmer.WarmNamespace(context.Background(), "warm/ns"); err != nil {
+		t.Fatal(err)
+	}
+	if inner.warmed != "warm/ns" {
+		t.Fatalf("inner warmed namespace = %q, want warm/ns", inner.warmed)
+	}
+	if _, ok := wrapped.(retrieval.DocGetter); ok {
+		t.Fatal("warm-only wrapper should not expose unrelated DocGetter")
 	}
 }

@@ -51,6 +51,7 @@ type ExtensionCapabilities struct {
 	Count          bool
 	DeleteByFilter bool
 	DropNamespace  bool
+	NamespaceWarm  bool
 }
 
 // DefaultMemoryCapabilities returns capabilities for MemoryIndex.
@@ -134,6 +135,9 @@ func extensionCapabilitiesOf(idx Index, declared ExtensionCapabilities) Extensio
 	}
 	if _, ok := idx.(Droppable); ok {
 		declared.DropNamespace = true
+	}
+	if _, ok := idx.(NamespaceWarmer); ok {
+		declared.NamespaceWarm = true
 	}
 	return declared
 }
