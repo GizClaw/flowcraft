@@ -424,6 +424,7 @@ func (c *LLM) GenerateStream(ctx context.Context, messages []llm.Message, opts .
 	}
 
 	reqOpts := extraRequestOpts(options)
+	start := time.Now()
 	stream := c.client.Chat.Completions.NewStreaming(ctx, params, reqOpts...)
 	// NewStreaming may return nil if the SDK fails before allocating the
 	// SSE handle (HTTP transport dial failure, panic recovery, etc.).
@@ -439,6 +440,13 @@ func (c *LLM) GenerateStream(ctx context.Context, messages []llm.Message, opts .
 		return nil, err
 	}
 	if err := stream.Err(); err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			err = errdefs.FromContext(fmt.Errorf("%s.stream: %s: %w: %w", provider, time.Since(start).String(), err, ctxErr))
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+			span.End()
+			return nil, err
+		}
 		// Some OpenAI-compatible providers don't support stream_options; retry without it.
 		params.StreamOptions = oai.ChatCompletionStreamOptionsParam{}
 		stream = c.client.Chat.Completions.NewStreaming(ctx, params, reqOpts...)
@@ -450,6 +458,13 @@ func (c *LLM) GenerateStream(ctx context.Context, messages []llm.Message, opts .
 			return nil, err
 		}
 		if err2 := stream.Err(); err2 != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				err2 = errdefs.FromContext(fmt.Errorf("%s.stream: %s: %w: %w", provider, time.Since(start).String(), err2, ctxErr))
+				span.RecordError(err2)
+				span.SetStatus(codes.Error, err2.Error())
+				span.End()
+				return nil, err2
+			}
 			span.RecordError(err2)
 			span.SetStatus(codes.Error, err2.Error())
 			span.End()

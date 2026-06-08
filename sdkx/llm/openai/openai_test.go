@@ -128,6 +128,48 @@ func TestGenerate_ContextDeadlinePreservesTimeoutClassification(t *testing.T) {
 	}
 }
 
+func TestGenerateStream_ContextCanceledPreservesAbortedClassification(t *testing.T) {
+	c, err := New("test-model", "test-key", "http://127.0.0.1:1", option.WithMaxRetries(0))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err = c.GenerateStream(ctx, []llm.Message{llm.NewTextMessage(llm.RoleUser, "hi")})
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !errdefs.IsAborted(err) {
+		t.Fatalf("expected Aborted kind, got %v", err)
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("error lost context.Canceled identity: %v", err)
+	}
+}
+
+func TestGenerateStream_ContextDeadlinePreservesTimeoutClassification(t *testing.T) {
+	c, err := New("test-model", "test-key", "http://127.0.0.1:1", option.WithMaxRetries(0))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+
+	_, err = c.GenerateStream(ctx, []llm.Message{llm.NewTextMessage(llm.RoleUser, "hi")})
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !errdefs.IsTimeout(err) {
+		t.Fatalf("expected Timeout kind, got %v", err)
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("error lost context.DeadlineExceeded identity: %v", err)
+	}
+}
+
 // TestGenerateStream_NilStream covers the streaming sibling of the
 // nil-resp guard. We simulate a transport-level dial failure by
 // pointing the client at a closed socket so NewStreaming gives back
