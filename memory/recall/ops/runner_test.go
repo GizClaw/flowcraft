@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -134,6 +135,140 @@ func TestSupervisorStartAndStop(t *testing.T) {
 	}
 	if err := supervisor.Stop(); err != nil {
 		t.Fatalf("Stop: %v", err)
+	}
+}
+
+func TestSupervisorGracefulStopDoesNotCancelInflightDrain(t *testing.T) {
+	ctx := context.Background()
+	scope := recall.Scope{RuntimeID: "rt", UserID: "u1"}
+	started := make(chan struct{})
+	release := make(chan struct{})
+	done := make(chan struct{})
+	runner := &Runner{
+		side: blockingSideEffectProcessor{
+			started: started,
+			release: release,
+			done:    done,
+		},
+		cfg: Config{
+			WorkerID:           "test",
+			BatchSize:          1,
+			IdleInterval:       time.Hour,
+			ErrorBackoff:       time.Hour,
+			DrainSideEffects:   true,
+			DrainAsyncSemantic: false,
+			Now:                time.Now,
+		},
+	}
+	supervisor, err := Start(ctx, runner, Target{Scopes: []recall.Scope{scope}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-started
+	stopDone := make(chan error, 1)
+	go func() {
+		stopDone <- supervisor.GracefulStop(context.Background())
+	}()
+	select {
+	case err := <-stopDone:
+		t.Fatalf("GracefulStop returned before in-flight drain completed: %v", err)
+	case <-time.After(10 * time.Millisecond):
+	}
+	close(release)
+	select {
+	case err := <-stopDone:
+		if err != nil {
+			t.Fatalf("GracefulStop: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("GracefulStop did not return after drain completed")
+	}
+	select {
+	case <-done:
+	default:
+		t.Fatal("processor did not finish")
+	}
+}
+
+func TestSupervisorGracefulStopPreservesInflightDrainError(t *testing.T) {
+	ctx := context.Background()
+	scope := recall.Scope{RuntimeID: "rt", UserID: "u1"}
+	wantErr := errors.New("side effect failed")
+	started := make(chan struct{})
+	release := make(chan struct{})
+	runner := &Runner{
+		side: blockingErrorSideEffectProcessor{
+			started: started,
+			release: release,
+			err:     wantErr,
+		},
+		cfg: Config{
+			WorkerID:           "test",
+			BatchSize:          1,
+			IdleInterval:       time.Hour,
+			ErrorBackoff:       time.Hour,
+			DrainSideEffects:   true,
+			DrainAsyncSemantic: false,
+			Now:                time.Now,
+		},
+	}
+	supervisor, err := Start(ctx, runner, Target{Scopes: []recall.Scope{scope}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-started
+	stopDone := make(chan error, 1)
+	go func() {
+		stopDone <- supervisor.GracefulStop(context.Background())
+	}()
+	close(release)
+	select {
+	case err := <-stopDone:
+		if err == nil {
+			t.Fatal("GracefulStop error = nil, want worker failure")
+		}
+		if !strings.Contains(err.Error(), wantErr.Error()) {
+			t.Fatalf("GracefulStop error = %v, want text containing %q", err, wantErr)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("GracefulStop did not return after failed drain")
+	}
+}
+
+func TestSupervisorGracefulStopDeadlineDoesNotWaitForever(t *testing.T) {
+	ctx := context.Background()
+	scope := recall.Scope{RuntimeID: "rt", UserID: "u1"}
+	started := make(chan struct{})
+	release := make(chan struct{})
+	runner := &Runner{
+		side: blockingSideEffectProcessor{
+			started: started,
+			release: release,
+		},
+		cfg: Config{
+			WorkerID:           "test",
+			BatchSize:          1,
+			IdleInterval:       time.Hour,
+			ErrorBackoff:       time.Hour,
+			DrainSideEffects:   true,
+			DrainAsyncSemantic: false,
+			Now:                time.Now,
+		},
+	}
+	supervisor, err := Start(ctx, runner, Target{Scopes: []recall.Scope{scope}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-started
+	deadlineCtx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+	err = supervisor.GracefulStop(deadlineCtx)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("GracefulStop error = %v, want context deadline", err)
+	}
+	close(release)
+	if err := supervisor.Stop(); err != nil && !errors.Is(err, context.Canceled) {
+		t.Fatalf("Stop after deadline GracefulStop: %v", err)
 	}
 }
 
@@ -300,6 +435,41 @@ type durableParts struct {
 	store recall.TemporalStore
 	side  recall.SideEffectOutbox
 	async recall.AsyncSemanticQueue
+}
+
+type blockingSideEffectProcessor struct {
+	started chan<- struct{}
+	release <-chan struct{}
+	done    chan<- struct{}
+}
+
+func (p blockingSideEffectProcessor) ProcessSideEffects(ctx context.Context, opts recall.SideEffectProcessOptions) (recall.SideEffectProcessResult, error) {
+	close(p.started)
+	select {
+	case <-p.release:
+		if p.done != nil {
+			close(p.done)
+		}
+		return recall.SideEffectProcessResult{Claimed: 1, Completed: 1}, nil
+	case <-ctx.Done():
+		return recall.SideEffectProcessResult{}, ctx.Err()
+	}
+}
+
+type blockingErrorSideEffectProcessor struct {
+	started chan<- struct{}
+	release <-chan struct{}
+	err     error
+}
+
+func (p blockingErrorSideEffectProcessor) ProcessSideEffects(ctx context.Context, opts recall.SideEffectProcessOptions) (recall.SideEffectProcessResult, error) {
+	close(p.started)
+	select {
+	case <-p.release:
+		return recall.SideEffectProcessResult{Claimed: 1}, p.err
+	case <-ctx.Done():
+		return recall.SideEffectProcessResult{}, ctx.Err()
+	}
 }
 
 type staticEnumerator []recall.Scope
