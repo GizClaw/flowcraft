@@ -124,6 +124,137 @@ func TestStreamBridge_SubscribeNode_CurrentPreservesPayloadObjectFields(t *testi
 	}
 }
 
+func TestStreamBridge_SubscribeNode_SeesLifecycleDeltaEndedInOrder(t *testing.T) {
+	bus := event.NewMemoryBus()
+	t.Cleanup(func() { _ = bus.Close() })
+
+	subscribe := streamSubscribeFunc(t, "run-1", bus)
+	iter, err := subscribe(map[string]any{"node_id": "planner"})
+	if err != nil {
+		t.Fatalf("subscribe_node: %v", err)
+	}
+	defer iter["close"].(func() error)()
+
+	publishStepLifecycle(t, bus, "run-1", "planner", "agent-a", "start", nil)
+	publishStreamDelta(t, bus, "run-1", "planner", "agent-a", "hello")
+	publishStepLifecycle(t, bus, "run-1", "planner", "agent-a", "complete", map[string]any{
+		"iteration": 1,
+	})
+
+	if !iter["next"].(func() bool)() {
+		t.Fatal("next() = false, want step.started")
+	}
+	checkCurrentEvent(t, iter["current"].(func() map[string]any)(), map[string]any{
+		"event":    "step.started",
+		"run_id":   "run-1",
+		"node_id":  "planner",
+		"agent_id": "agent-a",
+	})
+
+	if !iter["next"].(func() bool)() {
+		t.Fatal("next() = false, want stream.delta")
+	}
+	checkCurrentDelta(t, iter["current"].(func() map[string]any)(), map[string]any{
+		"type":    "token",
+		"content": "hello",
+	})
+
+	if !iter["next"].(func() bool)() {
+		t.Fatal("next() = false, want step.ended")
+	}
+	cur := iter["current"].(func() map[string]any)()
+	checkCurrentEvent(t, cur, map[string]any{
+		"event":     "step.ended",
+		"status":    "success",
+		"iteration": float64(1),
+		"run_id":    "run-1",
+		"node_id":   "planner",
+		"agent_id":  "agent-a",
+	})
+	if iter["next"].(func() bool)() {
+		t.Fatal("next() after step.ended = true, want false")
+	}
+}
+
+func TestStreamBridge_SubscribeNode_StepErrorFoldsToEndedAndCloses(t *testing.T) {
+	bus := event.NewMemoryBus()
+	t.Cleanup(func() { _ = bus.Close() })
+
+	subscribe := streamSubscribeFunc(t, "run-1", bus)
+	iter, err := subscribe(map[string]any{"node_id": "planner"})
+	if err != nil {
+		t.Fatalf("subscribe_node: %v", err)
+	}
+	defer iter["close"].(func() error)()
+
+	publishStepLifecycle(t, bus, "run-1", "planner", "agent-a", "error", map[string]any{
+		"error": "boom",
+	})
+
+	if !iter["next"].(func() bool)() {
+		t.Fatal("next() = false, want step.error as step.ended")
+	}
+	checkCurrentEvent(t, iter["current"].(func() map[string]any)(), map[string]any{
+		"event":  "step.ended",
+		"status": "error",
+		"error":  "boom",
+	})
+	if iter["next"].(func() bool)() {
+		t.Fatal("next() after step.error = true, want false")
+	}
+}
+
+func TestStreamBridge_SubscribeNode_StepSkippedIsTerminal(t *testing.T) {
+	bus := event.NewMemoryBus()
+	t.Cleanup(func() { _ = bus.Close() })
+
+	subscribe := streamSubscribeFunc(t, "run-1", bus)
+	iter, err := subscribe(map[string]any{"node_id": "planner"})
+	if err != nil {
+		t.Fatalf("subscribe_node: %v", err)
+	}
+	defer iter["close"].(func() error)()
+
+	publishStepLifecycle(t, bus, "run-1", "planner", "agent-a", "skipped", nil)
+
+	if !iter["next"].(func() bool)() {
+		t.Fatal("next() = false, want step.skipped")
+	}
+	checkCurrentEvent(t, iter["current"].(func() map[string]any)(), map[string]any{
+		"event":    "step.skipped",
+		"status":   "skipped",
+		"run_id":   "run-1",
+		"node_id":  "planner",
+		"agent_id": "agent-a",
+	})
+	if iter["next"].(func() bool)() {
+		t.Fatal("next() after step.skipped = true, want false")
+	}
+}
+
+func TestStreamBridge_SubscribeNode_FiltersOtherNodeLifecycleEvents(t *testing.T) {
+	bus := event.NewMemoryBus()
+	t.Cleanup(func() { _ = bus.Close() })
+
+	subscribe := streamSubscribeFunc(t, "run-1", bus)
+	iter, err := subscribe(map[string]any{"node_id": "planner"})
+	if err != nil {
+		t.Fatalf("subscribe_node: %v", err)
+	}
+	defer iter["close"].(func() error)()
+
+	publishStepLifecycle(t, bus, "run-1", "other", "agent-a", "skipped", nil)
+	publishStepLifecycle(t, bus, "run-1", "planner", "agent-a", "start", nil)
+
+	if !iter["next"].(func() bool)() {
+		t.Fatal("next() = false, want target node step.started")
+	}
+	checkCurrentEvent(t, iter["current"].(func() map[string]any)(), map[string]any{
+		"event":   "step.started",
+		"node_id": "planner",
+	})
+}
+
 func TestStreamBridge_SubscribeNode_NextReturnsFalseWhenCallContextCanceled(t *testing.T) {
 	bus := event.NewMemoryBus()
 	t.Cleanup(func() { _ = bus.Close() })
@@ -173,7 +304,7 @@ func TestStreamBridge_SubscribeNode_CloseMakesNextFalse(t *testing.T) {
 	}
 }
 
-func TestStreamBridge_SubscribeNode_DropNewestPublishIsNonBlocking(t *testing.T) {
+func TestStreamBridge_SubscribeNode_FullBufferPreservesTerminalEvent(t *testing.T) {
 	bus := event.NewMemoryBus()
 	t.Cleanup(func() { _ = bus.Close() })
 
@@ -187,7 +318,7 @@ func TestStreamBridge_SubscribeNode_DropNewestPublishIsNonBlocking(t *testing.T)
 	envs := []event.Envelope{
 		newStreamDeltaEnvelope(t, "run-1", "planner", "agent-a", "first"),
 		newStreamDeltaEnvelope(t, "run-1", "planner", "agent-a", "second"),
-		newStreamDeltaEnvelope(t, "run-1", "planner", "agent-a", "third"),
+		newStepLifecycleEnvelope(t, "run-1", "planner", "agent-a", "complete", nil),
 	}
 	done := make(chan error, 1)
 	go func() {
@@ -206,14 +337,20 @@ func TestStreamBridge_SubscribeNode_DropNewestPublishIsNonBlocking(t *testing.T)
 			t.Fatalf("publish: %v", err)
 		}
 	case <-time.After(500 * time.Millisecond):
-		t.Fatal("publish blocked with full stream subscription buffer")
+		t.Fatal("publish blocked with full node subscription buffer")
 	}
 
 	if !iter["next"].(func() bool)() {
-		t.Fatal("next() = false, want buffered first delta")
+		t.Fatal("next() = false, want terminal event preserved")
 	}
 	cur := iter["current"].(func() map[string]any)()
-	checkCurrentDelta(t, cur, map[string]any{"content": "first"})
+	checkCurrentEvent(t, cur, map[string]any{
+		"event":  "step.ended",
+		"status": "success",
+	})
+	if iter["next"].(func() bool)() {
+		t.Fatal("next() after preserved terminal event = true, want false")
+	}
 }
 
 func TestStreamBridge_SubscribeNode_InvalidBufferSize(t *testing.T) {
@@ -372,11 +509,66 @@ func newStreamDeltaPayloadEnvelope(t *testing.T, runID, nodeID, agentID string, 
 	return env
 }
 
+func publishStepLifecycle(t *testing.T, bus event.Bus, runID, nodeID, agentID, kind string, payload any) {
+	t.Helper()
+	env := newStepLifecycleEnvelope(t, runID, nodeID, agentID, kind, payload)
+	if err := bus.Publish(context.Background(), env); err != nil {
+		t.Fatalf("publish %s %s: %v", nodeID, kind, err)
+	}
+}
+
+func newStepLifecycleEnvelope(t *testing.T, runID, nodeID, agentID, kind string, payload any) event.Envelope {
+	t.Helper()
+	stepActor := agentID + ".node." + nodeID
+	var subject event.Subject
+	switch kind {
+	case "start":
+		subject = engine.SubjectStepStart(runID, stepActor)
+	case "complete":
+		subject = engine.SubjectStepComplete(runID, stepActor)
+	case "error":
+		subject = engine.SubjectStepError(runID, stepActor)
+	case "skipped":
+		subject = event.Subject(engine.SubjectPrefix + engine.SanitiseID(runID) + ".step." + engine.SanitiseID(stepActor) + ".skipped")
+	default:
+		t.Fatalf("unknown lifecycle kind %q", kind)
+	}
+	env, err := event.NewEnvelope(context.Background(), subject, payload)
+	if err != nil {
+		t.Fatalf("new lifecycle envelope: %v", err)
+	}
+	env.SetRunID(runID)
+	env.SetNodeID(nodeID)
+	env.SetAgentID(agentID)
+	return env
+}
+
 func checkCurrentDelta(t *testing.T, cur map[string]any, want map[string]any) {
 	t.Helper()
+	checkCurrentEvent(t, cur, map[string]any{"event": "stream.delta"})
 	for key, expected := range want {
 		if got := cur[key]; got != expected {
 			t.Fatalf("current.%s = %v, want %v (current=%+v)", key, got, expected, cur)
+		}
+	}
+}
+
+func checkCurrentEvent(t *testing.T, cur map[string]any, want map[string]any) {
+	t.Helper()
+	checkCurrentMetadata(t, cur)
+	for key, expected := range want {
+		if got := cur[key]; got != expected {
+			t.Fatalf("current.%s = %v, want %v (current=%+v)", key, got, expected, cur)
+		}
+	}
+}
+
+func checkCurrentMetadata(t *testing.T, cur map[string]any) {
+	t.Helper()
+	for _, key := range []string{"event", "run_id", "node_id", "agent_id", "subject", "envelope_id", "time"} {
+		v, ok := cur[key]
+		if !ok || v == "" {
+			t.Fatalf("current.%s missing: %+v", key, cur)
 		}
 	}
 }

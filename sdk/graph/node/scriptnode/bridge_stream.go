@@ -3,6 +3,7 @@ package scriptnode
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"sync"
 	"time"
 
@@ -14,7 +15,7 @@ import (
 
 const defaultStreamSubBufferSize = 256
 
-// newStreamBridge exposes graph stream-delta subscriptions to scripts as
+// newStreamBridge exposes graph node stream subscriptions to scripts as
 // the global "stream".
 //
 // Script-facing API:
@@ -41,11 +42,12 @@ func newStreamBridge(defaultRunID string, bus event.Bus) bindings.BindingFunc {
 				subCtx, cancel := context.WithCancel(callCtx)
 				sub, err := bus.Subscribe(
 					subCtx,
-					engine.PatternRunStream(opts.runID),
+					engine.PatternRun(opts.runID),
 					event.WithBufferSize(opts.bufferSize),
 					// Keep the publisher path non-blocking when scripts are slow:
-					// a full subscription buffer drops the incoming newest delta.
-					event.WithBackpressure(event.DropNewest),
+					// a full subscription buffer drops older events so terminal
+					// lifecycle events still reach slow subscribers.
+					event.WithBackpressure(event.DropOldest),
 					event.WithPredicate(func(env event.Envelope) bool {
 						return env.NodeID() == opts.nodeID
 					}),
@@ -55,7 +57,7 @@ func newStreamBridge(defaultRunID string, bus event.Bus) bindings.BindingFunc {
 					return nil, err
 				}
 
-				iter := &streamDeltaIterator{
+				iter := &streamNodeIterator{
 					ctx:    subCtx,
 					cancel: cancel,
 					sub:    sub,
@@ -151,7 +153,7 @@ func streamBufferSize(v any) (int, error) {
 	return 0, errdefs.Validationf("stream.subscribe_node: buffer_size must be positive")
 }
 
-type streamDeltaIterator struct {
+type streamNodeIterator struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 	sub    event.Subscription
@@ -161,27 +163,36 @@ type streamDeltaIterator struct {
 	once    sync.Once
 }
 
-// Next blocks until the next matching delta arrives. It returns false when
+// Next blocks until the next matching node stream event arrives. It returns false when
 // the subscription or parent execution context is closed.
-func (i *streamDeltaIterator) Next() bool {
+func (i *streamNodeIterator) Next() bool {
 	if i == nil || i.sub == nil {
 		return false
 	}
-	select {
-	case env, ok := <-i.sub.C():
-		if !ok {
+	for {
+		select {
+		case env, ok := <-i.sub.C():
+			if !ok {
+				return false
+			}
+			cur, terminal, ok := streamNodeEnvelopeToMap(env)
+			if !ok {
+				continue
+			}
+			i.mu.Lock()
+			i.current = cur
+			i.mu.Unlock()
+			if terminal {
+				_ = i.Close()
+			}
+			return true
+		case <-i.ctx.Done():
 			return false
 		}
-		i.mu.Lock()
-		i.current = streamDeltaEnvelopeToMap(env)
-		i.mu.Unlock()
-		return true
-	case <-i.ctx.Done():
-		return false
 	}
 }
 
-func (i *streamDeltaIterator) Current() map[string]any {
+func (i *streamNodeIterator) Current() map[string]any {
 	if i == nil {
 		return nil
 	}
@@ -197,7 +208,7 @@ func (i *streamDeltaIterator) Current() map[string]any {
 	return out
 }
 
-func (i *streamDeltaIterator) Close() error {
+func (i *streamNodeIterator) Close() error {
 	if i == nil {
 		return nil
 	}
@@ -211,12 +222,56 @@ func (i *streamDeltaIterator) Close() error {
 	return err
 }
 
+func streamNodeEnvelopeToMap(env event.Envelope) (map[string]any, bool, bool) {
+	if engine.IsStreamDelta(env.Subject) {
+		return streamDeltaEnvelopeToMap(env), false, true
+	}
+
+	str := string(env.Subject)
+	if !strings.Contains(str, ".step.") {
+		return nil, false, false
+	}
+	switch {
+	case strings.HasSuffix(str, ".start"):
+		return streamLifecycleEnvelopeToMap(env, "step.started", ""), false, true
+	case strings.HasSuffix(str, ".complete"):
+		return streamLifecycleEnvelopeToMap(env, "step.ended", "success"), true, true
+	case strings.HasSuffix(str, ".error"):
+		return streamLifecycleEnvelopeToMap(env, "step.ended", "error"), true, true
+	case strings.HasSuffix(str, ".skipped"):
+		return streamLifecycleEnvelopeToMap(env, "step.skipped", "skipped"), true, true
+	}
+	return nil, false, false
+}
+
 func streamDeltaEnvelopeToMap(env event.Envelope) map[string]any {
 	out := decodeStreamDeltaPayloadMap(env)
 	if out == nil {
 		out = make(map[string]any, 8)
 	}
+	out["event"] = "stream.delta"
 
+	addStreamEnvelopeMetadata(out, env)
+	return out
+}
+
+func streamLifecycleEnvelopeToMap(env event.Envelope, eventName, status string) map[string]any {
+	out := decodeEnvelopePayloadMap(env)
+	if out == nil {
+		out = make(map[string]any, 8)
+	}
+	out["event"] = eventName
+	if status != "" {
+		if _, ok := out["status"]; !ok {
+			out["status"] = status
+		}
+	}
+
+	addStreamEnvelopeMetadata(out, env)
+	return out
+}
+
+func addStreamEnvelopeMetadata(out map[string]any, env event.Envelope) {
 	// Preserve payload "id" for tool_call deltas; envelope id is always
 	// available under envelope_id and also under id when payload.id is absent.
 	if _, ok := out["id"]; !ok {
@@ -237,7 +292,6 @@ func streamDeltaEnvelopeToMap(env event.Envelope) map[string]any {
 	if env.SpanID != "" {
 		out["span_id"] = env.SpanID
 	}
-	return out
 }
 
 func decodeStreamDeltaPayloadMap(env event.Envelope) map[string]any {
@@ -251,6 +305,21 @@ func decodeStreamDeltaPayloadMap(env event.Envelope) map[string]any {
 	p, err := engine.DecodeStreamDelta(env)
 	if err == nil {
 		return streamDeltaPayloadToMap(p)
+	}
+	return map[string]any{"raw": string(env.Payload)}
+}
+
+func decodeEnvelopePayloadMap(env event.Envelope) map[string]any {
+	if len(env.Payload) == 0 {
+		return nil
+	}
+	var asMap map[string]any
+	if err := json.Unmarshal(env.Payload, &asMap); err == nil && asMap != nil {
+		return asMap
+	}
+	var generic any
+	if err := json.Unmarshal(env.Payload, &generic); err == nil {
+		return map[string]any{"value": generic}
 	}
 	return map[string]any{"raw": string(env.Payload)}
 }
