@@ -39,7 +39,7 @@ import (
 )
 
 const (
-	defaultModel     = "doubao-seed-1-8-251228"
+	defaultModel     = "doubao-seed-2-0-lite-260215"
 	defaultMaxTokens = 4096
 )
 

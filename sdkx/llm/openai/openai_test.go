@@ -84,6 +84,27 @@ func TestGenerate_EmptyChoices(t *testing.T) {
 	}
 }
 
+func TestGenerate_ContextCancellationPreservesOriginalError(t *testing.T) {
+	c, err := New("test-model", "test-key", "http://127.0.0.1:1", option.WithMaxRetries(0))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, _, err = c.Generate(ctx, []llm.Message{llm.NewTextMessage(llm.RoleUser, "hi")})
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !errdefs.IsTimeout(err) {
+		t.Fatalf("expected Timeout kind, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "context canceled") {
+		t.Fatalf("timeout error lost original context error: %v", err)
+	}
+}
+
 // TestGenerateStream_NilStream covers the streaming sibling of the
 // nil-resp guard. We simulate a transport-level dial failure by
 // pointing the client at a closed socket so NewStreaming gives back

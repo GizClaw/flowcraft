@@ -345,7 +345,7 @@ func (c *LLM) Generate(ctx context.Context, messages []llm.Message, opts ...llm.
 		span.SetStatus(codes.Error, err.Error())
 		llm.RecordLLMMetrics(ctx, provider, c.model, "error", dur, llm.TokenUsage{})
 		if ctx.Err() != nil {
-			return llm.Message{}, llm.TokenUsage{}, errdefs.Timeoutf("%s.generate: %s", provider, dur.String())
+			return llm.Message{}, llm.TokenUsage{}, errdefs.Timeoutf("%s.generate: %s: %w", provider, dur.String(), err)
 		}
 		return llm.Message{}, llm.TokenUsage{}, c.classifyAPIError(err)
 	}

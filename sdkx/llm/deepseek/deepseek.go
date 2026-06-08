@@ -53,6 +53,11 @@ func init() {
 		llm.CapJSONSchema, llm.CapVision, llm.CapAudio, llm.CapFile,
 		llm.CapImageOutput, llm.CapAudioOutput,
 	)
+	nonThinkingDefaults := llm.GenerateOptions{
+		Extra: map[string]any{
+			"thinking": map[string]any{"type": "disabled"},
+		},
+	}
 
 	llm.RegisterProviderModels("deepseek", []llm.ModelInfo{
 		// --- V4 series (current) -------------------------------------
@@ -63,7 +68,8 @@ func init() {
 			Label: "DeepSeek V4 Flash",
 			Name:  "deepseek-v4-flash",
 			Spec: llm.ModelSpec{
-				Caps: deepseekTextOnly,
+				Caps:     deepseekTextOnly,
+				Defaults: nonThinkingDefaults,
 				Limits: llm.ModelLimits{
 					MaxContextTokens: 1_000_000,
 					MaxOutputTokens:  384_000,
@@ -78,7 +84,8 @@ func init() {
 			Label: "DeepSeek V4 Pro",
 			Name:  "deepseek-v4-pro",
 			Spec: llm.ModelSpec{
-				Caps: deepseekTextOnly,
+				Caps:     deepseekTextOnly,
+				Defaults: nonThinkingDefaults,
 				Limits: llm.ModelLimits{
 					MaxContextTokens: 1_000_000,
 					MaxOutputTokens:  384_000,
@@ -151,7 +158,7 @@ func init() {
 
 const (
 	defaultBaseURL = "https://api.deepseek.com/v1"
-	defaultModel   = "deepseek-chat"
+	defaultModel   = "deepseek-v4-flash"
 )
 
 // New creates a DeepSeek LLM instance (OpenAI-compatible).

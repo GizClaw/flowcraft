@@ -143,7 +143,7 @@ func init() {
 
 const (
 	defaultBaseURL = "https://api.minimaxi.com/anthropic"
-	defaultModel   = "MiniMax-M2.5"
+	defaultModel   = "MiniMax-M2.7-highspeed"
 )
 
 // New creates a MiniMax LLM instance (Anthropic-compatible).
