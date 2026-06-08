@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/GizClaw/flowcraft/sdk/agent"
+	"github.com/GizClaw/flowcraft/sdk/event"
 	"github.com/GizClaw/flowcraft/sdk/graph"
 	"github.com/GizClaw/flowcraft/sdk/graph/node"
 	"github.com/GizClaw/flowcraft/sdk/script"
@@ -22,6 +23,7 @@ type ScriptNode struct {
 	script      string
 	config      map[string]any
 	runtime     script.Runtime
+	eventBus    event.Bus
 	extraBindFn []bindings.BindingFunc
 	inputPorts  []graph.Port
 	outputPorts []graph.Port
@@ -77,6 +79,7 @@ func (n *ScriptNode) ExecuteBoard(ctx graph.ExecutionContext, board *graph.Board
 		bindings.NewBoardBridge(board),
 		bindings.NewExprBridge(),
 		bindings.NewHostBridge(ctx.Host, n.id, ctx.Publisher),
+		newStreamBridge(ctx.RunID, n.eventBus),
 		newParallelBridge(),
 		// Reconstruct the full RunInfo from engine.Run.Attributes
 		// (promoted by agent.Run upstream) instead of the legacy

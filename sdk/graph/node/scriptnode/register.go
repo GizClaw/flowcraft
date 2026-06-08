@@ -4,6 +4,7 @@ import (
 	"io/fs"
 
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
+	"github.com/GizClaw/flowcraft/sdk/event"
 	"github.com/GizClaw/flowcraft/sdk/graph"
 	"github.com/GizClaw/flowcraft/sdk/graph/node"
 	"github.com/GizClaw/flowcraft/sdk/graph/node/scripts"
@@ -26,6 +27,7 @@ type Deps struct {
 	ScriptFS      fs.FS
 	Workspace     workspace.Workspace
 	CommandRunner sandbox.Runner
+	EventBus      event.Bus
 }
 
 // needsShell lists built-in jsnode types that additionally require a
@@ -46,6 +48,12 @@ var needsShell = map[string]bool{
 // require deps.CommandRunner. Missing deps are reported as a build-time
 // validation error from Factory.Build.
 func Register(factory *node.Factory, deps Deps) {
+	newNode := func(id, nodeType, src string, config map[string]any, extras ...bindings.BindingFunc) *ScriptNode {
+		n := New(id, nodeType, src, config, deps.ScriptRuntime, extras...)
+		n.eventBus = deps.EventBus
+		return n
+	}
+
 	for _, name := range scripts.BuiltinTypes() {
 		n := name
 		factory.RegisterBuilder(n, func(def graph.NodeDefinition) (graph.Node, error) {
@@ -59,7 +67,7 @@ func Register(factory *node.Factory, deps Deps) {
 				extras = append(extras, bindings.NewShellBridge(deps.CommandRunner))
 			}
 			extras = append(extras, bindings.NewFSBridge(deps.Workspace))
-			return New(def.ID, n, src, def.Config, deps.ScriptRuntime, extras...), nil
+			return newNode(def.ID, n, src, def.Config, extras...), nil
 		})
 	}
 
@@ -73,7 +81,7 @@ func Register(factory *node.Factory, deps Deps) {
 			return nil, errdefs.Validationf(
 				"node %q (type script): config.source is required", def.ID)
 		}
-		return New(def.ID, "script", source, def.Config, deps.ScriptRuntime, bindings.NewFSBridge(deps.Workspace)), nil
+		return newNode(def.ID, "script", source, def.Config, bindings.NewFSBridge(deps.Workspace)), nil
 	})
 
 	factory.SetFallback(func(def graph.NodeDefinition) (graph.Node, error) {
@@ -84,7 +92,7 @@ func Register(factory *node.Factory, deps Deps) {
 					return nil, errdefs.Validationf(
 						"node %q (type %s): script runtime not configured", def.ID, def.Type)
 				}
-				return New(def.ID, def.Type, string(data), def.Config, deps.ScriptRuntime, bindings.NewFSBridge(deps.Workspace)), nil
+				return newNode(def.ID, def.Type, string(data), def.Config, bindings.NewFSBridge(deps.Workspace)), nil
 			}
 		}
 		return nil, errdefs.Validationf(
