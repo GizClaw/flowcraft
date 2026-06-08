@@ -205,6 +205,28 @@ func TestGenerate_NilResp_NoPanic(t *testing.T) {
 	}
 }
 
+func TestGenerate_ThinkingFalseDisablesThinkingOnWire(t *testing.T) {
+	ts, cap := newCaptureServer(t)
+	c, err := New("claude-3-sonnet-20240229", "test-key", ts.URL, nil)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	_, _, err = c.Generate(
+		context.Background(),
+		[]llm.Message{llm.NewTextMessage(llm.RoleUser, "hi")},
+		llm.WithThinking(false),
+	)
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+
+	rb := decodeBody(t, cap.body)
+	if rb.Thinking["type"] != "disabled" {
+		t.Fatalf("thinking = %#v, want type=disabled; body=%s", rb.Thinking, cap.body)
+	}
+}
+
 // TestGenerateStream_TransportError verifies the streaming path
 // doesn't panic on a degraded server. The anthropic-sdk-go
 // NewStreaming always allocates the stream struct so a literal

@@ -2,11 +2,13 @@ package openai
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/llm"
@@ -81,6 +83,48 @@ func TestGenerate_EmptyChoices(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "no choices") {
 		t.Errorf("error message should mention choices, got %q", err.Error())
+	}
+}
+
+func TestGenerate_ContextCanceledPreservesAbortedClassification(t *testing.T) {
+	c, err := New("test-model", "test-key", "http://127.0.0.1:1", option.WithMaxRetries(0))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, _, err = c.Generate(ctx, []llm.Message{llm.NewTextMessage(llm.RoleUser, "hi")})
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !errdefs.IsAborted(err) {
+		t.Fatalf("expected Aborted kind, got %v", err)
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("error lost context.Canceled identity: %v", err)
+	}
+}
+
+func TestGenerate_ContextDeadlinePreservesTimeoutClassification(t *testing.T) {
+	c, err := New("test-model", "test-key", "http://127.0.0.1:1", option.WithMaxRetries(0))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+
+	_, _, err = c.Generate(ctx, []llm.Message{llm.NewTextMessage(llm.RoleUser, "hi")})
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !errdefs.IsTimeout(err) {
+		t.Fatalf("expected Timeout kind, got %v", err)
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("error lost context.DeadlineExceeded identity: %v", err)
 	}
 }
 
