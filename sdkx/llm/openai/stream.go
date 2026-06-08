@@ -2,6 +2,7 @@ package openai
 
 import (
 	"context"
+	"fmt"
 	"sort"
 	"strings"
 	"sync"
@@ -68,7 +69,11 @@ func (s *openaiStreamMessage) Next() bool {
 		if !s.stream.Next() {
 			err := s.stream.Err()
 			if err != nil {
-				err = classifyAPIErrorWithProvider(s.provider, err)
+				if ctxErr := s.baseCtx.Err(); ctxErr != nil {
+					err = errdefs.FromContext(fmt.Errorf("%s.stream: %s: %w: %w", s.provider, time.Since(s.start).String(), err, ctxErr))
+				} else {
+					err = classifyAPIErrorWithProvider(s.provider, err)
+				}
 			}
 			s.mu.Lock()
 			s.err = err
