@@ -188,6 +188,109 @@ func TestSupervisorGracefulStopDoesNotCancelInflightDrain(t *testing.T) {
 	default:
 		t.Fatal("processor did not finish")
 	}
+	if err := supervisor.GracefulStop(context.Background()); err != nil {
+		t.Fatalf("second GracefulStop after successful release: %v", err)
+	}
+}
+
+func TestSupervisorGracefulStopReportsParentCancellationDuringInflightDrain(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	scope := recall.Scope{RuntimeID: "rt", UserID: "u1"}
+	started := make(chan struct{})
+	release := make(chan struct{})
+	runner := &Runner{
+		side: blockingSideEffectProcessor{
+			started: started,
+			release: release,
+		},
+		cfg: Config{
+			WorkerID:           "test",
+			BatchSize:          1,
+			IdleInterval:       time.Hour,
+			ErrorBackoff:       time.Hour,
+			DrainSideEffects:   true,
+			DrainAsyncSemantic: false,
+			Now:                time.Now,
+		},
+	}
+	supervisor, err := Start(ctx, runner, Target{Scopes: []recall.Scope{scope}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-started
+	stopDone := make(chan error, 1)
+	go func() {
+		stopDone <- supervisor.GracefulStop(context.Background())
+	}()
+	select {
+	case <-supervisor.stop:
+	case <-time.After(time.Second):
+		t.Fatal("GracefulStop did not request stop")
+	}
+	cancel()
+	select {
+	case err := <-stopDone:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("GracefulStop error = %v, want context.Canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("GracefulStop did not return after parent cancellation")
+	}
+	close(release)
+}
+
+func TestSupervisorGracefulStopReportsConcurrentStopDuringInflightDrain(t *testing.T) {
+	ctx := context.Background()
+	scope := recall.Scope{RuntimeID: "rt", UserID: "u1"}
+	started := make(chan struct{})
+	release := make(chan struct{})
+	runner := &Runner{
+		side: blockingSideEffectProcessor{
+			started: started,
+			release: release,
+		},
+		cfg: Config{
+			WorkerID:           "test",
+			BatchSize:          1,
+			IdleInterval:       time.Hour,
+			ErrorBackoff:       time.Hour,
+			DrainSideEffects:   true,
+			DrainAsyncSemantic: false,
+			Now:                time.Now,
+		},
+	}
+	supervisor, err := Start(ctx, runner, Target{Scopes: []recall.Scope{scope}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-started
+	stopDone := make(chan error, 1)
+	go func() {
+		stopDone <- supervisor.GracefulStop(context.Background())
+	}()
+	select {
+	case <-supervisor.stop:
+	case <-time.After(time.Second):
+		t.Fatal("GracefulStop did not request stop")
+	}
+	forceDone := make(chan error, 1)
+	go func() {
+		forceDone <- supervisor.Stop()
+	}()
+	select {
+	case err := <-stopDone:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("GracefulStop error = %v, want context.Canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("GracefulStop did not return after concurrent Stop")
+	}
+	select {
+	case <-forceDone:
+	case <-time.After(time.Second):
+		t.Fatal("Stop did not return after cancelling in-flight drain")
+	}
+	close(release)
 }
 
 func TestSupervisorGracefulStopPreservesInflightDrainError(t *testing.T) {
