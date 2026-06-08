@@ -58,6 +58,10 @@ type Duration struct {
 	time.Duration
 }
 
+func (d Duration) MarshalJSON() ([]byte, error) {
+	return json.Marshal(d.Duration.String())
+}
+
 func (d *Duration) UnmarshalJSON(raw []byte) error {
 	var s string
 	if err := json.Unmarshal(raw, &s); err == nil {
@@ -74,6 +78,10 @@ func (d *Duration) UnmarshalJSON(raw []byte) error {
 	}
 	d.Duration = time.Duration(n)
 	return nil
+}
+
+func (d Duration) MarshalYAML() (any, error) {
+	return d.Duration.String(), nil
 }
 
 func (d *Duration) UnmarshalYAML(value *yaml.Node) error {

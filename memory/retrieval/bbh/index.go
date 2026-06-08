@@ -176,6 +176,15 @@ func (idx *Index) Capabilities() retrieval.Capabilities {
 // filter surface against Badger-loaded docs after candidate generation.
 func (idx *Index) SupportsFilter(retrieval.Filter) bool { return true }
 
+// WarmNamespace opens the path-backed Bleve and HNSW shard for namespace.
+func (idx *Index) WarmNamespace(ctx context.Context, namespace string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	_, err := idx.ensureShard(namespace)
+	return err
+}
+
 func (idx *Index) ensureOpen() error {
 	if idx.closed.Load() {
 		return errdefs.NotAvailablef("retrieval/bbh: index is closed")

@@ -60,7 +60,14 @@ func NewRunner(mem recall.Memory, opts ...Option) (*Runner, error) {
 
 // Run continuously drains the configured target until ctx is cancelled.
 func (r *Runner) Run(ctx context.Context, opts RunOptions) error {
+	return r.run(ctx, nil, opts)
+}
+
+func (r *Runner) run(ctx context.Context, stop <-chan struct{}, opts RunOptions) error {
 	for {
+		if stopped(stop) {
+			return nil
+		}
 		if err := ctx.Err(); err != nil {
 			return err
 		}
@@ -69,15 +76,18 @@ func (r *Runner) Run(ctx context.Context, opts RunOptions) error {
 			if errdefs.IsValidation(err) {
 				return err
 			}
-			if waitErr := sleepContext(ctx, r.cfg.ErrorBackoff); waitErr != nil {
+			if waitErr := sleepContext(ctx, stop, r.cfg.ErrorBackoff); waitErr != nil {
 				return waitErr
 			}
 			continue
 		}
+		if stopped(stop) {
+			return nil
+		}
 		if res.TotalClaimed() > 0 {
 			continue
 		}
-		if err := sleepContext(ctx, r.cfg.IdleInterval); err != nil {
+		if err := sleepContext(ctx, stop, r.cfg.IdleInterval); err != nil {
 			return err
 		}
 	}
@@ -152,13 +162,27 @@ func (r *Runner) emit(ctx context.Context, event Event) {
 	r.cfg.Metrics.ObserveRecallOps(ctx, event)
 }
 
-func sleepContext(ctx context.Context, d time.Duration) error {
+func stopped(stop <-chan struct{}) bool {
+	if stop == nil {
+		return false
+	}
+	select {
+	case <-stop:
+		return true
+	default:
+		return false
+	}
+}
+
+func sleepContext(ctx context.Context, stop <-chan struct{}, d time.Duration) error {
 	if d <= 0 {
 		return ctx.Err()
 	}
 	timer := time.NewTimer(d)
 	defer timer.Stop()
 	select {
+	case <-stop:
+		return nil
 	case <-ctx.Done():
 		return ctx.Err()
 	case <-timer.C:

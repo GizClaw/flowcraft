@@ -137,6 +137,58 @@ func TestSupervisorStartAndStop(t *testing.T) {
 	}
 }
 
+func TestSupervisorGracefulStopDoesNotCancelInflightDrain(t *testing.T) {
+	ctx := context.Background()
+	scope := recall.Scope{RuntimeID: "rt", UserID: "u1"}
+	started := make(chan struct{})
+	release := make(chan struct{})
+	done := make(chan struct{})
+	runner := &Runner{
+		side: blockingSideEffectProcessor{
+			started: started,
+			release: release,
+			done:    done,
+		},
+		cfg: Config{
+			WorkerID:           "test",
+			BatchSize:          1,
+			IdleInterval:       time.Hour,
+			ErrorBackoff:       time.Hour,
+			DrainSideEffects:   true,
+			DrainAsyncSemantic: false,
+			Now:                time.Now,
+		},
+	}
+	supervisor, err := Start(ctx, runner, Target{Scopes: []recall.Scope{scope}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-started
+	stopDone := make(chan error, 1)
+	go func() {
+		stopDone <- supervisor.GracefulStop(context.Background())
+	}()
+	select {
+	case err := <-stopDone:
+		t.Fatalf("GracefulStop returned before in-flight drain completed: %v", err)
+	case <-time.After(10 * time.Millisecond):
+	}
+	close(release)
+	select {
+	case err := <-stopDone:
+		if err != nil {
+			t.Fatalf("GracefulStop: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("GracefulStop did not return after drain completed")
+	}
+	select {
+	case <-done:
+	default:
+		t.Fatal("processor did not finish")
+	}
+}
+
 func TestRunnerReadinessRuntimeUsesEnumerator(t *testing.T) {
 	ctx := context.Background()
 	mem, err := recall.New()
@@ -300,6 +352,23 @@ type durableParts struct {
 	store recall.TemporalStore
 	side  recall.SideEffectOutbox
 	async recall.AsyncSemanticQueue
+}
+
+type blockingSideEffectProcessor struct {
+	started chan<- struct{}
+	release <-chan struct{}
+	done    chan<- struct{}
+}
+
+func (p blockingSideEffectProcessor) ProcessSideEffects(ctx context.Context, opts recall.SideEffectProcessOptions) (recall.SideEffectProcessResult, error) {
+	close(p.started)
+	select {
+	case <-p.release:
+		close(p.done)
+		return recall.SideEffectProcessResult{Claimed: 1, Completed: 1}, nil
+	case <-ctx.Done():
+		return recall.SideEffectProcessResult{}, ctx.Err()
+	}
 }
 
 type staticEnumerator []recall.Scope
