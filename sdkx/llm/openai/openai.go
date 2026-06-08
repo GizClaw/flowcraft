@@ -277,6 +277,11 @@ type LLM struct {
 	// silently aggregated under "openai". Same story on the Anthropic
 	// side via sdkx/llm/minimax.
 	provider string
+
+	// thinkingMapper lets OpenAI-compatible sub-providers translate
+	// llm.WithThinking into their provider-specific JSON body field.
+	// Direct OpenAI calls leave this nil.
+	thinkingMapper func(bool) (string, any)
 }
 
 var _ llm.LLM = (*LLM)(nil)
@@ -316,6 +321,15 @@ func (c *LLM) WithProviderName(name string) *LLM {
 	return c
 }
 
+// WithThinkingMapper installs a provider-specific mapper for llm.WithThinking.
+// The mapper returns the JSON body key and value to add through Extra.
+func (c *LLM) WithThinkingMapper(mapper func(bool) (string, any)) *LLM {
+	if c != nil {
+		c.thinkingMapper = mapper
+	}
+	return c
+}
+
 // Provider returns the OTel / metrics tag used by this instance. Mostly
 // a debugging aid; exported so eval drivers and observability dashboards
 // can introspect what name they'll see in traces.
@@ -334,6 +348,7 @@ func (c *LLM) Generate(ctx context.Context, messages []llm.Message, opts ...llm.
 	))
 	defer span.End()
 
+	opts = c.injectProviderOptions(opts)
 	options := llm.ApplyOptions(opts...)
 	params := c.buildParams(messages, options)
 
@@ -345,7 +360,7 @@ func (c *LLM) Generate(ctx context.Context, messages []llm.Message, opts ...llm.
 		span.SetStatus(codes.Error, err.Error())
 		llm.RecordLLMMetrics(ctx, provider, c.model, "error", dur, llm.TokenUsage{})
 		if ctx.Err() != nil {
-			return llm.Message{}, llm.TokenUsage{}, errdefs.Timeoutf("%s.generate: %s", provider, dur.String())
+			return llm.Message{}, llm.TokenUsage{}, errdefs.FromContext(fmt.Errorf("%s.generate: %s: %w", provider, dur.String(), err))
 		}
 		return llm.Message{}, llm.TokenUsage{}, c.classifyAPIError(err)
 	}
@@ -401,6 +416,7 @@ func (c *LLM) GenerateStream(ctx context.Context, messages []llm.Message, opts .
 		attribute.String(telemetry.AttrLLMModel, c.model),
 	))
 
+	opts = c.injectProviderOptions(opts)
 	options := llm.ApplyOptions(opts...)
 	params := c.buildParams(messages, options)
 	params.StreamOptions = oai.ChatCompletionStreamOptionsParam{
@@ -408,6 +424,7 @@ func (c *LLM) GenerateStream(ctx context.Context, messages []llm.Message, opts .
 	}
 
 	reqOpts := extraRequestOpts(options)
+	start := time.Now()
 	stream := c.client.Chat.Completions.NewStreaming(ctx, params, reqOpts...)
 	// NewStreaming may return nil if the SDK fails before allocating the
 	// SSE handle (HTTP transport dial failure, panic recovery, etc.).
@@ -423,6 +440,13 @@ func (c *LLM) GenerateStream(ctx context.Context, messages []llm.Message, opts .
 		return nil, err
 	}
 	if err := stream.Err(); err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			err = errdefs.FromContext(fmt.Errorf("%s.stream: %s: %w: %w", provider, time.Since(start).String(), err, ctxErr))
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+			span.End()
+			return nil, err
+		}
 		// Some OpenAI-compatible providers don't support stream_options; retry without it.
 		params.StreamOptions = oai.ChatCompletionStreamOptionsParam{}
 		stream = c.client.Chat.Completions.NewStreaming(ctx, params, reqOpts...)
@@ -434,6 +458,13 @@ func (c *LLM) GenerateStream(ctx context.Context, messages []llm.Message, opts .
 			return nil, err
 		}
 		if err2 := stream.Err(); err2 != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				err2 = errdefs.FromContext(fmt.Errorf("%s.stream: %s: %w: %w", provider, time.Since(start).String(), err2, ctxErr))
+				span.RecordError(err2)
+				span.SetStatus(codes.Error, err2.Error())
+				span.End()
+				return nil, err2
+			}
 			span.RecordError(err2)
 			span.SetStatus(codes.Error, err2.Error())
 			span.End()
@@ -442,6 +473,21 @@ func (c *LLM) GenerateStream(ctx context.Context, messages []llm.Message, opts .
 	}
 
 	return newStreamMessage(ctx, span, provider, c.model, stream), nil
+}
+
+func (c *LLM) injectProviderOptions(opts []llm.GenerateOption) []llm.GenerateOption {
+	if c == nil || c.thinkingMapper == nil {
+		return opts
+	}
+	o := llm.ApplyOptions(opts...)
+	if o.Thinking == nil {
+		return opts
+	}
+	key, value := c.thinkingMapper(*o.Thinking)
+	if key == "" {
+		return opts
+	}
+	return append(opts, llm.WithExtra(key, value))
 }
 
 // extraRequestOpts converts GenerateOptions.Extra into per-request

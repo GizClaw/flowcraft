@@ -53,6 +53,11 @@ func init() {
 		llm.CapJSONSchema, llm.CapVision, llm.CapAudio, llm.CapFile,
 		llm.CapImageOutput, llm.CapAudioOutput,
 	)
+	nonThinkingDefaults := llm.GenerateOptions{
+		Extra: map[string]any{
+			"thinking": map[string]any{"type": "disabled"},
+		},
+	}
 
 	llm.RegisterProviderModels("deepseek", []llm.ModelInfo{
 		// --- V4 series (current) -------------------------------------
@@ -63,7 +68,8 @@ func init() {
 			Label: "DeepSeek V4 Flash",
 			Name:  "deepseek-v4-flash",
 			Spec: llm.ModelSpec{
-				Caps: deepseekTextOnly,
+				Caps:     deepseekTextOnly,
+				Defaults: nonThinkingDefaults,
 				Limits: llm.ModelLimits{
 					MaxContextTokens: 1_000_000,
 					MaxOutputTokens:  384_000,
@@ -78,7 +84,8 @@ func init() {
 			Label: "DeepSeek V4 Pro",
 			Name:  "deepseek-v4-pro",
 			Spec: llm.ModelSpec{
-				Caps: deepseekTextOnly,
+				Caps:     deepseekTextOnly,
+				Defaults: nonThinkingDefaults,
 				Limits: llm.ModelLimits{
 					MaxContextTokens: 1_000_000,
 					MaxOutputTokens:  384_000,
@@ -170,5 +177,11 @@ func New(model, apiKey, baseURL string) (*openai.LLM, error) {
 	// is observable as its own bucket instead of getting silently
 	// aggregated under "openai" (the upstream HTTP transport). See
 	// sdkx/llm/openai/openai.go ▸ WithProviderName.
-	return inner.WithProviderName("deepseek"), nil
+	return inner.WithProviderName("deepseek").WithThinkingMapper(func(on bool) (string, any) {
+		typ := "disabled"
+		if on {
+			typ = "enabled"
+		}
+		return "thinking", map[string]any{"type": typ}
+	}), nil
 }
