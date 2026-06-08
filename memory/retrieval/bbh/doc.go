@@ -9,4 +9,7 @@
 // checkpointed by a per-namespace flush loop plus Close. It is intended as a
 // higher-performance local backend for recall's retrieval lens; the canonical
 // memory truth remains the recall TemporalStore.
+//
+// Inspector opens the same workspace read-only and reports discovered Badger,
+// Bleve, HNSW, and namespace statistics without constructing an Index.
 package bbh

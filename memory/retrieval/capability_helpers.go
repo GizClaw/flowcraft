@@ -18,6 +18,7 @@ const (
 	CapabilitySnapshot             Capability = "snapshot"
 	CapabilityVectorizable         Capability = "vectorizable"
 	CapabilityNativeDeleteByFilter Capability = "native_delete_by_filter"
+	CapabilityNamespaceWarm        Capability = "namespace_warm"
 )
 
 // Supports centralises capability checks so callers do not spread
@@ -56,6 +57,8 @@ func Supports(idx Index, cap Capability) bool {
 		return c.Extensions.Snapshottable
 	case CapabilityVectorizable:
 		return c.Extensions.Vectorizable
+	case CapabilityNamespaceWarm:
+		return c.Extensions.NamespaceWarm
 	default:
 		return false
 	}
@@ -107,4 +110,14 @@ func AsDroppable(idx Index) (Droppable, bool) {
 	}
 	d, ok := idx.(Droppable)
 	return d, ok
+}
+
+// AsNamespaceWarmer returns idx as a NamespaceWarmer when it advertises and
+// implements namespace warming.
+func AsNamespaceWarmer(idx Index) (NamespaceWarmer, bool) {
+	if !Supports(idx, CapabilityNamespaceWarm) {
+		return nil, false
+	}
+	w, ok := idx.(NamespaceWarmer)
+	return w, ok
 }
