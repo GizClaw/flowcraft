@@ -58,7 +58,8 @@ func newCaptureServer(t *testing.T) (*httptest.Server, *capturedRequest) {
 // SDK Marshal output is JSON-compatible with the public API shape, so
 // we decode straight into this; unknown fields are ignored.
 type requestBody struct {
-	System []struct {
+	Thinking map[string]interface{} `json:"thinking,omitempty"`
+	System   []struct {
 		Type         string                 `json:"type"`
 		Text         string                 `json:"text"`
 		CacheControl map[string]interface{} `json:"cache_control,omitempty"`
