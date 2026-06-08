@@ -9,13 +9,16 @@ import (
 // cancellation. It is intentionally small: callers still own signal handling,
 // logging, and whether an error should restart the surrounding process.
 type Supervisor struct {
+	runCtx context.Context
 	cancel context.CancelFunc
 	stop   chan struct{}
 	once   sync.Once
 	wg     sync.WaitGroup
 
-	mu   sync.Mutex
-	errs []error
+	mu               sync.Mutex
+	graceful         bool
+	gracefulReleased bool
+	errs             []error
 }
 
 // Start starts runner loops for each target. The returned Supervisor is stopped
@@ -27,16 +30,17 @@ func Start(ctx context.Context, runner *Runner, targets ...Target) (*Supervisor,
 	if len(targets) == 0 {
 		return nil, validationf("at least one target is required")
 	}
-	ctx, cancel := context.WithCancel(ctx)
-	s := &Supervisor{cancel: cancel, stop: make(chan struct{})}
+	runCtx, cancel := context.WithCancel(ctx)
+	s := &Supervisor{runCtx: runCtx, cancel: cancel, stop: make(chan struct{})}
 	for _, target := range targets {
 		target := target
 		s.wg.Add(1)
 		go func() {
 			defer s.wg.Done()
-			if err := runner.run(ctx, s.stop, RunOptions{Target: target}); err != nil && ctx.Err() == nil {
-				s.addErr(err)
-				cancel()
+			if err := runner.run(runCtx, s.stop, RunOptions{Target: target}); err != nil {
+				if s.recordRunError(err) {
+					cancel()
+				}
 			}
 		}()
 	}
@@ -66,6 +70,7 @@ func (s *Supervisor) GracefulStop(ctx context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	s.beginGracefulStop()
 	s.once.Do(func() {
 		close(s.stop)
 	})
@@ -76,12 +81,44 @@ func (s *Supervisor) GracefulStop(ctx context.Context) error {
 	}()
 	select {
 	case <-done:
-		s.cancel()
-		return s.err()
+		if err := s.gracefulErr(); err != nil {
+			s.cancel()
+			return err
+		}
+		s.releaseGraceful()
+		return nil
 	case <-ctx.Done():
 		s.cancel()
 		return ctx.Err()
 	}
+}
+
+func (s *Supervisor) beginGracefulStop() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.graceful = true
+}
+
+func (s *Supervisor) releaseGraceful() {
+	s.mu.Lock()
+	s.gracefulReleased = true
+	s.mu.Unlock()
+	s.cancel()
+}
+
+func (s *Supervisor) gracefulErr() error {
+	s.mu.Lock()
+	if len(s.errs) > 0 {
+		err := s.errs[0]
+		s.mu.Unlock()
+		return err
+	}
+	released := s.gracefulReleased
+	s.mu.Unlock()
+	if released {
+		return nil
+	}
+	return s.runCtx.Err()
 }
 
 func (s *Supervisor) err() error {
@@ -93,8 +130,12 @@ func (s *Supervisor) err() error {
 	return s.errs[0]
 }
 
-func (s *Supervisor) addErr(err error) {
+func (s *Supervisor) recordRunError(err error) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.errs = append(s.errs, err)
+	runErr := s.runCtx.Err()
+	if runErr == nil || s.graceful {
+		s.errs = append(s.errs, err)
+	}
+	return runErr == nil
 }
