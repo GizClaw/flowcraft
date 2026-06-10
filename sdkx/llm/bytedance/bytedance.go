@@ -59,9 +59,9 @@ func init() {
 	//
 	// All Doubao Seed 2.0 variants share a 256K context window and a
 	// 32K max output cap per the unified family doc. Vision and tool
-	// use are first-class. The Volcengine Ark API is OpenAI-style and
-	// supports streaming + structured output natively, so no
-	// negative input/protocol caps need declaring.
+	// use are first-class. The Responses API supports streaming and
+	// structured output natively, but does not expose stop sequences
+	// or frequency/presence penalties.
 	//
 	// Output modality: text only. Image generation lives in
 	// dedicated Doubao image SKUs and audio/video in Seedance 2.0 —
@@ -70,6 +70,8 @@ func init() {
 	// image-output / audio-output slots onto these chat models.
 	chatTextOutputOnly := llm.DisabledCaps(
 		llm.CapImageOutput, llm.CapAudioOutput,
+		llm.CapStopWords, llm.CapFrequencyPenalty, llm.CapPresencePenalty,
+		llm.CapAudio,
 	)
 
 	llm.RegisterProviderModels("bytedance", []llm.ModelInfo{

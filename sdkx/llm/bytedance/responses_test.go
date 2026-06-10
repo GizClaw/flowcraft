@@ -125,6 +125,53 @@ func TestGenerate_WithExtraOverridesWebSearch(t *testing.T) {
 	}
 }
 
+func TestGenerate_UsesResponsesImageContent(t *testing.T) {
+	var got map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"output": []map[string]any{{
+				"type":    "message",
+				"role":    "assistant",
+				"content": []map[string]any{{"type": "output_text", "text": "seen"}},
+			}},
+		})
+	}))
+	defer srv.Close()
+
+	c, err := New("doubao-test", "test-key", srv.URL, "", 0)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	_, _, err = c.Generate(context.Background(), []llm.Message{{
+		Role: llm.RoleUser,
+		Parts: []llm.Part{
+			{Type: llm.PartText, Text: "describe"},
+			{Type: llm.PartImage, Image: &llm.MediaRef{URL: "https://example.test/image.png"}},
+		},
+	}})
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+
+	input := got["input"].([]any)
+	msg := input[0].(map[string]any)
+	content := msg["content"].([]any)
+	if len(content) != 2 {
+		t.Fatalf("content = %#v", content)
+	}
+	text := content[0].(map[string]any)
+	if text["type"] != "input_text" || text["text"] != "describe" {
+		t.Fatalf("text content = %#v", text)
+	}
+	image := content[1].(map[string]any)
+	if image["type"] != "input_image" || image["image_url"] != "https://example.test/image.png" {
+		t.Fatalf("image content = %#v", image)
+	}
+}
+
 func TestGenerateStream_ResponsesChunks(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var got map[string]any
@@ -166,6 +213,68 @@ func TestGenerateStream_ResponsesChunks(t *testing.T) {
 		t.Fatalf("Message = %q", got)
 	}
 	if got := stream.Usage(); got.InputTokens != 1 || got.OutputTokens != 2 {
+		t.Fatalf("Usage = %+v", got)
+	}
+}
+
+func TestGenerateStream_AccumulatesToolCall(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var got map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if got["stream"] != true {
+			t.Fatalf("stream = %#v", got["stream"])
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("event: response.output_item.added\n"))
+		_, _ = w.Write([]byte(`data: {"type":"response.output_item.added","output_index":0,"sequence_number":1,"item":{"type":"function_call","call_id":"call_1","name":"lookup","arguments":""}}` + "\n\n"))
+		_, _ = w.Write([]byte("event: response.function_call_arguments.delta\n"))
+		_, _ = w.Write([]byte(`data: {"type":"response.function_call_arguments.delta","output_index":0,"sequence_number":2,"item_id":"fc_1","delta":"{\"q\""}` + "\n\n"))
+		_, _ = w.Write([]byte("event: response.function_call_arguments.delta\n"))
+		_, _ = w.Write([]byte(`data: {"type":"response.function_call_arguments.delta","output_index":0,"sequence_number":3,"item_id":"fc_1","delta":":\"news\"}"}` + "\n\n"))
+		_, _ = w.Write([]byte("event: response.completed\n"))
+		_, _ = w.Write([]byte(`data: {"type":"response.completed","sequence_number":4,"response":{"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"calling lookup"}]}],"usage":{"input_tokens":2,"output_tokens":1,"total_tokens":3}}}` + "\n\n"))
+	}))
+	defer srv.Close()
+
+	c, err := New("doubao-test", "test-key", srv.URL, "", 0)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	stream, err := c.GenerateStream(
+		context.Background(),
+		[]llm.Message{llm.NewTextMessage(llm.RoleUser, "search")},
+		llm.WithTools(llm.ToolDefinition{
+			Name:        "lookup",
+			Description: "look up current facts",
+			InputSchema: map[string]any{
+				"type":       "object",
+				"properties": map[string]any{"q": map[string]any{"type": "string"}},
+			},
+		}),
+	)
+	if err != nil {
+		t.Fatalf("GenerateStream: %v", err)
+	}
+	for stream.Next() {
+		t.Fatalf("unexpected text chunk: %#v", stream.Current())
+	}
+	if err := stream.Err(); err != nil {
+		t.Fatalf("Err: %v", err)
+	}
+	msg := stream.Message()
+	if msg.Content() != "calling lookup" {
+		t.Fatalf("Content = %q", msg.Content())
+	}
+	calls := msg.ToolCalls()
+	if len(calls) != 1 {
+		t.Fatalf("ToolCalls len = %d, want 1; message=%#v", len(calls), msg)
+	}
+	if calls[0].ID != "call_1" || calls[0].Name != "lookup" || calls[0].Arguments != `{"q":"news"}` {
+		t.Fatalf("ToolCall = %#v", calls[0])
+	}
+	if got := stream.Usage(); got.InputTokens != 2 || got.OutputTokens != 1 {
 		t.Fatalf("Usage = %+v", got)
 	}
 }

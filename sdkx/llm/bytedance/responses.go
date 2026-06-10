@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -56,7 +57,9 @@ func appendResponsesMessages(req *arkresponses.ResponsesRequest, msgs []llm.Mess
 
 		if msg.Role == llm.RoleAssistant && msg.HasToolCalls() {
 			if text := strings.TrimSpace(msg.Content()); text != "" {
-				list.ListValue = append(list.ListValue, inputMessage(msg.Role, text))
+				list.ListValue = append(list.ListValue, inputMessage(msg.Role, &arkresponses.MessageContent{
+					Union: &arkresponses.MessageContent_StringValue{StringValue: text},
+				}))
 			}
 			for _, call := range msg.ToolCalls() {
 				list.ListValue = append(list.ListValue, &arkresponses.InputItem{Union: &arkresponses.InputItem_FunctionToolCall{
@@ -71,23 +74,21 @@ func appendResponsesMessages(req *arkresponses.ResponsesRequest, msgs []llm.Mess
 			continue
 		}
 
-		text := strings.TrimSpace(messageTextForResponses(msg))
-		if text == "" {
+		content, ok := messageContentForResponses(msg)
+		if !ok {
 			continue
 		}
-		list.ListValue = append(list.ListValue, inputMessage(msg.Role, text))
+		list.ListValue = append(list.ListValue, inputMessage(msg.Role, content))
 	}
 	return nil
 }
 
-func inputMessage(role llm.Role, text string) *arkresponses.InputItem {
+func inputMessage(role llm.Role, content *arkresponses.MessageContent) *arkresponses.InputItem {
 	return &arkresponses.InputItem{Union: &arkresponses.InputItem_EasyMessage{
 		EasyMessage: &arkresponses.ItemEasyMessage{
-			Type: arkresponses.ItemType_message.Enum(),
-			Role: responsesRole(role),
-			Content: &arkresponses.MessageContent{Union: &arkresponses.MessageContent_StringValue{
-				StringValue: text,
-			}},
+			Type:    arkresponses.ItemType_message.Enum(),
+			Role:    responsesRole(role),
+			Content: content,
 		},
 	}}
 }
@@ -103,8 +104,27 @@ func responsesRole(role llm.Role) arkresponses.MessageRole_Enum {
 	}
 }
 
-func messageTextForResponses(msg llm.Message) string {
+func messageContentForResponses(msg llm.Message) (*arkresponses.MessageContent, bool) {
 	var b strings.Builder
+	var items []*arkresponses.ContentItem
+	hasStructured := false
+	flushText := func() {
+		if b.Len() == 0 {
+			return
+		}
+		text := b.String()
+		b.Reset()
+		if strings.TrimSpace(text) == "" {
+			return
+		}
+		items = append(items, &arkresponses.ContentItem{Union: &arkresponses.ContentItem_Text{
+			Text: &arkresponses.ContentItemText{
+				Type: arkresponses.ContentItemType_input_text,
+				Text: text,
+			},
+		}})
+	}
+
 	for _, part := range msg.Parts {
 		switch part.Type {
 		case llm.PartText:
@@ -116,15 +136,65 @@ func messageTextForResponses(msg llm.Message) string {
 			}
 		case llm.PartFile:
 			if part.File != nil {
-				b.WriteString(part.File.URI)
+				if strings.HasPrefix(part.File.MimeType, "image/") {
+					hasStructured = true
+					flushText()
+					items = appendImageContent(items, part.File.URI)
+				} else {
+					b.WriteString(part.File.URI)
+				}
 			}
 		case llm.PartImage:
 			if part.Image != nil {
-				b.WriteString(part.Image.URL)
+				if url := mediaURL(part.Image); url != "" {
+					hasStructured = true
+					flushText()
+					items = appendImageContent(items, url)
+				}
 			}
 		}
 	}
-	return b.String()
+	if hasStructured {
+		flushText()
+		if len(items) == 0 {
+			return nil, false
+		}
+		return &arkresponses.MessageContent{Union: &arkresponses.MessageContent_ListValue{
+			ListValue: &arkresponses.ContentItemList{ListValue: items},
+		}}, true
+	}
+
+	text := strings.TrimSpace(b.String())
+	if text == "" {
+		return nil, false
+	}
+	return &arkresponses.MessageContent{Union: &arkresponses.MessageContent_StringValue{StringValue: text}}, true
+}
+
+func appendImageContent(items []*arkresponses.ContentItem, url string) []*arkresponses.ContentItem {
+	if url == "" {
+		return items
+	}
+	return append(items, &arkresponses.ContentItem{Union: &arkresponses.ContentItem_Image{
+		Image: &arkresponses.ContentItemImage{
+			Type:     arkresponses.ContentItemType_input_image,
+			ImageUrl: &url,
+		},
+	}})
+}
+
+func mediaURL(media *llm.MediaRef) string {
+	if media.URL != "" {
+		return media.URL
+	}
+	if media.Base64 == "" {
+		return ""
+	}
+	mime := media.MediaType
+	if mime == "" {
+		mime = "application/octet-stream"
+	}
+	return "data:" + mime + ";base64," + media.Base64
 }
 
 type webSearchConfig struct {
@@ -219,6 +289,7 @@ type responsesStreamMessage struct {
 	mu        sync.Mutex
 	content   string
 	msg       llm.Message
+	toolCalls map[int]llm.ToolCall
 	usage     llm.Usage
 	cur       llm.StreamChunk
 	err       error
@@ -313,7 +384,65 @@ func (s *responsesStreamMessage) applyEvent(event *arkresponses.Event) error {
 		s.usage.OutputTokens = usage.OutputTokens
 		s.mu.Unlock()
 	}
+	if e := event.GetItem(); e != nil {
+		s.accumulateOutputItem(e.GetOutputIndex(), e.GetItem())
+	}
+	if e := event.GetItemDone(); e != nil {
+		s.accumulateOutputItem(e.GetOutputIndex(), e.GetItem())
+	}
+	if e := event.GetFunctionCallArguments(); e != nil {
+		s.accumulateFunctionArguments(e.GetOutputIndex(), e.GetDelta(), e.GetArguments())
+	}
+	if e := event.GetFunctionCallArgumentsDone(); e != nil {
+		s.accumulateFunctionArguments(e.GetOutputIndex(), e.GetDelta(), e.GetArguments())
+	}
 	return nil
+}
+
+func (s *responsesStreamMessage) accumulateOutputItem(outputIndex int64, item *arkresponses.OutputItem) {
+	if item == nil {
+		return
+	}
+	call := item.GetFunctionToolCall()
+	if call == nil {
+		return
+	}
+	idx := int(outputIndex)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.toolCalls == nil {
+		s.toolCalls = make(map[int]llm.ToolCall)
+	}
+	existing := s.toolCalls[idx]
+	if call.GetCallId() != "" {
+		existing.ID = call.GetCallId()
+	}
+	if call.GetName() != "" {
+		existing.Name = call.GetName()
+	}
+	if call.GetArguments() != "" {
+		existing.Arguments = call.GetArguments()
+	}
+	s.toolCalls[idx] = existing
+}
+
+func (s *responsesStreamMessage) accumulateFunctionArguments(outputIndex int64, delta, arguments string) {
+	if delta == "" && arguments == "" {
+		return
+	}
+	idx := int(outputIndex)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.toolCalls == nil {
+		s.toolCalls = make(map[int]llm.ToolCall)
+	}
+	existing := s.toolCalls[idx]
+	if arguments != "" {
+		existing.Arguments = arguments
+	} else {
+		existing.Arguments += delta
+	}
+	s.toolCalls[idx] = existing
 }
 
 func eventDeltaText(event *arkresponses.Event) string {
@@ -364,12 +493,34 @@ func (s *responsesStreamMessage) Close() error {
 }
 
 func (s *responsesStreamMessage) ensureMessageLocked() {
+	if len(s.msg.Parts) == 0 && s.content != "" {
+		s.msg.Parts = append(s.msg.Parts, llm.Part{Type: llm.PartText, Text: s.content})
+	}
+	if !s.msg.HasToolCalls() {
+		for _, tc := range s.sortedToolCallsLocked() {
+			tc := tc
+			s.msg.Parts = append(s.msg.Parts, llm.Part{Type: llm.PartToolCall, ToolCall: &tc})
+		}
+	}
 	if len(s.msg.Parts) > 0 {
-		return
+		s.msg.Role = llm.RoleAssistant
 	}
-	if s.content != "" {
-		s.msg = llm.NewTextMessage(llm.RoleAssistant, s.content)
+}
+
+func (s *responsesStreamMessage) sortedToolCallsLocked() []llm.ToolCall {
+	if len(s.toolCalls) == 0 {
+		return nil
 	}
+	indices := make([]int, 0, len(s.toolCalls))
+	for idx := range s.toolCalls {
+		indices = append(indices, idx)
+	}
+	sort.Ints(indices)
+	calls := make([]llm.ToolCall, 0, len(indices))
+	for _, idx := range indices {
+		calls = append(calls, s.toolCalls[idx])
+	}
+	return calls
 }
 
 func (s *responsesStreamMessage) finish(err error) {
