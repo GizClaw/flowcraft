@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/llm"
@@ -288,6 +289,7 @@ type responsesStreamMessage struct {
 
 	mu        sync.Mutex
 	content   string
+	pending   []byte
 	msg       llm.Message
 	toolCalls map[int]llm.ToolCall
 	usage     llm.Usage
@@ -352,12 +354,45 @@ func (s *responsesStreamMessage) Next() bool {
 		}
 		if text := eventDeltaText(event); text != "" {
 			s.mu.Lock()
-			s.content += text
-			s.cur = llm.StreamChunk{Role: llm.RoleAssistant, Content: text}
+			text = s.appendDeltaTextLocked(text)
 			s.mu.Unlock()
-			return true
+			if text != "" {
+				return true
+			}
 		}
 	}
+}
+
+func (s *responsesStreamMessage) appendDeltaTextLocked(text string) string {
+	s.pending = append(s.pending, text...)
+	text, pending := drainValidUTF8Text(s.pending)
+	s.pending = pending
+	if text == "" {
+		return ""
+	}
+	s.content += text
+	s.cur = llm.StreamChunk{Role: llm.RoleAssistant, Content: text}
+	return text
+}
+
+func drainValidUTF8Text(buf []byte) (string, []byte) {
+	var out strings.Builder
+	i := 0
+	for i < len(buf) {
+		r, size := utf8.DecodeRune(buf[i:])
+		if r == utf8.RuneError && size == 1 {
+			if !utf8.FullRune(buf[i:]) {
+				break
+			}
+			out.WriteRune(utf8.RuneError)
+			i++
+			continue
+		}
+		out.WriteRune(r)
+		i += size
+	}
+	pending := append([]byte(nil), buf[i:]...)
+	return out.String(), pending
 }
 
 func (s *responsesStreamMessage) applyEvent(event *arkresponses.Event) error {

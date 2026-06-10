@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/llm"
@@ -214,6 +215,24 @@ func TestGenerateStream_ResponsesChunks(t *testing.T) {
 	}
 	if got := stream.Usage(); got.InputTokens != 1 || got.OutputTokens != 2 {
 		t.Fatalf("Usage = %+v", got)
+	}
+}
+
+func TestResponsesStreamBuffersSplitUTF8Delta(t *testing.T) {
+	var stream responsesStreamMessage
+	first := stream.appendDeltaTextLocked(string([]byte{0xe4, 0xbd}))
+	if first != "" {
+		t.Fatalf("first split chunk = %q, want buffered", first)
+	}
+	second := stream.appendDeltaTextLocked(string([]byte{0xa0}) + "好")
+	if second != "你好" {
+		t.Fatalf("second chunk = %q, want 你好", second)
+	}
+	if !utf8.ValidString(second) {
+		t.Fatalf("second chunk is not valid utf8: %q", second)
+	}
+	if stream.content != "你好" || len(stream.pending) != 0 {
+		t.Fatalf("content=%q pending=%x, want complete output", stream.content, stream.pending)
 	}
 }
 
