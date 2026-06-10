@@ -137,12 +137,12 @@ func messageContentForResponses(msg llm.Message) (*arkresponses.MessageContent, 
 			}
 		case llm.PartFile:
 			if part.File != nil {
+				hasStructured = true
+				flushText()
 				if strings.HasPrefix(part.File.MimeType, "image/") {
-					hasStructured = true
-					flushText()
 					items = appendImageContent(items, part.File.URI)
 				} else {
-					b.WriteString(part.File.URI)
+					items = appendFileContent(items, part.File)
 				}
 			}
 		case llm.PartImage:
@@ -181,6 +181,28 @@ func appendImageContent(items []*arkresponses.ContentItem, url string) []*arkres
 			Type:     arkresponses.ContentItemType_input_image,
 			ImageUrl: &url,
 		},
+	}})
+}
+
+func appendFileContent(items []*arkresponses.ContentItem, fileRef *llm.FileRef) []*arkresponses.ContentItem {
+	if fileRef == nil || fileRef.URI == "" {
+		return items
+	}
+	file := &arkresponses.ContentItemFile{
+		Type: arkresponses.ContentItemType_input_file,
+	}
+	switch {
+	case strings.HasPrefix(fileRef.URI, "file_id://"):
+		id := strings.TrimPrefix(fileRef.URI, "file_id://")
+		file.FileId = stringPtrIfNotEmpty(id)
+	case strings.HasPrefix(fileRef.URI, "data:"):
+		file.FileData = &fileRef.URI
+	default:
+		file.FileUrl = &fileRef.URI
+	}
+	file.Filename = stringPtrIfNotEmpty(fileRef.Name)
+	return append(items, &arkresponses.ContentItem{Union: &arkresponses.ContentItem_File{
+		File: file,
 	}})
 }
 
@@ -397,12 +419,12 @@ func drainValidUTF8Text(buf []byte) (string, []byte) {
 
 func (s *responsesStreamMessage) applyEvent(event *arkresponses.Event) error {
 	if e := event.GetError(); e != nil {
-		return errdefs.NotAvailablef("bytedance: stream error %s: %s", e.GetCode(), e.GetMessage())
+		return classifyResponseEventError("stream error", e.GetCode(), e.GetMessage())
 	}
 	if e := event.GetResponseFailed(); e != nil {
 		resp := e.GetResponse()
 		if apiErr := resp.GetError(); apiErr != nil {
-			return errdefs.NotAvailablef("bytedance: response failed %s: %s", apiErr.GetCode(), apiErr.GetMessage())
+			return classifyResponseEventError("response failed", apiErr.GetCode(), apiErr.GetMessage())
 		}
 		return errdefs.NotAvailablef("bytedance: response failed")
 	}
@@ -432,6 +454,27 @@ func (s *responsesStreamMessage) applyEvent(event *arkresponses.Event) error {
 		s.accumulateFunctionArguments(e.GetOutputIndex(), e.GetDelta(), e.GetArguments())
 	}
 	return nil
+}
+
+func classifyResponseEventError(prefix, code, message string) error {
+	msg := strings.TrimSpace(prefix)
+	if code != "" {
+		msg += " " + code
+	}
+	if message != "" {
+		msg += ": " + message
+	}
+	err := errdefs.Fmt("bytedance: %s", msg)
+	switch lower := strings.ToLower(code + " " + message); {
+	case strings.Contains(lower, "rate"):
+		return errdefs.RateLimit(err)
+	case strings.Contains(lower, "auth") || strings.Contains(lower, "unauthorized") || strings.Contains(lower, "permission denied"):
+		return errdefs.Unauthorized(err)
+	case strings.Contains(lower, "invalid") || strings.Contains(lower, "badrequest") || strings.Contains(lower, "notfound") || strings.Contains(lower, "context"):
+		return errdefs.Validation(err)
+	default:
+		return errdefs.ClassifyProviderError("bytedance", err)
+	}
 }
 
 func (s *responsesStreamMessage) accumulateOutputItem(outputIndex int64, item *arkresponses.OutputItem) {

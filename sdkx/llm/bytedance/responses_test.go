@@ -11,6 +11,8 @@ import (
 
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/llm"
+
+	arkresponses "github.com/volcengine/volcengine-go-sdk/service/arkruntime/model/responses"
 )
 
 func TestGenerate_UsesResponsesWithWebSearchConfig(t *testing.T) {
@@ -173,6 +175,57 @@ func TestGenerate_UsesResponsesImageContent(t *testing.T) {
 	}
 }
 
+func TestGenerate_UsesResponsesFileContent(t *testing.T) {
+	var got map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"output": []map[string]any{{
+				"type":    "message",
+				"role":    "assistant",
+				"content": []map[string]any{{"type": "output_text", "text": "read"}},
+			}},
+		})
+	}))
+	defer srv.Close()
+
+	c, err := New("doubao-test", "test-key", srv.URL, "", 0)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	_, _, err = c.Generate(context.Background(), []llm.Message{{
+		Role: llm.RoleUser,
+		Parts: []llm.Part{
+			{Type: llm.PartText, Text: "summarize"},
+			{Type: llm.PartFile, File: &llm.FileRef{URI: "file_id://file_123", MimeType: "application/pdf", Name: "doc.pdf"}},
+			{Type: llm.PartFile, File: &llm.FileRef{URI: "https://example.test/report.csv", MimeType: "text/csv"}},
+		},
+	}})
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+
+	input := got["input"].([]any)
+	msg := input[0].(map[string]any)
+	content := msg["content"].([]any)
+	if len(content) != 3 {
+		t.Fatalf("content = %#v", content)
+	}
+	if text := content[0].(map[string]any); text["type"] != "input_text" || text["text"] != "summarize" {
+		t.Fatalf("text content = %#v", text)
+	}
+	fileID := content[1].(map[string]any)
+	if fileID["type"] != "input_file" || fileID["file_id"] != "file_123" || fileID["filename"] != "doc.pdf" {
+		t.Fatalf("file_id content = %#v", fileID)
+	}
+	fileURL := content[2].(map[string]any)
+	if fileURL["type"] != "input_file" || fileURL["file_url"] != "https://example.test/report.csv" {
+		t.Fatalf("file_url content = %#v", fileURL)
+	}
+}
+
 func TestGenerateStream_ResponsesChunks(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var got map[string]any
@@ -295,6 +348,25 @@ func TestGenerateStream_AccumulatesToolCall(t *testing.T) {
 	}
 	if got := stream.Usage(); got.InputTokens != 2 || got.OutputTokens != 1 {
 		t.Fatalf("Usage = %+v", got)
+	}
+}
+
+func TestResponsesStream_ClassifiesEventErrors(t *testing.T) {
+	code := "RateLimitExceeded"
+	streamErr := (&responsesStreamMessage{}).applyEvent(&arkresponses.Event{Event: &arkresponses.Event_Error{
+		Error: &arkresponses.ErrorEvent{Code: &code, Message: "too many requests"},
+	}})
+	if !errdefs.IsRateLimit(streamErr) {
+		t.Fatalf("stream event error = %v, want RateLimit", streamErr)
+	}
+
+	failedErr := (&responsesStreamMessage{}).applyEvent(&arkresponses.Event{Event: &arkresponses.Event_ResponseFailed{
+		ResponseFailed: &arkresponses.ResponseFailedEvent{Response: &arkresponses.ResponseObject{
+			Error: &arkresponses.Error{Code: "InvalidParameter", Message: "bad request"},
+		}},
+	}})
+	if !errdefs.IsValidation(failedErr) {
+		t.Fatalf("response failed error = %v, want Validation", failedErr)
 	}
 }
 
