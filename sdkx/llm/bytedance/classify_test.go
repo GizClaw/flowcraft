@@ -102,3 +102,31 @@ func TestClassifyAPIErrorIdempotent(t *testing.T) {
 		t.Fatalf("idempotent path lost the original errdefs marker: %v", got)
 	}
 }
+
+func TestCatalogCapsMatchResponsesAPI(t *testing.T) {
+	spec := llm.DefaultRegistry.LookupModelSpec("bytedance", "doubao-seed-2-0-lite-260215")
+	for _, cap := range []llm.Capability{
+		llm.CapStopWords,
+		llm.CapFrequencyPenalty,
+		llm.CapPresencePenalty,
+		llm.CapImageOutput,
+		llm.CapAudioOutput,
+		llm.CapAudio,
+	} {
+		if spec.Caps.Supports(cap) {
+			t.Fatalf("cap %s is supported, want disabled", cap)
+		}
+	}
+	for _, cap := range []llm.Capability{
+		llm.CapTools,
+		llm.CapToolChoice,
+		llm.CapParallelTools,
+		llm.CapStreaming,
+		llm.CapJSONMode,
+		llm.CapJSONSchema,
+	} {
+		if !spec.Caps.Supports(cap) {
+			t.Fatalf("cap %s is disabled, want supported", cap)
+		}
+	}
+}
