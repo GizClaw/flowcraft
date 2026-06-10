@@ -1,0 +1,205 @@
+package bytedance
+
+import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+
+	"github.com/GizClaw/flowcraft/sdk/errdefs"
+	"github.com/GizClaw/flowcraft/sdk/llm"
+)
+
+func TestGenerate_UsesResponsesWithWebSearchConfig(t *testing.T) {
+	var got map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/responses" {
+			t.Fatalf("path = %q, want /responses", r.URL.Path)
+		}
+		if auth := r.Header.Get("Authorization"); auth != "Bearer test-key" {
+			t.Fatalf("Authorization = %q", auth)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"output": []map[string]any{{
+				"type": "message",
+				"role": "assistant",
+				"content": []map[string]any{{
+					"type": "output_text",
+					"text": "answer with search",
+				}},
+			}},
+			"usage": map[string]any{
+				"input_tokens":  3,
+				"output_tokens": 4,
+				"total_tokens":  7,
+			},
+		})
+	}))
+	defer srv.Close()
+
+	c, err := New("doubao-seed-2-0-lite-260215", "test-key", srv.URL, "", 0)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	c.webSearch = webSearchConfig{Enabled: true, MaxKeyword: 2, Limit: 10}
+
+	msg, usage, err := c.Generate(context.Background(), []llm.Message{
+		llm.NewTextMessage(llm.RoleSystem, "be concise"),
+		llm.NewTextMessage(llm.RoleUser, "what changed today?"),
+	})
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if msg.Content() != "answer with search" {
+		t.Fatalf("content = %q", msg.Content())
+	}
+	if usage.InputTokens != 3 || usage.OutputTokens != 4 || usage.TotalTokens != 7 {
+		t.Fatalf("usage = %+v", usage)
+	}
+	if got["model"] != "doubao-seed-2-0-lite-260215" {
+		t.Fatalf("model = %v", got["model"])
+	}
+	if got["instructions"] != "be concise" {
+		t.Fatalf("instructions = %v", got["instructions"])
+	}
+	input, ok := got["input"].([]any)
+	if !ok || len(input) != 1 {
+		t.Fatalf("input = %#v", got["input"])
+	}
+	msg0, _ := input[0].(map[string]any)
+	if msg0["role"] != "user" || msg0["content"] != "what changed today?" {
+		t.Fatalf("input[0] = %#v", msg0)
+	}
+	tools, ok := got["tools"].([]any)
+	if !ok || len(tools) != 1 {
+		t.Fatalf("tools = %#v", got["tools"])
+	}
+	tool, _ := tools[0].(map[string]any)
+	if tool["type"] != "web_search" || tool["max_keyword"] != float64(2) || tool["limit"] != float64(10) {
+		t.Fatalf("tool = %#v", tool)
+	}
+}
+
+func TestGenerate_WithExtraOverridesWebSearch(t *testing.T) {
+	var got map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"output": []map[string]any{{
+				"type":    "message",
+				"role":    "assistant",
+				"content": []map[string]any{{"type": "output_text", "text": "ok"}},
+			}},
+		})
+	}))
+	defer srv.Close()
+
+	c, err := New("doubao-test", "test-key", srv.URL, "", 0)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	_, _, err = c.Generate(
+		context.Background(),
+		[]llm.Message{llm.NewTextMessage(llm.RoleUser, "hi")},
+		llm.WithExtra("web_search", map[string]any{
+			"enabled":     true,
+			"max_keyword": float64(4),
+			"limit":       float64(20),
+		}),
+	)
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	tools := got["tools"].([]any)
+	tool := tools[0].(map[string]any)
+	if tool["type"] != "web_search" || tool["max_keyword"] != float64(4) || tool["limit"] != float64(20) {
+		t.Fatalf("tool = %#v", tool)
+	}
+}
+
+func TestGenerateStream_ResponsesChunks(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var got map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if got["stream"] != true {
+			t.Fatalf("stream = %#v", got["stream"])
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("event: response.output_text.delta\n"))
+		_, _ = w.Write([]byte(`data: {"type":"response.output_text.delta","delta":"hel","content_index":0,"item_id":"msg","output_index":0,"sequence_number":1}` + "\n\n"))
+		_, _ = w.Write([]byte("event: response.output_text.delta\n"))
+		_, _ = w.Write([]byte(`data: {"type":"response.output_text.delta","delta":"lo","content_index":0,"item_id":"msg","output_index":0,"sequence_number":2}` + "\n\n"))
+		_, _ = w.Write([]byte("event: response.completed\n"))
+		_, _ = w.Write([]byte(`data: {"type":"response.completed","sequence_number":3,"response":{"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"hello"}]}],"usage":{"input_tokens":1,"output_tokens":2,"total_tokens":3}}}` + "\n\n"))
+	}))
+	defer srv.Close()
+
+	c, err := New("doubao-test", "test-key", srv.URL, "", 0)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	stream, err := c.GenerateStream(context.Background(), []llm.Message{llm.NewTextMessage(llm.RoleUser, "hi")})
+	if err != nil {
+		t.Fatalf("GenerateStream: %v", err)
+	}
+	var chunks []string
+	for stream.Next() {
+		chunks = append(chunks, stream.Current().Content)
+	}
+	if err := stream.Err(); err != nil {
+		t.Fatalf("Err: %v", err)
+	}
+	if strings.Join(chunks, "") != "hello" || len(chunks) != 2 {
+		t.Fatalf("chunks = %#v", chunks)
+	}
+	if got := stream.Message().Content(); got != "hello" {
+		t.Fatalf("Message = %q", got)
+	}
+	if got := stream.Usage(); got.InputTokens != 1 || got.OutputTokens != 2 {
+		t.Fatalf("Usage = %+v", got)
+	}
+}
+
+func TestGenerate_HTTPErrorClassified(t *testing.T) {
+	tests := []struct {
+		name   string
+		status int
+		check  func(error) bool
+	}{
+		{name: "401", status: http.StatusUnauthorized, check: errdefs.IsUnauthorized},
+		{name: "429", status: http.StatusTooManyRequests, check: errdefs.IsRateLimit},
+		{name: "500", status: http.StatusInternalServerError, check: errdefs.IsNotAvailable},
+		{name: "400", status: http.StatusBadRequest, check: errdefs.IsValidation},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(tc.status)
+				_, _ = w.Write([]byte(`{"error":{"message":"boom"}}`))
+			}))
+			defer srv.Close()
+
+			c, err := New("doubao-test", "test-key", srv.URL, "", 0)
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
+			_, _, err = c.Generate(context.Background(), []llm.Message{llm.NewTextMessage(llm.RoleUser, "hi")})
+			if err == nil {
+				t.Fatal("expected error")
+			}
+			if !tc.check(err) {
+				t.Fatalf("wrong classification: %v", err)
+			}
+		})
+	}
+}
