@@ -3,6 +3,7 @@ package views
 import (
 	"encoding/json"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -250,6 +251,14 @@ func TestDescriptorAndRegistry(t *testing.T) {
 	if err := valid.Validate(); err != nil {
 		t.Fatalf("Descriptor.Validate(valid) error = %v", err)
 	}
+	for _, descriptor := range []Descriptor{
+		{ID: ID("entity-profile"), Kind: KindEntityProfile, Version: "v1"},
+		{ID: ID("entity-timeline"), Kind: KindEntityTimeline, Version: "v1"},
+	} {
+		if err := descriptor.Validate(); err != nil {
+			t.Fatalf("Descriptor.Validate(%+v) error = %v", descriptor, err)
+		}
+	}
 
 	invalid := []Descriptor{
 		{Kind: KindRecentWindow, Version: "v1"},
@@ -279,6 +288,22 @@ func TestDescriptorAndRegistry(t *testing.T) {
 	listed := registry.ListViews()
 	if len(listed) != 2 || listed[0].ID != ID("fact") || listed[1].ID != ID("recent") {
 		t.Fatalf("ListViews() = %+v, want sorted by ID", listed)
+	}
+}
+
+func TestDescriptorRejectsIndexedProjectionAsNonSemanticView(t *testing.T) {
+	descriptor := Descriptor{
+		ID:      ID("retrieval"),
+		Kind:    Kind("retrieval_projection"),
+		Version: "v1",
+	}
+
+	err := descriptor.Validate()
+	if err == nil {
+		t.Fatal("Descriptor.Validate(indexed retrieval projection) error = nil, want unsupported non-semantic view kind")
+	}
+	if !strings.Contains(err.Error(), "retrieval_projection") {
+		t.Fatalf("Descriptor.Validate(indexed retrieval projection) error = %v, want error to name non-semantic indexed projection kind", err)
 	}
 }
 
