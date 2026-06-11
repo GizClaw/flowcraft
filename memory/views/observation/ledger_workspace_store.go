@@ -200,7 +200,7 @@ func (s *LedgerWorkspaceStore) DeleteScope(ctx context.Context, scope Scope) err
 			continue
 		}
 		if err := s.ws.Delete(ctx, s.observationPath(id)); err != nil && !errdefs.IsNotFound(err) {
-			return fmt.Errorf("%s: delete observation %q in scope %q/%q: %w", ledgerErrPrefix, id, scope.Kind, scope.ID, err)
+			return fmt.Errorf("%s: delete observation %q in scope %q: %w", ledgerErrPrefix, id, scope.HardPartitionKey(), err)
 		}
 	}
 	return nil
@@ -298,7 +298,7 @@ func (s *LedgerWorkspaceStore) rawPathSegment(segment string) (string, error) {
 }
 
 func sameScopeIdentity(a, b Scope) bool {
-	return a.Kind == b.Kind && a.ID == b.ID
+	return a == b
 }
 
 type observationRecord struct {
@@ -316,10 +316,11 @@ type observationRecord struct {
 }
 
 type scopeRecord struct {
-	Kind           string `json:"kind"`
-	ID             string `json:"id"`
-	DatasetID      string `json:"dataset_id,omitempty"`
+	RuntimeID      string `json:"runtime_id"`
+	UserID         string `json:"user_id,omitempty"`
+	AgentID        string `json:"agent_id,omitempty"`
 	ConversationID string `json:"conversation_id,omitempty"`
+	DatasetID      string `json:"dataset_id,omitempty"`
 	EntityID       string `json:"entity_id,omitempty"`
 }
 
@@ -369,20 +370,22 @@ func decodeObservation(data []byte, observation *Observation) error {
 
 func scopeRecordFromScope(scope Scope) scopeRecord {
 	return scopeRecord{
-		Kind:           scope.Kind,
-		ID:             scope.ID,
-		DatasetID:      scope.DatasetID,
+		RuntimeID:      scope.RuntimeID,
+		UserID:         scope.UserID,
+		AgentID:        scope.AgentID,
 		ConversationID: scope.ConversationID,
+		DatasetID:      scope.DatasetID,
 		EntityID:       scope.EntityID,
 	}
 }
 
 func scopeFromRecord(record scopeRecord) Scope {
 	return Scope{
-		Kind:           record.Kind,
-		ID:             record.ID,
-		DatasetID:      record.DatasetID,
+		RuntimeID:      record.RuntimeID,
+		UserID:         record.UserID,
+		AgentID:        record.AgentID,
 		ConversationID: record.ConversationID,
+		DatasetID:      record.DatasetID,
 		EntityID:       record.EntityID,
 	}
 }

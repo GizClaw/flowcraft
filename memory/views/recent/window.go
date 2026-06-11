@@ -32,9 +32,9 @@ type WindowBudget struct {
 // view's default budget; use a negative MaxMessages to explicitly request no
 // limit when the default budget is limited.
 type WindowRequest struct {
-	ConversationID string
-	Budget         WindowBudget
-	AfterSeq       uint64
+	Scope    views.Scope
+	Budget   WindowBudget
+	AfterSeq uint64
 }
 
 // WindowResult is a read-time view over canonical messages plus evidence refs.
@@ -144,7 +144,11 @@ func (v *Window) Descriptor() views.Descriptor {
 // conversation. When AfterSeq is non-zero, MaxMessages is passed through to the
 // message store as a forward window over messages with Seq > AfterSeq.
 func (v *Window) Load(ctx context.Context, req WindowRequest) (WindowResult, error) {
-	if req.ConversationID == "" {
+	if err := req.Scope.Validate(); err != nil {
+		return WindowResult{}, errdefs.Validationf("%s: invalid scope: %w", windowErrPrefix, err)
+	}
+	conversationID := req.Scope.ConversationID
+	if conversationID == "" {
 		return WindowResult{}, errdefs.Validationf("%s: conversation_id is required", windowErrPrefix)
 	}
 	if v.store == nil {
@@ -154,7 +158,7 @@ func (v *Window) Load(ctx context.Context, req WindowRequest) (WindowResult, err
 	budget := v.effectiveBudget(req.Budget)
 	limit := budget.MaxMessages
 
-	messages, err := v.loadMessages(ctx, req.ConversationID, req.AfterSeq, limit)
+	messages, err := v.loadMessages(ctx, conversationID, req.AfterSeq, limit)
 	if err != nil {
 		return WindowResult{}, err
 	}

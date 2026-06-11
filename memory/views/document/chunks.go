@@ -63,12 +63,12 @@ func (c *Chunks) PutChunk(ctx context.Context, chunk Chunk) (Chunk, error) {
 	return cloneChunk(stored), nil
 }
 
-// GetChunk returns one chunk by dataset, document, and chunk id.
-func (c *Chunks) GetChunk(ctx context.Context, datasetID, documentID string, id ChunkID) (Chunk, bool, error) {
+// GetChunk returns one chunk by scope, document, and chunk id.
+func (c *Chunks) GetChunk(ctx context.Context, scope views.Scope, documentID string, id ChunkID) (Chunk, bool, error) {
 	if c.store == nil {
 		return Chunk{}, false, errdefs.Validationf("%s: store is required", chunksErrPrefix)
 	}
-	chunk, ok, err := c.store.GetChunk(ctx, datasetID, documentID, id)
+	chunk, ok, err := c.store.GetChunk(ctx, scope, documentID, id)
 	if err != nil || !ok {
 		return Chunk{}, ok, err
 	}
@@ -76,11 +76,11 @@ func (c *Chunks) GetChunk(ctx context.Context, datasetID, documentID string, id 
 }
 
 // ListChunks returns chunks ordered by the backing store contract.
-func (c *Chunks) ListChunks(ctx context.Context, datasetID, documentID string, opts ListOptions) ([]Chunk, error) {
+func (c *Chunks) ListChunks(ctx context.Context, documentID string, opts ListOptions) ([]Chunk, error) {
 	if c.store == nil {
 		return nil, errdefs.Validationf("%s: store is required", chunksErrPrefix)
 	}
-	chunks, err := c.store.ListChunks(ctx, datasetID, documentID, cloneListOptions(opts))
+	chunks, err := c.store.ListChunks(ctx, documentID, cloneListOptions(opts))
 	if err != nil {
 		return nil, err
 	}
@@ -88,17 +88,17 @@ func (c *Chunks) ListChunks(ctx context.Context, datasetID, documentID string, o
 }
 
 // DeleteDocument removes all chunks for a canonical document.
-func (c *Chunks) DeleteDocument(ctx context.Context, datasetID, documentID string) error {
+func (c *Chunks) DeleteDocument(ctx context.Context, scope views.Scope, documentID string) error {
 	if c.store == nil {
 		return errdefs.Validationf("%s: store is required", chunksErrPrefix)
 	}
-	return c.store.DeleteDocument(ctx, datasetID, documentID)
+	return c.store.DeleteDocument(ctx, scope, documentID)
 }
 
 // DeleteDataset removes all chunks for a canonical dataset.
-func (c *Chunks) DeleteDataset(ctx context.Context, datasetID string) error {
+func (c *Chunks) DeleteDataset(ctx context.Context, scope views.Scope) error {
 	if c.store == nil {
 		return errdefs.Validationf("%s: store is required", chunksErrPrefix)
 	}
-	return c.store.DeleteDataset(ctx, datasetID)
+	return c.store.DeleteDataset(ctx, scope)
 }

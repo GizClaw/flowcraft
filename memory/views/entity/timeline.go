@@ -4,7 +4,6 @@ import (
 	"context"
 
 	"github.com/GizClaw/flowcraft/memory/views"
-	"github.com/GizClaw/flowcraft/memory/views/fact"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 )
 
@@ -97,15 +96,18 @@ func (t *Timeline) Put(ctx context.Context, event Event) (Event, error) {
 	return cloneEvent(stored), nil
 }
 
-// Get returns one entity timeline event by id.
-func (t *Timeline) Get(ctx context.Context, id EventID) (Event, bool, error) {
+// Get returns one entity timeline event by scope and id.
+func (t *Timeline) Get(ctx context.Context, scope views.Scope, id EventID) (Event, bool, error) {
 	if t.store == nil {
 		return Event{}, false, errdefs.Validationf("%s: store is required", timelineErrPrefix)
+	}
+	if err := validateEntityScope(timelineErrPrefix, scope); err != nil {
+		return Event{}, false, err
 	}
 	if err := validateEventID(id); err != nil {
 		return Event{}, false, err
 	}
-	event, ok, err := t.store.Get(ctx, id)
+	event, ok, err := t.store.Get(ctx, scope, id)
 	if err != nil {
 		return Event{}, false, err
 	}
@@ -127,24 +129,27 @@ func (t *Timeline) List(ctx context.Context, opts TimelineListOptions) ([]Event,
 	return cloneEvents(events), nil
 }
 
-// Delete removes one entity timeline event by id. It is idempotent at the Store boundary.
-func (t *Timeline) Delete(ctx context.Context, id EventID) error {
+// Delete removes one entity timeline event by scope and id. It is idempotent at the Store boundary.
+func (t *Timeline) Delete(ctx context.Context, scope views.Scope, id EventID) error {
 	if t.store == nil {
 		return errdefs.Validationf("%s: store is required", timelineErrPrefix)
+	}
+	if err := validateEntityScope(timelineErrPrefix, scope); err != nil {
+		return err
 	}
 	if err := validateEventID(id); err != nil {
 		return err
 	}
-	return t.store.Delete(ctx, id)
+	return t.store.Delete(ctx, scope, id)
 }
 
 // DeleteEntity removes all timeline events for one entity. It is idempotent at the Store boundary.
-func (t *Timeline) DeleteEntity(ctx context.Context, entityID fact.NodeID) error {
+func (t *Timeline) DeleteEntity(ctx context.Context, scope views.Scope) error {
 	if t.store == nil {
 		return errdefs.Validationf("%s: store is required", timelineErrPrefix)
 	}
-	if err := validateEntityID(timelineErrPrefix, entityID); err != nil {
+	if err := validateEntityScope(timelineErrPrefix, scope); err != nil {
 		return err
 	}
-	return t.store.DeleteEntity(ctx, entityID)
+	return t.store.DeleteEntity(ctx, scope)
 }

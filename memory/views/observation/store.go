@@ -65,11 +65,8 @@ func validateObservation(observation Observation) error {
 }
 
 func validateScope(scope Scope) error {
-	if scope.Kind == "" {
-		return errdefs.Validationf("%s: scope kind is required", ledgerErrPrefix)
-	}
-	if scope.ID == "" {
-		return errdefs.Validationf("%s: scope id is required", ledgerErrPrefix)
+	if err := scope.Validate(); err != nil {
+		return errdefs.Validationf("%s: invalid scope: %w", ledgerErrPrefix, err)
 	}
 	return nil
 }

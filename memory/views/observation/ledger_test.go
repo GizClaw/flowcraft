@@ -78,15 +78,9 @@ func TestLedgerPutValidation(t *testing.T) {
 			},
 		},
 		{
-			name: "missing scope kind",
+			name: "missing scope runtime",
 			mutate: func(observation *Observation) {
-				observation.Scope.Kind = ""
-			},
-		},
-		{
-			name: "missing scope id",
-			mutate: func(observation *Observation) {
-				observation.Scope.ID = ""
+				observation.Scope.RuntimeID = ""
 			},
 		},
 		{
@@ -177,10 +171,10 @@ func TestLedgerGetListDeleteValidation(t *testing.T) {
 	if err := ledger.Delete(ctx, ""); err == nil || !errdefs.IsValidation(err) {
 		t.Fatalf("Delete empty id error = %v, want validation", err)
 	}
-	if _, err := ledger.List(ctx, ListOptions{Scope: &Scope{Kind: "conversation"}}); err == nil || !errdefs.IsValidation(err) {
+	if _, err := ledger.List(ctx, ListOptions{Scope: &Scope{UserID: "user-1"}}); err == nil || !errdefs.IsValidation(err) {
 		t.Fatalf("List invalid scope error = %v, want validation", err)
 	}
-	if err := ledger.DeleteScope(ctx, Scope{ID: "conversation-1"}); err == nil || !errdefs.IsValidation(err) {
+	if err := ledger.DeleteScope(ctx, Scope{ConversationID: "conversation-1"}); err == nil || !errdefs.IsValidation(err) {
 		t.Fatalf("DeleteScope invalid scope error = %v, want validation", err)
 	}
 }
@@ -271,8 +265,8 @@ func TestLedgerDelegatesAndClonesPutGetListDelete(t *testing.T) {
 	if store.listOpts.Scope == nil || *store.listOpts.Scope != validScope() {
 		t.Fatalf("store List scope = %+v, want valid scope", store.listOpts.Scope)
 	}
-	if scope.Kind != "conversation" {
-		t.Fatalf("List shared Scope option with caller; scope kind = %q", scope.Kind)
+	if scope.RuntimeID != "runtime-1" {
+		t.Fatalf("List shared Scope option with caller; scope runtime_id = %q", scope.RuntimeID)
 	}
 	listed[0].SourceRefs[0].Message.MessageID = "mutated-list"
 	listed[0].Metadata["k"] = "mutated-list"
@@ -298,10 +292,11 @@ func TestLedgerDelegatesAndClonesPutGetListDelete(t *testing.T) {
 
 func validScope() Scope {
 	return Scope{
-		Kind:           "conversation",
-		ID:             "conversation-1",
-		DatasetID:      "dataset-1",
+		RuntimeID:      "runtime-1",
+		UserID:         "user-1",
+		AgentID:        "agent-1",
 		ConversationID: "conversation-1",
+		DatasetID:      "dataset-1",
 		EntityID:       "user-123",
 	}
 }
@@ -410,7 +405,7 @@ func (s *fakeStore) Get(_ context.Context, id string) (Observation, bool, error)
 func (s *fakeStore) List(_ context.Context, opts ListOptions) ([]Observation, error) {
 	s.listOpts = cloneListOptions(opts)
 	if opts.Scope != nil {
-		opts.Scope.Kind = "mutated-store-option"
+		opts.Scope.RuntimeID = "mutated-store-option"
 	}
 	return s.listOut, nil
 }

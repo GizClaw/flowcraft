@@ -78,20 +78,21 @@ func TestTimelineDescriptorDefaultsAndOptions(t *testing.T) {
 func TestProfileNilStoreReturnsValidationError(t *testing.T) {
 	ctx := context.Background()
 	profile := NewProfile(nil)
+	scope := testEntityScope("entity-1")
 
 	if _, err := profile.Put(ctx, validProfileRecord("profile-1")); err == nil || !errdefs.IsValidation(err) {
 		t.Fatalf("Put nil store error = %v, want validation", err)
 	}
-	if _, _, err := profile.Get(ctx, "profile-1"); err == nil || !errdefs.IsValidation(err) {
+	if _, _, err := profile.Get(ctx, scope, "profile-1"); err == nil || !errdefs.IsValidation(err) {
 		t.Fatalf("Get nil store error = %v, want validation", err)
 	}
-	if _, err := profile.List(ctx, ProfileListOptions{}); err == nil || !errdefs.IsValidation(err) {
+	if _, err := profile.List(ctx, ProfileListOptions{Scope: &scope}); err == nil || !errdefs.IsValidation(err) {
 		t.Fatalf("List nil store error = %v, want validation", err)
 	}
-	if err := profile.Delete(ctx, "profile-1"); err == nil || !errdefs.IsValidation(err) {
+	if err := profile.Delete(ctx, scope, "profile-1"); err == nil || !errdefs.IsValidation(err) {
 		t.Fatalf("Delete nil store error = %v, want validation", err)
 	}
-	if err := profile.DeleteEntity(ctx, "entity-1"); err == nil || !errdefs.IsValidation(err) {
+	if err := profile.DeleteEntity(ctx, scope); err == nil || !errdefs.IsValidation(err) {
 		t.Fatalf("DeleteEntity nil store error = %v, want validation", err)
 	}
 }
@@ -99,20 +100,21 @@ func TestProfileNilStoreReturnsValidationError(t *testing.T) {
 func TestTimelineNilStoreReturnsValidationError(t *testing.T) {
 	ctx := context.Background()
 	timeline := NewTimeline(nil)
+	scope := testEntityScope("entity-1")
 
 	if _, err := timeline.Put(ctx, validEvent("event-1")); err == nil || !errdefs.IsValidation(err) {
 		t.Fatalf("Put nil store error = %v, want validation", err)
 	}
-	if _, _, err := timeline.Get(ctx, "event-1"); err == nil || !errdefs.IsValidation(err) {
+	if _, _, err := timeline.Get(ctx, scope, "event-1"); err == nil || !errdefs.IsValidation(err) {
 		t.Fatalf("Get nil store error = %v, want validation", err)
 	}
-	if _, err := timeline.List(ctx, TimelineListOptions{}); err == nil || !errdefs.IsValidation(err) {
+	if _, err := timeline.List(ctx, TimelineListOptions{Scope: &scope}); err == nil || !errdefs.IsValidation(err) {
 		t.Fatalf("List nil store error = %v, want validation", err)
 	}
-	if err := timeline.Delete(ctx, "event-1"); err == nil || !errdefs.IsValidation(err) {
+	if err := timeline.Delete(ctx, scope, "event-1"); err == nil || !errdefs.IsValidation(err) {
 		t.Fatalf("Delete nil store error = %v, want validation", err)
 	}
-	if err := timeline.DeleteEntity(ctx, "entity-1"); err == nil || !errdefs.IsValidation(err) {
+	if err := timeline.DeleteEntity(ctx, scope); err == nil || !errdefs.IsValidation(err) {
 		t.Fatalf("DeleteEntity nil store error = %v, want validation", err)
 	}
 }
@@ -134,7 +136,7 @@ func TestProfilePutValidation(t *testing.T) {
 		{
 			name: "missing entity",
 			mutate: func(record *ProfileRecord) {
-				record.EntityID = ""
+				record.Scope.EntityID = ""
 			},
 		},
 		{
@@ -240,7 +242,7 @@ func TestTimelinePutValidation(t *testing.T) {
 		{
 			name: "missing entity",
 			mutate: func(event *Event) {
-				event.EntityID = ""
+				event.Scope.EntityID = ""
 			},
 		},
 		{
@@ -311,14 +313,15 @@ func TestTimelinePutValidation(t *testing.T) {
 func TestProfileGetListDeleteValidation(t *testing.T) {
 	ctx := context.Background()
 	profile := NewProfile(&fakeProfileStore{})
+	scope := testEntityScope("entity-1")
 
-	if _, _, err := profile.Get(ctx, ""); err == nil || !errdefs.IsValidation(err) {
+	if _, _, err := profile.Get(ctx, scope, ""); err == nil || !errdefs.IsValidation(err) {
 		t.Fatalf("Get empty id error = %v, want validation", err)
 	}
-	if err := profile.Delete(ctx, ""); err == nil || !errdefs.IsValidation(err) {
+	if err := profile.Delete(ctx, scope, ""); err == nil || !errdefs.IsValidation(err) {
 		t.Fatalf("Delete empty id error = %v, want validation", err)
 	}
-	if err := profile.DeleteEntity(ctx, ""); err == nil || !errdefs.IsValidation(err) {
+	if err := profile.DeleteEntity(ctx, testEntityScope("")); err == nil || !errdefs.IsValidation(err) {
 		t.Fatalf("DeleteEntity empty entity error = %v, want validation", err)
 	}
 }
@@ -326,14 +329,15 @@ func TestProfileGetListDeleteValidation(t *testing.T) {
 func TestTimelineGetListDeleteValidation(t *testing.T) {
 	ctx := context.Background()
 	timeline := NewTimeline(&fakeTimelineStore{})
+	scope := testEntityScope("entity-1")
 
-	if _, _, err := timeline.Get(ctx, ""); err == nil || !errdefs.IsValidation(err) {
+	if _, _, err := timeline.Get(ctx, scope, ""); err == nil || !errdefs.IsValidation(err) {
 		t.Fatalf("Get empty id error = %v, want validation", err)
 	}
-	if err := timeline.Delete(ctx, ""); err == nil || !errdefs.IsValidation(err) {
+	if err := timeline.Delete(ctx, scope, ""); err == nil || !errdefs.IsValidation(err) {
 		t.Fatalf("Delete empty id error = %v, want validation", err)
 	}
-	if err := timeline.DeleteEntity(ctx, ""); err == nil || !errdefs.IsValidation(err) {
+	if err := timeline.DeleteEntity(ctx, testEntityScope("")); err == nil || !errdefs.IsValidation(err) {
 		t.Fatalf("DeleteEntity empty entity error = %v, want validation", err)
 	}
 }
@@ -347,13 +351,14 @@ func TestProfileDelegatesAndClonesBoundaries(t *testing.T) {
 		listOut: []ProfileRecord{validProfileRecord("profile-list-out")},
 	}
 	profile := NewProfile(store)
+	scope := testEntityScope("entity-1")
 
 	input := validProfileRecord("profile-put-in")
 	put, err := profile.Put(ctx, input)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if store.putIn.ID != input.ID || store.putIn.EntityID != input.EntityID {
+	if store.putIn.ID != input.ID || store.putIn.Scope != input.Scope {
 		t.Fatalf("store Put received %+v, want delegated profile", store.putIn)
 	}
 	assertProfileMutableState(t, input, "display_name", "Hai", "fact-1", "fact-1", "message-1", "fact-output:v1", "profile:v1", "v", "v", "Put shared mutable state with caller")
@@ -373,47 +378,47 @@ func TestProfileDelegatesAndClonesBoundaries(t *testing.T) {
 	setNestedMetadata(put.Metadata, "mutated-return")
 	assertProfileMutableState(t, store.putOut, "display_name", "Hai", "fact-1", "fact-1", "message-1", "fact-output:v1", "profile:v1", "v", "v", "Put return shared mutable state with store output")
 
-	got, ok, err := profile.Get(ctx, "profile-get-out")
+	got, ok, err := profile.Get(ctx, scope, "profile-get-out")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !ok {
 		t.Fatal("Get ok = false, want true")
 	}
-	if store.getID != "profile-get-out" {
-		t.Fatalf("store Get id = %q, want profile-get-out", store.getID)
+	if store.getScope != scope || store.getID != "profile-get-out" {
+		t.Fatalf("store Get args = %+v/%q, want scope/profile-get-out", store.getScope, store.getID)
 	}
 	got.Metadata["k"] = "mutated-get"
 	setNestedMetadata(got.Metadata, "mutated-get")
 	assertProfileMutableState(t, store.getOut, "display_name", "Hai", "fact-1", "fact-1", "message-1", "fact-output:v1", "profile:v1", "v", "v", "Get result shared mutable state with store output")
 
 	listed, err := profile.List(ctx, ProfileListOptions{
-		AfterID:  "profile-a",
-		Limit:    2,
-		EntityID: "entity-1",
-		Label:    "Hai",
+		AfterID: "profile-a",
+		Limit:   2,
+		Scope:   &scope,
+		Label:   "Hai",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if store.listOpts.AfterID != "profile-a" || store.listOpts.Limit != 2 || store.listOpts.EntityID != "entity-1" || store.listOpts.Label != "Hai" {
+	if store.listOpts.AfterID != "profile-a" || store.listOpts.Limit != 2 || store.listOpts.Scope == nil || *store.listOpts.Scope != scope || store.listOpts.Label != "Hai" {
 		t.Fatalf("store List options = %+v, want delegated options", store.listOpts)
 	}
 	listed[0].Metadata["k"] = "mutated-list"
 	setNestedMetadata(listed[0].Metadata, "mutated-list")
 	assertProfileMutableState(t, store.listOut[0], "display_name", "Hai", "fact-1", "fact-1", "message-1", "fact-output:v1", "profile:v1", "v", "v", "List result shared mutable state with store output")
 
-	if err := profile.Delete(ctx, "profile-delete"); err != nil {
+	if err := profile.Delete(ctx, scope, "profile-delete"); err != nil {
 		t.Fatal(err)
 	}
-	if store.deleteID != "profile-delete" {
-		t.Fatalf("store Delete id = %q, want profile-delete", store.deleteID)
+	if store.deleteScope != scope || store.deleteID != "profile-delete" {
+		t.Fatalf("store Delete args = %+v/%q, want scope/profile-delete", store.deleteScope, store.deleteID)
 	}
-	if err := profile.DeleteEntity(ctx, "entity-1"); err != nil {
+	if err := profile.DeleteEntity(ctx, scope); err != nil {
 		t.Fatal(err)
 	}
-	if store.deleteEntityID != "entity-1" {
-		t.Fatalf("store DeleteEntity entity = %q, want entity-1", store.deleteEntityID)
+	if store.deleteEntityScope != scope {
+		t.Fatalf("store DeleteEntity scope = %+v, want %+v", store.deleteEntityScope, scope)
 	}
 }
 
@@ -426,13 +431,14 @@ func TestTimelineDelegatesAndClonesBoundaries(t *testing.T) {
 		listOut: []Event{validEvent("event-list-out")},
 	}
 	timeline := NewTimeline(store)
+	scope := testEntityScope("entity-1")
 
 	input := validEvent("event-put-in")
 	put, err := timeline.Put(ctx, input)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if store.putIn.ID != input.ID || store.putIn.EntityID != input.EntityID {
+	if store.putIn.ID != input.ID || store.putIn.Scope != input.Scope {
 		t.Fatalf("store Put received %+v, want delegated event", store.putIn)
 	}
 	assertEventMutableState(t, input, "fact-1", "message-1", "fact-output:v1", "timeline:v1", "v", "v", "Put shared mutable state with caller")
@@ -452,46 +458,46 @@ func TestTimelineDelegatesAndClonesBoundaries(t *testing.T) {
 	*put.ValidFrom = put.ValidFrom.Add(time.Hour)
 	assertEventMutableState(t, store.putOut, "fact-1", "message-1", "fact-output:v1", "timeline:v1", "v", "v", "Put return shared mutable state with store output")
 
-	got, ok, err := timeline.Get(ctx, "event-get-out")
+	got, ok, err := timeline.Get(ctx, scope, "event-get-out")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !ok {
 		t.Fatal("Get ok = false, want true")
 	}
-	if store.getID != "event-get-out" {
-		t.Fatalf("store Get id = %q, want event-get-out", store.getID)
+	if store.getScope != scope || store.getID != "event-get-out" {
+		t.Fatalf("store Get args = %+v/%q, want scope/event-get-out", store.getScope, store.getID)
 	}
 	got.Metadata["k"] = "mutated-get"
 	setNestedMetadata(got.Metadata, "mutated-get")
 	assertEventMutableState(t, store.getOut, "fact-1", "message-1", "fact-output:v1", "timeline:v1", "v", "v", "Get result shared mutable state with store output")
 
 	listed, err := timeline.List(ctx, TimelineListOptions{
-		AfterID:  "event-a",
-		Limit:    2,
-		EntityID: "entity-1",
+		AfterID: "event-a",
+		Limit:   2,
+		Scope:   &scope,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if store.listOpts.AfterID != "event-a" || store.listOpts.Limit != 2 || store.listOpts.EntityID != "entity-1" {
+	if store.listOpts.AfterID != "event-a" || store.listOpts.Limit != 2 || store.listOpts.Scope == nil || *store.listOpts.Scope != scope {
 		t.Fatalf("store List options = %+v, want delegated options", store.listOpts)
 	}
 	listed[0].Metadata["k"] = "mutated-list"
 	setNestedMetadata(listed[0].Metadata, "mutated-list")
 	assertEventMutableState(t, store.listOut[0], "fact-1", "message-1", "fact-output:v1", "timeline:v1", "v", "v", "List result shared mutable state with store output")
 
-	if err := timeline.Delete(ctx, "event-delete"); err != nil {
+	if err := timeline.Delete(ctx, scope, "event-delete"); err != nil {
 		t.Fatal(err)
 	}
-	if store.deleteID != "event-delete" {
-		t.Fatalf("store Delete id = %q, want event-delete", store.deleteID)
+	if store.deleteScope != scope || store.deleteID != "event-delete" {
+		t.Fatalf("store Delete args = %+v/%q, want scope/event-delete", store.deleteScope, store.deleteID)
 	}
-	if err := timeline.DeleteEntity(ctx, "entity-1"); err != nil {
+	if err := timeline.DeleteEntity(ctx, scope); err != nil {
 		t.Fatal(err)
 	}
-	if store.deleteEntityID != "entity-1" {
-		t.Fatalf("store DeleteEntity entity = %q, want entity-1", store.deleteEntityID)
+	if store.deleteEntityScope != scope {
+		t.Fatalf("store DeleteEntity scope = %+v, want %+v", store.deleteEntityScope, scope)
 	}
 }
 
@@ -499,10 +505,10 @@ func validProfileRecord(id ProfileID) ProfileRecord {
 	created := time.Date(2026, 6, 9, 1, 2, 3, 0, time.UTC)
 	updated := time.Date(2026, 6, 9, 4, 5, 6, 0, time.UTC)
 	return ProfileRecord{
-		ID:       id,
-		EntityID: "entity-1",
-		Label:    "Hai",
-		Summary:  "Likes coffee and quiet mornings.",
+		ID:      id,
+		Scope:   testEntityScope("entity-1"),
+		Label:   "Hai",
+		Summary: "Likes coffee and quiet mornings.",
 		Slots: []Slot{{
 			Name:       "display_name",
 			Value:      "Hai",
@@ -533,7 +539,7 @@ func validEvent(id EventID) Event {
 	validUntil := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
 	return Event{
 		ID:          id,
-		EntityID:    "entity-1",
+		Scope:       testEntityScope("entity-1"),
 		Title:       "Liked coffee",
 		Description: "User preference was observed.",
 		OccurredAt:  &occurredAt,
@@ -549,6 +555,10 @@ func validEvent(id EventID) Event {
 		UpdatedAt:  updated,
 		Metadata:   validMetadata(),
 	}
+}
+
+func testEntityScope(entityID string) views.Scope {
+	return views.Scope{RuntimeID: "runtime-1", UserID: "user-1", EntityID: entityID}
 }
 
 func validSourceRef() views.SourceRef {
@@ -674,13 +684,15 @@ func assertEventMutableState(t *testing.T, event Event, factID fact.FactID, mess
 type fakeProfileStore struct {
 	putIn          ProfileRecord
 	putOut         ProfileRecord
+	getScope       views.Scope
 	getID          ProfileID
 	getOut         ProfileRecord
 	getOK          bool
 	listOpts       ProfileListOptions
 	listOut        []ProfileRecord
-	deleteID       ProfileID
-	deleteEntityID fact.NodeID
+	deleteScope       views.Scope
+	deleteID          ProfileID
+	deleteEntityScope views.Scope
 }
 
 func (s *fakeProfileStore) Put(_ context.Context, record ProfileRecord) (ProfileRecord, error) {
@@ -697,7 +709,8 @@ func (s *fakeProfileStore) Put(_ context.Context, record ProfileRecord) (Profile
 	return s.putOut, nil
 }
 
-func (s *fakeProfileStore) Get(_ context.Context, id ProfileID) (ProfileRecord, bool, error) {
+func (s *fakeProfileStore) Get(_ context.Context, scope views.Scope, id ProfileID) (ProfileRecord, bool, error) {
+	s.getScope = scope
 	s.getID = id
 	return s.getOut, s.getOK, nil
 }
@@ -707,26 +720,29 @@ func (s *fakeProfileStore) List(_ context.Context, opts ProfileListOptions) ([]P
 	return s.listOut, nil
 }
 
-func (s *fakeProfileStore) Delete(_ context.Context, id ProfileID) error {
+func (s *fakeProfileStore) Delete(_ context.Context, scope views.Scope, id ProfileID) error {
+	s.deleteScope = scope
 	s.deleteID = id
 	return nil
 }
 
-func (s *fakeProfileStore) DeleteEntity(_ context.Context, entityID fact.NodeID) error {
-	s.deleteEntityID = entityID
+func (s *fakeProfileStore) DeleteEntity(_ context.Context, scope views.Scope) error {
+	s.deleteEntityScope = scope
 	return nil
 }
 
 type fakeTimelineStore struct {
 	putIn          Event
 	putOut         Event
+	getScope       views.Scope
 	getID          EventID
 	getOut         Event
 	getOK          bool
 	listOpts       TimelineListOptions
 	listOut        []Event
-	deleteID       EventID
-	deleteEntityID fact.NodeID
+	deleteScope       views.Scope
+	deleteID          EventID
+	deleteEntityScope views.Scope
 }
 
 func (s *fakeTimelineStore) Put(_ context.Context, event Event) (Event, error) {
@@ -742,7 +758,8 @@ func (s *fakeTimelineStore) Put(_ context.Context, event Event) (Event, error) {
 	return s.putOut, nil
 }
 
-func (s *fakeTimelineStore) Get(_ context.Context, id EventID) (Event, bool, error) {
+func (s *fakeTimelineStore) Get(_ context.Context, scope views.Scope, id EventID) (Event, bool, error) {
+	s.getScope = scope
 	s.getID = id
 	return s.getOut, s.getOK, nil
 }
@@ -752,12 +769,13 @@ func (s *fakeTimelineStore) List(_ context.Context, opts TimelineListOptions) ([
 	return s.listOut, nil
 }
 
-func (s *fakeTimelineStore) Delete(_ context.Context, id EventID) error {
+func (s *fakeTimelineStore) Delete(_ context.Context, scope views.Scope, id EventID) error {
+	s.deleteScope = scope
 	s.deleteID = id
 	return nil
 }
 
-func (s *fakeTimelineStore) DeleteEntity(_ context.Context, entityID fact.NodeID) error {
-	s.deleteEntityID = entityID
+func (s *fakeTimelineStore) DeleteEntity(_ context.Context, scope views.Scope) error {
+	s.deleteEntityScope = scope
 	return nil
 }

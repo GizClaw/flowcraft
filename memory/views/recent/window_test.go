@@ -36,7 +36,7 @@ func TestWindow_LoadUsesDefaultBudgetForRecentTail(t *testing.T) {
 	appended := appendMessages(t, ctx, store, "conv-1", "one", "two", "three", "four", "five")
 	view := NewWindow(store, WithDefaultBudget(WindowBudget{MaxMessages: 2}))
 
-	got, err := view.Load(ctx, WindowRequest{ConversationID: "conv-1"})
+	got, err := view.Load(ctx, windowRequest("conv-1"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -59,9 +59,9 @@ func TestWindow_LoadAfterSeqUsesForwardWindow(t *testing.T) {
 	view := NewWindow(store)
 
 	got, err := view.Load(ctx, WindowRequest{
-		ConversationID: "conv-1",
-		AfterSeq:       2,
-		Budget:         WindowBudget{MaxMessages: 2},
+		Scope:    testScope("conv-1"),
+		AfterSeq: 2,
+		Budget:   WindowBudget{MaxMessages: 2},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -80,7 +80,7 @@ func TestWindow_LoadEmptyConversationReturnsEmptyResult(t *testing.T) {
 	store := message.NewWorkspaceStore(newTestWorkspace())
 	view := NewWindow(store, WithDefaultBudget(WindowBudget{MaxMessages: 3}))
 
-	got, err := view.Load(ctx, WindowRequest{ConversationID: "missing-conv"})
+	got, err := view.Load(ctx, windowRequest("missing-conv"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -112,7 +112,7 @@ func TestWindow_LoadZeroBudgetReturnsAllMessages(t *testing.T) {
 	appended := appendMessages(t, ctx, store, "conv-1", "one", "two", "three")
 	view := NewWindow(store)
 
-	got, err := view.Load(ctx, WindowRequest{ConversationID: "conv-1"})
+	got, err := view.Load(ctx, windowRequest("conv-1"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -131,8 +131,8 @@ func TestWindow_LoadNegativeBudgetOverridesDefaultWithNoLimit(t *testing.T) {
 	view := NewWindow(store, WithDefaultBudget(WindowBudget{MaxMessages: 1}))
 
 	got, err := view.Load(ctx, WindowRequest{
-		ConversationID: "conv-1",
-		Budget:         WindowBudget{MaxMessages: -1},
+		Scope:  testScope("conv-1"),
+		Budget: WindowBudget{MaxMessages: -1},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -147,6 +147,14 @@ func TestWindow_LoadNegativeBudgetOverridesDefaultWithNoLimit(t *testing.T) {
 func newTestWorkspace() workspace.Workspace {
 	root := workspace.NewMemWorkspace()
 	return workspace.Sub(root, "memory/views/recent/window-test")
+}
+
+func windowRequest(conversationID string) WindowRequest {
+	return WindowRequest{Scope: testScope(conversationID)}
+}
+
+func testScope(conversationID string) views.Scope {
+	return views.Scope{RuntimeID: "runtime-1", UserID: "user-1", ConversationID: conversationID}
 }
 
 func appendMessages(t *testing.T, ctx context.Context, store message.Store, conversationID string, texts ...string) []message.Message {

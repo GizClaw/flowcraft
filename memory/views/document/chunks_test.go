@@ -29,20 +29,21 @@ func TestChunksNilStoreReturnsValidationError(t *testing.T) {
 	ctx := context.Background()
 	chunks := NewChunks(nil)
 	chunk := validChunk("chunk-1")
+	scope := testScope("dataset-1")
 
 	if _, err := chunks.PutChunk(ctx, chunk); err == nil || !errdefs.IsValidation(err) {
 		t.Fatalf("PutChunk nil store error = %v, want validation", err)
 	}
-	if _, _, err := chunks.GetChunk(ctx, "dataset-1", "doc-1", "chunk-1"); err == nil || !errdefs.IsValidation(err) {
+	if _, _, err := chunks.GetChunk(ctx, scope, "doc-1", "chunk-1"); err == nil || !errdefs.IsValidation(err) {
 		t.Fatalf("GetChunk nil store error = %v, want validation", err)
 	}
-	if _, err := chunks.ListChunks(ctx, "dataset-1", "doc-1", ListOptions{}); err == nil || !errdefs.IsValidation(err) {
+	if _, err := chunks.ListChunks(ctx, "doc-1", ListOptions{Scope: &scope}); err == nil || !errdefs.IsValidation(err) {
 		t.Fatalf("ListChunks nil store error = %v, want validation", err)
 	}
-	if err := chunks.DeleteDocument(ctx, "dataset-1", "doc-1"); err == nil || !errdefs.IsValidation(err) {
+	if err := chunks.DeleteDocument(ctx, scope, "doc-1"); err == nil || !errdefs.IsValidation(err) {
 		t.Fatalf("DeleteDocument nil store error = %v, want validation", err)
 	}
-	if err := chunks.DeleteDataset(ctx, "dataset-1"); err == nil || !errdefs.IsValidation(err) {
+	if err := chunks.DeleteDataset(ctx, scope); err == nil || !errdefs.IsValidation(err) {
 		t.Fatalf("DeleteDataset nil store error = %v, want validation", err)
 	}
 }
@@ -53,7 +54,7 @@ func TestValidateChunkCatchesInvalidInputs(t *testing.T) {
 		mutate func(*Chunk)
 	}{
 		{name: "missing id", mutate: func(c *Chunk) { c.ID = "" }},
-		{name: "missing dataset", mutate: func(c *Chunk) { c.DatasetID = "" }},
+		{name: "missing dataset", mutate: func(c *Chunk) { c.Scope.DatasetID = "" }},
 		{name: "missing document", mutate: func(c *Chunk) { c.DocumentID = "" }},
 		{name: "missing layer name", mutate: func(c *Chunk) { c.Layer.Name = "" }},
 		{name: "missing layer version", mutate: func(c *Chunk) { c.Layer.Version = "" }},
@@ -115,32 +116,33 @@ func TestChunksDelegatesAndClones(t *testing.T) {
 	mutateChunkNested(&put, "put-mutated")
 	assertChunkNestedValue(t, store.putResult, "original")
 
-	got, ok, err := view.GetChunk(ctx, "dataset-1", "doc-1", "get-result")
+	scope := testScope("dataset-1")
+	got, ok, err := view.GetChunk(ctx, scope, "doc-1", "get-result")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !ok {
 		t.Fatal("GetChunk ok = false, want true")
 	}
-	if store.getDatasetID != "dataset-1" || store.getDocumentID != "doc-1" || store.getID != "get-result" {
-		t.Fatalf("GetChunk args = %q/%q/%q", store.getDatasetID, store.getDocumentID, store.getID)
+	if store.getScope != scope || store.getDocumentID != "doc-1" || store.getID != "get-result" {
+		t.Fatalf("GetChunk args = %+v/%q/%q", store.getScope, store.getDocumentID, store.getID)
 	}
 	mutateChunkNested(&got, "get-mutated")
 	assertChunkNestedValue(t, store.getResult, "original")
 
 	filter := testLayer()
-	opts := ListOptions{AfterID: "after", Limit: 2, Layer: &filter}
-	listed, err := view.ListChunks(ctx, "dataset-1", "doc-1", opts)
+	opts := ListOptions{AfterID: "after", Limit: 2, Layer: &filter, Scope: &scope}
+	listed, err := view.ListChunks(ctx, "doc-1", opts)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(store.listCalls) != 1 {
 		t.Fatalf("ListChunks calls = %d, want 1", len(store.listCalls))
 	}
-	if store.listCalls[0].datasetID != "dataset-1" || store.listCalls[0].documentID != "doc-1" {
+	if store.listCalls[0].documentID != "doc-1" {
 		t.Fatalf("ListChunks args = %+v", store.listCalls[0])
 	}
-	if store.listCalls[0].opts.AfterID != "after" || store.listCalls[0].opts.Limit != 2 || store.listCalls[0].opts.Layer == nil || *store.listCalls[0].opts.Layer != filter {
+	if store.listCalls[0].opts.AfterID != "after" || store.listCalls[0].opts.Limit != 2 || store.listCalls[0].opts.Scope == nil || *store.listCalls[0].opts.Scope != scope || store.listCalls[0].opts.Layer == nil || *store.listCalls[0].opts.Layer != filter {
 		t.Fatalf("ListChunks opts = %+v", store.listCalls[0].opts)
 	}
 	filter.Name = "mutated-filter"
@@ -150,28 +152,29 @@ func TestChunksDelegatesAndClones(t *testing.T) {
 	mutateChunkNested(&listed[0], "list-mutated")
 	assertChunkNestedValue(t, store.listResult[0], "original")
 
-	if err := view.DeleteDocument(ctx, "dataset-1", "doc-1"); err != nil {
+	if err := view.DeleteDocument(ctx, scope, "doc-1"); err != nil {
 		t.Fatal(err)
 	}
-	if store.deleteDocumentDatasetID != "dataset-1" || store.deleteDocumentID != "doc-1" {
-		t.Fatalf("DeleteDocument args = %q/%q", store.deleteDocumentDatasetID, store.deleteDocumentID)
+	if store.deleteDocumentScope != scope || store.deleteDocumentID != "doc-1" {
+		t.Fatalf("DeleteDocument args = %+v/%q", store.deleteDocumentScope, store.deleteDocumentID)
 	}
-	if err := view.DeleteDataset(ctx, "dataset-1"); err != nil {
+	if err := view.DeleteDataset(ctx, scope); err != nil {
 		t.Fatal(err)
 	}
-	if store.deleteDatasetID != "dataset-1" {
-		t.Fatalf("DeleteDataset arg = %q", store.deleteDatasetID)
+	if store.deleteDatasetScope != scope {
+		t.Fatalf("DeleteDataset arg = %+v", store.deleteDatasetScope)
 	}
 }
 
 func TestChunksListChunksPassesClonedLayerFilter(t *testing.T) {
 	ctx := context.Background()
 	layer := testLayer()
-	opts := ListOptions{AfterID: "chunk-1", Limit: 10, Layer: &layer}
+	scope := testScope("dataset-1")
+	opts := ListOptions{AfterID: "chunk-1", Limit: 10, Layer: &layer, Scope: &scope}
 	store := &fakeChunkStore{listResult: []Chunk{validChunk("chunk-2")}}
 	view := NewChunks(store)
 
-	if _, err := view.ListChunks(ctx, "dataset-1", "doc-1", opts); err != nil {
+	if _, err := view.ListChunks(ctx, "doc-1", opts); err != nil {
 		t.Fatalf("ListChunks error = %v", err)
 	}
 	if len(store.listCalls) != 1 {
@@ -184,6 +187,9 @@ func TestChunksListChunksPassesClonedLayerFilter(t *testing.T) {
 	if got.Layer == opts.Layer {
 		t.Fatal("ListChunks shared caller Layer pointer with store options")
 	}
+	if got.Scope == opts.Scope {
+		t.Fatal("ListChunks shared caller Scope pointer with store options")
+	}
 	layer.Name = "mutated"
 	if store.listCalls[0].opts.Layer.Name != testLayer().Name {
 		t.Fatalf("ListChunks opts layer shared caller state: %+v", store.listCalls[0].opts.Layer)
@@ -194,18 +200,19 @@ func TestChunksDeleteDocumentAndDatasetAreNotLayerScoped(t *testing.T) {
 	ctx := context.Background()
 	store := &fakeChunkStore{}
 	view := NewChunks(store)
+	scope := testScope("dataset-1")
 
-	if err := view.DeleteDocument(ctx, "dataset-1", "doc-1"); err != nil {
+	if err := view.DeleteDocument(ctx, scope, "doc-1"); err != nil {
 		t.Fatal(err)
 	}
-	if store.deleteDocumentDatasetID != "dataset-1" || store.deleteDocumentID != "doc-1" {
-		t.Fatalf("DeleteDocument args = %q/%q", store.deleteDocumentDatasetID, store.deleteDocumentID)
+	if store.deleteDocumentScope != scope || store.deleteDocumentID != "doc-1" {
+		t.Fatalf("DeleteDocument args = %+v/%q", store.deleteDocumentScope, store.deleteDocumentID)
 	}
-	if err := view.DeleteDataset(ctx, "dataset-1"); err != nil {
+	if err := view.DeleteDataset(ctx, scope); err != nil {
 		t.Fatal(err)
 	}
-	if store.deleteDatasetID != "dataset-1" {
-		t.Fatalf("DeleteDataset arg = %q", store.deleteDatasetID)
+	if store.deleteDatasetScope != scope {
+		t.Fatalf("DeleteDataset arg = %+v", store.deleteDatasetScope)
 	}
 }
 
@@ -231,7 +238,7 @@ func validChunk(id ChunkID) Chunk {
 	}
 	return Chunk{
 		ID:         id,
-		DatasetID:  "dataset-1",
+		Scope:      testScope("dataset-1"),
 		DocumentID: "doc-1",
 		Layer:      testLayer(),
 		Ordinal:    1,
@@ -257,6 +264,14 @@ func validChunk(id ChunkID) Chunk {
 			"array":  []any{map[string]any{"key": "original"}},
 		},
 	}
+}
+
+func testScope(datasetID string) views.Scope {
+	return views.Scope{RuntimeID: "runtime-1", UserID: "user-1", DatasetID: datasetID}
+}
+
+func scopePtr(scope views.Scope) *views.Scope {
+	return &scope
 }
 
 func testLayer() Layer {
@@ -298,7 +313,7 @@ type fakeChunkStore struct {
 	putCalls  []Chunk
 	putResult Chunk
 
-	getDatasetID  string
+	getScope      views.Scope
 	getDocumentID string
 	getID         ChunkID
 	getResult     Chunk
@@ -307,13 +322,12 @@ type fakeChunkStore struct {
 	listCalls  []fakeListCall
 	listResult []Chunk
 
-	deleteDocumentDatasetID string
+	deleteDocumentScope     views.Scope
 	deleteDocumentID        string
-	deleteDatasetID         string
+	deleteDatasetScope      views.Scope
 }
 
 type fakeListCall struct {
-	datasetID  string
 	documentID string
 	opts       ListOptions
 }
@@ -323,26 +337,26 @@ func (s *fakeChunkStore) PutChunk(_ context.Context, chunk Chunk) (Chunk, error)
 	return s.putResult, nil
 }
 
-func (s *fakeChunkStore) GetChunk(_ context.Context, datasetID, documentID string, id ChunkID) (Chunk, bool, error) {
-	s.getDatasetID = datasetID
+func (s *fakeChunkStore) GetChunk(_ context.Context, scope views.Scope, documentID string, id ChunkID) (Chunk, bool, error) {
+	s.getScope = scope
 	s.getDocumentID = documentID
 	s.getID = id
 	return s.getResult, s.getOK, nil
 }
 
-func (s *fakeChunkStore) ListChunks(_ context.Context, datasetID, documentID string, opts ListOptions) ([]Chunk, error) {
-	s.listCalls = append(s.listCalls, fakeListCall{datasetID: datasetID, documentID: documentID, opts: opts})
+func (s *fakeChunkStore) ListChunks(_ context.Context, documentID string, opts ListOptions) ([]Chunk, error) {
+	s.listCalls = append(s.listCalls, fakeListCall{documentID: documentID, opts: opts})
 	return s.listResult, nil
 }
 
-func (s *fakeChunkStore) DeleteDocument(_ context.Context, datasetID, documentID string) error {
-	s.deleteDocumentDatasetID = datasetID
+func (s *fakeChunkStore) DeleteDocument(_ context.Context, scope views.Scope, documentID string) error {
+	s.deleteDocumentScope = scope
 	s.deleteDocumentID = documentID
 	return nil
 }
 
-func (s *fakeChunkStore) DeleteDataset(_ context.Context, datasetID string) error {
-	s.deleteDatasetID = datasetID
+func (s *fakeChunkStore) DeleteDataset(_ context.Context, scope views.Scope) error {
+	s.deleteDatasetScope = scope
 	return nil
 }
 

@@ -96,7 +96,7 @@ func TestLedgerWorkspaceStoreListOrderAfterIDLimitScopeAndSubject(t *testing.T) 
 	ctx := context.Background()
 	store := NewLedgerWorkspaceStore(workspace.NewMemWorkspace())
 	scopeOne := validScope()
-	scopeTwo := Scope{Kind: "conversation", ID: "conversation-2", ConversationID: "conversation-2"}
+	scopeTwo := Scope{RuntimeID: "runtime-1", UserID: "user-1", AgentID: "agent-1", ConversationID: "conversation-2", DatasetID: "dataset-1", EntityID: "user-123"}
 
 	observations := map[string]Observation{
 		"bravo":   validObservation("bravo"),
@@ -129,7 +129,7 @@ func TestLedgerWorkspaceStoreListOrderAfterIDLimitScopeAndSubject(t *testing.T) 
 	}
 	assertObservationIDs(t, afterLimited, []string{"bravo", "charlie"})
 
-	scopeFiltered, err := store.List(ctx, ListOptions{Scope: &Scope{Kind: scopeOne.Kind, ID: scopeOne.ID}})
+	scopeFiltered, err := store.List(ctx, ListOptions{Scope: &scopeOne})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -144,7 +144,7 @@ func TestLedgerWorkspaceStoreListOrderAfterIDLimitScopeAndSubject(t *testing.T) 
 	scopeSubjectLimited, err := store.List(ctx, ListOptions{
 		AfterID: "alpha",
 		Limit:   2,
-		Scope:   &Scope{Kind: scopeOne.Kind, ID: scopeOne.ID},
+		Scope:   &scopeOne,
 		Subject: "user:123",
 	})
 	if err != nil {
@@ -182,7 +182,7 @@ func TestLedgerWorkspaceStoreDeleteScopeOnlyDeletesMatchingScope(t *testing.T) {
 	ctx := context.Background()
 	store := NewLedgerWorkspaceStore(workspace.NewMemWorkspace())
 	scopeOne := validScope()
-	scopeTwo := Scope{Kind: "conversation", ID: "conversation-2", ConversationID: "conversation-2"}
+	scopeTwo := Scope{RuntimeID: "runtime-1", UserID: "user-1", AgentID: "agent-1", ConversationID: "conversation-2", DatasetID: "dataset-1", EntityID: "user-123"}
 
 	obsOne := validObservation("obs-1")
 	obsTwo := validObservation("obs-2")
@@ -195,7 +195,7 @@ func TestLedgerWorkspaceStoreDeleteScopeOnlyDeletesMatchingScope(t *testing.T) {
 		}
 	}
 
-	if err := store.DeleteScope(ctx, Scope{Kind: scopeOne.Kind, ID: scopeOne.ID}); err != nil {
+	if err := store.DeleteScope(ctx, scopeOne); err != nil {
 		t.Fatal(err)
 	}
 
@@ -208,7 +208,7 @@ func TestLedgerWorkspaceStoreDeleteScopeOnlyDeletesMatchingScope(t *testing.T) {
 		t.Fatalf("remaining scope = %+v, want %+v", listed[0].Scope, scopeTwo)
 	}
 
-	if err := store.DeleteScope(ctx, Scope{Kind: scopeOne.Kind, ID: scopeOne.ID}); err != nil {
+	if err := store.DeleteScope(ctx, scopeOne); err != nil {
 		t.Fatalf("second DeleteScope error = %v, want nil", err)
 	}
 }
@@ -326,13 +326,13 @@ func TestLedgerWorkspaceStoreValidationErrors(t *testing.T) {
 	if _, _, err := store.Get(ctx, ""); err == nil || !errdefs.IsValidation(err) {
 		t.Fatalf("Get empty id error = %v, want validation", err)
 	}
-	if _, err := store.List(ctx, ListOptions{Scope: &Scope{Kind: "conversation"}}); err == nil || !errdefs.IsValidation(err) {
+	if _, err := store.List(ctx, ListOptions{Scope: &Scope{UserID: "user-1"}}); err == nil || !errdefs.IsValidation(err) {
 		t.Fatalf("List invalid scope error = %v, want validation", err)
 	}
 	if err := store.Delete(ctx, ""); err == nil || !errdefs.IsValidation(err) {
 		t.Fatalf("Delete empty id error = %v, want validation", err)
 	}
-	if err := store.DeleteScope(ctx, Scope{ID: "conversation-1"}); err == nil || !errdefs.IsValidation(err) {
+	if err := store.DeleteScope(ctx, Scope{ConversationID: "conversation-1"}); err == nil || !errdefs.IsValidation(err) {
 		t.Fatalf("DeleteScope invalid scope error = %v, want validation", err)
 	}
 }

@@ -22,7 +22,7 @@ import (
 // ProfileWorkspaceStore persists entity profile records as JSON files in a workspace.
 //
 // Each profile is stored under:
-// entity/profiles/{encodedProfileID}.json
+// entity/entities/{encodedEntityID}/profiles/{encodedProfileID}.json
 //
 // Concurrent writes to the same scoped workspace must go through one
 // ProfileWorkspaceStore instance. Cross-instance or cross-process writers
@@ -92,10 +92,13 @@ func (s *ProfileWorkspaceStore) Put(ctx context.Context, record ProfileRecord) (
 	return cloneProfileRecord(record), nil
 }
 
-// Get returns one profile record by id.
-func (s *ProfileWorkspaceStore) Get(ctx context.Context, id ProfileID) (ProfileRecord, bool, error) {
+// Get returns one profile record by scope and id.
+func (s *ProfileWorkspaceStore) Get(ctx context.Context, scope views.Scope, id ProfileID) (ProfileRecord, bool, error) {
 	if s.ws == nil {
 		return ProfileRecord{}, false, errdefs.Validationf("%s: workspace is required", profileErrPrefix)
+	}
+	if err := validateEntityScope(profileErrPrefix, scope); err != nil {
+		return ProfileRecord{}, false, err
 	}
 	if err := validateProfileID(id); err != nil {
 		return ProfileRecord{}, false, err
@@ -104,7 +107,7 @@ func (s *ProfileWorkspaceStore) Get(ctx context.Context, id ProfileID) (ProfileR
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	record, ok, err := s.readProfile(ctx, id)
+	record, ok, err := s.readProfile(ctx, scope, id)
 	if err != nil {
 		return ProfileRecord{}, false, err
 	}
@@ -119,25 +122,28 @@ func (s *ProfileWorkspaceStore) List(ctx context.Context, opts ProfileListOption
 	if s.ws == nil {
 		return nil, errdefs.Validationf("%s: workspace is required", profileErrPrefix)
 	}
+	if opts.Scope == nil {
+		return nil, errdefs.Validationf("%s: scope is required", profileErrPrefix)
+	}
+	if err := validateEntityScope(profileErrPrefix, *opts.Scope); err != nil {
+		return nil, err
+	}
 
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	ids, err := s.profileIDs(ctx, opts.AfterID)
+	ids, err := s.profileIDs(ctx, *opts.Scope, opts.AfterID)
 	if err != nil {
 		return nil, err
 	}
 
 	out := make([]ProfileRecord, 0, len(ids))
 	for _, id := range ids {
-		record, ok, err := s.readProfile(ctx, id)
+		record, ok, err := s.readProfile(ctx, *opts.Scope, id)
 		if err != nil {
 			return nil, err
 		}
 		if !ok {
-			continue
-		}
-		if opts.EntityID != "" && record.EntityID != opts.EntityID {
 			continue
 		}
 		if opts.Label != "" && record.Label != opts.Label {
@@ -151,10 +157,13 @@ func (s *ProfileWorkspaceStore) List(ctx context.Context, opts ProfileListOption
 	return out, nil
 }
 
-// Delete removes one profile by id. It is idempotent.
-func (s *ProfileWorkspaceStore) Delete(ctx context.Context, id ProfileID) error {
+// Delete removes one profile by scope and id. It is idempotent.
+func (s *ProfileWorkspaceStore) Delete(ctx context.Context, scope views.Scope, id ProfileID) error {
 	if s.ws == nil {
 		return errdefs.Validationf("%s: workspace is required", profileErrPrefix)
+	}
+	if err := validateEntityScope(profileErrPrefix, scope); err != nil {
+		return err
 	}
 	if err := validateProfileID(id); err != nil {
 		return err
@@ -163,45 +172,32 @@ func (s *ProfileWorkspaceStore) Delete(ctx context.Context, id ProfileID) error 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if err := s.ws.Delete(ctx, s.profilePath(id)); err != nil && !errdefs.IsNotFound(err) {
+	if err := s.ws.Delete(ctx, s.profilePath(scope, id)); err != nil && !errdefs.IsNotFound(err) {
 		return fmt.Errorf("%s: delete profile %q: %w", profileErrPrefix, id, err)
 	}
 	return nil
 }
 
 // DeleteEntity removes all profile records for one entity. It is idempotent.
-func (s *ProfileWorkspaceStore) DeleteEntity(ctx context.Context, entityID fact.NodeID) error {
+func (s *ProfileWorkspaceStore) DeleteEntity(ctx context.Context, scope views.Scope) error {
 	if s.ws == nil {
 		return errdefs.Validationf("%s: workspace is required", profileErrPrefix)
 	}
-	if err := validateEntityID(profileErrPrefix, entityID); err != nil {
+	if err := validateEntityScope(profileErrPrefix, scope); err != nil {
 		return err
 	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	ids, err := s.profileIDs(ctx, "")
-	if err != nil {
-		return err
-	}
-	for _, id := range ids {
-		record, ok, err := s.readProfile(ctx, id)
-		if err != nil {
-			return err
-		}
-		if !ok || record.EntityID != entityID {
-			continue
-		}
-		if err := s.ws.Delete(ctx, s.profilePath(id)); err != nil && !errdefs.IsNotFound(err) {
-			return fmt.Errorf("%s: delete profile %q for entity %q: %w", profileErrPrefix, id, entityID, err)
-		}
+	if err := s.ws.RemoveAll(ctx, s.profilesDir(scope)); err != nil && !errdefs.IsNotFound(err) {
+		return fmt.Errorf("%s: delete profiles for entity %q: %w", profileErrPrefix, scope.EntityID, err)
 	}
 	return nil
 }
 
-func (s *ProfileWorkspaceStore) profileIDs(ctx context.Context, afterID ProfileID) ([]ProfileID, error) {
-	entries, err := s.ws.List(ctx, s.profilesDir())
+func (s *ProfileWorkspaceStore) profileIDs(ctx context.Context, scope views.Scope, afterID ProfileID) ([]ProfileID, error) {
+	entries, err := s.ws.List(ctx, s.profilesDir(scope))
 	if err != nil {
 		if errdefs.IsNotFound(err) {
 			return nil, nil
@@ -233,8 +229,8 @@ func (s *ProfileWorkspaceStore) profileIDs(ctx context.Context, afterID ProfileI
 	return ids, nil
 }
 
-func (s *ProfileWorkspaceStore) readProfile(ctx context.Context, id ProfileID) (ProfileRecord, bool, error) {
-	data, err := s.ws.Read(ctx, s.profilePath(id))
+func (s *ProfileWorkspaceStore) readProfile(ctx context.Context, scope views.Scope, id ProfileID) (ProfileRecord, bool, error) {
+	data, err := s.ws.Read(ctx, s.profilePath(scope, id))
 	if err != nil {
 		if errdefs.IsNotFound(err) {
 			return ProfileRecord{}, false, nil
@@ -255,7 +251,7 @@ func (s *ProfileWorkspaceStore) writeProfile(ctx context.Context, record Profile
 		return fmt.Errorf("%s: marshal profile %q: %w", profileErrPrefix, record.ID, err)
 	}
 
-	livePath := s.profilePath(record.ID)
+	livePath := s.profilePath(record.Scope, record.ID)
 	tmpPath := s.tmpProfilePath(livePath)
 	if err := s.ws.Write(ctx, tmpPath, data); err != nil {
 		return fmt.Errorf("%s: write profile tmp %q: %w", profileErrPrefix, record.ID, err)
@@ -271,12 +267,16 @@ func (s *ProfileWorkspaceStore) tmpProfilePath(livePath string) string {
 	return fmt.Sprintf("%s.tmp.%d.%d.%d", livePath, os.Getpid(), time.Now().UnixNano(), s.tmpCounter.Add(1))
 }
 
-func (s *ProfileWorkspaceStore) profilesDir() string {
-	return path.Join("entity", "profiles")
+func (s *ProfileWorkspaceStore) entityDir(scope views.Scope) string {
+	return path.Join("entity", "entities", s.pathSegment(scope.EntityID))
 }
 
-func (s *ProfileWorkspaceStore) profilePath(id ProfileID) string {
-	return path.Join(s.profilesDir(), s.pathSegment(string(id))+".json")
+func (s *ProfileWorkspaceStore) profilesDir(scope views.Scope) string {
+	return path.Join(s.entityDir(scope), "profiles")
+}
+
+func (s *ProfileWorkspaceStore) profilePath(scope views.Scope, id ProfileID) string {
+	return path.Join(s.profilesDir(scope), s.pathSegment(string(id))+".json")
 }
 
 func (s *ProfileWorkspaceStore) pathSegment(id string) string {
@@ -290,7 +290,7 @@ func (s *ProfileWorkspaceStore) rawPathSegment(segment string) (string, error) {
 // TimelineWorkspaceStore persists entity timeline events as JSON files in a workspace.
 //
 // Each event is stored under:
-// entity/timeline/{encodedEventID}.json
+// entity/entities/{encodedEntityID}/timeline/{encodedEventID}.json
 //
 // Concurrent writes to the same scoped workspace must go through one
 // TimelineWorkspaceStore instance. Cross-instance or cross-process writers
@@ -360,10 +360,13 @@ func (s *TimelineWorkspaceStore) Put(ctx context.Context, event Event) (Event, e
 	return cloneEvent(event), nil
 }
 
-// Get returns one timeline event by id.
-func (s *TimelineWorkspaceStore) Get(ctx context.Context, id EventID) (Event, bool, error) {
+// Get returns one timeline event by scope and id.
+func (s *TimelineWorkspaceStore) Get(ctx context.Context, scope views.Scope, id EventID) (Event, bool, error) {
 	if s.ws == nil {
 		return Event{}, false, errdefs.Validationf("%s: workspace is required", timelineErrPrefix)
+	}
+	if err := validateEntityScope(timelineErrPrefix, scope); err != nil {
+		return Event{}, false, err
 	}
 	if err := validateEventID(id); err != nil {
 		return Event{}, false, err
@@ -372,7 +375,7 @@ func (s *TimelineWorkspaceStore) Get(ctx context.Context, id EventID) (Event, bo
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	event, ok, err := s.readEvent(ctx, id)
+	event, ok, err := s.readEvent(ctx, scope, id)
 	if err != nil {
 		return Event{}, false, err
 	}
@@ -387,25 +390,28 @@ func (s *TimelineWorkspaceStore) List(ctx context.Context, opts TimelineListOpti
 	if s.ws == nil {
 		return nil, errdefs.Validationf("%s: workspace is required", timelineErrPrefix)
 	}
+	if opts.Scope == nil {
+		return nil, errdefs.Validationf("%s: scope is required", timelineErrPrefix)
+	}
+	if err := validateEntityScope(timelineErrPrefix, *opts.Scope); err != nil {
+		return nil, err
+	}
 
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	ids, err := s.eventIDs(ctx, opts.AfterID)
+	ids, err := s.eventIDs(ctx, *opts.Scope, opts.AfterID)
 	if err != nil {
 		return nil, err
 	}
 
 	out := make([]Event, 0, len(ids))
 	for _, id := range ids {
-		event, ok, err := s.readEvent(ctx, id)
+		event, ok, err := s.readEvent(ctx, *opts.Scope, id)
 		if err != nil {
 			return nil, err
 		}
 		if !ok {
-			continue
-		}
-		if opts.EntityID != "" && event.EntityID != opts.EntityID {
 			continue
 		}
 		out = append(out, cloneEvent(event))
@@ -416,10 +422,13 @@ func (s *TimelineWorkspaceStore) List(ctx context.Context, opts TimelineListOpti
 	return out, nil
 }
 
-// Delete removes one timeline event by id. It is idempotent.
-func (s *TimelineWorkspaceStore) Delete(ctx context.Context, id EventID) error {
+// Delete removes one timeline event by scope and id. It is idempotent.
+func (s *TimelineWorkspaceStore) Delete(ctx context.Context, scope views.Scope, id EventID) error {
 	if s.ws == nil {
 		return errdefs.Validationf("%s: workspace is required", timelineErrPrefix)
+	}
+	if err := validateEntityScope(timelineErrPrefix, scope); err != nil {
+		return err
 	}
 	if err := validateEventID(id); err != nil {
 		return err
@@ -428,45 +437,32 @@ func (s *TimelineWorkspaceStore) Delete(ctx context.Context, id EventID) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if err := s.ws.Delete(ctx, s.eventPath(id)); err != nil && !errdefs.IsNotFound(err) {
+	if err := s.ws.Delete(ctx, s.eventPath(scope, id)); err != nil && !errdefs.IsNotFound(err) {
 		return fmt.Errorf("%s: delete event %q: %w", timelineErrPrefix, id, err)
 	}
 	return nil
 }
 
 // DeleteEntity removes all timeline events for one entity. It is idempotent.
-func (s *TimelineWorkspaceStore) DeleteEntity(ctx context.Context, entityID fact.NodeID) error {
+func (s *TimelineWorkspaceStore) DeleteEntity(ctx context.Context, scope views.Scope) error {
 	if s.ws == nil {
 		return errdefs.Validationf("%s: workspace is required", timelineErrPrefix)
 	}
-	if err := validateEntityID(timelineErrPrefix, entityID); err != nil {
+	if err := validateEntityScope(timelineErrPrefix, scope); err != nil {
 		return err
 	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	ids, err := s.eventIDs(ctx, "")
-	if err != nil {
-		return err
-	}
-	for _, id := range ids {
-		event, ok, err := s.readEvent(ctx, id)
-		if err != nil {
-			return err
-		}
-		if !ok || event.EntityID != entityID {
-			continue
-		}
-		if err := s.ws.Delete(ctx, s.eventPath(id)); err != nil && !errdefs.IsNotFound(err) {
-			return fmt.Errorf("%s: delete event %q for entity %q: %w", timelineErrPrefix, id, entityID, err)
-		}
+	if err := s.ws.RemoveAll(ctx, s.eventsDir(scope)); err != nil && !errdefs.IsNotFound(err) {
+		return fmt.Errorf("%s: delete events for entity %q: %w", timelineErrPrefix, scope.EntityID, err)
 	}
 	return nil
 }
 
-func (s *TimelineWorkspaceStore) eventIDs(ctx context.Context, afterID EventID) ([]EventID, error) {
-	entries, err := s.ws.List(ctx, s.eventsDir())
+func (s *TimelineWorkspaceStore) eventIDs(ctx context.Context, scope views.Scope, afterID EventID) ([]EventID, error) {
+	entries, err := s.ws.List(ctx, s.eventsDir(scope))
 	if err != nil {
 		if errdefs.IsNotFound(err) {
 			return nil, nil
@@ -498,8 +494,8 @@ func (s *TimelineWorkspaceStore) eventIDs(ctx context.Context, afterID EventID) 
 	return ids, nil
 }
 
-func (s *TimelineWorkspaceStore) readEvent(ctx context.Context, id EventID) (Event, bool, error) {
-	data, err := s.ws.Read(ctx, s.eventPath(id))
+func (s *TimelineWorkspaceStore) readEvent(ctx context.Context, scope views.Scope, id EventID) (Event, bool, error) {
+	data, err := s.ws.Read(ctx, s.eventPath(scope, id))
 	if err != nil {
 		if errdefs.IsNotFound(err) {
 			return Event{}, false, nil
@@ -520,7 +516,7 @@ func (s *TimelineWorkspaceStore) writeEvent(ctx context.Context, event Event) er
 		return fmt.Errorf("%s: marshal event %q: %w", timelineErrPrefix, event.ID, err)
 	}
 
-	livePath := s.eventPath(event.ID)
+	livePath := s.eventPath(event.Scope, event.ID)
 	tmpPath := s.tmpEventPath(livePath)
 	if err := s.ws.Write(ctx, tmpPath, data); err != nil {
 		return fmt.Errorf("%s: write event tmp %q: %w", timelineErrPrefix, event.ID, err)
@@ -536,12 +532,16 @@ func (s *TimelineWorkspaceStore) tmpEventPath(livePath string) string {
 	return fmt.Sprintf("%s.tmp.%d.%d.%d", livePath, os.Getpid(), time.Now().UnixNano(), s.tmpCounter.Add(1))
 }
 
-func (s *TimelineWorkspaceStore) eventsDir() string {
-	return path.Join("entity", "timeline")
+func (s *TimelineWorkspaceStore) entityDir(scope views.Scope) string {
+	return path.Join("entity", "entities", s.pathSegment(scope.EntityID))
 }
 
-func (s *TimelineWorkspaceStore) eventPath(id EventID) string {
-	return path.Join(s.eventsDir(), s.pathSegment(string(id))+".json")
+func (s *TimelineWorkspaceStore) eventsDir(scope views.Scope) string {
+	return path.Join(s.entityDir(scope), "timeline")
+}
+
+func (s *TimelineWorkspaceStore) eventPath(scope views.Scope, id EventID) string {
+	return path.Join(s.eventsDir(scope), s.pathSegment(string(id))+".json")
 }
 
 func (s *TimelineWorkspaceStore) pathSegment(id string) string {
@@ -569,7 +569,7 @@ func rawPathSegment(segment, prefix string) (string, error) {
 
 type profileRecord struct {
 	ID         ProfileID           `json:"id"`
-	EntityID   fact.NodeID         `json:"entity_id"`
+	Scope      views.Scope         `json:"scope"`
 	Label      string              `json:"label"`
 	Summary    string              `json:"summary,omitempty"`
 	Slots      []slotRecord        `json:"slots,omitempty"`
@@ -591,7 +591,7 @@ type slotRecord struct {
 
 type eventRecord struct {
 	ID          EventID             `json:"id"`
-	EntityID    fact.NodeID         `json:"entity_id"`
+	Scope       views.Scope         `json:"scope"`
 	Title       string              `json:"title"`
 	Description string              `json:"description,omitempty"`
 	OccurredAt  *time.Time          `json:"occurred_at,omitempty"`
@@ -620,7 +620,7 @@ func encodeProfileRecord(record ProfileRecord) ([]byte, error) {
 	record = cloneProfileRecord(record)
 	return json.Marshal(profileRecord{
 		ID:         record.ID,
-		EntityID:   record.EntityID,
+		Scope:      record.Scope,
 		Label:      record.Label,
 		Summary:    record.Summary,
 		Slots:      slotRecords(record.Slots),
@@ -640,7 +640,7 @@ func decodeProfileRecord(data []byte, record *ProfileRecord) error {
 	}
 	*record = ProfileRecord{
 		ID:         stored.ID,
-		EntityID:   stored.EntityID,
+		Scope:      stored.Scope,
 		Label:      stored.Label,
 		Summary:    stored.Summary,
 		Slots:      slotsFromRecords(stored.Slots),
@@ -658,7 +658,7 @@ func encodeEvent(event Event) ([]byte, error) {
 	event = cloneEvent(event)
 	return json.Marshal(eventRecord{
 		ID:          event.ID,
-		EntityID:    event.EntityID,
+		Scope:       event.Scope,
 		Title:       event.Title,
 		Description: event.Description,
 		OccurredAt:  cloneTimePtr(event.OccurredAt),
@@ -680,7 +680,7 @@ func decodeEvent(data []byte, event *Event) error {
 	}
 	*event = Event{
 		ID:          stored.ID,
-		EntityID:    stored.EntityID,
+		Scope:       stored.Scope,
 		Title:       stored.Title,
 		Description: stored.Description,
 		OccurredAt:  cloneTimePtr(stored.OccurredAt),

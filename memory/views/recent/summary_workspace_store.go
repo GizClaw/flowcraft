@@ -21,7 +21,7 @@ import (
 // SummaryWorkspaceStore persists SummaryDAG nodes as JSON files in a workspace.
 //
 // Each node is stored under:
-// conversations/{encodedConversationID}/nodes/{encodedNodeID}.json
+// runtimes/{encodedRuntimeID}/users/{encodedUserID}/conversations/{encodedConversationID}/nodes/{encodedNodeID}.json
 //
 // Concurrent writes to the same scoped workspace must go through one
 // SummaryWorkspaceStore instance. Cross-instance or cross-process writers
@@ -75,8 +75,8 @@ func NewSummaryWorkspaceStore(ws workspace.Workspace, opts ...SummaryWorkspaceSt
 	return s
 }
 
-// PutNode stores a summary node as the authoritative value for its conversation
-// and node id.
+// PutNode stores a summary node as the authoritative value for its scoped
+// conversation and node id.
 func (s *SummaryWorkspaceStore) PutNode(ctx context.Context, node SummaryNode) (SummaryNode, error) {
 	if s.ws == nil {
 		return SummaryNode{}, errdefs.Validationf("%s: workspace is required", summaryDAGErrPrefix)
@@ -96,19 +96,22 @@ func (s *SummaryWorkspaceStore) PutNode(ctx context.Context, node SummaryNode) (
 	return cloneSummaryNode(node), nil
 }
 
-// GetNode returns one summary node by conversation and node id.
-func (s *SummaryWorkspaceStore) GetNode(ctx context.Context, conversationID string, id NodeID) (SummaryNode, bool, error) {
+// GetNode returns one summary node by scope and node id.
+func (s *SummaryWorkspaceStore) GetNode(ctx context.Context, scope views.Scope, id NodeID) (SummaryNode, bool, error) {
 	if s.ws == nil {
 		return SummaryNode{}, false, errdefs.Validationf("%s: workspace is required", summaryDAGErrPrefix)
 	}
-	if conversationID == "" || id == "" {
+	if scope.ConversationID == "" || id == "" {
 		return SummaryNode{}, false, nil
+	}
+	if err := validateSummaryScope(scope); err != nil {
+		return SummaryNode{}, false, err
 	}
 
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	node, ok, err := s.readNode(ctx, conversationID, id)
+	node, ok, err := s.readNode(ctx, scope, id)
 	if err != nil {
 		return SummaryNode{}, false, err
 	}
@@ -119,23 +122,26 @@ func (s *SummaryWorkspaceStore) GetNode(ctx context.Context, conversationID stri
 }
 
 // ListNodes returns summary nodes ordered by ascending node id.
-func (s *SummaryWorkspaceStore) ListNodes(ctx context.Context, conversationID string, opts ListOptions) ([]SummaryNode, error) {
+func (s *SummaryWorkspaceStore) ListNodes(ctx context.Context, scope views.Scope, opts ListOptions) ([]SummaryNode, error) {
 	if s.ws == nil {
 		return nil, errdefs.Validationf("%s: workspace is required", summaryDAGErrPrefix)
 	}
-	if conversationID == "" {
+	if scope.ConversationID == "" {
 		return nil, nil
+	}
+	if err := validateSummaryScope(scope); err != nil {
+		return nil, err
 	}
 
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	entries, err := s.ws.List(ctx, s.nodesDir(conversationID))
+	entries, err := s.ws.List(ctx, s.nodesDir(scope))
 	if err != nil {
 		if errdefs.IsNotFound(err) {
 			return nil, nil
 		}
-		return nil, fmt.Errorf("%s: list conversation %q nodes: %w", summaryDAGErrPrefix, conversationID, err)
+		return nil, fmt.Errorf("%s: list scope %q/%q/%q nodes: %w", summaryDAGErrPrefix, scope.RuntimeID, scope.UserID, scope.ConversationID, err)
 	}
 
 	ids := make([]string, 0, len(entries))
@@ -159,7 +165,7 @@ func (s *SummaryWorkspaceStore) ListNodes(ctx context.Context, conversationID st
 
 	out := make([]SummaryNode, 0, len(ids))
 	for _, id := range ids {
-		node, ok, err := s.readNode(ctx, conversationID, NodeID(id))
+		node, ok, err := s.readNode(ctx, scope, NodeID(id))
 		if err != nil {
 			return nil, err
 		}
@@ -177,40 +183,50 @@ func (s *SummaryWorkspaceStore) ListNodes(ctx context.Context, conversationID st
 	return out, nil
 }
 
-// DeleteConversation removes all persisted summary nodes for a conversation. It
+// DeleteScope removes all persisted summary nodes for a scoped conversation. It
 // is idempotent.
-func (s *SummaryWorkspaceStore) DeleteConversation(ctx context.Context, conversationID string) error {
+func (s *SummaryWorkspaceStore) DeleteScope(ctx context.Context, scope views.Scope) error {
 	if s.ws == nil {
 		return errdefs.Validationf("%s: workspace is required", summaryDAGErrPrefix)
 	}
-	if conversationID == "" {
+	if scope.ConversationID == "" {
 		return nil
+	}
+	if err := validateSummaryScope(scope); err != nil {
+		return err
 	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if err := s.ws.RemoveAll(ctx, s.conversationDir(conversationID)); err != nil {
+	if err := s.ws.RemoveAll(ctx, s.conversationDir(scope)); err != nil {
 		if errdefs.IsNotFound(err) {
 			return nil
 		}
-		return fmt.Errorf("%s: delete conversation %q: %w", summaryDAGErrPrefix, conversationID, err)
+		return fmt.Errorf("%s: delete scope %q/%q/%q: %w", summaryDAGErrPrefix, scope.RuntimeID, scope.UserID, scope.ConversationID, err)
 	}
 	return nil
 }
 
-func (s *SummaryWorkspaceStore) readNode(ctx context.Context, conversationID string, id NodeID) (SummaryNode, bool, error) {
-	data, err := s.ws.Read(ctx, s.nodePath(conversationID, id))
+func validateSummaryScope(scope views.Scope) error {
+	if err := scope.Validate(); err != nil {
+		return errdefs.Validationf("%s: invalid scope: %w", summaryDAGErrPrefix, err)
+	}
+	return nil
+}
+
+func (s *SummaryWorkspaceStore) readNode(ctx context.Context, scope views.Scope, id NodeID) (SummaryNode, bool, error) {
+	data, err := s.ws.Read(ctx, s.nodePath(scope, id))
 	if err != nil {
 		if errdefs.IsNotFound(err) {
 			return SummaryNode{}, false, nil
 		}
-		return SummaryNode{}, false, fmt.Errorf("%s: read node %q/%q: %w", summaryDAGErrPrefix, conversationID, id, err)
+		return SummaryNode{}, false, fmt.Errorf("%s: read node %q/%q/%q/%q: %w", summaryDAGErrPrefix, scope.RuntimeID, scope.UserID, scope.ConversationID, id, err)
 	}
 
 	var node SummaryNode
 	if err := decodeSummaryNode(data, &node); err != nil {
-		return SummaryNode{}, false, fmt.Errorf("%s: decode node %q/%q: %w", summaryDAGErrPrefix, conversationID, id, err)
+		return SummaryNode{}, false, fmt.Errorf("%s: decode node %q/%q/%q/%q: %w", summaryDAGErrPrefix, scope.RuntimeID, scope.UserID, scope.ConversationID, id, err)
 	}
 	return node, true, nil
 }
@@ -218,17 +234,17 @@ func (s *SummaryWorkspaceStore) readNode(ctx context.Context, conversationID str
 func (s *SummaryWorkspaceStore) writeNode(ctx context.Context, node SummaryNode) error {
 	data, err := encodeSummaryNode(node)
 	if err != nil {
-		return fmt.Errorf("%s: marshal node %q/%q: %w", summaryDAGErrPrefix, node.ConversationID, node.ID, err)
+		return fmt.Errorf("%s: marshal node %q/%q: %w", summaryDAGErrPrefix, node.Scope.ConversationID, node.ID, err)
 	}
 
-	livePath := s.nodePath(node.ConversationID, node.ID)
+	livePath := s.nodePath(node.Scope, node.ID)
 	tmpPath := s.tmpNodePath(livePath)
 	if err := s.ws.Write(ctx, tmpPath, data); err != nil {
-		return fmt.Errorf("%s: write node tmp %q/%q: %w", summaryDAGErrPrefix, node.ConversationID, node.ID, err)
+		return fmt.Errorf("%s: write node tmp %q/%q: %w", summaryDAGErrPrefix, node.Scope.ConversationID, node.ID, err)
 	}
 	if err := s.ws.Rename(ctx, tmpPath, livePath); err != nil {
 		_ = s.ws.Delete(ctx, tmpPath)
-		return fmt.Errorf("%s: publish node %q/%q: %w", summaryDAGErrPrefix, node.ConversationID, node.ID, err)
+		return fmt.Errorf("%s: publish node %q/%q: %w", summaryDAGErrPrefix, node.Scope.ConversationID, node.ID, err)
 	}
 	return nil
 }
@@ -237,16 +253,24 @@ func (s *SummaryWorkspaceStore) tmpNodePath(livePath string) string {
 	return fmt.Sprintf("%s.tmp.%d.%d.%d", livePath, os.Getpid(), time.Now().UnixNano(), s.tmpCounter.Add(1))
 }
 
-func (s *SummaryWorkspaceStore) conversationDir(conversationID string) string {
-	return path.Join("conversations", s.pathSegment(conversationID))
+func (s *SummaryWorkspaceStore) runtimeDir(scope views.Scope) string {
+	return path.Join("runtimes", s.pathSegment(scope.RuntimeID))
 }
 
-func (s *SummaryWorkspaceStore) nodesDir(conversationID string) string {
-	return path.Join(s.conversationDir(conversationID), "nodes")
+func (s *SummaryWorkspaceStore) userDir(scope views.Scope) string {
+	return path.Join(s.runtimeDir(scope), "users", s.pathSegment(scope.UserID))
 }
 
-func (s *SummaryWorkspaceStore) nodePath(conversationID string, id NodeID) string {
-	return path.Join(s.nodesDir(conversationID), s.pathSegment(string(id))+".json")
+func (s *SummaryWorkspaceStore) conversationDir(scope views.Scope) string {
+	return path.Join(s.userDir(scope), "conversations", s.pathSegment(scope.ConversationID))
+}
+
+func (s *SummaryWorkspaceStore) nodesDir(scope views.Scope) string {
+	return path.Join(s.conversationDir(scope), "nodes")
+}
+
+func (s *SummaryWorkspaceStore) nodePath(scope views.Scope, id NodeID) string {
+	return path.Join(s.nodesDir(scope), s.pathSegment(string(id))+".json")
 }
 
 func (s *SummaryWorkspaceStore) pathSegment(id string) string {
@@ -265,16 +289,16 @@ func (s *SummaryWorkspaceStore) rawPathSegment(segment string) (string, error) {
 }
 
 type summaryNodeRecord struct {
-	ID             NodeID              `json:"id"`
-	ConversationID string              `json:"conversation_id"`
-	ParentIDs      []NodeID            `json:"parent_ids,omitempty"`
-	SourceRefs     []sourceRefRecord   `json:"source_refs,omitempty"`
-	Summary        string              `json:"summary"`
-	Level          int                 `json:"level"`
-	Signature      views.ViewSignature `json:"signature"`
-	CreatedAt      time.Time           `json:"created_at"`
-	UpdatedAt      time.Time           `json:"updated_at"`
-	Metadata       map[string]any      `json:"metadata,omitempty"`
+	ID         NodeID              `json:"id"`
+	Scope      views.Scope         `json:"scope"`
+	ParentIDs  []NodeID            `json:"parent_ids,omitempty"`
+	SourceRefs []sourceRefRecord   `json:"source_refs,omitempty"`
+	Summary    string              `json:"summary"`
+	Level      int                 `json:"level"`
+	Signature  views.ViewSignature `json:"signature"`
+	CreatedAt  time.Time           `json:"created_at"`
+	UpdatedAt  time.Time           `json:"updated_at"`
+	Metadata   map[string]any      `json:"metadata,omitempty"`
 }
 
 type sourceRefRecord struct {
@@ -285,16 +309,16 @@ type sourceRefRecord struct {
 
 func encodeSummaryNode(node SummaryNode) ([]byte, error) {
 	return json.Marshal(summaryNodeRecord{
-		ID:             node.ID,
-		ConversationID: node.ConversationID,
-		ParentIDs:      append([]NodeID(nil), node.ParentIDs...),
-		SourceRefs:     sourceRefRecords(node.SourceRefs),
-		Summary:        node.Summary,
-		Level:          node.Level,
-		Signature:      node.Signature,
-		CreatedAt:      node.CreatedAt,
-		UpdatedAt:      node.UpdatedAt,
-		Metadata:       mapsClone(node.Metadata),
+		ID:         node.ID,
+		Scope:      node.Scope,
+		ParentIDs:  append([]NodeID(nil), node.ParentIDs...),
+		SourceRefs: sourceRefRecords(node.SourceRefs),
+		Summary:    node.Summary,
+		Level:      node.Level,
+		Signature:  node.Signature,
+		CreatedAt:  node.CreatedAt,
+		UpdatedAt:  node.UpdatedAt,
+		Metadata:   mapsClone(node.Metadata),
 	})
 }
 
@@ -304,16 +328,16 @@ func decodeSummaryNode(data []byte, node *SummaryNode) error {
 		return err
 	}
 	*node = SummaryNode{
-		ID:             record.ID,
-		ConversationID: record.ConversationID,
-		ParentIDs:      append([]NodeID(nil), record.ParentIDs...),
-		SourceRefs:     sourceRefsFromRecords(record.SourceRefs),
-		Summary:        record.Summary,
-		Level:          record.Level,
-		Signature:      record.Signature,
-		CreatedAt:      record.CreatedAt,
-		UpdatedAt:      record.UpdatedAt,
-		Metadata:       mapsClone(record.Metadata),
+		ID:         record.ID,
+		Scope:      record.Scope,
+		ParentIDs:  append([]NodeID(nil), record.ParentIDs...),
+		SourceRefs: sourceRefsFromRecords(record.SourceRefs),
+		Summary:    record.Summary,
+		Level:      record.Level,
+		Signature:  record.Signature,
+		CreatedAt:  record.CreatedAt,
+		UpdatedAt:  record.UpdatedAt,
+		Metadata:   mapsClone(record.Metadata),
 	}
 	return nil
 }

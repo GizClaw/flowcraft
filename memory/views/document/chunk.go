@@ -37,7 +37,7 @@ func (l Layer) Validate() error {
 // Metadata must be JSON-compatible when persisted by a store.
 type Chunk struct {
 	ID         ChunkID
-	DatasetID  string
+	Scope      views.Scope
 	DocumentID string
 	Layer      Layer
 	Ordinal    int
@@ -59,7 +59,10 @@ func validateChunk(chunk Chunk) error {
 	if chunk.ID == "" {
 		return errdefs.Validationf("%s: chunk id is required", chunksErrPrefix)
 	}
-	if chunk.DatasetID == "" {
+	if err := chunk.Scope.Validate(); err != nil {
+		return errdefs.Validationf("%s: invalid scope: %w", chunksErrPrefix, err)
+	}
+	if chunk.Scope.DatasetID == "" {
 		return errdefs.Validationf("%s: dataset_id is required", chunksErrPrefix)
 	}
 	if chunk.DocumentID == "" {
@@ -97,8 +100,8 @@ func validateChunkSourceRef(chunk Chunk) error {
 		return errdefs.Validationf("%s: source_ref document payload is required", chunksErrPrefix)
 	}
 	ref := chunk.SourceRef.Document
-	if ref.DatasetID != chunk.DatasetID {
-		return errdefs.Validationf("%s: source_ref dataset_id %q does not match chunk dataset_id %q", chunksErrPrefix, ref.DatasetID, chunk.DatasetID)
+	if ref.DatasetID != chunk.Scope.DatasetID {
+		return errdefs.Validationf("%s: source_ref dataset_id %q does not match chunk scope dataset_id %q", chunksErrPrefix, ref.DatasetID, chunk.Scope.DatasetID)
 	}
 	if ref.DocumentID != chunk.DocumentID {
 		return errdefs.Validationf("%s: source_ref document_id %q does not match chunk document_id %q", chunksErrPrefix, ref.DocumentID, chunk.DocumentID)

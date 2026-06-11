@@ -96,6 +96,12 @@ func TestLedgerPutValidation(t *testing.T) {
 			},
 		},
 		{
+			name: "missing scope runtime",
+			mutate: func(fact *Fact) {
+				fact.Scope.RuntimeID = ""
+			},
+		},
+		{
 			name: "missing observation refs",
 			mutate: func(fact *Fact) {
 				fact.ObservationRefs = nil
@@ -306,6 +312,7 @@ func validFact(id FactID) Fact {
 	}
 	return Fact{
 		ID:         id,
+		Scope:      validFactScope(),
 		Subject:    "user:123",
 		Predicate:  "likes",
 		Object:     "coffee",
@@ -337,6 +344,14 @@ func validFact(id FactID) Fact {
 				"items": []any{"v", map[string]any{"inner": "v"}},
 			},
 		},
+	}
+}
+
+func validFactScope() views.Scope {
+	return views.Scope{
+		RuntimeID:      "runtime-1",
+		UserID:         "user-1",
+		ConversationID: "conversation-1",
 	}
 }
 

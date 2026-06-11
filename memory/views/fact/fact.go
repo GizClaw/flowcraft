@@ -35,6 +35,7 @@ type ObservationRef struct {
 // include them.
 type Fact struct {
 	ID              FactID
+	Scope           views.Scope
 	Subject         string
 	Predicate       string
 	Object          string

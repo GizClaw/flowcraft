@@ -471,6 +471,7 @@ func (s *GraphWorkspaceStore) rawPathSegment(segment string) (string, error) {
 
 type nodeRecord struct {
 	ID         NodeID              `json:"id"`
+	Scope      views.Scope         `json:"scope"`
 	Kind       NodeKind            `json:"kind"`
 	Label      string              `json:"label"`
 	Aliases    []string            `json:"aliases,omitempty"`
@@ -484,6 +485,7 @@ type nodeRecord struct {
 
 type edgeRecord struct {
 	ID         EdgeID              `json:"id"`
+	Scope      views.Scope         `json:"scope"`
 	From       NodeID              `json:"from"`
 	To         NodeID              `json:"to"`
 	Predicate  string              `json:"predicate"`
@@ -508,6 +510,7 @@ func encodeNode(node Node) ([]byte, error) {
 	node = cloneNode(node)
 	return json.Marshal(nodeRecord{
 		ID:         node.ID,
+		Scope:      node.Scope,
 		Kind:       node.Kind,
 		Label:      node.Label,
 		Aliases:    cloneStrings(node.Aliases),
@@ -527,6 +530,7 @@ func decodeNode(data []byte, node *Node) error {
 	}
 	*node = Node{
 		ID:         record.ID,
+		Scope:      record.Scope,
 		Kind:       record.Kind,
 		Label:      record.Label,
 		Aliases:    cloneStrings(record.Aliases),
@@ -544,6 +548,7 @@ func encodeEdge(edge Edge) ([]byte, error) {
 	edge = cloneEdge(edge)
 	return json.Marshal(edgeRecord{
 		ID:         edge.ID,
+		Scope:      edge.Scope,
 		From:       edge.From,
 		To:         edge.To,
 		Predicate:  edge.Predicate,
@@ -567,6 +572,7 @@ func decodeEdge(data []byte, edge *Edge) error {
 	}
 	*edge = Edge{
 		ID:         record.ID,
+		Scope:      record.Scope,
 		From:       record.From,
 		To:         record.To,
 		Predicate:  record.Predicate,

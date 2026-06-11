@@ -15,16 +15,16 @@ type NodeID string
 // Metadata must be JSON-compatible. Values roundtrip through encoding/json, so
 // decoded maps use map[string]any, arrays use []any, and numbers use float64.
 type SummaryNode struct {
-	ID             NodeID
-	ConversationID string
-	ParentIDs      []NodeID
-	SourceRefs     []views.SourceRef
-	Summary        string
-	Level          int
-	Signature      views.ViewSignature
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
-	Metadata       map[string]any
+	ID         NodeID
+	Scope      views.Scope
+	ParentIDs  []NodeID
+	SourceRefs []views.SourceRef
+	Summary    string
+	Level      int
+	Signature  views.ViewSignature
+	CreatedAt  time.Time
+	UpdatedAt  time.Time
+	Metadata   map[string]any
 }
 
 func cloneSummaryNode(node SummaryNode) SummaryNode {

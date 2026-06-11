@@ -440,6 +440,7 @@ func validNode(id NodeID) Node {
 	updated := time.Date(2026, 6, 9, 4, 5, 6, 0, time.UTC)
 	return Node{
 		ID:      id,
+		Scope:   validFactScope(),
 		Kind:    NodeEntity,
 		Label:   "Coffee",
 		Aliases: []string{"alias-1"},
@@ -462,6 +463,7 @@ func validEdge(id EdgeID) Edge {
 	validUntil := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
 	return Edge{
 		ID:         id,
+		Scope:      validFactScope(),
 		From:       "user:123",
 		To:         "value:coffee",
 		Predicate:  "likes",

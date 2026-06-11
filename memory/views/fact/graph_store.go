@@ -33,6 +33,7 @@ type FactRef struct {
 // Node is an entity or value participating in long-lived fact recall.
 type Node struct {
 	ID         NodeID
+	Scope      views.Scope
 	Kind       NodeKind
 	Label      string
 	Aliases    []string
@@ -47,6 +48,7 @@ type Node struct {
 // Edge is a predicate relation between two fact graph nodes.
 type Edge struct {
 	ID         EdgeID
+	Scope      views.Scope
 	From       NodeID
 	To         NodeID
 	Predicate  string
@@ -96,6 +98,9 @@ func validateNode(node Node) error {
 	if node.ID == "" {
 		return errdefs.Validationf("%s: node id is required", graphErrPrefix)
 	}
+	if err := node.Scope.Validate(); err != nil {
+		return errdefs.Validationf("%s: invalid node scope: %w", graphErrPrefix, err)
+	}
 	if err := validateNodeKind(node.Kind); err != nil {
 		return err
 	}
@@ -121,6 +126,9 @@ func validateNode(node Node) error {
 func validateEdge(edge Edge) error {
 	if edge.ID == "" {
 		return errdefs.Validationf("%s: edge id is required", graphErrPrefix)
+	}
+	if err := edge.Scope.Validate(); err != nil {
+		return errdefs.Validationf("%s: invalid edge scope: %w", graphErrPrefix, err)
 	}
 	if edge.From == "" {
 		return errdefs.Validationf("%s: edge from node is required", graphErrPrefix)

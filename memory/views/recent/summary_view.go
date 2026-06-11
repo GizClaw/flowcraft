@@ -60,26 +60,26 @@ func (d *SummaryDAG) PutNode(ctx context.Context, node SummaryNode) (SummaryNode
 	return d.store.PutNode(ctx, node)
 }
 
-// GetNode returns one summary node by conversation and node id.
-func (d *SummaryDAG) GetNode(ctx context.Context, conversationID string, id NodeID) (SummaryNode, bool, error) {
+// GetNode returns one summary node by scope and node id.
+func (d *SummaryDAG) GetNode(ctx context.Context, scope views.Scope, id NodeID) (SummaryNode, bool, error) {
 	if d.store == nil {
 		return SummaryNode{}, false, errdefs.Validationf("%s: store is required", summaryDAGErrPrefix)
 	}
-	return d.store.GetNode(ctx, conversationID, id)
+	return d.store.GetNode(ctx, scope, id)
 }
 
 // ListNodes returns summary nodes ordered by ascending node id.
-func (d *SummaryDAG) ListNodes(ctx context.Context, conversationID string, opts ListOptions) ([]SummaryNode, error) {
+func (d *SummaryDAG) ListNodes(ctx context.Context, scope views.Scope, opts ListOptions) ([]SummaryNode, error) {
 	if d.store == nil {
 		return nil, errdefs.Validationf("%s: store is required", summaryDAGErrPrefix)
 	}
-	return d.store.ListNodes(ctx, conversationID, opts)
+	return d.store.ListNodes(ctx, scope, opts)
 }
 
-// DeleteConversation removes all summary nodes for a conversation.
-func (d *SummaryDAG) DeleteConversation(ctx context.Context, conversationID string) error {
+// DeleteScope removes all summary nodes for a scope.
+func (d *SummaryDAG) DeleteScope(ctx context.Context, scope views.Scope) error {
 	if d.store == nil {
 		return errdefs.Validationf("%s: store is required", summaryDAGErrPrefix)
 	}
-	return d.store.DeleteConversation(ctx, conversationID)
+	return d.store.DeleteScope(ctx, scope)
 }

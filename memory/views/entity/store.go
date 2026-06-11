@@ -29,7 +29,7 @@ type Slot struct {
 // ProfileRecord summarizes one entity with grounded slots and lineage.
 type ProfileRecord struct {
 	ID         ProfileID
-	EntityID   fact.NodeID
+	Scope      views.Scope
 	Label      string
 	Summary    string
 	Slots      []Slot
@@ -43,19 +43,19 @@ type ProfileRecord struct {
 
 // ProfileListOptions controls deterministic profile scans.
 type ProfileListOptions struct {
-	AfterID  ProfileID
-	Limit    int
-	EntityID fact.NodeID
-	Label    string
+	AfterID ProfileID
+	Limit   int
+	Scope   *views.Scope
+	Label   string
 }
 
 // ProfileStore persists entity profile records.
 type ProfileStore interface {
 	Put(ctx context.Context, record ProfileRecord) (ProfileRecord, error)
-	Get(ctx context.Context, id ProfileID) (ProfileRecord, bool, error)
+	Get(ctx context.Context, scope views.Scope, id ProfileID) (ProfileRecord, bool, error)
 	List(ctx context.Context, opts ProfileListOptions) ([]ProfileRecord, error)
-	Delete(ctx context.Context, id ProfileID) error
-	DeleteEntity(ctx context.Context, entityID fact.NodeID) error
+	Delete(ctx context.Context, scope views.Scope, id ProfileID) error
+	DeleteEntity(ctx context.Context, scope views.Scope) error
 }
 
 // EventID is a stable identifier for an entity timeline event.
@@ -64,7 +64,7 @@ type EventID string
 // Event records one grounded temporal entity fact cluster.
 type Event struct {
 	ID          EventID
-	EntityID    fact.NodeID
+	Scope       views.Scope
 	Title       string
 	Description string
 	OccurredAt  *time.Time
@@ -80,25 +80,25 @@ type Event struct {
 
 // TimelineListOptions controls deterministic event scans.
 type TimelineListOptions struct {
-	AfterID  EventID
-	Limit    int
-	EntityID fact.NodeID
+	AfterID EventID
+	Limit   int
+	Scope   *views.Scope
 }
 
 // TimelineStore persists entity timeline events.
 type TimelineStore interface {
 	Put(ctx context.Context, event Event) (Event, error)
-	Get(ctx context.Context, id EventID) (Event, bool, error)
+	Get(ctx context.Context, scope views.Scope, id EventID) (Event, bool, error)
 	List(ctx context.Context, opts TimelineListOptions) ([]Event, error)
-	Delete(ctx context.Context, id EventID) error
-	DeleteEntity(ctx context.Context, entityID fact.NodeID) error
+	Delete(ctx context.Context, scope views.Scope, id EventID) error
+	DeleteEntity(ctx context.Context, scope views.Scope) error
 }
 
 func validateProfileRecord(record ProfileRecord) error {
 	if record.ID == "" {
 		return errdefs.Validationf("%s: profile id is required", profileErrPrefix)
 	}
-	if err := validateEntityID(profileErrPrefix, record.EntityID); err != nil {
+	if err := validateEntityScope(profileErrPrefix, record.Scope); err != nil {
 		return err
 	}
 	if record.Label == "" {
@@ -154,7 +154,7 @@ func validateEvent(event Event) error {
 	if event.ID == "" {
 		return errdefs.Validationf("%s: event id is required", timelineErrPrefix)
 	}
-	if err := validateEntityID(timelineErrPrefix, event.EntityID); err != nil {
+	if err := validateEntityScope(timelineErrPrefix, event.Scope); err != nil {
 		return err
 	}
 	if event.Title == "" {
@@ -191,6 +191,13 @@ func validateEntityID(prefix string, entityID fact.NodeID) error {
 		return errdefs.Validationf("%s: entity id is required", prefix)
 	}
 	return nil
+}
+
+func validateEntityScope(prefix string, scope views.Scope) error {
+	if err := scope.Validate(); err != nil {
+		return errdefs.Validationf("%s: invalid scope: %w", prefix, err)
+	}
+	return validateEntityID(prefix, fact.NodeID(scope.EntityID))
 }
 
 func validateFactRef(prefix string, ref fact.FactRef) error {

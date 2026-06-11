@@ -304,6 +304,7 @@ func (s *LedgerWorkspaceStore) rawPathSegment(segment string) (string, error) {
 
 type factRecord struct {
 	ID              FactID              `json:"id"`
+	Scope           views.Scope         `json:"scope"`
 	Subject         string              `json:"subject"`
 	Predicate       string              `json:"predicate"`
 	Object          string              `json:"object"`
@@ -335,6 +336,7 @@ func encodeFact(fact Fact) ([]byte, error) {
 	fact = cloneFact(fact)
 	return json.Marshal(factRecord{
 		ID:              fact.ID,
+		Scope:           fact.Scope,
 		Subject:         fact.Subject,
 		Predicate:       fact.Predicate,
 		Object:          fact.Object,
@@ -358,6 +360,7 @@ func decodeFact(data []byte, fact *Fact) error {
 	}
 	*fact = Fact{
 		ID:              record.ID,
+		Scope:           record.Scope,
 		Subject:         record.Subject,
 		Predicate:       record.Predicate,
 		Object:          record.Object,

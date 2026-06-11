@@ -18,16 +18,16 @@ func TestProfileWorkspaceStoreNilWorkspaceReturnsValidationError(t *testing.T) {
 	if _, err := store.Put(ctx, validProfileRecord("profile-1")); err == nil || !errdefs.IsValidation(err) {
 		t.Fatalf("Put nil workspace error = %v, want validation", err)
 	}
-	if _, _, err := store.Get(ctx, "profile-1"); err == nil || !errdefs.IsValidation(err) {
+	if _, _, err := store.Get(ctx, testEntityScope("entity-1"), "profile-1"); err == nil || !errdefs.IsValidation(err) {
 		t.Fatalf("Get nil workspace error = %v, want validation", err)
 	}
 	if _, err := store.List(ctx, ProfileListOptions{}); err == nil || !errdefs.IsValidation(err) {
 		t.Fatalf("List nil workspace error = %v, want validation", err)
 	}
-	if err := store.Delete(ctx, "profile-1"); err == nil || !errdefs.IsValidation(err) {
+	if err := store.Delete(ctx, testEntityScope("entity-1"), "profile-1"); err == nil || !errdefs.IsValidation(err) {
 		t.Fatalf("Delete nil workspace error = %v, want validation", err)
 	}
-	if err := store.DeleteEntity(ctx, "entity-1"); err == nil || !errdefs.IsValidation(err) {
+	if err := store.DeleteEntity(ctx, testEntityScope("entity-1")); err == nil || !errdefs.IsValidation(err) {
 		t.Fatalf("DeleteEntity nil workspace error = %v, want validation", err)
 	}
 }
@@ -39,16 +39,16 @@ func TestTimelineWorkspaceStoreNilWorkspaceReturnsValidationError(t *testing.T) 
 	if _, err := store.Put(ctx, validEvent("event-1")); err == nil || !errdefs.IsValidation(err) {
 		t.Fatalf("Put nil workspace error = %v, want validation", err)
 	}
-	if _, _, err := store.Get(ctx, "event-1"); err == nil || !errdefs.IsValidation(err) {
+	if _, _, err := store.Get(ctx, testEntityScope("entity-1"), "event-1"); err == nil || !errdefs.IsValidation(err) {
 		t.Fatalf("Get nil workspace error = %v, want validation", err)
 	}
 	if _, err := store.List(ctx, TimelineListOptions{}); err == nil || !errdefs.IsValidation(err) {
 		t.Fatalf("List nil workspace error = %v, want validation", err)
 	}
-	if err := store.Delete(ctx, "event-1"); err == nil || !errdefs.IsValidation(err) {
+	if err := store.Delete(ctx, testEntityScope("entity-1"), "event-1"); err == nil || !errdefs.IsValidation(err) {
 		t.Fatalf("Delete nil workspace error = %v, want validation", err)
 	}
-	if err := store.DeleteEntity(ctx, "entity-1"); err == nil || !errdefs.IsValidation(err) {
+	if err := store.DeleteEntity(ctx, testEntityScope("entity-1")); err == nil || !errdefs.IsValidation(err) {
 		t.Fatalf("DeleteEntity nil workspace error = %v, want validation", err)
 	}
 }
@@ -79,7 +79,7 @@ func TestProfileWorkspaceStorePutGetDeepClone(t *testing.T) {
 	setNestedMetadata(put.Metadata, "mutated-put")
 
 	want := validProfileRecord("profile-1")
-	got, ok, err := store.Get(ctx, "profile-1")
+	got, ok, err := store.Get(ctx, testEntityScope("entity-1"), "profile-1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -91,7 +91,7 @@ func TestProfileWorkspaceStorePutGetDeepClone(t *testing.T) {
 	got.Slots[0].Value = "mutated-get"
 	got.Metadata["k"] = "mutated-get"
 	setNestedMetadata(got.Metadata, "mutated-get")
-	again, ok, err := store.Get(ctx, "profile-1")
+	again, ok, err := store.Get(ctx, testEntityScope("entity-1"), "profile-1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -127,7 +127,7 @@ func TestTimelineWorkspaceStorePutGetDeepClone(t *testing.T) {
 	*put.ValidFrom = put.ValidFrom.AddDate(0, 0, 1)
 
 	want := validEvent("event-1")
-	got, ok, err := store.Get(ctx, "event-1")
+	got, ok, err := store.Get(ctx, testEntityScope("entity-1"), "event-1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -139,7 +139,7 @@ func TestTimelineWorkspaceStorePutGetDeepClone(t *testing.T) {
 	got.Metadata["k"] = "mutated-get"
 	setNestedMetadata(got.Metadata, "mutated-get")
 	*got.OccurredAt = got.OccurredAt.AddDate(0, 0, 1)
-	again, ok, err := store.Get(ctx, "event-1")
+	again, ok, err := store.Get(ctx, testEntityScope("entity-1"), "event-1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -160,7 +160,7 @@ func TestProfileWorkspaceStoreListOrderAfterIDLimitAndFilters(t *testing.T) {
 		"charlie": validProfileRecord("charlie"),
 	}
 	bravo := records["bravo"]
-	bravo.EntityID = "entity-2"
+	bravo.Scope = testEntityScope("entity-2")
 	records["bravo"] = bravo
 	charlie := records["charlie"]
 	charlie.Label = "Other"
@@ -172,34 +172,35 @@ func TestProfileWorkspaceStoreListOrderAfterIDLimitAndFilters(t *testing.T) {
 		}
 	}
 
-	all, err := store.List(ctx, ProfileListOptions{})
+	scope := testEntityScope("entity-1")
+	all, err := store.List(ctx, ProfileListOptions{Scope: &scope})
 	if err != nil {
 		t.Fatal(err)
 	}
-	assertProfileIDs(t, all, []ProfileID{"alpha", "bravo", "charlie", "delta"})
+	assertProfileIDs(t, all, []ProfileID{"alpha", "charlie", "delta"})
 
-	afterLimited, err := store.List(ctx, ProfileListOptions{AfterID: "alpha", Limit: 2})
+	afterLimited, err := store.List(ctx, ProfileListOptions{Scope: &scope, AfterID: "alpha", Limit: 2})
 	if err != nil {
 		t.Fatal(err)
 	}
-	assertProfileIDs(t, afterLimited, []ProfileID{"bravo", "charlie"})
+	assertProfileIDs(t, afterLimited, []ProfileID{"charlie", "delta"})
 
-	entityFiltered, err := store.List(ctx, ProfileListOptions{EntityID: "entity-1"})
+	entityFiltered, err := store.List(ctx, ProfileListOptions{Scope: &scope})
 	if err != nil {
 		t.Fatal(err)
 	}
 	assertProfileIDs(t, entityFiltered, []ProfileID{"alpha", "charlie", "delta"})
 
-	labelFiltered, err := store.List(ctx, ProfileListOptions{Label: "Hai"})
+	labelFiltered, err := store.List(ctx, ProfileListOptions{Scope: &scope, Label: "Hai"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	assertProfileIDs(t, labelFiltered, []ProfileID{"alpha", "bravo", "delta"})
+	assertProfileIDs(t, labelFiltered, []ProfileID{"alpha", "delta"})
 
 	combined, err := store.List(ctx, ProfileListOptions{
-		Limit:    2,
-		EntityID: "entity-1",
-		Label:    "Hai",
+		Scope: &scope,
+		Limit: 2,
+		Label: "Hai",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -218,7 +219,7 @@ func TestTimelineWorkspaceStoreListOrderAfterIDLimitAndFilters(t *testing.T) {
 		"charlie": validEvent("charlie"),
 	}
 	bravo := events["bravo"]
-	bravo.EntityID = "entity-2"
+	bravo.Scope = testEntityScope("entity-2")
 	events["bravo"] = bravo
 
 	for _, id := range []EventID{"bravo", "alpha", "delta", "charlie"} {
@@ -227,27 +228,28 @@ func TestTimelineWorkspaceStoreListOrderAfterIDLimitAndFilters(t *testing.T) {
 		}
 	}
 
-	all, err := store.List(ctx, TimelineListOptions{})
+	scope := testEntityScope("entity-1")
+	all, err := store.List(ctx, TimelineListOptions{Scope: &scope})
 	if err != nil {
 		t.Fatal(err)
 	}
-	assertEventIDs(t, all, []EventID{"alpha", "bravo", "charlie", "delta"})
+	assertEventIDs(t, all, []EventID{"alpha", "charlie", "delta"})
 
-	afterLimited, err := store.List(ctx, TimelineListOptions{AfterID: "alpha", Limit: 2})
+	afterLimited, err := store.List(ctx, TimelineListOptions{Scope: &scope, AfterID: "alpha", Limit: 2})
 	if err != nil {
 		t.Fatal(err)
 	}
-	assertEventIDs(t, afterLimited, []EventID{"bravo", "charlie"})
+	assertEventIDs(t, afterLimited, []EventID{"charlie", "delta"})
 
-	entityFiltered, err := store.List(ctx, TimelineListOptions{EntityID: "entity-1"})
+	entityFiltered, err := store.List(ctx, TimelineListOptions{Scope: &scope})
 	if err != nil {
 		t.Fatal(err)
 	}
 	assertEventIDs(t, entityFiltered, []EventID{"alpha", "charlie", "delta"})
 
 	combined, err := store.List(ctx, TimelineListOptions{
-		Limit:    2,
-		EntityID: "entity-1",
+		Scope: &scope,
+		Limit: 2,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -266,16 +268,16 @@ func TestProfileWorkspaceStoreDelete(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := store.Delete(ctx, "profile-1"); err != nil {
+	if err := store.Delete(ctx, testEntityScope("entity-1"), "profile-1"); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok, err := store.Get(ctx, "profile-1"); err != nil || ok {
+	if _, ok, err := store.Get(ctx, testEntityScope("entity-1"), "profile-1"); err != nil || ok {
 		t.Fatalf("Get deleted profile ok = %v err %v, want false nil", ok, err)
 	}
-	if err := store.Delete(ctx, "profile-1"); err != nil {
+	if err := store.Delete(ctx, testEntityScope("entity-1"), "profile-1"); err != nil {
 		t.Fatalf("second Delete error = %v, want nil", err)
 	}
-	if got, ok, err := store.Get(ctx, "profile-2"); err != nil || !ok || got.ID != "profile-2" {
+	if got, ok, err := store.Get(ctx, testEntityScope("entity-1"), "profile-2"); err != nil || !ok || got.ID != "profile-2" {
 		t.Fatalf("Get kept profile = %+v ok %v err %v, want profile-2 true nil", got, ok, err)
 	}
 }
@@ -291,16 +293,16 @@ func TestTimelineWorkspaceStoreDelete(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := store.Delete(ctx, "event-1"); err != nil {
+	if err := store.Delete(ctx, testEntityScope("entity-1"), "event-1"); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok, err := store.Get(ctx, "event-1"); err != nil || ok {
+	if _, ok, err := store.Get(ctx, testEntityScope("entity-1"), "event-1"); err != nil || ok {
 		t.Fatalf("Get deleted event ok = %v err %v, want false nil", ok, err)
 	}
-	if err := store.Delete(ctx, "event-1"); err != nil {
+	if err := store.Delete(ctx, testEntityScope("entity-1"), "event-1"); err != nil {
 		t.Fatalf("second Delete error = %v, want nil", err)
 	}
-	if got, ok, err := store.Get(ctx, "event-2"); err != nil || !ok || got.ID != "event-2" {
+	if got, ok, err := store.Get(ctx, testEntityScope("entity-1"), "event-2"); err != nil || !ok || got.ID != "event-2" {
 		t.Fatalf("Get kept event = %+v ok %v err %v, want event-2 true nil", got, ok, err)
 	}
 }
@@ -311,7 +313,7 @@ func TestProfileWorkspaceStoreDeleteEntityOnlyDeletesMatchingEntity(t *testing.T
 
 	one := validProfileRecord("profile-1")
 	two := validProfileRecord("profile-2")
-	two.EntityID = "entity-2"
+	two.Scope = testEntityScope("entity-2")
 	three := validProfileRecord("profile-3")
 	for _, record := range []ProfileRecord{one, two, three} {
 		if _, err := store.Put(ctx, record); err != nil {
@@ -319,18 +321,19 @@ func TestProfileWorkspaceStoreDeleteEntityOnlyDeletesMatchingEntity(t *testing.T
 		}
 	}
 
-	if err := store.DeleteEntity(ctx, "entity-1"); err != nil {
+	if err := store.DeleteEntity(ctx, testEntityScope("entity-1")); err != nil {
 		t.Fatal(err)
 	}
-	listed, err := store.List(ctx, ProfileListOptions{})
+	scope := testEntityScope("entity-2")
+	listed, err := store.List(ctx, ProfileListOptions{Scope: &scope})
 	if err != nil {
 		t.Fatal(err)
 	}
 	assertProfileIDs(t, listed, []ProfileID{"profile-2"})
-	if listed[0].EntityID != "entity-2" {
-		t.Fatalf("remaining entity = %q, want entity-2", listed[0].EntityID)
+	if listed[0].Scope.EntityID != "entity-2" {
+		t.Fatalf("remaining entity = %q, want entity-2", listed[0].Scope.EntityID)
 	}
-	if err := store.DeleteEntity(ctx, "entity-1"); err != nil {
+	if err := store.DeleteEntity(ctx, testEntityScope("entity-1")); err != nil {
 		t.Fatalf("second DeleteEntity error = %v, want nil", err)
 	}
 }
@@ -341,7 +344,7 @@ func TestTimelineWorkspaceStoreDeleteEntityOnlyDeletesMatchingEntity(t *testing.
 
 	one := validEvent("event-1")
 	two := validEvent("event-2")
-	two.EntityID = "entity-2"
+	two.Scope = testEntityScope("entity-2")
 	three := validEvent("event-3")
 	for _, event := range []Event{one, two, three} {
 		if _, err := store.Put(ctx, event); err != nil {
@@ -349,18 +352,19 @@ func TestTimelineWorkspaceStoreDeleteEntityOnlyDeletesMatchingEntity(t *testing.
 		}
 	}
 
-	if err := store.DeleteEntity(ctx, "entity-1"); err != nil {
+	if err := store.DeleteEntity(ctx, testEntityScope("entity-1")); err != nil {
 		t.Fatal(err)
 	}
-	listed, err := store.List(ctx, TimelineListOptions{})
+	scope := testEntityScope("entity-2")
+	listed, err := store.List(ctx, TimelineListOptions{Scope: &scope})
 	if err != nil {
 		t.Fatal(err)
 	}
 	assertEventIDs(t, listed, []EventID{"event-2"})
-	if listed[0].EntityID != "entity-2" {
-		t.Fatalf("remaining entity = %q, want entity-2", listed[0].EntityID)
+	if listed[0].Scope.EntityID != "entity-2" {
+		t.Fatalf("remaining entity = %q, want entity-2", listed[0].Scope.EntityID)
 	}
-	if err := store.DeleteEntity(ctx, "entity-1"); err != nil {
+	if err := store.DeleteEntity(ctx, testEntityScope("entity-1")); err != nil {
 		t.Fatalf("second DeleteEntity error = %v, want nil", err)
 	}
 }
@@ -378,8 +382,8 @@ func TestProfileWorkspaceStorePathSegmentPrefixDefaultCustomAndExplicitEmpty(t *
 
 		segment := store.pathSegment(string(record.ID))
 		assertSafeProfileSegment(t, store, segment, string(record.ID), "eprof_")
-		assertPathExists(t, ctx, ws, "entity/profiles/"+segment+".json")
-		assertPathMissing(t, ctx, ws, "entity/profiles/"+string(record.ID)+".json")
+		assertPathExists(t, ctx, ws, store.profilePath(record.Scope, record.ID))
+		assertPathMissing(t, ctx, ws, "entity/entities/"+store.pathSegment(record.Scope.EntityID)+"/profiles/"+string(record.ID)+".json")
 	})
 
 	t.Run("custom", func(t *testing.T) {
@@ -392,8 +396,8 @@ func TestProfileWorkspaceStorePathSegmentPrefixDefaultCustomAndExplicitEmpty(t *
 
 		segment := store.pathSegment(string(record.ID))
 		assertSafeProfileSegment(t, store, segment, string(record.ID), "custom_")
-		assertPathExists(t, ctx, ws, "entity/profiles/"+segment+".json")
-		assertPathMissing(t, ctx, ws, "entity/profiles/"+string(record.ID)+".json")
+		assertPathExists(t, ctx, ws, store.profilePath(record.Scope, record.ID))
+		assertPathMissing(t, ctx, ws, "entity/entities/"+store.pathSegment(record.Scope.EntityID)+"/profiles/"+string(record.ID)+".json")
 	})
 
 	t.Run("explicit empty", func(t *testing.T) {
@@ -409,7 +413,7 @@ func TestProfileWorkspaceStorePathSegmentPrefixDefaultCustomAndExplicitEmpty(t *
 			t.Fatalf("explicit empty prefix segment = %q, should not use default prefix", segment)
 		}
 		assertSafeProfileSegment(t, store, segment, string(record.ID), "")
-		assertPathExists(t, ctx, ws, "entity/profiles/"+segment+".json")
+		assertPathExists(t, ctx, ws, store.profilePath(record.Scope, record.ID))
 	})
 }
 
@@ -426,8 +430,8 @@ func TestTimelineWorkspaceStorePathSegmentPrefixDefaultCustomAndExplicitEmpty(t 
 
 		segment := store.pathSegment(string(event.ID))
 		assertSafeTimelineSegment(t, store, segment, string(event.ID), "etl_")
-		assertPathExists(t, ctx, ws, "entity/timeline/"+segment+".json")
-		assertPathMissing(t, ctx, ws, "entity/timeline/"+string(event.ID)+".json")
+		assertPathExists(t, ctx, ws, store.eventPath(event.Scope, event.ID))
+		assertPathMissing(t, ctx, ws, "entity/entities/"+store.pathSegment(event.Scope.EntityID)+"/timeline/"+string(event.ID)+".json")
 	})
 
 	t.Run("custom", func(t *testing.T) {
@@ -440,8 +444,8 @@ func TestTimelineWorkspaceStorePathSegmentPrefixDefaultCustomAndExplicitEmpty(t 
 
 		segment := store.pathSegment(string(event.ID))
 		assertSafeTimelineSegment(t, store, segment, string(event.ID), "custom_")
-		assertPathExists(t, ctx, ws, "entity/timeline/"+segment+".json")
-		assertPathMissing(t, ctx, ws, "entity/timeline/"+string(event.ID)+".json")
+		assertPathExists(t, ctx, ws, store.eventPath(event.Scope, event.ID))
+		assertPathMissing(t, ctx, ws, "entity/entities/"+store.pathSegment(event.Scope.EntityID)+"/timeline/"+string(event.ID)+".json")
 	})
 
 	t.Run("explicit empty", func(t *testing.T) {
@@ -457,7 +461,7 @@ func TestTimelineWorkspaceStorePathSegmentPrefixDefaultCustomAndExplicitEmpty(t 
 			t.Fatalf("explicit empty prefix segment = %q, should not use default prefix", segment)
 		}
 		assertSafeTimelineSegment(t, store, segment, string(event.ID), "")
-		assertPathExists(t, ctx, ws, "entity/timeline/"+segment+".json")
+		assertPathExists(t, ctx, ws, store.eventPath(event.Scope, event.ID))
 	})
 }
 
@@ -480,7 +484,7 @@ func TestEntityWorkspaceStoreMetadataJSONRoundTripSemantics(t *testing.T) {
 	if _, err := profileStore.Put(ctx, record); err != nil {
 		t.Fatal(err)
 	}
-	gotRecord, ok, err := profileStore.Get(ctx, "profile-1")
+	gotRecord, ok, err := profileStore.Get(ctx, testEntityScope("entity-1"), "profile-1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -495,7 +499,7 @@ func TestEntityWorkspaceStoreMetadataJSONRoundTripSemantics(t *testing.T) {
 	if _, err := timelineStore.Put(ctx, event); err != nil {
 		t.Fatal(err)
 	}
-	gotEvent, ok, err := timelineStore.Get(ctx, "event-1")
+	gotEvent, ok, err := timelineStore.Get(ctx, testEntityScope("entity-1"), "event-1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -518,13 +522,13 @@ func TestEntityWorkspaceStoreValidationErrors(t *testing.T) {
 	if _, err := profileStore.Put(ctx, validProfileRecord("")); err == nil || !errdefs.IsValidation(err) {
 		t.Fatalf("Put empty profile id error = %v, want validation", err)
 	}
-	if _, _, err := profileStore.Get(ctx, ""); err == nil || !errdefs.IsValidation(err) {
+	if _, _, err := profileStore.Get(ctx, testEntityScope("entity-1"), ""); err == nil || !errdefs.IsValidation(err) {
 		t.Fatalf("Get empty profile id error = %v, want validation", err)
 	}
-	if err := profileStore.Delete(ctx, ""); err == nil || !errdefs.IsValidation(err) {
+	if err := profileStore.Delete(ctx, testEntityScope("entity-1"), ""); err == nil || !errdefs.IsValidation(err) {
 		t.Fatalf("Delete empty profile id error = %v, want validation", err)
 	}
-	if err := profileStore.DeleteEntity(ctx, ""); err == nil || !errdefs.IsValidation(err) {
+	if err := profileStore.DeleteEntity(ctx, testEntityScope("")); err == nil || !errdefs.IsValidation(err) {
 		t.Fatalf("DeleteEntity empty entity error = %v, want validation", err)
 	}
 
@@ -536,13 +540,13 @@ func TestEntityWorkspaceStoreValidationErrors(t *testing.T) {
 	if _, err := timelineStore.Put(ctx, validEvent("")); err == nil || !errdefs.IsValidation(err) {
 		t.Fatalf("Put empty event id error = %v, want validation", err)
 	}
-	if _, _, err := timelineStore.Get(ctx, ""); err == nil || !errdefs.IsValidation(err) {
+	if _, _, err := timelineStore.Get(ctx, testEntityScope("entity-1"), ""); err == nil || !errdefs.IsValidation(err) {
 		t.Fatalf("Get empty event id error = %v, want validation", err)
 	}
-	if err := timelineStore.Delete(ctx, ""); err == nil || !errdefs.IsValidation(err) {
+	if err := timelineStore.Delete(ctx, testEntityScope("entity-1"), ""); err == nil || !errdefs.IsValidation(err) {
 		t.Fatalf("Delete empty event id error = %v, want validation", err)
 	}
-	if err := timelineStore.DeleteEntity(ctx, ""); err == nil || !errdefs.IsValidation(err) {
+	if err := timelineStore.DeleteEntity(ctx, testEntityScope("")); err == nil || !errdefs.IsValidation(err) {
 		t.Fatalf("DeleteEntity empty entity error = %v, want validation", err)
 	}
 }

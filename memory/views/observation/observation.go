@@ -7,17 +7,8 @@ import (
 	"github.com/GizClaw/flowcraft/memory/views"
 )
 
-// Scope identifies the lightweight domain boundary an observation belongs to.
-//
-// Kind and ID are the stable scope identity. Optional fields let callers carry
-// common projections without depending on source packages.
-type Scope struct {
-	Kind           string
-	ID             string
-	DatasetID      string
-	ConversationID string
-	EntityID       string
-}
+// Scope is the shared memory boundary vocabulary used by observation records.
+type Scope = views.Scope
 
 // Observation is one derived semantic observation backed by canonical evidence.
 //

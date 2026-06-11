@@ -40,6 +40,9 @@ func validateFact(fact Fact) error {
 	if fact.ID == "" {
 		return errdefs.Validationf("%s: fact id is required", ledgerErrPrefix)
 	}
+	if err := fact.Scope.Validate(); err != nil {
+		return errdefs.Validationf("%s: invalid fact scope: %w", ledgerErrPrefix, err)
+	}
 	if fact.Subject == "" {
 		return errdefs.Validationf("%s: subject is required", ledgerErrPrefix)
 	}

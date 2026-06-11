@@ -15,20 +15,21 @@ import (
 func TestChunkWorkspaceStoreNilWorkspaceReturnsValidationError(t *testing.T) {
 	ctx := context.Background()
 	store := NewChunkWorkspaceStore(nil)
+	scope := testScope("dataset-1")
 
 	if _, err := store.PutChunk(ctx, validChunk("chunk-1")); err == nil || !errdefs.IsValidation(err) {
 		t.Fatalf("PutChunk nil workspace error = %v, want validation", err)
 	}
-	if _, _, err := store.GetChunk(ctx, "dataset-1", "doc-1", "chunk-1"); err == nil || !errdefs.IsValidation(err) {
+	if _, _, err := store.GetChunk(ctx, scope, "doc-1", "chunk-1"); err == nil || !errdefs.IsValidation(err) {
 		t.Fatalf("GetChunk nil workspace error = %v, want validation", err)
 	}
-	if _, err := store.ListChunks(ctx, "dataset-1", "doc-1", ListOptions{}); err == nil || !errdefs.IsValidation(err) {
+	if _, err := store.ListChunks(ctx, "doc-1", ListOptions{Scope: &scope}); err == nil || !errdefs.IsValidation(err) {
 		t.Fatalf("ListChunks nil workspace error = %v, want validation", err)
 	}
-	if err := store.DeleteDocument(ctx, "dataset-1", "doc-1"); err == nil || !errdefs.IsValidation(err) {
+	if err := store.DeleteDocument(ctx, scope, "doc-1"); err == nil || !errdefs.IsValidation(err) {
 		t.Fatalf("DeleteDocument nil workspace error = %v, want validation", err)
 	}
-	if err := store.DeleteDataset(ctx, "dataset-1"); err == nil || !errdefs.IsValidation(err) {
+	if err := store.DeleteDataset(ctx, scope); err == nil || !errdefs.IsValidation(err) {
 		t.Fatalf("DeleteDataset nil workspace error = %v, want validation", err)
 	}
 }
@@ -37,6 +38,7 @@ func TestChunkWorkspaceStorePutGetDeepClone(t *testing.T) {
 	ctx := context.Background()
 	store := NewChunkWorkspaceStore(workspace.NewMemWorkspace())
 	chunk := validChunk("chunk-1")
+	scope := chunk.Scope
 
 	put, err := store.PutChunk(ctx, chunk)
 	if err != nil {
@@ -47,7 +49,7 @@ func TestChunkWorkspaceStorePutGetDeepClone(t *testing.T) {
 	mutateChunkNested(&chunk, "input-mutated")
 	mutateChunkNested(&put, "put-mutated")
 
-	got, ok, err := store.GetChunk(ctx, "dataset-1", "doc-1", "chunk-1")
+	got, ok, err := store.GetChunk(ctx, scope, "doc-1", "chunk-1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -57,7 +59,7 @@ func TestChunkWorkspaceStorePutGetDeepClone(t *testing.T) {
 	assertChunkNestedValue(t, got, "original")
 
 	mutateChunkNested(&got, "get-mutated")
-	again, ok, err := store.GetChunk(ctx, "dataset-1", "doc-1", "chunk-1")
+	again, ok, err := store.GetChunk(ctx, scope, "doc-1", "chunk-1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -66,12 +68,12 @@ func TestChunkWorkspaceStorePutGetDeepClone(t *testing.T) {
 	}
 	assertChunkNestedValue(t, again, "original")
 
-	listed, err := store.ListChunks(ctx, "dataset-1", "doc-1", ListOptions{})
+	listed, err := store.ListChunks(ctx, "doc-1", ListOptions{Scope: &scope})
 	if err != nil {
 		t.Fatal(err)
 	}
 	listed[0].Metadata["key"] = "list-mutated"
-	again, ok, err = store.GetChunk(ctx, "dataset-1", "doc-1", "chunk-1")
+	again, ok, err = store.GetChunk(ctx, scope, "doc-1", "chunk-1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -84,6 +86,7 @@ func TestChunkWorkspaceStorePutGetDeepClone(t *testing.T) {
 func TestChunkWorkspaceStoreListOrderAfterIDLimitAndLayerFilter(t *testing.T) {
 	ctx := context.Background()
 	store := NewChunkWorkspaceStore(workspace.NewMemWorkspace())
+	scope := testScope("dataset-1")
 	layerA := testLayer()
 	layerB := Layer{Name: "semantic", Version: "v2", TransformSignature: "semantic:v2"}
 	layers := map[ChunkID]Layer{
@@ -102,25 +105,25 @@ func TestChunkWorkspaceStoreListOrderAfterIDLimitAndLayerFilter(t *testing.T) {
 		}
 	}
 
-	all, err := store.ListChunks(ctx, "dataset-1", "doc-1", ListOptions{})
+	all, err := store.ListChunks(ctx, "doc-1", ListOptions{Scope: &scope})
 	if err != nil {
 		t.Fatal(err)
 	}
 	assertChunkIDs(t, all, []ChunkID{"alpha", "bravo", "charlie", "delta"})
 
-	filtered, err := store.ListChunks(ctx, "dataset-1", "doc-1", ListOptions{AfterID: "alpha", Limit: 2, Layer: &layerA})
+	filtered, err := store.ListChunks(ctx, "doc-1", ListOptions{AfterID: "alpha", Limit: 2, Layer: &layerA, Scope: &scope})
 	if err != nil {
 		t.Fatal(err)
 	}
 	assertChunkIDs(t, filtered, []ChunkID{"bravo", "charlie"})
 
-	onlyLayerB, err := store.ListChunks(ctx, "dataset-1", "doc-1", ListOptions{Layer: &layerB})
+	onlyLayerB, err := store.ListChunks(ctx, "doc-1", ListOptions{Layer: &layerB, Scope: &scope})
 	if err != nil {
 		t.Fatal(err)
 	}
 	assertChunkIDs(t, onlyLayerB, []ChunkID{"delta"})
 
-	missing, err := store.ListChunks(ctx, "dataset-1", "missing-doc", ListOptions{})
+	missing, err := store.ListChunks(ctx, "missing-doc", ListOptions{Scope: &scope})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -145,7 +148,7 @@ func TestChunkWorkspaceStorePutReplacesSameIDAcrossLayers(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got, ok, err := store.GetChunk(ctx, "dataset-1", "doc-1", "chunk-1")
+	got, ok, err := store.GetChunk(ctx, testScope("dataset-1"), "doc-1", "chunk-1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -155,14 +158,15 @@ func TestChunkWorkspaceStorePutReplacesSameIDAcrossLayers(t *testing.T) {
 	if got.Layer != layerB || got.Text != "replacement text" {
 		t.Fatalf("GetChunk replacement = %+v, want layerB replacement", got)
 	}
-	oldLayer, err := store.ListChunks(ctx, "dataset-1", "doc-1", ListOptions{Layer: &layerA})
+	scope := testScope("dataset-1")
+	oldLayer, err := store.ListChunks(ctx, "doc-1", ListOptions{Layer: &layerA, Scope: &scope})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(oldLayer) != 0 {
 		t.Fatalf("ListChunks old layer returned %d chunks, want 0", len(oldLayer))
 	}
-	newLayer, err := store.ListChunks(ctx, "dataset-1", "doc-1", ListOptions{Layer: &layerB})
+	newLayer, err := store.ListChunks(ctx, "doc-1", ListOptions{Layer: &layerB, Scope: &scope})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -184,13 +188,13 @@ func TestChunkWorkspaceStorePutAcrossLayersKeepsOldChunkWhenPublishFails(t *test
 
 	replacement := chunkWithScope("dataset-1", "doc-1", layerB, "chunk-1")
 	replacement.Text = "replacement text"
-	ws.failRenameDst = store.chunkPath(replacement.DatasetID, replacement.DocumentID, replacement.Layer, replacement.ID)
+	ws.failRenameDst = store.chunkPath(replacement.Scope.DatasetID, replacement.DocumentID, replacement.Layer, replacement.ID)
 
 	if _, err := store.PutChunk(ctx, replacement); err == nil || !errors.Is(err, errFailRename) {
 		t.Fatalf("PutChunk replacement error = %v, want fail rename", err)
 	}
 
-	got, ok, err := store.GetChunk(ctx, "dataset-1", "doc-1", "chunk-1")
+	got, ok, err := store.GetChunk(ctx, testScope("dataset-1"), "doc-1", "chunk-1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -218,11 +222,12 @@ func TestChunkWorkspaceStoreDeleteDocumentRemovesAllLayers(t *testing.T) {
 		}
 	}
 
-	if err := store.DeleteDocument(ctx, "dataset-1", "doc-1"); err != nil {
+	if err := store.DeleteDocument(ctx, testScope("dataset-1"), "doc-1"); err != nil {
 		t.Fatal(err)
 	}
 
-	deleted, err := store.ListChunks(ctx, "dataset-1", "doc-1", ListOptions{})
+	scope1 := testScope("dataset-1")
+	deleted, err := store.ListChunks(ctx, "doc-1", ListOptions{Scope: &scope1})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -230,18 +235,19 @@ func TestChunkWorkspaceStoreDeleteDocumentRemovesAllLayers(t *testing.T) {
 		t.Fatalf("ListChunks deleted document returned %d chunks, want 0", len(deleted))
 	}
 
-	keptDoc, ok, err := store.GetChunk(ctx, "dataset-1", "doc-2", "kept-doc")
+	keptDoc, ok, err := store.GetChunk(ctx, scope1, "doc-2", "kept-doc")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !ok || keptDoc.DocumentID != "doc-2" {
 		t.Fatalf("GetChunk kept document = %+v ok %v, want doc-2 true", keptDoc, ok)
 	}
-	keptDataset, ok, err := store.GetChunk(ctx, "dataset-2", "doc-1", "kept-dataset")
+	scope2 := testScope("dataset-2")
+	keptDataset, ok, err := store.GetChunk(ctx, scope2, "doc-1", "kept-dataset")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !ok || keptDataset.DatasetID != "dataset-2" {
+	if !ok || keptDataset.Scope.DatasetID != "dataset-2" {
 		t.Fatalf("GetChunk kept dataset = %+v ok %v, want dataset-2 true", keptDataset, ok)
 	}
 }
@@ -260,11 +266,12 @@ func TestChunkWorkspaceStoreDeleteDatasetRemovesAllDocuments(t *testing.T) {
 		}
 	}
 
-	if err := store.DeleteDataset(ctx, "dataset-1"); err != nil {
+	scope1 := testScope("dataset-1")
+	if err := store.DeleteDataset(ctx, scope1); err != nil {
 		t.Fatal(err)
 	}
 	for _, docID := range []string{"doc-1", "doc-2"} {
-		deleted, err := store.ListChunks(ctx, "dataset-1", docID, ListOptions{})
+		deleted, err := store.ListChunks(ctx, docID, ListOptions{Scope: &scope1})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -272,11 +279,12 @@ func TestChunkWorkspaceStoreDeleteDatasetRemovesAllDocuments(t *testing.T) {
 			t.Fatalf("ListChunks deleted dataset document %q returned %d chunks, want 0", docID, len(deleted))
 		}
 	}
-	kept, ok, err := store.GetChunk(ctx, "dataset-2", "doc-1", "kept")
+	scope2 := testScope("dataset-2")
+	kept, ok, err := store.GetChunk(ctx, scope2, "doc-1", "kept")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !ok || kept.DatasetID != "dataset-2" {
+	if !ok || kept.Scope.DatasetID != "dataset-2" {
 		t.Fatalf("GetChunk kept dataset = %+v ok %v, want dataset-2 true", kept, ok)
 	}
 }
@@ -303,11 +311,11 @@ func TestChunkWorkspaceStorePathSegmentPrefixDefaultCustomAndEmpty(t *testing.T)
 				t.Fatal(err)
 			}
 
-			datasetSegment := store.pathSegment(chunk.DatasetID)
+			datasetSegment := store.pathSegment(chunk.Scope.DatasetID)
 			documentSegment := store.pathSegment(chunk.DocumentID)
 			layerSegment := store.pathSegment(layerIdentity(chunk.Layer))
 			chunkSegment := store.pathSegment(string(chunk.ID))
-			assertSafeChunkWorkspaceSegment(t, store, datasetSegment, chunk.DatasetID, tt.wantPrefix)
+			assertSafeChunkWorkspaceSegment(t, store, datasetSegment, chunk.Scope.DatasetID, tt.wantPrefix)
 			assertSafeChunkWorkspaceSegment(t, store, documentSegment, chunk.DocumentID, tt.wantPrefix)
 			assertSafeChunkWorkspaceSegment(t, store, layerSegment, layerIdentity(chunk.Layer), tt.wantPrefix)
 			assertSafeChunkWorkspaceSegment(t, store, chunkSegment, string(chunk.ID), tt.wantPrefix)
@@ -316,14 +324,14 @@ func TestChunkWorkspaceStorePathSegmentPrefixDefaultCustomAndEmpty(t *testing.T)
 			if exists, err := ws.Exists(ctx, encodedPath); err != nil || !exists {
 				t.Fatalf("encoded chunk exists = %v err %v, want true nil", exists, err)
 			}
-			rawPath := "datasets/" + chunk.DatasetID + "/documents/" + chunk.DocumentID + "/layers/" + layerIdentity(chunk.Layer) + "/chunks/" + string(chunk.ID) + ".json"
+			rawPath := "datasets/" + chunk.Scope.DatasetID + "/documents/" + chunk.DocumentID + "/layers/" + layerIdentity(chunk.Layer) + "/chunks/" + string(chunk.ID) + ".json"
 			if rawPath != encodedPath {
 				if exists, err := ws.Exists(ctx, rawPath); err != nil || exists {
 					t.Fatalf("raw chunk path %q exists = %v err %v, want false nil", rawPath, exists, err)
 				}
 			}
 
-			got, ok, err := store.GetChunk(ctx, chunk.DatasetID, chunk.DocumentID, chunk.ID)
+			got, ok, err := store.GetChunk(ctx, chunk.Scope, chunk.DocumentID, chunk.ID)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -352,7 +360,7 @@ func TestChunkWorkspaceStoreMetadataJSONRoundTripSemantics(t *testing.T) {
 	if _, err := store.PutChunk(ctx, chunk); err != nil {
 		t.Fatal(err)
 	}
-	got, ok, err := store.GetChunk(ctx, "dataset-1", "doc-1", "chunk-1")
+	got, ok, err := store.GetChunk(ctx, chunk.Scope, "doc-1", "chunk-1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -398,33 +406,33 @@ func TestChunkWorkspaceStoreValidationErrors(t *testing.T) {
 		run  func() error
 	}{
 		{name: "get missing dataset", run: func() error {
-			_, _, err := store.GetChunk(ctx, "", "doc-1", "chunk-1")
+			_, _, err := store.GetChunk(ctx, testScope(""), "doc-1", "chunk-1")
 			return err
 		}},
 		{name: "get missing document", run: func() error {
-			_, _, err := store.GetChunk(ctx, "dataset-1", "", "chunk-1")
+			_, _, err := store.GetChunk(ctx, testScope("dataset-1"), "", "chunk-1")
 			return err
 		}},
 		{name: "get missing id", run: func() error {
-			_, _, err := store.GetChunk(ctx, "dataset-1", "doc-1", "")
+			_, _, err := store.GetChunk(ctx, testScope("dataset-1"), "doc-1", "")
 			return err
 		}},
 		{name: "list missing dataset", run: func() error {
-			_, err := store.ListChunks(ctx, "", "doc-1", ListOptions{})
+			_, err := store.ListChunks(ctx, "doc-1", ListOptions{Scope: scopePtr(testScope(""))})
 			return err
 		}},
 		{name: "list missing document", run: func() error {
-			_, err := store.ListChunks(ctx, "dataset-1", "", ListOptions{})
+			_, err := store.ListChunks(ctx, "", ListOptions{Scope: scopePtr(testScope("dataset-1"))})
 			return err
 		}},
 		{name: "delete document missing dataset", run: func() error {
-			return store.DeleteDocument(ctx, "", "doc-1")
+			return store.DeleteDocument(ctx, testScope(""), "doc-1")
 		}},
 		{name: "delete document missing document", run: func() error {
-			return store.DeleteDocument(ctx, "dataset-1", "")
+			return store.DeleteDocument(ctx, testScope("dataset-1"), "")
 		}},
 		{name: "delete dataset missing dataset", run: func() error {
-			return store.DeleteDataset(ctx, "")
+			return store.DeleteDataset(ctx, testScope(""))
 		}},
 		{name: "put invalid chunk", run: func() error {
 			chunk := validChunk("chunk-1")
@@ -445,7 +453,7 @@ func TestChunkWorkspaceStoreValidationErrors(t *testing.T) {
 
 func chunkWithScope(datasetID, documentID string, layer Layer, id ChunkID) Chunk {
 	chunk := validChunk(id)
-	chunk.DatasetID = datasetID
+	chunk.Scope.DatasetID = datasetID
 	chunk.DocumentID = documentID
 	chunk.Layer = layer
 	chunk.Signature.TransformSignature = layer.TransformSignature

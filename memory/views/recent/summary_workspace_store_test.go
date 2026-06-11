@@ -38,31 +38,32 @@ func TestSummaryDAGNilStoreReturnsValidationError(t *testing.T) {
 	if _, err := dag.PutNode(ctx, validNode("conversation-1", "node-1")); err == nil || !errdefs.IsValidation(err) {
 		t.Fatalf("PutNode nil store error = %v, want validation", err)
 	}
-	if _, _, err := dag.GetNode(ctx, "conversation-1", "node-1"); err == nil || !errdefs.IsValidation(err) {
+	if _, _, err := dag.GetNode(ctx, testNodeScope("conversation-1"), "node-1"); err == nil || !errdefs.IsValidation(err) {
 		t.Fatalf("GetNode nil store error = %v, want validation", err)
 	}
-	if _, err := dag.ListNodes(ctx, "conversation-1", ListOptions{}); err == nil || !errdefs.IsValidation(err) {
+	if _, err := dag.ListNodes(ctx, testNodeScope("conversation-1"), ListOptions{}); err == nil || !errdefs.IsValidation(err) {
 		t.Fatalf("ListNodes nil store error = %v, want validation", err)
 	}
-	if err := dag.DeleteConversation(ctx, "conversation-1"); err == nil || !errdefs.IsValidation(err) {
-		t.Fatalf("DeleteConversation nil store error = %v, want validation", err)
+	if err := dag.DeleteScope(ctx, testNodeScope("conversation-1")); err == nil || !errdefs.IsValidation(err) {
+		t.Fatalf("DeleteScope nil store error = %v, want validation", err)
 	}
 }
 
-func TestSummaryWorkspaceStorePutGetListDeleteConversationRoundTrip(t *testing.T) {
+func TestSummaryWorkspaceStorePutGetListDeleteScopeRoundTrip(t *testing.T) {
 	ctx := context.Background()
 	store := NewSummaryWorkspaceStore(workspace.NewMemWorkspace())
 	node := validNode("conversation-1", "node-1")
+	scope := testNodeScope("conversation-1")
 
 	put, err := store.PutNode(ctx, node)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if put.ID != node.ID || put.ConversationID != node.ConversationID || put.Summary != node.Summary {
+	if put.ID != node.ID || put.Scope != node.Scope || put.Summary != node.Summary {
 		t.Fatalf("PutNode = %+v, want original identity and summary", put)
 	}
 
-	got, ok, err := store.GetNode(ctx, "conversation-1", "node-1")
+	got, ok, err := store.GetNode(ctx, scope, "node-1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -71,14 +72,14 @@ func TestSummaryWorkspaceStorePutGetListDeleteConversationRoundTrip(t *testing.T
 	}
 	assertNodeEqual(t, got, node)
 
-	listed, err := store.ListNodes(ctx, "conversation-1", ListOptions{})
+	listed, err := store.ListNodes(ctx, scope, ListOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	assertNodeIDs(t, listed, []NodeID{"node-1"})
 
 	dag := NewSummaryDAG(store)
-	fromDAG, ok, err := dag.GetNode(ctx, "conversation-1", "node-1")
+	fromDAG, ok, err := dag.GetNode(ctx, scope, "node-1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -86,18 +87,70 @@ func TestSummaryWorkspaceStorePutGetListDeleteConversationRoundTrip(t *testing.T
 		t.Fatalf("SummaryDAG GetNode = %+v ok %v, want node-1 true", fromDAG, ok)
 	}
 
-	if err := store.DeleteConversation(ctx, "conversation-1"); err != nil {
+	if err := store.DeleteScope(ctx, scope); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok, err := store.GetNode(ctx, "conversation-1", "node-1"); err != nil || ok {
-		t.Fatalf("GetNode after DeleteConversation = ok %v err %v, want false nil", ok, err)
+	if _, ok, err := store.GetNode(ctx, scope, "node-1"); err != nil || ok {
+		t.Fatalf("GetNode after DeleteScope = ok %v err %v, want false nil", ok, err)
 	}
-	listed, err = store.ListNodes(ctx, "conversation-1", ListOptions{})
+	listed, err = store.ListNodes(ctx, scope, ListOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(listed) != 0 {
-		t.Fatalf("ListNodes after DeleteConversation returned %d nodes, want 0", len(listed))
+		t.Fatalf("ListNodes after DeleteScope returned %d nodes, want 0", len(listed))
+	}
+}
+
+func TestSummaryWorkspaceStoreHardPartitionsSameConversation(t *testing.T) {
+	ctx := context.Background()
+	store := NewSummaryWorkspaceStore(workspace.NewMemWorkspace())
+
+	userOne := testNodeScope("conversation-1")
+	userTwo := userOne
+	userTwo.UserID = "user-2"
+
+	nodeOne := validNode("conversation-1", "node-1")
+	nodeOne.Scope = userOne
+	nodeOne.Summary = "summary for user one"
+	nodeTwo := validNode("conversation-1", "node-1")
+	nodeTwo.Scope = userTwo
+	nodeTwo.Summary = "summary for user two"
+
+	if _, err := store.PutNode(ctx, nodeOne); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.PutNode(ctx, nodeTwo); err != nil {
+		t.Fatal(err)
+	}
+
+	gotOne, ok, err := store.GetNode(ctx, userOne, "node-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok || gotOne.Summary != "summary for user one" {
+		t.Fatalf("GetNode user one = %+v ok %v, want user one summary", gotOne, ok)
+	}
+	gotTwo, ok, err := store.GetNode(ctx, userTwo, "node-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok || gotTwo.Summary != "summary for user two" {
+		t.Fatalf("GetNode user two = %+v ok %v, want user two summary", gotTwo, ok)
+	}
+
+	if err := store.DeleteScope(ctx, userOne); err != nil {
+		t.Fatal(err)
+	}
+	if listed, err := store.ListNodes(ctx, userOne, ListOptions{}); err != nil || len(listed) != 0 {
+		t.Fatalf("ListNodes deleted user one = %d err %v, want 0 nil", len(listed), err)
+	}
+	gotTwo, ok, err = store.GetNode(ctx, userTwo, "node-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok || gotTwo.Summary != "summary for user two" {
+		t.Fatalf("GetNode user two after user one delete = %+v ok %v, want kept", gotTwo, ok)
 	}
 }
 
@@ -135,14 +188,14 @@ func TestSummaryWorkspaceStorePutValidation(t *testing.T) {
 	store := NewSummaryWorkspaceStore(workspace.NewMemWorkspace())
 
 	tests := []SummaryNode{
-		{ConversationID: "conversation-1", Summary: "summary"},
+		{Scope: testNodeScope("conversation-1"), Summary: "summary"},
 		{ID: "node-1", Summary: "summary"},
-		{ID: "node-1", ConversationID: "conversation-1"},
-		{ID: "node-1", ConversationID: "conversation-1", Summary: "summary", Level: -1},
+		{ID: "node-1", Scope: testNodeScope("conversation-1")},
+		{ID: "node-1", Scope: testNodeScope("conversation-1"), Summary: "summary", Level: -1},
 		{
-			ID:             "node-1",
-			ConversationID: "conversation-1",
-			Summary:        "summary",
+			ID:      "node-1",
+			Scope:   testNodeScope("conversation-1"),
+			Summary: "summary",
 			Signature: views.ViewSignature{SourceRevisions: []views.SourceRevision{
 				{Kind: views.SourceMessage, SourceKey: "msg-1", Revision: "1"},
 				{Kind: views.SourceMessage, SourceKey: "msg-1", Revision: "2"},
@@ -173,7 +226,7 @@ func TestSummaryWorkspaceStoreReturnsClonesWithoutSortingParents(t *testing.T) {
 	put.Signature.DiagnosticSignatures["prompt"] = "mutated-prompt"
 	put.Metadata["k"] = "mutated-metadata"
 
-	got, ok, err := store.GetNode(ctx, "conversation-1", "node-1")
+	got, ok, err := store.GetNode(ctx, testNodeScope("conversation-1"), "node-1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -199,12 +252,12 @@ func TestSummaryWorkspaceStoreReturnsClonesWithoutSortingParents(t *testing.T) {
 		t.Fatalf("Metadata k = %q, want v", got.Metadata["k"])
 	}
 
-	listed, err := store.ListNodes(ctx, "conversation-1", ListOptions{})
+	listed, err := store.ListNodes(ctx, testNodeScope("conversation-1"), ListOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	listed[0].ParentIDs[0] = "mutated-listed-parent"
-	got, _, err = store.GetNode(ctx, "conversation-1", "node-1")
+	got, _, err = store.GetNode(ctx, testNodeScope("conversation-1"), "node-1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -230,27 +283,27 @@ func TestSummaryWorkspaceStoreListLevelAfterIDLimitDeterministic(t *testing.T) {
 		}
 	}
 
-	all, err := store.ListNodes(ctx, "conversation-1", ListOptions{})
+	all, err := store.ListNodes(ctx, testNodeScope("conversation-1"), ListOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	assertNodeIDs(t, all, []NodeID{"alpha", "bravo", "charlie", "delta"})
 
 	levelOne := 1
-	filtered, err := store.ListNodes(ctx, "conversation-1", ListOptions{AfterID: "alpha", Limit: 2, Level: &levelOne})
+	filtered, err := store.ListNodes(ctx, testNodeScope("conversation-1"), ListOptions{AfterID: "alpha", Limit: 2, Level: &levelOne})
 	if err != nil {
 		t.Fatal(err)
 	}
 	assertNodeIDs(t, filtered, []NodeID{"bravo", "charlie"})
 
 	levelZero := 0
-	onlyLevelZero, err := store.ListNodes(ctx, "conversation-1", ListOptions{Level: &levelZero})
+	onlyLevelZero, err := store.ListNodes(ctx, testNodeScope("conversation-1"), ListOptions{Level: &levelZero})
 	if err != nil {
 		t.Fatal(err)
 	}
 	assertNodeIDs(t, onlyLevelZero, []NodeID{"alpha"})
 
-	missing, err := store.ListNodes(ctx, "missing-conversation", ListOptions{})
+	missing, err := store.ListNodes(ctx, testNodeScope("missing-conversation"), ListOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -291,37 +344,40 @@ func TestSummaryWorkspaceStorePathSafeIDsRoundTripAndTargetedDelete(t *testing.T
 			assertSafeWorkspaceSegment(t, store, conversationSegment, tc.conversationID, "sdag_")
 			assertSafeWorkspaceSegment(t, store, nodeSegment, string(tc.nodeID), "sdag_")
 
-			encodedPath := "conversations/" + conversationSegment + "/nodes/" + nodeSegment + ".json"
+			scope := testNodeScope(tc.conversationID)
+			runtimeSegment := store.pathSegment(scope.RuntimeID)
+			userSegment := store.pathSegment(scope.UserID)
+			encodedPath := "runtimes/" + runtimeSegment + "/users/" + userSegment + "/conversations/" + conversationSegment + "/nodes/" + nodeSegment + ".json"
 			if exists, err := ws.Exists(ctx, encodedPath); err != nil || !exists {
 				t.Fatalf("encoded node exists = %v err %v, want true nil", exists, err)
 			}
-			rawPath := "conversations/" + tc.conversationID + "/nodes/" + string(tc.nodeID) + ".json"
+			rawPath := "runtimes/" + scope.RuntimeID + "/users/" + scope.UserID + "/conversations/" + tc.conversationID + "/nodes/" + string(tc.nodeID) + ".json"
 			if rawPath != encodedPath {
 				if exists, err := ws.Exists(ctx, rawPath); err != nil || exists {
 					t.Fatalf("raw node path %q exists = %v err %v, want false nil", rawPath, exists, err)
 				}
 			}
 
-			got, ok, err := store.GetNode(ctx, tc.conversationID, tc.nodeID)
+			got, ok, err := store.GetNode(ctx, scope, tc.nodeID)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if !ok || got.ConversationID != tc.conversationID || got.ID != tc.nodeID {
+			if !ok || got.Scope.ConversationID != tc.conversationID || got.ID != tc.nodeID {
 				t.Fatalf("GetNode path-safe id = %+v ok %v, want original ids", got, ok)
 			}
 
-			if err := store.DeleteConversation(ctx, tc.conversationID); err != nil {
+			if err := store.DeleteScope(ctx, scope); err != nil {
 				t.Fatal(err)
 			}
-			if listed, err := store.ListNodes(ctx, tc.conversationID, ListOptions{}); err != nil || len(listed) != 0 {
+			if listed, err := store.ListNodes(ctx, scope, ListOptions{}); err != nil || len(listed) != 0 {
 				t.Fatalf("ListNodes after target delete = %d err %v, want 0 nil", len(listed), err)
 			}
-			kept, ok, err := store.GetNode(ctx, "sentinel-conversation", "sentinel-node")
+			kept, ok, err := store.GetNode(ctx, testNodeScope("sentinel-conversation"), "sentinel-node")
 			if err != nil {
 				t.Fatal(err)
 			}
 			if !ok || kept.Summary != "summary for sentinel-node" {
-				t.Fatalf("sentinel after DeleteConversation(%q) = %+v ok %v, want kept", tc.conversationID, kept, ok)
+				t.Fatalf("sentinel after DeleteScope(%q) = %+v ok %v, want kept", tc.conversationID, kept, ok)
 			}
 		})
 	}
@@ -337,17 +393,19 @@ func TestSummaryWorkspaceStoreCustomPathSegmentPrefix(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	conversationSegment := store.pathSegment(node.ConversationID)
+	conversationSegment := store.pathSegment(node.Scope.ConversationID)
 	nodeSegment := store.pathSegment(string(node.ID))
-	assertSafeWorkspaceSegment(t, store, conversationSegment, node.ConversationID, "custom_")
+	assertSafeWorkspaceSegment(t, store, conversationSegment, node.Scope.ConversationID, "custom_")
 	assertSafeWorkspaceSegment(t, store, nodeSegment, string(node.ID), "custom_")
 
-	encodedPath := "conversations/" + conversationSegment + "/nodes/" + nodeSegment + ".json"
+	runtimeSegment := store.pathSegment(node.Scope.RuntimeID)
+	userSegment := store.pathSegment(node.Scope.UserID)
+	encodedPath := "runtimes/" + runtimeSegment + "/users/" + userSegment + "/conversations/" + conversationSegment + "/nodes/" + nodeSegment + ".json"
 	if exists, err := ws.Exists(ctx, encodedPath); err != nil || !exists {
 		t.Fatalf("custom-prefixed node exists = %v err %v, want true nil", exists, err)
 	}
 
-	got, ok, err := store.GetNode(ctx, node.ConversationID, node.ID)
+	got, ok, err := store.GetNode(ctx, node.Scope, node.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -356,16 +414,16 @@ func TestSummaryWorkspaceStoreCustomPathSegmentPrefix(t *testing.T) {
 	}
 	assertNodeEqual(t, got, node)
 
-	listed, err := store.ListNodes(ctx, node.ConversationID, ListOptions{})
+	listed, err := store.ListNodes(ctx, node.Scope, ListOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	assertNodeIDs(t, listed, []NodeID{node.ID})
 
-	if err := store.DeleteConversation(ctx, node.ConversationID); err != nil {
+	if err := store.DeleteScope(ctx, node.Scope); err != nil {
 		t.Fatal(err)
 	}
-	if listed, err := store.ListNodes(ctx, node.ConversationID, ListOptions{}); err != nil || len(listed) != 0 {
+	if listed, err := store.ListNodes(ctx, node.Scope, ListOptions{}); err != nil || len(listed) != 0 {
 		t.Fatalf("ListNodes after custom-prefixed delete = %d err %v, want 0 nil", len(listed), err)
 	}
 }
@@ -383,7 +441,7 @@ func TestSummaryWorkspaceStoreMetadataJSONRoundTripSemantics(t *testing.T) {
 	if _, err := store.PutNode(ctx, node); err != nil {
 		t.Fatal(err)
 	}
-	got, ok, err := store.GetNode(ctx, "conversation-1", "node-1")
+	got, ok, err := store.GetNode(ctx, testNodeScope("conversation-1"), "node-1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -418,12 +476,12 @@ func validNode(conversationID string, id NodeID) SummaryNode {
 		},
 	}
 	return SummaryNode{
-		ID:             id,
-		ConversationID: conversationID,
-		ParentIDs:      []NodeID{"parent-1"},
-		SourceRefs:     []views.SourceRef{sourceRef},
-		Summary:        "summary for " + string(id),
-		Level:          1,
+		ID:         id,
+		Scope:      testNodeScope(conversationID),
+		ParentIDs:  []NodeID{"parent-1"},
+		SourceRefs: []views.SourceRef{sourceRef},
+		Summary:    "summary for " + string(id),
+		Level:      1,
 		Signature: views.ViewSignature{
 			ViewID: views.ID("summary_dag"),
 			SourceRevisions: []views.SourceRevision{{
@@ -437,6 +495,10 @@ func validNode(conversationID string, id NodeID) SummaryNode {
 		UpdatedAt: updated,
 		Metadata:  map[string]any{"k": "v"},
 	}
+}
+
+func testNodeScope(conversationID string) views.Scope {
+	return views.Scope{RuntimeID: "runtime-1", UserID: "user-1", ConversationID: conversationID}
 }
 
 func assertNodeEqual(t *testing.T, got, want SummaryNode) {

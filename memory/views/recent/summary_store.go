@@ -19,16 +19,19 @@ type ListOptions struct {
 // SummaryStore persists SummaryDAG nodes.
 type SummaryStore interface {
 	PutNode(ctx context.Context, node SummaryNode) (SummaryNode, error)
-	GetNode(ctx context.Context, conversationID string, id NodeID) (SummaryNode, bool, error)
-	ListNodes(ctx context.Context, conversationID string, opts ListOptions) ([]SummaryNode, error)
-	DeleteConversation(ctx context.Context, conversationID string) error
+	GetNode(ctx context.Context, scope views.Scope, id NodeID) (SummaryNode, bool, error)
+	ListNodes(ctx context.Context, scope views.Scope, opts ListOptions) ([]SummaryNode, error)
+	DeleteScope(ctx context.Context, scope views.Scope) error
 }
 
 func validateSummaryNode(node SummaryNode) error {
 	if node.ID == "" {
 		return errdefs.Validationf("%s: summary node id is required", summaryDAGErrPrefix)
 	}
-	if node.ConversationID == "" {
+	if err := node.Scope.Validate(); err != nil {
+		return errdefs.Validationf("%s: invalid scope: %w", summaryDAGErrPrefix, err)
+	}
+	if node.Scope.ConversationID == "" {
 		return errdefs.Validationf("%s: conversation_id is required", summaryDAGErrPrefix)
 	}
 	if node.Summary == "" {

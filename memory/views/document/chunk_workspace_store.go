@@ -97,27 +97,28 @@ func (s *ChunkWorkspaceStore) PutChunk(ctx context.Context, chunk Chunk) (Chunk,
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	livePath := s.chunkPath(chunk.DatasetID, chunk.DocumentID, chunk.Layer, chunk.ID)
-	stalePaths, err := s.staleChunkIDPathsLocked(ctx, chunk.DatasetID, chunk.DocumentID, chunk.ID, livePath)
+	datasetID := chunk.Scope.DatasetID
+	livePath := s.chunkPath(datasetID, chunk.DocumentID, chunk.Layer, chunk.ID)
+	stalePaths, err := s.staleChunkIDPathsLocked(ctx, datasetID, chunk.DocumentID, chunk.ID, livePath)
 	if err != nil {
 		return Chunk{}, err
 	}
 	if err := s.writeChunk(ctx, chunk); err != nil {
 		return Chunk{}, err
 	}
-	if err := s.deleteStaleChunkIDPathsLocked(ctx, chunk.DatasetID, chunk.DocumentID, chunk.ID, stalePaths); err != nil {
+	if err := s.deleteStaleChunkIDPathsLocked(ctx, datasetID, chunk.DocumentID, chunk.ID, stalePaths); err != nil {
 		return Chunk{}, err
 	}
 	return cloneChunk(chunk), nil
 }
 
-// GetChunk returns one chunk by dataset, document, and chunk id.
-func (s *ChunkWorkspaceStore) GetChunk(ctx context.Context, datasetID, documentID string, id ChunkID) (Chunk, bool, error) {
+// GetChunk returns one chunk by scope, document, and chunk id.
+func (s *ChunkWorkspaceStore) GetChunk(ctx context.Context, scope views.Scope, documentID string, id ChunkID) (Chunk, bool, error) {
 	if s.ws == nil {
 		return Chunk{}, false, errdefs.Validationf("%s: workspace is required", chunksErrPrefix)
 	}
-	if datasetID == "" {
-		return Chunk{}, false, errdefs.Validationf("%s: dataset_id is required", chunksErrPrefix)
+	if err := validateDatasetScope(scope); err != nil {
+		return Chunk{}, false, err
 	}
 	if documentID == "" {
 		return Chunk{}, false, errdefs.Validationf("%s: document_id is required", chunksErrPrefix)
@@ -129,6 +130,7 @@ func (s *ChunkWorkspaceStore) GetChunk(ctx context.Context, datasetID, documentI
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
+	datasetID := scope.DatasetID
 	candidates, err := s.chunkCandidates(ctx, datasetID, documentID)
 	if err != nil {
 		return Chunk{}, false, err
@@ -151,12 +153,15 @@ func (s *ChunkWorkspaceStore) GetChunk(ctx context.Context, datasetID, documentI
 
 // ListChunks returns chunks ordered by ascending chunk id. When two layers have
 // the same chunk id, the layer identity provides a deterministic tie-breaker.
-func (s *ChunkWorkspaceStore) ListChunks(ctx context.Context, datasetID, documentID string, opts ListOptions) ([]Chunk, error) {
+func (s *ChunkWorkspaceStore) ListChunks(ctx context.Context, documentID string, opts ListOptions) ([]Chunk, error) {
 	if s.ws == nil {
 		return nil, errdefs.Validationf("%s: workspace is required", chunksErrPrefix)
 	}
-	if datasetID == "" {
-		return nil, errdefs.Validationf("%s: dataset_id is required", chunksErrPrefix)
+	if opts.Scope == nil {
+		return nil, errdefs.Validationf("%s: scope is required", chunksErrPrefix)
+	}
+	if err := validateDatasetScope(*opts.Scope); err != nil {
+		return nil, err
 	}
 	if documentID == "" {
 		return nil, errdefs.Validationf("%s: document_id is required", chunksErrPrefix)
@@ -165,6 +170,7 @@ func (s *ChunkWorkspaceStore) ListChunks(ctx context.Context, datasetID, documen
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
+	datasetID := opts.Scope.DatasetID
 	candidates, err := s.chunkCandidates(ctx, datasetID, documentID)
 	if err != nil {
 		return nil, err
@@ -219,12 +225,12 @@ func (s *ChunkWorkspaceStore) deleteStaleChunkIDPathsLocked(ctx context.Context,
 
 // DeleteDocument removes all persisted chunks for a document across layers. It
 // is idempotent.
-func (s *ChunkWorkspaceStore) DeleteDocument(ctx context.Context, datasetID, documentID string) error {
+func (s *ChunkWorkspaceStore) DeleteDocument(ctx context.Context, scope views.Scope, documentID string) error {
 	if s.ws == nil {
 		return errdefs.Validationf("%s: workspace is required", chunksErrPrefix)
 	}
-	if datasetID == "" {
-		return errdefs.Validationf("%s: dataset_id is required", chunksErrPrefix)
+	if err := validateDatasetScope(scope); err != nil {
+		return err
 	}
 	if documentID == "" {
 		return errdefs.Validationf("%s: document_id is required", chunksErrPrefix)
@@ -233,6 +239,7 @@ func (s *ChunkWorkspaceStore) DeleteDocument(ctx context.Context, datasetID, doc
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	datasetID := scope.DatasetID
 	if err := s.ws.RemoveAll(ctx, s.documentDir(datasetID, documentID)); err != nil {
 		if errdefs.IsNotFound(err) {
 			return nil
@@ -243,22 +250,33 @@ func (s *ChunkWorkspaceStore) DeleteDocument(ctx context.Context, datasetID, doc
 }
 
 // DeleteDataset removes all persisted chunks for a dataset. It is idempotent.
-func (s *ChunkWorkspaceStore) DeleteDataset(ctx context.Context, datasetID string) error {
+func (s *ChunkWorkspaceStore) DeleteDataset(ctx context.Context, scope views.Scope) error {
 	if s.ws == nil {
 		return errdefs.Validationf("%s: workspace is required", chunksErrPrefix)
 	}
-	if datasetID == "" {
-		return errdefs.Validationf("%s: dataset_id is required", chunksErrPrefix)
+	if err := validateDatasetScope(scope); err != nil {
+		return err
 	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	datasetID := scope.DatasetID
 	if err := s.ws.RemoveAll(ctx, s.datasetDir(datasetID)); err != nil {
 		if errdefs.IsNotFound(err) {
 			return nil
 		}
 		return fmt.Errorf("%s: delete dataset %q chunks: %w", chunksErrPrefix, datasetID, err)
+	}
+	return nil
+}
+
+func validateDatasetScope(scope views.Scope) error {
+	if err := scope.Validate(); err != nil {
+		return errdefs.Validationf("%s: invalid scope: %w", chunksErrPrefix, err)
+	}
+	if scope.DatasetID == "" {
+		return errdefs.Validationf("%s: dataset_id is required", chunksErrPrefix)
 	}
 	return nil
 }
@@ -342,17 +360,17 @@ func (s *ChunkWorkspaceStore) readChunkAtPath(ctx context.Context, chunkPath, da
 func (s *ChunkWorkspaceStore) writeChunk(ctx context.Context, chunk Chunk) error {
 	data, err := encodeChunk(chunk)
 	if err != nil {
-		return fmt.Errorf("%s: marshal chunk %q/%q/%q: %w", chunksErrPrefix, chunk.DatasetID, chunk.DocumentID, chunk.ID, err)
+		return fmt.Errorf("%s: marshal chunk %q/%q/%q: %w", chunksErrPrefix, chunk.Scope.DatasetID, chunk.DocumentID, chunk.ID, err)
 	}
 
-	livePath := s.chunkPath(chunk.DatasetID, chunk.DocumentID, chunk.Layer, chunk.ID)
+	livePath := s.chunkPath(chunk.Scope.DatasetID, chunk.DocumentID, chunk.Layer, chunk.ID)
 	tmpPath := s.tmpChunkPath(livePath)
 	if err := s.ws.Write(ctx, tmpPath, data); err != nil {
-		return fmt.Errorf("%s: write chunk tmp %q/%q/%q: %w", chunksErrPrefix, chunk.DatasetID, chunk.DocumentID, chunk.ID, err)
+		return fmt.Errorf("%s: write chunk tmp %q/%q/%q: %w", chunksErrPrefix, chunk.Scope.DatasetID, chunk.DocumentID, chunk.ID, err)
 	}
 	if err := s.ws.Rename(ctx, tmpPath, livePath); err != nil {
 		_ = s.ws.Delete(ctx, tmpPath)
-		return fmt.Errorf("%s: publish chunk %q/%q/%q: %w", chunksErrPrefix, chunk.DatasetID, chunk.DocumentID, chunk.ID, err)
+		return fmt.Errorf("%s: publish chunk %q/%q/%q: %w", chunksErrPrefix, chunk.Scope.DatasetID, chunk.DocumentID, chunk.ID, err)
 	}
 	return nil
 }
@@ -416,7 +434,7 @@ type layerIdentityRecord struct {
 
 type chunkRecord struct {
 	ID         ChunkID             `json:"id"`
-	DatasetID  string              `json:"dataset_id"`
+	Scope      views.Scope         `json:"scope"`
 	DocumentID string              `json:"document_id"`
 	Layer      Layer               `json:"layer"`
 	Ordinal    int                 `json:"ordinal"`
@@ -432,7 +450,7 @@ type chunkRecord struct {
 func encodeChunk(chunk Chunk) ([]byte, error) {
 	return json.Marshal(chunkRecord{
 		ID:         chunk.ID,
-		DatasetID:  chunk.DatasetID,
+		Scope:      chunk.Scope,
 		DocumentID: chunk.DocumentID,
 		Layer:      chunk.Layer,
 		Ordinal:    chunk.Ordinal,
@@ -453,7 +471,7 @@ func decodeChunk(data []byte, chunk *Chunk) error {
 	}
 	*chunk = Chunk{
 		ID:         record.ID,
-		DatasetID:  record.DatasetID,
+		Scope:      record.Scope,
 		DocumentID: record.DocumentID,
 		Layer:      record.Layer,
 		Ordinal:    record.Ordinal,

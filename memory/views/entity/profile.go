@@ -4,7 +4,6 @@ import (
 	"context"
 
 	"github.com/GizClaw/flowcraft/memory/views"
-	"github.com/GizClaw/flowcraft/memory/views/fact"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 )
 
@@ -97,15 +96,18 @@ func (p *Profile) Put(ctx context.Context, record ProfileRecord) (ProfileRecord,
 	return cloneProfileRecord(stored), nil
 }
 
-// Get returns one entity profile by id.
-func (p *Profile) Get(ctx context.Context, id ProfileID) (ProfileRecord, bool, error) {
+// Get returns one entity profile by scope and id.
+func (p *Profile) Get(ctx context.Context, scope views.Scope, id ProfileID) (ProfileRecord, bool, error) {
 	if p.store == nil {
 		return ProfileRecord{}, false, errdefs.Validationf("%s: store is required", profileErrPrefix)
+	}
+	if err := validateEntityScope(profileErrPrefix, scope); err != nil {
+		return ProfileRecord{}, false, err
 	}
 	if err := validateProfileID(id); err != nil {
 		return ProfileRecord{}, false, err
 	}
-	record, ok, err := p.store.Get(ctx, id)
+	record, ok, err := p.store.Get(ctx, scope, id)
 	if err != nil {
 		return ProfileRecord{}, false, err
 	}
@@ -127,24 +129,27 @@ func (p *Profile) List(ctx context.Context, opts ProfileListOptions) ([]ProfileR
 	return cloneProfileRecords(records), nil
 }
 
-// Delete removes one entity profile by id. It is idempotent at the Store boundary.
-func (p *Profile) Delete(ctx context.Context, id ProfileID) error {
+// Delete removes one entity profile by scope and id. It is idempotent at the Store boundary.
+func (p *Profile) Delete(ctx context.Context, scope views.Scope, id ProfileID) error {
 	if p.store == nil {
 		return errdefs.Validationf("%s: store is required", profileErrPrefix)
+	}
+	if err := validateEntityScope(profileErrPrefix, scope); err != nil {
+		return err
 	}
 	if err := validateProfileID(id); err != nil {
 		return err
 	}
-	return p.store.Delete(ctx, id)
+	return p.store.Delete(ctx, scope, id)
 }
 
 // DeleteEntity removes all profile records for one entity. It is idempotent at the Store boundary.
-func (p *Profile) DeleteEntity(ctx context.Context, entityID fact.NodeID) error {
+func (p *Profile) DeleteEntity(ctx context.Context, scope views.Scope) error {
 	if p.store == nil {
 		return errdefs.Validationf("%s: store is required", profileErrPrefix)
 	}
-	if err := validateEntityID(profileErrPrefix, entityID); err != nil {
+	if err := validateEntityScope(profileErrPrefix, scope); err != nil {
 		return err
 	}
-	return p.store.DeleteEntity(ctx, entityID)
+	return p.store.DeleteEntity(ctx, scope)
 }
