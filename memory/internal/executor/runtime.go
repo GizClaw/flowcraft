@@ -9,6 +9,7 @@ import (
 	sourcedocument "github.com/GizClaw/flowcraft/memory/sources/document"
 	sourcemessage "github.com/GizClaw/flowcraft/memory/sources/message"
 	viewdocument "github.com/GizClaw/flowcraft/memory/views/document"
+	viewentity "github.com/GizClaw/flowcraft/memory/views/entity"
 	"github.com/GizClaw/flowcraft/memory/views/fact"
 	viewobservation "github.com/GizClaw/flowcraft/memory/views/observation"
 	"github.com/GizClaw/flowcraft/memory/views/recent"
@@ -33,11 +34,14 @@ func New(deps Deps) (*Executor, error) {
 		projections: make(map[compiler.Capability]compiler.ProjectionAssembly, len(deps.Assembly.Projections)),
 		writers:     make(map[compiler.Capability]*indexed.Writer, len(deps.Assembly.Projections)),
 
-		documentChunker:      deps.DocumentChunker,
-		summarizer:           deps.Summarizer,
-		observationExtractor: deps.ObservationExtractor,
-		factReconciler:       deps.FactReconciler,
-		factGraphBuilder:     deps.FactGraphBuilder,
+		documentChunker:       deps.DocumentChunker,
+		summarizer:            deps.Summarizer,
+		observationExtractor:  deps.ObservationExtractor,
+		factReconciler:        deps.FactReconciler,
+		factGraphBuilder:      deps.FactGraphBuilder,
+		entityProfileBuilder:  deps.EntityProfileBuilder,
+		entityTimelineBuilder: deps.EntityTimelineBuilder,
+		contextPacker:         deps.ContextPacker,
 	}
 
 	for _, view := range deps.Assembly.Views {
@@ -135,6 +139,8 @@ func (r *Executor) configureViews(deps Deps) error {
 	observationFlow := r.shouldConfigureFlow(compiler.CapabilityObservationLedger, deps.ObservationStore != nil, r.observationExtractor != nil)
 	factFlow := r.shouldConfigureCompleteFlow(compiler.CapabilityFactLedger, deps.FactStore != nil, r.factReconciler != nil)
 	factGraphFlow := r.shouldConfigureCompleteFlow(compiler.CapabilityFactGraph, deps.FactGraphStore != nil, r.factGraphBuilder != nil)
+	entityProfileFlow := r.shouldConfigureCompleteFlow(compiler.CapabilityEntityProfile, deps.EntityProfileStore != nil, r.entityProfileBuilder != nil)
+	entityTimelineFlow := r.shouldConfigureCompleteFlow(compiler.CapabilityEntityTimeline, deps.EntityTimelineStore != nil, r.entityTimelineBuilder != nil)
 
 	if r.shouldConfigureRecentWindow(summaryFlow, observationFlow) {
 		if r.messageStore == nil {
@@ -161,7 +167,13 @@ func (r *Executor) configureViews(deps Deps) error {
 	if err := r.configureFactLedger(deps.FactStore, factFlow); err != nil {
 		return err
 	}
-	return r.configureFactGraph(deps.FactGraphStore, factGraphFlow)
+	if err := r.configureFactGraph(deps.FactGraphStore, factGraphFlow); err != nil {
+		return err
+	}
+	if err := r.configureEntityProfile(deps.EntityProfileStore, entityProfileFlow); err != nil {
+		return err
+	}
+	return r.configureEntityTimeline(deps.EntityTimelineStore, entityTimelineFlow)
 }
 
 func (r *Executor) configureSummaryDAG(store recent.SummaryStore) error {
@@ -239,6 +251,36 @@ func (r *Executor) configureFactGraph(store fact.GraphStore, configure bool) err
 	return nil
 }
 
+func (r *Executor) configureEntityProfile(store viewentity.ProfileStore, configure bool) error {
+	if !configure {
+		return nil
+	}
+	if store == nil {
+		return errdefs.Validationf("%s: capability %q requires EntityProfileStore", errPrefix, compiler.CapabilityEntityProfile)
+	}
+	if r.entityProfileBuilder == nil {
+		return errdefs.Validationf("%s: capability %q requires EntityProfileBuilder", errPrefix, compiler.CapabilityEntityProfile)
+	}
+	view := r.enabled[compiler.CapabilityEntityProfile]
+	r.entityProfile = viewentity.NewProfile(store, viewentity.WithProfileID(view.Descriptor.ID), viewentity.WithProfileVersion(view.Descriptor.Version))
+	return nil
+}
+
+func (r *Executor) configureEntityTimeline(store viewentity.TimelineStore, configure bool) error {
+	if !configure {
+		return nil
+	}
+	if store == nil {
+		return errdefs.Validationf("%s: capability %q requires EntityTimelineStore", errPrefix, compiler.CapabilityEntityTimeline)
+	}
+	if r.entityTimelineBuilder == nil {
+		return errdefs.Validationf("%s: capability %q requires EntityTimelineBuilder", errPrefix, compiler.CapabilityEntityTimeline)
+	}
+	view := r.enabled[compiler.CapabilityEntityTimeline]
+	r.entityTimeline = viewentity.NewTimeline(store, viewentity.WithTimelineID(view.Descriptor.ID), viewentity.WithTimelineVersion(view.Descriptor.Version))
+	return nil
+}
+
 func (r *Executor) configureProjectionWriters() error {
 	projections, err := r.projectionWritersToConfigure()
 	if err != nil {
@@ -293,6 +335,10 @@ func (r *Executor) projectionFlowConfigured(capability compiler.Capability) (con
 		return r.factLedger != nil, true
 	case compiler.CapabilityFactGraph:
 		return r.factGraph != nil, true
+	case compiler.CapabilityEntityProfile:
+		return r.entityProfile != nil, true
+	case compiler.CapabilityEntityTimeline:
+		return r.entityTimeline != nil, true
 	default:
 		return false, false
 	}
@@ -326,9 +372,6 @@ func (r *Executor) required(capability compiler.Capability) bool {
 
 func unsupportedCapability(capability compiler.Capability) bool {
 	switch capability {
-	case compiler.CapabilityEntityProfile,
-		compiler.CapabilityEntityTimeline:
-		return true
 	default:
 		return false
 	}

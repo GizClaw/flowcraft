@@ -120,10 +120,11 @@ func (l *Ledger) List(ctx context.Context, opts ListOptions) ([]Fact, error) {
 	if l.store == nil {
 		return nil, errdefs.Validationf("%s: store is required", ledgerErrPrefix)
 	}
+	opts = normalizeListOptions(cloneListOptions(opts))
 	if err := validateListOptions(opts); err != nil {
 		return nil, err
 	}
-	facts, err := l.store.List(ctx, cloneListOptions(opts))
+	facts, err := l.store.List(ctx, opts)
 	if err != nil {
 		return nil, err
 	}

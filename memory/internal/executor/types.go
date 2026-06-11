@@ -11,6 +11,7 @@ import (
 	sourcemessage "github.com/GizClaw/flowcraft/memory/sources/message"
 	"github.com/GizClaw/flowcraft/memory/views"
 	viewdocument "github.com/GizClaw/flowcraft/memory/views/document"
+	viewentity "github.com/GizClaw/flowcraft/memory/views/entity"
 	"github.com/GizClaw/flowcraft/memory/views/fact"
 	viewobservation "github.com/GizClaw/flowcraft/memory/views/observation"
 	"github.com/GizClaw/flowcraft/memory/views/recent"
@@ -26,19 +27,24 @@ type Deps struct {
 	MessageStore  sourcemessage.Store
 	DocumentStore sourcedocument.Store
 
-	SummaryStore     recent.SummaryStore
-	ChunkStore       viewdocument.ChunkStore
-	ObservationStore viewobservation.Store
-	FactStore        fact.Store
-	FactGraphStore   fact.GraphStore
+	SummaryStore        recent.SummaryStore
+	ChunkStore          viewdocument.ChunkStore
+	ObservationStore    viewobservation.Store
+	FactStore           fact.Store
+	FactGraphStore      fact.GraphStore
+	EntityProfileStore  viewentity.ProfileStore
+	EntityTimelineStore viewentity.TimelineStore
 
 	Index retrieval.Index
 
-	DocumentChunker      DocumentChunker
-	Summarizer           Summarizer
-	ObservationExtractor ObservationExtractor
-	FactReconciler       FactReconciler
-	FactGraphBuilder     FactGraphBuilder
+	DocumentChunker       DocumentChunker
+	Summarizer            Summarizer
+	ObservationExtractor  ObservationExtractor
+	FactReconciler        FactReconciler
+	FactGraphBuilder      FactGraphBuilder
+	EntityProfileBuilder  EntityProfileBuilder
+	EntityTimelineBuilder EntityTimelineBuilder
+	ContextPacker         ContextPacker
 }
 
 // Executor is the single internal capability runner assembled from compiler output.
@@ -54,6 +60,8 @@ type Executor struct {
 	observationLedger *viewobservation.Ledger
 	factLedger        *fact.Ledger
 	factGraph         *fact.Graph
+	entityProfile     *viewentity.Profile
+	entityTimeline    *viewentity.Timeline
 
 	index retrieval.Index
 
@@ -61,11 +69,14 @@ type Executor struct {
 	projections map[compiler.Capability]compiler.ProjectionAssembly
 	writers     map[compiler.Capability]*indexed.Writer
 
-	documentChunker      DocumentChunker
-	summarizer           Summarizer
-	observationExtractor ObservationExtractor
-	factReconciler       FactReconciler
-	factGraphBuilder     FactGraphBuilder
+	documentChunker       DocumentChunker
+	summarizer            Summarizer
+	observationExtractor  ObservationExtractor
+	factReconciler        FactReconciler
+	factGraphBuilder      FactGraphBuilder
+	entityProfileBuilder  EntityProfileBuilder
+	entityTimelineBuilder EntityTimelineBuilder
+	contextPacker         ContextPacker
 }
 
 // DocumentChunker derives semantic chunk records from a canonical document.
@@ -113,7 +124,9 @@ type FactReconciler interface {
 // FactReconcileInput is the evidence and view identity provided to a fact reconciler.
 type FactReconcileInput struct {
 	View         views.Descriptor
+	Scope        views.Scope
 	Observations []viewobservation.Observation
+	Current      []fact.Fact
 }
 
 // FactGraphBuilder derives graph nodes and edges from reconciled facts.
@@ -131,6 +144,61 @@ type FactGraphInput struct {
 type FactGraphOutput struct {
 	Nodes []fact.Node
 	Edges []fact.Edge
+}
+
+// EntityProfileBuilder derives entity profile records from fact graph and fact
+// ledger outputs. It receives evidence from the executor; builders must not read stores.
+type EntityProfileBuilder interface {
+	BuildEntityProfiles(context.Context, EntityProfileInput) ([]viewentity.ProfileRecord, error)
+}
+
+// EntityProfileInput is the evidence and view identity provided to an entity profile builder.
+type EntityProfileInput struct {
+	View  views.Descriptor
+	Scope views.Scope
+	Facts []fact.Fact
+	Graph FactGraphOutput
+}
+
+// EntityTimelineBuilder derives entity timeline events from fact graph and fact
+// ledger outputs. It receives evidence from the executor; builders must not read stores.
+type EntityTimelineBuilder interface {
+	BuildEntityTimeline(context.Context, EntityTimelineInput) ([]viewentity.Event, error)
+}
+
+// EntityTimelineInput is the evidence and view identity provided to an entity timeline builder.
+type EntityTimelineInput struct {
+	View  views.Descriptor
+	Scope views.Scope
+	Facts []fact.Fact
+	Graph FactGraphOutput
+}
+
+// ContextPacker optionally chooses the final context items from executor-built
+// candidates. It receives only typed DTO evidence and must not read stores.
+type ContextPacker interface {
+	PackContext(context.Context, ContextPackInput) (ContextPackOutput, error)
+}
+
+// ContextPackInput carries deterministic candidate evidence for a packer hook.
+type ContextPackInput struct {
+	Scope              views.Scope
+	Query              string
+	Window             recent.WindowResult
+	Items              []ContextItem
+	SummaryHits        []SummaryNodeSearchHit
+	DocumentHits       []DocumentChunkSearchHit
+	ObservationHits    []ObservationSearchHit
+	FactHits           []FactSearchHit
+	FactGraphHits      []FactGraphSearchHit
+	EntityProfileHits  []EntityProfileSearchHit
+	EntityTimelineHits []EntityTimelineSearchHit
+}
+
+// ContextPackOutput contains the final items selected by a packer hook.
+// An empty or nil Items slice is a valid result and filters all context items.
+type ContextPackOutput struct {
+	Items []ContextItem
 }
 
 // DocumentChunkSearchResponse hydrates document chunk search hits.
@@ -200,45 +268,87 @@ type FactGraphSearchHit struct {
 	Edge      *fact.Edge
 }
 
+// EntityBuildInput carries fact and graph evidence for entity profile/timeline builders.
+type EntityBuildInput struct {
+	Scope views.Scope
+	Facts []fact.Fact
+	Graph *FactGraphBuildResult
+}
+
+// EntityProfileSearchResponse hydrates entity profile search hits.
+type EntityProfileSearchResponse struct {
+	Hits []EntityProfileSearchHit
+	Took time.Duration
+}
+
+// EntityProfileSearchHit pairs a retrieval hit with its semantic entity profile.
+type EntityProfileSearchHit struct {
+	Retrieval retrieval.Hit
+	Profile   viewentity.ProfileRecord
+}
+
+// EntityTimelineSearchResponse hydrates entity timeline search hits.
+type EntityTimelineSearchResponse struct {
+	Hits []EntityTimelineSearchHit
+	Took time.Duration
+}
+
+// EntityTimelineSearchHit pairs a retrieval hit with its semantic entity timeline event.
+type EntityTimelineSearchHit struct {
+	Retrieval retrieval.Hit
+	Event     viewentity.Event
+}
+
 // PackContextRequest describes the read-time evidence Executor should compose.
 type PackContextRequest struct {
-	Window            recent.WindowRequest
-	SummarySearch     *retrieval.SearchRequest
-	DocumentSearch    *retrieval.SearchRequest
-	ObservationSearch *retrieval.SearchRequest
-	FactSearch        *retrieval.SearchRequest
-	FactGraphSearch   *retrieval.SearchRequest
+	Scope views.Scope
+	Query string
 
-	SummaryNamespace     string
-	DocumentNamespace    string
-	ObservationNamespace string
-	FactNamespace        string
-	FactGraphNamespace   string
+	Window               recent.WindowRequest
+	SummarySearch        *retrieval.SearchRequest
+	DocumentSearch       *retrieval.SearchRequest
+	ObservationSearch    *retrieval.SearchRequest
+	FactSearch           *retrieval.SearchRequest
+	FactGraphSearch      *retrieval.SearchRequest
+	EntityProfileSearch  *retrieval.SearchRequest
+	EntityTimelineSearch *retrieval.SearchRequest
+
+	SummaryNamespace        string
+	DocumentNamespace       string
+	ObservationNamespace    string
+	FactNamespace           string
+	FactGraphNamespace      string
+	EntityProfileNamespace  string
+	EntityTimelineNamespace string
 }
 
 // ContextPack is a minimal deterministic composition of recent messages and
 // explicitly requested retrieval results.
 type ContextPack struct {
-	Window          recent.WindowResult
-	SummaryHits     []SummaryNodeSearchHit
-	DocumentHits    []DocumentChunkSearchHit
-	ObservationHits []ObservationSearchHit
-	FactHits        []FactSearchHit
-	FactGraphHits   []FactGraphSearchHit
-	Items           []ContextItem
+	Window             recent.WindowResult
+	SummaryHits        []SummaryNodeSearchHit
+	DocumentHits       []DocumentChunkSearchHit
+	ObservationHits    []ObservationSearchHit
+	FactHits           []FactSearchHit
+	FactGraphHits      []FactGraphSearchHit
+	EntityProfileHits  []EntityProfileSearchHit
+	EntityTimelineHits []EntityTimelineSearchHit
+	Items              []ContextItem
 }
 
 // ContextItemKind identifies the source of a packed context item.
 type ContextItemKind string
 
 const (
-	ContextItemRecentMessage ContextItemKind = "recent_message"
-	ContextItemSummaryNode   ContextItemKind = "summary_node"
-	ContextItemDocumentChunk ContextItemKind = "document_chunk"
-	ContextItemObservation   ContextItemKind = "observation"
-	ContextItemFact          ContextItemKind = "fact"
-	ContextItemFactGraphNode ContextItemKind = "fact_graph_node"
-	ContextItemFactGraphEdge ContextItemKind = "fact_graph_edge"
+	ContextItemRecentMessage  ContextItemKind = "recent_message"
+	ContextItemSummaryNode    ContextItemKind = "summary_node"
+	ContextItemDocumentChunk  ContextItemKind = "document_chunk"
+	ContextItemObservation    ContextItemKind = "observation"
+	ContextItemFact           ContextItemKind = "fact"
+	ContextItemFactGraphNode  ContextItemKind = "fact_graph_node"
+	ContextItemFactGraphEdge  ContextItemKind = "fact_graph_edge"
+	ContextItemEntityProfile  ContextItemKind = "entity_profile"
+	ContextItemEntityTimeline ContextItemKind = "entity_timeline"
 )
 
 // ContextItem is one rendered, hydrated item in a ContextPack.
@@ -252,5 +362,7 @@ type ContextItem struct {
 	Fact          *fact.Fact
 	FactGraphNode *fact.Node
 	FactGraphEdge *fact.Edge
+	EntityProfile *viewentity.ProfileRecord
+	EntityEvent   *viewentity.Event
 	Retrieval     *retrieval.Hit
 }

@@ -36,9 +36,10 @@ const (
 	diagnosticStageTrace     = "trace"
 	diagnosticStageFreshness = "freshness"
 
-	lifecycleStageCompact = "compact"
-	lifecycleStageArchive = "archive"
-	lifecycleStageReload  = "reload"
+	lifecycleStageCompact        = "compact"
+	lifecycleStageArchive        = "archive"
+	lifecycleStageReload         = "reload"
+	lifecycleStageFreshnessCheck = "freshness_check"
 )
 
 func compilePlan(assembly compiler.Assembly, writeAvailable, readAvailable map[Capability]bool) (Plan, error) {
@@ -250,6 +251,12 @@ func defaultWritePlan(available map[Capability]bool) []StageSpec {
 	if available[CapabilityObservationLedger] && available[CapabilityFactLedger] && available[CapabilityFactGraph] {
 		stages = append(stages, StageSpec{Name: writeStageBuildFactGraph})
 	}
+	if available[CapabilityObservationLedger] && available[CapabilityFactLedger] && available[CapabilityFactGraph] && available[CapabilityEntityProfile] {
+		stages = append(stages, StageSpec{Name: writeStageBuildEntityProfiles})
+	}
+	if available[CapabilityObservationLedger] && available[CapabilityFactLedger] && available[CapabilityFactGraph] && available[CapabilityEntityTimeline] {
+		stages = append(stages, StageSpec{Name: writeStageBuildEntityTimeline})
+	}
 	return stages
 }
 
@@ -270,6 +277,12 @@ func defaultReadPlan(available map[Capability]bool) []StageSpec {
 	if available[CapabilityFactGraph] {
 		stages = append(stages, StageSpec{Name: readStageRetrieveFactGraph})
 	}
+	if available[CapabilityEntityProfile] {
+		stages = append(stages, StageSpec{Name: readStageRetrieveEntityProfiles})
+	}
+	if available[CapabilityEntityTimeline] {
+		stages = append(stages, StageSpec{Name: readStageRetrieveEntityTimeline})
+	}
 	return append(stages, StageSpec{Name: readStagePackContext})
 }
 
@@ -280,6 +293,8 @@ func isSupportedWriteStage(name string) bool {
 		writeStageExtractObservations,
 		writeStageReconcileFacts,
 		writeStageBuildFactGraph,
+		writeStageBuildEntityProfiles,
+		writeStageBuildEntityTimeline,
 		writeStageBuildSummaryDAG:
 		return true
 	default:
@@ -295,6 +310,8 @@ func isSupportedReadStage(name string) bool {
 		readStageRetrieveObs,
 		readStageRetrieveFacts,
 		readStageRetrieveFactGraph,
+		readStageRetrieveEntityProfiles,
+		readStageRetrieveEntityTimeline,
 		readStageExpandFactGraph,
 		readStagePackContext:
 		return true
@@ -310,7 +327,9 @@ func isSupportedLifecycleStage(name string) bool {
 		lifecycleStageDrain,
 		lifecycleStageShutdown,
 		lifecycleStageRebuild,
-		lifecycleStageReconcile:
+		lifecycleStageReconcile,
+		lifecycleStageReload,
+		lifecycleStageFreshnessCheck:
 		return true
 	default:
 		return false
@@ -319,7 +338,7 @@ func isSupportedLifecycleStage(name string) bool {
 
 func isToleratedOptionalLifecycleName(name string) bool {
 	switch name {
-	case lifecycleStageCompact, lifecycleStageArchive, lifecycleStageReload:
+	case lifecycleStageCompact, lifecycleStageArchive:
 		return true
 	default:
 		return false
@@ -338,6 +357,10 @@ func writeStageCapability(name string) (Capability, bool) {
 		return CapabilityFactLedger, true
 	case writeStageBuildFactGraph:
 		return CapabilityFactGraph, true
+	case writeStageBuildEntityProfiles:
+		return CapabilityEntityProfile, true
+	case writeStageBuildEntityTimeline:
+		return CapabilityEntityTimeline, true
 	default:
 		return "", false
 	}
@@ -355,6 +378,10 @@ func readStageCapability(name string) (Capability, bool) {
 		return CapabilityFactLedger, true
 	case readStageRetrieveFactGraph, readStageExpandFactGraph:
 		return CapabilityFactGraph, true
+	case readStageRetrieveEntityProfiles:
+		return CapabilityEntityProfile, true
+	case readStageRetrieveEntityTimeline:
+		return CapabilityEntityTimeline, true
 	default:
 		return "", false
 	}

@@ -2,6 +2,7 @@ package executor
 
 import (
 	"context"
+	"errors"
 	"strconv"
 	"strings"
 	"testing"
@@ -14,6 +15,7 @@ import (
 	sourcemessage "github.com/GizClaw/flowcraft/memory/sources/message"
 	"github.com/GizClaw/flowcraft/memory/views"
 	viewdocument "github.com/GizClaw/flowcraft/memory/views/document"
+	viewentity "github.com/GizClaw/flowcraft/memory/views/entity"
 	"github.com/GizClaw/flowcraft/memory/views/fact"
 	viewobservation "github.com/GizClaw/flowcraft/memory/views/observation"
 	"github.com/GizClaw/flowcraft/memory/views/recent"
@@ -481,6 +483,265 @@ func TestRuntimeFactLedgerAndGraphVerticalSlice(t *testing.T) {
 	}
 }
 
+func TestReconcileFactsProvidesCurrentActiveFactsInScope(t *testing.T) {
+	ctx := context.Background()
+	assembly := compileAssembly(
+		t,
+		[]compiler.SourceSpec{{Kind: compiler.SourceMessageLog, Required: true}},
+		[]compiler.CapabilitySpec{
+			{Capability: compiler.CapabilityRecentWindow, Required: true},
+			{Capability: compiler.CapabilityObservationLedger, Required: true},
+			{Capability: compiler.CapabilityFactLedger, Required: true},
+		},
+		nil,
+	)
+
+	reconciler := &fakeFactReconciler{}
+	deps := newExecutorDeps(t, assembly)
+	deps.ObservationExtractor = &fakeObservationExtractor{}
+	deps.FactReconciler = reconciler
+	rt, err := New(deps)
+	if err != nil {
+		t.Fatalf("New(fact current runtime) error = %v", err)
+	}
+	if _, err := rt.MessageStore().Append(ctx, sourcemessage.AppendRequest{
+		ConversationID: "conv-1",
+		Messages:       []sourcemessage.Message{messageWithText("Ada likes tea.")},
+	}); err != nil {
+		t.Fatalf("Append messages error = %v", err)
+	}
+
+	scope := testScope("conv-1")
+	observations, err := rt.ExtractObservations(ctx, recent.WindowRequest{Scope: scope}, scope, "")
+	if err != nil {
+		t.Fatalf("ExtractObservations() error = %v", err)
+	}
+	if _, err := deps.FactStore.Put(ctx, runtimeFact("current-active", scope, fact.FactActive)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := deps.FactStore.Put(ctx, runtimeFact("current-retracted", scope, fact.FactRetracted)); err != nil {
+		t.Fatal(err)
+	}
+	otherScope := testScope("conv-2")
+	if _, err := deps.FactStore.Put(ctx, runtimeFact("other-active", otherScope, fact.FactActive)); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := rt.ReconcileFacts(ctx, observations); err != nil {
+		t.Fatalf("ReconcileFacts() error = %v", err)
+	}
+	if reconciler.lastInput.Scope != scope {
+		t.Fatalf("reconciler scope = %+v, want %+v", reconciler.lastInput.Scope, scope)
+	}
+	if len(reconciler.lastInput.Current) != 1 || reconciler.lastInput.Current[0].ID != "current-active" {
+		t.Fatalf("reconciler current = %+v, want only scoped active fact", reconciler.lastInput.Current)
+	}
+}
+
+func TestFactProjectionAndSearchAreActiveOnly(t *testing.T) {
+	ctx := context.Background()
+	assembly := compileAssembly(
+		t,
+		[]compiler.SourceSpec{{Kind: compiler.SourceMessageLog, Required: true}},
+		[]compiler.CapabilitySpec{
+			{Capability: compiler.CapabilityRecentWindow, Required: true},
+			{Capability: compiler.CapabilityObservationLedger, Required: true},
+			{Capability: compiler.CapabilityFactLedger, Required: true},
+		},
+		[]compiler.ProjectionRequest{{Capability: compiler.CapabilityFactLedger, Namespace: "facts", Required: true}},
+	)
+
+	scope := testScope("conv-1")
+	reconciler := &fakeFactReconciler{
+		output: []fact.Fact{
+			runtimeFact("active-fact", scope, fact.FactActive),
+			runtimeFact("retracted-fact", scope, fact.FactRetracted),
+			runtimeFact("superseded-fact", scope, fact.FactSuperseded),
+			runtimeFact("conflict-fact", scope, fact.FactConflict),
+		},
+	}
+	deps := newExecutorDeps(t, assembly)
+	deps.ObservationExtractor = &fakeObservationExtractor{}
+	deps.FactReconciler = reconciler
+	rt, err := New(deps)
+	if err != nil {
+		t.Fatalf("New(fact search runtime) error = %v", err)
+	}
+
+	stored, err := rt.ReconcileFacts(ctx, []viewobservation.Observation{runtimeObservation("obs-1", scope)})
+	if err != nil {
+		t.Fatalf("ReconcileFacts() error = %v", err)
+	}
+	if len(stored) != 4 {
+		t.Fatalf("ReconcileFacts() stored = %+v, want all ledger facts", stored)
+	}
+	for _, id := range []fact.FactID{"retracted-fact", "superseded-fact", "conflict-fact"} {
+		got, ok, err := deps.FactStore.Get(ctx, id)
+		if err != nil || !ok || got.ID != id {
+			t.Fatalf("ledger Get(%q) = %+v ok=%v err=%v, want stored non-active fact", id, got, ok, err)
+		}
+	}
+
+	results, err := rt.SearchFacts(ctx, retrieval.SearchRequest{QueryText: "user:ada likes tea", TopK: 10})
+	if err != nil {
+		t.Fatalf("SearchFacts() error = %v", err)
+	}
+	if len(results.Hits) != 1 || results.Hits[0].Fact.ID != "active-fact" {
+		t.Fatalf("SearchFacts() hits = %+v, want only active fact", results.Hits)
+	}
+}
+
+func TestFactGraphAndEntityBuildersReceiveOnlyActiveFacts(t *testing.T) {
+	ctx := context.Background()
+	assembly := compileAssembly(
+		t,
+		[]compiler.SourceSpec{{Kind: compiler.SourceMessageLog, Required: true}},
+		[]compiler.CapabilitySpec{
+			{Capability: compiler.CapabilityRecentWindow, Required: true},
+			{Capability: compiler.CapabilityObservationLedger, Required: true},
+			{Capability: compiler.CapabilityFactLedger, Required: true},
+			{Capability: compiler.CapabilityFactGraph, Required: true},
+			{Capability: compiler.CapabilityEntityProfile, Required: true},
+			{Capability: compiler.CapabilityEntityTimeline, Required: true},
+		},
+		nil,
+	)
+
+	graphBuilder := &fakeFactGraphBuilder{}
+	profileBuilder := &fakeEntityProfileBuilder{}
+	timelineBuilder := &fakeEntityTimelineBuilder{}
+	deps := newExecutorDeps(t, assembly)
+	deps.ObservationExtractor = &fakeObservationExtractor{}
+	deps.FactReconciler = &fakeFactReconciler{}
+	deps.FactGraphBuilder = graphBuilder
+	deps.EntityProfileBuilder = profileBuilder
+	deps.EntityTimelineBuilder = timelineBuilder
+	rt, err := New(deps)
+	if err != nil {
+		t.Fatalf("New(active-only builders runtime) error = %v", err)
+	}
+
+	scope := testScope("conv-entity")
+	scope.EntityID = "user:ada"
+	facts := []fact.Fact{
+		runtimeFact("active-fact", scope, fact.FactActive),
+		runtimeFact("retracted-fact", scope, fact.FactRetracted),
+		runtimeFact("superseded-fact", scope, fact.FactSuperseded),
+		runtimeFact("conflict-fact", scope, fact.FactConflict),
+	}
+	graph, err := rt.BuildFactGraph(ctx, facts)
+	if err != nil {
+		t.Fatalf("BuildFactGraph() error = %v", err)
+	}
+	if len(graphBuilder.lastInput.Facts) != 1 || graphBuilder.lastInput.Facts[0].ID != "active-fact" {
+		t.Fatalf("graph builder facts = %+v, want only active fact", graphBuilder.lastInput.Facts)
+	}
+
+	if _, err := rt.BuildEntityProfiles(ctx, EntityBuildInput{Scope: scope, Facts: facts, Graph: graph}); err != nil {
+		t.Fatalf("BuildEntityProfiles() error = %v", err)
+	}
+	if len(profileBuilder.lastInput.Facts) != 1 || profileBuilder.lastInput.Facts[0].ID != "active-fact" {
+		t.Fatalf("profile builder facts = %+v, want only active fact", profileBuilder.lastInput.Facts)
+	}
+
+	if _, err := rt.BuildEntityTimeline(ctx, EntityBuildInput{Scope: scope, Facts: facts, Graph: graph}); err != nil {
+		t.Fatalf("BuildEntityTimeline() error = %v", err)
+	}
+	if len(timelineBuilder.lastInput.Facts) != 1 || timelineBuilder.lastInput.Facts[0].ID != "active-fact" {
+		t.Fatalf("timeline builder facts = %+v, want only active fact", timelineBuilder.lastInput.Facts)
+	}
+}
+
+func TestRuntimeEntityProfileAndTimelineVerticalSlice(t *testing.T) {
+	ctx := context.Background()
+	assembly := compileAssembly(
+		t,
+		[]compiler.SourceSpec{{Kind: compiler.SourceMessageLog, Required: true}},
+		[]compiler.CapabilitySpec{
+			{Capability: compiler.CapabilityRecentWindow, Required: true},
+			{Capability: compiler.CapabilityObservationLedger, Required: true},
+			{Capability: compiler.CapabilityFactLedger, Required: true},
+			{Capability: compiler.CapabilityFactGraph, Required: true},
+			{Capability: compiler.CapabilityEntityProfile, Required: true},
+			{Capability: compiler.CapabilityEntityTimeline, Required: true},
+		},
+		[]compiler.ProjectionRequest{
+			{Capability: compiler.CapabilityFactGraph, Namespace: "fact_graph", Required: true},
+			{Capability: compiler.CapabilityEntityProfile, Namespace: "entity_profiles", Required: true},
+			{Capability: compiler.CapabilityEntityTimeline, Namespace: "entity_timeline", Required: true},
+		},
+	)
+
+	profileBuilder := &fakeEntityProfileBuilder{}
+	timelineBuilder := &fakeEntityTimelineBuilder{}
+	deps := newExecutorDeps(t, assembly)
+	deps.ObservationExtractor = &fakeObservationExtractor{}
+	deps.FactReconciler = &fakeFactReconciler{}
+	deps.FactGraphBuilder = &fakeFactGraphBuilder{}
+	deps.EntityProfileBuilder = profileBuilder
+	deps.EntityTimelineBuilder = timelineBuilder
+	rt, err := New(deps)
+	if err != nil {
+		t.Fatalf("New(entity vertical slice runtime) error = %v", err)
+	}
+	assertNamespace(t, rt, compiler.CapabilityEntityProfile, "entity_profiles")
+	assertNamespace(t, rt, compiler.CapabilityEntityTimeline, "entity_timeline")
+
+	if _, err := rt.MessageStore().Append(ctx, sourcemessage.AppendRequest{
+		ConversationID: "conv-entity",
+		Messages: []sourcemessage.Message{
+			messageWithText("Ada likes tea."),
+		},
+	}); err != nil {
+		t.Fatalf("Append messages error = %v", err)
+	}
+
+	scope := testScope("conv-entity")
+	scope.EntityID = "user:ada"
+	observations, err := rt.ExtractObservations(ctx, recent.WindowRequest{Scope: scope}, scope, "")
+	if err != nil {
+		t.Fatalf("ExtractObservations() error = %v", err)
+	}
+	facts, err := rt.ReconcileFacts(ctx, observations)
+	if err != nil {
+		t.Fatalf("ReconcileFacts() error = %v", err)
+	}
+	graph, err := rt.BuildFactGraph(ctx, facts)
+	if err != nil {
+		t.Fatalf("BuildFactGraph() error = %v", err)
+	}
+
+	profiles, err := rt.BuildEntityProfiles(ctx, EntityBuildInput{Scope: scope, Facts: facts, Graph: graph})
+	if err != nil {
+		t.Fatalf("BuildEntityProfiles() error = %v", err)
+	}
+	if len(profiles) != 1 || profiles[0].ID != "profile-user:ada" || profileBuilder.calls != 1 {
+		t.Fatalf("BuildEntityProfiles() profiles = %+v calls=%d, want one built profile", profiles, profileBuilder.calls)
+	}
+	profileResults, err := rt.SearchEntityProfiles(ctx, retrieval.SearchRequest{QueryText: "Ada tea profile", TopK: 5})
+	if err != nil {
+		t.Fatalf("SearchEntityProfiles() error = %v", err)
+	}
+	if len(profileResults.Hits) != 1 || profileResults.Hits[0].Profile.ID != profiles[0].ID {
+		t.Fatalf("SearchEntityProfiles() hits = %+v, want hydrated profile", profileResults.Hits)
+	}
+
+	events, err := rt.BuildEntityTimeline(ctx, EntityBuildInput{Scope: scope, Facts: facts, Graph: graph})
+	if err != nil {
+		t.Fatalf("BuildEntityTimeline() error = %v", err)
+	}
+	if len(events) != 1 || events[0].ID != "event-user:ada" || timelineBuilder.calls != 1 {
+		t.Fatalf("BuildEntityTimeline() events = %+v calls=%d, want one built event", events, timelineBuilder.calls)
+	}
+	timelineResults, err := rt.SearchEntityTimeline(ctx, retrieval.SearchRequest{QueryText: "Ada tea event", TopK: 5})
+	if err != nil {
+		t.Fatalf("SearchEntityTimeline() error = %v", err)
+	}
+	if len(timelineResults.Hits) != 1 || timelineResults.Hits[0].Event.ID != events[0].ID {
+		t.Fatalf("SearchEntityTimeline() hits = %+v, want hydrated event", timelineResults.Hits)
+	}
+}
+
 func TestPackContextIncludesRecentSummaryDocumentObservationFactAndGraphItems(t *testing.T) {
 	ctx := context.Background()
 	assembly := compileAssembly(
@@ -694,6 +955,212 @@ func TestPackContextWindowOnlyDoesNotNeedRetrieval(t *testing.T) {
 	}
 	if item := pack.Items[0]; item.Kind != ContextItemRecentMessage || item.Text != "user: only recent context" || item.Retrieval != nil {
 		t.Fatalf("Items[0] = %+v, want recent message text without retrieval", item)
+	}
+}
+
+func TestPackContextPackerCanSeeTypedInputAndFilterItems(t *testing.T) {
+	ctx := context.Background()
+	packer := &fakeContextPacker{}
+	rt, req := setupContextPackerRuntime(t, ctx, packer)
+
+	packer.fn = func(input ContextPackInput) (ContextPackOutput, error) {
+		if input.Scope != req.Scope {
+			t.Fatalf("packer Scope = %+v, want %+v", input.Scope, req.Scope)
+		}
+		if input.Query != req.Query {
+			t.Fatalf("packer Query = %q, want %q", input.Query, req.Query)
+		}
+		if len(input.Window.Messages) != 2 {
+			t.Fatalf("packer Window.Messages len = %d, want 2", len(input.Window.Messages))
+		}
+		if len(input.SummaryHits) != 1 || len(input.DocumentHits) != 1 || len(input.ObservationHits) != 1 || len(input.FactHits) != 1 {
+			t.Fatalf("packer core hits = summary:%d document:%d observation:%d fact:%d, want one each", len(input.SummaryHits), len(input.DocumentHits), len(input.ObservationHits), len(input.FactHits))
+		}
+		if len(input.FactGraphHits) == 0 || len(input.EntityProfileHits) != 1 || len(input.EntityTimelineHits) != 1 {
+			t.Fatalf("packer graph/entity hits = graph:%d profile:%d timeline:%d, want graph plus one entity hit each", len(input.FactGraphHits), len(input.EntityProfileHits), len(input.EntityTimelineHits))
+		}
+		if len(input.Items) < 3 {
+			t.Fatalf("packer Items len = %d, want candidates", len(input.Items))
+		}
+		return ContextPackOutput{Items: []ContextItem{input.Items[2], input.Items[0]}}, nil
+	}
+
+	pack, err := rt.PackContext(ctx, req)
+	if err != nil {
+		t.Fatalf("PackContext() error = %v", err)
+	}
+	if packer.calls != 1 {
+		t.Fatalf("packer calls = %d, want 1", packer.calls)
+	}
+	if got, want := len(pack.Items), 2; got != want {
+		t.Fatalf("Items len = %d, want %d: %+v", got, want, pack.Items)
+	}
+	if pack.Items[0].Kind != ContextItemSummaryNode || pack.Items[1].Kind != ContextItemRecentMessage {
+		t.Fatalf("Items order = %q then %q, want hook-selected summary then recent", pack.Items[0].Kind, pack.Items[1].Kind)
+	}
+	if len(pack.SummaryHits) != 1 || len(pack.DocumentHits) != 1 || len(pack.EntityProfileHits) != 1 || len(pack.EntityTimelineHits) != 1 {
+		t.Fatalf("typed hits changed after packing: summary:%d document:%d profile:%d timeline:%d", len(pack.SummaryHits), len(pack.DocumentHits), len(pack.EntityProfileHits), len(pack.EntityTimelineHits))
+	}
+}
+
+func TestPackContextPackerErrorReturnsError(t *testing.T) {
+	ctx := context.Background()
+	wantErr := errors.New("packer failed")
+	packer := &fakeContextPacker{
+		fn: func(ContextPackInput) (ContextPackOutput, error) {
+			return ContextPackOutput{}, wantErr
+		},
+	}
+	rt, req := setupContextPackerRuntime(t, ctx, packer)
+
+	_, err := rt.PackContext(ctx, req)
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("PackContext() err = %v, want %v", err, wantErr)
+	}
+}
+
+func TestPackContextPackerInputMutationDoesNotPolluteTypedHits(t *testing.T) {
+	ctx := context.Background()
+	packer := &fakeContextPacker{}
+	rt, req := setupContextPackerRuntime(t, ctx, packer)
+
+	packer.fn = func(input ContextPackInput) (ContextPackOutput, error) {
+		if len(input.Items) == 0 || len(input.FactHits) == 0 || len(input.DocumentHits) == 0 {
+			t.Fatalf("packer input missing candidates: %+v", input)
+		}
+		input.Items[0].Text = "mutated item"
+		for i := range input.Items {
+			if input.Items[i].Fact != nil {
+				input.Items[i].Fact.Subject = "mutated item fact"
+				break
+			}
+		}
+		input.FactHits[0].Fact.Subject = "mutated fact hit"
+		input.DocumentHits[0].Chunk.Text = "mutated document hit"
+		return ContextPackOutput{}, nil
+	}
+
+	pack, err := rt.PackContext(ctx, req)
+	if err != nil {
+		t.Fatalf("PackContext() error = %v", err)
+	}
+	if len(pack.Items) != 0 {
+		t.Fatalf("Items len = %d, want hook-filtered empty items", len(pack.Items))
+	}
+	if got := pack.FactHits[0].Fact.Subject; got != "user:ada" {
+		t.Fatalf("FactHits[0].Fact.Subject = %q, want original", got)
+	}
+	if got := pack.DocumentHits[0].Chunk.Text; got != "chunkable document evidence about runtime memory" {
+		t.Fatalf("DocumentHits[0].Chunk.Text = %q, want original", got)
+	}
+}
+
+func setupContextPackerRuntime(t *testing.T, ctx context.Context, packer ContextPacker) (*Executor, PackContextRequest) {
+	t.Helper()
+	assembly := compileAssembly(
+		t,
+		[]compiler.SourceSpec{
+			{Kind: compiler.SourceMessageLog, Required: true},
+			{Kind: compiler.SourceDocumentStore, Required: true},
+		},
+		[]compiler.CapabilitySpec{
+			{Capability: compiler.CapabilityRecentWindow, Required: true},
+			{Capability: compiler.CapabilitySummaryDAG, Required: true},
+			{Capability: compiler.CapabilityDocumentChunks, Required: true},
+			{Capability: compiler.CapabilityObservationLedger, Required: true},
+			{Capability: compiler.CapabilityFactLedger, Required: true},
+			{Capability: compiler.CapabilityFactGraph, Required: true},
+			{Capability: compiler.CapabilityEntityProfile, Required: true},
+			{Capability: compiler.CapabilityEntityTimeline, Required: true},
+		},
+		[]compiler.ProjectionRequest{
+			{Capability: compiler.CapabilitySummaryDAG, Namespace: "summary_nodes", Required: true},
+			{Capability: compiler.CapabilityDocumentChunks, Namespace: "doc_chunks", Required: true},
+			{Capability: compiler.CapabilityObservationLedger, Namespace: "observations", Required: true},
+			{Capability: compiler.CapabilityFactLedger, Namespace: "facts", Required: true},
+			{Capability: compiler.CapabilityFactGraph, Namespace: "fact_graph", Required: true},
+			{Capability: compiler.CapabilityEntityProfile, Namespace: "entity_profiles", Required: true},
+			{Capability: compiler.CapabilityEntityTimeline, Namespace: "entity_timeline", Required: true},
+		},
+	)
+	deps := newExecutorDeps(t, assembly)
+	deps.DocumentChunker = &fakeChunker{}
+	deps.Summarizer = &fakeSummarizer{}
+	deps.ObservationExtractor = &fakeObservationExtractor{}
+	deps.FactReconciler = &fakeFactReconciler{}
+	deps.FactGraphBuilder = &fakeFactGraphBuilder{}
+	deps.EntityProfileBuilder = &fakeEntityProfileBuilder{}
+	deps.EntityTimelineBuilder = &fakeEntityTimelineBuilder{}
+	deps.ContextPacker = packer
+	rt, err := New(deps)
+	if err != nil {
+		t.Fatalf("New(context packer runtime) error = %v", err)
+	}
+
+	scope := testScope("conv-packer")
+	scope.DatasetID = "dataset-1"
+	scope.EntityID = "user:ada"
+	if _, err := rt.MessageStore().Append(ctx, sourcemessage.AppendRequest{
+		ConversationID: scope.ConversationID,
+		Messages: []sourcemessage.Message{
+			messageWithText("Ada likes tea."),
+			messageWithText("The project summary should mention memory runtime."),
+		},
+	}); err != nil {
+		t.Fatalf("Append messages error = %v", err)
+	}
+	if _, err := rt.DocumentStore().Put(ctx, sourcedocument.PutRequest{
+		Document: sourcedocument.Document{
+			DatasetID: scope.DatasetID,
+			ID:        "doc-1",
+			Content:   "chunkable document evidence about runtime memory",
+		},
+	}); err != nil {
+		t.Fatalf("Put document error = %v", err)
+	}
+	if _, err := rt.IndexDocument(ctx, scope, "doc-1", ""); err != nil {
+		t.Fatalf("IndexDocument() error = %v", err)
+	}
+	if _, err := rt.BuildSummaryDAG(ctx, recent.WindowRequest{Scope: scope}, ""); err != nil {
+		t.Fatalf("BuildSummaryDAG() error = %v", err)
+	}
+	observations, err := rt.ExtractObservations(ctx, recent.WindowRequest{Scope: scope}, scope, "")
+	if err != nil {
+		t.Fatalf("ExtractObservations() error = %v", err)
+	}
+	facts, err := rt.ReconcileFacts(ctx, observations)
+	if err != nil {
+		t.Fatalf("ReconcileFacts() error = %v", err)
+	}
+	graph, err := rt.BuildFactGraph(ctx, facts)
+	if err != nil {
+		t.Fatalf("BuildFactGraph() error = %v", err)
+	}
+	if _, err := rt.BuildEntityProfiles(ctx, EntityBuildInput{Scope: scope, Facts: facts, Graph: graph}); err != nil {
+		t.Fatalf("BuildEntityProfiles() error = %v", err)
+	}
+	if _, err := rt.BuildEntityTimeline(ctx, EntityBuildInput{Scope: scope, Facts: facts, Graph: graph}); err != nil {
+		t.Fatalf("BuildEntityTimeline() error = %v", err)
+	}
+
+	summarySearch := retrieval.SearchRequest{QueryText: "runtime summary", TopK: 5}
+	documentSearch := retrieval.SearchRequest{QueryText: "chunkable", TopK: 5}
+	observationSearch := retrieval.SearchRequest{QueryText: "likes tea", TopK: 5}
+	factSearch := retrieval.SearchRequest{QueryText: "Ada likes tea", TopK: 5}
+	factGraphSearch := retrieval.SearchRequest{QueryText: "Ada tea likes", TopK: 10}
+	entityProfileSearch := retrieval.SearchRequest{QueryText: "Ada tea profile", TopK: 5}
+	entityTimelineSearch := retrieval.SearchRequest{QueryText: "Ada tea event", TopK: 5}
+	return rt, PackContextRequest{
+		Scope:                scope,
+		Query:                "Ada tea hook query",
+		Window:               recent.WindowRequest{Scope: scope},
+		SummarySearch:        &summarySearch,
+		DocumentSearch:       &documentSearch,
+		ObservationSearch:    &observationSearch,
+		FactSearch:           &factSearch,
+		FactGraphSearch:      &factGraphSearch,
+		EntityProfileSearch:  &entityProfileSearch,
+		EntityTimelineSearch: &entityTimelineSearch,
 	}
 }
 
@@ -981,28 +1448,49 @@ func TestWholeDocumentChunkerSetsLayerSignatureAndObservedAt(t *testing.T) {
 	}
 }
 
-func TestRequiredUnsupportedCapabilitiesReturnNotAvailable(t *testing.T) {
+func TestNewRequiredEntityCapabilitiesMissingDependenciesFail(t *testing.T) {
 	tests := []struct {
-		name         string
-		capabilities []compiler.CapabilitySpec
+		name string
+		deps func(Deps) Deps
+		want string
 	}{
 		{
-			name: "entity profile",
-			capabilities: []compiler.CapabilitySpec{
-				{Capability: compiler.CapabilityObservationLedger, Required: true},
-				{Capability: compiler.CapabilityFactLedger, Required: true},
-				{Capability: compiler.CapabilityFactGraph, Required: true},
-				{Capability: compiler.CapabilityEntityProfile, Required: true},
+			name: "entity profile store",
+			deps: func(deps Deps) Deps {
+				deps.EntityProfileStore = nil
+				deps.EntityProfileBuilder = &fakeEntityProfileBuilder{}
+				deps.EntityTimelineBuilder = &fakeEntityTimelineBuilder{}
+				return deps
 			},
+			want: "EntityProfileStore",
 		},
 		{
-			name: "entity timeline",
-			capabilities: []compiler.CapabilitySpec{
-				{Capability: compiler.CapabilityObservationLedger, Required: true},
-				{Capability: compiler.CapabilityFactLedger, Required: true},
-				{Capability: compiler.CapabilityFactGraph, Required: true},
-				{Capability: compiler.CapabilityEntityTimeline, Required: true},
+			name: "entity profile builder",
+			deps: func(deps Deps) Deps {
+				deps.EntityProfileBuilder = nil
+				deps.EntityTimelineBuilder = &fakeEntityTimelineBuilder{}
+				return deps
 			},
+			want: "EntityProfileBuilder",
+		},
+		{
+			name: "entity timeline store",
+			deps: func(deps Deps) Deps {
+				deps.EntityProfileBuilder = &fakeEntityProfileBuilder{}
+				deps.EntityTimelineStore = nil
+				deps.EntityTimelineBuilder = &fakeEntityTimelineBuilder{}
+				return deps
+			},
+			want: "EntityTimelineStore",
+		},
+		{
+			name: "entity timeline builder",
+			deps: func(deps Deps) Deps {
+				deps.EntityProfileBuilder = &fakeEntityProfileBuilder{}
+				deps.EntityTimelineBuilder = nil
+				return deps
+			},
+			want: "EntityTimelineBuilder",
 		},
 	}
 
@@ -1011,17 +1499,56 @@ func TestRequiredUnsupportedCapabilitiesReturnNotAvailable(t *testing.T) {
 			assembly := compileAssembly(
 				t,
 				[]compiler.SourceSpec{{Kind: compiler.SourceMessageLog, Required: true}},
-				tt.capabilities,
+				[]compiler.CapabilitySpec{
+					{Capability: compiler.CapabilityObservationLedger, Required: true},
+					{Capability: compiler.CapabilityFactLedger, Required: true},
+					{Capability: compiler.CapabilityFactGraph, Required: true},
+					{Capability: compiler.CapabilityEntityProfile, Required: true},
+					{Capability: compiler.CapabilityEntityTimeline, Required: true},
+				},
 				nil,
 			)
-			_, err := New(Deps{
-				Assembly:             assembly,
-				ObservationExtractor: &fakeObservationExtractor{},
-			})
-			if err == nil || !errdefs.IsNotAvailable(err) {
-				t.Fatalf("New() err = %v, want NotAvailable", err)
+			deps := newExecutorDeps(t, assembly)
+			deps.ObservationExtractor = &fakeObservationExtractor{}
+			deps.FactReconciler = &fakeFactReconciler{}
+			deps.FactGraphBuilder = &fakeFactGraphBuilder{}
+			deps = tt.deps(deps)
+			_, err := New(deps)
+			if err == nil || !errdefs.IsValidation(err) || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("New() err = %v, want validation error mentioning %s", err, tt.want)
 			}
 		})
+	}
+}
+
+func TestOptionalEntityProjectionWithoutBuilderSkipsWriterAndIndex(t *testing.T) {
+	ctx := context.Background()
+	assembly := compileAssembly(
+		t,
+		[]compiler.SourceSpec{{Kind: compiler.SourceMessageLog}},
+		[]compiler.CapabilitySpec{
+			{Capability: compiler.CapabilityObservationLedger},
+			{Capability: compiler.CapabilityFactLedger},
+			{Capability: compiler.CapabilityFactGraph},
+			{Capability: compiler.CapabilityEntityProfile},
+		},
+		[]compiler.ProjectionRequest{{Capability: compiler.CapabilityEntityProfile, Namespace: "entity_profiles"}},
+	)
+
+	rt, err := New(Deps{Assembly: assembly})
+	if err != nil {
+		t.Fatalf("New(optional entity projection without builder) error = %v", err)
+	}
+	if rt.RetrievalIndex() != nil {
+		t.Fatal("RetrievalIndex() != nil, want no index when entity profile flow is not configured")
+	}
+	if rt.writers[compiler.CapabilityEntityProfile] != nil {
+		t.Fatal("entity profile writer configured, want nil")
+	}
+
+	_, err = rt.SearchEntityProfiles(ctx, retrieval.SearchRequest{QueryText: "entity", TopK: 1})
+	if err == nil || !errdefs.IsNotAvailable(err) {
+		t.Fatalf("SearchEntityProfiles() err = %v, want NotAvailable", err)
 	}
 }
 
@@ -1076,15 +1603,17 @@ func newExecutorDeps(t *testing.T, assembly compiler.Assembly) Deps {
 		t.Fatalf("create retrieval index error = %v", err)
 	}
 	return Deps{
-		Assembly:         assembly,
-		MessageStore:     sourcemessage.NewWorkspaceStore(sdkworkspace.Sub(ws, "sources/message")),
-		DocumentStore:    sourcedocument.NewWorkspaceStore(sdkworkspace.Sub(ws, "sources/document")),
-		SummaryStore:     recent.NewSummaryWorkspaceStore(sdkworkspace.Sub(ws, "views/summary_dag")),
-		ChunkStore:       viewdocument.NewChunkWorkspaceStore(sdkworkspace.Sub(ws, "views/document_chunks")),
-		ObservationStore: viewobservation.NewLedgerWorkspaceStore(sdkworkspace.Sub(ws, "views/observation_ledger")),
-		FactStore:        fact.NewLedgerWorkspaceStore(sdkworkspace.Sub(ws, "views/fact_ledger")),
-		FactGraphStore:   fact.NewGraphWorkspaceStore(sdkworkspace.Sub(ws, "views/fact_graph")),
-		Index:            index,
+		Assembly:            assembly,
+		MessageStore:        sourcemessage.NewWorkspaceStore(sdkworkspace.Sub(ws, "sources/message")),
+		DocumentStore:       sourcedocument.NewWorkspaceStore(sdkworkspace.Sub(ws, "sources/document")),
+		SummaryStore:        recent.NewSummaryWorkspaceStore(sdkworkspace.Sub(ws, "views/summary_dag")),
+		ChunkStore:          viewdocument.NewChunkWorkspaceStore(sdkworkspace.Sub(ws, "views/document_chunks")),
+		ObservationStore:    viewobservation.NewLedgerWorkspaceStore(sdkworkspace.Sub(ws, "views/observation_ledger")),
+		FactStore:           fact.NewLedgerWorkspaceStore(sdkworkspace.Sub(ws, "views/fact_ledger")),
+		FactGraphStore:      fact.NewGraphWorkspaceStore(sdkworkspace.Sub(ws, "views/fact_graph")),
+		EntityProfileStore:  viewentity.NewProfileWorkspaceStore(sdkworkspace.Sub(ws, "views/entity_profile")),
+		EntityTimelineStore: viewentity.NewTimelineWorkspaceStore(sdkworkspace.Sub(ws, "views/entity_timeline")),
+		Index:               index,
 	}
 }
 
@@ -1114,6 +1643,14 @@ func newFactStore() fact.Store {
 
 func newFactGraphStore() fact.GraphStore {
 	return fact.NewGraphWorkspaceStore(sdkworkspace.Sub(sdkworkspace.NewMemWorkspace(), "views/fact_graph"))
+}
+
+func newEntityProfileStore() viewentity.ProfileStore {
+	return viewentity.NewProfileWorkspaceStore(sdkworkspace.Sub(sdkworkspace.NewMemWorkspace(), "views/entity_profile"))
+}
+
+func newEntityTimelineStore() viewentity.TimelineStore {
+	return viewentity.NewTimelineWorkspaceStore(sdkworkspace.Sub(sdkworkspace.NewMemWorkspace(), "views/entity_timeline"))
 }
 
 func compileAssembly(t *testing.T, sources []compiler.SourceSpec, capabilities []compiler.CapabilitySpec, projections []compiler.ProjectionRequest) compiler.Assembly {
@@ -1160,6 +1697,58 @@ func testDocumentScope(datasetID string) views.Scope {
 	scope := testScope("conv-1")
 	scope.DatasetID = datasetID
 	return scope
+}
+
+func runtimeObservation(id string, scope views.Scope) viewobservation.Observation {
+	sourceRef := views.SourceRef{
+		Kind: views.SourceMessage,
+		Message: &views.MessageSourceRef{
+			ConversationID: scope.ConversationID,
+			MessageID:      "message-" + id,
+			Span:           &views.Span{Start: 0, End: 10},
+		},
+	}
+	return viewobservation.Observation{
+		ID:         id,
+		Scope:      scope,
+		Subject:    "user:ada",
+		Predicate:  "likes",
+		Object:     "tea",
+		Confidence: 0.9,
+		SourceRefs: []views.SourceRef{sourceRef},
+		Signature: views.ViewSignature{
+			ViewID:             views.ID("observation-ledger"),
+			TransformSignature: "runtime-observation:v1",
+		},
+	}
+}
+
+func runtimeFact(id fact.FactID, scope views.Scope, status fact.FactStatus) fact.Fact {
+	obs := runtimeObservation("obs-"+string(id), scope)
+	return fact.Fact{
+		ID:         id,
+		Scope:      scope,
+		Subject:    obs.Subject,
+		Predicate:  obs.Predicate,
+		Object:     obs.Object,
+		Status:     status,
+		Confidence: obs.Confidence,
+		ObservationRefs: []fact.ObservationRef{{
+			ObservationID: obs.ID,
+			ScopeKind:     "conversation",
+			ScopeID:       scope.ConversationID,
+		}},
+		SourceRefs: obs.SourceRefs,
+		Signature: views.ViewSignature{
+			ViewID: views.ID("fact-ledger"),
+			UpstreamViewRefs: []views.UpstreamViewRef{{
+				ViewID:          obs.Signature.ViewID,
+				OutputSignature: obs.Signature.TransformSignature,
+				RecordKey:       obs.ID,
+			}},
+			TransformSignature: "runtime-fact:v1",
+		},
+	}
 }
 
 type fakeChunker struct {
@@ -1222,11 +1811,17 @@ func (f *fakeObservationExtractor) ExtractObservations(_ context.Context, input 
 }
 
 type fakeFactReconciler struct {
-	calls int
+	calls     int
+	lastInput FactReconcileInput
+	output    []fact.Fact
 }
 
 func (f *fakeFactReconciler) ReconcileFacts(_ context.Context, input FactReconcileInput) ([]fact.Fact, error) {
 	f.calls++
+	f.lastInput = input
+	if f.output != nil {
+		return f.output, nil
+	}
 	if len(input.Observations) == 0 {
 		return nil, nil
 	}
@@ -1259,11 +1854,13 @@ func (f *fakeFactReconciler) ReconcileFacts(_ context.Context, input FactReconci
 }
 
 type fakeFactGraphBuilder struct {
-	calls int
+	calls     int
+	lastInput FactGraphInput
 }
 
 func (f *fakeFactGraphBuilder) BuildFactGraph(_ context.Context, input FactGraphInput) (FactGraphOutput, error) {
 	f.calls++
+	f.lastInput = input
 	if len(input.Facts) == 0 {
 		return FactGraphOutput{}, nil
 	}
@@ -1317,6 +1914,100 @@ func (f *fakeFactGraphBuilder) BuildFactGraph(_ context.Context, input FactGraph
 			Signature:  signature,
 		}},
 	}, nil
+}
+
+type fakeEntityProfileBuilder struct {
+	calls     int
+	lastInput EntityProfileInput
+}
+
+func (f *fakeEntityProfileBuilder) BuildEntityProfiles(_ context.Context, input EntityProfileInput) ([]viewentity.ProfileRecord, error) {
+	f.calls++
+	f.lastInput = input
+	if len(input.Facts) == 0 {
+		return nil, nil
+	}
+	record := input.Facts[0]
+	factRefs := []fact.FactRef{{FactID: record.ID, Role: "supporting_fact"}}
+	return []viewentity.ProfileRecord{{
+		ID:         viewentity.ProfileID("profile-" + input.Scope.EntityID),
+		Scope:      input.Scope,
+		Label:      "Ada",
+		Summary:    "Ada likes tea profile",
+		Slots:      []viewentity.Slot{{Name: "likes", Value: "tea", Confidence: 0.9, FactRefs: factRefs}},
+		FactRefs:   factRefs,
+		SourceRefs: record.SourceRefs,
+		Signature: views.ViewSignature{
+			ViewID: input.View.ID,
+			UpstreamViewRefs: []views.UpstreamViewRef{{
+				ViewID:          upstreamEntityViewID(input.Graph, record),
+				OutputSignature: upstreamEntitySignature(input.Graph, record),
+				RecordKey:       string(record.ID),
+			}},
+			TransformSignature: "fake-entity-profile:v1",
+		},
+	}}, nil
+}
+
+type fakeEntityTimelineBuilder struct {
+	calls     int
+	lastInput EntityTimelineInput
+}
+
+func (f *fakeEntityTimelineBuilder) BuildEntityTimeline(_ context.Context, input EntityTimelineInput) ([]viewentity.Event, error) {
+	f.calls++
+	f.lastInput = input
+	if len(input.Facts) == 0 {
+		return nil, nil
+	}
+	record := input.Facts[0]
+	factRefs := []fact.FactRef{{FactID: record.ID, Role: "supporting_fact"}}
+	return []viewentity.Event{{
+		ID:          viewentity.EventID("event-" + input.Scope.EntityID),
+		Scope:       input.Scope,
+		Title:       "Ada likes tea event",
+		Description: "Ada likes tea",
+		FactRefs:    factRefs,
+		SourceRefs:  record.SourceRefs,
+		Signature: views.ViewSignature{
+			ViewID: input.View.ID,
+			UpstreamViewRefs: []views.UpstreamViewRef{{
+				ViewID:          upstreamEntityViewID(input.Graph, record),
+				OutputSignature: upstreamEntitySignature(input.Graph, record),
+				RecordKey:       string(record.ID),
+			}},
+			TransformSignature: "fake-entity-timeline:v1",
+		},
+	}}, nil
+}
+
+type fakeContextPacker struct {
+	calls int
+	input ContextPackInput
+	fn    func(ContextPackInput) (ContextPackOutput, error)
+}
+
+func (f *fakeContextPacker) PackContext(_ context.Context, input ContextPackInput) (ContextPackOutput, error) {
+	f.calls++
+	f.input = cloneContextPackInput(input)
+	if f.fn != nil {
+		return f.fn(input)
+	}
+	return ContextPackOutput{Items: input.Items}, nil
+}
+
+func upstreamEntityViewID(graph FactGraphOutput, record fact.Fact) views.ID {
+	if len(graph.Nodes) > 0 && graph.Nodes[0].Signature.ViewID != "" {
+		return graph.Nodes[0].Signature.ViewID
+	}
+	return record.Signature.ViewID
+}
+
+func upstreamEntitySignature(graph FactGraphOutput, record fact.Fact) string {
+	if len(graph.Nodes) > 0 && graph.Nodes[0].Signature.TransformSignature != "" {
+		return graph.Nodes[0].Signature.TransformSignature
+	}
+	return record.Signature.TransformSignature
 }
 
 func messageRevisions(messages []sourcemessage.Message, refs []views.SourceRef) []views.SourceRevision {

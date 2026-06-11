@@ -10,9 +10,10 @@ import (
 	sourcemessage "github.com/GizClaw/flowcraft/memory/sources/message"
 	"github.com/GizClaw/flowcraft/memory/views"
 	viewdocument "github.com/GizClaw/flowcraft/memory/views/document"
-	"github.com/GizClaw/flowcraft/memory/views/fact"
+	viewentity "github.com/GizClaw/flowcraft/memory/views/entity"
+	viewfact "github.com/GizClaw/flowcraft/memory/views/fact"
 	viewobservation "github.com/GizClaw/flowcraft/memory/views/observation"
-	"github.com/GizClaw/flowcraft/memory/views/recent"
+	viewrecent "github.com/GizClaw/flowcraft/memory/views/recent"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 )
 
@@ -22,19 +23,24 @@ type Deps struct {
 	MessageStore  sourcemessage.Store
 	DocumentStore sourcedocument.Store
 
-	SummaryStore     recent.SummaryStore
-	ChunkStore       viewdocument.ChunkStore
-	ObservationStore viewobservation.Store
-	FactStore        fact.Store
-	FactGraphStore   fact.GraphStore
+	SummaryStore        viewrecent.SummaryStore
+	ChunkStore          viewdocument.ChunkStore
+	ObservationStore    viewobservation.Store
+	FactStore           viewfact.Store
+	FactGraphStore      viewfact.GraphStore
+	EntityProfileStore  viewentity.ProfileStore
+	EntityTimelineStore viewentity.TimelineStore
 
 	Index retrieval.Index
 
-	DocumentChunker      DocumentChunker
-	Summarizer           Summarizer
-	ObservationExtractor ObservationExtractor
-	FactReconciler       FactReconciler
-	FactGraphBuilder     FactGraphBuilder
+	DocumentChunker       DocumentChunker
+	Summarizer            Summarizer
+	ObservationExtractor  ObservationExtractor
+	FactReconciler        FactReconciler
+	FactGraphBuilder      FactGraphBuilder
+	EntityProfileBuilder  EntityProfileBuilder
+	EntityTimelineBuilder EntityTimelineBuilder
+	ContextPacker         ContextPacker
 
 	Scheduler Scheduler
 }
@@ -66,14 +72,14 @@ type DocumentChunkInput struct {
 
 // Summarizer derives SummaryDAG nodes from a recent message window.
 type Summarizer interface {
-	Summarize(context.Context, SummaryInput) ([]recent.SummaryNode, error)
+	Summarize(context.Context, SummaryInput) ([]viewrecent.SummaryNode, error)
 }
 
 // SummaryInput is the evidence and view identity provided to a summary service.
 type SummaryInput struct {
 	View   views.Descriptor
 	Scope  views.Scope
-	Window recent.WindowResult
+	Window viewrecent.WindowResult
 }
 
 // ObservationExtractor derives observation records from a recent message window.
@@ -85,19 +91,21 @@ type ObservationExtractor interface {
 // an observation extraction service.
 type ObservationInput struct {
 	View   views.Descriptor
-	Window recent.WindowResult
+	Window viewrecent.WindowResult
 	Scope  viewobservation.Scope
 }
 
 // FactReconciler derives durable facts from observation ledger outputs.
 type FactReconciler interface {
-	ReconcileFacts(context.Context, FactReconcileInput) ([]fact.Fact, error)
+	ReconcileFacts(context.Context, FactReconcileInput) ([]viewfact.Fact, error)
 }
 
 // FactReconcileInput is the evidence and view identity provided to a fact reconciler.
 type FactReconcileInput struct {
 	View         views.Descriptor
+	Scope        views.Scope
 	Observations []viewobservation.Observation
+	Current      []viewfact.Fact
 }
 
 // FactGraphBuilder derives graph nodes and edges from reconciled facts.
@@ -108,13 +116,47 @@ type FactGraphBuilder interface {
 // FactGraphInput is the evidence and view identity provided to a fact graph builder.
 type FactGraphInput struct {
 	View  views.Descriptor
-	Facts []fact.Fact
+	Facts []viewfact.Fact
 }
 
 // FactGraphOutput is the graph records produced by a FactGraphBuilder.
 type FactGraphOutput struct {
-	Nodes []fact.Node
-	Edges []fact.Edge
+	Nodes []viewfact.Node
+	Edges []viewfact.Edge
+}
+
+// EntityProfileBuilder derives entity profile records from fact graph and fact
+// ledger outputs. The System passes evidence explicitly; builders must not read stores.
+type EntityProfileBuilder interface {
+	BuildEntityProfiles(context.Context, EntityProfileInput) ([]viewentity.ProfileRecord, error)
+}
+
+// EntityProfileInput is the evidence and view identity provided to an entity profile builder.
+type EntityProfileInput struct {
+	View  views.Descriptor
+	Scope views.Scope
+	Facts []viewfact.Fact
+	Graph FactGraphOutput
+}
+
+// EntityTimelineBuilder derives entity timeline events from fact graph and fact
+// ledger outputs. The System passes evidence explicitly; builders must not read stores.
+type EntityTimelineBuilder interface {
+	BuildEntityTimeline(context.Context, EntityTimelineInput) ([]viewentity.Event, error)
+}
+
+// EntityTimelineInput is the evidence and view identity provided to an entity timeline builder.
+type EntityTimelineInput struct {
+	View  views.Descriptor
+	Scope views.Scope
+	Facts []viewfact.Fact
+	Graph FactGraphOutput
+}
+
+// ContextPacker optionally chooses the final packed context items from
+// executor-built candidates. New does not install a default implementation.
+type ContextPacker interface {
+	PackContext(context.Context, ContextPackInput) (ContextPackOutput, error)
 }
 
 // New compiles spec and constructs a system from caller-provided dependencies.
@@ -208,19 +250,24 @@ func executorDeps(assembly compiler.Assembly, deps Deps) internalexecutor.Deps {
 		MessageStore:  deps.MessageStore,
 		DocumentStore: deps.DocumentStore,
 
-		SummaryStore:     deps.SummaryStore,
-		ChunkStore:       deps.ChunkStore,
-		ObservationStore: deps.ObservationStore,
-		FactStore:        deps.FactStore,
-		FactGraphStore:   deps.FactGraphStore,
+		SummaryStore:        deps.SummaryStore,
+		ChunkStore:          deps.ChunkStore,
+		ObservationStore:    deps.ObservationStore,
+		FactStore:           deps.FactStore,
+		FactGraphStore:      deps.FactGraphStore,
+		EntityProfileStore:  deps.EntityProfileStore,
+		EntityTimelineStore: deps.EntityTimelineStore,
 
 		Index: deps.Index,
 
-		DocumentChunker:      adaptDocumentChunker(deps.DocumentChunker),
-		Summarizer:           adaptSummarizer(deps.Summarizer),
-		ObservationExtractor: adaptObservationExtractor(deps.ObservationExtractor),
-		FactReconciler:       adaptFactReconciler(deps.FactReconciler),
-		FactGraphBuilder:     adaptFactGraphBuilder(deps.FactGraphBuilder),
+		DocumentChunker:       adaptDocumentChunker(deps.DocumentChunker),
+		Summarizer:            adaptSummarizer(deps.Summarizer),
+		ObservationExtractor:  adaptObservationExtractor(deps.ObservationExtractor),
+		FactReconciler:        adaptFactReconciler(deps.FactReconciler),
+		FactGraphBuilder:      adaptFactGraphBuilder(deps.FactGraphBuilder),
+		EntityProfileBuilder:  adaptEntityProfileBuilder(deps.EntityProfileBuilder),
+		EntityTimelineBuilder: adaptEntityTimelineBuilder(deps.EntityTimelineBuilder),
+		ContextPacker:         adaptContextPacker(deps.ContextPacker),
 	}
 }
 
@@ -254,7 +301,7 @@ type summarizerAdapter struct {
 	service Summarizer
 }
 
-func (a summarizerAdapter) Summarize(ctx context.Context, input internalexecutor.SummaryInput) ([]recent.SummaryNode, error) {
+func (a summarizerAdapter) Summarize(ctx context.Context, input internalexecutor.SummaryInput) ([]viewrecent.SummaryNode, error) {
 	return a.service.Summarize(ctx, SummaryInput{
 		View:   input.View,
 		Scope:  input.Scope,
@@ -292,10 +339,12 @@ type factReconcilerAdapter struct {
 	service FactReconciler
 }
 
-func (a factReconcilerAdapter) ReconcileFacts(ctx context.Context, input internalexecutor.FactReconcileInput) ([]fact.Fact, error) {
+func (a factReconcilerAdapter) ReconcileFacts(ctx context.Context, input internalexecutor.FactReconcileInput) ([]viewfact.Fact, error) {
 	return a.service.ReconcileFacts(ctx, FactReconcileInput{
 		View:         input.View,
+		Scope:        input.Scope,
 		Observations: input.Observations,
+		Current:      input.Current,
 	})
 }
 
@@ -322,4 +371,85 @@ func (a factGraphBuilderAdapter) BuildFactGraph(ctx context.Context, input inter
 		Nodes: output.Nodes,
 		Edges: output.Edges,
 	}, nil
+}
+
+func adaptEntityProfileBuilder(service EntityProfileBuilder) internalexecutor.EntityProfileBuilder {
+	if service == nil {
+		return nil
+	}
+	return entityProfileBuilderAdapter{service: service}
+}
+
+type entityProfileBuilderAdapter struct {
+	service EntityProfileBuilder
+}
+
+func (a entityProfileBuilderAdapter) BuildEntityProfiles(ctx context.Context, input internalexecutor.EntityProfileInput) ([]viewentity.ProfileRecord, error) {
+	return a.service.BuildEntityProfiles(ctx, EntityProfileInput{
+		View:  input.View,
+		Scope: input.Scope,
+		Facts: input.Facts,
+		Graph: FactGraphOutput{
+			Nodes: input.Graph.Nodes,
+			Edges: input.Graph.Edges,
+		},
+	})
+}
+
+func adaptEntityTimelineBuilder(service EntityTimelineBuilder) internalexecutor.EntityTimelineBuilder {
+	if service == nil {
+		return nil
+	}
+	return entityTimelineBuilderAdapter{service: service}
+}
+
+type entityTimelineBuilderAdapter struct {
+	service EntityTimelineBuilder
+}
+
+func (a entityTimelineBuilderAdapter) BuildEntityTimeline(ctx context.Context, input internalexecutor.EntityTimelineInput) ([]viewentity.Event, error) {
+	return a.service.BuildEntityTimeline(ctx, EntityTimelineInput{
+		View:  input.View,
+		Scope: input.Scope,
+		Facts: input.Facts,
+		Graph: FactGraphOutput{
+			Nodes: input.Graph.Nodes,
+			Edges: input.Graph.Edges,
+		},
+	})
+}
+
+func adaptContextPacker(service ContextPacker) internalexecutor.ContextPacker {
+	if service == nil {
+		return nil
+	}
+	return contextPackerAdapter{service: service}
+}
+
+type contextPackerAdapter struct {
+	service ContextPacker
+}
+
+func (a contextPackerAdapter) PackContext(ctx context.Context, input internalexecutor.ContextPackInput) (internalexecutor.ContextPackOutput, error) {
+	output, err := a.service.PackContext(ctx, contextPackInputFromInternal(input))
+	if err != nil {
+		return internalexecutor.ContextPackOutput{}, err
+	}
+	return internalexecutor.ContextPackOutput{Items: output.Items}, nil
+}
+
+func contextPackInputFromInternal(input internalexecutor.ContextPackInput) ContextPackInput {
+	return ContextPackInput{
+		Scope:              input.Scope,
+		Query:              input.Query,
+		Window:             input.Window,
+		Items:              input.Items,
+		SummaryHits:        input.SummaryHits,
+		DocumentHits:       input.DocumentHits,
+		ObservationHits:    input.ObservationHits,
+		FactHits:           input.FactHits,
+		FactGraphHits:      input.FactGraphHits,
+		EntityProfileHits:  input.EntityProfileHits,
+		EntityTimelineHits: input.EntityTimelineHits,
+	}
 }

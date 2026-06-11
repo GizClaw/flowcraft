@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	sourcemessage "github.com/GizClaw/flowcraft/memory/sources/message"
+	viewentity "github.com/GizClaw/flowcraft/memory/views/entity"
 	"github.com/GizClaw/flowcraft/memory/views/fact"
 	viewobservation "github.com/GizClaw/flowcraft/memory/views/observation"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
@@ -163,6 +164,56 @@ func (r *Executor) PackContext(ctx context.Context, req PackContextRequest) (*Co
 		}
 	}
 
+	if req.EntityProfileSearch != nil {
+		resp, err := r.searchEntityProfiles(ctx, *req.EntityProfileSearch, req.EntityProfileNamespace)
+		if err != nil {
+			return nil, err
+		}
+		pack.EntityProfileHits = resp.Hits
+		for i := range resp.Hits {
+			profile := resp.Hits[i].Profile
+			hit := resp.Hits[i].Retrieval
+			text := renderEntityProfileText(profile)
+			if strings.TrimSpace(text) == "" {
+				continue
+			}
+			pack.Items = append(pack.Items, ContextItem{
+				Kind:          ContextItemEntityProfile,
+				Text:          text,
+				EntityProfile: &profile,
+				Retrieval:     &hit,
+			})
+		}
+	}
+
+	if req.EntityTimelineSearch != nil {
+		resp, err := r.searchEntityTimeline(ctx, *req.EntityTimelineSearch, req.EntityTimelineNamespace)
+		if err != nil {
+			return nil, err
+		}
+		pack.EntityTimelineHits = resp.Hits
+		for i := range resp.Hits {
+			event := resp.Hits[i].Event
+			hit := resp.Hits[i].Retrieval
+			text := renderEntityEventText(event)
+			if strings.TrimSpace(text) == "" {
+				continue
+			}
+			pack.Items = append(pack.Items, ContextItem{
+				Kind:        ContextItemEntityTimeline,
+				Text:        text,
+				EntityEvent: &event,
+				Retrieval:   &hit,
+			})
+		}
+	}
+
+	if r.contextPacker != nil {
+		if err := r.applyContextPacker(ctx, req, pack); err != nil {
+			return nil, err
+		}
+	}
+
 	return pack, nil
 }
 
@@ -188,6 +239,26 @@ func renderFactGraphNodeText(node fact.Node) string {
 
 func renderFactGraphEdgeText(edge fact.Edge) string {
 	return renderTriple(string(edge.From), edge.Predicate, string(edge.To))
+}
+
+func renderEntityProfileText(profile viewentity.ProfileRecord) string {
+	parts := []string{strings.TrimSpace(profile.Label)}
+	if strings.TrimSpace(profile.Summary) != "" {
+		parts = append(parts, strings.TrimSpace(profile.Summary))
+	}
+	for _, slot := range profile.Slots {
+		if strings.TrimSpace(slot.Name) != "" && strings.TrimSpace(slot.Value) != "" {
+			parts = append(parts, strings.TrimSpace(slot.Name)+": "+strings.TrimSpace(slot.Value))
+		}
+	}
+	return strings.TrimSpace(strings.Join(parts, "\n"))
+}
+
+func renderEntityEventText(event viewentity.Event) string {
+	return strings.TrimSpace(strings.Join([]string{
+		strings.TrimSpace(event.Title),
+		strings.TrimSpace(event.Description),
+	}, "\n"))
 }
 
 func renderTriple(subject, predicate, object string) string {

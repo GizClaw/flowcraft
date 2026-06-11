@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/workspace"
@@ -120,6 +121,8 @@ func TestLedgerWorkspaceStoreListOrderAfterIDLimitAndFilters(t *testing.T) {
 	delta := facts["delta"]
 	delta.Status = FactSuperseded
 	facts["delta"] = delta
+	charlie.Status = FactConflict
+	facts["charlie"] = charlie
 
 	for _, id := range []FactID{"bravo", "alpha", "delta", "charlie"} {
 		if _, err := store.Put(ctx, facts[id]); err != nil {
@@ -158,6 +161,19 @@ func TestLedgerWorkspaceStoreListOrderAfterIDLimitAndFilters(t *testing.T) {
 	}
 	assertFactIDs(t, statusFiltered, []FactID{"delta"})
 
+	activeOnly, err := store.List(ctx, ListOptions{ActiveOnly: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertFactIDs(t, activeOnly, []FactID{"alpha", "bravo"})
+
+	conflict := FactConflict
+	conflictFiltered, err := store.List(ctx, ListOptions{Status: &conflict})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertFactIDs(t, conflictFiltered, []FactID{"charlie"})
+
 	active := FactActive
 	combined, err := store.List(ctx, ListOptions{
 		Limit:     2,
@@ -169,6 +185,54 @@ func TestLedgerWorkspaceStoreListOrderAfterIDLimitAndFilters(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertFactIDs(t, combined, []FactID{"alpha"})
+}
+
+func TestLedgerWorkspaceStoreListFiltersByScopePartition(t *testing.T) {
+	ctx := context.Background()
+	store := NewLedgerWorkspaceStore(workspace.NewMemWorkspace())
+	convOne := validFact("conv-1-fact")
+	convTwo := validFact("conv-2-fact")
+	convTwo.Scope.ConversationID = "conversation-2"
+
+	if _, err := store.Put(ctx, convOne); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Put(ctx, convTwo); err != nil {
+		t.Fatal(err)
+	}
+
+	listed, err := store.List(ctx, ListOptions{Scope: convOne.Scope, ActiveOnly: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertFactIDs(t, listed, []FactID{"conv-1-fact"})
+}
+
+func TestLedgerWorkspaceStoreLineageJSONRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	store := NewLedgerWorkspaceStore(workspace.NewMemWorkspace())
+	retractedAt := time.Date(2026, 6, 10, 1, 2, 3, 0, time.UTC)
+	resolvedAt := retractedAt.Add(time.Minute)
+	record := validFact("fact-2")
+	record.Status = FactConflict
+	record.Revision = "rev-2"
+	record.Supersedes = []FactID{"fact-1"}
+	record.SupersededBy = []FactID{"fact-3"}
+	record.ConflictWith = []FactID{"fact-4"}
+	record.RetractedAt = &retractedAt
+	record.ResolvedAt = &resolvedAt
+
+	if _, err := store.Put(ctx, record); err != nil {
+		t.Fatal(err)
+	}
+	got, ok, err := store.Get(ctx, record.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok {
+		t.Fatal("Get ok = false, want true")
+	}
+	assertFactEqual(t, got, record)
 }
 
 func TestLedgerWorkspaceStoreDeleteOneFact(t *testing.T) {

@@ -118,6 +118,7 @@ func (s *LedgerWorkspaceStore) List(ctx context.Context, opts ListOptions) ([]Fa
 	if s.ws == nil {
 		return nil, errdefs.Validationf("%s: workspace is required", ledgerErrPrefix)
 	}
+	opts = normalizeListOptions(cloneListOptions(opts))
 	if err := validateListOptions(opts); err != nil {
 		return nil, err
 	}
@@ -137,6 +138,10 @@ func (s *LedgerWorkspaceStore) List(ctx context.Context, opts ListOptions) ([]Fa
 			return nil, err
 		}
 		if !ok {
+			continue
+		}
+		fact = normalizeFact(fact)
+		if !opts.Scope.IsZero() && fact.Scope != opts.Scope {
 			continue
 		}
 		if opts.Subject != "" && fact.Subject != opts.Subject {
@@ -309,9 +314,15 @@ type factRecord struct {
 	Predicate       string              `json:"predicate"`
 	Object          string              `json:"object"`
 	Status          FactStatus          `json:"status"`
+	Revision        string              `json:"revision,omitempty"`
+	Supersedes      []FactID            `json:"supersedes,omitempty"`
+	SupersededBy    []FactID            `json:"superseded_by,omitempty"`
+	ConflictWith    []FactID            `json:"conflict_with,omitempty"`
 	Confidence      float64             `json:"confidence"`
 	ValidFrom       *time.Time          `json:"valid_from,omitempty"`
 	ValidUntil      *time.Time          `json:"valid_until,omitempty"`
+	RetractedAt     *time.Time          `json:"retracted_at,omitempty"`
+	ResolvedAt      *time.Time          `json:"resolved_at,omitempty"`
 	ObservationRefs []observationRecord `json:"observation_refs,omitempty"`
 	SourceRefs      []sourceRefRecord   `json:"source_refs,omitempty"`
 	Signature       views.ViewSignature `json:"signature"`
@@ -341,9 +352,15 @@ func encodeFact(fact Fact) ([]byte, error) {
 		Predicate:       fact.Predicate,
 		Object:          fact.Object,
 		Status:          fact.Status,
+		Revision:        fact.Revision,
+		Supersedes:      cloneFactIDs(fact.Supersedes),
+		SupersededBy:    cloneFactIDs(fact.SupersededBy),
+		ConflictWith:    cloneFactIDs(fact.ConflictWith),
 		Confidence:      fact.Confidence,
 		ValidFrom:       cloneTimePtr(fact.ValidFrom),
 		ValidUntil:      cloneTimePtr(fact.ValidUntil),
+		RetractedAt:     cloneTimePtr(fact.RetractedAt),
+		ResolvedAt:      cloneTimePtr(fact.ResolvedAt),
 		ObservationRefs: observationRecords(fact.ObservationRefs),
 		SourceRefs:      sourceRefRecords(fact.SourceRefs),
 		Signature:       cloneViewSignature(fact.Signature),
@@ -365,9 +382,15 @@ func decodeFact(data []byte, fact *Fact) error {
 		Predicate:       record.Predicate,
 		Object:          record.Object,
 		Status:          record.Status,
+		Revision:        record.Revision,
+		Supersedes:      cloneFactIDs(record.Supersedes),
+		SupersededBy:    cloneFactIDs(record.SupersededBy),
+		ConflictWith:    cloneFactIDs(record.ConflictWith),
 		Confidence:      record.Confidence,
 		ValidFrom:       cloneTimePtr(record.ValidFrom),
 		ValidUntil:      cloneTimePtr(record.ValidUntil),
+		RetractedAt:     cloneTimePtr(record.RetractedAt),
+		ResolvedAt:      cloneTimePtr(record.ResolvedAt),
 		ObservationRefs: observationRefsFromRecords(record.ObservationRefs),
 		SourceRefs:      sourceRefsFromRecords(record.SourceRefs),
 		Signature:       cloneViewSignature(record.Signature),
@@ -375,6 +398,7 @@ func decodeFact(data []byte, fact *Fact) error {
 		UpdatedAt:       record.UpdatedAt,
 		Metadata:        cloneAnyMap(record.Metadata),
 	}
+	*fact = normalizeFact(*fact)
 	return nil
 }
 

@@ -20,6 +20,7 @@ import (
 	sourcemessage "github.com/GizClaw/flowcraft/memory/sources/message"
 	"github.com/GizClaw/flowcraft/memory/views"
 	viewdocument "github.com/GizClaw/flowcraft/memory/views/document"
+	viewentity "github.com/GizClaw/flowcraft/memory/views/entity"
 	"github.com/GizClaw/flowcraft/memory/views/fact"
 	viewobservation "github.com/GizClaw/flowcraft/memory/views/observation"
 	"github.com/GizClaw/flowcraft/memory/views/recent"
@@ -253,6 +254,185 @@ read_stages:
 	}
 }
 
+func TestMemoryFacadePackContextOnlyReturnsActiveFacts(t *testing.T) {
+	ctx := context.Background()
+	specYAML := `
+sources:
+  - kind: message_log
+    required: true
+capabilities:
+  - capability: recent_window
+    required: true
+  - capability: observation_ledger
+    required: true
+  - capability: fact_ledger
+    required: true
+projections:
+  - capability: fact_ledger
+    namespace: facts
+    required: true
+write_stages:
+  - name: append_message
+  - name: extract_observations
+  - name: reconcile_facts
+read_stages:
+  - name: load_recent_messages
+  - name: retrieve_facts
+  - name: pack_context
+`
+	spec, err := memory.Decode(strings.NewReader(specYAML))
+	if err != nil {
+		t.Fatalf("Decode lifecycle yaml spec error = %v", err)
+	}
+	deps := newDeps(t)
+	deps.ObservationExtractor = &fakeObservationExtractor{}
+	deps.FactReconciler = lifecycleFactReconciler{}
+
+	mem, err := memory.New(spec, deps)
+	if err != nil {
+		t.Fatalf("New error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := mem.Close(); err != nil {
+			t.Fatalf("Close error = %v", err)
+		}
+	})
+
+	result, err := mem.AppendMessage(ctx, memory.AppendMessageRequest{
+		Scope:    testScope("conv-1"),
+		Messages: []sourcemessage.Message{messageWithText("Ada likes tea.")},
+	})
+	if err != nil {
+		t.Fatalf("AppendMessage error = %v", err)
+	}
+	if len(result.Facts) != 4 {
+		t.Fatalf("AppendMessage facts = %+v, want active plus three non-active ledger records", result.Facts)
+	}
+
+	pack, err := mem.PackContext(ctx, memory.ContextRequest{
+		Scope: testScope("conv-1"),
+		Query: "Ada likes tea",
+		TopK:  10,
+	})
+	if err != nil {
+		t.Fatalf("PackContext error = %v", err)
+	}
+	if len(pack.FactHits) != 1 || pack.FactHits[0].Fact.ID != "fact-active" {
+		t.Fatalf("PackContext FactHits = %+v, want only active fact", pack.FactHits)
+	}
+	var factItems int
+	for _, item := range pack.Items {
+		if item.Kind != memory.ContextItemFact {
+			continue
+		}
+		factItems++
+		if item.Fact == nil || item.Fact.ID != "fact-active" || item.Fact.Status != fact.FactActive {
+			t.Fatalf("PackContext fact item = %+v, want only active fact item", item)
+		}
+	}
+	if factItems != 1 {
+		t.Fatalf("PackContext fact item count = %d, want 1 active fact item; items=%+v", factItems, pack.Items)
+	}
+}
+
+func TestMemoryFacadeEntityProfileAndTimelinePackContext(t *testing.T) {
+	ctx := context.Background()
+	deps := newDeps(t)
+	deps.ObservationExtractor = &fakeObservationExtractor{}
+	deps.FactReconciler = &fakeFactReconciler{}
+	deps.FactGraphBuilder = &fakeFactGraphBuilder{}
+	deps.EntityProfileBuilder = &fakeEntityProfileBuilder{}
+	deps.EntityTimelineBuilder = &fakeEntityTimelineBuilder{}
+	mem, err := memory.New(entityRetrievalSpec(), deps)
+	if err != nil {
+		t.Fatalf("New entity memory error = %v", err)
+	}
+
+	scope := testScope("conv-entity")
+	scope.EntityID = "user:ada"
+	result, err := mem.AppendMessage(ctx, memory.AppendMessageRequest{
+		Scope:    scope,
+		Messages: []sourcemessage.Message{messageWithText("Ada likes tea.")},
+	})
+	if err != nil {
+		t.Fatalf("AppendMessage entity stages error = %v", err)
+	}
+	if len(result.EntityProfiles) != 1 || result.EntityProfiles[0].Scope != scope {
+		t.Fatalf("AppendMessage EntityProfiles = %+v, want scoped profile", result.EntityProfiles)
+	}
+	if len(result.EntityEvents) != 1 || result.EntityEvents[0].Scope != scope {
+		t.Fatalf("AppendMessage EntityEvents = %+v, want scoped event", result.EntityEvents)
+	}
+
+	pack, err := mem.PackContext(ctx, memory.ContextRequest{
+		Scope: scope,
+		Query: "Ada tea",
+		TopK:  10,
+	})
+	if err != nil {
+		t.Fatalf("PackContext entity stages error = %v", err)
+	}
+	if len(pack.EntityProfileHits) != 1 || pack.EntityProfileHits[0].Profile.ID != result.EntityProfiles[0].ID {
+		t.Fatalf("EntityProfileHits = %+v, want hydrated profile", pack.EntityProfileHits)
+	}
+	if len(pack.EntityTimelineHits) != 1 || pack.EntityTimelineHits[0].Event.ID != result.EntityEvents[0].ID {
+		t.Fatalf("EntityTimelineHits = %+v, want hydrated event", pack.EntityTimelineHits)
+	}
+	kinds := map[memory.ContextItemKind]bool{}
+	for _, item := range pack.Items {
+		kinds[item.Kind] = true
+	}
+	if !kinds[memory.ContextItemEntityProfile] || !kinds[memory.ContextItemEntityTimeline] {
+		t.Fatalf("PackContext Items = %+v, want entity profile and timeline items", pack.Items)
+	}
+}
+
+func TestMemoryFacadeEntityRetrievalScopeIsolation(t *testing.T) {
+	ctx := context.Background()
+	deps := newDeps(t)
+	deps.ObservationExtractor = &fakeObservationExtractor{}
+	deps.FactReconciler = &fakeFactReconciler{}
+	deps.FactGraphBuilder = &fakeFactGraphBuilder{}
+	deps.EntityProfileBuilder = &fakeEntityProfileBuilder{}
+	deps.EntityTimelineBuilder = &fakeEntityTimelineBuilder{}
+	mem, err := memory.New(entityRetrievalSpec(), deps)
+	if err != nil {
+		t.Fatalf("New scoped entity memory error = %v", err)
+	}
+
+	scopeOne := testScope("conv-entity")
+	scopeOne.EntityID = "entity-1"
+	scopeOtherRuntime := scopeOne
+	scopeOtherRuntime.RuntimeID = "runtime-2"
+	scopeOtherUser := scopeOne
+	scopeOtherUser.UserID = "user-2"
+	scopeOtherEntity := scopeOne
+	scopeOtherEntity.EntityID = "entity-2"
+	for _, scope := range []memory.Scope{scopeOne, scopeOtherRuntime, scopeOtherUser, scopeOtherEntity} {
+		if _, err := mem.AppendMessage(ctx, memory.AppendMessageRequest{
+			Scope:    scope,
+			Messages: []sourcemessage.Message{messageWithText("Ada likes tea.")},
+		}); err != nil {
+			t.Fatalf("AppendMessage scope %+v error = %v", scope, err)
+		}
+	}
+
+	pack, err := mem.PackContext(ctx, memory.ContextRequest{
+		Scope: scopeOne,
+		Query: "Ada tea",
+		TopK:  10,
+	})
+	if err != nil {
+		t.Fatalf("PackContext scoped entity retrieval error = %v", err)
+	}
+	if len(pack.EntityProfileHits) != 1 || pack.EntityProfileHits[0].Profile.Scope != scopeOne {
+		t.Fatalf("EntityProfileHits = %+v, want only scope one", pack.EntityProfileHits)
+	}
+	if len(pack.EntityTimelineHits) != 1 || pack.EntityTimelineHits[0].Event.Scope != scopeOne {
+		t.Fatalf("EntityTimelineHits = %+v, want only scope one", pack.EntityTimelineHits)
+	}
+}
+
 func TestMemoryFacadeDefaultsEmptyWriteAndReadStages(t *testing.T) {
 	ctx := context.Background()
 	spec := memory.Spec{
@@ -295,6 +475,30 @@ func TestMemoryFacadeDefaultsEmptyWriteAndReadStages(t *testing.T) {
 	}
 	if len(pack.ObservationHits) != 1 || len(pack.FactHits) != 1 || len(pack.FactGraphHits) == 0 {
 		t.Fatalf("PackContext default hits = obs:%d facts:%d graph:%d, want all configured projections", len(pack.ObservationHits), len(pack.FactHits), len(pack.FactGraphHits))
+	}
+}
+
+func TestMemoryFacadeDefaultsEntityStagesWhenAvailable(t *testing.T) {
+	spec := entityRetrievalSpec()
+	spec.WriteStages = nil
+	spec.ReadStages = nil
+	deps := newDeps(t)
+	deps.ObservationExtractor = &fakeObservationExtractor{}
+	deps.FactReconciler = &fakeFactReconciler{}
+	deps.FactGraphBuilder = &fakeFactGraphBuilder{}
+	deps.EntityProfileBuilder = &fakeEntityProfileBuilder{}
+	deps.EntityTimelineBuilder = &fakeEntityTimelineBuilder{}
+	mem, err := memory.New(spec, deps)
+	if err != nil {
+		t.Fatalf("New default entity stage memory error = %v", err)
+	}
+
+	plan := mem.Plan()
+	if !plannedStageNamed(plan.Write, "build_entity_profiles") || !plannedStageNamed(plan.Write, "build_entity_timeline") {
+		t.Fatalf("Plan().Write = %+v, want default entity write stages", plan.Write)
+	}
+	if !plannedStageNamed(plan.Read, "retrieve_entity_profiles") || !plannedStageNamed(plan.Read, "retrieve_entity_timeline") {
+		t.Fatalf("Plan().Read = %+v, want default entity read stages", plan.Read)
 	}
 }
 
@@ -545,6 +749,59 @@ func TestMemoryFacadeImportDocumentValidationAndDependencyErrors(t *testing.T) {
 	}
 }
 
+func TestMemoryFacadeContextPackerCanChangePackedItems(t *testing.T) {
+	ctx := context.Background()
+	scope := testScope("conv-1")
+	packer := &fakeMemoryContextPacker{
+		fn: func(input memory.ContextPackInput) (memory.ContextPackOutput, error) {
+			if input.Scope != scope {
+				t.Fatalf("ContextPacker Scope = %+v, want %+v", input.Scope, scope)
+			}
+			if input.Query != "Ada tea" {
+				t.Fatalf("ContextPacker Query = %q, want Ada tea", input.Query)
+			}
+			if len(input.Window.Messages) != 1 || len(input.Items) != 1 {
+				t.Fatalf("ContextPacker input window/items = %d/%d, want 1/1", len(input.Window.Messages), len(input.Items))
+			}
+			item := input.Items[0]
+			item.Text = "hook-selected context"
+			return memory.ContextPackOutput{Items: []memory.ContextItem{item}}, nil
+		},
+	}
+	deps := newDeps(t)
+	deps.ContextPacker = packer
+	mem, err := memory.New(memory.Spec{
+		Sources: []memory.SourceSpec{{Kind: memory.SourceMessageLog, Required: true}},
+		Capabilities: []memory.CapabilitySpec{
+			{Capability: memory.CapabilityRecentWindow, Required: true},
+		},
+		ReadStages: []memory.StageSpec{
+			{Name: "load_recent_messages"},
+			{Name: "pack_context"},
+		},
+	}, deps)
+	if err != nil {
+		t.Fatalf("New(context packer facade) error = %v", err)
+	}
+	if _, err := mem.MessageStore().Append(ctx, sourcemessage.AppendRequest{
+		ConversationID: scope.ConversationID,
+		Messages:       []sourcemessage.Message{messageWithText("Ada likes tea.")},
+	}); err != nil {
+		t.Fatalf("Append message error = %v", err)
+	}
+
+	pack, err := mem.PackContext(ctx, memory.ContextRequest{Scope: scope, Query: "Ada tea"})
+	if err != nil {
+		t.Fatalf("PackContext() error = %v", err)
+	}
+	if packer.calls != 1 {
+		t.Fatalf("ContextPacker calls = %d, want 1", packer.calls)
+	}
+	if len(pack.Items) != 1 || pack.Items[0].Text != "hook-selected context" {
+		t.Fatalf("PackContext Items = %+v, want hook-selected item", pack.Items)
+	}
+}
+
 func TestMemoryFacadePackContextFiltersSemanticRetrievalByScope(t *testing.T) {
 	ctx := context.Background()
 	spec := semanticRetrievalSpec()
@@ -592,6 +849,52 @@ func TestMemoryFacadePackContextFiltersSemanticRetrievalByScope(t *testing.T) {
 		}
 		if hit.Edge != nil && hit.Edge.Scope != scopeOne {
 			t.Fatalf("FactGraph edge hit scope = %+v, want %+v", hit.Edge.Scope, scopeOne)
+		}
+	}
+}
+
+func TestMemoryFacadePackContextReturnsOnlyActiveFacts(t *testing.T) {
+	ctx := context.Background()
+	spec := semanticRetrievalSpec()
+	deps := newDeps(t)
+	deps.ObservationExtractor = &fakeObservationExtractor{}
+	deps.FactReconciler = &fakeFactReconciler{statuses: []fact.FactStatus{
+		fact.FactActive,
+		fact.FactRetracted,
+		fact.FactSuperseded,
+		fact.FactConflict,
+	}}
+	deps.FactGraphBuilder = &fakeFactGraphBuilder{}
+	mem, err := memory.New(spec, deps)
+	if err != nil {
+		t.Fatalf("New active-only semantic memory error = %v", err)
+	}
+
+	result, err := mem.AppendMessage(ctx, memory.AppendMessageRequest{
+		Scope:    testScope("conv-1"),
+		Messages: []sourcemessage.Message{messageWithText("Ada likes tea.")},
+	})
+	if err != nil {
+		t.Fatalf("AppendMessage active-only facts error = %v", err)
+	}
+	if len(result.Facts) != 4 {
+		t.Fatalf("AppendMessage facts = %+v, want active plus non-active ledger facts", result.Facts)
+	}
+
+	pack, err := mem.PackContext(ctx, memory.ContextRequest{
+		Scope: testScope("conv-1"),
+		Query: "Ada tea likes",
+		TopK:  10,
+	})
+	if err != nil {
+		t.Fatalf("PackContext active-only facts error = %v", err)
+	}
+	if len(pack.FactHits) != 1 || pack.FactHits[0].Fact.Status != fact.FactActive {
+		t.Fatalf("FactHits = %+v, want only active fact", pack.FactHits)
+	}
+	for _, item := range pack.Items {
+		if item.Kind == memory.ContextItemFact && (item.Fact == nil || item.Fact.Status != fact.FactActive) {
+			t.Fatalf("PackContext fact item = %+v, want only active fact items", item)
 		}
 	}
 }
@@ -1225,7 +1528,610 @@ func TestMemoryFacadeReadinessReportsMissingDependencies(t *testing.T) {
 	assertReadinessCheck(t, report, "capability.observation_ledger.service", false)
 }
 
-func TestMemoryFacadeRebuildAndReconcileAreExplicitlyUnavailable(t *testing.T) {
+func TestMemoryFacadeDiagnosticsFreshnessReturnsStructuredChecks(t *testing.T) {
+	ctx := context.Background()
+	mem, err := memory.New(memory.Spec{
+		Sources:      []memory.SourceSpec{{Kind: memory.SourceMessageLog, Required: true}},
+		Capabilities: []memory.CapabilitySpec{{Capability: memory.CapabilityRecentWindow, Required: true}},
+		Diagnostics:  []memory.StageSpec{{Name: "freshness"}},
+	}, newDeps(t))
+	if err != nil {
+		t.Fatalf("New diagnostics memory error = %v", err)
+	}
+
+	rawScope := memory.Scope{RuntimeID: " runtime-1 ", UserID: " user-1 ", ConversationID: " conv-1 "}
+	report, err := mem.Diagnostics(ctx, memory.DiagnosticRequest{Scope: rawScope})
+	if err != nil {
+		t.Fatalf("Diagnostics freshness error = %v", err)
+	}
+	wantScope := memory.Scope{RuntimeID: "runtime-1", UserID: "user-1", ConversationID: "conv-1"}
+	if !report.Ready || !report.OK || report.Stage != "freshness" || report.Scope != wantScope {
+		t.Fatalf("Diagnostics report = %+v, want ready/ok freshness with normalized scope %+v", report, wantScope)
+	}
+	if !reflect.DeepEqual(report.Capabilities, []memory.Capability{memory.CapabilityRecentWindow}) {
+		t.Fatalf("Diagnostics capabilities = %+v, want recent_window default from assembly", report.Capabilities)
+	}
+	assertDiagnosticCheck(t, report, "system.configured", memory.DiagnosticStatusOK, true)
+	assertDiagnosticCheck(t, report, "capability.recent_window.message_store", memory.DiagnosticStatusOK, true)
+}
+
+func TestMemoryFacadeDiagnosticsReportsMissingProjectionDependencies(t *testing.T) {
+	ctx := context.Background()
+	deps := newDeps(t)
+	deps.Index = nil
+	deps.ObservationStore = nil
+	deps.ObservationExtractor = nil
+	mem, err := memory.New(memory.Spec{
+		Sources: []memory.SourceSpec{{Kind: memory.SourceMessageLog, Required: true}},
+		Capabilities: []memory.CapabilitySpec{
+			{Capability: memory.CapabilityObservationLedger},
+		},
+		Projections: []memory.ProjectionSpec{{
+			Capability: memory.CapabilityObservationLedger,
+			Namespace:  "observations",
+		}},
+		Diagnostics: []memory.StageSpec{{Name: "freshness"}},
+	}, deps)
+	if err != nil {
+		t.Fatalf("New diagnostics missing deps memory error = %v", err)
+	}
+
+	report, err := mem.Diagnostics(ctx, memory.DiagnosticRequest{
+		Scope:        testScope("conv-1"),
+		Capabilities: []memory.Capability{memory.CapabilityObservationLedger},
+	})
+	if err != nil {
+		t.Fatalf("Diagnostics missing deps error = %v", err)
+	}
+	if report.Ready || report.OK {
+		t.Fatalf("Diagnostics missing deps report = %+v, want not ready/ok", report)
+	}
+	assertDiagnosticCheck(t, report, "capability.observation_ledger.store", memory.DiagnosticStatusError, false)
+	assertDiagnosticCheck(t, report, "capability.observation_ledger.service", memory.DiagnosticStatusError, false)
+	assertDiagnosticCheck(t, report, "projection.observation_ledger.index", memory.DiagnosticStatusError, false)
+	assertDiagnosticCheck(t, report, "projection.observation_ledger.scoped_namespace", memory.DiagnosticStatusOK, true)
+}
+
+func TestMemoryFacadeDiagnosticsUsesNormalizedHardPartitionScope(t *testing.T) {
+	ctx := context.Background()
+	deps := newDeps(t)
+	deps.ObservationExtractor = &fakeObservationExtractor{}
+	mem, err := memory.New(memory.Spec{
+		Sources: []memory.SourceSpec{{Kind: memory.SourceMessageLog, Required: true}},
+		Capabilities: []memory.CapabilitySpec{
+			{Capability: memory.CapabilityObservationLedger},
+		},
+		Projections: []memory.ProjectionSpec{{
+			Capability: memory.CapabilityObservationLedger,
+			Namespace:  "observations",
+		}},
+		Diagnostics: []memory.StageSpec{{Name: "freshness"}},
+	}, deps)
+	if err != nil {
+		t.Fatalf("New diagnostics partition memory error = %v", err)
+	}
+
+	userReport, err := mem.Diagnostics(ctx, memory.DiagnosticRequest{
+		Scope:        memory.Scope{RuntimeID: " runtime-1 ", UserID: " user-1 ", ConversationID: " conv-1 "},
+		Capabilities: []memory.Capability{memory.CapabilityObservationLedger},
+	})
+	if err != nil {
+		t.Fatalf("Diagnostics user scope error = %v", err)
+	}
+	globalReport, err := mem.Diagnostics(ctx, memory.DiagnosticRequest{
+		Scope:        memory.Scope{RuntimeID: " runtime-1 ", ConversationID: " conv-1 "},
+		Capabilities: []memory.Capability{memory.CapabilityObservationLedger},
+	})
+	if err != nil {
+		t.Fatalf("Diagnostics global scope error = %v", err)
+	}
+	if userReport.Scope != testScope("conv-1") {
+		t.Fatalf("Diagnostics user scope = %+v, want normalized %+v", userReport.Scope, testScope("conv-1"))
+	}
+	wantGlobalScope := testScope("conv-1")
+	wantGlobalScope.UserID = ""
+	if globalReport.Scope != wantGlobalScope {
+		t.Fatalf("Diagnostics global scope = %+v, want normalized %+v", globalReport.Scope, wantGlobalScope)
+	}
+	userNamespace := diagnosticDetailString(t, assertDiagnosticCheck(t, userReport, "projection.observation_ledger.scoped_namespace", memory.DiagnosticStatusOK, true), "scoped_namespace")
+	globalNamespace := diagnosticDetailString(t, assertDiagnosticCheck(t, globalReport, "projection.observation_ledger.scoped_namespace", memory.DiagnosticStatusOK, true), "scoped_namespace")
+	if userNamespace == globalNamespace {
+		t.Fatalf("scoped namespaces matched for user/global partitions: %q", userNamespace)
+	}
+}
+
+func TestMemoryFacadeDiagnosticsRequiresDeclaredStage(t *testing.T) {
+	ctx := context.Background()
+	mem, err := memory.New(memory.Spec{
+		Sources:      []memory.SourceSpec{{Kind: memory.SourceMessageLog, Required: true}},
+		Capabilities: []memory.CapabilitySpec{{Capability: memory.CapabilityRecentWindow, Required: true}},
+	}, newDeps(t))
+	if err != nil {
+		t.Fatalf("New diagnostics unavailable memory error = %v", err)
+	}
+
+	report, err := mem.Diagnostics(ctx, memory.DiagnosticRequest{Scope: testScope("conv-1")})
+	if err == nil || !errdefs.IsNotAvailable(err) || report.OK || report.Ready {
+		t.Fatalf("Diagnostics undeclared report=%+v err=%v, want undeclared NotAvailable", report, err)
+	}
+	assertDiagnosticCheck(t, report, "diagnostics.stage.freshness", memory.DiagnosticStatusError, false)
+}
+
+func TestMemoryFacadeFreshnessDryRunIncludesDiagnosticChecks(t *testing.T) {
+	ctx := context.Background()
+	mem, err := memory.New(memory.Spec{
+		Sources:      []memory.SourceSpec{{Kind: memory.SourceMessageLog, Required: true}},
+		Capabilities: []memory.CapabilitySpec{{Capability: memory.CapabilityRecentWindow, Required: true}},
+		Lifecycle: []memory.StageSpec{
+			{Name: "freshness_check"},
+		},
+	}, newDeps(t))
+	if err != nil {
+		t.Fatalf("New freshness diagnostics memory error = %v", err)
+	}
+
+	result, err := mem.Freshness(ctx, memory.FreshnessRequest{
+		Scope:  memory.Scope{RuntimeID: " runtime-1 ", UserID: " user-1 ", ConversationID: " conv-1 "},
+		DryRun: true,
+	})
+	if err != nil {
+		t.Fatalf("Freshness dry-run error = %v", err)
+	}
+	if !result.Supported || !result.Accepted || !result.DryRun || result.Action != "freshness_check" || !result.Ready || !result.OK {
+		t.Fatalf("Freshness dry-run result = %+v, want lifecycle plus ready diagnostics", result)
+	}
+	if result.Scope != testScope("conv-1") || result.Diagnostics.Scope != testScope("conv-1") {
+		t.Fatalf("Freshness scopes = lifecycle %+v diagnostics %+v, want normalized", result.Scope, result.Diagnostics.Scope)
+	}
+	assertFreshnessCheck(t, result.FreshnessReport, "capability.recent_window.message_store", memory.DiagnosticStatusOK, true)
+}
+
+func TestMemoryFacadeDocumentTargetFreshnessReportsFreshStaleAndMissing(t *testing.T) {
+	ctx := context.Background()
+	deps := newDocumentDeps(t)
+	deps.DocumentChunker = &fakeDocumentChunker{}
+	spec := documentRetrievalSpec()
+	spec.Lifecycle = []memory.StageSpec{{Name: "freshness_check"}}
+	spec.Diagnostics = []memory.StageSpec{{Name: "freshness"}}
+	mem, err := memory.New(spec, deps)
+	if err != nil {
+		t.Fatalf("New document freshness memory error = %v", err)
+	}
+	scope := testScope("conv-doc")
+	scope.DatasetID = "dataset-1"
+	if _, err := mem.ImportDocument(ctx, memory.ImportDocumentRequest{
+		Scope: scope,
+		Document: sourcedocument.Document{
+			ID:      "doc-fresh",
+			Content: "fresh document target content",
+		},
+	}); err != nil {
+		t.Fatalf("ImportDocument fresh error = %v", err)
+	}
+
+	fresh, err := mem.Freshness(ctx, memory.FreshnessRequest{
+		Scope:        scope,
+		Capabilities: []memory.Capability{memory.CapabilityDocumentChunks},
+		Documents:    []memory.DocumentTarget{{DocumentID: "doc-fresh"}},
+		DryRun:       true,
+	})
+	if err != nil {
+		t.Fatalf("Freshness fresh target error = %v", err)
+	}
+	freshCheck := assertFreshnessCheck(t, fresh.FreshnessReport, "freshness.document_chunks.target", memory.DiagnosticStatusOK, true)
+	if state := freshCheck.Details["state"]; state != "fresh" {
+		t.Fatalf("fresh state = %#v, want fresh; check=%+v", state, freshCheck)
+	}
+	if got := freshCheck.Details["chunk_count"]; got != 1 {
+		t.Fatalf("fresh chunk_count = %#v, want 1", got)
+	}
+	diagnostics, err := mem.Diagnostics(ctx, memory.DiagnosticRequest{
+		Scope:        scope,
+		Capabilities: []memory.Capability{memory.CapabilityDocumentChunks},
+		Documents:    []memory.DocumentTarget{{DocumentID: "doc-fresh"}},
+	})
+	if err != nil {
+		t.Fatalf("Diagnostics targeted freshness error = %v", err)
+	}
+	assertDiagnosticCheck(t, diagnostics, "freshness.document_chunks.target", memory.DiagnosticStatusOK, true)
+
+	if _, err := mem.DocumentStore().Put(ctx, sourcedocument.PutRequest{Document: sourcedocument.Document{
+		DatasetID: "dataset-1",
+		ID:        "doc-fresh",
+		Content:   "updated canonical document target content",
+	}}); err != nil {
+		t.Fatalf("Put stale canonical document error = %v", err)
+	}
+	stale, err := mem.Freshness(ctx, memory.FreshnessRequest{
+		Scope:        scope,
+		Capabilities: []memory.Capability{memory.CapabilityDocumentChunks},
+		Documents:    []memory.DocumentTarget{{DocumentID: "doc-fresh"}},
+		DryRun:       true,
+	})
+	if err != nil {
+		t.Fatalf("Freshness stale target error = %v", err)
+	}
+	if stale.OK || stale.Ready {
+		t.Fatalf("stale freshness = %+v, want not ok/ready", stale)
+	}
+	assertFreshnessCheck(t, stale.FreshnessReport, "freshness.document_chunks.target", memory.DiagnosticStatusStale, false)
+
+	if _, err := mem.DocumentStore().Put(ctx, sourcedocument.PutRequest{Document: sourcedocument.Document{
+		DatasetID: "dataset-1",
+		ID:        "doc-no-chunks",
+		Content:   "canonical document without chunks",
+	}}); err != nil {
+		t.Fatalf("Put missing chunks document error = %v", err)
+	}
+	missingChunks, err := mem.Freshness(ctx, memory.FreshnessRequest{
+		Scope:        scope,
+		Capabilities: []memory.Capability{memory.CapabilityDocumentChunks},
+		Documents:    []memory.DocumentTarget{{DocumentID: "doc-no-chunks"}},
+		DryRun:       true,
+	})
+	if err != nil {
+		t.Fatalf("Freshness missing chunks error = %v", err)
+	}
+	missingChunksCheck := assertFreshnessCheck(t, missingChunks.FreshnessReport, "freshness.document_chunks.target", memory.DiagnosticStatusMissing, false)
+	if state := missingChunksCheck.Details["state"]; state != "missing_chunks" {
+		t.Fatalf("missing chunks state = %#v, want missing_chunks", state)
+	}
+
+	missingDoc, err := mem.Freshness(ctx, memory.FreshnessRequest{
+		Scope:        scope,
+		Capabilities: []memory.Capability{memory.CapabilityDocumentChunks},
+		Documents:    []memory.DocumentTarget{{DocumentID: "doc-missing"}},
+		DryRun:       true,
+	})
+	if err != nil {
+		t.Fatalf("Freshness missing document error = %v", err)
+	}
+	missingDocCheck := assertFreshnessCheck(t, missingDoc.FreshnessReport, "freshness.document_chunks.target", memory.DiagnosticStatusMissing, false)
+	if state := missingDocCheck.Details["state"]; state != "missing_document" {
+		t.Fatalf("missing document state = %#v, want missing_document", state)
+	}
+}
+
+func TestMemoryFacadeDocumentTargetReloadAndRebuildDryRunPlansTargets(t *testing.T) {
+	ctx := context.Background()
+	deps := newDocumentDeps(t)
+	deps.DocumentChunker = &fakeDocumentChunker{}
+	spec := documentRetrievalSpec()
+	spec.Lifecycle = []memory.StageSpec{{Name: "reload"}, {Name: "rebuild"}}
+	mem, err := memory.New(spec, deps)
+	if err != nil {
+		t.Fatalf("New document lifecycle memory error = %v", err)
+	}
+	scope := testScope("conv-doc")
+	scope.DatasetID = "dataset-1"
+	targets := []memory.DocumentTarget{{DocumentID: "doc-1"}}
+
+	reload, err := mem.Reload(ctx, memory.ReloadRequest{
+		Scope:        scope,
+		Capabilities: []memory.Capability{memory.CapabilityDocumentChunks},
+		Documents:    targets,
+		DryRun:       true,
+	})
+	if err != nil {
+		t.Fatalf("Reload dry-run target error = %v", err)
+	}
+	if !reload.Accepted || !reload.Supported || len(reload.Steps) != 1 || reload.Steps[0].Completed {
+		t.Fatalf("Reload dry-run = %+v, want one planned target step", reload)
+	}
+	if reload.Documents[0] != (memory.DocumentTarget{DatasetID: "dataset-1", DocumentID: "doc-1"}) {
+		t.Fatalf("Reload documents = %+v, want normalized dataset target", reload.Documents)
+	}
+	if got := reload.Steps[0].Details["chunk_count"]; got != 0 {
+		t.Fatalf("Reload dry-run chunk_count = %#v, want 0", got)
+	}
+
+	rebuild, err := mem.Rebuild(ctx, memory.RebuildRequest{
+		Scope:        scope,
+		Capabilities: []memory.Capability{memory.CapabilityDocumentChunks},
+		Documents:    targets,
+		DryRun:       true,
+	})
+	if err != nil {
+		t.Fatalf("Rebuild dry-run target error = %v", err)
+	}
+	if !rebuild.Accepted || !rebuild.Supported || len(rebuild.Steps) != 1 || rebuild.Steps[0].Completed {
+		t.Fatalf("Rebuild dry-run = %+v, want one planned target step", rebuild)
+	}
+
+	noTargets, err := mem.Reload(ctx, memory.ReloadRequest{
+		Scope:        scope,
+		Capabilities: []memory.Capability{memory.CapabilityDocumentChunks},
+		DryRun:       true,
+	})
+	if err != nil {
+		t.Fatalf("Reload dry-run no targets error = %v", err)
+	}
+	if !noTargets.Accepted || len(noTargets.Steps) != 1 || !strings.Contains(noTargets.Message, "no full scan") {
+		t.Fatalf("Reload dry-run no targets = %+v, want explicit no-full-scan plan", noTargets)
+	}
+}
+
+func TestMemoryFacadeDocumentTargetReloadReindexesAndPackContextSeesUpdatedText(t *testing.T) {
+	ctx := context.Background()
+	chunker := &fakeDocumentChunker{}
+	deps := newDocumentDeps(t)
+	deps.DocumentChunker = chunker
+	spec := documentRetrievalSpec()
+	spec.Lifecycle = []memory.StageSpec{{Name: "reload"}, {Name: "rebuild"}}
+	mem, err := memory.New(spec, deps)
+	if err != nil {
+		t.Fatalf("New document reload memory error = %v", err)
+	}
+	scope := testScope("conv-doc")
+	scope.DatasetID = "dataset-1"
+	if _, err := mem.ImportDocument(ctx, memory.ImportDocumentRequest{
+		Scope: scope,
+		Document: sourcedocument.Document{
+			ID:      "doc-1",
+			Content: "old reload target text",
+		},
+	}); err != nil {
+		t.Fatalf("ImportDocument initial error = %v", err)
+	}
+	if _, err := mem.DocumentStore().Put(ctx, sourcedocument.PutRequest{Document: sourcedocument.Document{
+		DatasetID: "dataset-1",
+		ID:        "doc-1",
+		Content:   "updated reload target needle text",
+	}}); err != nil {
+		t.Fatalf("Put updated canonical document error = %v", err)
+	}
+
+	reload, err := mem.Reload(ctx, memory.ReloadRequest{
+		Scope:        scope,
+		Capabilities: []memory.Capability{memory.CapabilityDocumentChunks},
+		Documents:    []memory.DocumentTarget{{DocumentID: "doc-1"}},
+	})
+	if err != nil {
+		t.Fatalf("Reload target error = %v", err)
+	}
+	if !reload.Accepted || len(reload.Steps) != 1 || !reload.Steps[0].Completed {
+		t.Fatalf("Reload target report = %+v, want completed target step", reload)
+	}
+	if got := reload.Steps[0].Details["chunk_count"]; got != 1 {
+		t.Fatalf("Reload target chunk_count = %#v, want 1", got)
+	}
+	if chunker.calls != 2 {
+		t.Fatalf("chunker calls = %d, want import plus reload", chunker.calls)
+	}
+	pack, err := mem.PackContext(ctx, memory.ContextRequest{
+		Scope: scope,
+		Query: "updated reload needle",
+		TopK:  5,
+	})
+	if err != nil {
+		t.Fatalf("PackContext after reload error = %v", err)
+	}
+	if len(pack.DocumentHits) != 1 || !strings.Contains(pack.DocumentHits[0].Chunk.Text, "updated reload target needle text") {
+		t.Fatalf("DocumentHits after reload = %+v, want updated chunk text", pack.DocumentHits)
+	}
+}
+
+func TestMemoryFacadeDocumentTargetReloadKeepsRuntimeUserHardPartitions(t *testing.T) {
+	ctx := context.Background()
+	deps := newDocumentDeps(t)
+	deps.DocumentChunker = &fakeDocumentChunker{}
+	spec := documentRetrievalSpec()
+	spec.Lifecycle = []memory.StageSpec{{Name: "reload"}}
+	mem, err := memory.New(spec, deps)
+	if err != nil {
+		t.Fatalf("New partitioned reload memory error = %v", err)
+	}
+	userOne := testScope("conv-doc")
+	userOne.DatasetID = "dataset-1"
+	userTwo := userOne
+	userTwo.UserID = "user-2"
+
+	if _, err := mem.DocumentStore().Put(ctx, sourcedocument.PutRequest{Document: sourcedocument.Document{
+		DatasetID: "dataset-1",
+		ID:        "doc-1",
+		Content:   "user one partition text",
+	}}); err != nil {
+		t.Fatalf("Put user one canonical document error = %v", err)
+	}
+	if _, err := mem.Reload(ctx, memory.ReloadRequest{
+		Scope:        userOne,
+		Capabilities: []memory.Capability{memory.CapabilityDocumentChunks},
+		Documents:    []memory.DocumentTarget{{DocumentID: "doc-1"}},
+	}); err != nil {
+		t.Fatalf("Reload user one target error = %v", err)
+	}
+	if _, err := mem.DocumentStore().Put(ctx, sourcedocument.PutRequest{Document: sourcedocument.Document{
+		DatasetID: "dataset-1",
+		ID:        "doc-1",
+		Content:   "user two partition text",
+	}}); err != nil {
+		t.Fatalf("Put user two canonical document error = %v", err)
+	}
+	if _, err := mem.Reload(ctx, memory.ReloadRequest{
+		Scope:        userTwo,
+		Capabilities: []memory.Capability{memory.CapabilityDocumentChunks},
+		Documents:    []memory.DocumentTarget{{DocumentID: "doc-1"}},
+	}); err != nil {
+		t.Fatalf("Reload user two target error = %v", err)
+	}
+
+	userOnePack, err := mem.PackContext(ctx, memory.ContextRequest{Scope: userOne, Query: "user one partition", TopK: 5})
+	if err != nil {
+		t.Fatalf("PackContext user one error = %v", err)
+	}
+	if len(userOnePack.DocumentHits) != 1 || !strings.Contains(userOnePack.DocumentHits[0].Chunk.Text, "user one partition text") {
+		t.Fatalf("user one DocumentHits = %+v, want user one partition chunk", userOnePack.DocumentHits)
+	}
+	userTwoPack, err := mem.PackContext(ctx, memory.ContextRequest{Scope: userTwo, Query: "user two partition", TopK: 5})
+	if err != nil {
+		t.Fatalf("PackContext user two error = %v", err)
+	}
+	if len(userTwoPack.DocumentHits) != 1 || !strings.Contains(userTwoPack.DocumentHits[0].Chunk.Text, "user two partition text") {
+		t.Fatalf("user two DocumentHits = %+v, want user two partition chunk", userTwoPack.DocumentHits)
+	}
+}
+
+func TestMemoryFacadeRebuildAndReconcileDryRunReturnPlannedReports(t *testing.T) {
+	ctx := context.Background()
+	mem, err := memory.New(memory.Spec{
+		Sources:      []memory.SourceSpec{{Kind: memory.SourceMessageLog, Required: true}},
+		Capabilities: []memory.CapabilitySpec{{Capability: memory.CapabilityRecentWindow, Required: true}},
+		Lifecycle: []memory.StageSpec{
+			{Name: "readiness"},
+			{Name: "rebuild"},
+			{Name: "reconcile"},
+		},
+	}, newDeps(t))
+	if err != nil {
+		t.Fatalf("New dry-run lifecycle memory error = %v", err)
+	}
+
+	rawScope := memory.Scope{
+		RuntimeID:      " runtime-1 ",
+		UserID:         " user-1 ",
+		AgentID:        " agent-1 ",
+		ConversationID: " conv-1 ",
+		DatasetID:      " dataset-1 ",
+		EntityID:       " entity-1 ",
+	}
+	wantScope := memory.Scope{
+		RuntimeID:      "runtime-1",
+		UserID:         "user-1",
+		AgentID:        "agent-1",
+		ConversationID: "conv-1",
+		DatasetID:      "dataset-1",
+		EntityID:       "entity-1",
+	}
+	capabilities := []memory.Capability{memory.CapabilityObservationLedger, memory.CapabilityFactGraph}
+	rebuild, err := mem.Rebuild(ctx, memory.RebuildRequest{
+		Scope:        rawScope,
+		Capabilities: capabilities,
+		DryRun:       true,
+		Reason:       " operator requested ",
+	})
+	if err != nil {
+		t.Fatalf("Rebuild dry-run error = %v", err)
+	}
+	if !rebuild.Supported || !rebuild.Accepted || !rebuild.DryRun || rebuild.Action != "rebuild" {
+		t.Fatalf("Rebuild dry-run report = %+v, want supported accepted dry-run rebuild", rebuild)
+	}
+	if rebuild.Scope != wantScope || !reflect.DeepEqual(rebuild.Capabilities, capabilities) {
+		t.Fatalf("Rebuild dry-run scope/capabilities = %+v/%+v, want %+v/%+v", rebuild.Scope, rebuild.Capabilities, wantScope, capabilities)
+	}
+	if rebuild.Job.ID != "" || rebuild.Reason != "operator requested" || !strings.Contains(rebuild.Message, "planned") {
+		t.Fatalf("Rebuild dry-run job/reason/message = %+v/%q/%q, want no job, trimmed reason, planned message", rebuild.Job, rebuild.Reason, rebuild.Message)
+	}
+	if len(rebuild.Steps) != 1 || !rebuild.Steps[0].Planned || rebuild.Steps[0].Completed {
+		t.Fatalf("Rebuild dry-run steps = %+v, want one planned substrate step", rebuild.Steps)
+	}
+
+	reconcile, err := mem.Reconcile(ctx, memory.ReconcileRequest{
+		Scope:        rawScope,
+		Capabilities: []memory.Capability{memory.CapabilityFactLedger},
+		DryRun:       true,
+	})
+	if err != nil {
+		t.Fatalf("Reconcile dry-run error = %v", err)
+	}
+	if !reconcile.Supported || !reconcile.Accepted || !reconcile.DryRun || reconcile.Action != "reconcile" {
+		t.Fatalf("Reconcile dry-run report = %+v, want supported accepted dry-run reconcile", reconcile)
+	}
+	if reconcile.Scope != wantScope || !reflect.DeepEqual(reconcile.Capabilities, []memory.Capability{memory.CapabilityFactLedger}) {
+		t.Fatalf("Reconcile dry-run scope/capabilities = %+v/%+v, want %+v/fact_ledger", reconcile.Scope, reconcile.Capabilities, wantScope)
+	}
+}
+
+func TestMemoryFacadeRebuildAndReconcileEnqueueLifecycleJobs(t *testing.T) {
+	ctx := context.Background()
+	scheduler := newRecordingScheduler()
+	deps := newDeps(t)
+	deps.Scheduler = scheduler
+	mem, err := memory.New(memory.Spec{
+		Sources:      []memory.SourceSpec{{Kind: memory.SourceMessageLog, Required: true}},
+		Capabilities: []memory.CapabilitySpec{{Capability: memory.CapabilityRecentWindow, Required: true}},
+		Lifecycle: []memory.StageSpec{
+			{Name: "rebuild"},
+			{Name: "reconcile"},
+		},
+	}, deps)
+	if err != nil {
+		t.Fatalf("New lifecycle scheduler memory error = %v", err)
+	}
+	rawScope := memory.Scope{
+		RuntimeID:      " runtime-1 ",
+		UserID:         " user-1 ",
+		AgentID:        " agent-1 ",
+		ConversationID: " conv-1 ",
+		DatasetID:      " dataset-1 ",
+		EntityID:       " entity-1 ",
+	}
+	wantScope := memory.Scope{
+		RuntimeID:      "runtime-1",
+		UserID:         "user-1",
+		AgentID:        "agent-1",
+		ConversationID: "conv-1",
+		DatasetID:      "dataset-1",
+		EntityID:       "entity-1",
+	}
+	rebuildCapabilities := []memory.Capability{memory.CapabilityObservationLedger, memory.CapabilityFactGraph}
+	rebuild, err := mem.Rebuild(ctx, memory.RebuildRequest{
+		Scope:        rawScope,
+		Capabilities: rebuildCapabilities,
+		Reason:       "rebuild substrate",
+	})
+	if err != nil {
+		t.Fatalf("Rebuild enqueue error = %v", err)
+	}
+	if !rebuild.Supported || !rebuild.Accepted || rebuild.DryRun || rebuild.Job.ID == "" {
+		t.Fatalf("Rebuild enqueue report = %+v, want accepted queued job", rebuild)
+	}
+	reconcile, err := mem.Reconcile(ctx, memory.ReconcileRequest{
+		Scope:        rawScope,
+		Capabilities: []memory.Capability{memory.CapabilityFactLedger},
+		Reason:       "reconcile substrate",
+	})
+	if err != nil {
+		t.Fatalf("Reconcile enqueue error = %v", err)
+	}
+	if !reconcile.Supported || !reconcile.Accepted || reconcile.DryRun || reconcile.Job.ID == "" {
+		t.Fatalf("Reconcile enqueue report = %+v, want accepted queued job", reconcile)
+	}
+	if len(scheduler.jobs) != 2 {
+		t.Fatalf("recorded jobs len = %d, want 2", len(scheduler.jobs))
+	}
+	if job := scheduler.jobs[0]; job.Kind != "rebuild" || job.Scope != wantScope || !reflect.DeepEqual(job.Capabilities, rebuildCapabilities) || job.Reason != "rebuild substrate" {
+		t.Fatalf("rebuild job = %+v, want full normalized scope/capabilities/reason", job)
+	}
+	if job := scheduler.jobs[1]; job.Kind != "reconcile" || job.Scope != wantScope || !reflect.DeepEqual(job.Capabilities, []memory.Capability{memory.CapabilityFactLedger}) || job.Reason != "reconcile substrate" {
+		t.Fatalf("reconcile job = %+v, want full normalized scope/capabilities/reason", job)
+	}
+	stats, err := mem.QueueStats(ctx)
+	if err != nil {
+		t.Fatalf("QueueStats after lifecycle enqueue error = %v", err)
+	}
+	if stats.Pending != 2 || stats.Completed != 0 {
+		t.Fatalf("QueueStats after lifecycle enqueue = %+v, want two pending", stats)
+	}
+	result, err := mem.RunOnce(ctx)
+	if err != nil {
+		t.Fatalf("RunOnce lifecycle job error = %v", err)
+	}
+	if !result.Completed || result.JobID == "" || result.Error != "" {
+		t.Fatalf("RunOnce lifecycle result = %+v, want completed job", result)
+	}
+	if err := mem.Drain(ctx); err != nil {
+		t.Fatalf("Drain lifecycle jobs error = %v", err)
+	}
+	stats, err = mem.QueueStats(ctx)
+	if err != nil {
+		t.Fatalf("QueueStats after lifecycle drain error = %v", err)
+	}
+	if stats.Pending != 0 || stats.Completed != 2 || stats.Failed != 0 {
+		t.Fatalf("QueueStats after lifecycle drain = %+v, want two completed", stats)
+	}
+}
+
+func TestMemoryFacadeRebuildAndReconcileRequireDeclaredLifecycleStages(t *testing.T) {
 	ctx := context.Background()
 	mem, err := memory.New(memory.Spec{
 		Sources:      []memory.SourceSpec{{Kind: memory.SourceMessageLog, Required: true}},
@@ -1235,12 +2141,12 @@ func TestMemoryFacadeRebuildAndReconcileAreExplicitlyUnavailable(t *testing.T) {
 		t.Fatalf("New lifecycle unavailable memory error = %v", err)
 	}
 	rebuild, err := mem.Rebuild(ctx, memory.RebuildRequest{Scope: testScope("conv-1")})
-	if err == nil || !errdefs.IsNotAvailable(err) || rebuild.Supported {
-		t.Fatalf("Rebuild result=%+v err=%v, want unsupported NotAvailable", rebuild, err)
+	if err == nil || !errdefs.IsNotAvailable(err) || rebuild.Supported || rebuild.Accepted || rebuild.Action != "rebuild" {
+		t.Fatalf("Rebuild result=%+v err=%v, want undeclared NotAvailable", rebuild, err)
 	}
 	reconcile, err := mem.Reconcile(ctx, memory.ReconcileRequest{Scope: testScope("conv-1")})
-	if err == nil || !errdefs.IsNotAvailable(err) || reconcile.Supported {
-		t.Fatalf("Reconcile result=%+v err=%v, want unsupported NotAvailable", reconcile, err)
+	if err == nil || !errdefs.IsNotAvailable(err) || reconcile.Supported || reconcile.Accepted || reconcile.Action != "reconcile" {
+		t.Fatalf("Reconcile result=%+v err=%v, want undeclared NotAvailable", reconcile, err)
 	}
 }
 
@@ -1293,29 +2199,35 @@ func TestPublicExecutorTypeAliasesAreCentralized(t *testing.T) {
 	const executorImportPath = "github.com/GizClaw/flowcraft/memory/internal/executor"
 
 	expectedTypes := map[string]string{
-		"DocumentChunkSearchResponse": "DocumentChunkSearchResponse",
-		"DocumentChunkSearchHit":      "DocumentChunkSearchHit",
-		"SummaryNodeSearchResponse":   "SummaryNodeSearchResponse",
-		"SummaryNodeSearchHit":        "SummaryNodeSearchHit",
-		"ObservationSearchResponse":   "ObservationSearchResponse",
-		"ObservationSearchHit":        "ObservationSearchHit",
-		"FactSearchResponse":          "FactSearchResponse",
-		"FactSearchHit":               "FactSearchHit",
-		"FactGraphBuildResult":        "FactGraphBuildResult",
-		"FactGraphSearchResponse":     "FactGraphSearchResponse",
-		"FactGraphSearchHit":          "FactGraphSearchHit",
-		"ContextPack":                 "ContextPack",
-		"ContextItemKind":             "ContextItemKind",
-		"ContextItem":                 "ContextItem",
+		"DocumentChunkSearchResponse":  "DocumentChunkSearchResponse",
+		"DocumentChunkSearchHit":       "DocumentChunkSearchHit",
+		"SummaryNodeSearchResponse":    "SummaryNodeSearchResponse",
+		"SummaryNodeSearchHit":         "SummaryNodeSearchHit",
+		"ObservationSearchResponse":    "ObservationSearchResponse",
+		"ObservationSearchHit":         "ObservationSearchHit",
+		"FactSearchResponse":           "FactSearchResponse",
+		"FactSearchHit":                "FactSearchHit",
+		"FactGraphBuildResult":         "FactGraphBuildResult",
+		"FactGraphSearchResponse":      "FactGraphSearchResponse",
+		"FactGraphSearchHit":           "FactGraphSearchHit",
+		"EntityProfileSearchResponse":  "EntityProfileSearchResponse",
+		"EntityProfileSearchHit":       "EntityProfileSearchHit",
+		"EntityTimelineSearchResponse": "EntityTimelineSearchResponse",
+		"EntityTimelineSearchHit":      "EntityTimelineSearchHit",
+		"ContextPack":                  "ContextPack",
+		"ContextItemKind":              "ContextItemKind",
+		"ContextItem":                  "ContextItem",
 	}
 	expectedConstants := map[string]string{
-		"ContextItemRecentMessage": "ContextItemRecentMessage",
-		"ContextItemSummaryNode":   "ContextItemSummaryNode",
-		"ContextItemDocumentChunk": "ContextItemDocumentChunk",
-		"ContextItemObservation":   "ContextItemObservation",
-		"ContextItemFact":          "ContextItemFact",
-		"ContextItemFactGraphNode": "ContextItemFactGraphNode",
-		"ContextItemFactGraphEdge": "ContextItemFactGraphEdge",
+		"ContextItemRecentMessage":  "ContextItemRecentMessage",
+		"ContextItemSummaryNode":    "ContextItemSummaryNode",
+		"ContextItemDocumentChunk":  "ContextItemDocumentChunk",
+		"ContextItemObservation":    "ContextItemObservation",
+		"ContextItemFact":           "ContextItemFact",
+		"ContextItemFactGraphNode":  "ContextItemFactGraphNode",
+		"ContextItemFactGraphEdge":  "ContextItemFactGraphEdge",
+		"ContextItemEntityProfile":  "ContextItemEntityProfile",
+		"ContextItemEntityTimeline": "ContextItemEntityTimeline",
 	}
 	seenTypes := map[string]bool{}
 	seenConstants := map[string]bool{}
@@ -1429,7 +2341,11 @@ func TestPublicRequestTypesDoNotExposeNamespaceOverrides(t *testing.T) {
 				if name == "PackContextRequest" {
 					t.Fatalf("public PackContextRequest exposed in %s; use ContextRequest facade instead", filename)
 				}
-				if !typeSpec.Name.IsExported() || !strings.HasSuffix(name, "Request") {
+				if !typeSpec.Name.IsExported() {
+					continue
+				}
+				guardNamespaceFields := strings.HasSuffix(name, "Request") || name == "ContextPackInput" || name == "ContextPackOutput"
+				if !guardNamespaceFields {
 					continue
 				}
 				structType, ok := typeSpec.Type.(*ast.StructType)
@@ -1538,11 +2454,13 @@ func newDeps(t *testing.T) memory.Deps {
 		}
 	})
 	return memory.Deps{
-		MessageStore:     sourcemessage.NewWorkspaceStore(sdkworkspace.Sub(ws, "sources/message")),
-		ObservationStore: viewobservation.NewLedgerWorkspaceStore(sdkworkspace.Sub(ws, "views/observation_ledger")),
-		FactStore:        fact.NewLedgerWorkspaceStore(sdkworkspace.Sub(ws, "views/fact_ledger")),
-		FactGraphStore:   fact.NewGraphWorkspaceStore(sdkworkspace.Sub(ws, "views/fact_graph")),
-		Index:            index,
+		MessageStore:        sourcemessage.NewWorkspaceStore(sdkworkspace.Sub(ws, "sources/message")),
+		ObservationStore:    viewobservation.NewLedgerWorkspaceStore(sdkworkspace.Sub(ws, "views/observation_ledger")),
+		FactStore:           fact.NewLedgerWorkspaceStore(sdkworkspace.Sub(ws, "views/fact_ledger")),
+		FactGraphStore:      fact.NewGraphWorkspaceStore(sdkworkspace.Sub(ws, "views/fact_graph")),
+		EntityProfileStore:  viewentity.NewProfileWorkspaceStore(sdkworkspace.Sub(ws, "views/entity_profile")),
+		EntityTimelineStore: viewentity.NewTimelineWorkspaceStore(sdkworkspace.Sub(ws, "views/entity_timeline")),
+		Index:               index,
 	}
 }
 
@@ -1564,6 +2482,15 @@ func assertNamespace(t *testing.T, rt *memory.System, capability memory.Capabili
 	if got != want {
 		t.Fatalf("ProjectionNamespace(%q) = %q, want %q", capability, got, want)
 	}
+}
+
+func plannedStageNamed(stages []memory.PlannedStage, name string) bool {
+	for _, stage := range stages {
+		if stage.Name == name {
+			return true
+		}
+	}
+	return false
 }
 
 func assertBaseNamespaceEmpty(t *testing.T, ctx context.Context, index retrieval.Index, namespace string) {
@@ -1588,6 +2515,39 @@ func assertReadinessCheck(t *testing.T, report memory.ReadinessReport, name stri
 		}
 	}
 	t.Fatalf("Readiness check %q missing from report %+v", name, report)
+}
+
+func assertDiagnosticCheck(t *testing.T, report memory.DiagnosticReport, name string, status memory.DiagnosticStatus, ok bool) memory.DiagnosticCheck {
+	t.Helper()
+	return assertDiagnosticCheckIn(t, report.Checks, name, status, ok)
+}
+
+func assertFreshnessCheck(t *testing.T, report memory.FreshnessReport, name string, status memory.DiagnosticStatus, ok bool) memory.DiagnosticCheck {
+	t.Helper()
+	return assertDiagnosticCheckIn(t, report.Checks, name, status, ok)
+}
+
+func assertDiagnosticCheckIn(t *testing.T, checks []memory.DiagnosticCheck, name string, status memory.DiagnosticStatus, ok bool) memory.DiagnosticCheck {
+	t.Helper()
+	for _, check := range checks {
+		if check.Name == name {
+			if check.Status != status || check.OK != ok {
+				t.Fatalf("Diagnostic check %q = status %q ok %v, want status %q ok %v; check=%+v", name, check.Status, check.OK, status, ok, check)
+			}
+			return check
+		}
+	}
+	t.Fatalf("Diagnostic check %q missing from checks %+v", name, checks)
+	return memory.DiagnosticCheck{}
+}
+
+func diagnosticDetailString(t *testing.T, check memory.DiagnosticCheck, key string) string {
+	t.Helper()
+	got, ok := check.Details[key].(string)
+	if !ok || got == "" {
+		t.Fatalf("Diagnostic check %q details[%q] = %#v, want non-empty string", check.Name, key, check.Details[key])
+	}
+	return got
 }
 
 func messageWithText(text string) sourcemessage.Message {
@@ -1678,6 +2638,44 @@ func semanticRetrievalSpec() memory.Spec {
 	}
 }
 
+func entityRetrievalSpec() memory.Spec {
+	return memory.Spec{
+		Sources: []memory.SourceSpec{{Kind: memory.SourceMessageLog, Required: true}},
+		Capabilities: []memory.CapabilitySpec{
+			{Capability: memory.CapabilityRecentWindow, Required: true},
+			{Capability: memory.CapabilityObservationLedger, Required: true},
+			{Capability: memory.CapabilityFactLedger, Required: true},
+			{Capability: memory.CapabilityFactGraph, Required: true},
+			{Capability: memory.CapabilityEntityProfile, Required: true},
+			{Capability: memory.CapabilityEntityTimeline, Required: true},
+		},
+		Projections: []memory.ProjectionSpec{
+			{Capability: memory.CapabilityObservationLedger, Namespace: "observations", Required: true},
+			{Capability: memory.CapabilityFactLedger, Namespace: "facts", Required: true},
+			{Capability: memory.CapabilityFactGraph, Namespace: "fact_graph", Required: true},
+			{Capability: memory.CapabilityEntityProfile, Namespace: "entity_profiles", Required: true},
+			{Capability: memory.CapabilityEntityTimeline, Namespace: "entity_timeline", Required: true},
+		},
+		WriteStages: []memory.StageSpec{
+			{Name: "append_message"},
+			{Name: "extract_observations"},
+			{Name: "reconcile_facts"},
+			{Name: "build_fact_graph"},
+			{Name: "build_entity_profiles"},
+			{Name: "build_entity_timeline"},
+		},
+		ReadStages: []memory.StageSpec{
+			{Name: "load_recent_messages"},
+			{Name: "retrieve_observations"},
+			{Name: "retrieve_facts"},
+			{Name: "retrieve_fact_graph"},
+			{Name: "retrieve_entity_profiles"},
+			{Name: "retrieve_entity_timeline"},
+			{Name: "pack_context"},
+		},
+	}
+}
+
 type fakeObservationExtractor struct {
 	calls int
 }
@@ -1687,6 +2685,12 @@ type fakeDocumentChunker struct {
 }
 
 type fakeSummarizer struct{}
+
+type fakeMemoryContextPacker struct {
+	calls int
+	input memory.ContextPackInput
+	fn    func(memory.ContextPackInput) (memory.ContextPackOutput, error)
+}
 
 func (f *fakeDocumentChunker) ChunkDocument(_ context.Context, input memory.DocumentChunkInput) ([]viewdocument.Chunk, error) {
 	f.calls++
@@ -1732,6 +2736,15 @@ func (f *fakeDocumentChunker) ChunkDocument(_ context.Context, input memory.Docu
 	}}, nil
 }
 
+func (f *fakeMemoryContextPacker) PackContext(_ context.Context, input memory.ContextPackInput) (memory.ContextPackOutput, error) {
+	f.calls++
+	f.input = input
+	if f.fn != nil {
+		return f.fn(input)
+	}
+	return memory.ContextPackOutput{Items: input.Items}, nil
+}
+
 func (f *fakeSummarizer) Summarize(_ context.Context, input memory.SummaryInput) ([]recent.SummaryNode, error) {
 	if len(input.Window.Messages) == 0 {
 		return nil, nil
@@ -1774,40 +2787,100 @@ func (f *fakeObservationExtractor) ExtractObservations(_ context.Context, input 
 }
 
 type fakeFactReconciler struct {
-	calls int
+	calls     int
+	lastInput memory.FactReconcileInput
+	statuses  []fact.FactStatus
 }
 
 func (f *fakeFactReconciler) ReconcileFacts(_ context.Context, input memory.FactReconcileInput) ([]fact.Fact, error) {
 	f.calls++
+	f.lastInput = input
 	if len(input.Observations) == 0 {
 		return nil, nil
 	}
 	obs := input.Observations[0]
-	return []fact.Fact{{
-		ID:         fact.FactID(scopedID("fact", obs.Scope)),
-		Scope:      obs.Scope,
-		Subject:    obs.Subject,
-		Predicate:  obs.Predicate,
-		Object:     obs.Object,
-		Status:     fact.FactActive,
-		Confidence: obs.Confidence,
-		ObservationRefs: []fact.ObservationRef{{
-			ObservationID: obs.ID,
-		}},
-		SourceRefs: obs.SourceRefs,
-		Signature: views.ViewSignature{
-			ViewID: input.View.ID,
-			UpstreamViewRefs: []views.UpstreamViewRef{{
-				ViewID:          obs.Signature.ViewID,
-				OutputSignature: obs.Signature.TransformSignature,
-				RecordKey:       obs.ID,
+	statuses := f.statuses
+	if len(statuses) == 0 {
+		statuses = []fact.FactStatus{fact.FactActive}
+	}
+	facts := make([]fact.Fact, 0, len(statuses))
+	baseID := fact.FactID(scopedID("fact", obs.Scope))
+	for i, status := range statuses {
+		id := baseID
+		if i > 0 {
+			id = fact.FactID(string(baseID) + "-" + string(status))
+		}
+		facts = append(facts, fact.Fact{
+			ID:         id,
+			Scope:      obs.Scope,
+			Subject:    obs.Subject,
+			Predicate:  obs.Predicate,
+			Object:     obs.Object,
+			Status:     status,
+			Confidence: obs.Confidence,
+			ObservationRefs: []fact.ObservationRef{{
+				ObservationID: obs.ID,
 			}},
-			TransformSignature: "fake-fact:v1",
-			DiagnosticSignatures: map[string]string{
-				"reconciler": "fake-fact:v1",
+			SourceRefs: obs.SourceRefs,
+			Signature: views.ViewSignature{
+				ViewID: input.View.ID,
+				UpstreamViewRefs: []views.UpstreamViewRef{{
+					ViewID:          obs.Signature.ViewID,
+					OutputSignature: obs.Signature.TransformSignature,
+					RecordKey:       obs.ID,
+				}},
+				TransformSignature: "fake-fact:v1",
+				DiagnosticSignatures: map[string]string{
+					"reconciler": "fake-fact:v1",
+				},
 			},
-		},
-	}}, nil
+		})
+	}
+	return facts, nil
+}
+
+type lifecycleFactReconciler struct{}
+
+func (l lifecycleFactReconciler) ReconcileFacts(_ context.Context, input memory.FactReconcileInput) ([]fact.Fact, error) {
+	if len(input.Observations) == 0 {
+		return nil, nil
+	}
+	obs := input.Observations[0]
+	statuses := []struct {
+		id     fact.FactID
+		status fact.FactStatus
+	}{
+		{id: "fact-active", status: fact.FactActive},
+		{id: "fact-retracted", status: fact.FactRetracted},
+		{id: "fact-superseded", status: fact.FactSuperseded},
+		{id: "fact-conflict", status: fact.FactConflict},
+	}
+	out := make([]fact.Fact, 0, len(statuses))
+	for _, status := range statuses {
+		out = append(out, fact.Fact{
+			ID:         status.id,
+			Scope:      obs.Scope,
+			Subject:    obs.Subject,
+			Predicate:  obs.Predicate,
+			Object:     obs.Object,
+			Status:     status.status,
+			Confidence: obs.Confidence,
+			ObservationRefs: []fact.ObservationRef{{
+				ObservationID: obs.ID,
+			}},
+			SourceRefs: obs.SourceRefs,
+			Signature: views.ViewSignature{
+				ViewID: input.View.ID,
+				UpstreamViewRefs: []views.UpstreamViewRef{{
+					ViewID:          obs.Signature.ViewID,
+					OutputSignature: obs.Signature.TransformSignature,
+					RecordKey:       obs.ID,
+				}},
+				TransformSignature: "lifecycle-fact:v1",
+			},
+		})
+	}
+	return out, nil
 }
 
 type fakeFactGraphBuilder struct {
@@ -1873,6 +2946,81 @@ func (f *fakeFactGraphBuilder) BuildFactGraph(_ context.Context, input memory.Fa
 	}, nil
 }
 
+type fakeEntityProfileBuilder struct {
+	calls int
+}
+
+func (f *fakeEntityProfileBuilder) BuildEntityProfiles(_ context.Context, input memory.EntityProfileInput) ([]viewentity.ProfileRecord, error) {
+	f.calls++
+	if len(input.Facts) == 0 {
+		return nil, nil
+	}
+	record := input.Facts[0]
+	factRefs := []fact.FactRef{{FactID: record.ID, Role: "supporting_fact"}}
+	return []viewentity.ProfileRecord{{
+		ID:         viewentity.ProfileID("profile-" + safeIDPart(input.Scope.EntityID)),
+		Scope:      input.Scope,
+		Label:      "Ada",
+		Summary:    "Ada likes tea profile",
+		Slots:      []viewentity.Slot{{Name: "likes", Value: "tea", Confidence: 0.9, FactRefs: factRefs}},
+		FactRefs:   factRefs,
+		SourceRefs: record.SourceRefs,
+		Signature: views.ViewSignature{
+			ViewID: input.View.ID,
+			UpstreamViewRefs: []views.UpstreamViewRef{{
+				ViewID:          upstreamEntityViewID(input.Graph, record),
+				OutputSignature: upstreamEntitySignature(input.Graph, record),
+				RecordKey:       string(record.ID),
+			}},
+			TransformSignature: "fake-entity-profile:v1",
+		},
+	}}, nil
+}
+
+type fakeEntityTimelineBuilder struct {
+	calls int
+}
+
+func (f *fakeEntityTimelineBuilder) BuildEntityTimeline(_ context.Context, input memory.EntityTimelineInput) ([]viewentity.Event, error) {
+	f.calls++
+	if len(input.Facts) == 0 {
+		return nil, nil
+	}
+	record := input.Facts[0]
+	factRefs := []fact.FactRef{{FactID: record.ID, Role: "supporting_fact"}}
+	return []viewentity.Event{{
+		ID:          viewentity.EventID("event-" + safeIDPart(input.Scope.EntityID)),
+		Scope:       input.Scope,
+		Title:       "Ada likes tea event",
+		Description: "Ada likes tea",
+		FactRefs:    factRefs,
+		SourceRefs:  record.SourceRefs,
+		Signature: views.ViewSignature{
+			ViewID: input.View.ID,
+			UpstreamViewRefs: []views.UpstreamViewRef{{
+				ViewID:          upstreamEntityViewID(input.Graph, record),
+				OutputSignature: upstreamEntitySignature(input.Graph, record),
+				RecordKey:       string(record.ID),
+			}},
+			TransformSignature: "fake-entity-timeline:v1",
+		},
+	}}, nil
+}
+
+func upstreamEntityViewID(graph memory.FactGraphOutput, record fact.Fact) views.ID {
+	if len(graph.Nodes) > 0 && graph.Nodes[0].Signature.ViewID != "" {
+		return graph.Nodes[0].Signature.ViewID
+	}
+	return record.Signature.ViewID
+}
+
+func upstreamEntitySignature(graph memory.FactGraphOutput, record fact.Fact) string {
+	if len(graph.Nodes) > 0 && graph.Nodes[0].Signature.TransformSignature != "" {
+		return graph.Nodes[0].Signature.TransformSignature
+	}
+	return record.Signature.TransformSignature
+}
+
 func scopedID(prefix string, scope memory.Scope) string {
 	if scope == testScope("conv-1") {
 		switch prefix {
@@ -1888,15 +3036,19 @@ func scopedID(prefix string, scope memory.Scope) string {
 			return "edge-1"
 		}
 	}
-	parts := []string{prefix, scope.RuntimeID, scope.UserID, scope.AgentID, scope.ConversationID}
+	parts := []string{prefix, scope.RuntimeID, scope.UserID, scope.AgentID, scope.ConversationID, scope.EntityID}
 	for i, part := range parts {
 		if part == "" {
 			parts[i] = "global"
 			continue
 		}
-		parts[i] = strings.NewReplacer(":", "-", "/", "-", " ", "-").Replace(part)
+		parts[i] = safeIDPart(part)
 	}
 	return strings.Join(parts, "-")
+}
+
+func safeIDPart(part string) string {
+	return strings.NewReplacer(":", "-", "/", "-", " ", "-").Replace(part)
 }
 
 func messageRevisions(messages []sourcemessage.Message, refs []views.SourceRef) []views.SourceRevision {

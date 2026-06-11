@@ -11,6 +11,7 @@ import (
 	"github.com/GizClaw/flowcraft/memory/retrieval"
 	"github.com/GizClaw/flowcraft/memory/views"
 	viewdocument "github.com/GizClaw/flowcraft/memory/views/document"
+	viewentity "github.com/GizClaw/flowcraft/memory/views/entity"
 	"github.com/GizClaw/flowcraft/memory/views/fact"
 	viewobservation "github.com/GizClaw/flowcraft/memory/views/observation"
 	"github.com/GizClaw/flowcraft/memory/views/recent"
@@ -315,9 +316,22 @@ func (r *Executor) ReconcileFactsScoped(ctx context.Context, observations []view
 	if err := r.requireFactLedger(); err != nil {
 		return nil, err
 	}
+	scope, err := factReconcileScope(observations)
+	if err != nil {
+		return nil, err
+	}
+	var current []fact.Fact
+	if !scope.IsZero() {
+		current, err = r.factLedger.List(ctx, fact.ListOptions{Scope: scope, ActiveOnly: true})
+		if err != nil {
+			return nil, err
+		}
+	}
 	facts, err := r.factReconciler.ReconcileFacts(ctx, FactReconcileInput{
 		View:         r.factLedger.Descriptor(),
+		Scope:        scope,
 		Observations: observations,
+		Current:      current,
 	})
 	if err != nil {
 		return nil, err
@@ -338,6 +352,9 @@ func (r *Executor) ReconcileFactsScoped(ctx context.Context, observations []view
 	if writer != nil {
 		records := make([]indexed.Record, 0, len(stored))
 		for _, record := range stored {
+			if !isActiveFact(record) {
+				continue
+			}
 			projected, err := projectors.FactRecord(record)
 			if err != nil {
 				return nil, err
@@ -385,6 +402,9 @@ func (r *Executor) searchFacts(ctx context.Context, req retrieval.SearchRequest,
 		if !ok {
 			return nil, errdefs.NotAvailablef("%s: hydrate fact hit %q: fact %q not found", errPrefix, hit.Doc.ID, factID)
 		}
+		if !isActiveFact(record) {
+			continue
+		}
 		out.Hits = append(out.Hits, FactSearchHit{
 			Retrieval: retrieval.CloneHit(hit),
 			Fact:      record,
@@ -405,6 +425,7 @@ func (r *Executor) BuildFactGraphScoped(ctx context.Context, facts []fact.Fact, 
 	if err := r.requireFactGraph(); err != nil {
 		return nil, err
 	}
+	facts = activeFacts(facts)
 	output, err := r.factGraphBuilder.BuildFactGraph(ctx, FactGraphInput{
 		View:  r.factGraph.Descriptor(),
 		Facts: facts,
@@ -523,6 +544,249 @@ func (r *Executor) searchFactGraph(ctx context.Context, req retrieval.SearchRequ
 		}
 	}
 	return out, nil
+}
+
+// BuildEntityProfiles derives profile records from fact/graph evidence, stores
+// them, and projects them when an entity profile projection is configured.
+func (r *Executor) BuildEntityProfiles(ctx context.Context, input EntityBuildInput) ([]viewentity.ProfileRecord, error) {
+	return r.BuildEntityProfilesScoped(ctx, input, "")
+}
+
+// BuildEntityProfilesScoped stores profile records and writes any configured
+// projection to namespaceOverride instead of the compiler-bound namespace.
+func (r *Executor) BuildEntityProfilesScoped(ctx context.Context, input EntityBuildInput, namespaceOverride string) ([]viewentity.ProfileRecord, error) {
+	if err := r.requireEntityProfile(); err != nil {
+		return nil, err
+	}
+	if err := input.Scope.Validate(); err != nil {
+		return nil, errdefs.Validationf("%s: invalid entity profile scope: %w", errPrefix, err)
+	}
+	input.Facts = activeFacts(input.Facts)
+	records, err := r.entityProfileBuilder.BuildEntityProfiles(ctx, EntityProfileInput{
+		View:  r.entityProfile.Descriptor(),
+		Scope: input.Scope,
+		Facts: input.Facts,
+		Graph: entityGraphOutput(input.Graph),
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	stored := make([]viewentity.ProfileRecord, 0, len(records))
+	for _, record := range records {
+		written, err := r.entityProfile.Put(ctx, record)
+		if err != nil {
+			return nil, err
+		}
+		stored = append(stored, written)
+	}
+	writer, err := r.writerFor(compiler.CapabilityEntityProfile, namespaceOverride)
+	if err != nil {
+		return nil, err
+	}
+	if writer != nil {
+		records := make([]indexed.Record, 0, len(stored))
+		for _, record := range stored {
+			projected, err := projectors.EntityProfile(record)
+			if err != nil {
+				return nil, err
+			}
+			records = append(records, projected)
+		}
+		if err := writer.Upsert(ctx, records); err != nil {
+			return nil, err
+		}
+	}
+	return stored, nil
+}
+
+// SearchEntityProfiles searches the entity profile projection namespace and
+// hydrates every hit from the semantic profile store.
+func (r *Executor) SearchEntityProfiles(ctx context.Context, req retrieval.SearchRequest) (*EntityProfileSearchResponse, error) {
+	return r.searchEntityProfiles(ctx, req, "")
+}
+
+func (r *Executor) searchEntityProfiles(ctx context.Context, req retrieval.SearchRequest, namespaceOverride string) (*EntityProfileSearchResponse, error) {
+	if err := r.requireEntityProfileSearch(); err != nil {
+		return nil, err
+	}
+	namespace, err := r.namespaceForSearch(compiler.CapabilityEntityProfile, namespaceOverride)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := r.index.Search(ctx, namespace, req)
+	if err != nil {
+		return nil, err
+	}
+	if resp == nil {
+		return nil, errdefs.NotAvailablef("%s: search projection for capability %q returned nil response", errPrefix, compiler.CapabilityEntityProfile)
+	}
+	out := &EntityProfileSearchResponse{Took: resp.Took, Hits: make([]EntityProfileSearchHit, 0, len(resp.Hits))}
+	for _, hit := range resp.Hits {
+		scope, err := metadataScope(hit)
+		if err != nil {
+			return nil, err
+		}
+		profileID, err := metadataString(hit, projectors.MetadataProfileIDKey)
+		if err != nil {
+			return nil, err
+		}
+		record, ok, err := r.entityProfile.Get(ctx, scope, viewentity.ProfileID(profileID))
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			return nil, errdefs.NotAvailablef("%s: hydrate entity profile hit %q: profile %q/%q/%q/%q not found", errPrefix, hit.Doc.ID, scope.RuntimeID, scope.UserID, scope.EntityID, profileID)
+		}
+		out.Hits = append(out.Hits, EntityProfileSearchHit{
+			Retrieval: retrieval.CloneHit(hit),
+			Profile:   record,
+		})
+	}
+	return out, nil
+}
+
+// BuildEntityTimeline derives timeline events from fact/graph evidence, stores
+// them, and projects them when an entity timeline projection is configured.
+func (r *Executor) BuildEntityTimeline(ctx context.Context, input EntityBuildInput) ([]viewentity.Event, error) {
+	return r.BuildEntityTimelineScoped(ctx, input, "")
+}
+
+// BuildEntityTimelineScoped stores timeline events and writes any configured
+// projection to namespaceOverride instead of the compiler-bound namespace.
+func (r *Executor) BuildEntityTimelineScoped(ctx context.Context, input EntityBuildInput, namespaceOverride string) ([]viewentity.Event, error) {
+	if err := r.requireEntityTimeline(); err != nil {
+		return nil, err
+	}
+	if err := input.Scope.Validate(); err != nil {
+		return nil, errdefs.Validationf("%s: invalid entity timeline scope: %w", errPrefix, err)
+	}
+	input.Facts = activeFacts(input.Facts)
+	events, err := r.entityTimelineBuilder.BuildEntityTimeline(ctx, EntityTimelineInput{
+		View:  r.entityTimeline.Descriptor(),
+		Scope: input.Scope,
+		Facts: input.Facts,
+		Graph: entityGraphOutput(input.Graph),
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	stored := make([]viewentity.Event, 0, len(events))
+	for _, event := range events {
+		written, err := r.entityTimeline.Put(ctx, event)
+		if err != nil {
+			return nil, err
+		}
+		stored = append(stored, written)
+	}
+	writer, err := r.writerFor(compiler.CapabilityEntityTimeline, namespaceOverride)
+	if err != nil {
+		return nil, err
+	}
+	if writer != nil {
+		records := make([]indexed.Record, 0, len(stored))
+		for _, event := range stored {
+			projected, err := projectors.EntityEvent(event)
+			if err != nil {
+				return nil, err
+			}
+			records = append(records, projected)
+		}
+		if err := writer.Upsert(ctx, records); err != nil {
+			return nil, err
+		}
+	}
+	return stored, nil
+}
+
+// SearchEntityTimeline searches the entity timeline projection namespace and
+// hydrates every hit from the semantic timeline store.
+func (r *Executor) SearchEntityTimeline(ctx context.Context, req retrieval.SearchRequest) (*EntityTimelineSearchResponse, error) {
+	return r.searchEntityTimeline(ctx, req, "")
+}
+
+func (r *Executor) searchEntityTimeline(ctx context.Context, req retrieval.SearchRequest, namespaceOverride string) (*EntityTimelineSearchResponse, error) {
+	if err := r.requireEntityTimelineSearch(); err != nil {
+		return nil, err
+	}
+	namespace, err := r.namespaceForSearch(compiler.CapabilityEntityTimeline, namespaceOverride)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := r.index.Search(ctx, namespace, req)
+	if err != nil {
+		return nil, err
+	}
+	if resp == nil {
+		return nil, errdefs.NotAvailablef("%s: search projection for capability %q returned nil response", errPrefix, compiler.CapabilityEntityTimeline)
+	}
+	out := &EntityTimelineSearchResponse{Took: resp.Took, Hits: make([]EntityTimelineSearchHit, 0, len(resp.Hits))}
+	for _, hit := range resp.Hits {
+		scope, err := metadataScope(hit)
+		if err != nil {
+			return nil, err
+		}
+		eventID, err := metadataString(hit, projectors.MetadataEventIDKey)
+		if err != nil {
+			return nil, err
+		}
+		event, ok, err := r.entityTimeline.Get(ctx, scope, viewentity.EventID(eventID))
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			return nil, errdefs.NotAvailablef("%s: hydrate entity timeline hit %q: event %q/%q/%q/%q not found", errPrefix, hit.Doc.ID, scope.RuntimeID, scope.UserID, scope.EntityID, eventID)
+		}
+		out.Hits = append(out.Hits, EntityTimelineSearchHit{
+			Retrieval: retrieval.CloneHit(hit),
+			Event:     event,
+		})
+	}
+	return out, nil
+}
+
+func entityGraphOutput(graph *FactGraphBuildResult) FactGraphOutput {
+	if graph == nil {
+		return FactGraphOutput{}
+	}
+	return FactGraphOutput{
+		Nodes: graph.Nodes,
+		Edges: graph.Edges,
+	}
+}
+
+func factReconcileScope(observations []viewobservation.Observation) (views.Scope, error) {
+	if len(observations) == 0 {
+		return views.Scope{}, nil
+	}
+	scope := observations[0].Scope
+	if err := scope.Validate(); err != nil {
+		return views.Scope{}, errdefs.Validationf("%s: invalid fact reconcile scope: %w", errPrefix, err)
+	}
+	for _, observation := range observations[1:] {
+		if observation.Scope != scope {
+			return views.Scope{}, errdefs.Validationf("%s: observations must share one scope for fact reconciliation", errPrefix)
+		}
+	}
+	return scope, nil
+}
+
+func activeFacts(in []fact.Fact) []fact.Fact {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]fact.Fact, 0, len(in))
+	for _, record := range in {
+		if isActiveFact(record) {
+			out = append(out, record)
+		}
+	}
+	return out
+}
+
+func isActiveFact(record fact.Fact) bool {
+	return record.Status == "" || record.Status == fact.FactActive
 }
 
 // WholeDocumentChunker is a deterministic chunker useful for tests and simple
@@ -696,6 +960,46 @@ func (r *Executor) requireFactGraphSearch() error {
 		return errdefs.NotAvailablef("%s: fact graph view is not configured", errPrefix)
 	}
 	return r.requireProjection(compiler.CapabilityFactGraph)
+}
+
+func (r *Executor) requireEntityProfile() error {
+	if _, ok := r.enabled[compiler.CapabilityEntityProfile]; !ok {
+		return errdefs.NotAvailablef("%s: capability %q is not configured", errPrefix, compiler.CapabilityEntityProfile)
+	}
+	if r.entityProfile == nil {
+		return errdefs.NotAvailablef("%s: entity profile view is not configured", errPrefix)
+	}
+	if r.entityProfileBuilder == nil {
+		return errdefs.NotAvailablef("%s: EntityProfileBuilder is not configured", errPrefix)
+	}
+	return nil
+}
+
+func (r *Executor) requireEntityProfileSearch() error {
+	if r.entityProfile == nil {
+		return errdefs.NotAvailablef("%s: entity profile view is not configured", errPrefix)
+	}
+	return r.requireProjection(compiler.CapabilityEntityProfile)
+}
+
+func (r *Executor) requireEntityTimeline() error {
+	if _, ok := r.enabled[compiler.CapabilityEntityTimeline]; !ok {
+		return errdefs.NotAvailablef("%s: capability %q is not configured", errPrefix, compiler.CapabilityEntityTimeline)
+	}
+	if r.entityTimeline == nil {
+		return errdefs.NotAvailablef("%s: entity timeline view is not configured", errPrefix)
+	}
+	if r.entityTimelineBuilder == nil {
+		return errdefs.NotAvailablef("%s: EntityTimelineBuilder is not configured", errPrefix)
+	}
+	return nil
+}
+
+func (r *Executor) requireEntityTimelineSearch() error {
+	if r.entityTimeline == nil {
+		return errdefs.NotAvailablef("%s: entity timeline view is not configured", errPrefix)
+	}
+	return r.requireProjection(compiler.CapabilityEntityTimeline)
 }
 
 func (r *Executor) requireProjection(capability compiler.Capability) error {

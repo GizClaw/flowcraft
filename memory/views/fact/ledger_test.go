@@ -297,6 +297,56 @@ func TestLedgerDelegatesNormalizesStatusAndClonesBoundaries(t *testing.T) {
 	}
 }
 
+func TestLedgerClonesLineageFields(t *testing.T) {
+	ctx := context.Background()
+	retractedAt := time.Date(2026, 6, 10, 1, 2, 3, 0, time.UTC)
+	resolvedAt := retractedAt.Add(time.Minute)
+	record := validFact("fact-2")
+	record.Status = FactConflict
+	record.Revision = "rev-2"
+	record.Supersedes = []FactID{"fact-1"}
+	record.SupersededBy = []FactID{"fact-3"}
+	record.ConflictWith = []FactID{"fact-4"}
+	record.RetractedAt = &retractedAt
+	record.ResolvedAt = &resolvedAt
+
+	store := &fakeStore{
+		getOut:  record,
+		getOK:   true,
+		listOut: []Fact{record},
+	}
+	ledger := NewLedger(store)
+
+	got, ok, err := ledger.Get(ctx, record.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok {
+		t.Fatal("Get ok = false, want true")
+	}
+	got.Supersedes[0] = "mutated"
+	got.SupersededBy[0] = "mutated"
+	got.ConflictWith[0] = "mutated"
+	*got.RetractedAt = got.RetractedAt.Add(time.Hour)
+	*got.ResolvedAt = got.ResolvedAt.Add(time.Hour)
+	if !reflect.DeepEqual(store.getOut, record) {
+		t.Fatalf("Get result shared lineage state with store output:\ngot store = %#v\nwant      = %#v", store.getOut, record)
+	}
+
+	listed, err := ledger.List(ctx, ListOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	listed[0].Supersedes[0] = "mutated-list"
+	listed[0].SupersededBy[0] = "mutated-list"
+	listed[0].ConflictWith[0] = "mutated-list"
+	*listed[0].RetractedAt = listed[0].RetractedAt.Add(time.Hour)
+	*listed[0].ResolvedAt = listed[0].ResolvedAt.Add(time.Hour)
+	if !reflect.DeepEqual(store.listOut[0], record) {
+		t.Fatalf("List result shared lineage state with store output:\ngot store = %#v\nwant      = %#v", store.listOut[0], record)
+	}
+}
+
 func validFact(id FactID) Fact {
 	created := time.Date(2026, 6, 9, 1, 2, 3, 0, time.UTC)
 	updated := time.Date(2026, 6, 9, 4, 5, 6, 0, time.UTC)

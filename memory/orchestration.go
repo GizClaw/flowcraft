@@ -12,6 +12,7 @@ import (
 	sourcemessage "github.com/GizClaw/flowcraft/memory/sources/message"
 	"github.com/GizClaw/flowcraft/memory/views"
 	viewdocument "github.com/GizClaw/flowcraft/memory/views/document"
+	viewentity "github.com/GizClaw/flowcraft/memory/views/entity"
 	"github.com/GizClaw/flowcraft/memory/views/fact"
 	viewobservation "github.com/GizClaw/flowcraft/memory/views/observation"
 	"github.com/GizClaw/flowcraft/memory/views/recent"
@@ -26,16 +27,20 @@ const (
 	writeStageExtractObservations = "extract_observations"
 	writeStageReconcileFacts      = "reconcile_facts"
 	writeStageBuildFactGraph      = "build_fact_graph"
+	writeStageBuildEntityProfiles = "build_entity_profiles"
+	writeStageBuildEntityTimeline = "build_entity_timeline"
 	writeStageBuildSummaryDAG     = "build_summary_dag"
 
-	readStageLoadRecentMessages = "load_recent_messages"
-	readStageRetrieveSummaries  = "retrieve_summaries"
-	readStageRetrieveDocuments  = "retrieve_documents"
-	readStageRetrieveObs        = "retrieve_observations"
-	readStageRetrieveFacts      = "retrieve_facts"
-	readStageRetrieveFactGraph  = "retrieve_fact_graph"
-	readStageExpandFactGraph    = "expand_fact_graph"
-	readStagePackContext        = "pack_context"
+	readStageLoadRecentMessages     = "load_recent_messages"
+	readStageRetrieveSummaries      = "retrieve_summaries"
+	readStageRetrieveDocuments      = "retrieve_documents"
+	readStageRetrieveObs            = "retrieve_observations"
+	readStageRetrieveFacts          = "retrieve_facts"
+	readStageRetrieveFactGraph      = "retrieve_fact_graph"
+	readStageRetrieveEntityProfiles = "retrieve_entity_profiles"
+	readStageRetrieveEntityTimeline = "retrieve_entity_timeline"
+	readStageExpandFactGraph        = "expand_fact_graph"
+	readStagePackContext            = "pack_context"
 )
 
 // AppendMessageRequest appends canonical conversation messages and then runs
@@ -47,10 +52,12 @@ type AppendMessageRequest struct {
 
 // AppendMessageResult contains semantic records produced by write stages.
 type AppendMessageResult struct {
-	Observations []viewobservation.Observation
-	Facts        []fact.Fact
-	FactGraph    *FactGraphBuildResult
-	Jobs         []JobHandle
+	Observations   []viewobservation.Observation
+	Facts          []fact.Fact
+	FactGraph      *FactGraphBuildResult
+	EntityProfiles []viewentity.ProfileRecord
+	EntityEvents   []viewentity.Event
+	Jobs           []JobHandle
 }
 
 // ImportDocumentRequest stores one canonical document and runs configured
@@ -245,6 +252,52 @@ func (r *System) executeWriteStage(ctx context.Context, stage PlannedStage, wind
 			return err
 		}
 		result.FactGraph = graph
+	case writeStageBuildEntityProfiles:
+		if err := r.ensureFactGraphEvidence(ctx, window, scope, result); err != nil {
+			return err
+		}
+		if len(result.Facts) == 0 {
+			return nil
+		}
+		if err := r.requireWriteStage(stage, CapabilityEntityProfile); err != nil {
+			return err
+		}
+		namespace, err := r.scopedWriteNamespace(CapabilityEntityProfile, scope)
+		if err != nil {
+			return err
+		}
+		profiles, err := r.inner.BuildEntityProfilesScoped(ctx, internalexecutor.EntityBuildInput{
+			Scope: scope,
+			Facts: result.Facts,
+			Graph: result.FactGraph,
+		}, namespace)
+		if err != nil {
+			return err
+		}
+		result.EntityProfiles = profiles
+	case writeStageBuildEntityTimeline:
+		if err := r.ensureFactGraphEvidence(ctx, window, scope, result); err != nil {
+			return err
+		}
+		if len(result.Facts) == 0 {
+			return nil
+		}
+		if err := r.requireWriteStage(stage, CapabilityEntityTimeline); err != nil {
+			return err
+		}
+		namespace, err := r.scopedWriteNamespace(CapabilityEntityTimeline, scope)
+		if err != nil {
+			return err
+		}
+		events, err := r.inner.BuildEntityTimelineScoped(ctx, internalexecutor.EntityBuildInput{
+			Scope: scope,
+			Facts: result.Facts,
+			Graph: result.FactGraph,
+		}, namespace)
+		if err != nil {
+			return err
+		}
+		result.EntityEvents = events
 	case writeStageBuildSummaryDAG:
 		if err := r.requireWriteStage(stage, CapabilitySummaryDAG); err != nil {
 			return err
@@ -260,6 +313,46 @@ func (r *System) executeWriteStage(ctx context.Context, stage PlannedStage, wind
 			return errdefs.Validationf("memory: unsupported write stage %q", stage.Name)
 		}
 	}
+	return nil
+}
+
+func (r *System) ensureFactGraphEvidence(ctx context.Context, window recent.WindowRequest, scope viewobservation.Scope, result *AppendMessageResult) error {
+	if len(result.Facts) == 0 {
+		if len(result.Observations) == 0 && r.writeAvailable[CapabilityObservationLedger] {
+			namespace, err := r.scopedWriteNamespace(CapabilityObservationLedger, scope)
+			if err != nil {
+				return err
+			}
+			observations, err := r.inner.ExtractObservations(ctx, window, scope, namespace)
+			if err != nil {
+				return err
+			}
+			result.Observations = observations
+		}
+		if len(result.Observations) > 0 && r.writeAvailable[CapabilityFactLedger] {
+			namespace, err := r.scopedWriteNamespace(CapabilityFactLedger, scope)
+			if err != nil {
+				return err
+			}
+			facts, err := r.inner.ReconcileFactsScoped(ctx, result.Observations, namespace)
+			if err != nil {
+				return err
+			}
+			result.Facts = facts
+		}
+	}
+	if len(result.Facts) == 0 || result.FactGraph != nil || !r.writeAvailable[CapabilityFactGraph] {
+		return nil
+	}
+	namespace, err := r.scopedWriteNamespace(CapabilityFactGraph, scope)
+	if err != nil {
+		return err
+	}
+	graph, err := r.inner.BuildFactGraphScoped(ctx, result.Facts, namespace)
+	if err != nil {
+		return err
+	}
+	result.FactGraph = graph
 	return nil
 }
 
@@ -338,7 +431,11 @@ func (r *System) packContextRequest(req ContextRequest) (internalexecutor.PackCo
 		topK = defaultContextTopK
 	}
 
-	out := internalexecutor.PackContextRequest{Window: window}
+	out := internalexecutor.PackContextRequest{
+		Scope:  scope,
+		Query:  req.Query,
+		Window: window,
+	}
 	for _, stage := range r.plan.Read {
 		switch stage.Name {
 		case readStageLoadRecentMessages, readStagePackContext:
@@ -385,7 +482,7 @@ func (r *System) packContextRequest(req ContextRequest) (internalexecutor.PackCo
 				return internalexecutor.PackContextRequest{}, err
 			}
 			if err := r.populateSearch(stage, CapabilityFactLedger, req.Query, topK, func(search *retrieval.SearchRequest) {
-				search.Filter = mergeFilters(search.Filter, semanticScopeFilter(scope))
+				search.Filter = mergeFilters(search.Filter, factScopeFilter(scope))
 				out.FactSearch = search
 				out.FactNamespace = namespace
 			}); err != nil {
@@ -400,6 +497,30 @@ func (r *System) packContextRequest(req ContextRequest) (internalexecutor.PackCo
 				search.Filter = mergeFilters(search.Filter, semanticScopeFilter(scope))
 				out.FactGraphSearch = search
 				out.FactGraphNamespace = namespace
+			}); err != nil {
+				return internalexecutor.PackContextRequest{}, err
+			}
+		case readStageRetrieveEntityProfiles:
+			namespace, err := r.scopedReadNamespace(CapabilityEntityProfile, scope)
+			if err != nil {
+				return internalexecutor.PackContextRequest{}, err
+			}
+			if err := r.populateSearch(stage, CapabilityEntityProfile, req.Query, topK, func(search *retrieval.SearchRequest) {
+				search.Filter = mergeFilters(search.Filter, semanticScopeFilter(scope))
+				out.EntityProfileSearch = search
+				out.EntityProfileNamespace = namespace
+			}); err != nil {
+				return internalexecutor.PackContextRequest{}, err
+			}
+		case readStageRetrieveEntityTimeline:
+			namespace, err := r.scopedReadNamespace(CapabilityEntityTimeline, scope)
+			if err != nil {
+				return internalexecutor.PackContextRequest{}, err
+			}
+			if err := r.populateSearch(stage, CapabilityEntityTimeline, req.Query, topK, func(search *retrieval.SearchRequest) {
+				search.Filter = mergeFilters(search.Filter, semanticScopeFilter(scope))
+				out.EntityTimelineSearch = search
+				out.EntityTimelineNamespace = namespace
 			}); err != nil {
 				return internalexecutor.PackContextRequest{}, err
 			}
@@ -585,6 +706,12 @@ func semanticScopeFilter(scope views.Scope) retrieval.Filter {
 	return filter
 }
 
+func factScopeFilter(scope views.Scope) retrieval.Filter {
+	return mergeFilters(semanticScopeFilter(scope), retrieval.Filter{Eq: map[string]any{
+		projectors.MetadataStatusKey: string(fact.FactActive),
+	}})
+}
+
 func mergeFilters(left, right retrieval.Filter) retrieval.Filter {
 	if filterIsZero(left) {
 		return right
@@ -620,6 +747,8 @@ func configuredWriteCapabilities(assembly compiler.Assembly, deps Deps) map[Capa
 		CapabilityObservationLedger: assembly.HasCapability(CapabilityObservationLedger) && deps.MessageStore != nil && deps.ObservationStore != nil && deps.ObservationExtractor != nil,
 		CapabilityFactLedger:        assembly.HasCapability(CapabilityFactLedger) && deps.FactStore != nil && deps.FactReconciler != nil,
 		CapabilityFactGraph:         assembly.HasCapability(CapabilityFactGraph) && deps.FactGraphStore != nil && deps.FactGraphBuilder != nil,
+		CapabilityEntityProfile:     assembly.HasCapability(CapabilityEntityProfile) && deps.EntityProfileStore != nil && deps.EntityProfileBuilder != nil,
+		CapabilityEntityTimeline:    assembly.HasCapability(CapabilityEntityTimeline) && deps.EntityTimelineStore != nil && deps.EntityTimelineBuilder != nil,
 	}
 }
 
@@ -630,6 +759,8 @@ func configuredReadCapabilities(assembly compiler.Assembly, deps Deps) map[Capab
 		CapabilityObservationLedger: readProjectionConfigured(assembly, deps, CapabilityObservationLedger) && deps.ObservationStore != nil && deps.ObservationExtractor != nil,
 		CapabilityFactLedger:        readProjectionConfigured(assembly, deps, CapabilityFactLedger) && deps.FactStore != nil && deps.FactReconciler != nil,
 		CapabilityFactGraph:         readProjectionConfigured(assembly, deps, CapabilityFactGraph) && deps.FactGraphStore != nil && deps.FactGraphBuilder != nil,
+		CapabilityEntityProfile:     readProjectionConfigured(assembly, deps, CapabilityEntityProfile) && deps.EntityProfileStore != nil && deps.EntityProfileBuilder != nil,
+		CapabilityEntityTimeline:    readProjectionConfigured(assembly, deps, CapabilityEntityTimeline) && deps.EntityTimelineStore != nil && deps.EntityTimelineBuilder != nil,
 	}
 }
 

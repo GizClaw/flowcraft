@@ -17,6 +17,7 @@ const (
 	FactActive     FactStatus = "active"
 	FactSuperseded FactStatus = "superseded"
 	FactRetracted  FactStatus = "retracted"
+	FactConflict   FactStatus = "conflict"
 )
 
 // ObservationRef points at the observation ledger record that contributed to a
@@ -40,9 +41,15 @@ type Fact struct {
 	Predicate       string
 	Object          string
 	Status          FactStatus
+	Revision        string
+	Supersedes      []FactID
+	SupersededBy    []FactID
+	ConflictWith    []FactID
 	Confidence      float64
 	ValidFrom       *time.Time
 	ValidUntil      *time.Time
+	RetractedAt     *time.Time
+	ResolvedAt      *time.Time
 	ObservationRefs []ObservationRef
 	SourceRefs      []views.SourceRef
 	Signature       views.ViewSignature
@@ -64,6 +71,11 @@ func cloneFact(in Fact) Fact {
 	out := in
 	out.ValidFrom = cloneTimePtr(in.ValidFrom)
 	out.ValidUntil = cloneTimePtr(in.ValidUntil)
+	out.RetractedAt = cloneTimePtr(in.RetractedAt)
+	out.ResolvedAt = cloneTimePtr(in.ResolvedAt)
+	out.Supersedes = cloneFactIDs(in.Supersedes)
+	out.SupersededBy = cloneFactIDs(in.SupersededBy)
+	out.ConflictWith = cloneFactIDs(in.ConflictWith)
 	out.ObservationRefs = cloneObservationRefs(in.ObservationRefs)
 	out.SourceRefs = cloneSourceRefs(in.SourceRefs)
 	out.Signature = cloneViewSignature(in.Signature)
@@ -71,6 +83,13 @@ func cloneFact(in Fact) Fact {
 		out.Metadata = cloneAnyMap(in.Metadata)
 	}
 	return out
+}
+
+func cloneFactIDs(in []FactID) []FactID {
+	if in == nil {
+		return nil
+	}
+	return append([]FactID(nil), in...)
 }
 
 func cloneFacts(in []Fact) []Fact {

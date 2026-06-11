@@ -3,6 +3,7 @@ package fact
 import (
 	"context"
 
+	"github.com/GizClaw/flowcraft/memory/views"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 )
 
@@ -10,11 +11,13 @@ const ledgerErrPrefix = "memory/views/fact/ledger"
 
 // ListOptions controls deterministic fact scans.
 type ListOptions struct {
-	AfterID   FactID
-	Limit     int
-	Subject   string
-	Predicate string
-	Status    *FactStatus
+	AfterID    FactID
+	Limit      int
+	Scope      views.Scope
+	Subject    string
+	Predicate  string
+	ActiveOnly bool
+	Status     *FactStatus
 }
 
 // Store persists fact ledger records.
@@ -29,7 +32,7 @@ type Store interface {
 // Validate checks whether status is one of the supported fact lifecycle states.
 func (s FactStatus) Validate() error {
 	switch s {
-	case FactActive, FactSuperseded, FactRetracted:
+	case FactActive, FactSuperseded, FactRetracted, FactConflict:
 		return nil
 	default:
 		return errdefs.Validationf("%s: unsupported fact status %q", ledgerErrPrefix, s)
@@ -61,6 +64,18 @@ func validateFact(fact Fact) error {
 	if fact.ValidFrom != nil && fact.ValidUntil != nil && fact.ValidUntil.Before(*fact.ValidFrom) {
 		return errdefs.Validationf("%s: valid_until must be greater than or equal to valid_from", ledgerErrPrefix)
 	}
+	if fact.RetractedAt != nil && fact.ResolvedAt != nil && fact.ResolvedAt.Before(*fact.RetractedAt) {
+		return errdefs.Validationf("%s: resolved_at must be greater than or equal to retracted_at", ledgerErrPrefix)
+	}
+	if err := validateFactIDs("supersedes", fact.Supersedes); err != nil {
+		return err
+	}
+	if err := validateFactIDs("superseded_by", fact.SupersededBy); err != nil {
+		return err
+	}
+	if err := validateFactIDs("conflict_with", fact.ConflictWith); err != nil {
+		return err
+	}
 	if len(fact.ObservationRefs) == 0 {
 		return errdefs.Validationf("%s: observation_refs are required", ledgerErrPrefix)
 	}
@@ -82,6 +97,15 @@ func validateFact(fact Fact) error {
 	}
 	if err := fact.Signature.Validate(); err != nil {
 		return err
+	}
+	return nil
+}
+
+func validateFactIDs(name string, ids []FactID) error {
+	for _, id := range ids {
+		if id == "" {
+			return errdefs.Validationf("%s: %s fact id is required", ledgerErrPrefix, name)
+		}
 	}
 	return nil
 }
@@ -111,12 +135,32 @@ func validateSubject(subject string) error {
 }
 
 func validateListOptions(opts ListOptions) error {
+	if !opts.Scope.IsZero() {
+		if err := opts.Scope.Validate(); err != nil {
+			return errdefs.Validationf("%s: invalid list scope: %w", ledgerErrPrefix, err)
+		}
+	}
 	if opts.Status != nil {
 		if err := opts.Status.Validate(); err != nil {
 			return err
 		}
+		if opts.ActiveOnly && *opts.Status != FactActive {
+			return errdefs.Validationf("%s: active_only cannot be combined with status %q", ledgerErrPrefix, *opts.Status)
+		}
 	}
 	return nil
+}
+
+func normalizeListOptions(opts ListOptions) ListOptions {
+	if opts.ActiveOnly && opts.Status == nil {
+		status := FactActive
+		opts.Status = &status
+	}
+	if opts.Status != nil && *opts.Status == "" {
+		status := FactActive
+		opts.Status = &status
+	}
+	return opts
 }
 
 func cloneListOptions(in ListOptions) ListOptions {

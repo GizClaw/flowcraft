@@ -21,11 +21,13 @@ type Scheduler interface {
 // Job describes one queued memory control-plane unit. Runnable closures are
 // intentionally kept unexported so public metadata stays serializable.
 type Job struct {
-	ID     string
-	Kind   string
-	Scope  Scope
-	Window recent.WindowRequest
-	Stages []PlannedStage
+	ID           string
+	Kind         string
+	Scope        Scope
+	Capabilities []Capability
+	Reason       string
+	Window       recent.WindowRequest
+	Stages       []PlannedStage
 
 	run func(context.Context) error
 }
@@ -189,10 +191,12 @@ func (s *MemoryScheduler) finish(err error) {
 
 func cloneJobMetadata(job Job) Job {
 	return Job{
-		ID:     job.ID,
-		Kind:   job.Kind,
-		Scope:  job.Scope,
-		Window: job.Window,
-		Stages: clonePlannedStages(job.Stages),
+		ID:           job.ID,
+		Kind:         job.Kind,
+		Scope:        job.Scope,
+		Capabilities: cloneCapabilities(job.Capabilities),
+		Reason:       job.Reason,
+		Window:       job.Window,
+		Stages:       clonePlannedStages(job.Stages),
 	}
 }

@@ -20,8 +20,9 @@ import (
 
 // ChunkWorkspaceStore persists document chunks as JSON files in a workspace.
 //
-// Each chunk is stored under its current layer for efficient layer scans:
-// datasets/{encodedDatasetID}/documents/{encodedDocumentID}/layers/{encodedLayerIdentity}/chunks/{encodedChunkID}.json
+// Each chunk is stored under its hard partition and current layer for efficient
+// layer scans:
+// partitions/{encodedRuntimeID}/users/{encodedUserID}/datasets/{encodedDatasetID}/documents/{encodedDocumentID}/layers/{encodedLayerIdentity}/chunks/{encodedChunkID}.json
 //
 // Chunk IDs are unique within a dataset/document. Re-putting the same chunk ID
 // in a different layer replaces the older layer's copy so GetChunk remains
@@ -97,16 +98,15 @@ func (s *ChunkWorkspaceStore) PutChunk(ctx context.Context, chunk Chunk) (Chunk,
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	datasetID := chunk.Scope.DatasetID
-	livePath := s.chunkPath(datasetID, chunk.DocumentID, chunk.Layer, chunk.ID)
-	stalePaths, err := s.staleChunkIDPathsLocked(ctx, datasetID, chunk.DocumentID, chunk.ID, livePath)
+	livePath := s.chunkPath(chunk.Scope, chunk.DocumentID, chunk.Layer, chunk.ID)
+	stalePaths, err := s.staleChunkIDPathsLocked(ctx, chunk.Scope, chunk.DocumentID, chunk.ID, livePath)
 	if err != nil {
 		return Chunk{}, err
 	}
 	if err := s.writeChunk(ctx, chunk); err != nil {
 		return Chunk{}, err
 	}
-	if err := s.deleteStaleChunkIDPathsLocked(ctx, datasetID, chunk.DocumentID, chunk.ID, stalePaths); err != nil {
+	if err := s.deleteStaleChunkIDPathsLocked(ctx, chunk.Scope.DatasetID, chunk.DocumentID, chunk.ID, stalePaths); err != nil {
 		return Chunk{}, err
 	}
 	return cloneChunk(chunk), nil
@@ -130,8 +130,7 @@ func (s *ChunkWorkspaceStore) GetChunk(ctx context.Context, scope views.Scope, d
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	datasetID := scope.DatasetID
-	candidates, err := s.chunkCandidates(ctx, datasetID, documentID)
+	candidates, err := s.chunkCandidates(ctx, scope, documentID)
 	if err != nil {
 		return Chunk{}, false, err
 	}
@@ -139,7 +138,7 @@ func (s *ChunkWorkspaceStore) GetChunk(ctx context.Context, scope views.Scope, d
 		if candidate.id != id {
 			continue
 		}
-		chunk, ok, err := s.readChunkAtPath(ctx, candidate.path, datasetID, documentID, id)
+		chunk, ok, err := s.readChunkAtPath(ctx, candidate.path, scope.DatasetID, documentID, id)
 		if err != nil {
 			return Chunk{}, false, err
 		}
@@ -170,8 +169,7 @@ func (s *ChunkWorkspaceStore) ListChunks(ctx context.Context, documentID string,
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	datasetID := opts.Scope.DatasetID
-	candidates, err := s.chunkCandidates(ctx, datasetID, documentID)
+	candidates, err := s.chunkCandidates(ctx, *opts.Scope, documentID)
 	if err != nil {
 		return nil, err
 	}
@@ -181,7 +179,7 @@ func (s *ChunkWorkspaceStore) ListChunks(ctx context.Context, documentID string,
 		if candidate.id <= opts.AfterID {
 			continue
 		}
-		chunk, ok, err := s.readChunkAtPath(ctx, candidate.path, datasetID, documentID, candidate.id)
+		chunk, ok, err := s.readChunkAtPath(ctx, candidate.path, opts.Scope.DatasetID, documentID, candidate.id)
 		if err != nil {
 			return nil, err
 		}
@@ -199,8 +197,8 @@ func (s *ChunkWorkspaceStore) ListChunks(ctx context.Context, documentID string,
 	return out, nil
 }
 
-func (s *ChunkWorkspaceStore) staleChunkIDPathsLocked(ctx context.Context, datasetID, documentID string, id ChunkID, keepPath string) ([]string, error) {
-	candidates, err := s.chunkCandidates(ctx, datasetID, documentID)
+func (s *ChunkWorkspaceStore) staleChunkIDPathsLocked(ctx context.Context, scope views.Scope, documentID string, id ChunkID, keepPath string) ([]string, error) {
+	candidates, err := s.chunkCandidates(ctx, scope, documentID)
 	if err != nil {
 		return nil, err
 	}
@@ -239,12 +237,11 @@ func (s *ChunkWorkspaceStore) DeleteDocument(ctx context.Context, scope views.Sc
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	datasetID := scope.DatasetID
-	if err := s.ws.RemoveAll(ctx, s.documentDir(datasetID, documentID)); err != nil {
+	if err := s.ws.RemoveAll(ctx, s.documentDir(scope, documentID)); err != nil {
 		if errdefs.IsNotFound(err) {
 			return nil
 		}
-		return fmt.Errorf("%s: delete document %q/%q chunks: %w", chunksErrPrefix, datasetID, documentID, err)
+		return fmt.Errorf("%s: delete document %q/%q chunks: %w", chunksErrPrefix, scope.DatasetID, documentID, err)
 	}
 	return nil
 }
@@ -261,12 +258,11 @@ func (s *ChunkWorkspaceStore) DeleteDataset(ctx context.Context, scope views.Sco
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	datasetID := scope.DatasetID
-	if err := s.ws.RemoveAll(ctx, s.datasetDir(datasetID)); err != nil {
+	if err := s.ws.RemoveAll(ctx, s.datasetDir(scope)); err != nil {
 		if errdefs.IsNotFound(err) {
 			return nil
 		}
-		return fmt.Errorf("%s: delete dataset %q chunks: %w", chunksErrPrefix, datasetID, err)
+		return fmt.Errorf("%s: delete dataset %q chunks: %w", chunksErrPrefix, scope.DatasetID, err)
 	}
 	return nil
 }
@@ -281,13 +277,13 @@ func validateDatasetScope(scope views.Scope) error {
 	return nil
 }
 
-func (s *ChunkWorkspaceStore) chunkCandidates(ctx context.Context, datasetID, documentID string) ([]chunkCandidate, error) {
-	layerEntries, err := s.ws.List(ctx, s.layersDir(datasetID, documentID))
+func (s *ChunkWorkspaceStore) chunkCandidates(ctx context.Context, scope views.Scope, documentID string) ([]chunkCandidate, error) {
+	layerEntries, err := s.ws.List(ctx, s.layersDir(scope, documentID))
 	if err != nil {
 		if errdefs.IsNotFound(err) {
 			return nil, nil
 		}
-		return nil, fmt.Errorf("%s: list document %q/%q chunk layers: %w", chunksErrPrefix, datasetID, documentID, err)
+		return nil, fmt.Errorf("%s: list document %q/%q chunk layers: %w", chunksErrPrefix, scope.DatasetID, documentID, err)
 	}
 
 	candidates := make([]chunkCandidate, 0)
@@ -299,13 +295,13 @@ func (s *ChunkWorkspaceStore) chunkCandidates(ctx context.Context, datasetID, do
 		if err != nil {
 			return nil, fmt.Errorf("%s: decode chunk layer identity %q: %w", chunksErrPrefix, layerEntry.Name(), err)
 		}
-		chunksDir := path.Join(s.layersDir(datasetID, documentID), layerEntry.Name(), "chunks")
+		chunksDir := path.Join(s.layersDir(scope, documentID), layerEntry.Name(), "chunks")
 		chunkEntries, err := s.ws.List(ctx, chunksDir)
 		if err != nil {
 			if errdefs.IsNotFound(err) {
 				continue
 			}
-			return nil, fmt.Errorf("%s: list document %q/%q chunks: %w", chunksErrPrefix, datasetID, documentID, err)
+			return nil, fmt.Errorf("%s: list document %q/%q chunks: %w", chunksErrPrefix, scope.DatasetID, documentID, err)
 		}
 		for _, chunkEntry := range chunkEntries {
 			if chunkEntry.IsDir() || !strings.HasSuffix(chunkEntry.Name(), ".json") {
@@ -363,7 +359,7 @@ func (s *ChunkWorkspaceStore) writeChunk(ctx context.Context, chunk Chunk) error
 		return fmt.Errorf("%s: marshal chunk %q/%q/%q: %w", chunksErrPrefix, chunk.Scope.DatasetID, chunk.DocumentID, chunk.ID, err)
 	}
 
-	livePath := s.chunkPath(chunk.Scope.DatasetID, chunk.DocumentID, chunk.Layer, chunk.ID)
+	livePath := s.chunkPath(chunk.Scope, chunk.DocumentID, chunk.Layer, chunk.ID)
 	tmpPath := s.tmpChunkPath(livePath)
 	if err := s.ws.Write(ctx, tmpPath, data); err != nil {
 		return fmt.Errorf("%s: write chunk tmp %q/%q/%q: %w", chunksErrPrefix, chunk.Scope.DatasetID, chunk.DocumentID, chunk.ID, err)
@@ -379,28 +375,32 @@ func (s *ChunkWorkspaceStore) tmpChunkPath(livePath string) string {
 	return fmt.Sprintf("%s.tmp.%d.%d.%d", livePath, os.Getpid(), time.Now().UnixNano(), s.tmpCounter.Add(1))
 }
 
-func (s *ChunkWorkspaceStore) datasetDir(datasetID string) string {
-	return path.Join("datasets", s.pathSegment(datasetID))
+func (s *ChunkWorkspaceStore) partitionDir(scope views.Scope) string {
+	return path.Join("partitions", s.pathSegment(scope.RuntimeID), "users", s.pathSegment(scope.UserID))
 }
 
-func (s *ChunkWorkspaceStore) documentDir(datasetID, documentID string) string {
-	return path.Join(s.datasetDir(datasetID), "documents", s.pathSegment(documentID))
+func (s *ChunkWorkspaceStore) datasetDir(scope views.Scope) string {
+	return path.Join(s.partitionDir(scope), "datasets", s.pathSegment(scope.DatasetID))
 }
 
-func (s *ChunkWorkspaceStore) layersDir(datasetID, documentID string) string {
-	return path.Join(s.documentDir(datasetID, documentID), "layers")
+func (s *ChunkWorkspaceStore) documentDir(scope views.Scope, documentID string) string {
+	return path.Join(s.datasetDir(scope), "documents", s.pathSegment(documentID))
 }
 
-func (s *ChunkWorkspaceStore) layerDir(datasetID, documentID string, layer Layer) string {
-	return path.Join(s.layersDir(datasetID, documentID), s.pathSegment(layerIdentity(layer)))
+func (s *ChunkWorkspaceStore) layersDir(scope views.Scope, documentID string) string {
+	return path.Join(s.documentDir(scope, documentID), "layers")
 }
 
-func (s *ChunkWorkspaceStore) chunksDir(datasetID, documentID string, layer Layer) string {
-	return path.Join(s.layerDir(datasetID, documentID, layer), "chunks")
+func (s *ChunkWorkspaceStore) layerDir(scope views.Scope, documentID string, layer Layer) string {
+	return path.Join(s.layersDir(scope, documentID), s.pathSegment(layerIdentity(layer)))
 }
 
-func (s *ChunkWorkspaceStore) chunkPath(datasetID, documentID string, layer Layer, id ChunkID) string {
-	return path.Join(s.chunksDir(datasetID, documentID, layer), s.pathSegment(string(id))+".json")
+func (s *ChunkWorkspaceStore) chunksDir(scope views.Scope, documentID string, layer Layer) string {
+	return path.Join(s.layerDir(scope, documentID, layer), "chunks")
+}
+
+func (s *ChunkWorkspaceStore) chunkPath(scope views.Scope, documentID string, layer Layer, id ChunkID) string {
+	return path.Join(s.chunksDir(scope, documentID, layer), s.pathSegment(string(id))+".json")
 }
 
 func (s *ChunkWorkspaceStore) pathSegment(id string) string {

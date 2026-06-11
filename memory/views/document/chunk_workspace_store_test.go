@@ -188,7 +188,7 @@ func TestChunkWorkspaceStorePutAcrossLayersKeepsOldChunkWhenPublishFails(t *test
 
 	replacement := chunkWithScope("dataset-1", "doc-1", layerB, "chunk-1")
 	replacement.Text = "replacement text"
-	ws.failRenameDst = store.chunkPath(replacement.Scope.DatasetID, replacement.DocumentID, replacement.Layer, replacement.ID)
+	ws.failRenameDst = store.chunkPath(replacement.Scope, replacement.DocumentID, replacement.Layer, replacement.ID)
 
 	if _, err := store.PutChunk(ctx, replacement); err == nil || !errors.Is(err, errFailRename) {
 		t.Fatalf("PutChunk replacement error = %v, want fail rename", err)
@@ -320,11 +320,13 @@ func TestChunkWorkspaceStorePathSegmentPrefixDefaultCustomAndEmpty(t *testing.T)
 			assertSafeChunkWorkspaceSegment(t, store, layerSegment, layerIdentity(chunk.Layer), tt.wantPrefix)
 			assertSafeChunkWorkspaceSegment(t, store, chunkSegment, string(chunk.ID), tt.wantPrefix)
 
-			encodedPath := "datasets/" + datasetSegment + "/documents/" + documentSegment + "/layers/" + layerSegment + "/chunks/" + chunkSegment + ".json"
+			runtimeSegment := store.pathSegment(chunk.Scope.RuntimeID)
+			userSegment := store.pathSegment(chunk.Scope.UserID)
+			encodedPath := "partitions/" + runtimeSegment + "/users/" + userSegment + "/datasets/" + datasetSegment + "/documents/" + documentSegment + "/layers/" + layerSegment + "/chunks/" + chunkSegment + ".json"
 			if exists, err := ws.Exists(ctx, encodedPath); err != nil || !exists {
 				t.Fatalf("encoded chunk exists = %v err %v, want true nil", exists, err)
 			}
-			rawPath := "datasets/" + chunk.Scope.DatasetID + "/documents/" + chunk.DocumentID + "/layers/" + layerIdentity(chunk.Layer) + "/chunks/" + string(chunk.ID) + ".json"
+			rawPath := "partitions/" + chunk.Scope.RuntimeID + "/users/" + chunk.Scope.UserID + "/datasets/" + chunk.Scope.DatasetID + "/documents/" + chunk.DocumentID + "/layers/" + layerIdentity(chunk.Layer) + "/chunks/" + string(chunk.ID) + ".json"
 			if rawPath != encodedPath {
 				if exists, err := ws.Exists(ctx, rawPath); err != nil || exists {
 					t.Fatalf("raw chunk path %q exists = %v err %v, want false nil", rawPath, exists, err)

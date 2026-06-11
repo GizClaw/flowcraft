@@ -22,7 +22,7 @@ import (
 // ProfileWorkspaceStore persists entity profile records as JSON files in a workspace.
 //
 // Each profile is stored under:
-// entity/entities/{encodedEntityID}/profiles/{encodedProfileID}.json
+// entity/runtime/{encodedRuntimeID}/users/{encodedUserID}/entities/{encodedEntityID}/profiles/{encodedProfileID}.json
 //
 // Concurrent writes to the same scoped workspace must go through one
 // ProfileWorkspaceStore instance. Cross-instance or cross-process writers
@@ -268,7 +268,7 @@ func (s *ProfileWorkspaceStore) tmpProfilePath(livePath string) string {
 }
 
 func (s *ProfileWorkspaceStore) entityDir(scope views.Scope) string {
-	return path.Join("entity", "entities", s.pathSegment(scope.EntityID))
+	return path.Join("entity", "runtime", s.pathSegment(scope.RuntimeID), "users", s.pathSegment(userPartition(scope.UserID)), "entities", s.pathSegment(scope.EntityID))
 }
 
 func (s *ProfileWorkspaceStore) profilesDir(scope views.Scope) string {
@@ -290,7 +290,7 @@ func (s *ProfileWorkspaceStore) rawPathSegment(segment string) (string, error) {
 // TimelineWorkspaceStore persists entity timeline events as JSON files in a workspace.
 //
 // Each event is stored under:
-// entity/entities/{encodedEntityID}/timeline/{encodedEventID}.json
+// entity/runtime/{encodedRuntimeID}/users/{encodedUserID}/entities/{encodedEntityID}/timeline/{encodedEventID}.json
 //
 // Concurrent writes to the same scoped workspace must go through one
 // TimelineWorkspaceStore instance. Cross-instance or cross-process writers
@@ -533,7 +533,7 @@ func (s *TimelineWorkspaceStore) tmpEventPath(livePath string) string {
 }
 
 func (s *TimelineWorkspaceStore) entityDir(scope views.Scope) string {
-	return path.Join("entity", "entities", s.pathSegment(scope.EntityID))
+	return path.Join("entity", "runtime", s.pathSegment(scope.RuntimeID), "users", s.pathSegment(userPartition(scope.UserID)), "entities", s.pathSegment(scope.EntityID))
 }
 
 func (s *TimelineWorkspaceStore) eventsDir(scope views.Scope) string {
@@ -565,6 +565,13 @@ func rawPathSegment(segment, prefix string) (string, error) {
 		return "", err
 	}
 	return string(data), nil
+}
+
+func userPartition(userID string) string {
+	if strings.TrimSpace(userID) == "" {
+		return "global"
+	}
+	return userID
 }
 
 type profileRecord struct {
