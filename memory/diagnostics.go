@@ -2,11 +2,16 @@ package memory
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
 
 	"github.com/GizClaw/flowcraft/memory/internal/projectors"
+	"github.com/GizClaw/flowcraft/memory/internal/views/indexed"
+	"github.com/GizClaw/flowcraft/memory/retrieval"
 	sourcedocument "github.com/GizClaw/flowcraft/memory/sources/document"
 	"github.com/GizClaw/flowcraft/memory/views"
 	viewdocument "github.com/GizClaw/flowcraft/memory/views/document"
@@ -16,35 +21,182 @@ import (
 // DiagnosticRequest asks the root facade to run bounded diagnostics for a
 // declared diagnostics stage. Empty Stage currently means "freshness".
 type DiagnosticRequest struct {
+	TraceID      TraceID
 	Scope        Scope
 	Capabilities []Capability
 	Documents    []DocumentTarget
 	Stage        string
+	PageSize     int
+	PageToken    string
+	Consistency  []ConsistencyCheckKind
+}
+
+// ConsistencyCheckKind selects which consistency surfaces a diagnostics request
+// should scan.
+type ConsistencyCheckKind string
+
+const (
+	ConsistencyCheckProjection ConsistencyCheckKind = "projection"
+	ConsistencyCheckSourceView ConsistencyCheckKind = "source_view"
+)
+
+const (
+	defaultDiagnosticPageSize = 100
+	maxDiagnosticPageSize     = 500
+)
+
+// DiagnosticProbe runs one named diagnostics probe for a declared diagnostics
+// stage. Probes should return structured checks and leave report aggregation to
+// the System facade.
+type DiagnosticProbe interface {
+	Run(context.Context, DiagnosticProbeRequest) (DiagnosticProbeResult, error)
+}
+
+// DiagnosticProbeRequest is the normalized context passed to a diagnostics
+// probe. Deps is a read-only snapshot of configured dependency interfaces.
+type DiagnosticProbeRequest struct {
+	TraceID              TraceID
+	System               *System
+	Deps                 Deps
+	Plan                 Plan
+	Stage                string
+	Scope                Scope
+	Capabilities         []Capability
+	DeclaredCapabilities []Capability
+	Documents            []DocumentTarget
+	PageSize             int
+	PageToken            string
+	Consistency          []ConsistencyCheckKind
+}
+
+// DiagnosticProbeResult is the partial report produced by one probe.
+type DiagnosticProbeResult struct {
+	Capabilities  []Capability
+	Documents     []DocumentTarget
+	Checks        []DiagnosticCheck
+	Message       string
+	NextPageToken string
+}
+
+// DiagnosticProbeRegistry resolves diagnostics stages to one or more named
+// probes. Probe names are stage-local and run in registration order.
+type DiagnosticProbeRegistry struct {
+	stages map[string][]registeredDiagnosticProbe
+}
+
+type registeredDiagnosticProbe struct {
+	name  string
+	probe DiagnosticProbe
+}
+
+// NewDiagnosticProbeRegistry creates an empty diagnostics probe registry.
+func NewDiagnosticProbeRegistry() *DiagnosticProbeRegistry {
+	return &DiagnosticProbeRegistry{stages: make(map[string][]registeredDiagnosticProbe)}
+}
+
+// Register binds name to a probe for stage. Passing a nil probe removes the
+// binding.
+func (r *DiagnosticProbeRegistry) Register(stage, name string, probe DiagnosticProbe) {
+	if r == nil {
+		return
+	}
+	stage = strings.TrimSpace(stage)
+	name = strings.TrimSpace(name)
+	if stage == "" || name == "" {
+		return
+	}
+	if r.stages == nil {
+		r.stages = make(map[string][]registeredDiagnosticProbe)
+	}
+	probes := r.stages[stage]
+	for i, registered := range probes {
+		if registered.name != name {
+			continue
+		}
+		if probe == nil {
+			r.stages[stage] = append(probes[:i], probes[i+1:]...)
+			return
+		}
+		probes[i].probe = probe
+		r.stages[stage] = probes
+		return
+	}
+	if probe != nil {
+		r.stages[stage] = append(probes, registeredDiagnosticProbe{name: name, probe: probe})
+	}
+}
+
+// Lookup returns the named probe registered for stage.
+func (r *DiagnosticProbeRegistry) Lookup(stage, name string) (DiagnosticProbe, bool) {
+	if r == nil || r.stages == nil {
+		return nil, false
+	}
+	stage = strings.TrimSpace(stage)
+	name = strings.TrimSpace(name)
+	for _, registered := range r.stages[stage] {
+		if registered.name == name && registered.probe != nil {
+			return registered.probe, true
+		}
+	}
+	return nil, false
+}
+
+func (r *DiagnosticProbeRegistry) stageProbes(stage string) []registeredDiagnosticProbe {
+	if r == nil || r.stages == nil {
+		return nil
+	}
+	probes := r.stages[strings.TrimSpace(stage)]
+	if len(probes) == 0 {
+		return nil
+	}
+	out := make([]registeredDiagnosticProbe, 0, len(probes))
+	for _, registered := range probes {
+		if registered.probe != nil {
+			out = append(out, registered)
+		}
+	}
+	return out
+}
+
+func (r *DiagnosticProbeRegistry) mergeFrom(other *DiagnosticProbeRegistry) {
+	if r == nil || other == nil || other.stages == nil {
+		return
+	}
+	for stage, probes := range other.stages {
+		for _, registered := range probes {
+			r.Register(stage, registered.name, registered.probe)
+		}
+	}
 }
 
 // DiagnosticReport is the structured diagnostics contract shared by freshness
 // and consistency checks.
 type DiagnosticReport struct {
-	Stage        string
-	Scope        Scope
-	Capabilities []Capability
-	Documents    []DocumentTarget
-	Ready        bool
-	OK           bool
-	Checks       []DiagnosticCheck
-	Message      string
-	Warnings     []string
+	TraceID       TraceID
+	Stage         string
+	Scope         Scope
+	Capabilities  []Capability
+	Documents     []DocumentTarget
+	NextPageToken string
+	Ready         bool
+	OK            bool
+	Checks        []DiagnosticCheck
+	Message       string
+	Warnings      []string
 }
 
 // DiagnosticCheck reports one bounded diagnostics fact.
 type DiagnosticCheck struct {
 	Name       string
 	Capability Capability
+	Scope      Scope
+	Target     LifecycleTarget
 	Status     DiagnosticStatus
 	OK         bool
 	Severity   DiagnosticSeverity
 	Message    string
 	Details    map[string]any
+	RepairHint string
 }
 
 // DiagnosticStatus is the machine-readable check outcome.
@@ -81,32 +233,38 @@ type ProjectionReport struct {
 
 // Diagnostics runs bounded structured diagnostics for the compiled plan.
 func (r *System) Diagnostics(ctx context.Context, req DiagnosticRequest) (DiagnosticReport, error) {
-	return r.buildDiagnosticReport(ctx, req, true)
+	return r.runDiagnosticProbes(ctx, req, true)
 }
 
-func (r *System) buildDiagnosticReport(ctx context.Context, req DiagnosticRequest, requireDeclaredStage bool) (DiagnosticReport, error) {
+func (r *System) runDiagnosticProbes(ctx context.Context, req DiagnosticRequest, requireDeclaredStage bool) (report DiagnosticReport, err error) {
 	stage := strings.TrimSpace(req.Stage)
 	if stage == "" {
 		stage = diagnosticStageFreshness
 	}
-	report := DiagnosticReport{
+	report = DiagnosticReport{
+		TraceID:      ensureTraceID(req.TraceID),
 		Stage:        stage,
 		Scope:        normalizeScope(req.Scope),
 		Capabilities: normalizeDiagnosticCapabilities(req.Capabilities),
 		Documents:    cloneDocumentTargets(req.Documents),
-		Ready:        true,
-		OK:           true,
 	}
+	defer func() {
+		if storeErr := r.putDiagnosticReport(ctx, report); storeErr != nil {
+			err = errors.Join(err, storeErr)
+		}
+	}()
+	pageSize := normalizeDiagnosticPageSize(req.PageSize)
+	consistency := normalizeConsistencyCheckKinds(req.Consistency)
 	if r == nil || r.inner == nil {
 		report.addCheck("system.configured", "", DiagnosticStatusError, DiagnosticSeverityError, false, "system is not configured", nil)
-		report.Message = "system is not configured"
+		finalizeDiagnosticReport(&report, "system is not configured")
 		return report, errdefs.NotAvailablef("memory: system is not configured")
 	}
 	if err := report.Scope.Validate(); err != nil {
 		report.addCheck("scope.valid", "", DiagnosticStatusError, DiagnosticSeverityError, false, "scope is invalid", map[string]any{
 			"error": err.Error(),
 		})
-		report.Message = "invalid scope"
+		finalizeDiagnosticReport(&report, "invalid scope")
 		return report, errdefs.Validationf("memory: invalid scope: %w", err)
 	}
 	documents, err := normalizeDocumentTargets(report.Scope, req.Documents)
@@ -114,58 +272,142 @@ func (r *System) buildDiagnosticReport(ctx context.Context, req DiagnosticReques
 		report.addCheck("diagnostics.document_targets", CapabilityDocumentChunks, DiagnosticStatusError, DiagnosticSeverityError, false, "document targets are invalid", map[string]any{
 			"error": err.Error(),
 		})
-		report.Message = "invalid document targets"
+		finalizeDiagnosticReport(&report, "invalid document targets")
 		return report, err
 	}
 	report.Documents = documents
 	if requireDeclaredStage && !r.diagnosticStageDeclared(stage) {
 		report.addCheck("diagnostics.stage."+stage, "", DiagnosticStatusError, DiagnosticSeverityError, false, "diagnostics stage is not declared by the plan", nil)
-		report.Message = fmt.Sprintf("diagnostics stage %q is not declared by the plan", stage)
+		finalizeDiagnosticReport(&report, fmt.Sprintf("diagnostics stage %q is not declared by the plan", stage))
 		return report, errdefs.NotAvailablef("memory: diagnostics stage %q is not declared by the plan", stage)
 	}
 
 	report.addCheck("system.configured", "", DiagnosticStatusOK, DiagnosticSeverityInfo, true, "system is configured", nil)
-	switch stage {
-	case diagnosticStageFreshness:
-		r.addFreshnessDiagnostics(ctx, &report)
-	case lifecycleStageReadiness:
-		r.addReadinessDiagnostics(&report)
-	default:
-		report.addCheck("diagnostics.stage."+stage, "", DiagnosticStatusNotImplemented, DiagnosticSeverityWarning, true, "diagnostics stage is declared but has no Stage 2 executor", map[string]any{
+	probes := r.diagnosticProbes(stage)
+	if len(probes) == 0 {
+		report.addCheck("diagnostics.stage."+stage, "", DiagnosticStatusNotImplemented, DiagnosticSeverityError, false, "diagnostics stage is declared but has no registered probe", map[string]any{
 			"stage": stage,
 		})
+		finalizeDiagnosticReport(&report, fmt.Sprintf("diagnostics stage %q has no registered probe", stage))
+		return report, errdefs.NotAvailablef("memory: diagnostics stage %q has no registered probe", stage)
 	}
-	if report.Message == "" {
-		if report.OK {
-			report.Message = "diagnostics checks completed"
-		} else {
-			report.Message = "diagnostics checks found missing dependencies"
+
+	probeReq := r.newDiagnosticProbeRequest(report.TraceID, stage, report.Scope, report.Capabilities, report.Documents, pageSize, strings.TrimSpace(req.PageToken), consistency)
+	for _, registered := range probes {
+		result, err := registered.probe.Run(ctx, probeReq)
+		if len(result.Capabilities) > 0 {
+			report.Capabilities = cloneCapabilities(result.Capabilities)
+			probeReq.Capabilities = cloneCapabilities(result.Capabilities)
+		}
+		if result.Documents != nil {
+			report.Documents = cloneDocumentTargets(result.Documents)
+			probeReq.Documents = cloneDocumentTargets(result.Documents)
+		}
+		for _, check := range result.Checks {
+			report.addProbeCheck(check)
+		}
+		if result.Message != "" {
+			report.Message = result.Message
+		}
+		if result.NextPageToken != "" {
+			report.NextPageToken = result.NextPageToken
+			probeReq.PageToken = result.NextPageToken
+		}
+		if err != nil {
+			report.addCheck("diagnostics.probe."+registered.name, "", DiagnosticStatusError, DiagnosticSeverityError, false, err.Error(), map[string]any{
+				"stage": stage,
+				"probe": registered.name,
+			})
+			finalizeDiagnosticReport(&report, "diagnostics probe failed")
+			return report, err
 		}
 	}
+	finalizeDiagnosticReport(&report, "")
 	return report, nil
 }
 
-func (r *System) addFreshnessDiagnostics(ctx context.Context, report *DiagnosticReport) {
-	report.addCheck("diagnostics.stage.freshness", "", DiagnosticStatusOK, DiagnosticSeverityInfo, true, "freshness diagnostics stage is available", nil)
-	r.addSourceDiagnostics(report)
+func (r *System) defaultDiagnosticProbeRegistry() *DiagnosticProbeRegistry {
+	registry := NewDiagnosticProbeRegistry()
+	registry.Register(lifecycleStageReadiness, "readiness", readinessProbe{})
+	registry.Register(diagnosticStageFreshness, "freshness", freshnessProbe{})
+	registry.Register(diagnosticStageTrace, "trace", traceProbe{})
+	registry.Register(diagnosticStageConsistency, "consistency", consistencyProbe{})
+	return registry
+}
 
-	capabilities := report.Capabilities
-	if len(capabilities) == 0 {
-		capabilities = r.assembly.Capabilities()
-		report.Capabilities = cloneCapabilities(capabilities)
+func (r *System) diagnosticProbes(stage string) []registeredDiagnosticProbe {
+	if r == nil || r.diagnosticRegistry == nil {
+		return nil
 	}
-	for _, capability := range capabilities {
-		r.addCapabilityDiagnostics(report, capability)
-		r.addProjectionDiagnostics(report, capability)
-		r.addFreshnessCapabilityChecks(ctx, report, capability)
+	return r.diagnosticRegistry.stageProbes(stage)
+}
+
+func (r *System) newDiagnosticProbeRequest(traceID TraceID, stage string, scope Scope, capabilities []Capability, documents []DocumentTarget, pageSize int, pageToken string, consistency []ConsistencyCheckKind) DiagnosticProbeRequest {
+	declaredCapabilities := []Capability(nil)
+	if r != nil {
+		declaredCapabilities = r.assembly.Capabilities()
+	}
+	return DiagnosticProbeRequest{
+		TraceID:              ensureTraceID(traceID),
+		System:               r,
+		Deps:                 r.deps,
+		Plan:                 r.Plan(),
+		Stage:                stage,
+		Scope:                scope,
+		Capabilities:         cloneCapabilities(capabilities),
+		DeclaredCapabilities: cloneCapabilities(declaredCapabilities),
+		Documents:            cloneDocumentTargets(documents),
+		PageSize:             pageSize,
+		PageToken:            pageToken,
+		Consistency:          cloneConsistencyCheckKinds(consistency),
 	}
 }
 
-func (r *System) addReadinessDiagnostics(report *DiagnosticReport) {
-	readiness, err := r.Readiness(context.Background())
+type freshnessProbe struct{}
+
+func (freshnessProbe) Run(ctx context.Context, req DiagnosticProbeRequest) (DiagnosticProbeResult, error) {
+	result := DiagnosticProbeResult{
+		Capabilities: cloneCapabilities(req.Capabilities),
+		Documents:    cloneDocumentTargets(req.Documents),
+		Checks: []DiagnosticCheck{newDiagnosticCheck(
+			"diagnostics.stage.freshness",
+			"",
+			req.Scope,
+			LifecycleTarget{},
+			DiagnosticStatusOK,
+			DiagnosticSeverityInfo,
+			true,
+			"freshness diagnostics stage is available",
+			nil,
+		)},
+	}
+	addSourceDiagnostics(&result, req)
+
+	capabilities := result.Capabilities
+	if len(capabilities) == 0 {
+		capabilities = cloneCapabilities(req.DeclaredCapabilities)
+		result.Capabilities = cloneCapabilities(capabilities)
+	}
+	for _, capability := range capabilities {
+		addCapabilityDiagnostics(&result, req, capability)
+		addProjectionDiagnostics(&result, req, capability)
+		addFreshnessCapabilityChecks(ctx, &result, req, capability)
+	}
+	return result, nil
+}
+
+type readinessProbe struct{}
+
+func (readinessProbe) Run(ctx context.Context, req DiagnosticProbeRequest) (DiagnosticProbeResult, error) {
+	result := DiagnosticProbeResult{}
+	if req.System == nil {
+		result.Checks = append(result.Checks, newDiagnosticCheck("readiness", "", req.Scope, LifecycleTarget{}, DiagnosticStatusError, DiagnosticSeverityError, false, "system is not configured", nil))
+		return result, nil
+	}
+	readiness, err := req.System.Readiness(ctx)
 	if err != nil {
-		report.addCheck("readiness", "", DiagnosticStatusError, DiagnosticSeverityError, false, err.Error(), nil)
-		return
+		result.Checks = append(result.Checks, newDiagnosticCheck("readiness", "", req.Scope, LifecycleTarget{}, DiagnosticStatusError, DiagnosticSeverityError, false, err.Error(), nil))
+		return result, nil
 	}
 	for _, check := range readiness.Checks {
 		status := DiagnosticStatusOK
@@ -174,141 +416,588 @@ func (r *System) addReadinessDiagnostics(report *DiagnosticReport) {
 			status = DiagnosticStatusError
 			severity = DiagnosticSeverityError
 		}
-		report.addCheck(check.Name, "", status, severity, check.Ready, check.Message, nil)
+		result.Checks = append(result.Checks, newDiagnosticCheck(check.Name, "", req.Scope, LifecycleTarget{}, status, severity, check.Ready, check.Message, nil))
+	}
+	return result, nil
+}
+
+type traceProbe struct{}
+
+func (traceProbe) Run(_ context.Context, req DiagnosticProbeRequest) (DiagnosticProbeResult, error) {
+	result := DiagnosticProbeResult{Capabilities: cloneCapabilities(req.Capabilities), Documents: cloneDocumentTargets(req.Documents)}
+	if len(result.Capabilities) == 0 {
+		result.Capabilities = cloneCapabilities(req.DeclaredCapabilities)
+	}
+	result.Checks = append(result.Checks,
+		newDiagnosticCheck("diagnostics.stage.trace", "", req.Scope, LifecycleTarget{}, DiagnosticStatusOK, DiagnosticSeverityInfo, true, "trace diagnostics stage is available", nil),
+		newDiagnosticCheck("trace.plan", "", req.Scope, LifecycleTarget{}, DiagnosticStatusOK, DiagnosticSeverityInfo, true, "compiled plan stages selected for this request", map[string]any{
+			"write_stages":          plannedStageDetails(req.Plan.Write),
+			"read_stages":           plannedStageDetails(req.Plan.Read),
+			"lifecycle_stages":      plannedStageDetails(req.Plan.Lifecycle),
+			"diagnostic_stages":     plannedStageDetails(req.Plan.Diagnostics),
+			"request_stage":         req.Stage,
+			"document_targets":      documentTargetTraceDetails(req.Documents),
+			"selected_capabilities": capabilityStrings(result.Capabilities),
+			"declared_capabilities": capabilityStrings(req.DeclaredCapabilities),
+			"runtime_tracing":       "deferred",
+			"persistence_status":    "deferred_to_phase6",
+		}),
+		newDiagnosticCheck("trace.scope", "", req.Scope, LifecycleTarget{}, DiagnosticStatusOK, DiagnosticSeverityInfo, true, "diagnostics scope and hard partition inputs are normalized", scopeTraceDetails(req.Scope)),
+		newDiagnosticCheck("trace.projections", "", req.Scope, LifecycleTarget{}, DiagnosticStatusOK, DiagnosticSeverityInfo, true, "projection namespaces and retrieval filters were derived without executing runtime tracing", projectionTraceDetails(req, result.Capabilities)),
+	)
+	return result, nil
+}
+
+type consistencyProbe struct{}
+
+func (consistencyProbe) Run(ctx context.Context, req DiagnosticProbeRequest) (DiagnosticProbeResult, error) {
+	result := DiagnosticProbeResult{
+		Capabilities: cloneCapabilities(req.Capabilities),
+		Documents:    cloneDocumentTargets(req.Documents),
+		Checks: []DiagnosticCheck{newDiagnosticCheck(
+			"diagnostics.stage.consistency",
+			"",
+			req.Scope,
+			LifecycleTarget{},
+			DiagnosticStatusOK,
+			DiagnosticSeverityInfo,
+			true,
+			"consistency diagnostics stage is available",
+			map[string]any{"page_size": req.PageSize},
+		)},
+	}
+	if len(result.Capabilities) == 0 {
+		addCheckWithRepair(&result, "consistency.capabilities", "", req.Scope, LifecycleTarget{}, DiagnosticStatusError, DiagnosticSeverityError, false, "consistency scans require explicit capabilities", map[string]any{
+			"declared_capabilities": capabilityStrings(req.DeclaredCapabilities),
+			"requires_capabilities": true,
+		}, "rerun diagnostics with explicit capabilities")
+		return result, nil
+	}
+
+	kinds := req.Consistency
+	if len(kinds) == 0 {
+		kinds = []ConsistencyCheckKind{ConsistencyCheckProjection, ConsistencyCheckSourceView}
+	}
+	for _, kind := range kinds {
+		if !supportedConsistencyCheckKind(kind) {
+			addCheckWithRepair(&result, "consistency.kind", "", req.Scope, LifecycleTarget{}, DiagnosticStatusError, DiagnosticSeverityError, false, "unsupported consistency check kind", map[string]any{
+				"kind": string(kind),
+			}, "rerun diagnostics with consistency=projection or consistency=source_view")
+			return result, nil
+		}
+	}
+
+	items := consistencyWorkItems(kinds, result.Capabilities)
+	pageState, err := decodeConsistencyPageState(req.PageToken)
+	if err != nil {
+		addCheckWithRepair(&result, "consistency.page_token", "", req.Scope, LifecycleTarget{}, DiagnosticStatusError, DiagnosticSeverityError, false, "consistency page token is invalid", map[string]any{
+			"error": err.Error(),
+		}, "rerun diagnostics without page_token")
+		return result, nil
+	}
+	pageState.ensure()
+
+	for _, item := range items {
+		key := item.key()
+		if pageState.done[key] {
+			continue
+		}
+		next, scanned := scanConsistencyWorkItem(ctx, &result, req, item, pageState.Positions[key])
+		if next == "" {
+			pageState.done[key] = true
+			delete(pageState.Positions, key)
+		} else {
+			pageState.Positions[key] = next
+		}
+		if scanned == 0 && next == "" {
+			addCheck(&result, fmt.Sprintf("consistency.%s.%s.page", item.kind, item.capability), item.capability, req.Scope, LifecycleTarget{}, DiagnosticStatusOK, DiagnosticSeverityInfo, true, "consistency scan page had no records", map[string]any{
+				"kind":       string(item.kind),
+				"capability": string(item.capability),
+				"page_size":  req.PageSize,
+			})
+		}
+	}
+	if !pageState.complete(items) {
+		token, err := encodeConsistencyPageState(pageState)
+		if err != nil {
+			addCheckWithRepair(&result, "consistency.page_token.encode", "", req.Scope, LifecycleTarget{}, DiagnosticStatusError, DiagnosticSeverityError, false, "consistency next page token could not be encoded", map[string]any{
+				"error": err.Error(),
+			}, "rerun diagnostics from the first page")
+			return result, nil
+		}
+		result.NextPageToken = token
+	}
+	result.Message = "consistency diagnostics page completed"
+	return result, nil
+}
+
+type consistencyWorkItem struct {
+	kind       ConsistencyCheckKind
+	capability Capability
+}
+
+func (i consistencyWorkItem) key() string {
+	return string(i.kind) + "\x00" + string(i.capability)
+}
+
+type consistencyPageState struct {
+	Positions map[string]string `json:"positions,omitempty"`
+	Done      []string          `json:"done,omitempty"`
+
+	done map[string]bool
+}
+
+func (s *consistencyPageState) ensure() {
+	if s.Positions == nil {
+		s.Positions = map[string]string{}
+	}
+	if s.done == nil {
+		s.done = map[string]bool{}
+		for _, key := range s.Done {
+			if key != "" {
+				s.done[key] = true
+			}
+		}
 	}
 }
 
-func (r *System) addSourceDiagnostics(report *DiagnosticReport) {
-	if r.assembly.HasSource(SourceMessageLog) {
-		report.addDependencyCheck("source.message_store", "", "MessageStore", r.deps.MessageStore != nil)
+func (s *consistencyPageState) complete(items []consistencyWorkItem) bool {
+	s.ensure()
+	for _, item := range items {
+		if !s.done[item.key()] {
+			return false
+		}
 	}
-	if r.assembly.HasSource(SourceDocumentStore) {
-		report.addDependencyCheck("source.document_store", "", "DocumentStore", r.deps.DocumentStore != nil)
+	return true
+}
+
+func consistencyWorkItems(kinds []ConsistencyCheckKind, capabilities []Capability) []consistencyWorkItem {
+	items := make([]consistencyWorkItem, 0, len(kinds)*len(capabilities))
+	for _, kind := range kinds {
+		for _, capability := range capabilities {
+			items = append(items, consistencyWorkItem{kind: kind, capability: capability})
+		}
+	}
+	return items
+}
+
+func scanConsistencyWorkItem(ctx context.Context, result *DiagnosticProbeResult, req DiagnosticProbeRequest, item consistencyWorkItem, pageToken string) (string, int) {
+	switch item.kind {
+	case ConsistencyCheckProjection:
+		return scanProjectionConsistency(ctx, result, req, item.capability, pageToken)
+	case ConsistencyCheckSourceView:
+		return scanSourceViewConsistency(ctx, result, req, item.capability, pageToken)
+	default:
+		addCheckWithRepair(result, "consistency.kind", item.capability, req.Scope, LifecycleTarget{}, DiagnosticStatusError, DiagnosticSeverityError, false, "unsupported consistency check kind", map[string]any{
+			"kind": string(item.kind),
+		}, "rerun diagnostics with a supported consistency kind")
+		return "", 0
 	}
 }
 
-func (r *System) addCapabilityDiagnostics(report *DiagnosticReport, capability Capability) {
-	if !r.assembly.HasCapability(capability) {
-		report.addCheck(fmt.Sprintf("capability.%s.declared", capability), capability, DiagnosticStatusError, DiagnosticSeverityError, false, "capability is not declared by the assembly", nil)
+func scanProjectionConsistency(ctx context.Context, result *DiagnosticProbeResult, req DiagnosticProbeRequest, capability Capability, pageToken string) (string, int) {
+	resp, namespace, ok := listProjectionConsistencyPage(ctx, result, req, capability, pageToken, "projection")
+	if !ok || resp == nil {
+		return "", 0
+	}
+	for _, doc := range resp.Items {
+		addProjectionRecordConsistencyCheck(ctx, result, req, capability, namespace, doc)
+	}
+	return resp.NextPageToken, len(resp.Items)
+}
+
+func scanSourceViewConsistency(ctx context.Context, result *DiagnosticProbeResult, req DiagnosticProbeRequest, capability Capability, pageToken string) (string, int) {
+	if capability != CapabilityDocumentChunks {
+		addCheckWithRepair(result, fmt.Sprintf("consistency.source_view.%s", capability), capability, req.Scope, LifecycleTarget{}, DiagnosticStatusNotImplemented, DiagnosticSeverityWarning, true, "source-view consistency scan is not implemented for this capability", map[string]any{
+			"capability": string(capability),
+		}, fmt.Sprintf("rebuild capability=%s target=scope", capability))
+		return "", 0
+	}
+	resp, namespace, ok := listProjectionConsistencyPage(ctx, result, req, capability, pageToken, "source_view")
+	if !ok || resp == nil {
+		return "", 0
+	}
+	for _, doc := range resp.Items {
+		addDocumentChunkSourceViewConsistencyCheck(ctx, result, req, namespace, doc)
+	}
+	return resp.NextPageToken, len(resp.Items)
+}
+
+func listProjectionConsistencyPage(ctx context.Context, result *DiagnosticProbeResult, req DiagnosticProbeRequest, capability Capability, pageToken, kind string) (*retrieval.ListResponse, string, bool) {
+	if req.System == nil || !req.System.assembly.HasCapability(capability) {
+		addCheckWithRepair(result, fmt.Sprintf("consistency.%s.%s.declared", kind, capability), capability, req.Scope, LifecycleTarget{}, DiagnosticStatusError, DiagnosticSeverityError, false, "capability is not declared by the assembly", nil, fmt.Sprintf("declare capability=%s before scanning consistency", capability))
+		return nil, "", false
+	}
+	baseNamespace, ok := req.System.assembly.ProjectionNamespace(capability)
+	if !ok {
+		addCheckWithRepair(result, fmt.Sprintf("consistency.%s.%s.binding", kind, capability), capability, req.Scope, LifecycleTarget{}, DiagnosticStatusMissing, DiagnosticSeverityError, false, "projection namespace is not declared", nil, fmt.Sprintf("declare projection namespace for capability=%s", capability))
+		return nil, "", false
+	}
+	if req.Deps.Index == nil {
+		addCheckWithRepair(result, fmt.Sprintf("consistency.%s.%s.index", kind, capability), capability, req.Scope, LifecycleTarget{}, DiagnosticStatusError, DiagnosticSeverityError, false, "projection consistency scan requires Index", map[string]any{
+			"base_namespace": baseNamespace,
+		}, "configure retrieval index before scanning consistency")
+		return nil, "", false
+	}
+	scopedNamespace, err := projectors.ScopedNamespace(baseNamespace, req.Scope)
+	if err != nil {
+		addCheckWithRepair(result, fmt.Sprintf("consistency.%s.%s.scoped_namespace", kind, capability), capability, req.Scope, LifecycleTarget{}, DiagnosticStatusError, DiagnosticSeverityError, false, "scoped projection namespace cannot be computed", map[string]any{
+			"base_namespace": baseNamespace,
+			"error":          err.Error(),
+		}, fmt.Sprintf("fix scope or projection namespace for capability=%s", capability))
+		return nil, "", false
+	}
+	resp, err := req.Deps.Index.List(ctx, scopedNamespace, retrieval.ListRequest{
+		Filter:     consistencyScopeFilter(capability, req.Scope),
+		PageSize:   req.PageSize,
+		PageToken:  pageToken,
+		OrderBy:    retrieval.OrderByIDAsc,
+		Project:    consistencyProjectionMetadataKeys(capability),
+		WithVector: false,
+	})
+	if err != nil {
+		addCheckWithRepair(result, fmt.Sprintf("consistency.%s.%s.scan", kind, capability), capability, req.Scope, LifecycleTarget{}, DiagnosticStatusError, DiagnosticSeverityError, false, "projection page scan failed", map[string]any{
+			"namespace": scopedNamespace,
+			"error":     err.Error(),
+		}, fmt.Sprintf("retry consistency scan capability=%s", capability))
+		return nil, scopedNamespace, false
+	}
+	return resp, scopedNamespace, true
+}
+
+func addProjectionRecordConsistencyCheck(ctx context.Context, result *DiagnosticProbeResult, req DiagnosticProbeRequest, capability Capability, namespace string, doc retrieval.Doc) {
+	details := projectionRecordDetails(req, capability, namespace, doc)
+	target := projectionRecordLifecycleTarget(capability, doc.Metadata)
+	status := DiagnosticStatusOK
+	severity := DiagnosticSeverityInfo
+	ok := true
+	message := "projection record is consistent with semantic store"
+	var repairHint string
+
+	var missing []string
+	for _, key := range requiredProjectionMetadataKeys(capability, doc.Metadata) {
+		if metadataString(doc.Metadata, key) == "" {
+			missing = append(missing, key)
+		}
+	}
+	if len(missing) > 0 {
+		details["missing_metadata"] = missing
+		status = DiagnosticStatusMissing
+		severity = DiagnosticSeverityError
+		ok = false
+		message = "projection record is missing required identity metadata"
+		repairHint = projectionRepairHint(capability, target)
+	}
+
+	if scopeReasons := projectionHardPartitionMismatches(req.Scope, doc.Metadata); len(scopeReasons) > 0 {
+		details["scope_mismatches"] = scopeReasons
+		status = DiagnosticStatusStale
+		severity = DiagnosticSeverityError
+		ok = false
+		message = "projection record hard partition metadata does not match requested scope"
+		repairHint = projectionRepairHint(capability, target)
+	}
+
+	if _, found, err := indexed.DecodeSourceRefs(doc.Metadata); err != nil {
+		details["source_refs_error"] = err.Error()
+		status = DiagnosticStatusError
+		severity = DiagnosticSeverityError
+		ok = false
+		message = "projection record source refs could not be decoded"
+		repairHint = projectionRepairHint(capability, target)
+	} else if capability == CapabilityDocumentChunks && !found {
+		details["missing_metadata"] = appendStringDetail(details["missing_metadata"], indexed.MetadataSourceRefsKey)
+		status = DiagnosticStatusMissing
+		severity = DiagnosticSeverityError
+		ok = false
+		message = "projection record is missing indexed source refs"
+		repairHint = projectionRepairHint(capability, target)
+	}
+	if _, found, err := indexed.DecodeSignature(doc.Metadata); err != nil {
+		details["signature_error"] = err.Error()
+		status = DiagnosticStatusError
+		severity = DiagnosticSeverityError
+		ok = false
+		message = "projection record signature could not be decoded"
+		repairHint = projectionRepairHint(capability, target)
+	} else if capability == CapabilityDocumentChunks && !found {
+		details["missing_metadata"] = appendStringDetail(details["missing_metadata"], indexed.MetadataSignatureKey)
+		status = DiagnosticStatusMissing
+		severity = DiagnosticSeverityError
+		ok = false
+		message = "projection record is missing indexed signature"
+		repairHint = projectionRepairHint(capability, target)
+	}
+
+	hydrateStatus, hydrateMessage, hydrateDetails, hydrateRepair := hydrateProjectionRecord(ctx, req, capability, doc.Metadata, target)
+	for key, value := range hydrateDetails {
+		details[key] = value
+	}
+	if hydrateStatus != DiagnosticStatusOK && ok {
+		status = hydrateStatus
+		severity = DiagnosticSeverityError
+		ok = false
+		message = hydrateMessage
+		repairHint = hydrateRepair
+	}
+	if status != DiagnosticStatusOK && repairHint == "" {
+		repairHint = projectionRepairHint(capability, target)
+	}
+	addCheckWithRepair(result, fmt.Sprintf("consistency.projection.%s.record", capability), capability, req.Scope, target, status, severity, ok, message, details, repairHint)
+}
+
+func hydrateProjectionRecord(ctx context.Context, req DiagnosticProbeRequest, capability Capability, metadata map[string]any, target LifecycleTarget) (DiagnosticStatus, string, map[string]any, string) {
+	details := map[string]any{}
+	switch capability {
+	case CapabilityDocumentChunks:
+		if req.Deps.ChunkStore == nil {
+			return DiagnosticStatusError, "document chunk projection hydrate requires ChunkStore", details, "configure ChunkStore before scanning document_chunks"
+		}
+		datasetID := metadataString(metadata, projectors.MetadataDatasetIDKey)
+		documentID := metadataString(metadata, projectors.MetadataDocumentIDKey)
+		chunkID := metadataString(metadata, projectors.MetadataChunkIDKey)
+		if datasetID == "" || documentID == "" || chunkID == "" {
+			return DiagnosticStatusMissing, "document chunk projection cannot hydrate without dataset/document/chunk identity", details, projectionRepairHint(capability, target)
+		}
+		scope := projectionScopeFromMetadata(req.Scope, metadata)
+		scope.DatasetID = datasetID
+		chunk, found, err := req.Deps.ChunkStore.GetChunk(ctx, scope, documentID, viewdocument.ChunkID(chunkID))
+		if err != nil {
+			details["hydrate_error"] = err.Error()
+			return DiagnosticStatusError, "semantic document chunk hydrate failed", details, fmt.Sprintf("reload document_chunks target=%s/%s", datasetID, documentID)
+		}
+		if !found {
+			details["hydrate_state"] = "missing_semantic_record"
+			return DiagnosticStatusMissing, "semantic document chunk record is missing", details, fmt.Sprintf("reload document_chunks target=%s/%s", datasetID, documentID)
+		}
+		details["hydrate_state"] = "found"
+		details["chunk_id"] = string(chunk.ID)
+		return DiagnosticStatusOK, "", details, ""
+	default:
+		details["hydrate_state"] = "not_implemented"
+		return DiagnosticStatusNotImplemented, "semantic hydrate is not implemented for this capability", details, fmt.Sprintf("rebuild capability=%s target=scope", capability)
+	}
+}
+
+func addDocumentChunkSourceViewConsistencyCheck(ctx context.Context, result *DiagnosticProbeResult, req DiagnosticProbeRequest, namespace string, doc retrieval.Doc) {
+	details := projectionRecordDetails(req, CapabilityDocumentChunks, namespace, doc)
+	target := projectionRecordLifecycleTarget(CapabilityDocumentChunks, doc.Metadata)
+	datasetID := metadataString(doc.Metadata, projectors.MetadataDatasetIDKey)
+	documentID := metadataString(doc.Metadata, projectors.MetadataDocumentIDKey)
+	chunkID := metadataString(doc.Metadata, projectors.MetadataChunkIDKey)
+	repairHint := fmt.Sprintf("reload document_chunks target=%s/%s", datasetID, documentID)
+	if datasetID == "" || documentID == "" || chunkID == "" {
+		addCheckWithRepair(result, "consistency.source_view.document_chunks.record", CapabilityDocumentChunks, req.Scope, target, DiagnosticStatusMissing, DiagnosticSeverityError, false, "document chunk source-view scan requires projection identity metadata", details, projectionRepairHint(CapabilityDocumentChunks, target))
+		return
+	}
+	if req.Deps.ChunkStore == nil || req.Deps.DocumentStore == nil {
+		addCheckWithRepair(result, "consistency.source_view.document_chunks.record", CapabilityDocumentChunks, req.Scope, target, DiagnosticStatusError, DiagnosticSeverityError, false, "document chunk source-view scan requires ChunkStore and DocumentStore", details, "configure ChunkStore and DocumentStore before scanning source_view")
+		return
+	}
+	scope := projectionScopeFromMetadata(req.Scope, doc.Metadata)
+	scope.DatasetID = datasetID
+	chunk, found, err := req.Deps.ChunkStore.GetChunk(ctx, scope, documentID, viewdocument.ChunkID(chunkID))
+	if err != nil {
+		details["chunk_error"] = err.Error()
+		addCheckWithRepair(result, "consistency.source_view.document_chunks.record", CapabilityDocumentChunks, req.Scope, target, DiagnosticStatusError, DiagnosticSeverityError, false, "document chunk view record lookup failed", details, repairHint)
+		return
+	}
+	if !found {
+		details["state"] = "missing_chunk"
+		addCheckWithRepair(result, "consistency.source_view.document_chunks.record", CapabilityDocumentChunks, req.Scope, target, DiagnosticStatusMissing, DiagnosticSeverityError, false, "document chunk view record is missing", details, repairHint)
+		return
+	}
+	canonical, found, err := req.Deps.DocumentStore.Get(ctx, datasetID, documentID)
+	if err != nil {
+		details["document_error"] = err.Error()
+		addCheckWithRepair(result, "consistency.source_view.document_chunks.record", CapabilityDocumentChunks, req.Scope, target, DiagnosticStatusError, DiagnosticSeverityError, false, "canonical document lookup failed", details, repairHint)
+		return
+	}
+	if !found {
+		details["state"] = "missing_document"
+		addCheckWithRepair(result, "consistency.source_view.document_chunks.record", CapabilityDocumentChunks, req.Scope, target, DiagnosticStatusMissing, DiagnosticSeverityError, false, "canonical document is missing for document chunk source view", details, repairHint)
+		return
+	}
+	outcome := compareDocumentChunkSourceView(req.Scope, canonical, chunk)
+	for key, value := range outcome.details {
+		details[key] = value
+	}
+	hint := ""
+	if !outcome.ok {
+		hint = repairHint
+	}
+	addCheckWithRepair(result, "consistency.source_view.document_chunks.record", CapabilityDocumentChunks, req.Scope, target, outcome.status, outcome.severity, outcome.ok, outcome.message, details, hint)
+}
+
+func compareDocumentChunkSourceView(scope Scope, doc sourcedocument.Document, chunk viewdocument.Chunk) documentFreshnessOutcome {
+	comparable, staleReasons := compareDocumentChunkFreshness(scope, doc, chunk)
+	details := documentTargetDetails(DocumentTarget{DatasetID: doc.DatasetID, DocumentID: doc.ID}, scope)
+	details["document_version"] = strconv.FormatUint(doc.Version, 10)
+	details["document_content_hash"] = doc.ContentHash
+	details["chunk_id"] = string(chunk.ID)
+	if len(staleReasons) > 0 {
+		details["state"] = "stale"
+		details["stale_reasons"] = staleReasons
+		return documentFreshnessOutcome{
+			status:   DiagnosticStatusStale,
+			severity: DiagnosticSeverityError,
+			ok:       false,
+			message:  fmt.Sprintf("document chunk %s/%s/%s source view is stale", doc.DatasetID, doc.ID, chunk.ID),
+			details:  details,
+		}
+	}
+	if !comparable {
+		details["state"] = "unknown"
+		return documentFreshnessOutcome{
+			status:   DiagnosticStatusNotImplemented,
+			severity: DiagnosticSeverityWarning,
+			ok:       true,
+			message:  fmt.Sprintf("document chunk %s/%s/%s source view cannot be proven from available signatures", doc.DatasetID, doc.ID, chunk.ID),
+			details:  details,
+		}
+	}
+	details["state"] = "fresh"
+	return documentFreshnessOutcome{
+		status:   DiagnosticStatusOK,
+		severity: DiagnosticSeverityInfo,
+		ok:       true,
+		message:  fmt.Sprintf("document chunk %s/%s/%s source view is consistent", doc.DatasetID, doc.ID, chunk.ID),
+		details:  details,
+	}
+}
+
+func addSourceDiagnostics(result *DiagnosticProbeResult, req DiagnosticProbeRequest) {
+	if req.System.assembly.HasSource(SourceMessageLog) {
+		addDependencyCheck(result, "source.message_store", "", req.Scope, "MessageStore", req.Deps.MessageStore != nil)
+	}
+	if req.System.assembly.HasSource(SourceDocumentStore) {
+		addDependencyCheck(result, "source.document_store", "", req.Scope, "DocumentStore", req.Deps.DocumentStore != nil)
+	}
+}
+
+func addCapabilityDiagnostics(result *DiagnosticProbeResult, req DiagnosticProbeRequest, capability Capability) {
+	if !req.System.assembly.HasCapability(capability) {
+		addCheck(result, fmt.Sprintf("capability.%s.declared", capability), capability, req.Scope, LifecycleTarget{}, DiagnosticStatusError, DiagnosticSeverityError, false, "capability is not declared by the assembly", nil)
 		return
 	}
 
 	switch capability {
 	case CapabilityRecentWindow:
-		report.addDependencyCheck("capability.recent_window.message_store", capability, "MessageStore", r.deps.MessageStore != nil)
+		addDependencyCheck(result, "capability.recent_window.message_store", capability, req.Scope, "MessageStore", req.Deps.MessageStore != nil)
 	case CapabilitySummaryDAG:
-		report.addDependencyCheck("capability.summary_dag.store", capability, "SummaryStore", r.deps.SummaryStore != nil)
-		report.addDependencyCheck("capability.summary_dag.service", capability, "Summarizer", r.deps.Summarizer != nil)
+		addDependencyCheck(result, "capability.summary_dag.store", capability, req.Scope, "SummaryStore", req.Deps.SummaryStore != nil)
+		addDependencyCheck(result, "capability.summary_dag.service", capability, req.Scope, "Summarizer", req.Deps.Summarizer != nil)
 	case CapabilityDocumentChunks:
-		report.addDependencyCheck("capability.document_chunks.store", capability, "ChunkStore", r.deps.ChunkStore != nil)
-		report.addDependencyCheck("capability.document_chunks.service", capability, "DocumentChunker", r.deps.DocumentChunker != nil)
+		addDependencyCheck(result, "capability.document_chunks.store", capability, req.Scope, "ChunkStore", req.Deps.ChunkStore != nil)
+		addDependencyCheck(result, "capability.document_chunks.service", capability, req.Scope, "DocumentChunker", req.Deps.DocumentChunker != nil)
 	case CapabilityObservationLedger:
-		report.addDependencyCheck("capability.observation_ledger.store", capability, "ObservationStore", r.deps.ObservationStore != nil)
-		report.addDependencyCheck("capability.observation_ledger.service", capability, "ObservationExtractor", r.deps.ObservationExtractor != nil)
+		addDependencyCheck(result, "capability.observation_ledger.store", capability, req.Scope, "ObservationStore", req.Deps.ObservationStore != nil)
+		addDependencyCheck(result, "capability.observation_ledger.service", capability, req.Scope, "ObservationExtractor", req.Deps.ObservationExtractor != nil)
 	case CapabilityFactLedger:
-		report.addDependencyCheck("capability.fact_ledger.store", capability, "FactStore", r.deps.FactStore != nil)
-		report.addDependencyCheck("capability.fact_ledger.service", capability, "FactReconciler", r.deps.FactReconciler != nil)
-		report.addCheck("capability.fact_ledger.lifecycle_semantics", capability, DiagnosticStatusOK, DiagnosticSeverityInfo, true, "fact ledger lifecycle semantics support active, superseded, retracted, conflict, and revision lineage", map[string]any{
+		addDependencyCheck(result, "capability.fact_ledger.store", capability, req.Scope, "FactStore", req.Deps.FactStore != nil)
+		addDependencyCheck(result, "capability.fact_ledger.service", capability, req.Scope, "FactReconciler", req.Deps.FactReconciler != nil)
+		addCheck(result, "capability.fact_ledger.lifecycle_semantics", capability, req.Scope, LifecycleTarget{}, DiagnosticStatusOK, DiagnosticSeverityInfo, true, "fact ledger lifecycle semantics support active, superseded, retracted, conflict, and revision lineage", map[string]any{
 			"statuses": []string{"active", "superseded", "retracted", "conflict"},
 		})
 	case CapabilityFactGraph:
-		report.addDependencyCheck("capability.fact_graph.store", capability, "FactGraphStore", r.deps.FactGraphStore != nil)
-		report.addDependencyCheck("capability.fact_graph.service", capability, "FactGraphBuilder", r.deps.FactGraphBuilder != nil)
+		addDependencyCheck(result, "capability.fact_graph.store", capability, req.Scope, "FactGraphStore", req.Deps.FactGraphStore != nil)
+		addDependencyCheck(result, "capability.fact_graph.service", capability, req.Scope, "FactGraphBuilder", req.Deps.FactGraphBuilder != nil)
 	case CapabilityEntityProfile:
-		report.addDependencyCheck("capability.entity_profile.store", capability, "EntityProfileStore", r.deps.EntityProfileStore != nil)
-		report.addDependencyCheck("capability.entity_profile.service", capability, "EntityProfileBuilder", r.deps.EntityProfileBuilder != nil)
+		addDependencyCheck(result, "capability.entity_profile.store", capability, req.Scope, "EntityProfileStore", req.Deps.EntityProfileStore != nil)
+		addDependencyCheck(result, "capability.entity_profile.service", capability, req.Scope, "EntityProfileBuilder", req.Deps.EntityProfileBuilder != nil)
 	case CapabilityEntityTimeline:
-		report.addDependencyCheck("capability.entity_timeline.store", capability, "EntityTimelineStore", r.deps.EntityTimelineStore != nil)
-		report.addDependencyCheck("capability.entity_timeline.service", capability, "EntityTimelineBuilder", r.deps.EntityTimelineBuilder != nil)
+		addDependencyCheck(result, "capability.entity_timeline.store", capability, req.Scope, "EntityTimelineStore", req.Deps.EntityTimelineStore != nil)
+		addDependencyCheck(result, "capability.entity_timeline.service", capability, req.Scope, "EntityTimelineBuilder", req.Deps.EntityTimelineBuilder != nil)
 	default:
-		report.addCheck(fmt.Sprintf("capability.%s.implemented", capability), capability, DiagnosticStatusError, DiagnosticSeverityError, false, "capability is not implemented by the root facade", nil)
+		addCheck(result, fmt.Sprintf("capability.%s.implemented", capability), capability, req.Scope, LifecycleTarget{}, DiagnosticStatusError, DiagnosticSeverityError, false, "capability is not implemented by the root facade", nil)
 	}
 }
 
-func (r *System) addProjectionDiagnostics(report *DiagnosticReport, capability Capability) {
-	baseNamespace, ok := r.assembly.ProjectionNamespace(capability)
+func addProjectionDiagnostics(result *DiagnosticProbeResult, req DiagnosticProbeRequest, capability Capability) {
+	baseNamespace, ok := req.System.assembly.ProjectionNamespace(capability)
 	if !ok {
 		if capabilitySupportsProjectionDiagnostics(capability) {
-			report.addCheck(fmt.Sprintf("projection.%s.binding", capability), capability, DiagnosticStatusWarning, DiagnosticSeverityWarning, true, "projection namespace is not declared; indexed consistency checks are skipped", nil)
+			addCheck(result, fmt.Sprintf("projection.%s.binding", capability), capability, req.Scope, LifecycleTarget{}, DiagnosticStatusWarning, DiagnosticSeverityWarning, true, "projection namespace is not declared; indexed consistency checks are skipped", nil)
 		}
 		return
 	}
 
-	report.addCheck(fmt.Sprintf("projection.%s.binding", capability), capability, DiagnosticStatusOK, DiagnosticSeverityInfo, true, "projection namespace is declared", map[string]any{
+	addCheck(result, fmt.Sprintf("projection.%s.binding", capability), capability, req.Scope, LifecycleTarget{}, DiagnosticStatusOK, DiagnosticSeverityInfo, true, "projection namespace is declared", map[string]any{
 		"base_namespace": baseNamespace,
 	})
-	report.addDependencyCheck(fmt.Sprintf("projection.%s.index", capability), capability, "Index", r.deps.Index != nil)
+	addDependencyCheck(result, fmt.Sprintf("projection.%s.index", capability), capability, req.Scope, "Index", req.Deps.Index != nil)
 
-	scopedNamespace, err := projectors.ScopedNamespace(baseNamespace, report.Scope)
+	scopedNamespace, err := projectors.ScopedNamespace(baseNamespace, req.Scope)
 	if err != nil {
-		report.addCheck(fmt.Sprintf("projection.%s.scoped_namespace", capability), capability, DiagnosticStatusError, DiagnosticSeverityError, false, "scoped projection namespace cannot be computed", map[string]any{
+		addCheck(result, fmt.Sprintf("projection.%s.scoped_namespace", capability), capability, req.Scope, LifecycleTarget{}, DiagnosticStatusError, DiagnosticSeverityError, false, "scoped projection namespace cannot be computed", map[string]any{
 			"base_namespace": baseNamespace,
 			"error":          err.Error(),
 		})
 		return
 	}
-	report.addCheck(fmt.Sprintf("projection.%s.scoped_namespace", capability), capability, DiagnosticStatusOK, DiagnosticSeverityInfo, true, "scoped projection namespace is computable", map[string]any{
+	addCheck(result, fmt.Sprintf("projection.%s.scoped_namespace", capability), capability, req.Scope, LifecycleTarget{}, DiagnosticStatusOK, DiagnosticSeverityInfo, true, "scoped projection namespace is computable", map[string]any{
 		"base_namespace":   baseNamespace,
 		"scoped_namespace": scopedNamespace,
-		"runtime_id":       report.Scope.RuntimeID,
-		"user_id":          report.Scope.UserID,
+		"runtime_id":       req.Scope.RuntimeID,
+		"user_id":          req.Scope.UserID,
 	})
 }
 
-func (r *System) addFreshnessCapabilityChecks(ctx context.Context, report *DiagnosticReport, capability Capability) {
+func addFreshnessCapabilityChecks(ctx context.Context, result *DiagnosticProbeResult, req DiagnosticProbeRequest, capability Capability) {
 	switch capability {
 	case CapabilityDocumentChunks:
-		if len(report.Documents) > 0 {
-			r.addDocumentTargetFreshnessDiagnostics(ctx, report)
+		if len(result.Documents) > 0 {
+			addDocumentTargetFreshnessDiagnostics(ctx, result, req)
 			return
 		}
-		report.addCheck("freshness.document_chunks.targets", capability, DiagnosticStatusNotImplemented, DiagnosticSeverityWarning, true, "document chunk freshness requires explicit document targets; full scans are not implemented", map[string]any{
+		addCheck(result, "freshness.document_chunks.targets", capability, req.Scope, LifecycleTarget{}, DiagnosticStatusNotImplemented, DiagnosticSeverityWarning, true, "document chunk freshness requires explicit document targets; full scans are not implemented", map[string]any{
 			"requires_targets": true,
 		})
 	case CapabilityFactLedger:
-		report.addCheck("freshness.fact.reconcile_semantics", capability, DiagnosticStatusOK, DiagnosticSeverityInfo, true, "fact lifecycle ledger semantics are implemented; document freshness remains deferred", map[string]any{
+		addCheck(result, "freshness.fact.reconcile_semantics", capability, req.Scope, LifecycleTarget{}, DiagnosticStatusOK, DiagnosticSeverityInfo, true, "fact lifecycle ledger semantics are implemented; document freshness remains deferred", map[string]any{
 			"implemented_stage": "Stage 4",
 		})
 	default:
-		if _, ok := r.assembly.ProjectionNamespace(capability); ok {
-			report.addCheck(fmt.Sprintf("consistency.projection_records.%s", capability), capability, DiagnosticStatusNotImplemented, DiagnosticSeverityInfo, true, "record-level projection scan is not implemented in Stage 2", map[string]any{
+		if _, ok := req.System.assembly.ProjectionNamespace(capability); ok {
+			addCheck(result, fmt.Sprintf("consistency.projection_records.%s", capability), capability, req.Scope, LifecycleTarget{}, DiagnosticStatusNotImplemented, DiagnosticSeverityInfo, true, "record-level projection scan is not implemented in Stage 2", map[string]any{
 				"deferred_stage": "Stage 5",
 			})
 		}
 	}
 }
 
-func (r *System) addDocumentTargetFreshnessDiagnostics(ctx context.Context, report *DiagnosticReport) {
-	for _, target := range report.Documents {
-		scope := report.Scope
+func addDocumentTargetFreshnessDiagnostics(ctx context.Context, result *DiagnosticProbeResult, req DiagnosticProbeRequest) {
+	for _, target := range result.Documents {
+		scope := req.Scope
 		scope.DatasetID = target.DatasetID
 		details := documentTargetDetails(target, scope)
-		if r.deps.DocumentStore == nil || r.deps.ChunkStore == nil {
-			report.addCheck("freshness.document_chunks.target", CapabilityDocumentChunks, DiagnosticStatusError, DiagnosticSeverityError, false, "document chunk freshness requires DocumentStore and ChunkStore", details)
+		checkTarget := lifecycleTargetForDocument(target)
+		if req.Deps.DocumentStore == nil || req.Deps.ChunkStore == nil {
+			addCheck(result, "freshness.document_chunks.target", CapabilityDocumentChunks, scope, checkTarget, DiagnosticStatusError, DiagnosticSeverityError, false, "document chunk freshness requires DocumentStore and ChunkStore", details)
 			continue
 		}
 
-		doc, ok, err := r.deps.DocumentStore.Get(ctx, target.DatasetID, target.DocumentID)
+		doc, ok, err := req.Deps.DocumentStore.Get(ctx, target.DatasetID, target.DocumentID)
 		if err != nil {
 			details["error"] = err.Error()
-			report.addCheck("freshness.document_chunks.target", CapabilityDocumentChunks, DiagnosticStatusError, DiagnosticSeverityError, false, "canonical document lookup failed", details)
+			addCheck(result, "freshness.document_chunks.target", CapabilityDocumentChunks, scope, checkTarget, DiagnosticStatusError, DiagnosticSeverityError, false, "canonical document lookup failed", details)
 			continue
 		}
 		if !ok {
 			details["state"] = "missing_document"
 			details["chunk_count"] = 0
-			report.addCheck("freshness.document_chunks.target", CapabilityDocumentChunks, DiagnosticStatusMissing, DiagnosticSeverityError, false, fmt.Sprintf("canonical document %s is missing", documentTargetLabel(target)), details)
+			addCheck(result, "freshness.document_chunks.target", CapabilityDocumentChunks, scope, checkTarget, DiagnosticStatusMissing, DiagnosticSeverityError, false, fmt.Sprintf("canonical document %s is missing", documentTargetLabel(target)), details)
 			continue
 		}
 
-		chunks, err := r.deps.ChunkStore.ListChunks(ctx, target.DocumentID, viewdocument.ListOptions{Scope: &scope})
+		chunks, err := req.Deps.ChunkStore.ListChunks(ctx, target.DocumentID, viewdocument.ListOptions{Scope: &scope})
 		if err != nil {
 			details["error"] = err.Error()
-			report.addCheck("freshness.document_chunks.target", CapabilityDocumentChunks, DiagnosticStatusError, DiagnosticSeverityError, false, "document chunk lookup failed", details)
+			addCheck(result, "freshness.document_chunks.target", CapabilityDocumentChunks, scope, checkTarget, DiagnosticStatusError, DiagnosticSeverityError, false, "document chunk lookup failed", details)
 			continue
 		}
 		outcome := compareDocumentTargetFreshness(target, scope, doc, chunks)
-		report.addCheck("freshness.document_chunks.target", CapabilityDocumentChunks, outcome.status, outcome.severity, outcome.ok, outcome.message, outcome.details)
+		addCheck(result, "freshness.document_chunks.target", CapabilityDocumentChunks, scope, checkTarget, outcome.status, outcome.severity, outcome.ok, outcome.message, outcome.details)
 	}
 }
 
@@ -462,32 +1151,197 @@ func documentTargetDetails(target DocumentTarget, scope Scope) map[string]any {
 	}
 }
 
-func (report *DiagnosticReport) addDependencyCheck(name string, capability Capability, dependency string, ready bool) {
+func addDependencyCheck(result *DiagnosticProbeResult, name string, capability Capability, scope Scope, dependency string, ready bool) {
 	status := DiagnosticStatusOK
 	severity := DiagnosticSeverityInfo
 	if !ready {
 		status = DiagnosticStatusError
 		severity = DiagnosticSeverityError
 	}
-	report.addCheck(name, capability, status, severity, ready, dependencyMessage(dependency, ready), nil)
+	addCheck(result, name, capability, scope, LifecycleTarget{}, status, severity, ready, dependencyMessage(dependency, ready), nil)
 }
 
-func (report *DiagnosticReport) addCheck(name string, capability Capability, status DiagnosticStatus, severity DiagnosticSeverity, ok bool, message string, details map[string]any) {
-	report.Checks = append(report.Checks, DiagnosticCheck{
+func addCheck(result *DiagnosticProbeResult, name string, capability Capability, scope Scope, target LifecycleTarget, status DiagnosticStatus, severity DiagnosticSeverity, ok bool, message string, details map[string]any) {
+	result.Checks = append(result.Checks, newDiagnosticCheck(name, capability, scope, target, status, severity, ok, message, details))
+}
+
+func addCheckWithRepair(result *DiagnosticProbeResult, name string, capability Capability, scope Scope, target LifecycleTarget, status DiagnosticStatus, severity DiagnosticSeverity, ok bool, message string, details map[string]any, repairHint string) {
+	check := newDiagnosticCheck(name, capability, scope, target, status, severity, ok, message, details)
+	check.RepairHint = strings.TrimSpace(repairHint)
+	result.Checks = append(result.Checks, check)
+}
+
+func newDiagnosticCheck(name string, capability Capability, scope Scope, target LifecycleTarget, status DiagnosticStatus, severity DiagnosticSeverity, ok bool, message string, details map[string]any) DiagnosticCheck {
+	return DiagnosticCheck{
 		Name:       name,
 		Capability: capability,
+		Scope:      scope,
+		Target:     target,
 		Status:     status,
 		OK:         ok,
 		Severity:   severity,
 		Message:    message,
 		Details:    cloneDiagnosticDetails(details),
-	})
-	if severity == DiagnosticSeverityError && !ok {
-		report.Ready = false
-		report.OK = false
 	}
-	if severity == DiagnosticSeverityWarning {
-		report.Warnings = append(report.Warnings, message)
+}
+
+func normalizeDiagnosticPageSize(pageSize int) int {
+	if pageSize <= 0 {
+		return defaultDiagnosticPageSize
+	}
+	if pageSize > maxDiagnosticPageSize {
+		return maxDiagnosticPageSize
+	}
+	return pageSize
+}
+
+func (report *DiagnosticReport) addCheck(name string, capability Capability, status DiagnosticStatus, severity DiagnosticSeverity, ok bool, message string, details map[string]any) {
+	report.addProbeCheck(newDiagnosticCheck(name, capability, report.Scope, LifecycleTarget{}, status, severity, ok, message, details))
+}
+
+func (report *DiagnosticReport) addProbeCheck(check DiagnosticCheck) {
+	if check.Scope.IsZero() {
+		check.Scope = report.Scope
+	}
+	check.Details = cloneDiagnosticDetails(check.Details)
+	report.Checks = append(report.Checks, check)
+}
+
+func finalizeDiagnosticReport(report *DiagnosticReport, defaultMessage string) {
+	report.Ready = true
+	report.OK = true
+	report.Warnings = nil
+	for _, check := range report.Checks {
+		if check.Severity == DiagnosticSeverityError && !check.OK {
+			report.Ready = false
+			report.OK = false
+		}
+		if check.Severity == DiagnosticSeverityWarning {
+			report.Warnings = append(report.Warnings, check.Message)
+		}
+	}
+	if defaultMessage != "" {
+		report.Message = defaultMessage
+		return
+	}
+	if report.Message != "" {
+		return
+	}
+	if report.OK {
+		report.Message = "diagnostics checks completed"
+		return
+	}
+	report.Message = "diagnostics checks found missing dependencies"
+}
+
+func plannedStageDetails(stages []PlannedStage) []map[string]any {
+	if len(stages) == 0 {
+		return nil
+	}
+	out := make([]map[string]any, 0, len(stages))
+	for _, stage := range stages {
+		out = append(out, map[string]any{
+			"name":       stage.Name,
+			"async":      stage.Async,
+			"optional":   stage.Optional,
+			"capability": string(stage.Capability),
+		})
+	}
+	return out
+}
+
+func capabilityStrings(capabilities []Capability) []string {
+	if len(capabilities) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(capabilities))
+	for _, capability := range capabilities {
+		if capability != "" {
+			out = append(out, string(capability))
+		}
+	}
+	return out
+}
+
+func documentTargetTraceDetails(targets []DocumentTarget) []map[string]string {
+	if len(targets) == 0 {
+		return nil
+	}
+	out := make([]map[string]string, 0, len(targets))
+	for _, target := range targets {
+		out = append(out, map[string]string{
+			"dataset_id":  target.DatasetID,
+			"document_id": target.DocumentID,
+		})
+	}
+	return out
+}
+
+func scopeTraceDetails(scope Scope) map[string]any {
+	return map[string]any{
+		"runtime_id":      scope.RuntimeID,
+		"user_id":         scope.UserID,
+		"agent_id":        scope.AgentID,
+		"conversation_id": scope.ConversationID,
+		"dataset_id":      scope.DatasetID,
+		"entity_id":       scope.EntityID,
+	}
+}
+
+func projectionTraceDetails(req DiagnosticProbeRequest, capabilities []Capability) map[string]any {
+	details := map[string]any{}
+	if req.System == nil {
+		return details
+	}
+	for _, capability := range capabilities {
+		baseNamespace, ok := req.System.assembly.ProjectionNamespace(capability)
+		entry := map[string]any{
+			"capability": string(capability),
+			"filter":     filterForTraceCapability(capability, req.Scope),
+		}
+		if ok {
+			entry["base_namespace"] = baseNamespace
+			scopedNamespace, err := projectors.ScopedNamespace(baseNamespace, req.Scope)
+			if err != nil {
+				entry["scoped_namespace_error"] = err.Error()
+			} else {
+				entry["scoped_namespace"] = scopedNamespace
+			}
+		} else {
+			entry["projection_declared"] = false
+		}
+		details[string(capability)] = entry
+	}
+	return details
+}
+
+func filterForTraceCapability(capability Capability, scope Scope) any {
+	switch capability {
+	case CapabilitySummaryDAG:
+		return summaryScopeFilter(scope)
+	case CapabilityDocumentChunks:
+		return documentScopeFilter(scope)
+	case CapabilityFactLedger:
+		return factScopeFilter(scope)
+	case CapabilityObservationLedger, CapabilityFactGraph, CapabilityEntityProfile, CapabilityEntityTimeline:
+		return semanticScopeFilter(scope)
+	default:
+		return nil
+	}
+}
+
+func consistencyScopeFilter(capability Capability, scope Scope) retrieval.Filter {
+	switch capability {
+	case CapabilitySummaryDAG:
+		return summaryScopeFilter(scope)
+	case CapabilityDocumentChunks:
+		return documentScopeFilter(scope)
+	case CapabilityFactLedger:
+		return factScopeFilter(scope)
+	case CapabilityObservationLedger, CapabilityFactGraph, CapabilityEntityProfile, CapabilityEntityTimeline:
+		return semanticScopeFilter(scope)
+	default:
+		return retrieval.Filter{}
 	}
 }
 
@@ -514,6 +1368,41 @@ func normalizeDiagnosticCapabilities(in []Capability) []Capability {
 	return out
 }
 
+func normalizeConsistencyCheckKinds(in []ConsistencyCheckKind) []ConsistencyCheckKind {
+	if in == nil {
+		return nil
+	}
+	out := make([]ConsistencyCheckKind, 0, len(in))
+	seen := map[ConsistencyCheckKind]bool{}
+	for _, kind := range in {
+		trimmed := ConsistencyCheckKind(strings.TrimSpace(string(kind)))
+		if trimmed == "" || seen[trimmed] {
+			continue
+		}
+		seen[trimmed] = true
+		out = append(out, trimmed)
+	}
+	return out
+}
+
+func cloneConsistencyCheckKinds(in []ConsistencyCheckKind) []ConsistencyCheckKind {
+	if in == nil {
+		return nil
+	}
+	out := make([]ConsistencyCheckKind, len(in))
+	copy(out, in)
+	return out
+}
+
+func supportedConsistencyCheckKind(kind ConsistencyCheckKind) bool {
+	switch kind {
+	case ConsistencyCheckProjection, ConsistencyCheckSourceView:
+		return true
+	default:
+		return false
+	}
+}
+
 func capabilitySupportsProjectionDiagnostics(capability Capability) bool {
 	switch capability {
 	case CapabilitySummaryDAG,
@@ -527,6 +1416,216 @@ func capabilitySupportsProjectionDiagnostics(capability Capability) bool {
 	default:
 		return false
 	}
+}
+
+func encodeConsistencyPageState(state consistencyPageState) (string, error) {
+	state.ensure()
+	done := make([]string, 0, len(state.done))
+	for key := range state.done {
+		done = append(done, key)
+	}
+	raw, err := json.Marshal(struct {
+		Positions map[string]string `json:"positions,omitempty"`
+		Done      []string          `json:"done,omitempty"`
+	}{
+		Positions: state.Positions,
+		Done:      done,
+	})
+	if err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(raw), nil
+}
+
+func decodeConsistencyPageState(token string) (consistencyPageState, error) {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		state := consistencyPageState{}
+		state.ensure()
+		return state, nil
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(token)
+	if err != nil {
+		return consistencyPageState{}, err
+	}
+	var state consistencyPageState
+	if err := json.Unmarshal(raw, &state); err != nil {
+		return consistencyPageState{}, err
+	}
+	state.ensure()
+	return state, nil
+}
+
+func consistencyProjectionMetadataKeys(capability Capability) []string {
+	keys := []string{
+		projectors.MetadataViewKindKey,
+		projectors.MetadataRecordTypeKey,
+		projectors.MetadataRuntimeIDKey,
+		projectors.MetadataUserIDKey,
+		projectors.MetadataAgentIDKey,
+		projectors.MetadataConversationIDKey,
+		projectors.MetadataDatasetIDKey,
+		projectors.MetadataEntityIDKey,
+		indexed.MetadataSourceRefsKey,
+		indexed.MetadataSignatureKey,
+	}
+	switch capability {
+	case CapabilityDocumentChunks:
+		keys = append(keys, projectors.MetadataDocumentIDKey, projectors.MetadataChunkIDKey)
+	case CapabilitySummaryDAG:
+		keys = append(keys, projectors.MetadataNodeIDKey)
+	case CapabilityObservationLedger:
+		keys = append(keys, projectors.MetadataObservationIDKey, projectors.MetadataPredicateKey)
+	case CapabilityFactLedger:
+		keys = append(keys, projectors.MetadataFactIDKey, projectors.MetadataPredicateKey, projectors.MetadataStatusKey)
+	case CapabilityFactGraph:
+		keys = append(keys, projectors.MetadataNodeIDKey, projectors.MetadataEdgeIDKey, projectors.MetadataNodeKindKey, projectors.MetadataFromKey, projectors.MetadataToKey, projectors.MetadataStatusKey)
+	case CapabilityEntityProfile:
+		keys = append(keys, projectors.MetadataProfileIDKey)
+	case CapabilityEntityTimeline:
+		keys = append(keys, projectors.MetadataEventIDKey)
+	}
+	return keys
+}
+
+func requiredProjectionMetadataKeys(capability Capability, metadata map[string]any) []string {
+	keys := []string{
+		projectors.MetadataViewKindKey,
+		projectors.MetadataRecordTypeKey,
+		projectors.MetadataRuntimeIDKey,
+	}
+	switch capability {
+	case CapabilityDocumentChunks:
+		return append(keys, projectors.MetadataDatasetIDKey, projectors.MetadataDocumentIDKey, projectors.MetadataChunkIDKey)
+	case CapabilitySummaryDAG:
+		return append(keys, projectors.MetadataConversationIDKey, projectors.MetadataNodeIDKey)
+	case CapabilityObservationLedger:
+		return append(keys, projectors.MetadataObservationIDKey)
+	case CapabilityFactLedger:
+		return append(keys, projectors.MetadataFactIDKey, projectors.MetadataStatusKey)
+	case CapabilityFactGraph:
+		recordType := metadataString(metadata, projectors.MetadataRecordTypeKey)
+		if recordType == projectors.RecordTypeFactEdge {
+			return append(keys, projectors.MetadataEdgeIDKey, projectors.MetadataFromKey, projectors.MetadataToKey)
+		}
+		return append(keys, projectors.MetadataNodeIDKey)
+	case CapabilityEntityProfile:
+		return append(keys, projectors.MetadataProfileIDKey)
+	case CapabilityEntityTimeline:
+		return append(keys, projectors.MetadataEventIDKey)
+	default:
+		return keys
+	}
+}
+
+func projectionRecordDetails(req DiagnosticProbeRequest, capability Capability, namespace string, doc retrieval.Doc) map[string]any {
+	return map[string]any{
+		"record_id":       doc.ID,
+		"namespace":       namespace,
+		"capability":      string(capability),
+		"page_size":       req.PageSize,
+		"record_type":     metadataString(doc.Metadata, projectors.MetadataRecordTypeKey),
+		"view_kind":       metadataString(doc.Metadata, projectors.MetadataViewKindKey),
+		"runtime_id":      metadataString(doc.Metadata, projectors.MetadataRuntimeIDKey),
+		"user_id":         metadataString(doc.Metadata, projectors.MetadataUserIDKey),
+		"dataset_id":      metadataString(doc.Metadata, projectors.MetadataDatasetIDKey),
+		"document_id":     metadataString(doc.Metadata, projectors.MetadataDocumentIDKey),
+		"chunk_id":        metadataString(doc.Metadata, projectors.MetadataChunkIDKey),
+		"requested_scope": scopeTraceDetails(req.Scope),
+	}
+}
+
+func projectionRecordLifecycleTarget(capability Capability, metadata map[string]any) LifecycleTarget {
+	target := LifecycleTarget{Capability: capability}
+	if capability == CapabilityDocumentChunks {
+		target.Kind = "document"
+		target.DatasetID = metadataString(metadata, projectors.MetadataDatasetIDKey)
+		target.DocumentID = metadataString(metadata, projectors.MetadataDocumentIDKey)
+	}
+	return target
+}
+
+func projectionRepairHint(capability Capability, target LifecycleTarget) string {
+	if capability == CapabilityDocumentChunks && target.DatasetID != "" && target.DocumentID != "" {
+		return fmt.Sprintf("rebuild capability=%s target=%s/%s", capability, target.DatasetID, target.DocumentID)
+	}
+	return fmt.Sprintf("rebuild capability=%s target=scope", capability)
+}
+
+func projectionHardPartitionMismatches(scope Scope, metadata map[string]any) []string {
+	var reasons []string
+	if got := metadataString(metadata, projectors.MetadataRuntimeIDKey); got != scope.RuntimeID {
+		reasons = append(reasons, fmt.Sprintf("runtime_id metadata %q does not match requested scope %q", got, scope.RuntimeID))
+	}
+	if got := metadataString(metadata, projectors.MetadataUserIDKey); got != scope.UserID {
+		reasons = append(reasons, fmt.Sprintf("user_id metadata %q does not match requested scope %q", got, scope.UserID))
+	}
+	return reasons
+}
+
+func projectionScopeFromMetadata(fallback Scope, metadata map[string]any) Scope {
+	scope := fallback
+	if value := metadataString(metadata, projectors.MetadataRuntimeIDKey); value != "" {
+		scope.RuntimeID = value
+	}
+	if value, ok := metadata[projectors.MetadataUserIDKey]; ok {
+		scope.UserID = stringFromAny(value)
+	}
+	if value, ok := metadata[projectors.MetadataAgentIDKey]; ok {
+		scope.AgentID = stringFromAny(value)
+	}
+	if value, ok := metadata[projectors.MetadataConversationIDKey]; ok {
+		scope.ConversationID = stringFromAny(value)
+	}
+	if value, ok := metadata[projectors.MetadataDatasetIDKey]; ok {
+		scope.DatasetID = stringFromAny(value)
+	}
+	if value, ok := metadata[projectors.MetadataEntityIDKey]; ok {
+		scope.EntityID = stringFromAny(value)
+	}
+	return scope
+}
+
+func metadataString(metadata map[string]any, key string) string {
+	if metadata == nil {
+		return ""
+	}
+	value, ok := metadata[key]
+	if !ok {
+		return ""
+	}
+	return stringFromAny(value)
+}
+
+func stringFromAny(value any) string {
+	switch v := value.(type) {
+	case string:
+		return strings.TrimSpace(v)
+	case fmt.Stringer:
+		return strings.TrimSpace(v.String())
+	case nil:
+		return ""
+	default:
+		return strings.TrimSpace(fmt.Sprint(v))
+	}
+}
+
+func appendStringDetail(value any, item string) []string {
+	var out []string
+	switch existing := value.(type) {
+	case []string:
+		out = append(out, existing...)
+	case []any:
+		for _, entry := range existing {
+			if s := stringFromAny(entry); s != "" {
+				out = append(out, s)
+			}
+		}
+	}
+	if item != "" {
+		out = append(out, item)
+	}
+	return out
 }
 
 func cloneDiagnosticChecks(in []DiagnosticCheck) []DiagnosticCheck {

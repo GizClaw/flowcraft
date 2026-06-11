@@ -2,8 +2,10 @@ package memory
 
 import (
 	"context"
+	"fmt"
 	"strings"
 
+	"github.com/GizClaw/flowcraft/memory/derive"
 	"github.com/GizClaw/flowcraft/memory/internal/compiler"
 	internalexecutor "github.com/GizClaw/flowcraft/memory/internal/executor"
 	"github.com/GizClaw/flowcraft/memory/internal/projectors"
@@ -46,6 +48,7 @@ const (
 // AppendMessageRequest appends canonical conversation messages and then runs
 // the configured write stages that derive semantic memory from them.
 type AppendMessageRequest struct {
+	TraceID  TraceID
 	Messages []sourcemessage.Message
 	Scope    views.Scope
 }
@@ -57,12 +60,13 @@ type AppendMessageResult struct {
 	FactGraph      *FactGraphBuildResult
 	EntityProfiles []viewentity.ProfileRecord
 	EntityEvents   []viewentity.Event
-	Jobs           []JobHandle
+	Jobs           []LifecycleJobID
 }
 
 // ImportDocumentRequest stores one canonical document and runs configured
 // document derivation stages for its scope.
 type ImportDocumentRequest struct {
+	TraceID  TraceID
 	Scope    views.Scope
 	Document sourcedocument.Document
 }
@@ -76,10 +80,11 @@ type ImportDocumentResult struct {
 // semantics. Callers provide Scope; the system derives physical projection
 // namespaces internally.
 type ContextRequest struct {
-	Scope  views.Scope
-	Query  string
-	TopK   int
-	Window recent.WindowRequest
+	TraceID TraceID
+	Scope   views.Scope
+	Query   string
+	TopK    int
+	Window  recent.WindowRequest
 }
 
 // AppendMessage appends source messages first, then executes configured write
@@ -95,6 +100,7 @@ func (r *System) AppendMessage(ctx context.Context, req AppendMessageRequest) (*
 	if r.inner.MessageStore() == nil {
 		return nil, errdefs.NotAvailablef("memory: message store is not configured")
 	}
+	traceID := ensureTraceID(req.TraceID)
 	if _, err := r.inner.MessageStore().Append(ctx, sourcemessage.AppendRequest{
 		ConversationID: conversationID,
 		Messages:       req.Messages,
@@ -109,7 +115,7 @@ func (r *System) AppendMessage(ctx context.Context, req AppendMessageRequest) (*
 		if len(asyncChain) == 0 {
 			return nil
 		}
-		handle, err := r.enqueueWriteChain(ctx, scope, window, asyncChain)
+		handle, err := r.enqueueWriteChain(ctx, traceID, scope, window, asyncChain)
 		if err != nil {
 			return err
 		}
@@ -139,22 +145,41 @@ func (r *System) AppendMessage(ctx context.Context, req AppendMessageRequest) (*
 	return result, nil
 }
 
-func (r *System) enqueueWriteChain(ctx context.Context, scope Scope, window recent.WindowRequest, stages []PlannedStage) (JobHandle, error) {
-	if r.scheduler == nil {
-		return JobHandle{}, errdefs.Validationf("memory: async write stages require Scheduler")
+func (r *System) enqueueWriteChain(ctx context.Context, traceID TraceID, scope Scope, window recent.WindowRequest, stages []PlannedStage) (LifecycleJobID, error) {
+	if r.jobStore == nil {
+		return "", errdefs.Validationf("memory: async write stages require JobStore")
 	}
 	jobStages := clonePlannedStages(stages)
-	job := Job{
-		Kind:   "write_chain",
-		Scope:  scope,
-		Window: window,
-		Stages: jobStages,
+	job := LifecycleJob{
+		TraceID:     ensureTraceID(traceID),
+		OperationID: newOperationID(),
+		Kind:        LifecycleJobKindWriteChain,
+		Scope:       scope,
+		Window:      window,
+		Stages:      jobStages,
+		MaxAttempts: 1,
 	}
-	job.run = func(ctx context.Context) error {
-		_, err := r.executeWriteStages(ctx, jobStages, window, scope)
-		return err
+	jobID, err := r.jobStore.Enqueue(ctx, job)
+	if err != nil {
+		return "", err
 	}
-	return r.scheduler.Enqueue(ctx, job)
+	job.ID = jobID
+	report := newLifecycleReportForJob(r, job)
+	report.Accepted = true
+	report.Supported = true
+	report.Status = LifecycleStatusEnqueued
+	report.Message = fmt.Sprintf("write_chain lifecycle job enqueued")
+	report.Steps = append(report.Steps, LifecycleStep{
+		Name:    "write_chain.enqueue",
+		Status:  LifecycleStatusEnqueued,
+		Planned: true,
+		Message: fmt.Sprintf("queued %d async write stage(s)", len(jobStages)),
+	})
+	finalizeLifecycleExecutionReport(&report)
+	if err := r.putLifecycleReport(ctx, report); err != nil {
+		return "", err
+	}
+	return jobID, nil
 }
 
 func (r *System) executeWriteStages(ctx context.Context, stages []PlannedStage, window recent.WindowRequest, scope viewobservation.Scope) (*AppendMessageResult, error) {
@@ -251,7 +276,7 @@ func (r *System) executeWriteStage(ctx context.Context, stage PlannedStage, wind
 		if err != nil {
 			return err
 		}
-		result.FactGraph = graph
+		result.FactGraph = factGraphBuildResultFromExecutor(graph)
 	case writeStageBuildEntityProfiles:
 		if err := r.ensureFactGraphEvidence(ctx, window, scope, result); err != nil {
 			return err
@@ -269,7 +294,7 @@ func (r *System) executeWriteStage(ctx context.Context, stage PlannedStage, wind
 		profiles, err := r.inner.BuildEntityProfilesScoped(ctx, internalexecutor.EntityBuildInput{
 			Scope: scope,
 			Facts: result.Facts,
-			Graph: result.FactGraph,
+			Graph: factGraphBuildResultToExecutor(result.FactGraph),
 		}, namespace)
 		if err != nil {
 			return err
@@ -292,7 +317,7 @@ func (r *System) executeWriteStage(ctx context.Context, stage PlannedStage, wind
 		events, err := r.inner.BuildEntityTimelineScoped(ctx, internalexecutor.EntityBuildInput{
 			Scope: scope,
 			Facts: result.Facts,
-			Graph: result.FactGraph,
+			Graph: factGraphBuildResultToExecutor(result.FactGraph),
 		}, namespace)
 		if err != nil {
 			return err
@@ -352,7 +377,7 @@ func (r *System) ensureFactGraphEvidence(ctx context.Context, window recent.Wind
 	if err != nil {
 		return err
 	}
-	result.FactGraph = graph
+	result.FactGraph = factGraphBuildResultFromExecutor(graph)
 	return nil
 }
 
@@ -418,7 +443,48 @@ func (r *System) PackContext(ctx context.Context, req ContextRequest) (*ContextP
 	if err != nil {
 		return nil, err
 	}
-	return r.inner.PackContext(ctx, innerReq)
+	pack, err := r.inner.PackContext(ctx, innerReq)
+	if err != nil {
+		return nil, err
+	}
+	return contextPackFromExecutor(pack), nil
+}
+
+func factGraphBuildResultFromExecutor(in *internalexecutor.FactGraphBuildResult) *FactGraphBuildResult {
+	if in == nil {
+		return nil
+	}
+	return &FactGraphBuildResult{
+		Nodes: append([]fact.Node(nil), in.Nodes...),
+		Edges: append([]fact.Edge(nil), in.Edges...),
+	}
+}
+
+func factGraphBuildResultToExecutor(in *FactGraphBuildResult) *internalexecutor.FactGraphBuildResult {
+	if in == nil {
+		return nil
+	}
+	return &internalexecutor.FactGraphBuildResult{
+		Nodes: append([]fact.Node(nil), in.Nodes...),
+		Edges: append([]fact.Edge(nil), in.Edges...),
+	}
+}
+
+func contextPackFromExecutor(in *internalexecutor.ContextPack) *ContextPack {
+	if in == nil {
+		return nil
+	}
+	return &ContextPack{
+		Window:             in.Window,
+		SummaryHits:        append([]derive.SummaryNodeSearchHit(nil), in.SummaryHits...),
+		DocumentHits:       append([]derive.DocumentChunkSearchHit(nil), in.DocumentHits...),
+		ObservationHits:    append([]derive.ObservationSearchHit(nil), in.ObservationHits...),
+		FactHits:           append([]derive.FactSearchHit(nil), in.FactHits...),
+		FactGraphHits:      append([]derive.FactGraphSearchHit(nil), in.FactGraphHits...),
+		EntityProfileHits:  append([]derive.EntityProfileSearchHit(nil), in.EntityProfileHits...),
+		EntityTimelineHits: append([]derive.EntityTimelineSearchHit(nil), in.EntityTimelineHits...),
+		Items:              append([]derive.ContextItem(nil), in.Items...),
+	}
 }
 
 func (r *System) packContextRequest(req ContextRequest) (internalexecutor.PackContextRequest, error) {

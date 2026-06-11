@@ -4,140 +4,311 @@ import (
 	"context"
 	"strconv"
 	"sync"
+	"time"
 
 	"github.com/GizClaw/flowcraft/memory/views/recent"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 )
 
-// Scheduler is the async write-stage queue used by the root memory facade.
-type Scheduler interface {
-	Enqueue(context.Context, Job) (JobHandle, error)
-	RunOnce(context.Context) (JobResult, error)
-	Drain(context.Context) error
+// LifecycleJobStore is the durable queue boundary for serializable memory jobs.
+// Implementations own persistence, leases, and terminal status transitions.
+type LifecycleJobStore interface {
+	Enqueue(context.Context, LifecycleJob) (LifecycleJobID, error)
+	Claim(context.Context, string, time.Duration) (LifecycleJob, bool, error)
+	Heartbeat(context.Context, LifecycleJobID, string, time.Duration) error
+	Complete(context.Context, LifecycleJobID, string, LifecycleJobResult) error
+	Fail(context.Context, LifecycleJobID, string, error, map[string]any) error
+	Cancel(context.Context, LifecycleJobID, string) error
 	Shutdown(context.Context) error
 	Stats(context.Context) (QueueStats, error)
 }
 
-// Job describes one queued memory control-plane unit. Runnable closures are
-// intentionally kept unexported so public metadata stays serializable.
-type Job struct {
-	ID           string
-	Kind         string
-	Scope        Scope
-	Capabilities []Capability
-	Reason       string
-	Window       recent.WindowRequest
-	Stages       []PlannedStage
+// LifecycleJobKind names the serializable work payload carried by the job store.
+type LifecycleJobKind string
 
-	run func(context.Context) error
+const (
+	LifecycleJobKindWriteChain     LifecycleJobKind = "write_chain"
+	LifecycleJobKindRebuild        LifecycleJobKind = LifecycleJobKind(LifecycleActionRebuild)
+	LifecycleJobKindReconcile      LifecycleJobKind = LifecycleJobKind(LifecycleActionReconcile)
+	LifecycleJobKindReload         LifecycleJobKind = LifecycleJobKind(LifecycleActionReload)
+	LifecycleJobKindFreshnessCheck LifecycleJobKind = LifecycleJobKind(LifecycleActionFreshnessCheck)
+)
+
+// LifecycleJobStatus is the durable status of a queued memory job.
+type LifecycleJobStatus string
+
+const (
+	LifecycleJobStatusPending   LifecycleJobStatus = "pending"
+	LifecycleJobStatusRunning   LifecycleJobStatus = "running"
+	LifecycleJobStatusCompleted LifecycleJobStatus = "completed"
+	LifecycleJobStatusFailed    LifecycleJobStatus = "failed"
+	LifecycleJobStatusCancelled LifecycleJobStatus = "cancelled"
+)
+
+// LifecycleJob is the serializable job payload used by the memory control plane.
+type LifecycleJob struct {
+	ID             LifecycleJobID
+	TraceID        TraceID
+	OperationID    OperationID
+	Kind           LifecycleJobKind
+	Scope          Scope
+	Capabilities   []Capability
+	Documents      []DocumentTarget
+	Reason         string
+	Window         recent.WindowRequest
+	Stages         []PlannedStage
+	Status         LifecycleJobStatus
+	Attempt        int
+	MaxAttempts    int
+	LeaseOwner     string
+	LeaseExpiresAt time.Time
+	Checkpoint     map[string]any
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
+	Error          string
 }
 
-// JobHandle is returned after enqueueing async memory work.
-type JobHandle struct {
-	ID string
+// LifecycleJobResult reports the result of one worker execution attempt.
+type LifecycleJobResult struct {
+	JobID       LifecycleJobID
+	OperationID OperationID
+	Kind        LifecycleJobKind
+	Completed   bool
+	Error       string
+	Checkpoint  map[string]any
 }
 
-// JobResult reports the result of one scheduler execution attempt.
-type JobResult struct {
-	JobID     string
-	Completed bool
-	Error     string
-}
-
-// QueueStats summarizes in-memory scheduler state.
+// QueueStats summarizes durable job state.
 type QueueStats struct {
-	Pending   int
-	Running   int
-	Completed int
-	Failed    int
+	Pending         int
+	Running         int
+	Completed       int
+	Failed          int
+	Cancelled       int
+	Attempts        int
+	QueuedByKind    map[LifecycleJobKind]int
+	AttemptsByKind  map[LifecycleJobKind]int
+	CompletedByKind map[LifecycleJobKind]int
+	FailedByKind    map[LifecycleJobKind]int
+	CancelledByKind map[LifecycleJobKind]int
 }
 
-type jobEnvelope struct {
-	job Job
-	run func(context.Context) error
+// MemoryJobStore is an in-memory reference implementation of LifecycleJobStore.
+// It is intended for tests and local runs; production deployments should provide
+// a persistent implementation with the same lease semantics.
+type MemoryJobStore struct {
+	mu       sync.Mutex
+	nextID   uint64
+	order    []LifecycleJobID
+	jobs     map[LifecycleJobID]LifecycleJob
+	shutdown bool
 }
 
-// MemoryScheduler is a small FIFO scheduler for local execution and tests.
-type MemoryScheduler struct {
-	mu        sync.Mutex
-	nextID    uint64
-	pending   []jobEnvelope
-	running   int
-	completed int
-	failed    int
-	shutdown  bool
-}
-
-// NewMemoryScheduler returns a local FIFO scheduler for async memory jobs.
-func NewMemoryScheduler() *MemoryScheduler {
-	return &MemoryScheduler{}
-}
-
-// Enqueue appends a runnable job to the local FIFO queue.
-func (s *MemoryScheduler) Enqueue(_ context.Context, job Job) (JobHandle, error) {
-	if s == nil {
-		return JobHandle{}, errdefs.NotAvailablef("memory: scheduler is not configured")
+// NewMemoryJobStore returns a local durable-job reference store.
+func NewMemoryJobStore() *MemoryJobStore {
+	return &MemoryJobStore{
+		jobs: make(map[LifecycleJobID]LifecycleJob),
 	}
-	if job.run == nil {
-		return JobHandle{}, errdefs.Validationf("memory: job %q has no runner", job.ID)
+}
+
+// Enqueue persists a serializable job in pending state.
+func (s *MemoryJobStore) Enqueue(_ context.Context, job LifecycleJob) (LifecycleJobID, error) {
+	if s == nil {
+		return "", errdefs.NotAvailablef("memory: job store is not configured")
+	}
+	if job.Kind == "" {
+		return "", errdefs.Validationf("memory: job kind is required")
 	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	if s.shutdown {
-		return JobHandle{}, errdefs.NotAvailablef("memory: scheduler is shut down")
+		return "", errdefs.NotAvailablef("memory: job store is shut down")
+	}
+	if s.jobs == nil {
+		s.jobs = make(map[LifecycleJobID]LifecycleJob)
 	}
 	if job.ID == "" {
 		s.nextID++
-		job.ID = "memory-job-" + strconv.FormatUint(s.nextID, 10)
+		job.ID = LifecycleJobID("memory-job-" + strconv.FormatUint(s.nextID, 10))
+	} else if _, exists := s.jobs[job.ID]; exists {
+		return "", errdefs.Validationf("memory: job %q already exists", job.ID)
 	}
-	envelope := jobEnvelope{
-		job: cloneJobMetadata(job),
-		run: job.run,
+	if job.Status == "" {
+		job.Status = LifecycleJobStatusPending
 	}
-	s.pending = append(s.pending, envelope)
-	return JobHandle{ID: job.ID}, nil
+	if job.Status != LifecycleJobStatusPending {
+		return "", errdefs.Validationf("memory: job %q must be enqueued as pending", job.ID)
+	}
+	if job.MaxAttempts == 0 {
+		job.MaxAttempts = 1
+	}
+	now := time.Now().UTC()
+	if job.CreatedAt.IsZero() {
+		job.CreatedAt = now
+	}
+	job.UpdatedAt = now
+	job = cloneLifecycleJob(job)
+	s.jobs[job.ID] = job
+	s.order = append(s.order, job.ID)
+	return job.ID, nil
 }
 
-// RunOnce runs the next pending job, if any.
-func (s *MemoryScheduler) RunOnce(ctx context.Context) (JobResult, error) {
+// Get returns a snapshot of one queued job when available.
+func (s *MemoryJobStore) Get(_ context.Context, jobID LifecycleJobID) (LifecycleJob, bool, error) {
 	if s == nil {
-		err := errdefs.NotAvailablef("memory: scheduler is not configured")
-		return JobResult{Error: err.Error()}, err
+		return LifecycleJob{}, false, nil
 	}
-
-	envelope, ok := s.pop()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	job, ok := s.jobs[jobID]
 	if !ok {
-		return JobResult{}, nil
+		return LifecycleJob{}, false, nil
 	}
-
-	err := envelope.run(ctx)
-	s.finish(err)
-	if err != nil {
-		return JobResult{JobID: envelope.job.ID, Error: err.Error()}, err
-	}
-	return JobResult{JobID: envelope.job.ID, Completed: true}, nil
+	return cloneLifecycleJob(job), true, nil
 }
 
-// Drain runs pending jobs until the queue is empty or a job fails.
-func (s *MemoryScheduler) Drain(ctx context.Context) error {
+// Claim leases the next pending or expired running job for one worker.
+func (s *MemoryJobStore) Claim(_ context.Context, workerID string, lease time.Duration) (LifecycleJob, bool, error) {
 	if s == nil {
-		return errdefs.NotAvailablef("memory: scheduler is not configured")
+		return LifecycleJob{}, false, errdefs.NotAvailablef("memory: job store is not configured")
 	}
-	for {
-		result, err := s.RunOnce(ctx)
-		if err != nil {
-			return err
-		}
-		if result.JobID == "" {
-			return nil
-		}
+	if workerID == "" {
+		return LifecycleJob{}, false, errdefs.Validationf("memory: worker id is required")
 	}
+	if lease <= 0 {
+		return LifecycleJob{}, false, errdefs.Validationf("memory: lease must be positive")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	now := time.Now().UTC()
+	for _, id := range s.order {
+		job := s.jobs[id]
+		claimable := job.Status == LifecycleJobStatusPending ||
+			(job.Status == LifecycleJobStatusRunning && !job.LeaseExpiresAt.IsZero() && !job.LeaseExpiresAt.After(now))
+		if !claimable {
+			continue
+		}
+		job.Status = LifecycleJobStatusRunning
+		job.Attempt++
+		job.LeaseOwner = workerID
+		job.LeaseExpiresAt = now.Add(lease)
+		job.UpdatedAt = now
+		job.Error = ""
+		s.jobs[id] = job
+		return cloneLifecycleJob(job), true, nil
+	}
+	return LifecycleJob{}, false, nil
 }
 
-// Shutdown prevents future enqueueing. Pending jobs remain visible in Stats.
-func (s *MemoryScheduler) Shutdown(_ context.Context) error {
+// Heartbeat extends a running job lease for the current owner.
+func (s *MemoryJobStore) Heartbeat(_ context.Context, jobID LifecycleJobID, workerID string, lease time.Duration) error {
+	if s == nil {
+		return errdefs.NotAvailablef("memory: job store is not configured")
+	}
+	if lease <= 0 {
+		return errdefs.Validationf("memory: lease must be positive")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	job, err := s.requireOwnedRunning(jobID, workerID)
+	if err != nil {
+		return err
+	}
+	now := time.Now().UTC()
+	job.LeaseExpiresAt = now.Add(lease)
+	job.UpdatedAt = now
+	s.jobs[jobID] = job
+	return nil
+}
+
+// Complete marks a leased job as completed.
+func (s *MemoryJobStore) Complete(_ context.Context, jobID LifecycleJobID, workerID string, result LifecycleJobResult) error {
+	if s == nil {
+		return errdefs.NotAvailablef("memory: job store is not configured")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	job, err := s.requireOwnedRunning(jobID, workerID)
+	if err != nil {
+		return err
+	}
+	job.Status = LifecycleJobStatusCompleted
+	job.LeaseOwner = ""
+	job.LeaseExpiresAt = time.Time{}
+	job.Error = ""
+	if result.Checkpoint != nil {
+		job.Checkpoint = cloneCheckpoint(result.Checkpoint)
+	}
+	job.UpdatedAt = time.Now().UTC()
+	s.jobs[jobID] = job
+	return nil
+}
+
+// Fail records an attempt failure and either requeues or terminally fails the job.
+func (s *MemoryJobStore) Fail(_ context.Context, jobID LifecycleJobID, workerID string, jobErr error, checkpoint map[string]any) error {
+	if s == nil {
+		return errdefs.NotAvailablef("memory: job store is not configured")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	job, err := s.requireOwnedRunning(jobID, workerID)
+	if err != nil {
+		return err
+	}
+	if job.MaxAttempts == 0 {
+		job.MaxAttempts = 1
+	}
+	if job.Attempt < job.MaxAttempts {
+		job.Status = LifecycleJobStatusPending
+	} else {
+		job.Status = LifecycleJobStatusFailed
+	}
+	job.LeaseOwner = ""
+	job.LeaseExpiresAt = time.Time{}
+	if jobErr != nil {
+		job.Error = jobErr.Error()
+	}
+	if checkpoint != nil {
+		job.Checkpoint = cloneCheckpoint(checkpoint)
+	}
+	job.UpdatedAt = time.Now().UTC()
+	s.jobs[jobID] = job
+	return nil
+}
+
+// Cancel marks a non-terminal job as cancelled.
+func (s *MemoryJobStore) Cancel(_ context.Context, jobID LifecycleJobID, reason string) error {
+	if s == nil {
+		return errdefs.NotAvailablef("memory: job store is not configured")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	job, ok := s.jobs[jobID]
+	if !ok {
+		return errdefs.NotFoundf("memory: job %q not found", jobID)
+	}
+	if isTerminalLifecycleJobStatus(job.Status) {
+		return nil
+	}
+	job.Status = LifecycleJobStatusCancelled
+	job.LeaseOwner = ""
+	job.LeaseExpiresAt = time.Time{}
+	job.Error = reason
+	job.UpdatedAt = time.Now().UTC()
+	s.jobs[jobID] = job
+	return nil
+}
+
+// Shutdown prevents future enqueueing. Existing jobs remain visible in Stats.
+func (s *MemoryJobStore) Shutdown(_ context.Context) error {
 	if s == nil {
 		return nil
 	}
@@ -148,55 +319,97 @@ func (s *MemoryScheduler) Shutdown(_ context.Context) error {
 }
 
 // Stats returns a snapshot of queue counters.
-func (s *MemoryScheduler) Stats(_ context.Context) (QueueStats, error) {
+func (s *MemoryJobStore) Stats(_ context.Context) (QueueStats, error) {
 	if s == nil {
 		return QueueStats{}, nil
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return QueueStats{
-		Pending:   len(s.pending),
-		Running:   s.running,
-		Completed: s.completed,
-		Failed:    s.failed,
-	}, nil
+
+	stats := QueueStats{
+		QueuedByKind:    make(map[LifecycleJobKind]int),
+		AttemptsByKind:  make(map[LifecycleJobKind]int),
+		CompletedByKind: make(map[LifecycleJobKind]int),
+		FailedByKind:    make(map[LifecycleJobKind]int),
+		CancelledByKind: make(map[LifecycleJobKind]int),
+	}
+	for _, id := range s.order {
+		job := s.jobs[id]
+		stats.QueuedByKind[job.Kind]++
+		stats.Attempts += job.Attempt
+		stats.AttemptsByKind[job.Kind] += job.Attempt
+		switch job.Status {
+		case LifecycleJobStatusPending:
+			stats.Pending++
+		case LifecycleJobStatusRunning:
+			stats.Running++
+		case LifecycleJobStatusCompleted:
+			stats.Completed++
+			stats.CompletedByKind[job.Kind]++
+		case LifecycleJobStatusFailed:
+			stats.Failed++
+			stats.FailedByKind[job.Kind]++
+		case LifecycleJobStatusCancelled:
+			stats.Cancelled++
+			stats.CancelledByKind[job.Kind]++
+		}
+	}
+	if len(stats.QueuedByKind) == 0 {
+		stats.QueuedByKind = nil
+	}
+	if len(stats.AttemptsByKind) == 0 {
+		stats.AttemptsByKind = nil
+	}
+	if len(stats.CompletedByKind) == 0 {
+		stats.CompletedByKind = nil
+	}
+	if len(stats.FailedByKind) == 0 {
+		stats.FailedByKind = nil
+	}
+	if len(stats.CancelledByKind) == 0 {
+		stats.CancelledByKind = nil
+	}
+	return stats, nil
 }
 
-func (s *MemoryScheduler) pop() (jobEnvelope, bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if len(s.pending) == 0 {
-		return jobEnvelope{}, false
+func (s *MemoryJobStore) requireOwnedRunning(jobID LifecycleJobID, workerID string) (LifecycleJob, error) {
+	job, ok := s.jobs[jobID]
+	if !ok {
+		return LifecycleJob{}, errdefs.NotFoundf("memory: job %q not found", jobID)
 	}
-	envelope := s.pending[0]
-	copy(s.pending, s.pending[1:])
-	s.pending[len(s.pending)-1] = jobEnvelope{}
-	s.pending = s.pending[:len(s.pending)-1]
-	s.running++
-	return envelope, true
+	if job.Status != LifecycleJobStatusRunning {
+		return LifecycleJob{}, errdefs.Validationf("memory: job %q is not running", jobID)
+	}
+	if job.LeaseOwner != workerID {
+		return LifecycleJob{}, errdefs.Validationf("memory: job %q is leased by another worker", jobID)
+	}
+	return job, nil
 }
 
-func (s *MemoryScheduler) finish(err error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.running > 0 {
-		s.running--
+func isTerminalLifecycleJobStatus(status LifecycleJobStatus) bool {
+	switch status {
+	case LifecycleJobStatusCompleted, LifecycleJobStatusFailed, LifecycleJobStatusCancelled:
+		return true
+	default:
+		return false
 	}
-	if err != nil {
-		s.failed++
-		return
-	}
-	s.completed++
 }
 
-func cloneJobMetadata(job Job) Job {
-	return Job{
-		ID:           job.ID,
-		Kind:         job.Kind,
-		Scope:        job.Scope,
-		Capabilities: cloneCapabilities(job.Capabilities),
-		Reason:       job.Reason,
-		Window:       job.Window,
-		Stages:       clonePlannedStages(job.Stages),
+func cloneLifecycleJob(job LifecycleJob) LifecycleJob {
+	job.Capabilities = cloneCapabilities(job.Capabilities)
+	job.Documents = cloneDocumentTargets(job.Documents)
+	job.Stages = clonePlannedStages(job.Stages)
+	job.Checkpoint = cloneCheckpoint(job.Checkpoint)
+	return job
+}
+
+func cloneCheckpoint(in map[string]any) map[string]any {
+	if in == nil {
+		return nil
 	}
+	out := make(map[string]any, len(in))
+	for key, value := range in {
+		out[key] = value
+	}
+	return out
 }

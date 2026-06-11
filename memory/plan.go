@@ -33,8 +33,9 @@ const (
 	lifecycleStageRebuild    = "rebuild"
 	lifecycleStageReconcile  = "reconcile"
 
-	diagnosticStageTrace     = "trace"
-	diagnosticStageFreshness = "freshness"
+	diagnosticStageTrace       = "trace"
+	diagnosticStageFreshness   = "freshness"
+	diagnosticStageConsistency = "consistency"
 
 	lifecycleStageCompact        = "compact"
 	lifecycleStageArchive        = "archive"
@@ -224,7 +225,7 @@ func planDiagnosticsStage(stage StageSpec) (PlannedStage, bool, error) {
 		return PlannedStage{}, false, errdefs.Validationf("memory: diagnostics stage %q cannot be async", stage.Name)
 	}
 	switch name {
-	case lifecycleStageReadiness, lifecycleStageQueueStats, diagnosticStageTrace, diagnosticStageFreshness:
+	case lifecycleStageReadiness, lifecycleStageQueueStats, diagnosticStageTrace, diagnosticStageFreshness, diagnosticStageConsistency:
 		return PlannedStage{Name: name, Optional: stage.Optional}, true, nil
 	default:
 		if stage.Optional {

@@ -682,14 +682,14 @@ func assertEventMutableState(t *testing.T, event Event, factID fact.FactID, mess
 }
 
 type fakeProfileStore struct {
-	putIn          ProfileRecord
-	putOut         ProfileRecord
-	getScope       views.Scope
-	getID          ProfileID
-	getOut         ProfileRecord
-	getOK          bool
-	listOpts       ProfileListOptions
-	listOut        []ProfileRecord
+	putIn             ProfileRecord
+	putOut            ProfileRecord
+	getScope          views.Scope
+	getID             ProfileID
+	getOut            ProfileRecord
+	getOK             bool
+	listOpts          ProfileListOptions
+	listOut           []ProfileRecord
 	deleteScope       views.Scope
 	deleteID          ProfileID
 	deleteEntityScope views.Scope
@@ -732,14 +732,14 @@ func (s *fakeProfileStore) DeleteEntity(_ context.Context, scope views.Scope) er
 }
 
 type fakeTimelineStore struct {
-	putIn          Event
-	putOut         Event
-	getScope       views.Scope
-	getID          EventID
-	getOut         Event
-	getOK          bool
-	listOpts       TimelineListOptions
-	listOut        []Event
+	putIn             Event
+	putOut            Event
+	getScope          views.Scope
+	getID             EventID
+	getOut            Event
+	getOK             bool
+	listOpts          TimelineListOptions
+	listOut           []Event
 	deleteScope       views.Scope
 	deleteID          EventID
 	deleteEntityScope views.Scope

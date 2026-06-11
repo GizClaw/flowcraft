@@ -322,9 +322,9 @@ type fakeChunkStore struct {
 	listCalls  []fakeListCall
 	listResult []Chunk
 
-	deleteDocumentScope     views.Scope
-	deleteDocumentID        string
-	deleteDatasetScope      views.Scope
+	deleteDocumentScope views.Scope
+	deleteDocumentID    string
+	deleteDatasetScope  views.Scope
 }
 
 type fakeListCall struct {
